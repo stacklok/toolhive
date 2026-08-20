@@ -41,6 +41,7 @@ type testSetupOptions struct {
 	CIMDEnabled                         bool
 	AllowConfidentialClientRegistration bool
 	HasStaticDelegateClients            bool
+	JWTBearerGrantEnabled               bool
 }
 
 // testSetup creates a Handler with all dependencies for testing.
@@ -72,6 +73,7 @@ func testSetupWithOptions(t *testing.T, opts testSetupOptions) *Handler {
 		CIMDEnabled:                         opts.CIMDEnabled,
 		AllowConfidentialClientRegistration: opts.AllowConfidentialClientRegistration,
 		HasStaticDelegateClients:            opts.HasStaticDelegateClients,
+		JWTBearerGrantEnabled:               opts.JWTBearerGrantEnabled,
 		AccessTokenLifespan:                 time.Hour,
 		RefreshTokenLifespan:                time.Hour * 24,
 		AuthCodeLifespan:                    time.Minute * 10,
@@ -401,6 +403,47 @@ func TestWellKnownRoutes(t *testing.T) {
 			// Should not return 404 (route not found)
 			assert.NotEqual(t, http.StatusNotFound, rec.Code,
 				"route %s %s should be registered", tc.method, tc.path)
+		})
+	}
+}
+
+func TestDiscoveryHandlers_JWTBearerGrant(t *testing.T) {
+	t.Parallel()
+
+	for _, tc := range []struct {
+		name    string
+		enabled bool
+	}{
+		{"enabled", true},
+		{"disabled", false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			handler := testSetupWithOptions(t, testSetupOptions{JWTBearerGrantEnabled: tc.enabled})
+
+			for _, endpoint := range []struct {
+				name string
+				fn   func(http.ResponseWriter, *http.Request)
+			}{
+				{"OAuth AS metadata", handler.OAuthDiscoveryHandler},
+				{"OIDC discovery", handler.OIDCDiscoveryHandler},
+			} {
+				t.Run(endpoint.name, func(t *testing.T) {
+					t.Parallel()
+					req := httptest.NewRequest(http.MethodGet, "/", nil)
+					rec := httptest.NewRecorder()
+					endpoint.fn(rec, req)
+					require.Equal(t, http.StatusOK, rec.Code)
+
+					var meta sharedobauth.AuthorizationServerMetadata
+					require.NoError(t, json.NewDecoder(rec.Body).Decode(&meta))
+					if tc.enabled {
+						assert.Contains(t, meta.GrantTypesSupported, sharedobauth.GrantTypeJWTBearer)
+					} else {
+						assert.NotContains(t, meta.GrantTypesSupported, sharedobauth.GrantTypeJWTBearer)
+					}
+				})
+			}
 		})
 	}
 }

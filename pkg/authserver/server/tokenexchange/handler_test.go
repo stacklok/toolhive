@@ -163,8 +163,22 @@ func TestTokenExchangeHandler_CanSkipClientAuth(t *testing.T) {
 	tj := newTestJWKS(t)
 	h := newTestHandler(t, tj, 15*time.Minute)
 
-	req := fosite.NewAccessRequest(&session.Session{})
-	assert.False(t, h.CanSkipClientAuth(context.Background(), req))
+	tests := []struct {
+		name       string
+		grantTypes fosite.Arguments
+		want       bool
+	}{
+		{name: "token exchange requires authentication", grantTypes: fosite.Arguments{oauthproto.GrantTypeTokenExchange}},
+		{name: "other grants require authentication", grantTypes: fosite.Arguments{oauthproto.GrantTypeJWTBearer}},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			req := fosite.NewAccessRequest(&session.Session{})
+			req.GrantTypes = tt.grantTypes
+			assert.Equal(t, tt.want, h.CanSkipClientAuth(context.Background(), req))
+		})
+	}
 }
 
 func TestTokenExchangeHandler_HandleTokenEndpointRequest(t *testing.T) {

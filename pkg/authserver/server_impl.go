@@ -152,6 +152,7 @@ func newServer(ctx context.Context, cfg Config, stor storage.Storage, opts ...se
 		AllowConfidentialClientRegistration: cfg.AllowConfidentialClientRegistration,
 		HasStaticDelegateClients:            len(cfg.DelegateClients) > 0,
 		ForceConfidentialRedirectURIs:       cfg.ForceConfidentialRedirectURIs,
+		JWTBearerGrantEnabled:               jwtBearerGrantEnabled(cfg.TrustedIssuers),
 	}
 	authServerConfig, err := oauthserver.NewAuthorizationServerConfig(oauthParams)
 	if err != nil {
@@ -279,6 +280,19 @@ func decorateStorageForCIMD(cfg Config, stor storage.Storage) (storage.Storage, 
 	return decorated, nil
 }
 
+// jwtBearerGrantEnabled reports whether any trusted issuer has the RFC 7523
+// JWT-bearer grant configured. Shared by buildProvider (which decides
+// whether to register the grant with fosite) and the discovery metadata
+// (which decides whether to advertise it) so the two can never disagree.
+func jwtBearerGrantEnabled(trustedIssuers []tokenexchange.TrustedIssuer) bool {
+	for _, issuer := range trustedIssuers {
+		if issuer.JWTBearerGrant != nil {
+			return true
+		}
+	}
+	return false
+}
+
 // buildProvider assembles the fosite OAuth2 provider, registering the RFC 8693
 // token-exchange handler as an extension grant alongside the standard grants.
 func buildProvider(
@@ -288,11 +302,38 @@ func buildProvider(
 	for i, c := range cfg.DelegateClients {
 		delegateClientIDs[i] = c.ClientID
 	}
-	tokenExchangeFactory, err := tokenexchange.Factory(cfg.DelegationTokenLifespan, cfg.TrustedIssuers, delegateClientIDs)
+	jwtBearerEnabled := jwtBearerGrantEnabled(cfg.TrustedIssuers)
+
+	// Built once, up front, and handed to both factories below when the
+	// JWT-bearer grant is also enabled: otherwise each factory would build
+	// its own MultiIssuerTokenValidator over the same trusted issuers,
+	// doubling every issuer's JWKS cache and background refresh goroutines
+	// for no benefit. authServerConfig is the exact *AuthorizationServerConfig
+	// each factory closure would otherwise receive at call time (see
+	// createProvider/NewAuthorizationServer), so building it here first is
+	// equivalent.
+	var shared *tokenexchange.MultiIssuerTokenValidator
+	if jwtBearerEnabled {
+		var err error
+		shared, err = tokenexchange.NewSharedTrustedIssuerValidator(authServerConfig, cfg.TrustedIssuers)
+		if err != nil {
+			return nil, fmt.Errorf("failed to create shared trusted-issuer validator: %w", err)
+		}
+	}
+
+	tokenExchangeFactory, err := tokenexchange.FactoryWithSharedTrustedIssuerValidator(
+		cfg.DelegationTokenLifespan, cfg.TrustedIssuers, delegateClientIDs, shared)
 	if err != nil {
 		return nil, fmt.Errorf("failed to create token exchange factory: %w", err)
 	}
-	return createProvider(authServerConfig, stor, tokenExchangeFactory)
+	if !jwtBearerEnabled {
+		return createProvider(authServerConfig, stor, tokenExchangeFactory)
+	}
+	jwtBearerFactory, err := tokenexchange.JWTBearerIssuanceFactory(cfg.TrustedIssuers, shared)
+	if err != nil {
+		return nil, fmt.Errorf("failed to create JWT-bearer factory: %w", err)
+	}
+	return createProvider(authServerConfig, stor, tokenExchangeFactory, jwtBearerFactory)
 }
 
 // buildHandlerOptions assembles the handlers.Option list for NewHandler: the

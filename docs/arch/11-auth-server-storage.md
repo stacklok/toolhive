@@ -62,6 +62,7 @@ The storage layer implements multiple interfaces from the [fosite](https://githu
 - `PendingAuthorizationStorage` — In-flight authorization tracking
 - `UserStorage` — Internal user accounts and provider identity linking
 - `DCRCredentialStore` — DCR client secret persistence; intentionally NOT embedded in `Storage` (each backend implements it separately and call sites reach it via an explicit `stor.(DCRCredentialStore)` type assertion)
+- `AssertionJWTConsumer` — atomic single-use consumption for validated JWT assertions. It is deliberately separate from `Storage`, so only assertion-grant composition requires replay protection.
 
 **Implementation:**
 - Interface definitions: `pkg/authserver/storage/types.go`
@@ -124,12 +125,22 @@ The in-memory backend uses Go maps protected by `sync.RWMutex` for thread safety
 - State is lost on restart
 - Cannot be shared across replicas
 - Suitable for development and single-instance deployments
+- JWT-bearer assertion replay tracking is per-process. Each accepted assertion is
+  retained through its `exp`; a replay sent to a different process is not
+  detected.
 
 **Implementation:** `pkg/authserver/storage/memory.go`
 
 ## Redis Backend
 
 The Redis backend stores all OAuth 2.0 state as JSON-serialized values in Redis.
+JWT-bearer assertion replay tracking uses the same shared Redis namespace, so
+all processes configured with that backend observe a consumed assertion. The
+backend hashes a length-prefixed `(purpose, issuer, replay key)` tuple before
+using it in a Redis key, preventing ambiguous key encoding and keeping the
+assertion identifier out of Redis key names. A successful atomic `SET NX` marker
+expires at the assertion's `exp`; a duplicate unexpired marker returns
+`fosite.ErrJTIKnown`, and a Redis error is returned so the grant fails closed.
 
 ### Connection Architecture
 
@@ -212,6 +223,7 @@ Redis TTL is used for all time-bounded data. TTL values are derived from OAuth 2
 | PKCE requests | 10 minutes |
 | Invalidated codes | 30 minutes |
 | DCR-issued clients (public and confidential) | 30 days |
+| JWT-bearer replay markers | Assertion `exp` |
 | Users / Providers | No expiry |
 
 These TTLs apply to the Redis backend. The in-memory backend holds no
@@ -338,12 +350,13 @@ All other `Storage` methods (`RegisterClient`, token storage, upstream token sto
 
 ### Unwrap pattern
 
-`CIMDStorageDecorator` implements `Unwrap() Storage` to expose the concrete backend through the decorator layer. Two call sites in `pkg/authserver/server_impl.go` depend on this:
+`CIMDStorageDecorator` implements `Unwrap() Storage` to expose the concrete backend through the decorator layer. Three call sites depend on this:
 
 - **`DCRCredentialStore` assertion** (`newServer`): The `DCRCredentialStore` interface is narrower than `Storage` and not embedded in it. The assertion `unwrapStorage(stor).(storage.DCRCredentialStore)` reaches the concrete backend through the decorator.
 - **`RedisStorage` migration** (`runLegacyMigration`): A type assertion to `*storage.RedisStorage` is needed to run a one-shot data migration. Same `unwrapStorage` call.
+- **`AssertionJWTConsumer` assertion** (`JWTBearerIssuanceFactory`): The JWT-bearer grant unwraps before asserting this narrow replay capability. The decorator also implements `ConsumeAssertionJWT` and forwards it to a capable backend. If the backend lacks the capability, the decorator returns an error instead of accepting an assertion with unknown replay status; replay protection therefore fails closed.
 
-Both call sites use the `unwrapStorage(stor)` helper rather than asserting directly on `stor`.
+All call sites use `unwrapStorage(stor)` or the equivalent JWT-bearer construction helper rather than asserting directly on the decorator.
 
 ### Air-gapped environments
 

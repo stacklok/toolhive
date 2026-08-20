@@ -1,9 +1,10 @@
 // SPDX-FileCopyrightText: Copyright 2025 Stacklok, Inc.
 // SPDX-License-Identifier: Apache-2.0
 
-// Package tokenexchange implements RFC 8693 token exchange for the authorization server.
-// It provides validation of subject tokens that were issued by the same authorization
-// server, enabling agents to act on behalf of users through delegation.
+// Package tokenexchange implements RFC 8693 token exchange and RFC 7523
+// JWT-bearer grants for the authorization server. It validates subject tokens
+// issued by the same authorization server and trusted external JWT assertions,
+// enabling delegated and assertion-based access-token issuance.
 package tokenexchange
 
 import (

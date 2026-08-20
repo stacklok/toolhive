@@ -25,6 +25,7 @@ import (
 	"github.com/lestrrat-go/jwx/v3/jwk"
 
 	"github.com/stacklok/toolhive-core/cel"
+	"github.com/stacklok/toolhive/pkg/authserver/server"
 	"github.com/stacklok/toolhive/pkg/networking"
 	"github.com/stacklok/toolhive/pkg/oauthproto"
 )
@@ -107,8 +108,37 @@ var actorClaimsNotInExtra = []string{
 // Compile-time check that MultiIssuerTokenValidator implements SubjectTokenValidator.
 var _ SubjectTokenValidator = (*MultiIssuerTokenValidator)(nil)
 
-// TrustedIssuer configures an external OIDC issuer whose tokens are
-// accepted as subject tokens during token exchange.
+// Compile-time check that MultiIssuerTokenValidator implements JWTBearerAssertionValidator.
+var _ JWTBearerAssertionValidator = (*MultiIssuerTokenValidator)(nil)
+
+// JWTBearerSubjectBinding restricts a JWT-bearer assertion subject to the
+// resources for which it may obtain an access token.
+type JWTBearerSubjectBinding struct {
+	Subject          string   `json:"subject" yaml:"subject"`
+	AllowedResources []string `json:"allowed_resources" yaml:"allowed_resources"`
+}
+
+// JWTBearerGrantPolicy enables RFC 7523 JWT-bearer assertions for an issuer.
+// MaxAssertionAge uses Go's duration syntax in serialized RunConfig.
+type JWTBearerGrantPolicy struct {
+	MaxAssertionAge string                    `json:"max_assertion_age" yaml:"max_assertion_age"`
+	SubjectBindings []JWTBearerSubjectBinding `json:"subject_bindings" yaml:"subject_bindings"`
+	// AcceptedAudiences is the set of "this AS" identity strings an
+	// assertion's "aud" claim must intersect — e.g. to support migrating
+	// this server's issuer/token-endpoint URL, or exposing it under more
+	// than one valid name. Each value uniquely identifies this
+	// authorization server for this grant; it is NOT a resource/API
+	// identifier — a bare resource audience is deliberately not accepted
+	// here, that would let any RFC 8707 resource-scoped token satisfy the
+	// grant instead of only tokens minted for this AS. Defaults to
+	// [tokenEndpoint] when empty, preserving prior exact-match behavior.
+	AcceptedAudiences []string `json:"accepted_audiences,omitempty" yaml:"accepted_audiences,omitempty"`
+
+	maxAssertionAge time.Duration
+}
+
+// TrustedIssuer configures an external OIDC issuer whose tokens are accepted
+// as RFC 8693 subject tokens or RFC 7523 JWT-bearer assertions.
 //
 // This type is reused verbatim as the wire schema for
 // authserver.RunConfig.TrustedIssuers (deliberately, to avoid a parallel
@@ -120,8 +150,10 @@ type TrustedIssuer struct {
 	// IssuerURL is the expected "iss" claim value (exact match).
 	IssuerURL string `json:"issuer_url" yaml:"issuer_url"`
 	// ExpectedAudience is the expected "aud" claim value that must appear
-	// in the token's audience list (a resource/API identifier, not a
-	// client ID — required, but not enforced; see looksLikeResourceIdentifier).
+	// in an RFC 8693 subject token's audience list (a resource/API identifier,
+	// not a client ID — required for delegation unless JWTBearerGrant is
+	// configured; see looksLikeResourceIdentifier). RFC 7523 assertions use
+	// the token endpoint as their audience instead.
 	// See docs/arch/17-token-exchange-delegation.md ("ID/access-token
 	// discrimination") for why and its limits.
 	ExpectedAudience string `json:"expected_audience" yaml:"expected_audience"`
@@ -182,6 +214,11 @@ type TrustedIssuer struct {
 	// AllowedDelegateClients must name specific ToolHive clients rather than
 	// use the wildcard.
 	AllowMayAct bool `json:"allow_may_act,omitempty" yaml:"allow_may_act,omitempty"`
+	// JWTBearerGrant optionally enables the plain RFC 7523 JWT-bearer grant.
+	// It accepts assertions from this issuer without client authentication and
+	// limits their maximum age, subjects, and RFC 8707 resources. It is
+	// independent from RFC 8693 delegation policy.
+	JWTBearerGrant *JWTBearerGrantPolicy `json:"jwt_bearer_grant,omitempty" yaml:"jwt_bearer_grant,omitempty"`
 }
 
 // MultiIssuerTokenValidator validates subject tokens from the authorization
@@ -332,6 +369,25 @@ func compileActorMatcher(actorMatcher string) (*cel.CompiledExpression, error) {
 	return expr, nil
 }
 
+// ResolveJWTBearerGrantPolicies clones grant policies and parses their duration
+// fields once at the RunConfig-to-runtime boundary.
+func ResolveJWTBearerGrantPolicies(issuers []TrustedIssuer) ([]TrustedIssuer, error) {
+	resolved := slices.Clone(issuers)
+	for i := range resolved {
+		if resolved[i].JWTBearerGrant == nil {
+			continue
+		}
+		policy := cloneJWTBearerGrantPolicy(resolved[i].JWTBearerGrant)
+		age, err := time.ParseDuration(policy.MaxAssertionAge)
+		if err != nil || age <= 0 {
+			return nil, fmt.Errorf("issuer_url %q: jwt_bearer_grant.max_assertion_age must be a positive duration", resolved[i].IssuerURL)
+		}
+		policy.maxAssertionAge = age
+		resolved[i].JWTBearerGrant = policy
+	}
+	return resolved, nil
+}
+
 // NewMultiIssuerTokenValidator creates a validator that accepts tokens from
 // the authorization server itself and from the provided trusted external
 // issuers. Returns an error if selfValidator is nil, selfIssuer is empty,
@@ -342,6 +398,7 @@ func NewMultiIssuerTokenValidator(
 	selfValidator *SelfIssuedTokenValidator,
 	selfIssuer string,
 	trustedIssuers []TrustedIssuer,
+	allowedAudiences []string,
 ) (*MultiIssuerTokenValidator, error) {
 	if selfValidator == nil {
 		return nil, errors.New("selfValidator must not be nil")
@@ -352,7 +409,7 @@ func NewMultiIssuerTokenValidator(
 
 	issuers := make(map[string]*externalIssuerConfig, len(trustedIssuers))
 	for _, ti := range trustedIssuers {
-		if err := validateTrustedIssuer(ti, selfIssuer, issuers); err != nil {
+		if err := validateTrustedIssuer(ti, selfIssuer, issuers, allowedAudiences); err != nil {
 			return nil, err
 		}
 		if len(ti.AllowedActors) == 0 && ti.ActorMatcher == "" {
@@ -390,6 +447,25 @@ func NewMultiIssuerTokenValidator(
 	}, nil
 }
 
+func cloneJWTBearerGrantPolicy(policy *JWTBearerGrantPolicy) *JWTBearerGrantPolicy {
+	if policy == nil {
+		return nil
+	}
+	clone := *policy
+	clone.AcceptedAudiences = slices.Clone(policy.AcceptedAudiences)
+	clone.SubjectBindings = make([]JWTBearerSubjectBinding, len(policy.SubjectBindings))
+	for i, binding := range policy.SubjectBindings {
+		clone.SubjectBindings[i] = JWTBearerSubjectBinding{
+			Subject:          binding.Subject,
+			AllowedResources: slices.Clone(binding.AllowedResources),
+		}
+	}
+	if clone.maxAssertionAge == 0 {
+		clone.maxAssertionAge, _ = time.ParseDuration(clone.MaxAssertionAge)
+	}
+	return &clone
+}
+
 // newExternalIssuerConfig builds the *externalIssuerConfig for a single
 // already-validated TrustedIssuer: a dedicated HTTP client (scoped to that
 // issuer's own InsecureAllowHTTP/AllowPrivateIPs), its body-size-capped
@@ -404,6 +480,7 @@ func newExternalIssuerConfig(ti TrustedIssuer) (*externalIssuerConfig, error) {
 	// holding externalIssuerConfig.mu (that mutex guards JWKS state only).
 	ti.AllowedActors = slices.Clone(ti.AllowedActors)
 	ti.AllowedDelegateClients = slices.Clone(ti.AllowedDelegateClients)
+	ti.JWTBearerGrant = cloneJWTBearerGrantPolicy(ti.JWTBearerGrant)
 
 	actorMatcher, err := compileActorMatcher(ti.ActorMatcher)
 	if err != nil {
@@ -484,10 +561,10 @@ func newExternalIssuerConfig(ti TrustedIssuer) (*externalIssuerConfig, error) {
 // construction; NewMultiIssuerTokenValidator repeats the same checks at
 // server startup as defence in depth. Both route through validateTrustedIssuer,
 // so the two can't drift out of sync.
-func ValidateTrustedIssuers(trustedIssuers []TrustedIssuer, selfIssuer string) error {
+func ValidateTrustedIssuers(trustedIssuers []TrustedIssuer, selfIssuer string, allowedAudiences []string) error {
 	issuers := make(map[string]*externalIssuerConfig, len(trustedIssuers))
 	for _, ti := range trustedIssuers {
-		if err := validateTrustedIssuer(ti, selfIssuer, issuers); err != nil {
+		if err := validateTrustedIssuer(ti, selfIssuer, issuers, allowedAudiences); err != nil {
 			return err
 		}
 		issuers[ti.IssuerURL] = &externalIssuerConfig{TrustedIssuer: ti}
@@ -518,21 +595,69 @@ func (v *MultiIssuerTokenValidator) Validate(ctx context.Context, rawToken strin
 	return v.validateExternalToken(ctx, rawToken, issuerConfig)
 }
 
-// validateExternalToken verifies a JWT from a trusted external issuer by
-// fetching the issuer's JWKS (with caching) and validating the signature and claims.
-func (v *MultiIssuerTokenValidator) validateExternalToken(
-	ctx context.Context,
-	rawToken string,
-	issuerConfig *externalIssuerConfig,
+// ValidateJWTBearerAssertion verifies a plain RFC 7523 assertion issued by an
+// external issuer explicitly enabled for the JWT-bearer grant. It deliberately does not apply RFC 8693
+// delegation consent (AllowedActors, ActorMatcher, or may_act): a JWT-bearer
+// assertion's authorization policy is separate from delegation policy.
+//
+// The assertion audience must intersect the issuer's configured
+// JWTBearerGrant.AcceptedAudiences, or just tokenEndpoint when that is unset.
+// The caller is responsible for the phase-specific subject binding, maximum
+// age, replay, and issuance policy after this cryptographic verification
+// succeeds.
+func (v *MultiIssuerTokenValidator) ValidateJWTBearerAssertion(
+	ctx context.Context, rawToken, tokenEndpoint string,
 ) (*ValidatedClaims, error) {
+	if tokenEndpoint == "" {
+		return nil, errors.New("token endpoint must not be empty")
+	}
+
+	issuer, err := peekIssuer(rawToken)
+	if err != nil {
+		return nil, fmt.Errorf("failed to determine assertion issuer: %w", err)
+	}
+	issuerConfig, ok := v.issuers[issuer]
+	if !ok {
+		return nil, fmt.Errorf("untrusted assertion issuer: %q", issuer)
+	}
+	if issuerConfig.JWTBearerGrant == nil {
+		return nil, fmt.Errorf("assertion issuer is not enabled for the JWT-bearer grant: %q", issuer)
+	}
+
+	standardClaims, extraClaims, err := v.verifyExternalSignature(ctx, rawToken, issuerConfig)
+	if err != nil {
+		return nil, err
+	}
+
+	if err := rejectIDTokenClaims(extraClaims); err != nil {
+		return nil, err
+	}
+
+	acceptedAudiences := []string{tokenEndpoint}
+	if issuerConfig.JWTBearerGrant != nil && len(issuerConfig.JWTBearerGrant.AcceptedAudiences) > 0 {
+		acceptedAudiences = issuerConfig.JWTBearerGrant.AcceptedAudiences
+	}
+	if err := validateJWTBearerAssertionClaims(standardClaims, issuerConfig.IssuerURL, acceptedAudiences); err != nil {
+		return nil, err
+	}
+	return buildValidatedClaims(standardClaims, extraClaims), nil
+}
+
+// verifyExternalSignature parses and verifies a JWT using the configured
+// issuer's cached JWKS. Both RFC 8693 subject tokens and RFC 7523 assertions
+// use this path so unknown-kid refreshes and key-use/algorithm restrictions
+// cannot diverge between grant types.
+func (v *MultiIssuerTokenValidator) verifyExternalSignature(
+	ctx context.Context, rawToken string, issuerConfig *externalIssuerConfig,
+) (jwt.Claims, map[string]any, error) {
 	parsedToken, err := jwt.ParseSigned(rawToken, allowedSignatureAlgorithms)
 	if err != nil {
-		return nil, fmt.Errorf("subject token is not a valid JWT: %w", err)
+		return jwt.Claims{}, nil, fmt.Errorf("subject token is not a valid JWT: %w", err)
 	}
 
 	jwks, err := v.lookupJWKS(ctx, issuerConfig)
 	if err != nil {
-		return nil, fmt.Errorf("failed to fetch JWKS for issuer %s: %w", issuerConfig.IssuerURL, err)
+		return jwt.Claims{}, nil, fmt.Errorf("failed to fetch JWKS for issuer %s: %w", issuerConfig.IssuerURL, err)
 	}
 
 	standardClaims, extraClaims, kidMatched, err := verifySignature(parsedToken, jwks)
@@ -549,6 +674,20 @@ func (v *MultiIssuerTokenValidator) validateExternalToken(
 			standardClaims, extraClaims, _, err = verifySignature(parsedToken, refreshedJWKS)
 		}
 	}
+	if err != nil {
+		return jwt.Claims{}, nil, err
+	}
+	return standardClaims, extraClaims, nil
+}
+
+// validateExternalToken verifies a JWT from a trusted external issuer by
+// fetching the issuer's JWKS (with caching) and validating the signature and claims.
+func (v *MultiIssuerTokenValidator) validateExternalToken(
+	ctx context.Context,
+	rawToken string,
+	issuerConfig *externalIssuerConfig,
+) (*ValidatedClaims, error) {
+	standardClaims, extraClaims, err := v.verifyExternalSignature(ctx, rawToken, issuerConfig)
 	if err != nil {
 		return nil, err
 	}
@@ -989,12 +1128,14 @@ func ValidateJWKSURL(jwksURL string, insecureAllowHTTP, allowPrivateIPs bool) er
 // the serialized RunConfig.TrustedIssuers schema (see its doc comment), so an
 // operator's YAML uses these keys and should see them echoed back, not Go
 // identifiers they never wrote.
-func validateTrustedIssuer(ti TrustedIssuer, selfIssuer string, issuers map[string]*externalIssuerConfig) error {
+func validateTrustedIssuer(
+	ti TrustedIssuer, selfIssuer string, issuers map[string]*externalIssuerConfig, allowedAudiences []string,
+) error {
 	if ti.IssuerURL == "" {
 		return errors.New("issuer_url is required")
 	}
-	if ti.ExpectedAudience == "" {
-		return fmt.Errorf("issuer_url %q: expected_audience is required", ti.IssuerURL)
+	if ti.ExpectedAudience == "" && ti.JWTBearerGrant == nil {
+		return fmt.Errorf("issuer_url %q: expected_audience is required when JWT-bearer grant is disabled", ti.IssuerURL)
 	}
 	if ti.IssuerURL == selfIssuer {
 		return fmt.Errorf("issuer_url %q: must not equal the authorization server's own issuer; "+
@@ -1012,8 +1153,16 @@ func validateTrustedIssuer(ti TrustedIssuer, selfIssuer string, issuers map[stri
 	if _, err := compileActorMatcher(ti.ActorMatcher); err != nil {
 		return fmt.Errorf("issuer_url %q: %w", ti.IssuerURL, err)
 	}
-	if err := validateAllowedDelegateClients(ti); err != nil {
+	if err := validateDelegationPolicy(ti); err != nil {
 		return err
+	}
+	if err := validateJWTBearerGrantPolicy(ti, allowedAudiences); err != nil {
+		return err
+	}
+	if ti.AllowMayAct && slices.Contains(ti.AllowedDelegateClients, anyDelegateClient) {
+		return fmt.Errorf(
+			"issuer_url %q: allow_may_act must not be enabled when allowed_delegate_clients contains the wildcard %q",
+			ti.IssuerURL, anyDelegateClient)
 	}
 	// AllowPrivateIPs without a hand-configured jwks_url would let OIDC
 	// discovery — a document fetched from, and thus influenceable by, the
@@ -1028,6 +1177,98 @@ func validateTrustedIssuer(ti TrustedIssuer, selfIssuer string, issuers map[stri
 			"issuer_url %q: allow_private_ips requires jwks_url to be set explicitly; "+
 				"otherwise OIDC discovery — fetched from the external issuer — would choose the private target",
 			ti.IssuerURL)
+	}
+	return nil
+}
+
+// validateDelegationPolicy validates fields used exclusively by RFC 8693.
+func validateDelegationPolicy(ti TrustedIssuer) error {
+	hasDelegationSignal := ti.ActorClaim != "" || ti.ActorMatcher != "" || ti.AllowMayAct || len(ti.AllowedActors) > 0
+	if ti.ExpectedAudience == "" && !hasDelegationSignal {
+		return nil
+	}
+	if ti.ExpectedAudience == "" && hasDelegationSignal {
+		return fmt.Errorf(
+			"issuer_url %q: expected_audience is required when actor_claim, actor_matcher, allow_may_act, or allowed_actors is set",
+			ti.IssuerURL)
+	}
+	return validateAllowedDelegateClients(ti)
+}
+
+func validateJWTBearerGrantPolicy(ti TrustedIssuer, allowedAudiences []string) error {
+	if ti.JWTBearerGrant == nil {
+		return nil
+	}
+	policy := ti.JWTBearerGrant
+	age, err := time.ParseDuration(policy.MaxAssertionAge)
+	if err != nil || age <= 0 {
+		return fmt.Errorf("issuer_url %q: jwt_bearer_grant.max_assertion_age must be a positive duration", ti.IssuerURL)
+	}
+	if err := validateJWTBearerSubjectBindings(ti, policy.SubjectBindings); err != nil {
+		return err
+	}
+	return validateJWTBearerAcceptedAudiences(ti, policy.AcceptedAudiences, allowedAudiences)
+}
+
+func validateJWTBearerSubjectBindings(ti TrustedIssuer, bindings []JWTBearerSubjectBinding) error {
+	if len(bindings) == 0 {
+		return fmt.Errorf("issuer_url %q: jwt_bearer_grant.subject_bindings is required", ti.IssuerURL)
+	}
+	seenSubjects := make(map[string]struct{}, len(bindings))
+	for _, binding := range bindings {
+		if binding.Subject == "" || binding.Subject == anyDelegateClient {
+			return fmt.Errorf("issuer_url %q: jwt_bearer_grant.subject_bindings contains an empty or wildcard subject", ti.IssuerURL)
+		}
+		if _, duplicate := seenSubjects[binding.Subject]; duplicate {
+			return fmt.Errorf(
+				"issuer_url %q: jwt_bearer_grant.subject_bindings contains duplicate subject %q",
+				ti.IssuerURL, binding.Subject)
+		}
+		seenSubjects[binding.Subject] = struct{}{}
+		if len(binding.AllowedResources) == 0 {
+			return fmt.Errorf("issuer_url %q: jwt_bearer_grant subject %q has no allowed_resources", ti.IssuerURL, binding.Subject)
+		}
+		for _, resource := range binding.AllowedResources {
+			if resource == "" || resource == anyDelegateClient {
+				return fmt.Errorf(
+					"issuer_url %q: jwt_bearer_grant subject %q has an empty or wildcard resource",
+					ti.IssuerURL, binding.Subject)
+			}
+			if err := server.ValidateAudienceURI(resource); err != nil {
+				return fmt.Errorf(
+					"issuer_url %q: jwt_bearer_grant subject %q resource %q is invalid: %w",
+					ti.IssuerURL, binding.Subject, resource, err)
+			}
+		}
+	}
+	return nil
+}
+
+// validateJWTBearerAcceptedAudiences also rejects any accepted_audiences
+// entry that is a configured resource audience (allowedAudiences).
+// AcceptedAudiences identifies this authorization server itself (see its
+// doc comment); an entry shared with a resource audience would let an
+// upstream access token minted for that resource — not for this AS — pass
+// ValidateJWTBearerAssertion's audience check and mint a ToolHive token for
+// whatever resource the subject binding allows, bypassing the
+// client-authenticated RFC 8693 delegation route entirely.
+func validateJWTBearerAcceptedAudiences(ti TrustedIssuer, acceptedAudiences, allowedAudiences []string) error {
+	for _, audience := range acceptedAudiences {
+		if audience == "" {
+			return fmt.Errorf("issuer_url %q: jwt_bearer_grant.accepted_audiences must not contain an empty value", ti.IssuerURL)
+		}
+		if err := server.ValidateAudienceURI(audience); err != nil {
+			return fmt.Errorf(
+				"issuer_url %q: jwt_bearer_grant.accepted_audiences value %q is invalid: %w",
+				ti.IssuerURL, audience, err)
+		}
+		if slices.Contains(allowedAudiences, audience) {
+			return fmt.Errorf(
+				"issuer_url %q: jwt_bearer_grant.accepted_audiences value %q must not also be a "+
+					"configured resource audience (allowed_audiences); accepted_audiences identifies "+
+					"this authorization server, not a resource, or a resource-scoped access token "+
+					"could be replayed as a JWT-bearer assertion", ti.IssuerURL, audience)
+		}
 	}
 	return nil
 }

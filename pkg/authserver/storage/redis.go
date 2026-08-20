@@ -286,6 +286,10 @@ func clientFromStored(stored storedClient, hasTTL bool) fosite.Client {
 
 // RegisterClient adds or updates a client in the storage.
 func (s *RedisStorage) RegisterClient(ctx context.Context, client fosite.Client) error {
+	if err := ValidateRegisterableClientID(client.GetID()); err != nil {
+		return err
+	}
+
 	key := redisKey(s.keyPrefix, KeyTypeClient, client.GetID())
 
 	stored := storedClient{
@@ -426,6 +430,27 @@ func (s *RedisStorage) SetClientAssertionJWT(ctx context.Context, jti string, ex
 	}
 
 	return s.client.Set(ctx, key, "1", ttl).Err()
+}
+
+// ConsumeAssertionJWT atomically records an assertion JWT as consumed until its
+// expiry. Reusing an unexpired (purpose, issuer, jti) tuple returns
+// fosite.ErrJTIKnown. Redis errors are returned so callers fail closed rather
+// than accepting an assertion whose replay status is unknown.
+func (s *RedisStorage) ConsumeAssertionJWT(ctx context.Context, purpose, issuer, jti string, exp time.Time) error {
+	ttl := time.Until(exp)
+	if ttl <= 0 {
+		return nil
+	}
+
+	key := redisAssertionJWTKey(s.keyPrefix, purpose, issuer, jti)
+	_, err := s.client.SetArgs(ctx, key, "1", redis.SetArgs{TTL: ttl, Mode: "NX"}).Result()
+	if err != nil {
+		if errors.Is(err, redis.Nil) {
+			return fosite.ErrJTIKnown
+		}
+		return fmt.Errorf("consume assertion JWT replay marker: %w", err)
+	}
+	return nil
 }
 
 // -----------------------
@@ -1982,8 +2007,17 @@ func marshalRequester(request fosite.Requester) ([]byte, error) {
 		return nil, fmt.Errorf("failed to marshal session: %w", err)
 	}
 
+	// A clientless grant (fosite's CanSkipClientAuth) is expected to attach a
+	// synthetic client (see NewSyntheticClient) rather than leave this nil;
+	// this fallback only guards against a future clientless grant that
+	// forgets to.
+	var clientID string
+	if client := request.GetClient(); client != nil {
+		clientID = client.GetID()
+	}
+
 	stored := storedSession{
-		ClientID:          request.GetClient().GetID(),
+		ClientID:          clientID,
 		RequestedAt:       request.GetRequestedAt(),
 		RequestedScopes:   request.GetRequestedScopes(),
 		GrantedScopes:     request.GetGrantedScopes(),
@@ -2006,10 +2040,18 @@ func unmarshalRequester(ctx context.Context, data []byte, s *RedisStorage) (fosi
 		return nil, fmt.Errorf("failed to unmarshal session: %w", err)
 	}
 
-	// Look up the client
-	client, err := s.GetClient(ctx, stored.ClientID)
-	if err != nil {
-		return nil, fmt.Errorf("failed to get client for session: %w", err)
+	// A synthetic client (see NewSyntheticClient) was never registered via
+	// RegisterClient, so its ID alone reconstructs it rather than looking it
+	// up through the client registry.
+	var client fosite.Client
+	if IsSyntheticClientID(stored.ClientID) {
+		client = NewSyntheticClient(stored.ClientID)
+	} else {
+		fetchedClient, err := s.GetClient(ctx, stored.ClientID)
+		if err != nil {
+			return nil, fmt.Errorf("failed to get client for session: %w", err)
+		}
+		client = fetchedClient
 	}
 
 	// Create a session prototype via factory, then deserialize the full session
@@ -2066,4 +2108,5 @@ var (
 	_ UpstreamTokenStorage        = (*RedisStorage)(nil)
 	_ UserStorage                 = (*RedisStorage)(nil)
 	_ DCRCredentialStore          = (*RedisStorage)(nil)
+	_ AssertionJWTConsumer        = (*RedisStorage)(nil)
 )

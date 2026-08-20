@@ -389,18 +389,35 @@ type DelegateClientConfig struct {
 }
 
 // TrustedIssuerConfig configures an external OIDC issuer whose tokens are
-// accepted as RFC 8693 subject tokens during token exchange. It mirrors
-// tokenexchange.TrustedIssuer (pkg/authserver/server/tokenexchange), the
-// runtime type the operator converts this into directly — no secret is
-// referenced by this type, so no SecretKeyRef indirection is needed, unlike
-// DelegateClientConfig.
+// accepted as RFC 8693 subject tokens or RFC 7523 JWT-bearer assertions during
+// token exchange. It mirrors tokenexchange.TrustedIssuer
+// (pkg/authserver/server/tokenexchange), the runtime type the operator converts
+// this into directly — no secret is referenced by this type, so no SecretKeyRef
+// indirection is needed, unlike DelegateClientConfig.
 //
-// +kubebuilder:validation:XValidation:rule="!('*' in self.allowedDelegateClients) || size(self.allowedDelegateClients) == 1",message="allowedDelegateClients must not combine the wildcard \"*\" with specific client IDs"
+// expectedAudience is exempted only for a grant-only issuer: jwtBearerGrant
+// present and none of actorClaim, actorMatcher, allowMayAct, or allowedActors
+// set. Any RFC 8693 delegation field (actorClaim, actorMatcher, allowMayAct,
+// allowedActors) still requires expectedAudience, even when combined with
+// jwtBearerGrant.
+//
+// +kubebuilder:validation:XValidation:rule="!has(self.allowedDelegateClients) || !('*' in self.allowedDelegateClients) || size(self.allowedDelegateClients) == 1",message="allowedDelegateClients must not combine the wildcard \"*\" with specific client IDs"
+//
+// The allowedDelegateClients rule below mirrors validateDelegationPolicy
+// (pkg/authserver/server/tokenexchange/multi_issuer_validator.go): it is
+// keyed on whether ANY delegation field is set (expectedAudience,
+// actorClaim, actorMatcher, allowMayAct), not merely on whether
+// jwtBearerGrant is absent — an issuer can combine jwtBearerGrant with
+// expectedAudience for RFC 8693 delegation on the same issuer, and that
+// combination still requires allowedDelegateClients at the Go level.
+//
 // +kubebuilder:validation:XValidation:rule="!(has(self.allowMayAct) && self.allowMayAct && '*' in self.allowedDelegateClients)",message="allowMayAct must not be enabled when allowedDelegateClients contains the wildcard \"*\""
 // +kubebuilder:validation:XValidation:rule="!has(self.actorClaim) || !(self.actorClaim in ['sub', 'iss', 'aud', 'exp', 'iat', 'nbf', 'jti', 'name', 'email', 'scope', 'scp', 'may_act'])",message="actorClaim must name a readable claim; use client_id or a non-reserved claim such as azp, appid, or cid"
 // +kubebuilder:validation:XValidation:rule="!(has(self.allowPrivateIPs) && self.allowPrivateIPs) || (has(self.jwksUrl) && self.jwksUrl != \"\")",message="allowPrivateIPs requires jwksUrl to be set explicitly"
+// +kubebuilder:validation:XValidation:rule="(has(self.jwtBearerGrant) && !((has(self.actorClaim) && size(self.actorClaim) > 0) || (has(self.actorMatcher) && size(self.actorMatcher) > 0) || (has(self.allowMayAct) && self.allowMayAct) || (has(self.allowedActors) && size(self.allowedActors) > 0))) || (has(self.expectedAudience) && size(self.expectedAudience) > 0)",message="expectedAudience is required unless jwtBearerGrant is configured without actorClaim, actorMatcher, allowMayAct, or allowedActors"
+// +kubebuilder:validation:XValidation:rule="!((has(self.expectedAudience) && size(self.expectedAudience) > 0) || (has(self.actorClaim) && size(self.actorClaim) > 0) || (has(self.actorMatcher) && size(self.actorMatcher) > 0) || (has(self.allowMayAct) && self.allowMayAct)) || (has(self.allowedDelegateClients) && size(self.allowedDelegateClients) > 0)",message="allowedDelegateClients is required when expectedAudience, actorClaim, actorMatcher, or allowMayAct is set"
 //
-//nolint:lll // CEL validation rule exceeds line length limit
+//nolint:lll // CEL validation rules exceed line length limit
 type TrustedIssuerConfig struct {
 	// The actorClaim rule above uses !has(...) rather than comparing against an
 	// empty string literal: gofmt rewrites a doubled apostrophe inside a comment
@@ -413,12 +430,12 @@ type TrustedIssuerConfig struct {
 	IssuerURL string `json:"issuerUrl"`
 
 	// ExpectedAudience is the expected "aud" claim value that must appear in
-	// the token's audience list. This should be a resource/API identifier
-	// (e.g. a URI), not a client ID.
-	// +kubebuilder:validation:Required
+	// an RFC 8693 subject token's audience list. It is not used by an RFC 7523
+	// JWT-bearer assertion, whose audience is the token endpoint.
 	// +kubebuilder:validation:MinLength=1
 	// +kubebuilder:validation:MaxLength=2048
-	ExpectedAudience string `json:"expectedAudience"`
+	// +optional
+	ExpectedAudience string `json:"expectedAudience,omitempty"`
 
 	// JWKSURL is the URL to fetch the issuer's JSON Web Key Set from. If
 	// empty, it is resolved via OIDC discovery at
@@ -476,18 +493,18 @@ type TrustedIssuerConfig struct {
 	// +kubebuilder:validation:MaxLength=4096
 	ActorMatcher string `json:"actorMatcher,omitempty"`
 
-	// AllowedDelegateClients restricts which ToolHive client IDs may
-	// exchange a subject token from this issuer. Required; set it to ["*"]
-	// to permit any confidential client holding the token-exchange grant. The
-	// wildcard must be the only entry; otherwise list specific client IDs to
+	// AllowedDelegateClients restricts which ToolHive client IDs may exchange
+	// an RFC 8693 subject token from this issuer. Required unless only
+	// jwtBearerGrant is configured; set it to ["*"] to permit any confidential
+	// client holding the token-exchange grant, or list specific client IDs to
 	// bind delegation to them.
-	// +kubebuilder:validation:Required
 	// +kubebuilder:validation:MinItems=1
 	// +kubebuilder:validation:MaxItems=50
 	// +kubebuilder:validation:items:MinLength=1
 	// +kubebuilder:validation:items:MaxLength=256
 	// +listType=atomic
-	AllowedDelegateClients []string `json:"allowedDelegateClients"`
+	// +optional
+	AllowedDelegateClients []string `json:"allowedDelegateClients,omitempty"`
 
 	// AllowMayAct permits this external issuer's may_act claim to authorize
 	// delegation. Defaults to false; external issuers must be opted in
@@ -498,6 +515,66 @@ type TrustedIssuerConfig struct {
 	// +kubebuilder:default=false
 	// +optional
 	AllowMayAct bool `json:"allowMayAct,omitempty"`
+
+	// JWTBearerGrant enables the plain RFC 7523 JWT-bearer grant for this
+	// issuer. It is independent of RFC 8693 delegation policy.
+	// +optional
+	JWTBearerGrant *JWTBearerGrantConfig `json:"jwtBearerGrant,omitempty"`
+}
+
+// JWTBearerGrantConfig limits RFC 7523 JWT-bearer assertions for one trusted
+// issuer. Each assertion subject must have an exact binding and request exactly
+// one of that binding's allowed resources.
+//
+// +kubebuilder:validation:XValidation:rule="duration(self.maxAssertionAge) > duration('0s')",message="maxAssertionAge must be greater than zero"
+// +kubebuilder:validation:XValidation:rule="self.subjectBindings.all(binding, self.subjectBindings.filter(other, other.subject == binding.subject).size() == 1)",message="subjectBindings must not contain duplicate subjects"
+//
+//nolint:lll // CEL validation rules exceed line length limit
+type JWTBearerGrantConfig struct {
+	// MaxAssertionAge caps the exp-iat interval independently of exp.
+	// +kubebuilder:validation:Required
+	MaxAssertionAge *metav1.Duration `json:"maxAssertionAge"`
+
+	// SubjectBindings maps an exact external subject to allowed RFC 8707
+	// resources.
+	// +kubebuilder:validation:Required
+	// +kubebuilder:validation:MinItems=1
+	// +kubebuilder:validation:MaxItems=50
+	// +listType=atomic
+	SubjectBindings []JWTBearerSubjectBinding `json:"subjectBindings"`
+
+	// AcceptedAudiences identifies this authorization server's accepted
+	// assertion audiences. When omitted, runtime validation defaults to the
+	// token endpoint.
+	// +kubebuilder:validation:MaxItems=50
+	// +kubebuilder:validation:items:MinLength=1
+	// +kubebuilder:validation:items:MaxLength=2048
+	// +kubebuilder:validation:items:Pattern=`^https?://[^[:space:]]+$`
+	// +listType=atomic
+	// +optional
+	AcceptedAudiences []string `json:"acceptedAudiences,omitempty"`
+}
+
+// JWTBearerSubjectBinding configures the exact subject and allowed resources
+// for one RFC 7523 JWT-bearer assertion identity.
+type JWTBearerSubjectBinding struct {
+	// Subject is an exact assertion sub value. Wildcards are not supported.
+	// +kubebuilder:validation:Required
+	// +kubebuilder:validation:MinLength=1
+	// +kubebuilder:validation:MaxLength=256
+	// +kubebuilder:validation:Pattern=`^[^*]+$`
+	Subject string `json:"subject"`
+
+	// AllowedResources is the exact set of RFC 8707 resources this subject may
+	// request.
+	// +kubebuilder:validation:Required
+	// +kubebuilder:validation:MinItems=1
+	// +kubebuilder:validation:MaxItems=50
+	// +kubebuilder:validation:items:MinLength=1
+	// +kubebuilder:validation:items:MaxLength=2048
+	// +kubebuilder:validation:items:Pattern=`^https?://[^[:space:]]+$`
+	// +listType=atomic
+	AllowedResources []string `json:"allowedResources"`
 }
 
 // EmbeddedAuthServerConfig holds configuration for the embedded OAuth2/OIDC authorization server.
@@ -1908,7 +1985,12 @@ func (r *MCPExternalAuthConfig) validateEmbeddedAuthServer() error {
 		return err
 	}
 
-	if err := tokenexchange.ValidateTrustedIssuers(buildTrustedIssuerConfigs(cfg.TrustedIssuers), cfg.Issuer); err != nil {
+	// allowedAudiences is intentionally nil here: it is derived later from the
+	// resolved incoming OIDC config (see deriveAllowedAudiences), not
+	// available on this CRD. The same accepted_audiences/allowed_audiences
+	// disjointness check runs again once that value exists, at
+	// Config.Validate time (pkg/authserver/config.go's validateTrustedIssuers).
+	if err := tokenexchange.ValidateTrustedIssuers(buildTrustedIssuerConfigs(cfg.TrustedIssuers), cfg.Issuer, nil); err != nil {
 		return fmt.Errorf("trustedIssuers: %w", err)
 	}
 
@@ -1942,9 +2024,30 @@ func buildTrustedIssuerConfigs(issuers []TrustedIssuerConfig) []tokenexchange.Tr
 			AllowedActors:          slices.Clone(issuer.AllowedActors),
 			AllowedDelegateClients: slices.Clone(issuer.AllowedDelegateClients),
 			AllowMayAct:            issuer.AllowMayAct,
+			JWTBearerGrant:         buildJWTBearerGrantPolicy(issuer.JWTBearerGrant),
 		}
 	}
 	return configs
+}
+
+// buildJWTBearerGrantPolicy converts the CRD's JWT-bearer grant config to the
+// runtime policy type without sharing caller-owned slices.
+func buildJWTBearerGrantPolicy(grant *JWTBearerGrantConfig) *tokenexchange.JWTBearerGrantPolicy {
+	if grant == nil {
+		return nil
+	}
+	bindings := make([]tokenexchange.JWTBearerSubjectBinding, len(grant.SubjectBindings))
+	for i, binding := range grant.SubjectBindings {
+		bindings[i] = tokenexchange.JWTBearerSubjectBinding{
+			Subject:          binding.Subject,
+			AllowedResources: slices.Clone(binding.AllowedResources),
+		}
+	}
+	return &tokenexchange.JWTBearerGrantPolicy{
+		MaxAssertionAge:   grant.MaxAssertionAge.Duration.String(),
+		SubjectBindings:   bindings,
+		AcceptedAudiences: slices.Clone(grant.AcceptedAudiences),
+	}
 }
 
 // validateUpstreamProvider validates a single upstream provider configuration.

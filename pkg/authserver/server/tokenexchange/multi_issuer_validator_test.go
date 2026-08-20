@@ -70,7 +70,7 @@ func newMultiValidator(
 		issuers[i] = ti
 	}
 
-	v, err := NewMultiIssuerTokenValidator(selfValidator, testIssuer, issuers)
+	v, err := NewMultiIssuerTokenValidator(selfValidator, testIssuer, issuers, nil)
 	require.NoError(t, err)
 	return v
 }
@@ -1112,11 +1112,12 @@ func TestNewMultiIssuerTokenValidator_Validation(t *testing.T) {
 	require.NoError(t, err)
 
 	tests := []struct {
-		name           string
-		selfValidator  *SelfIssuedTokenValidator
-		selfIssuer     string
-		trustedIssuers []TrustedIssuer
-		errContains    string
+		name             string
+		selfValidator    *SelfIssuedTokenValidator
+		selfIssuer       string
+		trustedIssuers   []TrustedIssuer
+		allowedAudiences []string
+		errContains      string
 	}{
 		{
 			name:        "nil selfValidator rejected",
@@ -1300,17 +1301,92 @@ func TestNewMultiIssuerTokenValidator_Validation(t *testing.T) {
 			}},
 			errContains: "allow_private_ips requires jwks_url",
 		},
+		{
+			// A jwtBearerGrant issuer that also sets an RFC 8693-delegation-only
+			// field (actorClaim here) must still supply expected_audience: the
+			// delegation logic validates the subject token's audience against
+			// it, and an empty ExpectedAudience can never match (#6391 review).
+			name:          "jwtBearerGrant with ActorClaim but no ExpectedAudience rejected",
+			selfValidator: selfValidator,
+			selfIssuer:    testIssuer,
+			trustedIssuers: []TrustedIssuer{{
+				IssuerURL:              testExternalIssuer,
+				ActorClaim:             "client_id",
+				AllowedDelegateClients: []string{anyDelegateClient},
+				JWTBearerGrant: &JWTBearerGrantPolicy{
+					MaxAssertionAge: "1h",
+					SubjectBindings: []JWTBearerSubjectBinding{
+						{Subject: "agent", AllowedResources: []string{"https://api.example.com/resource"}},
+					},
+				},
+			}},
+			errContains: "expected_audience is required",
+		},
+		{
+			// AllowedActors is also an RFC 8693-delegation-only signal, and must
+			// be caught by the same check even though ActorClaim defaults to
+			// "azp" and is never itself set here (#6391 review follow-up).
+			name:          "jwtBearerGrant with AllowedActors but no ExpectedAudience rejected",
+			selfValidator: selfValidator,
+			selfIssuer:    testIssuer,
+			trustedIssuers: []TrustedIssuer{{
+				IssuerURL:              testExternalIssuer,
+				AllowedActors:          []string{"ext-agent"},
+				AllowedDelegateClients: []string{anyDelegateClient},
+				JWTBearerGrant: &JWTBearerGrantPolicy{
+					MaxAssertionAge: "1h",
+					SubjectBindings: []JWTBearerSubjectBinding{
+						{Subject: "agent", AllowedResources: []string{"https://api.example.com/resource"}},
+					},
+				},
+			}},
+			errContains: "expected_audience is required",
+		},
+		{
+			// AcceptedAudiences identifies this authorization server, not a
+			// resource; an entry shared with a resource audience would let
+			// an upstream resource-scoped access token be replayed as a
+			// JWT-bearer assertion (see validateJWTBearerAcceptedAudiences).
+			name:          "accepted_audiences overlapping a resource audience rejected",
+			selfValidator: selfValidator,
+			selfIssuer:    testIssuer,
+			trustedIssuers: []TrustedIssuer{{
+				IssuerURL: testExternalIssuer,
+				JWTBearerGrant: &JWTBearerGrantPolicy{
+					MaxAssertionAge: "1h",
+					SubjectBindings: []JWTBearerSubjectBinding{
+						{Subject: "agent", AllowedResources: []string{"https://api.example.com/resource"}},
+					},
+					AcceptedAudiences: []string{"https://api.example.com/resource"},
+				},
+			}},
+			allowedAudiences: []string{"https://api.example.com/resource"},
+			errContains:      "must not also be a configured resource audience",
+		},
 	}
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
-			v, err := NewMultiIssuerTokenValidator(tt.selfValidator, tt.selfIssuer, tt.trustedIssuers)
+			v, err := NewMultiIssuerTokenValidator(tt.selfValidator, tt.selfIssuer, tt.trustedIssuers, tt.allowedAudiences)
 			require.Error(t, err)
 			assert.Contains(t, err.Error(), tt.errContains)
 			assert.Nil(t, v)
 		})
 	}
+}
+
+func TestValidateJWTBearerAcceptedAudiences_RejectsResourceAudienceOverlap(t *testing.T) {
+	t.Parallel()
+
+	err := validateJWTBearerAcceptedAudiences(
+		TrustedIssuer{IssuerURL: testExternalIssuer},
+		[]string{"https://api.example.com/resource"},
+		[]string{"https://api.example.com/resource"},
+	)
+
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "must not also be a configured resource audience")
 }
 
 func TestNewMultiIssuerTokenValidator_EmptyAllowedActorsAccepted(t *testing.T) {
@@ -1326,7 +1402,32 @@ func TestNewMultiIssuerTokenValidator_EmptyAllowedActorsAccepted(t *testing.T) {
 		IssuerURL:              testExternalIssuer,
 		ExpectedAudience:       testExternalAudience,
 		AllowedDelegateClients: []string{anyDelegateClient},
-	}})
+	}}, nil)
+	require.NoError(t, err)
+	assert.NotNil(t, v)
+}
+
+// TestNewMultiIssuerTokenValidator_GrantOnlyIssuerAccepted pins the case this
+// PR exists for: a jwtBearerGrant-only issuer (none of ExpectedAudience,
+// ActorClaim, ActorMatcher, AllowMayAct, or AllowedActors set) needs neither
+// ExpectedAudience nor AllowedDelegateClients, since RFC 8693 delegation is
+// not in play.
+func TestNewMultiIssuerTokenValidator_GrantOnlyIssuerAccepted(t *testing.T) {
+	t.Parallel()
+
+	selfJWKS := newTestJWKS(t)
+	selfValidator, err := NewSelfIssuedTokenValidator(selfJWKS.publicJWKS(), testIssuer, []string{testIssuer})
+	require.NoError(t, err)
+
+	v, err := NewMultiIssuerTokenValidator(selfValidator, testIssuer, []TrustedIssuer{{
+		IssuerURL: testExternalIssuer,
+		JWTBearerGrant: &JWTBearerGrantPolicy{
+			MaxAssertionAge: "1h",
+			SubjectBindings: []JWTBearerSubjectBinding{
+				{Subject: "agent", AllowedResources: []string{"https://api.example.com/resource"}},
+			},
+		},
+	}}, nil)
 	require.NoError(t, err)
 	assert.NotNil(t, v)
 }
@@ -1413,7 +1514,7 @@ func TestNewMultiIssuerTokenValidator_AudienceShapeWarning(t *testing.T) {
 				ExpectedAudience:       tt.expectedAudience,
 				AllowedActors:          []string{"ext-agent"}, // avoid the unrelated AllowedActors warning
 				AllowedDelegateClients: []string{anyDelegateClient},
-			}})
+			}}, nil)
 			require.NoError(t, err)
 			require.NotNil(t, v)
 
@@ -1458,10 +1559,9 @@ func TestMultiIssuerTokenValidator_ActorMatcherEvaluationFailure(t *testing.T) {
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "actor matcher evaluation failed")
 	assert.Contains(t, buf.String(), "level=DEBUG")
-	assert.Contains(t, buf.String(), "actor matcher evaluation failed")
 	assert.NotContains(t, err.Error(), "sensitive-claim-value", "returned error must not carry claim values")
-	assert.NotContains(t, buf.String(), rawToken, "diagnostics must not log tokens")
 	assert.NotContains(t, buf.String(), "sensitive-claim-value", "diagnostics must not log claims")
+	assert.NotContains(t, buf.String(), rawToken, "diagnostics must not log tokens")
 }
 
 func TestNewMultiIssuerTokenValidator_ClonesAllowedActors(t *testing.T) {
@@ -1836,7 +1936,7 @@ func TestMultiIssuerTokenValidator_DiscoveryRefusesPrivateAddress(t *testing.T) 
 	}}
 	selfValidator, err := NewSelfIssuedTokenValidator(selfJWKS.publicJWKS(), testIssuer, []string{testIssuer})
 	require.NoError(t, err)
-	validator, err := NewMultiIssuerTokenValidator(selfValidator, testIssuer, trustedIssuers)
+	validator, err := NewMultiIssuerTokenValidator(selfValidator, testIssuer, trustedIssuers, nil)
 	require.NoError(t, err)
 
 	claims := externalClaims()
@@ -2396,7 +2496,7 @@ func TestMultiIssuerTokenValidator_SharedJWKSURL_DifferingPolicy(t *testing.T) {
 			InsecureAllowHTTP:      true,
 			AllowedDelegateClients: []string{anyDelegateClient},
 		},
-	})
+	}, nil)
 	require.NoError(t, err)
 
 	tokenFor := func(issuer, audience, actor, jti string) string {

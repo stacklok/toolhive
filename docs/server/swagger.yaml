@@ -789,8 +789,10 @@ components:
         trusted_issuers:
           description: |-
             TrustedIssuers lists external OIDC issuers whose tokens are accepted as
-            subject tokens during RFC 8693 token exchange. Empty (the default) means
-            only self-issued subject tokens are accepted.
+            RFC 8693 subject tokens or RFC 7523 JWT-bearer assertions. Issuers with
+            jwtBearerGrant enabled may be used for the JWT-bearer grant without an
+            RFC 8693 delegation policy. Empty (the default) means only self-issued
+            subject tokens are accepted.
 
             See tokenexchange.TrustedIssuer for the per-issuer field reference, and
             docs/arch/17-token-exchange-delegation.md for the trust model, consent
@@ -964,6 +966,46 @@ components:
             If not specified, defaults to GET.
           type: string
       type: object
+    github_com_stacklok_toolhive_pkg_authserver_server_tokenexchange.JWTBearerGrantPolicy:
+      description: |-
+        JWTBearerGrant optionally enables the plain RFC 7523 JWT-bearer grant.
+        It accepts assertions from this issuer without client authentication and
+        limits their maximum age, subjects, and RFC 8707 resources. It is
+        independent from RFC 8693 delegation policy.
+      properties:
+        accepted_audiences:
+          description: |-
+            AcceptedAudiences is the set of "this AS" identity strings an
+            assertion's "aud" claim must intersect — e.g. to support migrating
+            this server's issuer/token-endpoint URL, or exposing it under more
+            than one valid name. Each value uniquely identifies this
+            authorization server for this grant; it is NOT a resource/API
+            identifier — a bare resource audience is deliberately not accepted
+            here, that would let any RFC 8707 resource-scoped token satisfy the
+            grant instead of only tokens minted for this AS. Defaults to
+            [tokenEndpoint] when empty, preserving prior exact-match behavior.
+          items:
+            type: string
+          type: array
+          uniqueItems: false
+        max_assertion_age:
+          type: string
+        subject_bindings:
+          items:
+            $ref: '#/components/schemas/github_com_stacklok_toolhive_pkg_authserver_server_tokenexchange.JWTBearerSubjectBinding'
+          type: array
+          uniqueItems: false
+      type: object
+    github_com_stacklok_toolhive_pkg_authserver_server_tokenexchange.JWTBearerSubjectBinding:
+      properties:
+        allowed_resources:
+          items:
+            type: string
+          type: array
+          uniqueItems: false
+        subject:
+          type: string
+      type: object
     github_com_stacklok_toolhive_pkg_authserver_server_tokenexchange.TrustedIssuer:
       properties:
         actor_claim:
@@ -1031,8 +1073,10 @@ components:
         expected_audience:
           description: |-
             ExpectedAudience is the expected "aud" claim value that must appear
-            in the token's audience list (a resource/API identifier, not a
-            client ID — required, but not enforced; see looksLikeResourceIdentifier).
+            in an RFC 8693 subject token's audience list (a resource/API identifier,
+            not a client ID — required for delegation unless JWTBearerGrant is
+            configured; see looksLikeResourceIdentifier). RFC 7523 assertions use
+            the token endpoint as their audience instead.
             See docs/arch/17-token-exchange-delegation.md ("ID/access-token
             discrimination") for why and its limits.
           type: string
@@ -1055,6 +1099,8 @@ components:
             JWKSURL is the URL to fetch the issuer's JSON Web Key Set from.
             If empty, it is resolved via OIDC discovery at {IssuerURL}/.well-known/openid-configuration.
           type: string
+        jwt_bearer_grant:
+          $ref: '#/components/schemas/github_com_stacklok_toolhive_pkg_authserver_server_tokenexchange.JWTBearerGrantPolicy'
       type: object
     github_com_stacklok_toolhive_pkg_authz.Config:
       description: |-

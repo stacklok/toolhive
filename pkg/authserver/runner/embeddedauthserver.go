@@ -21,6 +21,7 @@ import (
 	servercrypto "github.com/stacklok/toolhive/pkg/authserver/server/crypto"
 	"github.com/stacklok/toolhive/pkg/authserver/server/handlers"
 	"github.com/stacklok/toolhive/pkg/authserver/server/keys"
+	"github.com/stacklok/toolhive/pkg/authserver/server/tokenexchange"
 	"github.com/stacklok/toolhive/pkg/authserver/storage"
 	"github.com/stacklok/toolhive/pkg/authserver/upstream"
 	"github.com/stacklok/toolhive/pkg/bodylimit"
@@ -239,6 +240,11 @@ func newEmbeddedAuthServerWithStorage(
 	// for BaselineClientScopes, low cardinality in practice for the others).
 	cimdEnabled, cimdCacheMaxSize, cimdCacheFallbackTTL := resolveCIMDConfig(cfg.CIMD)
 
+	trustedIssuers, err := tokenexchange.ResolveJWTBearerGrantPolicies(cfg.TrustedIssuers)
+	if err != nil {
+		return nil, fmt.Errorf("failed to resolve JWT-bearer grant policies: %w", err)
+	}
+
 	resolvedCfg := authserver.Config{
 		Issuer:                                    cfg.Issuer,
 		AuthorizationEndpointBaseURL:              cfg.AuthorizationEndpointBaseURL,
@@ -263,7 +269,7 @@ func newEmbeddedAuthServerWithStorage(
 		// slice is still shared with cfg. NewMultiIssuerTokenValidator's
 		// constructor clones AllowedActors per issuer before use, so the
 		// authorization-critical data is protected without a deep copy here.
-		TrustedIssuers:  slices.Clone(cfg.TrustedIssuers),
+		TrustedIssuers:  trustedIssuers,
 		DelegateClients: delegateClients,
 	}
 

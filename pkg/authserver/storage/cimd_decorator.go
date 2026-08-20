@@ -92,6 +92,19 @@ func (d *CIMDStorageDecorator) GetClient(ctx context.Context, id string) (fosite
 	return d.fetchOrCached(ctx, id)
 }
 
+// ConsumeAssertionJWT delegates assertion replay consumption to the wrapped
+// backend. Storage intentionally does not include this narrow capability, so a
+// decorator fails closed when its backend does not provide it.
+func (d *CIMDStorageDecorator) ConsumeAssertionJWT(
+	ctx context.Context, purpose, issuer, jti string, exp time.Time,
+) error {
+	consumer, ok := d.Storage.(AssertionJWTConsumer)
+	if !ok {
+		return fmt.Errorf("wrapped storage does not support assertion JWT replay consumption")
+	}
+	return consumer.ConsumeAssertionJWT(ctx, purpose, issuer, jti, exp)
+}
+
 // Unwrap returns the underlying storage so that type assertions (e.g. for
 // storage.DCRCredentialStore in server_impl.go) can reach the concrete type.
 func (d *CIMDStorageDecorator) Unwrap() Storage {

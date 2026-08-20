@@ -752,11 +752,25 @@ spec:
                     items:
                       description: |-
                         TrustedIssuerConfig configures an external OIDC issuer whose tokens are
-                        accepted as RFC 8693 subject tokens during token exchange. It mirrors
-                        tokenexchange.TrustedIssuer (pkg/authserver/server/tokenexchange), the
-                        runtime type the operator converts this into directly — no secret is
-                        referenced by this type, so no SecretKeyRef indirection is needed, unlike
-                        DelegateClientConfig.
+                        accepted as RFC 8693 subject tokens or RFC 7523 JWT-bearer assertions during
+                        token exchange. It mirrors tokenexchange.TrustedIssuer
+                        (pkg/authserver/server/tokenexchange), the runtime type the operator converts
+                        this into directly — no secret is referenced by this type, so no SecretKeyRef
+                        indirection is needed, unlike DelegateClientConfig.
+
+                        expectedAudience is exempted only for a grant-only issuer: jwtBearerGrant
+                        present and none of actorClaim, actorMatcher, allowMayAct, or allowedActors
+                        set. Any RFC 8693 delegation field (actorClaim, actorMatcher, allowMayAct,
+                        allowedActors) still requires expectedAudience, even when combined with
+                        jwtBearerGrant.
+
+                        The allowedDelegateClients rule below mirrors validateDelegationPolicy
+                        (pkg/authserver/server/tokenexchange/multi_issuer_validator.go): it is
+                        keyed on whether ANY delegation field is set (expectedAudience,
+                        actorClaim, actorMatcher, allowMayAct), not merely on whether
+                        jwtBearerGrant is absent — an issuer can combine jwtBearerGrant with
+                        expectedAudience for RFC 8693 delegation on the same issuer, and that
+                        combination still requires allowedDelegateClients at the Go level.
                       properties:
                         actorClaim:
                           description: |-
@@ -815,10 +829,10 @@ spec:
                           x-kubernetes-list-type: atomic
                         allowedDelegateClients:
                           description: |-
-                            AllowedDelegateClients restricts which ToolHive client IDs may
-                            exchange a subject token from this issuer. Required; set it to ["*"]
-                            to permit any confidential client holding the token-exchange grant. The
-                            wildcard must be the only entry; otherwise list specific client IDs to
+                            AllowedDelegateClients restricts which ToolHive client IDs may exchange
+                            an RFC 8693 subject token from this issuer. Required unless only
+                            jwtBearerGrant is configured; set it to ["*"] to permit any confidential
+                            client holding the token-exchange grant, or list specific client IDs to
                             bind delegation to them.
                           items:
                             maxLength: 256
@@ -831,8 +845,8 @@ spec:
                         expectedAudience:
                           description: |-
                             ExpectedAudience is the expected "aud" claim value that must appear in
-                            the token's audience list. This should be a resource/API identifier
-                            (e.g. a URI), not a client ID.
+                            an RFC 8693 subject token's audience list. It is not used by an RFC 7523
+                            JWT-bearer assertion, whose audience is the token endpoint.
                           maxLength: 2048
                           minLength: 1
                           type: string
@@ -855,16 +869,83 @@ spec:
                             {issuerUrl}/.well-known/openid-configuration.
                           maxLength: 2048
                           type: string
+                        jwtBearerGrant:
+                          description: |-
+                            JWTBearerGrant enables the plain RFC 7523 JWT-bearer grant for this
+                            issuer. It is independent of RFC 8693 delegation policy.
+                          properties:
+                            acceptedAudiences:
+                              description: |-
+                                AcceptedAudiences identifies this authorization server's accepted
+                                assertion audiences. When omitted, runtime validation defaults to the
+                                token endpoint.
+                              items:
+                                maxLength: 2048
+                                minLength: 1
+                                pattern: ^https?://[^[:space:]]+$
+                                type: string
+                              maxItems: 50
+                              type: array
+                              x-kubernetes-list-type: atomic
+                            maxAssertionAge:
+                              description: MaxAssertionAge caps the exp-iat interval
+                                independently of exp.
+                              type: string
+                            subjectBindings:
+                              description: |-
+                                SubjectBindings maps an exact external subject to allowed RFC 8707
+                                resources.
+                              items:
+                                description: |-
+                                  JWTBearerSubjectBinding configures the exact subject and allowed resources
+                                  for one RFC 7523 JWT-bearer assertion identity.
+                                properties:
+                                  allowedResources:
+                                    description: |-
+                                      AllowedResources is the exact set of RFC 8707 resources this subject may
+                                      request.
+                                    items:
+                                      maxLength: 2048
+                                      minLength: 1
+                                      pattern: ^https?://[^[:space:]]+$
+                                      type: string
+                                    maxItems: 50
+                                    minItems: 1
+                                    type: array
+                                    x-kubernetes-list-type: atomic
+                                  subject:
+                                    description: Subject is an exact assertion sub
+                                      value. Wildcards are not supported.
+                                    maxLength: 256
+                                    minLength: 1
+                                    pattern: ^[^*]+$
+                                    type: string
+                                required:
+                                - allowedResources
+                                - subject
+                                type: object
+                              maxItems: 50
+                              minItems: 1
+                              type: array
+                              x-kubernetes-list-type: atomic
+                          required:
+                          - maxAssertionAge
+                          - subjectBindings
+                          type: object
+                          x-kubernetes-validations:
+                          - message: maxAssertionAge must be greater than zero
+                            rule: duration(self.maxAssertionAge) > duration('0s')
+                          - message: subjectBindings must not contain duplicate subjects
+                            rule: self.subjectBindings.all(binding, self.subjectBindings.filter(other,
+                              other.subject == binding.subject).size() == 1)
                       required:
-                      - allowedDelegateClients
-                      - expectedAudience
                       - issuerUrl
                       type: object
                       x-kubernetes-validations:
                       - message: allowedDelegateClients must not combine the wildcard
                           "*" with specific client IDs
-                        rule: '!(''*'' in self.allowedDelegateClients) || size(self.allowedDelegateClients)
-                          == 1'
+                        rule: '!has(self.allowedDelegateClients) || !(''*'' in self.allowedDelegateClients)
+                          || size(self.allowedDelegateClients) == 1'
                       - message: allowMayAct must not be enabled when allowedDelegateClients
                           contains the wildcard "*"
                         rule: '!(has(self.allowMayAct) && self.allowMayAct && ''*''
@@ -877,6 +958,23 @@ spec:
                       - message: allowPrivateIPs requires jwksUrl to be set explicitly
                         rule: '!(has(self.allowPrivateIPs) && self.allowPrivateIPs)
                           || (has(self.jwksUrl) && self.jwksUrl != "")'
+                      - message: expectedAudience is required unless jwtBearerGrant
+                          is configured without actorClaim, actorMatcher, allowMayAct,
+                          or allowedActors
+                        rule: (has(self.jwtBearerGrant) && !((has(self.actorClaim)
+                          && size(self.actorClaim) > 0) || (has(self.actorMatcher)
+                          && size(self.actorMatcher) > 0) || (has(self.allowMayAct)
+                          && self.allowMayAct) || (has(self.allowedActors) && size(self.allowedActors)
+                          > 0))) || (has(self.expectedAudience) && size(self.expectedAudience)
+                          > 0)
+                      - message: allowedDelegateClients is required when expectedAudience,
+                          actorClaim, actorMatcher, or allowMayAct is set
+                        rule: '!((has(self.expectedAudience) && size(self.expectedAudience)
+                          > 0) || (has(self.actorClaim) && size(self.actorClaim) >
+                          0) || (has(self.actorMatcher) && size(self.actorMatcher)
+                          > 0) || (has(self.allowMayAct) && self.allowMayAct)) ||
+                          (has(self.allowedDelegateClients) && size(self.allowedDelegateClients)
+                          > 0)'
                     maxItems: 20
                     type: array
                     x-kubernetes-list-type: atomic
@@ -2627,11 +2725,25 @@ spec:
                     items:
                       description: |-
                         TrustedIssuerConfig configures an external OIDC issuer whose tokens are
-                        accepted as RFC 8693 subject tokens during token exchange. It mirrors
-                        tokenexchange.TrustedIssuer (pkg/authserver/server/tokenexchange), the
-                        runtime type the operator converts this into directly — no secret is
-                        referenced by this type, so no SecretKeyRef indirection is needed, unlike
-                        DelegateClientConfig.
+                        accepted as RFC 8693 subject tokens or RFC 7523 JWT-bearer assertions during
+                        token exchange. It mirrors tokenexchange.TrustedIssuer
+                        (pkg/authserver/server/tokenexchange), the runtime type the operator converts
+                        this into directly — no secret is referenced by this type, so no SecretKeyRef
+                        indirection is needed, unlike DelegateClientConfig.
+
+                        expectedAudience is exempted only for a grant-only issuer: jwtBearerGrant
+                        present and none of actorClaim, actorMatcher, allowMayAct, or allowedActors
+                        set. Any RFC 8693 delegation field (actorClaim, actorMatcher, allowMayAct,
+                        allowedActors) still requires expectedAudience, even when combined with
+                        jwtBearerGrant.
+
+                        The allowedDelegateClients rule below mirrors validateDelegationPolicy
+                        (pkg/authserver/server/tokenexchange/multi_issuer_validator.go): it is
+                        keyed on whether ANY delegation field is set (expectedAudience,
+                        actorClaim, actorMatcher, allowMayAct), not merely on whether
+                        jwtBearerGrant is absent — an issuer can combine jwtBearerGrant with
+                        expectedAudience for RFC 8693 delegation on the same issuer, and that
+                        combination still requires allowedDelegateClients at the Go level.
                       properties:
                         actorClaim:
                           description: |-
@@ -2690,10 +2802,10 @@ spec:
                           x-kubernetes-list-type: atomic
                         allowedDelegateClients:
                           description: |-
-                            AllowedDelegateClients restricts which ToolHive client IDs may
-                            exchange a subject token from this issuer. Required; set it to ["*"]
-                            to permit any confidential client holding the token-exchange grant. The
-                            wildcard must be the only entry; otherwise list specific client IDs to
+                            AllowedDelegateClients restricts which ToolHive client IDs may exchange
+                            an RFC 8693 subject token from this issuer. Required unless only
+                            jwtBearerGrant is configured; set it to ["*"] to permit any confidential
+                            client holding the token-exchange grant, or list specific client IDs to
                             bind delegation to them.
                           items:
                             maxLength: 256
@@ -2706,8 +2818,8 @@ spec:
                         expectedAudience:
                           description: |-
                             ExpectedAudience is the expected "aud" claim value that must appear in
-                            the token's audience list. This should be a resource/API identifier
-                            (e.g. a URI), not a client ID.
+                            an RFC 8693 subject token's audience list. It is not used by an RFC 7523
+                            JWT-bearer assertion, whose audience is the token endpoint.
                           maxLength: 2048
                           minLength: 1
                           type: string
@@ -2730,16 +2842,83 @@ spec:
                             {issuerUrl}/.well-known/openid-configuration.
                           maxLength: 2048
                           type: string
+                        jwtBearerGrant:
+                          description: |-
+                            JWTBearerGrant enables the plain RFC 7523 JWT-bearer grant for this
+                            issuer. It is independent of RFC 8693 delegation policy.
+                          properties:
+                            acceptedAudiences:
+                              description: |-
+                                AcceptedAudiences identifies this authorization server's accepted
+                                assertion audiences. When omitted, runtime validation defaults to the
+                                token endpoint.
+                              items:
+                                maxLength: 2048
+                                minLength: 1
+                                pattern: ^https?://[^[:space:]]+$
+                                type: string
+                              maxItems: 50
+                              type: array
+                              x-kubernetes-list-type: atomic
+                            maxAssertionAge:
+                              description: MaxAssertionAge caps the exp-iat interval
+                                independently of exp.
+                              type: string
+                            subjectBindings:
+                              description: |-
+                                SubjectBindings maps an exact external subject to allowed RFC 8707
+                                resources.
+                              items:
+                                description: |-
+                                  JWTBearerSubjectBinding configures the exact subject and allowed resources
+                                  for one RFC 7523 JWT-bearer assertion identity.
+                                properties:
+                                  allowedResources:
+                                    description: |-
+                                      AllowedResources is the exact set of RFC 8707 resources this subject may
+                                      request.
+                                    items:
+                                      maxLength: 2048
+                                      minLength: 1
+                                      pattern: ^https?://[^[:space:]]+$
+                                      type: string
+                                    maxItems: 50
+                                    minItems: 1
+                                    type: array
+                                    x-kubernetes-list-type: atomic
+                                  subject:
+                                    description: Subject is an exact assertion sub
+                                      value. Wildcards are not supported.
+                                    maxLength: 256
+                                    minLength: 1
+                                    pattern: ^[^*]+$
+                                    type: string
+                                required:
+                                - allowedResources
+                                - subject
+                                type: object
+                              maxItems: 50
+                              minItems: 1
+                              type: array
+                              x-kubernetes-list-type: atomic
+                          required:
+                          - maxAssertionAge
+                          - subjectBindings
+                          type: object
+                          x-kubernetes-validations:
+                          - message: maxAssertionAge must be greater than zero
+                            rule: duration(self.maxAssertionAge) > duration('0s')
+                          - message: subjectBindings must not contain duplicate subjects
+                            rule: self.subjectBindings.all(binding, self.subjectBindings.filter(other,
+                              other.subject == binding.subject).size() == 1)
                       required:
-                      - allowedDelegateClients
-                      - expectedAudience
                       - issuerUrl
                       type: object
                       x-kubernetes-validations:
                       - message: allowedDelegateClients must not combine the wildcard
                           "*" with specific client IDs
-                        rule: '!(''*'' in self.allowedDelegateClients) || size(self.allowedDelegateClients)
-                          == 1'
+                        rule: '!has(self.allowedDelegateClients) || !(''*'' in self.allowedDelegateClients)
+                          || size(self.allowedDelegateClients) == 1'
                       - message: allowMayAct must not be enabled when allowedDelegateClients
                           contains the wildcard "*"
                         rule: '!(has(self.allowMayAct) && self.allowMayAct && ''*''
@@ -2752,6 +2931,23 @@ spec:
                       - message: allowPrivateIPs requires jwksUrl to be set explicitly
                         rule: '!(has(self.allowPrivateIPs) && self.allowPrivateIPs)
                           || (has(self.jwksUrl) && self.jwksUrl != "")'
+                      - message: expectedAudience is required unless jwtBearerGrant
+                          is configured without actorClaim, actorMatcher, allowMayAct,
+                          or allowedActors
+                        rule: (has(self.jwtBearerGrant) && !((has(self.actorClaim)
+                          && size(self.actorClaim) > 0) || (has(self.actorMatcher)
+                          && size(self.actorMatcher) > 0) || (has(self.allowMayAct)
+                          && self.allowMayAct) || (has(self.allowedActors) && size(self.allowedActors)
+                          > 0))) || (has(self.expectedAudience) && size(self.expectedAudience)
+                          > 0)
+                      - message: allowedDelegateClients is required when expectedAudience,
+                          actorClaim, actorMatcher, or allowMayAct is set
+                        rule: '!((has(self.expectedAudience) && size(self.expectedAudience)
+                          > 0) || (has(self.actorClaim) && size(self.actorClaim) >
+                          0) || (has(self.actorMatcher) && size(self.actorMatcher)
+                          > 0) || (has(self.allowMayAct) && self.allowMayAct)) ||
+                          (has(self.allowedDelegateClients) && size(self.allowedDelegateClients)
+                          > 0)'
                     maxItems: 20
                     type: array
                     x-kubernetes-list-type: atomic

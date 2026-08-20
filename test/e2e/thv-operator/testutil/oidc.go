@@ -155,6 +155,9 @@ func DeployParameterizedOIDCServer(
 //     TrustedIssuer.ActorMatcher against a claim other than the default
 //     ActorClaim ("azp"). Both must be present together; either alone is
 //     ignored.
+//   - jti=<value>, iat=<unix seconds>, exp=<unix seconds> override the
+//     corresponding registered JWT claims, for assertion replay and lifetime
+//     tests. iat and exp default to now and one hour from now, respectively.
 const parameterizedOIDCServerScript = `
 import base64, json, time, http.server, socketserver
 from urllib.parse import urlparse, parse_qs
@@ -191,7 +194,12 @@ class H(http.server.BaseHTTPRequestHandler):
             sub = params.get("subject", ["test-user"])[0]
             aud = params.get("aud", ["vmcp-audience"])[0]
             hdr = {"alg": "RS256", "typ": "JWT", "kid": "k1"}
-            pay = {"sub": sub, "iss": ISSUER, "aud": aud, "exp": int(time.time())+3600, "iat": int(time.time())}
+            now = int(time.time())
+            iat = int(params.get("iat", [now])[0])
+            exp = int(params.get("exp", [now+3600])[0])
+            pay = {"sub": sub, "iss": ISSUER, "aud": aud, "exp": exp, "iat": iat}
+            if "jti" in params:
+                pay["jti"] = params["jti"][0]
             if "may_act_sub" in params:
                 may_act = {"sub": params["may_act_sub"][0]}
                 if "may_act_iss" in params:

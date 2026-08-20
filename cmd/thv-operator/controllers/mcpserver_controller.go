@@ -1108,7 +1108,7 @@ func (r *MCPServerReconciler) deploymentForMCPServer(
 
 	// Using ConfigMap mode for all configuration
 	// Pod template patch for secrets and service account
-	builder, err := ctrlutil.NewPodTemplateSpecBuilder(m.Spec.PodTemplateSpec, mcpContainerName)
+	ptsBuilder, err := ctrlutil.NewPodTemplateSpecBuilder(m.Spec.PodTemplateSpec, mcpContainerName)
 	if err != nil {
 		return nil, fmt.Errorf("failed to build PodTemplateSpec: %w", err)
 	}
@@ -1118,7 +1118,7 @@ func (r *MCPServerReconciler) deploymentForMCPServer(
 		defaultSA := mcpServerServiceAccountName(m.Name)
 		serviceAccount = &defaultSA
 	}
-	finalPodTemplateSpec := builder.
+	finalPodTemplateSpec := ptsBuilder.
 		WithServiceAccount(serviceAccount).
 		WithSecrets(m.Spec.Secrets).
 		Build()
@@ -1704,15 +1704,12 @@ func (r *MCPServerReconciler) updateMCPServerStatus(ctx context.Context, m *mcpv
 	// If that STS is gone, clients hit a dead backend while Ready stays true
 	// (#6343). Surface the gap instead of claiming the server is running.
 	if running > 0 {
-		missing, stsErr := r.statefulSetMissing(ctx, m)
+		updated, stsErr := r.statusIfWorkloadStatefulSetMissing(ctx, m)
 		if stsErr != nil {
 			return stsErr
 		}
-		if missing {
-			m.Status.Phase = mcpv1beta1.MCPServerPhasePending
-			m.Status.Message = "MCP server proxy is running; recreating missing workload StatefulSet"
-			setReadyCondition(m, metav1.ConditionFalse, mcpv1beta1.ConditionReasonNotReady, m.Status.Message)
-			return r.Status().Update(ctx, m)
+		if updated {
+			return nil
 		}
 		m.Status.Phase = mcpv1beta1.MCPServerPhaseReady
 		m.Status.Message = "MCP server is running"
@@ -1740,6 +1737,23 @@ func (r *MCPServerReconciler) updateMCPServerStatus(ctx context.Context, m *mcpv
 
 	// Update the status
 	return r.Status().Update(ctx, m)
+}
+
+
+// statusIfWorkloadStatefulSetMissing sets Pending when the proxy is up but the
+// sibling workload STS is gone (#6343). Returns true if status was written.
+func (r *MCPServerReconciler) statusIfWorkloadStatefulSetMissing(ctx context.Context, m *mcpv1beta1.MCPServer) (bool, error) {
+	missing, err := r.statefulSetMissing(ctx, m)
+	if err != nil {
+		return false, err
+	}
+	if !missing {
+		return false, nil
+	}
+	m.Status.Phase = mcpv1beta1.MCPServerPhasePending
+	m.Status.Message = "MCP server proxy is running; recreating missing workload StatefulSet"
+	setReadyCondition(m, metav1.ConditionFalse, mcpv1beta1.ConditionReasonNotReady, m.Status.Message)
+	return true, r.Status().Update(ctx, m)
 }
 
 // deleteIfExists fetches a Kubernetes object by name and namespace, and deletes it if it exists.
@@ -1971,13 +1985,13 @@ func (r *MCPServerReconciler) deploymentNeedsUpdate(
 			serviceAccount = &defaultSA
 		}
 
-		builder, err := ctrlutil.NewPodTemplateSpecBuilder(mcpServer.Spec.PodTemplateSpec, mcpContainerName)
+		ptsBuilder, err := ctrlutil.NewPodTemplateSpecBuilder(mcpServer.Spec.PodTemplateSpec, mcpContainerName)
 		if err != nil {
 			// If we can't parse the PodTemplateSpec, consider it as needing update
 			return true
 		}
 
-		expectedPodTemplateSpec := builder.
+		expectedPodTemplateSpec := ptsBuilder.
 			WithServiceAccount(serviceAccount).
 			WithSecrets(mcpServer.Spec.Secrets).
 			Build()

@@ -174,12 +174,9 @@ func (r *RawRequest) WithClientInfo(name, version string) *RawRequest {
 }
 
 // WithStreamableAccept sets "Accept: application/json, text/event-stream".
-// A real go-sdk streamable-HTTP server rejects a POST without this header
-// (HTTP 400), so requests bound for a real backend (e.g. the k8s tier) must
-// set it. Requests to the ToolHive proxy still omit it by convention: the
-// proxy does not require it, and omitting it keeps responses plain JSON (the
-// client parses SSE responses too -- see sseResponsePayload -- and flipping
-// proxy-bound requests to the conformant Accept is tracked in #6104).
+// A real streamable-HTTP MCP peer requires this header on POSTs. ToolHive's
+// proxy does not require it, but conformant proxy-bound specs should set it;
+// RawMCPClient parses both plain JSON and SSE-framed POST responses.
 func (r *RawRequest) WithStreamableAccept() *RawRequest {
 	return r.SetHeader("Accept", "application/json, text/event-stream")
 }
@@ -317,11 +314,10 @@ func NewRawMCPClient(timeout time.Duration) (*RawMCPClient, error) {
 	}, nil
 }
 
-// Send marshals req and POSTs it to url. No Accept header is set by default:
-// the ToolHive proxy returns a plain JSON body without it, and switches to an
-// SSE response body whenever Accept lists text/event-stream. A request bound
-// for a REAL streamable-HTTP MCP backend -- which rejects a POST lacking that
-// Accept with HTTP 400 -- should opt in via req.WithStreamableAccept().
+// Send marshals req and POSTs it to url. No Accept header is set by default.
+// Streamable-HTTP requests that need the conformant POST Accept header should
+// opt in via req.WithStreamableAccept(). ToolHive's proxy returns plain JSON
+// without it and may switch to SSE framing when Accept lists text/event-stream.
 //
 // Either way the JSON-RPC envelope is parsed into the RawResponse: a
 // Content-Type: text/event-stream body has its response event extracted first

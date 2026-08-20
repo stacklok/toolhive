@@ -109,6 +109,11 @@ func (s *service) verifyOCIInstall(
 	if err != nil {
 		return nil, err
 	}
+	if opts.AllowSignerChange {
+		// The signer-change guard was explicitly overridden: verify the
+		// chain of trust only and re-record whatever identity is observed.
+		expected, expectUnsigned = nil, false
+	}
 	if expectUnsigned {
 		return unsignedLockedDecision(opts, pluginName)
 	}
@@ -139,6 +144,9 @@ func (s *service) verifyGitInstall(
 	expected, expectUnsigned, err := expectedLockTrust(opts.ProjectRoot, pluginName)
 	if err != nil {
 		return nil, err
+	}
+	if opts.AllowSignerChange {
+		expected, expectUnsigned = nil, false
 	}
 	if expectUnsigned {
 		return unsignedLockedDecision(opts, pluginName)
@@ -300,13 +308,16 @@ func classifyInstallVerifyError(
 	// misreported as a signer-identity change below.
 	case errors.Is(verifyErr, verifier.ErrProvenanceFieldMismatch):
 		return httperr.WithCode(
-			fmt.Errorf("plugin %q's certificate no longer matches its pinned provenance: %w", pluginName, verifyErr),
+			fmt.Errorf("plugin %q's certificate no longer matches its pinned provenance: %w"+
+				" (if this is an expected publisher-side change, upgrade with allow_signer_change)",
+				pluginName, verifyErr),
 			http.StatusForbidden,
 		)
 	case errors.Is(verifyErr, verifier.ErrSignerMismatch):
 		return httperr.WithCode(
 			fmt.Errorf("signer identity mismatch for %q: %w"+
-				" (if the signer change is intended, remove the plugin's lock entry and reinstall)",
+				" (if the signer change is intended, remove the plugin's lock entry"+
+				" and reinstall, or upgrade with allow_signer_change)",
 				pluginName, verifyErr),
 			http.StatusForbidden,
 		)

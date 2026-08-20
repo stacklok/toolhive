@@ -3835,6 +3835,11 @@ components:
         allow_ref_change:
           description: AllowRefChange permits resolvedReference changes during upgrade
           type: boolean
+        allow_signer_change:
+          description: |-
+            AllowSignerChange permits upgrading to an artifact signed by a
+            different identity than the recorded one
+          type: boolean
         clients:
           description: |-
             Clients lists target client identifiers. Empty means every

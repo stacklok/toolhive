@@ -485,12 +485,13 @@ func (s *PluginsRoutes) upgradePlugins(w http.ResponseWriter, r *http.Request) e
 	}
 
 	result, err := s.lockService.Upgrade(r.Context(), plugins.UpgradeOptions{
-		ProjectRoot:    req.ProjectRoot,
-		Names:          req.Names,
-		Preview:        req.Preview,
-		FailOnChanges:  req.FailOnChanges,
-		AllowRefChange: req.AllowRefChange,
-		Clients:        req.Clients,
+		ProjectRoot:       req.ProjectRoot,
+		Names:             req.Names,
+		Preview:           req.Preview,
+		FailOnChanges:     req.FailOnChanges,
+		AllowRefChange:    req.AllowRefChange,
+		AllowSignerChange: req.AllowSignerChange,
+		Clients:           req.Clients,
 	})
 	if err != nil {
 		return err

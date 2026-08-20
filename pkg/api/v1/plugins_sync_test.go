@@ -83,6 +83,19 @@ func TestSyncPluginsEndpoint(t *testing.T) {
 			wantStatus: http.StatusBadRequest,
 		},
 		{
+			name: "allow_unsigned reaches the service",
+			service: &pluginServiceWithSync{
+				PluginService: plugmocks.NewMockPluginService(gomock.NewController(t)),
+				syncFn: func(_ context.Context, opts plugins.SyncOptions) (*plugins.SyncResult, error) {
+					assert.True(t, opts.Adopt)
+					assert.True(t, opts.AllowUnsigned, "allow_unsigned must survive the DTO boundary")
+					return &plugins.SyncResult{}, nil
+				},
+			},
+			body:       `{"project_root":"/tmp/proj","adopt":true,"allow_unsigned":true}`,
+			wantStatus: http.StatusOK,
+		},
+		{
 			name: "sync error is forwarded",
 			service: &pluginServiceWithSync{
 				PluginService: plugmocks.NewMockPluginService(gomock.NewController(t)),

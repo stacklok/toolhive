@@ -17,6 +17,7 @@ import (
 	"github.com/stacklok/toolhive/pkg/plugins"
 	"github.com/stacklok/toolhive/pkg/skills/gitresolver"
 	"github.com/stacklok/toolhive/pkg/skills/lockfile"
+	"github.com/stacklok/toolhive/pkg/skills/verifier"
 )
 
 // var _ ensures *service continues to satisfy the full lock service surface
@@ -29,9 +30,10 @@ var _ plugins.PluginLockService = (*service)(nil)
 // pinned to an immutable reference (an OCI digest or a full git commit hash)
 // are reported not-upgradable: there is nothing newer to resolve to.
 //
-// Signer-change guarding is intentionally omitted: plugin Sigstore
-// verification lands in a later PR. AllowSignerChange is accepted on the
-// options type (aliased from skills) but not enforced here.
+// An upgrade re-resolves a mutable source, which is exactly when a
+// compromised or transferred publisher would slip a differently-signed
+// artifact into the pinned trust chain, so planning probes the candidate's
+// signer identity before anything is installed — see guardSignerChange.
 func (s *service) Upgrade(ctx context.Context, opts plugins.UpgradeOptions) (*plugins.UpgradeResult, error) {
 	if !plugins.LockFileFeatureEnabled() {
 		return nil, httperr.WithCode(
@@ -147,6 +149,11 @@ type resolvedLatest struct {
 	ref       string
 	digest    string
 	layerData []byte
+	// commitPayload and commitSignature are the git candidate's signature
+	// material, captured during resolution so the signer probe does not
+	// need a second clone. Empty for OCI candidates.
+	commitPayload   []byte
+	commitSignature string
 }
 
 func (s *service) planUpgrade(ctx context.Context, opts plugins.UpgradeOptions, entry lockfile.Entry) upgradePlan {
@@ -196,6 +203,23 @@ func (s *service) planUpgrade(ctx context.Context, opts plugins.UpgradeOptions, 
 		}
 	}
 
+	// Signer-change guard: when the entry records a signer identity, the
+	// candidate must verify with the same one before the upgrade is even
+	// planned. Verification happens here (plan-only modes stay
+	// install-free) with a nil expected identity so a differing signer is
+	// reported as a change rather than a bare failure; blocked plans carry
+	// no pinnedRef, exactly like ref changes.
+	//
+	// Local-store candidates never reach this point — they returned above
+	// with layerData set — because they carry no signature to probe.
+	// verifyLocalInstall refuses them outright at install time when the
+	// entry is locked to a signer, which is the stronger check.
+	if entry.Provenance != nil && !opts.AllowSignerChange {
+		if blocked := s.guardSignerChange(ctx, entry, latest, &outcome); blocked {
+			return upgradePlan{entry: entry, outcome: outcome}
+		}
+	}
+
 	pinnedRef, err := buildPinnedReference(lockfile.Entry{ResolvedReference: latest.ref, Digest: latest.digest})
 	if err != nil {
 		outcome.Status = plugins.UpgradeStatusFailed
@@ -206,6 +230,86 @@ func (s *service) planUpgrade(ctx context.Context, opts plugins.UpgradeOptions, 
 
 	outcome.Status = plugins.UpgradeStatusUpgraded
 	return upgradePlan{entry: entry, outcome: outcome, pinnedRef: pinnedRef, resolvedRef: latest.ref}
+}
+
+// guardSignerChange probes the candidate artifact's signer identity and
+// fills outcome when the upgrade must not proceed: the candidate is signed
+// by a different identity (or unsigned) versus the recorded provenance, its
+// signature cannot be verified at all, or its certificate's repository ref
+// or runner class differs from what is recorded. Returns true when blocked.
+//
+// The repository ref has NO automatic allowance for a tag-shaped rotation.
+// An earlier version of the skills guard this mirrors let a recorded tag
+// ref rotate to any other tag ref, reasoning that a release workflow signs
+// each version on its own tag — but that also let a candidate signed from
+// an attacker's OWN tag (e.g. "refs/tags/attacker-release") on the SAME
+// repository replace a pinned tag, since nothing tied the candidate's tag
+// to the specific version actually being upgraded to. Binding it correctly
+// would need the resolved release source's own tag, which the git resolver
+// does not surface at all (only the resolved commit hash) — so an OCI-only
+// partial fix would leave git-sourced plugins with the identical hole.
+// Every ref change — tag or branch, git or OCI — therefore blocks here
+// exactly like a genuine signer-identity change, and needs the same
+// explicit --allow-signer-change override. See stacklok/toolhive#6315
+// review.
+func (s *service) guardSignerChange(
+	ctx context.Context,
+	entry lockfile.Entry,
+	latest resolvedLatest,
+	outcome *plugins.UpgradeOutcome,
+) bool {
+	probe, probeErr := s.probeCandidateSigner(ctx, latest)
+	switch {
+	case probeErr != nil && errors.Is(probeErr, verifier.ErrUnsigned):
+		outcome.Status = plugins.UpgradeStatusSignerChangeBlocked
+		return true
+	case probeErr != nil:
+		outcome.Status = plugins.UpgradeStatusFailed
+		outcome.Reason = classifySignatureError(probeErr)
+		if outcome.Reason == "" {
+			outcome.Reason = plugins.FailureReasonUnknown
+		}
+		outcome.Error = probeErr.Error()
+		return true
+	case probe.SignerIdentity != entry.Provenance.SignerIdentity ||
+		probe.CertIssuer != entry.Provenance.CertIssuer ||
+		runnerEnvironmentChanged(probe, entry.Provenance) ||
+		repositoryRefChanged(probe, entry.Provenance):
+		outcome.Status = plugins.UpgradeStatusSignerChangeBlocked
+		outcome.NewSignerIdentity = probe.SignerIdentity
+		return true
+	}
+	return false
+}
+
+// runnerEnvironmentChanged reports whether the candidate's runner class
+// differs from the one recorded. An entry that recorded none is
+// unconstrained — lock entries written before the field existed have it
+// empty, as do certificates that carry no such extension.
+func runnerEnvironmentChanged(probe *verifier.Result, recorded *lockfile.Provenance) bool {
+	return recorded.RunnerEnvironment != "" && probe.RunnerEnvironment != recorded.RunnerEnvironment
+}
+
+// repositoryRefChanged reports whether the candidate's certificate ref
+// differs from the one recorded, with the same absent-means-unconstrained
+// rule as runnerEnvironmentChanged. Unlike the runner class, no ref value
+// is treated as an automatically allowed rotation — see guardSignerChange's
+// doc comment for why.
+func repositoryRefChanged(probe *verifier.Result, recorded *lockfile.Provenance) bool {
+	return recorded.RepositoryRef != "" && probe.RepositoryRef != recorded.RepositoryRef
+}
+
+// probeCandidateSigner verifies the candidate artifact chain-of-trust-only
+// (nil expected identity) and returns the observed identity. Git candidates
+// verify the signature material captured while resolving the candidate
+// commit, rather than re-resolving it: skillsvc's probe clones a second
+// time, which for plugins would both double the clone cost and let the
+// probed commit drift from the one being planned.
+func (s *service) probeCandidateSigner(ctx context.Context, latest resolvedLatest) (*verifier.Result, error) {
+	if len(latest.commitPayload) > 0 {
+		return s.artifactVerifier().VerifyGit(ctx, latest.commitPayload, []byte(latest.commitSignature), nil)
+	}
+	return s.artifactVerifier().VerifyOCI(ctx, latest.ref, latest.digest, nil)
 }
 
 func (s *service) applyUpgrade(ctx context.Context, opts plugins.UpgradeOptions, plan upgradePlan) plugins.UpgradeOutcome {
@@ -238,6 +342,7 @@ func (s *service) applyUpgrade(ctx context.Context, opts plugins.UpgradeOptions,
 		Clients:               clients,
 		LockSource:            plan.entry.Source,
 		LockResolvedReference: lockResolved,
+		AllowSignerChange:     opts.AllowSignerChange,
 		ExpectedCanonicalName: plan.entry.Name,
 	}); err != nil {
 		outcome := plan.outcome
@@ -259,8 +364,7 @@ func (s *service) applyUpgrade(ctx context.Context, opts plugins.UpgradeOptions,
 // side-effect-free" note.
 func (s *service) resolveLatestState(ctx context.Context, source string) (resolvedLatest, error) {
 	if gitresolver.IsGitReference(source) {
-		ref, digest, err := s.resolveGitLatest(ctx, source)
-		return resolvedLatest{ref: ref, digest: digest}, err
+		return s.resolveGitLatest(ctx, source)
 	}
 
 	ref, isOCI, parseErr := parseOCIReference(source)
@@ -298,10 +402,14 @@ func (s *service) resolvePlainNameLatest(ctx context.Context, source string) (re
 	return resolvedLatest{ref: ref, digest: digest}, err
 }
 
-func (s *service) resolveGitLatest(ctx context.Context, gitURL string) (string, string, error) {
+// resolveGitLatest re-resolves gitURL to its current HEAD commit. The
+// commit's gitsign signature and the payload it covers travel with the
+// result so the signer probe can verify the exact commit being planned
+// without cloning the repository a second time.
+func (s *service) resolveGitLatest(ctx context.Context, gitURL string) (resolvedLatest, error) {
 	gitRef, err := gitresolver.ParseGitReference(gitURL)
 	if err != nil {
-		return "", "", httperr.WithCode(fmt.Errorf("invalid git reference: %w", err), http.StatusBadRequest)
+		return resolvedLatest{}, httperr.WithCode(fmt.Errorf("invalid git reference: %w", err), http.StatusBadRequest)
 	}
 
 	ctx, cancel := context.WithTimeout(ctx, gitresolver.CloneTimeout)
@@ -311,15 +419,20 @@ func (s *service) resolveGitLatest(ctx context.Context, gitURL string) (string, 
 	client := gitresolver.ClientForURL(gitRef.URL, s.gitClient)
 	repoInfo, err := client.Clone(ctx, cloneConfig)
 	if err != nil {
-		return "", "", httperr.WithCode(fmt.Errorf("resolving git plugin: %w", err), http.StatusBadGateway)
+		return resolvedLatest{}, httperr.WithCode(fmt.Errorf("resolving git plugin: %w", err), http.StatusBadGateway)
 	}
 	defer func() { _ = client.Cleanup(ctx, repoInfo) }()
 
 	head, err := client.HeadCommit(repoInfo)
 	if err != nil {
-		return "", "", httperr.WithCode(fmt.Errorf("resolving git plugin: %w", err), http.StatusBadGateway)
+		return resolvedLatest{}, httperr.WithCode(fmt.Errorf("resolving git plugin: %w", err), http.StatusBadGateway)
 	}
-	return gitURL, head.Hash, nil
+	return resolvedLatest{
+		ref:             gitURL,
+		digest:          head.Hash,
+		commitPayload:   head.Payload,
+		commitSignature: head.Signature,
+	}, nil
 }
 
 func (s *service) resolveOCILatest(ctx context.Context, ref nameref.Reference) (string, string, error) {

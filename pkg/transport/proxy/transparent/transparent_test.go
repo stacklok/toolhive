@@ -7,6 +7,7 @@ import (
 	"bufio"
 	"context"
 	"fmt"
+	"io"
 	"net"
 	"net/http"
 	"net/http/httptest"
@@ -1693,6 +1694,15 @@ func TestMetricsNotServedWithoutHandler(t *testing.T) {
 		"/metrics must not be served on the application listener")
 	assert.False(t, backendHit.Load(),
 		"/metrics must not be proxied to the backend")
+
+	// The response has to explain itself: a bare 404 here is indistinguishable
+	// from a typo, and this is the only client-side signal that a scrape
+	// configuration is pointed at the wrong port. It names no port deliberately —
+	// see diagnostics.NotServedHereHandler.
+	body, err := io.ReadAll(resp.Body)
+	require.NoError(t, err)
+	assert.Contains(t, string(body), "diagnostics",
+		"the 404 body must explain where metrics moved to")
 }
 
 // TestPrefixHandlers_NilMapDoesNotPanic tests that a nil PrefixHandlers map doesn't cause panic

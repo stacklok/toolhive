@@ -214,3 +214,56 @@ func TestStopDiagnosticsServerIsIdempotent(t *testing.T) {
 	// Stopping again, as Cleanup may, must be a no-op.
 	require.NoError(t, r.stopDiagnosticsServer(ctx))
 }
+
+// TestMountPrometheusHandlerOnTransportPort covers the decision jhrozek's review on
+// #6370 flagged as untested: the tri-state resolves correctly in isolation
+// (TestDiagnosticsPort / TestServeMetricsOnTransportPort in pkg/telemetry), but
+// nothing proved the resolved value actually reached transportConfig.PrometheusHandler
+// for a standard (non-vMCP) workload. A regression here would leave the migration
+// switch resolving correctly while silently never mounting the transport-port copy.
+func TestMountPrometheusHandlerOnTransportPort(t *testing.T) {
+	t.Parallel()
+
+	handler := testMetricsHandler()
+
+	tests := []struct {
+		name    string
+		handler http.Handler
+		cfg     *telemetry.Config
+		want    bool
+	}{
+		{
+			name:    "no handler never mounts, regardless of the switch",
+			handler: nil,
+			cfg:     &telemetry.Config{MetricsOnTransportPort: boolPtr(true)},
+			want:    false,
+		},
+		{
+			name:    "unset switch follows the default (currently true)",
+			handler: handler,
+			cfg:     nil,
+			want:    telemetry.DefaultMetricsOnTransportPort,
+		},
+		{
+			name:    "explicitly enabled mounts",
+			handler: handler,
+			cfg:     &telemetry.Config{MetricsOnTransportPort: boolPtr(true)},
+			want:    true,
+		},
+		{
+			name:    "explicitly disabled does not mount",
+			handler: handler,
+			cfg:     &telemetry.Config{MetricsOnTransportPort: boolPtr(false)},
+			want:    false,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			assert.Equal(t, tt.want, mountPrometheusHandlerOnTransportPort(tt.handler, tt.cfg))
+		})
+	}
+}
+
+func boolPtr(b bool) *bool { return &b }

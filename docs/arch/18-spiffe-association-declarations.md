@@ -62,6 +62,18 @@ inbound_grants:
 
 The server creates and initially loads every configured bundle source before it starts. Initial loading has a 30-second timeout; a missing, invalid, or authority-empty bundle for an enabled method fails server construction rather than leaving that method usable without trust material. The resulting multi-domain source is passed to both X.509-SVID and JWT-SVID verification and is closed with the server.
 
+## Supported SPIRE deployment topology
+
+The supported production topology separates public verification material from workload credentials:
+
+- SPIRE publishes the SPIFFE JSON trust bundle to a Kubernetes ConfigMap with `format = "spiffe"`, using the SPIRE v1.15 `k8s_configmap` `BundlePublisher` plugin configuration exercised by the E2E harness.
+- The authorization server (AS) uses the `file` bundle source and mounts that ConfigMap as a read-only public file. It does not receive a Workload API socket, an SVID, or private-key access.
+- Each attested client workload mounts its local SPIRE Workload API socket and obtains its own SVID through that API. The socket must be available only to the workload that needs its credential.
+
+A public bundle lets the AS verify credentials; it does not confer a SPIFFE identity to the AS or to any pod that can read it. Identity is established only when an attested workload presents a credential that validates against the bundle and is authorized by its configured association.
+
+The cert-manager CSI materials under `deploy/spiffe-poc/` are an optional development-only certificate-file path, not the supported production topology. They mount certificate files and do not provide a SPIFFE Workload API socket. Therefore, they cannot replace `workload_api` or provide the dynamically issued, attested credentials that a SPIRE Workload API client obtains.
+
 Supported sources are:
 
 - `workload_api`, which uses the local SPIFFE Workload API's live bundle watch.
@@ -69,7 +81,9 @@ Supported sources are:
 
 Bundle endpoint URLs must be absolute HTTPS URLs without userinfo, query, or fragment. Their hosts cannot be IP literals or loopback addresses; redirects are restricted to the same host. The endpoint response is limited to 1 MiB.
 
-`https_spiffe` is not supported. It requires future endpoint identity and bootstrap-trust configuration to authenticate the endpoint with an X.509-SVID. A `file` bundle source is deferred and is not supported by the current configuration or runtime.
+- `file`, which loads a local SPIFFE JWKS trust-bundle document (typically a mounted ConfigMap or Secret) and reloads it every 30 seconds. A reload failure is logged and the last known good bundle is retained; polling, not `fsnotify`, is used because a ConfigMap-mounted file is updated via a kubelet symlink swap that inotify on the mounted path frequently misses.
+
+`https_spiffe` is not supported. It requires future endpoint identity and bootstrap-trust configuration to authenticate the endpoint with an X.509-SVID.
 
 ## Authentication behavior
 
@@ -144,11 +158,13 @@ The configured OAuth client ID may differ from the SPIFFE ID under ToolHive's ex
 
 Configuration and loaded bundles are not authentication by themselves. A client ID, a declared association, a request header, an unverified SPIFFE-looking URI, a client-supplied trust domain, or a loaded bundle is never workload identity. SPIFFE credential validation establishes identity only after the credential validates against configured trust material and the association registry authorizes the resulting SPIFFE ID and configured client ID. A successful authentication binds that exact resolved principal to the static OAuth client; storage lookup alone is never authenticated provenance.
 
-The JWT-SVID client-authentication path described above is implemented by [#6203](https://github.com/stacklok/toolhive/issues/6203), association-constrained `client_credentials` alongside token exchange by [#6204](https://github.com/stacklok/toolhive/issues/6204) for both the JWT and X.509 arms ([#6202](https://github.com/stacklok/toolhive/issues/6202)), and live trust-bundle loading and rotation by [#6201](https://github.com/stacklok/toolhive/issues/6201), including discovery-metadata advertisement of `spiffe_x509`, `spiffe_jwt`, and `client_credentials` once the underlying association snapshot permits them. `newServer` (`pkg/authserver/server_impl.go`) constructs and wires the JWT and X.509 bundle sources these paths validate credentials against, so `jwtsvid.ParseAndValidate` and X.509 chain verification are reachable with real trust material. The following remain separate and pending:
+The JWT-SVID client-authentication path described above is implemented by [#6203](https://github.com/stacklok/toolhive/issues/6203), association-constrained `client_credentials` alongside token exchange by [#6204](https://github.com/stacklok/toolhive/issues/6204) for both the JWT and X.509 arms ([#6202](https://github.com/stacklok/toolhive/issues/6202)), and live trust-bundle loading and rotation by [#6201](https://github.com/stacklok/toolhive/issues/6201), including discovery-metadata advertisement of `spiffe_x509`, `spiffe_jwt`, and `client_credentials` once the underlying association snapshot permits them. `newServer` (`pkg/authserver/server_impl.go`) constructs and wires the JWT and X.509 bundle sources these paths validate credentials against, so `jwtsvid.ParseAndValidate` and X.509 chain verification are reachable with real trust material.
 
-- deploy SPIRE or mount Workload API sockets ([#6205](https://github.com/stacklok/toolhive/issues/6205)).
+Issue [#6205](https://github.com/stacklok/toolhive/issues/6205) adds a real SPIRE integration E2E that covers the positive flow through SPIRE-published JSON bundle ConfigMap material, the AS file source, and an attested client obtaining X.509-SVID and JWT-SVID credentials from the Workload API for equivalent `client_credentials` flows. It also covers X.509 and JWT local-authority/SVID rotation without restarting the client pod. Negative-path coverage is not asserted by this E2E.
 
 For [#6205](https://github.com/stacklok/toolhive/issues/6205), `workloadapi.X509Source` implements both `x509svid.Source` and `x509bundle.Source`, so one Workload API connection can also provide the authorization server's own certificate when deployment wiring is added. The v1alpha1 `ClientCASecretRef` plus `subPath` shape cannot support a rotating bundle and must not be reused for this purpose.
+
+The authorization-server file source is limited to public trust material. The supported deployment does not mount a Workload API socket into the authorization-server pod or use it to obtain an authorization-server SVID.
 
 ## Related documentation
 

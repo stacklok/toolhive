@@ -9,7 +9,9 @@ import (
 	"context"
 	"fmt"
 	"io"
+	"net/http"
 	"os"
+	"strings"
 	"time"
 
 	"github.com/onsi/gomega"
@@ -17,9 +19,12 @@ import (
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/types"
 	"k8s.io/apimachinery/pkg/util/intstr"
+	k8svalidation "k8s.io/apimachinery/pkg/util/validation"
 	"k8s.io/client-go/kubernetes"
+	"k8s.io/client-go/kubernetes/scheme"
 	"k8s.io/client-go/rest"
 	"k8s.io/client-go/tools/clientcmd"
+	"k8s.io/client-go/tools/remotecommand"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 
 	mcpv1beta1 "github.com/stacklok/toolhive/cmd/thv-operator/api/v1beta1"
@@ -102,6 +107,90 @@ func GetPodLogs(ctx context.Context, namespace, podName, containerName string, p
 		return "", fmt.Errorf("failed to read logs: %w", err)
 	}
 	return buf.String(), nil
+}
+
+// ExecutePodCommand runs command in a container through the Kubernetes API exec subresource.
+// It does not invoke kubectl or expose the container's sockets outside the pod.
+func ExecutePodCommand(
+	ctx context.Context,
+	namespace, podName, containerName string,
+	command []string,
+) (string, error) {
+	if err := validatePodExecInput(namespace, podName, containerName, command); err != nil {
+		return "", err
+	}
+
+	config, err := restConfig()
+	if err != nil {
+		return "", err
+	}
+	clientset, err := kubernetes.NewForConfig(config)
+	if err != nil {
+		return "", fmt.Errorf("create Kubernetes clientset: %w", err)
+	}
+
+	req := clientset.CoreV1().RESTClient().Post().
+		Resource("pods").
+		Namespace(namespace).
+		Name(podName).
+		SubResource("exec").
+		VersionedParams(&corev1.PodExecOptions{
+			Container: containerName,
+			Command:   command,
+			Stdout:    true,
+			Stderr:    true,
+		}, scheme.ParameterCodec)
+	executor, err := remotecommand.NewSPDYExecutor(config, http.MethodPost, req.URL())
+	if err != nil {
+		return "", fmt.Errorf("create pod exec executor: %w", err)
+	}
+
+	var stdout, stderr bytes.Buffer
+	if err := executor.StreamWithContext(ctx, remotecommand.StreamOptions{
+		Stdout: &stdout,
+		Stderr: &stderr,
+	}); err != nil {
+		return "", fmt.Errorf("execute command in pod %q container %q: %w", podName, containerName, err)
+	}
+	return stdout.String(), nil
+}
+
+func restConfig() (*rest.Config, error) {
+	config, err := rest.InClusterConfig()
+	if err == nil {
+		return config, nil
+	}
+
+	kubeconfigPath := os.Getenv("KUBECONFIG")
+	if kubeconfigPath == "" {
+		kubeconfigPath = clientcmd.RecommendedHomeFile
+	}
+	config, err = clientcmd.BuildConfigFromFlags("", kubeconfigPath)
+	if err != nil {
+		return nil, fmt.Errorf("get rest config: %w", err)
+	}
+	return config, nil
+}
+
+func validatePodExecInput(namespace, podName, containerName string, command []string) error {
+	if errs := k8svalidation.IsDNS1123Label(namespace); len(errs) > 0 {
+		return fmt.Errorf("invalid namespace")
+	}
+	if errs := k8svalidation.IsDNS1123Subdomain(podName); len(errs) > 0 {
+		return fmt.Errorf("invalid pod name")
+	}
+	if errs := k8svalidation.IsDNS1123Label(containerName); len(errs) > 0 {
+		return fmt.Errorf("invalid container name")
+	}
+	if len(command) == 0 {
+		return fmt.Errorf("pod exec command is required")
+	}
+	for _, arg := range command {
+		if strings.TrimSpace(arg) == "" || strings.ContainsRune(arg, '\x00') {
+			return fmt.Errorf("invalid pod exec command argument")
+		}
+	}
+	return nil
 }
 
 // WaitForMCPServerRunning waits for an MCPServer to reach the Running phase.

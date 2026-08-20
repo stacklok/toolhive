@@ -34,6 +34,7 @@ const (
 	spiffeBundleDefaultRefresh     = 5 * time.Minute
 	spiffeBundleFailureRefresh     = time.Minute
 	spiffeBundleMinimumRefresh     = 30 * time.Second
+	spiffeBundleFilePollInterval   = 30 * time.Second
 )
 
 // spiffeMultiDomainBundleSource provides live trust bundles for the configured
@@ -255,6 +256,20 @@ func newSPIFFELiveBundleSource(
 		live.jwt = holder
 		multi.workers.Add(1)
 		go endpoint.poll(runtimeCtx, holder, &multi.workers)
+	case SPIFFEBundleSourceTypeFile:
+		path := domain.BundleSource().Path()
+		bundle, err := spiffebundle.Load(trustDomain, path)
+		if err != nil {
+			return nil, fmt.Errorf("initial bundle load: %w", err)
+		}
+		holder := &bundleHolder{}
+		if err := holder.store(bundle); err != nil {
+			return nil, fmt.Errorf("store initial SPIFFE bundle: %w", err)
+		}
+		live.x509 = holder
+		live.jwt = holder
+		multi.workers.Add(1)
+		go pollFileBundle(runtimeCtx, trustDomain, path, holder, &multi.workers)
 	default:
 		return nil, fmt.Errorf("unsupported SPIFFE bundle source type %q", domain.BundleSource().Type())
 	}
@@ -512,6 +527,44 @@ func refreshInterval(bundle *spiffebundle.Bundle) time.Duration {
 		return min(max(hint, spiffeBundleMinimumRefresh), spiffeBundleMaxStaleAge)
 	}
 	return spiffeBundleDefaultRefresh
+}
+
+// pollFileBundle reloads a locally mounted SPIFFE bundle file on a fixed
+// interval. A ConfigMap-mounted file is updated via a symlink swap the
+// kubelet performs on its own sync period, which polling observes correctly
+// and inotify on the mounted path frequently misses. A failed reload is
+// logged and the last known good bundle is retained.
+func pollFileBundle(
+	ctx context.Context, trustDomain spiffeid.TrustDomain, path string, holder *bundleHolder, worker *sync.WaitGroup,
+) {
+	defer worker.Done()
+	failed := false
+	ticker := time.NewTicker(spiffeBundleFilePollInterval)
+	defer ticker.Stop()
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-ticker.C:
+		}
+
+		bundle, err := spiffebundle.Load(trustDomain, path)
+		if err == nil {
+			err = holder.store(bundle)
+		}
+		if err != nil {
+			if !failed {
+				slog.Warn("SPIFFE bundle file reload failed; retaining last known good bundle",
+					"trust_domain", trustDomain, "path", path, "error", err)
+				failed = true
+			}
+			continue
+		}
+		if failed {
+			slog.Debug("SPIFFE bundle file reload recovered", "trust_domain", trustDomain)
+			failed = false
+		}
+	}
 }
 
 var _ x509bundle.Source = (*spiffeMultiDomainBundleSource)(nil)

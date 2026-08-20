@@ -562,8 +562,11 @@ func (r *MCPRemoteProxyReconciler) validateSpec(ctx context.Context, proxy *mcpv
 		}
 	}
 
-	// Validate remote URL format (also rejects empty URLs)
-	if err := validation.ValidateRemoteURL(proxy.Spec.RemoteURL); err != nil {
+	// Validate remote URL format (also rejects empty URLs). When the proxy sets
+	// spec.allowPrivateEndpoint, private-network and cluster-internal endpoints
+	// are permitted.
+	urlOpts := validation.ValidateRemoteURLOptions{AllowPrivateEndpoint: proxy.Spec.AllowPrivateEndpoint}
+	if err := validation.ValidateRemoteURL(proxy.Spec.RemoteURL, urlOpts); err != nil {
 		return r.failValidation(proxy, mcpv1beta1.ConditionReasonRemoteURLInvalid, err)
 	}
 

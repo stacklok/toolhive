@@ -32,6 +32,12 @@ const (
 	testClientID     = "test-client"
 	testKeyPrefix    = "TEST_OAUTH_"
 	testRefreshToken = "stored-rt"
+
+	// Markers planted in the fake token endpoint's error response. Everything a
+	// token endpoint sends back is untrusted, so tests assert none of it reaches
+	// a rendered message.
+	testResponseBodySecret = "rt-should-not-leak"
+	testErrorDescription   = "the refresh token is invalid or has expired"
 )
 
 var errTestFallback = errors.New("test: authentication required")
@@ -716,8 +722,8 @@ func fakeOIDCServerRejecting(t *testing.T, status int, errorCode string) *httpte
 			return
 		}
 		_, _ = fmt.Fprintf(w,
-			`{"error":%q,"error_description":"the refresh token is invalid or has expired","secret":"rt-should-not-leak"}`,
-			errorCode)
+			`{"error":%q,"error_description":%q,"secret":%q}`,
+			errorCode, testErrorDescription, testResponseBodySecret)
 	})
 
 	srv = httptest.NewServer(mux)
@@ -748,7 +754,7 @@ func storedRefreshTokenOnly(t *testing.T) *secretsmocks.MockProvider {
 // only an interactive login can replace it. Callers keyed on FallbackErr to
 // render their re-login remediation must therefore see FallbackErr, not the raw
 // OAuth error, which reads like a transient provider fault.
-func TestToken_NonInteractive_PermanentVerdict_ReportsFallbackErr(t *testing.T) {
+func TestToken_NonInteractive_RejectedGrant_ReportsFallbackErr(t *testing.T) {
 	t.Parallel()
 
 	srv := fakeOIDCServerRejecting(t, http.StatusBadRequest, "invalid_grant")
@@ -762,26 +768,9 @@ func TestToken_NonInteractive_PermanentVerdict_ReportsFallbackErr(t *testing.T) 
 }
 
 // The cause stays reachable underneath the sentinel so diagnostics can still
-// identify which verdict the IdP rendered.
-func TestToken_NonInteractive_PermanentVerdict_KeepsCauseReachable(t *testing.T) {
-	t.Parallel()
-
-	srv := fakeOIDCServerRejecting(t, http.StatusBadRequest, "invalid_client")
-	opts := optsWithFakeOIDC(srv, storedRefreshTokenOnly(t))
-
-	_, err := tokensource.New(opts).Token(context.Background())
-
-	require.Error(t, err)
-	retrieveErr, ok := errors.AsType[*oauth2.RetrieveError](err)
-	require.True(t, ok, "the underlying *oauth2.RetrieveError must stay reachable via errors.As")
-	assert.Equal(t, "invalid_client", retrieveErr.ErrorCode)
-	assert.Contains(t, err.Error(), "invalid_client", "the safe RFC 6749 code belongs in the message")
-}
-
-// An *oauth2.RetrieveError's own Error() embeds the raw token-endpoint response
-// body, which can echo back bearer material. The rendered message must carry
-// only the sentinel and the error code.
-func TestToken_NonInteractive_PermanentVerdict_MessageOmitsResponseBody(t *testing.T) {
+// identify which verdict the IdP rendered, even though the rendered message
+// deliberately says nothing about it.
+func TestToken_NonInteractive_RejectedGrant_KeepsCauseReachable(t *testing.T) {
 	t.Parallel()
 
 	srv := fakeOIDCServerRejecting(t, http.StatusBadRequest, "invalid_grant")
@@ -790,8 +779,81 @@ func TestToken_NonInteractive_PermanentVerdict_MessageOmitsResponseBody(t *testi
 	_, err := tokensource.New(opts).Token(context.Background())
 
 	require.Error(t, err)
-	assert.NotContains(t, err.Error(), "rt-should-not-leak",
+	retrieveErr, ok := errors.AsType[*oauth2.RetrieveError](err)
+	require.True(t, ok, "the underlying *oauth2.RetrieveError must stay reachable via errors.As")
+	assert.Equal(t, "invalid_grant", retrieveErr.ErrorCode)
+}
+
+// Everything the token endpoint sends back is untrusted: an
+// *oauth2.RetrieveError's own Error() embeds the raw body, which can echo back
+// bearer material, and the parsed 'error' and 'error_description' fields are
+// arbitrary server-chosen strings. The rendered message must therefore
+// interpolate nothing but the caller's own sentinel.
+func TestToken_NonInteractive_RejectedGrant_MessageCarriesNoServerText(t *testing.T) {
+	t.Parallel()
+
+	srv := fakeOIDCServerRejecting(t, http.StatusBadRequest, "invalid_grant")
+	opts := optsWithFakeOIDC(srv, storedRefreshTokenOnly(t))
+
+	_, err := tokensource.New(opts).Token(context.Background())
+
+	require.Error(t, err)
+	assert.Equal(t,
+		errTestFallback.Error()+" (the identity provider rejected the stored credential)",
+		err.Error(),
+		"the message must be the sentinel plus fixed text, with nothing from the token endpoint")
+	assert.NotContains(t, err.Error(), testResponseBodySecret,
 		"the raw token-endpoint response body must never reach the rendered message")
+	assert.NotContains(t, err.Error(), testErrorDescription,
+		"the server-supplied error_description must never reach the rendered message")
+}
+
+// invalid_client, unauthorized_client, and invalid_scope are permanent, but they
+// indict the client registration or the requested scopes rather than the stored
+// refresh token. A fresh login reproduces them unchanged, so reporting them as
+// the re-login sentinel would send the user in a circle and hide the code that
+// names the real problem.
+func TestToken_NonInteractive_ClientVerdict_SurfacesVerbatim(t *testing.T) {
+	t.Parallel()
+
+	for _, code := range []string{"invalid_client", "unauthorized_client", "invalid_scope"} {
+		t.Run(code, func(t *testing.T) {
+			t.Parallel()
+
+			srv := fakeOIDCServerRejecting(t, http.StatusUnauthorized, code)
+			opts := optsWithFakeOIDC(srv, storedRefreshTokenOnly(t))
+
+			_, err := tokensource.New(opts).Token(context.Background())
+
+			require.Error(t, err)
+			assert.False(t, errors.Is(err, errTestFallback),
+				"a verdict on the client, not the credential, must not report as re-login required")
+			retrieveErr, ok := errors.AsType[*oauth2.RetrieveError](err)
+			require.True(t, ok, "the OAuth error must still surface so the operator sees the code")
+			assert.Equal(t, code, retrieveErr.ErrorCode)
+		})
+	}
+}
+
+// The RFC 6749 'error' field is attacker-influenceable text from whatever
+// answered the token endpoint. Only the literal invalid_grant builds the
+// sentinel error, so a hostile code cannot reach that rendered message at all —
+// there is no interpolation path for it to travel down.
+func TestToken_NonInteractive_HostileErrorCode_NeverReachesSentinel(t *testing.T) {
+	t.Parallel()
+
+	hostile := "invalid_grant\r\nAuthorization: Bearer " + testResponseBodySecret
+
+	srv := fakeOIDCServerRejecting(t, http.StatusBadRequest, hostile)
+	opts := optsWithFakeOIDC(srv, storedRefreshTokenOnly(t))
+
+	_, err := tokensource.New(opts).Token(context.Background())
+
+	require.Error(t, err)
+	assert.False(t, errors.Is(err, errTestFallback),
+		"only the literal invalid_grant may build the sentinel error")
+	assert.NotContains(t, err.Error(), "the identity provider rejected the stored credential",
+		"untrusted text must never be interpolated into the sentinel message")
 }
 
 // A 5xx is the IdP having a bad day, not a verdict on the credential. It must

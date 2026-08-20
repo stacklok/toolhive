@@ -72,6 +72,11 @@ func IsTransientRetrieveError(retrieveErr *oauth2.RetrieveError) bool {
 // on. Telling a user their stored credential is dead based on a
 // non-spec-compliant response would frequently mislead operators whose real
 // problem is upstream of the OAuth server.
+//
+// "Permanent" here means only "retrying will not help". It does NOT mean the
+// stored credential is dead — invalid_client and unauthorized_client indict the
+// client registration, not the refresh token. Callers deciding whether to tell
+// a user to log in again want IsRejectedRefreshGrant instead.
 func IsPermanentCredentialError(err error) bool {
 	retrieveErr, ok := errors.AsType[*oauth2.RetrieveError](err)
 	if !ok || retrieveErr.Response == nil {
@@ -80,19 +85,32 @@ func IsPermanentCredentialError(err error) bool {
 	return !IsTransientRetrieveError(retrieveErr)
 }
 
-// RetrieveErrorCode returns the RFC 6749 'error' code from err when err wraps
-// an *oauth2.RetrieveError, and "" otherwise.
+// rejectedGrantCode is the RFC 6749 'error' code a token endpoint returns when
+// the grant it was handed is invalid, expired, revoked, or was issued to a
+// different client. On a refresh exchange it is the one code that indicts the
+// stored refresh token itself.
+const rejectedGrantCode = "invalid_grant"
+
+// IsRejectedRefreshGrant reports whether err is an *oauth2.RetrieveError in
+// which the OAuth server rejected the refresh token itself: an RFC 6749
+// 'invalid_grant' on a response IsTransientRetrieveError does not already
+// excuse.
 //
-// The code and description are the only two fields of a RetrieveError safe to
-// put in a message: its Error() embeds the raw response body, which for a token
-// endpoint can echo back bearer material. Callers building a user-facing string
-// should reach for this rather than the error's own text.
-func RetrieveErrorCode(err error) string {
+// This is deliberately narrower than IsPermanentCredentialError, and the two
+// answer different questions. Both describe failures retrying cannot fix, but
+// only invalid_grant means a fresh interactive login is the remedy.
+// invalid_client, unauthorized_client, and invalid_scope are just as permanent
+// and just as pointless to retry, yet they indict the client registration or
+// the requested scopes — running the login flow again against the same broken
+// configuration reproduces them exactly, so telling the user to log in again
+// sends them in a circle. Callers rendering a re-login remediation must key off
+// this predicate; callers that only need "stop retrying" want the broader one.
+func IsRejectedRefreshGrant(err error) bool {
 	retrieveErr, ok := errors.AsType[*oauth2.RetrieveError](err)
-	if !ok {
-		return ""
+	if !ok || retrieveErr.ErrorCode != rejectedGrantCode {
+		return false
 	}
-	return retrieveErr.ErrorCode
+	return IsPermanentCredentialError(err)
 }
 
 // IsParseError detects errors from the oauth2 library that indicate the token

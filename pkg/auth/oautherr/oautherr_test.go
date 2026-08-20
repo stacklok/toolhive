@@ -72,15 +72,44 @@ func TestIsPermanentCredentialError(t *testing.T) {
 	}
 }
 
-func TestRetrieveErrorCode(t *testing.T) {
+func TestIsRejectedRefreshGrant(t *testing.T) {
 	t.Parallel()
 
-	assert.Empty(t, oautherr.RetrieveErrorCode(nil))
-	assert.Empty(t, oautherr.RetrieveErrorCode(errors.New("not an oauth error")))
-	assert.Equal(t, "invalid_grant",
-		oautherr.RetrieveErrorCode(retrieveErr(http.StatusBadRequest, "invalid_grant")))
-	assert.Equal(t, "invalid_grant",
-		oautherr.RetrieveErrorCode(fmt.Errorf("wrapped: %w", retrieveErr(http.StatusBadRequest, "invalid_grant"))))
+	tests := []struct {
+		name string
+		err  error
+		want bool
+	}{
+		{"nil", nil, false},
+		{"unrelated error", errors.New("keyring is locked"), false},
+		{"invalid_grant is the credential verdict", retrieveErr(http.StatusBadRequest, "invalid_grant"), true},
+		{"wrapped invalid_grant is still found",
+			fmt.Errorf("refresh failed: %w", retrieveErr(http.StatusBadRequest, "invalid_grant")), true},
+
+		// Permanent, but a verdict on the client rather than the credential:
+		// a fresh login reproduces these unchanged.
+		{"invalid_client indicts the registration", retrieveErr(http.StatusUnauthorized, "invalid_client"), false},
+		{"unauthorized_client indicts the registration", retrieveErr(http.StatusBadRequest, "unauthorized_client"), false},
+		{"invalid_scope indicts the request", retrieveErr(http.StatusBadRequest, "invalid_scope"), false},
+
+		// Shapes the transient classifier already excuses stay excused, even
+		// when the body claims invalid_grant.
+		{"429 is transient regardless of body", retrieveErr(http.StatusTooManyRequests, "invalid_grant"), false},
+		{"5xx is transient regardless of body", retrieveErr(http.StatusBadGateway, "invalid_grant"), false},
+		{"nil response carries no signal", &oauth2.RetrieveError{ErrorCode: "invalid_grant"}, false},
+
+		// The 'error' field is arbitrary server-chosen text; only the exact
+		// literal counts.
+		{"a code merely containing invalid_grant does not count",
+			retrieveErr(http.StatusBadRequest, "invalid_grant\r\nX-Injected: 1"), false},
+		{"empty code is not a verdict", retrieveErr(http.StatusForbidden, ""), false},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			assert.Equal(t, tt.want, oautherr.IsRejectedRefreshGrant(tt.err))
+		})
+	}
 }
 
 func TestIsParseError(t *testing.T) {

@@ -30,6 +30,7 @@ func (s *service) recordLockState(
 	opts skills.InstallOptions,
 	originalName string,
 	sk skills.InstalledSkill,
+	deps *depState,
 ) (skills.InstalledSkill, error) {
 	contentDigest, err := computeContentDigest(s.pathResolver, sk)
 	if err != nil {
@@ -72,7 +73,7 @@ func (s *service) recordLockState(
 	// each dependency from its mutable source string — silently upgrading
 	// and re-pinning it, the opposite of a deterministic restore.
 	if !opts.SyncRestore {
-		if err := s.materializeDependencies(ctx, opts, source, sk); err != nil {
+		if err := s.materializeDependencies(ctx, opts, sk, deps); err != nil {
 			return sk, fmt.Errorf("materializing dependencies: %w", err)
 		}
 	}
@@ -81,23 +82,19 @@ func (s *service) recordLockState(
 
 // materializeDependencies installs every toolhive.requires dependency
 // declared by sk's SKILL.md, recursively (a dependency may itself declare
-// further dependencies). A Visited set threaded through opts prevents
-// infinite recursion on a requires cycle; skills.MaxDependencies bounds the
-// total number of skills materialized across the whole tree, not just the
-// direct dependency list of a single skill.
+// further dependencies). deps tracks active and completed canonical skill
+// names after source resolution so alias cycles are rejected and diamond
+// RequiredBy edges merge without reacquiring locks. skills.MaxDependencies
+// bounds the total number of unique canonical skills materialized across
+// the whole tree.
 //
-// source is the reference sk was installed from (recordLockState's Source,
-// after any LockSource override) — the same kind of string a dependency
-// edge names in another skill's toolhive.requires. Visited must be keyed
-// consistently by that reference form, not by sk's resolved Metadata.Name:
-// a requires edge naming sk by a reference string other than its resolved
-// name would otherwise bypass the cycle check and re-materialize sk as its
-// own dependency, corrupting its RequiredBy list.
+// Callers must already hold the project transaction. Dependencies are
+// installed via installLocked — never the public Install entry.
 func (s *service) materializeDependencies(
 	ctx context.Context,
 	opts skills.InstallOptions,
-	source string,
 	sk skills.InstalledSkill,
+	deps *depState,
 ) error {
 	parsed, err := readSkillMD(s.pathResolver, sk)
 	if err != nil {
@@ -107,21 +104,15 @@ func (s *service) materializeDependencies(
 		return nil
 	}
 
-	visited := opts.Visited
-	if visited == nil {
-		visited = make(map[string]struct{})
+	if deps == nil {
+		deps = newDepState()
 	}
-	visited[source] = struct{}{}
 
 	for _, dep := range parsed.Requires {
-		if _, seen := visited[dep.Reference]; seen {
-			continue
-		}
-		if len(visited) >= skills.MaxDependencies {
+		if len(deps.completed)+len(deps.active) >= skills.MaxDependencies {
 			return fmt.Errorf("dependency tree for %q exceeds maximum of %d skills",
 				sk.Metadata.Name, skills.MaxDependencies)
 		}
-		visited[dep.Reference] = struct{}{}
 
 		depOpts := skills.InstallOptions{
 			Name:             dep.Reference,
@@ -130,9 +121,8 @@ func (s *service) materializeDependencies(
 			Clients:          sk.Clients,
 			Group:            opts.Group, // deps join the parent's group, not the default one
 			RequiredByParent: sk.Metadata.Name,
-			Visited:          visited,
 		}
-		if _, err := s.Install(ctx, depOpts); err != nil {
+		if _, err := s.installLocked(ctx, depOpts, dep.Reference, sk.Scope, deps); err != nil {
 			return fmt.Errorf("installing dependency %q (required by %q): %w", dep.Reference, sk.Metadata.Name, err)
 		}
 	}

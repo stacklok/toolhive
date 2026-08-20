@@ -54,6 +54,11 @@ jobs:
     permissions:
       contents: read
       packages: write
+      # Unused here — these callers build without pushing — but GitHub
+      # validates a called workflow's permissions against the calling job's
+      # statically, before inputs are considered, so omitting it fails the
+      # whole run at startup. Same reason packages:write is granted above.
+      id-token: write
     uses: ./.github/workflows/skills-build-and-publish.yml
   skills-keyless-e2e:
     name: Skills Keyless Signing E2E (staging)

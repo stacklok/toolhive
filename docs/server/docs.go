@@ -3642,6 +3642,10 @@ const docTemplate = `{
             "pkg_api_v1.pushSkillRequest": {
                 "description": "Request to push a built skill artifact",
                 "properties": {
+                    "identity_token": {
+                        "description": "IdentityToken is a short-lived OIDC identity token used for keyless\nsigning, mutually exclusive with Key",
+                        "type": "string"
+                    },
                     "key": {
                         "description": "Key is the path to a cosign private key used to sign the pushed\nartifact",
                         "type": "string"

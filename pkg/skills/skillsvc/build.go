@@ -9,6 +9,7 @@ import (
 	"fmt"
 	"log/slog"
 	"net/http"
+	"os"
 	"path/filepath"
 	"strings"
 
@@ -19,6 +20,15 @@ import (
 	ociskills "github.com/stacklok/toolhive-core/oci/skills"
 	"github.com/stacklok/toolhive/pkg/container/images"
 	"github.com/stacklok/toolhive/pkg/skills"
+)
+
+// Environment variable overrides for the Fulcio/Rekor instances used by
+// keyless signing. Unset means the sigstore public-good instances (core's
+// defaults). Intended for E2E and staging use only — not a supported
+// production configuration knob.
+const (
+	envFulcioURL = "TOOLHIVE_SIGSTORE_FULCIO_URL"
+	envRekorURL  = "TOOLHIVE_SIGSTORE_REKOR_URL"
 )
 
 // Validate checks whether a skill definition is valid.
@@ -113,11 +123,8 @@ func (s *service) Push(ctx context.Context, opts skills.PushOptions) error {
 			http.StatusBadRequest,
 		)
 	}
-	if opts.Key == "" && !opts.NoSign {
-		return httperr.WithCode(
-			errors.New("signing key required: set key (--key), or no_sign (--no-sign) to push unsigned"),
-			http.StatusBadRequest,
-		)
+	if err := validateSigningInputs(opts); err != nil {
+		return err
 	}
 
 	d, err := s.ociStore.Resolve(ctx, opts.Reference)
@@ -139,7 +146,10 @@ func (s *service) Push(ctx context.Context, opts skills.PushOptions) error {
 	// Sign the pushed artifact and attach the signature manifest next to
 	// it, so project-scoped installs can verify it (RFC THV-0080).
 	if _, err := s.artifactSigner().SignOCI(ctx, opts.Reference, d.String(), signer.Options{
-		Key: opts.Key,
+		Key:           opts.Key,
+		IdentityToken: opts.IdentityToken,
+		FulcioURL:     os.Getenv(envFulcioURL),
+		RekorURL:      os.Getenv(envRekorURL),
 	}); err != nil {
 		return httperr.WithCode(fmt.Errorf("signing pushed artifact: %w", err), http.StatusBadRequest)
 	}
@@ -230,6 +240,39 @@ func (s *service) DeleteBuild(ctx context.Context, tag string) error {
 		)
 	}
 	return s.ociStore.DeleteBuild(ctx, tag)
+}
+
+// validateSigningInputs enforces that a push declares exactly one signing
+// method: a cosign key, an OIDC identity token for keyless signing, or an
+// explicit opt-out. Ambiguous or absent input is rejected here, before the
+// artifact is pushed, rather than surfacing as a signing failure afterward.
+func validateSigningInputs(opts skills.PushOptions) error {
+	methods := 0
+	if opts.Key != "" {
+		methods++
+	}
+	if opts.IdentityToken != "" {
+		methods++
+	}
+	switch {
+	case opts.NoSign && methods > 0:
+		return httperr.WithCode(
+			errors.New("no_sign (--no-sign) cannot be combined with key (--key) or identity_token (--identity-token)"),
+			http.StatusBadRequest,
+		)
+	case !opts.NoSign && methods == 0:
+		return httperr.WithCode(
+			errors.New("signing credential required: set key (--key), identity_token (--identity-token) "+
+				"for CI/OIDC keyless signing, or no_sign (--no-sign) to push unsigned"),
+			http.StatusBadRequest,
+		)
+	case !opts.NoSign && methods > 1:
+		return httperr.WithCode(
+			errors.New("specify only one of key (--key) or identity_token (--identity-token)"),
+			http.StatusBadRequest,
+		)
+	}
+	return nil
 }
 
 // validateLocalPath checks that a path is non-empty, absolute, and does not

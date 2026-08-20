@@ -33,17 +33,42 @@ func newPushFixture(t *testing.T) (*ocimocks.MockRegistryClient, *ociskills.Stor
 	return ocimocks.NewMockRegistryClient(ctrl), ociStore, d.String()
 }
 
-// TestPushRequiresExplicitSigningDecision guards the RFC invariant that
-// pushes are signed by default: no key and no explicit no_sign is a 400,
-// before anything is pushed.
-func TestPushRequiresExplicitSigningDecision(t *testing.T) {
+// TestPushValidatesSigningInputs guards the RFC invariant that pushes are
+// signed by default: exactly one of a key, an identity token, or an explicit
+// no_sign must be given, before anything is pushed.
+func TestPushValidatesSigningInputs(t *testing.T) {
 	t.Parallel()
-	reg, ociStore, _ := newPushFixture(t)
-	svc := New(&storage.NoopSkillStore{}, WithRegistryClient(reg), WithOCIStore(ociStore))
 
-	err := svc.Push(t.Context(), skills.PushOptions{Reference: "my-tag"})
-	require.Error(t, err)
-	assert.Equal(t, http.StatusBadRequest, httperr.Code(err))
+	tests := []struct {
+		name string
+		opts skills.PushOptions
+	}{
+		{name: "neither key, identity_token, nor no_sign", opts: skills.PushOptions{}},
+		{
+			name: "both key and identity_token",
+			opts: skills.PushOptions{Key: "/tmp/cosign.key", IdentityToken: "tok"},
+		},
+		{
+			name: "no_sign combined with key",
+			opts: skills.PushOptions{NoSign: true, Key: "/tmp/cosign.key"},
+		},
+		{
+			name: "no_sign combined with identity_token",
+			opts: skills.PushOptions{NoSign: true, IdentityToken: "tok"},
+		},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			reg, ociStore, _ := newPushFixture(t)
+			svc := New(&storage.NoopSkillStore{}, WithRegistryClient(reg), WithOCIStore(ociStore))
+
+			tc.opts.Reference = "my-tag"
+			err := svc.Push(t.Context(), tc.opts)
+			require.Error(t, err)
+			assert.Equal(t, http.StatusBadRequest, httperr.Code(err))
+		})
+	}
 }
 
 // TestPushSignsAfterPushing proves the pushed artifact is signed with the
@@ -60,6 +85,29 @@ func TestPushSignsAfterPushing(t *testing.T) {
 	svc := New(&storage.NoopSkillStore{},
 		WithRegistryClient(reg), WithOCIStore(ociStore), WithSigner(ms))
 	err := svc.Push(t.Context(), skills.PushOptions{Reference: "my-tag", Key: "/tmp/cosign.key"})
+	require.NoError(t, err)
+}
+
+// TestPushSignsKeylessWithIdentityToken proves an identity token pushes
+// through keyless signing instead of a key, and that the Fulcio/Rekor URL
+// env overrides reach core's signer.Options — the E2E/staging escape hatch.
+// Not run in parallel: t.Setenv forbids it.
+func TestPushSignsKeylessWithIdentityToken(t *testing.T) {
+	reg, ociStore, digest := newPushFixture(t)
+	t.Setenv(envFulcioURL, "https://fulcio.example.test")
+	t.Setenv(envRekorURL, "https://rekor.example.test")
+
+	ms := signermocks.NewMockSigner(gomock.NewController(t))
+	ms.EXPECT().SignOCI(gomock.Any(), "my-tag", digest, signer.Options{
+		IdentityToken: "a.b.c",
+		FulcioURL:     "https://fulcio.example.test",
+		RekorURL:      "https://rekor.example.test",
+	}).Return(&signer.Result{Bundle: []byte(`{"bundle":true}`)}, nil)
+	reg.EXPECT().Push(gomock.Any(), gomock.Any(), gomock.Any(), "my-tag").Return(nil)
+
+	svc := New(&storage.NoopSkillStore{},
+		WithRegistryClient(reg), WithOCIStore(ociStore), WithSigner(ms))
+	err := svc.Push(t.Context(), skills.PushOptions{Reference: "my-tag", IdentityToken: "a.b.c"})
 	require.NoError(t, err)
 }
 

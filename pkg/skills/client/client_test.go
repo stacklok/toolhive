@@ -520,6 +520,20 @@ func TestPush(t *testing.T) {
 			statusCode: http.StatusNoContent,
 		},
 		{
+			// Guards the DTO trap: identity_token must reach the wire request,
+			// not just PushOptions.
+			name: "forwards identity token",
+			opts: skills.PushOptions{
+				Reference:     "ghcr.io/org/my-skill:v1.0.0",
+				IdentityToken: "a.b.c",
+			},
+			wantBody: pushRequest{
+				Reference:     "ghcr.io/org/my-skill:v1.0.0",
+				IdentityToken: "a.b.c",
+			},
+			statusCode: http.StatusNoContent,
+		},
+		{
 			name:       "not found",
 			opts:       skills.PushOptions{Reference: "ghcr.io/org/missing:v1"},
 			statusCode: http.StatusNotFound,

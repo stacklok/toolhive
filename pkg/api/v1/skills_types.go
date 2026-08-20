@@ -80,6 +80,9 @@ type pushSkillRequest struct {
 	// Key is the path to a cosign private key used to sign the pushed
 	// artifact
 	Key string `json:"key,omitempty"`
+	// IdentityToken is a short-lived OIDC identity token used for keyless
+	// signing, mutually exclusive with Key
+	IdentityToken string `json:"identity_token,omitempty"`
 	// NoSign pushes without signing
 	NoSign bool `json:"no_sign,omitempty"`
 }

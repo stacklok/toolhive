@@ -36,6 +36,9 @@ func (s *service) Upgrade(ctx context.Context, opts skills.UpgradeOptions) (*ski
 	}
 	opts.ProjectRoot = projectRoot
 
+	unlock := s.projectTx.lock(projectRoot)
+	defer unlock()
+
 	root, err := lockfile.OpenRoot(projectRoot)
 	if err != nil {
 		return nil, err
@@ -50,25 +53,9 @@ func (s *service) Upgrade(ctx context.Context, opts skills.UpgradeOptions) (*ski
 		return nil, err
 	}
 
-	// Resolve every target's latest state first, without installing
-	// anything. FailOnChanges is a CI freshness gate: it reports the full
-	// planned outcome set and never runs the apply pass at all — returning
-	// the outcomes (rather than an error that discards them) lets callers
-	// see exactly which skills are stale and distinguish "would change"
-	// from a genuine resolution failure. Exit-code mapping happens in the
-	// CLI from these outcomes, mirroring how sync --check works.
-	plans := make([]upgradePlan, len(targets))
-	for i, entry := range targets {
-		plans[i] = s.planUpgrade(ctx, opts, entry)
-	}
-
-	result := &skills.UpgradeResult{Outcomes: make([]skills.UpgradeOutcome, 0, len(plans))}
-	for _, p := range plans {
-		if opts.FailOnChanges {
-			result.Outcomes = append(result.Outcomes, p.outcome)
-			continue
-		}
-		result.Outcomes = append(result.Outcomes, s.applyUpgrade(ctx, opts, p))
+	result := &skills.UpgradeResult{Outcomes: make([]skills.UpgradeOutcome, 0, len(targets))}
+	for _, target := range targets {
+		result.Outcomes = append(result.Outcomes, s.upgradeOne(ctx, opts, target.Name))
 	}
 	return result, nil
 }
@@ -94,6 +81,47 @@ func selectUpgradeTargets(lf *lockfile.Lockfile, names []string) ([]lockfile.Ent
 		targets = append(targets, entry)
 	}
 	return targets, nil
+}
+
+// upgradeOne reloads the named lock entry under the held project
+// transaction, then plans and applies against that fresh snapshot. Planning
+// every entry first and applying later would let a concurrent uninstall be
+// resurrected, or a newer install be overwritten by this older plan.
+//
+// FailOnChanges is a CI freshness gate: it reports the planned outcome and
+// never applies. Exit-code mapping happens in the CLI from these outcomes.
+func (s *service) upgradeOne(
+	ctx context.Context, opts skills.UpgradeOptions, name string,
+) skills.UpgradeOutcome {
+	root, err := lockfile.OpenRoot(opts.ProjectRoot)
+	if err != nil {
+		return skills.UpgradeOutcome{
+			Name: name, Status: skills.UpgradeStatusFailed,
+			Reason: classifySyncFailure(err), Error: err.Error(),
+		}
+	}
+	lf, err := lockfile.Load(root)
+	if err != nil {
+		return skills.UpgradeOutcome{
+			Name: name, Status: skills.UpgradeStatusFailed,
+			Reason: classifySyncFailure(err), Error: err.Error(),
+		}
+	}
+	entry, ok := lf.Get(name)
+	if !ok {
+		return skills.UpgradeOutcome{
+			Name:   name,
+			Status: skills.UpgradeStatusFailed,
+			Reason: skills.FailureReasonUnknown,
+			Error:  fmt.Sprintf("skill %q is no longer in the lock file", name),
+		}
+	}
+
+	plan := s.planUpgrade(ctx, opts, entry)
+	if opts.FailOnChanges {
+		return plan.outcome
+	}
+	return s.applyUpgrade(ctx, opts, plan)
 }
 
 // upgradePlan is entry's resolved outcome before any install happens: either
@@ -263,6 +291,7 @@ func (s *service) probeCandidateSigner(ctx context.Context, newRef, newDigest st
 
 // applyUpgrade installs plan's pinned content when the plan calls for it.
 // Preview mode reports the plan's outcome without installing anything.
+// Assumes the project transaction is already held.
 func (s *service) applyUpgrade(ctx context.Context, opts skills.UpgradeOptions, plan upgradePlan) skills.UpgradeOutcome {
 	if plan.pinnedRef == "" || opts.Preview {
 		return plan.outcome
@@ -275,7 +304,7 @@ func (s *service) applyUpgrade(ctx context.Context, opts skills.UpgradeOptions, 
 		}
 	}
 
-	if _, err := s.Install(ctx, skills.InstallOptions{
+	if _, err := s.installLocked(ctx, skills.InstallOptions{
 		Name:                  plan.pinnedRef,
 		Scope:                 skills.ScopeProject,
 		ProjectRoot:           opts.ProjectRoot,
@@ -283,7 +312,8 @@ func (s *service) applyUpgrade(ctx context.Context, opts skills.UpgradeOptions, 
 		LockSource:            plan.entry.Source,
 		LockResolvedReference: plan.resolvedRef,
 		AllowSignerChange:     opts.AllowSignerChange,
-	}); err != nil {
+		ExpectedCanonicalName: plan.entry.Name,
+	}, plan.pinnedRef, skills.ScopeProject, newDepState()); err != nil {
 		outcome := plan.outcome
 		outcome.Status = skills.UpgradeStatusFailed
 		outcome.Reason = classifySyncFailure(err)

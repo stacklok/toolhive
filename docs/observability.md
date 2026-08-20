@@ -212,6 +212,28 @@ controller-runtime.
 chain: Go's `ServeMux` resolves the most specific registered pattern first, so an
 explicit `/metrics` always outranks the `/` catch-all that carries the chain.)
 
+#### Migration window
+
+`/metrics` is currently served on **both** the transport port and the diagnostics
+port. That is deliberate and temporary, so no existing scrape configuration breaks
+while it is moved:
+
+1. Point your scraper at the diagnostics port and confirm metrics arrive.
+2. Set `metricsOnTransportPort: false` to stop serving the old location, and confirm
+   nothing else was still scraping it.
+3. When the window closes the default flips, and only the diagnostics port serves
+   `/metrics`. See [issue #6384](https://github.com/stacklok/toolhive/issues/6384) for
+   the timeline.
+
+A deployment that sets `metricsOnTransportPort` explicitly is not moved by the flip.
+Leaving it unset is what opts you into the new default when it changes — the value is
+resolved at startup rather than written into stored configuration, so existing
+workloads pick up the new default without being recreated.
+
+While the transport-port copy is being served, a warning is logged at startup naming
+the transport port. That endpoint is on the listener that carries MCP traffic, so it
+cannot be restricted separately — which is the reason for the move.
+
 Port selection:
 
 - **Default** — port `9464`, the OpenTelemetry specification's Prometheus exporter
@@ -220,6 +242,23 @@ Port selection:
 - **Fallback** — if the requested port is already bound (several CLI workloads on
   one machine, for example) an available port is chosen instead. The resolved
   address is logged at startup.
+
+#### Finding the endpoint after an upgrade
+
+If metrics stopped arriving after an upgrade, the endpoint moved off the transport
+port. Two things tell you where it went:
+
+- **The startup log.** A warning naming the resolved address is emitted whenever
+  metrics are enabled: `prometheus metrics are served on a dedicated diagnostics
+  port, not the application port`.
+- **The old address.** `GET /metrics` on the transport port returns 404 with a body
+  explaining that metrics moved and telling you which log line carries the address.
+  It names no port: the listener honours a configured port and falls back to another
+  when that one is taken, so only the log is reliably correct.
+
+Prometheus reports the stale target as `up == 0` with a 404, so an alert on scrape
+failure fires — but neither the alert nor a bare 404 says *why*, which is what these
+two signals add.
 
 #### Restricting access to the diagnostics port
 
@@ -273,7 +312,7 @@ What lives on the transport port:
 | `/.well-known/oauth-protected-resource` | Yes, if clients perform OAuth discovery (RFC 9728) |
 | `/.well-known/openid-configuration`, `/.well-known/oauth-authorization-server`, `/.well-known/jwks.json`, `/oauth/` | Only when the embedded authorization server is enabled |
 | `/health` | No — it exists for Kubernetes probes, which reach it in-cluster |
-| `/metrics` | Not served here at all; it returns 404 on this listener |
+| `/metrics` | During the migration window, yes — see [Migration window](#migration-window). After it closes, no; it returns 404 on this listener |
 
 For a transparent proxy fronting a remote MCP server, the MCP path is whatever the
 backend exposes, since that proxy forwards `/` to the backend.
@@ -420,6 +459,21 @@ Total number of Redis errors encountered while checking rate limits.
 | `server` | string | MCPServer or VirtualMCPServer name |
 | `error_type` | string | `"timeout"`, `"connection"`, `"auth"`, or `"other"` |
 
+#### `toolhive_rate_limit_fail_open` (Counter)
+
+Total number of rate limit checks allowed after an enforcement error. Prometheus
+exports this counter as `toolhive_rate_limit_fail_open_total`.
+
+This counter records the application of fail-open policy, while
+`toolhive_rate_limit_redis_errors` records the underlying Redis failure. A
+failed check does not increment `toolhive_rate_limit_decisions` because Redis
+did not produce a rate limit decision.
+
+| Attribute | Type | Description |
+|-----------|------|-------------|
+| `namespace` | string | Kubernetes namespace associated with the server |
+| `server` | string | MCPServer or VirtualMCPServer name |
+
 #### `toolhive_rate_limit_check_latency` (Histogram, seconds)
 
 Duration of each attempted atomic Redis Lua rate limit check, including failed
@@ -486,7 +540,7 @@ attributes below.
 |-----------|------|-------------|
 | `rate_limit.decision` | string | `"allowed"` or `"rejected"` |
 | `rate_limit.rejected_by` | string | `"none"` for allowed requests, otherwise the bucket that rejected the request |
-| `rate_limit.fail_open` | bool | `false` for normal allowed and rejected outcomes |
+| `rate_limit.fail_open` | bool | `true` when an enforcement error is allowed to fail open; otherwise `false` |
 
 The bounded `rate_limit.rejected_by` values are:
 
@@ -499,9 +553,12 @@ The bounded `rate_limit.rejected_by` values are:
 
 When no configured bucket applies to a tool call, the span records
 `rate_limit.decision="allowed"`, `rate_limit.rejected_by="none"`, and
-`rate_limit.fail_open=false`. Redis check failures do not receive these normal
-outcome attributes. If multiple rate limit checks use the same request span,
-the latest normal outcome replaces earlier values.
+`rate_limit.fail_open=false`. When a Redis check fails and enforcement fails
+open, the span records `rate_limit.decision="allowed"`,
+`rate_limit.rejected_by="none"`, and `rate_limit.fail_open=true`. These
+attributes describe the rate limit outcome only; the eventual request result
+determines the span status. If multiple rate limit checks use the same request
+span, the latest outcome replaces earlier values (last write wins).
 
 ### Tool, Prompt, and Resource Attributes
 

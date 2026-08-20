@@ -525,11 +525,6 @@ func (c *Client) applyStatefulSet(
 	return createdStatefulSet, nil
 }
 
-// shouldSkipStatefulSetApply returns true when the existing StatefulSet is already
-// stamped with a strictly greater MCPServer generation than ours, meaning a newer
-// proxyrunner pod has already reconciled the workload and ours would be a regression.
-// Returns false (apply as normal) when ourGen is zero or negative, when the StatefulSet
-// does not yet exist, when the annotation is absent, or when the annotation is unparsable.
 func (c *Client) getExistingStatefulSet(ctx context.Context, namespace, name string) (*appsv1.StatefulSet, error) {
 	existing, err := c.client.AppsV1().StatefulSets(namespace).Get(ctx, name, metav1.GetOptions{})
 	if err != nil {
@@ -541,6 +536,11 @@ func (c *Client) getExistingStatefulSet(ctx context.Context, namespace, name str
 	return existing, nil
 }
 
+// skipStatefulSetApply returns true when the existing StatefulSet is already
+// stamped with a strictly greater MCPServer generation than ours, meaning a newer
+// proxyrunner pod has already reconciled the workload and ours would be a regression.
+// Returns false (apply as normal) when ourGen is zero or negative, when the StatefulSet
+// does not yet exist, when the annotation is absent, or when the annotation is unparsable.
 func skipStatefulSetApply(existing *appsv1.StatefulSet, ourGen int64) bool {
 	if ourGen <= 0 || existing == nil {
 		return false
@@ -564,16 +564,6 @@ func skipStatefulSetApply(existing *appsv1.StatefulSet, ourGen int64) bool {
 		return true
 	}
 	return false
-}
-
-func (c *Client) shouldSkipStatefulSetApply(
-	ctx context.Context, namespace, name string, ourGen int64,
-) (bool, error) {
-	existing, err := c.getExistingStatefulSet(ctx, namespace, name)
-	if err != nil {
-		return false, err
-	}
-	return skipStatefulSetApply(existing, ourGen), nil
 }
 
 // buildStatefulSetSpec constructs the StatefulSet spec apply configuration.

@@ -1651,7 +1651,7 @@ func TestDeployWorkload_RunConfigMCPServerGenerationGate(t *testing.T) {
 // rolling update; both have read the same MCPServerGeneration N from the
 // live-mounted RunConfig ConfigMap, but each holds a different image in
 // its CLI positional arg (frozen at pod creation). The gate at
-// shouldSkipStatefulSetApply uses strict-greater-than, so equal
+// skipStatefulSetApply uses strict-greater-than, so equal
 // generations cannot distinguish the callers — the stale-image apply
 // lands successfully and clobbers the fresh-image apply.
 //

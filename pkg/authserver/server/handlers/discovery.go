@@ -121,11 +121,22 @@ func (h *Handler) buildOAuthMetadata() sharedobauth.AuthorizationServerMetadata 
 	}
 }
 
+// grantTypesSupported returns the grant_types_supported list for discovery.
+// RFC 8693 token exchange is always registered with fosite (buildProvider
+// wires it unconditionally, even with no trusted issuers, to preserve
+// self-issued token exchange), so it's always advertised. The RFC 7523
+// JWT-bearer grant and the SPIFFE client_credentials grant, by contrast, are
+// only registered when their respective trust configuration enables them —
+// advertising either unconditionally would claim support the token endpoint
+// doesn't actually have.
 func (h *Handler) grantTypesSupported() []string {
 	grantTypes := []string{
 		string(fosite.GrantTypeAuthorizationCode),
 		string(fosite.GrantTypeRefreshToken),
 		sharedobauth.GrantTypeTokenExchange,
+	}
+	if h.config.JWTBearerGrantEnabled {
+		grantTypes = append(grantTypes, sharedobauth.GrantTypeJWTBearer)
 	}
 	if h.config.SupportsSPIFFEClientCredentialsGrant {
 		grantTypes = append(grantTypes, sharedobauth.GrantTypeClientCredentials)
@@ -156,25 +167,6 @@ func (h *Handler) tokenEndpointAuthMethodsSupported() []string {
 		methods = append(methods, sharedobauth.TokenEndpointAuthMethodSPIFFEJWT)
 	}
 	return methods
-}
-
-// grantTypesSupported returns the grant_types_supported list for discovery.
-// RFC 8693 token exchange is always registered with fosite (buildProvider
-// wires it unconditionally, even with no trusted issuers, to preserve
-// self-issued token exchange), so it's always advertised. The RFC 7523
-// JWT-bearer grant, by contrast, is only registered when at least one
-// trusted issuer opts in — advertising it unconditionally would claim
-// support the token endpoint doesn't actually have.
-func (h *Handler) grantTypesSupported() []string {
-	grantTypes := []string{
-		string(fosite.GrantTypeAuthorizationCode),
-		string(fosite.GrantTypeRefreshToken),
-		sharedobauth.GrantTypeTokenExchange,
-	}
-	if h.config.JWTBearerGrantEnabled {
-		grantTypes = append(grantTypes, sharedobauth.GrantTypeJWTBearer)
-	}
-	return grantTypes
 }
 
 // OAuthDiscoveryHandler handles GET /.well-known/oauth-authorization-server requests.

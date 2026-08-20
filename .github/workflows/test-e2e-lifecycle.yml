@@ -13,6 +13,7 @@ on:
       # image from test/e2e/images. A change there alters what these tests
       # actually deploy, so it has to trigger them.
       - 'test/e2e/images/**'
+      - 'test/e2e/cmd/spiffe-client/**'
       - '.github/workflows/test-e2e-lifecycle.yml'
 
 permissions:
@@ -96,6 +97,11 @@ jobs:
         echo "Loading vmcp image ${VMCP_IMAGE} into kind..."
         kind load docker-image --name toolhive ${VMCP_IMAGE}
 
+        # Build and load the SPIFFE E2E client image
+        echo "Building SPIFFE E2E client image..."
+        KO_DOCKER_REPO=kind.local/toolhive-spiffe-e2e-client ko build --local -B --bare --tags latest ./test/e2e/cmd/spiffe-client
+        kind load docker-image --name toolhive kind.local/toolhive-spiffe-e2e-client/spiffe-client:latest
+
         # Save VMCP_IMAGE for later steps
         echo "VMCP_IMAGE=${VMCP_IMAGE}" >> $GITHUB_ENV
         echo "Built and loaded vmcp image: ${VMCP_IMAGE}"
@@ -109,6 +115,8 @@ jobs:
         docker pull curlimages/curl:8.17.0 &
         docker pull ghcr.io/huggingface/text-embeddings-inference:cpu-latest &
         docker pull ghcr.io/dexidp/dex:v2.42.0 &
+        docker pull ghcr.io/spiffe/spire-server:1.15.0 &
+        docker pull ghcr.io/spiffe/spire-agent:1.15.0 &
         wait
 
         # Load all images into kind
@@ -119,6 +127,8 @@ jobs:
         kind load docker-image --name toolhive curlimages/curl:8.17.0
         kind load docker-image --name toolhive ghcr.io/huggingface/text-embeddings-inference:cpu-latest
         kind load docker-image --name toolhive ghcr.io/dexidp/dex:v2.42.0
+        kind load docker-image --name toolhive ghcr.io/spiffe/spire-server:1.15.0
+        kind load docker-image --name toolhive ghcr.io/spiffe/spire-agent:1.15.0
 
     - name: Deploy operator with VMCP_IMAGE
       run: |

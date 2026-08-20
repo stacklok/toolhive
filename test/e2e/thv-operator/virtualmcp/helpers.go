@@ -25,10 +25,12 @@ import (
 	"github.com/onsi/gomega"
 	appsv1 "k8s.io/api/apps/v1"
 	corev1 "k8s.io/api/core/v1"
+	rbacv1 "k8s.io/api/rbac/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/types"
 	"k8s.io/apimachinery/pkg/util/intstr"
+	k8svalidation "k8s.io/apimachinery/pkg/util/validation"
 	"k8s.io/utils/ptr"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 
@@ -1655,6 +1657,688 @@ func deployDex(
 		_ = c.Delete(ctx, &appsv1.Deployment{ObjectMeta: metav1.ObjectMeta{Name: name, Namespace: defaultNamespace}})
 		_ = c.Delete(ctx, &corev1.Service{ObjectMeta: metav1.ObjectMeta{Name: name, Namespace: defaultNamespace}})
 		_ = c.Delete(ctx, &corev1.ConfigMap{ObjectMeta: metav1.ObjectMeta{Name: configMapName, Namespace: defaultNamespace}})
+	}
+
+	return info, cleanup
+}
+
+const (
+	spireAgentSocketPath = "/run/spire/sockets/agent.sock"
+	spireTrustDomain     = "example.org"
+	spireSVIDTTLSeconds  = "60"
+)
+
+// SPIREInfo holds the SPIRE connection details needed by E2E workloads.
+type SPIREInfo struct {
+	// ServerDeploymentName is the Kubernetes Deployment name for the SPIRE Server.
+	ServerDeploymentName string
+	// ServerServiceName is the Kubernetes Service name for the SPIRE Server.
+	ServerServiceName string
+	// AgentServiceAccountName is the ServiceAccount used by the SPIRE Agent.
+	AgentServiceAccountName string
+	// BundleConfigMapName is the ConfigMap to which SPIRE publishes its trust bundle.
+	BundleConfigMapName string
+	// BundleConfigMapKey is the key in BundleConfigMapName containing the trust bundle.
+	BundleConfigMapKey string
+	// AgentSocketPath is the host path at which agents expose the Workload API socket.
+	AgentSocketPath string
+	// TrustDomain is the SPIFFE trust domain served by this SPIRE deployment.
+	TrustDomain string
+}
+
+func spireServerConfig(namespace, agentServiceAccountName, bundleConfigMapName string) string {
+	return fmt.Sprintf(`server {
+  bind_address = "0.0.0.0"
+  bind_port = "8081"
+  socket_path = "/run/spire/server-socket/api.sock"
+  trust_domain = "example.org"
+  data_dir = "/run/spire/data"
+  default_x509_svid_ttl = "5m"
+  default_jwt_svid_ttl = "5m"
+}
+
+plugins {
+  DataStore "sql" {
+    plugin_data {
+      database_type = "sqlite3"
+      connection_string = "/run/spire/data/datastore.sqlite3"
+    }
+  }
+  KeyManager "disk" {
+    plugin_data {
+      keys_path = "/run/spire/data/keys.json"
+    }
+  }
+  NodeAttestor "k8s_psat" {
+    plugin_data {
+      clusters = {
+        "kind" = {
+          service_account_allow_list = ["%s:%s"]
+        }
+      }
+    }
+  }
+  BundlePublisher "k8s_configmap" {
+    plugin_data {
+      clusters = {
+        "kind" = {
+          namespace = "%s"
+          configmap_name = "%s"
+          configmap_key = "bundle.json"
+          format = "spiffe"
+          refresh_hint = "5m"
+        }
+      }
+    }
+  }
+}
+`, namespace, agentServiceAccountName, namespace, bundleConfigMapName)
+}
+
+func spireAgentConfig(serverServiceName, namespace string) string {
+	return fmt.Sprintf(`agent {
+  data_dir = "/run/spire/data"
+  server_address = "%s.%s.svc"
+  server_port = "8081"
+  socket_path = "/run/spire/sockets/agent.sock"
+  trust_domain = "example.org"
+  insecure_bootstrap = true
+}
+
+plugins {
+  NodeAttestor "k8s_psat" {
+    plugin_data {
+      cluster = "kind"
+    }
+  }
+  KeyManager "memory" {
+  }
+  WorkloadAttestor "k8s" {
+    plugin_data {
+      node_name_env = "MY_NODE_NAME"
+      skip_kubelet_verification = true
+    }
+  }
+}
+`, serverServiceName, namespace)
+}
+
+// SPIREWorkloadAPIVolume returns the read-only agent socket mount and endpoint environment
+// variable needed by a PodTemplateSpec container that uses the SPIFFE Workload API.
+func SPIREWorkloadAPIVolume(volumeName string) (corev1.Volume, corev1.VolumeMount, corev1.EnvVar, error) {
+	if errs := k8svalidation.IsDNS1123Label(volumeName); len(errs) > 0 {
+		return corev1.Volume{}, corev1.VolumeMount{}, corev1.EnvVar{}, fmt.Errorf("invalid SPIRE socket volume name")
+	}
+
+	return corev1.Volume{
+			Name: volumeName,
+			VolumeSource: corev1.VolumeSource{
+				HostPath: &corev1.HostPathVolumeSource{
+					Path: spireAgentSocketPath[:strings.LastIndex(spireAgentSocketPath, "/")],
+					Type: ptr.To(corev1.HostPathDirectory),
+				},
+			},
+		}, corev1.VolumeMount{
+			Name:      volumeName,
+			MountPath: spireAgentSocketPath[:strings.LastIndex(spireAgentSocketPath, "/")],
+			ReadOnly:  true,
+		}, corev1.EnvVar{
+			Name:  "SPIFFE_ENDPOINT_SOCKET",
+			Value: "unix://" + spireAgentSocketPath,
+		}, nil
+}
+
+// RotateSPIRELocalAuthorities rotates the X.509 and JWT local authorities through
+// the SPIRE Server pod's private API socket. It never exposes that socket outside
+// the pod.
+func RotateSPIRELocalAuthorities(ctx context.Context, namespace, serverPodName string) error {
+	if err := validateSPIRENames(namespace, serverPodName); err != nil {
+		return err
+	}
+	for _, authorityType := range []string{"x509", "jwt"} {
+		if err := rotateSPIRELocalAuthority(ctx, namespace, serverPodName, authorityType); err != nil {
+			return fmt.Errorf("rotate SPIRE %s local authority: %w", authorityType, err)
+		}
+	}
+	return nil
+}
+
+type spireAuthority struct {
+	AuthorityID string `json:"authority_id"`
+}
+
+type spireAuthorityShowResponse struct {
+	Active spireAuthority `json:"active"`
+}
+
+type spireAuthorityPrepareResponse struct {
+	PreparedAuthority spireAuthority `json:"prepared_authority"`
+}
+
+type spireAuthorityActivateResponse struct {
+	ActivatedAuthority spireAuthority `json:"activated_authority"`
+}
+
+type spireAuthorityTaintResponse struct {
+	TaintedAuthority spireAuthority `json:"tainted_authority"`
+}
+
+func rotateSPIRELocalAuthority(ctx context.Context, namespace, serverPodName, authorityType string) error {
+	activeOutput, err := executeSPIREServerCommand(ctx, namespace, serverPodName,
+		"localauthority", authorityType, "show",
+		"-socketPath", "/run/spire/server-socket/api.sock", "-output", "json",
+	)
+	if err != nil {
+		return fmt.Errorf("show active authority: %w", err)
+	}
+	active := spireAuthorityShowResponse{}
+	if err := json.Unmarshal([]byte(activeOutput), &active); err != nil {
+		return fmt.Errorf("parse active authority response: %w", err)
+	}
+	if active.Active.AuthorityID == "" {
+		return fmt.Errorf("active authority response has no authority ID")
+	}
+
+	preparedOutput, err := executeSPIREServerCommand(ctx, namespace, serverPodName,
+		"localauthority", authorityType, "prepare",
+		"-socketPath", "/run/spire/server-socket/api.sock", "-output", "json",
+	)
+	if err != nil {
+		return fmt.Errorf("prepare authority: %w", err)
+	}
+	prepared := spireAuthorityPrepareResponse{}
+	if err := json.Unmarshal([]byte(preparedOutput), &prepared); err != nil {
+		return fmt.Errorf("parse prepared authority response: %w", err)
+	}
+	if prepared.PreparedAuthority.AuthorityID == "" || prepared.PreparedAuthority.AuthorityID == active.Active.AuthorityID {
+		return fmt.Errorf("prepared authority response has an invalid authority ID")
+	}
+
+	activatedOutput, err := executeSPIREServerCommand(ctx, namespace, serverPodName,
+		"localauthority", authorityType, "activate",
+		"-socketPath", "/run/spire/server-socket/api.sock", "-authorityID", prepared.PreparedAuthority.AuthorityID, "-output", "json",
+	)
+	if err != nil {
+		return fmt.Errorf("activate authority: %w", err)
+	}
+	activated := spireAuthorityActivateResponse{}
+	if err := json.Unmarshal([]byte(activatedOutput), &activated); err != nil {
+		return fmt.Errorf("parse activated authority response: %w", err)
+	}
+	if activated.ActivatedAuthority.AuthorityID != prepared.PreparedAuthority.AuthorityID {
+		return fmt.Errorf("activated authority response has an unexpected authority ID")
+	}
+
+	taintedOutput, err := executeSPIREServerCommand(ctx, namespace, serverPodName,
+		"localauthority", authorityType, "taint",
+		"-socketPath", "/run/spire/server-socket/api.sock", "-authorityID", active.Active.AuthorityID, "-output", "json",
+	)
+	if err != nil {
+		return fmt.Errorf("taint previous authority: %w", err)
+	}
+	tainted := spireAuthorityTaintResponse{}
+	if err := json.Unmarshal([]byte(taintedOutput), &tainted); err != nil {
+		return fmt.Errorf("parse tainted authority response: %w", err)
+	}
+	if tainted.TaintedAuthority.AuthorityID != active.Active.AuthorityID {
+		return fmt.Errorf("tainted authority response has an unexpected authority ID")
+	}
+	return nil
+}
+
+// CreateSPIREWorkloadEntries registers workloadName for workloadServiceAccountName in
+// workloadNamespace beneath each node that currently runs a SPIRE Agent. The workload
+// entries use Kubernetes service-account and namespace selectors and explicit SVID TTLs.
+func CreateSPIREWorkloadEntries(
+	ctx context.Context,
+	c client.Client,
+	namespace, serverPodName, agentName, workloadNamespace, workloadServiceAccountName, workloadName string,
+) error {
+	if err := validateSPIRENames(
+		namespace,
+		serverPodName,
+		agentName,
+		workloadNamespace,
+		workloadServiceAccountName,
+		workloadName,
+	); err != nil {
+		return err
+	}
+
+	parentIDs, err := spireAgentParentIDs(ctx, c, namespace, agentName)
+	if err != nil {
+		return err
+	}
+	workloadID := fmt.Sprintf(
+		"spiffe://%s/workload/%s/%s/%s",
+		spireTrustDomain,
+		workloadNamespace,
+		workloadServiceAccountName,
+		workloadName,
+	)
+	for _, parentID := range parentIDs {
+		_, err := executeSPIREServerCommand(ctx, namespace, serverPodName,
+			"entry", "create",
+			"-socketPath", "/run/spire/server-socket/api.sock",
+			"-spiffeID", workloadID,
+			"-parentID", parentID,
+			"-selector", "k8s:ns:"+workloadNamespace,
+			"-selector", "k8s:sa:"+workloadServiceAccountName,
+			"-x509SVIDTTL", spireSVIDTTLSeconds,
+			"-jwtSVIDTTL", spireSVIDTTLSeconds,
+		)
+		if err != nil {
+			return fmt.Errorf("create SPIRE workload registration entry: %w", err)
+		}
+	}
+	return nil
+}
+
+func createSPIREAgentEntries(ctx context.Context, c client.Client, namespace, serverPodName, agentName string) error {
+	if err := validateSPIRENames(namespace, serverPodName, agentName); err != nil {
+		return err
+	}
+
+	nodes := &corev1.NodeList{}
+	if err := c.List(ctx, nodes); err != nil {
+		return fmt.Errorf("list Kubernetes nodes: %w", err)
+	}
+	if len(nodes.Items) == 0 {
+		return fmt.Errorf("no Kubernetes nodes found for SPIRE Agent registration")
+	}
+	for _, node := range nodes.Items {
+		if !validSPIRENodeUID(node.UID) {
+			return fmt.Errorf("kubernetes node has invalid UID")
+		}
+		nodeID := fmt.Sprintf("spiffe://%s/spire/agent/k8s_psat/kind/%s", spireTrustDomain, node.UID)
+		_, err := executeSPIREServerCommand(ctx, namespace, serverPodName,
+			"entry", "create",
+			"-socketPath", "/run/spire/server-socket/api.sock",
+			"-spiffeID", nodeID,
+			"-parentID", fmt.Sprintf("spiffe://%s/spire/server", spireTrustDomain),
+			"-selector", "k8s_psat:cluster:kind",
+			"-selector", "k8s_psat:agent_ns:"+namespace,
+			"-selector", "k8s_psat:agent_sa:"+agentName,
+			"-selector", "k8s_psat:agent_node_uid:"+string(node.UID),
+			"-x509SVIDTTL", spireSVIDTTLSeconds,
+			"-jwtSVIDTTL", spireSVIDTTLSeconds,
+		)
+		if err != nil {
+			return fmt.Errorf("create SPIRE Agent registration entry: %w", err)
+		}
+	}
+	return nil
+}
+
+func spireAgentParentIDs(ctx context.Context, c client.Client, namespace, agentName string) ([]string, error) {
+	pods := &corev1.PodList{}
+	if err := c.List(
+		ctx,
+		pods,
+		client.InNamespace(namespace),
+		client.MatchingLabels(map[string]string{"app": agentName}),
+	); err != nil {
+		return nil, fmt.Errorf("list SPIRE Agent pods: %w", err)
+	}
+	if len(pods.Items) == 0 {
+		return nil, fmt.Errorf("no SPIRE Agent pods found")
+	}
+
+	parentIDs := make([]string, 0, len(pods.Items))
+	seenNodeUIDs := make(map[types.UID]struct{}, len(pods.Items))
+	for _, pod := range pods.Items {
+		if pod.Spec.NodeName == "" {
+			return nil, fmt.Errorf("SPIRE Agent pod has no assigned node")
+		}
+		node := &corev1.Node{}
+		if err := c.Get(ctx, types.NamespacedName{Name: pod.Spec.NodeName}, node); err != nil {
+			return nil, fmt.Errorf("get SPIRE Agent node: %w", err)
+		}
+		if !validSPIRENodeUID(node.UID) {
+			return nil, fmt.Errorf("SPIRE Agent node has invalid UID")
+		}
+		if _, ok := seenNodeUIDs[node.UID]; ok {
+			continue
+		}
+		seenNodeUIDs[node.UID] = struct{}{}
+		parentIDs = append(parentIDs, fmt.Sprintf("spiffe://%s/spire/agent/k8s_psat/kind/%s", spireTrustDomain, node.UID))
+	}
+	return parentIDs, nil
+}
+
+func findPodName(ctx context.Context, c client.Client, namespace string, labels map[string]string) (string, error) {
+	pods := &corev1.PodList{}
+	if err := c.List(ctx, pods, client.InNamespace(namespace), client.MatchingLabels(labels)); err != nil {
+		return "", fmt.Errorf("list pods: %w", err)
+	}
+	for _, pod := range pods.Items {
+		if pod.DeletionTimestamp == nil && pod.Status.Phase == corev1.PodRunning {
+			return pod.Name, nil
+		}
+	}
+	return "", fmt.Errorf("no running pod found")
+}
+
+func executeSPIREServerCommand(ctx context.Context, namespace, serverPodName string, args ...string) (string, error) {
+	if err := validateSPIRENames(namespace, serverPodName); err != nil {
+		return "", err
+	}
+	return testutil.ExecutePodCommand(ctx, namespace, serverPodName, "spire-server", append([]string{"spire-server"}, args...))
+}
+
+func validateSPIRENames(names ...string) error {
+	for _, name := range names {
+		if errs := k8svalidation.IsDNS1123Label(name); len(errs) > 0 {
+			return fmt.Errorf("invalid SPIRE resource name")
+		}
+	}
+	return nil
+}
+
+func validSPIRENodeUID(uid types.UID) bool {
+	if len(uid) != 36 {
+		return false
+	}
+	for i, char := range uid {
+		if i == 8 || i == 13 || i == 18 || i == 23 {
+			if char != '-' {
+				return false
+			}
+			continue
+		}
+		if (char < '0' || char > '9') && (char < 'a' || char > 'f') {
+			return false
+		}
+	}
+	return true
+}
+
+// deploySPIRE deploys a SPIRE Server and an Agent DaemonSet for E2E tests.
+// It returns the connection details and a cleanup function that removes every resource it creates.
+func deploySPIRE(
+	ctx context.Context,
+	c client.Client,
+	name, namespace string,
+	timeout, pollingInterval time.Duration,
+) (*SPIREInfo, func()) {
+	serverName := name + "-server"
+	agentName := name + "-agent"
+	bundleConfigMapName := name + "-bundle"
+	serverConfigMapName := serverName + "-config"
+	agentConfigMapName := agentName + "-config"
+	serverClusterRoleName := serverName + "-e2e"
+	agentClusterRoleName := agentName + "-e2e"
+	serverLabels := map[string]string{"app": serverName}
+	agentLabels := map[string]string{"app": agentName}
+
+	ginkgo.By("Creating SPIRE ConfigMaps and service accounts")
+	gomega.Expect(c.Create(ctx, &corev1.ConfigMap{
+		ObjectMeta: metav1.ObjectMeta{Name: serverConfigMapName, Namespace: namespace},
+		Data:       map[string]string{"server.conf": spireServerConfig(namespace, agentName, bundleConfigMapName)},
+	})).To(gomega.Succeed())
+	gomega.Expect(c.Create(ctx, &corev1.ConfigMap{
+		ObjectMeta: metav1.ObjectMeta{Name: agentConfigMapName, Namespace: namespace},
+		Data:       map[string]string{"agent.conf": spireAgentConfig(serverName, namespace)},
+	})).To(gomega.Succeed())
+	gomega.Expect(c.Create(ctx, &corev1.ConfigMap{
+		ObjectMeta: metav1.ObjectMeta{Name: bundleConfigMapName, Namespace: namespace},
+		Data:       map[string]string{"bundle.json": ""},
+	})).To(gomega.Succeed())
+	gomega.Expect(c.Create(ctx, &corev1.ServiceAccount{
+		ObjectMeta: metav1.ObjectMeta{Name: serverName, Namespace: namespace},
+	})).To(gomega.Succeed())
+	gomega.Expect(c.Create(ctx, &corev1.ServiceAccount{
+		ObjectMeta: metav1.ObjectMeta{Name: agentName, Namespace: namespace},
+	})).To(gomega.Succeed())
+
+	ginkgo.By("Creating SPIRE RBAC resources")
+	gomega.Expect(c.Create(ctx, &rbacv1.Role{
+		ObjectMeta: metav1.ObjectMeta{Name: serverName, Namespace: namespace},
+		Rules: []rbacv1.PolicyRule{{
+			APIGroups:     []string{""},
+			Resources:     []string{"configmaps"},
+			ResourceNames: []string{bundleConfigMapName},
+			Verbs:         []string{"get", "patch"},
+		}},
+	})).To(gomega.Succeed())
+	gomega.Expect(c.Create(ctx, &rbacv1.RoleBinding{
+		ObjectMeta: metav1.ObjectMeta{Name: serverName, Namespace: namespace},
+		RoleRef:    rbacv1.RoleRef{APIGroup: rbacv1.GroupName, Kind: "Role", Name: serverName},
+		Subjects:   []rbacv1.Subject{{Kind: rbacv1.ServiceAccountKind, Name: serverName, Namespace: namespace}},
+	})).To(gomega.Succeed())
+	gomega.Expect(c.Create(ctx, &rbacv1.Role{
+		ObjectMeta: metav1.ObjectMeta{Name: agentName, Namespace: namespace},
+		Rules: []rbacv1.PolicyRule{{
+			APIGroups: []string{""}, Resources: []string{"pods"}, Verbs: []string{"get"},
+		}},
+	})).To(gomega.Succeed())
+	gomega.Expect(c.Create(ctx, &rbacv1.RoleBinding{
+		ObjectMeta: metav1.ObjectMeta{Name: agentName, Namespace: namespace},
+		RoleRef:    rbacv1.RoleRef{APIGroup: rbacv1.GroupName, Kind: "Role", Name: agentName},
+		Subjects:   []rbacv1.Subject{{Kind: rbacv1.ServiceAccountKind, Name: agentName, Namespace: namespace}},
+	})).To(gomega.Succeed())
+	gomega.Expect(c.Create(ctx, &rbacv1.ClusterRole{
+		ObjectMeta: metav1.ObjectMeta{Name: serverClusterRoleName},
+		Rules: []rbacv1.PolicyRule{
+			{APIGroups: []string{"authentication.k8s.io"}, Resources: []string{"tokenreviews"}, Verbs: []string{"create"}},
+			{APIGroups: []string{""}, Resources: []string{"pods", "nodes"}, Verbs: []string{"get"}},
+		},
+	})).To(gomega.Succeed())
+	gomega.Expect(c.Create(ctx, &rbacv1.ClusterRoleBinding{
+		ObjectMeta: metav1.ObjectMeta{Name: serverClusterRoleName},
+		RoleRef:    rbacv1.RoleRef{APIGroup: rbacv1.GroupName, Kind: "ClusterRole", Name: serverClusterRoleName},
+		Subjects:   []rbacv1.Subject{{Kind: rbacv1.ServiceAccountKind, Name: serverName, Namespace: namespace}},
+	})).To(gomega.Succeed())
+	gomega.Expect(c.Create(ctx, &rbacv1.ClusterRole{
+		ObjectMeta: metav1.ObjectMeta{Name: agentClusterRoleName},
+		Rules: []rbacv1.PolicyRule{{
+			APIGroups: []string{""}, Resources: []string{"nodes", "nodes/proxy"}, Verbs: []string{"get"},
+		}},
+	})).To(gomega.Succeed())
+	gomega.Expect(c.Create(ctx, &rbacv1.ClusterRoleBinding{
+		ObjectMeta: metav1.ObjectMeta{Name: agentClusterRoleName},
+		RoleRef:    rbacv1.RoleRef{APIGroup: rbacv1.GroupName, Kind: "ClusterRole", Name: agentClusterRoleName},
+		Subjects:   []rbacv1.Subject{{Kind: rbacv1.ServiceAccountKind, Name: agentName, Namespace: namespace}},
+	})).To(gomega.Succeed())
+
+	ginkgo.By("Creating SPIRE Server deployment and service")
+	gomega.Expect(c.Create(ctx, &appsv1.Deployment{
+		ObjectMeta: metav1.ObjectMeta{Name: serverName, Namespace: namespace, Labels: serverLabels},
+		Spec: appsv1.DeploymentSpec{
+			Replicas: int32Ptr(1),
+			Selector: &metav1.LabelSelector{MatchLabels: serverLabels},
+			Template: corev1.PodTemplateSpec{
+				ObjectMeta: metav1.ObjectMeta{Labels: serverLabels},
+				Spec: corev1.PodSpec{
+					ServiceAccountName: serverName,
+					Containers: []corev1.Container{{
+						Name:  "spire-server",
+						Image: images.SPIREServerImage,
+						Args:  []string{"run", "-config", "/run/spire/config/server.conf"},
+						Ports: []corev1.ContainerPort{{Name: "grpc", ContainerPort: 8081}},
+						VolumeMounts: []corev1.VolumeMount{
+							{Name: "config", MountPath: "/run/spire/config", ReadOnly: true},
+							{Name: "data", MountPath: "/run/spire/data"},
+							{Name: "socket", MountPath: "/run/spire/server-socket"},
+						},
+					}},
+					Volumes: []corev1.Volume{
+						{
+							Name: "config",
+							VolumeSource: corev1.VolumeSource{
+								ConfigMap: &corev1.ConfigMapVolumeSource{
+									LocalObjectReference: corev1.LocalObjectReference{Name: serverConfigMapName},
+								},
+							},
+						},
+						{Name: "data", VolumeSource: corev1.VolumeSource{EmptyDir: &corev1.EmptyDirVolumeSource{}}},
+						{Name: "socket", VolumeSource: corev1.VolumeSource{EmptyDir: &corev1.EmptyDirVolumeSource{}}},
+					},
+				},
+			},
+		},
+	})).To(gomega.Succeed())
+	gomega.Expect(c.Create(ctx, &corev1.Service{
+		ObjectMeta: metav1.ObjectMeta{Name: serverName, Namespace: namespace},
+		Spec: corev1.ServiceSpec{
+			Selector: serverLabels,
+			Ports: []corev1.ServicePort{{
+				Name: "grpc", Port: 8081, TargetPort: intstr.FromInt(8081),
+			}},
+		},
+	})).To(gomega.Succeed())
+
+	ginkgo.By("Waiting for SPIRE Server to be ready")
+	gomega.Eventually(func() (int32, error) {
+		deployment := &appsv1.Deployment{}
+		if err := c.Get(ctx, types.NamespacedName{Name: serverName, Namespace: namespace}, deployment); err != nil {
+			return 0, err
+		}
+		return deployment.Status.ReadyReplicas, nil
+	}, timeout, pollingInterval).Should(gomega.Equal(int32(1)))
+
+	var serverPodName string
+	gomega.Eventually(func() error {
+		podName, err := findPodName(ctx, c, namespace, serverLabels)
+		if err != nil {
+			return err
+		}
+		serverPodName = podName
+		return nil
+	}, timeout, pollingInterval).Should(gomega.Succeed())
+
+	ginkgo.By("Creating SPIRE Agent registration entries")
+	gomega.Expect(createSPIREAgentEntries(ctx, c, namespace, serverPodName, agentName)).To(gomega.Succeed())
+
+	ginkgo.By("Creating SPIRE Agent DaemonSet")
+	gomega.Expect(c.Create(ctx, &appsv1.DaemonSet{
+		ObjectMeta: metav1.ObjectMeta{Name: agentName, Namespace: namespace, Labels: agentLabels},
+		Spec: appsv1.DaemonSetSpec{
+			Selector: &metav1.LabelSelector{MatchLabels: agentLabels},
+			Template: corev1.PodTemplateSpec{
+				ObjectMeta: metav1.ObjectMeta{Labels: agentLabels},
+				Spec: corev1.PodSpec{
+					HostPID:            true,
+					ServiceAccountName: agentName,
+					Containers: []corev1.Container{{
+						Name:  "spire-agent",
+						Image: images.SPIREAgentImage,
+						Args:  []string{"run", "-config", "/run/spire/config/agent.conf"},
+						Env: []corev1.EnvVar{{
+							Name: "MY_NODE_NAME",
+							ValueFrom: &corev1.EnvVarSource{FieldRef: &corev1.ObjectFieldSelector{
+								FieldPath: "spec.nodeName",
+							}},
+						}},
+						VolumeMounts: []corev1.VolumeMount{
+							{Name: "config", MountPath: "/run/spire/config", ReadOnly: true},
+							{Name: "data", MountPath: "/run/spire/data"},
+							{Name: "sockets", MountPath: "/run/spire/sockets"},
+							{Name: "token", MountPath: "/var/run/secrets/tokens", ReadOnly: true},
+						},
+					}},
+					Volumes: []corev1.Volume{
+						{
+							Name: "config",
+							VolumeSource: corev1.VolumeSource{
+								ConfigMap: &corev1.ConfigMapVolumeSource{
+									LocalObjectReference: corev1.LocalObjectReference{Name: agentConfigMapName},
+								},
+							},
+						},
+						{Name: "data", VolumeSource: corev1.VolumeSource{EmptyDir: &corev1.EmptyDirVolumeSource{}}},
+						{
+							Name: "sockets",
+							VolumeSource: corev1.VolumeSource{HostPath: &corev1.HostPathVolumeSource{
+								Path: "/run/spire/sockets",
+								Type: ptr.To(corev1.HostPathDirectoryOrCreate),
+							}},
+						},
+						{
+							Name: "token",
+							VolumeSource: corev1.VolumeSource{Projected: &corev1.ProjectedVolumeSource{
+								Sources: []corev1.VolumeProjection{{
+									ServiceAccountToken: &corev1.ServiceAccountTokenProjection{
+										Audience: "spire-server",
+										Path:     "spire-agent",
+									},
+								}},
+							}},
+						},
+					},
+				},
+			},
+		},
+	})).To(gomega.Succeed())
+
+	ginkgo.By("Waiting for SPIRE Agent to be ready")
+	gomega.Eventually(func() error {
+		daemonSet := &appsv1.DaemonSet{}
+		if err := c.Get(ctx, types.NamespacedName{Name: agentName, Namespace: namespace}, daemonSet); err != nil {
+			return err
+		}
+		if daemonSet.Status.DesiredNumberScheduled == 0 {
+			return fmt.Errorf("SPIRE Agent has no scheduled nodes")
+		}
+		if daemonSet.Status.NumberReady != daemonSet.Status.DesiredNumberScheduled {
+			return fmt.Errorf(
+				"SPIRE Agent ready count %d does not match desired count %d",
+				daemonSet.Status.NumberReady,
+				daemonSet.Status.DesiredNumberScheduled,
+			)
+		}
+		return nil
+	}, timeout, pollingInterval).Should(gomega.Succeed())
+
+	ginkgo.By("Verifying SPIRE Agent workload API readiness")
+	gomega.Eventually(func() error {
+		agentPodName, err := findPodName(ctx, c, namespace, agentLabels)
+		if err != nil {
+			return err
+		}
+		_, err = testutil.ExecutePodCommand(
+			ctx,
+			namespace,
+			agentPodName,
+			"spire-agent",
+			[]string{"spire-agent", "healthcheck", "-socketPath", spireAgentSocketPath},
+		)
+		if err != nil {
+			return fmt.Errorf("check SPIRE Agent workload API: %w", err)
+		}
+		return nil
+	}, timeout, pollingInterval).Should(gomega.Succeed())
+
+	info := &SPIREInfo{
+		ServerDeploymentName:    serverName,
+		ServerServiceName:       serverName,
+		AgentServiceAccountName: agentName,
+		BundleConfigMapName:     bundleConfigMapName,
+		BundleConfigMapKey:      "bundle.json",
+		AgentSocketPath:         spireAgentSocketPath,
+		TrustDomain:             spireTrustDomain,
+	}
+	cleanup := func() {
+		for _, resource := range []client.Object{
+			&appsv1.DaemonSet{ObjectMeta: metav1.ObjectMeta{Name: agentName, Namespace: namespace}},
+			&appsv1.Deployment{ObjectMeta: metav1.ObjectMeta{Name: serverName, Namespace: namespace}},
+			&corev1.Service{ObjectMeta: metav1.ObjectMeta{Name: serverName, Namespace: namespace}},
+			&rbacv1.ClusterRoleBinding{ObjectMeta: metav1.ObjectMeta{Name: agentClusterRoleName}},
+			&rbacv1.ClusterRole{ObjectMeta: metav1.ObjectMeta{Name: agentClusterRoleName}},
+			&rbacv1.ClusterRoleBinding{ObjectMeta: metav1.ObjectMeta{Name: serverClusterRoleName}},
+			&rbacv1.ClusterRole{ObjectMeta: metav1.ObjectMeta{Name: serverClusterRoleName}},
+			&rbacv1.RoleBinding{ObjectMeta: metav1.ObjectMeta{Name: agentName, Namespace: namespace}},
+			&rbacv1.Role{ObjectMeta: metav1.ObjectMeta{Name: agentName, Namespace: namespace}},
+			&rbacv1.RoleBinding{ObjectMeta: metav1.ObjectMeta{Name: serverName, Namespace: namespace}},
+			&rbacv1.Role{ObjectMeta: metav1.ObjectMeta{Name: serverName, Namespace: namespace}},
+			&corev1.ServiceAccount{ObjectMeta: metav1.ObjectMeta{Name: agentName, Namespace: namespace}},
+			&corev1.ServiceAccount{ObjectMeta: metav1.ObjectMeta{Name: serverName, Namespace: namespace}},
+			&corev1.ConfigMap{ObjectMeta: metav1.ObjectMeta{Name: bundleConfigMapName, Namespace: namespace}},
+			&corev1.ConfigMap{ObjectMeta: metav1.ObjectMeta{Name: agentConfigMapName, Namespace: namespace}},
+			&corev1.ConfigMap{ObjectMeta: metav1.ObjectMeta{Name: serverConfigMapName, Namespace: namespace}},
+		} {
+			gomega.Expect(client.IgnoreNotFound(c.Delete(ctx, resource))).To(gomega.Succeed())
+		}
 	}
 
 	return info, cleanup

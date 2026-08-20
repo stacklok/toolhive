@@ -606,8 +606,9 @@ const (
 
 // SPIFFETrustDomainConfig declares a SPIFFE trust domain and its bundle source
 // for the embedded authorization server.
-// The runtime bundle registry loads and rotates the declared source, but loaded trust material does not
-// by itself authenticate a workload: live X.509-SVID and JWT-SVID validation does not exist yet.
+// The runtime bundle registry loads and rotates the declared source. Loading
+// trust material alone does not authenticate a workload; authentication requires
+// live X.509-SVID or JWT-SVID validation and an authorized association.
 type SPIFFETrustDomainConfig struct {
 	// Name uniquely identifies this declaration for spiffeClientAuth references.
 	// +kubebuilder:validation:MinLength=1
@@ -688,10 +689,11 @@ type InboundGrantsConfig struct {
 }
 
 // SPIFFEClientAuthConfig associates a SPIFFE principal pattern with an explicit OAuth client.
-//nolint:lll // Kubebuilder requires each CEL rule to be a single comment line.
 // +kubebuilder:validation:XValidation:rule="self.grantTypes.exists(grant, grant == 'urn:ietf:params:oauth:grant-type:token-exchange') == has(self.tokenExchange)",message="tokenExchange must be configured if and only if token-exchange is granted"
 // Configuration is not authentication: configured SPIFFE clients are non-public OAuth clients
 // without a secret, and token requests require a validated SPIFFE credential.
+//
+//nolint:lll // Kubebuilder requires each CEL rule to be a single comment line.
 type SPIFFEClientAuthConfig struct {
 	// +kubebuilder:validation:MinLength=1
 	TrustDomainRef string `json:"trustDomainRef"`

@@ -37,20 +37,37 @@ If a refresh fails after an initial successful fetch, the registry continues ser
 
 A file source synchronously loads its initial SPIFFE trust-bundle JSON document, so startup fails if the file is unreadable, malformed, or lacks an authority required by an enabled method. After startup it polls once per minute rather than watching filesystem events: ConfigMap volume updates rotate symlinks, for which polling is reliable. Every valid reload atomically replaces the complete authority set, so removed authorities stop validating immediately. Failed reads, parses, and method-incomplete updates retain the last-known-good bundle.
 
-SPIRE must publish this document with:
+SPIRE must publish this document with the SPIRE v1.15 `k8s_configmap` publisher configuration used by the E2E harness:
 
 ```hcl
 BundlePublisher "k8s_configmap" {
   plugin_data {
-    namespace      = "toolhive-system"
-    config_map     = "spire-bundle"
-    config_map_key = "bundle.json"
-    format         = "spiffe"
+    clusters = {
+      "kind" = {
+        namespace      = "toolhive-system"
+        configmap_name = "spire-bundle"
+        configmap_key  = "bundle.json"
+        format         = "spiffe"
+        refresh_hint   = "5m"
+      }
+    }
   }
 }
 ```
 
 `Notifier "k8sbundle"` writes PEM-encoded X.509 material instead. PEM cannot carry the JWK authorities required for JWT-SVID validation, so it is not a suitable source when JWT authentication is enabled.
+
+## Supported SPIRE deployment topology
+
+The supported production topology separates public verification material from workload credentials:
+
+- SPIRE publishes the SPIFFE JSON trust bundle to a Kubernetes ConfigMap with `format = "spiffe"`.
+- The authorization server (AS) uses the `file` bundle source and mounts that ConfigMap as a read-only public file. It does not receive a Workload API socket, an SVID, or private-key access.
+- Each attested client workload mounts its local SPIRE Workload API socket and obtains its own SVID through that API. The socket must be available only to the workload that needs its credential.
+
+A public bundle lets the AS verify credentials; it does not confer a SPIFFE identity to the AS or to any pod that can read it. Identity is established only when an attested workload presents a credential that validates against the bundle and is authorized by its configured association.
+
+The cert-manager CSI materials under `deploy/spiffe-poc/` are an optional development-only certificate-file path, not the supported production topology. They mount certificate files and do not provide a SPIFFE Workload API socket. Therefore, they cannot replace `workload_api` or provide the dynamically issued, attested credentials that a SPIRE Workload API client obtains.
 
 ### Bundle Endpoint SSRF constraints
 
@@ -94,11 +111,9 @@ The configured OAuth client ID may differ from the SPIFFE ID under ToolHive's ex
 
 Configuration and loaded bundles are not authentication by themselves. A client ID, a declared association, a request header, an unverified SPIFFE-looking URI, a client-supplied trust domain, or a loaded bundle is never workload identity. SPIFFE credential validation establishes identity only after the credential validates against configured trust material and the association registry authorizes the resulting SPIFFE ID and configured client ID. A successful authentication binds that exact resolved principal to the static OAuth client; storage lookup alone is never authenticated provenance.
 
-Issue [#6201](https://github.com/stacklok/toolhive/issues/6201) loads and rotates trust bundles. SPIFFE JWT-SVID and X.509-SVID client authentication, including association-constrained `client_credentials` and discovery metadata integration for SPIFFE methods, are implemented by [#6203](https://github.com/stacklok/toolhive/issues/6203), [#6202](https://github.com/stacklok/toolhive/issues/6202), and [#6204](https://github.com/stacklok/toolhive/issues/6204). The following remains separate and pending:
+Issue [#6201](https://github.com/stacklok/toolhive/issues/6201) loads and rotates trust bundles. SPIFFE JWT-SVID and X.509-SVID client authentication, including association-constrained `client_credentials` and discovery metadata integration for SPIFFE methods, are implemented by [#6203](https://github.com/stacklok/toolhive/issues/6203), [#6202](https://github.com/stacklok/toolhive/issues/6202), and [#6204](https://github.com/stacklok/toolhive/issues/6204). Issue [#6205](https://github.com/stacklok/toolhive/issues/6205) adds a real SPIRE integration E2E that covers the positive flow through SPIRE-published JSON bundle ConfigMap material, the AS file source, and an attested client obtaining X.509-SVID and JWT-SVID credentials from the Workload API for equivalent `client_credentials` flows. It also covers X.509 and JWT local-authority/SVID rotation without restarting the client pod. Negative-path coverage is not asserted by this E2E.
 
-- deploy SPIRE, configure attestation or registration entries, or acquire workload SVIDs ([#6205](https://github.com/stacklok/toolhive/issues/6205)).
-
-The authorization-server file source is limited to public trust material. Follow-up deployment work must not mount a Workload API socket into the authorization-server pod or use it to obtain an authorization-server SVID.
+The authorization-server file source is limited to public trust material. The supported deployment does not mount a Workload API socket into the authorization-server pod or use it to obtain an authorization-server SVID.
 
 ## Related documentation
 

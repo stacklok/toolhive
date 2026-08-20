@@ -384,7 +384,7 @@ func (r *Runner) Run(ctx context.Context) error {
 	// the handler to the transport is what mounts it there; leaving it nil is what
 	// keeps the proxies from mounting it at all. See
 	// telemetry.DefaultMetricsOnTransportPort for the cutover.
-	if r.prometheusHandler != nil && r.Config.TelemetryConfig.ServeMetricsOnTransportPort() {
+	if mountPrometheusHandlerOnTransportPort(r.prometheusHandler, r.Config.TelemetryConfig) {
 		transportConfig.PrometheusHandler = r.prometheusHandler
 		slog.Warn("serving prometheus metrics on the transport port as well as the diagnostics port; "+
 			"this is deprecated and the transport-port copy will be removed; see #6384 for the timeline. "+

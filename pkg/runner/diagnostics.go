@@ -6,6 +6,7 @@ package runner
 import (
 	"context"
 	"fmt"
+	"net/http"
 	"time"
 
 	"github.com/stacklok/toolhive/pkg/diagnostics"
@@ -62,6 +63,17 @@ func diagnosticsPort(cfg *telemetry.Config) int {
 		return diagnostics.DefaultPort
 	}
 	return cfg.PrometheusPort
+}
+
+// mountPrometheusHandlerOnTransportPort reports whether Run should hand the
+// Prometheus handler to the transport, which is what makes the proxies also serve
+// /metrics on the transport port during the migration window (see
+// telemetry.DefaultMetricsOnTransportPort). Extracted from Run so the decision is
+// unit-testable without exercising the whole method: a bug here would resolve the
+// migration switch correctly while silently failing to act on it for standard
+// (non-vMCP) workloads.
+func mountPrometheusHandlerOnTransportPort(handler http.Handler, cfg *telemetry.Config) bool {
+	return handler != nil && cfg.ServeMetricsOnTransportPort()
 }
 
 // stopDiagnosticsServer shuts the diagnostics listener down. It is safe to call

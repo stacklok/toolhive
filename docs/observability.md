@@ -295,7 +295,7 @@ What lives on the transport port:
 | `/.well-known/oauth-protected-resource` | Yes, if clients perform OAuth discovery (RFC 9728) |
 | `/.well-known/openid-configuration`, `/.well-known/oauth-authorization-server`, `/.well-known/jwks.json`, `/oauth/` | Only when the embedded authorization server is enabled |
 | `/health` | No — it exists for Kubernetes probes, which reach it in-cluster |
-| `/metrics` | Not served here at all; it returns 404 on this listener |
+| `/metrics` | During the migration window, yes — see [Migration window](#migration-window). After it closes, no; it returns 404 on this listener |
 
 For a transparent proxy fronting a remote MCP server, the MCP path is whatever the
 backend exposes, since that proxy forwards `/` to the backend.

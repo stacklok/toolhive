@@ -25,6 +25,7 @@ thv ai-plugin install [plugin-name] [flags]
 ### Options
 
 ```
+      --allow-unsigned        Allow installing a project-scoped plugin without a verified signature (recorded in the lock file)
       --clients string        Comma-separated target client apps (e.g. claude-code,codex), or "all" for every available client
       --force                 Overwrite existing plugin directory
       --group string          Group to add the plugin to after installation

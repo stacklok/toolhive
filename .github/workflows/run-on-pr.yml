@@ -55,3 +55,17 @@ jobs:
       contents: read
       packages: write
     uses: ./.github/workflows/skills-build-and-publish.yml
+  skills-keyless-e2e:
+    name: Skills Keyless Signing E2E (staging)
+    needs: [linting, tests, codegen]
+    # Fork PRs cannot be granted id-token: write, so there is no ambient
+    # token to sign with and the job could only ever fail.
+    if: github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository
+    # Informational, not a merge gate: it signs against Sigstore's public
+    # staging instance, whose outages this repository does not control. The
+    # continue-on-error that makes it non-blocking lives on the called
+    # workflow's own job — GitHub rejects that key on a job that uses `uses:`.
+    permissions:
+      contents: read
+      id-token: write
+    uses: ./.github/workflows/skills-keyless-signing-e2e.yml

@@ -1,0 +1,218 @@
+#
+# Copyright 2025 Stacklok, Inc.
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+#     http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+#
+# Interoperability check for keyless skill signing (#6307).
+#
+# `thv skill push` with no signing flags acquires the job's ambient OIDC
+# token, and `thv serve` exchanges it with Fulcio for a certificate and
+# records the signature in Rekor. This workflow proves that what comes out
+# the other end is a real Sigstore signature and not merely something
+# ToolHive's own verifier happens to accept: it signs a throwaway skill and
+# then verifies it with stock `cosign`, an entirely separate implementation.
+#
+# Two deliberate choices keep this off the production trust root:
+#
+#   - Signing targets Sigstore's *staging* Fulcio and Rekor, so nothing this
+#     job produces lands in the production transparency log. Staging is
+#     operated the same way as production but carries no SLO guarantee.
+#   - The artifact is pushed to a throwaway `registry:2` service container,
+#     never to a real registry.
+#
+# Callers run this non-blocking (continue-on-error) for the same reason:
+# staging outages and its frequently re-signed TUF metadata are outside this
+# repository's control.
+
+name: Skills Keyless Signing E2E
+
+on:
+  workflow_call:
+
+jobs:
+  keyless-signing-e2e:
+    name: Sign against Sigstore staging and verify with cosign
+    runs-on: ubuntu-latest
+    # Non-blocking: staging carries no SLO guarantee and re-signs its TUF
+    # metadata every few days, so an outage there must not fail a caller's
+    # run. A failure is still recorded against this job for anyone reading
+    # the run. This lives here rather than on the calling job because GitHub
+    # rejects continue-on-error on a job that calls a reusable workflow.
+    continue-on-error: true
+    permissions:
+      contents: read
+      # The whole point: without this, no ambient OIDC token exists and the
+      # push fails rather than falling back to an unsigned publish.
+      id-token: write
+
+    services:
+      # Throwaway registry. Nothing published here outlives the job, so it
+      # runs over plain HTTP with no auth.
+      registry:
+        image: registry:2@sha256:a3d8aaa63ed8681a604f1dea0aa03f100d5895b6a58ace528858a7b332415373
+        ports:
+          - 5000:5000
+
+    env:
+      # Sigstore staging. Read by `thv serve` (pkg/skills/skillsvc/build.go),
+      # not by the CLI, so they are exported onto the server process below.
+      STAGING_FULCIO_URL: https://fulcio.sigstage.dev
+      STAGING_REKOR_URL: https://rekor.sigstage.dev
+      SKILL_NAME: keyless-e2e
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+        with:
+          # This job builds and signs throwaway content; it never pushes to
+          # the repository.
+          persist-credentials: false
+
+      - name: Set up Go
+        uses: actions/setup-go@924ae3a1cded613372ab5595356fb5720e22ba16 # v6
+        with:
+          go-version: 'stable'
+
+      - name: Install Cosign
+        uses: sigstore/cosign-installer@6f9f17788090df1f26f669e9d70d6ae9567deba6 # v4.1.2
+
+      - name: Pin the Sigstore staging trust root
+        # Points cosign's TUF trust root at sigstage, so the verify step below
+        # trusts the staging Fulcio CA and Rekor key instead of production's.
+        # Staging re-signs its metadata every few days; expired metadata here
+        # is the most likely reason for this job to fail spuriously.
+        run: cosign initialize --staging
+
+      - name: Build thv binary
+        run: go build -o ./thv ./cmd/thv
+
+      - name: Start thv serve
+        env:
+          # All three are read by the server process, never by the CLI.
+          #
+          # TOOLHIVE_DEV makes the OCI push use plain HTTP for loopback
+          # registries only (pkg/api/server.go newOCIRegistryClient); without
+          # it the push attempts TLS against the service container and dies in
+          # the handshake, long before signing. The signature manifest itself
+          # is attached by go-containerregistry, which already picks HTTP for
+          # a `localhost:<port>` host with no configuration — hence the
+          # `localhost:5000` reference below rather than a bare `localhost`
+          # host, which the two halves would resolve to different schemes.
+          TOOLHIVE_DEV: 'true'
+          TOOLHIVE_SIGSTORE_FULCIO_URL: ${{ env.STAGING_FULCIO_URL }}
+          TOOLHIVE_SIGSTORE_REKOR_URL: ${{ env.STAGING_REKOR_URL }}
+        run: |
+          ./thv serve --host 127.0.0.1 --port 8080 > /tmp/thv-serve.log 2>&1 &
+          echo "THV_PID=$!" >> "$GITHUB_ENV"
+
+          # Wait for the server to be ready
+          for i in $(seq 1 30); do
+            if curl -sf http://127.0.0.1:8080/health > /dev/null 2>&1; then
+              echo "thv serve is ready (PID: $!)"
+              break
+            fi
+            if [ "$i" -eq 30 ]; then
+              echo "thv serve failed to start after 30s; logs:"
+              cat /tmp/thv-serve.log
+              exit 1
+            fi
+            sleep 1
+          done
+
+          # Verify process is still alive after health check
+          kill -0 "$!" 2>/dev/null || { echo "thv serve exited unexpectedly; logs:"; cat /tmp/thv-serve.log; exit 1; }
+
+      - name: Build a throwaway skill
+        id: build
+        env:
+          # github.run_id and github.run_attempt are digits only, but they are
+          # bound rather than interpolated to match how every other workflow
+          # here feeds context values into a shell.
+          RUN_ID: ${{ github.run_id }}
+          RUN_ATTEMPT: ${{ github.run_attempt }}
+        run: |
+          set -euo pipefail
+
+          skill_dir="$(mktemp -d)/${SKILL_NAME}"
+          mkdir -p "$skill_dir"
+          cat > "${skill_dir}/SKILL.md" <<EOF
+          ---
+          name: ${SKILL_NAME}
+          description: Throwaway skill used to verify keyless signing interoperability. Never published.
+          ---
+          # Keyless signing E2E
+
+          This artifact exists only to be signed and verified within a single CI run.
+          EOF
+
+          # The install-side check requires the skill name to match the last
+          # path segment of the reference.
+          ref="localhost:5000/${SKILL_NAME}:run-${RUN_ID}-${RUN_ATTEMPT}"
+          built_ref=$(./thv skill build "$skill_dir" --tag "$ref")
+          echo "Built: ${built_ref}"
+          # Carry forward what build reported, the way the release workflow
+          # does, rather than re-deriving the reference downstream.
+          echo "ref=${built_ref}" >> "$GITHUB_OUTPUT"
+
+      - name: Push and sign keylessly
+        env:
+          REF: ${{ steps.build.outputs.ref }}
+        run: |
+          set -euo pipefail
+          # No signing flags. The CLI's acquisition ladder
+          # (pkg/skills/identitytoken) finds ACTIONS_ID_TOKEN_REQUEST_URL /
+          # _TOKEN, which exist because this job declares id-token: write.
+          ./thv skill push "$REF"
+
+      - name: Verify the signature with stock cosign
+        env:
+          REF: ${{ steps.build.outputs.ref }}
+          # Fulcio records the *reusable* workflow's ref in the certificate
+          # SAN (the token's job_workflow_ref claim), so this pins the
+          # identity to this file rather than to whichever workflow called it.
+          # The @.* tail is the git ref, which differs per branch, tag and PR.
+          IDENTITY_REGEXP: https://github.com/${{ github.repository }}/.github/workflows/skills-keyless-signing-e2e.yml@.*
+        run: |
+          set -euo pipefail
+          # A loose identity pattern would still pass if the wrong certificate
+          # somehow signed this, which would defeat the purpose of the job.
+          # --new-bundle-format=false: cosign v3 defaults to expecting an OCI
+          # 1.1 referrers bundle, but toolhive-core attaches the classic
+          # cosign signature manifest — a `sha256-<hex>.sig` tag whose layer
+          # annotations carry the signature, certificate and Rekor entry
+          # (container/signer/cosign_attach.go). Leaving the default on makes
+          # verification fail to find the signature at all, which would look
+          # like a signing bug rather than a format mismatch.
+          cosign verify "$REF" \
+            --certificate-identity-regexp "$IDENTITY_REGEXP" \
+            --certificate-oidc-issuer https://token.actions.githubusercontent.com \
+            --new-bundle-format=false \
+            --allow-insecure-registry
+
+      - name: Report failure
+        if: failure()
+        run: |
+          {
+            echo "## Skills keyless signing E2E failed"
+            echo
+            echo "This job is informational and does not block the run."
+            echo "Most likely causes, in order: stale Sigstore staging TUF"
+            echo "metadata (re-signed every few days), a staging Fulcio or"
+            echo "Rekor outage, or a genuine regression in keyless push."
+          } >> "$GITHUB_STEP_SUMMARY"
+          echo "--- thv serve log ---"
+          cat /tmp/thv-serve.log
+
+      - name: Stop thv serve
+        if: always()
+        run: kill "$THV_PID" 2>/dev/null || true

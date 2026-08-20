@@ -33,9 +33,13 @@ jobs:
     runs-on: ubuntu-latest
     permissions:
       contents: read
-      # packages:write is only exercised when inputs.push is true,
-      # but GitHub Actions does not support conditional permissions.
+      # packages:write and id-token:write are only exercised when inputs.push
+      # is true, but GitHub Actions does not support conditional permissions.
       packages: write
+      # Lets `thv skill push` mint the ambient OIDC token it signs with. A
+      # reusable workflow cannot be granted more than its caller declares, so
+      # the calling job needs this too (releaser.yml's skills-build-and-push).
+      id-token: write
 
     env:
       BASE_REPO: "ghcr.io/stacklok/toolhive/skills"
@@ -109,16 +113,18 @@ jobs:
 
             if [ "$PUSH" = "true" ]; then
               echo "Pushing skill: ${built_ref}"
-              # TODO(#6307): pushes are unsigned until keyless push signing lands;
-              # switch to Fulcio/Rekor signing and drop --no-sign once that ships.
-              ./thv skill push "$built_ref" --no-sign
+              # No signing flags: with id-token:write granted, the push acquires
+              # the job's ambient OIDC token and signs keylessly against Fulcio
+              # and Rekor. Absent that token the push fails rather than
+              # publishing unsigned.
+              ./thv skill push "$built_ref"
 
               # Also tag as latest when building from a release tag
               if [[ "$GH_REF" == refs/tags/* ]]; then
                 latest_ref="${BASE_REPO}/${skill_name}:latest"
                 echo "Tagging as latest: ${latest_ref}"
                 built_latest=$(./thv skill build "$skill_dir" --tag "$latest_ref")
-                ./thv skill push "$built_latest" --no-sign
+                ./thv skill push "$built_latest"
               fi
 
               echo "Published: ${ref}"

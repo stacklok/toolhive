@@ -588,7 +588,7 @@ func (r *MCPServerReconciler) Reconcile(ctx context.Context, req ctrl.Request) (
 	if result, err := r.ensureWorkloadStatefulSet(ctx, mcpServer, deployment); err != nil {
 		ctxLogger.Error(err, "Failed to ensure workload StatefulSet")
 		return ctrl.Result{}, err
-	} else if result.Requeue || result.RequeueAfter > 0 {
+	} else if result.RequeueAfter > 0 {
 		return result, nil
 	}
 
@@ -1711,34 +1711,38 @@ func (r *MCPServerReconciler) updateMCPServerStatus(ctx context.Context, m *mcpv
 		if updated {
 			return nil
 		}
+	}
+	applyMCPServerPhaseFromCounts(m, running, pending, failed, failureReason)
+
+	// Update the status
+	return r.Status().Update(ctx, m)
+}
+
+func applyMCPServerPhaseFromCounts(m *mcpv1beta1.MCPServer, running, pending, failed int, failureReason string) {
+	switch {
+	case running > 0:
 		m.Status.Phase = mcpv1beta1.MCPServerPhaseReady
 		m.Status.Message = "MCP server is running"
-	} else if failed > 0 {
+	case failed > 0:
 		m.Status.Phase = mcpv1beta1.MCPServerPhaseFailed
 		if failureReason != "" {
 			m.Status.Message = fmt.Sprintf("MCP server pod failed: %s", failureReason)
 		} else {
 			m.Status.Message = "MCP server pod failed"
 		}
-	} else if pending > 0 {
+	case pending > 0:
 		m.Status.Phase = mcpv1beta1.MCPServerPhasePending
 		m.Status.Message = "MCP server is starting"
-	} else {
+	default:
 		m.Status.Phase = mcpv1beta1.MCPServerPhasePending
 		m.Status.Message = "No healthy pods found"
 	}
-
-	// Set the top-level Ready condition based on the determined phase
 	if m.Status.Phase == mcpv1beta1.MCPServerPhaseReady {
 		setReadyCondition(m, metav1.ConditionTrue, mcpv1beta1.ConditionReasonReady, "MCP server is running")
 	} else {
 		setReadyCondition(m, metav1.ConditionFalse, mcpv1beta1.ConditionReasonNotReady, m.Status.Message)
 	}
-
-	// Update the status
-	return r.Status().Update(ctx, m)
 }
-
 
 // statusIfWorkloadStatefulSetMissing sets Pending when the proxy is up but the
 // sibling workload STS is gone (#6343). Returns true if status was written.

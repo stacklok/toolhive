@@ -373,7 +373,9 @@ whether to grant the exchange, in this order:
    external-issuer authorization below is skipped entirely
    (`validateExternalToken` never calls `resolveActorAuthorization` when
    `may_act` is present), and `checkDelegationConsent` enforces `may_act.sub`
-   against the authenticated ToolHive client. A malformed `may_act` is
+   against the resolved actor identity. For an ordinary OAuth client that is
+   normally its configured client ID; for a SPIFFE-authenticated exchange it is
+   the canonical verified SPIFFE ID. A malformed `may_act` is
    rejected outright by `validateMayActShape`, not silently ignored. On the
    external path, `may_act.iss` is mandatory, not merely constrained when
    present as on the self-issued path — `validateMayActShape`'s `requireIss`
@@ -404,8 +406,9 @@ whether to grant the exchange, in this order:
    `actorMatcher` accepts only permitted `may_act`-bearing tokens from that
    issuer; without `allowMayAct`, it accepts no tokens at all.
    `checkDelegationConsent` then additionally checks the issuer's
-   `allowedDelegateClients` against the authenticated ToolHive client — this
-   field is required (see below), so the check always applies on this path.
+   `allowedDelegateClients` against the authenticated ToolHive OAuth client ID
+   — this field is required (see below), so the check always applies on this
+   path.
 
    **`actorMatcher` misconfiguration risk, analogous to `allowedActors`
    above:** write the predicate against a claim the external issuer alone
@@ -444,6 +447,10 @@ roles:
   occupy. It is not required to equal the client ID: this is what lets a
   single OAuth client present a more specific actor identity (e.g. a
   particular agent instance or delegate persona) than its own `client_id`.
+  For a SPIFFE-authenticated exchange, this flexibility is deliberately
+  unavailable: the `actor_token` must assert both the configured OAuth
+  `client_id` and the exact canonical SPIFFE ID in `sub`; the latter is the
+  resolved actor identity and becomes `act.sub`.
 
 Presenting a distinct `sub` this way does not itself grant any extra
 privilege — the resulting actor identity still has to clear
@@ -605,12 +612,16 @@ delegate_clients:
    requires explicit per-client containment. `checkDelegationConsent` checks
    the authenticated client against this list on both consent paths:
    `may_act` bypasses `allowedActors` and `actorMatcher` (external-issuer
-   authorization) but NOT
-   `allowedDelegateClients`, since the validator sets `AllowedDelegateClients`
-   for every external token regardless of which path authorized it (see
-   limitation 4 below). A self-issued `may_act` (no external issuer involved)
-   has no `allowedDelegateClients` equivalent and is unaffected — it remains
-   bound by `may_act.sub` alone.
+   authorization) but NOT `allowedDelegateClients`, since the validator sets
+   `AllowedDelegateClients` for every external token regardless of which path
+   authorized it (see limitation 4 below). `may_act.sub` is separately bound
+   to the resolved actor identity: the canonical SPIFFE ID for a
+   SPIFFE-authenticated exchange, or the ordinary client's configured ID or
+   asserted actor-token identity. `allowedDelegateClients` always remains a
+   list of configured OAuth client IDs, including for SPIFFE authentication.
+   A self-issued `may_act` (no external issuer involved) has no
+   `allowedDelegateClients` equivalent and is unaffected — it remains bound by
+   `may_act.sub` alone.
 
 2. **Subject namespace collisions are closed, not accepted.** A trusted
    issuer is trusted to assert *any* subject this server accepts for
@@ -626,10 +637,13 @@ delegate_clients:
    disjoint across issuers.
 3. **Provenance is recorded for every external token, but never as a
    phantom actor.** The RFC 8693 §4.1 `act` claim identifies parties that
-   acted: its outer hop always contains ToolHive's issuer and client ID,
-   and a genuine external actor — the allowlist path's allowlisted actor
-   claim — nests one level in, e.g. `act = {iss: <toolhive-issuer>, sub:
-   <toolhive-client>, act: {iss: <external-issuer>, sub: <external-actor>}}`.
+   acted: its outer hop always contains ToolHive's issuer and the resolved
+   actor identity — the canonical SPIFFE ID for a SPIFFE-authenticated
+   exchange, or the configured OAuth client ID (or an actor_token's asserted
+   identity) for other clients — and a genuine external actor — the
+   allowlist path's allowlisted actor claim — nests one level in, e.g.
+   `act = {iss: <toolhive-issuer>, sub: <resolved-actor>, act: {iss:
+   <external-issuer>, sub: <external-actor>}}`.
    A `may_act`-bearing or `ActorMatcher`-only external token has no
    client-namespace actor to nest — `may_act.sub` already names the
    delegate directly via the outer hop — so `act` stays a single hop for

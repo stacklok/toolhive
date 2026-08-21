@@ -805,6 +805,42 @@ func TestNewSessionFactory_BackendInitTimeout(t *testing.T) {
 	require.NoError(t, sess.Close())
 }
 
+func TestNewSessionFactory_WorkloadTimeoutExtendsBackendInit(t *testing.T) {
+	t.Parallel()
+
+	backend := &vmcp.Backend{ID: "slow", Name: "slow", BaseURL: "http://x:9", TransportType: "streamable-http"}
+	connector := func(ctx context.Context, _ *vmcp.BackendTarget, _ *auth.Identity, _ string, _ internalbk.ListChangedSink) (internalbk.Session, *vmcp.CapabilityList, error) {
+		timer := time.NewTimer(150 * time.Millisecond)
+		defer timer.Stop()
+		select {
+		case <-ctx.Done():
+			return nil, nil, ctx.Err()
+		case <-timer.C:
+			return &mockConnectedBackend{}, &vmcp.CapabilityList{
+				Tools: []vmcp.Tool{{Name: "ready"}},
+			}, nil
+		}
+	}
+
+	factory := newSessionFactoryWithConnector(
+		connector,
+		WithBackendInitTimeout(50*time.Millisecond),
+		WithRequestTimeoutResolver(func(workloadID string) time.Duration {
+			if workloadID == "slow" {
+				return time.Second
+			}
+			return 50 * time.Millisecond
+		}),
+	)
+	sess, err := factory.MakeSessionWithID(
+		context.Background(), uuid.New().String(), nil, []*vmcp.Backend{backend}, nil,
+	)
+	require.NoError(t, err)
+	require.NotNil(t, sess)
+	assert.Len(t, sess.Tools(), 1)
+	require.NoError(t, sess.Close())
+}
+
 func TestNewSessionFactory_ParallelInit(t *testing.T) {
 	t.Parallel()
 

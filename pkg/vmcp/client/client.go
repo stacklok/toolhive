@@ -65,6 +65,10 @@ const (
 	// A tools/list response with 1000 tools would be limited to 100MB total.
 	maxResponseSize = 100 * 1024 * 1024 // 100 MB
 
+	// defaultBackendRequestTimeout bounds individual backend operations when no
+	// workload-specific timeout is configured.
+	defaultBackendRequestTimeout = 30 * time.Second
+
 	// defaultRefutationTTL is the default lifetime of a modernHintRefuted
 	// entry. Chosen to be long enough that a persistently hint-lying backend
 	// (#6154) pays a negligible probe cost (one server/discover per backend
@@ -125,6 +129,22 @@ func WithRefutationTTL(d time.Duration) Option {
 	return func(h *httpBackendClient) {
 		if d > 0 {
 			h.refutationTTL = d
+		}
+	}
+}
+
+// WithRequestTimeoutResolver configures the timeout used for each backend
+// operation. The resolver receives the backend workload ID and may return a
+// workload-specific duration. A nil resolver, or a non-positive result, uses
+// the 30-second default.
+//
+// The resolver may be called concurrently and must therefore be safe for
+// concurrent use. SSE connection lifetimes remain unbounded, but individual
+// operations on those connections are bounded through request contexts.
+func WithRequestTimeoutResolver(resolver func(workloadID string) time.Duration) Option {
+	return func(h *httpBackendClient) {
+		if resolver != nil {
+			h.requestTimeoutResolver = resolver
 		}
 	}
 }
@@ -209,6 +229,11 @@ type httpBackendClient struct {
 	// confirming probe in legacyInit. Defaults to defaultRefutationTTL;
 	// configurable via WithRefutationTTL (tests).
 	refutationTTL time.Duration
+
+	// requestTimeoutResolver returns the wall-clock timeout for an individual
+	// backend operation by workload ID. It is immutable after construction and
+	// may be read concurrently.
+	requestTimeoutResolver func(workloadID string) time.Duration
 }
 
 // NewHTTPBackendClient creates a new HTTP-based backend client.
@@ -238,6 +263,24 @@ func NewHTTPBackendClient(registry vmcpauth.OutgoingAuthRegistry, opts ...Option
 	}
 	c.clientFactory = c.defaultClientFactory
 	return c, nil
+}
+
+// requestTimeout returns the configured request timeout for workloadID,
+// falling back to the historical 30-second default when no positive override
+// is available.
+func (h *httpBackendClient) requestTimeout(workloadID string) time.Duration {
+	if h.requestTimeoutResolver != nil {
+		if timeout := h.requestTimeoutResolver(workloadID); timeout > 0 {
+			return timeout
+		}
+	}
+	return defaultBackendRequestTimeout
+}
+
+func (h *httpBackendClient) requestContext(
+	ctx context.Context, target *vmcp.BackendTarget,
+) (context.Context, context.CancelFunc) {
+	return context.WithTimeout(ctx, h.requestTimeout(target.WorkloadID))
 }
 
 // backendDialer returns a net.Dialer with the standard backend timeouts and an
@@ -517,7 +560,7 @@ func (h *httpBackendClient) resolveAuthStrategy(target *vmcp.BackendTarget) (vmc
 // sampling handlers so a backend's mid-call server->client traffic reaches the
 // downstream client. Non-forwarding calls get the plain client (no standalone GET
 // stream), which is byte-for-byte the pre-forwarding construction.
-func (*httpBackendClient) newStreamableHTTPClient(
+func (h *httpBackendClient) newStreamableHTTPClient(
 	ctx context.Context, target *vmcp.BackendTarget,
 	baseTransport http.RoundTripper, forwarding bool, fwd *boundForwarders,
 ) (*client.Client, error) {
@@ -537,9 +580,10 @@ func (*httpBackendClient) newStreamableHTTPClient(
 		}
 		return resp, nil
 	})
-	httpClient := newBackendHTTPClient(sizeLimitedTransport, 30*time.Second)
+	requestTimeout := h.requestTimeout(target.WorkloadID)
+	httpClient := newBackendHTTPClient(sizeLimitedTransport, requestTimeout)
 	transportOpts := []transport.StreamableHTTPCOption{
-		transport.WithHTTPTimeout(30 * time.Second),
+		transport.WithHTTPTimeout(requestTimeout),
 		transport.WithHTTPBasicClient(httpClient),
 	}
 	if fwd != nil && forwarding {
@@ -1052,15 +1096,15 @@ func (h *httpBackendClient) CachedRevision(workloadID string) (mcpparser.Revisio
 // identity, header-forward, trace, TLS/SSRF — see buildBackendRoundTripper) in an
 // *http.Client for the raw Modern shim. This is a LIVE production path: the
 // discover probe must carry the same security controls as every other backend
-// call, so it must NOT use a bare http.Client. A 30s timeout matches the
-// streamable-HTTP client; the response body is bounded inside modernCall
+// call, so it must NOT use a bare http.Client. Its workload-aware timeout
+// matches the streamable-HTTP client; the response body is bounded inside modernCall
 // (io.LimitReader), so no size-limit transport wrapper is needed here.
 func (h *httpBackendClient) buildModernHTTPClient(ctx context.Context, target *vmcp.BackendTarget) (*http.Client, error) {
 	rt, err := h.buildBackendRoundTripper(ctx, target)
 	if err != nil {
 		return nil, err
 	}
-	return newBackendHTTPClient(rt, 30*time.Second), nil
+	return newBackendHTTPClient(rt, h.requestTimeout(target.WorkloadID)), nil
 }
 
 // newBackendHTTPClient is the single choke point for every backend *http.Client
@@ -1399,6 +1443,9 @@ func newCapabilityListFromMCP(
 // first-probe blip that pinned Legacy) self-corrects: the failing path triggers a
 // re-probe and one retry under the corrected revision.
 func (h *httpBackendClient) ListCapabilities(ctx context.Context, target *vmcp.BackendTarget) (*vmcp.CapabilityList, error) {
+	ctx, cancel := h.requestContext(ctx, target)
+	defer cancel()
+
 	slog.Debug("querying capabilities from backend", "backend", target.WorkloadName, "url", target.BaseURL)
 	var out *vmcp.CapabilityList
 	err := h.dispatch(ctx, target, func(ctx context.Context, rev mcpparser.Revision) error {
@@ -1714,6 +1761,9 @@ func (h *httpBackendClient) CallTool(
 	meta map[string]any,
 	paramHeaders map[string]string,
 ) (*vmcp.ToolCallResult, error) {
+	ctx, cancel := h.requestContext(ctx, target)
+	defer cancel()
+
 	slog.Debug("calling tool on backend", "tool", toolName, "backend", target.WorkloadName)
 	var out *vmcp.ToolCallResult
 	err := h.dispatch(ctx, target, func(ctx context.Context, rev mcpparser.Revision) error {
@@ -1921,6 +1971,9 @@ func toolResultFromMCP(result *mcp.CallToolResult, toolName, backendID string) *
 func (h *httpBackendClient) ReadResource(
 	ctx context.Context, target *vmcp.BackendTarget, uri string,
 ) (*vmcp.ResourceReadResult, error) {
+	ctx, cancel := h.requestContext(ctx, target)
+	defer cancel()
+
 	slog.Debug("reading resource from backend", "resource", uri, "backend", target.WorkloadName)
 	var out *vmcp.ResourceReadResult
 	err := h.dispatch(ctx, target, func(ctx context.Context, rev mcpparser.Revision) error {
@@ -2038,6 +2091,9 @@ func (h *httpBackendClient) GetPrompt(
 	name string,
 	arguments map[string]any,
 ) (*vmcp.PromptGetResult, error) {
+	ctx, cancel := h.requestContext(ctx, target)
+	defer cancel()
+
 	slog.Debug("getting prompt from backend", "prompt", name, "backend", target.WorkloadName)
 	var out *vmcp.PromptGetResult
 	err := h.dispatch(ctx, target, func(ctx context.Context, rev mcpparser.Revision) error {
@@ -2158,6 +2214,9 @@ func (h *httpBackendClient) Complete(
 	argName, argValue string,
 	contextArgs map[string]string,
 ) (*vmcp.CompletionResult, error) {
+	ctx, cancel := h.requestContext(ctx, target)
+	defer cancel()
+
 	slog.Debug("requesting completion from backend", "ref_type", ref.Type, "backend", target.WorkloadName)
 	var out *vmcp.CompletionResult
 	err := h.dispatch(ctx, target, func(ctx context.Context, rev mcpparser.Revision) error {

@@ -60,6 +60,7 @@ var _ = ginkgo.Describe("MCPServer SPIFFE client credentials", ginkgo.Ordered, f
 		hmacSecretName                    string
 		listenerSecretName                string
 		publicCAConfigMapName             string
+		oidcConfigName                    string
 		signingSecretName                 string
 		spireName                         string
 		issuer                            string
@@ -85,6 +86,7 @@ var _ = ginkgo.Describe("MCPServer SPIFFE client credentials", ginkgo.Ordered, f
 		hmacSecretName = "spiffe-hmac-" + suffix
 		listenerSecretName = "spiffe-listener-" + suffix
 		publicCAConfigMapName = "spiffe-ca-" + suffix
+		oidcConfigName = "spiffe-oidc-" + suffix
 		signingSecretName = "spiffe-signing-" + suffix
 		spireName = "spiffe-" + suffix
 		issuer = fmt.Sprintf("https://%s.%s.svc.cluster.local:%d", asServiceName, defaultNamespace, proxyPort)
@@ -227,13 +229,44 @@ var _ = ginkgo.Describe("MCPServer SPIFFE client credentials", ginkgo.Ordered, f
 			},
 		})).To(gomega.Succeed())
 
+		ginkgo.By("creating an MCPOIDCConfig trusting the embedded auth server's own issuer")
+		gomega.Expect(k8sClient.Create(ctx, &mcpv1beta1.MCPOIDCConfig{
+			ObjectMeta: metav1.ObjectMeta{Name: oidcConfigName, Namespace: defaultNamespace},
+			Spec: mcpv1beta1.MCPOIDCConfigSpec{
+				Type: mcpv1beta1.MCPOIDCConfigTypeInline,
+				Inline: &mcpv1beta1.InlineOIDCSharedConfig{
+					// The proxy's incoming-request validator must trust the SAME
+					// self-issued issuer the embedded auth server signs tokens as.
+					// The issuer is HTTPS (X.509-SVID auth requires listener TLS),
+					// so JWKS fetch needs the same CA the client already trusts.
+					Issuer:  issuer,
+					JWKSURL: issuer + "/.well-known/jwks.json",
+					CABundleRef: &mcpv1beta1.CABundleSource{
+						ConfigMapRef: &corev1.ConfigMapKeySelector{
+							LocalObjectReference: corev1.LocalObjectReference{Name: publicCAConfigMapName},
+						},
+					},
+					JWKSAllowPrivateIP: true,
+				},
+			},
+		})).To(gomega.Succeed())
+
 		ginkgo.By("creating the authorization server and attested ToolHive client")
-		gomega.Expect(k8sClient.Create(ctx, newSPIFFEMCPServer(
+		asServer := newSPIFFEMCPServer(
 			asName,
 			nil,
 			&mcpv1beta1.AuthServerRef{Kind: "MCPExternalAuthConfig", Name: authConfigName},
 			nil,
-		))).To(gomega.Succeed())
+		)
+		asServer.Spec.OIDCConfigRef = &mcpv1beta1.MCPOIDCConfigReference{
+			// Scopes becomes the embedded AS's scopesSupported (see
+			// AddEmbeddedAuthServerConfigOptions in controllerutil/authserver.go);
+			// it defaults to ["openid", "offline_access"] when empty, which does
+			// not include the custom scope our SPIFFE association grants.
+			Name: oidcConfigName, Audience: resource, ResourceURL: resource,
+			Scopes: []string{"openid", clientScope},
+		}
+		gomega.Expect(k8sClient.Create(ctx, asServer)).To(gomega.Succeed())
 		socketVolume, socketMount, socketEnv, err := SPIREWorkloadAPIVolume("spire-socket")
 		gomega.Expect(err).NotTo(gomega.HaveOccurred())
 		clientTemplate := corev1.PodTemplateSpec{
@@ -243,8 +276,14 @@ var _ = ginkgo.Describe("MCPServer SPIFFE client credentials", ginkgo.Ordered, f
 					{
 						Name:  "spiffe-client",
 						Image: spiffeClientE2EImage,
-						Args:  []string{"hold"},
-						Env:   []corev1.EnvVar{socketEnv},
+						// kind.local isn't a resolvable registry — the image only exists
+						// because `kind load docker-image` injected it directly into
+						// containerd. Kubernetes defaults :latest-tagged images to
+						// imagePullPolicy: Always, which tries (and fails) a real
+						// network pull regardless, so this must be explicit.
+						ImagePullPolicy: corev1.PullNever,
+						Args:            []string{"hold"},
+						Env:             []corev1.EnvVar{socketEnv},
 						VolumeMounts: []corev1.VolumeMount{
 							socketMount,
 							{Name: "as-ca", MountPath: "/var/run/spiffe-ca", ReadOnly: true},
@@ -295,6 +334,9 @@ var _ = ginkgo.Describe("MCPServer SPIFFE client credentials", ginkgo.Ordered, f
 		}
 		_ = k8sClient.Delete(ctx, &mcpv1beta1.MCPExternalAuthConfig{
 			ObjectMeta: metav1.ObjectMeta{Name: authConfigName, Namespace: defaultNamespace},
+		})
+		_ = k8sClient.Delete(ctx, &mcpv1beta1.MCPOIDCConfig{
+			ObjectMeta: metav1.ObjectMeta{Name: oidcConfigName, Namespace: defaultNamespace},
 		})
 		for _, serviceAccountName := range []string{unmatchedClientServiceAccountName, clientServiceAccountName} {
 			_ = k8sClient.Delete(ctx, &corev1.ServiceAccount{

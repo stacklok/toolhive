@@ -922,13 +922,24 @@ type JWTBearerIssuerPolicyConfig struct {
 // +kubebuilder:validation:XValidation:rule="!has(self.inboundGrants) || !has(self.inboundGrants.jwtBearer) || !has(self.inboundGrants.jwtBearer.issuerPolicies) || self.inboundGrants.jwtBearer.issuerPolicies.all(policy, has(self.trustedIssuers) && self.trustedIssuers.exists(issuer, has(issuer.name) && issuer.name == policy.issuerRef))",message="every jwtBearer issuerRef must reference a named trusted issuer"
 // +kubebuilder:validation:XValidation:rule="!has(self.inboundGrants) || !has(self.inboundGrants.jwtBearer) || !has(self.inboundGrants.jwtBearer.issuerPolicies) || self.inboundGrants.jwtBearer.issuerPolicies.all(policy, self.inboundGrants.jwtBearer.issuerPolicies.filter(other, other.issuerRef == policy.issuerRef).size() == 1)",message="jwtBearer issuerPolicies must not contain duplicate issuerRef values"
 // +kubebuilder:validation:XValidation:rule="!has(self.listenerTLS) || (has(self.listenerTLS.certificateSecretRef) && has(self.listenerTLS.privateKeySecretRef))",message="listenerTLS certificateSecretRef and privateKeySecretRef must be configured together"
-// +kubebuilder:validation:XValidation:rule="!has(self.inboundGrants) || !has(self.inboundGrants.spiffeClientAuth) || !self.inboundGrants.spiffeClientAuth.exists(association, association.methods.exists(method, method == 'spiffe_x509')) || has(self.listenerTLS)",message="listenerTLS is required when SPIFFE X.509 client authentication is configured"
 //
 // The shared Go-level ValidateConfidentialClientTransport validator remains the
 // source of truth for confidential-client transport and loopback policy,
 // including delegate clients. Trusted issuer endpoint shape is validated by
 // ValidateInboundGrants; audience and outbound DNS/private-IP checks remain
 // runtime-only.
+//
+// "listenerTLS is required when SPIFFE X.509 client authentication is
+// configured" is deliberately NOT expressed here as a CEL rule: the natural
+// expression (self.inboundGrants.spiffeClientAuth.exists(a,
+// a.methods.exists(m, m == 'spiffe_x509'))) is a nested exists() over two
+// unbounded arrays, whose estimated worst-case cost alone pushed this
+// schema's total x-kubernetes-validations cost over the apiserver's CEL
+// budget by more than 100x — confirmed by dry-run apply against a real
+// cluster, not a hunch. validateListenerTLS (below) already enforces the
+// identical check in Go at reconcile time; this is exactly the "CEL
+// genuinely cannot express it" exception the operator rules carve out, not a
+// dropped guard.
 //
 //nolint:lll // CEL validation rules exceed line length limits.
 type EmbeddedAuthServerConfig struct {

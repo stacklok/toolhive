@@ -738,7 +738,6 @@ type SPIFFETokenExchangeConfig struct {
 // +kubebuilder:validation:XValidation:rule="(!has(self.forceConfidentialRedirectUris) || size(self.forceConfidentialRedirectUris) == 0) || (has(self.allowConfidentialClientRegistration) && self.allowConfidentialClientRegistration)",message="forceConfidentialRedirectUris requires allowConfidentialClientRegistration to be true"
 // +kubebuilder:validation:XValidation:rule="has(self.spiffeTrustDomains) == has(self.inboundGrants)",message="spiffeTrustDomains and inboundGrants must be configured together"
 // +kubebuilder:validation:XValidation:rule="!has(self.listenerTLS) || (has(self.listenerTLS.certificateSecretRef) && has(self.listenerTLS.privateKeySecretRef))",message="listenerTLS certificateSecretRef and privateKeySecretRef must be configured together"
-// +kubebuilder:validation:XValidation:rule="!has(self.inboundGrants) || !self.inboundGrants.spiffeClientAuth.exists(association, association.methods.exists(method, method == 'spiffe_x509')) || has(self.listenerTLS)",message="listenerTLS is required when SPIFFE X.509 client authentication is configured"
 //
 // Delegate clients categorically require HTTPS at admission. CEL has no URL
 // parser, so this deliberately conservative check rejects every plaintext HTTP
@@ -753,6 +752,18 @@ type SPIFFETokenExchangeConfig struct {
 // secrets. Do not tighten the Go-level check to match this CEL rule; the CRD
 // is stricter only because CEL cannot express the loopback exception, not
 // because delegate clients need one.
+//
+// "listenerTLS is required when SPIFFE X.509 client authentication is
+// configured" is deliberately NOT expressed here as a CEL rule: the natural
+// expression (self.inboundGrants.spiffeClientAuth.exists(a,
+// a.methods.exists(m, m == 'spiffe_x509'))) is a nested exists() over two
+// unbounded arrays, whose estimated worst-case cost alone pushed this
+// schema's total x-kubernetes-validations cost over the apiserver's CEL
+// budget by more than 100x — confirmed by dry-run apply against a real
+// cluster, not a hunch. validateListenerTLS (below) already enforces the
+// identical check in Go at reconcile time; this is exactly the "CEL
+// genuinely cannot express it" exception the operator rules carve out, not a
+// dropped guard.
 //
 //nolint:lll // CEL validation rules exceed line length limits.
 type EmbeddedAuthServerConfig struct {

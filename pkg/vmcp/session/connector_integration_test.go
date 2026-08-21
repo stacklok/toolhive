@@ -224,8 +224,6 @@ func TestSessionFactory_Integration_RequestTimeoutResolver(t *testing.T) {
 				t.Context(), uuid.New().String(), nil, []*vmcp.Backend{backend}, nil,
 			)
 			require.NoError(t, err)
-			// The deliberately tiny timeout in the failure case also applies to
-			// the best-effort MCP session DELETE performed by Close.
 			t.Cleanup(func() { _ = sess.Close() })
 
 			result, err := sess.CallTool(
@@ -250,7 +248,6 @@ func TestSessionFactory_Integration_ShortRequestTimeoutDoesNotShrinkInit(t *test
 
 	const (
 		requestTimeout = 50 * time.Millisecond
-		initTimeout    = 2 * time.Second
 		backendDelay   = 200 * time.Millisecond
 	)
 
@@ -264,7 +261,6 @@ func TestSessionFactory_Integration_ShortRequestTimeoutDoesNotShrinkInit(t *test
 
 	factory := NewSessionFactory(
 		newUnauthenticatedRegistry(t),
-		WithBackendInitTimeout(initTimeout),
 		WithRequestTimeoutResolver(func(string) time.Duration { return requestTimeout }),
 	)
 

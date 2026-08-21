@@ -791,6 +791,27 @@ func (r *VirtualMCPServerReconciler) emitPrimaryUpstreamProviderDeprecatedEvent(
 			"move the value to spec.authServerConfig.primaryUpstreamProvider")
 }
 
+// emitInlineTelemetryIgnoredEvent emits a Warning when VirtualMCPServer still
+// sets the deprecated spec.config.telemetry field without telemetryConfigRef.
+// The operator does not apply inline telemetry; GET /metrics then falls through
+// to the MCP handler (HTTP 406). One-shot per spec generation.
+func (r *VirtualMCPServerReconciler) emitInlineTelemetryIgnoredEvent(
+	vmcp *mcpv1beta1.VirtualMCPServer,
+	usesIgnoredInline bool,
+) {
+	if !usesIgnoredInline || r.Recorder == nil {
+		return
+	}
+	if vmcp.Generation == vmcp.Status.ObservedGeneration {
+		return
+	}
+	r.Recorder.Eventf(vmcp, nil, corev1.EventTypeWarning,
+		"InlineTelemetryIgnored", "ConvertTelemetry",
+		"spec.config.telemetry is ignored by the operator; set spec.telemetryConfigRef "+
+			"to an MCPTelemetryConfig. Without that, GET /metrics is not registered and "+
+			"returns HTTP 406 from the MCP streamable handler.")
+}
+
 func (r *VirtualMCPServerReconciler) validateAuthzUpstreamAvailable(
 	ctx context.Context,
 	vmcp *mcpv1beta1.VirtualMCPServer,

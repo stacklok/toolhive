@@ -3195,6 +3195,14 @@ spec:
                     - message: at least one of shared, perUser, or tools must be configured
                       rule: has(self.shared) || has(self.perUser) || (has(self.tools)
                         && size(self.tools) > 0)
+                  redactToolResultSecrets:
+                    default: false
+                    description: |-
+                      RedactToolResultSecrets enables best-effort credential-shape scanning
+                      (see pkg/mcp/secretscan) on tools/call results before they are relayed
+                      to the client: matches are redacted in place. Opt-in (default false);
+                      enable when a backend this vMCP aggregates is not fully trusted.
+                    type: boolean
                   sessionStorage:
                     description: |-
                       SessionStorage configures session storage for stateful horizontal scaling.
@@ -7186,6 +7194,14 @@ spec:
                     - message: at least one of shared, perUser, or tools must be configured
                       rule: has(self.shared) || has(self.perUser) || (has(self.tools)
                         && size(self.tools) > 0)
+                  redactToolResultSecrets:
+                    default: false
+                    description: |-
+                      RedactToolResultSecrets enables best-effort credential-shape scanning
+                      (see pkg/mcp/secretscan) on tools/call results before they are relayed
+                      to the client: matches are redacted in place. Opt-in (default false);
+                      enable when a backend this vMCP aggregates is not fully trusted.
+                    type: boolean
                   sessionStorage:
                     description: |-
                       SessionStorage configures session storage for stateful horizontal scaling.

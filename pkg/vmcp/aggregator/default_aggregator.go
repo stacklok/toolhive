@@ -11,6 +11,7 @@ import (
 	"slices"
 	"sort"
 	"sync"
+	"time"
 
 	"go.opentelemetry.io/otel/attribute"
 	"go.opentelemetry.io/otel/codes"
@@ -38,6 +39,44 @@ type defaultAggregator struct {
 	// construction.
 	promptNaming promptNaming
 	tracer       trace.Tracer
+
+	// partialFailureMode wires operational.failureHandling.partialFailureMode
+	// ("fail" | "best_effort"). "" (no WithOperationalConfig option, or a nil
+	// config) preserves the pre-wiring behavior: best-effort. See
+	// QueryAllCapabilities.
+	partialFailureMode string
+	// timeoutDefault is the default per-backend query timeout. Zero (unset)
+	// leaves no per-query deadline.
+	timeoutDefault time.Duration
+	// timeoutPerWorkload overrides timeoutDefault for named backends.
+	timeoutPerWorkload map[string]time.Duration
+}
+
+// Option configures the default aggregator.
+type Option func(*defaultAggregator)
+
+// WithOperationalConfig wires operational settings (partial failure mode and
+// backend request timeouts) into the aggregator so the configured behavior
+// actually takes effect. Nil and zero-valued fields leave the aggregator's
+// default behavior (best-effort, no per-query deadline) unchanged.
+func WithOperationalConfig(cfg *config.OperationalConfig) Option {
+	return func(a *defaultAggregator) {
+		if cfg == nil {
+			return
+		}
+		if cfg.FailureHandling != nil {
+			a.partialFailureMode = cfg.FailureHandling.PartialFailureMode
+		}
+		if cfg.Timeouts != nil {
+			a.timeoutDefault = time.Duration(cfg.Timeouts.Default)
+			if len(cfg.Timeouts.PerWorkload) > 0 {
+				a.timeoutPerWorkload = make(map[string]time.Duration, len(cfg.Timeouts.PerWorkload))
+				for backendID, d := range cfg.Timeouts.PerWorkload {
+					a.timeoutPerWorkload[backendID] = time.Duration(d)
+				}
+			}
+		}
+	}
 }
 
 // NewDefaultAggregator creates a new default aggregator implementation.
@@ -45,11 +84,13 @@ type defaultAggregator struct {
 // aggregationConfig specifies aggregation settings including tool filtering/overrides,
 // excludeAllTools, and defaultToolVisibility.
 // tracerProvider is used to create a tracer for distributed tracing (pass nil for no tracing).
+// opts apply operational settings such as partial failure mode and backend request timeouts.
 func NewDefaultAggregator(
 	backendClient vmcp.BackendClient,
 	conflictResolver ConflictResolver,
 	aggregationConfig *config.AggregationConfig,
 	tracerProvider trace.TracerProvider,
+	opts ...Option,
 ) Aggregator {
 	// Build tool config map for quick lookup by backend ID
 	toolConfigMap := make(map[string]*config.WorkloadToolConfig)
@@ -76,7 +117,7 @@ func NewDefaultAggregator(
 		tracer = noop.NewTracerProvider().Tracer("github.com/stacklok/toolhive/pkg/vmcp/aggregator")
 	}
 
-	return &defaultAggregator{
+	a := &defaultAggregator{
 		backendClient:    backendClient,
 		conflictResolver: conflictResolver,
 		toolConfigMap:    toolConfigMap,
@@ -85,6 +126,10 @@ func NewDefaultAggregator(
 		promptNaming:     promptNamingFromConfig(aggregationConfig),
 		tracer:           tracer,
 	}
+	for _, opt := range opts {
+		opt(a)
+	}
+	return a
 }
 
 // QueryCapabilities queries a single backend for its MCP capabilities.
@@ -146,7 +191,17 @@ func (a *defaultAggregator) QueryCapabilities(ctx context.Context, backend vmcp.
 }
 
 // QueryAllCapabilities queries all backends for their capabilities in parallel.
-// Handles backend failures gracefully (logs and continues with remaining backends).
+// Each backend query runs under the timeout configured via
+// WithOperationalConfig (the default, or a per-workload override).
+//
+// How backend failures are treated is controlled by
+// operational.failureHandling.partialFailureMode:
+//   - "best_effort" (or unset): a failing backend is logged and skipped, and
+//     the capabilities of the healthy backends are returned.
+//   - "fail": the first failing backend fails the whole query; the errgroup
+//     cancels the in-flight queries to the remaining backends.
+//
+// The function always fails when no backend returned capabilities.
 func (a *defaultAggregator) QueryAllCapabilities(
 	ctx context.Context,
 	backends []vmcp.Backend,
@@ -178,10 +233,27 @@ func (a *defaultAggregator) QueryAllCapabilities(
 	for _, backend := range backends {
 		backend := backend // Capture loop variable
 		g.Go(func() error {
-			caps, err := a.QueryCapabilities(ctx, backend)
+			// Apply the configured per-backend timeout, if any.
+			queryCtx := ctx
+			timeout := a.timeoutDefault
+			if t, ok := a.timeoutPerWorkload[backend.ID]; ok {
+				timeout = t
+			}
+			if timeout > 0 {
+				var cancel context.CancelFunc
+				queryCtx, cancel = context.WithTimeout(ctx, timeout)
+				defer cancel()
+			}
+
+			caps, err := a.QueryCapabilities(queryCtx, backend)
 			if err != nil {
-				// Log the error but continue with other backends
+				// Log the error but continue with other backends.
 				slog.Warn("failed to query backend", "backend", backend.ID, "error", err)
+				if a.partialFailureMode == "fail" {
+					// Fail fast: returning an error cancels the derived context,
+					// stopping the remaining in-flight backend queries.
+					return err
+				}
 				return nil // Don't fail the entire operation
 			}
 

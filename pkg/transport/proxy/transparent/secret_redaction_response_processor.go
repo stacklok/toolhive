@@ -133,22 +133,66 @@ func (*SecretRedactionResponseProcessor) processSSE(resp *http.Response) {
 		// sizeable tool result.
 		scanner.Buffer(make([]byte, 0, 1024), 1024*1024)
 
+		// dataBuf accumulates consecutive raw "data:" lines belonging to the
+		// SAME SSE event. Per the SSE spec, a compliant client concatenates
+		// them (joined by "\n") into one logical value before consuming it --
+		// scanning each "data:" line in isolation would let a hostile backend
+		// split a single JSON-RPC message across lines specifically to evade
+		// this scanner while the real client reassembles it and still sees
+		// the whole payload. flush reconstructs that same logical value.
+		var dataBuf []string
+		flush := func() bool {
+			if len(dataBuf) == 0 {
+				return true
+			}
+			joined := joinSSEDataLines(dataBuf)
+			lines := dataBuf
+			if redacted, changed, err := redactJSONRPCBody([]byte(joined)); err == nil && changed {
+				lines = []string{"data: " + string(redacted)}
+			}
+			dataBuf = nil
+			for _, l := range lines {
+				if _, err := pw.Write([]byte(l + "\n")); err != nil {
+					return false
+				}
+			}
+			return true
+		}
+
 		for scanner.Scan() {
 			line := scanner.Text()
-			if after, ok := strings.CutPrefix(line, "data:"); ok {
-				dataContent := strings.TrimSpace(after)
-				if redacted, changed, err := redactJSONRPCBody([]byte(dataContent)); err == nil && changed {
-					line = "data: " + string(redacted)
-				}
+			if strings.HasPrefix(line, "data:") {
+				dataBuf = append(dataBuf, line)
+				continue
+			}
+			if !flush() {
+				return
 			}
 			if _, err := pw.Write([]byte(line + "\n")); err != nil {
 				return
 			}
 		}
+		// A stream that ends without a trailing blank line still has a
+		// pending event to reassemble and forward.
+		if !flush() {
+			return
+		}
 		if err := scanner.Err(); err != nil {
 			slog.Error("failed to scan SSE response body for secret scan", "error", err)
 		}
 	}()
+}
+
+// joinSSEDataLines reconstructs the logical value of one SSE event's data
+// field from its raw "data:" lines, per the spec: each line's content (after
+// stripping the "data:" prefix and at most one leading space) is joined with
+// "\n".
+func joinSSEDataLines(rawLines []string) string {
+	contents := make([]string, len(rawLines))
+	for i, l := range rawLines {
+		contents[i] = strings.TrimSpace(strings.TrimPrefix(l, "data:"))
+	}
+	return strings.Join(contents, "\n")
 }
 
 // redactJSONRPCBody decodes data as a JSON object, redacts its "result"

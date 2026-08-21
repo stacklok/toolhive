@@ -22,6 +22,18 @@ func toolCallResultJSON() string {
 	return `{"jsonrpc":"2.0","id":1,"result":{"content":[{"type":"text","text":"Authorization: Bearer ` + sentinelToken + `"}]}}`
 }
 
+// toolCallResultJSONSplit returns the same JSON-RPC message as
+// toolCallResultJSON, but split into two fragments at a whitespace-
+// insignificant JSON boundary (right after a top-level comma) -- valid to
+// reassemble with a "\n" join, exactly as an SSE client concatenating two
+// consecutive "data:" lines would. Used to simulate a hostile backend
+// splitting a message across "data:" lines specifically to evade a
+// per-line-only scanner.
+func toolCallResultJSONSplit() (first, second string) {
+	return `{"jsonrpc":"2.0",`,
+		`"id":1,"result":{"content":[{"type":"text","text":"Authorization: Bearer ` + sentinelToken + `"}]}}`
+}
+
 // buildRedactingProxy wires up a *httputil.ReverseProxy fronting target using
 // a TransparentProxy configured with WithSecretRedaction(true) for the given
 // transport type -- mirroring the createBasicProxy/modifyResponse harness
@@ -151,4 +163,63 @@ func TestSecretRedaction_Disabled_ByDefault(t *testing.T) {
 
 	assert.Contains(t, rec.Body.String(), sentinelToken,
 		"disabled by default: response must pass through unmodified")
+}
+
+// TestSecretRedaction_StreamableHTTP_SplitAcrossDataLines is a regression
+// test for a bypass: a hostile backend that splits a single JSON-RPC message
+// across two "data:" lines (valid per the SSE spec -- a compliant client
+// reassembles them) must not evade the scanner, which used to inspect each
+// "data:" line in isolation.
+func TestSecretRedaction_StreamableHTTP_SplitAcrossDataLines(t *testing.T) {
+	t.Parallel()
+
+	first, second := toolCallResultJSONSplit()
+	target := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "text/event-stream")
+		w.WriteHeader(http.StatusOK)
+		w.Write([]byte("data: " + first + "\ndata: " + second + "\n\n"))
+		w.(http.Flusher).Flush()
+	}))
+	defer target.Close()
+	targetURL, err := url.Parse(target.URL)
+	require.NoError(t, err)
+
+	proxy := buildRedactingProxy(t, "streamable-http", targetURL)
+
+	rec := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodPost, target.URL, nil)
+	proxy.ServeHTTP(rec, req)
+
+	assert.NotContains(t, rec.Body.String(), sentinelToken,
+		"sentinel token split across data: lines must not reach the client")
+	assert.Contains(t, rec.Body.String(), "REDACTED-BY-TOOLHIVE")
+}
+
+// TestSecretRedaction_LegacySSETransport_SplitAcrossDataLines is the same
+// regression as above, for the legacy sse transport type's response
+// processor.
+func TestSecretRedaction_LegacySSETransport_SplitAcrossDataLines(t *testing.T) {
+	t.Parallel()
+
+	first, second := toolCallResultJSONSplit()
+	target := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "text/event-stream")
+		w.WriteHeader(http.StatusOK)
+		w.Write([]byte("data: " + first + "\ndata: " + second + "\n\n"))
+		w.(http.Flusher).Flush()
+	}))
+	defer target.Close()
+	targetURL, err := url.Parse(target.URL)
+	require.NoError(t, err)
+
+	proxy := buildRedactingProxy(t, "sse", targetURL)
+
+	rec := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodGet, target.URL, nil)
+	proxy.ServeHTTP(rec, req)
+
+	body := rec.Body.String()
+	assert.NotContains(t, body, sentinelToken,
+		"sentinel token split across data: lines must not reach the client")
+	assert.Contains(t, body, "REDACTED-BY-TOOLHIVE")
 }

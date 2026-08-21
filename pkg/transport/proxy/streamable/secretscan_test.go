@@ -13,22 +13,29 @@ import (
 	sdkmcp "github.com/stacklok/toolhive-core/mcpcompat/mcp"
 )
 
-func TestInspectToolCallResponse_RedactsCredentialShapedToolResult(t *testing.T) {
-	t.Parallel()
-
-	ghToken := "ghp_" + strings.Repeat("a", 36)
+func toolCallResultResponse(t *testing.T, text string) *jsonrpc2.Response {
+	t.Helper()
 	resp, err := jsonrpc2.NewResponse(
 		jsonrpc2.Int64ID(1),
 		map[string]any{
 			"content": []map[string]any{
-				{"type": "text", "text": "here is the token: " + ghToken},
+				{"type": "text", "text": text},
 			},
 		},
 		nil,
 	)
 	require.NoError(t, err)
+	return resp
+}
 
-	out := inspectToolCallResponse(string(sdkmcp.MethodToolsCall), resp)
+func TestInspectToolCallResponse_RedactsCredentialShapedToolResult(t *testing.T) {
+	t.Parallel()
+
+	ghToken := "ghp_" + strings.Repeat("a", 36)
+	resp := toolCallResultResponse(t, "here is the token: "+ghToken)
+	p := &HTTPProxy{redactToolResultSecrets: true}
+
+	out := p.inspectToolCallResponse(string(sdkmcp.MethodToolsCall), resp)
 
 	outResp, ok := out.(*jsonrpc2.Response)
 	require.True(t, ok)
@@ -36,22 +43,26 @@ func TestInspectToolCallResponse_RedactsCredentialShapedToolResult(t *testing.T)
 	require.Contains(t, string(outResp.Result), "REDACTED-BY-TOOLHIVE")
 }
 
+func TestInspectToolCallResponse_DisabledByDefault(t *testing.T) {
+	t.Parallel()
+
+	ghToken := "ghp_" + strings.Repeat("a", 36)
+	resp := toolCallResultResponse(t, ghToken)
+	p := &HTTPProxy{} // redactToolResultSecrets left at its zero value (false)
+
+	out := p.inspectToolCallResponse(string(sdkmcp.MethodToolsCall), resp)
+
+	require.Same(t, resp, out)
+}
+
 func TestInspectToolCallResponse_IgnoresNonToolCallMethods(t *testing.T) {
 	t.Parallel()
 
 	ghToken := "ghp_" + strings.Repeat("a", 36)
-	resp, err := jsonrpc2.NewResponse(
-		jsonrpc2.Int64ID(1),
-		map[string]any{
-			"content": []map[string]any{
-				{"type": "text", "text": ghToken},
-			},
-		},
-		nil,
-	)
-	require.NoError(t, err)
+	resp := toolCallResultResponse(t, ghToken)
+	p := &HTTPProxy{redactToolResultSecrets: true}
 
-	out := inspectToolCallResponse("resources/read", resp)
+	out := p.inspectToolCallResponse("resources/read", resp)
 
 	require.Same(t, resp, out)
 }
@@ -61,8 +72,9 @@ func TestInspectToolCallResponse_IgnoresErrorResponses(t *testing.T) {
 
 	resp, err := jsonrpc2.NewResponse(jsonrpc2.Int64ID(1), nil, jsonrpc2.NewError(-32000, "boom"))
 	require.NoError(t, err)
+	p := &HTTPProxy{redactToolResultSecrets: true}
 
-	out := inspectToolCallResponse(string(sdkmcp.MethodToolsCall), resp)
+	out := p.inspectToolCallResponse(string(sdkmcp.MethodToolsCall), resp)
 
 	require.Same(t, resp, out)
 }
@@ -72,8 +84,9 @@ func TestInspectToolCallResponse_IgnoresNonResponseMessages(t *testing.T) {
 
 	req, err := jsonrpc2.NewNotification("notifications/message", nil)
 	require.NoError(t, err)
+	p := &HTTPProxy{redactToolResultSecrets: true}
 
-	out := inspectToolCallResponse(string(sdkmcp.MethodToolsCall), req)
+	out := p.inspectToolCallResponse(string(sdkmcp.MethodToolsCall), req)
 
 	require.Same(t, req, out)
 }

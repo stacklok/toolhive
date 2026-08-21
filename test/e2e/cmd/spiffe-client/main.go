@@ -26,8 +26,13 @@ import (
 )
 
 const (
-	requestTimeout         = 30 * time.Second
-	spiffeJWTAssertionType = "urn:ietf:params:oauth:client-assertion-type:spiffe-jwt"
+	requestTimeout = 30 * time.Second
+	// Must match pkg/authserver/spiffe.SPIFFEJWTAssertionType exactly — this
+	// binary can't import that package (it needs to build as a standalone
+	// ko image), so the string is duplicated here. Transposed segments here
+	// silently produce a generic "Unknown client_assertion_type" 400 from
+	// the token endpoint, confirmed against a real cluster.
+	spiffeJWTAssertionType = "urn:ietf:params:oauth:client-assertion-type:jwt-spiffe"
 )
 
 type identityOutput struct {
@@ -232,8 +237,8 @@ func requestToken(ctx context.Context, client *http.Client, issuer string, form 
 		_ = response.Body.Close()
 	}()
 	if response.StatusCode != http.StatusOK {
-		_, _ = io.Copy(io.Discard, response.Body)
-		return "", fmt.Errorf("token endpoint returned HTTP %d", response.StatusCode)
+		body, _ := io.ReadAll(io.LimitReader(response.Body, 4096))
+		return "", fmt.Errorf("token endpoint returned HTTP %d: %s", response.StatusCode, strings.TrimSpace(string(body)))
 	}
 
 	var payload struct {

@@ -18,8 +18,8 @@ import (
 
 const sentinelToken = "DAST-SENTINEL-TOKEN-DO-NOT-FORWARD" //nolint:gosec // test fixture, not a real credential
 
-func toolCallResultJSON(text string) string {
-	return `{"jsonrpc":"2.0","id":1,"result":{"content":[{"type":"text","text":"` + text + `"}]}}`
+func toolCallResultJSON() string {
+	return `{"jsonrpc":"2.0","id":1,"result":{"content":[{"type":"text","text":"Authorization: Bearer ` + sentinelToken + `"}]}}`
 }
 
 // buildRedactingProxy wires up a *httputil.ReverseProxy fronting target using
@@ -49,7 +49,7 @@ func TestSecretRedaction_StreamableHTTP_JSONResponse(t *testing.T) {
 
 	target := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
-		w.Write([]byte(toolCallResultJSON("Authorization: Bearer " + sentinelToken)))
+		w.Write([]byte(toolCallResultJSON()))
 	}))
 	defer target.Close()
 	targetURL, err := url.Parse(target.URL)
@@ -72,7 +72,7 @@ func TestSecretRedaction_StreamableHTTP_SSEResponse(t *testing.T) {
 	target := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		w.Header().Set("Content-Type", "text/event-stream")
 		w.WriteHeader(http.StatusOK)
-		w.Write([]byte("data: " + toolCallResultJSON("Authorization: Bearer "+sentinelToken) + "\n\n"))
+		w.Write([]byte("data: " + toolCallResultJSON() + "\n\n"))
 		w.(http.Flusher).Flush()
 	}))
 	defer target.Close()
@@ -96,7 +96,7 @@ func TestSecretRedaction_LegacySSETransport_DataLine(t *testing.T) {
 	target := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		w.Header().Set("Content-Type", "text/event-stream")
 		w.WriteHeader(http.StatusOK)
-		w.Write([]byte("data: " + toolCallResultJSON("Authorization: Bearer "+sentinelToken) + "\n\n"))
+		w.Write([]byte("data: " + toolCallResultJSON() + "\n\n"))
 		w.(http.Flusher).Flush()
 	}))
 	defer target.Close()
@@ -126,7 +126,7 @@ func TestSecretRedaction_Disabled_ByDefault(t *testing.T) {
 
 	target := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
-		w.Write([]byte(toolCallResultJSON("Authorization: Bearer " + sentinelToken)))
+		w.Write([]byte(toolCallResultJSON()))
 	}))
 	defer target.Close()
 	targetURL, err := url.Parse(target.URL)

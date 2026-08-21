@@ -333,12 +333,13 @@ func (c *Client) Sync(ctx context.Context, opts plugins.SyncOptions) (*plugins.S
 // where available.
 func (c *Client) Upgrade(ctx context.Context, opts plugins.UpgradeOptions) (*plugins.UpgradeResult, error) {
 	body := upgradeRequest{
-		ProjectRoot:    opts.ProjectRoot,
-		Names:          opts.Names,
-		Preview:        opts.Preview,
-		FailOnChanges:  opts.FailOnChanges,
-		AllowRefChange: opts.AllowRefChange,
-		Clients:        opts.Clients,
+		ProjectRoot:       opts.ProjectRoot,
+		Names:             opts.Names,
+		Preview:           opts.Preview,
+		FailOnChanges:     opts.FailOnChanges,
+		AllowRefChange:    opts.AllowRefChange,
+		AllowSignerChange: opts.AllowSignerChange,
+		Clients:           opts.Clients,
 	}
 
 	var result plugins.UpgradeResult

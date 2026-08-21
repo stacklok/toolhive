@@ -56,10 +56,12 @@ type syncRequest struct {
 }
 
 type upgradeRequest struct {
-	ProjectRoot    string   `json:"project_root"`
-	Names          []string `json:"names,omitempty"`
-	Preview        bool     `json:"preview,omitempty"`
-	FailOnChanges  bool     `json:"fail_on_changes,omitempty"`
-	AllowRefChange bool     `json:"allow_ref_change,omitempty"`
-	Clients        []string `json:"clients,omitempty"`
+	ProjectRoot string   `json:"project_root"`
+	Names       []string `json:"names,omitempty"`
+	// AllowSignerChange mirrors plugins.UpgradeOptions.AllowSignerChange.
+	AllowSignerChange bool     `json:"allow_signer_change,omitempty"`
+	Preview           bool     `json:"preview,omitempty"`
+	FailOnChanges     bool     `json:"fail_on_changes,omitempty"`
+	AllowRefChange    bool     `json:"allow_ref_change,omitempty"`
+	Clients           []string `json:"clients,omitempty"`
 }

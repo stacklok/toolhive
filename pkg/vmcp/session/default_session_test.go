@@ -1104,6 +1104,52 @@ func TestWithBackendInitTimeout_IgnoresNonPositive(t *testing.T) {
 	assert.Equal(t, defaultBackendInitTimeout, f.backendInitTimeout)
 }
 
+func TestWithSessionInitTimeout_IgnoresNonPositive(t *testing.T) {
+	t.Parallel()
+
+	f := &defaultMultiSessionFactory{sessionInitTimeout: defaultSessionInitTimeout}
+	WithSessionInitTimeout(0)(f)
+	assert.Equal(t, defaultSessionInitTimeout, f.sessionInitTimeout)
+
+	WithSessionInitTimeout(-time.Second)(f)
+	assert.Equal(t, defaultSessionInitTimeout, f.sessionInitTimeout)
+}
+
+func TestNewSessionFactory_SessionInitTimeoutBoundsWait(t *testing.T) {
+	t.Parallel()
+
+	backend := &vmcp.Backend{ID: "slow", Name: "slow", BaseURL: "http://x:9", TransportType: "streamable-http"}
+
+	released := make(chan struct{})
+	connector := func(ctx context.Context, _ *vmcp.BackendTarget, _ *auth.Identity, _ string, _ internalbk.ListChangedSink) (internalbk.Session, *vmcp.CapabilityList, error) {
+		select {
+		case <-ctx.Done():
+			return nil, nil, ctx.Err()
+		case <-released:
+			return &mockConnectedBackend{}, &vmcp.CapabilityList{}, nil
+		}
+	}
+
+	// Per-backend timeout is long; the overall session budget must win so
+	// initialize cannot hang past typical gateway timeouts (#6345).
+	factory := newSessionFactoryWithConnector(connector,
+		WithSessionInitTimeout(200*time.Millisecond),
+		WithBackendInitTimeout(30*time.Second),
+	)
+
+	start := time.Now()
+	sess, err := factory.MakeSessionWithID(context.Background(), uuid.New().String(), nil, []*vmcp.Backend{backend}, nil)
+	elapsed := time.Since(start)
+
+	require.NoError(t, err, "session budget expiry is a partial failure, not a hard error")
+	require.NotNil(t, sess)
+	assert.Less(t, elapsed, 2*time.Second, "initialize must not wait for the 30s per-backend timeout")
+	assert.GreaterOrEqual(t, elapsed, 200*time.Millisecond)
+	assert.Empty(t, sess.Tools())
+	close(released)
+	require.NoError(t, sess.Close())
+}
+
 func TestValidateSessionID(t *testing.T) {
 	t.Parallel()
 

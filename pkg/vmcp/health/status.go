@@ -193,26 +193,36 @@ func (*statusTracker) copyState(state *backendHealthState) *State {
 // If the backend had recent failures, it's marked as degraded (recovering state).
 // If the backend was previously unhealthy, this transition is logged.
 //
+// The returned bool reports whether the backend's advertisability changed
+// (see ShouldAdvertise): true when a previously-excluded backend becomes part of
+// the advertised catalog (recovery), or when a previously-untracked backend
+// records its first result. The Monitor uses it to drive OnChange listeners.
+//
 // Parameters:
 //   - backendID: Unique identifier for the backend
 //   - backendName: Human-readable name for logging
 //   - status: The health status returned by the health check (healthy or degraded)
-func (t *statusTracker) RecordSuccess(backendID string, backendName string, status vmcp.BackendHealthStatus) {
+func (t *statusTracker) RecordSuccess(
+	backendID string, backendName string, status vmcp.BackendHealthStatus,
+) (advertisabilityChanged bool) {
 	t.mu.Lock()
 	defer t.mu.Unlock()
 
 	// Ignore removed backends to prevent race conditions with in-flight health checks
 	if t.isRemoved(backendID) {
 		slog.Debug("ignoring health check result for removed backend", "backend", backendName)
-		return
+		return false
 	}
 
 	state, exists := t.getOrCreateState(backendID, backendName, status, 0, nil)
 	if !exists {
-		// Initialize new state - no failure history, so accept status as-is
+		// Initialize new state - no failure history, so accept status as-is.
+		// A first recorded result is reported as a change: before it, the
+		// aggregation path fell back to the registry's initial status, which
+		// this tracked status now supersedes.
 		slog.Debug("backend initialized", "backend", backendName, "status", status)
 		state.circuitBreaker.RecordSuccess()
-		return
+		return true
 	}
 
 	// Check for status transition
@@ -247,6 +257,8 @@ func (t *statusTracker) RecordSuccess(backendID string, backendName string, stat
 
 	// Update circuit breaker
 	state.circuitBreaker.RecordSuccess()
+
+	return ShouldAdvertise(previousStatus) != ShouldAdvertise(state.status)
 }
 
 // RecordRevision stores the backend's negotiated MCP revision read-model. It is
@@ -265,19 +277,27 @@ func (t *statusTracker) RecordRevision(backendID, revision string) {
 // This increments the consecutive failure count and may transition the backend to unhealthy
 // if the threshold is exceeded. Status transitions are logged.
 //
+// The returned bool reports whether the backend's advertisability changed
+// (see ShouldAdvertise): true when a previously-advertised backend crosses the
+// unhealthy threshold and drops out of the catalog, or when a
+// previously-untracked backend records its first result. The Monitor uses it
+// to drive OnChange listeners.
+//
 // Parameters:
 //   - backendID: Unique identifier for the backend
 //   - backendName: Human-readable name for logging
 //   - status: The health status returned by the health check (unhealthy, unauthenticated, etc.)
 //   - err: The error encountered during health check
-func (t *statusTracker) RecordFailure(backendID string, backendName string, status vmcp.BackendHealthStatus, err error) {
+func (t *statusTracker) RecordFailure(
+	backendID string, backendName string, status vmcp.BackendHealthStatus, err error,
+) (advertisabilityChanged bool) {
 	t.mu.Lock()
 	defer t.mu.Unlock()
 
 	// Ignore removed backends to prevent race conditions with in-flight health checks
 	if t.isRemoved(backendID) {
 		slog.Debug("ignoring health check result for removed backend", "backend", backendName)
-		return
+		return false
 	}
 
 	state, exists := t.getOrCreateState(backendID, backendName, vmcp.BackendUnknown, 1, err)
@@ -301,7 +321,11 @@ func (t *statusTracker) RecordFailure(backendID string, backendName string, stat
 		}
 
 		state.circuitBreaker.RecordFailure()
-		return
+		// A first recorded result is reported as a change: before it, the
+		// aggregation path fell back to the registry's initial status (which
+		// may have advertised this backend); the tracked non-advertisable
+		// status now supersedes it.
+		return true
 	}
 
 	// Record the failure
@@ -346,6 +370,8 @@ func (t *statusTracker) RecordFailure(backendID string, backendName string, stat
 
 	// Update circuit breaker
 	state.circuitBreaker.RecordFailure()
+
+	return ShouldAdvertise(previousStatus) != ShouldAdvertise(state.status)
 }
 
 // GetStatus returns the current health status for a backend.

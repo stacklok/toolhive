@@ -48,6 +48,7 @@ For information on the ToolHive Operator, see the
 - **[Composite Tools Quick Reference](operator/composite-tools-quick-reference.md)** - Quick reference for composite tool configuration
 - **[CRD API Reference](operator/crd-api.md)** - Generated API reference for all CRDs
 - **[Restart Annotation](operator/restart-annotation.md)** - Restarting MCPServer instances via annotations
+- **[MCPServer Workloads](operator/mcpserver-workloads.md)** - Proxy Deployment plus backend StatefulSet, and how a deleted StatefulSet is recreated
 - **[MCPToolConfig Reconciliation](operator/toolconfig-reconciliation.md)** - How MCPToolConfig resources are reconciled
 
 ## Getting started

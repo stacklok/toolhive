@@ -424,11 +424,14 @@ func (r *MCPServerEntryReconciler) validateHeaderForwardSecretRefs(
 }
 
 // validateRemoteURL checks that the RemoteURL is well-formed and does not target
-// a blocked internal or metadata endpoint (SSRF protection).
+// a blocked internal or metadata endpoint (SSRF protection). When the entry sets
+// spec.allowPrivateEndpoint, private-network and cluster-internal endpoints are
+// permitted.
 func (*MCPServerEntryReconciler) validateRemoteURL(
 	entry *mcpv1beta1.MCPServerEntry,
 ) bool {
-	if err := validation.ValidateRemoteURL(entry.Spec.RemoteURL); err != nil {
+	opts := validation.ValidateRemoteURLOptions{AllowPrivateEndpoint: entry.Spec.AllowPrivateEndpoint}
+	if err := validation.ValidateRemoteURL(entry.Spec.RemoteURL, opts); err != nil {
 		meta.SetStatusCondition(&entry.Status.Conditions, metav1.Condition{
 			Type:               mcpv1beta1.ConditionTypeMCPServerEntryRemoteURLValidated,
 			Status:             metav1.ConditionFalse,

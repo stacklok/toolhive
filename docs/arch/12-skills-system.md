@@ -187,6 +187,40 @@ thv skill push ghcr.io/org/my-skill:v1.0.0
 
 **Implementation:** `pkg/skills/skillsvc/build.go` (Push), `toolhive-core/oci/skills` (RegistryClient)
 
+**Signing:** Every push is signed by default — the RFC THV-0080 trust model
+has no unsigned publish path. `thv skill push` requires exactly one of three
+mutually exclusive choices:
+
+- `--key <path>`: sign with a cosign private key (`COSIGN_PASSWORD`
+  decrypts encrypted keys, read server-side by `thv serve`, which performs
+  the signing).
+- `--identity-token <token-or-path>`: sign keylessly. The CLI acquires an
+  OIDC identity token and forwards it in the push request; the server
+  exchanges it with Fulcio for a short-lived certificate, signs, and records
+  a Rekor transparency-log entry (`toolhive-core/container/signer`). The
+  server never handles long-lived credentials — only the already-acquired,
+  short-lived token.
+- `--no-sign`: push unsigned. Consumers installing project-scoped need an
+  explicit unsigned exception.
+
+When none of the three is given, `pkg/skills/identitytoken` runs an
+acquisition ladder before the push request is made, so a failure here never
+leaves an unsigned artifact published:
+
+1. A GitHub Actions ambient OIDC token, when the job has
+   `permissions: id-token: write` (`ACTIONS_ID_TOKEN_REQUEST_URL` /
+   `_TOKEN`, scoped to the `sigstore` audience).
+2. Otherwise, on an interactive terminal only: a y/N prompt, then a browser
+   sign-in against the public-good Sigstore OAuth instance
+   (`oauth2.sigstore.dev`).
+3. If neither yields a token (non-interactive with no ambient token, or the
+   prompt declined): the push fails with an actionable error naming all
+   three signing choices, never silently unsigned.
+
+`--key` and `--identity-token` are mutually exclusive; the identity token,
+once resolved, is always forwarded even alongside `--key` so the server
+reports the conflict rather than the client silently picking one.
+
 ### 4. Installation
 
 ```bash
@@ -506,6 +540,9 @@ The skills system applies defense-in-depth across multiple layers:
 - OCI artifact skill name must match the last path component of the OCI repository
 - Git authentication is host-scoped (GitHub token only sent to github.com)
 - SSRF prevention: rejects localhost and private IPs in git references
+- Push signing is keyless by default; see "3. Publishing" above for the
+  credential ladder and the CLI-acquires / server-signs split
+  (`pkg/skills/identitytoken`, `toolhive-core/container/signer`)
 
 ### Input Validation
 - Skill names: 2-64 chars, lowercase alphanumeric + hyphens, no consecutive hyphens

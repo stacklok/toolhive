@@ -197,10 +197,12 @@ spec:
 See [`examples/operator/virtual-mcps/vmcp_with_telemetry_ref.yaml`](../../examples/operator/virtual-mcps/vmcp_with_telemetry_ref.yaml)
 for a complete example with an MCPGroup and backend MCPServer.
 
-**Inline (deprecated)**: The inline `spec.config.telemetry` field still works
-but is deprecated and will be removed in a future API version. It is mutually exclusive with
-`telemetryConfigRef` (CEL enforced). Migrate to `telemetryConfigRef` to use the
-shared MCPTelemetryConfig pattern.
+**Inline (deprecated, operator no-op)**: `spec.config.telemetry` is ignored by
+the operator. It remains valid for standalone CLI deployments only. If it is set
+without `spec.telemetryConfigRef`, the operator emits a Warning event
+(`InlineTelemetryIgnored`) and does not register `/metrics` — Prometheus scrapes
+then receive HTTP 406 from the MCP handler. Use `telemetryConfigRef`. CEL still
+rejects setting both fields.
 
 ```yaml
 # Deprecated — use telemetryConfigRef instead

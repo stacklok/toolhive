@@ -106,6 +106,10 @@ type RunFlags struct {
 	// on the streamable HTTP proxy.
 	StrictProtocolValidation bool
 
+	// RedactToolResultSecrets enables best-effort credential-shape scanning
+	// on tools/call responses relayed by the streamable HTTP proxy.
+	RedactToolResultSecrets bool
+
 	// Endpoint prefix for SSE endpoint URLs
 	EndpointPrefix string
 
@@ -290,6 +294,10 @@ func AddRunFlags(cmd *cobra.Command, config *RunFlags) {
 	cmd.Flags().BoolVar(&config.StrictProtocolValidation, "strict-protocol-validation", false,
 		"Reject client requests whose MCP-Protocol-Version header is an unknown/unsupported MCP revision with HTTP 400 "+
 			"(streamable-HTTP proxy only; an absent header is accepted). Off by default: any version is accepted.")
+	cmd.Flags().BoolVar(&config.RedactToolResultSecrets, "redact-tool-result-secrets", false,
+		"Scan tools/call responses for credential-shaped content (AWS/GitHub/Slack/Google/Stripe keys, JWTs, PEM "+
+			"private keys, generic Bearer tokens) and redact matches before relaying them to the client. "+
+			"Off by default; enable when the backend MCP server is not fully trusted.")
 	cmd.Flags().BoolVar(&config.Stateless, "stateless", false,
 		"Declare the server as stateless (POST-only, no SSE). "+
 			"Use for MCP servers implementing streamable-HTTP stateless mode.")
@@ -705,6 +713,7 @@ func buildRunnerConfig(
 		runner.WithAllowDockerGateway(runFlags.AllowDockerGateway),
 		runner.WithTrustProxyHeaders(runFlags.TrustProxyHeaders),
 		runner.WithStrictProtocolValidation(runFlags.StrictProtocolValidation),
+		runner.WithRedactToolResultSecrets(runFlags.RedactToolResultSecrets),
 		runner.WithStateless(runFlags.Stateless),
 		runner.WithSessionTTL(runFlags.SessionTTL),
 		runner.WithEndpointPrefix(runFlags.EndpointPrefix),

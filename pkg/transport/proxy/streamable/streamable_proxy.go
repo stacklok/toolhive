@@ -27,6 +27,7 @@ import (
 	"github.com/stacklok/toolhive/pkg/diagnostics"
 	"github.com/stacklok/toolhive/pkg/healthcheck"
 	"github.com/stacklok/toolhive/pkg/mcp"
+	"github.com/stacklok/toolhive/pkg/mcp/secretscan"
 	"github.com/stacklok/toolhive/pkg/transport/session"
 	"github.com/stacklok/toolhive/pkg/transport/types"
 )
@@ -135,6 +136,12 @@ type HTTPProxy struct {
 	// 2025-03-26 when the header is missing. Set via WithStrictProtocolValidation.
 	strictProtocolValidation bool
 
+	// redactToolResultSecrets enables scanning tools/call responses for
+	// credential-shaped content before relaying them to the client (see
+	// pkg/mcp/secretscan). Default false: the MCP backend is often
+	// operator-trusted. Set via WithSecretRedaction.
+	redactToolResultSecrets bool
+
 	// Health checker
 	healthChecker *healthcheck.HealthChecker
 
@@ -213,6 +220,15 @@ func WithStandaloneSSE(enabled bool) Option {
 // any version string is accepted.
 func WithStrictProtocolValidation(enabled bool) Option {
 	return func(p *HTTPProxy) { p.strictProtocolValidation = enabled }
+}
+
+// WithSecretRedaction enables best-effort credential-shape scanning (see
+// pkg/mcp/secretscan) on tools/call responses before they are relayed to the
+// client. Opt-in (default false): the MCP backend behind this proxy is often
+// operator-trusted, and scanning adds per-response overhead, so this is only
+// worth enabling when the backend is not fully trusted.
+func WithSecretRedaction(enabled bool) Option {
+	return func(p *HTTPProxy) { p.redactToolResultSecrets = enabled }
 }
 
 // NewHTTPProxy creates a new HTTPProxy for streamable HTTP transport.
@@ -663,6 +679,8 @@ func (p *HTTPProxy) handleSingleRequest(
 		return
 	}
 
+	msg = p.inspectToolCallResponse(req.Method, msg)
+
 	if setSessionHeader {
 		w.Header().Set("Mcp-Session-Id", sessID)
 	}
@@ -735,7 +753,7 @@ func (p *HTTPProxy) handleSingleRequestSSE(
 			// Progress does not end the request; keep waiting for more
 			// progress or the final response.
 		case msg := <-waitCh:
-			p.writeSingleRequestSSEFinalResponse(w, flusher, msg, ck)
+			p.writeSingleRequestSSEFinalResponse(w, flusher, req.Method, msg, ck)
 			return
 		case <-ctx.Done():
 			writeSSEErrorEvent(w, flusher, req.ID, ctx.Err())
@@ -756,7 +774,7 @@ func (p *HTTPProxy) handleSingleRequestSSE(
 // logged; the client simply does not get a final frame in that case, matching
 // the prior (pre-progress) behavior's error handling.
 func (p *HTTPProxy) writeSingleRequestSSEFinalResponse(
-	w http.ResponseWriter, flusher http.Flusher, msg jsonrpc2.Message, ck string,
+	w http.ResponseWriter, flusher http.Flusher, method string, msg jsonrpc2.Message, ck string,
 ) {
 	finalMsg := msg
 	if r, ok := msg.(*jsonrpc2.Response); ok && r.ID.IsValid() {
@@ -767,6 +785,7 @@ func (p *HTTPProxy) writeSingleRequestSSEFinalResponse(
 		}
 		finalMsg = restored
 	}
+	finalMsg = p.inspectToolCallResponse(method, finalMsg)
 
 	data, err := jsonrpc2.EncodeMessage(finalMsg)
 	if err != nil {
@@ -776,6 +795,35 @@ func (p *HTTPProxy) writeSingleRequestSSEFinalResponse(
 	if err := writeSSEData(w, flusher, data); err != nil {
 		slog.Debug("failed to write response", "error", err)
 	}
+}
+
+// inspectToolCallResponse applies best-effort secret redaction (see
+// pkg/mcp/secretscan) to the result of a tools/call response before it is
+// forwarded to the client, when redactToolResultSecrets is enabled (see
+// WithSecretRedaction). The MCP backend behind this proxy is not fully
+// trusted (it may be misconfigured, compromised, or malicious), so its tool
+// output is scanned for credential-shaped text before the proxy relays it.
+// Any other method, a non-Response message, an error response, or a result
+// that fails to decode is returned unchanged -- this check must never be the
+// reason a legitimate tool call breaks.
+func (p *HTTPProxy) inspectToolCallResponse(method string, msg jsonrpc2.Message) jsonrpc2.Message {
+	if !p.redactToolResultSecrets || method != string(sdkmcp.MethodToolsCall) {
+		return msg
+	}
+	resp, ok := msg.(*jsonrpc2.Response)
+	if !ok || resp.Error != nil || len(resp.Result) == 0 {
+		return msg
+	}
+	scan, err := secretscan.ScanAndRedactToolCallResult(resp.Result)
+	if err != nil {
+		slog.Debug("tool call result secret scan skipped", "error", err)
+		return msg
+	}
+	if !scan.Matched {
+		return msg
+	}
+	slog.Warn("redacted credential-shaped content in tool call result")
+	return &jsonrpc2.Response{Result: scan.Redacted, ID: resp.ID}
 }
 
 // writeSSEErrorEvent writes a best-effort JSON-RPC error as a single SSE

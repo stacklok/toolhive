@@ -213,6 +213,14 @@ type RunConfig struct {
 	// version string (an absent header is always accepted in either mode).
 	StrictProtocolValidation bool `json:"strict_protocol_validation,omitempty" yaml:"strict_protocol_validation,omitempty"`
 
+	// RedactToolResultSecrets enables best-effort credential-shape scanning
+	// on tools/call responses relayed by the proxy (streamable-HTTP or the
+	// transparent reverse-proxy, whichever the transport resolves to):
+	// matches are redacted before the response reaches the client. Opt-in
+	// (default false); enable it when the backend MCP server is not fully
+	// trusted.
+	RedactToolResultSecrets bool `json:"redact_tool_result_secrets,omitempty" yaml:"redact_tool_result_secrets,omitempty"`
+
 	// Stateless indicates the server only supports POST (no SSE/GET).
 	// When true, the proxy returns 405 for incoming GET requests and uses a
 	// POST-based health check instead of the default GET probe.

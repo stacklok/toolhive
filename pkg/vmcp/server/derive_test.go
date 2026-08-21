@@ -51,6 +51,7 @@ func populatedLegacyConfig() *Config {
 		Watcher:                 stubWatcher{},
 		StatusReporter:          stubServeReporter{},
 		SessionStorage:          &vmcpconfig.SessionStorageConfig{},
+		RedactToolResultSecrets: true,
 	}
 }
 

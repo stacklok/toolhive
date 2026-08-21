@@ -15,6 +15,7 @@ import (
 	"github.com/stacklok/toolhive/pkg/audit"
 	"github.com/stacklok/toolhive/pkg/auth"
 	mcpparser "github.com/stacklok/toolhive/pkg/mcp"
+	"github.com/stacklok/toolhive/pkg/mcp/secretscan"
 	"github.com/stacklok/toolhive/pkg/vmcp"
 	"github.com/stacklok/toolhive/pkg/vmcp/conversion"
 	vmcpsession "github.com/stacklok/toolhive/pkg/vmcp/session"
@@ -306,9 +307,14 @@ func (s *Server) coreToolHandler(sessionID, toolName, backendName string) server
 			return conversion.ErrorToToolResult(err), nil
 		}
 
+		content := conversion.ToMCPContents(result.Content)
+		if s.config.RedactToolResultSecrets {
+			secretscan.RedactContentInPlace(content)
+		}
+
 		return &mcp.CallToolResult{
 			Result:            mcp.Result{Meta: conversion.ToMCPMeta(result.Meta)},
-			Content:           conversion.ToMCPContents(result.Content),
+			Content:           content,
 			StructuredContent: result.StructuredContent,
 			IsError:           result.IsError,
 		}, nil

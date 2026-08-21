@@ -73,6 +73,12 @@ type StdioTransport struct {
 	// See streamable.WithStrictProtocolValidation.
 	strictProtocolValidation bool
 
+	// redactToolResultSecrets controls whether the streamable HTTP proxy
+	// scans tools/call responses for credential-shaped content and redacts
+	// matches before relaying them to the client. Default false. See
+	// streamable.WithSecretRedaction.
+	redactToolResultSecrets bool
+
 	// Mutex for protecting shared state
 	mutex sync.Mutex
 
@@ -150,6 +156,14 @@ func (t *StdioTransport) SetProxyMode(mode types.ProxyMode) {
 // behavior of accepting any header value.
 func (t *StdioTransport) SetStrictProtocolValidation(strict bool) {
 	t.strictProtocolValidation = strict
+}
+
+// SetSecretRedaction configures whether the streamable HTTP proxy scans
+// tools/call responses for credential-shaped content and redacts matches
+// before relaying them to the client. Default false: enable when the
+// backend MCP server is not fully trusted.
+func (t *StdioTransport) SetSecretRedaction(enabled bool) {
+	t.redactToolResultSecrets = enabled
 }
 
 // SetSessionStorage configures a custom session storage backend.
@@ -278,6 +292,7 @@ func (t *StdioTransport) streamableProxyOptions() []streamable.Option {
 		streamable.WithAuthInfoHandler(t.authInfoHandler),
 		streamable.WithPrefixHandlers(t.prefixHandlers),
 		streamable.WithStrictProtocolValidation(t.strictProtocolValidation),
+		streamable.WithSecretRedaction(t.redactToolResultSecrets),
 	)
 }
 

@@ -86,6 +86,10 @@ type HTTPTransport struct {
 	// underlying proxy. Zero uses the proxy's default.
 	sessionTTL time.Duration
 
+	// corsOrigins is the explicit Origin allowlist that enables CORS on the
+	// transparent MCP proxy. Empty (default) leaves CORS disabled.
+	corsOrigins []string
+
 	// Transparent proxy
 	proxy types.Proxy
 
@@ -442,6 +446,9 @@ func (t *HTTPTransport) buildProxyOptions(remoteBasePath, remoteRawQuery string)
 	}
 	if t.sessionStorage != nil {
 		opts = append(opts, transparent.WithSessionStorage(t.sessionStorage))
+	}
+	if len(t.corsOrigins) > 0 {
+		opts = append(opts, transparent.WithAllowedOrigins(t.corsOrigins))
 	}
 	return opts
 }

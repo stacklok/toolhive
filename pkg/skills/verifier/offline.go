@@ -4,16 +4,14 @@
 package verifier
 
 import (
-	"crypto/sha256"
-	"encoding/hex"
 	"errors"
 	"fmt"
 
 	"github.com/sigstore/sigstore-go/pkg/verify"
 
+	"github.com/stacklok/toolhive-core/container/signer"
 	coreverifier "github.com/stacklok/toolhive-core/container/verifier"
 	"github.com/stacklok/toolhive/pkg/skills/lockfile"
-	"github.com/stacklok/toolhive/pkg/skills/signer"
 )
 
 // VerifyBundleOffline re-verifies a stored bundle against the artifact
@@ -58,12 +56,10 @@ func (*Default) VerifyBundleOfflineWithKey(bundleBytes []byte, imageRef, digest 
 	if len(bundleBytes) == 0 {
 		return fmt.Errorf("%w: no stored bundle to verify — reinstall to restore it", ErrSignatureInvalid)
 	}
-	payload, err := signer.SimpleSigningPayload(imageRef, digest)
+	digestArg, err := signer.PayloadDigest(imageRef, digest)
 	if err != nil {
 		return fmt.Errorf("%w: %s", ErrSignatureInvalid, err.Error())
 	}
-	payloadDigest := sha256.Sum256(payload)
-	digestArg := coreverifier.DigestAlgorithmSHA256 + ":" + hex.EncodeToString(payloadDigest[:])
 	if _, err := coreverifier.VerifyBundleOfflineWithKey(bundleBytes, digestArg, pubKeyPEM); err != nil {
 		return wrapInvalid(err)
 	}

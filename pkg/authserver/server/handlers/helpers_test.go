@@ -184,14 +184,15 @@ func baseTestSetup(t *testing.T, opts ...baseTestSetupOption) (fosite.OAuth2Prov
 	}
 	storState.clients[testAuthClientID] = testClient
 
-	// Setup mock expectations for GetClient
-	stor.EXPECT().GetClient(gomock.Any(), testAuthClientID).DoAndReturn(func(_ context.Context, id string) (fosite.Client, error) {
+	// Setup mock expectations for GetClient. Looks up storState.clients so tests
+	// can register additional clients (e.g. a loopback client under its own ID)
+	// after baseTestSetup returns.
+	stor.EXPECT().GetClient(gomock.Any(), gomock.Any()).DoAndReturn(func(_ context.Context, id string) (fosite.Client, error) {
 		if c, ok := storState.clients[id]; ok {
 			return c, nil
 		}
 		return nil, fosite.ErrNotFound
 	}).AnyTimes()
-	stor.EXPECT().GetClient(gomock.Any(), gomock.Not(testAuthClientID)).Return(nil, fosite.ErrNotFound).AnyTimes()
 
 	// Token issuance renews the public client's registration TTL (best-effort).
 	// Record the calls so tests can assert the renewal fired on success.

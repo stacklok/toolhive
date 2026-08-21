@@ -161,6 +161,18 @@ func (pl *pluginLock) lock(name string, scope plugins.Scope, projectRoot string)
 	return m.Unlock
 }
 
+// lockPlugin acquires the per-plugin mutex. Callers that already hold the lock
+// (Sync/Upgrade) must use the *AlreadyLocked / *Locked helpers instead of
+// re-entering through public Install/Uninstall/adoptPlugin.
+func (s *service) lockPlugin(
+	ctx context.Context,
+	name string,
+	scope plugins.Scope,
+	projectRoot string,
+) (context.Context, func()) {
+	return ctx, s.locks.lock(name, scope, projectRoot)
+}
+
 // service is the default implementation of plugins.PluginService. It implements
 // the build/validate/push/content surface (Phase 2) and the install/uninstall/
 // list/info surface (Phase 3), the latter driving per-client materialization

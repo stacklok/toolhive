@@ -29,10 +29,12 @@ import (
 	"k8s.io/apimachinery/pkg/util/intstr"
 	"k8s.io/client-go/tools/events"
 	ctrl "sigs.k8s.io/controller-runtime"
+	"sigs.k8s.io/controller-runtime/pkg/builder"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/controller/controllerutil"
 	"sigs.k8s.io/controller-runtime/pkg/handler"
 	"sigs.k8s.io/controller-runtime/pkg/log"
+	"sigs.k8s.io/controller-runtime/pkg/predicate"
 	"sigs.k8s.io/controller-runtime/pkg/reconcile"
 
 	mcpv1alpha1 "github.com/stacklok/toolhive/cmd/thv-operator/api/v1alpha1"
@@ -545,6 +547,8 @@ func (r *MCPServerReconciler) Reconcile(ctx context.Context, req ctrl.Request) (
 			}
 			return ctrl.Result{}, err
 		}
+		newDeployment.Spec.Template.Annotations = ctrlutil.PreserveKubectlRestartedAt(
+			newDeployment.Spec.Template.Annotations, deployment.Spec.Template.Annotations)
 		deployment.Spec.Template = newDeployment.Spec.Template
 		deployment.Spec.Selector = newDeployment.Spec.Selector
 		deployment.Labels = newDeployment.Labels
@@ -581,6 +585,13 @@ func (r *MCPServerReconciler) Reconcile(ctx context.Context, req ctrl.Request) (
 		}
 		// Spec updated - return and requeue
 		return ctrl.Result{Requeue: true}, nil
+	}
+
+	if result, err := r.ensureWorkloadStatefulSet(ctx, mcpServer, deployment); err != nil {
+		ctxLogger.Error(err, "Failed to ensure workload StatefulSet")
+		return ctrl.Result{}, err
+	} else if result.RequeueAfter > 0 {
+		return result, nil
 	}
 
 	return ctrl.Result{}, nil
@@ -1099,7 +1110,7 @@ func (r *MCPServerReconciler) deploymentForMCPServer(
 
 	// Using ConfigMap mode for all configuration
 	// Pod template patch for secrets and service account
-	builder, err := ctrlutil.NewPodTemplateSpecBuilder(m.Spec.PodTemplateSpec, mcpContainerName)
+	ptsBuilder, err := ctrlutil.NewPodTemplateSpecBuilder(m.Spec.PodTemplateSpec, mcpContainerName)
 	if err != nil {
 		return nil, fmt.Errorf("failed to build PodTemplateSpec: %w", err)
 	}
@@ -1109,7 +1120,7 @@ func (r *MCPServerReconciler) deploymentForMCPServer(
 		defaultSA := mcpServerServiceAccountName(m.Name)
 		serviceAccount = &defaultSA
 	}
-	finalPodTemplateSpec := builder.
+	finalPodTemplateSpec := ptsBuilder.
 		WithServiceAccount(serviceAccount).
 		WithSecrets(m.Spec.Secrets).
 		Build()
@@ -1690,34 +1701,65 @@ func (r *MCPServerReconciler) updateMCPServerStatus(ctx context.Context, m *mcpv
 	// Set ReadyReplicas to the count of running pods
 	m.Status.ReadyReplicas = int32(running)
 
-	// Update the status based on pod health
+	// Proxy pods alone are not enough: stdio (and other) transports run the
+	// real MCP process in a sibling StatefulSet created by the proxy-runner.
+	// If that STS is gone, clients hit a dead backend while Ready stays true
+	// (#6343). Surface the gap instead of claiming the server is running.
 	if running > 0 {
+		updated, stsErr := r.statusIfWorkloadStatefulSetMissing(ctx, m)
+		if stsErr != nil {
+			return stsErr
+		}
+		if updated {
+			return nil
+		}
+	}
+	applyMCPServerPhaseFromCounts(m, running, pending, failed, failureReason)
+
+	// Update the status
+	return r.Status().Update(ctx, m)
+}
+
+func applyMCPServerPhaseFromCounts(m *mcpv1beta1.MCPServer, running, pending, failed int, failureReason string) {
+	switch {
+	case running > 0:
 		m.Status.Phase = mcpv1beta1.MCPServerPhaseReady
 		m.Status.Message = "MCP server is running"
-	} else if failed > 0 {
+	case failed > 0:
 		m.Status.Phase = mcpv1beta1.MCPServerPhaseFailed
 		if failureReason != "" {
 			m.Status.Message = fmt.Sprintf("MCP server pod failed: %s", failureReason)
 		} else {
 			m.Status.Message = "MCP server pod failed"
 		}
-	} else if pending > 0 {
+	case pending > 0:
 		m.Status.Phase = mcpv1beta1.MCPServerPhasePending
 		m.Status.Message = "MCP server is starting"
-	} else {
+	default:
 		m.Status.Phase = mcpv1beta1.MCPServerPhasePending
 		m.Status.Message = "No healthy pods found"
 	}
-
-	// Set the top-level Ready condition based on the determined phase
 	if m.Status.Phase == mcpv1beta1.MCPServerPhaseReady {
 		setReadyCondition(m, metav1.ConditionTrue, mcpv1beta1.ConditionReasonReady, "MCP server is running")
 	} else {
 		setReadyCondition(m, metav1.ConditionFalse, mcpv1beta1.ConditionReasonNotReady, m.Status.Message)
 	}
+}
 
-	// Update the status
-	return r.Status().Update(ctx, m)
+// statusIfWorkloadStatefulSetMissing sets Pending when the proxy is up but the
+// sibling workload STS is gone (#6343). Returns true if status was written.
+func (r *MCPServerReconciler) statusIfWorkloadStatefulSetMissing(ctx context.Context, m *mcpv1beta1.MCPServer) (bool, error) {
+	missing, err := r.statefulSetMissing(ctx, m)
+	if err != nil {
+		return false, err
+	}
+	if !missing {
+		return false, nil
+	}
+	m.Status.Phase = mcpv1beta1.MCPServerPhasePending
+	m.Status.Message = "MCP server proxy is running; recreating missing workload StatefulSet"
+	setReadyCondition(m, metav1.ConditionFalse, mcpv1beta1.ConditionReasonNotReady, m.Status.Message)
+	return true, r.Status().Update(ctx, m)
 }
 
 // deleteIfExists fetches a Kubernetes object by name and namespace, and deletes it if it exists.
@@ -1949,13 +1991,13 @@ func (r *MCPServerReconciler) deploymentNeedsUpdate(
 			serviceAccount = &defaultSA
 		}
 
-		builder, err := ctrlutil.NewPodTemplateSpecBuilder(mcpServer.Spec.PodTemplateSpec, mcpContainerName)
+		ptsBuilder, err := ctrlutil.NewPodTemplateSpecBuilder(mcpServer.Spec.PodTemplateSpec, mcpContainerName)
 		if err != nil {
 			// If we can't parse the PodTemplateSpec, consider it as needing update
 			return true
 		}
 
-		expectedPodTemplateSpec := builder.
+		expectedPodTemplateSpec := ptsBuilder.
 			WithServiceAccount(serviceAccount).
 			WithSecrets(mcpServer.Spec.Secrets).
 			Build()
@@ -2058,7 +2100,9 @@ func (r *MCPServerReconciler) deploymentNeedsUpdate(
 		)
 	}
 
-	if !maps.Equal(deployment.Spec.Template.Annotations, expectedPodTemplateAnnotations) {
+	// Subset check so kubectl.kubernetes.io/restartedAt (and other
+	// externally-written keys) are not treated as drift and reverted (#6344).
+	if !ctrlutil.MapIsSubset(expectedPodTemplateAnnotations, deployment.Spec.Template.Annotations) {
 		return true
 	}
 
@@ -3003,6 +3047,12 @@ func (r *MCPServerReconciler) SetupWithManager(mgr ctrl.Manager) error {
 		For(&mcpv1beta1.MCPServer{}).
 		Owns(&appsv1.Deployment{}).
 		Owns(&corev1.Service{}).
+		Owns(&appsv1.StatefulSet{}).
+		Watches(
+			&appsv1.StatefulSet{},
+			handler.EnqueueRequestsFromMapFunc(r.mapStatefulSetToMCPServer),
+			builder.WithPredicates(predicate.NewPredicateFuncs(isToolhiveStatefulSet)),
+		).
 		Watches(&mcpv1beta1.MCPExternalAuthConfig{}, externalAuthConfigHandler).
 		Watches(&mcpv1beta1.MCPOIDCConfig{}, oidcConfigHandler).
 		Watches(&mcpv1beta1.MCPAuthzConfig{}, authzConfigHandler).

@@ -2228,8 +2228,9 @@ func TestNewEmbeddedAuthServer_DeferredCleanupSanitizesLog(t *testing.T) {
 // actually reached the Factory closure and NewMultiIssuerTokenValidator's
 // constructor (not merely RunConfig.Validate/Config.Validate, both of which
 // run before resolvedCfg is built): NewMultiIssuerTokenValidator logs a
-// slog.Warn ("Trusted issuer has no allowed actors configured") for each
-// TrustedIssuer with an empty AllowedActors. Confirmed by mutation: deleting
+// slog.Warn ("Trusted issuer has no allowed actors or actor matcher
+// configured") for each TrustedIssuer with an empty AllowedActors and no
+// ActorMatcher. Confirmed by mutation: deleting
 // `TrustedIssuers: slices.Clone(cfg.TrustedIssuers)` from resolvedCfg's
 // construction makes this test fail (the warning never fires because
 // MultiIssuerTokenValidator is never even built — Factory falls back to the
@@ -2311,7 +2312,7 @@ func TestNewEmbeddedAuthServer_TrustedIssuers(t *testing.T) {
 		require.NotNil(t, srv)
 		t.Cleanup(func() { _ = srv.Close() })
 
-		assert.Contains(t, buf.String(), "Trusted issuer has no allowed actors configured")
+		assert.Contains(t, buf.String(), "Trusted issuer has no allowed actors or actor matcher configured")
 	})
 }
 

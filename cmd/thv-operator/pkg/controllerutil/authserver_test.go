@@ -10,6 +10,7 @@ import (
 	"fmt"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -25,6 +26,7 @@ import (
 	"github.com/stacklok/toolhive/cmd/thv-operator/pkg/oidc"
 	"github.com/stacklok/toolhive/pkg/authserver"
 	authrunner "github.com/stacklok/toolhive/pkg/authserver/runner"
+	"github.com/stacklok/toolhive/pkg/authserver/server/tokenexchange"
 	"github.com/stacklok/toolhive/pkg/authserver/storage"
 	"github.com/stacklok/toolhive/pkg/runner"
 )
@@ -3107,4 +3109,35 @@ func TestBuildAuthServerRunConfigInvalidDelegateClientIsTyped(t *testing.T) {
 	assert.Contains(t, err.Error(), "delegateClients[0].clientSecretRef.name and clientSecretRef.key are required")
 	var invalidConfigErr *InvalidEmbeddedAuthServerConfigError
 	assert.True(t, stderrors.As(err, &invalidConfigErr))
+}
+
+func TestBuildTrustedIssuerRunConfigs_JWTBearerGrant(t *testing.T) {
+	t.Parallel()
+
+	acceptedAudiences := []string{"https://auth.example.com/legacy-token"}
+	configs := buildTrustedIssuerRunConfigs([]mcpv1beta1.TrustedIssuerConfig{{
+		IssuerURL: "https://issuer.example.com",
+		JWTBearerGrant: &mcpv1beta1.JWTBearerGrantConfig{
+			MaxAssertionAge: &metav1.Duration{Duration: 5 * time.Minute},
+			SubjectBindings: []mcpv1beta1.JWTBearerSubjectBinding{{
+				Subject:          "workload-123",
+				AllowedResources: []string{"https://mcp.example.com"},
+			}},
+			AcceptedAudiences: acceptedAudiences,
+		},
+	}})
+
+	require.Len(t, configs, 1)
+	require.NotNil(t, configs[0].JWTBearerGrant)
+	assert.Equal(t, "5m0s", configs[0].JWTBearerGrant.MaxAssertionAge)
+	assert.Equal(t, []tokenexchange.JWTBearerSubjectBinding{{
+		Subject:          "workload-123",
+		AllowedResources: []string{"https://mcp.example.com"},
+	}}, configs[0].JWTBearerGrant.SubjectBindings)
+	assert.Equal(t, []string{"https://auth.example.com/legacy-token"}, configs[0].JWTBearerGrant.AcceptedAudiences)
+
+	// The runtime policy must not retain the CRD object's backing slice: the
+	// reconciler may reuse or mutate the source object after conversion.
+	acceptedAudiences[0] = "https://auth.example.com/source-mutated"
+	assert.Equal(t, "https://auth.example.com/legacy-token", configs[0].JWTBearerGrant.AcceptedAudiences[0])
 }

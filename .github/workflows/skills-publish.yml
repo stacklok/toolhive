@@ -13,29 +13,33 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 #
-# This workflow builds distributable Claude Code Agent Skills from
-# skills/ and optionally pushes them as OCI artifacts to GHCR.
+# This workflow builds distributable Claude Code Agent Skills from skills/
+# and publishes them as signed OCI artifacts to GHCR.
+#
+# Deliberately separate from skills-build.yml, which performs the same build
+# for verification on pull requests and main. This one holds id-token: write
+# so `thv skill push` can sign keylessly, and it runs repository code
+# (`thv serve`, `thv skill build`) to do so — so it must only ever be called
+# from a trusted, post-merge context. releaser.yml is its sole caller; adding
+# a pull-request-triggered one would hand OIDC signing capability to code
+# from the pull request under review.
 
-name: Build and Publish Skills
+name: Publish Skills
 
 on:
   workflow_call:
-    inputs:
-      push:
-        description: "Push built skills to the registry"
-        required: false
-        default: false
-        type: boolean
 
 jobs:
-  skills-build-and-publish:
-    name: Build and Publish Skills
+  skills-publish:
+    name: Publish Skills
     runs-on: ubuntu-latest
     permissions:
       contents: read
-      # packages:write is only exercised when inputs.push is true,
-      # but GitHub Actions does not support conditional permissions.
       packages: write
+      # Lets `thv skill push` mint the ambient OIDC token it signs with. A
+      # reusable workflow cannot be granted more than its caller declares, so
+      # the calling job needs this too (releaser.yml's skills-publish).
+      id-token: write
 
     env:
       BASE_REPO: "ghcr.io/stacklok/toolhive/skills"
@@ -59,7 +63,6 @@ jobs:
         run: go build -o ./thv ./cmd/thv
 
       - name: Login to GitHub Container Registry
-        if: inputs.push
         uses: docker/login-action@650006c6eb7dba73a995cc03b0b2d7f5ca915bee # v4.2.0
         with:
           registry: ghcr.io
@@ -88,10 +91,9 @@ jobs:
           # Verify process is still alive after health check
           kill -0 "$!" 2>/dev/null || { echo "thv serve exited unexpectedly; logs:"; cat /tmp/thv-serve.log; exit 1; }
 
-      - name: Build skills
+      - name: Build and publish skills
         env:
           TAG: ${{ steps.version-string.outputs.tag }}
-          PUSH: ${{ inputs.push }}
           GH_REF: ${{ github.ref }}
         run: |
           set -euo pipefail
@@ -107,24 +109,22 @@ jobs:
             built_ref=$(./thv skill build "$skill_dir" --tag "$ref")
             echo "Built: ${built_ref}"
 
-            if [ "$PUSH" = "true" ]; then
-              echo "Pushing skill: ${built_ref}"
-              # TODO(#6307): pushes are unsigned until keyless push signing lands;
-              # switch to Fulcio/Rekor signing and drop --no-sign once that ships.
-              ./thv skill push "$built_ref" --no-sign
+            echo "Pushing skill: ${built_ref}"
+            # No signing flags: with id-token:write granted, the push acquires
+            # the job's ambient OIDC token and signs keylessly against Fulcio
+            # and Rekor. Absent that token the push fails rather than
+            # publishing unsigned.
+            ./thv skill push "$built_ref"
 
-              # Also tag as latest when building from a release tag
-              if [[ "$GH_REF" == refs/tags/* ]]; then
-                latest_ref="${BASE_REPO}/${skill_name}:latest"
-                echo "Tagging as latest: ${latest_ref}"
-                built_latest=$(./thv skill build "$skill_dir" --tag "$latest_ref")
-                ./thv skill push "$built_latest" --no-sign
-              fi
-
-              echo "Published: ${ref}"
-            else
-              echo "Skipping push (build-only mode)"
+            # Also tag as latest when building from a release tag
+            if [[ "$GH_REF" == refs/tags/* ]]; then
+              latest_ref="${BASE_REPO}/${skill_name}:latest"
+              echo "Tagging as latest: ${latest_ref}"
+              built_latest=$(./thv skill build "$skill_dir" --tag "$latest_ref")
+              ./thv skill push "$built_latest"
             fi
+
+            echo "Published: ${ref}"
           done
 
       - name: Stop thv serve

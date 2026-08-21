@@ -273,15 +273,14 @@ jobs:
       id-token: write
     uses: ./.github/workflows/image-build-and-publish.yml
 
-  skills-build-and-push:
-    name: Build and Publish Skills
+  skills-publish:
+    name: Publish Skills
     needs: [ release-binaries ]
     permissions:
       contents: read
       packages: write
-    uses: ./.github/workflows/skills-build-and-publish.yml
-    with:
-      push: true
+      id-token: write # To do keyless signing of the pushed skill artifacts
+    uses: ./.github/workflows/skills-publish.yml
 
   publish-helm:
     name: Publish Helm Chart
@@ -351,7 +350,7 @@ jobs:
       - compute-build-flags
       - release-binaries
       - image-build-and-push
-      - skills-build-and-push
+      - skills-publish
       - publish-helm
     if: ${{ failure() }}
     runs-on: ubuntu-slim

@@ -92,15 +92,58 @@ type compiledMapping struct {
 // Claim-based mappings bind claim_value and role_claim_key as variables so that
 // user-supplied values are never interpolated into CEL expression strings,
 // eliminating CEL injection by design. Matcher-based mappings only need claims.
-func (cm *compiledMapping) evalContext(claims map[string]any, roleClaim string) map[string]any {
+func (cm *compiledMapping) evalContext(
+	claims map[string]any,
+	normalizedClaims map[string]any,
+	roleClaim string,
+) map[string]any {
 	if cm.claimValue != "" {
 		return map[string]any{
-			"claims":         claims,
+			"claims":         normalizedClaims,
 			"claim_value":    cm.claimValue,
 			"role_claim_key": roleClaim,
 		}
 	}
 	return map[string]any{"claims": claims}
+}
+
+// normalizeRoleClaim returns a copy of claims whose role claim value is
+// normalized to a list so the claim binding expression
+// `claim_value in claims[role_claim_key]` performs exact element membership
+// regardless of how the IdP serializes the claim: a single string is wrapped
+// into a one-element list, and a list passes through unchanged.
+//
+// The documented contract (config.go) treats the role claim as a value list, so
+// any other shape is an unsupported deviation and fails closed: without this
+// guard, a string-typed claim made CEL `in` raise a "no such overload" error
+// that SelectRole swallowed as a non-match (silently granting FallbackRoleArn),
+// and an object-typed claim made `in` test map-key membership (spuriously
+// matching when the configured value was a key).
+func normalizeRoleClaim(claims map[string]any, roleClaim string) (map[string]any, error) {
+	v, ok := claims[roleClaim]
+	if !ok {
+		// A missing role claim is a normal "no match", not an error: index the
+		// expression against an empty list so it evaluates false and SelectRole
+		// falls back as it always did.
+		return cloneClaimsWithRoleClaim(claims, roleClaim, []any{}), nil
+	}
+	switch t := v.(type) {
+	case string:
+		return cloneClaimsWithRoleClaim(claims, roleClaim, []any{t}), nil
+	case []any, []string:
+		return claims, nil
+	default:
+		return nil, fmt.Errorf("role claim %q has unsupported value type %T (want string or list of strings)", roleClaim, v)
+	}
+}
+
+func cloneClaimsWithRoleClaim(claims map[string]any, roleClaim string, value any) map[string]any {
+	clone := make(map[string]any, len(claims)+1)
+	for key, claim := range claims {
+		clone[key] = claim
+	}
+	clone[roleClaim] = value
+	return clone
 }
 
 // RoleMapper handles mapping JWT claims to IAM roles with priority-based selection.
@@ -169,21 +212,54 @@ func NewRoleMapper(cfg *Config) (*RoleMapper, error) {
 func (rm *RoleMapper) SelectRole(claims map[string]any) (string, error) {
 	// If no role mappings configured, use default role
 	if len(rm.mappings) == 0 {
-		if rm.config.FallbackRoleArn == "" {
-			return "", ErrMissingRoleConfig
-		}
-		return rm.config.FallbackRoleArn, nil
+		return rm.fallbackRole(ErrMissingRoleConfig)
 	}
 
 	// Find all matching mappings
 	roleClaim := rm.config.GetRoleClaim()
+	normalizedClaims := claims
+	var normalizationErr error
+	for _, mapping := range rm.mappings {
+		if mapping.claimValue != "" {
+			normalizedClaims, normalizationErr = normalizeRoleClaim(claims, roleClaim)
+			break
+		}
+	}
 
 	var matches []compiledMapping
+	var claimMappingErr error
 	for _, mapping := range rm.mappings {
-		match, err := mapping.expr.EvaluateBool(mapping.evalContext(claims, roleClaim))
+		if mapping.claimValue != "" && normalizationErr != nil {
+			// Keep evaluating other mappings: a valid matcher mapping may have
+			// already matched. If none do, fail closed below rather than granting
+			// the fallback role for an unsupported claim shape.
+			slog.Warn("role claim has unsupported shape, failing closed",
+				"role_arn", mapping.roleArn, "error", normalizationErr)
+			if claimMappingErr == nil {
+				claimMappingErr = normalizationErr
+			}
+			continue
+		}
+
+		ctx := mapping.evalContext(claims, normalizedClaims, roleClaim)
+		match, err := mapping.expr.EvaluateBool(ctx)
 		if err != nil {
+			if mapping.claimValue != "" {
+				// Claim-based mappings are normalized before evaluation, so an
+				// error here is unexpected. Keep evaluating other mappings; if no
+				// valid mapping matches, fail closed below instead of falling back.
+				slog.Warn("claim-based role mapping evaluation failed, failing closed",
+					"role_arn", mapping.roleArn, "error", err)
+				if claimMappingErr == nil {
+					claimMappingErr = err
+				}
+				continue
+			}
+			// Matcher expressions are admin-authored; keep the historical
+			// skip-and-fall-back behavior but surface the failure at Warn so
+			// operators can see it.
 			//nolint:gosec // G706: role ARN is from server configuration
-			slog.Debug("CEL expression evaluation failed, skipping mapping",
+			slog.Warn("CEL expression evaluation failed, skipping mapping",
 				"role_arn", mapping.roleArn, "error", err)
 			continue
 		}
@@ -193,12 +269,15 @@ func (rm *RoleMapper) SelectRole(claims map[string]any) (string, error) {
 		}
 	}
 
+	// A malformed claim-based mapping must not fall through to the fallback
+	// role, but a valid mapping match always takes precedence over that error.
+	if len(matches) == 0 && claimMappingErr != nil {
+		return "", fmt.Errorf("%w: %w", ErrNoRoleMapping, claimMappingErr)
+	}
+
 	// If no matches, fall back to default role
 	if len(matches) == 0 {
-		if rm.config.FallbackRoleArn == "" {
-			return "", fmt.Errorf("%w: no mapping matched for the provided claims", ErrNoRoleMapping)
-		}
-		return rm.config.FallbackRoleArn, nil
+		return rm.fallbackRole(fmt.Errorf("%w: no mapping matched for the provided claims", ErrNoRoleMapping))
 	}
 
 	// Sort by priority (lower number = higher priority).
@@ -210,6 +289,16 @@ func (rm *RoleMapper) SelectRole(claims map[string]any) (string, error) {
 
 	// Return the highest priority match (lowest priority number)
 	return matches[0].roleArn, nil
+}
+
+// fallbackRole returns the configured fallback role, or missingErr when none
+// is configured. Callers provide their context-specific error to preserve the
+// distinction between missing configuration and unmatched mappings.
+func (rm *RoleMapper) fallbackRole(missingErr error) (string, error) {
+	if rm.config.FallbackRoleArn == "" {
+		return "", missingErr
+	}
+	return rm.config.FallbackRoleArn, nil
 }
 
 // ValidateConfig validates the AWS STS configuration structure.

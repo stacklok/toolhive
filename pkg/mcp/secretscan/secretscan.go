@@ -58,6 +58,12 @@ var patterns = []*regexp.Regexp{
 	// PEM-encoded private key blocks (RSA/EC/PKCS8/OpenSSH/generic).
 	regexp.MustCompile(`(?s)-----BEGIN [A-Z ]*PRIVATE KEY-----.*?-----END [A-Z ]*PRIVATE KEY-----`),
 	regexp.MustCompile(`(?s)-----BEGIN OPENSSH PRIVATE KEY-----.*?-----END OPENSSH PRIVATE KEY-----`),
+	// Generic "Authorization: Bearer <token>" shape. Unlike the patterns
+	// above, this doesn't identify a specific issuer -- it catches any
+	// opaque bearer credential by the way it is carried, which is the most
+	// common shape for exfiltrated API/session tokens that don't match a
+	// named provider's format.
+	regexp.MustCompile(`(?i)\bBearer\s+[A-Za-z0-9\-._~+/=]{8,}\b`),
 }
 
 // Result reports what ScanAndRedactToolCallResult did.

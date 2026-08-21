@@ -57,12 +57,15 @@ func (c sseRewriteConfig) hasRewriteConfig() bool {
 var sessionRe = regexp.MustCompile(`sessionId=([0-9A-Fa-f-]+)|"sessionId"\s*:\s*"([^"]+)"`)
 
 // SSEResponseProcessor handles SSE-specific response processing including:
-// - Session ID extraction from SSE streams
-// - Endpoint URL rewriting for path-based routing
+//   - Session ID extraction from SSE streams
+//   - Endpoint URL rewriting for path-based routing
+//   - Optional credential-shape redaction of tools/call results (see
+//     WithSecretRedaction)
 type SSEResponseProcessor struct {
 	proxy             *TransparentProxy
 	endpointPrefix    string
 	trustProxyHeaders bool
+	redactSecrets     bool
 }
 
 // NewSSEResponseProcessor creates a new SSE response processor.
@@ -70,11 +73,13 @@ func NewSSEResponseProcessor(
 	proxy *TransparentProxy,
 	endpointPrefix string,
 	trustProxyHeaders bool,
+	redactSecrets bool,
 ) *SSEResponseProcessor {
 	return &SSEResponseProcessor{
 		proxy:             proxy,
 		endpointPrefix:    endpointPrefix,
 		trustProxyHeaders: trustProxyHeaders,
+		redactSecrets:     redactSecrets,
 	}
 }
 
@@ -212,6 +217,7 @@ type sseLineProcessor struct {
 	rewriteConfig    sseRewriteConfig
 	currentEventType string
 	sessionFound     bool
+	redactSecrets    bool
 }
 
 // processLine processes a single SSE line and returns the potentially modified line.
@@ -245,10 +251,27 @@ func (s *sseLineProcessor) processDataLine(line string) string {
 
 	// Rewrite endpoint URLs only for "endpoint" events
 	if s.currentEventType == "endpoint" && s.rewriteConfig.hasRewriteConfig() {
-		return s.rewriteDataLine(line, dataContent)
+		line = s.rewriteDataLine(line, dataContent)
+	}
+
+	if s.redactSecrets {
+		line = s.redactDataLine(line)
 	}
 
 	return line
+}
+
+// redactDataLine redacts credential-shaped content from a data line's
+// JSON-RPC payload (see pkg/mcp/secretscan). Lines that aren't a JSON-RPC
+// response object (endpoint events, notifications with no "result", any
+// content that fails to decode) are returned unchanged.
+func (*sseLineProcessor) redactDataLine(line string) string {
+	dataContent := strings.TrimSpace(strings.TrimPrefix(line, "data:"))
+	redacted, changed, err := redactJSONRPCBody([]byte(dataContent))
+	if err != nil || !changed {
+		return line
+	}
+	return "data: " + string(redacted)
 }
 
 // extractSessionID extracts and stores the session ID from a data line.
@@ -299,6 +322,7 @@ func (s *SSEResponseProcessor) processSSEStream(originalBody io.Reader, pw *io.P
 	processor := &sseLineProcessor{
 		proxy:         s.proxy,
 		rewriteConfig: rewriteConfig,
+		redactSecrets: s.redactSecrets,
 	}
 
 	for scanner.Scan() {

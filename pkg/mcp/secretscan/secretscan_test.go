@@ -25,6 +25,7 @@ func TestScanAndRedactToolCallResult_RedactsKnownCredentialShapes(t *testing.T) 
 		{"stripe secret key", "sk_live_" + strings.Repeat("a", 24)},
 		{"jwt", "ey" + strings.Repeat("A", 12) + "." + strings.Repeat("B", 12) + "." + strings.Repeat("C", 12)},
 		{"pem private key", "-----BEGIN " + "RSA PRIVATE KEY-----" + "\nMIIBogIBAAJ...\n" + "-----END " + "RSA PRIVATE KEY-----"},
+		{"generic bearer token", "Authorization: Bearer " + strings.Repeat("x", 24)},
 	}
 
 	for _, tc := range cases {

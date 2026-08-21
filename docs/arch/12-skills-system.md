@@ -232,13 +232,22 @@ digest. This ordering predates keyless signing and is unchanged by it;
 consumers are protected by the install-side requirement for a valid
 signature, not by the publisher's ordering.
 
-**In CI:** release pushes (`.github/workflows/skills-build-and-publish.yml`,
-called with `push: true` only from `releaser.yml`) run `thv skill push` with
-no signing flags at all, so the ambient rung of the ladder signs them with
-the job's OIDC token. That needs `id-token: write` on both the reusable
-workflow's job *and* the calling job — GitHub caps a reusable workflow's
-permissions at what its caller declares, so granting it in only one place
-silently yields no token and fails the push.
+**In CI:** release pushes (`.github/workflows/skills-publish.yml`, called
+only from `releaser.yml`) run `thv skill push` with no signing flags at all,
+so the ambient rung of the ladder signs them with the job's OIDC token. That
+needs `id-token: write` on both the reusable workflow's job *and* the calling
+job — GitHub caps a reusable workflow's permissions at what its caller
+declares, so granting it in only one place silently yields no token and fails
+the push.
+
+Building is a separate workflow (`skills-build.yml`, called from
+`run-on-pr.yml` and `run-on-main.yml`) that publishes nothing and holds
+neither `packages: write` nor `id-token: write`. The split is the reason
+those permissions exist in one place only: the build executes repository
+code — `thv serve` and `thv skill build` — which on a pull request is code
+from the pull request itself, and GitHub validates a called workflow's
+permissions against its caller's statically, so a single workflow behind a
+`push:` input would have forced every caller to grant the union regardless.
 
 Interoperability with the wider Sigstore ecosystem is covered separately by
 `.github/workflows/skills-keyless-signing-e2e.yml`, which signs a throwaway

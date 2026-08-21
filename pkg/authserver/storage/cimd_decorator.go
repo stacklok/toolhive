@@ -142,6 +142,13 @@ func (d *CIMDStorageDecorator) fetchOrCached(ctx context.Context, id string) (fo
 func (d *CIMDStorageDecorator) fetch(ctx context.Context, id string) (fosite.Client, error) {
 	doc, err := cimd.FetchClientMetadataDocument(ctx, id)
 	if err != nil {
+		// Log every rejection in fetch() at Warn: the errors returned here
+		// surface to the client as a generic invalid_client/invalid_request
+		// with the hint dropped by fosite's production error rendering, so
+		// without a server-side log line these failures are undiagnosable
+		// (see issue #6186).
+		slog.WarnContext(ctx, "CIMD document fetch failed",
+			"client_id", id, "error", err)
 		return nil, fmt.Errorf("%w: %w", fosite.ErrNotFound.WithHint("CIMD fetch failed"), err)
 	}
 
@@ -150,6 +157,8 @@ func (d *CIMDStorageDecorator) fetch(ctx context.Context, id string) (fosite.Cli
 	// metadata violates AS policy (distinct from ErrNotFound which means the
 	// document could not be fetched at all).
 	if m := doc.TokenEndpointAuthMethod; m != "" && m != defaultCIMDTokenEndpointAuthMethod {
+		slog.WarnContext(ctx, "CIMD client rejected: unsupported token_endpoint_auth_method",
+			"client_id", id, "token_endpoint_auth_method", m)
 		return nil, fmt.Errorf("%w: CIMD document at %s claims token_endpoint_auth_method %q "+
 			"but this server only supports %q",
 			fosite.ErrInvalidClient.WithHint("unsupported token_endpoint_auth_method"),
@@ -167,6 +176,8 @@ func (d *CIMDStorageDecorator) fetch(ctx context.Context, id string) (fosite.Cli
 	// a client that resolves and then fails every token request.
 	grantTypes, dcrErr := registration.FilterPublicGrantTypes(doc.GrantTypes)
 	if dcrErr != nil {
+		slog.WarnContext(ctx, "CIMD client rejected: invalid grant_types",
+			"client_id", id, "error", dcrErr.ErrorDescription)
 		return nil, fmt.Errorf("%w: CIMD document at %s: %s",
 			fosite.ErrInvalidClient.WithHint(dcrErr.ErrorDescription), id, dcrErr.ErrorDescription)
 	}
@@ -176,6 +187,8 @@ func (d *CIMDStorageDecorator) fetch(ctx context.Context, id string) (fosite.Cli
 	}
 	responseTypes, dcrErr := registration.FilterPublicResponseTypes(doc.ResponseTypes)
 	if dcrErr != nil {
+		slog.WarnContext(ctx, "CIMD client rejected: invalid response_types",
+			"client_id", id, "error", dcrErr.ErrorDescription)
 		return nil, fmt.Errorf("%w: CIMD document at %s: %s",
 			fosite.ErrInvalidClient.WithHint(dcrErr.ErrorDescription), id, dcrErr.ErrorDescription)
 	}
@@ -187,41 +200,58 @@ func (d *CIMDStorageDecorator) fetch(ctx context.Context, id string) (fosite.Cli
 	// Compute and validate the client scope list consistent with DCR.
 	// When ScopesSupported is configured:
 	//   - Declared scopes are validated via registration.ValidateScopes (same
-	//     function as the DCR handler).
-	//   - Omitted scope uses ValidateScopes(nil, scopesSupported) which returns
-	//     DefaultScopes when DefaultScopes ⊆ ScopesSupported, matching DCR.
-	//     If DefaultScopes ⊄ ScopesSupported the document must declare scope
-	//     explicitly to avoid ambiguous privilege grant.
+	//     function as the DCR handler); an unsupported declared scope rejects.
+	//   - Omitted scope uses ValidateScopes(nil, scopesSupported), which grants
+	//     the intersection of DefaultScopes with ScopesSupported (matching DCR)
+	//     and reports the defaults it dropped; only an empty intersection is
+	//     rejected, in which case the document must declare scope explicitly.
 	// When ScopesSupported is not configured: no AS-level validation; declared
 	// scopes are used directly, or nil to let buildFositeClient apply DefaultScopes.
 	// In both cases BaselineClientScopes is unioned in after validation,
 	// matching the DCR handler's behaviour.
 	var resolvedScopes []string
+	var droppedDefaults []string
 	if len(d.scopesSupported) > 0 {
 		if doc.Scope != "" {
-			computed, dcrErr := registration.ValidateScopes(strings.Fields(doc.Scope), d.scopesSupported)
+			computed, _, dcrErr := registration.ValidateScopes(strings.Fields(doc.Scope), d.scopesSupported)
 			if dcrErr != nil {
+				slog.WarnContext(ctx, "CIMD client rejected: invalid scope",
+					"client_id", id, "error", dcrErr.ErrorDescription)
 				return nil, fmt.Errorf("%w: CIMD document at %s: %s",
 					fosite.ErrInvalidClient.WithHint(dcrErr.ErrorDescription), id, dcrErr.ErrorDescription)
 			}
 			resolvedScopes = computed
 		} else {
-			// Omitted scope: match DCR — give DefaultScopes when they fit, else require explicit scope.
-			computed, dcrErr := registration.ValidateScopes(nil, d.scopesSupported)
+			// Omitted scope: match DCR — grant the intersection of DefaultScopes
+			// with scopes_supported; reject only when the intersection is empty.
+			computed, dropped, dcrErr := registration.ValidateScopes(nil, d.scopesSupported)
 			if dcrErr != nil {
-				return nil, fmt.Errorf("%w: CIMD document at %s omits scope but "+
-					"DefaultScopes are not a subset of this server's scopes_supported — "+
+				slog.WarnContext(ctx, "CIMD client rejected: no usable default scopes",
+					"client_id", id, "error", dcrErr.ErrorDescription)
+				return nil, fmt.Errorf("%w: CIMD document at %s omits scope and "+
+					"none of the default scopes are supported by this server — "+
 					"the document must explicitly declare its required scopes",
 					fosite.ErrInvalidClient.WithHint("scope field required"),
 					id)
 			}
 			resolvedScopes = computed
+			droppedDefaults = dropped
 		}
 	} else if doc.Scope != "" {
 		resolvedScopes = strings.Fields(doc.Scope)
 	}
 	if len(d.baselineClientScopes) > 0 {
 		resolvedScopes = registration.UnionScopes(resolvedScopes, d.baselineClientScopes)
+	}
+	// The document omitted scope and scopes_supported does not carry the full
+	// default set: resolution proceeded with the intersection (see issue
+	// #6186). Recorded after the baseline union so "scopes" is the set the
+	// client actually receives; Debug because the drop is fully determined by
+	// startup config — the one-time operator-facing signal lives in
+	// Config.applyDefaults.
+	if len(droppedDefaults) > 0 {
+		slog.DebugContext(ctx, "CIMD document omits scope; granted the intersection of default scopes with scopes_supported",
+			"client_id", id, "scopes", resolvedScopes, "dropped_defaults", droppedDefaults)
 	}
 
 	client := buildFositeClient(doc, resolvedScopes, grantTypes, responseTypes)

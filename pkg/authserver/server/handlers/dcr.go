@@ -73,7 +73,7 @@ func (h *Handler) RegisterClientHandler(w http.ResponseWriter, req *http.Request
 	}
 
 	// Validate requested scopes against server's supported scopes
-	scopes, dcrErr := registration.ValidateScopes(dcrReq.Scopes, h.config.ScopesSupported)
+	scopes, droppedDefaults, dcrErr := registration.ValidateScopes(dcrReq.Scopes, h.config.ScopesSupported)
 	if dcrErr != nil {
 		writeDCRError(w, http.StatusBadRequest, dcrErr)
 		return
@@ -183,6 +183,16 @@ func (h *Handler) RegisterClientHandler(w http.ResponseWriter, req *http.Request
 		"software_id", validated.SoftwareID,
 		"token_endpoint_auth_method", effectiveAuthMethod,
 		"scopes", scopes,
+	}
+	// The request omitted scope and scopes_supported does not carry the full
+	// default set: registration proceeded with the intersection (see issue
+	// #6186). Recorded on this line — after the baseline union and the
+	// client_id mint — so "scopes" is the set the client actually holds and
+	// the drop correlates with the client's later log lines. The drop itself
+	// is fully determined by startup config; the one-time operator-facing
+	// signal lives in Config.applyDefaults.
+	if len(droppedDefaults) > 0 {
+		logAttrs = append(logAttrs, "dropped_defaults", droppedDefaults)
 	}
 	if issuer := h.issuer(); issuer != "" {
 		logAttrs = append(logAttrs, "issuer", issuer)

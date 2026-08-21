@@ -84,7 +84,8 @@ type RunConfig struct {
 	// BaselineClientScopes is a baseline set of OAuth 2.0 scopes unioned into every
 	// DCR registration. All values must appear in ScopesSupported; the auth server
 	// rejects this RunConfig at startup otherwise. Empty means current behavior is
-	// preserved (registered scope = client-requested, or DefaultScopes if empty).
+	// preserved (registered scope = client-requested, or the intersection of
+	// DefaultScopes with ScopesSupported if the client requested none).
 	// When ScopesSupported is empty, the subset check uses registration.DefaultScopes
 	// (the same set applyDefaults would substitute at startup) — so
 	// BaselineClientScopes containing standard OIDC scopes works without enumerating
@@ -893,7 +894,8 @@ type Config struct {
 	// BaselineClientScopes is a baseline set of OAuth 2.0 scopes the embedded
 	// DCR handler unions into every newly registered client's scope set. Empty
 	// means current behavior is preserved (DCR registers exactly what the client
-	// requested, or registration.DefaultScopes if the client requested none).
+	// requested, or the intersection of registration.DefaultScopes with
+	// ScopesSupported if the client requested none).
 	// All entries must also be present in ScopesSupported. When ScopesSupported
 	// is empty, the validation gate uses registration.DefaultScopes as the
 	// superset — so standard OIDC scopes (e.g. "offline_access") work without
@@ -1466,6 +1468,22 @@ func (c *Config) applyDefaults() error {
 	if len(c.ScopesSupported) == 0 {
 		c.ScopesSupported = registration.DefaultScopes
 		slog.Debug("applied default scopes_supported", "scopes", c.ScopesSupported)
+	}
+	// One-time operator-facing signal for the omitted-scope registration
+	// behavior (see registration.ValidateScopes and issue #6186). The outcome
+	// is fully determined by ScopesSupported, so it is logged once here
+	// rather than on every unauthenticated /oauth/register call or CIMD
+	// resolution — those record it at Debug.
+	if intersection, dropped, dcrErr := registration.ValidateScopes(nil, c.ScopesSupported); dcrErr != nil {
+		slog.Warn("scopes_supported shares no scopes with the default set; "+
+			"clients that omit scope will be rejected and must declare scope explicitly",
+			"scopes_supported", c.ScopesSupported,
+			"default_scopes", registration.DefaultScopes)
+	} else if len(dropped) > 0 {
+		slog.Info("scopes_supported does not cover the default scope set; "+
+			"clients that omit scope will register with the intersection",
+			"intersection", intersection,
+			"dropped_defaults", dropped)
 	}
 	if c.CIMDEnabled && c.CIMDCacheMaxSize == 0 {
 		c.CIMDCacheMaxSize = 256

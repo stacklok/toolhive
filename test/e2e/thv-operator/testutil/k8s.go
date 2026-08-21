@@ -150,7 +150,8 @@ func ExecutePodCommand(
 		Stdout: &stdout,
 		Stderr: &stderr,
 	}); err != nil {
-		return "", fmt.Errorf("execute command in pod %q container %q: %w", podName, containerName, err)
+		return "", fmt.Errorf("execute command in pod %q container %q: %w (stderr: %s)",
+			podName, containerName, err, strings.TrimSpace(stderr.String()))
 	}
 	return stdout.String(), nil
 }

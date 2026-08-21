@@ -1665,7 +1665,13 @@ func deployDex(
 const (
 	spireAgentSocketPath = "/run/spire/sockets/agent.sock"
 	spireTrustDomain     = "example.org"
-	spireSVIDTTLSeconds  = "60"
+	// spireSVIDTTLSeconds must stay well above the time a test needs to fetch
+	// and use an SVID. A short TTL here doesn't test rotation — the rotation
+	// spec forces it explicitly via the SPIRE Server API
+	// (RotateSPIRELocalAuthorities) — it just makes every other spec flaky by
+	// racing SVID expiry against normal test execution time. 60s was observed
+	// to do exactly that against a real cluster.
+	spireSVIDTTLSeconds = "3600"
 )
 
 // SPIREInfo holds the SPIRE connection details needed by E2E workloads.
@@ -1693,8 +1699,14 @@ func spireServerConfig(namespace, agentServiceAccountName, bundleConfigMapName s
   socket_path = "/run/spire/server-socket/api.sock"
   trust_domain = "example.org"
   data_dir = "/run/spire/data"
-  default_x509_svid_ttl = "5m"
-  default_jwt_svid_ttl = "5m"
+  // A short default here isn't a rotation test — it just makes the agent's own
+  // node SVID expire faster than it gracefully rotates, forcing it into a
+  // repeating expire/fail/reattest cycle instead (observed against a real
+  // cluster: "Agent SVID is expired" / PermissionDenied on
+  // SyncAuthorizedEntries, every TTL period). Bundle/CA rotation is exercised
+  // by forcing it through the SPIRE Server API, not by racing this TTL.
+  default_x509_svid_ttl = "1h"
+  default_jwt_svid_ttl = "1h"
 }
 
 plugins {
@@ -1934,42 +1946,6 @@ func CreateSPIREWorkloadEntries(
 	return nil
 }
 
-func createSPIREAgentEntries(ctx context.Context, c client.Client, namespace, serverPodName, agentName string) error {
-	if err := validateSPIRENames(namespace, serverPodName, agentName); err != nil {
-		return err
-	}
-
-	nodes := &corev1.NodeList{}
-	if err := c.List(ctx, nodes); err != nil {
-		return fmt.Errorf("list Kubernetes nodes: %w", err)
-	}
-	if len(nodes.Items) == 0 {
-		return fmt.Errorf("no Kubernetes nodes found for SPIRE Agent registration")
-	}
-	for _, node := range nodes.Items {
-		if !validSPIRENodeUID(node.UID) {
-			return fmt.Errorf("kubernetes node has invalid UID")
-		}
-		nodeID := fmt.Sprintf("spiffe://%s/spire/agent/k8s_psat/kind/%s", spireTrustDomain, node.UID)
-		_, err := executeSPIREServerCommand(ctx, namespace, serverPodName,
-			"entry", "create",
-			"-socketPath", "/run/spire/server-socket/api.sock",
-			"-spiffeID", nodeID,
-			"-parentID", fmt.Sprintf("spiffe://%s/spire/server", spireTrustDomain),
-			"-selector", "k8s_psat:cluster:kind",
-			"-selector", "k8s_psat:agent_ns:"+namespace,
-			"-selector", "k8s_psat:agent_sa:"+agentName,
-			"-selector", "k8s_psat:agent_node_uid:"+string(node.UID),
-			"-x509SVIDTTL", spireSVIDTTLSeconds,
-			"-jwtSVIDTTL", spireSVIDTTLSeconds,
-		)
-		if err != nil {
-			return fmt.Errorf("create SPIRE Agent registration entry: %w", err)
-		}
-	}
-	return nil
-}
-
 func spireAgentParentIDs(ctx context.Context, c client.Client, namespace, agentName string) ([]string, error) {
 	pods := &corev1.PodList{}
 	if err := c.List(
@@ -2023,7 +1999,10 @@ func executeSPIREServerCommand(ctx context.Context, namespace, serverPodName str
 	if err := validateSPIRENames(namespace, serverPodName); err != nil {
 		return "", err
 	}
-	return testutil.ExecutePodCommand(ctx, namespace, serverPodName, "spire-server", append([]string{"spire-server"}, args...))
+	// /opt/spire/bin is not on the image's $PATH, so the exec target must be
+	// the full path — see the Command fix on the spire-server container.
+	return testutil.ExecutePodCommand(ctx, namespace, serverPodName, "spire-server",
+		append([]string{"/opt/spire/bin/spire-server"}, args...))
 }
 
 func validateSPIRENames(names ...string) error {
@@ -2081,8 +2060,14 @@ func deploySPIRE(
 		Data:       map[string]string{"agent.conf": spireAgentConfig(serverName, namespace)},
 	})).To(gomega.Succeed())
 	gomega.Expect(c.Create(ctx, &corev1.ConfigMap{
+		// No Data here: the SPIRE Server's k8s_configmap BundlePublisher writes
+		// bundle.json via server-side apply. Pre-setting that key with a
+		// plain (non-SSA) client claims field ownership under a different
+		// manager, and the publisher's apply then conflicts with it forever
+		// (observed against a real cluster: "Apply failed with 1 conflict:
+		// conflict with ... using ...: .data.bundle.json"). Leave Data empty
+		// so the publisher is the field's first and only writer.
 		ObjectMeta: metav1.ObjectMeta{Name: bundleConfigMapName, Namespace: namespace},
-		Data:       map[string]string{"bundle.json": ""},
 	})).To(gomega.Succeed())
 	gomega.Expect(c.Create(ctx, &corev1.ServiceAccount{
 		ObjectMeta: metav1.ObjectMeta{Name: serverName, Namespace: namespace},
@@ -2154,7 +2139,13 @@ func deploySPIRE(
 					Containers: []corev1.Container{{
 						Name:  "spire-server",
 						Image: images.SPIREServerImage,
-						Args:  []string{"run", "-config", "/run/spire/config/server.conf"},
+						// The image's own ENTRYPOINT is ["/opt/spire/bin/spire-server", "run"],
+						// so Args must not repeat "run" — a duplicated positional argument
+						// breaks the subcommand's flag parser, and it silently falls back to
+						// the default config path instead of erroring. Command makes the full
+						// invocation explicit regardless of what the image bakes in.
+						Command: []string{"/opt/spire/bin/spire-server", "run"},
+						Args:    []string{"-config", "/run/spire/config/server.conf"},
 						Ports: []corev1.ContainerPort{{Name: "grpc", ContainerPort: 8081}},
 						VolumeMounts: []corev1.VolumeMount{
 							{Name: "config", MountPath: "/run/spire/config", ReadOnly: true},
@@ -2197,19 +2188,6 @@ func deploySPIRE(
 		return deployment.Status.ReadyReplicas, nil
 	}, timeout, pollingInterval).Should(gomega.Equal(int32(1)))
 
-	var serverPodName string
-	gomega.Eventually(func() error {
-		podName, err := findPodName(ctx, c, namespace, serverLabels)
-		if err != nil {
-			return err
-		}
-		serverPodName = podName
-		return nil
-	}, timeout, pollingInterval).Should(gomega.Succeed())
-
-	ginkgo.By("Creating SPIRE Agent registration entries")
-	gomega.Expect(createSPIREAgentEntries(ctx, c, namespace, serverPodName, agentName)).To(gomega.Succeed())
-
 	ginkgo.By("Creating SPIRE Agent DaemonSet")
 	gomega.Expect(c.Create(ctx, &appsv1.DaemonSet{
 		ObjectMeta: metav1.ObjectMeta{Name: agentName, Namespace: namespace, Labels: agentLabels},
@@ -2223,7 +2201,10 @@ func deploySPIRE(
 					Containers: []corev1.Container{{
 						Name:  "spire-agent",
 						Image: images.SPIREAgentImage,
-						Args:  []string{"run", "-config", "/run/spire/config/agent.conf"},
+						// See the identical fix on the spire-server container above: the
+						// image's ENTRYPOINT already includes "run".
+						Command: []string{"/opt/spire/bin/spire-agent", "run"},
+						Args:    []string{"-config", "/run/spire/config/agent.conf"},
 						Env: []corev1.EnvVar{{
 							Name: "MY_NODE_NAME",
 							ValueFrom: &corev1.EnvVarSource{FieldRef: &corev1.ObjectFieldSelector{
@@ -2301,7 +2282,8 @@ func deploySPIRE(
 			namespace,
 			agentPodName,
 			"spire-agent",
-			[]string{"spire-agent", "healthcheck", "-socketPath", spireAgentSocketPath},
+			// Full path: /opt/spire/bin is not on the image's $PATH.
+			[]string{"/opt/spire/bin/spire-agent", "healthcheck", "-socketPath", spireAgentSocketPath},
 		)
 		if err != nil {
 			return fmt.Errorf("check SPIRE Agent workload API: %w", err)

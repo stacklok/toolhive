@@ -1906,6 +1906,10 @@ func TestVirtualMCPServerDeploymentNeedsUpdate(t *testing.T) {
 	expectedLabels, expectedAnnotations := reconciler.buildPodTemplateMetadata(
 		labelsForVirtualMCPServer(vmcp.Name), vmcp, vmcpConfigChecksum,
 	)
+	desiredVolumeMounts, desiredVolumes, desiredVolumesHash, err := reconciler.buildPodVolumesForVmcp(
+		context.Background(), vmcp, nil, nil,
+	)
+	require.NoError(t, err)
 
 	tests := []struct {
 		name           string
@@ -2079,7 +2083,7 @@ func TestVirtualMCPServerDeploymentNeedsUpdate(t *testing.T) {
 			deployment: &appsv1.Deployment{
 				ObjectMeta: metav1.ObjectMeta{
 					Labels:      labelsForVirtualMCPServer(vmcp.Name),
-					Annotations: make(map[string]string),
+					Annotations: map[string]string{podVolumesHashAnnotation: desiredVolumesHash},
 				},
 				Spec: appsv1.DeploymentSpec{
 					Template: corev1.PodTemplateSpec{
@@ -2095,10 +2099,12 @@ func TestVirtualMCPServerDeploymentNeedsUpdate(t *testing.T) {
 									Ports: []corev1.ContainerPort{
 										{ContainerPort: 4483},
 									},
-									Args: reconciler.buildContainerArgsForVmcp(vmcp),
-									Env:  mustBuildEnvVarsForVmcp(reconciler, vmcp),
+									Args:         reconciler.buildContainerArgsForVmcp(vmcp),
+									Env:          mustBuildEnvVarsForVmcp(reconciler, vmcp),
+									VolumeMounts: desiredVolumeMounts,
 								},
 							},
+							Volumes:            desiredVolumes,
 							ServiceAccountName: vmcpServiceAccountName(vmcp.Name),
 						},
 					},
@@ -2142,6 +2148,12 @@ func TestMergeDeploymentAnnotations(t *testing.T) {
 			name:     "prunes stale podTemplateSpecHashAnnotation when desired no longer wants it",
 			desired:  map[string]string{},
 			live:     map[string]string{podTemplateSpecHashAnnotation: "stale-hash"},
+			expected: map[string]string{},
+		},
+		{
+			name:     "prunes stale pod volumes hash annotation when desired no longer wants it",
+			desired:  map[string]string{},
+			live:     map[string]string{podVolumesHashAnnotation: "stale-hash"},
 			expected: map[string]string{},
 		},
 		{

@@ -1733,6 +1733,15 @@ func (r *VirtualMCPServerReconciler) deploymentNeedsUpdate(
 		return true
 	}
 
+	_, _, expectedVolumesHash, err := r.buildPodVolumesForVmcp(ctx, vmcp, telemetryCfg, typedWorkloads)
+	if err != nil {
+		log.FromContext(ctx).Error(err, "Failed to build volumes, assuming update needed")
+		return true
+	}
+	if deployment.Annotations[podVolumesHashAnnotation] != expectedVolumesHash {
+		return true
+	}
+
 	// Check if spec.replicas has changed. Only compare when spec.replicas is non-nil;
 	// nil means hands-off mode (HPA or external controller manages replicas) and the live count is authoritative.
 	if vmcp.Spec.Replicas != nil {
@@ -1882,7 +1891,7 @@ func (*VirtualMCPServerReconciler) podTemplateSpecNeedsUpdate(
 // MergeAnnotations otherwise preserves them forever once their source field goes empty (#5817, #5818).
 func mergeDeploymentAnnotations(desired, live map[string]string) map[string]string {
 	merged := ctrlutil.MergeAnnotations(desired, live)
-	for _, key := range []string{imagePullRefsHashAnnotation, podTemplateSpecHashAnnotation} {
+	for _, key := range []string{imagePullRefsHashAnnotation, podTemplateSpecHashAnnotation, podVolumesHashAnnotation} {
 		if _, want := desired[key]; !want {
 			delete(merged, key)
 		}

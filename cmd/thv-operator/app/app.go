@@ -97,7 +97,13 @@ func Run() {
 		},
 	}
 
-	mgr, err := ctrl.NewManager(ctrl.GetConfigOrDie(), options)
+	cfg := ctrl.GetConfigOrDie()
+	// The MCPRegistry CRD is deprecated; kube-apiserver emits a 299 Warning
+	// header on every LIST/WATCH. Without this, the cache logs it on every
+	// informer resync (~6m) even when no MCPRegistry CRs exist (#6346).
+	installMCPRegistryWarningHandler(cfg)
+
+	mgr, err := ctrl.NewManager(cfg, options)
 	if err != nil {
 		setupLog.Error(err, "unable to start manager")
 		os.Exit(1)

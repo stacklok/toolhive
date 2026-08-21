@@ -30,9 +30,14 @@
 #   - The artifact is pushed to a throwaway `registry:2` service container,
 #     never to a real registry.
 #
-# Callers run this non-blocking (continue-on-error) for the same reason:
-# staging outages and its frequently re-signed TUF metadata are outside this
-# repository's control.
+# It runs non-blocking (continue-on-error, on the job below) for the same
+# reason: staging outages and its frequently re-signed TUF metadata are
+# outside this repository's control.
+#
+# Called only from run-on-main.yml, never from run-on-pr.yml: it holds
+# id-token: write and runs repository code, so on a pull request that code
+# could mint an arbitrary-audience OIDC token from the request variables in
+# its environment. Post-merge, that code is trusted.
 
 name: Skills Keyless Signing E2E
 

@@ -10,11 +10,12 @@ import (
 )
 
 var (
-	aiPluginInstallScope       string
-	aiPluginInstallClientsRaw  string
-	aiPluginInstallForce       bool
-	aiPluginInstallProjectRoot string
-	aiPluginInstallGroup       string
+	aiPluginInstallScope         string
+	aiPluginInstallClientsRaw    string
+	aiPluginInstallForce         bool
+	aiPluginInstallProjectRoot   string
+	aiPluginInstallGroup         string
+	aiPluginInstallAllowUnsigned bool
 )
 
 var aiPluginInstallCmd = &cobra.Command{
@@ -44,6 +45,8 @@ func init() {
 		&aiPluginInstallProjectRoot, "project-root", "", "Project root path for project-scoped installs",
 	)
 	aiPluginInstallCmd.Flags().StringVar(&aiPluginInstallGroup, "group", "", "Group to add the plugin to after installation")
+	aiPluginInstallCmd.Flags().BoolVar(&aiPluginInstallAllowUnsigned, "allow-unsigned", false,
+		"Allow installing a project-scoped plugin without a verified signature (recorded in the lock file)")
 }
 
 func aiPluginInstallCmdFunc(cmd *cobra.Command, args []string) error {
@@ -55,12 +58,13 @@ func aiPluginInstallCmdFunc(cmd *cobra.Command, args []string) error {
 	}
 
 	_, err = c.Install(cmd.Context(), plugins.InstallOptions{
-		Name:        args[0],
-		Scope:       plugins.Scope(aiPluginInstallScope),
-		Clients:     parseSkillInstallClients(aiPluginInstallClientsRaw),
-		Force:       aiPluginInstallForce,
-		ProjectRoot: projectRoot,
-		Group:       aiPluginInstallGroup,
+		Name:          args[0],
+		Scope:         plugins.Scope(aiPluginInstallScope),
+		Clients:       parseSkillInstallClients(aiPluginInstallClientsRaw),
+		Force:         aiPluginInstallForce,
+		ProjectRoot:   projectRoot,
+		Group:         aiPluginInstallGroup,
+		AllowUnsigned: aiPluginInstallAllowUnsigned,
 	})
 	if err != nil {
 		return formatAIPluginError("install plugin", err)

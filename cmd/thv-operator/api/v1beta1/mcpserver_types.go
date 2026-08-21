@@ -369,6 +369,18 @@ type MCPServerSpec struct {
 	// +optional
 	TrustProxyHeaders bool `json:"trustProxyHeaders,omitempty"`
 
+	// RedactToolResultSecrets enables best-effort credential-shape scanning
+	// on tools/call responses (AWS/GitHub/Slack/Google/Stripe keys, JWTs, PEM
+	// private keys): matches are redacted before the response reaches the
+	// client. Off by default; enable when the backend MCP server is not
+	// fully trusted. This setting is ONLY applicable when Transport is
+	// "stdio" (the streamable-HTTP proxy path) -- it has no effect when
+	// Transport is "streamable-http" or "sse" (those reverse-proxy to an
+	// already-HTTP backend without inspecting message content).
+	// +kubebuilder:default=false
+	// +optional
+	RedactToolResultSecrets bool `json:"redactToolResultSecrets,omitempty"`
+
 	// EndpointPrefix is the path prefix to prepend to SSE endpoint URLs.
 	// This is used to handle path-based ingress routing scenarios where the ingress
 	// strips a path prefix before forwarding to the backend.

@@ -1681,3 +1681,42 @@ func TestCreateRunConfigFromMCPServer_SetsMCPServerGeneration(t *testing.T) {
 	assert.Equal(t, int64(7), rc.MCPServerGeneration,
 		"MCPServerGeneration should match MCPServer .metadata.generation")
 }
+
+// TestCreateRunConfigFromMCPServer_RedactToolResultSecrets verifies
+// MCPServerSpec.RedactToolResultSecrets flows into RunConfig, mirroring
+// TrustProxyHeaders's plumbing.
+func TestCreateRunConfigFromMCPServer_RedactToolResultSecrets(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name    string
+		enabled bool
+	}{
+		{name: "enabled", enabled: true},
+		{name: "disabled (default)", enabled: false},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			m := v1beta1test.NewMCPServer("redact-secrets-server", "default",
+				v1beta1test.WithImage("ghcr.io/example/mcp:v1"),
+				v1beta1test.Mutate(func(m *mcpv1beta1.MCPServer) {
+					m.Spec.RedactToolResultSecrets = tt.enabled
+				}))
+
+			r := newTestMCPServerReconciler(
+				fake.NewClientBuilder().WithScheme(testutil.NewScheme(t)).WithObjects(m).Build(),
+				testutil.NewScheme(t),
+				kubernetes.PlatformKubernetes,
+			)
+
+			rc, err := r.createRunConfigFromMCPServer(m)
+
+			require.NoError(t, err)
+			require.NotNil(t, rc)
+			assert.Equal(t, tt.enabled, rc.RedactToolResultSecrets)
+		})
+	}
+}

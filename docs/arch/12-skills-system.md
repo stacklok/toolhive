@@ -246,9 +246,10 @@ skill against Sigstore's *staging* Fulcio and Rekor (via the
 `TOOLHIVE_SIGSTORE_FULCIO_URL` / `TOOLHIVE_SIGSTORE_REKOR_URL` overrides read
 by `thv serve`) and then verifies it with stock `cosign verify` rather than
 ToolHive's own verifier — so a signature that only ToolHive can read fails
-the job. It runs on every PR and on `main`, non-blocking: staging carries no
-SLO guarantee and re-signs its TUF metadata every few days, so its outages
-are reported without gating merges.
+the job. It runs on every same-repo PR and on `main` — fork PRs skip it,
+since they cannot be granted the `id-token: write` the ambient token needs —
+and is non-blocking: staging carries no SLO guarantee and re-signs its TUF
+metadata every few days, so its outages are reported without gating merges.
 
 ### 4. Installation
 

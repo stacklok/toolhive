@@ -181,7 +181,12 @@ jobs:
           # SAN (the token's job_workflow_ref claim), so this pins the
           # identity to this file rather than to whichever workflow called it.
           # The @.* tail is the git ref, which differs per branch, tag and PR.
-          IDENTITY_REGEXP: https://github.com/${{ github.repository }}/.github/workflows/skills-keyless-signing-e2e.yml@.*
+          #
+          # Anchored and dot-escaped because the match is unanchored:
+          # sigstore-go tests the SAN with Regexp.MatchString
+          # (pkg/verify/certificate_identity.go), so an unanchored pattern
+          # accepts any SAN that merely *contains* it.
+          IDENTITY_REGEXP: ^https://github\.com/${{ github.repository }}/\.github/workflows/skills-keyless-signing-e2e\.yml@.*$
         run: |
           set -euo pipefail
           # A loose identity pattern would still pass if the wrong certificate

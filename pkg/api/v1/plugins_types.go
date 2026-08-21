@@ -96,6 +96,9 @@ type syncPluginsRequest struct {
 	Check bool `json:"check,omitempty"`
 	// Adopt writes lock entries for existing unmanaged project-scope installs
 	Adopt bool `json:"adopt,omitempty"`
+	// AllowUnsigned permits adopting plugins whose signature state cannot be
+	// established, recording them as unsigned
+	AllowUnsigned bool `json:"allow_unsigned,omitempty"`
 }
 
 // upgradePluginsRequest represents the request to upgrade a project's plugins.

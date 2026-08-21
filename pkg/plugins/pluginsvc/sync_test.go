@@ -265,7 +265,19 @@ func TestSync_AdoptsUnmanagedInstall(t *testing.T) {
 	require.NoError(t, err)
 	assert.Equal(t, []string{"my-plugin"}, result.NeverManaged)
 
+	// Adoption of an install with no stored bundle is an unsigned trust
+	// decision: without the explicit exception it fails...
 	result, err = syncSvc.Sync(t.Context(), plugins.SyncOptions{ProjectRoot: projectRoot, Adopt: true})
+	require.NoError(t, err)
+	require.Len(t, result.Failed, 1)
+	assert.Equal(t, plugins.FailureReasonUnsignedRejected, result.Failed[0].Reason)
+	_, ok := readLockfile(t, projectRoot).GetPlugin("my-plugin")
+	assert.False(t, ok, "adoption without the unsigned exception must not write a lock entry")
+
+	// ...and with it, the entry records the unsigned state.
+	result, err = syncSvc.Sync(t.Context(), plugins.SyncOptions{
+		ProjectRoot: projectRoot, Adopt: true, AllowUnsigned: true,
+	})
 	require.NoError(t, err)
 	assert.Equal(t, []string{"my-plugin"}, result.NeverManaged)
 	assert.Empty(t, result.Failed)
@@ -274,7 +286,7 @@ func TestSync_AdoptsUnmanagedInstall(t *testing.T) {
 	entry, ok := lf.GetPlugin("my-plugin")
 	require.True(t, ok, "adopt must write a lock entry for the unmanaged install")
 	assert.NotEmpty(t, entry.ContentDigest)
-	assert.False(t, entry.Unsigned)
+	assert.True(t, entry.Unsigned, "an adoption without verifiable trust must record unsigned")
 	assert.Nil(t, entry.Provenance)
 
 	info, err := svc.Info(t.Context(), plugins.InfoOptions{Name: "my-plugin", Scope: plugins.ScopeProject, ProjectRoot: projectRoot})
@@ -335,7 +347,9 @@ func TestSync_AdoptUpdateFailureRemovesLockEntry(t *testing.T) {
 		},
 	}
 
-	result, err := syncSvc.Sync(t.Context(), plugins.SyncOptions{ProjectRoot: projectRoot, Adopt: true})
+	result, err := syncSvc.Sync(t.Context(), plugins.SyncOptions{
+		ProjectRoot: projectRoot, Adopt: true, AllowUnsigned: true,
+	})
 	require.NoError(t, err)
 	require.Len(t, result.Failed, 1)
 	assert.Equal(t, "my-plugin", result.Failed[0].Name)
@@ -388,7 +402,9 @@ func TestSync_AdoptUpdateFailureRestoresExistingLockEntry(t *testing.T) {
 		},
 	}
 
-	result, err := syncSvc.Sync(t.Context(), plugins.SyncOptions{ProjectRoot: projectRoot, Adopt: true})
+	result, err := syncSvc.Sync(t.Context(), plugins.SyncOptions{
+		ProjectRoot: projectRoot, Adopt: true, AllowUnsigned: true,
+	})
 	require.NoError(t, err)
 	require.Len(t, result.Failed, 1)
 

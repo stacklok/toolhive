@@ -438,11 +438,12 @@ func (s *PluginsRoutes) syncPlugins(w http.ResponseWriter, r *http.Request) erro
 	}
 
 	result, err := s.lockService.Sync(r.Context(), plugins.SyncOptions{
-		ProjectRoot: req.ProjectRoot,
-		Clients:     req.Clients,
-		Prune:       req.Prune,
-		Check:       req.Check,
-		Adopt:       req.Adopt,
+		ProjectRoot:   req.ProjectRoot,
+		Clients:       req.Clients,
+		Prune:         req.Prune,
+		Check:         req.Check,
+		Adopt:         req.Adopt,
+		AllowUnsigned: req.AllowUnsigned,
 	})
 	if err != nil {
 		return err

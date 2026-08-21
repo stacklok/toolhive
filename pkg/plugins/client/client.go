@@ -314,11 +314,12 @@ func (c *Client) GetContent(ctx context.Context, opts plugins.ContentOptions) (*
 // Sync restores a project's installed plugins to match its lock file.
 func (c *Client) Sync(ctx context.Context, opts plugins.SyncOptions) (*plugins.SyncResult, error) {
 	body := syncRequest{
-		ProjectRoot: opts.ProjectRoot,
-		Clients:     opts.Clients,
-		Prune:       opts.Prune,
-		Check:       opts.Check,
-		Adopt:       opts.Adopt,
+		ProjectRoot:   opts.ProjectRoot,
+		Clients:       opts.Clients,
+		Prune:         opts.Prune,
+		Check:         opts.Check,
+		Adopt:         opts.Adopt,
+		AllowUnsigned: opts.AllowUnsigned,
 	}
 
 	var result plugins.SyncResult

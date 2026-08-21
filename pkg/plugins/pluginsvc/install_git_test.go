@@ -10,6 +10,7 @@ import (
 	"testing"
 
 	gogit "github.com/go-git/go-git/v5"
+	"github.com/go-git/go-git/v5/plumbing"
 	"github.com/go-git/go-git/v5/plumbing/object"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -98,13 +99,47 @@ func TestCloneAndCollectPlugin(t *testing.T) {
 		repoDir := createPluginTestRepo(t, "")
 
 		s := &service{gitClient: git.NewDefaultGitClient()}
-		files, manifest, commitHash, err := s.cloneAndCollectPlugin(t.Context(), &gitresolver.GitReference{URL: repoDir})
+		files, manifest, head, err := s.cloneAndCollectPlugin(t.Context(), &gitresolver.GitReference{URL: repoDir})
 		require.NoError(t, err)
 		assert.Equal(t, "my-plugin", manifest.Name)
 		assert.Equal(t, "1.0.0", manifest.Version)
-		assert.NotEmpty(t, commitHash)
+		assert.NotEmpty(t, head.Hash)
+		// The commit is unsigned, but its signed payload is still surfaced so
+		// install-time verification can check a signature when one is present.
+		assert.Empty(t, head.Signature, "test repo commits are unsigned")
+		assert.NotEmpty(t, head.Payload, "the signed commit payload must be surfaced")
 		// Manifest + a command file are collected.
 		assert.GreaterOrEqual(t, len(files), 2)
+	})
+
+	t.Run("signed commit surfaces its signature and payload", func(t *testing.T) {
+		t.Parallel()
+		const armoredSig = "-----BEGIN SIGNED MESSAGE-----\nMIIC(test-signature)\n-----END SIGNED MESSAGE-----\n"
+		repoDir := createPluginTestRepo(t, "")
+
+		// Rewrite HEAD with the signature attached, mimicking gitsign output.
+		repo, err := gogit.PlainOpen(repoDir)
+		require.NoError(t, err)
+		headRef, err := repo.Head()
+		require.NoError(t, err)
+		commit, err := repo.CommitObject(headRef.Hash())
+		require.NoError(t, err)
+		commit.PGPSignature = armoredSig
+		obj := repo.Storer.NewEncodedObject()
+		require.NoError(t, commit.Encode(obj))
+		signedHash, err := repo.Storer.SetEncodedObject(obj)
+		require.NoError(t, err)
+		require.NoError(t, repo.Storer.SetReference(plumbing.NewHashReference(headRef.Name(), signedHash)))
+
+		s := &service{gitClient: git.NewDefaultGitClient()}
+		_, _, head, err := s.cloneAndCollectPlugin(t.Context(), &gitresolver.GitReference{URL: repoDir})
+		require.NoError(t, err)
+		assert.Equal(t, signedHash.String(), head.Hash)
+		assert.Equal(t, armoredSig, head.Signature)
+		assert.Contains(t, string(head.Payload), "tree ",
+			"the signed payload must accompany the signature")
+		assert.NotContains(t, string(head.Payload), "gpgsig",
+			"the payload must exclude the signature it covers")
 	})
 
 	t.Run("subdir scopes the collected tree", func(t *testing.T) {

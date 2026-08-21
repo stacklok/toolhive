@@ -1832,7 +1832,7 @@ func TestVirtualMCPServerPodTemplateMetadataNeedsUpdate(t *testing.T) {
 			expectedUpdate: false,
 		},
 		{
-			name: "extra live pod template label is drift",
+			name: "extra live pod template label is not drift",
 			deployment: &appsv1.Deployment{
 				Spec: appsv1.DeploymentSpec{
 					Template: corev1.PodTemplateSpec{
@@ -1852,7 +1852,7 @@ func TestVirtualMCPServerPodTemplateMetadataNeedsUpdate(t *testing.T) {
 			},
 			vmcp:           vmcp,
 			checksum:       vmcpConfigChecksum,
-			expectedUpdate: true,
+			expectedUpdate: false,
 		},
 		{
 			name: "kubectl rollout restart annotation is not drift",

@@ -225,6 +225,23 @@ spec:
     type: anonymous
 ```
 
+### Where `/metrics` is served
+
+With `enablePrometheusMetricsPath` enabled, Virtual MCP serves `/metrics` on a
+**dedicated diagnostics port** (`prometheusPort`, default `9464`). Point scrapers at
+that port, and keep it out of any Service or Ingress that faces the internet.
+
+During the migration window `/metrics` is *also* still served on the port carrying MCP
+traffic, so an existing scrape configuration keeps working. Once you have moved a
+scraper to the diagnostics port, set `metricsOnTransportPort: false` to confirm nothing
+else depended on the old location. See
+[Migration window](../observability.md#migration-window) and
+[issue #6384](https://github.com/stacklok/toolhive/issues/6384) for the timeline.
+
+The endpoint is unauthenticated, so restricting who can reach that port is what
+protects it. See [Metrics endpoint exposure](../observability.md#metrics-endpoint-exposure)
+for the rationale, a `NetworkPolicy` example, and guidance on scoping external routes.
+
 See the [VirtualMCPServer API reference](./virtualmcpserver-api.md) for complete
 CRD documentation.
 

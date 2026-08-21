@@ -59,10 +59,10 @@ func (r *Runner) startDiagnosticsServer() error {
 // An unset port falls back to diagnostics.DefaultPort so a scraper has a
 // predictable target rather than an arbitrary one.
 func diagnosticsPort(cfg *telemetry.Config) int {
-	if cfg == nil || cfg.PrometheusPort == 0 {
+	if cfg == nil {
 		return diagnostics.DefaultPort
 	}
-	return cfg.PrometheusPort
+	return diagnostics.ResolvePort(cfg.PrometheusPort)
 }
 
 // mountPrometheusHandlerOnTransportPort reports whether Run should hand the

@@ -24,6 +24,15 @@ import (
 	"github.com/stacklok/toolhive/pkg/transport/session"
 )
 
+func testWorkloadStatefulSet(name, namespace string) *appsv1.StatefulSet {
+	return &appsv1.StatefulSet{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      name,
+			Namespace: namespace,
+		},
+	}
+}
+
 func TestReplicaBehavior(t *testing.T) {
 	t.Parallel()
 
@@ -401,7 +410,7 @@ func TestUpdateMCPServerStatusReadyReplicas(t *testing.T) {
 
 	fakeClient := fake.NewClientBuilder().
 		WithScheme(testScheme).
-		WithObjects(mcpServer, deployment, runningPod1, runningPod2, pendingPod).
+		WithObjects(mcpServer, deployment, testWorkloadStatefulSet(name, namespace), runningPod1, runningPod2, pendingPod).
 		WithStatusSubresource(&mcpv1beta1.MCPServer{}).
 		Build()
 
@@ -846,7 +855,7 @@ func TestUpdateMCPServerStatusExcludesTerminatingPods(t *testing.T) {
 
 	fakeClient := fake.NewClientBuilder().
 		WithScheme(testScheme).
-		WithObjects(mcpServer, deployment, runningPod1, runningPod2, terminatingPod).
+		WithObjects(mcpServer, deployment, testWorkloadStatefulSet(name, namespace), runningPod1, runningPod2, terminatingPod).
 		WithStatusSubresource(&mcpv1beta1.MCPServer{}).
 		Build()
 

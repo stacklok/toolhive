@@ -187,6 +187,87 @@ thv skill push ghcr.io/org/my-skill:v1.0.0
 
 **Implementation:** `pkg/skills/skillsvc/build.go` (Push), `toolhive-core/oci/skills` (RegistryClient)
 
+**Signing:** Every push is signed by default — the RFC THV-0080 trust model
+has no unsigned publish path. `thv skill push` requires exactly one of three
+mutually exclusive choices:
+
+- `--key <path>`: sign with a cosign private key (`COSIGN_PASSWORD`
+  decrypts encrypted keys, read server-side by `thv serve`, which performs
+  the signing).
+- `--identity-token <token-or-path>`: sign keylessly. The CLI acquires an
+  OIDC identity token and forwards it in the push request; the server
+  exchanges it with Fulcio for a short-lived certificate, signs, and records
+  a Rekor transparency-log entry (`toolhive-core/container/signer`). The
+  server never handles long-lived credentials — only the already-acquired,
+  short-lived token.
+- `--no-sign`: push unsigned. Consumers installing project-scoped need an
+  explicit unsigned exception.
+
+When none of the three is given, `pkg/skills/identitytoken` runs an
+acquisition ladder before the push request is made, so a failure here never
+leaves an unsigned artifact published:
+
+1. A GitHub Actions ambient OIDC token, when the job has
+   `permissions: id-token: write` (`ACTIONS_ID_TOKEN_REQUEST_URL` /
+   `_TOKEN`, scoped to the `sigstore` audience).
+2. Otherwise, on an interactive terminal only: a y/N prompt, then a browser
+   sign-in against the public-good Sigstore OAuth instance
+   (`oauth2.sigstore.dev`).
+3. If neither yields a token (non-interactive with no ambient token, or the
+   prompt declined): the push fails with an actionable error naming all
+   three signing choices, never silently unsigned.
+
+`--key` and `--identity-token` are mutually exclusive; the identity token,
+once resolved, is always forwarded even alongside `--key` so the server
+reports the conflict rather than the client silently picking one.
+
+**Push happens before signing.** `skillsvc.Push` uploads the artifact to the
+registry first, then signs it and attaches the signature manifest. A signing
+failure therefore returns an error *after* the artifact is already published,
+leaving it live and unsigned in the registry — the acquisition ladder above
+narrows the window (a missing credential fails before anything is pushed) but
+does not close it, since Fulcio and Rekor can still fail once the upload has
+happened. Recovering means re-running the push, which re-signs the same
+digest. This ordering predates keyless signing and is unchanged by it;
+consumers are protected by the install-side requirement for a valid
+signature, not by the publisher's ordering.
+
+**In CI:** release pushes (`.github/workflows/skills-publish.yml`, called
+only from `releaser.yml`) run `thv skill push` with no signing flags at all,
+so the ambient rung of the ladder signs them with the job's OIDC token. That
+needs `id-token: write` on both the reusable workflow's job *and* the calling
+job — GitHub caps a reusable workflow's permissions at what its caller
+declares, so granting it in only one place silently yields no token and fails
+the push.
+
+Building is a separate workflow (`skills-build.yml`, called from
+`run-on-pr.yml` and `run-on-main.yml`) that publishes nothing and holds
+neither `packages: write` nor `id-token: write`. The split is the reason
+those permissions exist in one place only: the build executes repository
+code — `thv serve` and `thv skill build` — which on a pull request is code
+from the pull request itself, and GitHub validates a called workflow's
+permissions against its caller's statically, so a single workflow behind a
+`push:` input would have forced every caller to grant the union regardless.
+
+Interoperability with the wider Sigstore ecosystem is covered separately by
+`.github/workflows/skills-keyless-signing-e2e.yml`, which signs a throwaway
+skill against Sigstore's *staging* Fulcio and Rekor (via the
+`TOOLHIVE_SIGSTORE_FULCIO_URL` / `TOOLHIVE_SIGSTORE_REKOR_URL` overrides read
+by `thv serve`) and then verifies it with stock `cosign verify` rather than
+ToolHive's own verifier — so a signature that only ToolHive can read fails
+the job. It runs post-merge on `main` only, and is non-blocking: staging
+carries no SLO guarantee and re-signs its TUF metadata every few days, so its
+outages are reported without gating anything.
+
+It is deliberately not wired into `run-on-pr.yml`. Minting the ambient OIDC
+token needs `id-token: write`, and the job builds and runs repository code to
+use it — which on a pull request is code from the pull request. That code
+could not impersonate the release signer (a different workflow path yields a
+different certificate SAN, and lock provenance pins the path), but it could
+mint a token for any *other* audience from the request variables in its
+environment. Running it only on merged code keeps that capability out of
+reach; to exercise it on a branch, dispatch the "Main build" workflow there.
+
 ### 4. Installation
 
 ```bash
@@ -339,7 +420,7 @@ What is still trusted on faith, deliberately and visibly:
 - **The lock file itself** remains a repository-editable policy document. A diff converting a `provenance:` block to `unsigned: true` is a trust downgrade that sync will honor — it cannot happen without a lock file edit, which is exactly what lock-file review must catch. Reviewing `provenance`, `unsigned`, `digest`, and `resolvedReference` changes carries the same weight as reviewing the AI-executed skill content itself.
 - **First use** anchors trust to whatever identity signed the artifact at that moment; verify the printed identity is the publisher you expect.
 
-Publishing is signed by default: `thv skill push` requires either `--key` (a cosign private key; the signature manifest is attached next to the artifact and the bundle is retrievable at install) or an explicit `--no-sign`.
+Publishing is signed by default: `thv skill push` requires `--key` (a cosign private key), an OIDC identity token for keyless signing (supplied with `--identity-token` or acquired automatically), or an explicit `--no-sign`. Either signing path attaches the signature manifest next to the artifact, and the bundle is retrievable at install. See [Publishing](#3-publishing) for the full ladder.
 
 ### Schema
 
@@ -506,6 +587,9 @@ The skills system applies defense-in-depth across multiple layers:
 - OCI artifact skill name must match the last path component of the OCI repository
 - Git authentication is host-scoped (GitHub token only sent to github.com)
 - SSRF prevention: rejects localhost and private IPs in git references
+- Push signing is keyless by default; see "3. Publishing" above for the
+  credential ladder and the CLI-acquires / server-signs split
+  (`pkg/skills/identitytoken`, `toolhive-core/container/signer`)
 
 ### Input Validation
 - Skill names: 2-64 chars, lowercase alphanumeric + hyphens, no consecutive hyphens

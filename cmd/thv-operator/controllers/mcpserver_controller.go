@@ -545,6 +545,8 @@ func (r *MCPServerReconciler) Reconcile(ctx context.Context, req ctrl.Request) (
 			}
 			return ctrl.Result{}, err
 		}
+		newDeployment.Spec.Template.Annotations = ctrlutil.PreserveKubectlRestartedAt(
+			newDeployment.Spec.Template.Annotations, deployment.Spec.Template.Annotations)
 		deployment.Spec.Template = newDeployment.Spec.Template
 		deployment.Spec.Selector = newDeployment.Spec.Selector
 		deployment.Labels = newDeployment.Labels
@@ -2058,7 +2060,9 @@ func (r *MCPServerReconciler) deploymentNeedsUpdate(
 		)
 	}
 
-	if !maps.Equal(deployment.Spec.Template.Annotations, expectedPodTemplateAnnotations) {
+	// Subset check so kubectl.kubernetes.io/restartedAt (and other
+	// externally-written keys) are not treated as drift and reverted (#6344).
+	if !ctrlutil.MapIsSubset(expectedPodTemplateAnnotations, deployment.Spec.Template.Annotations) {
 		return true
 	}
 

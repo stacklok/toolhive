@@ -59,8 +59,9 @@ const (
 
 	// defaultWriteTimeout is the server-level write deadline set on http.Server.WriteTimeout.
 	// It protects all routes (health, metrics, well-known, etc.) from slow-write clients.
-	// For qualifying SSE (GET) connections, transportmiddleware.WriteTimeout clears this
-	// per-request via http.ResponseController.SetWriteDeadline(time.Time{}) (golang/go#16100).
+	// For MCP POST requests, transportmiddleware.WriteTimeout clears this during
+	// handler computation and re-arms it when a non-streaming response starts.
+	// Qualifying SSE connections remain unbounded (golang/go#16100).
 	defaultWriteTimeout = 30 * time.Second
 
 	// defaultIdleTimeout is the maximum amount of time to wait for the next request when keep-alive's are enabled.
@@ -702,12 +703,11 @@ func (s *Server) Handler(_ context.Context) (http.Handler, error) {
 	// Apply Accept header validation (rejects GET requests without Accept: text/event-stream)
 	mcpHandler = headerValidatingMiddleware(mcpHandler)
 
-	// Clear the write deadline for qualifying SSE connections (GET +
-	// Accept: text/event-stream + MCP endpoint path) so the server-level
-	// WriteTimeout does not kill long-lived SSE streams (see golang/go#16100).
-	// Non-qualifying requests are left untouched; http.Server.WriteTimeout
-	// (defaultWriteTimeout) remains in effect for them.
-	mcpHandler = transportmiddleware.WriteTimeout(s.config.EndpointPath)(mcpHandler)
+	// Suspend the server write deadline while MCP POST handlers perform bounded
+	// backend operations, then re-arm it when a non-streaming response starts.
+	// Qualifying SSE connections remain long-lived (see golang/go#16100). Other
+	// requests retain the server-level defaultWriteTimeout.
+	mcpHandler = transportmiddleware.WriteTimeout(s.config.EndpointPath, defaultWriteTimeout)(mcpHandler)
 
 	// Cap request body size before the MCP parser (and all inner middleware)
 	// buffers it via io.ReadAll, rejecting oversized bodies with 413. This is

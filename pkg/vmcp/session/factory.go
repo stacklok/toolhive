@@ -131,10 +131,11 @@ type backendConnector func(
 
 // defaultMultiSessionFactory is the production MultiSessionFactory implementation.
 type defaultMultiSessionFactory struct {
-	connector          backendConnector
-	maxConcurrency     int
-	backendInitTimeout time.Duration
-	revisionLookup     func(workloadID string) (mcpparser.Revision, bool)
+	connector              backendConnector
+	maxConcurrency         int
+	backendInitTimeout     time.Duration
+	revisionLookup         func(workloadID string) (mcpparser.Revision, bool)
+	requestTimeoutResolver func(workloadID string) time.Duration
 }
 
 // MultiSessionFactoryOption configures a defaultMultiSessionFactory.
@@ -156,6 +157,23 @@ func WithBackendInitTimeout(d time.Duration) MultiSessionFactoryOption {
 	return func(f *defaultMultiSessionFactory) {
 		if d > 0 {
 			f.backendInitTimeout = d
+		}
+	}
+}
+
+// WithRequestTimeoutResolver configures the timeout used for individual
+// backend operations. The resolver receives a backend workload ID and may
+// return a workload-specific duration. A nil resolver, or a non-positive
+// result, preserves the historical 30-second default.
+//
+// The resolver may be called concurrently and must therefore be safe for
+// concurrent use. A workload timeout longer than WithBackendInitTimeout also
+// extends that workload's initialization deadline; the shorter configured
+// value never reduces an explicit initialization allowance.
+func WithRequestTimeoutResolver(resolver func(workloadID string) time.Duration) MultiSessionFactoryOption {
+	return func(f *defaultMultiSessionFactory) {
+		if resolver != nil {
+			f.requestTimeoutResolver = resolver
 		}
 	}
 }
@@ -189,13 +207,18 @@ func WithRevisionLookup(lookup func(workloadID string) (mcpparser.Revision, bool
 // NewSessionFactory creates a MultiSessionFactory that connects to backends
 // over HTTP using the given outgoing auth registry.
 func NewSessionFactory(registry vmcpauth.OutgoingAuthRegistry, opts ...MultiSessionFactoryOption) MultiSessionFactory {
-	return newSessionFactoryWithConnector(backend.NewHTTPConnector(registry), opts...)
+	f := newSessionFactoryWithConnector(nil, opts...)
+	f.connector = backend.NewHTTPConnector(
+		registry,
+		backend.WithRequestTimeoutResolver(f.requestTimeoutResolver),
+	)
+	return f
 }
 
 // newSessionFactoryWithConnector creates a MultiSessionFactory backed by an
 // arbitrary connector. Used by tests to inject a fake connector without
 // requiring real HTTP backends.
-func newSessionFactoryWithConnector(connector backendConnector, opts ...MultiSessionFactoryOption) MultiSessionFactory {
+func newSessionFactoryWithConnector(connector backendConnector, opts ...MultiSessionFactoryOption) *defaultMultiSessionFactory {
 	f := &defaultMultiSessionFactory{
 		connector:          connector,
 		maxConcurrency:     defaultMaxBackendInitConcurrency,
@@ -286,7 +309,13 @@ func (f *defaultMultiSessionFactory) initOneBackend(
 		return nil, true
 	}
 
-	bCtx, cancel := context.WithTimeout(ctx, f.backendInitTimeout)
+	initTimeout := f.backendInitTimeout
+	if f.requestTimeoutResolver != nil {
+		if requestTimeout := f.requestTimeoutResolver(target.WorkloadID); requestTimeout > initTimeout {
+			initTimeout = requestTimeout
+		}
+	}
+	bCtx, cancel := context.WithTimeout(ctx, initTimeout)
 	defer cancel()
 
 	conn, caps, err := f.connector(bCtx, target, identity, sessionHint, sink)

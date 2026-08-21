@@ -987,6 +987,7 @@ func buildOIDCUpstreamRunConfig(
 		Scopes:                        cfg.Scopes,
 		AdditionalAuthorizationParams: cfg.AdditionalAuthorizationParams,
 		SubjectClaim:                  cfg.SubjectClaim,
+		AllowPrivateIPs:               cfg.AllowPrivateIP,
 	}
 	if cfg.ClientSecretRef != nil {
 		runConfig.ClientSecretEnvVar = clientSecretEnvVar
@@ -1031,6 +1032,7 @@ func buildOAuth2UpstreamRunConfig(
 		RedirectURI:                   redirectURI,
 		Scopes:                        cfg.Scopes,
 		AdditionalAuthorizationParams: cfg.AdditionalAuthorizationParams,
+		AllowPrivateIPs:               cfg.AllowPrivateIPs,
 	}
 	if cfg.ClientSecretRef != nil {
 		runConfig.ClientSecretEnvVar = clientSecretEnvVar
@@ -1059,7 +1061,6 @@ func buildOAuth2UpstreamRunConfig(
 		runConfig.DCRConfig = buildDCRUpstreamRunConfig(cfg.DCRConfig, initialAccessTokenEnvVar)
 	}
 	runConfig.InsecureAllowHTTP = cfg.InsecureAllowHTTP
-	runConfig.AllowPrivateIPs = cfg.AllowPrivateIPs
 	return runConfig, nil
 }
 

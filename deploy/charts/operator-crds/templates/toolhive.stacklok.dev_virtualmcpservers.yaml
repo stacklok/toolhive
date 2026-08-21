@@ -1219,6 +1219,16 @@ spec:
                                 scope, state, code_challenge, code_challenge_method, nonce) are not allowed.
                               maxProperties: 16
                               type: object
+                            allowPrivateIP:
+                              description: |-
+                                AllowPrivateIP permits the upstream provider's HTTP client to connect
+                                to endpoints that resolve to private IP addresses. Required when the
+                                IdP is hosted on a private network (a self-hosted provider behind
+                                split-horizon DNS): without it the auth server refuses the connection
+                                at OIDC discovery and exits, crash-looping the pod. Disabled by
+                                default as SSRF protection — enable only for operator-controlled,
+                                trusted issuer URLs. Mirrors jwksAllowPrivateIP on MCPOIDCConfig.
+                              type: boolean
                             clientId:
                               description: ClientID is the OAuth 2.0 client identifier
                                 registered with the upstream IdP.
@@ -5210,6 +5220,16 @@ spec:
                                 scope, state, code_challenge, code_challenge_method, nonce) are not allowed.
                               maxProperties: 16
                               type: object
+                            allowPrivateIP:
+                              description: |-
+                                AllowPrivateIP permits the upstream provider's HTTP client to connect
+                                to endpoints that resolve to private IP addresses. Required when the
+                                IdP is hosted on a private network (a self-hosted provider behind
+                                split-horizon DNS): without it the auth server refuses the connection
+                                at OIDC discovery and exits, crash-looping the pod. Disabled by
+                                default as SSRF protection — enable only for operator-controlled,
+                                trusted issuer URLs. Mirrors jwksAllowPrivateIP on MCPOIDCConfig.
+                              type: boolean
                             clientId:
                               description: ClientID is the OAuth 2.0 client identifier
                                 registered with the upstream IdP.

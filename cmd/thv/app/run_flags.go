@@ -296,7 +296,7 @@ func AddRunFlags(cmd *cobra.Command, config *RunFlags) {
 			"(streamable-HTTP proxy only; an absent header is accepted). Off by default: any version is accepted.")
 	cmd.Flags().BoolVar(&config.RedactToolResultSecrets, "redact-tool-result-secrets", false,
 		"Scan tools/call responses for credential-shaped content (AWS/GitHub/Slack/Google/Stripe keys, JWTs, PEM "+
-			"private keys) and redact matches before relaying them to the client (streamable-HTTP proxy only). "+
+			"private keys, generic Bearer tokens) and redact matches before relaying them to the client. "+
 			"Off by default; enable when the backend MCP server is not fully trusted.")
 	cmd.Flags().BoolVar(&config.Stateless, "stateless", false,
 		"Declare the server as stateless (POST-only, no SSE). "+

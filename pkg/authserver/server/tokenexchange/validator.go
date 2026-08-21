@@ -445,12 +445,12 @@ func assignClaim(vc *ValidatedClaims, key string, val any) {
 //
 // selfIssuer is this authorization server's own issuer identifier. When
 // may_act carries an "iss" member, RFC 8693 §4.4 uses it together with "sub"
-// to identify the actor's namespace; this server only ever grants delegation
-// to its own clients (checkDelegationConsent compares may_act.sub against a
-// ToolHive client ID), so an "iss" naming any other issuer would mean sub is
-// being read out of the wrong namespace. Requiring iss == selfIssuer when
-// present — same fail-closed treatment as a malformed sub — prevents that
-// namespace confusion.
+// to identify the actor's namespace. checkDelegationConsent compares may_act.sub
+// with the resolved actor identity: ordinarily an OAuth client or actor-token
+// identity, and for SPIFFE-authenticated exchanges the verified SPIFFE ID. An
+// "iss" naming any other issuer would therefore mean sub is being read out of
+// the wrong namespace. Requiring iss == selfIssuer when present — same
+// fail-closed treatment as a malformed sub — prevents that namespace confusion.
 //
 // requireIss makes "iss" mandatory rather than merely constrained when
 // present. The self-issued path passes false: the subject token's own "iss"

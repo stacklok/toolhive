@@ -4,9 +4,11 @@
 package tokenexchange
 
 import (
+	"bytes"
 	"context"
 	"errors"
 	"fmt"
+	"log/slog"
 	"net/url"
 	"strings"
 	"testing"
@@ -20,7 +22,9 @@ import (
 
 	coreaudit "github.com/stacklok/toolhive-core/audit"
 	"github.com/stacklok/toolhive/pkg/authserver/server"
+	"github.com/stacklok/toolhive/pkg/authserver/server/registration"
 	"github.com/stacklok/toolhive/pkg/authserver/server/session"
+	spiffeauth "github.com/stacklok/toolhive/pkg/authserver/spiffe"
 	"github.com/stacklok/toolhive/pkg/oauthproto"
 )
 
@@ -2228,4 +2232,350 @@ func TestTokenExchangeHandler_PopulateTokenEndpointResponse(t *testing.T) {
 		// issued_token_type must NOT be set when token issuance failed.
 		assert.Nil(t, responder.GetExtra("issued_token_type"))
 	})
+}
+
+type staticSubjectTokenValidator struct {
+	claims *ValidatedClaims
+}
+
+func (v staticSubjectTokenValidator) Validate(context.Context, string) (*ValidatedClaims, error) {
+	return v.claims, nil
+}
+
+func newAuthenticatedSPIFFEClientWithAudiences(t *testing.T, resources, audiences, scopes, grantTypes []string) *registration.AuthenticatedSPIFFEClient {
+	t.Helper()
+
+	static, err := registration.NewSPIFFEClient(testAgentClientID, grantTypes, scopes, resources, audiences, true)
+	require.NoError(t, err)
+	principal := spiffeauth.NewNormalizedSPIFFEPrincipal(
+		testAgentClientID,
+		"spiffe://example.org/workload/delegate",
+		"example.org",
+		spiffeauth.SPIFFEAuthenticationMethodJWT,
+		spiffeauth.NewSPIFFEAuthorizationPolicy(grantTypes, scopes, resources, audiences, true),
+	)
+	client, err := registration.NewAuthenticatedSPIFFEClient(static, principal)
+	require.NoError(t, err)
+	return client
+}
+
+func newAuthenticatedSPIFFEClient(t *testing.T, resources, scopes, grantTypes []string) *registration.AuthenticatedSPIFFEClient {
+	t.Helper()
+	return newAuthenticatedSPIFFEClientWithAudiences(t, resources, nil, scopes, grantTypes)
+}
+
+func TestTokenExchangeHandler_SPIFFEClientDelegation(t *testing.T) {
+	t.Parallel()
+
+	tj := newTestJWKS(t)
+	const spiffeID = "spiffe://example.org/workload/delegate"
+	newClient := func(t *testing.T, resources, scopes, grants []string) *registration.AuthenticatedSPIFFEClient {
+		t.Helper()
+		return newAuthenticatedSPIFFEClient(t, resources, scopes, grants)
+	}
+	formWithClaims := func(t *testing.T, audience jwt.Audience) url.Values {
+		t.Helper()
+		claims := validClaims()
+		claims.Audience = audience
+		return url.Values{
+			"grant_type":         {oauthproto.GrantTypeTokenExchange},
+			"subject_token":      {tj.signToken(t, claims, validExtraClaims())},
+			"subject_token_type": {oauthproto.TokenTypeAccessToken},
+		}
+	}
+
+	tests := []struct {
+		name      string
+		client    func(*testing.T) *registration.AuthenticatedSPIFFEClient
+		form      func(*testing.T) url.Values
+		configure func(*fosite.AccessRequest)
+		handler   func(*Handler)
+		wantErr   error
+		check     func(*testing.T, *fosite.AccessRequest)
+	}{
+		{
+			name: "uses verified SPIFFE ID in act and configured client ID in client_id",
+			client: func(t *testing.T) *registration.AuthenticatedSPIFFEClient {
+				t.Helper()
+				return newClient(t, []string{testIssuer}, []string{"openid"}, []string{oauthproto.GrantTypeTokenExchange})
+			},
+			form: func(t *testing.T) url.Values {
+				t.Helper()
+				f := formWithClaims(t, jwt.Audience{testIssuer})
+				f.Set("resource", testIssuer)
+				return f
+			},
+			check: func(t *testing.T, req *fosite.AccessRequest) {
+				t.Helper()
+				sess := req.GetSession().(*session.Session)
+				assert.Equal(t, testAgentClientID, sess.JWTClaims.Extra["client_id"])
+				assert.Equal(t, map[string]any{"iss": testIssuer, "sub": spiffeID}, sess.JWTClaims.Extra["act"])
+			},
+		},
+		{
+			name: "actor token dual binding succeeds",
+			client: func(t *testing.T) *registration.AuthenticatedSPIFFEClient {
+				t.Helper()
+				return newClient(t, []string{testIssuer}, nil, []string{oauthproto.GrantTypeTokenExchange})
+			},
+			form: func(t *testing.T) url.Values {
+				t.Helper()
+				f := formWithClaims(t, jwt.Audience{testIssuer})
+				f.Set("resource", testIssuer)
+				f.Set("actor_token", signActorTokenForClient(t, tj, spiffeID, testAgentClientID))
+				f.Set("actor_token_type", oauthproto.TokenTypeJWT)
+				return f
+			},
+		},
+		{
+			name: "actor token OAuth client binding mismatch is invalid request",
+			client: func(t *testing.T) *registration.AuthenticatedSPIFFEClient {
+				t.Helper()
+				return newClient(t, []string{testIssuer}, nil, []string{oauthproto.GrantTypeTokenExchange})
+			},
+			form: func(t *testing.T) url.Values {
+				t.Helper()
+				f := formWithClaims(t, jwt.Audience{testIssuer})
+				f.Set("resource", testIssuer)
+				f.Set("actor_token", signActorTokenForClient(t, tj, spiffeID, "other-client"))
+				f.Set("actor_token_type", oauthproto.TokenTypeJWT)
+				return f
+			},
+			wantErr: fosite.ErrInvalidRequest,
+		},
+		{
+			name: "actor token SPIFFE subject binding mismatch is invalid request",
+			client: func(t *testing.T) *registration.AuthenticatedSPIFFEClient {
+				t.Helper()
+				return newClient(t, []string{testIssuer}, nil, []string{oauthproto.GrantTypeTokenExchange})
+			},
+			form: func(t *testing.T) url.Values {
+				t.Helper()
+				f := formWithClaims(t, jwt.Audience{testIssuer})
+				f.Set("resource", testIssuer)
+				f.Set("actor_token", signActorTokenForClient(t, tj, "spiffe://example.org/workload/other", testAgentClientID))
+				f.Set("actor_token_type", oauthproto.TokenTypeJWT)
+				return f
+			},
+			wantErr: fosite.ErrInvalidRequest,
+		},
+		{
+			name: "missing resource is invalid target",
+			client: func(t *testing.T) *registration.AuthenticatedSPIFFEClient {
+				t.Helper()
+				return newClient(t, []string{testIssuer}, nil, []string{oauthproto.GrantTypeTokenExchange})
+			},
+			form: func(t *testing.T) url.Values {
+				t.Helper()
+				return formWithClaims(t, jwt.Audience{testIssuer})
+			},
+			wantErr: server.ErrInvalidTarget,
+		},
+		{
+			name: "sole empty resource is invalid target",
+			client: func(t *testing.T) *registration.AuthenticatedSPIFFEClient {
+				t.Helper()
+				return newClient(t, []string{testIssuer}, nil, []string{oauthproto.GrantTypeTokenExchange})
+			},
+			form: func(t *testing.T) url.Values {
+				t.Helper()
+				f := formWithClaims(t, jwt.Audience{testIssuer})
+				f.Set("resource", "")
+
+				return f
+			},
+			wantErr: server.ErrInvalidTarget,
+		},
+		{
+			name: "duplicate resource values are invalid target",
+			client: func(t *testing.T) *registration.AuthenticatedSPIFFEClient {
+				t.Helper()
+				return newClient(t, []string{testIssuer}, nil, []string{oauthproto.GrantTypeTokenExchange})
+			},
+			form: func(t *testing.T) url.Values {
+				t.Helper()
+				f := formWithClaims(t, jwt.Audience{testIssuer})
+				f["resource"] = []string{testIssuer, testIssuer}
+				return f
+			},
+			wantErr: server.ErrInvalidTarget,
+		},
+		{
+			name: "nonempty audience with a valid sole resource is invalid target",
+			client: func(t *testing.T) *registration.AuthenticatedSPIFFEClient {
+				t.Helper()
+				return newClient(t, []string{testIssuer}, nil, []string{oauthproto.GrantTypeTokenExchange})
+			},
+			form: func(t *testing.T) url.Values {
+				t.Helper()
+				f := formWithClaims(t, jwt.Audience{testIssuer})
+				f.Set("resource", testIssuer)
+				f.Set("audience", testIssuer)
+				return f
+			},
+			wantErr: server.ErrInvalidTarget,
+		},
+		{
+			name: "empty audience with a valid sole resource is invalid target",
+			client: func(t *testing.T) *registration.AuthenticatedSPIFFEClient {
+				t.Helper()
+				return newClient(t, []string{testIssuer}, nil, []string{oauthproto.GrantTypeTokenExchange})
+			},
+			form: func(t *testing.T) url.Values {
+				t.Helper()
+				f := formWithClaims(t, jwt.Audience{testIssuer})
+				f.Set("resource", testIssuer)
+				f["audience"] = []string{""}
+				return f
+			},
+			wantErr: server.ErrInvalidTarget,
+		},
+		{
+			name: "audience-only association policy cannot authorize a resource",
+			client: func(t *testing.T) *registration.AuthenticatedSPIFFEClient {
+				t.Helper()
+				return newAuthenticatedSPIFFEClientWithAudiences(t, nil, []string{testIssuer}, nil, []string{oauthproto.GrantTypeTokenExchange})
+			},
+			form: func(t *testing.T) url.Values {
+				t.Helper()
+				f := formWithClaims(t, jwt.Audience{testIssuer})
+				f.Set("resource", testIssuer)
+				return f
+			},
+			wantErr: server.ErrInvalidTarget,
+		},
+		{
+			name: "resource must be covered by source audience",
+			client: func(t *testing.T) *registration.AuthenticatedSPIFFEClient {
+				t.Helper()
+				return newClient(t, []string{"https://other.example.com"}, nil, []string{oauthproto.GrantTypeTokenExchange})
+			},
+			form: func(t *testing.T) url.Values {
+				t.Helper()
+				f := formWithClaims(t, jwt.Audience{testIssuer})
+				f.Set("resource", "https://other.example.com")
+				return f
+			},
+			handler: func(h *Handler) { h.allowedAudiences = []string{testIssuer, "https://other.example.com"} },
+			wantErr: server.ErrInvalidTarget,
+		},
+		{
+			name: "scope is narrowed by association policy",
+			client: func(t *testing.T) *registration.AuthenticatedSPIFFEClient {
+				t.Helper()
+				return newClient(t, []string{testIssuer}, []string{"openid"}, []string{oauthproto.GrantTypeTokenExchange})
+			},
+			form: func(t *testing.T) url.Values {
+				t.Helper()
+				f := formWithClaims(t, jwt.Audience{testIssuer})
+				f.Set("resource", testIssuer)
+				f.Set("scope", "profile")
+				return f
+			},
+			configure: func(req *fosite.AccessRequest) { req.SetRequestedScopes(fosite.Arguments{"profile"}) },
+			wantErr:   fosite.ErrInvalidScope,
+		},
+		{
+			name: "scope is narrowed by source token",
+			client: func(t *testing.T) *registration.AuthenticatedSPIFFEClient {
+				t.Helper()
+				return newClient(t, []string{testIssuer}, []string{"openid", "profile"}, []string{oauthproto.GrantTypeTokenExchange})
+			},
+			form: func(t *testing.T) url.Values {
+				t.Helper()
+				f := formWithClaims(t, jwt.Audience{testIssuer})
+				f.Set("resource", testIssuer)
+				f.Set("scope", "profile")
+				return f
+			},
+			configure: func(req *fosite.AccessRequest) { req.SetRequestedScopes(fosite.Arguments{"profile"}) },
+			wantErr:   fosite.ErrInvalidScope,
+		},
+		{
+			name: "without token exchange grant is unauthorized client",
+			client: func(t *testing.T) *registration.AuthenticatedSPIFFEClient {
+				t.Helper()
+				return newClient(t, []string{testIssuer}, nil, []string{"client_credentials"})
+			},
+			form: func(t *testing.T) url.Values {
+				t.Helper()
+				f := formWithClaims(t, jwt.Audience{testIssuer})
+				f.Set("resource", testIssuer)
+				return f
+			},
+			wantErr: fosite.ErrUnauthorizedClient,
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			req := newAccessRequest(t, tt.client(t), tt.form(t))
+			if tt.configure != nil {
+				tt.configure(req)
+			}
+			h := newTestHandler(t, tj, time.Minute)
+			if tt.handler != nil {
+				tt.handler(h)
+			}
+			err := h.HandleTokenEndpointRequest(context.Background(), req)
+			if tt.wantErr != nil {
+				require.ErrorIs(t, err, tt.wantErr)
+				return
+			}
+			require.NoError(t, err)
+			if tt.check != nil {
+				tt.check(t, req)
+			}
+		})
+	}
+
+	for _, tt := range []struct {
+		name    string
+		mayAct  string
+		wantErr error
+	}{
+		{name: "may act SPIFFE ID and OAuth allowed delegate client succeeds", mayAct: spiffeID},
+		{name: "legacy OAuth client ID in may act is rejected", mayAct: testAgentClientID, wantErr: fosite.ErrInvalidGrant},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			claims := &ValidatedClaims{
+				Subject: "external-user", Audience: []string{testIssuer}, Expiry: time.Now().Add(time.Hour),
+				ExternalIssuer: "https://issuer.example.com", MayAct: &MayActClaim{Sub: tt.mayAct},
+				AllowedDelegateClients: []string{testAgentClientID},
+			}
+			h := newTestHandler(t, tj, time.Minute)
+			h.validator = staticSubjectTokenValidator{claims: claims}
+			req := newAccessRequest(t, newClient(t, []string{testIssuer}, nil, []string{oauthproto.GrantTypeTokenExchange}), url.Values{
+				"grant_type": {oauthproto.GrantTypeTokenExchange}, "subject_token": {"controlled-subject-token"},
+				"subject_token_type": {oauthproto.TokenTypeAccessToken}, "resource": {testIssuer},
+			})
+			err := h.HandleTokenEndpointRequest(context.Background(), req)
+			if tt.wantErr != nil {
+				require.ErrorIs(t, err, tt.wantErr)
+				return
+			}
+			require.NoError(t, err)
+			sess := req.GetSession().(*session.Session)
+			assert.Equal(t, spiffeID, sess.JWTClaims.Extra["act"].(map[string]any)["sub"])
+		})
+	}
+}
+
+//nolint:paralleltest // Mutates the process-global slog default; parallel execution could race unrelated log assertions.
+func TestTokenExchangeHandler_SPIFFEAuthenticationMethodLogging(t *testing.T) {
+	var logs bytes.Buffer
+	oldDefault := slog.Default()
+	slog.SetDefault(slog.New(slog.NewJSONHandler(&logs, &slog.HandlerOptions{Level: slog.LevelDebug})))
+	t.Cleanup(func() { slog.SetDefault(oldDefault) })
+
+	tj := newTestJWKS(t)
+	spiReq := newAccessRequest(t, newAuthenticatedSPIFFEClient(t, []string{testIssuer}, nil, []string{oauthproto.GrantTypeTokenExchange}), func() url.Values { f := defaultFormValues(t, tj); f.Set("resource", testIssuer); return f }())
+	require.NoError(t, newTestHandler(t, tj, time.Minute).HandleTokenEndpointRequest(context.Background(), spiReq))
+	assert.Contains(t, logs.String(), `"authentication_method":"spiffe_jwt"`)
+
+	logs.Reset()
+	ordinaryReq := newAccessRequest(t, defaultClient(), defaultFormValues(t, tj))
+	require.NoError(t, newTestHandler(t, tj, time.Minute).HandleTokenEndpointRequest(context.Background(), ordinaryReq))
+	assert.NotContains(t, logs.String(), "authentication_method")
 }

@@ -107,6 +107,53 @@ An association may permit `client_credentials`, token exchange, or both. A clien
 
 The configured OAuth client ID may differ from the SPIFFE ID under ToolHive's explicit association model. This behavior does not claim literal compliance with draft-ietf-oauth-spiffe-client-auth-02's X.509 `client_id` URI-SAN requirement.
 
+## SPIFFE RFC 8693 delegation
+
+A SPIFFE-authenticated client may use RFC 8693 only when its association enables
+both the token-exchange grant and `token_exchange.enabled`. The authenticated
+principal has two deliberately different identities: its canonical concrete
+SPIFFE ID is the resolved actor identity, while the configured OAuth client ID
+remains the authenticated client identity. A successful delegated token uses the
+canonical SPIFFE ID as the outer `act.sub` and retains the configured OAuth
+client ID as its `client_id` claim. Neither value is derived from the other.
+
+An optional self-issued `actor_token` must bind both identities: its `client_id`
+must exactly equal the configured OAuth client ID, and its `sub` must exactly
+equal the canonical resolved SPIFFE ID. A SPIFFE client cannot use an
+`actor_token` to substitute a delegate persona or another workload identity.
+
+SPIFFE token exchange requires exactly one explicit RFC 8707 `resource` form
+value. It rejects every `audience` form value, including an otherwise valid
+configured token-exchange audience. The resource must be a server-allowed URI,
+be listed in the association's resource policy, and be covered by the subject
+token's `aud`. Association resources and token-exchange audiences are separate
+policy inputs: an audience does not authorize a resource, and a resource does
+not authorize an `audience` request.
+
+For an externally issued subject token, `may_act.sub` is compared with the
+resolved actor identity — the canonical SPIFFE ID — whereas
+`allowedDelegateClients` is always checked against the configured OAuth client
+ID. This preserves the distinction between workload provenance and the OAuth
+client authorization that is permitted to exchange the external token. See
+[External Subject-Token Exchange](17-token-exchange-delegation.md) for the
+external-issuer consent model.
+
+### Authorization parity and diagnostics
+
+SPIFFE X.509-SVID and JWT-SVID authentication have parity when they produce the
+same stable authorization inputs and authorization decisions for the same
+resolved association: canonical SPIFFE ID, configured OAuth client ID,
+association policy, grant, scopes, and requested resource. Parity does not
+require byte-for-byte identical issued JWTs or matching volatile issuance
+claims such as timestamps, expiry, token IDs, or signatures.
+
+`authentication_method` (`spiffe_x509` or `spiffe_jwt`) is debug-only
+operational metadata emitted in token-exchange diagnostics. It is not added to
+the issued JWT and is excluded from Cedar authorization inputs. When Cedar
+evaluates the presented ToolHive-issued JWT, it can read the nested `act` claim
+in Cedar context when a policy needs delegation provenance; its principal identifier continues to use `sub`. A configured primary upstream
+provider instead supplies Cedar's claim source.
+
 ## Security and delivery scope
 
 Configuration and loaded bundles are not authentication by themselves. A client ID, a declared association, a request header, an unverified SPIFFE-looking URI, a client-supplied trust domain, or a loaded bundle is never workload identity. SPIFFE credential validation establishes identity only after the credential validates against configured trust material and the association registry authorizes the resulting SPIFFE ID and configured client ID. A successful authentication binds that exact resolved principal to the static OAuth client; storage lookup alone is never authenticated provenance.

@@ -31,10 +31,13 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
+	"github.com/stacklok/toolhive/pkg/auth"
 	servercrypto "github.com/stacklok/toolhive/pkg/authserver/server/crypto"
 	spiffeauth "github.com/stacklok/toolhive/pkg/authserver/spiffe"
 	"github.com/stacklok/toolhive/pkg/authserver/storage"
 	"github.com/stacklok/toolhive/pkg/authserver/upstream"
+	"github.com/stacklok/toolhive/pkg/authz/authorizers"
+	cedarauth "github.com/stacklok/toolhive/pkg/authz/authorizers/cedar"
 	"github.com/stacklok/toolhive/pkg/oauthproto"
 )
 
@@ -103,6 +106,128 @@ func TestIntegration_SPIFFEClientCredentialsAuthenticationArms(t *testing.T) {
 			assertTokenLifetime(t, claims, spiffeClientCredentialsLifetime)
 		})
 	}
+}
+
+func TestIntegration_SPIFFETokenExchangeAuthenticationArms(t *testing.T) {
+	t.Parallel()
+
+	fixture := newSPIFFEClientCredentialsFixture(t)
+	cedarAuthorizer, err := cedarauth.NewCedarAuthorizer(cedarauth.ConfigOptions{
+		Policies:     []string{`permit(principal, action == Action::"call_tool", resource == Tool::"delegate-tool") when { context.claim_act.sub == "spiffe://example.org/workload/client" };`},
+		EntitiesJSON: `[]`,
+	}, "")
+	require.NoError(t, err)
+	forms := []struct {
+		name string
+		form func(*testing.T) url.Values
+	}{
+		{name: "X509 SVID", form: func(t *testing.T) url.Values {
+			t.Helper()
+			return spiffeTokenExchangeForm(t, fixture.privateKey)
+		}},
+		{name: "JWT SVID", form: func(t *testing.T) url.Values {
+			t.Helper()
+			form := spiffeTokenExchangeForm(t, fixture.privateKey)
+			form.Set("client_assertion_type", spiffeauth.SPIFFEJWTAssertionType)
+			form.Set("client_assertion", signedSPIFFEJWTAssertion(t, fixture.jwtKey))
+			return form
+		}},
+	}
+
+	for _, tt := range forms {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			response := postSPIFFEClientCredentials(t, fixture.client, fixture.server.URL, tt.form(t))
+			defer response.Body.Close()
+			body := parseTokenResponse(t, response)
+			require.Equal(t, http.StatusOK, response.StatusCode, "%v", body)
+			accessToken, ok := body["access_token"].(string)
+			require.True(t, ok)
+			claims := decodeSPIFFEClientCredentialsToken(t, accessToken, fixture.privateKey.Public())
+			assert.Equal(t, "delegated-user", claims["sub"])
+			assert.Equal(t, spiffeClientCredentialsClientID, claims["client_id"])
+			assert.Equal(t, map[string]any{"iss": testIssuer, "sub": spiffeClientCredentialsID}, claims["act"])
+			assert.Equal(t, []any{"openid"}, claims["scp"])
+			assert.Equal(t, []any{spiffeClientCredentialsResource}, claims["aud"])
+			assert.Equal(t, oauthproto.TokenTypeAccessToken, body["issued_token_type"])
+			assertTokenLifetime(t, claims, 15*time.Minute)
+			assert.NotContains(t, claims, "authentication_method")
+			identity := &auth.Identity{PrincipalInfo: auth.PrincipalInfo{Subject: "delegated-user", Claims: claims}}
+			authorized, err := cedarAuthorizer.AuthorizeWithJWTClaims(
+				auth.WithIdentity(context.Background(), identity),
+				authorizers.MCPFeatureTool,
+				authorizers.MCPOperationCall,
+				"delegate-tool",
+				nil,
+			)
+			require.NoError(t, err)
+			assert.True(t, authorized)
+		})
+	}
+
+	for _, clientAuth := range []string{"Basic c3BpZmZlLWNsaWVudDphbnktc2VjcmV0", ""} {
+		name := "client secret basic"
+		if clientAuth == "" {
+			name = "client secret post"
+		}
+		t.Run(name+" without SVID is rejected for reserved ID", func(t *testing.T) {
+			form := spiffeTokenExchangeForm(t, fixture.privateKey)
+			if clientAuth == "" {
+				form.Set("client_secret", "any-secret")
+			}
+			request, err := http.NewRequest(http.MethodPost, fixture.server.URL+"/oauth/token", strings.NewReader(form.Encode()))
+			require.NoError(t, err)
+			request.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+			if clientAuth != "" {
+				request.Header.Set("Authorization", clientAuth)
+			}
+			response, err := fixture.client.Do(request)
+			require.NoError(t, err)
+			defer response.Body.Close()
+			body := parseTokenResponse(t, response)
+			assert.Equal(t, http.StatusUnauthorized, response.StatusCode)
+			assert.Equal(t, "invalid_client", body["error"])
+		})
+	}
+}
+
+func spiffeTokenExchangeForm(t *testing.T, key crypto.Signer) url.Values {
+	t.Helper()
+	signer, err := jose.NewSigner(jose.SigningKey{Algorithm: jose.RS256, Key: key}, nil)
+	require.NoError(t, err)
+	subjectToken, err := jwt.Signed(signer).Claims(jwt.Claims{Issuer: testIssuer, Subject: "delegated-user", Audience: jwt.Audience{spiffeClientCredentialsResource}, Expiry: jwt.NewNumericDate(time.Now().Add(time.Hour)), IssuedAt: jwt.NewNumericDate(time.Now())}).Claims(map[string]any{"client_id": spiffeClientCredentialsClientID, "scope": "openid"}).Serialize()
+	require.NoError(t, err)
+	return url.Values{"grant_type": {oauthproto.GrantTypeTokenExchange}, "client_id": {spiffeClientCredentialsClientID}, "subject_token": {subjectToken}, "subject_token_type": {oauthproto.TokenTypeAccessToken}, "resource": {spiffeClientCredentialsResource}, "scope": {"openid"}}
+}
+
+func TestNewRejectsDelegateClientIDReservedBySPIFFEAssociation(t *testing.T) {
+	t.Parallel()
+
+	trust := newSPIFFEClientCredentialsTrust(t)
+	registry, err := NewSPIFFEBundleRegistry(trust)
+	require.NoError(t, err)
+	privateKey, err := rsa.GenerateKey(rand.Reader, 2048)
+	require.NoError(t, err)
+	secret := make([]byte, 32)
+	_, err = rand.Read(secret)
+	require.NoError(t, err)
+	config := Config{
+		Issuer: testIssuer, KeyProvider: &testKeyProvider{key: privateKey}, HMACSecrets: servercrypto.NewHMACSecrets(secret),
+		AccessTokenLifespan: time.Hour, RefreshTokenLifespan: time.Hour, AuthCodeLifespan: time.Minute,
+		ScopesSupported: []string{"openid", "profile"}, AllowedAudiences: []string{spiffeClientCredentialsResource},
+		Upstreams:   []UpstreamConfig{{Name: "default", Type: UpstreamProviderTypeOAuth2, OAuth2Config: &upstream.OAuth2Config{CommonOAuthConfig: upstream.CommonOAuthConfig{ClientID: "upstream-client", RedirectURI: "https://example.com/callback"}, AuthorizationEndpoint: "https://idp.example.com/authorize", TokenEndpoint: "https://idp.example.com/token"}}},
+		SPIFFETrust: trust, SPIFFEBundleRegistry: registry, InsecureAllowConfidentialOverLoopbackHTTP: true,
+		DelegateClients: []DelegateClient{{
+			ClientID: spiffeClientCredentialsClientID, ClientSecret: strings.Repeat("x", 32),
+			Scopes: []string{"openid"}, Audiences: []string{spiffeClientCredentialsResource},
+		}},
+	}
+
+	server, err := New(context.Background(), config, storage.NewMemoryStorage())
+	require.Error(t, err)
+	assert.Nil(t, server)
+	assert.ErrorIs(t, err, storage.ErrAlreadyExists)
+	assert.Contains(t, err.Error(), "reserved for a static SPIFFE client")
 }
 
 // TestIntegration_SPIFFEClientCredentialsRejectsInvalidJWTAssertion proves the
@@ -235,7 +360,8 @@ func newSPIFFEClientCredentialsTrust(t *testing.T) *SPIFFETrustConfig {
 			TrustDomainRef: "example", Principal: spiffeClientCredentialsID, ClientID: spiffeClientCredentialsClientID,
 			Methods:   []SPIFFEAuthenticationMethod{SPIFFEAuthenticationMethodX509, SPIFFEAuthenticationMethodJWT},
 			Resources: []string{spiffeClientCredentialsResource}, Audiences: []string{"https://token-audience.example.com"},
-			Scopes: []string{"openid", "profile"}, GrantTypes: []string{oauthproto.GrantTypeClientCredentials},
+			Scopes: []string{"openid", "profile"}, GrantTypes: []string{oauthproto.GrantTypeClientCredentials, oauthproto.GrantTypeTokenExchange},
+			TokenExchange: &SPIFFETokenExchangeRunConfig{Enabled: true},
 		}}},
 		[]string{"openid", "profile"}, []string{spiffeClientCredentialsResource, "https://token-audience.example.com"},
 	)

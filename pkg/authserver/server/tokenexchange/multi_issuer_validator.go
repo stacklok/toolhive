@@ -747,13 +747,14 @@ func (v *MultiIssuerTokenValidator) validateExternalToken(
 	claims.AllowedDelegateClients = issuerConfig.AllowedDelegateClients
 
 	// A may_act claim is authoritative and enforced by checkDelegationConsent
-	// against the authenticated client — validateMayActShape above has
-	// already confirmed its own "iss" (if any) names this server, so
-	// may_act.sub is in ToolHive's own client namespace. AllowedActors and
-	// ActorMatcher below are skipped entirely when MayAct is set. Otherwise,
-	// either the resolved external actor claim or the matcher evaluated against
-	// the complete signature-verified JWT claims authorizes delegation. Neither
-	// is ever compared against the authenticated ToolHive client directly.
+	// against the resolved actor identity — validateMayActShape above has already
+	// confirmed its own "iss" (if any) names this server. For SPIFFE-authenticated
+	// exchanges, may_act.sub therefore contains the verified SPIFFE ID; otherwise
+	// it contains the ordinary OAuth actor identity. AllowedActors and ActorMatcher
+	// below are skipped entirely when MayAct is set. Otherwise, either the resolved
+	// external actor claim or the matcher evaluated against the complete
+	// signature-verified JWT claims authorizes delegation. Neither is ever compared
+	// against the authenticated ToolHive client directly.
 	if claims.MayAct == nil {
 		actor, authorized, err := resolveActorAuthorization(issuerConfig, claims, extraClaims)
 		if err != nil {
@@ -774,11 +775,11 @@ func (v *MultiIssuerTokenValidator) validateExternalToken(
 // actual reason for the common case.
 //
 // selfIssuer (not issuerConfig.IssuerURL) is the correct comparison for
-// may_act's optional "iss" once shape validation runs: that member
-// identifies the namespace of may_act.sub, always compared against a
-// ToolHive client ID regardless of which issuer validated the surrounding
-// token. requireIss is true here — unlike the self-issued path, the external
-// path cannot leave "iss" optional; see validateMayActShape's doc comment.
+// may_act's optional "iss" once shape validation runs: that member identifies
+// the namespace of may_act.sub, which checkDelegationConsent compares with the
+// resolved actor identity. requireIss is true here — unlike the self-issued
+// path, the external path cannot leave "iss" optional; see validateMayActShape's
+// doc comment.
 func checkMayActAllowed(extraClaims map[string]any, selfIssuer string, issuerConfig *externalIssuerConfig) error {
 	rawMayAct, ok := extraClaims["may_act"]
 	if ok && rawMayAct != nil && !issuerConfig.AllowMayAct {

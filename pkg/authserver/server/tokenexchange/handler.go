@@ -19,6 +19,7 @@ import (
 
 	coreaudit "github.com/stacklok/toolhive-core/audit"
 	"github.com/stacklok/toolhive/pkg/authserver/server"
+	"github.com/stacklok/toolhive/pkg/authserver/server/registration"
 	"github.com/stacklok/toolhive/pkg/authserver/server/session"
 	"github.com/stacklok/toolhive/pkg/oauthproto"
 )
@@ -131,8 +132,10 @@ func (h *Handler) HandleTokenEndpointRequest(ctx context.Context, requester fosi
 
 	// The authenticated client is the acting party ("actor"). The client is
 	// already authenticated by fosite's client authentication strategy before
-	// this handler runs.
+	// this handler runs. A SPIFFE-authenticated client additionally carries its
+	// verified workload principal.
 	actorID := client.GetID()
+	spiffeClient, _ := client.(*registration.AuthenticatedSPIFFEClient)
 	form := requester.GetRequestForm()
 
 	// Validate required RFC 8693 form parameters.
@@ -171,7 +174,7 @@ func (h *Handler) HandleTokenEndpointRequest(ctx context.Context, requester fosi
 	}
 
 	// Resolve actor identity: explicit actor_token or authenticated client.
-	actorSub, err := h.resolveActorIdentity(ctx, params, client)
+	actorSub, err := h.resolveActorIdentity(ctx, params, client, spiffeClient)
 	if err != nil {
 		return err
 	}
@@ -185,16 +188,16 @@ func (h *Handler) HandleTokenEndpointRequest(ctx context.Context, requester fosi
 		return err
 	}
 
-	if err := h.grantAndBoundAudiences(ctx, requester, client, validatedClaims); err != nil {
+	if err := h.grantAndBoundAudiences(ctx, requester, client, spiffeClient, validatedClaims); err != nil {
 		return err
 	}
 
 	// Build the delegated session with the user's identity and the
-	// authenticated client's identity. The third argument becomes the
-	// issued token's RFC 9068 client_id, so it must identify the client the
-	// token was actually issued to (client.GetID()) — not actorSub, which
-	// may name a distinct actor asserted via actor_token and belongs only
-	// in the act claim below.
+	// authenticated client's configured OAuth identity. The third argument
+	// becomes the issued token's RFC 9068 client_id, so it must identify the
+	// client the token was actually issued to (client.GetID()) — not actorSub,
+	// which for SPIFFE authentication is the workload's SPIFFE ID, and for
+	// other clients may be a distinct actor asserted via actor_token.
 	delegatedSession := session.New(
 		delegatedSubject(validatedClaims),
 		"", // No IDP session link for delegated tokens.
@@ -222,14 +225,26 @@ func (h *Handler) HandleTokenEndpointRequest(ctx context.Context, requester fosi
 
 	requester.SetSession(delegatedSession)
 
-	slog.Debug("Token exchange request validated",
-		"subject", validatedClaims.Subject,
-		"actor", actorSub,
-		"issuer", validatedClaims.Issuer,
-		"subject_token_client", validatedClaims.ExternalActor,
-		"subject_token_client_id", validatedClaims.ClientID,
-		"lifetime", lifetime.String(),
-	)
+	if spiffeClient != nil {
+		slog.Debug("Token exchange request validated",
+			"subject", validatedClaims.Subject,
+			"actor", actorSub,
+			"issuer", validatedClaims.Issuer,
+			"subject_token_client", validatedClaims.ExternalActor,
+			"subject_token_client_id", validatedClaims.ClientID,
+			"lifetime", lifetime.String(),
+			"authentication_method", spiffeClient.Principal().AuthenticationMethod(),
+		)
+	} else {
+		slog.Debug("Token exchange request validated",
+			"subject", validatedClaims.Subject,
+			"actor", actorSub,
+			"issuer", validatedClaims.Issuer,
+			"subject_token_client", validatedClaims.ExternalActor,
+			"subject_token_client_id", validatedClaims.ClientID,
+			"lifetime", lifetime.String(),
+		)
+	}
 
 	return nil
 }
@@ -280,27 +295,13 @@ func (h *Handler) PopulateTokenEndpointResponse(
 	return nil
 }
 
-// resolveActorIdentity determines the acting party identity: either the
-// authenticated OAuth client ID, or — when actor_token is present — the
-// distinct actor identity it asserts.
-//
-// actor_token lets the authenticated client name a more specific actor than
-// its own client_id (e.g. a particular agent instance or delegate persona)
-// the same way a normal issued token records its client identity: via a
-// "client_id" claim. The actor_token's own "client_id" claim MUST match the
-// authenticated client ID — this is the client-ID binding check, proving the
-// token was minted for this client — while its "sub" claim is the actor
-// identity that is returned here and flows into the delegated token's act.sub
-// the same place a normal client's identity would go. "sub" is deliberately
-// not compared to client.GetID(): requiring equality there would make
-// actor_token unable to ever assert an identity different from
-// the OAuth client, collapsing it to a no-op self-check. Note that this does
-// not by itself grant the asserted actor any extra privilege: the resulting
-// actor identity still has to satisfy checkDelegationConsent (may_act,
-// ExternalActor, client_id binding, or the configured-delegate exemption)
-// like any other actor identity would.
+// resolveActorIdentity determines the acting party identity. For an ordinary
+// OAuth client, it is the authenticated client ID unless an actor_token names a
+// distinct actor. For an authenticated SPIFFE client, it is always the verified
+// SPIFFE ID: an actor_token must assert that same SPIFFE ID as well as the
+// configured OAuth client ID.
 func (h *Handler) resolveActorIdentity(
-	ctx context.Context, params *formParams, client fosite.Client,
+	ctx context.Context, params *formParams, client fosite.Client, spiffeClient *registration.AuthenticatedSPIFFEClient,
 ) (string, error) {
 	if params.actorToken != "" {
 		// Validate actor_token against the AS's own JWKS (must be self-issued).
@@ -311,19 +312,26 @@ func (h *Handler) resolveActorIdentity(
 				"The actor token is invalid or could not be verified."))
 		}
 		// Client-ID binding: actor_token's client_id claim MUST match the
-		// authenticated client ID. This prevents replay attacks where a leaked
-		// actor token is presented by a different client. The client ID is
-		// always verified by fosite's client authentication before reaching here.
+		// authenticated client's configured OAuth ID. This prevents replay attacks
+		// where a leaked actor token is presented by a different client.
 		// RFC 8693 §2.2.2 requires invalid_request when an actor token is
 		// unacceptable based on policy.
 		if actorClaims.ClientID != client.GetID() {
 			return "", errorsx.WithStack(fosite.ErrInvalidRequest.WithHint(
 				"The actor token's client_id claim does not match the authenticated client identity."))
 		}
+		if spiffeClient != nil && actorClaims.Subject != spiffeClient.Principal().SPIFFEID() {
+			return "", errorsx.WithStack(fosite.ErrInvalidRequest.WithHint(
+				"The actor token's subject claim does not match the authenticated SPIFFE principal."))
+		}
 		return actorClaims.Subject, nil
 	}
 
-	// No actor_token: the authenticated client is the acting party.
+	// No actor_token: the authenticated SPIFFE workload or OAuth client is the
+	// acting party.
+	if spiffeClient != nil {
+		return spiffeClient.Principal().SPIFFEID(), nil
+	}
 	return client.GetID(), nil
 }
 
@@ -445,9 +453,10 @@ func delegatedSubject(validatedClaims *ValidatedClaims) string {
 }
 
 // buildActClaim assembles the RFC 8693 Section 4.1 "act" claim for the
-// delegated token. The outermost act.sub is always actorID (the ToolHive
-// client) — every downstream consumer reads that as "who is acting", and it
-// must not change regardless of how the subject token was obtained.
+// delegated token. The outermost act.sub is always the resolved actor identity:
+// the verified SPIFFE ID for SPIFFE-authenticated clients, or the configured
+// OAuth client ID (or an actor_token's asserted identity) for other clients.
+// Every downstream consumer reads it as "who is acting".
 //
 // Extracted from HandleTokenEndpointRequest rather than inlined: the external
 // provenance nesting, the prior-chain depth gate, and the encoded-size gate
@@ -675,10 +684,9 @@ func checkDelegationConsent(validatedClaims *ValidatedClaims, clientID, actorSub
 	switch {
 	case validatedClaims.MayAct != nil:
 		// may_act.sub is compared against actorSub, not clientID: this is
-		// the one binding that is meant to key off the asserted actor —
-		// may_act's whole purpose is authorizing a specific actor, which
-		// actor_token lets the authenticated client name distinctly from
-		// itself.
+		// the one binding that is meant to key off the resolved actor. For
+		// ordinary clients, actor_token can name it distinctly from the
+		// client; for SPIFFE clients, it is the verified SPIFFE ID.
 		if validatedClaims.MayAct.Sub != actorSub {
 			return errorsx.WithStack(fosite.ErrInvalidGrant.WithHint(
 				"The subject token does not authorize this client to act on behalf of the subject."))
@@ -748,9 +756,10 @@ func (h *Handler) grantScopes(
 	return nil
 }
 
-// grantAndBoundAudiences resolves the delegated token's audience from the
-// request (explicit "audience", RFC 8707 "resource", or the configured
-// default) and then bounds the result by the subject token.
+// grantAndBoundAudiences resolves the delegated token's audience and then
+// bounds the result by the subject token. SPIFFE-authenticated clients use their
+// association's RFC 8707 resource policy exclusively; all other clients retain
+// the existing audience, resource, and default-audience behavior.
 //
 // The delegated token must not target a resource the subject token was not
 // itself valid for: every granted audience must be covered by the subject
@@ -760,8 +769,15 @@ func (h *Handler) grantScopes(
 // user token minted for A into a token for B, an escalation the user never
 // consented to.
 func (h *Handler) grantAndBoundAudiences(
-	ctx context.Context, requester fosite.AccessRequester, client fosite.Client, validatedClaims *ValidatedClaims,
+	ctx context.Context,
+	requester fosite.AccessRequester,
+	client fosite.Client,
+	spiffeClient *registration.AuthenticatedSPIFFEClient,
+	validatedClaims *ValidatedClaims,
 ) error {
+	if spiffeClient != nil {
+		return h.grantSPIFFEResourceAudience(requester, spiffeClient, validatedClaims)
+	}
 	if err := h.grantAudiences(ctx, requester, client); err != nil {
 		return err
 	}
@@ -771,6 +787,36 @@ func (h *Handler) grantAndBoundAudiences(
 	if err := h.grantDefaultAudience(ctx, requester, client); err != nil {
 		return err
 	}
+	return ensureAudienceSubsetOfSubject(requester.GetGrantedAudience(), validatedClaims.Audience)
+}
+
+// grantSPIFFEResourceAudience requires exactly one explicit RFC 8707 resource
+// for a SPIFFE-authenticated client. The resource must be allowed by both the
+// server and the authenticated workload's association policy before it can be
+// granted and bounded by the subject token's audience.
+func (h *Handler) grantSPIFFEResourceAudience(
+	requester fosite.AccessRequester,
+	spiffeClient *registration.AuthenticatedSPIFFEClient,
+	validatedClaims *ValidatedClaims,
+) error {
+	form := requester.GetRequestForm()
+	resources := form["resource"]
+	if len(resources) != 1 || resources[0] == "" || len(form["audience"]) != 0 {
+		return errorsx.WithStack(server.ErrInvalidTarget)
+	}
+
+	resource := resources[0]
+	if err := server.ValidateAudienceURI(resource); err != nil {
+		return errorsx.WithStack(server.ErrInvalidTarget)
+	}
+	if err := server.ValidateAudienceAllowed(resource, h.allowedAudiences); err != nil {
+		return errorsx.WithStack(server.ErrInvalidTarget)
+	}
+	if !slices.Contains(spiffeClient.Principal().AuthorizationPolicy().Resources(), resource) {
+		return errorsx.WithStack(server.ErrInvalidTarget)
+	}
+
+	requester.GrantAudience(resource)
 	return ensureAudienceSubsetOfSubject(requester.GetGrantedAudience(), validatedClaims.Audience)
 }
 

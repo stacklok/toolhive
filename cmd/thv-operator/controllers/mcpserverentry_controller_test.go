@@ -303,6 +303,43 @@ func TestMCPServerEntryReconciler_Reconcile(t *testing.T) {
 			},
 		},
 		{
+			name: "private RemoteURL rejected when allowPrivateEndpoint is unset",
+			entry: func() *mcpv1beta1.MCPServerEntry {
+				e := newMCPServerEntry(testEntryGroupRef, nil, nil)
+				e.Spec.RemoteURL = "http://10.0.0.5:8080"
+				return e
+			}(),
+			objects:   []client.Object{newMCPGroup(mcpv1beta1.MCPGroupPhaseReady)},
+			wantPhase: mcpv1beta1.MCPServerEntryPhaseFailed,
+			conditions: []struct {
+				condType string
+				status   metav1.ConditionStatus
+				reason   string
+			}{
+				{mcpv1beta1.ConditionTypeMCPServerEntryRemoteURLValidated, metav1.ConditionFalse, mcpv1beta1.ConditionReasonMCPServerEntryRemoteURLInvalid},
+				{mcpv1beta1.ConditionTypeMCPServerEntryValid, metav1.ConditionFalse, mcpv1beta1.ConditionReasonMCPServerEntryInvalid},
+			},
+		},
+		{
+			name: "private RemoteURL allowed when allowPrivateEndpoint is true",
+			entry: func() *mcpv1beta1.MCPServerEntry {
+				e := newMCPServerEntry(testEntryGroupRef, nil, nil)
+				e.Spec.RemoteURL = "http://10.0.0.5:8080"
+				e.Spec.AllowPrivateEndpoint = true
+				return e
+			}(),
+			objects:   []client.Object{newMCPGroup(mcpv1beta1.MCPGroupPhaseReady)},
+			wantPhase: mcpv1beta1.MCPServerEntryPhaseValid,
+			conditions: []struct {
+				condType string
+				status   metav1.ConditionStatus
+				reason   string
+			}{
+				{mcpv1beta1.ConditionTypeMCPServerEntryRemoteURLValidated, metav1.ConditionTrue, mcpv1beta1.ConditionReasonMCPServerEntryRemoteURLValid},
+				{mcpv1beta1.ConditionTypeMCPServerEntryValid, metav1.ConditionTrue, mcpv1beta1.ConditionReasonMCPServerEntryValid},
+			},
+		},
+		{
 			name:      "entry not found returns no error and no requeue",
 			entry:     nil, // no entry seeded
 			wantPhase: "",  // not checked

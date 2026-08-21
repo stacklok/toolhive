@@ -1589,6 +1589,8 @@ func (r *VirtualMCPServerReconciler) ensureDeployment(
 		//
 		// Note: If update conflicts occur due to concurrent modifications, the reconcile
 		// loop will retry automatically. Kubernetes' optimistic locking prevents data loss.
+		newDeployment.Spec.Template.Annotations = ctrlutil.PreserveKubectlRestartedAt(
+			newDeployment.Spec.Template.Annotations, deployment.Spec.Template.Annotations)
 		deployment.Spec.Template = newDeployment.Spec.Template
 		deployment.Labels = newDeployment.Labels
 		deployment.Annotations = mergedAnnotations

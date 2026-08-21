@@ -42,10 +42,13 @@ type workloadStatusResponse struct {
 type updateRequest struct {
 	// Docker image to use
 	Image string `json:"image"`
-	// RuntimeConfig is only accepted on create/update when image is a protocol
-	// URI such as go://, npx://, or uvx://.
-	// GET responses may include runtime_config for existing workloads, but
-	// clients should not send it back with a built/non-protocol image.
+	// RuntimeConfig is accepted on create/update when image is a protocol
+	// URI such as go://, npx://, or uvx://. GET responses may include
+	// runtime_config for existing workloads; on update it may be sent back
+	// unchanged even with a built/non-protocol image, as long as it exactly
+	// matches the persisted config and the image and URL are unchanged - it
+	// is then preserved rather than applied to a rebuild. Any other
+	// runtime_config on a non-protocol image is rejected.
 	RuntimeConfig *templates.RuntimeConfig `json:"runtime_config,omitempty"`
 	// Host to bind to
 	Host string `json:"host"`
@@ -392,14 +395,11 @@ func runConfigToCreateRequest(runConfig *runner.RunConfig) *createRequest {
 }
 
 func runtimeConfigForResponse(runConfig *runner.RunConfig) *templates.RuntimeConfig {
-	if runConfig == nil || runConfig.RuntimeConfig == nil {
+	if runConfig == nil {
 		return nil
 	}
-
-	return &templates.RuntimeConfig{
-		BuilderImage:       runConfig.RuntimeConfig.BuilderImage,
-		AdditionalPackages: append([]string{}, runConfig.RuntimeConfig.AdditionalPackages...),
-	}
+	// Clone's nil-receiver handling covers a nil runConfig.RuntimeConfig too.
+	return runConfig.RuntimeConfig.Clone()
 }
 
 // validateHeaderForwardConfig validates the header forward configuration.

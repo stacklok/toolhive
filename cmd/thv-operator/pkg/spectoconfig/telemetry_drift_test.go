@@ -71,6 +71,10 @@ var telemetryIgnoredOnRuntimeOnly = map[string]string{
 	"environmentVariables": "CLI-only, not applicable to CRD-managed telemetry",
 	"caCertPath": "filesystem path assigned by runconfig.AddMCPTelemetryConfigRefOptions (cmd/thv-operator/pkg/runconfig/telemetry.go) " +
 		"after the operator computes the volume-mount path from openTelemetry.caBundleRef; not user-facing in the CRD",
+	"metricsOnTransportPort": "transitional deprecation switch, not a durable configuration knob: it controls whether " +
+		"/metrics is also served on the transport port during the migration window and is removed once the window " +
+		"closes. Deliberately absent from the CRD so no object persists a value that would survive the cutover; " +
+		"see telemetry.DefaultMetricsOnTransportPort",
 	"prometheusPort": "pod-topology concern rather than shared telemetry configuration, so it is intentionally absent " +
 		"from MCPTelemetryConfig; the runtime default (diagnostics.DefaultPort, 9464) is deterministic so in-cluster " +
 		"scrapers have a fixed target, and the diagnostics listener falls back to an available port when it is taken. " +

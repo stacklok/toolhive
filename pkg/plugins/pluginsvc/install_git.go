@@ -19,9 +19,9 @@ import (
 )
 
 // installFromGit clones a git repository, reads the plugin manifest, collects
-// the plugin file tree, builds an in-memory tar.gz layer, and delegates to
-// installWithExtraction. The digest is the git commit hash, enabling same-commit
-// no-op and upgrade detection.
+// the plugin file tree, builds an in-memory tar.gz layer, then materializes
+// and registers the plugin while holding the per-plugin lock. The digest is
+// the git commit hash, enabling same-commit no-op and upgrade detection.
 //
 // Unlike skillsvc.installFromGit, this does NOT call gitResolver.Resolve
 // (which is skill-specific: it reads SKILL.md). Instead it replicates the
@@ -31,6 +31,7 @@ func (s *service) installFromGit(
 	ctx context.Context,
 	opts plugins.InstallOptions,
 	scope plugins.Scope,
+	alreadyLocked bool,
 ) (*plugins.InstallResult, error) {
 	if len(s.materializers) == 0 {
 		return nil, httperr.WithCode(
@@ -91,10 +92,21 @@ func (s *service) installFromGit(
 		opts.Version = manifest.Version
 	}
 
-	unlock := s.locks.lock(opts.Name, scope, opts.ProjectRoot)
-	defer unlock()
+	if err := validateExpectedCanonicalName(opts); err != nil {
+		return nil, err
+	}
 
-	return s.installWithExtraction(ctx, opts, scope)
+	if !alreadyLocked {
+		var unlock func()
+		ctx, unlock = s.lockPlugin(ctx, opts.Name, scope, opts.ProjectRoot)
+		defer unlock()
+	}
+
+	result, err := s.installWithExtraction(ctx, opts, scope)
+	if err != nil {
+		return nil, err
+	}
+	return s.installAndRegister(ctx, opts, result, scope)
 }
 
 // cloneAndCollectPlugin clones the repo referenced by gitRef, reads the plugin

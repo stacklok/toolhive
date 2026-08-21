@@ -325,6 +325,9 @@ func (s *WorkloadRoutes) deleteWorkload(w http.ResponseWriter, r *http.Request) 
 //
 //	@Summary		Create a new workload
 //	@Description	Create and start a new workload
+//	@Description	runtime_config is only accepted for protocol-scheme images
+//	@Description	(uvx://, npx://, go://); supplying it with an ordinary image
+//	@Description	reference or a remote url is rejected with 400.
 //	@Tags			workloads
 //	@Accept			json
 //	@Produce		json
@@ -401,6 +404,10 @@ func (s *WorkloadRoutes) createWorkload(w http.ResponseWriter, r *http.Request) 
 //
 //	@Summary		Update workload
 //	@Description	Update an existing workload configuration
+//	@Description	runtime_config on a non-protocol-scheme image is accepted only when it
+//	@Description	exactly matches the workload's persisted config and the image and url
+//	@Description	are unchanged (an inert echo, e.g. from a prior GET); otherwise it is
+//	@Description	rejected with 400.
 //	@Tags			workloads
 //	@Accept			json
 //	@Produce		json

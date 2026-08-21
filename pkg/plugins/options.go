@@ -3,7 +3,11 @@
 
 package plugins
 
-import "github.com/stacklok/toolhive/pkg/skills"
+import (
+	"context"
+
+	"github.com/stacklok/toolhive/pkg/skills"
+)
 
 // ListOptions configures the behavior of the List operation. Alias for
 // skills.ListOptions (identical shape: Scope, ClientApp, ProjectRoot, Group).
@@ -44,12 +48,50 @@ type InstallOptions struct {
 	// Description is the plugin description, hydrated from the OCI artifact
 	// config or git manifest. Internal use only.
 	Description string `json:"-"`
+	// LockSource overrides the value recorded as the lock entry's Source. When
+	// empty, the entry's Source is Name as given by the caller before any
+	// internal resolution. Set by Sync/Upgrade, which pass an already-resolved
+	// Name that must not overwrite the entry's original Source. Internal use
+	// only — NOT exposed via HTTP API.
+	LockSource string `json:"-"`
+	// LockResolvedReference overrides the value recorded as the lock entry's
+	// ResolvedReference. When empty, the entry's ResolvedReference is
+	// whatever this install actually resolved to. Set by Sync when
+	// reinstalling at a pinned reference. Internal use only — NOT exposed
+	// via HTTP API.
+	LockResolvedReference string `json:"-"`
+	// SyncRestore forces re-extraction to every existing client even when
+	// Digest matches the currently-installed digest. Set by Sync when
+	// reinstalling at a pinned reference: the whole point is repairing
+	// on-disk drift that happened without the pinned digest changing, so the
+	// normal "same digest means content is already correct" fast path must
+	// not apply. Internal use only — NOT exposed via HTTP API.
+	SyncRestore bool `json:"-"`
+	// ExpectedCanonicalName, when set, requires the resolved plugin/manifest name
+	// to equal this value before any install mutation. Used by Sync/Upgrade so a
+	// lock entry cannot be repaired under a different canonical identity.
+	ExpectedCanonicalName string `json:"-"`
 }
 
 // InstallResult contains the outcome of an Install operation.
 type InstallResult struct {
 	// Plugin is the installed plugin.
 	Plugin InstalledPlugin `json:"plugin"`
+	// PreExisting is the store record as it was before this install, or nil
+	// when this install created the record. Rollback uses it to restore the
+	// previous state instead of destructively deleting a record this call
+	// did not create. Internal use only — NOT exposed via HTTP API.
+	PreExisting *InstalledPlugin `json:"-"`
+	// ContentDigest is the dirhash of the canonical plugin tree (ExtractPlugin
+	// output), computed at install time for recording in the lock file.
+	// Internal use only — NOT exposed via HTTP API.
+	ContentDigest string `json:"-"`
+	// RestoreFiles undoes this install's on-disk writes: dematerialize a
+	// fresh install, or restore the previous tree after a failed upgrade.
+	// Callers must join a non-nil error into the failure they are
+	// compensating; discarding it can hide a partial restore. Internal use
+	// only — NOT exposed via HTTP API.
+	RestoreFiles func(context.Context) error `json:"-"`
 }
 
 // UninstallOptions configures the behavior of the Uninstall operation. Alias

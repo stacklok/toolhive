@@ -74,20 +74,8 @@ func (a *ClaudeCodeAdapter) Materialize(_ context.Context, req plugins.Materiali
 		return nil, fmt.Errorf("extracting plugin: %w", err)
 	}
 
-	// The marketplace root is the plugins parent directory; each plugin lives in
-	// a "<name>" subdirectory referenced as a "./<name>" source.
-	marketplaceRoot := filepath.Dir(dir)
-
-	// Upsert the plugin into the shared marketplace.json at the plugins root so
-	// Claude Code resolves it under the "toolhive" marketplace.
-	if err := upsertClaudeMarketplace(marketplaceRoot, req.Name); err != nil {
-		return nil, fmt.Errorf("writing marketplace.json: %w", err)
-	}
-
-	// Patch settings.json to enable the plugin under the toolhive marketplace.
-	settingsPath := a.settingsPath(req.Scope, req.ProjectRoot)
-	if err := enablePluginInSettings(settingsPath, req.Name, marketplaceRoot); err != nil {
-		return nil, fmt.Errorf("enabling plugin in settings.json: %w", err)
+	if err := a.registerPlugin(req.Name, req.Scope, req.ProjectRoot, dir); err != nil {
+		return nil, err
 	}
 
 	return &plugins.MaterializeResult{
@@ -128,6 +116,110 @@ func (a *ClaudeCodeAdapter) Dematerialize(_ context.Context, req plugins.Demater
 		return fmt.Errorf("disabling plugin in settings.json: %w", err)
 	}
 
+	return nil
+}
+
+// EnsureRegistered restores the marketplace.json and settings.json entries
+// for this plugin without re-extracting files.
+func (a *ClaudeCodeAdapter) EnsureRegistered(_ context.Context, req plugins.DematerializeRequest) error {
+	dir, err := a.cm.GetPluginPath(client.ClaudeCode, req.Name, req.Scope, req.ProjectRoot)
+	if err != nil {
+		return fmt.Errorf("resolving plugin path: %w", err)
+	}
+	return a.registerPlugin(req.Name, req.Scope, req.ProjectRoot, dir)
+}
+
+// Health reports whether the plugin directory exists and the marketplace.json
+// plus settings.json entries that make Claude Code discover it are present.
+func (a *ClaudeCodeAdapter) Health(_ context.Context, req plugins.DematerializeRequest) error {
+	dir, err := a.cm.GetPluginPath(client.ClaudeCode, req.Name, req.Scope, req.ProjectRoot)
+	if err != nil {
+		return fmt.Errorf("resolving plugin path: %w", err)
+	}
+	if _, err := os.Stat(dir); err != nil {
+		return fmt.Errorf("plugin directory missing: %w", err)
+	}
+
+	mp, err := readClaudeMarketplace(claudeMarketplaceFilePath(filepath.Dir(dir)))
+	if err != nil {
+		return err
+	}
+	wantSource := "./" + req.Name
+	found := false
+	for _, p := range mp.Plugins {
+		if p.Name != req.Name {
+			continue
+		}
+		if p.Source != wantSource {
+			return fmt.Errorf("plugin %q marketplace source is %q, want %q", req.Name, p.Source, wantSource)
+		}
+		found = true
+		break
+	}
+	if !found {
+		return fmt.Errorf("plugin %q is missing from marketplace.json", req.Name)
+	}
+
+	settingsPath := a.settingsPath(req.Scope, req.ProjectRoot)
+	content, err := os.ReadFile(settingsPath) // #nosec G304 -- path is a known tool config file location
+	if err != nil {
+		return fmt.Errorf("reading settings.json: %w", err)
+	}
+	root, err := parseSettings(content, settingsPath)
+	if err != nil {
+		return err
+	}
+	return claudeMarketplaceRegistrationHealthy(root, req.Name, filepath.Dir(dir))
+}
+
+// claudeMarketplaceRegistrationHealthy reports whether settings.json has the
+// enabledPlugins entry and the extraKnownMarketplaces.toolhive directory
+// source that Claude Code needs to discover the plugin.
+func claudeMarketplaceRegistrationHealthy(root map[string]any, pluginName, marketplaceRoot string) error {
+	enabled, ok := root["enabledPlugins"].(map[string]any)
+	if !ok {
+		return fmt.Errorf("plugin %q is not enabled in settings.json", pluginName)
+	}
+	val, ok := enabled[pluginKey(pluginName)]
+	if !ok {
+		return fmt.Errorf("plugin %q is not enabled in settings.json", pluginName)
+	}
+	if on, _ := val.(bool); !on {
+		return fmt.Errorf("plugin %q is disabled in settings.json", pluginName)
+	}
+
+	marketplaces, ok := root["extraKnownMarketplaces"].(map[string]any)
+	if !ok {
+		return fmt.Errorf("extraKnownMarketplaces.toolhive is missing from settings.json")
+	}
+	tv, ok := marketplaces[marketplaceName].(map[string]any)
+	if !ok {
+		return fmt.Errorf("extraKnownMarketplaces.toolhive is missing from settings.json")
+	}
+	src, ok := tv["source"].(map[string]any)
+	if !ok {
+		return fmt.Errorf("extraKnownMarketplaces.toolhive source is missing from settings.json")
+	}
+	if src["source"] != "directory" {
+		return fmt.Errorf("extraKnownMarketplaces.toolhive source type is %v, want directory", src["source"])
+	}
+	if src["path"] != marketplaceRoot {
+		return fmt.Errorf("extraKnownMarketplaces.toolhive path is %v, want %s", src["path"], marketplaceRoot)
+	}
+	return nil
+}
+
+// registerPlugin upserts the shared marketplace.json entry and enables the
+// plugin in settings.json.
+func (a *ClaudeCodeAdapter) registerPlugin(name string, scope plugins.Scope, projectRoot, pluginDir string) error {
+	marketplaceRoot := filepath.Dir(pluginDir)
+	if err := upsertClaudeMarketplace(marketplaceRoot, name); err != nil {
+		return fmt.Errorf("writing marketplace.json: %w", err)
+	}
+	settingsPath := a.settingsPath(scope, projectRoot)
+	if err := enablePluginInSettings(settingsPath, name, marketplaceRoot); err != nil {
+		return fmt.Errorf("enabling plugin in settings.json: %w", err)
+	}
 	return nil
 }
 

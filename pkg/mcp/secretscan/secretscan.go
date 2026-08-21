@@ -93,22 +93,7 @@ func ScanAndRedactToolCallResult(raw json.RawMessage) (Result, error) {
 		return Result{Redacted: raw}, fmt.Errorf("decoding tool call result: %w", err)
 	}
 
-	matched := false
-	for i, c := range result.Content {
-		text, ok := c.(sdkmcp.TextContent)
-		if !ok {
-			continue
-		}
-		redactedText, hit := redactText(text.Text)
-		if !hit {
-			continue
-		}
-		matched = true
-		text.Text = redactedText
-		result.Content[i] = text
-	}
-
-	if !matched {
+	if !RedactContentInPlace(result.Content) {
 		return Result{Redacted: raw}, nil
 	}
 
@@ -119,6 +104,33 @@ func ScanAndRedactToolCallResult(raw json.RawMessage) (Result, error) {
 		return Result{Redacted: raw}, fmt.Errorf("re-encoding redacted tool call result: %w", err)
 	}
 	return Result{Redacted: encoded, Matched: true}, nil
+}
+
+// RedactContentInPlace scans content for credential-shaped text (see the
+// package doc) and redacts matches in place, entry by entry. Returns true if
+// anything matched. Non-text content (images, audio, embedded resources) is
+// left untouched -- this package does not decode binary/base64 payloads.
+//
+// Exported so callers that already hold a decoded []sdkmcp.Content -- e.g.
+// pkg/vmcp/server, which builds a CallToolResult's Content from the core's
+// domain result without ever serializing to JSON -- can redact without a
+// round trip through ScanAndRedactToolCallResult's JSON (de)serialization.
+func RedactContentInPlace(content []sdkmcp.Content) bool {
+	matched := false
+	for i, c := range content {
+		text, ok := c.(sdkmcp.TextContent)
+		if !ok {
+			continue
+		}
+		redactedText, hit := redactText(text.Text)
+		if !hit {
+			continue
+		}
+		matched = true
+		text.Text = redactedText
+		content[i] = text
+	}
+	return matched
 }
 
 // redactText replaces every pattern match in s with redactionPlaceholder.

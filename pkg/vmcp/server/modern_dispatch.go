@@ -339,7 +339,8 @@ func (s *Server) dispatchModernToolCall(
 			bi.BackendName = s.backendDisplayName(ctx, result.BackendID)
 		}
 	}
-	writeModernResult(w, parsed.ID, newModernCallToolResult(result, s.config.Name, s.config.Version))
+	writeModernResult(w, parsed.ID,
+		newModernCallToolResult(result, s.config.Name, s.config.Version, s.config.RedactToolResultSecrets))
 }
 
 // dispatchModernResourceRead re-homes authzCallGate's resources/read branch

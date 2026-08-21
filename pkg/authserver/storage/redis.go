@@ -2047,9 +2047,17 @@ func unmarshalRequester(ctx context.Context, data []byte, s *RedisStorage) (fosi
 	if IsSyntheticClientID(stored.ClientID) {
 		client = NewSyntheticClient(stored.ClientID)
 	} else {
+		// This lookup consults only this storage's own client rows: a client
+		// that was resolved dynamically at authorize time but never persisted
+		// would fail exactly here, surfacing to the client as a bare
+		// invalid_grant at the token endpoint — so log the client id and the
+		// underlying error, which otherwise leave no server-side trace (see
+		// issue #6187).
 		fetchedClient, err := s.GetClient(ctx, stored.ClientID)
 		if err != nil {
-			return nil, fmt.Errorf("failed to get client for session: %w", err)
+			slog.WarnContext(ctx, "failed to resolve client for stored session",
+				"client_id", stored.ClientID, "error", err)
+			return nil, fmt.Errorf("failed to get client %q for session: %w", stored.ClientID, err)
 		}
 		client = fetchedClient
 	}

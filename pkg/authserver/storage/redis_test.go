@@ -679,6 +679,46 @@ func TestRedisStorage_GetClient_ConfidentialClientDoesNotMatchAsLoopback(t *test
 	})
 }
 
+// TestRedisStorage_CIMDClientSessionRehydration is the issue #6187 scenario:
+// a session created for a CIMD-resolved client must survive rehydration, which
+// resolves the client through the bare RedisStorage row lookup rather than the
+// CIMD decorator. The decorator's write-through persistence is what makes that
+// row exist. The document server is shut down before rehydration to prove no
+// re-fetch is involved — the session survives even if the document has rotated
+// or disappeared since authorize time.
+func TestRedisStorage_CIMDClientSessionRehydration(t *testing.T) {
+	withRedisStorage(t, func(ctx context.Context, s *RedisStorage, mr *miniredis.Miniredis) {
+		srv := serveCIMDDocWithFields(t, nil)
+		decorated, err := NewCIMDStorageDecorator(s, CIMDDecoratorConfig{
+			Enabled:      true,
+			CacheMaxSize: 10,
+			FallbackTTL:  time.Minute,
+		})
+		require.NoError(t, err)
+		dec := decorated.(*CIMDStorageDecorator)
+
+		id := srv.URL + "/meta.json"
+		client, err := dec.fetchOrCached(ctx, id)
+		require.NoError(t, err)
+
+		// The persisted row must carry the anti-bloat TTL: unauthenticated
+		// authorize traffic can mint these rows, so they must never be
+		// permanent.
+		require.Positive(t, mr.TTL(redisKey(s.keyPrefix, KeyTypeClient, id)),
+			"persisted CIMD client row must expire")
+
+		request := newRedisTestRequester("req-cimd", client)
+		require.NoError(t, s.CreateAuthorizeCodeSession(ctx, "cimd-code", request))
+
+		srv.Close()
+
+		retrieved, err := s.GetAuthorizeCodeSession(ctx, "cimd-code", nil)
+		require.NoError(t, err,
+			"rehydration must find the persisted CIMD client without the decorator or a document re-fetch")
+		assert.Equal(t, id, retrieved.GetClient().GetID())
+	})
+}
+
 // TestRedisStorage_RenewClientTTL pins the RenewClientTTL contract: it refreshes
 // a DCR-issued client's TTL to DefaultDCRClientTTL on proven use, leaves
 // pre-provisioned clients (no DCRIssued marker) untouched so a permanent client

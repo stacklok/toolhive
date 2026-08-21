@@ -6,6 +6,7 @@ package storage
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -705,4 +706,80 @@ func TestBuildFositeClient_ScopeDefaultsToDefaultScopesWhenNoScopesSupported(t *
 	}
 	got := buildFositeClientWithDefaults(doc, nil)
 	assert.ElementsMatch(t, registration.DefaultScopes, []string(got.GetScopes()))
+}
+
+// --- write-through persistence (issue #6187) ---
+
+func TestCIMDStorageDecorator_PersistsResolvedClient(t *testing.T) {
+	t.Parallel()
+
+	base := newTestBase(t)
+	dec := newEnabledDecorator(t, base, 10, time.Minute)
+	srv := serveCIMDDocWithFields(t, nil)
+	id := srv.URL + "/meta.json"
+
+	resolved, err := dec.fetchOrCached(context.Background(), id)
+	require.NoError(t, err)
+
+	persisted, err := base.GetClient(context.Background(), id)
+	require.NoError(t, err,
+		"the resolved client must be persisted so session rehydration that resolves clients through the bare storage still finds it")
+	assert.Equal(t, resolved.GetID(), persisted.GetID())
+	assert.True(t, persisted.IsPublic())
+	assert.True(t, registration.DCRIssued(resolved),
+		"the resolved client must carry the DCR-issued marker so the persisted row gets the anti-bloat TTL")
+}
+
+// TestCIMDStorageDecorator_PersistsLoopbackResolvedClient covers a document
+// with loopback redirect URIs: buildFositeClient gives it the same
+// *fosite.DefaultOpenIDConnectClient shape as any other CIMD client (RFC 8252
+// dynamic-port matching is applied separately, by
+// registration.RegisteredLoopbackRedirectURI, not by a distinct wrapper
+// type), and the DCR-issued marker (and with it the TTL on the persisted
+// row) must survive that shape too.
+func TestCIMDStorageDecorator_PersistsLoopbackResolvedClient(t *testing.T) {
+	t.Parallel()
+
+	base := newTestBase(t)
+	dec := newEnabledDecorator(t, base, 10, time.Minute)
+	srv := serveCIMDDocWithFields(t, func(doc *cimd.ClientMetadataDocument) {
+		doc.RedirectURIs = []string{"http://localhost/callback"}
+	})
+	id := srv.URL + "/meta.json"
+
+	resolved, err := dec.fetchOrCached(context.Background(), id)
+	require.NoError(t, err)
+	assert.True(t, registration.DCRIssued(resolved),
+		"a loopback-wrapped CIMD client must also carry the DCR-issued marker")
+
+	_, err = base.GetClient(context.Background(), id)
+	require.NoError(t, err)
+}
+
+// registerFailingStorage wraps a Storage and fails every RegisterClient call,
+// for testing that a write-through persistence failure does not fail the
+// resolution itself.
+type registerFailingStorage struct {
+	Storage
+}
+
+func (*registerFailingStorage) RegisterClient(context.Context, fosite.Client) error {
+	return errors.New("register failed")
+}
+
+func TestCIMDStorageDecorator_PersistFailureDoesNotFailResolution(t *testing.T) {
+	t.Parallel()
+
+	srv := serveCIMDDocWithFields(t, nil)
+	got, err := NewCIMDStorageDecorator(&registerFailingStorage{Storage: newTestBase(t)}, CIMDDecoratorConfig{
+		Enabled:      true,
+		CacheMaxSize: 10,
+		FallbackTTL:  time.Minute,
+	})
+	require.NoError(t, err)
+	dec := got.(*CIMDStorageDecorator)
+
+	client, err := dec.fetchOrCached(context.Background(), srv.URL+"/meta.json")
+	require.NoError(t, err, "a write-through persistence failure must not fail the resolution")
+	assert.NotNil(t, client)
 }

@@ -382,17 +382,21 @@ func NewHTTPConnector(registry vmcpauth.OutgoingAuthRegistry, opts ...HTTPConnec
 		sink ListChangedSink,
 	) (Session, *vmcp.CapabilityList, error) {
 		requestTimeout := connectorConfig.requestTimeout(target.WorkloadID)
-		requestCtx, cancel := context.WithTimeout(ctx, requestTimeout)
-		defer cancel()
+		transportTimeout := requestTimeout
+		if deadline, ok := ctx.Deadline(); ok {
+			if remaining := time.Until(deadline); remaining > transportTimeout {
+				transportTimeout = remaining
+			}
+		}
 
 		c, err := createMCPClient(
-			requestCtx, target, identity, registry, sessionHint, provider, sink, requestTimeout,
+			ctx, target, identity, registry, sessionHint, provider, sink, transportTimeout,
 		)
 		if err != nil {
 			return nil, nil, fmt.Errorf("failed to create MCP client for backend %s: %w", target.WorkloadID, err)
 		}
 
-		caps, err := initAndQueryCapabilities(requestCtx, c, target)
+		caps, err := initAndQueryCapabilities(ctx, c, target)
 		if err != nil {
 			_ = c.Close()
 			return nil, nil, fmt.Errorf("failed to initialise backend %s: %w", target.WorkloadID, err)

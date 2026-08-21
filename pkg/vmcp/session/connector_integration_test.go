@@ -41,6 +41,11 @@ func startInProcessMCPServer(t *testing.T) string {
 
 func startInProcessMCPServerWithToolDelay(t *testing.T, toolDelay time.Duration) string {
 	t.Helper()
+	return startInProcessMCPServerWithDelays(t, 0, toolDelay)
+}
+
+func startInProcessMCPServerWithDelays(t *testing.T, initDelay, toolDelay time.Duration) string {
+	t.Helper()
 
 	mcpSrv := mcpserver.NewMCPServer("integration-test-backend", "1.0.0")
 
@@ -87,7 +92,13 @@ func startInProcessMCPServerWithToolDelay(t *testing.T, toolDelay time.Duration)
 
 	streamableSrv := mcpserver.NewStreamableHTTPServer(mcpSrv)
 	mux := http.NewServeMux()
-	mux.Handle("/mcp", streamableSrv)
+	var initOnce sync.Once
+	mux.Handle("/mcp", http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method == http.MethodPost {
+			initOnce.Do(func() { time.Sleep(initDelay) })
+		}
+		streamableSrv.ServeHTTP(w, r)
+	}))
 
 	ts := httptest.NewServer(mux)
 	t.Cleanup(ts.Close)
@@ -232,6 +243,46 @@ func TestSessionFactory_Integration_RequestTimeoutResolver(t *testing.T) {
 			assert.Equal(t, "slow response", result.Content[0].Text)
 		})
 	}
+}
+
+func TestSessionFactory_Integration_ShortRequestTimeoutDoesNotShrinkInit(t *testing.T) {
+	t.Parallel()
+
+	const (
+		requestTimeout = 50 * time.Millisecond
+		initTimeout    = 2 * time.Second
+		backendDelay   = 200 * time.Millisecond
+	)
+
+	baseURL := startInProcessMCPServerWithDelays(t, backendDelay, backendDelay)
+	backend := &vmcp.Backend{
+		ID:            "slow-init-backend",
+		Name:          "slow-init-backend",
+		BaseURL:       baseURL,
+		TransportType: "streamable-http",
+	}
+
+	factory := NewSessionFactory(
+		newUnauthenticatedRegistry(t),
+		WithBackendInitTimeout(initTimeout),
+		WithRequestTimeoutResolver(func(string) time.Duration { return requestTimeout }),
+	)
+
+	started := time.Now()
+	sess, err := factory.MakeSessionWithID(
+		t.Context(), uuid.New().String(), nil, []*vmcp.Backend{backend}, nil,
+	)
+	require.NoError(t, err)
+	require.GreaterOrEqual(t, time.Since(started), backendDelay)
+	require.Len(t, sess.Tools(), 1)
+	t.Cleanup(func() { _ = sess.Close() })
+
+	result, err := sess.CallTool(
+		t.Context(), nil, "echo", map[string]any{"input": "slow response"}, nil,
+	)
+	require.Error(t, err)
+	assert.ErrorContains(t, err, "context deadline exceeded")
+	assert.Nil(t, result)
 }
 
 func TestSessionFactory_Integration_ReadResource(t *testing.T) {

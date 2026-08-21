@@ -15,8 +15,13 @@
 package storage
 
 import (
+	"context"
+	"errors"
+	"strings"
 	"testing"
 	"time"
+
+	"github.com/ory/fosite"
 )
 
 func TestUpstreamTokens_IsExpired(t *testing.T) {
@@ -86,6 +91,72 @@ func TestUpstreamTokens_IsExpired(t *testing.T) {
 			if got != tt.want {
 				t.Errorf("IsExpired(%v) = %v, want %v (expiresAt=%v)",
 					tt.checkTime, got, tt.want, tt.expiresAt)
+			}
+		})
+	}
+}
+
+func TestUpstreamTokenRowIDResolution(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name                  string
+		resolver              UpstreamTokenStorage
+		delimiterRowsDistinct bool
+	}{
+		{name: "memory", resolver: NewMemoryStorage(), delimiterRowsDistinct: true},
+		{name: "redis", resolver: &RedisStorage{}},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			if memory, ok := tt.resolver.(*MemoryStorage); ok {
+				t.Cleanup(func() { _ = memory.Close() })
+			}
+
+			first, err := tt.resolver.ResolveUpstreamTokenRowID(context.Background(), "session:one", "provider:one")
+			if err != nil {
+				t.Fatalf("resolve first row: %v", err)
+			}
+			again, err := tt.resolver.ResolveUpstreamTokenRowID(context.Background(), "session:one", "provider:one")
+			if err != nil {
+				t.Fatalf("resolve same row: %v", err)
+			}
+			otherSession, err := tt.resolver.ResolveUpstreamTokenRowID(context.Background(), "session", "one:provider:one")
+			if err != nil {
+				t.Fatalf("resolve delimiter row: %v", err)
+			}
+			otherProvider, err := tt.resolver.ResolveUpstreamTokenRowID(context.Background(), "session:one", "provider:two")
+			if err != nil {
+				t.Fatalf("resolve different provider: %v", err)
+			}
+
+			if first == "" {
+				t.Error("row ID must not be empty")
+			}
+			if first != again {
+				t.Errorf("same row IDs differ: %q and %q", first, again)
+			}
+			if tt.delimiterRowsDistinct {
+				if first == otherSession {
+					t.Errorf("distinct delimiter rows must have distinct IDs: %q and %q", first, otherSession)
+				}
+			} else if first != otherSession {
+				t.Errorf("equivalent Redis row keys must have equal IDs: %q and %q", first, otherSession)
+			}
+			if first == otherProvider || otherSession == otherProvider {
+				t.Errorf("distinct rows must have distinct IDs: %q, %q, %q", first, otherSession, otherProvider)
+			}
+			if strings.Contains(string(first), "session") || strings.Contains(string(first), "provider") {
+				t.Errorf("row ID must be opaque, got %q", first)
+			}
+
+			for _, input := range [][2]string{{"", "provider"}, {"session", ""}} {
+				_, err := tt.resolver.ResolveUpstreamTokenRowID(context.Background(), input[0], input[1])
+				if !errors.Is(err, fosite.ErrInvalidRequest) {
+					t.Errorf("resolve(%q, %q) error = %v, want invalid request", input[0], input[1], err)
+				}
 			}
 		})
 	}

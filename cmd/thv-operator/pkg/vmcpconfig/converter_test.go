@@ -1832,6 +1832,12 @@ func TestConvert_AuthServerConfigIntegration(t *testing.T) {
 			SigningKeySecretRefs: []mcpv1beta1.SecretKeyRef{
 				{Name: "signing-key", Key: "private.pem"},
 			},
+			DelegateClients: []mcpv1beta1.DelegateClientConfig{{
+				ClientID:        "delegate client / does not affect env name",
+				ClientSecretRef: &mcpv1beta1.SecretKeyRef{Name: "delegate-secret", Key: "credential"},
+				Scopes:          []string{"openid"},
+				Audiences:       []string{"https://resource.example.com"},
+			}},
 			UpstreamProviders: []mcpv1beta1.UpstreamProviderConfig{
 				{
 					Name: "corp-idp",
@@ -1862,6 +1868,12 @@ func TestConvert_AuthServerConfigIntegration(t *testing.T) {
 	// Verify AllowedAudiences derived from IncomingAuth OIDC Resource (takes precedence over Audience)
 	assert.Equal(t, []string{"https://resource.example.com"}, runConfig.AllowedAudiences)
 
+	// Verify delegate clients carry only a reserved env-var name into the ConfigMap runtime config.
+	require.Len(t, runConfig.DelegateClients, 1)
+	assert.Equal(t, "TOOLHIVE_DELEGATE_CLIENT_SECRET_0", runConfig.DelegateClients[0].ClientSecretEnvVar)
+	assert.Equal(t, []string{"openid"}, runConfig.DelegateClients[0].Scopes)
+	assert.Equal(t, []string{"https://resource.example.com"}, runConfig.DelegateClients[0].Audiences)
+
 	// Verify upstream is present and uses env var, not file path
 	require.Len(t, runConfig.Upstreams, 1)
 	assert.Equal(t, "corp-idp", runConfig.Upstreams[0].Name)
@@ -1870,6 +1882,41 @@ func TestConvert_AuthServerConfigIntegration(t *testing.T) {
 		"No file path for secret should be present; env var is used")
 	assert.Equal(t, controllerutil.UpstreamClientSecretEnvVar+"_CORP_IDP",
 		runConfig.Upstreams[0].OIDCConfig.ClientSecretEnvVar)
+}
+
+func TestConvert_DelegateClientInvalidEffectiveAudience(t *testing.T) {
+	t.Parallel()
+
+	ctrl := gomock.NewController(t)
+	resolver := oidcmocks.NewMockResolver(ctrl)
+	resolver.EXPECT().ResolveFromConfigRef(
+		gomock.Any(), gomock.Any(), gomock.Any(), gomock.Any(), gomock.Any(), gomock.Any(),
+	).Return(&oidc.OIDCConfig{ResourceURL: "https://allowed.example.com"}, nil)
+
+	converter, err := NewConverter(resolver, newTestK8sClient(t,
+		newTestMCPOIDCConfigInline(&mcpv1beta1.InlineOIDCSharedConfig{})))
+	require.NoError(t, err)
+	vmcp := newTestVMCPServer(&mcpv1beta1.MCPOIDCConfigReference{Name: "test-oidc"})
+	vmcp.Spec.AuthServerConfig = &mcpv1beta1.EmbeddedAuthServerConfig{
+		Issuer: "https://auth.example.com",
+		DelegateClients: []mcpv1beta1.DelegateClientConfig{{
+			ClientID:        "delegate-client",
+			ClientSecretRef: &mcpv1beta1.SecretKeyRef{Name: "delegate-secret", Key: "credential"},
+			Scopes:          []string{"openid"},
+			Audiences:       []string{"https://not-allowed.example.com"},
+		}},
+		UpstreamProviders: []mcpv1beta1.UpstreamProviderConfig{{
+			Name:       "upstream",
+			Type:       mcpv1beta1.UpstreamProviderTypeOIDC,
+			OIDCConfig: &mcpv1beta1.OIDCUpstreamConfig{IssuerURL: "https://idp.example.com", ClientID: "client-id"},
+		}},
+	}
+
+	_, _, err = converter.Convert(context.Background(), vmcp, nil)
+	require.Error(t, err)
+	var validationErr *DelegateClientConfigValidationError
+	require.ErrorAs(t, err, &validationErr)
+	assert.Contains(t, validationErr.Error(), "not-allowed.example.com")
 }
 
 // TestConverter_TelemetryConfigRef tests that Convert uses MCPTelemetryConfig when TelemetryConfigRef is set.

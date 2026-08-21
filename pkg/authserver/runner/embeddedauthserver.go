@@ -21,6 +21,7 @@ import (
 	servercrypto "github.com/stacklok/toolhive/pkg/authserver/server/crypto"
 	"github.com/stacklok/toolhive/pkg/authserver/server/handlers"
 	"github.com/stacklok/toolhive/pkg/authserver/server/keys"
+	"github.com/stacklok/toolhive/pkg/authserver/server/tokenexchange"
 	"github.com/stacklok/toolhive/pkg/authserver/storage"
 	"github.com/stacklok/toolhive/pkg/authserver/upstream"
 	"github.com/stacklok/toolhive/pkg/bodylimit"
@@ -58,9 +59,9 @@ type EmbeddedAuthServer struct {
 }
 
 // NewEmbeddedAuthServer creates an EmbeddedAuthServer from authserver.RunConfig.
-// It loads signing keys from files, reads HMAC secrets from files,
-// resolves the upstream client secret from file or environment variable, and initializes
-// all auth server components.
+// It loads signing keys from files, reads HMAC secrets from files, resolves
+// upstream and delegate-client secret references from files or environment
+// variables, and initializes all auth server components.
 //
 // The cfg parameter contains file paths and environment variable names that are
 // resolved at runtime to build the underlying authserver.Config.
@@ -82,6 +83,10 @@ func NewEmbeddedAuthServer(ctx context.Context, cfg *authserver.RunConfig) (*Emb
 	if err := cfg.Validate(); err != nil {
 		return nil, fmt.Errorf("invalid run config: %w", err)
 	}
+	delegateClients, err := resolveDelegateClients(cfg.DelegateClients)
+	if err != nil {
+		return nil, err
+	}
 
 	// Create the storage backend FIRST so the DCR resolver and the auth
 	// server share the same persistence. Both MemoryStorage and RedisStorage
@@ -95,7 +100,7 @@ func NewEmbeddedAuthServer(ctx context.Context, cfg *authserver.RunConfig) (*Emb
 	if err != nil {
 		return nil, fmt.Errorf("failed to create storage: %w", err)
 	}
-	return NewEmbeddedAuthServerWithStorage(ctx, cfg, stor)
+	return newEmbeddedAuthServerWithStorage(ctx, cfg, stor, delegateClients)
 }
 
 // NewEmbeddedAuthServerWithStorage is the exported core constructor that
@@ -132,6 +137,15 @@ func NewEmbeddedAuthServerWithStorage(
 	ctx context.Context,
 	cfg *authserver.RunConfig,
 	stor storage.Storage,
+) (*EmbeddedAuthServer, error) {
+	return newEmbeddedAuthServerWithStorage(ctx, cfg, stor, nil)
+}
+
+func newEmbeddedAuthServerWithStorage(
+	ctx context.Context,
+	cfg *authserver.RunConfig,
+	stor storage.Storage,
+	delegateClients []authserver.DelegateClient,
 ) (retEAS *EmbeddedAuthServer, retErr error) {
 	// From here on, any error must close stor before returning.
 	//
@@ -162,8 +176,10 @@ func NewEmbeddedAuthServerWithStorage(
 	// otherwise skip the check. Placed inside the deferred-cleanup gate above so
 	// a validation failure still closes the caller-supplied storage per the
 	// resource-ownership contract.
-	if err := cfg.Validate(); err != nil {
-		return nil, fmt.Errorf("invalid run config: %w", err)
+	var err error
+	delegateClients, err = validateAndResolveDelegateClients(cfg, delegateClients)
+	if err != nil {
+		return nil, err
 	}
 
 	// 1. Create key provider from RunConfig.SigningKeyConfig
@@ -224,6 +240,11 @@ func NewEmbeddedAuthServerWithStorage(
 	// for BaselineClientScopes, low cardinality in practice for the others).
 	cimdEnabled, cimdCacheMaxSize, cimdCacheFallbackTTL := resolveCIMDConfig(cfg.CIMD)
 
+	trustedIssuers, err := tokenexchange.ResolveJWTBearerGrantPolicies(cfg.TrustedIssuers)
+	if err != nil {
+		return nil, fmt.Errorf("failed to resolve JWT-bearer grant policies: %w", err)
+	}
+
 	resolvedCfg := authserver.Config{
 		Issuer:                                    cfg.Issuer,
 		AuthorizationEndpointBaseURL:              cfg.AuthorizationEndpointBaseURL,
@@ -248,7 +269,8 @@ func NewEmbeddedAuthServerWithStorage(
 		// slice is still shared with cfg. NewMultiIssuerTokenValidator's
 		// constructor clones AllowedActors per issuer before use, so the
 		// authorization-critical data is protected without a deep copy here.
-		TrustedIssuers: slices.Clone(cfg.TrustedIssuers),
+		TrustedIssuers:  trustedIssuers,
+		DelegateClients: delegateClients,
 	}
 
 	// 8. Create the auth server. authserver.New also asserts the DCR
@@ -690,6 +712,46 @@ func resolveSecret(file, envVar string) (string, error) {
 	}
 	slog.Debug("no client secret configured (neither file nor env var specified)")
 	return "", nil
+}
+
+// validateAndResolveDelegateClients validates cfg and resolves delegate-client
+// secret references for direct constructor callers.
+func validateAndResolveDelegateClients(
+	cfg *authserver.RunConfig,
+	delegateClients []authserver.DelegateClient,
+) ([]authserver.DelegateClient, error) {
+	if cfg == nil {
+		return nil, fmt.Errorf("config is required")
+	}
+	if err := cfg.Validate(); err != nil {
+		return nil, fmt.Errorf("invalid run config: %w", err)
+	}
+	if delegateClients != nil || len(cfg.DelegateClients) == 0 {
+		return delegateClients, nil
+	}
+	return resolveDelegateClients(cfg.DelegateClients)
+}
+
+// resolveDelegateClients resolves secret references and copies authorization
+// permissions before configuration crosses into the running authorization server.
+func resolveDelegateClients(clients []authserver.DelegateClientRunConfig) ([]authserver.DelegateClient, error) {
+	resolved := make([]authserver.DelegateClient, len(clients))
+	for i, client := range clients {
+		secret, err := resolveSecret(client.ClientSecretFile, client.ClientSecretEnvVar)
+		if err != nil {
+			return nil, fmt.Errorf("delegate client %q: %w", client.ClientID, err)
+		}
+		if secret == "" {
+			return nil, fmt.Errorf("delegate client %q: resolved client secret is empty", client.ClientID)
+		}
+		resolved[i] = authserver.DelegateClient{
+			ClientID:     client.ClientID,
+			ClientSecret: secret,
+			Scopes:       slices.Clone(client.Scopes),
+			Audiences:    slices.Clone(client.Audiences),
+		}
+	}
+	return resolved, nil
 }
 
 // convertUserInfoConfig converts UserInfoRunConfig to upstream.UserInfoConfig.

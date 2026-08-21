@@ -16,8 +16,9 @@ import (
 // InProcessService implements the Service interface for in-process use.
 // It composes storage (read) and refresher (refresh + persist) to provide a
 // single GetValidTokens call. Concurrent-refresh deduplication is delegated to
-// the refresher's own singleflight.Group so the same Group covers both the
-// handler's chain-walk path and the runtime token-swap path.
+// the refresher's own singleflight.Group keyed by an opaque storage-row identity,
+// so the same Group covers both the handler's chain-walk path and the runtime
+// token-swap path within this process.
 type InProcessService struct {
 	storage   storage.UpstreamTokenStorage
 	refresher storage.UpstreamTokenRefresher
@@ -147,7 +148,8 @@ func (s *InProcessService) GetAllUpstreamCredentials(
 
 // refreshOrFail attempts a refresh via the shared refresher and maps errors to
 // the service's sentinel errors. Deduplication of concurrent refreshes for the
-// same (session, provider) pair is handled inside the refresher.
+// same logical upstream-token row is handled inside the refresher using an
+// opaque storage-row identity.
 func (s *InProcessService) refreshOrFail(
 	ctx context.Context,
 	sessionID string,

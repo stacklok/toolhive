@@ -102,16 +102,6 @@ func Setup(
 		return nil
 	}
 
-	// Only build the shell-string token helper if a detected tool actually
-	// consumes it — its shell-safety check on the thv executable path would
-	// otherwise fail setup for e.g. a Codex-only run, which never uses it.
-	var tokenHelperCommand string
-	if tokenHelperCommandNeeded(gm, detected) {
-		tokenHelperCommand, err = buildTokenHelperCommand()
-		if err != nil {
-			return err
-		}
-	}
 	tokenHelperPath, tokenHelperArgs, err := buildTokenHelperArgv()
 	if err != nil {
 		return err
@@ -143,7 +133,7 @@ func Setup(
 	anthropicPrefix := resolveAnthropicPrefix(ctx, gm, detected, llmCfg, anthropicPathPrefix, anthropicPathPrefixSet)
 
 	configured, err := configureDetectedTools(
-		out, errOut, gm, detected, llmCfg.GatewayURL, proxyBaseURL, tokenHelperCommand,
+		out, errOut, gm, detected, llmCfg.GatewayURL, proxyBaseURL,
 		tokenHelperPath, tokenHelperArgs, llmCfg.TLSSkipVerify, anthropicPrefix, llmCfg.Models, llmCfg.Bedrock,
 	)
 	if err != nil {
@@ -190,6 +180,12 @@ func Setup(
 // targetTool selects which tool to revert; pass an empty string to revert all
 // configured tools. An error is returned when targetTool is non-empty but not
 // found in the configured tool list.
+//
+// Reverting the last configured tool also resets the persisted LLM config to its
+// zero value, so settings that are deliberately sticky across "thv llm setup"
+// re-runs (e.g. Bedrock compat) are not silently re-applied by a later setup.
+// A targeted teardown that leaves other tools configured keeps the config, which
+// those tools still need to reach the gateway.
 //
 // If secretsProvider is non-nil and purgeTokens is true, cached OIDC tokens
 // are deleted after the config update succeeds.
@@ -239,15 +235,17 @@ func Teardown(
 	// Persist the updated tool list (and clear token metadata if purging) in a
 	// single write before mutating any tool config files. If this fails,
 	// nothing on disk has changed and the caller can retry.
+	lastTool := len(remaining) == 0
 	if err := provider.UpdateLLMConfig(func(c *Config) error {
-		c.ConfiguredTools = remaining
-		if purgeTokens {
-			c.OIDC.CachedRefreshTokenRef = ""
-			c.OIDC.CachedTokenExpiry = time.Time{}
-		}
+		applyTeardownToConfig(c, remaining, purgeTokens)
 		return nil
 	}); err != nil {
 		return fmt.Errorf("persisting tool configuration: %w", err)
+	}
+
+	if lastTool {
+		_, _ = fmt.Fprintln(out,
+			"Cleared the LLM gateway configuration: no tools are configured anymore.")
 	}
 
 	// Revert tool config files best-effort; warn on failure but do not undo
@@ -263,6 +261,40 @@ func Teardown(
 	}
 
 	return nil
+}
+
+// applyTeardownToConfig updates the persisted LLM config for a teardown that
+// leaves remaining configured. purgeTokens reports whether the caller also asked
+// to drop cached OIDC token state.
+//
+// When no tool remains, the config is reset wholesale rather than pruned field by
+// field. Settings such as Bedrock compat are deliberately sticky across "thv llm
+// setup" re-runs, so keeping them past the last teardown would let the next setup
+// silently re-apply settings the user just removed — possibly against a gateway
+// they have since repointed elsewhere. While any tool remains the config is left
+// intact, since those tools still need it to reach the gateway.
+//
+// Cached token state survives a reset unless purgeTokens is set: the secret lives
+// in the keyring, and dropping the only reference to it without deleting it would
+// strand it there once the user points at a different gateway (the fallback key is
+// derived from the gateway URL and issuer). Token lifetime stays the exclusive
+// business of --purge-tokens.
+func applyTeardownToConfig(c *Config, remaining []ToolConfig, purgeTokens bool) {
+	if len(remaining) > 0 {
+		c.ConfiguredTools = remaining
+		if purgeTokens {
+			c.OIDC.CachedRefreshTokenRef = ""
+			c.OIDC.CachedTokenExpiry = time.Time{}
+		}
+		return
+	}
+
+	tokenState := c.OIDC
+	*c = Config{}
+	if !purgeTokens {
+		c.OIDC.CachedRefreshTokenRef = tokenState.CachedRefreshTokenRef
+		c.OIDC.CachedTokenExpiry = tokenState.CachedTokenExpiry
+	}
 }
 
 // PurgeTokens deletes all cached OIDC tokens from the provided secrets
@@ -460,7 +492,7 @@ func configureDetectedTools(
 	out, errOut io.Writer,
 	gm GatewayManager,
 	detected []string,
-	gatewayURL, proxyBaseURL, tokenHelperCommand string,
+	gatewayURL, proxyBaseURL string,
 	tokenHelperPath string, tokenHelperArgs []string,
 	tlsSkipVerify bool,
 	anthropicPathPrefix string,
@@ -488,7 +520,7 @@ func configureDetectedTools(
 			GatewayURL:         gatewayURL,
 			AnthropicBaseURL:   anthropicBaseURL,
 			ProxyBaseURL:       proxyBaseURL,
-			TokenHelperCommand: tokenHelperCommand,
+			TokenHelperCommand: tokenHelperShellCommand,
 			TokenHelperPath:    tokenHelperPath,
 			TokenHelperArgs:    tokenHelperArgs,
 			TLSSkipVerify:      tlsSkipVerify,
@@ -602,46 +634,24 @@ func probeAnthropicPrefix(ctx context.Context, gatewayURL string, tlsSkipVerify 
 	return ""
 }
 
-// tokenHelperCommandNeeded reports whether any detected client's mode consumes
-// the shell-string token helper (TokenHelperCommand) — direct-mode's
-// apiKeyHelper-style JSON-Pointer clients and Claude Desktop's credential
-// helper. Proxy-mode tools and Codex (argv-based auth) never use it.
-func tokenHelperCommandNeeded(gm GatewayManager, detected []string) bool {
-	for _, clientType := range detected {
-		switch gm.LLMGatewayModeFor(clientType) {
-		case llmgateway.ModeDirect, llmgateway.ModeCredentialHelper:
-			return true
-		}
-	}
-	return false
-}
-
-// buildTokenHelperCommand returns the shell command string used as the
-// token-helper for direct-mode tools. It rejects executable paths that contain
-// shell metacharacters, since the command is written verbatim into long-lived
-// tool config files and re-executed by the shell inside Claude Code / Gemini CLI.
-// A path with '"', '\', ';', '$', '`', newline, or carriage-return would
-// silently produce a broken or exploitable command. '$' and '`' are included
-// because they trigger variable/command substitution inside double-quoted strings.
+// tokenHelperShellCommand is the shell command written into direct-mode tools'
+// config as their token helper — e.g. Claude Code's apiKeyHelper, which is run
+// through a shell (execa with shell:true; see anthropics/claude-code#42593).
 //
-// Note: backslashes are Windows path separators, so this effectively makes
-// "thv llm setup" unsupported on Windows — consistent with the rest of the LLM
-// gateway feature (token-helper tools use POSIX-style shells).
-func buildTokenHelperCommand() (string, error) {
-	self, err := os.Executable()
-	if err != nil {
-		return "", fmt.Errorf("resolving thv executable path: %w", err)
-	}
-	const shellUnsafe = `"\;$` + "`\n\r"
-	if strings.ContainsAny(self, shellUnsafe) {
-		return "", fmt.Errorf(
-			"executable path %q contains shell-unsafe characters; "+
-				"move thv to a path without quotes, backslashes, semicolons, "+
-				"dollar signs, or backticks "+
-				"(Windows paths are not supported by thv llm setup)", self)
-	}
-	return fmt.Sprintf(`"%s" llm token`, self), nil
-}
+// It deliberately names "thv" bare rather than interpolating os.Executable().
+// A bare command has nothing to escape, so it is correct in both /bin/sh and
+// cmd.exe without a platform branch, and it re-resolves on every invocation —
+// so upgrading, reinstalling, or relocating thv keeps working without re-running
+// "thv llm setup".
+//
+// The trade-off is that it resolves via PATH at invocation time. A tool launched
+// without the user's shell PATH (e.g. from the macOS Dock, which inherits
+// launchd's environment) will not find thv, and a binary earlier on PATH can
+// shadow it. Both are accepted here: direct-mode tools are terminal-oriented.
+// Claude Desktop cannot accept them — it is only ever GUI-launched — so its
+// credential-helper shim uses the absolute TokenHelperPath instead (see
+// writeCredentialHelperShim in pkg/client).
+const tokenHelperShellCommand = "thv llm token" //nolint:gosec // G101: a command line, not a credential
 
 // buildTokenHelperArgv returns the argv-form of the token helper, for config
 // formats that invoke an executable directly (no shell) — e.g. Codex's

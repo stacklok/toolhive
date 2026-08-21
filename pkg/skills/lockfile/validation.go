@@ -77,7 +77,7 @@ func validateEntryGraph(entries []Entry) error {
 
 // findRequiredByCycle detects a cycle in the requiredBy graph and returns
 // one such cycle path, or nil. Normal installs can never produce a cycle
-// (the install-time Visited set breaks them), but a hand-edited or badly
+// (the install-time depState active stack rejects them), but a hand-edited or badly
 // merge-resolved lock file can — and a ring of mutually-required,
 // non-explicit entries would then be impossible to ever cascade-remove, so
 // it is rejected at validation instead of persisting silently.
@@ -180,10 +180,12 @@ func validateProvenance(p *Provenance) error {
 		return errors.New("certIssuer is required")
 	}
 	fields := map[string]string{
-		"signerIdentity": p.SignerIdentity,
-		"certIssuer":     p.CertIssuer,
-		"repositoryUri":  p.RepositoryURI,
-		"sigstoreUrl":    p.SigstoreURL,
+		"signerIdentity":    p.SignerIdentity,
+		"certIssuer":        p.CertIssuer,
+		"repositoryUri":     p.RepositoryURI,
+		"repositoryRef":     p.RepositoryRef,
+		"runnerEnvironment": p.RunnerEnvironment,
+		"sigstoreUrl":       p.SigstoreURL,
 	}
 	for name, value := range fields {
 		if value == "" {

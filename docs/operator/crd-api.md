@@ -1003,7 +1003,9 @@ _Appears in:_
 | `samplingRate` _string_ | SamplingRate is the trace sampling rate (0.0-1.0) as a string.<br />Only used when TracingEnabled is true.<br />Example: "0.05" for 5% sampling. | 0.05 | Optional: \{\} <br /> |
 | `headers` _object (keys:string, values:string)_ | Headers contains authentication headers for the OTLP endpoint. |  | Optional: \{\} <br /> |
 | `insecure` _boolean_ | Insecure indicates whether to use HTTP instead of HTTPS for the OTLP endpoint. | false | Optional: \{\} <br /> |
-| `enablePrometheusMetricsPath` _boolean_ | EnablePrometheusMetricsPath controls whether to expose Prometheus-style /metrics endpoint.<br />The metrics are served on the main transport port at /metrics.<br />This is separate from OTLP metrics which are sent to the Endpoint. | false | Optional: \{\} <br /> |
+| `enablePrometheusMetricsPath` _boolean_ | EnablePrometheusMetricsPath controls whether to expose Prometheus-style /metrics endpoint.<br />The metrics are served at /metrics on a dedicated diagnostics port rather than on the<br />main transport port, so the endpoint can be restricted by port and is not routed<br />alongside application traffic. The endpoint is unauthenticated either way.<br />See PrometheusPort and pkg/diagnostics.<br />This is separate from OTLP metrics which are sent to the Endpoint. | false | Optional: \{\} <br /> |
+| `prometheusPort` _integer_ | PrometheusPort is the port the Prometheus /metrics endpoint is served on when<br />EnablePrometheusMetricsPath is true. It is deliberately not the main transport port,<br />so that access can be restricted with a NetworkPolicy: NetworkPolicy matches on port,<br />not on HTTP path, so a shared port makes "allow MCP traffic, deny metrics scraping"<br />impossible to express. The endpoint itself is unauthenticated, so restricting who can<br />reach this port is how it is protected.<br />Zero selects the default diagnostics port (9464, the OpenTelemetry specification's<br />Prometheus exporter default). If that port is taken the listener falls back to an<br />available one and logs the resolved address. Do not route this port publicly. |  | Optional: \{\} <br /> |
+| `metricsOnTransportPort` _boolean_ | MetricsOnTransportPort controls whether /metrics is ALSO served on the main<br />transport port, in addition to the diagnostics port. It exists to give<br />deployments a migration window: while true, an existing scrape configuration<br />aimed at the transport port keeps working, and a new one aimed at<br />PrometheusPort works too, so a scraper can be moved and verified before the<br />old location goes away. See https://github.com/stacklok/toolhive/issues/6384 for<br />the removal timeline.<br />Deliberately a pointer with NO kubebuilder default. Nil means "unset", and is<br />resolved against DefaultMetricsOnTransportPort at the point of use rather than<br />written into config. A plain bool with a default marker would be materialised<br />into the persisted RunConfig and into CRD objects at admission, so changing<br />the default later would not move any workload that already exists — the flip<br />would silently do nothing. |  | Optional: \{\} <br /> |
 | `environmentVariables` _string array_ | EnvironmentVariables is a list of environment variable names that should be<br />included in telemetry spans as attributes. Only variables in this list will<br />be read from the host machine and included in spans for observability.<br />Example: ["NODE_ENV", "DEPLOYMENT_ENV", "SERVICE_VERSION"] |  | Optional: \{\} <br /> |
 | `customAttributes` _object (keys:string, values:string)_ | CustomAttributes contains custom resource attributes to be added to all telemetry signals.<br />These are parsed from CLI flags (--otel-custom-attributes) or environment variables<br />(OTEL_RESOURCE_ATTRIBUTES) as key=value pairs. |  | Optional: \{\} <br /> |
 | `useLegacyAttributes` _boolean_ | UseLegacyAttributes controls whether legacy (pre-MCP OTEL semconv) attribute names<br />are emitted alongside the new standard attribute names. When true, spans include both<br />old and new attribute names for backward compatibility with existing dashboards.<br />Currently defaults to true; this will change to false in a future release. | true | Optional: \{\} <br /> |
@@ -1886,6 +1888,27 @@ _Appears in:_
 | `softwareStatement` _string_ | SoftwareStatement is the RFC 7591 "software_statement" JWT asserting<br />metadata about the client software, signed by a party the authorization<br />server trusts.<br />Stored inline on the CR. The JWT is signed but not encrypted, so its<br />contents are visible to anyone with get/list/watch on this resource and<br />appear in etcd backups in plaintext. Treat the value as non-confidential<br />(signed attestation, not a secret). Operators that rotate software<br />statements like bearer credentials should keep them at the authorization<br />server side and rely on the registration endpoint's initial access<br />token (see InitialAccessTokenRef) instead of placing them on the CR.<br />Bounded to 16384 characters as a defensive size cap (etcd object<br />budget, regex evaluation cost). Real-world signed statements with<br />embedded x5c certificate chains, JWKS keys, or OIDC-Federation<br />trust-framework metadata routinely exceed 4 KB. |  | MaxLength: 16384 <br />Optional: \{\} <br /> |
 
 
+#### api.v1beta1.DelegateClientConfig
+
+
+
+DelegateClientConfig configures a pre-provisioned confidential OAuth client
+for RFC 8693 token exchange. Its secret is referenced from a Kubernetes
+Secret and is never represented inline.
+
+
+
+_Appears in:_
+- [api.v1beta1.EmbeddedAuthServerConfig](#apiv1beta1embeddedauthserverconfig)
+
+| Field | Description | Default | Validation |
+| --- | --- | --- | --- |
+| `clientId` _string_ | ClientID is the OAuth client_id presented at the token endpoint. |  | MaxLength: 256 <br />MinLength: 1 <br />Required: \{\} <br /> |
+| `clientSecretRef` _[api.v1beta1.SecretKeyRef](#apiv1beta1secretkeyref)_ | ClientSecretRef references the Kubernetes Secret key containing the client secret. |  | Required: \{\} <br /> |
+| `scopes` _string array_ | Scopes is the narrowed set of OAuth scopes this client may request. |  | MaxItems: 10 <br />MinItems: 1 <br />Required: \{\} <br />items:MaxLength: 256 <br />items:MinLength: 1 <br /> |
+| `audiences` _string array_ | Audiences is the narrowed set of RFC 8707 resources this client may request. |  | MaxItems: 10 <br />MinItems: 1 <br />Required: \{\} <br />items:MaxLength: 2048 <br />items:MinLength: 1 <br /> |
+
+
 #### api.v1beta1.DiscoveredBackend
 
 
@@ -1930,15 +1953,19 @@ This type is shared by MCPExternalAuthConfig.Spec.EmbeddedAuthServer and
 VirtualMCPServer.Spec.AuthServerConfig, so the XValidation rule below is
 enforced at admission for both CRDs.
 
-The allowConfidentialClientRegistration + plain-HTTP-loopback-issuer combination
-(see insecureAllowConfidentialOverLoopbackHTTP below) has no CEL rule here: CEL has
-no URL parser, only regex over the raw string, and this codebase already declined
-a regex-based loopback check for forceConfidentialRedirectUris above for the same
-reason — an approximate regex (port, path, case, IPv6 forms) can drift from the
-authoritative net.ParseIP-based classifier (networking.IsLocalhost) the real check
-uses, which is exactly the kind of gap this validation exists to close. It is
-enforced in Go instead, at the same reconcile-time call site as the two rules
-above (validateEmbeddedAuthServer -> authserver.ValidateConfidentialClientTransport).
+Delegate clients categorically require HTTPS at admission. CEL has no URL
+parser, so this deliberately conservative check rejects every plaintext HTTP
+issuer rather than attempting a loopback exception that could admit a
+non-loopback host. The runtime transport validation remains defense in depth
+for direct Go callers and confidential DCR.
+
+This is stricter than the Go-level ValidateConfidentialClientTransport,
+which still permits a loopback-HTTP issuer with delegate clients when
+InsecureAllowConfidentialOverLoopbackHTTP is set — intentionally, since that
+flag's loopback-is-safe rationale applies equally to delegate-client
+secrets. Do not tighten the Go-level check to match this CEL rule; the CRD
+is stricter only because CEL cannot express the loopback exception, not
+because delegate clients need one.
 
 
 
@@ -1961,6 +1988,8 @@ _Appears in:_
 | `baselineClientScopes` _string array_ | BaselineClientScopes is a baseline set of OAuth 2.0 scopes guaranteed to be<br />included in every client registration. The embedded auth server unions these<br />scopes into the registered set returned by RFC 7591 Dynamic Client<br />Registration, so a client that narrows the `scope` field at /oauth/register<br />can still request the baseline scopes at /oauth/authorize. All values must<br />be present in the upstream-derived scopesSupported set; the auth server<br />fails to start if any value is missing.<br />Security: every client registered via /oauth/register will gain the<br />ability to request these scopes at /oauth/authorize, regardless of what<br />the client itself requested. Keep the baseline narrow (typically<br />"openid" and "offline_access"). Adding a privileged scope here — e.g.<br />"admin:read" — would grant it to every DCR-registered client, including<br />public clients like Claude Code, Cursor, and VS Code.<br />When cimd.enabled is true, every dynamically resolved CIMD client will<br />also gain the ability to request these scopes, including third-party<br />clients resolved from arbitrary HTTPS URLs. |  | MaxItems: 10 <br />items:MinLength: 1 <br />items:Pattern: `^[\x21\x23-\x5B\x5D-\x7E]+$` <br />Optional: \{\} <br /> |
 | `allowConfidentialClientRegistration` _boolean_ | AllowConfidentialClientRegistration permits RFC 7591 Dynamic Client<br />Registration of confidential clients: when true, /oauth/register<br />accepts token_endpoint_auth_method values client_secret_basic and<br />client_secret_post in addition to "none" (still the default on<br />omission) and mints a client_secret returned exactly once.<br />Confidential registrations are restricted to https non-loopback<br />redirect URIs, and on the Redis storage backend all DCR-issued<br />registrations are evicted after 30 days of inactivity and must<br />re-register. This gates registration only: disabling it does not<br />revoke or reject already-minted secrets at the token endpoint.<br />Security: registration is unauthenticated, so enabling this lets any<br />caller who can reach the endpoint obtain a client credential.<br />Combining it with insecureAllowHTTP is rejected at validation. | false | Optional: \{\} <br /> |
 | `insecureAllowConfidentialOverLoopbackHTTP` _boolean_ | InsecureAllowConfidentialOverLoopbackHTTP opts in to<br />allowConfidentialClientRegistration when issuer is a plain-HTTP loopback<br />URL (e.g. "http://localhost:8080"). Without this flag, that combination<br />is rejected at reconcile time: a loopback http:// issuer is normally<br />fine for local development since the traffic never leaves the machine,<br />but combined with confidential registration it means /oauth/register —<br />which is unauthenticated — mints client secrets over cleartext. Forcing<br />TLS onto every loopback deployment instead would just push operators<br />toward insecureAllowHTTP, which is worse: that also disables the<br />non-loopback host check. Has no effect when<br />allowConfidentialClientRegistration is false or issuer is https. | false | Optional: \{\} <br /> |
+| `delegateClients` _[api.v1beta1.DelegateClientConfig](#apiv1beta1delegateclientconfig) array_ | DelegateClients configures pre-provisioned confidential clients for RFC 8693<br />token exchange. Each secret is referenced from a Kubernetes Secret; no<br />plaintext secret, redirect URI, or grant selection is accepted here. The<br />operator always supplies the token-exchange grant when it converts this<br />configuration to the runtime contract.<br />This is independent of allowConfidentialClientRegistration: it neither<br />enables nor requires unauthenticated confidential dynamic client<br />registration. |  | MaxItems: 10 <br />Optional: \{\} <br /> |
+| `trustedIssuers` _[api.v1beta1.TrustedIssuerConfig](#apiv1beta1trustedissuerconfig) array_ | TrustedIssuers configures external OIDC issuers whose tokens are<br />accepted as RFC 8693 subject tokens during token exchange, in addition<br />to self-issued subject tokens. Empty (the default) means only<br />self-issued subject tokens are accepted. See<br />docs/arch/17-token-exchange-delegation.md for the trust model. |  | MaxItems: 20 <br />Optional: \{\} <br /> |
 | `forceConfidentialRedirectUris` _string array_ | ForceConfidentialRedirectURIs lists redirect URIs that must be<br />registered as confidential clients regardless of the<br />token_endpoint_auth_method the DCR request declares. A registration<br />whose redirectUris contains an EXACT match for one of these entries is<br />issued a real client_secret and reported back as<br />token_endpoint_auth_method "client_secret_post", even if the request<br />said "none" or omitted the field.<br />Intended for MCP clients that declare themselves public<br />(token_endpoint_auth_method: "none") per RFC 7591 but then refuse to<br />proceed because the response carries no client_secret — a<br />self-contradictory request. RFC 7591 §3.2.1 permits the server to<br />substitute client metadata, so this takes such a client at its word<br />that it wants a secret. Remove an entry once the client is fixed to<br />handle "none" registrations correctly.<br />Exact matching is deliberate: an attacker who registers with someone<br />else's callback URI is issued a secret for a client whose<br />authorization codes are delivered to that someone else's redirect<br />endpoint, not to the attacker, so this is not a way to obtain a usable<br />credential for another client.<br />Requires allowConfidentialClientRegistration to be true. Every entry<br />must be an https non-loopback URI — a loopback client is a public<br />client by construction (OAuth 2.1 §2.1) and must not be issued a<br />secret; this is enforced at reconcile time since CEL cannot express<br />the loopback-hostname check. |  | MaxItems: 10 <br />items:Pattern: `^https://[^\s?#]+$` <br />Optional: \{\} <br /> |
 | `cimd` _[api.v1beta1.EmbeddedAuthServerCIMDConfig](#apiv1beta1embeddedauthservercimdconfig)_ | CIMD configures Client ID Metadata Document support. When omitted, CIMD is disabled. |  | Optional: \{\} <br /> |
 
@@ -2344,6 +2373,44 @@ _Appears in:_
 | `jwksAllowPrivateIP` _boolean_ | JWKSAllowPrivateIP allows JWKS/OIDC endpoints on private IP addresses.<br />Note: at runtime, if either JWKSAllowPrivateIP or ProtectedResourceAllowPrivateIP<br />is true, private IPs are allowed for all OIDC HTTP requests (JWKS, discovery, introspection). | false | Optional: \{\} <br /> |
 | `protectedResourceAllowPrivateIP` _boolean_ | ProtectedResourceAllowPrivateIP allows protected resource endpoint on private IP addresses.<br />Note: at runtime, if either ProtectedResourceAllowPrivateIP or JWKSAllowPrivateIP<br />is true, private IPs are allowed for all OIDC HTTP requests (JWKS, discovery, introspection). | false | Optional: \{\} <br /> |
 | `insecureAllowHTTP` _boolean_ | InsecureAllowHTTP allows HTTP (non-HTTPS) OIDC issuer and JWKS URLs for development/testing.<br />WARNING: This is insecure and should NEVER be used in production. | false | Optional: \{\} <br /> |
+
+
+#### api.v1beta1.JWTBearerGrantConfig
+
+
+
+JWTBearerGrantConfig limits RFC 7523 JWT-bearer assertions for one trusted
+issuer. Each assertion subject must have an exact binding and request exactly
+one of that binding's allowed resources.
+
+
+
+_Appears in:_
+- [api.v1beta1.TrustedIssuerConfig](#apiv1beta1trustedissuerconfig)
+
+| Field | Description | Default | Validation |
+| --- | --- | --- | --- |
+| `maxAssertionAge` _[Duration](https://kubernetes.io/docs/reference/generated/kubernetes-api/v1.27/#duration-v1-meta)_ | MaxAssertionAge caps the exp-iat interval independently of exp. |  | Required: \{\} <br /> |
+| `subjectBindings` _[api.v1beta1.JWTBearerSubjectBinding](#apiv1beta1jwtbearersubjectbinding) array_ | SubjectBindings maps an exact external subject to allowed RFC 8707<br />resources. |  | MaxItems: 50 <br />MinItems: 1 <br />Required: \{\} <br /> |
+| `acceptedAudiences` _string array_ | AcceptedAudiences identifies this authorization server's accepted<br />assertion audiences. When omitted, runtime validation defaults to the<br />token endpoint. |  | MaxItems: 50 <br />items:MaxLength: 2048 <br />items:MinLength: 1 <br />items:Pattern: `^https?://[^[:space:]]+$` <br />Optional: \{\} <br /> |
+
+
+#### api.v1beta1.JWTBearerSubjectBinding
+
+
+
+JWTBearerSubjectBinding configures the exact subject and allowed resources
+for one RFC 7523 JWT-bearer assertion identity.
+
+
+
+_Appears in:_
+- [api.v1beta1.JWTBearerGrantConfig](#apiv1beta1jwtbearergrantconfig)
+
+| Field | Description | Default | Validation |
+| --- | --- | --- | --- |
+| `subject` _string_ | Subject is an exact assertion sub value. Wildcards are not supported. |  | MaxLength: 256 <br />MinLength: 1 <br />Pattern: `^[^*]+$` <br />Required: \{\} <br /> |
+| `allowedResources` _string array_ | AllowedResources is the exact set of RFC 8707 resources this subject may<br />request. |  | MaxItems: 50 <br />MinItems: 1 <br />Required: \{\} <br />items:MaxLength: 2048 <br />items:MinLength: 1 <br />items:Pattern: `^https?://[^[:space:]]+$` <br /> |
 
 
 #### api.v1beta1.KubernetesServiceAccountOIDCConfig
@@ -2987,6 +3054,7 @@ _Appears in:_
 | Field | Description | Default | Validation |
 | --- | --- | --- | --- |
 | `remoteUrl` _string_ | RemoteURL is the URL of the remote MCP server to proxy |  | Pattern: `^https?://` <br />Required: \{\} <br /> |
+| `allowPrivateEndpoint` _boolean_ | AllowPrivateEndpoint permits RemoteURL to point at a private or<br />in-cluster endpoint: RFC 1918 and IPv6 unique-local addresses, and<br />hostnames ending in "cluster.local". (Bare ".svc" hostnames are never<br />blocked, since no DNS resolution is performed.) Enable this to reach a<br />co-located in-cluster backend in-mesh so the backend's workload-identity<br />authorization policy still applies. Loopback, link-local, cloud-metadata,<br />and kubernetes.default endpoints remain blocked regardless of this<br />setting. | false | Optional: \{\} <br /> |
 | `proxyPort` _integer_ | ProxyPort is the port to expose the MCP proxy on | 8080 | Maximum: 65535 <br />Minimum: 1 <br /> |
 | `transport` _string_ | Transport is the transport method for the remote proxy (sse or streamable-http) | streamable-http | Enum: [sse streamable-http] <br /> |
 | `oidcConfigRef` _[api.v1beta1.MCPOIDCConfigReference](#apiv1beta1mcpoidcconfigreference)_ | OIDCConfigRef references a shared MCPOIDCConfig resource for OIDC authentication.<br />The referenced MCPOIDCConfig must exist in the same namespace as this MCPRemoteProxy.<br />Per-server overrides (audience, scopes) are specified here; shared provider config<br />lives in the MCPOIDCConfig resource.<br />SECURITY: if this field is omitted and no other authentication source is configured,<br />the proxy runs UNAUTHENTICATED. It accepts every request that can reach its port and<br />forwards it to the remote MCP server under a synthetic local-user identity, with no<br />token or credential check. Set this field to enforce identity-based access control<br />per request. |  | Optional: \{\} <br /> |
@@ -3138,6 +3206,7 @@ _Appears in:_
 | Field | Description | Default | Validation |
 | --- | --- | --- | --- |
 | `remoteUrl` _string_ | RemoteURL is the URL of the remote MCP server.<br />Both HTTP and HTTPS schemes are accepted at admission time. |  | Pattern: `^https?://` <br />Required: \{\} <br /> |
+| `allowPrivateEndpoint` _boolean_ | AllowPrivateEndpoint permits RemoteURL to point at a private or<br />in-cluster endpoint: RFC 1918 and IPv6 unique-local addresses, and<br />hostnames ending in "cluster.local". (Bare ".svc" hostnames are never<br />blocked, since no DNS resolution is performed.) Enable this to reach a<br />co-located in-cluster backend in-mesh so the backend's workload-identity<br />authorization policy still applies. Loopback, link-local, cloud-metadata,<br />and kubernetes.default endpoints remain blocked regardless of this<br />setting. | false | Optional: \{\} <br /> |
 | `transport` _string_ | Transport is the transport method for the remote server (sse or streamable-http).<br />No default is set (unlike MCPRemoteProxy) because MCPServerEntry points at external<br />servers the user doesn't control — requiring explicit transport avoids silent mismatches. |  | Enum: [sse streamable-http] <br />Required: \{\} <br /> |
 | `groupRef` _[api.v1beta1.MCPGroupRef](#apiv1beta1mcpgroupref)_ | GroupRef references the MCPGroup this entry belongs to.<br />Required — every MCPServerEntry must be part of a group for vMCP discovery. |  | Required: \{\} <br /> |
 | `externalAuthConfigRef` _[api.v1beta1.ExternalAuthConfigRef](#apiv1beta1externalauthconfigref)_ | ExternalAuthConfigRef references a MCPExternalAuthConfig resource for token exchange<br />when connecting to the remote MCP server. The referenced MCPExternalAuthConfig must<br />exist in the same namespace as this MCPServerEntry. |  | Optional: \{\} <br /> |
@@ -3607,6 +3676,8 @@ _Appears in:_
 | `tokenResponseMapping` _[api.v1beta1.TokenResponseMapping](#apiv1beta1tokenresponsemapping)_ | TokenResponseMapping configures custom field extraction from non-standard token responses.<br />Some OAuth providers (e.g., GovSlack) nest token fields under non-standard paths<br />instead of returning them at the top level. When set, ToolHive performs the token<br />exchange HTTP call directly and extracts fields using the configured dot-notation paths.<br />If nil, standard OAuth 2.0 token response parsing is used.<br />For extracting user identity from the token response, see IdentityFromToken. |  | Optional: \{\} <br /> |
 | `identityFromToken` _[api.v1beta1.IdentityFromTokenConfig](#apiv1beta1identityfromtokenconfig)_ | IdentityFromToken extracts user identity (subject, name, email) directly<br />from the OAuth2 token-endpoint response body using gjson dot-notation paths.<br />When set, the embedded auth server skips the userinfo HTTP call entirely<br />and resolves identity from the token response. See IdentityFromTokenConfig<br />for trust-model and uniqueness considerations. |  | Optional: \{\} <br /> |
 | `additionalAuthorizationParams` _object (keys:string, values:string)_ | AdditionalAuthorizationParams are extra query parameters to include in<br />authorization requests sent to the upstream provider.<br />This is useful for providers that require custom parameters, such as<br />Google's access_type=offline for obtaining refresh tokens.<br />Framework-managed parameters (response_type, client_id, redirect_uri,<br />scope, state, code_challenge, code_challenge_method, nonce) are not allowed. |  | MaxProperties: 16 <br />Optional: \{\} <br /> |
+| `insecureAllowHTTP` _boolean_ | InsecureAllowHTTP permits plain-HTTP authorization and token endpoint URLs<br />for this upstream. Only for in-cluster development environments (e.g. an<br />OAuth2 provider served over HTTP in a kind cluster) where TLS is not<br />available. Never set this in production. |  | Optional: \{\} <br /> |
+| `allowPrivateIPs` _boolean_ | AllowPrivateIPs permits the upstream provider's HTTP client to connect to<br />private IP ranges (RFC-1918, link-local). Use only when the upstream is<br />hosted inside the same cluster and has no public endpoint. HTTP-scheme<br />restrictions are unchanged — HTTPS is still required for non-localhost<br />hosts unless InsecureAllowHTTP is set. Defaults to false. |  | Optional: \{\} <br /> |
 | `dcrConfig` _[api.v1beta1.DCRUpstreamConfig](#apiv1beta1dcrupstreamconfig)_ | DCRConfig enables RFC 7591 Dynamic Client Registration against the upstream<br />authorization server. When set, the client credentials are obtained at<br />runtime rather than being pre-provisioned, and ClientID must be left empty.<br />Mutually exclusive with ClientID. |  | Optional: \{\} <br /> |
 
 
@@ -4044,6 +4115,7 @@ SecretKeyRef is a reference to a key within a Secret
 _Appears in:_
 - [api.v1beta1.BearerTokenConfig](#apiv1beta1bearertokenconfig)
 - [api.v1beta1.DCRUpstreamConfig](#apiv1beta1dcrupstreamconfig)
+- [api.v1beta1.DelegateClientConfig](#apiv1beta1delegateclientconfig)
 - [api.v1beta1.EmbeddedAuthServerConfig](#apiv1beta1embeddedauthserverconfig)
 - [api.v1beta1.EmbeddingServerSpec](#apiv1beta1embeddingserverspec)
 - [api.v1beta1.HeaderFromSecret](#apiv1beta1headerfromsecret)
@@ -4282,6 +4354,51 @@ ToolRateLimitConfig defines rate limits for a specific tool.
 
 
 
+
+
+#### api.v1beta1.TrustedIssuerConfig
+
+
+
+TrustedIssuerConfig configures an external OIDC issuer whose tokens are
+accepted as RFC 8693 subject tokens or RFC 7523 JWT-bearer assertions during
+token exchange. It mirrors tokenexchange.TrustedIssuer
+(pkg/authserver/server/tokenexchange), the runtime type the operator converts
+this into directly — no secret is referenced by this type, so no SecretKeyRef
+indirection is needed, unlike DelegateClientConfig.
+
+expectedAudience is exempted only for a grant-only issuer: jwtBearerGrant
+present and none of actorClaim, actorMatcher, allowMayAct, or allowedActors
+set. Any RFC 8693 delegation field (actorClaim, actorMatcher, allowMayAct,
+allowedActors) still requires expectedAudience, even when combined with
+jwtBearerGrant.
+
+The allowedDelegateClients rule below mirrors validateDelegationPolicy
+(pkg/authserver/server/tokenexchange/multi_issuer_validator.go): it is
+keyed on whether ANY delegation field is set (expectedAudience,
+actorClaim, actorMatcher, allowMayAct), not merely on whether
+jwtBearerGrant is absent — an issuer can combine jwtBearerGrant with
+expectedAudience for RFC 8693 delegation on the same issuer, and that
+combination still requires allowedDelegateClients at the Go level.
+
+
+
+_Appears in:_
+- [api.v1beta1.EmbeddedAuthServerConfig](#apiv1beta1embeddedauthserverconfig)
+
+| Field | Description | Default | Validation |
+| --- | --- | --- | --- |
+| `issuerUrl` _string_ | IssuerURL is the expected "iss" claim value (exact match). |  | MaxLength: 2048 <br />MinLength: 1 <br />Required: \{\} <br /> |
+| `expectedAudience` _string_ | ExpectedAudience is the expected "aud" claim value that must appear in<br />an RFC 8693 subject token's audience list. It is not used by an RFC 7523<br />JWT-bearer assertion, whose audience is the token endpoint. |  | MaxLength: 2048 <br />MinLength: 1 <br />Optional: \{\} <br /> |
+| `jwksUrl` _string_ | JWKSURL is the URL to fetch the issuer's JSON Web Key Set from. If<br />empty, it is resolved via OIDC discovery at<br />\{issuerUrl\}/.well-known/openid-configuration. |  | MaxLength: 2048 <br />Optional: \{\} <br /> |
+| `insecureAllowHTTP` _boolean_ | InsecureAllowHTTP permits plain-HTTP OIDC discovery and JWKS fetches<br />for THIS issuer only. Development and testing only — never set in<br />production. |  | Optional: \{\} <br /> |
+| `allowPrivateIPs` _boolean_ | AllowPrivateIPs permits OIDC discovery and JWKS fetches for THIS issuer<br />to resolve to a private or loopback address. Use only when the issuer<br />is hosted inside the same cluster and has no public endpoint. Requires<br />jwksUrl to be set explicitly (enforced at reconcile time), since<br />otherwise OIDC discovery — fetched from the external issuer itself —<br />would choose the private dial target. |  | Optional: \{\} <br /> |
+| `actorClaim` _string_ | ActorClaim names the claim identifying the client that requested the<br />subject token from this external issuer (used by allowedActors below).<br />Defaults to "azp" when empty; use "appid" for Microsoft Entra v1, "cid"<br />for Okta. The special value "client_id" reads the subject token's<br />client_id claim instead. |  | MaxLength: 64 <br />Optional: \{\} <br /> |
+| `allowedActors` _string array_ | AllowedActors is the allowlist of actorClaim values authorized to<br />exchange a subject token from this issuer when it carries no<br />"may_act" claim, in addition to (not instead of) actorMatcher below —<br />either signal is sufficient. Empty denies every token unless<br />actorMatcher is set, or allowMayAct is true and the token carries a<br />permitted may_act claim. |  | MaxItems: 50 <br />items:MaxLength: 256 <br />items:MinLength: 1 <br />Optional: \{\} <br /> |
+| `actorMatcher` _string_ | ActorMatcher is an admin-authored CEL expression evaluated against the<br />subject token's complete signature-verified claims map (bound as<br />"claims") to authorize a class of external actors, in addition to (not<br />instead of) allowedActors — either signal is sufficient. Must evaluate<br />to a boolean; a non-boolean result denies the token at evaluation time,<br />not at reconcile time. A syntactically invalid expression fails<br />reconciliation (surfaced via the AuthServerConfigValidated condition),<br />not admission — there is no validating webhook for this field. |  | MaxLength: 4096 <br />Optional: \{\} <br /> |
+| `allowedDelegateClients` _string array_ | AllowedDelegateClients restricts which ToolHive client IDs may exchange<br />an RFC 8693 subject token from this issuer. Required unless only<br />jwtBearerGrant is configured; set it to ["*"] to permit any confidential<br />client holding the token-exchange grant, or list specific client IDs to<br />bind delegation to them. |  | MaxItems: 50 <br />MinItems: 1 <br />items:MaxLength: 256 <br />items:MinLength: 1 <br />Optional: \{\} <br /> |
+| `allowMayAct` _boolean_ | AllowMayAct permits this external issuer's may_act claim to authorize<br />delegation. Defaults to false; external issuers must be opted in<br />explicitly because may_act bypasses allowedActors and actorMatcher.<br />Does not affect self-issued subject tokens. The wildcard is never<br />permitted alongside specific allowedDelegateClients, regardless of<br />this setting. | false | Optional: \{\} <br /> |
+| `jwtBearerGrant` _[api.v1beta1.JWTBearerGrantConfig](#apiv1beta1jwtbearergrantconfig)_ | JWTBearerGrant enables the plain RFC 7523 JWT-bearer grant for this<br />issuer. It is independent of RFC 8693 delegation policy. |  | Optional: \{\} <br /> |
 
 
 #### api.v1beta1.UpstreamInjectSpec

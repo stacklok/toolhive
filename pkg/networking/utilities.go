@@ -15,6 +15,67 @@ import (
 	"github.com/stacklok/toolhive/pkg/oauthproto"
 )
 
+// AuthorityMatchesAny reports whether endpointURL's authority (host and port)
+// equals the authority of any of operatorURLs. Comparison is case-insensitive
+// and normalizes the implicit scheme default port, so "https://idp.example.com"
+// and "idp.example.com:443" match. Empty and malformed entries never match.
+//
+// This is the trust test for endpoints read out of an authorization-server
+// metadata document: an AS naming its own authority is still covered by the
+// operator's decision to configure it, while an AS naming some other host is
+// not (CWE-918).
+func AuthorityMatchesAny(endpointURL string, operatorURLs ...string) bool {
+	target := canonicalAuthority(endpointURL)
+	if target == "" {
+		return false
+	}
+	for _, operatorURL := range operatorURLs {
+		if authority := canonicalAuthority(operatorURL); authority != "" && authority == target {
+			return true
+		}
+	}
+	return false
+}
+
+// canonicalAuthority reduces a URL — or a bare "host:port" authority — to a
+// lowercase host:port form suitable for equality comparison. It returns the
+// empty string whenever the authority cannot be determined, including when a
+// bare host carries no port and no scheme to imply one: callers treat that as
+// "does not match", so an undecidable input fails closed.
+func canonicalAuthority(rawURL string) string {
+	if rawURL == "" {
+		return ""
+	}
+	u, err := url.Parse(rawURL)
+	if err != nil || u.Host == "" {
+		// Not a full URL. Retry as a bare authority ("idp.example.com:443",
+		// "[::1]:8443"), which url.Parse otherwise reads as scheme:opaque or
+		// rejects outright.
+		u, err = url.Parse("//" + rawURL)
+		if err != nil || u.Host == "" {
+			return ""
+		}
+	}
+
+	host := strings.ToLower(u.Hostname())
+	if host == "" {
+		return ""
+	}
+
+	port := u.Port()
+	if port == "" {
+		switch strings.ToLower(u.Scheme) {
+		case HttpScheme:
+			port = "80"
+		case HttpsScheme:
+			port = "443"
+		default:
+			return ""
+		}
+	}
+	return net.JoinHostPort(host, port)
+}
+
 // TargetIsPrivate reports whether the host in rawURL refers to — or resolves to —
 // a private, loopback, or link-local address. It is used to detect when an
 // operator has deliberately pointed ToolHive at an internal target, so that

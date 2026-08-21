@@ -356,6 +356,39 @@ const docTemplate = `{
                 },
                 "type": "object"
             },
+            "github_com_stacklok_toolhive_pkg_authserver.DelegateClientRunConfig": {
+                "properties": {
+                    "audiences": {
+                        "description": "Audiences are the RFC 8707 resource values this client may request a\ntoken for. Required, and must be a subset of RunConfig.AllowedAudiences:\na declared client must not receive every allowed audience just because\nthis was left empty.",
+                        "items": {
+                            "type": "string"
+                        },
+                        "type": "array",
+                        "uniqueItems": false
+                    },
+                    "client_id": {
+                        "description": "ClientID is the OAuth client_id this client presents at the token endpoint.",
+                        "type": "string"
+                    },
+                    "client_secret_env_var": {
+                        "description": "ClientSecretEnvVar is the name of an environment variable containing\nthe client secret. One of ClientSecretFile or ClientSecretEnvVar is\nrequired.",
+                        "type": "string"
+                    },
+                    "client_secret_file": {
+                        "description": "ClientSecretFile is the path to a file containing the client secret.\nIf both this and ClientSecretEnvVar are set, the file takes precedence.",
+                        "type": "string"
+                    },
+                    "scopes": {
+                        "description": "Scopes are the OAuth scopes this client may request. Required, and\nmust be a subset of RunConfig.ScopesSupported: a declared client must\nnot receive every supported scope just because this was left empty.",
+                        "items": {
+                            "type": "string"
+                        },
+                        "type": "array",
+                        "uniqueItems": false
+                    }
+                },
+                "type": "object"
+            },
             "github_com_stacklok_toolhive_pkg_authserver.IdentityFromTokenRunConfig": {
                 "description": "IdentityFromToken extracts user identity (subject, name, email) directly from the\nOAuth2 token-endpoint response body using gjson dot-notation paths. When set, the\nembedded auth server skips the userinfo HTTP call entirely. Mirrors the CRD type\n(cmd/thv-operator/api/v1beta1.IdentityFromTokenConfig) — the authoritative\ntrust-model and uniqueness documentation lives there.",
                 "properties": {
@@ -525,6 +558,14 @@ const docTemplate = `{
                     "cimd": {
                         "$ref": "#/components/schemas/github_com_stacklok_toolhive_pkg_authserver.CIMDRunConfig"
                     },
+                    "delegate_clients": {
+                        "description": "DelegateClients declares confidential OAuth clients to register at\nauthorization-server startup, including clients intended for RFC 8693\ntoken exchange.\n\nIndependent of AllowConfidentialClientRegistration: declaring a client\nhere does not require or enable self-service confidential DCR, and\nsetting that flag does not declare or enable any client here. They\ngovern different endpoints — this field is static configuration the\noperator controls directly, while the flag is admission policy for the\nunauthenticated /oauth/register endpoint.\n\nSee DelegateClientRunConfig for the per-client field reference.",
+                        "items": {
+                            "$ref": "#/components/schemas/github_com_stacklok_toolhive_pkg_authserver.DelegateClientRunConfig"
+                        },
+                        "type": "array",
+                        "uniqueItems": false
+                    },
                     "delegation_token_lifespan": {
                         "description": "DelegationTokenLifespan is the maximum lifetime for delegated tokens issued\nvia RFC 8693 token exchange. Specified as a Go duration string (e.g., \"15m\").\nIf empty, defaults to 15 minutes.",
                         "type": "string"
@@ -550,7 +591,7 @@ const docTemplate = `{
                         "uniqueItems": false
                     },
                     "insecure_allow_confidential_over_loopback_http": {
-                        "description": "InsecureAllowConfidentialOverLoopbackHTTP opts in to confidential-client\nDCR (AllowConfidentialClientRegistration) when Issuer is a plain-HTTP\nloopback URL. Without this flag, that combination is rejected: a\nloopback http:// issuer is normally fine for local development (the\ntraffic never leaves the machine), but combined with confidential\nregistration it means /oauth/register — which is unauthenticated —\nmints client secrets over cleartext. Defaults to false. Has no effect\nwhen AllowConfidentialClientRegistration is false or Issuer is https.",
+                        "description": "InsecureAllowConfidentialOverLoopbackHTTP opts in to confidential clients\nwhen Issuer is a plain-HTTP loopback URL. Without this flag, that\ncombination is rejected: a loopback http:// issuer is normally fine for\nlocal development (the traffic never leaves the machine), but client\nsecrets would otherwise travel over cleartext. Defaults to false. Has no\neffect when there are no confidential clients or Issuer is https.\n\nApplies identically to delegate clients and DCR-registered clients; the\nKubernetes CRD blocks this combination unconditionally only because CEL\ncannot express the loopback exception, not because delegate clients need\na stricter policy — see EmbeddedAuthServerConfig's doc comment.",
                         "type": "boolean"
                     },
                     "insecure_allow_http": {
@@ -583,7 +624,7 @@ const docTemplate = `{
                         "$ref": "#/components/schemas/github_com_stacklok_toolhive_pkg_authserver.TokenLifespanRunConfig"
                     },
                     "trusted_issuers": {
-                        "description": "TrustedIssuers lists external OIDC issuers whose tokens are accepted as\nsubject tokens during RFC 8693 token exchange. Empty (the default) means\nonly self-issued subject tokens are accepted.\n\nPrerequisite: the token-exchange grant requires a confidential client,\nand no supported deployment path provisions one today (DCR and CIMD\nclients are both public-only, and there is no client-seeding field on\nthis RunConfig), so this grant is not yet usable end to end for\nself-issued or external subject tokens alike. Tracked in\nhttps://github.com/stacklok/toolhive/issues/6082.\n\nSee tokenexchange.TrustedIssuer for the per-issuer field reference, and\ndocs/arch/17-token-exchange-delegation.md for the trust model, consent\nsignals, and operator-facing constraints (audience/scope bounding,\nsubject namespace qualification, required client binding) that aren't\nvisible from the config shape alone.",
+                        "description": "TrustedIssuers lists external OIDC issuers whose tokens are accepted as\nRFC 8693 subject tokens or RFC 7523 JWT-bearer assertions. Issuers with\njwtBearerGrant enabled may be used for the JWT-bearer grant without an\nRFC 8693 delegation policy. Empty (the default) means only self-issued\nsubject tokens are accepted.\n\nSee tokenexchange.TrustedIssuer for the per-issuer field reference, and\ndocs/arch/17-token-exchange-delegation.md for the trust model, consent\nsignals, and operator-facing constraints (audience/scope bounding,\nsubject namespace qualification, required client binding) that aren't\nvisible from the config shape alone.",
                         "items": {
                             "$ref": "#/components/schemas/github_com_stacklok_toolhive_pkg_authserver_server_tokenexchange.TrustedIssuer"
                         },
@@ -747,18 +788,65 @@ const docTemplate = `{
                 },
                 "type": "object"
             },
+            "github_com_stacklok_toolhive_pkg_authserver_server_tokenexchange.JWTBearerGrantPolicy": {
+                "description": "JWTBearerGrant optionally enables the plain RFC 7523 JWT-bearer grant.\nIt accepts assertions from this issuer without client authentication and\nlimits their maximum age, subjects, and RFC 8707 resources. It is\nindependent from RFC 8693 delegation policy.",
+                "properties": {
+                    "accepted_audiences": {
+                        "description": "AcceptedAudiences is the set of \"this AS\" identity strings an\nassertion's \"aud\" claim must intersect — e.g. to support migrating\nthis server's issuer/token-endpoint URL, or exposing it under more\nthan one valid name. Each value uniquely identifies this\nauthorization server for this grant; it is NOT a resource/API\nidentifier — a bare resource audience is deliberately not accepted\nhere, that would let any RFC 8707 resource-scoped token satisfy the\ngrant instead of only tokens minted for this AS. Defaults to\n[tokenEndpoint] when empty, preserving prior exact-match behavior.",
+                        "items": {
+                            "type": "string"
+                        },
+                        "type": "array",
+                        "uniqueItems": false
+                    },
+                    "max_assertion_age": {
+                        "type": "string"
+                    },
+                    "subject_bindings": {
+                        "items": {
+                            "$ref": "#/components/schemas/github_com_stacklok_toolhive_pkg_authserver_server_tokenexchange.JWTBearerSubjectBinding"
+                        },
+                        "type": "array",
+                        "uniqueItems": false
+                    }
+                },
+                "type": "object"
+            },
+            "github_com_stacklok_toolhive_pkg_authserver_server_tokenexchange.JWTBearerSubjectBinding": {
+                "properties": {
+                    "allowed_resources": {
+                        "items": {
+                            "type": "string"
+                        },
+                        "type": "array",
+                        "uniqueItems": false
+                    },
+                    "subject": {
+                        "type": "string"
+                    }
+                },
+                "type": "object"
+            },
             "github_com_stacklok_toolhive_pkg_authserver_server_tokenexchange.TrustedIssuer": {
                 "properties": {
                     "actor_claim": {
                         "description": "ActorClaim names the claim identifying the client that requested the\nsubject token from THIS EXTERNAL ISSUER (used by AllowedActors below).\nValues are in the external issuer's namespace, NOT ToolHive client\nIDs. Defaults to \"azp\"; use \"appid\" for Microsoft Entra v1, \"cid\" for\nOkta. The special value \"client_id\" reads ValidatedClaims.ClientID\ninstead of Extra (assignClaim routes it to that field) — it is still\nthe external token's client_id claim, not a ToolHive one.",
                         "type": "string"
                     },
+                    "actor_matcher": {
+                        "description": "ActorMatcher is an admin-authored CEL expression evaluated against the\ncomplete signature-verified JWT claims map as \"claims\". A true result\nauthorizes delegation alongside AllowedActors; a syntax or type error\nfails configuration validation. An expression that compiles but does\nnot return bool is NOT caught at that point, though — it compiles\nsuccessfully and is only rejected the first time it is evaluated\nagainst a real token, denying that token (and every one after it, since\nthe expression will never return bool). Any other runtime evaluation\nerror denies the token the same way.",
+                        "type": "string"
+                    },
+                    "allow_may_act": {
+                        "description": "AllowMayAct permits this external issuer's may_act claim to authorize\ndelegation. It defaults to false; external issuers must be opted in\nexplicitly because may_act bypasses AllowedActors and ActorMatcher. It\ndoes not affect self-issued subject tokens. When enabled,\nAllowedDelegateClients must name specific ToolHive clients rather than\nuse the wildcard.",
+                        "type": "boolean"
+                    },
                     "allow_private_ips": {
                         "description": "AllowPrivateIPs permits OIDC discovery and JWKS fetches for THIS\nissuer to resolve to a private or loopback address. Use only when the\nissuer is hosted inside the same cluster and has no public endpoint.",
                         "type": "boolean"
                     },
                     "allowed_actors": {
-                        "description": "AllowedActors is the allowlist of ActorClaim values authorized to\nexchange a subject token from this issuer when it carries no\n\"may_act\" claim; empty means only may_act-bearing tokens are\naccepted. By itself names no ToolHive client — see\nAllowedDelegateClients and docs/arch/17-token-exchange-delegation.md\n(\"Accepted limitations\" #1).",
+                        "description": "AllowedActors is the allowlist of ActorClaim values authorized to\nexchange a subject token from this issuer when it carries no\n\"may_act\" claim. ActorMatcher can additionally authorize a token by\nmatching its complete verified claims map; either signal is sufficient.\nWhen both are empty, only may_act-bearing tokens are accepted, and only\nif AllowMayAct is also true for this issuer. By itself names no\nToolHive client — see AllowedDelegateClients and\ndocs/arch/17-token-exchange-delegation.md (\"Accepted limitations\" #1).",
                         "items": {
                             "type": "string"
                         },
@@ -774,7 +862,7 @@ const docTemplate = `{
                         "uniqueItems": false
                     },
                     "expected_audience": {
-                        "description": "ExpectedAudience is the expected \"aud\" claim value that must appear\nin the token's audience list (a resource/API identifier, not a\nclient ID — required, but not enforced; see looksLikeResourceIdentifier).\nSee docs/arch/17-token-exchange-delegation.md (\"ID/access-token\ndiscrimination\") for why and its limits.",
+                        "description": "ExpectedAudience is the expected \"aud\" claim value that must appear\nin an RFC 8693 subject token's audience list (a resource/API identifier,\nnot a client ID — required for delegation unless JWTBearerGrant is\nconfigured; see looksLikeResourceIdentifier). RFC 7523 assertions use\nthe token endpoint as their audience instead.\nSee docs/arch/17-token-exchange-delegation.md (\"ID/access-token\ndiscrimination\") for why and its limits.",
                         "type": "string"
                     },
                     "insecure_allow_http": {
@@ -788,6 +876,9 @@ const docTemplate = `{
                     "jwks_url": {
                         "description": "JWKSURL is the URL to fetch the issuer's JSON Web Key Set from.\nIf empty, it is resolved via OIDC discovery at {IssuerURL}/.well-known/openid-configuration.",
                         "type": "string"
+                    },
+                    "jwt_bearer_grant": {
+                        "$ref": "#/components/schemas/github_com_stacklok_toolhive_pkg_authserver_server_tokenexchange.JWTBearerGrantPolicy"
                     }
                 },
                 "type": "object"
@@ -832,7 +923,8 @@ const docTemplate = `{
                     "codex",
                     "kimi-cli",
                     "factory",
-                    "copilot-cli"
+                    "copilot-cli",
+                    "qoder"
                 ],
                 "type": "string",
                 "x-enum-varnames": [
@@ -859,7 +951,8 @@ const docTemplate = `{
                     "Codex",
                     "KimiCli",
                     "Factory",
-                    "CopilotCli"
+                    "CopilotCli",
+                    "Qoder"
                 ]
             },
             "github_com_stacklok_toolhive_pkg_client.ClientAppStatus": {
@@ -1025,6 +1118,10 @@ const docTemplate = `{
                     "installed_at": {
                         "description": "InstalledAt is the timestamp when the plugin was installed.",
                         "type": "string"
+                    },
+                    "managed": {
+                        "description": "Managed indicates this install is tracked in the project's\ntoolhive.lock.yaml plugins: key. Only ever true for project-scoped\ninstalls. No omitempty: false is an observable state (unmanaged),\nnot an absence.",
+                        "type": "boolean"
                     },
                     "metadata": {
                         "$ref": "#/components/schemas/github_com_stacklok_toolhive_pkg_plugins.PluginMetadata"
@@ -1199,6 +1296,88 @@ const docTemplate = `{
                     "ScopeUser",
                     "ScopeProject"
                 ]
+            },
+            "github_com_stacklok_toolhive_pkg_plugins.SyncResult": {
+                "properties": {
+                    "already_current": {
+                        "description": "AlreadyCurrent lists skills that already matched the lock file.",
+                        "items": {
+                            "type": "string"
+                        },
+                        "type": "array",
+                        "uniqueItems": false
+                    },
+                    "drifted": {
+                        "description": "Drifted lists skills whose on-disk contentDigest differed from the lock\nfile. Normally these are reinstalled to match it; when Check is set,\nnothing is written and this field reports the drift only.",
+                        "items": {
+                            "type": "string"
+                        },
+                        "type": "array",
+                        "uniqueItems": false
+                    },
+                    "failed": {
+                        "description": "Failed lists skills that could not be synced, with the reason for each.\nDrift alone is never reported here — see Drifted.",
+                        "items": {
+                            "$ref": "#/components/schemas/github_com_stacklok_toolhive_pkg_skills.SyncFailure"
+                        },
+                        "type": "array",
+                        "uniqueItems": false
+                    },
+                    "installed": {
+                        "description": "Installed lists skills that were installed or reinstalled to match the lock file.",
+                        "items": {
+                            "type": "string"
+                        },
+                        "type": "array",
+                        "uniqueItems": false
+                    },
+                    "missing": {
+                        "description": "Missing lists lock entries with no corresponding install record at all\n— the fresh-clone state. Normally these are installed at their pinned\nreference; when Check is set, nothing is written and this field\nreports the gap only.",
+                        "items": {
+                            "type": "string"
+                        },
+                        "type": "array",
+                        "uniqueItems": false
+                    },
+                    "never_managed": {
+                        "description": "NeverManaged lists project-scoped skills never recorded as lock-managed.",
+                        "items": {
+                            "type": "string"
+                        },
+                        "type": "array",
+                        "uniqueItems": false
+                    },
+                    "pruned": {
+                        "description": "Pruned lists removed-from-lock skills that were uninstalled because Prune was set.",
+                        "items": {
+                            "type": "string"
+                        },
+                        "type": "array",
+                        "uniqueItems": false
+                    },
+                    "removed_from_lock": {
+                        "description": "RemovedFromLock lists previously managed skills absent from the lock file.",
+                        "items": {
+                            "type": "string"
+                        },
+                        "type": "array",
+                        "uniqueItems": false
+                    }
+                },
+                "type": "object"
+            },
+            "github_com_stacklok_toolhive_pkg_plugins.UpgradeResult": {
+                "properties": {
+                    "outcomes": {
+                        "description": "Outcomes contains one entry per skill considered for upgrade.",
+                        "items": {
+                            "$ref": "#/components/schemas/github_com_stacklok_toolhive_pkg_skills.UpgradeOutcome"
+                        },
+                        "type": "array",
+                        "uniqueItems": false
+                    }
+                },
+                "type": "object"
             },
             "github_com_stacklok_toolhive_pkg_plugins.ValidationResult": {
                 "properties": {
@@ -1665,6 +1844,7 @@ const docTemplate = `{
                     "lock-write-failed",
                     "signature-invalid",
                     "signer-mismatch",
+                    "provenance-field-mismatch",
                     "unsigned-rejected",
                     "unknown"
                 ],
@@ -1676,6 +1856,7 @@ const docTemplate = `{
                     "FailureReasonLockWriteFailed",
                     "FailureReasonSignatureInvalid",
                     "FailureReasonSignerMismatch",
+                    "FailureReasonProvenanceFieldMismatch",
                     "FailureReasonUnsignedRejected",
                     "FailureReasonUnknown"
                 ]
@@ -1785,8 +1966,16 @@ const docTemplate = `{
                         "description": "Provisional marks provenance with a documented verification gap\n(git signatures until transparency-log validation lands).",
                         "type": "boolean"
                     },
+                    "repository_ref": {
+                        "description": "RepositoryRef is the git ref the signing workflow ran on, from Fulcio\ncertificate extension 1.3.6.1.4.1.57264.1.14. Empty means\nunconstrained, matching lock files written before the field existed.",
+                        "type": "string"
+                    },
                     "repository_uri": {
                         "description": "RepositoryURI is the source repository from the certificate\nextensions, when present.",
+                        "type": "string"
+                    },
+                    "runner_environment": {
+                        "description": "RunnerEnvironment is the runner class the signing workflow executed in\n(e.g. \"github-hosted\"), from Fulcio certificate extension\n1.3.6.1.4.1.57264.1.11. Empty means unconstrained.",
                         "type": "string"
                     },
                     "signer_identity": {
@@ -3453,6 +3642,10 @@ const docTemplate = `{
             "pkg_api_v1.pushSkillRequest": {
                 "description": "Request to push a built skill artifact",
                 "properties": {
+                    "identity_token": {
+                        "description": "IdentityToken is a short-lived OIDC identity token used for keyless\nsigning, mutually exclusive with Key",
+                        "type": "string"
+                    },
                     "key": {
                         "description": "Key is the path to a cosign private key used to sign the pushed\nartifact",
                         "type": "string"
@@ -3685,6 +3878,36 @@ const docTemplate = `{
                 },
                 "type": "object"
             },
+            "pkg_api_v1.syncPluginsRequest": {
+                "description": "Request to restore a project's installed plugins to match its lock file",
+                "properties": {
+                    "adopt": {
+                        "description": "Adopt writes lock entries for existing unmanaged project-scope installs",
+                        "type": "boolean"
+                    },
+                    "check": {
+                        "description": "Check verifies on-disk content against the lock file without installing or writing anything",
+                        "type": "boolean"
+                    },
+                    "clients": {
+                        "description": "Clients lists target client identifiers. Empty means every\nplugin-supporting client detected on this host.",
+                        "items": {
+                            "type": "string"
+                        },
+                        "type": "array",
+                        "uniqueItems": false
+                    },
+                    "project_root": {
+                        "description": "ProjectRoot is the project root path whose lock file should be synced",
+                        "type": "string"
+                    },
+                    "prune": {
+                        "description": "Prune removes project-scoped plugins installed but not present in the lock file",
+                        "type": "boolean"
+                    }
+                },
+                "type": "object"
+            },
             "pkg_api_v1.syncSkillsRequest": {
                 "description": "Request to restore a project's installed skills to match its lock file",
                 "properties": {
@@ -3898,6 +4121,44 @@ const docTemplate = `{
                 "properties": {
                     "result": {
                         "$ref": "#/components/schemas/github_com_stacklok_toolhive_pkg_workloads_upgrade.CheckResult"
+                    }
+                },
+                "type": "object"
+            },
+            "pkg_api_v1.upgradePluginsRequest": {
+                "description": "Request to re-resolve a project's lock entries and install newer content",
+                "properties": {
+                    "allow_ref_change": {
+                        "description": "AllowRefChange permits resolvedReference changes during upgrade",
+                        "type": "boolean"
+                    },
+                    "clients": {
+                        "description": "Clients lists target client identifiers. Empty means every\nplugin-supporting client detected on this host.",
+                        "items": {
+                            "type": "string"
+                        },
+                        "type": "array",
+                        "uniqueItems": false
+                    },
+                    "fail_on_changes": {
+                        "description": "FailOnChanges exits with an error when any mutable source would upgrade",
+                        "type": "boolean"
+                    },
+                    "names": {
+                        "description": "Names restricts the upgrade to specific plugin names. Empty means every entry.",
+                        "items": {
+                            "type": "string"
+                        },
+                        "type": "array",
+                        "uniqueItems": false
+                    },
+                    "preview": {
+                        "description": "Preview reports what would change without installing (still fetches to compare digests)",
+                        "type": "boolean"
+                    },
+                    "project_root": {
+                        "description": "ProjectRoot is the project root path whose lock file should be upgraded",
+                        "type": "string"
                     }
                 },
                 "type": "object"
@@ -4933,7 +5194,7 @@ const docTemplate = `{
                         "type": "object"
                     },
                     "enablePrometheusMetricsPath": {
-                        "description": "EnablePrometheusMetricsPath controls whether to expose Prometheus-style /metrics endpoint.\nThe metrics are served on the main transport port at /metrics.\nThis is separate from OTLP metrics which are sent to the Endpoint.\n+kubebuilder:default=false\n+optional",
+                        "description": "EnablePrometheusMetricsPath controls whether to expose Prometheus-style /metrics endpoint.\nThe metrics are served at /metrics on a dedicated diagnostics port rather than on the\nmain transport port, so the endpoint can be restricted by port and is not routed\nalongside application traffic. The endpoint is unauthenticated either way.\nSee PrometheusPort and pkg/diagnostics.\nThis is separate from OTLP metrics which are sent to the Endpoint.\n+kubebuilder:default=false\n+optional",
                         "type": "boolean"
                     },
                     "endpoint": {
@@ -4962,6 +5223,14 @@ const docTemplate = `{
                     "metricsEnabled": {
                         "description": "MetricsEnabled controls whether OTLP metrics are enabled.\nWhen false, OTLP metrics are not sent even if an endpoint is configured.\nThis is independent of EnablePrometheusMetricsPath.\n+kubebuilder:default=false\n+optional",
                         "type": "boolean"
+                    },
+                    "metricsOnTransportPort": {
+                        "description": "MetricsOnTransportPort controls whether /metrics is ALSO served on the main\ntransport port, in addition to the diagnostics port. It exists to give\ndeployments a migration window: while true, an existing scrape configuration\naimed at the transport port keeps working, and a new one aimed at\nPrometheusPort works too, so a scraper can be moved and verified before the\nold location goes away. See https://github.com/stacklok/toolhive/issues/6384 for\nthe removal timeline.\n\nDeliberately a pointer with NO kubebuilder default. Nil means \"unset\", and is\nresolved against DefaultMetricsOnTransportPort at the point of use rather than\nwritten into config. A plain bool with a default marker would be materialised\ninto the persisted RunConfig and into CRD objects at admission, so changing\nthe default later would not move any workload that already exists — the flip\nwould silently do nothing.\n\n+optional",
+                        "type": "boolean"
+                    },
+                    "prometheusPort": {
+                        "description": "PrometheusPort is the port the Prometheus /metrics endpoint is served on when\nEnablePrometheusMetricsPath is true. It is deliberately not the main transport port,\nso that access can be restricted with a NetworkPolicy: NetworkPolicy matches on port,\nnot on HTTP path, so a shared port makes \"allow MCP traffic, deny metrics scraping\"\nimpossible to express. The endpoint itself is unauthenticated, so restricting who can\nreach this port is how it is protected.\n\nZero selects the default diagnostics port (9464, the OpenTelemetry specification's\nPrometheus exporter default). If that port is taken the listener falls back to an\navailable one and logs the resolved address. Do not route this port publicly.\n+optional",
+                        "type": "integer"
                     },
                     "samplingRate": {
                         "description": "SamplingRate is the trace sampling rate (0.0-1.0) as a string.\nOnly used when TracingEnabled is true.\nExample: \"0.05\" for 5% sampling.\n+kubebuilder:default=\"0.05\"\n+optional",
@@ -6187,6 +6456,178 @@ const docTemplate = `{
                     }
                 },
                 "summary": "Push a plugin",
+                "tags": [
+                    "plugins"
+                ]
+            }
+        },
+        "/api/v1beta/plugins/sync": {
+            "post": {
+                "description": "Restore a project's installed plugins to match toolhive.lock.yaml",
+                "requestBody": {
+                    "content": {
+                        "application/json": {
+                            "schema": {
+                                "oneOf": [
+                                    {
+                                        "type": "object"
+                                    },
+                                    {
+                                        "$ref": "#/components/schemas/pkg_api_v1.syncPluginsRequest",
+                                        "summary": "request",
+                                        "description": "Sync request"
+                                    }
+                                ]
+                            }
+                        }
+                    },
+                    "description": "Sync request",
+                    "required": true
+                },
+                "responses": {
+                    "200": {
+                        "content": {
+                            "application/json": {
+                                "schema": {
+                                    "$ref": "#/components/schemas/github_com_stacklok_toolhive_pkg_plugins.SyncResult"
+                                }
+                            }
+                        },
+                        "description": "OK"
+                    },
+                    "400": {
+                        "content": {
+                            "application/json": {
+                                "schema": {
+                                    "type": "string"
+                                }
+                            }
+                        },
+                        "description": "Bad Request"
+                    },
+                    "403": {
+                        "content": {
+                            "application/json": {
+                                "schema": {
+                                    "type": "string"
+                                }
+                            }
+                        },
+                        "description": "Forbidden (feature not enabled)"
+                    },
+                    "500": {
+                        "content": {
+                            "application/json": {
+                                "schema": {
+                                    "type": "string"
+                                }
+                            }
+                        },
+                        "description": "Internal Server Error"
+                    },
+                    "501": {
+                        "content": {
+                            "application/json": {
+                                "schema": {
+                                    "type": "string"
+                                }
+                            }
+                        },
+                        "description": "Not Implemented"
+                    }
+                },
+                "summary": "Sync project plugins from the lock file",
+                "tags": [
+                    "plugins"
+                ]
+            }
+        },
+        "/api/v1beta/plugins/upgrade": {
+            "post": {
+                "description": "Re-resolve a project's lock entries and install newer content where available",
+                "requestBody": {
+                    "content": {
+                        "application/json": {
+                            "schema": {
+                                "oneOf": [
+                                    {
+                                        "type": "object"
+                                    },
+                                    {
+                                        "$ref": "#/components/schemas/pkg_api_v1.upgradePluginsRequest",
+                                        "summary": "request",
+                                        "description": "Upgrade request"
+                                    }
+                                ]
+                            }
+                        }
+                    },
+                    "description": "Upgrade request",
+                    "required": true
+                },
+                "responses": {
+                    "200": {
+                        "content": {
+                            "application/json": {
+                                "schema": {
+                                    "$ref": "#/components/schemas/github_com_stacklok_toolhive_pkg_plugins.UpgradeResult"
+                                }
+                            }
+                        },
+                        "description": "OK"
+                    },
+                    "400": {
+                        "content": {
+                            "application/json": {
+                                "schema": {
+                                    "type": "string"
+                                }
+                            }
+                        },
+                        "description": "Bad Request"
+                    },
+                    "403": {
+                        "content": {
+                            "application/json": {
+                                "schema": {
+                                    "type": "string"
+                                }
+                            }
+                        },
+                        "description": "Forbidden (feature not enabled)"
+                    },
+                    "404": {
+                        "content": {
+                            "application/json": {
+                                "schema": {
+                                    "type": "string"
+                                }
+                            }
+                        },
+                        "description": "Not Found (a requested name is not in the lock file)"
+                    },
+                    "500": {
+                        "content": {
+                            "application/json": {
+                                "schema": {
+                                    "type": "string"
+                                }
+                            }
+                        },
+                        "description": "Internal Server Error"
+                    },
+                    "501": {
+                        "content": {
+                            "application/json": {
+                                "schema": {
+                                    "type": "string"
+                                }
+                            }
+                        },
+                        "description": "Not Implemented"
+                    }
+                },
+                "summary": "Upgrade project plugins",
                 "tags": [
                     "plugins"
                 ]
@@ -8274,7 +8715,7 @@ const docTemplate = `{
                 ]
             },
             "post": {
-                "description": "Create and start a new workload",
+                "description": "Create and start a new workload\nruntime_config is only accepted for protocol-scheme images\n(uvx://, npx://, go://); supplying it with an ordinary image\nreference or a remote url is rejected with 400.",
                 "requestBody": {
                     "content": {
                         "application/json": {
@@ -8639,7 +9080,7 @@ const docTemplate = `{
         },
         "/api/v1beta/workloads/{name}/edit": {
             "post": {
-                "description": "Update an existing workload configuration",
+                "description": "Update an existing workload configuration\nruntime_config on a non-protocol-scheme image is accepted only when it\nexactly matches the workload's persisted config and the image and url\nare unchanged (an inert echo, e.g. from a prior GET); otherwise it is\nrejected with 400.",
                 "parameters": [
                     {
                         "description": "Workload name",

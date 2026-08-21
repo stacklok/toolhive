@@ -70,6 +70,18 @@ spec:
               MCPServerEntry is a zero-infrastructure catalog entry that declares a remote MCP
               server endpoint. Unlike MCPRemoteProxy, it creates no pods, services, or deployments.
             properties:
+              allowPrivateEndpoint:
+                default: false
+                description: |-
+                  AllowPrivateEndpoint permits RemoteURL to point at a private or
+                  in-cluster endpoint: RFC 1918 and IPv6 unique-local addresses, and
+                  hostnames ending in "cluster.local". (Bare ".svc" hostnames are never
+                  blocked, since no DNS resolution is performed.) Enable this to reach a
+                  co-located in-cluster backend in-mesh so the backend's workload-identity
+                  authorization policy still applies. Loopback, link-local, cloud-metadata,
+                  and kubernetes.default endpoints remain blocked regardless of this
+                  setting.
+                type: boolean
               caBundleRef:
                 description: |-
                   CABundleRef references a ConfigMap containing CA certificates for TLS verification
@@ -324,6 +336,18 @@ spec:
               MCPServerEntry is a zero-infrastructure catalog entry that declares a remote MCP
               server endpoint. Unlike MCPRemoteProxy, it creates no pods, services, or deployments.
             properties:
+              allowPrivateEndpoint:
+                default: false
+                description: |-
+                  AllowPrivateEndpoint permits RemoteURL to point at a private or
+                  in-cluster endpoint: RFC 1918 and IPv6 unique-local addresses, and
+                  hostnames ending in "cluster.local". (Bare ".svc" hostnames are never
+                  blocked, since no DNS resolution is performed.) Enable this to reach a
+                  co-located in-cluster backend in-mesh so the backend's workload-identity
+                  authorization policy still applies. Loopback, link-local, cloud-metadata,
+                  and kubernetes.default endpoints remain blocked regardless of this
+                  setting.
+                type: boolean
               caBundleRef:
                 description: |-
                   CABundleRef references a ConfigMap containing CA certificates for TLS verification

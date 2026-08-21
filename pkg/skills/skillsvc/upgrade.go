@@ -36,6 +36,9 @@ func (s *service) Upgrade(ctx context.Context, opts skills.UpgradeOptions) (*ski
 	}
 	opts.ProjectRoot = projectRoot
 
+	unlock := s.projectTx.lock(projectRoot)
+	defer unlock()
+
 	root, err := lockfile.OpenRoot(projectRoot)
 	if err != nil {
 		return nil, err
@@ -50,25 +53,9 @@ func (s *service) Upgrade(ctx context.Context, opts skills.UpgradeOptions) (*ski
 		return nil, err
 	}
 
-	// Resolve every target's latest state first, without installing
-	// anything. FailOnChanges is a CI freshness gate: it reports the full
-	// planned outcome set and never runs the apply pass at all — returning
-	// the outcomes (rather than an error that discards them) lets callers
-	// see exactly which skills are stale and distinguish "would change"
-	// from a genuine resolution failure. Exit-code mapping happens in the
-	// CLI from these outcomes, mirroring how sync --check works.
-	plans := make([]upgradePlan, len(targets))
-	for i, entry := range targets {
-		plans[i] = s.planUpgrade(ctx, opts, entry)
-	}
-
-	result := &skills.UpgradeResult{Outcomes: make([]skills.UpgradeOutcome, 0, len(plans))}
-	for _, p := range plans {
-		if opts.FailOnChanges {
-			result.Outcomes = append(result.Outcomes, p.outcome)
-			continue
-		}
-		result.Outcomes = append(result.Outcomes, s.applyUpgrade(ctx, opts, p))
+	result := &skills.UpgradeResult{Outcomes: make([]skills.UpgradeOutcome, 0, len(targets))}
+	for _, target := range targets {
+		result.Outcomes = append(result.Outcomes, s.upgradeOne(ctx, opts, target.Name))
 	}
 	return result, nil
 }
@@ -94,6 +81,47 @@ func selectUpgradeTargets(lf *lockfile.Lockfile, names []string) ([]lockfile.Ent
 		targets = append(targets, entry)
 	}
 	return targets, nil
+}
+
+// upgradeOne reloads the named lock entry under the held project
+// transaction, then plans and applies against that fresh snapshot. Planning
+// every entry first and applying later would let a concurrent uninstall be
+// resurrected, or a newer install be overwritten by this older plan.
+//
+// FailOnChanges is a CI freshness gate: it reports the planned outcome and
+// never applies. Exit-code mapping happens in the CLI from these outcomes.
+func (s *service) upgradeOne(
+	ctx context.Context, opts skills.UpgradeOptions, name string,
+) skills.UpgradeOutcome {
+	root, err := lockfile.OpenRoot(opts.ProjectRoot)
+	if err != nil {
+		return skills.UpgradeOutcome{
+			Name: name, Status: skills.UpgradeStatusFailed,
+			Reason: classifySyncFailure(err), Error: err.Error(),
+		}
+	}
+	lf, err := lockfile.Load(root)
+	if err != nil {
+		return skills.UpgradeOutcome{
+			Name: name, Status: skills.UpgradeStatusFailed,
+			Reason: classifySyncFailure(err), Error: err.Error(),
+		}
+	}
+	entry, ok := lf.Get(name)
+	if !ok {
+		return skills.UpgradeOutcome{
+			Name:   name,
+			Status: skills.UpgradeStatusFailed,
+			Reason: skills.FailureReasonUnknown,
+			Error:  fmt.Sprintf("skill %q is no longer in the lock file", name),
+		}
+	}
+
+	plan := s.planUpgrade(ctx, opts, entry)
+	if opts.FailOnChanges {
+		return plan.outcome
+	}
+	return s.applyUpgrade(ctx, opts, plan)
 }
 
 // upgradePlan is entry's resolved outcome before any install happens: either
@@ -175,8 +203,23 @@ func (s *service) planUpgrade(ctx context.Context, opts skills.UpgradeOptions, e
 
 // guardSignerChange probes the candidate artifact's signer identity and
 // fills outcome when the upgrade must not proceed: the candidate is signed
-// by a different identity (or unsigned) versus the recorded provenance, or
-// its signature cannot be verified at all. Returns true when blocked.
+// by a different identity (or unsigned) versus the recorded provenance, its
+// signature cannot be verified at all, or its certificate's repository ref
+// or runner class differs from what is recorded. Returns true when blocked.
+//
+// The repository ref has NO automatic allowance for a tag-shaped rotation.
+// An earlier version of this guard let a recorded tag ref rotate to any
+// other tag ref, reasoning that a release workflow signs each version on
+// its own tag — but that also let a candidate signed from an attacker's OWN
+// tag (e.g. "refs/tags/attacker-release") on the SAME repository replace a
+// pinned tag, since nothing tied the candidate's tag to the specific
+// version actually being upgraded to. Binding it correctly would need the
+// resolved release source's own tag, which the git resolver does not
+// surface at all (only the resolved commit hash) — so an OCI-only partial
+// fix would leave git-sourced skills with the identical hole. Every ref
+// change — tag or branch, git or OCI — therefore blocks here exactly like a
+// genuine signer-identity change, and needs the same explicit
+// --allow-signer-change override. See stacklok/toolhive#6315 review.
 func (s *service) guardSignerChange(
 	ctx context.Context,
 	entry lockfile.Entry,
@@ -197,12 +240,31 @@ func (s *service) guardSignerChange(
 		outcome.Error = probeErr.Error()
 		return true
 	case probe.SignerIdentity != entry.Provenance.SignerIdentity ||
-		probe.CertIssuer != entry.Provenance.CertIssuer:
+		probe.CertIssuer != entry.Provenance.CertIssuer ||
+		runnerEnvironmentChanged(probe, entry.Provenance) ||
+		repositoryRefChanged(probe, entry.Provenance):
 		outcome.Status = skills.UpgradeStatusSignerChangeBlocked
 		outcome.NewSignerIdentity = probe.SignerIdentity
 		return true
 	}
 	return false
+}
+
+// runnerEnvironmentChanged reports whether the candidate's runner class
+// differs from the one recorded. An entry that recorded none is
+// unconstrained — lock entries written before the field existed have it
+// empty, as do certificates that carry no such extension.
+func runnerEnvironmentChanged(probe *verifier.Result, recorded *lockfile.Provenance) bool {
+	return recorded.RunnerEnvironment != "" && probe.RunnerEnvironment != recorded.RunnerEnvironment
+}
+
+// repositoryRefChanged reports whether the candidate's certificate ref
+// differs from the one recorded, with the same absent-means-unconstrained
+// rule as runnerEnvironmentChanged. Unlike the runner class, no ref value
+// is treated as an automatically allowed rotation — see guardSignerChange's
+// doc comment for why.
+func repositoryRefChanged(probe *verifier.Result, recorded *lockfile.Provenance) bool {
+	return recorded.RepositoryRef != "" && probe.RepositoryRef != recorded.RepositoryRef
 }
 
 // probeCandidateSigner verifies the candidate artifact chain-of-trust-only
@@ -229,6 +291,7 @@ func (s *service) probeCandidateSigner(ctx context.Context, newRef, newDigest st
 
 // applyUpgrade installs plan's pinned content when the plan calls for it.
 // Preview mode reports the plan's outcome without installing anything.
+// Assumes the project transaction is already held.
 func (s *service) applyUpgrade(ctx context.Context, opts skills.UpgradeOptions, plan upgradePlan) skills.UpgradeOutcome {
 	if plan.pinnedRef == "" || opts.Preview {
 		return plan.outcome
@@ -241,7 +304,7 @@ func (s *service) applyUpgrade(ctx context.Context, opts skills.UpgradeOptions, 
 		}
 	}
 
-	if _, err := s.Install(ctx, skills.InstallOptions{
+	if _, err := s.installLocked(ctx, skills.InstallOptions{
 		Name:                  plan.pinnedRef,
 		Scope:                 skills.ScopeProject,
 		ProjectRoot:           opts.ProjectRoot,
@@ -249,7 +312,8 @@ func (s *service) applyUpgrade(ctx context.Context, opts skills.UpgradeOptions, 
 		LockSource:            plan.entry.Source,
 		LockResolvedReference: plan.resolvedRef,
 		AllowSignerChange:     opts.AllowSignerChange,
-	}); err != nil {
+		ExpectedCanonicalName: plan.entry.Name,
+	}, plan.pinnedRef, skills.ScopeProject, newDepState()); err != nil {
 		outcome := plan.outcome
 		outcome.Status = skills.UpgradeStatusFailed
 		outcome.Reason = classifySyncFailure(err)

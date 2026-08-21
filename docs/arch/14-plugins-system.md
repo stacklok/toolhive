@@ -25,8 +25,8 @@ different component subsets.
 │  per-(scope,name,projectRoot) pluginLock                     │
 └───────────────┬─────────────────────────────────────────────┘
                 │  MaterializationAdapter interface
-                │  (Materialize / Dematerialize / SupportedComponents /
-                │   ScopeSupport)
+                │  (Materialize / Dematerialize / EnsureRegistered /
+                │   Health / SupportedComponents / ScopeSupport)
        ┌────────┴────────┐
        ▼                 ▼
 ┌─────────────┐   ┌──────────────┐
@@ -114,13 +114,27 @@ After resolving the artifact, `installWithExtraction` resolves target clients,
 acquires the per-plugin lock, calls each client's `MaterializationAdapter`,
 builds the `InstalledPlugin` record, persists it (Create/Update with
 upgrade-digest/same-digest-new-clients branches), and registers the plugin in
-its group. Failure rolls back already-materialized clients.
+its group. When a `ClientManager` is configured, target trees are snapshotted
+(files plus registration state via `Health`) before materialization; any later
+failure — extraction, DB persist, group registration, or lock write — restores
+the snapshot exactly (files, and `EnsureRegistered` only when the tree was
+registered before) and joins every compensation error with the trigger.
+Without a `ClientManager` (embedded/test services), compensation degrades to
+dematerializing what this call wrote.
 
 ### 4. Uninstallation
 
-`pluginsvc.Uninstall` calls `Dematerialize` per client (best-effort,
-`errors.Join`), deletes the store record, and removes the plugin from all
-groups. Idempotent.
+`pluginsvc.Uninstall` is scope-dependent:
+
+- **Unmanaged / user scope**: `Dematerialize` per client (best-effort,
+  `errors.Join`), remove group memberships, then delete the store record.
+  Group removal snapshots memberships first and restores them if an update
+  midway or the DB delete fails, keeping the operation retryable. Idempotent.
+- **Lock-managed project scope**: fails closed. Every stored client must have
+  a materializer, the lock entry is removed after snapshotting client trees,
+  and a later dematerialize/group/DB failure restores the pin, the trees, and
+  adapter registration so the plugin is never left half-removed or
+  installed-but-untracked.
 
 ### 5. Info
 

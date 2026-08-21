@@ -70,11 +70,45 @@ type Config struct {
 	Insecure bool `json:"insecure,omitempty" yaml:"insecure,omitempty"`
 
 	// EnablePrometheusMetricsPath controls whether to expose Prometheus-style /metrics endpoint.
-	// The metrics are served on the main transport port at /metrics.
+	// The metrics are served at /metrics on a dedicated diagnostics port rather than on the
+	// main transport port, so the endpoint can be restricted by port and is not routed
+	// alongside application traffic. The endpoint is unauthenticated either way.
+	// See PrometheusPort and pkg/diagnostics.
 	// This is separate from OTLP metrics which are sent to the Endpoint.
 	// +kubebuilder:default=false
 	// +optional
 	EnablePrometheusMetricsPath bool `json:"enablePrometheusMetricsPath,omitempty" yaml:"enablePrometheusMetricsPath,omitempty"`
+
+	// PrometheusPort is the port the Prometheus /metrics endpoint is served on when
+	// EnablePrometheusMetricsPath is true. It is deliberately not the main transport port,
+	// so that access can be restricted with a NetworkPolicy: NetworkPolicy matches on port,
+	// not on HTTP path, so a shared port makes "allow MCP traffic, deny metrics scraping"
+	// impossible to express. The endpoint itself is unauthenticated, so restricting who can
+	// reach this port is how it is protected.
+	//
+	// Zero selects the default diagnostics port (9464, the OpenTelemetry specification's
+	// Prometheus exporter default). If that port is taken the listener falls back to an
+	// available one and logs the resolved address. Do not route this port publicly.
+	// +optional
+	PrometheusPort int `json:"prometheusPort,omitempty" yaml:"prometheusPort,omitempty"`
+
+	// MetricsOnTransportPort controls whether /metrics is ALSO served on the main
+	// transport port, in addition to the diagnostics port. It exists to give
+	// deployments a migration window: while true, an existing scrape configuration
+	// aimed at the transport port keeps working, and a new one aimed at
+	// PrometheusPort works too, so a scraper can be moved and verified before the
+	// old location goes away. See https://github.com/stacklok/toolhive/issues/6384 for
+	// the removal timeline.
+	//
+	// Deliberately a pointer with NO kubebuilder default. Nil means "unset", and is
+	// resolved against DefaultMetricsOnTransportPort at the point of use rather than
+	// written into config. A plain bool with a default marker would be materialised
+	// into the persisted RunConfig and into CRD objects at admission, so changing
+	// the default later would not move any workload that already exists — the flip
+	// would silently do nothing.
+	//
+	// +optional
+	MetricsOnTransportPort *bool `json:"metricsOnTransportPort,omitempty" yaml:"metricsOnTransportPort,omitempty"`
 
 	// EnvironmentVariables is a list of environment variable names that should be
 	// included in telemetry spans as attributes. Only variables in this list will
@@ -124,12 +158,38 @@ func (c Config) String() string {
 
 	return fmt.Sprintf("Config{Endpoint: %q, ServiceName: %q, ServiceVersion: %q, TracingEnabled: %t, "+
 		"MetricsEnabled: %t, SamplingRate: %q, Headers: %v, Insecure: %t, "+
-		"EnablePrometheusMetricsPath: %t, EnvironmentVariables: %v, CustomAttributes: %v, "+
+		"EnablePrometheusMetricsPath: %t, PrometheusPort: %d, MetricsOnTransportPort: %t, "+
+		"EnvironmentVariables: %v, CustomAttributes: %v, "+
 		"UseLegacyAttributes: %t, CACertPath: %q}",
 		c.Endpoint, c.ServiceName, c.ServiceVersion, c.TracingEnabled,
 		c.MetricsEnabled, c.SamplingRate, redactedHeaders, c.Insecure,
-		c.EnablePrometheusMetricsPath, c.EnvironmentVariables, c.CustomAttributes,
+		c.EnablePrometheusMetricsPath, c.PrometheusPort, c.ServeMetricsOnTransportPort(),
+		c.EnvironmentVariables, c.CustomAttributes,
 		c.UseLegacyAttributes, c.CACertPath)
+}
+
+// DefaultMetricsOnTransportPort is the value used when Config.MetricsOnTransportPort
+// is unset.
+//
+// True during the deprecation window: /metrics is served on both the transport port
+// and the diagnostics port, so no existing scrape configuration breaks. Flipping this
+// to false is the entire cutover — it stops serving the transport-port copy and leaves
+// only the diagnostics port. Deployments that set MetricsOnTransportPort explicitly
+// are unaffected by the flip, by design.
+//
+// Flipping it is not the whole job: #6384 carries the timeline and the cleanup this
+// field, its CLI flag, and its CRD entry all need afterwards.
+const DefaultMetricsOnTransportPort = true
+
+// ServeMetricsOnTransportPort reports whether /metrics should also be served on the
+// main transport port. It resolves the unset case at the point of use, which is what
+// makes changing DefaultMetricsOnTransportPort take effect for workloads that already
+// exist. A nil receiver reports the default so callers need no nil check.
+func (c *Config) ServeMetricsOnTransportPort() bool {
+	if c == nil || c.MetricsOnTransportPort == nil {
+		return DefaultMetricsOnTransportPort
+	}
+	return *c.MetricsOnTransportPort
 }
 
 // GetSamplingRateFloat parses the SamplingRate string and returns it as float64.

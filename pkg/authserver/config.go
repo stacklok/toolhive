@@ -122,15 +122,10 @@ type RunConfig struct {
 	InsecureAllowHTTP bool `json:"insecure_allow_http,omitempty" yaml:"insecure_allow_http,omitempty"`
 
 	// TrustedIssuers lists external OIDC issuers whose tokens are accepted as
-	// subject tokens during RFC 8693 token exchange. Empty (the default) means
-	// only self-issued subject tokens are accepted.
-	//
-	// Prerequisite: the token-exchange grant requires a confidential client,
-	// and no supported deployment path provisions one today (DCR and CIMD
-	// clients are both public-only, and there is no client-seeding field on
-	// this RunConfig), so this grant is not yet usable end to end for
-	// self-issued or external subject tokens alike. Tracked in
-	// https://github.com/stacklok/toolhive/issues/6082.
+	// RFC 8693 subject tokens or RFC 7523 JWT-bearer assertions. Issuers with
+	// jwtBearerGrant enabled may be used for the JWT-bearer grant without an
+	// RFC 8693 delegation policy. Empty (the default) means only self-issued
+	// subject tokens are accepted.
 	//
 	// See tokenexchange.TrustedIssuer for the per-issuer field reference, and
 	// docs/arch/17-token-exchange-delegation.md for the trust model, consent
@@ -187,16 +182,64 @@ type RunConfig struct {
 	//nolint:lll // field tags require full JSON+YAML names
 	ForceConfidentialRedirectURIs []string `json:"force_confidential_redirect_uris,omitempty" yaml:"force_confidential_redirect_uris,omitempty"`
 
-	// InsecureAllowConfidentialOverLoopbackHTTP opts in to confidential-client
-	// DCR (AllowConfidentialClientRegistration) when Issuer is a plain-HTTP
-	// loopback URL. Without this flag, that combination is rejected: a
-	// loopback http:// issuer is normally fine for local development (the
-	// traffic never leaves the machine), but combined with confidential
-	// registration it means /oauth/register — which is unauthenticated —
-	// mints client secrets over cleartext. Defaults to false. Has no effect
-	// when AllowConfidentialClientRegistration is false or Issuer is https.
+	// InsecureAllowConfidentialOverLoopbackHTTP opts in to confidential clients
+	// when Issuer is a plain-HTTP loopback URL. Without this flag, that
+	// combination is rejected: a loopback http:// issuer is normally fine for
+	// local development (the traffic never leaves the machine), but client
+	// secrets would otherwise travel over cleartext. Defaults to false. Has no
+	// effect when there are no confidential clients or Issuer is https.
+	//
+	// Applies identically to delegate clients and DCR-registered clients; the
+	// Kubernetes CRD blocks this combination unconditionally only because CEL
+	// cannot express the loopback exception, not because delegate clients need
+	// a stricter policy — see EmbeddedAuthServerConfig's doc comment.
 	//nolint:lll // field tags require full JSON+YAML names
 	InsecureAllowConfidentialOverLoopbackHTTP bool `json:"insecure_allow_confidential_over_loopback_http,omitempty" yaml:"insecure_allow_confidential_over_loopback_http,omitempty"`
+
+	// DelegateClients declares confidential OAuth clients to register at
+	// authorization-server startup, including clients intended for RFC 8693
+	// token exchange.
+	//
+	// Independent of AllowConfidentialClientRegistration: declaring a client
+	// here does not require or enable self-service confidential DCR, and
+	// setting that flag does not declare or enable any client here. They
+	// govern different endpoints — this field is static configuration the
+	// operator controls directly, while the flag is admission policy for the
+	// unauthenticated /oauth/register endpoint.
+	//
+	// See DelegateClientRunConfig for the per-client field reference.
+	DelegateClients []DelegateClientRunConfig `json:"delegate_clients,omitempty" yaml:"delegate_clients,omitempty"`
+}
+
+// DelegateClientRunConfig declares a pre-provisioned confidential OAuth
+// client for authorization-server startup, so it can act as the client in an
+// RFC 8693 token-exchange request. The secret is always a reference (file or
+// environment variable), never an inline literal. The grant type is fixed to
+// RFC 8693 token exchange internally and is not configurable.
+type DelegateClientRunConfig struct {
+	// ClientID is the OAuth client_id this client presents at the token endpoint.
+	ClientID string `json:"client_id" yaml:"client_id"`
+
+	// ClientSecretFile is the path to a file containing the client secret.
+	// If both this and ClientSecretEnvVar are set, the file takes precedence.
+	ClientSecretFile string `json:"client_secret_file,omitempty" yaml:"client_secret_file,omitempty"`
+
+	// ClientSecretEnvVar is the name of an environment variable containing
+	// the client secret. One of ClientSecretFile or ClientSecretEnvVar is
+	// required.
+	//nolint:lll // field tags require full JSON+YAML names
+	ClientSecretEnvVar string `json:"client_secret_env_var,omitempty" yaml:"client_secret_env_var,omitempty"`
+
+	// Scopes are the OAuth scopes this client may request. Required, and
+	// must be a subset of RunConfig.ScopesSupported: a declared client must
+	// not receive every supported scope just because this was left empty.
+	Scopes []string `json:"scopes" yaml:"scopes"`
+
+	// Audiences are the RFC 8707 resource values this client may request a
+	// token for. Required, and must be a subset of RunConfig.AllowedAudiences:
+	// a declared client must not receive every allowed audience just because
+	// this was left empty.
+	Audiences []string `json:"audiences" yaml:"audiences"`
 }
 
 // Validate checks that the on-disk RunConfig is internally consistent. Called
@@ -212,15 +255,21 @@ func (c *RunConfig) Validate() error {
 	// Also checked by Config.Validate() (same reasoning as
 	// validateBaselineClientScopes below): buildUpstreamConfigs performs live
 	// RFC 7591 registration against upstream IdPs before authserver.New ever
-	// reaches Config.Validate(), so a malformed trusted-issuer config must
+	// reaches Config.Validate(), so a malformed delegate-client config must
 	// fail here, before that side-effecting work runs — not on a crash loop
 	// after it, which would also orphan an upstream registration on every
 	// restart with the default in-memory DCR store.
-	if err := validateTrustedIssuers(c.TrustedIssuers, c.Issuer); err != nil {
+	if err := validateAllowedAudiences(c.AllowedAudiences); err != nil {
+		return err
+	}
+	if err := validateDelegateClients(c.DelegateClients, c.ScopesSupported, c.AllowedAudiences); err != nil {
+		return err
+	}
+	if err := validateTrustedIssuers(c.TrustedIssuers, c.Issuer, c.AllowedAudiences); err != nil {
 		return err
 	}
 	if err := ValidateConfidentialClientTransport(
-		c.AllowConfidentialClientRegistration, c.InsecureAllowHTTP,
+		c.AllowConfidentialClientRegistration || len(c.DelegateClients) > 0, c.InsecureAllowHTTP,
 		c.Issuer, c.InsecureAllowConfidentialOverLoopbackHTTP); err != nil {
 		return err
 	}
@@ -247,6 +296,102 @@ func (c *RunConfig) validateBaselineClientScopes() error {
 		effective = registration.DefaultScopes
 	}
 	return registration.ValidateScopeSubset(c.BaselineClientScopes, effective, "baseline_client_scopes")
+}
+
+func validateAllowedAudiences(audiences []string) error {
+	for _, audience := range audiences {
+		if audience == "" {
+			return fmt.Errorf("allowed_audiences must not contain an empty audience")
+		}
+		if err := oauthserver.ValidateAudienceURI(audience); err != nil {
+			return fmt.Errorf("allowed_audiences contains invalid audience %q: %w", audience, err)
+		}
+	}
+	return nil
+}
+
+// validateDelegateClients validates the structural and narrowing invariants for
+// RunConfig.DelegateClients. Scopes and audiences are required and must be
+// subsets of the server-supported values so a declared client never defaults
+// to every supported scope or audience.
+func validateDelegateClients(
+	clients []DelegateClientRunConfig, scopesSupported, allowedAudiences []string,
+) error {
+	effectiveScopes := scopesSupported
+	if len(effectiveScopes) == 0 {
+		effectiveScopes = registration.DefaultScopes
+	}
+
+	seen := make(map[string]struct{}, len(clients))
+	for _, client := range clients {
+		if client.ClientID == "" {
+			return fmt.Errorf("delegate_clients: client_id is required")
+		}
+		if _, ok := seen[client.ClientID]; ok {
+			return fmt.Errorf("delegate_clients: duplicate client_id %q", client.ClientID)
+		}
+		seen[client.ClientID] = struct{}{}
+
+		if client.ClientSecretFile == "" && client.ClientSecretEnvVar == "" {
+			return fmt.Errorf(
+				"delegate_clients: client_id %q: client_secret_file or client_secret_env_var is required", client.ClientID)
+		}
+		if len(client.Scopes) == 0 {
+			return fmt.Errorf("delegate_clients: client_id %q: scopes is required", client.ClientID)
+		}
+		if err := registration.ValidateScopeSubset(
+			client.Scopes, effectiveScopes, fmt.Sprintf("delegate_clients[%s].scopes", client.ClientID)); err != nil {
+			return err
+		}
+		if len(client.Audiences) == 0 {
+			return fmt.Errorf("delegate_clients: client_id %q: audiences is required", client.ClientID)
+		}
+		for _, audience := range client.Audiences {
+			if !slices.Contains(allowedAudiences, audience) {
+				return fmt.Errorf(
+					"delegate_clients: client_id %q: audience %q is not in allowed_audiences", client.ClientID, audience)
+			}
+		}
+	}
+	return nil
+}
+
+// minDelegateClientSecretLength is the minimum accepted length for a resolved
+// delegate-client secret. Delegate-client secrets come from the operator (a
+// file or environment variable) rather than being minted by this server's own
+// DCR path, so — unlike SHA256Hasher's DCR-issued-secret assumption (see that
+// type's doc comment) — nothing else guarantees they carry meaningful
+// entropy. 32 matches the byte length GenerateClientSecret uses for DCR
+// secrets (32 bytes of crypto/rand, base64url-encoded), so this floor accepts
+// anything at that scale without requiring a specific encoding.
+const minDelegateClientSecretLength = 32
+
+// validateResolvedDelegateClients validates resolved runtime delegate clients.
+// The resolved secret must be nonempty and at least minDelegateClientSecretLength
+// characters, because Config callers bypass secret resolution and
+// RunConfig.Validate, and unlike DCR-minted secrets, a delegate-client secret's
+// entropy is never otherwise checked.
+func validateResolvedDelegateClients(
+	clients []DelegateClient, scopesSupported, allowedAudiences []string,
+) error {
+	runClients := make([]DelegateClientRunConfig, len(clients))
+	for i, client := range clients {
+		if client.ClientSecret == "" {
+			return fmt.Errorf("delegate_clients: client_id %q: resolved client secret is required", client.ClientID)
+		}
+		if len(client.ClientSecret) < minDelegateClientSecretLength {
+			return fmt.Errorf(
+				"delegate_clients: client_id %q: resolved client secret must be at least %d characters",
+				client.ClientID, minDelegateClientSecretLength)
+		}
+		runClients[i] = DelegateClientRunConfig{
+			ClientID:           client.ClientID,
+			ClientSecretEnvVar: "resolved",
+			Scopes:             client.Scopes,
+			Audiences:          client.Audiences,
+		}
+	}
+	return validateDelegateClients(runClients, scopesSupported, allowedAudiences)
 }
 
 // CIMDRunConfig controls client_id metadata document (CIMD) support.
@@ -786,9 +931,9 @@ type Config struct {
 	InsecureAllowHTTP bool
 
 	// TrustedIssuers lists external OIDC issuers whose tokens are accepted as
-	// subject tokens during RFC 8693 token exchange. See the identically
-	// named field on RunConfig for the full doc comment, including the
-	// fail-closed AllowedActors semantics and the audience/scope constraints
+	// RFC 8693 subject tokens or RFC 7523 JWT-bearer assertions. See the
+	// identically named field on RunConfig for the full doc comment, including
+	// the fail-closed AllowedActors semantics and the audience/scope constraints
 	// operators must account for.
 	TrustedIssuers []tokenexchange.TrustedIssuer
 
@@ -803,10 +948,32 @@ type Config struct {
 	// semantics and rationale.
 	ForceConfidentialRedirectURIs []string
 
-	// InsecureAllowConfidentialOverLoopbackHTTP opts in to confidential-client
-	// DCR when Issuer is a plain-HTTP loopback URL. See the identically named
-	// field on RunConfig for the full semantics and rationale.
+	// InsecureAllowConfidentialOverLoopbackHTTP opts in to confidential clients
+	// when Issuer is a plain-HTTP loopback URL. See the identically named field
+	// on RunConfig for the full semantics and rationale.
 	InsecureAllowConfidentialOverLoopbackHTTP bool
+
+	// DelegateClients are pre-provisioned confidential OAuth clients in their
+	// resolved runtime form. ClientSecret has already been read from its file
+	// or environment-variable reference. See RunConfig.DelegateClients for the
+	// serialized configuration.
+	DelegateClients []DelegateClient
+}
+
+// DelegateClient is the resolved form of DelegateClientRunConfig: the secret
+// has already been read from its file or environment variable reference.
+type DelegateClient struct {
+	// ClientID is the OAuth client_id this client presents at the token endpoint.
+	ClientID string
+
+	// ClientSecret is the resolved (plaintext) client secret.
+	ClientSecret string //nolint:gosec // G117: field legitimately holds sensitive data
+
+	// Scopes are the OAuth scopes this client may request.
+	Scopes []string
+
+	// Audiences are the RFC 8707 resource values this client may request a token for.
+	Audiences []string
 }
 
 // Validate checks that the Config is valid.
@@ -851,20 +1018,18 @@ func (c *Config) Validate() error {
 		return fmt.Errorf("at least one allowed audience is required for MCP compliance (RFC 8707 resource parameter validation)")
 	}
 
+	if err := validateAllowedAudiences(c.AllowedAudiences); err != nil {
+		return err
+	}
+
 	// BaselineClientScopes must be a subset of ScopesSupported. RunConfig.Validate
 	// catches this for the YAML-loaded path, but a caller that constructs Config
 	// directly bypasses that; failing here gives them a clearer call stack than
 	// the inner validateParams in the provider layer.
 	// When ScopesSupported is empty, use DefaultScopes as the superset (matching
 	// what applyDefaults substitutes at startup).
-	{
-		effective := c.ScopesSupported
-		if len(effective) == 0 {
-			effective = registration.DefaultScopes
-		}
-		if err := registration.ValidateScopeSubset(c.BaselineClientScopes, effective, "baseline_client_scopes"); err != nil {
-			return err
-		}
+	if err := c.validateBaselineClientScopes(); err != nil {
+		return err
 	}
 
 	if err := c.validateCIMDBounds(); err != nil {
@@ -875,11 +1040,11 @@ func (c *Config) Validate() error {
 		return err
 	}
 
-	// RunConfig.Validate() also runs this (see the comment there for why:
-	// buildUpstreamConfigs's live DCR registration happens before this method
-	// is reached), but a caller that constructs Config directly bypasses that,
-	// same as the BaselineClientScopes check above.
-	if err := validateTrustedIssuers(c.TrustedIssuers, c.Issuer); err != nil {
+	// RunConfig.Validate() also runs these checks (see the comment there for
+	// why: buildUpstreamConfigs's live DCR registration happens before this
+	// method is reached), but a caller that constructs Config directly bypasses
+	// that, same as the BaselineClientScopes check above.
+	if err := c.validateDelegationConfig(); err != nil {
 		return err
 	}
 	c.warnTrustedIssuerAudiences()
@@ -891,13 +1056,32 @@ func (c *Config) Validate() error {
 	return nil
 }
 
-// validateConfidentialClientConfig groups the two confidential-client DCR
-// checks (cleartext-transport rejection and the force-confidential-redirect-
-// uris override) behind a single call site, keeping Config.Validate's own
-// cyclomatic complexity down.
+// validateBaselineClientScopes ensures every baseline scope is advertised by
+// ScopesSupported. When it is empty, applyDefaults supplies DefaultScopes.
+func (c *Config) validateBaselineClientScopes() error {
+	effective := c.ScopesSupported
+	if len(effective) == 0 {
+		effective = registration.DefaultScopes
+	}
+	return registration.ValidateScopeSubset(c.BaselineClientScopes, effective, "baseline_client_scopes")
+}
+
+// validateDelegationConfig validates delegate clients and trusted issuers for
+// callers that construct a runtime Config directly.
+func (c *Config) validateDelegationConfig() error {
+	if err := validateResolvedDelegateClients(c.DelegateClients, c.ScopesSupported, c.AllowedAudiences); err != nil {
+		return err
+	}
+	return validateTrustedIssuers(c.TrustedIssuers, c.Issuer, c.AllowedAudiences)
+}
+
+// validateConfidentialClientConfig groups cleartext-transport validation for
+// all confidential clients and the force-confidential-redirect-uris override
+// behind a single call site, keeping Config.Validate's own cyclomatic
+// complexity down.
 func (c *Config) validateConfidentialClientConfig() error {
 	if err := ValidateConfidentialClientTransport(
-		c.AllowConfidentialClientRegistration, c.InsecureAllowHTTP,
+		c.AllowConfidentialClientRegistration || len(c.DelegateClients) > 0, c.InsecureAllowHTTP,
 		c.Issuer, c.InsecureAllowConfidentialOverLoopbackHTTP); err != nil {
 		return err
 	}
@@ -935,8 +1119,8 @@ func (c *Config) validateDelegationTokenLifespan() error {
 }
 
 // validateTrustedIssuers checks every configured TrustedIssuer as early as
-// RunConfig.Validate can catch it, so a bad actor_claim or duplicate
-// issuer_url fails before buildUpstreamConfigs performs live RFC 7591
+// RunConfig.Validate can catch it, so a bad actor_claim, actor_matcher, or
+// duplicate issuer_url fails before buildUpstreamConfigs performs live RFC 7591
 // registration against upstream IdPs — not after it, on a crash loop that
 // orphans an upstream registration on every restart. Shared by
 // RunConfig.Validate() and Config.Validate() (mirrors
@@ -946,9 +1130,9 @@ func (c *Config) validateDelegationTokenLifespan() error {
 // issuer_url is checked by validateTrustedIssuerURL, jwks_url (when set) by
 // validateJWKSEndpointURL — see their doc comments for the URL rules each
 // enforces. The remaining structural checks (required fields, self-issuer
-// collision, duplicate issuers, ActorClaim reachability) run via
-// tokenexchange.ValidateTrustedIssuers.
-func validateTrustedIssuers(issuers []tokenexchange.TrustedIssuer, selfIssuer string) error {
+// collision, duplicate issuers, ActorClaim reachability, and ActorMatcher
+// compilation) run via tokenexchange.ValidateTrustedIssuers.
+func validateTrustedIssuers(issuers []tokenexchange.TrustedIssuer, selfIssuer string, allowedAudiences []string) error {
 	for _, ti := range issuers {
 		if err := validateTrustedIssuerURL(ti.IssuerURL, ti.InsecureAllowHTTP); err != nil {
 			return fmt.Errorf("trusted_issuers: issuer_url %q: %w", ti.IssuerURL, err)
@@ -980,8 +1164,22 @@ func validateTrustedIssuers(issuers []tokenexchange.TrustedIssuer, selfIssuer st
 			}
 		}
 	}
-	if err := tokenexchange.ValidateTrustedIssuers(issuers, selfIssuer); err != nil {
+	if err := tokenexchange.ValidateTrustedIssuers(issuers, selfIssuer, allowedAudiences); err != nil {
 		return fmt.Errorf("trusted_issuers: %w", err)
+	}
+	for _, issuer := range issuers {
+		if issuer.JWTBearerGrant == nil {
+			continue
+		}
+		for _, binding := range issuer.JWTBearerGrant.SubjectBindings {
+			for _, resource := range binding.AllowedResources {
+				if !slices.Contains(allowedAudiences, resource) {
+					return fmt.Errorf(
+						"trusted_issuers: issuer_url %q: jwt_bearer_grant subject %q resource %q is not in allowed_audiences",
+						issuer.IssuerURL, binding.Subject, resource)
+				}
+			}
+		}
 	}
 	return nil
 }
@@ -1212,7 +1410,7 @@ func validateUpstreamType(up *UpstreamConfig, insecureAllowHTTP bool) error {
 		if up.OAuth2Config != nil {
 			return fmt.Errorf("upstream %q: oauth2_config must not be set when type is %q", up.Name, up.Type)
 		}
-		if err := up.OIDCConfig.ValidateWithInsecure(insecureAllowHTTP); err != nil {
+		if err := up.OIDCConfig.ValidateWithInsecure(insecureAllowHTTP || up.OIDCConfig.InsecureAllowHTTP); err != nil {
 			return fmt.Errorf("upstream %q: %w", up.Name, err)
 		}
 	case UpstreamProviderTypeOAuth2:
@@ -1222,7 +1420,7 @@ func validateUpstreamType(up *UpstreamConfig, insecureAllowHTTP bool) error {
 		if up.OIDCConfig != nil {
 			return fmt.Errorf("upstream %q: oidc_config must not be set when type is %q", up.Name, up.Type)
 		}
-		if err := up.OAuth2Config.ValidateWithInsecure(insecureAllowHTTP); err != nil {
+		if err := up.OAuth2Config.ValidateWithInsecure(insecureAllowHTTP || up.OAuth2Config.InsecureAllowHTTP); err != nil {
 			return fmt.Errorf("upstream %q: %w", up.Name, err)
 		}
 	default:
@@ -1280,28 +1478,16 @@ func (c *Config) applyDefaults() error {
 	return nil
 }
 
-// ValidateConfidentialClientTransport rejects the two ways confidential-client
-// DCR can end up minting client secrets over cleartext HTTP:
-// /oauth/register is unauthenticated, so either one exposes the secret to
-// anyone on the network path.
+// ValidateConfidentialClientTransport rejects cleartext HTTP configurations
+// when any confidential client is enabled, whether it is admitted through DCR
+// or statically declared. Static clients do not enable DCR; they share this
+// validation because their secrets are sent to the token endpoint.
 //
 //  1. insecureAllowHTTP is set: the server accepts a plain-HTTP issuer for
-//     any host, not just loopback. Always rejected when combined with
-//     allowConfidential — there is no opt-in for this one.
+//     any host, not just loopback. Always rejected for confidential clients.
 //  2. issuer is a plain-HTTP loopback URL (e.g. "http://localhost:18080").
-//     validateIssuerURL permits this independently of insecureAllowHTTP,
-//     because a loopback issuer is the shape of local CLI development,
-//     where "the traffic stays on this machine" is actually true and
-//     setting up TLS just to run `thv` locally would be needless friction.
-//     That assumption breaks down in a Kubernetes deployment, though — the
-//     server there still binds all interfaces, and "localhost" in the
-//     issuer string is just a string; it does not make the listener
-//     loopback-only. Because forcing TLS onto every loopback deployment
-//     would just push operators toward insecureAllowHTTP instead — a worse
-//     outcome, since that also disables the host check — this case is
-//     rejected by default but stays opt-in-able via
-//     insecureAllowConfidentialOverLoopbackHTTP, so the operator makes the
-//     tradeoff explicitly rather than getting it for free.
+//     This is rejected by default but may be explicitly enabled with
+//     insecureAllowConfidentialOverLoopbackHTTP.
 func ValidateConfidentialClientTransport(
 	allowConfidential, insecureAllowHTTP bool,
 	issuer string, insecureAllowConfidentialOverLoopbackHTTP bool,
@@ -1311,7 +1497,7 @@ func ValidateConfidentialClientTransport(
 	}
 	if insecureAllowHTTP {
 		return fmt.Errorf("allow_confidential_client_registration cannot be combined with insecure_allow_http: " +
-			"this would issue client secrets over cleartext HTTP on an unauthenticated registration endpoint")
+			"confidential clients would send secrets over cleartext HTTP")
 	}
 	if insecureAllowConfidentialOverLoopbackHTTP {
 		return nil
@@ -1320,9 +1506,8 @@ func ValidateConfidentialClientTransport(
 	// check here if parsing fails.
 	if parsed, err := url.Parse(issuer); err == nil &&
 		parsed.Scheme == "http" && networking.IsLocalhost(parsed.Host) {
-		return fmt.Errorf("allow_confidential_client_registration cannot be combined with a plain-HTTP loopback "+
-			"issuer (%q) unless insecure_allow_confidential_over_loopback_http is set: /oauth/register is "+
-			"unauthenticated, so this would issue client secrets over cleartext even on a purely local deployment",
+		return fmt.Errorf("allow_confidential_client_registration cannot be combined with a plain-HTTP loopback issuer (%q) unless "+
+			"insecure_allow_confidential_over_loopback_http is set: confidential clients would send secrets over cleartext HTTP",
 			issuer)
 	}
 	return nil

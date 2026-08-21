@@ -65,6 +65,18 @@ spec:
           spec:
             description: MCPRemoteProxySpec defines the desired state of MCPRemoteProxy
             properties:
+              allowPrivateEndpoint:
+                default: false
+                description: |-
+                  AllowPrivateEndpoint permits RemoteURL to point at a private or
+                  in-cluster endpoint: RFC 1918 and IPv6 unique-local addresses, and
+                  hostnames ending in "cluster.local". (Bare ".svc" hostnames are never
+                  blocked, since no DNS resolution is performed.) Enable this to reach a
+                  co-located in-cluster backend in-mesh so the backend's workload-identity
+                  authorization policy still applies. Loopback, link-local, cloud-metadata,
+                  and kubernetes.default endpoints remain blocked regardless of this
+                  setting.
+                type: boolean
               audit:
                 description: Audit defines audit logging configuration for the proxy
                 properties:
@@ -803,6 +815,18 @@ spec:
           spec:
             description: MCPRemoteProxySpec defines the desired state of MCPRemoteProxy
             properties:
+              allowPrivateEndpoint:
+                default: false
+                description: |-
+                  AllowPrivateEndpoint permits RemoteURL to point at a private or
+                  in-cluster endpoint: RFC 1918 and IPv6 unique-local addresses, and
+                  hostnames ending in "cluster.local". (Bare ".svc" hostnames are never
+                  blocked, since no DNS resolution is performed.) Enable this to reach a
+                  co-located in-cluster backend in-mesh so the backend's workload-identity
+                  authorization policy still applies. Loopback, link-local, cloud-metadata,
+                  and kubernetes.default endpoints remain blocked regardless of this
+                  setting.
+                type: boolean
               audit:
                 description: Audit defines audit logging configuration for the proxy
                 properties:

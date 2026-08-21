@@ -328,6 +328,15 @@ func TestValidateDCRRequest(t *testing.T) {
 			expectedGrants: []string{"authorization_code"},
 		},
 		{
+			name: "token exchange grant rejected",
+			request: &oauthproto.DynamicClientRegistrationRequest{
+				RedirectURIs: []string{"http://127.0.0.1/callback"},
+				GrantTypes:   []string{"authorization_code", oauthproto.GrantTypeTokenExchange},
+			},
+			expectError: true,
+			errorCode:   DCRErrorInvalidClientMetadata,
+		},
+		{
 			name: "grant_types with unsupported type rejected",
 			request: &oauthproto.DynamicClientRegistrationRequest{
 				RedirectURIs: []string{"http://127.0.0.1/callback"},

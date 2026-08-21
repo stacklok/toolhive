@@ -55,15 +55,20 @@ func (*Default) VerifyGit(
 		return nil, fmt.Errorf("%w: %w", ErrSignatureInvalid, err)
 	}
 
-	identity, err := gitIdentityFromCertificate(cert)
+	observed, err := gitIdentityFromCertificate(cert)
 	if err != nil {
 		return nil, fmt.Errorf("%w: %w", ErrSignatureInvalid, err)
 	}
-	if expected != nil && !gitIdentityMatches(identity, expected) {
-		return nil, fmt.Errorf("%w: commit is signed by a different identity than %q",
-			ErrSignerMismatch, expected.SignerIdentity)
+	if expected != nil {
+		if !gitIdentityMatches(observed.Identity, expected) {
+			return nil, fmt.Errorf("%w: commit is signed by a different identity than %q",
+				ErrSignerMismatch, expected.SignerIdentity)
+		}
+		if err := checkPinnedCertificateFields(observed, expected); err != nil {
+			return nil, err
+		}
 	}
-	result := resultFromCore(identity, nil)
+	result := resultFromCore(observed, nil)
 	// No transparency-log proof is validated yet (see the doc comment), so
 	// git verification carries a documented assurance gap — marked so the
 	// lock file shows it rather than implying full verification.
@@ -173,21 +178,28 @@ func fulcioPools() (roots, intermediates *x509.CertPool, err error) {
 // certificate, reusing core's identity normalization (GitHub Actions
 // workflow paths, issuer extraction) by summarizing the certificate the
 // same way sigstore-go does for bundle verification results.
-func gitIdentityFromCertificate(cert *x509.Certificate) (coreverifier.Identity, error) {
+//
+// The ref and runner-environment extensions are only present on
+// certificates issued to a CI workload identity; a commit signed
+// interactively (gitsign with a personal OIDC identity) carries neither, and
+// they are recorded empty — which the lock file treats as unconstrained.
+func gitIdentityFromCertificate(cert *x509.Certificate) (observedCertificate, error) {
 	summary, err := certificate.SummarizeCertificate(cert)
 	if err != nil {
-		return coreverifier.Identity{}, fmt.Errorf("summarizing certificate: %w", err)
+		return observedCertificate{}, fmt.Errorf("summarizing certificate: %w", err)
 	}
-	return coreverifier.IdentityFromResult(&verify.VerificationResult{
+	return observedFromResult(&verify.VerificationResult{
 		Signature: &verify.SignatureVerificationResult{Certificate: &summary},
 	})
 }
 
 // gitIdentityMatches compares the observed certificate identity against the
-// lock file's expected provenance. Unlike the OCI path there is no Sigstore
-// policy to bind the identity into, so the comparison is explicit; empty
-// expected fields are not wildcards — SignerIdentity and CertIssuer are
-// always recorded together at trust-on-first-use.
+// lock file's expected provenance — the fields the OCI path binds into its
+// Sigstore policy, which git signatures have no policy to bind into.
+// SignerIdentity and CertIssuer are always recorded together at
+// trust-on-first-use, so an empty expected value there is not a wildcard.
+// The pinned ref and runner class are checked separately, by
+// checkPinnedCertificateFields, on both paths alike.
 func gitIdentityMatches(observed coreverifier.Identity, expected *lockfile.Provenance) bool {
 	if observed.SignerIdentity != expected.SignerIdentity {
 		return false

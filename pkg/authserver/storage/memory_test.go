@@ -20,6 +20,7 @@ package storage
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"net/url"
 	"strconv"
@@ -237,6 +238,37 @@ func TestMemoryStorage_RegisterClient(t *testing.T) {
 		retrieved, err := s.GetClient(ctx, "test-client")
 		require.NoError(t, err)
 		assert.Equal(t, client, retrieved)
+	})
+}
+
+func TestMemoryStorage_RegisterClient_RejectsSyntheticPrefix(t *testing.T) {
+	withStorage(t, func(ctx context.Context, s *MemoryStorage) {
+		client := &mockClient{id: SyntheticClientIDPrefix + "delegate"}
+		err := s.RegisterClient(ctx, client)
+		require.ErrorIs(t, err, ErrReservedClientID)
+
+		_, err = s.GetClient(ctx, client.id)
+		require.ErrorIs(t, err, ErrNotFound)
+	})
+}
+
+func TestMemoryStorage_StaticClientReplacesDCRClient(t *testing.T) {
+	withStorage(t, func(ctx context.Context, s *MemoryStorage) {
+		dcrClient := dcrClient(t, "delegate")
+		require.True(t, registration.DCRIssued(dcrClient))
+		require.NoError(t, s.RegisterClient(ctx, dcrClient))
+
+		staticClient, err := registration.NewStaticDelegateClient(registration.Config{
+			ID: "delegate", Secret: "new-secret", GrantTypes: []string{"urn:ietf:params:oauth:grant-type:token-exchange"},
+			Scopes: []string{"openid"}, Audience: []string{"https://mcp.example"},
+		})
+		require.NoError(t, err)
+		require.NoError(t, s.RegisterClient(ctx, staticClient))
+
+		retrieved, err := s.GetClient(ctx, "delegate")
+		require.NoError(t, err)
+		assert.False(t, registration.DCRIssued(retrieved))
+		assert.NoError(t, registration.SHA256Hasher.Compare(ctx, retrieved.GetHashedSecret(), []byte("new-secret")))
 	})
 }
 
@@ -493,6 +525,79 @@ func TestMemoryStorage_ClientAssertionJWT(t *testing.T) {
 			s.mu.RUnlock()
 			assert.False(t, exists, "expired JTI should have been cleaned up")
 		})
+	})
+}
+
+func TestMemoryStorage_ConsumeAssertionJWT(t *testing.T) {
+	withStorage(t, func(ctx context.Context, s *MemoryStorage) {
+		exp := time.Now().Add(time.Hour)
+		require.NoError(t, s.ConsumeAssertionJWT(ctx, "jwt-bearer", "https://issuer.example", "shared-jti", exp))
+		require.ErrorIs(t, s.ConsumeAssertionJWT(ctx, "jwt-bearer", "https://issuer.example", "shared-jti", exp), fosite.ErrJTIKnown)
+
+		for _, assertion := range []struct {
+			purpose string
+			issuer  string
+		}{
+			{purpose: "client-auth", issuer: "https://issuer.example"},
+			{purpose: "jwt-bearer", issuer: "https://other-issuer.example"},
+		} {
+			require.NoError(t, s.ConsumeAssertionJWT(ctx, assertion.purpose, assertion.issuer, "shared-jti", exp))
+		}
+	})
+}
+
+func TestMemoryStorage_ConsumeAssertionJWT_Expired(t *testing.T) {
+	withStorage(t, func(ctx context.Context, s *MemoryStorage) {
+		exp := time.Now().Add(time.Hour)
+		const purpose = "jwt-bearer"
+		const issuer = "https://issuer.example"
+		const jti = "expired-jti"
+		require.NoError(t, s.ConsumeAssertionJWT(ctx, purpose, issuer, jti, exp))
+
+		s.mu.Lock()
+		s.assertionJWTs[assertionJWTKey{purpose: purpose, issuer: issuer, jti: jti}] = time.Now().Add(-time.Second)
+		s.mu.Unlock()
+
+		require.NoError(t, s.ConsumeAssertionJWT(ctx, purpose, issuer, jti, exp))
+	})
+}
+
+func TestMemoryStorage_ConsumeAssertionJWT_Concurrent(t *testing.T) {
+	withStorage(t, func(ctx context.Context, s *MemoryStorage) {
+		const consumers = 32
+		var successes atomic.Int32
+		errs := make(chan error, consumers)
+		var wg sync.WaitGroup
+		wg.Add(consumers)
+		for range consumers {
+			go func() {
+				defer wg.Done()
+				err := s.ConsumeAssertionJWT(ctx, "jwt-bearer", "https://issuer.example", "concurrent-jti", time.Now().Add(time.Hour))
+				if err == nil {
+					successes.Add(1)
+					return
+				}
+				if !errors.Is(err, fosite.ErrJTIKnown) {
+					errs <- err
+				}
+			}()
+		}
+
+		done := make(chan struct{})
+		go func() {
+			wg.Wait()
+			close(done)
+		}()
+		select {
+		case <-done:
+		case <-time.After(5 * time.Second):
+			t.Fatal("timeout waiting for concurrent assertion JWT consumers")
+		}
+		close(errs)
+		for err := range errs {
+			require.NoError(t, err)
+		}
+		assert.Equal(t, int32(1), successes.Load())
 	})
 }
 

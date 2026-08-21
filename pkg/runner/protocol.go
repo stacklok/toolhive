@@ -7,7 +7,6 @@ import (
 	"context"
 	"fmt"
 	"log/slog"
-	"maps"
 	"os"
 	"path/filepath"
 	"strings"
@@ -149,15 +148,6 @@ func createTemplateData(
 	}
 	templateData.RuntimeConfig = runtimeConfig
 
-	// Build-time dependency constraints are interpreted per package
-	// ecosystem; only the uvx builder currently supports them. Reject
-	// rather than silently ignore for the others.
-	if transportType != templates.TransportTypeUVX && len(runtimeConfig.BuildWith) > 0 {
-		return templateData, fmt.Errorf(
-			"--build-with is not supported for %s:// builds (only uvx://)", transportType,
-		)
-	}
-
 	return templateData, nil
 }
 
@@ -173,10 +163,12 @@ func loadRuntimeConfig(
 	transportType templates.TransportType,
 	override *templates.RuntimeConfig,
 ) (*templates.RuntimeConfig, error) {
+	defaults := templates.GetDefaultRuntimeConfig(transportType)
+
 	// If override is provided, merge with defaults before validating
 	if override != nil {
-		merged := mergeRuntimeConfig(transportType, override)
-		if err := merged.Validate(); err != nil {
+		merged := defaults.WithOverrides(override)
+		if err := merged.ValidateFor(transportType); err != nil {
 			return nil, fmt.Errorf("invalid runtime config override: %w", err)
 		}
 		return merged, nil
@@ -185,63 +177,20 @@ func loadRuntimeConfig(
 	// Try loading from user config (merge with defaults, then validate)
 	provider := config.NewProvider()
 	if userConfig, err := provider.GetRuntimeConfig(string(transportType)); err == nil && userConfig != nil {
-		merged := mergeRuntimeConfig(transportType, userConfig)
-		if err := merged.Validate(); err != nil {
+		merged := defaults.WithOverrides(userConfig)
+		if err := merged.ValidateFor(transportType); err != nil {
 			return nil, fmt.Errorf("invalid runtime config in config file for %s: %w", transportType, err)
 		}
 		return merged, nil
 	}
 
-	// Fall back to defaults
-	defaultConfig := templates.GetDefaultRuntimeConfig(transportType)
-	return &defaultConfig, nil
-}
-
-// mergeRuntimeConfig merges an override RuntimeConfig with the defaults for the
-// given transport type. Empty BuilderImage falls back to the default, and
-// AdditionalPackages are merged (defaults first, then unique override entries).
-func mergeRuntimeConfig(transportType templates.TransportType, override *templates.RuntimeConfig) *templates.RuntimeConfig {
-	defaults := templates.GetDefaultRuntimeConfig(transportType)
-
-	merged := &templates.RuntimeConfig{
-		BuilderImage: override.BuilderImage,
+	// Fall back to defaults. GetDefaultRuntimeConfig already returns a value
+	// detached from the package-global RuntimeDefaults, so no further clone
+	// is needed here.
+	if err := defaults.ValidateFor(transportType); err != nil {
+		return nil, fmt.Errorf("invalid default runtime config for %s: %w", transportType, err)
 	}
-	if merged.BuilderImage == "" {
-		merged.BuilderImage = defaults.BuilderImage
-	}
-
-	// Start with default packages, then append any override packages not
-	// already present.
-	seen := make(map[string]bool, len(defaults.AdditionalPackages))
-	merged.AdditionalPackages = append(merged.AdditionalPackages, defaults.AdditionalPackages...)
-	for _, pkg := range defaults.AdditionalPackages {
-		seen[pkg] = true
-	}
-	for _, pkg := range override.AdditionalPackages {
-		if !seen[pkg] {
-			merged.AdditionalPackages = append(merged.AdditionalPackages, pkg)
-			seen[pkg] = true
-		}
-	}
-
-	merged.RuntimeEnv = mergeEnvMaps(defaults.RuntimeEnv, override.RuntimeEnv)
-
-	// BuildWith has no defaults; the override's specifiers are used as-is.
-	merged.BuildWith = override.BuildWith
-
-	return merged
-}
-
-// mergeEnvMaps merges two environment variable maps without mutating either
-// input. Entries in override take precedence over entries in base.
-func mergeEnvMaps(base, override map[string]string) map[string]string {
-	if len(base) == 0 && len(override) == 0 {
-		return nil
-	}
-	merged := make(map[string]string, len(base)+len(override))
-	maps.Copy(merged, base)
-	maps.Copy(merged, override)
-	return merged
+	return &defaults, nil
 }
 
 // addBuildEnvToTemplate loads build environment variables from config and adds them to template data.

@@ -7,9 +7,9 @@ require (
 	github.com/1password/onepassword-sdk-go v0.3.1
 	github.com/alicebob/miniredis/v2 v2.38.0
 	github.com/atotto/clipboard v0.1.4
-	github.com/aws/aws-sdk-go-v2 v1.43.5
-	github.com/aws/aws-sdk-go-v2/config v1.32.36
-	github.com/aws/aws-sdk-go-v2/service/sts v1.45.5
+	github.com/aws/aws-sdk-go-v2 v1.43.7
+	github.com/aws/aws-sdk-go-v2/config v1.32.38
+	github.com/aws/aws-sdk-go-v2/service/sts v1.45.7
 	github.com/cedar-policy/cedar-go v1.8.0
 	github.com/cenkalti/backoff/v5 v5.0.3
 	github.com/charmbracelet/bubbles v1.0.0
@@ -90,7 +90,7 @@ require (
 )
 
 require (
-	github.com/aws/aws-sdk-go-v2/internal/v4a v1.4.37 // indirect
+	github.com/aws/aws-sdk-go-v2/internal/v4a v1.4.39 // indirect
 	github.com/go-openapi/runtime/server-middleware v0.30.0 // indirect
 	github.com/go-openapi/swag/pools v0.27.3 // indirect
 	github.com/jedisct1/go-minisign v0.0.0-20241212093149-d2f9f49435c7 // indirect
@@ -114,16 +114,16 @@ require (
 	github.com/ProtonMail/go-crypto v1.4.1 // indirect
 	github.com/antlr4-go/antlr/v4 v4.13.1 // indirect
 	github.com/asaskevich/govalidator v0.0.0-20230301143203-a9d515a09cc2 // indirect
-	github.com/aws/aws-sdk-go-v2/credentials v1.19.35 // indirect
-	github.com/aws/aws-sdk-go-v2/feature/ec2/imds v1.18.36 // indirect
-	github.com/aws/aws-sdk-go-v2/internal/configsources v1.4.36 // indirect
-	github.com/aws/aws-sdk-go-v2/internal/endpoints/v2 v2.7.36 // indirect
-	github.com/aws/aws-sdk-go-v2/service/internal/accept-encoding v1.13.16 // indirect
-	github.com/aws/aws-sdk-go-v2/service/internal/presigned-url v1.13.36 // indirect
-	github.com/aws/aws-sdk-go-v2/service/signin v1.5.5 // indirect
-	github.com/aws/aws-sdk-go-v2/service/sso v1.33.5 // indirect
-	github.com/aws/aws-sdk-go-v2/service/ssooidc v1.38.5 // indirect
-	github.com/aws/smithy-go v1.27.7 // indirect
+	github.com/aws/aws-sdk-go-v2/credentials v1.19.37 // indirect
+	github.com/aws/aws-sdk-go-v2/feature/ec2/imds v1.18.38 // indirect
+	github.com/aws/aws-sdk-go-v2/internal/configsources v1.4.38 // indirect
+	github.com/aws/aws-sdk-go-v2/internal/endpoints/v2 v2.7.38 // indirect
+	github.com/aws/aws-sdk-go-v2/service/internal/accept-encoding v1.13.17 // indirect
+	github.com/aws/aws-sdk-go-v2/service/internal/presigned-url v1.13.38 // indirect
+	github.com/aws/aws-sdk-go-v2/service/signin v1.5.7 // indirect
+	github.com/aws/aws-sdk-go-v2/service/sso v1.33.7 // indirect
+	github.com/aws/aws-sdk-go-v2/service/ssooidc v1.38.7 // indirect
+	github.com/aws/smithy-go v1.27.8 // indirect
 	github.com/aymanbagabas/go-osc52/v2 v2.0.1 // indirect
 	github.com/beorn7/perks v1.0.1 // indirect
 	github.com/blang/semver v3.5.1+incompatible // indirect

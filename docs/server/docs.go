@@ -152,6 +152,80 @@ const docTemplate = `{
                 },
                 "type": "object"
             },
+            "github_com_stacklok_toolhive-core_registry_types.Skill": {
+                "properties": {
+                    "_meta": {
+                        "additionalProperties": {},
+                        "description": "Meta is an opaque payload with extended meta data details of the skill.",
+                        "type": "object"
+                    },
+                    "allowedTools": {
+                        "description": "AllowedTools is the list of tools that the skill is compatible with.\nThis is experimental.",
+                        "items": {
+                            "type": "string"
+                        },
+                        "type": "array",
+                        "uniqueItems": false
+                    },
+                    "compatibility": {
+                        "description": "Compatibility is the environment requirements of the skill.",
+                        "type": "string"
+                    },
+                    "description": {
+                        "description": "Description is the description of the skill.",
+                        "type": "string"
+                    },
+                    "icons": {
+                        "description": "Icons is the list of icons for the skill.",
+                        "items": {
+                            "$ref": "#/components/schemas/registry.SkillIcon"
+                        },
+                        "type": "array",
+                        "uniqueItems": false
+                    },
+                    "license": {
+                        "description": "License is the SPDX license identifier of the skill.",
+                        "type": "string"
+                    },
+                    "metadata": {
+                        "additionalProperties": {},
+                        "description": "Metadata is the official metadata of the skill as reported in the\nSKILL.md file.",
+                        "type": "object"
+                    },
+                    "name": {
+                        "description": "Name is the name of the skill.\nThe format is that of identifiers, e.g. \"my-skill\".",
+                        "type": "string"
+                    },
+                    "namespace": {
+                        "description": "Namespace is the namespace of the skill.\nThe format is reverse-DNS, e.g. \"io.github.user\".",
+                        "type": "string"
+                    },
+                    "packages": {
+                        "description": "Packages is the list of packages for the skill.",
+                        "items": {
+                            "$ref": "#/components/schemas/registry.SkillPackage"
+                        },
+                        "type": "array",
+                        "uniqueItems": false
+                    },
+                    "repository": {
+                        "$ref": "#/components/schemas/registry.SkillRepository"
+                    },
+                    "status": {
+                        "description": "Status is the status of the skill.\nCan be one of \"active\", \"deprecated\", or \"archived\".",
+                        "type": "string"
+                    },
+                    "title": {
+                        "description": "Title is the title of the skill.\nThis is for human consumption, not an identifier.",
+                        "type": "string"
+                    },
+                    "version": {
+                        "description": "Version is the version of the skill.\nAny non-empty string is valid, but ideally it should be either a\nsemantic version or a commit hash.",
+                        "type": "string"
+                    }
+                },
+                "type": "object"
+            },
             "github_com_stacklok_toolhive_cmd_thv-operator_api_v1beta1.RateLimitConfig": {
                 "description": "RateLimitConfig contains the CRD rate limiting configuration.\nWhen set, rate limiting middleware is added to the proxy middleware chain.",
                 "properties": {
@@ -1629,6 +1703,11 @@ const docTemplate = `{
                             "sse",
                             "streamable-http"
                         ],
+                        "type": "string"
+                    },
+                    "proxy_read_timeout": {
+                        "description": "ProxyReadTimeout bounds reading the entire request (headers + body) on the\nproxy HTTP server, expressed as a Go duration string (e.g. \"30s\", \"1m\").\nEmpty uses the proxy default (30s). Negative durations and values that fail\ntime.ParseDuration are rejected at runtime. Applies to all HTTP transports.\nString (not time.Duration) keeps the wire format unit-explicit.",
+                        "example": "30s",
                         "type": "string"
                     },
                     "publish": {
@@ -3870,7 +3949,7 @@ const docTemplate = `{
                     "skills": {
                         "description": "Skills is the list of skills on the current page",
                         "items": {
-                            "$ref": "#/components/schemas/registry.Skill"
+                            "$ref": "#/components/schemas/github_com_stacklok_toolhive-core_registry_types.Skill"
                         },
                         "type": "array",
                         "uniqueItems": false
@@ -4793,80 +4872,6 @@ const docTemplate = `{
                     },
                     "url": {
                         "description": "URL is the endpoint URL for the remote MCP server (e.g., https://api.example.com/mcp)",
-                        "type": "string"
-                    }
-                },
-                "type": "object"
-            },
-            "registry.Skill": {
-                "properties": {
-                    "_meta": {
-                        "additionalProperties": {},
-                        "description": "Meta is an opaque payload with extended meta data details of the skill.",
-                        "type": "object"
-                    },
-                    "allowedTools": {
-                        "description": "AllowedTools is the list of tools that the skill is compatible with.\nThis is experimental.",
-                        "items": {
-                            "type": "string"
-                        },
-                        "type": "array",
-                        "uniqueItems": false
-                    },
-                    "compatibility": {
-                        "description": "Compatibility is the environment requirements of the skill.",
-                        "type": "string"
-                    },
-                    "description": {
-                        "description": "Description is the description of the skill.",
-                        "type": "string"
-                    },
-                    "icons": {
-                        "description": "Icons is the list of icons for the skill.",
-                        "items": {
-                            "$ref": "#/components/schemas/registry.SkillIcon"
-                        },
-                        "type": "array",
-                        "uniqueItems": false
-                    },
-                    "license": {
-                        "description": "License is the SPDX license identifier of the skill.",
-                        "type": "string"
-                    },
-                    "metadata": {
-                        "additionalProperties": {},
-                        "description": "Metadata is the official metadata of the skill as reported in the\nSKILL.md file.",
-                        "type": "object"
-                    },
-                    "name": {
-                        "description": "Name is the name of the skill.\nThe format is that of identifiers, e.g. \"my-skill\".",
-                        "type": "string"
-                    },
-                    "namespace": {
-                        "description": "Namespace is the namespace of the skill.\nThe format is reverse-DNS, e.g. \"io.github.user\".",
-                        "type": "string"
-                    },
-                    "packages": {
-                        "description": "Packages is the list of packages for the skill.",
-                        "items": {
-                            "$ref": "#/components/schemas/registry.SkillPackage"
-                        },
-                        "type": "array",
-                        "uniqueItems": false
-                    },
-                    "repository": {
-                        "$ref": "#/components/schemas/registry.SkillRepository"
-                    },
-                    "status": {
-                        "description": "Status is the status of the skill.\nCan be one of \"active\", \"deprecated\", or \"archived\".",
-                        "type": "string"
-                    },
-                    "title": {
-                        "description": "Title is the title of the skill.\nThis is for human consumption, not an identifier.",
-                        "type": "string"
-                    },
-                    "version": {
-                        "description": "Version is the version of the skill.\nAny non-empty string is valid, but ideally it should be either a\nsemantic version or a commit hash.",
                         "type": "string"
                     }
                 },
@@ -10032,7 +10037,7 @@ const docTemplate = `{
                         "content": {
                             "application/json": {
                                 "schema": {
-                                    "$ref": "#/components/schemas/registry.Skill"
+                                    "$ref": "#/components/schemas/github_com_stacklok_toolhive-core_registry_types.Skill"
                                 }
                             }
                         },

@@ -124,7 +124,8 @@ thv run uvx://mcp-server \
   "transport": "stdio",
   "host": "127.0.0.1",
   "port": 8080,
-  "proxy_mode": "streamable-http"
+  "proxy_mode": "streamable-http",
+  "proxy_read_timeout": "45s"
 }
 ```
 
@@ -146,6 +147,7 @@ thv run uvx://mcp-server \
 - `target_port`: Container port (SSE/Streamable only)
 - `target_host`: Container host (default: `127.0.0.1`)
 - `proxy_mode`: For stdio: `sse` or `streamable-http`
+- `proxy_read_timeout`: Maximum time to read a complete client request, as a Go duration string; omitted or zero uses the secure 30-second default
 
 **Implementation**: `pkg/runner/config.go`
 

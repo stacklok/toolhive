@@ -71,7 +71,7 @@ func PopulateMiddlewareConfigs(config *RunConfig) error {
 	// effective Host/Port/AllowedOrigins are fully resolved.
 
 	// Body size limit middleware (always present, outermost). See addBodyLimitMiddleware.
-	middlewareConfigs, err := addBodyLimitMiddleware(middlewareConfigs)
+	middlewareConfigs, err := addBodyLimitMiddleware(middlewareConfigs, config.MaxRequestBodySize)
 	if err != nil {
 		return err
 	}
@@ -359,19 +359,34 @@ func addTokenExchangeMiddleware(
 // oversized request body is rejected with 413 before auth, the MCP parser, or any
 // handler buffers it via io.ReadAll — regardless of which builder assembled the chain.
 //
-// Idempotent: if the chain already starts with body-limit, the slice is returned
-// unchanged. Defaults to bodylimit.DefaultMaxRequestBodySize.
-func addBodyLimitMiddleware(middlewares []types.MiddlewareConfig) ([]types.MiddlewareConfig, error) {
-	if len(middlewares) > 0 && middlewares[0].Type == bodylimit.MiddlewareType {
-		return middlewares, nil
+// Existing body-limit entries are replaced so the typed RunConfig field remains
+// authoritative. The relative order of every other middleware is preserved.
+// Zero defaults to bodylimit.DefaultMaxRequestBodySize; negative values are rejected.
+func addBodyLimitMiddleware(
+	middlewares []types.MiddlewareConfig,
+	maxRequestBodySize int64,
+) ([]types.MiddlewareConfig, error) {
+	if maxRequestBodySize < 0 {
+		return nil, fmt.Errorf("max_request_body_size must be non-negative, got %d", maxRequestBodySize)
+	}
+	if maxRequestBodySize == 0 {
+		maxRequestBodySize = bodylimit.DefaultMaxRequestBodySize
 	}
 	bodyLimitConfig, err := types.NewMiddlewareConfig(bodylimit.MiddlewareType, bodylimit.MiddlewareParams{
-		MaxBytes: bodylimit.DefaultMaxRequestBodySize,
+		MaxBytes: maxRequestBodySize,
 	})
 	if err != nil {
 		return nil, fmt.Errorf("failed to create body limit middleware config: %w", err)
 	}
-	return append([]types.MiddlewareConfig{*bodyLimitConfig}, middlewares...), nil
+
+	result := make([]types.MiddlewareConfig, 0, len(middlewares)+1)
+	result = append(result, *bodyLimitConfig)
+	for _, middleware := range middlewares {
+		if middleware.Type != bodylimit.MiddlewareType {
+			result = append(result, middleware)
+		}
+	}
+	return result, nil
 }
 
 // addHeaderForwardMiddleware adds header forward middleware if configured for remote servers

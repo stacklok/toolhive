@@ -348,6 +348,25 @@ func TestCreateRunConfigFromMCPServer(t *testing.T) {
 				assert.Equal(t, "[]", cedarCfg.Options.EntitiesJSON)
 			},
 		},
+		{
+			name:      "max request body size omitted",
+			mcpServer: v1beta1test.NewMCPServer("body-limit-omitted", "test-ns"),
+			//nolint:thelper // We want to see the error at the specific line
+			expected: func(t *testing.T, config *runner.RunConfig) {
+				assert.Zero(t, config.MaxRequestBodySize)
+			},
+		},
+		{
+			name: "with max request body size",
+			mcpServer: v1beta1test.NewMCPServer("body-limit-configured", "test-ns",
+				v1beta1test.Mutate(func(m *mcpv1beta1.MCPServer) {
+					m.Spec.MaxRequestBodySize = 16 << 20
+				})),
+			//nolint:thelper // We want to see the error at the specific line
+			expected: func(t *testing.T, config *runner.RunConfig) {
+				assert.Equal(t, int64(16<<20), config.MaxRequestBodySize)
+			},
+		},
 	}
 
 	for _, tt := range tests {

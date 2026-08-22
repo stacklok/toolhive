@@ -1,4 +1,4 @@
-// SPDX-FileCopyrightText: Copyright 2026 Stacklok, Inc.
+// SPDX-FileCopyrightText: Copyright 2025 Stacklok, Inc.
 // SPDX-License-Identifier: Apache-2.0
 
 package app
@@ -8,7 +8,36 @@ import (
 	"testing"
 
 	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 )
+
+func TestValidateProxyMaxRequestBodySize(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name      string
+		maxBytes  int64
+		wantError bool
+	}{
+		{name: "zero uses default", maxBytes: 0},
+		{name: "positive value", maxBytes: 16 << 20},
+		{name: "negative value", maxBytes: -1, wantError: true},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			err := validateProxyMaxRequestBodySize(tt.maxBytes)
+			if tt.wantError {
+				require.Error(t, err)
+				assert.Contains(t, err.Error(), "max-request-body-size must be non-negative")
+				return
+			}
+			require.NoError(t, err)
+		})
+	}
+}
 
 // TestBuildRemoteAuthFlowConfig_Trust covers the trust flags this function
 // derives. The target URIs are IP literals so no DNS lookup is involved.

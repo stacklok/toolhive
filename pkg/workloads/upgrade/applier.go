@@ -311,6 +311,7 @@ func (a *Applier) buildUpgradedConfig(
 		runner.WithProxyMode(old.ProxyMode),
 		runner.WithCmdArgs(slices.Clone(old.CmdArgs)),
 		runner.WithStateless(old.Stateless),
+		runner.WithMaxRequestBodySize(old.MaxRequestBodySize),
 		runner.WithEndpointPrefix(old.EndpointPrefix),
 		runner.WithRegistrySourceURLs(regAPIURL, regURL),
 		runner.WithRegistryServerName(old.RegistryServerName),
@@ -360,7 +361,7 @@ func (a *Applier) buildUpgradedConfig(
 // round-trip upgrade changes only the image, env/secrets, and registry URLs.
 //
 // SchemaVersion, Image, Name, Group, Transport, Host, Port, TargetPort,
-// Volumes, Secrets, EnvVars, ProxyMode, CmdArgs, Stateless, EndpointPrefix,
+// Volumes, Secrets, EnvVars, ProxyMode, CmdArgs, Stateless, MaxRequestBodySize, EndpointPrefix,
 // network/posture flags, permission profile, container name/labels (standard
 // labels), and registry fields are intentionally NOT copied here: they are
 // produced by the builder above (with image/env/secrets/registry URLs being the

@@ -56,3 +56,21 @@ func TestParseUnixSocketPath_FourSlashAlias(t *testing.T) {
 	require.NoError(t, err)
 	assert.Equal(t, "/tmp/test.sock", got)
 }
+
+func TestParseUnixSocketPath_DriveLetterRejectsDotDot(t *testing.T) {
+	t.Parallel()
+	_, err := ParseUnixSocketPath(`unix:///C:%5Cpath%5C..%5CWindows%5Cthv.sock`)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "..")
+}
+
+func TestParseUnixSocketPathHelpers(t *testing.T) {
+	t.Parallel()
+	_, err := parseUnixSocketPath("")
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "empty")
+
+	_, err = parseUnixSocketPath("relative.sock")
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "absolute")
+}

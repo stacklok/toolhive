@@ -1241,56 +1241,30 @@ func (h *httpBackendClient) modernEnumerate(
 	var resources []mcp.Resource
 	var templates []mcp.ResourceTemplate
 	if caps != nil && caps.Resources != nil {
-		resources, err = modernListAll[mcp.Resource](ctx, hc, endpoint, "resources/list", "resources")
-		switch {
-		case errors.Is(err, errModernTransient):
-			// A transient failure here (errModernTransient: HTTP 408/429/5xx, a
-			// mid-stream read failure, or a transport/network error) — after the
-			// mandatory tools/list has already succeeded — degrades this optional
-			// list instead of failing the whole enumeration; distinct from
-			// -32601, which means the backend does not implement the method at all.
-			slog.Warn("resources/list transiently unavailable; degrading to empty resources list",
-				"backend", target.WorkloadName, "error", err)
-			resources = nil
-		case err != nil:
+		resources, err = modernListOptional[mcp.Resource](
+			ctx, hc, endpoint, "resources/list", "resources", target.WorkloadName, false,
+		)
+		if err != nil {
 			return nil, wrapBackendError(err, target.WorkloadID, "list resources")
 		}
 
 		// Resource templates share the resources capability flag. A backend that
 		// does not implement resources/templates/list (-32601) degrades to an
 		// empty template list, mirroring the Legacy queryResourceTemplates path.
-		templates, err = modernListAll[mcp.ResourceTemplate](ctx, hc, endpoint, "resources/templates/list", "resourceTemplates")
-		switch {
-		case errors.Is(err, mcp.ErrMethodNotFound):
-			templates = nil
-		case errors.Is(err, errModernTransient):
-			// A transient failure here (errModernTransient: HTTP 408/429/5xx, a
-			// mid-stream read failure, or a transport/network error) — after the
-			// mandatory tools/list has already succeeded — degrades this optional
-			// list instead of failing the whole enumeration; distinct from
-			// -32601, which means the backend does not implement the method at all.
-			slog.Warn("resources/templates/list transiently unavailable; degrading to empty template list",
-				"backend", target.WorkloadName, "error", err)
-			templates = nil
-		case err != nil:
+		templates, err = modernListOptional[mcp.ResourceTemplate](
+			ctx, hc, endpoint, "resources/templates/list", "resourceTemplates", target.WorkloadName, true,
+		)
+		if err != nil {
 			return nil, wrapBackendError(err, target.WorkloadID, "list resource templates")
 		}
 	}
 
 	var prompts []mcp.Prompt
 	if caps != nil && caps.Prompts != nil {
-		prompts, err = modernListAll[mcp.Prompt](ctx, hc, endpoint, "prompts/list", "prompts")
-		switch {
-		case errors.Is(err, errModernTransient):
-			// A transient failure here (errModernTransient: HTTP 408/429/5xx, a
-			// mid-stream read failure, or a transport/network error) — after the
-			// mandatory tools/list has already succeeded — degrades this optional
-			// list instead of failing the whole enumeration; distinct from
-			// -32601, which means the backend does not implement the method at all.
-			slog.Warn("prompts/list transiently unavailable; degrading to empty prompts list",
-				"backend", target.WorkloadName, "error", err)
-			prompts = nil
-		case err != nil:
+		prompts, err = modernListOptional[mcp.Prompt](
+			ctx, hc, endpoint, "prompts/list", "prompts", target.WorkloadName, false,
+		)
+		if err != nil {
 			return nil, wrapBackendError(err, target.WorkloadID, "list prompts")
 		}
 	}
@@ -1300,6 +1274,35 @@ func (h *httpBackendClient) modernEnumerate(
 		"tools", len(tools), "resources", len(resources),
 		"resource_templates", len(templates), "prompts", len(prompts))
 	return newCapabilityListFromMCP(target.WorkloadID, tools, resources, templates, prompts), nil
+}
+
+// modernListOptional enumerates an optional capability list via modernListAll.
+// Unlike tools/list — where a failure means the backend is genuinely unusable —
+// an optional list degrades instead of failing the whole enumeration:
+//
+//   - a transient failure (errModernTransient: HTTP 408/429/5xx, a mid-stream
+//     read failure, or a transport/network error), after the mandatory
+//     tools/list has already succeeded, yields an empty list with a WARN;
+//   - a -32601 not-implemented (mcp.ErrMethodNotFound) yields an empty list
+//     when degradeNotFound is set, mirroring the Legacy resources/templates/list
+//     path; resources/list and prompts/list treat it as fatal.
+//
+// Any other error is returned to the caller, which fails the enumeration.
+func modernListOptional[T any](
+	ctx context.Context, hc *http.Client, endpoint, method, itemsField, backend string, degradeNotFound bool,
+) ([]T, error) {
+	items, err := modernListAll[T](ctx, hc, endpoint, method, itemsField)
+	switch {
+	case errors.Is(err, errModernTransient):
+		slog.Warn(method+" transiently unavailable; degrading to empty list",
+			"backend", backend, "error", err)
+		return nil, nil
+	case errors.Is(err, mcp.ErrMethodNotFound) && degradeNotFound:
+		return nil, nil
+	case err != nil:
+		return nil, err
+	}
+	return items, nil
 }
 
 // cursorParams builds the Modern list request params carrying a pagination

@@ -98,8 +98,8 @@ type Manager struct {
 }
 
 // New creates a Manager backed by the given SessionDataStorage and backend
-// registry. It builds the decorating session factory from cfg, wiring the
-// optimizer and composite tool layers internally.
+// registry. It wraps cfg.Base as the session factory and exposes any resolved
+// optimizer factory for the Serve layer to compose with the core tools.
 //
 // An optimizer (FactoryConfig.OptimizerFactory or OptimizerConfig) requires
 // FactoryConfig.AdvertiseFromCore; New rejects the combination otherwise. The
@@ -135,8 +135,8 @@ func New(
 		return nil, nil, err
 	}
 
-	// Build the Manager first so we can reference sm.Terminate and sm.sessions
-	// directly in closures, eliminating the forward-reference variable pattern.
+	// Build the Manager first so cache callbacks can reference sm.loadSession,
+	// sm.checkSession, and sm.sessions without a forward-reference variable.
 	sm := &Manager{
 		storage:       storage,
 		backendReg:    backendRegistry,

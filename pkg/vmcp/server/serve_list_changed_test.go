@@ -378,7 +378,7 @@ func TestListChangedResyncWorker_CoalescesAndNonBlocking(t *testing.T) {
 
 	w := &listChangedResyncWorker{
 		baseCtx: context.Background(),
-		run: func(context.Context) {
+		run: func(context.Context, bool) {
 			n := inFlight.Add(1)
 			for {
 				m := maxSeen.Load()
@@ -395,7 +395,7 @@ func TestListChangedResyncWorker_CoalescesAndNonBlocking(t *testing.T) {
 	}
 
 	// First trigger starts the (blocked) worker goroutine.
-	w.trigger()
+	w.trigger(true)
 	select {
 	case <-firstStarted:
 	case <-time.After(5 * time.Second):
@@ -405,7 +405,7 @@ func TestListChangedResyncWorker_CoalescesAndNonBlocking(t *testing.T) {
 	// While the first run is blocked, fire many more triggers. Each must return
 	// immediately (non-blocking) and collapse into a single dirty re-run.
 	for range 50 {
-		w.trigger()
+		w.trigger(true)
 	}
 
 	close(release) // let the first run finish; one coalesced re-run should follow
@@ -464,7 +464,7 @@ func TestRunListChangedResync(t *testing.T) {
 					sess = capsSess
 				}
 
-				srv.runListChangedResync(context.Background(), "sess-1", sess, identity, fwd, tc.kind)
+				srv.runListChangedResync(context.Background(), "sess-1", sess, identity, fwd, tc.kind, true)
 
 				assert.Equal(t, int32(0), fc.invalidateCacheCalls.Load(), "terminated session must not invalidate the cache")
 				assert.Equal(t, int32(0), fc.listToolsCalls.Load(), "terminated session must not re-aggregate")
@@ -503,7 +503,7 @@ func TestRunListChangedResync(t *testing.T) {
 					sess = capsSess
 				}
 
-				srv.runListChangedResync(context.Background(), "sess-1", sess, identity, fwd, tc.kind)
+				srv.runListChangedResync(context.Background(), "sess-1", sess, identity, fwd, tc.kind, true)
 
 				assert.Equal(t, int32(1), fc.invalidateCacheCalls.Load(), "live session must invalidate the cache once")
 

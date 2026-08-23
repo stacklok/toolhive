@@ -15,6 +15,7 @@ import (
 	"github.com/stacklok/toolhive-core/mcpcompat/mcp"
 	"github.com/stacklok/toolhive-core/mcpcompat/server"
 	"github.com/stacklok/toolhive/pkg/vmcp"
+	"github.com/stacklok/toolhive/pkg/vmcp/health"
 	"github.com/stacklok/toolhive/pkg/vmcp/optimizer"
 	vmcpsession "github.com/stacklok/toolhive/pkg/vmcp/session"
 )
@@ -23,7 +24,10 @@ import (
 // that a backend health change fans out to a registered session: its tool
 // store is REPLACED with the freshly core-derived set (gaining a recovered
 // backend's tool and dropping a failed backend's tool) and the capability
-// cache is invalidated so the re-derivation sweeps the new healthy set.
+// cache is invalidated exactly once, by the listener — the per-run purge is
+// skipped on the health path (the cache key already varies with the
+// health-filtered backend-ID set), so sibling sessions can share the entry
+// the first sweep repopulates.
 func TestResyncSessionsOnBackendHealthChange_ResyncsLiveSession(t *testing.T) {
 	t.Parallel()
 
@@ -51,8 +55,40 @@ func TestResyncSessionsOnBackendHealthChange_ResyncsLiveSession(t *testing.T) {
 	assert.Contains(t, got, "kept")
 	assert.Contains(t, got, "recovered", "the recovered backend's tool must be gained")
 	assert.NotContains(t, got, "failed", "the failed backend's tool must be dropped")
-	assert.GreaterOrEqual(t, fc.invalidateCacheCalls.Load(), int32(1),
-		"resync must invalidate the capability cache so the re-derivation sweeps the new healthy set")
+	assert.Equal(t, int32(1), fc.invalidateCacheCalls.Load(),
+		"the fan-out must purge the capability cache exactly once per delivery — in the listener, not per session run")
+}
+
+// TestResyncSessionsOnBackendHealthChange_PurgesOncePerDelivery verifies the
+// purge economics of the fan-out: one delivery purges the shared capability
+// cache once, no matter how many live sessions it triggers — N per-run purges
+// would each evict what a sibling session's sweep just repopulated, forcing N
+// full backend sweeps where later same-identity sessions could share one.
+func TestResyncSessionsOnBackendHealthChange_PurgesOncePerDelivery(t *testing.T) {
+	t.Parallel()
+
+	fc := &fakeCore{tools: []vmcp.Tool{{Name: "t"}}}
+	srv := &Server{
+		core:           fc,
+		vmcpSessionMgr: &stubSessionManager{alive: true},
+		resyncBaseCtx:  context.Background(),
+	}
+
+	sessions := []*fakeToolsSession{{id: "sess-1"}, {id: "sess-2"}, {id: "sess-3"}}
+	for _, sess := range sessions {
+		_, toolsWorker := srv.buildListChangedSink(sess.id, sess, nil, nil)
+		srv.healthResync.add(sess.id, toolsWorker)
+	}
+
+	srv.resyncSessionsOnBackendHealthChange(1)
+
+	for _, sess := range sessions {
+		sess := sess
+		require.Eventually(t, func() bool { return sess.setToolsCalls() > 0 },
+			2*time.Second, 10*time.Millisecond, "every registered session must be resynced")
+	}
+	assert.Equal(t, int32(1), fc.invalidateCacheCalls.Load(),
+		"one delivery must purge once, not once per session")
 }
 
 // setToolsCalls returns the fake's SetSessionTools call count under its lock,
@@ -225,6 +261,79 @@ func TestPruneOnTerminateSessionIDManager(t *testing.T) {
 			}
 		})
 	}
+}
+
+// registrationStubSessionManager extends stubSessionManager with a working
+// CreateSession so handleSessionRegistrationImpl can run against it.
+type registrationStubSessionManager struct {
+	stubSessionManager
+}
+
+func (*registrationStubSessionManager) CreateSession(
+	context.Context, string, vmcpsession.ListChangedSink,
+) (vmcpsession.MultiSession, error) {
+	return nil, nil
+}
+
+// healthEnabledCore wraps fakeCore (whose BackendHealth returns nil) with a
+// non-nil reporter, so tests can exercise the health-monitoring-enabled side
+// of the registration gate.
+type healthEnabledCore struct {
+	*fakeCore
+	reporter health.Reporter
+}
+
+func (c *healthEnabledCore) BackendHealth() health.Reporter { return c.reporter }
+
+// TestHandleSessionRegistration_HealthResyncRegistrationGate verifies that a
+// passthrough session's tools resync worker joins the health fan-out registry
+// only when health monitoring is enabled. With no monitor there is no OnChange
+// subscription (see Serve), so no fan-out would ever run the registry's lazy
+// prune — a session ending without a server-observed Terminate (TTL expiry,
+// node-local cache eviction) would retain its worker closure forever.
+func TestHandleSessionRegistration_HealthResyncRegistrationGate(t *testing.T) {
+	t.Parallel()
+
+	newReporter := func(t *testing.T) health.Reporter {
+		t.Helper()
+		mon, err := health.NewMonitor(nil, nil, health.MonitorConfig{
+			CheckInterval:      time.Minute,
+			UnhealthyThreshold: 1,
+			Timeout:            time.Second,
+		})
+		require.NoError(t, err)
+		return mon
+	}
+
+	t.Run("health monitoring enabled registers the session", func(t *testing.T) {
+		t.Parallel()
+
+		srv := &Server{
+			core:           &healthEnabledCore{fakeCore: &fakeCore{}, reporter: newReporter(t)},
+			vmcpSessionMgr: &registrationStubSessionManager{},
+			resyncBaseCtx:  context.Background(),
+		}
+
+		require.NoError(t, srv.handleSessionRegistrationImpl(context.Background(), &fakeToolsSession{id: "sess-1"}))
+
+		assert.Len(t, srv.healthResync.snapshot(), 1,
+			"passthrough session must join the health fan-out registry when a monitor exists")
+	})
+
+	t.Run("health monitoring disabled skips registration", func(t *testing.T) {
+		t.Parallel()
+
+		srv := &Server{
+			core:           &fakeCore{}, // BackendHealth() returns nil: monitoring disabled
+			vmcpSessionMgr: &registrationStubSessionManager{},
+			resyncBaseCtx:  context.Background(),
+		}
+
+		require.NoError(t, srv.handleSessionRegistrationImpl(context.Background(), &fakeToolsSession{id: "sess-1"}))
+
+		assert.Empty(t, srv.healthResync.snapshot(),
+			"with no monitor nothing ever triggers the fan-out or its lazy prune, so the entry would leak")
+	})
 }
 
 // TestHealthResyncRegistry_AddRemoveSnapshot covers the registry's zero-value

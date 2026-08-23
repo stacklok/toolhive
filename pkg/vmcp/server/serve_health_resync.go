@@ -34,9 +34,11 @@ import (
 // for backend-health-driven fan-out. The zero value is usable.
 //
 // Lifecycle: a session is added after registration succeeds
-// (handleSessionRegistrationImpl; passthrough mode only — optimizer-mode
-// sessions are never registered because the fan-out is a no-op for them in
-// PR1) and removed eagerly on every termination
+// (handleSessionRegistrationImpl; passthrough mode with health monitoring
+// enabled only — optimizer-mode sessions are never registered because the
+// fan-out is a no-op for them in PR1, and with health monitoring disabled
+// there is no OnChange subscriber, so nothing would ever trigger the fan-out
+// or run the lazy prune below) and removed eagerly on every termination
 // path the server observes — registration failure, binding-failure
 // termination, and SDK-initiated termination (HTTP DELETE), the last via
 // pruneOnTerminateSessionIDManager. Sessions that end without any Terminate
@@ -103,10 +105,17 @@ func (r *healthResyncRegistry) snapshot() []*listChangedResyncWorker {
 }
 
 // resyncSessionsOnBackendHealthChange is the Monitor.OnChange listener Serve
-// registers: it triggers a tools resync for every registered session. The
-// monitor already debounces delivery and each per-session worker coalesces
-// concurrent triggers, so a burst of health transitions costs each session at
-// most one in-flight re-derivation (plus one queued follow-up).
+// registers: it purges the shared capability cache once, then triggers a tools
+// resync for every registered session. The monitor already debounces delivery
+// and each per-session worker coalesces concurrent triggers, so a burst of
+// health transitions costs each session at most one in-flight re-derivation
+// (plus one queued follow-up). That is a PER-SESSION bound, not a bound on
+// total work: one delivery still fans out to up to len(workers) concurrent
+// re-derivations, each a full backend sweep on a cache miss. Sessions sharing
+// an identity and forwarded-header set can hit the entry an earlier sibling's
+// sweep populated (the per-run purge is skipped on this path — see
+// listChangedResyncWorker.trigger), but there is no singleflight, so
+// same-key sweeps that start together may still each hit the backends.
 //
 // generation is the monitor's change counter; it is logged for correlation
 // only — the resync always re-derives from the current health view, so a
@@ -123,10 +132,21 @@ func (s *Server) resyncSessionsOnBackendHealthChange(generation uint64) {
 		return
 	}
 
+	// Purge the shared capability cache ONCE per delivery, before the fan-out,
+	// instead of once per session run. For the plain health flip this is
+	// belt-and-braces — the cache key hashes the health-filtered backend-ID
+	// set, so the flip changes the key by itself — but it also evicts entries
+	// cached under a key that is about to be current again: a backend that
+	// flipped down and back up within one debounce window (or was removed and
+	// re-added) yields a delivery whose filtered set equals a previously
+	// cached one, and the backend may have restarted with different tools in
+	// between.
+	s.core.InvalidateCapabilityCache()
+
 	workers := s.healthResync.snapshot()
 	slog.Debug("backend health change: triggering tools resync for live sessions",
 		"generation", generation, "sessions", len(workers))
 	for _, w := range workers {
-		w.trigger()
+		w.trigger(false)
 	}
 }

@@ -823,24 +823,42 @@ interface). It fires when a backend's **advertisability** flips — a transition
 across the healthy/degraded ⇄ unhealthy/unknown/unauthenticated partition,
 detected at the `statusTracker.RecordSuccess`/`RecordFailure` transition
 points, mirroring `filterHealthyBackends`' inclusion rule — and when
-`UpdateBackends` adds or removes backends. Delivery is **debounced to the
-monitor's check interval** (leading edge immediate, further changes in the
-window coalesced into one trailing delivery carrying a monotonically
-increasing generation), so a flapping backend or a multi-backend partition
-cannot storm listeners. Listeners run on a dedicated goroutine, never on a
-health-check path, and `Monitor.Stop` waits for in-flight deliveries.
+`UpdateBackends` adds or removes backends. A previously-untracked backend's
+**first result is quiet**: the registry-fallback status the aggregation had
+been serving is advertisable in practice, so a first success flips nothing
+("this backend exists" is the membership notification's job), and a first —
+or any below-threshold — failure is the normal path for a workload still
+starting when the registry lists it, so withdrawing it before
+`UnhealthyThreshold` genuinely trips would flap every connected session. The
+withdrawal is reported at the genuine threshold crossing; the recovery of a
+never-successful backend is reported on its first success. Delivery is
+**debounced to the monitor's check interval** (leading edge immediate,
+further changes in the window coalesced into one trailing delivery carrying a
+monotonically increasing generation), so a flapping backend or a
+multi-backend partition cannot storm listeners. Listeners run on a dedicated
+goroutine, never on a health-check path, and `Monitor.Stop` waits for
+in-flight deliveries.
 
 `Serve` subscribes the transport layer
 (`pkg/vmcp/server/serve_health_resync.go`): the server keeps a registry of
 each live session's **KindTools resync worker** (the same
 `listChangedResyncWorker` the backend-notification path builds — identity and
-forwarded-header capture, the liveness guard, cache invalidation, replace
-semantics, and the SDK's automatic downstream `notifications/tools/list_changed`
-emission are all shared) and, on each delivery, triggers a tools resync for
-every registered session. Sessions register on successful registration and
-deregister on the termination paths the server observes; sessions that end
-without server involvement (TTL expiry, SDK-initiated DELETE) are pruned
-lazily when a triggered resync's liveness guard finds them gone.
+forwarded-header capture, the liveness guard, replace semantics, and the
+SDK's automatic downstream `notifications/tools/list_changed` emission are
+all shared) and, on each delivery, purges the shared capability cache **once**
+and triggers a tools resync for every registered session. The per-run cache
+purge is skipped on this path — the cache key already hashes the
+health-filtered backend-ID set, so a health flip changes the key by itself,
+and per-session purges would defeat cross-session sharing of the freshly
+repopulated entry; the backend-notification path keeps its per-run purge,
+since there a backend's content changes under an unchanged key. Sessions
+register on successful registration (only when health monitoring is enabled —
+with no monitor there is no subscriber and nothing would ever trigger or
+prune the registry) and deregister on the termination paths the server
+observes — including SDK-initiated HTTP DELETE, via a thin
+`SessionIdManager` wrapper; sessions that end without any Terminate call (TTL
+expiry) are pruned lazily when a triggered resync's liveness guard finds them
+gone.
 
 **Scope**: passthrough mode, tools only. When the optimizer is enabled the
 fan-out is a no-op — the advertised `find_tool`/`call_tool` meta-tools do not

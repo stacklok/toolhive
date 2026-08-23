@@ -20,9 +20,11 @@ import (
 
 // TestStatusTracker_AdvertisabilityTransitions verifies the changed-signal
 // contract of RecordSuccess/RecordFailure (#5786): they report true exactly
-// when the backend's advertisability flips (or its tracked state first comes
-// into existence), and false for every state update that does not change
-// whether the backend participates in capability aggregation.
+// when the backend's advertisability genuinely flips, and false for every
+// state update that does not change whether the backend participates in
+// capability aggregation — including a previously-untracked backend's first
+// result (the registry fallback the aggregation had been serving is
+// advertisable in practice, so a first success changes nothing).
 func TestStatusTracker_AdvertisabilityTransitions(t *testing.T) {
 	t.Parallel()
 
@@ -41,11 +43,11 @@ func TestStatusTracker_AdvertisabilityTransitions(t *testing.T) {
 	}
 	steps := []step{
 		{
-			name: "first success creates tracked state",
+			name: "first success is quiet (fallback already advertisable)",
 			record: func(tr *statusTracker) bool {
 				return tr.RecordSuccess(id, name, vmcp.BackendHealthy)
 			},
-			wantChanged: true,
+			wantChanged: false,
 		},
 		{
 			name: "repeat success is steady state",
@@ -98,14 +100,69 @@ func TestStatusTracker_AdvertisabilityTransitions(t *testing.T) {
 	}
 }
 
-// TestStatusTracker_FirstFailureReportsChange verifies a previously-untracked
-// backend whose first check fails reports a change: its tracked
-// non-advertisable status supersedes the registry fallback, which may have
-// advertised it.
-func TestStatusTracker_FirstFailureReportsChange(t *testing.T) {
+// TestStatusTracker_NewBackend_QuietUntilThresholdCross verifies the
+// first-result semantics for a never-successful backend: below-threshold
+// failures are quiet (a brand-new backend whose workload is still starting
+// must not flap connected sessions — the aggregation had been serving the
+// advertisable registry fallback, and UnhealthyThreshold promises tolerance),
+// the genuine threshold crossing reports the withdrawal, and a subsequent
+// recovery reports the restore.
+func TestStatusTracker_NewBackend_QuietUntilThresholdCross(t *testing.T) {
 	t.Parallel()
 
+	const (
+		id   = "backend-1"
+		name = "Backend 1"
+	)
+	boom := errors.New("boom")
+
 	tracker := newStatusTracker(2, nil)
+
+	changed := tracker.RecordFailure(id, name, vmcp.BackendUnhealthy, boom)
+	assert.False(t, changed, "first failure below threshold must be quiet")
+
+	changed = tracker.RecordFailure(id, name, vmcp.BackendUnhealthy, boom)
+	assert.True(t, changed, "the genuine threshold crossing is the backend's first real withdrawal")
+
+	changed = tracker.RecordFailure(id, name, vmcp.BackendUnhealthy, boom)
+	assert.False(t, changed, "failures past the threshold are steady state")
+
+	changed = tracker.RecordSuccess(id, name, vmcp.BackendHealthy)
+	assert.True(t, changed, "recovery after the withdrawal must be reported")
+}
+
+// TestStatusTracker_NewBackend_RecoveryAfterQuietFailure verifies the
+// reviewer-flagged startup path (#5786 PR1 review): a new backend's failed
+// first probe is quiet, and the success that follows once the workload is up
+// reports a change — the quiet failure left the backend tracked as
+// BackendUnknown, which the catalog excludes, so the recovery must restore it
+// for any session that re-derived in the interim.
+func TestStatusTracker_NewBackend_RecoveryAfterQuietFailure(t *testing.T) {
+	t.Parallel()
+
+	const (
+		id   = "backend-1"
+		name = "Backend 1"
+	)
+
+	tracker := newStatusTracker(3, nil)
+
+	assert.False(t, tracker.RecordFailure(id, name, vmcp.BackendUnhealthy, errors.New("starting")),
+		"first failed probe of a starting workload must be quiet")
+	assert.False(t, tracker.RecordFailure(id, name, vmcp.BackendUnhealthy, errors.New("starting")),
+		"second below-threshold failure must be quiet")
+	assert.True(t, tracker.RecordSuccess(id, name, vmcp.BackendHealthy),
+		"success after quiet failures must report (tracked BackendUnknown excluded the backend from the catalog)")
+}
+
+// TestStatusTracker_ThresholdOne_FirstFailureReportsChange verifies that with
+// UnhealthyThreshold of 1 the very first failed probe classifies the backend
+// and reports the withdrawal: there is no below-threshold window to be quiet
+// in.
+func TestStatusTracker_ThresholdOne_FirstFailureReportsChange(t *testing.T) {
+	t.Parallel()
+
+	tracker := newStatusTracker(1, nil)
 	changed := tracker.RecordFailure("backend-1", "Backend 1", vmcp.BackendUnhealthy, errors.New("boom"))
 	assert.True(t, changed)
 }
@@ -148,11 +205,12 @@ func TestMonitor_OnChange_FiresOnRecoveryTransition(t *testing.T) {
 	require.NoError(t, monitor.Start(context.Background()))
 	t.Cleanup(func() { _ = monitor.Stop() })
 
-	// The initial failing check tracks the backend as unhealthy: one delivery.
+	// With UnhealthyThreshold 1 the initial failing check classifies the
+	// backend as unhealthy immediately: one delivery.
 	firstGen := waitForFire(t, fires)
 
 	// Steady failing state: no further deliveries.
-	assertNoFire(t, fires, 100*time.Millisecond)
+	assertNoFire(t, fires)
 
 	// Flip to healthy: the recovery transition must be delivered with a
 	// strictly greater generation.
@@ -166,7 +224,7 @@ func TestMonitor_OnChange_FiresOnRecoveryTransition(t *testing.T) {
 	}, 2*time.Second, 10*time.Millisecond, "backend must become advertisable after recovery")
 
 	// Steady healthy state: no further deliveries.
-	assertNoFire(t, fires, 100*time.Millisecond)
+	assertNoFire(t, fires)
 }
 
 // TestMonitor_OnChange_FiresOnBackendSetChange verifies UpdateBackends
@@ -203,18 +261,19 @@ func TestMonitor_OnChange_FiresOnBackendSetChange(t *testing.T) {
 	require.NoError(t, monitor.Start(context.Background()))
 	t.Cleanup(func() { _ = monitor.Stop() })
 
-	// Drain the initial-check delivery, then let the debounce window elapse so
-	// each UpdateBackends below is delivered on the leading edge.
-	waitForFire(t, fires)
+	// The initial successful check is quiet — the registry fallback the
+	// aggregation had been serving is already advertisable, so a first
+	// success flips nothing — leaving the debounce leading edge free for the
+	// UpdateBackends deliveries below.
 	monitor.WaitForInitialHealthChecks()
-	time.Sleep(60 * time.Millisecond)
+	assertNoFire(t, fires)
 
 	// Unchanged set: no delivery.
 	monitor.UpdateBackends([]vmcp.Backend{b1})
-	assertNoFire(t, fires, 100*time.Millisecond)
+	assertNoFire(t, fires)
 
-	// Adding a backend delivers (the add itself, coalesced with the new
-	// backend's initial check result).
+	// Adding a backend delivers (the membership change itself; the new
+	// backend's successful initial check is quiet).
 	monitor.UpdateBackends([]vmcp.Backend{b1, b2})
 	waitForFire(t, fires)
 	drainFires(fires)
@@ -237,12 +296,12 @@ func waitForFire(t *testing.T, fires <-chan uint64) uint64 {
 	}
 }
 
-func assertNoFire(t *testing.T, fires <-chan uint64, wait time.Duration) {
+func assertNoFire(t *testing.T, fires <-chan uint64) {
 	t.Helper()
 	select {
 	case gen := <-fires:
 		t.Fatalf("unexpected OnChange notification with generation %d", gen)
-	case <-time.After(wait):
+	case <-time.After(100 * time.Millisecond):
 	}
 }
 

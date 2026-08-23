@@ -1290,7 +1290,15 @@ func (s *Server) handleSessionRegistrationImpl(ctx context.Context, session serv
 	// resyncSessionsOnBackendHealthChange), so registering would only retain
 	// the worker closure until termination. The optimizer-mode follow-up (PR2)
 	// removes this gate together with the fan-out's.
-	if s.optimizerFactory == nil {
+	//
+	// Also gated on health monitoring being enabled: with no monitor there is
+	// no OnChange subscription (see Serve), so no fan-out would ever run the
+	// registry's lazy liveness prune — an entry for a session that ends
+	// without a server-observed Terminate (TTL expiry, node-local cache
+	// eviction, which only calls Close) would retain its worker closure (SDK
+	// session, captured identity and forwarded headers) forever. With no
+	// subscriber the registration could never be triggered anyway.
+	if s.optimizerFactory == nil && s.backendHealth() != nil {
 		s.healthResync.add(sessionID, toolsResyncWorker)
 	}
 

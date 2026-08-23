@@ -26,6 +26,13 @@ func TestParseUnixSocketPath_Valid(t *testing.T) {
 	assert.Equal(t, "/var/run/thv.sock", path)
 }
 
+func TestParseUnixSocketPath_WindowsDriveLetter(t *testing.T) {
+	t.Parallel()
+	path, err := ParseUnixSocketPath(`unix:///C:%5Cpath%5Cthv.sock`)
+	require.NoError(t, err)
+	assert.Equal(t, `C:\path\thv.sock`, path)
+}
+
 func TestParseUnixSocketPath_RelativePathRejected(t *testing.T) {
 	t.Parallel()
 	_, err := ParseUnixSocketPath("unix://relative/path.sock")
@@ -177,7 +184,7 @@ func TestCheckHealth_UnixSocket_Success(t *testing.T) {
 	go func() { _ = srv.Serve(listener) }()
 	defer srv.Close()
 
-	err = CheckHealth(context.Background(), "unix://"+socketPath, expectedNonce)
+	err = CheckHealth(context.Background(), UnixSocketURL(socketPath), expectedNonce)
 	require.NoError(t, err)
 }
 
@@ -242,6 +249,6 @@ func TestValidateLoopbackURL(t *testing.T) {
 func TestCheckHealth_UnixSocket_NotFound(t *testing.T) {
 	t.Parallel()
 	socketPath := filepath.Join(os.TempDir(), "nonexistent-test.sock")
-	err := CheckHealth(context.Background(), "unix://"+socketPath, "")
+	err := CheckHealth(context.Background(), UnixSocketURL(socketPath), "")
 	require.Error(t, err)
 }

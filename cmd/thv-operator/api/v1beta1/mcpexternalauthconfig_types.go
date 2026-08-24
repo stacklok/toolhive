@@ -858,6 +858,7 @@ func (c *EmbeddedAuthServerConfig) ValidateConfidentialClientTransport() error {
 		c.AllowPrivateKeyJWTRegistration,
 		c.InsecureAllowHTTP,
 		c.Issuer,
+		c.InsecureAllowConfidentialOverLoopbackHTTP,
 	)
 }
 

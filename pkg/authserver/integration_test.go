@@ -22,6 +22,7 @@ import (
 	"time"
 
 	"github.com/alicebob/miniredis/v2"
+	josev3 "github.com/go-jose/go-jose/v3"
 	"github.com/go-jose/go-jose/v4"
 	"github.com/go-jose/go-jose/v4/jwt"
 	"github.com/oauth2-proxy/mockoidc"
@@ -113,6 +114,9 @@ type testServerOptions struct {
 	// forceConfidentialRedirectURIs, when non-empty, sets
 	// Config.ForceConfidentialRedirectURIs.
 	forceConfidentialRedirectURIs []string
+	// allowPrivateKeyJWTRegistration, when true, enables DCR registration of
+	// clients authenticating with inline private_key_jwt credentials.
+	allowPrivateKeyJWTRegistration bool
 }
 
 // testServerOption is a functional option for test server setup.
@@ -309,12 +313,13 @@ func setupTestServer(t *testing.T, opts ...testServerOption) *testServer {
 		// Opt-in gate for confidential-client DCR; off by default in tests just
 		// as in production.
 		AllowConfidentialClientRegistration: options.allowConfidentialClientRegistration,
+		AllowPrivateKeyJWTRegistration:      options.allowPrivateKeyJWTRegistration,
 		ForceConfidentialRedirectURIs:       options.forceConfidentialRedirectURIs,
 		// The test server's issuer is a plain-HTTP loopback URL (genuinely
 		// local: an in-process httptest server), so opt in to the same
 		// combination withAllowConfidentialClientRegistration would otherwise
 		// be rejected for in production.
-		InsecureAllowConfidentialOverLoopbackHTTP: options.allowConfidentialClientRegistration,
+		InsecureAllowConfidentialOverLoopbackHTTP: options.allowConfidentialClientRegistration || options.allowPrivateKeyJWTRegistration,
 	}
 
 	// 7. Create server using newServer with test options
@@ -391,10 +396,14 @@ func setupJWTBearerGrantTestServer(t *testing.T, opts ...testServerOption) (*tes
 
 	serverOpts := append([]testServerOption{}, opts...)
 	serverOpts = append(serverOpts, withTrustedIssuers([]tokenexchange.TrustedIssuer{{
-		IssuerURL:         externalIssuer,
-		JWKSURL:           jwksServer.URL,
-		InsecureAllowHTTP: true,
-		AllowPrivateIPs:   true,
+		IssuerURL:              externalIssuer,
+		ExpectedAudience:       testAudience,
+		JWKSURL:                jwksServer.URL,
+		InsecureAllowHTTP:      true,
+		AllowPrivateIPs:        true,
+		ActorClaim:             "azp",
+		AllowedActors:          []string{"external-subject"},
+		AllowedDelegateClients: []string{"*"},
 		JWTBearerGrant: &tokenexchange.JWTBearerGrantPolicy{
 			MaxAssertionAge: "10m",
 			SubjectBindings: []tokenexchange.JWTBearerSubjectBinding{{
@@ -407,18 +416,25 @@ func setupJWTBearerGrantTestServer(t *testing.T, opts ...testServerOption) (*tes
 	signer, err := jose.NewSigner(jose.SigningKey{Algorithm: jose.RS256, Key: externalKey}, (&jose.SignerOptions{}).WithHeader("kid", "external-key"))
 	require.NoError(t, err)
 
-	signAssertion := func(subject string, issuedAt, expiry time.Time, id string) string {
+	sign := func(subject, audience string, issuedAt, expiry time.Time, id string) string {
 		t.Helper()
-		assertion, err := jwt.Signed(signer).Claims(jwt.Claims{
+		builder := jwt.Signed(signer).Claims(jwt.Claims{
 			Issuer:   externalIssuer,
 			Subject:  subject,
-			Audience: jwt.Audience{testIssuer + "/oauth/token"},
+			Audience: jwt.Audience{audience},
 			IssuedAt: jwt.NewNumericDate(issuedAt),
 			Expiry:   jwt.NewNumericDate(expiry),
 			ID:       id,
-		}).Serialize()
+		}).Claims(map[string]any{"azp": subject})
+		assertion, err := builder.Serialize()
 		require.NoError(t, err)
 		return assertion
+	}
+	signAssertion := func(subject string, issuedAt, expiry time.Time, id string) string {
+		return sign(subject, testIssuer+"/oauth/token", issuedAt, expiry, id)
+	}
+	ts.signSubjectToken = func(subject string, issuedAt, expiry time.Time, id string) string {
+		return sign(subject, testAudience, issuedAt, expiry, id)
 	}
 	return ts, signAssertion
 }
@@ -2003,6 +2019,7 @@ type testServerWithUpstream struct {
 	*testServer
 	mockOIDC         *mockoidc.MockOIDC
 	upstreamProvider upstream.OAuth2Provider
+	signSubjectToken func(string, time.Time, time.Time, string) string
 }
 
 // startMockOIDC starts a mockoidc server with default test user.
@@ -4351,7 +4368,12 @@ func withAllowConfidentialClientRegistration() testServerOption {
 	}
 }
 
-// makeTokenRequestWithBasicAuth is the makeTokenRequest variant for
+func withAllowPrivateKeyJWTRegistration() testServerOption {
+	return func(opts *testServerOptions) {
+		opts.allowPrivateKeyJWTRegistration = true
+	}
+}
+
 // client_secret_basic clients: identical form POST to /oauth/token, plus an
 // Authorization header carrying base64(client_id:client_secret). fosite
 // url.QueryUnescape's both Basic-auth components, so the wire form must be the
@@ -5244,4 +5266,129 @@ func TestIntegration_ConfidentialClientDCR_AudienceParity(t *testing.T) {
 	require.Len(t, aud, 1, "aud should have exactly one audience")
 	assert.Equal(t, testAudience, aud[0],
 		"aud from an explicit resource parameter must match the public-client result")
+}
+
+// TestIntegration_PrivateKeyJWTDCRTokenExchange exercises the complete inline
+// private_key_jwt path through DCR, client authentication, and RFC 8693. The
+// backend variants ensure the registered JWKS and assertion replay marker use
+// the same observable behavior with memory and Redis storage.
+func TestIntegration_PrivateKeyJWTDCRTokenExchange(t *testing.T) {
+	t.Parallel()
+
+	for _, tc := range []struct {
+		name string
+		opt  testServerOption
+	}{
+		{name: "memory", opt: func(_ *testServerOptions) {}},
+		{name: "redis", opt: withRedisBackedStorage()},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+
+			ts, _ := setupJWTBearerGrantTestServer(t,
+				withAllowPrivateKeyJWTRegistration(), tc.opt)
+			clientKey, err := rsa.GenerateKey(rand.Reader, 2048)
+			require.NoError(t, err)
+			const signingAlgorithm = "RS256"
+			jwks := &josev3.JSONWebKeySet{Keys: []josev3.JSONWebKey{{
+				Key:       clientKey.Public(),
+				KeyID:     "dcr-client-key",
+				Algorithm: signingAlgorithm,
+				Use:       "sig",
+			}}}
+
+			registrationBody, err := json.Marshal(oauthproto.DynamicClientRegistrationRequest{
+				RedirectURIs:                []string{testConfidentialRedirectURI},
+				TokenEndpointAuthMethod:     oauthproto.TokenEndpointAuthMethodPrivateKeyJWT,
+				TokenEndpointAuthSigningAlg: signingAlgorithm,
+				GrantTypes:                  []string{oauthproto.GrantTypeTokenExchange},
+				JWKS:                        jwks,
+			})
+			require.NoError(t, err)
+			registrationResponse, err := http.Post(ts.Server.URL+"/oauth/register", "application/json", bytes.NewReader(registrationBody))
+			require.NoError(t, err)
+			t.Cleanup(func() {
+				_, _ = io.Copy(io.Discard, registrationResponse.Body)
+				require.NoError(t, registrationResponse.Body.Close())
+			})
+			var registered oauthproto.DynamicClientRegistrationResponse
+			require.NoError(t, json.NewDecoder(registrationResponse.Body).Decode(&registered))
+			require.Equal(t, http.StatusCreated, registrationResponse.StatusCode)
+			require.NotEmpty(t, registered.ClientID)
+			assert.Equal(t, oauthproto.TokenEndpointAuthMethodPrivateKeyJWT, registered.TokenEndpointAuthMethod)
+			assert.Equal(t, signingAlgorithm, registered.TokenEndpointAuthSigningAlg)
+			assert.Empty(t, registered.ClientSecret)
+			require.NotNil(t, registered.JWKS)
+			require.Len(t, registered.JWKS.Keys, 1)
+			assert.Equal(t, signingAlgorithm, registered.JWKS.Keys[0].Algorithm)
+
+			signer, err := jose.NewSigner(jose.SigningKey{Algorithm: jose.RS256, Key: clientKey},
+				(&jose.SignerOptions{}).WithType("JWT").WithHeader("kid", "dcr-client-key"))
+			require.NoError(t, err)
+			makeAssertion := func(issuer, audience string, expiry time.Time, jti string) string {
+				t.Helper()
+				assertion, err := jwt.Signed(signer).Claims(jwt.Claims{
+					Issuer:   issuer,
+					Subject:  issuer,
+					Audience: jwt.Audience{audience},
+					Expiry:   jwt.NewNumericDate(expiry),
+					IssuedAt: jwt.NewNumericDate(time.Now()),
+					ID:       jti,
+				}).Serialize()
+				require.NoError(t, err)
+				return assertion
+			}
+			request := func(assertion, subjectToken string) (*http.Response, map[string]interface{}) {
+				t.Helper()
+				response := makeTokenRequest(t, ts.Server.URL, url.Values{
+					"grant_type":            {oauthproto.GrantTypeTokenExchange},
+					"subject_token":         {subjectToken},
+					"subject_token_type":    {oauthproto.TokenTypeAccessToken},
+					"client_id":             {registered.ClientID},
+					"client_assertion_type": {"urn:ietf:params:oauth:client-assertion-type:jwt-bearer"},
+					"client_assertion":      {assertion},
+				})
+				body := parseTokenResponse(t, response)
+				return response, body
+			}
+
+			now := time.Now()
+			subjectToken := ts.signSubjectToken("external-subject", now, now.Add(10*time.Minute), "subject-1")
+			assertion := makeAssertion(registered.ClientID, testIssuer+"/oauth/token", now.Add(2*time.Minute), "client-assertion-1")
+			response, body := request(assertion, subjectToken)
+			t.Cleanup(func() { response.Body.Close() })
+			require.Equal(t, http.StatusOK, response.StatusCode, body)
+			delegated, ok := body["access_token"].(string)
+			require.True(t, ok)
+			parsed, err := jwt.ParseSigned(delegated, []jose.SignatureAlgorithm{jose.RS256})
+			require.NoError(t, err)
+			var claims map[string]interface{}
+			require.NoError(t, parsed.Claims(ts.PrivateKey.Public(), &claims))
+			act, ok := claims["act"].(map[string]interface{})
+			require.True(t, ok)
+			assert.Equal(t, registered.ClientID, act["sub"])
+
+			// The exact same assertion is single-use, even when replayed with a
+			// valid subject token on the real token endpoint.
+			replayResponse, replayBody := request(assertion, subjectToken)
+			t.Cleanup(func() { replayResponse.Body.Close() })
+			assert.Equal(t, http.StatusBadRequest, replayResponse.StatusCode, replayBody)
+			assert.Equal(t, "jti_known", replayBody["error"])
+
+			for _, negative := range []struct {
+				name      string
+				assertion string
+			}{
+				{name: "wrong_audience", assertion: makeAssertion(registered.ClientID, "https://wrong.example/token", now.Add(2*time.Minute), "client-assertion-wrong-aud")},
+				{name: "wrong_subject", assertion: makeAssertion("different-client", testIssuer+"/oauth/token", now.Add(2*time.Minute), "client-assertion-wrong-sub")},
+				{name: "expired", assertion: makeAssertion(registered.ClientID, testIssuer+"/oauth/token", now.Add(-time.Minute), "client-assertion-expired")},
+			} {
+				t.Run(negative.name, func(t *testing.T) {
+					response, body := request(negative.assertion, subjectToken)
+					t.Cleanup(func() { response.Body.Close() })
+					assert.NotEqual(t, http.StatusOK, response.StatusCode, body)
+				})
+			}
+		})
+	}
 }

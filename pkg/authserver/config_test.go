@@ -716,9 +716,8 @@ func TestValidateConfidentialClientTransport(t *testing.T) {
 			allowConfidential: true, issuer: "http://localhost:8080", allowLoopbackOverride: true,
 		},
 		{
-			name:               "private-key JWT with plain-HTTP loopback issuer rejects even with confidential override",
+			name:               "private-key JWT with plain-HTTP loopback issuer passes with explicit opt in",
 			allowPrivateKeyJWT: true, issuer: "http://localhost:8080", allowLoopbackOverride: true,
-			wantErr: true, errContains: "allow_private_key_jwt_registration",
 		},
 		{
 			name:              "confidential with https loopback issuer passes without the opt-in",
@@ -746,7 +745,7 @@ func TestValidateConfidentialClientTransport(t *testing.T) {
 			err := ValidateConfidentialClientTransport(tt.allowConfidential, tt.insecureAllowHTTP, tt.issuer, tt.allowLoopbackOverride)
 			if err == nil {
 				err = ValidatePrivateKeyJWTRegistrationTransport(
-					tt.allowPrivateKeyJWT, tt.insecureAllowHTTP, tt.issuer)
+					tt.allowPrivateKeyJWT, tt.insecureAllowHTTP, tt.issuer, tt.allowLoopbackOverride)
 			}
 			if tt.wantErr {
 				require.Error(t, err)

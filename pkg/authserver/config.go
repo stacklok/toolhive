@@ -286,7 +286,8 @@ func (c *RunConfig) Validate() error {
 		return err
 	}
 	if err := ValidatePrivateKeyJWTRegistrationTransport(
-		c.AllowPrivateKeyJWTRegistration, c.InsecureAllowHTTP, c.Issuer); err != nil {
+		c.AllowPrivateKeyJWTRegistration, c.InsecureAllowHTTP,
+		c.Issuer, c.InsecureAllowConfidentialOverLoopbackHTTP); err != nil {
 		return err
 	}
 	if err := ValidateForceConfidentialRedirectURIs(
@@ -1106,7 +1107,8 @@ func (c *Config) validateConfidentialClientConfig() error {
 		return err
 	}
 	if err := ValidatePrivateKeyJWTRegistrationTransport(
-		c.AllowPrivateKeyJWTRegistration, c.InsecureAllowHTTP, c.Issuer); err != nil {
+		c.AllowPrivateKeyJWTRegistration, c.InsecureAllowHTTP,
+		c.Issuer, c.InsecureAllowConfidentialOverLoopbackHTTP); err != nil {
 		return err
 	}
 	return ValidateForceConfidentialRedirectURIs(c.ForceConfidentialRedirectURIs, c.AllowConfidentialClientRegistration)
@@ -1559,7 +1561,7 @@ func ValidateConfidentialClientTransport(
 // implies the other.
 func ValidatePrivateKeyJWTRegistrationTransport(
 	allowPrivateKeyJWTRegistration, insecureAllowHTTP bool,
-	issuer string,
+	issuer string, insecureAllowConfidentialOverLoopbackHTTP bool,
 ) error {
 	if !allowPrivateKeyJWTRegistration {
 		return nil
@@ -1568,10 +1570,14 @@ func ValidatePrivateKeyJWTRegistrationTransport(
 		return fmt.Errorf("allow_private_key_jwt_registration cannot be combined with insecure_allow_http: " +
 			"private_key_jwt registration would occur over cleartext HTTP")
 	}
+	if insecureAllowConfidentialOverLoopbackHTTP {
+		return nil
+	}
 	if parsed, err := url.Parse(issuer); err == nil &&
-		parsed.Scheme == "http" {
-		return fmt.Errorf("allow_private_key_jwt_registration cannot be combined with a plain-HTTP issuer (%q): "+
-			"private_key_jwt registration would occur over cleartext HTTP", issuer)
+		parsed.Scheme == "http" && networking.IsLocalhost(parsed.Host) {
+		return fmt.Errorf("allow_private_key_jwt_registration cannot be combined with a plain-HTTP loopback issuer (%q) unless "+
+			"insecure_allow_confidential_over_loopback_http is set: private_key_jwt registration would occur over cleartext HTTP",
+			issuer)
 	}
 	return nil
 }

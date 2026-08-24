@@ -89,10 +89,10 @@ func verifyKeylessBundles(
 // every rejection when none match. Keeping selection separate from the
 // cryptographic operation makes the "any satisfying valid signature wins"
 // rule explicit for multi-signature artifacts.
-func firstVerifiedBundle[T any](bundles []T, verify func(T) (*Result, error)) (*Result, []error) {
+func firstVerifiedBundle[T any](bundles []T, verifyBundle func(T) (*Result, error)) (*Result, []error) {
 	errList := make([]error, 0, len(bundles))
 	for _, bundle := range bundles {
-		result, err := verify(bundle)
+		result, err := verifyBundle(bundle)
 		if err != nil {
 			errList = append(errList, err)
 			continue

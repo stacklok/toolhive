@@ -338,24 +338,23 @@ func TestVerifyInstall_CatalogIdentityPairPreservesCatalogSemantics(t *testing.T
 					CertIssuer:     testCertIssuer,
 				},
 			}
-			checkExpected := func(expected *verifier.ProvenanceExpectation) (*verifier.Result, error) {
+			checkExpected := func(expected *verifier.ProvenanceExpectation) {
 				require.NotNil(t, expected)
 				assert.Equal(t, verifier.NewCatalogExpectation(opts.CatalogProvenance), expected)
-				return signedResult(), nil
 			}
 
 			var err error
 			if backend == "git" {
 				mv.EXPECT().VerifyGit(gomock.Any(), gomock.Any(), gomock.Any(), gomock.Any()).
-					DoAndReturn(func(_ any, _, _ []byte, expected *verifier.ProvenanceExpectation) (*verifier.Result, error) {
-						return checkExpected(expected)
-					})
+					Do(func(_ any, _, _ []byte, expected *verifier.ProvenanceExpectation) {
+						checkExpected(expected)
+					}).Return(signedResult(), nil)
 				_, err = svc.verifyGitInstall(t.Context(), opts, "catalog-skill", []byte("payload"), "signature")
 			} else {
 				mv.EXPECT().VerifyOCI(gomock.Any(), gomock.Any(), gomock.Any(), gomock.Any()).
-					DoAndReturn(func(_ any, _, _ string, expected *verifier.ProvenanceExpectation) (*verifier.Result, error) {
-						return checkExpected(expected)
-					})
+					Do(func(_ any, _, _ string, expected *verifier.ProvenanceExpectation) {
+						checkExpected(expected)
+					}).Return(signedResult(), nil)
 				_, err = svc.verifyOCIInstall(
 					t.Context(), opts, "catalog-skill", "ghcr.io/test/catalog-skill:v1", "sha256:digest")
 			}
@@ -497,7 +496,7 @@ func TestVerifyInstall_UnsupportedCatalogConstraintsOnlyFailOnFirstUse(t *testin
 					}
 
 					if !state.wantErr {
-						checkExpected := func(expected *verifier.ProvenanceExpectation) (*verifier.Result, error) {
+						checkExpected := func(expected *verifier.ProvenanceExpectation) {
 							if state.wantExpected {
 								require.NotNil(t, expected)
 								assert.Equal(t, verifier.NewLockExpectation(state.entry.Provenance), expected)
@@ -505,18 +504,17 @@ func TestVerifyInstall_UnsupportedCatalogConstraintsOnlyFailOnFirstUse(t *testin
 								assert.Nil(t, expected,
 									"a legacy lock must suppress catalog policy without inventing lock trust")
 							}
-							return signedResult(), nil
 						}
 						if backend == "git" {
 							mv.EXPECT().VerifyGit(gomock.Any(), gomock.Any(), gomock.Any(), gomock.Any()).
-								DoAndReturn(func(_ any, _, _ []byte, expected *verifier.ProvenanceExpectation) (*verifier.Result, error) {
-									return checkExpected(expected)
-								})
+								Do(func(_ any, _, _ []byte, expected *verifier.ProvenanceExpectation) {
+									checkExpected(expected)
+								}).Return(signedResult(), nil)
 						} else {
 							mv.EXPECT().VerifyOCI(gomock.Any(), gomock.Any(), gomock.Any(), gomock.Any()).
-								DoAndReturn(func(_ any, _, _ string, expected *verifier.ProvenanceExpectation) (*verifier.Result, error) {
-									return checkExpected(expected)
-								})
+								Do(func(_ any, _, _ string, expected *verifier.ProvenanceExpectation) {
+									checkExpected(expected)
+								}).Return(signedResult(), nil)
 						}
 					}
 

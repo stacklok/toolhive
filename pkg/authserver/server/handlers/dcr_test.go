@@ -6,15 +6,18 @@ package handlers
 import (
 	"bytes"
 	"context"
+	"crypto/rsa"
 	"encoding/json"
 	"errors"
 	"fmt"
+	"math/big"
 	"net/http"
 	"net/http/httptest"
 	"regexp"
 	"strings"
 	"testing"
 
+	"github.com/go-jose/go-jose/v3"
 	"github.com/ory/fosite"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -140,6 +143,63 @@ func TestRegisterClientHandler(t *testing.T) {
 			}
 		})
 	}
+}
+
+func TestRegisterClientHandler_PrivateKeyJWTResponseAndClient(t *testing.T) {
+	t.Parallel()
+
+	jwks := &jose.JSONWebKeySet{Keys: []jose.JSONWebKey{{
+		Key:       &rsa.PublicKey{N: big.NewInt(65537), E: 3},
+		KeyID:     "handler-key",
+		Use:       "sig",
+		Algorithm: string(jose.RS256),
+	}}}
+	ctrl := gomock.NewController(t)
+	stor := mocks.NewMockStorage(ctrl)
+	var stored fosite.Client
+	stor.EXPECT().RegisterClient(gomock.Any(), gomock.Any()).DoAndReturn(
+		func(_ context.Context, client fosite.Client) error {
+			stored = client
+			return nil
+		})
+	handler := &Handler{storage: stor, config: &server.AuthorizationServerConfig{
+		Config:                         &fosite.Config{AccessTokenIssuer: "https://test-authserver"},
+		ScopesSupported:                registration.DefaultScopes,
+		AllowPrivateKeyJWTRegistration: true,
+	}}
+	body, err := json.Marshal(oauthproto.DynamicClientRegistrationRequest{
+		RedirectURIs:                []string{"https://example.com/callback"},
+		TokenEndpointAuthMethod:     oauthproto.TokenEndpointAuthMethodPrivateKeyJWT,
+		JWKS:                        jwks,
+		TokenEndpointAuthSigningAlg: string(jose.RS256),
+	})
+	require.NoError(t, err)
+
+	req := httptest.NewRequest(http.MethodPost, "/oauth/register", bytes.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
+	w := httptest.NewRecorder()
+	handler.RegisterClientHandler(w, req)
+
+	require.Equal(t, http.StatusCreated, w.Code)
+	var response oauthproto.DynamicClientRegistrationResponse
+	require.NoError(t, json.Unmarshal(w.Body.Bytes(), &response))
+	assert.Contains(t, w.Body.String(), `"jwks"`)
+	assert.NotContains(t, w.Body.String(), `"client_secret"`)
+	assert.Equal(t, string(jose.RS256), response.TokenEndpointAuthSigningAlg)
+	assert.Equal(t, jwks.Keys[0].KeyID, response.JWKS.Keys[0].KeyID)
+	assert.Equal(t, jwks.Keys[0].Algorithm, response.JWKS.Keys[0].Algorithm)
+	assert.Equal(t, jwks.Keys[0].Use, response.JWKS.Keys[0].Use)
+	assert.NotNil(t, stored)
+	assert.False(t, stored.IsPublic())
+	assert.True(t, registration.DCRIssued(stored))
+	assert.Empty(t, stored.GetHashedSecret())
+	oidc, ok := stored.(fosite.OpenIDConnectClient)
+	require.True(t, ok)
+	assert.Equal(t, oauthproto.TokenEndpointAuthMethodPrivateKeyJWT, oidc.GetTokenEndpointAuthMethod())
+	assert.Equal(t, string(jose.RS256), oidc.GetTokenEndpointAuthSigningAlgorithm())
+	assert.Equal(t, jwks.Keys[0].KeyID, oidc.GetJSONWebKeys().Keys[0].KeyID)
+	assert.Equal(t, jwks.Keys[0].Algorithm, oidc.GetJSONWebKeys().Keys[0].Algorithm)
+	assert.Equal(t, jwks.Keys[0].Use, oidc.GetJSONWebKeys().Keys[0].Use)
 }
 
 func TestRegisterClientHandler_ScopeInResponse(t *testing.T) {

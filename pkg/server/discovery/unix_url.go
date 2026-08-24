@@ -47,6 +47,11 @@ func isDriveLetterPath(p string) bool {
 	return len(p) >= 2 && isASCIILetter(p[0]) && p[1] == ':'
 }
 
+// Windows current-directory-relative form (C:foo) is not absolute.
+func isAbsoluteDriveLetterPath(p string) bool {
+	return isDriveLetterPath(p) && len(p) >= 3 && (p[2] == '\\' || p[2] == '/')
+}
+
 func isDriveLetterURLPath(p string) bool {
 	if isDriveLetterPath(p) {
 		return true
@@ -62,7 +67,7 @@ func parseDriveLetterSocketPath(p string) (string, error) {
 		return "", fmt.Errorf("unix socket path must not contain '..': %s", p)
 	}
 	cleaned := filepath.Clean(p)
-	if !isDriveLetterPath(cleaned) {
+	if !isAbsoluteDriveLetterPath(cleaned) {
 		return "", fmt.Errorf("unix socket path must be absolute: %s", p)
 	}
 	return cleaned, nil

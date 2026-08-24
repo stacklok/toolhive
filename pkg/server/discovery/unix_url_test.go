@@ -64,6 +64,21 @@ func TestParseUnixSocketPath_DriveLetterRejectsDotDot(t *testing.T) {
 	assert.Contains(t, err.Error(), "..")
 }
 
+func TestParseUnixSocketPath_DriveRelativeRejected(t *testing.T) {
+	t.Parallel()
+	// Drive-relative paths (C:foo) are not absolute; filepath.IsAbs used to
+	// reject them. Keep that contract so the health client cannot dial a
+	// different socket from the process's current directory on C:.
+	for _, raw := range []string{"unix:///C:relative.sock", "unix:///C:"} {
+		t.Run(raw, func(t *testing.T) {
+			t.Parallel()
+			_, err := ParseUnixSocketPath(raw)
+			require.Error(t, err)
+			assert.Contains(t, err.Error(), "absolute")
+		})
+	}
+}
+
 func TestParseUnixSocketPathHelpers(t *testing.T) {
 	t.Parallel()
 	_, err := parseUnixSocketPath("")

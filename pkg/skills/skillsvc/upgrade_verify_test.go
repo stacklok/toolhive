@@ -40,7 +40,7 @@ func signerChangeFixture(
 	mv := verifiermocks.NewMockVerifier(gomock.NewController(t))
 	mv.EXPECT().VerifyGit(gomock.Any(), gomock.Any(), gomock.Any(), gomock.Any()).
 		AnyTimes().
-		DoAndReturn(func(_ any, _, _ []byte, expected *lockfile.Provenance) (*verifier.Result, error) {
+		DoAndReturn(func(_ any, _, _ []byte, expected *verifier.ProvenanceExpectation) (*verifier.Result, error) {
 			installs++
 			if installs == 1 {
 				return signedResult(), nil // initial install (TOFU)
@@ -49,7 +49,7 @@ func signerChangeFixture(
 			if err != nil {
 				return nil, err
 			}
-			if expected != nil && expected.SignerIdentity != result.SignerIdentity {
+			if expected != nil && result.SignerIdentity != testSignerIdentity {
 				return nil, verifier.ErrSignerMismatch
 			}
 			return result, nil
@@ -100,7 +100,7 @@ func TestUpgrade_RefChangeRequiresAllowSignerChange(t *testing.T) {
 	mv := verifiermocks.NewMockVerifier(gomock.NewController(t))
 	mv.EXPECT().VerifyGit(gomock.Any(), gomock.Any(), gomock.Any(), gomock.Any()).
 		AnyTimes().
-		DoAndReturn(func(_ any, _, _ []byte, expected *lockfile.Provenance) (*verifier.Result, error) {
+		DoAndReturn(func(_ any, _, _ []byte, expected *verifier.ProvenanceExpectation) (*verifier.Result, error) {
 			calls++
 			if calls == 1 {
 				return refSignedResult(installedRef), nil // initial install (TOFU)
@@ -109,10 +109,7 @@ func TestUpgrade_RefChangeRequiresAllowSignerChange(t *testing.T) {
 			if expected == nil {
 				return candidate, nil // the upgrade's plan-time signer probe
 			}
-			if expected.RepositoryRef != "" && expected.RepositoryRef != candidate.RepositoryRef {
-				return nil, verifier.ErrSignerMismatch
-			}
-			return candidate, nil
+			return nil, verifier.ErrSignerMismatch
 		})
 	mv.EXPECT().VerifyBundleOffline(gomock.Any(), gomock.Any(), gomock.Any()).AnyTimes().Return(nil)
 
@@ -223,7 +220,7 @@ func TestUpgrade_RefTransitionBlocked(t *testing.T) {
 			mv := verifiermocks.NewMockVerifier(gomock.NewController(t))
 			mv.EXPECT().VerifyGit(gomock.Any(), gomock.Any(), gomock.Any(), gomock.Any()).
 				AnyTimes().
-				DoAndReturn(func(_ any, _, _ []byte, expected *lockfile.Provenance) (*verifier.Result, error) {
+				DoAndReturn(func(_ any, _, _ []byte, expected *verifier.ProvenanceExpectation) (*verifier.Result, error) {
 					calls++
 					if calls == 1 {
 						return refSignedResult(tc.lockedRef), nil // initial install (TOFU)

@@ -18,9 +18,9 @@ import (
 	"sync"
 	"time"
 
+	celgo "cel.dev/cel-go/cel"
 	"github.com/go-jose/go-jose/v4"
 	"github.com/go-jose/go-jose/v4/jwt"
-	celgo "github.com/google/cel-go/cel"
 	"github.com/lestrrat-go/httprc/v3"
 	"github.com/lestrrat-go/jwx/v3/jwk"
 

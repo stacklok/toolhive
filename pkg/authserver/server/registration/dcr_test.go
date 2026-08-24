@@ -15,9 +15,12 @@
 package registration
 
 import (
+	"crypto/rsa"
+	"math/big"
 	"strings"
 	"testing"
 
+	"github.com/go-jose/go-jose/v3"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
@@ -487,7 +490,7 @@ func TestValidateDCRRequest(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
 
-			result, err := ValidateDCRRequest(tt.request, false)
+			result, err := ValidateDCRRequest(tt.request, false, false)
 
 			if tt.expectError {
 				require.NotNil(t, err, "expected error")
@@ -521,6 +524,63 @@ func TestValidateDCRRequest(t *testing.T) {
 	}
 }
 
+func TestValidatePrivateKeyJWTRegistration(t *testing.T) {
+	t.Parallel()
+	validKey := jose.JSONWebKey{Key: &rsa.PublicKey{N: big.NewInt(3), E: 3}, KeyID: "key-1", Algorithm: string(jose.RS256), Use: "sig"}
+	request := func() *oauthproto.DynamicClientRegistrationRequest {
+		return &oauthproto.DynamicClientRegistrationRequest{
+			RedirectURIs:                []string{"https://client.example/callback"},
+			TokenEndpointAuthMethod:     oauthproto.TokenEndpointAuthMethodPrivateKeyJWT,
+			JWKS:                        &jose.JSONWebKeySet{Keys: []jose.JSONWebKey{validKey}},
+			TokenEndpointAuthSigningAlg: string(jose.RS256),
+		}
+	}
+	tests := []struct {
+		name    string
+		setup   func(*oauthproto.DynamicClientRegistrationRequest)
+		allow   bool
+		wantErr bool
+	}{
+		{"flag off", func(_ *oauthproto.DynamicClientRegistrationRequest) {}, false, true},
+		{"valid inline JWKS", func(_ *oauthproto.DynamicClientRegistrationRequest) {}, true, false},
+		{"missing JWKS", func(r *oauthproto.DynamicClientRegistrationRequest) { r.JWKS = nil }, true, true},
+		{"empty JWKS", func(r *oauthproto.DynamicClientRegistrationRequest) { r.JWKS.Keys = nil }, true, true},
+		{"malformed key", func(r *oauthproto.DynamicClientRegistrationRequest) { r.JWKS.Keys[0] = jose.JSONWebKey{} }, true, true},
+		{"symmetric key", func(r *oauthproto.DynamicClientRegistrationRequest) { r.JWKS.Keys[0].Key = []byte("secret") }, true, true},
+		{"private key", func(r *oauthproto.DynamicClientRegistrationRequest) {
+			r.JWKS.Keys[0].Key = &rsa.PrivateKey{PublicKey: *validKey.Key.(*rsa.PublicKey), D: big.NewInt(1)}
+		}, true, true},
+		{"use mismatch", func(r *oauthproto.DynamicClientRegistrationRequest) { r.JWKS.Keys[0].Use = "enc" }, true, true},
+		{"algorithm mismatch", func(r *oauthproto.DynamicClientRegistrationRequest) { r.JWKS.Keys[0].Algorithm = string(jose.ES256) }, true, true},
+		{"unsupported algorithm", func(r *oauthproto.DynamicClientRegistrationRequest) { r.TokenEndpointAuthSigningAlg = "HS256" }, true, true},
+		{"missing algorithm", func(r *oauthproto.DynamicClientRegistrationRequest) { r.TokenEndpointAuthSigningAlg = "" }, true, true},
+		{"jwks_uri", func(r *oauthproto.DynamicClientRegistrationRequest) { r.JWKSURI = "https://keys.example/jwks" }, true, true},
+		{"both key sources", func(r *oauthproto.DynamicClientRegistrationRequest) { r.JWKSURI = "https://keys.example/jwks" }, true, true},
+		{"wrong grant", func(r *oauthproto.DynamicClientRegistrationRequest) {
+			r.GrantTypes = []string{oauthproto.GrantTypeAuthorizationCode}
+		}, true, true},
+		{"token exchange grant", func(r *oauthproto.DynamicClientRegistrationRequest) {
+			r.GrantTypes = []string{oauthproto.GrantTypeTokenExchange}
+		}, true, false},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			r := request()
+			tt.setup(r)
+			got, err := ValidateDCRRequest(r, false, tt.allow)
+			if tt.wantErr {
+				require.Nil(t, got)
+				require.NotNil(t, err)
+				assert.Equal(t, DCRErrorInvalidClientMetadata, err.Error)
+			} else {
+				require.Nil(t, err)
+				require.NotNil(t, got)
+				assert.Equal(t, r.JWKS, got.JWKS)
+			}
+		})
+	}
+}
 func TestValidateScopes(t *testing.T) {
 	t.Parallel()
 

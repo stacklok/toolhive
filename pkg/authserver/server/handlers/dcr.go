@@ -66,7 +66,9 @@ func (h *Handler) RegisterClientHandler(w http.ResponseWriter, req *http.Request
 
 	// Validate request. h.config.AllowConfidentialClientRegistration gates whether
 	// client_secret_basic / client_secret_post registrations are accepted.
-	validated, dcrErr := registration.ValidateDCRRequest(&dcrReq, h.config.AllowConfidentialClientRegistration)
+	validated, dcrErr := registration.ValidateDCRRequest(
+		&dcrReq, h.config.AllowConfidentialClientRegistration,
+		h.config.AllowPrivateKeyJWTRegistration)
 	if dcrErr != nil {
 		writeDCRError(w, http.StatusBadRequest, dcrErr)
 		return

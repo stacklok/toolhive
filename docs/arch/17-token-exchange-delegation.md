@@ -16,6 +16,13 @@ IdP (e.g. a corporate IdP), so a client already holding a token from that IdP
 can exchange it for a ToolHive delegated token without a separate ToolHive
 login.
 
+This document also describes how a DCR-registered client can authenticate to the
+exchange without receiving a secret. That is RFC 7523 §2.2 `private_key_jwt`
+**client authentication**: the client registers an inline public JWKS and signs
+a `client_assertion` with its private key. It is not the RFC 7523 §2.1
+JWT-bearer grant, which uses a JWT as the grant assertion itself and does not
+authenticate a registered client. The two mechanisms are independent.
+
 ## Deployment and configuration
 
 RFC 8693 is reachable through a pre-provisioned **delegate client**. A delegate
@@ -162,16 +169,75 @@ reuse IDs between the two mechanisms.
 
 Both `/.well-known/oauth-authorization-server` and
 `/.well-known/openid-configuration` advertise the token-exchange grant in
-`grant_types_supported`. When confidential DCR is enabled **or** at least one
-static delegate client is configured, they also advertise
-`client_secret_basic` and `client_secret_post` in
-`token_endpoint_auth_methods_supported`; otherwise only `none` is advertised.
+`grant_types_supported`. `token_endpoint_auth_methods_supported` always
+includes `none`; it also includes `client_secret_basic` and
+`client_secret_post` when confidential DCR is enabled or a static delegate
+client is configured, and includes `private_key_jwt` when
+`allowPrivateKeyJWTRegistration` is enabled. In the latter case,
+`token_endpoint_auth_signing_alg_values_supported` lists the implemented
+algorithms. The RFC 7523 §2.1 JWT-bearer grant is advertised only when a trusted
+issuer opts into it. A private-key JWT DCR client is limited to token exchange;
+it is not an authorization-code client.
 
 On Kubernetes, a delegate-client Secret is injected as a pod environment
 variable and is resolved when the authorization server starts. Updating that
 Secret does not change the environment of an already running pod. The operator
 has no delegate-client Secret watch or automatic rollout for this feature, so
 restart or otherwise roll out the workload after rotating the secret.
+
+## Secretless DCR delegate flow
+
+Set `allowPrivateKeyJWTRegistration: true` without enabling
+`allowConfidentialClientRegistration` when the authorization server should
+accept key-based registrations but must not mint secret-based confidential
+clients. Registration is still unauthenticated, so protect the endpoint through
+network policy and enable it only for callers that are trusted to register.
+
+The request uses an inline public JWK. This example intentionally uses a
+placeholder key and contains no private key or secret; the client keeps the
+corresponding private key locally and never sends it to ToolHive:
+
+```http
+POST /oauth/register HTTP/1.1
+Host: auth.example.com
+Content-Type: application/json
+
+{
+  "redirect_uris": ["https://client.example/callback"],
+  "token_endpoint_auth_method": "private_key_jwt",
+  "token_endpoint_auth_signing_alg": "RS256",
+  "grant_types": ["urn:ietf:params:oauth:grant-type:token-exchange"],
+  "jwks": {"keys": [{"kty": "RSA", "use": "sig", "alg": "RS256", "kid": "client-key", "n": "<base64url-public-modulus>", "e": "AQAB"}]}
+}
+```
+
+The successful response returns a `client_id`, the registered metadata, and no
+`client_secret`. The client then signs a short-lived `client_assertion` with
+its private key and sends it to `/oauth/token` together with the token-exchange
+request:
+
+```text
+grant_type=urn:ietf:params:oauth:grant-type:token-exchange&
+subject_token=<subject-token>&
+subject_token_type=urn:ietf:params:oauth:token-type:access_token&
+client_assertion_type=urn:ietf:params:oauth:client-assertion-type:jwt-bearer&
+client_assertion=<signed-assertion>
+```
+
+The assertion identifies the registered `client_id` in `iss` and `sub`, targets
+the token endpoint in `aud`, and includes a unique `jti` and an `exp`. The
+server verifies it against the stored inline JWKS and rejects replay while the
+assertion is valid. No `client_secret` is included in registration or token
+exchange.
+
+Private-key JWT registration accepts only inline `jwks`; `jwks_uri`, SPIFFE/SVID
+authentication, AWS STS `act` mapping, and ID-JAG chaining are deferred and out
+of scope. `token_endpoint_auth_signing_alg` is required and the supported
+values are `RS256`, `RS384`, `RS512`, `PS256`, `PS384`, `PS512`, `ES256`, `ES384`,
+`ES512`, and `EdDSA`. HTTPS is required; a plain-HTTP loopback development
+issuer needs the explicit `insecureAllowConfidentialOverLoopbackHTTP` override.
+The broader `insecureAllowHTTP` option cannot be combined with this registration
+feature.
 
 ## Trust model
 

@@ -326,26 +326,42 @@ func TestCheckLockProvenanceExpectation(t *testing.T) {
 		{
 			name:     "both fields match",
 			observed: observed,
-			expected: &lockfile.Provenance{RepositoryRef: "refs/tags/v0.1.0", RunnerEnvironment: "github-hosted"},
+			expected: &lockfile.Provenance{
+				SignerIdentity:    "/.github/workflows/release.yml",
+				RepositoryRef:     "refs/tags/v0.1.0",
+				RunnerEnvironment: "github-hosted",
+			},
 		},
 		{
-			name:        "different ref rejected",
-			observed:    observed,
-			expected:    &lockfile.Provenance{RepositoryRef: "refs/heads/attacker-branch"},
+			name:     "different ref rejected",
+			observed: observed,
+			expected: &lockfile.Provenance{
+				SignerIdentity: "/.github/workflows/release.yml",
+				RepositoryRef:  "refs/heads/attacker-branch",
+			},
 			wantErr:     true,
 			wantMessage: "repository ref",
 		},
 		{
-			name:        "different runner class rejected",
-			observed:    observed,
-			expected:    &lockfile.Provenance{RunnerEnvironment: "self-hosted"},
+			name:     "different runner class rejected",
+			observed: observed,
+			expected: &lockfile.Provenance{
+				SignerIdentity:    "/.github/workflows/release.yml",
+				RunnerEnvironment: "self-hosted",
+			},
 			wantErr:     true,
 			wantMessage: "runner environment",
 		},
 		{
-			name:        "certificate that stopped carrying the pinned ref rejected",
-			observed:    observedCertificate{RunnerEnvironment: "github-hosted"},
-			expected:    &lockfile.Provenance{RepositoryRef: "refs/tags/v0.1.0"},
+			name: "certificate that stopped carrying the pinned ref rejected",
+			observed: observedCertificate{
+				Identity:          coreverifier.Identity{SignerIdentity: "/.github/workflows/release.yml"},
+				RunnerEnvironment: "github-hosted",
+			},
+			expected: &lockfile.Provenance{
+				SignerIdentity: "/.github/workflows/release.yml",
+				RepositoryRef:  "refs/tags/v0.1.0",
+			},
 			wantErr:     true,
 			wantMessage: "carries none",
 		},

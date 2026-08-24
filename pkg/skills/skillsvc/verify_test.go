@@ -716,6 +716,9 @@ func TestInstallVerification_EnforcesPinnedRef(t *testing.T) {
 	}
 	_, err := svc.Install(t.Context(), installOpts)
 	require.NoError(t, err)
+	entry, ok := loadLockEntry(t, projectRoot, "ref-pinned-skill")
+	require.True(t, ok)
+	require.NotNil(t, entry.Provenance)
 
 	mv.EXPECT().VerifyGit(gomock.Any(), gomock.Any(), gomock.Any(), gomock.Any()).
 		DoAndReturn(func(_ any, _, _ []byte, expected *verifier.ProvenanceExpectation) (*verifier.Result, error) {
@@ -729,7 +732,7 @@ func TestInstallVerification_EnforcesPinnedRef(t *testing.T) {
 	require.Error(t, err)
 	assert.Equal(t, http.StatusForbidden, httperr.Code(err))
 
-	entry, ok := loadLockEntry(t, projectRoot, "ref-pinned-skill")
+	entry, ok = loadLockEntry(t, projectRoot, "ref-pinned-skill")
 	require.True(t, ok)
 	require.NotNil(t, entry.Provenance)
 	assert.Equal(t, "refs/tags/v0.1.0", entry.Provenance.RepositoryRef, "the rejected install must not re-pin")

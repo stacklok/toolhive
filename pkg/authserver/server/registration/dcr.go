@@ -365,15 +365,18 @@ func validatePrivateKeyJWTMetadata(req *oauthproto.DynamicClientRegistrationRequ
 	return nil
 }
 
-func supportedSigningAlgorithm(alg string) bool {
-	switch alg {
-	case string(jose.RS256), string(jose.RS384), string(jose.RS512),
+// SupportedSigningAlgorithms returns the narrow allowlist accepted for
+// private_key_jwt client assertions and their registered signing keys.
+func SupportedSigningAlgorithms() []string {
+	return []string{
+		string(jose.RS256), string(jose.RS384), string(jose.RS512),
 		string(jose.PS256), string(jose.PS384), string(jose.PS512),
-		string(jose.ES256), string(jose.ES384), string(jose.ES512), string(jose.EdDSA):
-		return true
-	default:
-		return false
+		string(jose.ES256), string(jose.ES384), string(jose.ES512), string(jose.EdDSA),
 	}
+}
+
+func supportedSigningAlgorithm(alg string) bool {
+	return slices.Contains(SupportedSigningAlgorithms(), alg)
 }
 
 func cloneJWKS(jwks *jose.JSONWebKeySet) *jose.JSONWebKeySet {

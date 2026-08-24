@@ -76,7 +76,7 @@ type AuthorizationServerConfig struct {
 	AllowConfidentialClientRegistration bool
 	// AllowPrivateKeyJWTRegistration permits DCR of clients using
 	// private_key_jwt authentication. This is independent of confidential-client
-	// registration and is available to handlers for future registration support.
+	// registration and is used by DCR validation and discovery advertisement.
 	AllowPrivateKeyJWTRegistration bool
 	// HasStaticDelegateClients indicates whether any pre-provisioned confidential
 	// delegate client is registered at startup. Discovery advertises client-secret
@@ -137,7 +137,7 @@ type AuthorizationServerParams struct {
 	AllowConfidentialClientRegistration bool
 	// AllowPrivateKeyJWTRegistration permits DCR of clients using
 	// private_key_jwt authentication. This is independent of confidential-client
-	// registration and is available to handlers for future registration support.
+	// registration and is used by DCR validation and discovery advertisement.
 	AllowPrivateKeyJWTRegistration bool
 	// HasStaticDelegateClients indicates whether any pre-provisioned confidential
 	// delegate client is registered at startup. Discovery advertises client-secret

@@ -156,8 +156,8 @@ type RunConfig struct {
 	// AllowPrivateKeyJWTRegistration permits Dynamic Client Registration of
 	// clients using private_key_jwt authentication. This is independent of
 	// AllowConfidentialClientRegistration and defaults to false. Registration
-	// behavior is introduced separately; this field only carries the capability
-	// through the configuration pipeline.
+	// behavior is controlled independently by the DCR handler and discovery
+	// metadata.
 	//
 	// Security: /oauth/register is unauthenticated. Combining this capability
 	// with InsecureAllowHTTP is rejected by Validate.

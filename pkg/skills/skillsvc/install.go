@@ -207,11 +207,11 @@ func (s *service) installFromResolvedRegistry(
 	deps *depState,
 	alreadyLocked bool,
 ) (*skills.InstallResult, error) {
-	catalogProvenance, provErr := provenanceInfoFromCatalog(resolved.Provenance)
-	if provErr != nil {
-		return nil, provErr
-	}
-	opts.CatalogProvenance = catalogProvenance
+	// Carry catalog constraints to the verification boundary unchanged.
+	// Validation is deliberately deferred until the resolved canonical skill
+	// name can be checked against the lock: existing lock entries take
+	// precedence, and user-scope installs do not apply project trust policy.
+	opts.CatalogProvenance = resolved.Provenance
 
 	switch {
 	case resolved.OCIRef != nil:

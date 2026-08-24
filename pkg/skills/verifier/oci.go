@@ -13,7 +13,6 @@ import (
 	"github.com/sigstore/sigstore-go/pkg/verify"
 
 	coreverifier "github.com/stacklok/toolhive-core/container/verifier"
-	"github.com/stacklok/toolhive/pkg/skills/lockfile"
 )
 
 // VerifyOCI discovers and verifies the Sigstore signature for an OCI
@@ -22,7 +21,7 @@ import (
 func (d *Default) VerifyOCI(
 	ctx context.Context,
 	imageRef, digest string,
-	expected *lockfile.Provenance,
+	expected *ProvenanceExpectation,
 ) (*Result, error) {
 	bundles, err := d.retrieveBundles(ctx, imageRef, digest)
 	if err != nil {
@@ -69,36 +68,49 @@ func (d *Default) VerifyOCIWithKey(
 }
 
 // verifyKeylessBundles verifies bundles until one passes the keyless policy
-// AND the pinned certificate fields the policy cannot express, returning its
-// result, or nil with the most useful verification error.
+// and its source-specific provenance expectation, returning its result or
+// nil with the most useful verification error.
 func verifyKeylessBundles(
 	bundles []coreverifier.Bundle,
 	tm root.TrustedMaterial,
 	opts []verify.VerifierOption,
-	expected *lockfile.Provenance,
+	expected *ProvenanceExpectation,
 ) (*Result, error) {
-	var errs []error
-	for _, b := range bundles {
-		result, err := verifyOneKeylessBundle(b, tm, opts, expected)
-		if err != nil {
-			errs = append(errs, err)
-			continue
-		}
+	result, errs := firstVerifiedBundle(bundles, func(b coreverifier.Bundle) (*Result, error) {
+		return verifyOneKeylessBundle(b, tm, opts, expected)
+	})
+	if result != nil {
 		return result, nil
 	}
 	return nil, mostUsefulVerifyError(errs)
 }
 
+// firstVerifiedBundle returns the first bundle accepted by verify and keeps
+// every rejection when none match. Keeping selection separate from the
+// cryptographic operation makes the "any satisfying valid signature wins"
+// rule explicit for multi-signature artifacts.
+func firstVerifiedBundle[T any](bundles []T, verify func(T) (*Result, error)) (*Result, []error) {
+	errList := make([]error, 0, len(bundles))
+	for _, bundle := range bundles {
+		result, err := verify(bundle)
+		if err != nil {
+			errList = append(errList, err)
+			continue
+		}
+		return result, nil
+	}
+	return nil, errList
+}
+
 // verifyOneKeylessBundle verifies a single bundle against the keyless
-// policy, then the pinned certificate fields the policy cannot express. A
-// pinned-field mismatch disqualifies the bundle exactly like a policy
-// failure — another bundle on the artifact may satisfy the full
-// expectation.
+// policy, then its source-specific provenance expectation. A mismatch
+// disqualifies the bundle exactly like a policy failure — another signature
+// on the artifact may satisfy the full expectation.
 func verifyOneKeylessBundle(
 	b coreverifier.Bundle,
 	tm root.TrustedMaterial,
 	opts []verify.VerifierOption,
-	expected *lockfile.Provenance,
+	expected *ProvenanceExpectation,
 ) (*Result, error) {
 	vr, verifyErr := coreverifier.VerifyBundle(b, tm, expectedIdentity(expected), opts...)
 	if verifyErr != nil {
@@ -108,10 +120,9 @@ func verifyOneKeylessBundle(
 	if idErr != nil {
 		return nil, idErr
 	}
-	// The Sigstore policy accepted this certificate's signer identity and
-	// issuer; the pinned ref and runner class are enforced against the same
-	// certificate here.
-	if err := checkPinnedCertificateFields(observed, expected); err != nil {
+	// Catalog constraints are checked here, inside the per-bundle loop, so a
+	// mismatching valid signature does not hide a later satisfying one.
+	if err := checkProvenanceExpectation(observed, expected); err != nil {
 		return nil, err
 	}
 	return resultFromCore(observed, b.Raw), nil
@@ -179,17 +190,15 @@ func splitEmbeddedDigest(imageRef string) (string, bool) {
 }
 
 // classifyVerifyFailure distinguishes a signer mismatch from an invalid
-// signature. The expected identity is enforced inside the Sigstore policy,
-// so a mismatch surfaces as a verification failure; re-verifying without
-// the identity constraint tells the two apart: if the chain of trust holds
-// without the constraint, the failure was the identity — and the identity
-// that DID verify is reported, so an operator can tell a legitimate
-// publisher rotation from an artifact substitution.
+// signature. Lock identities are enforced inside the Sigstore policy, so a
+// mismatch surfaces as a verification failure; re-verifying without the
+// identity constraint tells the two apart. Catalog mismatches are already
+// classified inside the per-bundle loop.
 func classifyVerifyFailure(
 	bundles []coreverifier.Bundle,
 	tm root.TrustedMaterial,
 	opts []verify.VerifierOption,
-	expected *lockfile.Provenance,
+	expected *ProvenanceExpectation,
 	lastErr error,
 ) error {
 	// A pinned ref or runner mismatch is already the precise diagnosis, and
@@ -214,15 +223,18 @@ func classifyVerifyFailure(
 // signerMismatchError builds the ErrSignerMismatch error, naming both the
 // expected identity tuple and the identity the artifact actually verifies
 // with (when extractable).
-func signerMismatchError(vr *verify.VerificationResult, expected *lockfile.Provenance) error {
-	observed, idErr := coreverifier.IdentityFromResult(vr)
+func signerMismatchError(vr *verify.VerificationResult, expected *ProvenanceExpectation) error {
+	observed, idErr := observedFromResult(vr)
 	if idErr != nil {
-		return fmt.Errorf("%w: artifact is signed by a different identity than %q (issuer %q)",
-			ErrSignerMismatch, expected.SignerIdentity, expected.CertIssuer)
+		return fmt.Errorf("%w: artifact is signed by a different identity", ErrSignerMismatch)
 	}
+	if expected.catalog != nil {
+		return checkCatalogExpectation(observed, expected.catalog)
+	}
+	p := expected.locked
 	return fmt.Errorf("%w: locked to %q (issuer %q), but the artifact verifies as %q (issuer %q)",
 		ErrSignerMismatch,
-		expected.SignerIdentity, expected.CertIssuer,
+		p.SignerIdentity, p.CertIssuer,
 		observed.SignerIdentity, observed.CertIssuer)
 }
 

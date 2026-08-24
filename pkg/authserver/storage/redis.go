@@ -14,6 +14,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/go-jose/go-jose/v3"
 	"github.com/ory/fosite"
 	"github.com/redis/go-redis/v9"
 
@@ -199,6 +200,30 @@ type storedClient struct {
 	// is not compensated for — it predates confidential DCR support entirely,
 	// so it cannot be DCR-issued.
 	DCRIssued bool `json:"dcr_issued,omitempty"`
+	// JSONWebKeys stores only the inline public keys used by private_key_jwt.
+	// JSONWebKeysURI and other assertion material are intentionally not stored.
+	JSONWebKeys                       *jose.JSONWebKeySet `json:"jwks,omitempty"`
+	TokenEndpointAuthSigningAlgorithm string              `json:"token_endpoint_auth_signing_alg,omitempty"`
+}
+
+// publicJSONWebKeySet copies an inline JWKS while removing private and
+// symmetric key material before it is persisted.
+func publicJSONWebKeySet(jwks *jose.JSONWebKeySet) *jose.JSONWebKeySet {
+	if jwks == nil {
+		return nil
+	}
+
+	publicKeys := make([]jose.JSONWebKey, 0, len(jwks.Keys))
+	for _, key := range jwks.Keys {
+		publicKey := key
+		if !key.IsPublic() {
+			publicKey = key.Public()
+		}
+		if publicKey.Key != nil && publicKey.IsPublic() {
+			publicKeys = append(publicKeys, publicKey)
+		}
+	}
+	return &jose.JSONWebKeySet{Keys: publicKeys}
 }
 
 // clientFromStored rebuilds a fosite.Client from its persisted form. hasTTL
@@ -276,7 +301,9 @@ func clientFromStored(stored storedClient, hasTTL bool) fosite.Client {
 			Audience:      stored.Audience,
 			Public:        stored.Public && method == oauthproto.TokenEndpointAuthMethodNone,
 		},
-		TokenEndpointAuthMethod: method,
+		TokenEndpointAuthMethod:           method,
+		JSONWebKeys:                       stored.JSONWebKeys,
+		TokenEndpointAuthSigningAlgorithm: stored.TokenEndpointAuthSigningAlgorithm,
 	}
 	if stored.DCRIssued {
 		return registration.MarkDCRIssued(oidcClient)
@@ -311,6 +338,8 @@ func (s *RedisStorage) RegisterClient(ctx context.Context, client fosite.Client)
 	// row as public on read-back.
 	if oidcClient, ok := client.(fosite.OpenIDConnectClient); ok {
 		stored.TokenEndpointAuthMethod = oidcClient.GetTokenEndpointAuthMethod()
+		stored.JSONWebKeys = publicJSONWebKeySet(oidcClient.GetJSONWebKeys())
+		stored.TokenEndpointAuthSigningAlgorithm = oidcClient.GetTokenEndpointAuthSigningAlgorithm()
 	}
 	stored.DCRIssued = registration.DCRIssued(client)
 

@@ -4643,7 +4643,7 @@ const docTemplate = `{
                 "type": "object"
             },
             "registry.Provenance": {
-                "description": "Provenance contains verification and signing metadata",
+                "description": "Provenance is the expected signer identity for this skill, checked on\nfirst install instead of trust-on-first-use. Absent means unconstrained\n— most catalog entries won't have this for a while, and that must not\nbreak installs; it's an opt-in tightening per entry, not a requirement.\n\nEach field constrains independently, and an empty string leaves that\ndimension unconstrained. Attestation is the exception: setting it at\nall, even to an empty struct, requires the artifact to be attested, so\nverification fails against a signature carrying no statement. Its own\nPredicateType and Predicate then follow the usual rule and constrain\nonly when set. Predicate must be a JSON object; anything else can never\nmatch, and Validate rejects it rather than letting it through as a\nconstraint that silently fails every artifact.",
                 "properties": {
                     "attestation": {
                         "$ref": "#/components/schemas/registry.VerifiedAttestation"
@@ -4853,6 +4853,9 @@ const docTemplate = `{
                         },
                         "type": "array",
                         "uniqueItems": false
+                    },
+                    "provenance": {
+                        "$ref": "#/components/schemas/registry.Provenance"
                     },
                     "repository": {
                         "$ref": "#/components/schemas/registry.SkillRepository"

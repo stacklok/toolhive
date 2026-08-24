@@ -10,6 +10,7 @@ import (
 	"net/http"
 
 	"github.com/stacklok/toolhive-core/httperr"
+	regtypes "github.com/stacklok/toolhive-core/registry/types"
 	"github.com/stacklok/toolhive/pkg/container/images"
 	"github.com/stacklok/toolhive/pkg/skills"
 	"github.com/stacklok/toolhive/pkg/skills/lockfile"
@@ -55,8 +56,11 @@ func applyDecisionToOpts(opts *skills.InstallOptions, decision *provenanceDecisi
 
 // verifyOCIInstall verifies the signature of the OCI artifact at ref/digest
 // before anything is extracted or recorded. The identity expected by the
-// lock file (if any) is enforced inside the verifier's Sigstore policy;
-// trust on first use records whatever identity verification observes.
+// lock file (if any) is enforced inside the verifier's Sigstore policy; on
+// true first use (no lock entry at all), a catalog-declared expectation
+// takes its place if the install resolved from a registry entry that
+// declared one (RFC THV-0080 follow-up #6310) — otherwise trust on first
+// use records whatever identity verification observes.
 func (s *service) verifyOCIInstall(
 	ctx context.Context,
 	opts skills.InstallOptions,
@@ -65,6 +69,9 @@ func (s *service) verifyOCIInstall(
 	expected, expectUnsigned, err := expectedLockTrust(opts.ProjectRoot, skillName)
 	if err != nil {
 		return nil, err
+	}
+	if expected == nil && !expectUnsigned {
+		expected = provenanceInfoToLock(opts.CatalogProvenance)
 	}
 	if opts.AllowSignerChange {
 		// The signer-change guard was explicitly overridden: verify the
@@ -89,7 +96,8 @@ func (s *service) verifyOCIInstall(
 }
 
 // verifyGitInstall verifies the gitsign signature on the resolved commit
-// before anything is written or recorded.
+// before anything is written or recorded. See verifyOCIInstall for the
+// catalog-provenance fallback on true first use.
 func (s *service) verifyGitInstall(
 	ctx context.Context,
 	opts skills.InstallOptions,
@@ -100,6 +108,9 @@ func (s *service) verifyGitInstall(
 	expected, expectUnsigned, err := expectedLockTrust(opts.ProjectRoot, skillName)
 	if err != nil {
 		return nil, err
+	}
+	if expected == nil && !expectUnsigned {
+		expected = provenanceInfoToLock(opts.CatalogProvenance)
 	}
 	if opts.AllowSignerChange {
 		expected, expectUnsigned = nil, false
@@ -333,4 +344,37 @@ func provenanceInfoFromResult(r *verifier.Result) *skills.ProvenanceInfo {
 		SigstoreURL:       r.SigstoreURL,
 		Provisional:       r.Provisional,
 	}
+}
+
+// provenanceInfoFromCatalog converts a skill registry/catalog entry's
+// declared provenance into the internal shape used as the expected identity
+// for first-install verification (RFC THV-0080 follow-up #6310). nil input
+// yields nil output — most catalog entries won't declare one for a while,
+// and that must not block installs.
+//
+// An attestation constraint is refused rather than silently dropped:
+// toolhive's skill verifier (pkg/skills/verifier) has no attestation
+// comparison logic today, so honoring the rest of the provenance while
+// quietly ignoring Attestation would let a catalog author believe a
+// guarantee is enforced when it is not — the same fail-closed principle
+// toolhive-core's own Skill.Validate applies to catalog authors.
+func provenanceInfoFromCatalog(p *regtypes.Provenance) (*skills.ProvenanceInfo, error) {
+	if p == nil {
+		return nil, nil
+	}
+	if p.Attestation != nil {
+		return nil, httperr.WithCode(
+			errors.New("catalog declares an attestation constraint for this skill,"+
+				" which toolhive cannot yet enforce; refusing to silently ignore it"),
+			http.StatusUnprocessableEntity,
+		)
+	}
+	return &skills.ProvenanceInfo{
+		SignerIdentity:    p.SignerIdentity,
+		CertIssuer:        p.CertIssuer,
+		RepositoryURI:     p.RepositoryURI,
+		RepositoryRef:     p.RepositoryRef,
+		RunnerEnvironment: p.RunnerEnvironment,
+		SigstoreURL:       p.SigstoreURL,
+	}, nil
 }

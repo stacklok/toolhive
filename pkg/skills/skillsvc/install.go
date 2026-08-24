@@ -207,6 +207,12 @@ func (s *service) installFromResolvedRegistry(
 	deps *depState,
 	alreadyLocked bool,
 ) (*skills.InstallResult, error) {
+	catalogProvenance, provErr := provenanceInfoFromCatalog(resolved.Provenance)
+	if provErr != nil {
+		return nil, provErr
+	}
+	opts.CatalogProvenance = catalogProvenance
+
 	switch {
 	case resolved.OCIRef != nil:
 		slog.Info("resolved skill from registry (OCI)", "name", opts.Name, "oci_reference", resolved.OCIRef.String())

@@ -15,7 +15,11 @@ import (
 	"go.uber.org/mock/gomock"
 
 	"github.com/stacklok/toolhive-core/httperr"
+	regtypes "github.com/stacklok/toolhive-core/registry/types"
+	regmocks "github.com/stacklok/toolhive/pkg/registry/mocks"
 	"github.com/stacklok/toolhive/pkg/skills"
+	"github.com/stacklok/toolhive/pkg/skills/gitresolver"
+	gitmocks "github.com/stacklok/toolhive/pkg/skills/gitresolver/mocks"
 	"github.com/stacklok/toolhive/pkg/skills/lockfile"
 	"github.com/stacklok/toolhive/pkg/skills/verifier"
 	verifiermocks "github.com/stacklok/toolhive/pkg/skills/verifier/mocks"
@@ -96,6 +100,123 @@ func TestInstallVerification_TOFURecordsProvenance(t *testing.T) {
 		})
 	_, err = svc.Install(t.Context(), skills.InstallOptions{
 		Name:        ref,
+		Scope:       skills.ScopeProject,
+		ProjectRoot: projectRoot,
+		Clients:     []string{"claude-code"},
+		Force:       true,
+	})
+	require.NoError(t, err)
+}
+
+// catalogSkill returns a registry/catalog entry for "catalog-skill" resolving
+// to a git package, declaring the given provenance (RFC THV-0080 follow-up
+// #6310).
+func catalogSkill(provenance *regtypes.Provenance) regtypes.Skill {
+	return regtypes.Skill{
+		Namespace: "io.github.test",
+		Name:      "catalog-skill",
+		Packages: []regtypes.SkillPackage{
+			{RegistryType: "git", URL: "https://github.com/test/catalog-skill"},
+		},
+		Provenance: provenance,
+	}
+}
+
+// catalogSkillFiles is the git-resolved content installFromGit expects for
+// the catalogSkill fixture.
+func catalogSkillFiles() *gitresolver.ResolveResult {
+	return &gitresolver.ResolveResult{
+		SkillConfig: &skills.ParseResult{Name: "catalog-skill", Version: "1.0.0"},
+		Files: []gitresolver.FileEntry{
+			{Path: "SKILL.md", Content: gitSkill("catalog-skill"), Mode: 0o644},
+		},
+		CommitHash: testCommitHash,
+	}
+}
+
+//nolint:paralleltest // uses t.Setenv via newLockTestService, incompatible with t.Parallel
+func TestInstallVerification_CatalogProvenanceUsedOnFirstUse(t *testing.T) {
+	gr := gitmocks.NewMockResolver(gomock.NewController(t))
+	gr.EXPECT().Resolve(gomock.Any(), gomock.Any()).Return(catalogSkillFiles(), nil)
+
+	lookup := regmocks.NewMockProvider(gomock.NewController(t))
+	lookup.EXPECT().SearchSkills("catalog-skill").Return([]regtypes.Skill{
+		catalogSkill(&regtypes.Provenance{
+			SignerIdentity: testSignerIdentity,
+			CertIssuer:     testCertIssuer,
+		}),
+	}, nil)
+
+	mv := verifiermocks.NewMockVerifier(gomock.NewController(t))
+	// No lock entry exists yet, but the registry entry declares an expected
+	// identity: it must reach the verifier instead of nil (blind TOFU).
+	mv.EXPECT().VerifyGit(gomock.Any(), gomock.Any(), gomock.Any(), gomock.Any()).
+		DoAndReturn(func(_ any, _, _ []byte, expected *lockfile.Provenance) (*verifier.Result, error) {
+			require.NotNil(t, expected, "a catalog-declared provenance must be checked on first install")
+			assert.Equal(t, testSignerIdentity, expected.SignerIdentity)
+			assert.Equal(t, testCertIssuer, expected.CertIssuer)
+			return signedResult(), nil
+		})
+
+	svc, projectRoot := newLockTestService(t, gr, WithVerifier(mv), WithSkillLookup(lookup))
+	_, err := svc.Install(t.Context(), skills.InstallOptions{
+		Name:        "catalog-skill",
+		Scope:       skills.ScopeProject,
+		ProjectRoot: projectRoot,
+		Clients:     []string{"claude-code"},
+	})
+	require.NoError(t, err)
+
+	entry, ok := loadLockEntry(t, projectRoot, "catalog-skill")
+	require.True(t, ok)
+	assert.Equal(t, testSignerIdentity, entry.Provenance.SignerIdentity)
+}
+
+//nolint:paralleltest // uses t.Setenv via newLockTestService, incompatible with t.Parallel
+func TestInstallVerification_LockEntryTakesPrecedenceOverCatalog(t *testing.T) {
+	gr := gitmocks.NewMockResolver(gomock.NewController(t))
+	gr.EXPECT().Resolve(gomock.Any(), gomock.Any()).Return(catalogSkillFiles(), nil).AnyTimes()
+
+	lookup := regmocks.NewMockProvider(gomock.NewController(t))
+	// The catalog now declares a DIFFERENT identity than what will end up
+	// locked — if the lock entry didn't win, this install would enforce the
+	// wrong expectation.
+	lookup.EXPECT().SearchSkills("catalog-skill").Return([]regtypes.Skill{
+		catalogSkill(&regtypes.Provenance{SignerIdentity: "/.github/workflows/other.yml", CertIssuer: testCertIssuer}),
+	}, nil).AnyTimes()
+
+	mv := verifiermocks.NewMockVerifier(gomock.NewController(t))
+	// First install: no lock entry yet, so the catalog identity is checked
+	// and — since it verifies — becomes what gets locked.
+	mv.EXPECT().VerifyGit(gomock.Any(), gomock.Any(), gomock.Any(), gomock.Any()).
+		Return(&verifier.Result{
+			Signed: true, SignerIdentity: "/.github/workflows/other.yml", CertIssuer: testCertIssuer,
+			SigstoreURL: "https://rekor.sigstore.dev", Bundle: []byte(`{"bundle":true}`),
+		}, nil)
+
+	svc, projectRoot := newLockTestService(t, gr, WithVerifier(mv), WithSkillLookup(lookup))
+	_, err := svc.Install(t.Context(), skills.InstallOptions{
+		Name:        "catalog-skill",
+		Scope:       skills.ScopeProject,
+		ProjectRoot: projectRoot,
+		Clients:     []string{"claude-code"},
+	})
+	require.NoError(t, err)
+
+	// Reinstall: the lock entry now recorded is what must be enforced, not
+	// the catalog's declared identity.
+	mv.EXPECT().VerifyGit(gomock.Any(), gomock.Any(), gomock.Any(), gomock.Any()).
+		DoAndReturn(func(_ any, _, _ []byte, expected *lockfile.Provenance) (*verifier.Result, error) {
+			require.NotNil(t, expected)
+			assert.Equal(t, "/.github/workflows/other.yml", expected.SignerIdentity,
+				"the lock entry, not the catalog, must be enforced once one exists")
+			return &verifier.Result{
+				Signed: true, SignerIdentity: "/.github/workflows/other.yml", CertIssuer: testCertIssuer,
+				SigstoreURL: "https://rekor.sigstore.dev", Bundle: []byte(`{"bundle":true}`),
+			}, nil
+		})
+	_, err = svc.Install(t.Context(), skills.InstallOptions{
+		Name:        "catalog-skill",
 		Scope:       skills.ScopeProject,
 		ProjectRoot: projectRoot,
 		Clients:     []string{"claude-code"},
@@ -391,6 +512,51 @@ func TestProvenanceConversionsPreserveEveryField(t *testing.T) {
 
 	assert.Nil(t, provenanceInfoFromLock(nil))
 	assert.Nil(t, provenanceInfoToLock(nil))
+}
+
+func TestProvenanceInfoFromCatalog(t *testing.T) {
+	t.Parallel()
+
+	t.Run("nil is nil", func(t *testing.T) {
+		t.Parallel()
+		info, err := provenanceInfoFromCatalog(nil)
+		require.NoError(t, err)
+		assert.Nil(t, info)
+	})
+
+	t.Run("every identity field carries through", func(t *testing.T) {
+		t.Parallel()
+		catalog := &regtypes.Provenance{
+			SignerIdentity:    testSignerIdentity,
+			CertIssuer:        testCertIssuer,
+			RepositoryURI:     "https://github.com/org/repo",
+			RepositoryRef:     "refs/heads/main",
+			RunnerEnvironment: testRunnerEnvironment,
+			SigstoreURL:       "https://rekor.sigstore.dev",
+		}
+		info, err := provenanceInfoFromCatalog(catalog)
+		require.NoError(t, err)
+		require.NotNil(t, info)
+		assert.Equal(t, catalog.SignerIdentity, info.SignerIdentity)
+		assert.Equal(t, catalog.CertIssuer, info.CertIssuer)
+		assert.Equal(t, catalog.RepositoryURI, info.RepositoryURI)
+		assert.Equal(t, catalog.RepositoryRef, info.RepositoryRef)
+		assert.Equal(t, catalog.RunnerEnvironment, info.RunnerEnvironment)
+		assert.Equal(t, catalog.SigstoreURL, info.SigstoreURL)
+		assert.False(t, info.Provisional, "a catalog-declared expectation is not itself a verified result")
+	})
+
+	t.Run("attestation constraint is refused, not silently dropped", func(t *testing.T) {
+		t.Parallel()
+		catalog := &regtypes.Provenance{
+			SignerIdentity: testSignerIdentity,
+			Attestation:    &regtypes.VerifiedAttestation{PredicateType: "https://slsa.dev/provenance/v1"},
+		}
+		_, err := provenanceInfoFromCatalog(catalog)
+		require.Error(t, err)
+		assert.Equal(t, http.StatusUnprocessableEntity, httperr.Code(err))
+		assert.Contains(t, err.Error(), "attestation")
+	})
 }
 
 // requireAllFieldsSet fails when any field of the struct pointed to by v holds

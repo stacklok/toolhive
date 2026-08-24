@@ -86,6 +86,14 @@ type InstallOptions struct {
 	// install-time verification; recorded as `unsigned: true` in the lock
 	// entry.
 	Unsigned bool `json:"-"`
+	// CatalogProvenance is the expected signer identity declared by the
+	// skill registry/catalog entry this install resolved from, if any. When
+	// no lock entry already exists for this skill, install-time
+	// verification checks the artifact against this instead of blindly
+	// trusting whatever it observes (trust-on-first-use) — see RFC
+	// THV-0080 follow-up #6310. A lock entry, once one exists, always takes
+	// precedence over this. Internal use only — NOT exposed via HTTP API.
+	CatalogProvenance *ProvenanceInfo `json:"-"`
 	// Provenance carries the verified signer identity established during
 	// install-time verification, for recording into the lock entry. Set by
 	// the verification step, nil when the artifact is unsigned or

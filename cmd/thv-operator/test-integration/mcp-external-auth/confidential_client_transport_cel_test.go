@@ -20,14 +20,18 @@ import (
 // combined with insecureAllowHTTP would issue client secrets in cleartext
 // over an unauthenticated registration endpoint, so the pair must be
 // rejected at admission rather than surfacing only as a pod crash at
-// startup. URL-specific delegate-client transport policy is handled by the
-// shared Go validator because CEL cannot safely parse URLs. EmbeddedAuthServerConfig
-// is shared by MCPExternalAuthConfig and VirtualMCPServer, so exercising both
-// CRDs verifies the schema behavior.
+// startup. allowPrivateKeyJWTRegistration combined with insecureAllowHTTP is
+// rejected independently, for the same reason. URL-specific delegate-client
+// transport policy is handled by the shared Go validator because CEL cannot
+// safely parse URLs. EmbeddedAuthServerConfig is shared by
+// MCPExternalAuthConfig and VirtualMCPServer, so exercising both CRDs
+// verifies the schema behavior.
 var _ = Describe("EmbeddedAuthServerConfig confidential-client-transport CEL validation", func() {
 	const namespace = "default"
 
-	makeAuthConfig := func(name string, allowConfidential, insecureHTTP, delegateClient, loopbackHTTP, loopbackOptIn bool) *mcpv1beta1.MCPExternalAuthConfig {
+	makeAuthConfig := func(
+		name string, allowConfidential, allowPrivateKeyJWT, insecureHTTP, delegateClient, loopbackHTTP, loopbackOptIn bool,
+	) *mcpv1beta1.MCPExternalAuthConfig {
 		issuer := "https://auth.example.com"
 		if insecureHTTP {
 			issuer = "http://auth.internal.svc.cluster.local"
@@ -40,9 +44,10 @@ var _ = Describe("EmbeddedAuthServerConfig confidential-client-transport CEL val
 			Spec: mcpv1beta1.MCPExternalAuthConfigSpec{
 				Type: "embeddedAuthServer",
 				EmbeddedAuthServer: &mcpv1beta1.EmbeddedAuthServerConfig{
-					Issuer:                              issuer,
-					InsecureAllowHTTP:                   insecureHTTP,
-					AllowConfidentialClientRegistration: allowConfidential,
+					Issuer:                                    issuer,
+					InsecureAllowHTTP:                         insecureHTTP,
+					AllowConfidentialClientRegistration:       allowConfidential,
+					AllowPrivateKeyJWTRegistration:            allowPrivateKeyJWT,
 					InsecureAllowConfidentialOverLoopbackHTTP: loopbackOptIn,
 					UpstreamProviders: []mcpv1beta1.UpstreamProviderConfig{{
 						Name: "github",
@@ -72,14 +77,15 @@ var _ = Describe("EmbeddedAuthServerConfig confidential-client-transport CEL val
 	})
 
 	type validationCase struct {
-		name              string
-		allowConfidential bool
-		insecureHTTP      bool
-		delegateClient    bool
-		loopbackHTTP      bool
-		loopbackOptIn     bool
-		shouldAdmit       bool
-		expectedMessage   string
+		name               string
+		allowConfidential  bool
+		allowPrivateKeyJWT bool
+		insecureHTTP       bool
+		delegateClient     bool
+		loopbackHTTP       bool
+		loopbackOptIn      bool
+		shouldAdmit        bool
+		expectedMessage    string
 	}
 
 	cases := []validationCase{
@@ -89,6 +95,13 @@ var _ = Describe("EmbeddedAuthServerConfig confidential-client-transport CEL val
 			insecureHTTP:      true,
 			shouldAdmit:       false,
 			expectedMessage:   "allowConfidentialClientRegistration cannot be combined with insecureAllowHTTP",
+		},
+		{
+			name:               "both allowPrivateKeyJWTRegistration and insecureAllowHTTP set",
+			allowPrivateKeyJWT: true,
+			insecureHTTP:       true,
+			shouldAdmit:        false,
+			expectedMessage:    "allowPrivateKeyJWTRegistration cannot be combined with insecureAllowHTTP",
 		},
 		{
 			name:              "allowConfidentialClientRegistration alone",
@@ -115,7 +128,8 @@ var _ = Describe("EmbeddedAuthServerConfig confidential-client-transport CEL val
 	for i, c := range cases {
 		name := fmt.Sprintf("confidential-client-transport-%d", i)
 		It(c.name, func() {
-			cfg := makeAuthConfig(name, c.allowConfidential, c.insecureHTTP, c.delegateClient, c.loopbackHTTP, c.loopbackOptIn)
+			cfg := makeAuthConfig(
+				name, c.allowConfidential, c.allowPrivateKeyJWT, c.insecureHTTP, c.delegateClient, c.loopbackHTTP, c.loopbackOptIn)
 			err := k8sClient.Create(ctx, cfg)
 			if c.shouldAdmit {
 				Expect(err).NotTo(HaveOccurred(),

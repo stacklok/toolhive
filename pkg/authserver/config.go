@@ -153,6 +153,17 @@ type RunConfig struct {
 	//nolint:lll // field tags require full JSON+YAML names
 	AllowConfidentialClientRegistration bool `json:"allow_confidential_client_registration,omitempty" yaml:"allow_confidential_client_registration,omitempty"`
 
+	// AllowPrivateKeyJWTRegistration permits Dynamic Client Registration of
+	// clients using private_key_jwt authentication. This is independent of
+	// AllowConfidentialClientRegistration and defaults to false. Registration
+	// behavior is introduced separately; this field only carries the capability
+	// through the configuration pipeline.
+	//
+	// Security: /oauth/register is unauthenticated. Combining this capability
+	// with InsecureAllowHTTP is rejected by Validate.
+	//nolint:lll // field tags require full JSON+YAML names
+	AllowPrivateKeyJWTRegistration bool `json:"allow_private_key_jwt_registration,omitempty" yaml:"allow_private_key_jwt_registration,omitempty"`
+
 	// ForceConfidentialRedirectURIs lists redirect URIs that must be registered
 	// as confidential clients regardless of the token_endpoint_auth_method the
 	// DCR request declares. A registration whose redirect_uris contains an
@@ -272,6 +283,10 @@ func (c *RunConfig) Validate() error {
 	if err := ValidateConfidentialClientTransport(
 		c.AllowConfidentialClientRegistration || len(c.DelegateClients) > 0, c.InsecureAllowHTTP,
 		c.Issuer, c.InsecureAllowConfidentialOverLoopbackHTTP); err != nil {
+		return err
+	}
+	if err := ValidatePrivateKeyJWTRegistrationTransport(
+		c.AllowPrivateKeyJWTRegistration, c.InsecureAllowHTTP, c.Issuer); err != nil {
 		return err
 	}
 	if err := ValidateForceConfidentialRedirectURIs(
@@ -943,6 +958,10 @@ type Config struct {
 	// semantics; disabling it does not revoke already-minted secrets.
 	AllowConfidentialClientRegistration bool
 
+	// AllowPrivateKeyJWTRegistration permits DCR of clients using
+	// private_key_jwt authentication. See RunConfig for the full semantics.
+	AllowPrivateKeyJWTRegistration bool
+
 	// ForceConfidentialRedirectURIs lists redirect URIs that are always
 	// registered as confidential clients, even when the DCR request declares
 	// "none". See the identically named field on RunConfig for the full
@@ -1084,6 +1103,10 @@ func (c *Config) validateConfidentialClientConfig() error {
 	if err := ValidateConfidentialClientTransport(
 		c.AllowConfidentialClientRegistration || len(c.DelegateClients) > 0, c.InsecureAllowHTTP,
 		c.Issuer, c.InsecureAllowConfidentialOverLoopbackHTTP); err != nil {
+		return err
+	}
+	if err := ValidatePrivateKeyJWTRegistrationTransport(
+		c.AllowPrivateKeyJWTRegistration, c.InsecureAllowHTTP, c.Issuer); err != nil {
 		return err
 	}
 	return ValidateForceConfidentialRedirectURIs(c.ForceConfidentialRedirectURIs, c.AllowConfidentialClientRegistration)
@@ -1526,6 +1549,29 @@ func ValidateConfidentialClientTransport(
 	if !networking.IsLocalhost(parsed.Host) {
 		return fmt.Errorf("allow_confidential_client_registration cannot use a plain-HTTP non-loopback issuer (%q): "+
 			"confidential clients would send secrets over cleartext HTTP", issuer)
+	}
+	return nil
+}
+
+// ValidatePrivateKeyJWTRegistrationTransport rejects cleartext HTTP
+// configurations when private_key_jwt registration is enabled. This is kept
+// independent from confidential-client registration because neither capability
+// implies the other.
+func ValidatePrivateKeyJWTRegistrationTransport(
+	allowPrivateKeyJWTRegistration, insecureAllowHTTP bool,
+	issuer string,
+) error {
+	if !allowPrivateKeyJWTRegistration {
+		return nil
+	}
+	if insecureAllowHTTP {
+		return fmt.Errorf("allow_private_key_jwt_registration cannot be combined with insecure_allow_http: " +
+			"private_key_jwt registration would occur over cleartext HTTP")
+	}
+	if parsed, err := url.Parse(issuer); err == nil &&
+		parsed.Scheme == "http" {
+		return fmt.Errorf("allow_private_key_jwt_registration cannot be combined with a plain-HTTP issuer (%q): "+
+			"private_key_jwt registration would occur over cleartext HTTP", issuer)
 	}
 	return nil
 }

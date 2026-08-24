@@ -74,6 +74,10 @@ type AuthorizationServerConfig struct {
 	// the DCR handler accepts client_secret_basic / client_secret_post and the
 	// discovery document advertises them in token_endpoint_auth_methods_supported.
 	AllowConfidentialClientRegistration bool
+	// AllowPrivateKeyJWTRegistration permits DCR of clients using
+	// private_key_jwt authentication. This is independent of confidential-client
+	// registration and is available to handlers for future registration support.
+	AllowPrivateKeyJWTRegistration bool
 	// HasStaticDelegateClients indicates whether any pre-provisioned confidential
 	// delegate client is registered at startup. Discovery advertises client-secret
 	// authentication methods when this is true.
@@ -131,6 +135,10 @@ type AuthorizationServerParams struct {
 	// the DCR handler accepts client_secret_basic / client_secret_post and the
 	// discovery document advertises them in token_endpoint_auth_methods_supported.
 	AllowConfidentialClientRegistration bool
+	// AllowPrivateKeyJWTRegistration permits DCR of clients using
+	// private_key_jwt authentication. This is independent of confidential-client
+	// registration and is available to handlers for future registration support.
+	AllowPrivateKeyJWTRegistration bool
 	// HasStaticDelegateClients indicates whether any pre-provisioned confidential
 	// delegate client is registered at startup. Discovery advertises client-secret
 	// authentication methods when this is true.
@@ -307,6 +315,7 @@ func NewAuthorizationServerConfig(cfg *AuthorizationServerParams) (*Authorizatio
 		AuthorizationEndpointBaseURL:        cfg.AuthorizationEndpointBaseURL,
 		CIMDEnabled:                         cfg.CIMDEnabled,
 		AllowConfidentialClientRegistration: cfg.AllowConfidentialClientRegistration,
+		AllowPrivateKeyJWTRegistration:      cfg.AllowPrivateKeyJWTRegistration,
 		HasStaticDelegateClients:            cfg.HasStaticDelegateClients,
 		ForceConfidentialRedirectURIs:       cfg.ForceConfidentialRedirectURIs,
 		JWTBearerGrantEnabled:               cfg.JWTBearerGrantEnabled,

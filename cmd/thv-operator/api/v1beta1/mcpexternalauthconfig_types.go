@@ -586,6 +586,7 @@ type JWTBearerSubjectBinding struct {
 // precise loopback-host security check.
 //
 // +kubebuilder:validation:XValidation:rule="!(has(self.allowConfidentialClientRegistration) && self.allowConfidentialClientRegistration && has(self.insecureAllowHTTP) && self.insecureAllowHTTP)",message="allowConfidentialClientRegistration cannot be combined with insecureAllowHTTP; client secrets would be issued in cleartext over an unauthenticated endpoint"
+// +kubebuilder:validation:XValidation:rule="!(has(self.allowPrivateKeyJWTRegistration) && self.allowPrivateKeyJWTRegistration && has(self.insecureAllowHTTP) && self.insecureAllowHTTP)",message="allowPrivateKeyJWTRegistration cannot be combined with insecureAllowHTTP; private_key_jwt registration would occur over cleartext HTTP"
 // +kubebuilder:validation:XValidation:rule="(!has(self.forceConfidentialRedirectUris) || size(self.forceConfidentialRedirectUris) == 0) || (has(self.allowConfidentialClientRegistration) && self.allowConfidentialClientRegistration)",message="forceConfidentialRedirectUris requires allowConfidentialClientRegistration to be true"
 // +kubebuilder:validation:XValidation:rule="!has(self.delegateClients) || size(self.delegateClients) == 0 || !self.issuer.startsWith('http://') || (has(self.insecureAllowConfidentialOverLoopbackHTTP) && self.insecureAllowConfidentialOverLoopbackHTTP)",message="delegateClients with an HTTP issuer require insecureAllowConfidentialOverLoopbackHTTP to be explicitly enabled; the issuer must still be loopback"
 //
@@ -752,6 +753,17 @@ type EmbeddedAuthServerConfig struct {
 	// +optional
 	AllowConfidentialClientRegistration bool `json:"allowConfidentialClientRegistration,omitempty"`
 
+	// AllowPrivateKeyJWTRegistration permits Dynamic Client Registration of
+	// clients using private_key_jwt authentication. Registration behavior is
+	// intentionally configured separately from confidential-client registration.
+	//
+	// Security: registration is unauthenticated, so enabling this lets any
+	// caller who can reach the endpoint register a private_key_jwt client.
+	// Combining it with insecureAllowHTTP is rejected at validation.
+	// +kubebuilder:default=false
+	// +optional
+	AllowPrivateKeyJWTRegistration bool `json:"allowPrivateKeyJWTRegistration,omitempty"`
+
 	// InsecureAllowConfidentialOverLoopbackHTTP opts in to confidential
 	// Dynamic Client Registration (DCR) and delegate clients when issuer is a
 	// plain-HTTP loopback URL (e.g. "http://localhost:8080"). Without this
@@ -831,13 +843,21 @@ type EmbeddedAuthServerConfig struct {
 // ValidateConfidentialClientTransport rejects cleartext issuer configurations
 // when confidential DCR or delegate clients are configured. Delegate clients
 // do not enable DCR; they share its transport policy because they send a
-// secret to the token endpoint.
+// secret to the token endpoint. Private-key JWT registration is validated
+// independently because it does not enable confidential-client registration.
 func (c *EmbeddedAuthServerConfig) ValidateConfidentialClientTransport() error {
-	return authserver.ValidateConfidentialClientTransport(
+	if err := authserver.ValidateConfidentialClientTransport(
 		c.AllowConfidentialClientRegistration || len(c.DelegateClients) > 0,
 		c.InsecureAllowHTTP,
 		c.Issuer,
 		c.InsecureAllowConfidentialOverLoopbackHTTP,
+	); err != nil {
+		return err
+	}
+	return authserver.ValidatePrivateKeyJWTRegistrationTransport(
+		c.AllowPrivateKeyJWTRegistration,
+		c.InsecureAllowHTTP,
+		c.Issuer,
 	)
 }
 

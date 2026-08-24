@@ -223,6 +223,17 @@ spec:
                       caller who can reach the endpoint obtain a client credential.
                       Combining it with insecureAllowHTTP is rejected at validation.
                     type: boolean
+                  allowPrivateKeyJWTRegistration:
+                    default: false
+                    description: |-
+                      AllowPrivateKeyJWTRegistration permits Dynamic Client Registration of
+                      clients using private_key_jwt authentication. Registration behavior is
+                      intentionally configured separately from confidential-client registration.
+
+                      Security: registration is unauthenticated, so enabling this lets any
+                      caller who can reach the endpoint register a private_key_jwt client.
+                      Combining it with insecureAllowHTTP is rejected at validation.
+                    type: boolean
                   authorizationEndpointBaseUrl:
                     description: |-
                       AuthorizationEndpointBaseURL overrides the base URL used for the authorization_endpoint
@@ -437,16 +448,17 @@ spec:
                   insecureAllowConfidentialOverLoopbackHTTP:
                     default: false
                     description: |-
-                      InsecureAllowConfidentialOverLoopbackHTTP opts in to confidential
-                      Dynamic Client Registration (DCR) and delegate clients when issuer is a
-                      plain-HTTP loopback URL (e.g. "http://localhost:8080"). Without this
-                      flag, that combination is rejected at reconcile time: a loopback http://
-                      issuer is normally fine for local development since the traffic never
-                      leaves the machine, but confidential clients send secrets over cleartext.
-                      Forcing TLS onto every loopback deployment instead would just push
-                      operators toward insecureAllowHTTP, which is worse: that also disables
-                      the non-loopback host check. Has no effect when there are no confidential
-                      clients or issuer is https.
+                      InsecureAllowConfidentialOverLoopbackHTTP opts in to
+                      allowConfidentialClientRegistration when issuer is a plain-HTTP loopback
+                      URL (e.g. "http://localhost:8080"). Without this flag, that combination
+                      is rejected at reconcile time: a loopback http:// issuer is normally
+                      fine for local development since the traffic never leaves the machine,
+                      but combined with confidential registration it means /oauth/register —
+                      which is unauthenticated — mints client secrets over cleartext. Forcing
+                      TLS onto every loopback deployment instead would just push operators
+                      toward insecureAllowHTTP, which is worse: that also disables the
+                      non-loopback host check. Has no effect when
+                      allowConfidentialClientRegistration is false or issuer is https.
                     type: boolean
                   insecureAllowHTTP:
                     default: false
@@ -1517,15 +1529,19 @@ spec:
                     over an unauthenticated endpoint
                   rule: '!(has(self.allowConfidentialClientRegistration) && self.allowConfidentialClientRegistration
                     && has(self.insecureAllowHTTP) && self.insecureAllowHTTP)'
+                - message: allowPrivateKeyJWTRegistration cannot be combined with
+                    insecureAllowHTTP; private_key_jwt registration would occur over
+                    cleartext HTTP
+                  rule: '!(has(self.allowPrivateKeyJWTRegistration) && self.allowPrivateKeyJWTRegistration
+                    && has(self.insecureAllowHTTP) && self.insecureAllowHTTP)'
+                - message: delegateClients require an https:// issuer; delegate client
+                    secrets must not be sent over plaintext HTTP
+                  rule: '!has(self.delegateClients) || size(self.delegateClients)
+                    == 0 || !self.issuer.startsWith(''http://'')'
                 - message: forceConfidentialRedirectUris requires allowConfidentialClientRegistration
                     to be true
                   rule: (!has(self.forceConfidentialRedirectUris) || size(self.forceConfidentialRedirectUris)
                     == 0) || (has(self.allowConfidentialClientRegistration) && self.allowConfidentialClientRegistration)
-                - message: delegateClients with an HTTP issuer require insecureAllowConfidentialOverLoopbackHTTP
-                    to be explicitly enabled; the issuer must still be loopback
-                  rule: '!has(self.delegateClients) || size(self.delegateClients)
-                    == 0 || !self.issuer.startsWith(''http://'') || (has(self.insecureAllowConfidentialOverLoopbackHTTP)
-                    && self.insecureAllowConfidentialOverLoopbackHTTP)'
               headerInjection:
                 description: |-
                   HeaderInjection configures custom HTTP header injection
@@ -2196,6 +2212,17 @@ spec:
                       caller who can reach the endpoint obtain a client credential.
                       Combining it with insecureAllowHTTP is rejected at validation.
                     type: boolean
+                  allowPrivateKeyJWTRegistration:
+                    default: false
+                    description: |-
+                      AllowPrivateKeyJWTRegistration permits Dynamic Client Registration of
+                      clients using private_key_jwt authentication. Registration behavior is
+                      intentionally configured separately from confidential-client registration.
+
+                      Security: registration is unauthenticated, so enabling this lets any
+                      caller who can reach the endpoint register a private_key_jwt client.
+                      Combining it with insecureAllowHTTP is rejected at validation.
+                    type: boolean
                   authorizationEndpointBaseUrl:
                     description: |-
                       AuthorizationEndpointBaseURL overrides the base URL used for the authorization_endpoint
@@ -2410,16 +2437,17 @@ spec:
                   insecureAllowConfidentialOverLoopbackHTTP:
                     default: false
                     description: |-
-                      InsecureAllowConfidentialOverLoopbackHTTP opts in to confidential
-                      Dynamic Client Registration (DCR) and delegate clients when issuer is a
-                      plain-HTTP loopback URL (e.g. "http://localhost:8080"). Without this
-                      flag, that combination is rejected at reconcile time: a loopback http://
-                      issuer is normally fine for local development since the traffic never
-                      leaves the machine, but confidential clients send secrets over cleartext.
-                      Forcing TLS onto every loopback deployment instead would just push
-                      operators toward insecureAllowHTTP, which is worse: that also disables
-                      the non-loopback host check. Has no effect when there are no confidential
-                      clients or issuer is https.
+                      InsecureAllowConfidentialOverLoopbackHTTP opts in to
+                      allowConfidentialClientRegistration when issuer is a plain-HTTP loopback
+                      URL (e.g. "http://localhost:8080"). Without this flag, that combination
+                      is rejected at reconcile time: a loopback http:// issuer is normally
+                      fine for local development since the traffic never leaves the machine,
+                      but combined with confidential registration it means /oauth/register —
+                      which is unauthenticated — mints client secrets over cleartext. Forcing
+                      TLS onto every loopback deployment instead would just push operators
+                      toward insecureAllowHTTP, which is worse: that also disables the
+                      non-loopback host check. Has no effect when
+                      allowConfidentialClientRegistration is false or issuer is https.
                     type: boolean
                   insecureAllowHTTP:
                     default: false
@@ -3490,15 +3518,19 @@ spec:
                     over an unauthenticated endpoint
                   rule: '!(has(self.allowConfidentialClientRegistration) && self.allowConfidentialClientRegistration
                     && has(self.insecureAllowHTTP) && self.insecureAllowHTTP)'
+                - message: allowPrivateKeyJWTRegistration cannot be combined with
+                    insecureAllowHTTP; private_key_jwt registration would occur over
+                    cleartext HTTP
+                  rule: '!(has(self.allowPrivateKeyJWTRegistration) && self.allowPrivateKeyJWTRegistration
+                    && has(self.insecureAllowHTTP) && self.insecureAllowHTTP)'
+                - message: delegateClients require an https:// issuer; delegate client
+                    secrets must not be sent over plaintext HTTP
+                  rule: '!has(self.delegateClients) || size(self.delegateClients)
+                    == 0 || !self.issuer.startsWith(''http://'')'
                 - message: forceConfidentialRedirectUris requires allowConfidentialClientRegistration
                     to be true
                   rule: (!has(self.forceConfidentialRedirectUris) || size(self.forceConfidentialRedirectUris)
                     == 0) || (has(self.allowConfidentialClientRegistration) && self.allowConfidentialClientRegistration)
-                - message: delegateClients with an HTTP issuer require insecureAllowConfidentialOverLoopbackHTTP
-                    to be explicitly enabled; the issuer must still be loopback
-                  rule: '!has(self.delegateClients) || size(self.delegateClients)
-                    == 0 || !self.issuer.startsWith(''http://'') || (has(self.insecureAllowConfidentialOverLoopbackHTTP)
-                    && self.insecureAllowConfidentialOverLoopbackHTTP)'
               headerInjection:
                 description: |-
                   HeaderInjection configures custom HTTP header injection

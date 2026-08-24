@@ -1285,20 +1285,19 @@ func (s *Server) handleSessionRegistrationImpl(ctx context.Context, session serv
 	// the next fan-out. The error-path defer above deregisters alongside
 	// Terminate.
 	//
-	// Optimizer-mode sessions are not registered: the health fan-out is a
-	// no-op there (#5786 PR1 is passthrough-only, see
-	// resyncSessionsOnBackendHealthChange), so registering would only retain
-	// the worker closure until termination. The optimizer-mode follow-up (PR2)
-	// removes this gate together with the fan-out's.
+	// Registered in BOTH modes since #5786 PR2: optimizer-mode sessions need
+	// the fan-out too, not to re-advertise (the find_tool/call_tool names never
+	// change) but to rebuild the session's optimizer index — see
+	// serve_optimizer_reindex.go.
 	//
-	// Also gated on health monitoring being enabled: with no monitor there is
+	// Gated on health monitoring being enabled: with no monitor there is
 	// no OnChange subscription (see Serve), so no fan-out would ever run the
 	// registry's lazy liveness prune — an entry for a session that ends
 	// without a server-observed Terminate (TTL expiry, node-local cache
 	// eviction, which only calls Close) would retain its worker closure (SDK
 	// session, captured identity and forwarded headers) forever. With no
 	// subscriber the registration could never be triggered anyway.
-	if s.optimizerFactory == nil && s.backendHealth() != nil {
+	if s.backendHealth() != nil {
 		s.healthResync.add(sessionID, toolsResyncWorker)
 	}
 

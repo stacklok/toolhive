@@ -1502,7 +1502,7 @@ func ValidateConfidentialClientTransport(
 	}
 	parsed, err := url.Parse(issuer)
 	if err != nil {
-		return fmt.Errorf("confidential client transport: invalid issuer URL: %w", err)
+		return fmt.Errorf("confidential clients require a valid issuer URL: %w", err)
 	}
 	if parsed.Scheme != "http" {
 		return nil

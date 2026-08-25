@@ -150,6 +150,48 @@ func TestNewFlow(t *testing.T) {
 	}
 }
 
+func TestNewFlow_CallbackPortInUse(t *testing.T) {
+	t.Parallel()
+
+	listener, err := net.Listen("tcp", "127.0.0.1:0")
+	require.NoError(t, err)
+	t.Cleanup(func() { require.NoError(t, listener.Close()) })
+	port := listener.Addr().(*net.TCPAddr).Port
+
+	flow, err := NewFlow(&Config{
+		ClientID:                 "test-client",
+		AuthURL:                  "https://example.com/auth",
+		TokenURL:                 "https://example.com/token",
+		CallbackPort:             port,
+		RequireExactCallbackPort: true,
+	})
+
+	require.Error(t, err)
+	assert.Nil(t, flow)
+	var portErr *networking.CallbackPortInUseError
+	require.ErrorAs(t, err, &portErr)
+	assert.Equal(t, port, portErr.Port)
+}
+
+func TestNewFlow_CallbackPortFallback(t *testing.T) {
+	t.Parallel()
+
+	listener, err := net.Listen("tcp", "127.0.0.1:0")
+	require.NoError(t, err)
+	t.Cleanup(func() { require.NoError(t, listener.Close()) })
+	port := listener.Addr().(*net.TCPAddr).Port
+
+	flow, err := NewFlow(&Config{
+		ClientID:     "test-client",
+		AuthURL:      "https://example.com/auth",
+		TokenURL:     "https://example.com/token",
+		CallbackPort: port,
+	})
+
+	require.NoError(t, err)
+	assert.NotEqual(t, port, flow.port)
+}
+
 func TestGeneratePKCEParams(t *testing.T) {
 	t.Parallel()
 	flow := &Flow{}

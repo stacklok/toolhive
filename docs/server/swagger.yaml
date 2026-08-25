@@ -766,10 +766,10 @@ components:
             secrets would otherwise travel over cleartext. Defaults to false. Has no
             effect when there are no confidential clients or Issuer is https.
 
-            Applies identically to delegate clients and DCR-registered clients; the
-            Kubernetes CRD blocks this combination unconditionally only because CEL
-            cannot express the loopback exception, not because delegate clients need
-            a stricter policy — see EmbeddedAuthServerConfig's doc comment.
+            Applies identically to delegate clients and DCR-registered clients. The
+            Kubernetes CRD requires the explicit opt-in for a delegate client with an
+            HTTP issuer; the shared transport validator enforces that its host is
+            loopback — see EmbeddedAuthServerConfig's doc comment.
 
             private_key_jwt registration has no equivalent flag or transport
             restriction: unlike confidential registration, it never returns a

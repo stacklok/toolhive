@@ -1,11 +1,13 @@
 // SPDX-FileCopyrightText: Copyright 2025 Stacklok, Inc.
 // SPDX-License-Identifier: Apache-2.0
 
-// Package lockfile manages the project-level skills lock file
-// (toolhive.lock.yaml). The lock file pins the exact name, version, source,
-// and digests of every project-scoped skill install so a team can restore
-// ("thv skill sync") or refresh ("thv skill upgrade") the pinned state on any
-// machine. See RFC THV-0080.
+// Package lockfile manages the project-level lock file (toolhive.lock.yaml).
+// The lock file pins the exact name, version, source, and digests of every
+// project-scoped skill and plugin install so a team can restore
+// ("thv skill sync" / "thv ai-plugin sync") or refresh
+// ("thv skill upgrade" / "thv ai-plugin upgrade") the pinned state on any
+// machine. RFC THV-0080 owns the version and skills: keys; plugins: is the
+// sibling key ratified by the AI-plugin lock track.
 //
 // All filesystem access goes through [Root], a capability type that can only
 // be constructed from a validated project root. Root confines every read and
@@ -31,7 +33,7 @@ import (
 	"github.com/stacklok/toolhive/pkg/skills"
 )
 
-// FileName is the name of the project-level skills lock file, written to the
+// FileName is the name of the project-level lock file, written to the
 // project root alongside .git.
 const FileName = "toolhive.lock.yaml"
 
@@ -40,11 +42,13 @@ const FileName = "toolhive.lock.yaml"
 // parse.
 const CurrentVersion = 1
 
-// Entry represents a single pinned skill installation in the lock file.
+// Entry represents a single pinned skill or plugin installation in the lock file.
 type Entry struct {
-	// Name is the skill's unique name.
+	// Name is the artifact's unique name within its key (skills: or plugins:).
+	// The same name may appear once under each key.
 	Name string `yaml:"name"`
-	// Version is the skill's declared version, if any (from SKILL.md frontmatter).
+	// Version is the artifact's declared version, if any (SKILL.md frontmatter
+	// or .claude-plugin/plugin.json).
 	Version string `yaml:"version,omitempty"`
 	// Source is exactly what the user (or the registry resolver) originally
 	// requested — a plain registry name, an OCI reference, or a git://
@@ -58,7 +62,8 @@ type Entry struct {
 	// digest or a full git commit hash.
 	Digest string `yaml:"digest"`
 	// ContentDigest is a deterministic SHA-256 dirhash of the materialized
-	// skill file set, used for on-disk integrity verification.
+	// file set (skill directory, or the canonical plugin tree ExtractPlugin
+	// writes), used for on-disk integrity verification.
 	ContentDigest string `yaml:"contentDigest,omitempty"`
 	// Provenance records the verified signer identity of the installed
 	// artifact — the trust-on-first-use anchor later installs, syncs, and
@@ -72,11 +77,14 @@ type Entry struct {
 	// signed one clears it, and a signed entry never becomes unsigned
 	// without the same explicit flag.
 	Unsigned bool `yaml:"unsigned,omitempty"`
-	// RequiredBy lists parent skill names for transitively materialized
-	// dependencies (skills declared via toolhive.requires).
+	// RequiredBy lists parent names in the same key (skills: or plugins:)
+	// for transitively materialized dependencies. Plugin v1 does not
+	// populate this; the field is reserved for when plugin requires are
+	// materialized.
 	RequiredBy []string `yaml:"requiredBy,omitempty"`
-	// Explicit is true when the user directly installed this skill; explicit
-	// entries are exempt from cascade removal when RequiredBy becomes empty.
+	// Explicit is true when the user directly installed this artifact;
+	// explicit entries are exempt from cascade removal when RequiredBy
+	// becomes empty.
 	Explicit bool `yaml:"explicit,omitempty"`
 	// Extra round-trips fields this binary does not know about, so a
 	// Load→modify→Save cycle by an older binary preserves rather than strips
@@ -97,6 +105,16 @@ type Provenance struct {
 	// RepositoryURI is the source repository from the Fulcio certificate
 	// extensions, when present.
 	RepositoryURI string `yaml:"repositoryUri,omitempty"`
+	// RepositoryRef is the git ref the signing workflow ran on, from Fulcio
+	// certificate extension 1.3.6.1.4.1.57264.1.14, when present. Empty
+	// means unconstrained: every lock file written before this field existed
+	// omits it, and such entries must keep verifying against any ref.
+	RepositoryRef string `yaml:"repositoryRef,omitempty"`
+	// RunnerEnvironment is the runner class the signing workflow executed in
+	// (e.g. "github-hosted"), from Fulcio certificate extension
+	// 1.3.6.1.4.1.57264.1.11, when present. Empty means unconstrained, for
+	// the same backward-compatibility reason as RepositoryRef.
+	RunnerEnvironment string `yaml:"runnerEnvironment,omitempty"`
 	// SigstoreURL is the Sigstore instance the signature chains to.
 	SigstoreURL string `yaml:"sigstoreUrl,omitempty"`
 	// Provisional marks provenance whose verification has a documented
@@ -114,6 +132,10 @@ type Lockfile struct {
 	// Skills is the set of pinned skill installations, sorted by name for
 	// stable diffs.
 	Skills []Entry `yaml:"skills,omitempty"`
+	// Plugins is the set of pinned plugin installations, sorted by name
+	// for stable diffs. Validated as its own name/requiredBy graph, so a
+	// skill and a plugin may share a name.
+	Plugins []Entry `yaml:"plugins,omitempty"`
 	// Extra round-trips unknown top-level fields, mirroring Entry.Extra.
 	Extra map[string]any `yaml:",inline"`
 }
@@ -190,50 +212,51 @@ func Load(root Root) (*Lockfile, error) {
 		lf.Version = CurrentVersion
 	}
 	sortEntries(lf.Skills)
+	sortEntries(lf.Plugins)
 	if err := validateLockfile(&lf); err != nil {
 		return nil, err
 	}
 	return &lf, nil
 }
 
-// Get returns the entry for name, if present.
+// Get returns the skills: entry for name, if present.
 func (l *Lockfile) Get(name string) (Entry, bool) {
-	for _, e := range l.Skills {
-		if e.Name == name {
-			return e, true
-		}
-	}
-	return Entry{}, false
+	return getNamed(l.Skills, name)
 }
 
-// Upsert inserts or replaces the entry with a matching name, keeping the
-// slice sorted by name for stable diffs.
+// GetPlugin returns the plugins: entry for name, if present.
+func (l *Lockfile) GetPlugin(name string) (Entry, bool) {
+	return getNamed(l.Plugins, name)
+}
+
+// Upsert inserts or replaces the skills: entry with a matching name, keeping
+// the slice sorted by name for stable diffs. It does not touch plugins:.
 func (l *Lockfile) Upsert(entry Entry) {
-	for i := range l.Skills {
-		if l.Skills[i].Name == entry.Name {
-			l.Skills[i] = entry
-			return
-		}
-	}
-	l.Skills = append(l.Skills, entry)
-	sortEntries(l.Skills)
+	upsertNamed(&l.Skills, entry)
 }
 
-// Remove deletes the entry with the given name, if present. Reports whether
-// an entry was removed.
+// UpsertPlugin inserts or replaces the plugins: entry with a matching name,
+// keeping the slice sorted by name for stable diffs. It does not touch skills:.
+func (l *Lockfile) UpsertPlugin(entry Entry) {
+	upsertNamed(&l.Plugins, entry)
+}
+
+// Remove deletes the skills: entry with the given name, if present. Reports
+// whether an entry was removed.
 func (l *Lockfile) Remove(name string) bool {
-	for i, e := range l.Skills {
-		if e.Name == name {
-			l.Skills = slices.Delete(l.Skills, i, i+1)
-			return true
-		}
-	}
-	return false
+	return removeNamed(&l.Skills, name)
 }
 
-// RemoveParentFromRequiredBy removes parent from every entry's RequiredBy
-// list and returns the names of entries that lost their last parent and are
-// not explicit — the candidates for cascade removal.
+// RemovePlugin deletes the plugins: entry with the given name, if present.
+// Reports whether an entry was removed.
+func (l *Lockfile) RemovePlugin(name string) bool {
+	return removeNamed(&l.Plugins, name)
+}
+
+// RemoveParentFromRequiredBy removes parent from every skills: entry's
+// RequiredBy list and returns the names of entries that lost their last
+// parent and are not explicit — the candidates for cascade removal. It
+// does not touch plugins:.
 func (l *Lockfile) RemoveParentFromRequiredBy(parent string) []string {
 	var cascadeCandidates []string
 	for i := range l.Skills {
@@ -285,6 +308,7 @@ func (l *Lockfile) Save(root Root) error {
 		l.Version = CurrentVersion
 	}
 	sortEntries(l.Skills)
+	sortEntries(l.Plugins)
 
 	if err := validateLockfile(l); err != nil {
 		return fmt.Errorf("refusing to save invalid lock file: %w", err)
@@ -311,8 +335,8 @@ func (l *Lockfile) Save(root Root) error {
 	return nil
 }
 
-// UpsertEntry loads the lock file, upserts entry, and saves it back, all
-// under a single file lock so concurrent installs cannot race on
+// UpsertEntry loads the lock file, upserts a skills: entry, and saves it
+// back, all under a single file lock so concurrent installs cannot race on
 // read-modify-write.
 func UpsertEntry(root Root, entry Entry) error {
 	return Update(root, func(lf *Lockfile) error {
@@ -321,12 +345,34 @@ func UpsertEntry(root Root, entry Entry) error {
 	})
 }
 
-// RemoveEntry loads the lock file, removes the named entry if present, and
-// saves it back, all under a single file lock. Removing an entry that does
-// not exist is a no-op, not an error.
+// UpsertPluginEntry loads the lock file, upserts a plugins: entry, and
+// saves it back, all under a single file lock so concurrent installs cannot
+// race on read-modify-write.
+func UpsertPluginEntry(root Root, entry Entry) error {
+	return Update(root, func(lf *Lockfile) error {
+		lf.UpsertPlugin(entry)
+		return nil
+	})
+}
+
+// RemoveEntry loads the lock file, removes the named skills: entry if
+// present, and saves it back, all under a single file lock. Removing an
+// entry that does not exist is a no-op, not an error.
 func RemoveEntry(root Root, name string) error {
 	return Update(root, func(lf *Lockfile) error {
 		if !lf.Remove(name) {
+			return errSkipSave
+		}
+		return nil
+	})
+}
+
+// RemovePluginEntry loads the lock file, removes the named plugins: entry
+// if present, and saves it back, all under a single file lock. Removing an
+// entry that does not exist is a no-op, not an error.
+func RemovePluginEntry(root Root, name string) error {
+	return Update(root, func(lf *Lockfile) error {
+		if !lf.RemovePlugin(name) {
 			return errSkipSave
 		}
 		return nil
@@ -361,4 +407,34 @@ var errSkipSave = errors.New("lockfile: no changes to save")
 
 func sortEntries(entries []Entry) {
 	slices.SortFunc(entries, func(a, b Entry) int { return strings.Compare(a.Name, b.Name) })
+}
+
+func getNamed(entries []Entry, name string) (Entry, bool) {
+	for _, e := range entries {
+		if e.Name == name {
+			return e, true
+		}
+	}
+	return Entry{}, false
+}
+
+func upsertNamed(entries *[]Entry, entry Entry) {
+	for i := range *entries {
+		if (*entries)[i].Name == entry.Name {
+			(*entries)[i] = entry
+			return
+		}
+	}
+	*entries = append(*entries, entry)
+	sortEntries(*entries)
+}
+
+func removeNamed(entries *[]Entry, name string) bool {
+	for i, e := range *entries {
+		if e.Name == name {
+			*entries = slices.Delete(*entries, i, i+1)
+			return true
+		}
+	}
+	return false
 }

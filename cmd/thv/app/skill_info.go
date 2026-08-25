@@ -45,10 +45,15 @@ func init() {
 func skillInfoCmdFunc(cmd *cobra.Command, args []string) error {
 	c := newSkillClient(cmd.Context())
 
+	projectRoot, err := absProjectRoot(skillInfoProjectRoot)
+	if err != nil {
+		return err
+	}
+
 	info, err := c.Info(cmd.Context(), skills.InfoOptions{
 		Name:        args[0],
 		Scope:       skills.Scope(skillInfoScope),
-		ProjectRoot: skillInfoProjectRoot,
+		ProjectRoot: projectRoot,
 	})
 	if err != nil {
 		return formatSkillError("get skill info", err)
@@ -73,6 +78,16 @@ func printSkillInfoText(info *skills.SkillInfo) {
 
 	_, _ = fmt.Fprintf(w, "Name:\t%s\n", info.Metadata.Name)
 	_, _ = fmt.Fprintf(w, "Version:\t%s\n", info.Metadata.Version)
+	switch {
+	case info.Provenance != nil && info.Provenance.Provisional:
+		_, _ = fmt.Fprintf(w, "Signed by:\t%s (provisional)\n", info.Provenance.SignerIdentity)
+		_, _ = fmt.Fprintf(w, "Cert issuer:\t%s\n", info.Provenance.CertIssuer)
+	case info.Provenance != nil:
+		_, _ = fmt.Fprintf(w, "Signed by:\t%s\n", info.Provenance.SignerIdentity)
+		_, _ = fmt.Fprintf(w, "Cert issuer:\t%s\n", info.Provenance.CertIssuer)
+	case info.Unsigned:
+		_, _ = fmt.Fprintf(w, "Signed by:\t(unsigned — explicit exception)\n")
+	}
 	_, _ = fmt.Fprintf(w, "Description:\t%s\n", info.Metadata.Description)
 
 	if s := info.InstalledSkill; s != nil {

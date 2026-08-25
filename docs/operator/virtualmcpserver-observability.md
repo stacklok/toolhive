@@ -24,7 +24,7 @@ The vMCP uses a decorator pattern to wrap backend clients and workflow executors
 with telemetry instrumentation. This approach provides consistent metrics and
 tracing without modifying the core business logic.
 
-The implementation of both metrics and traces can be found in `pkg/vmcp/server/telemetry.go`.
+The implementation of both metrics and traces can be found in `pkg/vmcp/internal/backendtelemetry/backendtelemetry.go`.
 
 ## Metrics
 
@@ -224,6 +224,31 @@ spec:
   incomingAuth:
     type: anonymous
 ```
+
+### Where `/metrics` is served
+
+With `enablePrometheusMetricsPath` enabled, Virtual MCP serves `/metrics` on a
+**dedicated diagnostics port** (default `9464`). Point scrapers at that port, and keep
+it out of any Service or Ingress that faces the internet.
+
+During the migration window `/metrics` is *also* still served on the port carrying MCP
+traffic, so an existing scrape configuration keeps working until you move it. See
+[Migration window](../observability.md#migration-window) and
+[issue #6384](https://github.com/stacklok/toolhive/issues/6384) for the timeline.
+
+**`prometheusPort` and `metricsOnTransportPort` are only settable through the inline
+`spec.config.telemetry` path** — both examples above sit above this section, but only
+the inline (deprecated) one can set them: they live on `telemetry.Config`, which
+`spec.config.telemetry` embeds directly, and the shared `MCPTelemetryConfig` used by
+`telemetryConfigRef` does not carry them. A `telemetryConfigRef` deployment still gets
+the default diagnostics port and the migration-window transport-port copy — it just
+cannot change the port or opt out of the window early. Once you have moved a scraper to
+the diagnostics port, set `metricsOnTransportPort: false` (inline config only) to
+confirm nothing else depended on the old location.
+
+The endpoint is unauthenticated, so restricting who can reach that port is what
+protects it. See [Metrics endpoint exposure](../observability.md#metrics-endpoint-exposure)
+for the rationale, a `NetworkPolicy` example, and guidance on scoping external routes.
 
 See the [VirtualMCPServer API reference](./virtualmcpserver-api.md) for complete
 CRD documentation.

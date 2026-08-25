@@ -14,12 +14,14 @@ import (
 	"github.com/stacklok/toolhive/pkg/secrets"
 )
 
-// ErrTokenRequired is returned when a fresh token is needed but no cached or
-// refreshable token exists and the caller is non-interactive (browser flow
-// disabled). The user must first complete an interactive login so that a
-// refresh token is persisted for subsequent non-interactive calls.
+// ErrTokenRequired is returned when a fresh token is needed but no USABLE
+// cached credential exists and the caller is non-interactive (browser flow
+// disabled). That covers both an empty cache and a stored refresh token the
+// identity provider has since rejected (expired, revoked, or rotated out from
+// under us) — the two are one outcome to the user, because both are fixed only
+// by an interactive login that persists a new refresh token.
 var ErrTokenRequired = errors.New(
-	"LLM gateway authentication required: no cached credentials found; " +
+	"LLM gateway authentication required: no usable cached credentials; " +
 		"run \"thv llm setup\" to log in",
 )
 
@@ -39,7 +41,10 @@ type TokenSource = tokensource.OAuthTokenSource
 // secretsProvider may be nil if the secrets store is unavailable.
 // tokenRefUpdater is called after login/refresh to persist the token reference
 // into config — pass nil to skip config persistence (useful in tests).
-// Set interactive to false for non-interactive callers such as thv llm token.
+// interactive controls whether a genuine cache miss may launch the browser
+// OIDC flow. thv llm token passes true so a prior "thv llm setup --lazy" signs
+// the user in transparently on first use; cached tokens are served without a
+// browser prompt either way.
 // When skipBrowser is true, an interactive login prints the authorization URL
 // instead of opening a browser (headless/SSH/CI use); it has no effect unless
 // interactive is also true.

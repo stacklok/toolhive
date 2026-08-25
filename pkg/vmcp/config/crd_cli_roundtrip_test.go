@@ -489,6 +489,11 @@ func TestConfigRoundtrip(t *testing.T) {
 						Tool: "github-mcp.search_repos",
 					},
 				},
+				Annotations: &ToolAnnotationsOverride{
+					Title:         ptrTo("Test Tool"),
+					ReadOnlyHint:  ptrTo(true),
+					OpenWorldHint: ptrTo(true),
+				},
 			},
 		},
 	}
@@ -525,6 +530,24 @@ func TestConfigRoundtrip(t *testing.T) {
 	}
 	if parsedConfig.CompositeTools[0].Name != "test-tool" {
 		t.Errorf("CompositeTools[0].Name = %q, want %q", parsedConfig.CompositeTools[0].Name, "test-tool")
+	}
+	// Annotations must survive the YAML round-trip (guards the yaml tags).
+	wantAnn := originalConfig.CompositeTools[0].Annotations
+	gotAnn := parsedConfig.CompositeTools[0].Annotations
+	if gotAnn == nil {
+		t.Fatal("CompositeTools[0].Annotations is nil after round-trip")
+	}
+	if gotAnn.Title == nil || *gotAnn.Title != *wantAnn.Title {
+		t.Errorf("Annotations.Title = %v, want %v", gotAnn.Title, *wantAnn.Title)
+	}
+	if gotAnn.ReadOnlyHint == nil || *gotAnn.ReadOnlyHint != *wantAnn.ReadOnlyHint {
+		t.Errorf("Annotations.ReadOnlyHint = %v, want %v", gotAnn.ReadOnlyHint, *wantAnn.ReadOnlyHint)
+	}
+	if gotAnn.OpenWorldHint == nil || *gotAnn.OpenWorldHint != *wantAnn.OpenWorldHint {
+		t.Errorf("Annotations.OpenWorldHint = %v, want %v", gotAnn.OpenWorldHint, *wantAnn.OpenWorldHint)
+	}
+	if gotAnn.DestructiveHint != nil || gotAnn.IdempotentHint != nil {
+		t.Errorf("unset annotations hints = (%v, %v), want nil", gotAnn.DestructiveHint, gotAnn.IdempotentHint)
 	}
 }
 

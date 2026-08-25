@@ -23,10 +23,11 @@ import (
 	"fmt"
 	"io"
 	"log/slog"
+	"mime"
 	"net"
 	"net/http"
 	"os"
-	"path/filepath"
+	"strconv"
 	"strings"
 	"time"
 
@@ -60,6 +61,7 @@ import (
 	"github.com/stacklok/toolhive/pkg/skills/gitresolver"
 	"github.com/stacklok/toolhive/pkg/skills/skillsvc"
 	"github.com/stacklok/toolhive/pkg/storage/sqlite"
+	"github.com/stacklok/toolhive/pkg/transport/middleware/origin"
 	"github.com/stacklok/toolhive/pkg/updates"
 	"github.com/stacklok/toolhive/pkg/workloads"
 )
@@ -157,7 +159,8 @@ func (b *ServerBuilder) WithOtelEnabled(enabled bool) *ServerBuilder {
 }
 
 // WithMiddleware appends HTTP middleware that runs after the default middleware
-// stack (request-ID, body-size limit, headers, update-check, auth) and before
+// stack (request-ID, body-size limit, headers, update-check, Origin validation,
+// JSON content-type enforcement, auth) and before route handlers. Part of the
 // route handlers. Part of the ApplyServerExtensions extension point — used by
 // downstream consumers to inject custom authentication or request-scoping
 // middleware into the API server.
@@ -227,6 +230,40 @@ func (b *ServerBuilder) Build(ctx context.Context) (*chi.Mux, error) {
 
 	// Add update check middleware
 	r.Use(updateCheckMiddleware())
+
+	// Reject cross-origin browser requests before they reach auth or handlers.
+	// The management API creates workloads with caller-named host bind mounts,
+	// so a cross-origin page must not be able to drive it (GHSA-xv9h-79wp-q9w6).
+	// Skipped for UNIX-socket mode, which no web page can reach.
+	if !b.isUnixSocket {
+		// A loopback bind yields a loopback-only allowlist; a non-loopback bind
+		// (or --port 0, whose real port is unknown until the listener binds)
+		// yields none, which makes origin.NewHandler a pass-through — matching
+		// the `thv proxy` behaviour, where operators exposing a public listener
+		// must front it with a reverse proxy that enforces Origin. We WARN in
+		// that case so the disabled protection is visible. A parse error needs
+		// no handling here: the same address fails net.Listen in NewServer, so
+		// there is no running-but-unprotected window.
+		if host, portStr, err := net.SplitHostPort(b.address); err == nil {
+			port, _ := strconv.Atoi(portStr) // non-numeric → 0 → empty allowlist below
+			allowed := origin.ResolveAllowedOrigins(host, port, nil)
+			if len(allowed) == 0 {
+				slog.Warn("API server Origin validation is disabled for this bind address; "+
+					"cross-origin browser requests are not rejected at this layer. "+
+					"Front a non-loopback listener with a reverse proxy that enforces Origin.",
+					"address", b.address)
+			}
+			r.Use(origin.NewHandler(allowed))
+		}
+		// Defence in depth: require application/json on state-changing requests
+		// that carry a body. text/plain, form encodings, and an absent
+		// Content-Type are all CORS "simple" — a cross-origin page can send them
+		// with no preflight, and the handlers decode any body as JSON regardless
+		// of Content-Type. Requiring application/json forces a preflight the
+		// browser will not clear. Empty-body mutating routes (e.g. stop/restart)
+		// are unaffected.
+		r.Use(enforceJSONContentType)
+	}
 
 	// Add authentication middleware
 	authMiddleware, _, err := auth.GetAuthenticationMiddleware(ctx, b.oidcConfig)
@@ -410,6 +447,13 @@ func (b *ServerBuilder) setupDefaultRoutes(r *chi.Mux) {
 		b.debugMode,
 	))
 
+	// Skills router does the same: install, sync, and upgrade pull OCI
+	// artifacts, so a flat 60s cap would sever them mid-transfer.
+	r.Mount("/api/v1beta/skills", v1.SkillsRouter(b.skillManager))
+
+	// Plugins router likewise: install, build, and push move OCI artifacts.
+	r.Mount("/api/v1beta/plugins", v1.PluginsRouter(b.pluginManager))
+
 	// All other routes get standard timeout
 	standardRouters := map[string]http.Handler{
 		"/health":               v1.HealthcheckRouter(b.containerRuntime, b.nonce),
@@ -419,8 +463,6 @@ func (b *ServerBuilder) setupDefaultRoutes(r *chi.Mux) {
 		"/api/v1beta/clients":   v1.ClientRouter(b.clientManager, b.workloadManager, b.groupManager),
 		"/api/v1beta/secrets":   v1.SecretsRouter(),
 		"/api/v1beta/groups":    v1.GroupsRouter(b.groupManager, b.workloadManager, b.clientManager),
-		"/api/v1beta/skills":    v1.SkillsRouter(b.skillManager),
-		"/api/v1beta/plugins":   v1.PluginsRouter(b.pluginManager),
 		"/registry":             v1.RegistryV01Router(),
 	}
 	for prefix, router := range standardRouters {
@@ -452,6 +494,39 @@ func isNamedPipeAddress(address string) bool {
 
 func setupTCPListener(address string) (net.Listener, error) {
 	return net.Listen("tcp", address)
+}
+
+// enforceJSONContentType refuses state-changing requests that carry a body
+// without an application/json content type. The three CORS "simple" content
+// types (text/plain, application/x-www-form-urlencoded, multipart/form-data)
+// and an absent Content-Type are all exempt from CORS preflight, so a
+// cross-origin page can send them without the browser consulting the server;
+// the handlers then decode the body as JSON regardless of Content-Type
+// (GHSA-xv9h-79wp-q9w6). Requiring application/json forces a preflight the
+// browser will not clear.
+//
+// Requests with no body are left alone: ContentLength is 0 for an empty body,
+// so mutating routes that take no body (e.g. /workloads/{name}/stop) still
+// work. A chunked request has ContentLength -1 (unknown), which is != 0 and so
+// takes the strict path — the safe choice. GET/HEAD are never gated.
+func enforceJSONContentType(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.Method {
+		case http.MethodPost, http.MethodPut, http.MethodPatch, http.MethodDelete:
+			if r.ContentLength == 0 {
+				break // no body to decode, nothing to smuggle
+			}
+			// mime.ParseMediaType lowercases the type and strips any
+			// ";charset=" parameter, so "application/json; charset=UTF-8"
+			// still matches; an absent or unparsable value fails closed.
+			mediaType, _, err := mime.ParseMediaType(r.Header.Get("Content-Type"))
+			if err != nil || mediaType != "application/json" {
+				http.Error(w, "unsupported content type", http.StatusUnsupportedMediaType)
+				return
+			}
+		}
+		next.ServeHTTP(w, r)
+	})
 }
 
 func headersMiddleware(next http.Handler) http.Handler {
@@ -609,14 +684,23 @@ func (s *Server) writeDiscoveryFile(ctx context.Context) error {
 		return nil
 	}
 
-	// Ensure the discovery directory exists before acquiring the lock,
-	// since the lock file is created in the same directory.
-	discoveryPath := discovery.FilePath()
-	if err := os.MkdirAll(filepath.Dir(discoveryPath), 0700); err != nil {
-		return fmt.Errorf("failed to create discovery directory: %w", err)
+	// Create and lock down the discovery directory before acquiring the lock,
+	// since the lock file is created in the same directory and Discover below
+	// trusts whatever server.json it finds there. Restricting only on the write
+	// would be too late: a StateRunning result returns before the write, and
+	// the lock file itself would be taken in a directory other accounts can
+	// still write to.
+	secure, err := discovery.EnsureSecureDirEx()
+	if err != nil {
+		return err
 	}
+	discoveryPath := discovery.FilePath()
 
 	return fileutils.WithFileLock(discoveryPath, func() error {
+		if err := discovery.ReconcileDiscoveryAfterInsecureUpgrade(ctx, secure.RepairedInsecureChain); err != nil {
+			return err
+		}
+
 		// Guard against overwriting another server's discovery file.
 		result, err := discovery.Discover(ctx)
 		if err != nil {

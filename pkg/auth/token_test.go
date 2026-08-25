@@ -3011,3 +3011,103 @@ func TestValidateToken_DiscoveryFailsWithKeyProvider(t *testing.T) {
 		require.Contains(t, err.Error(), "local key provider could not resolve key")
 	})
 }
+
+func TestEnsureJWKSRegistered_NonFatalRegistrationErrors(t *testing.T) {
+	t.Parallel()
+
+	t.Run("ErrNotReady marks the JWKS as registered", func(t *testing.T) {
+		t.Parallel()
+		// A JWKS endpoint that never succeeds keeps the resource from
+		// becoming ready within the registration budget.
+		jwksServer := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+			w.WriteHeader(http.StatusInternalServerError)
+		}))
+		t.Cleanup(jwksServer.Close)
+		caCertPath := writeTestServerCert(t, jwksServer)
+
+		validator, err := NewTokenValidator(context.Background(), TokenValidatorConfig{
+			Issuer:         "test-issuer",
+			Audience:       "test-audience",
+			JWKSURL:        jwksServer.URL,
+			ClientID:       "test-client",
+			CACertPath:     caCertPath,
+			AllowPrivateIP: true,
+		})
+		require.NoError(t, err)
+
+		// Bound the ready-wait well below the 5s registration budget.
+		ctx, cancel := context.WithTimeout(context.Background(), time.Second)
+		defer cancel()
+		require.NoError(t, validator.ensureJWKSRegistered(ctx),
+			"ErrNotReady must be treated as registered-but-pending")
+		require.True(t, validator.jwksRegistered)
+
+		// Lookup surfaces not-ready until a background fetch succeeds.
+		_, err = validator.jwksClient.Lookup(context.Background(), jwksServer.URL)
+		require.Error(t, err)
+	})
+
+	t.Run("ErrResourceAlreadyExists marks the JWKS as registered", func(t *testing.T) {
+		t.Parallel()
+		jwksServer, caCertPath := createTestJWKSServer(t, jwk.NewSet())
+		t.Cleanup(jwksServer.Close)
+
+		validator, err := NewTokenValidator(context.Background(), TokenValidatorConfig{
+			Issuer:         "test-issuer",
+			Audience:       "test-audience",
+			JWKSURL:        jwksServer.URL,
+			ClientID:       "test-client",
+			CACertPath:     caCertPath,
+			AllowPrivateIP: true,
+		})
+		require.NoError(t, err)
+		require.NoError(t, validator.ensureJWKSRegistered(context.Background()))
+
+		// Simulate the reset done after OIDC re-discovery: the flag is
+		// cleared but the URL is still in httprc's resource map, so the
+		// next registration attempt returns ErrResourceAlreadyExists.
+		validator.jwksRegistrationMu.Lock()
+		validator.jwksRegistered = false
+		validator.jwksRegistrationMu.Unlock()
+
+		require.NoError(t, validator.ensureJWKSRegistered(context.Background()),
+			"re-registering an already-registered URL must not fail")
+		require.True(t, validator.jwksRegistered)
+	})
+}
+
+func TestNewTokenValidator_GoogleTokeninfoRequiresAudience(t *testing.T) {
+	t.Parallel()
+
+	// Google tokeninfo returns no iss claim (the provider synthesises it
+	// locally), so an issuer check is self-satisfying and the audience check
+	// is the only binding to this deployment. Without it, any valid Google
+	// access token passes regardless of which OAuth client minted it.
+	tests := []struct {
+		name      string
+		audience  string
+		expectErr bool
+	}{
+		{name: "empty audience rejected", audience: "", expectErr: true},
+		{name: "whitespace-only audience rejected", audience: "   ", expectErr: true},
+		{name: "audience configured accepted", audience: "my-client-id.apps.googleusercontent.com", expectErr: false},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			_, err := NewTokenValidator(context.Background(), TokenValidatorConfig{
+				Issuer:           "https://accounts.google.com",
+				JWKSURL:          "https://www.googleapis.com/oauth2/v3/certs",
+				IntrospectionURL: GoogleTokeninfoURL,
+				Audience:         tt.audience,
+			})
+			if tt.expectErr {
+				require.Error(t, err)
+				require.Contains(t, err.Error(), "audience is required")
+			} else {
+				require.NoError(t, err)
+			}
+		})
+	}
+}

@@ -430,8 +430,8 @@ func (c *OutgoingAuthConfig) ResolveForBackend(backendID string) *authtypes.Back
 // AggregationConfig defines tool aggregation, filtering, and conflict resolution strategies.
 //
 // Tool Visibility vs Routing:
-//   - ExcludeAllTools, per-workload ExcludeAll, and Filter control which tools are
-//     advertised to MCP clients (visible in tools/list responses).
+//   - ExcludeAllTools, DefaultToolVisibility, per-workload ExcludeAll, and Filter control
+//     which tools are advertised to MCP clients (visible in tools/list responses).
 //   - ALL backend tools remain available in the internal routing table, allowing
 //     composite tools to call hidden backend tools.
 //   - This enables curated experiences where raw backend tools are hidden from
@@ -464,7 +464,50 @@ type AggregationConfig struct {
 	// direct client access while exposing curated composite tool workflows.
 	// +optional
 	ExcludeAllTools bool `json:"excludeAllTools,omitempty" yaml:"excludeAllTools,omitempty"`
+
+	// NOTE (maintainers, not rendered into the CRD reference): there is
+	// deliberately no kubebuilder default on DefaultToolVisibility. "" already
+	// behaves as allow everywhere that reads this field, so defaulting would change
+	// only the serialized bytes — and apiextensions applies structural defaults on
+	// decode, so every existing VirtualMCPServer would come back with the field set,
+	// changing config.yaml, its ConfigMap checksum, and the pod template that stamps
+	// it. That restarts every vMCP deployment once for a no-op field.
+
+	// DefaultToolVisibility controls whether a backend with NO entry in Tools has its
+	// tools advertised to MCP clients.
+	//   - allow (default): every tool from an unlisted backend is advertised, so
+	//     adding a workload to the group exposes it without further configuration.
+	//   - deny: an unlisted backend contributes no tools, so only backends named in
+	//     Tools are advertised. Use this when the set of exposed tools must be
+	//     enumerated deliberately rather than inherited from group membership.
+	//
+	// A backend that DOES have a Tools entry is unaffected by this setting: the
+	// entry opts it in, and ExcludeAll/Filter on that entry decide the rest. Like
+	// every other visibility setting here, this controls advertising only — hidden
+	// tools remain in the routing table for composite tools (see the type doc).
+	//
+	// This gates TOOLS only. An unlisted backend's resources, resource templates,
+	// and prompts are still advertised under deny; mergeResources/mergePrompts have
+	// no equivalent check.
+	// +kubebuilder:validation:Enum=allow;deny
+	// +optional
+	DefaultToolVisibility DefaultToolVisibility `json:"defaultToolVisibility,omitempty" yaml:"defaultToolVisibility,omitempty"`
 }
+
+// DefaultToolVisibility names the advertising default applied to backends with no
+// per-workload Tools entry. The zero value is "" (unset), which behaves as
+// DefaultToolVisibilityAllow so existing configs keep today's behavior.
+// +gendoc
+type DefaultToolVisibility string
+
+const (
+	// DefaultToolVisibilityAllow advertises every tool from a backend with no Tools
+	// entry. This is the default and matches pre-DefaultToolVisibility behavior.
+	DefaultToolVisibilityAllow DefaultToolVisibility = "allow"
+
+	// DefaultToolVisibilityDeny advertises no tools from a backend with no Tools entry.
+	DefaultToolVisibilityDeny DefaultToolVisibility = "deny"
+)
 
 // ConflictResolutionConfig provides configuration for conflict resolution strategies.
 // +kubebuilder:object:generate=true
@@ -541,23 +584,33 @@ type ToolConfigRef struct {
 // +kubebuilder:object:generate=true
 // +gendoc
 type ToolAnnotationsOverride struct {
-	// Title overrides the human-readable title annotation.
+	// Title sets the human-readable title annotation.
+	// For tool overrides this replaces the backend value; for composite tools
+	// it is an explicit declaration merged over the derived safety floor.
 	// +optional
 	Title *string `json:"title,omitempty" yaml:"title,omitempty"`
 
-	// ReadOnlyHint overrides the read-only hint annotation.
+	// ReadOnlyHint sets the read-only hint annotation.
+	// For tool overrides this replaces the backend value; for composite tools
+	// it is an explicit declaration merged over the derived safety floor.
 	// +optional
 	ReadOnlyHint *bool `json:"readOnlyHint,omitempty" yaml:"readOnlyHint,omitempty"`
 
-	// DestructiveHint overrides the destructive hint annotation.
+	// DestructiveHint sets the destructive hint annotation.
+	// For tool overrides this replaces the backend value; for composite tools
+	// it is an explicit declaration merged over the derived safety floor.
 	// +optional
 	DestructiveHint *bool `json:"destructiveHint,omitempty" yaml:"destructiveHint,omitempty"`
 
-	// IdempotentHint overrides the idempotent hint annotation.
+	// IdempotentHint sets the idempotent hint annotation.
+	// For tool overrides this replaces the backend value; for composite tools
+	// it is an explicit declaration merged over the derived safety floor.
 	// +optional
 	IdempotentHint *bool `json:"idempotentHint,omitempty" yaml:"idempotentHint,omitempty"`
 
-	// OpenWorldHint overrides the open-world hint annotation.
+	// OpenWorldHint sets the open-world hint annotation.
+	// For tool overrides this replaces the backend value; for composite tools
+	// it is an explicit declaration merged over the derived safety floor.
 	// +optional
 	OpenWorldHint *bool `json:"openWorldHint,omitempty" yaml:"openWorldHint,omitempty"`
 }
@@ -720,6 +773,26 @@ type CompositeToolConfig struct {
 	// If not specified, the workflow returns the last step's output (backward compatible).
 	// +optional
 	Output *OutputConfig `json:"output,omitempty" yaml:"output,omitempty"`
+
+	// Annotations declares MCP tool annotations for the composite tool.
+	//
+	// Annotation derivation runs at ADVERTISE TIME (when tools/list is served
+	// and the backend tools are aggregated), not at CRD admission — thv vmcp
+	// validate does NOT check annotation contradictions. The derived floor is
+	// fail-closed: when the workflow has one or more tool steps the floor is
+	// always non-nil, and any step whose annotations are nil/unknown taints the
+	// floor conservatively (readOnly=false, destructive=true, openWorld=true).
+	// A workflow with no tool steps (e.g. only elicitation) has no floor.
+	//
+	// When nil, annotations are derived from the annotations of the backend tools
+	// referenced by the workflow's steps (e.g. readOnlyHint is true only when every
+	// step tool is read-only). When set, the values are an explicit author
+	// declaration merged over the derived floor — subject to a safety-floor
+	// guardrail that drops the composite tool (with a warning naming the offending
+	// step tools) if an explicit hint would make the tool look safer than its
+	// steps allow.
+	// +optional
+	Annotations *ToolAnnotationsOverride `json:"annotations,omitempty" yaml:"annotations,omitempty"`
 }
 
 // CompositeToolRef defines a reference to a VirtualMCPCompositeToolDefinition resource.

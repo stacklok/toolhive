@@ -12,6 +12,84 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
+func TestAuthorityMatchesAny(t *testing.T) {
+	t.Parallel()
+	tests := []struct {
+		name         string
+		endpointURL  string
+		operatorURLs []string
+		want         bool
+	}{
+		{
+			name:         "host comparison is case-insensitive",
+			endpointURL:  "https://IdP.Example.COM/token",
+			operatorURLs: []string{"https://idp.example.com"},
+			want:         true,
+		},
+		{
+			name:         "different path on the same authority still matches",
+			endpointURL:  "https://idp.example.com/oauth2/v1/token",
+			operatorURLs: []string{"https://idp.example.com/oauth2/v1/authorize"},
+			want:         true,
+		},
+		{
+			name:         "same host on a different port does not match",
+			endpointURL:  "http://127.0.0.1:9999/token",
+			operatorURLs: []string{"http://127.0.0.1:8080"},
+			want:         false,
+		},
+		{
+			name:         "distinct IPv6 addresses do not match",
+			endpointURL:  "https://[::1]:8443/token",
+			operatorURLs: []string{"https://[fd00::1]:8443"},
+			want:         false,
+		},
+		{
+			name:         "second operator entry can match",
+			endpointURL:  "https://idp.example.com/token",
+			operatorURLs: []string{"https://other.example.com", "https://idp.example.com"},
+			want:         true,
+		},
+		{
+			name:         "empty endpoint never matches",
+			endpointURL:  "",
+			operatorURLs: []string{"https://idp.example.com"},
+			want:         false,
+		},
+		{
+			name:         "no operator entries never matches",
+			endpointURL:  "https://idp.example.com/token",
+			operatorURLs: nil,
+			want:         false,
+		},
+		{
+			name:         "empty operator entry is not a wildcard",
+			endpointURL:  "https://idp.example.com/token",
+			operatorURLs: []string{""},
+			want:         false,
+		},
+		{
+			name:         "garbage operator entry is not a wildcard",
+			endpointURL:  "https://idp.example.com/token",
+			operatorURLs: []string{"://%%", "not a url at all"},
+			want:         false,
+		},
+		{
+			name:         "endpoint without a scheme or port is undecidable and fails closed",
+			endpointURL:  "idp.example.com",
+			operatorURLs: []string{"https://idp.example.com"},
+			want:         false,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			assert.Equal(t, tt.want, AuthorityMatchesAny(tt.endpointURL, tt.operatorURLs...))
+		})
+	}
+}
+
 func TestTargetIsPrivate(t *testing.T) {
 	t.Parallel()
 	tests := []struct {
@@ -270,17 +348,17 @@ func TestIsLocalhost(t *testing.T) {
 		{
 			name:     "case insensitive localhost",
 			input:    "LOCALHOST",
-			expected: false, // Current implementation is case sensitive
+			expected: true, // net/url lowercases hostnames anyway; case-fold is safe
 		},
 		{
 			name:     "case insensitive localhost with port",
 			input:    "LOCALHOST:8080",
-			expected: false, // Current implementation is case sensitive
+			expected: true,
 		},
 		{
 			name:     "mixed case localhost",
 			input:    "LocalHost",
-			expected: false, // Current implementation is case sensitive
+			expected: true,
 		},
 		{
 			name:     "localhost with spaces",
@@ -363,6 +441,22 @@ func TestIsPrivateIP(t *testing.T) {
 		// decoded, so it is blocked wholesale even when the low 32 bits look
 		// public (would otherwise be a false-negative SSRF bypass).
 		{"NAT64 local-use non-/96 blocked", "64:ff9b:1:1::8.8.8.8", true},
+
+		// 6to4 (RFC 3056): classified by the embedded IPv4, decoded from bits 16-47.
+		{"6to4 -> IMDS link-local", "2002:a9fe:a9fe::", true},
+		{"6to4 -> RFC1918 192.168.x", "2002:c0a8:0101::", true},
+		{"6to4 -> loopback", "2002:7f00:0001::", true},
+		// 6to4 embedding a genuinely public IPv4 must stay allowed, proving the
+		// prefix is decoded rather than blocked wholesale.
+		{"6to4 -> public", "2002:0808:0808::", false},
+		// Just outside the 6to4 prefix: no embedded-IPv4 decoding applies.
+		{"just outside 6to4 prefix", "2003::", false},
+
+		// Teredo (RFC 4380): the embedded client IPv4 is obfuscated via bitwise
+		// NOT and cannot be decoded from the address alone, so the whole prefix
+		// is blocked regardless of what the low 32 bits would decode to.
+		{"Teredo simple address", "2001::1", true},
+		{"Teredo address decoding to a public-looking IPv4", "2001:0:4136:e378:8000:63bf:3fff:fdf6", true},
 	}
 
 	for _, tt := range tests {

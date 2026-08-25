@@ -223,6 +223,19 @@ scan silently dropped an item whenever a duplicate landed on a page boundary
 
 Beyond conflict resolution, vMCP can filter which tools are exposed through allow/deny lists, renaming, and description overrides.
 
+By default a backend with no per-workload entry has all of its tools advertised, so
+adding a workload to the group exposes it. `aggregation.defaultToolVisibility: deny`
+inverts that, advertising only backends named in `aggregation.tools` — useful when the
+exposed tool set should be enumerated deliberately rather than inherited from group
+membership. A listed backend is opted in by its entry; its own `excludeAll`/`filter`
+then decide which of its tools are advertised.
+
+All of these settings — `excludeAllTools`, `defaultToolVisibility`, per-workload
+`excludeAll`, and `filter` — control **advertising only**. Every backend tool stays in
+the routing table so composite tools can call hidden ones, and none of them affect
+resources or prompts. Per-identity authorization is Cedar's job (see [Authorization
+Enforcement](#authorization-enforcement-core-admission-seam--pre-dispatch-gate)).
+
 **Implementation**: `pkg/vmcp/aggregator/`
 
 ## Composite Tools
@@ -252,7 +265,9 @@ Steps can be of three types:
 - **elicitation**: Request user input via MCP elicitation protocol
 - **forEach**: Iterate over a collection from a previous step, executing an inner tool step per item with bounded parallelism
 
-**Implementation**: `pkg/vmcp/composer/`
+**Tool annotations**: Composite tools advertise MCP tool annotations computed at advertise time via a derive-then-merge ordering. First, a safety floor is derived from the annotations of the step tools (including `forEach` inner steps): `readOnlyHint` is the AND across steps, `destructiveHint` and `openWorldHint` are the OR across steps (unknown steps taint conservatively), and `idempotentHint` is never derived. Then any explicit `annotations` declared on the composite tool definition are merged over the floor, with explicitly set fields winning. An explicit hint may be more conservative than the floor, but if it would make the tool look safer than its steps allow (e.g. `readOnlyHint: true` when a step is not read-only), the composite tool is dropped from `tools/list` with a warning rather than advertised misleadingly.
+
+**Implementation**: `pkg/vmcp/composer/` (execution), `pkg/vmcp/internal/compositetools/` (advertised tool conversion and annotation derivation)
 
 ## Backend MCP Revision Classification
 
@@ -791,6 +806,80 @@ connector wiring), `pkg/vmcp/aggregator/aggregator.go` and
 `runListChangedResync`, `resyncSessionTools`, `resyncSessionResources`,
 `resyncSessionPrompts`) with `Server.resyncBaseCtx` cancelled on `Stop`.
 
+### Health-driven tools resync (#5786, PR1: passthrough mode)
+
+The propagation above only fires when a connected backend itself emits a
+`list_changed` notification. A backend that flips
+unhealthy ⇄ healthy, or is added to / removed from the group, emits nothing —
+yet the advertised catalog changes, because capability aggregation
+health-filters the backend set (`filterHealthyBackends`). Before #5786,
+already-connected sessions kept serving the capability set snapshotted at
+registration until they reconnected; health transitions were a status-only
+signal (logged, reported to the CRD) with no data-path consumer.
+
+The health monitor (`pkg/vmcp/health`) now exposes a change callback:
+`Monitor.OnChange(fn ChangeListener)` (also on the `health.Reporter`
+interface). It fires when a backend's **advertisability** flips — a transition
+across the healthy/degraded ⇄ unhealthy/unknown/unauthenticated partition,
+detected at the `statusTracker.RecordSuccess`/`RecordFailure` transition
+points, mirroring `filterHealthyBackends`' inclusion rule — and when
+`UpdateBackends` adds or removes backends. A previously-untracked backend's
+**first result is quiet**: the registry-fallback status the aggregation had
+been serving is advertisable in practice, so a first success flips nothing
+("this backend exists" is the membership notification's job), and a first —
+or any below-threshold — failure is the normal path for a workload still
+starting when the registry lists it, so withdrawing it before
+`UnhealthyThreshold` genuinely trips would flap every connected session. The
+withdrawal is reported at the genuine threshold crossing; the recovery of a
+never-successful backend is reported on its first success. Delivery is
+**debounced to the monitor's check interval** (leading edge immediate,
+further changes in the window coalesced into one trailing delivery carrying a
+monotonically increasing generation), so a flapping backend or a
+multi-backend partition cannot storm listeners. Listeners run on a dedicated
+goroutine, never on a health-check path, and `Monitor.Stop` waits for
+in-flight deliveries.
+
+`Serve` subscribes the transport layer
+(`pkg/vmcp/server/serve_health_resync.go`): the server keeps a registry of
+each live session's **KindTools resync worker** (the same
+`listChangedResyncWorker` the backend-notification path builds — identity and
+forwarded-header capture, the liveness guard, replace semantics, and the
+SDK's automatic downstream `notifications/tools/list_changed` emission are
+all shared) and, on each delivery, purges the shared capability cache **once**
+and triggers a tools resync for every registered session. The per-run cache
+purge is skipped on this path — the cache key already hashes the
+health-filtered backend-ID set, so a health flip changes the key by itself,
+and per-session purges would defeat cross-session sharing of the freshly
+repopulated entry; the backend-notification path keeps its per-run purge,
+since there a backend's content changes under an unchanged key. Sessions
+register on successful registration (only when health monitoring is enabled —
+with no monitor there is no subscriber and nothing would ever trigger or
+prune the registry) and deregister on the termination paths the server
+observes — including SDK-initiated HTTP DELETE, via a thin
+`SessionIdManager` wrapper; sessions that end without any Terminate call (TTL
+expiry) are pruned lazily when a triggered resync's liveness guard finds them
+gone.
+
+**Scope**: passthrough mode, tools only. When the optimizer is enabled the
+fan-out is a no-op — the advertised `find_tool`/`call_tool` meta-tools do not
+change on a health flip, and rebuilding the optimizer's per-session backing
+index for live sessions is the deferred optimizer-mode follow-up (PR2 of
+#5786). Resources/resource-templates/prompts re-derivation on health change is
+likewise not wired (a recovered backend's resources appear to new sessions,
+and to existing sessions on the backend's own `list_changed`). `UpdateBackends`
+notifies on membership changes only: a property change to an existing backend
+(URL/transport) restarts its health-check goroutine but does not notify —
+if the relocated backend serves a different tool set, existing sessions pick
+it up via the backend's own `list_changed` or on reconnect, matching the
+agreed membership-only scope.
+
+**Implementation**: `pkg/vmcp/health/change_notifier.go` (`ChangeListener`,
+debounce), `pkg/vmcp/health/monitor.go` (`OnChange`, fire points),
+`pkg/vmcp/health/status.go` (advertisability-transition detection),
+`pkg/vmcp/server/serve_health_resync.go` (`healthResyncRegistry`,
+`resyncSessionsOnBackendHealthChange`), subscription in
+`pkg/vmcp/server/serve.go`.
+
 ### Mid-call forwarding (elicitation / sampling / progress / logging)
 
 While a backend `tools/call` (or other request) is in flight, the backend may issue **server-initiated** requests and notifications back toward the client: elicitation, sampling, progress, and logging. vMCP forwards these mid-call in both directions through a per-call forwarder that bridges the backend connection to the originating client session, so a backend that needs user input (elicitation) or model completions (sampling), or that emits progress/log notifications, reaches the real client transparently. This is distinct from composite-tool elicitation (which the composer drives during a workflow); the mid-call forwarder handles the general request-scoped case for a single backend call.
@@ -805,6 +894,32 @@ forwarding applies — see
 for what a Modern caller gets instead.
 
 **Known limitation (logging level)**: forwarded backend logging is not yet filtered to the downstream client's requested level. On Legacy, vMCP requests debug-level logging from the backend (`logging/setLevel`) so it emits `notifications/message`, and every such notification is forwarded — the downstream client's own `logging/setLevel` preference is not applied to the relayed stream. The same is true on Modern (2026-07-28), where the RPC is removed and the level rides per-request in `_meta["io.modelcontextprotocol/logLevel"]`: vMCP strips that reserved per-hop key from the downstream request and overlays its own (`debug`, when forwarding is bound) on the backend hop, so a Modern client's per-request level preference is likewise not honored — the relay runs at debug either way.
+
+**Known limitation (advertised-but-no-stream elicitation fails fast)**: a client
+that advertised the `elicitation` capability but holds **no open standalone SSE
+stream** passes go-sdk's capability gate, yet the elicitation cannot be
+delivered — under the shim's `JSONResponse` transport the go-sdk routes
+server→client requests to the standalone stream, and a missing stream rejects
+the write ("rejected by transport: stream not connected or already closed").
+The mid-call `tools/call` therefore fails fast with a tool error instead of
+hanging to the deadline (pinned by
+`TestForwarding_Elicitation_AdvertisedButNoStream_FastFails` in
+`pkg/vmcp/server`). A cleaner pre-dispatch refusal awaits an upstream mcpcompat
+accessor for stream presence (#5975).
+
+**Known limitation (cross-pod origination needs session affinity)**: a
+server→client request can only be delivered by the replica currently holding
+the client's standalone SSE stream. If the `tools/call` executes on replica A
+but the client's GET stream is pinned to replica B, an elicitation or sampling
+request originated from A cannot reach the client — the shim loads the go-sdk
+session bound to *its* pod and has no cross-replica delivery channel for
+request/response (only notifications rehydrate cross-replica). Multi-replica
+deployments that rely on mid-call elicitation/sampling therefore need **session
+affinity** at the load balancer pinning the standalone stream and the tool
+calls to the same replica. The durable fix is the 2026-07-28 revision itself:
+it replaces server-initiated requests with client-polled MRTR, which has no
+stream-locality requirement — so this constraint is documented rather than
+engineered around (#5975, #5743).
 
 **Known limitation (resource-template authorization)**: a resource template is advertised on the template-string entity (e.g. `file:///logs/{date}.txt`), but a concrete read is admission-checked on the **expanded** URI (e.g. `file:///logs/2025-01-01.txt`). Operators should therefore author resource authorization policies against concrete URI patterns, not the template string.
 

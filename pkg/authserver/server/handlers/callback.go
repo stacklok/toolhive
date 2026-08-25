@@ -359,7 +359,16 @@ func (h *Handler) buildAuthorizeRequesterFromPending(
 	if client, err := h.storage.GetClient(ctx, pending.ClientID); err == nil {
 		ar.Client = client
 	}
-	return ar
+
+	// ar.RedirectURI keeps the real dynamic-port URI from pending.RedirectURI.
+	// fosite's own IsRedirectURIValid can't recognize "localhost" as loopback
+	// any more than the original /authorize request could (see
+	// rewriteLoopbackRedirectURI in authorize.go), so wrap here. Wrapping
+	// unconditionally is safe because the wrapper's override only ever widens
+	// validity (see loopbackAuthorizeRequester.IsRedirectURIValid), so a
+	// non-loopback or confidential client keeps exactly the validity fosite
+	// would have given it.
+	return wrapLoopbackErrorRequester(ar, pending.RedirectURI)
 }
 
 // handleUpstreamError handles error responses from the upstream IDP.

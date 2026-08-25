@@ -587,35 +587,18 @@ func resolveClientSecret(configSecret string, envReader env.Reader) string {
 	return ""
 }
 
-// NewTokenValidator creates a new token validator.
-func NewTokenValidator(ctx context.Context, config TokenValidatorConfig, opts ...TokenValidatorOption) (*TokenValidator, error) {
-	// Apply functional options
-	o := &tokenValidatorOptions{envReader: &env.OSReader{}}
-	for _, opt := range opts {
-		opt(o)
-	}
-
-	// Log warning if insecure HTTP is enabled
-	if config.InsecureAllowHTTP {
-		slog.Warn(
-			"insecure HTTP is enabled - "+
-				"HTTP OIDC URLs are allowed - this is INSECURE and should NEVER be used in production",
-			"issuer", config.Issuer,
-		)
-	}
-
+// resolveJWKSDiscovery determines the JWKS URL to use, and whether lazy OIDC
+// discovery is needed. Discovery is deferred when JWKS URL is not provided
+// but issuer is, allowing the validator to start before the OIDC provider is
+// ready; ensureOIDCDiscovered populates jwksURL on first use in that case.
+func resolveJWKSDiscovery(config TokenValidatorConfig, o *tokenValidatorOptions) (string, error) {
 	jwksURL := config.JWKSURL
-
-	// Determine if we need lazy OIDC discovery.
-	// Discovery is deferred when JWKS URL is not provided but issuer is,
-	// allowing the validator to start before the OIDC provider is ready.
-	// When set, ensureOIDCDiscovered will populate jwksURL on first use.
 
 	// Skip discovery if TOOLHIVE_SKIP_OIDC_DISCOVERY is set (for testing only)
 	skipDiscovery := o.envReader.Getenv("TOOLHIVE_SKIP_OIDC_DISCOVERY") == "true"
 	if skipDiscovery && config.Issuer != "" {
 		if jwksURL == "" {
-			return nil, fmt.Errorf(
+			return "", fmt.Errorf(
 				"TOOLHIVE_SKIP_OIDC_DISCOVERY=true requires explicit JWKSURL in config. " +
 					"This env var is for testing only and cannot guess provider-specific JWKS URLs",
 			)
@@ -637,7 +620,36 @@ func NewTokenValidator(ctx context.Context, config TokenValidatorConfig, opts ..
 	// Ensure we have either an explicit JWKS URL, an issuer to discover from,
 	// or a local key provider (embedded auth server).
 	if jwksURL == "" && config.Issuer == "" && o.keyProvider == nil {
-		return nil, ErrMissingIssuerAndJWKSURL
+		return "", ErrMissingIssuerAndJWKSURL
+	}
+
+	return jwksURL, nil
+}
+
+// NewTokenValidator creates a new token validator.
+func NewTokenValidator(ctx context.Context, config TokenValidatorConfig, opts ...TokenValidatorOption) (*TokenValidator, error) {
+	// Apply functional options
+	o := &tokenValidatorOptions{envReader: &env.OSReader{}}
+	for _, opt := range opts {
+		opt(o)
+	}
+
+	// Log warning if insecure HTTP is enabled
+	if config.InsecureAllowHTTP {
+		slog.Warn(
+			"insecure HTTP is enabled - "+
+				"HTTP OIDC URLs are allowed - this is INSECURE and should NEVER be used in production",
+			"issuer", config.Issuer,
+		)
+	}
+
+	jwksURL, err := resolveJWKSDiscovery(config, o)
+	if err != nil {
+		return nil, err
+	}
+
+	if err := validateGoogleTokeninfoAudience(config); err != nil {
+		return nil, err
 	}
 
 	// Create HTTP client with CA bundle and auth token support for JWKS
@@ -691,6 +703,23 @@ func NewTokenValidator(ctx context.Context, config TokenValidatorConfig, opts ..
 	return validator, nil
 }
 
+// validateGoogleTokeninfoAudience rejects a Google tokeninfo introspection
+// config with no audience. Google's tokeninfo endpoint returns no iss claim -
+// parseGoogleResponse synthesises iss locally, so a configured-issuer check
+// against it is self-satisfying and proves nothing about which OAuth client
+// the token was minted for. The only real binding to this deployment is the
+// audience check, which is skipped when audience is empty. Without it, ANY
+// valid Google access token (e.g. one minted for an attacker's own unrelated
+// OAuth client) passes validation. Refuse the combination at startup instead
+// of silently accepting cross-client tokens at runtime.
+func validateGoogleTokeninfoAudience(config TokenValidatorConfig) error {
+	if config.IntrospectionURL == GoogleTokeninfoURL && strings.TrimSpace(config.Audience) == "" {
+		return fmt.Errorf("audience is required when using Google's tokeninfo endpoint for introspection: " +
+			"without it any valid Google access token is accepted regardless of the OAuth client it was minted for")
+	}
+	return nil
+}
+
 // ensureJWKSRegistered ensures that the JWKS URL is registered with the cache.
 // This is called lazily on first use to avoid blocking startup.
 // On failure, registration is retried on subsequent calls (transient failures
@@ -708,8 +737,30 @@ func (v *TokenValidator) ensureJWKSRegistered(ctx context.Context) error {
 	registrationCtx, cancel := context.WithTimeout(ctx, 5*time.Second)
 	defer cancel()
 
-	// Attempt registration
-	if err := v.jwksClient.Register(registrationCtx, v.jwksURL); err != nil {
+	// Attempt registration. The CA-aware client must be passed per-resource:
+	// jwx >= 3.1.0 injects its own default client at the resource level when
+	// none is given here, which takes precedence over the client-level one
+	// configured in NewTokenValidator and silently drops custom CA support.
+	err := v.jwksClient.Register(registrationCtx, v.jwksURL, jwk.WithHTTPClient(v.client))
+	switch {
+	case err == nil:
+		// Registered and the first fetch succeeded.
+	case errors.Is(err, httprc.ErrNotReady()):
+		// The resource is registered and httprc will keep fetching it in the
+		// background; only the first fetch has not completed within the
+		// registration budget. Treat it as registered: Lookup returns a
+		// not-ready error until a background fetch succeeds. Retrying Register
+		// instead would fail with ErrResourceAlreadyExists forever.
+		//nolint:gosec // G706: JWKS URL is from server configuration or OIDC discovery
+		slog.Debug(
+			"JWKS URL registered but first fetch not ready; fetching continues in background",
+			"jwks_url", v.jwksURL, "error", err,
+		)
+	case errors.Is(err, httprc.ErrResourceAlreadyExists()):
+		// The URL is already in httprc's resource map, e.g. a previous attempt
+		// returned ErrNotReady before this state was tracked, or OIDC
+		// re-discovery produced the same URL after resetting the flag.
+	default:
 		v.jwksRegistrationErr = fmt.Errorf("failed to register JWKS URL: %w", err)
 		// Do NOT set jwksRegistered = true -- allow retry on next call
 		return v.jwksRegistrationErr

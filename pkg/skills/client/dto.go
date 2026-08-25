@@ -31,6 +31,11 @@ type buildRequest struct {
 
 type pushRequest struct {
 	Reference string `json:"reference"`
+	Key       string `json:"key,omitempty"`
+	// IdentityToken mirrors skills.PushOptions.IdentityToken; without it here
+	// the --identity-token flag would silently never reach the server.
+	IdentityToken string `json:"identity_token,omitempty"`
+	NoSign        bool   `json:"no_sign,omitempty"`
 }
 
 type listResponse struct {
@@ -39,6 +44,12 @@ type listResponse struct {
 
 type installResponse struct {
 	Skill skills.InstalledSkill `json:"skill"`
+	// Provenance and Unsigned mirror installSkillResponse. Without them the
+	// CLI — which is a pure HTTP client — could never report the trust state
+	// the server recorded, and would silently print every install as if it
+	// were untracked.
+	Provenance *skills.ProvenanceInfo `json:"provenance,omitempty"`
+	Unsigned   bool                   `json:"unsigned,omitempty"`
 }
 
 type listBuildsResponse struct {
@@ -56,10 +67,12 @@ type syncRequest struct {
 }
 
 type upgradeRequest struct {
-	ProjectRoot    string   `json:"project_root"`
-	Names          []string `json:"names,omitempty"`
-	Preview        bool     `json:"preview,omitempty"`
-	FailOnChanges  bool     `json:"fail_on_changes,omitempty"`
-	AllowRefChange bool     `json:"allow_ref_change,omitempty"`
-	Clients        []string `json:"clients,omitempty"`
+	ProjectRoot string   `json:"project_root"`
+	Names       []string `json:"names,omitempty"`
+	// AllowSignerChange mirrors skills.UpgradeOptions.AllowSignerChange.
+	AllowSignerChange bool     `json:"allow_signer_change,omitempty"`
+	Preview           bool     `json:"preview,omitempty"`
+	FailOnChanges     bool     `json:"fail_on_changes,omitempty"`
+	AllowRefChange    bool     `json:"allow_ref_change,omitempty"`
+	Clients           []string `json:"clients,omitempty"`
 }

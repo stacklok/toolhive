@@ -32,6 +32,7 @@ import (
 	"golang.org/x/oauth2"
 
 	"github.com/stacklok/toolhive/pkg/auth/oauth"
+	"github.com/stacklok/toolhive/pkg/auth/oautherr"
 	"github.com/stacklok/toolhive/pkg/auth/remote"
 	"github.com/stacklok/toolhive/pkg/secrets"
 )
@@ -160,7 +161,7 @@ func (t *OAuthTokenSource) Token(ctx context.Context) (string, error) {
 	// Tier 3: browser OIDC+PKCE flow — only in interactive mode.
 	if !t.opts.Interactive {
 		if lastErr != nil {
-			return "", lastErr
+			return "", t.classifyTerminalError(lastErr)
 		}
 		return "", t.opts.FallbackErr
 	}
@@ -174,6 +175,61 @@ func (t *OAuthTokenSource) Token(ctx context.Context) (string, error) {
 	t.cacheAccessToken(ctx, tok.AccessToken, tok.Expiry)
 	return tok.AccessToken, nil
 }
+
+// classifyTerminalError decides which error a non-interactive caller sees when
+// every cache tier has failed.
+//
+// An RFC 6749 invalid_grant means the OAuth server rejected the stored refresh
+// token itself: it expired, was revoked, or was rotated out from under us.
+// Retrying cannot fix that, and only a fresh interactive login can. Returning
+// the raw OAuth error there is actively misleading, because callers that
+// distinguish "you must log in again" from "the provider is having a bad day"
+// all key off FallbackErr, and a dead refresh token is precisely the case that
+// needs the re-login remediation.
+//
+// Every other failure surfaces verbatim, including the permanent ones. A 5xx,
+// a 429, a WAF page, or a locked keyring is worth retrying or fixing in place.
+// invalid_client, unauthorized_client, and invalid_scope are not worth
+// retrying, but they are verdicts on the client registration or the requested
+// scopes rather than on the credential, so logging in again reproduces them
+// unchanged — reporting them as FallbackErr would send the user in a circle
+// while hiding the code that names the real problem.
+//
+// The stored credential is deliberately NOT deleted here. With an IdP that
+// rotates refresh tokens, a sibling process may have just written a newer token
+// under the same key, and the next Token() call re-reads the secrets provider;
+// deleting on a rejection would destroy that cross-process recovery.
+func (t *OAuthTokenSource) classifyTerminalError(lastErr error) error {
+	if t.opts.FallbackErr == nil || !oautherr.IsRejectedRefreshGrant(lastErr) {
+		return lastErr
+	}
+	return &credentialRejectedError{fallback: t.opts.FallbackErr, cause: lastErr}
+}
+
+// credentialRejectedError marks a non-interactive failure where the identity
+// provider rejected the stored refresh token. It wraps BOTH the caller's
+// FallbackErr (so errors.Is finds the re-login sentinel) and the underlying
+// cause (so errors.As can still reach the *oauth2.RetrieveError).
+//
+// Error() interpolates nothing from the token endpoint, on purpose. The whole
+// response is untrusted input: an *oauth2.RetrieveError's own Error() embeds the
+// raw body, which can echo back bearer material, and even the parsed RFC 6749
+// 'error' field is an arbitrary server-chosen string that may carry secrets or
+// control characters into a log line. Since this type is only constructed for
+// invalid_grant, the code carries no information the fixed sentence does not
+// already convey. Diagnostics that need the exact verdict reach the cause
+// through errors.As.
+type credentialRejectedError struct {
+	fallback error
+	cause    error
+}
+
+func (e *credentialRejectedError) Error() string {
+	return fmt.Sprintf("%s (the identity provider rejected the stored credential)", e.fallback)
+}
+
+// Unwrap exposes both the sentinel and the cause to errors.Is / errors.As.
+func (e *credentialRejectedError) Unwrap() []error { return []error{e.fallback, e.cause} }
 
 // tryInMemoryToken tries the in-memory token source (tier 1).
 // Returns (token, nil) on success, ("", errCacheMiss) when no source is set,
@@ -235,6 +291,10 @@ func (t *OAuthTokenSource) tryRestoreFromCache(ctx context.Context) error {
 	if err != nil {
 		return fmt.Errorf("building oauth2 config for cache restore: %w", err)
 	}
+	httpClient, err := oauth.NewTokenHTTPClient(oauth2Cfg.Endpoint.TokenURL, true)
+	if err != nil {
+		return fmt.Errorf("building token endpoint HTTP client for cache restore: %w", err)
+	}
 
 	// Use a non-caching refresher as the innermost source.
 	//
@@ -252,7 +312,7 @@ func (t *OAuthTokenSource) tryRestoreFromCache(ctx context.Context) error {
 	// serves it until the next window — exactly one refresh per window.
 	//
 	// Target stacking: ReuseTokenSource(nil, preemptive{PersistingTokenSource{nonCachingRefresher}})
-	rawRefresher := oauth.NewNonCachingRefresher(oauth2Cfg, refreshToken, t.opts.OIDC.Audience)
+	rawRefresher := oauth.NewNonCachingRefresher(oauth2Cfg, refreshToken, t.opts.OIDC.Audience, httpClient)
 
 	// Persist rotated refresh tokens back to the secrets provider so future
 	// invocations can still restore the session if the provider invalidates the
@@ -301,7 +361,13 @@ func (t *OAuthTokenSource) performBrowserFlow(ctx context.Context) error {
 		TokenType:    tokenResult.TokenType,
 	}
 
-	var base oauth2.TokenSource = oauth.NewNonCachingRefresher(oauth2Cfg, initialToken.RefreshToken, flowCfg.Resource)
+	httpClient, err := oauth.NewTokenHTTPClient(flowCfg.TokenURL, flowCfg.TokenEndpointTrusted)
+	if err != nil {
+		return fmt.Errorf("building token endpoint HTTP client: %w", err)
+	}
+	var base oauth2.TokenSource = oauth.NewNonCachingRefresher(
+		oauth2Cfg, initialToken.RefreshToken, flowCfg.Resource, httpClient,
+	)
 
 	if t.opts.SecretsProvider != nil {
 		key := t.opts.KeyProvider()
@@ -326,7 +392,7 @@ func (t *OAuthTokenSource) performBrowserFlow(ctx context.Context) error {
 // buildFlowConfig creates an oauth.Config for the interactive browser flow.
 // PKCE (S256) is always enabled per OAuth 2.1 requirements for public clients.
 func (t *OAuthTokenSource) buildFlowConfig(ctx context.Context) (*oauth.Config, error) {
-	return oauth.CreateOAuthConfigFromOIDC(
+	config, err := oauth.CreateOAuthConfigFromOIDC(
 		ctx,
 		t.opts.OIDC.Issuer,
 		t.opts.OIDC.ClientID,
@@ -336,6 +402,11 @@ func (t *OAuthTokenSource) buildFlowConfig(ctx context.Context) (*oauth.Config, 
 		t.opts.OIDC.CallbackPort,
 		t.opts.OIDC.Audience,
 	)
+	if err != nil {
+		return nil, err
+	}
+	config.TokenEndpointTrusted = true
+	return config, nil
 }
 
 // buildOAuth2Config creates a minimal oauth2.Config suitable for token refresh

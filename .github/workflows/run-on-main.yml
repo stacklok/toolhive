@@ -22,7 +22,11 @@ jobs:
   tests:
     name: Tests
     uses: ./.github/workflows/test.yml
-    secrets: inherit
+    # Named rather than inherited: this job runs the Go test suite, and so
+    # executes repository code and its dependency tree. It has no business
+    # holding the release signing keys.
+    secrets:
+      CODECOV_TOKEN: ${{ secrets.CODECOV_TOKEN }}
   codegen:
     name: Codegen
     uses: ./.github/workflows/verify-gen.yml
@@ -30,7 +34,6 @@ jobs:
   helm-charts:
     name: Helm Charts
     uses: ./.github/workflows/helm-charts-test.yml
-    secrets: inherit
   e2e-tests:
     name: E2E Tests
     needs: [linting, tests, codegen]
@@ -50,10 +53,22 @@ jobs:
       packages: write
       id-token: write
     uses: ./.github/workflows/image-build-and-publish.yml
-  skills-build-and-push:
-    name: Build and Publish Skills
+  # Named for what it does: this verifies skills still build. Publishing
+  # happens only from releaser.yml, via skills-publish.yml.
+  skills-build:
+    name: Build Skills
     needs: [linting, tests, codegen]
     permissions:
       contents: read
-      packages: write
-    uses: ./.github/workflows/skills-build-and-publish.yml
+    uses: ./.github/workflows/skills-build.yml
+  skills-keyless-e2e:
+    name: Skills Keyless Signing E2E (staging)
+    needs: [linting, tests, codegen]
+    # Informational, not a merge gate: it signs against Sigstore's public
+    # staging instance, whose outages this repository does not control. The
+    # continue-on-error that makes it non-blocking lives on the called
+    # workflow's own job — GitHub rejects that key on a job that uses `uses:`.
+    permissions:
+      contents: read
+      id-token: write
+    uses: ./.github/workflows/skills-keyless-signing-e2e.yml

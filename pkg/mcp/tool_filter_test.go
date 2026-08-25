@@ -1878,6 +1878,63 @@ func TestNewListToolsMappingMiddleware_MissingContentTypeCannotSmuggleToolsList(
 	}
 }
 
+// TestNewListToolsMappingMiddleware_BOMCannotSmuggleToolsList is a regression
+// test for a #5257-class leak: a client strips a leading UTF-8 BOM per the
+// WHATWG decode algorithm before parsing, but the sniffing of a body with a
+// missing/unrecognized Content-Type used to run on the raw bytes. The BOM made
+// the JSON sniff (encoding/json rejects EF BB BF) and sniffSSEToolsList's
+// "data:" prefix match fail, letting the unfiltered tools list pass through.
+func TestNewListToolsMappingMiddleware_BOMCannotSmuggleToolsList(t *testing.T) {
+	t.Parallel()
+
+	middleware, err := NewListToolsMappingMiddleware(WithToolsFilter("tool1"))
+	require.NoError(t, err)
+
+	tests := []struct {
+		name string
+		body string
+	}{
+		{
+			name: "BOM-prefixed JSON tools list with no Content-Type",
+			body: "\xEF\xBB\xBF" + `{"jsonrpc":"2.0","id":1,"result":{"tools":[` +
+				`{"name":"tool1","description":"desc1"},` +
+				`{"name":"tool2","description":"desc2"}]}}`,
+		},
+		{
+			name: "BOM-prefixed SSE tools list with no Content-Type",
+			body: "\xEF\xBB\xBF" + "event: message\n" +
+				`data: {"jsonrpc":"2.0","id":1,"result":{"tools":[` +
+				`{"name":"tool1","description":"desc1"},` +
+				`{"name":"tool2","description":"desc2"}]}}` + "\n\n",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			inner := http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+				w.WriteHeader(http.StatusOK)
+				_, writeErr := w.Write([]byte(tt.body))
+				require.NoError(t, writeErr)
+			})
+
+			handler := middleware(inner)
+
+			req := httptest.NewRequest(http.MethodPost, "/", nil)
+			recorder := httptest.NewRecorder()
+
+			handler.ServeHTTP(recorder, req)
+
+			assert.Contains(t, recorder.Body.String(), "tool1")
+			assert.NotContains(t, recorder.Body.String(), "tool2",
+				"the excluded tool must not be exposed because a leading UTF-8 BOM defeated the sniff")
+			assert.False(t, strings.HasPrefix(recorder.Body.String(), "\xEF\xBB\xBF"),
+				"the leading BOM must be dropped from the output")
+		})
+	}
+}
+
 func TestClientAcceptsJSON(t *testing.T) {
 	t.Parallel()
 

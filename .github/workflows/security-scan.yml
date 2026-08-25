@@ -1,27 +1,35 @@
 name: Security Scan
 
 on:
+  # Called by run-on-main.yml on push to main, where image-build-and-push gates
+  # on the result. There is deliberately no `push:` trigger here as well — that
+  # would run every scan twice for each push to main.
   workflow_call:
   workflow_dispatch:
-  push:
-    branches: [ main ]
+  # PRs trigger this directly rather than through run-on-pr.yml, for the same
+  # reason. Unfiltered by branch, to match the coverage run-on-pr.yml gave.
   pull_request:
-    branches: [ main ]
   schedule:
     # Run daily at 2 AM UTC
     - cron: '0 2 * * *'
 
+# security-events: write is granted per job rather than here, so only the two
+# jobs that upload SARIF can write security events.
 permissions:
   contents: read
-  security-events: write
 
 jobs:
   grype-repo-scan:
     name: Grype Repository Scan
     runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      security-events: write
     steps:
       - name: Checkout repository
         uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+        with:
+          persist-credentials: false
 
       - name: Run Grype vulnerability scanner
         id: grype-scan
@@ -32,11 +40,56 @@ jobs:
           fail-build: false
 
       - name: Upload Grype scan results to GitHub Security tab
-        uses: github/codeql-action/upload-sarif@f205ea1c3313d32999d8d6a48b4f6530d4437b38 # v4
+        uses: github/codeql-action/upload-sarif@5595ccaf912efad79be6eef63a5619ff05969be3 # v4.37.6
         if: always()
         with:
           sarif_file: ${{ steps.grype-scan.outputs.sarif }}
           category: "grype"
+
+  zizmor:
+    name: GitHub Actions Static Analysis
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      security-events: write
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+        with:
+          # This job only reads the workflow files; it never pushes.
+          persist-credentials: false
+
+      # Reports at every severity, including the low and informational findings
+      # the gate below does not block on, so the Security tab keeps the full
+      # picture. This step does not gate: zizmor suppresses its findings exit
+      # code when the output format is SARIF, which is what advanced-security
+      # selects. The upload happens inside the action.
+      - name: Report findings
+        uses: zizmorcore/zizmor-action@3dc1ecc9bcb9e94e9b2c709687979e1298497054 # v0.6.2
+        with:
+          version: "1.29.0"
+          inputs: .github/
+          persona: regular
+
+      # The gate. `main` is clear of medium-and-above findings, so anything
+      # this reports was introduced by the change under review.
+      #
+      # advanced-security: false is what makes this block — it swaps SARIF for
+      # human-readable output, which restores the findings exit code, and
+      # avoids uploading a second, severity-filtered SARIF over the first.
+      #
+      # The remaining low and informational findings are deliberate and are
+      # documented where they sit: checkouts whose credentials are in use, and
+      # expressions carrying values GitHub constrains to characters that cannot
+      # reach a shell. Lowering this threshold means dealing with those first.
+      - name: Fail on new findings
+        uses: zizmorcore/zizmor-action@3dc1ecc9bcb9e94e9b2c709687979e1298497054 # v0.6.2
+        with:
+          version: "1.29.0"
+          inputs: .github/
+          persona: regular
+          min-severity: medium
+          advanced-security: false
 
   govulncheck:
     name: Go Vulnerability Check
@@ -44,6 +97,8 @@ jobs:
     steps:
       - name: Checkout repository
         uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+        with:
+          persist-credentials: false
 
       - name: Run govulncheck
         uses: golang/govulncheck-action@032d45514ae346b1db93c04b0c90b841c370344f # v1
@@ -56,6 +111,8 @@ jobs:
 
       - name: Check for vulnerabilities (with exclusions)
         run: |
+          set -euo pipefail
+
           # Ignored vulnerabilities with justification:
           # Go stdlib advisories published 2026-06-02, all fixed in go1.26.4 /
           # go1.25.11 (DoS / log-injection class, no RCE):
@@ -68,21 +125,51 @@ jobs:
           #
           # GO-2026-5932: golang.org/x/crypto/openpgp is deprecated-by-design
           # ("unsafe, not maintained, should not be used"). No fixed version
-          # exists and none is planned. ToolHive does not import openpgp
-          # directly; it is pulled transitively via sigstore (rekor/sigstore-go)
-          # for backward-compatible OpenPGP verification. Remove when sigstore
-          # drops the openpgp dependency.
+          # exists and none is planned.
+          #
+          # ToolHive does not import openpgp. It arrives four levels up:
+          #   pkg/skills/signer -> sigstore-go/pkg/sign -> rekor/pkg/pki
+          #     -> rekor/pkg/pki/pgp -> golang.org/x/crypto/openpgp
+          # rekor/pkg/pki is a pluggable signature-format registry, so
+          # importing it links every format, PGP included. Every govulncheck
+          # trace is package-init reachability, not a call: the code is
+          # linked but never parses PGP data on any ToolHive path.
+          #
+          # REMOVAL TRIGGER: rekor migrated to ProtonMail/go-crypto/openpgp
+          # in sigstore/rekor#2883 (merged 2026-07-15), which landed after
+          # v1.5.3 (2026-07-02) and so is not in any release yet. Bump rekor
+          # past v1.5.3 once a release contains it, then drop this entry.
           IGNORED_VULNS="GO-2026-5037 GO-2026-5038 GO-2026-5039 GO-2026-5932"
 
           # Show the raw output for debugging
+          # A scan that produced nothing is a failed scan, not a clean one.
+          # Without this, a crashed or truncated run yields an empty finding
+          # list indistinguishable from "no vulnerabilities" and the gate
+          # goes green.
+          if [ ! -s govulncheck-output.json ]; then
+            echo "::error::govulncheck produced no output; refusing to report success"
+            exit 1
+          fi
+
           echo "::group::govulncheck raw output"
           cat govulncheck-output.json
           echo "::endgroup::"
 
-          # Extract vulnerability IDs that have actual findings (called symbols)
-          # The JSON has "finding" objects with "osv" field only for vulnerabilities
-          # where vulnerable code paths are actually called
-          FOUND_VULNS=$(jq -r 'select(.finding != null) | .finding.osv' govulncheck-output.json | sort -u | grep -E '^GO-' || true)
+          # Extract vulnerability IDs that have actual findings (called symbols).
+          # The JSON has "finding" objects with an "osv" field only for
+          # vulnerabilities whose vulnerable code paths are actually called.
+          #
+          # jq failures must be fatal. A trailing `|| true` on the pipeline
+          # would swallow a parse error and hand us an empty list, which is
+          # how malformed output could pass the gate.
+          if ! jq -r 'select(.finding != null) | .finding.osv' govulncheck-output.json > found-osv.txt; then
+            echo "::error::could not parse govulncheck output; treating as a failed scan"
+            exit 1
+          fi
+
+          # grep exiting 1 means "no matches", which is legitimately clean —
+          # that is the only non-zero status tolerated here.
+          FOUND_VULNS=$(sort -u found-osv.txt | { grep -E '^GO-' || true; })
 
           if [ -z "$FOUND_VULNS" ]; then
             echo "✅ No vulnerabilities found"

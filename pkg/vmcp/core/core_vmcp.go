@@ -633,12 +633,22 @@ func (c *coreVMCP) authorizedBackends(
 // may only SUBTRACT reachability ([VMCP] contract), so the core is the only layer
 // that can advertise them.
 func (c *coreVMCP) advertisedTools(agg *aggregator.AggregatedCapabilities) []vmcp.Tool {
-	defs := c.accessibleComposites(agg)
+	return advertisedToolsWith(agg, c.accessibleComposites(agg))
+}
+
+// advertisedToolsWith is advertisedTools against an ALREADY-RESOLVED composite set.
+// CallTool needs the same composites map for its own dispatch, and resolving it is
+// not free (FilterWorkflowDefsForSession + ValidateNoToolConflicts +
+// ConvertWorkflowDefsToTools), so it resolves once and passes the result here
+// rather than having this recompute it.
+func advertisedToolsWith(
+	agg *aggregator.AggregatedCapabilities, defs map[string]*composer.WorkflowDefinition,
+) []vmcp.Tool {
 	if len(defs) == 0 {
 		return agg.Tools
 	}
 
-	composite := compositetools.ConvertWorkflowDefsToTools(defs)
+	composite := compositetools.ConvertWorkflowDefsToTools(defs, stepAnnotationResolver(agg))
 	out := make([]vmcp.Tool, 0, len(agg.Tools)+len(composite))
 	out = append(out, agg.Tools...)
 	out = append(out, composite...)
@@ -647,9 +657,12 @@ func (c *coreVMCP) advertisedTools(agg *aggregator.AggregatedCapabilities) []vmc
 
 // accessibleComposites returns the composite-tool definitions the core advertises
 // (and therefore executes) for agg's view: those whose every tool step is reachable
-// in the routing table AND whose names do not collide with a backend tool. On a name
+// in the routing table, whose names do not collide with a backend tool, AND whose
+// explicit annotations do not contradict the derived safety floor. On a name
 // collision ALL composites are dropped so the backend tool wins, matching the legacy
 // compositeToolsDecorator (sessionmanager/factory.go:158-168, decorator.go:83-86).
+// On an annotation contradiction the offending composite is dropped (with a warning)
+// so CallTool and ListTools share the same set.
 //
 // This is the single source of truth shared by advertisedTools (what ListTools shows)
 // and CallTool (what executes), so a withheld composite is never executed — advertised
@@ -665,11 +678,39 @@ func (c *coreVMCP) accessibleComposites(
 	if len(defs) == 0 {
 		return nil
 	}
-	if err := compositetools.ValidateNoToolConflicts(agg.Tools, compositetools.ConvertWorkflowDefsToTools(defs)); err != nil {
+	// Name-only conflict check — must not run annotation conversion, which can
+	// drop composites carrying optimistic hints and hide a colliding name.
+	if err := compositetools.ValidateNoToolConflicts(
+		agg.Tools, compositetools.CompositeToolNames(defs)); err != nil {
 		slog.Warn("composite tool name conflict detected; omitting composite tools", "error", err)
 		return nil
 	}
-	return defs
+	// Annotation guardrail: drop contradicting composites so CallTool and
+	// ListTools share the same set (advertised equals executed).
+	return compositetools.FilterWorkflowDefsByAnnotations(defs, stepAnnotationResolver(agg))
+}
+
+// stepAnnotationResolver returns a StepAnnotationResolver that maps a composite
+// tool's step reference ("{workloadID}.{toolName}") to the backend tool's
+// annotations, using agg's routing table and aggregated tools. Resolution goes
+// through the shared router.ResolveToolRef primitive (the same path
+// isToolStepAccessible uses), so accessibility filtering and annotation
+// resolution cannot drift. Unknown step tools resolve to nil annotations
+// (treated conservatively by the derivation).
+func stepAnnotationResolver(agg *aggregator.AggregatedCapabilities) compositetools.StepAnnotationResolver {
+	annByName := make(map[string]*vmcp.ToolAnnotations, len(agg.Tools))
+	for i := range agg.Tools {
+		if agg.Tools[i].Annotations != nil {
+			annByName[agg.Tools[i].Name] = agg.Tools[i].Annotations
+		}
+	}
+	return func(stepTool string) *vmcp.ToolAnnotations {
+		resolvedName, ok := router.ResolveToolRef(agg.RoutingTable, stepTool)
+		if !ok {
+			return nil
+		}
+		return annByName[resolvedName]
+	}
 }
 
 // validateConfig checks New's required inputs and the elicitation contract,
@@ -795,9 +836,10 @@ func filterHealthyBackends(backends []vmcp.Backend, healthStatusProvider health.
 
 		// Include healthy, degraded, and empty/zero-value (assume healthy) backends.
 		// Explicitly exclude unhealthy, unknown, and unauthenticated backends.
-		if healthStatus == "" ||
-			healthStatus == vmcp.BackendHealthy ||
-			healthStatus == vmcp.BackendDegraded {
+		// The predicate is shared with session establishment's stricter
+		// counterpart — see health.ShouldAdvertise / health.ShouldOpenSession —
+		// and with the health monitor's change detection (Monitor.OnChange).
+		if health.ShouldAdvertise(healthStatus) {
 			healthy = append(healthy, *backend)
 		} else {
 			excluded++

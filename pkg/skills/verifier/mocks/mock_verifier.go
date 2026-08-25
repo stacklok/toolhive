@@ -86,7 +86,7 @@ func (mr *MockVerifierMockRecorder) VerifyBundleOfflineWithKey(bundle, imageRef,
 }
 
 // VerifyGit mocks base method.
-func (m *MockVerifier) VerifyGit(ctx context.Context, payload, signature []byte, expected *lockfile.Provenance) (*verifier.Result, error) {
+func (m *MockVerifier) VerifyGit(ctx context.Context, payload, signature []byte, expected *verifier.ProvenanceExpectation) (*verifier.Result, error) {
 	m.ctrl.T.Helper()
 	ret := m.ctrl.Call(m, "VerifyGit", ctx, payload, signature, expected)
 	ret0, _ := ret[0].(*verifier.Result)
@@ -101,7 +101,7 @@ func (mr *MockVerifierMockRecorder) VerifyGit(ctx, payload, signature, expected 
 }
 
 // VerifyOCI mocks base method.
-func (m *MockVerifier) VerifyOCI(ctx context.Context, imageRef, digest string, expected *lockfile.Provenance) (*verifier.Result, error) {
+func (m *MockVerifier) VerifyOCI(ctx context.Context, imageRef, digest string, expected *verifier.ProvenanceExpectation) (*verifier.Result, error) {
 	m.ctrl.T.Helper()
 	ret := m.ctrl.Call(m, "VerifyOCI", ctx, imageRef, digest, expected)
 	ret0, _ := ret[0].(*verifier.Result)

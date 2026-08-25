@@ -17,70 +17,71 @@
 package registration
 
 import (
+	"context"
+	"crypto/rand"
+	"encoding/base64"
 	"fmt"
+	"log/slog"
+	"net"
 	"net/url"
+	"slices"
 	"strings"
 
 	"github.com/ory/fosite"
-	"golang.org/x/crypto/bcrypt"
 
-	"github.com/stacklok/toolhive/pkg/networking"
+	"github.com/stacklok/toolhive/pkg/oauthproto"
 )
 
-// LoopbackClient is a fosite.Client implementation that supports RFC 8252 Section 7.3
-// compliant loopback redirect URI matching for native OAuth clients.
+// RegisteredLoopbackRedirectURI returns the registered redirect URI of c that
+// requestedURI matches -- exactly, or under RFC 8252 Section 7.3 loopback
+// dynamic-port rules -- or ("", false) if none matches.
 //
-// RFC 8252 Section 7.3 specifies that:
-//   - Loopback redirect URIs use "http" (not "https")
-//   - The host must be "127.0.0.1", "[::1]", or "localhost"
-//   - The authorization server MUST allow any port
-//   - The path and query components must match exactly
-//
-// This client extends fosite's built-in loopback support to also handle "localhost"
-// as a loopback address. Fosite's isMatchingAsLoopback uses isLoopbackAddress()
-// which only supports IP addresses (net.ParseIP().IsLoopback()), not the "localhost"
-// hostname. This is needed for DCR with clients like VS Code, Claude Code, and other
-// native apps that register redirect URIs like "http://localhost/callback" and then
-// request authorization with dynamic ports like "http://localhost:57403/callback".
-type LoopbackClient struct {
-	*fosite.DefaultOpenIDConnectClient
+// Loopback dynamic-port matching is restricted to public clients: RFC 8252
+// loopback redirects are a native-app pattern and a confidential client must
+// never get dynamic-port flexibility on its registered redirect_uri. Keeping
+// that guard here rather than in a per-client method means no storage backend
+// can reconstruct a client that silently skips it.
+func RegisteredLoopbackRedirectURI(c fosite.Client, requestedURI string) (string, bool) {
+	if !c.IsPublic() {
+		return "", false
+	}
+	return matchLoopbackRedirectURI(c.GetRedirectURIs(), requestedURI)
 }
 
-// NewLoopbackClient creates a new LoopbackClient wrapping the provided client.
-// The wrapper preserves all OIDC fields (including TokenEndpointAuthMethod)
-// while adding RFC 8252 §7.3 dynamic port matching for loopback redirect URIs.
-func NewLoopbackClient(client *fosite.DefaultOpenIDConnectClient) *LoopbackClient {
-	return &LoopbackClient{DefaultOpenIDConnectClient: client}
+// IsLocalhostHostname reports whether host (as returned by url.Hostname()) is
+// the string "localhost", matched case-insensitively -- the same definition
+// hostnamesMatch and isLoopbackHostname use. Exported so callers outside this
+// package that need to know "is this specifically localhost, not an IP
+// loopback literal" (e.g. deciding whether fosite's own IP-literal-only
+// loopback matching already handles a redirect_uri, or whether it needs this
+// package's help) share this package's one definition instead of
+// re-implementing it and risking drift.
+func IsLocalhostHostname(host string) bool {
+	return strings.EqualFold(host, "localhost")
 }
 
-// MatchRedirectURI checks if the given redirect URI matches one of the client's
-// registered redirect URIs, with RFC 8252 Section 7.3 loopback support.
+// matchLoopbackRedirectURI returns the registered URI (from registeredURIs)
+// that requestedURI matches, either exactly or under RFC 8252 Section 7.3
+// loopback dynamic-port rules, or ("", false) if none matches.
 //
-// For loopback URIs (127.0.0.1, [::1], or localhost), the port is allowed to
-// vary while the scheme, host, path, and query must match exactly.
-func (c *LoopbackClient) MatchRedirectURI(requestedURI string) bool {
-	for _, registeredURI := range c.GetRedirectURIs() {
-		if matchesRedirectURI(requestedURI, registeredURI) {
-			return true
+// Exact matches take precedence over loopback matches: a full pass over
+// registeredURIs checks for an exact match first, and only then falls back to
+// loopback matching. Without this, a client registered with both
+// "http://localhost/callback" and "http://localhost:54321/callback" would
+// have a request for the second rewritten to the first, because loopback
+// matching against the first entry succeeds before the loop ever reaches the
+// second entry's exact match. A client that registered a specific port must
+// not have its request silently redirected to a different registered entry.
+func matchLoopbackRedirectURI(registeredURIs []string, requestedURI string) (string, bool) {
+	if slices.Contains(registeredURIs, requestedURI) {
+		return requestedURI, true
+	}
+	for _, registeredURI := range registeredURIs {
+		if matchesAsLoopback(requestedURI, registeredURI) {
+			return registeredURI, true
 		}
 	}
-	return false
-}
-
-// GetMatchingRedirectURI returns the matching redirect URI if found, or an empty string.
-// For loopback URIs, returns the requested URI (with its port) if it matches a registered
-// loopback pattern.
-func (c *LoopbackClient) GetMatchingRedirectURI(requestedURI string) string {
-	for _, registeredURI := range c.GetRedirectURIs() {
-		if matchesRedirectURI(requestedURI, registeredURI) {
-			// For loopback matches, return the requested URI to preserve the dynamic port
-			if isLoopbackURI(requestedURI) {
-				return requestedURI
-			}
-			return registeredURI
-		}
-	}
-	return ""
+	return "", false
 }
 
 // DefaultScopes are the default OAuth 2.0 scopes for registered clients.
@@ -93,14 +94,17 @@ type Config struct {
 	ID string
 
 	// Secret is the client secret for confidential clients.
-	// Empty for public clients.
+	// Required for client_secret_basic / client_secret_post; ignored for "none".
 	Secret string //nolint:gosec // G117: field legitimately holds sensitive data
 
 	// RedirectURIs is the list of allowed redirect URIs.
 	RedirectURIs []string
 
-	// Public indicates whether this is a public client (no secret).
-	Public bool
+	// TokenEndpointAuthMethod is the client's registered auth method:
+	// "none" (public client) or one of the client_secret_* methods
+	// (confidential client). Required — there is no default, so callers must
+	// choose explicitly rather than drifting into one.
+	TokenEndpointAuthMethod string
 
 	// GrantTypes overrides the default grant types.
 	// If nil or empty, defaultGrantTypes is used.
@@ -120,12 +124,123 @@ type Config struct {
 	Audience []string
 }
 
+// dcrIssued is the marker identifying clients built by this package (i.e.
+// issued via dynamic client registration or an equivalent explicit
+// registration.New call). Storage backends use it to tell DCR-issued
+// registrations — which carry an anti-bloat TTL — from pre-provisioned
+// clients, which must never acquire one. The method is unexported so the
+// marker cannot be implemented outside this package.
+type dcrIssued interface {
+	dcrIssued()
+}
+
+// DCRIssued reports whether client was issued by this package.
+func DCRIssued(client fosite.Client) bool {
+	_, ok := client.(dcrIssued)
+	return ok
+}
+
+// MarkDCRIssued wraps a client rebuilt from persisted DCR-issued form so the
+// DCRIssued marker — and with it the anti-bloat TTL behaviour in storage —
+// survives the storage round-trip. Callers must only mark clients they know
+// were DCR-issued; pre-provisioned clients must never carry the marker.
+//
+// client must be one of the two concrete shapes clientFromStored produces:
+// *fosite.DefaultOpenIDConnectClient (a row with a recorded
+// token_endpoint_auth_method) or *fosite.DefaultClient (a row with none). The
+// type switch below embeds whichever concrete type it was given rather than
+// the fosite.Client interface, so every method the concrete type implements —
+// now and in the future, including optional fosite interfaces like
+// ClientWithSecretRotation — promotes automatically instead of being silently
+// dropped, which is exactly what embedding the interface would do (fosite
+// type-asserts for ClientWithSecretRotation.GetRotatedHashes during secret
+// validation).
+//
+// Any other concrete type is a caller bug, but this sits on the GetClient
+// path reachable from the unauthenticated /oauth/authorize endpoint, so it
+// must not crash the process. Falling back to the client unwrapped, with an
+// error log naming the type, is a bounded degradation: the row loses its
+// DCRIssued marker and so stops renewing its TTL, which is recoverable —
+// unlike a panic on an unauthenticated request path.
+func MarkDCRIssued(client fosite.Client) fosite.Client {
+	switch c := client.(type) {
+	case *fosite.DefaultOpenIDConnectClient:
+		return &markedDCRIssuedOIDC{DefaultOpenIDConnectClient: c}
+	case *fosite.DefaultClient:
+		return &markedDCRIssuedDefault{DefaultClient: c}
+	default:
+		slog.Error("registration: MarkDCRIssued: unsupported concrete client type, returning unmarked",
+			"type", fmt.Sprintf("%T", client))
+		return client
+	}
+}
+
+type markedDCRIssuedOIDC struct {
+	*fosite.DefaultOpenIDConnectClient
+}
+
+func (markedDCRIssuedOIDC) dcrIssued() {}
+
+type markedDCRIssuedDefault struct {
+	*fosite.DefaultClient
+}
+
+func (markedDCRIssuedDefault) dcrIssued() {}
+
+type dcrIssuedMarker struct{}
+
+func (dcrIssuedMarker) dcrIssued() {}
+
+// publicClient is the DCR-issued public client shape: an OIDC client (so the
+// "none" method is recorded and enforced). RFC 8252 Section 7.3 loopback
+// dynamic-port matching for native apps is provided separately by
+// RegisteredLoopbackRedirectURI, not by this type.
+type publicClient struct {
+	dcrIssuedMarker
+	*fosite.DefaultOpenIDConnectClient
+}
+
+// confidentialClient is the DCR-issued confidential client shape: an OIDC
+// client so fosite pins and enforces the registered auth method at the token
+// endpoint. RegisteredLoopbackRedirectURI refuses dynamic-port matching for
+// any non-public client, so a secret-holding client never gets it.
+type confidentialClient struct {
+	dcrIssuedMarker
+	*fosite.DefaultOpenIDConnectClient
+}
+
+// GenerateClientSecret mints a new client secret: 32 bytes of crypto/rand
+// output, base64url-encoded (43 characters, no padding). RawURLEncoding is
+// load-bearing, not cosmetic: fosite url.QueryUnescape's both Basic-auth
+// components, so a secret containing '+', '/', or '%' would be corrupted or
+// rejected at the token endpoint.
+func GenerateClientSecret() (string, error) {
+	buf := make([]byte, 32)
+	if _, err := rand.Read(buf); err != nil {
+		return "", fmt.Errorf("failed to generate client secret: %w", err)
+	}
+	return base64.RawURLEncoding.EncodeToString(buf), nil
+}
+
 // New creates a fosite.Client from the given configuration.
-// Public clients are wrapped in LoopbackClient to support RFC 8252 Section 7.3
-// compliant loopback redirect URI matching for native OAuth clients.
-// Confidential clients with secrets have their Secret field bcrypt-hashed
-// as required by fosite for credential validation.
+// Public clients get TokenEndpointAuthMethod "none" via DefaultOpenIDConnectClient;
+// RFC 8252 Section 7.3 loopback redirect URI matching for native OAuth clients is
+// provided separately by RegisteredLoopbackRedirectURI, not by the client type itself.
+// Confidential clients with secrets have their Secret field SHA-256 hashed
+// (see SHA256Hasher) as required by fosite for credential validation.
 func New(cfg Config) (fosite.Client, error) {
+	// Validate the auth method explicitly: silently defaulting an empty or
+	// unknown value would reclassify the client one layer up, the same
+	// public-ification bug the storage read path fails closed against.
+	switch cfg.TokenEndpointAuthMethod {
+	case oauthproto.TokenEndpointAuthMethodNone,
+		oauthproto.TokenEndpointAuthMethodClientSecretBasic,
+		oauthproto.TokenEndpointAuthMethodClientSecretPost:
+	default:
+		return nil, fmt.Errorf("unsupported token_endpoint_auth_method: %q", cfg.TokenEndpointAuthMethod)
+	}
+	public := cfg.TokenEndpointAuthMethod == oauthproto.TokenEndpointAuthMethodNone
+
 	// Apply defaults for empty slices
 	grantTypes := cfg.GrantTypes
 	if len(grantTypes) == 0 {
@@ -150,51 +265,131 @@ func New(cfg Config) (fosite.Client, error) {
 		GrantTypes:    grantTypes,
 		Scopes:        scopes,
 		Audience:      cfg.Audience,
-		Public:        cfg.Public,
+		Public:        public,
 	}
 
-	// Set bcrypt-hashed secret for confidential clients.
-	// Fosite expects the Secret field to contain a bcrypt hash
-	// for proper credential validation.
-	if !cfg.Public {
+	// Hash the secret for confidential clients. fosite compares the stored
+	// hash with the presented secret using the hasher configured on
+	// fosite.Config.ClientSecretsHasher, so this must use the same SHA-256
+	// hasher — see SHA256Hasher for why no KDF is used.
+	if !public {
 		if cfg.Secret == "" {
 			return nil, fmt.Errorf("confidential client requires a secret")
 		}
-		hashedSecret, err := bcrypt.GenerateFromPassword([]byte(cfg.Secret), bcrypt.DefaultCost)
+		hashedSecret, err := SHA256Hasher.Hash(context.Background(), []byte(cfg.Secret))
 		if err != nil {
 			return nil, fmt.Errorf("failed to hash client secret: %w", err)
 		}
 		defaultClient.Secret = hashedSecret
 	}
 
-	// Wrap public clients in LoopbackClient for RFC 8252 Section 7.3
-	// dynamic port matching for native app loopback redirect URIs.
-	// Use DefaultOpenIDConnectClient so TokenEndpointAuthMethod ("none" for
-	// public clients) is preserved through the LoopbackClient wrapper.
-	if cfg.Public {
-		oidcClient := &fosite.DefaultOpenIDConnectClient{
-			DefaultClient:           defaultClient,
-			TokenEndpointAuthMethod: "none",
-		}
-		return NewLoopbackClient(oidcClient), nil
+	oidcClient := &fosite.DefaultOpenIDConnectClient{
+		DefaultClient:           defaultClient,
+		TokenEndpointAuthMethod: cfg.TokenEndpointAuthMethod,
 	}
 
-	return defaultClient, nil
+	if public {
+		return &publicClient{DefaultOpenIDConnectClient: oidcClient}, nil
+	}
+	return &confidentialClient{DefaultOpenIDConnectClient: oidcClient}, nil
 }
 
-// Compile-time interface compliance check
-var _ fosite.Client = (*LoopbackClient)(nil)
-
-// matchesRedirectURI checks if a requested URI matches a registered URI.
-// Implements RFC 8252 Section 7.3 loopback matching.
-func matchesRedirectURI(requestedURI, registeredURI string) bool {
-	// Exact match always works
-	if requestedURI == registeredURI {
-		return true
+// NewConfidentialPlain creates a DCR-issued confidential client as a plain
+// *fosite.DefaultClient (Public: false, hashed secret), NOT the
+// *fosite.DefaultOpenIDConnectClient shape New produces for an ordinary
+// confidential registration.
+//
+// The difference matters: fosite only enforces token_endpoint_auth_method for
+// clients implementing fosite.OpenIDConnectClient (see
+// client_authentication.go in fosite v0.49.0 — AuthenticateClient type-
+// switches on that interface before checking the method at all). A plain
+// *fosite.DefaultClient with Public=false accepts credentials via either HTTP
+// Basic or the form body and verifies whichever is presented. Use this
+// constructor when the caller does not know which presentation the client
+// will use — pinning the wrong one yields an invalid_client the operator
+// cannot debug remotely.
+//
+// This is the shape ValidateDCRRequest's override path uses when a request's
+// redirect_uris matches an operator-configured
+// Config.ForceConfidentialRedirectURIs entry: such a client declared itself
+// public but requires a secret, and the operator cannot know in advance
+// whether its OAuth library presents credentials via Basic or form body.
+//
+// TokenEndpointAuthMethod on cfg is ignored; the returned client has no
+// pinned method by construction. Ignores cfg.GrantTypes/ResponseTypes
+// defaulting the same way New does. The returned client always carries the
+// DCRIssued marker (see MarkDCRIssued) so storage retention applies.
+func NewConfidentialPlain(cfg Config) (fosite.Client, error) {
+	if cfg.Secret == "" {
+		return nil, fmt.Errorf("confidential client requires a secret")
 	}
 
-	// Try loopback matching
-	return matchesAsLoopback(requestedURI, registeredURI)
+	grantTypes := cfg.GrantTypes
+	if len(grantTypes) == 0 {
+		grantTypes = defaultGrantTypes
+	}
+	responseTypes := cfg.ResponseTypes
+	if len(responseTypes) == 0 {
+		responseTypes = defaultResponseTypes
+	}
+	scopes := cfg.Scopes
+	if len(scopes) == 0 {
+		scopes = DefaultScopes
+	}
+
+	hashedSecret, err := SHA256Hasher.Hash(context.Background(), []byte(cfg.Secret))
+	if err != nil {
+		return nil, fmt.Errorf("failed to hash client secret: %w", err)
+	}
+
+	defaultClient := &fosite.DefaultClient{
+		ID:            cfg.ID,
+		Secret:        hashedSecret,
+		RedirectURIs:  cfg.RedirectURIs,
+		ResponseTypes: responseTypes,
+		GrantTypes:    grantTypes,
+		Scopes:        scopes,
+		Audience:      cfg.Audience,
+		Public:        false,
+	}
+
+	return MarkDCRIssued(defaultClient), nil
+}
+
+// NewStaticDelegateClient creates an unmarked, pre-provisioned confidential
+// client for token exchange. A bare DefaultClient intentionally leaves the
+// token endpoint authentication method unpinned, allowing both HTTP Basic and
+// form-body client-secret authentication.
+func NewStaticDelegateClient(cfg Config) (*fosite.DefaultClient, error) {
+	if cfg.ID == "" {
+		return nil, fmt.Errorf("delegate client requires an ID")
+	}
+	if cfg.Secret == "" {
+		return nil, fmt.Errorf("confidential client requires a secret")
+	}
+	if len(cfg.GrantTypes) != 1 || cfg.GrantTypes[0] != oauthproto.GrantTypeTokenExchange {
+		return nil, fmt.Errorf("delegate client grant types must be exactly [%q]", oauthproto.GrantTypeTokenExchange)
+	}
+	if len(cfg.Scopes) == 0 {
+		return nil, fmt.Errorf("delegate client requires at least one scope")
+	}
+	if len(cfg.Audience) == 0 {
+		return nil, fmt.Errorf("delegate client requires at least one audience")
+	}
+
+	hashedSecret, err := SHA256Hasher.Hash(context.Background(), []byte(cfg.Secret))
+	if err != nil {
+		return nil, fmt.Errorf("failed to hash client secret: %w", err)
+	}
+
+	return &fosite.DefaultClient{
+		ID:         cfg.ID,
+		Secret:     hashedSecret,
+		GrantTypes: slices.Clone(cfg.GrantTypes),
+		Scopes:     slices.Clone(cfg.Scopes),
+		Audience:   slices.Clone(cfg.Audience),
+		Public:     false,
+	}, nil
 }
 
 // matchesAsLoopback checks if the requested URI matches the registered URI
@@ -216,6 +411,26 @@ func matchesAsLoopback(requestedURI, registeredURI string) bool {
 		return false
 	}
 
+	// RFC 6749 Section 3.1.2: the redirection endpoint URI MUST NOT include a
+	// fragment component, and must not carry userinfo. Fosite's own
+	// IsValidRedirectURI enforces this on whatever redirect_uri it actually
+	// validates -- but a loopback match here is what causes the ORIGINAL
+	// requested URI (not fosite's validated one) to become the effective
+	// redirect target, so the same check must run here too, or an invalid
+	// requested URI could reach storage/token-issuance unvalidated.
+	//
+	// The registered side gets the same userinfo check: registration
+	// validation (oauthproto.ValidateRedirectURI, backed by fosite's
+	// IsValidRedirectURI) only rejects a missing fragment, not userinfo, so a
+	// registered "http://user:pass@localhost/callback" would otherwise match
+	// a dynamic-port request for "http://localhost:54321/callback" -- the
+	// hostname/path/query comparisons below never look at User, so dropping
+	// this check would let a registered entry's userinfo silently vanish from
+	// what "matching" means.
+	if requested.Fragment != "" || requested.User != nil || registered.User != nil {
+		return false
+	}
+
 	// RFC 8252 Section 7.3: Loopback redirect URIs use the "http" scheme.
 	// Dynamic port matching only applies to http loopback URIs, not https.
 	if requested.Scheme != "http" || registered.Scheme != "http" {
@@ -223,7 +438,7 @@ func matchesAsLoopback(requestedURI, registeredURI string) bool {
 	}
 
 	// Both must be loopback addresses
-	if !networking.IsLocalhost(requested.Hostname()) || !networking.IsLocalhost(registered.Hostname()) {
+	if !isLoopbackHostname(requested.Hostname()) || !isLoopbackHostname(registered.Hostname()) {
 		return false
 	}
 
@@ -232,13 +447,18 @@ func matchesAsLoopback(requestedURI, registeredURI string) bool {
 		return false
 	}
 
-	// Path must match exactly
-	if requested.Path != registered.Path {
+	// Path must match exactly. EscapedPath() (not Path) is compared: Path is
+	// percent-decoded, so an encoded separator (e.g. registered
+	// "/callback%2Fchild") would otherwise compare equal to a literal,
+	// unencoded path ("/callback/child") that was never actually registered.
+	if requested.EscapedPath() != registered.EscapedPath() {
 		return false
 	}
 
-	// Query must match exactly
-	if requested.RawQuery != registered.RawQuery {
+	// Query must match exactly, including whether a bare "?" was present at
+	// all (ForceQuery): RawQuery alone can't distinguish "/callback" from
+	// "/callback?", since both parse to an empty RawQuery.
+	if requested.RawQuery != registered.RawQuery || requested.ForceQuery != registered.ForceQuery {
 		return false
 	}
 
@@ -246,13 +466,36 @@ func matchesAsLoopback(requestedURI, registeredURI string) bool {
 	return true
 }
 
-// isLoopbackURI checks if the URI uses a loopback address.
+// isLoopbackURI reports whether uri's host is a loopback address (an IP
+// loopback literal or "localhost", case-insensitively) — a hostname-only
+// check, with no DNS resolution. Used by ValidateConfidentialRedirectURIs in
+// dcr.go to reject a confidential registration's redirect_uri that targets
+// loopback, which RFC 8252 §7.3 reserves for native/public clients.
 func isLoopbackURI(uri string) bool {
 	parsed, err := url.Parse(uri)
 	if err != nil {
 		return false
 	}
-	return networking.IsLocalhost(parsed.Hostname())
+	return isLoopbackHostname(parsed.Hostname())
+}
+
+// isLoopbackHostname reports whether host (as returned by url.Hostname(), so
+// already stripped of brackets and port) is one of the RFC 8252 §7.3 loopback
+// forms: "localhost" (case-insensitive, matching hostnamesMatch below) or an
+// IP loopback literal (127.0.0.1, ::1).
+//
+// This is deliberately self-contained rather than delegating to
+// networking.IsLocalhost: that helper (via oauthproto.IsLoopbackHost) is a
+// case-SENSITIVE prefix check requiring the bracketed "[::1]" form, which
+// url.Hostname() never produces -- using it here would silently make
+// "LOCALHOST" and "::1" both unmatchable despite hostnamesMatch's own
+// case-insensitive "localhost" contract.
+func isLoopbackHostname(host string) bool {
+	if IsLocalhostHostname(host) {
+		return true
+	}
+	ip := net.ParseIP(host)
+	return ip != nil && ip.IsLoopback()
 }
 
 // hostnamesMatch checks if two hostnames (as returned by url.Hostname()) should

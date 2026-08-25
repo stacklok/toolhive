@@ -16,9 +16,11 @@ import (
 
 	oauthserver "github.com/stacklok/toolhive/pkg/authserver/server"
 	"github.com/stacklok/toolhive/pkg/authserver/server/handlers"
+	"github.com/stacklok/toolhive/pkg/authserver/server/registration"
 	"github.com/stacklok/toolhive/pkg/authserver/server/tokenexchange"
 	"github.com/stacklok/toolhive/pkg/authserver/storage"
 	"github.com/stacklok/toolhive/pkg/authserver/upstream"
+	"github.com/stacklok/toolhive/pkg/oauthproto"
 )
 
 // server is the internal implementation of the Server interface.
@@ -99,6 +101,8 @@ func newServer(ctx context.Context, cfg Config, stor storage.Storage, opts ...se
 		return nil, fmt.Errorf("invalid config: %w", err)
 	}
 
+	logConfidentialClientStartup(cfg.AllowConfidentialClientRegistration)
+
 	// Validate storage is provided
 	if stor == nil {
 		return nil, fmt.Errorf("storage is required")
@@ -118,6 +122,10 @@ func newServer(ctx context.Context, cfg Config, stor storage.Storage, opts ...se
 		return nil, fmt.Errorf("storage backend %T does not implement storage.DCRCredentialStore", baseStore)
 	}
 
+	if err := registerDelegateClients(ctx, stor, cfg.DelegateClients); err != nil {
+		return nil, err
+	}
+
 	slog.Debug("creating OAuth2 configuration")
 
 	// Get signing key from KeyProvider
@@ -128,19 +136,23 @@ func newServer(ctx context.Context, cfg Config, stor storage.Storage, opts ...se
 
 	// Create OAuth2 config from authserver.Config
 	oauthParams := &oauthserver.AuthorizationServerParams{
-		Issuer:                       cfg.Issuer,
-		AccessTokenLifespan:          cfg.AccessTokenLifespan,
-		RefreshTokenLifespan:         cfg.RefreshTokenLifespan,
-		AuthCodeLifespan:             cfg.AuthCodeLifespan,
-		HMACSecrets:                  cfg.HMACSecrets,
-		SigningKeyID:                 signingKey.KeyID,
-		SigningKeyAlgorithm:          signingKey.Algorithm,
-		SigningKey:                   signingKey.Key,
-		ScopesSupported:              cfg.ScopesSupported,
-		BaselineClientScopes:         cfg.BaselineClientScopes,
-		AllowedAudiences:             cfg.AllowedAudiences,
-		AuthorizationEndpointBaseURL: cfg.AuthorizationEndpointBaseURL,
-		CIMDEnabled:                  cfg.CIMDEnabled,
+		Issuer:                              cfg.Issuer,
+		AccessTokenLifespan:                 cfg.AccessTokenLifespan,
+		RefreshTokenLifespan:                cfg.RefreshTokenLifespan,
+		AuthCodeLifespan:                    cfg.AuthCodeLifespan,
+		HMACSecrets:                         cfg.HMACSecrets,
+		SigningKeyID:                        signingKey.KeyID,
+		SigningKeyAlgorithm:                 signingKey.Algorithm,
+		SigningKey:                          signingKey.Key,
+		ScopesSupported:                     cfg.ScopesSupported,
+		BaselineClientScopes:                cfg.BaselineClientScopes,
+		AllowedAudiences:                    cfg.AllowedAudiences,
+		AuthorizationEndpointBaseURL:        cfg.AuthorizationEndpointBaseURL,
+		CIMDEnabled:                         cfg.CIMDEnabled,
+		AllowConfidentialClientRegistration: cfg.AllowConfidentialClientRegistration,
+		HasStaticDelegateClients:            len(cfg.DelegateClients) > 0,
+		ForceConfidentialRedirectURIs:       cfg.ForceConfidentialRedirectURIs,
+		JWTBearerGrantEnabled:               jwtBearerGrantEnabled(cfg.TrustedIssuers),
 	}
 	authServerConfig, err := oauthserver.NewAuthorizationServerConfig(oauthParams)
 	if err != nil {
@@ -194,7 +206,8 @@ func newServer(ctx context.Context, cfg Config, stor storage.Storage, opts ...se
 	// refresh an expired upstream leg during login instead of skipping it and
 	// failing later at MCP-request token-swap time. The same instance is stored
 	// on the server so UpstreamTokenRefresher() returns the identical object,
-	// ensuring both paths share one singleflight.Group.
+	// ensuring both paths share one process-local singleflight.Group keyed by
+	// opaque storage-row identity.
 	refresher := newUpstreamTokenRefresher(upstreams, stor, cfg.RefreshTokenLifespan)
 	handlerInstance, err := handlers.NewHandler(fositeProvider, authServerConfig, stor, upstreams,
 		buildHandlerOptions(refresher, cfg.UpstreamFilter)...)
@@ -216,6 +229,29 @@ func newServer(ctx context.Context, cfg Config, stor storage.Storage, opts ...se
 		upstreams:         upstreams,
 		upstreamRefresher: refresher,
 	}, nil
+}
+
+func registerDelegateClients(ctx context.Context, stor storage.Storage, delegateClients []DelegateClient) error {
+	for _, delegateClient := range delegateClients {
+		client, err := registration.NewStaticDelegateClient(registration.Config{
+			ID:         delegateClient.ClientID,
+			Secret:     delegateClient.ClientSecret,
+			GrantTypes: []string{oauthproto.GrantTypeTokenExchange},
+			Scopes:     delegateClient.Scopes,
+			Audience:   delegateClient.Audiences,
+		})
+		if err != nil {
+			return fmt.Errorf("failed to create delegate client %q: %w", delegateClient.ClientID, err)
+		}
+		if err := stor.RegisterClient(ctx, client); err != nil {
+			return fmt.Errorf("failed to register delegate client %q: %w", delegateClient.ClientID, err)
+		}
+		slog.Warn("delegate client has blanket self-issued token exchange rights: "+
+			"it may exchange any user's self-issued ToolHive token for a delegated token, "+
+			"with no per-subject binding to the client that originally obtained that token",
+			"client_id", delegateClient.ClientID, "scopes", delegateClient.Scopes, "audiences", delegateClient.Audiences)
+	}
+	return nil
 }
 
 // decorateStorageForCIMD wraps stor with the CIMD decorator when CIMD is enabled,
@@ -244,16 +280,60 @@ func decorateStorageForCIMD(cfg Config, stor storage.Storage) (storage.Storage, 
 	return decorated, nil
 }
 
+// jwtBearerGrantEnabled reports whether any trusted issuer has the RFC 7523
+// JWT-bearer grant configured. Shared by buildProvider (which decides
+// whether to register the grant with fosite) and the discovery metadata
+// (which decides whether to advertise it) so the two can never disagree.
+func jwtBearerGrantEnabled(trustedIssuers []tokenexchange.TrustedIssuer) bool {
+	for _, issuer := range trustedIssuers {
+		if issuer.JWTBearerGrant != nil {
+			return true
+		}
+	}
+	return false
+}
+
 // buildProvider assembles the fosite OAuth2 provider, registering the RFC 8693
 // token-exchange handler as an extension grant alongside the standard grants.
 func buildProvider(
 	cfg Config, authServerConfig *oauthserver.AuthorizationServerConfig, stor storage.Storage,
 ) (fosite.OAuth2Provider, error) {
-	tokenExchangeFactory, err := tokenexchange.Factory(cfg.DelegationTokenLifespan)
+	delegateClientIDs := make([]string, len(cfg.DelegateClients))
+	for i, c := range cfg.DelegateClients {
+		delegateClientIDs[i] = c.ClientID
+	}
+	jwtBearerEnabled := jwtBearerGrantEnabled(cfg.TrustedIssuers)
+
+	// Built once, up front, and handed to both factories below when the
+	// JWT-bearer grant is also enabled: otherwise each factory would build
+	// its own MultiIssuerTokenValidator over the same trusted issuers,
+	// doubling every issuer's JWKS cache and background refresh goroutines
+	// for no benefit. authServerConfig is the exact *AuthorizationServerConfig
+	// each factory closure would otherwise receive at call time (see
+	// createProvider/NewAuthorizationServer), so building it here first is
+	// equivalent.
+	var shared *tokenexchange.MultiIssuerTokenValidator
+	if jwtBearerEnabled {
+		var err error
+		shared, err = tokenexchange.NewSharedTrustedIssuerValidator(authServerConfig, cfg.TrustedIssuers)
+		if err != nil {
+			return nil, fmt.Errorf("failed to create shared trusted-issuer validator: %w", err)
+		}
+	}
+
+	tokenExchangeFactory, err := tokenexchange.FactoryWithSharedTrustedIssuerValidator(
+		cfg.DelegationTokenLifespan, cfg.TrustedIssuers, delegateClientIDs, shared)
 	if err != nil {
 		return nil, fmt.Errorf("failed to create token exchange factory: %w", err)
 	}
-	return createProvider(authServerConfig, stor, tokenExchangeFactory)
+	if !jwtBearerEnabled {
+		return createProvider(authServerConfig, stor, tokenExchangeFactory)
+	}
+	jwtBearerFactory, err := tokenexchange.JWTBearerIssuanceFactory(cfg.TrustedIssuers, shared)
+	if err != nil {
+		return nil, fmt.Errorf("failed to create JWT-bearer factory: %w", err)
+	}
+	return createProvider(authServerConfig, stor, tokenExchangeFactory, jwtBearerFactory)
 }
 
 // buildHandlerOptions assembles the handlers.Option list for NewHandler: the
@@ -286,8 +366,8 @@ func (s *server) DCRStore() storage.DCRCredentialStore {
 
 // UpstreamTokenRefresher returns the single shared refresher constructed in
 // newServer. Both the handler's chain-walk path and the runtime token-swap
-// path use this instance, ensuring concurrent refreshes for the same
-// (session, provider) pair are deduplicated by a single singleflight.Group.
+// path use this instance, ensuring concurrent refreshes for the same logical
+// upstream-token row are deduplicated by one process-local singleflight.Group.
 func (s *server) UpstreamTokenRefresher() storage.UpstreamTokenRefresher {
 	return s.upstreamRefresher
 }
@@ -412,6 +492,18 @@ func runLegacyMigration(ctx context.Context, stor storage.Storage, upstreams []U
 		}
 	}
 	return nil
+}
+
+// logConfidentialClientStartup emits an Info line naming the consequence of
+// enabling confidential-client DCR. Combining it with cleartext HTTP is
+// rejected by Config.Validate (see ValidateConfidentialClientTransport), so
+// that combination can no longer reach this function.
+func logConfidentialClientStartup(allowConfidentialClientRegistration bool) {
+	if !allowConfidentialClientRegistration {
+		return
+	}
+	slog.Info("confidential-client dynamic registration is enabled: " +
+		"this server issues client secrets over unauthenticated dynamic registration")
 }
 
 // wrapComposeFactory adapts a compose.Factory to a server.Factory.

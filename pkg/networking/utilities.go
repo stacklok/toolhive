@@ -15,6 +15,67 @@ import (
 	"github.com/stacklok/toolhive/pkg/oauthproto"
 )
 
+// AuthorityMatchesAny reports whether endpointURL's authority (host and port)
+// equals the authority of any of operatorURLs. Comparison is case-insensitive
+// and normalizes the implicit scheme default port, so "https://idp.example.com"
+// and "idp.example.com:443" match. Empty and malformed entries never match.
+//
+// This is the trust test for endpoints read out of an authorization-server
+// metadata document: an AS naming its own authority is still covered by the
+// operator's decision to configure it, while an AS naming some other host is
+// not (CWE-918).
+func AuthorityMatchesAny(endpointURL string, operatorURLs ...string) bool {
+	target := canonicalAuthority(endpointURL)
+	if target == "" {
+		return false
+	}
+	for _, operatorURL := range operatorURLs {
+		if authority := canonicalAuthority(operatorURL); authority != "" && authority == target {
+			return true
+		}
+	}
+	return false
+}
+
+// canonicalAuthority reduces a URL — or a bare "host:port" authority — to a
+// lowercase host:port form suitable for equality comparison. It returns the
+// empty string whenever the authority cannot be determined, including when a
+// bare host carries no port and no scheme to imply one: callers treat that as
+// "does not match", so an undecidable input fails closed.
+func canonicalAuthority(rawURL string) string {
+	if rawURL == "" {
+		return ""
+	}
+	u, err := url.Parse(rawURL)
+	if err != nil || u.Host == "" {
+		// Not a full URL. Retry as a bare authority ("idp.example.com:443",
+		// "[::1]:8443"), which url.Parse otherwise reads as scheme:opaque or
+		// rejects outright.
+		u, err = url.Parse("//" + rawURL)
+		if err != nil || u.Host == "" {
+			return ""
+		}
+	}
+
+	host := strings.ToLower(u.Hostname())
+	if host == "" {
+		return ""
+	}
+
+	port := u.Port()
+	if port == "" {
+		switch strings.ToLower(u.Scheme) {
+		case HttpScheme:
+			port = "80"
+		case HttpsScheme:
+			port = "443"
+		default:
+			return ""
+		}
+	}
+	return net.JoinHostPort(host, port)
+}
+
 // TargetIsPrivate reports whether the host in rawURL refers to — or resolves to —
 // a private, loopback, or link-local address. It is used to detect when an
 // operator has deliberately pointed ToolHive at an internal target, so that
@@ -72,8 +133,18 @@ const (
 // is blocked wholesale via privateIPBlocks to avoid a false-negative bypass.
 var nat64Prefixes []*net.IPNet
 
-// embeddedIPv4 returns the IPv4 address embedded in the low 32 bits of a NAT64
-// address if ip falls inside a NAT64 translation prefix, or nil otherwise.
+// sixToFourPrefix is the 6to4 prefix 2002::/16 (RFC 3056, deprecated by
+// RFC 7526). A 6to4 address embeds a full IPv4 address in bits 16-47
+// (2002:aabb:ccdd::/48 encodes aa.bb.cc.dd), so — like NAT64 — its true
+// reachability is determined by the embedded IPv4, not by the (global-unicast)
+// IPv6 form. Unlike the NAT64 remainder above, this embedding is exact and
+// reversible for the whole prefix, so it is decoded rather than blocked
+// wholesale (blocking 2002::/16 outright would also reject legitimate public
+// 6to4 addresses).
+var sixToFourPrefix *net.IPNet
+
+// embeddedIPv4 returns the IPv4 address embedded in a NAT64 or 6to4 address
+// if ip falls inside one of those translation prefixes, or nil otherwise.
 func embeddedIPv4(ip net.IP) net.IP {
 	v6 := ip.To16()
 	if v6 == nil || ip.To4() != nil {
@@ -83,6 +154,9 @@ func embeddedIPv4(ip net.IP) net.IP {
 		if block.Contains(ip) {
 			return net.IPv4(v6[12], v6[13], v6[14], v6[15])
 		}
+	}
+	if sixToFourPrefix.Contains(ip) {
+		return net.IPv4(v6[2], v6[3], v6[4], v6[5])
 	}
 	return nil
 }
@@ -109,6 +183,11 @@ func init() {
 		// to its embedded IPv4 below; this catch-all blocks the remaining
 		// non-/96 embeddings, which cannot be decoded from the address alone.
 		"64:ff9b:1::/48",
+		// Teredo (RFC 4380). The embedded client IPv4 lives in the low 32 bits
+		// but is obfuscated via bitwise NOT (RFC 4380 §4), so — unlike NAT64 and
+		// 6to4 — it cannot be reliably decoded from the address alone. Blocked
+		// wholesale to avoid a false-negative bypass.
+		"2001::/32",
 	} {
 		_, block, err := net.ParseCIDR(cidr)
 		if err != nil {
@@ -126,20 +205,31 @@ func init() {
 		}
 		nat64Prefixes = append(nat64Prefixes, block)
 	}
+	const sixToFourCIDR = "2002::/16"
+	_, sixToFourBlock, err := net.ParseCIDR(sixToFourCIDR)
+	if err != nil {
+		panic(fmt.Errorf("parse error on %q: %w", sixToFourCIDR, err))
+	}
+	sixToFourPrefix = sixToFourBlock
 }
 
 // IsPrivateIP reports whether ip is a private, loopback, link-local,
 // unspecified, or otherwise reserved/non-public address.
 //
-// NAT64-translated addresses are evaluated by the IPv4 address they embed: a
-// NAT64 address whose low 32 bits map to a private/link-local IPv4 (e.g.
-// 64:ff9b:1::a9fe:a9fe -> 169.254.169.254, the cloud metadata endpoint) is
-// treated as private, because behind a NAT64 gateway it reaches exactly that
-// internal IPv4, while NAT64 addresses embedding a genuinely public IPv4 remain
-// allowed. This /96 decoding covers the well-known 64:ff9b::/96 (RFC 6052) and
-// the 64:ff9b:1::/96 sub-prefix of the RFC 8215 local-use range; the rest of
-// 64:ff9b:1::/48 uses a non-/96 embedding that cannot be decoded from the
-// address alone and is blocked wholesale (see privateIPBlocks).
+// NAT64- and 6to4-translated addresses are evaluated by the IPv4 address they
+// embed: a NAT64 address whose low 32 bits map to a private/link-local IPv4
+// (e.g. 64:ff9b:1::a9fe:a9fe -> 169.254.169.254, the cloud metadata endpoint)
+// is treated as private, because behind a NAT64 gateway it reaches exactly
+// that internal IPv4, while NAT64 addresses embedding a genuinely public IPv4
+// remain allowed. This /96 decoding covers the well-known 64:ff9b::/96
+// (RFC 6052) and the 64:ff9b:1::/96 sub-prefix of the RFC 8215 local-use
+// range; the rest of 64:ff9b:1::/48 uses a non-/96 embedding that cannot be
+// decoded from the address alone and is blocked wholesale (see
+// privateIPBlocks). 6to4 addresses (2002::/16, RFC 3056) are decoded the same
+// way, extracting the IPv4 from bits 16-47 (e.g. 2002:a9fe:a9fe:: ->
+// 169.254.169.254). Teredo addresses (2001::/32, RFC 4380) obfuscate their
+// embedded IPv4 via bitwise NOT and so cannot be decoded from the address
+// alone; they are blocked wholesale (see privateIPBlocks).
 func IsPrivateIP(ip net.IP) bool {
 	if ip.IsLoopback() || ip.IsUnspecified() || ip.IsLinkLocalUnicast() || ip.IsLinkLocalMulticast() {
 		return true

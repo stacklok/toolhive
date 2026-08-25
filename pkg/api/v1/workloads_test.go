@@ -4,6 +4,7 @@
 package v1
 
 import (
+	"bytes"
 	"context"
 	"fmt"
 	"net"
@@ -12,11 +13,11 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/adrg/xdg"
 	"github.com/go-chi/chi/v5"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 	"go.uber.org/mock/gomock"
-	"golang.org/x/sync/errgroup"
 
 	regtypes "github.com/stacklok/toolhive-core/registry/types"
 	apierrors "github.com/stacklok/toolhive/pkg/api/errors"
@@ -28,6 +29,7 @@ import (
 	groupsmocks "github.com/stacklok/toolhive/pkg/groups/mocks"
 	"github.com/stacklok/toolhive/pkg/runner"
 	"github.com/stacklok/toolhive/pkg/runner/retriever"
+	"github.com/stacklok/toolhive/pkg/workloads"
 	workloadsmocks "github.com/stacklok/toolhive/pkg/workloads/mocks"
 	wt "github.com/stacklok/toolhive/pkg/workloads/types"
 )
@@ -97,8 +99,20 @@ func TestGetWorkload(t *testing.T) {
 	}
 }
 
+// TestCreateWorkload cannot call t.Parallel() at its own level: two cases
+// below compute their expectation via getBaseRuntimeConfig, which reads the
+// process-wide config singleton (config.NewProvider() -> getSingletonConfig).
+// Fixing that singleton to a known-empty config makes both the test's
+// expectation and the production code path deterministic regardless of the
+// developer's real ~/.config/toolhive - a configured additional_packages or
+// runtime_env would otherwise make the expectation wrong on that machine.
+// Subtests still run in parallel with each other; they just all observe the
+// same fixed singleton, so there's nothing to race on.
+//
+//nolint:paralleltest,tparallel // Mutates the process-global config singleton; see comment above.
 func TestCreateWorkload(t *testing.T) {
-	t.Parallel()
+	config.SetSingletonConfig(&config.Config{})
+	t.Cleanup(config.ResetSingleton)
 
 	tests := []struct {
 		name                  string
@@ -137,8 +151,9 @@ func TestCreateWorkload(t *testing.T) {
 			expectedBody:   "Invalid proxy_mode",
 		},
 		{
-			name:        "with runtime config override",
-			requestBody: `{"name": "test-workload", "image": "go://github.com/example/server", "runtime_config": {"builder_image": "golang:1.24-alpine", "additional_packages": ["ca-certificates"]}}`,
+			name: "with runtime config override",
+			requestBody: `{"name": "test-workload", "image": "go://github.com/example/server", ` +
+				`"runtime_config": {"builder_image": "golang:1.24-alpine", "additional_packages": ["curl"]}}`,
 			setupMock: func(_ *testing.T, wm *workloadsmocks.MockManager, _ *runtimemocks.MockRuntime, gm *groupsmocks.MockManager) {
 				wm.EXPECT().DoesWorkloadExist(gomock.Any(), "test-workload").Return(false, nil)
 				gm.EXPECT().Exists(gomock.Any(), "default").Return(true, nil)
@@ -146,15 +161,21 @@ func TestCreateWorkload(t *testing.T) {
 					DoAndReturn(func(_ context.Context, runConfig *runner.RunConfig) error {
 						assert.NotNil(t, runConfig.RuntimeConfig)
 						assert.Equal(t, "golang:1.24-alpine", runConfig.RuntimeConfig.BuilderImage)
-						assert.Equal(t, []string{"ca-certificates"}, runConfig.RuntimeConfig.AdditionalPackages)
+						assert.Equal(t, []string{"curl"}, runConfig.RuntimeConfig.AdditionalPackages)
 						return nil
 					})
 			},
 			expectedRuntimeConfig: func() *templates.RuntimeConfig {
 				base := getBaseRuntimeConfig(templates.TransportTypeGO)
+				// "curl" is not a Go default on any machine's config, so it
+				// must survive the merge regardless of local overrides in
+				// ~/.config/toolhive — proves the override is genuinely
+				// applied rather than the assertion being self-referential.
+				// Dedupe itself is covered hermetically in
+				// pkg/container/templates/runtime_config_test.go.
 				return &templates.RuntimeConfig{
 					BuilderImage:       "golang:1.24-alpine",
-					AdditionalPackages: append(append([]string{}, base.AdditionalPackages...), "ca-certificates"),
+					AdditionalPackages: append(append([]string{}, base.AdditionalPackages...), "curl"),
 				}
 			}(),
 			expectedServerOrImage: "go://github.com/example/server",
@@ -186,6 +207,68 @@ func TestCreateWorkload(t *testing.T) {
 			},
 			expectedStatus: http.StatusBadRequest,
 			expectedBody:   "runtime_config is only supported for protocol-scheme images",
+		},
+		{
+			// build_with is only supported for uvx builds; npx must be
+			// rejected with an actionable 400, not a scrubbed 500 (the
+			// bug this design closes — see pkg/api/errors/handler.go).
+			name:        "npx build_with is rejected with 400, not a scrubbed 500",
+			requestBody: `{"name": "test-workload", "image": "npx://some-pkg", "runtime_config": {"build_with": ["mcp<2"]}}`,
+			setupMock: func(_ *testing.T, wm *workloadsmocks.MockManager, _ *runtimemocks.MockRuntime, gm *groupsmocks.MockManager) {
+				wm.EXPECT().DoesWorkloadExist(gomock.Any(), "test-workload").Return(false, nil)
+				gm.EXPECT().Exists(gomock.Any(), "default").Return(true, nil)
+			},
+			expectedStatus: http.StatusBadRequest,
+			expectedBody:   "build_with is not supported for npx:// builds",
+		},
+		{
+			// runtime_env-only requests must not slip past the emptiness
+			// short-circuit: a request carrying only runtime_env against a
+			// non-protocol image must still hit the protocol-scheme guard,
+			// not be silently discarded and accepted.
+			name:        "runtime_env only, non protocol image is rejected",
+			requestBody: `{"name": "test-workload", "image": "nginx:latest", "runtime_config": {"runtime_env": {"NODE_ENV": "production"}}}`,
+			setupMock: func(_ *testing.T, wm *workloadsmocks.MockManager, _ *runtimemocks.MockRuntime, gm *groupsmocks.MockManager) {
+				wm.EXPECT().DoesWorkloadExist(gomock.Any(), "test-workload").Return(false, nil)
+				gm.EXPECT().Exists(gomock.Any(), "default").Return(true, nil)
+			},
+			expectedStatus: http.StatusBadRequest,
+			expectedBody:   "runtime_config is only supported for protocol-scheme images",
+		},
+		{
+			// The headline bug: build_with (and runtime_env) must actually
+			// reach the build, not just be accepted. Pins both sinks fed by
+			// runtimeConfigFromRequest: the retriever config (via
+			// expectedRuntimeConfig, coming from runtimeConfigForImageBuild's
+			// WithOverrides merge) and the persisted config (via the
+			// RunWorkloadDetached closure, coming from runtimeConfigFromRequest
+			// unmerged) — these are two different functions.
+			name: "uvx build_with and runtime_env reach both the build and the persisted config",
+			requestBody: `{"name": "test-workload", "image": "uvx://arxiv-mcp-server", ` +
+				`"runtime_config": {"build_with": ["mcp<2"], "runtime_env": {"NODE_ENV": "production"}}}`,
+			setupMock: func(_ *testing.T, wm *workloadsmocks.MockManager, _ *runtimemocks.MockRuntime, gm *groupsmocks.MockManager) {
+				wm.EXPECT().DoesWorkloadExist(gomock.Any(), "test-workload").Return(false, nil)
+				gm.EXPECT().Exists(gomock.Any(), "default").Return(true, nil)
+				wm.EXPECT().RunWorkloadDetached(gomock.Any(), gomock.Any()).
+					DoAndReturn(func(_ context.Context, runConfig *runner.RunConfig) error {
+						assert.NotNil(t, runConfig.RuntimeConfig)
+						assert.Equal(t, []string{"mcp<2"}, runConfig.RuntimeConfig.BuildWith)
+						assert.Equal(t, map[string]string{"NODE_ENV": "production"}, runConfig.RuntimeConfig.RuntimeEnv)
+						return nil
+					})
+			},
+			expectedRuntimeConfig: func() *templates.RuntimeConfig {
+				base := getBaseRuntimeConfig(templates.TransportTypeUVX)
+				return &templates.RuntimeConfig{
+					BuilderImage:       base.BuilderImage,
+					AdditionalPackages: base.AdditionalPackages,
+					BuildWith:          []string{"mcp<2"},
+					RuntimeEnv:         map[string]string{"NODE_ENV": "production"},
+				}
+			}(),
+			expectedServerOrImage: "uvx://arxiv-mcp-server",
+			expectedStatus:        http.StatusCreated,
+			expectedBody:          "test-workload",
 		},
 		{
 			name:        "with tool filters",
@@ -371,10 +454,10 @@ func TestUpdateWorkload(t *testing.T) {
 					Return(core.Workload{Name: "test-workload"}, nil)
 				gm.EXPECT().Exists(gomock.Any(), "default").Return(true, nil)
 				wm.EXPECT().UpdateWorkload(gomock.Any(), "test-workload", gomock.Any()).
-					DoAndReturn(func(_ context.Context, _ string, runConfig *runner.RunConfig) (*errgroup.Group, error) {
+					DoAndReturn(func(_ context.Context, _ string, runConfig *runner.RunConfig) (workloads.CompletionFunc, error) {
 						assert.Equal(t, toolsFilter, runConfig.ToolsFilter, "Tools filter should be equal")
 						assert.Equal(t, toolsOverride, runConfig.ToolsOverride, "Tools override should be equal")
-						return &errgroup.Group{}, nil
+						return nil, nil
 					})
 			},
 			expectedStatus: http.StatusOK,
@@ -397,10 +480,10 @@ func TestUpdateWorkload(t *testing.T) {
 					Return(core.Workload{Name: "test-workload"}, nil)
 				gm.EXPECT().Exists(gomock.Any(), "default").Return(true, nil)
 				wm.EXPECT().UpdateWorkload(gomock.Any(), "test-workload", gomock.Any()).
-					DoAndReturn(func(_ context.Context, _ string, runConfig *runner.RunConfig) (*errgroup.Group, error) {
+					DoAndReturn(func(_ context.Context, _ string, runConfig *runner.RunConfig) (workloads.CompletionFunc, error) {
 						assert.Equal(t, toolsFilter, runConfig.ToolsFilter, "Tools filter should be equal")
 						assert.Equal(t, toolsOverride, runConfig.ToolsOverride, "Tools override should be equal")
-						return &errgroup.Group{}, nil
+						return nil, nil
 					})
 			},
 			expectedStatus: http.StatusOK,
@@ -423,10 +506,10 @@ func TestUpdateWorkload(t *testing.T) {
 					Return(core.Workload{Name: "test-workload"}, nil)
 				gm.EXPECT().Exists(gomock.Any(), "default").Return(true, nil)
 				wm.EXPECT().UpdateWorkload(gomock.Any(), "test-workload", gomock.Any()).
-					DoAndReturn(func(_ context.Context, _ string, runConfig *runner.RunConfig) (*errgroup.Group, error) {
+					DoAndReturn(func(_ context.Context, _ string, runConfig *runner.RunConfig) (workloads.CompletionFunc, error) {
 						assert.Equal(t, toolsFilter, runConfig.ToolsFilter, "Tools filter should be equal")
 						assert.Equal(t, toolsOverride, runConfig.ToolsOverride, "Tools override should be equal")
-						return &errgroup.Group{}, nil
+						return nil, nil
 					})
 			},
 			expectedStatus: http.StatusOK,
@@ -454,9 +537,9 @@ func TestUpdateWorkload(t *testing.T) {
 					Return(core.Workload{Name: "test-workload"}, nil)
 				gm.EXPECT().Exists(gomock.Any(), "default").Return(true, nil)
 				wm.EXPECT().UpdateWorkload(gomock.Any(), "test-workload", gomock.Any()).
-					DoAndReturn(func(_ context.Context, _ string, runConfig *runner.RunConfig) (*errgroup.Group, error) {
+					DoAndReturn(func(_ context.Context, _ string, runConfig *runner.RunConfig) (workloads.CompletionFunc, error) {
 						assert.Nil(t, runConfig.RuntimeConfig)
-						return &errgroup.Group{}, nil
+						return nil, nil
 					})
 			},
 			expectedStatus: http.StatusOK,
@@ -524,6 +607,314 @@ func TestUpdateWorkload(t *testing.T) {
 	}
 }
 
+// TestUpdateWorkload_ProtocolBuiltRuntimeConfigRoundTrip guards the GET-edit-PUT
+// regression: a workload built from a protocol-scheme image (uvx://, npx://,
+// go://) persists Image as the *built* image (no longer a protocol scheme)
+// plus the RuntimeConfig used to build it. GET echoes both back, and PUT-ing
+// that response unchanged must succeed rather than 400 on the protocol-scheme
+// guard in runtimeConfigForImageBuild. A genuinely different runtime_config on
+// the same non-protocol image must still be rejected.
+//
+//nolint:paralleltest // SaveState/LoadState use process-wide XDG state settings; keep sequential.
+func TestUpdateWorkload_ProtocolBuiltRuntimeConfigRoundTrip(t *testing.T) {
+	t.Cleanup(xdg.Reload)
+	t.Setenv("XDG_STATE_HOME", t.TempDir())
+	xdg.Reload()
+
+	ctx := context.Background()
+	const workloadName = "test-workload"
+	builtImage := "toolhivelocal/uvx-arxiv-mcp-server:20260101000000"
+
+	persisted := runner.NewRunConfig()
+	persisted.Name = workloadName
+	persisted.BaseName = workloadName
+	persisted.ContainerName = workloadName
+	persisted.Image = builtImage
+	persisted.RuntimeConfig = &templates.RuntimeConfig{
+		BuilderImage:       "python:3.14-slim",
+		AdditionalPackages: []string{"ca-certificates"},
+		BuildWith:          []string{"mcp<2"},
+		RuntimeEnv:         map[string]string{"NODE_ENV": "production"},
+	}
+	require.NoError(t, persisted.SaveState(ctx))
+
+	ctrl := gomock.NewController(t)
+	defer ctrl.Finish()
+
+	mockWorkloadManager := workloadsmocks.NewMockManager(ctrl)
+	mockRuntime := runtimemocks.NewMockRuntime(ctrl)
+	mockGroupManager := groupsmocks.NewMockManager(ctrl)
+
+	routes := &WorkloadRoutes{
+		workloadManager:  mockWorkloadManager,
+		containerRuntime: mockRuntime,
+		groupManager:     mockGroupManager,
+		workloadService: &WorkloadService{
+			groupManager:      mockGroupManager,
+			workloadManager:   mockWorkloadManager,
+			imagePuller:       func(_ context.Context, _ string) error { return nil },
+			configProvider:    config.NewDefaultProvider(),
+			imageVerification: retriever.VerifyImageWarn,
+		},
+	}
+
+	// GET: fetch the persisted config as JSON, exactly as a client would.
+	mockWorkloadManager.EXPECT().GetWorkload(gomock.Any(), workloadName).
+		Return(core.Workload{Name: workloadName}, nil)
+
+	getReq := httptest.NewRequest("GET", "/"+workloadName, nil)
+	getRctx := chi.NewRouteContext()
+	getRctx.URLParams.Add("name", workloadName)
+	getReq = getReq.WithContext(context.WithValue(getReq.Context(), chi.RouteCtxKey, getRctx))
+	getW := httptest.NewRecorder()
+	apierrors.ErrorHandler(routes.getWorkload).ServeHTTP(getW, getReq)
+	require.Equal(t, http.StatusOK, getW.Code, getW.Body.String())
+	getBody := getW.Body.Bytes()
+
+	t.Run("PUT the GET response back unchanged succeeds and preserves the config", func(t *testing.T) {
+		mockWorkloadManager.EXPECT().GetWorkload(gomock.Any(), workloadName).
+			Return(core.Workload{Name: workloadName}, nil)
+		mockGroupManager.EXPECT().Exists(gomock.Any(), "default").Return(true, nil)
+		mockWorkloadManager.EXPECT().UpdateWorkload(gomock.Any(), workloadName, gomock.Any()).
+			DoAndReturn(func(_ context.Context, _ string, runConfig *runner.RunConfig) (workloads.CompletionFunc, error) {
+				assert.NotNil(t, runConfig.RuntimeConfig)
+				assert.Equal(t, "python:3.14-slim", runConfig.RuntimeConfig.BuilderImage)
+				assert.Equal(t, []string{"ca-certificates"}, runConfig.RuntimeConfig.AdditionalPackages)
+				assert.Equal(t, []string{"mcp<2"}, runConfig.RuntimeConfig.BuildWith)
+				assert.Equal(t, map[string]string{"NODE_ENV": "production"}, runConfig.RuntimeConfig.RuntimeEnv)
+				return nil, nil
+			})
+		// The runtime_config is an exact echo, so it's suppressed from the
+		// retriever/builder input only (nothing to rebuild); the request's
+		// runtime_config itself is never cleared, so runConfig.RuntimeConfig
+		// (asserted above) is populated from the request throughout.
+		routes.workloadService.imageRetriever = makeMockRetriever(t, builtImage, &regtypes.ImageMetadata{Image: builtImage}, nil)
+
+		putReq := httptest.NewRequest("POST", "/"+workloadName+"/edit", bytes.NewReader(getBody))
+		putReq.Header.Set("Content-Type", "application/json")
+		rctx := chi.NewRouteContext()
+		rctx.URLParams.Add("name", workloadName)
+		putReq = putReq.WithContext(context.WithValue(putReq.Context(), chi.RouteCtxKey, rctx))
+
+		putW := httptest.NewRecorder()
+		apierrors.ErrorHandler(routes.updateWorkload).ServeHTTP(putW, putReq)
+		assert.Equal(t, http.StatusOK, putW.Code, putW.Body.String())
+	})
+
+	t.Run("genuinely different runtime_config on the same non-protocol image still 400s", func(t *testing.T) {
+		mockWorkloadManager.EXPECT().GetWorkload(gomock.Any(), workloadName).
+			Return(core.Workload{Name: workloadName}, nil)
+		mockGroupManager.EXPECT().Exists(gomock.Any(), "default").Return(true, nil)
+
+		body := fmt.Sprintf(`{"image": %q, "runtime_config": {"build_with": ["mcp>=3"]}}`, builtImage)
+		putReq := httptest.NewRequest("POST", "/"+workloadName+"/edit", strings.NewReader(body))
+		putReq.Header.Set("Content-Type", "application/json")
+		rctx := chi.NewRouteContext()
+		rctx.URLParams.Add("name", workloadName)
+		putReq = putReq.WithContext(context.WithValue(putReq.Context(), chi.RouteCtxKey, rctx))
+
+		putW := httptest.NewRecorder()
+		apierrors.ErrorHandler(routes.updateWorkload).ServeHTTP(putW, putReq)
+		assert.Equal(t, http.StatusBadRequest, putW.Code)
+		assert.Contains(t, putW.Body.String(), "runtime_config is only supported for protocol-scheme images")
+	})
+
+	t.Run("changed image with echoed runtime_config still 400s", func(t *testing.T) {
+		mockWorkloadManager.EXPECT().GetWorkload(gomock.Any(), workloadName).
+			Return(core.Workload{Name: workloadName}, nil)
+		mockGroupManager.EXPECT().Exists(gomock.Any(), "default").Return(true, nil)
+
+		// Same runtime_config as persisted, but a different image - not an
+		// echo of the source, so the guard must still fire.
+		body := `{"image": "nginx:latest", "runtime_config": {"builder_image": "python:3.14-slim", ` +
+			`"additional_packages": ["ca-certificates"], "build_with": ["mcp<2"], ` +
+			`"runtime_env": {"NODE_ENV": "production"}}}`
+		putReq := httptest.NewRequest("POST", "/"+workloadName+"/edit", strings.NewReader(body))
+		putReq.Header.Set("Content-Type", "application/json")
+		rctx := chi.NewRouteContext()
+		rctx.URLParams.Add("name", workloadName)
+		putReq = putReq.WithContext(context.WithValue(putReq.Context(), chi.RouteCtxKey, rctx))
+
+		putW := httptest.NewRecorder()
+		apierrors.ErrorHandler(routes.updateWorkload).ServeHTTP(putW, putReq)
+		assert.Equal(t, http.StatusBadRequest, putW.Code)
+		assert.Contains(t, putW.Body.String(), "runtime_config is only supported for protocol-scheme images")
+	})
+
+	t.Run("changed url with echoed runtime_config still 400s", func(t *testing.T) {
+		mockWorkloadManager.EXPECT().GetWorkload(gomock.Any(), workloadName).
+			Return(core.Workload{Name: workloadName}, nil)
+		mockGroupManager.EXPECT().Exists(gomock.Any(), "default").Return(true, nil)
+
+		// Same runtime_config as persisted, but a URL where the persisted
+		// workload had none - not an echo of the source.
+		body := `{"url": "https://example.com", "runtime_config": {"builder_image": "python:3.14-slim", ` +
+			`"additional_packages": ["ca-certificates"], "build_with": ["mcp<2"], ` +
+			`"runtime_env": {"NODE_ENV": "production"}}}`
+		putReq := httptest.NewRequest("POST", "/"+workloadName+"/edit", strings.NewReader(body))
+		putReq.Header.Set("Content-Type", "application/json")
+		rctx := chi.NewRouteContext()
+		rctx.URLParams.Add("name", workloadName)
+		putReq = putReq.WithContext(context.WithValue(putReq.Context(), chi.RouteCtxKey, rctx))
+
+		putW := httptest.NewRecorder()
+		apierrors.ErrorHandler(routes.updateWorkload).ServeHTTP(putW, putReq)
+		assert.Equal(t, http.StatusBadRequest, putW.Code)
+		assert.Contains(t, putW.Body.String(), "runtime_config is only supported for protocol-scheme images")
+	})
+}
+
+// TestUpdateWorkload_RemoteEchoPreservesRuntimeConfig guards against the
+// req.URL == "" guard on WithRuntimeConfig silently dropping an accepted
+// echo's RuntimeConfig for remote workloads. thv run --remote-url with
+// --runtime-image persists a RuntimeConfig on a remote workload today
+// (configureRuntimeOptions in cmd/thv/app/run_flags.go does not exclude
+// remote workloads), so an unchanged GET-edit-PUT of such a workload must
+// round-trip the config, not silently lose it.
+//
+//nolint:paralleltest // Uses process-wide XDG state settings; keep sequential.
+func TestUpdateWorkload_RemoteEchoPreservesRuntimeConfig(t *testing.T) {
+	t.Cleanup(xdg.Reload)
+	t.Setenv("XDG_STATE_HOME", t.TempDir())
+	xdg.Reload()
+
+	ctx := context.Background()
+	const workloadName = "test-remote-workload"
+
+	persisted := runner.NewRunConfig()
+	persisted.Name = workloadName
+	persisted.BaseName = workloadName
+	persisted.ContainerName = workloadName
+	persisted.RemoteURL = "https://mcp.example.com/mcp"
+	persisted.RuntimeConfig = &templates.RuntimeConfig{BuilderImage: "python:3.14-slim"}
+	require.NoError(t, persisted.SaveState(ctx))
+
+	ctrl := gomock.NewController(t)
+	defer ctrl.Finish()
+
+	mockWorkloadManager := workloadsmocks.NewMockManager(ctrl)
+	mockRuntime := runtimemocks.NewMockRuntime(ctrl)
+	mockGroupManager := groupsmocks.NewMockManager(ctrl)
+
+	routes := &WorkloadRoutes{
+		workloadManager:  mockWorkloadManager,
+		containerRuntime: mockRuntime,
+		groupManager:     mockGroupManager,
+		workloadService: &WorkloadService{
+			groupManager:      mockGroupManager,
+			workloadManager:   mockWorkloadManager,
+			configProvider:    config.NewDefaultProvider(),
+			imageVerification: retriever.VerifyImageWarn,
+		},
+	}
+
+	mockWorkloadManager.EXPECT().GetWorkload(gomock.Any(), workloadName).
+		Return(core.Workload{Name: workloadName}, nil)
+
+	getReq := httptest.NewRequest("GET", "/"+workloadName, nil)
+	getRctx := chi.NewRouteContext()
+	getRctx.URLParams.Add("name", workloadName)
+	getReq = getReq.WithContext(context.WithValue(getReq.Context(), chi.RouteCtxKey, getRctx))
+	getW := httptest.NewRecorder()
+	apierrors.ErrorHandler(routes.getWorkload).ServeHTTP(getW, getReq)
+	require.Equal(t, http.StatusOK, getW.Code, getW.Body.String())
+	getBody := getW.Body.Bytes()
+
+	mockWorkloadManager.EXPECT().GetWorkload(gomock.Any(), workloadName).
+		Return(core.Workload{Name: workloadName}, nil)
+	mockGroupManager.EXPECT().Exists(gomock.Any(), "default").Return(true, nil)
+	mockWorkloadManager.EXPECT().UpdateWorkload(gomock.Any(), workloadName, gomock.Any()).
+		DoAndReturn(func(_ context.Context, _ string, runConfig *runner.RunConfig) (workloads.CompletionFunc, error) {
+			require.NotNil(t, runConfig.RuntimeConfig)
+			assert.Equal(t, "python:3.14-slim", runConfig.RuntimeConfig.BuilderImage)
+			return nil, nil
+		})
+
+	putReq := httptest.NewRequest("POST", "/"+workloadName+"/edit", bytes.NewReader(getBody))
+	putReq.Header.Set("Content-Type", "application/json")
+	rctx := chi.NewRouteContext()
+	rctx.URLParams.Add("name", workloadName)
+	putReq = putReq.WithContext(context.WithValue(putReq.Context(), chi.RouteCtxKey, rctx))
+
+	putW := httptest.NewRecorder()
+	apierrors.ErrorHandler(routes.updateWorkload).ServeHTTP(putW, putReq)
+	assert.Equal(t, http.StatusOK, putW.Code, putW.Body.String())
+}
+
+// TestUpdateWorkload_PaddedBuilderImageEchoRoundTrips guards normalization
+// being applied to the persisted side of the echo comparison, not just the
+// request side: a builder_image persisted with surrounding whitespace
+// (reachable via --runtime-image, a plain StringVar with no trim-on-store)
+// must still compare equal to its own unchanged echo.
+//
+//nolint:paralleltest // Uses process-wide XDG state settings; keep sequential.
+func TestUpdateWorkload_PaddedBuilderImageEchoRoundTrips(t *testing.T) {
+	t.Cleanup(xdg.Reload)
+	t.Setenv("XDG_STATE_HOME", t.TempDir())
+	xdg.Reload()
+
+	ctx := context.Background()
+	const workloadName = "test-padded-workload"
+	builtImage := "toolhivelocal/uvx-arxiv-mcp-server:20260101000000"
+
+	persisted := runner.NewRunConfig()
+	persisted.Name = workloadName
+	persisted.BaseName = workloadName
+	persisted.ContainerName = workloadName
+	persisted.Image = builtImage
+	persisted.RuntimeConfig = &templates.RuntimeConfig{BuilderImage: "  golang:1.24-alpine  "}
+	require.NoError(t, persisted.SaveState(ctx))
+
+	ctrl := gomock.NewController(t)
+	defer ctrl.Finish()
+
+	mockWorkloadManager := workloadsmocks.NewMockManager(ctrl)
+	mockRuntime := runtimemocks.NewMockRuntime(ctrl)
+	mockGroupManager := groupsmocks.NewMockManager(ctrl)
+
+	routes := &WorkloadRoutes{
+		workloadManager:  mockWorkloadManager,
+		containerRuntime: mockRuntime,
+		groupManager:     mockGroupManager,
+		workloadService: &WorkloadService{
+			groupManager:      mockGroupManager,
+			workloadManager:   mockWorkloadManager,
+			imageRetriever:    makeMockRetriever(t, builtImage, &regtypes.ImageMetadata{Image: builtImage}, nil),
+			imagePuller:       func(_ context.Context, _ string) error { return nil },
+			configProvider:    config.NewDefaultProvider(),
+			imageVerification: retriever.VerifyImageWarn,
+		},
+	}
+
+	mockWorkloadManager.EXPECT().GetWorkload(gomock.Any(), workloadName).
+		Return(core.Workload{Name: workloadName}, nil)
+
+	getReq := httptest.NewRequest("GET", "/"+workloadName, nil)
+	getRctx := chi.NewRouteContext()
+	getRctx.URLParams.Add("name", workloadName)
+	getReq = getReq.WithContext(context.WithValue(getReq.Context(), chi.RouteCtxKey, getRctx))
+	getW := httptest.NewRecorder()
+	apierrors.ErrorHandler(routes.getWorkload).ServeHTTP(getW, getReq)
+	require.Equal(t, http.StatusOK, getW.Code, getW.Body.String())
+	getBody := getW.Body.Bytes()
+
+	mockWorkloadManager.EXPECT().GetWorkload(gomock.Any(), workloadName).
+		Return(core.Workload{Name: workloadName}, nil)
+	mockGroupManager.EXPECT().Exists(gomock.Any(), "default").Return(true, nil)
+	mockWorkloadManager.EXPECT().UpdateWorkload(gomock.Any(), workloadName, gomock.Any()).
+		Return(nil, nil)
+
+	putReq := httptest.NewRequest("POST", "/"+workloadName+"/edit", bytes.NewReader(getBody))
+	putReq.Header.Set("Content-Type", "application/json")
+	rctx := chi.NewRouteContext()
+	rctx.URLParams.Add("name", workloadName)
+	putReq = putReq.WithContext(context.WithValue(putReq.Context(), chi.RouteCtxKey, rctx))
+
+	putW := httptest.NewRecorder()
+	apierrors.ErrorHandler(routes.updateWorkload).ServeHTTP(putW, putReq)
+	assert.Equal(t, http.StatusOK, putW.Code, putW.Body.String())
+}
+
 // TestUpdateWorkload_PortReuse tests the port reuse logic when editing workloads
 func TestUpdateWorkload_PortReuse(t *testing.T) {
 	t.Parallel()
@@ -549,9 +940,9 @@ func TestUpdateWorkload_PortReuse(t *testing.T) {
 					Return(core.Workload{Name: "test-workload", Port: 8080}, nil)
 				gm.EXPECT().Exists(gomock.Any(), "default").Return(true, nil)
 				wm.EXPECT().UpdateWorkload(gomock.Any(), "test-workload", gomock.Any()).
-					DoAndReturn(func(_ context.Context, _ string, runConfig *runner.RunConfig) (*errgroup.Group, error) {
+					DoAndReturn(func(_ context.Context, _ string, runConfig *runner.RunConfig) (workloads.CompletionFunc, error) {
 						assert.Equal(t, 8080, runConfig.Port, "Port should be reused from existing workload")
-						return &errgroup.Group{}, nil
+						return nil, nil
 					})
 			},
 			expectedStatus: http.StatusOK,
@@ -569,9 +960,9 @@ func TestUpdateWorkload_PortReuse(t *testing.T) {
 					Return(core.Workload{Name: "test-workload", Port: 8080}, nil)
 				gm.EXPECT().Exists(gomock.Any(), "default").Return(true, nil)
 				wm.EXPECT().UpdateWorkload(gomock.Any(), "test-workload", gomock.Any()).
-					DoAndReturn(func(_ context.Context, _ string, runConfig *runner.RunConfig) (*errgroup.Group, error) {
+					DoAndReturn(func(_ context.Context, _ string, runConfig *runner.RunConfig) (workloads.CompletionFunc, error) {
 						assert.Equal(t, 8080, runConfig.Port, "Port should remain the same")
-						return &errgroup.Group{}, nil
+						return nil, nil
 					})
 			},
 			expectedStatus: http.StatusOK,
@@ -589,9 +980,9 @@ func TestUpdateWorkload_PortReuse(t *testing.T) {
 					Return(core.Workload{Name: "test-workload", Port: 8080}, nil)
 				gm.EXPECT().Exists(gomock.Any(), "default").Return(true, nil)
 				wm.EXPECT().UpdateWorkload(gomock.Any(), "test-workload", gomock.Any()).
-					DoAndReturn(func(_ context.Context, _ string, runConfig *runner.RunConfig) (*errgroup.Group, error) {
+					DoAndReturn(func(_ context.Context, _ string, runConfig *runner.RunConfig) (workloads.CompletionFunc, error) {
 						assert.Equal(t, 8080, runConfig.Port, "Port should default to existing port")
-						return &errgroup.Group{}, nil
+						return nil, nil
 					})
 			},
 			expectedStatus: http.StatusOK,
@@ -674,9 +1065,9 @@ func TestUpdateWorkload_PortReuse(t *testing.T) {
 			Return(core.Workload{Name: "test-workload", Port: 8080}, nil)
 		mockGroupManager.EXPECT().Exists(gomock.Any(), "default").Return(true, nil)
 		mockWorkloadManager.EXPECT().UpdateWorkload(gomock.Any(), "test-workload", gomock.Any()).
-			DoAndReturn(func(_ context.Context, _ string, runConfig *runner.RunConfig) (*errgroup.Group, error) {
+			DoAndReturn(func(_ context.Context, _ string, runConfig *runner.RunConfig) (workloads.CompletionFunc, error) {
 				assert.Equal(t, freePort, runConfig.Port, "Port should be set to explicitly requested port")
-				return &errgroup.Group{}, nil
+				return nil, nil
 			})
 
 		mockRetriever := makeMockRetriever(t,

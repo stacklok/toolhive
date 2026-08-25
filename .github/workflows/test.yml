@@ -2,6 +2,13 @@ name: Tests
 
 on:
   workflow_call:
+    secrets:
+      # Declared so callers can pass this one secret explicitly instead of
+      # `secrets: inherit`. Optional: pull requests from forks receive no
+      # secrets at all, and codecov accepts tokenless uploads for public
+      # repositories, so an empty value degrades rather than fails.
+      CODECOV_TOKEN:
+        required: false
 
 permissions:
   contents: read
@@ -16,6 +23,8 @@ jobs:
       fail-fast: false
     steps:
       - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+        with:
+          persist-credentials: false
 
       - name: Set up Go
         uses: actions/setup-go@924ae3a1cded613372ab5595356fb5720e22ba16 # v6
@@ -56,7 +65,7 @@ jobs:
         run: go install github.com/gotesttools/gotestfmt/v2/cmd/gotestfmt@latest
 
       - name: Install Task
-        uses: arduino/setup-task@v2
+        uses: arduino/setup-task@b91d5d2c96a56797b48ac1e0e89220bf64044611 # v2
         with:
           version: 3.44.1
           repo-token: ${{ secrets.GITHUB_TOKEN }}

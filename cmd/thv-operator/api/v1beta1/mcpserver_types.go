@@ -157,6 +157,9 @@ const (
 	// ConditionReasonAuthServerRefInvalidType indicates the referenced config is not an embeddedAuthServer
 	ConditionReasonAuthServerRefInvalidType = "AuthServerRefInvalidType"
 
+	// ConditionReasonAuthServerRefInvalidConfig indicates the referenced embedded auth server configuration is invalid.
+	ConditionReasonAuthServerRefInvalidConfig = "AuthServerRefInvalidConfig"
+
 	// ConditionReasonAuthServerRefMultiUpstream indicates multi-upstream is not supported
 	ConditionReasonAuthServerRefMultiUpstream = "MultiUpstreamNotSupported"
 )

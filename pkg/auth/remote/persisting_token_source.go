@@ -5,6 +5,7 @@ package remote
 
 import (
 	"context"
+	"fmt"
 	"log/slog"
 	"sync"
 	"time"
@@ -12,7 +13,6 @@ import (
 	"golang.org/x/oauth2"
 
 	"github.com/stacklok/toolhive/pkg/auth/oauth"
-	"github.com/stacklok/toolhive/pkg/oauthproto"
 )
 
 // TokenPersister is a callback function that persists OAuth refresh tokens.
@@ -95,12 +95,22 @@ func (p *PersistingTokenSource) Token() (*oauth2.Token, error) {
 // The returned token source will immediately refresh to get a new access token,
 // then automatically refresh when it expires.
 // If resource is non-empty, it is included in all refresh requests per RFC 8707.
+// trusted reports that the token endpoint's authority came from operator
+// configuration; see oauth.Config.TokenEndpointTrusted.
 func CreateTokenSourceFromCached(
 	config *oauth2.Config,
 	refreshToken string,
 	expiry time.Time,
 	resource string,
-) oauth2.TokenSource {
+	trusted bool,
+) (oauth2.TokenSource, error) {
+	if config == nil {
+		return nil, fmt.Errorf("OAuth config must not be nil")
+	}
+	httpClient, err := oauth.NewTokenHTTPClient(config.Endpoint.TokenURL, trusted)
+	if err != nil {
+		return nil, fmt.Errorf("build token endpoint HTTP client: %w", err)
+	}
 	// Create a token with only the refresh token.
 	// The access token is intentionally empty - ReuseTokenSource will detect
 	// that the token is expired (since Expiry is in the past or AccessToken is empty)
@@ -115,14 +125,11 @@ func CreateTokenSourceFromCached(
 	// Use resource-aware token source if configured (RFC 8707)
 	var base oauth2.TokenSource
 	if resource != "" {
-		base = oauth.NewResourceTokenSource(config, token, resource)
+		base = oauth.NewResourceTokenSource(config, token, resource, httpClient)
 	} else {
-		// Inject an HTTP client whose transport sets the ToolHive User-Agent
-		// so the oauth2 library does not fall back to Go-http-client/2.0 on
-		// token refresh requests.
-		ctx := context.WithValue(context.Background(), oauth2.HTTPClient, oauthproto.NewHTTPClient())
+		ctx := context.WithValue(context.Background(), oauth2.HTTPClient, httpClient)
 		base = config.TokenSource(ctx, token)
 	}
 
-	return oauth2.ReuseTokenSource(token, base)
+	return oauth2.ReuseTokenSource(token, base), nil
 }

@@ -157,6 +157,18 @@ operational:
 #       required: ["pr_number"]
 #     timeout: "30m"
 #
+#     # Optional: explicit MCP tool annotations advertised to clients.
+#     # When omitted, annotations are derived from the step tools at advertise
+#     # time (readOnlyHint = AND across steps, destructiveHint/openWorldHint = OR,
+#     # idempotentHint = never derived). Explicit values are merged over the
+#     # derived floor but must never contradict it (e.g. readOnlyHint: true when
+#     # a step is not read-only) — a contradicting composite tool is dropped
+#     # from tools/list with a warning at runtime.
+#     annotations:
+#       title: "Deploy and Notify"
+#       destructiveHint: true
+#       openWorldHint: true
+#
 #     steps:
 #       - id: "merge"
 #         tool: "github.merge_pr"
@@ -197,7 +209,9 @@ telemetry:
   metricsEnabled: true
   samplingRate: "0.1"  # 10% sampling
   insecure: true  # Use HTTP instead of HTTPS
-  enablePrometheusMetricsPath: true  # Expose /metrics endpoint
+  enablePrometheusMetricsPath: true  # Expose /metrics on the diagnostics port
+  # prometheusPort: 9464  # Diagnostics port for /metrics. Defaults to 9464; do
+  #                       # not route it publicly. See docs/observability.md.
 
 # ===== AUDIT LOGGING =====
 # Audit logging for MCP operations (optional)

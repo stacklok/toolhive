@@ -78,6 +78,24 @@ spec:
                   so that tokens it issues are accepted by the vMCP's incoming auth middleware.
                   When nil, IncomingAuth uses an external IDP and behavior is unchanged.
                 properties:
+                  allowConfidentialClientRegistration:
+                    default: false
+                    description: |-
+                      AllowConfidentialClientRegistration permits RFC 7591 Dynamic Client
+                      Registration of confidential clients: when true, /oauth/register
+                      accepts token_endpoint_auth_method values client_secret_basic and
+                      client_secret_post in addition to "none" (still the default on
+                      omission) and mints a client_secret returned exactly once.
+                      Confidential registrations are restricted to https non-loopback
+                      redirect URIs, and on the Redis storage backend all DCR-issued
+                      registrations are evicted after 30 days of inactivity and must
+                      re-register. This gates registration only: disabling it does not
+                      revoke or reject already-minted secrets at the token endpoint.
+
+                      Security: registration is unauthenticated, so enabling this lets any
+                      caller who can reach the endpoint obtain a client credential.
+                      Combining it with insecureAllowHTTP is rejected at validation.
+                    type: boolean
                   authorizationEndpointBaseUrl:
                     description: |-
                       AuthorizationEndpointBaseURL overrides the base URL used for the authorization_endpoint
@@ -143,6 +161,79 @@ spec:
                     required:
                     - enabled
                     type: object
+                  delegateClients:
+                    description: |-
+                      DelegateClients configures pre-provisioned confidential clients for RFC 8693
+                      token exchange. Each secret is referenced from a Kubernetes Secret; no
+                      plaintext secret, redirect URI, or grant selection is accepted here. The
+                      operator always supplies the token-exchange grant when it converts this
+                      configuration to the runtime contract.
+
+                      This is independent of allowConfidentialClientRegistration: it neither
+                      enables nor requires unauthenticated confidential dynamic client
+                      registration.
+                    items:
+                      description: |-
+                        DelegateClientConfig configures a pre-provisioned confidential OAuth client
+                        for RFC 8693 token exchange. Its secret is referenced from a Kubernetes
+                        Secret and is never represented inline.
+                      properties:
+                        audiences:
+                          description: Audiences is the narrowed set of RFC 8707 resources
+                            this client may request.
+                          items:
+                            maxLength: 2048
+                            minLength: 1
+                            type: string
+                          maxItems: 10
+                          minItems: 1
+                          type: array
+                          x-kubernetes-list-type: atomic
+                        clientId:
+                          description: ClientID is the OAuth client_id presented at
+                            the token endpoint.
+                          maxLength: 256
+                          minLength: 1
+                          type: string
+                        clientSecretRef:
+                          description: ClientSecretRef references the Kubernetes Secret
+                            key containing the client secret.
+                          properties:
+                            key:
+                              description: Key is the key within the secret
+                              type: string
+                            name:
+                              description: Name is the name of the secret
+                              type: string
+                          required:
+                          - key
+                          - name
+                          type: object
+                        scopes:
+                          description: Scopes is the narrowed set of OAuth scopes
+                            this client may request.
+                          items:
+                            maxLength: 256
+                            minLength: 1
+                            type: string
+                          maxItems: 10
+                          minItems: 1
+                          type: array
+                          x-kubernetes-list-type: atomic
+                      required:
+                      - audiences
+                      - clientId
+                      - clientSecretRef
+                      - scopes
+                      type: object
+                      x-kubernetes-validations:
+                      - message: clientSecretRef.name and clientSecretRef.key are
+                          required and must be non-empty
+                        rule: has(self.clientSecretRef) && size(self.clientSecretRef.name)
+                          > 0 && size(self.clientSecretRef.key) > 0
+                    maxItems: 10
+                    type: array
+                    x-kubernetes-list-type: atomic
                   disableUpstreamTokenInjection:
                     default: false
                     description: |-
@@ -158,6 +249,41 @@ spec:
                       This is useful when the backend MCP server does not require authentication
                       (e.g., public documentation servers) but you still want client authentication.
                     type: boolean
+                  forceConfidentialRedirectUris:
+                    description: |-
+                      ForceConfidentialRedirectURIs lists redirect URIs that must be
+                      registered as confidential clients regardless of the
+                      token_endpoint_auth_method the DCR request declares. A registration
+                      whose redirectUris contains an EXACT match for one of these entries is
+                      issued a real client_secret and reported back as
+                      token_endpoint_auth_method "client_secret_post", even if the request
+                      said "none" or omitted the field.
+
+                      Intended for MCP clients that declare themselves public
+                      (token_endpoint_auth_method: "none") per RFC 7591 but then refuse to
+                      proceed because the response carries no client_secret — a
+                      self-contradictory request. RFC 7591 §3.2.1 permits the server to
+                      substitute client metadata, so this takes such a client at its word
+                      that it wants a secret. Remove an entry once the client is fixed to
+                      handle "none" registrations correctly.
+
+                      Exact matching is deliberate: an attacker who registers with someone
+                      else's callback URI is issued a secret for a client whose
+                      authorization codes are delivered to that someone else's redirect
+                      endpoint, not to the attacker, so this is not a way to obtain a usable
+                      credential for another client.
+
+                      Requires allowConfidentialClientRegistration to be true. Every entry
+                      must be an https non-loopback URI — a loopback client is a public
+                      client by construction (OAuth 2.1 §2.1) and must not be issued a
+                      secret; this is enforced at reconcile time since CEL cannot express
+                      the loopback-hostname check.
+                    items:
+                      pattern: ^https://[^\s?#]+$
+                      type: string
+                    maxItems: 10
+                    type: array
+                    x-kubernetes-list-type: atomic
                   hmacSecretRefs:
                     description: |-
                       HMACSecretRefs references Kubernetes Secrets containing symmetric secrets for signing
@@ -181,6 +307,20 @@ spec:
                       type: object
                     type: array
                     x-kubernetes-list-type: atomic
+                  insecureAllowConfidentialOverLoopbackHTTP:
+                    default: false
+                    description: |-
+                      InsecureAllowConfidentialOverLoopbackHTTP opts in to confidential
+                      Dynamic Client Registration (DCR) and delegate clients when issuer is a
+                      plain-HTTP loopback URL (e.g. "http://localhost:8080"). Without this
+                      flag, that combination is rejected at reconcile time: a loopback http://
+                      issuer is normally fine for local development since the traffic never
+                      leaves the machine, but confidential clients send secrets over cleartext.
+                      Forcing TLS onto every loopback deployment instead would just push
+                      operators toward insecureAllowHTTP, which is worse: that also disables
+                      the non-loopback host check. Has no effect when there are no confidential
+                      clients or issuer is https.
+                    type: boolean
                   insecureAllowHTTP:
                     default: false
                     description: |-
@@ -196,6 +336,11 @@ spec:
                       structurally present but enforcement is deferred to pod startup via Config.Validate();
                       a misconfigured issuer will cause the pod to crash at startup rather than surface
                       as an operator condition.
+
+                      One combination is rejected at admission on all three CRDs regardless of the
+                      above: setting this field alongside allowConfidentialClientRegistration, which
+                      would issue client secrets in cleartext over an unauthenticated registration
+                      endpoint (see the XValidation rule on EmbeddedAuthServerConfig).
                     type: boolean
                   issuer:
                     description: |-
@@ -472,6 +617,242 @@ spec:
                         pattern: ^([0-9]+(\.[0-9]+)?(ns|us|µs|ms|s|m|h))+$
                         type: string
                     type: object
+                  trustedIssuers:
+                    description: |-
+                      TrustedIssuers configures external OIDC issuers whose tokens are
+                      accepted as RFC 8693 subject tokens during token exchange, in addition
+                      to self-issued subject tokens. Empty (the default) means only
+                      self-issued subject tokens are accepted. See
+                      docs/arch/17-token-exchange-delegation.md for the trust model.
+                    items:
+                      description: |-
+                        TrustedIssuerConfig configures an external OIDC issuer whose tokens are
+                        accepted as RFC 8693 subject tokens or RFC 7523 JWT-bearer assertions during
+                        token exchange. It mirrors tokenexchange.TrustedIssuer
+                        (pkg/authserver/server/tokenexchange), the runtime type the operator converts
+                        this into directly — no secret is referenced by this type, so no SecretKeyRef
+                        indirection is needed, unlike DelegateClientConfig.
+
+                        expectedAudience is exempted only for a grant-only issuer: jwtBearerGrant
+                        present and none of actorClaim, actorMatcher, allowMayAct, or allowedActors
+                        set. Any RFC 8693 delegation field (actorClaim, actorMatcher, allowMayAct,
+                        allowedActors) still requires expectedAudience, even when combined with
+                        jwtBearerGrant.
+
+                        The allowedDelegateClients rule below mirrors validateDelegationPolicy
+                        (pkg/authserver/server/tokenexchange/multi_issuer_validator.go): it is
+                        keyed on whether ANY delegation field is set (expectedAudience,
+                        actorClaim, actorMatcher, allowMayAct), not merely on whether
+                        jwtBearerGrant is absent — an issuer can combine jwtBearerGrant with
+                        expectedAudience for RFC 8693 delegation on the same issuer, and that
+                        combination still requires allowedDelegateClients at the Go level.
+                      properties:
+                        actorClaim:
+                          description: |-
+                            ActorClaim names the claim identifying the client that requested the
+                            subject token from this external issuer (used by allowedActors below).
+                            Defaults to "azp" when empty; use "appid" for Microsoft Entra v1, "cid"
+                            for Okta. The special value "client_id" reads the subject token's
+                            client_id claim instead.
+                          maxLength: 64
+                          type: string
+                        actorMatcher:
+                          description: |-
+                            ActorMatcher is an admin-authored CEL expression evaluated against the
+                            subject token's complete signature-verified claims map (bound as
+                            "claims") to authorize a class of external actors, in addition to (not
+                            instead of) allowedActors — either signal is sufficient. Must evaluate
+                            to a boolean; a non-boolean result denies the token at evaluation time,
+                            not at reconcile time. A syntactically invalid expression fails
+                            reconciliation (surfaced via the AuthServerConfigValidated condition),
+                            not admission — there is no validating webhook for this field.
+                          maxLength: 4096
+                          type: string
+                        allowMayAct:
+                          default: false
+                          description: |-
+                            AllowMayAct permits this external issuer's may_act claim to authorize
+                            delegation. Defaults to false; external issuers must be opted in
+                            explicitly because may_act bypasses allowedActors and actorMatcher.
+                            Does not affect self-issued subject tokens. The wildcard is never
+                            permitted alongside specific allowedDelegateClients, regardless of
+                            this setting.
+                          type: boolean
+                        allowPrivateIPs:
+                          description: |-
+                            AllowPrivateIPs permits OIDC discovery and JWKS fetches for THIS issuer
+                            to resolve to a private or loopback address. Use only when the issuer
+                            is hosted inside the same cluster and has no public endpoint. Requires
+                            jwksUrl to be set explicitly (enforced at reconcile time), since
+                            otherwise OIDC discovery — fetched from the external issuer itself —
+                            would choose the private dial target.
+                          type: boolean
+                        allowedActors:
+                          description: |-
+                            AllowedActors is the allowlist of actorClaim values authorized to
+                            exchange a subject token from this issuer when it carries no
+                            "may_act" claim, in addition to (not instead of) actorMatcher below —
+                            either signal is sufficient. Empty denies every token unless
+                            actorMatcher is set, or allowMayAct is true and the token carries a
+                            permitted may_act claim.
+                          items:
+                            maxLength: 256
+                            minLength: 1
+                            type: string
+                          maxItems: 50
+                          type: array
+                          x-kubernetes-list-type: atomic
+                        allowedDelegateClients:
+                          description: |-
+                            AllowedDelegateClients restricts which ToolHive client IDs may exchange
+                            an RFC 8693 subject token from this issuer. Required unless only
+                            jwtBearerGrant is configured; set it to ["*"] to permit any confidential
+                            client holding the token-exchange grant, or list specific client IDs to
+                            bind delegation to them.
+                          items:
+                            maxLength: 256
+                            minLength: 1
+                            type: string
+                          maxItems: 50
+                          minItems: 1
+                          type: array
+                          x-kubernetes-list-type: atomic
+                        expectedAudience:
+                          description: |-
+                            ExpectedAudience is the expected "aud" claim value that must appear in
+                            an RFC 8693 subject token's audience list. It is not used by an RFC 7523
+                            JWT-bearer assertion, whose audience is the token endpoint.
+                          maxLength: 2048
+                          minLength: 1
+                          type: string
+                        insecureAllowHTTP:
+                          description: |-
+                            InsecureAllowHTTP permits plain-HTTP OIDC discovery and JWKS fetches
+                            for THIS issuer only. Development and testing only — never set in
+                            production.
+                          type: boolean
+                        issuerUrl:
+                          description: IssuerURL is the expected "iss" claim value
+                            (exact match).
+                          maxLength: 2048
+                          minLength: 1
+                          type: string
+                        jwksUrl:
+                          description: |-
+                            JWKSURL is the URL to fetch the issuer's JSON Web Key Set from. If
+                            empty, it is resolved via OIDC discovery at
+                            {issuerUrl}/.well-known/openid-configuration.
+                          maxLength: 2048
+                          type: string
+                        jwtBearerGrant:
+                          description: |-
+                            JWTBearerGrant enables the plain RFC 7523 JWT-bearer grant for this
+                            issuer. It is independent of RFC 8693 delegation policy.
+                          properties:
+                            acceptedAudiences:
+                              description: |-
+                                AcceptedAudiences identifies this authorization server's accepted
+                                assertion audiences. When omitted, runtime validation defaults to the
+                                token endpoint.
+                              items:
+                                maxLength: 2048
+                                minLength: 1
+                                pattern: ^https?://[^[:space:]]+$
+                                type: string
+                              maxItems: 50
+                              type: array
+                              x-kubernetes-list-type: atomic
+                            maxAssertionAge:
+                              description: MaxAssertionAge caps the exp-iat interval
+                                independently of exp.
+                              type: string
+                            subjectBindings:
+                              description: |-
+                                SubjectBindings maps an exact external subject to allowed RFC 8707
+                                resources.
+                              items:
+                                description: |-
+                                  JWTBearerSubjectBinding configures the exact subject and allowed resources
+                                  for one RFC 7523 JWT-bearer assertion identity.
+                                properties:
+                                  allowedResources:
+                                    description: |-
+                                      AllowedResources is the exact set of RFC 8707 resources this subject may
+                                      request.
+                                    items:
+                                      maxLength: 2048
+                                      minLength: 1
+                                      pattern: ^https?://[^[:space:]]+$
+                                      type: string
+                                    maxItems: 50
+                                    minItems: 1
+                                    type: array
+                                    x-kubernetes-list-type: atomic
+                                  subject:
+                                    description: Subject is an exact assertion sub
+                                      value. Wildcards are not supported.
+                                    maxLength: 256
+                                    minLength: 1
+                                    pattern: ^[^*]+$
+                                    type: string
+                                required:
+                                - allowedResources
+                                - subject
+                                type: object
+                              maxItems: 50
+                              minItems: 1
+                              type: array
+                              x-kubernetes-list-type: atomic
+                          required:
+                          - maxAssertionAge
+                          - subjectBindings
+                          type: object
+                          x-kubernetes-validations:
+                          - message: maxAssertionAge must be greater than zero
+                            rule: duration(self.maxAssertionAge) > duration('0s')
+                          - message: subjectBindings must not contain duplicate subjects
+                            rule: self.subjectBindings.all(binding, self.subjectBindings.filter(other,
+                              other.subject == binding.subject).size() == 1)
+                      required:
+                      - issuerUrl
+                      type: object
+                      x-kubernetes-validations:
+                      - message: allowedDelegateClients must not combine the wildcard
+                          "*" with specific client IDs
+                        rule: '!has(self.allowedDelegateClients) || !(''*'' in self.allowedDelegateClients)
+                          || size(self.allowedDelegateClients) == 1'
+                      - message: allowMayAct must not be enabled when allowedDelegateClients
+                          contains the wildcard "*"
+                        rule: '!(has(self.allowMayAct) && self.allowMayAct && ''*''
+                          in self.allowedDelegateClients)'
+                      - message: actorClaim must name a readable claim; use client_id
+                          or a non-reserved claim such as azp, appid, or cid
+                        rule: '!has(self.actorClaim) || !(self.actorClaim in [''sub'',
+                          ''iss'', ''aud'', ''exp'', ''iat'', ''nbf'', ''jti'', ''name'',
+                          ''email'', ''scope'', ''scp'', ''may_act''])'
+                      - message: allowPrivateIPs requires jwksUrl to be set explicitly
+                        rule: '!(has(self.allowPrivateIPs) && self.allowPrivateIPs)
+                          || (has(self.jwksUrl) && self.jwksUrl != "")'
+                      - message: expectedAudience is required unless jwtBearerGrant
+                          is configured without actorClaim, actorMatcher, allowMayAct,
+                          or allowedActors
+                        rule: (has(self.jwtBearerGrant) && !((has(self.actorClaim)
+                          && size(self.actorClaim) > 0) || (has(self.actorMatcher)
+                          && size(self.actorMatcher) > 0) || (has(self.allowMayAct)
+                          && self.allowMayAct) || (has(self.allowedActors) && size(self.allowedActors)
+                          > 0))) || (has(self.expectedAudience) && size(self.expectedAudience)
+                          > 0)
+                      - message: allowedDelegateClients is required when expectedAudience,
+                          actorClaim, actorMatcher, or allowMayAct is set
+                        rule: '!((has(self.expectedAudience) && size(self.expectedAudience)
+                          > 0) || (has(self.actorClaim) && size(self.actorClaim) >
+                          0) || (has(self.actorMatcher) && size(self.actorMatcher)
+                          > 0) || (has(self.allowMayAct) && self.allowMayAct)) ||
+                          (has(self.allowedDelegateClients) && size(self.allowedDelegateClients)
+                          > 0)'
+                    maxItems: 20
+                    type: array
+                    x-kubernetes-list-type: atomic
                   upstreamProviders:
                     description: |-
                       UpstreamProviders configures connections to upstream Identity Providers.
@@ -518,6 +899,14 @@ spec:
                                 scope, state, code_challenge, code_challenge_method, nonce) are not allowed.
                               maxProperties: 16
                               type: object
+                            allowPrivateIPs:
+                              description: |-
+                                AllowPrivateIPs permits the upstream provider's HTTP client to connect to
+                                private IP ranges (RFC-1918, link-local). Use only when the upstream is
+                                hosted inside the same cluster and has no public endpoint. HTTP-scheme
+                                restrictions are unchanged — HTTPS is still required for non-localhost
+                                hosts unless InsecureAllowHTTP is set. Defaults to false.
+                              type: boolean
                             authorizationEndpoint:
                               description: AuthorizationEndpoint is the URL for the
                                 OAuth authorization endpoint.
@@ -669,6 +1058,13 @@ spec:
                               required:
                               - subjectPath
                               type: object
+                            insecureAllowHTTP:
+                              description: |-
+                                InsecureAllowHTTP permits plain-HTTP authorization and token endpoint URLs
+                                for this upstream. Only for in-cluster development environments (e.g. an
+                                OAuth2 provider served over HTTP in a kind cluster) where TLS is not
+                                available. Never set this in production.
+                              type: boolean
                             redirectUri:
                               description: |-
                                 RedirectURI is the callback URL where the upstream IdP will redirect after authentication.
@@ -988,6 +1384,21 @@ spec:
                 - issuer
                 - upstreamProviders
                 type: object
+                x-kubernetes-validations:
+                - message: allowConfidentialClientRegistration cannot be combined
+                    with insecureAllowHTTP; client secrets would be issued in cleartext
+                    over an unauthenticated endpoint
+                  rule: '!(has(self.allowConfidentialClientRegistration) && self.allowConfidentialClientRegistration
+                    && has(self.insecureAllowHTTP) && self.insecureAllowHTTP)'
+                - message: forceConfidentialRedirectUris requires allowConfidentialClientRegistration
+                    to be true
+                  rule: (!has(self.forceConfidentialRedirectUris) || size(self.forceConfidentialRedirectUris)
+                    == 0) || (has(self.allowConfidentialClientRegistration) && self.allowConfidentialClientRegistration)
+                - message: delegateClients with an HTTP issuer require insecureAllowConfidentialOverLoopbackHTTP
+                    to be explicitly enabled; the issuer must still be loopback
+                  rule: '!has(self.delegateClients) || size(self.delegateClients)
+                    == 0 || !self.issuer.startsWith(''http://'') || (has(self.insecureAllowConfidentialOverLoopbackHTTP)
+                    && self.insecureAllowConfidentialOverLoopbackHTTP)'
               config:
                 description: |-
                   Config is the Virtual MCP server configuration.
@@ -1032,6 +1443,28 @@ spec:
                               type: string
                             type: array
                         type: object
+                      defaultToolVisibility:
+                        description: |-
+                          DefaultToolVisibility controls whether a backend with NO entry in Tools has its
+                          tools advertised to MCP clients.
+                            - allow (default): every tool from an unlisted backend is advertised, so
+                              adding a workload to the group exposes it without further configuration.
+                            - deny: an unlisted backend contributes no tools, so only backends named in
+                              Tools are advertised. Use this when the set of exposed tools must be
+                              enumerated deliberately rather than inherited from group membership.
+
+                          A backend that DOES have a Tools entry is unaffected by this setting: the
+                          entry opts it in, and ExcludeAll/Filter on that entry decide the rest. Like
+                          every other visibility setting here, this controls advertising only — hidden
+                          tools remain in the routing table for composite tools (see the type doc).
+
+                          This gates TOOLS only. An unlisted backend's resources, resource templates,
+                          and prompts are still advertised under deny; mergeResources/mergePrompts have
+                          no equivalent check.
+                        enum:
+                        - allow
+                        - deny
+                        type: string
                       excludeAllTools:
                         description: |-
                           ExcludeAllTools hides all backend tools from MCP clients when true.
@@ -1077,24 +1510,34 @@ spec:
                                       Only specified fields are overridden; others pass through from the backend.
                                     properties:
                                       destructiveHint:
-                                        description: DestructiveHint overrides the
-                                          destructive hint annotation.
+                                        description: |-
+                                          DestructiveHint sets the destructive hint annotation.
+                                          For tool overrides this replaces the backend value; for composite tools
+                                          it is an explicit declaration merged over the derived safety floor.
                                         type: boolean
                                       idempotentHint:
-                                        description: IdempotentHint overrides the
-                                          idempotent hint annotation.
+                                        description: |-
+                                          IdempotentHint sets the idempotent hint annotation.
+                                          For tool overrides this replaces the backend value; for composite tools
+                                          it is an explicit declaration merged over the derived safety floor.
                                         type: boolean
                                       openWorldHint:
-                                        description: OpenWorldHint overrides the open-world
-                                          hint annotation.
+                                        description: |-
+                                          OpenWorldHint sets the open-world hint annotation.
+                                          For tool overrides this replaces the backend value; for composite tools
+                                          it is an explicit declaration merged over the derived safety floor.
                                         type: boolean
                                       readOnlyHint:
-                                        description: ReadOnlyHint overrides the read-only
-                                          hint annotation.
+                                        description: |-
+                                          ReadOnlyHint sets the read-only hint annotation.
+                                          For tool overrides this replaces the backend value; for composite tools
+                                          it is an explicit declaration merged over the derived safety floor.
                                         type: boolean
                                       title:
-                                        description: Title overrides the human-readable
-                                          title annotation.
+                                        description: |-
+                                          Title sets the human-readable title annotation.
+                                          For tool overrides this replaces the backend value; for composite tools
+                                          it is an explicit declaration merged over the derived safety floor.
                                         type: string
                                     type: object
                                   description:
@@ -1322,6 +1765,57 @@ spec:
                         CompositeToolConfig defines a composite tool workflow.
                         This matches the YAML structure from the proposal (lines 173-255).
                       properties:
+                        annotations:
+                          description: |-
+                            Annotations declares MCP tool annotations for the composite tool.
+
+                            Annotation derivation runs at ADVERTISE TIME (when tools/list is served
+                            and the backend tools are aggregated), not at CRD admission — thv vmcp
+                            validate does NOT check annotation contradictions. The derived floor is
+                            fail-closed: when the workflow has one or more tool steps the floor is
+                            always non-nil, and any step whose annotations are nil/unknown taints the
+                            floor conservatively (readOnly=false, destructive=true, openWorld=true).
+                            A workflow with no tool steps (e.g. only elicitation) has no floor.
+
+                            When nil, annotations are derived from the annotations of the backend tools
+                            referenced by the workflow's steps (e.g. readOnlyHint is true only when every
+                            step tool is read-only). When set, the values are an explicit author
+                            declaration merged over the derived floor — subject to a safety-floor
+                            guardrail that drops the composite tool (with a warning naming the offending
+                            step tools) if an explicit hint would make the tool look safer than its
+                            steps allow.
+                          properties:
+                            destructiveHint:
+                              description: |-
+                                DestructiveHint sets the destructive hint annotation.
+                                For tool overrides this replaces the backend value; for composite tools
+                                it is an explicit declaration merged over the derived safety floor.
+                              type: boolean
+                            idempotentHint:
+                              description: |-
+                                IdempotentHint sets the idempotent hint annotation.
+                                For tool overrides this replaces the backend value; for composite tools
+                                it is an explicit declaration merged over the derived safety floor.
+                              type: boolean
+                            openWorldHint:
+                              description: |-
+                                OpenWorldHint sets the open-world hint annotation.
+                                For tool overrides this replaces the backend value; for composite tools
+                                it is an explicit declaration merged over the derived safety floor.
+                              type: boolean
+                            readOnlyHint:
+                              description: |-
+                                ReadOnlyHint sets the read-only hint annotation.
+                                For tool overrides this replaces the backend value; for composite tools
+                                it is an explicit declaration merged over the derived safety floor.
+                              type: boolean
+                            title:
+                              description: |-
+                                Title sets the human-readable title annotation.
+                                For tool overrides this replaces the backend value; for composite tools
+                                it is an explicit declaration merged over the derived safety floor.
+                              type: string
+                          type: object
                         description:
                           description: Description describes what the workflow does.
                           type: string
@@ -2757,7 +3251,10 @@ spec:
                         default: false
                         description: |-
                           EnablePrometheusMetricsPath controls whether to expose Prometheus-style /metrics endpoint.
-                          The metrics are served on the main transport port at /metrics.
+                          The metrics are served at /metrics on a dedicated diagnostics port rather than on the
+                          main transport port, so the endpoint can be restricted by port and is not routed
+                          alongside application traffic. The endpoint is unauthenticated either way.
+                          See PrometheusPort and pkg/diagnostics.
                           This is separate from OTLP metrics which are sent to the Endpoint.
                         type: boolean
                       endpoint:
@@ -2790,6 +3287,36 @@ spec:
                           When false, OTLP metrics are not sent even if an endpoint is configured.
                           This is independent of EnablePrometheusMetricsPath.
                         type: boolean
+                      metricsOnTransportPort:
+                        description: |-
+                          MetricsOnTransportPort controls whether /metrics is ALSO served on the main
+                          transport port, in addition to the diagnostics port. It exists to give
+                          deployments a migration window: while true, an existing scrape configuration
+                          aimed at the transport port keeps working, and a new one aimed at
+                          PrometheusPort works too, so a scraper can be moved and verified before the
+                          old location goes away. See https://github.com/stacklok/toolhive/issues/6384 for
+                          the removal timeline.
+
+                          Deliberately a pointer with NO kubebuilder default. Nil means "unset", and is
+                          resolved against DefaultMetricsOnTransportPort at the point of use rather than
+                          written into config. A plain bool with a default marker would be materialised
+                          into the persisted RunConfig and into CRD objects at admission, so changing
+                          the default later would not move any workload that already exists — the flip
+                          would silently do nothing.
+                        type: boolean
+                      prometheusPort:
+                        description: |-
+                          PrometheusPort is the port the Prometheus /metrics endpoint is served on when
+                          EnablePrometheusMetricsPath is true. It is deliberately not the main transport port,
+                          so that access can be restricted with a NetworkPolicy: NetworkPolicy matches on port,
+                          not on HTTP path, so a shared port makes "allow MCP traffic, deny metrics scraping"
+                          impossible to express. The endpoint itself is unauthenticated, so restricting who can
+                          reach this port is how it is protected.
+
+                          Zero selects the default diagnostics port (9464, the OpenTelemetry specification's
+                          Prometheus exporter default). If that port is taken the listener falls back to an
+                          available one and logs the resolved address. Do not route this port publicly.
+                        type: integer
                       samplingRate:
                         default: "0.05"
                         description: |-
@@ -3542,6 +4069,24 @@ spec:
                   so that tokens it issues are accepted by the vMCP's incoming auth middleware.
                   When nil, IncomingAuth uses an external IDP and behavior is unchanged.
                 properties:
+                  allowConfidentialClientRegistration:
+                    default: false
+                    description: |-
+                      AllowConfidentialClientRegistration permits RFC 7591 Dynamic Client
+                      Registration of confidential clients: when true, /oauth/register
+                      accepts token_endpoint_auth_method values client_secret_basic and
+                      client_secret_post in addition to "none" (still the default on
+                      omission) and mints a client_secret returned exactly once.
+                      Confidential registrations are restricted to https non-loopback
+                      redirect URIs, and on the Redis storage backend all DCR-issued
+                      registrations are evicted after 30 days of inactivity and must
+                      re-register. This gates registration only: disabling it does not
+                      revoke or reject already-minted secrets at the token endpoint.
+
+                      Security: registration is unauthenticated, so enabling this lets any
+                      caller who can reach the endpoint obtain a client credential.
+                      Combining it with insecureAllowHTTP is rejected at validation.
+                    type: boolean
                   authorizationEndpointBaseUrl:
                     description: |-
                       AuthorizationEndpointBaseURL overrides the base URL used for the authorization_endpoint
@@ -3607,6 +4152,79 @@ spec:
                     required:
                     - enabled
                     type: object
+                  delegateClients:
+                    description: |-
+                      DelegateClients configures pre-provisioned confidential clients for RFC 8693
+                      token exchange. Each secret is referenced from a Kubernetes Secret; no
+                      plaintext secret, redirect URI, or grant selection is accepted here. The
+                      operator always supplies the token-exchange grant when it converts this
+                      configuration to the runtime contract.
+
+                      This is independent of allowConfidentialClientRegistration: it neither
+                      enables nor requires unauthenticated confidential dynamic client
+                      registration.
+                    items:
+                      description: |-
+                        DelegateClientConfig configures a pre-provisioned confidential OAuth client
+                        for RFC 8693 token exchange. Its secret is referenced from a Kubernetes
+                        Secret and is never represented inline.
+                      properties:
+                        audiences:
+                          description: Audiences is the narrowed set of RFC 8707 resources
+                            this client may request.
+                          items:
+                            maxLength: 2048
+                            minLength: 1
+                            type: string
+                          maxItems: 10
+                          minItems: 1
+                          type: array
+                          x-kubernetes-list-type: atomic
+                        clientId:
+                          description: ClientID is the OAuth client_id presented at
+                            the token endpoint.
+                          maxLength: 256
+                          minLength: 1
+                          type: string
+                        clientSecretRef:
+                          description: ClientSecretRef references the Kubernetes Secret
+                            key containing the client secret.
+                          properties:
+                            key:
+                              description: Key is the key within the secret
+                              type: string
+                            name:
+                              description: Name is the name of the secret
+                              type: string
+                          required:
+                          - key
+                          - name
+                          type: object
+                        scopes:
+                          description: Scopes is the narrowed set of OAuth scopes
+                            this client may request.
+                          items:
+                            maxLength: 256
+                            minLength: 1
+                            type: string
+                          maxItems: 10
+                          minItems: 1
+                          type: array
+                          x-kubernetes-list-type: atomic
+                      required:
+                      - audiences
+                      - clientId
+                      - clientSecretRef
+                      - scopes
+                      type: object
+                      x-kubernetes-validations:
+                      - message: clientSecretRef.name and clientSecretRef.key are
+                          required and must be non-empty
+                        rule: has(self.clientSecretRef) && size(self.clientSecretRef.name)
+                          > 0 && size(self.clientSecretRef.key) > 0
+                    maxItems: 10
+                    type: array
+                    x-kubernetes-list-type: atomic
                   disableUpstreamTokenInjection:
                     default: false
                     description: |-
@@ -3622,6 +4240,41 @@ spec:
                       This is useful when the backend MCP server does not require authentication
                       (e.g., public documentation servers) but you still want client authentication.
                     type: boolean
+                  forceConfidentialRedirectUris:
+                    description: |-
+                      ForceConfidentialRedirectURIs lists redirect URIs that must be
+                      registered as confidential clients regardless of the
+                      token_endpoint_auth_method the DCR request declares. A registration
+                      whose redirectUris contains an EXACT match for one of these entries is
+                      issued a real client_secret and reported back as
+                      token_endpoint_auth_method "client_secret_post", even if the request
+                      said "none" or omitted the field.
+
+                      Intended for MCP clients that declare themselves public
+                      (token_endpoint_auth_method: "none") per RFC 7591 but then refuse to
+                      proceed because the response carries no client_secret — a
+                      self-contradictory request. RFC 7591 §3.2.1 permits the server to
+                      substitute client metadata, so this takes such a client at its word
+                      that it wants a secret. Remove an entry once the client is fixed to
+                      handle "none" registrations correctly.
+
+                      Exact matching is deliberate: an attacker who registers with someone
+                      else's callback URI is issued a secret for a client whose
+                      authorization codes are delivered to that someone else's redirect
+                      endpoint, not to the attacker, so this is not a way to obtain a usable
+                      credential for another client.
+
+                      Requires allowConfidentialClientRegistration to be true. Every entry
+                      must be an https non-loopback URI — a loopback client is a public
+                      client by construction (OAuth 2.1 §2.1) and must not be issued a
+                      secret; this is enforced at reconcile time since CEL cannot express
+                      the loopback-hostname check.
+                    items:
+                      pattern: ^https://[^\s?#]+$
+                      type: string
+                    maxItems: 10
+                    type: array
+                    x-kubernetes-list-type: atomic
                   hmacSecretRefs:
                     description: |-
                       HMACSecretRefs references Kubernetes Secrets containing symmetric secrets for signing
@@ -3645,6 +4298,20 @@ spec:
                       type: object
                     type: array
                     x-kubernetes-list-type: atomic
+                  insecureAllowConfidentialOverLoopbackHTTP:
+                    default: false
+                    description: |-
+                      InsecureAllowConfidentialOverLoopbackHTTP opts in to confidential
+                      Dynamic Client Registration (DCR) and delegate clients when issuer is a
+                      plain-HTTP loopback URL (e.g. "http://localhost:8080"). Without this
+                      flag, that combination is rejected at reconcile time: a loopback http://
+                      issuer is normally fine for local development since the traffic never
+                      leaves the machine, but confidential clients send secrets over cleartext.
+                      Forcing TLS onto every loopback deployment instead would just push
+                      operators toward insecureAllowHTTP, which is worse: that also disables
+                      the non-loopback host check. Has no effect when there are no confidential
+                      clients or issuer is https.
+                    type: boolean
                   insecureAllowHTTP:
                     default: false
                     description: |-
@@ -3660,6 +4327,11 @@ spec:
                       structurally present but enforcement is deferred to pod startup via Config.Validate();
                       a misconfigured issuer will cause the pod to crash at startup rather than surface
                       as an operator condition.
+
+                      One combination is rejected at admission on all three CRDs regardless of the
+                      above: setting this field alongside allowConfidentialClientRegistration, which
+                      would issue client secrets in cleartext over an unauthenticated registration
+                      endpoint (see the XValidation rule on EmbeddedAuthServerConfig).
                     type: boolean
                   issuer:
                     description: |-
@@ -3936,6 +4608,242 @@ spec:
                         pattern: ^([0-9]+(\.[0-9]+)?(ns|us|µs|ms|s|m|h))+$
                         type: string
                     type: object
+                  trustedIssuers:
+                    description: |-
+                      TrustedIssuers configures external OIDC issuers whose tokens are
+                      accepted as RFC 8693 subject tokens during token exchange, in addition
+                      to self-issued subject tokens. Empty (the default) means only
+                      self-issued subject tokens are accepted. See
+                      docs/arch/17-token-exchange-delegation.md for the trust model.
+                    items:
+                      description: |-
+                        TrustedIssuerConfig configures an external OIDC issuer whose tokens are
+                        accepted as RFC 8693 subject tokens or RFC 7523 JWT-bearer assertions during
+                        token exchange. It mirrors tokenexchange.TrustedIssuer
+                        (pkg/authserver/server/tokenexchange), the runtime type the operator converts
+                        this into directly — no secret is referenced by this type, so no SecretKeyRef
+                        indirection is needed, unlike DelegateClientConfig.
+
+                        expectedAudience is exempted only for a grant-only issuer: jwtBearerGrant
+                        present and none of actorClaim, actorMatcher, allowMayAct, or allowedActors
+                        set. Any RFC 8693 delegation field (actorClaim, actorMatcher, allowMayAct,
+                        allowedActors) still requires expectedAudience, even when combined with
+                        jwtBearerGrant.
+
+                        The allowedDelegateClients rule below mirrors validateDelegationPolicy
+                        (pkg/authserver/server/tokenexchange/multi_issuer_validator.go): it is
+                        keyed on whether ANY delegation field is set (expectedAudience,
+                        actorClaim, actorMatcher, allowMayAct), not merely on whether
+                        jwtBearerGrant is absent — an issuer can combine jwtBearerGrant with
+                        expectedAudience for RFC 8693 delegation on the same issuer, and that
+                        combination still requires allowedDelegateClients at the Go level.
+                      properties:
+                        actorClaim:
+                          description: |-
+                            ActorClaim names the claim identifying the client that requested the
+                            subject token from this external issuer (used by allowedActors below).
+                            Defaults to "azp" when empty; use "appid" for Microsoft Entra v1, "cid"
+                            for Okta. The special value "client_id" reads the subject token's
+                            client_id claim instead.
+                          maxLength: 64
+                          type: string
+                        actorMatcher:
+                          description: |-
+                            ActorMatcher is an admin-authored CEL expression evaluated against the
+                            subject token's complete signature-verified claims map (bound as
+                            "claims") to authorize a class of external actors, in addition to (not
+                            instead of) allowedActors — either signal is sufficient. Must evaluate
+                            to a boolean; a non-boolean result denies the token at evaluation time,
+                            not at reconcile time. A syntactically invalid expression fails
+                            reconciliation (surfaced via the AuthServerConfigValidated condition),
+                            not admission — there is no validating webhook for this field.
+                          maxLength: 4096
+                          type: string
+                        allowMayAct:
+                          default: false
+                          description: |-
+                            AllowMayAct permits this external issuer's may_act claim to authorize
+                            delegation. Defaults to false; external issuers must be opted in
+                            explicitly because may_act bypasses allowedActors and actorMatcher.
+                            Does not affect self-issued subject tokens. The wildcard is never
+                            permitted alongside specific allowedDelegateClients, regardless of
+                            this setting.
+                          type: boolean
+                        allowPrivateIPs:
+                          description: |-
+                            AllowPrivateIPs permits OIDC discovery and JWKS fetches for THIS issuer
+                            to resolve to a private or loopback address. Use only when the issuer
+                            is hosted inside the same cluster and has no public endpoint. Requires
+                            jwksUrl to be set explicitly (enforced at reconcile time), since
+                            otherwise OIDC discovery — fetched from the external issuer itself —
+                            would choose the private dial target.
+                          type: boolean
+                        allowedActors:
+                          description: |-
+                            AllowedActors is the allowlist of actorClaim values authorized to
+                            exchange a subject token from this issuer when it carries no
+                            "may_act" claim, in addition to (not instead of) actorMatcher below —
+                            either signal is sufficient. Empty denies every token unless
+                            actorMatcher is set, or allowMayAct is true and the token carries a
+                            permitted may_act claim.
+                          items:
+                            maxLength: 256
+                            minLength: 1
+                            type: string
+                          maxItems: 50
+                          type: array
+                          x-kubernetes-list-type: atomic
+                        allowedDelegateClients:
+                          description: |-
+                            AllowedDelegateClients restricts which ToolHive client IDs may exchange
+                            an RFC 8693 subject token from this issuer. Required unless only
+                            jwtBearerGrant is configured; set it to ["*"] to permit any confidential
+                            client holding the token-exchange grant, or list specific client IDs to
+                            bind delegation to them.
+                          items:
+                            maxLength: 256
+                            minLength: 1
+                            type: string
+                          maxItems: 50
+                          minItems: 1
+                          type: array
+                          x-kubernetes-list-type: atomic
+                        expectedAudience:
+                          description: |-
+                            ExpectedAudience is the expected "aud" claim value that must appear in
+                            an RFC 8693 subject token's audience list. It is not used by an RFC 7523
+                            JWT-bearer assertion, whose audience is the token endpoint.
+                          maxLength: 2048
+                          minLength: 1
+                          type: string
+                        insecureAllowHTTP:
+                          description: |-
+                            InsecureAllowHTTP permits plain-HTTP OIDC discovery and JWKS fetches
+                            for THIS issuer only. Development and testing only — never set in
+                            production.
+                          type: boolean
+                        issuerUrl:
+                          description: IssuerURL is the expected "iss" claim value
+                            (exact match).
+                          maxLength: 2048
+                          minLength: 1
+                          type: string
+                        jwksUrl:
+                          description: |-
+                            JWKSURL is the URL to fetch the issuer's JSON Web Key Set from. If
+                            empty, it is resolved via OIDC discovery at
+                            {issuerUrl}/.well-known/openid-configuration.
+                          maxLength: 2048
+                          type: string
+                        jwtBearerGrant:
+                          description: |-
+                            JWTBearerGrant enables the plain RFC 7523 JWT-bearer grant for this
+                            issuer. It is independent of RFC 8693 delegation policy.
+                          properties:
+                            acceptedAudiences:
+                              description: |-
+                                AcceptedAudiences identifies this authorization server's accepted
+                                assertion audiences. When omitted, runtime validation defaults to the
+                                token endpoint.
+                              items:
+                                maxLength: 2048
+                                minLength: 1
+                                pattern: ^https?://[^[:space:]]+$
+                                type: string
+                              maxItems: 50
+                              type: array
+                              x-kubernetes-list-type: atomic
+                            maxAssertionAge:
+                              description: MaxAssertionAge caps the exp-iat interval
+                                independently of exp.
+                              type: string
+                            subjectBindings:
+                              description: |-
+                                SubjectBindings maps an exact external subject to allowed RFC 8707
+                                resources.
+                              items:
+                                description: |-
+                                  JWTBearerSubjectBinding configures the exact subject and allowed resources
+                                  for one RFC 7523 JWT-bearer assertion identity.
+                                properties:
+                                  allowedResources:
+                                    description: |-
+                                      AllowedResources is the exact set of RFC 8707 resources this subject may
+                                      request.
+                                    items:
+                                      maxLength: 2048
+                                      minLength: 1
+                                      pattern: ^https?://[^[:space:]]+$
+                                      type: string
+                                    maxItems: 50
+                                    minItems: 1
+                                    type: array
+                                    x-kubernetes-list-type: atomic
+                                  subject:
+                                    description: Subject is an exact assertion sub
+                                      value. Wildcards are not supported.
+                                    maxLength: 256
+                                    minLength: 1
+                                    pattern: ^[^*]+$
+                                    type: string
+                                required:
+                                - allowedResources
+                                - subject
+                                type: object
+                              maxItems: 50
+                              minItems: 1
+                              type: array
+                              x-kubernetes-list-type: atomic
+                          required:
+                          - maxAssertionAge
+                          - subjectBindings
+                          type: object
+                          x-kubernetes-validations:
+                          - message: maxAssertionAge must be greater than zero
+                            rule: duration(self.maxAssertionAge) > duration('0s')
+                          - message: subjectBindings must not contain duplicate subjects
+                            rule: self.subjectBindings.all(binding, self.subjectBindings.filter(other,
+                              other.subject == binding.subject).size() == 1)
+                      required:
+                      - issuerUrl
+                      type: object
+                      x-kubernetes-validations:
+                      - message: allowedDelegateClients must not combine the wildcard
+                          "*" with specific client IDs
+                        rule: '!has(self.allowedDelegateClients) || !(''*'' in self.allowedDelegateClients)
+                          || size(self.allowedDelegateClients) == 1'
+                      - message: allowMayAct must not be enabled when allowedDelegateClients
+                          contains the wildcard "*"
+                        rule: '!(has(self.allowMayAct) && self.allowMayAct && ''*''
+                          in self.allowedDelegateClients)'
+                      - message: actorClaim must name a readable claim; use client_id
+                          or a non-reserved claim such as azp, appid, or cid
+                        rule: '!has(self.actorClaim) || !(self.actorClaim in [''sub'',
+                          ''iss'', ''aud'', ''exp'', ''iat'', ''nbf'', ''jti'', ''name'',
+                          ''email'', ''scope'', ''scp'', ''may_act''])'
+                      - message: allowPrivateIPs requires jwksUrl to be set explicitly
+                        rule: '!(has(self.allowPrivateIPs) && self.allowPrivateIPs)
+                          || (has(self.jwksUrl) && self.jwksUrl != "")'
+                      - message: expectedAudience is required unless jwtBearerGrant
+                          is configured without actorClaim, actorMatcher, allowMayAct,
+                          or allowedActors
+                        rule: (has(self.jwtBearerGrant) && !((has(self.actorClaim)
+                          && size(self.actorClaim) > 0) || (has(self.actorMatcher)
+                          && size(self.actorMatcher) > 0) || (has(self.allowMayAct)
+                          && self.allowMayAct) || (has(self.allowedActors) && size(self.allowedActors)
+                          > 0))) || (has(self.expectedAudience) && size(self.expectedAudience)
+                          > 0)
+                      - message: allowedDelegateClients is required when expectedAudience,
+                          actorClaim, actorMatcher, or allowMayAct is set
+                        rule: '!((has(self.expectedAudience) && size(self.expectedAudience)
+                          > 0) || (has(self.actorClaim) && size(self.actorClaim) >
+                          0) || (has(self.actorMatcher) && size(self.actorMatcher)
+                          > 0) || (has(self.allowMayAct) && self.allowMayAct)) ||
+                          (has(self.allowedDelegateClients) && size(self.allowedDelegateClients)
+                          > 0)'
+                    maxItems: 20
+                    type: array
+                    x-kubernetes-list-type: atomic
                   upstreamProviders:
                     description: |-
                       UpstreamProviders configures connections to upstream Identity Providers.
@@ -3982,6 +4890,14 @@ spec:
                                 scope, state, code_challenge, code_challenge_method, nonce) are not allowed.
                               maxProperties: 16
                               type: object
+                            allowPrivateIPs:
+                              description: |-
+                                AllowPrivateIPs permits the upstream provider's HTTP client to connect to
+                                private IP ranges (RFC-1918, link-local). Use only when the upstream is
+                                hosted inside the same cluster and has no public endpoint. HTTP-scheme
+                                restrictions are unchanged — HTTPS is still required for non-localhost
+                                hosts unless InsecureAllowHTTP is set. Defaults to false.
+                              type: boolean
                             authorizationEndpoint:
                               description: AuthorizationEndpoint is the URL for the
                                 OAuth authorization endpoint.
@@ -4133,6 +5049,13 @@ spec:
                               required:
                               - subjectPath
                               type: object
+                            insecureAllowHTTP:
+                              description: |-
+                                InsecureAllowHTTP permits plain-HTTP authorization and token endpoint URLs
+                                for this upstream. Only for in-cluster development environments (e.g. an
+                                OAuth2 provider served over HTTP in a kind cluster) where TLS is not
+                                available. Never set this in production.
+                              type: boolean
                             redirectUri:
                               description: |-
                                 RedirectURI is the callback URL where the upstream IdP will redirect after authentication.
@@ -4452,6 +5375,21 @@ spec:
                 - issuer
                 - upstreamProviders
                 type: object
+                x-kubernetes-validations:
+                - message: allowConfidentialClientRegistration cannot be combined
+                    with insecureAllowHTTP; client secrets would be issued in cleartext
+                    over an unauthenticated endpoint
+                  rule: '!(has(self.allowConfidentialClientRegistration) && self.allowConfidentialClientRegistration
+                    && has(self.insecureAllowHTTP) && self.insecureAllowHTTP)'
+                - message: forceConfidentialRedirectUris requires allowConfidentialClientRegistration
+                    to be true
+                  rule: (!has(self.forceConfidentialRedirectUris) || size(self.forceConfidentialRedirectUris)
+                    == 0) || (has(self.allowConfidentialClientRegistration) && self.allowConfidentialClientRegistration)
+                - message: delegateClients with an HTTP issuer require insecureAllowConfidentialOverLoopbackHTTP
+                    to be explicitly enabled; the issuer must still be loopback
+                  rule: '!has(self.delegateClients) || size(self.delegateClients)
+                    == 0 || !self.issuer.startsWith(''http://'') || (has(self.insecureAllowConfidentialOverLoopbackHTTP)
+                    && self.insecureAllowConfidentialOverLoopbackHTTP)'
               config:
                 description: |-
                   Config is the Virtual MCP server configuration.
@@ -4496,6 +5434,28 @@ spec:
                               type: string
                             type: array
                         type: object
+                      defaultToolVisibility:
+                        description: |-
+                          DefaultToolVisibility controls whether a backend with NO entry in Tools has its
+                          tools advertised to MCP clients.
+                            - allow (default): every tool from an unlisted backend is advertised, so
+                              adding a workload to the group exposes it without further configuration.
+                            - deny: an unlisted backend contributes no tools, so only backends named in
+                              Tools are advertised. Use this when the set of exposed tools must be
+                              enumerated deliberately rather than inherited from group membership.
+
+                          A backend that DOES have a Tools entry is unaffected by this setting: the
+                          entry opts it in, and ExcludeAll/Filter on that entry decide the rest. Like
+                          every other visibility setting here, this controls advertising only — hidden
+                          tools remain in the routing table for composite tools (see the type doc).
+
+                          This gates TOOLS only. An unlisted backend's resources, resource templates,
+                          and prompts are still advertised under deny; mergeResources/mergePrompts have
+                          no equivalent check.
+                        enum:
+                        - allow
+                        - deny
+                        type: string
                       excludeAllTools:
                         description: |-
                           ExcludeAllTools hides all backend tools from MCP clients when true.
@@ -4541,24 +5501,34 @@ spec:
                                       Only specified fields are overridden; others pass through from the backend.
                                     properties:
                                       destructiveHint:
-                                        description: DestructiveHint overrides the
-                                          destructive hint annotation.
+                                        description: |-
+                                          DestructiveHint sets the destructive hint annotation.
+                                          For tool overrides this replaces the backend value; for composite tools
+                                          it is an explicit declaration merged over the derived safety floor.
                                         type: boolean
                                       idempotentHint:
-                                        description: IdempotentHint overrides the
-                                          idempotent hint annotation.
+                                        description: |-
+                                          IdempotentHint sets the idempotent hint annotation.
+                                          For tool overrides this replaces the backend value; for composite tools
+                                          it is an explicit declaration merged over the derived safety floor.
                                         type: boolean
                                       openWorldHint:
-                                        description: OpenWorldHint overrides the open-world
-                                          hint annotation.
+                                        description: |-
+                                          OpenWorldHint sets the open-world hint annotation.
+                                          For tool overrides this replaces the backend value; for composite tools
+                                          it is an explicit declaration merged over the derived safety floor.
                                         type: boolean
                                       readOnlyHint:
-                                        description: ReadOnlyHint overrides the read-only
-                                          hint annotation.
+                                        description: |-
+                                          ReadOnlyHint sets the read-only hint annotation.
+                                          For tool overrides this replaces the backend value; for composite tools
+                                          it is an explicit declaration merged over the derived safety floor.
                                         type: boolean
                                       title:
-                                        description: Title overrides the human-readable
-                                          title annotation.
+                                        description: |-
+                                          Title sets the human-readable title annotation.
+                                          For tool overrides this replaces the backend value; for composite tools
+                                          it is an explicit declaration merged over the derived safety floor.
                                         type: string
                                     type: object
                                   description:
@@ -4786,6 +5756,57 @@ spec:
                         CompositeToolConfig defines a composite tool workflow.
                         This matches the YAML structure from the proposal (lines 173-255).
                       properties:
+                        annotations:
+                          description: |-
+                            Annotations declares MCP tool annotations for the composite tool.
+
+                            Annotation derivation runs at ADVERTISE TIME (when tools/list is served
+                            and the backend tools are aggregated), not at CRD admission — thv vmcp
+                            validate does NOT check annotation contradictions. The derived floor is
+                            fail-closed: when the workflow has one or more tool steps the floor is
+                            always non-nil, and any step whose annotations are nil/unknown taints the
+                            floor conservatively (readOnly=false, destructive=true, openWorld=true).
+                            A workflow with no tool steps (e.g. only elicitation) has no floor.
+
+                            When nil, annotations are derived from the annotations of the backend tools
+                            referenced by the workflow's steps (e.g. readOnlyHint is true only when every
+                            step tool is read-only). When set, the values are an explicit author
+                            declaration merged over the derived floor — subject to a safety-floor
+                            guardrail that drops the composite tool (with a warning naming the offending
+                            step tools) if an explicit hint would make the tool look safer than its
+                            steps allow.
+                          properties:
+                            destructiveHint:
+                              description: |-
+                                DestructiveHint sets the destructive hint annotation.
+                                For tool overrides this replaces the backend value; for composite tools
+                                it is an explicit declaration merged over the derived safety floor.
+                              type: boolean
+                            idempotentHint:
+                              description: |-
+                                IdempotentHint sets the idempotent hint annotation.
+                                For tool overrides this replaces the backend value; for composite tools
+                                it is an explicit declaration merged over the derived safety floor.
+                              type: boolean
+                            openWorldHint:
+                              description: |-
+                                OpenWorldHint sets the open-world hint annotation.
+                                For tool overrides this replaces the backend value; for composite tools
+                                it is an explicit declaration merged over the derived safety floor.
+                              type: boolean
+                            readOnlyHint:
+                              description: |-
+                                ReadOnlyHint sets the read-only hint annotation.
+                                For tool overrides this replaces the backend value; for composite tools
+                                it is an explicit declaration merged over the derived safety floor.
+                              type: boolean
+                            title:
+                              description: |-
+                                Title sets the human-readable title annotation.
+                                For tool overrides this replaces the backend value; for composite tools
+                                it is an explicit declaration merged over the derived safety floor.
+                              type: string
+                          type: object
                         description:
                           description: Description describes what the workflow does.
                           type: string
@@ -6221,7 +7242,10 @@ spec:
                         default: false
                         description: |-
                           EnablePrometheusMetricsPath controls whether to expose Prometheus-style /metrics endpoint.
-                          The metrics are served on the main transport port at /metrics.
+                          The metrics are served at /metrics on a dedicated diagnostics port rather than on the
+                          main transport port, so the endpoint can be restricted by port and is not routed
+                          alongside application traffic. The endpoint is unauthenticated either way.
+                          See PrometheusPort and pkg/diagnostics.
                           This is separate from OTLP metrics which are sent to the Endpoint.
                         type: boolean
                       endpoint:
@@ -6254,6 +7278,36 @@ spec:
                           When false, OTLP metrics are not sent even if an endpoint is configured.
                           This is independent of EnablePrometheusMetricsPath.
                         type: boolean
+                      metricsOnTransportPort:
+                        description: |-
+                          MetricsOnTransportPort controls whether /metrics is ALSO served on the main
+                          transport port, in addition to the diagnostics port. It exists to give
+                          deployments a migration window: while true, an existing scrape configuration
+                          aimed at the transport port keeps working, and a new one aimed at
+                          PrometheusPort works too, so a scraper can be moved and verified before the
+                          old location goes away. See https://github.com/stacklok/toolhive/issues/6384 for
+                          the removal timeline.
+
+                          Deliberately a pointer with NO kubebuilder default. Nil means "unset", and is
+                          resolved against DefaultMetricsOnTransportPort at the point of use rather than
+                          written into config. A plain bool with a default marker would be materialised
+                          into the persisted RunConfig and into CRD objects at admission, so changing
+                          the default later would not move any workload that already exists — the flip
+                          would silently do nothing.
+                        type: boolean
+                      prometheusPort:
+                        description: |-
+                          PrometheusPort is the port the Prometheus /metrics endpoint is served on when
+                          EnablePrometheusMetricsPath is true. It is deliberately not the main transport port,
+                          so that access can be restricted with a NetworkPolicy: NetworkPolicy matches on port,
+                          not on HTTP path, so a shared port makes "allow MCP traffic, deny metrics scraping"
+                          impossible to express. The endpoint itself is unauthenticated, so restricting who can
+                          reach this port is how it is protected.
+
+                          Zero selects the default diagnostics port (9464, the OpenTelemetry specification's
+                          Prometheus exporter default). If that port is taken the listener falls back to an
+                          available one and logs the resolved address. Do not route this port publicly.
+                        type: integer
                       samplingRate:
                         default: "0.05"
                         description: |-

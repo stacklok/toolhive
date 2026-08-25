@@ -124,7 +124,7 @@ func newDCRTestServer(t *testing.T, cfg dcrTestHandlerConfig) *httptest.Server {
 			RegistrationClientURI:   server.URL + "/register/" + clientID,
 			TokenEndpointAuthMethod: req.TokenEndpointAuthMethod,
 			ClientIDIssuedAt:        cfg.clientIDIssuedAt,
-			ClientSecretExpiresAt:   cfg.clientSecretExpiresAt,
+			ClientSecretExpiresAt:   &cfg.clientSecretExpiresAt,
 		}
 		w.Header().Set("Content-Type", "application/json")
 		w.WriteHeader(http.StatusCreated)
@@ -819,9 +819,9 @@ func TestResolveDCRCredentials_AuthMethodPreference(t *testing.T) {
 			expected:  "client_secret_basic",
 		},
 		{
-			name:      "prefers private_key_jwt over others",
+			name:      "selects client_secret_basic when private_key_jwt is also advertised",
 			supported: []string{"client_secret_basic", "private_key_jwt", "none"},
-			expected:  "private_key_jwt",
+			expected:  "client_secret_basic",
 		},
 		{
 			name:          "falls back to none when only none supported and S256 advertised",
@@ -1896,7 +1896,7 @@ func TestBuildResolution_PopulatesRFC7591ExpiryFields(t *testing.T) {
 					ClientID:              "id",
 					ClientSecret:          "secret",
 					ClientIDIssuedAt:      tc.issuedAt,
-					ClientSecretExpiresAt: tc.expiresAt,
+					ClientSecretExpiresAt: &tc.expiresAt,
 				},
 				&dcrEndpoints{
 					authorizationEndpoint: "https://idp.example.com/authorize",
@@ -2277,4 +2277,89 @@ func TestSanitizeErrorForLog(t *testing.T) {
 			assert.Equal(t, tc.expected, SanitizeErrorForLog(tc.in))
 		})
 	}
+}
+
+// TestResolveDCRCredentials_MetadataNamedForeignRegistrationEndpointGuarded is
+// the regression test for GHSA-3768-rwj3-38p2 on the embedded-authserver path.
+// The DiscoveryURL is operator-configured, but the document it returns is
+// upstream-controlled, so a registration_endpoint naming a *different* authority
+// is server-supplied input and must be dialed under the strict policy — where
+// being loopback is not itself a permission. The registration POST carries the
+// operator's initial access token as a bearer header, so the foreign listener
+// must never receive a request at all (CWE-918).
+//
+// AllowPrivateIPs is deliberately left false: this is the guarded-by-default
+// posture an embedded authserver runs with unless the operator opts in.
+func TestResolveDCRCredentials_MetadataNamedForeignRegistrationEndpointGuarded(t *testing.T) {
+	t.Parallel()
+
+	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+	defer cancel()
+
+	// The authority the operator never named. Any hit here is the vulnerability.
+	var foreignHits atomic.Int32
+	foreign := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		foreignHits.Add(1)
+		t.Errorf("registration POST reached the foreign authority %s (auth header present: %t)",
+			r.Host, r.Header.Get("Authorization") != "")
+		w.WriteHeader(http.StatusOK)
+	}))
+	t.Cleanup(foreign.Close)
+
+	mux := http.NewServeMux()
+	var server *httptest.Server
+	mux.HandleFunc("/.well-known/oauth-authorization-server",
+		func(w http.ResponseWriter, _ *http.Request) {
+			w.Header().Set("Content-Type", "application/json")
+			_ = json.NewEncoder(w).Encode(oauthproto.AuthorizationServerMetadata{
+				Issuer:                server.URL,
+				AuthorizationEndpoint: server.URL + "/authorize",
+				TokenEndpoint:         server.URL + "/token",
+				JWKSURI:               server.URL + "/jwks",
+				// Same loopback host, different port: a different authority, and
+				// one the operator's DiscoveryURL never named.
+				RegistrationEndpoint: foreign.URL + "/register",
+			})
+		})
+	server = httptest.NewServer(mux)
+	t.Cleanup(server.Close)
+
+	req := &Request{
+		Issuer:             server.URL,
+		Scopes:             []string{"openid"},
+		DiscoveryURL:       server.URL + "/.well-known/oauth-authorization-server",
+		InitialAccessToken: "operator-initial-access-token",
+	}
+
+	_, err := ResolveCredentials(ctx, req, newMemoryDCRStore(t))
+	require.Error(t, err, "a registration endpoint on an unnamed authority must be refused")
+	assert.Contains(t, err.Error(), networking.ErrPrivateIpAddress,
+		"the refusal must come from the private-IP guard, not an unrelated failure")
+	assert.Zero(t, foreignHits.Load(), "the initial access token must never leave for an unnamed authority")
+}
+
+// TestResolveDCRCredentials_MetadataSelfNamedRegistrationEndpointAllowed is the
+// non-regression counterpart: an upstream naming its *own* authority stays
+// within the operator's decision to configure that DiscoveryURL, so a loopback
+// or in-cluster IdP that worked before the GHSA-3768 fix still works. Without
+// this, guarding every metadata-derived endpoint would break dex and
+// Keycloak-in-Docker.
+func TestResolveDCRCredentials_MetadataSelfNamedRegistrationEndpointAllowed(t *testing.T) {
+	t.Parallel()
+
+	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+	defer cancel()
+
+	server := newDCRTestServer(t, dcrTestHandlerConfig{})
+
+	req := &Request{
+		Issuer:       server.URL,
+		Scopes:       []string{"openid"},
+		DiscoveryURL: server.URL + "/.well-known/oauth-authorization-server",
+	}
+
+	res, err := ResolveCredentials(ctx, req, newMemoryDCRStore(t))
+	require.NoError(t, err, "an upstream naming its own loopback authority must still register")
+	require.NotNil(t, res)
+	assert.NotEmpty(t, res.ClientID)
 }

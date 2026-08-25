@@ -83,7 +83,7 @@ func Setup(
 	// and tool patching succeed, so a failed login leaves no persisted state.
 	if err := llmCfg.SetFields(inlineOpts); err != nil {
 		if portErr := setupCallbackPortError(err); portErr != nil {
-			return portErr
+			return fmt.Errorf("invalid inline flag values: %w", portErr)
 		}
 		return fmt.Errorf("invalid inline flag values: %w", err)
 	}
@@ -124,7 +124,7 @@ func Setup(
 		_, _ = fmt.Fprintln(out, "Ensuring you are logged in to the LLM gateway…")
 		if err := login(ctx, &llmCfg); err != nil {
 			if portErr := setupCallbackPortError(err); portErr != nil {
-				return portErr
+				return fmt.Errorf("OIDC login failed: %w", portErr)
 			}
 			return fmt.Errorf("OIDC login failed: %s", SanitizeTokenError(err))
 		}
@@ -189,7 +189,7 @@ func setupCallbackPortError(err error) error {
 		return nil
 	}
 	return fmt.Errorf(
-		"OIDC login failed: requested callback port %d is already in use; "+
+		"requested callback port %d is already in use; "+
 			"stop the process using it or choose another provider-registered port with "+
 			`"thv llm setup --callback-port <port>"`,
 		portErr.Port,

@@ -129,12 +129,17 @@ func NewFlow(config *Config) (*Flow, error) {
 	}
 
 	requestedPort := config.CallbackPort
-	port, err := networking.FindOrUsePort(requestedPort)
-	if err != nil {
-		return nil, fmt.Errorf("failed to find available port: %w", err)
-	}
-	if config.RequireExactCallbackPort && requestedPort != 0 && port != requestedPort {
-		return nil, &networking.CallbackPortInUseError{Port: requestedPort}
+	port := requestedPort
+	if config.RequireExactCallbackPort && requestedPort != 0 {
+		if !networking.IsAvailable(requestedPort) {
+			return nil, &networking.CallbackPortInUseError{Port: requestedPort}
+		}
+	} else {
+		var err error
+		port, err = networking.FindOrUsePort(requestedPort)
+		if err != nil {
+			return nil, fmt.Errorf("failed to find available port: %w", err)
+		}
 	}
 
 	// Set default redirect URL if not provided

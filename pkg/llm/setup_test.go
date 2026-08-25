@@ -656,6 +656,8 @@ func TestSetup_CallbackPortInUseBeforeLogin(t *testing.T) {
 	)
 
 	require.Error(t, err)
+	assert.Contains(t, err.Error(), "invalid inline flag values")
+	assert.NotContains(t, err.Error(), "OIDC login failed")
 	assert.Contains(t, err.Error(), fmt.Sprintf("requested callback port %d is already in use", port))
 	assert.Contains(t, err.Error(), "thv llm setup --callback-port <port>")
 	assert.False(t, loginCalled)

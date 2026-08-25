@@ -2870,3 +2870,160 @@ func TestOAuth2Config_AllowPrivateIPs(t *testing.T) {
 		assert.False(t, provider.config.AllowPrivateIPs)
 	})
 }
+
+func TestValidateAdditionalTokenParams(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name        string
+		params      map[string]string
+		wantErr     bool
+		errContains string
+	}{
+		{
+			name:   "nil map",
+			params: nil,
+		},
+		{
+			name:   "empty map",
+			params: map[string]string{},
+		},
+		{
+			name:   "valid RFC 8707 resource",
+			params: map[string]string{"resource": "https://api.example.com/mcp"},
+		},
+		{
+			name:   "valid multiple params",
+			params: map[string]string{"resource": "https://api.example.com/mcp", "audience": "mcp"},
+		},
+		{
+			name:        "reserved: grant_type",
+			params:      map[string]string{"grant_type": "password"},
+			wantErr:     true,
+			errContains: "grant_type",
+		},
+		{
+			name:        "reserved: code",
+			params:      map[string]string{"code": "x"},
+			wantErr:     true,
+			errContains: "code",
+		},
+		{
+			name:        "reserved: code_verifier",
+			params:      map[string]string{"code_verifier": "x"},
+			wantErr:     true,
+			errContains: "code_verifier",
+		},
+		{
+			name:        "reserved: refresh_token",
+			params:      map[string]string{"refresh_token": "x"},
+			wantErr:     true,
+			errContains: "refresh_token",
+		},
+		{
+			name:        "reserved: client_id",
+			params:      map[string]string{"client_id": "x"},
+			wantErr:     true,
+			errContains: "client_id",
+		},
+		{
+			name:        "reserved: client_secret",
+			params:      map[string]string{"client_secret": "x"},
+			wantErr:     true,
+			errContains: "client_secret",
+		},
+		{
+			name:        "reserved: redirect_uri",
+			params:      map[string]string{"redirect_uri": "http://evil.com"},
+			wantErr:     true,
+			errContains: "redirect_uri",
+		},
+		{
+			name:        "reserved: scope",
+			params:      map[string]string{"scope": "admin"},
+			wantErr:     true,
+			errContains: "scope",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			config := &CommonOAuthConfig{
+				ClientID:              "test-client",
+				RedirectURI:           "http://localhost:8080/callback",
+				AdditionalTokenParams: tt.params,
+			}
+
+			err := config.ValidateWithInsecure(false)
+
+			if tt.wantErr {
+				require.Error(t, err)
+				assert.Contains(t, err.Error(), tt.errContains)
+			} else {
+				require.NoError(t, err)
+			}
+		})
+	}
+}
+
+// TestTokenRequests_AdditionalTokenParams verifies that configured additional
+// token params reach the token endpoint's POST form body on both the
+// authorization-code exchange and the refresh grant — the RFC 8707 use case,
+// where an AS rejects token requests lacking a resource indicator.
+func TestTokenRequests_AdditionalTokenParams(t *testing.T) {
+	t.Parallel()
+
+	newProviderWithCapture := func(t *testing.T) (*BaseOAuth2Provider, *url.Values) {
+		t.Helper()
+		var captured url.Values
+		mux := http.NewServeMux()
+		mux.HandleFunc("/token", func(w http.ResponseWriter, r *http.Request) {
+			require.NoError(t, r.ParseForm())
+			captured = r.PostForm
+			w.Header().Set("Content-Type", "application/json")
+			_, _ = w.Write([]byte(`{"access_token":"a","token_type":"Bearer","refresh_token":"r"}`))
+		})
+		srv := httptest.NewServer(mux)
+		t.Cleanup(srv.Close)
+
+		config := &OAuth2Config{
+			CommonOAuthConfig: CommonOAuthConfig{
+				ClientID:    "test-client",
+				RedirectURI: "http://localhost:8080/callback",
+				AdditionalTokenParams: map[string]string{
+					"resource": "https://api.example.com/mcp",
+				},
+			},
+			AuthorizationEndpoint: srv.URL + "/authorize",
+			TokenEndpoint:         srv.URL + "/token",
+		}
+		provider, err := NewOAuth2Provider(config)
+		require.NoError(t, err)
+		return provider, &captured
+	}
+
+	t.Run("code exchange includes params in form body", func(t *testing.T) {
+		t.Parallel()
+
+		provider, captured := newProviderWithCapture(t)
+		_, err := provider.ExchangeCodeForIdentity(context.Background(), "test-code", "test-verifier", "")
+		require.NoError(t, err)
+
+		assert.Equal(t, "https://api.example.com/mcp", captured.Get("resource"))
+		assert.Equal(t, "authorization_code", captured.Get("grant_type"))
+		assert.Equal(t, "test-verifier", captured.Get("code_verifier"))
+	})
+
+	t.Run("refresh includes params in form body", func(t *testing.T) {
+		t.Parallel()
+
+		provider, captured := newProviderWithCapture(t)
+		_, err := provider.RefreshTokens(context.Background(), "old-refresh", "")
+		require.NoError(t, err)
+
+		assert.Equal(t, "https://api.example.com/mcp", captured.Get("resource"))
+		assert.Equal(t, "refresh_token", captured.Get("grant_type"))
+	})
+}

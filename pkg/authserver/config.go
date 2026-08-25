@@ -561,6 +561,12 @@ type OIDCUpstreamRunConfig struct {
 	//nolint:lll // field tags require full JSON+YAML names
 	AdditionalAuthorizationParams map[string]string `json:"additional_authorization_params,omitempty" yaml:"additional_authorization_params,omitempty"`
 
+	// AdditionalTokenParams are extra form-body parameters to include in
+	// token requests (authorization code exchange and refresh). Useful for
+	// providers that enforce RFC 8707 resource indicators on token requests.
+	//nolint:lll // field tags require full JSON+YAML names
+	AdditionalTokenParams map[string]string `json:"additional_token_params,omitempty" yaml:"additional_token_params,omitempty"`
+
 	// SubjectClaim names the validated ID-token claim to use as the upstream
 	// subject. Defaults to "sub" when empty. Set for IdPs where "sub" isn't
 	// stable per user (e.g. Entra/Azure AD's "oid"). See upstream.OIDCConfig.
@@ -636,6 +642,12 @@ type OAuth2UpstreamRunConfig struct {
 	// Google's access_type=offline.
 	//nolint:lll // field tags require full JSON+YAML names
 	AdditionalAuthorizationParams map[string]string `json:"additional_authorization_params,omitempty" yaml:"additional_authorization_params,omitempty"`
+
+	// AdditionalTokenParams are extra form-body parameters to include in
+	// token requests (authorization code exchange and refresh). Useful for
+	// providers that enforce RFC 8707 resource indicators on token requests.
+	//nolint:lll // field tags require full JSON+YAML names
+	AdditionalTokenParams map[string]string `json:"additional_token_params,omitempty" yaml:"additional_token_params,omitempty"`
 
 	// DCRConfig enables RFC 7591 Dynamic Client Registration against the
 	// upstream authorization server. When set, the client credentials are

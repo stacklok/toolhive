@@ -20,6 +20,20 @@ var ReservedAuthorizationParams = map[string]bool{
 	"nonce":                 true,
 }
 
+// ReservedTokenParams are OAuth2 parameters managed by the framework that
+// must not be set via AdditionalTokenParams. They cover both token-endpoint
+// grant types the framework issues (authorization_code and refresh_token).
+var ReservedTokenParams = map[string]bool{
+	"grant_type":    true,
+	"code":          true,
+	"redirect_uri":  true,
+	"client_id":     true,
+	"client_secret": true,
+	"code_verifier": true,
+	"refresh_token": true,
+	"scope":         true,
+}
+
 // Validate checks that no key in params is a reserved OAuth2 authorization
 // parameter. Reserved parameters are managed by the framework and cannot be
 // overridden via additional authorization params.
@@ -27,6 +41,18 @@ func Validate(params map[string]string) error {
 	for k := range params {
 		if ReservedAuthorizationParams[k] {
 			return fmt.Errorf("reserved parameter %q is managed by the framework and cannot be overridden", k)
+		}
+	}
+	return nil
+}
+
+// ValidateTokenParams checks that no key in params is a reserved OAuth2
+// token-request parameter. Reserved parameters are managed by the framework
+// and cannot be overridden via additional token params.
+func ValidateTokenParams(params map[string]string) error {
+	for k := range params {
+		if ReservedTokenParams[k] {
+			return fmt.Errorf("reserved token parameter %q is managed by the framework and cannot be overridden", k)
 		}
 	}
 	return nil

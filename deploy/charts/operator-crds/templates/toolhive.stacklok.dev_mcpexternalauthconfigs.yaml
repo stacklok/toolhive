@@ -1026,6 +1026,20 @@ spec:
                                 scope, state, code_challenge, code_challenge_method, nonce) are not allowed.
                               maxProperties: 16
                               type: object
+                            additionalTokenParams:
+                              additionalProperties:
+                                type: string
+                              description: |-
+                                AdditionalTokenParams are extra form-body parameters to include in
+                                token requests (authorization code exchange and refresh) sent to the
+                                upstream provider's token endpoint.
+                                This is useful for providers that enforce RFC 8707 resource indicators
+                                on token requests, where the resource parameter must accompany the code
+                                exchange and refresh, not only the authorization request.
+                                Framework-managed parameters (grant_type, code, redirect_uri, client_id,
+                                client_secret, code_verifier, refresh_token, scope) are not allowed.
+                              maxProperties: 16
+                              type: object
                             allowPrivateIPs:
                               description: |-
                                 AllowPrivateIPs permits the upstream provider's HTTP client to connect to
@@ -1340,6 +1354,20 @@ spec:
                                 the default offline_access scope being sent alongside it.
                                 Framework-managed parameters (response_type, client_id, redirect_uri,
                                 scope, state, code_challenge, code_challenge_method, nonce) are not allowed.
+                              maxProperties: 16
+                              type: object
+                            additionalTokenParams:
+                              additionalProperties:
+                                type: string
+                              description: |-
+                                AdditionalTokenParams are extra form-body parameters to include in
+                                token requests (authorization code exchange and refresh) sent to the
+                                upstream provider's token endpoint.
+                                This is useful for providers that enforce RFC 8707 resource indicators
+                                on token requests, where the resource parameter must accompany the code
+                                exchange and refresh, not only the authorization request.
+                                Framework-managed parameters (grant_type, code, redirect_uri, client_id,
+                                client_secret, code_verifier, refresh_token, scope) are not allowed.
                               maxProperties: 16
                               type: object
                             clientId:
@@ -2999,6 +3027,20 @@ spec:
                                 scope, state, code_challenge, code_challenge_method, nonce) are not allowed.
                               maxProperties: 16
                               type: object
+                            additionalTokenParams:
+                              additionalProperties:
+                                type: string
+                              description: |-
+                                AdditionalTokenParams are extra form-body parameters to include in
+                                token requests (authorization code exchange and refresh) sent to the
+                                upstream provider's token endpoint.
+                                This is useful for providers that enforce RFC 8707 resource indicators
+                                on token requests, where the resource parameter must accompany the code
+                                exchange and refresh, not only the authorization request.
+                                Framework-managed parameters (grant_type, code, redirect_uri, client_id,
+                                client_secret, code_verifier, refresh_token, scope) are not allowed.
+                              maxProperties: 16
+                              type: object
                             allowPrivateIPs:
                               description: |-
                                 AllowPrivateIPs permits the upstream provider's HTTP client to connect to
@@ -3313,6 +3355,20 @@ spec:
                                 the default offline_access scope being sent alongside it.
                                 Framework-managed parameters (response_type, client_id, redirect_uri,
                                 scope, state, code_challenge, code_challenge_method, nonce) are not allowed.
+                              maxProperties: 16
+                              type: object
+                            additionalTokenParams:
+                              additionalProperties:
+                                type: string
+                              description: |-
+                                AdditionalTokenParams are extra form-body parameters to include in
+                                token requests (authorization code exchange and refresh) sent to the
+                                upstream provider's token endpoint.
+                                This is useful for providers that enforce RFC 8707 resource indicators
+                                on token requests, where the resource parameter must accompany the code
+                                exchange and refresh, not only the authorization request.
+                                Framework-managed parameters (grant_type, code, redirect_uri, client_id,
+                                client_secret, code_verifier, refresh_token, scope) are not allowed.
                               maxProperties: 16
                               type: object
                             clientId:

@@ -907,6 +907,72 @@ func TestMCPExternalAuthConfig_validateUpstreamProvider(t *testing.T) {
 			expectErr: false,
 		},
 		{
+			name: "OIDC provider with valid additionalTokenParams",
+			provider: UpstreamProviderConfig{
+				Name: "nominal",
+				Type: UpstreamProviderTypeOIDC,
+				OIDCConfig: &OIDCUpstreamConfig{
+					IssuerURL: "https://idp.example.com",
+					ClientID:  "client-id",
+					AdditionalTokenParams: map[string]string{
+						"resource": "https://api.example.com/mcp",
+					},
+				},
+			},
+			expectErr: false,
+		},
+		{
+			name: "OAuth2 provider with valid additionalTokenParams",
+			provider: UpstreamProviderConfig{
+				Name: "nominal",
+				Type: UpstreamProviderTypeOAuth2,
+				OAuth2Config: &OAuth2UpstreamConfig{
+					AuthorizationEndpoint: "https://oauth.example.com/authorize",
+					TokenEndpoint:         "https://oauth.example.com/token",
+					ClientID:              "client-id",
+					UserInfo:              &UserInfoConfig{EndpointURL: "https://oauth.example.com/userinfo"},
+					AdditionalTokenParams: map[string]string{
+						"resource": "https://api.example.com/mcp",
+					},
+				},
+			},
+			expectErr: false,
+		},
+		{
+			name: "OAuth2 provider with reserved token param grant_type",
+			provider: UpstreamProviderConfig{
+				Name: "custom",
+				Type: UpstreamProviderTypeOAuth2,
+				OAuth2Config: &OAuth2UpstreamConfig{
+					AuthorizationEndpoint: "https://oauth.example.com/authorize",
+					TokenEndpoint:         "https://oauth.example.com/token",
+					ClientID:              "client-id",
+					UserInfo:              &UserInfoConfig{EndpointURL: "https://oauth.example.com/userinfo"},
+					AdditionalTokenParams: map[string]string{
+						"grant_type": "password",
+					},
+				},
+			},
+			expectErr: true,
+			errMsg:    "reserved token parameter \"grant_type\" is managed by the framework",
+		},
+		{
+			name: "OIDC provider with reserved token param refresh_token",
+			provider: UpstreamProviderConfig{
+				Name: "custom",
+				Type: UpstreamProviderTypeOIDC,
+				OIDCConfig: &OIDCUpstreamConfig{
+					IssuerURL: "https://idp.example.com",
+					ClientID:  "client-id",
+					AdditionalTokenParams: map[string]string{
+						"refresh_token": "override-attempt",
+					},
+				},
+			},
+			expectErr: true,
+			errMsg:    "reserved token parameter \"refresh_token\" is managed by the framework",
+		},
+		{
 			name: "OAuth2 provider with valid DCRConfig (discoveryUrl only)",
 			provider: UpstreamProviderConfig{
 				Name: "dcr-discovery",

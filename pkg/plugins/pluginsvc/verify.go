@@ -16,6 +16,20 @@ import (
 	"github.com/stacklok/toolhive/pkg/skills/verifier"
 )
 
+// maxSignatureBlobSize bounds every attacker-influenced blob install-time
+// verification captures: the Sigstore bundle persisted with the install
+// record, and the commit payload and gitsign signature a git install verifies.
+// None is bounded at its source — a registry serves whatever bundle it likes,
+// and git imposes no length limit on a commit message — so without a ceiling a
+// hostile plugin source can push a multi-MB blob into SQLite on every install
+// and make every sync read it back (#6396 review). A real keyless bundle or
+// gitsign signature is a few KB (a certificate chain, a signature, an
+// inclusion proof), so 1 MiB is orders of magnitude above any legitimate
+// value while still refusing the abuse. Over-limit material is rejected, not
+// truncated: a truncated bundle would fail to verify later and be
+// indistinguishable from tampering.
+const maxSignatureBlobSize = 1 << 20 // 1 MiB
+
 // artifactVerifier returns the configured signature verifier, defaulting to
 // the Sigstore verifier with the composite registry keychain. Plugins reuse
 // the skills verifier wholesale: the Sigstore policy, the trust-on-first-use
@@ -58,6 +72,30 @@ func applyDecisionToOpts(opts *plugins.InstallOptions, decision *provenanceDecis
 	opts.SigstoreBundle = decision.bundle
 }
 
+// rejectOversizedBlob rejects signature material over maxSignatureBlobSize.
+// Reported as unprocessable rather than as a signature failure: the artifact
+// may well be correctly signed, but its material is not something ToolHive
+// will store.
+func rejectOversizedBlob(kind, pluginName string, size int) error {
+	if size <= maxSignatureBlobSize {
+		return nil
+	}
+	return httperr.WithCode(
+		fmt.Errorf("%s for plugin %q is %d bytes, over the %d-byte limit",
+			kind, pluginName, size, maxSignatureBlobSize),
+		http.StatusUnprocessableEntity,
+	)
+}
+
+// signedDecision records a successful verification, refusing an oversized
+// bundle before it reaches InstallOptions and the store.
+func signedDecision(result *verifier.Result, pluginName string) (*provenanceDecision, error) {
+	if err := rejectOversizedBlob("sigstore bundle", pluginName, len(result.Bundle)); err != nil {
+		return nil, err
+	}
+	return &provenanceDecision{provenance: result.ToLockProvenance(), bundle: result.Bundle}, nil
+}
+
 // verifyOCIInstall verifies the signature of the OCI artifact at ref/digest
 // before anything is extracted or recorded. The identity expected by the
 // lock file (if any) is enforced inside the verifier's Sigstore policy;
@@ -86,7 +124,7 @@ func (s *service) verifyOCIInstall(
 		}
 		return nil, classifyInstallVerifyError(verifyErr, pluginName, expected)
 	}
-	return &provenanceDecision{provenance: result.ToLockProvenance(), bundle: result.Bundle}, nil
+	return signedDecision(result, pluginName)
 }
 
 // verifyGitInstall verifies the gitsign signature on the resolved commit
@@ -105,6 +143,14 @@ func (s *service) verifyGitInstall(
 	if expectUnsigned {
 		return unsignedLockedDecision(opts, pluginName)
 	}
+	// Checked before verification: both come straight off a remote commit,
+	// so refusing them early keeps a hostile repo from spending our CPU.
+	if err := rejectOversizedBlob("commit payload", pluginName, len(payload)); err != nil {
+		return nil, err
+	}
+	if err := rejectOversizedBlob("commit signature", pluginName, len(signature)); err != nil {
+		return nil, err
+	}
 
 	result, verifyErr := s.artifactVerifier().VerifyGit(
 		ctx, payload, []byte(signature), verifier.NewLockExpectation(expected))
@@ -114,7 +160,7 @@ func (s *service) verifyGitInstall(
 		}
 		return nil, classifyInstallVerifyError(verifyErr, pluginName, expected)
 	}
-	return &provenanceDecision{provenance: result.ToLockProvenance(), bundle: result.Bundle}, nil
+	return signedDecision(result, pluginName)
 }
 
 // verifyLocalInstall handles installs sourced from the local OCI store or

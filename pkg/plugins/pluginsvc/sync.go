@@ -411,11 +411,20 @@ func (s *service) syncUnlockedInstall(
 // bundle fails closed for OCI installs (the bundle should exist); git
 // installs never store a bundle — their signature lives on the commit and is
 // re-verified when content is re-resolved.
+//
+// Local-store pins (isLocalStorePin) also carry an OCI-shaped digest and
+// store no bundle, but they cannot reach the fail-closed branch: a local
+// install is always an unsigned trust decision (verifyLocalInstall refuses
+// outright once an entry is locked to a signer), so its entry records
+// unsigned and returns above. An entry hand-edited into that state is
+// correctly reported as drift here, and the reinstall it triggers is then
+// refused by verifyLocalInstall.
 func (s *service) verifyStoredSignature(entry lockfile.Entry, pl plugins.InstalledPlugin) error {
 	if entry.Unsigned || entry.Provenance == nil {
 		return nil
 	}
 	if len(pl.SigstoreBundle) == 0 {
+		// A bare commit hash has no colon; an OCI digest is "sha256:<hex>".
 		if !strings.Contains(entry.Digest, ":") {
 			return nil // git install: no stored bundle by design
 		}

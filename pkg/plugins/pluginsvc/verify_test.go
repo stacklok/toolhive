@@ -377,3 +377,107 @@ func TestClassifyInstallVerifyErrorDistinguishesProvenanceField(t *testing.T) {
 	assert.Contains(t, identityMismatch.Error(), "signer identity mismatch for",
 		"a genuine signer-identity mismatch keeps its existing wording")
 }
+
+// TestVerify_OversizedSignatureMaterialRejected covers the size ceiling
+// deferred from #6396's review: neither the bundle a registry serves nor the
+// commit payload/signature a repo serves is bounded at its source, so each is
+// refused at capture time rather than written to the store. The git payload
+// and signature are checked before the verifier is consulted, which the
+// mock's missing VerifyGit expectation enforces.
+func TestVerify_OversizedSignatureMaterialRejected(t *testing.T) {
+	t.Parallel()
+
+	oversized := make([]byte, maxSignatureBlobSize+1)
+
+	tests := []struct {
+		name    string
+		arrange func(*verifiermocks.MockVerifier)
+		call    func(*service) error
+	}{
+		{
+			name: "oversized OCI bundle",
+			arrange: func(mv *verifiermocks.MockVerifier) {
+				result := signedResult()
+				result.Bundle = oversized
+				mv.EXPECT().VerifyOCI(gomock.Any(), gomock.Any(), gomock.Any(), gomock.Any()).
+					Return(result, nil)
+			},
+			call: func(svc *service) error {
+				_, err := svc.verifyOCIInstall(t.Context(), plugins.InstallOptions{},
+					"my-plugin", "ghcr.io/org/my-plugin:v1", validLockDigest())
+				return err
+			},
+		},
+		{
+			name: "oversized git bundle",
+			arrange: func(mv *verifiermocks.MockVerifier) {
+				result := signedResult()
+				result.Bundle = oversized
+				mv.EXPECT().VerifyGit(gomock.Any(), gomock.Any(), gomock.Any(), gomock.Any()).
+					Return(result, nil)
+			},
+			call: func(svc *service) error {
+				_, err := svc.verifyGitInstall(t.Context(), plugins.InstallOptions{},
+					"my-plugin", []byte("commit payload"), "signature")
+				return err
+			},
+		},
+		{
+			name:    "oversized commit payload is refused before verification",
+			arrange: func(*verifiermocks.MockVerifier) {},
+			call: func(svc *service) error {
+				_, err := svc.verifyGitInstall(t.Context(), plugins.InstallOptions{},
+					"my-plugin", oversized, "signature")
+				return err
+			},
+		},
+		{
+			name:    "oversized commit signature is refused before verification",
+			arrange: func(*verifiermocks.MockVerifier) {},
+			call: func(svc *service) error {
+				_, err := svc.verifyGitInstall(t.Context(), plugins.InstallOptions{},
+					"my-plugin", []byte("commit payload"), string(oversized))
+				return err
+			},
+		},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			mv := verifiermocks.NewMockVerifier(gomock.NewController(t))
+			tc.arrange(mv)
+
+			err := tc.call(&service{sigVerifier: mv})
+			require.Error(t, err)
+			assert.Equal(t, http.StatusUnprocessableEntity, httperr.Code(err))
+			assert.Equal(t, plugins.FailureReasonValidationRejected, classifySyncFailure(err))
+		})
+	}
+}
+
+// TestInstallVerification_OversizedBundleIsNotStored proves the ceiling holds
+// end to end: an over-limit bundle fails the install rather than reaching the
+// DB or the lock file.
+//
+//nolint:paralleltest // uses t.Setenv via newGitLockTestService
+func TestInstallVerification_OversizedBundleIsNotStored(t *testing.T) {
+	repoDir := createPluginTestRepo(t, "")
+	result := signedResult()
+	result.Bundle = make([]byte, maxSignatureBlobSize+1)
+
+	mv := verifiermocks.NewMockVerifier(gomock.NewController(t))
+	mv.EXPECT().VerifyGit(gomock.Any(), gomock.Any(), gomock.Any(), gomock.Nil()).
+		Return(result, nil)
+
+	svc, projectRoot := newGitLockTestService(t, repoDir, WithVerifier(mv))
+	err := gitInstall(t, svc, projectRoot, nil)
+	require.Error(t, err)
+	assert.Equal(t, http.StatusUnprocessableEntity, httperr.Code(err))
+
+	_, ok := loadPluginLockEntry(t, projectRoot)
+	assert.False(t, ok, "an oversized bundle must not produce a lock entry")
+	_, err = svc.Info(t.Context(), plugins.InfoOptions{
+		Name: "my-plugin", Scope: plugins.ScopeProject, ProjectRoot: projectRoot,
+	})
+	require.Error(t, err, "an oversized bundle must not produce a DB record")
+}

@@ -634,6 +634,17 @@ components:
             secrets to any caller. Combining it with InsecureAllowHTTP is rejected
             by Validate.
           type: boolean
+        allow_private_key_jwt_registration:
+          description: |-
+            AllowPrivateKeyJWTRegistration permits Dynamic Client Registration of
+            clients using private_key_jwt authentication. This is independent of
+            AllowConfidentialClientRegistration and defaults to false. Registration
+            behavior is controlled independently by the DCR handler and discovery
+            metadata.
+
+            Security: /oauth/register is unauthenticated. Combining this capability
+            with InsecureAllowHTTP is rejected by Validate.
+          type: boolean
         allowed_audiences:
           description: |-
             AllowedAudiences is the list of valid resource URIs that tokens can be issued for.

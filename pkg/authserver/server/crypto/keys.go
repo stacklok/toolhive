@@ -133,18 +133,28 @@ func deriveECAlgorithm(curve elliptic.Curve) (string, error) {
 	}
 }
 
-// ValidateAlgorithmForKey checks if the provided algorithm is compatible with the key type.
-// Returns an error if the algorithm doesn't match the key type.
-func ValidateAlgorithmForKey(alg string, key crypto.Signer) error {
+// rsaAlgorithmsForClientKeys are the RSA JWS algorithms accepted for a client's public key.
+var rsaAlgorithmsForClientKeys = map[string]bool{
+	"RS256": true, "RS384": true, "RS512": true,
+	"PS256": true, "PS384": true, "PS512": true,
+}
+
+// rsaAlgorithmsForSigningKeys are the RSA JWS algorithms accepted for the server's own
+// signing key. Deliberately narrower than rsaAlgorithmsForClientKeys: PS* is excluded.
+var rsaAlgorithmsForSigningKeys = map[string]bool{
+	"RS256": true, "RS384": true, "RS512": true,
+}
+
+// validateAlgorithmForPublicKeyValue checks whether alg is compatible with a public key,
+// accepting exactly the RSA algorithms in allowedRSAAlgorithms.
+func validateAlgorithmForPublicKeyValue(alg string, key crypto.PublicKey, allowedRSAAlgorithms map[string]bool) error {
 	switch k := key.(type) {
-	case *rsa.PrivateKey:
-		switch alg {
-		case "RS256", "RS384", "RS512":
+	case *rsa.PublicKey:
+		if allowedRSAAlgorithms[alg] {
 			return nil
-		default:
-			return fmt.Errorf("algorithm %s is not compatible with RSA key", alg)
 		}
-	case *ecdsa.PrivateKey:
+		return fmt.Errorf("algorithm %s is not compatible with RSA key", alg)
+	case *ecdsa.PublicKey:
 		expectedAlg, err := deriveECAlgorithm(k.Curve)
 		if err != nil {
 			return err
@@ -154,11 +164,41 @@ func ValidateAlgorithmForKey(alg string, key crypto.Signer) error {
 				alg, k.Curve.Params().Name, expectedAlg)
 		}
 		return nil
-	case ed25519.PrivateKey:
+	case ed25519.PublicKey:
 		if alg != "EdDSA" {
 			return fmt.Errorf("algorithm %s is not compatible with Ed25519 key (expected EdDSA)", alg)
 		}
 		return nil
+	default:
+		return fmt.Errorf("unsupported key type: %T", key)
+	}
+}
+
+// ValidateAlgorithmForPublicKey checks whether alg is compatible with a public key.
+// It accepts the public-key values stored in jose.JSONWebKey.Key.
+func ValidateAlgorithmForPublicKey(alg string, key crypto.PublicKey) error {
+	return validateAlgorithmForPublicKeyValue(alg, key, rsaAlgorithmsForClientKeys)
+}
+
+// ValidateAlgorithmForKey checks if the provided algorithm is compatible with the key type.
+// Returns an error if the algorithm doesn't match the key type.
+func ValidateAlgorithmForKey(alg string, key crypto.Signer) error {
+	switch k := key.(type) {
+	case *rsa.PrivateKey:
+		if k == nil {
+			return fmt.Errorf("signing key is nil")
+		}
+		return validateAlgorithmForPublicKeyValue(alg, &k.PublicKey, rsaAlgorithmsForSigningKeys)
+	case *ecdsa.PrivateKey:
+		if k == nil {
+			return fmt.Errorf("signing key is nil")
+		}
+		return validateAlgorithmForPublicKeyValue(alg, &k.PublicKey, rsaAlgorithmsForSigningKeys)
+	case ed25519.PrivateKey:
+		if k == nil {
+			return fmt.Errorf("signing key is nil")
+		}
+		return validateAlgorithmForPublicKeyValue(alg, k.Public(), rsaAlgorithmsForSigningKeys)
 	default:
 		return fmt.Errorf("unsupported key type: %T", key)
 	}

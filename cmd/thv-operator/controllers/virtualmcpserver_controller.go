@@ -558,6 +558,19 @@ func (*VirtualMCPServerReconciler) validateAuthServerConfig(
 		return stderrors.New(message)
 	}
 
+	if err := cfg.ValidateConfidentialClientTransport(); err != nil {
+		message := fmt.Sprintf("spec.authServerConfig: %v", err)
+		statusManager.SetPhase(mcpv1beta1.VirtualMCPServerPhaseFailed)
+		statusManager.SetMessage(message)
+		statusManager.SetAuthServerConfigValidatedCondition(
+			mcpv1beta1.ConditionReasonAuthServerConfigInvalid,
+			message,
+			metav1.ConditionFalse,
+		)
+		statusManager.SetObservedGeneration(vmcp.Generation)
+		return stderrors.New(message)
+	}
+
 	// Admission-time check: http:// issuers for non-localhost hosts require
 	// insecureAllowHTTP to be set explicitly. Without it the proxyrunner pod
 	// will crash at startup with a validateIssuerURL failure.
@@ -582,19 +595,6 @@ func (*VirtualMCPServerReconciler) validateAuthServerConfig(
 			statusManager.SetObservedGeneration(vmcp.Generation)
 			return stderrors.New(message)
 		}
-	}
-
-	if err := cfg.ValidateConfidentialClientTransport(); err != nil {
-		message := fmt.Sprintf("spec.authServerConfig: %v", err)
-		statusManager.SetPhase(mcpv1beta1.VirtualMCPServerPhaseFailed)
-		statusManager.SetMessage(message)
-		statusManager.SetAuthServerConfigValidatedCondition(
-			mcpv1beta1.ConditionReasonAuthServerConfigInvalid,
-			message,
-			metav1.ConditionFalse,
-		)
-		statusManager.SetObservedGeneration(vmcp.Generation)
-		return stderrors.New(message)
 	}
 
 	if len(cfg.UpstreamProviders) == 0 {

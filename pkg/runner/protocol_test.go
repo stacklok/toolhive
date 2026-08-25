@@ -659,3 +659,82 @@ func TestCreateTemplateDataRejectsBuildWithForNonUVX(t *testing.T) {
 		t.Errorf("createTemplateData(uvx) with BuildWith should succeed, got %v", err)
 	}
 }
+
+func TestValidatePackageName(t *testing.T) {
+	t.Parallel()
+	tests := []struct {
+		name        string
+		packageName string
+		wantErr     bool
+	}{
+		// Valid names across all three ecosystems.
+		{"npm plain", "package-name", false},
+		{"npm scoped", "@launchdarkly/mcp-server", false},
+		{"npm scoped with version", "@org/package@1.2.3", false},
+		{"pypi with pin", "okta-mcp-server==1.1.3", false},
+		{"pypi with extra", "package[extra]==1.0", false},
+		{"go module path", "github.com/example/package@v1.2.3", false},
+		{"go module with port", "example.com:8443/mod/cmd", false},
+		{"go local path", "./cmd/server", false},
+		{"go parent path", "../server", false},
+		{"go current dir", ".", false},
+
+		// Shell metacharacters that must not reach a RUN instruction.
+		{"empty", "", true},
+		{"semicolon", "foo; echo INJECTED > /tmp/pwned; #", true},
+		{"double quote break", `foo"; echo INJECTED; echo "`, true},
+		{"command substitution", "foo$(id)", true},
+		{"backtick substitution", "foo`id`", true},
+		{"pipe", "foo|id", true},
+		{"background", "foo&", true},
+		{"redirect", "foo>/tmp/x", true},
+		{"logical and", "foo&&id", true},
+		{"space", "foo bar", true},
+		{"newline", "foo\nRUN id", true},
+		{"single quote", "foo'", true},
+		{"backslash", `foo\`, true},
+		{"variable expansion", "foo$HOME", true},
+		{"comment", "foo#bar", true},
+		{"glob", "foo*", true},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			err := validatePackageName(tt.packageName)
+			if tt.wantErr {
+				require.Error(t, err, "expected %q to be rejected", tt.packageName)
+				return
+			}
+			require.NoError(t, err, "expected %q to be accepted", tt.packageName)
+		})
+	}
+}
+
+// TestCreateTemplateDataRejectsInjectedPackageName checks the guard is wired
+// into the single chokepoint both the CLI and the API path go through, for
+// every transport type.
+func TestCreateTemplateDataRejectsInjectedPackageName(t *testing.T) {
+	t.Parallel()
+	transports := []templates.TransportType{
+		templates.TransportTypeNPX,
+		templates.TransportTypeUVX,
+		templates.TransportTypeGO,
+	}
+	payloads := []string{
+		"foo; echo INJECTED > /tmp/pwned; #",
+		`foo"; echo INJECTED > /tmp/pwned2; echo "`,
+		"foo$(cat /root/.netrc)",
+	}
+
+	for _, transport := range transports {
+		for _, payload := range payloads {
+			t.Run(string(transport)+"/"+payload, func(t *testing.T) {
+				t.Parallel()
+				_, err := createTemplateData(transport, payload, "", nil, nil)
+				require.Error(t, err)
+				assert.Contains(t, err.Error(), "invalid package name")
+			})
+		}
+	}
+}

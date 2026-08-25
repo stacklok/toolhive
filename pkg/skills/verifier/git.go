@@ -37,7 +37,7 @@ import (
 func (*Default) VerifyGit(
 	ctx context.Context,
 	payload, signature []byte,
-	expected *lockfile.Provenance,
+	expected *ProvenanceExpectation,
 ) (*Result, error) {
 	if len(signature) == 0 {
 		return nil, fmt.Errorf("%w: commit is not signed", ErrUnsigned)
@@ -59,14 +59,8 @@ func (*Default) VerifyGit(
 	if err != nil {
 		return nil, fmt.Errorf("%w: %w", ErrSignatureInvalid, err)
 	}
-	if expected != nil {
-		if !gitIdentityMatches(observed.Identity, expected) {
-			return nil, fmt.Errorf("%w: commit is signed by a different identity than %q",
-				ErrSignerMismatch, expected.SignerIdentity)
-		}
-		if err := checkPinnedCertificateFields(observed, expected); err != nil {
-			return nil, err
-		}
+	if err := checkProvenanceExpectation(observed, expected); err != nil {
+		return nil, err
 	}
 	result := resultFromCore(observed, nil)
 	// No transparency-log proof is validated yet (see the doc comment), so

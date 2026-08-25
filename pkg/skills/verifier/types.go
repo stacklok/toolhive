@@ -10,6 +10,7 @@ import (
 	"github.com/sigstore/sigstore-go/pkg/verify"
 
 	coreverifier "github.com/stacklok/toolhive-core/container/verifier"
+	regtypes "github.com/stacklok/toolhive-core/registry/types"
 	"github.com/stacklok/toolhive/pkg/skills/lockfile"
 )
 
@@ -49,6 +50,30 @@ type Result struct {
 	Bundle []byte
 }
 
+// ProvenanceExpectation identifies both the provenance constraints and their
+// source. Lock entries use their existing strict identity semantics, while
+// catalog fields constrain independently and ignore empty values.
+type ProvenanceExpectation struct {
+	locked  *lockfile.Provenance
+	catalog *regtypes.Provenance
+}
+
+// NewLockExpectation returns the strict expectation recorded in a lock file.
+func NewLockExpectation(p *lockfile.Provenance) *ProvenanceExpectation {
+	if p == nil {
+		return nil
+	}
+	return &ProvenanceExpectation{locked: p}
+}
+
+// NewCatalogExpectation returns independently optional catalog constraints.
+func NewCatalogExpectation(p *regtypes.Provenance) *ProvenanceExpectation {
+	if p == nil {
+		return nil
+	}
+	return &ProvenanceExpectation{catalog: p}
+}
+
 // ToLockProvenance converts a verification result to a lock file provenance
 // block. Key-signed results have no certificate identity and yield nil —
 // the lock file records provenance only for identity-bearing signatures.
@@ -67,19 +92,28 @@ func (r *Result) ToLockProvenance() *lockfile.Provenance {
 	}
 }
 
-// expectedIdentity converts a lock provenance block into the core Identity
-// that gets bound into the Sigstore verification policy. A nil provenance
-// (trust on first use) yields nil, which core treats as chain-of-trust-only
+// expectedIdentity converts a lock expectation into the core Identity bound
+// into the Sigstore verification policy. Catalog expectations and nil (trust
+// on first use) yield nil, which core treats as chain-of-trust-only
 // verification.
 //
 // The recorded RepositoryRef and RunnerEnvironment are deliberately absent:
 // core's Identity cannot express them (and its SAN policy matches any ref),
 // so they are enforced against the certificate after the policy has passed —
 // see checkPinnedCertificateFields.
-func expectedIdentity(p *lockfile.Provenance) *coreverifier.Identity {
-	if p == nil {
+func expectedIdentity(expected *ProvenanceExpectation) *coreverifier.Identity {
+	if expected == nil {
 		return nil
 	}
+	if expected.catalog != nil {
+		// Catalog fields constrain independently. Core's identity policy
+		// composes repository URI and signer into a GitHub Actions SAN, which
+		// would cross-couple those fields and reject valid non-GitHub
+		// identities. Catalog matching therefore happens against the observed
+		// certificate after chain verification, inside the per-bundle loop.
+		return nil
+	}
+	p := expected.locked
 	return &coreverifier.Identity{
 		SignerIdentity:      p.SignerIdentity,
 		CertIssuer:          p.CertIssuer,
@@ -139,16 +173,26 @@ func observedFromResult(vr *verify.VerificationResult) (observedCertificate, err
 	}, nil
 }
 
-// checkPinnedCertificateFields enforces the certificate fields the lock file
-// pins that no Sigstore policy can express: the git ref the signing workflow
-// ran on and the runner class it executed in. Without this, provenance
-// recorded for "this workflow in this repository" is satisfied by the same
-// workflow run from any branch or on a self-hosted runner.
-//
-// An empty expected field is unconstrained, not a wildcard mismatch: every
-// lock entry written before these fields were recorded has them empty, and
-// certificates from signers outside GitHub Actions carry no such extensions
-// at all. Both must keep verifying.
+// checkProvenanceExpectation applies the source-specific comparison after a
+// certificate chain has verified. Lock identity semantics remain strict;
+// catalog fields constrain independently and ignore empty values.
+func checkProvenanceExpectation(observed observedCertificate, expected *ProvenanceExpectation) error {
+	if expected == nil {
+		return nil
+	}
+	if expected.catalog != nil {
+		return checkCatalogExpectation(observed, expected.catalog)
+	}
+	p := expected.locked
+	if !gitIdentityMatches(observed.Identity, p) {
+		return fmt.Errorf("%w: artifact is signed by a different identity than %q",
+			ErrSignerMismatch, p.SignerIdentity)
+	}
+	return checkPinnedCertificateFields(observed, p)
+}
+
+// checkPinnedCertificateFields enforces lock fields the core Sigstore policy
+// cannot express while retaining the lock file's established semantics.
 func checkPinnedCertificateFields(observed observedCertificate, expected *lockfile.Provenance) error {
 	if expected == nil {
 		return nil
@@ -158,6 +202,27 @@ func checkPinnedCertificateFields(observed observedCertificate, expected *lockfi
 	}
 	if expected.RunnerEnvironment != "" && observed.RunnerEnvironment != expected.RunnerEnvironment {
 		return pinnedFieldMismatch("runner environment", expected.RunnerEnvironment, observed.RunnerEnvironment)
+	}
+	return nil
+}
+
+func checkCatalogExpectation(observed observedCertificate, expected *regtypes.Provenance) error {
+	checks := []struct {
+		name     string
+		expected string
+		observed string
+	}{
+		{name: "signer identity", expected: expected.SignerIdentity, observed: observed.SignerIdentity},
+		{name: "certificate issuer", expected: expected.CertIssuer, observed: observed.CertIssuer},
+		{name: "repository URI", expected: expected.RepositoryURI, observed: observed.SourceRepositoryURI},
+		{name: "repository ref", expected: expected.RepositoryRef, observed: observed.RepositoryRef},
+		{name: "runner environment", expected: expected.RunnerEnvironment, observed: observed.RunnerEnvironment},
+	}
+	for _, check := range checks {
+		if check.expected != "" && check.observed != check.expected {
+			return fmt.Errorf("%w: catalog requires %s %q, but the artifact carries %s",
+				ErrSignerMismatch, check.name, check.expected, quotedOrNone(check.observed))
+		}
 	}
 	return nil
 }

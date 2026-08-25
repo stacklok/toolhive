@@ -238,6 +238,16 @@ func TestValidateAlgorithmForPublicKey(t *testing.T) {
 	assert.Error(t, ValidateAlgorithmForPublicKey("ES384", &ecP256.PublicKey))
 	assert.NoError(t, ValidateAlgorithmForPublicKey("ES384", &ecP384.PublicKey))
 }
+
+func TestSupportedClientKeyAlgorithmsIncludesEdDSA(t *testing.T) {
+	t.Parallel()
+
+	// Regression test: EdDSA was previously missing from a hand-maintained
+	// copy of this list in the registration package, silently rejecting
+	// every Ed25519 private_key_jwt registration despite full Ed25519
+	// support elsewhere in this file.
+	assert.Contains(t, SupportedClientKeyAlgorithms(), "EdDSA")
+}
 func TestDeriveSigningKeyParams(t *testing.T) {
 	t.Parallel()
 

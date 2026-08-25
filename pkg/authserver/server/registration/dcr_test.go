@@ -15,6 +15,8 @@
 package registration
 
 import (
+	"crypto/ed25519"
+	"crypto/rand"
 	"crypto/rsa"
 	"math/big"
 	"strings"
@@ -628,6 +630,25 @@ func TestPrivateKeyJWTAllowsJWKWithoutAlgorithm(t *testing.T) {
 	require.Nil(t, err)
 	assert.Empty(t, validated.JWKS.Keys[0].Algorithm)
 }
+
+func TestPrivateKeyJWTAllowsEd25519Key(t *testing.T) {
+	t.Parallel()
+
+	pub, _, err := ed25519.GenerateKey(rand.Reader)
+	require.NoError(t, err)
+
+	validated, dcrErr := ValidateDCRRequest(&oauthproto.DynamicClientRegistrationRequest{
+		TokenEndpointAuthMethod:     oauthproto.TokenEndpointAuthMethodPrivateKeyJWT,
+		TokenEndpointAuthSigningAlg: "EdDSA",
+		GrantTypes:                  []string{oauthproto.GrantTypeTokenExchange},
+		JWKS: &jose.JSONWebKeySet{Keys: []jose.JSONWebKey{{
+			Key: pub, KeyID: "key-1", Use: "sig", Algorithm: "EdDSA",
+		}}},
+	}, false, true)
+	require.Nil(t, dcrErr)
+	require.NotNil(t, validated)
+}
+
 func TestValidateScopes(t *testing.T) {
 	t.Parallel()
 

@@ -401,14 +401,12 @@ func validatePrivateKeyJWTKey(key *jose.JSONWebKey, algorithm string) (bool, *DC
 	return true, nil
 }
 
-// SupportedSigningAlgorithms returns the narrow allowlist accepted for
-// private_key_jwt client assertions and their registered signing keys.
+// SupportedSigningAlgorithms returns the allowlist accepted for private_key_jwt
+// client assertions and their registered signing keys. Delegates to
+// servercrypto.SupportedClientKeyAlgorithms, the single source of truth also
+// consulted by key-compatibility validation, so the two cannot drift apart.
 func SupportedSigningAlgorithms() []string {
-	return []string{
-		string(jose.RS256), string(jose.RS384), string(jose.RS512),
-		string(jose.PS256), string(jose.PS384), string(jose.PS512),
-		string(jose.ES256), string(jose.ES384), string(jose.ES512),
-	}
+	return servercrypto.SupportedClientKeyAlgorithms()
 }
 
 func supportedSigningAlgorithm(alg string) bool {

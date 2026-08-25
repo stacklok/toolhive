@@ -26,6 +26,7 @@ import (
 	"encoding/pem"
 	"fmt"
 	"os"
+	"slices"
 
 	"github.com/go-jose/go-jose/v4"
 )
@@ -134,23 +135,31 @@ func deriveECAlgorithm(curve elliptic.Curve) (string, error) {
 }
 
 // rsaAlgorithmsForClientKeys are the RSA JWS algorithms accepted for a client's public key.
-var rsaAlgorithmsForClientKeys = map[string]bool{
-	"RS256": true, "RS384": true, "RS512": true,
-	"PS256": true, "PS384": true, "PS512": true,
-}
+var rsaAlgorithmsForClientKeys = []string{"RS256", "RS384", "RS512", "PS256", "PS384", "PS512"}
 
 // rsaAlgorithmsForSigningKeys are the RSA JWS algorithms accepted for the server's own
 // signing key. Deliberately narrower than rsaAlgorithmsForClientKeys: PS* is excluded.
-var rsaAlgorithmsForSigningKeys = map[string]bool{
-	"RS256": true, "RS384": true, "RS512": true,
+var rsaAlgorithmsForSigningKeys = []string{"RS256", "RS384", "RS512"}
+
+// SupportedClientKeyAlgorithms returns the full allowlist of JWS algorithms
+// accepted for a private_key_jwt client's registered key: rsaAlgorithmsForClientKeys,
+// the three EC algorithms deriveECAlgorithm maps curves to, and EdDSA for
+// Ed25519. This is the single source of truth for both key-compatibility
+// validation here and DCR's signing-algorithm allowlist, so the two lists
+// cannot silently drift apart (as happened when EdDSA was previously missing
+// from a hand-maintained copy of this list).
+func SupportedClientKeyAlgorithms() []string {
+	algs := make([]string, 0, len(rsaAlgorithmsForClientKeys)+4)
+	algs = append(algs, rsaAlgorithmsForClientKeys...)
+	return append(algs, "ES256", "ES384", "ES512", "EdDSA")
 }
 
 // validateAlgorithmForPublicKeyValue checks whether alg is compatible with a public key,
 // accepting exactly the RSA algorithms in allowedRSAAlgorithms.
-func validateAlgorithmForPublicKeyValue(alg string, key crypto.PublicKey, allowedRSAAlgorithms map[string]bool) error {
+func validateAlgorithmForPublicKeyValue(alg string, key crypto.PublicKey, allowedRSAAlgorithms []string) error {
 	switch k := key.(type) {
 	case *rsa.PublicKey:
-		if allowedRSAAlgorithms[alg] {
+		if slices.Contains(allowedRSAAlgorithms, alg) {
 			return nil
 		}
 		return fmt.Errorf("algorithm %s is not compatible with RSA key", alg)

@@ -1394,14 +1394,15 @@ spec:
                     over an unauthenticated endpoint
                   rule: '!(has(self.allowConfidentialClientRegistration) && self.allowConfidentialClientRegistration
                     && has(self.insecureAllowHTTP) && self.insecureAllowHTTP)'
-                - message: delegateClients require an https:// issuer; delegate client
-                    secrets must not be sent over plaintext HTTP
-                  rule: '!has(self.delegateClients) || size(self.delegateClients)
-                    == 0 || !self.issuer.startsWith(''http://'')'
                 - message: forceConfidentialRedirectUris requires allowConfidentialClientRegistration
                     to be true
                   rule: (!has(self.forceConfidentialRedirectUris) || size(self.forceConfidentialRedirectUris)
                     == 0) || (has(self.allowConfidentialClientRegistration) && self.allowConfidentialClientRegistration)
+                - message: delegateClients with an HTTP issuer require insecureAllowConfidentialOverLoopbackHTTP
+                    to be explicitly enabled; the issuer must still be loopback
+                  rule: '!has(self.delegateClients) || size(self.delegateClients)
+                    == 0 || !self.issuer.startsWith(''http://'') || (has(self.insecureAllowConfidentialOverLoopbackHTTP)
+                    && self.insecureAllowConfidentialOverLoopbackHTTP)'
               config:
                 description: |-
                   Config is the Virtual MCP server configuration.
@@ -5385,14 +5386,15 @@ spec:
                     over an unauthenticated endpoint
                   rule: '!(has(self.allowConfidentialClientRegistration) && self.allowConfidentialClientRegistration
                     && has(self.insecureAllowHTTP) && self.insecureAllowHTTP)'
-                - message: delegateClients require an https:// issuer; delegate client
-                    secrets must not be sent over plaintext HTTP
-                  rule: '!has(self.delegateClients) || size(self.delegateClients)
-                    == 0 || !self.issuer.startsWith(''http://'')'
                 - message: forceConfidentialRedirectUris requires allowConfidentialClientRegistration
                     to be true
                   rule: (!has(self.forceConfidentialRedirectUris) || size(self.forceConfidentialRedirectUris)
                     == 0) || (has(self.allowConfidentialClientRegistration) && self.allowConfidentialClientRegistration)
+                - message: delegateClients with an HTTP issuer require insecureAllowConfidentialOverLoopbackHTTP
+                    to be explicitly enabled; the issuer must still be loopback
+                  rule: '!has(self.delegateClients) || size(self.delegateClients)
+                    == 0 || !self.issuer.startsWith(''http://'') || (has(self.insecureAllowConfidentialOverLoopbackHTTP)
+                    && self.insecureAllowConfidentialOverLoopbackHTTP)'
               config:
                 description: |-
                   Config is the Virtual MCP server configuration.

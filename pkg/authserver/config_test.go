@@ -684,9 +684,14 @@ func TestValidateConfidentialClientTransport(t *testing.T) {
 			issuer: "http://localhost:8080",
 		},
 		{
-			name: "confidential with plain-HTTP non-loopback issuer passes here " +
-				"(caught separately by insecureAllowHTTP/validateIssuerURL)",
+			name:              "confidential with plain-HTTP non-loopback issuer rejects without opt-in",
 			allowConfidential: true, issuer: "http://auth.example.com",
+			wantErr: true, errContains: "plain-HTTP non-loopback",
+		},
+		{
+			name:              "confidential with plain-HTTP non-loopback issuer rejects with loopback opt-in",
+			allowConfidential: true, issuer: "http://auth.example.com", allowLoopbackOverride: true,
+			wantErr: true, errContains: "non-loopback issuer",
 		},
 	}
 

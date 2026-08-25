@@ -15,21 +15,25 @@ import (
 	"github.com/stacklok/toolhive/cmd/thv-operator/api/v1beta1/v1beta1test"
 )
 
-// These tests exercise the CEL XValidation rule on EmbeddedAuthServerConfig
+// These tests exercise the CEL XValidation rules on EmbeddedAuthServerConfig
 // through the real apiserver (envtest): allowConfidentialClientRegistration
 // combined with insecureAllowHTTP would issue client secrets in cleartext
 // over an unauthenticated registration endpoint, so the pair must be
 // rejected at admission rather than surfacing only as a pod crash at
-// startup. EmbeddedAuthServerConfig is shared by MCPExternalAuthConfig and
-// VirtualMCPServer, so exercising the rule through one CRD's generated
-// schema covers both.
+// startup. URL-specific delegate-client transport policy is handled by the
+// shared Go validator because CEL cannot safely parse URLs. EmbeddedAuthServerConfig
+// is shared by MCPExternalAuthConfig and VirtualMCPServer, so exercising both
+// CRDs verifies the schema behavior.
 var _ = Describe("EmbeddedAuthServerConfig confidential-client-transport CEL validation", func() {
 	const namespace = "default"
 
-	makeAuthConfig := func(name string, allowConfidential, insecureHTTP, delegateClient bool) *mcpv1beta1.MCPExternalAuthConfig {
+	makeAuthConfig := func(name string, allowConfidential, insecureHTTP, delegateClient, loopbackHTTP, loopbackOptIn bool) *mcpv1beta1.MCPExternalAuthConfig {
 		issuer := "https://auth.example.com"
 		if insecureHTTP {
 			issuer = "http://auth.internal.svc.cluster.local"
+		}
+		if loopbackHTTP {
+			issuer = "http://127.0.0.1:8080"
 		}
 		config := &mcpv1beta1.MCPExternalAuthConfig{
 			ObjectMeta: metav1.ObjectMeta{Name: name, Namespace: namespace},
@@ -39,6 +43,7 @@ var _ = Describe("EmbeddedAuthServerConfig confidential-client-transport CEL val
 					Issuer:                              issuer,
 					InsecureAllowHTTP:                   insecureHTTP,
 					AllowConfidentialClientRegistration: allowConfidential,
+					InsecureAllowConfidentialOverLoopbackHTTP: loopbackOptIn,
 					UpstreamProviders: []mcpv1beta1.UpstreamProviderConfig{{
 						Name: "github",
 						Type: mcpv1beta1.UpstreamProviderTypeOAuth2,
@@ -71,6 +76,8 @@ var _ = Describe("EmbeddedAuthServerConfig confidential-client-transport CEL val
 		allowConfidential bool
 		insecureHTTP      bool
 		delegateClient    bool
+		loopbackHTTP      bool
+		loopbackOptIn     bool
 		shouldAdmit       bool
 	}
 
@@ -88,17 +95,18 @@ var _ = Describe("EmbeddedAuthServerConfig confidential-client-transport CEL val
 			shouldAdmit:       true,
 		},
 		{
-			name:           "delegate clients with plaintext non-loopback issuer",
-			insecureHTTP:   true,
+			name:           "delegate clients with opted-in loopback HTTP issuer",
 			delegateClient: true,
-			shouldAdmit:    false,
+			loopbackHTTP:   true,
+			loopbackOptIn:  true,
+			shouldAdmit:    true,
 		},
 	}
 
 	for i, c := range cases {
 		name := fmt.Sprintf("confidential-client-transport-%d", i)
 		It(c.name, func() {
-			cfg := makeAuthConfig(name, c.allowConfidential, c.insecureHTTP, c.delegateClient)
+			cfg := makeAuthConfig(name, c.allowConfidential, c.insecureHTTP, c.delegateClient, c.loopbackHTTP, c.loopbackOptIn)
 			err := k8sClient.Create(ctx, cfg)
 			if c.shouldAdmit {
 				Expect(err).NotTo(HaveOccurred(),
@@ -110,22 +118,18 @@ var _ = Describe("EmbeddedAuthServerConfig confidential-client-transport CEL val
 			}
 			Expect(err).To(HaveOccurred(),
 				"expected apiserver to reject config: %s", c.name)
-			if c.delegateClient {
-				Expect(err.Error()).To(ContainSubstring("delegateClients require an https:// issuer"))
-				return
-			}
 			Expect(err.Error()).To(ContainSubstring(
 				"allowConfidentialClientRegistration cannot be combined with insecureAllowHTTP"))
 		})
 	}
 
-	It("rejects a plaintext issuer with delegate clients on VirtualMCPServer", func() {
+	It("admits an opted-in loopback HTTP issuer with delegate clients on VirtualMCPServer", func() {
 		vmcp := v1beta1test.NewVirtualMCPServer("delegate-client-http", namespace,
 			v1beta1test.WithVMCPGroupRef("test-group"),
 			v1beta1test.WithVMCPIncomingAuth(&mcpv1beta1.IncomingAuthConfig{Type: "anonymous"}),
 			v1beta1test.WithVMCPAuthServerConfig(&mcpv1beta1.EmbeddedAuthServerConfig{
-				Issuer:            "http://auth.internal.svc.cluster.local",
-				InsecureAllowHTTP: true,
+				Issuer: "http://127.0.0.1:8080",
+				InsecureAllowConfidentialOverLoopbackHTTP: true,
 				DelegateClients: []mcpv1beta1.DelegateClientConfig{{
 					ClientID:        "delegate-client",
 					ClientSecretRef: &mcpv1beta1.SecretKeyRef{Name: "delegate-secret", Key: "credential"},
@@ -139,7 +143,9 @@ var _ = Describe("EmbeddedAuthServerConfig confidential-client-transport CEL val
 			}),
 		)
 		err := k8sClient.Create(ctx, vmcp)
-		Expect(err).To(HaveOccurred())
-		Expect(err.Error()).To(ContainSubstring("delegateClients require an https:// issuer"))
+		Expect(err).NotTo(HaveOccurred())
+		DeferCleanup(func() {
+			Expect(k8sClient.Delete(ctx, vmcp)).To(Succeed())
+		})
 	})
 })

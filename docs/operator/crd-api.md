@@ -1950,22 +1950,15 @@ _Appears in:_
 EmbeddedAuthServerConfig holds configuration for the embedded OAuth2/OIDC authorization server.
 This enables running an authorization server that delegates authentication to upstream IDPs.
 This type is shared by MCPExternalAuthConfig.Spec.EmbeddedAuthServer and
-VirtualMCPServer.Spec.AuthServerConfig, so the XValidation rule below is
-enforced at admission for both CRDs.
+VirtualMCPServer.Spec.AuthServerConfig, so the XValidation rules below are
+enforced at admission for both CRDs. CEL only requires the explicit opt-in for
+delegate clients using an HTTP issuer; the shared Go validator performs the
+precise loopback-host security check.
 
-Delegate clients categorically require HTTPS at admission. CEL has no URL
-parser, so this deliberately conservative check rejects every plaintext HTTP
-issuer rather than attempting a loopback exception that could admit a
-non-loopback host. The runtime transport validation remains defense in depth
-for direct Go callers and confidential DCR.
-
-This is stricter than the Go-level ValidateConfidentialClientTransport,
-which still permits a loopback-HTTP issuer with delegate clients when
-InsecureAllowConfidentialOverLoopbackHTTP is set — intentionally, since that
-flag's loopback-is-safe rationale applies equally to delegate-client
-secrets. Do not tighten the Go-level check to match this CEL rule; the CRD
-is stricter only because CEL cannot express the loopback exception, not
-because delegate clients need one.
+The shared Go-level ValidateConfidentialClientTransport validator remains the
+source of truth for confidential-client transport and loopback policy,
+including delegate clients. Full issuer URL validation is performed by the
+runtime configuration validator.
 
 
 

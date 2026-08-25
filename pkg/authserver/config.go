@@ -1487,7 +1487,8 @@ func (c *Config) applyDefaults() error {
 //     any host, not just loopback. Always rejected for confidential clients.
 //  2. issuer is a plain-HTTP loopback URL (e.g. "http://localhost:18080").
 //     This is rejected by default but may be explicitly enabled with
-//     insecureAllowConfidentialOverLoopbackHTTP.
+//     insecureAllowConfidentialOverLoopbackHTTP. The opt-in does not permit
+//     non-loopback HTTP issuers.
 func ValidateConfidentialClientTransport(
 	allowConfidential, insecureAllowHTTP bool,
 	issuer string, insecureAllowConfidentialOverLoopbackHTTP bool,
@@ -1499,16 +1500,25 @@ func ValidateConfidentialClientTransport(
 		return fmt.Errorf("allow_confidential_client_registration cannot be combined with insecure_allow_http: " +
 			"confidential clients would send secrets over cleartext HTTP")
 	}
-	if insecureAllowConfidentialOverLoopbackHTTP {
-		return nil
-	}
 	// Malformed issuers are reported by validateIssuerURL; nothing more to
 	// check here if parsing fails.
-	if parsed, err := url.Parse(issuer); err == nil &&
-		parsed.Scheme == "http" && networking.IsLocalhost(parsed.Host) {
+	parsed, err := url.Parse(issuer)
+	if err != nil || parsed.Scheme != "http" {
+		return nil
+	}
+	if insecureAllowConfidentialOverLoopbackHTTP && !networking.IsLocalhost(parsed.Host) {
+		return fmt.Errorf(
+			"allow_confidential_client_registration cannot use the loopback HTTP opt-in with a non-loopback issuer (%q): "+
+				"confidential clients would send secrets over cleartext HTTP", issuer)
+	}
+	if !insecureAllowConfidentialOverLoopbackHTTP && networking.IsLocalhost(parsed.Host) {
 		return fmt.Errorf("allow_confidential_client_registration cannot be combined with a plain-HTTP loopback issuer (%q) unless "+
 			"insecure_allow_confidential_over_loopback_http is set: confidential clients would send secrets over cleartext HTTP",
 			issuer)
+	}
+	if !networking.IsLocalhost(parsed.Host) {
+		return fmt.Errorf("allow_confidential_client_registration cannot use a plain-HTTP non-loopback issuer (%q): "+
+			"confidential clients would send secrets over cleartext HTTP", issuer)
 	}
 	return nil
 }

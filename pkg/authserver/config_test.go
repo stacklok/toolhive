@@ -157,7 +157,7 @@ func TestConfigValidate(t *testing.T) {
 
 		// Confidential-client transport gate (same predicate RunConfig.Validate uses)
 		{name: "confidential clients combined with insecure HTTP rejects", config: Config{Issuer: "http://example.com", KeyProvider: validKeyProvider, HMACSecrets: validHMAC, Upstreams: validUpstreams, AllowedAudiences: []string{"https://mcp.example.com"}, AllowConfidentialClientRegistration: true, InsecureAllowHTTP: true}, wantErr: true, errMsg: "allow_confidential_client_registration cannot be combined with insecure_allow_http"},
-		{name: "private-key JWT registration combined with insecure HTTP rejects independently", config: Config{Issuer: "http://example.com", KeyProvider: validKeyProvider, HMACSecrets: validHMAC, Upstreams: validUpstreams, AllowedAudiences: []string{"https://mcp.example.com"}, AllowPrivateKeyJWTRegistration: true, InsecureAllowHTTP: true}, wantErr: true, errMsg: "allow_private_key_jwt_registration cannot be combined with insecure_allow_http"},
+		{name: "private-key JWT registration combined with insecure HTTP passes (no secret to protect)", config: Config{Issuer: "http://example.com", KeyProvider: validKeyProvider, HMACSecrets: validHMAC, Upstreams: validUpstreams, AllowedAudiences: []string{"https://mcp.example.com"}, AllowPrivateKeyJWTRegistration: true, InsecureAllowHTTP: true}},
 
 		// Valid configs
 		{name: "valid minimal", config: Config{Issuer: "https://example.com", KeyProvider: validKeyProvider, HMACSecrets: validHMAC, Upstreams: validUpstreams, AllowedAudiences: []string{"https://mcp.example.com"}}},
@@ -509,10 +509,8 @@ func TestRunConfigValidate(t *testing.T) {
 			errMsg:  "confidential clients require a valid issuer URL",
 		},
 		{
-			name:    "private-key JWT registration combined with insecure HTTP rejects independently",
-			config:  RunConfig{AllowPrivateKeyJWTRegistration: true, InsecureAllowHTTP: true},
-			wantErr: true,
-			errMsg:  "allow_private_key_jwt_registration cannot be combined with insecure_allow_http",
+			name:   "private-key JWT registration combined with insecure HTTP passes (no secret to protect)",
+			config: RunConfig{AllowPrivateKeyJWTRegistration: true, InsecureAllowHTTP: true},
 		},
 		{
 			name: "confidential clients with plain-HTTP loopback issuer rejects without the opt-in",
@@ -542,6 +540,13 @@ func TestRunConfigValidate(t *testing.T) {
 			name: "confidential clients disabled with plain-HTTP loopback issuer is unaffected",
 			config: RunConfig{
 				Issuer: "http://localhost:8080",
+			},
+		},
+		{
+			name: "private-key JWT registration with plain-HTTP loopback issuer is unaffected (no secret to protect)",
+			config: RunConfig{
+				Issuer:                         "http://localhost:8080",
+				AllowPrivateKeyJWTRegistration: true,
 			},
 		},
 	}
@@ -666,13 +671,15 @@ func TestConfigValidateDelegateClients(t *testing.T) {
 // validateEmbeddedAuthServer reuses: confidential clients are rejected when
 // combined with insecureAllowHTTP (unconditionally), or with a plain-HTTP
 // loopback issuer unless insecureAllowConfidentialOverLoopbackHTTP opts in.
+// private_key_jwt registration has no equivalent transport gate: it never
+// returns a secret in the DCR response, so it is unaffected by any of this
+// (see TestConfigValidate's "private-key JWT registration ... passes" cases).
 func TestValidateConfidentialClientTransport(t *testing.T) {
 	t.Parallel()
 
 	tests := []struct {
 		name                  string
 		allowConfidential     bool
-		allowPrivateKeyJWT    bool
 		insecureAllowHTTP     bool
 		issuer                string
 		allowLoopbackOverride bool
@@ -699,14 +706,6 @@ func TestValidateConfidentialClientTransport(t *testing.T) {
 			wantErr: true, errContains: "confidential clients require a valid issuer URL",
 		},
 		{
-			name: "insecure HTTP combined with private-key JWT registration rejects independently", allowPrivateKeyJWT: true, insecureAllowHTTP: true,
-			wantErr: true, errContains: "allow_private_key_jwt_registration",
-		},
-		{
-			name: "both registration capabilities over HTTPS pass", allowConfidential: true, allowPrivateKeyJWT: true,
-			issuer: "https://auth.example.com",
-		},
-		{
 			name:              "confidential with plain-HTTP loopback issuer rejects without the opt-in",
 			allowConfidential: true, issuer: "http://localhost:8080",
 			wantErr: true, errContains: "insecure_allow_confidential_over_loopback_http",
@@ -714,10 +713,6 @@ func TestValidateConfidentialClientTransport(t *testing.T) {
 		{
 			name:              "confidential with plain-HTTP loopback issuer passes with the opt-in",
 			allowConfidential: true, issuer: "http://localhost:8080", allowLoopbackOverride: true,
-		},
-		{
-			name:               "private-key JWT with plain-HTTP loopback issuer passes with explicit opt in",
-			allowPrivateKeyJWT: true, issuer: "http://localhost:8080", allowLoopbackOverride: true,
 		},
 		{
 			name:              "confidential with https loopback issuer passes without the opt-in",
@@ -743,10 +738,6 @@ func TestValidateConfidentialClientTransport(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
 			err := ValidateConfidentialClientTransport(tt.allowConfidential, tt.insecureAllowHTTP, tt.issuer, tt.allowLoopbackOverride)
-			if err == nil {
-				err = ValidatePrivateKeyJWTRegistrationTransport(
-					tt.allowPrivateKeyJWT, tt.insecureAllowHTTP, tt.issuer, tt.allowLoopbackOverride)
-			}
 			if tt.wantErr {
 				require.Error(t, err)
 				assert.Contains(t, err.Error(), "cleartext HTTP")

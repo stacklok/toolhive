@@ -319,7 +319,7 @@ func setupTestServer(t *testing.T, opts ...testServerOption) *testServer {
 		// local: an in-process httptest server), so opt in to the same
 		// combination withAllowConfidentialClientRegistration would otherwise
 		// be rejected for in production.
-		InsecureAllowConfidentialOverLoopbackHTTP: options.allowConfidentialClientRegistration || options.allowPrivateKeyJWTRegistration,
+		InsecureAllowConfidentialOverLoopbackHTTP: options.allowConfidentialClientRegistration,
 	}
 
 	// 7. Create server using newServer with test options

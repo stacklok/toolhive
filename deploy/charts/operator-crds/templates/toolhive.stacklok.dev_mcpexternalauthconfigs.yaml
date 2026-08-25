@@ -459,6 +459,11 @@ spec:
                       toward insecureAllowHTTP, which is worse: that also disables the
                       non-loopback host check. Has no effect when
                       allowConfidentialClientRegistration is false or issuer is https.
+
+                      private_key_jwt registration has no equivalent flag or transport
+                      restriction: unlike confidential registration, it never returns a
+                      client_secret (or any other secret) in the DCR response, so there is
+                      nothing here for cleartext HTTP to expose.
                     type: boolean
                   insecureAllowHTTP:
                     default: false
@@ -1528,11 +1533,6 @@ spec:
                     with insecureAllowHTTP; client secrets would be issued in cleartext
                     over an unauthenticated endpoint
                   rule: '!(has(self.allowConfidentialClientRegistration) && self.allowConfidentialClientRegistration
-                    && has(self.insecureAllowHTTP) && self.insecureAllowHTTP)'
-                - message: allowPrivateKeyJWTRegistration cannot be combined with
-                    insecureAllowHTTP; private_key_jwt registration would occur over
-                    cleartext HTTP
-                  rule: '!(has(self.allowPrivateKeyJWTRegistration) && self.allowPrivateKeyJWTRegistration
                     && has(self.insecureAllowHTTP) && self.insecureAllowHTTP)'
                 - message: delegateClients require an https:// issuer; delegate client
                     secrets must not be sent over plaintext HTTP
@@ -2448,6 +2448,11 @@ spec:
                       toward insecureAllowHTTP, which is worse: that also disables the
                       non-loopback host check. Has no effect when
                       allowConfidentialClientRegistration is false or issuer is https.
+
+                      private_key_jwt registration has no equivalent flag or transport
+                      restriction: unlike confidential registration, it never returns a
+                      client_secret (or any other secret) in the DCR response, so there is
+                      nothing here for cleartext HTTP to expose.
                     type: boolean
                   insecureAllowHTTP:
                     default: false
@@ -3517,11 +3522,6 @@ spec:
                     with insecureAllowHTTP; client secrets would be issued in cleartext
                     over an unauthenticated endpoint
                   rule: '!(has(self.allowConfidentialClientRegistration) && self.allowConfidentialClientRegistration
-                    && has(self.insecureAllowHTTP) && self.insecureAllowHTTP)'
-                - message: allowPrivateKeyJWTRegistration cannot be combined with
-                    insecureAllowHTTP; private_key_jwt registration would occur over
-                    cleartext HTTP
-                  rule: '!(has(self.allowPrivateKeyJWTRegistration) && self.allowPrivateKeyJWTRegistration
                     && has(self.insecureAllowHTTP) && self.insecureAllowHTTP)'
                 - message: delegateClients require an https:// issuer; delegate client
                     secrets must not be sent over plaintext HTTP

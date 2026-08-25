@@ -159,8 +159,11 @@ type RunConfig struct {
 	// behavior is controlled independently by the DCR handler and discovery
 	// metadata.
 	//
-	// Security: /oauth/register is unauthenticated. Combining this capability
-	// with InsecureAllowHTTP is rejected by Validate.
+	// Security: /oauth/register is unauthenticated. Unlike
+	// AllowConfidentialClientRegistration, this is NOT rejected when combined
+	// with InsecureAllowHTTP: registration never returns a secret for a
+	// private_key_jwt client, so there is nothing for cleartext HTTP to
+	// expose.
 	//nolint:lll // field tags require full JSON+YAML names
 	AllowPrivateKeyJWTRegistration bool `json:"allow_private_key_jwt_registration,omitempty" yaml:"allow_private_key_jwt_registration,omitempty"`
 
@@ -205,6 +208,11 @@ type RunConfig struct {
 	// Kubernetes CRD requires the explicit opt-in for a delegate client with an
 	// HTTP issuer; the shared transport validator enforces that its host is
 	// loopback — see EmbeddedAuthServerConfig's doc comment.
+	//
+	// private_key_jwt registration has no equivalent flag or transport
+	// restriction: unlike confidential registration, it never returns a
+	// client_secret (or any other secret) in the DCR response, so there is
+	// nothing here for cleartext HTTP to expose.
 	//nolint:lll // field tags require full JSON+YAML names
 	InsecureAllowConfidentialOverLoopbackHTTP bool `json:"insecure_allow_confidential_over_loopback_http,omitempty" yaml:"insecure_allow_confidential_over_loopback_http,omitempty"`
 
@@ -282,11 +290,6 @@ func (c *RunConfig) Validate() error {
 	}
 	if err := ValidateConfidentialClientTransport(
 		c.AllowConfidentialClientRegistration || len(c.DelegateClients) > 0, c.InsecureAllowHTTP,
-		c.Issuer, c.InsecureAllowConfidentialOverLoopbackHTTP); err != nil {
-		return err
-	}
-	if err := ValidatePrivateKeyJWTRegistrationTransport(
-		c.AllowPrivateKeyJWTRegistration, c.InsecureAllowHTTP,
 		c.Issuer, c.InsecureAllowConfidentialOverLoopbackHTTP); err != nil {
 		return err
 	}
@@ -1106,11 +1109,6 @@ func (c *Config) validateConfidentialClientConfig() error {
 		c.Issuer, c.InsecureAllowConfidentialOverLoopbackHTTP); err != nil {
 		return err
 	}
-	if err := ValidatePrivateKeyJWTRegistrationTransport(
-		c.AllowPrivateKeyJWTRegistration, c.InsecureAllowHTTP,
-		c.Issuer, c.InsecureAllowConfidentialOverLoopbackHTTP); err != nil {
-		return err
-	}
 	return ValidateForceConfidentialRedirectURIs(c.ForceConfidentialRedirectURIs, c.AllowConfidentialClientRegistration)
 }
 
@@ -1551,33 +1549,6 @@ func ValidateConfidentialClientTransport(
 	if !networking.IsLocalhost(parsed.Host) {
 		return fmt.Errorf("allow_confidential_client_registration cannot use a plain-HTTP non-loopback issuer (%q): "+
 			"confidential clients would send secrets over cleartext HTTP", issuer)
-	}
-	return nil
-}
-
-// ValidatePrivateKeyJWTRegistrationTransport rejects cleartext HTTP
-// configurations when private_key_jwt registration is enabled. This is kept
-// independent from confidential-client registration because neither capability
-// implies the other.
-func ValidatePrivateKeyJWTRegistrationTransport(
-	allowPrivateKeyJWTRegistration, insecureAllowHTTP bool,
-	issuer string, insecureAllowConfidentialOverLoopbackHTTP bool,
-) error {
-	if !allowPrivateKeyJWTRegistration {
-		return nil
-	}
-	if insecureAllowHTTP {
-		return fmt.Errorf("allow_private_key_jwt_registration cannot be combined with insecure_allow_http: " +
-			"private_key_jwt registration would occur over cleartext HTTP")
-	}
-	if insecureAllowConfidentialOverLoopbackHTTP {
-		return nil
-	}
-	if parsed, err := url.Parse(issuer); err == nil &&
-		parsed.Scheme == "http" && networking.IsLocalhost(parsed.Host) {
-		return fmt.Errorf("allow_private_key_jwt_registration cannot be combined with a plain-HTTP loopback issuer (%q) unless "+
-			"insecure_allow_confidential_over_loopback_http is set: private_key_jwt registration would occur over cleartext HTTP",
-			issuer)
 	}
 	return nil
 }

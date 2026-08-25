@@ -238,11 +238,14 @@ exchange.
 Private-key JWT registration accepts only inline `jwks`; `jwks_uri`, SPIFFE/SVID
 authentication, AWS STS `act` mapping, and ID-JAG chaining are deferred and out
 of scope. `token_endpoint_auth_signing_alg` is required and the supported
-values are `RS256`, `RS384`, `RS512`, `PS256`, `PS384`, `PS512`, `ES256`, `ES384`,
-`ES512`, and `EdDSA`. HTTPS is required; a plain-HTTP loopback development
-issuer needs the explicit `insecureAllowConfidentialOverLoopbackHTTP` override.
-The broader `insecureAllowHTTP` option cannot be combined with this registration
-feature.
+values are `RS256`, `RS384`, `RS512`, `PS256`, `PS384`, `PS512`, `ES256`,
+`ES384`, and `ES512` (not `EdDSA` — the pinned fosite version's
+client-assertion verification doesn't handle it). Unlike confidential-client
+registration, this has no transport restriction of its own: the DCR response
+for a `private_key_jwt` client never contains a `client_secret` or any other
+secret, so there is nothing for cleartext HTTP to expose. It is governed only
+by the issuer's general transport policy (`insecureAllowHTTP`), the same as a
+public (`none`) client.
 
 ## Trust model
 

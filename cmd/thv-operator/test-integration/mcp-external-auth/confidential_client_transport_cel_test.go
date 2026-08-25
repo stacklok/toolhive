@@ -16,16 +16,15 @@ import (
 )
 
 // These tests exercise the CEL XValidation rules on EmbeddedAuthServerConfig
-// through the real apiserver (envtest): allowConfidentialClientRegistration
-// combined with insecureAllowHTTP would issue client secrets in cleartext
-// over an unauthenticated registration endpoint, so the pair must be
-// rejected at admission rather than surfacing only as a pod crash at
-// startup. allowPrivateKeyJWTRegistration combined with insecureAllowHTTP is
-// rejected independently, for the same reason. URL-specific delegate-client
-// transport policy is handled by the shared Go validator because CEL cannot
-// safely parse URLs. EmbeddedAuthServerConfig is shared by
-// MCPExternalAuthConfig and VirtualMCPServer, so exercising both CRDs
-// verifies the schema behavior.
+// These tests exercise the CEL XValidation rules on EmbeddedAuthServerConfig
+// through the real apiserver (envtest). Confidential registration rejects
+// insecureAllowHTTP because it mints a client_secret in the DCR response;
+// private_key_jwt registration has no equivalent rule because it never
+// returns a secret, so combining it with insecureAllowHTTP is admitted.
+// URL-specific delegate-client transport policy is handled by the shared Go
+// validator because CEL cannot safely parse URLs. EmbeddedAuthServerConfig
+// is shared by MCPExternalAuthConfig and VirtualMCPServer, so exercising
+// the rule through one CRD's generated schema covers both.
 var _ = Describe("EmbeddedAuthServerConfig confidential-client-transport CEL validation", func() {
 	const namespace = "default"
 
@@ -97,11 +96,10 @@ var _ = Describe("EmbeddedAuthServerConfig confidential-client-transport CEL val
 			expectedMessage:   "allowConfidentialClientRegistration cannot be combined with insecureAllowHTTP",
 		},
 		{
-			name:               "both allowPrivateKeyJWTRegistration and insecureAllowHTTP set",
+			name:               "allowPrivateKeyJWTRegistration with insecureAllowHTTP is admitted (no secret to protect)",
 			allowPrivateKeyJWT: true,
 			insecureHTTP:       true,
-			shouldAdmit:        false,
-			expectedMessage:    "allowPrivateKeyJWTRegistration cannot be combined with insecureAllowHTTP",
+			shouldAdmit:        true,
 		},
 		{
 			name:              "allowConfidentialClientRegistration alone",

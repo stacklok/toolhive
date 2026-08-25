@@ -332,9 +332,10 @@ This implementation accepts **inline `jwks` only** for `private_key_jwt` DCR.
 `jwks_uri` is explicitly rejected; the client must include at least one valid
 public signing key with `use: "sig"`. `token_endpoint_auth_signing_alg` is
 mandatory and must match a key in the set. The accepted algorithms are `RS256`,
-`RS384`, `RS512`, `PS256`, `PS384`, `PS512`, `ES256`, `ES384`, `ES512`, and
-`EdDSA`. The registration response contains the client metadata and no
-`client_secret`.
+`RS384`, `RS512`, `PS256`, `PS384`, `PS512`, `ES256`, `ES384`, and `ES512`
+(EdDSA is excluded because the pinned fosite version cannot verify it — see
+`crypto.SupportedClientKeyAlgorithms`). The registration response contains the
+client metadata and no `client_secret`.
 
 A `private_key_jwt` DCR registration is restricted to the RFC 8693 token-exchange
 grant (`urn:ietf:params:oauth:grant-type:token-exchange`) and cannot request the
@@ -344,13 +345,13 @@ exchange grant is supplied automatically. Discovery advertises
 `allowPrivateKeyJWTRegistration` is enabled; token exchange itself is always
 advertised because the embedded server supports it for self-issued tokens.
 
-The registration and token endpoints must use HTTPS. A plain-HTTP loopback
-issuer is allowed for local development only with the explicit
-`insecureAllowConfidentialOverLoopbackHTTP` opt-in; this setting is a deliberate
-exception for traffic that remains on the development machine. The general
-`insecureAllowHTTP` opt-in does not permit private-key JWT registration and is
-rejected when that registration flag is enabled. Do not treat a loopback issuer
-name as a network boundary in a cluster.
+The registration and token endpoints must use HTTPS for confidential-client
+registration, exactly as described above. `private_key_jwt` registration has
+no equivalent restriction: a `private_key_jwt` DCR response never contains a
+`client_secret` or any other secret, so there is nothing for cleartext HTTP
+to expose. It is governed only by the issuer's general `insecureAllowHTTP`
+setting, the same as a public (`none`) client — no loopback-specific opt-in
+is needed or offered.
 
 A client proves possession of its private key by sending a signed
 `client_assertion` at `/oauth/token`; ToolHive stores only the registered public

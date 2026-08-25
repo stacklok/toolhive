@@ -57,7 +57,7 @@ RUN echo '{"name":"mcp-container","version":"1.0.0"}' > package.json
 
 # Install the MCP package and its dependencies at build time
 # This ensures all dependencies are downloaded during the build phase
-RUN npm install --save {{.MCPPackage}}
+RUN npm install --save '{{.MCPPackage}}'
 {{end}}
 
 # Final stage - runtime image with pre-installed packages

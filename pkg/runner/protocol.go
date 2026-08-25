@@ -9,6 +9,7 @@ import (
 	"log/slog"
 	"os"
 	"path/filepath"
+	"regexp"
 	"strings"
 	"time"
 
@@ -106,11 +107,40 @@ func validateBuildArgs(buildArgs []string) error {
 	return nil
 }
 
+// packageNameChars allows the characters that npm, PyPI and Go package
+// references legitimately need: scopes and versions (@, /), Go module paths
+// (/, .), local Go paths (./, ../, /), PyPI pins and extras (=, [, ]) and the
+// usual separators. Every character a shell treats specially is excluded, so a
+// validated name cannot break out of the RUN instructions it is rendered into.
+var packageNameChars = regexp.MustCompile(`^[A-Za-z0-9@/:._+=~\[\]-]+$`)
+
+// validatePackageName rejects package names that could inject shell syntax into
+// the generated Dockerfile. The name is interpolated into RUN instructions in
+// npx.tmpl, uvx.tmpl and go.tmpl, so it has to be constrained before it reaches
+// the template data.
+func validatePackageName(packageName string) error {
+	if packageName == "" {
+		return fmt.Errorf("package name cannot be empty")
+	}
+	if !packageNameChars.MatchString(packageName) {
+		return fmt.Errorf(
+			"invalid package name %q: only letters, digits and the characters @/:._+=~[]- are allowed",
+			packageName,
+		)
+	}
+	return nil
+}
+
 // createTemplateData creates the template data with optional CA certificate and build arguments.
 func createTemplateData(
 	transportType templates.TransportType, packageName, caCertPath string, buildArgs []string,
 	runtimeOverride *templates.RuntimeConfig,
 ) (templates.TemplateData, error) {
+	// Validate the package name to prevent shell injection in the generated Dockerfile
+	if err := validatePackageName(packageName); err != nil {
+		return templates.TemplateData{}, err
+	}
+
 	// Validate buildArgs to prevent shell injection in templates that use sh -c
 	if err := validateBuildArgs(buildArgs); err != nil {
 		return templates.TemplateData{}, err

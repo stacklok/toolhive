@@ -141,17 +141,24 @@ var rsaAlgorithmsForClientKeys = []string{"RS256", "RS384", "RS512", "PS256", "P
 // signing key. Deliberately narrower than rsaAlgorithmsForClientKeys: PS* is excluded.
 var rsaAlgorithmsForSigningKeys = []string{"RS256", "RS384", "RS512"}
 
-// SupportedClientKeyAlgorithms returns the full allowlist of JWS algorithms
-// accepted for a private_key_jwt client's registered key: rsaAlgorithmsForClientKeys,
-// the three EC algorithms deriveECAlgorithm maps curves to, and EdDSA for
-// Ed25519. This is the single source of truth for both key-compatibility
-// validation here and DCR's signing-algorithm allowlist, so the two lists
-// cannot silently drift apart (as happened when EdDSA was previously missing
-// from a hand-maintained copy of this list).
+// SupportedClientKeyAlgorithms returns the allowlist of JWS algorithms
+// accepted for a private_key_jwt client's registered key: rsaAlgorithmsForClientKeys
+// plus the three EC algorithms deriveECAlgorithm maps curves to. This is the
+// single source of truth for both key-compatibility validation here and DCR's
+// signing-algorithm allowlist, so the two lists cannot silently drift apart
+// (as happened when EdDSA was previously missing from a hand-maintained copy
+// of this list).
+//
+// EdDSA is deliberately excluded even though validateAlgorithmForPublicKeyValue
+// and ValidateAlgorithmForKey both support Ed25519 keys structurally: fosite
+// v0.49.0's client-assertion verification (client_authentication.go) only
+// switches on the RS*/ES*/PS*/HS* families, so an EdDSA client could register
+// successfully and then never be able to authenticate. Revisit when fosite
+// adds EdDSA support or this pins a version that has it.
 func SupportedClientKeyAlgorithms() []string {
-	algs := make([]string, 0, len(rsaAlgorithmsForClientKeys)+4)
+	algs := make([]string, 0, len(rsaAlgorithmsForClientKeys)+3)
 	algs = append(algs, rsaAlgorithmsForClientKeys...)
-	return append(algs, "ES256", "ES384", "ES512", "EdDSA")
+	return append(algs, "ES256", "ES384", "ES512")
 }
 
 // validateAlgorithmForPublicKeyValue checks whether alg is compatible with a public key,
@@ -159,6 +166,17 @@ func SupportedClientKeyAlgorithms() []string {
 func validateAlgorithmForPublicKeyValue(alg string, key crypto.PublicKey, allowedRSAAlgorithms []string) error {
 	switch k := key.(type) {
 	case *rsa.PublicKey:
+		if keyBits := k.N.BitLen(); keyBits < MinRSAKeyBits {
+			return fmt.Errorf("RSA key size %d bits is below minimum required %d bits", keyBits, MinRSAKeyBits)
+		}
+		// Reject a degenerate or unsafe public exponent (e.g. e=1 makes RSA
+		// the identity function; e must be odd for the exponentiation to be
+		// well-defined). This mirrors the modulus-size check above as
+		// defense-in-depth against a structurally weak key, not just an
+		// undersized one.
+		if k.E < 3 || k.E%2 == 0 {
+			return fmt.Errorf("RSA public exponent %d is invalid or unsafe", k.E)
+		}
 		if slices.Contains(allowedRSAAlgorithms, alg) {
 			return nil
 		}

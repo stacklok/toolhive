@@ -239,14 +239,14 @@ func TestValidateAlgorithmForPublicKey(t *testing.T) {
 	assert.NoError(t, ValidateAlgorithmForPublicKey("ES384", &ecP384.PublicKey))
 }
 
-func TestSupportedClientKeyAlgorithmsIncludesEdDSA(t *testing.T) {
+func TestSupportedClientKeyAlgorithmsExcludesEdDSA(t *testing.T) {
 	t.Parallel()
 
-	// Regression test: EdDSA was previously missing from a hand-maintained
-	// copy of this list in the registration package, silently rejecting
-	// every Ed25519 private_key_jwt registration despite full Ed25519
-	// support elsewhere in this file.
-	assert.Contains(t, SupportedClientKeyAlgorithms(), "EdDSA")
+	// fosite v0.49.0's client-assertion verification (client_authentication.go)
+	// only handles the RS*/ES*/PS*/HS* families. Advertising/accepting EdDSA
+	// here would let a client register successfully and then never be able
+	// to authenticate. Revisit once fosite supports it.
+	assert.NotContains(t, SupportedClientKeyAlgorithms(), "EdDSA")
 }
 func TestDeriveSigningKeyParams(t *testing.T) {
 	t.Parallel()

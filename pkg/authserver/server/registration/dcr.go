@@ -383,15 +383,17 @@ func validatePrivateKeyJWTKey(key *jose.JSONWebKey, algorithm string) (bool, *DC
 			ErrorDescription: "jwks contains an unsupported signing algorithm",
 		}
 	}
-	if key.Algorithm != "" {
-		if key.Algorithm != algorithm {
-			return false, &DCRError{
-				Error:            DCRErrorInvalidClientMetadata,
-				ErrorDescription: "jwks contains a signing algorithm that does not match the request",
-			}
+	if key.Algorithm != "" && key.Algorithm != algorithm {
+		return false, &DCRError{
+			Error:            DCRErrorInvalidClientMetadata,
+			ErrorDescription: "jwks contains a signing algorithm that does not match the request",
 		}
-		return true, nil
 	}
+	// Always validate structural compatibility between the declared algorithm
+	// and the actual key type/curve, even when the JWK's own alg label
+	// already matched above: a client could mislabel an EC key as "RS256"
+	// and have both label-only checks pass despite the key never being able
+	// to actually sign or verify with that algorithm.
 	if err := servercrypto.ValidateAlgorithmForPublicKey(algorithm, key.Key); err != nil {
 		return false, &DCRError{
 			Error:            DCRErrorInvalidClientMetadata,

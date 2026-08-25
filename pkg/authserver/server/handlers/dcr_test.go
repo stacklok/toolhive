@@ -6,11 +6,11 @@ package handlers
 import (
 	"bytes"
 	"context"
+	"crypto/rand"
 	"crypto/rsa"
 	"encoding/json"
 	"errors"
 	"fmt"
-	"math/big"
 	"net/http"
 	"net/http/httptest"
 	"regexp"
@@ -145,11 +145,20 @@ func TestRegisterClientHandler(t *testing.T) {
 	}
 }
 
+// testRSAPublicKey generates a real, correctly-sized RSA public key for tests
+// that go through key-strength validation (crypto.MinRSAKeyBits).
+func testRSAPublicKey(t *testing.T) *rsa.PublicKey {
+	t.Helper()
+	key, err := rsa.GenerateKey(rand.Reader, 2048)
+	require.NoError(t, err)
+	return &key.PublicKey
+}
+
 func TestRegisterClientHandler_PrivateKeyJWTResponseAndClient(t *testing.T) {
 	t.Parallel()
 
 	jwks := &jose.JSONWebKeySet{Keys: []jose.JSONWebKey{{
-		Key:       &rsa.PublicKey{N: big.NewInt(65537), E: 3},
+		Key:       testRSAPublicKey(t),
 		KeyID:     "handler-key",
 		Use:       "sig",
 		Algorithm: string(jose.RS256),

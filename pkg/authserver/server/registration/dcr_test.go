@@ -15,7 +15,9 @@
 package registration
 
 import (
+	"crypto/ecdsa"
 	"crypto/ed25519"
+	"crypto/elliptic"
 	"crypto/rand"
 	"crypto/rsa"
 	"math/big"
@@ -28,6 +30,17 @@ import (
 
 	"github.com/stacklok/toolhive/pkg/oauthproto"
 )
+
+// testRSAPublicKey generates a real, correctly-sized RSA public key for
+// tests that go through key-strength validation (ValidateAlgorithmForPublicKey
+// rejects anything below crypto.MinRSAKeyBits). Toy keys like {N: 3, E: 3}
+// are no longer accepted here.
+func testRSAPublicKey(t *testing.T) *rsa.PublicKey {
+	t.Helper()
+	key, err := rsa.GenerateKey(rand.Reader, 2048)
+	require.NoError(t, err)
+	return &key.PublicKey
+}
 
 func TestValidateRedirectURI(t *testing.T) {
 	t.Parallel()
@@ -528,7 +541,7 @@ func TestValidateDCRRequest(t *testing.T) {
 
 func TestValidatePrivateKeyJWTRegistration(t *testing.T) {
 	t.Parallel()
-	validKey := jose.JSONWebKey{Key: &rsa.PublicKey{N: big.NewInt(3), E: 3}, KeyID: "key-1", Algorithm: string(jose.RS256), Use: "sig"}
+	validKey := jose.JSONWebKey{Key: testRSAPublicKey(t), KeyID: "key-1", Algorithm: string(jose.RS256), Use: "sig"}
 	request := func() *oauthproto.DynamicClientRegistrationRequest {
 		return &oauthproto.DynamicClientRegistrationRequest{
 			RedirectURIs:                []string{"https://client.example/callback"},
@@ -554,6 +567,14 @@ func TestValidatePrivateKeyJWTRegistration(t *testing.T) {
 		}, true, true},
 		{"use mismatch", func(r *oauthproto.DynamicClientRegistrationRequest) { r.JWKS.Keys[0].Use = "enc" }, true, true},
 		{"algorithm mismatch", func(r *oauthproto.DynamicClientRegistrationRequest) { r.JWKS.Keys[0].Algorithm = string(jose.ES256) }, true, true},
+		{"mislabeled key", func(r *oauthproto.DynamicClientRegistrationRequest) {
+			// alg label ("RS256") matches the request, but the actual key is
+			// EC, not RSA — must be caught by structural validation even
+			// though the label-only checks would otherwise pass.
+			ecKey, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
+			require.NoError(t, err)
+			r.JWKS.Keys[0].Key = &ecKey.PublicKey
+		}, true, true},
 		{"unsupported algorithm", func(r *oauthproto.DynamicClientRegistrationRequest) { r.TokenEndpointAuthSigningAlg = "HS256" }, true, true},
 		{"missing algorithm", func(r *oauthproto.DynamicClientRegistrationRequest) { r.TokenEndpointAuthSigningAlg = "" }, true, true},
 		{"jwks_uri", func(r *oauthproto.DynamicClientRegistrationRequest) { r.JWKSURI = "https://keys.example/jwks" }, true, true},
@@ -591,7 +612,7 @@ func TestPrivateKeyJWTAllowsTokenExchangeWithoutRedirectURI(t *testing.T) {
 		TokenEndpointAuthSigningAlg: string(jose.RS256),
 		GrantTypes:                  []string{oauthproto.GrantTypeTokenExchange},
 		JWKS: &jose.JSONWebKeySet{Keys: []jose.JSONWebKey{{
-			Key: &rsa.PublicKey{N: big.NewInt(3), E: 3}, KeyID: "key-1", Use: "sig",
+			Key: testRSAPublicKey(t), KeyID: "key-1", Use: "sig",
 		}}},
 	}
 
@@ -624,16 +645,20 @@ func TestPrivateKeyJWTAllowsJWKWithoutAlgorithm(t *testing.T) {
 		TokenEndpointAuthSigningAlg: string(jose.RS256),
 		GrantTypes:                  []string{oauthproto.GrantTypeTokenExchange},
 		JWKS: &jose.JSONWebKeySet{Keys: []jose.JSONWebKey{{
-			Key: &rsa.PublicKey{N: big.NewInt(3), E: 3}, KeyID: "key-1", Use: "sig",
+			Key: testRSAPublicKey(t), KeyID: "key-1", Use: "sig",
 		}}},
 	}, false, true)
 	require.Nil(t, err)
 	assert.Empty(t, validated.JWKS.Keys[0].Algorithm)
 }
 
-func TestPrivateKeyJWTAllowsEd25519Key(t *testing.T) {
+func TestPrivateKeyJWTRejectsEd25519Key(t *testing.T) {
 	t.Parallel()
 
+	// fosite's client-assertion verification doesn't support EdDSA (see
+	// crypto.SupportedClientKeyAlgorithms), so registration must reject an
+	// Ed25519 key/algorithm before a client can register something it can
+	// never actually authenticate with.
 	pub, _, err := ed25519.GenerateKey(rand.Reader)
 	require.NoError(t, err)
 
@@ -645,8 +670,9 @@ func TestPrivateKeyJWTAllowsEd25519Key(t *testing.T) {
 			Key: pub, KeyID: "key-1", Use: "sig", Algorithm: "EdDSA",
 		}}},
 	}, false, true)
-	require.Nil(t, dcrErr)
-	require.NotNil(t, validated)
+	require.Nil(t, validated)
+	require.NotNil(t, dcrErr)
+	assert.Equal(t, DCRErrorInvalidClientMetadata, dcrErr.Error)
 }
 
 func TestValidateScopes(t *testing.T) {

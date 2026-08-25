@@ -6,6 +6,7 @@ package authserver
 
 import (
 	"crypto/rand"
+	"errors"
 	"fmt"
 	"log/slog"
 	"net/url"
@@ -1488,7 +1489,7 @@ func (c *Config) applyDefaults() error {
 //  2. issuer is a plain-HTTP loopback URL (e.g. "http://localhost:18080").
 //     This is rejected by default but may be explicitly enabled with
 //     insecureAllowConfidentialOverLoopbackHTTP. The opt-in does not permit
-//     non-loopback HTTP issuers.
+//     non-loopback HTTP issuers and still requires a valid issuer URL.
 func ValidateConfidentialClientTransport(
 	allowConfidential, insecureAllowHTTP bool,
 	issuer string, insecureAllowConfidentialOverLoopbackHTTP bool,
@@ -1502,10 +1503,15 @@ func ValidateConfidentialClientTransport(
 	}
 	parsed, err := url.Parse(issuer)
 	if err != nil {
-		return fmt.Errorf("confidential clients require a valid issuer URL: %w", err)
+		return errors.New("confidential clients require a valid issuer URL")
 	}
 	if parsed.Scheme != "http" {
 		return nil
+	}
+	if insecureAllowConfidentialOverLoopbackHTTP && networking.IsLocalhost(parsed.Host) {
+		if err := validateIssuerURL(issuer, false); err != nil {
+			return errors.New("confidential clients require a valid issuer URL")
+		}
 	}
 	if insecureAllowConfidentialOverLoopbackHTTP && !networking.IsLocalhost(parsed.Host) {
 		return fmt.Errorf(

@@ -79,6 +79,7 @@ var _ = Describe("EmbeddedAuthServerConfig confidential-client-transport CEL val
 		loopbackHTTP      bool
 		loopbackOptIn     bool
 		shouldAdmit       bool
+		expectedMessage   string
 	}
 
 	cases := []validationCase{
@@ -87,12 +88,20 @@ var _ = Describe("EmbeddedAuthServerConfig confidential-client-transport CEL val
 			allowConfidential: true,
 			insecureHTTP:      true,
 			shouldAdmit:       false,
+			expectedMessage:   "allowConfidentialClientRegistration cannot be combined with insecureAllowHTTP",
 		},
 		{
 			name:              "allowConfidentialClientRegistration alone",
 			allowConfidential: true,
 			insecureHTTP:      false,
 			shouldAdmit:       true,
+		},
+		{
+			name:            "delegate clients with loopback HTTP issuer without opt-in",
+			delegateClient:  true,
+			loopbackHTTP:    true,
+			shouldAdmit:     false,
+			expectedMessage: "delegateClients with an HTTP issuer require insecureAllowConfidentialOverLoopbackHTTP",
 		},
 		{
 			name:           "delegate clients with opted-in loopback HTTP issuer",
@@ -118,8 +127,7 @@ var _ = Describe("EmbeddedAuthServerConfig confidential-client-transport CEL val
 			}
 			Expect(err).To(HaveOccurred(),
 				"expected apiserver to reject config: %s", c.name)
-			Expect(err.Error()).To(ContainSubstring(
-				"allowConfidentialClientRegistration cannot be combined with insecureAllowHTTP"))
+			Expect(err.Error()).To(ContainSubstring(c.expectedMessage))
 		})
 	}
 
@@ -147,5 +155,29 @@ var _ = Describe("EmbeddedAuthServerConfig confidential-client-transport CEL val
 		DeferCleanup(func() {
 			Expect(k8sClient.Delete(ctx, vmcp)).To(Succeed())
 		})
+	})
+
+	It("rejects a loopback HTTP issuer with delegate clients without opt-in on VirtualMCPServer", func() {
+		vmcp := v1beta1test.NewVirtualMCPServer("delegate-client-http-without-opt-in", namespace,
+			v1beta1test.WithVMCPGroupRef("test-group"),
+			v1beta1test.WithVMCPIncomingAuth(&mcpv1beta1.IncomingAuthConfig{Type: "anonymous"}),
+			v1beta1test.WithVMCPAuthServerConfig(&mcpv1beta1.EmbeddedAuthServerConfig{
+				Issuer: "http://127.0.0.1:8080",
+				DelegateClients: []mcpv1beta1.DelegateClientConfig{{
+					ClientID:        "delegate-client",
+					ClientSecretRef: &mcpv1beta1.SecretKeyRef{Name: "delegate-secret", Key: "credential"},
+					Scopes:          []string{"openid"},
+					Audiences:       []string{"https://api.example.com"},
+				}},
+				UpstreamProviders: []mcpv1beta1.UpstreamProviderConfig{{
+					Name: "github", Type: mcpv1beta1.UpstreamProviderTypeOIDC,
+					OIDCConfig: &mcpv1beta1.OIDCUpstreamConfig{IssuerURL: "https://github.com", ClientID: "test-client-id"},
+				}},
+			}),
+		)
+		err := k8sClient.Create(ctx, vmcp)
+		Expect(err).To(HaveOccurred())
+		Expect(err.Error()).To(ContainSubstring(
+			"delegateClients with an HTTP issuer require insecureAllowConfidentialOverLoopbackHTTP"))
 	})
 })

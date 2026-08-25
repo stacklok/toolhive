@@ -189,10 +189,10 @@ type RunConfig struct {
 	// secrets would otherwise travel over cleartext. Defaults to false. Has no
 	// effect when there are no confidential clients or Issuer is https.
 	//
-	// Applies identically to delegate clients and DCR-registered clients; the
-	// Kubernetes CRD blocks this combination unconditionally only because CEL
-	// cannot express the loopback exception, not because delegate clients need
-	// a stricter policy — see EmbeddedAuthServerConfig's doc comment.
+	// Applies identically to delegate clients and DCR-registered clients. The
+	// Kubernetes CRD requires the explicit opt-in for a delegate client with an
+	// HTTP issuer; the shared transport validator enforces that its host is
+	// loopback — see EmbeddedAuthServerConfig's doc comment.
 	//nolint:lll // field tags require full JSON+YAML names
 	InsecureAllowConfidentialOverLoopbackHTTP bool `json:"insecure_allow_confidential_over_loopback_http,omitempty" yaml:"insecure_allow_confidential_over_loopback_http,omitempty"`
 
@@ -1500,10 +1500,11 @@ func ValidateConfidentialClientTransport(
 		return fmt.Errorf("allow_confidential_client_registration cannot be combined with insecure_allow_http: " +
 			"confidential clients would send secrets over cleartext HTTP")
 	}
-	// Malformed issuers are reported by validateIssuerURL; nothing more to
-	// check here if parsing fails.
 	parsed, err := url.Parse(issuer)
-	if err != nil || parsed.Scheme != "http" {
+	if err != nil {
+		return fmt.Errorf("confidential client transport: invalid issuer URL: %w", err)
+	}
+	if parsed.Scheme != "http" {
 		return nil
 	}
 	if insecureAllowConfidentialOverLoopbackHTTP && !networking.IsLocalhost(parsed.Host) {

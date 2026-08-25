@@ -752,17 +752,16 @@ type EmbeddedAuthServerConfig struct {
 	// +optional
 	AllowConfidentialClientRegistration bool `json:"allowConfidentialClientRegistration,omitempty"`
 
-	// InsecureAllowConfidentialOverLoopbackHTTP opts in to
-	// allowConfidentialClientRegistration when issuer is a plain-HTTP loopback
-	// URL (e.g. "http://localhost:8080"). Without this flag, that combination
-	// is rejected at reconcile time: a loopback http:// issuer is normally
-	// fine for local development since the traffic never leaves the machine,
-	// but combined with confidential registration it means /oauth/register —
-	// which is unauthenticated — mints client secrets over cleartext. Forcing
-	// TLS onto every loopback deployment instead would just push operators
-	// toward insecureAllowHTTP, which is worse: that also disables the
-	// non-loopback host check. Has no effect when
-	// allowConfidentialClientRegistration is false or issuer is https.
+	// InsecureAllowConfidentialOverLoopbackHTTP opts in to confidential
+	// Dynamic Client Registration (DCR) and delegate clients when issuer is a
+	// plain-HTTP loopback URL (e.g. "http://localhost:8080"). Without this
+	// flag, that combination is rejected at reconcile time: a loopback http://
+	// issuer is normally fine for local development since the traffic never
+	// leaves the machine, but confidential clients send secrets over cleartext.
+	// Forcing TLS onto every loopback deployment instead would just push
+	// operators toward insecureAllowHTTP, which is worse: that also disables
+	// the non-loopback host check. Has no effect when there are no confidential
+	// clients or issuer is https.
 	// +kubebuilder:default=false
 	// +optional
 	InsecureAllowConfidentialOverLoopbackHTTP bool `json:"insecureAllowConfidentialOverLoopbackHTTP,omitempty"`

@@ -490,10 +490,10 @@ func TestRunConfigValidate(t *testing.T) {
 		{name: "confidential clients without insecure HTTP passes", config: RunConfig{AllowConfidentialClientRegistration: true}},
 		{name: "insecure HTTP without confidential clients passes", config: RunConfig{InsecureAllowHTTP: true}},
 		{
-			name:    "confidential clients combined with insecure HTTP rejects",
-			config:  RunConfig{AllowConfidentialClientRegistration: true, InsecureAllowHTTP: true},
+			name:    "confidential clients with malformed issuer reject before startup",
+			config:  RunConfig{Issuer: "http://[::1", AllowConfidentialClientRegistration: true},
 			wantErr: true,
-			errMsg:  "allow_confidential_client_registration cannot be combined with insecure_allow_http",
+			errMsg:  "invalid issuer URL",
 		},
 		{
 			name: "confidential clients with plain-HTTP loopback issuer rejects without the opt-in",
@@ -665,6 +665,11 @@ func TestValidateConfidentialClientTransport(t *testing.T) {
 		{
 			name: "insecure HTTP combined with confidential rejects", allowConfidential: true, insecureAllowHTTP: true,
 			wantErr: true, errContains: "insecure_allow_http",
+		},
+		{
+			name:              "confidential with malformed issuer rejects",
+			allowConfidential: true, issuer: "http://[::1",
+			wantErr: true, errContains: "invalid issuer URL",
 		},
 		{
 			name:              "confidential with plain-HTTP loopback issuer rejects without the opt-in",

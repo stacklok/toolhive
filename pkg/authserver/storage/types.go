@@ -16,15 +16,17 @@
 // OAuth authorization server.
 package storage
 
-//go:generate mockgen -destination=mocks/mock_storage.go -package=mocks -source=types.go Storage,PendingAuthorizationStorage,ClientRegistry,UpstreamTokenStorage,UpstreamTokenRefresher,UserStorage,DCRCredentialStore
+//go:generate mockgen -destination=mocks/mock_storage.go -package=mocks -source=types.go Storage,PendingAuthorizationStorage,AssertionJWTConsumer,ClientRegistry,UpstreamTokenStorage,UpstreamTokenRefresher,UserStorage,DCRCredentialStore
 
 import (
 	"context"
 	"crypto/sha256"
 	"encoding/hex"
 	"errors"
+	"fmt"
 	"slices"
 	"sort"
+	"strings"
 	"time"
 
 	"github.com/ory/fosite"
@@ -47,6 +49,14 @@ var (
 	// ErrInvalidBinding is returned when token binding validation fails
 	// (e.g., subject or client ID mismatch).
 	ErrInvalidBinding = errors.New("storage: token binding validation failed")
+
+	// ErrClientCapacity is returned when the client map is full and no
+	// DCR-issued client has aged enough to be safely evicted.
+	ErrClientCapacity = errors.New("storage: client capacity reached")
+
+	// ErrReservedClientID is returned when a caller attempts to register a
+	// real client whose ID collides with SyntheticClientIDPrefix.
+	ErrReservedClientID = errors.New("storage: client id uses reserved synthetic prefix")
 )
 
 // DefaultPendingAuthorizationTTL is the default TTL for pending authorization requests.
@@ -521,6 +531,58 @@ type PendingAuthorizationStorage interface {
 	DeletePendingAuthorization(ctx context.Context, state string) error
 }
 
+// AssertionJWTConsumer atomically records a validated assertion JWT as consumed.
+//
+// Implementations must treat (purpose, issuer, jti) as the replay key, retain it
+// until exp, and return fosite.ErrJTIKnown when that key is already unexpired.
+// Purpose keeps distinct assertion profiles separate, while issuer binds a JTI to
+// its JWT issuer. This intentionally stays separate from Storage so only
+// assertion-grant composition needs replay-consumption access.
+type AssertionJWTConsumer interface {
+	ConsumeAssertionJWT(ctx context.Context, purpose, issuer, jti string, exp time.Time) error
+}
+
+// SyntheticClientIDPrefix marks a client ID minted by NewSyntheticClient. A
+// grant that skips client authentication (fosite's CanSkipClientAuth) has no
+// real registered fosite.Client to attach to its request, but every storage
+// backend's marshal/unmarshal path calls request.GetClient() unconditionally
+// — so the request still needs a non-nil one. A synthetic client ID encodes
+// everything needed to reconstruct that client, so unmarshaling never has to
+// look it up in the client registry (it was never registered there).
+const SyntheticClientIDPrefix = "synthetic:"
+
+// NewSyntheticClient returns a public fosite.Client identified only by id,
+// for a clientless grant to attach to its fosite.AccessRequester so no
+// storage backend ever has to marshal a nil client. id should carry the
+// SyntheticClientIDPrefix so IsSyntheticClientID recognizes it again on
+// unmarshal.
+func NewSyntheticClient(id string) fosite.Client {
+	return &fosite.DefaultClient{ID: id, Public: true}
+}
+
+// IsSyntheticClientID reports whether id was minted by NewSyntheticClient,
+// letting a storage backend reconstruct the client locally on unmarshal
+// instead of looking it up in the client registry.
+func IsSyntheticClientID(id string) bool {
+	return strings.HasPrefix(id, SyntheticClientIDPrefix)
+}
+
+// ValidateRegisterableClientID rejects a real client registration whose ID
+// collides with the SyntheticClientIDPrefix namespace. Synthetic clients are
+// minted directly by NewSyntheticClient and never go through RegisterClient,
+// so any caller reaching this check — DCR, static delegate-client config, or
+// a future registration path — is registering a real, externally-visible
+// client. Every ClientRegistry.RegisterClient implementation must call this
+// before persisting: without it, a colliding ID would round-trip through
+// Redis as a bare unregistered synthetic client (see IsSyntheticClientID),
+// silently discarding its real secret, scopes, and grants.
+func ValidateRegisterableClientID(id string) error {
+	if IsSyntheticClientID(id) {
+		return fmt.Errorf("%w: %q", ErrReservedClientID, id)
+	}
+	return nil
+}
+
 // ClientRegistry provides client registration and lookup operations.
 // It embeds fosite.ClientManager for client lookup (GetClient) and adds
 // RegisterClient for dynamic client registration (RFC 7591).
@@ -533,14 +595,34 @@ type ClientRegistry interface {
 	// Returns ErrAlreadyExists if a client with the same ID already exists.
 	RegisterClient(ctx context.Context, client fosite.Client) error
 
-	// RenewClientTTL extends the registration TTL of a public (DCR) client so an
-	// actively-used client is not evicted mid-lifecycle and forced to re-register.
-	// Call it on a proven-use signal (e.g. a successful token exchange), NOT on an
-	// unauthenticated client read such as the /oauth/authorize lookup. Implementations
-	// renew only public clients; confidential clients have no TTL. Backends without a
-	// native TTL (the in-memory backend) treat this as a no-op. A renewal failure is
-	// non-fatal to the caller's primary operation.
+	// RenewClientTTL extends the registration TTL of a DCR-issued client (public or
+	// confidential, gated on the registration.DCRIssued marker) so an actively-used
+	// client is not evicted mid-lifecycle and forced to re-register. Call it on a
+	// proven-use signal (e.g. a successful token exchange), NOT on an unauthenticated
+	// client read such as the /oauth/authorize lookup. Pre-provisioned/static clients
+	// carry no marker and this is a no-op for them on both backends. On the Redis
+	// backend this refreshes the key's sliding TTL; on the in-memory backend, which
+	// has no native TTL, this instead repositions the client to the back of the
+	// eviction order so it is not the next one dropped when WithMaxClients is reached.
+	// A renewal failure is non-fatal to the caller's primary operation.
 	RenewClientTTL(ctx context.Context, client fosite.Client) error
+}
+
+// UpstreamTokenRowID is an opaque, process-local coordination key for one
+// logical upstream token row. Callers must not persist, log, or expose it.
+type UpstreamTokenRowID string
+
+// upstreamTokenRowID returns a SHA-256 digest of the supplied row-key components.
+// Each component is length-prefixed so the encoding is self-delimiting: distinct
+// inputs cannot share a canonical representation when a component contains the
+// delimiter. Hashing keeps the session ID out of a value that is easy to log.
+func upstreamTokenRowID(components ...string) UpstreamTokenRowID {
+	h := sha256.New()
+	for _, component := range components {
+		// hash.Hash.Write never returns an error.
+		_, _ = fmt.Fprintf(h, "%d:%s", len(component), component)
+	}
+	return UpstreamTokenRowID(hex.EncodeToString(h.Sum(nil)))
 }
 
 // UpstreamTokenStorage provides storage for tokens obtained from upstream identity providers.
@@ -553,6 +635,23 @@ type ClientRegistry interface {
 // A secondary lookup by (userID, providerID) is exposed via GetLatestUpstreamTokensForUser;
 // see that method for usage and security contract.
 type UpstreamTokenStorage interface {
+	// ResolveUpstreamTokenRowID returns an opaque non-empty identity for the
+	// (sessionID, providerName) row. Equal physical rows must resolve to equal
+	// IDs; implementations must NOT alias rows that are not physically the
+	// same row (e.g. two distinct sessionIDs), because the singleflight leader
+	// reads and writes under its own sessionID, and aliasing distinct rows
+	// would cross credentials between sessions. A backend whose storage key is
+	// derived from (sessionID, providerName) may legitimately map two
+	// different (sessionID, providerName) pairs to the same ID when they are
+	// the same physical row under that key scheme.
+	//
+	// Resolution must be local and side-effect-free (no I/O): it is called
+	// before the singleflight joins, so any I/O here gives every concurrent
+	// caller its own round-trip and partially defeats the deduplication. This
+	// ID is solely for process-local refresh coordination: callers must not
+	// persist, log, or expose it.
+	ResolveUpstreamTokenRowID(ctx context.Context, sessionID, providerName string) (UpstreamTokenRowID, error)
+
 	// StoreUpstreamTokens stores the upstream IDP tokens for a session and provider.
 	// The providerName identifies which upstream provider these tokens belong to.
 	StoreUpstreamTokens(ctx context.Context, sessionID, providerName string, tokens *UpstreamTokens) error

@@ -22,19 +22,20 @@ func TestFactory(t *testing.T) {
 	t.Parallel()
 
 	tests := []struct {
-		name               string
-		delegationLifespan time.Duration
-		wantErr            bool
+		name                      string
+		delegationLifespan        time.Duration
+		configuredDelegateClients []string
+		wantErr                   string
 	}{
 		{
 			name:               "zero delegationLifespan returns error",
 			delegationLifespan: 0,
-			wantErr:            true,
+			wantErr:            "delegationLifespan must be between",
 		},
 		{
 			name:               "negative delegationLifespan returns error",
 			delegationLifespan: -time.Minute,
-			wantErr:            true,
+			wantErr:            "delegationLifespan must be between",
 		},
 		{
 			name:               "positive delegationLifespan succeeds",
@@ -47,12 +48,18 @@ func TestFactory(t *testing.T) {
 		{
 			name:               "delegationLifespan above max access token lifespan returns error",
 			delegationLifespan: server.MaxAccessTokenLifespan + time.Hour,
-			wantErr:            true,
+			wantErr:            "delegationLifespan must be between",
 		},
 		{
 			name:               "delegationLifespan of 48h returns error",
 			delegationLifespan: 48 * time.Hour,
-			wantErr:            true,
+			wantErr:            "delegationLifespan must be between",
+		},
+		{
+			name:                      "empty-string configured delegate client returns error",
+			delegationLifespan:        15 * time.Minute,
+			configuredDelegateClients: []string{"agent-1", ""},
+			wantErr:                   "configuredDelegateClients must not contain an empty client ID",
 		},
 	}
 
@@ -60,10 +67,10 @@ func TestFactory(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
 
-			f, err := Factory(tt.delegationLifespan, nil)
-			if tt.wantErr {
+			f, err := Factory(tt.delegationLifespan, nil, tt.configuredDelegateClients)
+			if tt.wantErr != "" {
 				require.Error(t, err)
-				assert.Contains(t, err.Error(), "delegationLifespan must be between")
+				assert.Contains(t, err.Error(), tt.wantErr)
 				assert.Nil(t, f)
 				return
 			}
@@ -168,7 +175,7 @@ func TestFactory_ValidatorSelection(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
 
-			f, err := Factory(15*time.Minute, tt.trustedIssuers)
+			f, err := Factory(15*time.Minute, tt.trustedIssuers, nil)
 			require.NoError(t, err)
 
 			cfg := buildTestAuthServerConfig(t)

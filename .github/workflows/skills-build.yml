@@ -1,0 +1,107 @@
+#
+# Copyright 2025 Stacklok, Inc.
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+#     http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+#
+# Verification-only build of the distributable Claude Code Agent Skills in
+# skills/ — it proves every skill still packages cleanly, and publishes
+# nothing.
+#
+# This is deliberately a separate workflow from skills-publish.yml rather
+# than the same one behind a `push: false` input. The build runs repository
+# code (`thv serve`, `thv skill build`), which on a pull request is code
+# from the pull request itself; keeping publishing in its own file means
+# this job never needs packages: write or id-token: write, so a pull request
+# cannot reach the credentials that sign a release. GitHub validates a
+# called workflow's permissions against its caller's statically, so a shared
+# workflow would have forced every caller to grant the union regardless of
+# the input.
+
+name: Build Skills
+
+on:
+  workflow_call:
+
+jobs:
+  skills-build:
+    name: Build Skills
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+
+    env:
+      BASE_REPO: "ghcr.io/stacklok/toolhive/skills"
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+        with:
+          persist-credentials: false
+
+      - name: Set up Go
+        uses: actions/setup-go@924ae3a1cded613372ab5595356fb5720e22ba16 # v6
+        with:
+          go-version: 'stable'
+
+      - name: Compute version number
+        id: version-string
+        uses: ./.github/actions/compute-version
+
+      - name: Build thv binary
+        run: go build -o ./thv ./cmd/thv
+
+      - name: Start thv serve
+        run: |
+          ./thv serve --host 127.0.0.1 --port 8080 > /tmp/thv-serve.log 2>&1 &
+          echo "THV_PID=$!" >> "$GITHUB_ENV"
+
+          # Wait for the server to be ready
+          for i in $(seq 1 30); do
+            if curl -sf http://127.0.0.1:8080/health > /dev/null 2>&1; then
+              echo "thv serve is ready (PID: $!)"
+              break
+            fi
+            if [ "$i" -eq 30 ]; then
+              echo "thv serve failed to start after 30s; logs:"
+              cat /tmp/thv-serve.log
+              exit 1
+            fi
+            sleep 1
+          done
+
+          # Verify process is still alive after health check
+          kill -0 "$!" 2>/dev/null || { echo "thv serve exited unexpectedly; logs:"; cat /tmp/thv-serve.log; exit 1; }
+
+      - name: Build skills
+        env:
+          TAG: ${{ steps.version-string.outputs.tag }}
+        run: |
+          set -euo pipefail
+
+          for skill_dir in skills/*/; do
+            # Skip if no skills exist
+            [ -d "$skill_dir" ] || continue
+
+            skill_name=$(basename "$skill_dir")
+            # Tagged with the real destination even though nothing is pushed,
+            # so the reference is validated exactly as a release would build it.
+            ref="${BASE_REPO}/${skill_name}:${TAG}"
+
+            echo "Building skill: ${skill_name} -> ${ref}"
+            built_ref=$(./thv skill build "$skill_dir" --tag "$ref")
+            echo "Built: ${built_ref}"
+          done
+
+      - name: Stop thv serve
+        if: always()
+        run: kill "$THV_PID" 2>/dev/null || true

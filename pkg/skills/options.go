@@ -3,6 +3,8 @@
 
 package skills
 
+import regtypes "github.com/stacklok/toolhive-core/registry/types"
+
 // ListOptions configures the behavior of the List operation.
 type ListOptions struct {
 	// Scope filters results by installation scope.
@@ -23,7 +25,8 @@ type InstallOptions struct {
 	Version string `json:"version,omitempty"`
 	// Scope is the installation scope.
 	Scope Scope `json:"scope,omitempty"`
-	// Clients lists target clients (e.g., "claude-code"). Empty means first skill-supporting client.
+	// Clients lists target clients (e.g., "claude-code"). Empty means every
+	// skill-supporting client detected on this host.
 	Clients []string `json:"clients,omitempty"`
 	// Force allows overwriting unmanaged skill directories.
 	Force bool `json:"force,omitempty"`
@@ -63,12 +66,11 @@ type InstallOptions struct {
 	// Empty means the user explicitly requested this install. Internal use
 	// only — NOT exposed via HTTP API.
 	RequiredByParent string `json:"-"`
-	// Visited tracks skill names already materialized in this dependency
-	// tree, preventing infinite recursion on a requires cycle. Left nil by
-	// external callers; Install initializes it on first entry and threads it
-	// through recursive dependency installs. Internal use only — NOT exposed
-	// via HTTP API.
-	Visited map[string]struct{} `json:"-"`
+	// ExpectedCanonicalName, when set, requires the resolved skill/manifest
+	// name to equal this value before any install mutation. Used by
+	// Sync/Upgrade so a lock entry cannot be repaired under a different
+	// canonical identity. Internal use only — NOT exposed via HTTP API.
+	ExpectedCanonicalName string `json:"-"`
 	// SyncRestore forces re-extraction to every existing client even when
 	// Digest matches the currently-installed digest. Set by Sync when
 	// reinstalling at a pinned reference: the whole point is repairing
@@ -86,6 +88,13 @@ type InstallOptions struct {
 	// install-time verification; recorded as `unsigned: true` in the lock
 	// entry.
 	Unsigned bool `json:"-"`
+	// CatalogProvenance is the independently optional provenance constraints
+	// declared by the skill registry/catalog entry this install resolved
+	// from. On true first use, install-time verification checks each non-empty
+	// field against the observed signature. A lock entry, including a legacy
+	// entry with no trust state, always takes precedence over this. Internal
+	// use only — NOT exposed via HTTP API.
+	CatalogProvenance *regtypes.Provenance `json:"-"`
 	// Provenance carries the verified signer identity established during
 	// install-time verification, for recording into the lock entry. Set by
 	// the verification step, nil when the artifact is unsigned or
@@ -102,14 +111,25 @@ type InstallOptions struct {
 type ProvenanceInfo struct {
 	// SignerIdentity is the certificate subject identity (workflow path for
 	// GitHub Actions certificates, SAN verbatim otherwise).
-	SignerIdentity string `json:"-"`
+	SignerIdentity string `json:"signer_identity"`
 	// CertIssuer is the OIDC issuer that authenticated the signer.
-	CertIssuer string `json:"-"`
+	CertIssuer string `json:"cert_issuer"`
 	// RepositoryURI is the source repository from the certificate
 	// extensions, when present.
-	RepositoryURI string `json:"-"`
+	RepositoryURI string `json:"repository_uri,omitempty"`
+	// RepositoryRef is the git ref the signing workflow ran on, from Fulcio
+	// certificate extension 1.3.6.1.4.1.57264.1.14. Empty means
+	// unconstrained, matching lock files written before the field existed.
+	RepositoryRef string `json:"repository_ref,omitempty"`
+	// RunnerEnvironment is the runner class the signing workflow executed in
+	// (e.g. "github-hosted"), from Fulcio certificate extension
+	// 1.3.6.1.4.1.57264.1.11. Empty means unconstrained.
+	RunnerEnvironment string `json:"runner_environment,omitempty"`
 	// SigstoreURL is the Sigstore instance the signature chains to.
-	SigstoreURL string `json:"-"`
+	SigstoreURL string `json:"sigstore_url,omitempty"`
+	// Provisional marks provenance with a documented verification gap
+	// (git signatures until transparency-log validation lands).
+	Provisional bool `json:"provisional,omitempty"`
 }
 
 // InstallResult contains the outcome of an Install operation.
@@ -121,6 +141,17 @@ type InstallResult struct {
 	// previous state instead of destructively deleting a record this call
 	// did not create. Internal use only — NOT exposed via HTTP API.
 	PreExisting *InstalledSkill `json:"-"`
+	// RestoreFiles restores on-disk skill trees overwritten by a force
+	// reinstall or upgrade. Set when extraction snapshotted prior content;
+	// rollback calls it so a failed install does not leave half-written
+	// files. Internal use only — NOT exposed via HTTP API.
+	RestoreFiles func() error `json:"-"`
+	// Provenance is the verified signer identity this install recorded —
+	// surfaced so callers can display what trust-on-first-use pinned.
+	Provenance *ProvenanceInfo `json:"provenance,omitempty"`
+	// Unsigned reports that the install was recorded as an explicit
+	// unsigned exception.
+	Unsigned bool `json:"unsigned,omitempty"`
 }
 
 // UninstallOptions configures the behavior of the Uninstall operation.
@@ -155,6 +186,12 @@ type SkillInfo struct {
 	Metadata SkillMetadata `json:"metadata"`
 	// InstalledSkill contains the full installation record.
 	InstalledSkill *InstalledSkill `json:"installed_skill,omitempty"`
+	// Provenance is the signer identity the project's lock file records
+	// for this skill, when project-scoped and lock-managed.
+	Provenance *ProvenanceInfo `json:"provenance,omitempty"`
+	// Unsigned reports that the lock file records an explicit unsigned
+	// exception for this skill.
+	Unsigned bool `json:"unsigned,omitempty"`
 }
 
 // ContentOptions configures the behavior of the GetContent operation.
@@ -215,6 +252,18 @@ type BuildResult struct {
 type PushOptions struct {
 	// Reference is the OCI reference to push.
 	Reference string `json:"reference"`
+	// Key is the path to a cosign PEM private key used to sign the pushed
+	// artifact (COSIGN_PASSWORD decrypts encrypted keys). Mutually exclusive
+	// with IdentityToken. One of Key, IdentityToken, or NoSign is required.
+	Key string `json:"key,omitempty"`
+	// IdentityToken is a short-lived OIDC identity token (raw JWT) used for
+	// keyless signing: the server exchanges it with Fulcio for a short-lived
+	// signing certificate and records the signature in Rekor. Mutually
+	// exclusive with Key. One of Key, IdentityToken, or NoSign is required.
+	IdentityToken string `json:"identity_token,omitempty"`
+	// NoSign pushes without signing. Consumers installing the artifact
+	// project-scoped will need an explicit unsigned exception.
+	NoSign bool `json:"no_sign,omitempty"`
 }
 
 // SyncOptions configures the behavior of the Sync operation.
@@ -260,6 +309,12 @@ const (
 	// FailureReasonSignerMismatch means the artifact verifies, but against
 	// an identity other than the one recorded in the lock file.
 	FailureReasonSignerMismatch FailureReason = "signer-mismatch"
+	// FailureReasonProvenanceFieldMismatch means the artifact verifies
+	// against the recorded signer identity and issuer, but its
+	// certificate's repository ref or runner environment differs from what
+	// is pinned — a narrower case than FailureReasonSignerMismatch, whose
+	// remediation (--allow-signer-change) is nonetheless the same.
+	FailureReasonProvenanceFieldMismatch FailureReason = "provenance-field-mismatch"
 	// FailureReasonUnsignedRejected means the artifact is unsigned and the
 	// operation did not permit unsigned installs.
 	FailureReasonUnsignedRejected FailureReason = "unsigned-rejected"
@@ -322,8 +377,9 @@ type UpgradeOptions struct {
 	// different identity than the one recorded in the lock file; the new
 	// identity is recorded in its place.
 	AllowSignerChange bool `json:"allow_signer_change,omitempty"`
-	// Clients lists target clients (e.g., "claude-code"). Empty means every
-	// skill-supporting client detected on this host.
+	// Clients lists target clients (e.g., "claude-code"). Empty preserves the
+	// skill's currently installed client list; when that is also empty,
+	// every skill-supporting client detected on this host is used.
 	Clients []string `json:"clients,omitempty"`
 }
 

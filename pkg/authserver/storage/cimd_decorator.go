@@ -6,7 +6,7 @@ package storage
 import (
 	"context"
 	"fmt"
-	"net/url"
+	"log/slog"
 	"slices"
 	"strings"
 	"time"
@@ -92,6 +92,19 @@ func (d *CIMDStorageDecorator) GetClient(ctx context.Context, id string) (fosite
 	return d.fetchOrCached(ctx, id)
 }
 
+// ConsumeAssertionJWT delegates assertion replay consumption to the wrapped
+// backend. Storage intentionally does not include this narrow capability, so a
+// decorator fails closed when its backend does not provide it.
+func (d *CIMDStorageDecorator) ConsumeAssertionJWT(
+	ctx context.Context, purpose, issuer, jti string, exp time.Time,
+) error {
+	consumer, ok := d.Storage.(AssertionJWTConsumer)
+	if !ok {
+		return fmt.Errorf("wrapped storage does not support assertion JWT replay consumption")
+	}
+	return consumer.ConsumeAssertionJWT(ctx, purpose, issuer, jti, exp)
+}
+
 // Unwrap returns the underlying storage so that type assertions (e.g. for
 // storage.DCRCredentialStore in server_impl.go) can reach the concrete type.
 func (d *CIMDStorageDecorator) Unwrap() Storage {
@@ -143,16 +156,32 @@ func (d *CIMDStorageDecorator) fetch(ctx context.Context, id string) (fosite.Cli
 			id, m, defaultCIMDTokenEndpointAuthMethod)
 	}
 
-	// Reject documents that declare grant_types or response_types the embedded AS
-	// does not support for public clients. Uses the same validators as DCR so the
-	// error messages and allowed sets are identical on both registration paths.
-	if _, dcrErr := registration.ValidatePublicGrantTypes(doc.GrantTypes); dcrErr != nil {
+	// Filter — not reject — grant_types and response_types this AS does not
+	// support. A CIMD document describes the client's capabilities across
+	// every AS it talks to and cannot be tailored per server (VS Code
+	// declares device_code alongside authorization_code, see #6290), so an
+	// unsupported entry is ignored rather than failing the whole document.
+	// The filters still reject when the intersection lacks the one flow this
+	// server offers (authorization_code / code): such a client could never
+	// complete a token exchange here, and a clear error at resolution beats
+	// a client that resolves and then fails every token request.
+	grantTypes, dcrErr := registration.FilterPublicGrantTypes(doc.GrantTypes)
+	if dcrErr != nil {
 		return nil, fmt.Errorf("%w: CIMD document at %s: %s",
 			fosite.ErrInvalidClient.WithHint(dcrErr.ErrorDescription), id, dcrErr.ErrorDescription)
 	}
-	if _, dcrErr := registration.ValidatePublicResponseTypes(doc.ResponseTypes); dcrErr != nil {
+	if len(grantTypes) < len(doc.GrantTypes) {
+		slog.Debug("CIMD: ignoring grant_types this server does not support",
+			"client_id", id, "declared", doc.GrantTypes, "effective", grantTypes)
+	}
+	responseTypes, dcrErr := registration.FilterPublicResponseTypes(doc.ResponseTypes)
+	if dcrErr != nil {
 		return nil, fmt.Errorf("%w: CIMD document at %s: %s",
 			fosite.ErrInvalidClient.WithHint(dcrErr.ErrorDescription), id, dcrErr.ErrorDescription)
+	}
+	if len(responseTypes) < len(doc.ResponseTypes) {
+		slog.Debug("CIMD: ignoring response_types this server does not support",
+			"client_id", id, "declared", doc.ResponseTypes, "effective", responseTypes)
 	}
 
 	// Compute and validate the client scope list consistent with DCR.
@@ -195,7 +224,7 @@ func (d *CIMDStorageDecorator) fetch(ctx context.Context, id string) (fosite.Cli
 		resolvedScopes = registration.UnionScopes(resolvedScopes, d.baselineClientScopes)
 	}
 
-	client := buildFositeClient(doc, resolvedScopes)
+	client := buildFositeClient(doc, resolvedScopes, grantTypes, responseTypes)
 
 	d.cache.Add(id, &cimdCacheEntry{
 		client:  client,
@@ -205,15 +234,6 @@ func (d *CIMDStorageDecorator) fetch(ctx context.Context, id string) (fosite.Cli
 	return client, nil
 }
 
-// defaultCIMDGrantTypes are the OAuth 2.0 grant types applied when the CIMD
-// document omits grant_types. CIMD clients are typically public native apps
-// that use the authorization code flow with refresh token rotation.
-var defaultCIMDGrantTypes = []string{"authorization_code", "refresh_token"}
-
-// defaultCIMDResponseTypes are the OAuth 2.0 response types applied when the
-// CIMD document omits response_types.
-var defaultCIMDResponseTypes = []string{"code"}
-
 // defaultCIMDTokenEndpointAuthMethod is the token endpoint authentication
 // method applied when the CIMD document omits token_endpoint_auth_method.
 // Documents that declare any other value are rejected by fetch() before
@@ -221,22 +241,21 @@ var defaultCIMDResponseTypes = []string{"code"}
 const defaultCIMDTokenEndpointAuthMethod = "none"
 
 // buildFositeClient converts a ClientMetadataDocument into a fosite.Client.
-// Redirect URIs containing http://localhost are wrapped in a LoopbackClient
-// so that RFC 8252 §7.3 dynamic port matching applies.
+// RFC 8252 §7.3 loopback dynamic-port matching for a "http://localhost" redirect
+// URI is provided generically by registration.RegisteredLoopbackRedirectURI
+// (keyed on IsPublic() + GetRedirectURIs()), so no wrapper type is needed here.
 // resolvedScopes is the already-validated scope list computed by fetch() via
 // registration.ValidateScopes; when empty, DefaultScopes is used — this occurs when
 // the decorator has no ScopesSupported restriction (unconstrained AS).
-func buildFositeClient(doc *cimd.ClientMetadataDocument, resolvedScopes []string) fosite.Client {
-	grantTypes := doc.GrantTypes
-	if len(grantTypes) == 0 {
-		grantTypes = defaultCIMDGrantTypes
-	}
-
-	responseTypes := doc.ResponseTypes
-	if len(responseTypes) == 0 {
-		responseTypes = defaultCIMDResponseTypes
-	}
-
+// grantTypes and responseTypes are the already-filtered lists computed by
+// fetch() via registration.FilterPublicGrantTypes/FilterPublicResponseTypes —
+// the document's declared values with unsupported entries dropped, never
+// empty (the filters apply defaults and reject empty intersections). The
+// stored client therefore carries only grant/response types this server can
+// actually serve, not the document's full declaration.
+func buildFositeClient(
+	doc *cimd.ClientMetadataDocument, resolvedScopes, grantTypes, responseTypes []string,
+) fosite.Client {
 	tokenEndpointAuthMethod := doc.TokenEndpointAuthMethod
 	if tokenEndpointAuthMethod == "" {
 		tokenEndpointAuthMethod = defaultCIMDTokenEndpointAuthMethod
@@ -262,34 +281,8 @@ func buildFositeClient(doc *cimd.ClientMetadataDocument, resolvedScopes []string
 		Public:   true,
 	}
 
-	openIDClient := &fosite.DefaultOpenIDConnectClient{
+	return &fosite.DefaultOpenIDConnectClient{
 		DefaultClient:           defaultClient,
 		TokenEndpointAuthMethod: tokenEndpointAuthMethod,
 	}
-
-	// Wrap in LoopbackClient when any redirect URI targets localhost so that
-	// RFC 8252 §7.3 dynamic port matching works for native app clients.
-	// Pass openIDClient directly so TokenEndpointAuthMethod is preserved —
-	// LoopbackClient now embeds *fosite.DefaultOpenIDConnectClient.
-	if hasLoopbackRedirectURI(doc.RedirectURIs) {
-		return registration.NewLoopbackClient(openIDClient)
-	}
-
-	return openIDClient
-}
-
-// hasLoopbackRedirectURI returns true when any of the redirect URIs in the
-// list targets a loopback address over HTTP. The host is parsed from each URI
-// to prevent bypass via hosts like "http://localhost.evil.com/".
-func hasLoopbackRedirectURI(uris []string) bool {
-	for _, uri := range uris {
-		parsed, err := url.Parse(uri)
-		if err != nil {
-			continue
-		}
-		if parsed.Scheme == "http" && oauthproto.IsLoopbackHost(parsed.Hostname()) {
-			return true
-		}
-	}
-	return false
 }

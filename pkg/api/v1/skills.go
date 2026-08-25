@@ -137,7 +137,11 @@ func (s *SkillsRoutes) installSkill(w http.ResponseWriter, r *http.Request) erro
 	w.Header().Set("Content-Type", "application/json")
 	w.Header().Set("Location", fmt.Sprintf("/api/v1beta/skills/%s", result.Skill.Metadata.Name))
 	w.WriteHeader(http.StatusCreated)
-	return json.NewEncoder(w).Encode(installSkillResponse{Skill: result.Skill})
+	return json.NewEncoder(w).Encode(installSkillResponse{
+		Skill:      result.Skill,
+		Provenance: result.Provenance,
+		Unsigned:   result.Unsigned,
+	})
 }
 
 // uninstallSkill removes an installed skill.
@@ -297,7 +301,10 @@ func (s *SkillsRoutes) pushSkill(w http.ResponseWriter, r *http.Request) error {
 	}
 
 	if err := s.skillService.Push(r.Context(), skills.PushOptions{
-		Reference: req.Reference,
+		Reference:     req.Reference,
+		Key:           req.Key,
+		IdentityToken: req.IdentityToken,
+		NoSign:        req.NoSign,
 	}); err != nil {
 		return err
 	}

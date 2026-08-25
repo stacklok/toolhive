@@ -218,7 +218,11 @@ func (c *Client) Install(ctx context.Context, opts skills.InstallOptions) (*skil
 	if err := c.doJSONRequest(ctx, http.MethodPost, "", nil, body, &resp); err != nil {
 		return nil, err
 	}
-	return &skills.InstallResult{Skill: resp.Skill}, nil
+	return &skills.InstallResult{
+		Skill:      resp.Skill,
+		Provenance: resp.Provenance,
+		Unsigned:   resp.Unsigned,
+	}, nil
 }
 
 // Uninstall removes an installed skill.
@@ -280,7 +284,12 @@ func (c *Client) Build(ctx context.Context, opts skills.BuildOptions) (*skills.B
 
 // Push pushes a built skill artifact to a remote registry.
 func (c *Client) Push(ctx context.Context, opts skills.PushOptions) error {
-	body := pushRequest{Reference: opts.Reference}
+	body := pushRequest{
+		Reference:     opts.Reference,
+		Key:           opts.Key,
+		IdentityToken: opts.IdentityToken,
+		NoSign:        opts.NoSign,
+	}
 	return c.doJSONRequest(ctx, http.MethodPost, "/push", nil, body, nil)
 }
 

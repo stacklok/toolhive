@@ -65,6 +65,45 @@ func TestNewAuthorizationServerConfig(t *testing.T) {
 	assert.Len(t, authzServerConfig.SigningJWKS.Keys, 1)
 }
 
+// TestNewAuthorizationServerConfig_ConfidentialClientCapabilities pins the
+// confidential-client capability flags' passage through NewAuthorizationServerConfig.
+func TestNewAuthorizationServerConfig_ConfidentialClientCapabilities(t *testing.T) {
+	t.Parallel()
+
+	rsaKey, err := rsa.GenerateKey(rand.Reader, 2048)
+	require.NoError(t, err)
+
+	tests := []struct {
+		name                    string
+		allowConfidential       bool
+		hasStaticDelegateClient bool
+	}{
+		{name: "public only", allowConfidential: false, hasStaticDelegateClient: false},
+		{name: "confidential DCR", allowConfidential: true, hasStaticDelegateClient: false},
+		{name: "static delegate client", allowConfidential: false, hasStaticDelegateClient: true},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			config, err := NewAuthorizationServerConfig(&AuthorizationServerParams{
+				Issuer:                              "https://auth.example.com",
+				AccessTokenLifespan:                 time.Hour,
+				RefreshTokenLifespan:                time.Hour * 24,
+				AuthCodeLifespan:                    time.Minute * 10,
+				HMACSecrets:                         servercrypto.NewHMACSecrets([]byte("test-secret-with-32-bytes-long!!")),
+				SigningKeyID:                        "key-1",
+				SigningKeyAlgorithm:                 "RS256",
+				SigningKey:                          rsaKey,
+				AllowConfidentialClientRegistration: tt.allowConfidential,
+				HasStaticDelegateClients:            tt.hasStaticDelegateClient,
+			})
+			require.NoError(t, err)
+			assert.Equal(t, tt.allowConfidential, config.AllowConfidentialClientRegistration)
+			assert.Equal(t, tt.hasStaticDelegateClient, config.HasStaticDelegateClients)
+		})
+	}
+}
+
 func TestNewAuthorizationServerConfig_InvalidConfig(t *testing.T) {
 	t.Parallel()
 

@@ -8,8 +8,10 @@ import (
 	"errors"
 	"net/http"
 	"os"
+	"path/filepath"
 	"testing"
 
+	"github.com/adrg/xdg"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 	"go.uber.org/mock/gomock"
@@ -23,6 +25,7 @@ import (
 	"github.com/stacklok/toolhive/pkg/runner"
 	"github.com/stacklok/toolhive/pkg/runner/retriever"
 	"github.com/stacklok/toolhive/pkg/secrets"
+	"github.com/stacklok/toolhive/pkg/state"
 	workloadsmocks "github.com/stacklok/toolhive/pkg/workloads/mocks"
 )
 
@@ -204,7 +207,7 @@ func TestBuildFullRunConfig_ThreadsImageVerification(t *testing.T) {
 		updateRequest: updateRequest{Image: testImage},
 	}
 
-	_, err := service.BuildFullRunConfig(context.Background(), req, 0)
+	_, err := service.BuildFullRunConfig(context.Background(), req, 0, nil)
 	require.NoError(t, err)
 	assert.Equal(t, retriever.VerifyImageDisabled, observed,
 		"imageRetriever must receive s.imageVerification verbatim")
@@ -261,7 +264,7 @@ func TestBuildFullRunConfig_AppliesOtelFromConfig(t *testing.T) {
 		updateRequest: updateRequest{Image: testImage},
 	}
 
-	runConfig, err := service.BuildFullRunConfig(context.Background(), req, 0)
+	runConfig, err := service.BuildFullRunConfig(context.Background(), req, 0, nil)
 	require.NoError(t, err)
 	require.NotNil(t, runConfig.TelemetryConfig,
 		"TelemetryConfig must be populated from config.OTEL when set — workloads created via the API would otherwise drop the endpoint")
@@ -315,7 +318,7 @@ func TestBuildFullRunConfig_ThreadsAllowDockerGateway(t *testing.T) {
 		},
 	}
 
-	runConfig, err := service.BuildFullRunConfig(context.Background(), req, 0)
+	runConfig, err := service.BuildFullRunConfig(context.Background(), req, 0, nil)
 	require.NoError(t, err)
 	assert.True(t, runConfig.AllowDockerGateway)
 }
@@ -355,7 +358,7 @@ func TestBuildFullRunConfig_NoOtelConfigLeavesTelemetryNil(t *testing.T) {
 		updateRequest: updateRequest{Image: testImage},
 	}
 
-	runConfig, err := service.BuildFullRunConfig(context.Background(), req, 0)
+	runConfig, err := service.BuildFullRunConfig(context.Background(), req, 0, nil)
 	require.NoError(t, err)
 	assert.Nil(t, runConfig.TelemetryConfig,
 		"TelemetryConfig must remain nil when config.OTEL has no endpoint or prometheus path")
@@ -473,6 +476,24 @@ func TestRuntimeConfigFromRequest(t *testing.T) {
 		req.RuntimeConfig.AdditionalPackages[0] = "curl"
 		assert.Equal(t, []string{"git"}, result.AdditionalPackages)
 	})
+
+	t.Run("trims and filters build_with, carries runtime_env", func(t *testing.T) {
+		t.Parallel()
+
+		req := &createRequest{
+			updateRequest: updateRequest{
+				RuntimeConfig: &templates.RuntimeConfig{
+					BuildWith:  []string{" mcp<2 ", "", "  "},
+					RuntimeEnv: map[string]string{"NODE_ENV": "production"},
+				},
+			},
+		}
+
+		result := runtimeConfigFromRequest(req)
+		require.NotNil(t, result)
+		assert.Equal(t, []string{"mcp<2"}, result.BuildWith)
+		assert.Equal(t, map[string]string{"NODE_ENV": "production"}, result.RuntimeEnv)
+	})
 }
 
 func TestRuntimeConfigForImageBuild(t *testing.T) {
@@ -483,6 +504,7 @@ func TestRuntimeConfigForImageBuild(t *testing.T) {
 
 		result, err := runtimeConfigForImageBuild(
 			&createRequest{updateRequest: updateRequest{Image: "go://github.com/example/server"}},
+			nil,
 			nil,
 		)
 		require.NoError(t, err)
@@ -495,6 +517,7 @@ func TestRuntimeConfigForImageBuild(t *testing.T) {
 		result, err := runtimeConfigForImageBuild(
 			&createRequest{updateRequest: updateRequest{Image: "nginx:latest"}},
 			&templates.RuntimeConfig{BuilderImage: "golang:1.24-alpine"},
+			nil,
 		)
 		require.Error(t, err)
 		assert.Nil(t, result)
@@ -507,6 +530,7 @@ func TestRuntimeConfigForImageBuild(t *testing.T) {
 		result, err := runtimeConfigForImageBuild(
 			&createRequest{updateRequest: updateRequest{URL: "https://example.com"}},
 			&templates.RuntimeConfig{BuilderImage: "golang:1.24-alpine"},
+			nil,
 		)
 		require.Error(t, err)
 		assert.Nil(t, result)
@@ -519,10 +543,11 @@ func TestRuntimeConfigForImageBuild(t *testing.T) {
 		result, err := runtimeConfigForImageBuild(
 			&createRequest{updateRequest: updateRequest{Image: "go://github.com/example/server"}},
 			&templates.RuntimeConfig{BuilderImage: "not a valid image ref"},
+			nil,
 		)
 		require.Error(t, err)
 		assert.Nil(t, result)
-		assert.Contains(t, err.Error(), "runtime_config.builder_image must be a valid container image reference")
+		assert.Contains(t, err.Error(), "runtime_config: invalid builder_image")
 	})
 
 	t.Run("rejects invalid additional package names", func(t *testing.T) {
@@ -531,10 +556,11 @@ func TestRuntimeConfigForImageBuild(t *testing.T) {
 		result, err := runtimeConfigForImageBuild(
 			&createRequest{updateRequest: updateRequest{Image: "go://github.com/example/server"}},
 			&templates.RuntimeConfig{AdditionalPackages: []string{"curl;rm -rf /"}},
+			nil,
 		)
 		require.Error(t, err)
 		assert.Nil(t, result)
-		assert.Contains(t, err.Error(), "runtime_config.additional_packages contains invalid package name")
+		assert.Contains(t, err.Error(), "runtime_config: invalid package name")
 	})
 
 	t.Run("rejects option like additional package names", func(t *testing.T) {
@@ -543,10 +569,26 @@ func TestRuntimeConfigForImageBuild(t *testing.T) {
 		result, err := runtimeConfigForImageBuild(
 			&createRequest{updateRequest: updateRequest{Image: "go://github.com/example/server"}},
 			&templates.RuntimeConfig{AdditionalPackages: []string{"--allow-untrusted"}},
+			nil,
 		)
 		require.Error(t, err)
 		assert.Nil(t, result)
-		assert.Contains(t, err.Error(), "runtime_config.additional_packages contains invalid package name")
+		assert.Contains(t, err.Error(), "runtime_config: invalid package name")
+	})
+
+	t.Run("rejects additional packages starting with . or _", func(t *testing.T) {
+		t.Parallel()
+
+		for _, pkg := range []string{".foo", "_foo"} {
+			result, err := runtimeConfigForImageBuild(
+				&createRequest{updateRequest: updateRequest{Image: "go://github.com/example/server"}},
+				&templates.RuntimeConfig{AdditionalPackages: []string{pkg}},
+				nil,
+			)
+			require.Error(t, err, "package %q should be rejected", pkg)
+			assert.Nil(t, result)
+			assert.Contains(t, err.Error(), "runtime_config: invalid package name")
+		}
 	})
 
 	t.Run("merges override with base defaults for protocol images", func(t *testing.T) {
@@ -559,6 +601,7 @@ func TestRuntimeConfigForImageBuild(t *testing.T) {
 		result, err := runtimeConfigForImageBuild(
 			&createRequest{updateRequest: updateRequest{Image: "go://github.com/example/server"}},
 			override,
+			nil,
 		)
 		require.NoError(t, err)
 		require.NotNil(t, result)
@@ -571,6 +614,23 @@ func TestRuntimeConfigForImageBuild(t *testing.T) {
 
 		override.AdditionalPackages[0] = "git"
 		assert.Equal(t, expectedPackages, result.AdditionalPackages)
+	})
+
+	t.Run("build_with and runtime_env survive the merge for uvx", func(t *testing.T) {
+		t.Parallel()
+
+		result, err := runtimeConfigForImageBuild(
+			&createRequest{updateRequest: updateRequest{Image: "uvx://arxiv-mcp-server"}},
+			&templates.RuntimeConfig{
+				BuildWith:  []string{"mcp<2"},
+				RuntimeEnv: map[string]string{"NODE_ENV": "production"},
+			},
+			nil,
+		)
+		require.NoError(t, err)
+		require.NotNil(t, result)
+		assert.Equal(t, []string{"mcp<2"}, result.BuildWith)
+		assert.Equal(t, map[string]string{"NODE_ENV": "production"}, result.RuntimeEnv)
 	})
 }
 
@@ -631,6 +691,134 @@ func TestCreateWorkloadFromRequest_PolicyGateDenied(t *testing.T) {
 
 	require.Error(t, err)
 	require.ErrorIs(t, err, sentinel)
+}
+
+// testCapturePolicyGate snapshots the RuntimeConfig it was asked to check,
+// so a test can assert what the policy gate actually evaluated at call time
+// - not just what the same object looks like later. Storing the
+// *runner.RunConfig pointer instead would be wrong: a caller that mutates it
+// after this call returns (e.g. a restore-after-the-fact) would make a later
+// inspection of the pointer lie about what the gate actually saw.
+type testCapturePolicyGate struct {
+	runner.NoopPolicyGate
+	called   bool
+	snapshot *templates.RuntimeConfig
+}
+
+func (g *testCapturePolicyGate) CheckCreateServer(_ context.Context, rc *runner.RunConfig) error {
+	g.called = true
+	g.snapshot = rc.RuntimeConfig.Clone()
+	return nil
+}
+
+// TestBuildFullRunConfig_EchoedRuntimeConfigVisibleToPolicyGate guards the
+// echo fix's synchronous policy gate: EnforcePolicyAndPullImage runs inside
+// BuildFullRunConfig, so for an unchanged runtime_config echo on a
+// non-protocol image, the gate must still see the real runtime_config, not
+// nil. A clear-then-restore-after-BuildFullRunConfig-returns approach (an
+// earlier version of this fix) would let a policy restricting builder
+// images, packages, build constraints or runtime env silently approve the
+// edit, since the gate runs before the restore. Threading persisted straight
+// into BuildFullRunConfig, so req.RuntimeConfig is never touched, closes
+// that gap: the retriever/build input is suppressed for the echo, but
+// runConfig.RuntimeConfig - what the policy gate and the caller both see -
+// is always populated from the request.
+//
+//nolint:paralleltest // Mutates the global policy gate.
+func TestBuildFullRunConfig_EchoedRuntimeConfigVisibleToPolicyGate(t *testing.T) {
+	const testImage = "toolhivelocal/uvx-arxiv-mcp-server:20260101000000"
+
+	gate := &testCapturePolicyGate{}
+	original := runner.ActivePolicyGate()
+	runner.RegisterPolicyGate(gate)
+	t.Cleanup(func() { runner.RegisterPolicyGate(original) })
+
+	ctrl := gomock.NewController(t)
+	defer ctrl.Finish()
+
+	mockGroupManager := groupsmocks.NewMockManager(ctrl)
+	mockGroupManager.EXPECT().Exists(gomock.Any(), "default").Return(true, nil)
+
+	echoedConfig := &templates.RuntimeConfig{
+		BuilderImage:       "python:3.14-slim",
+		AdditionalPackages: []string{"ca-certificates"},
+		BuildWith:          []string{"mcp<2"},
+		RuntimeEnv:         map[string]string{"NODE_ENV": "production"},
+	}
+	persisted := &runner.RunConfig{Image: testImage, RuntimeConfig: echoedConfig}
+
+	mockRetriever := func(
+		_ context.Context, _ string, _ string, _ string, _ string, rc *templates.RuntimeConfig,
+	) (string, regtypes.ServerMetadata, error) {
+		// The retriever/build input is suppressed for an echo - nothing to build.
+		assert.Nil(t, rc)
+		return testImage, &regtypes.ImageMetadata{Image: testImage}, nil
+	}
+
+	service := &WorkloadService{
+		groupManager:      mockGroupManager,
+		imageRetriever:    mockRetriever,
+		imagePuller:       func(_ context.Context, _ string) error { return nil },
+		configProvider:    config.NewDefaultProvider(),
+		imageVerification: retriever.VerifyImageWarn,
+	}
+
+	req := &createRequest{
+		updateRequest: updateRequest{
+			Image:         testImage,
+			RuntimeConfig: echoedConfig,
+		},
+	}
+
+	runConfig, err := service.BuildFullRunConfig(context.Background(), req, 0, persisted)
+	require.NoError(t, err)
+	require.NotNil(t, runConfig.RuntimeConfig,
+		"echoed runtime_config must survive on the built RunConfig, not just be accepted")
+	assert.Equal(t, echoedConfig, runConfig.RuntimeConfig)
+
+	require.True(t, gate.called, "policy gate must have been invoked")
+	require.NotNil(t, gate.snapshot,
+		"policy gate must evaluate the real runtime_config, not nil, AT CALL TIME - a policy "+
+			"restricting builder images, packages, build constraints or runtime env must not be "+
+			"bypassable by echoing an unchanged config back")
+	assert.Equal(t, echoedConfig, gate.snapshot)
+}
+
+// TestUpdateWorkloadFromRequest_CorruptStateSurfacesError guards the
+// not-found-vs-failure distinction in UpdateWorkloadFromRequest's echo check:
+// a corrupt or unreadable state file must surface as an error, not be
+// silently treated the same as "no persisted state" - which would let the
+// protocol-scheme guard produce a misleading 400 that hides the real cause.
+//
+//nolint:paralleltest // Uses process-wide XDG state settings; keep sequential.
+func TestUpdateWorkloadFromRequest_CorruptStateSurfacesError(t *testing.T) {
+	t.Cleanup(xdg.Reload)
+	t.Setenv("XDG_STATE_HOME", t.TempDir())
+	xdg.Reload()
+
+	const workloadName = "test-workload"
+	const testImage = "toolhivelocal/uvx-arxiv-mcp-server:20260101000000"
+
+	// Write a corrupt state file directly, bypassing SaveState, so LoadState
+	// fails with something other than "not found".
+	dir := filepath.Join(xdg.StateHome, state.DefaultAppName, state.RunConfigsDir)
+	require.NoError(t, os.MkdirAll(dir, 0o750))
+	require.NoError(t, os.WriteFile(filepath.Join(dir, workloadName+state.FileExtension), []byte("{not valid json"), 0o600))
+
+	service := &WorkloadService{configProvider: config.NewDefaultProvider()}
+	req := &createRequest{
+		updateRequest: updateRequest{
+			Image:         testImage,
+			RuntimeConfig: &templates.RuntimeConfig{BuilderImage: "python:3.14-slim"},
+		},
+	}
+
+	_, err := service.UpdateWorkloadFromRequest(context.Background(), workloadName, req, 0)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "failed to load persisted state for workload")
+	assert.NotContains(t, err.Error(), "runtime_config is only supported for protocol-scheme images",
+		"a corrupt state file must not be mistaken for 'no persisted state' and fall through "+
+			"to the unrelated protocol-scheme rejection")
 }
 
 func TestApplyImageDefaults(t *testing.T) {

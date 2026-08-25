@@ -10,6 +10,7 @@ import (
 	"net/http"
 
 	"github.com/stacklok/toolhive-core/httperr"
+	regtypes "github.com/stacklok/toolhive-core/registry/types"
 	"github.com/stacklok/toolhive/pkg/container/images"
 	"github.com/stacklok/toolhive/pkg/skills"
 	"github.com/stacklok/toolhive/pkg/skills/lockfile"
@@ -26,11 +27,10 @@ func (s *service) artifactVerifier() verifier.Verifier {
 }
 
 // shouldVerifyInstall reports whether install-time signature verification
-// applies: project-scope installs with the lock file feature enabled. The
-// lock file is where trust decisions are recorded, so verification is
-// scoped to it.
+// applies: project-scope installs. The lock file is where trust decisions
+// are recorded, so verification is scoped to it.
 func shouldVerifyInstall(opts skills.InstallOptions, scope skills.Scope) bool {
-	return scope == skills.ScopeProject && opts.ProjectRoot != "" && skills.LockFileFeatureEnabled()
+	return scope == skills.ScopeProject && opts.ProjectRoot != ""
 }
 
 // provenanceDecision is the outcome of install-time verification: either a
@@ -56,28 +56,45 @@ func applyDecisionToOpts(opts *skills.InstallOptions, decision *provenanceDecisi
 
 // verifyOCIInstall verifies the signature of the OCI artifact at ref/digest
 // before anything is extracted or recorded. The identity expected by the
-// lock file (if any) is enforced inside the verifier's Sigstore policy;
-// trust on first use records whatever identity verification observes.
+// lock file (if any) is enforced inside the verifier's Sigstore policy; on
+// true first use (no lock entry at all), a catalog-declared expectation
+// takes its place if the install resolved from a registry entry that
+// declared one (RFC THV-0080 follow-up #6310) — otherwise trust on first
+// use records whatever identity verification observes.
 func (s *service) verifyOCIInstall(
 	ctx context.Context,
 	opts skills.InstallOptions,
 	skillName, ref, digest string,
 ) (*provenanceDecision, error) {
-	expected, expectUnsigned, err := expectedLockTrust(opts.ProjectRoot, skillName)
+	expected, expectUnsigned, lockEntryExists, err := expectedLockTrust(opts.ProjectRoot, skillName)
 	if err != nil {
 		return nil, err
+	}
+	var catalogExpected *regtypes.Provenance
+	verifierExpected := verifier.NewLockExpectation(expected)
+	if !lockEntryExists {
+		if err := validateCatalogProvenance(opts.CatalogProvenance); err != nil {
+			return nil, err
+		}
+		catalogExpected = normalizeCatalogProvenance(opts.CatalogProvenance)
+		verifierExpected = verifier.NewCatalogExpectation(catalogExpected)
 	}
 	if opts.AllowSignerChange {
 		// The signer-change guard was explicitly overridden: verify the
 		// chain of trust only and re-record whatever identity is observed.
 		expected, expectUnsigned = nil, false
+		catalogExpected = nil
+		verifierExpected = nil
 	}
 	if expectUnsigned {
 		return unsignedLockedDecision(opts, skillName)
 	}
 
-	result, verifyErr := s.artifactVerifier().VerifyOCI(ctx, ref, digest, expected)
+	result, verifyErr := s.artifactVerifier().VerifyOCI(ctx, ref, digest, verifierExpected)
 	if verifyErr != nil {
+		if catalogExpected != nil {
+			return nil, classifyCatalogVerifyError(verifyErr, skillName)
+		}
 		if isAllowedUnsigned(verifyErr, opts, expected) {
 			return &provenanceDecision{unsigned: true}, nil
 		}
@@ -90,7 +107,8 @@ func (s *service) verifyOCIInstall(
 }
 
 // verifyGitInstall verifies the gitsign signature on the resolved commit
-// before anything is written or recorded.
+// before anything is written or recorded. See verifyOCIInstall for the
+// catalog-provenance fallback on true first use.
 func (s *service) verifyGitInstall(
 	ctx context.Context,
 	opts skills.InstallOptions,
@@ -98,19 +116,33 @@ func (s *service) verifyGitInstall(
 	payload []byte,
 	signature string,
 ) (*provenanceDecision, error) {
-	expected, expectUnsigned, err := expectedLockTrust(opts.ProjectRoot, skillName)
+	expected, expectUnsigned, lockEntryExists, err := expectedLockTrust(opts.ProjectRoot, skillName)
 	if err != nil {
 		return nil, err
 	}
+	var catalogExpected *regtypes.Provenance
+	verifierExpected := verifier.NewLockExpectation(expected)
+	if !lockEntryExists {
+		if err := validateCatalogProvenance(opts.CatalogProvenance); err != nil {
+			return nil, err
+		}
+		catalogExpected = normalizeCatalogProvenance(opts.CatalogProvenance)
+		verifierExpected = verifier.NewCatalogExpectation(catalogExpected)
+	}
 	if opts.AllowSignerChange {
 		expected, expectUnsigned = nil, false
+		catalogExpected = nil
+		verifierExpected = nil
 	}
 	if expectUnsigned {
 		return unsignedLockedDecision(opts, skillName)
 	}
 
-	result, verifyErr := s.artifactVerifier().VerifyGit(ctx, payload, []byte(signature), expected)
+	result, verifyErr := s.artifactVerifier().VerifyGit(ctx, payload, []byte(signature), verifierExpected)
 	if verifyErr != nil {
+		if catalogExpected != nil {
+			return nil, classifyCatalogVerifyError(verifyErr, skillName)
+		}
 		if isAllowedUnsigned(verifyErr, opts, expected) {
 			return &provenanceDecision{unsigned: true}, nil
 		}
@@ -129,7 +161,7 @@ func (s *service) verifyGitInstall(
 // artifact for a local build is exactly the substitution the lock exists to
 // catch.
 func verifyLocalInstall(opts skills.InstallOptions, skillName string) (*provenanceDecision, error) {
-	expected, expectUnsigned, err := expectedLockTrust(opts.ProjectRoot, skillName)
+	expected, expectUnsigned, _, err := expectedLockTrust(opts.ProjectRoot, skillName)
 	if err != nil {
 		return nil, err
 	}
@@ -174,28 +206,29 @@ func unsignedLockedDecision(opts skills.InstallOptions, skillName string) (*prov
 }
 
 // expectedLockTrust reads the trust state recorded in projectRoot's lock
-// file for skillName: the expected signer identity (nil on first use — the
-// TOFU case), or that the entry was recorded unsigned.
-func expectedLockTrust(projectRoot, skillName string) (*lockfile.Provenance, bool, error) {
+// file for skillName: the expected signer identity, whether the entry was
+// recorded unsigned, and whether any entry exists. The third result
+// distinguishes true first use from legacy entries that predate trust state.
+func expectedLockTrust(projectRoot, skillName string) (*lockfile.Provenance, bool, bool, error) {
 	if projectRoot == "" {
-		return nil, false, nil
+		return nil, false, false, nil
 	}
 	root, err := lockfile.OpenRoot(projectRoot)
 	if err != nil {
-		return nil, false, err
+		return nil, false, false, err
 	}
 	lf, err := lockfile.Load(root)
 	if err != nil {
-		return nil, false, err
+		return nil, false, false, err
 	}
 	entry, ok := lf.Get(skillName)
 	if !ok {
-		return nil, false, nil
+		return nil, false, false, nil
 	}
 	if entry.Unsigned {
-		return nil, true, nil
+		return nil, true, true, nil
 	}
-	return entry.Provenance, false, nil
+	return entry.Provenance, false, true, nil
 }
 
 // isAllowedUnsigned reports whether a verification failure is the unsigned
@@ -242,6 +275,16 @@ func classifyInstallVerifyError(
 				skillName),
 			http.StatusForbidden,
 		)
+	// Checked before the broader ErrSignerMismatch case: pinnedFieldMismatch
+	// wraps both, so a ref/runner-only mismatch would otherwise be
+	// misreported as a signer-identity change below.
+	case errors.Is(verifyErr, verifier.ErrProvenanceFieldMismatch):
+		return httperr.WithCode(
+			fmt.Errorf("skill %q's certificate no longer matches its pinned provenance: %w"+
+				" (if this is an expected publisher-side change, upgrade with allow_signer_change)",
+				skillName, verifyErr),
+			http.StatusForbidden,
+		)
 	case errors.Is(verifyErr, verifier.ErrSignerMismatch):
 		return httperr.WithCode(
 			fmt.Errorf("signer identity mismatch for %q: %w"+
@@ -257,10 +300,29 @@ func classifyInstallVerifyError(
 	}
 }
 
+// classifyCatalogVerifyError reports a first-install artifact that does not
+// satisfy the provenance constraints declared by its catalog entry.
+func classifyCatalogVerifyError(verifyErr error, skillName string) error {
+	if errors.Is(verifyErr, verifier.ErrUnsigned) {
+		return httperr.WithCode(
+			fmt.Errorf("skill %q is unsigned but its catalog entry requires verified provenance", skillName),
+			http.StatusForbidden,
+		)
+	}
+	return httperr.WithCode(
+		fmt.Errorf("skill %q does not match its catalog-declared provenance: %w", skillName, verifyErr),
+		http.StatusForbidden,
+	)
+}
+
 // classifySignatureError maps verifier sentinels to typed failure reasons
 // for sync/upgrade results. Returns "" when err is not a signature failure.
 func classifySignatureError(err error) skills.FailureReason {
 	switch {
+	// Checked before the broader ErrSignerMismatch case for the same reason
+	// as classifyInstallVerifyError above.
+	case errors.Is(err, verifier.ErrProvenanceFieldMismatch):
+		return skills.FailureReasonProvenanceFieldMismatch
 	case errors.Is(err, verifier.ErrSignerMismatch):
 		return skills.FailureReasonSignerMismatch
 	case errors.Is(err, verifier.ErrUnsigned):
@@ -272,6 +334,22 @@ func classifySignatureError(err error) skills.FailureReason {
 	}
 }
 
+// provenanceInfoFromLock converts a lock provenance block to the API shape.
+func provenanceInfoFromLock(p *lockfile.Provenance) *skills.ProvenanceInfo {
+	if p == nil {
+		return nil
+	}
+	return &skills.ProvenanceInfo{
+		SignerIdentity:    p.SignerIdentity,
+		CertIssuer:        p.CertIssuer,
+		RepositoryURI:     p.RepositoryURI,
+		RepositoryRef:     p.RepositoryRef,
+		RunnerEnvironment: p.RunnerEnvironment,
+		SigstoreURL:       p.SigstoreURL,
+		Provisional:       p.Provisional,
+	}
+}
+
 // provenanceInfoToLock converts the internal provenance shape to the lock
 // file's.
 func provenanceInfoToLock(p *skills.ProvenanceInfo) *lockfile.Provenance {
@@ -279,10 +357,13 @@ func provenanceInfoToLock(p *skills.ProvenanceInfo) *lockfile.Provenance {
 		return nil
 	}
 	return &lockfile.Provenance{
-		SignerIdentity: p.SignerIdentity,
-		CertIssuer:     p.CertIssuer,
-		RepositoryURI:  p.RepositoryURI,
-		SigstoreURL:    p.SigstoreURL,
+		SignerIdentity:    p.SignerIdentity,
+		CertIssuer:        p.CertIssuer,
+		RepositoryURI:     p.RepositoryURI,
+		RepositoryRef:     p.RepositoryRef,
+		RunnerEnvironment: p.RunnerEnvironment,
+		SigstoreURL:       p.SigstoreURL,
+		Provisional:       p.Provisional,
 	}
 }
 
@@ -293,9 +374,51 @@ func provenanceInfoFromResult(r *verifier.Result) *skills.ProvenanceInfo {
 		return nil
 	}
 	return &skills.ProvenanceInfo{
-		SignerIdentity: r.SignerIdentity,
-		CertIssuer:     r.CertIssuer,
-		RepositoryURI:  r.RepositoryURI,
-		SigstoreURL:    r.SigstoreURL,
+		SignerIdentity:    r.SignerIdentity,
+		CertIssuer:        r.CertIssuer,
+		RepositoryURI:     r.RepositoryURI,
+		RepositoryRef:     r.RepositoryRef,
+		RunnerEnvironment: r.RunnerEnvironment,
+		SigstoreURL:       r.SigstoreURL,
+		Provisional:       r.Provisional,
 	}
+}
+
+// validateCatalogProvenance rejects catalog constraints the skills verifier
+// cannot currently enforce. It runs only for project-scope true first use,
+// after lock precedence has been established.
+func validateCatalogProvenance(p *regtypes.Provenance) error {
+	if p == nil {
+		return nil
+	}
+	if p.SigstoreURL != "" {
+		return httperr.WithCode(
+			errors.New("catalog declares a sigstore_url constraint for this skill,"+
+				" which toolhive cannot yet enforce; refusing to silently ignore it"),
+			http.StatusUnprocessableEntity,
+		)
+	}
+	if p.Attestation != nil {
+		return httperr.WithCode(
+			errors.New("catalog declares an attestation constraint for this skill,"+
+				" which toolhive cannot yet enforce; refusing to silently ignore it"),
+			http.StatusUnprocessableEntity,
+		)
+	}
+	return nil
+}
+
+// normalizeCatalogProvenance treats an empty supported constraint as absent.
+// Catalog fields constrain independently, so an object containing no
+// supported values must preserve the ordinary unconstrained TOFU behavior,
+// including the explicit allow-unsigned path.
+func normalizeCatalogProvenance(p *regtypes.Provenance) *regtypes.Provenance {
+	if p == nil || (p.SignerIdentity == "" &&
+		p.CertIssuer == "" &&
+		p.RepositoryURI == "" &&
+		p.RepositoryRef == "" &&
+		p.RunnerEnvironment == "") {
+		return nil
+	}
+	return p
 }

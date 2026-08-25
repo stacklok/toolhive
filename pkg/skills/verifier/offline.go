@@ -4,14 +4,14 @@
 package verifier
 
 import (
-	"crypto/sha256"
-	"encoding/hex"
 	"errors"
 	"fmt"
 
+	"github.com/sigstore/sigstore-go/pkg/verify"
+
+	"github.com/stacklok/toolhive-core/container/signer"
 	coreverifier "github.com/stacklok/toolhive-core/container/verifier"
 	"github.com/stacklok/toolhive/pkg/skills/lockfile"
-	"github.com/stacklok/toolhive/pkg/skills/signer"
 )
 
 // VerifyBundleOffline re-verifies a stored bundle against the artifact
@@ -26,9 +26,9 @@ func (*Default) VerifyBundleOffline(bundleBytes []byte, digest string, expected 
 		// reinstalling (or re-adopting) is the fix.
 		return fmt.Errorf("%w: no stored bundle to verify — reinstall to restore it", ErrSignatureInvalid)
 	}
-	_, err := coreverifier.VerifyBundleOffline(bundleBytes, digest, expectedIdentity(expected))
+	vr, err := coreverifier.VerifyBundleOffline(bundleBytes, digest, expectedIdentity(NewLockExpectation(expected)))
 	if err == nil {
-		return nil
+		return checkStoredBundlePins(vr, expected)
 	}
 	if expected != nil && !errors.Is(err, coreverifier.ErrVerificationFailed) {
 		// Malformed input never reaches verification; don't reclassify.
@@ -40,7 +40,7 @@ func (*Default) VerifyBundleOffline(bundleBytes []byte, digest string, expected 
 		// mismatch apart from a broken signature — and yields the identity
 		// that DID verify, which the error reports.
 		if vr, tofuErr := coreverifier.VerifyBundleOffline(bundleBytes, digest, nil); tofuErr == nil {
-			return signerMismatchError(vr, expected)
+			return signerMismatchError(vr, NewLockExpectation(expected))
 		}
 	}
 	return wrapInvalid(err)
@@ -56,12 +56,10 @@ func (*Default) VerifyBundleOfflineWithKey(bundleBytes []byte, imageRef, digest 
 	if len(bundleBytes) == 0 {
 		return fmt.Errorf("%w: no stored bundle to verify — reinstall to restore it", ErrSignatureInvalid)
 	}
-	payload, err := signer.SimpleSigningPayload(imageRef, digest)
+	digestArg, err := signer.PayloadDigest(imageRef, digest)
 	if err != nil {
 		return fmt.Errorf("%w: %s", ErrSignatureInvalid, err.Error())
 	}
-	payloadDigest := sha256.Sum256(payload)
-	digestArg := coreverifier.DigestAlgorithmSHA256 + ":" + hex.EncodeToString(payloadDigest[:])
 	if _, err := coreverifier.VerifyBundleOfflineWithKey(bundleBytes, digestArg, pubKeyPEM); err != nil {
 		return wrapInvalid(err)
 	}
@@ -79,9 +77,26 @@ func (*Default) ResultFromBundle(bundleBytes []byte, digest string) (*Result, er
 	if err != nil {
 		return nil, wrapInvalid(err)
 	}
-	identity, err := coreverifier.IdentityFromResult(vr)
+	observed, err := observedFromResult(vr)
 	if err != nil {
 		return nil, wrapInvalid(err)
 	}
-	return resultFromCore(identity, bundleBytes), nil
+	return resultFromCore(observed, bundleBytes), nil
+}
+
+// checkStoredBundlePins enforces the pinned ref and runner class against a
+// stored bundle that just passed offline verification. The lock file's
+// provenance and the bundle backing it are stored separately (lock file
+// versus install record), so a bundle whose certificate no longer carries
+// the recorded ref is exactly the substitution this re-verification exists
+// to catch.
+func checkStoredBundlePins(vr *verify.VerificationResult, expected *lockfile.Provenance) error {
+	if expected == nil || (expected.RepositoryRef == "" && expected.RunnerEnvironment == "") {
+		return nil
+	}
+	observed, err := observedFromResult(vr)
+	if err != nil {
+		return fmt.Errorf("%w: %s", ErrSignatureInvalid, err.Error())
+	}
+	return checkPinnedCertificateFields(observed, expected)
 }

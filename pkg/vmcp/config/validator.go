@@ -378,10 +378,12 @@ func (v *DefaultValidator) validateAggregation(agg *AggregationConfig) error {
 // Rejecting the combination up front is cheaper than reordering the pipeline,
 // which would mean resolving conflicts twice: once over the visible candidates
 // and once over the complete set that composite tools route against.
+//
+// validateAggregation guarantees ConflictResolutionConfig is non-nil before
+// calling this, so it is safe to dereference below.
 func validateDenyVisibilityPriorityOrder(agg *AggregationConfig) error {
 	if agg.DefaultToolVisibility != DefaultToolVisibilityDeny ||
-		agg.ConflictResolution != vmcp.ConflictStrategyPriority ||
-		agg.ConflictResolutionConfig == nil {
+		agg.ConflictResolution != vmcp.ConflictStrategyPriority {
 		return nil
 	}
 
@@ -589,6 +591,16 @@ func (*DefaultValidator) validateCompositeToolRefs(refs []CompositeToolRef) erro
 	return nil
 }
 
+// The standalone header-forward middleware deliberately allows Authorization
+// (an operator may legitimately forward it), but for vMCP passthrough the
+// documented contract is stricter: Authorization and Cookie are rejected at
+// startup because forwarding caller-supplied credentials verbatim to every
+// backend is a credential-leak footgun, not a pass-through use case.
+var vmcpRestrictedHeaders = map[string]bool{
+	"Authorization": true,
+	"Cookie":        true,
+}
+
 func (*DefaultValidator) validatePassthroughHeaders(cfg *Config) error {
 	for i, name := range cfg.PassthroughHeaders {
 		if name == "" {
@@ -597,7 +609,7 @@ func (*DefaultValidator) validatePassthroughHeaders(cfg *Config) error {
 
 		canonical := http.CanonicalHeaderKey(name)
 
-		if middleware.RestrictedHeaders[canonical] {
+		if middleware.RestrictedHeaders[canonical] || vmcpRestrictedHeaders[canonical] {
 			return fmt.Errorf("passthroughHeaders[%d]: %q is a restricted header and cannot be forwarded", i, canonical)
 		}
 

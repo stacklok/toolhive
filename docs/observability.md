@@ -105,7 +105,7 @@ maintaining the modular architecture of ToolHive's middleware system.
 | `--otel-service-name` | string | `"toolhive-mcp-proxy"` | Service name for telemetry resource |
 | `--otel-headers` | string[] | `nil` | OTLP authentication headers (`key=value` format) |
 | `--otel-insecure` | bool | `false` | Use HTTP instead of HTTPS for the OTLP endpoint |
-| `--otel-enable-prometheus-metrics-path` | bool | `false` | Expose Prometheus `/metrics` endpoint on the transport port |
+| `--otel-enable-prometheus-metrics-path` | bool | `false` | Expose Prometheus `/metrics` endpoint on a dedicated diagnostics port (see [Metrics endpoint exposure](#metrics-endpoint-exposure)) |
 | `--otel-env-vars` | string[] | `nil` | Environment variables to include in spans (comma-separated) |
 | `--otel-custom-attributes` | string | `""` | Custom resource attributes (`key1=value1,key2=value2`) |
 | `--otel-use-legacy-attributes` | bool | `true` | Emit legacy attribute names alongside new OTEL semantic convention names |
@@ -182,6 +182,181 @@ For VirtualMCPServer telemetry, see the
 - If only `enablePrometheusMetricsPath` is enabled (no OTLP endpoint),
   Prometheus metrics are served without OTLP export.
 - If nothing is configured (no endpoint, no Prometheus), telemetry is disabled.
+
+### Metrics endpoint exposure
+
+When `enablePrometheusMetricsPath` is on, `/metrics` is served on a **dedicated
+diagnostics listener**, not on the transport port that serves MCP traffic.
+
+This is deliberate, and it is worth being precise about what it does and does not
+give you.
+
+**The endpoint is unauthenticated either way.** The diagnostics listener carries no
+middleware — no authentication, rate limiting, body limits, or audit. Moving
+`/metrics` off the transport port does not add any of those.
+
+**What it gives you is control by port.** Kubernetes `NetworkPolicy` matches on
+pods, ports, and protocols — it cannot filter on HTTP path. So while `/metrics`
+shares the transport port, there is no way to express "allow MCP traffic, deny
+metrics scraping": any policy that permits your MCP clients also permits scraping.
+On its own port, that becomes expressible. Route-level controls (Gateway API,
+Ingress path rules) can hide the path from external traffic, but they only govern
+what passes through the gateway and leave pod-to-pod traffic untouched.
+
+It also means the safe outcome does not depend on every deployment getting its
+route rules right. The ToolHive operator already binds its own metrics endpoint
+this way (`--metrics-bind-address`), as do etcd (`--listen-metrics-urls`) and
+controller-runtime.
+
+(Serving `/metrics` on the transport mux is also what put it outside the middleware
+chain: Go's `ServeMux` resolves the most specific registered pattern first, so an
+explicit `/metrics` always outranks the `/` catch-all that carries the chain.)
+
+#### Migration window
+
+`/metrics` is currently served on **both** the transport port and the diagnostics
+port. That is deliberate and temporary, so no existing scrape configuration breaks
+while it is moved:
+
+1. Point your scraper at the diagnostics port and confirm metrics arrive.
+2. Set `metricsOnTransportPort: false` to stop serving the old location, and confirm
+   nothing else was still scraping it.
+3. When the window closes the default flips, and only the diagnostics port serves
+   `/metrics`. See [issue #6384](https://github.com/stacklok/toolhive/issues/6384) for
+   the timeline.
+
+A deployment that sets `metricsOnTransportPort` explicitly is not moved by the flip.
+Leaving it unset is what opts you into the new default when it changes — the value is
+resolved at startup rather than written into stored configuration, so existing
+workloads pick up the new default without being recreated.
+
+While the transport-port copy is being served, a warning is logged at startup naming
+the transport port. That endpoint is on the listener that carries MCP traffic, so it
+cannot be restricted separately — which is the reason for the move.
+
+Port selection:
+
+- **Default** — port `9464`, the OpenTelemetry specification's Prometheus exporter
+  default (`OTEL_EXPORTER_PROMETHEUS_PORT`), so scrapers already expect it there.
+- **Explicit** — set `prometheusPort` to override it.
+- **Fallback** — if the requested port is already bound (several CLI workloads on
+  one machine, for example) an available port is chosen instead. The resolved
+  address is logged at startup.
+
+#### Finding the endpoint after an upgrade
+
+If metrics stopped arriving after an upgrade, the endpoint moved off the transport
+port. Two things tell you where it went:
+
+- **The startup log.** A warning naming the resolved address is emitted whenever
+  metrics are enabled: `prometheus metrics are served on a dedicated diagnostics
+  port, not the application port`.
+- **The old address.** `GET /metrics` on the transport port returns 404 with a body
+  explaining that metrics moved and telling you which log line carries the address.
+  It names no port: the listener honours a configured port and falls back to another
+  when that one is taken, so only the log is reliably correct.
+
+Prometheus reports the stale target as `up == 0` with a 404, so an alert on scrape
+failure fires — but neither the alert nor a bare 404 says *why*, which is what these
+two signals add.
+
+#### Restricting access to the diagnostics port
+
+Leave the diagnostics port out of any Service or Ingress that faces the internet,
+and restrict which pods may reach it. Since the endpoint is unauthenticated, this
+policy is what protects it:
+
+```yaml
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: mcpserver-diagnostics
+spec:
+  podSelector:
+    matchLabels:
+      app.kubernetes.io/name: mcpserver
+      app.kubernetes.io/instance: my-mcp-server
+  policyTypes: [Ingress]
+  ingress:
+    # Only the monitoring namespace may scrape the diagnostics port.
+    - from:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: monitoring
+      ports:
+        - protocol: TCP
+          port: 9464
+```
+
+This is the rule that cannot be written while `/metrics` shares the transport port,
+because it would also have to permit MCP traffic.
+
+#### Scope external routes to the paths you need
+
+A `NetworkPolicy` governs which pods may connect. It says nothing about which paths
+your gateway publishes. Those are separate controls and you want both.
+
+The operator creates a plain `Service` — it does not create an `Ingress` or an
+`HTTPRoute`, so the external route is yours to define. Route only the paths clients
+actually need rather than sending `/` at the workload. A blanket `/` publishes
+everything on the transport port, including endpoints meant to stay internal, and it
+publishes anything added to that mux in future releases without you revisiting the
+rule.
+
+What lives on the transport port:
+
+| Path | Publish externally? |
+|------|---------------------|
+| `/mcp` | Yes, for `streamable-http` — this is the MCP endpoint |
+| `/sse` and `/messages` | Yes, for `sse` — the stream and the POST channel |
+| `/.well-known/oauth-protected-resource` | Yes, if clients perform OAuth discovery (RFC 9728) |
+| `/.well-known/openid-configuration`, `/.well-known/oauth-authorization-server`, `/.well-known/jwks.json`, `/oauth/` | Only when the embedded authorization server is enabled |
+| `/health` | No — it exists for Kubernetes probes, which reach it in-cluster |
+| `/metrics` | During the migration window, yes — see [Migration window](#migration-window). After it closes, no; it returns 404 on this listener |
+
+For a transparent proxy fronting a remote MCP server, the MCP path is whatever the
+backend exposes, since that proxy forwards `/` to the backend.
+
+An `HTTPRoute` publishing only the streamable-http endpoint and OAuth discovery:
+
+```yaml
+apiVersion: gateway.networking.k8s.io/v1
+kind: HTTPRoute
+metadata:
+  name: my-mcp-server
+spec:
+  parentRefs:
+    - name: my-gateway
+  hostnames:
+    - my-mcp-server.example.com
+  rules:
+    - matches:
+        - path:
+            type: Exact
+            value: /mcp
+        - path:
+            type: PathPrefix
+            value: /.well-known/oauth-protected-resource
+      backendRefs:
+        - name: my-mcp-server
+          port: 8080
+```
+
+The equivalent with an `Ingress` is a `path` entry per route with
+`pathType: Exact` or `Prefix`; avoid a single `path: /` with `pathType: Prefix`.
+
+Never add the diagnostics port to a `Service` or route that faces the internet. It is
+not on the transport port, so a path-scoped route excludes it automatically — but
+adding it back by hand undoes that.
+
+`/health` deliberately stays on the transport port so Kubernetes liveness and
+readiness probes keep working. It exposes no version or build information.
+
+> **Cardinality warning.** Metric label values derived from client input (MCP
+> method, tool, and prompt names) are bounded in length, and the OpenTelemetry SDK
+> caps attribute sets at 2000 per instrument. Both readers aggregate cumulatively,
+> so every distinct attribute set stays resident for the process lifetime. Avoid
+> adding new client-controlled values as metric labels; put them on spans instead.
 
 ## Metrics Reference
 
@@ -284,6 +459,21 @@ Total number of Redis errors encountered while checking rate limits.
 | `server` | string | MCPServer or VirtualMCPServer name |
 | `error_type` | string | `"timeout"`, `"connection"`, `"auth"`, or `"other"` |
 
+#### `toolhive_rate_limit_fail_open` (Counter)
+
+Total number of rate limit checks allowed after an enforcement error. Prometheus
+exports this counter as `toolhive_rate_limit_fail_open_total`.
+
+This counter records the application of fail-open policy, while
+`toolhive_rate_limit_redis_errors` records the underlying Redis failure. A
+failed check does not increment `toolhive_rate_limit_decisions` because Redis
+did not produce a rate limit decision.
+
+| Attribute | Type | Description |
+|-----------|------|-------------|
+| `namespace` | string | Kubernetes namespace associated with the server |
+| `server` | string | MCPServer or VirtualMCPServer name |
+
 #### `toolhive_rate_limit_check_latency` (Histogram, seconds)
 
 Duration of each attempted atomic Redis Lua rate limit check, including failed
@@ -339,6 +529,36 @@ middleware (`pkg/mcp/parser.go`).
 The `mcp.resource.uri` attribute is set only for the following methods:
 `resources/read`, `resources/subscribe`, `resources/unsubscribe`,
 `notifications/resources/updated`.
+
+### Rate Limit Attributes
+
+Redis-backed rate limit checks annotate the existing request span; they do not
+create a separate span. Normal allowed and rejected outcomes set all three
+attributes below.
+
+| Attribute | Type | Description |
+|-----------|------|-------------|
+| `rate_limit.decision` | string | `"allowed"` or `"rejected"` |
+| `rate_limit.rejected_by` | string | `"none"` for allowed requests, otherwise the bucket that rejected the request |
+| `rate_limit.fail_open` | bool | `true` when an enforcement error is allowed to fail open; otherwise `false` |
+
+The bounded `rate_limit.rejected_by` values are:
+
+| Value | Limiting bucket |
+|-------|-----------------|
+| `shared_server` | Server-wide shared limit |
+| `shared_tool` | Tool-specific shared limit |
+| `per_user_server` | Server-wide per-user limit |
+| `per_user_tool` | Tool-specific per-user limit |
+
+When no configured bucket applies to a tool call, the span records
+`rate_limit.decision="allowed"`, `rate_limit.rejected_by="none"`, and
+`rate_limit.fail_open=false`. When a Redis check fails and enforcement fails
+open, the span records `rate_limit.decision="allowed"`,
+`rate_limit.rejected_by="none"`, and `rate_limit.fail_open=true`. These
+attributes describe the rate limit outcome only; the eventual request result
+determines the span status. If multiple rate limit checks use the same request
+span, the latest outcome replaces earlier values (last write wins).
 
 ### Tool, Prompt, and Resource Attributes
 

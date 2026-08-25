@@ -1539,17 +1539,24 @@ type DexInfo struct {
 func deployDex(
 	ctx context.Context,
 	c client.Client,
-	name, namespace string,
+	name string,
 	vmcpCallbackURL string,
-	timeout, pollingInterval time.Duration,
 ) (*DexInfo, func()) {
-	inClusterBaseURL := fmt.Sprintf("http://%s.%s.svc.cluster.local:5556", name, namespace)
+	// Every call site passes defaultNamespace, the same 5-minute timeout, and
+	// the same 2-second poll interval; all three were flagged as unparam once
+	// a fourth identical call site landed, so they're fixed here rather than
+	// threaded through as parameters.
+	const (
+		timeout         = 5 * time.Minute
+		pollingInterval = 2 * time.Second
+	)
+	inClusterBaseURL := fmt.Sprintf("http://%s.%s.svc.cluster.local:5556", name, defaultNamespace)
 	configMapName := name + "-config"
 
 	ginkgo.By("Creating Dex ConfigMap with mockCallback connector")
 	configData := dexConfig(inClusterBaseURL, vmcpCallbackURL)
 	gomega.Expect(c.Create(ctx, &corev1.ConfigMap{
-		ObjectMeta: metav1.ObjectMeta{Name: configMapName, Namespace: namespace},
+		ObjectMeta: metav1.ObjectMeta{Name: configMapName, Namespace: defaultNamespace},
 		Data:       map[string]string{"config.yaml": configData},
 	})).To(gomega.Succeed())
 
@@ -1557,7 +1564,7 @@ func deployDex(
 
 	ginkgo.By("Creating Dex Deployment")
 	gomega.Expect(c.Create(ctx, &appsv1.Deployment{
-		ObjectMeta: metav1.ObjectMeta{Name: name, Namespace: namespace, Labels: labels},
+		ObjectMeta: metav1.ObjectMeta{Name: name, Namespace: defaultNamespace, Labels: labels},
 		Spec: appsv1.DeploymentSpec{
 			Replicas: int32Ptr(1),
 			Selector: &metav1.LabelSelector{MatchLabels: labels},
@@ -1600,7 +1607,7 @@ func deployDex(
 
 	ginkgo.By("Creating Dex NodePort Service")
 	dexSvc := &corev1.Service{
-		ObjectMeta: metav1.ObjectMeta{Name: name, Namespace: namespace},
+		ObjectMeta: metav1.ObjectMeta{Name: name, Namespace: defaultNamespace},
 		Spec: corev1.ServiceSpec{
 			Type:     corev1.ServiceTypeNodePort,
 			Selector: labels,
@@ -1617,7 +1624,7 @@ func deployDex(
 	// Wait for the NodePort to be assigned (assigned asynchronously by the endpoint controller).
 	var nodePort int32
 	gomega.Eventually(func() (int32, error) {
-		if err := c.Get(ctx, types.NamespacedName{Name: name, Namespace: namespace}, dexSvc); err != nil {
+		if err := c.Get(ctx, types.NamespacedName{Name: name, Namespace: defaultNamespace}, dexSvc); err != nil {
 			return 0, err
 		}
 		if len(dexSvc.Spec.Ports) == 0 || dexSvc.Spec.Ports[0].NodePort == 0 {
@@ -1631,7 +1638,7 @@ func deployDex(
 	ginkgo.By("Waiting for Dex to be ready")
 	gomega.Eventually(func() bool {
 		dep := &appsv1.Deployment{}
-		if err := c.Get(ctx, types.NamespacedName{Name: name, Namespace: namespace}, dep); err != nil {
+		if err := c.Get(ctx, types.NamespacedName{Name: name, Namespace: defaultNamespace}, dep); err != nil {
 			return false
 		}
 		return dep.Status.ReadyReplicas > 0
@@ -1645,9 +1652,9 @@ func deployDex(
 	}
 
 	cleanup := func() {
-		_ = c.Delete(ctx, &appsv1.Deployment{ObjectMeta: metav1.ObjectMeta{Name: name, Namespace: namespace}})
-		_ = c.Delete(ctx, &corev1.Service{ObjectMeta: metav1.ObjectMeta{Name: name, Namespace: namespace}})
-		_ = c.Delete(ctx, &corev1.ConfigMap{ObjectMeta: metav1.ObjectMeta{Name: configMapName, Namespace: namespace}})
+		_ = c.Delete(ctx, &appsv1.Deployment{ObjectMeta: metav1.ObjectMeta{Name: name, Namespace: defaultNamespace}})
+		_ = c.Delete(ctx, &corev1.Service{ObjectMeta: metav1.ObjectMeta{Name: name, Namespace: defaultNamespace}})
+		_ = c.Delete(ctx, &corev1.ConfigMap{ObjectMeta: metav1.ObjectMeta{Name: configMapName, Namespace: defaultNamespace}})
 	}
 
 	return info, cleanup

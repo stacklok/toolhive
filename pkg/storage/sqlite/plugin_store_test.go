@@ -77,6 +77,37 @@ func TestPluginStore_Create(t *testing.T) {
 	assert.Equal(t, pl.Dependencies, got.Dependencies)
 
 	assert.False(t, got.InstalledAt.IsZero(), "InstalledAt should not be zero")
+	assert.False(t, got.Managed, "Managed should default to false")
+	assert.Nil(t, got.SigstoreBundle, "SigstoreBundle should default to nil (unsigned)")
+}
+
+func TestPluginStore_SigstoreBundleRoundTrip(t *testing.T) {
+	t.Parallel()
+	store := newPluginTestStore(t)
+
+	bundle := []byte(`{"mediaType":"application/vnd.dev.sigstore.bundle.v0.3+json"}`)
+	pl := testPlugin("bundle-test")
+	pl.SigstoreBundle = bundle
+	require.NoError(t, store.Create(t.Context(), pl))
+
+	got, err := store.Get(t.Context(), pl.Metadata.Name, pl.Scope, pl.ProjectRoot)
+	require.NoError(t, err)
+	assert.Equal(t, bundle, got.SigstoreBundle)
+
+	// Update replaces the stored bundle (e.g. re-install of a re-signed
+	// artifact), and can clear it back to nil for an unsigned replacement.
+	newBundle := []byte(`{"replaced":true}`)
+	got.SigstoreBundle = newBundle
+	require.NoError(t, store.Update(t.Context(), got))
+	got, err = store.Get(t.Context(), pl.Metadata.Name, pl.Scope, pl.ProjectRoot)
+	require.NoError(t, err)
+	assert.Equal(t, newBundle, got.SigstoreBundle)
+
+	got.SigstoreBundle = nil
+	require.NoError(t, store.Update(t.Context(), got))
+	got, err = store.Get(t.Context(), pl.Metadata.Name, pl.Scope, pl.ProjectRoot)
+	require.NoError(t, err)
+	assert.Nil(t, got.SigstoreBundle, "a cleared bundle must read back as NULL/unsigned")
 }
 
 func TestPluginStore_CreateDuplicate(t *testing.T) {
@@ -463,4 +494,45 @@ func TestPluginStore_NullableSignature(t *testing.T) {
 	got, err := store.Get(t.Context(), "null-sig", plugins.ScopeUser, "")
 	require.NoError(t, err)
 	assert.Empty(t, got.Signature)
+}
+
+func TestPluginStore_ManagedFlagRoundTrip(t *testing.T) {
+	t.Parallel()
+	store := newPluginTestStore(t)
+
+	pl := testPlugin("managed-test")
+	pl.Scope = plugins.ScopeProject
+	pl.ProjectRoot = "/tmp/project"
+	pl.Managed = true
+	require.NoError(t, store.Create(t.Context(), pl))
+
+	got, err := store.Get(t.Context(), pl.Metadata.Name, pl.Scope, pl.ProjectRoot)
+	require.NoError(t, err)
+	assert.True(t, got.Managed)
+
+	got.Managed = false
+	require.NoError(t, store.Update(t.Context(), got))
+
+	got, err = store.Get(t.Context(), pl.Metadata.Name, pl.Scope, pl.ProjectRoot)
+	require.NoError(t, err)
+	assert.False(t, got.Managed)
+}
+
+// TestPluginStore_ManagedRequiresProjectScope guards the invariant that
+// Managed only ever applies to project-scoped installs (it pins a plugin
+// in a project's lock file, which doesn't exist for user-scoped installs).
+func TestPluginStore_ManagedRequiresProjectScope(t *testing.T) {
+	t.Parallel()
+	store := newPluginTestStore(t)
+
+	pl := testPlugin("managed-user-scope")
+	pl.Managed = true // pl.Scope is ScopeUser from testPlugin
+	err := store.Create(t.Context(), pl)
+	require.ErrorIs(t, err, errPluginManagedRequiresProjectScope)
+
+	pl.Managed = false
+	require.NoError(t, store.Create(t.Context(), pl))
+	pl.Managed = true
+	err = store.Update(t.Context(), pl)
+	require.ErrorIs(t, err, errPluginManagedRequiresProjectScope)
 }

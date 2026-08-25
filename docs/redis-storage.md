@@ -330,7 +330,7 @@ All keys use the prefix `thv:auth:{namespace:name}:` where `{namespace:name}` is
 | `{prefix}refresh:{signature}` | Refresh token data | 30 days (default) |
 | `{prefix}authcode:{code}` | Authorization code | 10 minutes |
 | `{prefix}pkce:{signature}` | PKCE challenge data | 10 minutes |
-| `{prefix}client:{client_id}` | OAuth client registration | 30 days (public) / none (confidential) |
+| `{prefix}client:{client_id}` | OAuth client registration | 30 days sliding, renewed on use (DCR-issued) / none (pre-provisioned) |
 | `{prefix}user:{user_id}` | User account | None |
 | `{prefix}provider:{len}:{provider_id}:{subject}` | Provider identity linkage | None |
 | `{prefix}upstream:{session_id}` | Upstream IDP tokens | Matches token lifetime |

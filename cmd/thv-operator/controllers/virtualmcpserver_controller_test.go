@@ -16,6 +16,7 @@ package controllers
 
 import (
 	"context"
+	stderrors "errors"
 	"testing"
 	"time"
 
@@ -1822,6 +1823,52 @@ func TestVirtualMCPServerPodTemplateMetadataNeedsUpdate(t *testing.T) {
 						ObjectMeta: metav1.ObjectMeta{
 							Labels:      expectedLabels,
 							Annotations: expectedAnnotations,
+						},
+					},
+				},
+			},
+			vmcp:           vmcp,
+			checksum:       vmcpConfigChecksum,
+			expectedUpdate: false,
+		},
+		{
+			name: "extra live pod template label is drift",
+			deployment: &appsv1.Deployment{
+				Spec: appsv1.DeploymentSpec{
+					Template: corev1.PodTemplateSpec{
+						ObjectMeta: metav1.ObjectMeta{
+							Labels: func() map[string]string {
+								labels := make(map[string]string, len(expectedLabels)+1)
+								for k, v := range expectedLabels {
+									labels[k] = v
+								}
+								labels["stale-extra"] = "1"
+								return labels
+							}(),
+							Annotations: expectedAnnotations,
+						},
+					},
+				},
+			},
+			vmcp:           vmcp,
+			checksum:       vmcpConfigChecksum,
+			expectedUpdate: true,
+		},
+		{
+			name: "kubectl rollout restart annotation is not drift",
+			deployment: &appsv1.Deployment{
+				Spec: appsv1.DeploymentSpec{
+					Template: corev1.PodTemplateSpec{
+						ObjectMeta: metav1.ObjectMeta{
+							Labels: expectedLabels,
+							Annotations: func() map[string]string {
+								ann := make(map[string]string, len(expectedAnnotations)+1)
+								for k, v := range expectedAnnotations {
+									ann[k] = v
+								}
+								ann[ctrlutil.KubectlRestartedAtAnnotation] = "2026-08-19T06:00:00Z"
+								return ann
+							}(),
 						},
 					},
 				},
@@ -4165,4 +4212,75 @@ func TestVirtualMCPServerValidateAuthServerConfig_InsecureAllowHTTP(t *testing.T
 			}
 		})
 	}
+}
+
+func TestVirtualMCPServerValidateAuthServerConfig_DelegateClientsRejectUnsafeHTTP(t *testing.T) {
+	t.Parallel()
+
+	vmcp := v1beta1test.NewVirtualMCPServer(testVmcpName, "default",
+		v1beta1test.WithVMCPGroupRef("test-group"),
+		v1beta1test.WithVMCPAuthServerConfig(&mcpv1beta1.EmbeddedAuthServerConfig{
+			Issuer: "http://vmcp-test.default.svc.cluster.local:4483",
+			DelegateClients: []mcpv1beta1.DelegateClientConfig{{
+				ClientID:        "delegate-client",
+				ClientSecretRef: &mcpv1beta1.SecretKeyRef{Name: "delegate-secret", Key: "client-secret"},
+				Scopes:          []string{"openid"},
+				Audiences:       []string{"https://api.example.com"},
+			}},
+			UpstreamProviders: []mcpv1beta1.UpstreamProviderConfig{{
+				Name:       "dex",
+				Type:       mcpv1beta1.UpstreamProviderTypeOIDC,
+				OIDCConfig: &mcpv1beta1.OIDCUpstreamConfig{IssuerURL: "https://dex.example.com", ClientID: "test-client"},
+			}},
+		}),
+		v1beta1test.MutateVMCP(func(v *mcpv1beta1.VirtualMCPServer) {
+			v.Generation = 1
+		}),
+	)
+
+	r := &VirtualMCPServerReconciler{}
+	statusManager := virtualmcpserverstatus.NewStatusManager(vmcp)
+	err := r.validateAuthServerConfig(vmcp, statusManager)
+	statusManager.UpdateStatus(t.Context(), &vmcp.Status)
+
+	require.Error(t, err)
+	cond := findCondition(vmcp.Status.Conditions, mcpv1beta1.ConditionTypeAuthServerConfigValidated)
+	require.NotNil(t, cond)
+	assert.Equal(t, metav1.ConditionFalse, cond.Status)
+	assert.Contains(t, cond.Message, "plain-HTTP non-loopback")
+	assert.NotContains(t, cond.Message, "set spec.authServerConfig.insecureAllowHTTP: true")
+}
+
+func TestVirtualMCPServerReconciler_handleInvalidEmbeddedAuthServerConfig(t *testing.T) {
+	t.Parallel()
+
+	vmcp := v1beta1test.NewVirtualMCPServer(testVmcpName, "default",
+		v1beta1test.WithVMCPStatus(mcpv1beta1.VirtualMCPServerStatus{
+			Conditions: []metav1.Condition{{
+				Type:   mcpv1beta1.ConditionTypeReady,
+				Status: metav1.ConditionTrue,
+			}},
+		}),
+	)
+	reconciler, k8sClient := newTestVirtualMCPServerReconciler(t, vmcp)
+	statusManager := virtualmcpserverstatus.NewStatusManager(vmcp)
+
+	handled, err := reconciler.handleInvalidEmbeddedAuthServerConfig(
+		t.Context(), vmcp, statusManager,
+		&ctrlutil.InvalidEmbeddedAuthServerConfigError{Err: stderrors.New("invalid delegate client")},
+	)
+	require.NoError(t, err)
+	assert.True(t, handled)
+
+	updated := &mcpv1beta1.VirtualMCPServer{}
+	require.NoError(t, k8sClient.Get(t.Context(), types.NamespacedName{Name: vmcp.Name, Namespace: vmcp.Namespace}, updated))
+	assert.Equal(t, mcpv1beta1.VirtualMCPServerPhaseFailed, updated.Status.Phase)
+	assert.Contains(t, updated.Status.Message, "invalid delegate client")
+	condition := findCondition(updated.Status.Conditions, mcpv1beta1.ConditionTypeAuthServerConfigValidated)
+	require.NotNil(t, condition)
+	assert.Equal(t, metav1.ConditionFalse, condition.Status)
+	assert.Equal(t, mcpv1beta1.ConditionReasonAuthServerConfigInvalid, condition.Reason)
+	ready := findCondition(updated.Status.Conditions, mcpv1beta1.ConditionTypeReady)
+	require.NotNil(t, ready)
+	assert.Equal(t, metav1.ConditionFalse, ready.Status)
 }

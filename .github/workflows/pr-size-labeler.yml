@@ -62,11 +62,17 @@ jobs:
             console.log(`PR size: ${total} lines -> ${sizeLabel}`);
             return sizeLabel;
 
+      # This workflow runs on `pull_request`, so a pull request — including one
+      # from a fork — supplies the definition that produces these files.
+      # Nothing in them can be trusted to say which pull request to act on, so
+      # the consumer derives the number from its own trigger event instead, so
+      # the label is the only thing that needs to cross the boundary.
       - name: Save size label to artifact
+        env:
+          SIZE_LABEL: ${{ steps.size.outputs.result }}
         run: |
           mkdir -p pr-size
-          echo "${{ steps.size.outputs.result }}" > pr-size/label.txt
-          echo "${{ github.event.pull_request.number }}" > pr-size/pr-number.txt
+          echo "$SIZE_LABEL" > pr-size/label.txt
 
       - name: Upload artifact
         uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f # v6

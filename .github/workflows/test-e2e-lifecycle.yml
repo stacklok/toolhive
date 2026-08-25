@@ -40,6 +40,8 @@ jobs:
     steps:
     - name: Checkout code
       uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+      with:
+        persist-credentials: false
 
     - name: Disable containerd image store
       # Workaround for https://github.com/kubernetes-sigs/kind/issues/3795
@@ -67,13 +69,13 @@ jobs:
         cache: true
 
     - name: Install Task
-      uses: arduino/setup-task@v2
+      uses: arduino/setup-task@b91d5d2c96a56797b48ac1e0e89220bf64044611 # v2
       with:
         version: 3.44.1
         repo-token: ${{ secrets.GITHUB_TOKEN }}
 
     - name: Create KIND Cluster with port mappings
-      uses: helm/kind-action@ef37e7f390d99f746eb8b610417061a60e82a6cc # pin@v1.12.0
+      uses: helm/kind-action@ef37e7f390d99f746eb8b610417061a60e82a6cc # v1.14.0
       with:
         cluster_name: toolhive
         version: v0.31.0 # kind
@@ -100,7 +102,7 @@ jobs:
 
         # Pull and load all test server images in parallel to speed up CI
         echo "Pulling and loading test server images..."
-        docker pull ${{ env.YARDSTICK_IMAGE }} &
+        docker pull "$YARDSTICK_IMAGE" &
         docker pull ghcr.io/stackloklabs/gofetch/server:1.0.1 &
         docker pull ghcr.io/stackloklabs/osv-mcp/server:0.0.7 &
         docker pull python:3.9-slim &
@@ -110,7 +112,7 @@ jobs:
         wait
 
         # Load all images into kind
-        kind load docker-image --name toolhive ${{ env.YARDSTICK_IMAGE }}
+        kind load docker-image --name toolhive "$YARDSTICK_IMAGE"
         kind load docker-image --name toolhive ghcr.io/stackloklabs/gofetch/server:1.0.1
         kind load docker-image --name toolhive ghcr.io/stackloklabs/osv-mcp/server:0.0.7
         kind load docker-image --name toolhive python:3.9-slim
@@ -121,7 +123,7 @@ jobs:
     - name: Deploy operator with VMCP_IMAGE
       run: |
         export KUBECONFIG=kconfig.yaml
-        echo "Deploying operator with vmcp image: ${{ env.VMCP_IMAGE }}"
+        echo "Deploying operator with vmcp image: ${VMCP_IMAGE}"
 
         # Build operator and proxyrunner images
         OPERATOR_IMAGE=$(KO_DOCKER_REPO=kind.local ko build --local -B ./cmd/thv-operator | tail -n 1)
@@ -135,7 +137,7 @@ jobs:
         helm upgrade --install toolhive-operator deploy/charts/operator \
           --set operator.image=${OPERATOR_IMAGE} \
           --set operator.toolhiveRunnerImage=${TOOLHIVE_IMAGE} \
-          --set operator.vmcpImage=${{ env.VMCP_IMAGE }} \
+          --set operator.vmcpImage=${VMCP_IMAGE} \
           --namespace toolhive-system \
           --create-namespace \
           --kubeconfig kconfig.yaml

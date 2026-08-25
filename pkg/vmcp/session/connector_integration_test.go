@@ -9,6 +9,7 @@ import (
 	"net/http/httptest"
 	"sync"
 	"testing"
+	"time"
 
 	"github.com/google/uuid"
 	"github.com/stretchr/testify/assert"
@@ -35,6 +36,16 @@ import (
 //   - prompt "greet": returns a greeting message
 func startInProcessMCPServer(t *testing.T) string {
 	t.Helper()
+	return startInProcessMCPServerWithToolDelay(t, 0)
+}
+
+func startInProcessMCPServerWithToolDelay(t *testing.T, toolDelay time.Duration) string {
+	t.Helper()
+	return startInProcessMCPServerWithDelays(t, 0, toolDelay)
+}
+
+func startInProcessMCPServerWithDelays(t *testing.T, initDelay, toolDelay time.Duration) string {
+	t.Helper()
 
 	mcpSrv := mcpserver.NewMCPServer("integration-test-backend", "1.0.0")
 
@@ -44,6 +55,7 @@ func startInProcessMCPServer(t *testing.T) string {
 			mcpmcp.WithString("input", mcpmcp.Required()),
 		),
 		func(_ context.Context, req mcpmcp.CallToolRequest) (*mcpmcp.CallToolResult, error) {
+			time.Sleep(toolDelay)
 			args, _ := req.Params.Arguments.(map[string]any)
 			input, _ := args["input"].(string)
 			return &mcpmcp.CallToolResult{
@@ -80,7 +92,13 @@ func startInProcessMCPServer(t *testing.T) string {
 
 	streamableSrv := mcpserver.NewStreamableHTTPServer(mcpSrv)
 	mux := http.NewServeMux()
-	mux.Handle("/mcp", streamableSrv)
+	var initOnce sync.Once
+	mux.Handle("/mcp", http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method == http.MethodPost {
+			initOnce.Do(func() { time.Sleep(initDelay) })
+		}
+		streamableSrv.ServeHTTP(w, r)
+	}))
 
 	ts := httptest.NewServer(mux)
 	t.Cleanup(ts.Close)
@@ -152,6 +170,115 @@ func TestSessionFactory_Integration_CallTool(t *testing.T) {
 	require.NotNil(t, result)
 	require.Len(t, result.Content, 1)
 	assert.Equal(t, "hello world", result.Content[0].Text)
+}
+
+// TestSessionFactory_Integration_RequestTimeoutResolver proves that the timeout
+// selected for a workload reaches the persistent streamable-HTTP client's tool
+// call. The paired cases are intentional: a success-only case would also pass
+// if the historical hard-coded 30-second timeout were still in use.
+func TestSessionFactory_Integration_RequestTimeoutResolver(t *testing.T) {
+	t.Parallel()
+
+	const toolDelay = 300 * time.Millisecond
+
+	tests := []struct {
+		name           string
+		resolver       func(string) time.Duration
+		wantTimeoutErr bool
+	}{
+		{
+			name: "default timeout is enforced",
+			resolver: func(string) time.Duration {
+				return 100 * time.Millisecond
+			},
+			wantTimeoutErr: true,
+		},
+		{
+			name: "workload override permits slow response",
+			resolver: func(workloadID string) time.Duration {
+				if workloadID == "slow-backend" {
+					return 2 * time.Second
+				}
+				return 100 * time.Millisecond
+			},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			baseURL := startInProcessMCPServerWithToolDelay(t, toolDelay)
+			backend := &vmcp.Backend{
+				ID:            "slow-backend",
+				Name:          "slow-backend",
+				BaseURL:       baseURL,
+				TransportType: "streamable-http",
+			}
+
+			factory := NewSessionFactory(
+				newUnauthenticatedRegistry(t),
+				WithRequestTimeoutResolver(tt.resolver),
+			)
+			sess, err := factory.MakeSessionWithID(
+				t.Context(), uuid.New().String(), nil, []*vmcp.Backend{backend}, nil,
+			)
+			require.NoError(t, err)
+			t.Cleanup(func() { _ = sess.Close() })
+
+			result, err := sess.CallTool(
+				t.Context(), nil, "echo", map[string]any{"input": "slow response"}, nil,
+			)
+			if tt.wantTimeoutErr {
+				require.Error(t, err)
+				assert.Nil(t, result)
+				return
+			}
+
+			require.NoError(t, err)
+			require.NotNil(t, result)
+			require.Len(t, result.Content, 1)
+			assert.Equal(t, "slow response", result.Content[0].Text)
+		})
+	}
+}
+
+func TestSessionFactory_Integration_ShortRequestTimeoutDoesNotShrinkInit(t *testing.T) {
+	t.Parallel()
+
+	const (
+		requestTimeout = 50 * time.Millisecond
+		backendDelay   = 200 * time.Millisecond
+	)
+
+	baseURL := startInProcessMCPServerWithDelays(t, backendDelay, backendDelay)
+	backend := &vmcp.Backend{
+		ID:            "slow-init-backend",
+		Name:          "slow-init-backend",
+		BaseURL:       baseURL,
+		TransportType: "streamable-http",
+	}
+
+	factory := NewSessionFactory(
+		newUnauthenticatedRegistry(t),
+		WithRequestTimeoutResolver(func(string) time.Duration { return requestTimeout }),
+	)
+
+	started := time.Now()
+	sess, err := factory.MakeSessionWithID(
+		t.Context(), uuid.New().String(), nil, []*vmcp.Backend{backend}, nil,
+	)
+	require.NoError(t, err)
+	require.GreaterOrEqual(t, time.Since(started), backendDelay)
+	require.Len(t, sess.Tools(), 1)
+	t.Cleanup(func() { _ = sess.Close() })
+
+	result, err := sess.CallTool(
+		t.Context(), nil, "echo", map[string]any{"input": "slow response"}, nil,
+	)
+	require.Error(t, err)
+	assert.ErrorContains(t, err, "context deadline exceeded")
+	assert.Nil(t, result)
 }
 
 func TestSessionFactory_Integration_ReadResource(t *testing.T) {

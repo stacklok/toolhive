@@ -112,7 +112,10 @@ func TestCreateMCPClient_UnsupportedTransport(t *testing.T) {
 				TransportType: transport,
 			}
 
-			_, err := createMCPClient(context.Background(), target, nil, newTestRegistry(t), "", secrets.NewEnvironmentProvider(), nil)
+			_, err := createMCPClient(
+				context.Background(), target, nil, newTestRegistry(t), "", secrets.NewEnvironmentProvider(), nil,
+				defaultBackendRequestTimeout,
+			)
 			require.Error(t, err)
 			assert.ErrorIs(t, err, vmcp.ErrUnsupportedTransport,
 				"transport %q should return ErrUnsupportedTransport", transport)
@@ -372,6 +375,7 @@ func TestCreateMCPClient_ContinuousListeningGatedOnSink(t *testing.T) {
 
 			c, err := createMCPClient(
 				context.Background(), target, nil, newTestRegistry(t), "", secrets.NewEnvironmentProvider(), tc.sink,
+				defaultBackendRequestTimeout,
 			)
 			require.NoError(t, err)
 			t.Cleanup(func() { _ = c.Close() })
@@ -439,6 +443,7 @@ func TestCreateMCPClient_ListChangedSink_FiresOnBackendNotification(t *testing.T
 
 			c, err := createMCPClient(
 				context.Background(), target, nil, newTestRegistry(t), "", secrets.NewEnvironmentProvider(), sink,
+				defaultBackendRequestTimeout,
 			)
 			require.NoError(t, err)
 			t.Cleanup(func() { _ = c.Close() })
@@ -510,6 +515,7 @@ func TestCreateMCPClient_ListChangedSink_DoesNotStallInFlightCall(t *testing.T) 
 
 	c, err := createMCPClient(
 		context.Background(), target, nil, newTestRegistry(t), "", secrets.NewEnvironmentProvider(), sink,
+		defaultBackendRequestTimeout,
 	)
 	require.NoError(t, err)
 	t.Cleanup(func() { _ = c.Close() })

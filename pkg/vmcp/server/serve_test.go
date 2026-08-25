@@ -235,7 +235,9 @@ func TestServeOmitsAuthzAndAnnotation(t *testing.T) {
 // TestServeHandlerMetricsOnTransportPort pins both ends of the migration: while
 // metricsOnTransportPort is on, /metrics stays reachable on the port serving MCP
 // traffic so existing scrapers keep working; once it is off, the application mux
-// 404s rather than letting /metrics fall through to the "/" MCP handler.
+// answers with diagnostics.NotServedHereHandler rather than a bare 404 or letting
+// /metrics fall through to the "/" MCP handler -- an operator whose scraper is
+// still pointed here needs the same explanation the proxies give (see #6369).
 //
 // Metrics are served on the diagnostics listener in both cases.
 func TestServeHandlerMetricsOnTransportPort(t *testing.T) {
@@ -245,6 +247,10 @@ func TestServeHandlerMetricsOnTransportPort(t *testing.T) {
 		name                   string
 		metricsOnTransportPort *bool
 		wantStatus             int
+		// wantExplained asserts the body names the diagnostics listener, so a
+		// regression to a bare 404 (indistinguishable from a typo) is caught here
+		// rather than only in pkg/diagnostics.
+		wantExplained bool
 	}{
 		{
 			name:                   "default serves on the transport port during the migration window",
@@ -260,6 +266,7 @@ func TestServeHandlerMetricsOnTransportPort(t *testing.T) {
 			name:                   "opted out leaves only the diagnostics listener",
 			metricsOnTransportPort: ptrTo(false),
 			wantStatus:             http.StatusNotFound,
+			wantExplained:          true,
 		},
 	}
 
@@ -292,6 +299,10 @@ func TestServeHandlerMetricsOnTransportPort(t *testing.T) {
 			rec := httptest.NewRecorder()
 			handler.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, diagnostics.MetricsPath, nil))
 			assert.Equal(t, tt.wantStatus, rec.Code)
+			if tt.wantExplained {
+				assert.Contains(t, rec.Body.String(), "diagnostics",
+					"the 404 body must explain where metrics moved to, not just say not found")
+			}
 		})
 	}
 }

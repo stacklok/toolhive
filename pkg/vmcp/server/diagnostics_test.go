@@ -16,6 +16,7 @@ import (
 
 	"github.com/stacklok/toolhive/pkg/diagnostics"
 	"github.com/stacklok/toolhive/pkg/telemetry"
+	"github.com/stacklok/toolhive/pkg/vmcp"
 )
 
 // freePort asks the OS for an unused port and releases it, so a test can name a
@@ -162,4 +163,50 @@ func TestStopDiagnosticsIsIdempotent(t *testing.T) {
 	assert.Nil(t, s.diagnosticsServer)
 	// Stop runs this again on a server that already shut down.
 	require.NoError(t, s.stopDiagnostics(ctx))
+}
+
+// TestStartFailsBeforeMCPListenerWhenDiagnosticsFails is a regression test for a
+// review finding on #6368: startDiagnostics used to run after the MCP listener was
+// already serving in a background goroutine, so a diagnostics failure returned an
+// error from Start while MCP traffic kept flowing and Ready() never closed --
+// anything blocked on it would hang forever.
+//
+// Forces startDiagnostics to fail deterministically with a host that cannot be
+// listened on, and asserts Start fails before anything MCP-related is touched: no
+// listener is bound, and Ready() stays open (matching "the server never became
+// ready", not "ready and now broken").
+func TestStartFailsBeforeMCPListenerWhenDiagnosticsFails(t *testing.T) {
+	t.Parallel()
+
+	ctx := t.Context()
+	provider := newMetricsProvider(t, freePort(t))
+
+	srv, err := Serve(ctx, &stubVMCP{}, &ServerConfig{
+		// Cannot be resolved as a listen address, so diagnostics.Server.bind fails
+		// all its retries quickly rather than needing a real occupied port, which
+		// would be racy to arrange deterministically.
+		Host:                 "invalid-host-that-cannot-be-resolved.invalid",
+		Port:                 freePort(t),
+		SessionTTL:           defaultSessionTTL,
+		SessionManagerConfig: testMinimalSessionManagerConfig(),
+		BackendRegistry:      vmcp.NewImmutableRegistry([]vmcp.Backend{}),
+		TelemetryProvider:    provider,
+	})
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = srv.Stop(context.Background()) })
+
+	err = srv.Start(ctx)
+	require.Error(t, err)
+
+	assert.Nil(t, srv.diagnosticsServer, "a failed diagnostics start must not leave a server reference behind")
+	srv.listenerMu.RLock()
+	listener := srv.listener
+	srv.listenerMu.RUnlock()
+	assert.Nil(t, listener, "the MCP listener must not be created when diagnostics fails first")
+
+	select {
+	case <-srv.Ready():
+		t.Fatal("Ready() must not close when Start returns an error")
+	default:
+	}
 }

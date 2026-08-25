@@ -490,10 +490,20 @@ func TestRunConfigValidate(t *testing.T) {
 		{name: "confidential clients without insecure HTTP passes", config: RunConfig{AllowConfidentialClientRegistration: true}},
 		{name: "insecure HTTP without confidential clients passes", config: RunConfig{InsecureAllowHTTP: true}},
 		{
-			name:    "confidential clients combined with insecure HTTP rejects",
-			config:  RunConfig{AllowConfidentialClientRegistration: true, InsecureAllowHTTP: true},
+			name:    "confidential clients with malformed issuer reject before startup",
+			config:  RunConfig{Issuer: "http://[::1", AllowConfidentialClientRegistration: true},
 			wantErr: true,
-			errMsg:  "allow_confidential_client_registration cannot be combined with insecure_allow_http",
+			errMsg:  "confidential clients require a valid issuer URL",
+		},
+		{
+			name: "loopback confidential opt-in rejects structurally invalid issuer before startup",
+			config: RunConfig{
+				Issuer:                              "http://user@localhost",
+				AllowConfidentialClientRegistration: true,
+				InsecureAllowConfidentialOverLoopbackHTTP: true,
+			},
+			wantErr: true,
+			errMsg:  "confidential clients require a valid issuer URL",
 		},
 		{
 			name: "confidential clients with plain-HTTP loopback issuer rejects without the opt-in",
@@ -658,6 +668,7 @@ func TestValidateConfidentialClientTransport(t *testing.T) {
 		allowLoopbackOverride bool
 		wantErr               bool
 		errContains           string
+		redacted              []string
 	}{
 		{name: "both false passes"},
 		{name: "confidential only, https issuer passes", allowConfidential: true, issuer: "https://auth.example.com"},
@@ -665,6 +676,17 @@ func TestValidateConfidentialClientTransport(t *testing.T) {
 		{
 			name: "insecure HTTP combined with confidential rejects", allowConfidential: true, insecureAllowHTTP: true,
 			wantErr: true, errContains: "insecure_allow_http",
+		},
+		{
+			name:              "confidential with malformed issuer rejects without exposing credentials",
+			allowConfidential: true, issuer: "http://user:supersecret@[::1",
+			wantErr: true, errContains: "confidential clients require a valid issuer URL",
+			redacted: []string{"user", "supersecret", "http://user:supersecret@[::1"},
+		},
+		{
+			name:              "loopback confidential opt-in rejects structurally invalid issuer",
+			allowConfidential: true, issuer: "http://user@localhost", allowLoopbackOverride: true,
+			wantErr: true, errContains: "confidential clients require a valid issuer URL",
 		},
 		{
 			name:              "confidential with plain-HTTP loopback issuer rejects without the opt-in",
@@ -684,9 +706,14 @@ func TestValidateConfidentialClientTransport(t *testing.T) {
 			issuer: "http://localhost:8080",
 		},
 		{
-			name: "confidential with plain-HTTP non-loopback issuer passes here " +
-				"(caught separately by insecureAllowHTTP/validateIssuerURL)",
+			name:              "confidential with plain-HTTP non-loopback issuer rejects without opt-in",
 			allowConfidential: true, issuer: "http://auth.example.com",
+			wantErr: true, errContains: "plain-HTTP non-loopback",
+		},
+		{
+			name:              "confidential with plain-HTTP non-loopback issuer rejects with loopback opt-in",
+			allowConfidential: true, issuer: "http://auth.example.com", allowLoopbackOverride: true,
+			wantErr: true, errContains: "non-loopback issuer",
 		},
 	}
 
@@ -698,6 +725,9 @@ func TestValidateConfidentialClientTransport(t *testing.T) {
 				require.Error(t, err)
 				assert.Contains(t, err.Error(), "confidential clients")
 				assert.Contains(t, err.Error(), tt.errContains)
+				for _, value := range tt.redacted {
+					assert.NotContains(t, err.Error(), value)
+				}
 			} else {
 				require.NoError(t, err)
 			}

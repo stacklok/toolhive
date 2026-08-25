@@ -4220,8 +4220,7 @@ func TestVirtualMCPServerValidateAuthServerConfig_DelegateClientsRejectUnsafeHTT
 	vmcp := v1beta1test.NewVirtualMCPServer(testVmcpName, "default",
 		v1beta1test.WithVMCPGroupRef("test-group"),
 		v1beta1test.WithVMCPAuthServerConfig(&mcpv1beta1.EmbeddedAuthServerConfig{
-			Issuer:            "http://vmcp-test.default.svc.cluster.local:4483",
-			InsecureAllowHTTP: true,
+			Issuer: "http://vmcp-test.default.svc.cluster.local:4483",
 			DelegateClients: []mcpv1beta1.DelegateClientConfig{{
 				ClientID:        "delegate-client",
 				ClientSecretRef: &mcpv1beta1.SecretKeyRef{Name: "delegate-secret", Key: "client-secret"},
@@ -4248,7 +4247,8 @@ func TestVirtualMCPServerValidateAuthServerConfig_DelegateClientsRejectUnsafeHTT
 	cond := findCondition(vmcp.Status.Conditions, mcpv1beta1.ConditionTypeAuthServerConfigValidated)
 	require.NotNil(t, cond)
 	assert.Equal(t, metav1.ConditionFalse, cond.Status)
-	assert.Contains(t, cond.Message, "insecure_allow_http")
+	assert.Contains(t, cond.Message, "plain-HTTP non-loopback")
+	assert.NotContains(t, cond.Message, "set spec.authServerConfig.insecureAllowHTTP: true")
 }
 
 func TestVirtualMCPServerReconciler_handleInvalidEmbeddedAuthServerConfig(t *testing.T) {

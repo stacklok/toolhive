@@ -666,7 +666,8 @@ type OutboundNetworkPermissions struct {
 // CABundleSource defines a source for CA certificate bundles.
 type CABundleSource struct {
 	// ConfigMapRef references a ConfigMap containing the CA certificate bundle.
-	// If Key is not specified, it defaults to "ca.crt".
+	// The ConfigMap key is required by the API. If omitted in a stored object, it
+	// defaults to "ca.crt" for backwards compatibility.
 	// +optional
 	ConfigMapRef *corev1.ConfigMapKeySelector `json:"configMapRef,omitempty"`
 }

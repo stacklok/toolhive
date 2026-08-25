@@ -77,7 +77,8 @@ spec:
                       configMapRef:
                         description: |-
                           ConfigMapRef references a ConfigMap containing the CA certificate bundle.
-                          If Key is not specified, it defaults to "ca.crt".
+                          The ConfigMap key is required by the API. If omitted in a stored object, it
+                          defaults to "ca.crt" for backwards compatibility.
                         properties:
                           key:
                             description: The key to select.
@@ -342,7 +343,8 @@ spec:
                       configMapRef:
                         description: |-
                           ConfigMapRef references a ConfigMap containing the CA certificate bundle.
-                          If Key is not specified, it defaults to "ca.crt".
+                          The ConfigMap key is required by the API. If omitted in a stored object, it
+                          defaults to "ca.crt" for backwards compatibility.
                         properties:
                           key:
                             description: The key to select.

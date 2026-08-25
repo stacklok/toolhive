@@ -1048,6 +1048,19 @@ type OIDCUpstreamConfig struct {
 	// +kubebuilder:validation:MaxLength=128
 	// +kubebuilder:validation:Pattern=`^([a-zA-Z_][a-zA-Z0-9_]*)?$`
 	SubjectClaim string `json:"subjectClaim,omitempty"`
+
+	// CABundleRef references a ConfigMap containing a CA bundle added to the
+	// system roots when connecting to this upstream; it does not restrict trust
+	// to this bundle or disable public-root trust. The selected key is projected
+	// as ca.crt.
+	// +optional
+	CABundleRef *CABundleSource `json:"caBundleRef,omitempty"`
+
+	// AllowPrivateIPs permits the upstream provider's HTTP client to connect to
+	// private IP ranges (RFC-1918, link-local). Use only when the upstream is
+	// hosted inside the same cluster and has no public endpoint.
+	// +optional
+	AllowPrivateIPs bool `json:"allowPrivateIPs,omitempty"`
 }
 
 // OAuth2UpstreamConfig contains configuration for pure OAuth 2.0 providers.
@@ -1148,6 +1161,13 @@ type OAuth2UpstreamConfig struct {
 	// +kubebuilder:validation:MaxProperties=16
 	// +optional
 	AdditionalAuthorizationParams map[string]string `json:"additionalAuthorizationParams,omitempty"`
+
+	// CABundleRef references a ConfigMap containing a CA bundle added to the
+	// system roots when connecting to this upstream; it does not restrict trust
+	// to this bundle or disable public-root trust. The selected key is projected
+	// as ca.crt.
+	// +optional
+	CABundleRef *CABundleSource `json:"caBundleRef,omitempty"`
 
 	// InsecureAllowHTTP permits plain-HTTP authorization and token endpoint URLs
 	// for this upstream. Only for in-cluster development environments (e.g. an
@@ -2079,6 +2099,10 @@ func (*MCPExternalAuthConfig) validateUpstreamProvider(index int, provider *Upst
 			"and oauth2Config must be set when type is 'oauth2' (and the other must not be set)", prefix)
 	}
 
+	if err := validateUpstreamProviderCABundle(prefix, provider); err != nil {
+		return err
+	}
+
 	// Validate OAuth2-specific constraints (defense-in-depth with CEL).
 	// The discriminator above guarantees OAuth2Config != nil when type is oauth2.
 	if provider.Type == UpstreamProviderTypeOAuth2 {
@@ -2094,6 +2118,17 @@ func (*MCPExternalAuthConfig) validateUpstreamProvider(index int, provider *Upst
 	return ValidateAdditionalAuthorizationParams(prefix, provider.AdditionalAuthorizationParams())
 }
 
+func validateUpstreamProviderCABundle(prefix string, provider *UpstreamProviderConfig) error {
+	field := "oidcConfig.caBundleRef"
+	if provider.Type == UpstreamProviderTypeOAuth2 {
+		field = "oauth2Config.caBundleRef"
+	}
+	if err := validateUpstreamCABundleRef(provider.CABundleRef()); err != nil {
+		return fmt.Errorf("%s: %s: %w", prefix, field, err)
+	}
+	return nil
+}
+
 // Length caps for DCR-related string fields. Mirror the
 // +kubebuilder:validation:MaxLength markers on DCRUpstreamConfig so that
 // ValidateOAuth2DCRConfig is a true reconcile-time backstop for length
@@ -2107,6 +2142,22 @@ const (
 	// DCRUpstreamConfig.SoftwareStatement.
 	MaxSoftwareStatementLength = 16384
 )
+
+// validateUpstreamCABundleRef validates the source shape shared by OIDC and
+// OAuth2 upstream CA bundles. ConfigMap existence and key contents are
+// resolved by Kubernetes when the generated Pod is scheduled.
+func validateUpstreamCABundleRef(ref *CABundleSource) error {
+	if ref == nil {
+		return nil
+	}
+	if ref.ConfigMapRef == nil {
+		return fmt.Errorf("configMapRef must be specified")
+	}
+	if ref.ConfigMapRef.Name == "" {
+		return fmt.Errorf("configMapRef.name must not be empty")
+	}
+	return nil
+}
 
 // ValidateOAuth2DCRConfig enforces the mutual exclusivity between ClientID and
 // DCRConfig, between ClientSecretRef and DCRConfig, and (when DCRConfig is
@@ -2182,6 +2233,22 @@ func (p *UpstreamProviderConfig) AdditionalAuthorizationParams() map[string]stri
 	}
 	if p.OAuth2Config != nil {
 		return p.OAuth2Config.AdditionalAuthorizationParams
+	}
+	return nil
+}
+
+// CABundleRef returns the CA bundle reference for the provider's configured
+// type, or nil when the type-matched config or the reference is absent.
+func (p *UpstreamProviderConfig) CABundleRef() *CABundleSource {
+	switch p.Type {
+	case UpstreamProviderTypeOIDC:
+		if p.OIDCConfig != nil {
+			return p.OIDCConfig.CABundleRef
+		}
+	case UpstreamProviderTypeOAuth2:
+		if p.OAuth2Config != nil {
+			return p.OAuth2Config.CABundleRef
+		}
 	}
 	return nil
 }

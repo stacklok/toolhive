@@ -253,6 +253,7 @@ func TestNewDCRRequest(t *testing.T) {
 		wantDiscoveryURL       string
 		wantRegistration       string
 		wantAllowPrivateIPs    bool
+		wantCAFilePath         string
 	}{
 		{
 			name: "discovery_url branch resolves file-based initial access token",
@@ -292,11 +293,13 @@ func TestNewDCRRequest(t *testing.T) {
 					RegistrationEndpoint: "https://idp.example.com/register",
 				},
 				AllowPrivateIPs: true,
+				CAFilePath:      "/var/run/toolhive/upstream-ca/ca.crt",
 			},
 			localIssuer:         "https://thv.example.com",
 			wantIssuer:          "https://thv.example.com",
 			wantRegistration:    "https://idp.example.com/register",
 			wantAllowPrivateIPs: true,
+			wantCAFilePath:      "/var/run/toolhive/upstream-ca/ca.crt",
 		},
 		{
 			name:        "nil run-config rejected",
@@ -327,6 +330,7 @@ func TestNewDCRRequest(t *testing.T) {
 			assert.Equal(t, tc.wantDiscoveryURL, req.DiscoveryURL)
 			assert.Equal(t, tc.wantRegistration, req.RegistrationEndpoint)
 			assert.Equal(t, tc.wantAllowPrivateIPs, req.AllowPrivateIPs)
+			assert.Equal(t, tc.wantCAFilePath, req.CAFilePath)
 		})
 	}
 }

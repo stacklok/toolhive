@@ -632,6 +632,7 @@ func buildOIDCConfig(rc *authserver.UpstreamRunConfig, insecureAllowHTTP bool) (
 		Issuer:            oidc.IssuerURL,
 		SubjectClaim:      oidc.SubjectClaim,
 		AllowPrivateIPs:   oidc.AllowPrivateIPs,
+		CAFilePath:        oidc.CAFilePath,
 		InsecureAllowHTTP: insecureAllowHTTP || oidc.InsecureAllowHTTP,
 	}, nil
 }
@@ -667,6 +668,7 @@ func buildPureOAuth2Config(rc *authserver.UpstreamRunConfig, insecureAllowHTTP b
 		AuthorizationEndpoint: oauth2.AuthorizationEndpoint,
 		TokenEndpoint:         oauth2.TokenEndpoint,
 		UserInfo:              convertUserInfoConfig(oauth2.UserInfo),
+		CAFilePath:            oauth2.CAFilePath,
 		AllowPrivateIPs:       oauth2.AllowPrivateIPs,
 		InsecureAllowHTTP:     insecureAllowHTTP || oauth2.InsecureAllowHTTP,
 	}

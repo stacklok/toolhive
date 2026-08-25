@@ -5,6 +5,8 @@ package controllerutil
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"fmt"
 	"strings"
 
@@ -15,6 +17,7 @@ import (
 
 	mcpv1beta1 "github.com/stacklok/toolhive/cmd/thv-operator/api/v1beta1"
 	"github.com/stacklok/toolhive/cmd/thv-operator/pkg/oidc"
+	"github.com/stacklok/toolhive/cmd/thv-operator/pkg/validation"
 	"github.com/stacklok/toolhive/pkg/authserver"
 	authrunner "github.com/stacklok/toolhive/pkg/authserver/runner"
 	"github.com/stacklok/toolhive/pkg/authserver/server/tokenexchange"
@@ -53,6 +56,18 @@ const (
 
 	// AuthServerHMACFilePattern is the pattern for HMAC secret filenames
 	AuthServerHMACFilePattern = "hmac-%d"
+
+	// AuthServerUpstreamCABundleVolumePrefix is the prefix for upstream CA bundle volume names.
+	AuthServerUpstreamCABundleVolumePrefix = "authserver-upstream-ca-"
+
+	// AuthServerUpstreamCABundleMountPath is the base path for upstream CA bundles.
+	AuthServerUpstreamCABundleMountPath = "/etc/toolhive/authserver/upstream-ca"
+
+	// AuthServerUpstreamCABundleFileName is the fixed projected filename for upstream CA bundles.
+	AuthServerUpstreamCABundleFileName = validation.OIDCCABundleDefaultKey
+
+	// AuthServerCABundleChecksumAnnotation triggers a rollout when a selected upstream CA changes.
+	AuthServerCABundleChecksumAnnotation = "toolhive.stacklok.dev/authserver-ca-checksum"
 
 	// UpstreamClientSecretEnvVar is the prefix for upstream client secret environment variables.
 	// Actual names are TOOLHIVE_UPSTREAM_CLIENT_SECRET_<PROVIDER> where PROVIDER is the
@@ -328,14 +343,79 @@ func GenerateAuthServerConfigByName(
 		return nil, nil, nil, fmt.Errorf("embedded auth server configuration is nil for type embeddedAuthServer")
 	}
 
-	volumes, volumeMounts := GenerateAuthServerVolumes(authServerConfig)
+	if err := ValidateEmbeddedAuthServerCABundles(ctx, c, namespace, authServerConfig); err != nil {
+		return nil, nil, nil, fmt.Errorf("failed to validate embedded auth server CA bundles: %w", err)
+	}
+
+	volumes, volumeMounts, err := GenerateAuthServerVolumes(authServerConfig)
+	if err != nil {
+		return nil, nil, nil, err
+	}
 	envVars := GenerateAuthServerEnvVars(authServerConfig)
 
 	return volumes, volumeMounts, envVars, nil
 }
 
-// GenerateAuthServerVolumes creates volumes and volume mounts for embedded auth server
-// signing keys and HMAC secrets. Returns slices of volumes and volume mounts.
+// EmbeddedAuthServerCABundleChecksum returns a checksum of the selected bytes in all
+// upstream CA ConfigMaps used by an embedded auth server. ConfigMap metadata and
+// unselected keys are deliberately excluded.
+func EmbeddedAuthServerCABundleChecksum(
+	ctx context.Context, c client.Client, namespace, configName string,
+) (string, error) {
+	config, err := GetExternalAuthConfigByName(ctx, c, namespace, configName)
+	if err != nil {
+		return "", fmt.Errorf("failed to get MCPExternalAuthConfig: %w", err)
+	}
+	if config.Spec.Type != mcpv1beta1.ExternalAuthTypeEmbeddedAuthServer || config.Spec.EmbeddedAuthServer == nil {
+		return "", nil
+	}
+	return EmbeddedAuthServerCABundleChecksumForConfig(ctx, c, namespace, config.Spec.EmbeddedAuthServer)
+}
+
+// EmbeddedAuthServerCABundleChecksumForConfig returns a checksum of the selected
+// bytes in all upstream CA ConfigMaps used by an inline embedded auth server.
+// ConfigMap metadata and unselected keys are deliberately excluded.
+func EmbeddedAuthServerCABundleChecksumForConfig(
+	ctx context.Context, c client.Client, namespace string, config *mcpv1beta1.EmbeddedAuthServerConfig,
+) (string, error) {
+	if config == nil {
+		return "", nil
+	}
+
+	hash := sha256.New()
+	found := false
+	for _, provider := range config.UpstreamProviders {
+		value, err := embeddedAuthServerCABundleValue(ctx, c, namespace, &provider)
+		if err != nil {
+			return "", err
+		}
+		if value == nil {
+			continue
+		}
+		_, _ = hash.Write(value)
+		_, _ = hash.Write([]byte{0})
+		found = true
+	}
+	if !found {
+		return "", nil
+	}
+	return hex.EncodeToString(hash.Sum(nil)), nil
+}
+
+func embeddedAuthServerCABundleValue(
+	ctx context.Context, c client.Client, namespace string,
+	provider *mcpv1beta1.UpstreamProviderConfig,
+) ([]byte, error) {
+	ref := provider.CABundleRef()
+	if ref == nil {
+		return nil, nil
+	}
+	return ResolveCABundle(ctx, c, namespace, ref)
+}
+
+// GenerateAuthServerVolumes generates volumes and mounts for auth server
+// signing keys, HMAC secrets, Redis CA certificates, and upstream CA bundles.
+// Returns an error when an upstream CA bundle reference is malformed.
 // The volumes are configured with 0400 permissions for security.
 //
 // For signing keys, files are mounted at /etc/toolhive/authserver/keys/key-{N}.pem
@@ -344,9 +424,9 @@ func GenerateAuthServerConfigByName(
 // Returns nil slices if authConfig is nil.
 func GenerateAuthServerVolumes(
 	authConfig *mcpv1beta1.EmbeddedAuthServerConfig,
-) ([]corev1.Volume, []corev1.VolumeMount) {
+) ([]corev1.Volume, []corev1.VolumeMount, error) {
 	if authConfig == nil {
-		return nil, nil
+		return nil, nil, nil
 	}
 
 	var volumes []corev1.Volume
@@ -457,7 +537,53 @@ func GenerateAuthServerVolumes(
 		}
 	}
 
-	return volumes, volumeMounts
+	upstreamVolumes, upstreamMounts, err := generateUpstreamCABundleVolumes(authConfig.UpstreamProviders)
+	if err != nil {
+		return nil, nil, err
+	}
+	volumes = append(volumes, upstreamVolumes...)
+	volumeMounts = append(volumeMounts, upstreamMounts...)
+
+	return volumes, volumeMounts, nil
+}
+
+func generateUpstreamCABundleVolumes(
+	providers []mcpv1beta1.UpstreamProviderConfig,
+) ([]corev1.Volume, []corev1.VolumeMount, error) {
+	var volumes []corev1.Volume
+	var mounts []corev1.VolumeMount
+	for index, provider := range providers {
+		ref := provider.CABundleRef()
+		if ref == nil {
+			continue
+		}
+		if ref.ConfigMapRef == nil || ref.ConfigMapRef.Name == "" {
+			return nil, nil, fmt.Errorf("upstreamProviders[%d].caBundleRef.configMapRef.name is required", index)
+		}
+		key := ref.ConfigMapRef.Key
+		if key == "" {
+			key = AuthServerUpstreamCABundleFileName
+		}
+		volumeName := fmt.Sprintf("%s%d", AuthServerUpstreamCABundleVolumePrefix, index)
+		mountPath := upstreamCABundleFilePath(index)
+		volumes = append(volumes, corev1.Volume{
+			Name: volumeName,
+			VolumeSource: corev1.VolumeSource{ConfigMap: &corev1.ConfigMapVolumeSource{
+				LocalObjectReference: corev1.LocalObjectReference{Name: ref.ConfigMapRef.Name},
+				Items:                []corev1.KeyToPath{{Key: key, Path: AuthServerUpstreamCABundleFileName}},
+			}},
+		})
+		mounts = append(mounts, corev1.VolumeMount{
+			Name: volumeName, MountPath: mountPath, SubPath: AuthServerUpstreamCABundleFileName, ReadOnly: true,
+		})
+	}
+	return volumes, mounts, nil
+}
+
+// upstreamCABundleFilePath returns the path for the provider at the given index.
+// The index must match the provider's position in UpstreamProviders.
+func upstreamCABundleFilePath(index int) string {
+	return fmt.Sprintf("%s/%d/%s", AuthServerUpstreamCABundleMountPath, index, AuthServerUpstreamCABundleFileName)
 }
 
 // GenerateAuthServerEnvVars creates environment variables for embedded auth server.
@@ -714,8 +840,8 @@ func BuildAuthServerRunConfig(
 	// Build upstream provider configs using shared bindings
 	bindings := buildUpstreamSecretBindings(authConfig.UpstreamProviders)
 	config.Upstreams = make([]authserver.UpstreamRunConfig, 0, len(bindings))
-	for _, b := range bindings {
-		upstream, err := buildUpstreamRunConfig(&b, resourceURL)
+	for index, b := range bindings {
+		upstream, err := buildUpstreamRunConfig(&b, index, resourceURL)
 		if err != nil {
 			return nil, fmt.Errorf("upstream %q: %w", b.Provider.Name, err)
 		}
@@ -945,6 +1071,7 @@ func defaultRedirectURI(resourceURL string) string {
 // the project convention of rejecting malformed objects as early as possible.
 func buildUpstreamRunConfig(
 	b *upstreamSecretBinding,
+	index int,
 	resourceURL string,
 ) (*authserver.UpstreamRunConfig, error) {
 	provider := b.Provider
@@ -956,12 +1083,12 @@ func buildUpstreamRunConfig(
 	switch provider.Type {
 	case mcpv1beta1.UpstreamProviderTypeOIDC:
 		if provider.OIDCConfig != nil {
-			config.OIDCConfig = buildOIDCUpstreamRunConfig(provider.OIDCConfig, b.EnvVarName, resourceURL)
+			config.OIDCConfig = buildOIDCUpstreamRunConfig(provider.OIDCConfig, b.EnvVarName, index, resourceURL)
 		}
 	case mcpv1beta1.UpstreamProviderTypeOAuth2:
 		if provider.OAuth2Config != nil {
 			oauth2, err := buildOAuth2UpstreamRunConfig(
-				provider.OAuth2Config, b.EnvVarName, b.DCRInitialAccessTokenEnvVar, resourceURL)
+				provider.OAuth2Config, b.EnvVarName, b.DCRInitialAccessTokenEnvVar, index, resourceURL)
 			if err != nil {
 				return nil, err
 			}
@@ -978,6 +1105,7 @@ func buildUpstreamRunConfig(
 func buildOIDCUpstreamRunConfig(
 	cfg *mcpv1beta1.OIDCUpstreamConfig,
 	clientSecretEnvVar string,
+	index int,
 	resourceURL string,
 ) *authserver.OIDCUpstreamRunConfig {
 	redirectURI := cfg.RedirectURI
@@ -991,9 +1119,13 @@ func buildOIDCUpstreamRunConfig(
 		Scopes:                        cfg.Scopes,
 		AdditionalAuthorizationParams: cfg.AdditionalAuthorizationParams,
 		SubjectClaim:                  cfg.SubjectClaim,
+		AllowPrivateIPs:               cfg.AllowPrivateIPs,
 	}
 	if cfg.ClientSecretRef != nil {
 		runConfig.ClientSecretEnvVar = clientSecretEnvVar
+	}
+	if cfg.CABundleRef != nil {
+		runConfig.CAFilePath = upstreamCABundleFilePath(index)
 	}
 	if cfg.UserInfoOverride != nil {
 		runConfig.UserInfoOverride = buildUserInfoRunConfig(cfg.UserInfoOverride)
@@ -1018,6 +1150,7 @@ func buildOAuth2UpstreamRunConfig(
 	cfg *mcpv1beta1.OAuth2UpstreamConfig,
 	clientSecretEnvVar string,
 	initialAccessTokenEnvVar string,
+	index int,
 	resourceURL string,
 ) (*authserver.OAuth2UpstreamRunConfig, error) {
 	if err := mcpv1beta1.ValidateOAuth2DCRConfig(cfg); err != nil {
@@ -1035,9 +1168,14 @@ func buildOAuth2UpstreamRunConfig(
 		RedirectURI:                   redirectURI,
 		Scopes:                        cfg.Scopes,
 		AdditionalAuthorizationParams: cfg.AdditionalAuthorizationParams,
+		InsecureAllowHTTP:             cfg.InsecureAllowHTTP,
+		AllowPrivateIPs:               cfg.AllowPrivateIPs,
 	}
 	if cfg.ClientSecretRef != nil {
 		runConfig.ClientSecretEnvVar = clientSecretEnvVar
+	}
+	if cfg.CABundleRef != nil {
+		runConfig.CAFilePath = upstreamCABundleFilePath(index)
 	}
 	if cfg.UserInfo != nil {
 		runConfig.UserInfo = buildUserInfoRunConfig(cfg.UserInfo)
@@ -1062,8 +1200,6 @@ func buildOAuth2UpstreamRunConfig(
 	if cfg.DCRConfig != nil {
 		runConfig.DCRConfig = buildDCRUpstreamRunConfig(cfg.DCRConfig, initialAccessTokenEnvVar)
 	}
-	runConfig.InsecureAllowHTTP = cfg.InsecureAllowHTTP
-	runConfig.AllowPrivateIPs = cfg.AllowPrivateIPs
 	return runConfig, nil
 }
 

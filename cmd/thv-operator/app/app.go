@@ -215,6 +215,19 @@ func isStorageVersionMigratorEnabled() (bool, error) {
 	return enabled, nil
 }
 
+// setupEmbeddedAuthCABundleFieldIndex sets up the shared CA ConfigMap reference index.
+func setupEmbeddedAuthCABundleFieldIndex(mgr ctrl.Manager) error {
+	if err := mgr.GetFieldIndexer().IndexField(
+		context.Background(),
+		&mcpv1beta1.MCPExternalAuthConfig{},
+		controllers.EmbeddedAuthCABundleConfigMapIndex,
+		controllers.IndexEmbeddedAuthCABundleConfigMaps,
+	); err != nil {
+		return fmt.Errorf("index MCPExternalAuthConfig CA bundle references: %w", err)
+	}
+	return nil
+}
+
 // setupGroupRefFieldIndexes sets up field indexing for spec.groupRef on all resource types
 // that can reference an MCPGroup. This enables efficient lookups by groupRef in controllers.
 func setupGroupRefFieldIndexes(mgr ctrl.Manager) error {
@@ -277,6 +290,9 @@ func setupGroupRefFieldIndexes(mgr ctrl.Manager) error {
 // imagePullSecretsDefaults are merged with per-CR imagePullSecrets when
 // reconcilers construct workloads.
 func setupServerControllers(mgr ctrl.Manager, imagePullSecretsDefaults imagepullsecrets.Defaults) error {
+	if err := setupEmbeddedAuthCABundleFieldIndex(mgr); err != nil {
+		return err
+	}
 	if err := setupGroupRefFieldIndexes(mgr); err != nil {
 		return err
 	}

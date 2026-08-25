@@ -1159,6 +1159,46 @@ func TestGetToolConfigForMCPRemoteProxy(t *testing.T) {
 }
 
 // TestGetExternalAuthConfigForMCPRemoteProxy tests external auth config fetching
+
+func TestMCPRemoteProxyReconciler_InvalidUpstreamCABundleIsTerminal(t *testing.T) {
+	t.Parallel()
+
+	proxy := v1beta1test.NewMCPRemoteProxy("proxy", "default",
+		v1beta1test.WithRemoteProxyURL("https://remote.example.com"),
+		v1beta1test.WithRemoteProxyExternalAuthConfigRef("auth"),
+	)
+	authConfig := &mcpv1beta1.MCPExternalAuthConfig{
+		ObjectMeta: metav1.ObjectMeta{Name: "auth", Namespace: "default"},
+		Spec: mcpv1beta1.MCPExternalAuthConfigSpec{
+			Type: mcpv1beta1.ExternalAuthTypeEmbeddedAuthServer,
+			EmbeddedAuthServer: &mcpv1beta1.EmbeddedAuthServerConfig{UpstreamProviders: []mcpv1beta1.UpstreamProviderConfig{{
+				Name: "upstream",
+				Type: mcpv1beta1.UpstreamProviderTypeOIDC,
+				OIDCConfig: &mcpv1beta1.OIDCUpstreamConfig{CABundleRef: &mcpv1beta1.CABundleSource{
+					ConfigMapRef: &corev1.ConfigMapKeySelector{LocalObjectReference: corev1.LocalObjectReference{Name: "bundle"}, Key: "ca.crt"},
+				}},
+			}}},
+		},
+	}
+	bundle := &corev1.ConfigMap{ObjectMeta: metav1.ObjectMeta{Name: "bundle", Namespace: "default"}}
+	reconciler, fakeClient := newTestMCPRemoteProxyReconciler(t, proxy, authConfig, bundle)
+
+	result, err := reconciler.Reconcile(t.Context(), ctrl.Request{NamespacedName: client.ObjectKeyFromObject(proxy)})
+	require.NoError(t, err)
+	assert.Zero(t, result)
+
+	actual := &mcpv1beta1.MCPRemoteProxy{}
+	require.NoError(t, fakeClient.Get(t.Context(), client.ObjectKeyFromObject(proxy), actual))
+	assert.Equal(t, mcpv1beta1.MCPRemoteProxyPhaseFailed, actual.Status.Phase)
+	ready := meta.FindStatusCondition(actual.Status.Conditions, mcpv1beta1.ConditionTypeReady)
+	require.NotNil(t, ready)
+	assert.Equal(t, metav1.ConditionFalse, ready.Status)
+	condition := meta.FindStatusCondition(actual.Status.Conditions, mcpv1beta1.ConditionTypeMCPRemoteProxyExternalAuthConfigValidated)
+	require.NotNil(t, condition)
+	assert.Equal(t, metav1.ConditionFalse, condition.Status)
+	assert.Equal(t, mcpv1beta1.ConditionReasonInvalidConfig, condition.Reason)
+}
+
 func TestGetExternalAuthConfigForMCPRemoteProxy(t *testing.T) {
 	t.Parallel()
 

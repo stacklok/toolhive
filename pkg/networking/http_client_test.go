@@ -4,8 +4,14 @@
 package networking
 
 import (
+	"crypto/rand"
+	"crypto/rsa"
 	"crypto/tls"
+	"crypto/x509"
+	"crypto/x509/pkix"
+	"encoding/pem"
 	"io"
+	"math/big"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
@@ -193,6 +199,66 @@ func TestHttpClientBuilder_WithCABundle(t *testing.T) {
 	assert.Equal(t, path, builder.caCertPath)
 }
 
+func TestHttpClientBuilder_CABundleTrustSemantics(t *testing.T) {
+	t.Parallel()
+
+	key, err := rsa.GenerateKey(rand.Reader, 2048)
+	require.NoError(t, err)
+	certDER, err := x509.CreateCertificate(rand.Reader, &x509.Certificate{
+		SerialNumber:          big.NewInt(1),
+		Subject:               pkix.Name{CommonName: "ToolHive test CA"},
+		NotBefore:             time.Now().Add(-time.Hour),
+		NotAfter:              time.Now().Add(time.Hour),
+		IsCA:                  true,
+		BasicConstraintsValid: true,
+	}, &x509.Certificate{
+		SerialNumber:          big.NewInt(1),
+		Subject:               pkix.Name{CommonName: "ToolHive test CA"},
+		IsCA:                  true,
+		BasicConstraintsValid: true,
+	}, &key.PublicKey, key)
+	require.NoError(t, err)
+	caPath := filepath.Join(t.TempDir(), "ca.crt")
+	require.NoError(t, os.WriteFile(caPath, pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: certDER}), 0600))
+
+	tests := []struct {
+		name      string
+		configure func(*HttpClientBuilder)
+		additive  bool
+	}{
+		{
+			name:      "pinned custom bundle",
+			configure: func(builder *HttpClientBuilder) { builder.WithCABundle(caPath) },
+		},
+		{
+			name:      "system roots plus custom bundle",
+			configure: func(builder *HttpClientBuilder) { builder.WithSystemRootsPlusCABundle(caPath) },
+			additive:  true,
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			builder := NewHttpClientBuilder().WithPrivateIPs(true)
+			tt.configure(builder)
+			client, err := builder.Build()
+			require.NoError(t, err)
+			transport := client.Transport.(*ValidatingTransport).Transport.(*http.Transport)
+			require.NotNil(t, transport.TLSClientConfig)
+			require.NotNil(t, transport.TLSClientConfig.RootCAs)
+
+			pinnedPool := x509.NewCertPool()
+			require.True(t, pinnedPool.AppendCertsFromPEM(
+				pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: certDER})))
+			if tt.additive {
+				assert.False(t, transport.TLSClientConfig.RootCAs.Equal(pinnedPool))
+			} else {
+				assert.True(t, transport.TLSClientConfig.RootCAs.Equal(pinnedPool))
+			}
+		})
+	}
+}
 func TestHttpClientBuilder_WithTokenFromFile(t *testing.T) {
 	t.Parallel()
 

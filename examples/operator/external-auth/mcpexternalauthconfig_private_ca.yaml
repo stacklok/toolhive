@@ -1,0 +1,34 @@
+# Embedded auth server using a private CA for its OIDC upstream.
+# Replace the placeholder certificate with the PEM-encoded CA certificate.
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: upstream-private-ca
+  namespace: default
+data:
+  ca.crt: |
+    -----BEGIN CERTIFICATE-----
+    replace-with-your-private-ca-certificate
+    -----END CERTIFICATE-----
+
+---
+apiVersion: toolhive.stacklok.dev/v1beta1
+kind: MCPExternalAuthConfig
+metadata:
+  name: private-ca-auth-server
+  namespace: default
+spec:
+  type: embeddedAuthServer
+  embeddedAuthServer:
+    issuer: https://auth.example.com
+    upstreamProviders:
+      - name: corporate-idp
+        type: oidc
+        oidcConfig:
+          issuerUrl: https://idp.internal.example.com
+          clientId: toolhive-client
+          caBundleRef:
+            configMapRef:
+              name: upstream-private-ca
+              # key defaults to ca.crt

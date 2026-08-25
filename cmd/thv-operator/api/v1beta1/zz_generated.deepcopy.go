@@ -2324,6 +2324,11 @@ func (in *OAuth2UpstreamConfig) DeepCopyInto(out *OAuth2UpstreamConfig) {
 			(*out)[key] = val
 		}
 	}
+	if in.CABundleRef != nil {
+		in, out := &in.CABundleRef, &out.CABundleRef
+		*out = new(CABundleSource)
+		(*in).DeepCopyInto(*out)
+	}
 	if in.DCRConfig != nil {
 		in, out := &in.DCRConfig, &out.DCRConfig
 		*out = new(DCRUpstreamConfig)
@@ -2395,6 +2400,11 @@ func (in *OIDCUpstreamConfig) DeepCopyInto(out *OIDCUpstreamConfig) {
 		for key, val := range *in {
 			(*out)[key] = val
 		}
+	}
+	if in.CABundleRef != nil {
+		in, out := &in.CABundleRef, &out.CABundleRef
+		*out = new(CABundleSource)
+		(*in).DeepCopyInto(*out)
 	}
 }
 

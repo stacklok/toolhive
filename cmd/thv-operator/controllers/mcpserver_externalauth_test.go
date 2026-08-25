@@ -620,7 +620,50 @@ func TestMCPServerReconciler_handleExternalAuthConfig_ClearsMirrorOnSourceNotFou
 		"stale mirror must be cleared when the referenced source is NotFound")
 }
 
-// TestMCPServerReconciler_ExternalAuthConfigRefInvalidEmbeddedConfigSteadyState
+func TestMCPServerReconciler_InvalidUpstreamCABundleIsTerminal(t *testing.T) {
+	t.Parallel()
+
+	server := v1beta1test.NewMCPServer("server", "default",
+		v1beta1test.WithImage("test"),
+		v1beta1test.WithExternalAuthConfigRef("auth"),
+	)
+	authConfig := &mcpv1beta1.MCPExternalAuthConfig{
+		ObjectMeta: metav1.ObjectMeta{Name: "auth", Namespace: "default"},
+		Spec: mcpv1beta1.MCPExternalAuthConfigSpec{
+			Type: mcpv1beta1.ExternalAuthTypeEmbeddedAuthServer,
+			EmbeddedAuthServer: &mcpv1beta1.EmbeddedAuthServerConfig{UpstreamProviders: []mcpv1beta1.UpstreamProviderConfig{{
+				Name: "upstream",
+				Type: mcpv1beta1.UpstreamProviderTypeOIDC,
+				OIDCConfig: &mcpv1beta1.OIDCUpstreamConfig{CABundleRef: &mcpv1beta1.CABundleSource{
+					ConfigMapRef: &corev1.ConfigMapKeySelector{LocalObjectReference: corev1.LocalObjectReference{Name: "bundle"}, Key: "ca.crt"},
+				}},
+			}}},
+		},
+	}
+	bundle := &corev1.ConfigMap{ObjectMeta: metav1.ObjectMeta{Name: "bundle", Namespace: "default"}}
+	scheme := testutil.NewScheme(t)
+	fakeClient := fake.NewClientBuilder().WithScheme(scheme).
+		WithObjects(server, authConfig, bundle).
+		WithStatusSubresource(&mcpv1beta1.MCPServer{}).
+		Build()
+	reconciler := newTestMCPServerReconciler(fakeClient, scheme, kubernetes.PlatformKubernetes)
+
+	result, err := reconciler.Reconcile(t.Context(), ctrl.Request{NamespacedName: client.ObjectKeyFromObject(server)})
+	require.NoError(t, err)
+	assert.Zero(t, result)
+
+	actual := &mcpv1beta1.MCPServer{}
+	require.NoError(t, fakeClient.Get(t.Context(), client.ObjectKeyFromObject(server), actual))
+	assert.Equal(t, mcpv1beta1.MCPServerPhaseFailed, actual.Status.Phase)
+	ready := meta.FindStatusCondition(actual.Status.Conditions, mcpv1beta1.ConditionTypeReady)
+	require.NotNil(t, ready)
+	assert.Equal(t, metav1.ConditionFalse, ready.Status)
+	condition := meta.FindStatusCondition(actual.Status.Conditions, mcpv1beta1.ConditionTypeExternalAuthConfigValidated)
+	require.NotNil(t, condition)
+	assert.Equal(t, metav1.ConditionFalse, condition.Status)
+	assert.Equal(t, mcpv1beta1.ConditionReasonInvalidConfig, condition.Reason)
+}
+
 // guards against mirrorInvalidOnMCPServer's clear branch clobbering the
 // ExternalAuthConfigValidated condition that handleInvalidEmbeddedAuthServerConfig
 // owns for a different reason (delegate clients configured without OIDC).

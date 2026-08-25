@@ -23,6 +23,7 @@ import (
 	"k8s.io/apimachinery/pkg/types"
 	"k8s.io/client-go/tools/events"
 	ctrl "sigs.k8s.io/controller-runtime"
+	"sigs.k8s.io/controller-runtime/pkg/builder"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/handler"
 	"sigs.k8s.io/controller-runtime/pkg/log"
@@ -106,6 +107,34 @@ func (r *MCPRemoteProxyReconciler) handleInvalidEmbeddedAuthServerConfig(
 	})
 }
 
+// handleInvalidUpstreamCABundle records an invalid upstream CA bundle as terminal.
+// Failures to persist status remain retryable.
+func (r *MCPRemoteProxyReconciler) handleInvalidUpstreamCABundle(
+	ctx context.Context,
+	proxy *mcpv1beta1.MCPRemoteProxy,
+	invalidCABundleErr *ctrlutil.InvalidCABundleError,
+) error {
+	return ctrlutil.MutateAndPatchStatus(ctx, r.Client, proxy, func(remoteProxy *mcpv1beta1.MCPRemoteProxy) {
+		remoteProxy.Status.Phase = mcpv1beta1.MCPRemoteProxyPhaseFailed
+		remoteProxy.Status.Message = fmt.Sprintf("Failed to build configuration: %s", invalidCABundleErr)
+		remoteProxy.Status.ObservedGeneration = remoteProxy.Generation
+		meta.SetStatusCondition(&remoteProxy.Status.Conditions, metav1.Condition{
+			Type:               mcpv1beta1.ConditionTypeReady,
+			Status:             metav1.ConditionFalse,
+			ObservedGeneration: remoteProxy.Generation,
+			Reason:             mcpv1beta1.ConditionReasonNotReady,
+			Message:            remoteProxy.Status.Message,
+		})
+		meta.SetStatusCondition(&remoteProxy.Status.Conditions, metav1.Condition{
+			Type:               mcpv1beta1.ConditionTypeMCPRemoteProxyExternalAuthConfigValidated,
+			Status:             metav1.ConditionFalse,
+			ObservedGeneration: remoteProxy.Generation,
+			Reason:             mcpv1beta1.ConditionReasonInvalidConfig,
+			Message:            fmt.Sprintf("invalid upstream CA bundle: %v", invalidCABundleErr),
+		})
+	})
+}
+
 // Reconcile is part of the main kubernetes reconciliation loop which aims to
 // move the current state of the cluster closer to the desired state.
 func (r *MCPRemoteProxyReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Result, error) {
@@ -125,6 +154,14 @@ func (r *MCPRemoteProxyReconciler) Reconcile(ctx context.Context, req ctrl.Reque
 
 	// Validate and handle configurations
 	if err := r.validateAndHandleConfigs(ctx, proxy); err != nil {
+		var invalidCABundleErr *ctrlutil.InvalidCABundleError
+		if stderrors.As(err, &invalidCABundleErr) {
+			if statusErr := r.handleInvalidUpstreamCABundle(ctx, proxy, invalidCABundleErr); statusErr != nil {
+				ctxLogger.Error(statusErr, "Failed to update MCPRemoteProxy status after invalid upstream CA bundle")
+				return ctrl.Result{}, statusErr
+			}
+			return ctrl.Result{}, nil
+		}
 		if stderrors.Is(err, errInvalidMCPRemoteProxyPodTemplateSpec) {
 			return ctrl.Result{}, nil
 		}
@@ -908,6 +945,18 @@ func (r *MCPRemoteProxyReconciler) handleExternalAuthConfig(ctx context.Context,
 		return err
 	}
 
+	// Resolve upstream CA dependencies before allowing any workload changes.
+	if embeddedCfg := externalAuthConfig.Spec.EmbeddedAuthServer; embeddedCfg != nil {
+		if err := ctrlutil.ValidateEmbeddedAuthServerCABundles(ctx, r.Client, proxy.Namespace, embeddedCfg); err != nil {
+			meta.SetStatusCondition(&proxy.Status.Conditions, metav1.Condition{
+				Type: mcpv1beta1.ConditionTypeMCPRemoteProxyExternalAuthConfigValidated, Status: metav1.ConditionFalse,
+				Reason: mcpv1beta1.ConditionReasonInvalidConfig, Message: fmt.Sprintf("invalid upstream CA bundle: %v", err),
+				ObservedGeneration: proxy.Generation,
+			})
+			return err
+		}
+	}
+
 	// MCPRemoteProxy supports only single-upstream embedded auth server configs.
 	// Multi-upstream requires VirtualMCPServer.
 	if embeddedCfg := externalAuthConfig.Spec.EmbeddedAuthServer; embeddedCfg != nil && len(embeddedCfg.UpstreamProviders) > 1 {
@@ -1327,10 +1376,7 @@ func (r *MCPRemoteProxyReconciler) evaluateCABundleRef(
 	// Verify the key exists in the ConfigMap. A missing key is a configuration state
 	// surfaced through the condition, not a Go error, so it logs at Info (the two
 	// branches above carry a real error and log at Error).
-	key := caBundleRef.ConfigMapRef.Key
-	if key == "" {
-		key = validation.OIDCCABundleDefaultKey
-	}
+	key := caBundleKey(caBundleRef)
 	if _, exists := configMap.Data[key]; !exists {
 		ctxLogger.Info("CA bundle key not found in ConfigMap", "configMap", cmName, "key", key)
 		return metav1.ConditionFalse, mcpv1beta1.ConditionReasonMCPRemoteProxyCABundleRefInvalid,
@@ -1634,7 +1680,7 @@ func (r *MCPRemoteProxyReconciler) deploymentNeedsUpdate(
 		return true
 	}
 
-	if r.podTemplateMetadataNeedsUpdate(deployment, proxy, runConfigChecksum) {
+	if r.podTemplateMetadataNeedsUpdate(ctx, deployment, proxy, runConfigChecksum) {
 		return true
 	}
 
@@ -1821,6 +1867,7 @@ func (*MCPRemoteProxyReconciler) deploymentMetadataNeedsUpdate(
 // checksum annotation that triggers pod restarts when configuration changes.
 // Also includes any user-specified overrides from ResourceOverrides.PodTemplateMetadata.
 func (r *MCPRemoteProxyReconciler) podTemplateMetadataNeedsUpdate(
+	ctx context.Context,
 	deployment *appsv1.Deployment,
 	proxy *mcpv1beta1.MCPRemoteProxy,
 	runConfigChecksum string,
@@ -1832,6 +1879,25 @@ func (r *MCPRemoteProxyReconciler) podTemplateMetadataNeedsUpdate(
 	expectedPodTemplateLabels, expectedPodTemplateAnnotations := r.buildPodTemplateMetadata(
 		labelsForMCPRemoteProxy(proxy.Name), proxy, runConfigChecksum,
 	)
+
+	configName := ctrlutil.EmbeddedAuthServerConfigName(proxy.Spec.ExternalAuthConfigRef, proxy.Spec.AuthServerRef)
+	if configName != "" {
+		caChecksum, err := ctrlutil.EmbeddedAuthServerCABundleChecksum(ctx, r.Client, proxy.Namespace, configName)
+		if err != nil {
+			log.FromContext(ctx).Error(err, "Failed to calculate auth server CA checksum")
+			return true
+		}
+		if caChecksum != "" {
+			expectedPodTemplateAnnotations[ctrlutil.AuthServerCABundleChecksumAnnotation] = caChecksum
+		}
+	}
+
+	const caChecksumKey = ctrlutil.AuthServerCABundleChecksumAnnotation
+	actualCAChecksum, actualCAChecksumSet := deployment.Spec.Template.Annotations[caChecksumKey]
+	expectedCAChecksum, expectedCAChecksumSet := expectedPodTemplateAnnotations[caChecksumKey]
+	if actualCAChecksumSet != expectedCAChecksumSet || actualCAChecksum != expectedCAChecksum {
+		return true
+	}
 
 	if proxy.Spec.PodTemplateSpec != nil && len(proxy.Spec.PodTemplateSpec.Raw) > 0 {
 		return !maps.Equal(deployment.Spec.Template.Labels, expectedPodTemplateLabels) ||
@@ -2163,6 +2229,11 @@ func (r *MCPRemoteProxyReconciler) mapAuthzConfigToMCPRemoteProxy(
 
 // SetupWithManager sets up the controller with the Manager
 func (r *MCPRemoteProxyReconciler) SetupWithManager(mgr ctrl.Manager) error {
+	if err := mgr.GetFieldIndexer().IndexField(
+		context.Background(), &mcpv1beta1.MCPRemoteProxy{},
+		EmbeddedAuthConfigIndex, indexMCPRemoteProxyEmbeddedAuthConfig); err != nil {
+		return fmt.Errorf("index MCPRemoteProxy embedded auth references: %w", err)
+	}
 	// Create a handler that maps MCPExternalAuthConfig changes to MCPRemoteProxy reconciliation requests
 	externalAuthConfigHandler := handler.EnqueueRequestsFromMapFunc(
 		func(ctx context.Context, obj client.Object) []reconcile.Request {
@@ -2248,6 +2319,11 @@ func (r *MCPRemoteProxyReconciler) SetupWithManager(mgr ctrl.Manager) error {
 		Watches(
 			&mcpv1beta1.MCPAuthzConfig{},
 			handler.EnqueueRequestsFromMapFunc(r.mapAuthzConfigToMCPRemoteProxy),
+		).
+		Watches(
+			&corev1.ConfigMap{},
+			handler.EnqueueRequestsFromMapFunc(r.mapAuthServerCABundleConfigMapToMCPRemoteProxy),
+			builder.WithPredicates(configMapDataChangedPredicate()),
 		).
 		Complete(r)
 }

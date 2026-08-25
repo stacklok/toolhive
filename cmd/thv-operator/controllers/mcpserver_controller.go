@@ -206,6 +206,28 @@ func (r *MCPServerReconciler) handleInvalidEmbeddedAuthServerConfig(
 	})
 }
 
+// handleInvalidUpstreamCABundle records an invalid upstream CA bundle as terminal.
+// Failures to persist status remain retryable.
+func (r *MCPServerReconciler) handleInvalidUpstreamCABundle(
+	ctx context.Context,
+	mcpServer *mcpv1beta1.MCPServer,
+	invalidCABundleErr *ctrlutil.InvalidCABundleError,
+) error {
+	return ctrlutil.MutateAndPatchStatus(ctx, r.Client, mcpServer, func(server *mcpv1beta1.MCPServer) {
+		server.Status.Phase = mcpv1beta1.MCPServerPhaseFailed
+		server.Status.Message = fmt.Sprintf("Failed to build configuration: %s", invalidCABundleErr)
+		server.Status.ObservedGeneration = server.Generation
+		setReadyCondition(server, metav1.ConditionFalse, mcpv1beta1.ConditionReasonNotReady, server.Status.Message)
+		meta.SetStatusCondition(&server.Status.Conditions, metav1.Condition{
+			Type:               mcpv1beta1.ConditionTypeExternalAuthConfigValidated,
+			Status:             metav1.ConditionFalse,
+			ObservedGeneration: server.Generation,
+			Reason:             mcpv1beta1.ConditionReasonInvalidConfig,
+			Message:            fmt.Sprintf("invalid upstream CA bundle: %v", invalidCABundleErr),
+		})
+	})
+}
+
 // Reconcile is part of the main kubernetes reconciliation loop which aims to
 // move the current state of the cluster closer to the desired state.
 //
@@ -310,6 +332,15 @@ func (r *MCPServerReconciler) Reconcile(ctx context.Context, req ctrl.Request) (
 
 	// Check if MCPExternalAuthConfig is referenced and handle it
 	if err := r.handleExternalAuthConfig(ctx, mcpServer); err != nil {
+		var invalidCABundleErr *ctrlutil.InvalidCABundleError
+		if stderrors.As(err, &invalidCABundleErr) {
+			if statusErr := r.handleInvalidUpstreamCABundle(ctx, mcpServer, invalidCABundleErr); statusErr != nil {
+				ctxLogger.Error(statusErr, "Failed to update MCPServer status after invalid upstream CA bundle")
+				return ctrl.Result{}, statusErr
+			}
+			return ctrl.Result{}, nil
+		}
+
 		ctxLogger.Error(err, "Failed to handle MCPExternalAuthConfig")
 		// Update status to reflect the error
 		mcpServer.Status.Phase = mcpv1beta1.MCPServerPhaseFailed
@@ -693,10 +724,7 @@ func (r *MCPServerReconciler) validateCABundleRef(ctx context.Context, mcpServer
 	}
 
 	// Verify the key exists in the ConfigMap
-	key := caBundleRef.ConfigMapRef.Key
-	if key == "" {
-		key = validation.OIDCCABundleDefaultKey
-	}
+	key := caBundleKey(caBundleRef)
 	if _, exists := configMap.Data[key]; !exists {
 		ctxLogger.Error(nil, "CA bundle key not found in ConfigMap", "configMap", cmName, "key", key)
 		setCABundleRefCondition(mcpServer, metav1.ConditionFalse, mcpv1beta1.ConditionReasonCABundleRefInvalid,
@@ -1110,7 +1138,7 @@ func (r *MCPServerReconciler) deploymentForMCPServer(
 
 	// Using ConfigMap mode for all configuration
 	// Pod template patch for secrets and service account
-	ptsBuilder, err := ctrlutil.NewPodTemplateSpecBuilder(m.Spec.PodTemplateSpec, mcpContainerName)
+	podTemplateBuilder, err := ctrlutil.NewPodTemplateSpecBuilder(m.Spec.PodTemplateSpec, mcpContainerName)
 	if err != nil {
 		return nil, fmt.Errorf("failed to build PodTemplateSpec: %w", err)
 	}
@@ -1120,7 +1148,7 @@ func (r *MCPServerReconciler) deploymentForMCPServer(
 		defaultSA := mcpServerServiceAccountName(m.Name)
 		serviceAccount = &defaultSA
 	}
-	finalPodTemplateSpec := ptsBuilder.
+	finalPodTemplateSpec := podTemplateBuilder.
 		WithServiceAccount(serviceAccount).
 		WithSecrets(m.Spec.Secrets).
 		Build()
@@ -1387,6 +1415,15 @@ func (r *MCPServerReconciler) deploymentForMCPServer(
 
 	// Add RunConfig checksum annotation to trigger pod rollout when config changes
 	deploymentTemplateAnnotations = checksum.AddRunConfigChecksumToPodTemplate(deploymentTemplateAnnotations, runConfigChecksum)
+	if configName := ctrlutil.EmbeddedAuthServerConfigName(m.Spec.ExternalAuthConfigRef, m.Spec.AuthServerRef); configName != "" {
+		caChecksum, err := ctrlutil.EmbeddedAuthServerCABundleChecksum(ctx, r.Client, m.Namespace, configName)
+		if err != nil {
+			return nil, fmt.Errorf("failed to calculate auth server CA checksum: %w", err)
+		}
+		if caChecksum != "" {
+			deploymentTemplateAnnotations[ctrlutil.AuthServerCABundleChecksumAnnotation] = caChecksum
+		}
+	}
 
 	// Stamp the MCPServer generation on the proxy Deployment's pod template so the
 	// downward-API env var below resolves to a value that is frozen at pod creation
@@ -1991,13 +2028,13 @@ func (r *MCPServerReconciler) deploymentNeedsUpdate(
 			serviceAccount = &defaultSA
 		}
 
-		ptsBuilder, err := ctrlutil.NewPodTemplateSpecBuilder(mcpServer.Spec.PodTemplateSpec, mcpContainerName)
+		podTemplateBuilder, err := ctrlutil.NewPodTemplateSpecBuilder(mcpServer.Spec.PodTemplateSpec, mcpContainerName)
 		if err != nil {
 			// If we can't parse the PodTemplateSpec, consider it as needing update
 			return true
 		}
 
-		expectedPodTemplateSpec := ptsBuilder.
+		expectedPodTemplateSpec := podTemplateBuilder.
 			WithServiceAccount(serviceAccount).
 			WithSecrets(mcpServer.Spec.Secrets).
 			Build()
@@ -2084,6 +2121,17 @@ func (r *MCPServerReconciler) deploymentNeedsUpdate(
 	// Check if pod template annotations have changed (including runconfig checksum)
 	expectedPodTemplateAnnotations := make(map[string]string)
 	expectedPodTemplateAnnotations = checksum.AddRunConfigChecksumToPodTemplate(expectedPodTemplateAnnotations, runConfigChecksum)
+	configName := ctrlutil.EmbeddedAuthServerConfigName(
+		mcpServer.Spec.ExternalAuthConfigRef, mcpServer.Spec.AuthServerRef)
+	if configName != "" {
+		caChecksum, err := ctrlutil.EmbeddedAuthServerCABundleChecksum(ctx, r.Client, mcpServer.Namespace, configName)
+		if err != nil {
+			return true
+		}
+		if caChecksum != "" {
+			expectedPodTemplateAnnotations[ctrlutil.AuthServerCABundleChecksumAnnotation] = caChecksum
+		}
+	}
 	// Mirrors deploymentForMCPServer: stamp the MCPServer generation so the
 	// downward-API env var injected into the proxyrunner container resolves
 	// to a frozen-per-pod value (#5360).
@@ -2103,6 +2151,13 @@ func (r *MCPServerReconciler) deploymentNeedsUpdate(
 	// Subset check so kubectl.kubernetes.io/restartedAt (and other
 	// externally-written keys) are not treated as drift and reverted (#6344).
 	if !ctrlutil.MapIsSubset(expectedPodTemplateAnnotations, deployment.Spec.Template.Annotations) {
+		return true
+	}
+
+	const caChecksumKey = ctrlutil.AuthServerCABundleChecksumAnnotation
+	actualCAChecksum, actualCAChecksumSet := deployment.Spec.Template.Annotations[caChecksumKey]
+	expectedCAChecksum, expectedCAChecksumSet := expectedPodTemplateAnnotations[caChecksumKey]
+	if actualCAChecksumSet != expectedCAChecksumSet || actualCAChecksum != expectedCAChecksum {
 		return true
 	}
 
@@ -2266,6 +2321,18 @@ func (r *MCPServerReconciler) handleExternalAuthConfig(ctx context.Context, m *m
 	// having to inspect the referenced MCPExternalAuthConfig).
 	if mirrored, err := mirrorInvalidOnMCPServer(m, externalAuthConfig); mirrored {
 		return err
+	}
+
+	// Resolve upstream CA dependencies before allowing any workload changes.
+	if embeddedCfg := externalAuthConfig.Spec.EmbeddedAuthServer; embeddedCfg != nil {
+		if err := ctrlutil.ValidateEmbeddedAuthServerCABundles(ctx, r.Client, m.Namespace, embeddedCfg); err != nil {
+			meta.SetStatusCondition(&m.Status.Conditions, metav1.Condition{
+				Type: mcpv1beta1.ConditionTypeExternalAuthConfigValidated, Status: metav1.ConditionFalse,
+				Reason: mcpv1beta1.ConditionReasonInvalidConfig, Message: fmt.Sprintf("invalid upstream CA bundle: %v", err),
+				ObservedGeneration: m.Generation,
+			})
+			return err
+		}
 	}
 
 	// MCPServer supports only single-upstream embedded auth server configs.
@@ -2970,6 +3037,11 @@ func (r *MCPServerReconciler) mapToolConfigToServers(
 
 // SetupWithManager sets up the controller with the Manager.
 func (r *MCPServerReconciler) SetupWithManager(mgr ctrl.Manager) error {
+	if err := mgr.GetFieldIndexer().IndexField(
+		context.Background(), &mcpv1beta1.MCPServer{},
+		EmbeddedAuthConfigIndex, indexMCPServerEmbeddedAuthConfig); err != nil {
+		return fmt.Errorf("index MCPServer embedded auth references: %w", err)
+	}
 	// Create a handler that maps MCPExternalAuthConfig changes to MCPServer reconciliation requests
 	externalAuthConfigHandler := handler.EnqueueRequestsFromMapFunc(
 		func(ctx context.Context, obj client.Object) []reconcile.Request {
@@ -3059,5 +3131,10 @@ func (r *MCPServerReconciler) SetupWithManager(mgr ctrl.Manager) error {
 		Watches(&mcpv1beta1.MCPTelemetryConfig{}, telemetryConfigHandler).
 		Watches(&mcpv1alpha1.MCPWebhookConfig{}, webhookConfigHandler).
 		Watches(&mcpv1beta1.MCPToolConfig{}, toolConfigHandler).
+		Watches(
+			&corev1.ConfigMap{},
+			handler.EnqueueRequestsFromMapFunc(r.mapAuthServerCABundleConfigMapToMCPServer),
+			builder.WithPredicates(configMapDataChangedPredicate()),
+		).
 		Complete(r)
 }

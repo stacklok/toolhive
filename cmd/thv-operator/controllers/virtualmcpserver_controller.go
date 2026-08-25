@@ -483,6 +483,12 @@ func (r *VirtualMCPServerReconciler) runAuthValidations(
 			}
 			return false
 		}
+		if err := r.validateAuthServerConfigCABundles(ctx, vmcp, statusManager); err != nil {
+			if applyErr := r.applyStatusUpdates(ctx, vmcp, statusManager); applyErr != nil {
+				ctxLogger.Error(applyErr, "Failed to apply status updates after CA bundle validation error")
+			}
+			return false
+		}
 	} else {
 		// Remove stale conditions if AuthServerConfig was previously set then removed.
 		statusManager.RemoveConditionsWithPrefix(mcpv1beta1.ConditionTypeAuthServerConfigValidated, []string{})
@@ -501,6 +507,23 @@ func (r *VirtualMCPServerReconciler) runAuthValidations(
 	}
 
 	return true
+}
+
+// validateAuthServerConfigCABundles resolves inline upstream CA dependencies.
+func (r *VirtualMCPServerReconciler) validateAuthServerConfigCABundles(
+	ctx context.Context, vmcp *mcpv1beta1.VirtualMCPServer, statusManager virtualmcpserverstatus.StatusManager,
+) error {
+	err := ctrlutil.ValidateEmbeddedAuthServerCABundles(ctx, r.Client, vmcp.Namespace, vmcp.Spec.AuthServerConfig)
+	if err == nil {
+		return nil
+	}
+	message := fmt.Sprintf("invalid upstream CA bundle: %v", err)
+	statusManager.SetPhase(mcpv1beta1.VirtualMCPServerPhaseFailed)
+	statusManager.SetMessage(message)
+	statusManager.SetAuthServerConfigValidatedCondition(
+		mcpv1beta1.ConditionReasonAuthServerConfigInvalid, message, metav1.ConditionFalse)
+	statusManager.SetObservedGeneration(vmcp.Generation)
+	return err
 }
 
 // validateSessionStorageForReplicas emits a SessionStorageWarning condition when
@@ -1525,85 +1548,95 @@ func (r *VirtualMCPServerReconciler) ensureDeployment(
 		return ctrl.Result{}, err
 	}
 
+	// Fetch the selected inline auth-server CA content checksum. This is intentionally
+	// computed from the current ConfigMaps so both rollout and drift detection use
+	// the same value.
+	caBundleChecksum, err := ctrlutil.EmbeddedAuthServerCABundleChecksumForConfig(
+		ctx, r.Client, vmcp.Namespace, vmcp.Spec.AuthServerConfig)
+	if err != nil {
+		return ctrl.Result{}, err
+	}
+
 	deployment := &appsv1.Deployment{}
 	err = r.Get(ctx, types.NamespacedName{Name: vmcp.Name, Namespace: vmcp.Namespace}, deployment)
 
 	if errors.IsNotFound(err) {
-		dep := r.deploymentForVirtualMCPServer(ctx, vmcp, vmcpConfigChecksum, telemetryCfg, typedWorkloads)
-		if dep == nil {
-			return ctrl.Result{}, fmt.Errorf("failed to create Deployment object")
-		}
-		ctxLogger.Info("Creating a new Deployment", "Deployment.Namespace", dep.Namespace, "Deployment.Name", dep.Name)
-		if err := r.Create(ctx, dep); err != nil {
-			ctxLogger.Error(err, "Failed to create new Deployment")
-			// Record event for deployment creation failure
-			if r.Recorder != nil {
-				r.Recorder.Eventf(vmcp, nil, corev1.EventTypeWarning, "DeploymentCreationFailed", "CreateDeployment",
-					"Failed to create Deployment: %v", err)
-			}
-			return ctrl.Result{}, err
-		}
-		// Record event for successful deployment creation
-		if r.Recorder != nil {
-			r.Recorder.Eventf(vmcp, nil, corev1.EventTypeNormal, "DeploymentCreated", "CreateDeployment",
-				"Deployment created successfully")
-		}
-		// Return empty result to continue with rest of reconciliation (Service, status update, etc.)
-		// Kubernetes will automatically requeue when Deployment status changes
-		return ctrl.Result{}, nil
-	} else if err != nil {
+		return r.createDeployment(ctx, vmcp, telemetryCfg, typedWorkloads, vmcpConfigChecksum, caBundleChecksum)
+	}
+	if err != nil {
 		ctxLogger.Error(err, "Failed to get Deployment")
 		return ctrl.Result{}, err
 	}
 
-	// Deployment exists - check if it needs to be updated
-	// deploymentNeedsUpdate performs a detailed comparison to avoid unnecessary updates
-	if r.deploymentNeedsUpdate(ctx, deployment, vmcp, vmcpConfigChecksum, telemetryCfg, typedWorkloads) {
-		newDeployment := r.deploymentForVirtualMCPServer(ctx, vmcp, vmcpConfigChecksum, telemetryCfg, typedWorkloads)
-		if newDeployment == nil {
-			return ctrl.Result{}, fmt.Errorf("failed to create updated Deployment object")
-		}
-
-		// Selective field update strategy:
-		// - Update Spec.Template: Contains container spec, volumes, pod metadata (triggers rollout)
-		// - Update Labels: For label selectors and queries
-		// - Update Annotations: For metadata and tooling
-		// - Sync Spec.Replicas when spec.replicas is non-nil (operator authoritative)
-		// - Preserve Spec.Replicas when spec.replicas is nil (HPA or external controller manages scaling)
-		// - Preserve ResourceVersion, UID: Required for optimistic concurrency control
-		//
-		// Note: If update conflicts occur due to concurrent modifications, the reconcile
-		// loop will retry automatically. Kubernetes' optimistic locking prevents data loss.
-		newDeployment.Spec.Template.Annotations = ctrlutil.PreserveKubectlRestartedAt(
-			newDeployment.Spec.Template.Annotations, deployment.Spec.Template.Annotations)
-		deployment.Spec.Template = newDeployment.Spec.Template
-		deployment.Labels = newDeployment.Labels
-		deployment.Annotations = mergeDeploymentAnnotations(newDeployment.Annotations, deployment.Annotations)
-		if newDeployment.Spec.Replicas != nil {
-			deployment.Spec.Replicas = newDeployment.Spec.Replicas
-		}
-
-		ctxLogger.Info("Updating Deployment", "Deployment.Namespace", deployment.Namespace, "Deployment.Name", deployment.Name)
-		if err := r.Update(ctx, deployment); err != nil {
-			ctxLogger.Error(err, "Failed to update Deployment")
-			// Record event for deployment update failure
-			if r.Recorder != nil {
-				r.Recorder.Eventf(vmcp, nil, corev1.EventTypeWarning, "DeploymentUpdateFailed", "UpdateDeployment",
-					"Failed to update Deployment: %v", err)
-			}
-			// Return error to trigger reconcile retry (handles transient failures and conflicts)
-			return ctrl.Result{}, err
-		}
-		// Record event for successful deployment update (config change triggers rollout)
-		if r.Recorder != nil {
-			r.Recorder.Eventf(vmcp, nil, corev1.EventTypeNormal, "DeploymentUpdated", "UpdateDeployment",
-				"Deployment updated, rolling out new configuration")
-		}
-		// Return empty result to continue with rest of reconciliation
-		// Deployment rollout will be monitored when Kubernetes triggers subsequent reconciles
-		return ctrl.Result{}, nil
+	if r.deploymentNeedsUpdate(ctx, deployment, vmcp, vmcpConfigChecksum, caBundleChecksum, telemetryCfg, typedWorkloads) {
+		return r.updateDeployment(ctx, vmcp, deployment, telemetryCfg, typedWorkloads, vmcpConfigChecksum, caBundleChecksum)
 	}
 
+	return ctrl.Result{}, nil
+}
+
+func (r *VirtualMCPServerReconciler) createDeployment(
+	ctx context.Context,
+	vmcp *mcpv1beta1.VirtualMCPServer,
+	telemetryCfg *mcpv1beta1.MCPTelemetryConfig,
+	typedWorkloads []workloads.TypedWorkload,
+	vmcpConfigChecksum, caBundleChecksum string,
+) (ctrl.Result, error) {
+	ctxLogger := log.FromContext(ctx)
+	dep := r.deploymentForVirtualMCPServer(ctx, vmcp, vmcpConfigChecksum, caBundleChecksum, telemetryCfg, typedWorkloads)
+	if dep == nil {
+		return ctrl.Result{}, fmt.Errorf("failed to create Deployment object")
+	}
+	ctxLogger.Info("Creating a new Deployment", "Deployment.Namespace", dep.Namespace, "Deployment.Name", dep.Name)
+	if err := r.Create(ctx, dep); err != nil {
+		ctxLogger.Error(err, "Failed to create new Deployment")
+		if r.Recorder != nil {
+			r.Recorder.Eventf(vmcp, nil, corev1.EventTypeWarning, "DeploymentCreationFailed", "CreateDeployment",
+				"Failed to create Deployment: %v", err)
+		}
+		return ctrl.Result{}, err
+	}
+	if r.Recorder != nil {
+		r.Recorder.Eventf(vmcp, nil, corev1.EventTypeNormal, "DeploymentCreated", "CreateDeployment",
+			"Deployment created successfully")
+	}
+	return ctrl.Result{}, nil
+}
+
+func (r *VirtualMCPServerReconciler) updateDeployment(
+	ctx context.Context,
+	vmcp *mcpv1beta1.VirtualMCPServer,
+	deployment *appsv1.Deployment,
+	telemetryCfg *mcpv1beta1.MCPTelemetryConfig,
+	typedWorkloads []workloads.TypedWorkload,
+	vmcpConfigChecksum, caBundleChecksum string,
+) (ctrl.Result, error) {
+	ctxLogger := log.FromContext(ctx)
+	newDeployment := r.deploymentForVirtualMCPServer(ctx, vmcp, vmcpConfigChecksum, caBundleChecksum, telemetryCfg, typedWorkloads)
+	if newDeployment == nil {
+		return ctrl.Result{}, fmt.Errorf("failed to create updated Deployment object")
+	}
+	newDeployment.Spec.Template.Annotations = ctrlutil.PreserveKubectlRestartedAt(
+		newDeployment.Spec.Template.Annotations, deployment.Spec.Template.Annotations)
+	deployment.Spec.Template = newDeployment.Spec.Template
+	deployment.Labels = newDeployment.Labels
+	deployment.Annotations = mergeDeploymentAnnotations(newDeployment.Annotations, deployment.Annotations)
+	if newDeployment.Spec.Replicas != nil {
+		deployment.Spec.Replicas = newDeployment.Spec.Replicas
+	}
+	ctxLogger.Info("Updating Deployment", "Deployment.Namespace", deployment.Namespace, "Deployment.Name", deployment.Name)
+	if err := r.Update(ctx, deployment); err != nil {
+		ctxLogger.Error(err, "Failed to update Deployment")
+		if r.Recorder != nil {
+			r.Recorder.Eventf(vmcp, nil, corev1.EventTypeWarning, "DeploymentUpdateFailed", "UpdateDeployment",
+				"Failed to update Deployment: %v", err)
+		}
+		return ctrl.Result{}, err
+	}
+	if r.Recorder != nil {
+		r.Recorder.Eventf(vmcp, nil, corev1.EventTypeNormal, "DeploymentUpdated", "UpdateDeployment",
+			"Deployment updated, rolling out new configuration")
+	}
 	return ctrl.Result{}, nil
 }
 
@@ -1702,6 +1735,7 @@ func (r *VirtualMCPServerReconciler) deploymentNeedsUpdate(
 	deployment *appsv1.Deployment,
 	vmcp *mcpv1beta1.VirtualMCPServer,
 	vmcpConfigChecksum string,
+	caBundleChecksum string,
 	telemetryCfg *mcpv1beta1.MCPTelemetryConfig,
 	typedWorkloads []workloads.TypedWorkload,
 ) bool {
@@ -1721,7 +1755,7 @@ func (r *VirtualMCPServerReconciler) deploymentNeedsUpdate(
 		return true
 	}
 
-	if r.podTemplateMetadataNeedsUpdate(deployment, vmcp, vmcpConfigChecksum) {
+	if r.podTemplateMetadataNeedsUpdate(deployment, vmcp, vmcpConfigChecksum, caBundleChecksum) {
 		return true
 	}
 
@@ -1828,13 +1862,14 @@ func (r *VirtualMCPServerReconciler) podTemplateMetadataNeedsUpdate(
 	deployment *appsv1.Deployment,
 	vmcp *mcpv1beta1.VirtualMCPServer,
 	vmcpConfigChecksum string,
+	caBundleChecksum string,
 ) bool {
 	if deployment == nil || vmcp == nil {
 		return true
 	}
 
 	expectedPodTemplateLabels, expectedPodTemplateAnnotations := r.buildPodTemplateMetadata(
-		labelsForVirtualMCPServer(vmcp.Name), vmcp, vmcpConfigChecksum,
+		labelsForVirtualMCPServer(vmcp.Name), vmcp, vmcpConfigChecksum, caBundleChecksum,
 	)
 
 	if !maps.Equal(deployment.Spec.Template.Labels, expectedPodTemplateLabels) {

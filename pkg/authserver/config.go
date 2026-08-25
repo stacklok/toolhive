@@ -585,6 +585,9 @@ type OIDCUpstreamRunConfig struct {
 	// stable per user (e.g. Entra/Azure AD's "oid"). See upstream.OIDCConfig.
 	SubjectClaim string `json:"subject_claim,omitempty" yaml:"subject_claim,omitempty"`
 
+	// CAFilePath is the path to a PEM CA bundle added to the system roots.
+	CAFilePath string `json:"ca_file_path,omitempty" yaml:"ca_file_path,omitempty"`
+
 	// AllowPrivateIPs permits the OIDC discovery and token HTTP clients to
 	// connect to private IP ranges (RFC-1918, link-local). Use only when the
 	// upstream is hosted inside the same cluster and has no public endpoint.
@@ -662,6 +665,9 @@ type OAuth2UpstreamRunConfig struct {
 	// ClientSecretFile / ClientSecretEnvVar, and ClientID must be left empty.
 	// Mutually exclusive with ClientID.
 	DCRConfig *DCRUpstreamConfig `json:"dcr_config,omitempty" yaml:"dcr_config,omitempty"`
+
+	// CAFilePath is the path to a PEM CA bundle added to the system roots.
+	CAFilePath string `json:"ca_file_path,omitempty" yaml:"ca_file_path,omitempty"`
 
 	// AllowPrivateIPs permits the upstream provider's HTTP client to connect to
 	// private IP ranges (RFC-1918, link-local). When DCRConfig is set, this

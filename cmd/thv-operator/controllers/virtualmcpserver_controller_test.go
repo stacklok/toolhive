@@ -1728,7 +1728,7 @@ func TestVirtualMCPServerPodTemplateMetadataNeedsUpdate(t *testing.T) {
 
 	vmcpConfigChecksum := testChecksumValue
 	expectedLabels, expectedAnnotations := reconciler.buildPodTemplateMetadata(
-		labelsForVirtualMCPServer(vmcp.Name), vmcp, vmcpConfigChecksum,
+		labelsForVirtualMCPServer(vmcp.Name), vmcp, vmcpConfigChecksum, "",
 	)
 
 	tests := []struct {
@@ -1883,7 +1883,7 @@ func TestVirtualMCPServerPodTemplateMetadataNeedsUpdate(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
 
-			needsUpdate := reconciler.podTemplateMetadataNeedsUpdate(tt.deployment, tt.vmcp, tt.checksum)
+			needsUpdate := reconciler.podTemplateMetadataNeedsUpdate(tt.deployment, tt.vmcp, tt.checksum, "")
 			assert.Equal(t, tt.expectedUpdate, needsUpdate)
 		})
 	}
@@ -1904,7 +1904,7 @@ func TestVirtualMCPServerDeploymentNeedsUpdate(t *testing.T) {
 
 	vmcpConfigChecksum := testChecksumValue
 	expectedLabels, expectedAnnotations := reconciler.buildPodTemplateMetadata(
-		labelsForVirtualMCPServer(vmcp.Name), vmcp, vmcpConfigChecksum,
+		labelsForVirtualMCPServer(vmcp.Name), vmcp, vmcpConfigChecksum, "",
 	)
 
 	tests := []struct {
@@ -2112,7 +2112,7 @@ func TestVirtualMCPServerDeploymentNeedsUpdate(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
 
-			needsUpdate := reconciler.deploymentNeedsUpdate(context.Background(), tt.deployment, vmcp, vmcpConfigChecksum, nil, []workloads.TypedWorkload{})
+			needsUpdate := reconciler.deploymentNeedsUpdate(context.Background(), tt.deployment, vmcp, vmcpConfigChecksum, "", nil, []workloads.TypedWorkload{})
 			assert.Equal(t, tt.expectedUpdate, needsUpdate)
 		})
 	}
@@ -2586,7 +2586,7 @@ func TestVirtualMCPServerEnsureDeployment_NoUpdateNeeded(t *testing.T) {
 
 	// Create deployment matching current spec
 	expectedLabels, expectedAnnotations := reconciler.buildPodTemplateMetadata(
-		labelsForVirtualMCPServer(vmcp.Name), vmcp, "test-checksum",
+		labelsForVirtualMCPServer(vmcp.Name), vmcp, "test-checksum", "",
 	)
 
 	correctDeployment := &appsv1.Deployment{
@@ -2680,7 +2680,7 @@ func TestVirtualMCPServerEnsureDeployment_RemovesStaleHashAnnotation(t *testing.
 			}
 
 			expectedLabels, expectedAnnotations := reconciler.buildPodTemplateMetadata(
-				labelsForVirtualMCPServer(vmcp.Name), vmcp, "test-checksum",
+				labelsForVirtualMCPServer(vmcp.Name), vmcp, "test-checksum", "",
 			)
 
 			// Deployment otherwise matches the desired state exactly, except it

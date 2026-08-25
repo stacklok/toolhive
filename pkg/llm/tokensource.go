@@ -14,12 +14,14 @@ import (
 	"github.com/stacklok/toolhive/pkg/secrets"
 )
 
-// ErrTokenRequired is returned when a fresh token is needed but no cached or
-// refreshable token exists and the caller is non-interactive (browser flow
-// disabled). The user must first complete an interactive login so that a
-// refresh token is persisted for subsequent non-interactive calls.
+// ErrTokenRequired is returned when a fresh token is needed but no USABLE
+// cached credential exists and the caller is non-interactive (browser flow
+// disabled). That covers both an empty cache and a stored refresh token the
+// identity provider has since rejected (expired, revoked, or rotated out from
+// under us) — the two are one outcome to the user, because both are fixed only
+// by an interactive login that persists a new refresh token.
 var ErrTokenRequired = errors.New(
-	"LLM gateway authentication required: no cached credentials found; " +
+	"LLM gateway authentication required: no usable cached credentials; " +
 		"run \"thv llm setup\" to log in",
 )
 

@@ -763,6 +763,26 @@ func TestValidateSpecConfigurationConditions(t *testing.T) {
 			expectCondition: mcpv1beta1.ConditionReasonRemoteURLInvalid,
 			conditionStatus: metav1.ConditionFalse,
 		},
+		{
+			name: "private remote URL is rejected without allowPrivateEndpoint",
+			proxy: v1beta1test.NewMCPRemoteProxy("private-url-proxy", "default",
+				v1beta1test.WithRemoteProxyURL("http://foo.ns.svc.cluster.local")),
+			expectError:     true,
+			errContains:     "blocked internal hostname",
+			expectCondition: mcpv1beta1.ConditionReasonRemoteURLInvalid,
+			conditionStatus: metav1.ConditionFalse,
+		},
+		{
+			name: "private remote URL is allowed with allowPrivateEndpoint",
+			proxy: v1beta1test.NewMCPRemoteProxy("private-url-allowed-proxy", "default",
+				v1beta1test.WithRemoteProxyURL("http://foo.ns.svc.cluster.local"),
+				v1beta1test.MutateRemoteProxy(func(p *mcpv1beta1.MCPRemoteProxy) {
+					p.Spec.AllowPrivateEndpoint = true
+				})),
+			expectError:     false,
+			expectCondition: mcpv1beta1.ConditionReasonConfigurationValid,
+			conditionStatus: metav1.ConditionTrue,
+		},
 	}
 
 	for _, tt := range tests {

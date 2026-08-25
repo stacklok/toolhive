@@ -2375,6 +2375,44 @@ _Appears in:_
 | `insecureAllowHTTP` _boolean_ | InsecureAllowHTTP allows HTTP (non-HTTPS) OIDC issuer and JWKS URLs for development/testing.<br />WARNING: This is insecure and should NEVER be used in production. | false | Optional: \{\} <br /> |
 
 
+#### api.v1beta1.JWTBearerGrantConfig
+
+
+
+JWTBearerGrantConfig limits RFC 7523 JWT-bearer assertions for one trusted
+issuer. Each assertion subject must have an exact binding and request exactly
+one of that binding's allowed resources.
+
+
+
+_Appears in:_
+- [api.v1beta1.TrustedIssuerConfig](#apiv1beta1trustedissuerconfig)
+
+| Field | Description | Default | Validation |
+| --- | --- | --- | --- |
+| `maxAssertionAge` _[Duration](https://kubernetes.io/docs/reference/generated/kubernetes-api/v1.27/#duration-v1-meta)_ | MaxAssertionAge caps the exp-iat interval independently of exp. |  | Required: \{\} <br /> |
+| `subjectBindings` _[api.v1beta1.JWTBearerSubjectBinding](#apiv1beta1jwtbearersubjectbinding) array_ | SubjectBindings maps an exact external subject to allowed RFC 8707<br />resources. |  | MaxItems: 50 <br />MinItems: 1 <br />Required: \{\} <br /> |
+| `acceptedAudiences` _string array_ | AcceptedAudiences identifies this authorization server's accepted<br />assertion audiences. When omitted, runtime validation defaults to the<br />token endpoint. |  | MaxItems: 50 <br />items:MaxLength: 2048 <br />items:MinLength: 1 <br />items:Pattern: `^https?://[^[:space:]]+$` <br />Optional: \{\} <br /> |
+
+
+#### api.v1beta1.JWTBearerSubjectBinding
+
+
+
+JWTBearerSubjectBinding configures the exact subject and allowed resources
+for one RFC 7523 JWT-bearer assertion identity.
+
+
+
+_Appears in:_
+- [api.v1beta1.JWTBearerGrantConfig](#apiv1beta1jwtbearergrantconfig)
+
+| Field | Description | Default | Validation |
+| --- | --- | --- | --- |
+| `subject` _string_ | Subject is an exact assertion sub value. Wildcards are not supported. |  | MaxLength: 256 <br />MinLength: 1 <br />Pattern: `^[^*]+$` <br />Required: \{\} <br /> |
+| `allowedResources` _string array_ | AllowedResources is the exact set of RFC 8707 resources this subject may<br />request. |  | MaxItems: 50 <br />MinItems: 1 <br />Required: \{\} <br />items:MaxLength: 2048 <br />items:MinLength: 1 <br />items:Pattern: `^https?://[^[:space:]]+$` <br /> |
+
+
 #### api.v1beta1.KubernetesServiceAccountOIDCConfig
 
 
@@ -3016,6 +3054,7 @@ _Appears in:_
 | Field | Description | Default | Validation |
 | --- | --- | --- | --- |
 | `remoteUrl` _string_ | RemoteURL is the URL of the remote MCP server to proxy |  | Pattern: `^https?://` <br />Required: \{\} <br /> |
+| `allowPrivateEndpoint` _boolean_ | AllowPrivateEndpoint permits RemoteURL to point at a private or<br />in-cluster endpoint: RFC 1918 and IPv6 unique-local addresses, and<br />hostnames ending in "cluster.local". (Bare ".svc" hostnames are never<br />blocked, since no DNS resolution is performed.) Enable this to reach a<br />co-located in-cluster backend in-mesh so the backend's workload-identity<br />authorization policy still applies. Loopback, link-local, cloud-metadata,<br />and kubernetes.default endpoints remain blocked regardless of this<br />setting. | false | Optional: \{\} <br /> |
 | `proxyPort` _integer_ | ProxyPort is the port to expose the MCP proxy on | 8080 | Maximum: 65535 <br />Minimum: 1 <br /> |
 | `transport` _string_ | Transport is the transport method for the remote proxy (sse or streamable-http) | streamable-http | Enum: [sse streamable-http] <br /> |
 | `oidcConfigRef` _[api.v1beta1.MCPOIDCConfigReference](#apiv1beta1mcpoidcconfigreference)_ | OIDCConfigRef references a shared MCPOIDCConfig resource for OIDC authentication.<br />The referenced MCPOIDCConfig must exist in the same namespace as this MCPRemoteProxy.<br />Per-server overrides (audience, scopes) are specified here; shared provider config<br />lives in the MCPOIDCConfig resource.<br />SECURITY: if this field is omitted and no other authentication source is configured,<br />the proxy runs UNAUTHENTICATED. It accepts every request that can reach its port and<br />forwards it to the remote MCP server under a synthetic local-user identity, with no<br />token or credential check. Set this field to enforce identity-based access control<br />per request. |  | Optional: \{\} <br /> |
@@ -3167,6 +3206,7 @@ _Appears in:_
 | Field | Description | Default | Validation |
 | --- | --- | --- | --- |
 | `remoteUrl` _string_ | RemoteURL is the URL of the remote MCP server.<br />Both HTTP and HTTPS schemes are accepted at admission time. |  | Pattern: `^https?://` <br />Required: \{\} <br /> |
+| `allowPrivateEndpoint` _boolean_ | AllowPrivateEndpoint permits RemoteURL to point at a private or<br />in-cluster endpoint: RFC 1918 and IPv6 unique-local addresses, and<br />hostnames ending in "cluster.local". (Bare ".svc" hostnames are never<br />blocked, since no DNS resolution is performed.) Enable this to reach a<br />co-located in-cluster backend in-mesh so the backend's workload-identity<br />authorization policy still applies. Loopback, link-local, cloud-metadata,<br />and kubernetes.default endpoints remain blocked regardless of this<br />setting. | false | Optional: \{\} <br /> |
 | `transport` _string_ | Transport is the transport method for the remote server (sse or streamable-http).<br />No default is set (unlike MCPRemoteProxy) because MCPServerEntry points at external<br />servers the user doesn't control — requiring explicit transport avoids silent mismatches. |  | Enum: [sse streamable-http] <br />Required: \{\} <br /> |
 | `groupRef` _[api.v1beta1.MCPGroupRef](#apiv1beta1mcpgroupref)_ | GroupRef references the MCPGroup this entry belongs to.<br />Required — every MCPServerEntry must be part of a group for vMCP discovery. |  | Required: \{\} <br /> |
 | `externalAuthConfigRef` _[api.v1beta1.ExternalAuthConfigRef](#apiv1beta1externalauthconfigref)_ | ExternalAuthConfigRef references a MCPExternalAuthConfig resource for token exchange<br />when connecting to the remote MCP server. The referenced MCPExternalAuthConfig must<br />exist in the same namespace as this MCPServerEntry. |  | Optional: \{\} <br /> |
@@ -4322,11 +4362,25 @@ ToolRateLimitConfig defines rate limits for a specific tool.
 
 
 TrustedIssuerConfig configures an external OIDC issuer whose tokens are
-accepted as RFC 8693 subject tokens during token exchange. It mirrors
-tokenexchange.TrustedIssuer (pkg/authserver/server/tokenexchange), the
-runtime type the operator converts this into directly — no secret is
-referenced by this type, so no SecretKeyRef indirection is needed, unlike
-DelegateClientConfig.
+accepted as RFC 8693 subject tokens or RFC 7523 JWT-bearer assertions during
+token exchange. It mirrors tokenexchange.TrustedIssuer
+(pkg/authserver/server/tokenexchange), the runtime type the operator converts
+this into directly — no secret is referenced by this type, so no SecretKeyRef
+indirection is needed, unlike DelegateClientConfig.
+
+expectedAudience is exempted only for a grant-only issuer: jwtBearerGrant
+present and none of actorClaim, actorMatcher, allowMayAct, or allowedActors
+set. Any RFC 8693 delegation field (actorClaim, actorMatcher, allowMayAct,
+allowedActors) still requires expectedAudience, even when combined with
+jwtBearerGrant.
+
+The allowedDelegateClients rule below mirrors validateDelegationPolicy
+(pkg/authserver/server/tokenexchange/multi_issuer_validator.go): it is
+keyed on whether ANY delegation field is set (expectedAudience,
+actorClaim, actorMatcher, allowMayAct), not merely on whether
+jwtBearerGrant is absent — an issuer can combine jwtBearerGrant with
+expectedAudience for RFC 8693 delegation on the same issuer, and that
+combination still requires allowedDelegateClients at the Go level.
 
 
 
@@ -4336,14 +4390,16 @@ _Appears in:_
 | Field | Description | Default | Validation |
 | --- | --- | --- | --- |
 | `issuerUrl` _string_ | IssuerURL is the expected "iss" claim value (exact match). |  | MaxLength: 2048 <br />MinLength: 1 <br />Required: \{\} <br /> |
-| `expectedAudience` _string_ | ExpectedAudience is the expected "aud" claim value that must appear in<br />the token's audience list. This should be a resource/API identifier<br />(e.g. a URI), not a client ID. |  | MaxLength: 2048 <br />MinLength: 1 <br />Required: \{\} <br /> |
+| `expectedAudience` _string_ | ExpectedAudience is the expected "aud" claim value that must appear in<br />an RFC 8693 subject token's audience list. It is not used by an RFC 7523<br />JWT-bearer assertion, whose audience is the token endpoint. |  | MaxLength: 2048 <br />MinLength: 1 <br />Optional: \{\} <br /> |
 | `jwksUrl` _string_ | JWKSURL is the URL to fetch the issuer's JSON Web Key Set from. If<br />empty, it is resolved via OIDC discovery at<br />\{issuerUrl\}/.well-known/openid-configuration. |  | MaxLength: 2048 <br />Optional: \{\} <br /> |
 | `insecureAllowHTTP` _boolean_ | InsecureAllowHTTP permits plain-HTTP OIDC discovery and JWKS fetches<br />for THIS issuer only. Development and testing only — never set in<br />production. |  | Optional: \{\} <br /> |
 | `allowPrivateIPs` _boolean_ | AllowPrivateIPs permits OIDC discovery and JWKS fetches for THIS issuer<br />to resolve to a private or loopback address. Use only when the issuer<br />is hosted inside the same cluster and has no public endpoint. Requires<br />jwksUrl to be set explicitly (enforced at reconcile time), since<br />otherwise OIDC discovery — fetched from the external issuer itself —<br />would choose the private dial target. |  | Optional: \{\} <br /> |
 | `actorClaim` _string_ | ActorClaim names the claim identifying the client that requested the<br />subject token from this external issuer (used by allowedActors below).<br />Defaults to "azp" when empty; use "appid" for Microsoft Entra v1, "cid"<br />for Okta. The special value "client_id" reads the subject token's<br />client_id claim instead. |  | MaxLength: 64 <br />Optional: \{\} <br /> |
-| `allowedActors` _string array_ | AllowedActors is the allowlist of actorClaim values authorized to<br />exchange a subject token from this issuer when it carries no<br />"may_act" claim. Empty denies every token unless allowMayAct is true<br />and the token carries a permitted may_act claim. |  | MaxItems: 50 <br />items:MaxLength: 256 <br />items:MinLength: 1 <br />Optional: \{\} <br /> |
-| `allowedDelegateClients` _string array_ | AllowedDelegateClients restricts which ToolHive client IDs may<br />exchange a subject token from this issuer. Required; set it to ["*"]<br />to permit any confidential client holding the token-exchange grant. The<br />wildcard must be the only entry; otherwise list specific client IDs to<br />bind delegation to them. |  | MaxItems: 50 <br />MinItems: 1 <br />Required: \{\} <br />items:MaxLength: 256 <br />items:MinLength: 1 <br /> |
-| `allowMayAct` _boolean_ | AllowMayAct permits this external issuer's may_act claim to authorize<br />delegation. Defaults to false; external issuers must be opted in<br />explicitly because may_act bypasses allowedActors. Does not affect<br />self-issued subject tokens. The wildcard is never permitted alongside<br />specific allowedDelegateClients, regardless of this setting. | false | Optional: \{\} <br /> |
+| `allowedActors` _string array_ | AllowedActors is the allowlist of actorClaim values authorized to<br />exchange a subject token from this issuer when it carries no<br />"may_act" claim, in addition to (not instead of) actorMatcher below —<br />either signal is sufficient. Empty denies every token unless<br />actorMatcher is set, or allowMayAct is true and the token carries a<br />permitted may_act claim. |  | MaxItems: 50 <br />items:MaxLength: 256 <br />items:MinLength: 1 <br />Optional: \{\} <br /> |
+| `actorMatcher` _string_ | ActorMatcher is an admin-authored CEL expression evaluated against the<br />subject token's complete signature-verified claims map (bound as<br />"claims") to authorize a class of external actors, in addition to (not<br />instead of) allowedActors — either signal is sufficient. Must evaluate<br />to a boolean; a non-boolean result denies the token at evaluation time,<br />not at reconcile time. A syntactically invalid expression fails<br />reconciliation (surfaced via the AuthServerConfigValidated condition),<br />not admission — there is no validating webhook for this field. |  | MaxLength: 4096 <br />Optional: \{\} <br /> |
+| `allowedDelegateClients` _string array_ | AllowedDelegateClients restricts which ToolHive client IDs may exchange<br />an RFC 8693 subject token from this issuer. Required unless only<br />jwtBearerGrant is configured; set it to ["*"] to permit any confidential<br />client holding the token-exchange grant, or list specific client IDs to<br />bind delegation to them. |  | MaxItems: 50 <br />MinItems: 1 <br />items:MaxLength: 256 <br />items:MinLength: 1 <br />Optional: \{\} <br /> |
+| `allowMayAct` _boolean_ | AllowMayAct permits this external issuer's may_act claim to authorize<br />delegation. Defaults to false; external issuers must be opted in<br />explicitly because may_act bypasses allowedActors and actorMatcher.<br />Does not affect self-issued subject tokens. The wildcard is never<br />permitted alongside specific allowedDelegateClients, regardless of<br />this setting. | false | Optional: \{\} <br /> |
+| `jwtBearerGrant` _[api.v1beta1.JWTBearerGrantConfig](#apiv1beta1jwtbearergrantconfig)_ | JWTBearerGrant enables the plain RFC 7523 JWT-bearer grant for this<br />issuer. It is independent of RFC 8693 delegation policy. |  | Optional: \{\} <br /> |
 
 
 #### api.v1beta1.UpstreamInjectSpec

@@ -1651,7 +1651,7 @@ func TestDeployWorkload_RunConfigMCPServerGenerationGate(t *testing.T) {
 // rolling update; both have read the same MCPServerGeneration N from the
 // live-mounted RunConfig ConfigMap, but each holds a different image in
 // its CLI positional arg (frozen at pod creation). The gate at
-// shouldSkipStatefulSetApply uses strict-greater-than, so equal
+// skipStatefulSetApply uses strict-greater-than, so equal
 // generations cannot distinguish the callers — the stale-image apply
 // lands successfully and clobbers the fresh-image apply.
 //
@@ -1708,4 +1708,56 @@ func TestDeployWorkload_EqualGenerationDifferentImageClobbers(t *testing.T) {
 		"stale apply must clobber the fresh image when generations are equal; "+
 			"the gate cannot defend against this and the fix must live upstream "+
 			"(see issue #5360)")
+}
+
+func TestDeployWorkload_PreservesKubectlRestartedAt(t *testing.T) {
+	t.Parallel()
+	const containerName = "test-container"
+	const restartedAt = "2026-08-19T06:00:00Z"
+
+	sts := &appsv1.StatefulSet{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      containerName,
+			Namespace: defaultNamespace,
+		},
+		Spec: appsv1.StatefulSetSpec{
+			Replicas: ptr.To(int32(1)),
+			Template: corev1.PodTemplateSpec{
+				ObjectMeta: metav1.ObjectMeta{
+					Annotations: map[string]string{
+						KubectlRestartedAtAnnotation: restartedAt,
+					},
+				},
+				Spec: corev1.PodSpec{
+					Containers: []corev1.Container{{
+						Name:  mcpContainerName,
+						Image: "seeded-image:pre-existing",
+					}},
+				},
+			},
+		},
+		Status: appsv1.StatefulSetStatus{ReadyReplicas: 1},
+	}
+	clientset := fake.NewClientset(sts)
+	client := NewClientWithConfigAndPlatformDetector(
+		clientset,
+		&rest.Config{Host: "https://fake-k8s-api.example.com"},
+		&mockPlatformDetector{platform: PlatformKubernetes},
+	)
+	client.waitForStatefulSetReadyFunc = mockWaitForStatefulSetReady
+	client.namespaceFunc = func() string { return defaultNamespace }
+
+	_, err := client.DeployWorkload(
+		t.Context(),
+		"test-image", containerName, nil,
+		map[string]string{}, map[string]string{},
+		nil, "streamable-http", runtime.NewDeployWorkloadOptions(), false,
+	)
+	require.NoError(t, err)
+
+	got, getErr := clientset.AppsV1().StatefulSets(defaultNamespace).Get(
+		t.Context(), containerName, metav1.GetOptions{},
+	)
+	require.NoError(t, getErr)
+	assert.Equal(t, restartedAt, got.Spec.Template.Annotations[KubectlRestartedAtAnnotation])
 }

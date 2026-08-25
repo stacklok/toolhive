@@ -381,6 +381,10 @@ func TestUpstreamTokenRefresher_RefreshAndStore(t *testing.T) {
 
 			mockProvider := upstreammocks.NewMockOAuth2Provider(ctrl)
 			mockStorage := storagemocks.NewMockUpstreamTokenStorage(ctrl)
+			mockStorage.EXPECT().ResolveUpstreamTokenRowID(gomock.Any(), gomock.Any(), gomock.Any()).
+				AnyTimes().Return(storage.UpstreamTokenRowID("test-row"), nil)
+			mockStorage.EXPECT().GetUpstreamTokens(gomock.Any(), gomock.Any(), gomock.Any()).
+				AnyTimes().Return(tt.expired, storage.ErrExpired)
 
 			tt.setupProvider(t, mockProvider)
 			tt.setupStorage(t, mockStorage)
@@ -410,10 +414,10 @@ func TestUpstreamTokenRefresher_RefreshAndStore(t *testing.T) {
 }
 
 // waitGroupTimeout blocks until wg is done, failing the test if that takes
-// longer than d. Without it, a synchronization regression (or a panicking
+// longer than five seconds. Without it, a synchronization regression (or a panicking
 // goroutine) would hang the test until the global go test timeout instead of
 // failing fast with a clear message.
-func waitGroupTimeout(t *testing.T, wg *sync.WaitGroup, d time.Duration, msg string) {
+func waitGroupTimeout(t *testing.T, wg *sync.WaitGroup, msg string) {
 	t.Helper()
 	done := make(chan struct{})
 	go func() {
@@ -422,14 +426,14 @@ func waitGroupTimeout(t *testing.T, wg *sync.WaitGroup, d time.Duration, msg str
 	}()
 	select {
 	case <-done:
-	case <-time.After(d):
+	case <-time.After(5 * time.Second):
 		t.Fatal(msg)
 	}
 }
 
 // TestUpstreamTokenRefresher_SingleflightDedup proves that concurrent
-// RefreshAndStore calls for the same (session, provider) key result in exactly
-// one upstream redemption, and that distinct keys are independent.
+// RefreshAndStore calls resolving to the same storage-row identity result in
+// exactly one upstream redemption, while distinct identities are independent.
 //
 // The same-key sub-test holds the leader's in-flight call open on a
 // test-controlled release channel while the followers join it, then asserts the
@@ -484,6 +488,10 @@ func TestUpstreamTokenRefresher_SingleflightDedup(t *testing.T) {
 		// invokeCount tracks actual provider invocations.
 		var invokeCount atomic.Int64
 
+		mockStorage.EXPECT().ResolveUpstreamTokenRowID(gomock.Any(), "session-1", "github").
+			AnyTimes().Return(storage.UpstreamTokenRowID("session-1-github"), nil)
+		mockStorage.EXPECT().GetUpstreamTokens(gomock.Any(), "session-1", "github").
+			Times(1).Return(expired, storage.ErrExpired)
 		mockProvider.EXPECT().
 			RefreshTokens(gomock.Any(), "old-refresh", "sub-1").
 			Times(1).
@@ -543,13 +551,13 @@ func TestUpstreamTokenRefresher_SingleflightDedup(t *testing.T) {
 		// Wait for every goroutine to have reached RefreshAndStore, then give the
 		// followers a brief settle to park inside sfGroup.Do before releasing the
 		// leader. The leader holds the key open the whole time, so once released
-		// it returns the single shared result to all joined followers.
+		// each caller receives a distinct copy of the completed result.
 		require.Eventually(t, func() bool { return entered.Load() == n }, 5*time.Second, time.Millisecond,
 			"all goroutines should reach RefreshAndStore")
 		time.Sleep(100 * time.Millisecond)
 		close(release)
 
-		waitGroupTimeout(t, &wg, 5*time.Second,
+		waitGroupTimeout(t, &wg,
 			"timeout waiting for concurrent RefreshAndStore callers to complete")
 
 		for i := range n {
@@ -558,6 +566,13 @@ func TestUpstreamTokenRefresher_SingleflightDedup(t *testing.T) {
 			assert.Equal(t, "new-access", results[i].AccessToken,
 				"goroutine %d got wrong access token", i)
 		}
+		for i := 1; i < n; i++ {
+			assert.NotSame(t, results[0], results[i],
+				"goroutine %d must receive an independent result pointer", i)
+		}
+		results[0].AccessToken = "mutated-access"
+		assert.Equal(t, "new-access", results[1].AccessToken,
+			"mutating one caller's result must not change another caller's result")
 		assert.Equal(t, int64(1), invokeCount.Load(),
 			"upstream provider must be invoked exactly once despite %d concurrent callers", n)
 		// mockStorage Times(1) independently enforces exactly one store write.
@@ -569,6 +584,14 @@ func TestUpstreamTokenRefresher_SingleflightDedup(t *testing.T) {
 		const numProviders = 3
 		ctrl := gomock.NewController(t)
 		mockStorage := storagemocks.NewMockUpstreamTokenStorage(ctrl)
+		mockStorage.EXPECT().ResolveUpstreamTokenRowID(gomock.Any(), "session-x", gomock.Any()).
+			AnyTimes().DoAndReturn(func(_ context.Context, _ string, providerID string) (storage.UpstreamTokenRowID, error) {
+			return storage.UpstreamTokenRowID(providerID), nil
+		})
+		mockStorage.EXPECT().GetUpstreamTokens(gomock.Any(), "session-x", gomock.Any()).
+			AnyTimes().DoAndReturn(func(_ context.Context, _ string, providerID string) (*storage.UpstreamTokens, error) {
+			return &storage.UpstreamTokens{ProviderID: providerID, RefreshToken: "rt-" + providerID, UpstreamSubject: "s"}, storage.ErrExpired
+		})
 
 		providers := make(map[string]upstream.OAuth2Provider, numProviders)
 		for i := range numProviders {
@@ -615,9 +638,256 @@ func TestUpstreamTokenRefresher_SingleflightDedup(t *testing.T) {
 				assert.NotNil(t, result)
 			}(tok)
 		}
-		waitGroupTimeout(t, &wg, 5*time.Second,
+		waitGroupTimeout(t, &wg,
 			"timeout waiting for distinct-key RefreshAndStore callers to complete")
 		// gomock Times(1) per mock provider asserts each distinct key ran
 		// exactly once through the actual upstream call.
+	})
+
+	t.Run("distinct row identities for equivalent sessions refresh independently", func(t *testing.T) {
+		t.Parallel()
+
+		ctrl := gomock.NewController(t)
+		mockStorage := storagemocks.NewMockUpstreamTokenStorage(ctrl)
+		mockProvider := upstreammocks.NewMockOAuth2Provider(ctrl)
+		expiredA := &storage.UpstreamTokens{
+			ProviderID: "github", RefreshToken: "old-refresh", UpstreamSubject: "subject", UserID: "user", ClientID: "client",
+		}
+		expiredB := &storage.UpstreamTokens{
+			ProviderID: "github", RefreshToken: "old-refresh", UpstreamSubject: "subject", UserID: "user", ClientID: "client",
+		}
+		providerEntered := make(chan struct{})
+		release := make(chan struct{})
+		var releaseOnce sync.Once
+		t.Cleanup(func() { releaseOnce.Do(func() { close(release) }) })
+		var providerCalls atomic.Int64
+
+		mockStorage.EXPECT().ResolveUpstreamTokenRowID(gomock.Any(), "session-a", "github").
+			Times(1).Return(storage.UpstreamTokenRowID("physical-row-a"), nil)
+		mockStorage.EXPECT().ResolveUpstreamTokenRowID(gomock.Any(), "session-b", "github").
+			Times(1).Return(storage.UpstreamTokenRowID("physical-row-b"), nil)
+		mockStorage.EXPECT().GetUpstreamTokens(gomock.Any(), "session-a", "github").
+			Times(1).Return(expiredA, storage.ErrExpired)
+		mockStorage.EXPECT().GetUpstreamTokens(gomock.Any(), "session-b", "github").
+			Times(1).Return(expiredB, storage.ErrExpired)
+		mockProvider.EXPECT().RefreshTokens(gomock.Any(), "old-refresh", "subject").Times(2).
+			DoAndReturn(func(ctx context.Context, _, _ string) (*upstream.Tokens, error) {
+				if providerCalls.Add(1) == 2 {
+					close(providerEntered)
+				}
+				select {
+				case <-release:
+					return &upstream.Tokens{AccessToken: "new-access", ExpiresAt: newExpiry}, nil
+				case <-ctx.Done():
+					return nil, ctx.Err()
+				}
+			})
+		mockStorage.EXPECT().StoreUpstreamTokens(gomock.Any(), "session-a", "github", gomock.Any()).Times(1).Return(nil)
+		mockStorage.EXPECT().StoreUpstreamTokens(gomock.Any(), "session-b", "github", gomock.Any()).Times(1).Return(nil)
+
+		refresher := &upstreamTokenRefresher{
+			providers:            map[string]upstream.OAuth2Provider{"github": mockProvider},
+			storage:              mockStorage,
+			refreshTokenLifespan: 24 * time.Hour,
+		}
+		var wg sync.WaitGroup
+		errs := make([]error, 2)
+		wg.Add(2)
+		for i, sessionID := range []string{"session-a", "session-b"} {
+			go func(i int, sessionID string) {
+				defer wg.Done()
+				_, errs[i] = refresher.RefreshAndStore(context.Background(), sessionID, expiredA)
+			}(i, sessionID)
+		}
+
+		select {
+		case <-providerEntered:
+		case <-time.After(5 * time.Second):
+			t.Fatal("timeout waiting for both distinct rows to enter the provider")
+		}
+		releaseOnce.Do(func() { close(release) })
+		waitGroupTimeout(t, &wg,
+			"timeout waiting for distinct-row RefreshAndStore callers to complete")
+		for i := range errs {
+			require.NoError(t, errs[i], "caller %d got error", i)
+		}
+		assert.Equal(t, int64(2), providerCalls.Load(),
+			"each distinct physical row must invoke the provider once")
+		// mockStorage Times(1) per session independently asserts one store per row.
+	})
+}
+
+func TestUpstreamTokenRefresher_RowIdentity(t *testing.T) {
+	t.Parallel()
+
+	t.Run("same row identity across sessions refreshes and writes once", func(t *testing.T) {
+		t.Parallel()
+		ctrl := gomock.NewController(t)
+		store := storagemocks.NewMockUpstreamTokenStorage(ctrl)
+		provider := upstreammocks.NewMockOAuth2Provider(ctrl)
+		expired := &storage.UpstreamTokens{ProviderID: "github", RefreshToken: "stale", UpstreamSubject: "subject"}
+		leaderEntered := make(chan struct{})
+		followerResolved := make(chan struct{})
+		release := make(chan struct{})
+		var resolves atomic.Int64
+
+		store.EXPECT().ResolveUpstreamTokenRowID(gomock.Any(), gomock.Any(), "github").
+			Times(2).DoAndReturn(func(_ context.Context, _, _ string) (storage.UpstreamTokenRowID, error) {
+			if resolves.Add(1) == 2 {
+				close(followerResolved)
+			}
+			return storage.UpstreamTokenRowID("shared-row"), nil
+		})
+		store.EXPECT().GetUpstreamTokens(gomock.Any(), "leader", "github").
+			Times(1).Return(expired, storage.ErrExpired)
+		provider.EXPECT().RefreshTokens(gomock.Any(), "stale", "subject").Times(1).
+			DoAndReturn(func(ctx context.Context, _, _ string) (*upstream.Tokens, error) {
+				close(leaderEntered)
+				select {
+				case <-release:
+					return &upstream.Tokens{AccessToken: "fresh", ExpiresAt: time.Now().Add(time.Hour)}, nil
+				case <-ctx.Done():
+					return nil, ctx.Err()
+				}
+			})
+		store.EXPECT().StoreUpstreamTokens(gomock.Any(), "leader", "github", gomock.Any()).Times(1).Return(nil)
+
+		refresher := &upstreamTokenRefresher{providers: map[string]upstream.OAuth2Provider{"github": provider}, storage: store}
+		var wg sync.WaitGroup
+		var leaderResult, followerResult *storage.UpstreamTokens
+		var leaderErr, followerErr error
+		wg.Add(2)
+		go func() {
+			defer wg.Done()
+			leaderResult, leaderErr = refresher.RefreshAndStore(context.Background(), "leader", expired)
+		}()
+		select {
+		case <-leaderEntered:
+		case <-time.After(5 * time.Second):
+			t.Fatal("timeout waiting for leader to start refresh")
+		}
+		go func() {
+			defer wg.Done()
+			followerResult, followerErr = refresher.RefreshAndStore(context.Background(), "follower", &storage.UpstreamTokens{ProviderID: "github", RefreshToken: "different-stale"})
+		}()
+		select {
+		case <-followerResolved:
+		case <-time.After(5 * time.Second):
+			t.Fatal("timeout waiting for follower to resolve shared row")
+		}
+		close(release)
+		waitGroupTimeout(t, &wg, "timeout waiting for row-identity refresh callers")
+		require.NoError(t, leaderErr)
+		require.NoError(t, followerErr)
+		require.NotNil(t, leaderResult)
+		require.NotNil(t, followerResult)
+		assert.Equal(t, "fresh", leaderResult.AccessToken)
+		assert.Equal(t, "fresh", followerResult.AccessToken)
+		assert.NotSame(t, leaderResult, followerResult)
+		leaderResult.AccessToken = "mutated-access"
+		assert.Equal(t, "fresh", followerResult.AccessToken,
+			"mutating one session's result must not change the other session's result")
+	})
+
+	t.Run("late stale caller returns authoritative fresh row", func(t *testing.T) {
+		t.Parallel()
+		ctrl := gomock.NewController(t)
+		store := storagemocks.NewMockUpstreamTokenStorage(ctrl)
+		provider := upstreammocks.NewMockOAuth2Provider(ctrl)
+		expired := &storage.UpstreamTokens{ProviderID: "github", RefreshToken: "stale", UpstreamSubject: "subject"}
+		fresh := &storage.UpstreamTokens{ProviderID: "github", AccessToken: "fresh", RefreshToken: "rotated"}
+
+		store.EXPECT().ResolveUpstreamTokenRowID(gomock.Any(), "session", "github").Times(2).
+			Return(storage.UpstreamTokenRowID("row"), nil)
+		store.EXPECT().GetUpstreamTokens(gomock.Any(), "session", "github").Times(1).Return(expired, storage.ErrExpired)
+		store.EXPECT().GetUpstreamTokens(gomock.Any(), "session", "github").Times(1).Return(fresh, nil)
+		provider.EXPECT().RefreshTokens(gomock.Any(), "stale", "subject").Times(1).
+			Return(&upstream.Tokens{AccessToken: "fresh", RefreshToken: "rotated", ExpiresAt: time.Now().Add(time.Hour)}, nil)
+		store.EXPECT().StoreUpstreamTokens(gomock.Any(), "session", "github", gomock.Any()).Times(1).Return(nil)
+
+		refresher := &upstreamTokenRefresher{providers: map[string]upstream.OAuth2Provider{"github": provider}, storage: store}
+		_, err := refresher.RefreshAndStore(context.Background(), "session", expired)
+		require.NoError(t, err)
+		result, err := refresher.RefreshAndStore(context.Background(), "session", expired)
+		require.NoError(t, err)
+		assert.NotSame(t, fresh, result)
+		assert.Equal(t, fresh, result)
+		result.AccessToken = "mutated-access"
+		assert.Equal(t, "fresh", fresh.AccessToken, "mutating the returned result must not change the stored result")
+	})
+
+	t.Run("re-read returns expired row without ErrExpired - still refreshes", func(t *testing.T) {
+		t.Parallel()
+		ctrl := gomock.NewController(t)
+		store := storagemocks.NewMockUpstreamTokenStorage(ctrl)
+		provider := upstreammocks.NewMockOAuth2Provider(ctrl)
+		expired := &storage.UpstreamTokens{ProviderID: "github", RefreshToken: "stale", UpstreamSubject: "subject"}
+		// staleButUnflagged simulates a storage backend that does not check
+		// access-token expiry on GetUpstreamTokens (per the interface docs):
+		// it returns (row, nil) even though ExpiresAt is in the past.
+		staleButUnflagged := &storage.UpstreamTokens{
+			ProviderID:      "github",
+			RefreshToken:    "stale",
+			UpstreamSubject: "subject",
+			ExpiresAt:       time.Now().Add(-time.Hour),
+		}
+
+		store.EXPECT().ResolveUpstreamTokenRowID(gomock.Any(), "session", "github").Times(2).
+			Return(storage.UpstreamTokenRowID("row"), nil)
+		store.EXPECT().GetUpstreamTokens(gomock.Any(), "session", "github").Times(1).Return(expired, storage.ErrExpired)
+		store.EXPECT().GetUpstreamTokens(gomock.Any(), "session", "github").Times(1).Return(staleButUnflagged, nil)
+		provider.EXPECT().RefreshTokens(gomock.Any(), "stale", "subject").Times(2).
+			Return(&upstream.Tokens{AccessToken: "fresh", RefreshToken: "rotated", ExpiresAt: time.Now().Add(time.Hour)}, nil)
+		store.EXPECT().StoreUpstreamTokens(gomock.Any(), "session", "github", gomock.Any()).Times(2).Return(nil)
+
+		refresher := &upstreamTokenRefresher{providers: map[string]upstream.OAuth2Provider{"github": provider}, storage: store}
+		_, err := refresher.RefreshAndStore(context.Background(), "session", expired)
+		require.NoError(t, err)
+		result, err := refresher.RefreshAndStore(context.Background(), "session", expired)
+		require.NoError(t, err)
+		assert.Equal(t, "fresh", result.AccessToken,
+			"a re-read row that is expired but not flagged ErrExpired must still be refreshed")
+	})
+
+	t.Run("re-read returns nil row without error - fails loudly", func(t *testing.T) {
+		t.Parallel()
+		ctrl := gomock.NewController(t)
+		store := storagemocks.NewMockUpstreamTokenStorage(ctrl)
+		provider := upstreammocks.NewMockOAuth2Provider(ctrl)
+
+		store.EXPECT().ResolveUpstreamTokenRowID(gomock.Any(), "session", "github").
+			Return(storage.UpstreamTokenRowID("row"), nil)
+		store.EXPECT().GetUpstreamTokens(gomock.Any(), "session", "github").
+			Return((*storage.UpstreamTokens)(nil), nil)
+
+		refresher := &upstreamTokenRefresher{providers: map[string]upstream.OAuth2Provider{"github": provider}, storage: store}
+		_, err := refresher.RefreshAndStore(context.Background(), "session",
+			&storage.UpstreamTokens{ProviderID: "github", RefreshToken: "stale"})
+		require.Error(t, err)
+		assert.Contains(t, err.Error(), "missing on re-read")
+	})
+
+	t.Run("resolver errors and empty identities stop before refresh", func(t *testing.T) {
+		t.Parallel()
+		for _, tt := range []struct {
+			name string
+			id   storage.UpstreamTokenRowID
+			err  error
+		}{
+			{name: "resolver error", err: errors.New("resolve failed")},
+			{name: "empty identity"},
+		} {
+			t.Run(tt.name, func(t *testing.T) {
+				t.Parallel()
+				ctrl := gomock.NewController(t)
+				store := storagemocks.NewMockUpstreamTokenStorage(ctrl)
+				provider := upstreammocks.NewMockOAuth2Provider(ctrl)
+				store.EXPECT().ResolveUpstreamTokenRowID(gomock.Any(), "session", "github").Return(tt.id, tt.err)
+				refresher := &upstreamTokenRefresher{providers: map[string]upstream.OAuth2Provider{"github": provider}, storage: store}
+
+				_, err := refresher.RefreshAndStore(context.Background(), "session", &storage.UpstreamTokens{ProviderID: "github", RefreshToken: "stale"})
+				require.Error(t, err)
+			})
+		}
 	})
 }

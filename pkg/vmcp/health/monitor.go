@@ -70,6 +70,11 @@ type Reporter interface {
 	UpdateBackends(newBackends []vmcp.Backend)
 	// BuildStatus assembles the aggregate vMCP status from current backend health.
 	BuildStatus() *vmcp.Status
+	// OnChange registers fn to be notified, debounced, when the monitored
+	// backend catalog changes — a backend's advertisability flips or the
+	// monitored set gains/loses backends. See Monitor.OnChange for the full
+	// contract.
+	OnChange(fn ChangeListener)
 }
 
 var _ Reporter = (*Monitor)(nil)
@@ -125,6 +130,10 @@ type Monitor struct {
 
 	// statusTracker tracks health status for all backends.
 	statusTracker *statusTracker
+
+	// changes debounces backend-catalog change events (advertisability flips,
+	// backend set changes) and fans them out to OnChange listeners.
+	changes *changeNotifier
 
 	// checkInterval is how often to perform health checks.
 	checkInterval time.Duration
@@ -264,10 +273,32 @@ func NewMonitor(
 		checker:       checker,
 		revisions:     revisions,
 		statusTracker: statusTracker,
+		// Debounce catalog-change notifications to the check cadence: transitions
+		// are only detected once per interval per backend, so one window bounds a
+		// multi-backend flap (e.g. a network partition) to a single fan-out.
+		changes:       newChangeNotifier(config.CheckInterval),
 		checkInterval: config.CheckInterval,
 		backends:      backends,
 		activeChecks:  make(map[string]*backendCheck),
 	}, nil
+}
+
+// OnChange registers fn to be notified when the monitored backend catalog
+// changes: a backend's advertisability flips (healthy/degraded ⇄
+// unhealthy/unknown/unauthenticated — the same partition the core's capability
+// aggregation filters by) or UpdateBackends adds/removes backends.
+//
+// Notifications are debounced to the monitor's check interval: the first
+// change after a quiet period is delivered immediately and further changes
+// within the window coalesce into one trailing delivery, so a flapping
+// backend cannot storm listeners. fn runs on a dedicated goroutine and may
+// call back into the Monitor's read methods, but MUST NOT call Stop (Stop
+// waits for in-flight notifications and would deadlock).
+//
+// Safe to call before or after Start. Listeners cannot be unregistered; they
+// stop being invoked once the monitor is stopped.
+func (m *Monitor) OnChange(fn ChangeListener) {
+	m.changes.subscribe(fn)
 }
 
 // Start begins health monitoring for all backends.
@@ -348,6 +379,11 @@ func (m *Monitor) Stop() error {
 	m.stopped = true
 	m.mu.Unlock()
 
+	// Stop the change notifier first: this cancels any pending debounced
+	// delivery, suppresses notifications from in-flight checks, and waits for
+	// running listener invocations — so no listener outlives Stop.
+	m.changes.stop()
+
 	// Wait for all goroutines to complete
 	m.wg.Wait()
 	slog.Info("health monitor stopped")
@@ -380,6 +416,12 @@ func (m *Monitor) UpdateBackends(newBackends []vmcp.Backend) {
 	// This ensures GetHealthSummary sees new backends before their health checks complete
 	m.backends = newBackends
 
+	// Track whether the monitored set's membership changes (add/remove) so
+	// OnChange listeners are notified once, after the reconciliation below.
+	// Property changes to an existing backend (URL/transport) restart its check
+	// goroutine but do not change catalog membership, so they do not notify.
+	membershipChanged := false
+
 	// Start monitoring for new or changed backends
 	for id, backend := range newBackendsMap {
 		if existing, ok := m.activeChecks[id]; ok {
@@ -393,6 +435,7 @@ func (m *Monitor) UpdateBackends(newBackends []vmcp.Backend) {
 			existing.stop()
 		} else {
 			slog.Info("starting health monitoring for new backend", "backend", backend.Name)
+			membershipChanged = true
 		}
 
 		bc := &backendCheck{backend: backend}
@@ -411,7 +454,12 @@ func (m *Monitor) UpdateBackends(newBackends []vmcp.Backend) {
 			delete(m.activeChecks, id)
 			// Remove backend from status tracker so it no longer appears in status reports
 			m.statusTracker.RemoveBackend(id)
+			membershipChanged = true
 		}
+	}
+
+	if membershipChanged {
+		m.changes.notify()
 	}
 }
 
@@ -486,15 +534,21 @@ func (m *Monitor) performHealthCheck(ctx context.Context, backend *vmcp.Backend)
 	// Perform health check
 	status, err := m.checker.CheckHealth(healthCheckCtx, target)
 
-	// Record result in status tracker
+	// Record result in status tracker. When the result flips the backend's
+	// advertisability, notify OnChange listeners (debounced) so live sessions
+	// can re-derive their advertised capability set.
+	var advertisabilityChanged bool
 	if err != nil {
 		slog.Debug("health check failed for backend", "backend", backend.Name, "error", err, "status", status)
-		m.statusTracker.RecordFailure(backend.ID, backend.Name, status, err)
+		advertisabilityChanged = m.statusTracker.RecordFailure(backend.ID, backend.Name, status, err)
 	} else {
 		// Pass status to RecordSuccess - it may be healthy or degraded (from slow response)
 		// RecordSuccess will further check for recovering state (had recent failures)
 		slog.Debug("health check succeeded for backend", "backend", backend.Name, "status", status)
-		m.statusTracker.RecordSuccess(backend.ID, backend.Name, status)
+		advertisabilityChanged = m.statusTracker.RecordSuccess(backend.ID, backend.Name, status)
+	}
+	if advertisabilityChanged {
+		m.changes.notify()
 	}
 
 	// Refresh the MCP revision read-model from the client's cache (empty until the

@@ -4,16 +4,14 @@
 package verifier
 
 import (
-	"crypto/sha256"
-	"encoding/hex"
 	"errors"
 	"fmt"
 
 	"github.com/sigstore/sigstore-go/pkg/verify"
 
+	"github.com/stacklok/toolhive-core/container/signer"
 	coreverifier "github.com/stacklok/toolhive-core/container/verifier"
 	"github.com/stacklok/toolhive/pkg/skills/lockfile"
-	"github.com/stacklok/toolhive/pkg/skills/signer"
 )
 
 // VerifyBundleOffline re-verifies a stored bundle against the artifact
@@ -28,7 +26,7 @@ func (*Default) VerifyBundleOffline(bundleBytes []byte, digest string, expected 
 		// reinstalling (or re-adopting) is the fix.
 		return fmt.Errorf("%w: no stored bundle to verify — reinstall to restore it", ErrSignatureInvalid)
 	}
-	vr, err := coreverifier.VerifyBundleOffline(bundleBytes, digest, expectedIdentity(expected))
+	vr, err := coreverifier.VerifyBundleOffline(bundleBytes, digest, expectedIdentity(NewLockExpectation(expected)))
 	if err == nil {
 		return checkStoredBundlePins(vr, expected)
 	}
@@ -42,7 +40,7 @@ func (*Default) VerifyBundleOffline(bundleBytes []byte, digest string, expected 
 		// mismatch apart from a broken signature — and yields the identity
 		// that DID verify, which the error reports.
 		if vr, tofuErr := coreverifier.VerifyBundleOffline(bundleBytes, digest, nil); tofuErr == nil {
-			return signerMismatchError(vr, expected)
+			return signerMismatchError(vr, NewLockExpectation(expected))
 		}
 	}
 	return wrapInvalid(err)
@@ -58,12 +56,10 @@ func (*Default) VerifyBundleOfflineWithKey(bundleBytes []byte, imageRef, digest 
 	if len(bundleBytes) == 0 {
 		return fmt.Errorf("%w: no stored bundle to verify — reinstall to restore it", ErrSignatureInvalid)
 	}
-	payload, err := signer.SimpleSigningPayload(imageRef, digest)
+	digestArg, err := signer.PayloadDigest(imageRef, digest)
 	if err != nil {
 		return fmt.Errorf("%w: %s", ErrSignatureInvalid, err.Error())
 	}
-	payloadDigest := sha256.Sum256(payload)
-	digestArg := coreverifier.DigestAlgorithmSHA256 + ":" + hex.EncodeToString(payloadDigest[:])
 	if _, err := coreverifier.VerifyBundleOfflineWithKey(bundleBytes, digestArg, pubKeyPEM); err != nil {
 		return wrapInvalid(err)
 	}

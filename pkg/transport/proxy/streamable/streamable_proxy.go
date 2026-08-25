@@ -24,6 +24,7 @@ import (
 	sdkmcp "github.com/stacklok/toolhive-core/mcpcompat/mcp"
 	"github.com/stacklok/toolhive/pkg/auth"
 	"github.com/stacklok/toolhive/pkg/bodylimit"
+	"github.com/stacklok/toolhive/pkg/diagnostics"
 	"github.com/stacklok/toolhive/pkg/healthcheck"
 	"github.com/stacklok/toolhive/pkg/mcp"
 	"github.com/stacklok/toolhive/pkg/transport/session"
@@ -278,7 +279,7 @@ func (p *HTTPProxy) Start(_ context.Context) error {
 	if p.prometheusHandler != nil {
 		mux.Handle("/metrics", p.prometheusHandler)
 	} else {
-		mux.HandleFunc("/metrics", http.NotFound)
+		mux.Handle(diagnostics.MetricsPath, diagnostics.NotServedHereHandler())
 	}
 
 	// Mount prefix handlers (e.g. embedded auth server routes) outside the middleware chain.

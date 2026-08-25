@@ -323,8 +323,8 @@ func TestRegisterClientHandler_ClientIsStored(t *testing.T) {
 
 	require.NotNil(t, storedClient)
 	// DCR now stores the package's DCR-issued public client shape
-	// (*registration.publicClient), which embeds the LoopbackClient behaviour.
-	// Assert on the public surface rather than the unexported concrete type.
+	// (*registration.publicClient). Assert on the public surface rather than
+	// the unexported concrete type.
 	assert.Equal(t, resp.ClientID, storedClient.GetID())
 	assert.True(t, storedClient.IsPublic())
 	assert.Equal(t, []string{"http://127.0.0.1:8080/callback"}, storedClient.GetRedirectURIs())
@@ -686,7 +686,7 @@ func TestRegisterClientHandler_ConfidentialDCR(t *testing.T) {
 func TestRegisterClientHandler_ConfidentialClientStored(t *testing.T) {
 	t.Parallel()
 
-	t.Run("stored without LoopbackClient wrapper and carries auth method", func(t *testing.T) {
+	t.Run("stored without loopback dynamic-port matching and carries auth method", func(t *testing.T) {
 		t.Parallel()
 		cfg := confidentialConfig(true)
 		w, captured := runDCR(t, cfg,
@@ -700,11 +700,9 @@ func TestRegisterClientHandler_ConfidentialClientStored(t *testing.T) {
 		assert.False(t, captured.IsPublic(), "confidential client must not be public")
 		assert.Equal(t, []string{"https://app.example/cb"}, captured.GetRedirectURIs())
 
-		// A secret-holding client must NOT get the LoopbackClient dynamic-port
-		// matching wrapper.
-		_, isLoopback := captured.(*registration.LoopbackClient)
-		assert.False(t, isLoopback,
-			"confidential client must not be a *registration.LoopbackClient")
+		// A secret-holding client must NOT get RFC 8252 dynamic-port matching.
+		_, ok = registration.RegisteredLoopbackRedirectURI(captured, "https://app.example/cb")
+		assert.False(t, ok, "confidential client must not get loopback dynamic-port matching")
 	})
 
 	t.Run("audience is preserved on stored confidential client", func(t *testing.T) {

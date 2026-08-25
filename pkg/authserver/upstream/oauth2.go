@@ -117,6 +117,18 @@ type CommonOAuthConfig struct {
 	// and will be rejected during validation.
 	//nolint:lll // field tags require full JSON+YAML names
 	AdditionalAuthorizationParams map[string]string `json:"additional_authorization_params,omitempty" yaml:"additional_authorization_params,omitempty"`
+
+	// AdditionalTokenParams are extra form-body parameters to include in
+	// token requests (authorization code exchange and refresh) sent to the
+	// upstream IDP's token endpoint. This is useful for providers that
+	// enforce RFC 8707 resource indicators on token requests, where the
+	// resource parameter must accompany the code exchange and refresh, not
+	// only the authorization request.
+	// Framework-managed parameters (grant_type, code, redirect_uri, client_id,
+	// client_secret, code_verifier, refresh_token, scope) are not allowed here
+	// and will be rejected during validation.
+	//nolint:lll // field tags require full JSON+YAML names
+	AdditionalTokenParams map[string]string `json:"additional_token_params,omitempty" yaml:"additional_token_params,omitempty"`
 }
 
 // ValidateWithInsecure validates CommonOAuthConfig, allowing http:// redirect URIs for
@@ -129,6 +141,9 @@ func (c *CommonOAuthConfig) ValidateWithInsecure(insecureAllowHTTP bool) error {
 		return errors.New("redirect_uri is required")
 	}
 	if err := oauthparams.Validate(c.AdditionalAuthorizationParams); err != nil {
+		return err
+	}
+	if err := oauthparams.ValidateTokenParams(c.AdditionalTokenParams); err != nil {
 		return err
 	}
 	if insecureAllowHTTP {
@@ -672,6 +687,12 @@ func (p *BaseOAuth2Provider) exchangeCodeForTokens(
 	if codeVerifier != "" {
 		opts = append(opts, oauth2.VerifierOption(codeVerifier))
 	}
+	// AuthCodeOptions passed to Exchange land in the POST form body, so
+	// configured additional token params (e.g. an RFC 8707 resource
+	// indicator) reach the token endpoint the way such ASes require.
+	for k, v := range p.config.AdditionalTokenParams {
+		opts = append(opts, oauth2.SetAuthURLParam(k, v))
+	}
 
 	token, err := p.oauth2Config.Exchange(ctx, code, opts...)
 	if err != nil {
@@ -736,6 +757,11 @@ func (p *BaseOAuth2Provider) RefreshTokens(ctx context.Context, refreshToken, _ 
 	}
 	if len(p.oauth2Config.Scopes) > 0 {
 		opts = append(opts, oauth2.SetAuthURLParam("scope", strings.Join(p.oauth2Config.Scopes, " ")))
+	}
+	// Same rationale as in exchangeCodeForTokens: ASes that enforce
+	// RFC 8707 on token requests require these on refresh as well.
+	for k, v := range p.config.AdditionalTokenParams {
+		opts = append(opts, oauth2.SetAuthURLParam(k, v))
 	}
 
 	token, err := p.oauth2Config.Exchange(ctx, "", opts...)

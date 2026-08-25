@@ -995,6 +995,18 @@ type OIDCUpstreamConfig struct {
 	// +optional
 	AdditionalAuthorizationParams map[string]string `json:"additionalAuthorizationParams,omitempty"`
 
+	// AdditionalTokenParams are extra form-body parameters to include in
+	// token requests (authorization code exchange and refresh) sent to the
+	// upstream provider's token endpoint.
+	// This is useful for providers that enforce RFC 8707 resource indicators
+	// on token requests, where the resource parameter must accompany the code
+	// exchange and refresh, not only the authorization request.
+	// Framework-managed parameters (grant_type, code, redirect_uri, client_id,
+	// client_secret, code_verifier, refresh_token, scope) are not allowed.
+	// +kubebuilder:validation:MaxProperties=16
+	// +optional
+	AdditionalTokenParams map[string]string `json:"additionalTokenParams,omitempty"`
+
 	// SubjectClaim names the validated ID-token claim to use as the upstream
 	// subject. Defaults to "sub" when empty. Set it for IdPs where "sub" isn't
 	// stable per user — e.g. Entra/Azure AD, whose "sub" rotates per application
@@ -1127,6 +1139,18 @@ type OAuth2UpstreamConfig struct {
 	// +kubebuilder:validation:MaxProperties=16
 	// +optional
 	AdditionalAuthorizationParams map[string]string `json:"additionalAuthorizationParams,omitempty"`
+
+	// AdditionalTokenParams are extra form-body parameters to include in
+	// token requests (authorization code exchange and refresh) sent to the
+	// upstream provider's token endpoint.
+	// This is useful for providers that enforce RFC 8707 resource indicators
+	// on token requests, where the resource parameter must accompany the code
+	// exchange and refresh, not only the authorization request.
+	// Framework-managed parameters (grant_type, code, redirect_uri, client_id,
+	// client_secret, code_verifier, refresh_token, scope) are not allowed.
+	// +kubebuilder:validation:MaxProperties=16
+	// +optional
+	AdditionalTokenParams map[string]string `json:"additionalTokenParams,omitempty"`
 
 	// InsecureAllowHTTP permits plain-HTTP authorization and token endpoint URLs
 	// for this upstream. Only for in-cluster development environments (e.g. an
@@ -2070,7 +2094,12 @@ func (*MCPExternalAuthConfig) validateUpstreamProvider(index int, provider *Upst
 	}
 
 	// Validate additionalAuthorizationParams does not contain reserved keys
-	return ValidateAdditionalAuthorizationParams(prefix, provider.AdditionalAuthorizationParams())
+	if err := ValidateAdditionalAuthorizationParams(prefix, provider.AdditionalAuthorizationParams()); err != nil {
+		return err
+	}
+
+	// Validate additionalTokenParams does not contain reserved keys
+	return ValidateAdditionalTokenParams(prefix, provider.AdditionalTokenParams())
 }
 
 // Length caps for DCR-related string fields. Mirror the
@@ -2165,6 +2194,18 @@ func (p *UpstreamProviderConfig) AdditionalAuthorizationParams() map[string]stri
 	return nil
 }
 
+// AdditionalTokenParams returns the additional token-request parameters
+// from whichever upstream config is set, or nil if none.
+func (p *UpstreamProviderConfig) AdditionalTokenParams() map[string]string {
+	if p.OIDCConfig != nil {
+		return p.OIDCConfig.AdditionalTokenParams
+	}
+	if p.OAuth2Config != nil {
+		return p.OAuth2Config.AdditionalTokenParams
+	}
+	return nil
+}
+
 // SyntheticIdentityUpstreams returns the names of OAuth2 upstreams running
 // in synthesis mode (neither userInfo nor identityFromToken configured),
 // sorted lexically for deterministic condition messages. OIDC upstreams are
@@ -2195,6 +2236,15 @@ func (c *EmbeddedAuthServerConfig) SyntheticIdentityUpstreams() []string {
 func ValidateAdditionalAuthorizationParams(prefix string, params map[string]string) error {
 	if err := oauthparams.Validate(params); err != nil {
 		return fmt.Errorf("%s.additionalAuthorizationParams: %w", prefix, err)
+	}
+	return nil
+}
+
+// ValidateAdditionalTokenParams checks that no reserved OAuth2 token-request
+// parameters are present in the additional token params map.
+func ValidateAdditionalTokenParams(prefix string, params map[string]string) error {
+	if err := oauthparams.ValidateTokenParams(params); err != nil {
+		return fmt.Errorf("%s.additionalTokenParams: %w", prefix, err)
 	}
 	return nil
 }

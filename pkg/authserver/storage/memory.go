@@ -24,6 +24,7 @@ import (
 
 	"github.com/ory/fosite"
 
+	"github.com/stacklok/toolhive/pkg/authserver/server"
 	"github.com/stacklok/toolhive/pkg/authserver/server/registration"
 )
 
@@ -549,33 +550,61 @@ func (s *MemoryStorage) GetClient(_ context.Context, id string) (fosite.Client, 
 	return client, nil
 }
 
-// ClientAssertionJWTValid returns an error if the JTI is known or the DB check failed,
-// and nil if the JTI is not known (meaning it can be used).
+// assertionReservationTTL bounds how long ClientAssertionJWTValid's atomic
+// reservation lives before SetClientAssertionJWT extends it to the
+// assertion's real (bounded) expiry. Short and fixed: if a caller wins the
+// reservation and then never calls SetClientAssertionJWT (crash, error path),
+// the jti becomes reusable again after this window rather than being stuck
+// or, worse, permanently reserved.
+const assertionReservationTTL = 30 * time.Second
+
+// ClientAssertionJWTValid atomically reserves jti for a short window,
+// returning fosite.ErrJTIKnown if it is already reserved or was previously
+// consumed and not yet expired. This is the only atomic checkpoint in
+// fosite's two-call client-assertion replay protocol (Valid, then
+// SetClientAssertionJWT with the real expiry once the rest of the assertion
+// has been validated) — without it, two concurrent requests presenting the
+// same assertion could both observe jti as unused before either recorded it.
+// jti length is bounded here too, before it's ever stored, since fosite
+// hands it to us before parsing exp.
 func (s *MemoryStorage) ClientAssertionJWTValid(_ context.Context, jti string) error {
-	s.mu.RLock()
-	defer s.mu.RUnlock()
-
-	if exp, ok := s.clientAssertionJWTs[jti]; ok {
-		if time.Now().Before(exp) {
-			return fosite.ErrJTIKnown
-		}
+	if len(jti) > server.MaxAssertionJTILength {
+		return fmt.Errorf("jti exceeds maximum length of %d bytes", server.MaxAssertionJTILength)
 	}
-	return nil
-}
 
-// SetClientAssertionJWT marks a JTI as known for the given expiry time.
-// Before inserting the new JTI, it will clean up any existing JTIs that have expired.
-func (s *MemoryStorage) SetClientAssertionJWT(_ context.Context, jti string, exp time.Time) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
-	// Clean up expired JTIs
 	now := time.Now()
+	if exp, ok := s.clientAssertionJWTs[jti]; ok && now.Before(exp) {
+		return fosite.ErrJTIKnown
+	}
+
+	// Clean up expired JTIs while the lock is already held.
 	for k, v := range s.clientAssertionJWTs {
 		if now.After(v) {
 			delete(s.clientAssertionJWTs, k)
 		}
 	}
+
+	s.clientAssertionJWTs[jti] = now.Add(assertionReservationTTL)
+	return nil
+}
+
+// SetClientAssertionJWT extends jti's replay marker to its real expiry,
+// rejecting an exp further than MaxAssertionLifespan in the future. This
+// bounds how long a replay-tracking entry survives regardless of what the
+// client's own assertion claims — otherwise a registered caller could set
+// exp decades out and grow this map indefinitely. Unconditional overwrite,
+// not a fresh atomic check: only the caller that already won
+// ClientAssertionJWTValid's reservation reaches this call.
+func (s *MemoryStorage) SetClientAssertionJWT(_ context.Context, jti string, exp time.Time) error {
+	if time.Until(exp) > server.MaxAssertionLifespan {
+		return fmt.Errorf("assertion lifetime exceeds maximum of %s", server.MaxAssertionLifespan)
+	}
+
+	s.mu.Lock()
+	defer s.mu.Unlock()
 
 	s.clientAssertionJWTs[jti] = exp
 	return nil

@@ -489,7 +489,7 @@ func TestMemoryStorage_ClientAssertionJWT(t *testing.T) {
 	}{
 		{"unknown JTI is valid", nil, "unknown-jti", nil},
 		{"known JTI is invalid", func(ctx context.Context, s *MemoryStorage) {
-			_ = s.SetClientAssertionJWT(ctx, "test-jti", time.Now().Add(time.Hour))
+			_ = s.SetClientAssertionJWT(ctx, "test-jti", time.Now().Add(time.Minute))
 		}, "test-jti", fosite.ErrJTIKnown},
 		{"expired JTI is valid", func(ctx context.Context, s *MemoryStorage) {
 			_ = s.SetClientAssertionJWT(ctx, "expired-jti", time.Now().Add(-time.Hour))
@@ -512,19 +512,50 @@ func TestMemoryStorage_ClientAssertionJWT(t *testing.T) {
 		})
 	}
 
-	t.Run("cleanup expired JTIs on set", func(t *testing.T) {
+	t.Run("cleanup expired JTIs on valid check", func(t *testing.T) {
 		withStorage(t, func(ctx context.Context, s *MemoryStorage) {
 			s.mu.Lock()
 			s.clientAssertionJWTs["old-jti"] = time.Now().Add(-time.Hour)
 			s.mu.Unlock()
 
-			require.NoError(t, s.SetClientAssertionJWT(ctx, "new-jti", time.Now().Add(time.Hour)))
+			// Cleanup now happens in ClientAssertionJWTValid (the atomic
+			// reservation checkpoint), not SetClientAssertionJWT, since
+			// fosite always calls Valid before Set on every assertion.
+			require.NoError(t, s.ClientAssertionJWTValid(ctx, "new-jti"))
 
 			s.mu.RLock()
 			_, exists := s.clientAssertionJWTs["old-jti"]
 			s.mu.RUnlock()
 			assert.False(t, exists, "expired JTI should have been cleaned up")
 		})
+	})
+}
+
+// TestMemoryStorage_ClientAssertionJWT_ConcurrentReplay proves
+// ClientAssertionJWTValid's reservation is atomic: of many goroutines
+// racing to validate the identical jti, exactly one must observe it as
+// unused. Before the reserve-then-confirm fix, fosite's separate
+// Valid-then-Set calls let concurrent requests carrying the same assertion
+// both pass the check before either recorded it.
+func TestMemoryStorage_ClientAssertionJWT_ConcurrentReplay(t *testing.T) {
+	t.Parallel()
+
+	withStorage(t, func(ctx context.Context, s *MemoryStorage) {
+		const attempts = 20
+		var succeeded atomic.Int32
+		var wg sync.WaitGroup
+		wg.Add(attempts)
+		for range attempts {
+			go func() {
+				defer wg.Done()
+				if err := s.ClientAssertionJWTValid(ctx, "race-jti"); err == nil {
+					succeeded.Add(1)
+				}
+			}()
+		}
+		wg.Wait()
+
+		assert.Equal(t, int32(1), succeeded.Load(), "exactly one concurrent validator must win the reservation")
 	})
 }
 
@@ -1521,7 +1552,7 @@ func TestMemoryStorage_Stats(t *testing.T) {
 		_ = s.CreatePKCERequestSession(ctx, "pkce-1", request)
 		_ = s.StoreUpstreamTokens(ctx, "upstream-1", "provider-a", &UpstreamTokens{AccessToken: "test"})
 		_ = s.InvalidateAuthorizeCodeSession(ctx, "code-1")
-		_ = s.SetClientAssertionJWT(ctx, "jti-1", time.Now().Add(time.Hour))
+		_ = s.SetClientAssertionJWT(ctx, "jti-1", time.Now().Add(time.Minute))
 
 		now := time.Now()
 		_ = s.CreateUser(ctx, &User{ID: "user-1", CreatedAt: now, UpdatedAt: now})

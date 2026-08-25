@@ -19,6 +19,7 @@ import (
 	"github.com/redis/go-redis/v9"
 
 	tcredis "github.com/stacklok/toolhive-core/redis"
+	"github.com/stacklok/toolhive/pkg/authserver/server"
 	"github.com/stacklok/toolhive/pkg/authserver/server/registration"
 	"github.com/stacklok/toolhive/pkg/authserver/server/session"
 	"github.com/stacklok/toolhive/pkg/oauthproto"
@@ -430,32 +431,55 @@ func (s *RedisStorage) RenewClientTTL(ctx context.Context, client fosite.Client)
 	return s.client.Expire(ctx, key, DefaultDCRClientTTL).Err()
 }
 
-// ClientAssertionJWTValid returns an error if the JTI is known.
+// ClientAssertionJWTValid atomically reserves jti for a short window via
+// Redis SET NX, returning fosite.ErrJTIKnown if it is already reserved or
+// was previously consumed and not yet expired. This is the only atomic
+// checkpoint in fosite's two-call client-assertion replay protocol (Valid,
+// then SetClientAssertionJWT with the real expiry once the rest of the
+// assertion has been validated) — an Exists-then-Set pair (the prior
+// implementation) lets two concurrent requests presenting the same
+// assertion both observe jti as unused before either records it. jti
+// length is bounded here too, before it's ever sent to Redis, since fosite
+// hands it to us before parsing exp.
 func (s *RedisStorage) ClientAssertionJWTValid(ctx context.Context, jti string) error {
-	key := redisKey(s.keyPrefix, KeyTypeJWT, jti)
-
-	exists, err := s.client.Exists(ctx, key).Result()
-	if err != nil {
-		return fmt.Errorf("failed to check JWT: %w", err)
+	if len(jti) > server.MaxAssertionJTILength {
+		return fmt.Errorf("jti exceeds maximum length of %d bytes", server.MaxAssertionJTILength)
 	}
-	if exists > 0 {
-		return fosite.ErrJTIKnown
+
+	key := redisKey(s.keyPrefix, KeyTypeJWT, jti)
+	_, err := s.client.SetArgs(ctx, key, "1", redis.SetArgs{TTL: assertionReservationTTL, Mode: "NX"}).Result()
+	if err != nil {
+		if errors.Is(err, redis.Nil) {
+			return fosite.ErrJTIKnown
+		}
+		return fmt.Errorf("failed to reserve JWT: %w", err)
 	}
 	return nil
 }
 
-// SetClientAssertionJWT marks a JTI as known for the given expiry time.
-// If the JWT has already expired (exp is in the past), this is a no-op: there is
-// no need to store it for replay detection since it will be rejected on expiry
-// checks before reaching the JTI lookup.
+// SetClientAssertionJWT extends jti's replay marker to its real expiry,
+// rejecting an exp further than MaxAssertionLifespan in the future. This
+// bounds how long a replay-tracking entry survives regardless of what the
+// client's own assertion claims — otherwise a registered caller could set
+// exp decades out and give Redis a key with a correspondingly enormous TTL.
+// Unconditional overwrite, not a fresh atomic check: only the caller that
+// already won ClientAssertionJWTValid's reservation reaches this call. If
+// the JWT has already expired (exp is in the past), this deletes the
+// reservation instead: there is no need to keep it for replay detection
+// since the assertion will be rejected on expiry checks before reaching the
+// JTI lookup.
 func (s *RedisStorage) SetClientAssertionJWT(ctx context.Context, jti string, exp time.Time) error {
+	if time.Until(exp) > server.MaxAssertionLifespan {
+		return fmt.Errorf("assertion lifetime exceeds maximum of %s", server.MaxAssertionLifespan)
+	}
+
 	key := redisKey(s.keyPrefix, KeyTypeJWT, jti)
 
 	ttl := time.Until(exp)
 	if ttl <= 0 {
-		slog.Debug("skipping storage of already-expired client assertion JWT",
+		slog.Debug("removing reservation for already-expired client assertion JWT",
 			"jti", jti, "exp", exp)
-		return nil
+		return s.client.Del(ctx, key).Err()
 	}
 
 	return s.client.Set(ctx, key, "1", ttl).Err()

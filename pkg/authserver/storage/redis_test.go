@@ -842,7 +842,7 @@ func TestRedisStorage_ClientAssertionJWT(t *testing.T) {
 
 	t.Run("known JTI is invalid", func(t *testing.T) {
 		withRedisStorage(t, func(ctx context.Context, s *RedisStorage, _ *miniredis.Miniredis) {
-			require.NoError(t, s.SetClientAssertionJWT(ctx, "test-jti", time.Now().Add(time.Hour)))
+			require.NoError(t, s.SetClientAssertionJWT(ctx, "test-jti", time.Now().Add(time.Minute)))
 			err := s.ClientAssertionJWTValid(ctx, "test-jti")
 			assert.ErrorIs(t, err, fosite.ErrJTIKnown)
 		})
@@ -854,6 +854,34 @@ func TestRedisStorage_ClientAssertionJWT(t *testing.T) {
 			err := s.ClientAssertionJWTValid(ctx, "expired-jti")
 			require.NoError(t, err) // Should be valid because expired JTI is not stored
 		})
+	})
+}
+
+// TestRedisStorage_ClientAssertionJWT_ConcurrentReplay proves
+// ClientAssertionJWTValid's SET NX reservation is atomic: of many
+// goroutines racing to validate the identical jti, exactly one must
+// observe it as unused. Before the reserve-then-confirm fix, the
+// Exists-then-Set pair let concurrent requests carrying the same assertion
+// both pass the check before either recorded it.
+func TestRedisStorage_ClientAssertionJWT_ConcurrentReplay(t *testing.T) {
+	t.Parallel()
+
+	withRedisStorage(t, func(ctx context.Context, s *RedisStorage, _ *miniredis.Miniredis) {
+		const attempts = 20
+		var succeeded atomic.Int32
+		var wg sync.WaitGroup
+		wg.Add(attempts)
+		for range attempts {
+			go func() {
+				defer wg.Done()
+				if err := s.ClientAssertionJWTValid(ctx, "race-jti"); err == nil {
+					succeeded.Add(1)
+				}
+			}()
+		}
+		wg.Wait()
+
+		assert.Equal(t, int32(1), succeeded.Load(), "exactly one concurrent validator must win the reservation")
 	})
 }
 

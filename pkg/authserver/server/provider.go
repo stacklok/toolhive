@@ -44,6 +44,20 @@ const (
 	MinAuthCodeLifespan = 30 * time.Second
 	// MaxAuthCodeLifespan is the maximum allowed authorization code lifetime (RFC 6749 recommends 10 min max).
 	MaxAuthCodeLifespan = 10 * time.Minute
+	// MaxAssertionLifespan is the maximum allowed exp-now duration for a
+	// private_key_jwt client_assertion. fosite persists the replay marker
+	// (Storage.SetClientAssertionJWT/ConsumeAssertionJWT) with a TTL derived
+	// from the assertion's own exp claim, and neither fosite nor RFC 7523
+	// bounds that value — a client could otherwise set exp decades out and
+	// grow replay-tracking storage indefinitely. A client assertion
+	// authenticates a single token request, so it has no legitimate reason
+	// to outlive that request by more than a small clock-skew margin.
+	MaxAssertionLifespan = 5 * time.Minute
+	// MaxAssertionJTILength bounds the byte length of a private_key_jwt
+	// client_assertion's jti before it's persisted as a replay marker.
+	// Comfortably fits UUIDs/ULIDs and typical nonce formats with headroom
+	// while capping per-entry storage cost.
+	MaxAssertionJTILength = 256
 )
 
 // AuthorizationServerConfig wraps fosite.Config with additional configuration

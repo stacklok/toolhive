@@ -184,6 +184,11 @@ var _ = ginkgo.Describe("VirtualMCPServer private_key_jwt DCR delegation", ginkg
 	})
 })
 
+// privateKeyJWTHTTPClient is shared by the DCR registration and token-exchange
+// requests below so a stalled port-forward or half-open connection cannot
+// hang the suite indefinitely.
+var privateKeyJWTHTTPClient = &http.Client{Timeout: 30 * time.Second}
+
 func registerPrivateKeyJWTClient(endpoint string, privateKey *rsa.PrivateKey) oauthproto.DynamicClientRegistrationResponse {
 	jwks := &josev3.JSONWebKeySet{Keys: []josev3.JSONWebKey{{Key: privateKey.Public(), KeyID: "dcr-client-key", Algorithm: "RS256", Use: "sig"}}}
 	requestBody, err := json.Marshal(oauthproto.DynamicClientRegistrationRequest{
@@ -191,10 +196,10 @@ func registerPrivateKeyJWTClient(endpoint string, privateKey *rsa.PrivateKey) oa
 		TokenEndpointAuthSigningAlg: "RS256", GrantTypes: []string{oauthproto.GrantTypeTokenExchange}, JWKS: jwks,
 	})
 	gomega.Expect(err).NotTo(gomega.HaveOccurred())
-	request, err := http.NewRequest(http.MethodPost, endpoint+"/oauth/register", bytes.NewReader(requestBody))
+	request, err := http.NewRequestWithContext(context.Background(), http.MethodPost, endpoint+"/oauth/register", bytes.NewReader(requestBody))
 	gomega.Expect(err).NotTo(gomega.HaveOccurred())
 	request.Header.Set("Content-Type", "application/json")
-	response, err := http.DefaultClient.Do(request)
+	response, err := privateKeyJWTHTTPClient.Do(request)
 	gomega.Expect(err).NotTo(gomega.HaveOccurred())
 	defer response.Body.Close()
 	var registered oauthproto.DynamicClientRegistrationResponse
@@ -219,7 +224,7 @@ func requestPrivateKeyJWTExchange(endpoint, clientID, assertion, subjectToken, a
 	request, err := http.NewRequestWithContext(context.Background(), http.MethodPost, endpoint+"/oauth/token", strings.NewReader(form.Encode()))
 	gomega.Expect(err).NotTo(gomega.HaveOccurred())
 	request.Header.Set("Content-Type", "application/x-www-form-urlencoded")
-	response, err := http.DefaultClient.Do(request)
+	response, err := privateKeyJWTHTTPClient.Do(request)
 	gomega.Expect(err).NotTo(gomega.HaveOccurred())
 	defer response.Body.Close()
 	body, err := io.ReadAll(response.Body)

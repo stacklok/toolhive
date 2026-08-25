@@ -354,6 +354,11 @@ type Server struct {
 	// server. Set by Serve; nil for direct-Serve callers that never register a
 	// list_changed sink.
 	resyncBaseCtx context.Context
+
+	// healthResync tracks each live session's tools resync worker so a backend
+	// health change can fan out to every session (#5786). The zero value is
+	// usable; see serve_health_resync.go for registration/pruning lifecycle.
+	healthResync healthResyncRegistry
 }
 
 // buildSessionDataStorage constructs the DataStorage backend from cfg.
@@ -578,10 +583,16 @@ func New(
 // All returned handlers share the same underlying MCPServer and SessionManager,
 // so callers should not serve concurrent traffic through multiple handlers.
 func (s *Server) Handler(_ context.Context) (http.Handler, error) {
-	// Create Streamable HTTP server with ToolHive session management.
+	// Create Streamable HTTP server with ToolHive session management. The
+	// session-id manager is wrapped so an SDK-initiated termination (HTTP
+	// DELETE) eagerly deregisters the session's health-resync worker (#5786);
+	// see pruneOnTerminateSessionIDManager.
 	streamableOpts := []server.StreamableHTTPOption{
 		server.WithEndpointPath(s.config.EndpointPath),
-		server.WithSessionIdManager(s.vmcpSessionMgr),
+		server.WithSessionIdManager(&pruneOnTerminateSessionIDManager{
+			SessionIdManager: s.vmcpSessionMgr,
+			registry:         &s.healthResync,
+		}),
 		server.WithHeartbeatInterval(heartbeatInterval(s.config.HeartbeatInterval)),
 	}
 	// Install the pre-dispatch authorization gate only when authz is configured
@@ -1232,6 +1243,7 @@ func (s *Server) handleSessionRegistrationImpl(ctx context.Context, session serv
 	// Defer cleanup: if any error occurs, terminate the session and log failures.
 	defer func() {
 		if retErr != nil {
+			s.healthResync.remove(sessionID)
 			if _, termErr := s.vmcpSessionMgr.Terminate(sessionID); termErr != nil {
 				slog.Warn("failed to clean up session after error",
 					"session_id", sessionID,
@@ -1264,12 +1276,40 @@ func (s *Server) handleSessionRegistrationImpl(ctx context.Context, session serv
 	// enumerate unauthenticated. See buildListChangedSink.
 	identity, _ := auth.IdentityFromContext(ctx)
 	forwardedHeaders := headerforward.ForwardedHeadersFromContext(ctx)
-	sink := s.buildListChangedSink(sessionID, session, identity, forwardedHeaders)
+	sink, toolsResyncWorker := s.buildListChangedSink(sessionID, session, identity, forwardedHeaders)
 	if _, retErr = s.vmcpSessionMgr.CreateSession(ctx, sessionID, sink); retErr != nil {
 		slog.Error("failed to create session-scoped backends",
 			"session_id", sessionID,
 			"error", retErr)
 		return retErr
+	}
+
+	// Register the session's tools resync worker for backend-health-driven
+	// fan-out (#5786, serve_health_resync.go) as soon as the session exists:
+	// a health change firing during the capability injection below then
+	// triggers a (coalesced) re-derivation rather than being missed. That
+	// early registration means a fan-out can run the worker's SetSessionTools
+	// (replace) concurrently with injectCoreSessionCapabilities' merge below;
+	// both derive from the live health-filtered core view and the SDK tool
+	// store is internally locked, so the overlap is benign and self-heals on
+	// the next fan-out. The error-path defer above deregisters alongside
+	// Terminate.
+	//
+	// Optimizer-mode sessions are not registered: the health fan-out is a
+	// no-op there (#5786 PR1 is passthrough-only, see
+	// resyncSessionsOnBackendHealthChange), so registering would only retain
+	// the worker closure until termination. The optimizer-mode follow-up (PR2)
+	// removes this gate together with the fan-out's.
+	//
+	// Also gated on health monitoring being enabled: with no monitor there is
+	// no OnChange subscription (see Serve), so no fan-out would ever run the
+	// registry's lazy liveness prune — an entry for a session that ends
+	// without a server-observed Terminate (TTL expiry, node-local cache
+	// eviction, which only calls Close) would retain its worker closure (SDK
+	// session, captured identity and forwarded headers) forever. With no
+	// subscriber the registration could never be triggered anyway.
+	if s.optimizerFactory == nil && s.backendHealth() != nil {
+		s.healthResync.add(sessionID, toolsResyncWorker)
 	}
 
 	// The core is the single authoritative aggregation: source the advertised tool/resource

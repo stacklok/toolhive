@@ -15,7 +15,11 @@ import (
 	"go.uber.org/mock/gomock"
 
 	"github.com/stacklok/toolhive-core/httperr"
+	regtypes "github.com/stacklok/toolhive-core/registry/types"
+	regmocks "github.com/stacklok/toolhive/pkg/registry/mocks"
 	"github.com/stacklok/toolhive/pkg/skills"
+	"github.com/stacklok/toolhive/pkg/skills/gitresolver"
+	gitmocks "github.com/stacklok/toolhive/pkg/skills/gitresolver/mocks"
 	"github.com/stacklok/toolhive/pkg/skills/lockfile"
 	"github.com/stacklok/toolhive/pkg/skills/verifier"
 	verifiermocks "github.com/stacklok/toolhive/pkg/skills/verifier/mocks"
@@ -57,6 +61,15 @@ func loadLockEntry(t *testing.T, projectRoot, name string) (lockfile.Entry, bool
 	return lf.Get(name)
 }
 
+// writeLockEntry seeds project trust state without first passing through the
+// install path under test.
+func writeLockEntry(t *testing.T, projectRoot string, entry lockfile.Entry) {
+	t.Helper()
+	root, err := lockfile.OpenRoot(projectRoot)
+	require.NoError(t, err)
+	require.NoError(t, lockfile.UpsertEntry(root, entry))
+}
+
 //nolint:paralleltest // uses t.Setenv via newLockTestService, incompatible with t.Parallel
 func TestInstallVerification_TOFURecordsProvenance(t *testing.T) {
 	gr, fixtures := newGitResolverMock(t)
@@ -89,9 +102,9 @@ func TestInstallVerification_TOFURecordsProvenance(t *testing.T) {
 	// Second install: the recorded identity must flow into the verifier as
 	// the expected identity.
 	mv.EXPECT().VerifyGit(gomock.Any(), gomock.Any(), gomock.Any(), gomock.Any()).
-		DoAndReturn(func(_ any, _, _ []byte, expected *lockfile.Provenance) (*verifier.Result, error) {
+		DoAndReturn(func(_ any, _, _ []byte, expected *verifier.ProvenanceExpectation) (*verifier.Result, error) {
 			require.NotNil(t, expected, "the second install must enforce the recorded identity")
-			assert.Equal(t, testSignerIdentity, expected.SignerIdentity)
+			assert.Equal(t, verifier.NewLockExpectation(entry.Provenance), expected)
 			return signedResult(), nil
 		})
 	_, err = svc.Install(t.Context(), skills.InstallOptions{
@@ -102,6 +115,485 @@ func TestInstallVerification_TOFURecordsProvenance(t *testing.T) {
 		Force:       true,
 	})
 	require.NoError(t, err)
+}
+
+// catalogSkill returns a registry/catalog entry for "catalog-skill" resolving
+// to a git package, declaring the given provenance (RFC THV-0080 follow-up
+// #6310).
+func catalogSkill(provenance *regtypes.Provenance) regtypes.Skill {
+	return regtypes.Skill{
+		Namespace: "io.github.test",
+		Name:      "catalog-skill",
+		Packages: []regtypes.SkillPackage{
+			{RegistryType: "git", URL: "https://github.com/test/catalog-skill"},
+		},
+		Provenance: provenance,
+	}
+}
+
+// catalogSkillFiles is the git-resolved content installFromGit expects for
+// the catalogSkill fixture.
+func catalogSkillFiles() *gitresolver.ResolveResult {
+	return &gitresolver.ResolveResult{
+		SkillConfig: &skills.ParseResult{Name: "catalog-skill", Version: "1.0.0"},
+		Files: []gitresolver.FileEntry{
+			{Path: "SKILL.md", Content: gitSkill("catalog-skill"), Mode: 0o644},
+		},
+		CommitHash: testCommitHash,
+	}
+}
+
+//nolint:paralleltest // uses t.Setenv via newLockTestService, incompatible with t.Parallel
+func TestInstallVerification_CatalogProvenanceUsedOnFirstUse(t *testing.T) {
+	gr := gitmocks.NewMockResolver(gomock.NewController(t))
+	gr.EXPECT().Resolve(gomock.Any(), gomock.Any()).Return(catalogSkillFiles(), nil)
+
+	lookup := regmocks.NewMockProvider(gomock.NewController(t))
+	lookup.EXPECT().SearchSkills("catalog-skill").Return([]regtypes.Skill{
+		catalogSkill(&regtypes.Provenance{
+			SignerIdentity: testSignerIdentity,
+			CertIssuer:     testCertIssuer,
+		}),
+	}, nil)
+
+	mv := verifiermocks.NewMockVerifier(gomock.NewController(t))
+	// No lock entry exists yet, so the catalog expectation and its wildcard
+	// semantics must reach the verifier distinctly from strict lock trust.
+	catalogExpected := &regtypes.Provenance{SignerIdentity: testSignerIdentity, CertIssuer: testCertIssuer}
+	mv.EXPECT().VerifyGit(gomock.Any(), gomock.Any(), gomock.Any(), gomock.Any()).
+		DoAndReturn(func(_ any, _, _ []byte, expected *verifier.ProvenanceExpectation) (*verifier.Result, error) {
+			require.NotNil(t, expected, "a catalog-declared provenance must be checked on first install")
+			assert.Equal(t, verifier.NewCatalogExpectation(catalogExpected), expected)
+			return signedResult(), nil
+		})
+
+	svc, projectRoot := newLockTestService(t, gr, WithVerifier(mv), WithSkillLookup(lookup))
+	_, err := svc.Install(t.Context(), skills.InstallOptions{
+		Name:        "catalog-skill",
+		Scope:       skills.ScopeProject,
+		ProjectRoot: projectRoot,
+		Clients:     []string{"claude-code"},
+	})
+	require.NoError(t, err)
+
+	entry, ok := loadLockEntry(t, projectRoot, "catalog-skill")
+	require.True(t, ok)
+	assert.Equal(t, testSignerIdentity, entry.Provenance.SignerIdentity)
+}
+
+//nolint:paralleltest // uses t.Setenv via newLockTestService, incompatible with t.Parallel
+func TestInstallVerification_LockEntryTakesPrecedenceOverCatalog(t *testing.T) {
+	gr := gitmocks.NewMockResolver(gomock.NewController(t))
+	gr.EXPECT().Resolve(gomock.Any(), gomock.Any()).Return(catalogSkillFiles(), nil)
+
+	lookup := regmocks.NewMockProvider(gomock.NewController(t))
+	// The catalog declares a different identity from the pre-existing lock.
+	lookup.EXPECT().SearchSkills("catalog-skill").Return([]regtypes.Skill{
+		catalogSkill(&regtypes.Provenance{SignerIdentity: "/.github/workflows/other.yml", CertIssuer: testCertIssuer}),
+	}, nil)
+
+	mv := verifiermocks.NewMockVerifier(gomock.NewController(t))
+	svc, projectRoot := newLockTestService(t, gr, WithVerifier(mv), WithSkillLookup(lookup))
+	writeLockEntry(t, projectRoot, lockfile.Entry{
+		Name:              "catalog-skill",
+		Source:            "catalog-skill",
+		ResolvedReference: "git://github.com/test/catalog-skill",
+		Digest:            testCommitHash,
+		Explicit:          true,
+		Provenance: &lockfile.Provenance{
+			SignerIdentity: testSignerIdentity,
+			CertIssuer:     testCertIssuer,
+		},
+	})
+
+	mv.EXPECT().VerifyGit(gomock.Any(), gomock.Any(), gomock.Any(), gomock.Any()).
+		DoAndReturn(func(_ any, _, _ []byte, expected *verifier.ProvenanceExpectation) (*verifier.Result, error) {
+			require.NotNil(t, expected)
+			assert.Equal(t, verifier.NewLockExpectation(&lockfile.Provenance{
+				SignerIdentity: testSignerIdentity,
+				CertIssuer:     testCertIssuer,
+			}), expected,
+				"the lock entry, not the catalog, must be enforced once one exists")
+			return signedResult(), nil
+		})
+	_, err := svc.Install(t.Context(), skills.InstallOptions{
+		Name:        "catalog-skill",
+		Scope:       skills.ScopeProject,
+		ProjectRoot: projectRoot,
+		Clients:     []string{"claude-code"},
+	})
+	require.NoError(t, err)
+}
+
+func TestVerifyInstall_CatalogPartialConstraints(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name       string
+		provenance *regtypes.Provenance
+		observed   *verifier.Result
+	}{
+		{name: "empty provenance constrains nothing", provenance: &regtypes.Provenance{}, observed: signedResult()},
+		{name: "signer only", provenance: &regtypes.Provenance{SignerIdentity: testSignerIdentity}, observed: signedResult()},
+		{name: "issuer only", provenance: &regtypes.Provenance{CertIssuer: testCertIssuer}, observed: signedResult()},
+		{name: "repository only", provenance: &regtypes.Provenance{RepositoryURI: "https://github.com/org/repo"}, observed: signedResult()},
+		{name: "ref only", provenance: &regtypes.Provenance{RepositoryRef: "refs/tags/v1.0.0"}, observed: refSignedResult("refs/tags/v1.0.0")},
+		{name: "runner only", provenance: &regtypes.Provenance{RunnerEnvironment: testRunnerEnvironment}, observed: refSignedResult("refs/tags/v1.0.0")},
+	}
+	for _, backend := range []string{"git", "oci"} {
+		for _, tc := range tests {
+			t.Run(backend+"/"+tc.name, func(t *testing.T) {
+				t.Parallel()
+				projectRoot := makeProjectRoot(t)
+				mv := verifiermocks.NewMockVerifier(gomock.NewController(t))
+				svc := &service{sigVerifier: mv}
+				opts := skills.InstallOptions{
+					ProjectRoot:       projectRoot,
+					CatalogProvenance: tc.provenance,
+				}
+
+				var (
+					decision *provenanceDecision
+					err      error
+				)
+				wantExpected := verifier.NewCatalogExpectation(tc.provenance)
+				if tc.provenance.SignerIdentity == "" && tc.provenance.CertIssuer == "" &&
+					tc.provenance.RepositoryURI == "" && tc.provenance.RepositoryRef == "" &&
+					tc.provenance.RunnerEnvironment == "" {
+					wantExpected = nil
+				}
+				if backend == "git" {
+					mv.EXPECT().VerifyGit(gomock.Any(), gomock.Any(), gomock.Any(), gomock.Eq(wantExpected)).
+						Return(tc.observed, nil)
+					decision, err = svc.verifyGitInstall(t.Context(), opts, "catalog-skill", []byte("payload"), "signature")
+				} else {
+					mv.EXPECT().VerifyOCI(
+						gomock.Any(), "ghcr.io/test/catalog-skill:v1", "sha256:digest", gomock.Eq(wantExpected)).
+						Return(tc.observed, nil)
+					decision, err = svc.verifyOCIInstall(
+						t.Context(), opts, "catalog-skill", "ghcr.io/test/catalog-skill:v1", "sha256:digest")
+				}
+				require.NoError(t, err)
+				require.NotNil(t, decision.provenance)
+				assert.Equal(t, tc.observed.SignerIdentity, decision.provenance.SignerIdentity)
+			})
+		}
+	}
+}
+
+func TestVerifyInstall_CatalogPartialConstraintMismatchRejected(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name       string
+		provenance *regtypes.Provenance
+	}{
+		{name: "signer", provenance: &regtypes.Provenance{SignerIdentity: "attacker@example.com"}},
+		{name: "issuer", provenance: &regtypes.Provenance{CertIssuer: "https://issuer.example.com"}},
+		{name: "repository", provenance: &regtypes.Provenance{RepositoryURI: "https://github.com/attacker/repo"}},
+		{name: "ref", provenance: &regtypes.Provenance{RepositoryRef: "refs/heads/attacker"}},
+		{name: "runner", provenance: &regtypes.Provenance{RunnerEnvironment: "self-hosted"}},
+	}
+	for _, backend := range []string{"git", "oci"} {
+		for _, tc := range tests {
+			t.Run(backend+"/"+tc.name, func(t *testing.T) {
+				t.Parallel()
+				projectRoot := makeProjectRoot(t)
+				mv := verifiermocks.NewMockVerifier(gomock.NewController(t))
+				svc := &service{sigVerifier: mv}
+				opts := skills.InstallOptions{ProjectRoot: projectRoot, CatalogProvenance: tc.provenance}
+				wantExpected := verifier.NewCatalogExpectation(tc.provenance)
+
+				var err error
+				if backend == "git" {
+					mv.EXPECT().VerifyGit(gomock.Any(), gomock.Any(), gomock.Any(), gomock.Eq(wantExpected)).
+						Return(nil, verifier.ErrSignerMismatch)
+					_, err = svc.verifyGitInstall(t.Context(), opts, "catalog-skill", []byte("payload"), "signature")
+				} else {
+					mv.EXPECT().VerifyOCI(gomock.Any(), gomock.Any(), gomock.Any(), gomock.Eq(wantExpected)).
+						Return(nil, verifier.ErrSignerMismatch)
+					_, err = svc.verifyOCIInstall(
+						t.Context(), opts, "catalog-skill", "ghcr.io/test/catalog-skill:v1", "sha256:digest")
+				}
+				require.Error(t, err)
+				assert.Equal(t, http.StatusForbidden, httperr.Code(err))
+			})
+		}
+	}
+}
+
+func TestVerifyInstall_CatalogIdentityPairPreservesCatalogSemantics(t *testing.T) {
+	t.Parallel()
+
+	for _, backend := range []string{"git", "oci"} {
+		t.Run(backend, func(t *testing.T) {
+			t.Parallel()
+			projectRoot := makeProjectRoot(t)
+			mv := verifiermocks.NewMockVerifier(gomock.NewController(t))
+			svc := &service{sigVerifier: mv}
+			opts := skills.InstallOptions{
+				ProjectRoot: projectRoot,
+				CatalogProvenance: &regtypes.Provenance{
+					SignerIdentity: testSignerIdentity,
+					CertIssuer:     testCertIssuer,
+				},
+			}
+			checkExpected := func(expected *verifier.ProvenanceExpectation) {
+				require.NotNil(t, expected)
+				assert.Equal(t, verifier.NewCatalogExpectation(opts.CatalogProvenance), expected)
+			}
+
+			var err error
+			if backend == "git" {
+				mv.EXPECT().VerifyGit(gomock.Any(), gomock.Any(), gomock.Any(), gomock.Any()).
+					Do(func(_ any, _, _ []byte, expected *verifier.ProvenanceExpectation) {
+						checkExpected(expected)
+					}).Return(signedResult(), nil)
+				_, err = svc.verifyGitInstall(t.Context(), opts, "catalog-skill", []byte("payload"), "signature")
+			} else {
+				mv.EXPECT().VerifyOCI(gomock.Any(), gomock.Any(), gomock.Any(), gomock.Any()).
+					Do(func(_ any, _, _ string, expected *verifier.ProvenanceExpectation) {
+						checkExpected(expected)
+					}).Return(signedResult(), nil)
+				_, err = svc.verifyOCIInstall(
+					t.Context(), opts, "catalog-skill", "ghcr.io/test/catalog-skill:v1", "sha256:digest")
+			}
+			require.NoError(t, err)
+		})
+	}
+}
+
+func TestVerifyInstall_CatalogConstraintCannotAllowUnsigned(t *testing.T) {
+	t.Parallel()
+
+	for _, backend := range []string{"git", "oci"} {
+		t.Run(backend, func(t *testing.T) {
+			t.Parallel()
+			projectRoot := makeProjectRoot(t)
+			mv := verifiermocks.NewMockVerifier(gomock.NewController(t))
+			svc := &service{sigVerifier: mv}
+			opts := skills.InstallOptions{
+				ProjectRoot:       projectRoot,
+				AllowUnsigned:     true,
+				CatalogProvenance: &regtypes.Provenance{SignerIdentity: testSignerIdentity},
+			}
+
+			var err error
+			if backend == "git" {
+				mv.EXPECT().VerifyGit(
+					gomock.Any(), gomock.Any(), gomock.Any(), gomock.Eq(verifier.NewCatalogExpectation(opts.CatalogProvenance))).
+					Return(nil, verifier.ErrUnsigned)
+				_, err = svc.verifyGitInstall(t.Context(), opts, "catalog-skill", []byte("payload"), "")
+			} else {
+				mv.EXPECT().VerifyOCI(
+					gomock.Any(), gomock.Any(), gomock.Any(), gomock.Eq(verifier.NewCatalogExpectation(opts.CatalogProvenance))).
+					Return(nil, verifier.ErrUnsigned)
+				_, err = svc.verifyOCIInstall(
+					t.Context(), opts, "catalog-skill", "ghcr.io/test/catalog-skill:v1", "sha256:digest")
+			}
+			require.Error(t, err)
+			assert.Equal(t, http.StatusForbidden, httperr.Code(err))
+		})
+	}
+}
+
+func TestVerifyInstall_EmptyCatalogProvenanceAllowsUnsigned(t *testing.T) {
+	t.Parallel()
+
+	for _, backend := range []string{"git", "oci"} {
+		t.Run(backend, func(t *testing.T) {
+			t.Parallel()
+			projectRoot := makeProjectRoot(t)
+			mv := verifiermocks.NewMockVerifier(gomock.NewController(t))
+			svc := &service{sigVerifier: mv}
+			opts := skills.InstallOptions{
+				ProjectRoot:       projectRoot,
+				AllowUnsigned:     true,
+				CatalogProvenance: &regtypes.Provenance{},
+			}
+
+			var (
+				decision *provenanceDecision
+				err      error
+			)
+			if backend == "git" {
+				mv.EXPECT().VerifyGit(gomock.Any(), gomock.Any(), gomock.Any(), gomock.Nil()).
+					Return(nil, verifier.ErrUnsigned)
+				decision, err = svc.verifyGitInstall(t.Context(), opts, "catalog-skill", []byte("payload"), "")
+			} else {
+				mv.EXPECT().VerifyOCI(gomock.Any(), gomock.Any(), gomock.Any(), gomock.Nil()).
+					Return(nil, verifier.ErrUnsigned)
+				decision, err = svc.verifyOCIInstall(
+					t.Context(), opts, "catalog-skill", "ghcr.io/test/catalog-skill:v1", "sha256:digest")
+			}
+			require.NoError(t, err)
+			assert.True(t, decision.unsigned)
+		})
+	}
+}
+
+func TestVerifyInstall_UnsupportedCatalogConstraintsOnlyFailOnFirstUse(t *testing.T) {
+	t.Parallel()
+
+	constraints := []struct {
+		name       string
+		provenance *regtypes.Provenance
+	}{
+		{
+			name: "attestation",
+			provenance: &regtypes.Provenance{
+				Attestation: &regtypes.VerifiedAttestation{PredicateType: "https://slsa.dev/provenance/v1"},
+			},
+		},
+		{
+			name:       "sigstore URL",
+			provenance: &regtypes.Provenance{SigstoreURL: "https://sigstore.example.com/root.json"},
+		},
+	}
+	states := []struct {
+		name         string
+		entry        *lockfile.Entry
+		wantErr      bool
+		wantExpected bool
+	}{
+		{name: "first use", wantErr: true},
+		{
+			name: "signed lock",
+			entry: &lockfile.Entry{
+				Name:   "catalog-skill",
+				Source: "catalog-skill",
+				Digest: testCommitHash,
+				Provenance: &lockfile.Provenance{
+					SignerIdentity: testSignerIdentity,
+					CertIssuer:     testCertIssuer,
+				},
+			},
+			wantExpected: true,
+		},
+		{
+			name: "legacy lock without trust state",
+			entry: &lockfile.Entry{
+				Name:   "catalog-skill",
+				Source: "catalog-skill",
+				Digest: testCommitHash,
+			},
+		},
+	}
+	for _, backend := range []string{"git", "oci"} {
+		for _, constraint := range constraints {
+			for _, state := range states {
+				t.Run(backend+"/"+constraint.name+"/"+state.name, func(t *testing.T) {
+					t.Parallel()
+					projectRoot := makeProjectRoot(t)
+					if state.entry != nil {
+						writeLockEntry(t, projectRoot, *state.entry)
+					}
+					mv := verifiermocks.NewMockVerifier(gomock.NewController(t))
+					svc := &service{sigVerifier: mv}
+					opts := skills.InstallOptions{
+						ProjectRoot:       projectRoot,
+						CatalogProvenance: constraint.provenance,
+					}
+
+					if !state.wantErr {
+						checkExpected := func(expected *verifier.ProvenanceExpectation) {
+							if state.wantExpected {
+								require.NotNil(t, expected)
+								assert.Equal(t, verifier.NewLockExpectation(state.entry.Provenance), expected)
+							} else {
+								assert.Nil(t, expected,
+									"a legacy lock must suppress catalog policy without inventing lock trust")
+							}
+						}
+						if backend == "git" {
+							mv.EXPECT().VerifyGit(gomock.Any(), gomock.Any(), gomock.Any(), gomock.Any()).
+								Do(func(_ any, _, _ []byte, expected *verifier.ProvenanceExpectation) {
+									checkExpected(expected)
+								}).Return(signedResult(), nil)
+						} else {
+							mv.EXPECT().VerifyOCI(gomock.Any(), gomock.Any(), gomock.Any(), gomock.Any()).
+								Do(func(_ any, _, _ string, expected *verifier.ProvenanceExpectation) {
+									checkExpected(expected)
+								}).Return(signedResult(), nil)
+						}
+					}
+
+					var err error
+					if backend == "git" {
+						_, err = svc.verifyGitInstall(t.Context(), opts, "catalog-skill", []byte("payload"), "signature")
+					} else {
+						_, err = svc.verifyOCIInstall(
+							t.Context(), opts, "catalog-skill", "ghcr.io/test/catalog-skill:v1", "sha256:digest")
+					}
+					if state.wantErr {
+						require.Error(t, err)
+						assert.Equal(t, http.StatusUnprocessableEntity, httperr.Code(err))
+						return
+					}
+					require.NoError(t, err)
+				})
+			}
+		}
+	}
+}
+
+//nolint:paralleltest // uses t.Setenv via newLockTestService, incompatible with t.Parallel
+func TestInstallVerification_CatalogRejectionHasNoSideEffects(t *testing.T) {
+	tests := []struct {
+		name       string
+		provenance *regtypes.Provenance
+		verifyErr  error
+		wantCode   int
+	}{
+		{
+			name:       "provenance mismatch",
+			provenance: &regtypes.Provenance{SignerIdentity: "attacker@example.com"},
+			verifyErr:  verifier.ErrSignerMismatch,
+			wantCode:   http.StatusForbidden,
+		},
+		{
+			name:       "unsupported sigstore URL",
+			provenance: &regtypes.Provenance{SigstoreURL: "https://sigstore.example.com/root.json"},
+			wantCode:   http.StatusUnprocessableEntity,
+		},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			gr := gitmocks.NewMockResolver(gomock.NewController(t))
+			gr.EXPECT().Resolve(gomock.Any(), gomock.Any()).Return(catalogSkillFiles(), nil)
+
+			lookup := regmocks.NewMockProvider(gomock.NewController(t))
+			lookup.EXPECT().SearchSkills("catalog-skill").Return([]regtypes.Skill{
+				catalogSkill(tc.provenance),
+			}, nil)
+
+			mv := verifiermocks.NewMockVerifier(gomock.NewController(t))
+			if tc.verifyErr != nil {
+				mv.EXPECT().VerifyGit(
+					gomock.Any(), gomock.Any(), gomock.Any(), gomock.Eq(verifier.NewCatalogExpectation(tc.provenance))).
+					Return(nil, tc.verifyErr)
+			}
+			svc, projectRoot := newLockTestService(t, gr, WithVerifier(mv), WithSkillLookup(lookup))
+
+			_, err := svc.Install(t.Context(), skills.InstallOptions{
+				Name:        "catalog-skill",
+				Scope:       skills.ScopeProject,
+				ProjectRoot: projectRoot,
+				Clients:     []string{"claude-code"},
+			})
+			require.Error(t, err)
+			assert.Equal(t, tc.wantCode, httperr.Code(err))
+
+			_, ok := loadLockEntry(t, projectRoot, "catalog-skill")
+			assert.False(t, ok, "a rejected catalog policy must not write a lock entry")
+			_, err = svc.Info(t.Context(), skills.InfoOptions{
+				Name: "catalog-skill", Scope: skills.ScopeProject, ProjectRoot: projectRoot,
+			})
+			require.Error(t, err, "a rejected catalog policy must not create a database record")
+			assert.NoDirExists(t, projectRoot+"/.claude/skills/catalog-skill",
+				"verification must fail before skill files are extracted")
+		})
+	}
 }
 
 //nolint:paralleltest // uses t.Setenv via newLockTestService, incompatible with t.Parallel
@@ -222,11 +714,14 @@ func TestInstallVerification_EnforcesPinnedRef(t *testing.T) {
 	}
 	_, err := svc.Install(t.Context(), installOpts)
 	require.NoError(t, err)
+	entry, ok := loadLockEntry(t, projectRoot, "ref-pinned-skill")
+	require.True(t, ok)
+	require.NotNil(t, entry.Provenance)
 
 	mv.EXPECT().VerifyGit(gomock.Any(), gomock.Any(), gomock.Any(), gomock.Any()).
-		DoAndReturn(func(_ any, _, _ []byte, expected *lockfile.Provenance) (*verifier.Result, error) {
+		DoAndReturn(func(_ any, _, _ []byte, expected *verifier.ProvenanceExpectation) (*verifier.Result, error) {
 			require.NotNil(t, expected)
-			assert.Equal(t, "refs/tags/v0.1.0", expected.RepositoryRef,
+			assert.Equal(t, verifier.NewLockExpectation(entry.Provenance), expected,
 				"install must enforce the recorded ref, not relax it like upgrade")
 			return nil, verifier.ErrSignerMismatch
 		})
@@ -235,7 +730,7 @@ func TestInstallVerification_EnforcesPinnedRef(t *testing.T) {
 	require.Error(t, err)
 	assert.Equal(t, http.StatusForbidden, httperr.Code(err))
 
-	entry, ok := loadLockEntry(t, projectRoot, "ref-pinned-skill")
+	entry, ok = loadLockEntry(t, projectRoot, "ref-pinned-skill")
 	require.True(t, ok)
 	require.NotNil(t, entry.Provenance)
 	assert.Equal(t, "refs/tags/v0.1.0", entry.Provenance.RepositoryRef, "the rejected install must not re-pin")
@@ -290,6 +785,47 @@ func TestInstallVerification_UserScopeSkipsVerification(t *testing.T) {
 		Clients: []string{"claude-code"},
 	})
 	require.NoError(t, err)
+}
+
+//nolint:paralleltest // uses t.Setenv via newLockTestService, incompatible with t.Parallel
+func TestInstallVerification_UserScopeIgnoresUnsupportedCatalogConstraints(t *testing.T) {
+	tests := []struct {
+		name       string
+		provenance *regtypes.Provenance
+	}{
+		{
+			name: "attestation",
+			provenance: &regtypes.Provenance{
+				Attestation: &regtypes.VerifiedAttestation{PredicateType: "https://slsa.dev/provenance/v1"},
+			},
+		},
+		{
+			name:       "sigstore URL",
+			provenance: &regtypes.Provenance{SigstoreURL: "https://sigstore.example.com/root.json"},
+		},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			gr := gitmocks.NewMockResolver(gomock.NewController(t))
+			gr.EXPECT().Resolve(gomock.Any(), gomock.Any()).Return(catalogSkillFiles(), nil)
+
+			lookup := regmocks.NewMockProvider(gomock.NewController(t))
+			lookup.EXPECT().SearchSkills("catalog-skill").Return([]regtypes.Skill{
+				catalogSkill(tc.provenance),
+			}, nil)
+
+			// Unsupported project verification policy is irrelevant at user
+			// scope, where no verifier or lock trust decision is used.
+			mv := verifiermocks.NewMockVerifier(gomock.NewController(t))
+			svc, _ := newLockTestService(t, gr, WithVerifier(mv), WithSkillLookup(lookup))
+			_, err := svc.Install(t.Context(), skills.InstallOptions{
+				Name:    "catalog-skill",
+				Scope:   skills.ScopeUser,
+				Clients: []string{"claude-code"},
+			})
+			require.NoError(t, err)
+		})
+	}
 }
 
 func TestVerifyLocalInstall(t *testing.T) {
@@ -391,6 +927,18 @@ func TestProvenanceConversionsPreserveEveryField(t *testing.T) {
 
 	assert.Nil(t, provenanceInfoFromLock(nil))
 	assert.Nil(t, provenanceInfoToLock(nil))
+}
+
+func TestNormalizeCatalogProvenance(t *testing.T) {
+	t.Parallel()
+
+	assert.Nil(t, normalizeCatalogProvenance(nil))
+	assert.Nil(t, normalizeCatalogProvenance(&regtypes.Provenance{}),
+		"an empty catalog block must preserve unconstrained TOFU behavior")
+
+	partial := &regtypes.Provenance{RepositoryRef: "refs/tags/v1.0.0"}
+	assert.Same(t, partial, normalizeCatalogProvenance(partial),
+		"a single supported constraint must not be discarded")
 }
 
 // requireAllFieldsSet fails when any field of the struct pointed to by v holds

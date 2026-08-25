@@ -1289,15 +1289,32 @@ func TestEmbeddedAuthServerConfig_ValidateConfidentialClientTransport(t *testing
 		{
 			name: "delegate clients reject HTTP loopback without explicit opt in",
 			config: EmbeddedAuthServerConfig{
-				Issuer:          "http://localhost:8080",
+				Issuer:          "http://127.0.0.1:8080",
 				DelegateClients: delegateClients,
 			},
 			expectErr: true,
 		},
 		{
-			name: "delegate clients allow HTTP loopback with explicit opt in",
+			name: "delegate clients reject HTTP non-loopback without explicit opt in",
 			config: EmbeddedAuthServerConfig{
-				Issuer: "http://localhost:8080",
+				Issuer:          "http://auth.example.com",
+				DelegateClients: delegateClients,
+			},
+			expectErr: true,
+		},
+		{
+			name: "delegate clients reject HTTP non-loopback with loopback opt in",
+			config: EmbeddedAuthServerConfig{
+				Issuer: "http://auth.example.com",
+				InsecureAllowConfidentialOverLoopbackHTTP: true,
+				DelegateClients: delegateClients,
+			},
+			expectErr: true,
+		},
+		{
+			name: "delegate clients allow HTTPS with loopback opt in",
+			config: EmbeddedAuthServerConfig{
+				Issuer: "https://auth.example.com",
 				InsecureAllowConfidentialOverLoopbackHTTP: true,
 				DelegateClients: delegateClients,
 			},

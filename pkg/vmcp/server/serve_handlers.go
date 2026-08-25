@@ -573,6 +573,7 @@ func (s *Server) enforceSessionBinding(ctx context.Context, sessionID string, ca
 func (s *Server) terminateOnBindingFailure(sessionID, capability string, err error) {
 	slog.Warn("caller authorization failed, terminating session",
 		"session_id", sessionID, "capability", capability, "error", err)
+	s.healthResync.remove(sessionID)
 	if _, termErr := s.vmcpSessionMgr.Terminate(sessionID); termErr != nil {
 		slog.Error("failed to terminate session after auth failure",
 			"session_id", sessionID, "error", termErr)

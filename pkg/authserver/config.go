@@ -6,6 +6,7 @@ package authserver
 
 import (
 	"crypto/rand"
+	"errors"
 	"fmt"
 	"log/slog"
 	"net/url"
@@ -189,10 +190,10 @@ type RunConfig struct {
 	// secrets would otherwise travel over cleartext. Defaults to false. Has no
 	// effect when there are no confidential clients or Issuer is https.
 	//
-	// Applies identically to delegate clients and DCR-registered clients; the
-	// Kubernetes CRD blocks this combination unconditionally only because CEL
-	// cannot express the loopback exception, not because delegate clients need
-	// a stricter policy — see EmbeddedAuthServerConfig's doc comment.
+	// Applies identically to delegate clients and DCR-registered clients. The
+	// Kubernetes CRD requires the explicit opt-in for a delegate client with an
+	// HTTP issuer; the shared transport validator enforces that its host is
+	// loopback — see EmbeddedAuthServerConfig's doc comment.
 	//nolint:lll // field tags require full JSON+YAML names
 	InsecureAllowConfidentialOverLoopbackHTTP bool `json:"insecure_allow_confidential_over_loopback_http,omitempty" yaml:"insecure_allow_confidential_over_loopback_http,omitempty"`
 
@@ -1487,7 +1488,8 @@ func (c *Config) applyDefaults() error {
 //     any host, not just loopback. Always rejected for confidential clients.
 //  2. issuer is a plain-HTTP loopback URL (e.g. "http://localhost:18080").
 //     This is rejected by default but may be explicitly enabled with
-//     insecureAllowConfidentialOverLoopbackHTTP.
+//     insecureAllowConfidentialOverLoopbackHTTP. The opt-in does not permit
+//     non-loopback HTTP issuers and still requires a valid issuer URL.
 func ValidateConfidentialClientTransport(
 	allowConfidential, insecureAllowHTTP bool,
 	issuer string, insecureAllowConfidentialOverLoopbackHTTP bool,
@@ -1499,16 +1501,31 @@ func ValidateConfidentialClientTransport(
 		return fmt.Errorf("allow_confidential_client_registration cannot be combined with insecure_allow_http: " +
 			"confidential clients would send secrets over cleartext HTTP")
 	}
-	if insecureAllowConfidentialOverLoopbackHTTP {
+	parsed, err := url.Parse(issuer)
+	if err != nil {
+		return errors.New("confidential clients require a valid issuer URL")
+	}
+	if parsed.Scheme != "http" {
 		return nil
 	}
-	// Malformed issuers are reported by validateIssuerURL; nothing more to
-	// check here if parsing fails.
-	if parsed, err := url.Parse(issuer); err == nil &&
-		parsed.Scheme == "http" && networking.IsLocalhost(parsed.Host) {
+	if insecureAllowConfidentialOverLoopbackHTTP && networking.IsLocalhost(parsed.Host) {
+		if err := validateIssuerURL(issuer, false); err != nil {
+			return errors.New("confidential clients require a valid issuer URL")
+		}
+	}
+	if insecureAllowConfidentialOverLoopbackHTTP && !networking.IsLocalhost(parsed.Host) {
+		return fmt.Errorf(
+			"allow_confidential_client_registration cannot use the loopback HTTP opt-in with a non-loopback issuer (%q): "+
+				"confidential clients would send secrets over cleartext HTTP", issuer)
+	}
+	if !insecureAllowConfidentialOverLoopbackHTTP && networking.IsLocalhost(parsed.Host) {
 		return fmt.Errorf("allow_confidential_client_registration cannot be combined with a plain-HTTP loopback issuer (%q) unless "+
 			"insecure_allow_confidential_over_loopback_http is set: confidential clients would send secrets over cleartext HTTP",
 			issuer)
+	}
+	if !networking.IsLocalhost(parsed.Host) {
+		return fmt.Errorf("allow_confidential_client_registration cannot use a plain-HTTP non-loopback issuer (%q): "+
+			"confidential clients would send secrets over cleartext HTTP", issuer)
 	}
 	return nil
 }

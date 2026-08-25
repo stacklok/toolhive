@@ -100,9 +100,9 @@ func TestInstallVerification_TOFURecordsProvenance(t *testing.T) {
 	// Second install: the recorded identity must flow into the verifier as
 	// the expected identity.
 	mv.EXPECT().VerifyGit(gomock.Any(), gomock.Any(), gomock.Any(), gomock.Any()).
-		DoAndReturn(func(_ any, _, _ []byte, expected *lockfile.Provenance) (*verifier.Result, error) {
+		DoAndReturn(func(_ any, _, _ []byte, expected *verifier.ProvenanceExpectation) (*verifier.Result, error) {
 			require.NotNil(t, expected, "the second install must enforce the recorded identity")
-			assert.Equal(t, testSignerIdentity, expected.SignerIdentity)
+			assert.Equal(t, verifier.NewLockExpectation(entry.Provenance), expected)
 			return signedResult(), nil
 		})
 	require.NoError(t, gitInstall(t, svc, projectRoot, func(o *plugins.InstallOptions) { o.Force = true }))

@@ -75,7 +75,11 @@ func (s *service) verifyOCIInstall(
 		return unsignedLockedDecision(opts, pluginName)
 	}
 
-	result, verifyErr := s.artifactVerifier().VerifyOCI(ctx, ref, digest, expected)
+	// The verifier takes a ProvenanceExpectation so it can distinguish a
+	// strict lock pin from the independently-optional catalog constraints
+	// added in #6420. Plugins only ever present a lock expectation today;
+	// NewLockExpectation(nil) is nil, preserving the TOFU case.
+	result, verifyErr := s.artifactVerifier().VerifyOCI(ctx, ref, digest, verifier.NewLockExpectation(expected))
 	if verifyErr != nil {
 		if isAllowedUnsigned(verifyErr, opts, expected) {
 			return &provenanceDecision{unsigned: true}, nil
@@ -102,7 +106,8 @@ func (s *service) verifyGitInstall(
 		return unsignedLockedDecision(opts, pluginName)
 	}
 
-	result, verifyErr := s.artifactVerifier().VerifyGit(ctx, payload, []byte(signature), expected)
+	result, verifyErr := s.artifactVerifier().VerifyGit(
+		ctx, payload, []byte(signature), verifier.NewLockExpectation(expected))
 	if verifyErr != nil {
 		if isAllowedUnsigned(verifyErr, opts, expected) {
 			return &provenanceDecision{unsigned: true}, nil

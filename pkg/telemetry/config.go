@@ -402,6 +402,19 @@ func (p *Provider) PrometheusHandler() http.Handler {
 	return p.prometheusHandler
 }
 
+// PrometheusPort returns the configured diagnostics port for the Prometheus
+// /metrics endpoint. Zero means unset; see diagnostics.ResolvePort.
+func (p *Provider) PrometheusPort() int {
+	return p.config.PrometheusPort
+}
+
+// ServeMetricsOnTransportPort reports whether this provider's configuration also
+// wants /metrics on the main transport port. Resolves the unset case against the
+// current default; see Config.ServeMetricsOnTransportPort.
+func (p *Provider) ServeMetricsOnTransportPort() bool {
+	return p.config.ServeMetricsOnTransportPort()
+}
+
 // validateOtelConfig validates the otel configuration
 func validateOtelConfig(config Config) error {
 	// If OTLP endpoint is configured but both tracing and metrics are disabled, that's an error

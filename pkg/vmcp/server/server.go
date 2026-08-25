@@ -28,6 +28,7 @@ import (
 	asrunner "github.com/stacklok/toolhive/pkg/authserver/runner"
 	"github.com/stacklok/toolhive/pkg/authz"
 	"github.com/stacklok/toolhive/pkg/bodylimit"
+	"github.com/stacklok/toolhive/pkg/diagnostics"
 	mcpparser "github.com/stacklok/toolhive/pkg/mcp"
 	baseratelimit "github.com/stacklok/toolhive/pkg/ratelimit"
 	"github.com/stacklok/toolhive/pkg/recovery"
@@ -298,6 +299,11 @@ type Server struct {
 
 	// HTTP server for Streamable HTTP transport
 	httpServer *http.Server
+
+	// diagnosticsServer serves the Prometheus /metrics endpoint on its own
+	// listener, keeping it off the port that serves MCP traffic. Nil unless the
+	// telemetry provider exposes a Prometheus handler.
+	diagnosticsServer *diagnostics.Server
 
 	// Network listener (tracks actual bound port when using port 0)
 	listener   net.Listener
@@ -606,14 +612,20 @@ func (s *Server) Handler(_ context.Context) (http.Handler, error) {
 	mux.HandleFunc("/status", s.handleStatus)
 	mux.HandleFunc("/api/backends/health", s.handleBackendHealth)
 
-	// Optional Prometheus metrics endpoint (unauthenticated)
-	if s.config.TelemetryProvider != nil {
-		if prometheusHandler := s.config.TelemetryProvider.PrometheusHandler(); prometheusHandler != nil {
-			mux.Handle("/metrics", prometheusHandler)
-			slog.Info("prometheus metrics endpoint enabled at /metrics")
-		} else {
-			slog.Warn("prometheus metrics endpoint is not enabled, but telemetry provider is configured")
-		}
+	// Prometheus metrics belong on the dedicated diagnostics listener (see
+	// pkg/diagnostics and startDiagnostics below), so that access can be restricted
+	// by port: NetworkPolicy matches on port and not on HTTP path, so a shared port
+	// makes "allow MCP traffic, deny metrics scraping" impossible to express.
+	//
+	// During the migration window they are also served here, so an existing scrape
+	// configuration keeps working while it is moved; see
+	// telemetry.DefaultMetricsOnTransportPort. Once that is off, answer with a 404
+	// rather than leaving /metrics to the "/" catch-all, which would hand a scrape
+	// to the MCP handler.
+	if h := s.transportPortMetricsHandler(); h != nil {
+		mux.Handle(diagnostics.MetricsPath, h)
+	} else {
+		mux.Handle(diagnostics.MetricsPath, diagnostics.NotServedHereHandler())
 	}
 
 	// RFC 9728 protected resource metadata.
@@ -770,9 +782,34 @@ func (s *Server) Start(ctx context.Context) error {
 		MaxHeaderBytes:    defaultMaxHeaderBytes,
 	}
 
+	// Start the diagnostics listener before the MCP listener, matching the
+	// runner's ordering (pkg/runner/runner.go), so a failure here has nothing to
+	// unwind: nothing has bound or started serving MCP traffic yet. Starting it
+	// after Serve, as an earlier version of this method did, left a window where
+	// an error here returned from Start with the MCP listener already accepting
+	// connections in its background goroutine and s.ready never closed --
+	// anything blocked on Ready() would hang forever.
+	//
+	// A failure here is fatal to Start, matching the runner's choice for the
+	// same tradeoff: metrics are opt-in, so failing loudly at startup beats
+	// silently shipping without the observability #6271 exists to provide. This
+	// is deliberately harder to hit than it looks -- diagnostics.Server.bind
+	// itself retries when the configured port is merely occupied, so what
+	// reaches here is either a genuinely invalid configuration or a machine with
+	// no ports left, not routine contention.
+	if err := s.startDiagnostics(); err != nil {
+		return err
+	}
+
 	// Create listener (allows port 0 to bind to random available port)
 	listener, err := net.Listen("tcp", addr)
 	if err != nil {
+		// Diagnostics already started above; without this, a failure here would
+		// leak its listener and background goroutine, since nothing else on this
+		// path calls Stop.
+		if stopErr := s.stopDiagnostics(ctx); stopErr != nil {
+			slog.Warn("failed to stop diagnostics server after listener creation failed", "error", stopErr)
+		}
 		return fmt.Errorf("failed to create listener: %w", err)
 	}
 
@@ -871,6 +908,10 @@ func (s *Server) Stop(ctx context.Context) error {
 	s.listenerMu.Lock()
 	s.listener = nil
 	s.listenerMu.Unlock()
+
+	if err := s.stopDiagnostics(ctx); err != nil {
+		errs = append(errs, err)
+	}
 
 	// The backend health monitor is stopped by core.Close (the core owns it); Serve registered
 	// a shutdown function that closes the core, run in the loop below.

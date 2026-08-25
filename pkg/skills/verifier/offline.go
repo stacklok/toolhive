@@ -26,7 +26,7 @@ func (*Default) VerifyBundleOffline(bundleBytes []byte, digest string, expected 
 		// reinstalling (or re-adopting) is the fix.
 		return fmt.Errorf("%w: no stored bundle to verify — reinstall to restore it", ErrSignatureInvalid)
 	}
-	vr, err := coreverifier.VerifyBundleOffline(bundleBytes, digest, expectedIdentity(expected))
+	vr, err := coreverifier.VerifyBundleOffline(bundleBytes, digest, expectedIdentity(NewLockExpectation(expected)))
 	if err == nil {
 		return checkStoredBundlePins(vr, expected)
 	}
@@ -40,7 +40,7 @@ func (*Default) VerifyBundleOffline(bundleBytes []byte, digest string, expected 
 		// mismatch apart from a broken signature — and yields the identity
 		// that DID verify, which the error reports.
 		if vr, tofuErr := coreverifier.VerifyBundleOffline(bundleBytes, digest, nil); tofuErr == nil {
-			return signerMismatchError(vr, expected)
+			return signerMismatchError(vr, NewLockExpectation(expected))
 		}
 	}
 	return wrapInvalid(err)

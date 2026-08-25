@@ -24,7 +24,7 @@ The vMCP uses a decorator pattern to wrap backend clients and workflow executors
 with telemetry instrumentation. This approach provides consistent metrics and
 tracing without modifying the core business logic.
 
-The implementation of both metrics and traces can be found in `pkg/vmcp/server/telemetry.go`.
+The implementation of both metrics and traces can be found in `pkg/vmcp/internal/backendtelemetry/backendtelemetry.go`.
 
 ## Metrics
 

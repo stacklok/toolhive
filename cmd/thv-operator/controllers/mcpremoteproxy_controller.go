@@ -459,6 +459,8 @@ func (r *MCPRemoteProxyReconciler) ensureDeployment(
 		// Update template and metadata. Also sync Spec.Replicas when spec.replicas
 		// is non-nil (operator authoritative); preserve it when nil so an HPA or
 		// other external controller can manage scaling.
+		newDeployment.Spec.Template.Annotations = ctrlutil.PreserveKubectlRestartedAt(
+			newDeployment.Spec.Template.Annotations, deployment.Spec.Template.Annotations)
 		deployment.Spec.Template = newDeployment.Spec.Template
 		deployment.Labels = newDeployment.Labels
 		deployment.Annotations = ctrlutil.MergeAnnotations(newDeployment.Annotations, deployment.Annotations)
@@ -562,8 +564,11 @@ func (r *MCPRemoteProxyReconciler) validateSpec(ctx context.Context, proxy *mcpv
 		}
 	}
 
-	// Validate remote URL format (also rejects empty URLs)
-	if err := validation.ValidateRemoteURL(proxy.Spec.RemoteURL); err != nil {
+	// Validate remote URL format (also rejects empty URLs). When the proxy sets
+	// spec.allowPrivateEndpoint, private-network and cluster-internal endpoints
+	// are permitted.
+	urlOpts := validation.ValidateRemoteURLOptions{AllowPrivateEndpoint: proxy.Spec.AllowPrivateEndpoint}
+	if err := validation.ValidateRemoteURL(proxy.Spec.RemoteURL, urlOpts); err != nil {
 		return r.failValidation(proxy, mcpv1beta1.ConditionReasonRemoteURLInvalid, err)
 	}
 
@@ -1829,7 +1834,7 @@ func (r *MCPRemoteProxyReconciler) podTemplateMetadataNeedsUpdate(
 	)
 
 	if proxy.Spec.PodTemplateSpec != nil && len(proxy.Spec.PodTemplateSpec.Raw) > 0 {
-		return !ctrlutil.MapIsSubset(expectedPodTemplateLabels, deployment.Spec.Template.Labels) ||
+		return !maps.Equal(deployment.Spec.Template.Labels, expectedPodTemplateLabels) ||
 			!ctrlutil.MapIsSubset(expectedPodTemplateAnnotations, deployment.Spec.Template.Annotations)
 	}
 
@@ -1837,7 +1842,7 @@ func (r *MCPRemoteProxyReconciler) podTemplateMetadataNeedsUpdate(
 		return true
 	}
 
-	if !maps.Equal(deployment.Spec.Template.Annotations, expectedPodTemplateAnnotations) {
+	if !ctrlutil.MapIsSubset(expectedPodTemplateAnnotations, deployment.Spec.Template.Annotations) {
 		return true
 	}
 

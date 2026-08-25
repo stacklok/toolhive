@@ -3,9 +3,10 @@
 
 // Package verifier verifies Sigstore signatures on skill artifacts.
 //
-// It is a thin wrapper over toolhive-core's container/verifier exports: all
-// cryptographic verification — including binding an expected identity into
-// the Sigstore policy — happens in core. This package adds the
+// It is a thin wrapper over toolhive-core's container/verifier exports. Lock
+// identities are bound into core's Sigstore policy; independently optional
+// catalog constraints are matched against the observed certificate inside
+// each bundle-verification attempt. This package adds the
 // skills-domain vocabulary: lock file provenance conversion, the
 // unsigned/invalid/mismatch error taxonomy, and the trust-on-first-use flow
 // (nil expected identity verifies the chain of trust only; the caller
@@ -34,12 +35,12 @@ import (
 type Verifier interface {
 	// VerifyOCI discovers the Sigstore signature material attached to the
 	// OCI artifact and verifies it (keyless/Fulcio flow). A non-nil
-	// expected identity is enforced inside the Sigstore verification
-	// policy, and its recorded repository ref and runner environment
-	// against the verified certificate; nil expected is the
-	// trust-on-first-use case and verifies the chain of trust only.
+	// lock expectation is enforced inside the Sigstore verification policy;
+	// catalog fields are checked independently against each verified bundle.
+	// nil expected is the trust-on-first-use case and verifies the chain of
+	// trust only.
 	// Returns ErrUnsigned when the artifact carries no signature material.
-	VerifyOCI(ctx context.Context, imageRef, digest string, expected *lockfile.Provenance) (*Result, error)
+	VerifyOCI(ctx context.Context, imageRef, digest string, expected *ProvenanceExpectation) (*Result, error)
 
 	// VerifyOCIWithKey discovers the signature material and verifies it
 	// against the given PEM public key (the cosign key-pair flow).
@@ -48,10 +49,10 @@ type Verifier interface {
 
 	// VerifyGit cryptographically verifies a gitsign commit signature over
 	// the commit payload against the embedded Fulcio roots. A non-nil
-	// expected identity must match the certificate identity; nil expected
-	// is the trust-on-first-use case. Returns ErrUnsigned for an empty
-	// signature.
-	VerifyGit(ctx context.Context, payload, signature []byte, expected *lockfile.Provenance) (*Result, error)
+	// expectation must match the certificate identity according to its lock
+	// or catalog semantics; nil expected is the trust-on-first-use case.
+	// Returns ErrUnsigned for an empty signature.
+	VerifyGit(ctx context.Context, payload, signature []byte, expected *ProvenanceExpectation) (*Result, error)
 
 	// VerifyBundleOffline re-verifies a stored bundle against the artifact
 	// digest ("sha256:<hex>") without network access, enforcing expected

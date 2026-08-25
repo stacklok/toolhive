@@ -74,6 +74,7 @@ type MCPExternalAuthConfigList struct {
 //+kubebuilder:subresource:status
 //+kubebuilder:resource:shortName=mcpg;mcpgroup,categories=toolhive
 //+kubebuilder:printcolumn:name="Servers",type="integer",JSONPath=".status.serverCount"
+//+kubebuilder:printcolumn:name="Proxies",type="integer",JSONPath=".status.remoteProxyCount"
 //+kubebuilder:printcolumn:name="Phase",type="string",JSONPath=".status.phase"
 //+kubebuilder:printcolumn:name="Checked",type="string",JSONPath=".status.conditions[?(@.type=='MCPServersChecked')].status"
 //+kubebuilder:printcolumn:name="Age",type="date",JSONPath=".metadata.creationTimestamp"

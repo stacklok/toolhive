@@ -11,8 +11,8 @@ import (
 	"slices"
 	"strings"
 
+	celgo "cel.dev/cel-go/cel"
 	"github.com/aws/aws-sdk-go-v2/aws/arn"
-	celgo "github.com/google/cel-go/cel"
 
 	"github.com/stacklok/toolhive-core/cel"
 )

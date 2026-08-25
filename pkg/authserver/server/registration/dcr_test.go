@@ -581,6 +581,53 @@ func TestValidatePrivateKeyJWTRegistration(t *testing.T) {
 		})
 	}
 }
+func TestPrivateKeyJWTAllowsTokenExchangeWithoutRedirectURI(t *testing.T) {
+	t.Parallel()
+
+	request := &oauthproto.DynamicClientRegistrationRequest{
+		TokenEndpointAuthMethod:     oauthproto.TokenEndpointAuthMethodPrivateKeyJWT,
+		TokenEndpointAuthSigningAlg: string(jose.RS256),
+		GrantTypes:                  []string{oauthproto.GrantTypeTokenExchange},
+		JWKS: &jose.JSONWebKeySet{Keys: []jose.JSONWebKey{{
+			Key: &rsa.PublicKey{N: big.NewInt(3), E: 3}, KeyID: "key-1", Use: "sig",
+		}}},
+	}
+
+	validated, err := ValidateDCRRequest(request, false, true)
+	require.Nil(t, err)
+	assert.Empty(t, validated.RedirectURIs)
+	assert.Empty(t, validated.ResponseTypes)
+}
+
+func TestNonPrivateKeyJWTDropsJWKSMetadata(t *testing.T) {
+	t.Parallel()
+
+	validated, err := ValidateDCRRequest(&oauthproto.DynamicClientRegistrationRequest{
+		RedirectURIs:                []string{"http://127.0.0.1/callback"},
+		JWKS:                        &jose.JSONWebKeySet{Keys: []jose.JSONWebKey{{Key: []byte("secret")}}},
+		JWKSURI:                     "https://keys.example/jwks",
+		TokenEndpointAuthSigningAlg: "RS256",
+	}, false, false)
+	require.Nil(t, err)
+	assert.Nil(t, validated.JWKS)
+	assert.Empty(t, validated.JWKSURI)
+	assert.Empty(t, validated.TokenEndpointAuthSigningAlg)
+}
+
+func TestPrivateKeyJWTAllowsJWKWithoutAlgorithm(t *testing.T) {
+	t.Parallel()
+
+	validated, err := ValidateDCRRequest(&oauthproto.DynamicClientRegistrationRequest{
+		TokenEndpointAuthMethod:     oauthproto.TokenEndpointAuthMethodPrivateKeyJWT,
+		TokenEndpointAuthSigningAlg: string(jose.RS256),
+		GrantTypes:                  []string{oauthproto.GrantTypeTokenExchange},
+		JWKS: &jose.JSONWebKeySet{Keys: []jose.JSONWebKey{{
+			Key: &rsa.PublicKey{N: big.NewInt(3), E: 3}, KeyID: "key-1", Use: "sig",
+		}}},
+	}, false, true)
+	require.Nil(t, err)
+	assert.Empty(t, validated.JWKS.Keys[0].Algorithm)
+}
 func TestValidateScopes(t *testing.T) {
 	t.Parallel()
 

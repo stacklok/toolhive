@@ -23,6 +23,11 @@ a `client_assertion` with its private key. It is not the RFC 7523 §2.1
 JWT-bearer grant, which uses a JWT as the grant assertion itself and does not
 authenticate a registered client. The two mechanisms are independent.
 
+ToolHive requires every registered private-key JWT JWK to be public, have
+`use: "sig"`, and identify a signing algorithm compatible with the registered
+`token_endpoint_auth_signing_alg`. ToolHive requires this explicit `use` value
+even though the JWK specification makes the member optional.
+
 ## Deployment and configuration
 
 RFC 8693 is reachable through a pre-provisioned **delegate client**. A delegate

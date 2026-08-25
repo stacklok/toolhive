@@ -53,10 +53,11 @@ var _ = ginkgo.Describe("VirtualMCPServer private_key_jwt DCR delegation", ginkg
 		oidcIssuer                                                string
 		oidcLocalPort                                             int
 		cleanupDexFn, oidcCleanupFn, oidcPortForwardCleanup       func()
-		clientKey                                                 *rsa.PrivateKey
+		clientKey, serverKey                                      *rsa.PrivateKey
 	)
 
 	ginkgo.BeforeAll(func() {
+		var err error
 		suffix := fmt.Sprintf("%d-%d", ginkgo.GinkgoParallelProcess(), time.Now().UnixNano())
 		backendName = "e2e-pkjwt-backend-" + suffix
 		dexName = "e2e-pkjwt-dex-" + suffix
@@ -69,15 +70,16 @@ var _ = ginkgo.Describe("VirtualMCPServer private_key_jwt DCR delegation", ginkg
 		oidcConfigName = "e2e-pkjwt-oidccfg-" + suffix
 		issuer = fmt.Sprintf("https://vmcp-%s.%s.svc.cluster.local:4483", vmcpName, defaultNamespace)
 
-		privateKey, err := rsa.GenerateKey(rand.Reader, 2048)
+		clientKey, err = rsa.GenerateKey(rand.Reader, 2048)
 		gomega.Expect(err).NotTo(gomega.HaveOccurred())
-		clientKey = privateKey
+		serverKey, err = rsa.GenerateKey(rand.Reader, 2048)
+		gomega.Expect(err).NotTo(gomega.HaveOccurred())
 		hmac := make([]byte, 32)
 		_, err = rand.Read(hmac)
 		gomega.Expect(err).NotTo(gomega.HaveOccurred())
 		gomega.Expect(k8sClient.Create(ctx, &corev1.Secret{
 			ObjectMeta: metav1.ObjectMeta{Name: signingKeySecretName, Namespace: defaultNamespace},
-			Data:       map[string][]byte{"private-key": pemEncodePKCS1(privateKey)},
+			Data:       map[string][]byte{"private-key": pemEncodePKCS1(serverKey)},
 		})).To(gomega.Succeed())
 		gomega.Expect(k8sClient.Create(ctx, &corev1.Secret{
 			ObjectMeta: metav1.ObjectMeta{Name: hmacSecretName, Namespace: defaultNamespace},
@@ -170,15 +172,22 @@ var _ = ginkgo.Describe("VirtualMCPServer private_key_jwt DCR delegation", ginkg
 		gomega.Expect(ok).To(gomega.BeTrue())
 		gomega.Expect(act["sub"]).To(gomega.Equal(registered.ClientID))
 
+		wrongKeyAssertion := signPrivateKeyJWTAssertion(serverKey, registered.ClientID, issuer+"/oauth/token", "private-key-jwt-wrong-key")
+		status, body = requestPrivateKeyJWTExchange(endpoint, registered.ClientID, wrongKeyAssertion, subjectToken, issuer)
+		gomega.Expect(status).To(gomega.Equal(http.StatusUnauthorized), string(body))
+
 		status, body = requestPrivateKeyJWTExchange(endpoint, registered.ClientID, assertion, subjectToken, issuer)
-		gomega.Expect(status).NotTo(gomega.Equal(http.StatusOK), "a replayed client assertion must not issue a token: %s", body)
+		gomega.Expect(status).To(gomega.Equal(http.StatusBadRequest), string(body))
+		var replayError map[string]any
+		gomega.Expect(json.Unmarshal(body, &replayError)).To(gomega.Succeed())
+		gomega.Expect(replayError["error"]).To(gomega.Equal("jti_known"))
 	})
 })
 
 func registerPrivateKeyJWTClient(endpoint string, privateKey *rsa.PrivateKey) oauthproto.DynamicClientRegistrationResponse {
 	jwks := &josev3.JSONWebKeySet{Keys: []josev3.JSONWebKey{{Key: privateKey.Public(), KeyID: "dcr-client-key", Algorithm: "RS256", Use: "sig"}}}
 	requestBody, err := json.Marshal(oauthproto.DynamicClientRegistrationRequest{
-		RedirectURIs: []string{"http://localhost:19999/callback"}, TokenEndpointAuthMethod: oauthproto.TokenEndpointAuthMethodPrivateKeyJWT,
+		RedirectURIs: []string{}, TokenEndpointAuthMethod: oauthproto.TokenEndpointAuthMethodPrivateKeyJWT,
 		TokenEndpointAuthSigningAlg: "RS256", GrantTypes: []string{oauthproto.GrantTypeTokenExchange}, JWKS: jwks,
 	})
 	gomega.Expect(err).NotTo(gomega.HaveOccurred())

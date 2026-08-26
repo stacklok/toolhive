@@ -158,7 +158,13 @@ func TestMultiIssuerTokenValidator_ExternalIssuerCABundle(t *testing.T) {
 		result, err := validator.Validate(context.Background(), externalJWKS.signToken(t, externalClaims(), map[string]any{"azp": "ext-agent"}))
 		require.Error(t, err)
 		assert.Nil(t, result)
-		assert.Contains(t, err.Error(), "x509")
+		// jwx's httprc layer does not propagate the x509 cause: the registration
+		// fails as "resource registered but not ready" once the fetch times out.
+		// Assert on the stage that failed instead, which together with the
+		// success case above pins the bundle as the load-bearing difference.
+		assert.Contains(t, err.Error(), "failed to fetch JWKS")
+		// This subtest waits out httpTimeout (10s) because the fetch context is
+		// detached from the caller's, so a shorter context here cannot bound it.
 	})
 
 	t.Run("unreadable bundle fails construction", func(t *testing.T) {

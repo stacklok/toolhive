@@ -31,4 +31,4 @@ spec:
           caBundleRef:
             configMapRef:
               name: upstream-private-ca
-              # key defaults to ca.crt
+              key: ca.crt

@@ -31,12 +31,12 @@ func TestResolveMetricsOnTransportPort(t *testing.T) {
 		{
 			name: "explicit true is recorded",
 			args: []string{"--otel-metrics-on-transport-port=true"},
-			want: ptr(true),
+			want: boolPtr(true),
 		},
 		{
 			name: "explicit false is recorded",
 			args: []string{"--otel-metrics-on-transport-port=false"},
-			want: ptr(false),
+			want: boolPtr(false),
 		},
 	}
 
@@ -61,5 +61,3 @@ func TestResolveMetricsOnTransportPort(t *testing.T) {
 		})
 	}
 }
-
-func ptr[T any](v T) *T { return &v }

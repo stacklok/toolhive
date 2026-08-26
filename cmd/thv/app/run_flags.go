@@ -276,7 +276,8 @@ func AddRunFlags(cmd *cobra.Command, config *RunFlags) {
 		"OpenTelemetry OTLP headers in key=value format (e.g., x-honeycomb-team=your-api-key)")
 	cmd.Flags().BoolVar(&config.OtelInsecure, "otel-insecure", false,
 		"Connect to the OpenTelemetry endpoint using HTTP instead of HTTPS (default false)")
-	cmd.Flags().BoolVar(&config.OtelMetricsOnTransportPort, "otel-metrics-on-transport-port", true,
+	cmd.Flags().BoolVar(&config.OtelMetricsOnTransportPort, "otel-metrics-on-transport-port",
+		telemetry.DefaultMetricsOnTransportPort,
 		"Also serve Prometheus /metrics on the transport port, alongside the diagnostics port. "+
 			"Deprecated: this is a migration aid and the default will become false; "+
 			"see https://github.com/stacklok/toolhive/issues/6384 for the timeline. "+

@@ -874,10 +874,6 @@ type PrometheusConfig struct {
 	//
 	// See https://github.com/stacklok/toolhive/issues/6384 for the removal timeline.
 	//
-	// Deliberately has no default marker. A default would be materialised into the
-	// object at admission, so every MCPTelemetryConfig created during the window
-	// would carry the window's value permanently and the cutover would not move it.
-	//
 	// +optional
 	MetricsOnTransportPort *bool `json:"metricsOnTransportPort,omitempty"`
 }

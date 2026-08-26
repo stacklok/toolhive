@@ -610,10 +610,6 @@ func WithTelemetryConfigFromFlags(
 // main transport port. Nil means the caller expressed no preference and the current
 // default applies at startup; see telemetry.DefaultMetricsOnTransportPort.
 //
-// Deliberately a separate option rather than another parameter on the telemetry
-// constructors: the field is transitional and removing it later should touch one
-// function, not two long positional signatures.
-//
 // Must be applied after the telemetry configuration; it is a no-op when telemetry is
 // disabled, since there is no config to record it on.
 func WithMetricsOnTransportPort(v *bool) RunConfigBuilderOption {

@@ -1,0 +1,375 @@
+// SPDX-FileCopyrightText: Copyright 2025 Stacklok, Inc.
+// SPDX-License-Identifier: Apache-2.0
+
+package pluginsvc
+
+import (
+	"fmt"
+	"net/http"
+	"os"
+	"strings"
+	"testing"
+
+	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
+	"go.uber.org/mock/gomock"
+
+	"github.com/stacklok/toolhive-core/httperr"
+	"github.com/stacklok/toolhive/pkg/plugins"
+	"github.com/stacklok/toolhive/pkg/skills/lockfile"
+	"github.com/stacklok/toolhive/pkg/skills/verifier"
+	verifiermocks "github.com/stacklok/toolhive/pkg/skills/verifier/mocks"
+)
+
+const (
+	testSignerIdentity = "/.github/workflows/release.yml"
+	testCertIssuer     = "https://token.actions.githubusercontent.com"
+)
+
+func signedResult() *verifier.Result {
+	return &verifier.Result{
+		Signed:         true,
+		SignerIdentity: testSignerIdentity,
+		CertIssuer:     testCertIssuer,
+		RepositoryURI:  "https://github.com/org/repo",
+		SigstoreURL:    "https://rekor.sigstore.dev",
+		Bundle:         []byte(`{"bundle":true}`),
+	}
+}
+
+// alwaysSignedVerifier reports every artifact as signed by the fixed test
+// identity, so tests exercising lock/sync/upgrade mechanics don't trip
+// install-time verification.
+func alwaysSignedVerifier(t *testing.T) verifier.Verifier {
+	t.Helper()
+	mv := verifiermocks.NewMockVerifier(gomock.NewController(t))
+	mv.EXPECT().VerifyGit(gomock.Any(), gomock.Any(), gomock.Any(), gomock.Any()).
+		AnyTimes().Return(signedResult(), nil)
+	mv.EXPECT().VerifyOCI(gomock.Any(), gomock.Any(), gomock.Any(), gomock.Any()).
+		AnyTimes().Return(signedResult(), nil)
+	return mv
+}
+
+// loadPluginLockEntry reads the fixture plugin's lock entry from projectRoot.
+func loadPluginLockEntry(t *testing.T, projectRoot string) (lockfile.Entry, bool) {
+	t.Helper()
+	return readLockfile(t, projectRoot).GetPlugin("my-plugin")
+}
+
+// gitInstall installs the fixture git plugin project-scoped.
+func gitInstall(t *testing.T, svc plugins.PluginService, projectRoot string, mutate func(*plugins.InstallOptions)) error {
+	t.Helper()
+	opts := plugins.InstallOptions{
+		Name:        gitPluginRef,
+		Scope:       plugins.ScopeProject,
+		ProjectRoot: projectRoot,
+		Clients:     []string{"claude-code"},
+	}
+	if mutate != nil {
+		mutate(&opts)
+	}
+	_, err := svc.Install(t.Context(), opts)
+	return err
+}
+
+//nolint:paralleltest // uses t.Setenv via newGitLockTestService
+func TestInstallVerification_TOFURecordsProvenance(t *testing.T) {
+	repoDir := createPluginTestRepo(t, "")
+	mv := verifiermocks.NewMockVerifier(gomock.NewController(t))
+	// First install: no lock entry yet — trust on first use, nil expected.
+	mv.EXPECT().VerifyGit(gomock.Any(), gomock.Any(), gomock.Any(), gomock.Nil()).
+		Return(signedResult(), nil)
+
+	svc, projectRoot := newGitLockTestService(t, repoDir, WithVerifier(mv))
+	require.NoError(t, gitInstall(t, svc, projectRoot, nil))
+
+	entry, ok := loadPluginLockEntry(t, projectRoot)
+	require.True(t, ok)
+	require.NotNil(t, entry.Provenance, "TOFU must record the observed identity")
+	assert.Equal(t, testSignerIdentity, entry.Provenance.SignerIdentity)
+	assert.Equal(t, testCertIssuer, entry.Provenance.CertIssuer)
+	assert.False(t, entry.Unsigned)
+
+	stored, err := svc.Info(t.Context(), plugins.InfoOptions{
+		Name: "my-plugin", Scope: plugins.ScopeProject, ProjectRoot: projectRoot,
+	})
+	require.NoError(t, err)
+	assert.Equal(t, []byte(`{"bundle":true}`), stored.InstalledPlugin.SigstoreBundle,
+		"the bundle must be persisted with the install record for offline re-verification")
+
+	// Second install: the recorded identity must flow into the verifier as
+	// the expected identity.
+	mv.EXPECT().VerifyGit(gomock.Any(), gomock.Any(), gomock.Any(), gomock.Any()).
+		DoAndReturn(func(_ any, _, _ []byte, expected *verifier.ProvenanceExpectation) (*verifier.Result, error) {
+			require.NotNil(t, expected, "the second install must enforce the recorded identity")
+			assert.Equal(t, verifier.NewLockExpectation(entry.Provenance), expected)
+			return signedResult(), nil
+		})
+	require.NoError(t, gitInstall(t, svc, projectRoot, func(o *plugins.InstallOptions) { o.Force = true }))
+}
+
+//nolint:paralleltest // uses t.Setenv via newGitLockTestService
+func TestInstallVerification_UnsignedRejectedWithoutFlag(t *testing.T) {
+	repoDir := createPluginTestRepo(t, "")
+	mv := verifiermocks.NewMockVerifier(gomock.NewController(t))
+	mv.EXPECT().VerifyGit(gomock.Any(), gomock.Any(), gomock.Any(), gomock.Nil()).
+		Return(nil, verifier.ErrUnsigned)
+
+	svc, projectRoot := newGitLockTestService(t, repoDir, WithVerifier(mv))
+	err := gitInstall(t, svc, projectRoot, nil)
+	require.Error(t, err)
+	assert.Equal(t, http.StatusForbidden, httperr.Code(err))
+
+	_, ok := loadPluginLockEntry(t, projectRoot)
+	assert.False(t, ok, "a rejected install must not write a lock entry")
+	_, err = svc.Info(t.Context(), plugins.InfoOptions{
+		Name: "my-plugin", Scope: plugins.ScopeProject, ProjectRoot: projectRoot,
+	})
+	require.Error(t, err, "a rejected install must not create a DB record")
+}
+
+//nolint:paralleltest // uses t.Setenv via newGitLockTestService
+func TestInstallVerification_UnsignedAcceptedWithFlag(t *testing.T) {
+	repoDir := createPluginTestRepo(t, "")
+	mv := verifiermocks.NewMockVerifier(gomock.NewController(t))
+	mv.EXPECT().VerifyGit(gomock.Any(), gomock.Any(), gomock.Any(), gomock.Nil()).
+		Return(nil, verifier.ErrUnsigned)
+
+	svc, projectRoot := newGitLockTestService(t, repoDir, WithVerifier(mv))
+	require.NoError(t, gitInstall(t, svc, projectRoot,
+		func(o *plugins.InstallOptions) { o.AllowUnsigned = true }))
+
+	entry, ok := loadPluginLockEntry(t, projectRoot)
+	require.True(t, ok)
+	assert.True(t, entry.Unsigned, "the unsigned exception must be recorded")
+	assert.Nil(t, entry.Provenance)
+
+	stored, err := svc.Info(t.Context(), plugins.InfoOptions{
+		Name: "my-plugin", Scope: plugins.ScopeProject, ProjectRoot: projectRoot,
+	})
+	require.NoError(t, err)
+	assert.Nil(t, stored.InstalledPlugin.SigstoreBundle, "an unsigned install stores no bundle")
+}
+
+//nolint:paralleltest // uses t.Setenv via newGitLockTestService
+func TestInstallVerification_SignerMismatchRejectedAndLockIntact(t *testing.T) {
+	repoDir := createPluginTestRepo(t, "")
+	mv := verifiermocks.NewMockVerifier(gomock.NewController(t))
+	mv.EXPECT().VerifyGit(gomock.Any(), gomock.Any(), gomock.Any(), gomock.Nil()).
+		Return(signedResult(), nil)
+
+	svc, projectRoot := newGitLockTestService(t, repoDir, WithVerifier(mv))
+	require.NoError(t, gitInstall(t, svc, projectRoot, nil))
+
+	// The re-install is signed by someone else: the verifier reports a
+	// mismatch (the expected identity was bound into its policy).
+	mv.EXPECT().VerifyGit(gomock.Any(), gomock.Any(), gomock.Any(), gomock.Any()).
+		Return(nil, verifier.ErrSignerMismatch)
+	err := gitInstall(t, svc, projectRoot, func(o *plugins.InstallOptions) { o.Force = true })
+	require.Error(t, err)
+	assert.Equal(t, http.StatusForbidden, httperr.Code(err))
+
+	// The prior trusted state is untouched.
+	entry, ok := loadPluginLockEntry(t, projectRoot)
+	require.True(t, ok)
+	require.NotNil(t, entry.Provenance)
+	assert.Equal(t, testSignerIdentity, entry.Provenance.SignerIdentity)
+}
+
+//nolint:paralleltest // uses t.Setenv via newGitLockTestService
+func TestInstallVerification_LockedUnsignedRequiresFlagAgain(t *testing.T) {
+	repoDir := createPluginTestRepo(t, "")
+	mv := verifiermocks.NewMockVerifier(gomock.NewController(t))
+	mv.EXPECT().VerifyGit(gomock.Any(), gomock.Any(), gomock.Any(), gomock.Nil()).
+		Return(nil, verifier.ErrUnsigned)
+
+	svc, projectRoot := newGitLockTestService(t, repoDir, WithVerifier(mv))
+	require.NoError(t, gitInstall(t, svc, projectRoot,
+		func(o *plugins.InstallOptions) { o.AllowUnsigned = true }))
+
+	// Reinstall without the flag: the locked unsigned exception does not
+	// silently renew — the verifier is not even consulted (the mock has no
+	// second expectation, so a call would fail the test).
+	err := gitInstall(t, svc, projectRoot, func(o *plugins.InstallOptions) { o.Force = true })
+	require.Error(t, err)
+	assert.Equal(t, http.StatusForbidden, httperr.Code(err))
+}
+
+// TestInstallVerification_LockDrivenInstallHonorsRecordedTrust proves a sync
+// restore of an unsigned-locked entry does not demand the flag again: the
+// lock file already records the decision the restore is materializing.
+//
+//nolint:paralleltest // uses t.Setenv via newGitLockTestService
+func TestInstallVerification_LockDrivenInstallHonorsRecordedTrust(t *testing.T) {
+	repoDir := createPluginTestRepo(t, "")
+	mv := verifiermocks.NewMockVerifier(gomock.NewController(t))
+	mv.EXPECT().VerifyGit(gomock.Any(), gomock.Any(), gomock.Any(), gomock.Nil()).
+		Return(nil, verifier.ErrUnsigned)
+
+	svc, projectRoot := newGitLockTestService(t, repoDir, WithVerifier(mv))
+	require.NoError(t, gitInstall(t, svc, projectRoot,
+		func(o *plugins.InstallOptions) { o.AllowUnsigned = true }))
+
+	// Drop the install so sync has to restore it from the lock entry.
+	inner := svc.(*service) //nolint:forcetypeassert
+	require.NoError(t, os.RemoveAll(pluginOnDiskPath(projectRoot, "my-plugin")))
+	require.NoError(t, inner.store.Delete(t.Context(), "my-plugin", plugins.ScopeProject, projectRoot))
+
+	result, err := inner.Sync(t.Context(), plugins.SyncOptions{ProjectRoot: projectRoot})
+	require.NoError(t, err)
+	assert.Equal(t, []string{"my-plugin"}, result.Installed, "the restore must not demand allow_unsigned")
+	assert.Empty(t, result.Failed)
+
+	entry, ok := loadPluginLockEntry(t, projectRoot)
+	require.True(t, ok)
+	assert.True(t, entry.Unsigned, "the restore keeps the recorded trust state")
+}
+
+//nolint:paralleltest // uses t.Setenv via newLockTestService
+func TestInstallVerification_UserScopeSkipsVerification(t *testing.T) {
+	repoDir := createPluginTestRepo(t, "")
+	// The mock has no expectations: any verifier call fails the test.
+	mv := verifiermocks.NewMockVerifier(gomock.NewController(t))
+
+	svc, _ := newGitLockTestService(t, repoDir, WithVerifier(mv))
+	_, err := svc.Install(t.Context(), plugins.InstallOptions{
+		Name:    gitPluginRef,
+		Scope:   plugins.ScopeUser,
+		Clients: []string{"claude-code"},
+	})
+	require.NoError(t, err)
+}
+
+// TestInstallVerification_GateDisabledSkipsVerification pins the feature-gate
+// scoping: with the plugins lock file off there is nowhere to anchor trust on
+// first use, so verification must not run at all.
+//
+//nolint:paralleltest // uses t.Setenv
+func TestInstallVerification_GateDisabledSkipsVerification(t *testing.T) {
+	svc, projectRoot := newLockTestService(t, false, WithVerifier(
+		verifiermocks.NewMockVerifier(gomock.NewController(t)), // no expectations
+	))
+	_, err := svc.Install(t.Context(), plugins.InstallOptions{
+		Name:        "my-plugin",
+		LayerData:   makePluginLayerData(t, "my-plugin"),
+		Digest:      validLockDigest(),
+		Scope:       plugins.ScopeProject,
+		ProjectRoot: projectRoot,
+		Clients:     []string{"claude-code"},
+	})
+	require.NoError(t, err, "an unsigned local install must not be rejected while the gate is off")
+}
+
+func TestVerifyLocalInstall(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name     string
+		opts     plugins.InstallOptions
+		entry    *lockfile.Entry
+		wantErr  bool
+		unsigned bool
+	}{
+		{
+			name:    "no flag rejected",
+			opts:    plugins.InstallOptions{},
+			wantErr: true,
+		},
+		{
+			name:     "flag records unsigned",
+			opts:     plugins.InstallOptions{AllowUnsigned: true},
+			unsigned: true,
+		},
+		{
+			name: "locked identity refuses local replacement even with flag",
+			opts: plugins.InstallOptions{AllowUnsigned: true},
+			entry: &lockfile.Entry{
+				Name:              "local-plugin",
+				Source:            "example.com/org/local-plugin",
+				ResolvedReference: "example.com/org/local-plugin:v1",
+				Digest:            "sha256:" + strings.Repeat("a", 64),
+				Provenance: &lockfile.Provenance{
+					SignerIdentity: testSignerIdentity,
+					CertIssuer:     testCertIssuer,
+				},
+			},
+			wantErr: true,
+		},
+		{
+			name: "locked unsigned honored with flag",
+			opts: plugins.InstallOptions{AllowUnsigned: true},
+			entry: &lockfile.Entry{
+				Name:              "local-plugin",
+				Source:            "example.com/org/local-plugin",
+				ResolvedReference: "example.com/org/local-plugin:v1",
+				Digest:            "sha256:" + strings.Repeat("a", 64),
+				Unsigned:          true,
+			},
+			unsigned: true,
+		},
+		{
+			name:     "lock-driven upgrade of a local build needs no flag",
+			opts:     plugins.InstallOptions{ExpectedCanonicalName: "local-plugin"},
+			unsigned: true,
+		},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			projectRoot := makeProjectRoot(t)
+			if tc.entry != nil {
+				require.NoError(t, lockfile.UpsertPluginEntry(mustOpenRoot(t, projectRoot), *tc.entry))
+			}
+			opts := tc.opts
+			opts.ProjectRoot = projectRoot
+
+			decision, err := verifyLocalInstall(opts, "local-plugin")
+			if tc.wantErr {
+				require.Error(t, err)
+				assert.Equal(t, http.StatusForbidden, httperr.Code(err))
+				return
+			}
+			require.NoError(t, err)
+			assert.Equal(t, tc.unsigned, decision.unsigned)
+			assert.Nil(t, decision.provenance)
+		})
+	}
+}
+
+func TestClassifySignatureError(t *testing.T) {
+	t.Parallel()
+	assert.Equal(t, plugins.FailureReasonSignerMismatch, classifySignatureError(verifier.ErrSignerMismatch))
+	assert.Equal(t, plugins.FailureReasonUnsignedRejected, classifySignatureError(verifier.ErrUnsigned))
+	assert.Equal(t, plugins.FailureReasonSignatureInvalid, classifySignatureError(verifier.ErrSignatureInvalid))
+	assert.Equal(t, plugins.FailureReason(""), classifySignatureError(assert.AnError))
+
+	// A pinned ref/runner mismatch satisfies errors.Is against BOTH
+	// ErrSignerMismatch and ErrProvenanceFieldMismatch (see
+	// verifier.pinnedFieldMismatch) — the more specific reason must win, or
+	// every version bump on a ref-pinned plugin would misreport as a
+	// publisher change rather than a provenance-field change.
+	fieldMismatch := fmt.Errorf("%w: %w: locked to repository ref, but the artifact carries a different one",
+		verifier.ErrSignerMismatch, verifier.ErrProvenanceFieldMismatch)
+	assert.Equal(t, plugins.FailureReasonProvenanceFieldMismatch, classifySignatureError(fieldMismatch))
+}
+
+// TestClassifyInstallVerifyErrorDistinguishesProvenanceField covers the
+// install-time (403) classification alongside TestClassifySignatureError's
+// sync/upgrade coverage: a pinned ref/runner mismatch must not be reported
+// to the operator as a signer-identity change.
+func TestClassifyInstallVerifyErrorDistinguishesProvenanceField(t *testing.T) {
+	t.Parallel()
+
+	fieldMismatch := fmt.Errorf("%w: %w: locked to repository ref, but the artifact carries a different one",
+		verifier.ErrSignerMismatch, verifier.ErrProvenanceFieldMismatch)
+	err := classifyInstallVerifyError(fieldMismatch, "some-plugin", &lockfile.Provenance{SignerIdentity: testSignerIdentity})
+	assert.Contains(t, err.Error(), "no longer matches its pinned provenance",
+		"a provenance-field mismatch must lead with the field-specific wording, not the identity one")
+	assert.NotContains(t, err.Error(), "signer identity mismatch for",
+		"the identity-specific phrasing (distinct from ErrSignerMismatch's own wrapped message text) must not appear")
+
+	identityMismatch := classifyInstallVerifyError(
+		verifier.ErrSignerMismatch, "some-plugin", &lockfile.Provenance{SignerIdentity: testSignerIdentity})
+	assert.Contains(t, identityMismatch.Error(), "signer identity mismatch for",
+		"a genuine signer-identity mismatch keeps its existing wording")
+}

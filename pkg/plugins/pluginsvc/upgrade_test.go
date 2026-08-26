@@ -219,12 +219,13 @@ func TestUpgrade_PlainNameResolvesLocalStoreWithoutRegistry(t *testing.T) {
 	inner.pluginLookup = lookup
 
 	_, err = svc.Install(t.Context(), plugins.InstallOptions{
-		Name:        "my-plugin",
-		LayerData:   makePluginLayerData(t, "my-plugin"),
-		Digest:      validLockDigest(),
-		Scope:       plugins.ScopeProject,
-		ProjectRoot: projectRoot,
-		Clients:     []string{"claude-code"},
+		Name:          "my-plugin",
+		LayerData:     makePluginLayerData(t, "my-plugin"),
+		AllowUnsigned: true,
+		Digest:        validLockDigest(),
+		Scope:         plugins.ScopeProject,
+		ProjectRoot:   projectRoot,
+		Clients:       []string{"claude-code"},
 	})
 	require.NoError(t, err)
 	lookup.n = 0
@@ -252,12 +253,13 @@ func TestUpgrade_AppliesSameNameLocalTagWithoutRegistry(t *testing.T) {
 	inner.pluginLookup = lookup
 
 	_, err = svc.Install(t.Context(), plugins.InstallOptions{
-		Name:        "my-plugin",
-		LayerData:   makePluginLayerData(t, "my-plugin"),
-		Digest:      validLockDigest(),
-		Scope:       plugins.ScopeProject,
-		ProjectRoot: projectRoot,
-		Clients:     []string{"claude-code"},
+		Name:          "my-plugin",
+		LayerData:     makePluginLayerData(t, "my-plugin"),
+		AllowUnsigned: true,
+		Digest:        validLockDigest(),
+		Scope:         plugins.ScopeProject,
+		ProjectRoot:   projectRoot,
+		Clients:       []string{"claude-code"},
 	})
 	require.NoError(t, err)
 	lookup.n = 0
@@ -308,12 +310,13 @@ func TestUpgrade_AppliesDifferentlyNamedLocalTagWithoutRegistry(t *testing.T) {
 	inner.pluginLookup = lookup
 
 	_, err = svc.Install(t.Context(), plugins.InstallOptions{
-		Name:        "my-plugin",
-		LayerData:   makePluginLayerData(t, "my-plugin"),
-		Digest:      validLockDigest(),
-		Scope:       plugins.ScopeProject,
-		ProjectRoot: projectRoot,
-		Clients:     []string{"claude-code"},
+		Name:          "my-plugin",
+		LayerData:     makePluginLayerData(t, "my-plugin"),
+		AllowUnsigned: true,
+		Digest:        validLockDigest(),
+		Scope:         plugins.ScopeProject,
+		ProjectRoot:   projectRoot,
+		Clients:       []string{"claude-code"},
 	})
 	require.NoError(t, err)
 	lookup.n = 0
@@ -350,12 +353,13 @@ func TestUpgrade_PlainNameFallsBackToRegistryWhenLocalMisses(t *testing.T) {
 	inner.ociStore = ociStore
 
 	_, err = svc.Install(t.Context(), plugins.InstallOptions{
-		Name:        "my-plugin",
-		LayerData:   makePluginLayerData(t, "my-plugin"),
-		Digest:      validLockDigest(),
-		Scope:       plugins.ScopeProject,
-		ProjectRoot: projectRoot,
-		Clients:     []string{"claude-code"},
+		Name:          "my-plugin",
+		LayerData:     makePluginLayerData(t, "my-plugin"),
+		AllowUnsigned: true,
+		Digest:        validLockDigest(),
+		Scope:         plugins.ScopeProject,
+		ProjectRoot:   projectRoot,
+		Clients:       []string{"claude-code"},
 	})
 	require.NoError(t, err)
 

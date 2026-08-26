@@ -50,9 +50,9 @@ func (s *service) installFromGit(
 
 	gitURL := opts.Name
 
-	// head carries the resolved commit's hash plus its (unverified) gitsign
-	// signature and signed payload. Only the hash is consumed today; the
-	// signature and payload are carried for install-time verification.
+	// head carries the resolved commit's hash (the install digest) plus its
+	// gitsign signature and the payload it covers, which install-time
+	// verification checks below before anything is written.
 	files, manifest, head, err := s.cloneAndCollectPlugin(ctx, gitRef)
 	if err != nil {
 		return nil, httperr.WithCode(
@@ -103,6 +103,17 @@ func (s *service) installFromGit(
 		var unlock func()
 		ctx, unlock = s.lockPlugin(ctx, opts.Name, scope, opts.ProjectRoot)
 		defer unlock()
+	}
+
+	// Verify the commit signature before anything is written or recorded.
+	// This runs under the per-plugin lock so concurrent first installs
+	// cannot both read an absent lock entry and race their TOFU anchors.
+	if shouldVerifyInstall(opts, scope) {
+		decision, verifyErr := s.verifyGitInstall(ctx, opts, manifest.Name, head.Payload, head.Signature)
+		if verifyErr != nil {
+			return nil, verifyErr
+		}
+		applyDecisionToOpts(&opts, decision)
 	}
 
 	result, err := s.installWithExtraction(ctx, opts, scope)

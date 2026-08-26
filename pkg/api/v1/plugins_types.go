@@ -31,6 +31,10 @@ type installPluginRequest struct {
 	Clients []string `json:"clients,omitempty"`
 	// Force allows overwriting unmanaged plugin directories
 	Force bool `json:"force,omitempty"`
+	// AllowUnsigned permits installing a project-scoped plugin without a
+	// verified signature; the exception is recorded in the project's lock
+	// file.
+	AllowUnsigned bool `json:"allow_unsigned,omitempty"`
 	// Group is the group name to add the plugin to after installation
 	Group string `json:"group,omitempty"`
 }

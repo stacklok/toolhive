@@ -3216,6 +3216,12 @@ components:
     pkg_api_v1.installPluginRequest:
       description: Request to install a plugin
       properties:
+        allow_unsigned:
+          description: |-
+            AllowUnsigned permits installing a project-scoped plugin without a
+            verified signature; the exception is recorded in the project's lock
+            file.
+          type: boolean
         clients:
           description: |-
             Clients lists target client identifiers (e.g., "claude-code"),

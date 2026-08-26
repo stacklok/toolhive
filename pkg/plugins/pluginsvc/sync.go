@@ -527,6 +527,9 @@ func classifySyncFailure(err error) plugins.FailureReason {
 	if errors.Is(err, errLockWrite) {
 		return plugins.FailureReasonLockWriteFailed
 	}
+	if reason := classifySignatureError(err); reason != "" {
+		return reason
+	}
 	switch httperr.Code(err) {
 	case http.StatusNotFound:
 		return plugins.FailureReasonDigestMissing

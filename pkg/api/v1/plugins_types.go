@@ -45,6 +45,12 @@ type installPluginRequest struct {
 type installPluginResponse struct {
 	// The installed plugin
 	Plugin plugins.InstalledPlugin `json:"plugin"`
+	// The signer identity trust-on-first-use pinned for this install, when
+	// the artifact was verified. Omitted for unsigned or non-lock-managed
+	// installs.
+	Provenance *plugins.ProvenanceInfo `json:"provenance,omitempty"`
+	// Whether the install was recorded as an explicit unsigned exception.
+	Unsigned bool `json:"unsigned,omitempty"`
 }
 
 // validatePluginRequest represents the request to validate a plugin.
@@ -71,6 +77,14 @@ type buildPluginRequest struct {
 type pushPluginRequest struct {
 	// OCI reference to push
 	Reference string `json:"reference"`
+	// Key is the path to a cosign private key used to sign the pushed
+	// artifact
+	Key string `json:"key,omitempty"`
+	// IdentityToken is a short-lived OIDC identity token used for keyless
+	// signing, mutually exclusive with Key
+	IdentityToken string `json:"identity_token,omitempty"`
+	// NoSign pushes without signing
+	NoSign bool `json:"no_sign,omitempty"`
 }
 
 // pluginBuildListResponse represents the response for listing locally-built OCI plugin artifacts.

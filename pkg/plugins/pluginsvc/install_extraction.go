@@ -690,10 +690,10 @@ func missingClients(existing, requested []string) []string {
 }
 
 // lockContentDigest computes the canonical-tree dirhash for a project-scope
-// install when the lock file feature is enabled. Empty when the install is
-// not lock-scoped, so user-scope and ungated installs skip the extra extract.
+// install. Empty when the install is not lock-scoped, so user-scope installs
+// skip the extra extract.
 func lockContentDigest(opts plugins.InstallOptions, scope plugins.Scope) (string, error) {
-	if scope != plugins.ScopeProject || !plugins.LockFileFeatureEnabled() {
+	if scope != plugins.ScopeProject {
 		return "", nil
 	}
 	digest, err := computeContentDigest(opts.LayerData)

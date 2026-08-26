@@ -76,7 +76,7 @@ func gitInstall(t *testing.T, svc plugins.PluginService, projectRoot string, mut
 	return err
 }
 
-//nolint:paralleltest // uses t.Setenv via newGitLockTestService
+//nolint:paralleltest // serial: real sqlite + on-disk client materialization per test
 func TestInstallVerification_TOFURecordsProvenance(t *testing.T) {
 	repoDir := createPluginTestRepo(t, "")
 	mv := verifiermocks.NewMockVerifier(gomock.NewController(t))
@@ -112,7 +112,7 @@ func TestInstallVerification_TOFURecordsProvenance(t *testing.T) {
 	require.NoError(t, gitInstall(t, svc, projectRoot, func(o *plugins.InstallOptions) { o.Force = true }))
 }
 
-//nolint:paralleltest // uses t.Setenv via newGitLockTestService
+//nolint:paralleltest // serial: real sqlite + on-disk client materialization per test
 func TestInstallVerification_UnsignedRejectedWithoutFlag(t *testing.T) {
 	repoDir := createPluginTestRepo(t, "")
 	mv := verifiermocks.NewMockVerifier(gomock.NewController(t))
@@ -132,7 +132,7 @@ func TestInstallVerification_UnsignedRejectedWithoutFlag(t *testing.T) {
 	require.Error(t, err, "a rejected install must not create a DB record")
 }
 
-//nolint:paralleltest // uses t.Setenv via newGitLockTestService
+//nolint:paralleltest // serial: real sqlite + on-disk client materialization per test
 func TestInstallVerification_UnsignedAcceptedWithFlag(t *testing.T) {
 	repoDir := createPluginTestRepo(t, "")
 	mv := verifiermocks.NewMockVerifier(gomock.NewController(t))
@@ -155,7 +155,7 @@ func TestInstallVerification_UnsignedAcceptedWithFlag(t *testing.T) {
 	assert.Nil(t, stored.InstalledPlugin.SigstoreBundle, "an unsigned install stores no bundle")
 }
 
-//nolint:paralleltest // uses t.Setenv via newGitLockTestService
+//nolint:paralleltest // serial: real sqlite + on-disk client materialization per test
 func TestInstallVerification_SignerMismatchRejectedAndLockIntact(t *testing.T) {
 	repoDir := createPluginTestRepo(t, "")
 	mv := verifiermocks.NewMockVerifier(gomock.NewController(t))
@@ -180,7 +180,7 @@ func TestInstallVerification_SignerMismatchRejectedAndLockIntact(t *testing.T) {
 	assert.Equal(t, testSignerIdentity, entry.Provenance.SignerIdentity)
 }
 
-//nolint:paralleltest // uses t.Setenv via newGitLockTestService
+//nolint:paralleltest // serial: real sqlite + on-disk client materialization per test
 func TestInstallVerification_LockedUnsignedRequiresFlagAgain(t *testing.T) {
 	repoDir := createPluginTestRepo(t, "")
 	mv := verifiermocks.NewMockVerifier(gomock.NewController(t))
@@ -203,7 +203,7 @@ func TestInstallVerification_LockedUnsignedRequiresFlagAgain(t *testing.T) {
 // restore of an unsigned-locked entry does not demand the flag again: the
 // lock file already records the decision the restore is materializing.
 //
-//nolint:paralleltest // uses t.Setenv via newGitLockTestService
+//nolint:paralleltest // serial: real sqlite + on-disk client materialization per test
 func TestInstallVerification_LockDrivenInstallHonorsRecordedTrust(t *testing.T) {
 	repoDir := createPluginTestRepo(t, "")
 	mv := verifiermocks.NewMockVerifier(gomock.NewController(t))
@@ -229,7 +229,7 @@ func TestInstallVerification_LockDrivenInstallHonorsRecordedTrust(t *testing.T) 
 	assert.True(t, entry.Unsigned, "the restore keeps the recorded trust state")
 }
 
-//nolint:paralleltest // uses t.Setenv via newLockTestService
+//nolint:paralleltest // serial: real sqlite + on-disk client materialization per test
 func TestInstallVerification_UserScopeSkipsVerification(t *testing.T) {
 	repoDir := createPluginTestRepo(t, "")
 	// The mock has no expectations: any verifier call fails the test.
@@ -242,26 +242,6 @@ func TestInstallVerification_UserScopeSkipsVerification(t *testing.T) {
 		Clients: []string{"claude-code"},
 	})
 	require.NoError(t, err)
-}
-
-// TestInstallVerification_GateDisabledSkipsVerification pins the feature-gate
-// scoping: with the plugins lock file off there is nowhere to anchor trust on
-// first use, so verification must not run at all.
-//
-//nolint:paralleltest // uses t.Setenv
-func TestInstallVerification_GateDisabledSkipsVerification(t *testing.T) {
-	svc, projectRoot := newLockTestService(t, false, WithVerifier(
-		verifiermocks.NewMockVerifier(gomock.NewController(t)), // no expectations
-	))
-	_, err := svc.Install(t.Context(), plugins.InstallOptions{
-		Name:        "my-plugin",
-		LayerData:   makePluginLayerData(t, "my-plugin"),
-		Digest:      validLockDigest(),
-		Scope:       plugins.ScopeProject,
-		ProjectRoot: projectRoot,
-		Clients:     []string{"claude-code"},
-	})
-	require.NoError(t, err, "an unsigned local install must not be rejected while the gate is off")
 }
 
 func TestVerifyLocalInstall(t *testing.T) {
@@ -459,7 +439,7 @@ func TestVerify_OversizedSignatureMaterialRejected(t *testing.T) {
 // end to end: an over-limit bundle fails the install rather than reaching the
 // DB or the lock file.
 //
-//nolint:paralleltest // uses t.Setenv via newGitLockTestService
+//nolint:paralleltest // serial: real sqlite + on-disk client materialization per test
 func TestInstallVerification_OversizedBundleIsNotStored(t *testing.T) {
 	repoDir := createPluginTestRepo(t, "")
 	result := signedResult()
@@ -522,4 +502,108 @@ func TestIsAllowedUnsignedRejectsKeySigned(t *testing.T) {
 	assert.True(t, isAllowedUnsigned(verifier.ErrUnsigned,
 		plugins.InstallOptions{AllowUnsigned: true}, nil),
 		"the genuine unsigned case must still be allowed through")
+}
+
+// TestInfoReportsLockTrustState covers the four states `thv ai-plugin info`
+// renders: a verified signer, a provisional one, an explicit unsigned
+// exception, and a plugin with no lock entry at all.
+//
+//nolint:paralleltest // serial: real sqlite + on-disk client materialization per test
+func TestInfoReportsLockTrustState(t *testing.T) {
+	tests := []struct {
+		name            string
+		mutateEntry     func(*lockfile.Entry)
+		removeEntry     bool
+		wantProvenance  bool
+		wantProvisional bool
+		wantUnsigned    bool
+	}{
+		{name: "signed records the observed identity", wantProvenance: true},
+		{
+			name:            "provisional signature is marked",
+			mutateEntry:     func(e *lockfile.Entry) { e.Provenance.Provisional = true },
+			wantProvenance:  true,
+			wantProvisional: true,
+		},
+		{
+			name: "unsigned exception",
+			mutateEntry: func(e *lockfile.Entry) {
+				e.Provenance = nil
+				e.Unsigned = true
+			},
+			wantUnsigned: true,
+		},
+		{name: "no lock entry reports nothing", removeEntry: true},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			repoDir := createPluginTestRepo(t, "")
+			svc, projectRoot := newGitLockTestService(t, repoDir)
+			require.NoError(t, gitInstall(t, svc, projectRoot, nil))
+
+			entry, ok := loadPluginLockEntry(t, projectRoot)
+			require.True(t, ok)
+			switch {
+			case tc.removeEntry:
+				require.NoError(t, lockfile.RemovePluginEntry(mustOpenRoot(t, projectRoot), "my-plugin"))
+			case tc.mutateEntry != nil:
+				tc.mutateEntry(&entry)
+				lf := readLockfile(t, projectRoot)
+				lf.UpsertPlugin(entry)
+				require.NoError(t, lf.Save(mustOpenRoot(t, projectRoot)))
+			}
+
+			info, err := svc.Info(t.Context(), plugins.InfoOptions{
+				Name: "my-plugin", Scope: plugins.ScopeProject, ProjectRoot: projectRoot,
+			})
+			require.NoError(t, err)
+
+			assert.Equal(t, tc.wantUnsigned, info.Unsigned)
+			if !tc.wantProvenance {
+				assert.Nil(t, info.Provenance)
+				return
+			}
+			require.NotNil(t, info.Provenance)
+			assert.Equal(t, testSignerIdentity, info.Provenance.SignerIdentity)
+			assert.Equal(t, testCertIssuer, info.Provenance.CertIssuer)
+			assert.Equal(t, tc.wantProvisional, info.Provenance.Provisional)
+		})
+	}
+}
+
+// TestInstallResultCarriesTrustDecision proves the decision install recorded
+// is surfaced on the result, which is what the CLI prints after installing.
+//
+//nolint:paralleltest // serial: real sqlite + on-disk client materialization per test
+func TestInstallResultCarriesTrustDecision(t *testing.T) {
+	t.Run("signed", func(t *testing.T) {
+		repoDir := createPluginTestRepo(t, "")
+		svc, projectRoot := newGitLockTestService(t, repoDir)
+
+		result, err := svc.Install(t.Context(), plugins.InstallOptions{
+			Name: gitPluginRef, Scope: plugins.ScopeProject,
+			ProjectRoot: projectRoot, Clients: []string{"claude-code"},
+		})
+		require.NoError(t, err)
+		require.NotNil(t, result.Provenance)
+		assert.Equal(t, testSignerIdentity, result.Provenance.SignerIdentity)
+		assert.False(t, result.Unsigned)
+	})
+
+	t.Run("unsigned exception", func(t *testing.T) {
+		repoDir := createPluginTestRepo(t, "")
+		mv := verifiermocks.NewMockVerifier(gomock.NewController(t))
+		mv.EXPECT().VerifyGit(gomock.Any(), gomock.Any(), gomock.Any(), gomock.Nil()).
+			Return(nil, verifier.ErrUnsigned)
+		svc, projectRoot := newGitLockTestService(t, repoDir, WithVerifier(mv))
+
+		result, err := svc.Install(t.Context(), plugins.InstallOptions{
+			Name: gitPluginRef, Scope: plugins.ScopeProject, ProjectRoot: projectRoot,
+			Clients: []string{"claude-code"}, AllowUnsigned: true,
+		})
+		require.NoError(t, err)
+		assert.Nil(t, result.Provenance)
+		assert.True(t, result.Unsigned)
+	})
 }

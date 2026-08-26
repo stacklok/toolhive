@@ -32,12 +32,24 @@ func (s *service) Info(ctx context.Context, opts plugins.InfoOptions) (*plugins.
 	}
 
 	degraded := s.computeProjectScopeDegraded(stored)
-	return &plugins.PluginInfo{
+	info := &plugins.PluginInfo{
 		Metadata:                    stored.Metadata,
 		InstalledPlugin:             &stored,
 		UnmaterializedComponents:    s.computeUnmaterialized(stored),
 		ProjectScopeDegradedClients: degraded,
-	}, nil
+	}
+	// Project-scoped, lock-managed plugins carry the lock file's recorded
+	// trust state so callers can display what installs are checked against.
+	// A lock read failure is not fatal here: Info's job is describing the
+	// install, and an unreadable lock file already fails loudly in the
+	// operations that depend on it (install, sync, upgrade).
+	if scope == plugins.ScopeProject && projectRoot != "" {
+		if expected, expectUnsigned, trustErr := expectedLockTrust(projectRoot, opts.Name); trustErr == nil {
+			info.Provenance = provenanceInfoFromLock(expected)
+			info.Unsigned = expectUnsigned
+		}
+	}
+	return info, nil
 }
 
 // computeProjectScopeDegraded returns the client types for which a

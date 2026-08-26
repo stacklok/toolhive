@@ -7,6 +7,13 @@ import (
 	"github.com/spf13/cobra"
 
 	"github.com/stacklok/toolhive/pkg/plugins"
+	"github.com/stacklok/toolhive/pkg/skills/identitytoken"
+)
+
+var (
+	aiPluginPushKey           string
+	aiPluginPushIdentityToken string
+	aiPluginPushNoSign        bool
 )
 
 var aiPluginPushCmd = &cobra.Command{
@@ -19,13 +26,41 @@ var aiPluginPushCmd = &cobra.Command{
 
 func init() {
 	aiPluginCmd.AddCommand(aiPluginPushCmd)
+	aiPluginPushCmd.Flags().StringVar(&aiPluginPushKey, "key", "",
+		"Path to a cosign private key to sign the pushed artifact. "+
+			"Encrypted keys are decrypted with COSIGN_PASSWORD read from the 'thv serve' process, "+
+			"which performs the signing")
+	aiPluginPushCmd.Flags().StringVar(&aiPluginPushIdentityToken, "identity-token", "",
+		"OIDC identity token (or a path to a file containing one) for keyless signing. "+
+			"Mutually exclusive with --key. If omitted, one is acquired automatically: from the "+
+			"ambient CI OIDC token when running with id-token: write permission, otherwise via an "+
+			"interactive browser sign-in")
+	aiPluginPushCmd.Flags().BoolVar(&aiPluginPushNoSign, "no-sign", false,
+		"Push without signing (consumers will need an explicit unsigned exception to install project-scoped)")
 }
 
 func aiPluginPushCmdFunc(cmd *cobra.Command, args []string) error {
-	c := newAIPluginClient(cmd.Context())
+	ctx := cmd.Context()
 
-	err := c.Push(cmd.Context(), plugins.PushOptions{
-		Reference: args[0],
+	// Shared with `thv skill push`: the acquisition ladder (explicit flag →
+	// ambient CI token → interactive browser sign-in) is a property of
+	// Sigstore keyless signing, not of the artifact kind being pushed.
+	token, err := identitytoken.Acquire(ctx, identitytoken.Options{
+		FlagValue: aiPluginPushIdentityToken,
+		Key:       aiPluginPushKey,
+		NoSign:    aiPluginPushNoSign,
+		Confirm:   confirmBrowserSignIn,
+	})
+	if err != nil {
+		return formatAIPluginError("push plugin", err)
+	}
+
+	c := newAIPluginClient(ctx)
+	err = c.Push(ctx, plugins.PushOptions{
+		Reference:     args[0],
+		Key:           aiPluginPushKey,
+		IdentityToken: token,
+		NoSign:        aiPluginPushNoSign,
 	})
 	if err != nil {
 		return formatAIPluginError("push plugin", err)

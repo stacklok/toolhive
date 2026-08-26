@@ -45,10 +45,9 @@ func (s *service) artifactVerifier() verifier.Verifier {
 // shouldVerifyInstall reports whether install-time signature verification
 // applies: project-scope installs that record lock state. The lock file is
 // where trust decisions live, so verification is scoped to exactly the
-// installs that write one — including the feature gate, since a disabled
-// lock file has nowhere to anchor trust on first use.
+// installs that write one.
 func shouldVerifyInstall(opts plugins.InstallOptions, scope plugins.Scope) bool {
-	return scope == plugins.ScopeProject && opts.ProjectRoot != "" && plugins.LockFileFeatureEnabled()
+	return scope == plugins.ScopeProject && opts.ProjectRoot != ""
 }
 
 // provenanceDecision is the outcome of install-time verification: either a
@@ -251,6 +250,24 @@ func expectedLockTrust(projectRoot, pluginName string) (*lockfile.Provenance, bo
 		return nil, true, nil
 	}
 	return entry.Provenance, false, nil
+}
+
+// provenanceInfoFromLock converts a lock file's provenance block to the
+// API-facing shape, so Info and Install can report the recorded trust state.
+// Mirror skillsvc.provenanceInfoFromLock.
+func provenanceInfoFromLock(p *lockfile.Provenance) *plugins.ProvenanceInfo {
+	if p == nil {
+		return nil
+	}
+	return &plugins.ProvenanceInfo{
+		SignerIdentity:    p.SignerIdentity,
+		CertIssuer:        p.CertIssuer,
+		RepositoryURI:     p.RepositoryURI,
+		RepositoryRef:     p.RepositoryRef,
+		RunnerEnvironment: p.RunnerEnvironment,
+		SigstoreURL:       p.SigstoreURL,
+		Provisional:       p.Provisional,
+	}
 }
 
 // isAllowedUnsigned reports whether a verification failure is the unsigned

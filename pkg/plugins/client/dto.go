@@ -31,6 +31,12 @@ type buildRequest struct {
 
 type pushRequest struct {
 	Reference string `json:"reference"`
+	// Key, IdentityToken, and NoSign mirror pushPluginRequest. Without them
+	// here the CLI's signing flags would be dropped at the HTTP boundary and
+	// every push would be rejected as missing a signing credential.
+	Key           string `json:"key,omitempty"`
+	IdentityToken string `json:"identity_token,omitempty"`
+	NoSign        bool   `json:"no_sign,omitempty"`
 }
 
 type listResponse struct {
@@ -39,6 +45,12 @@ type listResponse struct {
 
 type installResponse struct {
 	Plugin plugins.InstalledPlugin `json:"plugin"`
+	// Provenance and Unsigned mirror installPluginResponse. Without them the
+	// CLI — which is a pure HTTP client — could never report the trust state
+	// the server recorded, and would silently print every install as if it
+	// were untracked.
+	Provenance *plugins.ProvenanceInfo `json:"provenance,omitempty"`
+	Unsigned   bool                    `json:"unsigned,omitempty"`
 }
 
 type listBuildsResponse struct {

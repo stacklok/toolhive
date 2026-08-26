@@ -20,8 +20,7 @@ var errLockWrite = errors.New("lock file write failed")
 // recordLockState updates opts.ProjectRoot's lock file to reflect a
 // just-completed project-scope install: a plugins: entry for pl. It also
 // marks pl as lock-managed in the store. Callers must only invoke this for
-// project-scope installs with the lock file feature enabled (see
-// plugins.LockFileFeatureEnabled) — pl is returned updated so the caller
+// project-scope installs — pl is returned updated so the caller
 // can reflect the Managed flag back to its own result.
 //
 // Plugin requires is parsed today but not materialized; requiredBy/explicit

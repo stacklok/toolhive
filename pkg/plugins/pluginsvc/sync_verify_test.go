@@ -23,7 +23,7 @@ import (
 // where install-time verification enforces the locked identity and heals the
 // stored state.
 //
-//nolint:paralleltest // uses t.Setenv via newGitLockTestService
+//nolint:paralleltest // serial: real sqlite + on-disk client materialization per test
 func TestSync_StoredSignatureFailureIsDriftThenHeals(t *testing.T) {
 	repoDir := createPluginTestRepo(t, "")
 
@@ -141,7 +141,7 @@ func TestVerifyStoredSignature_MissingBundleClassifiesAsSignatureInvalid(t *test
 // the lock entry, so the adopted entry is signed rather than an unsigned
 // exception.
 //
-//nolint:paralleltest // uses t.Setenv via newLockTestService
+//nolint:paralleltest // serial: real sqlite + on-disk client materialization per test
 func TestSync_AdoptBackFillsProvenanceFromStoredBundle(t *testing.T) {
 	mv := verifiermocks.NewMockVerifier(gomock.NewController(t))
 	mv.EXPECT().ResultFromBundle([]byte(`{"bundle":true}`), gomock.Any()).
@@ -149,7 +149,7 @@ func TestSync_AdoptBackFillsProvenanceFromStoredBundle(t *testing.T) {
 	mv.EXPECT().VerifyBundleOffline(gomock.Any(), gomock.Any(), gomock.Any()).
 		AnyTimes().Return(nil)
 
-	svc, projectRoot := newLockTestService(t, true, WithVerifier(mv))
+	svc, projectRoot := newLockTestService(t, WithVerifier(mv))
 	installTestPlugin(t, svc, projectRoot, validLockDigest())
 
 	require.NoError(t, lockfile.RemovePluginEntry(mustOpenRoot(t, projectRoot), "my-plugin"))
@@ -178,7 +178,7 @@ func TestSync_AdoptBackFillsProvenanceFromStoredBundle(t *testing.T) {
 // outcome: a bundle exists but does not verify, which is a failure rather
 // than a silent fall-through to the unsigned path.
 //
-//nolint:paralleltest // uses t.Setenv via newLockTestService
+//nolint:paralleltest // serial: real sqlite + on-disk client materialization per test
 func TestSync_AdoptRejectsUnverifiableStoredBundle(t *testing.T) {
 	mv := verifiermocks.NewMockVerifier(gomock.NewController(t))
 	mv.EXPECT().ResultFromBundle(gomock.Any(), gomock.Any()).
@@ -186,7 +186,7 @@ func TestSync_AdoptRejectsUnverifiableStoredBundle(t *testing.T) {
 	mv.EXPECT().VerifyBundleOffline(gomock.Any(), gomock.Any(), gomock.Any()).
 		AnyTimes().Return(nil)
 
-	svc, projectRoot := newLockTestService(t, true, WithVerifier(mv))
+	svc, projectRoot := newLockTestService(t, WithVerifier(mv))
 	installTestPlugin(t, svc, projectRoot, validLockDigest())
 
 	require.NoError(t, lockfile.RemovePluginEntry(mustOpenRoot(t, projectRoot), "my-plugin"))

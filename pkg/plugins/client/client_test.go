@@ -498,13 +498,39 @@ func TestPush(t *testing.T) {
 	}{
 		{
 			name:       "success",
-			opts:       plugins.PushOptions{Reference: "ghcr.io/org/my-plugin:v1.0.0"},
-			wantBody:   pushRequest{Reference: "ghcr.io/org/my-plugin:v1.0.0"},
+			opts:       plugins.PushOptions{Reference: "ghcr.io/org/my-plugin:v1.0.0", NoSign: true},
+			wantBody:   pushRequest{Reference: "ghcr.io/org/my-plugin:v1.0.0", NoSign: true},
+			statusCode: http.StatusNoContent,
+		},
+		{
+			// Guards the DTO trap: the signing fields must reach the wire
+			// request, not just PushOptions.
+			name: "forwards identity token",
+			opts: plugins.PushOptions{
+				Reference:     "ghcr.io/org/my-plugin:v1.0.0",
+				IdentityToken: "a.b.c",
+			},
+			wantBody: pushRequest{
+				Reference:     "ghcr.io/org/my-plugin:v1.0.0",
+				IdentityToken: "a.b.c",
+			},
+			statusCode: http.StatusNoContent,
+		},
+		{
+			name: "forwards key",
+			opts: plugins.PushOptions{
+				Reference: "ghcr.io/org/my-plugin:v1.0.0",
+				Key:       "/tmp/cosign.key",
+			},
+			wantBody: pushRequest{
+				Reference: "ghcr.io/org/my-plugin:v1.0.0",
+				Key:       "/tmp/cosign.key",
+			},
 			statusCode: http.StatusNoContent,
 		},
 		{
 			name:       "not found",
-			opts:       plugins.PushOptions{Reference: "ghcr.io/org/missing:v1"},
+			opts:       plugins.PushOptions{Reference: "ghcr.io/org/missing:v1", NoSign: true},
 			statusCode: http.StatusNotFound,
 			wantErr:    true,
 			wantCode:   http.StatusNotFound,
@@ -1024,6 +1050,64 @@ func TestInstallCarriesAllowUnsigned(t *testing.T) {
 	})
 	require.NoError(t, err)
 	assert.True(t, got.AllowUnsigned, "allow_unsigned must reach the server")
+}
+
+// TestInstallReturnsTrustState guards the response half of the same DTO
+// boundary: the CLI is a pure HTTP client, so a provenance block dropped
+// here would make every signed install print as if it were untracked.
+func TestInstallReturnsTrustState(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name     string
+		response installResponse
+	}{
+		{
+			name: "signed",
+			response: installResponse{
+				Plugin: plugins.InstalledPlugin{Metadata: plugins.PluginMetadata{Name: "my-plugin"}},
+				Provenance: &plugins.ProvenanceInfo{
+					SignerIdentity: "/.github/workflows/release.yml",
+					CertIssuer:     "https://token.actions.githubusercontent.com",
+				},
+			},
+		},
+		{
+			name: "provisional",
+			response: installResponse{
+				Plugin: plugins.InstalledPlugin{Metadata: plugins.PluginMetadata{Name: "my-plugin"}},
+				Provenance: &plugins.ProvenanceInfo{
+					SignerIdentity: "/.github/workflows/release.yml",
+					Provisional:    true,
+				},
+			},
+		},
+		{
+			name: "unsigned exception",
+			response: installResponse{
+				Plugin:   plugins.InstalledPlugin{Metadata: plugins.PluginMetadata{Name: "my-plugin"}},
+				Unsigned: true,
+			},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+				w.Header().Set("Content-Type", "application/json")
+				w.WriteHeader(http.StatusCreated)
+				_ = json.NewEncoder(w).Encode(tt.response)
+			}))
+			t.Cleanup(srv.Close)
+
+			result, err := newTestClient(t, srv).Install(t.Context(), plugins.InstallOptions{Name: "my-plugin"})
+			require.NoError(t, err)
+			assert.Equal(t, tt.response.Provenance, result.Provenance)
+			assert.Equal(t, tt.response.Unsigned, result.Unsigned)
+		})
+	}
 }
 
 // TestSyncCarriesAllowUnsigned mirrors TestInstallCarriesAllowUnsigned for

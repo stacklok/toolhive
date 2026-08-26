@@ -26,8 +26,6 @@ Unless --check is set, sync prompts for confirmation before installing —
 plugin content is a set of AI-followed instructions. Pass --yes to skip the
 prompt (required in non-interactive contexts such as CI).
 
-Requires TOOLHIVE_PLUGINS_LOCK_ENABLED=true.
-
 ```
 thv ai-plugin sync [flags]
 ```

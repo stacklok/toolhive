@@ -33,7 +33,6 @@ var _ = Describe("Plugins CLI lock file exit codes (RFC THV-0080)", Label("api",
 
 	BeforeEach(func() {
 		config = e2e.NewServerConfig()
-		config.ExtraEnv = []string{"TOOLHIVE_PLUGINS_LOCK_ENABLED=true"}
 		apiServer = e2e.StartServer(config)
 		thvConfig = e2e.NewTestConfig()
 	})
@@ -320,9 +319,13 @@ func buildPlugin(server *e2e.Server, path, tag string) *http.Response {
 }
 
 func pushPlugin(server *e2e.Server, reference string) *http.Response {
+	// E2E artifacts are pushed unsigned (no signing infrastructure in the
+	// suite), which signed-by-default pushes require to be explicit —
+	// matching the allow_unsigned exceptions these installs already record.
 	reqBody := struct {
 		Reference string `json:"reference"`
-	}{Reference: reference}
+		NoSign    bool   `json:"no_sign,omitempty"`
+	}{Reference: reference, NoSign: true}
 	jsonData, err := json.Marshal(reqBody)
 	ExpectWithOffset(1, err).ToNot(HaveOccurred())
 

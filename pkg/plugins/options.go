@@ -104,6 +104,12 @@ type InstallOptions struct {
 	SigstoreBundle []byte `json:"-"`
 }
 
+// ProvenanceInfo is the verified signer identity of an installed artifact,
+// the in-memory mirror of the lock file's provenance block. Alias for
+// skills.ProvenanceInfo: the RFC THV-0080 provenance contract is shared, and
+// a parallel struct would only be a place for the two to drift.
+type ProvenanceInfo = skills.ProvenanceInfo
+
 // InstallResult contains the outcome of an Install operation.
 type InstallResult struct {
 	// Plugin is the installed plugin.
@@ -123,6 +129,12 @@ type InstallResult struct {
 	// compensating; discarding it can hide a partial restore. Internal use
 	// only — NOT exposed via HTTP API.
 	RestoreFiles func(context.Context) error `json:"-"`
+	// Provenance is the verified signer identity this install recorded —
+	// surfaced so callers can display what trust-on-first-use pinned.
+	Provenance *ProvenanceInfo `json:"provenance,omitempty"`
+	// Unsigned reports that the install was recorded as an explicit
+	// unsigned exception.
+	Unsigned bool `json:"unsigned,omitempty"`
 }
 
 // UninstallOptions configures the behavior of the Uninstall operation. Alias
@@ -152,6 +164,12 @@ type PluginInfo struct {
 	// UnmaterializedComponents pattern (no persistence needed — the degradation
 	// is deterministic from scope + client type).
 	ProjectScopeDegradedClients []string `json:"project_scope_degraded_clients,omitempty"`
+	// Provenance is the signer identity the project's lock file records for
+	// this plugin, when project-scoped and lock-managed.
+	Provenance *ProvenanceInfo `json:"provenance,omitempty"`
+	// Unsigned reports that the lock file records an explicit unsigned
+	// exception for this plugin.
+	Unsigned bool `json:"unsigned,omitempty"`
 }
 
 // ContentOptions configures the behavior of the GetContent operation. Alias

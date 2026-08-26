@@ -141,7 +141,11 @@ func (s *PluginsRoutes) installPlugin(w http.ResponseWriter, r *http.Request) er
 	w.Header().Set("Content-Type", "application/json")
 	w.Header().Set("Location", fmt.Sprintf("/api/v1beta/plugins/%s", result.Plugin.Metadata.Name))
 	w.WriteHeader(http.StatusCreated)
-	return json.NewEncoder(w).Encode(installPluginResponse{Plugin: result.Plugin})
+	return json.NewEncoder(w).Encode(installPluginResponse{
+		Plugin:     result.Plugin,
+		Provenance: result.Provenance,
+		Unsigned:   result.Unsigned,
+	})
 }
 
 // uninstallPlugin removes an installed plugin.
@@ -322,7 +326,10 @@ func (s *PluginsRoutes) pushPlugin(w http.ResponseWriter, r *http.Request) error
 	}
 
 	if err := s.pluginService.Push(r.Context(), plugins.PushOptions{
-		Reference: req.Reference,
+		Reference:     req.Reference,
+		Key:           req.Key,
+		IdentityToken: req.IdentityToken,
+		NoSign:        req.NoSign,
 	}); err != nil {
 		return err
 	}

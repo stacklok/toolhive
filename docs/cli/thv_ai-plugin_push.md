@@ -24,7 +24,10 @@ thv ai-plugin push [reference] [flags]
 ### Options
 
 ```
-  -h, --help   help for push
+  -h, --help                    help for push
+      --identity-token string   OIDC identity token (or a path to a file containing one) for keyless signing. Mutually exclusive with --key. If omitted, one is acquired automatically: from the ambient CI OIDC token when running with id-token: write permission, otherwise via an interactive browser sign-in
+      --key string              Path to a cosign private key to sign the pushed artifact. Encrypted keys are decrypted with COSIGN_PASSWORD read from the 'thv serve' process, which performs the signing
+      --no-sign                 Push without signing (consumers will need an explicit unsigned exception to install project-scoped)
 ```
 
 ### Options inherited from parent commands

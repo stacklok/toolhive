@@ -29,13 +29,6 @@ import (
 // the lock file are reported (or removed with Prune). Check performs the
 // same reconciliation read-only: nothing is installed, written, or removed.
 func (s *service) Sync(ctx context.Context, opts plugins.SyncOptions) (*plugins.SyncResult, error) {
-	if !plugins.LockFileFeatureEnabled() {
-		return nil, httperr.WithCode(
-			fmt.Errorf("plugin lock file is not enabled; set %s=true", plugins.LockFileEnvVar),
-			http.StatusForbidden,
-		)
-	}
-
 	_, projectRoot, err := normalizeProjectRoot(plugins.ScopeProject, opts.ProjectRoot)
 	if err != nil {
 		return nil, err

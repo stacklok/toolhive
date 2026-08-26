@@ -81,6 +81,16 @@ func printAIPluginInfoText(info *plugins.PluginInfo) {
 
 	_, _ = fmt.Fprintf(w, "Name:\t%s\n", info.Metadata.Name)
 	_, _ = fmt.Fprintf(w, "Version:\t%s\n", info.Metadata.Version)
+	switch {
+	case info.Provenance != nil && info.Provenance.Provisional:
+		_, _ = fmt.Fprintf(w, "Signed by:\t%s (provisional)\n", info.Provenance.SignerIdentity)
+		_, _ = fmt.Fprintf(w, "Cert issuer:\t%s\n", info.Provenance.CertIssuer)
+	case info.Provenance != nil:
+		_, _ = fmt.Fprintf(w, "Signed by:\t%s\n", info.Provenance.SignerIdentity)
+		_, _ = fmt.Fprintf(w, "Cert issuer:\t%s\n", info.Provenance.CertIssuer)
+	case info.Unsigned:
+		_, _ = fmt.Fprintf(w, "Signed by:\t(unsigned — explicit exception)\n")
+	}
 	_, _ = fmt.Fprintf(w, "Description:\t%s\n", info.Metadata.Description)
 
 	if s := info.InstalledPlugin; s != nil {

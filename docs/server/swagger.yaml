@@ -1395,6 +1395,8 @@ components:
             type: string
           type: array
           uniqueItems: false
+        provenance:
+          $ref: '#/components/schemas/github_com_stacklok_toolhive_pkg_plugins.ProvenanceInfo'
         unmaterialized_components:
           additionalProperties:
             items:
@@ -1406,6 +1408,11 @@ components:
             by Info by diffing InstalledPlugin.Components against each installed
             client adapter's SupportedComponents.
           type: object
+        unsigned:
+          description: |-
+            Unsigned reports that the lock file records an explicit unsigned
+            exception for this plugin.
+          type: boolean
       type: object
     github_com_stacklok_toolhive_pkg_plugins.PluginMetadata:
       description: Metadata contains the plugin's metadata.
@@ -1430,6 +1437,45 @@ components:
           type: string
         version:
           description: Version is the semantic version of the plugin.
+          type: string
+      type: object
+    github_com_stacklok_toolhive_pkg_plugins.ProvenanceInfo:
+      description: |-
+        Provenance is the signer identity the project's lock file records
+        for this skill, when project-scoped and lock-managed.
+      properties:
+        cert_issuer:
+          description: CertIssuer is the OIDC issuer that authenticated the signer.
+          type: string
+        provisional:
+          description: |-
+            Provisional marks provenance with a documented verification gap
+            (git signatures until transparency-log validation lands).
+          type: boolean
+        repository_ref:
+          description: |-
+            RepositoryRef is the git ref the signing workflow ran on, from Fulcio
+            certificate extension 1.3.6.1.4.1.57264.1.14. Empty means
+            unconstrained, matching lock files written before the field existed.
+          type: string
+        repository_uri:
+          description: |-
+            RepositoryURI is the source repository from the certificate
+            extensions, when present.
+          type: string
+        runner_environment:
+          description: |-
+            RunnerEnvironment is the runner class the signing workflow executed in
+            (e.g. "github-hosted"), from Fulcio certificate extension
+            1.3.6.1.4.1.57264.1.11. Empty means unconstrained.
+          type: string
+        signer_identity:
+          description: |-
+            SignerIdentity is the certificate subject identity (workflow path for
+            GitHub Actions certificates, SAN verbatim otherwise).
+          type: string
+        sigstore_url:
+          description: SigstoreURL is the Sigstore instance the signature chains to.
           type: string
       type: object
     github_com_stacklok_toolhive_pkg_plugins.Scope:
@@ -3211,6 +3257,11 @@ components:
       properties:
         plugin:
           $ref: '#/components/schemas/github_com_stacklok_toolhive_pkg_plugins.InstalledPlugin'
+        provenance:
+          $ref: '#/components/schemas/github_com_stacklok_toolhive_pkg_plugins.ProvenanceInfo'
+        unsigned:
+          description: Whether the install was recorded as an explicit unsigned exception.
+          type: boolean
       type: object
     pkg_api_v1.installSkillRequest:
       description: Request to install a skill
@@ -3387,6 +3438,19 @@ components:
     pkg_api_v1.pushPluginRequest:
       description: Request to push a built plugin artifact
       properties:
+        identity_token:
+          description: |-
+            IdentityToken is a short-lived OIDC identity token used for keyless
+            signing, mutually exclusive with Key
+          type: string
+        key:
+          description: |-
+            Key is the path to a cosign private key used to sign the pushed
+            artifact
+          type: string
+        no_sign:
+          description: NoSign pushes without signing
+          type: boolean
         reference:
           description: OCI reference to push
           type: string

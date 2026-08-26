@@ -68,10 +68,7 @@ func diagnosticsPort(cfg *telemetry.Config) int {
 // mountPrometheusHandlerOnTransportPort reports whether Run should hand the
 // Prometheus handler to the transport, which is what makes the proxies also serve
 // /metrics on the transport port during the migration window (see
-// telemetry.DefaultMetricsOnTransportPort). Extracted from Run so the decision is
-// unit-testable without exercising the whole method: a bug here would resolve the
-// migration switch correctly while silently failing to act on it for standard
-// (non-vMCP) workloads.
+// telemetry.DefaultMetricsOnTransportPort).
 func mountPrometheusHandlerOnTransportPort(handler http.Handler, cfg *telemetry.Config) bool {
 	return handler != nil && cfg.ServeMetricsOnTransportPort()
 }

@@ -100,13 +100,6 @@ type Config struct {
 	// old location goes away. See https://github.com/stacklok/toolhive/issues/6384 for
 	// the removal timeline.
 	//
-	// Deliberately a pointer with NO kubebuilder default. Nil means "unset", and is
-	// resolved against DefaultMetricsOnTransportPort at the point of use rather than
-	// written into config. A plain bool with a default marker would be materialised
-	// into the persisted RunConfig and into CRD objects at admission, so changing
-	// the default later would not move any workload that already exists — the flip
-	// would silently do nothing.
-	//
 	// +optional
 	MetricsOnTransportPort *bool `json:"metricsOnTransportPort,omitempty" yaml:"metricsOnTransportPort,omitempty"`
 

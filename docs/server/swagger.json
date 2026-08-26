@@ -5229,7 +5229,7 @@
                         "type": "boolean"
                     },
                     "metricsOnTransportPort": {
-                        "description": "MetricsOnTransportPort controls whether /metrics is ALSO served on the main\ntransport port, in addition to the diagnostics port. It exists to give\ndeployments a migration window: while true, an existing scrape configuration\naimed at the transport port keeps working, and a new one aimed at\nPrometheusPort works too, so a scraper can be moved and verified before the\nold location goes away. See https://github.com/stacklok/toolhive/issues/6384 for\nthe removal timeline.\n\nDeliberately a pointer with NO kubebuilder default. Nil means \"unset\", and is\nresolved against DefaultMetricsOnTransportPort at the point of use rather than\nwritten into config. A plain bool with a default marker would be materialised\ninto the persisted RunConfig and into CRD objects at admission, so changing\nthe default later would not move any workload that already exists — the flip\nwould silently do nothing.\n\n+optional",
+                        "description": "MetricsOnTransportPort controls whether /metrics is ALSO served on the main\ntransport port, in addition to the diagnostics port. It exists to give\ndeployments a migration window: while true, an existing scrape configuration\naimed at the transport port keeps working, and a new one aimed at\nPrometheusPort works too, so a scraper can be moved and verified before the\nold location goes away. See https://github.com/stacklok/toolhive/issues/6384 for\nthe removal timeline.\n\n+optional",
                         "type": "boolean"
                     },
                     "prometheusPort": {

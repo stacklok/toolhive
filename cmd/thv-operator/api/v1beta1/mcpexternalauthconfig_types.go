@@ -2078,6 +2078,7 @@ func buildTrustedIssuerConfigs(issuers []TrustedIssuerConfig) []tokenexchange.Tr
 			AllowPrivateIPs:        issuer.AllowPrivateIPs,
 			ActorClaim:             issuer.ActorClaim,
 			AllowedActors:          slices.Clone(issuer.AllowedActors),
+			ActorMatcher:           issuer.ActorMatcher,
 			AllowedDelegateClients: slices.Clone(issuer.AllowedDelegateClients),
 			AllowMayAct:            issuer.AllowMayAct,
 			JWTBearerGrant:         buildJWTBearerGrantPolicy(issuer.JWTBearerGrant),

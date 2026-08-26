@@ -404,13 +404,12 @@ func TestMCPServerReconciler_handleExternalAuthConfig_MirrorsInvalidCondition(t 
 	)
 
 	tests := []struct {
-		name                   string
-		sourceValid            *metav1.Condition
-		preexisting            []metav1.Condition
-		wantMirrored           bool
-		wantReason             string
-		wantMessage            string
-		wantPreexistingCleared bool
+		name         string
+		sourceValid  *metav1.Condition
+		preexisting  []metav1.Condition
+		wantMirrored bool
+		wantReason   string
+		wantMessage  string
 	}{
 		{
 			name: "source Valid=False/EnterpriseRequired is mirrored",
@@ -467,8 +466,7 @@ func TestMCPServerReconciler_handleExternalAuthConfig_MirrorsInvalidCondition(t 
 				Reason:  mcpv1beta1.ConditionReasonEnterpriseRequired,
 				Message: "stale mirror from a previous reconcile",
 			}},
-			wantMirrored:           false,
-			wantPreexistingCleared: true,
+			wantMirrored: false,
 		},
 	}
 
@@ -514,11 +512,13 @@ func TestMCPServerReconciler_handleExternalAuthConfig_MirrorsInvalidCondition(t 
 
 			if !tt.wantMirrored {
 				assert.NoError(t, err, "no error expected when source is valid")
-				if tt.wantPreexistingCleared {
-					assert.Nil(t, cond, "stale mirror condition must be cleared once source has healed")
-				} else {
-					assert.Nil(t, cond, "no mirror condition expected when source is valid")
-				}
+				// The mirror clears any stale False; handleExternalAuthConfig's own
+				// success writer then records the validated state, so the condition
+				// ends up True rather than absent.
+				require.NotNil(t, cond, "success writer must record the validated state")
+				assert.Equal(t, metav1.ConditionTrue, cond.Status,
+					"no mirrored failure must remain once the source is valid")
+				assert.Equal(t, mcpv1beta1.ConditionReasonExternalAuthConfigValid, cond.Reason)
 				return
 			}
 
@@ -670,6 +670,73 @@ func TestMCPServerReconciler_InvalidUpstreamCABundleIsTerminal(t *testing.T) {
 // branch on every reconcile; without ownedByLocalValidation recognising
 // ConditionReasonInvalidCABundle the condition would be removed and immediately
 // re-added, restamping LastTransitionTime each time.
+// caBundleRepairAuthConfig returns an embedded auth server config that is valid
+// apart from its CA bundle, so a reconcile that gets past the bundle check does
+// not then fail on unrelated missing fields.
+func caBundleRepairAuthConfig() *mcpv1beta1.MCPExternalAuthConfig {
+	return &mcpv1beta1.MCPExternalAuthConfig{
+		ObjectMeta: metav1.ObjectMeta{Name: "auth", Namespace: "default"},
+		Spec: mcpv1beta1.MCPExternalAuthConfigSpec{
+			Type: mcpv1beta1.ExternalAuthTypeEmbeddedAuthServer,
+			EmbeddedAuthServer: &mcpv1beta1.EmbeddedAuthServerConfig{
+				Issuer:               "https://auth.example.com",
+				SigningKeySecretRefs: []mcpv1beta1.SecretKeyRef{{Name: "signing-key", Key: "private.pem"}},
+				HMACSecretRefs:       []mcpv1beta1.SecretKeyRef{{Name: "hmac-secret", Key: "hmac"}},
+				UpstreamProviders: []mcpv1beta1.UpstreamProviderConfig{{
+					Name: "upstream",
+					Type: mcpv1beta1.UpstreamProviderTypeOIDC,
+					OIDCConfig: &mcpv1beta1.OIDCUpstreamConfig{
+						IssuerURL:   "https://idp.example.com",
+						ClientID:    "client",
+						CABundleRef: &mcpv1beta1.CABundleSource{ConfigMapRef: &corev1.ConfigMapKeySelector{LocalObjectReference: corev1.LocalObjectReference{Name: "bundle"}, Key: "ca.crt"}},
+					},
+				}},
+			},
+		},
+	}
+}
+
+// The referenced ConfigMap starts without the key the bundle names, then gains
+// valid PEM. Neither metadata.generation nor the MCPExternalAuthConfig spec hash
+// changes across the repair, so this only passes if the condition is re-derived
+// from observed state rather than held by a hash guard — and only if a True
+// writer exists at all.
+func TestMCPServerReconciler_ExternalAuthConfigCABundleRepairRestoresTrue(t *testing.T) {
+	t.Parallel()
+
+	server := v1beta1test.NewMCPServer("server", "default",
+		v1beta1test.WithImage("test"),
+		v1beta1test.WithExternalAuthConfigRef("auth"),
+	)
+	authConfig := caBundleRepairAuthConfig()
+	bundle := &corev1.ConfigMap{ObjectMeta: metav1.ObjectMeta{Name: "bundle", Namespace: "default"}}
+	scheme := testutil.NewScheme(t)
+	fakeClient := fake.NewClientBuilder().WithScheme(scheme).
+		WithObjects(server, authConfig, bundle).
+		WithStatusSubresource(&mcpv1beta1.MCPServer{}).
+		Build()
+	reconciler := newTestMCPServerReconciler(fakeClient, scheme, kubernetes.PlatformKubernetes)
+
+	err := reconciler.handleExternalAuthConfig(t.Context(), server)
+	require.Error(t, err, "a bundle ConfigMap without the named key must fail validation")
+	brokenCondition := meta.FindStatusCondition(server.Status.Conditions, mcpv1beta1.ConditionTypeExternalAuthConfigValidated)
+	require.NotNil(t, brokenCondition)
+	require.Equal(t, metav1.ConditionFalse, brokenCondition.Status)
+	require.Equal(t, mcpv1beta1.ConditionReasonInvalidCABundle, brokenCondition.Reason)
+
+	repaired := &corev1.ConfigMap{}
+	require.NoError(t, fakeClient.Get(t.Context(), client.ObjectKeyFromObject(bundle), repaired))
+	repaired.Data = map[string]string{"ca.crt": string(mapperTestCertificatePEM(t))}
+	require.NoError(t, fakeClient.Update(t.Context(), repaired))
+
+	require.NoError(t, reconciler.handleExternalAuthConfig(t.Context(), server))
+	healedCondition := meta.FindStatusCondition(server.Status.Conditions, mcpv1beta1.ConditionTypeExternalAuthConfigValidated)
+	require.NotNil(t, healedCondition)
+	assert.Equal(t, metav1.ConditionTrue, healedCondition.Status,
+		"repairing the ConfigMap must clear the CA bundle failure")
+	assert.Equal(t, mcpv1beta1.ConditionReasonExternalAuthConfigValid, healedCondition.Reason)
+}
+
 func TestMCPServerReconciler_InvalidCABundleDoesNotFlapLastTransitionTime(t *testing.T) {
 	t.Parallel()
 

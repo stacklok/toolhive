@@ -2354,6 +2354,8 @@ func (r *MCPServerReconciler) handleExternalAuthConfig(ctx context.Context, m *m
 			m.Namespace, m.Name, len(embeddedCfg.UpstreamProviders))
 	}
 
+	setMCPServerExternalAuthConfigValidCondition(m, externalAuthConfig.Name, externalAuthConfig.Status.ConfigHash)
+
 	// Check if the MCPExternalAuthConfig hash has changed
 	if m.Status.ExternalAuthConfigHash != externalAuthConfig.Status.ConfigHash {
 		ctxLogger.Info("MCPExternalAuthConfig has changed, updating MCPServer",
@@ -2373,6 +2375,37 @@ func (r *MCPServerReconciler) handleExternalAuthConfig(ctx context.Context, m *m
 	}
 
 	return nil
+}
+
+// setMCPServerExternalAuthConfigValidCondition preserves a terminal RunConfig validation failure
+// until its referenced configuration or this resource generation changes.
+//
+// A CA bundle failure (ConditionReasonInvalidCABundle) is deliberately not
+// preserved here: its failing input is ConfigMap content, which neither
+// generation nor configHash tracks, and the check that records it re-runs
+// earlier in this same function. Holding it would make the failure permanent.
+func setMCPServerExternalAuthConfigValidCondition(
+	m *mcpv1beta1.MCPServer,
+	configName, configHash string,
+) {
+	previousCondition := meta.FindStatusCondition(
+		m.Status.Conditions, mcpv1beta1.ConditionTypeExternalAuthConfigValidated,
+	)
+	if previousCondition != nil &&
+		previousCondition.Status == metav1.ConditionFalse &&
+		previousCondition.Reason == mcpv1beta1.ConditionReasonInvalidConfig &&
+		previousCondition.ObservedGeneration == m.Generation &&
+		m.Status.ExternalAuthConfigHash == configHash {
+		return
+	}
+
+	meta.SetStatusCondition(&m.Status.Conditions, metav1.Condition{
+		Type:               mcpv1beta1.ConditionTypeExternalAuthConfigValidated,
+		Status:             metav1.ConditionTrue,
+		Reason:             mcpv1beta1.ConditionReasonExternalAuthConfigValid,
+		Message:            fmt.Sprintf("MCPExternalAuthConfig '%s' is valid", configName),
+		ObservedGeneration: m.Generation,
+	})
 }
 
 // handleAuthServerRef validates and tracks the hash of the referenced authServerRef config.

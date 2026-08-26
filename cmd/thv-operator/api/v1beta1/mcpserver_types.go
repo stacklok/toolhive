@@ -127,6 +127,11 @@ const (
 	// which is not supported for MCPServer (use VirtualMCPServer for multi-upstream).
 	ConditionReasonExternalAuthConfigMultiUpstream = "MultiUpstreamNotSupported"
 
+	// ConditionReasonExternalAuthConfigValid indicates the referenced
+	// MCPExternalAuthConfig passed every check the MCPServer controller applies
+	// to it. Mirrors ConditionReasonMCPRemoteProxyExternalAuthConfigValid.
+	ConditionReasonExternalAuthConfigValid = "ExternalAuthConfigValid"
+
 	// ConditionReasonWebhookConfigInvalid indicates the referenced webhook config is invalid or missing
 	ConditionReasonWebhookConfigInvalid = "WebhookConfigInvalid"
 

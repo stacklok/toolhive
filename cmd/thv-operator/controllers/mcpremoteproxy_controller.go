@@ -129,7 +129,7 @@ func (r *MCPRemoteProxyReconciler) handleInvalidUpstreamCABundle(
 			Type:               mcpv1beta1.ConditionTypeMCPRemoteProxyExternalAuthConfigValidated,
 			Status:             metav1.ConditionFalse,
 			ObservedGeneration: remoteProxy.Generation,
-			Reason:             mcpv1beta1.ConditionReasonInvalidConfig,
+			Reason:             mcpv1beta1.ConditionReasonInvalidCABundle,
 			Message:            fmt.Sprintf("invalid upstream CA bundle: %v", invalidCABundleErr),
 		})
 	})
@@ -950,7 +950,7 @@ func (r *MCPRemoteProxyReconciler) handleExternalAuthConfig(ctx context.Context,
 		if err := ctrlutil.ValidateEmbeddedAuthServerCABundles(ctx, r.Client, proxy.Namespace, embeddedCfg); err != nil {
 			meta.SetStatusCondition(&proxy.Status.Conditions, metav1.Condition{
 				Type: mcpv1beta1.ConditionTypeMCPRemoteProxyExternalAuthConfigValidated, Status: metav1.ConditionFalse,
-				Reason: mcpv1beta1.ConditionReasonInvalidConfig, Message: fmt.Sprintf("invalid upstream CA bundle: %v", err),
+				Reason: mcpv1beta1.ConditionReasonInvalidCABundle, Message: fmt.Sprintf("invalid upstream CA bundle: %v", err),
 				ObservedGeneration: proxy.Generation,
 			})
 			return err

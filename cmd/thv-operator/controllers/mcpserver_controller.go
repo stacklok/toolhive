@@ -222,7 +222,7 @@ func (r *MCPServerReconciler) handleInvalidUpstreamCABundle(
 			Type:               mcpv1beta1.ConditionTypeExternalAuthConfigValidated,
 			Status:             metav1.ConditionFalse,
 			ObservedGeneration: server.Generation,
-			Reason:             mcpv1beta1.ConditionReasonInvalidConfig,
+			Reason:             mcpv1beta1.ConditionReasonInvalidCABundle,
 			Message:            fmt.Sprintf("invalid upstream CA bundle: %v", invalidCABundleErr),
 		})
 	})
@@ -2328,7 +2328,7 @@ func (r *MCPServerReconciler) handleExternalAuthConfig(ctx context.Context, m *m
 		if err := ctrlutil.ValidateEmbeddedAuthServerCABundles(ctx, r.Client, m.Namespace, embeddedCfg); err != nil {
 			meta.SetStatusCondition(&m.Status.Conditions, metav1.Condition{
 				Type: mcpv1beta1.ConditionTypeExternalAuthConfigValidated, Status: metav1.ConditionFalse,
-				Reason: mcpv1beta1.ConditionReasonInvalidConfig, Message: fmt.Sprintf("invalid upstream CA bundle: %v", err),
+				Reason: mcpv1beta1.ConditionReasonInvalidCABundle, Message: fmt.Sprintf("invalid upstream CA bundle: %v", err),
 				ObservedGeneration: m.Generation,
 			})
 			return err

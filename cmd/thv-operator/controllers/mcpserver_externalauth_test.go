@@ -661,7 +661,68 @@ func TestMCPServerReconciler_InvalidUpstreamCABundleIsTerminal(t *testing.T) {
 	condition := meta.FindStatusCondition(actual.Status.Conditions, mcpv1beta1.ConditionTypeExternalAuthConfigValidated)
 	require.NotNil(t, condition)
 	assert.Equal(t, metav1.ConditionFalse, condition.Status)
-	assert.Equal(t, mcpv1beta1.ConditionReasonInvalidConfig, condition.Reason)
+	assert.Equal(t, mcpv1beta1.ConditionReasonInvalidCABundle, condition.Reason)
+}
+
+// guards against mirrorInvalidOnMCPServer's clear branch clobbering the
+// ExternalAuthConfigValidated condition that the upstream CA bundle check owns.
+// The referenced MCPExternalAuthConfig is healthy, so the mirror takes its clear
+// branch on every reconcile; without ownedByLocalValidation recognising
+// ConditionReasonInvalidCABundle the condition would be removed and immediately
+// re-added, restamping LastTransitionTime each time.
+func TestMCPServerReconciler_InvalidCABundleDoesNotFlapLastTransitionTime(t *testing.T) {
+	t.Parallel()
+
+	// Seeded well in the past: metav1.Time has second resolution, so a
+	// remove-then-re-add within one reconcile is only observable against a
+	// timestamp that predates the test run.
+	seeded := metav1.NewTime(time.Now().Add(-time.Hour).Truncate(time.Second))
+	server := v1beta1test.NewMCPServer("server", "default",
+		v1beta1test.WithImage("test"),
+		v1beta1test.WithExternalAuthConfigRef("auth"),
+		v1beta1test.WithStatus(mcpv1beta1.MCPServerStatus{
+			Conditions: []metav1.Condition{{
+				Type:               mcpv1beta1.ConditionTypeExternalAuthConfigValidated,
+				Status:             metav1.ConditionFalse,
+				Reason:             mcpv1beta1.ConditionReasonInvalidCABundle,
+				Message:            "invalid upstream CA bundle: already recorded",
+				LastTransitionTime: seeded,
+			}},
+		}),
+	)
+	authConfig := &mcpv1beta1.MCPExternalAuthConfig{
+		ObjectMeta: metav1.ObjectMeta{Name: "auth", Namespace: "default"},
+		Spec: mcpv1beta1.MCPExternalAuthConfigSpec{
+			Type: mcpv1beta1.ExternalAuthTypeEmbeddedAuthServer,
+			EmbeddedAuthServer: &mcpv1beta1.EmbeddedAuthServerConfig{UpstreamProviders: []mcpv1beta1.UpstreamProviderConfig{{
+				Name: "upstream",
+				Type: mcpv1beta1.UpstreamProviderTypeOIDC,
+				OIDCConfig: &mcpv1beta1.OIDCUpstreamConfig{CABundleRef: &mcpv1beta1.CABundleSource{
+					ConfigMapRef: &corev1.ConfigMapKeySelector{LocalObjectReference: corev1.LocalObjectReference{Name: "bundle"}, Key: "ca.crt"},
+				}},
+			}}},
+		},
+	}
+	// Present but keyless: the same terminal CA failure the seeded condition
+	// records, so the reconcile re-derives it unchanged.
+	bundle := &corev1.ConfigMap{ObjectMeta: metav1.ObjectMeta{Name: "bundle", Namespace: "default"}}
+	scheme := testutil.NewScheme(t)
+	fakeClient := fake.NewClientBuilder().WithScheme(scheme).
+		WithObjects(server, authConfig, bundle).
+		WithStatusSubresource(&mcpv1beta1.MCPServer{}).
+		Build()
+	reconciler := newTestMCPServerReconciler(fakeClient, scheme, kubernetes.PlatformKubernetes)
+
+	_, err := reconciler.Reconcile(t.Context(), ctrl.Request{NamespacedName: client.ObjectKeyFromObject(server)})
+	require.NoError(t, err)
+
+	actual := &mcpv1beta1.MCPServer{}
+	require.NoError(t, fakeClient.Get(t.Context(), client.ObjectKeyFromObject(server), actual))
+	condition := meta.FindStatusCondition(actual.Status.Conditions, mcpv1beta1.ConditionTypeExternalAuthConfigValidated)
+	require.NotNil(t, condition, "condition must survive the mirror's clear branch")
+	assert.Equal(t, mcpv1beta1.ConditionReasonInvalidCABundle, condition.Reason)
+	assert.Equal(t, seeded, condition.LastTransitionTime,
+		"an unchanged terminal CA failure must not restamp LastTransitionTime")
 }
 
 // guards against mirrorInvalidOnMCPServer's clear branch clobbering the

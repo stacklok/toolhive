@@ -1737,6 +1737,17 @@ const (
 	// Validate() with an error other than the enterprise-required sentinel.
 	// Used by out-of-tree handlers; unreachable in upstream-only builds.
 	ConditionReasonInvalidConfig = "InvalidConfig"
+
+	// ConditionReasonInvalidCABundle: a referenced upstream CA bundle ConfigMap
+	// is missing its key or holds content that is not a PEM certificate.
+	//
+	// Distinct from ConditionReasonInvalidConfig because the failing input is
+	// ConfigMap *content*, which is covered by neither metadata.generation nor
+	// the referenced config's spec hash. The guards that hold a terminal
+	// ConditionReasonInvalidConfig steady across reconciles key off those two
+	// values, so reusing that reason here would pin the failure in place even
+	// after the ConfigMap is repaired.
+	ConditionReasonInvalidCABundle = "InvalidCABundle"
 )
 
 // XAASpec holds configuration for the XAA (Cross-Application Access) auth strategy.

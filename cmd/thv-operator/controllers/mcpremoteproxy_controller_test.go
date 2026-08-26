@@ -1196,7 +1196,7 @@ func TestMCPRemoteProxyReconciler_InvalidUpstreamCABundleIsTerminal(t *testing.T
 	condition := meta.FindStatusCondition(actual.Status.Conditions, mcpv1beta1.ConditionTypeMCPRemoteProxyExternalAuthConfigValidated)
 	require.NotNil(t, condition)
 	assert.Equal(t, metav1.ConditionFalse, condition.Status)
-	assert.Equal(t, mcpv1beta1.ConditionReasonInvalidConfig, condition.Reason)
+	assert.Equal(t, mcpv1beta1.ConditionReasonInvalidCABundle, condition.Reason)
 }
 
 func TestGetExternalAuthConfigForMCPRemoteProxy(t *testing.T) {

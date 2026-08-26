@@ -1058,6 +1058,40 @@ spec:
                                 OAuth authorization endpoint.
                               pattern: ^https?://.*$
                               type: string
+                            caBundleRef:
+                              description: |-
+                                CABundleRef references a ConfigMap containing a CA bundle added to the
+                                system roots when connecting to this upstream; it does not restrict trust
+                                to this bundle or disable public-root trust. The selected key is projected
+                                as ca.crt.
+                              properties:
+                                configMapRef:
+                                  description: |-
+                                    ConfigMapRef references a ConfigMap containing the CA certificate bundle.
+                                    The ConfigMap key is required by the API. If omitted in a stored object, it
+                                    defaults to "ca.crt" for backwards compatibility.
+                                  properties:
+                                    key:
+                                      description: The key to select.
+                                      type: string
+                                    name:
+                                      default: ""
+                                      description: |-
+                                        Name of the referent.
+                                        This field is effectively required, but due to backwards compatibility is
+                                        allowed to be empty. Instances of this type with an empty value here are
+                                        almost certainly wrong.
+                                        More info: https://kubernetes.io/docs/concepts/overview/working-with-objects/names/#names
+                                      type: string
+                                    optional:
+                                      description: Specify whether the ConfigMap or
+                                        its key must be defined
+                                      type: boolean
+                                  required:
+                                  - key
+                                  type: object
+                                  x-kubernetes-map-type: atomic
+                              type: object
                             clientId:
                               description: |-
                                 ClientID is the OAuth 2.0 client identifier registered with the upstream IDP.
@@ -1360,6 +1394,46 @@ spec:
                                 Framework-managed parameters (response_type, client_id, redirect_uri,
                                 scope, state, code_challenge, code_challenge_method, nonce) are not allowed.
                               maxProperties: 16
+                              type: object
+                            allowPrivateIPs:
+                              description: |-
+                                AllowPrivateIPs permits the upstream provider's HTTP client to connect to
+                                private IP ranges (RFC-1918, link-local). Use only when the upstream is
+                                hosted inside the same cluster and has no public endpoint.
+                              type: boolean
+                            caBundleRef:
+                              description: |-
+                                CABundleRef references a ConfigMap containing a CA bundle added to the
+                                system roots when connecting to this upstream; it does not restrict trust
+                                to this bundle or disable public-root trust. The selected key is projected
+                                as ca.crt.
+                              properties:
+                                configMapRef:
+                                  description: |-
+                                    ConfigMapRef references a ConfigMap containing the CA certificate bundle.
+                                    The ConfigMap key is required by the API. If omitted in a stored object, it
+                                    defaults to "ca.crt" for backwards compatibility.
+                                  properties:
+                                    key:
+                                      description: The key to select.
+                                      type: string
+                                    name:
+                                      default: ""
+                                      description: |-
+                                        Name of the referent.
+                                        This field is effectively required, but due to backwards compatibility is
+                                        allowed to be empty. Instances of this type with an empty value here are
+                                        almost certainly wrong.
+                                        More info: https://kubernetes.io/docs/concepts/overview/working-with-objects/names/#names
+                                      type: string
+                                    optional:
+                                      description: Specify whether the ConfigMap or
+                                        its key must be defined
+                                      type: boolean
+                                  required:
+                                  - key
+                                  type: object
+                                  x-kubernetes-map-type: atomic
                               type: object
                             clientId:
                               description: ClientID is the OAuth 2.0 client identifier
@@ -3050,6 +3124,40 @@ spec:
                                 OAuth authorization endpoint.
                               pattern: ^https?://.*$
                               type: string
+                            caBundleRef:
+                              description: |-
+                                CABundleRef references a ConfigMap containing a CA bundle added to the
+                                system roots when connecting to this upstream; it does not restrict trust
+                                to this bundle or disable public-root trust. The selected key is projected
+                                as ca.crt.
+                              properties:
+                                configMapRef:
+                                  description: |-
+                                    ConfigMapRef references a ConfigMap containing the CA certificate bundle.
+                                    The ConfigMap key is required by the API. If omitted in a stored object, it
+                                    defaults to "ca.crt" for backwards compatibility.
+                                  properties:
+                                    key:
+                                      description: The key to select.
+                                      type: string
+                                    name:
+                                      default: ""
+                                      description: |-
+                                        Name of the referent.
+                                        This field is effectively required, but due to backwards compatibility is
+                                        allowed to be empty. Instances of this type with an empty value here are
+                                        almost certainly wrong.
+                                        More info: https://kubernetes.io/docs/concepts/overview/working-with-objects/names/#names
+                                      type: string
+                                    optional:
+                                      description: Specify whether the ConfigMap or
+                                        its key must be defined
+                                      type: boolean
+                                  required:
+                                  - key
+                                  type: object
+                                  x-kubernetes-map-type: atomic
+                              type: object
                             clientId:
                               description: |-
                                 ClientID is the OAuth 2.0 client identifier registered with the upstream IDP.
@@ -3352,6 +3460,46 @@ spec:
                                 Framework-managed parameters (response_type, client_id, redirect_uri,
                                 scope, state, code_challenge, code_challenge_method, nonce) are not allowed.
                               maxProperties: 16
+                              type: object
+                            allowPrivateIPs:
+                              description: |-
+                                AllowPrivateIPs permits the upstream provider's HTTP client to connect to
+                                private IP ranges (RFC-1918, link-local). Use only when the upstream is
+                                hosted inside the same cluster and has no public endpoint.
+                              type: boolean
+                            caBundleRef:
+                              description: |-
+                                CABundleRef references a ConfigMap containing a CA bundle added to the
+                                system roots when connecting to this upstream; it does not restrict trust
+                                to this bundle or disable public-root trust. The selected key is projected
+                                as ca.crt.
+                              properties:
+                                configMapRef:
+                                  description: |-
+                                    ConfigMapRef references a ConfigMap containing the CA certificate bundle.
+                                    The ConfigMap key is required by the API. If omitted in a stored object, it
+                                    defaults to "ca.crt" for backwards compatibility.
+                                  properties:
+                                    key:
+                                      description: The key to select.
+                                      type: string
+                                    name:
+                                      default: ""
+                                      description: |-
+                                        Name of the referent.
+                                        This field is effectively required, but due to backwards compatibility is
+                                        allowed to be empty. Instances of this type with an empty value here are
+                                        almost certainly wrong.
+                                        More info: https://kubernetes.io/docs/concepts/overview/working-with-objects/names/#names
+                                      type: string
+                                    optional:
+                                      description: Specify whether the ConfigMap or
+                                        its key must be defined
+                                      type: boolean
+                                  required:
+                                  - key
+                                  type: object
+                                  x-kubernetes-map-type: atomic
                               type: object
                             clientId:
                               description: ClientID is the OAuth 2.0 client identifier

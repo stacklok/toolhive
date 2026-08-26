@@ -31,11 +31,16 @@ const (
 	maxConfigMapNameForCABundle = maxK8sVolumeName - len(OIDCCABundleVolumePrefix)
 )
 
-// ValidateCABundleSource validates the CABundleSource configuration.
-// It ensures that configMapRef is specified when CABundleRef is provided,
-// and that the ConfigMap name is short enough to fit in a Kubernetes volume name.
+// ValidateCABundleSourceShape validates that a CABundleSource names a ConfigMap,
+// without applying the OIDC volume-name length cap.
 // Returns nil if ref is nil (no CA bundle configured).
-func ValidateCABundleSource(ref *mcpv1beta1.CABundleSource) error {
+//
+// Use this for CA bundles whose volume name does not embed the ConfigMap name.
+// Embedded auth server upstream bundles are mounted under volumes named by
+// provider index (AuthServerUpstreamCABundleVolumePrefix + index), so the
+// ConfigMap name never reaches a Kubernetes volume name and the cap enforced by
+// ValidateCABundleSource would reject otherwise-valid names.
+func ValidateCABundleSourceShape(ref *mcpv1beta1.CABundleSource) error {
 	if ref == nil {
 		return nil
 	}
@@ -44,6 +49,24 @@ func ValidateCABundleSource(ref *mcpv1beta1.CABundleSource) error {
 	}
 	if ref.ConfigMapRef.Name == "" {
 		return fmt.Errorf("configMapRef.name must be specified")
+	}
+	return nil
+}
+
+// ValidateCABundleSource validates the CABundleSource configuration.
+// It ensures that configMapRef is specified when CABundleRef is provided,
+// and that the ConfigMap name is short enough to fit in a Kubernetes volume name.
+// Returns nil if ref is nil (no CA bundle configured).
+//
+// The length cap applies only because OIDC CA bundle volumes are named
+// OIDCCABundleVolumePrefix + configMapName. Callers whose volume names do not
+// embed the ConfigMap name want ValidateCABundleSourceShape instead.
+func ValidateCABundleSource(ref *mcpv1beta1.CABundleSource) error {
+	if err := ValidateCABundleSourceShape(ref); err != nil {
+		return err
+	}
+	if ref == nil {
+		return nil
 	}
 	// Check that the ConfigMap name won't cause the volume name to exceed K8s limits
 	if len(ref.ConfigMapRef.Name) > maxConfigMapNameForCABundle {

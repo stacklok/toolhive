@@ -178,6 +178,9 @@ type OAuth2Config struct {
 	// authoritative trust-model and uniqueness documentation.
 	IdentityFromToken *IdentityFromTokenConfig `json:"identity_from_token,omitempty" yaml:"identity_from_token,omitempty"`
 
+	// CAFilePath is the path to a PEM CA bundle added to the system roots.
+	CAFilePath string `json:"ca_file_path,omitempty" yaml:"ca_file_path,omitempty"`
+
 	// InsecureAllowHTTP permits http:// authorization_endpoint and token_endpoint
 	// URLs for non-localhost hosts. Set only for trusted in-cluster deployments.
 	InsecureAllowHTTP bool `json:"insecure_allow_http,omitempty" yaml:"insecure_allow_http,omitempty"`
@@ -313,7 +316,7 @@ func newBaseOAuth2Provider(config *OAuth2Config, hostForClient string) (*BaseOAu
 		return nil, fmt.Errorf("invalid config: %w", err)
 	}
 
-	httpClient, err := newHTTPClientForHost(hostForClient, config.AllowPrivateIPs, config.InsecureAllowHTTP)
+	httpClient, err := newHTTPClientForHost(hostForClient, config.AllowPrivateIPs, config.InsecureAllowHTTP, config.CAFilePath)
 	if err != nil {
 		return nil, fmt.Errorf("failed to create HTTP client: %w", err)
 	}
@@ -903,6 +906,10 @@ func formatOAuth2Error(err error, prefix string) error {
 // resolver's per-request-host, low-frequency calls don't have the same
 // trade-off, hence the difference. If this provider's threat model changes
 // (e.g. it starts dialing caller-varying hosts), revisit this decision.
-func newHTTPClientForHost(host string, allowPrivateIPs, insecureAllowHTTP bool) (*http.Client, error) {
-	return networking.NewHostScopedClientBuilder(host, allowPrivateIPs, insecureAllowHTTP).Build()
+func newHTTPClientForHost(host string, allowPrivateIPs, insecureAllowHTTP bool, caFilePath string) (*http.Client, error) {
+	builder := networking.NewHostScopedClientBuilder(host, allowPrivateIPs, insecureAllowHTTP)
+	if caFilePath != "" {
+		builder.WithSystemRootsPlusCABundle(caFilePath)
+	}
+	return builder.Build()
 }

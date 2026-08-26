@@ -458,7 +458,8 @@ func registerAndCache(
 	registrationScopes := chooseRegistrationScopes(scopes, endpoints.scopesSupported, req.Issuer)
 
 	response, err := performRegistration(ctx, req, endpoints.registrationEndpoint,
-		redirectURI, authMethod, registrationScopes, endpoints.registrationEndpointServerSupplied)
+		redirectURI, authMethod, registrationScopes, endpoints.registrationEndpointServerSupplied,
+		req.CAFilePath)
 	if err != nil {
 		return nil, newDCRStepError(dcrStepRegister, req.Issuer, redirectURI, err)
 	}
@@ -786,12 +787,14 @@ func performRegistration(
 	registrationEndpoint, redirectURI, authMethod string,
 	scopes []string,
 	registrationEndpointServerSupplied bool,
+	caFilePath string,
 ) (*oauthproto.DynamicClientRegistrationResponse, error) {
 	httpClient, err := newDCRHTTPClient(
 		req.InitialAccessToken,
 		registrationEndpoint,
 		req.AllowPrivateIPs,
 		req.ServerSuppliedEndpoints || registrationEndpointServerSupplied,
+		caFilePath,
 	)
 	if err != nil {
 		return nil, fmt.Errorf("dcr: build registration http client: %w", err)
@@ -971,6 +974,7 @@ func resolveDCREndpoints(
 		discoveryHost,
 		req.AllowPrivateIPs,
 		req.ServerSuppliedEndpoints,
+		req.CAFilePath,
 	)
 	if err != nil {
 		return nil, fmt.Errorf("dcr: build discovery http client: %w", err)
@@ -1429,12 +1433,13 @@ var errDCRRedirectRefused = errors.New(
 func newDCRHTTPClient(
 	initialAccessToken, registrationEndpoint string,
 	allowPrivateIPs, serverSuppliedEndpoints bool,
+	caFilePath string,
 ) (*http.Client, error) {
 	host, err := hostFromURL(registrationEndpoint)
 	if err != nil {
 		return nil, err
 	}
-	client, err := newGuardedDCRClient(host, allowPrivateIPs, serverSuppliedEndpoints)
+	client, err := newGuardedDCRClient(host, allowPrivateIPs, serverSuppliedEndpoints, caFilePath)
 	if err != nil {
 		return nil, err
 	}
@@ -1470,13 +1475,16 @@ func newDCRHTTPClient(
 // the discovery client restricts them to the same host). The dial guard alone
 // does not stop a redirect to a different public host, so the redirect policy
 // is a required complement, not an optional one.
-func newGuardedDCRClient(host string, allowPrivateIPs, serverSuppliedEndpoints bool) (*http.Client, error) {
+func newGuardedDCRClient(host string, allowPrivateIPs, serverSuppliedEndpoints bool, caFilePath string) (*http.Client, error) {
 	builder := func() *networking.HttpClientBuilder {
 		if serverSuppliedEndpoints {
 			return networking.NewServerSuppliedHostClientBuilder(host, allowPrivateIPs, false)
 		}
 		return networking.NewHostScopedClientBuilder(host, allowPrivateIPs, false)
 	}()
+	if caFilePath != "" {
+		builder.WithSystemRootsPlusCABundle(caFilePath)
+	}
 	return builder.WithDisableKeepAlives(true).Build()
 }
 

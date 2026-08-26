@@ -113,6 +113,7 @@ func TestMCPRegistryOnceWarningHandler_concurrentResyncsLogOnce(t *testing.T) {
 }
 
 func TestInstallMCPRegistryWarningHandler(t *testing.T) {
+	//nolint:paralleltest // mutates process-wide client-go default warning handler
 	// Mutates the process-wide client-go default warning handler.
 	t.Cleanup(func() {
 		rest.SetDefaultWarningHandlerWithContext(rest.WarningLogger{})
@@ -129,9 +130,7 @@ func TestInstallMCPRegistryWarningHandler(t *testing.T) {
 	require.True(t, ok)
 	h.next = recorder
 
-	legacy, ok := cfg.WarningHandler.(rest.WarningHandler)
-	require.True(t, ok)
-	legacy.HandleWarningHeader(299, "kube-apiserver", mcpRegistryDeprecationWarningText)
+	cfg.WarningHandler.HandleWarningHeader(299, "kube-apiserver", mcpRegistryDeprecationWarningText)
 	cfg.WarningHandlerWithContext.HandleWarningHeaderWithContext(
 		t.Context(), 299, "kube-apiserver", mcpRegistryDeprecationWarningText)
 

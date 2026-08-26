@@ -577,7 +577,8 @@ func generateUpstreamCABundleVolumes(
 	for i := range providers {
 		refs[i] = providers[i].CABundleRef()
 	}
-	return generateCABundleVolumes(refs, AuthServerUpstreamCABundleVolumePrefix, AuthServerUpstreamCABundleMountPath, "upstreamProviders")
+	return generateCABundleVolumes(
+		refs, AuthServerUpstreamCABundleVolumePrefix, AuthServerUpstreamCABundleMountPath, "upstreamProviders")
 }
 
 func generateTrustedIssuerCABundleVolumes(
@@ -587,7 +588,8 @@ func generateTrustedIssuerCABundleVolumes(
 	for i := range issuers {
 		refs[i] = issuers[i].CABundleRef
 	}
-	return generateCABundleVolumes(refs, AuthServerTrustedIssuerCABundleVolumePrefix, AuthServerTrustedIssuerCABundleMountPath, "trustedIssuers")
+	return generateCABundleVolumes(
+		refs, AuthServerTrustedIssuerCABundleVolumePrefix, AuthServerTrustedIssuerCABundleMountPath, "trustedIssuers")
 }
 
 func generateCABundleVolumes(

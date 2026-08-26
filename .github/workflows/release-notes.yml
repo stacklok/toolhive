@@ -138,10 +138,15 @@ jobs:
               `release-notes-${{ steps.tag.outputs.tag }}.md` in the repo root.
             - Do not post comments or run `gh release edit`. Stop after writing the file.
           # Tools: gh/git for read-only data gathering, Task for the expert
-          # subagents, and file tools for reading the skill and writing the output.
+          # subagents (kubernetes-expert, mcp-protocol-expert, oauth-expert,
+          # toolhive-expert, site-reliability-engineer), file tools for reading
+          # the skill and writing the output, WebFetch/context7 for the specs
+          # those experts consult, and unrestricted Bash since the experts'
+          # own tool declarations aren't scoped to gh/git and the job is
+          # already read-only at the GITHUB_TOKEN permission level.
           claude_args: |
-            --allowedTools "Bash(gh *),Bash(git *),Task,Read,Write,Edit,Glob,Grep,TodoWrite"
-            --max-turns 60
+            --allowedTools "Bash,Task,Read,Write,Edit,Glob,Grep,TodoWrite,WebFetch,mcp__context7__resolve-library-id,mcp__context7__get-library-docs"
+            --max-turns 100
 
       - name: Verify notes were generated
         id: verify

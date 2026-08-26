@@ -23,6 +23,7 @@ import (
 	"github.com/ory/fosite"
 
 	"github.com/stacklok/toolhive/pkg/authserver/server/crypto"
+	"github.com/stacklok/toolhive/pkg/authserver/server/registration"
 	sharedobauth "github.com/stacklok/toolhive/pkg/oauthproto"
 )
 
@@ -108,9 +109,10 @@ func (h *Handler) buildOAuthMetadata() sharedobauth.AuthorizationServerMetadata 
 		ScopesSupported:        h.config.ScopesSupported,
 
 		// OPTIONAL
-		GrantTypesSupported:               h.grantTypesSupported(),
-		CodeChallengeMethodsSupported:     []string{crypto.PKCEChallengeMethodS256},
-		TokenEndpointAuthMethodsSupported: h.tokenEndpointAuthMethodsSupported(),
+		GrantTypesSupported:                        h.grantTypesSupported(),
+		CodeChallengeMethodsSupported:              []string{crypto.PKCEChallengeMethodS256},
+		TokenEndpointAuthMethodsSupported:          h.tokenEndpointAuthMethodsSupported(),
+		TokenEndpointAuthSigningAlgValuesSupported: h.tokenEndpointAuthSigningAlgorithms(),
 
 		// ClientIDMetadataDocumentSupported is defined in the CIMD draft as an
 		// OAuth AS metadata field (RFC 8414), not in OIDC Discovery 1.0. It is
@@ -135,12 +137,25 @@ func (h *Handler) tokenEndpointAuthMethodsSupported() []string {
 			sharedobauth.TokenEndpointAuthMethodClientSecretPost,
 		)
 	}
+	if h.config.AllowPrivateKeyJWTRegistration {
+		methods = append(methods, sharedobauth.TokenEndpointAuthMethodPrivateKeyJWT)
+	}
 	return methods
 }
 
+// tokenEndpointAuthSigningAlgorithms returns the signing algorithms advertised
+// for private_key_jwt client assertions. The list is shared with DCR validation
+// so discovery cannot claim support for an algorithm registration rejects.
+func (h *Handler) tokenEndpointAuthSigningAlgorithms() []string {
+	if !h.config.AllowPrivateKeyJWTRegistration {
+		return nil
+	}
+	return registration.SupportedSigningAlgorithms()
+}
+
 // grantTypesSupported returns the grant_types_supported list for discovery.
-// RFC 8693 token exchange is always registered with fosite (buildProvider
-// wires it unconditionally, even with no trusted issuers, to preserve
+// RFC 8693 token exchange is always registered with fosite (buildProvider wires
+// it unconditionally, even with no trusted issuers, to preserve
 // self-issued token exchange), so it's always advertised. The RFC 7523
 // JWT-bearer grant, by contrast, is only registered when at least one
 // trusted issuer opts in — advertising it unconditionally would claim

@@ -16,8 +16,11 @@ package registration
 
 import (
 	"context"
+	"crypto/rsa"
+	"math/big"
 	"testing"
 
+	"github.com/go-jose/go-jose/v3"
 	"github.com/ory/fosite"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -399,6 +402,35 @@ func TestNewClient_PublicClient(t *testing.T) {
 	assert.ElementsMatch(t, defaultGrantTypes, client.GetGrantTypes())
 	assert.ElementsMatch(t, defaultResponseTypes, client.GetResponseTypes())
 	assert.ElementsMatch(t, DefaultScopes, client.GetScopes())
+}
+
+func TestNewClient_PrivateKeyJWT(t *testing.T) {
+	t.Parallel()
+
+	jwks := &jose.JSONWebKeySet{Keys: []jose.JSONWebKey{{
+		Key:       &rsa.PublicKey{N: big.NewInt(65537), E: 3},
+		KeyID:     "test-key",
+		Use:       "sig",
+		Algorithm: string(jose.RS256),
+	}}}
+	client, err := New(Config{
+		ID:                                "test-private-key-jwt-client",
+		RedirectURIs:                      []string{"https://example.com/callback"},
+		TokenEndpointAuthMethod:           oauthproto.TokenEndpointAuthMethodPrivateKeyJWT,
+		JSONWebKeys:                       jwks,
+		TokenEndpointAuthSigningAlgorithm: string(jose.RS256),
+	})
+	require.NoError(t, err)
+
+	assert.False(t, client.IsPublic())
+	assert.True(t, DCRIssued(client))
+	assert.Empty(t, client.GetHashedSecret())
+	oidc, ok := client.(fosite.OpenIDConnectClient)
+	require.True(t, ok)
+	assert.Equal(t, oauthproto.TokenEndpointAuthMethodPrivateKeyJWT, oidc.GetTokenEndpointAuthMethod())
+	assert.Equal(t, string(jose.RS256), oidc.GetTokenEndpointAuthSigningAlgorithm())
+	assert.Equal(t, jwks, oidc.GetJSONWebKeys())
+	assert.NotSame(t, jwks, oidc.GetJSONWebKeys())
 }
 
 func TestNewClient_ConfidentialClient(t *testing.T) {

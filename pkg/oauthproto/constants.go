@@ -49,6 +49,10 @@ const (
 	// TokenEndpointAuthMethodClientSecretPost sends the client credentials in the
 	// request body at the token endpoint (RFC 6749 Section 2.3.1).
 	TokenEndpointAuthMethodClientSecretPost = "client_secret_post"
+
+	// TokenEndpointAuthMethodPrivateKeyJWT authenticates with a signed client
+	// assertion at the token endpoint (RFC 7523).
+	TokenEndpointAuthMethodPrivateKeyJWT = "private_key_jwt" //nolint:gosec // G101: RFC 7591 auth-method identifier
 )
 
 // PKCE (Proof Key for Code Exchange) methods as defined by RFC 7636.

@@ -263,6 +263,7 @@ func newEmbeddedAuthServerWithStorage(
 		CIMDCacheFallbackTTL:                      cimdCacheFallbackTTL,
 		InsecureAllowHTTP:                         cfg.InsecureAllowHTTP,
 		AllowConfidentialClientRegistration:       cfg.AllowConfidentialClientRegistration,
+		AllowPrivateKeyJWTRegistration:            cfg.AllowPrivateKeyJWTRegistration,
 		ForceConfidentialRedirectURIs:             slices.Clone(cfg.ForceConfidentialRedirectURIs),
 		InsecureAllowConfidentialOverLoopbackHTTP: cfg.InsecureAllowConfidentialOverLoopbackHTTP,
 		// slices.Clone is shallow: each TrustedIssuer's own AllowedActors

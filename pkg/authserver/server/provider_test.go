@@ -76,10 +76,12 @@ func TestNewAuthorizationServerConfig_ConfidentialClientCapabilities(t *testing.
 	tests := []struct {
 		name                    string
 		allowConfidential       bool
+		allowPrivateKeyJWT      bool
 		hasStaticDelegateClient bool
 	}{
 		{name: "public only", allowConfidential: false, hasStaticDelegateClient: false},
 		{name: "confidential DCR", allowConfidential: true, hasStaticDelegateClient: false},
+		{name: "private-key JWT registration", allowPrivateKeyJWT: true, hasStaticDelegateClient: false},
 		{name: "static delegate client", allowConfidential: false, hasStaticDelegateClient: true},
 	}
 	for _, tt := range tests {
@@ -95,10 +97,12 @@ func TestNewAuthorizationServerConfig_ConfidentialClientCapabilities(t *testing.
 				SigningKeyAlgorithm:                 "RS256",
 				SigningKey:                          rsaKey,
 				AllowConfidentialClientRegistration: tt.allowConfidential,
+				AllowPrivateKeyJWTRegistration:      tt.allowPrivateKeyJWT,
 				HasStaticDelegateClients:            tt.hasStaticDelegateClient,
 			})
 			require.NoError(t, err)
 			assert.Equal(t, tt.allowConfidential, config.AllowConfidentialClientRegistration)
+			assert.Equal(t, tt.allowPrivateKeyJWT, config.AllowPrivateKeyJWTRegistration)
 			assert.Equal(t, tt.hasStaticDelegateClient, config.HasStaticDelegateClients)
 		})
 	}

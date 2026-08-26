@@ -157,6 +157,7 @@ func TestConfigValidate(t *testing.T) {
 
 		// Confidential-client transport gate (same predicate RunConfig.Validate uses)
 		{name: "confidential clients combined with insecure HTTP rejects", config: Config{Issuer: "http://example.com", KeyProvider: validKeyProvider, HMACSecrets: validHMAC, Upstreams: validUpstreams, AllowedAudiences: []string{"https://mcp.example.com"}, AllowConfidentialClientRegistration: true, InsecureAllowHTTP: true}, wantErr: true, errMsg: "allow_confidential_client_registration cannot be combined with insecure_allow_http"},
+		{name: "private-key JWT registration combined with insecure HTTP passes (no secret to protect)", config: Config{Issuer: "http://example.com", KeyProvider: validKeyProvider, HMACSecrets: validHMAC, Upstreams: validUpstreams, AllowedAudiences: []string{"https://mcp.example.com"}, AllowPrivateKeyJWTRegistration: true, InsecureAllowHTTP: true}},
 
 		// Valid configs
 		{name: "valid minimal", config: Config{Issuer: "https://example.com", KeyProvider: validKeyProvider, HMACSecrets: validHMAC, Upstreams: validUpstreams, AllowedAudiences: []string{"https://mcp.example.com"}}},
@@ -488,6 +489,8 @@ func TestRunConfigValidate(t *testing.T) {
 		{name: "CIMD enabled omitted optional fields pass", config: RunConfig{CIMD: &CIMDRunConfig{Enabled: true}}},
 		// Confidential-client transport gate
 		{name: "confidential clients without insecure HTTP passes", config: RunConfig{AllowConfidentialClientRegistration: true}},
+		{name: "private-key JWT registration defaults to false", config: RunConfig{}},
+		{name: "private-key JWT registration without insecure HTTP passes", config: RunConfig{AllowPrivateKeyJWTRegistration: true}},
 		{name: "insecure HTTP without confidential clients passes", config: RunConfig{InsecureAllowHTTP: true}},
 		{
 			name:    "confidential clients with malformed issuer reject before startup",
@@ -504,6 +507,10 @@ func TestRunConfigValidate(t *testing.T) {
 			},
 			wantErr: true,
 			errMsg:  "confidential clients require a valid issuer URL",
+		},
+		{
+			name:   "private-key JWT registration combined with insecure HTTP passes (no secret to protect)",
+			config: RunConfig{AllowPrivateKeyJWTRegistration: true, InsecureAllowHTTP: true},
 		},
 		{
 			name: "confidential clients with plain-HTTP loopback issuer rejects without the opt-in",
@@ -533,6 +540,13 @@ func TestRunConfigValidate(t *testing.T) {
 			name: "confidential clients disabled with plain-HTTP loopback issuer is unaffected",
 			config: RunConfig{
 				Issuer: "http://localhost:8080",
+			},
+		},
+		{
+			name: "private-key JWT registration with plain-HTTP loopback issuer is unaffected (no secret to protect)",
+			config: RunConfig{
+				Issuer:                         "http://localhost:8080",
+				AllowPrivateKeyJWTRegistration: true,
 			},
 		},
 	}
@@ -657,6 +671,9 @@ func TestConfigValidateDelegateClients(t *testing.T) {
 // validateEmbeddedAuthServer reuses: confidential clients are rejected when
 // combined with insecureAllowHTTP (unconditionally), or with a plain-HTTP
 // loopback issuer unless insecureAllowConfidentialOverLoopbackHTTP opts in.
+// private_key_jwt registration has no equivalent transport gate: it never
+// returns a secret in the DCR response, so it is unaffected by any of this
+// (see TestConfigValidate's "private-key JWT registration ... passes" cases).
 func TestValidateConfidentialClientTransport(t *testing.T) {
 	t.Parallel()
 

@@ -753,6 +753,9 @@ func applySimpleAuthServerConfigFields(config *authserver.RunConfig, authConfig 
 	// Wire through the confidential-client DCR flag (default off).
 	config.AllowConfidentialClientRegistration = authConfig.AllowConfidentialClientRegistration
 
+	// Wire through the private-key JWT DCR capability (default off).
+	config.AllowPrivateKeyJWTRegistration = authConfig.AllowPrivateKeyJWTRegistration
+
 	// Wire through the force-confidential-redirect-uris override list.
 	config.ForceConfidentialRedirectURIs = authConfig.ForceConfidentialRedirectURIs
 
@@ -783,10 +786,11 @@ func validateDelegateClientsAndTrustedIssuers(config *authserver.RunConfig) erro
 	}
 
 	validationConfig := &authserver.RunConfig{
-		Issuer:            config.Issuer,
-		AllowedAudiences:  config.AllowedAudiences,
-		ScopesSupported:   config.ScopesSupported,
-		InsecureAllowHTTP: config.InsecureAllowHTTP,
+		Issuer:                         config.Issuer,
+		AllowedAudiences:               config.AllowedAudiences,
+		ScopesSupported:                config.ScopesSupported,
+		InsecureAllowHTTP:              config.InsecureAllowHTTP,
+		AllowPrivateKeyJWTRegistration: config.AllowPrivateKeyJWTRegistration,
 		InsecureAllowConfidentialOverLoopbackHTTP: config.InsecureAllowConfidentialOverLoopbackHTTP,
 		DelegateClients: config.DelegateClients,
 		TrustedIssuers:  config.TrustedIssuers,

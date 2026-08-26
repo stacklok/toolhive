@@ -223,6 +223,20 @@ spec:
                       caller who can reach the endpoint obtain a client credential.
                       Combining it with insecureAllowHTTP is rejected at validation.
                     type: boolean
+                  allowPrivateKeyJWTRegistration:
+                    default: false
+                    description: |-
+                      AllowPrivateKeyJWTRegistration permits Dynamic Client Registration of
+                      clients using private_key_jwt authentication. Registration behavior is
+                      intentionally configured separately from confidential-client registration.
+
+                      Security: registration is unauthenticated, so enabling this lets any
+                      caller who can reach the endpoint register a private_key_jwt client.
+                      Unlike allowConfidentialClientRegistration, this is NOT rejected when
+                      combined with insecureAllowHTTP: registration never returns a secret
+                      for a private_key_jwt client, so there is nothing for cleartext HTTP
+                      to expose.
+                    type: boolean
                   authorizationEndpointBaseUrl:
                     description: |-
                       AuthorizationEndpointBaseURL overrides the base URL used for the authorization_endpoint
@@ -447,6 +461,11 @@ spec:
                       operators toward insecureAllowHTTP, which is worse: that also disables
                       the non-loopback host check. Has no effect when there are no confidential
                       clients or issuer is https.
+
+                      private_key_jwt registration has no equivalent flag or transport
+                      restriction: unlike confidential registration, it never returns a
+                      client_secret (or any other secret) in the DCR response, so there is
+                      nothing here for cleartext HTTP to expose.
                     type: boolean
                   insecureAllowHTTP:
                     default: false
@@ -2196,6 +2215,20 @@ spec:
                       caller who can reach the endpoint obtain a client credential.
                       Combining it with insecureAllowHTTP is rejected at validation.
                     type: boolean
+                  allowPrivateKeyJWTRegistration:
+                    default: false
+                    description: |-
+                      AllowPrivateKeyJWTRegistration permits Dynamic Client Registration of
+                      clients using private_key_jwt authentication. Registration behavior is
+                      intentionally configured separately from confidential-client registration.
+
+                      Security: registration is unauthenticated, so enabling this lets any
+                      caller who can reach the endpoint register a private_key_jwt client.
+                      Unlike allowConfidentialClientRegistration, this is NOT rejected when
+                      combined with insecureAllowHTTP: registration never returns a secret
+                      for a private_key_jwt client, so there is nothing for cleartext HTTP
+                      to expose.
+                    type: boolean
                   authorizationEndpointBaseUrl:
                     description: |-
                       AuthorizationEndpointBaseURL overrides the base URL used for the authorization_endpoint
@@ -2420,6 +2453,11 @@ spec:
                       operators toward insecureAllowHTTP, which is worse: that also disables
                       the non-loopback host check. Has no effect when there are no confidential
                       clients or issuer is https.
+
+                      private_key_jwt registration has no equivalent flag or transport
+                      restriction: unlike confidential registration, it never returns a
+                      client_secret (or any other secret) in the DCR response, so there is
+                      nothing here for cleartext HTTP to expose.
                     type: boolean
                   insecureAllowHTTP:
                     default: false

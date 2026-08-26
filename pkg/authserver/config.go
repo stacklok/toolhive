@@ -153,6 +153,20 @@ type RunConfig struct {
 	//nolint:lll // field tags require full JSON+YAML names
 	AllowConfidentialClientRegistration bool `json:"allow_confidential_client_registration,omitempty" yaml:"allow_confidential_client_registration,omitempty"`
 
+	// AllowPrivateKeyJWTRegistration permits Dynamic Client Registration of
+	// clients using private_key_jwt authentication. This is independent of
+	// AllowConfidentialClientRegistration and defaults to false. Registration
+	// behavior is controlled independently by the DCR handler and discovery
+	// metadata.
+	//
+	// Security: /oauth/register is unauthenticated. Unlike
+	// AllowConfidentialClientRegistration, this is NOT rejected when combined
+	// with InsecureAllowHTTP: registration never returns a secret for a
+	// private_key_jwt client, so there is nothing for cleartext HTTP to
+	// expose.
+	//nolint:lll // field tags require full JSON+YAML names
+	AllowPrivateKeyJWTRegistration bool `json:"allow_private_key_jwt_registration,omitempty" yaml:"allow_private_key_jwt_registration,omitempty"`
+
 	// ForceConfidentialRedirectURIs lists redirect URIs that must be registered
 	// as confidential clients regardless of the token_endpoint_auth_method the
 	// DCR request declares. A registration whose redirect_uris contains an
@@ -194,6 +208,11 @@ type RunConfig struct {
 	// Kubernetes CRD requires the explicit opt-in for a delegate client with an
 	// HTTP issuer; the shared transport validator enforces that its host is
 	// loopback — see EmbeddedAuthServerConfig's doc comment.
+	//
+	// private_key_jwt registration has no equivalent flag or transport
+	// restriction: unlike confidential registration, it never returns a
+	// client_secret (or any other secret) in the DCR response, so there is
+	// nothing here for cleartext HTTP to expose.
 	//nolint:lll // field tags require full JSON+YAML names
 	InsecureAllowConfidentialOverLoopbackHTTP bool `json:"insecure_allow_confidential_over_loopback_http,omitempty" yaml:"insecure_allow_confidential_over_loopback_http,omitempty"`
 
@@ -942,6 +961,10 @@ type Config struct {
 	// (client_secret_basic / client_secret_post). See RunConfig for the full
 	// semantics; disabling it does not revoke already-minted secrets.
 	AllowConfidentialClientRegistration bool
+
+	// AllowPrivateKeyJWTRegistration permits DCR of clients using
+	// private_key_jwt authentication. See RunConfig for the full semantics.
+	AllowPrivateKeyJWTRegistration bool
 
 	// ForceConfidentialRedirectURIs lists redirect URIs that are always
 	// registered as confidential clients, even when the DCR request declares

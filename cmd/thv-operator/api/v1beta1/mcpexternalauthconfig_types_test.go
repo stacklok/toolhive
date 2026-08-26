@@ -1254,6 +1254,7 @@ func TestDelegateClientConfig_JSON(t *testing.T) {
 	require.NoError(t, err)
 	assert.Nil(t, existing.DelegateClients)
 	assert.False(t, existing.AllowConfidentialClientRegistration)
+	assert.False(t, existing.AllowPrivateKeyJWTRegistration)
 }
 
 func TestEmbeddedAuthServerConfig_ValidateConfidentialClientTransport(t *testing.T) {
@@ -1317,6 +1318,28 @@ func TestEmbeddedAuthServerConfig_ValidateConfidentialClientTransport(t *testing
 				Issuer: "https://auth.example.com",
 				InsecureAllowConfidentialOverLoopbackHTTP: true,
 				DelegateClients: delegateClients,
+			},
+		},
+		{
+			name: "private-key JWT registration passes with insecure HTTP (no secret to protect)",
+			config: EmbeddedAuthServerConfig{
+				Issuer:                         "http://auth.example.com",
+				InsecureAllowHTTP:              true,
+				AllowPrivateKeyJWTRegistration: true,
+			},
+		},
+		{
+			name: "private-key JWT registration does not enable confidential registration",
+			config: EmbeddedAuthServerConfig{
+				Issuer:                         "https://auth.example.com",
+				AllowPrivateKeyJWTRegistration: true,
+			},
+		},
+		{
+			name: "private-key JWT registration passes with plain-HTTP loopback issuer (no secret to protect)",
+			config: EmbeddedAuthServerConfig{
+				Issuer:                         "http://localhost:8080",
+				AllowPrivateKeyJWTRegistration: true,
 			},
 		},
 	}

@@ -752,6 +752,20 @@ type EmbeddedAuthServerConfig struct {
 	// +optional
 	AllowConfidentialClientRegistration bool `json:"allowConfidentialClientRegistration,omitempty"`
 
+	// AllowPrivateKeyJWTRegistration permits Dynamic Client Registration of
+	// clients using private_key_jwt authentication. Registration behavior is
+	// intentionally configured separately from confidential-client registration.
+	//
+	// Security: registration is unauthenticated, so enabling this lets any
+	// caller who can reach the endpoint register a private_key_jwt client.
+	// Unlike allowConfidentialClientRegistration, this is NOT rejected when
+	// combined with insecureAllowHTTP: registration never returns a secret
+	// for a private_key_jwt client, so there is nothing for cleartext HTTP
+	// to expose.
+	// +kubebuilder:default=false
+	// +optional
+	AllowPrivateKeyJWTRegistration bool `json:"allowPrivateKeyJWTRegistration,omitempty"`
+
 	// InsecureAllowConfidentialOverLoopbackHTTP opts in to confidential
 	// Dynamic Client Registration (DCR) and delegate clients when issuer is a
 	// plain-HTTP loopback URL (e.g. "http://localhost:8080"). Without this
@@ -762,6 +776,11 @@ type EmbeddedAuthServerConfig struct {
 	// operators toward insecureAllowHTTP, which is worse: that also disables
 	// the non-loopback host check. Has no effect when there are no confidential
 	// clients or issuer is https.
+	//
+	// private_key_jwt registration has no equivalent flag or transport
+	// restriction: unlike confidential registration, it never returns a
+	// client_secret (or any other secret) in the DCR response, so there is
+	// nothing here for cleartext HTTP to expose.
 	// +kubebuilder:default=false
 	// +optional
 	InsecureAllowConfidentialOverLoopbackHTTP bool `json:"insecureAllowConfidentialOverLoopbackHTTP,omitempty"`
@@ -831,7 +850,9 @@ type EmbeddedAuthServerConfig struct {
 // ValidateConfidentialClientTransport rejects cleartext issuer configurations
 // when confidential DCR or delegate clients are configured. Delegate clients
 // do not enable DCR; they share its transport policy because they send a
-// secret to the token endpoint.
+// secret to the token endpoint. private_key_jwt registration is not gated
+// here: it never returns a secret in the DCR response, so cleartext HTTP
+// exposes nothing this check would protect.
 func (c *EmbeddedAuthServerConfig) ValidateConfidentialClientTransport() error {
 	return authserver.ValidateConfidentialClientTransport(
 		c.AllowConfidentialClientRegistration || len(c.DelegateClients) > 0,

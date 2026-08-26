@@ -740,7 +740,7 @@ func TestValidateConfidentialClientTransport(t *testing.T) {
 			err := ValidateConfidentialClientTransport(tt.allowConfidential, tt.insecureAllowHTTP, tt.issuer, tt.allowLoopbackOverride)
 			if tt.wantErr {
 				require.Error(t, err)
-				assert.Contains(t, err.Error(), "cleartext HTTP")
+				assert.Contains(t, err.Error(), "confidential clients")
 				assert.Contains(t, err.Error(), tt.errContains)
 				for _, value := range tt.redacted {
 					assert.NotContains(t, err.Error(), value)

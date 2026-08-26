@@ -5276,6 +5276,10 @@ const docTemplate = `{
                         "type": "array",
                         "uniqueItems": false
                     },
+                    "ca_file_path": {
+                        "description": "CAFilePath is the path to a PEM CA bundle added to the system roots when\nfetching this issuer's OIDC discovery document and JWKS. Trust is additive\nand scoped to this issuer: the public roots still apply, and no other\nissuer's client is affected.",
+                        "type": "string"
+                    },
                     "expected_audience": {
                         "description": "ExpectedAudience is the expected \"aud\" claim value that must appear\nin an RFC 8693 subject token's audience list (a resource/API identifier,\nnot a client ID — required for delegation unless JWTBearerGrant is\nconfigured; see looksLikeResourceIdentifier). RFC 7523 assertions use\nthe token endpoint as their audience instead.\nSee docs/arch/17-token-exchange-delegation.md (\"ID/access-token\ndiscrimination\") for why and its limits.",
                         "type": "string"

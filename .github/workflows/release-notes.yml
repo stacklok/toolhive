@@ -146,7 +146,7 @@ jobs:
           # already read-only at the GITHUB_TOKEN permission level.
           claude_args: |
             --allowedTools "Bash,Task,Read,Write,Edit,Glob,Grep,TodoWrite,WebFetch,mcp__context7__resolve-library-id,mcp__context7__get-library-docs"
-            --max-turns 100
+            --max-turns 60
 
       - name: Verify notes were generated
         id: verify

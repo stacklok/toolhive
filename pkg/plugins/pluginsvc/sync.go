@@ -7,6 +7,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"log/slog"
 	"net/http"
 	"strings"
 
@@ -17,6 +18,7 @@ import (
 	"github.com/stacklok/toolhive/pkg/plugins"
 	"github.com/stacklok/toolhive/pkg/skills/gitresolver"
 	"github.com/stacklok/toolhive/pkg/skills/lockfile"
+	"github.com/stacklok/toolhive/pkg/skills/verifier"
 	"github.com/stacklok/toolhive/pkg/storage"
 )
 
@@ -129,10 +131,11 @@ func (s *service) syncOne(
 }
 
 // syncLockedEntry reconciles one lock file entry against installed state,
-// appending its outcome to result. Missing (dbOK false) and drifted (digest
-// or contentDigest mismatch) entries are reinstalled at the pinned reference
-// unless opts.Check is set, in which case nothing is written — both states
-// are still reported (Missing/Drifted), never as failures.
+// appending its outcome to result. Missing (dbOK false), drifted (digest or
+// contentDigest mismatch) and signature-drifted (the stored bundle no longer
+// verifies against the locked identity) entries are reinstalled at the pinned
+// reference unless opts.Check is set, in which case nothing is written — all
+// three states are still reported (Missing/Drifted), never as failures.
 func (s *service) syncLockedEntry(
 	ctx context.Context,
 	opts plugins.SyncOptions,
@@ -142,7 +145,19 @@ func (s *service) syncLockedEntry(
 	targetClients []string,
 	result *plugins.SyncResult,
 ) {
-	if dbOK && pl.Managed && s.entryMatchesInstalled(ctx, entry, pl, targetClients) {
+	sigOK := true
+	if dbOK {
+		if sigErr := s.verifyStoredSignature(entry, pl); sigErr != nil {
+			// A failed offline re-verification is treated as drift: check
+			// mode reports it, apply mode reinstalls from the pinned
+			// reference — where install-time verification enforces the
+			// locked identity and, on success, heals the stored bundle.
+			sigOK = false
+			slog.Warn("stored signature failed offline re-verification",
+				"plugin", entry.Name, "error", sigErr)
+		}
+	}
+	if dbOK && sigOK && pl.Managed && s.entryMatchesInstalled(ctx, entry, pl, targetClients) {
 		result.AlreadyCurrent = append(result.AlreadyCurrent, entry.Name)
 		return
 	}
@@ -365,7 +380,7 @@ func (s *service) syncUnlockedInstall(
 	if !pl.Managed {
 		result.NeverManaged = append(result.NeverManaged, pl.Metadata.Name)
 		if opts.Adopt && !opts.Check {
-			if err := s.adoptLocked(ctx, pl); err != nil {
+			if err := s.adoptLocked(ctx, opts, pl); err != nil {
 				result.Failed = append(result.Failed, plugins.SyncFailure{
 					Name: pl.Metadata.Name, Reason: classifySyncFailure(err), Error: err.Error(),
 				})
@@ -388,21 +403,50 @@ func (s *service) syncUnlockedInstall(
 	}
 }
 
-// adoptPlugin writes a lock entry for an existing, unmanaged project-scope
-// install, pinning its current on-disk state. The install's own Reference is
-// used as Source: an adopted install predates (or never went through) lock
-// tracking, so the original user-typed request is not recoverable — the
-// concrete resolved reference is the closest available fact to pin against.
-// Adoption is rejected when that reference is not a restorable git:// or OCI
-// pin (a bare local-store tag cannot be re-fetched later).
+// verifyStoredSignature re-verifies the Sigstore bundle stored with an
+// installed plugin against the identity its lock entry records — entirely
+// offline, via the embedded trust root, so sync never contacts a registry to
+// decide whether an entry is current. Entries recorded unsigned or with no
+// provenance have nothing to verify. A recorded identity with no stored
+// bundle fails closed for OCI installs (the bundle should exist); git
+// installs never store a bundle — their signature lives on the commit and is
+// re-verified when content is re-resolved.
 //
-// Trust state is left unset (no provenance, not unsigned). Plugin Sigstore
-// verification lands in a later PR; requiring --allow-unsigned here would
-// make every adopt fail until then. Lock validation permits an entry with
-// neither provenance nor unsigned.
-// adoptLocked writes a lock entry for an unmanaged install assuming the
-// per-plugin lock is already held.
-func (s *service) adoptLocked(ctx context.Context, pl plugins.InstalledPlugin) error {
+// Local-store pins (isLocalStorePin) also carry an OCI-shaped digest and
+// store no bundle, but they cannot reach the fail-closed branch: a local
+// install is always an unsigned trust decision (verifyLocalInstall refuses
+// outright once an entry is locked to a signer), so its entry records
+// unsigned and returns above. An entry hand-edited into that state is
+// correctly reported as drift here, and the reinstall it triggers is then
+// refused by verifyLocalInstall.
+func (s *service) verifyStoredSignature(entry lockfile.Entry, pl plugins.InstalledPlugin) error {
+	if entry.Unsigned || entry.Provenance == nil {
+		return nil
+	}
+	if len(pl.SigstoreBundle) == 0 {
+		// A bare commit hash has no colon; an OCI digest is "sha256:<hex>".
+		if !strings.Contains(entry.Digest, ":") {
+			return nil // git install: no stored bundle by design
+		}
+		return fmt.Errorf("%w: lock entry records signer %q but no bundle is stored",
+			verifier.ErrSignatureInvalid, entry.Provenance.SignerIdentity)
+	}
+	return s.artifactVerifier().VerifyBundleOffline(pl.SigstoreBundle, entry.Digest, entry.Provenance)
+}
+
+// adoptLocked writes a lock entry for an existing, unmanaged project-scope
+// install, pinning its current on-disk state and assuming the per-plugin lock
+// is already held. The install's own Reference is used as Source: an adopted
+// install predates (or never went through) lock tracking, so the original
+// user-typed request is not recoverable — the concrete resolved reference is
+// the closest available fact to pin against. Adoption is rejected when that
+// reference is not a restorable git:// or OCI pin (a bare local-store tag
+// cannot be re-fetched later).
+//
+// Trust state is back-filled from the stored Sigstore bundle when one exists;
+// otherwise adoption is the same trust decision as an unsigned install and
+// requires the explicit AllowUnsigned exception.
+func (s *service) adoptLocked(ctx context.Context, opts plugins.SyncOptions, pl plugins.InstalledPlugin) error {
 	current, err := s.store.Get(ctx, pl.Metadata.Name, plugins.ScopeProject, pl.ProjectRoot)
 	if err != nil {
 		return fmt.Errorf("re-reading plugin before adopt: %w", err)
@@ -442,6 +486,11 @@ func (s *service) adoptLocked(ctx context.Context, pl plugins.InstalledPlugin) e
 		prevEntry = &e
 	}
 
+	provenance, unsigned, err := s.adoptionTrust(opts, pl)
+	if err != nil {
+		return err
+	}
+
 	if err := recordLockEntry(pl.ProjectRoot, lockEntryInput{
 		Name:              pl.Metadata.Name,
 		Version:           pl.Metadata.Version,
@@ -449,6 +498,8 @@ func (s *service) adoptLocked(ctx context.Context, pl plugins.InstalledPlugin) e
 		ResolvedReference: resolved,
 		Digest:            pl.Digest,
 		ContentDigest:     contentDigest,
+		Provenance:        provenance,
+		Unsigned:          unsigned,
 	}); err != nil {
 		return fmt.Errorf("writing lock entry: %w", errors.Join(errLockWrite, err))
 	}
@@ -462,7 +513,34 @@ func (s *service) adoptLocked(ctx context.Context, pl plugins.InstalledPlugin) e
 	return nil
 }
 
-// restoreAdoptedLockEntry undoes adoptPlugin's lock write: reinstates the
+// adoptionTrust decides what trust state an adopted install records. A stored
+// Sigstore bundle is the only evidence adoption has to work from: when one
+// exists its identity is back-filled into the lock entry, and when it does not
+// adopting is the same trust decision as an unsigned install — it records an
+// explicit unsigned exception, which the caller must have opted into.
+func (s *service) adoptionTrust(
+	opts plugins.SyncOptions, pl plugins.InstalledPlugin,
+) (*lockfile.Provenance, bool, error) {
+	if len(pl.SigstoreBundle) > 0 {
+		result, err := s.artifactVerifier().ResultFromBundle(pl.SigstoreBundle, pl.Digest)
+		if err != nil {
+			return nil, false, fmt.Errorf("verifying stored bundle for adoption: %w", err)
+		}
+		if provenance := result.ToLockProvenance(); provenance != nil {
+			return provenance, false, nil
+		}
+	}
+	if !opts.AllowUnsigned {
+		return nil, false, httperr.WithCode(
+			fmt.Errorf("%w: adopting %q records it as unsigned; pass --allow-unsigned to accept that",
+				verifier.ErrUnsigned, pl.Metadata.Name),
+			http.StatusForbidden,
+		)
+	}
+	return nil, true, nil
+}
+
+// restoreAdoptedLockEntry undoes adoptLocked's lock write: reinstates the
 // entry observed before adoption, or removes the name if none existed.
 func restoreAdoptedLockEntry(pl plugins.InstalledPlugin, prevEntry *lockfile.Entry) error {
 	if prevEntry != nil {

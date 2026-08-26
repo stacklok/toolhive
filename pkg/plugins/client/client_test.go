@@ -1025,3 +1025,26 @@ func TestInstallCarriesAllowUnsigned(t *testing.T) {
 	require.NoError(t, err)
 	assert.True(t, got.AllowUnsigned, "allow_unsigned must reach the server")
 }
+
+// TestSyncCarriesAllowUnsigned mirrors TestInstallCarriesAllowUnsigned for
+// the sync/adopt path: a flag that dies at the DTO boundary would silently
+// make every adoption of an install with no stored bundle fail.
+func TestSyncCarriesAllowUnsigned(t *testing.T) {
+	t.Parallel()
+
+	var got syncRequest
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		require.NoError(t, json.NewDecoder(r.Body).Decode(&got))
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(plugins.SyncResult{})
+	}))
+	t.Cleanup(srv.Close)
+
+	_, err := newTestClient(t, srv).Sync(t.Context(), plugins.SyncOptions{
+		ProjectRoot:   "/tmp/project",
+		Adopt:         true,
+		AllowUnsigned: true,
+	})
+	require.NoError(t, err)
+	assert.True(t, got.AllowUnsigned, "allow_unsigned must reach the server")
+}

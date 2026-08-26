@@ -54,6 +54,10 @@ type Config struct {
 	// CallbackPort is the port for the OAuth callback server (optional, 0 means auto-select)
 	CallbackPort int
 
+	// RequireExactCallbackPort prevents fallback when CallbackPort is unavailable.
+	// Use it when the callback URI is pre-registered with the identity provider.
+	RequireExactCallbackPort bool
+
 	// IntrospectionEndpoint is the optional introspection endpoint for validating tokens
 	IntrospectionEndpoint string
 
@@ -124,10 +128,18 @@ func NewFlow(config *Config) (*Flow, error) {
 		return nil, errors.New("token URL is required")
 	}
 
-	// Use specified callback port or find an available port for the local server
-	port, err := networking.FindOrUsePort(config.CallbackPort)
-	if err != nil {
-		return nil, fmt.Errorf("failed to find available port: %w", err)
+	requestedPort := config.CallbackPort
+	port := requestedPort
+	if config.RequireExactCallbackPort && requestedPort != 0 {
+		if !networking.IsAvailable(requestedPort) {
+			return nil, &networking.CallbackPortInUseError{Port: requestedPort}
+		}
+	} else {
+		var err error
+		port, err = networking.FindOrUsePort(requestedPort)
+		if err != nil {
+			return nil, fmt.Errorf("failed to find available port: %w", err)
+		}
 	}
 
 	// Set default redirect URL if not provided

@@ -12,6 +12,7 @@ import (
 	"encoding/pem"
 	"errors"
 	"math/big"
+	"strings"
 	"testing"
 	"time"
 
@@ -53,6 +54,20 @@ func TestResolveCABundle(t *testing.T) {
 			ref:       caBundleTestRef("custom.pem"),
 			objects:   []client.Object{&corev1.ConfigMap{ObjectMeta: metav1.ObjectMeta{Name: "bundle", Namespace: "workload"}, BinaryData: map[string][]byte{"custom.pem": validPEM}}},
 			want:      validPEM,
+		},
+		{
+			// The OIDC volume-name cap (48 chars) must not apply here: upstream CA
+			// volumes are named by provider index, never by ConfigMap name.
+			name:      "name longer than the OIDC volume-name cap resolves",
+			namespace: "workload",
+			ref: &mcpv1beta1.CABundleSource{ConfigMapRef: &corev1.ConfigMapKeySelector{
+				LocalObjectReference: corev1.LocalObjectReference{Name: strings.Repeat("a", 60)},
+			}},
+			objects: []client.Object{&corev1.ConfigMap{
+				ObjectMeta: metav1.ObjectMeta{Name: strings.Repeat("a", 60), Namespace: "workload"},
+				Data:       map[string]string{validation.OIDCCABundleDefaultKey: string(validPEM)},
+			}},
+			want: validPEM,
 		},
 		{
 			name:      "missing key",

@@ -44,7 +44,9 @@ func invalidCABundleError(err error) error {
 // successful result to gate reconciliation; the workload still mounts the
 // ConfigMap so updates can be observed by kubelet.
 func ResolveCABundle(ctx context.Context, c client.Reader, namespace string, ref *mcpv1beta1.CABundleSource) ([]byte, error) {
-	if err := validation.ValidateCABundleSource(ref); err != nil {
+	// Shape-only: the upstream CA volume name is index-derived, so the OIDC
+	// ConfigMap-name length cap does not apply here.
+	if err := validation.ValidateCABundleSourceShape(ref); err != nil {
 		return nil, invalidCABundleError(err)
 	}
 	if ref == nil || ref.ConfigMapRef == nil {

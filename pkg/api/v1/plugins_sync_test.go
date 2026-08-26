@@ -157,6 +157,27 @@ func TestUpgradePluginsEndpoint(t *testing.T) {
 			wantContains: `"my-plugin"`,
 		},
 		{
+			// A DTO field that dies at the decode boundary would silently
+			// re-arm the signer-change guard the caller just overrode.
+			name: "allow_signer_change reaches the service",
+			service: &pluginServiceWithSync{
+				PluginService: plugmocks.NewMockPluginService(gomock.NewController(t)),
+				syncFn:        func(context.Context, plugins.SyncOptions) (*plugins.SyncResult, error) { return nil, nil },
+				upgradeFn: func(_ context.Context, opts plugins.UpgradeOptions) (*plugins.UpgradeResult, error) {
+					assert.True(t, opts.AllowSignerChange, "allow_signer_change must reach the service")
+					assert.True(t, opts.AllowRefChange)
+					assert.Equal(t, []string{"my-plugin"}, opts.Names)
+					return &plugins.UpgradeResult{Outcomes: []plugins.UpgradeOutcome{
+						{Name: "my-plugin", Status: plugins.UpgradeStatusUpgraded},
+					}}, nil
+				},
+			},
+			body: `{"project_root":"/tmp/proj","names":["my-plugin"],` +
+				`"allow_ref_change":true,"allow_signer_change":true}`,
+			wantStatus:   http.StatusOK,
+			wantContains: `"upgraded"`,
+		},
+		{
 			name:       "service without Upgrade support returns 501",
 			service:    plugmocks.NewMockPluginService(gomock.NewController(t)),
 			body:       `{"project_root":"/tmp/proj"}`,

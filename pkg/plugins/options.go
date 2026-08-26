@@ -75,6 +75,11 @@ type InstallOptions struct {
 	// normal "same digest means content is already correct" fast path must
 	// not apply. Internal use only — NOT exposed via HTTP API.
 	SyncRestore bool `json:"-"`
+	// AllowSignerChange lets install-time verification re-record the
+	// observed identity instead of enforcing the lock file's recorded one.
+	// Internal use only — set by upgrade when its signer-change guard was
+	// explicitly overridden. NOT exposed via HTTP API.
+	AllowSignerChange bool `json:"-"`
 	// ExpectedCanonicalName, when set, requires the resolved plugin/manifest name
 	// to equal this value before any install mutation. Used by Sync/Upgrade so a
 	// lock entry cannot be repaired under a different canonical identity.

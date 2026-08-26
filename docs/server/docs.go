@@ -3998,6 +3998,10 @@ const docTemplate = `{
                         "description": "AllowRefChange permits resolvedReference changes during upgrade",
                         "type": "boolean"
                     },
+                    "allow_signer_change": {
+                        "description": "AllowSignerChange permits upgrading to an artifact signed by a\ndifferent identity than the recorded one",
+                        "type": "boolean"
+                    },
                     "clients": {
                         "description": "Clients lists target client identifiers. Empty means every\nplugin-supporting client detected on this host.",
                         "items": {

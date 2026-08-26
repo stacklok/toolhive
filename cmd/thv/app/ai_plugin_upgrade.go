@@ -13,13 +13,14 @@ import (
 )
 
 var (
-	aiPluginUpgradeProjectRoot    string
-	aiPluginUpgradeClientsRaw     string
-	aiPluginUpgradePreview        bool
-	aiPluginUpgradeFailOnChanges  bool
-	aiPluginUpgradeAllowRefChange bool
-	aiPluginUpgradeYes            bool
-	aiPluginUpgradeFormat         string
+	aiPluginUpgradeProjectRoot       string
+	aiPluginUpgradeClientsRaw        string
+	aiPluginUpgradePreview           bool
+	aiPluginUpgradeFailOnChanges     bool
+	aiPluginUpgradeAllowRefChange    bool
+	aiPluginUpgradeAllowSignerChange bool
+	aiPluginUpgradeYes               bool
+	aiPluginUpgradeFormat            string
 )
 
 var aiPluginUpgradeCmd = &cobra.Command{
@@ -60,6 +61,8 @@ func init() {
 		"Report what would change without persisting anything (OCI sources are still fetched to compare digests)")
 	aiPluginUpgradeCmd.Flags().BoolVar(&aiPluginUpgradeFailOnChanges, "fail-on-changes", false,
 		"Report what would change without installing anything; a CI freshness gate")
+	aiPluginUpgradeCmd.Flags().BoolVar(&aiPluginUpgradeAllowSignerChange, "allow-signer-change", false,
+		"Permit upgrading to an artifact signed by a different identity; the new identity replaces the recorded one")
 	aiPluginUpgradeCmd.Flags().BoolVar(&aiPluginUpgradeAllowRefChange, "allow-ref-change", false,
 		"Permit the artifact to move to a different repository during upgrade")
 	aiPluginUpgradeCmd.Flags().BoolVar(&aiPluginUpgradeYes, "yes", false,
@@ -89,12 +92,13 @@ func aiPluginUpgradeCmdFunc(cmd *cobra.Command, args []string) error {
 
 	c := newAIPluginClient(cmd.Context())
 	result, err := c.Upgrade(cmd.Context(), plugins.UpgradeOptions{
-		ProjectRoot:    projectRoot,
-		Names:          args,
-		Clients:        parseSkillInstallClients(aiPluginUpgradeClientsRaw),
-		Preview:        aiPluginUpgradePreview,
-		FailOnChanges:  aiPluginUpgradeFailOnChanges,
-		AllowRefChange: aiPluginUpgradeAllowRefChange,
+		ProjectRoot:       projectRoot,
+		Names:             args,
+		Clients:           parseSkillInstallClients(aiPluginUpgradeClientsRaw),
+		Preview:           aiPluginUpgradePreview,
+		FailOnChanges:     aiPluginUpgradeFailOnChanges,
+		AllowRefChange:    aiPluginUpgradeAllowRefChange,
+		AllowSignerChange: aiPluginUpgradeAllowSignerChange,
 	})
 	if err != nil {
 		return formatAIPluginError("upgrade plugins", err)
@@ -109,7 +113,8 @@ func aiPluginUpgradeCmdFunc(cmd *cobra.Command, args []string) error {
 
 func pluginUpgradeExitError(result *plugins.UpgradeResult, preview, failOnChanges bool) error {
 	tally := tallyUpgradeOutcomes(result)
-	failed, refBlocked, wouldChange := tally.failed, tally.refBlocked, tally.wouldChange
+	failed, refBlocked, signerBlocked, wouldChange :=
+		tally.failed, tally.refBlocked, tally.signerBlocked, tally.wouldChange
 	if failed > 0 {
 		return withExitCode(fmt.Errorf("upgrade failed for %d plugin(s)", failed), ExitCodePartialFailure)
 	}
@@ -117,6 +122,12 @@ func pluginUpgradeExitError(result *plugins.UpgradeResult, preview, failOnChange
 		return withExitCode(
 			fmt.Errorf("%d plugin(s) would change; the lock file is stale", wouldChange),
 			ExitCodeCheckFailure,
+		)
+	}
+	if !preview && !failOnChanges && signerBlocked > 0 {
+		return withExitCode(
+			fmt.Errorf("%d plugin(s) blocked by a signer change; use --allow-signer-change", signerBlocked),
+			ExitCodePolicyRejection,
 		)
 	}
 	if !preview && !failOnChanges && refBlocked > 0 {

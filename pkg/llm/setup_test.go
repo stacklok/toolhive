@@ -6,6 +6,9 @@ package llm
 import (
 	"bytes"
 	"context"
+	"errors"
+	"fmt"
+	"net"
 	"net/http"
 	"net/http/httptest"
 	"testing"
@@ -16,6 +19,7 @@ import (
 	"go.uber.org/mock/gomock"
 
 	"github.com/stacklok/toolhive/pkg/llmgateway"
+	"github.com/stacklok/toolhive/pkg/networking"
 	"github.com/stacklok/toolhive/pkg/secrets"
 	secretsmocks "github.com/stacklok/toolhive/pkg/secrets/mocks"
 )
@@ -573,6 +577,90 @@ func TestSetup_NonLazy_InvokesLogin(t *testing.T) {
 
 	assert.True(t, loginCalled, "non-lazy mode must invoke the OIDC login")
 	require.Len(t, provider.cfg.ConfiguredTools, 1)
+}
+
+func TestSetup_NonLazy_LoginFailure(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name            string
+		loginErr        error
+		wantContains    []string
+		wantNotContains string
+	}{
+		{
+			name:     "callback port in use includes remediation",
+			loginErr: &networking.CallbackPortInUseError{Port: 8666},
+			wantContains: []string{
+				"OIDC login failed",
+				"requested callback port 8666 is already in use",
+				"stop the process using it",
+				"thv llm setup --callback-port <port>",
+			},
+		},
+		{
+			name:            "other login errors keep generic handling",
+			loginErr:        errors.New("login unavailable"),
+			wantContains:    []string{"OIDC login failed", "login unavailable"},
+			wantNotContains: "--callback-port",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			gm := &setupGatewayManager{detected: []string{"cursor"}, mode: "proxy"}
+			provider := configuredSetupProvider()
+			login := func(_ context.Context, _ *Config) error { return tt.loginErr }
+
+			var stdout, stderr bytes.Buffer
+			err := Setup(
+				context.Background(), &stdout, &stderr, gm, provider, login,
+				SetOptions{}, "", true, "", false,
+			)
+
+			require.Error(t, err)
+			for _, want := range tt.wantContains {
+				assert.Contains(t, err.Error(), want)
+			}
+			if tt.wantNotContains != "" {
+				assert.NotContains(t, err.Error(), tt.wantNotContains)
+			}
+			assert.Empty(t, provider.cfg.ConfiguredTools)
+		})
+	}
+}
+
+func TestSetup_CallbackPortInUseBeforeLogin(t *testing.T) {
+	t.Parallel()
+
+	listener, err := net.Listen("tcp", "127.0.0.1:0")
+	require.NoError(t, err)
+	t.Cleanup(func() { require.NoError(t, listener.Close()) })
+	port := listener.Addr().(*net.TCPAddr).Port
+
+	provider := configuredSetupProvider()
+	provider.cfg.OIDC.CallbackPort = port
+	loginCalled := false
+	login := func(_ context.Context, _ *Config) error {
+		loginCalled = true
+		return nil
+	}
+
+	var stdout, stderr bytes.Buffer
+	err = Setup(
+		context.Background(), &stdout, &stderr,
+		&setupGatewayManager{detected: []string{"cursor"}, mode: "proxy"}, provider, login,
+		SetOptions{}, "", true, "", false,
+	)
+
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "invalid inline flag values")
+	assert.NotContains(t, err.Error(), "OIDC login failed")
+	assert.Contains(t, err.Error(), fmt.Sprintf("requested callback port %d is already in use", port))
+	assert.Contains(t, err.Error(), "thv llm setup --callback-port <port>")
+	assert.False(t, loginCalled)
 }
 
 // ── AnthropicPathPrefix / configureDetectedTools ──────────────────────────────

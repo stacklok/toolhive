@@ -175,6 +175,25 @@ ports of the skills analogues.
 
 ## Security Model
 
+### Trust Model
+
+Project-scoped plugin installs are verified against Sigstore signatures, and the project's `toolhive.lock.yaml` — the same file skills use, under its own `plugins:` key — records the trust decisions those verifications produce. A plugin contributes hooks, agents, commands, and MCP server declarations to whichever client loads it, so this is a strictly larger blast radius than a skill: the trust decision is never implicit.
+
+On first install of a signed plugin the observed signer identity is recorded (trust on first use) as the entry's `provenance:` block and **displayed to the user** — by `thv ai-plugin install` when it completes, and by `thv ai-plugin info` on every later read. Each subsequent install, sync, and upgrade enforces that identity *inside* the Sigstore verification policy: OCI artifacts through their attached signature bundles, git commits through gitsign signature-and-chain verification (recorded `provisional: true` — the transparency-log proof of signing time is not yet validated, so the replay window is unbounded until that lands, and the marker is rendered wherever the identity is). `thv ai-plugin sync` additionally re-verifies each entry's stored signature bundle offline — embedded trust root, no network — before counting it current, so a tampered-with stored bundle is caught in CI rather than at the next install. `thv ai-plugin upgrade` refuses to move to an artifact signed by a different identity, or to an unsigned one, without an explicit `--allow-signer-change`.
+
+Publishing is signed by default. `thv ai-plugin push` requires `--key` (a cosign private key), an OIDC identity token for keyless signing (`--identity-token`, or acquired automatically from an ambient CI token or an interactive browser sign-in), or an explicit `--no-sign`. Either signing path attaches the signature manifest next to the pushed artifact, where install-time verification finds it. A failed signing fails the push: an artifact published as if it were signed — which consumers then have to install with `--allow-unsigned` — is worse than a push that visibly did not complete.
+
+What is still trusted on faith, deliberately and visibly:
+
+- **Unsigned plugins** install only with an explicit `--allow-unsigned`, recorded as `unsigned: true` in the lock entry. That entry is a standing exception: lock-driven operations (sync restores, upgrade re-pins) honor it without re-asking, and `thv ai-plugin info` renders it as `(unsigned — explicit exception)`.
+- **The lock file itself** remains a repository-editable policy document. A diff converting a `provenance:` block to `unsigned: true` is a trust downgrade that sync will honor — it cannot happen without a lock file edit, which is exactly what lock-file review must catch. Reviewing `provenance`, `unsigned`, `digest`, and `resolvedReference` changes carries the same weight as reviewing the plugin content itself.
+- **First use** anchors trust to whatever identity signed the artifact at that moment; verify the printed identity is the publisher you expect.
+- **Declared-but-unmanaged components** (`mcpServers`, `lspServers`) are recorded in the inventory and shown by `info`, but ToolHive neither materializes nor lifecycle-manages them — their content is not covered by anything above beyond the artifact digest.
+
+Plugins do not yet consume catalog-declared provenance the way skills do (`registry.Skill.Provenance`), so a plugin's first project-scoped install is always ordinary trust on first use.
+
+See [Project Lock File](12-skills-system.md#project-lock-file) in the skills document for the lock file's schema and the shared verification internals.
+
 ### Archive Extraction Safety
 
 Both adapters delegate to `skills.Installer.Extract`, which enforces:
@@ -253,8 +272,8 @@ no remaining `@toolhive` plugins are enabled.
 
 The OCI install path rejects artifacts whose declared name doesn't match the
 reference's repository last segment. This is a consistency check, not publisher
-authenticity — `pluginConfig.Name` is self-declared. Signature verification is a
-separate concern.
+authenticity — `pluginConfig.Name` is self-declared. Publisher authenticity is
+established separately, by signature verification (see [Trust Model](#trust-model)).
 
 ### Git Clone Bounds
 

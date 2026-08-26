@@ -1893,10 +1893,29 @@ func (r *MCPRemoteProxyReconciler) podSpecNeedsUpdate(
 			!equality.Semantic.DeepEqual(
 				deployment.Spec.Template.Spec.ImagePullSecrets,
 				expectedDeployment.Spec.Template.Spec.ImagePullSecrets,
+			) ||
+			// Scheduling can come from podTemplateSpec as well as from
+			// resourceOverrides, so compare against the rebuilt Deployment rather
+			// than the overrides alone.
+			!equality.Semantic.DeepEqual(
+				deployment.Spec.Template.Spec.NodeSelector,
+				expectedDeployment.Spec.Template.Spec.NodeSelector,
+			) ||
+			!equality.Semantic.DeepEqual(
+				deployment.Spec.Template.Spec.Tolerations,
+				expectedDeployment.Spec.Template.Spec.Tolerations,
+			) ||
+			!equality.Semantic.DeepEqual(
+				deployment.Spec.Template.Spec.Affinity,
+				expectedDeployment.Spec.Template.Spec.Affinity,
 			)
 	}
 
 	if deployment.Spec.Template.Spec.ServiceAccountName != serviceAccountNameForRemoteProxy(proxy) {
+		return true
+	}
+
+	if proxySchedulingNeedsUpdate(deployment, proxy.Spec.ResourceOverrides) {
 		return true
 	}
 

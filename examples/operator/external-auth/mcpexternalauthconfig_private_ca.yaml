@@ -32,3 +32,12 @@ spec:
             configMapRef:
               name: upstream-private-ca
               key: ca.crt
+    trustedIssuers:
+      - issuerUrl: https://issuer.internal.example.com
+        expectedAudience: toolhive-authserver
+        allowedDelegateClients:
+          - toolhive-client
+        caBundleRef:
+          configMapRef:
+            name: upstream-private-ca
+            key: ca.crt

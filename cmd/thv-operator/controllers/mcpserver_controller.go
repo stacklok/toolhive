@@ -206,10 +206,10 @@ func (r *MCPServerReconciler) handleInvalidEmbeddedAuthServerConfig(
 	})
 }
 
-// handleInvalidUpstreamCABundle records an invalid upstream CA bundle as terminal
+// handleInvalidCABundle records an invalid CA bundle as terminal
 // on conditionType, which the caller picks because it knows which reference the
 // bundle was reached through. Failures to persist status remain retryable.
-func (r *MCPServerReconciler) handleInvalidUpstreamCABundle(
+func (r *MCPServerReconciler) handleInvalidCABundle(
 	ctx context.Context,
 	mcpServer *mcpv1beta1.MCPServer,
 	conditionType string,
@@ -225,7 +225,7 @@ func (r *MCPServerReconciler) handleInvalidUpstreamCABundle(
 			Status:             metav1.ConditionFalse,
 			ObservedGeneration: server.Generation,
 			Reason:             mcpv1beta1.ConditionReasonInvalidCABundle,
-			Message:            fmt.Sprintf("invalid upstream CA bundle: %v", invalidCABundleErr),
+			Message:            fmt.Sprintf("invalid CA bundle: %v", invalidCABundleErr),
 		})
 	})
 }
@@ -336,9 +336,9 @@ func (r *MCPServerReconciler) Reconcile(ctx context.Context, req ctrl.Request) (
 	if err := r.handleExternalAuthConfig(ctx, mcpServer); err != nil {
 		var invalidCABundleErr *ctrlutil.InvalidCABundleError
 		if stderrors.As(err, &invalidCABundleErr) {
-			if statusErr := r.handleInvalidUpstreamCABundle(
+			if statusErr := r.handleInvalidCABundle(
 				ctx, mcpServer, mcpv1beta1.ConditionTypeExternalAuthConfigValidated, invalidCABundleErr); statusErr != nil {
-				ctxLogger.Error(statusErr, "Failed to update MCPServer status after invalid upstream CA bundle")
+				ctxLogger.Error(statusErr, "Failed to update MCPServer status after invalid CA bundle")
 				return ctrl.Result{}, statusErr
 			}
 			return ctrl.Result{}, nil
@@ -370,9 +370,9 @@ func (r *MCPServerReconciler) Reconcile(ctx context.Context, req ctrl.Request) (
 	if err := r.handleAuthServerRef(ctx, mcpServer); err != nil {
 		var invalidCABundleErr *ctrlutil.InvalidCABundleError
 		if stderrors.As(err, &invalidCABundleErr) {
-			if statusErr := r.handleInvalidUpstreamCABundle(
+			if statusErr := r.handleInvalidCABundle(
 				ctx, mcpServer, mcpv1beta1.ConditionTypeAuthServerRefValidated, invalidCABundleErr); statusErr != nil {
-				ctxLogger.Error(statusErr, "Failed to update MCPServer status after invalid upstream CA bundle")
+				ctxLogger.Error(statusErr, "Failed to update MCPServer status after invalid CA bundle")
 				return ctrl.Result{}, statusErr
 			}
 			return ctrl.Result{}, nil
@@ -2390,7 +2390,7 @@ func (r *MCPServerReconciler) handleExternalAuthConfig(ctx context.Context, m *m
 			}
 			meta.SetStatusCondition(&m.Status.Conditions, metav1.Condition{
 				Type: mcpv1beta1.ConditionTypeExternalAuthConfigValidated, Status: metav1.ConditionFalse,
-				Reason: mcpv1beta1.ConditionReasonInvalidCABundle, Message: fmt.Sprintf("invalid upstream CA bundle: %v", err),
+				Reason: mcpv1beta1.ConditionReasonInvalidCABundle, Message: fmt.Sprintf("invalid CA bundle: %v", err),
 				ObservedGeneration: m.Generation,
 			})
 			return err
@@ -2570,7 +2570,7 @@ func (r *MCPServerReconciler) handleAuthServerRef(ctx context.Context, m *mcpv1b
 				Type:               mcpv1beta1.ConditionTypeAuthServerRefValidated,
 				Status:             metav1.ConditionFalse,
 				Reason:             mcpv1beta1.ConditionReasonInvalidCABundle,
-				Message:            fmt.Sprintf("invalid upstream CA bundle: %v", err),
+				Message:            fmt.Sprintf("invalid CA bundle: %v", err),
 				ObservedGeneration: m.Generation,
 			})
 			return err

@@ -739,6 +739,40 @@ spec:
                           minItems: 1
                           type: array
                           x-kubernetes-list-type: atomic
+                        caBundleRef:
+                          description: |-
+                            CABundleRef references a ConfigMap containing PEM CA certificates used when
+                            fetching this issuer's OIDC discovery document and JWKS. The bundle is added
+                            to the system roots for this issuer's client only; public roots still apply
+                            and other issuers are unaffected.
+                          properties:
+                            configMapRef:
+                              description: |-
+                                ConfigMapRef references a ConfigMap containing the CA certificate bundle.
+                                The ConfigMap key is required by the API. If omitted in a stored object, it
+                                defaults to "ca.crt" for backwards compatibility.
+                              properties:
+                                key:
+                                  description: The key to select.
+                                  type: string
+                                name:
+                                  default: ""
+                                  description: |-
+                                    Name of the referent.
+                                    This field is effectively required, but due to backwards compatibility is
+                                    allowed to be empty. Instances of this type with an empty value here are
+                                    almost certainly wrong.
+                                    More info: https://kubernetes.io/docs/concepts/overview/working-with-objects/names/#names
+                                  type: string
+                                optional:
+                                  description: Specify whether the ConfigMap or its
+                                    key must be defined
+                                  type: boolean
+                              required:
+                              - key
+                              type: object
+                              x-kubernetes-map-type: atomic
+                          type: object
                         expectedAudience:
                           description: |-
                             ExpectedAudience is the expected "aud" claim value that must appear in
@@ -4816,6 +4850,40 @@ spec:
                           minItems: 1
                           type: array
                           x-kubernetes-list-type: atomic
+                        caBundleRef:
+                          description: |-
+                            CABundleRef references a ConfigMap containing PEM CA certificates used when
+                            fetching this issuer's OIDC discovery document and JWKS. The bundle is added
+                            to the system roots for this issuer's client only; public roots still apply
+                            and other issuers are unaffected.
+                          properties:
+                            configMapRef:
+                              description: |-
+                                ConfigMapRef references a ConfigMap containing the CA certificate bundle.
+                                The ConfigMap key is required by the API. If omitted in a stored object, it
+                                defaults to "ca.crt" for backwards compatibility.
+                              properties:
+                                key:
+                                  description: The key to select.
+                                  type: string
+                                name:
+                                  default: ""
+                                  description: |-
+                                    Name of the referent.
+                                    This field is effectively required, but due to backwards compatibility is
+                                    allowed to be empty. Instances of this type with an empty value here are
+                                    almost certainly wrong.
+                                    More info: https://kubernetes.io/docs/concepts/overview/working-with-objects/names/#names
+                                  type: string
+                                optional:
+                                  description: Specify whether the ConfigMap or its
+                                    key must be defined
+                                  type: boolean
+                              required:
+                              - key
+                              type: object
+                              x-kubernetes-map-type: atomic
+                          type: object
                         expectedAudience:
                           description: |-
                             ExpectedAudience is the expected "aud" claim value that must appear in

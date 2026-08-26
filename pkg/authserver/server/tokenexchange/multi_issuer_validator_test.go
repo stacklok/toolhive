@@ -7,11 +7,14 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"encoding/pem"
 	"fmt"
 	"io"
 	"log/slog"
 	"net/http"
 	"net/http/httptest"
+	"os"
+	"path/filepath"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -46,6 +49,32 @@ func startJWKSServer(t *testing.T, tj *testJWKS) *httptest.Server {
 	srv := httptest.NewServer(mux)
 	t.Cleanup(srv.Close)
 	return srv
+}
+
+// writeTLSCABundle writes srv's self-signed certificate as a PEM CA bundle.
+func writeTLSCABundle(t *testing.T, srv *httptest.Server) string {
+	t.Helper()
+
+	caPath := filepath.Join(t.TempDir(), "ca.crt")
+	caPEM := pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: srv.Certificate().Raw})
+	require.NoError(t, os.WriteFile(caPath, caPEM, 0600))
+	return caPath
+}
+
+// startTLSJWKSServer creates a TLS test server that serves a JWKS endpoint and
+// returns the path to a CA bundle that trusts its certificate.
+func startTLSJWKSServer(t *testing.T, tj *testJWKS) (*httptest.Server, string) {
+	t.Helper()
+
+	mux := http.NewServeMux()
+	mux.HandleFunc("/jwks", func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(tj.publicJWKS())
+	})
+
+	srv := httptest.NewTLSServer(mux)
+	t.Cleanup(srv.Close)
+	return srv, writeTLSCABundle(t, srv)
 }
 
 // newMultiValidator creates a MultiIssuerTokenValidator configured for testing.
@@ -87,6 +116,140 @@ func externalClaims() jwt.Claims {
 		NotBefore: jwt.NewNumericDate(now.Add(-time.Minute)),
 		ID:        "jti-ext-789",
 	}
+}
+
+func TestMultiIssuerTokenValidator_ExternalIssuerCABundle(t *testing.T) {
+	t.Parallel()
+
+	t.Run("trusts private TLS JWKS with configured bundle", func(t *testing.T) {
+		t.Parallel()
+
+		selfJWKS := newTestJWKS(t)
+		externalJWKS := newTestJWKS(t)
+		srv, caPath := startTLSJWKSServer(t, externalJWKS)
+		validator := newMultiValidator(t, selfJWKS, []TrustedIssuer{{
+			IssuerURL:              testExternalIssuer,
+			ExpectedAudience:       testExternalAudience,
+			JWKSURL:                srv.URL + "/jwks",
+			CAFilePath:             caPath,
+			AllowedActors:          []string{"ext-agent"},
+			AllowedDelegateClients: []string{anyDelegateClient},
+		}})
+
+		result, err := validator.Validate(context.Background(), externalJWKS.signToken(t, externalClaims(), map[string]any{"azp": "ext-agent"}))
+		require.NoError(t, err)
+		assert.Equal(t, "ext-user-456", result.Subject)
+	})
+
+	t.Run("rejects private TLS JWKS without configured bundle", func(t *testing.T) {
+		t.Parallel()
+
+		selfJWKS := newTestJWKS(t)
+		externalJWKS := newTestJWKS(t)
+		srv, _ := startTLSJWKSServer(t, externalJWKS)
+		validator := newMultiValidator(t, selfJWKS, []TrustedIssuer{{
+			IssuerURL:              testExternalIssuer,
+			ExpectedAudience:       testExternalAudience,
+			JWKSURL:                srv.URL + "/jwks",
+			AllowedActors:          []string{"ext-agent"},
+			AllowedDelegateClients: []string{anyDelegateClient},
+		}})
+
+		result, err := validator.Validate(context.Background(), externalJWKS.signToken(t, externalClaims(), map[string]any{"azp": "ext-agent"}))
+		require.Error(t, err)
+		assert.Nil(t, result)
+		assert.Contains(t, err.Error(), "x509")
+	})
+
+	t.Run("unreadable bundle fails construction", func(t *testing.T) {
+		t.Parallel()
+
+		selfJWKS := newTestJWKS(t)
+		selfValidator, err := NewSelfIssuedTokenValidator(selfJWKS.publicJWKS(), testIssuer, []string{testIssuer})
+		require.NoError(t, err)
+
+		_, err = NewMultiIssuerTokenValidator(selfValidator, testIssuer, []TrustedIssuer{{
+			IssuerURL:              testExternalIssuer,
+			ExpectedAudience:       testExternalAudience,
+			JWKSURL:                "https://issuer.example.com/jwks",
+			CAFilePath:             filepath.Join(t.TempDir(), "missing-ca.crt"),
+			AllowedDelegateClients: []string{anyDelegateClient},
+		}}, nil)
+		require.Error(t, err)
+		assert.Contains(t, err.Error(), testExternalIssuer)
+		assert.Contains(t, err.Error(), "failed to read CA certificate bundle")
+	})
+}
+
+func TestMultiIssuerTokenValidator_DiscoverJWKSURLWithCABundle(t *testing.T) {
+	t.Parallel()
+
+	mux := http.NewServeMux()
+	srv := httptest.NewUnstartedServer(mux)
+	mux.HandleFunc("/.well-known/openid-configuration", func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(map[string]string{
+			"issuer":   srv.URL,
+			"jwks_uri": srv.URL + "/jwks",
+		})
+	})
+	srv.StartTLS()
+	t.Cleanup(srv.Close)
+
+	issuerConfig, err := newExternalIssuerConfig(TrustedIssuer{
+		IssuerURL:              srv.URL,
+		CAFilePath:             writeTLSCABundle(t, srv),
+		AllowPrivateIPs:        true,
+		AllowedDelegateClients: []string{anyDelegateClient},
+	})
+	require.NoError(t, err)
+
+	jwksURL, err := (&MultiIssuerTokenValidator{}).discoverJWKSURL(context.Background(), issuerConfig)
+	require.NoError(t, err)
+	assert.Equal(t, srv.URL+"/jwks", jwksURL)
+}
+
+func TestMultiIssuerTokenValidator_PrivateTLSKeyRotationRefreshesImmediately(t *testing.T) {
+	t.Parallel()
+
+	selfJWKS := newTestJWKS(t)
+	keyV1 := newECDSAJWK(t, "v1")
+	keyV2 := newECDSAJWK(t, "v2")
+
+	var mu sync.Mutex
+	currentKey := keyV1
+	mux := http.NewServeMux()
+	mux.HandleFunc("/jwks", func(w http.ResponseWriter, _ *http.Request) {
+		mu.Lock()
+		key := currentKey
+		mu.Unlock()
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(publicJWKSOf(key))
+	})
+	srv := httptest.NewTLSServer(mux)
+	t.Cleanup(srv.Close)
+
+	validator := newMultiValidator(t, selfJWKS, []TrustedIssuer{{
+		IssuerURL:              testExternalIssuer,
+		ExpectedAudience:       testExternalAudience,
+		JWKSURL:                srv.URL + "/jwks",
+		CAFilePath:             writeTLSCABundle(t, srv),
+		AllowedDelegateClients: []string{"some-toolhive-client"},
+		AllowMayAct:            true,
+	}})
+
+	_, err := validator.Validate(context.Background(), signExternalToken(t, keyV1, externalClaims()))
+	require.NoError(t, err)
+
+	mu.Lock()
+	currentKey = keyV2
+	mu.Unlock()
+
+	claims := externalClaims()
+	claims.ID = "jti-post-private-tls-rotation"
+	result, err := validator.Validate(context.Background(), signExternalToken(t, keyV2, claims))
+	require.NoError(t, err)
+	assert.Equal(t, "ext-user-456", result.Subject)
 }
 
 // TestCompileActorMatcher_AcceptsAnyWellTypedExpression confirms

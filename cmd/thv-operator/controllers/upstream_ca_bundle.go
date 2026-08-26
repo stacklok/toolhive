@@ -34,7 +34,7 @@ func caBundleKey(ref *mcpv1beta1.CABundleSource) string {
 }
 
 // IndexEmbeddedAuthCABundleConfigMaps returns the ConfigMap names referenced by
-// an MCPExternalAuthConfig's embedded-auth upstream CA bundles.
+// an MCPExternalAuthConfig's embedded-auth CA bundles.
 func IndexEmbeddedAuthCABundleConfigMaps(obj client.Object) []string {
 	config, ok := obj.(*mcpv1beta1.MCPExternalAuthConfig)
 	if !ok || config.Spec.EmbeddedAuthServer == nil {
@@ -44,6 +44,12 @@ func IndexEmbeddedAuthCABundleConfigMaps(obj client.Object) []string {
 	for _, provider := range config.Spec.EmbeddedAuthServer.UpstreamProviders {
 		if name := providerCABundleConfigMapName(provider); name != "" {
 			keys = append(keys, name)
+		}
+	}
+	for i := range config.Spec.EmbeddedAuthServer.TrustedIssuers {
+		ref := config.Spec.EmbeddedAuthServer.TrustedIssuers[i].CABundleRef
+		if ref != nil && ref.ConfigMapRef != nil && ref.ConfigMapRef.Name != "" {
+			keys = append(keys, ref.ConfigMapRef.Name)
 		}
 	}
 	return keys

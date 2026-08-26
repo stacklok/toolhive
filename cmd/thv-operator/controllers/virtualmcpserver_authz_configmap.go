@@ -68,8 +68,8 @@ func vmcpReferencesAuthzConfigMap(vmcp *mcpv1beta1.VirtualMCPServer, configMapNa
 	return vmcp.Spec.IncomingAuth.AuthzConfig.ConfigMap.Name == configMapName
 }
 
-// vmcpReferencesAuthServerCABundle reports whether an inline auth-server upstream
-// selects the named ConfigMap for its CA bundle.
+// vmcpReferencesAuthServerCABundle reports whether an inline auth-server
+// configuration selects the named ConfigMap for a CA bundle.
 func vmcpReferencesAuthServerCABundle(vmcp *mcpv1beta1.VirtualMCPServer, configMapName string) bool {
 	if vmcp.Spec.AuthServerConfig == nil {
 		return false
@@ -77,6 +77,12 @@ func vmcpReferencesAuthServerCABundle(vmcp *mcpv1beta1.VirtualMCPServer, configM
 	for i := range vmcp.Spec.AuthServerConfig.UpstreamProviders {
 		provider := &vmcp.Spec.AuthServerConfig.UpstreamProviders[i]
 		ref := provider.CABundleRef()
+		if ref != nil && ref.ConfigMapRef != nil && ref.ConfigMapRef.Name == configMapName {
+			return true
+		}
+	}
+	for i := range vmcp.Spec.AuthServerConfig.TrustedIssuers {
+		ref := vmcp.Spec.AuthServerConfig.TrustedIssuers[i].CABundleRef
 		if ref != nil && ref.ConfigMapRef != nil && ref.ConfigMapRef.Name == configMapName {
 			return true
 		}

@@ -4938,6 +4938,13 @@ components:
             type: string
           type: array
           uniqueItems: false
+        ca_file_path:
+          description: |-
+            CAFilePath is the path to a PEM CA bundle added to the system roots when
+            fetching this issuer's OIDC discovery document and JWKS. Trust is additive
+            and scoped to this issuer: the public roots still apply, and no other
+            issuer's client is affected.
+          type: string
         expected_audience:
           description: |-
             ExpectedAudience is the expected "aud" claim value that must appear

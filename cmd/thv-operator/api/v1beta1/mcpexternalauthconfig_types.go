@@ -459,6 +459,13 @@ type TrustedIssuerConfig struct {
 	// +optional
 	AllowPrivateIPs bool `json:"allowPrivateIPs,omitempty"`
 
+	// CABundleRef references a ConfigMap containing PEM CA certificates used when
+	// fetching this issuer's OIDC discovery document and JWKS. The bundle is added
+	// to the system roots for this issuer's client only; public roots still apply
+	// and other issuers are unaffected.
+	// +optional
+	CABundleRef *CABundleSource `json:"caBundleRef,omitempty"`
+
 	// ActorClaim names the claim identifying the client that requested the
 	// subject token from this external issuer (used by allowedActors below).
 	// Defaults to "azp" when empty; use "appid" for Microsoft Entra v1, "cid"
@@ -1738,8 +1745,8 @@ const (
 	// Used by out-of-tree handlers; unreachable in upstream-only builds.
 	ConditionReasonInvalidConfig = "InvalidConfig"
 
-	// ConditionReasonInvalidCABundle: a referenced upstream CA bundle ConfigMap
-	// is missing its key or holds content that is not a PEM certificate.
+	// ConditionReasonInvalidCABundle: a referenced CA bundle ConfigMap is
+	// missing its key or holds content that is not a PEM certificate.
 	//
 	// Distinct from ConditionReasonInvalidConfig because the failing input is
 	// ConfigMap *content*, which is covered by neither metadata.generation nor
@@ -2036,6 +2043,11 @@ func (r *MCPExternalAuthConfig) validateEmbeddedAuthServer() error {
 	// Config.Validate time (pkg/authserver/config.go's validateTrustedIssuers).
 	if err := tokenexchange.ValidateTrustedIssuers(buildTrustedIssuerConfigs(cfg.TrustedIssuers), cfg.Issuer, nil); err != nil {
 		return fmt.Errorf("trustedIssuers: %w", err)
+	}
+	for i := range cfg.TrustedIssuers {
+		if err := validateUpstreamCABundleRef(cfg.TrustedIssuers[i].CABundleRef); err != nil {
+			return fmt.Errorf("trustedIssuers[%d] (%q) caBundleRef: %w", i, cfg.TrustedIssuers[i].IssuerURL, err)
+		}
 	}
 
 	seen := make(map[string]bool, len(cfg.UpstreamProviders))

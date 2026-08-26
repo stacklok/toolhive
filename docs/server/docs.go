@@ -8,6 +8,60 @@ const docTemplate = `{
     "schemes": {{ marshal .Schemes }},
     "components": {
         "schemas": {
+            "audit.Config": {
+                "description": "DEPRECATED: Middleware configuration.\nAuditConfig contains the audit logging configuration",
+                "properties": {
+                    "component": {
+                        "description": "Component is the component name to use in audit events.\n+optional",
+                        "type": "string"
+                    },
+                    "detectApplicationErrors": {
+                        "description": "DetectApplicationErrors controls whether the audit middleware inspects\nJSON-RPC response bodies for application-level errors when the HTTP\nstatus code indicates success (2xx). When enabled, a small prefix of\nthe response body is buffered to detect JSON-RPC error fields,\nindependent of the IncludeResponseData setting.\n+kubebuilder:default=true\n+optional",
+                        "type": "boolean"
+                    },
+                    "enabled": {
+                        "description": "Enabled controls whether audit logging is enabled.\nWhen true, enables audit logging with the configured options.\n+kubebuilder:default=false\n+optional",
+                        "type": "boolean"
+                    },
+                    "eventTypes": {
+                        "description": "EventTypes specifies which event types to audit. If empty, all events are audited.\n+optional",
+                        "items": {
+                            "type": "string"
+                        },
+                        "type": "array",
+                        "uniqueItems": false
+                    },
+                    "excludeEventTypes": {
+                        "description": "ExcludeEventTypes specifies which event types to exclude from auditing.\nThis takes precedence over EventTypes.\n+optional",
+                        "items": {
+                            "type": "string"
+                        },
+                        "type": "array",
+                        "uniqueItems": false
+                    },
+                    "includeRequestData": {
+                        "description": "IncludeRequestData determines whether to include request data in audit logs.\n+kubebuilder:default=false\n+optional",
+                        "type": "boolean"
+                    },
+                    "includeResponseData": {
+                        "description": "IncludeResponseData determines whether to include response data in audit logs.\n+kubebuilder:default=false\n+optional",
+                        "type": "boolean"
+                    },
+                    "logFile": {
+                        "description": "LogFile specifies the file path for audit logs. If empty, logs to stdout.\n+optional",
+                        "type": "string"
+                    },
+                    "maxDataSize": {
+                        "description": "MaxDataSize limits the size of request/response data included in audit logs (in bytes).\n+kubebuilder:default=1024\n+optional",
+                        "type": "integer"
+                    },
+                    "maxDelegationDepth": {
+                        "description": "MaxDelegationDepth caps how many nested RFC 8693 \"act\" entries are\nrecorded in an audit event's delegation chain. Deeper chains are\ntruncated (marked with truncated=true). Defaults to 10 when unset.\n+kubebuilder:validation:Minimum=1\n+kubebuilder:default=10\n+optional",
+                        "type": "integer"
+                    }
+                },
+                "type": "object"
+            },
             "auth.TokenValidatorConfig": {
                 "description": "DEPRECATED: Middleware configuration.\nOIDCConfig contains OIDC configuration",
                 "properties": {
@@ -61,6 +115,488 @@ const docTemplate = `{
                             "type": "string"
                         },
                         "type": "array"
+                    }
+                },
+                "type": "object"
+            },
+            "authserver.CIMDRunConfig": {
+                "description": "CIMD controls client_id metadata document support. When enabled, the\nembedded authorization server accepts HTTPS URLs as client_id values\nand resolves them via the CIMD protocol instead of requiring DCR.",
+                "properties": {
+                    "cache_fallback_ttl": {
+                        "description": "CacheFallbackTTL is the fixed TTL applied to every cached CIMD document.\nCache-Control header parsing is not yet implemented; all entries use this value.\nFormat: Go duration string (e.g. \"5m\", \"10m\", \"1h\").\nDefaults to 5 minutes when Enabled is true and this field is omitted.",
+                        "example": "5m",
+                        "type": "string"
+                    },
+                    "cache_max_size": {
+                        "description": "CacheMaxSize is the maximum number of CIMD documents held in the LRU cache.\nDefaults to 256 when Enabled is true and this field is zero.",
+                        "type": "integer"
+                    },
+                    "enabled": {
+                        "description": "Enabled activates CIMD client lookup when true.",
+                        "type": "boolean"
+                    }
+                },
+                "type": "object"
+            },
+            "authserver.DCRUpstreamConfig": {
+                "description": "DCRConfig enables RFC 7591 Dynamic Client Registration against the\nupstream authorization server. When set, the client credentials are\nobtained at runtime rather than being pre-provisioned via ClientID /\nClientSecretFile / ClientSecretEnvVar, and ClientID must be left empty.\nMutually exclusive with ClientID.",
+                "properties": {
+                    "discovery_url": {
+                        "description": "DiscoveryURL is the exact RFC 8414 / OIDC Discovery document URL to\nfetch at runtime. The resolver issues a single GET against this URL\n(no well-known-path fallback) and reads registration_endpoint,\nauthorization_endpoint, token_endpoint,\ntoken_endpoint_auth_methods_supported, and scopes_supported from the\nresponse. Per RFC 8414 §3.3, the document's \"issuer\" field must\nexactly match the upstream issuer configured on the parent\nrun-config.\n\nUse this field when the upstream publishes discovery metadata at a\npath that differs from the issuer-derived well-known paths — for\nexample a multi-tenant IdP whose metadata lives at\nhttps://idp.example.com/tenants/acme/.well-known/openid-configuration.\n\nMutually exclusive with RegistrationEndpoint.",
+                        "type": "string"
+                    },
+                    "initial_access_token_env_var": {
+                        "description": "InitialAccessTokenEnvVar is the name of an environment variable\ncontaining the RFC 7591 initial access token. Mutually exclusive with\nInitialAccessTokenFile.",
+                        "type": "string"
+                    },
+                    "initial_access_token_file": {
+                        "description": "InitialAccessTokenFile is the path to a file containing the RFC 7591\ninitial access token presented to the registration endpoint. Mutually\nexclusive with InitialAccessTokenEnvVar. Both may be omitted for open\nregistration endpoints.",
+                        "type": "string"
+                    },
+                    "registration_endpoint": {
+                        "description": "RegistrationEndpoint is the RFC 7591 registration endpoint URL used\ndirectly, bypassing discovery. Because no discovery is performed,\nserver-capability fields (token_endpoint_auth_methods_supported,\nscopes_supported) are unavailable on this code path; the caller is\nexpected to also supply AuthorizationEndpoint, TokenEndpoint, and an\nexplicit Scopes list on the parent OAuth2UpstreamRunConfig. Auth\nmethod falls back to the resolver's default (client_secret_basic).\n\nMutually exclusive with DiscoveryURL.",
+                        "type": "string"
+                    },
+                    "software_id": {
+                        "description": "SoftwareID is the RFC 7591 \"software_id\" registration metadata value,\nidentifying the client software independent of any particular\nregistration instance.",
+                        "type": "string"
+                    },
+                    "software_statement": {
+                        "description": "SoftwareStatement is the RFC 7591 \"software_statement\" JWT asserting\nmetadata about the client software, signed by a party the authorization\nserver trusts.",
+                        "type": "string"
+                    }
+                },
+                "type": "object"
+            },
+            "authserver.DelegateClientRunConfig": {
+                "properties": {
+                    "audiences": {
+                        "description": "Audiences are the RFC 8707 resource values this client may request a\ntoken for. Required, and must be a subset of RunConfig.AllowedAudiences:\na declared client must not receive every allowed audience just because\nthis was left empty.",
+                        "items": {
+                            "type": "string"
+                        },
+                        "type": "array",
+                        "uniqueItems": false
+                    },
+                    "client_id": {
+                        "description": "ClientID is the OAuth client_id this client presents at the token endpoint.",
+                        "type": "string"
+                    },
+                    "client_secret_env_var": {
+                        "description": "ClientSecretEnvVar is the name of an environment variable containing\nthe client secret. One of ClientSecretFile or ClientSecretEnvVar is\nrequired.",
+                        "type": "string"
+                    },
+                    "client_secret_file": {
+                        "description": "ClientSecretFile is the path to a file containing the client secret.\nIf both this and ClientSecretEnvVar are set, the file takes precedence.",
+                        "type": "string"
+                    },
+                    "scopes": {
+                        "description": "Scopes are the OAuth scopes this client may request. Required, and\nmust be a subset of RunConfig.ScopesSupported: a declared client must\nnot receive every supported scope just because this was left empty.",
+                        "items": {
+                            "type": "string"
+                        },
+                        "type": "array",
+                        "uniqueItems": false
+                    }
+                },
+                "type": "object"
+            },
+            "authserver.IdentityFromTokenRunConfig": {
+                "description": "IdentityFromToken extracts user identity (subject, name, email) directly from the\nOAuth2 token-endpoint response body using gjson dot-notation paths. When set, the\nembedded auth server skips the userinfo HTTP call entirely. Mirrors the CRD type\n(cmd/thv-operator/api/v1beta1.IdentityFromTokenConfig) — the authoritative\ntrust-model and uniqueness documentation lives there.",
+                "properties": {
+                    "email_path": {
+                        "description": "EmailPath is the dot-notation path to the email address field.",
+                        "type": "string"
+                    },
+                    "name_path": {
+                        "description": "NamePath is the dot-notation path to the display name field.",
+                        "type": "string"
+                    },
+                    "subject_path": {
+                        "description": "SubjectPath is the dot-notation path to the subject (user ID) field.\nRequired when IdentityFromToken is set.",
+                        "type": "string"
+                    }
+                },
+                "type": "object"
+            },
+            "authserver.OAuth2UpstreamRunConfig": {
+                "description": "OAuth2Config contains OAuth 2.0-specific configuration.\nRequired when Type is \"oauth2\", must be nil when Type is \"oidc\".",
+                "properties": {
+                    "additional_authorization_params": {
+                        "additionalProperties": {
+                            "type": "string"
+                        },
+                        "description": "AdditionalAuthorizationParams are extra query parameters to include in\nauthorization requests. Useful for provider-specific parameters like\nGoogle's access_type=offline.",
+                        "type": "object"
+                    },
+                    "allow_private_ips": {
+                        "description": "AllowPrivateIPs permits the upstream provider's HTTP client to connect to\nprivate IP ranges (RFC-1918, link-local). When DCRConfig is set, this\nalso gates the DCR discovery and registration calls made on this\nupstream's behalf (see pkg/authserver/runner/dcr_adapter.go), so a\nsingle flag covers the whole upstream rather than needing a separate\nDCR-specific setting. Use only when the upstream is hosted inside the\nsame cluster and has no public endpoint. HTTP-scheme restrictions are\nunchanged — HTTPS is still required for non-localhost hosts. Defaults\nto false.",
+                        "type": "boolean"
+                    },
+                    "authorization_endpoint": {
+                        "description": "AuthorizationEndpoint is the URL for the OAuth authorization endpoint.",
+                        "type": "string"
+                    },
+                    "ca_file_path": {
+                        "description": "CAFilePath is the path to a PEM CA bundle added to the system roots.",
+                        "type": "string"
+                    },
+                    "client_id": {
+                        "description": "ClientID is the OAuth 2.0 client identifier registered with the upstream IDP.\nMutually exclusive with DCRConfig: when DCRConfig is set, ClientID is obtained\nat runtime via RFC 7591 Dynamic Client Registration and must be left empty.",
+                        "type": "string"
+                    },
+                    "client_secret_env_var": {
+                        "description": "ClientSecretEnvVar is the name of an environment variable containing the client secret.\nMutually exclusive with ClientSecretFile. Optional for public clients using PKCE.",
+                        "type": "string"
+                    },
+                    "client_secret_file": {
+                        "description": "ClientSecretFile is the path to a file containing the OAuth 2.0 client secret.\nMutually exclusive with ClientSecretEnvVar. Optional for public clients using PKCE.",
+                        "type": "string"
+                    },
+                    "dcr_config": {
+                        "$ref": "#/components/schemas/authserver.DCRUpstreamConfig"
+                    },
+                    "identity_from_token": {
+                        "$ref": "#/components/schemas/authserver.IdentityFromTokenRunConfig"
+                    },
+                    "insecure_allow_http": {
+                        "description": "InsecureAllowHTTP permits plain-HTTP authorization and token endpoint URLs\nfor this upstream. Only for in-cluster development environments (e.g. an\nOAuth2 provider served over HTTP in a kind cluster) where TLS is not\navailable. Never set this in production.",
+                        "type": "boolean"
+                    },
+                    "redirect_uri": {
+                        "description": "RedirectURI is the callback URL where the upstream IDP will redirect after authentication.\nWhen not specified, defaults to ` + "`" + `{issuer}/oauth/callback` + "`" + `.",
+                        "type": "string"
+                    },
+                    "scopes": {
+                        "description": "Scopes are the OAuth scopes to request from the upstream IDP.",
+                        "items": {
+                            "type": "string"
+                        },
+                        "type": "array",
+                        "uniqueItems": false
+                    },
+                    "token_endpoint": {
+                        "description": "TokenEndpoint is the URL for the OAuth token endpoint.",
+                        "type": "string"
+                    },
+                    "token_response_mapping": {
+                        "$ref": "#/components/schemas/authserver.TokenResponseMappingRunConfig"
+                    },
+                    "userinfo": {
+                        "$ref": "#/components/schemas/authserver.UserInfoRunConfig"
+                    }
+                },
+                "type": "object"
+            },
+            "authserver.OIDCUpstreamRunConfig": {
+                "description": "OIDCConfig contains OIDC-specific configuration.\nRequired when Type is \"oidc\", must be nil when Type is \"oauth2\".",
+                "properties": {
+                    "additional_authorization_params": {
+                        "additionalProperties": {
+                            "type": "string"
+                        },
+                        "description": "AdditionalAuthorizationParams are extra query parameters to include in\nauthorization requests. Useful for provider-specific parameters like\nGoogle's access_type=offline.",
+                        "type": "object"
+                    },
+                    "allow_private_ips": {
+                        "description": "AllowPrivateIPs permits the OIDC discovery and token HTTP clients to\nconnect to private IP ranges (RFC-1918, link-local). Use only when the\nupstream is hosted inside the same cluster and has no public endpoint.\nHTTP-scheme restrictions are unchanged — HTTPS is still required for\nnon-localhost hosts. Defaults to false.",
+                        "type": "boolean"
+                    },
+                    "ca_file_path": {
+                        "description": "CAFilePath is the path to a PEM CA bundle added to the system roots.",
+                        "type": "string"
+                    },
+                    "client_id": {
+                        "description": "ClientID is the OAuth 2.0 client identifier registered with the upstream IDP.",
+                        "type": "string"
+                    },
+                    "client_secret_env_var": {
+                        "description": "ClientSecretEnvVar is the name of an environment variable containing the client secret.\nMutually exclusive with ClientSecretFile. Optional for public clients using PKCE.",
+                        "type": "string"
+                    },
+                    "client_secret_file": {
+                        "description": "ClientSecretFile is the path to a file containing the OAuth 2.0 client secret.\nMutually exclusive with ClientSecretEnvVar. Optional for public clients using PKCE.",
+                        "type": "string"
+                    },
+                    "insecure_allow_http": {
+                        "description": "InsecureAllowHTTP permits a plain-HTTP issuer URL and HTTP discovery\nendpoints for this upstream. Only for in-cluster development environments\n(e.g. Dex served over HTTP in a kind cluster) where TLS is not available.\nNever set this in production.",
+                        "type": "boolean"
+                    },
+                    "issuer_url": {
+                        "description": "IssuerURL is the OIDC issuer URL for automatic endpoint discovery.\nMust be a valid HTTPS URL.",
+                        "type": "string"
+                    },
+                    "redirect_uri": {
+                        "description": "RedirectURI is the callback URL where the upstream IDP will redirect after authentication.\nWhen not specified, defaults to ` + "`" + `{issuer}/oauth/callback` + "`" + `.",
+                        "type": "string"
+                    },
+                    "scopes": {
+                        "description": "Scopes are the OAuth scopes to request from the upstream IDP.\nIf not specified, defaults to [\"openid\", \"offline_access\"].\nWhen using AdditionalAuthorizationParams with provider-specific refresh\ntoken mechanisms (e.g., Google's access_type=offline), set explicit scopes\nto avoid sending both offline_access and the provider-specific parameter.",
+                        "items": {
+                            "type": "string"
+                        },
+                        "type": "array",
+                        "uniqueItems": false
+                    },
+                    "subject_claim": {
+                        "description": "SubjectClaim names the validated ID-token claim to use as the upstream\nsubject. Defaults to \"sub\" when empty. Set for IdPs where \"sub\" isn't\nstable per user (e.g. Entra/Azure AD's \"oid\"). See upstream.OIDCConfig.",
+                        "type": "string"
+                    },
+                    "userinfo_override": {
+                        "$ref": "#/components/schemas/authserver.UserInfoRunConfig"
+                    }
+                },
+                "type": "object"
+            },
+            "authserver.RunConfig": {
+                "description": "EmbeddedAuthServerConfig contains configuration for the embedded OAuth2/OIDC authorization server.\nWhen set, the proxy runner will start an embedded auth server that delegates to upstream IDPs.\nThis is the serializable RunConfig; secrets are referenced by file paths or env var names.",
+                "properties": {
+                    "allow_confidential_client_registration": {
+                        "description": "AllowConfidentialClientRegistration permits Dynamic Client Registration\nof confidential clients: when true, /oauth/register accepts\ntoken_endpoint_auth_method values client_secret_basic and\nclient_secret_post in addition to \"none\" (still the default on\nomission) and mints a client_secret returned exactly once. Confidential\nclients are restricted to https non-loopback redirect URIs, and\nregistrations idle for more than DefaultDCRClientTTL (30 days) are\nevicted and must re-register. This gates registration only: disabling\nit does not revoke or reject already-minted secrets at the token\nendpoint.\n\nSecurity: /oauth/register is unauthenticated, so this issues client\nsecrets to any caller. Combining it with InsecureAllowHTTP is rejected\nby Validate.",
+                        "type": "boolean"
+                    },
+                    "allow_private_key_jwt_registration": {
+                        "description": "AllowPrivateKeyJWTRegistration permits Dynamic Client Registration of\nclients using private_key_jwt authentication. This is independent of\nAllowConfidentialClientRegistration and defaults to false. Registration\nbehavior is controlled independently by the DCR handler and discovery\nmetadata.\n\nSecurity: /oauth/register is unauthenticated. Unlike\nAllowConfidentialClientRegistration, this is NOT rejected when combined\nwith InsecureAllowHTTP: registration never returns a secret for a\nprivate_key_jwt client, so there is nothing for cleartext HTTP to\nexpose.",
+                        "type": "boolean"
+                    },
+                    "allowed_audiences": {
+                        "description": "AllowedAudiences is the list of valid resource URIs that tokens can be issued for.\nPer RFC 8707, the \"resource\" parameter in authorization and token requests is\nvalidated against this list. Required for MCP compliance.",
+                        "items": {
+                            "type": "string"
+                        },
+                        "type": "array",
+                        "uniqueItems": false
+                    },
+                    "authorization_endpoint_base_url": {
+                        "description": "AuthorizationEndpointBaseURL overrides the base URL used for the authorization_endpoint\nin the OAuth discovery document. When set, the discovery document will advertise\n` + "`" + `{authorization_endpoint_base_url}/oauth/authorize` + "`" + ` instead of ` + "`" + `{issuer}/oauth/authorize` + "`" + `.\nAll other endpoints remain derived from the issuer.",
+                        "type": "string"
+                    },
+                    "baseline_client_scopes": {
+                        "description": "BaselineClientScopes is a baseline set of OAuth 2.0 scopes unioned into every\nDCR registration. All values must appear in ScopesSupported; the auth server\nrejects this RunConfig at startup otherwise. Empty means current behavior is\npreserved (registered scope = client-requested, or DefaultScopes if empty).\nWhen ScopesSupported is empty, the subset check uses registration.DefaultScopes\n(the same set applyDefaults would substitute at startup) — so\nBaselineClientScopes containing standard OIDC scopes works without enumerating\nScopesSupported explicitly.",
+                        "items": {
+                            "type": "string"
+                        },
+                        "type": "array",
+                        "uniqueItems": false
+                    },
+                    "cimd": {
+                        "$ref": "#/components/schemas/authserver.CIMDRunConfig"
+                    },
+                    "delegate_clients": {
+                        "description": "DelegateClients declares confidential OAuth clients to register at\nauthorization-server startup, including clients intended for RFC 8693\ntoken exchange.\n\nIndependent of AllowConfidentialClientRegistration: declaring a client\nhere does not require or enable self-service confidential DCR, and\nsetting that flag does not declare or enable any client here. They\ngovern different endpoints — this field is static configuration the\noperator controls directly, while the flag is admission policy for the\nunauthenticated /oauth/register endpoint.\n\nSee DelegateClientRunConfig for the per-client field reference.",
+                        "items": {
+                            "$ref": "#/components/schemas/authserver.DelegateClientRunConfig"
+                        },
+                        "type": "array",
+                        "uniqueItems": false
+                    },
+                    "delegation_token_lifespan": {
+                        "description": "DelegationTokenLifespan is the maximum lifetime for delegated tokens issued\nvia RFC 8693 token exchange. Specified as a Go duration string (e.g., \"15m\").\nIf empty, defaults to 15 minutes.",
+                        "type": "string"
+                    },
+                    "disable_upstream_token_injection": {
+                        "description": "DisableUpstreamTokenInjection prevents the upstream swap middleware from being added.\nWhen true, the embedded auth server handles OAuth flows for clients, but instead of\ninjecting upstream IdP tokens the proxy strips the client's credential headers\n(Authorization, Cookie, Proxy-Authorization) after the JWT is validated — the\nbackend receives an unauthenticated request. Incompatible with token exchange\nand AWS STS, which would re-add credentials after the strip.",
+                        "type": "boolean"
+                    },
+                    "force_confidential_redirect_uris": {
+                        "description": "ForceConfidentialRedirectURIs lists redirect URIs that must be registered\nas confidential clients regardless of the token_endpoint_auth_method the\nDCR request declares. A registration whose redirect_uris contains an\nEXACT match for one of these entries is issued a real client_secret and\nreported back as token_endpoint_auth_method \"client_secret_post\", even\nif the request said \"none\" or omitted the field.\n\nThis exists for MCP clients (Perplexity is the known case) that declare\nthemselves public (token_endpoint_auth_method: \"none\") per RFC 7591 but\nthen refuse to proceed because the response carries no client_secret —\na self-contradictory request no conformant server can satisfy as\nwritten. RFC 7591 §3.2.1 permits the server to substitute metadata, so\nthis takes such a client at its word that it wants a secret.\n\nExact matching is deliberate: it is not a way to obtain a usable\ncredential for another client. An attacker who registers with someone\nelse's callback URI is issued a secret for a client whose authorization\ncodes are delivered to that someone else's redirect endpoint, not to\nthe attacker — the secret is useless without also controlling the\ncallback.\n\nRequires AllowConfidentialClientRegistration; every entry must be a\nvalid https non-loopback URI (Validate rejects loopback entries — the\nsame restriction AllowConfidentialClientRegistration itself enforces\nexists so secrets do not land in distributed native apps, and this\noverride must not bypass it). Remove an entry once the client is fixed\nto handle \"none\" registrations correctly.",
+                        "items": {
+                            "type": "string"
+                        },
+                        "type": "array",
+                        "uniqueItems": false
+                    },
+                    "hmac_secret_files": {
+                        "description": "HMACSecretFiles contains file paths to HMAC secrets for signing authorization codes\nand refresh tokens (opaque tokens).\nFirst file is the current secret (must be at least 32 bytes), subsequent files\nare for rotation/verification of existing tokens.\nIf empty, an ephemeral secret will be auto-generated (development only).",
+                        "items": {
+                            "type": "string"
+                        },
+                        "type": "array",
+                        "uniqueItems": false
+                    },
+                    "insecure_allow_confidential_over_loopback_http": {
+                        "description": "InsecureAllowConfidentialOverLoopbackHTTP opts in to confidential clients\nwhen Issuer is a plain-HTTP loopback URL. Without this flag, that\ncombination is rejected: a loopback http:// issuer is normally fine for\nlocal development (the traffic never leaves the machine), but client\nsecrets would otherwise travel over cleartext. Defaults to false. Has no\neffect when there are no confidential clients or Issuer is https.\n\nApplies identically to delegate clients and DCR-registered clients. The\nKubernetes CRD requires the explicit opt-in for a delegate client with an\nHTTP issuer; the shared transport validator enforces that its host is\nloopback — see EmbeddedAuthServerConfig's doc comment.\n\nprivate_key_jwt registration has no equivalent flag or transport\nrestriction: unlike confidential registration, it never returns a\nclient_secret (or any other secret) in the DCR response, so there is\nnothing here for cleartext HTTP to expose.",
+                        "type": "boolean"
+                    },
+                    "insecure_allow_http": {
+                        "description": "InsecureAllowHTTP permits an http:// issuer URL for non-localhost hosts.\nOnly set this for in-cluster Kubernetes deployments on a trusted network.\nProduction deployments reachable outside the cluster MUST use https://.",
+                        "type": "boolean"
+                    },
+                    "issuer": {
+                        "description": "Issuer is the issuer identifier for this authorization server.\nThis will be included in the \"iss\" claim of issued tokens.\nMust be a valid HTTPS URL (or HTTP for localhost) without query, fragment, or trailing slash.",
+                        "type": "string"
+                    },
+                    "schema_version": {
+                        "description": "SchemaVersion is the version of the RunConfig schema.",
+                        "type": "string"
+                    },
+                    "scopes_supported": {
+                        "description": "ScopesSupported lists the OAuth 2.0 scope values advertised in discovery documents.\nIf empty, defaults to registration.DefaultScopes ([\"openid\", \"profile\", \"email\", \"offline_access\"]).",
+                        "items": {
+                            "type": "string"
+                        },
+                        "type": "array",
+                        "uniqueItems": false
+                    },
+                    "signing_key_config": {
+                        "$ref": "#/components/schemas/authserver.SigningKeyRunConfig"
+                    },
+                    "storage": {
+                        "$ref": "#/components/schemas/storage.RunConfig"
+                    },
+                    "token_lifespans": {
+                        "$ref": "#/components/schemas/authserver.TokenLifespanRunConfig"
+                    },
+                    "trusted_issuers": {
+                        "description": "TrustedIssuers lists external OIDC issuers whose tokens are accepted as\nRFC 8693 subject tokens or RFC 7523 JWT-bearer assertions. Issuers with\njwtBearerGrant enabled may be used for the JWT-bearer grant without an\nRFC 8693 delegation policy. Empty (the default) means only self-issued\nsubject tokens are accepted.\n\nSee tokenexchange.TrustedIssuer for the per-issuer field reference, and\ndocs/arch/17-token-exchange-delegation.md for the trust model, consent\nsignals, and operator-facing constraints (audience/scope bounding,\nsubject namespace qualification, required client binding) that aren't\nvisible from the config shape alone.",
+                        "items": {
+                            "$ref": "#/components/schemas/tokenexchange.TrustedIssuer"
+                        },
+                        "type": "array",
+                        "uniqueItems": false
+                    },
+                    "upstreams": {
+                        "description": "Upstreams configures connections to upstream Identity Providers.\nAt least one upstream is required - the server delegates authentication to these providers.\nMultiple upstreams are supported for sequential authorization chains.",
+                        "items": {
+                            "$ref": "#/components/schemas/authserver.UpstreamRunConfig"
+                        },
+                        "type": "array",
+                        "uniqueItems": false
+                    }
+                },
+                "type": "object"
+            },
+            "authserver.SigningKeyRunConfig": {
+                "description": "SigningKeyConfig configures the signing key provider for JWT operations.\nIf nil or empty, an ephemeral signing key will be auto-generated (development only).",
+                "properties": {
+                    "fallback_key_files": {
+                        "description": "FallbackKeyFiles are filenames of additional keys for verification (relative to KeyDir).\nThese keys are included in the JWKS endpoint for token verification but are NOT\nused for signing new tokens. Useful for key rotation.",
+                        "items": {
+                            "type": "string"
+                        },
+                        "type": "array",
+                        "uniqueItems": false
+                    },
+                    "key_dir": {
+                        "description": "KeyDir is the directory containing PEM-encoded private key files.\nAll key filenames are relative to this directory.\nIn Kubernetes, this is typically a mounted Secret volume.",
+                        "type": "string"
+                    },
+                    "signing_key_file": {
+                        "description": "SigningKeyFile is the filename of the primary signing key (relative to KeyDir).\nThis key is used for signing new tokens.",
+                        "type": "string"
+                    }
+                },
+                "type": "object"
+            },
+            "authserver.TokenLifespanRunConfig": {
+                "description": "TokenLifespans configures the duration that various tokens are valid.\nIf nil, defaults are applied (access: 1h, refresh: 7d, authCode: 10m).",
+                "properties": {
+                    "access_token_lifespan": {
+                        "description": "AccessTokenLifespan is the duration that access tokens are valid.\nIf empty, defaults to 1 hour.",
+                        "type": "string"
+                    },
+                    "auth_code_lifespan": {
+                        "description": "AuthCodeLifespan is the duration that authorization codes are valid.\nIf empty, defaults to 10 minutes.",
+                        "type": "string"
+                    },
+                    "refresh_token_lifespan": {
+                        "description": "RefreshTokenLifespan is the duration that refresh tokens are valid.\nIf empty, defaults to 7 days (168h).",
+                        "type": "string"
+                    }
+                },
+                "type": "object"
+            },
+            "authserver.TokenResponseMappingRunConfig": {
+                "description": "TokenResponseMapping configures custom field extraction from non-standard token responses.\nWhen set, the token exchange bypasses golang.org/x/oauth2 and extracts fields using\nthe configured dot-notation paths.",
+                "properties": {
+                    "access_token_path": {
+                        "description": "AccessTokenPath is the dot-notation path to the access token (required).",
+                        "type": "string"
+                    },
+                    "expires_in_path": {
+                        "description": "ExpiresInPath is the dot-notation path to the expires_in value. Defaults to \"expires_in\".",
+                        "type": "string"
+                    },
+                    "refresh_token_path": {
+                        "description": "RefreshTokenPath is the dot-notation path to the refresh token. Defaults to \"refresh_token\".",
+                        "type": "string"
+                    },
+                    "scope_path": {
+                        "description": "ScopePath is the dot-notation path to the scope. Defaults to \"scope\".",
+                        "type": "string"
+                    }
+                },
+                "type": "object"
+            },
+            "authserver.UpstreamRunConfig": {
+                "properties": {
+                    "name": {
+                        "description": "Name uniquely identifies this upstream.\nUsed for routing decisions and session binding in multi-upstream scenarios.\nIf empty when only one upstream is configured, defaults to \"default\".",
+                        "type": "string"
+                    },
+                    "oauth2_config": {
+                        "$ref": "#/components/schemas/authserver.OAuth2UpstreamRunConfig"
+                    },
+                    "oidc_config": {
+                        "$ref": "#/components/schemas/authserver.OIDCUpstreamRunConfig"
+                    },
+                    "type": {
+                        "description": "Type specifies the provider type: \"oidc\" or \"oauth2\".",
+                        "type": "string"
+                    }
+                },
+                "type": "object"
+            },
+            "authserver.UserInfoFieldMappingRunConfig": {
+                "description": "FieldMapping contains custom field mapping configuration for non-standard providers.\nIf nil, standard OIDC field names are used (\"sub\", \"name\", \"email\").",
+                "properties": {
+                    "email_fields": {
+                        "description": "EmailFields is an ordered list of field names to try for the email address.\nThe first non-empty value found will be used.\nDefault: [\"email\"]",
+                        "items": {
+                            "type": "string"
+                        },
+                        "type": "array",
+                        "uniqueItems": false
+                    },
+                    "name_fields": {
+                        "description": "NameFields is an ordered list of field names to try for the display name.\nThe first non-empty value found will be used.\nDefault: [\"name\"]",
+                        "items": {
+                            "type": "string"
+                        },
+                        "type": "array",
+                        "uniqueItems": false
+                    },
+                    "subject_fields": {
+                        "description": "SubjectFields is an ordered list of field names to try for the user ID.\nThe first non-empty value found will be used.\nDefault: [\"sub\"]",
+                        "items": {
+                            "type": "string"
+                        },
+                        "type": "array",
+                        "uniqueItems": false
+                    }
+                },
+                "type": "object"
+            },
+            "authserver.UserInfoRunConfig": {
+                "description": "UserInfo contains configuration for fetching user information.\nOptional: when nil, the upstream OAuth2 provider derives a deterministic\nsubject by SHA-256-hashing the access token (with a \"tk-\" prefix) instead\nof calling a userinfo endpoint. OIDC providers always derive Subject from\nthe ID token and are unaffected.",
+                "properties": {
+                    "additional_headers": {
+                        "additionalProperties": {
+                            "type": "string"
+                        },
+                        "description": "AdditionalHeaders contains extra headers to include in the userinfo request.\nUseful for providers that require specific headers (e.g., GitHub's Accept header).",
+                        "type": "object"
+                    },
+                    "endpoint_url": {
+                        "description": "EndpointURL is the URL of the userinfo endpoint.",
+                        "type": "string"
+                    },
+                    "field_mapping": {
+                        "$ref": "#/components/schemas/authserver.UserInfoFieldMappingRunConfig"
+                    },
+                    "http_method": {
+                        "description": "HTTPMethod is the HTTP method to use for the userinfo request.\nIf not specified, defaults to GET.",
+                        "type": "string"
                     }
                 },
                 "type": "object"
@@ -152,80 +688,6 @@ const docTemplate = `{
                 },
                 "type": "object"
             },
-            "github_com_stacklok_toolhive_cmd_thv-operator_api_v1beta1.RateLimitConfig": {
-                "description": "RateLimitConfig contains the CRD rate limiting configuration.\nWhen set, rate limiting middleware is added to the proxy middleware chain.",
-                "properties": {
-                    "perUser": {
-                        "$ref": "#/components/schemas/github_com_stacklok_toolhive_pkg_ratelimit_types.RateLimitBucket"
-                    },
-                    "shared": {
-                        "$ref": "#/components/schemas/github_com_stacklok_toolhive_pkg_ratelimit_types.RateLimitBucket"
-                    },
-                    "tools": {
-                        "description": "Tools defines per-tool rate limit overrides.\nEach entry applies additional rate limits to calls targeting a specific tool name.\nA request must pass both the server-level limit and the per-tool limit.\n+listType=map\n+listMapKey=name\n+optional",
-                        "items": {
-                            "$ref": "#/components/schemas/github_com_stacklok_toolhive_pkg_ratelimit_types.ToolRateLimitConfig"
-                        },
-                        "type": "array",
-                        "uniqueItems": false
-                    }
-                },
-                "type": "object"
-            },
-            "github_com_stacklok_toolhive_pkg_audit.Config": {
-                "description": "DEPRECATED: Middleware configuration.\nAuditConfig contains the audit logging configuration",
-                "properties": {
-                    "component": {
-                        "description": "Component is the component name to use in audit events.\n+optional",
-                        "type": "string"
-                    },
-                    "detectApplicationErrors": {
-                        "description": "DetectApplicationErrors controls whether the audit middleware inspects\nJSON-RPC response bodies for application-level errors when the HTTP\nstatus code indicates success (2xx). When enabled, a small prefix of\nthe response body is buffered to detect JSON-RPC error fields,\nindependent of the IncludeResponseData setting.\n+kubebuilder:default=true\n+optional",
-                        "type": "boolean"
-                    },
-                    "enabled": {
-                        "description": "Enabled controls whether audit logging is enabled.\nWhen true, enables audit logging with the configured options.\n+kubebuilder:default=false\n+optional",
-                        "type": "boolean"
-                    },
-                    "eventTypes": {
-                        "description": "EventTypes specifies which event types to audit. If empty, all events are audited.\n+optional",
-                        "items": {
-                            "type": "string"
-                        },
-                        "type": "array",
-                        "uniqueItems": false
-                    },
-                    "excludeEventTypes": {
-                        "description": "ExcludeEventTypes specifies which event types to exclude from auditing.\nThis takes precedence over EventTypes.\n+optional",
-                        "items": {
-                            "type": "string"
-                        },
-                        "type": "array",
-                        "uniqueItems": false
-                    },
-                    "includeRequestData": {
-                        "description": "IncludeRequestData determines whether to include request data in audit logs.\n+kubebuilder:default=false\n+optional",
-                        "type": "boolean"
-                    },
-                    "includeResponseData": {
-                        "description": "IncludeResponseData determines whether to include response data in audit logs.\n+kubebuilder:default=false\n+optional",
-                        "type": "boolean"
-                    },
-                    "logFile": {
-                        "description": "LogFile specifies the file path for audit logs. If empty, logs to stdout.\n+optional",
-                        "type": "string"
-                    },
-                    "maxDataSize": {
-                        "description": "MaxDataSize limits the size of request/response data included in audit logs (in bytes).\n+kubebuilder:default=1024\n+optional",
-                        "type": "integer"
-                    },
-                    "maxDelegationDepth": {
-                        "description": "MaxDelegationDepth caps how many nested RFC 8693 \"act\" entries are\nrecorded in an audit event's delegation chain. Deeper chains are\ntruncated (marked with truncated=true). Defaults to 10 when unset.\n+kubebuilder:validation:Minimum=1\n+kubebuilder:default=10\n+optional",
-                        "type": "integer"
-                    }
-                },
-                "type": "object"
-            },
             "github_com_stacklok_toolhive_pkg_auth_awssts.Config": {
                 "description": "AWSStsConfig contains AWS STS token exchange configuration for accessing AWS services",
                 "properties": {
@@ -303,586 +765,6 @@ const docTemplate = `{
                     "provider_name": {
                         "description": "ProviderName identifies which upstream provider's tokens to retrieve for injection.\nThis is required and must match a configured upstream provider name.",
                         "type": "string"
-                    }
-                },
-                "type": "object"
-            },
-            "github_com_stacklok_toolhive_pkg_authserver.CIMDRunConfig": {
-                "description": "CIMD controls client_id metadata document support. When enabled, the\nembedded authorization server accepts HTTPS URLs as client_id values\nand resolves them via the CIMD protocol instead of requiring DCR.",
-                "properties": {
-                    "cache_fallback_ttl": {
-                        "description": "CacheFallbackTTL is the fixed TTL applied to every cached CIMD document.\nCache-Control header parsing is not yet implemented; all entries use this value.\nFormat: Go duration string (e.g. \"5m\", \"10m\", \"1h\").\nDefaults to 5 minutes when Enabled is true and this field is omitted.",
-                        "example": "5m",
-                        "type": "string"
-                    },
-                    "cache_max_size": {
-                        "description": "CacheMaxSize is the maximum number of CIMD documents held in the LRU cache.\nDefaults to 256 when Enabled is true and this field is zero.",
-                        "type": "integer"
-                    },
-                    "enabled": {
-                        "description": "Enabled activates CIMD client lookup when true.",
-                        "type": "boolean"
-                    }
-                },
-                "type": "object"
-            },
-            "github_com_stacklok_toolhive_pkg_authserver.DCRUpstreamConfig": {
-                "description": "DCRConfig enables RFC 7591 Dynamic Client Registration against the\nupstream authorization server. When set, the client credentials are\nobtained at runtime rather than being pre-provisioned via ClientID /\nClientSecretFile / ClientSecretEnvVar, and ClientID must be left empty.\nMutually exclusive with ClientID.",
-                "properties": {
-                    "discovery_url": {
-                        "description": "DiscoveryURL is the exact RFC 8414 / OIDC Discovery document URL to\nfetch at runtime. The resolver issues a single GET against this URL\n(no well-known-path fallback) and reads registration_endpoint,\nauthorization_endpoint, token_endpoint,\ntoken_endpoint_auth_methods_supported, and scopes_supported from the\nresponse. Per RFC 8414 §3.3, the document's \"issuer\" field must\nexactly match the upstream issuer configured on the parent\nrun-config.\n\nUse this field when the upstream publishes discovery metadata at a\npath that differs from the issuer-derived well-known paths — for\nexample a multi-tenant IdP whose metadata lives at\nhttps://idp.example.com/tenants/acme/.well-known/openid-configuration.\n\nMutually exclusive with RegistrationEndpoint.",
-                        "type": "string"
-                    },
-                    "initial_access_token_env_var": {
-                        "description": "InitialAccessTokenEnvVar is the name of an environment variable\ncontaining the RFC 7591 initial access token. Mutually exclusive with\nInitialAccessTokenFile.",
-                        "type": "string"
-                    },
-                    "initial_access_token_file": {
-                        "description": "InitialAccessTokenFile is the path to a file containing the RFC 7591\ninitial access token presented to the registration endpoint. Mutually\nexclusive with InitialAccessTokenEnvVar. Both may be omitted for open\nregistration endpoints.",
-                        "type": "string"
-                    },
-                    "registration_endpoint": {
-                        "description": "RegistrationEndpoint is the RFC 7591 registration endpoint URL used\ndirectly, bypassing discovery. Because no discovery is performed,\nserver-capability fields (token_endpoint_auth_methods_supported,\nscopes_supported) are unavailable on this code path; the caller is\nexpected to also supply AuthorizationEndpoint, TokenEndpoint, and an\nexplicit Scopes list on the parent OAuth2UpstreamRunConfig. Auth\nmethod falls back to the resolver's default (client_secret_basic).\n\nMutually exclusive with DiscoveryURL.",
-                        "type": "string"
-                    },
-                    "software_id": {
-                        "description": "SoftwareID is the RFC 7591 \"software_id\" registration metadata value,\nidentifying the client software independent of any particular\nregistration instance.",
-                        "type": "string"
-                    },
-                    "software_statement": {
-                        "description": "SoftwareStatement is the RFC 7591 \"software_statement\" JWT asserting\nmetadata about the client software, signed by a party the authorization\nserver trusts.",
-                        "type": "string"
-                    }
-                },
-                "type": "object"
-            },
-            "github_com_stacklok_toolhive_pkg_authserver.DelegateClientRunConfig": {
-                "properties": {
-                    "audiences": {
-                        "description": "Audiences are the RFC 8707 resource values this client may request a\ntoken for. Required, and must be a subset of RunConfig.AllowedAudiences:\na declared client must not receive every allowed audience just because\nthis was left empty.",
-                        "items": {
-                            "type": "string"
-                        },
-                        "type": "array",
-                        "uniqueItems": false
-                    },
-                    "client_id": {
-                        "description": "ClientID is the OAuth client_id this client presents at the token endpoint.",
-                        "type": "string"
-                    },
-                    "client_secret_env_var": {
-                        "description": "ClientSecretEnvVar is the name of an environment variable containing\nthe client secret. One of ClientSecretFile or ClientSecretEnvVar is\nrequired.",
-                        "type": "string"
-                    },
-                    "client_secret_file": {
-                        "description": "ClientSecretFile is the path to a file containing the client secret.\nIf both this and ClientSecretEnvVar are set, the file takes precedence.",
-                        "type": "string"
-                    },
-                    "scopes": {
-                        "description": "Scopes are the OAuth scopes this client may request. Required, and\nmust be a subset of RunConfig.ScopesSupported: a declared client must\nnot receive every supported scope just because this was left empty.",
-                        "items": {
-                            "type": "string"
-                        },
-                        "type": "array",
-                        "uniqueItems": false
-                    }
-                },
-                "type": "object"
-            },
-            "github_com_stacklok_toolhive_pkg_authserver.IdentityFromTokenRunConfig": {
-                "description": "IdentityFromToken extracts user identity (subject, name, email) directly from the\nOAuth2 token-endpoint response body using gjson dot-notation paths. When set, the\nembedded auth server skips the userinfo HTTP call entirely. Mirrors the CRD type\n(cmd/thv-operator/api/v1beta1.IdentityFromTokenConfig) — the authoritative\ntrust-model and uniqueness documentation lives there.",
-                "properties": {
-                    "email_path": {
-                        "description": "EmailPath is the dot-notation path to the email address field.",
-                        "type": "string"
-                    },
-                    "name_path": {
-                        "description": "NamePath is the dot-notation path to the display name field.",
-                        "type": "string"
-                    },
-                    "subject_path": {
-                        "description": "SubjectPath is the dot-notation path to the subject (user ID) field.\nRequired when IdentityFromToken is set.",
-                        "type": "string"
-                    }
-                },
-                "type": "object"
-            },
-            "github_com_stacklok_toolhive_pkg_authserver.OAuth2UpstreamRunConfig": {
-                "description": "OAuth2Config contains OAuth 2.0-specific configuration.\nRequired when Type is \"oauth2\", must be nil when Type is \"oidc\".",
-                "properties": {
-                    "additional_authorization_params": {
-                        "additionalProperties": {
-                            "type": "string"
-                        },
-                        "description": "AdditionalAuthorizationParams are extra query parameters to include in\nauthorization requests. Useful for provider-specific parameters like\nGoogle's access_type=offline.",
-                        "type": "object"
-                    },
-                    "allow_private_ips": {
-                        "description": "AllowPrivateIPs permits the upstream provider's HTTP client to connect to\nprivate IP ranges (RFC-1918, link-local). When DCRConfig is set, this\nalso gates the DCR discovery and registration calls made on this\nupstream's behalf (see pkg/authserver/runner/dcr_adapter.go), so a\nsingle flag covers the whole upstream rather than needing a separate\nDCR-specific setting. Use only when the upstream is hosted inside the\nsame cluster and has no public endpoint. HTTP-scheme restrictions are\nunchanged — HTTPS is still required for non-localhost hosts. Defaults\nto false.",
-                        "type": "boolean"
-                    },
-                    "authorization_endpoint": {
-                        "description": "AuthorizationEndpoint is the URL for the OAuth authorization endpoint.",
-                        "type": "string"
-                    },
-                    "client_id": {
-                        "description": "ClientID is the OAuth 2.0 client identifier registered with the upstream IDP.\nMutually exclusive with DCRConfig: when DCRConfig is set, ClientID is obtained\nat runtime via RFC 7591 Dynamic Client Registration and must be left empty.",
-                        "type": "string"
-                    },
-                    "client_secret_env_var": {
-                        "description": "ClientSecretEnvVar is the name of an environment variable containing the client secret.\nMutually exclusive with ClientSecretFile. Optional for public clients using PKCE.",
-                        "type": "string"
-                    },
-                    "client_secret_file": {
-                        "description": "ClientSecretFile is the path to a file containing the OAuth 2.0 client secret.\nMutually exclusive with ClientSecretEnvVar. Optional for public clients using PKCE.",
-                        "type": "string"
-                    },
-                    "dcr_config": {
-                        "$ref": "#/components/schemas/github_com_stacklok_toolhive_pkg_authserver.DCRUpstreamConfig"
-                    },
-                    "identity_from_token": {
-                        "$ref": "#/components/schemas/github_com_stacklok_toolhive_pkg_authserver.IdentityFromTokenRunConfig"
-                    },
-                    "insecure_allow_http": {
-                        "description": "InsecureAllowHTTP permits plain-HTTP authorization and token endpoint URLs\nfor this upstream. Only for in-cluster development environments (e.g. an\nOAuth2 provider served over HTTP in a kind cluster) where TLS is not\navailable. Never set this in production.",
-                        "type": "boolean"
-                    },
-                    "redirect_uri": {
-                        "description": "RedirectURI is the callback URL where the upstream IDP will redirect after authentication.\nWhen not specified, defaults to ` + "`" + `{issuer}/oauth/callback` + "`" + `.",
-                        "type": "string"
-                    },
-                    "scopes": {
-                        "description": "Scopes are the OAuth scopes to request from the upstream IDP.",
-                        "items": {
-                            "type": "string"
-                        },
-                        "type": "array",
-                        "uniqueItems": false
-                    },
-                    "token_endpoint": {
-                        "description": "TokenEndpoint is the URL for the OAuth token endpoint.",
-                        "type": "string"
-                    },
-                    "token_response_mapping": {
-                        "$ref": "#/components/schemas/github_com_stacklok_toolhive_pkg_authserver.TokenResponseMappingRunConfig"
-                    },
-                    "userinfo": {
-                        "$ref": "#/components/schemas/github_com_stacklok_toolhive_pkg_authserver.UserInfoRunConfig"
-                    }
-                },
-                "type": "object"
-            },
-            "github_com_stacklok_toolhive_pkg_authserver.OIDCUpstreamRunConfig": {
-                "description": "OIDCConfig contains OIDC-specific configuration.\nRequired when Type is \"oidc\", must be nil when Type is \"oauth2\".",
-                "properties": {
-                    "additional_authorization_params": {
-                        "additionalProperties": {
-                            "type": "string"
-                        },
-                        "description": "AdditionalAuthorizationParams are extra query parameters to include in\nauthorization requests. Useful for provider-specific parameters like\nGoogle's access_type=offline.",
-                        "type": "object"
-                    },
-                    "allow_private_ips": {
-                        "description": "AllowPrivateIPs permits the OIDC discovery and token HTTP clients to\nconnect to private IP ranges (RFC-1918, link-local). Use only when the\nupstream is hosted inside the same cluster and has no public endpoint.\nHTTP-scheme restrictions are unchanged — HTTPS is still required for\nnon-localhost hosts. Defaults to false.",
-                        "type": "boolean"
-                    },
-                    "client_id": {
-                        "description": "ClientID is the OAuth 2.0 client identifier registered with the upstream IDP.",
-                        "type": "string"
-                    },
-                    "client_secret_env_var": {
-                        "description": "ClientSecretEnvVar is the name of an environment variable containing the client secret.\nMutually exclusive with ClientSecretFile. Optional for public clients using PKCE.",
-                        "type": "string"
-                    },
-                    "client_secret_file": {
-                        "description": "ClientSecretFile is the path to a file containing the OAuth 2.0 client secret.\nMutually exclusive with ClientSecretEnvVar. Optional for public clients using PKCE.",
-                        "type": "string"
-                    },
-                    "insecure_allow_http": {
-                        "description": "InsecureAllowHTTP permits a plain-HTTP issuer URL and HTTP discovery\nendpoints for this upstream. Only for in-cluster development environments\n(e.g. Dex served over HTTP in a kind cluster) where TLS is not available.\nNever set this in production.",
-                        "type": "boolean"
-                    },
-                    "issuer_url": {
-                        "description": "IssuerURL is the OIDC issuer URL for automatic endpoint discovery.\nMust be a valid HTTPS URL.",
-                        "type": "string"
-                    },
-                    "redirect_uri": {
-                        "description": "RedirectURI is the callback URL where the upstream IDP will redirect after authentication.\nWhen not specified, defaults to ` + "`" + `{issuer}/oauth/callback` + "`" + `.",
-                        "type": "string"
-                    },
-                    "scopes": {
-                        "description": "Scopes are the OAuth scopes to request from the upstream IDP.\nIf not specified, defaults to [\"openid\", \"offline_access\"].\nWhen using AdditionalAuthorizationParams with provider-specific refresh\ntoken mechanisms (e.g., Google's access_type=offline), set explicit scopes\nto avoid sending both offline_access and the provider-specific parameter.",
-                        "items": {
-                            "type": "string"
-                        },
-                        "type": "array",
-                        "uniqueItems": false
-                    },
-                    "subject_claim": {
-                        "description": "SubjectClaim names the validated ID-token claim to use as the upstream\nsubject. Defaults to \"sub\" when empty. Set for IdPs where \"sub\" isn't\nstable per user (e.g. Entra/Azure AD's \"oid\"). See upstream.OIDCConfig.",
-                        "type": "string"
-                    },
-                    "userinfo_override": {
-                        "$ref": "#/components/schemas/github_com_stacklok_toolhive_pkg_authserver.UserInfoRunConfig"
-                    }
-                },
-                "type": "object"
-            },
-            "github_com_stacklok_toolhive_pkg_authserver.RunConfig": {
-                "description": "EmbeddedAuthServerConfig contains configuration for the embedded OAuth2/OIDC authorization server.\nWhen set, the proxy runner will start an embedded auth server that delegates to upstream IDPs.\nThis is the serializable RunConfig; secrets are referenced by file paths or env var names.",
-                "properties": {
-                    "allow_confidential_client_registration": {
-                        "description": "AllowConfidentialClientRegistration permits Dynamic Client Registration\nof confidential clients: when true, /oauth/register accepts\ntoken_endpoint_auth_method values client_secret_basic and\nclient_secret_post in addition to \"none\" (still the default on\nomission) and mints a client_secret returned exactly once. Confidential\nclients are restricted to https non-loopback redirect URIs, and\nregistrations idle for more than DefaultDCRClientTTL (30 days) are\nevicted and must re-register. This gates registration only: disabling\nit does not revoke or reject already-minted secrets at the token\nendpoint.\n\nSecurity: /oauth/register is unauthenticated, so this issues client\nsecrets to any caller. Combining it with InsecureAllowHTTP is rejected\nby Validate.",
-                        "type": "boolean"
-                    },
-                    "allow_private_key_jwt_registration": {
-                        "description": "AllowPrivateKeyJWTRegistration permits Dynamic Client Registration of\nclients using private_key_jwt authentication. This is independent of\nAllowConfidentialClientRegistration and defaults to false. Registration\nbehavior is controlled independently by the DCR handler and discovery\nmetadata.\n\nSecurity: /oauth/register is unauthenticated. Unlike\nAllowConfidentialClientRegistration, this is NOT rejected when combined\nwith InsecureAllowHTTP: registration never returns a secret for a\nprivate_key_jwt client, so there is nothing for cleartext HTTP to\nexpose.",
-                        "type": "boolean"
-                    },
-                    "allowed_audiences": {
-                        "description": "AllowedAudiences is the list of valid resource URIs that tokens can be issued for.\nPer RFC 8707, the \"resource\" parameter in authorization and token requests is\nvalidated against this list. Required for MCP compliance.",
-                        "items": {
-                            "type": "string"
-                        },
-                        "type": "array",
-                        "uniqueItems": false
-                    },
-                    "authorization_endpoint_base_url": {
-                        "description": "AuthorizationEndpointBaseURL overrides the base URL used for the authorization_endpoint\nin the OAuth discovery document. When set, the discovery document will advertise\n` + "`" + `{authorization_endpoint_base_url}/oauth/authorize` + "`" + ` instead of ` + "`" + `{issuer}/oauth/authorize` + "`" + `.\nAll other endpoints remain derived from the issuer.",
-                        "type": "string"
-                    },
-                    "baseline_client_scopes": {
-                        "description": "BaselineClientScopes is a baseline set of OAuth 2.0 scopes unioned into every\nDCR registration. All values must appear in ScopesSupported; the auth server\nrejects this RunConfig at startup otherwise. Empty means current behavior is\npreserved (registered scope = client-requested, or DefaultScopes if empty).\nWhen ScopesSupported is empty, the subset check uses registration.DefaultScopes\n(the same set applyDefaults would substitute at startup) — so\nBaselineClientScopes containing standard OIDC scopes works without enumerating\nScopesSupported explicitly.",
-                        "items": {
-                            "type": "string"
-                        },
-                        "type": "array",
-                        "uniqueItems": false
-                    },
-                    "cimd": {
-                        "$ref": "#/components/schemas/github_com_stacklok_toolhive_pkg_authserver.CIMDRunConfig"
-                    },
-                    "delegate_clients": {
-                        "description": "DelegateClients declares confidential OAuth clients to register at\nauthorization-server startup, including clients intended for RFC 8693\ntoken exchange.\n\nIndependent of AllowConfidentialClientRegistration: declaring a client\nhere does not require or enable self-service confidential DCR, and\nsetting that flag does not declare or enable any client here. They\ngovern different endpoints — this field is static configuration the\noperator controls directly, while the flag is admission policy for the\nunauthenticated /oauth/register endpoint.\n\nSee DelegateClientRunConfig for the per-client field reference.",
-                        "items": {
-                            "$ref": "#/components/schemas/github_com_stacklok_toolhive_pkg_authserver.DelegateClientRunConfig"
-                        },
-                        "type": "array",
-                        "uniqueItems": false
-                    },
-                    "delegation_token_lifespan": {
-                        "description": "DelegationTokenLifespan is the maximum lifetime for delegated tokens issued\nvia RFC 8693 token exchange. Specified as a Go duration string (e.g., \"15m\").\nIf empty, defaults to 15 minutes.",
-                        "type": "string"
-                    },
-                    "disable_upstream_token_injection": {
-                        "description": "DisableUpstreamTokenInjection prevents the upstream swap middleware from being added.\nWhen true, the embedded auth server handles OAuth flows for clients, but instead of\ninjecting upstream IdP tokens the proxy strips the client's credential headers\n(Authorization, Cookie, Proxy-Authorization) after the JWT is validated — the\nbackend receives an unauthenticated request. Incompatible with token exchange\nand AWS STS, which would re-add credentials after the strip.",
-                        "type": "boolean"
-                    },
-                    "force_confidential_redirect_uris": {
-                        "description": "ForceConfidentialRedirectURIs lists redirect URIs that must be registered\nas confidential clients regardless of the token_endpoint_auth_method the\nDCR request declares. A registration whose redirect_uris contains an\nEXACT match for one of these entries is issued a real client_secret and\nreported back as token_endpoint_auth_method \"client_secret_post\", even\nif the request said \"none\" or omitted the field.\n\nThis exists for MCP clients (Perplexity is the known case) that declare\nthemselves public (token_endpoint_auth_method: \"none\") per RFC 7591 but\nthen refuse to proceed because the response carries no client_secret —\na self-contradictory request no conformant server can satisfy as\nwritten. RFC 7591 §3.2.1 permits the server to substitute metadata, so\nthis takes such a client at its word that it wants a secret.\n\nExact matching is deliberate: it is not a way to obtain a usable\ncredential for another client. An attacker who registers with someone\nelse's callback URI is issued a secret for a client whose authorization\ncodes are delivered to that someone else's redirect endpoint, not to\nthe attacker — the secret is useless without also controlling the\ncallback.\n\nRequires AllowConfidentialClientRegistration; every entry must be a\nvalid https non-loopback URI (Validate rejects loopback entries — the\nsame restriction AllowConfidentialClientRegistration itself enforces\nexists so secrets do not land in distributed native apps, and this\noverride must not bypass it). Remove an entry once the client is fixed\nto handle \"none\" registrations correctly.",
-                        "items": {
-                            "type": "string"
-                        },
-                        "type": "array",
-                        "uniqueItems": false
-                    },
-                    "hmac_secret_files": {
-                        "description": "HMACSecretFiles contains file paths to HMAC secrets for signing authorization codes\nand refresh tokens (opaque tokens).\nFirst file is the current secret (must be at least 32 bytes), subsequent files\nare for rotation/verification of existing tokens.\nIf empty, an ephemeral secret will be auto-generated (development only).",
-                        "items": {
-                            "type": "string"
-                        },
-                        "type": "array",
-                        "uniqueItems": false
-                    },
-                    "insecure_allow_confidential_over_loopback_http": {
-                        "description": "InsecureAllowConfidentialOverLoopbackHTTP opts in to confidential clients\nwhen Issuer is a plain-HTTP loopback URL. Without this flag, that\ncombination is rejected: a loopback http:// issuer is normally fine for\nlocal development (the traffic never leaves the machine), but client\nsecrets would otherwise travel over cleartext. Defaults to false. Has no\neffect when there are no confidential clients or Issuer is https.\n\nApplies identically to delegate clients and DCR-registered clients. The\nKubernetes CRD requires the explicit opt-in for a delegate client with an\nHTTP issuer; the shared transport validator enforces that its host is\nloopback — see EmbeddedAuthServerConfig's doc comment.\n\nprivate_key_jwt registration has no equivalent flag or transport\nrestriction: unlike confidential registration, it never returns a\nclient_secret (or any other secret) in the DCR response, so there is\nnothing here for cleartext HTTP to expose.",
-                        "type": "boolean"
-                    },
-                    "insecure_allow_http": {
-                        "description": "InsecureAllowHTTP permits an http:// issuer URL for non-localhost hosts.\nOnly set this for in-cluster Kubernetes deployments on a trusted network.\nProduction deployments reachable outside the cluster MUST use https://.",
-                        "type": "boolean"
-                    },
-                    "issuer": {
-                        "description": "Issuer is the issuer identifier for this authorization server.\nThis will be included in the \"iss\" claim of issued tokens.\nMust be a valid HTTPS URL (or HTTP for localhost) without query, fragment, or trailing slash.",
-                        "type": "string"
-                    },
-                    "schema_version": {
-                        "description": "SchemaVersion is the version of the RunConfig schema.",
-                        "type": "string"
-                    },
-                    "scopes_supported": {
-                        "description": "ScopesSupported lists the OAuth 2.0 scope values advertised in discovery documents.\nIf empty, defaults to registration.DefaultScopes ([\"openid\", \"profile\", \"email\", \"offline_access\"]).",
-                        "items": {
-                            "type": "string"
-                        },
-                        "type": "array",
-                        "uniqueItems": false
-                    },
-                    "signing_key_config": {
-                        "$ref": "#/components/schemas/github_com_stacklok_toolhive_pkg_authserver.SigningKeyRunConfig"
-                    },
-                    "storage": {
-                        "$ref": "#/components/schemas/storage.RunConfig"
-                    },
-                    "token_lifespans": {
-                        "$ref": "#/components/schemas/github_com_stacklok_toolhive_pkg_authserver.TokenLifespanRunConfig"
-                    },
-                    "trusted_issuers": {
-                        "description": "TrustedIssuers lists external OIDC issuers whose tokens are accepted as\nRFC 8693 subject tokens or RFC 7523 JWT-bearer assertions. Issuers with\njwtBearerGrant enabled may be used for the JWT-bearer grant without an\nRFC 8693 delegation policy. Empty (the default) means only self-issued\nsubject tokens are accepted.\n\nSee tokenexchange.TrustedIssuer for the per-issuer field reference, and\ndocs/arch/17-token-exchange-delegation.md for the trust model, consent\nsignals, and operator-facing constraints (audience/scope bounding,\nsubject namespace qualification, required client binding) that aren't\nvisible from the config shape alone.",
-                        "items": {
-                            "$ref": "#/components/schemas/github_com_stacklok_toolhive_pkg_authserver_server_tokenexchange.TrustedIssuer"
-                        },
-                        "type": "array",
-                        "uniqueItems": false
-                    },
-                    "upstreams": {
-                        "description": "Upstreams configures connections to upstream Identity Providers.\nAt least one upstream is required - the server delegates authentication to these providers.\nMultiple upstreams are supported for sequential authorization chains.",
-                        "items": {
-                            "$ref": "#/components/schemas/github_com_stacklok_toolhive_pkg_authserver.UpstreamRunConfig"
-                        },
-                        "type": "array",
-                        "uniqueItems": false
-                    }
-                },
-                "type": "object"
-            },
-            "github_com_stacklok_toolhive_pkg_authserver.SigningKeyRunConfig": {
-                "description": "SigningKeyConfig configures the signing key provider for JWT operations.\nIf nil or empty, an ephemeral signing key will be auto-generated (development only).",
-                "properties": {
-                    "fallback_key_files": {
-                        "description": "FallbackKeyFiles are filenames of additional keys for verification (relative to KeyDir).\nThese keys are included in the JWKS endpoint for token verification but are NOT\nused for signing new tokens. Useful for key rotation.",
-                        "items": {
-                            "type": "string"
-                        },
-                        "type": "array",
-                        "uniqueItems": false
-                    },
-                    "key_dir": {
-                        "description": "KeyDir is the directory containing PEM-encoded private key files.\nAll key filenames are relative to this directory.\nIn Kubernetes, this is typically a mounted Secret volume.",
-                        "type": "string"
-                    },
-                    "signing_key_file": {
-                        "description": "SigningKeyFile is the filename of the primary signing key (relative to KeyDir).\nThis key is used for signing new tokens.",
-                        "type": "string"
-                    }
-                },
-                "type": "object"
-            },
-            "github_com_stacklok_toolhive_pkg_authserver.TokenLifespanRunConfig": {
-                "description": "TokenLifespans configures the duration that various tokens are valid.\nIf nil, defaults are applied (access: 1h, refresh: 7d, authCode: 10m).",
-                "properties": {
-                    "access_token_lifespan": {
-                        "description": "AccessTokenLifespan is the duration that access tokens are valid.\nIf empty, defaults to 1 hour.",
-                        "type": "string"
-                    },
-                    "auth_code_lifespan": {
-                        "description": "AuthCodeLifespan is the duration that authorization codes are valid.\nIf empty, defaults to 10 minutes.",
-                        "type": "string"
-                    },
-                    "refresh_token_lifespan": {
-                        "description": "RefreshTokenLifespan is the duration that refresh tokens are valid.\nIf empty, defaults to 7 days (168h).",
-                        "type": "string"
-                    }
-                },
-                "type": "object"
-            },
-            "github_com_stacklok_toolhive_pkg_authserver.TokenResponseMappingRunConfig": {
-                "description": "TokenResponseMapping configures custom field extraction from non-standard token responses.\nWhen set, the token exchange bypasses golang.org/x/oauth2 and extracts fields using\nthe configured dot-notation paths.",
-                "properties": {
-                    "access_token_path": {
-                        "description": "AccessTokenPath is the dot-notation path to the access token (required).",
-                        "type": "string"
-                    },
-                    "expires_in_path": {
-                        "description": "ExpiresInPath is the dot-notation path to the expires_in value. Defaults to \"expires_in\".",
-                        "type": "string"
-                    },
-                    "refresh_token_path": {
-                        "description": "RefreshTokenPath is the dot-notation path to the refresh token. Defaults to \"refresh_token\".",
-                        "type": "string"
-                    },
-                    "scope_path": {
-                        "description": "ScopePath is the dot-notation path to the scope. Defaults to \"scope\".",
-                        "type": "string"
-                    }
-                },
-                "type": "object"
-            },
-            "github_com_stacklok_toolhive_pkg_authserver.UpstreamProviderType": {
-                "description": "Type specifies the provider type: \"oidc\" or \"oauth2\".",
-                "enum": [
-                    "oidc",
-                    "oauth2"
-                ],
-                "type": "string",
-                "x-enum-varnames": [
-                    "UpstreamProviderTypeOIDC",
-                    "UpstreamProviderTypeOAuth2"
-                ]
-            },
-            "github_com_stacklok_toolhive_pkg_authserver.UpstreamRunConfig": {
-                "properties": {
-                    "name": {
-                        "description": "Name uniquely identifies this upstream.\nUsed for routing decisions and session binding in multi-upstream scenarios.\nIf empty when only one upstream is configured, defaults to \"default\".",
-                        "type": "string"
-                    },
-                    "oauth2_config": {
-                        "$ref": "#/components/schemas/github_com_stacklok_toolhive_pkg_authserver.OAuth2UpstreamRunConfig"
-                    },
-                    "oidc_config": {
-                        "$ref": "#/components/schemas/github_com_stacklok_toolhive_pkg_authserver.OIDCUpstreamRunConfig"
-                    },
-                    "type": {
-                        "$ref": "#/components/schemas/github_com_stacklok_toolhive_pkg_authserver.UpstreamProviderType"
-                    }
-                },
-                "type": "object"
-            },
-            "github_com_stacklok_toolhive_pkg_authserver.UserInfoFieldMappingRunConfig": {
-                "description": "FieldMapping contains custom field mapping configuration for non-standard providers.\nIf nil, standard OIDC field names are used (\"sub\", \"name\", \"email\").",
-                "properties": {
-                    "email_fields": {
-                        "description": "EmailFields is an ordered list of field names to try for the email address.\nThe first non-empty value found will be used.\nDefault: [\"email\"]",
-                        "items": {
-                            "type": "string"
-                        },
-                        "type": "array",
-                        "uniqueItems": false
-                    },
-                    "name_fields": {
-                        "description": "NameFields is an ordered list of field names to try for the display name.\nThe first non-empty value found will be used.\nDefault: [\"name\"]",
-                        "items": {
-                            "type": "string"
-                        },
-                        "type": "array",
-                        "uniqueItems": false
-                    },
-                    "subject_fields": {
-                        "description": "SubjectFields is an ordered list of field names to try for the user ID.\nThe first non-empty value found will be used.\nDefault: [\"sub\"]",
-                        "items": {
-                            "type": "string"
-                        },
-                        "type": "array",
-                        "uniqueItems": false
-                    }
-                },
-                "type": "object"
-            },
-            "github_com_stacklok_toolhive_pkg_authserver.UserInfoRunConfig": {
-                "description": "UserInfo contains configuration for fetching user information.\nOptional: when nil, the upstream OAuth2 provider derives a deterministic\nsubject by SHA-256-hashing the access token (with a \"tk-\" prefix) instead\nof calling a userinfo endpoint. OIDC providers always derive Subject from\nthe ID token and are unaffected.",
-                "properties": {
-                    "additional_headers": {
-                        "additionalProperties": {
-                            "type": "string"
-                        },
-                        "description": "AdditionalHeaders contains extra headers to include in the userinfo request.\nUseful for providers that require specific headers (e.g., GitHub's Accept header).",
-                        "type": "object"
-                    },
-                    "endpoint_url": {
-                        "description": "EndpointURL is the URL of the userinfo endpoint.",
-                        "type": "string"
-                    },
-                    "field_mapping": {
-                        "$ref": "#/components/schemas/github_com_stacklok_toolhive_pkg_authserver.UserInfoFieldMappingRunConfig"
-                    },
-                    "http_method": {
-                        "description": "HTTPMethod is the HTTP method to use for the userinfo request.\nIf not specified, defaults to GET.",
-                        "type": "string"
-                    }
-                },
-                "type": "object"
-            },
-            "github_com_stacklok_toolhive_pkg_authserver_server_tokenexchange.JWTBearerGrantPolicy": {
-                "description": "JWTBearerGrant optionally enables the plain RFC 7523 JWT-bearer grant.\nIt accepts assertions from this issuer without client authentication and\nlimits their maximum age, subjects, and RFC 8707 resources. It is\nindependent from RFC 8693 delegation policy.",
-                "properties": {
-                    "accepted_audiences": {
-                        "description": "AcceptedAudiences is the set of \"this AS\" identity strings an\nassertion's \"aud\" claim must intersect — e.g. to support migrating\nthis server's issuer/token-endpoint URL, or exposing it under more\nthan one valid name. Each value uniquely identifies this\nauthorization server for this grant; it is NOT a resource/API\nidentifier — a bare resource audience is deliberately not accepted\nhere, that would let any RFC 8707 resource-scoped token satisfy the\ngrant instead of only tokens minted for this AS. Defaults to\n[tokenEndpoint] when empty, preserving prior exact-match behavior.",
-                        "items": {
-                            "type": "string"
-                        },
-                        "type": "array",
-                        "uniqueItems": false
-                    },
-                    "max_assertion_age": {
-                        "type": "string"
-                    },
-                    "subject_bindings": {
-                        "items": {
-                            "$ref": "#/components/schemas/github_com_stacklok_toolhive_pkg_authserver_server_tokenexchange.JWTBearerSubjectBinding"
-                        },
-                        "type": "array",
-                        "uniqueItems": false
-                    }
-                },
-                "type": "object"
-            },
-            "github_com_stacklok_toolhive_pkg_authserver_server_tokenexchange.JWTBearerSubjectBinding": {
-                "properties": {
-                    "allowed_resources": {
-                        "items": {
-                            "type": "string"
-                        },
-                        "type": "array",
-                        "uniqueItems": false
-                    },
-                    "subject": {
-                        "type": "string"
-                    }
-                },
-                "type": "object"
-            },
-            "github_com_stacklok_toolhive_pkg_authserver_server_tokenexchange.TrustedIssuer": {
-                "properties": {
-                    "actor_claim": {
-                        "description": "ActorClaim names the claim identifying the client that requested the\nsubject token from THIS EXTERNAL ISSUER (used by AllowedActors below).\nValues are in the external issuer's namespace, NOT ToolHive client\nIDs. Defaults to \"azp\"; use \"appid\" for Microsoft Entra v1, \"cid\" for\nOkta. The special value \"client_id\" reads ValidatedClaims.ClientID\ninstead of Extra (assignClaim routes it to that field) — it is still\nthe external token's client_id claim, not a ToolHive one.",
-                        "type": "string"
-                    },
-                    "actor_matcher": {
-                        "description": "ActorMatcher is an admin-authored CEL expression evaluated against the\ncomplete signature-verified JWT claims map as \"claims\". A true result\nauthorizes delegation alongside AllowedActors; a syntax or type error\nfails configuration validation. An expression that compiles but does\nnot return bool is NOT caught at that point, though — it compiles\nsuccessfully and is only rejected the first time it is evaluated\nagainst a real token, denying that token (and every one after it, since\nthe expression will never return bool). Any other runtime evaluation\nerror denies the token the same way.",
-                        "type": "string"
-                    },
-                    "allow_may_act": {
-                        "description": "AllowMayAct permits this external issuer's may_act claim to authorize\ndelegation. It defaults to false; external issuers must be opted in\nexplicitly because may_act bypasses AllowedActors and ActorMatcher. It\ndoes not affect self-issued subject tokens. When enabled,\nAllowedDelegateClients must name specific ToolHive clients rather than\nuse the wildcard.",
-                        "type": "boolean"
-                    },
-                    "allow_private_ips": {
-                        "description": "AllowPrivateIPs permits OIDC discovery and JWKS fetches for THIS\nissuer to resolve to a private or loopback address. Use only when the\nissuer is hosted inside the same cluster and has no public endpoint.",
-                        "type": "boolean"
-                    },
-                    "allowed_actors": {
-                        "description": "AllowedActors is the allowlist of ActorClaim values authorized to\nexchange a subject token from this issuer when it carries no\n\"may_act\" claim. ActorMatcher can additionally authorize a token by\nmatching its complete verified claims map; either signal is sufficient.\nWhen both are empty, only may_act-bearing tokens are accepted, and only\nif AllowMayAct is also true for this issuer. By itself names no\nToolHive client — see AllowedDelegateClients and\ndocs/arch/17-token-exchange-delegation.md (\"Accepted limitations\" #1).",
-                        "items": {
-                            "type": "string"
-                        },
-                        "type": "array",
-                        "uniqueItems": false
-                    },
-                    "allowed_delegate_clients": {
-                        "description": "AllowedDelegateClients restricts which ToolHive client IDs may\nexchange a subject token from this issuer, for BOTH consent paths.\nRequired (validateTrustedIssuer rejects empty/absent); \"*\" permits\nany confidential client holding the grant. See\ndocs/arch/17-token-exchange-delegation.md (\"Accepted limitations\" #1).",
-                        "items": {
-                            "type": "string"
-                        },
-                        "type": "array",
-                        "uniqueItems": false
-                    },
-                    "expected_audience": {
-                        "description": "ExpectedAudience is the expected \"aud\" claim value that must appear\nin an RFC 8693 subject token's audience list (a resource/API identifier,\nnot a client ID — required for delegation unless JWTBearerGrant is\nconfigured; see looksLikeResourceIdentifier). RFC 7523 assertions use\nthe token endpoint as their audience instead.\nSee docs/arch/17-token-exchange-delegation.md (\"ID/access-token\ndiscrimination\") for why and its limits.",
-                        "type": "string"
-                    },
-                    "insecure_allow_http": {
-                        "description": "InsecureAllowHTTP permits plain-HTTP OIDC discovery and JWKS fetches\nfor THIS issuer only. Development and testing only — never set in\nproduction. Does not relax the private-IP guard; see AllowPrivateIPs.\nDeliberately per-issuer: this server's own InsecureAllowHTTP must not\nsilently permit plaintext discovery for every trusted external issuer\ntoo — a network attacker who can intercept that traffic could\nsubstitute a JWKS and forge subject tokens for that issuer's\nnamespace.",
-                        "type": "boolean"
-                    },
-                    "issuer_url": {
-                        "description": "IssuerURL is the expected \"iss\" claim value (exact match).",
-                        "type": "string"
-                    },
-                    "jwks_url": {
-                        "description": "JWKSURL is the URL to fetch the issuer's JSON Web Key Set from.\nIf empty, it is resolved via OIDC discovery at {IssuerURL}/.well-known/openid-configuration.",
-                        "type": "string"
-                    },
-                    "jwt_bearer_grant": {
-                        "$ref": "#/components/schemas/github_com_stacklok_toolhive_pkg_authserver_server_tokenexchange.JWTBearerGrantPolicy"
                     }
                 },
                 "type": "object"
@@ -1408,34 +1290,6 @@ const docTemplate = `{
                 },
                 "type": "object"
             },
-            "github_com_stacklok_toolhive_pkg_ratelimit_types.RateLimitBucket": {
-                "description": "PerUser token bucket configuration for this tool.\n+optional",
-                "properties": {
-                    "maxTokens": {
-                        "description": "MaxTokens is the maximum number of tokens (bucket capacity).\nThis is also the burst size: the maximum number of requests that can be served\ninstantaneously before the bucket is depleted.\n+kubebuilder:validation:Required\n+kubebuilder:validation:Minimum=1",
-                        "type": "integer"
-                    },
-                    "refillPeriod": {
-                        "$ref": "#/components/schemas/v1.Duration"
-                    }
-                },
-                "type": "object"
-            },
-            "github_com_stacklok_toolhive_pkg_ratelimit_types.ToolRateLimitConfig": {
-                "properties": {
-                    "name": {
-                        "description": "Name is the MCP tool name this limit applies to.\n+kubebuilder:validation:Required\n+kubebuilder:validation:MinLength=1",
-                        "type": "string"
-                    },
-                    "perUser": {
-                        "$ref": "#/components/schemas/github_com_stacklok_toolhive_pkg_ratelimit_types.RateLimitBucket"
-                    },
-                    "shared": {
-                        "$ref": "#/components/schemas/github_com_stacklok_toolhive_pkg_ratelimit_types.RateLimitBucket"
-                    }
-                },
-                "type": "object"
-            },
             "github_com_stacklok_toolhive_pkg_registry.OAuthPublicConfig": {
                 "description": "AuthConfig contains the non-secret OAuth configuration when auth is configured.\nNil when auth_status is \"none\".",
                 "properties": {
@@ -1501,7 +1355,7 @@ const docTemplate = `{
                         "uniqueItems": false
                     },
                     "audit_config": {
-                        "$ref": "#/components/schemas/github_com_stacklok_toolhive_pkg_audit.Config"
+                        "$ref": "#/components/schemas/audit.Config"
                     },
                     "audit_config_path": {
                         "description": "DEPRECATED: Middleware configuration.\nAuditConfigPath is the path to the audit configuration file",
@@ -1545,7 +1399,7 @@ const docTemplate = `{
                         "type": "boolean"
                     },
                     "embedded_auth_server_config": {
-                        "$ref": "#/components/schemas/github_com_stacklok_toolhive_pkg_authserver.RunConfig"
+                        "$ref": "#/components/schemas/authserver.RunConfig"
                     },
                     "endpoint_prefix": {
                         "description": "EndpointPrefix is an explicit prefix to prepend to SSE endpoint URLs.\nThis is used to handle path-based ingress routing scenarios.",
@@ -1644,7 +1498,7 @@ const docTemplate = `{
                         "uniqueItems": false
                     },
                     "rate_limit_config": {
-                        "$ref": "#/components/schemas/github_com_stacklok_toolhive_cmd_thv-operator_api_v1beta1.RateLimitConfig"
+                        "$ref": "#/components/schemas/v1beta1.RateLimitConfig"
                     },
                     "rate_limit_namespace": {
                         "description": "RateLimitNamespace is the Kubernetes namespace for Redis key derivation.",
@@ -5341,6 +5195,101 @@ const docTemplate = `{
                 },
                 "type": "object"
             },
+            "tokenexchange.JWTBearerGrantPolicy": {
+                "description": "JWTBearerGrant optionally enables the plain RFC 7523 JWT-bearer grant.\nIt accepts assertions from this issuer without client authentication and\nlimits their maximum age, subjects, and RFC 8707 resources. It is\nindependent from RFC 8693 delegation policy.",
+                "properties": {
+                    "accepted_audiences": {
+                        "description": "AcceptedAudiences is the set of \"this AS\" identity strings an\nassertion's \"aud\" claim must intersect — e.g. to support migrating\nthis server's issuer/token-endpoint URL, or exposing it under more\nthan one valid name. Each value uniquely identifies this\nauthorization server for this grant; it is NOT a resource/API\nidentifier — a bare resource audience is deliberately not accepted\nhere, that would let any RFC 8707 resource-scoped token satisfy the\ngrant instead of only tokens minted for this AS. Defaults to\n[tokenEndpoint] when empty, preserving prior exact-match behavior.",
+                        "items": {
+                            "type": "string"
+                        },
+                        "type": "array",
+                        "uniqueItems": false
+                    },
+                    "max_assertion_age": {
+                        "type": "string"
+                    },
+                    "subject_bindings": {
+                        "items": {
+                            "$ref": "#/components/schemas/tokenexchange.JWTBearerSubjectBinding"
+                        },
+                        "type": "array",
+                        "uniqueItems": false
+                    }
+                },
+                "type": "object"
+            },
+            "tokenexchange.JWTBearerSubjectBinding": {
+                "properties": {
+                    "allowed_resources": {
+                        "items": {
+                            "type": "string"
+                        },
+                        "type": "array",
+                        "uniqueItems": false
+                    },
+                    "subject": {
+                        "type": "string"
+                    }
+                },
+                "type": "object"
+            },
+            "tokenexchange.TrustedIssuer": {
+                "properties": {
+                    "actor_claim": {
+                        "description": "ActorClaim names the claim identifying the client that requested the\nsubject token from THIS EXTERNAL ISSUER (used by AllowedActors below).\nValues are in the external issuer's namespace, NOT ToolHive client\nIDs. Defaults to \"azp\"; use \"appid\" for Microsoft Entra v1, \"cid\" for\nOkta. The special value \"client_id\" reads ValidatedClaims.ClientID\ninstead of Extra (assignClaim routes it to that field) — it is still\nthe external token's client_id claim, not a ToolHive one.",
+                        "type": "string"
+                    },
+                    "actor_matcher": {
+                        "description": "ActorMatcher is an admin-authored CEL expression evaluated against the\ncomplete signature-verified JWT claims map as \"claims\". A true result\nauthorizes delegation alongside AllowedActors; a syntax or type error\nfails configuration validation. An expression that compiles but does\nnot return bool is NOT caught at that point, though — it compiles\nsuccessfully and is only rejected the first time it is evaluated\nagainst a real token, denying that token (and every one after it, since\nthe expression will never return bool). Any other runtime evaluation\nerror denies the token the same way.",
+                        "type": "string"
+                    },
+                    "allow_may_act": {
+                        "description": "AllowMayAct permits this external issuer's may_act claim to authorize\ndelegation. It defaults to false; external issuers must be opted in\nexplicitly because may_act bypasses AllowedActors and ActorMatcher. It\ndoes not affect self-issued subject tokens. When enabled,\nAllowedDelegateClients must name specific ToolHive clients rather than\nuse the wildcard.",
+                        "type": "boolean"
+                    },
+                    "allow_private_ips": {
+                        "description": "AllowPrivateIPs permits OIDC discovery and JWKS fetches for THIS\nissuer to resolve to a private or loopback address. Use only when the\nissuer is hosted inside the same cluster and has no public endpoint.",
+                        "type": "boolean"
+                    },
+                    "allowed_actors": {
+                        "description": "AllowedActors is the allowlist of ActorClaim values authorized to\nexchange a subject token from this issuer when it carries no\n\"may_act\" claim. ActorMatcher can additionally authorize a token by\nmatching its complete verified claims map; either signal is sufficient.\nWhen both are empty, only may_act-bearing tokens are accepted, and only\nif AllowMayAct is also true for this issuer. By itself names no\nToolHive client — see AllowedDelegateClients and\ndocs/arch/17-token-exchange-delegation.md (\"Accepted limitations\" #1).",
+                        "items": {
+                            "type": "string"
+                        },
+                        "type": "array",
+                        "uniqueItems": false
+                    },
+                    "allowed_delegate_clients": {
+                        "description": "AllowedDelegateClients restricts which ToolHive client IDs may\nexchange a subject token from this issuer, for BOTH consent paths.\nRequired (validateTrustedIssuer rejects empty/absent); \"*\" permits\nany confidential client holding the grant. See\ndocs/arch/17-token-exchange-delegation.md (\"Accepted limitations\" #1).",
+                        "items": {
+                            "type": "string"
+                        },
+                        "type": "array",
+                        "uniqueItems": false
+                    },
+                    "expected_audience": {
+                        "description": "ExpectedAudience is the expected \"aud\" claim value that must appear\nin an RFC 8693 subject token's audience list (a resource/API identifier,\nnot a client ID — required for delegation unless JWTBearerGrant is\nconfigured; see looksLikeResourceIdentifier). RFC 7523 assertions use\nthe token endpoint as their audience instead.\nSee docs/arch/17-token-exchange-delegation.md (\"ID/access-token\ndiscrimination\") for why and its limits.",
+                        "type": "string"
+                    },
+                    "insecure_allow_http": {
+                        "description": "InsecureAllowHTTP permits plain-HTTP OIDC discovery and JWKS fetches\nfor THIS issuer only. Development and testing only — never set in\nproduction. Does not relax the private-IP guard; see AllowPrivateIPs.\nDeliberately per-issuer: this server's own InsecureAllowHTTP must not\nsilently permit plaintext discovery for every trusted external issuer\ntoo — a network attacker who can intercept that traffic could\nsubstitute a JWKS and forge subject tokens for that issuer's\nnamespace.",
+                        "type": "boolean"
+                    },
+                    "issuer_url": {
+                        "description": "IssuerURL is the expected \"iss\" claim value (exact match).",
+                        "type": "string"
+                    },
+                    "jwks_url": {
+                        "description": "JWKSURL is the URL to fetch the issuer's JSON Web Key Set from.\nIf empty, it is resolved via OIDC discovery at {IssuerURL}/.well-known/openid-configuration.",
+                        "type": "string"
+                    },
+                    "jwt_bearer_grant": {
+                        "$ref": "#/components/schemas/tokenexchange.JWTBearerGrantPolicy"
+                    }
+                },
+                "type": "object"
+            },
             "types.MiddlewareConfig": {
                 "properties": {
                     "parameters": {
@@ -5350,6 +5299,34 @@ const docTemplate = `{
                     "type": {
                         "description": "Type is a string representing the middleware type.",
                         "type": "string"
+                    }
+                },
+                "type": "object"
+            },
+            "types.RateLimitBucket": {
+                "description": "PerUser token bucket configuration for this tool.\n+optional",
+                "properties": {
+                    "maxTokens": {
+                        "description": "MaxTokens is the maximum number of tokens (bucket capacity).\nThis is also the burst size: the maximum number of requests that can be served\ninstantaneously before the bucket is depleted.\n+kubebuilder:validation:Required\n+kubebuilder:validation:Minimum=1",
+                        "type": "integer"
+                    },
+                    "refillPeriod": {
+                        "$ref": "#/components/schemas/v1.Duration"
+                    }
+                },
+                "type": "object"
+            },
+            "types.ToolRateLimitConfig": {
+                "properties": {
+                    "name": {
+                        "description": "Name is the MCP tool name this limit applies to.\n+kubebuilder:validation:Required\n+kubebuilder:validation:MinLength=1",
+                        "type": "string"
+                    },
+                    "perUser": {
+                        "$ref": "#/components/schemas/types.RateLimitBucket"
+                    },
+                    "shared": {
+                        "$ref": "#/components/schemas/types.RateLimitBucket"
                     }
                 },
                 "type": "object"
@@ -5433,6 +5410,26 @@ const docTemplate = `{
             },
             "v1.Duration": {
                 "description": "RefillPeriod is the duration to fully refill the bucket from zero to maxTokens.\nThe effective refill rate is maxTokens / refillPeriod tokens per second.\nFormat: Go duration string (e.g., \"1m0s\", \"30s\", \"1h0m0s\").\n+kubebuilder:validation:Required",
+                "type": "object"
+            },
+            "v1beta1.RateLimitConfig": {
+                "description": "RateLimitConfig contains the CRD rate limiting configuration.\nWhen set, rate limiting middleware is added to the proxy middleware chain.",
+                "properties": {
+                    "perUser": {
+                        "$ref": "#/components/schemas/types.RateLimitBucket"
+                    },
+                    "shared": {
+                        "$ref": "#/components/schemas/types.RateLimitBucket"
+                    },
+                    "tools": {
+                        "description": "Tools defines per-tool rate limit overrides.\nEach entry applies additional rate limits to calls targeting a specific tool name.\nA request must pass both the server-level limit and the per-tool limit.\n+listType=map\n+listMapKey=name\n+optional",
+                        "items": {
+                            "$ref": "#/components/schemas/types.ToolRateLimitConfig"
+                        },
+                        "type": "array",
+                        "uniqueItems": false
+                    }
+                },
                 "type": "object"
             }
         }

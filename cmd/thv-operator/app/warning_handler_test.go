@@ -112,8 +112,8 @@ func TestMCPRegistryOnceWarningHandler_concurrentResyncsLogOnce(t *testing.T) {
 	assert.Len(t, recorder.snapshot(), 1)
 }
 
+//nolint:paralleltest // mutates process-wide client-go default warning handler
 func TestInstallMCPRegistryWarningHandler(t *testing.T) {
-	//nolint:paralleltest // mutates process-wide client-go default warning handler
 	// Mutates the process-wide client-go default warning handler.
 	t.Cleanup(func() {
 		rest.SetDefaultWarningHandlerWithContext(rest.WarningLogger{})

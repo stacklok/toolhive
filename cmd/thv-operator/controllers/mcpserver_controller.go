@@ -206,11 +206,13 @@ func (r *MCPServerReconciler) handleInvalidEmbeddedAuthServerConfig(
 	})
 }
 
-// handleInvalidUpstreamCABundle records an invalid upstream CA bundle as terminal.
-// Failures to persist status remain retryable.
+// handleInvalidUpstreamCABundle records an invalid upstream CA bundle as terminal
+// on conditionType, which the caller picks because it knows which reference the
+// bundle was reached through. Failures to persist status remain retryable.
 func (r *MCPServerReconciler) handleInvalidUpstreamCABundle(
 	ctx context.Context,
 	mcpServer *mcpv1beta1.MCPServer,
+	conditionType string,
 	invalidCABundleErr *ctrlutil.InvalidCABundleError,
 ) error {
 	return ctrlutil.MutateAndPatchStatus(ctx, r.Client, mcpServer, func(server *mcpv1beta1.MCPServer) {
@@ -219,7 +221,7 @@ func (r *MCPServerReconciler) handleInvalidUpstreamCABundle(
 		server.Status.ObservedGeneration = server.Generation
 		setReadyCondition(server, metav1.ConditionFalse, mcpv1beta1.ConditionReasonNotReady, server.Status.Message)
 		meta.SetStatusCondition(&server.Status.Conditions, metav1.Condition{
-			Type:               mcpv1beta1.ConditionTypeExternalAuthConfigValidated,
+			Type:               conditionType,
 			Status:             metav1.ConditionFalse,
 			ObservedGeneration: server.Generation,
 			Reason:             mcpv1beta1.ConditionReasonInvalidCABundle,
@@ -334,7 +336,8 @@ func (r *MCPServerReconciler) Reconcile(ctx context.Context, req ctrl.Request) (
 	if err := r.handleExternalAuthConfig(ctx, mcpServer); err != nil {
 		var invalidCABundleErr *ctrlutil.InvalidCABundleError
 		if stderrors.As(err, &invalidCABundleErr) {
-			if statusErr := r.handleInvalidUpstreamCABundle(ctx, mcpServer, invalidCABundleErr); statusErr != nil {
+			if statusErr := r.handleInvalidUpstreamCABundle(
+				ctx, mcpServer, mcpv1beta1.ConditionTypeExternalAuthConfigValidated, invalidCABundleErr); statusErr != nil {
 				ctxLogger.Error(statusErr, "Failed to update MCPServer status after invalid upstream CA bundle")
 				return ctrl.Result{}, statusErr
 			}
@@ -365,6 +368,16 @@ func (r *MCPServerReconciler) Reconcile(ctx context.Context, req ctrl.Request) (
 
 	// Check if authServerRef is referenced and handle config hash tracking
 	if err := r.handleAuthServerRef(ctx, mcpServer); err != nil {
+		var invalidCABundleErr *ctrlutil.InvalidCABundleError
+		if stderrors.As(err, &invalidCABundleErr) {
+			if statusErr := r.handleInvalidUpstreamCABundle(
+				ctx, mcpServer, mcpv1beta1.ConditionTypeAuthServerRefValidated, invalidCABundleErr); statusErr != nil {
+				ctxLogger.Error(statusErr, "Failed to update MCPServer status after invalid upstream CA bundle")
+				return ctrl.Result{}, statusErr
+			}
+			return ctrl.Result{}, nil
+		}
+
 		ctxLogger.Error(err, "Failed to handle authServerRef")
 		mcpServer.Status.Phase = mcpv1beta1.MCPServerPhaseFailed
 		setReadyCondition(mcpServer, metav1.ConditionFalse, mcpv1beta1.ConditionReasonNotReady, err.Error())
@@ -2326,6 +2339,12 @@ func (r *MCPServerReconciler) handleExternalAuthConfig(ctx context.Context, m *m
 	// Resolve upstream CA dependencies before allowing any workload changes.
 	if embeddedCfg := externalAuthConfig.Spec.EmbeddedAuthServer; embeddedCfg != nil {
 		if err := ctrlutil.ValidateEmbeddedAuthServerCABundles(ctx, r.Client, m.Namespace, embeddedCfg); err != nil {
+			// Only a content error is terminal. A failed ConfigMap read may be
+			// transient, and must requeue rather than be recorded as a spec defect.
+			var invalidCABundleErr *ctrlutil.InvalidCABundleError
+			if !stderrors.As(err, &invalidCABundleErr) {
+				return err
+			}
 			meta.SetStatusCondition(&m.Status.Conditions, metav1.Condition{
 				Type: mcpv1beta1.ConditionTypeExternalAuthConfigValidated, Status: metav1.ConditionFalse,
 				Reason: mcpv1beta1.ConditionReasonInvalidCABundle, Message: fmt.Sprintf("invalid upstream CA bundle: %v", err),
@@ -2490,6 +2509,29 @@ func (r *MCPServerReconciler) handleAuthServerRef(ctx context.Context, m *mcpv1b
 		return fmt.Errorf("MCPServer %s/%s: embedded auth server has %d upstream providers, "+
 			"but only 1 is supported; use VirtualMCPServer",
 			m.Namespace, m.Name, len(embeddedCfg.UpstreamProviders))
+	}
+
+	// Resolve upstream CA dependencies before allowing any workload changes.
+	// Mirrors handleExternalAuthConfig: without this the first notice of a bad
+	// bundle is Deployment construction, which reports a generic build failure
+	// and requeues instead of recording a terminal condition here.
+	if embeddedCfg := authConfig.Spec.EmbeddedAuthServer; embeddedCfg != nil {
+		if err := ctrlutil.ValidateEmbeddedAuthServerCABundles(ctx, r.Client, m.Namespace, embeddedCfg); err != nil {
+			// Only a content error is terminal. A failed ConfigMap read may be
+			// transient, and must requeue rather than be recorded as a spec defect.
+			var invalidCABundleErr *ctrlutil.InvalidCABundleError
+			if !stderrors.As(err, &invalidCABundleErr) {
+				return err
+			}
+			meta.SetStatusCondition(&m.Status.Conditions, metav1.Condition{
+				Type:               mcpv1beta1.ConditionTypeAuthServerRefValidated,
+				Status:             metav1.ConditionFalse,
+				Reason:             mcpv1beta1.ConditionReasonInvalidCABundle,
+				Message:            fmt.Sprintf("invalid upstream CA bundle: %v", err),
+				ObservedGeneration: m.Generation,
+			})
+			return err
+		}
 	}
 
 	setMCPServerAuthServerRefValidCondition(m, authConfig.Name, authConfig.Status.ConfigHash)

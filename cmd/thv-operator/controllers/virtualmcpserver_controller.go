@@ -445,7 +445,9 @@ func (r *VirtualMCPServerReconciler) runValidations(
 	}
 
 	// Validate auth-related spec fields (AuthServerConfig + AuthzConfig coherence).
-	if ok := r.runAuthValidations(ctx, vmcp, statusManager); !ok {
+	if ok, err := r.runAuthValidations(ctx, vmcp, statusManager); err != nil {
+		return false, err
+	} else if !ok {
 		return false, nil
 	}
 
@@ -457,13 +459,14 @@ func (r *VirtualMCPServerReconciler) runValidations(
 
 // runAuthValidations runs the auth-related spec validations: the inline
 // AuthServerConfig (when specified) and the AuthzConfig/upstream coherence
-// check. Returns false when a validation fails and the caller should stop
-// reconciliation (user must fix the spec); true to continue.
+// check. Returns (true, nil) to continue; (false, nil) when a spec validation
+// failed and the user must fix it, so reconciliation stops without requeue;
+// (false, err) for a transient failure the caller should requeue on.
 func (r *VirtualMCPServerReconciler) runAuthValidations(
 	ctx context.Context,
 	vmcp *mcpv1beta1.VirtualMCPServer,
 	statusManager virtualmcpserverstatus.StatusManager,
-) bool {
+) (bool, error) {
 	ctxLogger := log.FromContext(ctx)
 
 	// Validate inline AuthServerConfig (when specified).
@@ -481,13 +484,16 @@ func (r *VirtualMCPServerReconciler) runAuthValidations(
 			if applyErr := r.applyStatusUpdates(ctx, vmcp, statusManager); applyErr != nil {
 				ctxLogger.Error(applyErr, "Failed to apply status updates after AuthServerConfig validation error")
 			}
-			return false
+			return false, nil
 		}
-		if err := r.validateAuthServerConfigCABundles(ctx, vmcp, statusManager); err != nil {
+		if terminal, err := r.validateAuthServerConfigCABundles(ctx, vmcp, statusManager); err != nil {
 			if applyErr := r.applyStatusUpdates(ctx, vmcp, statusManager); applyErr != nil {
 				ctxLogger.Error(applyErr, "Failed to apply status updates after CA bundle validation error")
 			}
-			return false
+			if terminal {
+				return false, nil
+			}
+			return false, err
 		}
 	} else {
 		// Remove stale conditions if AuthServerConfig was previously set then removed.
@@ -503,19 +509,30 @@ func (r *VirtualMCPServerReconciler) runAuthValidations(
 		if applyErr := r.applyStatusUpdates(ctx, vmcp, statusManager); applyErr != nil {
 			ctxLogger.Error(applyErr, "Failed to apply status updates after AuthzUpstreamAvailable validation error")
 		}
-		return false
+		return false, nil
 	}
 
-	return true
+	return true, nil
 }
 
 // validateAuthServerConfigCABundles resolves inline upstream CA dependencies.
+//
+// Returns (true, err) when the failure is terminal — a malformed reference or
+// non-PEM content, which no retry fixes — with the failure already stamped on
+// status. Returns (false, err) when the ConfigMap read itself failed, which may
+// be transient: nothing is stamped, because recording a spec defect for an
+// unavailable apiserver would outlive its cause. Returns (false, nil) on
+// success.
 func (r *VirtualMCPServerReconciler) validateAuthServerConfigCABundles(
 	ctx context.Context, vmcp *mcpv1beta1.VirtualMCPServer, statusManager virtualmcpserverstatus.StatusManager,
-) error {
+) (bool, error) {
 	err := ctrlutil.ValidateEmbeddedAuthServerCABundles(ctx, r.Client, vmcp.Namespace, vmcp.Spec.AuthServerConfig)
 	if err == nil {
-		return nil
+		return false, nil
+	}
+	var invalidCABundleErr *ctrlutil.InvalidCABundleError
+	if !stderrors.As(err, &invalidCABundleErr) {
+		return false, err
 	}
 	message := fmt.Sprintf("invalid upstream CA bundle: %v", err)
 	statusManager.SetPhase(mcpv1beta1.VirtualMCPServerPhaseFailed)
@@ -523,7 +540,7 @@ func (r *VirtualMCPServerReconciler) validateAuthServerConfigCABundles(
 	statusManager.SetAuthServerConfigValidatedCondition(
 		mcpv1beta1.ConditionReasonAuthServerConfigInvalid, message, metav1.ConditionFalse)
 	statusManager.SetObservedGeneration(vmcp.Generation)
-	return err
+	return true, err
 }
 
 // validateSessionStorageForReplicas emits a SessionStorageWarning condition when
@@ -1554,6 +1571,13 @@ func (r *VirtualMCPServerReconciler) ensureDeployment(
 	caBundleChecksum, err := ctrlutil.EmbeddedAuthServerCABundleChecksumForConfig(
 		ctx, r.Client, vmcp.Namespace, vmcp.Spec.AuthServerConfig)
 	if err != nil {
+		// runAuthValidations gates this path, so a terminal bundle error should
+		// not reach here. Stop rather than requeue if one does: retrying cannot
+		// fix malformed content, and the validation above has already recorded it.
+		var invalidCABundleErr *ctrlutil.InvalidCABundleError
+		if stderrors.As(err, &invalidCABundleErr) {
+			return ctrl.Result{}, nil
+		}
 		return ctrl.Result{}, err
 	}
 

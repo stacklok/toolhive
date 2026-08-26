@@ -25,6 +25,7 @@ import (
 	appsv1 "k8s.io/api/apps/v1"
 	corev1 "k8s.io/api/core/v1"
 	rbacv1 "k8s.io/api/rbac/v1"
+	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	"k8s.io/apimachinery/pkg/api/meta"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/types"
@@ -34,6 +35,7 @@ import (
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/client/fake"
+	"sigs.k8s.io/controller-runtime/pkg/client/interceptor"
 
 	mcpv1beta1 "github.com/stacklok/toolhive/cmd/thv-operator/api/v1beta1"
 	"github.com/stacklok/toolhive/cmd/thv-operator/api/v1beta1/v1beta1test"
@@ -4283,4 +4285,86 @@ func TestVirtualMCPServerReconciler_handleInvalidEmbeddedAuthServerConfig(t *tes
 	ready := findCondition(updated.Status.Conditions, mcpv1beta1.ConditionTypeReady)
 	require.NotNil(t, ready)
 	assert.Equal(t, metav1.ConditionFalse, ready.Status)
+}
+
+// vmcpCABundleAuthServerConfig returns an inline auth server config whose only
+// defect is whatever state the referenced "bundle" ConfigMap is left in.
+func vmcpCABundleAuthServerConfig() *mcpv1beta1.EmbeddedAuthServerConfig {
+	return &mcpv1beta1.EmbeddedAuthServerConfig{
+		Issuer:               "https://auth.example.com",
+		SigningKeySecretRefs: []mcpv1beta1.SecretKeyRef{{Name: "signing-key", Key: "private.pem"}},
+		HMACSecretRefs:       []mcpv1beta1.SecretKeyRef{{Name: "hmac-secret", Key: "hmac"}},
+		UpstreamProviders: []mcpv1beta1.UpstreamProviderConfig{{
+			Name: "upstream",
+			Type: mcpv1beta1.UpstreamProviderTypeOIDC,
+			OIDCConfig: &mcpv1beta1.OIDCUpstreamConfig{
+				IssuerURL: "https://idp.example.com",
+				ClientID:  "client",
+				CABundleRef: &mcpv1beta1.CABundleSource{ConfigMapRef: &corev1.ConfigMapKeySelector{
+					LocalObjectReference: corev1.LocalObjectReference{Name: "bundle"}, Key: "ca.crt",
+				}},
+			},
+		}},
+	}
+}
+
+// A bundle ConfigMap without the key it names cannot be fixed by retrying, so
+// the failure is recorded and reported as terminal rather than propagated.
+func TestVirtualMCPServer_AuthServerConfigCABundleInvalidIsTerminal(t *testing.T) {
+	t.Parallel()
+
+	vmcp := v1beta1test.NewVirtualMCPServer(testVmcpName, "default",
+		v1beta1test.MutateVMCP(func(v *mcpv1beta1.VirtualMCPServer) {
+			v.Generation = 1
+			v.Spec.AuthServerConfig = vmcpCABundleAuthServerConfig()
+		}),
+	)
+	bundle := &corev1.ConfigMap{ObjectMeta: metav1.ObjectMeta{Name: "bundle", Namespace: "default"}}
+	reconciler, _ := newTestVirtualMCPServerReconciler(t, vmcp, bundle)
+	statusManager := virtualmcpserverstatus.NewStatusManager(vmcp)
+
+	terminal, err := reconciler.validateAuthServerConfigCABundles(t.Context(), vmcp, statusManager)
+
+	require.Error(t, err)
+	assert.True(t, terminal, "malformed bundle content is terminal")
+}
+
+// A ConfigMap read that fails for reasons unrelated to its content is transient:
+// it must propagate so the caller requeues, and must not be painted onto status
+// as a spec defect that would outlive the outage.
+func TestVirtualMCPServer_AuthServerConfigCABundleGetErrorIsTransient(t *testing.T) {
+	t.Parallel()
+
+	vmcp := v1beta1test.NewVirtualMCPServer(testVmcpName, "default",
+		v1beta1test.MutateVMCP(func(v *mcpv1beta1.VirtualMCPServer) {
+			v.Generation = 1
+			v.Spec.AuthServerConfig = vmcpCABundleAuthServerConfig()
+		}),
+	)
+	scheme := testutil.NewScheme(t)
+	fakeClient := fake.NewClientBuilder().WithScheme(scheme).
+		WithObjects(vmcp, &corev1.ConfigMap{ObjectMeta: metav1.ObjectMeta{Name: "bundle", Namespace: "default"}}).
+		WithStatusSubresource(&mcpv1beta1.VirtualMCPServer{}).
+		WithInterceptorFuncs(interceptor.Funcs{
+			Get: func(ctx context.Context, c client.WithWatch, key client.ObjectKey, obj client.Object, opts ...client.GetOption) error {
+				if _, ok := obj.(*corev1.ConfigMap); ok && key.Name == "bundle" {
+					return apierrors.NewServiceUnavailable("apiserver is having a moment")
+				}
+				return c.Get(ctx, key, obj, opts...)
+			},
+		}).
+		Build()
+	reconciler := &VirtualMCPServerReconciler{
+		Client:           fakeClient,
+		Scheme:           scheme,
+		PlatformDetector: ctrlutil.NewSharedPlatformDetector(),
+	}
+	statusManager := virtualmcpserverstatus.NewStatusManager(vmcp)
+
+	terminal, err := reconciler.validateAuthServerConfigCABundles(t.Context(), vmcp, statusManager)
+
+	require.Error(t, err, "a transient read failure must surface so the caller requeues")
+	assert.False(t, terminal, "an unavailable apiserver is not a spec defect")
+	assert.NotEqual(t, mcpv1beta1.VirtualMCPServerPhaseFailed, vmcp.Status.Phase,
+		"a transient read failure must not stamp a terminal phase")
 }

@@ -203,6 +203,28 @@ func (r *MCPRemoteProxyReconciler) Reconcile(ctx context.Context, req ctrl.Reque
 }
 
 // validateAndHandleConfigs validates spec and handles referenced configurations
+// handleAuthServerRefCABundleError records a terminal upstream CA bundle failure
+// reached through authServerRef, against that ref's own condition. The unwrap at
+// the Reconcile boundary cannot tell the two reference paths apart, so it would
+// otherwise attribute the failure to externalAuthConfigRef.
+//
+// Returns handled=false when err is not a terminal CA bundle error, leaving the
+// caller to apply its own handling.
+func (r *MCPRemoteProxyReconciler) handleAuthServerRefCABundleError(
+	ctx context.Context, proxy *mcpv1beta1.MCPRemoteProxy, err error,
+) (bool, error) {
+	var invalidCABundleErr *ctrlutil.InvalidCABundleError
+	if !stderrors.As(err, &invalidCABundleErr) {
+		return false, nil
+	}
+	if statusErr := r.handleInvalidUpstreamCABundle(
+		ctx, proxy, mcpv1beta1.ConditionTypeMCPRemoteProxyAuthServerRefValidated, invalidCABundleErr); statusErr != nil {
+		log.FromContext(ctx).Error(statusErr, "Failed to update MCPRemoteProxy status after invalid CA bundle")
+		return true, statusErr
+	}
+	return true, errTerminalCABundleHandled
+}
+
 func (r *MCPRemoteProxyReconciler) validateAndHandleConfigs(ctx context.Context, proxy *mcpv1beta1.MCPRemoteProxy) error {
 	ctxLogger := log.FromContext(ctx)
 
@@ -254,14 +276,8 @@ func (r *MCPRemoteProxyReconciler) validateAndHandleConfigs(ctx context.Context,
 
 	// Handle authServerRef config hash tracking
 	if err := r.handleAuthServerRef(ctx, proxy); err != nil {
-		var invalidCABundleErr *ctrlutil.InvalidCABundleError
-		if stderrors.As(err, &invalidCABundleErr) {
-			if statusErr := r.handleInvalidUpstreamCABundle(
-				ctx, proxy, mcpv1beta1.ConditionTypeMCPRemoteProxyAuthServerRefValidated, invalidCABundleErr); statusErr != nil {
-				ctxLogger.Error(statusErr, "Failed to update MCPRemoteProxy status after invalid upstream CA bundle")
-				return statusErr
-			}
-			return errTerminalCABundleHandled
+		if handled, handledErr := r.handleAuthServerRefCABundleError(ctx, proxy, err); handled {
+			return handledErr
 		}
 
 		ctxLogger.Error(err, "Failed to handle authServerRef")

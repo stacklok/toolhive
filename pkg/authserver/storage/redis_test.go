@@ -864,8 +864,6 @@ func TestRedisStorage_ClientAssertionJWT(t *testing.T) {
 // Exists-then-Set pair let concurrent requests carrying the same assertion
 // both pass the check before either recorded it.
 func TestRedisStorage_ClientAssertionJWT_ConcurrentReplay(t *testing.T) {
-	t.Parallel()
-
 	withRedisStorage(t, func(ctx context.Context, s *RedisStorage, _ *miniredis.Miniredis) {
 		const attempts = 20
 		var succeeded atomic.Int32

@@ -538,8 +538,6 @@ func TestMemoryStorage_ClientAssertionJWT(t *testing.T) {
 // Valid-then-Set calls let concurrent requests carrying the same assertion
 // both pass the check before either recorded it.
 func TestMemoryStorage_ClientAssertionJWT_ConcurrentReplay(t *testing.T) {
-	t.Parallel()
-
 	withStorage(t, func(ctx context.Context, s *MemoryStorage) {
 		const attempts = 20
 		var succeeded atomic.Int32

@@ -97,7 +97,15 @@ func Run() {
 		},
 	}
 
-	mgr, err := ctrl.NewManager(ctrl.GetConfigOrDie(), options)
+	cfg := ctrl.GetConfigOrDie()
+	// The MCPRegistry CRD is deprecated; kube-apiserver emits a 299 Warning
+	// header on every LIST/WATCH. client-go re-establishes the WATCH every
+	// 5–10m (reflector timeout), which re-parses response headers and would
+	// otherwise spam the deprecation even when no MCPRegistry CRs exist
+	// (#6346). next is nil so the constructor installs CRT's slog logger.
+	installMCPRegistryWarningHandler(cfg, nil)
+
+	mgr, err := ctrl.NewManager(cfg, options)
 	if err != nil {
 		setupLog.Error(err, "unable to start manager")
 		os.Exit(1)

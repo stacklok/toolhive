@@ -275,7 +275,10 @@ func TestValidateLockfile(t *testing.T) {
 			name: "publicKey must be base64",
 			lf: Lockfile{Version: CurrentVersion, Skills: []Entry{
 				{Name: "keyed", Source: "s", Digest: validSHA256Digest, Provenance: &Provenance{
-					PublicKey: "-----BEGIN PUBLIC KEY-----",
+					// Graphic and whitespace-free, so the syntactic checks pass
+					// and the base64 decode is genuinely what rejects it. PEM
+					// armor would be caught earlier, by its embedded spaces.
+					PublicKey: "-----BEGINPUBLICKEY-----",
 				}},
 			}},
 			wantErr: "not valid base64",
@@ -418,6 +421,32 @@ func TestValidateLockfile(t *testing.T) {
 					Provenance:        &Provenance{PublicKey: testPublicKeyB64},
 				},
 			}},
+		},
+		{
+			// Key material needs more room than an identifier: an RSA-4096
+			// SPKI encodes to 736 characters, so the reference bound would
+			// reject a legitimate anchor rather than the garbage it guards
+			// against. Reaching the SPKI parse at this length proves the
+			// narrower bound is not the one being applied.
+			name: "publicKey is bounded above the reference limit",
+			lf: Lockfile{Version: CurrentVersion, Skills: []Entry{
+				{Name: "keyed", Source: "s", Digest: validSHA256Digest, Provenance: &Provenance{
+					PublicKey: strings.Repeat("A", maxReferenceLength+4),
+				}},
+			}},
+			wantErr: "not a DER SPKI public key",
+		},
+		{
+			// The length must be rejected before the value is base64-decoded,
+			// so the allocation is bounded by a checked number rather than by
+			// whatever the lock file happens to contain.
+			name: "publicKey beyond its own bound rejected before decoding",
+			lf: Lockfile{Version: CurrentVersion, Skills: []Entry{
+				{Name: "keyed", Source: "s", Digest: validSHA256Digest, Provenance: &Provenance{
+					PublicKey: strings.Repeat("A", MaxEncodedPublicKeyLength+4),
+				}},
+			}},
+			wantErr: "exceeds",
 		},
 		{
 			name: "requiredBy diamond is not a cycle",

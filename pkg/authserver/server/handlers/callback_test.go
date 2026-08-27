@@ -427,6 +427,84 @@ func TestCallbackHandler_IdentityResolutionFailure(t *testing.T) {
 
 // --- Multi-upstream chain tests ---
 
+func TestCallbackHandler_UserResolutionFailure_UserNotProvisioned_DeniesAccess(t *testing.T) {
+	t.Parallel()
+	handler, storState, mockUpstream := handlerTestSetup(t, withCreateUserError(storage.ErrUserNotProvisioned))
+
+	// A subject with no existing provider identity takes UserResolver's create
+	// path, where the configured storage refuses to auto-provision it.
+	mockUpstream.exchangeResult = &upstream.Identity{
+		Tokens: &upstream.Tokens{
+			AccessToken: "upstream-access-token",
+			ExpiresAt:   time.Now().Add(time.Hour),
+		},
+		Subject: "unprovisioned-user",
+	}
+
+	internalState := testInternalState
+	pending := &storage.PendingAuthorization{
+		ClientID:             testAuthClientID,
+		RedirectURI:          testAuthRedirectURI,
+		State:                "client-state",
+		PKCEChallenge:        "challenge123",
+		PKCEMethod:           "S256",
+		Scopes:               []string{"openid"},
+		InternalState:        internalState,
+		SessionID:            "session-not-provisioned",
+		UpstreamProviderName: "test-upstream",
+		CreatedAt:            time.Now(),
+	}
+	storState.pendingAuths[internalState] = pending
+
+	req := httptest.NewRequest(http.MethodGet, "/oauth/callback?code=upstream-code&state="+internalState, nil)
+	rec := httptest.NewRecorder()
+
+	handler.CallbackHandler(rec, req)
+
+	assert.Equal(t, http.StatusSeeOther, rec.Code)
+	location := rec.Header().Get("Location")
+	assert.Contains(t, location, "error=access_denied",
+		"a deliberate provisioning refusal must deny the login, not surface as a server error")
+}
+
+func TestCallbackHandler_UserResolutionFailure_OtherError_ServerError(t *testing.T) {
+	t.Parallel()
+	handler, storState, mockUpstream := handlerTestSetup(t, withCreateUserError(assert.AnError))
+
+	mockUpstream.exchangeResult = &upstream.Identity{
+		Tokens: &upstream.Tokens{
+			AccessToken: "upstream-access-token",
+			ExpiresAt:   time.Now().Add(time.Hour),
+		},
+		Subject: "some-user",
+	}
+
+	internalState := testInternalState
+	pending := &storage.PendingAuthorization{
+		ClientID:             testAuthClientID,
+		RedirectURI:          testAuthRedirectURI,
+		State:                "client-state",
+		PKCEChallenge:        "challenge123",
+		PKCEMethod:           "S256",
+		Scopes:               []string{"openid"},
+		InternalState:        internalState,
+		SessionID:            "session-other-error",
+		UpstreamProviderName: "test-upstream",
+		CreatedAt:            time.Now(),
+	}
+	storState.pendingAuths[internalState] = pending
+
+	req := httptest.NewRequest(http.MethodGet, "/oauth/callback?code=upstream-code&state="+internalState, nil)
+	rec := httptest.NewRecorder()
+
+	handler.CallbackHandler(rec, req)
+
+	assert.Equal(t, http.StatusSeeOther, rec.Code)
+	location := rec.Header().Get("Location")
+	assert.Contains(t, location, "error=server_error",
+		"an internal storage failure unrelated to provisioning refusal keeps mapping to server_error")
+}
+
 func TestCallbackHandler_TwoUpstreams_FirstLeg_RedirectsToSecond(t *testing.T) {
 	t.Parallel()
 	handler, storState, provider1, _ := multiUpstreamTestSetup(t)

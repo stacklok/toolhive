@@ -122,7 +122,15 @@ func (h *Handler) CallbackHandler(w http.ResponseWriter, req *http.Request) {
 			user, err := h.userResolver.ResolveUser(ctx, providerID, providerSubject)
 			if err != nil {
 				slog.Error("failed to resolve user", "error", err)
-				h.provider.WriteAuthorizeError(ctx, w, ar, fosite.ErrServerError.WithHint("failed to resolve user"))
+				// A UserStorage that deliberately refuses to auto-provision this
+				// identity (e.g. SCIM-only provisioning) is a client-facing denial,
+				// not a server fault — every other resolution failure keeps the
+				// generic server_error mapping.
+				resolveErr := fosite.ErrServerError.WithHint("failed to resolve user")
+				if errors.Is(err, storage.ErrUserNotProvisioned) {
+					resolveErr = fosite.ErrAccessDenied.WithHint("user not provisioned")
+				}
+				h.provider.WriteAuthorizeError(ctx, w, ar, resolveErr)
 				return
 			}
 			subject = user.ID

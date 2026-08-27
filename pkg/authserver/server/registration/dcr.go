@@ -544,6 +544,18 @@ func ValidateScopes(requestedScopes, allowedScopes []string) (scopes, droppedDef
 	// reject any client that omits scope against a server whose
 	// scopes_supported does not carry the full default set, even though a
 	// perfectly usable subset exists (see issue #6186).
+	//
+	// Known residual gap (#6186): this fallback draws from DefaultScopes
+	// only, never from the rest of allowedScopes. A scope-omitting client
+	// against a server whose scopes_supported carries entries outside the
+	// default set (e.g. mcp:tools) registers without them — and because
+	// protected-resource metadata advertises scopes_supported and MCP
+	// guidance tells clients to request all of it absent a narrower hint,
+	// such a client can then fail at /oauth/authorize with invalid_scope.
+	// Defaulting to allowedScopes itself would close that, but granting
+	// every anonymous registration the full advertised set is a policy
+	// decision; the explicit opt-in for it is
+	// baseline_client_scopes = scopes_supported.
 	for _, s := range DefaultScopes {
 		if allowed[s] {
 			scopes = append(scopes, s)

@@ -1703,6 +1703,7 @@ const docTemplate = `{
                     "signature-invalid",
                     "signer-mismatch",
                     "provenance-field-mismatch",
+                    "key-signed-unverifiable",
                     "unsigned-rejected",
                     "unknown"
                 ],
@@ -1715,6 +1716,7 @@ const docTemplate = `{
                     "FailureReasonSignatureInvalid",
                     "FailureReasonSignerMismatch",
                     "FailureReasonProvenanceFieldMismatch",
+                    "FailureReasonKeySigned",
                     "FailureReasonUnsignedRejected",
                     "FailureReasonUnknown"
                 ]

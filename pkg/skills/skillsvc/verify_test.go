@@ -991,3 +991,45 @@ func TestClassifyInstallVerifyErrorDistinguishesProvenanceField(t *testing.T) {
 	assert.Contains(t, identityMismatch.Error(), "signer identity mismatch for",
 		"a genuine signer-identity mismatch keeps its existing wording")
 }
+
+// TestClassifyInstallVerifyErrorNamesKeySigned pins the user-facing half of
+// #6442: a key-signed artifact must be diagnosed as key-signed, must not be
+// reported as a verification failure, and must say plainly that allow_unsigned
+// is no remedy — the artifact is signed, so recording an unsigned exception
+// would file a false trust decision in the lock.
+func TestClassifyInstallVerifyErrorNamesKeySigned(t *testing.T) {
+	t.Parallel()
+
+	err := classifyInstallVerifyError(verifier.ErrKeySigned, "some-skill", nil)
+	assert.Contains(t, err.Error(), "cosign key pair")
+	assert.Contains(t, err.Error(), "re-publish it with keyless signing",
+		"the message must state the remedy, not merely the refusal")
+	assert.Contains(t, err.Error(), "allow_unsigned does not apply")
+	assert.NotContains(t, err.Error(), "signature verification failed for",
+		"the generic invalid-signature wording is the misdiagnosis this replaces")
+}
+
+// TestClassifySignatureErrorNamesKeySigned keeps the sync/upgrade failure
+// reason distinct from signature-invalid for the same reason.
+func TestClassifySignatureErrorNamesKeySigned(t *testing.T) {
+	t.Parallel()
+
+	assert.Equal(t, skills.FailureReasonKeySigned, classifySignatureError(verifier.ErrKeySigned))
+	assert.Equal(t, skills.FailureReasonSignatureInvalid,
+		classifySignatureError(verifier.ErrSignatureInvalid),
+		"the pre-existing mapping must be unaffected")
+}
+
+// TestIsAllowedUnsignedRejectsKeySigned is the guard that closes #6442's
+// actual escape-hatch gap: --allow-unsigned must not rescue a key-signed
+// artifact even on true first use with the flag explicitly set.
+func TestIsAllowedUnsignedRejectsKeySigned(t *testing.T) {
+	t.Parallel()
+
+	assert.False(t, isAllowedUnsigned(verifier.ErrKeySigned,
+		skills.InstallOptions{AllowUnsigned: true}, nil),
+		"a signed artifact must never be recordable as an unsigned exception")
+	assert.True(t, isAllowedUnsigned(verifier.ErrUnsigned,
+		skills.InstallOptions{AllowUnsigned: true}, nil),
+		"the genuine unsigned case must still be allowed through")
+}

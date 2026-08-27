@@ -321,6 +321,17 @@ func classifyInstallVerifyError(
 				pluginName, verifyErr),
 			http.StatusForbidden,
 		)
+	// Reported before the default arm so a key-signed artifact is named as
+	// such rather than as a failed verification. allow_unsigned is
+	// deliberately no remedy here: the artifact IS signed, and recording it
+	// as an unsigned exception would file a false trust decision in the lock.
+	case errors.Is(verifyErr, verifier.ErrKeySigned):
+		return httperr.WithCode(
+			fmt.Errorf("plugin %q: %w; re-publish it with keyless signing"+
+				" (allow_unsigned does not apply — the artifact is signed)",
+				pluginName, verifyErr),
+			http.StatusForbidden,
+		)
 	default:
 		return httperr.WithCode(
 			fmt.Errorf("signature verification failed for %q: %w", pluginName, verifyErr),
@@ -341,6 +352,8 @@ func classifySignatureError(err error) plugins.FailureReason {
 		return plugins.FailureReasonSignerMismatch
 	case errors.Is(err, verifier.ErrUnsigned):
 		return plugins.FailureReasonUnsignedRejected
+	case errors.Is(err, verifier.ErrKeySigned):
+		return plugins.FailureReasonKeySigned
 	case errors.Is(err, verifier.ErrSignatureInvalid):
 		return plugins.FailureReasonSignatureInvalid
 	default:

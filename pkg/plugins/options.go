@@ -194,6 +194,7 @@ const (
 	FailureReasonLockWriteFailed     = skills.FailureReasonLockWriteFailed
 	FailureReasonSignatureInvalid    = skills.FailureReasonSignatureInvalid
 	FailureReasonSignerMismatch      = skills.FailureReasonSignerMismatch
+	FailureReasonKeySigned           = skills.FailureReasonKeySigned
 	FailureReasonUnsignedRejected    = skills.FailureReasonUnsignedRejected
 	FailureReasonUnknown             = skills.FailureReasonUnknown
 

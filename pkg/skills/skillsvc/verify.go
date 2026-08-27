@@ -292,6 +292,17 @@ func classifyInstallVerifyError(
 				" and reinstall, or upgrade with allow_signer_change)", skillName, verifyErr),
 			http.StatusForbidden,
 		)
+	// Reported before the default arm so a key-signed artifact is named as
+	// such rather than as a failed verification. allow_unsigned is
+	// deliberately no remedy here: the artifact IS signed, and recording it
+	// as an unsigned exception would file a false trust decision in the lock.
+	case errors.Is(verifyErr, verifier.ErrKeySigned):
+		return httperr.WithCode(
+			fmt.Errorf("skill %q: %w; re-publish it with keyless signing"+
+				" (allow_unsigned does not apply — the artifact is signed)",
+				skillName, verifyErr),
+			http.StatusForbidden,
+		)
 	default:
 		return httperr.WithCode(
 			fmt.Errorf("signature verification failed for %q: %w", skillName, verifyErr),
@@ -327,6 +338,8 @@ func classifySignatureError(err error) skills.FailureReason {
 		return skills.FailureReasonSignerMismatch
 	case errors.Is(err, verifier.ErrUnsigned):
 		return skills.FailureReasonUnsignedRejected
+	case errors.Is(err, verifier.ErrKeySigned):
+		return skills.FailureReasonKeySigned
 	case errors.Is(err, verifier.ErrSignatureInvalid):
 		return skills.FailureReasonSignatureInvalid
 	default:

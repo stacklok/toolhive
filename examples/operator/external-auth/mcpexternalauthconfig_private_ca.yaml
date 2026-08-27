@@ -1,4 +1,5 @@
-# Embedded auth server using a private CA for its OIDC upstream.
+# Embedded auth server using a private CA for its OIDC upstream and for a
+# trusted issuer's discovery/JWKS endpoint.
 # Replace the placeholder certificate with the PEM-encoded CA certificate.
 ---
 apiVersion: v1
@@ -11,6 +12,16 @@ data:
     -----BEGIN CERTIFICATE-----
     replace-with-your-private-ca-certificate
     -----END CERTIFICATE-----
+
+---
+apiVersion: v1
+kind: Secret
+metadata:
+  name: reporting-delegate-secret
+  namespace: default
+type: Opaque
+stringData:
+  client-secret: replace-with-your-delegate-client-secret
 
 ---
 apiVersion: toolhive.stacklok.dev/v1beta1
@@ -32,11 +43,23 @@ spec:
             configMapRef:
               name: upstream-private-ca
               key: ca.crt
+    # reporting-delegate is declared here and referenced by name below in
+    # trustedIssuers.allowedDelegateClients - the two lists are independent
+    # (a declaration vs. an allowlist) but share clientId to wire together.
+    delegateClients:
+      - clientId: reporting-delegate
+        clientSecretRef:
+          name: reporting-delegate-secret
+          key: client-secret
+        scopes: [openid]
+        audiences: [https://mcp.example.com]
     trustedIssuers:
       - issuerUrl: https://issuer.internal.example.com
         expectedAudience: toolhive-authserver
         allowedDelegateClients:
-          - toolhive-client
+          - reporting-delegate
+        allowedActors:
+          - external-reporting-client
         caBundleRef:
           configMapRef:
             name: upstream-private-ca

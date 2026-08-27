@@ -785,7 +785,7 @@ when delivery lands it does not also require rewriting the fan-out primitives.
 - **Remote MCP servers**: Full HTTPS support with certificate validation
 - **Custom CA bundles**: Configurable for clients that connect to private-CA or self-signed endpoints
 - **Local proxy**: HTTP only (localhost binding for security)
-- **Trust store**: Clients either use the system CA bundle, a pinned custom bundle, or (for embedded auth-server upstreams) system roots plus a custom bundle
+- **Trust store**: Clients either use the system CA bundle, a pinned custom bundle, or (for embedded auth-server upstreams and trusted issuers) system roots plus a custom bundle
 
 A custom CA bundle does not disable the HTTPS and network protections applied to the client. In particular, the server-supplied endpoint paths retain redirect and private-IP safeguards unless the corresponding explicit development or in-cluster options are configured.
 

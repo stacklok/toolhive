@@ -1944,6 +1944,11 @@ func (*VirtualMCPServerReconciler) podTemplateSpecNeedsUpdate(
 // ctrlutil.MergeAnnotations, then prunes operator-owned hash annotations that
 // desired no longer wants — MergeAnnotations otherwise preserves them forever
 // once their source field goes empty (#5817, #5818).
+//
+// ctrlutil.AuthServerCABundleChecksumAnnotation is included defensively: today
+// buildDeploymentMetadataForVmcp only ever writes it onto the pod template
+// (see buildPodTemplateMetadata), never onto the Deployment's own annotations,
+// so this branch is a no-op in practice. Kept in case that changes.
 func mergeDeploymentAnnotations(desired, live map[string]string) map[string]string {
 	merged := ctrlutil.MergeAnnotations(desired, live)
 	for _, key := range []string{

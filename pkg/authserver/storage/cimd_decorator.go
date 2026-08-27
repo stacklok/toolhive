@@ -204,18 +204,37 @@ func (d *CIMDStorageDecorator) fetch(ctx context.Context, id string) (fosite.Cli
 			"client_id", id, "declared", doc.ResponseTypes, "effective", responseTypes)
 	}
 
-	// Compute and validate the client scope list consistent with DCR.
-	// When ScopesSupported is configured:
-	//   - Declared scopes are validated via registration.ValidateScopes (same
-	//     function as the DCR handler); an unsupported declared scope rejects.
-	//   - Omitted scope uses ValidateScopes(nil, scopesSupported), which grants
-	//     the intersection of DefaultScopes with ScopesSupported (matching DCR)
-	//     and reports the defaults it dropped; only an empty intersection is
-	//     rejected, in which case the document must declare scope explicitly.
-	// When ScopesSupported is not configured: no AS-level validation; declared
-	// scopes are used directly, or nil to let buildFositeClient apply DefaultScopes.
-	// In both cases BaselineClientScopes is unioned in after validation,
-	// matching the DCR handler's behaviour.
+	resolvedScopes, err := d.resolveCIMDScopes(ctx, id, doc)
+	if err != nil {
+		return nil, err
+	}
+
+	client := buildFositeClient(doc, resolvedScopes, grantTypes, responseTypes, authMethod)
+
+	d.cache.Add(id, &cimdCacheEntry{
+		client:  client,
+		expires: time.Now().Add(d.ttl),
+	})
+
+	return client, nil
+}
+
+// resolveCIMDScopes computes and validates the client scope list consistent
+// with DCR. When d.scopesSupported is configured:
+//   - Declared scopes are validated via registration.ValidateScopes (same
+//     function as the DCR handler); an unsupported declared scope rejects.
+//   - Omitted scope uses ValidateScopes(nil, scopesSupported), which grants
+//     the intersection of DefaultScopes with ScopesSupported (matching DCR)
+//     and reports the defaults it dropped; only an empty intersection is
+//     rejected, in which case the document must declare scope explicitly.
+//
+// When d.scopesSupported is not configured: no AS-level validation; declared
+// scopes are used directly, or nil to let buildFositeClient apply
+// DefaultScopes. In both cases d.baselineClientScopes is unioned in after
+// validation, matching the DCR handler's behaviour.
+func (d *CIMDStorageDecorator) resolveCIMDScopes(
+	ctx context.Context, id string, doc *cimd.ClientMetadataDocument,
+) ([]string, error) {
 	var resolvedScopes []string
 	var droppedDefaults []string
 	if len(d.scopesSupported) > 0 {
@@ -260,15 +279,7 @@ func (d *CIMDStorageDecorator) fetch(ctx context.Context, id string) (fosite.Cli
 		slog.DebugContext(ctx, "CIMD document omits scope; granted the intersection of default scopes with scopes_supported",
 			"client_id", id, "scopes", resolvedScopes, "dropped_defaults", droppedDefaults)
 	}
-
-	client := buildFositeClient(doc, resolvedScopes, grantTypes, responseTypes, authMethod)
-
-	d.cache.Add(id, &cimdCacheEntry{
-		client:  client,
-		expires: time.Now().Add(d.ttl),
-	})
-
-	return client, nil
+	return resolvedScopes, nil
 }
 
 // defaultCIMDTokenEndpointAuthMethod is the token endpoint authentication

@@ -181,27 +181,9 @@ func (h *Handler) RegisterClientHandler(w http.ResponseWriter, req *http.Request
 	// upstream AS. The two uses live at opposite ends of the DCR flow.
 	// No "upstream" attribute is emitted because the /oauth/register
 	// endpoint has no upstream concept.
-	logAttrs := []any{
-		"client_id", clientID,
-		"software_id", validated.SoftwareID,
-		"token_endpoint_auth_method", effectiveAuthMethod,
-		"scopes", scopes,
-	}
-	// The request omitted scope and scopes_supported does not carry the full
-	// default set: registration proceeded with the intersection (see issue
-	// #6186). Recorded on this line — after the baseline union and the
-	// client_id mint — so "scopes" is the set the client actually holds and
-	// the drop correlates with the client's later log lines. The drop itself
-	// is fully determined by startup config; the one-time operator-facing
-	// signal lives in Config.applyDefaults.
-	if len(droppedDefaults) > 0 {
-		logAttrs = append(logAttrs, "dropped_defaults", droppedDefaults)
-	}
-	if issuer := h.issuer(); issuer != "" {
-		logAttrs = append(logAttrs, "issuer", issuer)
-	}
 	//nolint:gosec // G706: client_id is public metadata per RFC 7591.
-	slog.Debug("registered new DCR client", logAttrs...)
+	slog.Debug("registered new DCR client",
+		h.dcrClientLogAttrs(clientID, validated.SoftwareID, effectiveAuthMethod, scopes, droppedDefaults)...)
 
 	// Build response per RFC 7591 Section 3.2.1.
 	// Scopes reflects the scopes actually granted to this client: the
@@ -266,6 +248,32 @@ func (h *Handler) validateDCRRequest(
 		Error:            registration.DCRErrorInvalidClientMetadata,
 		ErrorDescription: "token-only authorization servers only permit private_key_jwt token-exchange registrations",
 	}
+}
+
+// dcrClientLogAttrs builds the attribute list for the "registered new DCR
+// client" record. dropped_defaults is attached only when the request omitted
+// scope and scopes_supported did not carry the full default set (see issue
+// #6186): recording it here — after the baseline union and the client_id
+// mint upstream — means "scopes" is the set the client actually holds and
+// the drop correlates with the client's later log lines. The drop itself is
+// fully determined by startup config; the one-time operator-facing signal
+// lives in Config.applyDefaults.
+func (h *Handler) dcrClientLogAttrs(
+	clientID, softwareID, effectiveAuthMethod string, scopes, droppedDefaults []string,
+) []any {
+	attrs := []any{
+		"client_id", clientID,
+		"software_id", softwareID,
+		"token_endpoint_auth_method", effectiveAuthMethod,
+		"scopes", scopes,
+	}
+	if len(droppedDefaults) > 0 {
+		attrs = append(attrs, "dropped_defaults", droppedDefaults)
+	}
+	if issuer := h.issuer(); issuer != "" {
+		attrs = append(attrs, "issuer", issuer)
+	}
+	return attrs
 }
 
 // resolveForceConfidentialOverride checks whether validated's redirect_uris

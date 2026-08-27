@@ -1033,3 +1033,37 @@ func TestIsAllowedUnsignedRejectsKeySigned(t *testing.T) {
 		skills.InstallOptions{AllowUnsigned: true}, nil),
 		"the genuine unsigned case must still be allowed through")
 }
+
+// TestCatalogInstallNamesKeySignedArtifact covers the second route to
+// classification. A first install resolved from a catalog entry that declares
+// provenance is classified by classifyCatalogVerifyError, not
+// classifyInstallVerifyError, so a key-signed artifact arriving that way would
+// otherwise be reported as failing to match its catalog-declared provenance —
+// which is doubly wrong: nothing was compared, because the keyless policy
+// cannot check a key-pair signature at all, and the report would carry neither
+// the re-publish remedy nor the note that allow_unsigned cannot help.
+func TestCatalogInstallNamesKeySignedArtifact(t *testing.T) {
+	t.Parallel()
+
+	projectRoot := makeProjectRoot(t)
+	mv := verifiermocks.NewMockVerifier(gomock.NewController(t))
+	svc := &service{sigVerifier: mv}
+	opts := skills.InstallOptions{
+		ProjectRoot:       projectRoot,
+		CatalogProvenance: &regtypes.Provenance{SignerIdentity: testSignerIdentity},
+	}
+	mv.EXPECT().VerifyOCI(
+		gomock.Any(), gomock.Any(), gomock.Any(),
+		gomock.Eq(verifier.NewCatalogExpectation(opts.CatalogProvenance))).
+		Return(nil, verifier.ErrKeySigned)
+
+	_, err := svc.verifyOCIInstall(
+		t.Context(), opts, "catalog-skill", "ghcr.io/test/catalog-skill:v1", "sha256:digest")
+
+	require.Error(t, err)
+	assert.Equal(t, http.StatusForbidden, httperr.Code(err))
+	assert.Contains(t, err.Error(), "re-publish it with keyless signing")
+	assert.Contains(t, err.Error(), "allow_unsigned does not apply")
+	assert.NotContains(t, err.Error(), "does not match its catalog-declared provenance",
+		"a key-signed artifact was never compared against the catalog constraint")
+}

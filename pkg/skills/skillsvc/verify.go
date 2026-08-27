@@ -297,12 +297,7 @@ func classifyInstallVerifyError(
 	// deliberately no remedy here: the artifact IS signed, and recording it
 	// as an unsigned exception would file a false trust decision in the lock.
 	case errors.Is(verifyErr, verifier.ErrKeySigned):
-		return httperr.WithCode(
-			fmt.Errorf("skill %q: %w; re-publish it with keyless signing"+
-				" (allow_unsigned does not apply — the artifact is signed)",
-				skillName, verifyErr),
-			http.StatusForbidden,
-		)
+		return keySignedInstallError(skillName, verifyErr)
 	default:
 		return httperr.WithCode(
 			fmt.Errorf("signature verification failed for %q: %w", skillName, verifyErr),
@@ -320,8 +315,31 @@ func classifyCatalogVerifyError(verifyErr error, skillName string) error {
 			http.StatusForbidden,
 		)
 	}
+	// A key-signed artifact is not a provenance mismatch — nothing was
+	// compared, because the keyless policy cannot check a key-pair signature
+	// at all. The catalog constraint is beside the point, so this reports the
+	// same diagnosis and remedy the non-catalog route does.
+	if errors.Is(verifyErr, verifier.ErrKeySigned) {
+		return keySignedInstallError(skillName, verifyErr)
+	}
 	return httperr.WithCode(
 		fmt.Errorf("skill %q does not match its catalog-declared provenance: %w", skillName, verifyErr),
+		http.StatusForbidden,
+	)
+}
+
+// keySignedInstallError reports a key-signed artifact identically wherever it
+// is detected. A lock-constrained install and a catalog-constrained first
+// install reach classification by different routes, but neither could verify
+// the artifact and both have the same remedy, so the wording is shared rather
+// than duplicated — including the note that allow_unsigned is not a way out,
+// since the artifact IS signed and recording it as an unsigned exception
+// would file a false trust decision in the lock.
+func keySignedInstallError(skillName string, verifyErr error) error {
+	return httperr.WithCode(
+		fmt.Errorf("skill %q: %w; re-publish it with keyless signing"+
+			" (allow_unsigned does not apply — the artifact is signed)",
+			skillName, verifyErr),
 		http.StatusForbidden,
 	)
 }

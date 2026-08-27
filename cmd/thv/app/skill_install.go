@@ -82,6 +82,10 @@ func printInstallTrust(result *skills.InstallResult) {
 	}
 	name := result.Skill.Metadata.Name
 	switch {
+	// Before the identity cases: a key-pinned install has no signer identity
+	// to name, and "signed by " with nothing after it is worse than silence.
+	case result.Provenance != nil && result.Provenance.PublicKey != "":
+		fmt.Printf("Installed %s (signed by a cosign key pair; the pinned public key is in the lock file)\n", name)
 	case result.Provenance != nil && result.Provenance.Provisional:
 		fmt.Printf("Installed %s (signed by %s; verification provisional — see lock file)\n",
 			name, result.Provenance.SignerIdentity)

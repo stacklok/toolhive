@@ -203,6 +203,44 @@ func TestValidateLockfile(t *testing.T) {
 			wantErr: "mutually exclusive",
 		},
 		{
+			name: "publicKey-pinned provenance accepted without an identity",
+			lf: Lockfile{Version: CurrentVersion, Skills: []Entry{
+				{Name: "keyed", Source: "s", Digest: validSHA256Digest, Provenance: &Provenance{
+					PublicKey: "TUlJQkl6QU5CZ2txaGtpRzl3MEJBUUVGQUFPQ0FRODA=",
+				}},
+			}},
+		},
+		{
+			name: "publicKey and a certificate identity are mutually exclusive",
+			lf: Lockfile{Version: CurrentVersion, Skills: []Entry{
+				{Name: "both", Source: "s", Digest: validSHA256Digest, Provenance: &Provenance{
+					SignerIdentity: "dev@example.com",
+					CertIssuer:     "https://accounts.example.com",
+					PublicKey:      "TUlJQkl6QU5CZ2txaGtpRzl3MEJBUUVGQUFPQ0FRODA=",
+				}},
+			}},
+			wantErr: "mutually exclusive",
+		},
+		{
+			name: "certificate-derived fields rejected on a publicKey-pinned entry",
+			lf: Lockfile{Version: CurrentVersion, Skills: []Entry{
+				{Name: "keyed", Source: "s", Digest: validSHA256Digest, Provenance: &Provenance{
+					PublicKey:     "TUlJQkl6QU5CZ2txaGtpRzl3MEJBUUVGQUFPQ0FRODA=",
+					RepositoryRef: "refs/tags/v1",
+				}},
+			}},
+			wantErr: "read from a certificate",
+		},
+		{
+			name: "publicKey must be base64",
+			lf: Lockfile{Version: CurrentVersion, Skills: []Entry{
+				{Name: "keyed", Source: "s", Digest: validSHA256Digest, Provenance: &Provenance{
+					PublicKey: "-----BEGIN PUBLIC KEY-----",
+				}},
+			}},
+			wantErr: "not valid base64",
+		},
+		{
 			name: "provenance missing signer identity",
 			lf: Lockfile{Version: CurrentVersion, Skills: []Entry{
 				{Name: "signed", Source: "s", Digest: validSHA256Digest, Provenance: &Provenance{

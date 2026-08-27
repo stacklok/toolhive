@@ -377,6 +377,7 @@ func provenanceInfoFromLock(p *lockfile.Provenance) *skills.ProvenanceInfo {
 		RepositoryRef:     p.RepositoryRef,
 		RunnerEnvironment: p.RunnerEnvironment,
 		SigstoreURL:       p.SigstoreURL,
+		PublicKey:         p.PublicKey,
 		Provisional:       p.Provisional,
 	}
 }
@@ -394,6 +395,7 @@ func provenanceInfoToLock(p *skills.ProvenanceInfo) *lockfile.Provenance {
 		RepositoryRef:     p.RepositoryRef,
 		RunnerEnvironment: p.RunnerEnvironment,
 		SigstoreURL:       p.SigstoreURL,
+		PublicKey:         p.PublicKey,
 		Provisional:       p.Provisional,
 	}
 }

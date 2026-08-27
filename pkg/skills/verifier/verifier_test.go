@@ -561,3 +561,32 @@ func TestVerifyOCIReportsKeySignedAgainstLockedIdentity(t *testing.T) {
 	require.NotErrorIs(t, err, ErrSignerMismatch,
 		"no certificate exists to compare, so reporting a signer mismatch would invent an observation")
 }
+
+// TestKeylessPathsRefuseKeyPinnedEntry covers the window this PR opens: the
+// lock can now express a key-pinned entry, but nothing verifies one until the
+// install path lands. Such an entry has empty certificate fields by
+// construction, and sigstore rejects an all-empty identity ("there must be
+// subject alternative name criteria") rather than treating it as
+// match-anything — so the failure was already closed. What was missing was a
+// message naming the actual problem instead of that one.
+func TestKeylessPathsRefuseKeyPinnedEntry(t *testing.T) {
+	t.Parallel()
+	host := startTestRegistry(t)
+	ref, digest := pushTestArtifact(t, host)
+	keyed := &lockfile.Provenance{PublicKey: "TUlJQkl6QU5CZ2txaGtpRzl3MEJBUUVGQUFPQ0FRODA="}
+	d := NewDefault(nil)
+
+	_, err := d.VerifyOCI(t.Context(), ref, digest, NewLockExpectation(keyed))
+	require.ErrorIs(t, err, ErrSignatureInvalid,
+		"an entry that cannot be verified this way is a verification failure")
+	require.ErrorContains(t, err, "pinned to a cosign public key")
+
+	// Refused before any registry access, so an unsigned artifact does not
+	// mask the misrouting as ErrUnsigned.
+	require.NotErrorIs(t, err, ErrUnsigned)
+
+	offlineErr := d.VerifyBundleOffline([]byte("ignored"), digest, keyed)
+	require.ErrorIs(t, offlineErr, ErrSignatureInvalid)
+	require.ErrorContains(t, offlineErr, "pinned to a cosign public key",
+		"offline re-verification has the identical hazard")
+}

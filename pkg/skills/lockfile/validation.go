@@ -4,6 +4,7 @@
 package lockfile
 
 import (
+	"encoding/base64"
 	"errors"
 	"fmt"
 	"strings"
@@ -173,11 +174,8 @@ func validateEntry(entry Entry) error {
 // well-formed graphic strings of bounded length. Validation is purely
 // syntactic — whether the identity is trustworthy is the verifier's job.
 func validateProvenance(p *Provenance) error {
-	if p.SignerIdentity == "" {
-		return errors.New("signerIdentity is required")
-	}
-	if p.CertIssuer == "" {
-		return errors.New("certIssuer is required")
+	if err := validateProvenanceAnchor(p); err != nil {
+		return err
 	}
 	fields := map[string]string{
 		"signerIdentity":    p.SignerIdentity,
@@ -186,6 +184,7 @@ func validateProvenance(p *Provenance) error {
 		"repositoryRef":     p.RepositoryRef,
 		"runnerEnvironment": p.RunnerEnvironment,
 		"sigstoreUrl":       p.SigstoreURL,
+		"publicKey":         p.PublicKey,
 	}
 	for name, value := range fields {
 		if value == "" {
@@ -202,6 +201,50 @@ func validateProvenance(p *Provenance) error {
 				return fmt.Errorf("%s contains non-graphic or whitespace character %q", name, r)
 			}
 		}
+	}
+	return nil
+}
+
+// validateProvenanceAnchor enforces that an entry records exactly one trust
+// anchor: a keyless certificate identity, or a cosign public key. The two are
+// verified by different policies against different trust roots, so an entry
+// carrying both would not say which applies, and an entry carrying neither
+// pins nothing at all.
+//
+// Rejecting a key-pinned entry outright is also what makes this field safe to
+// add without a schema version bump: a build that predates PublicKey sees an
+// entry with no signerIdentity, reports it as required, and fails the whole
+// lock file closed rather than silently treating the entry as unpinned.
+func validateProvenanceAnchor(p *Provenance) error {
+	keyed := p.PublicKey != ""
+	identified := p.SignerIdentity != "" || p.CertIssuer != ""
+	switch {
+	case keyed && identified:
+		return errors.New("publicKey and signerIdentity/certIssuer are mutually exclusive" +
+			" — an entry is pinned to either a cosign key or a keyless certificate identity")
+	case keyed:
+		// The remaining fields are all read off a Fulcio certificate, which a
+		// key-pair signature does not have. Populated here they would pin
+		// constraints that no verification could ever check.
+		for name, value := range map[string]string{
+			"repositoryUri":     p.RepositoryURI,
+			"repositoryRef":     p.RepositoryRef,
+			"runnerEnvironment": p.RunnerEnvironment,
+			"sigstoreUrl":       p.SigstoreURL,
+		} {
+			if value != "" {
+				return fmt.Errorf("%s cannot be set on a publicKey-pinned entry"+
+					" — it is read from a certificate, and a key-pair signature has none", name)
+			}
+		}
+		if _, err := base64.StdEncoding.DecodeString(p.PublicKey); err != nil {
+			return fmt.Errorf("publicKey is not valid base64: %w", err)
+		}
+		return nil
+	case p.SignerIdentity == "":
+		return errors.New("signerIdentity is required")
+	case p.CertIssuer == "":
+		return errors.New("certIssuer is required")
 	}
 	return nil
 }

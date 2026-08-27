@@ -1826,6 +1826,10 @@ const docTemplate = `{
                         "description": "Provisional marks provenance with a documented verification gap\n(git signatures until transparency-log validation lands).",
                         "type": "boolean"
                     },
+                    "public_key": {
+                        "description": "PublicKey is the base64-encoded DER SPKI cosign public key a\nkey-pair-signed entry is pinned to. Set only when SignerIdentity and\nCertIssuer are empty: the two anchors are mutually exclusive.",
+                        "type": "string"
+                    },
                     "repository_ref": {
                         "description": "RepositoryRef is the git ref the signing workflow ran on, from Fulcio\ncertificate extension 1.3.6.1.4.1.57264.1.14. Empty means\nunconstrained, matching lock files written before the field existed.",
                         "type": "string"

@@ -841,6 +841,8 @@ func TestVerifyLocalInstall(t *testing.T) {
 		opts     skills.InstallOptions
 		entry    *lockfile.Entry
 		wantErr  bool
+		wantCode int
+		wantMsg  string
 		unsigned bool
 	}{
 		{
@@ -867,6 +869,34 @@ func TestVerifyLocalInstall(t *testing.T) {
 				},
 			},
 			wantErr: true,
+			wantMsg: `locked to signer "` + testSignerIdentity + `"`,
+		},
+		{
+			// A key-pinned entry has no signer identity, so the refusal must
+			// name the anchor it does have. Rendering it as `signer ""` reads
+			// as a corrupt lock file rather than as the refusal it is.
+			name: "locked public key refuses local replacement without a blank signer",
+			opts: skills.InstallOptions{AllowUnsigned: true},
+			entry: &lockfile.Entry{
+				Name:              "local-skill",
+				Source:            "example.com/org/local-skill",
+				ResolvedReference: "example.com/org/local-skill:v1",
+				Digest:            "sha256:" + strings.Repeat("a", 64),
+				Provenance:        &lockfile.Provenance{PublicKey: testPublicKeyB64},
+			},
+			wantErr: true,
+			wantMsg: "locked to a cosign public key",
+		},
+		{
+			// Bad input, not a policy refusal: a local build carries no
+			// registry signature for any key to check, so accepting the key
+			// and then recording the install as unsigned would answer a
+			// question the caller did not ask.
+			name:     "public key rejected as input for a local build",
+			opts:     skills.InstallOptions{AllowUnsigned: true, PublicKey: testPublicKeyB64},
+			wantErr:  true,
+			wantCode: http.StatusBadRequest,
+			wantMsg:  "carries no registry signature",
 		},
 		{
 			name: "locked unsigned honored with flag",
@@ -899,7 +929,14 @@ func TestVerifyLocalInstall(t *testing.T) {
 			decision, err := verifyLocalInstall(opts, "local-skill")
 			if tc.wantErr {
 				require.Error(t, err)
-				assert.Equal(t, http.StatusForbidden, httperr.Code(err))
+				wantCode := tc.wantCode
+				if wantCode == 0 {
+					wantCode = http.StatusForbidden
+				}
+				assert.Equal(t, wantCode, httperr.Code(err))
+				if tc.wantMsg != "" {
+					assert.Contains(t, err.Error(), tc.wantMsg)
+				}
 				return
 			}
 			require.NoError(t, err)
@@ -1090,4 +1127,322 @@ func TestCatalogInstallNamesKeySignedArtifact(t *testing.T) {
 	assert.Contains(t, err.Error(), "allow_unsigned does not apply")
 	assert.NotContains(t, err.Error(), "does not match its catalog-declared provenance",
 		"a key-signed artifact was never compared against the catalog constraint")
+}
+
+// keyedLockEntry is a lock entry pinned to testPublicKeyB64 — the shape a
+// previous key-verified install leaves behind.
+func keyedLockEntry(name string) lockfile.Entry {
+	return lockfile.Entry{
+		Name:              name,
+		Source:            "example.com/org/" + name,
+		ResolvedReference: "example.com/org/" + name + ":v1",
+		Digest:            "sha256:" + strings.Repeat("b", 64),
+		Provenance:        &lockfile.Provenance{PublicKey: testPublicKeyB64},
+	}
+}
+
+// TestVerifyOCIInstall_KeyPathDispatch covers the two ways the key path is
+// reached and the fact that reaching it excludes the keyless one. Dispatch is
+// lock-first by design: were the artifact allowed to select the policy, a
+// republished key-signed artifact could walk an entry out of the certificate
+// identity it is pinned to.
+func TestVerifyOCIInstall_KeyPathDispatch(t *testing.T) {
+	t.Parallel()
+
+	keyPEM, err := verifier.DecodePublicKey(testPublicKeyB64)
+	require.NoError(t, err)
+
+	tests := []struct {
+		name  string
+		entry *lockfile.Entry
+		opts  skills.InstallOptions
+	}{
+		{
+			name: "first use verifies against the supplied key",
+			opts: skills.InstallOptions{PublicKey: testPublicKeyB64},
+		},
+		{
+			name:  "pinned entry verifies against the locked key with no flag",
+			entry: ptrTo(keyedLockEntry("keyed-skill")),
+		},
+		{
+			name:  "supplied key that agrees with the pin is accepted",
+			entry: ptrTo(keyedLockEntry("keyed-skill")),
+			opts:  skills.InstallOptions{PublicKey: testPublicKeyB64},
+		},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			projectRoot := makeProjectRoot(t)
+			if tc.entry != nil {
+				writeLockEntry(t, projectRoot, *tc.entry)
+			}
+			mv := verifiermocks.NewMockVerifier(gomock.NewController(t))
+			mv.EXPECT().VerifyOCIWithKey(
+				gomock.Any(), gomock.Any(), gomock.Any(), gomock.Eq(keyPEM)).
+				Return(&verifier.Result{Signed: true, Bundle: []byte(`{"bundle":true}`)}, nil)
+
+			opts := tc.opts
+			opts.ProjectRoot = projectRoot
+			svc := &service{sigVerifier: mv}
+			decision, err := svc.verifyOCIInstall(
+				t.Context(), opts, "keyed-skill", "example.com/org/keyed-skill:v1",
+				"sha256:"+strings.Repeat("b", 64))
+
+			require.NoError(t, err)
+			require.NotNil(t, decision.provenance)
+			// The key is recorded, and nothing else is: a key-pair bundle
+			// carries no certificate, so there is no identity to observe and
+			// inventing one would file provenance the artifact never asserted.
+			assert.Equal(t, &skills.ProvenanceInfo{PublicKey: testPublicKeyB64}, decision.provenance)
+			assert.Equal(t, []byte(`{"bundle":true}`), decision.bundle)
+			assert.False(t, decision.unsigned)
+		})
+	}
+}
+
+func ptrTo[T any](v T) *T { return &v }
+
+// TestResolveKeyAnchor pins the conflict rules. Every disagreement between a
+// supplied key and the recorded trust state is an error rather than a
+// precedence rule, because silently preferring either one is how a mistyped
+// --public-key installs as though it had been honored.
+func TestResolveKeyAnchor(t *testing.T) {
+	t.Parallel()
+
+	const otherKeyB64 = "MFkwEwYHKoZIzj0CAQYIKoZIzj0DAQcDQgAEZ7Bd5Kk7GAOI1PoQFvY6Sw+9zL3fVX" +
+		"Bqz0mAo0hVW1nQz4Vv9pQmT2yqXqL7NqRk5FvPQZ8DdcW0xTn3Yg6ZBw=="
+	identityPin := &lockfile.Provenance{SignerIdentity: testSignerIdentity, CertIssuer: testCertIssuer}
+	keyPin := &lockfile.Provenance{PublicKey: testPublicKeyB64}
+
+	tests := []struct {
+		name           string
+		opts           skills.InstallOptions
+		expected       *lockfile.Provenance
+		expectUnsigned bool
+		catalog        *regtypes.Provenance
+		want           string
+		wantCode       int
+		wantMsg        string
+	}{
+		{name: "nothing supplied, nothing pinned: keyless"},
+		{name: "identity pin, no key: keyless", expected: identityPin},
+		{name: "key pin selects the locked key", expected: keyPin, want: testPublicKeyB64},
+		{
+			name:     "supplied key confirms the locked key",
+			opts:     skills.InstallOptions{PublicKey: testPublicKeyB64},
+			expected: keyPin,
+			want:     testPublicKeyB64,
+		},
+		{
+			name:     "supplied key that differs from the pin is refused",
+			opts:     skills.InstallOptions{PublicKey: otherKeyB64},
+			expected: keyPin,
+			wantCode: http.StatusForbidden,
+			wantMsg:  "pinned to a different cosign public key",
+		},
+		{
+			name:     "supplied key against an identity pin is refused",
+			opts:     skills.InstallOptions{PublicKey: testPublicKeyB64},
+			expected: identityPin,
+			wantCode: http.StatusForbidden,
+			wantMsg:  "carries no certificate identity",
+		},
+		{
+			name:           "supplied key cannot upgrade a recorded unsigned exception",
+			opts:           skills.InstallOptions{PublicKey: testPublicKeyB64},
+			expectUnsigned: true,
+			wantCode:       http.StatusForbidden,
+			wantMsg:        "unsigned exception",
+		},
+		{
+			// The catalog declares a certificate identity; installing under a
+			// key would satisfy none of it, so honoring the key would drop the
+			// constraint without saying so.
+			name:     "supplied key against a catalog identity constraint is refused",
+			opts:     skills.InstallOptions{PublicKey: testPublicKeyB64},
+			catalog:  &regtypes.Provenance{SignerIdentity: testSignerIdentity},
+			wantCode: http.StatusForbidden,
+			wantMsg:  "catalog entry declares a certificate identity",
+		},
+		{
+			name: "first use adopts the supplied key",
+			opts: skills.InstallOptions{PublicKey: testPublicKeyB64},
+			want: testPublicKeyB64,
+		},
+		{
+			// The override re-records whatever it observes, and a key-pair
+			// bundle offers nothing to observe — so honoring a key here would
+			// re-anchor on the caller's say-so alone. v1 has no such path.
+			name:     "allow_signer_change with a key is refused",
+			opts:     skills.InstallOptions{PublicKey: testPublicKeyB64, AllowSignerChange: true},
+			expected: keyPin,
+			wantCode: http.StatusBadRequest,
+			wantMsg:  "cannot be combined with allow_signer_change",
+		},
+		{
+			// key -> keyless is the one supported transition: the candidate is
+			// chain-verifiable, so the override drops the pinned key and lets
+			// the keyless path record what it observes.
+			name:     "allow_signer_change without a key drops the pinned key",
+			opts:     skills.InstallOptions{AllowSignerChange: true},
+			expected: keyPin,
+			want:     "",
+		},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			got, err := resolveKeyAnchor(tc.opts, "some-skill", tc.expected, tc.expectUnsigned, tc.catalog)
+			if tc.wantCode != 0 {
+				require.Error(t, err)
+				assert.Equal(t, tc.wantCode, httperr.Code(err))
+				assert.Contains(t, err.Error(), tc.wantMsg)
+				assert.Empty(t, got, "a refused anchor must not also be returned")
+				return
+			}
+			require.NoError(t, err)
+			assert.Equal(t, tc.want, got)
+		})
+	}
+}
+
+// TestValidateInstallPublicKey covers the entry guard: a key that this install
+// could never use is bad input, reported before any artifact is fetched rather
+// than as a verification failure afterwards.
+func TestValidateInstallPublicKey(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name    string
+		opts    skills.InstallOptions
+		scope   skills.Scope
+		wantMsg string
+	}{
+		{
+			name:  "no key is always fine",
+			opts:  skills.InstallOptions{},
+			scope: skills.ScopeUser,
+		},
+		{
+			name:  "project scope with a valid key",
+			opts:  skills.InstallOptions{PublicKey: testPublicKeyB64, ProjectRoot: "/tmp/project"},
+			scope: skills.ScopeProject,
+		},
+		{
+			// User-scope installs are not lock-managed, so verification never
+			// runs and the key would be accepted and then dropped.
+			name:    "user scope rejects a key it would never use",
+			opts:    skills.InstallOptions{PublicKey: testPublicKeyB64},
+			scope:   skills.ScopeUser,
+			wantMsg: "applies to project-scoped installs",
+		},
+		{
+			name:    "project scope without a root rejects a key",
+			opts:    skills.InstallOptions{PublicKey: testPublicKeyB64},
+			scope:   skills.ScopeProject,
+			wantMsg: "applies to project-scoped installs",
+		},
+		{
+			name:    "malformed base64 rejected",
+			opts:    skills.InstallOptions{PublicKey: "not!base64", ProjectRoot: "/tmp/project"},
+			scope:   skills.ScopeProject,
+			wantMsg: "not valid base64",
+		},
+		{
+			// Well-encoded is not well-formed. This value decodes cleanly and
+			// is not a key, which is exactly the input that would otherwise
+			// fail deep inside verification with the lock file as the suspect.
+			name:    "valid base64 that is not a public key rejected",
+			opts:    skills.InstallOptions{PublicKey: "aGVsbG8gd29ybGQ=", ProjectRoot: "/tmp/project"},
+			scope:   skills.ScopeProject,
+			wantMsg: "not a DER SPKI public key",
+		},
+		{
+			name: "oversized key rejected before decoding",
+			opts: skills.InstallOptions{
+				PublicKey:   strings.Repeat("A", lockfile.MaxEncodedPublicKeyLength+1),
+				ProjectRoot: "/tmp/project",
+			},
+			scope:   skills.ScopeProject,
+			wantMsg: "exceeding the",
+		},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			err := validateInstallPublicKey(tc.opts, tc.scope)
+			if tc.wantMsg == "" {
+				require.NoError(t, err)
+				return
+			}
+			require.Error(t, err)
+			assert.Equal(t, http.StatusBadRequest, httperr.Code(err),
+				"a key this install cannot use is bad input, not a policy refusal")
+			assert.Contains(t, err.Error(), tc.wantMsg)
+		})
+	}
+}
+
+// TestClassifyKeyVerifyError pins the diagnoses the key path reports. None of
+// them mention allow_unsigned: an install that named a public key asked for
+// that key to be enforced, and the unsigned exception answers a different
+// question entirely.
+func TestClassifyKeyVerifyError(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name    string
+		err     error
+		wantMsg string
+	}{
+		{
+			name:    "unsigned artifact",
+			err:     verifier.ErrUnsigned,
+			wantMsg: "carries no signature material at all",
+		},
+		{
+			// The likeliest mistake: a key aimed at an artifact that was
+			// signed keylessly. The remedy is to drop the key, which a bare
+			// "verification failed" would never suggest.
+			name:    "keyless artifact names the right remedy",
+			err:     verifier.ErrKeylessSigned,
+			wantMsg: "install it without a public key",
+		},
+		{
+			// Wrong key and damaged signature are genuinely indistinguishable:
+			// the bundle records no key of its own to compare against.
+			name:    "verification failure names both possible causes",
+			err:     verifier.ErrSignatureInvalid,
+			wantMsg: "either the key is not the one that signed it, or the signature is damaged",
+		},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			err := classifyKeyVerifyError(tc.err, "keyed-skill")
+			require.Error(t, err)
+			assert.Equal(t, http.StatusForbidden, httperr.Code(err))
+			assert.Contains(t, err.Error(), tc.wantMsg)
+			assert.NotContains(t, err.Error(), "allow_unsigned")
+		})
+	}
+}
+
+// TestVerifyGitInstall_RefusesPublicKey guards the git side of the same rule
+// the lock file enforces on key-pinned git entries: a commit signature is made
+// with a Fulcio certificate, so a public key has no operation to take part in.
+func TestVerifyGitInstall_RefusesPublicKey(t *testing.T) {
+	t.Parallel()
+
+	svc := &service{sigVerifier: verifiermocks.NewMockVerifier(gomock.NewController(t))}
+	_, err := svc.verifyGitInstall(
+		t.Context(),
+		skills.InstallOptions{ProjectRoot: makeProjectRoot(t), PublicKey: testPublicKeyB64},
+		"git-skill", []byte("payload"), "signature")
+
+	require.Error(t, err)
+	assert.Equal(t, http.StatusBadRequest, httperr.Code(err))
+	assert.Contains(t, err.Error(), "a cosign public key cannot verify it")
 }

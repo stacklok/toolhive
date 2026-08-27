@@ -5,11 +5,14 @@ package app
 
 import (
 	"fmt"
+	"os"
+	"path/filepath"
 	"strings"
 
 	"github.com/spf13/cobra"
 
 	"github.com/stacklok/toolhive/pkg/skills"
+	"github.com/stacklok/toolhive/pkg/skills/verifier"
 )
 
 var (
@@ -19,6 +22,7 @@ var (
 	skillInstallProjectRoot   string
 	skillInstallGroup         string
 	skillInstallAllowUnsigned bool
+	skillInstallPublicKey     string
 )
 
 var skillInstallCmd = &cobra.Command{
@@ -46,12 +50,21 @@ func init() {
 	skillInstallCmd.Flags().StringVar(&skillInstallGroup, "group", "", "Group to add the skill to after installation")
 	skillInstallCmd.Flags().BoolVar(&skillInstallAllowUnsigned, "allow-unsigned", false,
 		"Allow installing a project-scoped skill without a verified signature (recorded in the lock file)")
+	skillInstallCmd.Flags().StringVar(&skillInstallPublicKey, "public-key", "",
+		"Path to the cosign public key (cosign.pub) a key-pair-signed skill must verify against."+
+			" Required the first time such a skill is installed project-scoped; the key is then pinned"+
+			" in the lock file and reused automatically")
 }
 
 func skillInstallCmdFunc(cmd *cobra.Command, args []string) error {
 	c := newSkillClient(cmd.Context())
 
 	projectRoot, err := absProjectRoot(skillInstallProjectRoot)
+	if err != nil {
+		return err
+	}
+
+	publicKey, err := readInstallPublicKey(skillInstallPublicKey)
 	if err != nil {
 		return err
 	}
@@ -64,6 +77,7 @@ func skillInstallCmdFunc(cmd *cobra.Command, args []string) error {
 		ProjectRoot:   projectRoot,
 		Group:         skillInstallGroup,
 		AllowUnsigned: skillInstallAllowUnsigned,
+		PublicKey:     publicKey,
 	})
 	if err != nil {
 		return formatSkillError("install skill", err)
@@ -71,6 +85,28 @@ func skillInstallCmdFunc(cmd *cobra.Command, args []string) error {
 
 	printInstallTrust(result)
 	return nil
+}
+
+// readInstallPublicKey turns a --public-key file path into the encoded key
+// material the API carries. The CLI reads the file rather than forwarding its
+// path because the server is a separate process, possibly on another host,
+// where that path names nothing — or something else.
+func readInstallPublicKey(path string) (string, error) {
+	if path == "" {
+		return "", nil
+	}
+	cleanPath := filepath.Clean(path)
+	// #nosec G304 - the path is a CLI flag the user chose; reading the file
+	// they named is the operation.
+	pemBytes, err := os.ReadFile(cleanPath)
+	if err != nil {
+		return "", fmt.Errorf("read public key: %w", err)
+	}
+	encoded, err := verifier.EncodePublicKey(pemBytes)
+	if err != nil {
+		return "", fmt.Errorf("read public key %s: %w", cleanPath, err)
+	}
+	return encoded, nil
 }
 
 // printInstallTrust shows the trust state the install recorded — RFC

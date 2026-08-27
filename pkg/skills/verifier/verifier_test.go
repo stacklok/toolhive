@@ -19,6 +19,9 @@ import (
 	"github.com/google/go-containerregistry/pkg/registry"
 	"github.com/google/go-containerregistry/pkg/v1/random"
 	"github.com/google/go-containerregistry/pkg/v1/remote"
+	protobundle "github.com/sigstore/protobuf-specs/gen/pb-go/bundle/v1"
+	protocommon "github.com/sigstore/protobuf-specs/gen/pb-go/common/v1"
+	sgbundle "github.com/sigstore/sigstore-go/pkg/bundle"
 	"github.com/sigstore/sigstore/pkg/cryptoutils"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -137,6 +140,9 @@ func TestVerifyOCIWithKeyRejectsWrongKey(t *testing.T) {
 
 	_, err = NewDefault(nil).VerifyOCIWithKey(t.Context(), ref, digest, otherPub)
 	require.ErrorIs(t, err, ErrSignatureInvalid)
+	require.NotErrorIs(t, err, ErrKeylessSigned,
+		"the artifact IS key-signed; the key is simply the wrong one, and telling the caller to"+
+			" drop the key would send them to a path that cannot verify it either")
 }
 
 func TestVerifyOCIUnsignedArtifact(t *testing.T) {
@@ -611,4 +617,48 @@ func TestVerifyGitRefusesKeyPinnedEntry(t *testing.T) {
 	require.ErrorContains(t, err, "pinned to a cosign public key")
 	require.NotErrorIs(t, err, ErrUnsigned,
 		"refused before the signature checks, so the misrouting is not masked as unsigned")
+}
+
+// certBundle is a bundle carrying a signing certificate — the keyless layout.
+// Only the verification material is populated: onlyKeylessSigned reads nothing
+// else, and a fully-formed keyless bundle would need a live Fulcio.
+func certBundle() coreverifier.Bundle {
+	return coreverifier.Bundle{Parsed: &sgbundle.Bundle{Bundle: &protobundle.Bundle{
+		VerificationMaterial: &protobundle.VerificationMaterial{
+			Content: &protobundle.VerificationMaterial_Certificate{
+				Certificate: &protocommon.X509Certificate{RawBytes: []byte("der")},
+			},
+		},
+	}}}
+}
+
+// TestOnlyKeylessSigned is the mirror of the onlyKeySigned rule: a supplied
+// public key cannot verify a Fulcio-certificate signature, and saying so beats
+// reporting the intact signature as broken. A mixed artifact is excluded
+// because one of its bundles genuinely is key-signed, so the generic failure
+// is the honest answer there.
+func TestOnlyKeylessSigned(t *testing.T) {
+	t.Parallel()
+
+	keySigned := coreverifier.Bundle{}
+	tests := []struct {
+		name    string
+		bundles []coreverifier.Bundle
+		want    bool
+	}{
+		{name: "no bundles", bundles: nil, want: false},
+		{name: "all keyless", bundles: []coreverifier.Bundle{certBundle(), certBundle()}, want: true},
+		{name: "all key-signed", bundles: []coreverifier.Bundle{keySigned}, want: false},
+		{name: "mixed", bundles: []coreverifier.Bundle{certBundle(), keySigned}, want: false},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			assert.Equal(t, tc.want, onlyKeylessSigned(tc.bundles))
+			// The two predicates must never both hold: they select opposite
+			// verification paths, and a bundle set answering yes to both would
+			// mean whichever is checked first decides the policy.
+			assert.False(t, onlyKeylessSigned(tc.bundles) && onlyKeySigned(tc.bundles))
+		})
+	}
 }

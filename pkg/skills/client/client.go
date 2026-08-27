@@ -212,6 +212,7 @@ func (c *Client) Install(ctx context.Context, opts skills.InstallOptions) (*skil
 		Force:         opts.Force,
 		Group:         opts.Group,
 		AllowUnsigned: opts.AllowUnsigned,
+		PublicKey:     opts.PublicKey,
 	}
 
 	var resp installResponse

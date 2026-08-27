@@ -33,6 +33,17 @@ var (
 	// fail open, because no caller treats ErrSignatureInvalid as permission
 	// to proceed — it only selects a failure reason.
 	ErrKeySigned = errors.New("artifact is signed with a cosign key pair, which cannot be verified at install time")
+	// ErrKeylessSigned is the mirror of ErrKeySigned: every signature on the
+	// artifact carries a Fulcio certificate, so a cosign public key is the
+	// wrong trust anchor to check it with. Reported when a caller supplies a
+	// key for an artifact that was signed keylessly — the likeliest way to
+	// reach the key path by mistake, and one whose remedy (drop the key) is
+	// invisible in a bare "signature verification failed".
+	//
+	// Deliberately NOT wrapping ErrSignatureInvalid, for the same reason
+	// ErrKeySigned does not: the signature is intact, and there is a real
+	// verification path for it.
+	ErrKeylessSigned = errors.New("artifact is signed keylessly, not with a cosign key pair")
 	// ErrProvenanceFieldMismatch indicates the signature verifies against
 	// the expected signer identity and issuer, but a certificate field the
 	// Sigstore policy cannot itself express — the repository ref or runner

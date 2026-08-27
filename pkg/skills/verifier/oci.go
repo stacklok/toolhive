@@ -67,6 +67,13 @@ func (d *Default) VerifyOCIWithKey(
 		}
 		return resultFromKey(b.Raw), nil
 	}
+	// Only after every bundle failed: a key-signed bundle that verifies wins
+	// regardless of what else is attached to the artifact. Reported ahead of
+	// the generic failure so aiming a key at a keylessly-signed artifact is
+	// named as the mistake it is rather than reported as a bad signature.
+	if onlyKeylessSigned(bundles) {
+		return nil, ErrKeylessSigned
+	}
 	return nil, wrapInvalid(lastErr)
 }
 
@@ -243,6 +250,22 @@ func onlyKeySigned(bundles []coreverifier.Bundle) bool {
 	}
 	for _, b := range bundles {
 		if b.HasCertificate() {
+			return false
+		}
+	}
+	return true
+}
+
+// onlyKeylessSigned reports whether every retrieved bundle carries a Fulcio
+// certificate — the keyless layout, which no supplied public key can verify.
+// The inverse of onlyKeySigned, and an empty slice is excluded for the same
+// reason.
+func onlyKeylessSigned(bundles []coreverifier.Bundle) bool {
+	if len(bundles) == 0 {
+		return false
+	}
+	for _, b := range bundles {
+		if !b.HasCertificate() {
 			return false
 		}
 	}

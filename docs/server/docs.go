@@ -3308,6 +3308,10 @@ const docTemplate = `{
                         "description": "ProjectRoot is the project root path for project-scoped installs",
                         "type": "string"
                     },
+                    "public_key": {
+                        "description": "PublicKey is the base64-encoded DER SPKI cosign public key the artifact\nmust verify against, for artifacts signed with a cosign key pair rather\nthan keylessly. Required the first time such an artifact is installed\nproject-scoped, and pinned in the lock file from then on.",
+                        "type": "string"
+                    },
                     "scope": {
                         "$ref": "#/components/schemas/github_com_stacklok_toolhive_pkg_skills.Scope"
                     },

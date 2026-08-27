@@ -143,6 +143,9 @@ spec:
       - issuerUrl: https://login.example-idp.com
         expectedAudience: https://mcp.example.com
         allowedActors: [external-reporting-client]
+        # actorMatcher is additive with allowedActors, not a replacement —
+        # either signal is sufficient. Omit it to rely on allowedActors alone.
+        actorMatcher: "has(claims.roles) && 'trusted-delegator' in claims.roles"
         allowedDelegateClients: [reporting-delegate]
         allowMayAct: false
 ```
@@ -182,39 +185,64 @@ delegation.
 
 ## Consent signals
 
-Two functions cooperate here. `resolveAllowedActor`
+Two functions cooperate here. `resolveActorAuthorization`
 (`pkg/authserver/server/tokenexchange/multi_issuer_validator.go`), called from
 `validateExternalToken` during signature/claim validation, checks the
-external-issuer allowlist and — when it matches — sets
-`ValidatedClaims.ExternalActor`. `checkDelegationConsent`
+external-issuer authorization and — when it matches — sets
+`ValidatedClaims.ExternalActorAuthorized` (and `ValidatedClaims.ExternalActor`
+when the allowlist path resolved an actor claim). `checkDelegationConsent`
 (`pkg/authserver/server/tokenexchange/handler.go`) runs afterwards and decides
 whether to grant the exchange, in this order:
 
 1. **`may_act` (RFC 8693 §4.4).** A trusted issuer must explicitly set
    `allow_may_act: true` before its well-formed `may_act` claim is considered.
    It is otherwise rejected outright, not silently ignored or fallen through
-   to the allowlist. When enabled, `may_act` is authoritative: the allowlist
-   step above is skipped entirely (`validateExternalToken` never calls
-   `resolveAllowedActor` when `may_act` is present), and
-   `checkDelegationConsent` enforces `may_act.sub` against the authenticated
-   ToolHive client. On the external path, `may_act.iss` is mandatory, not
-   merely constrained when present as on the self-issued path —
-   `validateMayActShape`'s `requireIss` parameter is `true` there. Without
-   this, an external issuer omitting `iss` could authorize any ToolHive client
-   by naming its ID in a bare `may_act.sub`, bypassing
-   `allowedActors`/`allowedDelegateClients` entirely — the one consent path
-   that does.
-2. **`ExternalActor`.** Otherwise, consent was already established by
-   `resolveAllowedActor`: the claim named by that issuer's `actorClaim`
-   (default `azp`; `appid` for Microsoft Entra v1, `cid` for Okta) matched an
-   entry in that issuer's `allowedActors`. `allowedActors` holds client IDs in
-   the *external* IdP's namespace, not ToolHive client IDs — the likeliest
-   misconfiguration. An empty `allowedActors` accepts only permitted
-   `may_act`-bearing tokens from that issuer; without `allow_may_act`, it
-   accepts no tokens. `checkDelegationConsent` then additionally checks
-   the issuer's `allowedDelegateClients` against the authenticated ToolHive
-   client — this field is required (see below), so the check always applies
-   on this path.
+   to external-issuer authorization. When enabled, `may_act` is authoritative:
+   external-issuer authorization below is skipped entirely
+   (`validateExternalToken` never calls `resolveActorAuthorization` when
+   `may_act` is present), and `checkDelegationConsent` enforces `may_act.sub`
+   against the authenticated ToolHive client. A malformed `may_act` is
+   rejected outright by `validateMayActShape`, not silently ignored. On the
+   external path, `may_act.iss` is mandatory, not merely constrained when
+   present as on the self-issued path — `validateMayActShape`'s `requireIss`
+   parameter is `true` there. Without this, an external issuer omitting `iss`
+   could authorize any ToolHive client by naming its ID in a bare
+   `may_act.sub`, bypassing `allowedActors`/`actorMatcher` external
+   authorization entirely. The handler still enforces `allowedDelegateClients`
+   for every external token.
+2. **External actor authorization.** Otherwise, consent was already
+   established by `resolveActorAuthorization`: the claim named by that
+   issuer's `actorClaim` (default `azp`; `appid` for Microsoft Entra v1,
+   `cid` for Okta) matched an entry in that issuer's `allowedActors`, **or**
+   its `actorMatcher` CEL expression evaluated to `true`. `allowedActors`
+   holds client IDs in the *external* IdP's namespace, not ToolHive client
+   IDs — the likeliest misconfiguration. `actorMatcher` is an admin-authored
+   CEL expression whose only variable is `claims`, a `map[string]any`
+   containing the complete signature-verified JWT claims map, including
+   registered claims such as `iss`, `sub`, `aud`, `exp`, `iat`, `nbf`, and
+   `jti`. It is compiled during config validation and validator construction;
+   a syntax or type error fails startup, but an expression that compiles yet
+   never returns bool does NOT — it is only caught the first time a real
+   token evaluates it, denying that token (and every subsequent one, since it
+   can never return bool). Runtime CEL errors, including that one, deny the
+   token (they are never treated as a match). Access to optional claims must be
+   guarded with `has()` (for example, `has(claims.roles) && 'trusted-delegator'
+   in claims.roles`), because a missing claim produces a CEL evaluation error
+   and denies the token. An empty `allowedActors` and
+   `actorMatcher` accepts only permitted `may_act`-bearing tokens from that
+   issuer; without `allowMayAct`, it accepts no tokens at all.
+   `checkDelegationConsent` then additionally checks the issuer's
+   `allowedDelegateClients` against the authenticated ToolHive client — this
+   field is required (see below), so the check always applies on this path.
+
+   **`actorMatcher` misconfiguration risk, analogous to `allowedActors`
+   above:** write the predicate against a claim the external issuer alone
+   controls and that does not vary with a user- or self-service-editable
+   attribute — an actor/client identifier such as `azp`, `appid`, or `cid`,
+   not a profile or business attribute such as a department or team name
+   (which may be HR-synced or editable by the user themselves). A matcher
+   written against the wrong kind of claim can grant delegation on a basis
+   the operator never intended.
 3. **`client_id` binding.** For a self-issued subject token (not part of the
    external path above), the token's `client_id` must match the authenticated
    client — **unless** the authenticated client is a configured delegate
@@ -381,15 +409,15 @@ delegate_clients:
 
 ## Accepted limitations
 
-1. **`allowedDelegateClients` binds an allowlisted actor to specific ToolHive
-   clients, and is mandatory, not opt-in.** `allowedActors` by itself
-   authorizes "this external client's tokens may be exchanged here," not
-   "…by this particular ToolHive client" — the external actor claim is never
-   compared against the authenticated ToolHive client ID. Without a separate
-   binding, every ToolHive confidential client holding the token-exchange
-   grant would be delegation-equivalent with respect to an allowlisted
-   external actor, so compromise of the weakest such client would be as good
-   as compromise of all of them.
+1. **`allowedDelegateClients` binds external actor authorization to specific
+   ToolHive clients, and is mandatory, not opt-in.** `allowedActors` or
+   `actorMatcher` by itself authorizes "these external tokens may be exchanged
+   here," not "…by this particular ToolHive client" — the external actor
+   claim (when one exists) is never compared against the authenticated
+   ToolHive client ID. Without a separate binding, every ToolHive confidential
+   client holding the token-exchange grant would be delegation-equivalent with
+   respect to an authorized external token, so compromise of the weakest such
+   client would be as good as compromise of all of them.
 
    `TrustedIssuer.AllowedDelegateClients` (`allowed_delegate_clients` on a
    hand-written `authserver.RunConfig`) closes this per issuer: a list of
@@ -402,7 +430,8 @@ delegate_clients:
    enabled: trusting a foreign issuer to name ToolHive clients in `may_act`
    requires explicit per-client containment. `checkDelegationConsent` checks
    the authenticated client against this list on both consent paths:
-   `may_act` bypasses `allowedActors` (the external-issuer allowlist) but NOT
+   `may_act` bypasses `allowedActors` and `actorMatcher` (external-issuer
+   authorization) but NOT
    `allowedDelegateClients`, since the validator sets `AllowedDelegateClients`
    for every external token regardless of which path authorized it (see
    limitation 4 below). A self-issued `may_act` (no external issuer involved)
@@ -429,16 +458,18 @@ delegate_clients:
    entry additionally carries `sub` (the allowlisted actor claim) when the
    allowlist path resolved one; a `may_act`-bearing external token yields
    `act = {iss: <toolhive-issuer>, sub: <toolhive-client>, act: {iss:
-   <external-issuer>}}`. Either way, Cedar authorizers key on `sub` and do not
-   read `act` — it is an audit trail, not an access control. (AWS STS role
+<external-issuer>}}` — no client-namespace actor to report there, but the
+   issuer is still recorded. Either way, Cedar authorizers key on `sub` and do
+   not read `act` — it is an audit trail, not an access control. (AWS STS role
    mapping can read arbitrary claims including `act` via its CEL matcher, so
    "authorizers" here means Cedar specifically, not every consumer.)
-4. **`may_act` trust is a per-issuer opt-in.** `allow_may_act` is false by
-   default because an enabled issuer bypasses `allowedActors` and can name a
-   ToolHive client. The claim must be drawn from ToolHive's own client
-   namespace and must not be influenceable by an untrusted party. Its issuer
-   must use explicit `allowedDelegateClients`; wildcard delegation is rejected
-   with this opt-in.
+4. **`may_act` trust is a per-issuer opt-in, and it bypasses more than one
+   thing.** `allow_may_act` is false by default because an enabled issuer
+   bypasses BOTH `allowedActors` and `actorMatcher` (external actor
+   authorization) and can name a ToolHive client directly. The claim must be
+   drawn from ToolHive's own client namespace and must not be influenceable by
+   an untrusted party. Its issuer must use explicit `allowedDelegateClients`;
+   wildcard delegation is rejected with this opt-in.
 5. **ID/access-token discrimination on the external path rests on two
    partial layers, neither of which is exhaustive alone.** Nothing inspects
    the JWT header's `typ` claim: RFC 8725 §3.12 recommends `typ: at+jwt` for
@@ -483,6 +514,150 @@ delegate_clients:
    delegated token — it must also be signed by a configured trusted issuer
    and satisfy one of the consent signals above.
 
+## RFC 7523 JWT-bearer grant
+
+The embedded authorization server also supports the plain RFC 7523 JWT-bearer
+grant (`urn:ietf:params:oauth:grant-type:jwt-bearer`), a separate grant from
+RFC 8693 token exchange above. Where token exchange lets an already-authenticated
+ToolHive client trade a subject token it holds for a delegated one, the
+JWT-bearer grant lets an external party present a signed assertion directly at
+`/oauth/token` and receive a ToolHive access token — no ToolHive client, no
+delegate client, no consent signal (`may_act`/`allowedActors`/`actorMatcher`)
+involved. It is enabled per trusted issuer by setting
+`TrustedIssuer.JWTBearerGrant` (`jwt_bearer_grant` on a hand-written
+`authserver.RunConfig`, `jwtBearerGrant` on the operator's
+`TrustedIssuerConfig`) — independent of that issuer's RFC 8693 delegation
+fields, though both may be configured on the same issuer.
+
+### JWT-bearer configuration
+
+`accepted_audiences` identifies this authorization server, while
+`allowed_audiences` identifies resources that issued access tokens may target.
+They must be disjoint: configuring the same value in both is rejected, because
+a resource audience must not also make an assertion acceptable to the token
+endpoint. When `accepted_audiences` is omitted, the token endpoint URL is the
+only accepted assertion audience.
+
+A `RunConfig` enables the grant per trusted issuer. This example accepts
+assertions for the authorization-server URL and permits the exact assertion
+subject to request only the listed resource:
+
+```yaml
+issuer: https://auth.example.com
+allowed_audiences: [https://mcp.example.com]
+trusted_issuers:
+  - issuer_url: https://issuer.example.com
+    jwt_bearer_grant:
+      max_assertion_age: 5m
+      accepted_audiences: [https://auth.example.com]
+      subject_bindings:
+        - subject: workload-123
+          allowed_resources: [https://mcp.example.com]
+```
+
+The equivalent operator configuration uses camelCase fields:
+
+```yaml
+apiVersion: toolhive.stacklok.dev/v1beta1
+kind: MCPExternalAuthConfig
+metadata:
+  name: embedded-auth
+spec:
+  type: embeddedAuthServer
+  embeddedAuthServer:
+    issuer: https://auth.example.com
+    allowedAudiences: [https://mcp.example.com]
+    trustedIssuers:
+      - issuerUrl: https://issuer.example.com
+        jwtBearerGrant:
+          maxAssertionAge: 5m
+          acceptedAudiences: [https://auth.example.com]
+          subjectBindings:
+            - subject: workload-123
+              allowedResources: [https://mcp.example.com]
+```
+
+- **Clientless.** `JWTBearerHandler.CanSkipClientAuth` permits a
+  credential-free plain assertion. Form-supplied client credentials prevent
+  this clientless path. Every storage backend's request-marshaling path still
+  needs a non-nil `fosite.Client`, so the handler attaches a synthetic one —
+  see "Synthetic subject and client identity" below.
+- **Assertion bounds.** Beyond the standard RFC 7523 §3 claims (`iss`, `sub`,
+  `aud`, `exp`; `iat` is required here specifically, for the age bound below),
+  two policy-level bounds apply:
+  - `JWTBearerGrantPolicy.MaxAssertionAge` caps `exp - iat` — independent of
+    `exp` itself, which is still checked for plain expiry. This bounds how
+    long an assertion can claim to be "fresh" for, not just how long it
+    remains unexpired.
+  - `JWTBearerGrantPolicy.AcceptedAudiences` is the set of "this AS" identity
+    strings the assertion's `aud` must intersect (`audienceIntersects`),
+    checked by exact-match membership rather than equality — RFC 7523 §3
+    permits a multi-valued `aud`, so an assertion may additionally name other
+    audiences without losing its match. Defaults to `[tokenEndpoint]` when
+    unset, preserving the original exact-endpoint-match behavior. This exists
+    to let an issuer's assertions target this AS by more than one valid name
+    (e.g. across an issuer/token-endpoint URL migration) — it is deliberately
+    NOT the same relaxation as accepting an arbitrary RFC 8707 resource
+    audience, which would let any resource-scoped token satisfy the grant
+    instead of only tokens minted for this AS specifically.
+
+  Beyond cryptographic and claim validation, `JWTBearerGrantPolicy.SubjectBindings`
+  is an exact-match allowlist: an assertion's `sub` must have a configured
+  binding, and the request's `resource` parameter (required, exactly one)
+  must be one of that binding's `allowed_resources`. There is no wildcard
+  subject or resource — every accepted assertion subject and resource pair is
+  named explicitly.
+- **Synthetic subject and client identity.** The issued token's `sub` is
+  `<assertion issuer>#<assertion subject>` (`session.New`'s first argument,
+  matching the delegated-token subject qualification pattern in [Accepted
+  limitations](#accepted-limitations) #2, so it can never collide with a
+  native ToolHive UUID subject). Its `client_id` claim has the precise format
+  `synthetic:jwt-bearer-<base64url SHA-256>`: the base64url value is the
+  unpadded SHA-256 digest of `<issuer>\x00<subject>` (`jwtBearerClientID`). It
+  is never a real registered `fosite.Client`. `storage.NewSyntheticClient`
+  builds the client object attached to the access request, and
+  `storage.IsSyntheticClientID` lets a storage backend reconstruct it on read
+  (e.g. `RedisStorage.unmarshalRequester`) without a client-registry lookup,
+  `RegisterClient`. This mechanism is generic — any future clientless grant
+  can reuse it, not just this one.
+- **Replay model.** `storage.AssertionJWTConsumer.ConsumeAssertionJWT` atomically
+  records `(purpose, issuer, key)` as consumed, keyed until the assertion's own
+  `exp`, and returns `fosite.ErrJTIKnown` on a repeat. `key` is not always the
+  assertion's `jti`: many real-world IdPs (e.g. Entra ID `client_credentials`
+  tokens) never emit one, so `jti` is not a required claim here. `assertionReplayKey`
+  uses `jti` when present, and otherwise falls back to a SHA-256 digest of the
+  raw assertion JWT string (prefixed `jwt-bearer-noJTI-` so it can never
+  collide with a real `jti`) — hashing the serialized assertion identifies
+  replays of the exact same assertion without storing the raw JWT. Replay
+  protection is never skipped, only re-keyed. The
+  JWT-bearer grant's purpose is `"jwt-bearer"` (`jwtBearerReplayPurpose`), kept
+  separate from any other assertion-consuming grant so a reused key cannot be
+  laundered across purposes. Consumption happens *before* issuance: if token
+  issuance somehow fails after that point, the assertion stays consumed rather
+  than becoming replayable — a fail-closed choice that costs an otherwise-valid
+  assertion its one use on an issuance-side error, rather than risk a second
+  grant on a retried replay.
+- **Discovery.** `grant_types_supported` in `/.well-known/oauth-authorization-server`
+  and `/.well-known/openid-configuration` advertises
+  `urn:ietf:params:oauth:grant-type:jwt-bearer` only when at least one trusted
+  issuer has `jwtBearerGrant` configured (`AuthorizationServerConfig.JWTBearerGrantEnabled`,
+  computed by the same `jwtBearerGrantEnabled` helper that decides whether
+  `buildProvider` registers the grant with fosite in the first place — the two
+  can't drift out of sync).
+- **Validator sharing.** When both RFC 8693 token exchange and the JWT-bearer
+  grant are enabled for the same trusted issuers, `buildProvider` constructs a
+  single `MultiIssuerTokenValidator` (`tokenexchange.NewSharedTrustedIssuerValidator`)
+  and passes it to both `tokenexchange.FactoryWithSharedTrustedIssuerValidator`
+  and `tokenexchange.JWTBearerIssuanceFactory`, rather than each building its own —
+  a `MultiIssuerTokenValidator` registers a `jwk.Cache` and background refresh
+  goroutines per issuer, so building two would double that cost with no
+  benefit.
+- **No delegation consent.** The JWT-bearer grant does not apply
+  `allowedActors`, `actorMatcher`, or `may_act` — those are RFC 8693 delegation
+  concepts. An issuer's JWT-bearer subjects are authorized entirely by
+  `SubjectBindings`, independent of whatever `allowedActors`/`allowMayAct` that
+  same issuer may also have configured for delegation.
+
 ## Operational notes
 
 - **Audience.** The requested audience is bounded by the subject token's own
@@ -513,21 +688,23 @@ delegate_clients:
   redirects (`networking.SameHostRedirectPolicy()`), so an issuer whose
   `/.well-known/openid-configuration` redirects cross-host cannot be
   onboarded via discovery — set `jwksUrl` explicitly to skip discovery.
-- **JWKS caching.** A successful fetch is cached and refreshed by jwx's
-  `jwk.Cache` on a schedule driven by the response's `Cache-Control`/`Expires`
-  headers (no fixed TTL). The 30-second figure is `jwksFetchFailureBackoff`,
-  which gates only how often a persistently-failing issuer is retried before
+- **JWKS caching.** A successful fetch is cached and refreshed on the fixed
+  five-minute `jwksRefreshInterval`, independent of response `Cache-Control` or
+  `Expires` headers. The 30-second figure is `jwksFetchFailureBackoff`, which
+  gates only how often a persistently-failing issuer is retried before
   its first successful fetch — so a just-corrected `jwksUrl` can keep failing
   for up to 30s before the next retry; once a fetch has ever succeeded, this
   backoff no longer applies.
-- **Diagnostics.** A non-allowlisted actor and an untrusted issuer both
-  surface as the same generic `invalid_request`
-  ("The subject token is invalid or could not be verified."), per RFC 8693
-  §2.2.2. The only discriminator is a `slog.Debug` log line, so diagnosing a
-  failed exchange needs debug logging enabled. The two exceptions are startup
-  `slog.Warn` lines — an issuer with empty `allowedActors`, and an
-  `expectedAudience` missing from `allowedAudiences` — the only non-DEBUG
-  diagnostics this feature emits.
+- **Diagnostics.** A non-allowlisted/non-matching actor, a runtime
+  `actorMatcher` CEL evaluation failure, and an untrusted issuer all surface
+  as the same generic `invalid_request` ("The subject token is invalid or
+  could not be verified."), per RFC 8693 §2.2.2. The only discriminator is a
+  safe `slog.Debug` log line (the matcher diagnostic names only the configured
+  issuer and CEL error, never claims or tokens), so diagnosing a failed
+  exchange needs debug logging enabled. The two exceptions are startup
+  `slog.Warn` lines — an issuer with both empty `allowedActors` and
+  `actorMatcher`, and an `expectedAudience` that does not look like a resource
+  identifier — the only non-DEBUG diagnostics this feature emits.
 - **HTTPS enforcement for a trusted issuer.** `validateTrustedIssuerURL`
   (`pkg/authserver/config.go`) validates `issuer_url` at config time and,
   unlike the server's own issuer, grants no localhost exemption: an
@@ -551,13 +728,16 @@ delegate_clients:
 ## Implementation
 
 - `pkg/authserver/server/tokenexchange/handler.go` — `checkDelegationConsent`, `grantScopes`, `grantAndBoundAudiences`
-- `pkg/authserver/server/tokenexchange/multi_issuer_validator.go` — `MultiIssuerTokenValidator`, `TrustedIssuer`, `resolveAllowedActor`, `ValidateJWKSURL`
+- `pkg/authserver/server/tokenexchange/multi_issuer_validator.go` — `MultiIssuerTokenValidator`, `TrustedIssuer`, `resolveActorAuthorization`, `ValidateJWKSURL`
 - `pkg/authserver/server/tokenexchange/validator.go` — `assignClaim`, `buildValidatedClaims`, `validateMayActShape`, `scpToScopeString`
 - `pkg/authserver/config.go` — `DelegateClientRunConfig`, delegate-client validation, `validateTrustedIssuerURL`, `validateJWKSEndpointURL`, `validateTrustedIssuers`, `warnTrustedIssuerAudiences`
 - `cmd/thv-operator/api/v1beta1/mcpexternalauthconfig_types.go` — `DelegateClientConfig`, `TrustedIssuerConfig`, `EmbeddedAuthServerConfig`
 - `cmd/thv-operator/pkg/controllerutil/authserver.go` — `buildDelegateClientRunConfigs`, `buildTrustedIssuerRunConfigs`, `BuildAuthServerRunConfig`
 - `pkg/authserver/runner/embeddedauthserver.go` — delegate-client secret-reference resolution at startup
 - `pkg/authserver/server_impl.go` — static delegate-client registration and precedence over an existing storage registration
-- `pkg/authserver/server/handlers/discovery.go` — advertised token-exchange grant and client-secret authentication methods
+- `pkg/authserver/server/handlers/discovery.go` — advertised token-exchange and JWT-bearer grants, client-secret authentication methods
 - `cmd/thv-operator/api/v1beta1/mcpexternalauthconfig_types.go` — shared `DelegateClientConfig` CRD contract
 - `cmd/thv-operator/pkg/controllerutil/authserver.go` — Secret-reference to pod-environment conversion
+- `pkg/authserver/server/tokenexchange/jwt_bearer_handler.go` — `JWTBearerHandler`, `JWTBearerIssuanceFactory`, `NewSharedTrustedIssuerValidator`, synthetic client-ID minting
+- `pkg/authserver/storage/types.go` — `SyntheticClientIDPrefix`, `NewSyntheticClient`, `IsSyntheticClientID`
+- `pkg/authserver/storage/redis.go` — synthetic-client-aware `marshalRequester`/`unmarshalRequester`

@@ -31,6 +31,7 @@ import (
 
 	"github.com/stacklok/toolhive/pkg/auth"
 	"github.com/stacklok/toolhive/pkg/bodylimit"
+	"github.com/stacklok/toolhive/pkg/diagnostics"
 	"github.com/stacklok/toolhive/pkg/healthcheck"
 	"github.com/stacklok/toolhive/pkg/mcp"
 	"github.com/stacklok/toolhive/pkg/transport/proxy/socket"
@@ -1318,10 +1319,19 @@ func (p *TransparentProxy) Start(ctx context.Context) error {
 		mux.HandleFunc("/health", http.NotFound)
 	}
 
-	// 3. Mount Prometheus metrics endpoint if handler is provided (no middlewares)
+	// 3. Mount Prometheus metrics endpoint if handler is provided (no middlewares),
+	// otherwise return 404 (prevents /metrics from being proxied to the backend).
+	//
+	// The runner no longer supplies a handler here: metrics are served on a
+	// separate diagnostics listener (see pkg/diagnostics) so access can be
+	// restricted by port, which NetworkPolicy can express and a shared port
+	// cannot. Registering "/metrics" on this mux would also outrank the "/"
+	// catch-all below and so sit outside the middleware chain.
 	if p.prometheusHandler != nil {
 		mux.Handle("/metrics", p.prometheusHandler)
 		slog.Debug("prometheus metrics endpoint enabled at /metrics")
+	} else {
+		mux.Handle(diagnostics.MetricsPath, diagnostics.NotServedHereHandler())
 	}
 
 	// 4. Mount RFC 9728 OAuth Protected Resource discovery endpoint (no middlewares)

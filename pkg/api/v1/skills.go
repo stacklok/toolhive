@@ -301,9 +301,10 @@ func (s *SkillsRoutes) pushSkill(w http.ResponseWriter, r *http.Request) error {
 	}
 
 	if err := s.skillService.Push(r.Context(), skills.PushOptions{
-		Reference: req.Reference,
-		Key:       req.Key,
-		NoSign:    req.NoSign,
+		Reference:     req.Reference,
+		Key:           req.Key,
+		IdentityToken: req.IdentityToken,
+		NoSign:        req.NoSign,
 	}); err != nil {
 		return err
 	}

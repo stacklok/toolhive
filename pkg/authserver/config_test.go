@@ -1288,6 +1288,14 @@ func TestConfigValidate_TrustedIssuers(t *testing.T) {
 			errMsg:  "actor_claim",
 		},
 		{
+			name: "actor_matcher malformed rejected",
+			issuers: []tokenexchange.TrustedIssuer{
+				{IssuerURL: "https://idp.example.com", ExpectedAudience: "https://mcp.example.com", ActorMatcher: "claims.", AllowedDelegateClients: []string{"*"}},
+			},
+			wantErr: true,
+			errMsg:  "actor_matcher",
+		},
+		{
 			// Unlike Config.Issuer, a trusted issuer_url permits a trailing
 			// slash: Microsoft Entra ID v1 (the default for a newly
 			// registered API) issues "iss": "https://sts.windows.net/{tenant}/"
@@ -1329,6 +1337,25 @@ func TestConfigValidate_TrustedIssuers(t *testing.T) {
 			},
 			wantErr: true,
 			errMsg:  "allow_may_act",
+		},
+		{
+			// This is a server runtime configuration invariant, not CRD
+			// admission: the configured allowed audience is supplied by the
+			// individual MCP server using the shared auth configuration.
+			name: "JWT-bearer accepted audience overlapping allowed resource rejected",
+			issuers: []tokenexchange.TrustedIssuer{{
+				IssuerURL: "https://idp.example.com",
+				JWTBearerGrant: &tokenexchange.JWTBearerGrantPolicy{
+					MaxAssertionAge: "1m",
+					SubjectBindings: []tokenexchange.JWTBearerSubjectBinding{{
+						Subject:          "workload",
+						AllowedResources: []string{"https://mcp.example.com"},
+					}},
+					AcceptedAudiences: []string{"https://mcp.example.com"},
+				},
+			}},
+			wantErr: true,
+			errMsg:  "must not also be a configured resource audience",
 		},
 	}
 
@@ -1405,6 +1432,14 @@ func TestRunConfigValidate_TrustedIssuers(t *testing.T) {
 			},
 			wantErr: true,
 			errMsg:  "actor_claim",
+		},
+		{
+			name: "actor_matcher malformed rejected",
+			issuers: []tokenexchange.TrustedIssuer{
+				{IssuerURL: "https://idp.example.com", ExpectedAudience: "https://mcp.example.com", ActorMatcher: "claims.", AllowedDelegateClients: []string{"*"}},
+			},
+			wantErr: true,
+			errMsg:  "actor_matcher",
 		},
 		{
 			name: "jwks_url private IP literal rejected without allow_private_ips",

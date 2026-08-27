@@ -256,11 +256,33 @@ func buildTrustedIssuerRunConfigs(issuers []mcpv1beta1.TrustedIssuerConfig) []to
 			AllowPrivateIPs:        ti.AllowPrivateIPs,
 			ActorClaim:             ti.ActorClaim,
 			AllowedActors:          append([]string(nil), ti.AllowedActors...),
+			ActorMatcher:           ti.ActorMatcher,
 			AllowedDelegateClients: append([]string(nil), ti.AllowedDelegateClients...),
 			AllowMayAct:            ti.AllowMayAct,
+			JWTBearerGrant:         buildJWTBearerGrantPolicy(ti.JWTBearerGrant),
 		}
 	}
 	return configs
+}
+
+func buildJWTBearerGrantPolicy(config *mcpv1beta1.JWTBearerGrantConfig) *tokenexchange.JWTBearerGrantPolicy {
+	if config == nil {
+		return nil
+	}
+	policy := &tokenexchange.JWTBearerGrantPolicy{
+		SubjectBindings:   make([]tokenexchange.JWTBearerSubjectBinding, len(config.SubjectBindings)),
+		AcceptedAudiences: append([]string(nil), config.AcceptedAudiences...),
+	}
+	if config.MaxAssertionAge != nil {
+		policy.MaxAssertionAge = config.MaxAssertionAge.Duration.String()
+	}
+	for i, binding := range config.SubjectBindings {
+		policy.SubjectBindings[i] = tokenexchange.JWTBearerSubjectBinding{
+			Subject:          binding.Subject,
+			AllowedResources: append([]string(nil), binding.AllowedResources...),
+		}
+	}
+	return policy
 }
 
 // EmbeddedAuthServerConfigName returns the config name that should be used for

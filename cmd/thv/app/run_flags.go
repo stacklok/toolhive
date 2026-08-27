@@ -268,7 +268,7 @@ func AddRunFlags(cmd *cobra.Command, config *RunFlags) {
 	cmd.Flags().BoolVar(&config.OtelInsecure, "otel-insecure", false,
 		"Connect to the OpenTelemetry endpoint using HTTP instead of HTTPS (default false)")
 	cmd.Flags().BoolVar(&config.OtelEnablePrometheusMetricsPath, "otel-enable-prometheus-metrics-path", false,
-		"Enable Prometheus-style /metrics endpoint on the main transport port (default false)")
+		"Enable Prometheus-style /metrics endpoint on a dedicated diagnostics port (default false)")
 	cmd.Flags().StringArrayVar(&config.OtelEnvironmentVariables, "otel-env-vars", nil,
 		"Environment variable names to include in OpenTelemetry spans (comma-separated: ENV1,ENV2)")
 	cmd.Flags().StringVar(&config.OtelCustomAttributes, "otel-custom-attributes", "",

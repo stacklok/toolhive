@@ -1404,8 +1404,12 @@ func TestAuthorizeWithJWTClaims_UpstreamProvider(t *testing.T) {
 				},
 				UpstreamTokens: map[string]string{},
 			},
-			wantErr:     true,
-			errContains: "upstream token for provider",
+			// Delegated tokens (RFC 8693) have no UpstreamTokens entry; the
+			// authorizer now falls back to request-token claims instead of
+			// erroring. Here the fallback sub does not match the policy, so
+			// authorization is denied by policy evaluation, not by a missing-
+			// token error. See #6424.
+			wantAuthorize: false,
 		},
 		{
 			name: "upstream_token_opaque_falls_back_to_request_claims_denied",
@@ -1469,8 +1473,29 @@ func TestAuthorizeWithJWTClaims_UpstreamProvider(t *testing.T) {
 				},
 				UpstreamTokens: nil,
 			},
-			wantErr:     true,
-			errContains: "upstream token for provider",
+			// Same fallback as above: a nil UpstreamTokens map (no tsid, as in
+			// a delegated token minted without an IDP session link) falls back
+			// to request claims rather than erroring. Policy evaluation then
+			// denies because sub mismatch.
+			wantAuthorize: false,
+		},
+		{
+			name: "delegated_token_missing_upstream_falls_back_and_permits_via_request_claims",
+			identity: &auth.Identity{
+				PrincipalInfo: auth.PrincipalInfo{
+					Subject: "upstream-user",
+					Claims: map[string]any{
+						"sub": "upstream-user",
+						"act": map[string]interface{}{"sub": "spiffe://toolhive.dev/ns/agents/sa/delegate"},
+					},
+				},
+				UpstreamTokens: nil,
+			},
+			// RFC 8693 delegated token has no upstream session (no tsid) and
+			// thus no UpstreamTokens entry. The fallback to request claims
+			// carries the delegated subject through, so a policy targeting the
+			// user still permits. See #6424.
+			wantAuthorize: true,
 		},
 		{
 			name: "upstream_token_has_no_sub_claim",

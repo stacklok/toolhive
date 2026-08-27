@@ -616,10 +616,20 @@ func (a *Authorizer) resolveClaims(identity *auth.Identity) (jwt.MapClaims, erro
 	// Embedded auth server path: the upstream IDP token is the primary claim source.
 	upstreamToken, tokenFound := identity.UpstreamTokens[a.primaryUpstreamProvider]
 	if !tokenFound || upstreamToken == "" {
-		// The upstream token must be present if the authorizer is configured to use it.
-		// Missing token means the session has no upstream credential; deny.
-		return nil, fmt.Errorf("upstream token for provider %q not found in identity",
-			a.primaryUpstreamProvider)
+		// RFC 8693 delegated tokens (and any token without an upstream session)
+		// have no UpstreamTokens entry — that binding only exists for an
+		// identity established via the upstream browser flow. Falling back to
+		// the request token's claims keeps delegation usable when Cedar is
+		// configured with a primaryUpstreamProvider (auto-derived from the
+		// sole upstream), rather than denying every tool before policy
+		// evaluation. This mirrors the existing opaque-token fallback branch
+		// below. See #6424.
+		a.claimKeyLog.Do(func() {
+			slog.Warn("upstream token not found for provider; falling back to request-token claims for Cedar evaluation",
+				"provider", a.primaryUpstreamProvider)
+		})
+		a.logClaimKeys("delegated-fallback", requestClaims)
+		return requestClaims, nil
 	}
 
 	upstreamClaims, err := parseUpstreamJWTClaims(upstreamToken)

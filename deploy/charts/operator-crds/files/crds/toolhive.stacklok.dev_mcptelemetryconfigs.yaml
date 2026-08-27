@@ -105,6 +105,10 @@ spec:
                         type: object
                         x-kubernetes-map-type: atomic
                     type: object
+                    x-kubernetes-validations:
+                    - message: configMapRef.name is required and must be non-empty
+                      rule: has(self.configMapRef) && size(self.configMapRef.name)
+                        > 0
                   enabled:
                     default: false
                     description: Enabled controls whether OpenTelemetry is enabled
@@ -394,6 +398,10 @@ spec:
                         type: object
                         x-kubernetes-map-type: atomic
                     type: object
+                    x-kubernetes-validations:
+                    - message: configMapRef.name is required and must be non-empty
+                      rule: has(self.configMapRef) && size(self.configMapRef.name)
+                        > 0
                   enabled:
                     default: false
                     description: Enabled controls whether OpenTelemetry is enabled

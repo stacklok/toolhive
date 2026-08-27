@@ -692,6 +692,10 @@ type OutboundNetworkPermissions struct {
 }
 
 // CABundleSource defines a source for CA certificate bundles.
+//
+// +kubebuilder:validation:XValidation:rule="has(self.configMapRef) && size(self.configMapRef.name) > 0",message="configMapRef.name is required and must be non-empty"
+//
+//nolint:lll // CEL validation rule exceeds line length limit
 type CABundleSource struct {
 	// ConfigMapRef references a ConfigMap containing the CA certificate bundle.
 	// The ConfigMap key is required by the API. If omitted in a stored object, it

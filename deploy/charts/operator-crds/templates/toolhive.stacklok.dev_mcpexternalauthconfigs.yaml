@@ -897,6 +897,10 @@ spec:
                               type: object
                               x-kubernetes-map-type: atomic
                           type: object
+                          x-kubernetes-validations:
+                          - message: configMapRef.name is required and must be non-empty
+                            rule: has(self.configMapRef) && size(self.configMapRef.name)
+                              > 0
                         expectedAudience:
                           description: |-
                             ExpectedAudience is the expected "aud" claim value that must appear in
@@ -1126,6 +1130,11 @@ spec:
                                   type: object
                                   x-kubernetes-map-type: atomic
                               type: object
+                              x-kubernetes-validations:
+                              - message: configMapRef.name is required and must be
+                                  non-empty
+                                rule: has(self.configMapRef) && size(self.configMapRef.name)
+                                  > 0
                             clientId:
                               description: |-
                                 ClientID is the OAuth 2.0 client identifier registered with the upstream IDP.
@@ -1469,6 +1478,11 @@ spec:
                                   type: object
                                   x-kubernetes-map-type: atomic
                               type: object
+                              x-kubernetes-validations:
+                              - message: configMapRef.name is required and must be
+                                  non-empty
+                                rule: has(self.configMapRef) && size(self.configMapRef.name)
+                                  > 0
                             clientId:
                               description: ClientID is the OAuth 2.0 client identifier
                                 registered with the upstream IdP.
@@ -2997,6 +3011,10 @@ spec:
                               type: object
                               x-kubernetes-map-type: atomic
                           type: object
+                          x-kubernetes-validations:
+                          - message: configMapRef.name is required and must be non-empty
+                            rule: has(self.configMapRef) && size(self.configMapRef.name)
+                              > 0
                         expectedAudience:
                           description: |-
                             ExpectedAudience is the expected "aud" claim value that must appear in
@@ -3226,6 +3244,11 @@ spec:
                                   type: object
                                   x-kubernetes-map-type: atomic
                               type: object
+                              x-kubernetes-validations:
+                              - message: configMapRef.name is required and must be
+                                  non-empty
+                                rule: has(self.configMapRef) && size(self.configMapRef.name)
+                                  > 0
                             clientId:
                               description: |-
                                 ClientID is the OAuth 2.0 client identifier registered with the upstream IDP.
@@ -3569,6 +3592,11 @@ spec:
                                   type: object
                                   x-kubernetes-map-type: atomic
                               type: object
+                              x-kubernetes-validations:
+                              - message: configMapRef.name is required and must be
+                                  non-empty
+                                rule: has(self.configMapRef) && size(self.configMapRef.name)
+                                  > 0
                             clientId:
                               description: ClientID is the OAuth 2.0 client identifier
                                 registered with the upstream IdP.

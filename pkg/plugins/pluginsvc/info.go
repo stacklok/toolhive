@@ -40,14 +40,19 @@ func (s *service) Info(ctx context.Context, opts plugins.InfoOptions) (*plugins.
 	}
 	// Project-scoped, lock-managed plugins carry the lock file's recorded
 	// trust state so callers can display what installs are checked against.
-	// A lock read failure is not fatal here: Info's job is describing the
-	// install, and an unreadable lock file already fails loudly in the
-	// operations that depend on it (install, sync, upgrade).
+	// A read failure is propagated rather than reported as absent trust
+	// state: "no provenance and not unsigned" is how an untracked install
+	// renders, so swallowing the error would make a malformed or unreadable
+	// toolhive.lock.yaml indistinguishable from a plugin nothing is pinning.
+	// A missing lock file is not an error — lockfile.Load returns an empty
+	// lockfile — so this only fires on one that exists and cannot be trusted.
 	if scope == plugins.ScopeProject && projectRoot != "" {
-		if expected, expectUnsigned, trustErr := expectedLockTrust(projectRoot, opts.Name); trustErr == nil {
-			info.Provenance = provenanceInfoFromLock(expected)
-			info.Unsigned = expectUnsigned
+		expected, expectUnsigned, trustErr := expectedLockTrust(projectRoot, opts.Name)
+		if trustErr != nil {
+			return nil, trustErr
 		}
+		info.Provenance = provenanceInfoFromLock(expected)
+		info.Unsigned = expectUnsigned
 	}
 	return info, nil
 }

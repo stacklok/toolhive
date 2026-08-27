@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"net/http"
 	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 
@@ -606,4 +607,95 @@ func TestInstallResultCarriesTrustDecision(t *testing.T) {
 		assert.Nil(t, result.Provenance)
 		assert.True(t, result.Unsigned)
 	})
+}
+
+// TestDispatchExtractionPersistsNewlyVerifiedBundle covers the migration path
+// that removing the lock feature gate opened up. A project install recorded
+// while verification was gated off carries no Sigstore bundle, so a
+// same-digest reinstall that now verifies must not short-circuit: the no-op
+// and same-digest-new-clients paths both return the stored record verbatim
+// without persisting, which would leave the lock entry naming a signer that
+// verifyStoredSignature cannot re-verify offline (it fails closed on
+// provenance with no stored bundle) and leave on-disk drift unrepaired.
+//
+//nolint:paralleltest // serial: real sqlite + on-disk client materialization per test
+func TestDispatchExtractionPersistsNewlyVerifiedBundle(t *testing.T) {
+	const name = "my-plugin"
+
+	tests := []struct {
+		name       string
+		bundle     []byte
+		wantBundle bool
+	}{
+		{
+			name:       "bundle to persist is not a no-op",
+			bundle:     []byte(`{"bundle":true}`),
+			wantBundle: true,
+		},
+		{
+			name:   "no bundle still short-circuits",
+			bundle: nil,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			svc, projectRoot := newLockTestService(t)
+			inner := svc.(*service) //nolint:forcetypeassert
+			digest := validLockDigest()
+
+			// Stand in for a record written before lock tracking: right
+			// digest and clients, no stored bundle.
+			installTestPlugin(t, svc, projectRoot, digest)
+			existing, err := inner.store.Get(t.Context(), name, plugins.ScopeProject, projectRoot)
+			require.NoError(t, err)
+			require.Empty(t, existing.SigstoreBundle, "precondition: the pre-gate record stores no bundle")
+
+			result, err := inner.dispatchExtraction(t.Context(), plugins.InstallOptions{
+				Name:           name,
+				LayerData:      makePluginLayerData(t, name),
+				Digest:         digest,
+				Scope:          plugins.ScopeProject,
+				ProjectRoot:    projectRoot,
+				Clients:        []string{"claude-code"},
+				SigstoreBundle: tt.bundle,
+			}, plugins.ScopeProject, existing, nil, []string{"claude-code"})
+			require.NoError(t, err)
+
+			if !tt.wantBundle {
+				assert.Empty(t, result.Plugin.SigstoreBundle)
+				return
+			}
+			assert.Equal(t, tt.bundle, result.Plugin.SigstoreBundle,
+				"the freshly verified bundle must reach the record, or offline sync fails closed")
+
+			stored, err := inner.store.Get(t.Context(), name, plugins.ScopeProject, projectRoot)
+			require.NoError(t, err)
+			assert.Equal(t, tt.bundle, stored.SigstoreBundle, "the bundle must be persisted, not just returned")
+		})
+	}
+}
+
+// TestInfoPropagatesUnreadableLockTrustState pins that a lock file which
+// exists but cannot be trusted surfaces as an error rather than as absent
+// trust state: "no provenance and not unsigned" is exactly how an untracked
+// install renders, so swallowing the read failure would leave CLI and JSON
+// callers unable to tell a malformed toolhive.lock.yaml from a plugin nothing
+// is pinning. A missing lock file stays non-fatal (lockfile.Load returns an
+// empty lockfile), which the "no lock entry" case above covers.
+//
+//nolint:paralleltest // serial: real sqlite + on-disk client materialization per test
+func TestInfoPropagatesUnreadableLockTrustState(t *testing.T) {
+	repoDir := createPluginTestRepo(t, "")
+	svc, projectRoot := newGitLockTestService(t, repoDir)
+	require.NoError(t, gitInstall(t, svc, projectRoot, nil))
+
+	require.NoError(t, os.WriteFile(
+		filepath.Join(projectRoot, lockfile.FileName), []byte("plugins: [unterminated"), 0o644))
+
+	_, err := svc.Info(t.Context(), plugins.InfoOptions{
+		Name: "my-plugin", Scope: plugins.ScopeProject, ProjectRoot: projectRoot,
+	})
+	require.Error(t, err, "an unreadable lock file must not render as an untracked install")
+	assert.Contains(t, err.Error(), "reading lock trust state")
 }

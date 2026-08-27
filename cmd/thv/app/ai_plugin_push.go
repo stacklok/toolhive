@@ -29,7 +29,9 @@ func init() {
 	aiPluginPushCmd.Flags().StringVar(&aiPluginPushKey, "key", "",
 		"Path to a cosign private key to sign the pushed artifact. "+
 			"Encrypted keys are decrypted with COSIGN_PASSWORD read from the 'thv serve' process, "+
-			"which performs the signing")
+			"which performs the signing. NOTE: ToolHive cannot yet verify key-signed artifacts at "+
+			"install time (only keyless/Fulcio signatures), so a project-scoped install of one is "+
+			"refused and --allow-unsigned does not override it; prefer keyless signing")
 	aiPluginPushCmd.Flags().StringVar(&aiPluginPushIdentityToken, "identity-token", "",
 		"OIDC identity token (or a path to a file containing one) for keyless signing. "+
 			"Mutually exclusive with --key. If omitted, one is acquired automatically: from the "+

@@ -73,12 +73,23 @@ func (s *service) dispatchExtraction(
 	storeErr error,
 	clientTypes []string,
 ) (*plugins.InstallResult, error) {
-	if !opts.SyncRestore && isExtractionNoOp(existing, storeErr, opts, clientTypes) {
+	// Freshly verified trust material has to reach the stored record, so an
+	// install carrying a bundle the record lacks can take neither the no-op
+	// nor the same-digest client-only path: both return `existing` verbatim
+	// without persisting anything. Project installs predating lock tracking
+	// recorded no bundle (verification was gated off), so a same-digest
+	// reinstall would otherwise write a lock entry naming a signer that
+	// verifyStoredSignature cannot re-verify offline — it fails closed on
+	// provenance-without-bundle — while leaving on-disk drift unrepaired.
+	// Routing to the upgrade path rematerializes and persists both.
+	mustPersistTrust := storeErr == nil && len(opts.SigstoreBundle) > 0 && len(existing.SigstoreBundle) == 0
+
+	if !opts.SyncRestore && !mustPersistTrust && isExtractionNoOp(existing, storeErr, opts, clientTypes) {
 		return &plugins.InstallResult{Plugin: existing}, nil
 	}
 
 	digestMatches := storeErr == nil && existing.Digest == opts.Digest
-	if digestMatches && !opts.SyncRestore {
+	if digestMatches && !opts.SyncRestore && !mustPersistTrust {
 		return s.installExtractionSameDigestNewClients(ctx, opts, scope, existing, clientTypes)
 	}
 	if storeErr == nil {
@@ -89,9 +100,11 @@ func (s *service) dispatchExtraction(
 
 // isExtractionNoOp reports whether the install can be short-circuited because
 // the same digest and all requested clients are already present. Mirror of
-// skillsvc.isExtractionNoOp. Callers must also check SyncRestore: a lock-driven
-// reinstall repairs on-disk drift at the same digest, so the no-op path must
-// not apply.
+// skillsvc.isExtractionNoOp. Callers must also check SyncRestore and whether
+// newly verified trust material still needs persisting (see
+// dispatchExtraction): a lock-driven reinstall repairs on-disk drift at the
+// same digest, and a record with no stored bundle needs one written, so the
+// no-op path must not apply to either.
 func isExtractionNoOp(existing plugins.InstalledPlugin, storeErr error, opts plugins.InstallOptions, clientTypes []string) bool {
 	if storeErr != nil || existing.Digest != opts.Digest {
 		return false

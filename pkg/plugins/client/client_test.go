@@ -517,18 +517,6 @@ func TestPush(t *testing.T) {
 			statusCode: http.StatusNoContent,
 		},
 		{
-			name: "forwards key",
-			opts: plugins.PushOptions{
-				Reference: "ghcr.io/org/my-plugin:v1.0.0",
-				Key:       "/tmp/cosign.key",
-			},
-			wantBody: pushRequest{
-				Reference: "ghcr.io/org/my-plugin:v1.0.0",
-				Key:       "/tmp/cosign.key",
-			},
-			statusCode: http.StatusNoContent,
-		},
-		{
 			name:       "not found",
 			opts:       plugins.PushOptions{Reference: "ghcr.io/org/missing:v1", NoSign: true},
 			statusCode: http.StatusNotFound,

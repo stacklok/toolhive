@@ -288,7 +288,6 @@ func (c *Client) Build(ctx context.Context, opts plugins.BuildOptions) (*plugins
 func (c *Client) Push(ctx context.Context, opts plugins.PushOptions) error {
 	body := pushRequest{
 		Reference:     opts.Reference,
-		Key:           opts.Key,
 		IdentityToken: opts.IdentityToken,
 		NoSign:        opts.NoSign,
 	}

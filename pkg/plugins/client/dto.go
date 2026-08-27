@@ -31,10 +31,10 @@ type buildRequest struct {
 
 type pushRequest struct {
 	Reference string `json:"reference"`
-	// Key, IdentityToken, and NoSign mirror pushPluginRequest. Without them
-	// here the CLI's signing flags would be dropped at the HTTP boundary and
-	// every push would be rejected as missing a signing credential.
-	Key           string `json:"key,omitempty"`
+	// IdentityToken and NoSign mirror pushPluginRequest. Without them here the
+	// CLI's signing flags would be dropped at the HTTP boundary and every push
+	// would be rejected as missing a signing credential. There is no key field:
+	// plugin signing is keyless-only (#6442).
 	IdentityToken string `json:"identity_token,omitempty"`
 	NoSign        bool   `json:"no_sign,omitempty"`
 }

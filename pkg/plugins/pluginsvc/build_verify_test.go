@@ -35,8 +35,10 @@ func newPushFixture(t *testing.T) (*ocimocks.MockRegistryClient, *ociplugins.Sto
 }
 
 // TestPushValidatesSigningInputs guards the RFC invariant that pushes are
-// signed by default: exactly one of a key, an identity token, or an explicit
-// no_sign must be given, before anything is pushed.
+// signed by default: an identity token or an explicit no_sign must be given,
+// before anything is pushed. A key is refused on every combination — plugin
+// signing is keyless-only until install-time key verification exists (#6442),
+// so accepting one would publish an uninstallable artifact.
 func TestPushValidatesSigningInputs(t *testing.T) {
 	t.Parallel()
 
@@ -44,13 +46,17 @@ func TestPushValidatesSigningInputs(t *testing.T) {
 		name string
 		opts plugins.PushOptions
 	}{
-		{name: "neither key, identity_token, nor no_sign", opts: plugins.PushOptions{}},
+		{name: "neither identity_token nor no_sign", opts: plugins.PushOptions{}},
 		{
-			name: "both key and identity_token",
+			name: "key alone is refused",
+			opts: plugins.PushOptions{Key: "/tmp/cosign.key"},
+		},
+		{
+			name: "key with identity_token is refused",
 			opts: plugins.PushOptions{Key: "/tmp/cosign.key", IdentityToken: "tok"},
 		},
 		{
-			name: "no_sign combined with key",
+			name: "key with no_sign is refused",
 			opts: plugins.PushOptions{NoSign: true, Key: "/tmp/cosign.key"},
 		},
 		{
@@ -72,25 +78,27 @@ func TestPushValidatesSigningInputs(t *testing.T) {
 	}
 }
 
-// TestPushSignsAfterPushing proves the pushed artifact is signed with the
-// provided key, pinned to the digest that was pushed.
-func TestPushSignsAfterPushing(t *testing.T) {
+// TestPushRejectsKeyBeforePushing proves a key-signed push is refused before
+// the artifact reaches the registry and before the signer is consulted (both
+// mocks carry no expectations). plugins.PushOptions aliases skills.PushOptions
+// so the field still exists for in-process callers; it must be answered with a
+// 400 rather than silently producing an artifact no install can accept.
+func TestPushRejectsKeyBeforePushing(t *testing.T) {
 	t.Parallel()
-	reg, ociStore, digest := newPushFixture(t)
+	reg, ociStore, _ := newPushFixture(t)
 
-	ms := signermocks.NewMockSigner(gomock.NewController(t))
-	ms.EXPECT().SignOCI(gomock.Any(), "my-tag", digest, signer.Options{Key: "/tmp/cosign.key"}).
-		Return(&signer.Result{Bundle: []byte(`{"bundle":true}`)}, nil)
-	reg.EXPECT().Push(gomock.Any(), gomock.Any(), gomock.Any(), "my-tag").Return(nil)
-
+	ms := signermocks.NewMockSigner(gomock.NewController(t)) // no expectations
 	svc := New(WithRegistryClient(reg), WithOCIStore(ociStore), WithSigner(ms))
 	err := svc.Push(t.Context(), plugins.PushOptions{Reference: "my-tag", Key: "/tmp/cosign.key"})
-	require.NoError(t, err)
+	require.Error(t, err)
+	assert.Equal(t, http.StatusBadRequest, httperr.Code(err))
+	assert.Contains(t, err.Error(), "key signing is not supported for plugins")
 }
 
-// TestPushSignsKeylessWithIdentityToken proves an identity token pushes
-// through keyless signing instead of a key, and that the Fulcio/Rekor URL
-// env overrides reach core's signer.Options — the E2E/staging escape hatch.
+// TestPushSignsKeylessWithIdentityToken proves an identity token signs the
+// pushed artifact pinned to the digest that was pushed, and that the
+// Fulcio/Rekor URL env overrides reach core's signer.Options — the
+// E2E/staging escape hatch.
 // Not run in parallel: t.Setenv forbids it.
 func TestPushSignsKeylessWithIdentityToken(t *testing.T) {
 	reg, ociStore, digest := newPushFixture(t)
@@ -122,7 +130,7 @@ func TestPushSigningFailurePropagates(t *testing.T) {
 	reg.EXPECT().Push(gomock.Any(), gomock.Any(), gomock.Any(), "my-tag").Return(nil)
 
 	svc := New(WithRegistryClient(reg), WithOCIStore(ociStore), WithSigner(ms))
-	err := svc.Push(t.Context(), plugins.PushOptions{Reference: "my-tag", Key: "/bad/key"})
+	err := svc.Push(t.Context(), plugins.PushOptions{Reference: "my-tag", IdentityToken: "a.b.c"})
 	require.Error(t, err)
 	assert.Equal(t, http.StatusBadRequest, httperr.Code(err))
 }

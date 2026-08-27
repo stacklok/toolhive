@@ -3441,12 +3441,9 @@ components:
         identity_token:
           description: |-
             IdentityToken is a short-lived OIDC identity token used for keyless
-            signing, mutually exclusive with Key
-          type: string
-        key:
-          description: |-
-            Key is the path to a cosign private key used to sign the pushed
-            artifact
+            signing. Plugin signing is keyless-only: there is deliberately no key
+            field, because ToolHive cannot verify key-signed artifacts at install
+            time and would publish an uninstallable plugin (#6442)
           type: string
         no_sign:
           description: NoSign pushes without signing

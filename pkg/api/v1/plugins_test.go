@@ -487,14 +487,18 @@ func TestPluginsRouter(t *testing.T) {
 			expectedStatus: http.StatusNoContent,
 		},
 		{
-			name:   "push plugin forwards key and no_sign",
+			// The request DTO has no key field, so a key sent by an older
+			// client is dropped rather than reaching the service: plugin
+			// signing is keyless-only (#6442). It must never arrive as a
+			// populated PushOptions.Key.
+			name:   "push plugin does not forward a key",
 			method: "POST",
 			path:   "/push",
-			body:   `{"reference":"ghcr.io/test/plugin:v1","key":"/tmp/cosign.key"}`,
+			body:   `{"reference":"ghcr.io/test/plugin:v1","key":"/tmp/cosign.key","no_sign":true}`,
 			setupMock: func(svc *plugmocks.MockPluginService, _ string) {
 				svc.EXPECT().Push(gomock.Any(), plugins.PushOptions{
 					Reference: "ghcr.io/test/plugin:v1",
-					Key:       "/tmp/cosign.key",
+					NoSign:    true,
 				}).Return(nil)
 			},
 			expectedStatus: http.StatusNoContent,

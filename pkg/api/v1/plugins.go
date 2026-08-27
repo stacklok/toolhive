@@ -327,7 +327,6 @@ func (s *PluginsRoutes) pushPlugin(w http.ResponseWriter, r *http.Request) error
 
 	if err := s.pluginService.Push(r.Context(), plugins.PushOptions{
 		Reference:     req.Reference,
-		Key:           req.Key,
 		IdentityToken: req.IdentityToken,
 		NoSign:        req.NoSign,
 	}); err != nil {

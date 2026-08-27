@@ -77,11 +77,10 @@ type buildPluginRequest struct {
 type pushPluginRequest struct {
 	// OCI reference to push
 	Reference string `json:"reference"`
-	// Key is the path to a cosign private key used to sign the pushed
-	// artifact
-	Key string `json:"key,omitempty"`
 	// IdentityToken is a short-lived OIDC identity token used for keyless
-	// signing, mutually exclusive with Key
+	// signing. Plugin signing is keyless-only: there is deliberately no key
+	// field, because ToolHive cannot verify key-signed artifacts at install
+	// time and would publish an uninstallable plugin (#6442)
 	IdentityToken string `json:"identity_token,omitempty"`
 	// NoSign pushes without signing
 	NoSign bool `json:"no_sign,omitempty"`

@@ -3681,11 +3681,7 @@
                 "description": "Request to push a built plugin artifact",
                 "properties": {
                     "identity_token": {
-                        "description": "IdentityToken is a short-lived OIDC identity token used for keyless\nsigning, mutually exclusive with Key",
-                        "type": "string"
-                    },
-                    "key": {
-                        "description": "Key is the path to a cosign private key used to sign the pushed\nartifact",
+                        "description": "IdentityToken is a short-lived OIDC identity token used for keyless\nsigning. Plugin signing is keyless-only: there is deliberately no key\nfield, because ToolHive cannot verify key-signed artifacts at install\ntime and would publish an uninstallable plugin (#6442)",
                         "type": "string"
                     },
                     "no_sign": {

@@ -154,8 +154,11 @@ func (s *service) Push(ctx context.Context, opts plugins.PushOptions) error {
 	// failure fails the push: an artifact published as if it were signed,
 	// which consumers then have to install with --allow-unsigned, is worse
 	// than a push that visibly did not complete.
+	//
+	// Key is deliberately not forwarded: plugin pushes are keyless-only until
+	// install-time key verification exists (#6442), and validateSigningInputs
+	// has already rejected a non-empty one.
 	if _, err := s.artifactSigner().SignOCI(ctx, opts.Reference, d.String(), signer.Options{
-		Key:           opts.Key,
 		IdentityToken: opts.IdentityToken,
 		FulcioURL:     os.Getenv(envFulcioURL),
 		RekorURL:      os.Getenv(envRekorURL),
@@ -252,34 +255,38 @@ func (s *service) DeleteBuild(ctx context.Context, tag string) error {
 }
 
 // validateSigningInputs enforces that a push declares exactly one signing
-// method: a cosign key, an OIDC identity token for keyless signing, or an
-// explicit opt-out. Ambiguous or absent input is rejected here, before the
-// artifact is pushed, rather than surfacing as a signing failure afterward.
-// Mirror skillsvc.validateSigningInputs — plugins.PushOptions aliases
-// skills.PushOptions, but the error text names the plugin command's flags.
+// method: an OIDC identity token for keyless signing, or an explicit opt-out.
+// Ambiguous or absent input is rejected here, before the artifact is pushed,
+// rather than surfacing as a signing failure afterward.
+//
+// Diverges from skillsvc.validateSigningInputs on purpose: key signing is
+// refused rather than accepted. Install-time verification is keyless-only, and
+// the resulting failure is verifier.ErrKeySigned rather than ErrUnsigned, so
+// --allow-unsigned cannot override it — a key-signed plugin is uninstallable
+// project-scoped. Accepting a key here would publish artifacts ToolHive itself
+// refuses to consume. Tracked in #6442; the field survives because
+// plugins.PushOptions aliases skills.PushOptions, so an in-process caller can
+// still set it and has to be told no.
 func validateSigningInputs(opts plugins.PushOptions) error {
-	methods := 0
 	if opts.Key != "" {
-		methods++
-	}
-	if opts.IdentityToken != "" {
-		methods++
+		return httperr.WithCode(
+			errors.New("key signing is not supported for plugins: ToolHive cannot verify key-signed "+
+				"artifacts at install time, so the pushed plugin would be uninstallable. Use keyless "+
+				"signing (identity_token / --identity-token, acquired automatically when omitted) "+
+				"or no_sign (--no-sign)"),
+			http.StatusBadRequest,
+		)
 	}
 	switch {
-	case opts.NoSign && methods > 0:
+	case opts.NoSign && opts.IdentityToken != "":
 		return httperr.WithCode(
-			errors.New("no_sign (--no-sign) cannot be combined with key (--key) or identity_token (--identity-token)"),
+			errors.New("no_sign (--no-sign) cannot be combined with identity_token (--identity-token)"),
 			http.StatusBadRequest,
 		)
-	case !opts.NoSign && methods == 0:
+	case !opts.NoSign && opts.IdentityToken == "":
 		return httperr.WithCode(
-			errors.New("signing credential required: set key (--key), identity_token (--identity-token) "+
-				"for CI/OIDC keyless signing, or no_sign (--no-sign) to push unsigned"),
-			http.StatusBadRequest,
-		)
-	case !opts.NoSign && methods > 1:
-		return httperr.WithCode(
-			errors.New("specify only one of key (--key) or identity_token (--identity-token)"),
+			errors.New("signing credential required: set identity_token (--identity-token) for "+
+				"CI/OIDC keyless signing, or no_sign (--no-sign) to push unsigned"),
 			http.StatusBadRequest,
 		)
 	}

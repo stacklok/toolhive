@@ -14,18 +14,22 @@ import (
 )
 
 // TestAIPluginPushSigningFlags pins the signed-by-default publish surface:
-// the three flags must exist, and neither signing method nor the opt-out may
-// be preset — a defaulted --no-sign would publish unsigned artifacts silently.
+// the keyless flags must exist, the opt-out must not be preset (a defaulted
+// --no-sign would publish unsigned artifacts silently), and --key must NOT be
+// offered — ToolHive cannot verify key-signed artifacts at install time, so
+// the flag would only produce uninstallable plugins (#6442). Re-add it in the
+// change that makes key verification work.
 func TestAIPluginPushSigningFlags(t *testing.T) {
 	t.Parallel()
 
-	for _, name := range []string{"key", "identity-token", "no-sign"} {
+	for _, name := range []string{"identity-token", "no-sign"} {
 		flag := aiPluginPushCmd.Flags().Lookup(name)
 		require.NotNil(t, flag, "thv ai-plugin push must expose --%s", name)
 	}
+	assert.Nil(t, aiPluginPushCmd.Flags().Lookup("key"),
+		"plugin signing is keyless-only; --key must not be advertised until install can verify it")
 	assert.Equal(t, "false", aiPluginPushCmd.Flags().Lookup("no-sign").DefValue,
 		"pushing unsigned must always be an explicit choice")
-	assert.Empty(t, aiPluginPushCmd.Flags().Lookup("key").DefValue)
 	assert.Empty(t, aiPluginPushCmd.Flags().Lookup("identity-token").DefValue)
 }
 

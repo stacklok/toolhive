@@ -92,15 +92,6 @@ func (r *Result) ToLockProvenance() *lockfile.Provenance {
 	}
 }
 
-// expectedIdentity converts a lock expectation into the core Identity bound
-// into the Sigstore verification policy. Catalog expectations and nil (trust
-// on first use) yield nil, which core treats as chain-of-trust-only
-// verification.
-//
-// The recorded RepositoryRef and RunnerEnvironment are deliberately absent:
-// core's Identity cannot express them (and its SAN policy matches any ref),
-// so they are enforced against the certificate after the policy has passed —
-// see checkPinnedCertificateFields.
 // keyPinnedExpectation reports whether expected pins a cosign public key
 // rather than a certificate identity. Such an entry cannot be checked by the
 // keyless policy at all, and its certificate fields are empty by construction
@@ -113,6 +104,15 @@ func keyPinnedExpectation(expected *ProvenanceExpectation) bool {
 	return expected != nil && expected.locked != nil && expected.locked.PublicKey != ""
 }
 
+// expectedIdentity converts a lock expectation into the core Identity bound
+// into the Sigstore verification policy. Catalog expectations and nil (trust
+// on first use) yield nil, which core treats as chain-of-trust-only
+// verification.
+//
+// The recorded RepositoryRef and RunnerEnvironment are deliberately absent:
+// core's Identity cannot express them (and its SAN policy matches any ref),
+// so they are enforced against the certificate after the policy has passed —
+// see checkPinnedCertificateFields.
 func expectedIdentity(expected *ProvenanceExpectation) *coreverifier.Identity {
 	if expected == nil {
 		return nil

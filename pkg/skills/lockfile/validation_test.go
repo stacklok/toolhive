@@ -18,6 +18,11 @@ var (
 	validContentDigest = ContentDigestPrefix + validSHA256Hex
 )
 
+// testPublicKeyB64 is a real P-256 public key in the base64 DER SPKI
+// form a key-pinned lock entry stores. It must genuinely parse: validation
+// rejects a value that merely decodes as base64.
+const testPublicKeyB64 = "MFkwEwYHKoZIzj0CAQYIKoZIzj0DAQcDQgAExlVDpbnOEv2fH3gS8n7UCHS9Gs0wKxIPR5EAcl8F1jSxlxAV/pll0NsSiuAK95Ws4Fpkn+5QkdVKNXy7LHgb2A=="
+
 func TestValidateDigest(t *testing.T) {
 	t.Parallel()
 
@@ -206,7 +211,7 @@ func TestValidateLockfile(t *testing.T) {
 			name: "publicKey-pinned provenance accepted without an identity",
 			lf: Lockfile{Version: CurrentVersion, Skills: []Entry{
 				{Name: "keyed", Source: "s", Digest: validSHA256Digest, Provenance: &Provenance{
-					PublicKey: "TUlJQkl6QU5CZ2txaGtpRzl3MEJBUUVGQUFPQ0FRODA=",
+					PublicKey: testPublicKeyB64,
 				}},
 			}},
 		},
@@ -216,7 +221,7 @@ func TestValidateLockfile(t *testing.T) {
 				{Name: "both", Source: "s", Digest: validSHA256Digest, Provenance: &Provenance{
 					SignerIdentity: "dev@example.com",
 					CertIssuer:     "https://accounts.example.com",
-					PublicKey:      "TUlJQkl6QU5CZ2txaGtpRzl3MEJBUUVGQUFPQ0FRODA=",
+					PublicKey:      testPublicKeyB64,
 				}},
 			}},
 			wantErr: "mutually exclusive",
@@ -225,11 +230,32 @@ func TestValidateLockfile(t *testing.T) {
 			name: "certificate-derived fields rejected on a publicKey-pinned entry",
 			lf: Lockfile{Version: CurrentVersion, Skills: []Entry{
 				{Name: "keyed", Source: "s", Digest: validSHA256Digest, Provenance: &Provenance{
-					PublicKey:     "TUlJQkl6QU5CZ2txaGtpRzl3MEJBUUVGQUFPQ0FRODA=",
+					PublicKey:     testPublicKeyB64,
 					RepositoryRef: "refs/tags/v1",
 				}},
 			}},
 			wantErr: "read from a certificate",
+		},
+		{
+			name: "publicKey must decode to a DER SPKI key, not merely to bytes",
+			lf: Lockfile{Version: CurrentVersion, Skills: []Entry{
+				{Name: "keyed", Source: "s", Digest: validSHA256Digest, Provenance: &Provenance{
+					// Valid base64 of ASCII text: well-encoded, but not a key.
+					PublicKey: "bm90LWEta2V5LWp1c3QtdGV4dA==",
+				}},
+			}},
+			wantErr: "not a DER SPKI public key",
+		},
+		{
+			name: "publicKey rejected on a git entry",
+			lf: Lockfile{Version: CurrentVersion, Skills: []Entry{
+				// A bare commit hash: a git entry, whose signature lives on the
+				// commit and is verified against a certificate, never a key.
+				{Name: "keyed", Source: "s", Digest: strings.Repeat("a", 40), Provenance: &Provenance{
+					PublicKey: testPublicKeyB64,
+				}},
+			}},
+			wantErr: "only valid for an OCI artifact",
 		},
 		{
 			name: "publicKey must be base64",

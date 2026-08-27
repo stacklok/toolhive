@@ -4,6 +4,7 @@
 package lockfile
 
 import (
+	"crypto/x509"
 	"encoding/base64"
 	"errors"
 	"fmt"
@@ -164,6 +165,15 @@ func validateEntry(entry Entry) error {
 		if err := validateProvenance(entry.Provenance); err != nil {
 			return fmt.Errorf("entry %q: provenance: %w", entry.Name, err)
 		}
+		// Checked here rather than in validateProvenance, which sees only the
+		// provenance block: a cosign key pair signs an OCI artifact, while a
+		// git entry's signature lives on the commit and is always
+		// certificate-based. A key-pinned git entry pins an anchor no
+		// verification of that entry could ever use.
+		if entry.Provenance.PublicKey != "" && !strings.HasPrefix(entry.Digest, ContentDigestPrefix) {
+			return fmt.Errorf("entry %q: provenance: publicKey is only valid for an OCI artifact;"+
+				" a git commit signature is verified against a certificate, not a key", entry.Name)
+		}
 	}
 	return nil
 }
@@ -237,8 +247,16 @@ func validateProvenanceAnchor(p *Provenance) error {
 					" — it is read from a certificate, and a key-pair signature has none", name)
 			}
 		}
-		if _, err := base64.StdEncoding.DecodeString(p.PublicKey); err != nil {
+		der, err := base64.StdEncoding.DecodeString(p.PublicKey)
+		if err != nil {
 			return fmt.Errorf("publicKey is not valid base64: %w", err)
+		}
+		// Decoding proves the encoding, not the content. This value is the
+		// entry's only trust anchor, so a blob that is merely well-encoded
+		// would be accepted here and then fail deep inside verification, long
+		// after the lock file stopped being the obvious suspect.
+		if _, err := x509.ParsePKIXPublicKey(der); err != nil {
+			return fmt.Errorf("publicKey is not a DER SPKI public key: %w", err)
 		}
 		return nil
 	case p.SignerIdentity == "":

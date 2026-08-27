@@ -31,6 +31,11 @@ const (
 	testRunnerEnvironment = "github-hosted"
 )
 
+// testPublicKeyB64 is a real P-256 public key in the base64 DER SPKI
+// form a key-pinned lock entry stores. It must genuinely parse: validation
+// rejects a value that merely decodes as base64.
+const testPublicKeyB64 = "MFkwEwYHKoZIzj0CAQYIKoZIzj0DAQcDQgAExlVDpbnOEv2fH3gS8n7UCHS9Gs0wKxIPR5EAcl8F1jSxlxAV/pll0NsSiuAK95Ws4Fpkn+5QkdVKNXy7LHgb2A=="
+
 func signedResult() *verifier.Result {
 	return &verifier.Result{
 		Signed:         true,
@@ -924,7 +929,7 @@ func TestProvenanceConversionsPreserveEveryField(t *testing.T) {
 		SigstoreURL:       "https://rekor.sigstore.dev",
 		Provisional:       true,
 	}
-	keyed := &lockfile.Provenance{PublicKey: "TUlJQkl6QU5CZ2txaGtpRzl3MEJBUUVGQUFPQ0FRODA="}
+	keyed := &lockfile.Provenance{PublicKey: testPublicKeyB64}
 	requireEveryFieldCovered(t, keyless, keyed)
 
 	keylessInfo := provenanceInfoFromLock(keyless)

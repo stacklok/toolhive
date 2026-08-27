@@ -208,16 +208,20 @@ func (r *MCPServerReconciler) handleInvalidEmbeddedAuthServerConfig(
 
 // handleInvalidCABundle records an invalid CA bundle as terminal
 // on conditionType, which the caller picks because it knows which reference the
-// bundle was reached through. Failures to persist status remain retryable.
+// bundle was reached through. err must be the full error returned by the
+// caller's validation call (not the unwrapped *InvalidCABundleError), so the
+// field-path prefix added by ValidateEmbeddedAuthServerCABundles (e.g.
+// "trustedIssuers[0] (...) caBundleRef:") reaches the status message. Failures
+// to persist status remain retryable.
 func (r *MCPServerReconciler) handleInvalidCABundle(
 	ctx context.Context,
 	mcpServer *mcpv1beta1.MCPServer,
 	conditionType string,
-	invalidCABundleErr *ctrlutil.InvalidCABundleError,
+	err error,
 ) error {
 	return ctrlutil.MutateAndPatchStatus(ctx, r.Client, mcpServer, func(server *mcpv1beta1.MCPServer) {
 		server.Status.Phase = mcpv1beta1.MCPServerPhaseFailed
-		server.Status.Message = fmt.Sprintf("Failed to build configuration: %s", invalidCABundleErr)
+		server.Status.Message = fmt.Sprintf("Failed to build configuration: %s", err)
 		server.Status.ObservedGeneration = server.Generation
 		setReadyCondition(server, metav1.ConditionFalse, mcpv1beta1.ConditionReasonNotReady, server.Status.Message)
 		meta.SetStatusCondition(&server.Status.Conditions, metav1.Condition{
@@ -225,7 +229,7 @@ func (r *MCPServerReconciler) handleInvalidCABundle(
 			Status:             metav1.ConditionFalse,
 			ObservedGeneration: server.Generation,
 			Reason:             mcpv1beta1.ConditionReasonInvalidCABundle,
-			Message:            fmt.Sprintf("invalid CA bundle: %v", invalidCABundleErr),
+			Message:            fmt.Sprintf("invalid CA bundle: %v", err),
 		})
 	})
 }
@@ -337,7 +341,7 @@ func (r *MCPServerReconciler) Reconcile(ctx context.Context, req ctrl.Request) (
 		var invalidCABundleErr *ctrlutil.InvalidCABundleError
 		if stderrors.As(err, &invalidCABundleErr) {
 			if statusErr := r.handleInvalidCABundle(
-				ctx, mcpServer, mcpv1beta1.ConditionTypeExternalAuthConfigValidated, invalidCABundleErr); statusErr != nil {
+				ctx, mcpServer, mcpv1beta1.ConditionTypeExternalAuthConfigValidated, err); statusErr != nil {
 				ctxLogger.Error(statusErr, "Failed to update MCPServer status after invalid CA bundle")
 				return ctrl.Result{}, statusErr
 			}
@@ -371,7 +375,7 @@ func (r *MCPServerReconciler) Reconcile(ctx context.Context, req ctrl.Request) (
 		var invalidCABundleErr *ctrlutil.InvalidCABundleError
 		if stderrors.As(err, &invalidCABundleErr) {
 			if statusErr := r.handleInvalidCABundle(
-				ctx, mcpServer, mcpv1beta1.ConditionTypeAuthServerRefValidated, invalidCABundleErr); statusErr != nil {
+				ctx, mcpServer, mcpv1beta1.ConditionTypeAuthServerRefValidated, err); statusErr != nil {
 				ctxLogger.Error(statusErr, "Failed to update MCPServer status after invalid CA bundle")
 				return ctrl.Result{}, statusErr
 			}

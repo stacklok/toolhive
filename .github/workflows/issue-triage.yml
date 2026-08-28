@@ -20,7 +20,7 @@ jobs:
           persist-credentials: false
 
       - name: Run Claude Code for Issue Triage
-        uses: anthropics/claude-code-action@d40ddef4c030e508327d6e35a9c45f3368482c50 # v1.0.195
+        uses: anthropics/claude-code-action@16b3b310c3d7b5279df73130324d5205aeea8eac # v1.0.205
         with:
           prompt: |
             You are an issue triage assistant. Analyze issue #${{ github.event.issue.number }} in ${{ github.repository }} and apply appropriate labels.

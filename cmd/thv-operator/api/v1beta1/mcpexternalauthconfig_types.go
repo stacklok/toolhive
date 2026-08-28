@@ -459,6 +459,15 @@ type TrustedIssuerConfig struct {
 	// +optional
 	AllowPrivateIPs bool `json:"allowPrivateIPs,omitempty"`
 
+	// CABundleRef references a ConfigMap containing PEM CA certificates used when
+	// fetching this issuer's OIDC discovery document and JWKS. The bundle is added
+	// to the system roots for this issuer's client only; public roots still apply
+	// and other issuers are unaffected. Write access to the referenced ConfigMap is
+	// equivalent to controlling this issuer's trust anchor for subject-token
+	// validation — restrict it with the same care as a signing-key Secret.
+	// +optional
+	CABundleRef *CABundleSource `json:"caBundleRef,omitempty"`
+
 	// ActorClaim names the claim identifying the client that requested the
 	// subject token from this external issuer (used by allowedActors below).
 	// Defaults to "azp" when empty; use "appid" for Microsoft Entra v1, "cid"
@@ -580,26 +589,19 @@ type JWTBearerSubjectBinding struct {
 // EmbeddedAuthServerConfig holds configuration for the embedded OAuth2/OIDC authorization server.
 // This enables running an authorization server that delegates authentication to upstream IDPs.
 // This type is shared by MCPExternalAuthConfig.Spec.EmbeddedAuthServer and
-// VirtualMCPServer.Spec.AuthServerConfig, so the XValidation rule below is
-// enforced at admission for both CRDs.
+// VirtualMCPServer.Spec.AuthServerConfig, so the XValidation rules below are
+// enforced at admission for both CRDs. CEL only requires the explicit opt-in for
+// delegate clients using an HTTP issuer; the shared Go validator performs the
+// precise loopback-host security check.
 //
 // +kubebuilder:validation:XValidation:rule="!(has(self.allowConfidentialClientRegistration) && self.allowConfidentialClientRegistration && has(self.insecureAllowHTTP) && self.insecureAllowHTTP)",message="allowConfidentialClientRegistration cannot be combined with insecureAllowHTTP; client secrets would be issued in cleartext over an unauthenticated endpoint"
-// +kubebuilder:validation:XValidation:rule="!has(self.delegateClients) || size(self.delegateClients) == 0 || !self.issuer.startsWith('http://')",message="delegateClients require an https:// issuer; delegate client secrets must not be sent over plaintext HTTP"
 // +kubebuilder:validation:XValidation:rule="(!has(self.forceConfidentialRedirectUris) || size(self.forceConfidentialRedirectUris) == 0) || (has(self.allowConfidentialClientRegistration) && self.allowConfidentialClientRegistration)",message="forceConfidentialRedirectUris requires allowConfidentialClientRegistration to be true"
+// +kubebuilder:validation:XValidation:rule="!has(self.delegateClients) || size(self.delegateClients) == 0 || !self.issuer.startsWith('http://') || (has(self.insecureAllowConfidentialOverLoopbackHTTP) && self.insecureAllowConfidentialOverLoopbackHTTP)",message="delegateClients with an HTTP issuer require insecureAllowConfidentialOverLoopbackHTTP to be explicitly enabled; the issuer must still be loopback"
 //
-// Delegate clients categorically require HTTPS at admission. CEL has no URL
-// parser, so this deliberately conservative check rejects every plaintext HTTP
-// issuer rather than attempting a loopback exception that could admit a
-// non-loopback host. The runtime transport validation remains defense in depth
-// for direct Go callers and confidential DCR.
-//
-// This is stricter than the Go-level ValidateConfidentialClientTransport,
-// which still permits a loopback-HTTP issuer with delegate clients when
-// InsecureAllowConfidentialOverLoopbackHTTP is set — intentionally, since that
-// flag's loopback-is-safe rationale applies equally to delegate-client
-// secrets. Do not tighten the Go-level check to match this CEL rule; the CRD
-// is stricter only because CEL cannot express the loopback exception, not
-// because delegate clients need one.
+// The shared Go-level ValidateConfidentialClientTransport validator remains the
+// source of truth for confidential-client transport and loopback policy,
+// including delegate clients. Full issuer URL validation is performed by the
+// runtime configuration validator.
 //
 //nolint:lll // CEL validation rule exceeds line length limit
 type EmbeddedAuthServerConfig struct {
@@ -759,17 +761,35 @@ type EmbeddedAuthServerConfig struct {
 	// +optional
 	AllowConfidentialClientRegistration bool `json:"allowConfidentialClientRegistration,omitempty"`
 
-	// InsecureAllowConfidentialOverLoopbackHTTP opts in to
-	// allowConfidentialClientRegistration when issuer is a plain-HTTP loopback
-	// URL (e.g. "http://localhost:8080"). Without this flag, that combination
-	// is rejected at reconcile time: a loopback http:// issuer is normally
-	// fine for local development since the traffic never leaves the machine,
-	// but combined with confidential registration it means /oauth/register —
-	// which is unauthenticated — mints client secrets over cleartext. Forcing
-	// TLS onto every loopback deployment instead would just push operators
-	// toward insecureAllowHTTP, which is worse: that also disables the
-	// non-loopback host check. Has no effect when
-	// allowConfidentialClientRegistration is false or issuer is https.
+	// AllowPrivateKeyJWTRegistration permits Dynamic Client Registration of
+	// clients using private_key_jwt authentication. Registration behavior is
+	// intentionally configured separately from confidential-client registration.
+	//
+	// Security: registration is unauthenticated, so enabling this lets any
+	// caller who can reach the endpoint register a private_key_jwt client.
+	// Unlike allowConfidentialClientRegistration, this is NOT rejected when
+	// combined with insecureAllowHTTP: registration never returns a secret
+	// for a private_key_jwt client, so there is nothing for cleartext HTTP
+	// to expose.
+	// +kubebuilder:default=false
+	// +optional
+	AllowPrivateKeyJWTRegistration bool `json:"allowPrivateKeyJWTRegistration,omitempty"`
+
+	// InsecureAllowConfidentialOverLoopbackHTTP opts in to confidential
+	// Dynamic Client Registration (DCR) and delegate clients when issuer is a
+	// plain-HTTP loopback URL (e.g. "http://localhost:8080"). Without this
+	// flag, that combination is rejected at reconcile time: a loopback http://
+	// issuer is normally fine for local development since the traffic never
+	// leaves the machine, but confidential clients send secrets over cleartext.
+	// Forcing TLS onto every loopback deployment instead would just push
+	// operators toward insecureAllowHTTP, which is worse: that also disables
+	// the non-loopback host check. Has no effect when there are no confidential
+	// clients or issuer is https.
+	//
+	// private_key_jwt registration has no equivalent flag or transport
+	// restriction: unlike confidential registration, it never returns a
+	// client_secret (or any other secret) in the DCR response, so there is
+	// nothing here for cleartext HTTP to expose.
 	// +kubebuilder:default=false
 	// +optional
 	InsecureAllowConfidentialOverLoopbackHTTP bool `json:"insecureAllowConfidentialOverLoopbackHTTP,omitempty"`
@@ -839,7 +859,9 @@ type EmbeddedAuthServerConfig struct {
 // ValidateConfidentialClientTransport rejects cleartext issuer configurations
 // when confidential DCR or delegate clients are configured. Delegate clients
 // do not enable DCR; they share its transport policy because they send a
-// secret to the token endpoint.
+// secret to the token endpoint. private_key_jwt registration is not gated
+// here: it never returns a secret in the DCR response, so cleartext HTTP
+// exposes nothing this check would protect.
 func (c *EmbeddedAuthServerConfig) ValidateConfidentialClientTransport() error {
 	return authserver.ValidateConfidentialClientTransport(
 		c.AllowConfidentialClientRegistration || len(c.DelegateClients) > 0,
@@ -1035,6 +1057,19 @@ type OIDCUpstreamConfig struct {
 	// +kubebuilder:validation:MaxLength=128
 	// +kubebuilder:validation:Pattern=`^([a-zA-Z_][a-zA-Z0-9_]*)?$`
 	SubjectClaim string `json:"subjectClaim,omitempty"`
+
+	// CABundleRef references a ConfigMap containing a CA bundle added to the
+	// system roots when connecting to this upstream; it does not restrict trust
+	// to this bundle or disable public-root trust. The selected key is projected
+	// as ca.crt.
+	// +optional
+	CABundleRef *CABundleSource `json:"caBundleRef,omitempty"`
+
+	// AllowPrivateIPs permits the upstream provider's HTTP client to connect to
+	// private IP ranges (RFC-1918, link-local). Use only when the upstream is
+	// hosted inside the same cluster and has no public endpoint.
+	// +optional
+	AllowPrivateIPs bool `json:"allowPrivateIPs,omitempty"`
 }
 
 // OAuth2UpstreamConfig contains configuration for pure OAuth 2.0 providers.
@@ -1135,6 +1170,13 @@ type OAuth2UpstreamConfig struct {
 	// +kubebuilder:validation:MaxProperties=16
 	// +optional
 	AdditionalAuthorizationParams map[string]string `json:"additionalAuthorizationParams,omitempty"`
+
+	// CABundleRef references a ConfigMap containing a CA bundle added to the
+	// system roots when connecting to this upstream; it does not restrict trust
+	// to this bundle or disable public-root trust. The selected key is projected
+	// as ca.crt.
+	// +optional
+	CABundleRef *CABundleSource `json:"caBundleRef,omitempty"`
 
 	// InsecureAllowHTTP permits plain-HTTP authorization and token endpoint URLs
 	// for this upstream. Only for in-cluster development environments (e.g. an
@@ -1704,6 +1746,17 @@ const (
 	// Validate() with an error other than the enterprise-required sentinel.
 	// Used by out-of-tree handlers; unreachable in upstream-only builds.
 	ConditionReasonInvalidConfig = "InvalidConfig"
+
+	// ConditionReasonInvalidCABundle: a referenced CA bundle ConfigMap is
+	// missing its key or holds content that is not a PEM certificate.
+	//
+	// Distinct from ConditionReasonInvalidConfig because the failing input is
+	// ConfigMap *content*, which is covered by neither metadata.generation nor
+	// the referenced config's spec hash. The guards that hold a terminal
+	// ConditionReasonInvalidConfig steady across reconciles key off those two
+	// values, so reusing that reason here would pin the failure in place even
+	// after the ConfigMap is repaired.
+	ConditionReasonInvalidCABundle = "InvalidCABundle"
 )
 
 // XAASpec holds configuration for the XAA (Cross-Application Access) auth strategy.
@@ -1993,6 +2046,11 @@ func (r *MCPExternalAuthConfig) validateEmbeddedAuthServer() error {
 	if err := tokenexchange.ValidateTrustedIssuers(buildTrustedIssuerConfigs(cfg.TrustedIssuers), cfg.Issuer, nil); err != nil {
 		return fmt.Errorf("trustedIssuers: %w", err)
 	}
+	for i := range cfg.TrustedIssuers {
+		if err := validateUpstreamCABundleRef(cfg.TrustedIssuers[i].CABundleRef); err != nil {
+			return fmt.Errorf("trustedIssuers[%d] (%q) caBundleRef: %w", i, cfg.TrustedIssuers[i].IssuerURL, err)
+		}
+	}
 
 	seen := make(map[string]bool, len(cfg.UpstreamProviders))
 	for i, provider := range cfg.UpstreamProviders {
@@ -2022,6 +2080,7 @@ func buildTrustedIssuerConfigs(issuers []TrustedIssuerConfig) []tokenexchange.Tr
 			AllowPrivateIPs:        issuer.AllowPrivateIPs,
 			ActorClaim:             issuer.ActorClaim,
 			AllowedActors:          slices.Clone(issuer.AllowedActors),
+			ActorMatcher:           issuer.ActorMatcher,
 			AllowedDelegateClients: slices.Clone(issuer.AllowedDelegateClients),
 			AllowMayAct:            issuer.AllowMayAct,
 			JWTBearerGrant:         buildJWTBearerGrantPolicy(issuer.JWTBearerGrant),
@@ -2066,6 +2125,10 @@ func (*MCPExternalAuthConfig) validateUpstreamProvider(index int, provider *Upst
 			"and oauth2Config must be set when type is 'oauth2' (and the other must not be set)", prefix)
 	}
 
+	if err := validateUpstreamProviderCABundle(prefix, provider); err != nil {
+		return err
+	}
+
 	// Validate OAuth2-specific constraints (defense-in-depth with CEL).
 	// The discriminator above guarantees OAuth2Config != nil when type is oauth2.
 	if provider.Type == UpstreamProviderTypeOAuth2 {
@@ -2081,6 +2144,17 @@ func (*MCPExternalAuthConfig) validateUpstreamProvider(index int, provider *Upst
 	return ValidateAdditionalAuthorizationParams(prefix, provider.AdditionalAuthorizationParams())
 }
 
+func validateUpstreamProviderCABundle(prefix string, provider *UpstreamProviderConfig) error {
+	field := "oidcConfig.caBundleRef"
+	if provider.Type == UpstreamProviderTypeOAuth2 {
+		field = "oauth2Config.caBundleRef"
+	}
+	if err := validateUpstreamCABundleRef(provider.CABundleRef()); err != nil {
+		return fmt.Errorf("%s: %s: %w", prefix, field, err)
+	}
+	return nil
+}
+
 // Length caps for DCR-related string fields. Mirror the
 // +kubebuilder:validation:MaxLength markers on DCRUpstreamConfig so that
 // ValidateOAuth2DCRConfig is a true reconcile-time backstop for length
@@ -2094,6 +2168,22 @@ const (
 	// DCRUpstreamConfig.SoftwareStatement.
 	MaxSoftwareStatementLength = 16384
 )
+
+// validateUpstreamCABundleRef validates the source shape shared by OIDC and
+// OAuth2 upstream CA bundles. ConfigMap existence and key contents are
+// resolved by Kubernetes when the generated Pod is scheduled.
+func validateUpstreamCABundleRef(ref *CABundleSource) error {
+	if ref == nil {
+		return nil
+	}
+	if ref.ConfigMapRef == nil {
+		return fmt.Errorf("configMapRef must be specified")
+	}
+	if ref.ConfigMapRef.Name == "" {
+		return fmt.Errorf("configMapRef.name must not be empty")
+	}
+	return nil
+}
 
 // ValidateOAuth2DCRConfig enforces the mutual exclusivity between ClientID and
 // DCRConfig, between ClientSecretRef and DCRConfig, and (when DCRConfig is
@@ -2169,6 +2259,22 @@ func (p *UpstreamProviderConfig) AdditionalAuthorizationParams() map[string]stri
 	}
 	if p.OAuth2Config != nil {
 		return p.OAuth2Config.AdditionalAuthorizationParams
+	}
+	return nil
+}
+
+// CABundleRef returns the CA bundle reference for the provider's configured
+// type, or nil when the type-matched config or the reference is absent.
+func (p *UpstreamProviderConfig) CABundleRef() *CABundleSource {
+	switch p.Type {
+	case UpstreamProviderTypeOIDC:
+		if p.OIDCConfig != nil {
+			return p.OIDCConfig.CABundleRef
+		}
+	case UpstreamProviderTypeOAuth2:
+		if p.OAuth2Config != nil {
+			return p.OAuth2Config.CABundleRef
+		}
 	}
 	return nil
 }

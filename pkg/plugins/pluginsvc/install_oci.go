@@ -121,6 +121,19 @@ func (s *service) installFromOCI(
 		defer unlock()
 	}
 
+	// Verify the artifact signature before anything is extracted or
+	// recorded; the decision (verified identity or explicit unsigned
+	// exception) travels on opts into the DB record and lock entry. This
+	// runs under the per-plugin lock so concurrent first installs cannot
+	// both read an absent lock entry and race their TOFU anchors.
+	if shouldVerifyInstall(opts, scope) {
+		decision, verifyErr := s.verifyOCIInstall(ctx, opts, pluginConfig.Name, ociRef, opts.Digest)
+		if verifyErr != nil {
+			return nil, verifyErr
+		}
+		applyDecisionToOpts(&opts, decision)
+	}
+
 	result, err := s.installWithExtraction(ctx, opts, scope)
 	if err != nil {
 		return nil, err

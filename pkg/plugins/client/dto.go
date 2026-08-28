@@ -15,6 +15,9 @@ type installRequest struct {
 	Clients     []string      `json:"clients,omitempty"`
 	Force       bool          `json:"force,omitempty"`
 	Group       string        `json:"group,omitempty"`
+	// AllowUnsigned mirrors plugins.InstallOptions.AllowUnsigned; without
+	// it here the CLI flag would silently never reach the server.
+	AllowUnsigned bool `json:"allow_unsigned,omitempty"`
 }
 
 type validateRequest struct {
@@ -48,13 +51,17 @@ type syncRequest struct {
 	Prune       bool     `json:"prune,omitempty"`
 	Check       bool     `json:"check,omitempty"`
 	Adopt       bool     `json:"adopt,omitempty"`
+	// AllowUnsigned mirrors plugins.SyncOptions.AllowUnsigned for adoption.
+	AllowUnsigned bool `json:"allow_unsigned,omitempty"`
 }
 
 type upgradeRequest struct {
-	ProjectRoot    string   `json:"project_root"`
-	Names          []string `json:"names,omitempty"`
-	Preview        bool     `json:"preview,omitempty"`
-	FailOnChanges  bool     `json:"fail_on_changes,omitempty"`
-	AllowRefChange bool     `json:"allow_ref_change,omitempty"`
-	Clients        []string `json:"clients,omitempty"`
+	ProjectRoot string   `json:"project_root"`
+	Names       []string `json:"names,omitempty"`
+	// AllowSignerChange mirrors plugins.UpgradeOptions.AllowSignerChange.
+	AllowSignerChange bool     `json:"allow_signer_change,omitempty"`
+	Preview           bool     `json:"preview,omitempty"`
+	FailOnChanges     bool     `json:"fail_on_changes,omitempty"`
+	AllowRefChange    bool     `json:"allow_ref_change,omitempty"`
+	Clients           []string `json:"clients,omitempty"`
 }

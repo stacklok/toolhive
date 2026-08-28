@@ -161,6 +161,7 @@ type HttpClientBuilder struct {
 	tlsHandshakeTimeout   time.Duration
 	responseHeaderTimeout time.Duration
 	caCertPath            string
+	caCertUsesSystemRoots bool
 	authTokenFile         string
 	allowPrivate          bool
 	insecureAllowHTTP     bool
@@ -221,9 +222,21 @@ func NewServerSuppliedHostClientBuilder(host string, allowPrivateIPs, insecureAl
 		WithPrivateIPs(allowPrivateIPs)
 }
 
-// WithCABundle sets the CA certificate bundle path
+// WithCABundle sets a pinned CA certificate bundle path. When a bundle is
+// configured, only certificates from that bundle are trusted (system roots are
+// not included).
 func (b *HttpClientBuilder) WithCABundle(path string) *HttpClientBuilder {
 	b.caCertPath = path
+	b.caCertUsesSystemRoots = false
+	return b
+}
+
+// WithSystemRootsPlusCABundle sets a CA certificate bundle path and preserves
+// trust in the system root pool. Use this when an upstream may use either a
+// publicly trusted certificate or a private CA.
+func (b *HttpClientBuilder) WithSystemRootsPlusCABundle(path string) *HttpClientBuilder {
+	b.caCertPath = path
+	b.caCertUsesSystemRoots = true
 	return b
 }
 
@@ -281,6 +294,16 @@ func (b *HttpClientBuilder) Build() (*http.Client, error) {
 		}
 
 		caCertPool := x509.NewCertPool()
+		if b.caCertUsesSystemRoots {
+			caCertPool, err = x509.SystemCertPool()
+			if err != nil {
+				return nil, fmt.Errorf("failed to load system CA certificate pool: %w", err)
+			}
+			if caCertPool == nil {
+				return nil, fmt.Errorf("failed to load system CA certificate pool: pool is nil")
+			}
+		}
+
 		if !caCertPool.AppendCertsFromPEM(caCert) {
 			return nil, fmt.Errorf("failed to parse CA certificate bundle")
 		}

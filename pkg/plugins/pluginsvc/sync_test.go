@@ -52,7 +52,12 @@ func (c *redirectGitClient) Cleanup(ctx context.Context, repoInfo *git.Repositor
 	return c.inner.Cleanup(ctx, repoInfo)
 }
 
-func newGitLockTestService(t *testing.T, repoDir string) (plugins.PluginService, string) {
+// newGitLockTestService builds a lock-enabled service whose git installs
+// resolve to repoDir. Test repo commits are unsigned, so it defaults to a
+// verifier that reports every commit as signed by a fixed test identity —
+// tests about verification itself pass their own WithVerifier via extra
+// (later options win).
+func newGitLockTestService(t *testing.T, repoDir string, extra ...Option) (plugins.PluginService, string) {
 	t.Helper()
 	t.Setenv(plugins.LockFileEnvVar, "true")
 
@@ -69,13 +74,14 @@ func newGitLockTestService(t *testing.T, repoDir string) (plugins.PluginService,
 	home := t.TempDir()
 	// Claude Code RelPath is empty; IsClientInstalled checks ~/.claude.json.
 	require.NoError(t, os.WriteFile(filepath.Join(home, ".claude.json"), []byte("{}"), 0o644))
-	svc := New(
+	opts := append([]Option{
 		WithStore(sqlite.NewPluginStore(db)),
 		WithMaterializers(map[string]plugins.MaterializationAdapter{"claude-code": adapter}),
 		WithClientManager(client.NewTestClientManagerWithHome(home)),
 		WithGitClient(&redirectGitClient{dir: repoDir, inner: git.NewDefaultGitClient()}),
-	)
-	return svc, projectRoot
+		WithVerifier(alwaysSignedVerifier(t)),
+	}, extra...)
+	return New(opts...), projectRoot
 }
 
 func pluginOnDiskPath(projectRoot, name string) string {
@@ -259,7 +265,19 @@ func TestSync_AdoptsUnmanagedInstall(t *testing.T) {
 	require.NoError(t, err)
 	assert.Equal(t, []string{"my-plugin"}, result.NeverManaged)
 
+	// Adoption of an install with no stored bundle is an unsigned trust
+	// decision: without the explicit exception it fails...
 	result, err = syncSvc.Sync(t.Context(), plugins.SyncOptions{ProjectRoot: projectRoot, Adopt: true})
+	require.NoError(t, err)
+	require.Len(t, result.Failed, 1)
+	assert.Equal(t, plugins.FailureReasonUnsignedRejected, result.Failed[0].Reason)
+	_, ok := readLockfile(t, projectRoot).GetPlugin("my-plugin")
+	assert.False(t, ok, "adoption without the unsigned exception must not write a lock entry")
+
+	// ...and with it, the entry records the unsigned state.
+	result, err = syncSvc.Sync(t.Context(), plugins.SyncOptions{
+		ProjectRoot: projectRoot, Adopt: true, AllowUnsigned: true,
+	})
 	require.NoError(t, err)
 	assert.Equal(t, []string{"my-plugin"}, result.NeverManaged)
 	assert.Empty(t, result.Failed)
@@ -268,7 +286,7 @@ func TestSync_AdoptsUnmanagedInstall(t *testing.T) {
 	entry, ok := lf.GetPlugin("my-plugin")
 	require.True(t, ok, "adopt must write a lock entry for the unmanaged install")
 	assert.NotEmpty(t, entry.ContentDigest)
-	assert.False(t, entry.Unsigned)
+	assert.True(t, entry.Unsigned, "an adoption without verifiable trust must record unsigned")
 	assert.Nil(t, entry.Provenance)
 
 	info, err := svc.Info(t.Context(), plugins.InfoOptions{Name: "my-plugin", Scope: plugins.ScopeProject, ProjectRoot: projectRoot})
@@ -329,7 +347,9 @@ func TestSync_AdoptUpdateFailureRemovesLockEntry(t *testing.T) {
 		},
 	}
 
-	result, err := syncSvc.Sync(t.Context(), plugins.SyncOptions{ProjectRoot: projectRoot, Adopt: true})
+	result, err := syncSvc.Sync(t.Context(), plugins.SyncOptions{
+		ProjectRoot: projectRoot, Adopt: true, AllowUnsigned: true,
+	})
 	require.NoError(t, err)
 	require.Len(t, result.Failed, 1)
 	assert.Equal(t, "my-plugin", result.Failed[0].Name)
@@ -382,7 +402,9 @@ func TestSync_AdoptUpdateFailureRestoresExistingLockEntry(t *testing.T) {
 		},
 	}
 
-	result, err := syncSvc.Sync(t.Context(), plugins.SyncOptions{ProjectRoot: projectRoot, Adopt: true})
+	result, err := syncSvc.Sync(t.Context(), plugins.SyncOptions{
+		ProjectRoot: projectRoot, Adopt: true, AllowUnsigned: true,
+	})
 	require.NoError(t, err)
 	require.Len(t, result.Failed, 1)
 
@@ -603,12 +625,13 @@ func TestSync_LocalUpgradeRoundTripRestoresExactDigest(t *testing.T) {
 	inner.ociStore = ociStore
 
 	_, err = svc.Install(t.Context(), plugins.InstallOptions{
-		Name:        "my-plugin",
-		LayerData:   makePluginLayerData(t, "my-plugin"),
-		Digest:      validLockDigest(),
-		Scope:       plugins.ScopeProject,
-		ProjectRoot: projectRoot,
-		Clients:     []string{"claude-code"},
+		Name:          "my-plugin",
+		LayerData:     makePluginLayerData(t, "my-plugin"),
+		AllowUnsigned: true,
+		Digest:        validLockDigest(),
+		Scope:         plugins.ScopeProject,
+		ProjectRoot:   projectRoot,
+		Clients:       []string{"claude-code"},
 	})
 	require.NoError(t, err)
 
@@ -663,12 +686,13 @@ func TestSync_LocalStorePinDigestMissing(t *testing.T) {
 	inner.ociStore = ociStore
 
 	_, err = svc.Install(t.Context(), plugins.InstallOptions{
-		Name:        "my-plugin",
-		LayerData:   makePluginLayerData(t, "my-plugin"),
-		Digest:      validLockDigest(),
-		Scope:       plugins.ScopeProject,
-		ProjectRoot: projectRoot,
-		Clients:     []string{"claude-code"},
+		Name:          "my-plugin",
+		LayerData:     makePluginLayerData(t, "my-plugin"),
+		AllowUnsigned: true,
+		Digest:        validLockDigest(),
+		Scope:         plugins.ScopeProject,
+		ProjectRoot:   projectRoot,
+		Clients:       []string{"claude-code"},
 	})
 	require.NoError(t, err)
 

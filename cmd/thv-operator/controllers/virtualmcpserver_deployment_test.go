@@ -53,7 +53,7 @@ func TestDeploymentForVirtualMCPServer(t *testing.T) {
 		PlatformDetector: ctrlutil.NewSharedPlatformDetector(),
 	}
 
-	deployment := r.deploymentForVirtualMCPServer(context.Background(), vmcp, "test-checksum", nil, []workloads.TypedWorkload{})
+	deployment := r.deploymentForVirtualMCPServer(context.Background(), vmcp, "test-checksum", "", nil, []workloads.TypedWorkload{})
 
 	require.NotNil(t, deployment)
 	assert.Equal(t, vmcp.Name, deployment.Name)
@@ -107,7 +107,7 @@ func TestDeploymentForVirtualMCPServer_WithDelegateClientSecrets(t *testing.T) {
 		Scheme:           testutil.NewScheme(t),
 		PlatformDetector: ctrlutil.NewSharedPlatformDetector(),
 	}
-	deployment := r.deploymentForVirtualMCPServer(context.Background(), vmcp, "test-checksum", nil, nil)
+	deployment := r.deploymentForVirtualMCPServer(context.Background(), vmcp, "test-checksum", "", nil, nil)
 	require.NotNil(t, deployment)
 
 	for _, envVar := range deployment.Spec.Template.Spec.Containers[0].Env {
@@ -147,7 +147,7 @@ func TestDeploymentForVirtualMCPServer_WithRedisPassword(t *testing.T) {
 		PlatformDetector: ctrlutil.NewSharedPlatformDetector(),
 	}
 
-	deployment := r.deploymentForVirtualMCPServer(context.Background(), vmcp, "test-checksum", nil, []workloads.TypedWorkload{})
+	deployment := r.deploymentForVirtualMCPServer(context.Background(), vmcp, "test-checksum", "", nil, []workloads.TypedWorkload{})
 	require.NotNil(t, deployment)
 	require.Len(t, deployment.Spec.Template.Spec.Containers, 1)
 
@@ -386,7 +386,7 @@ func TestBuildPodTemplateMetadata(t *testing.T) {
 	checksumValue := "test-checksum-123"
 
 	r := &VirtualMCPServerReconciler{}
-	labels, annotations := r.buildPodTemplateMetadata(baseLabels, vmcp, checksumValue)
+	labels, annotations := r.buildPodTemplateMetadata(baseLabels, vmcp, checksumValue, "")
 
 	assert.Equal(t, baseLabels, labels)
 	assert.Equal(t, checksumValue, annotations[checksum.RunConfigChecksumAnnotation])
@@ -541,12 +541,12 @@ func TestDeploymentNeedsUpdate(t *testing.T) {
 	}
 
 	// Test nil inputs
-	assert.True(t, r.deploymentNeedsUpdate(context.Background(), nil, nil, "", nil, []workloads.TypedWorkload{}))
+	assert.True(t, r.deploymentNeedsUpdate(context.Background(), nil, nil, "", "", nil, []workloads.TypedWorkload{}))
 
 	vmcp := v1beta1test.NewVirtualMCPServer("test-vmcp", "default")
 
 	// Test with nil deployment
-	assert.True(t, r.deploymentNeedsUpdate(context.Background(), nil, vmcp, "checksum", nil, []workloads.TypedWorkload{}))
+	assert.True(t, r.deploymentNeedsUpdate(context.Background(), nil, vmcp, "checksum", "", nil, []workloads.TypedWorkload{}))
 }
 
 // TestServiceNeedsUpdate tests service update detection
@@ -953,7 +953,7 @@ func TestDeploymentForVirtualMCPServer_ImagePullSecrets(t *testing.T) {
 				PlatformDetector: ctrlutil.NewSharedPlatformDetector(),
 			}
 
-			deployment := r.deploymentForVirtualMCPServer(t.Context(), vmcp, "test-checksum", nil, []workloads.TypedWorkload{})
+			deployment := r.deploymentForVirtualMCPServer(t.Context(), vmcp, "test-checksum", "", nil, []workloads.TypedWorkload{})
 			require.NotNil(t, deployment)
 
 			assert.ElementsMatch(t, tt.expected, deployment.Spec.Template.Spec.ImagePullSecrets)
@@ -1041,7 +1041,7 @@ func TestDeploymentForVirtualMCPServer_ImagePullSecrets_UpdatePath(t *testing.T)
 			}
 
 			// Step 1: build the initial Deployment, simulating the create path.
-			initialDep := r.deploymentForVirtualMCPServer(t.Context(), vmcp, "test-checksum", nil, []workloads.TypedWorkload{})
+			initialDep := r.deploymentForVirtualMCPServer(t.Context(), vmcp, "test-checksum", "", nil, []workloads.TypedWorkload{})
 			require.NotNil(t, initialDep)
 
 			// Step 2: mutate the spec, then assert drift detection.
@@ -1058,13 +1058,13 @@ func TestDeploymentForVirtualMCPServer_ImagePullSecrets_UpdatePath(t *testing.T)
 			// out env/checksum so the rest of the chain doesn't trigger drift on
 			// other axes for unrelated reasons.
 			parentNeedsUpdate := r.deploymentNeedsUpdate(
-				t.Context(), initialDep, vmcp, "test-checksum", nil, []workloads.TypedWorkload{},
+				t.Context(), initialDep, vmcp, "test-checksum", "", nil, []workloads.TypedWorkload{},
 			)
 			assert.True(t, parentNeedsUpdate, "deploymentNeedsUpdate must propagate imagePullSecrets drift")
 
 			// Step 3: rebuild the Deployment with the updated spec and assert the
 			// live PodSpec.ImagePullSecrets reflects the new value.
-			updatedDep := r.deploymentForVirtualMCPServer(t.Context(), vmcp, "test-checksum", nil, []workloads.TypedWorkload{})
+			updatedDep := r.deploymentForVirtualMCPServer(t.Context(), vmcp, "test-checksum", "", nil, []workloads.TypedWorkload{})
 			require.NotNil(t, updatedDep)
 			assert.ElementsMatch(t, tt.expectedDeployedSecret, updatedDep.Spec.Template.Spec.ImagePullSecrets)
 
@@ -1119,7 +1119,7 @@ func TestDeploymentForVirtualMCPServer_AuthServerConfig_NoUpdateLoop(t *testing.
 	)
 
 	const cfgChecksum = "test-checksum"
-	dep := r.deploymentForVirtualMCPServer(t.Context(), vmcp, cfgChecksum, nil, []workloads.TypedWorkload{})
+	dep := r.deploymentForVirtualMCPServer(t.Context(), vmcp, cfgChecksum, "", nil, []workloads.TypedWorkload{})
 	require.NotNil(t, dep)
 
 	// Sanity: the auth-server client-secret env var must actually be on the built
@@ -1136,7 +1136,7 @@ func TestDeploymentForVirtualMCPServer_AuthServerConfig_NoUpdateLoop(t *testing.
 
 	// The freshly-built Deployment is steady state: a drift check against it must
 	// not request an update. Before the fix this returned true on every reconcile.
-	needsUpdate := r.deploymentNeedsUpdate(t.Context(), dep, vmcp, cfgChecksum, nil, []workloads.TypedWorkload{})
+	needsUpdate := r.deploymentNeedsUpdate(t.Context(), dep, vmcp, cfgChecksum, "", nil, []workloads.TypedWorkload{})
 	assert.False(t, needsUpdate,
 		"deploymentNeedsUpdate must not loop on a vMCP with AuthServerConfig (regression #5616)")
 }

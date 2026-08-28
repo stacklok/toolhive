@@ -150,6 +150,7 @@ func newServer(ctx context.Context, cfg Config, stor storage.Storage, opts ...se
 		AuthorizationEndpointBaseURL:        cfg.AuthorizationEndpointBaseURL,
 		CIMDEnabled:                         cfg.CIMDEnabled,
 		AllowConfidentialClientRegistration: cfg.AllowConfidentialClientRegistration,
+		AllowPrivateKeyJWTRegistration:      cfg.AllowPrivateKeyJWTRegistration,
 		HasStaticDelegateClients:            len(cfg.DelegateClients) > 0,
 		ForceConfidentialRedirectURIs:       cfg.ForceConfidentialRedirectURIs,
 		JWTBearerGrantEnabled:               jwtBearerGrantEnabled(cfg.TrustedIssuers),

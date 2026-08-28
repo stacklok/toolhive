@@ -106,7 +106,7 @@ jobs:
 
       - name: Generate release notes with Claude
         id: claude
-        uses: anthropics/claude-code-action@d40ddef4c030e508327d6e35a9c45f3368482c50 # v1.0.195
+        uses: anthropics/claude-code-action@16b3b310c3d7b5279df73130324d5205aeea8eac # v1.0.205
         env:
           # gh CLI used by the skill (read-only PR/issue lookups) authenticates
           # via GH_TOKEN. Read access is sufficient — publishing happens in a
@@ -138,9 +138,17 @@ jobs:
               `release-notes-${{ steps.tag.outputs.tag }}.md` in the repo root.
             - Do not post comments or run `gh release edit`. Stop after writing the file.
           # Tools: gh/git for read-only data gathering, Task for the expert
-          # subagents, and file tools for reading the skill and writing the output.
+          # subagents (kubernetes-expert, mcp-protocol-expert, oauth-expert,
+          # toolhive-expert, site-reliability-engineer), file tools for reading
+          # the skill and writing the output, WebFetch/context7 for the specs
+          # those experts consult. The extra Bash(...) entries cover the
+          # local code-exploration commands those experts actually run
+          # (grep/find/cat/ls/go doc) without opening up network or
+          # write-capable commands (curl, go get/install, etc.) — this job
+          # runs unattended over PR/issue content it doesn't control, so
+          # Bash stays scoped rather than fully unrestricted.
           claude_args: |
-            --allowedTools "Bash(gh *),Bash(git *),Task,Read,Write,Edit,Glob,Grep,TodoWrite"
+            --allowedTools "Bash(gh *),Bash(git *),Bash(grep *),Bash(rg *),Bash(find *),Bash(cat *),Bash(ls *),Bash(head *),Bash(tail *),Bash(go doc *),Task,Read,Write,Edit,Glob,Grep,TodoWrite,WebFetch,mcp__context7__resolve-library-id,mcp__context7__get-library-docs"
             --max-turns 60
 
       - name: Verify notes were generated

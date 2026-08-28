@@ -11,12 +11,16 @@ import (
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+	corev1 "k8s.io/api/core/v1"
+	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	"k8s.io/apimachinery/pkg/api/meta"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/types"
 	ctrl "sigs.k8s.io/controller-runtime"
+	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/client/fake"
+	"sigs.k8s.io/controller-runtime/pkg/client/interceptor"
 
 	mcpv1beta1 "github.com/stacklok/toolhive/cmd/thv-operator/api/v1beta1"
 	"github.com/stacklok/toolhive/cmd/thv-operator/api/v1beta1/v1beta1test"
@@ -316,4 +320,172 @@ func TestMCPServerReconciler_InvalidEmbeddedAuthServerConfigSteadyState(t *testi
 
 	require.NoError(t, fakeClient.Get(t.Context(), req.NamespacedName, actual))
 	assert.Equal(t, initial.Status, actual.Status)
+}
+
+// authServerRefCABundleConfig returns an embedded auth server config whose only
+// defect is whatever state the referenced "bundle" ConfigMap is left in.
+func authServerRefCABundleConfig() *mcpv1beta1.MCPExternalAuthConfig {
+	return &mcpv1beta1.MCPExternalAuthConfig{
+		ObjectMeta: metav1.ObjectMeta{Name: "auth", Namespace: "default"},
+		Spec: mcpv1beta1.MCPExternalAuthConfigSpec{
+			Type: mcpv1beta1.ExternalAuthTypeEmbeddedAuthServer,
+			EmbeddedAuthServer: &mcpv1beta1.EmbeddedAuthServerConfig{
+				Issuer:               "https://auth.example.com",
+				SigningKeySecretRefs: []mcpv1beta1.SecretKeyRef{{Name: "signing-key", Key: "private.pem"}},
+				HMACSecretRefs:       []mcpv1beta1.SecretKeyRef{{Name: "hmac-secret", Key: "hmac"}},
+				UpstreamProviders: []mcpv1beta1.UpstreamProviderConfig{{
+					Name: "upstream",
+					Type: mcpv1beta1.UpstreamProviderTypeOIDC,
+					OIDCConfig: &mcpv1beta1.OIDCUpstreamConfig{
+						IssuerURL: "https://idp.example.com",
+						ClientID:  "client",
+						CABundleRef: &mcpv1beta1.CABundleSource{ConfigMapRef: &corev1.ConfigMapKeySelector{
+							LocalObjectReference: corev1.LocalObjectReference{Name: "bundle"}, Key: "ca.crt",
+						}},
+					},
+				}},
+			},
+		},
+	}
+}
+
+// A bundle ConfigMap without the key it names is a content error no retry can
+// fix, so it must be recorded on AuthServerRefValidated and not requeued.
+func TestMCPServerReconciler_AuthServerRefInvalidCABundleIsTerminal(t *testing.T) {
+	t.Parallel()
+
+	server := v1beta1test.NewMCPServer("server", "default",
+		v1beta1test.WithImage("test"),
+		v1beta1test.WithAuthServerRef("MCPExternalAuthConfig", "auth"),
+	)
+	bundle := &corev1.ConfigMap{ObjectMeta: metav1.ObjectMeta{Name: "bundle", Namespace: "default"}}
+	scheme := testutil.NewScheme(t)
+	fakeClient := fake.NewClientBuilder().WithScheme(scheme).
+		WithObjects(server, authServerRefCABundleConfig(), bundle).
+		WithStatusSubresource(&mcpv1beta1.MCPServer{}).
+		Build()
+	reconciler := newTestMCPServerReconciler(fakeClient, scheme, kubernetes.PlatformKubernetes)
+
+	result, err := reconciler.Reconcile(t.Context(), ctrl.Request{NamespacedName: client.ObjectKeyFromObject(server)})
+	require.NoError(t, err, "a terminal CA bundle failure must not requeue")
+	assert.Zero(t, result)
+
+	actual := &mcpv1beta1.MCPServer{}
+	require.NoError(t, fakeClient.Get(t.Context(), client.ObjectKeyFromObject(server), actual))
+	assert.Equal(t, mcpv1beta1.MCPServerPhaseFailed, actual.Status.Phase)
+	condition := meta.FindStatusCondition(actual.Status.Conditions, mcpv1beta1.ConditionTypeAuthServerRefValidated)
+	require.NotNil(t, condition)
+	assert.Equal(t, metav1.ConditionFalse, condition.Status)
+	assert.Equal(t, mcpv1beta1.ConditionReasonInvalidCABundle, condition.Reason)
+	assert.Nil(t,
+		meta.FindStatusCondition(actual.Status.Conditions, mcpv1beta1.ConditionTypeExternalAuthConfigValidated),
+		"a bundle reached through authServerRef must not be recorded against externalAuthConfigRef")
+}
+
+// The bundle is repaired without touching the MCPServer or the referenced
+// config, so neither generation nor the config hash changes.
+func TestMCPServerReconciler_AuthServerRefCABundleRepairRestoresTrue(t *testing.T) {
+	t.Parallel()
+
+	server := v1beta1test.NewMCPServer("server", "default",
+		v1beta1test.WithImage("test"),
+		v1beta1test.WithAuthServerRef("MCPExternalAuthConfig", "auth"),
+	)
+	bundle := &corev1.ConfigMap{ObjectMeta: metav1.ObjectMeta{Name: "bundle", Namespace: "default"}}
+	scheme := testutil.NewScheme(t)
+	fakeClient := fake.NewClientBuilder().WithScheme(scheme).
+		WithObjects(server, authServerRefCABundleConfig(), bundle).
+		WithStatusSubresource(&mcpv1beta1.MCPServer{}).
+		Build()
+	reconciler := newTestMCPServerReconciler(fakeClient, scheme, kubernetes.PlatformKubernetes)
+
+	require.Error(t, reconciler.handleAuthServerRef(t.Context(), server))
+	broken := meta.FindStatusCondition(server.Status.Conditions, mcpv1beta1.ConditionTypeAuthServerRefValidated)
+	require.NotNil(t, broken)
+	require.Equal(t, mcpv1beta1.ConditionReasonInvalidCABundle, broken.Reason)
+
+	repaired := &corev1.ConfigMap{}
+	require.NoError(t, fakeClient.Get(t.Context(), client.ObjectKeyFromObject(bundle), repaired))
+	repaired.Data = map[string]string{"ca.crt": string(mapperTestCertificatePEM(t))}
+	require.NoError(t, fakeClient.Update(t.Context(), repaired))
+
+	require.NoError(t, reconciler.handleAuthServerRef(t.Context(), server))
+	healed := meta.FindStatusCondition(server.Status.Conditions, mcpv1beta1.ConditionTypeAuthServerRefValidated)
+	require.NotNil(t, healed)
+	assert.Equal(t, metav1.ConditionTrue, healed.Status,
+		"repairing the ConfigMap must clear the CA bundle failure")
+	assert.Equal(t, mcpv1beta1.ConditionReasonAuthServerRefValid, healed.Reason)
+}
+
+// A ConfigMap read that fails for reasons unrelated to its content is transient
+// and must requeue rather than be painted as a terminal spec error.
+func TestMCPServerReconciler_AuthServerRefCABundleGetErrorRequeues(t *testing.T) {
+	t.Parallel()
+
+	server := v1beta1test.NewMCPServer("server", "default",
+		v1beta1test.WithImage("test"),
+		v1beta1test.WithAuthServerRef("MCPExternalAuthConfig", "auth"),
+	)
+	scheme := testutil.NewScheme(t)
+	fakeClient := fake.NewClientBuilder().WithScheme(scheme).
+		WithObjects(server, authServerRefCABundleConfig(),
+			&corev1.ConfigMap{ObjectMeta: metav1.ObjectMeta{Name: "bundle", Namespace: "default"}}).
+		WithStatusSubresource(&mcpv1beta1.MCPServer{}).
+		WithInterceptorFuncs(interceptor.Funcs{
+			Get: func(ctx context.Context, c client.WithWatch, key client.ObjectKey, obj client.Object, opts ...client.GetOption) error {
+				if _, ok := obj.(*corev1.ConfigMap); ok && key.Name == "bundle" {
+					return apierrors.NewServiceUnavailable("apiserver is having a moment")
+				}
+				return c.Get(ctx, key, obj, opts...)
+			},
+		}).
+		Build()
+	reconciler := newTestMCPServerReconciler(fakeClient, scheme, kubernetes.PlatformKubernetes)
+
+	err := reconciler.handleAuthServerRef(t.Context(), server)
+	require.Error(t, err, "a transient read failure must surface so the caller requeues")
+	condition := meta.FindStatusCondition(server.Status.Conditions, mcpv1beta1.ConditionTypeAuthServerRefValidated)
+	if condition != nil {
+		assert.NotEqual(t, mcpv1beta1.ConditionReasonInvalidCABundle, condition.Reason,
+			"a transient read failure must not be recorded as a terminal bundle error")
+	}
+}
+
+// An unchanged terminal failure must be re-derived to the identical condition,
+// LastTransitionTime included. Asserted on the condition rather than the
+// object's ResourceVersion: other writers in Reconcile issue unconditional
+// no-op status patches, so the ResourceVersion advances regardless.
+func TestMCPServerReconciler_AuthServerRefInvalidCABundleSteadyState(t *testing.T) {
+	t.Parallel()
+
+	server := v1beta1test.NewMCPServer("server", "default",
+		v1beta1test.WithImage("test"),
+		v1beta1test.WithAuthServerRef("MCPExternalAuthConfig", "auth"),
+	)
+	bundle := &corev1.ConfigMap{ObjectMeta: metav1.ObjectMeta{Name: "bundle", Namespace: "default"}}
+	scheme := testutil.NewScheme(t)
+	fakeClient := fake.NewClientBuilder().WithScheme(scheme).
+		WithObjects(server, authServerRefCABundleConfig(), bundle).
+		WithStatusSubresource(&mcpv1beta1.MCPServer{}).
+		Build()
+	reconciler := newTestMCPServerReconciler(fakeClient, scheme, kubernetes.PlatformKubernetes)
+	req := ctrl.Request{NamespacedName: client.ObjectKeyFromObject(server)}
+
+	_, err := reconciler.Reconcile(t.Context(), req)
+	require.NoError(t, err)
+	first := &mcpv1beta1.MCPServer{}
+	require.NoError(t, fakeClient.Get(t.Context(), client.ObjectKeyFromObject(server), first))
+
+	_, err = reconciler.Reconcile(t.Context(), req)
+	require.NoError(t, err)
+	second := &mcpv1beta1.MCPServer{}
+	require.NoError(t, fakeClient.Get(t.Context(), client.ObjectKeyFromObject(server), second))
+
+	firstCondition := meta.FindStatusCondition(first.Status.Conditions, mcpv1beta1.ConditionTypeAuthServerRefValidated)
+	secondCondition := meta.FindStatusCondition(second.Status.Conditions, mcpv1beta1.ConditionTypeAuthServerRefValidated)
+	require.NotNil(t, firstCondition)
+	require.NotNil(t, secondCondition)
+	assert.Equal(t, *firstCondition, *secondCondition,
+		"re-deriving an unchanged terminal CA failure must leave the condition untouched")
+	assert.Equal(t, first.Status.Phase, second.Status.Phase)
 }

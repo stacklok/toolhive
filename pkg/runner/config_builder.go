@@ -606,6 +606,22 @@ func WithTelemetryConfigFromFlags(
 	return WithTelemetryConfig(config)
 }
 
+// WithMetricsOnTransportPort records whether /metrics should also be served on the
+// main transport port. Nil means the caller expressed no preference and the current
+// default applies at startup; see telemetry.DefaultMetricsOnTransportPort.
+//
+// Must be applied after the telemetry configuration; it is a no-op when telemetry is
+// disabled, since there is no config to record it on.
+func WithMetricsOnTransportPort(v *bool) RunConfigBuilderOption {
+	return func(b *runConfigBuilder) error {
+		if v == nil || b.config.TelemetryConfig == nil {
+			return nil
+		}
+		b.config.TelemetryConfig.MetricsOnTransportPort = v
+		return nil
+	}
+}
+
 // WithTelemetryConfig sets the telemetry configuration
 func WithTelemetryConfig(config *telemetry.Config) RunConfigBuilderOption {
 	return func(b *runConfigBuilder) error {

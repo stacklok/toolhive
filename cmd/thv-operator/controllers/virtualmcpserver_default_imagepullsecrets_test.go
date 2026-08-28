@@ -81,7 +81,7 @@ func TestVirtualMCPServer_DefaultImagePullSecrets(t *testing.T) {
 			}
 
 			// Verify Deployment PodSpec carries the merged list.
-			dep := r.deploymentForVirtualMCPServer(t.Context(), vmcp, "test-checksum", nil, []workloads.TypedWorkload{})
+			dep := r.deploymentForVirtualMCPServer(t.Context(), vmcp, "test-checksum", "", nil, []workloads.TypedWorkload{})
 			require.NotNil(t, dep)
 			assert.Equal(t, tt.wantSecrets, dep.Spec.Template.Spec.ImagePullSecrets,
 				"vMCP Deployment ImagePullSecrets must reflect merged defaults+CR")

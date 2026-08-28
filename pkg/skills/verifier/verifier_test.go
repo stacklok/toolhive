@@ -8,6 +8,7 @@ import (
 	"crypto/elliptic"
 	"crypto/rand"
 	"errors"
+	"fmt"
 	"net/http/httptest"
 	"os"
 	"path/filepath"
@@ -24,6 +25,7 @@ import (
 
 	"github.com/stacklok/toolhive-core/container/signer"
 	coreverifier "github.com/stacklok/toolhive-core/container/verifier"
+	regtypes "github.com/stacklok/toolhive-core/registry/types"
 	"github.com/stacklok/toolhive/pkg/skills/lockfile"
 )
 
@@ -272,20 +274,31 @@ func TestExpectedIdentityConversion(t *testing.T) {
 
 	assert.Nil(t, expectedIdentity(nil), "TOFU first use must yield a nil core identity")
 
-	got := expectedIdentity(&lockfile.Provenance{
+	got := expectedIdentity(NewLockExpectation(&lockfile.Provenance{
 		SignerIdentity:    "/.github/workflows/release.yml",
 		CertIssuer:        "https://token.actions.githubusercontent.com",
 		RepositoryURI:     "https://github.com/org/repo",
 		RepositoryRef:     "refs/tags/v0.1.0",
 		RunnerEnvironment: "github-hosted",
-	})
+	}))
 	require.NotNil(t, got)
 	assert.Equal(t, "/.github/workflows/release.yml", got.SignerIdentity)
 	assert.Equal(t, "https://token.actions.githubusercontent.com", got.CertIssuer)
 	assert.Equal(t, "https://github.com/org/repo", got.SourceRepositoryURI)
+
+	assert.Nil(t, expectedIdentity(NewCatalogExpectation(&regtypes.Provenance{
+		SignerIdentity: "/.github/workflows/release.yml",
+		CertIssuer:     "https://token.actions.githubusercontent.com",
+	})), "signer and issuer without repository must not be bound into core's composed GitHub policy")
+
+	assert.Nil(t, expectedIdentity(NewCatalogExpectation(&regtypes.Provenance{
+		SignerIdentity: "/.github/workflows/release.yml",
+		CertIssuer:     "https://token.actions.githubusercontent.com",
+		RepositoryURI:  "https://github.com/org/repo",
+	})), "even a complete catalog identity must retain independent-field semantics")
 }
 
-func TestCheckPinnedCertificateFields(t *testing.T) {
+func TestCheckLockProvenanceExpectation(t *testing.T) {
 	t.Parallel()
 
 	observed := observedCertificate{
@@ -313,26 +326,42 @@ func TestCheckPinnedCertificateFields(t *testing.T) {
 		{
 			name:     "both fields match",
 			observed: observed,
-			expected: &lockfile.Provenance{RepositoryRef: "refs/tags/v0.1.0", RunnerEnvironment: "github-hosted"},
+			expected: &lockfile.Provenance{
+				SignerIdentity:    "/.github/workflows/release.yml",
+				RepositoryRef:     "refs/tags/v0.1.0",
+				RunnerEnvironment: "github-hosted",
+			},
 		},
 		{
-			name:        "different ref rejected",
-			observed:    observed,
-			expected:    &lockfile.Provenance{RepositoryRef: "refs/heads/attacker-branch"},
+			name:     "different ref rejected",
+			observed: observed,
+			expected: &lockfile.Provenance{
+				SignerIdentity: "/.github/workflows/release.yml",
+				RepositoryRef:  "refs/heads/attacker-branch",
+			},
 			wantErr:     true,
 			wantMessage: "repository ref",
 		},
 		{
-			name:        "different runner class rejected",
-			observed:    observed,
-			expected:    &lockfile.Provenance{RunnerEnvironment: "self-hosted"},
+			name:     "different runner class rejected",
+			observed: observed,
+			expected: &lockfile.Provenance{
+				SignerIdentity:    "/.github/workflows/release.yml",
+				RunnerEnvironment: "self-hosted",
+			},
 			wantErr:     true,
 			wantMessage: "runner environment",
 		},
 		{
-			name:        "certificate that stopped carrying the pinned ref rejected",
-			observed:    observedCertificate{RunnerEnvironment: "github-hosted"},
-			expected:    &lockfile.Provenance{RepositoryRef: "refs/tags/v0.1.0"},
+			name: "certificate that stopped carrying the pinned ref rejected",
+			observed: observedCertificate{
+				Identity:          coreverifier.Identity{SignerIdentity: "/.github/workflows/release.yml"},
+				RunnerEnvironment: "github-hosted",
+			},
+			expected: &lockfile.Provenance{
+				SignerIdentity: "/.github/workflows/release.yml",
+				RepositoryRef:  "refs/tags/v0.1.0",
+			},
 			wantErr:     true,
 			wantMessage: "carries none",
 		},
@@ -340,7 +369,7 @@ func TestCheckPinnedCertificateFields(t *testing.T) {
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
 			t.Parallel()
-			err := checkPinnedCertificateFields(tc.observed, tc.expected)
+			err := checkProvenanceExpectation(tc.observed, NewLockExpectation(tc.expected))
 			if !tc.wantErr {
 				require.NoError(t, err)
 				return
@@ -348,6 +377,48 @@ func TestCheckPinnedCertificateFields(t *testing.T) {
 			require.ErrorIs(t, err, ErrSignerMismatch)
 			assert.Contains(t, err.Error(), tc.wantMessage,
 				"the error must name which pinned field differed")
+		})
+	}
+}
+
+func TestCheckCatalogProvenanceExpectation(t *testing.T) {
+	t.Parallel()
+
+	observed := observedCertificate{
+		Identity: coreverifier.Identity{
+			SignerIdentity:      "/.github/workflows/release.yml",
+			CertIssuer:          "https://token.actions.githubusercontent.com",
+			SourceRepositoryURI: "https://github.com/org/repo",
+		},
+		RepositoryRef:     "refs/tags/v1.0.0",
+		RunnerEnvironment: "github-hosted",
+	}
+	tests := []struct {
+		name     string
+		expected *regtypes.Provenance
+		wantErr  bool
+	}{
+		{name: "empty constraints", expected: &regtypes.Provenance{}},
+		{name: "signer only", expected: &regtypes.Provenance{SignerIdentity: observed.SignerIdentity}},
+		{name: "issuer only", expected: &regtypes.Provenance{CertIssuer: observed.CertIssuer}},
+		{name: "repository only", expected: &regtypes.Provenance{RepositoryURI: observed.SourceRepositoryURI}},
+		{name: "ref only", expected: &regtypes.Provenance{RepositoryRef: observed.RepositoryRef}},
+		{name: "runner only", expected: &regtypes.Provenance{RunnerEnvironment: observed.RunnerEnvironment}},
+		{name: "signer mismatch", expected: &regtypes.Provenance{SignerIdentity: "attacker@example.com"}, wantErr: true},
+		{name: "issuer mismatch", expected: &regtypes.Provenance{CertIssuer: "https://issuer.example.com"}, wantErr: true},
+		{name: "repository mismatch", expected: &regtypes.Provenance{RepositoryURI: "https://github.com/attacker/repo"}, wantErr: true},
+		{name: "ref mismatch", expected: &regtypes.Provenance{RepositoryRef: "refs/heads/attacker"}, wantErr: true},
+		{name: "runner mismatch", expected: &regtypes.Provenance{RunnerEnvironment: "self-hosted"}, wantErr: true},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			err := checkProvenanceExpectation(observed, NewCatalogExpectation(tc.expected))
+			if tc.wantErr {
+				require.ErrorIs(t, err, ErrSignerMismatch)
+				return
+			}
+			require.NoError(t, err)
 		})
 	}
 }
@@ -365,7 +436,7 @@ func TestClassifyVerifyFailureKeepsPinnedFieldDiagnosis(t *testing.T) {
 	}
 	pinErr := pinnedFieldMismatch("repository ref", expected.RepositoryRef, "refs/heads/main")
 
-	err := classifyVerifyFailure(nil, nil, nil, expected, pinErr)
+	err := classifyVerifyFailure(nil, nil, nil, NewLockExpectation(expected), pinErr)
 	require.ErrorIs(t, err, ErrSignerMismatch)
 	assert.Contains(t, err.Error(), "repository ref")
 	assert.NotErrorIs(t, err, ErrSignatureInvalid)
@@ -419,4 +490,42 @@ func TestMostUsefulVerifyErrorPrefersPinnedFieldMismatch(t *testing.T) {
 			assert.Equal(t, tc.want, got)
 		})
 	}
+}
+
+func TestFirstVerifiedBundleSelectsLaterCatalogMatch(t *testing.T) {
+	t.Parallel()
+
+	want := &Result{Signed: true, SignerIdentity: "matching@example.com"}
+	visited := make([]string, 0, 3)
+	result, errs := firstVerifiedBundle([]string{"valid-mismatch", "valid-match", "unused"},
+		func(candidate string) (*Result, error) {
+			visited = append(visited, candidate)
+			switch candidate {
+			case "valid-mismatch":
+				return nil, fmt.Errorf("%w: first valid signature does not satisfy the catalog", ErrSignerMismatch)
+			case "valid-match":
+				return want, nil
+			default:
+				t.Fatalf("selection must stop after the later matching signature")
+				return nil, nil
+			}
+		})
+
+	assert.Same(t, want, result)
+	assert.Nil(t, errs)
+	assert.Equal(t, []string{"valid-mismatch", "valid-match"}, visited,
+		"a mismatching valid signature must not hide a later catalog match")
+}
+
+func TestFirstVerifiedBundleReturnsEveryRejection(t *testing.T) {
+	t.Parallel()
+
+	result, errs := firstVerifiedBundle([]string{"first", "second"}, func(candidate string) (*Result, error) {
+		return nil, errors.New(candidate)
+	})
+
+	assert.Nil(t, result)
+	require.Len(t, errs, 2)
+	assert.EqualError(t, errs[0], "first")
+	assert.EqualError(t, errs[1], "second")
 }

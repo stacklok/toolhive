@@ -145,15 +145,22 @@ func (d *CIMDStorageDecorator) fetch(ctx context.Context, id string) (fosite.Cli
 		return nil, fmt.Errorf("%w: %w", fosite.ErrNotFound.WithHint("CIMD fetch failed"), err)
 	}
 
-	// Reject documents that declare an auth method this AS does not support.
-	// ErrInvalidClient: the document was fetched successfully but its declared
-	// metadata violates AS policy (distinct from ErrNotFound which means the
-	// document could not be fetched at all).
-	if m := doc.TokenEndpointAuthMethod; m != "" && m != defaultCIMDTokenEndpointAuthMethod {
+	// Negotiate the effective token_endpoint_auth_method rather than rejecting
+	// outright on a declared-but-unsupported singular value. ErrInvalidClient:
+	// the document was fetched successfully but its declared metadata violates
+	// AS policy (distinct from ErrNotFound which means the document could not
+	// be fetched at all).
+	authMethod, ok := negotiateTokenEndpointAuthMethod(doc)
+	if !ok {
 		return nil, fmt.Errorf("%w: CIMD document at %s claims token_endpoint_auth_method %q "+
-			"but this server only supports %q",
+			"but this server only supports %q (token_endpoint_auth_methods_supported: %v)",
 			fosite.ErrInvalidClient.WithHint("unsupported token_endpoint_auth_method"),
-			id, m, defaultCIMDTokenEndpointAuthMethod)
+			id, doc.TokenEndpointAuthMethod, defaultCIMDTokenEndpointAuthMethod,
+			doc.TokenEndpointAuthMethodsSupported)
+	}
+	if doc.TokenEndpointAuthMethod != "" && authMethod != doc.TokenEndpointAuthMethod {
+		slog.Debug("CIMD: negotiated token_endpoint_auth_method from the client's supported list",
+			"client_id", id, "declared", doc.TokenEndpointAuthMethod, "effective", authMethod)
 	}
 
 	// Filter — not reject — grant_types and response_types this AS does not
@@ -224,7 +231,7 @@ func (d *CIMDStorageDecorator) fetch(ctx context.Context, id string) (fosite.Cli
 		resolvedScopes = registration.UnionScopes(resolvedScopes, d.baselineClientScopes)
 	}
 
-	client := buildFositeClient(doc, resolvedScopes, grantTypes, responseTypes)
+	client := buildFositeClient(doc, resolvedScopes, grantTypes, responseTypes, authMethod)
 
 	d.cache.Add(id, &cimdCacheEntry{
 		client:  client,
@@ -235,10 +242,40 @@ func (d *CIMDStorageDecorator) fetch(ctx context.Context, id string) (fosite.Cli
 }
 
 // defaultCIMDTokenEndpointAuthMethod is the token endpoint authentication
-// method applied when the CIMD document omits token_endpoint_auth_method.
-// Documents that declare any other value are rejected by fetch() before
-// buildFositeClient is called.
+// method applied when the CIMD document omits token_endpoint_auth_method, and
+// the only method this server ever selects when negotiating a fallback for a
+// declared-but-unsupported value. Documents whose declared method is neither
+// this value nor negotiable to it via negotiateTokenEndpointAuthMethod are
+// rejected by fetch() before buildFositeClient is called.
 const defaultCIMDTokenEndpointAuthMethod = "none"
+
+// negotiateTokenEndpointAuthMethod resolves the effective token endpoint auth
+// method for a CIMD document. The declared singular TokenEndpointAuthMethod is
+// used when it is empty or already equal to defaultCIMDTokenEndpointAuthMethod.
+// When it names anything else, the plural TokenEndpointAuthMethodsSupported
+// (OpenID Connect RP Metadata Choices 1.0 — not part of the CIMD draft) is
+// consulted: if it contains defaultCIMDTokenEndpointAuthMethod, the document
+// is accepted with that as the negotiated method, since the client itself
+// declared willingness to use it. Otherwise negotiation fails and ok is false.
+//
+// The supported set this function negotiates against is deliberately the
+// defaultCIMDTokenEndpointAuthMethod constant alone, never the AS discovery
+// document's own token_endpoint_auth_methods_supported: discovery legitimately
+// advertises client_secret_basic/client_secret_post when confidential DCR or
+// static delegate clients are enabled, and the CIMD draft (§4.1) forbids those
+// symmetric methods in CIMD documents outright. Deriving the negotiated set
+// from discovery would let a CIMD document negotiate its way into a forbidden
+// method, so no such config plumbing is introduced.
+func negotiateTokenEndpointAuthMethod(doc *cimd.ClientMetadataDocument) (string, bool) {
+	declared := doc.TokenEndpointAuthMethod
+	if declared == "" || declared == defaultCIMDTokenEndpointAuthMethod {
+		return defaultCIMDTokenEndpointAuthMethod, true
+	}
+	if slices.Contains(doc.TokenEndpointAuthMethodsSupported, defaultCIMDTokenEndpointAuthMethod) {
+		return defaultCIMDTokenEndpointAuthMethod, true
+	}
+	return "", false
+}
 
 // buildFositeClient converts a ClientMetadataDocument into a fosite.Client.
 // RFC 8252 §7.3 loopback dynamic-port matching for a "http://localhost" redirect
@@ -253,14 +290,14 @@ const defaultCIMDTokenEndpointAuthMethod = "none"
 // empty (the filters apply defaults and reject empty intersections). The
 // stored client therefore carries only grant/response types this server can
 // actually serve, not the document's full declaration.
+// tokenEndpointAuthMethod is the already-negotiated value computed by fetch()
+// via negotiateTokenEndpointAuthMethod; this function no longer applies its
+// own empty-to-default fallback, so the resolver is the single authority over
+// which method a CIMD-derived client ends up with.
 func buildFositeClient(
 	doc *cimd.ClientMetadataDocument, resolvedScopes, grantTypes, responseTypes []string,
+	tokenEndpointAuthMethod string,
 ) fosite.Client {
-	tokenEndpointAuthMethod := doc.TokenEndpointAuthMethod
-	if tokenEndpointAuthMethod == "" {
-		tokenEndpointAuthMethod = defaultCIMDTokenEndpointAuthMethod
-	}
-
 	// Scopes were computed and validated by fetch() via registration.ValidateScopes,
 	// consistent with the DCR handler. Fall back to DefaultScopes only when the
 	// decorator has no ScopesSupported restriction (unconstrained AS).

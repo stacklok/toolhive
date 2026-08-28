@@ -21,6 +21,9 @@ import (
 	"fmt"
 	"slices"
 
+	"github.com/go-jose/go-jose/v3"
+
+	servercrypto "github.com/stacklok/toolhive/pkg/authserver/server/crypto"
 	"github.com/stacklok/toolhive/pkg/oauthproto"
 )
 
@@ -115,22 +118,30 @@ var allowedResponseTypes = map[string]bool{
 // distributed binary.
 // Returns the validated request with defaults applied, or an error.
 //
-// The validated request does NOT carry the requested scopes — scope
-// validation against the server's supported set is a separate step,
-// handled by ValidateScopes using the caller's policy inputs.
+// The returned request preserves validated client metadata, including scopes and
+// private_key_jwt key metadata. Scope authorization against the server's supported
+// set is a separate step handled by ValidateScopes using the caller's policy inputs.
 func ValidateDCRRequest(
 	req *oauthproto.DynamicClientRegistrationRequest,
 	allowConfidential bool,
+	allowPrivateKeyJWT bool,
 ) (*oauthproto.DynamicClientRegistrationRequest, *DCRError) {
-	// 1. Validate redirect_uris - required
-	if len(req.RedirectURIs) == 0 {
+	// Validate the authentication method before applying method-specific metadata
+	// rules. Existing registration methods may carry jwks_uri metadata even though
+	// only private_key_jwt requires inline keys.
+	authMethod, dcrErr := validateAuthMethod(req.TokenEndpointAuthMethod, req.RedirectURIs, allowConfidential, allowPrivateKeyJWT)
+	if dcrErr != nil {
+		return nil, dcrErr
+	}
+
+	if len(req.RedirectURIs) == 0 && authMethod != oauthproto.TokenEndpointAuthMethodPrivateKeyJWT {
 		return nil, &DCRError{
 			Error:            DCRErrorInvalidRedirectURI,
 			ErrorDescription: "redirect_uris is required",
 		}
 	}
 
-	// 2. Validate redirect_uris count limit
+	// Validate redirect_uris count limit
 	if len(req.RedirectURIs) > MaxRedirectURICount {
 		return nil, &DCRError{
 			Error:            DCRErrorInvalidRedirectURI,
@@ -162,32 +173,45 @@ func ValidateDCRRequest(
 		return nil, dcrErr
 	}
 
-	// 5. Validate/default token_endpoint_auth_method
-	authMethod, dcrErr := validateAuthMethod(req.TokenEndpointAuthMethod, req.RedirectURIs, allowConfidential)
-	if dcrErr != nil {
+	if dcrErr := validatePrivateKeyJWTMetadata(req, authMethod); dcrErr != nil {
 		return nil, dcrErr
 	}
 
 	// 6. Validate/default grant_types
-	grantTypes, err := validateGrantTypes(req.GrantTypes)
+	grantTypes, err := validateGrantTypes(req.GrantTypes, authMethod)
 	if err != nil {
 		return nil, err
 	}
 
 	// 7. Validate/default response_types
-	responseTypes, err := validateResponseTypes(req.ResponseTypes)
+	responseTypes, err := validateResponseTypes(req.ResponseTypes, authMethod)
 	if err != nil {
 		return nil, err
 	}
 
+	// Only private_key_jwt uses client key metadata. Keep unrelated DCR
+	// registrations from echoing or retaining attacker-supplied key material.
+	clientJWKS := cloneJSONWebKeySet(req.JWKS)
+	clientJWKSURI := req.JWKSURI
+	clientSigningAlgorithm := req.TokenEndpointAuthSigningAlg
+	if authMethod != oauthproto.TokenEndpointAuthMethodPrivateKeyJWT {
+		clientJWKS = nil
+		clientJWKSURI = ""
+		clientSigningAlgorithm = ""
+	}
+
 	// Return validated request with defaults applied
 	return &oauthproto.DynamicClientRegistrationRequest{
-		RedirectURIs:            req.RedirectURIs,
-		ClientName:              req.ClientName,
-		TokenEndpointAuthMethod: authMethod,
-		GrantTypes:              grantTypes,
-		ResponseTypes:           responseTypes,
-		SoftwareID:              req.SoftwareID,
+		RedirectURIs:                req.RedirectURIs,
+		ClientName:                  req.ClientName,
+		TokenEndpointAuthMethod:     authMethod,
+		GrantTypes:                  grantTypes,
+		ResponseTypes:               responseTypes,
+		Scopes:                      req.Scopes,
+		JWKS:                        clientJWKS,
+		JWKSURI:                     clientJWKSURI,
+		TokenEndpointAuthSigningAlg: clientSigningAlgorithm,
+		SoftwareID:                  req.SoftwareID,
 	}, nil
 }
 
@@ -230,6 +254,7 @@ func validateAuthMethod(
 	authMethod string,
 	redirectURIs []string,
 	allowConfidential bool,
+	allowPrivateKeyJWT bool,
 ) (string, *DCRError) {
 	if authMethod == "" {
 		// RFC 7591 §2 says an omitted token_endpoint_auth_method defaults to
@@ -249,6 +274,11 @@ func validateAuthMethod(
 	switch authMethod {
 	case oauthproto.TokenEndpointAuthMethodNone:
 		// Always accepted; the public-client default.
+		return authMethod, nil
+	case oauthproto.TokenEndpointAuthMethodPrivateKeyJWT:
+		if !allowPrivateKeyJWT {
+			return "", &DCRError{Error: DCRErrorInvalidClientMetadata, ErrorDescription: "private_key_jwt registration is disabled"}
+		}
 		return authMethod, nil
 	case oauthproto.TokenEndpointAuthMethodClientSecretBasic,
 		oauthproto.TokenEndpointAuthMethodClientSecretPost:
@@ -313,7 +343,91 @@ func ValidateConfidentialRedirectURIs(redirectURIs []string, authMethod string) 
 	return nil
 }
 
-func validateGrantTypes(grantTypes []string) ([]string, *DCRError) {
+func validatePrivateKeyJWTMetadata(req *oauthproto.DynamicClientRegistrationRequest, authMethod string) *DCRError {
+	if authMethod != oauthproto.TokenEndpointAuthMethodPrivateKeyJWT {
+		return nil
+	}
+	if req.JWKSURI != "" {
+		return &DCRError{Error: DCRErrorInvalidClientMetadata, ErrorDescription: "jwks_uri is not supported; provide inline jwks"}
+	}
+	if req.JWKS == nil || len(req.JWKS.Keys) == 0 {
+		return &DCRError{Error: DCRErrorInvalidClientMetadata, ErrorDescription: "private_key_jwt requires a non-empty inline jwks"}
+	}
+	if !supportedSigningAlgorithm(req.TokenEndpointAuthSigningAlg) {
+		return &DCRError{
+			Error:            DCRErrorInvalidClientMetadata,
+			ErrorDescription: "token_endpoint_auth_signing_alg is missing or unsupported",
+		}
+	}
+	matching := false
+	for i := range req.JWKS.Keys {
+		keyMatches, dcrErr := validatePrivateKeyJWTKey(&req.JWKS.Keys[i], req.TokenEndpointAuthSigningAlg)
+		if dcrErr != nil {
+			return dcrErr
+		}
+		matching = matching || keyMatches
+	}
+	if !matching {
+		return &DCRError{Error: DCRErrorInvalidClientMetadata, ErrorDescription: "signing algorithm does not match a registered key"}
+	}
+	return nil
+}
+
+func validatePrivateKeyJWTKey(key *jose.JSONWebKey, algorithm string) (bool, *DCRError) {
+	if !key.Valid() || !key.IsPublic() || key.Use != "sig" {
+		return false, &DCRError{Error: DCRErrorInvalidClientMetadata, ErrorDescription: "jwks must contain valid public signing keys"}
+	}
+	if key.Algorithm != "" && !supportedSigningAlgorithm(key.Algorithm) {
+		return false, &DCRError{
+			Error:            DCRErrorInvalidClientMetadata,
+			ErrorDescription: "jwks contains an unsupported signing algorithm",
+		}
+	}
+	if key.Algorithm != "" && key.Algorithm != algorithm {
+		return false, &DCRError{
+			Error:            DCRErrorInvalidClientMetadata,
+			ErrorDescription: "jwks contains a signing algorithm that does not match the request",
+		}
+	}
+	// Always validate structural compatibility between the declared algorithm
+	// and the actual key type/curve, even when the JWK's own alg label
+	// already matched above: a client could mislabel an EC key as "RS256"
+	// and have both label-only checks pass despite the key never being able
+	// to actually sign or verify with that algorithm.
+	if err := servercrypto.ValidateAlgorithmForPublicKey(algorithm, key.Key); err != nil {
+		return false, &DCRError{
+			Error:            DCRErrorInvalidClientMetadata,
+			ErrorDescription: "jwks key is not compatible with the requested signing algorithm",
+		}
+	}
+	return true, nil
+}
+
+// SupportedSigningAlgorithms returns the allowlist accepted for private_key_jwt
+// client assertions and their registered signing keys. Delegates to
+// servercrypto.SupportedClientKeyAlgorithms, the single source of truth also
+// consulted by key-compatibility validation, so the two cannot drift apart.
+func SupportedSigningAlgorithms() []string {
+	return servercrypto.SupportedClientKeyAlgorithms()
+}
+
+func supportedSigningAlgorithm(alg string) bool {
+	return slices.Contains(SupportedSigningAlgorithms(), alg)
+}
+
+func validateGrantTypes(grantTypes []string, authMethod string) ([]string, *DCRError) {
+	if authMethod == oauthproto.TokenEndpointAuthMethodPrivateKeyJWT {
+		if len(grantTypes) == 0 {
+			return []string{oauthproto.GrantTypeTokenExchange}, nil
+		}
+		if len(grantTypes) != 1 || grantTypes[0] != oauthproto.GrantTypeTokenExchange {
+			return nil, &DCRError{
+				Error:            DCRErrorInvalidClientMetadata,
+				ErrorDescription: "private_key_jwt registrations require exactly the token exchange grant",
+			}
+		}
+		return append([]string(nil), grantTypes...), nil
+	}
 	if len(grantTypes) == 0 {
 		grantTypes = defaultGrantTypes
 	}
@@ -336,7 +450,16 @@ func validateGrantTypes(grantTypes []string) ([]string, *DCRError) {
 	return grantTypes, nil
 }
 
-func validateResponseTypes(responseTypes []string) ([]string, *DCRError) {
+func validateResponseTypes(responseTypes []string, authMethod string) ([]string, *DCRError) {
+	if authMethod == oauthproto.TokenEndpointAuthMethodPrivateKeyJWT {
+		if len(responseTypes) != 0 {
+			return nil, &DCRError{
+				Error:            DCRErrorInvalidClientMetadata,
+				ErrorDescription: "private_key_jwt registrations cannot use response_types",
+			}
+		}
+		return nil, nil
+	}
 	if len(responseTypes) == 0 {
 		responseTypes = defaultResponseTypes
 	}
@@ -457,7 +580,7 @@ func UnionScopes(requested, baseline []string) []string {
 // declared values must be in the allowed set. Returns the validated slice (with
 // defaults applied when nil/empty) or a *DCRError on violation.
 func ValidatePublicGrantTypes(grantTypes []string) ([]string, *DCRError) {
-	return validateGrantTypes(grantTypes)
+	return validateGrantTypes(grantTypes, oauthproto.TokenEndpointAuthMethodNone)
 }
 
 // ValidatePublicResponseTypes validates the response_types for a public OAuth
@@ -465,7 +588,7 @@ func ValidatePublicGrantTypes(grantTypes []string) ([]string, *DCRError) {
 // values must be in the allowed set. Returns the validated slice (with defaults
 // applied when nil/empty) or a *DCRError on violation.
 func ValidatePublicResponseTypes(responseTypes []string) ([]string, *DCRError) {
-	return validateResponseTypes(responseTypes)
+	return validateResponseTypes(responseTypes, oauthproto.TokenEndpointAuthMethodNone)
 }
 
 // FilterPublicGrantTypes returns the subset of grantTypes this server supports

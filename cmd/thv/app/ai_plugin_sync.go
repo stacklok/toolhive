@@ -15,13 +15,14 @@ import (
 )
 
 var (
-	aiPluginSyncProjectRoot string
-	aiPluginSyncClientsRaw  string
-	aiPluginSyncCheck       bool
-	aiPluginSyncAdopt       bool
-	aiPluginSyncPrune       bool
-	aiPluginSyncYes         bool
-	aiPluginSyncFormat      string
+	aiPluginSyncProjectRoot   string
+	aiPluginSyncClientsRaw    string
+	aiPluginSyncCheck         bool
+	aiPluginSyncAdopt         bool
+	aiPluginSyncPrune         bool
+	aiPluginSyncYes           bool
+	aiPluginSyncAllowUnsigned bool
+	aiPluginSyncFormat        string
 )
 
 var aiPluginSyncCmd = &cobra.Command{
@@ -60,6 +61,8 @@ func init() {
 		"Remove installs no longer present in the lock file")
 	aiPluginSyncCmd.Flags().BoolVar(&aiPluginSyncYes, "yes", false,
 		"Skip the confirmation prompt (required when not running interactively)")
+	aiPluginSyncCmd.Flags().BoolVar(&aiPluginSyncAllowUnsigned, "allow-unsigned", false,
+		"Allow adopting plugins whose signature state cannot be established (recorded as unsigned)")
 	AddFormatFlag(aiPluginSyncCmd, &aiPluginSyncFormat)
 }
 
@@ -85,11 +88,12 @@ func aiPluginSyncCmdFunc(cmd *cobra.Command, _ []string) error {
 
 	c := newAIPluginClient(cmd.Context())
 	result, err := c.Sync(cmd.Context(), plugins.SyncOptions{
-		ProjectRoot: projectRoot,
-		Clients:     parseSkillInstallClients(aiPluginSyncClientsRaw),
-		Check:       aiPluginSyncCheck,
-		Adopt:       aiPluginSyncAdopt,
-		Prune:       aiPluginSyncPrune,
+		ProjectRoot:   projectRoot,
+		Clients:       parseSkillInstallClients(aiPluginSyncClientsRaw),
+		Check:         aiPluginSyncCheck,
+		Adopt:         aiPluginSyncAdopt,
+		Prune:         aiPluginSyncPrune,
+		AllowUnsigned: aiPluginSyncAllowUnsigned,
 	})
 	if err != nil {
 		return formatAIPluginError("sync plugins", err)

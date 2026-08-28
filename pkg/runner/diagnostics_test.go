@@ -215,12 +215,13 @@ func TestStopDiagnosticsServerIsIdempotent(t *testing.T) {
 	require.NoError(t, r.stopDiagnosticsServer(ctx))
 }
 
-// TestMountPrometheusHandlerOnTransportPort covers the decision jhrozek's review on
-// #6370 flagged as untested: the tri-state resolves correctly in isolation
-// (TestDiagnosticsPort / TestServeMetricsOnTransportPort in pkg/telemetry), but
-// nothing proved the resolved value actually reached transportConfig.PrometheusHandler
-// for a standard (non-vMCP) workload. A regression here would leave the migration
-// switch resolving correctly while silently never mounting the transport-port copy.
+// TestMountPrometheusHandlerOnTransportPort covers the decision Run() makes when
+// deciding whether to mount /metrics on the transport port. The tri-state itself
+// resolves correctly in isolation (TestDiagnosticsPort / TestServeMetricsOnTransportPort
+// in pkg/telemetry), but that alone does not prove the resolved value reaches
+// transportConfig.PrometheusHandler for a standard (non-vMCP) workload -- a
+// regression here would leave the migration switch resolving correctly while
+// silently never mounting the transport-port copy.
 func TestMountPrometheusHandlerOnTransportPort(t *testing.T) {
 	t.Parallel()
 

@@ -18,9 +18,9 @@ import (
 	"sync"
 	"time"
 
+	celgo "cel.dev/cel-go/cel"
 	"github.com/go-jose/go-jose/v4"
 	"github.com/go-jose/go-jose/v4/jwt"
-	celgo "github.com/google/cel-go/cel"
 	"github.com/lestrrat-go/httprc/v3"
 	"github.com/lestrrat-go/jwx/v3/jwk"
 
@@ -173,6 +173,11 @@ type TrustedIssuer struct {
 	// issuer to resolve to a private or loopback address. Use only when the
 	// issuer is hosted inside the same cluster and has no public endpoint.
 	AllowPrivateIPs bool `json:"allow_private_ips,omitempty" yaml:"allow_private_ips,omitempty"`
+	// CAFilePath is the path to a PEM CA bundle added to the system roots when
+	// fetching this issuer's OIDC discovery document and JWKS. Trust is additive
+	// and scoped to this issuer: the public roots still apply, and no other
+	// issuer's client is affected.
+	CAFilePath string `json:"ca_file_path,omitempty" yaml:"ca_file_path,omitempty"`
 	// ActorClaim names the claim identifying the client that requested the
 	// subject token from THIS EXTERNAL ISSUER (used by AllowedActors below).
 	// Values are in the external issuer's namespace, NOT ToolHive client
@@ -499,12 +504,15 @@ func newExternalIssuerConfig(ti TrustedIssuer) (*externalIssuerConfig, error) {
 	// from an untrusted discovery document, only on the fixed
 	// jwksRefreshInterval schedule plus occasional on-demand refreshes —
 	// no hot path here to trade the per-dial SSRF check away for.
-	httpClient, err := networking.NewHttpClientBuilder().
+	builder := networking.NewHttpClientBuilder().
 		WithInsecureAllowHTTP(ti.InsecureAllowHTTP).
 		WithPrivateIPs(ti.AllowPrivateIPs).
 		WithTimeout(httpTimeout).
-		WithDisableKeepAlives(true).
-		Build()
+		WithDisableKeepAlives(true)
+	if ti.CAFilePath != "" {
+		builder = builder.WithSystemRootsPlusCABundle(ti.CAFilePath)
+	}
+	httpClient, err := builder.Build()
 	if err != nil {
 		return nil, fmt.Errorf("issuer_url %q: failed to build HTTP client: %w", ti.IssuerURL, err)
 	}

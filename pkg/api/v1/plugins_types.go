@@ -31,6 +31,10 @@ type installPluginRequest struct {
 	Clients []string `json:"clients,omitempty"`
 	// Force allows overwriting unmanaged plugin directories
 	Force bool `json:"force,omitempty"`
+	// AllowUnsigned permits installing a project-scoped plugin without a
+	// verified signature; the exception is recorded in the project's lock
+	// file.
+	AllowUnsigned bool `json:"allow_unsigned,omitempty"`
 	// Group is the group name to add the plugin to after installation
 	Group string `json:"group,omitempty"`
 }
@@ -92,6 +96,9 @@ type syncPluginsRequest struct {
 	Check bool `json:"check,omitempty"`
 	// Adopt writes lock entries for existing unmanaged project-scope installs
 	Adopt bool `json:"adopt,omitempty"`
+	// AllowUnsigned permits adopting plugins whose signature state cannot be
+	// established, recording them as unsigned
+	AllowUnsigned bool `json:"allow_unsigned,omitempty"`
 }
 
 // upgradePluginsRequest represents the request to upgrade a project's plugins.
@@ -108,6 +115,9 @@ type upgradePluginsRequest struct {
 	FailOnChanges bool `json:"fail_on_changes,omitempty"`
 	// AllowRefChange permits resolvedReference changes during upgrade
 	AllowRefChange bool `json:"allow_ref_change,omitempty"`
+	// AllowSignerChange permits upgrading to an artifact signed by a
+	// different identity than the recorded one
+	AllowSignerChange bool `json:"allow_signer_change,omitempty"`
 	// Clients lists target client identifiers. Empty means every
 	// plugin-supporting client detected on this host.
 	Clients []string `json:"clients,omitempty"`

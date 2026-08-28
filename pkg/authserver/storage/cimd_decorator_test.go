@@ -357,11 +357,12 @@ func TestCIMDStorageDecorator_GetClient_CIMDURLHitsCacheDirectly(t *testing.T) {
 
 // buildFositeClientWithDefaults calls buildFositeClient with the standard
 // filtered grant/response types (what FilterPublicGrantTypes /
-// FilterPublicResponseTypes return for an omitted declaration), for tests
-// that don't exercise those fields.
+// FilterPublicResponseTypes return for an omitted declaration) and the
+// default negotiated auth method, for tests that don't exercise those fields.
 func buildFositeClientWithDefaults(doc *cimd.ClientMetadataDocument, scopes []string) fosite.Client {
 	return buildFositeClient(doc, scopes,
-		[]string{"authorization_code", "refresh_token"}, []string{"code"})
+		[]string{"authorization_code", "refresh_token"}, []string{"code"},
+		defaultCIMDTokenEndpointAuthMethod)
 }
 
 func TestBuildFositeClient_PassesThroughGrantAndResponseTypes(t *testing.T) {
@@ -375,7 +376,8 @@ func TestBuildFositeClient_PassesThroughGrantAndResponseTypes(t *testing.T) {
 		GrantTypes: []string{"authorization_code", "urn:ietf:params:oauth:grant-type:device_code"},
 	}
 
-	got := buildFositeClient(doc, nil, []string{"authorization_code"}, []string{"code"})
+	got := buildFositeClient(doc, nil, []string{"authorization_code"}, []string{"code"},
+		defaultCIMDTokenEndpointAuthMethod)
 	assert.Equal(t, "https://example.com/meta.json", got.GetID())
 	assert.True(t, got.IsPublic())
 	assert.ElementsMatch(t, []string{"authorization_code"}, []string(got.GetGrantTypes()),
@@ -465,6 +467,68 @@ func TestFetch_RejectsUnsupportedTokenEndpointAuthMethod(t *testing.T) {
 	assert.ErrorIs(t, err, fosite.ErrInvalidClient,
 		"CIMD policy rejections must use ErrInvalidClient, not ErrNotFound")
 	assert.NotErrorIs(t, err, fosite.ErrNotFound)
+}
+
+// TestFetch_TokenEndpointAuthMethodNegotiation exercises the negotiation
+// introduced for #6278: a declared-but-unsupported singular
+// token_endpoint_auth_method is rescued when the plural
+// token_endpoint_auth_methods_supported list names a method this server does
+// support, instead of the document being rejected outright.
+func TestFetch_TokenEndpointAuthMethodNegotiation(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name           string
+		declared       string
+		supportedList  []string
+		wantErr        bool
+		wantAuthMethod string
+	}{
+		{
+			name:           "unsupported singular rescued by none in the supported list",
+			declared:       "private_key_jwt",
+			supportedList:  []string{"none", "private_key_jwt"},
+			wantErr:        false,
+			wantAuthMethod: "none",
+		},
+		{
+			name:          "unsupported singular with no none in the supported list stays rejected",
+			declared:      "private_key_jwt",
+			supportedList: []string{"private_key_jwt", "tls_client_auth"},
+			wantErr:       true,
+		},
+		{
+			name:           "omitted singular with a supported list is unaffected — accepted as none",
+			declared:       "",
+			supportedList:  []string{"private_key_jwt"},
+			wantErr:        false,
+			wantAuthMethod: "none",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			srv := serveCIMDDocWithFields(t, func(doc *cimd.ClientMetadataDocument) {
+				doc.TokenEndpointAuthMethod = tt.declared
+				doc.TokenEndpointAuthMethodsSupported = tt.supportedList
+			})
+			dec := newEnabledDecorator(t, newTestBase(t), 10, time.Minute)
+			client, err := dec.fetchOrCached(context.Background(), srv.URL+"/meta.json")
+			if tt.wantErr {
+				require.Error(t, err)
+				assert.ErrorIs(t, err, fosite.ErrInvalidClient,
+					"CIMD policy rejections must use ErrInvalidClient, not ErrNotFound")
+				assert.NotErrorIs(t, err, fosite.ErrNotFound)
+				return
+			}
+			require.NoError(t, err)
+			assert.True(t, client.IsPublic())
+			oidc, ok := client.(fosite.OpenIDConnectClient)
+			require.True(t, ok, "client must implement fosite.OpenIDConnectClient")
+			assert.Equal(t, tt.wantAuthMethod, oidc.GetTokenEndpointAuthMethod())
+		})
+	}
 }
 
 // serveCIMDDocWithFields starts an httptest.Server that serves a CIMD document

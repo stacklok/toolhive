@@ -142,6 +142,9 @@ type Request struct {
 	// so the resolver refuses to register as a public client.
 	PublicClient bool
 
+	// CAFilePath is the path to a PEM CA bundle added to the system roots.
+	CAFilePath string
+
 	// AllowPrivateIPs permits both of the resolver's outbound calls — the
 	// discovery fetch to DiscoveryURL and the registration POST to the
 	// resolved registration endpoint — to connect to private IP ranges. For

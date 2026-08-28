@@ -53,6 +53,8 @@ func (s *service) recordLockState(
 		ResolvedReference: resolvedReference,
 		Digest:            pl.Digest,
 		ContentDigest:     contentDigest,
+		Provenance:        opts.Provenance,
+		Unsigned:          opts.Unsigned,
 	}); err != nil {
 		return pl, fmt.Errorf("writing lock entry: %w", errors.Join(errLockWrite, err))
 	}
@@ -75,6 +77,11 @@ type lockEntryInput struct {
 	ResolvedReference string
 	Digest            string
 	ContentDigest     string
+	// Provenance is the verified signer identity to record, nil for
+	// unsigned or unverified entries.
+	Provenance *lockfile.Provenance
+	// Unsigned records the explicit unsigned-install exception.
+	Unsigned bool
 }
 
 // recordLockEntry upserts a single plugins: entry into projectRoot's lock
@@ -94,6 +101,8 @@ func recordLockEntry(projectRoot string, in lockEntryInput) error {
 			ResolvedReference: in.ResolvedReference,
 			Digest:            in.Digest,
 			ContentDigest:     in.ContentDigest,
+			Provenance:        in.Provenance,
+			Unsigned:          in.Unsigned,
 			Explicit:          true,
 		}
 		existing, exists := lf.GetPlugin(in.Name)

@@ -97,7 +97,15 @@ func Run() {
 		},
 	}
 
-	mgr, err := ctrl.NewManager(ctrl.GetConfigOrDie(), options)
+	cfg := ctrl.GetConfigOrDie()
+	// The MCPRegistry CRD is deprecated; kube-apiserver emits a 299 Warning
+	// header on every LIST/WATCH. client-go re-establishes the WATCH every
+	// 5–10m (reflector timeout), which re-parses response headers and would
+	// otherwise spam the deprecation even when no MCPRegistry CRs exist
+	// (#6346). next is nil so the constructor installs CRT's slog logger.
+	installMCPRegistryWarningHandler(cfg, nil)
+
+	mgr, err := ctrl.NewManager(cfg, options)
 	if err != nil {
 		setupLog.Error(err, "unable to start manager")
 		os.Exit(1)
@@ -215,6 +223,19 @@ func isStorageVersionMigratorEnabled() (bool, error) {
 	return enabled, nil
 }
 
+// setupEmbeddedAuthCABundleFieldIndex sets up the shared CA ConfigMap reference index.
+func setupEmbeddedAuthCABundleFieldIndex(mgr ctrl.Manager) error {
+	if err := mgr.GetFieldIndexer().IndexField(
+		context.Background(),
+		&mcpv1beta1.MCPExternalAuthConfig{},
+		controllers.EmbeddedAuthCABundleConfigMapIndex,
+		controllers.IndexEmbeddedAuthCABundleConfigMaps,
+	); err != nil {
+		return fmt.Errorf("index MCPExternalAuthConfig CA bundle references: %w", err)
+	}
+	return nil
+}
+
 // setupGroupRefFieldIndexes sets up field indexing for spec.groupRef on all resource types
 // that can reference an MCPGroup. This enables efficient lookups by groupRef in controllers.
 func setupGroupRefFieldIndexes(mgr ctrl.Manager) error {
@@ -277,6 +298,9 @@ func setupGroupRefFieldIndexes(mgr ctrl.Manager) error {
 // imagePullSecretsDefaults are merged with per-CR imagePullSecrets when
 // reconcilers construct workloads.
 func setupServerControllers(mgr ctrl.Manager, imagePullSecretsDefaults imagepullsecrets.Defaults) error {
+	if err := setupEmbeddedAuthCABundleFieldIndex(mgr); err != nil {
+		return err
+	}
 	if err := setupGroupRefFieldIndexes(mgr); err != nil {
 		return err
 	}

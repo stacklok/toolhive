@@ -50,6 +50,55 @@ var _ = Describe("Plugins CLI lock file exit codes (RFC THV-0080)", Label("api",
 		return exitErr.ExitCode()
 	}
 
+	Describe("project-scoped install signature verification", func() {
+		It("rejects an unsigned install without allow_unsigned and writes no lock entry", func() {
+			projectRoot := makeE2EProjectRoot()
+			pluginName := "cli-lock-unsigned-plugin"
+
+			ociRegistry := httptest.NewServer(registry.New())
+			DeferCleanup(ociRegistry.Close)
+			ociRef := buildAndPushPlugin(apiServer, ociRegistry, pluginName, "An unsigned plugin that must be rejected")
+
+			installResp := installPlugin(apiServer, installPluginE2ERequest{
+				Name: ociRef, Scope: "project", ProjectRoot: projectRoot, Clients: []string{"claude-code"},
+			})
+			defer installResp.Body.Close()
+			Expect(installResp.StatusCode).To(Equal(http.StatusForbidden))
+
+			root, err := lockfile.OpenRoot(projectRoot)
+			Expect(err).ToNot(HaveOccurred())
+			lf, err := lockfile.Load(root)
+			Expect(err).ToNot(HaveOccurred())
+			_, ok := lf.GetPlugin(pluginName)
+			Expect(ok).To(BeFalse(), "a rejected install must not write a lock entry")
+		})
+
+		It("records the unsigned exception in the lock entry when allow_unsigned is set", func() {
+			projectRoot := makeE2EProjectRoot()
+			pluginName := "cli-lock-unsigned-allowed-plugin"
+
+			ociRegistry := httptest.NewServer(registry.New())
+			DeferCleanup(ociRegistry.Close)
+			ociRef := buildAndPushPlugin(apiServer, ociRegistry, pluginName, "An unsigned plugin installed by exception")
+
+			installResp := installPlugin(apiServer, installPluginE2ERequest{
+				Name: ociRef, Scope: "project", ProjectRoot: projectRoot,
+				Clients: []string{"claude-code"}, AllowUnsigned: true,
+			})
+			defer installResp.Body.Close()
+			Expect(installResp.StatusCode).To(Equal(http.StatusCreated))
+
+			root, err := lockfile.OpenRoot(projectRoot)
+			Expect(err).ToNot(HaveOccurred())
+			lf, err := lockfile.Load(root)
+			Expect(err).ToNot(HaveOccurred())
+			entry, ok := lf.GetPlugin(pluginName)
+			Expect(ok).To(BeTrue())
+			Expect(entry.Unsigned).To(BeTrue(), "the unsigned exception must be recorded in the lock entry")
+			Expect(entry.Provenance).To(BeNil())
+		})
+	})
+
 	Describe("thv ai-plugin sync --check", func() {
 		It("exits 0 when the project matches its lock file", func() {
 			projectRoot := makeE2EProjectRoot()
@@ -60,7 +109,8 @@ var _ = Describe("Plugins CLI lock file exit codes (RFC THV-0080)", Label("api",
 			ociRef := buildAndPushPlugin(apiServer, ociRegistry, pluginName, "A clean plugin for CLI exit code testing")
 
 			installResp := installPlugin(apiServer, installPluginE2ERequest{
-				Name: ociRef, Scope: "project", ProjectRoot: projectRoot, Clients: []string{"claude-code"},
+				Name: ociRef, Scope: "project", ProjectRoot: projectRoot,
+				Clients: []string{"claude-code"}, AllowUnsigned: true,
 			})
 			defer installResp.Body.Close()
 			Expect(installResp.StatusCode).To(Equal(http.StatusCreated))
@@ -79,7 +129,8 @@ var _ = Describe("Plugins CLI lock file exit codes (RFC THV-0080)", Label("api",
 			ociRef := buildAndPushPlugin(apiServer, ociRegistry, pluginName, "A drifted plugin for CLI exit code testing")
 
 			installResp := installPlugin(apiServer, installPluginE2ERequest{
-				Name: ociRef, Scope: "project", ProjectRoot: projectRoot, Clients: []string{"claude-code"},
+				Name: ociRef, Scope: "project", ProjectRoot: projectRoot,
+				Clients: []string{"claude-code"}, AllowUnsigned: true,
 			})
 			defer installResp.Body.Close()
 			Expect(installResp.StatusCode).To(Equal(http.StatusCreated))
@@ -122,7 +173,8 @@ var _ = Describe("Plugins CLI lock file exit codes (RFC THV-0080)", Label("api",
 			ociRef := buildAndPushPlugin(apiServer, ociRegistry, pluginName, "A plugin whose registry will vanish")
 
 			installResp := installPlugin(apiServer, installPluginE2ERequest{
-				Name: ociRef, Scope: "project", ProjectRoot: projectRoot, Clients: []string{"claude-code"},
+				Name: ociRef, Scope: "project", ProjectRoot: projectRoot,
+				Clients: []string{"claude-code"}, AllowUnsigned: true,
 			})
 			defer installResp.Body.Close()
 			Expect(installResp.StatusCode).To(Equal(http.StatusCreated))
@@ -148,7 +200,8 @@ var _ = Describe("Plugins CLI lock file exit codes (RFC THV-0080)", Label("api",
 			ociRef := buildAndPushPlugin(apiServer, ociRegistry, pluginName, "A plugin for the fresh-clone gate")
 
 			installResp := installPlugin(apiServer, installPluginE2ERequest{
-				Name: ociRef, Scope: "project", ProjectRoot: projectRoot, Clients: []string{"claude-code"},
+				Name: ociRef, Scope: "project", ProjectRoot: projectRoot,
+				Clients: []string{"claude-code"}, AllowUnsigned: true,
 			})
 			defer installResp.Body.Close()
 			Expect(installResp.StatusCode).To(Equal(http.StatusCreated))
@@ -178,7 +231,8 @@ var _ = Describe("Plugins CLI lock file exit codes (RFC THV-0080)", Label("api",
 			ociRef := buildAndPushPlugin(apiServer, ociRegistry, pluginName, "The original description")
 
 			installResp := installPlugin(apiServer, installPluginE2ERequest{
-				Name: ociRef, Scope: "project", ProjectRoot: projectRoot, Clients: []string{"claude-code"},
+				Name: ociRef, Scope: "project", ProjectRoot: projectRoot,
+				Clients: []string{"claude-code"}, AllowUnsigned: true,
 			})
 			defer installResp.Body.Close()
 			Expect(installResp.StatusCode).To(Equal(http.StatusCreated))
@@ -219,6 +273,10 @@ type installPluginE2ERequest struct {
 	Scope       string   `json:"scope,omitempty"`
 	ProjectRoot string   `json:"project_root,omitempty"`
 	Clients     []string `json:"clients,omitempty"`
+	// AllowUnsigned records the unsigned-install exception. The plugins
+	// published by these tests are unsigned, so project-scoped installs
+	// need it — the rejection path itself is covered below.
+	AllowUnsigned bool `json:"allow_unsigned,omitempty"`
 }
 
 func installPlugin(server *e2e.Server, req installPluginE2ERequest) *http.Response {

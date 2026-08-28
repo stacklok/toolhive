@@ -744,6 +744,40 @@ func TestMCPExternalAuthConfig_validateEmbeddedAuthServer(t *testing.T) {
 			expectErr: true,
 			errMsg:    "must not equal the authorization server's own issuer",
 		},
+		{
+			// buildTrustedIssuerConfigs must carry actorMatcher through, or a
+			// malformed CEL expression passes admission and only surfaces when
+			// the auth server fails to start.
+			name: "trusted issuer with malformed actorMatcher - invalid",
+			config: &MCPExternalAuthConfig{
+				Spec: MCPExternalAuthConfigSpec{
+					Type: ExternalAuthTypeEmbeddedAuthServer,
+					EmbeddedAuthServer: &EmbeddedAuthServerConfig{
+						Issuer: "https://auth.example.com",
+						UpstreamProviders: []UpstreamProviderConfig{
+							{
+								Name: "okta",
+								Type: UpstreamProviderTypeOIDC,
+								OIDCConfig: &OIDCUpstreamConfig{
+									IssuerURL: "https://okta.example.com",
+									ClientID:  "client",
+								},
+							},
+						},
+						TrustedIssuers: []TrustedIssuerConfig{
+							{
+								IssuerURL:              "https://external.example.com",
+								ExpectedAudience:       "aud",
+								ActorMatcher:           "this is not ( valid CEL",
+								AllowedDelegateClients: []string{"*"},
+							},
+						},
+					},
+				},
+			},
+			expectErr: true,
+			errMsg:    "actor_matcher",
+		},
 	}
 
 	for _, tt := range tests {
@@ -1254,6 +1288,7 @@ func TestDelegateClientConfig_JSON(t *testing.T) {
 	require.NoError(t, err)
 	assert.Nil(t, existing.DelegateClients)
 	assert.False(t, existing.AllowConfidentialClientRegistration)
+	assert.False(t, existing.AllowPrivateKeyJWTRegistration)
 }
 
 func TestEmbeddedAuthServerConfig_ValidateConfidentialClientTransport(t *testing.T) {
@@ -1289,17 +1324,56 @@ func TestEmbeddedAuthServerConfig_ValidateConfidentialClientTransport(t *testing
 		{
 			name: "delegate clients reject HTTP loopback without explicit opt in",
 			config: EmbeddedAuthServerConfig{
-				Issuer:          "http://localhost:8080",
+				Issuer:          "http://127.0.0.1:8080",
 				DelegateClients: delegateClients,
 			},
 			expectErr: true,
 		},
 		{
-			name: "delegate clients allow HTTP loopback with explicit opt in",
+			name: "delegate clients reject HTTP non-loopback without explicit opt in",
 			config: EmbeddedAuthServerConfig{
-				Issuer: "http://localhost:8080",
+				Issuer:          "http://auth.example.com",
+				DelegateClients: delegateClients,
+			},
+			expectErr: true,
+		},
+		{
+			name: "delegate clients reject HTTP non-loopback with loopback opt in",
+			config: EmbeddedAuthServerConfig{
+				Issuer: "http://auth.example.com",
 				InsecureAllowConfidentialOverLoopbackHTTP: true,
 				DelegateClients: delegateClients,
+			},
+			expectErr: true,
+		},
+		{
+			name: "delegate clients allow HTTPS with loopback opt in",
+			config: EmbeddedAuthServerConfig{
+				Issuer: "https://auth.example.com",
+				InsecureAllowConfidentialOverLoopbackHTTP: true,
+				DelegateClients: delegateClients,
+			},
+		},
+		{
+			name: "private-key JWT registration passes with insecure HTTP (no secret to protect)",
+			config: EmbeddedAuthServerConfig{
+				Issuer:                         "http://auth.example.com",
+				InsecureAllowHTTP:              true,
+				AllowPrivateKeyJWTRegistration: true,
+			},
+		},
+		{
+			name: "private-key JWT registration does not enable confidential registration",
+			config: EmbeddedAuthServerConfig{
+				Issuer:                         "https://auth.example.com",
+				AllowPrivateKeyJWTRegistration: true,
+			},
+		},
+		{
+			name: "private-key JWT registration passes with plain-HTTP loopback issuer (no secret to protect)",
+			config: EmbeddedAuthServerConfig{
+				Issuer:                         "http://localhost:8080",
+				AllowPrivateKeyJWTRegistration: true,
 			},
 		},
 	}

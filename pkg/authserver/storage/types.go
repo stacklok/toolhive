@@ -57,6 +57,14 @@ var (
 	// ErrReservedClientID is returned when a caller attempts to register a
 	// real client whose ID collides with SyntheticClientIDPrefix.
 	ErrReservedClientID = errors.New("storage: client id uses reserved synthetic prefix")
+
+	// ErrUserNotProvisioned is returned by a UserStorage.CreateUser implementation
+	// that deliberately refuses to auto-provision an upstream identity (e.g. a
+	// deployment where user accounts are only created out-of-band, such as via
+	// SCIM). It signals the authorization callback to deny the login with
+	// fosite.ErrAccessDenied instead of treating the refusal as an internal
+	// server error.
+	ErrUserNotProvisioned = errors.New("storage: user not provisioned")
 )
 
 // DefaultPendingAuthorizationTTL is the default TTL for pending authorization requests.
@@ -748,6 +756,10 @@ type UpstreamTokenRefresher interface {
 type UserStorage interface {
 	// CreateUser creates a new user account.
 	// Returns ErrAlreadyExists if a user with the same ID already exists.
+	// A deployment that provisions users out-of-band (e.g. via SCIM) and never
+	// auto-creates them here may return ErrUserNotProvisioned to deny the login
+	// instead; the caller (the authorization callback) maps that specifically to
+	// an OAuth access_denied response rather than a server error.
 	CreateUser(ctx context.Context, user *User) error
 
 	// GetUser retrieves a user by their internal ID.

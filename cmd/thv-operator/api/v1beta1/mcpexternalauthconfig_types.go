@@ -587,12 +587,15 @@ type JWTBearerSubjectBinding struct {
 }
 
 // EmbeddedAuthServerConfig holds configuration for the embedded OAuth2/OIDC authorization server.
-// This enables running an authorization server that delegates authentication to upstream IDPs.
+// This enables running an authorization server that delegates authentication to upstream IDPs
+// or accepts token exchange without an interactive authorization flow.
 // This type is shared by MCPExternalAuthConfig.Spec.EmbeddedAuthServer and
 // VirtualMCPServer.Spec.AuthServerConfig, so the XValidation rules below are
 // enforced at admission for both CRDs. CEL only requires the explicit opt-in for
 // delegate clients using an HTTP issuer; the shared Go validator performs the
 // precise loopback-host security check.
+//
+// +kubebuilder:validation:XValidation:rule="(has(self.upstreamProviders) && size(self.upstreamProviders) > 0) || (has(self.delegateClients) && size(self.delegateClients) > 0) || (has(self.trustedIssuers) && self.trustedIssuers.exists(issuer, has(issuer.jwtBearerGrant)))",message="at least one upstream provider is required unless delegateClients or a trustedIssuer with jwtBearerGrant is configured"
 //
 // +kubebuilder:validation:XValidation:rule="!(has(self.allowConfidentialClientRegistration) && self.allowConfidentialClientRegistration && has(self.insecureAllowHTTP) && self.insecureAllowHTTP)",message="allowConfidentialClientRegistration cannot be combined with insecureAllowHTTP; client secrets would be issued in cleartext over an unauthenticated endpoint"
 // +kubebuilder:validation:XValidation:rule="(!has(self.forceConfidentialRedirectUris) || size(self.forceConfidentialRedirectUris) == 0) || (has(self.allowConfidentialClientRegistration) && self.allowConfidentialClientRegistration)",message="forceConfidentialRedirectUris requires allowConfidentialClientRegistration to be true"
@@ -650,13 +653,14 @@ type EmbeddedAuthServerConfig struct {
 	TokenLifespans *TokenLifespanConfig `json:"tokenLifespans,omitempty"`
 
 	// UpstreamProviders configures connections to upstream Identity Providers.
-	// The embedded auth server delegates authentication to these providers.
+	// When configured, the embedded auth server delegates interactive authentication
+	// to these providers. It may be omitted only when delegateClients or a trusted
+	// issuer with jwtBearerGrant enables token-only operation.
 	// MCPServer and MCPRemoteProxy support a single upstream; VirtualMCPServer supports multiple.
-	// +kubebuilder:validation:Required
-	// +kubebuilder:validation:MinItems=1
 	// +listType=map
 	// +listMapKey=name
-	UpstreamProviders []UpstreamProviderConfig `json:"upstreamProviders"`
+	// +optional
+	UpstreamProviders []UpstreamProviderConfig `json:"upstreamProviders,omitempty"`
 
 	// PrimaryUpstreamProvider names the upstream IDP whose access token Cedar
 	// should read claims from when authorising a request. Must match the name
@@ -690,8 +694,8 @@ type EmbeddedAuthServerConfig struct {
 	// the client's credential headers (Authorization, Cookie, Proxy-Authorization)
 	// after validating the JWT — the backend receives an unauthenticated request.
 	// Use headerForward to attach static credentials (e.g. an API key) if the
-	// backend needs them. Cannot be combined with token exchange or AWS STS,
-	// which would re-add credentials after the strip.
+	// backend needs them. Cannot be combined with token exchange, AWS STS, or OBO
+	// middleware, which would re-add credentials after the strip.
 	// This is useful when the backend MCP server does not require authentication
 	// (e.g., public documentation servers) but you still want client authentication.
 	// +kubebuilder:default=false
@@ -2012,10 +2016,10 @@ func (r *MCPExternalAuthConfig) validateEmbeddedAuthServer() error {
 		return nil
 	}
 
-	// Note: MinItems=1 is enforced by kubebuilder markers,
-	// but we add runtime validation for clarity and future-proofing
-	if len(cfg.UpstreamProviders) == 0 {
-		return fmt.Errorf("at least one upstream provider is required")
+	if len(cfg.UpstreamProviders) == 0 && len(cfg.DelegateClients) == 0 &&
+		!hasJWTBearerTrustedIssuer(cfg.TrustedIssuers) {
+		return fmt.Errorf("at least one upstream provider is required unless delegateClients " +
+			"or a trustedIssuer with jwtBearerGrant is configured")
 	}
 	// Note: multi-upstream is accepted at the CRD level. Consumer controllers
 	// (MCPServer, MCPRemoteProxy) enforce single-upstream restrictions;
@@ -2065,6 +2069,12 @@ func (r *MCPExternalAuthConfig) validateEmbeddedAuthServer() error {
 	}
 
 	return nil
+}
+
+func hasJWTBearerTrustedIssuer(issuers []TrustedIssuerConfig) bool {
+	return slices.ContainsFunc(issuers, func(issuer TrustedIssuerConfig) bool {
+		return issuer.JWTBearerGrant != nil
+	})
 }
 
 // buildTrustedIssuerConfigs converts CRD entries to the authoritative runtime

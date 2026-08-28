@@ -79,10 +79,11 @@ func (h *Handler) AuthorizeHandler(w http.ResponseWriter, req *http.Request) {
 	codeChallengeMethod := ar.GetRequestForm().Get("code_challenge_method")
 	scopes := []string(ar.GetRequestedScopes())
 
-	// Check if upstream providers are configured (defensive; constructor panics on empty)
-	if len(h.upstreams) == 0 {
-		slog.Error("upstream providers not configured")
-		h.provider.WriteAuthorizeError(ctx, w, errAr, fosite.ErrServerError.WithHint("authorization server not configured"))
+	// Token-only servers have no interactive authorization flow. Validation above
+	// deliberately still runs first, so client and redirect errors retain their
+	// normal OAuth semantics.
+	if h.tokenOnly {
+		h.provider.WriteAuthorizeError(ctx, w, errAr, fosite.ErrUnsupportedResponseType)
 		return
 	}
 

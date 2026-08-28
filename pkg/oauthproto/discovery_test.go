@@ -44,6 +44,14 @@ func TestOIDCDiscoveryDocument_Validate(t *testing.T) {
 		{"valid OIDC document", nil, true, nil},
 		{"missing issuer", func(d *OIDCDiscoveryDocument) { d.Issuer = "" }, false, ErrMissingIssuer},
 		{"missing authorization_endpoint", func(d *OIDCDiscoveryDocument) { d.AuthorizationEndpoint = "" }, false, ErrMissingAuthorizationEndpoint},
+		{"token-only OAuth metadata omits authorization_endpoint", func(d *OIDCDiscoveryDocument) {
+			d.AuthorizationEndpoint = ""
+			d.GrantTypesSupported = []string{GrantTypeTokenExchange}
+		}, false, nil},
+		{"token-only OIDC metadata is rejected", func(d *OIDCDiscoveryDocument) {
+			d.AuthorizationEndpoint = ""
+			d.GrantTypesSupported = []string{GrantTypeTokenExchange}
+		}, true, ErrMissingAuthorizationEndpoint},
 		{"missing token_endpoint", func(d *OIDCDiscoveryDocument) { d.TokenEndpoint = "" }, false, ErrMissingTokenEndpoint},
 		{"missing jwks_uri for OIDC", func(d *OIDCDiscoveryDocument) { d.JWKSURI = "" }, true, ErrMissingJWKSURI},
 		{"missing jwks_uri for OAuth is OK", func(d *OIDCDiscoveryDocument) { d.JWKSURI = "" }, false, nil},

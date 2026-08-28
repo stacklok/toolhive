@@ -87,6 +87,20 @@ func WaitForVirtualMCPServerReady(
 	}, timeout, pollingInterval).Should(gomega.Succeed())
 }
 
+// WaitForObjectDeletion waits until Kubernetes reports that obj no longer exists.
+func WaitForObjectDeletion(
+	ctx context.Context,
+	c client.Client,
+	obj client.Object,
+	timeout time.Duration,
+	pollingInterval time.Duration,
+) {
+	key := client.ObjectKeyFromObject(obj)
+	gomega.Eventually(func() bool {
+		return apierrors.IsNotFound(c.Get(ctx, key, obj))
+	}, timeout, pollingInterval).Should(gomega.BeTrue())
+}
+
 // checkPodsReady waits for at least one pod matching the given labels to be ready.
 func checkPodsReady(ctx context.Context, c client.Client, namespace string, labels map[string]string) error {
 	return testutil.CheckPodsReady(ctx, c, namespace, labels)

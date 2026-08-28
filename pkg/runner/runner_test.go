@@ -210,6 +210,17 @@ func TestRunner_CleanupWithMiddlewareError(t *testing.T) {
 	assert.Error(t, err)
 }
 
+func TestRunner_RunRejectsPrePopulatedChainWithoutCredentialStrip(t *testing.T) {
+	t.Parallel()
+
+	config := NewRunConfig()
+	config.EmbeddedAuthServerConfig = &authserver.RunConfig{}
+	config.MiddlewareConfigs = []types.MiddlewareConfig{{Type: "auth"}}
+
+	err := NewRunner(config, nil).Run(t.Context())
+	require.ErrorContains(t, err, "credential stripping requires strip-auth middleware")
+}
+
 func TestStatusManagerAdapter_SetWorkloadStatus(t *testing.T) {
 	t.Parallel()
 

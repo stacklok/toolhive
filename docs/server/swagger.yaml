@@ -641,8 +641,9 @@ components:
           uniqueItems: false
         upstreams:
           description: |-
-            Upstreams configures connections to upstream Identity Providers.
-            At least one upstream is required - the server delegates authentication to these providers.
+            Upstreams configures connections to upstream Identity Providers for
+            interactive authorization. It may be empty only when DelegateClients or a
+            TrustedIssuer with JWTBearerGrant enables token-only operation.
             Multiple upstreams are supported for sequential authorization chains.
           items:
             $ref: '#/components/schemas/authserver.UpstreamRunConfig'

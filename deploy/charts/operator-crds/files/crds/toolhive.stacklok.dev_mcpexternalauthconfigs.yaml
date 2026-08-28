@@ -865,7 +865,9 @@ spec:
                             CABundleRef references a ConfigMap containing PEM CA certificates used when
                             fetching this issuer's OIDC discovery document and JWKS. The bundle is added
                             to the system roots for this issuer's client only; public roots still apply
-                            and other issuers are unaffected.
+                            and other issuers are unaffected. Write access to the referenced ConfigMap is
+                            equivalent to controlling this issuer's trust anchor for subject-token
+                            validation — restrict it with the same care as a signing-key Secret.
                           properties:
                             configMapRef:
                               description: |-
@@ -2979,7 +2981,9 @@ spec:
                             CABundleRef references a ConfigMap containing PEM CA certificates used when
                             fetching this issuer's OIDC discovery document and JWKS. The bundle is added
                             to the system roots for this issuer's client only; public roots still apply
-                            and other issuers are unaffected.
+                            and other issuers are unaffected. Write access to the referenced ConfigMap is
+                            equivalent to controlling this issuer's trust anchor for subject-token
+                            validation — restrict it with the same care as a signing-key Secret.
                           properties:
                             configMapRef:
                               description: |-

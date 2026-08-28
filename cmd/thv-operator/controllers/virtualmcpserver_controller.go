@@ -534,7 +534,7 @@ func (r *VirtualMCPServerReconciler) validateAuthServerConfigCABundles(
 	if !stderrors.As(err, &invalidCABundleErr) {
 		return false, err
 	}
-	message := fmt.Sprintf("invalid upstream CA bundle: %v", err)
+	message := fmt.Sprintf("invalid CA bundle: %v", err)
 	statusManager.SetPhase(mcpv1beta1.VirtualMCPServerPhaseFailed)
 	statusManager.SetMessage(message)
 	statusManager.SetAuthServerConfigValidatedCondition(
@@ -1903,6 +1903,11 @@ func (r *VirtualMCPServerReconciler) podTemplateMetadataNeedsUpdate(
 	if !ctrlutil.MapIsSubset(expectedPodTemplateAnnotations, deployment.Spec.Template.Annotations) {
 		return true
 	}
+	if _, expected := expectedPodTemplateAnnotations[ctrlutil.AuthServerCABundleChecksumAnnotation]; !expected {
+		if _, actual := deployment.Spec.Template.Annotations[ctrlutil.AuthServerCABundleChecksumAnnotation]; actual {
+			return true
+		}
+	}
 
 	return false
 }
@@ -1936,12 +1941,21 @@ func (*VirtualMCPServerReconciler) podTemplateSpecNeedsUpdate(
 }
 
 // mergeDeploymentAnnotations merges desired annotations onto the live ones via
-// ctrlutil.MergeAnnotations, then prunes the operator-owned hash annotations
-// (imagePullRefsHashAnnotation, podTemplateSpecHashAnnotation) that desired no longer wants —
-// MergeAnnotations otherwise preserves them forever once their source field goes empty (#5817, #5818).
+// ctrlutil.MergeAnnotations, then prunes operator-owned hash annotations that
+// desired no longer wants — MergeAnnotations otherwise preserves them forever
+// once their source field goes empty (#5817, #5818).
+//
+// ctrlutil.AuthServerCABundleChecksumAnnotation is included defensively: today
+// buildDeploymentMetadataForVmcp only ever writes it onto the pod template
+// (see buildPodTemplateMetadata), never onto the Deployment's own annotations,
+// so this branch is a no-op in practice. Kept in case that changes.
 func mergeDeploymentAnnotations(desired, live map[string]string) map[string]string {
 	merged := ctrlutil.MergeAnnotations(desired, live)
-	for _, key := range []string{imagePullRefsHashAnnotation, podTemplateSpecHashAnnotation} {
+	for _, key := range []string{
+		imagePullRefsHashAnnotation,
+		podTemplateSpecHashAnnotation,
+		ctrlutil.AuthServerCABundleChecksumAnnotation,
+	} {
 		if _, want := desired[key]; !want {
 			delete(merged, key)
 		}

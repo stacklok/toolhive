@@ -38,13 +38,13 @@ func invalidCABundleError(err error) error {
 // ResolveCABundle reads and validates a CA bundle referenced by a workload.
 // ConfigMapKeySelector is deliberately resolved here rather than left to pod
 // admission: an optional or malformed reference must never result in a
-// workload without the trust roots its upstream requires.
+// workload without the trust roots it requires.
 //
 // The returned bytes are not retained by the operator. Callers only need the
 // successful result to gate reconciliation; the workload still mounts the
 // ConfigMap so updates can be observed by kubelet.
 func ResolveCABundle(ctx context.Context, c client.Reader, namespace string, ref *mcpv1beta1.CABundleSource) ([]byte, error) {
-	// Shape-only: the upstream CA volume name is index-derived, so the OIDC
+	// Shape-only: the CA volume name is index-derived, so the OIDC
 	// ConfigMap-name length cap does not apply here.
 	if err := validation.ValidateCABundleSourceShape(ref); err != nil {
 		return nil, invalidCABundleError(err)
@@ -109,7 +109,7 @@ func validatePEMCertificates(value []byte) error {
 	return nil
 }
 
-// ValidateEmbeddedAuthServerCABundles resolves every upstream CA reference.
+// ValidateEmbeddedAuthServerCABundles resolves every embedded auth server CA reference.
 func ValidateEmbeddedAuthServerCABundles(
 	ctx context.Context, c client.Reader, namespace string, cfg *mcpv1beta1.EmbeddedAuthServerConfig,
 ) error {
@@ -122,6 +122,14 @@ func ValidateEmbeddedAuthServerCABundles(
 		if ref != nil {
 			if _, err := ResolveCABundle(ctx, c, namespace, ref); err != nil {
 				return fmt.Errorf("upstreamProviders[%d] (%q) caBundleRef: %w", i, provider.Name, err)
+			}
+		}
+	}
+	for i := range cfg.TrustedIssuers {
+		issuer := &cfg.TrustedIssuers[i]
+		if issuer.CABundleRef != nil {
+			if _, err := ResolveCABundle(ctx, c, namespace, issuer.CABundleRef); err != nil {
+				return fmt.Errorf("trustedIssuers[%d] (%q) caBundleRef: %w", i, issuer.IssuerURL, err)
 			}
 		}
 	}

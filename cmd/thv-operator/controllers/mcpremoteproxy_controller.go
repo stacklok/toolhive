@@ -115,18 +115,22 @@ func (r *MCPRemoteProxyReconciler) handleInvalidEmbeddedAuthServerConfig(
 	})
 }
 
-// handleInvalidUpstreamCABundle records an invalid upstream CA bundle as terminal
+// handleInvalidCABundle records an invalid CA bundle as terminal
 // on conditionType, which the caller picks because it knows which reference the
-// bundle was reached through. Failures to persist status remain retryable.
-func (r *MCPRemoteProxyReconciler) handleInvalidUpstreamCABundle(
+// bundle was reached through. err must be the full error returned by the
+// caller's validation call (not the unwrapped *InvalidCABundleError), so the
+// field-path prefix added by ValidateEmbeddedAuthServerCABundles (e.g.
+// "trustedIssuers[0] (...) caBundleRef:") reaches the status message. Failures
+// to persist status remain retryable.
+func (r *MCPRemoteProxyReconciler) handleInvalidCABundle(
 	ctx context.Context,
 	proxy *mcpv1beta1.MCPRemoteProxy,
 	conditionType string,
-	invalidCABundleErr *ctrlutil.InvalidCABundleError,
+	err error,
 ) error {
 	return ctrlutil.MutateAndPatchStatus(ctx, r.Client, proxy, func(remoteProxy *mcpv1beta1.MCPRemoteProxy) {
 		remoteProxy.Status.Phase = mcpv1beta1.MCPRemoteProxyPhaseFailed
-		remoteProxy.Status.Message = fmt.Sprintf("Failed to build configuration: %s", invalidCABundleErr)
+		remoteProxy.Status.Message = fmt.Sprintf("Failed to build configuration: %s", err)
 		remoteProxy.Status.ObservedGeneration = remoteProxy.Generation
 		meta.SetStatusCondition(&remoteProxy.Status.Conditions, metav1.Condition{
 			Type:               mcpv1beta1.ConditionTypeReady,
@@ -140,7 +144,7 @@ func (r *MCPRemoteProxyReconciler) handleInvalidUpstreamCABundle(
 			Status:             metav1.ConditionFalse,
 			ObservedGeneration: remoteProxy.Generation,
 			Reason:             mcpv1beta1.ConditionReasonInvalidCABundle,
-			Message:            fmt.Sprintf("invalid upstream CA bundle: %v", invalidCABundleErr),
+			Message:            fmt.Sprintf("invalid CA bundle: %v", err),
 		})
 	})
 }
@@ -166,9 +170,9 @@ func (r *MCPRemoteProxyReconciler) Reconcile(ctx context.Context, req ctrl.Reque
 	if err := r.validateAndHandleConfigs(ctx, proxy); err != nil {
 		var invalidCABundleErr *ctrlutil.InvalidCABundleError
 		if stderrors.As(err, &invalidCABundleErr) {
-			if statusErr := r.handleInvalidUpstreamCABundle(
-				ctx, proxy, mcpv1beta1.ConditionTypeMCPRemoteProxyExternalAuthConfigValidated, invalidCABundleErr); statusErr != nil {
-				ctxLogger.Error(statusErr, "Failed to update MCPRemoteProxy status after invalid upstream CA bundle")
+			if statusErr := r.handleInvalidCABundle(
+				ctx, proxy, mcpv1beta1.ConditionTypeMCPRemoteProxyExternalAuthConfigValidated, err); statusErr != nil {
+				ctxLogger.Error(statusErr, "Failed to update MCPRemoteProxy status after invalid CA bundle")
 				return ctrl.Result{}, statusErr
 			}
 			return ctrl.Result{}, nil
@@ -217,8 +221,8 @@ func (r *MCPRemoteProxyReconciler) handleAuthServerRefCABundleError(
 	if !stderrors.As(err, &invalidCABundleErr) {
 		return false, nil
 	}
-	if statusErr := r.handleInvalidUpstreamCABundle(
-		ctx, proxy, mcpv1beta1.ConditionTypeMCPRemoteProxyAuthServerRefValidated, invalidCABundleErr); statusErr != nil {
+	if statusErr := r.handleInvalidCABundle(
+		ctx, proxy, mcpv1beta1.ConditionTypeMCPRemoteProxyAuthServerRefValidated, err); statusErr != nil {
 		log.FromContext(ctx).Error(statusErr, "Failed to update MCPRemoteProxy status after invalid CA bundle")
 		return true, statusErr
 	}
@@ -994,7 +998,7 @@ func (r *MCPRemoteProxyReconciler) handleExternalAuthConfig(ctx context.Context,
 			}
 			meta.SetStatusCondition(&proxy.Status.Conditions, metav1.Condition{
 				Type: mcpv1beta1.ConditionTypeMCPRemoteProxyExternalAuthConfigValidated, Status: metav1.ConditionFalse,
-				Reason: mcpv1beta1.ConditionReasonInvalidCABundle, Message: fmt.Sprintf("invalid upstream CA bundle: %v", err),
+				Reason: mcpv1beta1.ConditionReasonInvalidCABundle, Message: fmt.Sprintf("invalid CA bundle: %v", err),
 				ObservedGeneration: proxy.Generation,
 			})
 			return err
@@ -1163,7 +1167,7 @@ func (r *MCPRemoteProxyReconciler) handleAuthServerRef(ctx context.Context, prox
 				Type:               mcpv1beta1.ConditionTypeMCPRemoteProxyAuthServerRefValidated,
 				Status:             metav1.ConditionFalse,
 				Reason:             mcpv1beta1.ConditionReasonInvalidCABundle,
-				Message:            fmt.Sprintf("invalid upstream CA bundle: %v", err),
+				Message:            fmt.Sprintf("invalid CA bundle: %v", err),
 				ObservedGeneration: proxy.Generation,
 			})
 			return err

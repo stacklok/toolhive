@@ -744,6 +744,40 @@ func TestMCPExternalAuthConfig_validateEmbeddedAuthServer(t *testing.T) {
 			expectErr: true,
 			errMsg:    "must not equal the authorization server's own issuer",
 		},
+		{
+			// buildTrustedIssuerConfigs must carry actorMatcher through, or a
+			// malformed CEL expression passes admission and only surfaces when
+			// the auth server fails to start.
+			name: "trusted issuer with malformed actorMatcher - invalid",
+			config: &MCPExternalAuthConfig{
+				Spec: MCPExternalAuthConfigSpec{
+					Type: ExternalAuthTypeEmbeddedAuthServer,
+					EmbeddedAuthServer: &EmbeddedAuthServerConfig{
+						Issuer: "https://auth.example.com",
+						UpstreamProviders: []UpstreamProviderConfig{
+							{
+								Name: "okta",
+								Type: UpstreamProviderTypeOIDC,
+								OIDCConfig: &OIDCUpstreamConfig{
+									IssuerURL: "https://okta.example.com",
+									ClientID:  "client",
+								},
+							},
+						},
+						TrustedIssuers: []TrustedIssuerConfig{
+							{
+								IssuerURL:              "https://external.example.com",
+								ExpectedAudience:       "aud",
+								ActorMatcher:           "this is not ( valid CEL",
+								AllowedDelegateClients: []string{"*"},
+							},
+						},
+					},
+				},
+			},
+			expectErr: true,
+			errMsg:    "actor_matcher",
+		},
 	}
 
 	for _, tt := range tests {

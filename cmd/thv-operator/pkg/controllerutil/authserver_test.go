@@ -93,6 +93,31 @@ func TestEmbeddedAuthServerCABundleChecksumForConfig(t *testing.T) {
 	}
 }
 
+func TestEmbeddedAuthServerTrustedIssuerCABundleChecksum(t *testing.T) {
+	t.Parallel()
+
+	pemData := testCertificatePEM(t)
+	config := &mcpv1beta1.EmbeddedAuthServerConfig{TrustedIssuers: []mcpv1beta1.TrustedIssuerConfig{{
+		IssuerURL:   "https://issuer.example.com",
+		CABundleRef: caBundleTestRef(""),
+	}}}
+	configMap := &corev1.ConfigMap{ObjectMeta: metav1.ObjectMeta{Name: "bundle", Namespace: "ns"}, Data: map[string]string{"ca.crt": string(pemData)}}
+	c := fake.NewClientBuilder().WithObjects(configMap).Build()
+	issuerOnly, err := EmbeddedAuthServerCABundleChecksumForConfig(t.Context(), c, "ns", config)
+	require.NoError(t, err)
+	require.NotEmpty(t, issuerOnly)
+
+	upstreamOnly := config.DeepCopy()
+	upstreamOnly.TrustedIssuers = nil
+	upstreamOnly.UpstreamProviders = []mcpv1beta1.UpstreamProviderConfig{{
+		Name: "issuer", Type: mcpv1beta1.UpstreamProviderTypeOIDC,
+		OIDCConfig: &mcpv1beta1.OIDCUpstreamConfig{CABundleRef: caBundleTestRef("")},
+	}}
+	upstreamChecksum, err := EmbeddedAuthServerCABundleChecksumForConfig(t.Context(), c, "ns", upstreamOnly)
+	require.NoError(t, err)
+	assert.NotEqual(t, upstreamChecksum, issuerOnly)
+}
+
 func TestEmbeddedAuthServerCABundleChecksumStability(t *testing.T) {
 	t.Parallel()
 
@@ -173,6 +198,26 @@ func TestGenerateUpstreamCABundleVolumes(t *testing.T) {
 	providers[0].OIDCConfig.CABundleRef.ConfigMapRef = &corev1.ConfigMapKeySelector{}
 	_, _, err = generateUpstreamCABundleVolumes(providers)
 	require.Error(t, err)
+}
+
+func TestGenerateTrustedIssuerCABundleVolumes(t *testing.T) {
+	t.Parallel()
+
+	issuers := []mcpv1beta1.TrustedIssuerConfig{
+		{IssuerURL: "https://one.example.com", CABundleRef: caBundleTestRef("")},
+		{IssuerURL: "https://two.example.com", CABundleRef: caBundleTestRef("custom.pem")},
+	}
+	volumes, mounts, err := generateTrustedIssuerCABundleVolumes(issuers)
+	require.NoError(t, err)
+	require.Len(t, volumes, 2)
+	require.Len(t, mounts, 2)
+	assert.Equal(t, "authserver-issuer-ca-0", volumes[0].Name)
+	assert.Equal(t, trustedIssuerCABundleFilePath(0), mounts[0].MountPath)
+	assert.Equal(t, "custom.pem", volumes[1].ConfigMap.Items[0].Key)
+
+	issuers[0].CABundleRef.ConfigMapRef = nil
+	_, _, err = generateTrustedIssuerCABundleVolumes(issuers)
+	require.ErrorContains(t, err, "trustedIssuers[0]")
 }
 
 func TestGenerateAuthServerVolumes(t *testing.T) {

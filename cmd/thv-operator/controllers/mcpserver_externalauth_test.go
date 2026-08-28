@@ -752,7 +752,7 @@ func TestMCPServerReconciler_InvalidCABundleDoesNotFlapLastTransitionTime(t *tes
 				Type:               mcpv1beta1.ConditionTypeExternalAuthConfigValidated,
 				Status:             metav1.ConditionFalse,
 				Reason:             mcpv1beta1.ConditionReasonInvalidCABundle,
-				Message:            "invalid upstream CA bundle: already recorded",
+				Message:            "invalid CA bundle: already recorded",
 				LastTransitionTime: seeded,
 			}},
 		}),

@@ -80,8 +80,8 @@ func mirroredReasonFromError(err error) string {
 //   - handleInvalidEmbeddedAuthServerConfig, ConditionReasonInvalidConfig, set
 //     when the assembled RunConfig fails to build (e.g. delegate clients
 //     without an OIDC config).
-//   - the upstream CA bundle check, ConditionReasonInvalidCABundle, set when a
-//     referenced bundle ConfigMap is missing its key or holds non-PEM content.
+//   - the CA bundle check, ConditionReasonInvalidCABundle, set when a referenced
+//     bundle ConfigMap is missing its key or holds non-PEM content.
 //
 // Both re-derive the same condition a few lines after the mirror runs, so
 // clearing it here would force a fresh LastTransitionTime on every reconcile.

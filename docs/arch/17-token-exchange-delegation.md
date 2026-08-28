@@ -160,6 +160,11 @@ spec:
         actorMatcher: "has(claims.roles) && 'trusted-delegator' in claims.roles"
         allowedDelegateClients: [reporting-delegate]
         allowMayAct: false
+        # Optional: trust a private CA for this issuer's discovery/JWKS fetch.
+        caBundleRef:
+          configMapRef:
+            name: login-example-idp-ca
+            key: ca.crt
 ```
 
 Static delegate clients and confidential Dynamic Client Registration (DCR) are
@@ -796,8 +801,18 @@ spec:
   from, and thus influenceable by, the external issuer itself — would choose
   the private JWKS dial target, which is exactly what pinning it to
   operator-supplied config prevents.
-- **Misconfiguration surfaces as a pod crash**, not an operator condition —
-  check pod logs, not `kubectl describe`.
+- **Private-CA discovery/JWKS fetch.** A trusted issuer's `caBundleRef`
+  (`cmd/thv-operator/api/v1beta1/mcpexternalauthconfig_types.go`) names a
+  namespace-local ConfigMap whose PEM bytes are added to the system roots for
+  that issuer's own HTTP client only (`WithSystemRootsPlusCABundle`) — other
+  issuers and the upstream-provider clients are unaffected. It has no effect
+  when `insecureAllowHTTP` is set, since a plain-HTTP fetch never consults it.
+- **Misconfiguration surfaces as a pod crash** for a hand-authored RunConfig
+  passed directly to `pkg/authserver`, not an operator condition — check pod
+  logs, not `kubectl describe`. Through the operator, a malformed `caBundleRef`
+  is instead caught at reconcile time and reported as
+  `ConditionReasonInvalidCABundle` on the owning MCPServer, MCPRemoteProxy, or
+  VirtualMCPServer before any RunConfig is built.
 
 ## Implementation
 

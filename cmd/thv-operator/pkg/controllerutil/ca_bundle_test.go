@@ -190,6 +190,23 @@ func TestValidateEmbeddedAuthServerCABundlesClassifiesErrors(t *testing.T) {
 	}
 }
 
+func TestValidateEmbeddedAuthServerCABundlesTrustedIssuer(t *testing.T) {
+	t.Parallel()
+
+	config := &mcpv1beta1.EmbeddedAuthServerConfig{TrustedIssuers: []mcpv1beta1.TrustedIssuerConfig{{
+		IssuerURL:   "https://issuer.example.com",
+		CABundleRef: caBundleTestRef("ca.crt"),
+	}}}
+	err := ValidateEmbeddedAuthServerCABundles(context.Background(), fake.NewClientBuilder().WithObjects(&corev1.ConfigMap{
+		ObjectMeta: metav1.ObjectMeta{Name: "bundle", Namespace: "workload"},
+		Data:       map[string]string{"ca.crt": "not a certificate"},
+	}).Build(), "workload", config)
+	require.Error(t, err)
+	assert.ErrorContains(t, err, "trustedIssuers[0]")
+	var invalidCABundleErr *InvalidCABundleError
+	assert.True(t, errors.As(err, &invalidCABundleErr))
+}
+
 func caBundleTestRef(key string) *mcpv1beta1.CABundleSource {
 	return &mcpv1beta1.CABundleSource{ConfigMapRef: &corev1.ConfigMapKeySelector{
 		LocalObjectReference: corev1.LocalObjectReference{Name: "bundle"},

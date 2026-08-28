@@ -739,6 +739,46 @@ spec:
                           minItems: 1
                           type: array
                           x-kubernetes-list-type: atomic
+                        caBundleRef:
+                          description: |-
+                            CABundleRef references a ConfigMap containing PEM CA certificates used when
+                            fetching this issuer's OIDC discovery document and JWKS. The bundle is added
+                            to the system roots for this issuer's client only; public roots still apply
+                            and other issuers are unaffected. Write access to the referenced ConfigMap is
+                            equivalent to controlling this issuer's trust anchor for subject-token
+                            validation — restrict it with the same care as a signing-key Secret.
+                          properties:
+                            configMapRef:
+                              description: |-
+                                ConfigMapRef references a ConfigMap containing the CA certificate bundle.
+                                The ConfigMap key is required by the API. If omitted in a stored object, it
+                                defaults to "ca.crt" for backwards compatibility.
+                              properties:
+                                key:
+                                  description: The key to select.
+                                  type: string
+                                name:
+                                  default: ""
+                                  description: |-
+                                    Name of the referent.
+                                    This field is effectively required, but due to backwards compatibility is
+                                    allowed to be empty. Instances of this type with an empty value here are
+                                    almost certainly wrong.
+                                    More info: https://kubernetes.io/docs/concepts/overview/working-with-objects/names/#names
+                                  type: string
+                                optional:
+                                  description: Specify whether the ConfigMap or its
+                                    key must be defined
+                                  type: boolean
+                              required:
+                              - key
+                              type: object
+                              x-kubernetes-map-type: atomic
+                          type: object
+                          x-kubernetes-validations:
+                          - message: configMapRef.name is required and must be non-empty
+                            rule: has(self.configMapRef) && size(self.configMapRef.name)
+                              > 0
                         expectedAudience:
                           description: |-
                             ExpectedAudience is the expected "aud" claim value that must appear in
@@ -968,6 +1008,11 @@ spec:
                                   type: object
                                   x-kubernetes-map-type: atomic
                               type: object
+                              x-kubernetes-validations:
+                              - message: configMapRef.name is required and must be
+                                  non-empty
+                                rule: has(self.configMapRef) && size(self.configMapRef.name)
+                                  > 0
                             clientId:
                               description: |-
                                 ClientID is the OAuth 2.0 client identifier registered with the upstream IDP.
@@ -1311,6 +1356,11 @@ spec:
                                   type: object
                                   x-kubernetes-map-type: atomic
                               type: object
+                              x-kubernetes-validations:
+                              - message: configMapRef.name is required and must be
+                                  non-empty
+                                rule: has(self.configMapRef) && size(self.configMapRef.name)
+                                  > 0
                             clientId:
                               description: ClientID is the OAuth 2.0 client identifier
                                 registered with the upstream IdP.
@@ -4816,6 +4866,46 @@ spec:
                           minItems: 1
                           type: array
                           x-kubernetes-list-type: atomic
+                        caBundleRef:
+                          description: |-
+                            CABundleRef references a ConfigMap containing PEM CA certificates used when
+                            fetching this issuer's OIDC discovery document and JWKS. The bundle is added
+                            to the system roots for this issuer's client only; public roots still apply
+                            and other issuers are unaffected. Write access to the referenced ConfigMap is
+                            equivalent to controlling this issuer's trust anchor for subject-token
+                            validation — restrict it with the same care as a signing-key Secret.
+                          properties:
+                            configMapRef:
+                              description: |-
+                                ConfigMapRef references a ConfigMap containing the CA certificate bundle.
+                                The ConfigMap key is required by the API. If omitted in a stored object, it
+                                defaults to "ca.crt" for backwards compatibility.
+                              properties:
+                                key:
+                                  description: The key to select.
+                                  type: string
+                                name:
+                                  default: ""
+                                  description: |-
+                                    Name of the referent.
+                                    This field is effectively required, but due to backwards compatibility is
+                                    allowed to be empty. Instances of this type with an empty value here are
+                                    almost certainly wrong.
+                                    More info: https://kubernetes.io/docs/concepts/overview/working-with-objects/names/#names
+                                  type: string
+                                optional:
+                                  description: Specify whether the ConfigMap or its
+                                    key must be defined
+                                  type: boolean
+                              required:
+                              - key
+                              type: object
+                              x-kubernetes-map-type: atomic
+                          type: object
+                          x-kubernetes-validations:
+                          - message: configMapRef.name is required and must be non-empty
+                            rule: has(self.configMapRef) && size(self.configMapRef.name)
+                              > 0
                         expectedAudience:
                           description: |-
                             ExpectedAudience is the expected "aud" claim value that must appear in
@@ -5045,6 +5135,11 @@ spec:
                                   type: object
                                   x-kubernetes-map-type: atomic
                               type: object
+                              x-kubernetes-validations:
+                              - message: configMapRef.name is required and must be
+                                  non-empty
+                                rule: has(self.configMapRef) && size(self.configMapRef.name)
+                                  > 0
                             clientId:
                               description: |-
                                 ClientID is the OAuth 2.0 client identifier registered with the upstream IDP.
@@ -5388,6 +5483,11 @@ spec:
                                   type: object
                                   x-kubernetes-map-type: atomic
                               type: object
+                              x-kubernetes-validations:
+                              - message: configMapRef.name is required and must be
+                                  non-empty
+                                rule: has(self.configMapRef) && size(self.configMapRef.name)
+                                  > 0
                             clientId:
                               description: ClientID is the OAuth 2.0 client identifier
                                 registered with the upstream IdP.

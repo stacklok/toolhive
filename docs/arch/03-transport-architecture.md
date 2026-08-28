@@ -304,7 +304,7 @@ Outgoing HTTPS clients can use either a **pinned** or an **additive** CA bundle:
 - `WithCABundle` replaces the system root pool. Only certificates chaining to the supplied bundle are trusted.
 - `WithSystemRootsPlusCABundle` starts with the system root pool and appends the supplied certificates. This supports an upstream that may use either a publicly trusted certificate or a private CA.
 
-The `caBundleRef` fields on embedded auth-server upstreams use additive trust. A referenced ConfigMap augments, rather than replaces, the system roots for that upstream's OAuth/OIDC requests, including discovery, token, user-info, and dynamic client registration requests. The reference is per upstream, so a bundle is not implicitly trusted for other upstreams or for unrelated ToolHive traffic. Existing callers that need strict CA pinning continue to use the pinned mode.
+The `caBundleRef` fields on embedded auth-server upstreams and trusted issuers use additive trust. A referenced ConfigMap augments, rather than replaces, the system roots for an upstream's OAuth/OIDC requests or a trusted issuer's discovery and JWKS requests. The reference is per provider or issuer, so a bundle is not implicitly trusted for other clients or unrelated ToolHive traffic. Existing callers that need strict CA pinning continue to use the pinned mode.
 
 In Kubernetes, the operator projects each selected ConfigMap key as a read-only `ca.crt` file in the proxyrunner pod and passes its path to the upstream client. The ConfigMap must contain PEM-encoded CA certificates.
 
@@ -785,7 +785,7 @@ when delivery lands it does not also require rewriting the fan-out primitives.
 - **Remote MCP servers**: Full HTTPS support with certificate validation
 - **Custom CA bundles**: Configurable for clients that connect to private-CA or self-signed endpoints
 - **Local proxy**: HTTP only (localhost binding for security)
-- **Trust store**: Clients either use the system CA bundle, a pinned custom bundle, or (for embedded auth-server upstreams) system roots plus a custom bundle
+- **Trust store**: Clients either use the system CA bundle, a pinned custom bundle, or (for embedded auth-server upstreams and trusted issuers) system roots plus a custom bundle
 
 A custom CA bundle does not disable the HTTPS and network protections applied to the client. In particular, the server-supplied endpoint paths retain redirect and private-IP safeguards unless the corresponding explicit development or in-cluster options are configured.
 

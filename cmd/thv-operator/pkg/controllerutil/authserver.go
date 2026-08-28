@@ -66,7 +66,13 @@ const (
 	// AuthServerUpstreamCABundleFileName is the fixed projected filename for upstream CA bundles.
 	AuthServerUpstreamCABundleFileName = validation.OIDCCABundleDefaultKey
 
-	// AuthServerCABundleChecksumAnnotation triggers a rollout when a selected upstream CA changes.
+	// AuthServerTrustedIssuerCABundleVolumePrefix is the prefix for trusted issuer CA bundle volume names.
+	AuthServerTrustedIssuerCABundleVolumePrefix = "authserver-issuer-ca-"
+
+	// AuthServerTrustedIssuerCABundleMountPath is the base path for trusted issuer CA bundles.
+	AuthServerTrustedIssuerCABundleMountPath = "/etc/toolhive/authserver/issuer-ca"
+
+	// AuthServerCABundleChecksumAnnotation triggers a rollout when a selected CA bundle changes.
 	AuthServerCABundleChecksumAnnotation = "toolhive.stacklok.dev/authserver-ca-checksum"
 
 	// UpstreamClientSecretEnvVar is the prefix for upstream client secret environment variables.
@@ -276,6 +282,9 @@ func buildTrustedIssuerRunConfigs(issuers []mcpv1beta1.TrustedIssuerConfig) []to
 			AllowMayAct:            ti.AllowMayAct,
 			JWTBearerGrant:         buildJWTBearerGrantPolicy(ti.JWTBearerGrant),
 		}
+		if ti.CABundleRef != nil {
+			configs[i].CAFilePath = trustedIssuerCABundleFilePath(i)
+		}
 	}
 	return configs
 }
@@ -357,8 +366,8 @@ func GenerateAuthServerConfigByName(
 }
 
 // EmbeddedAuthServerCABundleChecksum returns a checksum of the selected bytes in all
-// upstream CA ConfigMaps used by an embedded auth server. ConfigMap metadata and
-// unselected keys are deliberately excluded.
+// CA ConfigMaps used by an embedded auth server. ConfigMap metadata and unselected
+// keys are deliberately excluded.
 func EmbeddedAuthServerCABundleChecksum(
 	ctx context.Context, c client.Client, namespace, configName string,
 ) (string, error) {
@@ -373,8 +382,8 @@ func EmbeddedAuthServerCABundleChecksum(
 }
 
 // EmbeddedAuthServerCABundleChecksumForConfig returns a checksum of the selected
-// bytes in all upstream CA ConfigMaps used by an inline embedded auth server.
-// ConfigMap metadata and unselected keys are deliberately excluded.
+// bytes in all CA ConfigMaps used by an inline embedded auth server. ConfigMap
+// metadata and unselected keys are deliberately excluded.
 func EmbeddedAuthServerCABundleChecksumForConfig(
 	ctx context.Context, c client.Client, namespace string, config *mcpv1beta1.EmbeddedAuthServerConfig,
 ) (string, error) {
@@ -384,13 +393,32 @@ func EmbeddedAuthServerCABundleChecksumForConfig(
 
 	hash := sha256.New()
 	found := false
-	for _, provider := range config.UpstreamProviders {
-		value, err := embeddedAuthServerCABundleValue(ctx, c, namespace, &provider)
+	for i := range config.UpstreamProviders {
+		ref := config.UpstreamProviders[i].CABundleRef()
+		if ref == nil {
+			continue
+		}
+		value, err := ResolveCABundle(ctx, c, namespace, ref)
 		if err != nil {
 			return "", err
 		}
-		if value == nil {
+		_, _ = hash.Write(value)
+		_, _ = hash.Write([]byte{0})
+		found = true
+	}
+	wroteIssuerMarker := false
+	for i := range config.TrustedIssuers {
+		ref := config.TrustedIssuers[i].CABundleRef
+		if ref == nil {
 			continue
+		}
+		value, err := ResolveCABundle(ctx, c, namespace, ref)
+		if err != nil {
+			return "", err
+		}
+		if !wroteIssuerMarker {
+			_, _ = hash.Write([]byte("trustedIssuers\x00"))
+			wroteIssuerMarker = true
 		}
 		_, _ = hash.Write(value)
 		_, _ = hash.Write([]byte{0})
@@ -402,20 +430,9 @@ func EmbeddedAuthServerCABundleChecksumForConfig(
 	return hex.EncodeToString(hash.Sum(nil)), nil
 }
 
-func embeddedAuthServerCABundleValue(
-	ctx context.Context, c client.Client, namespace string,
-	provider *mcpv1beta1.UpstreamProviderConfig,
-) ([]byte, error) {
-	ref := provider.CABundleRef()
-	if ref == nil {
-		return nil, nil
-	}
-	return ResolveCABundle(ctx, c, namespace, ref)
-}
-
 // GenerateAuthServerVolumes generates volumes and mounts for auth server
-// signing keys, HMAC secrets, Redis CA certificates, and upstream CA bundles.
-// Returns an error when an upstream CA bundle reference is malformed.
+// signing keys, HMAC secrets, Redis CA certificates, and CA bundles.
+// Returns an error when a CA bundle reference is malformed.
 // The volumes are configured with 0400 permissions for security.
 //
 // For signing keys, files are mounted at /etc/toolhive/authserver/keys/key-{N}.pem
@@ -541,8 +558,14 @@ func GenerateAuthServerVolumes(
 	if err != nil {
 		return nil, nil, err
 	}
+	trustedIssuerVolumes, trustedIssuerMounts, err := generateTrustedIssuerCABundleVolumes(authConfig.TrustedIssuers)
+	if err != nil {
+		return nil, nil, err
+	}
 	volumes = append(volumes, upstreamVolumes...)
+	volumes = append(volumes, trustedIssuerVolumes...)
 	volumeMounts = append(volumeMounts, upstreamMounts...)
+	volumeMounts = append(volumeMounts, trustedIssuerMounts...)
 
 	return volumes, volumeMounts, nil
 }
@@ -550,22 +573,43 @@ func GenerateAuthServerVolumes(
 func generateUpstreamCABundleVolumes(
 	providers []mcpv1beta1.UpstreamProviderConfig,
 ) ([]corev1.Volume, []corev1.VolumeMount, error) {
+	refs := make([]*mcpv1beta1.CABundleSource, len(providers))
+	for i := range providers {
+		refs[i] = providers[i].CABundleRef()
+	}
+	return generateCABundleVolumes(
+		refs, AuthServerUpstreamCABundleVolumePrefix, AuthServerUpstreamCABundleMountPath, "upstreamProviders")
+}
+
+func generateTrustedIssuerCABundleVolumes(
+	issuers []mcpv1beta1.TrustedIssuerConfig,
+) ([]corev1.Volume, []corev1.VolumeMount, error) {
+	refs := make([]*mcpv1beta1.CABundleSource, len(issuers))
+	for i := range issuers {
+		refs[i] = issuers[i].CABundleRef
+	}
+	return generateCABundleVolumes(
+		refs, AuthServerTrustedIssuerCABundleVolumePrefix, AuthServerTrustedIssuerCABundleMountPath, "trustedIssuers")
+}
+
+func generateCABundleVolumes(
+	refs []*mcpv1beta1.CABundleSource, volumePrefix, mountBase, fieldPrefix string,
+) ([]corev1.Volume, []corev1.VolumeMount, error) {
 	var volumes []corev1.Volume
 	var mounts []corev1.VolumeMount
-	for index, provider := range providers {
-		ref := provider.CABundleRef()
+	for index, ref := range refs {
 		if ref == nil {
 			continue
 		}
 		if ref.ConfigMapRef == nil || ref.ConfigMapRef.Name == "" {
-			return nil, nil, fmt.Errorf("upstreamProviders[%d].caBundleRef.configMapRef.name is required", index)
+			return nil, nil, fmt.Errorf("%s[%d].caBundleRef.configMapRef.name is required", fieldPrefix, index)
 		}
 		key := ref.ConfigMapRef.Key
 		if key == "" {
 			key = AuthServerUpstreamCABundleFileName
 		}
-		volumeName := fmt.Sprintf("%s%d", AuthServerUpstreamCABundleVolumePrefix, index)
-		mountPath := upstreamCABundleFilePath(index)
+		volumeName := fmt.Sprintf("%s%d", volumePrefix, index)
+		mountPath := caBundleFilePath(mountBase, index)
 		volumes = append(volumes, corev1.Volume{
 			Name: volumeName,
 			VolumeSource: corev1.VolumeSource{ConfigMap: &corev1.ConfigMapVolumeSource{
@@ -583,7 +627,17 @@ func generateUpstreamCABundleVolumes(
 // upstreamCABundleFilePath returns the path for the provider at the given index.
 // The index must match the provider's position in UpstreamProviders.
 func upstreamCABundleFilePath(index int) string {
-	return fmt.Sprintf("%s/%d/%s", AuthServerUpstreamCABundleMountPath, index, AuthServerUpstreamCABundleFileName)
+	return caBundleFilePath(AuthServerUpstreamCABundleMountPath, index)
+}
+
+// trustedIssuerCABundleFilePath returns the path for the issuer at the given index.
+// The index must match the issuer's position in TrustedIssuers.
+func trustedIssuerCABundleFilePath(index int) string {
+	return caBundleFilePath(AuthServerTrustedIssuerCABundleMountPath, index)
+}
+
+func caBundleFilePath(mountBase string, index int) string {
+	return fmt.Sprintf("%s/%d/%s", mountBase, index, AuthServerUpstreamCABundleFileName)
 }
 
 // GenerateAuthServerEnvVars creates environment variables for embedded auth server.

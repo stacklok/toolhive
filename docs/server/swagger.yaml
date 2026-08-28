@@ -273,6 +273,20 @@ components:
             Required when IdentityFromToken is set.
           type: string
       type: object
+    authserver.InboundGrantsRunConfig:
+      description: |-
+        InboundGrants declares canonical inbound grant configuration, including
+        SPIFFE client authentication. See InboundGrantsRunConfig.
+      properties:
+        spiffe_client_auth:
+          description: |-
+            SPIFFEClientAuth associates SPIFFE principal patterns with explicit OAuth
+            client identities and permissions. See SPIFFEClientAuthRunConfig.
+          items:
+            $ref: '#/components/schemas/authserver.SPIFFEClientAuthRunConfig'
+          type: array
+          uniqueItems: false
+      type: object
     authserver.OAuth2UpstreamRunConfig:
       description: |-
         OAuth2Config contains OAuth 2.0-specific configuration.
@@ -574,6 +588,8 @@ components:
             type: string
           type: array
           uniqueItems: false
+        inbound_grants:
+          $ref: '#/components/schemas/authserver.InboundGrantsRunConfig'
         insecure_allow_confidential_over_loopback_http:
           description: |-
             InsecureAllowConfidentialOverLoopbackHTTP opts in to confidential clients
@@ -618,6 +634,14 @@ components:
           uniqueItems: false
         signing_key_config:
           $ref: '#/components/schemas/authserver.SigningKeyRunConfig'
+        spiffe_trust_domains:
+          description: |-
+            SPIFFETrustDomains declares SPIFFE trust roots. Each declaration must be
+            referenced by an InboundGrants.SPIFFEClientAuth entry.
+          items:
+            $ref: '#/components/schemas/authserver.SPIFFETrustDomainRunConfig'
+          type: array
+          uniqueItems: false
         storage:
           $ref: '#/components/schemas/storage.RunConfig'
         token_lifespans:
@@ -649,6 +673,116 @@ components:
             $ref: '#/components/schemas/authserver.UpstreamRunConfig'
           type: array
           uniqueItems: false
+      type: object
+    authserver.SPIFFEBundleEndpointSourceRunConfig:
+      properties:
+        profile:
+          description: |-
+            Profile selects how the endpoint's TLS connection is authenticated:
+            SPIFFEBundleEndpointProfileHTTPSWeb (Web PKI) or
+            SPIFFEBundleEndpointProfileHTTPSSPIFFE (a separately distributed
+            X.509-SVID root). Required, since the future bundle loader cannot
+            otherwise know which trust anchor to use for the initial connection.
+          type: string
+        url:
+          type: string
+      type: object
+    authserver.SPIFFEBundleSourceRunConfig:
+      description: |-
+        BundleSource declares exactly one future trust-bundle source. It is
+        validated for shape only; fetching or loading a bundle from it is a
+        later step.
+      properties:
+        endpoint:
+          $ref: '#/components/schemas/authserver.SPIFFEBundleEndpointSourceRunConfig'
+        type:
+          type: string
+        workload_api:
+          $ref: '#/components/schemas/authserver.SPIFFEWorkloadAPIBundleSourceRunConfig'
+      type: object
+    authserver.SPIFFEClientAuthRunConfig:
+      properties:
+        audiences:
+          description: |-
+            Audiences are RFC 8693 token audiences this association may request.
+            This is an independent request dimension from Resources: it is not
+            bounded by allowed_audiences (which is an RFC 8707 resource-URI list)
+            and may contain non-URI logical audience identifiers.
+          items:
+            type: string
+          type: array
+          uniqueItems: false
+        client_id:
+          description: |-
+            ClientID is the explicit OAuth client_id. It is never derived from a
+            SPIFFE ID.
+          type: string
+        grant_types:
+          description: |-
+            GrantTypes are the OAuth grant types this association may use. Client
+            authentication does not by itself confer any grant.
+          items:
+            type: string
+          type: array
+          uniqueItems: false
+        methods:
+          items:
+            type: string
+          type: array
+          uniqueItems: false
+        principal_pattern:
+          description: |-
+            PrincipalPattern is a concrete SPIFFE ID or a terminal /* pattern within
+            the declared trust domain.
+          type: string
+        resources:
+          description: |-
+            Resources are RFC 8707 resource indicators this association may
+            request. Must be a subset of the server's allowed_audiences allowlist
+            (RunConfig.AllowedAudiences) — the same RFC 8707 resource-URI list
+            DelegateClientRunConfig.Audiences is validated against. Distinct from
+            Audiences: a resource permission does not imply the same value is also
+            a permitted token audience, or vice versa.
+          items:
+            type: string
+          type: array
+          uniqueItems: false
+        scopes:
+          description: |-
+            Scopes are OAuth scopes granted to this association. They must be a
+            subset of the server's effective supported scopes.
+          items:
+            type: string
+          type: array
+          uniqueItems: false
+        trust_domain_ref:
+          description: |-
+            TrustDomainRef identifies the SPIFFE trust-domain declaration governing
+            this association policy.
+          type: string
+      type: object
+    authserver.SPIFFETrustDomainRunConfig:
+      properties:
+        bundle_source:
+          $ref: '#/components/schemas/authserver.SPIFFEBundleSourceRunConfig'
+        methods:
+          description: |-
+            Methods explicitly enables the supported credential types for this trust
+            domain. No authentication method is enabled when the list is empty.
+          items:
+            type: string
+          type: array
+          uniqueItems: false
+        name:
+          description: |-
+            Name uniquely identifies this declaration and is referenced by
+            InboundGrants.SPIFFEClientAuth entries.
+          type: string
+        trust_domain:
+          description: TrustDomain is the SPIFFE trust domain accepted by this declaration.
+          type: string
+      type: object
+    authserver.SPIFFEWorkloadAPIBundleSourceRunConfig:
       type: object
     authserver.SigningKeyRunConfig:
       description: |-

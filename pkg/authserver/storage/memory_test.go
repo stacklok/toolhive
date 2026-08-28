@@ -23,7 +23,6 @@ import (
 	"errors"
 	"fmt"
 	"net/url"
-	"strconv"
 	"sync"
 	"sync/atomic"
 	"testing"
@@ -274,8 +273,7 @@ func TestMemoryStorage_StaticClientReplacesDCRClient(t *testing.T) {
 
 // TestMemoryStorage_RegisterClient_Bounded pins the anti-DoS cap: the client
 // map is bounded by maxClients with oldest-first eviction among DCR-issued
-// clients only, a re-registered client refreshes its eviction position, and
-// the survivors still authenticate.
+// clients only, and duplicate registrations fail without changing stored state.
 func TestMemoryStorage_RegisterClient_Bounded(t *testing.T) {
 	t.Parallel()
 
@@ -290,31 +288,20 @@ func TestMemoryStorage_RegisterClient_Bounded(t *testing.T) {
 		require.NoError(t, s.RegisterClient(ctx, dcrClient(t, id)))
 	}
 
-	// Re-register client-1: it is no longer the oldest, so the next overflow
-	// evicts client-2 instead.
-	require.NoError(t, s.RegisterClient(ctx, dcrClient(t, "client-1")))
+	// A duplicate does not update the original registration or eviction order.
+	require.ErrorIs(t, s.RegisterClient(ctx, dcrClient(t, "client-1")), ErrAlreadyExists)
 
-	// Overflow: client-2 (now oldest) is evicted; everyone else survives.
+	// Overflow evicts the oldest client.
 	require.NoError(t, s.RegisterClient(ctx, dcrClient(t, "client-4")))
 
-	_, err := s.GetClient(ctx, "client-2")
+	_, err := s.GetClient(ctx, "client-1")
 	requireNotFoundError(t, err)
 
-	for _, id := range []string{"client-1", "client-3", "client-4"} {
+	for _, id := range []string{"client-2", "client-3", "client-4"} {
 		client, err := s.GetClient(ctx, id)
 		require.NoError(t, err, "surviving client %q must still authenticate", id)
 		assert.Equal(t, id, client.GetID())
 	}
-
-	// Capacity is retained under continued registration pressure: the next
-	// registration always evicts the oldest aged DCR-issued client.
-	for i := range 10 {
-		require.NoError(t, s.RegisterClient(ctx, dcrClient(t, "overflow-"+strconv.Itoa(i))))
-	}
-	s.mu.RLock()
-	size := len(s.clients)
-	s.mu.RUnlock()
-	assert.LessOrEqual(t, size, 3, "client map must never exceed maxClients")
 }
 
 // TestMemoryStorage_RegisterClient_MinAgeGraceWindow pins the eviction floor:

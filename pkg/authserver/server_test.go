@@ -595,6 +595,15 @@ func TestNewServer_RegistersDelegateClientsBeforeUpstreamConstruction(t *testing
 	ctx := t.Context()
 	stor := storage.NewMemoryStorage()
 	t.Cleanup(func() { _ = stor.Close() })
+
+	// Seed a DCR-issued client under the same ID as the configured delegate
+	// client. The static delegate client is authoritative, so registering it
+	// must replace this DCR registration rather than being rejected as a
+	// duplicate.
+	dcrClient, err := registration.NewConfidentialPlain(registration.Config{ID: "delegate", Secret: "old-secret"})
+	require.NoError(t, err)
+	require.NoError(t, stor.RegisterClient(ctx, dcrClient))
+
 	cfg := Config{
 		Issuer:           "https://example.com",
 		KeyProvider:      keys.NewGeneratingProvider(keys.DefaultAlgorithm),
@@ -617,19 +626,21 @@ func TestNewServer_RegistersDelegateClientsBeforeUpstreamConstruction(t *testing
 	}
 
 	cfg.UpstreamFactory = factory
-	_, err := newServer(ctx, cfg, stor)
-	require.ErrorIs(t, err, assert.AnError)
 
-	// Startup registration is an upsert. Replacing a same-ID DCR client makes
-	// it permanent and unmarked rather than retaining DCR eviction semantics.
-	dcrClient, err := registration.NewConfidentialPlain(registration.Config{ID: "delegate", Secret: "old-secret"})
-	require.NoError(t, err)
-	require.NoError(t, stor.RegisterClient(ctx, dcrClient))
-	_, err = newServer(ctx, cfg, stor)
+	// First boot: static registration is an upsert. Replacing a same-ID DCR
+	// client makes it permanent and unmarked rather than retaining DCR
+	// eviction semantics.
+	_, err := newServer(ctx, cfg, stor)
 	require.ErrorIs(t, err, assert.AnError)
 	client, err := stor.GetClient(ctx, "delegate")
 	require.NoError(t, err)
 	assert.False(t, registration.DCRIssued(client))
+
+	// Second boot: registerDelegateClients runs on every startup, so
+	// re-registering the same static client (not a DCR duplicate) must not
+	// fail the server on restart.
+	_, err = newServer(ctx, cfg, stor)
+	require.ErrorIs(t, err, assert.AnError)
 }
 
 // closeCountingProvider is an OAuth2Provider that implements the optional

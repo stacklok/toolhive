@@ -582,6 +582,9 @@ func TestValidatePrivateKeyJWTRegistration(t *testing.T) {
 		{"wrong grant", func(r *oauthproto.DynamicClientRegistrationRequest) {
 			r.GrantTypes = []string{oauthproto.GrantTypeAuthorizationCode}
 		}, true, true},
+		{"response types", func(r *oauthproto.DynamicClientRegistrationRequest) {
+			r.ResponseTypes = []string{"code"}
+		}, true, true},
 		{"token exchange grant", func(r *oauthproto.DynamicClientRegistrationRequest) {
 			r.GrantTypes = []string{oauthproto.GrantTypeTokenExchange}
 		}, true, false},

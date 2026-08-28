@@ -7,6 +7,7 @@ import (
 	"encoding/json"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -791,6 +792,66 @@ func TestMCPExternalAuthConfig_validateEmbeddedAuthServer(t *testing.T) {
 			} else {
 				assert.NoError(t, err, "expected validation to pass")
 			}
+		})
+	}
+}
+
+func TestMCPExternalAuthConfig_ZeroUpstreamAlternatives(t *testing.T) {
+	t.Parallel()
+
+	jwtGrant := &JWTBearerGrantConfig{
+		MaxAssertionAge: &metav1.Duration{Duration: time.Minute},
+		SubjectBindings: []JWTBearerSubjectBinding{{
+			Subject:          "service-account",
+			AllowedResources: []string{"https://mcp.example.com"},
+		}},
+	}
+	tests := []struct {
+		name      string
+		config    EmbeddedAuthServerConfig
+		wantError string
+	}{
+		{
+			name: "delegate client permits token-only operation",
+			config: EmbeddedAuthServerConfig{
+				Issuer: "https://auth.example.com",
+				DelegateClients: []DelegateClientConfig{{
+					ClientID:        "delegate-client",
+					ClientSecretRef: &SecretKeyRef{Name: "delegate-secret", Key: "client-secret"},
+					Scopes:          []string{"openid"},
+					Audiences:       []string{"https://mcp.example.com"},
+				}},
+			},
+		},
+		{
+			name: "JWT bearer trusted issuer permits token-only operation",
+			config: EmbeddedAuthServerConfig{
+				Issuer: "https://auth.example.com",
+				TrustedIssuers: []TrustedIssuerConfig{{
+					IssuerURL:      "https://issuer.example.com",
+					JWTBearerGrant: jwtGrant,
+				}},
+			},
+		},
+		{
+			name:      "no token-only alternative is rejected",
+			config:    EmbeddedAuthServerConfig{Issuer: "https://auth.example.com"},
+			wantError: "at least one upstream provider is required",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			err := (&MCPExternalAuthConfig{Spec: MCPExternalAuthConfigSpec{
+				Type:               ExternalAuthTypeEmbeddedAuthServer,
+				EmbeddedAuthServer: &tt.config,
+			}}).Validate()
+			if tt.wantError != "" {
+				require.ErrorContains(t, err, tt.wantError)
+				return
+			}
+			require.NoError(t, err)
 		})
 	}
 }

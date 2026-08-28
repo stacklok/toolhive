@@ -73,8 +73,9 @@ type RunConfig struct {
 	// If empty, defaults to 15 minutes.
 	DelegationTokenLifespan string `json:"delegation_token_lifespan,omitempty" yaml:"delegation_token_lifespan,omitempty"`
 
-	// Upstreams configures connections to upstream Identity Providers.
-	// At least one upstream is required - the server delegates authentication to these providers.
+	// Upstreams configures connections to upstream Identity Providers for
+	// interactive authorization. It may be empty only when DelegateClients or a
+	// TrustedIssuer with JWTBearerGrant enables token-only operation.
 	// Multiple upstreams are supported for sequential authorization chains.
 	Upstreams []UpstreamRunConfig `json:"upstreams" yaml:"upstreams"`
 
@@ -1359,11 +1360,16 @@ func (c *DCRUpstreamConfig) Validate() error {
 	return nil
 }
 
+func validateZeroUpstreamMode(upstreamCount, delegateClientCount int, issuers []tokenexchange.TrustedIssuer) error {
+	if upstreamCount > 0 || delegateClientCount > 0 || JWTBearerGrantEnabled(issuers) {
+		return nil
+	}
+	return fmt.Errorf("at least one upstream is required unless delegate clients or a " +
+		"trusted issuer with JWT bearer grant is configured")
+}
+
 // validateUpstreams validates the upstream configurations.
 func (c *Config) validateUpstreams() error {
-	if len(c.Upstreams) == 0 {
-		return fmt.Errorf("at least one upstream is required")
-	}
 	// Track names for uniqueness checking
 	seenNames := make(map[string]bool)
 
@@ -1385,7 +1391,7 @@ func (c *Config) validateUpstreams() error {
 		}
 	}
 
-	return nil
+	return validateZeroUpstreamMode(len(c.Upstreams), len(c.DelegateClients), c.TrustedIssuers)
 }
 
 // validateUpstreamFilter rejects an UpstreamFilter configured with fewer than

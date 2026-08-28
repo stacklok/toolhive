@@ -191,12 +191,16 @@ func validateOIDCDocument(
 	oidc bool,
 	insecureAllowHTTP bool,
 ) error {
-	// Delegate basic field presence validation to the shared method.
-	// Note: We pass oidc=false here because we handle jwks_uri separately below
-	// with a more specific error message, and response_types_supported validation
-	// is not enforced in this legacy code path to maintain backward compatibility.
+	// Delegate basic field presence validation to the shared method. We pass
+	// oidc=false because this legacy path handles jwks_uri separately below and
+	// does not require response_types_supported. It nevertheless always creates
+	// an interactive authorization request, so authorization_endpoint is required
+	// regardless of the remote server's advertised grant types.
 	if err := doc.Validate(false); err != nil {
 		return err
+	}
+	if doc.AuthorizationEndpoint == "" {
+		return oauthproto.ErrMissingAuthorizationEndpoint
 	}
 
 	// Require jwks_uri for OIDC (with specific error message)

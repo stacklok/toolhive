@@ -637,8 +637,12 @@ func (*VirtualMCPServerReconciler) validateAuthServerConfig(
 		}
 	}
 
-	if len(cfg.UpstreamProviders) == 0 {
-		message := "spec.authServerConfig.upstreamProviders is required"
+	if len(cfg.UpstreamProviders) == 0 && len(cfg.DelegateClients) == 0 &&
+		!slices.ContainsFunc(cfg.TrustedIssuers, func(issuer mcpv1beta1.TrustedIssuerConfig) bool {
+			return issuer.JWTBearerGrant != nil
+		}) {
+		message := "spec.authServerConfig requires at least one upstream provider unless " +
+			"delegateClients or a trustedIssuer with jwtBearerGrant is configured"
 		statusManager.SetPhase(mcpv1beta1.VirtualMCPServerPhaseFailed)
 		statusManager.SetMessage(message)
 		statusManager.SetAuthServerConfigValidatedCondition(
@@ -838,18 +842,20 @@ func (r *VirtualMCPServerReconciler) validateAuthzUpstreamAvailable(
 		return nil
 	}
 
-	// Embedded AS configured but no upstreams: this is the misconfiguration
-	// that silently evaluates policies against the AS-issued token.
+	// Embedded AS configured but no upstreams: token-only issuance does not
+	// create provenance-bound upstream-token entries that Cedar needs to select
+	// upstream-derived claims. Reject rather than allowing policies that cannot
+	// resolve their configured claim source.
 	if len(vmcp.Spec.AuthServerConfig.UpstreamProviders) == 0 {
 		// User-facing message includes full remediation guidance and ends with
 		// a period, matching other validator messages. The returned error uses
 		// a trimmed form without trailing punctuation to satisfy staticcheck.
 		message := "spec.authServerConfig is set but has no upstream providers, and " +
-			"spec.incomingAuth.authzConfig references claims. Cedar would evaluate " +
-			"against the ToolHive-issued AS token rather than the upstream IDP token. " +
-			"Configure spec.authServerConfig.upstreamProviders with at least one " +
-			"upstream IDP, or remove authServerConfig if clients will present IdP " +
-			"tokens directly."
+			"spec.incomingAuth.authzConfig references claims. Grant-only token issuance " +
+			"does not create the provenance-bound upstream-token entries Cedar needs to " +
+			"select upstream-derived claims. Configure spec.authServerConfig.upstreamProviders " +
+			"with at least one upstream IDP, or remove authServerConfig if clients will " +
+			"present IdP tokens directly."
 		return rejectAuthzAdmission(ctx, vmcp, statusManager,
 			"authz configured without an upstream IDP; rejecting VirtualMCPServer",
 			mcpv1beta1.ConditionReasonAuthzRequiresUpstream,
@@ -2738,6 +2744,9 @@ func injectSubjectProviderIfNeeded(
 	if strategy == nil || embeddedCfg == nil {
 		return strategy, nil
 	}
+	if len(embeddedCfg.UpstreamProviders) == 0 {
+		return strategy, nil
+	}
 	return authtypes.DefaultSubjectProviderName(
 		strategy,
 		resolveFirstUpstreamProvider(embeddedCfg),
@@ -2746,8 +2755,9 @@ func injectSubjectProviderIfNeeded(
 }
 
 // resolveFirstUpstreamProvider returns the resolved name of the first upstream
-// provider configured on the embedded auth server, or the default name if none
-// are configured.
+// provider configured on the embedded auth server. It is total and returns the
+// default provider name when there are no upstreams; callers guard that case to
+// avoid injecting a default-provider reference where no provider exists.
 func resolveFirstUpstreamProvider(embeddedCfg *mcpv1beta1.EmbeddedAuthServerConfig) string {
 	names := make([]string, len(embeddedCfg.UpstreamProviders))
 	for i, p := range embeddedCfg.UpstreamProviders {

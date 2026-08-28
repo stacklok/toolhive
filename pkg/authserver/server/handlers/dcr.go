@@ -36,7 +36,8 @@ const MaxDCRBodySize = 64 * 1024
 // It implements RFC 7591 Dynamic Client Registration for public clients with
 // loopback redirect URIs, and additionally for confidential clients with
 // https non-loopback redirect URIs when AllowConfidentialClientRegistration
-// is set.
+// is set. Token-only servers accept only private_key_jwt clients registered
+// for RFC 8693 token exchange.
 func (h *Handler) RegisterClientHandler(w http.ResponseWriter, req *http.Request) {
 	ctx := req.Context()
 
@@ -67,9 +68,7 @@ func (h *Handler) RegisterClientHandler(w http.ResponseWriter, req *http.Request
 
 	// Validate request. h.config.AllowConfidentialClientRegistration gates whether
 	// client_secret_basic / client_secret_post registrations are accepted.
-	validated, dcrErr := registration.ValidateDCRRequest(
-		&dcrReq, h.config.AllowConfidentialClientRegistration,
-		h.config.AllowPrivateKeyJWTRegistration)
+	validated, dcrErr := h.validateDCRRequest(&dcrReq)
 	if dcrErr != nil {
 		writeDCRError(w, http.StatusBadRequest, dcrErr)
 		return
@@ -238,6 +237,24 @@ func (h *Handler) RegisterClientHandler(w http.ResponseWriter, req *http.Request
 	w.WriteHeader(http.StatusCreated)
 	if err := json.NewEncoder(w).Encode(response); err != nil {
 		slog.Error("failed to encode DCR response", "error", err)
+	}
+}
+
+func (h *Handler) validateDCRRequest(
+	req *oauthproto.DynamicClientRegistrationRequest,
+) (*oauthproto.DynamicClientRegistrationRequest, *registration.DCRError) {
+	validated, dcrErr := registration.ValidateDCRRequest(
+		req, h.config.AllowConfidentialClientRegistration, h.config.AllowPrivateKeyJWTRegistration)
+	if dcrErr != nil || !h.tokenOnly {
+		return validated, dcrErr
+	}
+	if validated.TokenEndpointAuthMethod == oauthproto.TokenEndpointAuthMethodPrivateKeyJWT &&
+		slices.Contains(validated.GrantTypes, oauthproto.GrantTypeTokenExchange) {
+		return validated, nil
+	}
+	return nil, &registration.DCRError{
+		Error:            registration.DCRErrorInvalidClientMetadata,
+		ErrorDescription: "token-only authorization servers only permit private_key_jwt token-exchange registrations",
 	}
 }
 

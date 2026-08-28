@@ -1391,6 +1391,29 @@ func startIssuerServer(t *testing.T, tokenEndpoint func(issuerURL string) string
 	return server.URL
 }
 
+// TestCreateOAuthConfig_BlocksPrivateIssuerDiscoveryFallback verifies that the
+// OIDC fallback preserves OAuthFlowConfig's private-IP policy.
+func TestCreateOAuthConfig_BlocksPrivateIssuerDiscoveryFallback(t *testing.T) {
+	t.Parallel()
+
+	var discoveryHits atomic.Int32
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		discoveryHits.Add(1)
+		http.Error(w, "unexpected discovery request", http.StatusInternalServerError)
+	}))
+	t.Cleanup(server.Close)
+
+	config, err := createOAuthConfig(context.Background(), server.URL, &OAuthFlowConfig{
+		ClientID:        "test-client",
+		AllowPrivateIPs: false,
+	})
+
+	require.Error(t, err)
+	assert.ErrorContains(t, err, networking.ErrPrivateIpAddress)
+	assert.Nil(t, config)
+	assert.Zero(t, discoveryHits.Load(), "OIDC fallback must not reach a private issuer")
+}
+
 // TestCreateOAuthConfig_DiscoveredTokenEndpoint is the regression test for
 // GHSA-3768-rwj3-38p2. An operator-configured issuer that names its own
 // authority in its metadata keeps the operator's trust; one that names a
@@ -1440,6 +1463,7 @@ func TestCreateOAuthConfig_DiscoveredTokenEndpoint(t *testing.T) {
 				ClientID:             "test-client",
 				IssuerTrusted:        true,
 				TokenEndpointTrusted: true,
+				AllowPrivateIPs:      true,
 			})
 			require.NoError(t, err)
 

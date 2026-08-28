@@ -175,6 +175,57 @@ func TestConfigValidate(t *testing.T) {
 	}
 }
 
+func TestConfigValidate_ZeroUpstreamAlternatives(t *testing.T) {
+	t.Parallel()
+
+	secret := []byte("0123456789abcdef0123456789abcdef")
+	configs := []struct {
+		name string
+		cfg  Config
+	}{
+		{
+			name: "delegate client",
+			cfg: Config{
+				Issuer:           "https://example.com",
+				HMACSecrets:      servercrypto.NewHMACSecrets(secret),
+				AllowedAudiences: []string{"https://mcp.example.com"},
+				DelegateClients: []DelegateClient{{
+					ClientID:     "delegate",
+					ClientSecret: strings.Repeat("a", minDelegateClientSecretLength),
+					Scopes:       []string{"openid"},
+					Audiences:    []string{"https://mcp.example.com"},
+				}},
+			},
+		},
+		{
+			name: "JWT bearer trusted issuer",
+			cfg: Config{
+				Issuer:           "https://example.com",
+				HMACSecrets:      servercrypto.NewHMACSecrets(secret),
+				AllowedAudiences: []string{"https://mcp.example.com"},
+				TrustedIssuers: []tokenexchange.TrustedIssuer{{
+					IssuerURL: "https://idp.example.com",
+					JWTBearerGrant: &tokenexchange.JWTBearerGrantPolicy{
+						MaxAssertionAge: "1m",
+						SubjectBindings: []tokenexchange.JWTBearerSubjectBinding{{
+							Subject:          "workload",
+							AllowedResources: []string{"https://mcp.example.com"},
+						}},
+						AcceptedAudiences: []string{"https://example.com/oauth/token"},
+					},
+				}},
+			},
+		},
+	}
+
+	for _, tt := range configs {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			require.NoError(t, tt.cfg.Validate())
+		})
+	}
+}
+
 func TestConfigApplyDefaults(t *testing.T) {
 	t.Parallel()
 

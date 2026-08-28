@@ -40,10 +40,13 @@ type NamedUpstream struct {
 
 // Handler provides HTTP handlers for the OAuth authorization server endpoints.
 type Handler struct {
-	provider     fosite.OAuth2Provider
-	config       *server.AuthorizationServerConfig
-	storage      storage.Storage
-	upstreams    []NamedUpstream
+	provider  fosite.OAuth2Provider
+	config    *server.AuthorizationServerConfig
+	storage   storage.Storage
+	upstreams []NamedUpstream
+	// tokenOnly is derived at construction from the absence of upstreams and is
+	// the single source of truth for token-only capability behavior.
+	tokenOnly    bool
 	userResolver *UserResolver
 	// refresher, when set, lets nextMissingUpstream transparently refresh an
 	// expired upstream leg during chain evaluation instead of re-prompting. Nil
@@ -138,8 +141,8 @@ func WithUpstreamFilter(f UpstreamFilter) Option {
 // during multi-upstream authorization flows (e.g., sequential token acquisition).
 //
 // Returns an error if config is nil, if config's embedded *fosite.Config is
-// nil, if upstreams is empty, or if any entry has an empty name, a nil provider,
-// or a duplicate name. Upstream names must be unique: upstreamByName returns the
+// nil, or if any entry has an empty name, a nil provider, or a duplicate name.
+// Upstream names must be unique: upstreamByName returns the
 // first match, tokens are keyed by name, and the authorization chain is keyed by
 // name — a duplicate would silently shadow a provider. Catching misconfiguration
 // here is far easier to diagnose than a nil-deref panic or a shadowed provider
@@ -154,9 +157,6 @@ func NewHandler(
 	if config == nil || config.Config == nil {
 		return nil, fmt.Errorf(
 			"handlers: AuthorizationServerConfig with embedded *fosite.Config must be non-nil")
-	}
-	if len(upstreams) == 0 {
-		return nil, fmt.Errorf("handlers: upstreams must not be empty")
 	}
 	seen := make(map[string]struct{}, len(upstreams))
 	for _, u := range upstreams {
@@ -176,6 +176,7 @@ func NewHandler(
 		config:       config,
 		storage:      stor,
 		upstreams:    upstreams,
+		tokenOnly:    len(upstreams) == 0,
 		userResolver: NewUserResolver(stor),
 		// 1 registration/sec sustained, burst of 5: generous for legitimate
 		// tooling (a client registers once, then reuses its client_id), tight

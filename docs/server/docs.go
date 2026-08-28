@@ -456,7 +456,7 @@ const docTemplate = `{
                         "uniqueItems": false
                     },
                     "upstreams": {
-                        "description": "Upstreams configures connections to upstream Identity Providers.\nAt least one upstream is required - the server delegates authentication to these providers.\nMultiple upstreams are supported for sequential authorization chains.",
+                        "description": "Upstreams configures connections to upstream Identity Providers for\ninteractive authorization. It may be empty only when DelegateClients or a\nTrustedIssuer with JWTBearerGrant enables token-only operation.\nMultiple upstreams are supported for sequential authorization chains.",
                         "items": {
                             "$ref": "#/components/schemas/authserver.UpstreamRunConfig"
                         },

@@ -425,6 +425,7 @@ func TestNewClient_PrivateKeyJWT(t *testing.T) {
 	assert.False(t, client.IsPublic())
 	assert.True(t, DCRIssued(client))
 	assert.Empty(t, client.GetHashedSecret())
+	assert.Empty(t, client.GetResponseTypes())
 	oidc, ok := client.(fosite.OpenIDConnectClient)
 	require.True(t, ok)
 	assert.Equal(t, oauthproto.TokenEndpointAuthMethodPrivateKeyJWT, oidc.GetTokenEndpointAuthMethod())
@@ -639,8 +640,7 @@ func TestNewStaticDelegateClient(t *testing.T) {
 	assert.Empty(t, client.GetRedirectURIs())
 	// Asserts on the underlying field, not GetResponseTypes(): fosite.DefaultClient's
 	// getter falls back to Arguments{"code"} whenever ResponseTypes is unset (per the
-	// OIDC dynamic registration default), regardless of client type, so the getter
-	// is never empty for this or any other client that doesn't set it explicitly.
+	// OIDC dynamic registration default), unless the client type overrides it.
 	assert.Empty(t, client.ResponseTypes)
 	// Use ElementsMatch since fosite returns fosite.Arguments type.
 	assert.ElementsMatch(t, []string{"urn:ietf:params:oauth:grant-type:token-exchange"}, client.GetGrantTypes())

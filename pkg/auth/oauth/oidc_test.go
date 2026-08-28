@@ -386,6 +386,20 @@ func TestValidateOIDCDocument(t *testing.T) {
 			errorMsg:       "missing authorization_endpoint",
 		},
 		{
+			name: "token-exchange metadata without authorization endpoint",
+			doc: &oauthproto.OIDCDiscoveryDocument{
+				AuthorizationServerMetadata: oauthproto.AuthorizationServerMetadata{
+					Issuer:              "https://example.com",
+					TokenEndpoint:       "https://example.com/token",
+					JWKSURI:             "https://example.com/jwks",
+					GrantTypesSupported: []string{oauthproto.GrantTypeTokenExchange},
+				},
+			},
+			expectedIssuer: "https://example.com",
+			expectError:    true,
+			errorMsg:       "missing authorization_endpoint",
+		},
+		{
 			name: "missing token endpoint",
 			doc: &oauthproto.OIDCDiscoveryDocument{
 				AuthorizationServerMetadata: oauthproto.AuthorizationServerMetadata{

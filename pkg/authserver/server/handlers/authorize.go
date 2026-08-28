@@ -18,6 +18,7 @@ import (
 	"github.com/stacklok/toolhive/pkg/authserver/server/registration"
 	"github.com/stacklok/toolhive/pkg/authserver/storage"
 	"github.com/stacklok/toolhive/pkg/authserver/upstream"
+	"github.com/stacklok/toolhive/pkg/oauthproto"
 )
 
 // upstreamAuthSecrets holds cryptographic values needed for upstream IDP authorization.
@@ -47,6 +48,14 @@ func newUpstreamAuthSecrets() *upstreamAuthSecrets {
 // It validates the client's authorization request and redirects to the upstream IDP.
 func (h *Handler) AuthorizeHandler(w http.ResponseWriter, req *http.Request) {
 	ctx := req.Context()
+
+	// Back-channel-only clients must be indistinguishable from unknown clients
+	// at this unauthenticated endpoint. This runs before redirect URI matching
+	// (including the loopback matcher below), which would otherwise expose that
+	// the client is configured through an invalid_request response.
+	if h.rejectBackChannelOnlyAuthorizeClient(ctx, w, req) {
+		return
+	}
 
 	// See rewriteLoopbackRedirectURI's doc comment for what this does and why.
 	rewrittenFrom := h.rewriteLoopbackRedirectURI(ctx, req)
@@ -142,6 +151,38 @@ func (h *Handler) AuthorizeHandler(w http.ResponseWriter, req *http.Request) {
 
 	// Redirect user to upstream IDP
 	http.Redirect(w, req, upstreamURL, http.StatusFound)
+}
+
+// rejectBackChannelOnlyAuthorizeClient rejects a configured client that has no
+// authorization response types before fosite validates redirect_uri. It returns
+// false for unknown clients so fosite retains responsibility for its normal
+// client lookup and error handling.
+func (h *Handler) rejectBackChannelOnlyAuthorizeClient(ctx context.Context, w http.ResponseWriter, req *http.Request) bool {
+	if err := req.ParseForm(); err != nil {
+		return false
+	}
+	clientID := req.Form.Get("client_id")
+	if clientID == "" {
+		return false
+	}
+	client, err := h.storage.GetClient(ctx, clientID)
+	if err != nil || client == nil || !isBackChannelOnlyClient(client) {
+		return false
+	}
+	authorizeRequest := fosite.NewAuthorizeRequest()
+	authorizeRequest.Client = client
+	h.provider.WriteAuthorizeError(
+		ctx,
+		w,
+		authorizeRequest,
+		fosite.ErrInvalidClient.WithHint("The requested OAuth 2.0 Client does not exist."),
+	)
+	return true
+}
+
+func isBackChannelOnlyClient(client fosite.Client) bool {
+	return len(client.GetResponseTypes()) == 0 ||
+		client.GetGrantTypes().ExactOne(oauthproto.GrantTypeTokenExchange)
 }
 
 // loopbackAuthorizeRequester wraps a fosite.AuthorizeRequester to make the

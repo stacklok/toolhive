@@ -598,18 +598,12 @@ type ClientRegistry interface {
 	// ClientManager provides client lookup (GetClient)
 	fosite.ClientManager
 
-	// RegisterClient registers a new OAuth client. This supports both static
-	// configuration and dynamic client registration (RFC 7591).
-	//
-	// This is an upsert, not an insert: both backends store()/SET the client
-	// unconditionally, overwriting any existing row with the same ID rather
-	// than rejecting it. Re-registering an existing ID is the only mechanism
-	// that renews a DCR-issued client's TTL on the CIMD write-through path
-	// (see CIMDStorageDecorator.fetch), so callers rely on this upsert
-	// behavior, not merely tolerate it. The one exception is the in-memory
-	// backend at capacity: when the client map is full and no DCR-issued
-	// client is old enough to evict, RegisterClient returns ErrClientCapacity
-	// instead of completing the upsert.
+	// RegisterClient registers a new OAuth client.
+	// This supports both static configuration and dynamic client registration (RFC 7591).
+	// A DCR-issued client is create-only: it returns ErrAlreadyExists if a
+	// client with the same ID already exists. A static/operator-declared
+	// client is authoritative and replaces any existing client with the same
+	// ID, including one that was DCR-issued.
 	RegisterClient(ctx context.Context, client fosite.Client) error
 
 	// RenewClientTTL extends the registration TTL of a DCR-issued client (public or

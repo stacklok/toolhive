@@ -449,15 +449,11 @@ func getExpirationFromRequester(request fosite.Requester, tokenType fosite.Token
 	return expTime
 }
 
-// RegisterClient adds or updates a client in the storage.
-// This is useful for setting up test clients.
-//
-// When the client map is at maxClients, the oldest DCR-issued registration
-// that has aged past minClientAge is evicted to make room. A pre-provisioned
-// client (no registration.DCRIssued marker) is never evicted; if no current
-// DCR-issued client is old enough to evict, RegisterClient returns
-// ErrClientCapacity. Re-registering an existing ID moves it to the back of the
-// eviction queue.
+// RegisterClient creates or replaces a client in storage. A DCR-issued
+// registration is create-only and returns ErrAlreadyExists when a client with
+// the same ID is already registered; an operator-declared static/delegate
+// client is authoritative and always replaces any existing registration,
+// including one DCR issued.
 func (s *MemoryStorage) RegisterClient(_ context.Context, client fosite.Client) error {
 	id := client.GetID()
 	if err := ValidateRegisterableClientID(id); err != nil {
@@ -469,8 +465,17 @@ func (s *MemoryStorage) RegisterClient(_ context.Context, client fosite.Client) 
 
 	now := time.Now()
 	if _, exists := s.clients[id]; exists {
-		// Refresh the eviction position: an actively re-registering client is
-		// not the oldest.
+		// DCR is unauthenticated (the /register endpoint has no caller
+		// identity), so a DCR-issued registration must never clobber an
+		// existing client. Operator-declared static/delegate clients are
+		// authoritative and may replace any existing registration, including
+		// one DCR issued: this is how a static overlay promotes a client that
+		// first appeared via DCR into permanent configuration.
+		if registration.DCRIssued(client) {
+			return fmt.Errorf("%w: client %q", ErrAlreadyExists, id)
+		}
+		// Refresh the eviction position: the replacing registration is not
+		// the oldest, and clientOrder must not carry a stale duplicate entry.
 		s.clientOrder = slices.DeleteFunc(s.clientOrder, func(e clientOrderEntry) bool { return e.id == id })
 	} else if s.maxClients > 0 && len(s.clients) >= s.maxClients {
 		if idx := s.oldestEvictableClientIndex(now); idx >= 0 {

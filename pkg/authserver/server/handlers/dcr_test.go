@@ -157,6 +157,18 @@ func testRSAPublicKey(t *testing.T) *rsa.PublicKey {
 func TestRegisterClientHandler_PrivateKeyJWTResponseAndClient(t *testing.T) {
 	t.Parallel()
 
+	testRegisterClientHandlerPrivateKeyJWTResponseAndClient(t, false)
+}
+
+func TestRegisterClientHandler_TokenOnlyPrivateKeyJWTResponseAndClient(t *testing.T) {
+	t.Parallel()
+
+	testRegisterClientHandlerPrivateKeyJWTResponseAndClient(t, true)
+}
+
+func testRegisterClientHandlerPrivateKeyJWTResponseAndClient(t *testing.T, tokenOnly bool) {
+	t.Helper()
+
 	jwks := &jose.JSONWebKeySet{Keys: []jose.JSONWebKey{{
 		Key:       testRSAPublicKey(t),
 		KeyID:     "handler-key",
@@ -171,13 +183,18 @@ func TestRegisterClientHandler_PrivateKeyJWTResponseAndClient(t *testing.T) {
 			stored = client
 			return nil
 		})
-	handler := &Handler{storage: stor, config: &server.AuthorizationServerConfig{
-		Config:                         &fosite.Config{AccessTokenIssuer: "https://test-authserver"},
-		ScopesSupported:                registration.DefaultScopes,
-		AllowPrivateKeyJWTRegistration: true,
-	}}
+	handler := &Handler{
+		storage:   stor,
+		tokenOnly: tokenOnly,
+		config: &server.AuthorizationServerConfig{
+			Config:                         &fosite.Config{AccessTokenIssuer: "https://test-authserver"},
+			ScopesSupported:                registration.DefaultScopes,
+			AllowPrivateKeyJWTRegistration: true,
+		},
+	}
 	body, err := json.Marshal(oauthproto.DynamicClientRegistrationRequest{
 		RedirectURIs:                []string{"https://example.com/callback"},
+		GrantTypes:                  []string{oauthproto.GrantTypeTokenExchange},
 		TokenEndpointAuthMethod:     oauthproto.TokenEndpointAuthMethodPrivateKeyJWT,
 		JWKS:                        jwks,
 		TokenEndpointAuthSigningAlg: string(jose.RS256),
@@ -194,6 +211,11 @@ func TestRegisterClientHandler_PrivateKeyJWTResponseAndClient(t *testing.T) {
 	require.NoError(t, json.Unmarshal(w.Body.Bytes(), &response))
 	assert.Contains(t, w.Body.String(), `"jwks"`)
 	assert.NotContains(t, w.Body.String(), `"client_secret"`)
+	var rawResponse map[string]any
+	require.NoError(t, json.Unmarshal(w.Body.Bytes(), &rawResponse))
+	_, hasResponseTypes := rawResponse["response_types"]
+	assert.False(t, hasResponseTypes, "private_key_jwt DCR must not advertise an authorization-code flow")
+	assert.Equal(t, []string{oauthproto.GrantTypeTokenExchange}, response.GrantTypes)
 	assert.Equal(t, string(jose.RS256), response.TokenEndpointAuthSigningAlg)
 	assert.Equal(t, jwks.Keys[0].KeyID, response.JWKS.Keys[0].KeyID)
 	assert.Equal(t, jwks.Keys[0].Algorithm, response.JWKS.Keys[0].Algorithm)
@@ -202,6 +224,7 @@ func TestRegisterClientHandler_PrivateKeyJWTResponseAndClient(t *testing.T) {
 	assert.False(t, stored.IsPublic())
 	assert.True(t, registration.DCRIssued(stored))
 	assert.Empty(t, stored.GetHashedSecret())
+	assert.Empty(t, stored.GetResponseTypes(), "stored private_key_jwt client must not represent an authorization-code flow")
 	oidc, ok := stored.(fosite.OpenIDConnectClient)
 	require.True(t, ok)
 	assert.Equal(t, oauthproto.TokenEndpointAuthMethodPrivateKeyJWT, oidc.GetTokenEndpointAuthMethod())
@@ -210,7 +233,6 @@ func TestRegisterClientHandler_PrivateKeyJWTResponseAndClient(t *testing.T) {
 	assert.Equal(t, jwks.Keys[0].Algorithm, oidc.GetJSONWebKeys().Keys[0].Algorithm)
 	assert.Equal(t, jwks.Keys[0].Use, oidc.GetJSONWebKeys().Keys[0].Use)
 }
-
 func TestRegisterClientHandler_ScopeInResponse(t *testing.T) {
 	t.Parallel()
 

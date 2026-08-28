@@ -245,6 +245,96 @@ func TestPopulateMiddlewareConfigs_HeaderForward(t *testing.T) {
 	}
 }
 
+func TestPopulateMiddlewareConfigs_CredentialStripping(t *testing.T) {
+	t.Parallel()
+
+	oboConfig, err := types.NewMiddlewareConfig(obo.MiddlewareType, map[string]string{"token_url": "https://idp.example.com/token"})
+	require.NoError(t, err)
+
+	tests := []struct {
+		name    string
+		config  *RunConfig
+		wantErr string
+	}{
+		{
+			name:   "zero upstreams strips credentials after authentication without swap",
+			config: &RunConfig{EmbeddedAuthServerConfig: &authserver.RunConfig{}},
+		},
+		{
+			name: "zero upstreams rejects OBO configuration",
+			config: &RunConfig{
+				EmbeddedAuthServerConfig:    &authserver.RunConfig{},
+				AdditionalMiddlewareConfigs: []types.MiddlewareConfig{*oboConfig},
+			},
+			wantErr: "OBO middleware",
+		},
+		{
+			name: "disabled upstream injection rejects OBO configuration",
+			config: &RunConfig{
+				EmbeddedAuthServerConfig: &authserver.RunConfig{
+					Upstreams:                     []authserver.UpstreamRunConfig{{Name: "upstream"}},
+					DisableUpstreamTokenInjection: true,
+				},
+				AdditionalMiddlewareConfigs: []types.MiddlewareConfig{*oboConfig},
+			},
+			wantErr: "OBO middleware",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			err := PopulateMiddlewareConfigs(tt.config)
+			if tt.wantErr != "" {
+				require.ErrorContains(t, err, tt.wantErr)
+				return
+			}
+			require.NoError(t, err)
+			assert.Greater(t,
+				indexOfMiddleware(t, tt.config.MiddlewareConfigs, headerfwd.StripAuthMiddlewareName),
+				indexOfMiddleware(t, tt.config.MiddlewareConfigs, auth.MiddlewareType),
+				"strip-auth must run after authentication")
+			for _, middleware := range tt.config.MiddlewareConfigs {
+				assert.NotEqual(t, upstreamswap.MiddlewareType, middleware.Type)
+			}
+		})
+	}
+}
+
+func TestValidateCredentialStrippingMiddleware_RejectsPrePopulatedOBO(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name   string
+		config *RunConfig
+	}{
+		{
+			name:   "zero upstreams",
+			config: &RunConfig{EmbeddedAuthServerConfig: &authserver.RunConfig{}},
+		},
+		{
+			name: "disabled upstream injection",
+			config: &RunConfig{EmbeddedAuthServerConfig: &authserver.RunConfig{
+				Upstreams:                     []authserver.UpstreamRunConfig{{Name: "upstream"}},
+				DisableUpstreamTokenInjection: true,
+			}},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			err := validateCredentialStrippingMiddleware([]types.MiddlewareConfig{
+				{Type: auth.MiddlewareType},
+				{Type: headerfwd.StripAuthMiddlewareName},
+				{Type: obo.MiddlewareType},
+			}, tt.config)
+			require.ErrorContains(t, err, "OBO middleware")
+		})
+	}
+}
+
 // indexOfMiddleware returns the index of the first middleware of the given type
 // in the chain, failing the test if it is absent.
 func indexOfMiddleware(t *testing.T, mws []types.MiddlewareConfig, mwType string) int {
@@ -567,6 +657,7 @@ func TestAddUpstreamSwapMiddleware(t *testing.T) {
 		config       *RunConfig
 		wantAppended bool
 		wantType     string // expected middleware type when appended
+		wantErr      string
 	}{
 		{
 			name:         "nil EmbeddedAuthServerConfig returns input unchanged",
@@ -591,6 +682,18 @@ func TestAddUpstreamSwapMiddleware(t *testing.T) {
 			}(),
 			wantAppended: true,
 			wantType:     headerfwd.StripAuthMiddlewareName,
+		},
+		{
+			name: "DisableUpstreamTokenInjection rejects explicit upstream swap",
+			config: func() *RunConfig {
+				cfg := createMinimalAuthServerConfig()
+				cfg.DisableUpstreamTokenInjection = true
+				return &RunConfig{
+					EmbeddedAuthServerConfig: cfg,
+					UpstreamSwapConfig:       &upstreamswap.Config{},
+				}
+			}(),
+			wantErr: "disableUpstreamTokenInjection cannot be combined with upstream swap",
 		},
 		{
 			name: "EmbeddedAuthServerConfig set with explicit UpstreamSwapConfig uses provided config",
@@ -623,6 +726,10 @@ func TestAddUpstreamSwapMiddleware(t *testing.T) {
 
 			initial := []types.MiddlewareConfig{{Type: "existing"}}
 			got, err := addUpstreamSwapMiddleware(initial, tt.config)
+			if tt.wantErr != "" {
+				require.ErrorContains(t, err, tt.wantErr)
+				return
+			}
 			require.NoError(t, err)
 
 			if !tt.wantAppended {
@@ -1088,12 +1195,12 @@ func TestInjectUpstreamProviderIfNeeded(t *testing.T) {
 			wantProviderName: authserver.DefaultUpstreamName,
 		},
 		{
-			name: "empty_upstreams_falls_back_to_default",
+			name: "empty_upstreams_leave_Cedar_config_unchanged",
 			embeddedCfg: &authserver.RunConfig{
 				Upstreams: []authserver.UpstreamRunConfig{},
 			},
-			wantErr:          false,
-			wantProviderName: authserver.DefaultUpstreamName,
+			wantErr:         false,
+			wantSamePointer: true,
 		},
 	}
 
@@ -1469,6 +1576,128 @@ func TestPopulateMiddlewareConfigs_StripAuthOrdering(t *testing.T) {
 	require.GreaterOrEqual(t, stripIdx, 0, "strip-auth middleware must be present")
 	assert.Less(t, authIdx, stripIdx,
 		"auth must validate the client JWT before strip-auth removes the Authorization header")
+}
+
+// TestTokenOnlyAuthServerMiddleware verifies that no-upstream auth servers strip
+// credentials and reject an explicit upstream-swap configuration.
+func TestTokenOnlyAuthServerMiddleware(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name    string
+		config  *RunConfig
+		wantErr string
+	}{
+		{
+			name:   "strips credentials",
+			config: &RunConfig{EmbeddedAuthServerConfig: &authserver.RunConfig{}},
+		},
+		{
+			name: "rejects explicit upstream swap",
+			config: &RunConfig{
+				EmbeddedAuthServerConfig: &authserver.RunConfig{},
+				UpstreamSwapConfig:       &upstreamswap.Config{},
+			},
+			wantErr: "upstream swap cannot be configured without upstreams",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			configs, err := addUpstreamSwapMiddleware(nil, tt.config)
+			if tt.wantErr != "" {
+				require.ErrorContains(t, err, tt.wantErr)
+				return
+			}
+			require.NoError(t, err)
+			require.Len(t, configs, 1)
+			assert.Equal(t, headerfwd.StripAuthMiddlewareName, configs[0].Type)
+		})
+	}
+}
+
+func TestValidateCredentialStrippingMiddleware(t *testing.T) {
+	t.Parallel()
+
+	disabledInjectionConfig := func() *RunConfig {
+		authServerCfg := createMinimalAuthServerConfig()
+		authServerCfg.DisableUpstreamTokenInjection = true
+		return &RunConfig{EmbeddedAuthServerConfig: authServerCfg}
+	}()
+
+	tests := []struct {
+		name    string
+		config  *RunConfig
+		configs []types.MiddlewareConfig
+		wantErr string
+	}{
+		{
+			name:    "token-only requires strip-auth",
+			config:  &RunConfig{EmbeddedAuthServerConfig: &authserver.RunConfig{}},
+			configs: []types.MiddlewareConfig{{Type: auth.MiddlewareType}},
+			wantErr: "requires strip-auth",
+		},
+		{
+			name:    "token-only accepts auth before strip-auth",
+			config:  &RunConfig{EmbeddedAuthServerConfig: &authserver.RunConfig{}},
+			configs: []types.MiddlewareConfig{{Type: auth.MiddlewareType}, {Type: headerfwd.StripAuthMiddlewareName}},
+		},
+		{
+			name:    "disabled injection accepts auth before strip-auth",
+			config:  disabledInjectionConfig,
+			configs: []types.MiddlewareConfig{{Type: auth.MiddlewareType}, {Type: headerfwd.StripAuthMiddlewareName}},
+		},
+		{
+			name:    "requires auth",
+			config:  &RunConfig{EmbeddedAuthServerConfig: &authserver.RunConfig{}},
+			configs: []types.MiddlewareConfig{{Type: headerfwd.StripAuthMiddlewareName}},
+			wantErr: "requires auth",
+		},
+		{
+			name:    "rejects strip-auth before auth",
+			config:  disabledInjectionConfig,
+			configs: []types.MiddlewareConfig{{Type: headerfwd.StripAuthMiddlewareName}, {Type: auth.MiddlewareType}},
+			wantErr: "strip-auth middleware after auth middleware",
+		},
+		{
+			name:    "rejects duplicate strip-auth",
+			config:  &RunConfig{EmbeddedAuthServerConfig: &authserver.RunConfig{}},
+			configs: []types.MiddlewareConfig{{Type: auth.MiddlewareType}, {Type: headerfwd.StripAuthMiddlewareName}, {Type: headerfwd.StripAuthMiddlewareName}},
+			wantErr: "exactly one strip-auth",
+		},
+		{
+			name:    "disabled injection rejects upstream swap",
+			config:  disabledInjectionConfig,
+			configs: []types.MiddlewareConfig{{Type: auth.MiddlewareType}, {Type: upstreamswap.MiddlewareType}, {Type: headerfwd.StripAuthMiddlewareName}},
+			wantErr: "upstream swap",
+		},
+		{
+			name:    "token-only rejects token exchange",
+			config:  &RunConfig{EmbeddedAuthServerConfig: &authserver.RunConfig{}},
+			configs: []types.MiddlewareConfig{{Type: auth.MiddlewareType}, {Type: tokenexchange.MiddlewareType}, {Type: headerfwd.StripAuthMiddlewareName}},
+			wantErr: "token exchange",
+		},
+		{
+			name:    "token-only rejects AWS STS",
+			config:  &RunConfig{EmbeddedAuthServerConfig: &authserver.RunConfig{}},
+			configs: []types.MiddlewareConfig{{Type: auth.MiddlewareType}, {Type: awssts.MiddlewareType}, {Type: headerfwd.StripAuthMiddlewareName}},
+			wantErr: "AWS STS",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			err := validateCredentialStrippingMiddleware(tt.configs, tt.config)
+			if tt.wantErr != "" {
+				require.ErrorContains(t, err, tt.wantErr)
+				return
+			}
+			require.NoError(t, err)
+		})
+	}
 }
 
 // TestPopulateMiddlewareConfigs_StripAuthConflicts verifies that

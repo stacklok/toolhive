@@ -1191,6 +1191,12 @@ func TestInjectSubjectProviderIfNeeded(t *testing.T) {
 			wantSamePointer: true,
 		},
 		{
+			name:            "zero_upstreams_returned_unchanged",
+			strategy:        tokenExchangeStrategy(),
+			embeddedCfg:     embeddedAuthServerCfg(),
+			wantSamePointer: true,
+		},
+		{
 			name:                    "named_upstream_populates_subject_provider",
 			strategy:                tokenExchangeStrategy(),
 			embeddedCfg:             embeddedAuthServerCfg("github"),
@@ -1225,6 +1231,9 @@ func TestInjectSubjectProviderIfNeeded(t *testing.T) {
 
 			if tt.wantSamePointer {
 				assert.Same(t, tt.strategy, result)
+				if tt.strategy != nil && tt.strategy.TokenExchange != nil {
+					assert.Empty(t, result.TokenExchange.SubjectProviderName)
+				}
 				return
 			}
 

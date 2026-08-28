@@ -296,6 +296,10 @@ func (r *Runner) Run(ctx context.Context) error {
 		}
 	}
 
+	if err := validateCredentialStrippingMiddleware(r.Config.MiddlewareConfigs, r.Config); err != nil {
+		return fmt.Errorf("invalid credential stripping middleware configuration: %w", err)
+	}
+
 	// Origin-header validation (DNS-rebinding protection per MCP 2025-11-25
 	// §"Security Warning") is wired here, after both middleware-population
 	// paths, because it is the single place where Host/Port/AllowedOrigins are

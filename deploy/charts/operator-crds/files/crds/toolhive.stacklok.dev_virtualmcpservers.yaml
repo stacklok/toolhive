@@ -258,8 +258,8 @@ spec:
                       the client's credential headers (Authorization, Cookie, Proxy-Authorization)
                       after validating the JWT — the backend receives an unauthenticated request.
                       Use headerForward to attach static credentials (e.g. an API key) if the
-                      backend needs them. Cannot be combined with token exchange or AWS STS,
-                      which would re-add credentials after the strip.
+                      backend needs them. Cannot be combined with token exchange, AWS STS, or OBO
+                      middleware, which would re-add credentials after the strip.
                       This is useful when the backend MCP server does not require authentication
                       (e.g., public documentation servers) but you still want client authentication.
                     type: boolean
@@ -915,7 +915,9 @@ spec:
                   upstreamProviders:
                     description: |-
                       UpstreamProviders configures connections to upstream Identity Providers.
-                      The embedded auth server delegates authentication to these providers.
+                      When configured, the embedded auth server delegates interactive authentication
+                      to these providers. It may be omitted only when delegateClients or a trusted
+                      issuer with jwtBearerGrant enables token-only operation.
                       MCPServer and MCPRemoteProxy support a single upstream; VirtualMCPServer supports multiple.
                     items:
                       description: |-
@@ -1518,16 +1520,20 @@ spec:
                         rule: 'self.type == ''oidc'' ? (has(self.oidcConfig) && !has(self.oauth2Config))
                           : self.type == ''oauth2'' ? (has(self.oauth2Config) && !has(self.oidcConfig))
                           : false'
-                    minItems: 1
                     type: array
                     x-kubernetes-list-map-keys:
                     - name
                     x-kubernetes-list-type: map
                 required:
                 - issuer
-                - upstreamProviders
                 type: object
                 x-kubernetes-validations:
+                - message: at least one upstream provider is required unless delegateClients
+                    or a trustedIssuer with jwtBearerGrant is configured
+                  rule: has(self.upstreamProviders) && size(self.upstreamProviders)
+                    > 0 || (has(self.delegateClients) && size(self.delegateClients)
+                    > 0) || (has(self.trustedIssuers) && self.trustedIssuers.exists(issuer,
+                    has(issuer.jwtBearerGrant)))
                 - message: allowConfidentialClientRegistration cannot be combined
                     with insecureAllowHTTP; client secrets would be issued in cleartext
                     over an unauthenticated endpoint
@@ -4385,8 +4391,8 @@ spec:
                       the client's credential headers (Authorization, Cookie, Proxy-Authorization)
                       after validating the JWT — the backend receives an unauthenticated request.
                       Use headerForward to attach static credentials (e.g. an API key) if the
-                      backend needs them. Cannot be combined with token exchange or AWS STS,
-                      which would re-add credentials after the strip.
+                      backend needs them. Cannot be combined with token exchange, AWS STS, or OBO
+                      middleware, which would re-add credentials after the strip.
                       This is useful when the backend MCP server does not require authentication
                       (e.g., public documentation servers) but you still want client authentication.
                     type: boolean
@@ -5042,7 +5048,9 @@ spec:
                   upstreamProviders:
                     description: |-
                       UpstreamProviders configures connections to upstream Identity Providers.
-                      The embedded auth server delegates authentication to these providers.
+                      When configured, the embedded auth server delegates interactive authentication
+                      to these providers. It may be omitted only when delegateClients or a trusted
+                      issuer with jwtBearerGrant enables token-only operation.
                       MCPServer and MCPRemoteProxy support a single upstream; VirtualMCPServer supports multiple.
                     items:
                       description: |-
@@ -5645,16 +5653,20 @@ spec:
                         rule: 'self.type == ''oidc'' ? (has(self.oidcConfig) && !has(self.oauth2Config))
                           : self.type == ''oauth2'' ? (has(self.oauth2Config) && !has(self.oidcConfig))
                           : false'
-                    minItems: 1
                     type: array
                     x-kubernetes-list-map-keys:
                     - name
                     x-kubernetes-list-type: map
                 required:
                 - issuer
-                - upstreamProviders
                 type: object
                 x-kubernetes-validations:
+                - message: at least one upstream provider is required unless delegateClients
+                    or a trustedIssuer with jwtBearerGrant is configured
+                  rule: has(self.upstreamProviders) && size(self.upstreamProviders)
+                    > 0 || (has(self.delegateClients) && size(self.delegateClients)
+                    > 0) || (has(self.trustedIssuers) && self.trustedIssuers.exists(issuer,
+                    has(issuer.jwtBearerGrant)))
                 - message: allowConfidentialClientRegistration cannot be combined
                     with insecureAllowHTTP; client secrets would be issued in cleartext
                     over an unauthenticated endpoint

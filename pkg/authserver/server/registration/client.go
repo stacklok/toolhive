@@ -111,8 +111,9 @@ type Config struct {
 	// If nil or empty, defaultGrantTypes is used.
 	GrantTypes []string
 
-	// ResponseTypes overrides the default response types.
-	// If nil or empty, defaultResponseTypes is used.
+	// ResponseTypes overrides the default response types. If nil or empty,
+	// defaultResponseTypes is used except for private_key_jwt clients, which
+	// deliberately support no response types.
 	ResponseTypes []string
 
 	// Scopes overrides the default scopes.
@@ -225,6 +226,14 @@ type privateKeyJWTClient struct {
 	*fosite.DefaultOpenIDConnectClient
 }
 
+// GetResponseTypes prevents fosite.DefaultClient's implicit ["code"] default
+// from representing this token-exchange-only client as an authorization-code
+// client. Embedding DefaultOpenIDConnectClient still preserves fosite's
+// private_key_jwt authentication-method enforcement.
+func (privateKeyJWTClient) GetResponseTypes() fosite.Arguments {
+	return nil
+}
+
 // GenerateClientSecret mints a new client secret: 32 bytes of crypto/rand
 // output, base64url-encoded (43 characters, no padding). RawURLEncoding is
 // load-bearing, not cosmetic: fosite url.QueryUnescape's both Basic-auth
@@ -266,7 +275,11 @@ func New(cfg Config) (fosite.Client, error) {
 	}
 
 	responseTypes := cfg.ResponseTypes
-	if len(responseTypes) == 0 {
+	// RFC 7591 §2 treats an omitted response_types value as ["code"]. A
+	// private_key_jwt registration supports no response types, but RFC 7591
+	// has no wire encoding for that zero-element set; preserve the validated
+	// empty value rather than applying the interactive-client default.
+	if len(responseTypes) == 0 && !privateKeyJWT {
 		responseTypes = defaultResponseTypes
 	}
 

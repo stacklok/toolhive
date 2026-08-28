@@ -162,14 +162,12 @@ func TestAuthorizeHandler_PlainChallengeMethodAcceptedButValidatedAtToken(t *tes
 	assert.Contains(t, location, "https://idp.example.com/authorize")
 }
 
-func TestNewHandler_ErrorsOnEmptyUpstreams(t *testing.T) {
+func TestNewHandler_AllowsEmptyUpstreams(t *testing.T) {
 	t.Parallel()
 
-	_, err := NewHandler(nil, nil, nil, nil)
-	require.Error(t, err, "NewHandler should error when upstreams is nil")
-
-	_, err = NewHandler(nil, nil, nil, []NamedUpstream{})
-	require.Error(t, err, "NewHandler should error when upstreams is empty slice")
+	handler, _, _ := handlerTestSetup(t)
+	_, err := NewHandler(handler.provider, handler.config, handler.storage, nil)
+	require.NoError(t, err)
 }
 
 // TestNewHandler_ErrorsOnNilConfig pins the constructor invariant that a

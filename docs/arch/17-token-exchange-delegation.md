@@ -73,6 +73,32 @@ binding. The Kubernetes operator also exposes `trusted_issuers` as
 `EmbeddedAuthServerConfig.trustedIssuers` — see
 [Kubernetes operator](#kubernetes-operator) below.
 
+### Token-only embedded authorization servers
+
+An embedded authorization server may omit upstream identity providers only when
+it has a pre-provisioned delegate client or a trusted issuer with
+`jwtBearerGrant`. This mode serves token exchange without an interactive login:
+`/oauth/authorize` validates the OAuth client and redirect URI, then returns
+`unsupported_response_type`. Discovery omits authorization-code, refresh-token,
+and PKCE capabilities while retaining token exchange (and JWT bearer when a
+trusted issuer enables it). Generic MCP and OIDC authorization-code clients
+cannot use token-only servers: the metadata deliberately lacks the
+authorization-code and PKCE fields those clients require to start an interactive
+flow. The OpenID well-known route returns the same RFC 8414 token-only metadata
+alias, not OIDC-only fields.
+
+Token-only metadata continues to advertise configured scopes such as `openid`
+and `offline_access`. Scopes describe permissions that token exchange can issue,
+not interactive-login availability; removing them would falsely imply those
+valid exchanged-token permissions are unavailable.
+
+In token-only mode, ordinary dynamic registrations are rejected. The
+registration endpoint is advertised only when `private_key_jwt` registration is
+enabled, and then accepts only private-key-JWT token-exchange clients. Backend
+requests strip inbound credential headers after ToolHive authentication because
+there is no upstream credential to inject; outgoing token exchange and AWS STS
+remain incompatible because they would add credentials after the strip.
+
 ### Kubernetes operator
 
 The operator exposes delegate clients on the shared
@@ -130,6 +156,10 @@ spec:
         scopes: [openid]
         audiences: [https://mcp.example.com]
 ```
+
+A token-only vMCP cannot use Cedar authorization: grant-only issuance does not
+create the provenance-bound upstream-token entries Cedar needs for
+upstream-derived claims.
 
 The CRD accepts Secret references only: no plaintext secret, redirect URI, or
 arbitrary grant selection is available. A non-empty `clientSecretRef.name` and

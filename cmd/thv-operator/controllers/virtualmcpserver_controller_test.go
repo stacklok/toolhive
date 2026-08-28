@@ -3381,6 +3381,7 @@ func TestVirtualMCPServerValidateAuthzUpstreamAvailable(t *testing.T) {
 		authServerConfig *mcpv1beta1.EmbeddedAuthServerConfig
 		expectError      bool
 		expectedReason   string
+		expectedMessage  string
 		expectedWarning  warningExpectation
 	}{
 		{
@@ -3404,6 +3405,39 @@ func TestVirtualMCPServerValidateAuthzUpstreamAvailable(t *testing.T) {
 			authServerConfig: nil,
 			expectError:      false,
 			expectedWarning:  warningExpectation{expectPresent: false},
+		},
+		{
+			name: "authz with empty upstream providers and delegate client is invalid",
+			incomingAuth: &mcpv1beta1.IncomingAuthConfig{
+				Type:        "oidc",
+				AuthzConfig: inlineAuthzRef,
+			},
+			authServerConfig: &mcpv1beta1.EmbeddedAuthServerConfig{
+				Issuer:          "https://authserver.example.com",
+				DelegateClients: []mcpv1beta1.DelegateClientConfig{{ClientID: "delegate-client"}},
+			},
+			expectError:     true,
+			expectedReason:  mcpv1beta1.ConditionReasonAuthzRequiresUpstream,
+			expectedMessage: "Grant-only token issuance does not create the provenance-bound upstream-token entries Cedar needs to select upstream-derived claims.",
+			expectedWarning: warningExpectation{expectPresent: false},
+		},
+		{
+			name: "authz with empty upstream providers and JWT bearer issuer is invalid",
+			incomingAuth: &mcpv1beta1.IncomingAuthConfig{
+				Type:        "oidc",
+				AuthzConfig: inlineAuthzRef,
+			},
+			authServerConfig: &mcpv1beta1.EmbeddedAuthServerConfig{
+				Issuer: "https://authserver.example.com",
+				TrustedIssuers: []mcpv1beta1.TrustedIssuerConfig{{
+					IssuerURL:      "https://issuer.example.com",
+					JWTBearerGrant: &mcpv1beta1.JWTBearerGrantConfig{},
+				}},
+			},
+			expectError:     true,
+			expectedReason:  mcpv1beta1.ConditionReasonAuthzRequiresUpstream,
+			expectedMessage: "Grant-only token issuance does not create the provenance-bound upstream-token entries Cedar needs to select upstream-derived claims.",
+			expectedWarning: warningExpectation{expectPresent: false},
 		},
 		{
 			name: "authz with empty upstream providers is invalid",
@@ -3556,6 +3590,9 @@ func TestVirtualMCPServerValidateAuthzUpstreamAvailable(t *testing.T) {
 				assert.True(t, statusManager.UpdateStatus(t.Context(), &vmcp.Status))
 				assert.Equal(t, mcpv1beta1.VirtualMCPServerPhaseFailed, vmcp.Status.Phase)
 				assert.NotEmpty(t, vmcp.Status.Message)
+				if tt.expectedMessage != "" {
+					assert.Contains(t, vmcp.Status.Message, tt.expectedMessage)
+				}
 
 				found := false
 				for _, cond := range vmcp.Status.Conditions {
@@ -3563,6 +3600,9 @@ func TestVirtualMCPServerValidateAuthzUpstreamAvailable(t *testing.T) {
 						found = true
 						assert.Equal(t, metav1.ConditionFalse, cond.Status)
 						assert.Equal(t, tt.expectedReason, cond.Reason)
+						if tt.expectedMessage != "" {
+							assert.Contains(t, cond.Message, tt.expectedMessage)
+						}
 					}
 				}
 				assert.True(t, found, "AuthServerConfigValidated condition should be set to False")
@@ -4212,6 +4252,63 @@ func TestVirtualMCPServerValidateAuthServerConfig_InsecureAllowHTTP(t *testing.T
 				assert.Contains(t, cond.Message, "insecureAllowHTTP",
 					"rejection message must guide the user to the fix")
 			}
+		})
+	}
+}
+
+func TestVirtualMCPServerValidateAuthServerConfig_ZeroUpstreamAlternatives(t *testing.T) {
+	t.Parallel()
+
+	jwtGrant := &mcpv1beta1.JWTBearerGrantConfig{
+		MaxAssertionAge: &metav1.Duration{Duration: time.Minute},
+		SubjectBindings: []mcpv1beta1.JWTBearerSubjectBinding{{
+			Subject:          "service-account",
+			AllowedResources: []string{"https://mcp.example.com"},
+		}},
+	}
+	tests := []struct {
+		name   string
+		config *mcpv1beta1.EmbeddedAuthServerConfig
+	}{
+		{
+			name: "delegate client",
+			config: &mcpv1beta1.EmbeddedAuthServerConfig{
+				Issuer: "https://auth.example.com",
+				DelegateClients: []mcpv1beta1.DelegateClientConfig{{
+					ClientID:        "delegate-client",
+					ClientSecretRef: &mcpv1beta1.SecretKeyRef{Name: "delegate-secret", Key: "client-secret"},
+					Scopes:          []string{"openid"},
+					Audiences:       []string{"https://mcp.example.com"},
+				}},
+			},
+		},
+		{
+			name: "JWT bearer trusted issuer",
+			config: &mcpv1beta1.EmbeddedAuthServerConfig{
+				Issuer: "https://auth.example.com",
+				TrustedIssuers: []mcpv1beta1.TrustedIssuerConfig{{
+					IssuerURL:      "https://issuer.example.com",
+					JWTBearerGrant: jwtGrant,
+				}},
+			},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			vmcp := v1beta1test.NewVirtualMCPServer(testVmcpName, "default",
+				v1beta1test.WithVMCPGroupRef("test-group"),
+				v1beta1test.WithVMCPAuthServerConfig(tt.config),
+			)
+			statusManager := virtualmcpserverstatus.NewStatusManager(vmcp)
+
+			require.NoError(t, (&VirtualMCPServerReconciler{}).validateAuthServerConfig(vmcp, statusManager))
+			statusManager.UpdateStatus(t.Context(), &vmcp.Status)
+			condition := findCondition(vmcp.Status.Conditions, mcpv1beta1.ConditionTypeAuthServerConfigValidated)
+			require.NotNil(t, condition)
+			assert.Equal(t, metav1.ConditionTrue, condition.Status)
+			assert.Equal(t, mcpv1beta1.ConditionReasonAuthServerConfigValid, condition.Reason)
 		})
 	}
 }

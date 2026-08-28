@@ -83,6 +83,7 @@ func (ts *testServer) Miniredis(t *testing.T) *miniredis.Miniredis {
 // testServerOptions configures the test server setup.
 type testServerOptions struct {
 	upstream            upstream.OAuth2Provider
+	withoutUpstreams    bool
 	scopes              []string
 	accessTokenLifespan time.Duration
 	// storageFactory, when non-nil, supplies the storage backend instead of
@@ -126,6 +127,12 @@ type testServerOption func(*testServerOptions)
 func withUpstream(provider upstream.OAuth2Provider) testServerOption {
 	return func(opts *testServerOptions) {
 		opts.upstream = provider
+	}
+}
+
+func withoutUpstreams() testServerOption {
+	return func(opts *testServerOptions) {
+		opts.withoutUpstreams = true
 	}
 }
 
@@ -306,10 +313,15 @@ func setupTestServer(t *testing.T, opts ...testServerOption) *testServer {
 		AccessTokenLifespan:  accessTokenLifespan,
 		RefreshTokenLifespan: 24 * time.Hour,
 		AuthCodeLifespan:     10 * time.Minute,
-		Upstreams:            []UpstreamConfig{{Name: "default", Type: UpstreamProviderTypeOAuth2, OAuth2Config: upstreamCfg}},
-		UpstreamFilter:       options.upstreamFilter,
-		AllowedAudiences:     []string{"https://mcp.example.com"},
-		TrustedIssuers:       options.trustedIssuers,
+		Upstreams: func() []UpstreamConfig {
+			if options.withoutUpstreams {
+				return nil
+			}
+			return []UpstreamConfig{{Name: "default", Type: UpstreamProviderTypeOAuth2, OAuth2Config: upstreamCfg}}
+		}(),
+		UpstreamFilter:   options.upstreamFilter,
+		AllowedAudiences: []string{"https://mcp.example.com"},
+		TrustedIssuers:   options.trustedIssuers,
 		// Opt-in gate for confidential-client DCR; off by default in tests just
 		// as in production.
 		AllowConfidentialClientRegistration: options.allowConfidentialClientRegistration,
@@ -437,6 +449,34 @@ func setupJWTBearerGrantTestServer(t *testing.T, opts ...testServerOption) (*tes
 		return sign(subject, testAudience, issuedAt, expiry, id)
 	}
 	return ts, signAssertion
+}
+
+func TestIntegration_ZeroUpstreamJWTBearerGrant(t *testing.T) {
+	t.Parallel()
+
+	ts, signAssertion := setupJWTBearerGrantTestServer(t, withoutUpstreams())
+	now := time.Now()
+	assertion := signAssertion("external-subject", now, now.Add(2*time.Minute), "zero-upstream-assertion")
+
+	response := makeTokenRequest(t, ts.Server.URL, url.Values{
+		"grant_type": {oauthproto.GrantTypeJWTBearer},
+		"assertion":  {assertion},
+		"resource":   {testAudience},
+	})
+	t.Cleanup(func() { response.Body.Close() })
+	result := parseTokenResponse(t, response)
+	require.Equal(t, http.StatusOK, response.StatusCode, result)
+	require.NotEmpty(t, result["access_token"])
+
+	discoveryResponse, err := http.Get(ts.Server.URL + "/.well-known/oauth-authorization-server")
+	require.NoError(t, err)
+	t.Cleanup(func() { discoveryResponse.Body.Close() })
+	require.Equal(t, http.StatusOK, discoveryResponse.StatusCode)
+	var metadata map[string]any
+	require.NoError(t, json.NewDecoder(discoveryResponse.Body).Decode(&metadata))
+	assert.Contains(t, metadata["grant_types_supported"], oauthproto.GrantTypeJWTBearer)
+	assert.NotContains(t, metadata["grant_types_supported"], oauthproto.GrantTypeAuthorizationCode)
+	assert.NotContains(t, metadata, "authorization_endpoint")
 }
 
 func TestIntegration_JWTBearerGrantWithoutClientAuthentication(t *testing.T) {
@@ -5286,7 +5326,7 @@ func TestIntegration_PrivateKeyJWTDCRTokenExchange(t *testing.T) {
 			t.Parallel()
 
 			ts, _ := setupJWTBearerGrantTestServer(t,
-				withAllowPrivateKeyJWTRegistration(), tc.opt)
+				withoutUpstreams(), withAllowPrivateKeyJWTRegistration(), tc.opt)
 			clientKey, err := rsa.GenerateKey(rand.Reader, 2048)
 			require.NoError(t, err)
 			const signingAlgorithm = "RS256"
@@ -5318,6 +5358,7 @@ func TestIntegration_PrivateKeyJWTDCRTokenExchange(t *testing.T) {
 			assert.Equal(t, oauthproto.TokenEndpointAuthMethodPrivateKeyJWT, registered.TokenEndpointAuthMethod)
 			assert.Equal(t, signingAlgorithm, registered.TokenEndpointAuthSigningAlg)
 			assert.Empty(t, registered.ClientSecret)
+			assert.Empty(t, registered.ResponseTypes)
 			require.NotNil(t, registered.JWKS)
 			require.Len(t, registered.JWKS.Keys, 1)
 			assert.Equal(t, signingAlgorithm, registered.JWKS.Keys[0].Algorithm)

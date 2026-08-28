@@ -325,8 +325,8 @@ type AuthorizationServerMetadata struct {
 	Issuer string `json:"issuer"`
 
 	// AuthorizationEndpoint is the URL of the authorization endpoint (RECOMMENDED).
-	// Note: No omitempty to maintain backward compatibility with existing JSON serialization.
-	AuthorizationEndpoint string `json:"authorization_endpoint"`
+	// It is omitted for token-only authorization servers.
+	AuthorizationEndpoint string `json:"authorization_endpoint,omitempty"`
 
 	// TokenEndpoint is the URL of the token endpoint (RECOMMENDED).
 	// Note: No omitempty to maintain backward compatibility with existing JSON serialization.
@@ -394,7 +394,8 @@ func (d *OIDCDiscoveryDocument) Validate(isOIDC bool) error {
 	if d.Issuer == "" {
 		return ErrMissingIssuer
 	}
-	if d.AuthorizationEndpoint == "" {
+	tokenOnly := !isOIDC && d.AuthorizationEndpoint == "" && d.SupportsGrantType(GrantTypeTokenExchange)
+	if d.AuthorizationEndpoint == "" && !tokenOnly {
 		return ErrMissingAuthorizationEndpoint
 	}
 	if d.TokenEndpoint == "" {

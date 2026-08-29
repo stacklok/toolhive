@@ -92,6 +92,64 @@ func (d *CIMDStorageDecorator) GetClient(ctx context.Context, id string) (fosite
 	return d.fetchOrCached(ctx, id)
 }
 
+// cimdShapeGuardStorage wraps storage.Storage and rejects URL-shaped
+// client_id values at GetClient without ever reading the underlying row.
+//
+// It exists for the case where CIMD is (or was previously) enabled and then
+// disabled: the write-through persistence in CIMDStorageDecorator.fetch may
+// have already left a resolved CIMD client's row in the underlying storage,
+// and that row's TTL — up to DefaultDCRClientTTL — can outlive the config
+// change. Without this guard, a bare Storage's GetClient does not check the
+// shape of the id it is asked for, so it would happily resolve the stale row
+// from a snapshot the document may have since changed or that the operator
+// intended to revoke by turning CIMD off, with no re-fetch and therefore no
+// re-validation of scopes, redirect URIs, or auth method. Wrapping the
+// storage when CIMD is disabled closes that gap for both backends without
+// changing GetClient's behavior for any opaque (non-URL) client_id.
+type cimdShapeGuardStorage struct {
+	Storage // embed full interface — all methods delegate
+}
+
+// GetClient rejects URL-shaped ids with fosite.ErrNotFound before consulting
+// the wrapped storage, so a stale CIMD-origin row can never be resolved while
+// CIMD is disabled. Opaque DCR-issued and pre-provisioned ids are delegated
+// to the underlying storage unchanged.
+func (g cimdShapeGuardStorage) GetClient(ctx context.Context, id string) (fosite.Client, error) {
+	if oauthproto.IsClientIDMetadataDocumentURL(id) {
+		return nil, fosite.ErrNotFound.WithHint("CIMD is disabled on this server")
+	}
+	return g.Storage.GetClient(ctx, id)
+}
+
+// ConsumeAssertionJWT delegates assertion replay consumption to the wrapped
+// backend, matching CIMDStorageDecorator's identical method: Storage embeds
+// the interface, not the concrete backend, so this narrow capability is not
+// promoted automatically and must be forwarded explicitly for callers (e.g.
+// the RFC 7523 JWT-bearer grant factory) that need it through this wrapper.
+func (g cimdShapeGuardStorage) ConsumeAssertionJWT(
+	ctx context.Context, purpose, issuer, jti string, exp time.Time,
+) error {
+	consumer, ok := g.Storage.(AssertionJWTConsumer)
+	if !ok {
+		return fmt.Errorf("wrapped storage does not support assertion JWT replay consumption")
+	}
+	return consumer.ConsumeAssertionJWT(ctx, purpose, issuer, jti, exp)
+}
+
+// Unwrap returns the underlying storage so that type assertions (e.g. for
+// storage.DCRCredentialStore in server_impl.go) can reach the concrete type.
+func (g cimdShapeGuardStorage) Unwrap() Storage {
+	return g.Storage
+}
+
+// NewCIMDShapeGuardStorage wraps base so that GetClient refuses any
+// URL-shaped client_id, regardless of whether a matching row exists in base.
+// Callers apply this when CIMD is disabled — see cimdShapeGuardStorage's doc
+// comment for why a disabled decorator alone does not close this gap.
+func NewCIMDShapeGuardStorage(base Storage) Storage {
+	return cimdShapeGuardStorage{Storage: base}
+}
+
 // ConsumeAssertionJWT delegates assertion replay consumption to the wrapped
 // backend. Storage intentionally does not include this narrow capability, so a
 // decorator fails closed when its backend does not provide it.
@@ -204,7 +262,7 @@ func (d *CIMDStorageDecorator) fetch(ctx context.Context, id string) (fosite.Cli
 			"client_id", id, "declared", doc.ResponseTypes, "effective", responseTypes)
 	}
 
-	resolvedScopes, err := d.resolveCIMDScopes(ctx, id, doc)
+	resolvedScopes, err := d.resolveScopes(ctx, id, doc)
 	if err != nil {
 		return nil, err
 	}
@@ -221,7 +279,7 @@ func (d *CIMDStorageDecorator) fetch(ctx context.Context, id string) (fosite.Cli
 	// permanent. Re-persisting on every fresh fetch keeps the snapshot
 	// current with the document. A persistence failure only degrades
 	// token-path rehydration, so it must not fail the resolution itself.
-	if err := d.Storage.RegisterClient(ctx, client); err != nil {
+	if err := d.RegisterClient(ctx, client); err != nil {
 		slog.WarnContext(ctx, "failed to persist resolved CIMD client",
 			"client_id", id, "error", err)
 	}
@@ -234,7 +292,7 @@ func (d *CIMDStorageDecorator) fetch(ctx context.Context, id string) (fosite.Cli
 	return client, nil
 }
 
-// resolveCIMDScopes computes and validates the client scope list consistent
+// resolveScopes computes and validates the client scope list consistent
 // with DCR. When d.scopesSupported is configured:
 //   - Declared scopes are validated via registration.ValidateScopes (same
 //     function as the DCR handler); an unsupported declared scope rejects.
@@ -247,7 +305,7 @@ func (d *CIMDStorageDecorator) fetch(ctx context.Context, id string) (fosite.Cli
 // scopes are used directly, or nil to let buildFositeClient apply
 // DefaultScopes. In both cases d.baselineClientScopes is unioned in after
 // validation, matching the DCR handler's behaviour.
-func (d *CIMDStorageDecorator) resolveCIMDScopes(
+func (d *CIMDStorageDecorator) resolveScopes(
 	ctx context.Context, id string, doc *cimd.ClientMetadataDocument,
 ) ([]string, error) {
 	var resolvedScopes []string

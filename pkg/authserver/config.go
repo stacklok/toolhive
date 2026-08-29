@@ -353,6 +353,22 @@ func validateDelegateClients(
 			return fmt.Errorf("delegate_clients: duplicate client_id %q", client.ClientID)
 		}
 		seen[client.ClientID] = struct{}{}
+		// A URL-shaped client_id collides with CIMD (see
+		// oauthproto.IsClientIDMetadataDocumentURL): when CIMD is enabled, the
+		// CIMDStorageDecorator resolves any client_id matching this shape from
+		// a live-fetched document instead of this pre-provisioned row, and its
+		// write-through persistence (CIMDStorageDecorator.fetch) would then
+		// overwrite this confidential delegate client in place — downgrading
+		// it to a public client and discarding its hashed secret. Reject the
+		// shape outright regardless of whether CIMD is enabled in this
+		// particular deployment, since the config is portable across
+		// deployments where it may be.
+		if oauthproto.IsClientIDMetadataDocumentURL(client.ClientID) {
+			return fmt.Errorf(
+				"delegate_clients: client_id %q looks like a CIMD client metadata URL, "+
+					"which collides with CIMD client resolution — pre-provisioned delegate "+
+					"clients must use an opaque, non-URL client_id", client.ClientID)
+		}
 
 		if client.ClientSecretFile == "" && client.ClientSecretEnvVar == "" {
 			return fmt.Errorf(
@@ -942,6 +958,23 @@ type Config struct {
 
 	// CIMDEnabled enables the CIMD storage decorator so the authorization server
 	// accepts HTTPS URLs as client_id values without prior DCR registration.
+	//
+	// A resolved CIMD client is write-through persisted into the underlying
+	// storage (see CIMDStorageDecorator.fetch) so that token-endpoint session
+	// rehydration finds it. That row is marked DCR-issued and therefore
+	// expires (DefaultDCRClientTTL, currently 30 days), but disabling
+	// CIMDEnabled does not itself evict or invalidate any row a prior enabled
+	// period already persisted — GetClient is instead wrapped to refuse any
+	// URL-shaped client_id outright while CIMDEnabled is false (see
+	// decorateStorageForCIMD / storage.NewCIMDShapeGuardStorage), so such a
+	// row simply cannot be resolved for as long as CIMD stays disabled.
+	// Re-enabling CIMDEnabled before that TTL expires makes the stale
+	// snapshot resolvable again without a fresh document fetch, until the row
+	// expires or a new fetch overwrites it. Document rotation and revocation
+	// generally follow the same rule: an existing persisted row keeps
+	// authenticating from its stored snapshot, with no re-validation of
+	// scopes, redirect URIs, or auth method, until it is naturally re-fetched
+	// or its TTL lapses.
 	CIMDEnabled bool
 
 	// CIMDCacheMaxSize is the maximum number of CIMD documents held in the LRU

@@ -255,12 +255,18 @@ func registerDelegateClients(ctx context.Context, stor storage.Storage, delegate
 	return nil
 }
 
-// decorateStorageForCIMD wraps stor with the CIMD decorator when CIMD is enabled,
-// so GetClient calls for HTTPS client_id values are intercepted at the fosite
-// level (not just the handler level). Returns stor unchanged when CIMD is disabled.
+// decorateStorageForCIMD wraps stor with the CIMD decorator when CIMD is
+// enabled, so GetClient calls for HTTPS client_id values are intercepted at
+// the fosite level (not just the handler level).
+//
+// When CIMD is disabled, stor is instead wrapped with
+// storage.NewCIMDShapeGuardStorage so that a URL-shaped client_id can never
+// resolve from a stale row a prior CIMD-enabled period may have
+// write-through persisted (see cimdShapeGuardStorage's doc comment for why
+// disabling CIMD alone does not evict or invalidate such a row).
 func decorateStorageForCIMD(cfg Config, stor storage.Storage) (storage.Storage, error) {
 	if !cfg.CIMDEnabled {
-		return stor, nil
+		return storage.NewCIMDShapeGuardStorage(stor), nil
 	}
 	if len(cfg.BaselineClientScopes) > 0 {
 		slog.Warn("CIMD is enabled with baseline_client_scopes configured; "+

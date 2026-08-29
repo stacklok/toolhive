@@ -2104,13 +2104,15 @@ func unmarshalRequester(ctx context.Context, data []byte, s *RedisStorage) (fosi
 		// that was resolved dynamically at authorize time but never persisted
 		// would fail exactly here, surfacing to the client as a bare
 		// invalid_grant at the token endpoint — so log the client id and the
-		// underlying error, which otherwise leave no server-side trace (see
-		// issue #6187).
+		// underlying error once, which otherwise leave no server-side trace
+		// (see issue #6187). The returned error deliberately does not repeat
+		// the client id: all four call sites propagate it up to fosite, which
+		// would otherwise report the same failure to the operator twice.
 		fetchedClient, err := s.GetClient(ctx, stored.ClientID)
 		if err != nil {
 			slog.WarnContext(ctx, "failed to resolve client for stored session",
 				"client_id", stored.ClientID, "error", err)
-			return nil, fmt.Errorf("failed to get client %q for session: %w", stored.ClientID, err)
+			return nil, fmt.Errorf("failed to get client for session: %w", err)
 		}
 		client = fetchedClient
 	}

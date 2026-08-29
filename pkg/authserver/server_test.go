@@ -190,8 +190,16 @@ func TestNewServer_Success(t *testing.T) {
 	if srv.Handler() == nil {
 		t.Error("server.Handler() returned nil")
 	}
-	if srv.IDPTokenStorage() != stor {
-		t.Error("server.IDPTokenStorage() did not return expected storage")
+	// CIMDEnabled defaults to false in cfg, so newServer wraps stor with the
+	// CIMD shape-guard (decorateStorageForCIMD) rather than passing it through
+	// unchanged — see TestNewServer_CIMDEnabled_WrapsStorage for the enabled
+	// case. Unwrap() must still reach the exact storage this test constructed.
+	if unwrapper, ok := srv.IDPTokenStorage().(interface{ Unwrap() storage.Storage }); ok {
+		if unwrapper.Unwrap() != stor {
+			t.Error("server.IDPTokenStorage().Unwrap() did not return expected storage")
+		}
+	} else {
+		t.Errorf("server.IDPTokenStorage() (%T) does not implement Unwrap()", srv.IDPTokenStorage())
 	}
 }
 

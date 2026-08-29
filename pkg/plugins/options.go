@@ -7,6 +7,7 @@ import (
 	"context"
 
 	"github.com/stacklok/toolhive/pkg/skills"
+	"github.com/stacklok/toolhive/pkg/skills/lockfile"
 )
 
 // ListOptions configures the behavior of the List operation. Alias for
@@ -31,6 +32,13 @@ type InstallOptions struct {
 	ProjectRoot string `json:"project_root,omitempty"`
 	// Group is the group name to add the plugin to after installation.
 	Group string `json:"group,omitempty"`
+	// AllowUnsigned permits installing a project-scoped plugin whose
+	// artifact carries no Sigstore signature. Without it, unsigned
+	// artifacts are rejected; with it, the lock entry records the exception
+	// as "unsigned: true". A plugin contributes hooks, agents, and MCP
+	// servers to the client that loads it, so this is an explicit
+	// per-install trust decision, never a default.
+	AllowUnsigned bool `json:"allow_unsigned,omitempty"`
 	// LayerData is the tar.gz content from an OCI layer. Internal use only — NOT exposed via HTTP API.
 	LayerData []byte `json:"-"`
 	// Reference is the full OCI reference (e.g. ghcr.io/org/plugin:v1).
@@ -67,10 +75,33 @@ type InstallOptions struct {
 	// normal "same digest means content is already correct" fast path must
 	// not apply. Internal use only — NOT exposed via HTTP API.
 	SyncRestore bool `json:"-"`
+	// AllowSignerChange lets install-time verification re-record the
+	// observed identity instead of enforcing the lock file's recorded one.
+	// Internal use only — set by upgrade when its signer-change guard was
+	// explicitly overridden. NOT exposed via HTTP API.
+	AllowSignerChange bool `json:"-"`
 	// ExpectedCanonicalName, when set, requires the resolved plugin/manifest name
 	// to equal this value before any install mutation. Used by Sync/Upgrade so a
 	// lock entry cannot be repaired under a different canonical identity.
 	ExpectedCanonicalName string `json:"-"`
+	// Unsigned records the trust decision that this install proceeded
+	// without a verified signature (via AllowUnsigned). Set internally by
+	// install-time verification; recorded as `unsigned: true` in the lock
+	// entry. Internal use only — NOT exposed via HTTP API.
+	Unsigned bool `json:"-"`
+	// Provenance carries the verified signer identity established during
+	// install-time verification, for recording into the lock entry. Set by
+	// the verification step, nil when the artifact is unsigned or
+	// verification did not run. Unlike skills.InstallOptions, this is the
+	// lock file's own shape: plugins have no API-facing provenance type to
+	// convert through yet, and a conversion pair that exists only to be
+	// round-tripped is a place for recorded trust data to get dropped.
+	// Internal use only — NOT exposed via HTTP API.
+	Provenance *lockfile.Provenance `json:"-"`
+	// SigstoreBundle is the serialized Sigstore bundle backing Provenance,
+	// persisted alongside the install record so sync can re-verify offline.
+	// Internal use only — NOT exposed via HTTP API.
+	SigstoreBundle []byte `json:"-"`
 }
 
 // InstallResult contains the outcome of an Install operation.
@@ -165,6 +196,11 @@ const (
 	FailureReasonSignerMismatch      = skills.FailureReasonSignerMismatch
 	FailureReasonUnsignedRejected    = skills.FailureReasonUnsignedRejected
 	FailureReasonUnknown             = skills.FailureReasonUnknown
+
+	// FailureReasonProvenanceFieldMismatch means the artifact verifies
+	// against the recorded signer, but a pinned certificate field (the
+	// repository ref or runner environment) no longer matches.
+	FailureReasonProvenanceFieldMismatch = skills.FailureReasonProvenanceFieldMismatch
 )
 
 // UpgradeOptions configures a lock-file upgrade. Alias for

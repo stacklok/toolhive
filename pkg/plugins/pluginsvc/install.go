@@ -132,6 +132,17 @@ func (s *service) installByName(
 		}
 	}
 
+	// Local-store artifacts and raw layer data carry no registry signature
+	// to verify — installing them project-scoped is an unsigned trust
+	// decision that must be explicit.
+	if shouldVerifyInstall(opts, scope) {
+		decision, verifyErr := verifyLocalInstall(opts, opts.Name)
+		if verifyErr != nil {
+			return nil, verifyErr
+		}
+		applyDecisionToOpts(&opts, decision)
+	}
+
 	result, err := s.installWithExtraction(ctx, opts, scope)
 	if err != nil {
 		return nil, err

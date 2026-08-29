@@ -83,6 +83,19 @@ func TestSyncPluginsEndpoint(t *testing.T) {
 			wantStatus: http.StatusBadRequest,
 		},
 		{
+			name: "allow_unsigned reaches the service",
+			service: &pluginServiceWithSync{
+				PluginService: plugmocks.NewMockPluginService(gomock.NewController(t)),
+				syncFn: func(_ context.Context, opts plugins.SyncOptions) (*plugins.SyncResult, error) {
+					assert.True(t, opts.Adopt)
+					assert.True(t, opts.AllowUnsigned, "allow_unsigned must survive the DTO boundary")
+					return &plugins.SyncResult{}, nil
+				},
+			},
+			body:       `{"project_root":"/tmp/proj","adopt":true,"allow_unsigned":true}`,
+			wantStatus: http.StatusOK,
+		},
+		{
 			name: "sync error is forwarded",
 			service: &pluginServiceWithSync{
 				PluginService: plugmocks.NewMockPluginService(gomock.NewController(t)),
@@ -142,6 +155,27 @@ func TestUpgradePluginsEndpoint(t *testing.T) {
 			body:         `{"project_root":"/tmp/proj","preview":true}`,
 			wantStatus:   http.StatusOK,
 			wantContains: `"my-plugin"`,
+		},
+		{
+			// A DTO field that dies at the decode boundary would silently
+			// re-arm the signer-change guard the caller just overrode.
+			name: "allow_signer_change reaches the service",
+			service: &pluginServiceWithSync{
+				PluginService: plugmocks.NewMockPluginService(gomock.NewController(t)),
+				syncFn:        func(context.Context, plugins.SyncOptions) (*plugins.SyncResult, error) { return nil, nil },
+				upgradeFn: func(_ context.Context, opts plugins.UpgradeOptions) (*plugins.UpgradeResult, error) {
+					assert.True(t, opts.AllowSignerChange, "allow_signer_change must reach the service")
+					assert.True(t, opts.AllowRefChange)
+					assert.Equal(t, []string{"my-plugin"}, opts.Names)
+					return &plugins.UpgradeResult{Outcomes: []plugins.UpgradeOutcome{
+						{Name: "my-plugin", Status: plugins.UpgradeStatusUpgraded},
+					}}, nil
+				},
+			},
+			body: `{"project_root":"/tmp/proj","names":["my-plugin"],` +
+				`"allow_ref_change":true,"allow_signer_change":true}`,
+			wantStatus:   http.StatusOK,
+			wantContains: `"upgraded"`,
 		},
 		{
 			name:       "service without Upgrade support returns 501",

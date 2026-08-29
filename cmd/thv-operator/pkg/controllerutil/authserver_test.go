@@ -31,6 +31,195 @@ import (
 	"github.com/stacklok/toolhive/pkg/runner"
 )
 
+func TestEmbeddedAuthServerCABundleChecksumForConfig(t *testing.T) {
+	t.Parallel()
+
+	pemData := testCertificatePEM(t)
+	ref := caBundleTestRef("")
+	config := &mcpv1beta1.EmbeddedAuthServerConfig{UpstreamProviders: []mcpv1beta1.UpstreamProviderConfig{{
+		Name: "issuer", Type: mcpv1beta1.UpstreamProviderTypeOIDC,
+		OIDCConfig: &mcpv1beta1.OIDCUpstreamConfig{CABundleRef: ref},
+	}}}
+	newClient := func(objects ...client.Object) client.Client {
+		scheme := runtime.NewScheme()
+		require.NoError(t, corev1.AddToScheme(scheme))
+		builder := fake.NewClientBuilder().WithScheme(scheme)
+		for _, object := range objects {
+			if object != nil {
+				builder = builder.WithObjects(object)
+			}
+		}
+		return builder.Build()
+	}
+
+	tests := []struct {
+		name        string
+		configMap   *corev1.ConfigMap
+		noBundleRef bool
+		wantErr     bool
+		wantEmpty   bool
+	}{
+		{name: "no bundle", configMap: nil, noBundleRef: true, wantEmpty: true},
+		{name: "selected value", configMap: &corev1.ConfigMap{ObjectMeta: metav1.ObjectMeta{Name: "bundle", Namespace: "ns"}, Data: map[string]string{"ca.crt": string(pemData)}}},
+		{name: "missing key", configMap: &corev1.ConfigMap{ObjectMeta: metav1.ObjectMeta{Name: "bundle", Namespace: "ns"}, Data: map[string]string{"other": string(pemData)}}, wantErr: true},
+		{name: "missing ConfigMap", wantErr: true},
+		{name: "binary data", configMap: &corev1.ConfigMap{ObjectMeta: metav1.ObjectMeta{Name: "bundle", Namespace: "ns"}, BinaryData: map[string][]byte{"ca.crt": pemData}}},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			cfg := config.DeepCopy()
+			if tt.noBundleRef {
+				cfg.UpstreamProviders[0].OIDCConfig.CABundleRef = nil
+			}
+			var c client.Client
+			if tt.configMap == nil {
+				c = newClient()
+			} else {
+				c = newClient(tt.configMap)
+			}
+			got, err := EmbeddedAuthServerCABundleChecksumForConfig(t.Context(), c, "ns", cfg)
+			if tt.wantErr {
+				require.Error(t, err)
+				return
+			}
+			require.NoError(t, err)
+			if tt.wantEmpty {
+				assert.Empty(t, got)
+			} else {
+				assert.NotEmpty(t, got)
+			}
+		})
+	}
+}
+
+func TestEmbeddedAuthServerTrustedIssuerCABundleChecksum(t *testing.T) {
+	t.Parallel()
+
+	pemData := testCertificatePEM(t)
+	config := &mcpv1beta1.EmbeddedAuthServerConfig{TrustedIssuers: []mcpv1beta1.TrustedIssuerConfig{{
+		IssuerURL:   "https://issuer.example.com",
+		CABundleRef: caBundleTestRef(""),
+	}}}
+	configMap := &corev1.ConfigMap{ObjectMeta: metav1.ObjectMeta{Name: "bundle", Namespace: "ns"}, Data: map[string]string{"ca.crt": string(pemData)}}
+	c := fake.NewClientBuilder().WithObjects(configMap).Build()
+	issuerOnly, err := EmbeddedAuthServerCABundleChecksumForConfig(t.Context(), c, "ns", config)
+	require.NoError(t, err)
+	require.NotEmpty(t, issuerOnly)
+
+	upstreamOnly := config.DeepCopy()
+	upstreamOnly.TrustedIssuers = nil
+	upstreamOnly.UpstreamProviders = []mcpv1beta1.UpstreamProviderConfig{{
+		Name: "issuer", Type: mcpv1beta1.UpstreamProviderTypeOIDC,
+		OIDCConfig: &mcpv1beta1.OIDCUpstreamConfig{CABundleRef: caBundleTestRef("")},
+	}}
+	upstreamChecksum, err := EmbeddedAuthServerCABundleChecksumForConfig(t.Context(), c, "ns", upstreamOnly)
+	require.NoError(t, err)
+	assert.NotEqual(t, upstreamChecksum, issuerOnly)
+}
+
+func TestEmbeddedAuthServerCABundleChecksumStability(t *testing.T) {
+	t.Parallel()
+
+	pemData := testCertificatePEM(t)
+	config := &mcpv1beta1.EmbeddedAuthServerConfig{UpstreamProviders: []mcpv1beta1.UpstreamProviderConfig{{
+		Name: "issuer", Type: mcpv1beta1.UpstreamProviderTypeOIDC,
+		OIDCConfig: &mcpv1beta1.OIDCUpstreamConfig{CABundleRef: caBundleTestRef("")},
+	}}}
+	newClient := func(objects ...client.Object) client.Client {
+		scheme := runtime.NewScheme()
+		require.NoError(t, corev1.AddToScheme(scheme))
+		builder := fake.NewClientBuilder().WithScheme(scheme)
+		for _, object := range objects {
+			if object != nil {
+				builder = builder.WithObjects(object)
+			}
+		}
+		return builder.Build()
+	}
+	changed := &corev1.ConfigMap{ObjectMeta: metav1.ObjectMeta{Name: "bundle", Namespace: "ns", Labels: map[string]string{"initial": "yes"}}, Data: map[string]string{"ca.crt": string(pemData), "other": "unchanged"}}
+	first, err := EmbeddedAuthServerCABundleChecksumForConfig(t.Context(), newClient(changed), "ns", config)
+	require.NoError(t, err)
+	changed.Data["other"] = "changed"
+	changed.Labels["changed"] = "yes"
+	second, err := EmbeddedAuthServerCABundleChecksumForConfig(t.Context(), newClient(changed), "ns", config)
+	require.NoError(t, err)
+	assert.Equal(t, first, second)
+	changed.Data["ca.crt"] = string(testCertificatePEM(t))
+	second, err = EmbeddedAuthServerCABundleChecksumForConfig(t.Context(), newClient(changed), "ns", config)
+	require.NoError(t, err)
+	assert.NotEqual(t, first, second)
+
+	secondConfig := config.DeepCopy()
+	secondConfig.UpstreamProviders = append(secondConfig.UpstreamProviders, mcpv1beta1.UpstreamProviderConfig{
+		Name: "oauth", Type: mcpv1beta1.UpstreamProviderTypeOAuth2,
+		OAuth2Config: &mcpv1beta1.OAuth2UpstreamConfig{CABundleRef: &mcpv1beta1.CABundleSource{ConfigMapRef: &corev1.ConfigMapKeySelector{LocalObjectReference: corev1.LocalObjectReference{Name: "bundle-two"}}}},
+	})
+	secondMap := &corev1.ConfigMap{ObjectMeta: metav1.ObjectMeta{Name: "bundle-two", Namespace: "ns"}, Data: map[string]string{"ca.crt": string(pemData)}}
+	baseline, err := EmbeddedAuthServerCABundleChecksumForConfig(t.Context(), newClient(changed, secondMap), "ns", secondConfig)
+	require.NoError(t, err)
+	secondMap.Data["ca.crt"] = string(testCertificatePEM(t))
+	rotated, err := EmbeddedAuthServerCABundleChecksumForConfig(t.Context(), newClient(changed, secondMap), "ns", secondConfig)
+	require.NoError(t, err)
+	assert.NotEqual(t, baseline, rotated)
+}
+
+func TestGenerateUpstreamCABundleVolumes(t *testing.T) {
+	t.Parallel()
+
+	providers := []mcpv1beta1.UpstreamProviderConfig{
+		{Name: "oidc", Type: mcpv1beta1.UpstreamProviderTypeOIDC, OIDCConfig: &mcpv1beta1.OIDCUpstreamConfig{CABundleRef: caBundleTestRef("")}},
+		{Name: "oauth", Type: mcpv1beta1.UpstreamProviderTypeOAuth2, OAuth2Config: &mcpv1beta1.OAuth2UpstreamConfig{CABundleRef: caBundleTestRef("custom.pem")}},
+	}
+	volumes, mounts, err := generateUpstreamCABundleVolumes(providers)
+	require.NoError(t, err)
+	require.Len(t, volumes, 2)
+	require.Len(t, mounts, 2)
+	seen := map[string]bool{}
+	for i, mount := range mounts {
+		assert.Equal(t, upstreamCABundleFilePath(i), mount.MountPath)
+		assert.Equal(t, AuthServerUpstreamCABundleFileName, mount.SubPath)
+		assert.Equal(t, fmt.Sprintf("authserver-upstream-ca-%d", i), volumes[i].Name)
+		assert.False(t, seen[volumes[i].Name])
+		seen[volumes[i].Name] = true
+		cm := volumes[i].ConfigMap
+		require.NotNil(t, cm)
+		assert.Equal(t, "bundle", cm.Name)
+		key := "ca.crt"
+		if i == 1 {
+			key = "custom.pem"
+		}
+		assert.Equal(t, []corev1.KeyToPath{{Key: key, Path: AuthServerUpstreamCABundleFileName}}, cm.Items)
+	}
+
+	providers[0].OIDCConfig.CABundleRef.ConfigMapRef = nil
+	_, _, err = generateUpstreamCABundleVolumes(providers)
+	require.Error(t, err)
+	providers[0].OIDCConfig.CABundleRef.ConfigMapRef = &corev1.ConfigMapKeySelector{}
+	_, _, err = generateUpstreamCABundleVolumes(providers)
+	require.Error(t, err)
+}
+
+func TestGenerateTrustedIssuerCABundleVolumes(t *testing.T) {
+	t.Parallel()
+
+	issuers := []mcpv1beta1.TrustedIssuerConfig{
+		{IssuerURL: "https://one.example.com", CABundleRef: caBundleTestRef("")},
+		{IssuerURL: "https://two.example.com", CABundleRef: caBundleTestRef("custom.pem")},
+	}
+	volumes, mounts, err := generateTrustedIssuerCABundleVolumes(issuers)
+	require.NoError(t, err)
+	require.Len(t, volumes, 2)
+	require.Len(t, mounts, 2)
+	assert.Equal(t, "authserver-issuer-ca-0", volumes[0].Name)
+	assert.Equal(t, trustedIssuerCABundleFilePath(0), mounts[0].MountPath)
+	assert.Equal(t, "custom.pem", volumes[1].ConfigMap.Items[0].Key)
+
+	issuers[0].CABundleRef.ConfigMapRef = nil
+	_, _, err = generateTrustedIssuerCABundleVolumes(issuers)
+	require.ErrorContains(t, err, "trustedIssuers[0]")
+}
+
 func TestGenerateAuthServerVolumes(t *testing.T) {
 	t.Parallel()
 
@@ -141,7 +330,8 @@ func TestGenerateAuthServerVolumes(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
 
-			volumes, mounts := GenerateAuthServerVolumes(tt.authConfig)
+			volumes, mounts, err := GenerateAuthServerVolumes(tt.authConfig)
+			require.NoError(t, err)
 
 			assert.Len(t, volumes, tt.wantVolumes)
 			assert.Len(t, mounts, tt.wantMounts)
@@ -301,7 +491,8 @@ func TestGenerateAuthServerVolumes_RedisTLS(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
 
-			volumes, mounts := GenerateAuthServerVolumes(tt.authConfig)
+			volumes, mounts, err := GenerateAuthServerVolumes(tt.authConfig)
+			require.NoError(t, err)
 
 			// Count TLS-specific volumes
 			tlsVolCount := 0
@@ -1713,6 +1904,41 @@ func TestBuildAuthServerRunConfig(t *testing.T) {
 					"AllowConfidentialClientRegistration must default to false when the CRD field is unset")
 			},
 		},
+		{
+			name: "allowPrivateKeyJWTRegistration true is propagated to RunConfig",
+			authConfig: &mcpv1beta1.EmbeddedAuthServerConfig{
+				Issuer:                         "https://authserver.example.com",
+				AllowPrivateKeyJWTRegistration: true,
+				HMACSecretRefs: []mcpv1beta1.SecretKeyRef{
+					{Name: "hmac-secret", Key: "hmac"},
+				},
+			},
+			allowedAudiences: defaultAudiences,
+			scopesSupported:  defaultScopes,
+			checkFunc: func(t *testing.T, config *authserver.RunConfig) {
+				t.Helper()
+				assert.True(t, config.AllowPrivateKeyJWTRegistration,
+					"AllowPrivateKeyJWTRegistration must propagate from CRD field to RunConfig")
+				assert.False(t, config.AllowConfidentialClientRegistration,
+					"private-key JWT registration must not enable confidential registration")
+			},
+		},
+		{
+			name: "allowPrivateKeyJWTRegistration defaults to false",
+			authConfig: &mcpv1beta1.EmbeddedAuthServerConfig{
+				Issuer: "https://authserver.example.com",
+				HMACSecretRefs: []mcpv1beta1.SecretKeyRef{
+					{Name: "hmac-secret", Key: "hmac"},
+				},
+			},
+			allowedAudiences: defaultAudiences,
+			scopesSupported:  defaultScopes,
+			checkFunc: func(t *testing.T, config *authserver.RunConfig) {
+				t.Helper()
+				assert.False(t, config.AllowPrivateKeyJWTRegistration,
+					"AllowPrivateKeyJWTRegistration must default to false when the CRD field is unset")
+			},
+		},
 	}
 
 	for _, tt := range tests {
@@ -1782,7 +2008,7 @@ func TestBuildOAuth2UpstreamRunConfig_TransportOptions(t *testing.T) {
 		ClientID:              "client-id",
 		InsecureAllowHTTP:     true,
 		AllowPrivateIPs:       true,
-	}, "", "", "")
+	}, "", "", 0, "")
 	require.NoError(t, err)
 	assert.True(t, runConfig.InsecureAllowHTTP)
 	assert.True(t, runConfig.AllowPrivateIPs)
@@ -2074,7 +2300,8 @@ func TestVolumePathPatterns(t *testing.T) {
 		},
 	}
 
-	volumes, mounts := GenerateAuthServerVolumes(authConfig)
+	volumes, mounts, err := GenerateAuthServerVolumes(authConfig)
+	require.NoError(t, err)
 
 	require.Len(t, volumes, 4)
 	require.Len(t, mounts, 4)

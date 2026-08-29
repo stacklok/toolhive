@@ -16,6 +16,18 @@ IdP (e.g. a corporate IdP), so a client already holding a token from that IdP
 can exchange it for a ToolHive delegated token without a separate ToolHive
 login.
 
+This document also describes how a DCR-registered client can authenticate to the
+exchange without receiving a secret. That is RFC 7523 §2.2 `private_key_jwt`
+**client authentication**: the client registers an inline public JWKS and signs
+a `client_assertion` with its private key. It is not the RFC 7523 §2.1
+JWT-bearer grant, which uses a JWT as the grant assertion itself and does not
+authenticate a registered client. The two mechanisms are independent.
+
+ToolHive requires every registered private-key JWT JWK to be public, have
+`use: "sig"`, and identify a signing algorithm compatible with the registered
+`token_endpoint_auth_signing_alg`. ToolHive requires this explicit `use` value
+even though the JWK specification makes the member optional.
+
 ## Deployment and configuration
 
 RFC 8693 is reachable through a pre-provisioned **delegate client**. A delegate
@@ -60,6 +72,32 @@ token. See [Trust model](#trust-model) for the required external-issuer
 binding. The Kubernetes operator also exposes `trusted_issuers` as
 `EmbeddedAuthServerConfig.trustedIssuers` — see
 [Kubernetes operator](#kubernetes-operator) below.
+
+### Token-only embedded authorization servers
+
+An embedded authorization server may omit upstream identity providers only when
+it has a pre-provisioned delegate client or a trusted issuer with
+`jwtBearerGrant`. This mode serves token exchange without an interactive login:
+`/oauth/authorize` validates the OAuth client and redirect URI, then returns
+`unsupported_response_type`. Discovery omits authorization-code, refresh-token,
+and PKCE capabilities while retaining token exchange (and JWT bearer when a
+trusted issuer enables it). Generic MCP and OIDC authorization-code clients
+cannot use token-only servers: the metadata deliberately lacks the
+authorization-code and PKCE fields those clients require to start an interactive
+flow. The OpenID well-known route returns the same RFC 8414 token-only metadata
+alias, not OIDC-only fields.
+
+Token-only metadata continues to advertise configured scopes such as `openid`
+and `offline_access`. Scopes describe permissions that token exchange can issue,
+not interactive-login availability; removing them would falsely imply those
+valid exchanged-token permissions are unavailable.
+
+In token-only mode, ordinary dynamic registrations are rejected. The
+registration endpoint is advertised only when `private_key_jwt` registration is
+enabled, and then accepts only private-key-JWT token-exchange clients. Backend
+requests strip inbound credential headers after ToolHive authentication because
+there is no upstream credential to inject; outgoing token exchange and AWS STS
+remain incompatible because they would add credentials after the strip.
 
 ### Kubernetes operator
 
@@ -119,6 +157,10 @@ spec:
         audiences: [https://mcp.example.com]
 ```
 
+A token-only vMCP cannot use Cedar authorization: grant-only issuance does not
+create the provenance-bound upstream-token entries Cedar needs for
+upstream-derived claims.
+
 The CRD accepts Secret references only: no plaintext secret, redirect URI, or
 arbitrary grant selection is available. A non-empty `clientSecretRef.name` and
 `.key`, at least one scope, and at least one audience are required. Delegate
@@ -148,6 +190,11 @@ spec:
         actorMatcher: "has(claims.roles) && 'trusted-delegator' in claims.roles"
         allowedDelegateClients: [reporting-delegate]
         allowMayAct: false
+        # Optional: trust a private CA for this issuer's discovery/JWKS fetch.
+        caBundleRef:
+          configMapRef:
+            name: login-example-idp-ca
+            key: ca.crt
 ```
 
 Static delegate clients and confidential Dynamic Client Registration (DCR) are
@@ -162,16 +209,78 @@ reuse IDs between the two mechanisms.
 
 Both `/.well-known/oauth-authorization-server` and
 `/.well-known/openid-configuration` advertise the token-exchange grant in
-`grant_types_supported`. When confidential DCR is enabled **or** at least one
-static delegate client is configured, they also advertise
-`client_secret_basic` and `client_secret_post` in
-`token_endpoint_auth_methods_supported`; otherwise only `none` is advertised.
+`grant_types_supported`. `token_endpoint_auth_methods_supported` always
+includes `none`; it also includes `client_secret_basic` and
+`client_secret_post` when confidential DCR is enabled or a static delegate
+client is configured, and includes `private_key_jwt` when
+`allowPrivateKeyJWTRegistration` is enabled. In the latter case,
+`token_endpoint_auth_signing_alg_values_supported` lists the implemented
+algorithms. The RFC 7523 §2.1 JWT-bearer grant is advertised only when a trusted
+issuer opts into it. A private-key JWT DCR client is limited to token exchange;
+it is not an authorization-code client.
 
 On Kubernetes, a delegate-client Secret is injected as a pod environment
 variable and is resolved when the authorization server starts. Updating that
 Secret does not change the environment of an already running pod. The operator
 has no delegate-client Secret watch or automatic rollout for this feature, so
 restart or otherwise roll out the workload after rotating the secret.
+
+## Secretless DCR delegate flow
+
+Set `allowPrivateKeyJWTRegistration: true` without enabling
+`allowConfidentialClientRegistration` when the authorization server should
+accept key-based registrations but must not mint secret-based confidential
+clients. Registration is still unauthenticated, so protect the endpoint through
+network policy and enable it only for callers that are trusted to register.
+
+The request uses an inline public JWK. This example intentionally uses a
+placeholder key and contains no private key or secret; the client keeps the
+corresponding private key locally and never sends it to ToolHive:
+
+```http
+POST /oauth/register HTTP/1.1
+Host: auth.example.com
+Content-Type: application/json
+
+{
+  "redirect_uris": ["https://client.example/callback"],
+  "token_endpoint_auth_method": "private_key_jwt",
+  "token_endpoint_auth_signing_alg": "RS256",
+  "grant_types": ["urn:ietf:params:oauth:grant-type:token-exchange"],
+  "jwks": {"keys": [{"kty": "RSA", "use": "sig", "alg": "RS256", "kid": "client-key", "n": "<base64url-public-modulus>", "e": "AQAB"}]}
+}
+```
+
+The successful response returns a `client_id`, the registered metadata, and no
+`client_secret`. The client then signs a short-lived `client_assertion` with
+its private key and sends it to `/oauth/token` together with the token-exchange
+request:
+
+```text
+grant_type=urn:ietf:params:oauth:grant-type:token-exchange&
+subject_token=<subject-token>&
+subject_token_type=urn:ietf:params:oauth:token-type:access_token&
+client_assertion_type=urn:ietf:params:oauth:client-assertion-type:jwt-bearer&
+client_assertion=<signed-assertion>
+```
+
+The assertion identifies the registered `client_id` in `iss` and `sub`, targets
+the token endpoint in `aud`, and includes a unique `jti` and an `exp`. The
+server verifies it against the stored inline JWKS and rejects replay while the
+assertion is valid. No `client_secret` is included in registration or token
+exchange.
+
+Private-key JWT registration accepts only inline `jwks`; `jwks_uri`, SPIFFE/SVID
+authentication, AWS STS `act` mapping, and ID-JAG chaining are deferred and out
+of scope. `token_endpoint_auth_signing_alg` is required and the supported
+values are `RS256`, `RS384`, `RS512`, `PS256`, `PS384`, `PS512`, `ES256`,
+`ES384`, and `ES512` (not `EdDSA` — the pinned fosite version's
+client-assertion verification doesn't handle it). Unlike confidential-client
+registration, this has no transport restriction of its own: the DCR response
+for a `private_key_jwt` client never contains a `client_secret` or any other
+secret, so there is nothing for cleartext HTTP to expose. It is governed only
+by the issuer's general transport policy (`insecureAllowHTTP`), the same as a
+public (`none`) client.
 
 ## Trust model
 
@@ -722,8 +831,18 @@ spec:
   from, and thus influenceable by, the external issuer itself — would choose
   the private JWKS dial target, which is exactly what pinning it to
   operator-supplied config prevents.
-- **Misconfiguration surfaces as a pod crash**, not an operator condition —
-  check pod logs, not `kubectl describe`.
+- **Private-CA discovery/JWKS fetch.** A trusted issuer's `caBundleRef`
+  (`cmd/thv-operator/api/v1beta1/mcpexternalauthconfig_types.go`) names a
+  namespace-local ConfigMap whose PEM bytes are added to the system roots for
+  that issuer's own HTTP client only (`WithSystemRootsPlusCABundle`) — other
+  issuers and the upstream-provider clients are unaffected. It has no effect
+  when `insecureAllowHTTP` is set, since a plain-HTTP fetch never consults it.
+- **Misconfiguration surfaces as a pod crash** for a hand-authored RunConfig
+  passed directly to `pkg/authserver`, not an operator condition — check pod
+  logs, not `kubectl describe`. Through the operator, a malformed `caBundleRef`
+  is instead caught at reconcile time and reported as
+  `ConditionReasonInvalidCABundle` on the owning MCPServer, MCPRemoteProxy, or
+  VirtualMCPServer before any RunConfig is built.
 
 ## Implementation
 

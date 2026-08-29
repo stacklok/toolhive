@@ -157,6 +157,7 @@ func TestConfigValidate(t *testing.T) {
 
 		// Confidential-client transport gate (same predicate RunConfig.Validate uses)
 		{name: "confidential clients combined with insecure HTTP rejects", config: Config{Issuer: "http://example.com", KeyProvider: validKeyProvider, HMACSecrets: validHMAC, Upstreams: validUpstreams, AllowedAudiences: []string{"https://mcp.example.com"}, AllowConfidentialClientRegistration: true, InsecureAllowHTTP: true}, wantErr: true, errMsg: "allow_confidential_client_registration cannot be combined with insecure_allow_http"},
+		{name: "private-key JWT registration combined with insecure HTTP passes (no secret to protect)", config: Config{Issuer: "http://example.com", KeyProvider: validKeyProvider, HMACSecrets: validHMAC, Upstreams: validUpstreams, AllowedAudiences: []string{"https://mcp.example.com"}, AllowPrivateKeyJWTRegistration: true, InsecureAllowHTTP: true}},
 
 		// Valid configs
 		{name: "valid minimal", config: Config{Issuer: "https://example.com", KeyProvider: validKeyProvider, HMACSecrets: validHMAC, Upstreams: validUpstreams, AllowedAudiences: []string{"https://mcp.example.com"}}},
@@ -170,6 +171,57 @@ func TestConfigValidate(t *testing.T) {
 			t.Parallel()
 			err := tt.config.Validate()
 			assertError(t, err, tt.wantErr, tt.errMsg)
+		})
+	}
+}
+
+func TestConfigValidate_ZeroUpstreamAlternatives(t *testing.T) {
+	t.Parallel()
+
+	secret := []byte("0123456789abcdef0123456789abcdef")
+	configs := []struct {
+		name string
+		cfg  Config
+	}{
+		{
+			name: "delegate client",
+			cfg: Config{
+				Issuer:           "https://example.com",
+				HMACSecrets:      servercrypto.NewHMACSecrets(secret),
+				AllowedAudiences: []string{"https://mcp.example.com"},
+				DelegateClients: []DelegateClient{{
+					ClientID:     "delegate",
+					ClientSecret: strings.Repeat("a", minDelegateClientSecretLength),
+					Scopes:       []string{"openid"},
+					Audiences:    []string{"https://mcp.example.com"},
+				}},
+			},
+		},
+		{
+			name: "JWT bearer trusted issuer",
+			cfg: Config{
+				Issuer:           "https://example.com",
+				HMACSecrets:      servercrypto.NewHMACSecrets(secret),
+				AllowedAudiences: []string{"https://mcp.example.com"},
+				TrustedIssuers: []tokenexchange.TrustedIssuer{{
+					IssuerURL: "https://idp.example.com",
+					JWTBearerGrant: &tokenexchange.JWTBearerGrantPolicy{
+						MaxAssertionAge: "1m",
+						SubjectBindings: []tokenexchange.JWTBearerSubjectBinding{{
+							Subject:          "workload",
+							AllowedResources: []string{"https://mcp.example.com"},
+						}},
+						AcceptedAudiences: []string{"https://example.com/oauth/token"},
+					},
+				}},
+			},
+		},
+	}
+
+	for _, tt := range configs {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			require.NoError(t, tt.cfg.Validate())
 		})
 	}
 }
@@ -488,12 +540,28 @@ func TestRunConfigValidate(t *testing.T) {
 		{name: "CIMD enabled omitted optional fields pass", config: RunConfig{CIMD: &CIMDRunConfig{Enabled: true}}},
 		// Confidential-client transport gate
 		{name: "confidential clients without insecure HTTP passes", config: RunConfig{AllowConfidentialClientRegistration: true}},
+		{name: "private-key JWT registration defaults to false", config: RunConfig{}},
+		{name: "private-key JWT registration without insecure HTTP passes", config: RunConfig{AllowPrivateKeyJWTRegistration: true}},
 		{name: "insecure HTTP without confidential clients passes", config: RunConfig{InsecureAllowHTTP: true}},
 		{
-			name:    "confidential clients combined with insecure HTTP rejects",
-			config:  RunConfig{AllowConfidentialClientRegistration: true, InsecureAllowHTTP: true},
+			name:    "confidential clients with malformed issuer reject before startup",
+			config:  RunConfig{Issuer: "http://[::1", AllowConfidentialClientRegistration: true},
 			wantErr: true,
-			errMsg:  "allow_confidential_client_registration cannot be combined with insecure_allow_http",
+			errMsg:  "confidential clients require a valid issuer URL",
+		},
+		{
+			name: "loopback confidential opt-in rejects structurally invalid issuer before startup",
+			config: RunConfig{
+				Issuer:                              "http://user@localhost",
+				AllowConfidentialClientRegistration: true,
+				InsecureAllowConfidentialOverLoopbackHTTP: true,
+			},
+			wantErr: true,
+			errMsg:  "confidential clients require a valid issuer URL",
+		},
+		{
+			name:   "private-key JWT registration combined with insecure HTTP passes (no secret to protect)",
+			config: RunConfig{AllowPrivateKeyJWTRegistration: true, InsecureAllowHTTP: true},
 		},
 		{
 			name: "confidential clients with plain-HTTP loopback issuer rejects without the opt-in",
@@ -523,6 +591,13 @@ func TestRunConfigValidate(t *testing.T) {
 			name: "confidential clients disabled with plain-HTTP loopback issuer is unaffected",
 			config: RunConfig{
 				Issuer: "http://localhost:8080",
+			},
+		},
+		{
+			name: "private-key JWT registration with plain-HTTP loopback issuer is unaffected (no secret to protect)",
+			config: RunConfig{
+				Issuer:                         "http://localhost:8080",
+				AllowPrivateKeyJWTRegistration: true,
 			},
 		},
 	}
@@ -647,6 +722,9 @@ func TestConfigValidateDelegateClients(t *testing.T) {
 // validateEmbeddedAuthServer reuses: confidential clients are rejected when
 // combined with insecureAllowHTTP (unconditionally), or with a plain-HTTP
 // loopback issuer unless insecureAllowConfidentialOverLoopbackHTTP opts in.
+// private_key_jwt registration has no equivalent transport gate: it never
+// returns a secret in the DCR response, so it is unaffected by any of this
+// (see TestConfigValidate's "private-key JWT registration ... passes" cases).
 func TestValidateConfidentialClientTransport(t *testing.T) {
 	t.Parallel()
 
@@ -658,6 +736,7 @@ func TestValidateConfidentialClientTransport(t *testing.T) {
 		allowLoopbackOverride bool
 		wantErr               bool
 		errContains           string
+		redacted              []string
 	}{
 		{name: "both false passes"},
 		{name: "confidential only, https issuer passes", allowConfidential: true, issuer: "https://auth.example.com"},
@@ -665,6 +744,17 @@ func TestValidateConfidentialClientTransport(t *testing.T) {
 		{
 			name: "insecure HTTP combined with confidential rejects", allowConfidential: true, insecureAllowHTTP: true,
 			wantErr: true, errContains: "insecure_allow_http",
+		},
+		{
+			name:              "confidential with malformed issuer rejects without exposing credentials",
+			allowConfidential: true, issuer: "http://user:supersecret@[::1",
+			wantErr: true, errContains: "confidential clients require a valid issuer URL",
+			redacted: []string{"user", "supersecret", "http://user:supersecret@[::1"},
+		},
+		{
+			name:              "loopback confidential opt-in rejects structurally invalid issuer",
+			allowConfidential: true, issuer: "http://user@localhost", allowLoopbackOverride: true,
+			wantErr: true, errContains: "confidential clients require a valid issuer URL",
 		},
 		{
 			name:              "confidential with plain-HTTP loopback issuer rejects without the opt-in",
@@ -684,9 +774,14 @@ func TestValidateConfidentialClientTransport(t *testing.T) {
 			issuer: "http://localhost:8080",
 		},
 		{
-			name: "confidential with plain-HTTP non-loopback issuer passes here " +
-				"(caught separately by insecureAllowHTTP/validateIssuerURL)",
+			name:              "confidential with plain-HTTP non-loopback issuer rejects without opt-in",
 			allowConfidential: true, issuer: "http://auth.example.com",
+			wantErr: true, errContains: "plain-HTTP non-loopback",
+		},
+		{
+			name:              "confidential with plain-HTTP non-loopback issuer rejects with loopback opt-in",
+			allowConfidential: true, issuer: "http://auth.example.com", allowLoopbackOverride: true,
+			wantErr: true, errContains: "non-loopback issuer",
 		},
 	}
 
@@ -698,6 +793,9 @@ func TestValidateConfidentialClientTransport(t *testing.T) {
 				require.Error(t, err)
 				assert.Contains(t, err.Error(), "confidential clients")
 				assert.Contains(t, err.Error(), tt.errContains)
+				for _, value := range tt.redacted {
+					assert.NotContains(t, err.Error(), value)
+				}
 			} else {
 				require.NoError(t, err)
 			}

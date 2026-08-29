@@ -6,6 +6,7 @@ package runner
 import (
 	"fmt"
 	"log/slog"
+	"slices"
 
 	"github.com/stacklok/toolhive/pkg/audit"
 	"github.com/stacklok/toolhive/pkg/auth"
@@ -418,6 +419,19 @@ func addUpstreamSwapMiddleware(
 		return middlewares, nil
 	}
 
+	// A token-only embedded auth server has no upstream credential to swap. Like
+	// DisableUpstreamTokenInjection, it strips client credentials only after auth.
+	// An explicit swap configuration is invalid rather than silently ignored.
+	if len(config.EmbeddedAuthServerConfig.Upstreams) == 0 {
+		if config.UpstreamSwapConfig != nil {
+			return nil, fmt.Errorf("upstream swap cannot be configured without upstreams")
+		}
+		if err := validateCredentialInjectionConflicts(config, "token-only embedded auth server"); err != nil {
+			return nil, err
+		}
+		return addAuthHeaderStripMiddleware(middlewares)
+	}
+
 	// When upstream token injection is disabled, strip the client's credential
 	// headers (Authorization, Cookie, Proxy-Authorization) so they never reach
 	// the upstream server. Two ordering invariants apply, pinned by
@@ -430,13 +444,12 @@ func addUpstreamSwapMiddleware(
 	//     strip, silently defeating the flag — that contradiction is rejected
 	//     here instead.
 	if config.EmbeddedAuthServerConfig.DisableUpstreamTokenInjection {
-		if config.TokenExchangeConfig != nil {
-			return nil, fmt.Errorf("disableUpstreamTokenInjection cannot be combined with token exchange: " +
-				"token exchange would re-add an Authorization header after strip-auth removes it")
+		if config.UpstreamSwapConfig != nil {
+			return nil, fmt.Errorf("disableUpstreamTokenInjection cannot be combined with upstream swap: " +
+				"upstream swap would re-add an Authorization header after strip-auth removes it")
 		}
-		if config.AWSStsConfig != nil {
-			return nil, fmt.Errorf("disableUpstreamTokenInjection cannot be combined with AWS STS: " +
-				"SigV4 signing would re-add credentials after strip-auth removes them")
+		if err := validateCredentialInjectionConflicts(config, "disableUpstreamTokenInjection"); err != nil {
+			return nil, err
 		}
 		return addAuthHeaderStripMiddleware(middlewares)
 	}
@@ -485,6 +498,10 @@ func injectUpstreamProviderIfNeeded(
 		return authzCfg, nil
 	}
 
+	if len(embeddedCfg.Upstreams) == 0 {
+		return authzCfg, nil
+	}
+
 	names := make([]string, len(embeddedCfg.Upstreams))
 	for i, u := range embeddedCfg.Upstreams {
 		names[i] = u.Name
@@ -492,6 +509,119 @@ func injectUpstreamProviderIfNeeded(
 	providerName := authserver.ResolveFirstUpstreamName(names)
 
 	return cedar.InjectUpstreamProvider(authzCfg, providerName)
+}
+
+// validateCredentialStrippingMiddleware verifies that a pre-built middleware chain
+// cannot bypass the credential-stripping guarantees required when no upstream
+// credential is available or its injection is disabled. The chain must include
+// exactly one strip-auth middleware after authentication.
+func validateCredentialStrippingMiddleware(
+	middlewares []types.MiddlewareConfig,
+	config *RunConfig,
+) error {
+	if !requiresCredentialStripping(config) {
+		return nil
+	}
+	if err := validateCredentialStrippingConfig(config); err != nil {
+		return err
+	}
+
+	authIndex, stripAuthIndex, err := credentialStrippingMiddlewareIndices(middlewares)
+	if err != nil {
+		return err
+	}
+	if stripAuthIndex == -1 {
+		return fmt.Errorf("credential stripping requires strip-auth middleware")
+	}
+	if authIndex == -1 {
+		return fmt.Errorf("credential stripping requires auth middleware")
+	}
+	if stripAuthIndex < authIndex {
+		return fmt.Errorf("credential stripping requires strip-auth middleware after auth middleware")
+	}
+	return nil
+}
+
+func requiresCredentialStripping(config *RunConfig) bool {
+	return config.EmbeddedAuthServerConfig != nil &&
+		(len(config.EmbeddedAuthServerConfig.Upstreams) == 0 ||
+			config.EmbeddedAuthServerConfig.DisableUpstreamTokenInjection)
+}
+
+func validateCredentialStrippingConfig(config *RunConfig) error {
+	if config.UpstreamSwapConfig != nil {
+		return fmt.Errorf("credential stripping cannot be combined with upstream swap")
+	}
+	if config.TokenExchangeConfig != nil {
+		return fmt.Errorf("credential stripping cannot be combined with token exchange")
+	}
+	if config.AWSStsConfig != nil {
+		return fmt.Errorf("credential stripping cannot be combined with AWS STS")
+	}
+	if hasCredentialInjectingAdditionalMiddleware(config.AdditionalMiddlewareConfigs) {
+		return fmt.Errorf("credential stripping cannot be combined with OBO middleware")
+	}
+	return nil
+}
+
+func credentialStrippingMiddlewareIndices(middlewares []types.MiddlewareConfig) (int, int, error) {
+	authIndex, stripAuthIndex := -1, -1
+	for i, middleware := range middlewares {
+		if err := credentialInjectingMiddlewareError(middleware.Type); err != nil {
+			return 0, 0, err
+		}
+		if middleware.Type == auth.MiddlewareType && authIndex == -1 {
+			authIndex = i
+		}
+		if middleware.Type != headerfwd.StripAuthMiddlewareName {
+			continue
+		}
+		if stripAuthIndex != -1 {
+			return 0, 0, fmt.Errorf("credential stripping requires exactly one strip-auth middleware")
+		}
+		stripAuthIndex = i
+	}
+	return authIndex, stripAuthIndex, nil
+}
+
+func credentialInjectingMiddlewareError(middlewareType string) error {
+	switch middlewareType {
+	case upstreamswap.MiddlewareType:
+		return fmt.Errorf("credential stripping cannot be combined with upstream swap middleware")
+	case tokenexchange.MiddlewareType:
+		return fmt.Errorf("credential stripping cannot be combined with token exchange middleware")
+	case awssts.MiddlewareType:
+		return fmt.Errorf("credential stripping cannot be combined with AWS STS middleware")
+	case obo.MiddlewareType:
+		return fmt.Errorf("credential stripping cannot be combined with OBO middleware")
+	default:
+		return nil
+	}
+}
+
+func validateCredentialInjectionConflicts(config *RunConfig, reason string) error {
+	if hasCredentialInjectingAdditionalMiddleware(config.AdditionalMiddlewareConfigs) {
+		return fmt.Errorf(
+			"%s cannot be combined with OBO middleware: "+
+				"OBO would re-add credentials after strip-auth removes them", reason)
+	}
+	if config.TokenExchangeConfig != nil {
+		return fmt.Errorf(
+			"%s cannot be combined with token exchange: "+
+				"token exchange would re-add an Authorization header after strip-auth removes it", reason)
+	}
+	if config.AWSStsConfig != nil {
+		return fmt.Errorf(
+			"%s cannot be combined with AWS STS: "+
+				"SigV4 signing would re-add credentials after strip-auth removes them", reason)
+	}
+	return nil
+}
+
+func hasCredentialInjectingAdditionalMiddleware(middlewares []types.MiddlewareConfig) bool {
+	return slices.ContainsFunc(middlewares, func(middleware types.MiddlewareConfig) bool {
+		return middleware.Type == obo.MiddlewareType
+	})
 }
 
 // addAuthHeaderStripMiddleware adds the strip-auth middleware

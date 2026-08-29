@@ -354,6 +354,10 @@ func Serve(ctx context.Context, cfg ServeConfig) error {
 	if revisions, ok := backendClient.(vmcp.RevisionReporter); ok {
 		sessionFactoryOpts = append(sessionFactoryOpts, vmcpsession.WithRevisionLookup(revisions.CachedRevision))
 	}
+	sessionFactoryOpts = append(
+		sessionFactoryOpts,
+		vmcpsession.WithRequestTimeoutResolver(backendRequestTimeoutResolver(vmcpCfg)),
+	)
 	sessionFactory := vmcpsession.NewSessionFactory(outgoingRegistry, sessionFactoryOpts...)
 
 	// When the optimizer is enabled, its meta-tools are pass-through tools.
@@ -520,6 +524,24 @@ func getStatusReportingInterval(cfg *config.Config) time.Duration {
 	return 0
 }
 
+// backendRequestTimeoutResolver resolves the documented operational timeout
+// for a backend workload. Configuration loaded from YAML has defaults applied
+// and is immutable after startup; the defensive fallback also supports quick
+// mode and direct embedders that omit Operational.
+func backendRequestTimeoutResolver(cfg *config.Config) func(workloadID string) time.Duration {
+	timeouts := config.DefaultOperationalConfig().Timeouts
+	if cfg != nil && cfg.Operational != nil && cfg.Operational.Timeouts != nil {
+		timeouts = cfg.Operational.Timeouts
+	}
+
+	return func(workloadID string) time.Duration {
+		if timeout, ok := timeouts.PerWorkload[workloadID]; ok && timeout > 0 {
+			return time.Duration(timeout)
+		}
+		return time.Duration(timeouts.Default)
+	}
+}
+
 // loadAndValidateConfig loads and validates the vMCP configuration file.
 func loadAndValidateConfig(configPath string) (*config.Config, error) {
 	slog.Info(fmt.Sprintf("Loading configuration from: %s", configPath))
@@ -624,7 +646,10 @@ func discoverBackends(
 		return nil, nil, nil, fmt.Errorf("failed to create outgoing authentication registry: %w", err)
 	}
 
-	backendClient, err := vmcpclient.NewHTTPBackendClient(outgoingRegistry)
+	backendClient, err := vmcpclient.NewHTTPBackendClient(
+		outgoingRegistry,
+		vmcpclient.WithRequestTimeoutResolver(backendRequestTimeoutResolver(cfg)),
+	)
 	if err != nil {
 		return nil, nil, nil, fmt.Errorf("failed to create backend client: %w", err)
 	}

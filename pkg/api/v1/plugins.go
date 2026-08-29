@@ -125,13 +125,14 @@ func (s *PluginsRoutes) installPlugin(w http.ResponseWriter, r *http.Request) er
 	}
 
 	result, err := s.pluginService.Install(r.Context(), plugins.InstallOptions{
-		Name:        req.Name,
-		Version:     req.Version,
-		Scope:       req.Scope,
-		ProjectRoot: req.ProjectRoot,
-		Clients:     req.Clients,
-		Force:       req.Force,
-		Group:       req.Group,
+		Name:          req.Name,
+		Version:       req.Version,
+		Scope:         req.Scope,
+		ProjectRoot:   req.ProjectRoot,
+		Clients:       req.Clients,
+		Force:         req.Force,
+		Group:         req.Group,
+		AllowUnsigned: req.AllowUnsigned,
 	})
 	if err != nil {
 		return err
@@ -437,11 +438,12 @@ func (s *PluginsRoutes) syncPlugins(w http.ResponseWriter, r *http.Request) erro
 	}
 
 	result, err := s.lockService.Sync(r.Context(), plugins.SyncOptions{
-		ProjectRoot: req.ProjectRoot,
-		Clients:     req.Clients,
-		Prune:       req.Prune,
-		Check:       req.Check,
-		Adopt:       req.Adopt,
+		ProjectRoot:   req.ProjectRoot,
+		Clients:       req.Clients,
+		Prune:         req.Prune,
+		Check:         req.Check,
+		Adopt:         req.Adopt,
+		AllowUnsigned: req.AllowUnsigned,
 	})
 	if err != nil {
 		return err
@@ -483,12 +485,13 @@ func (s *PluginsRoutes) upgradePlugins(w http.ResponseWriter, r *http.Request) e
 	}
 
 	result, err := s.lockService.Upgrade(r.Context(), plugins.UpgradeOptions{
-		ProjectRoot:    req.ProjectRoot,
-		Names:          req.Names,
-		Preview:        req.Preview,
-		FailOnChanges:  req.FailOnChanges,
-		AllowRefChange: req.AllowRefChange,
-		Clients:        req.Clients,
+		ProjectRoot:       req.ProjectRoot,
+		Names:             req.Names,
+		Preview:           req.Preview,
+		FailOnChanges:     req.FailOnChanges,
+		AllowRefChange:    req.AllowRefChange,
+		AllowSignerChange: req.AllowSignerChange,
+		Clients:           req.Clients,
 	})
 	if err != nil {
 		return err

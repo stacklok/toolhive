@@ -61,7 +61,18 @@ func (r *MCPRemoteProxyReconciler) deploymentForMCPRemoteProxy(
 	resources := ctrlutil.BuildResourceRequirements(proxy.Spec.Resources)
 	deploymentLabels, deploymentAnnotations := r.buildDeploymentMetadata(ls, proxy)
 	deploymentTemplateLabels, deploymentTemplateAnnotations := r.buildPodTemplateMetadata(ls, proxy, runConfigChecksum)
+	if configName != "" {
+		caChecksum, err := ctrlutil.EmbeddedAuthServerCABundleChecksum(ctx, r.Client, proxy.Namespace, configName)
+		if err != nil {
+			log.FromContext(ctx).Error(err, "Failed to calculate auth server CA checksum")
+			return nil
+		}
+		if caChecksum != "" {
+			deploymentTemplateAnnotations[ctrlutil.AuthServerCABundleChecksumAnnotation] = caChecksum
+		}
+	}
 	podSecurityContext, containerSecurityContext := r.buildSecurityContexts(ctx, proxy)
+	proxyNodeSelector, proxyTolerations, proxyAffinity := proxyDeploymentScheduling(proxy.Spec.ResourceOverrides)
 
 	dep := &appsv1.Deployment{
 		ObjectMeta: metav1.ObjectMeta{
@@ -86,6 +97,9 @@ func (r *MCPRemoteProxyReconciler) deploymentForMCPRemoteProxy(
 				Spec: corev1.PodSpec{
 					ServiceAccountName: serviceAccountNameForRemoteProxy(proxy),
 					ImagePullSecrets:   r.imagePullSecretsForRemoteProxy(proxy),
+					NodeSelector:       proxyNodeSelector,
+					Tolerations:        proxyTolerations,
+					Affinity:           proxyAffinity,
 					Containers: []corev1.Container{{
 						Image:           getToolhiveRunnerImage(),
 						Name:            mcpRemoteProxyContainerName,

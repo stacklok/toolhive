@@ -27,6 +27,7 @@ import (
 	"slices"
 	"strings"
 
+	"github.com/go-jose/go-jose/v3"
 	"github.com/ory/fosite"
 
 	"github.com/stacklok/toolhive/pkg/oauthproto"
@@ -110,8 +111,9 @@ type Config struct {
 	// If nil or empty, defaultGrantTypes is used.
 	GrantTypes []string
 
-	// ResponseTypes overrides the default response types.
-	// If nil or empty, defaultResponseTypes is used.
+	// ResponseTypes overrides the default response types. If nil or empty,
+	// defaultResponseTypes is used except for private_key_jwt clients, which
+	// deliberately support no response types.
 	ResponseTypes []string
 
 	// Scopes overrides the default scopes.
@@ -122,6 +124,13 @@ type Config struct {
 	// Per RFC 8707, the "resource" parameter in token requests is validated
 	// against this list. If nil, audience validation will reject all values.
 	Audience []string
+
+	// JSONWebKeys contains the validated inline public keys for private_key_jwt.
+	JSONWebKeys *jose.JSONWebKeySet
+
+	// TokenEndpointAuthSigningAlgorithm is the validated signing algorithm for
+	// private_key_jwt client authentication.
+	TokenEndpointAuthSigningAlgorithm string
 }
 
 // dcrIssued is the marker identifying clients built by this package (i.e.
@@ -209,6 +218,22 @@ type confidentialClient struct {
 	*fosite.DefaultOpenIDConnectClient
 }
 
+// privateKeyJWTClient is a DCR-issued client authenticated with an inline
+// public key rather than a client secret. It is non-public because it must
+// authenticate at the token endpoint, while retaining the DCR marker.
+type privateKeyJWTClient struct {
+	dcrIssuedMarker
+	*fosite.DefaultOpenIDConnectClient
+}
+
+// GetResponseTypes prevents fosite.DefaultClient's implicit ["code"] default
+// from representing this token-exchange-only client as an authorization-code
+// client. Embedding DefaultOpenIDConnectClient still preserves fosite's
+// private_key_jwt authentication-method enforcement.
+func (privateKeyJWTClient) GetResponseTypes() fosite.Arguments {
+	return nil
+}
+
 // GenerateClientSecret mints a new client secret: 32 bytes of crypto/rand
 // output, base64url-encoded (43 characters, no padding). RawURLEncoding is
 // load-bearing, not cosmetic: fosite url.QueryUnescape's both Basic-auth
@@ -235,11 +260,13 @@ func New(cfg Config) (fosite.Client, error) {
 	switch cfg.TokenEndpointAuthMethod {
 	case oauthproto.TokenEndpointAuthMethodNone,
 		oauthproto.TokenEndpointAuthMethodClientSecretBasic,
-		oauthproto.TokenEndpointAuthMethodClientSecretPost:
+		oauthproto.TokenEndpointAuthMethodClientSecretPost,
+		oauthproto.TokenEndpointAuthMethodPrivateKeyJWT:
 	default:
 		return nil, fmt.Errorf("unsupported token_endpoint_auth_method: %q", cfg.TokenEndpointAuthMethod)
 	}
 	public := cfg.TokenEndpointAuthMethod == oauthproto.TokenEndpointAuthMethodNone
+	privateKeyJWT := cfg.TokenEndpointAuthMethod == oauthproto.TokenEndpointAuthMethodPrivateKeyJWT
 
 	// Apply defaults for empty slices
 	grantTypes := cfg.GrantTypes
@@ -248,7 +275,11 @@ func New(cfg Config) (fosite.Client, error) {
 	}
 
 	responseTypes := cfg.ResponseTypes
-	if len(responseTypes) == 0 {
+	// RFC 7591 §2 treats an omitted response_types value as ["code"]. A
+	// private_key_jwt registration supports no response types, but RFC 7591
+	// has no wire encoding for that zero-element set; preserve the validated
+	// empty value rather than applying the interactive-client default.
+	if len(responseTypes) == 0 && !privateKeyJWT {
 		responseTypes = defaultResponseTypes
 	}
 
@@ -272,7 +303,7 @@ func New(cfg Config) (fosite.Client, error) {
 	// hash with the presented secret using the hasher configured on
 	// fosite.Config.ClientSecretsHasher, so this must use the same SHA-256
 	// hasher — see SHA256Hasher for why no KDF is used.
-	if !public {
+	if !public && !privateKeyJWT {
 		if cfg.Secret == "" {
 			return nil, fmt.Errorf("confidential client requires a secret")
 		}
@@ -284,14 +315,26 @@ func New(cfg Config) (fosite.Client, error) {
 	}
 
 	oidcClient := &fosite.DefaultOpenIDConnectClient{
-		DefaultClient:           defaultClient,
-		TokenEndpointAuthMethod: cfg.TokenEndpointAuthMethod,
+		DefaultClient:                     defaultClient,
+		TokenEndpointAuthMethod:           cfg.TokenEndpointAuthMethod,
+		JSONWebKeys:                       cloneJSONWebKeySet(cfg.JSONWebKeys),
+		TokenEndpointAuthSigningAlgorithm: cfg.TokenEndpointAuthSigningAlgorithm,
 	}
 
 	if public {
 		return &publicClient{DefaultOpenIDConnectClient: oidcClient}, nil
 	}
+	if privateKeyJWT {
+		return &privateKeyJWTClient{DefaultOpenIDConnectClient: oidcClient}, nil
+	}
 	return &confidentialClient{DefaultOpenIDConnectClient: oidcClient}, nil
+}
+
+func cloneJSONWebKeySet(jwks *jose.JSONWebKeySet) *jose.JSONWebKeySet {
+	if jwks == nil {
+		return nil
+	}
+	return &jose.JSONWebKeySet{Keys: append([]jose.JSONWebKey(nil), jwks.Keys...)}
 }
 
 // NewConfidentialPlain creates a DCR-issued confidential client as a plain

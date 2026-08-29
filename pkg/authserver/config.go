@@ -6,6 +6,7 @@ package authserver
 
 import (
 	"crypto/rand"
+	"errors"
 	"fmt"
 	"log/slog"
 	"net/url"
@@ -72,8 +73,9 @@ type RunConfig struct {
 	// If empty, defaults to 15 minutes.
 	DelegationTokenLifespan string `json:"delegation_token_lifespan,omitempty" yaml:"delegation_token_lifespan,omitempty"`
 
-	// Upstreams configures connections to upstream Identity Providers.
-	// At least one upstream is required - the server delegates authentication to these providers.
+	// Upstreams configures connections to upstream Identity Providers for
+	// interactive authorization. It may be empty only when DelegateClients or a
+	// TrustedIssuer with JWTBearerGrant enables token-only operation.
 	// Multiple upstreams are supported for sequential authorization chains.
 	Upstreams []UpstreamRunConfig `json:"upstreams" yaml:"upstreams"`
 
@@ -152,6 +154,20 @@ type RunConfig struct {
 	//nolint:lll // field tags require full JSON+YAML names
 	AllowConfidentialClientRegistration bool `json:"allow_confidential_client_registration,omitempty" yaml:"allow_confidential_client_registration,omitempty"`
 
+	// AllowPrivateKeyJWTRegistration permits Dynamic Client Registration of
+	// clients using private_key_jwt authentication. This is independent of
+	// AllowConfidentialClientRegistration and defaults to false. Registration
+	// behavior is controlled independently by the DCR handler and discovery
+	// metadata.
+	//
+	// Security: /oauth/register is unauthenticated. Unlike
+	// AllowConfidentialClientRegistration, this is NOT rejected when combined
+	// with InsecureAllowHTTP: registration never returns a secret for a
+	// private_key_jwt client, so there is nothing for cleartext HTTP to
+	// expose.
+	//nolint:lll // field tags require full JSON+YAML names
+	AllowPrivateKeyJWTRegistration bool `json:"allow_private_key_jwt_registration,omitempty" yaml:"allow_private_key_jwt_registration,omitempty"`
+
 	// ForceConfidentialRedirectURIs lists redirect URIs that must be registered
 	// as confidential clients regardless of the token_endpoint_auth_method the
 	// DCR request declares. A registration whose redirect_uris contains an
@@ -189,10 +205,15 @@ type RunConfig struct {
 	// secrets would otherwise travel over cleartext. Defaults to false. Has no
 	// effect when there are no confidential clients or Issuer is https.
 	//
-	// Applies identically to delegate clients and DCR-registered clients; the
-	// Kubernetes CRD blocks this combination unconditionally only because CEL
-	// cannot express the loopback exception, not because delegate clients need
-	// a stricter policy — see EmbeddedAuthServerConfig's doc comment.
+	// Applies identically to delegate clients and DCR-registered clients. The
+	// Kubernetes CRD requires the explicit opt-in for a delegate client with an
+	// HTTP issuer; the shared transport validator enforces that its host is
+	// loopback — see EmbeddedAuthServerConfig's doc comment.
+	//
+	// private_key_jwt registration has no equivalent flag or transport
+	// restriction: unlike confidential registration, it never returns a
+	// client_secret (or any other secret) in the DCR response, so there is
+	// nothing here for cleartext HTTP to expose.
 	//nolint:lll // field tags require full JSON+YAML names
 	InsecureAllowConfidentialOverLoopbackHTTP bool `json:"insecure_allow_confidential_over_loopback_http,omitempty" yaml:"insecure_allow_confidential_over_loopback_http,omitempty"`
 
@@ -565,6 +586,9 @@ type OIDCUpstreamRunConfig struct {
 	// stable per user (e.g. Entra/Azure AD's "oid"). See upstream.OIDCConfig.
 	SubjectClaim string `json:"subject_claim,omitempty" yaml:"subject_claim,omitempty"`
 
+	// CAFilePath is the path to a PEM CA bundle added to the system roots.
+	CAFilePath string `json:"ca_file_path,omitempty" yaml:"ca_file_path,omitempty"`
+
 	// AllowPrivateIPs permits the OIDC discovery and token HTTP clients to
 	// connect to private IP ranges (RFC-1918, link-local). Use only when the
 	// upstream is hosted inside the same cluster and has no public endpoint.
@@ -642,6 +666,9 @@ type OAuth2UpstreamRunConfig struct {
 	// ClientSecretFile / ClientSecretEnvVar, and ClientID must be left empty.
 	// Mutually exclusive with ClientID.
 	DCRConfig *DCRUpstreamConfig `json:"dcr_config,omitempty" yaml:"dcr_config,omitempty"`
+
+	// CAFilePath is the path to a PEM CA bundle added to the system roots.
+	CAFilePath string `json:"ca_file_path,omitempty" yaml:"ca_file_path,omitempty"`
 
 	// AllowPrivateIPs permits the upstream provider's HTTP client to connect to
 	// private IP ranges (RFC-1918, link-local). When DCRConfig is set, this
@@ -941,6 +968,10 @@ type Config struct {
 	// (client_secret_basic / client_secret_post). See RunConfig for the full
 	// semantics; disabling it does not revoke already-minted secrets.
 	AllowConfidentialClientRegistration bool
+
+	// AllowPrivateKeyJWTRegistration permits DCR of clients using
+	// private_key_jwt authentication. See RunConfig for the full semantics.
+	AllowPrivateKeyJWTRegistration bool
 
 	// ForceConfidentialRedirectURIs lists redirect URIs that are always
 	// registered as confidential clients, even when the DCR request declares
@@ -1329,11 +1360,16 @@ func (c *DCRUpstreamConfig) Validate() error {
 	return nil
 }
 
+func validateZeroUpstreamMode(upstreamCount, delegateClientCount int, issuers []tokenexchange.TrustedIssuer) error {
+	if upstreamCount > 0 || delegateClientCount > 0 || JWTBearerGrantEnabled(issuers) {
+		return nil
+	}
+	return fmt.Errorf("at least one upstream is required unless delegate clients or a " +
+		"trusted issuer with JWT bearer grant is configured")
+}
+
 // validateUpstreams validates the upstream configurations.
 func (c *Config) validateUpstreams() error {
-	if len(c.Upstreams) == 0 {
-		return fmt.Errorf("at least one upstream is required")
-	}
 	// Track names for uniqueness checking
 	seenNames := make(map[string]bool)
 
@@ -1355,7 +1391,7 @@ func (c *Config) validateUpstreams() error {
 		}
 	}
 
-	return nil
+	return validateZeroUpstreamMode(len(c.Upstreams), len(c.DelegateClients), c.TrustedIssuers)
 }
 
 // validateUpstreamFilter rejects an UpstreamFilter configured with fewer than
@@ -1487,7 +1523,8 @@ func (c *Config) applyDefaults() error {
 //     any host, not just loopback. Always rejected for confidential clients.
 //  2. issuer is a plain-HTTP loopback URL (e.g. "http://localhost:18080").
 //     This is rejected by default but may be explicitly enabled with
-//     insecureAllowConfidentialOverLoopbackHTTP.
+//     insecureAllowConfidentialOverLoopbackHTTP. The opt-in does not permit
+//     non-loopback HTTP issuers and still requires a valid issuer URL.
 func ValidateConfidentialClientTransport(
 	allowConfidential, insecureAllowHTTP bool,
 	issuer string, insecureAllowConfidentialOverLoopbackHTTP bool,
@@ -1499,16 +1536,31 @@ func ValidateConfidentialClientTransport(
 		return fmt.Errorf("allow_confidential_client_registration cannot be combined with insecure_allow_http: " +
 			"confidential clients would send secrets over cleartext HTTP")
 	}
-	if insecureAllowConfidentialOverLoopbackHTTP {
+	parsed, err := url.Parse(issuer)
+	if err != nil {
+		return errors.New("confidential clients require a valid issuer URL")
+	}
+	if parsed.Scheme != "http" {
 		return nil
 	}
-	// Malformed issuers are reported by validateIssuerURL; nothing more to
-	// check here if parsing fails.
-	if parsed, err := url.Parse(issuer); err == nil &&
-		parsed.Scheme == "http" && networking.IsLocalhost(parsed.Host) {
+	if insecureAllowConfidentialOverLoopbackHTTP && networking.IsLocalhost(parsed.Host) {
+		if err := validateIssuerURL(issuer, false); err != nil {
+			return errors.New("confidential clients require a valid issuer URL")
+		}
+	}
+	if insecureAllowConfidentialOverLoopbackHTTP && !networking.IsLocalhost(parsed.Host) {
+		return fmt.Errorf(
+			"allow_confidential_client_registration cannot use the loopback HTTP opt-in with a non-loopback issuer (%q): "+
+				"confidential clients would send secrets over cleartext HTTP", issuer)
+	}
+	if !insecureAllowConfidentialOverLoopbackHTTP && networking.IsLocalhost(parsed.Host) {
 		return fmt.Errorf("allow_confidential_client_registration cannot be combined with a plain-HTTP loopback issuer (%q) unless "+
 			"insecure_allow_confidential_over_loopback_http is set: confidential clients would send secrets over cleartext HTTP",
 			issuer)
+	}
+	if !networking.IsLocalhost(parsed.Host) {
+		return fmt.Errorf("allow_confidential_client_registration cannot use a plain-HTTP non-loopback issuer (%q): "+
+			"confidential clients would send secrets over cleartext HTTP", issuer)
 	}
 	return nil
 }

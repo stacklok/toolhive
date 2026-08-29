@@ -91,9 +91,18 @@ type RunFlags struct {
 	OtelHeaders                     []string
 	OtelInsecure                    bool
 	OtelEnablePrometheusMetricsPath bool
-	OtelEnvironmentVariables        []string // renamed binding to otel-env-vars
-	OtelCustomAttributes            string   // Custom attributes in key=value format
-	OtelUseLegacyAttributes         bool     // Emit legacy attribute names alongside new ones
+	// OtelMetricsOnTransportPort is bound by cobra as a plain bool. Use
+	// resolveMetricsOnTransportPort to read it: an unset flag must stay unset rather
+	// than resolving to false, so the eventual default change reaches workloads that
+	// never expressed a preference.
+	OtelMetricsOnTransportPort bool
+	// metricsOnTransportPort is the tri-state resolved from the flag above. Not a
+	// cobra binding: it is set by resolveMetricsOnTransportPort, which needs the
+	// command to tell "unset" from "explicitly false".
+	metricsOnTransportPort   *bool
+	OtelEnvironmentVariables []string // renamed binding to otel-env-vars
+	OtelCustomAttributes     string   // Custom attributes in key=value format
+	OtelUseLegacyAttributes  bool     // Emit legacy attribute names alongside new ones
 
 	// Network isolation
 	IsolateNetwork     bool
@@ -267,6 +276,12 @@ func AddRunFlags(cmd *cobra.Command, config *RunFlags) {
 		"OpenTelemetry OTLP headers in key=value format (e.g., x-honeycomb-team=your-api-key)")
 	cmd.Flags().BoolVar(&config.OtelInsecure, "otel-insecure", false,
 		"Connect to the OpenTelemetry endpoint using HTTP instead of HTTPS (default false)")
+	cmd.Flags().BoolVar(&config.OtelMetricsOnTransportPort, "otel-metrics-on-transport-port",
+		telemetry.DefaultMetricsOnTransportPort,
+		"Also serve Prometheus /metrics on the transport port, alongside the diagnostics port. "+
+			"Deprecated: this is a migration aid and the default will become false; "+
+			"see https://github.com/stacklok/toolhive/issues/6384 for the timeline. "+
+			"Move scrapers to the diagnostics port and set this to false to verify.")
 	cmd.Flags().BoolVar(&config.OtelEnablePrometheusMetricsPath, "otel-enable-prometheus-metrics-path", false,
 		"Enable Prometheus-style /metrics endpoint on a dedicated diagnostics port (default false)")
 	cmd.Flags().StringArrayVar(&config.OtelEnvironmentVariables, "otel-env-vars", nil,
@@ -368,6 +383,7 @@ func BuildRunnerConfig(
 
 	// Setup telemetry configuration
 	telemetryConfig := setupTelemetryConfiguration(cmd, runFlags, appConfig)
+	runFlags.metricsOnTransportPort = resolveMetricsOnTransportPort(cmd, runFlags)
 
 	// Setup runtime and validation
 	rt, envVarValidator, err := setupRuntimeAndValidation(ctx, configProvider)
@@ -446,6 +462,18 @@ func setupOIDCConfiguration(cmd *cobra.Command, runFlags *RunFlags) (*auth.Token
 
 	return createOIDCConfig(oidcIssuer, oidcAudience, oidcJwksURL, oidcIntrospectionURL,
 		oidcClientID, oidcClientSecret, runFlags.ResourceURL, runFlags.JWKSAllowPrivateIP, oidcScopes), nil
+}
+
+// resolveMetricsOnTransportPort turns the bound bool into a tri-state. Only an
+// explicitly-passed flag becomes a value; otherwise nil, so the workload follows
+// whatever telemetry.DefaultMetricsOnTransportPort is at startup — including after
+// that default changes.
+func resolveMetricsOnTransportPort(cmd *cobra.Command, runFlags *RunFlags) *bool {
+	if !cmd.Flags().Changed("otel-metrics-on-transport-port") {
+		return nil
+	}
+	v := runFlags.OtelMetricsOnTransportPort
+	return &v
 }
 
 // setupTelemetryConfiguration sets up telemetry configuration with config fallbacks
@@ -857,6 +885,8 @@ func configureMiddlewareAndOptions(
 			finalOtelSamplingRate, runFlags.OtelHeaders, runFlags.OtelInsecure, finalOtelEnvironmentVariables,
 			runFlags.OtelUseLegacyAttributes,
 		),
+		// Applied after the telemetry config it records onto.
+		runner.WithMetricsOnTransportPort(runFlags.metricsOnTransportPort),
 		runner.WithToolsFilter(runFlags.ToolsFilter))
 
 	// Process environment files

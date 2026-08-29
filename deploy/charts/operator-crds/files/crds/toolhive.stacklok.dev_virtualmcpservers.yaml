@@ -96,6 +96,20 @@ spec:
                       caller who can reach the endpoint obtain a client credential.
                       Combining it with insecureAllowHTTP is rejected at validation.
                     type: boolean
+                  allowPrivateKeyJWTRegistration:
+                    default: false
+                    description: |-
+                      AllowPrivateKeyJWTRegistration permits Dynamic Client Registration of
+                      clients using private_key_jwt authentication. Registration behavior is
+                      intentionally configured separately from confidential-client registration.
+
+                      Security: registration is unauthenticated, so enabling this lets any
+                      caller who can reach the endpoint register a private_key_jwt client.
+                      Unlike allowConfidentialClientRegistration, this is NOT rejected when
+                      combined with insecureAllowHTTP: registration never returns a secret
+                      for a private_key_jwt client, so there is nothing for cleartext HTTP
+                      to expose.
+                    type: boolean
                   authorizationEndpointBaseUrl:
                     description: |-
                       AuthorizationEndpointBaseURL overrides the base URL used for the authorization_endpoint
@@ -244,8 +258,8 @@ spec:
                       the client's credential headers (Authorization, Cookie, Proxy-Authorization)
                       after validating the JWT — the backend receives an unauthenticated request.
                       Use headerForward to attach static credentials (e.g. an API key) if the
-                      backend needs them. Cannot be combined with token exchange or AWS STS,
-                      which would re-add credentials after the strip.
+                      backend needs them. Cannot be combined with token exchange, AWS STS, or OBO
+                      middleware, which would re-add credentials after the strip.
                       This is useful when the backend MCP server does not require authentication
                       (e.g., public documentation servers) but you still want client authentication.
                     type: boolean
@@ -310,17 +324,21 @@ spec:
                   insecureAllowConfidentialOverLoopbackHTTP:
                     default: false
                     description: |-
-                      InsecureAllowConfidentialOverLoopbackHTTP opts in to
-                      allowConfidentialClientRegistration when issuer is a plain-HTTP loopback
-                      URL (e.g. "http://localhost:8080"). Without this flag, that combination
-                      is rejected at reconcile time: a loopback http:// issuer is normally
-                      fine for local development since the traffic never leaves the machine,
-                      but combined with confidential registration it means /oauth/register —
-                      which is unauthenticated — mints client secrets over cleartext. Forcing
-                      TLS onto every loopback deployment instead would just push operators
-                      toward insecureAllowHTTP, which is worse: that also disables the
-                      non-loopback host check. Has no effect when
-                      allowConfidentialClientRegistration is false or issuer is https.
+                      InsecureAllowConfidentialOverLoopbackHTTP opts in to confidential
+                      Dynamic Client Registration (DCR) and delegate clients when issuer is a
+                      plain-HTTP loopback URL (e.g. "http://localhost:8080"). Without this
+                      flag, that combination is rejected at reconcile time: a loopback http://
+                      issuer is normally fine for local development since the traffic never
+                      leaves the machine, but confidential clients send secrets over cleartext.
+                      Forcing TLS onto every loopback deployment instead would just push
+                      operators toward insecureAllowHTTP, which is worse: that also disables
+                      the non-loopback host check. Has no effect when there are no confidential
+                      clients or issuer is https.
+
+                      private_key_jwt registration has no equivalent flag or transport
+                      restriction: unlike confidential registration, it never returns a
+                      client_secret (or any other secret) in the DCR response, so there is
+                      nothing here for cleartext HTTP to expose.
                     type: boolean
                   insecureAllowHTTP:
                     default: false
@@ -718,6 +736,46 @@ spec:
                           minItems: 1
                           type: array
                           x-kubernetes-list-type: atomic
+                        caBundleRef:
+                          description: |-
+                            CABundleRef references a ConfigMap containing PEM CA certificates used when
+                            fetching this issuer's OIDC discovery document and JWKS. The bundle is added
+                            to the system roots for this issuer's client only; public roots still apply
+                            and other issuers are unaffected. Write access to the referenced ConfigMap is
+                            equivalent to controlling this issuer's trust anchor for subject-token
+                            validation — restrict it with the same care as a signing-key Secret.
+                          properties:
+                            configMapRef:
+                              description: |-
+                                ConfigMapRef references a ConfigMap containing the CA certificate bundle.
+                                The ConfigMap key is required by the API. If omitted in a stored object, it
+                                defaults to "ca.crt" for backwards compatibility.
+                              properties:
+                                key:
+                                  description: The key to select.
+                                  type: string
+                                name:
+                                  default: ""
+                                  description: |-
+                                    Name of the referent.
+                                    This field is effectively required, but due to backwards compatibility is
+                                    allowed to be empty. Instances of this type with an empty value here are
+                                    almost certainly wrong.
+                                    More info: https://kubernetes.io/docs/concepts/overview/working-with-objects/names/#names
+                                  type: string
+                                optional:
+                                  description: Specify whether the ConfigMap or its
+                                    key must be defined
+                                  type: boolean
+                              required:
+                              - key
+                              type: object
+                              x-kubernetes-map-type: atomic
+                          type: object
+                          x-kubernetes-validations:
+                          - message: configMapRef.name is required and must be non-empty
+                            rule: has(self.configMapRef) && size(self.configMapRef.name)
+                              > 0
                         expectedAudience:
                           description: |-
                             ExpectedAudience is the expected "aud" claim value that must appear in
@@ -857,7 +915,9 @@ spec:
                   upstreamProviders:
                     description: |-
                       UpstreamProviders configures connections to upstream Identity Providers.
-                      The embedded auth server delegates authentication to these providers.
+                      When configured, the embedded auth server delegates interactive authentication
+                      to these providers. It may be omitted only when delegateClients or a trusted
+                      issuer with jwtBearerGrant enables token-only operation.
                       MCPServer and MCPRemoteProxy support a single upstream; VirtualMCPServer supports multiple.
                     items:
                       description: |-
@@ -913,6 +973,45 @@ spec:
                                 OAuth authorization endpoint.
                               pattern: ^https?://.*$
                               type: string
+                            caBundleRef:
+                              description: |-
+                                CABundleRef references a ConfigMap containing a CA bundle added to the
+                                system roots when connecting to this upstream; it does not restrict trust
+                                to this bundle or disable public-root trust. The selected key is projected
+                                as ca.crt.
+                              properties:
+                                configMapRef:
+                                  description: |-
+                                    ConfigMapRef references a ConfigMap containing the CA certificate bundle.
+                                    The ConfigMap key is required by the API. If omitted in a stored object, it
+                                    defaults to "ca.crt" for backwards compatibility.
+                                  properties:
+                                    key:
+                                      description: The key to select.
+                                      type: string
+                                    name:
+                                      default: ""
+                                      description: |-
+                                        Name of the referent.
+                                        This field is effectively required, but due to backwards compatibility is
+                                        allowed to be empty. Instances of this type with an empty value here are
+                                        almost certainly wrong.
+                                        More info: https://kubernetes.io/docs/concepts/overview/working-with-objects/names/#names
+                                      type: string
+                                    optional:
+                                      description: Specify whether the ConfigMap or
+                                        its key must be defined
+                                      type: boolean
+                                  required:
+                                  - key
+                                  type: object
+                                  x-kubernetes-map-type: atomic
+                              type: object
+                              x-kubernetes-validations:
+                              - message: configMapRef.name is required and must be
+                                  non-empty
+                                rule: has(self.configMapRef) && size(self.configMapRef.name)
+                                  > 0
                             clientId:
                               description: |-
                                 ClientID is the OAuth 2.0 client identifier registered with the upstream IDP.
@@ -1216,6 +1315,51 @@ spec:
                                 scope, state, code_challenge, code_challenge_method, nonce) are not allowed.
                               maxProperties: 16
                               type: object
+                            allowPrivateIPs:
+                              description: |-
+                                AllowPrivateIPs permits the upstream provider's HTTP client to connect to
+                                private IP ranges (RFC-1918, link-local). Use only when the upstream is
+                                hosted inside the same cluster and has no public endpoint.
+                              type: boolean
+                            caBundleRef:
+                              description: |-
+                                CABundleRef references a ConfigMap containing a CA bundle added to the
+                                system roots when connecting to this upstream; it does not restrict trust
+                                to this bundle or disable public-root trust. The selected key is projected
+                                as ca.crt.
+                              properties:
+                                configMapRef:
+                                  description: |-
+                                    ConfigMapRef references a ConfigMap containing the CA certificate bundle.
+                                    The ConfigMap key is required by the API. If omitted in a stored object, it
+                                    defaults to "ca.crt" for backwards compatibility.
+                                  properties:
+                                    key:
+                                      description: The key to select.
+                                      type: string
+                                    name:
+                                      default: ""
+                                      description: |-
+                                        Name of the referent.
+                                        This field is effectively required, but due to backwards compatibility is
+                                        allowed to be empty. Instances of this type with an empty value here are
+                                        almost certainly wrong.
+                                        More info: https://kubernetes.io/docs/concepts/overview/working-with-objects/names/#names
+                                      type: string
+                                    optional:
+                                      description: Specify whether the ConfigMap or
+                                        its key must be defined
+                                      type: boolean
+                                  required:
+                                  - key
+                                  type: object
+                                  x-kubernetes-map-type: atomic
+                              type: object
+                              x-kubernetes-validations:
+                              - message: configMapRef.name is required and must be
+                                  non-empty
+                                rule: has(self.configMapRef) && size(self.configMapRef.name)
+                                  > 0
                             clientId:
                               description: ClientID is the OAuth 2.0 client identifier
                                 registered with the upstream IdP.
@@ -1376,29 +1520,34 @@ spec:
                         rule: 'self.type == ''oidc'' ? (has(self.oidcConfig) && !has(self.oauth2Config))
                           : self.type == ''oauth2'' ? (has(self.oauth2Config) && !has(self.oidcConfig))
                           : false'
-                    minItems: 1
                     type: array
                     x-kubernetes-list-map-keys:
                     - name
                     x-kubernetes-list-type: map
                 required:
                 - issuer
-                - upstreamProviders
                 type: object
                 x-kubernetes-validations:
+                - message: at least one upstream provider is required unless delegateClients
+                    or a trustedIssuer with jwtBearerGrant is configured
+                  rule: (has(self.upstreamProviders) && size(self.upstreamProviders)
+                    > 0) || (has(self.delegateClients) && size(self.delegateClients)
+                    > 0) || (has(self.trustedIssuers) && self.trustedIssuers.exists(issuer,
+                    has(issuer.jwtBearerGrant)))
                 - message: allowConfidentialClientRegistration cannot be combined
                     with insecureAllowHTTP; client secrets would be issued in cleartext
                     over an unauthenticated endpoint
                   rule: '!(has(self.allowConfidentialClientRegistration) && self.allowConfidentialClientRegistration
                     && has(self.insecureAllowHTTP) && self.insecureAllowHTTP)'
-                - message: delegateClients require an https:// issuer; delegate client
-                    secrets must not be sent over plaintext HTTP
-                  rule: '!has(self.delegateClients) || size(self.delegateClients)
-                    == 0 || !self.issuer.startsWith(''http://'')'
                 - message: forceConfidentialRedirectUris requires allowConfidentialClientRegistration
                     to be true
                   rule: (!has(self.forceConfidentialRedirectUris) || size(self.forceConfidentialRedirectUris)
                     == 0) || (has(self.allowConfidentialClientRegistration) && self.allowConfidentialClientRegistration)
+                - message: delegateClients with an HTTP issuer require insecureAllowConfidentialOverLoopbackHTTP
+                    to be explicitly enabled; the issuer must still be loopback
+                  rule: '!has(self.delegateClients) || size(self.delegateClients)
+                    == 0 || !self.issuer.startsWith(''http://'') || (has(self.insecureAllowConfidentialOverLoopbackHTTP)
+                    && self.insecureAllowConfidentialOverLoopbackHTTP)'
               config:
                 description: |-
                   Config is the Virtual MCP server configuration.
@@ -3296,13 +3445,6 @@ spec:
                           PrometheusPort works too, so a scraper can be moved and verified before the
                           old location goes away. See https://github.com/stacklok/toolhive/issues/6384 for
                           the removal timeline.
-
-                          Deliberately a pointer with NO kubebuilder default. Nil means "unset", and is
-                          resolved against DefaultMetricsOnTransportPort at the point of use rather than
-                          written into config. A plain bool with a default marker would be materialised
-                          into the persisted RunConfig and into CRD objects at admission, so changing
-                          the default later would not move any workload that already exists — the flip
-                          would silently do nothing.
                         type: boolean
                       prometheusPort:
                         description: |-
@@ -4087,6 +4229,20 @@ spec:
                       caller who can reach the endpoint obtain a client credential.
                       Combining it with insecureAllowHTTP is rejected at validation.
                     type: boolean
+                  allowPrivateKeyJWTRegistration:
+                    default: false
+                    description: |-
+                      AllowPrivateKeyJWTRegistration permits Dynamic Client Registration of
+                      clients using private_key_jwt authentication. Registration behavior is
+                      intentionally configured separately from confidential-client registration.
+
+                      Security: registration is unauthenticated, so enabling this lets any
+                      caller who can reach the endpoint register a private_key_jwt client.
+                      Unlike allowConfidentialClientRegistration, this is NOT rejected when
+                      combined with insecureAllowHTTP: registration never returns a secret
+                      for a private_key_jwt client, so there is nothing for cleartext HTTP
+                      to expose.
+                    type: boolean
                   authorizationEndpointBaseUrl:
                     description: |-
                       AuthorizationEndpointBaseURL overrides the base URL used for the authorization_endpoint
@@ -4235,8 +4391,8 @@ spec:
                       the client's credential headers (Authorization, Cookie, Proxy-Authorization)
                       after validating the JWT — the backend receives an unauthenticated request.
                       Use headerForward to attach static credentials (e.g. an API key) if the
-                      backend needs them. Cannot be combined with token exchange or AWS STS,
-                      which would re-add credentials after the strip.
+                      backend needs them. Cannot be combined with token exchange, AWS STS, or OBO
+                      middleware, which would re-add credentials after the strip.
                       This is useful when the backend MCP server does not require authentication
                       (e.g., public documentation servers) but you still want client authentication.
                     type: boolean
@@ -4301,17 +4457,21 @@ spec:
                   insecureAllowConfidentialOverLoopbackHTTP:
                     default: false
                     description: |-
-                      InsecureAllowConfidentialOverLoopbackHTTP opts in to
-                      allowConfidentialClientRegistration when issuer is a plain-HTTP loopback
-                      URL (e.g. "http://localhost:8080"). Without this flag, that combination
-                      is rejected at reconcile time: a loopback http:// issuer is normally
-                      fine for local development since the traffic never leaves the machine,
-                      but combined with confidential registration it means /oauth/register —
-                      which is unauthenticated — mints client secrets over cleartext. Forcing
-                      TLS onto every loopback deployment instead would just push operators
-                      toward insecureAllowHTTP, which is worse: that also disables the
-                      non-loopback host check. Has no effect when
-                      allowConfidentialClientRegistration is false or issuer is https.
+                      InsecureAllowConfidentialOverLoopbackHTTP opts in to confidential
+                      Dynamic Client Registration (DCR) and delegate clients when issuer is a
+                      plain-HTTP loopback URL (e.g. "http://localhost:8080"). Without this
+                      flag, that combination is rejected at reconcile time: a loopback http://
+                      issuer is normally fine for local development since the traffic never
+                      leaves the machine, but confidential clients send secrets over cleartext.
+                      Forcing TLS onto every loopback deployment instead would just push
+                      operators toward insecureAllowHTTP, which is worse: that also disables
+                      the non-loopback host check. Has no effect when there are no confidential
+                      clients or issuer is https.
+
+                      private_key_jwt registration has no equivalent flag or transport
+                      restriction: unlike confidential registration, it never returns a
+                      client_secret (or any other secret) in the DCR response, so there is
+                      nothing here for cleartext HTTP to expose.
                     type: boolean
                   insecureAllowHTTP:
                     default: false
@@ -4709,6 +4869,46 @@ spec:
                           minItems: 1
                           type: array
                           x-kubernetes-list-type: atomic
+                        caBundleRef:
+                          description: |-
+                            CABundleRef references a ConfigMap containing PEM CA certificates used when
+                            fetching this issuer's OIDC discovery document and JWKS. The bundle is added
+                            to the system roots for this issuer's client only; public roots still apply
+                            and other issuers are unaffected. Write access to the referenced ConfigMap is
+                            equivalent to controlling this issuer's trust anchor for subject-token
+                            validation — restrict it with the same care as a signing-key Secret.
+                          properties:
+                            configMapRef:
+                              description: |-
+                                ConfigMapRef references a ConfigMap containing the CA certificate bundle.
+                                The ConfigMap key is required by the API. If omitted in a stored object, it
+                                defaults to "ca.crt" for backwards compatibility.
+                              properties:
+                                key:
+                                  description: The key to select.
+                                  type: string
+                                name:
+                                  default: ""
+                                  description: |-
+                                    Name of the referent.
+                                    This field is effectively required, but due to backwards compatibility is
+                                    allowed to be empty. Instances of this type with an empty value here are
+                                    almost certainly wrong.
+                                    More info: https://kubernetes.io/docs/concepts/overview/working-with-objects/names/#names
+                                  type: string
+                                optional:
+                                  description: Specify whether the ConfigMap or its
+                                    key must be defined
+                                  type: boolean
+                              required:
+                              - key
+                              type: object
+                              x-kubernetes-map-type: atomic
+                          type: object
+                          x-kubernetes-validations:
+                          - message: configMapRef.name is required and must be non-empty
+                            rule: has(self.configMapRef) && size(self.configMapRef.name)
+                              > 0
                         expectedAudience:
                           description: |-
                             ExpectedAudience is the expected "aud" claim value that must appear in
@@ -4848,7 +5048,9 @@ spec:
                   upstreamProviders:
                     description: |-
                       UpstreamProviders configures connections to upstream Identity Providers.
-                      The embedded auth server delegates authentication to these providers.
+                      When configured, the embedded auth server delegates interactive authentication
+                      to these providers. It may be omitted only when delegateClients or a trusted
+                      issuer with jwtBearerGrant enables token-only operation.
                       MCPServer and MCPRemoteProxy support a single upstream; VirtualMCPServer supports multiple.
                     items:
                       description: |-
@@ -4904,6 +5106,45 @@ spec:
                                 OAuth authorization endpoint.
                               pattern: ^https?://.*$
                               type: string
+                            caBundleRef:
+                              description: |-
+                                CABundleRef references a ConfigMap containing a CA bundle added to the
+                                system roots when connecting to this upstream; it does not restrict trust
+                                to this bundle or disable public-root trust. The selected key is projected
+                                as ca.crt.
+                              properties:
+                                configMapRef:
+                                  description: |-
+                                    ConfigMapRef references a ConfigMap containing the CA certificate bundle.
+                                    The ConfigMap key is required by the API. If omitted in a stored object, it
+                                    defaults to "ca.crt" for backwards compatibility.
+                                  properties:
+                                    key:
+                                      description: The key to select.
+                                      type: string
+                                    name:
+                                      default: ""
+                                      description: |-
+                                        Name of the referent.
+                                        This field is effectively required, but due to backwards compatibility is
+                                        allowed to be empty. Instances of this type with an empty value here are
+                                        almost certainly wrong.
+                                        More info: https://kubernetes.io/docs/concepts/overview/working-with-objects/names/#names
+                                      type: string
+                                    optional:
+                                      description: Specify whether the ConfigMap or
+                                        its key must be defined
+                                      type: boolean
+                                  required:
+                                  - key
+                                  type: object
+                                  x-kubernetes-map-type: atomic
+                              type: object
+                              x-kubernetes-validations:
+                              - message: configMapRef.name is required and must be
+                                  non-empty
+                                rule: has(self.configMapRef) && size(self.configMapRef.name)
+                                  > 0
                             clientId:
                               description: |-
                                 ClientID is the OAuth 2.0 client identifier registered with the upstream IDP.
@@ -5207,6 +5448,51 @@ spec:
                                 scope, state, code_challenge, code_challenge_method, nonce) are not allowed.
                               maxProperties: 16
                               type: object
+                            allowPrivateIPs:
+                              description: |-
+                                AllowPrivateIPs permits the upstream provider's HTTP client to connect to
+                                private IP ranges (RFC-1918, link-local). Use only when the upstream is
+                                hosted inside the same cluster and has no public endpoint.
+                              type: boolean
+                            caBundleRef:
+                              description: |-
+                                CABundleRef references a ConfigMap containing a CA bundle added to the
+                                system roots when connecting to this upstream; it does not restrict trust
+                                to this bundle or disable public-root trust. The selected key is projected
+                                as ca.crt.
+                              properties:
+                                configMapRef:
+                                  description: |-
+                                    ConfigMapRef references a ConfigMap containing the CA certificate bundle.
+                                    The ConfigMap key is required by the API. If omitted in a stored object, it
+                                    defaults to "ca.crt" for backwards compatibility.
+                                  properties:
+                                    key:
+                                      description: The key to select.
+                                      type: string
+                                    name:
+                                      default: ""
+                                      description: |-
+                                        Name of the referent.
+                                        This field is effectively required, but due to backwards compatibility is
+                                        allowed to be empty. Instances of this type with an empty value here are
+                                        almost certainly wrong.
+                                        More info: https://kubernetes.io/docs/concepts/overview/working-with-objects/names/#names
+                                      type: string
+                                    optional:
+                                      description: Specify whether the ConfigMap or
+                                        its key must be defined
+                                      type: boolean
+                                  required:
+                                  - key
+                                  type: object
+                                  x-kubernetes-map-type: atomic
+                              type: object
+                              x-kubernetes-validations:
+                              - message: configMapRef.name is required and must be
+                                  non-empty
+                                rule: has(self.configMapRef) && size(self.configMapRef.name)
+                                  > 0
                             clientId:
                               description: ClientID is the OAuth 2.0 client identifier
                                 registered with the upstream IdP.
@@ -5367,29 +5653,34 @@ spec:
                         rule: 'self.type == ''oidc'' ? (has(self.oidcConfig) && !has(self.oauth2Config))
                           : self.type == ''oauth2'' ? (has(self.oauth2Config) && !has(self.oidcConfig))
                           : false'
-                    minItems: 1
                     type: array
                     x-kubernetes-list-map-keys:
                     - name
                     x-kubernetes-list-type: map
                 required:
                 - issuer
-                - upstreamProviders
                 type: object
                 x-kubernetes-validations:
+                - message: at least one upstream provider is required unless delegateClients
+                    or a trustedIssuer with jwtBearerGrant is configured
+                  rule: (has(self.upstreamProviders) && size(self.upstreamProviders)
+                    > 0) || (has(self.delegateClients) && size(self.delegateClients)
+                    > 0) || (has(self.trustedIssuers) && self.trustedIssuers.exists(issuer,
+                    has(issuer.jwtBearerGrant)))
                 - message: allowConfidentialClientRegistration cannot be combined
                     with insecureAllowHTTP; client secrets would be issued in cleartext
                     over an unauthenticated endpoint
                   rule: '!(has(self.allowConfidentialClientRegistration) && self.allowConfidentialClientRegistration
                     && has(self.insecureAllowHTTP) && self.insecureAllowHTTP)'
-                - message: delegateClients require an https:// issuer; delegate client
-                    secrets must not be sent over plaintext HTTP
-                  rule: '!has(self.delegateClients) || size(self.delegateClients)
-                    == 0 || !self.issuer.startsWith(''http://'')'
                 - message: forceConfidentialRedirectUris requires allowConfidentialClientRegistration
                     to be true
                   rule: (!has(self.forceConfidentialRedirectUris) || size(self.forceConfidentialRedirectUris)
                     == 0) || (has(self.allowConfidentialClientRegistration) && self.allowConfidentialClientRegistration)
+                - message: delegateClients with an HTTP issuer require insecureAllowConfidentialOverLoopbackHTTP
+                    to be explicitly enabled; the issuer must still be loopback
+                  rule: '!has(self.delegateClients) || size(self.delegateClients)
+                    == 0 || !self.issuer.startsWith(''http://'') || (has(self.insecureAllowConfidentialOverLoopbackHTTP)
+                    && self.insecureAllowConfidentialOverLoopbackHTTP)'
               config:
                 description: |-
                   Config is the Virtual MCP server configuration.
@@ -7287,13 +7578,6 @@ spec:
                           PrometheusPort works too, so a scraper can be moved and verified before the
                           old location goes away. See https://github.com/stacklok/toolhive/issues/6384 for
                           the removal timeline.
-
-                          Deliberately a pointer with NO kubebuilder default. Nil means "unset", and is
-                          resolved against DefaultMetricsOnTransportPort at the point of use rather than
-                          written into config. A plain bool with a default marker would be materialised
-                          into the persisted RunConfig and into CRD objects at admission, so changing
-                          the default later would not move any workload that already exists — the flip
-                          would silently do nothing.
                         type: boolean
                       prometheusPort:
                         description: |-

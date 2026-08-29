@@ -754,6 +754,153 @@ func TestNewHTTPBackendClient_NilRegistry(t *testing.T) {
 	})
 }
 
+func TestHTTPBackendClient_RequestTimeout(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name     string
+		resolver func(string) time.Duration
+		want     time.Duration
+	}{
+		{name: "nil resolver uses default", want: defaultBackendRequestTimeout},
+		{
+			name: "positive workload timeout is used",
+			resolver: func(string) time.Duration {
+				return 240 * time.Second
+			},
+			want: 240 * time.Second,
+		},
+		{
+			name:     "zero timeout uses default",
+			resolver: func(string) time.Duration { return 0 },
+			want:     defaultBackendRequestTimeout,
+		},
+		{
+			name:     "negative timeout uses default",
+			resolver: func(string) time.Duration { return -time.Second },
+			want:     defaultBackendRequestTimeout,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			backendClient := &httpBackendClient{requestTimeoutResolver: tt.resolver}
+			assert.Equal(t, tt.want, backendClient.requestTimeout("elastic"))
+		})
+	}
+}
+
+func TestHTTPBackendClient_ModernHTTPClientUsesWorkloadTimeout(t *testing.T) {
+	t.Parallel()
+
+	registry := auth.NewDefaultOutgoingAuthRegistry()
+	require.NoError(t, registry.RegisterStrategy(
+		authtypes.StrategyTypeUnauthenticated, &strategies.UnauthenticatedStrategy{},
+	))
+	backendClient, err := NewHTTPBackendClient(
+		registry,
+		WithRequestTimeoutResolver(func(workloadID string) time.Duration {
+			if workloadID == "elastic" {
+				return 240 * time.Second
+			}
+			return defaultBackendRequestTimeout
+		}),
+	)
+	require.NoError(t, err)
+
+	clientImpl := backendClient.(*httpBackendClient)
+	httpClient, err := clientImpl.buildModernHTTPClient(t.Context(), &vmcp.BackendTarget{
+		WorkloadID: "elastic",
+		BaseURL:    "http://127.0.0.1:1",
+	})
+	require.NoError(t, err)
+	assert.Equal(t, 240*time.Second, httpClient.Timeout)
+}
+
+// TestHTTPBackendClient_RequestTimeoutIntegration proves that the resolved
+// workload timeout reaches the real streamable-HTTP tools/call path used by the
+// vMCP core. The paired timeout/success cases prevent the historical fixed
+// 30-second timeout from satisfying the test accidentally.
+func TestHTTPBackendClient_RequestTimeoutIntegration(t *testing.T) {
+	t.Parallel()
+
+	const toolDelay = 300 * time.Millisecond
+
+	tests := []struct {
+		name           string
+		resolver       func(string) time.Duration
+		wantTimeoutErr bool
+	}{
+		{
+			name:           "default timeout is enforced",
+			resolver:       func(string) time.Duration { return 100 * time.Millisecond },
+			wantTimeoutErr: true,
+		},
+		{
+			name: "workload override permits slow response",
+			resolver: func(workloadID string) time.Duration {
+				if workloadID == "elastic" {
+					return 2 * time.Second
+				}
+				return 100 * time.Millisecond
+			},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			mcpSrv := mcpserver.NewMCPServer("timeout-test", "1.0.0")
+			mcpSrv.AddTool(
+				mcp.NewTool("slow_echo", mcp.WithString("input", mcp.Required())),
+				func(_ context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
+					time.Sleep(toolDelay)
+					args, _ := req.Params.Arguments.(map[string]any)
+					input, _ := args["input"].(string)
+					return &mcp.CallToolResult{Content: []mcp.Content{mcp.NewTextContent(input)}}, nil
+				},
+			)
+			ts := httptest.NewServer(mcpserver.NewStreamableHTTPServer(mcpSrv))
+			t.Cleanup(ts.Close)
+
+			registry := auth.NewDefaultOutgoingAuthRegistry()
+			require.NoError(t, registry.RegisterStrategy(
+				authtypes.StrategyTypeUnauthenticated, &strategies.UnauthenticatedStrategy{},
+			))
+			backendClient, err := NewHTTPBackendClient(
+				registry, WithRequestTimeoutResolver(tt.resolver),
+			)
+			require.NoError(t, err)
+
+			clientImpl := backendClient.(*httpBackendClient)
+			clientImpl.revisions.Store("elastic", mcpparser.RevisionLegacy)
+			target := &vmcp.BackendTarget{
+				WorkloadID:    "elastic",
+				WorkloadName:  "elastic",
+				BaseURL:       ts.URL,
+				TransportType: "streamable-http",
+			}
+
+			result, err := backendClient.CallTool(
+				t.Context(), target, "slow_echo", map[string]any{"input": "slow response"}, nil, nil,
+			)
+			if tt.wantTimeoutErr {
+				require.Error(t, err)
+				assert.Nil(t, result)
+				return
+			}
+
+			require.NoError(t, err)
+			require.NotNil(t, result)
+			require.Len(t, result.Content, 1)
+			assert.Equal(t, "slow response", result.Content[0].Text)
+		})
+	}
+}
+
 // TestTracePropagatingRoundTripper tests the trace context propagation RoundTripper.
 func TestTracePropagatingRoundTripper(t *testing.T) {
 	t.Parallel()

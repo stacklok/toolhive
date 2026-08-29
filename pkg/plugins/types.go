@@ -100,6 +100,10 @@ type InstalledPlugin struct {
 	// installs. No omitempty: false is an observable state (unmanaged),
 	// not an absence.
 	Managed bool `json:"managed"`
+	// SigstoreBundle is the serialized Sigstore bundle captured at install
+	// time, used for offline re-verification during sync. Nil for unsigned
+	// installs. Never serialized to API responses.
+	SigstoreBundle []byte `json:"-"`
 }
 
 // ComponentInventory summarizes the component types declared by a plugin

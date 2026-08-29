@@ -677,3 +677,38 @@ func TestPluginsInstallLocationHeader(t *testing.T) {
 	assert.Equal(t, http.StatusCreated, rec.Code)
 	assert.Equal(t, "/api/v1beta/plugins/my-plugin", rec.Header().Get("Location"))
 }
+
+// TestPluginsInstallCarriesAllowUnsigned pins the API-side half of the
+// unsigned-install exception: a request body that sets allow_unsigned must
+// reach the service as InstallOptions.AllowUnsigned, or the flag dies at the
+// handler and every caller is told to pass the flag it already passed.
+func TestPluginsInstallCarriesAllowUnsigned(t *testing.T) {
+	t.Parallel()
+
+	ctrl := gomock.NewController(t)
+	mockSvc := plugmocks.NewMockPluginService(ctrl)
+
+	mockSvc.EXPECT().Install(gomock.Any(), plugins.InstallOptions{
+		Name:          "my-plugin",
+		Scope:         plugins.ScopeProject,
+		ProjectRoot:   "/tmp/project",
+		AllowUnsigned: true,
+	}).Return(&plugins.InstallResult{
+		Plugin: plugins.InstalledPlugin{
+			Metadata: plugins.PluginMetadata{Name: "my-plugin"},
+			Scope:    plugins.ScopeProject,
+			Status:   plugins.InstallStatusInstalled,
+		},
+	}, nil)
+
+	router := chi.NewRouter()
+	router.Mount("/", PluginsRouter(mockSvc))
+
+	body := `{"name":"my-plugin","scope":"project","project_root":"/tmp/project","allow_unsigned":true}`
+	req := httptest.NewRequest(http.MethodPost, "/", strings.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
+	rec := httptest.NewRecorder()
+	router.ServeHTTP(rec, req)
+
+	assert.Equal(t, http.StatusCreated, rec.Code)
+}

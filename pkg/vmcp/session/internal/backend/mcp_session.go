@@ -36,10 +36,42 @@ const (
 	maxBackendResponseSize = 100 * 1024 * 1024 // 100 MB
 
 	// defaultBackendRequestTimeout is the wall-clock deadline for individual
-	// streamable-HTTP requests. Applied at both the http.Client and SDK layers
-	// (defense-in-depth). Not used for SSE, whose stream lifetime is unbounded.
+	// backend operations. Streamable-HTTP also applies it at the http.Client and
+	// SDK layers; SSE keeps its connection unbounded but bounds operation contexts.
 	defaultBackendRequestTimeout = 30 * time.Second
 )
+
+// HTTPConnectorOption configures the persistent HTTP backend connector.
+type HTTPConnectorOption func(*httpConnectorConfig)
+
+type httpConnectorConfig struct {
+	requestTimeoutResolver func(workloadID string) time.Duration
+}
+
+// WithRequestTimeoutResolver configures the timeout used for each backend
+// operation. The resolver receives the backend workload ID and may return a
+// workload-specific duration. A nil resolver, or a non-positive result, uses
+// the 30-second default.
+//
+// The resolver may be called concurrently and must therefore be safe for
+// concurrent use. SSE connection lifetimes remain unbounded, but individual
+// operations on those connections are bounded through request contexts.
+func WithRequestTimeoutResolver(resolver func(workloadID string) time.Duration) HTTPConnectorOption {
+	return func(cfg *httpConnectorConfig) {
+		if resolver != nil {
+			cfg.requestTimeoutResolver = resolver
+		}
+	}
+}
+
+func (c *httpConnectorConfig) requestTimeout(workloadID string) time.Duration {
+	if c.requestTimeoutResolver != nil {
+		if timeout := c.requestTimeoutResolver(workloadID); timeout > 0 {
+			return timeout
+		}
+	}
+	return defaultBackendRequestTimeout
+}
 
 // ChangeKind identifies which capability class a backend reported changed via
 // ListChangedSink. Using a typed constant (rather than a bare string) means a
@@ -183,6 +215,7 @@ type mcpSession struct {
 	client           *mcpclient.Client
 	target           *vmcp.BackendTarget // bound at creation; used for capability name translation
 	backendSessionID string              // backend-assigned session ID (may be empty)
+	requestTimeout   time.Duration       // bounds each backend operation, including over SSE
 }
 
 // SessionID returns the backend-assigned session ID.
@@ -198,6 +231,9 @@ func (c *mcpSession) CallTool(
 	arguments map[string]any,
 	meta map[string]any,
 ) (*vmcp.ToolCallResult, error) {
+	ctx, cancel := context.WithTimeout(ctx, c.requestTimeout)
+	defer cancel()
+
 	backendName := c.target.GetBackendCapabilityName(toolName)
 	if backendName != toolName {
 		slog.Debug("Translating tool name", "clientName", toolName, "backendName", backendName)
@@ -246,6 +282,9 @@ func (c *mcpSession) ReadResource(
 	ctx context.Context,
 	uri string,
 ) (*vmcp.ResourceReadResult, error) {
+	ctx, cancel := context.WithTimeout(ctx, c.requestTimeout)
+	defer cancel()
+
 	backendURI := c.target.GetBackendCapabilityName(uri)
 	if backendURI != uri {
 		slog.Debug("Translating resource URI", "clientURI", uri, "backendURI", backendURI)
@@ -276,6 +315,9 @@ func (c *mcpSession) GetPrompt(
 	name string,
 	arguments map[string]any,
 ) (*vmcp.PromptGetResult, error) {
+	ctx, cancel := context.WithTimeout(ctx, c.requestTimeout)
+	defer cancel()
+
 	backendName := c.target.GetBackendCapabilityName(name)
 	if backendName != name {
 		slog.Debug("Translating prompt name", "clientName", name, "backendName", backendName)
@@ -320,7 +362,7 @@ func (c *mcpSession) GetPrompt(
 // createMCPClient for what that does and does not enable (nil-sink callers are
 // completely unaffected: no OnNotification handler is registered and no
 // standalone GET stream is opened).
-func NewHTTPConnector(registry vmcpauth.OutgoingAuthRegistry) func(
+func NewHTTPConnector(registry vmcpauth.OutgoingAuthRegistry, opts ...HTTPConnectorOption) func(
 	ctx context.Context,
 	target *vmcp.BackendTarget,
 	identity *auth.Identity,
@@ -328,6 +370,10 @@ func NewHTTPConnector(registry vmcpauth.OutgoingAuthRegistry) func(
 	sink ListChangedSink,
 ) (Session, *vmcp.CapabilityList, error) {
 	provider := secrets.NewEnvironmentProvider()
+	connectorConfig := &httpConnectorConfig{}
+	for _, opt := range opts {
+		opt(connectorConfig)
+	}
 	return func(
 		ctx context.Context,
 		target *vmcp.BackendTarget,
@@ -335,7 +381,17 @@ func NewHTTPConnector(registry vmcpauth.OutgoingAuthRegistry) func(
 		sessionHint string,
 		sink ListChangedSink,
 	) (Session, *vmcp.CapabilityList, error) {
-		c, err := createMCPClient(ctx, target, identity, registry, sessionHint, provider, sink)
+		requestTimeout := connectorConfig.requestTimeout(target.WorkloadID)
+		transportTimeout := requestTimeout
+		if deadline, ok := ctx.Deadline(); ok {
+			if remaining := time.Until(deadline); remaining > transportTimeout {
+				transportTimeout = remaining
+			}
+		}
+
+		c, err := createMCPClient(
+			ctx, target, identity, registry, sessionHint, provider, sink, transportTimeout,
+		)
 		if err != nil {
 			return nil, nil, fmt.Errorf("failed to create MCP client for backend %s: %w", target.WorkloadID, err)
 		}
@@ -356,7 +412,9 @@ func NewHTTPConnector(registry vmcpauth.OutgoingAuthRegistry) func(
 			backendSessionID = sh.GetSessionId()
 		}
 
-		return &mcpSession{client: c, target: target, backendSessionID: backendSessionID}, caps, nil
+		return &mcpSession{
+			client: c, target: target, backendSessionID: backendSessionID, requestTimeout: requestTimeout,
+		}, caps, nil
 	}
 }
 
@@ -390,6 +448,7 @@ func createMCPClient(
 	sessionHint string,
 	provider secrets.Provider,
 	sink ListChangedSink,
+	requestTimeout time.Duration,
 ) (*mcpclient.Client, error) {
 	// Resolve and validate the auth strategy once at client creation time.
 	strategyName := authtypes.StrategyTypeUnauthenticated
@@ -453,7 +512,7 @@ func createMCPClient(
 		// WithHTTPTimeout additionally wraps each SDK request in a
 		// context.WithTimeout so the mcpcompat transport surfaces a descriptive
 		// error before the stdlib deadline fires. Both are set to
-		// defaultBackendRequestTimeout: defense-in-depth.
+		// requestTimeout: defense-in-depth.
 		sizeLimited := httpRoundTripperFunc(func(req *http.Request) (*http.Response, error) {
 			resp, err := base.RoundTrip(req)
 			if err != nil {
@@ -473,11 +532,11 @@ func createMCPClient(
 		// auth/identity/header-forward credentials at the attacker host.
 		httpClient := &http.Client{
 			Transport:     sizeLimited,
-			Timeout:       defaultBackendRequestTimeout,
+			Timeout:       requestTimeout,
 			CheckRedirect: networking.SameHostRedirectPolicy(),
 		}
 		streamableOpts := []mcptransport.StreamableHTTPCOption{
-			mcptransport.WithHTTPTimeout(defaultBackendRequestTimeout),
+			mcptransport.WithHTTPTimeout(requestTimeout),
 			mcptransport.WithHTTPBasicClient(httpClient),
 		}
 		if sessionHint != "" {

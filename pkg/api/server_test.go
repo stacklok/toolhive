@@ -6,10 +6,12 @@ package api
 import (
 	"context"
 	"fmt"
+	"io"
 	"net"
 	"net/http"
 	"net/http/httptest"
 	"regexp"
+	"strings"
 	"testing"
 
 	"github.com/go-chi/chi/v5"
@@ -97,12 +99,6 @@ func TestListenURL(t *testing.T) {
 	}
 }
 
-// TestServerBuilderExtensionPoints exercises WithMiddleware and WithRoute so
-// they remain reachable to deadcode analysis. Both methods form the public
-// surface for ApplyServerExtensions consumers, whose callers may live in
-// downstream repositories that this module's analyzer cannot see. Without
-// this test, a future deadcode pass would flag them as unreachable (as
-// happened in #5355) even though external callers depend on them.
 func TestSecurityHeaders(t *testing.T) {
 	t.Parallel()
 
@@ -118,6 +114,12 @@ func TestSecurityHeaders(t *testing.T) {
 	assert.Equal(t, "same-origin", rec.Header().Get("Cross-Origin-Resource-Policy"))
 }
 
+// TestServerBuilderExtensionPoints exercises WithMiddleware and WithRoute so
+// they remain reachable to deadcode analysis. Both methods form the public
+// surface for ApplyServerExtensions consumers, whose callers may live in
+// downstream repositories that this module's analyzer cannot see. Without
+// this test, a future deadcode pass would flag them as unreachable (as
+// happened in #5355) even though external callers depend on them.
 func TestServerBuilderExtensionPoints(t *testing.T) {
 	t.Parallel()
 
@@ -286,4 +288,121 @@ func TestPluginHitsFromRegistry(t *testing.T) {
 			tt.assert(t, hits)
 		})
 	}
+}
+
+// TestCrossOriginCSRFProtection verifies the two barriers added for
+// GHSA-xv9h-79wp-q9w6: a state-changing request that carries a body without an
+// application/json content type is rejected (415), and a request bearing a
+// disallowed Origin is rejected (403). Legitimate same-origin and non-browser
+// (no Origin) JSON requests pass, as do empty-body mutating requests. A
+// non-loopback bind intentionally disables the Origin gate (pass-through) but
+// keeps the content-type gate; UNIX-socket mode is exempt from both.
+func TestCrossOriginCSRFProtection(t *testing.T) {
+	t.Parallel()
+
+	build := func(t *testing.T, addr string, socket bool) http.Handler {
+		t.Helper()
+		// Inject mock skill/plugin managers so Build() skips the default SQLite
+		// stores, which share a DB file and race under parallel subtests.
+		ctrl := gomock.NewController(t)
+		b := NewServerBuilder().WithAddress(addr).WithUnixSocket(socket)
+		b.skillManager = skillsmocks.NewMockSkillService(ctrl)
+		b.pluginManager = pluginsmocks.NewMockPluginService(ctrl)
+		hit := chi.NewRouter()
+		hit.HandleFunc("/", func(w http.ResponseWriter, _ *http.Request) { w.WriteHeader(http.StatusOK) })
+		b.WithRoute("/ext", hit)
+		router, err := b.Build(context.Background())
+		require.NoError(t, err)
+		return router
+	}
+
+	// send issues one request and returns the status code. body may be nil for
+	// an empty-body request (ContentLength 0).
+	send := func(router http.Handler, method, contentType, origin string, body io.Reader) int {
+		req := httptest.NewRequest(method, "/ext/", body)
+		if contentType != "" {
+			req.Header.Set("Content-Type", contentType)
+		}
+		if origin != "" {
+			req.Header.Set("Origin", origin)
+		}
+		rec := httptest.NewRecorder()
+		router.ServeHTTP(rec, req)
+		return rec.Code
+	}
+
+	// do sends a non-empty body, so ContentLength > 0 and the content-type gate
+	// applies. doEmpty sends no body (ContentLength 0), the empty-body path.
+	do := func(router http.Handler, method, contentType, origin string) int {
+		return send(router, method, contentType, origin, strings.NewReader(`{}`))
+	}
+	doEmpty := func(router http.Handler, method, contentType, origin string) int {
+		return send(router, method, contentType, origin, nil)
+	}
+
+	t.Run("TCP loopback listener", func(t *testing.T) {
+		t.Parallel()
+		router := build(t, "127.0.0.1:8080", false)
+
+		// The attack, in its variants: a body that is not declared
+		// application/json is refused before the handler decodes it. This
+		// includes an absent Content-Type, which is CORS-simple and was the
+		// original bypass.
+		assert.Equal(t, http.StatusUnsupportedMediaType,
+			do(router, http.MethodPost, "text/plain", ""))
+		assert.Equal(t, http.StatusUnsupportedMediaType,
+			do(router, http.MethodPost, "text/plain; charset=UTF-8", ""))
+		assert.Equal(t, http.StatusUnsupportedMediaType,
+			do(router, http.MethodPost, "application/x-www-form-urlencoded", ""))
+		assert.Equal(t, http.StatusUnsupportedMediaType,
+			do(router, http.MethodPost, "", "")) // body present, no Content-Type
+
+		// A JSON body from a disallowed Origin is refused by the origin gate.
+		assert.Equal(t, http.StatusForbidden,
+			do(router, http.MethodPost, "application/json", "http://127.0.0.1:9999"))
+		assert.Equal(t, http.StatusForbidden,
+			do(router, http.MethodPost, "application/json", "https://evil.example"))
+
+		// Legitimate traffic is untouched: same-origin browser and no-Origin
+		// clients (curl, CI runners) succeed with JSON, GET is never gated, and
+		// an empty-body mutating request (e.g. stop/restart) passes with no
+		// Content-Type.
+		assert.Equal(t, http.StatusOK,
+			do(router, http.MethodPost, "application/json", "http://localhost:8080"))
+		assert.Equal(t, http.StatusOK,
+			do(router, http.MethodPost, "application/json", ""))
+		assert.Equal(t, http.StatusOK,
+			do(router, http.MethodGet, "", ""))
+		assert.Equal(t, http.StatusOK,
+			doEmpty(router, http.MethodPost, "", ""))
+	})
+
+	t.Run("non-loopback bind disables Origin gate but keeps content-type gate", func(t *testing.T) {
+		t.Parallel()
+		// Pins the intentional pass-through: a non-loopback bind derives no
+		// allowlist, so the Origin gate does not run. A future change that
+		// silently started rejecting or allowing here would flip this.
+		router := build(t, "0.0.0.0:8080", false)
+
+		// Origin gate is off: a foreign-Origin JSON request is NOT rejected.
+		assert.Equal(t, http.StatusOK,
+			do(router, http.MethodPost, "application/json", "https://evil.example"))
+		// Content-type gate is still on: the no-Content-Type bypass is closed
+		// even in this mode, where it is the only remaining barrier.
+		assert.Equal(t, http.StatusUnsupportedMediaType,
+			do(router, http.MethodPost, "", ""))
+		assert.Equal(t, http.StatusUnsupportedMediaType,
+			do(router, http.MethodPost, "text/plain", ""))
+	})
+
+	t.Run("UNIX socket mode is exempt", func(t *testing.T) {
+		t.Parallel()
+		router := build(t, "/tmp/thv-test.sock", true)
+
+		// No browser can reach a socket, so neither gate applies.
+		assert.Equal(t, http.StatusOK,
+			do(router, http.MethodPost, "text/plain", ""))
+		assert.Equal(t, http.StatusOK,
+			do(router, http.MethodPost, "application/json", "http://127.0.0.1:9999"))
+	})
 }

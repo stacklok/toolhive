@@ -10,7 +10,6 @@ import (
 	"net"
 	"net/http"
 	"net/url"
-	"path/filepath"
 	"regexp"
 	"strings"
 	"time"
@@ -181,7 +180,9 @@ func ValidateLoopbackURL(rawURL string) error {
 // authority (unix://host/path) are rejected because the path component would
 // be ambiguous. On Windows, unix:///C:%5Cpath%5Cthv.sock round-trips back to
 // C:\path\thv.sock by stripping the synthetic leading slash that net/url
-// inserts in front of the drive letter.
+// inserts in front of the drive letter. POSIX unix:///tmp/foo.sock stays in
+// slash form even when parsed on Windows; filepath.Clean would otherwise turn
+// it into \tmp\foo.sock, which is not absolute on that GOOS.
 func ParseUnixSocketPath(rawURL string) (string, error) {
 	u, err := url.Parse(rawURL)
 	if err != nil {
@@ -193,31 +194,7 @@ func ParseUnixSocketPath(rawURL string) (string, error) {
 	if u.Host != "" || u.RawQuery != "" || u.Fragment != "" || u.User != nil {
 		return "", fmt.Errorf("unix socket path must be absolute (use unix:///<path>): %s", rawURL)
 	}
-	path := u.Path
-	if path == "" {
-		return "", fmt.Errorf("empty unix socket path")
-	}
-
-	// On Windows AF_UNIX paths, the listener emits unix:///C:%5Cpath%5C..., which
-	// url.Parse returns as Path="/C:\path\..." with a synthetic leading slash.
-	// Strip it before any further validation so filepath.IsAbs sees the actual
-	// drive-letter form.
-	if len(path) >= 3 && path[0] == '/' && isASCIILetter(path[1]) && path[2] == ':' {
-		path = path[1:]
-	}
-
-	// Check for traversal before Clean resolves it away.
-	if strings.Contains(path, "..") {
-		return "", fmt.Errorf("unix socket path must not contain '..': %s", path)
-	}
-
-	path = filepath.Clean(path)
-
-	if !filepath.IsAbs(path) {
-		return "", fmt.Errorf("unix socket path must be absolute: %s", path)
-	}
-
-	return path, nil
+	return parseUnixSocketPath(u.Path)
 }
 
 // ParseNamedPipeURL extracts and validates the pipe name from an npipe:// URL
@@ -256,8 +233,8 @@ func ParseNamedPipeURL(rawURL string) (string, error) {
 	return NamedPipePrefix + name, nil
 }
 
-// isASCIILetter reports whether b is an ASCII letter [A-Za-z]. Used by
-// ParseUnixSocketPath to detect Windows drive-letter prefixes after url.Parse.
+// isASCIILetter reports whether b is an ASCII letter [A-Za-z]. Used to detect
+// Windows drive-letter prefixes in unix:// URL paths.
 func isASCIILetter(b byte) bool {
 	return (b >= 'A' && b <= 'Z') || (b >= 'a' && b <= 'z')
 }

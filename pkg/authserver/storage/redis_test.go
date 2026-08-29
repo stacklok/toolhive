@@ -10,6 +10,8 @@ package storage
 import (
 	"bytes"
 	"context"
+	"crypto/rand"
+	"crypto/rsa"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -22,6 +24,7 @@ import (
 	"time"
 
 	"github.com/alicebob/miniredis/v2"
+	"github.com/go-jose/go-jose/v3"
 	"github.com/ory/fosite"
 	"github.com/redis/go-redis/v9"
 	"github.com/stretchr/testify/assert"
@@ -347,6 +350,49 @@ func TestRedisStorage_ClientAuthMethodPersistence(t *testing.T) {
 
 			// The stored secret is already hashed; round-tripping must not re-hash it.
 			assert.Equal(t, []byte("already-hashed-secret"), retrieved.GetHashedSecret())
+		})
+	})
+
+	t.Run("private_key_jwt client round-trips metadata without private keys", func(t *testing.T) {
+		withRedisStorage(t, func(ctx context.Context, s *RedisStorage, _ *miniredis.Miniredis) {
+			privateKey, err := rsa.GenerateKey(rand.Reader, 2048)
+			require.NoError(t, err)
+			client, err := registration.New(registration.Config{
+				ID:                                "private-key-client",
+				TokenEndpointAuthMethod:           oauthproto.TokenEndpointAuthMethodPrivateKeyJWT,
+				TokenEndpointAuthSigningAlgorithm: "RS256",
+				JSONWebKeys: &jose.JSONWebKeySet{Keys: []jose.JSONWebKey{{
+					Key: privateKey, KeyID: "client-key", Algorithm: "RS256", Use: "sig",
+				}}},
+				GrantTypes:    []string{"authorization_code", "refresh_token"},
+				ResponseTypes: []string{"code"},
+				Scopes:        []string{"openid", "profile"},
+				Audience:      []string{"https://mcp.example"},
+				RedirectURIs:  []string{"https://app.example/cb"},
+			})
+			require.NoError(t, err)
+			require.NoError(t, s.RegisterClient(ctx, client))
+
+			data, err := s.client.Get(ctx, redisKey(s.keyPrefix, KeyTypeClient, client.GetID())).Bytes()
+			require.NoError(t, err)
+			assert.NotContains(t, string(data), `"d"`, "private RSA exponent must not be persisted")
+
+			retrieved, err := s.GetClient(ctx, client.GetID())
+			require.NoError(t, err)
+			oidc, ok := retrieved.(fosite.OpenIDConnectClient)
+			require.True(t, ok)
+			assert.Equal(t, oauthproto.TokenEndpointAuthMethodPrivateKeyJWT, oidc.GetTokenEndpointAuthMethod())
+			assert.Equal(t, "RS256", oidc.GetTokenEndpointAuthSigningAlgorithm())
+			assert.Equal(t, []string{"authorization_code", "refresh_token"}, []string(retrieved.GetGrantTypes()))
+			assert.Equal(t, []string{"openid", "profile"}, []string(retrieved.GetScopes()))
+			assert.Equal(t, []string{"https://mcp.example"}, []string(retrieved.GetAudience()))
+			jwks := oidc.GetJSONWebKeys()
+			require.NotNil(t, jwks)
+			require.Len(t, jwks.Keys, 1)
+			assert.True(t, jwks.Keys[0].IsPublic())
+			assert.Equal(t, "client-key", jwks.Keys[0].KeyID)
+			assert.True(t, registration.DCRIssued(retrieved))
+			assert.False(t, retrieved.IsPublic())
 		})
 	})
 
@@ -796,7 +842,7 @@ func TestRedisStorage_ClientAssertionJWT(t *testing.T) {
 
 	t.Run("known JTI is invalid", func(t *testing.T) {
 		withRedisStorage(t, func(ctx context.Context, s *RedisStorage, _ *miniredis.Miniredis) {
-			require.NoError(t, s.SetClientAssertionJWT(ctx, "test-jti", time.Now().Add(time.Hour)))
+			require.NoError(t, s.SetClientAssertionJWT(ctx, "test-jti", time.Now().Add(time.Minute)))
 			err := s.ClientAssertionJWTValid(ctx, "test-jti")
 			assert.ErrorIs(t, err, fosite.ErrJTIKnown)
 		})
@@ -808,6 +854,32 @@ func TestRedisStorage_ClientAssertionJWT(t *testing.T) {
 			err := s.ClientAssertionJWTValid(ctx, "expired-jti")
 			require.NoError(t, err) // Should be valid because expired JTI is not stored
 		})
+	})
+}
+
+// TestRedisStorage_ClientAssertionJWT_ConcurrentReplay proves
+// ClientAssertionJWTValid's SET NX reservation is atomic: of many
+// goroutines racing to validate the identical jti, exactly one must
+// observe it as unused. Before the reserve-then-confirm fix, the
+// Exists-then-Set pair let concurrent requests carrying the same assertion
+// both pass the check before either recorded it.
+func TestRedisStorage_ClientAssertionJWT_ConcurrentReplay(t *testing.T) {
+	withRedisStorage(t, func(ctx context.Context, s *RedisStorage, _ *miniredis.Miniredis) {
+		const attempts = 20
+		var succeeded atomic.Int32
+		var wg sync.WaitGroup
+		wg.Add(attempts)
+		for range attempts {
+			go func() {
+				defer wg.Done()
+				if err := s.ClientAssertionJWTValid(ctx, "race-jti"); err == nil {
+					succeeded.Add(1)
+				}
+			}()
+		}
+		wg.Wait()
+
+		assert.Equal(t, int32(1), succeeded.Load(), "exactly one concurrent validator must win the reservation")
 	})
 }
 

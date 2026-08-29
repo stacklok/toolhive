@@ -136,6 +136,7 @@ func (r *VirtualMCPServerReconciler) deploymentForVirtualMCPServer(
 	ctx context.Context,
 	vmcp *mcpv1beta1.VirtualMCPServer,
 	vmcpConfigChecksum string,
+	caBundleChecksum string,
 	telemetryCfg *mcpv1beta1.MCPTelemetryConfig,
 	typedWorkloads []workloads.TypedWorkload,
 ) *appsv1.Deployment {
@@ -174,12 +175,17 @@ func (r *VirtualMCPServerReconciler) deploymentForVirtualMCPServer(
 	// env vars are injected by buildEnvVarsForVmcp above so the drift check stays
 	// symmetric with what is built here (see #5616).
 	if vmcp.Spec.AuthServerConfig != nil {
-		authServerVolumes, authServerMounts := ctrlutil.GenerateAuthServerVolumes(vmcp.Spec.AuthServerConfig)
+		authServerVolumes, authServerMounts, err := ctrlutil.GenerateAuthServerVolumes(vmcp.Spec.AuthServerConfig)
+		if err != nil {
+			log.FromContext(ctx).Error(err, "Failed to build embedded auth server CA volumes")
+			return nil
+		}
 		volumes = append(volumes, authServerVolumes...)
 		volumeMounts = append(volumeMounts, authServerMounts...)
 	}
 	deploymentLabels, deploymentAnnotations := r.buildDeploymentMetadataForVmcp(ls, vmcp)
-	deploymentTemplateLabels, deploymentTemplateAnnotations := r.buildPodTemplateMetadata(ls, vmcp, vmcpConfigChecksum)
+	deploymentTemplateLabels, deploymentTemplateAnnotations := r.buildPodTemplateMetadata(
+		ls, vmcp, vmcpConfigChecksum, caBundleChecksum)
 	podSecurityContext, containerSecurityContext := r.buildSecurityContextsForVmcp(ctx, vmcp)
 	serviceAccountName := r.serviceAccountNameForVmcp(vmcp)
 
@@ -980,12 +986,16 @@ func (*VirtualMCPServerReconciler) buildPodTemplateMetadata(
 	baseLabels map[string]string,
 	_ *mcpv1beta1.VirtualMCPServer,
 	vmcpConfigChecksum string,
+	caBundleChecksum string,
 ) (map[string]string, map[string]string) {
 	templateLabels := baseLabels
 
 	// Add vmcp Config checksum annotation to trigger pod rollout when config changes
 	// Use the standard checksum package helper for consistency
 	templateAnnotations := checksum.AddRunConfigChecksumToPodTemplate(nil, vmcpConfigChecksum)
+	if caBundleChecksum != "" {
+		templateAnnotations[ctrlutil.AuthServerCABundleChecksumAnnotation] = caBundleChecksum
+	}
 
 	return templateLabels, templateAnnotations
 }

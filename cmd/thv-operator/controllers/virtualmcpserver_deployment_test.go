@@ -1162,21 +1162,21 @@ func TestDeploymentForVirtualMCPServer_AuthServerSigningKeyVolumeDrift(t *testin
 	)
 
 	const cfgChecksum = "test-checksum"
-	initialDeployment := r.deploymentForVirtualMCPServer(t.Context(), vmcp, cfgChecksum, nil, nil)
+	initialDeployment := r.deploymentForVirtualMCPServer(t.Context(), vmcp, cfgChecksum, "", nil, nil)
 	require.NotNil(t, initialDeployment)
 	require.NotEmpty(t, initialDeployment.Annotations["toolhive.stacklok.io/podvolumes-hash"])
 
 	updatedVMCP := vmcp.DeepCopy()
 	updatedVMCP.Spec.AuthServerConfig.SigningKeySecretRefs[0].Name = "keys-v2"
-	updatedDeployment := r.deploymentForVirtualMCPServer(t.Context(), updatedVMCP, cfgChecksum, nil, nil)
+	updatedDeployment := r.deploymentForVirtualMCPServer(t.Context(), updatedVMCP, cfgChecksum, "", nil, nil)
 	require.NotNil(t, updatedDeployment)
 
 	assert.NotEqual(t,
 		initialDeployment.Annotations["toolhive.stacklok.io/podvolumes-hash"],
 		updatedDeployment.Annotations["toolhive.stacklok.io/podvolumes-hash"],
 		"changing the signing key Secret reference must change the pod volume hash")
-	assert.True(t, r.deploymentNeedsUpdate(t.Context(), initialDeployment, updatedVMCP, cfgChecksum, nil, nil))
-	assert.False(t, r.deploymentNeedsUpdate(t.Context(), updatedDeployment, updatedVMCP, cfgChecksum, nil, nil))
+	assert.True(t, r.deploymentNeedsUpdate(t.Context(), initialDeployment, updatedVMCP, cfgChecksum, "", nil, nil))
+	assert.False(t, r.deploymentNeedsUpdate(t.Context(), updatedDeployment, updatedVMCP, cfgChecksum, "", nil, nil))
 
 	var signingKeySecretName string
 	for _, volume := range updatedDeployment.Spec.Template.Spec.Volumes {

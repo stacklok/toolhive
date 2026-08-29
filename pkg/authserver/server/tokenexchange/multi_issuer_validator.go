@@ -431,7 +431,7 @@ func newExternalIssuerConfig(ti TrustedIssuer) (*externalIssuerConfig, error) {
 	// fetcher from this issuer's own flags (see networking's
 	// NewHttpClientBuilder — deliberately not NewHostScopedClientBuilder,
 	// see the fetcher's buildHTTPClient comment for why env vars must not
-	// widen these gates). Keep-alives are disabled: the client dials
+	// widen these gates). Keep-alive is disabled: the client dials
 	// jwks_uri, a host taken from an untrusted discovery document, only on
 	// the fixed jwksRefreshInterval schedule plus occasional on-demand
 	// refreshes — no hot path here to trade the per-dial SSRF check away

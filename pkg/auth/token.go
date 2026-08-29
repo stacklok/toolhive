@@ -20,10 +20,10 @@ import (
 
 	"github.com/cenkalti/backoff/v5"
 	"github.com/golang-jwt/jwt/v5"
-	"github.com/lestrrat-go/httprc/v3"
 	"github.com/lestrrat-go/jwx/v3/jwk"
 
 	"github.com/stacklok/toolhive-core/env"
+	"github.com/stacklok/toolhive/pkg/auth/jwks"
 	"github.com/stacklok/toolhive/pkg/auth/upstreamtoken"
 	"github.com/stacklok/toolhive/pkg/authserver/server/keys"
 	"github.com/stacklok/toolhive/pkg/networking"
@@ -360,7 +360,7 @@ type TokenValidator struct {
 	jwksURL           string
 	clientID          string
 	clientSecret      string // Optional client secret for introspection
-	jwksClient        *jwk.Cache
+	jwks              *jwks.Fetcher
 	introspectURL     string       // Optional introspection endpoint
 	client            *http.Client // HTTP client for making requests
 	resourceURL       string       // (RFC 9728)
@@ -373,15 +373,10 @@ type TokenValidator struct {
 	upstreamTokenReader upstreamtoken.TokenReader
 
 	// keyProvider provides in-process JWKS key lookups from the embedded auth
-	// server's key provider. When set, getKeyFromJWKS resolves keys locally
-	// before falling back to HTTP. Eliminates self-referential HTTP calls.
-	// nil when no embedded auth server is configured.
+	// server's key provider. When set, JWKS key resolution resolves keys
+	// locally before falling back to HTTP. Eliminates self-referential HTTP
+	// calls. nil when no embedded auth server is configured.
 	keyProvider keys.PublicKeyProvider
-
-	// Lazy JWKS registration
-	jwksRegistered      bool
-	jwksRegistrationMu  sync.Mutex
-	jwksRegistrationErr error
 
 	// Lazy OIDC discovery - allows deferring discovery until first validation request.
 	// This is needed when the OIDC provider (auth server) is the same pod and starts after
@@ -652,7 +647,10 @@ func NewTokenValidator(ctx context.Context, config TokenValidatorConfig, opts ..
 		return nil, err
 	}
 
-	// Create HTTP client with CA bundle and auth token support for JWKS
+	// Create HTTP client with CA bundle and auth token support for OIDC
+	// discovery and introspection. The JWKS fetch path uses the dedicated
+	// jwks.Fetcher built below, which constructs its own client from the
+	// same flags — one Fetcher (and therefore one cache) per validator.
 	httpClient, err := networking.NewHttpClientBuilder().
 		WithCABundle(config.CACertPath).
 		WithPrivateIPs(config.AllowPrivateIP).
@@ -664,15 +662,27 @@ func NewTokenValidator(ctx context.Context, config TokenValidatorConfig, opts ..
 	}
 	config.httpClient = httpClient
 
-	// Create a new JWKS client with auto-refresh
-	// In jwx v3, NewCache requires an httprc.Client
-	httprcClient := httprc.NewClient(httprc.WithHTTPClient(httpClient))
-	cache, err := jwk.NewCache(ctx, httprcClient)
-	if err != nil {
-		return nil, fmt.Errorf("failed to create JWKS cache: %w", err)
+	// Build the JWKS fetcher: it owns JWKS URL validation, lazy registration,
+	// the response-body cap, the max-key-count cap, rate-limited refresh on
+	// unknown key IDs, and the fetch-failure backoff gate (see
+	// pkg/auth/jwks). The registration timeout keeps today's 5-second
+	// ready-wait budget; the header-derived refresh schedule is kept (no
+	// pinned interval). The 1 MiB body cap, 100-key cap, 30s unknown-kid
+	// refresh gate, and 30s fetch-failure backoff are new hardening that
+	// previously only existed on the token-exchange path.
+	fetcherOpts := []jwks.Option{
+		jwks.WithInsecureAllowHTTP(config.InsecureAllowHTTP),
+		jwks.WithAllowPrivateIPs(config.AllowPrivateIP),
+		jwks.WithAuthTokenFile(config.AuthTokenFile),
+		jwks.WithRegistrationTimeout(5 * time.Second),
 	}
-
-	// Skip synchronous JWKS registration - will be done lazily on first use
+	if config.CACertPath != "" {
+		fetcherOpts = append(fetcherOpts, jwks.WithCABundle(config.CACertPath))
+	}
+	fetcher, err := jwks.NewFetcher(ctx, fetcherOpts...)
+	if err != nil {
+		return nil, fmt.Errorf("failed to create JWKS fetcher: %w", err)
+	}
 
 	// Resolve client secret from config or environment variable
 	clientSecret := resolveClientSecret(config.ClientSecret, o.envReader)
@@ -690,7 +700,7 @@ func NewTokenValidator(ctx context.Context, config TokenValidatorConfig, opts ..
 		introspectURL:       config.IntrospectionURL,
 		clientID:            config.ClientID,
 		clientSecret:        clientSecret,
-		jwksClient:          cache,
+		jwks:                fetcher,
 		client:              config.httpClient,
 		resourceURL:         config.ResourceURL,
 		scopes:              config.Scopes,
@@ -717,57 +727,6 @@ func validateGoogleTokeninfoAudience(config TokenValidatorConfig) error {
 		return fmt.Errorf("audience is required when using Google's tokeninfo endpoint for introspection: " +
 			"without it any valid Google access token is accepted regardless of the OAuth client it was minted for")
 	}
-	return nil
-}
-
-// ensureJWKSRegistered ensures that the JWKS URL is registered with the cache.
-// This is called lazily on first use to avoid blocking startup.
-// On failure, registration is retried on subsequent calls (transient failures
-// should not permanently disable the validator).
-func (v *TokenValidator) ensureJWKSRegistered(ctx context.Context) error {
-	v.jwksRegistrationMu.Lock()
-	defer v.jwksRegistrationMu.Unlock()
-
-	// Already registered successfully - nothing to do
-	if v.jwksRegistered {
-		return nil
-	}
-
-	// Create context with 5-second timeout for JWKS registration
-	registrationCtx, cancel := context.WithTimeout(ctx, 5*time.Second)
-	defer cancel()
-
-	// Attempt registration. The CA-aware client must be passed per-resource:
-	// jwx >= 3.1.0 injects its own default client at the resource level when
-	// none is given here, which takes precedence over the client-level one
-	// configured in NewTokenValidator and silently drops custom CA support.
-	err := v.jwksClient.Register(registrationCtx, v.jwksURL, jwk.WithHTTPClient(v.client))
-	switch {
-	case err == nil:
-		// Registered and the first fetch succeeded.
-	case errors.Is(err, httprc.ErrNotReady()):
-		// The resource is registered and httprc will keep fetching it in the
-		// background; only the first fetch has not completed within the
-		// registration budget. Treat it as registered: Lookup returns a
-		// not-ready error until a background fetch succeeds. Retrying Register
-		// instead would fail with ErrResourceAlreadyExists forever.
-		//nolint:gosec // G706: JWKS URL is from server configuration or OIDC discovery
-		slog.Debug(
-			"JWKS URL registered but first fetch not ready; fetching continues in background",
-			"jwks_url", v.jwksURL, "error", err,
-		)
-	case errors.Is(err, httprc.ErrResourceAlreadyExists()):
-		// The URL is already in httprc's resource map, e.g. a previous attempt
-		// returned ErrNotReady before this state was tracked, or OIDC
-		// re-discovery produced the same URL after resetting the flag.
-	default:
-		v.jwksRegistrationErr = fmt.Errorf("failed to register JWKS URL: %w", err)
-		// Do NOT set jwksRegistered = true -- allow retry on next call
-		return v.jwksRegistrationErr
-	}
-
-	v.jwksRegistered = true
-	v.jwksRegistrationErr = nil
 	return nil
 }
 
@@ -857,12 +816,10 @@ func (v *TokenValidator) ensureOIDCDiscovered(ctx context.Context) error {
 	v.jwksURL = doc.JWKSURI
 	v.oidcDiscovered = true
 	v.oidcDiscoveryErr = nil
-	// Reset JWKS registration so it re-registers with the newly discovered URL.
-	// Acquire jwksRegistrationMu to safely reset the flag, since ensureJWKSRegistered
-	// reads it under that mutex. Lock ordering: oidcDiscoveryMu -> jwksRegistrationMu.
-	v.jwksRegistrationMu.Lock()
-	v.jwksRegistered = false
-	v.jwksRegistrationMu.Unlock()
+	// No JWKS registration state to reset here: the jwks.Fetcher registers
+	// per URL (EnsureRegistered asks the cache whether the URL is already
+	// registered), so a newly discovered URL registers naturally on first
+	// lookup.
 	//nolint:gosec // G706: issuer and JWKS URL are from OIDC discovery
 	slog.Debug(
 		"oidc discovery succeeded",
@@ -945,27 +902,20 @@ func (v *TokenValidator) getKeyFromJWKS(ctx context.Context, token *jwt.Token) (
 		return nil, ErrMissingJWKSURL
 	}
 
-	// Ensure JWKS is registered before attempting to use it
-	if err := v.ensureJWKSRegistered(ctx); err != nil {
-		return nil, fmt.Errorf("JWKS registration failed: %w", err)
-	}
-
 	kid, err := validateTokenHeader(token)
 	if err != nil {
 		return nil, err
 	}
 
-	// Get the key set from the JWKS
-	// In jwx v3, Get is replaced with Lookup
-	keySet, err := v.jwksClient.Lookup(ctx, v.jwksURL)
+	// Resolve the key through the shared fetcher: it registers and fetches
+	// the JWKS lazily (see EnsureRegistered), rate-limits refreshes for
+	// unknown key IDs, and caps response-body and key-count. Registration
+	// and fetch failures are retried on subsequent calls (transient failures
+	// should not permanently disable the validator) — gated by the fetcher's
+	// fetch-failure backoff.
+	key, err := v.jwks.Lookup(ctx, v.jwksURL, kid)
 	if err != nil {
-		return nil, fmt.Errorf("failed to lookup JWKS: %w", err)
-	}
-
-	// Get the key with the matching key ID
-	key, found := keySet.LookupKeyID(kid)
-	if !found {
-		return nil, fmt.Errorf("key ID %s not found in JWKS", kid)
+		return nil, err
 	}
 
 	// Get the raw key

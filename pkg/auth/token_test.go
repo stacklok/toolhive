@@ -94,18 +94,6 @@ func TestTokenValidator(t *testing.T) {
 		t.Fatalf("Failed to create token validator: %v", err)
 	}
 
-	// Ensure JWKS is registered before lookup
-	err = validator.ensureJWKSRegistered(ctx)
-	if err != nil {
-		t.Fatalf("Failed to register JWKS: %v", err)
-	}
-
-	// Force a refresh of the JWKS cache
-	_, err = validator.jwksClient.Lookup(ctx, jwksServer.URL)
-	if err != nil {
-		t.Fatalf("Failed to refresh JWKS cache: %v", err)
-	}
-
 	// Test cases
 	testCases := []struct {
 		name      string
@@ -240,18 +228,6 @@ func TestTokenValidatorMiddleware(t *testing.T) {
 	})
 	if err != nil {
 		t.Fatalf("Failed to create token validator: %v", err)
-	}
-
-	// Ensure JWKS is registered before lookup
-	err = validator.ensureJWKSRegistered(ctx)
-	if err != nil {
-		t.Fatalf("Failed to register JWKS: %v", err)
-	}
-
-	// Force a refresh of the JWKS cache
-	_, err = validator.jwksClient.Lookup(ctx, jwksServer.URL)
-	if err != nil {
-		t.Fatalf("Failed to refresh JWKS cache: %v", err)
 	}
 
 	// Create a test handler
@@ -677,18 +653,6 @@ func TestNewTokenValidatorWithOIDCDiscovery(t *testing.T) {
 		tokenString, err := token.SignedString(privateKey)
 		if err != nil {
 			t.Fatalf("Failed to sign token: %v", err)
-		}
-
-		// Ensure JWKS is registered before lookup
-		err = validator.ensureJWKSRegistered(ctx)
-		if err != nil {
-			t.Fatalf("Failed to register JWKS: %v", err)
-		}
-
-		// Force a refresh of the JWKS cache
-		_, err = validator.jwksClient.Lookup(ctx, validator.jwksURL)
-		if err != nil {
-			t.Fatalf("Failed to refresh JWKS cache: %v", err)
 		}
 
 		validatedClaims, err := validator.ValidateToken(ctx, tokenString)
@@ -2390,9 +2354,6 @@ func TestMiddleware_UpstreamTokenEnrichment(t *testing.T) {
 			CACertPath: caCertPath, AllowPrivateIP: true,
 		}, opts...)
 		require.NoError(t, vErr)
-		require.NoError(t, v.ensureJWKSRegistered(context.Background()))
-		_, lErr := v.jwksClient.Lookup(context.Background(), jwksServer.URL)
-		require.NoError(t, lErr)
 		return v
 	}
 
@@ -3009,70 +2970,6 @@ func TestValidateToken_DiscoveryFailsWithKeyProvider(t *testing.T) {
 		require.Error(t, err)
 		require.ErrorIs(t, err, ErrMissingJWKSURL)
 		require.Contains(t, err.Error(), "local key provider could not resolve key")
-	})
-}
-
-func TestEnsureJWKSRegistered_NonFatalRegistrationErrors(t *testing.T) {
-	t.Parallel()
-
-	t.Run("ErrNotReady marks the JWKS as registered", func(t *testing.T) {
-		t.Parallel()
-		// A JWKS endpoint that never succeeds keeps the resource from
-		// becoming ready within the registration budget.
-		jwksServer := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
-			w.WriteHeader(http.StatusInternalServerError)
-		}))
-		t.Cleanup(jwksServer.Close)
-		caCertPath := writeTestServerCert(t, jwksServer)
-
-		validator, err := NewTokenValidator(context.Background(), TokenValidatorConfig{
-			Issuer:         "test-issuer",
-			Audience:       "test-audience",
-			JWKSURL:        jwksServer.URL,
-			ClientID:       "test-client",
-			CACertPath:     caCertPath,
-			AllowPrivateIP: true,
-		})
-		require.NoError(t, err)
-
-		// Bound the ready-wait well below the 5s registration budget.
-		ctx, cancel := context.WithTimeout(context.Background(), time.Second)
-		defer cancel()
-		require.NoError(t, validator.ensureJWKSRegistered(ctx),
-			"ErrNotReady must be treated as registered-but-pending")
-		require.True(t, validator.jwksRegistered)
-
-		// Lookup surfaces not-ready until a background fetch succeeds.
-		_, err = validator.jwksClient.Lookup(context.Background(), jwksServer.URL)
-		require.Error(t, err)
-	})
-
-	t.Run("ErrResourceAlreadyExists marks the JWKS as registered", func(t *testing.T) {
-		t.Parallel()
-		jwksServer, caCertPath := createTestJWKSServer(t, jwk.NewSet())
-		t.Cleanup(jwksServer.Close)
-
-		validator, err := NewTokenValidator(context.Background(), TokenValidatorConfig{
-			Issuer:         "test-issuer",
-			Audience:       "test-audience",
-			JWKSURL:        jwksServer.URL,
-			ClientID:       "test-client",
-			CACertPath:     caCertPath,
-			AllowPrivateIP: true,
-		})
-		require.NoError(t, err)
-		require.NoError(t, validator.ensureJWKSRegistered(context.Background()))
-
-		// Simulate the reset done after OIDC re-discovery: the flag is
-		// cleared but the URL is still in httprc's resource map, so the
-		// next registration attempt returns ErrResourceAlreadyExists.
-		validator.jwksRegistrationMu.Lock()
-		validator.jwksRegistered = false
-		validator.jwksRegistrationMu.Unlock()
-
-		require.NoError(t, validator.ensureJWKSRegistered(context.Background()),
-			"re-registering an already-registered URL must not fail")
-		require.True(t, validator.jwksRegistered)
 	})
 }
 

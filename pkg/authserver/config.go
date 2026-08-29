@@ -15,6 +15,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/stacklok/toolhive/pkg/auth/jwks"
 	oauthserver "github.com/stacklok/toolhive/pkg/authserver/server"
 	servercrypto "github.com/stacklok/toolhive/pkg/authserver/server/crypto"
 	"github.com/stacklok/toolhive/pkg/authserver/server/handlers"
@@ -1178,7 +1179,8 @@ func validateTrustedIssuers(issuers []tokenexchange.TrustedIssuer, selfIssuer st
 		// (multi_issuer_validator.go) enforces the same invariant inside
 		// NewMultiIssuerTokenValidator, so a caller constructing a validator
 		// without routing through Config.Validate is still covered. Note that
-		// ensureRegistered's ValidateJWKSURL does NOT cover it — that check is
+		// the fetcher's jwks.ValidateJWKSURL (applied on every register and
+		// refresh, see pkg/auth/jwks) does NOT cover it — that check is
 		// gated on net.ParseIP, so it only rejects private IP *literals*, and a
 		// discovery document advertising a private *hostname* passes it
 		// cleanly. Checking here and in the constructor is deliberate
@@ -1222,9 +1224,9 @@ func validateTrustedIssuers(issuers []tokenexchange.TrustedIssuer, selfIssuer st
 // OIDC issuer-identifier rules (no query/fragment/trailing-slash) since a
 // JWKS endpoint legitimately carries those.
 //
-// Delegates to tokenexchange.ValidateJWKSURL, the same predicate the runtime
-// choke point (ensureRegistered, called on every JWKS fetch) enforces — the two
-// were previously separate implementations that had drifted apart (a
+// Delegates to jwks.ValidateJWKSURL, the same predicate the runtime choke
+// point (jwks.Fetcher.EnsureRegistered, called on every JWKS fetch) enforces —
+// the two were previously separate implementations that had drifted apart (a
 // runtime check laxer than this one would silently defeat this config-time
 // guard), so this is now the single source of truth for both.
 //
@@ -1236,7 +1238,7 @@ func validateTrustedIssuers(issuers []tokenexchange.TrustedIssuer, selfIssuer st
 // only relaxing the scheme. This helper takes its "insecure" bits solely
 // from the issuer's own explicit InsecureAllowHTTP/AllowPrivateIPs fields.
 func validateJWKSEndpointURL(rawURL string, insecureAllowHTTP, allowPrivateIPs bool) error {
-	return tokenexchange.ValidateJWKSURL(rawURL, insecureAllowHTTP, allowPrivateIPs)
+	return jwks.ValidateJWKSURL(rawURL, insecureAllowHTTP, allowPrivateIPs)
 }
 
 // warnTrustedIssuerAudiences logs a warning for each TrustedIssuer whose

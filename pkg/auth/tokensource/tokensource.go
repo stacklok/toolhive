@@ -402,6 +402,7 @@ func (t *OAuthTokenSource) buildFlowConfig(ctx context.Context) (*oauth.Config, 
 		true, // always use PKCE
 		t.opts.OIDC.CallbackPort,
 		t.opts.OIDC.Audience,
+		false, // issuer is operator-configured
 	)
 	if err != nil {
 		return nil, err

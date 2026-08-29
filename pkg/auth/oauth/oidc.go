@@ -242,8 +242,11 @@ func CreateOAuthConfigFromOIDC(
 	usePKCE bool,
 	callbackPort int,
 	resource string,
+	blockPrivateIPs bool,
 ) (*Config, error) {
-	return createOAuthConfigFromOIDCWithClient(ctx, issuer, clientID, clientSecret, scopes, usePKCE, callbackPort, resource, nil)
+	return createOAuthConfigFromOIDCWithClient(
+		ctx, issuer, clientID, clientSecret, scopes, usePKCE, callbackPort, resource, nil, blockPrivateIPs,
+	)
 }
 
 // createOAuthConfigFromOIDCWithClient creates an OAuth config from OIDC discovery with a custom HTTP client (private for testing)
@@ -255,11 +258,10 @@ func createOAuthConfigFromOIDCWithClient(
 	callbackPort int,
 	resource string,
 	client networking.HTTPClient,
+	blockPrivateIPs bool,
 ) (*Config, error) {
 	// Discover OIDC endpoints (insecureAllowHTTP is false for OAuth config creation).
-	// blockPrivateIPs=false here preserves this call path's existing behavior;
-	// it is unrelated to the CLI DCR fallback fixed in DiscoverOIDCEndpoints.
-	doc, err := discoverOIDCEndpointsWithClient(ctx, issuer, client, false, false)
+	doc, err := discoverOIDCEndpointsWithClient(ctx, issuer, client, false, blockPrivateIPs)
 	if err != nil {
 		return nil, fmt.Errorf("failed to discover OIDC endpoints: %w", err)
 	}

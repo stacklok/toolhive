@@ -943,6 +943,7 @@ func createOAuthConfig(ctx context.Context, issuer string, config *OAuthFlowConf
 		true, // Enable PKCE by default for security
 		config.CallbackPort,
 		config.Resource,
+		!config.AllowPrivateIPs,
 	)
 	if err != nil {
 		return nil, err

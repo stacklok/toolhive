@@ -19,15 +19,19 @@ import (
 )
 
 // installFromOCI pulls a plugin artifact from a remote registry, extracts
-// metadata and layer data, then delegates to installWithExtraction. Mirror of
-// skillsvc.installFromOCI, substituting the plugin supply-chain check
-// (config.Name == OCI repo last segment) and hydrating Components/Dependencies
-// from the plugin OCI config.
+// metadata and layer data, then materializes and registers the plugin while
+// holding the per-plugin lock. Structural mirror of skillsvc.installFromOCI
+// (failure semantics diverge — see Install), substituting
+// the plugin supply-chain check (config.Name == OCI repo last segment) and
+// hydrating Components/Dependencies from the plugin OCI config.
+//
+//nolint:gocyclo // pull, validate, hydrate, and locked install are one transactional path
 func (s *service) installFromOCI(
 	ctx context.Context,
 	opts plugins.InstallOptions,
 	scope plugins.Scope,
 	ref nameref.Reference,
+	alreadyLocked bool,
 ) (*plugins.InstallResult, error) {
 	if s.registry == nil || s.ociStore == nil {
 		return nil, httperr.WithCode(
@@ -107,10 +111,34 @@ func (s *service) installFromOCI(
 		opts.Version = pluginConfig.Version
 	}
 
-	unlock := s.locks.lock(opts.Name, scope, opts.ProjectRoot)
-	defer unlock()
+	if err := validateExpectedCanonicalName(opts); err != nil {
+		return nil, err
+	}
 
-	return s.installWithExtraction(ctx, opts, scope)
+	if !alreadyLocked {
+		var unlock func()
+		ctx, unlock = s.lockPlugin(ctx, opts.Name, scope, opts.ProjectRoot)
+		defer unlock()
+	}
+
+	// Verify the artifact signature before anything is extracted or
+	// recorded; the decision (verified identity or explicit unsigned
+	// exception) travels on opts into the DB record and lock entry. This
+	// runs under the per-plugin lock so concurrent first installs cannot
+	// both read an absent lock entry and race their TOFU anchors.
+	if shouldVerifyInstall(opts, scope) {
+		decision, verifyErr := s.verifyOCIInstall(ctx, opts, pluginConfig.Name, ociRef, opts.Digest)
+		if verifyErr != nil {
+			return nil, verifyErr
+		}
+		applyDecisionToOpts(&opts, decision)
+	}
+
+	result, err := s.installWithExtraction(ctx, opts, scope)
+	if err != nil {
+		return nil, err
+	}
+	return s.installAndRegister(ctx, opts, result, scope)
 }
 
 // requiresToDependencies maps a plugin's declared `requires` OCI references

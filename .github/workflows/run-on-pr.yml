@@ -51,7 +51,22 @@ jobs:
   skills-build:
     name: Build Skills
     needs: [linting, tests, codegen]
+    # Build-only, and deliberately calls a workflow that publishes nothing:
+    # this executes code from the pull request, so it must not hold the
+    # packages:write or id-token:write that skills-publish.yml uses to sign
+    # and push a release.
     permissions:
       contents: read
-      packages: write
-    uses: ./.github/workflows/skills-build-and-publish.yml
+    uses: ./.github/workflows/skills-build.yml
+  # Deliberately no skills-keyless-signing-e2e job here. It needs
+  # id-token: write to mint an ambient OIDC token, and it builds and runs
+  # repository code to use it — which on a pull request is code from the
+  # pull request. Even though the certificate it produces cannot impersonate
+  # the release signer (a different workflow path means a different SAN, and
+  # lock provenance pins that path), the job's environment carries
+  # ACTIONS_ID_TOKEN_REQUEST_URL/_TOKEN, from which that code could mint a
+  # token for *any* audience and exfiltrate it. Any external trust policy
+  # matching this repository without pinning the ref would accept it. The
+  # job runs post-merge from run-on-main.yml instead, where the code is
+  # trusted; it was already non-blocking, so it never gated a merge anyway.
+  # To exercise it on a branch, dispatch the "Main build" workflow there.

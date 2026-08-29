@@ -122,7 +122,15 @@ func (h *Handler) CallbackHandler(w http.ResponseWriter, req *http.Request) {
 			user, err := h.userResolver.ResolveUser(ctx, providerID, providerSubject)
 			if err != nil {
 				slog.Error("failed to resolve user", "error", err)
-				h.provider.WriteAuthorizeError(ctx, w, ar, fosite.ErrServerError.WithHint("failed to resolve user"))
+				// A UserStorage that deliberately refuses to auto-provision this
+				// identity (e.g. SCIM-only provisioning) is a client-facing denial,
+				// not a server fault — every other resolution failure keeps the
+				// generic server_error mapping.
+				resolveErr := fosite.ErrServerError.WithHint("failed to resolve user")
+				if errors.Is(err, storage.ErrUserNotProvisioned) {
+					resolveErr = fosite.ErrAccessDenied.WithHint("user not provisioned")
+				}
+				h.provider.WriteAuthorizeError(ctx, w, ar, resolveErr)
 				return
 			}
 			subject = user.ID
@@ -359,7 +367,16 @@ func (h *Handler) buildAuthorizeRequesterFromPending(
 	if client, err := h.storage.GetClient(ctx, pending.ClientID); err == nil {
 		ar.Client = client
 	}
-	return ar
+
+	// ar.RedirectURI keeps the real dynamic-port URI from pending.RedirectURI.
+	// fosite's own IsRedirectURIValid can't recognize "localhost" as loopback
+	// any more than the original /authorize request could (see
+	// rewriteLoopbackRedirectURI in authorize.go), so wrap here. Wrapping
+	// unconditionally is safe because the wrapper's override only ever widens
+	// validity (see loopbackAuthorizeRequester.IsRedirectURIValid), so a
+	// non-loopback or confidential client keeps exactly the validity fosite
+	// would have given it.
+	return wrapLoopbackErrorRequester(ar, pending.RedirectURI)
 }
 
 // handleUpstreamError handles error responses from the upstream IDP.

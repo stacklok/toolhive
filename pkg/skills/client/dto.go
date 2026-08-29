@@ -31,6 +31,11 @@ type buildRequest struct {
 
 type pushRequest struct {
 	Reference string `json:"reference"`
+	Key       string `json:"key,omitempty"`
+	// IdentityToken mirrors skills.PushOptions.IdentityToken; without it here
+	// the --identity-token flag would silently never reach the server.
+	IdentityToken string `json:"identity_token,omitempty"`
+	NoSign        bool   `json:"no_sign,omitempty"`
 }
 
 type listResponse struct {

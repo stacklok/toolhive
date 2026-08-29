@@ -390,18 +390,9 @@ func handleOutgoingAuthentication(ctx context.Context) (*discovery.OAuthFlowResu
 			return nil, fmt.Errorf("cannot specify both OIDC issuer and manual OAuth endpoints - choose one approach")
 		}
 
-		flowConfig := &discovery.OAuthFlowConfig{
-			ClientID:        remoteAuthFlags.RemoteAuthClientID,
-			ClientSecret:    clientSecret,
-			AuthorizeURL:    remoteAuthFlags.RemoteAuthAuthorizeURL,
-			TokenURL:        remoteAuthFlags.RemoteAuthTokenURL,
-			Scopes:          remoteAuthFlags.RemoteAuthScopes,
-			CallbackPort:    remoteAuthFlags.RemoteAuthCallbackPort,
-			Timeout:         remoteAuthFlags.RemoteAuthTimeout,
-			SkipBrowser:     remoteAuthFlags.RemoteAuthSkipBrowser,
-			ScopeParamName:  remoteAuthFlags.RemoteAuthScopeParamName,
-			AllowPrivateIPs: networking.TargetIsPrivate(ctx, proxyTargetURI),
-		}
+		flowConfig := buildRemoteAuthFlowConfig(
+			ctx, &remoteAuthFlags, clientSecret, proxyTargetURI, remoteAuthFlags.RemoteAuthIssuer,
+		)
 
 		result, err := discovery.PerformOAuthFlow(ctx, remoteAuthFlags.RemoteAuthIssuer, flowConfig)
 		if err != nil {
@@ -422,18 +413,8 @@ func handleOutgoingAuthentication(ctx context.Context) (*discovery.OAuthFlowResu
 		slog.Debug(fmt.Sprintf("Detected authentication requirement from server: %s", authInfo.Realm))
 
 		// Perform OAuth flow with discovered configuration
-		flowConfig := &discovery.OAuthFlowConfig{
-			ClientID:        remoteAuthFlags.RemoteAuthClientID,
-			ClientSecret:    clientSecret,
-			AuthorizeURL:    remoteAuthFlags.RemoteAuthAuthorizeURL,
-			TokenURL:        remoteAuthFlags.RemoteAuthTokenURL,
-			Scopes:          remoteAuthFlags.RemoteAuthScopes,
-			CallbackPort:    remoteAuthFlags.RemoteAuthCallbackPort,
-			Timeout:         remoteAuthFlags.RemoteAuthTimeout,
-			SkipBrowser:     remoteAuthFlags.RemoteAuthSkipBrowser,
-			ScopeParamName:  remoteAuthFlags.RemoteAuthScopeParamName,
-			AllowPrivateIPs: networking.TargetIsPrivate(ctx, proxyTargetURI),
-		}
+		// The issuer here is the server-supplied realm, so no operator issuer is passed.
+		flowConfig := buildRemoteAuthFlowConfig(ctx, &remoteAuthFlags, clientSecret, proxyTargetURI, "")
 
 		result, err := discovery.PerformOAuthFlow(ctx, authInfo.Realm, flowConfig)
 		if err != nil {
@@ -444,6 +425,40 @@ func handleOutgoingAuthentication(ctx context.Context) (*discovery.OAuthFlowResu
 	}
 
 	return nil, nil // No authentication required
+}
+
+// buildRemoteAuthFlowConfig assembles the OAuth flow config for the proxy's
+// outgoing authentication, from the remote-auth flags and the proxy target.
+//
+// operatorIssuer is the issuer the flow will run against when the operator named
+// it with --remote-auth-issuer, and empty when the issuer instead comes from the
+// remote server's WWW-Authenticate realm.
+//
+// The two trust flags are derived here because only this layer knows what the
+// operator typed. Both the token URL and the issuer flag are operator input, so
+// either one seeds the token endpoint's trust; when the endpoint is discovered
+// from the issuer instead, discovery narrows that trust back down by comparing
+// the discovered authority against the issuer's (CWE-918). A token endpoint the
+// remote server named reaches neither, so it stays guarded.
+func buildRemoteAuthFlowConfig(
+	ctx context.Context,
+	flags *RemoteAuthFlags,
+	clientSecret, targetURI, operatorIssuer string,
+) *discovery.OAuthFlowConfig {
+	return &discovery.OAuthFlowConfig{
+		ClientID:             flags.RemoteAuthClientID,
+		ClientSecret:         clientSecret,
+		AuthorizeURL:         flags.RemoteAuthAuthorizeURL,
+		TokenURL:             flags.RemoteAuthTokenURL,
+		Scopes:               flags.RemoteAuthScopes,
+		CallbackPort:         flags.RemoteAuthCallbackPort,
+		Timeout:              flags.RemoteAuthTimeout,
+		SkipBrowser:          flags.RemoteAuthSkipBrowser,
+		ScopeParamName:       flags.RemoteAuthScopeParamName,
+		AllowPrivateIPs:      networking.TargetIsPrivate(ctx, targetURI),
+		IssuerTrusted:        operatorIssuer != "",
+		TokenEndpointTrusted: flags.RemoteAuthTokenURL != "" || operatorIssuer != "",
+	}
 }
 
 // resolveClientSecret resolves the OAuth client secret from multiple sources

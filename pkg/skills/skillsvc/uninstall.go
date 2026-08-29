@@ -18,7 +18,7 @@ import (
 )
 
 // Uninstall removes an installed skill and cleans up files for all clients.
-// For a project-scope, lock-managed skill (see skills.LockFileFeatureEnabled),
+// For a project-scope, lock-managed skill,
 // it also removes the skill's lock entry and cascades to any dependency that
 // loses its last requiring parent as a result.
 func (s *service) Uninstall(ctx context.Context, opts skills.UninstallOptions) error {
@@ -33,6 +33,20 @@ func (s *service) Uninstall(ctx context.Context, opts skills.UninstallOptions) e
 	scope = defaultScope(scope)
 	opts.ProjectRoot = projectRoot
 
+	if scope == skills.ScopeProject {
+		unlock := s.projectTx.lock(opts.ProjectRoot)
+		defer unlock()
+		return s.uninstallLocked(ctx, opts, scope)
+	}
+	unlock := s.locks.lock(opts.Name, scope, opts.ProjectRoot)
+	defer unlock()
+	return s.uninstallLocked(ctx, opts, scope)
+}
+
+// uninstallLocked performs Uninstall assuming the appropriate lock is already
+// held (project transaction or per-skill). Sync prune and cascade removals
+// call this directly so they never reacquire.
+func (s *service) uninstallLocked(ctx context.Context, opts skills.UninstallOptions, scope skills.Scope) error {
 	return s.uninstallOne(ctx, opts, scope)
 }
 
@@ -47,10 +61,11 @@ func (s *service) Uninstall(ctx context.Context, opts skills.UninstallOptions) e
 // silently reinstalled. Failing after the entry is removed leaves the
 // opposite, safe inconsistency — an installed-but-unlocked skill that sync
 // reports as removed-from-lock and prune can clean up.
+//
+// Callers must already hold the project transaction (project scope) or the
+// per-skill lock (user scope). Cascades reuse that held lock — they never
+// reacquire.
 func (s *service) uninstallOne(ctx context.Context, opts skills.UninstallOptions, scope skills.Scope) error {
-	unlock := s.locks.lock(opts.Name, scope, opts.ProjectRoot)
-	defer unlock()
-
 	// Look up the existing record to find which clients have files.
 	existing, err := s.store.Get(ctx, opts.Name, scope, opts.ProjectRoot)
 	if err != nil {
@@ -64,7 +79,7 @@ func (s *service) uninstallOne(ctx context.Context, opts skills.UninstallOptions
 	visited[opts.Name] = struct{}{}
 
 	var cascadeCandidates []string
-	if scope == skills.ScopeProject && existing.Managed && skills.LockFileFeatureEnabled() {
+	if scope == skills.ScopeProject && existing.Managed {
 		cascadeCandidates, err = removeLockEntry(opts)
 		if err != nil {
 			return fmt.Errorf("updating project lock file: %w", err)
@@ -150,7 +165,8 @@ func removeLockEntry(opts skills.UninstallOptions) ([]string, error) {
 
 // cascadeUninstall uninstalls each candidate dependency that has not
 // already been visited. The visited set prevents infinite recursion on a
-// requiredBy cycle in a hand-edited lock.
+// requiredBy cycle in a hand-edited lock. Assumes the project transaction
+// (or user-scope skill lock) is already held.
 func (s *service) cascadeUninstall(
 	ctx context.Context, candidates []string, visited map[string]struct{}, projectRoot string, scope skills.Scope,
 ) error {

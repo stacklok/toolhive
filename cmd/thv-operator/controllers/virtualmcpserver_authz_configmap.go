@@ -42,7 +42,7 @@ func (r *VirtualMCPServerReconciler) mapAuthzConfigMapToVirtualMCPServer(
 
 	var requests []reconcile.Request
 	for _, vmcp := range vmcpList.Items {
-		if !vmcpReferencesAuthzConfigMap(&vmcp, cm.Name) {
+		if !vmcpReferencesAuthzConfigMap(&vmcp, cm.Name) && !vmcpReferencesAuthServerCABundle(&vmcp, cm.Name) {
 			continue
 		}
 		requests = append(requests, reconcile.Request{
@@ -68,7 +68,28 @@ func vmcpReferencesAuthzConfigMap(vmcp *mcpv1beta1.VirtualMCPServer, configMapNa
 	return vmcp.Spec.IncomingAuth.AuthzConfig.ConfigMap.Name == configMapName
 }
 
-// configMapDataChangedPredicate admits ConfigMap events that may affect a VirtualMCPServer's
+// vmcpReferencesAuthServerCABundle reports whether an inline auth-server
+// configuration selects the named ConfigMap for a CA bundle.
+func vmcpReferencesAuthServerCABundle(vmcp *mcpv1beta1.VirtualMCPServer, configMapName string) bool {
+	if vmcp.Spec.AuthServerConfig == nil {
+		return false
+	}
+	for i := range vmcp.Spec.AuthServerConfig.UpstreamProviders {
+		provider := &vmcp.Spec.AuthServerConfig.UpstreamProviders[i]
+		ref := provider.CABundleRef()
+		if ref != nil && ref.ConfigMapRef != nil && ref.ConfigMapRef.Name == configMapName {
+			return true
+		}
+	}
+	for i := range vmcp.Spec.AuthServerConfig.TrustedIssuers {
+		ref := vmcp.Spec.AuthServerConfig.TrustedIssuers[i].CABundleRef
+		if ref != nil && ref.ConfigMapRef != nil && ref.ConfigMapRef.Name == configMapName {
+			return true
+		}
+	}
+	return false
+}
+
 // resolved authz config. Update events are admitted only when .Data or .BinaryData actually
 // change, so metadata-only updates (labels, annotations, resourceVersion bumps) do not trigger
 // reconciliation. Create and Delete events are passed through so the controller can pick up a

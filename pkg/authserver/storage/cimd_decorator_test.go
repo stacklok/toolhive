@@ -116,6 +116,32 @@ func TestCIMDStorageDecorator_UnwrapReturnsBase(t *testing.T) {
 	assert.Same(t, base, dec.Unwrap())
 }
 
+func TestCIMDStorageDecorator_ConsumeAssertionJWTDelegatesToBase(t *testing.T) {
+	t.Parallel()
+	base := newTestBase(t)
+	dec := newEnabledDecorator(t, base, 10, time.Minute)
+	var consumer AssertionJWTConsumer = dec
+
+	exp := time.Now().Add(time.Hour)
+	require.NoError(t, consumer.ConsumeAssertionJWT(context.Background(), "jwt-bearer", "https://issuer.example", "jti", exp))
+	require.ErrorIs(t, consumer.ConsumeAssertionJWT(context.Background(), "jwt-bearer", "https://issuer.example", "jti", exp), fosite.ErrJTIKnown)
+}
+
+type storageWithoutAssertionJWTConsumer struct{ Storage }
+
+func TestCIMDStorageDecorator_ConsumeAssertionJWTFailsClosedWithoutBackendCapability(t *testing.T) {
+	t.Parallel()
+
+	decorated, err := NewCIMDStorageDecorator(storageWithoutAssertionJWTConsumer{}, CIMDDecoratorConfig{
+		Enabled: true, CacheMaxSize: 1, FallbackTTL: time.Minute,
+	})
+	require.NoError(t, err)
+	consumer := decorated.(AssertionJWTConsumer)
+	err = consumer.ConsumeAssertionJWT(context.Background(), "jwt-bearer", "https://issuer.example", "jti", time.Now().Add(time.Hour))
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "does not support assertion JWT replay consumption")
+}
+
 // --- GetClient delegation for non-CIMD IDs ---
 
 func TestCIMDStorageDecorator_GetClient_OpaqueIDDelegatesToBase(t *testing.T) {
@@ -329,32 +355,34 @@ func TestCIMDStorageDecorator_GetClient_CIMDURLHitsCacheDirectly(t *testing.T) {
 
 // --- buildFositeClient ---
 
-func TestBuildFositeClient_Defaults(t *testing.T) {
-	t.Parallel()
-
-	doc := &cimd.ClientMetadataDocument{
-		ClientID:     "https://example.com/meta.json",
-		RedirectURIs: []string{"https://example.com/callback"},
-	}
-
-	got := buildFositeClient(doc, nil)
-	assert.Equal(t, "https://example.com/meta.json", got.GetID())
-	assert.True(t, got.IsPublic())
-	assert.ElementsMatch(t, []string{"authorization_code", "refresh_token"}, []string(got.GetGrantTypes()))
-	assert.ElementsMatch(t, []string{"code"}, []string(got.GetResponseTypes()))
+// buildFositeClientWithDefaults calls buildFositeClient with the standard
+// filtered grant/response types (what FilterPublicGrantTypes /
+// FilterPublicResponseTypes return for an omitted declaration) and the
+// default negotiated auth method, for tests that don't exercise those fields.
+func buildFositeClientWithDefaults(doc *cimd.ClientMetadataDocument, scopes []string) fosite.Client {
+	return buildFositeClient(doc, scopes,
+		[]string{"authorization_code", "refresh_token"}, []string{"code"},
+		defaultCIMDTokenEndpointAuthMethod)
 }
 
-func TestBuildFositeClient_ExplicitGrantTypes(t *testing.T) {
+func TestBuildFositeClient_PassesThroughGrantAndResponseTypes(t *testing.T) {
 	t.Parallel()
 
 	doc := &cimd.ClientMetadataDocument{
 		ClientID:     "https://example.com/meta.json",
 		RedirectURIs: []string{"https://example.com/callback"},
-		GrantTypes:   []string{"authorization_code"},
+		// The document's own declaration is ignored: fetch() passes the
+		// filtered lists explicitly, and only those must reach the client.
+		GrantTypes: []string{"authorization_code", "urn:ietf:params:oauth:grant-type:device_code"},
 	}
 
-	got := buildFositeClient(doc, nil)
-	assert.ElementsMatch(t, []string{"authorization_code"}, []string(got.GetGrantTypes()))
+	got := buildFositeClient(doc, nil, []string{"authorization_code"}, []string{"code"},
+		defaultCIMDTokenEndpointAuthMethod)
+	assert.Equal(t, "https://example.com/meta.json", got.GetID())
+	assert.True(t, got.IsPublic())
+	assert.ElementsMatch(t, []string{"authorization_code"}, []string(got.GetGrantTypes()),
+		"the filtered grant types must be stored, not the document's declaration")
+	assert.ElementsMatch(t, []string{"code"}, []string(got.GetResponseTypes()))
 }
 
 func TestBuildFositeClient_ScopeParsing(t *testing.T) {
@@ -367,11 +395,11 @@ func TestBuildFositeClient_ScopeParsing(t *testing.T) {
 	}
 
 	// Scope parsing is done by fetch() before buildFositeClient.
-	got := buildFositeClient(doc, strings.Fields(doc.Scope))
+	got := buildFositeClientWithDefaults(doc, strings.Fields(doc.Scope))
 	assert.ElementsMatch(t, []string{"openid", "profile", "email"}, []string(got.GetScopes()))
 }
 
-func TestBuildFositeClient_LoopbackRedirectWrapsInLoopbackClient(t *testing.T) {
+func TestBuildFositeClient_LoopbackRedirectGetsDynamicPortMatching(t *testing.T) {
 	t.Parallel()
 
 	doc := &cimd.ClientMetadataDocument{
@@ -379,19 +407,15 @@ func TestBuildFositeClient_LoopbackRedirectWrapsInLoopbackClient(t *testing.T) {
 		RedirectURIs: []string{"http://localhost/callback"},
 	}
 
-	got := buildFositeClient(doc, nil)
-	// LoopbackClient adds MatchRedirectURI — check the distinctive method is present.
-	type loopbackMatcher interface {
-		MatchRedirectURI(string) bool
-	}
-	_, ok := got.(loopbackMatcher)
-	assert.True(t, ok, "loopback redirect URI must produce a LoopbackClient")
+	got := buildFositeClientWithDefaults(doc, nil)
 
-	// TokenEndpointAuthMethod must be preserved through the LoopbackClient wrapper.
+	uri, ok := registration.RegisteredLoopbackRedirectURI(got, "http://localhost:54321/callback")
+	require.True(t, ok, "loopback redirect URI must get dynamic-port matching")
+	assert.Equal(t, "http://localhost/callback", uri)
+
 	oidc, ok := got.(fosite.OpenIDConnectClient)
-	require.True(t, ok, "LoopbackClient must implement fosite.OpenIDConnectClient")
-	assert.Equal(t, "none", oidc.GetTokenEndpointAuthMethod(),
-		"loopback client must preserve TokenEndpointAuthMethod from the OIDC client")
+	require.True(t, ok, "got must implement fosite.OpenIDConnectClient")
+	assert.Equal(t, "none", oidc.GetTokenEndpointAuthMethod())
 }
 
 func TestBuildFositeClient_NonLoopbackRedirectReturnsOpenIDConnectClient(t *testing.T) {
@@ -402,7 +426,7 @@ func TestBuildFositeClient_NonLoopbackRedirectReturnsOpenIDConnectClient(t *test
 		RedirectURIs: []string{"https://example.com/callback"},
 	}
 
-	got := buildFositeClient(doc, nil)
+	got := buildFositeClientWithDefaults(doc, nil)
 	_, ok := got.(*fosite.DefaultOpenIDConnectClient)
 	assert.True(t, ok, "non-loopback redirect URI must produce a DefaultOpenIDConnectClient")
 }
@@ -415,7 +439,7 @@ func TestBuildFositeClient_TokenEndpointAuthMethodDefault(t *testing.T) {
 		RedirectURIs: []string{"https://example.com/callback"},
 	}
 
-	got := buildFositeClient(doc, nil)
+	got := buildFositeClientWithDefaults(doc, nil)
 	if oidc, ok := got.(fosite.OpenIDConnectClient); ok {
 		assert.Equal(t, "none", oidc.GetTokenEndpointAuthMethod())
 	}
@@ -443,6 +467,68 @@ func TestFetch_RejectsUnsupportedTokenEndpointAuthMethod(t *testing.T) {
 	assert.ErrorIs(t, err, fosite.ErrInvalidClient,
 		"CIMD policy rejections must use ErrInvalidClient, not ErrNotFound")
 	assert.NotErrorIs(t, err, fosite.ErrNotFound)
+}
+
+// TestFetch_TokenEndpointAuthMethodNegotiation exercises the negotiation
+// introduced for #6278: a declared-but-unsupported singular
+// token_endpoint_auth_method is rescued when the plural
+// token_endpoint_auth_methods_supported list names a method this server does
+// support, instead of the document being rejected outright.
+func TestFetch_TokenEndpointAuthMethodNegotiation(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name           string
+		declared       string
+		supportedList  []string
+		wantErr        bool
+		wantAuthMethod string
+	}{
+		{
+			name:           "unsupported singular rescued by none in the supported list",
+			declared:       "private_key_jwt",
+			supportedList:  []string{"none", "private_key_jwt"},
+			wantErr:        false,
+			wantAuthMethod: "none",
+		},
+		{
+			name:          "unsupported singular with no none in the supported list stays rejected",
+			declared:      "private_key_jwt",
+			supportedList: []string{"private_key_jwt", "tls_client_auth"},
+			wantErr:       true,
+		},
+		{
+			name:           "omitted singular with a supported list is unaffected — accepted as none",
+			declared:       "",
+			supportedList:  []string{"private_key_jwt"},
+			wantErr:        false,
+			wantAuthMethod: "none",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			srv := serveCIMDDocWithFields(t, func(doc *cimd.ClientMetadataDocument) {
+				doc.TokenEndpointAuthMethod = tt.declared
+				doc.TokenEndpointAuthMethodsSupported = tt.supportedList
+			})
+			dec := newEnabledDecorator(t, newTestBase(t), 10, time.Minute)
+			client, err := dec.fetchOrCached(context.Background(), srv.URL+"/meta.json")
+			if tt.wantErr {
+				require.Error(t, err)
+				assert.ErrorIs(t, err, fosite.ErrInvalidClient,
+					"CIMD policy rejections must use ErrInvalidClient, not ErrNotFound")
+				assert.NotErrorIs(t, err, fosite.ErrNotFound)
+				return
+			}
+			require.NoError(t, err)
+			assert.True(t, client.IsPublic())
+			oidc, ok := client.(fosite.OpenIDConnectClient)
+			require.True(t, ok, "client must implement fosite.OpenIDConnectClient")
+			assert.Equal(t, tt.wantAuthMethod, oidc.GetTokenEndpointAuthMethod())
+		})
+	}
 }
 
 // serveCIMDDocWithFields starts an httptest.Server that serves a CIMD document
@@ -473,18 +559,31 @@ func serveCIMDDocWithFields(t *testing.T, mutate func(*cimd.ClientMetadataDocume
 func TestFetch_GrantTypeValidation(t *testing.T) {
 	t.Parallel()
 
+	// A CIMD document declares the client's capabilities across every AS it
+	// talks to, so grant types this server does not support are filtered out
+	// rather than failing the document (#6290). Rejection only happens when
+	// nothing this server supports survives — specifically, when
+	// authorization_code is absent from the intersection.
 	tests := []struct {
-		name       string
-		grantTypes []string
-		wantErr    bool
+		name           string
+		grantTypes     []string
+		wantErr        bool
+		wantGrantTypes []string // asserted on the resolved client when no error
 	}{
-		{"omitted grant_types accepted", nil, false},
-		{"explicit [authorization_code, refresh_token] accepted", []string{"authorization_code", "refresh_token"}, false},
-		{"explicit [authorization_code] accepted", []string{"authorization_code"}, false},
-		{"refresh_token only missing authorization_code rejected", []string{"refresh_token"}, true},
-		{"client_credentials rejected", []string{"client_credentials"}, true},
-		{"implicit rejected", []string{"implicit"}, true},
-		{"device_code rejected", []string{"urn:ietf:params:oauth:grant-type:device_code"}, true},
+		{"omitted grant_types accepted", nil, false,
+			[]string{"authorization_code", "refresh_token"}},
+		{"explicit [authorization_code, refresh_token] accepted", []string{"authorization_code", "refresh_token"}, false,
+			[]string{"authorization_code", "refresh_token"}},
+		{"explicit [authorization_code] accepted", []string{"authorization_code"}, false,
+			[]string{"authorization_code"}},
+		{"device_code alongside authorization_code is ignored, not fatal",
+			[]string{"authorization_code", "refresh_token", "urn:ietf:params:oauth:grant-type:device_code"}, false,
+			[]string{"authorization_code", "refresh_token"}},
+		{"refresh_token only missing authorization_code rejected", []string{"refresh_token"}, true, nil},
+		{"client_credentials only rejected (no supported grant type)", []string{"client_credentials"}, true, nil},
+		{"implicit only rejected (no supported grant type)", []string{"implicit"}, true, nil},
+		{"device_code only rejected (no supported grant type)",
+			[]string{"urn:ietf:params:oauth:grant-type:device_code"}, true, nil},
 	}
 
 	for _, tt := range tests {
@@ -494,7 +593,7 @@ func TestFetch_GrantTypeValidation(t *testing.T) {
 				doc.GrantTypes = tt.grantTypes
 			})
 			dec := newEnabledDecorator(t, newTestBase(t), 10, time.Minute)
-			_, err := dec.fetchOrCached(context.Background(), srv.URL+"/meta.json")
+			client, err := dec.fetchOrCached(context.Background(), srv.URL+"/meta.json")
 			if tt.wantErr {
 				require.Error(t, err)
 				assert.ErrorIs(t, err, fosite.ErrInvalidClient,
@@ -502,9 +601,38 @@ func TestFetch_GrantTypeValidation(t *testing.T) {
 				assert.NotErrorIs(t, err, fosite.ErrNotFound)
 			} else {
 				require.NoError(t, err)
+				assert.ElementsMatch(t, tt.wantGrantTypes, []string(client.GetGrantTypes()),
+					"the resolved client must carry only grant types this server supports")
 			}
 		})
 	}
+}
+
+// TestFetch_VSCodeDocumentResolves is the regression test for #6290: VS
+// Code's real-world client-metadata document declares the device_code grant
+// alongside authorization_code and refresh_token, and its resolution must
+// succeed with device_code filtered out rather than failing the whole
+// document with invalid_client.
+func TestFetch_VSCodeDocumentResolves(t *testing.T) {
+	t.Parallel()
+
+	srv := serveCIMDDocWithFields(t, func(doc *cimd.ClientMetadataDocument) {
+		// Mirror https://vscode.dev/oauth/client-metadata.json (VS Code 1.133.0),
+		// with client_id/redirect kept test-local.
+		doc.ClientName = "Visual Studio Code"
+		doc.GrantTypes = []string{"authorization_code", "refresh_token", "urn:ietf:params:oauth:grant-type:device_code"}
+		doc.ResponseTypes = []string{"code"}
+		doc.TokenEndpointAuthMethod = "none"
+		doc.RedirectURIs = []string{"http://127.0.0.1:33418/", "https://vscode.dev/redirect"}
+	})
+	dec := newEnabledDecorator(t, newTestBase(t), 10, time.Minute)
+
+	client, err := dec.fetchOrCached(context.Background(), srv.URL+"/meta.json")
+	require.NoError(t, err, "VS Code's document must resolve (#6290)")
+	assert.True(t, client.IsPublic())
+	assert.ElementsMatch(t, []string{"authorization_code", "refresh_token"}, []string(client.GetGrantTypes()),
+		"device_code must be filtered out, not stored")
+	assert.ElementsMatch(t, []string{"code"}, []string(client.GetResponseTypes()))
 }
 
 // --- response_types validation ---
@@ -512,15 +640,20 @@ func TestFetch_GrantTypeValidation(t *testing.T) {
 func TestFetch_ResponseTypeValidation(t *testing.T) {
 	t.Parallel()
 
+	// Same filtering semantics as grant types: unsupported response types are
+	// ignored, and rejection only happens when "code" — the one response type
+	// this server serves — does not survive the intersection.
 	tests := []struct {
-		name          string
-		responseTypes []string
-		wantErr       bool
+		name              string
+		responseTypes     []string
+		wantErr           bool
+		wantResponseTypes []string // asserted on the resolved client when no error
 	}{
-		{"omitted response_types accepted", nil, false},
-		{"code accepted", []string{"code"}, false},
-		{"token rejected", []string{"token"}, true},
-		{"code id_token rejected (hybrid)", []string{"code id_token"}, true},
+		{"omitted response_types accepted", nil, false, []string{"code"}},
+		{"code accepted", []string{"code"}, false, []string{"code"}},
+		{"token alongside code is ignored, not fatal", []string{"code", "token"}, false, []string{"code"}},
+		{"token only rejected (no supported response type)", []string{"token"}, true, nil},
+		{"code id_token rejected (hybrid)", []string{"code id_token"}, true, nil},
 	}
 
 	for _, tt := range tests {
@@ -530,7 +663,7 @@ func TestFetch_ResponseTypeValidation(t *testing.T) {
 				doc.ResponseTypes = tt.responseTypes
 			})
 			dec := newEnabledDecorator(t, newTestBase(t), 10, time.Minute)
-			_, err := dec.fetchOrCached(context.Background(), srv.URL+"/meta.json")
+			client, err := dec.fetchOrCached(context.Background(), srv.URL+"/meta.json")
 			if tt.wantErr {
 				require.Error(t, err)
 				assert.ErrorIs(t, err, fosite.ErrInvalidClient,
@@ -538,6 +671,8 @@ func TestFetch_ResponseTypeValidation(t *testing.T) {
 				assert.NotErrorIs(t, err, fosite.ErrNotFound)
 			} else {
 				require.NoError(t, err)
+				assert.ElementsMatch(t, tt.wantResponseTypes, []string(client.GetResponseTypes()),
+					"the resolved client must carry only response types this server supports")
 			}
 		})
 	}
@@ -632,6 +767,6 @@ func TestBuildFositeClient_ScopeDefaultsToDefaultScopesWhenNoScopesSupported(t *
 		ClientID:     "https://example.com/meta.json",
 		RedirectURIs: []string{"https://example.com/callback"},
 	}
-	got := buildFositeClient(doc, nil)
+	got := buildFositeClientWithDefaults(doc, nil)
 	assert.ElementsMatch(t, registration.DefaultScopes, []string(got.GetScopes()))
 }

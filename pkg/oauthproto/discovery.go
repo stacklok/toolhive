@@ -325,8 +325,8 @@ type AuthorizationServerMetadata struct {
 	Issuer string `json:"issuer"`
 
 	// AuthorizationEndpoint is the URL of the authorization endpoint (RECOMMENDED).
-	// Note: No omitempty to maintain backward compatibility with existing JSON serialization.
-	AuthorizationEndpoint string `json:"authorization_endpoint"`
+	// It is omitted for token-only authorization servers.
+	AuthorizationEndpoint string `json:"authorization_endpoint,omitempty"`
 
 	// TokenEndpoint is the URL of the token endpoint (RECOMMENDED).
 	// Note: No omitempty to maintain backward compatibility with existing JSON serialization.
@@ -357,6 +357,10 @@ type AuthorizationServerMetadata struct {
 
 	// TokenEndpointAuthMethodsSupported lists the authentication methods supported at the token endpoint (OPTIONAL).
 	TokenEndpointAuthMethodsSupported []string `json:"token_endpoint_auth_methods_supported,omitempty"`
+
+	// TokenEndpointAuthSigningAlgValuesSupported lists the JWS algorithms supported
+	// for private_key_jwt client assertions (RFC 8414).
+	TokenEndpointAuthSigningAlgValuesSupported []string `json:"token_endpoint_auth_signing_alg_values_supported,omitempty"`
 
 	// ScopesSupported lists the OAuth 2.0 scope values supported (RECOMMENDED per RFC 8414).
 	// For MCP authorization servers, this typically includes "openid" and "offline_access".
@@ -390,7 +394,8 @@ func (d *OIDCDiscoveryDocument) Validate(isOIDC bool) error {
 	if d.Issuer == "" {
 		return ErrMissingIssuer
 	}
-	if d.AuthorizationEndpoint == "" {
+	tokenOnly := !isOIDC && d.AuthorizationEndpoint == "" && d.SupportsGrantType(GrantTypeTokenExchange)
+	if d.AuthorizationEndpoint == "" && !tokenOnly {
 		return ErrMissingAuthorizationEndpoint
 	}
 	if d.TokenEndpoint == "" {

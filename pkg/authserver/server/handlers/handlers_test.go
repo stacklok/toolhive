@@ -31,6 +31,7 @@ import (
 
 	"github.com/stacklok/toolhive/pkg/authserver/server"
 	servercrypto "github.com/stacklok/toolhive/pkg/authserver/server/crypto"
+	"github.com/stacklok/toolhive/pkg/authserver/server/registration"
 	"github.com/stacklok/toolhive/pkg/authserver/storage/mocks"
 	sharedobauth "github.com/stacklok/toolhive/pkg/oauthproto"
 )
@@ -40,6 +41,9 @@ type testSetupOptions struct {
 	AuthorizationEndpointBaseURL        string
 	CIMDEnabled                         bool
 	AllowConfidentialClientRegistration bool
+	AllowPrivateKeyJWTRegistration      bool
+	HasStaticDelegateClients            bool
+	JWTBearerGrantEnabled               bool
 }
 
 // testSetup creates a Handler with all dependencies for testing.
@@ -70,6 +74,9 @@ func testSetupWithOptions(t *testing.T, opts testSetupOptions) *Handler {
 		AuthorizationEndpointBaseURL:        opts.AuthorizationEndpointBaseURL,
 		CIMDEnabled:                         opts.CIMDEnabled,
 		AllowConfidentialClientRegistration: opts.AllowConfidentialClientRegistration,
+		AllowPrivateKeyJWTRegistration:      opts.AllowPrivateKeyJWTRegistration,
+		HasStaticDelegateClients:            opts.HasStaticDelegateClients,
+		JWTBearerGrantEnabled:               opts.JWTBearerGrantEnabled,
 		AccessTokenLifespan:                 time.Hour,
 		RefreshTokenLifespan:                time.Hour * 24,
 		AuthCodeLifespan:                    time.Minute * 10,
@@ -189,6 +196,7 @@ func TestOAuthDiscoveryHandler(t *testing.T) {
 	// Verify OPTIONAL fields per RFC 8414
 	assert.Contains(t, metadata.GrantTypesSupported, "authorization_code")
 	assert.Contains(t, metadata.GrantTypesSupported, "refresh_token")
+	assert.Contains(t, metadata.GrantTypesSupported, sharedobauth.GrantTypeTokenExchange)
 	assert.Contains(t, metadata.CodeChallengeMethodsSupported, "S256")
 	// Flag off: only "none" is advertised (exact-slice, not Contains — a
 	// Contains assertion cannot fail to notice an unexpectedly-added method).
@@ -252,36 +260,59 @@ func TestOIDCDiscoveryHandler(t *testing.T) {
 	// Verify OPTIONAL fields
 	assert.Contains(t, discovery.GrantTypesSupported, "authorization_code")
 	assert.Contains(t, discovery.GrantTypesSupported, "refresh_token")
+	assert.Contains(t, discovery.GrantTypesSupported, sharedobauth.GrantTypeTokenExchange)
 	assert.Contains(t, discovery.CodeChallengeMethodsSupported, "S256")
 	// Flag off: only "none" is advertised (exact-slice, not Contains).
 	assert.Equal(t, []string{sharedobauth.TokenEndpointAuthMethodNone}, discovery.TokenEndpointAuthMethodsSupported)
 }
 
 // TestDiscoveryHandlers_ConfidentialAuthMethods verifies both discovery endpoints
-// advertise exactly the methods /oauth/register accepts, for flag off and flag on.
-// "none" must stay at index 0 (readability convention; RFC 8414 defines no ordering).
+// advertise the client authentication methods enabled by configuration, including
+// the independent private_key_jwt capability. "none" must stay at index 0
+// (readability convention; RFC 8414 defines no ordering).
 func TestDiscoveryHandlers_ConfidentialAuthMethods(t *testing.T) {
 	t.Parallel()
 
 	wantOff := []string{sharedobauth.TokenEndpointAuthMethodNone}
-	wantOn := []string{
+	wantSecrets := []string{
 		sharedobauth.TokenEndpointAuthMethodNone,
 		sharedobauth.TokenEndpointAuthMethodClientSecretBasic,
 		sharedobauth.TokenEndpointAuthMethodClientSecretPost,
 	}
+	wantPrivateKeyJWT := []string{
+		sharedobauth.TokenEndpointAuthMethodNone,
+		sharedobauth.TokenEndpointAuthMethodPrivateKeyJWT,
+	}
+	wantSecretsAndPrivateKeyJWT := append(
+		append([]string(nil), wantSecrets...), sharedobauth.TokenEndpointAuthMethodPrivateKeyJWT,
+	)
+	wantAlgorithms := registration.SupportedSigningAlgorithms()
 
 	tests := []struct {
 		name              string
 		allowConfidential bool
+		allowPrivate      bool
+		hasStaticClient   bool
 		wantMethods       []string
+		wantAlgorithms    []string
 	}{
-		{"flag off advertises only none", false, wantOff},
-		{"flag on advertises none plus client_secret methods", true, wantOn},
+		{"public only advertises only none", false, false, false, wantOff, nil},
+		{"private_key_jwt only advertises private_key_jwt", false, true, false, wantPrivateKeyJWT, wantAlgorithms},
+		{"confidential DCR advertises client_secret methods", true, false, false, wantSecrets, nil},
+		{"confidential DCR and private_key_jwt advertise both", true, true, false, wantSecretsAndPrivateKeyJWT, wantAlgorithms},
+		{"static delegate advertises client_secret methods", false, false, true, wantSecrets, nil},
+		{"static delegate and private_key_jwt advertise both", false, true, true, wantSecretsAndPrivateKeyJWT, wantAlgorithms},
+		{"confidential DCR and static delegate advertise client_secret methods", true, false, true, wantSecrets, nil},
+		{"all authentication methods are advertised", true, true, true, wantSecretsAndPrivateKeyJWT, wantAlgorithms},
 	}
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
 			t.Parallel()
-			handler := testSetupWithOptions(t, testSetupOptions{AllowConfidentialClientRegistration: tc.allowConfidential})
+			handler := testSetupWithOptions(t, testSetupOptions{
+				AllowConfidentialClientRegistration: tc.allowConfidential,
+				AllowPrivateKeyJWTRegistration:      tc.allowPrivate,
+				HasStaticDelegateClients:            tc.hasStaticClient,
+			})
 
 			// OAuth AS metadata endpoint.
 			rec := httptest.NewRecorder()
@@ -290,7 +321,9 @@ func TestDiscoveryHandlers_ConfidentialAuthMethods(t *testing.T) {
 			var metadata sharedobauth.AuthorizationServerMetadata
 			require.NoError(t, json.NewDecoder(rec.Body).Decode(&metadata))
 			assert.Equal(t, tc.wantMethods, metadata.TokenEndpointAuthMethodsSupported,
-				"oauth-authorization-server must advertise exactly the accepted methods")
+				"oauth-authorization-server must advertise configured client authentication methods")
+			assert.Equal(t, tc.wantAlgorithms, metadata.TokenEndpointAuthSigningAlgValuesSupported,
+				"oauth-authorization-server must advertise private_key_jwt signing algorithms only when enabled")
 			assert.Equal(t, sharedobauth.TokenEndpointAuthMethodNone, metadata.TokenEndpointAuthMethodsSupported[0],
 				"none must remain at index 0")
 
@@ -301,7 +334,9 @@ func TestDiscoveryHandlers_ConfidentialAuthMethods(t *testing.T) {
 			var discovery sharedobauth.OIDCDiscoveryDocument
 			require.NoError(t, json.NewDecoder(rec2.Body).Decode(&discovery))
 			assert.Equal(t, tc.wantMethods, discovery.TokenEndpointAuthMethodsSupported,
-				"openid-configuration must advertise exactly the accepted methods")
+				"openid-configuration must advertise configured client authentication methods")
+			assert.Equal(t, tc.wantAlgorithms, discovery.TokenEndpointAuthSigningAlgValuesSupported,
+				"openid-configuration must advertise private_key_jwt signing algorithms only when enabled")
 		})
 	}
 }
@@ -391,6 +426,47 @@ func TestWellKnownRoutes(t *testing.T) {
 			// Should not return 404 (route not found)
 			assert.NotEqual(t, http.StatusNotFound, rec.Code,
 				"route %s %s should be registered", tc.method, tc.path)
+		})
+	}
+}
+
+func TestDiscoveryHandlers_JWTBearerGrant(t *testing.T) {
+	t.Parallel()
+
+	for _, tc := range []struct {
+		name    string
+		enabled bool
+	}{
+		{"enabled", true},
+		{"disabled", false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			handler := testSetupWithOptions(t, testSetupOptions{JWTBearerGrantEnabled: tc.enabled})
+
+			for _, endpoint := range []struct {
+				name string
+				fn   func(http.ResponseWriter, *http.Request)
+			}{
+				{"OAuth AS metadata", handler.OAuthDiscoveryHandler},
+				{"OIDC discovery", handler.OIDCDiscoveryHandler},
+			} {
+				t.Run(endpoint.name, func(t *testing.T) {
+					t.Parallel()
+					req := httptest.NewRequest(http.MethodGet, "/", nil)
+					rec := httptest.NewRecorder()
+					endpoint.fn(rec, req)
+					require.Equal(t, http.StatusOK, rec.Code)
+
+					var meta sharedobauth.AuthorizationServerMetadata
+					require.NoError(t, json.NewDecoder(rec.Body).Decode(&meta))
+					if tc.enabled {
+						assert.Contains(t, meta.GrantTypesSupported, sharedobauth.GrantTypeJWTBearer)
+					} else {
+						assert.NotContains(t, meta.GrantTypesSupported, sharedobauth.GrantTypeJWTBearer)
+					}
+				})
+			}
 		})
 	}
 }

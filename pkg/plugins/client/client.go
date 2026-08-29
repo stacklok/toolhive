@@ -206,13 +206,14 @@ func (c *Client) List(ctx context.Context, opts plugins.ListOptions) ([]plugins.
 // Install installs a plugin from a remote source.
 func (c *Client) Install(ctx context.Context, opts plugins.InstallOptions) (*plugins.InstallResult, error) {
 	body := installRequest{
-		Name:        opts.Name,
-		Version:     opts.Version,
-		Scope:       opts.Scope,
-		ProjectRoot: opts.ProjectRoot,
-		Clients:     opts.Clients,
-		Force:       opts.Force,
-		Group:       opts.Group,
+		Name:          opts.Name,
+		Version:       opts.Version,
+		Scope:         opts.Scope,
+		ProjectRoot:   opts.ProjectRoot,
+		Clients:       opts.Clients,
+		Force:         opts.Force,
+		Group:         opts.Group,
+		AllowUnsigned: opts.AllowUnsigned,
 	}
 
 	var resp installResponse
@@ -308,6 +309,44 @@ func (c *Client) GetContent(ctx context.Context, opts plugins.ContentOptions) (*
 		return nil, err
 	}
 	return &content, nil
+}
+
+// Sync restores a project's installed plugins to match its lock file.
+func (c *Client) Sync(ctx context.Context, opts plugins.SyncOptions) (*plugins.SyncResult, error) {
+	body := syncRequest{
+		ProjectRoot:   opts.ProjectRoot,
+		Clients:       opts.Clients,
+		Prune:         opts.Prune,
+		Check:         opts.Check,
+		Adopt:         opts.Adopt,
+		AllowUnsigned: opts.AllowUnsigned,
+	}
+
+	var result plugins.SyncResult
+	if err := c.doJSONRequest(ctx, http.MethodPost, "/sync", nil, body, &result); err != nil {
+		return nil, err
+	}
+	return &result, nil
+}
+
+// Upgrade re-resolves a project's lock entries and installs newer content
+// where available.
+func (c *Client) Upgrade(ctx context.Context, opts plugins.UpgradeOptions) (*plugins.UpgradeResult, error) {
+	body := upgradeRequest{
+		ProjectRoot:       opts.ProjectRoot,
+		Names:             opts.Names,
+		Preview:           opts.Preview,
+		FailOnChanges:     opts.FailOnChanges,
+		AllowRefChange:    opts.AllowRefChange,
+		AllowSignerChange: opts.AllowSignerChange,
+		Clients:           opts.Clients,
+	}
+
+	var result plugins.UpgradeResult
+	if err := c.doJSONRequest(ctx, http.MethodPost, "/upgrade", nil, body, &result); err != nil {
+		return nil, err
+	}
+	return &result, nil
 }
 
 // --- internal helpers ---

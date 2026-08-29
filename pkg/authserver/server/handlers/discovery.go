@@ -23,6 +23,7 @@ import (
 	"github.com/ory/fosite"
 
 	"github.com/stacklok/toolhive/pkg/authserver/server/crypto"
+	"github.com/stacklok/toolhive/pkg/authserver/server/registration"
 	sharedobauth "github.com/stacklok/toolhive/pkg/oauthproto"
 )
 
@@ -90,30 +91,30 @@ func (h *Handler) JWKSHandler(w http.ResponseWriter, _ *http.Request) {
 	_, _ = w.Write(data) //nolint:gosec // G705: data is JSON-marshaled from internal metadata, not user input
 }
 
-// buildOAuthMetadata constructs the base OAuth 2.0 Authorization Server Metadata (RFC 8414).
-// This is shared between the OAuth AS metadata endpoint and the OIDC discovery endpoint.
+// buildOAuthMetadata constructs the authorization-server metadata shared by the
+// OAuth AS metadata endpoint and the OIDC discovery endpoint. Token-only
+// servers intentionally omit authorization response metadata, including
+// response_types_supported, because they do not implement those response types.
+// They retain configured scopes because scopes describe permissions available
+// through token exchange, not interactive authorization availability. This is
+// ToolHive metadata for the supported token flows, not a claim of full RFC 8414
+// or OIDC Discovery conformance.
 func (h *Handler) buildOAuthMetadata() sharedobauth.AuthorizationServerMetadata {
 	issuer := h.config.GetAccessTokenIssuer()
 
-	return sharedobauth.AuthorizationServerMetadata{
+	metadata := sharedobauth.AuthorizationServerMetadata{
 		// REQUIRED
 		Issuer: issuer,
 
 		// RECOMMENDED
-		AuthorizationEndpoint:  h.config.GetAuthorizationEndpointBaseURL() + "/oauth/authorize",
-		TokenEndpoint:          issuer + "/oauth/token",
-		JWKSURI:                issuer + "/.well-known/jwks.json",
-		RegistrationEndpoint:   issuer + "/oauth/register",
-		ResponseTypesSupported: []string{sharedobauth.ResponseTypeCode},
-		ScopesSupported:        h.config.ScopesSupported,
+		TokenEndpoint:   issuer + "/oauth/token",
+		JWKSURI:         issuer + "/.well-known/jwks.json",
+		ScopesSupported: h.config.ScopesSupported,
 
 		// OPTIONAL
-		GrantTypesSupported: []string{
-			string(fosite.GrantTypeAuthorizationCode),
-			string(fosite.GrantTypeRefreshToken),
-		},
-		CodeChallengeMethodsSupported:     []string{crypto.PKCEChallengeMethodS256},
-		TokenEndpointAuthMethodsSupported: h.tokenEndpointAuthMethodsSupported(),
+		GrantTypesSupported:                        h.grantTypesSupported(),
+		TokenEndpointAuthMethodsSupported:          h.tokenEndpointAuthMethodsSupported(),
+		TokenEndpointAuthSigningAlgValuesSupported: h.tokenEndpointAuthSigningAlgorithms(),
 
 		// ClientIDMetadataDocumentSupported is defined in the CIMD draft as an
 		// OAuth AS metadata field (RFC 8414), not in OIDC Discovery 1.0. It is
@@ -122,23 +123,66 @@ func (h *Handler) buildOAuthMetadata() sharedobauth.AuthorizationServerMetadata 
 		// CIMD. Spec-compliant OIDC consumers silently ignore unknown fields.
 		ClientIDMetadataDocumentSupported: h.config.CIMDEnabled,
 	}
+	if !h.tokenOnly {
+		metadata.AuthorizationEndpoint = h.config.GetAuthorizationEndpointBaseURL() + "/oauth/authorize"
+		metadata.ResponseTypesSupported = []string{sharedobauth.ResponseTypeCode}
+		metadata.CodeChallengeMethodsSupported = []string{crypto.PKCEChallengeMethodS256}
+	}
+	if !h.tokenOnly || h.config.AllowPrivateKeyJWTRegistration {
+		metadata.RegistrationEndpoint = issuer + "/oauth/register"
+	}
+	return metadata
 }
 
 // tokenEndpointAuthMethodsSupported returns the token_endpoint_auth_methods_supported
 // list for discovery, derived from config. "none" is always first — the public-client
-// default. When AllowConfidentialClientRegistration is on, the two client_secret_* methods the
-// registration endpoint accepts are appended, so what is advertised here always matches
-// what /oauth/register accepts (no advertise/reject skew). RFC 8414 defines no ordering
-// semantics, so "none"-first is a readability convention, not a security control.
+// default. When confidential DCR is enabled or static delegate clients are configured,
+// the two client_secret_* methods are appended. Static clients need these methods even
+// though DCR itself remains public-only. RFC 8414 defines no ordering semantics, so
+// "none"-first is a readability convention, not a security control.
 func (h *Handler) tokenEndpointAuthMethodsSupported() []string {
 	methods := []string{sharedobauth.TokenEndpointAuthMethodNone}
-	if h.config.AllowConfidentialClientRegistration {
+	if h.config.AllowConfidentialClientRegistration || h.config.HasStaticDelegateClients {
 		methods = append(methods,
 			sharedobauth.TokenEndpointAuthMethodClientSecretBasic,
 			sharedobauth.TokenEndpointAuthMethodClientSecretPost,
 		)
 	}
+	if h.config.AllowPrivateKeyJWTRegistration {
+		methods = append(methods, sharedobauth.TokenEndpointAuthMethodPrivateKeyJWT)
+	}
 	return methods
+}
+
+// tokenEndpointAuthSigningAlgorithms returns the signing algorithms advertised
+// for private_key_jwt client assertions. The list is shared with DCR validation
+// so discovery cannot claim support for an algorithm registration rejects.
+func (h *Handler) tokenEndpointAuthSigningAlgorithms() []string {
+	if !h.config.AllowPrivateKeyJWTRegistration {
+		return nil
+	}
+	return registration.SupportedSigningAlgorithms()
+}
+
+// grantTypesSupported returns the grant_types_supported list for discovery.
+// RFC 8693 token exchange is always registered with fosite (buildProvider wires
+// it unconditionally, even with no trusted issuers, to preserve
+// self-issued token exchange), so it's always advertised. The RFC 7523
+// JWT-bearer grant, by contrast, is only registered when at least one
+// trusted issuer opts in — advertising it unconditionally would claim
+// support the token endpoint doesn't actually have.
+func (h *Handler) grantTypesSupported() []string {
+	grantTypes := []string{sharedobauth.GrantTypeTokenExchange}
+	if !h.tokenOnly {
+		grantTypes = append(grantTypes,
+			string(fosite.GrantTypeAuthorizationCode),
+			string(fosite.GrantTypeRefreshToken),
+		)
+	}
+	if h.config.JWTBearerGrantEnabled {
+		grantTypes = append(grantTypes, sharedobauth.GrantTypeJWTBearer)
+	}
+	return grantTypes
 }
 
 // OAuthDiscoveryHandler handles GET /.well-known/oauth-authorization-server requests.
@@ -163,9 +207,31 @@ func (h *Handler) OAuthDiscoveryHandler(w http.ResponseWriter, _ *http.Request) 
 }
 
 // OIDCDiscoveryHandler handles GET /.well-known/openid-configuration requests.
-// It returns the OIDC discovery document describing the authorization server capabilities.
-// This extends the OAuth 2.0 AS Metadata (RFC 8414) with OIDC-specific fields.
+// With interactive authorization enabled, it returns OIDC discovery metadata
+// describing the authorization server capabilities. In token-only mode, the
+// endpoint is a ToolHive compatibility alias for key discovery, not a
+// standards-conforming OIDC Discovery response: generic MCP and OIDC
+// authorization-code clients cannot use it because it omits the authorization
+// endpoint and PKCE metadata required to begin an interactive flow.
 func (h *Handler) OIDCDiscoveryHandler(w http.ResponseWriter, _ *http.Request) {
+	if h.tokenOnly {
+		// Token-only servers do not implement OIDC authorization. This ToolHive
+		// compatibility alias lets existing key-discovery clients find the token
+		// endpoint without advertising unsupported OIDC response types; it is not
+		// a standards-conforming OIDC Discovery response.
+		data, err := json.Marshal(h.buildOAuthMetadata())
+		if err != nil {
+			slog.Error("failed to encode token-only discovery document", "error", err)
+			http.Error(w, "internal server error", http.StatusInternalServerError)
+			return
+		}
+		w.Header().Set("Content-Type", "application/json")
+		w.Header().Set("Cache-Control", fmt.Sprintf("public, max-age=%d", DefaultDiscoveryCacheMaxAge))
+		w.Header().Set("X-Content-Type-Options", "nosniff")
+		_, _ = w.Write(data)
+		return
+	}
+
 	// Get signing algorithms from the actual JWKS keys
 	signingAlgs := h.getSigningAlgorithms()
 

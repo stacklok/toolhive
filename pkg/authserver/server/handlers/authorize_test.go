@@ -4,16 +4,21 @@
 package handlers
 
 import (
+	"errors"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
+	"strings"
 	"testing"
 
+	"github.com/ory/fosite"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
 	"github.com/stacklok/toolhive/pkg/authserver/server"
 	servercrypto "github.com/stacklok/toolhive/pkg/authserver/server/crypto"
+	"github.com/stacklok/toolhive/pkg/authserver/server/registration"
+	"github.com/stacklok/toolhive/pkg/oauthproto"
 )
 
 func TestAuthorizeHandler_MissingClientID(t *testing.T) {
@@ -157,14 +162,12 @@ func TestAuthorizeHandler_PlainChallengeMethodAcceptedButValidatedAtToken(t *tes
 	assert.Contains(t, location, "https://idp.example.com/authorize")
 }
 
-func TestNewHandler_ErrorsOnEmptyUpstreams(t *testing.T) {
+func TestNewHandler_AllowsEmptyUpstreams(t *testing.T) {
 	t.Parallel()
 
-	_, err := NewHandler(nil, nil, nil, nil)
-	require.Error(t, err, "NewHandler should error when upstreams is nil")
-
-	_, err = NewHandler(nil, nil, nil, []NamedUpstream{})
-	require.Error(t, err, "NewHandler should error when upstreams is empty slice")
+	handler, _, _ := handlerTestSetup(t)
+	_, err := NewHandler(handler.provider, handler.config, handler.storage, nil)
+	require.NoError(t, err)
 }
 
 // TestNewHandler_ErrorsOnNilConfig pins the constructor invariant that a
@@ -251,4 +254,311 @@ func TestAuthorizeHandler_RedirectsToUpstream(t *testing.T) {
 
 	// Verify the challenge matches the stored verifier
 	assert.Equal(t, servercrypto.ComputePKCEChallenge(pending.UpstreamPKCEVerifier), mockUpstream.capturedCodeChallenge)
+}
+
+// registerLoopbackClient creates a public client with loopback redirect URIs (as
+// DCR/CIMD would) and registers it in storState so the mock GetClient call the
+// handler makes can resolve it.
+func registerLoopbackClient(t *testing.T, storState *testStorageState, clientID string, redirectURIs ...string) {
+	t.Helper()
+
+	client, err := registration.New(registration.Config{
+		ID:                      clientID,
+		RedirectURIs:            redirectURIs,
+		TokenEndpointAuthMethod: oauthproto.TokenEndpointAuthMethodNone,
+	})
+	require.NoError(t, err)
+	storState.clients[clientID] = client
+}
+
+func TestAuthorizeHandler_LoopbackLocalhostDynamicPortIsAccepted(t *testing.T) {
+	t.Parallel()
+	handler, storState, mockUpstream := handlerTestSetup(t)
+
+	const clientID = "loopback-localhost-client"
+	registerLoopbackClient(t, storState, clientID, "http://localhost/callback")
+
+	params := url.Values{
+		"client_id":             {clientID},
+		"redirect_uri":          {"http://localhost:54321/callback"},
+		"response_type":         {"code"},
+		"state":                 {"client-state"},
+		"code_challenge":        {"challenge123"},
+		"code_challenge_method": {"S256"},
+	}
+	req := httptest.NewRequest(http.MethodGet, "/oauth/authorize?"+params.Encode(), nil)
+	rec := httptest.NewRecorder()
+
+	handler.AuthorizeHandler(rec, req)
+
+	require.Equal(t, http.StatusFound, rec.Code, "response body: %s", rec.Body.String())
+	assert.Contains(t, rec.Header().Get("Location"), "https://idp.example.com/authorize")
+
+	pending, ok := storState.pendingAuths[mockUpstream.capturedState]
+	require.True(t, ok, "pending authorization should be stored")
+	assert.Equal(t, "http://localhost:54321/callback", pending.RedirectURI,
+		"the dynamic-port redirect_uri, not the portless registered one, must be preserved")
+}
+
+// TestAuthorizeHandler_LoopbackCaseInsensitiveLocalhostIsAccepted pins that a
+// mixed-case "localhost" hostname is matched the same as lowercase --
+// registration.hostnamesMatch treats "localhost" case-insensitively, and
+// rewriteLoopbackRedirectURI's own pre-filter must not be stricter than the
+// matcher it's gating (it previously used networking.IsLocalhost, a
+// case-SENSITIVE check, which silently rejected "LOCALHOST" before the
+// case-insensitive matcher ever saw it).
+func TestAuthorizeHandler_LoopbackCaseInsensitiveLocalhostIsAccepted(t *testing.T) {
+	t.Parallel()
+	handler, storState, mockUpstream := handlerTestSetup(t)
+
+	const clientID = "loopback-uppercase-localhost-client"
+	registerLoopbackClient(t, storState, clientID, "http://localhost/callback")
+
+	params := url.Values{
+		"client_id":             {clientID},
+		"redirect_uri":          {"http://LOCALHOST:54321/callback"},
+		"response_type":         {"code"},
+		"state":                 {"client-state"},
+		"code_challenge":        {"challenge123"},
+		"code_challenge_method": {"S256"},
+	}
+	req := httptest.NewRequest(http.MethodGet, "/oauth/authorize?"+params.Encode(), nil)
+	rec := httptest.NewRecorder()
+
+	handler.AuthorizeHandler(rec, req)
+
+	require.Equal(t, http.StatusFound, rec.Code, "response body: %s", rec.Body.String())
+
+	pending, ok := storState.pendingAuths[mockUpstream.capturedState]
+	require.True(t, ok, "pending authorization should be stored")
+	assert.Equal(t, "http://LOCALHOST:54321/callback", pending.RedirectURI)
+}
+
+func TestAuthorizeHandler_Loopback127001DynamicPortStillWorks(t *testing.T) {
+	t.Parallel()
+	handler, storState, mockUpstream := handlerTestSetup(t)
+
+	const clientID = "loopback-127001-client"
+	registerLoopbackClient(t, storState, clientID, "http://127.0.0.1/callback")
+
+	params := url.Values{
+		"client_id":             {clientID},
+		"redirect_uri":          {"http://127.0.0.1:54321/callback"},
+		"response_type":         {"code"},
+		"state":                 {"client-state"},
+		"code_challenge":        {"challenge123"},
+		"code_challenge_method": {"S256"},
+	}
+	req := httptest.NewRequest(http.MethodGet, "/oauth/authorize?"+params.Encode(), nil)
+	rec := httptest.NewRecorder()
+
+	handler.AuthorizeHandler(rec, req)
+
+	require.Equal(t, http.StatusFound, rec.Code, "response body: %s", rec.Body.String())
+
+	pending, ok := storState.pendingAuths[mockUpstream.capturedState]
+	require.True(t, ok, "pending authorization should be stored")
+	assert.Equal(t, "http://127.0.0.1:54321/callback", pending.RedirectURI)
+}
+
+func TestAuthorizeHandler_LoopbackUnregisteredRedirectURIRejected(t *testing.T) {
+	t.Parallel()
+	handler, storState, _ := handlerTestSetup(t)
+
+	const clientID = "loopback-unregistered-client"
+	registerLoopbackClient(t, storState, clientID, "http://localhost/callback")
+
+	params := url.Values{
+		"client_id":             {clientID},
+		"redirect_uri":          {"http://localhost:54321/not-the-registered-path"},
+		"response_type":         {"code"},
+		"state":                 {"client-state"},
+		"code_challenge":        {"challenge123"},
+		"code_challenge_method": {"S256"},
+	}
+	req := httptest.NewRequest(http.MethodGet, "/oauth/authorize?"+params.Encode(), nil)
+	rec := httptest.NewRecorder()
+
+	handler.AuthorizeHandler(rec, req)
+
+	assert.Equal(t, http.StatusBadRequest, rec.Code)
+	assert.Contains(t, rec.Body.String(), "invalid_request")
+}
+
+// TestAuthorizeHandler_LoopbackErrorRedirectsToDynamicPort proves that a
+// validation failure occurring after redirect_uri validation succeeds (here,
+// an unsupported response_type) redirects to the client's real dynamic-port
+// listener, not the registered portless placeholder that
+// rewriteLoopbackRedirectURI substituted for fosite's exact-match check. See
+// loopbackAuthorizeRequester for the mechanism.
+func TestAuthorizeHandler_LoopbackErrorRedirectsToDynamicPort(t *testing.T) {
+	t.Parallel()
+	handler, storState, _ := handlerTestSetup(t)
+
+	const clientID = "loopback-error-redirect-client"
+	registerLoopbackClient(t, storState, clientID, "http://localhost/callback")
+
+	params := url.Values{
+		"client_id":     {clientID},
+		"redirect_uri":  {"http://localhost:54321/callback"},
+		"response_type": {"token"}, // implicit flow not supported
+		"state":         {"client-state"},
+	}
+	req := httptest.NewRequest(http.MethodGet, "/oauth/authorize?"+params.Encode(), nil)
+	rec := httptest.NewRecorder()
+
+	handler.AuthorizeHandler(rec, req)
+
+	// fosite uses 303 See Other for error redirects per RFC 6749
+	assert.Equal(t, http.StatusSeeOther, rec.Code)
+	location := rec.Header().Get("Location")
+	assert.Contains(t, location, "error=unsupported_response_type")
+	assert.Contains(t, location, "state=client-state")
+	assert.True(t, strings.HasPrefix(location, "http://localhost:54321/callback"),
+		"error redirect must target the client's real dynamic-port listener, got: %s", location)
+}
+
+// TestAuthorizeHandler_Loopback127001ErrorRedirectsToDynamicPort proves an
+// IP-literal loopback client (127.0.0.1) keeps working exactly as it did
+// before the "localhost" loopback rewrite was introduced:
+// rewriteLoopbackRedirectURI skips IP literals entirely, since fosite's own
+// native loopback matching already preserves the dynamic port for these on
+// both success and error redirects.
+func TestAuthorizeHandler_Loopback127001ErrorRedirectsToDynamicPort(t *testing.T) {
+	t.Parallel()
+	handler, storState, _ := handlerTestSetup(t)
+
+	const clientID = "loopback-127001-error-redirect-client"
+	registerLoopbackClient(t, storState, clientID, "http://127.0.0.1/callback")
+
+	params := url.Values{
+		"client_id":     {clientID},
+		"redirect_uri":  {"http://127.0.0.1:54321/callback"},
+		"response_type": {"token"}, // implicit flow not supported
+		"state":         {"client-state"},
+	}
+	req := httptest.NewRequest(http.MethodGet, "/oauth/authorize?"+params.Encode(), nil)
+	rec := httptest.NewRecorder()
+
+	handler.AuthorizeHandler(rec, req)
+
+	assert.Equal(t, http.StatusSeeOther, rec.Code)
+	location := rec.Header().Get("Location")
+	assert.Contains(t, location, "error=unsupported_response_type")
+	assert.True(t, strings.HasPrefix(location, "http://127.0.0.1:54321/callback"),
+		"error redirect must preserve the dynamic port for IP-literal loopback clients, got: %s", location)
+}
+
+// TestAuthorizeHandler_LoopbackPostValidationErrorRedirectsToDynamicPort proves
+// that a failure AFTER NewAuthorizeRequest succeeds -- not just a validation
+// failure inside it -- still redirects to the client's real dynamic-port
+// listener rather than the registered portless literal. StorePendingAuthorization
+// failing is the regression case: ar is valid at that point (rewriteLoopbackRedirectURI
+// already substituted the portless literal into it), so the error path must
+// use the wrapped requester too, not the raw one.
+func TestAuthorizeHandler_LoopbackPostValidationErrorRedirectsToDynamicPort(t *testing.T) {
+	t.Parallel()
+	handler, storState, _ := handlerTestSetup(t, withStorePendingError(errors.New("storage unavailable")))
+
+	const clientID = "loopback-post-validation-error-client"
+	registerLoopbackClient(t, storState, clientID, "http://localhost/callback")
+
+	params := url.Values{
+		"client_id":             {clientID},
+		"redirect_uri":          {"http://localhost:54321/callback"},
+		"response_type":         {"code"},
+		"state":                 {"client-state"},
+		"code_challenge":        {"challenge123"},
+		"code_challenge_method": {"S256"},
+	}
+	req := httptest.NewRequest(http.MethodGet, "/oauth/authorize?"+params.Encode(), nil)
+	rec := httptest.NewRecorder()
+
+	handler.AuthorizeHandler(rec, req)
+
+	assert.Equal(t, http.StatusSeeOther, rec.Code)
+	location := rec.Header().Get("Location")
+	assert.Contains(t, location, "error=server_error")
+	assert.True(t, strings.HasPrefix(location, "http://localhost:54321/callback"),
+		"a post-validation failure must still redirect to the client's real dynamic-port listener, got: %s", location)
+}
+
+func TestLoopbackAuthorizeRequester_IsRedirectURIValid(t *testing.T) {
+	t.Parallel()
+
+	loopbackClient, err := registration.New(registration.Config{
+		ID:                      "wrapper-test-client",
+		RedirectURIs:            []string{"http://localhost/callback"},
+		TokenEndpointAuthMethod: oauthproto.TokenEndpointAuthMethodNone,
+	})
+	require.NoError(t, err)
+
+	confidentialClient, err := registration.New(registration.Config{
+		ID:                      "wrapper-test-confidential-client",
+		Secret:                  "s3cr3t-plaintext",
+		RedirectURIs:            []string{"https://example.com/callback"},
+		TokenEndpointAuthMethod: oauthproto.TokenEndpointAuthMethodClientSecretBasic,
+	})
+	require.NoError(t, err)
+
+	tests := []struct {
+		name string
+		// arRedirectURI, when non-empty, seeds the embedded requester's own
+		// RedirectURI, exercising fosite's own IsRedirectURIValid. Left empty
+		// (nil ar.RedirectURI) for cases that must exercise only the fallback.
+		arRedirectURI string
+		client        fosite.Client
+		redirectURI   string
+		wantValid     bool
+	}{
+		{
+			name:        "nil client is invalid",
+			client:      nil,
+			redirectURI: "http://localhost:54321/callback",
+			wantValid:   false,
+		},
+		{
+			name:        "genuine loopback dynamic-port match is valid",
+			client:      loopbackClient,
+			redirectURI: "http://localhost:54321/callback",
+			wantValid:   true,
+		},
+		{
+			name:        "unregistered path is not a loopback match",
+			client:      loopbackClient,
+			redirectURI: "http://localhost:54321/not-registered",
+			wantValid:   false,
+		},
+		{
+			// Pins the widen-only invariant (see IsRedirectURIValid's doc
+			// comment): would fail if the override reverted to consulting
+			// only the public-clients-only loopback matcher, since
+			// RegisteredLoopbackRedirectURI unconditionally rejects
+			// confidential clients via its !IsPublic() guard.
+			name:          "confidential client with exact-match redirect_uri is valid via fosite's own check",
+			arRedirectURI: "https://example.com/callback",
+			client:        confidentialClient,
+			redirectURI:   "https://example.com/callback",
+			wantValid:     true,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			redirectURI, err := url.Parse(tt.redirectURI)
+			require.NoError(t, err)
+
+			ar := fosite.NewAuthorizeRequest()
+			ar.Client = tt.client
+			if tt.arRedirectURI != "" {
+				ar.RedirectURI, err = url.Parse(tt.arRedirectURI)
+				require.NoError(t, err)
+			}
+			wrapped := &loopbackAuthorizeRequester{AuthorizeRequester: ar, redirectURI: redirectURI}
+
+			assert.Equal(t, tt.wantValid, wrapped.IsRedirectURIValid())
+		})
+	}
 }

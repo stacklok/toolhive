@@ -161,6 +161,7 @@ type HttpClientBuilder struct {
 	tlsHandshakeTimeout   time.Duration
 	responseHeaderTimeout time.Duration
 	caCertPath            string
+	caCertUsesSystemRoots bool
 	authTokenFile         string
 	allowPrivate          bool
 	insecureAllowHTTP     bool
@@ -177,10 +178,11 @@ func NewHttpClientBuilder() *HttpClientBuilder {
 }
 
 // NewHostScopedClientBuilder returns an HttpClientBuilder pre-configured with
-// the SSRF-guard policy (CWE-918) appropriate for dialing host. By default the
-// returned builder blocks plain HTTP and connections to private/loopback/
-// link-local IP ranges. Both gates are relaxed automatically for loopback
-// hosts (development/testing) and when INSECURE_DISABLE_URL_VALIDATION is set.
+// the SSRF-guard policy (CWE-918) appropriate for a host explicitly configured
+// by an operator. By default the returned builder blocks plain HTTP and
+// connections to private/loopback/link-local IP ranges. Both gates are relaxed
+// automatically for loopback hosts (development/testing) and when
+// INSECURE_DISABLE_URL_VALIDATION is set.
 //
 // allowPrivateIPs widens only the private-IP gate — for example an in-cluster
 // provider reachable solely over an RFC-1918 address — without enabling plain
@@ -188,10 +190,10 @@ func NewHttpClientBuilder() *HttpClientBuilder {
 // plain-HTTP for non-loopback hosts and must never be set in production.
 //
 // The returned builder is not yet built: callers may chain further options
-// (e.g. WithTimeout, WithDisableKeepAlives) before calling Build. This is the
-// single source of truth for the host-scoped guard policy shared by the
-// upstream OAuth2/OIDC providers and the DCR resolver so the two paths cannot
-// drift.
+// (e.g. WithTimeout, WithDisableKeepAlives) before calling Build. This builder
+// carries the policy for operator-configured hosts only; a host named by a
+// remote server or by a document it serves must use
+// NewServerSuppliedHostClientBuilder instead.
 func NewHostScopedClientBuilder(host string, allowPrivateIPs, insecureAllowHTTP bool) *HttpClientBuilder {
 	allowInsecure := IsLocalhost(host) ||
 		insecureAllowHTTP ||
@@ -201,9 +203,40 @@ func NewHostScopedClientBuilder(host string, allowPrivateIPs, insecureAllowHTTP 
 		WithPrivateIPs(allowInsecure || allowPrivateIPs)
 }
 
-// WithCABundle sets the CA certificate bundle path
+// NewServerSuppliedHostClientBuilder returns an HttpClientBuilder for a host
+// supplied by a remote server or its metadata. It permits HTTP for localhost,
+// explicit insecure configuration, or INSECURE_DISABLE_URL_VALIDATION to
+// preserve compatibility, but private/loopback/link-local dialing is enabled
+// only by allowPrivateIPs. In particular, localhost and the environment
+// override never widen the private-IP gate for server-supplied endpoints:
+// INSECURE_DISABLE_URL_VALIDATION deliberately relaxes only the HTTPS
+// requirement here, because a remote server that can name an endpoint must not
+// be able to reach an internal address just because a developer set that
+// variable.
+func NewServerSuppliedHostClientBuilder(host string, allowPrivateIPs, insecureAllowHTTP bool) *HttpClientBuilder {
+	allowInsecure := IsLocalhost(host) ||
+		insecureAllowHTTP ||
+		strings.EqualFold(os.Getenv("INSECURE_DISABLE_URL_VALIDATION"), "true")
+	return NewHttpClientBuilder().
+		WithInsecureAllowHTTP(allowInsecure).
+		WithPrivateIPs(allowPrivateIPs)
+}
+
+// WithCABundle sets a pinned CA certificate bundle path. When a bundle is
+// configured, only certificates from that bundle are trusted (system roots are
+// not included).
 func (b *HttpClientBuilder) WithCABundle(path string) *HttpClientBuilder {
 	b.caCertPath = path
+	b.caCertUsesSystemRoots = false
+	return b
+}
+
+// WithSystemRootsPlusCABundle sets a CA certificate bundle path and preserves
+// trust in the system root pool. Use this when an upstream may use either a
+// publicly trusted certificate or a private CA.
+func (b *HttpClientBuilder) WithSystemRootsPlusCABundle(path string) *HttpClientBuilder {
+	b.caCertPath = path
+	b.caCertUsesSystemRoots = true
 	return b
 }
 
@@ -261,6 +294,16 @@ func (b *HttpClientBuilder) Build() (*http.Client, error) {
 		}
 
 		caCertPool := x509.NewCertPool()
+		if b.caCertUsesSystemRoots {
+			caCertPool, err = x509.SystemCertPool()
+			if err != nil {
+				return nil, fmt.Errorf("failed to load system CA certificate pool: %w", err)
+			}
+			if caCertPool == nil {
+				return nil, fmt.Errorf("failed to load system CA certificate pool: pool is nil")
+			}
+		}
+
 		if !caCertPool.AppendCertsFromPEM(caCert) {
 			return nil, fmt.Errorf("failed to parse CA certificate bundle")
 		}

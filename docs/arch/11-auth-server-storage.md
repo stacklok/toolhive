@@ -61,7 +61,8 @@ The storage layer implements multiple interfaces from the [fosite](https://githu
 - `UpstreamTokenStorage` — Upstream IDP token caching with user binding
 - `PendingAuthorizationStorage` — In-flight authorization tracking
 - `UserStorage` — Internal user accounts and provider identity linking
-- `DCRCredentialStore` — DCR client secret persistence; intentionally NOT embedded in `Storage` (each backend implements it separately and call sites reach it via an explicit `stor.(DCRCredentialStore)` type assertion)
+- `DCRCredentialStore` — DCR client metadata and credential persistence; intentionally NOT embedded in `Storage` (each backend implements it separately and call sites reach it via an explicit `stor.(DCRCredentialStore)` type assertion). Secret-based clients store hashed secrets; `private_key_jwt` clients store their inline public JWKS and signing algorithm.
+- `AssertionJWTConsumer` — atomic single-use consumption for validated JWT assertions. It is deliberately separate from `Storage`, so only assertion-grant composition requires replay protection.
 
 **Implementation:**
 - Interface definitions: `pkg/authserver/storage/types.go`
@@ -124,12 +125,22 @@ The in-memory backend uses Go maps protected by `sync.RWMutex` for thread safety
 - State is lost on restart
 - Cannot be shared across replicas
 - Suitable for development and single-instance deployments
+- JWT-bearer assertion replay tracking is per-process. Each accepted assertion is
+  retained through its `exp`; a replay sent to a different process is not
+  detected.
 
 **Implementation:** `pkg/authserver/storage/memory.go`
 
 ## Redis Backend
 
 The Redis backend stores all OAuth 2.0 state as JSON-serialized values in Redis.
+JWT-bearer assertion replay tracking uses the same shared Redis namespace, so
+all processes configured with that backend observe a consumed assertion. The
+backend hashes a length-prefixed `(purpose, issuer, replay key)` tuple before
+using it in a Redis key, preventing ambiguous key encoding and keeping the
+assertion identifier out of Redis key names. A successful atomic `SET NX` marker
+expires at the assertion's `exp`; a duplicate unexpired marker returns
+`fosite.ErrJTIKnown`, and a Redis error is returned so the grant fails closed.
 
 ### Connection Architecture
 
@@ -176,6 +187,26 @@ The implementation uses different strategies based on consistency requirements:
 - **Pipelines** (`MULTI`/`EXEC`) for batched operations: authorization code invalidation, token session creation with secondary index updates
 - **Individual commands** with best-effort cleanup: token revocation, refresh token rotation — partial failures are safe since orphaned keys expire via TTL
 
+### Refresh Coordination Scope
+
+When an expired upstream access token is refreshed, `UpstreamTokenStorage` derives
+an opaque SHA-256 identity from its storage-defined row representation. For
+Redis, that representation is its row-key format, so two `(sessionID,
+providerName)` pairs that happen to produce the same Redis key resolve to the
+same identity — that's safe because they're the same physical row. What's
+not allowed is aliasing two pairs that are genuinely different rows: the
+auth server uses this identity only as the key for its in-process
+`singleflight` group, then its leader re-reads the row before redeeming its
+refresh token, and it reads/writes under its own sessionID — aliasing
+distinct rows would cross credentials between sessions. This prevents
+duplicate redemption from stale concurrent callers served by the same
+process; the identity is not persisted, logged, or exposed.
+
+This is deliberately narrower than #4122: it does not provide distributed
+coordination across replicas, row-addressed mutation, compare-and-swap, or any
+other cross-process consistency guarantee. Redis remains the durable storage
+backend, while each replica coordinates only its own in-flight refreshes.
+
 ### Serialization
 
 All values are stored as JSON. The implementation uses defensive copies on read and write to prevent caller mutations from affecting stored data.
@@ -191,7 +222,8 @@ Redis TTL is used for all time-bounded data. TTL values are derived from OAuth 2
 | Authorization codes | 10 minutes |
 | PKCE requests | 10 minutes |
 | Invalidated codes | 30 minutes |
-| DCR-issued clients (public and confidential) | 30 days |
+| DCR-issued clients (public, confidential, and private_key_jwt) | 30 days |
+| JWT-bearer replay markers | Assertion `exp` |
 | Users / Providers | No expiry |
 
 These TTLs apply to the Redis backend. The in-memory backend holds no
@@ -283,6 +315,74 @@ But a loopback `http://` issuer combined with `AllowConfidentialClientRegistrati
 
 **Rate limiting on `/oauth/register`.** Because the endpoint is unauthenticated, `Handler` also rate-limits it: 1 request/second sustained with a burst of 5 (`pkg/authserver/server/handlers/handler.go`). The limiter is a field on `Handler`, so it is per-process — running N replicas behind a load balancer allows roughly N times the configured rate, not a shared global rate.
 
+**DCR client metadata.** Redis persists the complete DCR client shape, including the inline public JWKS and `token_endpoint_auth_signing_alg` for `private_key_jwt` clients. These registrations use the same 30-day inactivity TTL as public and secret-based confidential DCR clients. A successful token exchange or refresh renews the TTL; reading a client during authorization does not. The in-memory backend has no wall-clock TTL, but applies the same DCR-issued marker to its capacity-bounded eviction policy. Pre-provisioned clients are not subject to this DCR retention policy.
+
+### Enabling `private_key_jwt` Dynamic Client Registration
+
+`AllowPrivateKeyJWTRegistration` is **off by default** and is separate from
+`AllowConfidentialClientRegistration`. The former permits unauthenticated
+`/oauth/register` requests to create clients that authenticate at the token
+endpoint with their own signed JWT assertions; the latter permits the endpoint
+to mint `client_secret` credentials for `client_secret_basic` or
+`client_secret_post`. Enabling one does not enable the other. Because registration
+is unauthenticated, either flag should be enabled only when any caller able to
+reach the endpoint is trusted to create a client of that type.
+
+This implementation accepts **inline `jwks` only** for `private_key_jwt` DCR.
+`jwks_uri` is explicitly rejected; the client must include at least one valid
+public signing key with `use: "sig"`. `token_endpoint_auth_signing_alg` is
+mandatory and must match a key in the set. The accepted algorithms are `RS256`,
+`RS384`, `RS512`, `PS256`, `PS384`, `PS512`, `ES256`, `ES384`, and `ES512`
+(EdDSA is excluded because the pinned fosite version cannot verify it — see
+`crypto.SupportedClientKeyAlgorithms`). The registration response contains the
+client metadata and no `client_secret`.
+
+A `private_key_jwt` DCR registration is restricted to the RFC 8693 token-exchange
+grant (`urn:ietf:params:oauth:grant-type:token-exchange`) and cannot request the
+authorization-code or refresh-token grants. If `grant_types` is omitted, this
+exchange grant is supplied automatically. Discovery advertises
+`private_key_jwt` and the supported signing algorithms only when
+`allowPrivateKeyJWTRegistration` is enabled; token exchange itself is always
+advertised because the embedded server supports it for self-issued tokens.
+
+The registration and token endpoints must use HTTPS for confidential-client
+registration, exactly as described above. `private_key_jwt` registration has
+no equivalent restriction: a `private_key_jwt` DCR response never contains a
+`client_secret` or any other secret, so there is nothing for cleartext HTTP
+to expose. It is governed only by the issuer's general `insecureAllowHTTP`
+setting, the same as a public (`none`) client — no loopback-specific opt-in
+is needed or offered.
+
+A client proves possession of its private key by sending a signed
+`client_assertion` at `/oauth/token`; ToolHive stores only the registered public
+JWKS. Assertion replay markers are retained until the assertion `exp` in both
+storage backends. Redis also persists the registered client and its JWKS under
+the auth server's isolated key prefix, so replicas sharing Redis can use the
+same registration. The in-memory backend is process-local and loses registrations
+on restart.
+
+This client-authentication flow is distinct from the existing RFC 7523 §2.1
+JWT-bearer **grant**. The JWT-bearer grant accepts an external assertion as the
+bearer grant itself and issues a token without authenticating a registered OAuth
+client. `private_key_jwt` is RFC 7523 §2.2 client authentication: it authenticates
+an already registered client, which then uses its permitted token-exchange grant.
+The two flows have separate enablement and purposes; one does not configure or
+substitute for the other.
+
+### Delegation consent
+
+A private-key JWT client is subject to the same delegation consent checks as any
+other authenticated ToolHive client. For an externally issued subject token,
+the trusted issuer's `AllowedDelegateClients` list must contain the registered
+ToolHive `client_id`, or explicitly contain `"*"` where wildcard delegation is
+intended. The check is based on the authenticated client ID, not whether it used
+a secret or `private_key_jwt`; `allowedActors`/`actorMatcher` alone do not bind
+the exchange to a particular ToolHive client.
+
+The following capabilities are deliberately deferred and are not supported by
+this feature: remote `jwks_uri` key retrieval, SPIFFE/SVID client
+authentication, AWS STS `act` claim mapping, and ID-JAG chaining.
+
 ### Forcing Confidential Registration for a Known Redirect URI
 
 Some MCP clients declare themselves public in their RFC 7591 registration (`token_endpoint_auth_method: "none"`) and then refuse to proceed because the response carries no `client_secret` — a self-contradictory request no conformant server can satisfy as written (Perplexity is the known case). RFC 7591 §3.2.1 permits the server to substitute client metadata during registration, and `ForceConfidentialRedirectURIs` uses that permission: it lists redirect URIs that are always registered as confidential clients, overriding a requested (or omitted) `"none"`.
@@ -318,12 +418,13 @@ All other `Storage` methods (`RegisterClient`, token storage, upstream token sto
 
 ### Unwrap pattern
 
-`CIMDStorageDecorator` implements `Unwrap() Storage` to expose the concrete backend through the decorator layer. Two call sites in `pkg/authserver/server_impl.go` depend on this:
+`CIMDStorageDecorator` implements `Unwrap() Storage` to expose the concrete backend through the decorator layer. Three call sites depend on this:
 
 - **`DCRCredentialStore` assertion** (`newServer`): The `DCRCredentialStore` interface is narrower than `Storage` and not embedded in it. The assertion `unwrapStorage(stor).(storage.DCRCredentialStore)` reaches the concrete backend through the decorator.
 - **`RedisStorage` migration** (`runLegacyMigration`): A type assertion to `*storage.RedisStorage` is needed to run a one-shot data migration. Same `unwrapStorage` call.
+- **`AssertionJWTConsumer` assertion** (`JWTBearerIssuanceFactory`): The JWT-bearer grant unwraps before asserting this narrow replay capability. The decorator also implements `ConsumeAssertionJWT` and forwards it to a capable backend. If the backend lacks the capability, the decorator returns an error instead of accepting an assertion with unknown replay status; replay protection therefore fails closed.
 
-Both call sites use the `unwrapStorage(stor)` helper rather than asserting directly on `stor`.
+All call sites use `unwrapStorage(stor)` or the equivalent JWT-bearer construction helper rather than asserting directly on the decorator.
 
 ### Air-gapped environments
 

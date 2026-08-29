@@ -5,6 +5,7 @@ package controllers
 
 import (
 	"context"
+	stderrors "errors"
 	"fmt"
 
 	"gopkg.in/yaml.v3"
@@ -47,6 +48,19 @@ func (r *VirtualMCPServerReconciler) ensureVmcpConfigConfigMap(
 	}
 	config, authServerRC, err := converter.Convert(ctx, vmcp, telemetryCfg)
 	if err != nil {
+		var delegateErr *operatorvmcpconfig.DelegateClientConfigValidationError
+		if stderrors.As(err, &delegateErr) {
+			message := fmt.Sprintf("invalid delegate clients in spec.authServerConfig: %v", delegateErr)
+			statusManager.SetPhase(mcpv1beta1.VirtualMCPServerPhaseFailed)
+			statusManager.SetMessage(message)
+			statusManager.SetAuthServerConfigValidatedCondition(
+				mcpv1beta1.ConditionReasonAuthServerConfigInvalid,
+				message,
+				metav1.ConditionFalse,
+			)
+			statusManager.SetObservedGeneration(vmcp.Generation)
+			return &SpecValidationError{Message: message}
+		}
 		return fmt.Errorf("failed to create vmcp Config from VirtualMCPServer: %w", err)
 	}
 

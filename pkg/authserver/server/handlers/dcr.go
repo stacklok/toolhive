@@ -14,6 +14,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/go-jose/go-jose/v3"
 	"github.com/google/uuid"
 	"github.com/ory/fosite"
 
@@ -35,7 +36,8 @@ const MaxDCRBodySize = 64 * 1024
 // It implements RFC 7591 Dynamic Client Registration for public clients with
 // loopback redirect URIs, and additionally for confidential clients with
 // https non-loopback redirect URIs when AllowConfidentialClientRegistration
-// is set.
+// is set. Token-only servers accept only private_key_jwt clients registered
+// for RFC 8693 token exchange.
 func (h *Handler) RegisterClientHandler(w http.ResponseWriter, req *http.Request) {
 	ctx := req.Context()
 
@@ -66,7 +68,7 @@ func (h *Handler) RegisterClientHandler(w http.ResponseWriter, req *http.Request
 
 	// Validate request. h.config.AllowConfidentialClientRegistration gates whether
 	// client_secret_basic / client_secret_post registrations are accepted.
-	validated, dcrErr := registration.ValidateDCRRequest(&dcrReq, h.config.AllowConfidentialClientRegistration)
+	validated, dcrErr := h.validateDCRRequest(&dcrReq)
 	if dcrErr != nil {
 		writeDCRError(w, http.StatusBadRequest, dcrErr)
 		return
@@ -129,7 +131,8 @@ func (h *Handler) RegisterClientHandler(w http.ResponseWriter, req *http.Request
 	}
 
 	fositeClient, clientSecret, err := buildDCRClient(
-		clientID, forcedURI != "", effectiveAuthMethod, validated, scopes, h.config.AllowedAudiences)
+		clientID, forcedURI != "", effectiveAuthMethod, validated, scopes, h.config.AllowedAudiences,
+		validated.JWKS, validated.TokenEndpointAuthSigningAlg)
 	if err != nil {
 		slog.Error("failed to create client", "error", err)
 		writeDCRError(w, http.StatusInternalServerError, &registration.DCRError{
@@ -200,14 +203,17 @@ func (h *Handler) RegisterClientHandler(w http.ResponseWriter, req *http.Request
 	// space-delimited wire form on the way out.
 	issuedAt := time.Now().Unix()
 	response := oauthproto.DynamicClientRegistrationResponse{
-		ClientID:                clientID,
-		ClientIDIssuedAt:        issuedAt,
-		RedirectURIs:            validated.RedirectURIs,
-		ClientName:              validated.ClientName,
-		TokenEndpointAuthMethod: effectiveAuthMethod,
-		GrantTypes:              validated.GrantTypes,
-		ResponseTypes:           validated.ResponseTypes,
-		Scopes:                  oauthproto.ScopeList(scopes),
+		ClientID:                    clientID,
+		ClientIDIssuedAt:            issuedAt,
+		RedirectURIs:                validated.RedirectURIs,
+		ClientName:                  validated.ClientName,
+		TokenEndpointAuthMethod:     effectiveAuthMethod,
+		GrantTypes:                  validated.GrantTypes,
+		ResponseTypes:               validated.ResponseTypes,
+		Scopes:                      oauthproto.ScopeList(scopes),
+		JWKS:                        validated.JWKS,
+		JWKSURI:                     validated.JWKSURI,
+		TokenEndpointAuthSigningAlg: validated.TokenEndpointAuthSigningAlg,
 	}
 	if clientSecret != "" {
 		// client_secret_expires_at is 0 ("does not expire", RFC 7591 §2): the
@@ -231,6 +237,24 @@ func (h *Handler) RegisterClientHandler(w http.ResponseWriter, req *http.Request
 	w.WriteHeader(http.StatusCreated)
 	if err := json.NewEncoder(w).Encode(response); err != nil {
 		slog.Error("failed to encode DCR response", "error", err)
+	}
+}
+
+func (h *Handler) validateDCRRequest(
+	req *oauthproto.DynamicClientRegistrationRequest,
+) (*oauthproto.DynamicClientRegistrationRequest, *registration.DCRError) {
+	validated, dcrErr := registration.ValidateDCRRequest(
+		req, h.config.AllowConfidentialClientRegistration, h.config.AllowPrivateKeyJWTRegistration)
+	if dcrErr != nil || !h.tokenOnly {
+		return validated, dcrErr
+	}
+	if validated.TokenEndpointAuthMethod == oauthproto.TokenEndpointAuthMethodPrivateKeyJWT &&
+		slices.Contains(validated.GrantTypes, oauthproto.GrantTypeTokenExchange) {
+		return validated, nil
+	}
+	return nil, &registration.DCRError{
+		Error:            registration.DCRErrorInvalidClientMetadata,
+		ErrorDescription: "token-only authorization servers only permit private_key_jwt token-exchange registrations",
 	}
 }
 
@@ -291,8 +315,10 @@ func buildDCRClient(
 	effectiveAuthMethod string,
 	validated *oauthproto.DynamicClientRegistrationRequest,
 	scopes, allowedAudiences []string,
+	jwks *jose.JSONWebKeySet, signingAlgorithm string,
 ) (fositeClient fosite.Client, clientSecret string, err error) {
-	if effectiveAuthMethod != oauthproto.TokenEndpointAuthMethodNone {
+	if effectiveAuthMethod != oauthproto.TokenEndpointAuthMethodNone &&
+		effectiveAuthMethod != oauthproto.TokenEndpointAuthMethodPrivateKeyJWT {
 		clientSecret, err = registration.GenerateClientSecret()
 		if err != nil {
 			return nil, "", fmt.Errorf("failed to generate client secret: %w", err)
@@ -311,14 +337,16 @@ func buildDCRClient(
 		})
 	} else {
 		fositeClient, err = registration.New(registration.Config{
-			ID:                      clientID,
-			Secret:                  clientSecret,
-			RedirectURIs:            validated.RedirectURIs,
-			TokenEndpointAuthMethod: validated.TokenEndpointAuthMethod,
-			GrantTypes:              validated.GrantTypes,
-			ResponseTypes:           validated.ResponseTypes,
-			Scopes:                  scopes,
-			Audience:                allowedAudiences,
+			ID:                                clientID,
+			Secret:                            clientSecret,
+			RedirectURIs:                      validated.RedirectURIs,
+			TokenEndpointAuthMethod:           validated.TokenEndpointAuthMethod,
+			GrantTypes:                        validated.GrantTypes,
+			ResponseTypes:                     validated.ResponseTypes,
+			Scopes:                            scopes,
+			Audience:                          allowedAudiences,
+			JSONWebKeys:                       jwks,
+			TokenEndpointAuthSigningAlgorithm: signingAlgorithm,
 		})
 	}
 	if err != nil {

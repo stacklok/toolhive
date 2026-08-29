@@ -24,6 +24,7 @@ import (
 
 	"github.com/ory/fosite"
 
+	"github.com/stacklok/toolhive/pkg/authserver/server"
 	"github.com/stacklok/toolhive/pkg/authserver/server/registration"
 )
 
@@ -38,6 +39,14 @@ type timedEntry[T any] struct {
 type upstreamKey struct {
 	sessionID    string
 	providerName string
+}
+
+// assertionJWTKey identifies a consumed assertion JWT without sharing JTIs
+// across assertion purposes or authorization-server issuers.
+type assertionJWTKey struct {
+	purpose string
+	issuer  string
+	jti     string
 }
 
 // clientOrderEntry is one position in MemoryStorage.clientOrder: a client ID
@@ -126,6 +135,9 @@ type MemoryStorage struct {
 
 	// clientAssertionJWTs tracks JTIs to prevent JWT replay attacks per RFC 7523.
 	clientAssertionJWTs map[string]time.Time
+
+	// assertionJWTs tracks consumed assertion JWTs by purpose, issuer, and JTI.
+	assertionJWTs map[assertionJWTKey]time.Time
 
 	// users maps user ID -> User for user account lookup.
 	// Users are not subject to TTL-based cleanup as they represent persistent accounts.
@@ -224,6 +236,7 @@ func NewMemoryStorage(opts ...MemoryStorageOption) *MemoryStorage {
 		pendingAuthorizations: make(map[string]*timedEntry[*PendingAuthorization]),
 		invalidatedCodes:      make(map[string]*timedEntry[bool]),
 		clientAssertionJWTs:   make(map[string]time.Time),
+		assertionJWTs:         make(map[assertionJWTKey]time.Time),
 		users:                 make(map[string]*User),
 		providerIdentities:    make(map[string]*ProviderIdentity),
 		dcrCredentials:        make(map[DCRKey]*DCRCredentials),
@@ -345,6 +358,13 @@ func (s *MemoryStorage) cleanupExpired() {
 		}
 	}
 
+	var expiredAssertionJWTs []assertionJWTKey
+	for k, v := range s.assertionJWTs {
+		if now.After(v) {
+			expiredAssertionJWTs = append(expiredAssertionJWTs, k)
+		}
+	}
+
 	s.mu.RUnlock()
 
 	// Phase 2: Early return if nothing to delete (no write lock needed)
@@ -355,7 +375,8 @@ func (s *MemoryStorage) cleanupExpired() {
 		len(expiredPKCERequests) == 0 &&
 		len(expiredUpstreamTokens) == 0 &&
 		len(expiredPendingAuthorizations) == 0 &&
-		len(expiredJWTs) == 0 {
+		len(expiredJWTs) == 0 &&
+		len(expiredAssertionJWTs) == 0 {
 		return
 	}
 
@@ -395,6 +416,12 @@ func (s *MemoryStorage) cleanupExpired() {
 	for _, k := range expiredJWTs {
 		delete(s.clientAssertionJWTs, k)
 	}
+
+	for _, k := range expiredAssertionJWTs {
+		if exp, ok := s.assertionJWTs[k]; ok && now.After(exp) {
+			delete(s.assertionJWTs, k)
+		}
+	}
 }
 
 // getExpirationFromRequester extracts expiration time from a fosite.Requester session.
@@ -432,10 +459,14 @@ func getExpirationFromRequester(request fosite.Requester, tokenType fosite.Token
 // ErrClientCapacity. Re-registering an existing ID moves it to the back of the
 // eviction queue.
 func (s *MemoryStorage) RegisterClient(_ context.Context, client fosite.Client) error {
+	id := client.GetID()
+	if err := ValidateRegisterableClientID(id); err != nil {
+		return err
+	}
+
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
-	id := client.GetID()
 	now := time.Now()
 	if _, exists := s.clients[id]; exists {
 		// Refresh the eviction position: an actively re-registering client is
@@ -519,35 +550,88 @@ func (s *MemoryStorage) GetClient(_ context.Context, id string) (fosite.Client, 
 	return client, nil
 }
 
-// ClientAssertionJWTValid returns an error if the JTI is known or the DB check failed,
-// and nil if the JTI is not known (meaning it can be used).
+// assertionReservationTTL bounds how long ClientAssertionJWTValid's atomic
+// reservation lives before SetClientAssertionJWT extends it to the
+// assertion's real (bounded) expiry. Short and fixed: if a caller wins the
+// reservation and then never calls SetClientAssertionJWT (crash, error path),
+// the jti becomes reusable again after this window rather than being stuck
+// or, worse, permanently reserved.
+const assertionReservationTTL = 30 * time.Second
+
+// ClientAssertionJWTValid atomically reserves jti for a short window,
+// returning fosite.ErrJTIKnown if it is already reserved or was previously
+// consumed and not yet expired. This is the only atomic checkpoint in
+// fosite's two-call client-assertion replay protocol (Valid, then
+// SetClientAssertionJWT with the real expiry once the rest of the assertion
+// has been validated) — without it, two concurrent requests presenting the
+// same assertion could both observe jti as unused before either recorded it.
+// jti length is bounded here too, before it's ever stored, since fosite
+// hands it to us before parsing exp.
 func (s *MemoryStorage) ClientAssertionJWTValid(_ context.Context, jti string) error {
-	s.mu.RLock()
-	defer s.mu.RUnlock()
-
-	if exp, ok := s.clientAssertionJWTs[jti]; ok {
-		if time.Now().Before(exp) {
-			return fosite.ErrJTIKnown
-		}
+	if len(jti) > server.MaxAssertionJTILength {
+		return fmt.Errorf("jti exceeds maximum length of %d bytes", server.MaxAssertionJTILength)
 	}
-	return nil
-}
 
-// SetClientAssertionJWT marks a JTI as known for the given expiry time.
-// Before inserting the new JTI, it will clean up any existing JTIs that have expired.
-func (s *MemoryStorage) SetClientAssertionJWT(_ context.Context, jti string, exp time.Time) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
-	// Clean up expired JTIs
 	now := time.Now()
+	if exp, ok := s.clientAssertionJWTs[jti]; ok && now.Before(exp) {
+		return fosite.ErrJTIKnown
+	}
+
+	// Clean up expired JTIs while the lock is already held.
 	for k, v := range s.clientAssertionJWTs {
 		if now.After(v) {
 			delete(s.clientAssertionJWTs, k)
 		}
 	}
 
+	s.clientAssertionJWTs[jti] = now.Add(assertionReservationTTL)
+	return nil
+}
+
+// SetClientAssertionJWT extends jti's replay marker to its real expiry,
+// rejecting an exp further than MaxAssertionLifespan in the future. This
+// bounds how long a replay-tracking entry survives regardless of what the
+// client's own assertion claims — otherwise a registered caller could set
+// exp decades out and grow this map indefinitely. Unconditional overwrite,
+// not a fresh atomic check: only the caller that already won
+// ClientAssertionJWTValid's reservation reaches this call.
+func (s *MemoryStorage) SetClientAssertionJWT(_ context.Context, jti string, exp time.Time) error {
+	if time.Until(exp) > server.MaxAssertionLifespan {
+		return fmt.Errorf("assertion lifetime exceeds maximum of %s", server.MaxAssertionLifespan)
+	}
+
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
 	s.clientAssertionJWTs[jti] = exp
+	return nil
+}
+
+// ConsumeAssertionJWT atomically records an assertion JWT as consumed until its
+// expiry. Reusing an unexpired (purpose, issuer, jti) tuple returns
+// fosite.ErrJTIKnown. Expired assertions are not retained because a caller must
+// reject them during JWT validation before attempting replay consumption.
+func (s *MemoryStorage) ConsumeAssertionJWT(_ context.Context, purpose, issuer, jti string, exp time.Time) error {
+	key := assertionJWTKey{purpose: purpose, issuer: issuer, jti: jti}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	now := time.Now()
+	if !exp.After(now) {
+		return nil
+	}
+
+	if storedExp, ok := s.assertionJWTs[key]; ok {
+		if storedExp.After(now) {
+			return fosite.ErrJTIKnown
+		}
+		delete(s.assertionJWTs, key)
+	}
+
+	s.assertionJWTs[key] = exp
 	return nil
 }
 
@@ -862,6 +946,18 @@ func (s *MemoryStorage) DeletePKCERequestSession(_ context.Context, signature st
 // -----------------------
 // Upstream Token Storage
 // -----------------------
+
+// ResolveUpstreamTokenRowID returns an opaque ID for process-local refresh
+// coordination of a logical upstream-token row.
+func (*MemoryStorage) ResolveUpstreamTokenRowID(_ context.Context, sessionID, providerName string) (UpstreamTokenRowID, error) {
+	if sessionID == "" {
+		return "", fosite.ErrInvalidRequest.WithHint("session ID cannot be empty")
+	}
+	if providerName == "" {
+		return "", fosite.ErrInvalidRequest.WithHint("provider name cannot be empty")
+	}
+	return upstreamTokenRowID(sessionID, providerName), nil
+}
 
 // StoreUpstreamTokens stores the upstream IDP tokens for a session and provider.
 // A defensive copy is made to prevent aliasing issues.
@@ -1489,4 +1585,5 @@ var (
 	_ UpstreamTokenStorage        = (*MemoryStorage)(nil)
 	_ UserStorage                 = (*MemoryStorage)(nil)
 	_ DCRCredentialStore          = (*MemoryStorage)(nil)
+	_ AssertionJWTConsumer        = (*MemoryStorage)(nil)
 )

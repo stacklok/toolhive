@@ -4,14 +4,21 @@
 package networking
 
 import (
+	"crypto/rand"
+	"crypto/rsa"
 	"crypto/tls"
+	"crypto/x509"
+	"crypto/x509/pkix"
+	"encoding/pem"
 	"io"
+	"math/big"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
 	"os"
 	"path/filepath"
 	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -102,6 +109,84 @@ func TestNewHostScopedClientBuilder_InsecureDisableURLValidationEnvVar(t *testin
 	assert.True(t, builder.insecureAllowHTTP, "env var must widen the HTTP scheme gate")
 }
 
+// serverSuppliedClient builds a server-supplied-policy client for host and
+// fails the test if the builder itself errors, so each check below is about the
+// dial and nothing else.
+func serverSuppliedClient(t *testing.T, host string, allowPrivateIPs bool) *http.Client {
+	t.Helper()
+	client, err := NewServerSuppliedHostClientBuilder(host, allowPrivateIPs, false).
+		WithDisableKeepAlives(true).
+		Build()
+	require.NoError(t, err)
+	return client
+}
+
+// TestNewServerSuppliedHostClientBuilder_PrivateIPGate asserts the guard by
+// whether the listener was reached, not by inspecting builder fields: a field
+// can read correctly while the dial goes through anyway. The IP ranges the
+// dialer refuses are covered by TestIsPrivateIP and
+// TestAddressReferencesPrivateIp; what matters here is that being loopback does
+// not on its own earn a server-supplied endpoint the right to be dialed.
+func TestNewServerSuppliedHostClientBuilder_PrivateIPGate(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name            string
+		allowPrivateIPs bool
+		wantReached     bool
+	}{
+		{name: "loopback is guarded by default", allowPrivateIPs: false, wantReached: false},
+		{name: "allowPrivateIPs permits the dial", allowPrivateIPs: true, wantReached: true},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			var hits atomic.Int32
+			srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+				hits.Add(1)
+				w.WriteHeader(http.StatusOK)
+			}))
+			t.Cleanup(srv.Close)
+
+			client := serverSuppliedClient(t, srv.Listener.Addr().String(), tt.allowPrivateIPs)
+			resp, err := client.Get(srv.URL) //nolint:bodyclose // closed below when the dial succeeded
+			if !tt.wantReached {
+				require.Error(t, err)
+				assert.Contains(t, err.Error(), ErrPrivateIpAddress)
+				assert.Zero(t, hits.Load(), "guarded client must not reach the listener")
+				return
+			}
+			require.NoError(t, err)
+			_, _ = io.Copy(io.Discard, resp.Body)
+			require.NoError(t, resp.Body.Close())
+			assert.Equal(t, int32(1), hits.Load())
+		})
+	}
+}
+
+// TestNewServerSuppliedHostClientBuilder_EnvVarDoesNotWidenPrivateIPGate pins
+// that INSECURE_DISABLE_URL_VALIDATION relaxes only the HTTPS requirement for
+// server-supplied endpoints. Kept as a standalone test (not a table case)
+// because t.Setenv is incompatible with t.Parallel.
+func TestNewServerSuppliedHostClientBuilder_EnvVarDoesNotWidenPrivateIPGate(t *testing.T) {
+	t.Setenv("INSECURE_DISABLE_URL_VALIDATION", "true")
+
+	var hits atomic.Int32
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		hits.Add(1)
+		w.WriteHeader(http.StatusOK)
+	}))
+	t.Cleanup(srv.Close)
+
+	//nolint:bodyclose // request never completes
+	_, err := serverSuppliedClient(t, srv.Listener.Addr().String(), false).Get(srv.URL)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), ErrPrivateIpAddress)
+	assert.Zero(t, hits.Load())
+}
+
 func TestHttpClientBuilder_WithCABundle(t *testing.T) {
 	t.Parallel()
 
@@ -114,6 +199,66 @@ func TestHttpClientBuilder_WithCABundle(t *testing.T) {
 	assert.Equal(t, path, builder.caCertPath)
 }
 
+func TestHttpClientBuilder_CABundleTrustSemantics(t *testing.T) {
+	t.Parallel()
+
+	key, err := rsa.GenerateKey(rand.Reader, 2048)
+	require.NoError(t, err)
+	certDER, err := x509.CreateCertificate(rand.Reader, &x509.Certificate{
+		SerialNumber:          big.NewInt(1),
+		Subject:               pkix.Name{CommonName: "ToolHive test CA"},
+		NotBefore:             time.Now().Add(-time.Hour),
+		NotAfter:              time.Now().Add(time.Hour),
+		IsCA:                  true,
+		BasicConstraintsValid: true,
+	}, &x509.Certificate{
+		SerialNumber:          big.NewInt(1),
+		Subject:               pkix.Name{CommonName: "ToolHive test CA"},
+		IsCA:                  true,
+		BasicConstraintsValid: true,
+	}, &key.PublicKey, key)
+	require.NoError(t, err)
+	caPath := filepath.Join(t.TempDir(), "ca.crt")
+	require.NoError(t, os.WriteFile(caPath, pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: certDER}), 0600))
+
+	tests := []struct {
+		name      string
+		configure func(*HttpClientBuilder)
+		additive  bool
+	}{
+		{
+			name:      "pinned custom bundle",
+			configure: func(builder *HttpClientBuilder) { builder.WithCABundle(caPath) },
+		},
+		{
+			name:      "system roots plus custom bundle",
+			configure: func(builder *HttpClientBuilder) { builder.WithSystemRootsPlusCABundle(caPath) },
+			additive:  true,
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			builder := NewHttpClientBuilder().WithPrivateIPs(true)
+			tt.configure(builder)
+			client, err := builder.Build()
+			require.NoError(t, err)
+			transport := client.Transport.(*ValidatingTransport).Transport.(*http.Transport)
+			require.NotNil(t, transport.TLSClientConfig)
+			require.NotNil(t, transport.TLSClientConfig.RootCAs)
+
+			pinnedPool := x509.NewCertPool()
+			require.True(t, pinnedPool.AppendCertsFromPEM(
+				pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: certDER})))
+			if tt.additive {
+				assert.False(t, transport.TLSClientConfig.RootCAs.Equal(pinnedPool))
+			} else {
+				assert.True(t, transport.TLSClientConfig.RootCAs.Equal(pinnedPool))
+			}
+		})
+	}
+}
 func TestHttpClientBuilder_WithTokenFromFile(t *testing.T) {
 	t.Parallel()
 

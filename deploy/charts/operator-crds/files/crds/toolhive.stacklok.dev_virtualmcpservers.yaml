@@ -96,6 +96,20 @@ spec:
                       caller who can reach the endpoint obtain a client credential.
                       Combining it with insecureAllowHTTP is rejected at validation.
                     type: boolean
+                  allowPrivateKeyJWTRegistration:
+                    default: false
+                    description: |-
+                      AllowPrivateKeyJWTRegistration permits Dynamic Client Registration of
+                      clients using private_key_jwt authentication. Registration behavior is
+                      intentionally configured separately from confidential-client registration.
+
+                      Security: registration is unauthenticated, so enabling this lets any
+                      caller who can reach the endpoint register a private_key_jwt client.
+                      Unlike allowConfidentialClientRegistration, this is NOT rejected when
+                      combined with insecureAllowHTTP: registration never returns a secret
+                      for a private_key_jwt client, so there is nothing for cleartext HTTP
+                      to expose.
+                    type: boolean
                   authorizationEndpointBaseUrl:
                     description: |-
                       AuthorizationEndpointBaseURL overrides the base URL used for the authorization_endpoint
@@ -161,6 +175,79 @@ spec:
                     required:
                     - enabled
                     type: object
+                  delegateClients:
+                    description: |-
+                      DelegateClients configures pre-provisioned confidential clients for RFC 8693
+                      token exchange. Each secret is referenced from a Kubernetes Secret; no
+                      plaintext secret, redirect URI, or grant selection is accepted here. The
+                      operator always supplies the token-exchange grant when it converts this
+                      configuration to the runtime contract.
+
+                      This is independent of allowConfidentialClientRegistration: it neither
+                      enables nor requires unauthenticated confidential dynamic client
+                      registration.
+                    items:
+                      description: |-
+                        DelegateClientConfig configures a pre-provisioned confidential OAuth client
+                        for RFC 8693 token exchange. Its secret is referenced from a Kubernetes
+                        Secret and is never represented inline.
+                      properties:
+                        audiences:
+                          description: Audiences is the narrowed set of RFC 8707 resources
+                            this client may request.
+                          items:
+                            maxLength: 2048
+                            minLength: 1
+                            type: string
+                          maxItems: 10
+                          minItems: 1
+                          type: array
+                          x-kubernetes-list-type: atomic
+                        clientId:
+                          description: ClientID is the OAuth client_id presented at
+                            the token endpoint.
+                          maxLength: 256
+                          minLength: 1
+                          type: string
+                        clientSecretRef:
+                          description: ClientSecretRef references the Kubernetes Secret
+                            key containing the client secret.
+                          properties:
+                            key:
+                              description: Key is the key within the secret
+                              type: string
+                            name:
+                              description: Name is the name of the secret
+                              type: string
+                          required:
+                          - key
+                          - name
+                          type: object
+                        scopes:
+                          description: Scopes is the narrowed set of OAuth scopes
+                            this client may request.
+                          items:
+                            maxLength: 256
+                            minLength: 1
+                            type: string
+                          maxItems: 10
+                          minItems: 1
+                          type: array
+                          x-kubernetes-list-type: atomic
+                      required:
+                      - audiences
+                      - clientId
+                      - clientSecretRef
+                      - scopes
+                      type: object
+                      x-kubernetes-validations:
+                      - message: clientSecretRef.name and clientSecretRef.key are
+                          required and must be non-empty
+                        rule: has(self.clientSecretRef) && size(self.clientSecretRef.name)
+                          > 0 && size(self.clientSecretRef.key) > 0
+                    maxItems: 10
+                    type: array
+                    x-kubernetes-list-type: atomic
                   disableUpstreamTokenInjection:
                     default: false
                     description: |-
@@ -171,8 +258,8 @@ spec:
                       the client's credential headers (Authorization, Cookie, Proxy-Authorization)
                       after validating the JWT — the backend receives an unauthenticated request.
                       Use headerForward to attach static credentials (e.g. an API key) if the
-                      backend needs them. Cannot be combined with token exchange or AWS STS,
-                      which would re-add credentials after the strip.
+                      backend needs them. Cannot be combined with token exchange, AWS STS, or OBO
+                      middleware, which would re-add credentials after the strip.
                       This is useful when the backend MCP server does not require authentication
                       (e.g., public documentation servers) but you still want client authentication.
                     type: boolean
@@ -237,17 +324,21 @@ spec:
                   insecureAllowConfidentialOverLoopbackHTTP:
                     default: false
                     description: |-
-                      InsecureAllowConfidentialOverLoopbackHTTP opts in to
-                      allowConfidentialClientRegistration when issuer is a plain-HTTP loopback
-                      URL (e.g. "http://localhost:8080"). Without this flag, that combination
-                      is rejected at reconcile time: a loopback http:// issuer is normally
-                      fine for local development since the traffic never leaves the machine,
-                      but combined with confidential registration it means /oauth/register —
-                      which is unauthenticated — mints client secrets over cleartext. Forcing
-                      TLS onto every loopback deployment instead would just push operators
-                      toward insecureAllowHTTP, which is worse: that also disables the
-                      non-loopback host check. Has no effect when
-                      allowConfidentialClientRegistration is false or issuer is https.
+                      InsecureAllowConfidentialOverLoopbackHTTP opts in to confidential
+                      Dynamic Client Registration (DCR) and delegate clients when issuer is a
+                      plain-HTTP loopback URL (e.g. "http://localhost:8080"). Without this
+                      flag, that combination is rejected at reconcile time: a loopback http://
+                      issuer is normally fine for local development since the traffic never
+                      leaves the machine, but confidential clients send secrets over cleartext.
+                      Forcing TLS onto every loopback deployment instead would just push
+                      operators toward insecureAllowHTTP, which is worse: that also disables
+                      the non-loopback host check. Has no effect when there are no confidential
+                      clients or issuer is https.
+
+                      private_key_jwt registration has no equivalent flag or transport
+                      restriction: unlike confidential registration, it never returns a
+                      client_secret (or any other secret) in the DCR response, so there is
+                      nothing here for cleartext HTTP to expose.
                     type: boolean
                   insecureAllowHTTP:
                     default: false
@@ -545,10 +636,288 @@ spec:
                         pattern: ^([0-9]+(\.[0-9]+)?(ns|us|µs|ms|s|m|h))+$
                         type: string
                     type: object
+                  trustedIssuers:
+                    description: |-
+                      TrustedIssuers configures external OIDC issuers whose tokens are
+                      accepted as RFC 8693 subject tokens during token exchange, in addition
+                      to self-issued subject tokens. Empty (the default) means only
+                      self-issued subject tokens are accepted. See
+                      docs/arch/17-token-exchange-delegation.md for the trust model.
+                    items:
+                      description: |-
+                        TrustedIssuerConfig configures an external OIDC issuer whose tokens are
+                        accepted as RFC 8693 subject tokens or RFC 7523 JWT-bearer assertions during
+                        token exchange. It mirrors tokenexchange.TrustedIssuer
+                        (pkg/authserver/server/tokenexchange), the runtime type the operator converts
+                        this into directly — no secret is referenced by this type, so no SecretKeyRef
+                        indirection is needed, unlike DelegateClientConfig.
+
+                        expectedAudience is exempted only for a grant-only issuer: jwtBearerGrant
+                        present and none of actorClaim, actorMatcher, allowMayAct, or allowedActors
+                        set. Any RFC 8693 delegation field (actorClaim, actorMatcher, allowMayAct,
+                        allowedActors) still requires expectedAudience, even when combined with
+                        jwtBearerGrant.
+
+                        The allowedDelegateClients rule below mirrors validateDelegationPolicy
+                        (pkg/authserver/server/tokenexchange/multi_issuer_validator.go): it is
+                        keyed on whether ANY delegation field is set (expectedAudience,
+                        actorClaim, actorMatcher, allowMayAct), not merely on whether
+                        jwtBearerGrant is absent — an issuer can combine jwtBearerGrant with
+                        expectedAudience for RFC 8693 delegation on the same issuer, and that
+                        combination still requires allowedDelegateClients at the Go level.
+                      properties:
+                        actorClaim:
+                          description: |-
+                            ActorClaim names the claim identifying the client that requested the
+                            subject token from this external issuer (used by allowedActors below).
+                            Defaults to "azp" when empty; use "appid" for Microsoft Entra v1, "cid"
+                            for Okta. The special value "client_id" reads the subject token's
+                            client_id claim instead.
+                          maxLength: 64
+                          type: string
+                        actorMatcher:
+                          description: |-
+                            ActorMatcher is an admin-authored CEL expression evaluated against the
+                            subject token's complete signature-verified claims map (bound as
+                            "claims") to authorize a class of external actors, in addition to (not
+                            instead of) allowedActors — either signal is sufficient. Must evaluate
+                            to a boolean; a non-boolean result denies the token at evaluation time,
+                            not at reconcile time. A syntactically invalid expression fails
+                            reconciliation (surfaced via the AuthServerConfigValidated condition),
+                            not admission — there is no validating webhook for this field.
+                          maxLength: 4096
+                          type: string
+                        allowMayAct:
+                          default: false
+                          description: |-
+                            AllowMayAct permits this external issuer's may_act claim to authorize
+                            delegation. Defaults to false; external issuers must be opted in
+                            explicitly because may_act bypasses allowedActors and actorMatcher.
+                            Does not affect self-issued subject tokens. The wildcard is never
+                            permitted alongside specific allowedDelegateClients, regardless of
+                            this setting.
+                          type: boolean
+                        allowPrivateIPs:
+                          description: |-
+                            AllowPrivateIPs permits OIDC discovery and JWKS fetches for THIS issuer
+                            to resolve to a private or loopback address. Use only when the issuer
+                            is hosted inside the same cluster and has no public endpoint. Requires
+                            jwksUrl to be set explicitly (enforced at reconcile time), since
+                            otherwise OIDC discovery — fetched from the external issuer itself —
+                            would choose the private dial target.
+                          type: boolean
+                        allowedActors:
+                          description: |-
+                            AllowedActors is the allowlist of actorClaim values authorized to
+                            exchange a subject token from this issuer when it carries no
+                            "may_act" claim, in addition to (not instead of) actorMatcher below —
+                            either signal is sufficient. Empty denies every token unless
+                            actorMatcher is set, or allowMayAct is true and the token carries a
+                            permitted may_act claim.
+                          items:
+                            maxLength: 256
+                            minLength: 1
+                            type: string
+                          maxItems: 50
+                          type: array
+                          x-kubernetes-list-type: atomic
+                        allowedDelegateClients:
+                          description: |-
+                            AllowedDelegateClients restricts which ToolHive client IDs may exchange
+                            an RFC 8693 subject token from this issuer. Required unless only
+                            jwtBearerGrant is configured; set it to ["*"] to permit any confidential
+                            client holding the token-exchange grant, or list specific client IDs to
+                            bind delegation to them.
+                          items:
+                            maxLength: 256
+                            minLength: 1
+                            type: string
+                          maxItems: 50
+                          minItems: 1
+                          type: array
+                          x-kubernetes-list-type: atomic
+                        caBundleRef:
+                          description: |-
+                            CABundleRef references a ConfigMap containing PEM CA certificates used when
+                            fetching this issuer's OIDC discovery document and JWKS. The bundle is added
+                            to the system roots for this issuer's client only; public roots still apply
+                            and other issuers are unaffected. Write access to the referenced ConfigMap is
+                            equivalent to controlling this issuer's trust anchor for subject-token
+                            validation — restrict it with the same care as a signing-key Secret.
+                          properties:
+                            configMapRef:
+                              description: |-
+                                ConfigMapRef references a ConfigMap containing the CA certificate bundle.
+                                The ConfigMap key is required by the API. If omitted in a stored object, it
+                                defaults to "ca.crt" for backwards compatibility.
+                              properties:
+                                key:
+                                  description: The key to select.
+                                  type: string
+                                name:
+                                  default: ""
+                                  description: |-
+                                    Name of the referent.
+                                    This field is effectively required, but due to backwards compatibility is
+                                    allowed to be empty. Instances of this type with an empty value here are
+                                    almost certainly wrong.
+                                    More info: https://kubernetes.io/docs/concepts/overview/working-with-objects/names/#names
+                                  type: string
+                                optional:
+                                  description: Specify whether the ConfigMap or its
+                                    key must be defined
+                                  type: boolean
+                              required:
+                              - key
+                              type: object
+                              x-kubernetes-map-type: atomic
+                          type: object
+                          x-kubernetes-validations:
+                          - message: configMapRef.name is required and must be non-empty
+                            rule: has(self.configMapRef) && size(self.configMapRef.name)
+                              > 0
+                        expectedAudience:
+                          description: |-
+                            ExpectedAudience is the expected "aud" claim value that must appear in
+                            an RFC 8693 subject token's audience list. It is not used by an RFC 7523
+                            JWT-bearer assertion, whose audience is the token endpoint.
+                          maxLength: 2048
+                          minLength: 1
+                          type: string
+                        insecureAllowHTTP:
+                          description: |-
+                            InsecureAllowHTTP permits plain-HTTP OIDC discovery and JWKS fetches
+                            for THIS issuer only. Development and testing only — never set in
+                            production.
+                          type: boolean
+                        issuerUrl:
+                          description: IssuerURL is the expected "iss" claim value
+                            (exact match).
+                          maxLength: 2048
+                          minLength: 1
+                          type: string
+                        jwksUrl:
+                          description: |-
+                            JWKSURL is the URL to fetch the issuer's JSON Web Key Set from. If
+                            empty, it is resolved via OIDC discovery at
+                            {issuerUrl}/.well-known/openid-configuration.
+                          maxLength: 2048
+                          type: string
+                        jwtBearerGrant:
+                          description: |-
+                            JWTBearerGrant enables the plain RFC 7523 JWT-bearer grant for this
+                            issuer. It is independent of RFC 8693 delegation policy.
+                          properties:
+                            acceptedAudiences:
+                              description: |-
+                                AcceptedAudiences identifies this authorization server's accepted
+                                assertion audiences. When omitted, runtime validation defaults to the
+                                token endpoint.
+                              items:
+                                maxLength: 2048
+                                minLength: 1
+                                pattern: ^https?://[^[:space:]]+$
+                                type: string
+                              maxItems: 50
+                              type: array
+                              x-kubernetes-list-type: atomic
+                            maxAssertionAge:
+                              description: MaxAssertionAge caps the exp-iat interval
+                                independently of exp.
+                              type: string
+                            subjectBindings:
+                              description: |-
+                                SubjectBindings maps an exact external subject to allowed RFC 8707
+                                resources.
+                              items:
+                                description: |-
+                                  JWTBearerSubjectBinding configures the exact subject and allowed resources
+                                  for one RFC 7523 JWT-bearer assertion identity.
+                                properties:
+                                  allowedResources:
+                                    description: |-
+                                      AllowedResources is the exact set of RFC 8707 resources this subject may
+                                      request.
+                                    items:
+                                      maxLength: 2048
+                                      minLength: 1
+                                      pattern: ^https?://[^[:space:]]+$
+                                      type: string
+                                    maxItems: 50
+                                    minItems: 1
+                                    type: array
+                                    x-kubernetes-list-type: atomic
+                                  subject:
+                                    description: Subject is an exact assertion sub
+                                      value. Wildcards are not supported.
+                                    maxLength: 256
+                                    minLength: 1
+                                    pattern: ^[^*]+$
+                                    type: string
+                                required:
+                                - allowedResources
+                                - subject
+                                type: object
+                              maxItems: 50
+                              minItems: 1
+                              type: array
+                              x-kubernetes-list-type: atomic
+                          required:
+                          - maxAssertionAge
+                          - subjectBindings
+                          type: object
+                          x-kubernetes-validations:
+                          - message: maxAssertionAge must be greater than zero
+                            rule: duration(self.maxAssertionAge) > duration('0s')
+                          - message: subjectBindings must not contain duplicate subjects
+                            rule: self.subjectBindings.all(binding, self.subjectBindings.filter(other,
+                              other.subject == binding.subject).size() == 1)
+                      required:
+                      - issuerUrl
+                      type: object
+                      x-kubernetes-validations:
+                      - message: allowedDelegateClients must not combine the wildcard
+                          "*" with specific client IDs
+                        rule: '!has(self.allowedDelegateClients) || !(''*'' in self.allowedDelegateClients)
+                          || size(self.allowedDelegateClients) == 1'
+                      - message: allowMayAct must not be enabled when allowedDelegateClients
+                          contains the wildcard "*"
+                        rule: '!(has(self.allowMayAct) && self.allowMayAct && ''*''
+                          in self.allowedDelegateClients)'
+                      - message: actorClaim must name a readable claim; use client_id
+                          or a non-reserved claim such as azp, appid, or cid
+                        rule: '!has(self.actorClaim) || !(self.actorClaim in [''sub'',
+                          ''iss'', ''aud'', ''exp'', ''iat'', ''nbf'', ''jti'', ''name'',
+                          ''email'', ''scope'', ''scp'', ''may_act''])'
+                      - message: allowPrivateIPs requires jwksUrl to be set explicitly
+                        rule: '!(has(self.allowPrivateIPs) && self.allowPrivateIPs)
+                          || (has(self.jwksUrl) && self.jwksUrl != "")'
+                      - message: expectedAudience is required unless jwtBearerGrant
+                          is configured without actorClaim, actorMatcher, allowMayAct,
+                          or allowedActors
+                        rule: (has(self.jwtBearerGrant) && !((has(self.actorClaim)
+                          && size(self.actorClaim) > 0) || (has(self.actorMatcher)
+                          && size(self.actorMatcher) > 0) || (has(self.allowMayAct)
+                          && self.allowMayAct) || (has(self.allowedActors) && size(self.allowedActors)
+                          > 0))) || (has(self.expectedAudience) && size(self.expectedAudience)
+                          > 0)
+                      - message: allowedDelegateClients is required when expectedAudience,
+                          actorClaim, actorMatcher, or allowMayAct is set
+                        rule: '!((has(self.expectedAudience) && size(self.expectedAudience)
+                          > 0) || (has(self.actorClaim) && size(self.actorClaim) >
+                          0) || (has(self.actorMatcher) && size(self.actorMatcher)
+                          > 0) || (has(self.allowMayAct) && self.allowMayAct)) ||
+                          (has(self.allowedDelegateClients) && size(self.allowedDelegateClients)
+                          > 0)'
+                    maxItems: 20
+                    type: array
+                    x-kubernetes-list-type: atomic
                   upstreamProviders:
                     description: |-
                       UpstreamProviders configures connections to upstream Identity Providers.
-                      The embedded auth server delegates authentication to these providers.
+                      When configured, the embedded auth server delegates interactive authentication
+                      to these providers. It may be omitted only when delegateClients or a trusted
+                      issuer with jwtBearerGrant enables token-only operation.
                       MCPServer and MCPRemoteProxy support a single upstream; VirtualMCPServer supports multiple.
                     items:
                       description: |-
@@ -591,11 +960,58 @@ spec:
                                 scope, state, code_challenge, code_challenge_method, nonce) are not allowed.
                               maxProperties: 16
                               type: object
+                            allowPrivateIPs:
+                              description: |-
+                                AllowPrivateIPs permits the upstream provider's HTTP client to connect to
+                                private IP ranges (RFC-1918, link-local). Use only when the upstream is
+                                hosted inside the same cluster and has no public endpoint. HTTP-scheme
+                                restrictions are unchanged — HTTPS is still required for non-localhost
+                                hosts unless InsecureAllowHTTP is set. Defaults to false.
+                              type: boolean
                             authorizationEndpoint:
                               description: AuthorizationEndpoint is the URL for the
                                 OAuth authorization endpoint.
                               pattern: ^https?://.*$
                               type: string
+                            caBundleRef:
+                              description: |-
+                                CABundleRef references a ConfigMap containing a CA bundle added to the
+                                system roots when connecting to this upstream; it does not restrict trust
+                                to this bundle or disable public-root trust. The selected key is projected
+                                as ca.crt.
+                              properties:
+                                configMapRef:
+                                  description: |-
+                                    ConfigMapRef references a ConfigMap containing the CA certificate bundle.
+                                    The ConfigMap key is required by the API. If omitted in a stored object, it
+                                    defaults to "ca.crt" for backwards compatibility.
+                                  properties:
+                                    key:
+                                      description: The key to select.
+                                      type: string
+                                    name:
+                                      default: ""
+                                      description: |-
+                                        Name of the referent.
+                                        This field is effectively required, but due to backwards compatibility is
+                                        allowed to be empty. Instances of this type with an empty value here are
+                                        almost certainly wrong.
+                                        More info: https://kubernetes.io/docs/concepts/overview/working-with-objects/names/#names
+                                      type: string
+                                    optional:
+                                      description: Specify whether the ConfigMap or
+                                        its key must be defined
+                                      type: boolean
+                                  required:
+                                  - key
+                                  type: object
+                                  x-kubernetes-map-type: atomic
+                              type: object
+                              x-kubernetes-validations:
+                              - message: configMapRef.name is required and must be
+                                  non-empty
+                                rule: has(self.configMapRef) && size(self.configMapRef.name)
+                                  > 0
                             clientId:
                               description: |-
                                 ClientID is the OAuth 2.0 client identifier registered with the upstream IDP.
@@ -742,6 +1158,13 @@ spec:
                               required:
                               - subjectPath
                               type: object
+                            insecureAllowHTTP:
+                              description: |-
+                                InsecureAllowHTTP permits plain-HTTP authorization and token endpoint URLs
+                                for this upstream. Only for in-cluster development environments (e.g. an
+                                OAuth2 provider served over HTTP in a kind cluster) where TLS is not
+                                available. Never set this in production.
+                              type: boolean
                             redirectUri:
                               description: |-
                                 RedirectURI is the callback URL where the upstream IdP will redirect after authentication.
@@ -892,6 +1315,51 @@ spec:
                                 scope, state, code_challenge, code_challenge_method, nonce) are not allowed.
                               maxProperties: 16
                               type: object
+                            allowPrivateIPs:
+                              description: |-
+                                AllowPrivateIPs permits the upstream provider's HTTP client to connect to
+                                private IP ranges (RFC-1918, link-local). Use only when the upstream is
+                                hosted inside the same cluster and has no public endpoint.
+                              type: boolean
+                            caBundleRef:
+                              description: |-
+                                CABundleRef references a ConfigMap containing a CA bundle added to the
+                                system roots when connecting to this upstream; it does not restrict trust
+                                to this bundle or disable public-root trust. The selected key is projected
+                                as ca.crt.
+                              properties:
+                                configMapRef:
+                                  description: |-
+                                    ConfigMapRef references a ConfigMap containing the CA certificate bundle.
+                                    The ConfigMap key is required by the API. If omitted in a stored object, it
+                                    defaults to "ca.crt" for backwards compatibility.
+                                  properties:
+                                    key:
+                                      description: The key to select.
+                                      type: string
+                                    name:
+                                      default: ""
+                                      description: |-
+                                        Name of the referent.
+                                        This field is effectively required, but due to backwards compatibility is
+                                        allowed to be empty. Instances of this type with an empty value here are
+                                        almost certainly wrong.
+                                        More info: https://kubernetes.io/docs/concepts/overview/working-with-objects/names/#names
+                                      type: string
+                                    optional:
+                                      description: Specify whether the ConfigMap or
+                                        its key must be defined
+                                      type: boolean
+                                  required:
+                                  - key
+                                  type: object
+                                  x-kubernetes-map-type: atomic
+                              type: object
+                              x-kubernetes-validations:
+                              - message: configMapRef.name is required and must be
+                                  non-empty
+                                rule: has(self.configMapRef) && size(self.configMapRef.name)
+                                  > 0
                             clientId:
                               description: ClientID is the OAuth 2.0 client identifier
                                 registered with the upstream IdP.
@@ -1052,16 +1520,20 @@ spec:
                         rule: 'self.type == ''oidc'' ? (has(self.oidcConfig) && !has(self.oauth2Config))
                           : self.type == ''oauth2'' ? (has(self.oauth2Config) && !has(self.oidcConfig))
                           : false'
-                    minItems: 1
                     type: array
                     x-kubernetes-list-map-keys:
                     - name
                     x-kubernetes-list-type: map
                 required:
                 - issuer
-                - upstreamProviders
                 type: object
                 x-kubernetes-validations:
+                - message: at least one upstream provider is required unless delegateClients
+                    or a trustedIssuer with jwtBearerGrant is configured
+                  rule: (has(self.upstreamProviders) && size(self.upstreamProviders)
+                    > 0) || (has(self.delegateClients) && size(self.delegateClients)
+                    > 0) || (has(self.trustedIssuers) && self.trustedIssuers.exists(issuer,
+                    has(issuer.jwtBearerGrant)))
                 - message: allowConfidentialClientRegistration cannot be combined
                     with insecureAllowHTTP; client secrets would be issued in cleartext
                     over an unauthenticated endpoint
@@ -1071,6 +1543,11 @@ spec:
                     to be true
                   rule: (!has(self.forceConfidentialRedirectUris) || size(self.forceConfidentialRedirectUris)
                     == 0) || (has(self.allowConfidentialClientRegistration) && self.allowConfidentialClientRegistration)
+                - message: delegateClients with an HTTP issuer require insecureAllowConfidentialOverLoopbackHTTP
+                    to be explicitly enabled; the issuer must still be loopback
+                  rule: '!has(self.delegateClients) || size(self.delegateClients)
+                    == 0 || !self.issuer.startsWith(''http://'') || (has(self.insecureAllowConfidentialOverLoopbackHTTP)
+                    && self.insecureAllowConfidentialOverLoopbackHTTP)'
               config:
                 description: |-
                   Config is the Virtual MCP server configuration.
@@ -2923,7 +3400,10 @@ spec:
                         default: false
                         description: |-
                           EnablePrometheusMetricsPath controls whether to expose Prometheus-style /metrics endpoint.
-                          The metrics are served on the main transport port at /metrics.
+                          The metrics are served at /metrics on a dedicated diagnostics port rather than on the
+                          main transport port, so the endpoint can be restricted by port and is not routed
+                          alongside application traffic. The endpoint is unauthenticated either way.
+                          See PrometheusPort and pkg/diagnostics.
                           This is separate from OTLP metrics which are sent to the Endpoint.
                         type: boolean
                       endpoint:
@@ -2956,6 +3436,29 @@ spec:
                           When false, OTLP metrics are not sent even if an endpoint is configured.
                           This is independent of EnablePrometheusMetricsPath.
                         type: boolean
+                      metricsOnTransportPort:
+                        description: |-
+                          MetricsOnTransportPort controls whether /metrics is ALSO served on the main
+                          transport port, in addition to the diagnostics port. It exists to give
+                          deployments a migration window: while true, an existing scrape configuration
+                          aimed at the transport port keeps working, and a new one aimed at
+                          PrometheusPort works too, so a scraper can be moved and verified before the
+                          old location goes away. See https://github.com/stacklok/toolhive/issues/6384 for
+                          the removal timeline.
+                        type: boolean
+                      prometheusPort:
+                        description: |-
+                          PrometheusPort is the port the Prometheus /metrics endpoint is served on when
+                          EnablePrometheusMetricsPath is true. It is deliberately not the main transport port,
+                          so that access can be restricted with a NetworkPolicy: NetworkPolicy matches on port,
+                          not on HTTP path, so a shared port makes "allow MCP traffic, deny metrics scraping"
+                          impossible to express. The endpoint itself is unauthenticated, so restricting who can
+                          reach this port is how it is protected.
+
+                          Zero selects the default diagnostics port (9464, the OpenTelemetry specification's
+                          Prometheus exporter default). If that port is taken the listener falls back to an
+                          available one and logs the resolved address. Do not route this port publicly.
+                        type: integer
                       samplingRate:
                         default: "0.05"
                         description: |-
@@ -3726,6 +4229,20 @@ spec:
                       caller who can reach the endpoint obtain a client credential.
                       Combining it with insecureAllowHTTP is rejected at validation.
                     type: boolean
+                  allowPrivateKeyJWTRegistration:
+                    default: false
+                    description: |-
+                      AllowPrivateKeyJWTRegistration permits Dynamic Client Registration of
+                      clients using private_key_jwt authentication. Registration behavior is
+                      intentionally configured separately from confidential-client registration.
+
+                      Security: registration is unauthenticated, so enabling this lets any
+                      caller who can reach the endpoint register a private_key_jwt client.
+                      Unlike allowConfidentialClientRegistration, this is NOT rejected when
+                      combined with insecureAllowHTTP: registration never returns a secret
+                      for a private_key_jwt client, so there is nothing for cleartext HTTP
+                      to expose.
+                    type: boolean
                   authorizationEndpointBaseUrl:
                     description: |-
                       AuthorizationEndpointBaseURL overrides the base URL used for the authorization_endpoint
@@ -3791,6 +4308,79 @@ spec:
                     required:
                     - enabled
                     type: object
+                  delegateClients:
+                    description: |-
+                      DelegateClients configures pre-provisioned confidential clients for RFC 8693
+                      token exchange. Each secret is referenced from a Kubernetes Secret; no
+                      plaintext secret, redirect URI, or grant selection is accepted here. The
+                      operator always supplies the token-exchange grant when it converts this
+                      configuration to the runtime contract.
+
+                      This is independent of allowConfidentialClientRegistration: it neither
+                      enables nor requires unauthenticated confidential dynamic client
+                      registration.
+                    items:
+                      description: |-
+                        DelegateClientConfig configures a pre-provisioned confidential OAuth client
+                        for RFC 8693 token exchange. Its secret is referenced from a Kubernetes
+                        Secret and is never represented inline.
+                      properties:
+                        audiences:
+                          description: Audiences is the narrowed set of RFC 8707 resources
+                            this client may request.
+                          items:
+                            maxLength: 2048
+                            minLength: 1
+                            type: string
+                          maxItems: 10
+                          minItems: 1
+                          type: array
+                          x-kubernetes-list-type: atomic
+                        clientId:
+                          description: ClientID is the OAuth client_id presented at
+                            the token endpoint.
+                          maxLength: 256
+                          minLength: 1
+                          type: string
+                        clientSecretRef:
+                          description: ClientSecretRef references the Kubernetes Secret
+                            key containing the client secret.
+                          properties:
+                            key:
+                              description: Key is the key within the secret
+                              type: string
+                            name:
+                              description: Name is the name of the secret
+                              type: string
+                          required:
+                          - key
+                          - name
+                          type: object
+                        scopes:
+                          description: Scopes is the narrowed set of OAuth scopes
+                            this client may request.
+                          items:
+                            maxLength: 256
+                            minLength: 1
+                            type: string
+                          maxItems: 10
+                          minItems: 1
+                          type: array
+                          x-kubernetes-list-type: atomic
+                      required:
+                      - audiences
+                      - clientId
+                      - clientSecretRef
+                      - scopes
+                      type: object
+                      x-kubernetes-validations:
+                      - message: clientSecretRef.name and clientSecretRef.key are
+                          required and must be non-empty
+                        rule: has(self.clientSecretRef) && size(self.clientSecretRef.name)
+                          > 0 && size(self.clientSecretRef.key) > 0
+                    maxItems: 10
+                    type: array
+                    x-kubernetes-list-type: atomic
                   disableUpstreamTokenInjection:
                     default: false
                     description: |-
@@ -3801,8 +4391,8 @@ spec:
                       the client's credential headers (Authorization, Cookie, Proxy-Authorization)
                       after validating the JWT — the backend receives an unauthenticated request.
                       Use headerForward to attach static credentials (e.g. an API key) if the
-                      backend needs them. Cannot be combined with token exchange or AWS STS,
-                      which would re-add credentials after the strip.
+                      backend needs them. Cannot be combined with token exchange, AWS STS, or OBO
+                      middleware, which would re-add credentials after the strip.
                       This is useful when the backend MCP server does not require authentication
                       (e.g., public documentation servers) but you still want client authentication.
                     type: boolean
@@ -3867,17 +4457,21 @@ spec:
                   insecureAllowConfidentialOverLoopbackHTTP:
                     default: false
                     description: |-
-                      InsecureAllowConfidentialOverLoopbackHTTP opts in to
-                      allowConfidentialClientRegistration when issuer is a plain-HTTP loopback
-                      URL (e.g. "http://localhost:8080"). Without this flag, that combination
-                      is rejected at reconcile time: a loopback http:// issuer is normally
-                      fine for local development since the traffic never leaves the machine,
-                      but combined with confidential registration it means /oauth/register —
-                      which is unauthenticated — mints client secrets over cleartext. Forcing
-                      TLS onto every loopback deployment instead would just push operators
-                      toward insecureAllowHTTP, which is worse: that also disables the
-                      non-loopback host check. Has no effect when
-                      allowConfidentialClientRegistration is false or issuer is https.
+                      InsecureAllowConfidentialOverLoopbackHTTP opts in to confidential
+                      Dynamic Client Registration (DCR) and delegate clients when issuer is a
+                      plain-HTTP loopback URL (e.g. "http://localhost:8080"). Without this
+                      flag, that combination is rejected at reconcile time: a loopback http://
+                      issuer is normally fine for local development since the traffic never
+                      leaves the machine, but confidential clients send secrets over cleartext.
+                      Forcing TLS onto every loopback deployment instead would just push
+                      operators toward insecureAllowHTTP, which is worse: that also disables
+                      the non-loopback host check. Has no effect when there are no confidential
+                      clients or issuer is https.
+
+                      private_key_jwt registration has no equivalent flag or transport
+                      restriction: unlike confidential registration, it never returns a
+                      client_secret (or any other secret) in the DCR response, so there is
+                      nothing here for cleartext HTTP to expose.
                     type: boolean
                   insecureAllowHTTP:
                     default: false
@@ -4175,10 +4769,288 @@ spec:
                         pattern: ^([0-9]+(\.[0-9]+)?(ns|us|µs|ms|s|m|h))+$
                         type: string
                     type: object
+                  trustedIssuers:
+                    description: |-
+                      TrustedIssuers configures external OIDC issuers whose tokens are
+                      accepted as RFC 8693 subject tokens during token exchange, in addition
+                      to self-issued subject tokens. Empty (the default) means only
+                      self-issued subject tokens are accepted. See
+                      docs/arch/17-token-exchange-delegation.md for the trust model.
+                    items:
+                      description: |-
+                        TrustedIssuerConfig configures an external OIDC issuer whose tokens are
+                        accepted as RFC 8693 subject tokens or RFC 7523 JWT-bearer assertions during
+                        token exchange. It mirrors tokenexchange.TrustedIssuer
+                        (pkg/authserver/server/tokenexchange), the runtime type the operator converts
+                        this into directly — no secret is referenced by this type, so no SecretKeyRef
+                        indirection is needed, unlike DelegateClientConfig.
+
+                        expectedAudience is exempted only for a grant-only issuer: jwtBearerGrant
+                        present and none of actorClaim, actorMatcher, allowMayAct, or allowedActors
+                        set. Any RFC 8693 delegation field (actorClaim, actorMatcher, allowMayAct,
+                        allowedActors) still requires expectedAudience, even when combined with
+                        jwtBearerGrant.
+
+                        The allowedDelegateClients rule below mirrors validateDelegationPolicy
+                        (pkg/authserver/server/tokenexchange/multi_issuer_validator.go): it is
+                        keyed on whether ANY delegation field is set (expectedAudience,
+                        actorClaim, actorMatcher, allowMayAct), not merely on whether
+                        jwtBearerGrant is absent — an issuer can combine jwtBearerGrant with
+                        expectedAudience for RFC 8693 delegation on the same issuer, and that
+                        combination still requires allowedDelegateClients at the Go level.
+                      properties:
+                        actorClaim:
+                          description: |-
+                            ActorClaim names the claim identifying the client that requested the
+                            subject token from this external issuer (used by allowedActors below).
+                            Defaults to "azp" when empty; use "appid" for Microsoft Entra v1, "cid"
+                            for Okta. The special value "client_id" reads the subject token's
+                            client_id claim instead.
+                          maxLength: 64
+                          type: string
+                        actorMatcher:
+                          description: |-
+                            ActorMatcher is an admin-authored CEL expression evaluated against the
+                            subject token's complete signature-verified claims map (bound as
+                            "claims") to authorize a class of external actors, in addition to (not
+                            instead of) allowedActors — either signal is sufficient. Must evaluate
+                            to a boolean; a non-boolean result denies the token at evaluation time,
+                            not at reconcile time. A syntactically invalid expression fails
+                            reconciliation (surfaced via the AuthServerConfigValidated condition),
+                            not admission — there is no validating webhook for this field.
+                          maxLength: 4096
+                          type: string
+                        allowMayAct:
+                          default: false
+                          description: |-
+                            AllowMayAct permits this external issuer's may_act claim to authorize
+                            delegation. Defaults to false; external issuers must be opted in
+                            explicitly because may_act bypasses allowedActors and actorMatcher.
+                            Does not affect self-issued subject tokens. The wildcard is never
+                            permitted alongside specific allowedDelegateClients, regardless of
+                            this setting.
+                          type: boolean
+                        allowPrivateIPs:
+                          description: |-
+                            AllowPrivateIPs permits OIDC discovery and JWKS fetches for THIS issuer
+                            to resolve to a private or loopback address. Use only when the issuer
+                            is hosted inside the same cluster and has no public endpoint. Requires
+                            jwksUrl to be set explicitly (enforced at reconcile time), since
+                            otherwise OIDC discovery — fetched from the external issuer itself —
+                            would choose the private dial target.
+                          type: boolean
+                        allowedActors:
+                          description: |-
+                            AllowedActors is the allowlist of actorClaim values authorized to
+                            exchange a subject token from this issuer when it carries no
+                            "may_act" claim, in addition to (not instead of) actorMatcher below —
+                            either signal is sufficient. Empty denies every token unless
+                            actorMatcher is set, or allowMayAct is true and the token carries a
+                            permitted may_act claim.
+                          items:
+                            maxLength: 256
+                            minLength: 1
+                            type: string
+                          maxItems: 50
+                          type: array
+                          x-kubernetes-list-type: atomic
+                        allowedDelegateClients:
+                          description: |-
+                            AllowedDelegateClients restricts which ToolHive client IDs may exchange
+                            an RFC 8693 subject token from this issuer. Required unless only
+                            jwtBearerGrant is configured; set it to ["*"] to permit any confidential
+                            client holding the token-exchange grant, or list specific client IDs to
+                            bind delegation to them.
+                          items:
+                            maxLength: 256
+                            minLength: 1
+                            type: string
+                          maxItems: 50
+                          minItems: 1
+                          type: array
+                          x-kubernetes-list-type: atomic
+                        caBundleRef:
+                          description: |-
+                            CABundleRef references a ConfigMap containing PEM CA certificates used when
+                            fetching this issuer's OIDC discovery document and JWKS. The bundle is added
+                            to the system roots for this issuer's client only; public roots still apply
+                            and other issuers are unaffected. Write access to the referenced ConfigMap is
+                            equivalent to controlling this issuer's trust anchor for subject-token
+                            validation — restrict it with the same care as a signing-key Secret.
+                          properties:
+                            configMapRef:
+                              description: |-
+                                ConfigMapRef references a ConfigMap containing the CA certificate bundle.
+                                The ConfigMap key is required by the API. If omitted in a stored object, it
+                                defaults to "ca.crt" for backwards compatibility.
+                              properties:
+                                key:
+                                  description: The key to select.
+                                  type: string
+                                name:
+                                  default: ""
+                                  description: |-
+                                    Name of the referent.
+                                    This field is effectively required, but due to backwards compatibility is
+                                    allowed to be empty. Instances of this type with an empty value here are
+                                    almost certainly wrong.
+                                    More info: https://kubernetes.io/docs/concepts/overview/working-with-objects/names/#names
+                                  type: string
+                                optional:
+                                  description: Specify whether the ConfigMap or its
+                                    key must be defined
+                                  type: boolean
+                              required:
+                              - key
+                              type: object
+                              x-kubernetes-map-type: atomic
+                          type: object
+                          x-kubernetes-validations:
+                          - message: configMapRef.name is required and must be non-empty
+                            rule: has(self.configMapRef) && size(self.configMapRef.name)
+                              > 0
+                        expectedAudience:
+                          description: |-
+                            ExpectedAudience is the expected "aud" claim value that must appear in
+                            an RFC 8693 subject token's audience list. It is not used by an RFC 7523
+                            JWT-bearer assertion, whose audience is the token endpoint.
+                          maxLength: 2048
+                          minLength: 1
+                          type: string
+                        insecureAllowHTTP:
+                          description: |-
+                            InsecureAllowHTTP permits plain-HTTP OIDC discovery and JWKS fetches
+                            for THIS issuer only. Development and testing only — never set in
+                            production.
+                          type: boolean
+                        issuerUrl:
+                          description: IssuerURL is the expected "iss" claim value
+                            (exact match).
+                          maxLength: 2048
+                          minLength: 1
+                          type: string
+                        jwksUrl:
+                          description: |-
+                            JWKSURL is the URL to fetch the issuer's JSON Web Key Set from. If
+                            empty, it is resolved via OIDC discovery at
+                            {issuerUrl}/.well-known/openid-configuration.
+                          maxLength: 2048
+                          type: string
+                        jwtBearerGrant:
+                          description: |-
+                            JWTBearerGrant enables the plain RFC 7523 JWT-bearer grant for this
+                            issuer. It is independent of RFC 8693 delegation policy.
+                          properties:
+                            acceptedAudiences:
+                              description: |-
+                                AcceptedAudiences identifies this authorization server's accepted
+                                assertion audiences. When omitted, runtime validation defaults to the
+                                token endpoint.
+                              items:
+                                maxLength: 2048
+                                minLength: 1
+                                pattern: ^https?://[^[:space:]]+$
+                                type: string
+                              maxItems: 50
+                              type: array
+                              x-kubernetes-list-type: atomic
+                            maxAssertionAge:
+                              description: MaxAssertionAge caps the exp-iat interval
+                                independently of exp.
+                              type: string
+                            subjectBindings:
+                              description: |-
+                                SubjectBindings maps an exact external subject to allowed RFC 8707
+                                resources.
+                              items:
+                                description: |-
+                                  JWTBearerSubjectBinding configures the exact subject and allowed resources
+                                  for one RFC 7523 JWT-bearer assertion identity.
+                                properties:
+                                  allowedResources:
+                                    description: |-
+                                      AllowedResources is the exact set of RFC 8707 resources this subject may
+                                      request.
+                                    items:
+                                      maxLength: 2048
+                                      minLength: 1
+                                      pattern: ^https?://[^[:space:]]+$
+                                      type: string
+                                    maxItems: 50
+                                    minItems: 1
+                                    type: array
+                                    x-kubernetes-list-type: atomic
+                                  subject:
+                                    description: Subject is an exact assertion sub
+                                      value. Wildcards are not supported.
+                                    maxLength: 256
+                                    minLength: 1
+                                    pattern: ^[^*]+$
+                                    type: string
+                                required:
+                                - allowedResources
+                                - subject
+                                type: object
+                              maxItems: 50
+                              minItems: 1
+                              type: array
+                              x-kubernetes-list-type: atomic
+                          required:
+                          - maxAssertionAge
+                          - subjectBindings
+                          type: object
+                          x-kubernetes-validations:
+                          - message: maxAssertionAge must be greater than zero
+                            rule: duration(self.maxAssertionAge) > duration('0s')
+                          - message: subjectBindings must not contain duplicate subjects
+                            rule: self.subjectBindings.all(binding, self.subjectBindings.filter(other,
+                              other.subject == binding.subject).size() == 1)
+                      required:
+                      - issuerUrl
+                      type: object
+                      x-kubernetes-validations:
+                      - message: allowedDelegateClients must not combine the wildcard
+                          "*" with specific client IDs
+                        rule: '!has(self.allowedDelegateClients) || !(''*'' in self.allowedDelegateClients)
+                          || size(self.allowedDelegateClients) == 1'
+                      - message: allowMayAct must not be enabled when allowedDelegateClients
+                          contains the wildcard "*"
+                        rule: '!(has(self.allowMayAct) && self.allowMayAct && ''*''
+                          in self.allowedDelegateClients)'
+                      - message: actorClaim must name a readable claim; use client_id
+                          or a non-reserved claim such as azp, appid, or cid
+                        rule: '!has(self.actorClaim) || !(self.actorClaim in [''sub'',
+                          ''iss'', ''aud'', ''exp'', ''iat'', ''nbf'', ''jti'', ''name'',
+                          ''email'', ''scope'', ''scp'', ''may_act''])'
+                      - message: allowPrivateIPs requires jwksUrl to be set explicitly
+                        rule: '!(has(self.allowPrivateIPs) && self.allowPrivateIPs)
+                          || (has(self.jwksUrl) && self.jwksUrl != "")'
+                      - message: expectedAudience is required unless jwtBearerGrant
+                          is configured without actorClaim, actorMatcher, allowMayAct,
+                          or allowedActors
+                        rule: (has(self.jwtBearerGrant) && !((has(self.actorClaim)
+                          && size(self.actorClaim) > 0) || (has(self.actorMatcher)
+                          && size(self.actorMatcher) > 0) || (has(self.allowMayAct)
+                          && self.allowMayAct) || (has(self.allowedActors) && size(self.allowedActors)
+                          > 0))) || (has(self.expectedAudience) && size(self.expectedAudience)
+                          > 0)
+                      - message: allowedDelegateClients is required when expectedAudience,
+                          actorClaim, actorMatcher, or allowMayAct is set
+                        rule: '!((has(self.expectedAudience) && size(self.expectedAudience)
+                          > 0) || (has(self.actorClaim) && size(self.actorClaim) >
+                          0) || (has(self.actorMatcher) && size(self.actorMatcher)
+                          > 0) || (has(self.allowMayAct) && self.allowMayAct)) ||
+                          (has(self.allowedDelegateClients) && size(self.allowedDelegateClients)
+                          > 0)'
+                    maxItems: 20
+                    type: array
+                    x-kubernetes-list-type: atomic
                   upstreamProviders:
                     description: |-
                       UpstreamProviders configures connections to upstream Identity Providers.
-                      The embedded auth server delegates authentication to these providers.
+                      When configured, the embedded auth server delegates interactive authentication
+                      to these providers. It may be omitted only when delegateClients or a trusted
+                      issuer with jwtBearerGrant enables token-only operation.
                       MCPServer and MCPRemoteProxy support a single upstream; VirtualMCPServer supports multiple.
                     items:
                       description: |-
@@ -4221,11 +5093,58 @@ spec:
                                 scope, state, code_challenge, code_challenge_method, nonce) are not allowed.
                               maxProperties: 16
                               type: object
+                            allowPrivateIPs:
+                              description: |-
+                                AllowPrivateIPs permits the upstream provider's HTTP client to connect to
+                                private IP ranges (RFC-1918, link-local). Use only when the upstream is
+                                hosted inside the same cluster and has no public endpoint. HTTP-scheme
+                                restrictions are unchanged — HTTPS is still required for non-localhost
+                                hosts unless InsecureAllowHTTP is set. Defaults to false.
+                              type: boolean
                             authorizationEndpoint:
                               description: AuthorizationEndpoint is the URL for the
                                 OAuth authorization endpoint.
                               pattern: ^https?://.*$
                               type: string
+                            caBundleRef:
+                              description: |-
+                                CABundleRef references a ConfigMap containing a CA bundle added to the
+                                system roots when connecting to this upstream; it does not restrict trust
+                                to this bundle or disable public-root trust. The selected key is projected
+                                as ca.crt.
+                              properties:
+                                configMapRef:
+                                  description: |-
+                                    ConfigMapRef references a ConfigMap containing the CA certificate bundle.
+                                    The ConfigMap key is required by the API. If omitted in a stored object, it
+                                    defaults to "ca.crt" for backwards compatibility.
+                                  properties:
+                                    key:
+                                      description: The key to select.
+                                      type: string
+                                    name:
+                                      default: ""
+                                      description: |-
+                                        Name of the referent.
+                                        This field is effectively required, but due to backwards compatibility is
+                                        allowed to be empty. Instances of this type with an empty value here are
+                                        almost certainly wrong.
+                                        More info: https://kubernetes.io/docs/concepts/overview/working-with-objects/names/#names
+                                      type: string
+                                    optional:
+                                      description: Specify whether the ConfigMap or
+                                        its key must be defined
+                                      type: boolean
+                                  required:
+                                  - key
+                                  type: object
+                                  x-kubernetes-map-type: atomic
+                              type: object
+                              x-kubernetes-validations:
+                              - message: configMapRef.name is required and must be
+                                  non-empty
+                                rule: has(self.configMapRef) && size(self.configMapRef.name)
+                                  > 0
                             clientId:
                               description: |-
                                 ClientID is the OAuth 2.0 client identifier registered with the upstream IDP.
@@ -4372,6 +5291,13 @@ spec:
                               required:
                               - subjectPath
                               type: object
+                            insecureAllowHTTP:
+                              description: |-
+                                InsecureAllowHTTP permits plain-HTTP authorization and token endpoint URLs
+                                for this upstream. Only for in-cluster development environments (e.g. an
+                                OAuth2 provider served over HTTP in a kind cluster) where TLS is not
+                                available. Never set this in production.
+                              type: boolean
                             redirectUri:
                               description: |-
                                 RedirectURI is the callback URL where the upstream IdP will redirect after authentication.
@@ -4522,6 +5448,51 @@ spec:
                                 scope, state, code_challenge, code_challenge_method, nonce) are not allowed.
                               maxProperties: 16
                               type: object
+                            allowPrivateIPs:
+                              description: |-
+                                AllowPrivateIPs permits the upstream provider's HTTP client to connect to
+                                private IP ranges (RFC-1918, link-local). Use only when the upstream is
+                                hosted inside the same cluster and has no public endpoint.
+                              type: boolean
+                            caBundleRef:
+                              description: |-
+                                CABundleRef references a ConfigMap containing a CA bundle added to the
+                                system roots when connecting to this upstream; it does not restrict trust
+                                to this bundle or disable public-root trust. The selected key is projected
+                                as ca.crt.
+                              properties:
+                                configMapRef:
+                                  description: |-
+                                    ConfigMapRef references a ConfigMap containing the CA certificate bundle.
+                                    The ConfigMap key is required by the API. If omitted in a stored object, it
+                                    defaults to "ca.crt" for backwards compatibility.
+                                  properties:
+                                    key:
+                                      description: The key to select.
+                                      type: string
+                                    name:
+                                      default: ""
+                                      description: |-
+                                        Name of the referent.
+                                        This field is effectively required, but due to backwards compatibility is
+                                        allowed to be empty. Instances of this type with an empty value here are
+                                        almost certainly wrong.
+                                        More info: https://kubernetes.io/docs/concepts/overview/working-with-objects/names/#names
+                                      type: string
+                                    optional:
+                                      description: Specify whether the ConfigMap or
+                                        its key must be defined
+                                      type: boolean
+                                  required:
+                                  - key
+                                  type: object
+                                  x-kubernetes-map-type: atomic
+                              type: object
+                              x-kubernetes-validations:
+                              - message: configMapRef.name is required and must be
+                                  non-empty
+                                rule: has(self.configMapRef) && size(self.configMapRef.name)
+                                  > 0
                             clientId:
                               description: ClientID is the OAuth 2.0 client identifier
                                 registered with the upstream IdP.
@@ -4682,16 +5653,20 @@ spec:
                         rule: 'self.type == ''oidc'' ? (has(self.oidcConfig) && !has(self.oauth2Config))
                           : self.type == ''oauth2'' ? (has(self.oauth2Config) && !has(self.oidcConfig))
                           : false'
-                    minItems: 1
                     type: array
                     x-kubernetes-list-map-keys:
                     - name
                     x-kubernetes-list-type: map
                 required:
                 - issuer
-                - upstreamProviders
                 type: object
                 x-kubernetes-validations:
+                - message: at least one upstream provider is required unless delegateClients
+                    or a trustedIssuer with jwtBearerGrant is configured
+                  rule: (has(self.upstreamProviders) && size(self.upstreamProviders)
+                    > 0) || (has(self.delegateClients) && size(self.delegateClients)
+                    > 0) || (has(self.trustedIssuers) && self.trustedIssuers.exists(issuer,
+                    has(issuer.jwtBearerGrant)))
                 - message: allowConfidentialClientRegistration cannot be combined
                     with insecureAllowHTTP; client secrets would be issued in cleartext
                     over an unauthenticated endpoint
@@ -4701,6 +5676,11 @@ spec:
                     to be true
                   rule: (!has(self.forceConfidentialRedirectUris) || size(self.forceConfidentialRedirectUris)
                     == 0) || (has(self.allowConfidentialClientRegistration) && self.allowConfidentialClientRegistration)
+                - message: delegateClients with an HTTP issuer require insecureAllowConfidentialOverLoopbackHTTP
+                    to be explicitly enabled; the issuer must still be loopback
+                  rule: '!has(self.delegateClients) || size(self.delegateClients)
+                    == 0 || !self.issuer.startsWith(''http://'') || (has(self.insecureAllowConfidentialOverLoopbackHTTP)
+                    && self.insecureAllowConfidentialOverLoopbackHTTP)'
               config:
                 description: |-
                   Config is the Virtual MCP server configuration.
@@ -6553,7 +7533,10 @@ spec:
                         default: false
                         description: |-
                           EnablePrometheusMetricsPath controls whether to expose Prometheus-style /metrics endpoint.
-                          The metrics are served on the main transport port at /metrics.
+                          The metrics are served at /metrics on a dedicated diagnostics port rather than on the
+                          main transport port, so the endpoint can be restricted by port and is not routed
+                          alongside application traffic. The endpoint is unauthenticated either way.
+                          See PrometheusPort and pkg/diagnostics.
                           This is separate from OTLP metrics which are sent to the Endpoint.
                         type: boolean
                       endpoint:
@@ -6586,6 +7569,29 @@ spec:
                           When false, OTLP metrics are not sent even if an endpoint is configured.
                           This is independent of EnablePrometheusMetricsPath.
                         type: boolean
+                      metricsOnTransportPort:
+                        description: |-
+                          MetricsOnTransportPort controls whether /metrics is ALSO served on the main
+                          transport port, in addition to the diagnostics port. It exists to give
+                          deployments a migration window: while true, an existing scrape configuration
+                          aimed at the transport port keeps working, and a new one aimed at
+                          PrometheusPort works too, so a scraper can be moved and verified before the
+                          old location goes away. See https://github.com/stacklok/toolhive/issues/6384 for
+                          the removal timeline.
+                        type: boolean
+                      prometheusPort:
+                        description: |-
+                          PrometheusPort is the port the Prometheus /metrics endpoint is served on when
+                          EnablePrometheusMetricsPath is true. It is deliberately not the main transport port,
+                          so that access can be restricted with a NetworkPolicy: NetworkPolicy matches on port,
+                          not on HTTP path, so a shared port makes "allow MCP traffic, deny metrics scraping"
+                          impossible to express. The endpoint itself is unauthenticated, so restricting who can
+                          reach this port is how it is protected.
+
+                          Zero selects the default diagnostics port (9464, the OpenTelemetry specification's
+                          Prometheus exporter default). If that port is taken the listener falls back to an
+                          available one and logs the resolved address. Do not route this port publicly.
+                        type: integer
                       samplingRate:
                         default: "0.05"
                         description: |-

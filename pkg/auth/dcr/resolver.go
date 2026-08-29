@@ -458,7 +458,8 @@ func registerAndCache(
 	registrationScopes := chooseRegistrationScopes(scopes, endpoints.scopesSupported, req.Issuer)
 
 	response, err := performRegistration(ctx, req, endpoints.registrationEndpoint,
-		redirectURI, authMethod, registrationScopes)
+		redirectURI, authMethod, registrationScopes, endpoints.registrationEndpointServerSupplied,
+		req.CAFilePath)
 	if err != nil {
 		return nil, newDCRStepError(dcrStepRegister, req.Issuer, redirectURI, err)
 	}
@@ -785,8 +786,16 @@ func performRegistration(
 	req *Request,
 	registrationEndpoint, redirectURI, authMethod string,
 	scopes []string,
+	registrationEndpointServerSupplied bool,
+	caFilePath string,
 ) (*oauthproto.DynamicClientRegistrationResponse, error) {
-	httpClient, err := newDCRHTTPClient(req.InitialAccessToken, registrationEndpoint, req.AllowPrivateIPs)
+	httpClient, err := newDCRHTTPClient(
+		req.InitialAccessToken,
+		registrationEndpoint,
+		req.AllowPrivateIPs,
+		req.ServerSuppliedEndpoints || registrationEndpointServerSupplied,
+		caFilePath,
+	)
 	if err != nil {
 		return nil, fmt.Errorf("dcr: build registration http client: %w", err)
 	}
@@ -890,6 +899,16 @@ type dcrEndpoints struct {
 	// upstream that advertises only plain (or omits the field) would be a
 	// compliance gap.
 	codeChallengeMethodsSupported []string
+	// registrationEndpointServerSupplied records that registrationEndpoint came
+	// out of a fetched metadata document AND names an authority the operator
+	// never configured. Even an operator-configured DiscoveryURL yields a
+	// document the upstream controls, so an endpoint it points at some other
+	// host must use the strict server-supplied client policy — the registration
+	// POST carries the initial access token (CWE-918). An upstream naming its
+	// own authority is still covered by the operator's decision to configure it,
+	// and keeps the host-scoped policy so an in-cluster or loopback IdP that
+	// worked before still works.
+	registrationEndpointServerSupplied bool
 }
 
 // resolveDCREndpoints produces the endpoint bundle from req.
@@ -944,12 +963,19 @@ func resolveDCREndpoints(
 	// DiscoveryURL that resolves to a private/loopback/link-local address —
 	// or rebinds to one after the caller validated it — is refused at connect
 	// time (CWE-918). Guarded by default; req.AllowPrivateIPs opts in to
-	// private ranges for an in-cluster upstream.
+	// private ranges for an in-cluster upstream. Server-supplied discovery
+	// endpoints use the strict policy, where localhost and the environment
+	// validation override cannot bypass this gate.
 	discoveryHost, err := hostFromURL(req.DiscoveryURL)
 	if err != nil {
 		return nil, err
 	}
-	discoveryClient, err := newGuardedDCRClient(discoveryHost, req.AllowPrivateIPs)
+	discoveryClient, err := newGuardedDCRClient(
+		discoveryHost,
+		req.AllowPrivateIPs,
+		req.ServerSuppliedEndpoints,
+		req.CAFilePath,
+	)
 	if err != nil {
 		return nil, fmt.Errorf("dcr: build discovery http client: %w", err)
 	}
@@ -1160,6 +1186,13 @@ func endpointsFromMetadata(
 		tokenEndpointAuthMethodsSupported: metadata.TokenEndpointAuthMethodsSupported,
 		scopesSupported:                   metadata.ScopesSupported,
 		codeChallengeMethodsSupported:     metadata.CodeChallengeMethodsSupported,
+		// The document is upstream-controlled, so a registration_endpoint on any
+		// authority the operator did not name is server-supplied input.
+		// upstreamIssuer is derived from the operator's DiscoveryURL (not from the
+		// document), so an upstream naming its own authority — or the synthesised
+		// {issuer}/register above — stays within the operator's decision to
+		// configure it, while an endpoint pointing anywhere else does not.
+		registrationEndpointServerSupplied: !networking.AuthorityMatchesAny(registrationEndpoint, upstreamIssuer),
 	}, nil
 }
 
@@ -1397,12 +1430,16 @@ var errDCRRedirectRefused = errors.New(
 // transport with a bearerTokenTransport that injects the Authorization header.
 // The combination of the bearer transport plus the redirect block is what
 // prevents the token-leak class of bug.
-func newDCRHTTPClient(initialAccessToken, registrationEndpoint string, allowPrivateIPs bool) (*http.Client, error) {
+func newDCRHTTPClient(
+	initialAccessToken, registrationEndpoint string,
+	allowPrivateIPs, serverSuppliedEndpoints bool,
+	caFilePath string,
+) (*http.Client, error) {
 	host, err := hostFromURL(registrationEndpoint)
 	if err != nil {
 		return nil, err
 	}
-	client, err := newGuardedDCRClient(host, allowPrivateIPs)
+	client, err := newGuardedDCRClient(host, allowPrivateIPs, serverSuppliedEndpoints, caFilePath)
 	if err != nil {
 		return nil, err
 	}
@@ -1427,20 +1464,28 @@ func newDCRHTTPClient(initialAccessToken, registrationEndpoint string, allowPriv
 
 // newGuardedDCRClient builds the private-IP-guarded *http.Client used for both
 // of the resolver's outbound calls — the discovery fetch and the registration
-// POST. See networking.NewHostScopedClientBuilder for the CWE-918 guard policy
-// this applies (allowPrivateIPs semantics, loopback exemption, HTTPS
-// enforcement). Keep-alive is disabled so the dial-time check re-runs on
-// every request rather than being bypassed by a pooled connection.
+// POST. Trusted operator-configured endpoints use
+// networking.NewHostScopedClientBuilder; server-supplied endpoints use the
+// strict builder, which permits private/loopback/link-local dialing only when
+// allowPrivateIPs is true. Keep-alive is disabled so the dial-time check
+// re-runs on every request rather than being bypassed by a pooled connection.
 //
 // The returned client has no CheckRedirect policy: each caller layers its own
 // (the registration client refuses all redirects to protect the bearer token;
 // the discovery client restricts them to the same host). The dial guard alone
 // does not stop a redirect to a different public host, so the redirect policy
 // is a required complement, not an optional one.
-func newGuardedDCRClient(host string, allowPrivateIPs bool) (*http.Client, error) {
-	return networking.NewHostScopedClientBuilder(host, allowPrivateIPs, false).
-		WithDisableKeepAlives(true).
-		Build()
+func newGuardedDCRClient(host string, allowPrivateIPs, serverSuppliedEndpoints bool, caFilePath string) (*http.Client, error) {
+	builder := func() *networking.HttpClientBuilder {
+		if serverSuppliedEndpoints {
+			return networking.NewServerSuppliedHostClientBuilder(host, allowPrivateIPs, false)
+		}
+		return networking.NewHostScopedClientBuilder(host, allowPrivateIPs, false)
+	}()
+	if caFilePath != "" {
+		builder.WithSystemRootsPlusCABundle(caFilePath)
+	}
+	return builder.WithDisableKeepAlives(true).Build()
 }
 
 // hostFromURL extracts the host[:port] component used to scope the guarded

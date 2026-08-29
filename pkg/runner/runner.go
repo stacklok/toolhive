@@ -28,6 +28,7 @@ import (
 	"github.com/stacklok/toolhive/pkg/config"
 	ct "github.com/stacklok/toolhive/pkg/container"
 	rt "github.com/stacklok/toolhive/pkg/container/runtime"
+	"github.com/stacklok/toolhive/pkg/diagnostics"
 	"github.com/stacklok/toolhive/pkg/labels"
 	"github.com/stacklok/toolhive/pkg/process"
 	"github.com/stacklok/toolhive/pkg/runtime"
@@ -88,6 +89,11 @@ type Runner struct {
 
 	// prometheusHandler is the Prometheus metrics handler set by telemetry middleware
 	prometheusHandler http.Handler
+
+	// diagnosticsServer serves the Prometheus /metrics endpoint on its own
+	// listener, keeping it off the application listener where it would bypass
+	// the middleware chain. Nil unless the metrics path is enabled.
+	diagnosticsServer *diagnostics.Server
 
 	statusManager statuses.StatusManager
 
@@ -290,6 +296,10 @@ func (r *Runner) Run(ctx context.Context) error {
 		}
 	}
 
+	if err := validateCredentialStrippingMiddleware(r.Config.MiddlewareConfigs, r.Config); err != nil {
+		return fmt.Errorf("invalid credential stripping middleware configuration: %w", err)
+	}
+
 	// Origin-header validation (DNS-rebinding protection per MCP 2025-11-25
 	// §"Security Warning") is wired here, after both middleware-population
 	// paths, because it is the single place where Host/Port/AllowedOrigins are
@@ -366,7 +376,44 @@ func (r *Runner) Run(ctx context.Context) error {
 	// Set all named middleware and handlers on transport config
 	transportConfig.Middlewares = r.namedMiddlewares
 	transportConfig.AuthInfoHandler = r.authInfoHandler
-	transportConfig.PrometheusHandler = r.prometheusHandler
+
+	// Metrics are served on a dedicated diagnostics listener so access can be
+	// restricted by port; see pkg/diagnostics.
+	if err := r.startDiagnosticsServer(); err != nil {
+		return err
+	}
+
+	// During the deprecation window /metrics is ALSO served on the transport port,
+	// so an existing scrape configuration keeps working while it is moved. Handing
+	// the handler to the transport is what mounts it there; leaving it nil is what
+	// keeps the proxies from mounting it at all. See
+	// telemetry.DefaultMetricsOnTransportPort for the cutover.
+	if mountPrometheusHandlerOnTransportPort(r.prometheusHandler, r.Config.TelemetryConfig) {
+		transportConfig.PrometheusHandler = r.prometheusHandler
+		slog.Warn("serving prometheus metrics on the transport port as well as the diagnostics port; "+
+			"this is deprecated and the transport-port copy will be removed; see #6384 for the timeline. "+
+			"Move scrapers to the "+
+			"diagnostics address logged above, then set metricsOnTransportPort: false to verify",
+			"transport_port", r.Config.Port)
+	}
+
+	// Release the listener on every exit from Run, not just the happy path.
+	// Cleanup runs only via stopMCPServer, which several paths skip: the early
+	// error returns below, and the graceful container-exit branch that returns
+	// nil after the transport already stopped. Leaking here would strand a
+	// goroutine and a bound port, and under workloads.Manager's restart loop each
+	// attempt would strand another and push the next onto a different port —
+	// silently breaking the scrape target this change exists to stabilise.
+	//
+	// A duplicate stop is harmless: stopDiagnosticsServer is nil-safe and
+	// idempotent, so the paths that do reach Cleanup are unaffected.
+	defer func() {
+		stopCtx, cancel := context.WithTimeout(context.Background(), diagnosticsStopTimeout)
+		defer cancel()
+		if err := r.stopDiagnosticsServer(stopCtx); err != nil {
+			slog.Warn("failed to stop diagnostics server", "error", err)
+		}
+	}()
 
 	// Set up the transport
 	slog.Debug("setting up transport", "transport", r.Config.Transport)
@@ -955,6 +1002,15 @@ func (r *Runner) Cleanup(ctx context.Context) error {
 			if lastErr == nil {
 				lastErr = err
 			}
+		}
+	}
+
+	// Stop the diagnostics listener before the telemetry provider it scrapes
+	// from is shut down.
+	if err := r.stopDiagnosticsServer(ctx); err != nil {
+		slog.Warn("Failed to stop diagnostics server", "error", err)
+		if lastErr == nil {
+			lastErr = err
 		}
 	}
 

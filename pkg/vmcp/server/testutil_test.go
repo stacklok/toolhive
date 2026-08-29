@@ -10,6 +10,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"testing"
+	"time"
 
 	mcpmcp "github.com/stacklok/toolhive-core/mcpcompat/mcp"
 	mcpserver "github.com/stacklok/toolhive-core/mcpcompat/server"
@@ -26,6 +27,14 @@ import (
 // Returns the full URL to the backend's /mcp endpoint.
 func startRealMCPBackend(t *testing.T) string {
 	t.Helper()
+	return startRealMCPBackendWithToolDelay(t, 0)
+}
+
+// startRealMCPBackendWithToolDelay is startRealMCPBackend with a configurable
+// delay before the echo tool responds. It is used to exercise vMCP request
+// deadlines over a real streamable-HTTP backend connection.
+func startRealMCPBackendWithToolDelay(t *testing.T, toolDelay time.Duration) string {
+	t.Helper()
 
 	mcpSrv := mcpserver.NewMCPServer("real-backend", "1.0.0")
 	mcpSrv.AddTool(
@@ -34,6 +43,7 @@ func startRealMCPBackend(t *testing.T) string {
 			mcpmcp.WithString("input", mcpmcp.Required()),
 		),
 		func(_ context.Context, req mcpmcp.CallToolRequest) (*mcpmcp.CallToolResult, error) {
+			time.Sleep(toolDelay)
 			args, _ := req.Params.Arguments.(map[string]any)
 			input, _ := args["input"].(string)
 			return &mcpmcp.CallToolResult{

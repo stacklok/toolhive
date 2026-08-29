@@ -10,7 +10,10 @@ package storage
 import (
 	"bytes"
 	"context"
+	"crypto/rand"
+	"crypto/rsa"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"log/slog"
 	"net/url"
@@ -21,6 +24,7 @@ import (
 	"time"
 
 	"github.com/alicebob/miniredis/v2"
+	"github.com/go-jose/go-jose/v3"
 	"github.com/ory/fosite"
 	"github.com/redis/go-redis/v9"
 	"github.com/stretchr/testify/assert"
@@ -293,6 +297,17 @@ func TestRedisStorage_RegisterClient(t *testing.T) {
 	})
 }
 
+func TestRedisStorage_RegisterClient_RejectsSyntheticPrefix(t *testing.T) {
+	withRedisStorage(t, func(ctx context.Context, s *RedisStorage, _ *miniredis.Miniredis) {
+		client := &mockClient{id: SyntheticClientIDPrefix + "delegate"}
+		err := s.RegisterClient(ctx, client)
+		require.ErrorIs(t, err, ErrReservedClientID)
+
+		_, err = s.GetClient(ctx, client.id)
+		require.ErrorIs(t, err, ErrNotFound)
+	})
+}
+
 // TestRedisStorage_ClientAuthMethodPersistence pins the fail-closed read/write
 // behaviour for token_endpoint_auth_method: drift between the Public flag and
 // the stored method may only ever add secret verification, never remove it,
@@ -335,6 +350,49 @@ func TestRedisStorage_ClientAuthMethodPersistence(t *testing.T) {
 
 			// The stored secret is already hashed; round-tripping must not re-hash it.
 			assert.Equal(t, []byte("already-hashed-secret"), retrieved.GetHashedSecret())
+		})
+	})
+
+	t.Run("private_key_jwt client round-trips metadata without private keys", func(t *testing.T) {
+		withRedisStorage(t, func(ctx context.Context, s *RedisStorage, _ *miniredis.Miniredis) {
+			privateKey, err := rsa.GenerateKey(rand.Reader, 2048)
+			require.NoError(t, err)
+			client, err := registration.New(registration.Config{
+				ID:                                "private-key-client",
+				TokenEndpointAuthMethod:           oauthproto.TokenEndpointAuthMethodPrivateKeyJWT,
+				TokenEndpointAuthSigningAlgorithm: "RS256",
+				JSONWebKeys: &jose.JSONWebKeySet{Keys: []jose.JSONWebKey{{
+					Key: privateKey, KeyID: "client-key", Algorithm: "RS256", Use: "sig",
+				}}},
+				GrantTypes:    []string{"authorization_code", "refresh_token"},
+				ResponseTypes: []string{"code"},
+				Scopes:        []string{"openid", "profile"},
+				Audience:      []string{"https://mcp.example"},
+				RedirectURIs:  []string{"https://app.example/cb"},
+			})
+			require.NoError(t, err)
+			require.NoError(t, s.RegisterClient(ctx, client))
+
+			data, err := s.client.Get(ctx, redisKey(s.keyPrefix, KeyTypeClient, client.GetID())).Bytes()
+			require.NoError(t, err)
+			assert.NotContains(t, string(data), `"d"`, "private RSA exponent must not be persisted")
+
+			retrieved, err := s.GetClient(ctx, client.GetID())
+			require.NoError(t, err)
+			oidc, ok := retrieved.(fosite.OpenIDConnectClient)
+			require.True(t, ok)
+			assert.Equal(t, oauthproto.TokenEndpointAuthMethodPrivateKeyJWT, oidc.GetTokenEndpointAuthMethod())
+			assert.Equal(t, "RS256", oidc.GetTokenEndpointAuthSigningAlgorithm())
+			assert.Equal(t, []string{"authorization_code", "refresh_token"}, []string(retrieved.GetGrantTypes()))
+			assert.Equal(t, []string{"openid", "profile"}, []string(retrieved.GetScopes()))
+			assert.Equal(t, []string{"https://mcp.example"}, []string(retrieved.GetAudience()))
+			jwks := oidc.GetJSONWebKeys()
+			require.NotNil(t, jwks)
+			require.Len(t, jwks.Keys, 1)
+			assert.True(t, jwks.Keys[0].IsPublic())
+			assert.Equal(t, "client-key", jwks.Keys[0].KeyID)
+			assert.True(t, registration.DCRIssued(retrieved))
+			assert.False(t, retrieved.IsPublic())
 		})
 	})
 
@@ -599,6 +657,72 @@ func TestRedisStorage_DCRClientTTL(t *testing.T) {
 			assert.Equal(t, time.Duration(0), mr.TTL(key), "pre-provisioned public client must not acquire a TTL")
 		})
 	})
+
+	t.Run("static client replaces DCR client without TTL", func(t *testing.T) {
+		withRedisStorage(t, func(ctx context.Context, s *RedisStorage, mr *miniredis.Miniredis) {
+			dcrClient := newDCRClient(t, "delegate", oauthproto.TokenEndpointAuthMethodClientSecretBasic, "old-secret")
+			require.NoError(t, s.RegisterClient(ctx, dcrClient))
+			key := redisKey(s.keyPrefix, KeyTypeClient, "delegate")
+			require.Positive(t, mr.TTL(key))
+
+			staticClient, err := registration.NewStaticDelegateClient(registration.Config{
+				ID: "delegate", Secret: "new-secret", GrantTypes: []string{oauthproto.GrantTypeTokenExchange},
+				Scopes: []string{"openid"}, Audience: []string{"https://mcp.example"},
+			})
+			require.NoError(t, err)
+			require.NoError(t, s.RegisterClient(ctx, staticClient))
+
+			retrieved, err := s.GetClient(ctx, "delegate")
+			require.NoError(t, err)
+			assert.False(t, registration.DCRIssued(retrieved))
+			assert.Equal(t, time.Duration(0), mr.TTL(key))
+			assert.NoError(t, registration.SHA256Hasher.Compare(ctx, retrieved.GetHashedSecret(), []byte("new-secret")))
+		})
+	})
+}
+
+// TestRedisStorage_GetClient_SupportsLoopbackRedirectMatching pins that a
+// public client round-tripped through Redis still supports RFC 8252 §7.3
+// loopback dynamic-port redirect_uri matching.
+func TestRedisStorage_GetClient_SupportsLoopbackRedirectMatching(t *testing.T) {
+	withRedisStorage(t, func(ctx context.Context, s *RedisStorage, _ *miniredis.Miniredis) {
+		client, err := registration.New(registration.Config{
+			ID:                      "loopback-redis-client",
+			RedirectURIs:            []string{"http://localhost/callback"},
+			TokenEndpointAuthMethod: oauthproto.TokenEndpointAuthMethodNone,
+		})
+		require.NoError(t, err)
+		require.NoError(t, s.RegisterClient(ctx, client))
+
+		retrieved, err := s.GetClient(ctx, "loopback-redis-client")
+		require.NoError(t, err)
+
+		registered, ok := registration.RegisteredLoopbackRedirectURI(retrieved, "http://localhost:54321/callback")
+		require.True(t, ok, "a dynamic-port localhost request must still match the registered portless URI")
+		assert.Equal(t, "http://localhost/callback", registered)
+	})
+}
+
+// TestRedisStorage_GetClient_ConfidentialClientDoesNotMatchAsLoopback pins that
+// a confidential client stored in Redis never matches as a loopback client,
+// even if its redirect URIs happen to look loopback-shaped.
+func TestRedisStorage_GetClient_ConfidentialClientDoesNotMatchAsLoopback(t *testing.T) {
+	withRedisStorage(t, func(ctx context.Context, s *RedisStorage, _ *miniredis.Miniredis) {
+		client, err := registration.New(registration.Config{
+			ID:                      "confidential-redis-client",
+			Secret:                  "s3cr3t",
+			RedirectURIs:            []string{"http://localhost/callback"},
+			TokenEndpointAuthMethod: oauthproto.TokenEndpointAuthMethodClientSecretBasic,
+		})
+		require.NoError(t, err)
+		require.NoError(t, s.RegisterClient(ctx, client))
+
+		retrieved, err := s.GetClient(ctx, "confidential-redis-client")
+		require.NoError(t, err)
+
+		_, ok := registration.RegisteredLoopbackRedirectURI(retrieved, "http://localhost:54321/callback")
+		assert.False(t, ok, "a confidential client must not get loopback dynamic-port matching")
+	})
 }
 
 // TestRedisStorage_RenewClientTTL pins the RenewClientTTL contract: it refreshes
@@ -718,7 +842,7 @@ func TestRedisStorage_ClientAssertionJWT(t *testing.T) {
 
 	t.Run("known JTI is invalid", func(t *testing.T) {
 		withRedisStorage(t, func(ctx context.Context, s *RedisStorage, _ *miniredis.Miniredis) {
-			require.NoError(t, s.SetClientAssertionJWT(ctx, "test-jti", time.Now().Add(time.Hour)))
+			require.NoError(t, s.SetClientAssertionJWT(ctx, "test-jti", time.Now().Add(time.Minute)))
 			err := s.ClientAssertionJWTValid(ctx, "test-jti")
 			assert.ErrorIs(t, err, fosite.ErrJTIKnown)
 		})
@@ -730,6 +854,98 @@ func TestRedisStorage_ClientAssertionJWT(t *testing.T) {
 			err := s.ClientAssertionJWTValid(ctx, "expired-jti")
 			require.NoError(t, err) // Should be valid because expired JTI is not stored
 		})
+	})
+}
+
+// TestRedisStorage_ClientAssertionJWT_ConcurrentReplay proves
+// ClientAssertionJWTValid's SET NX reservation is atomic: of many
+// goroutines racing to validate the identical jti, exactly one must
+// observe it as unused. Before the reserve-then-confirm fix, the
+// Exists-then-Set pair let concurrent requests carrying the same assertion
+// both pass the check before either recorded it.
+func TestRedisStorage_ClientAssertionJWT_ConcurrentReplay(t *testing.T) {
+	withRedisStorage(t, func(ctx context.Context, s *RedisStorage, _ *miniredis.Miniredis) {
+		const attempts = 20
+		var succeeded atomic.Int32
+		var wg sync.WaitGroup
+		wg.Add(attempts)
+		for range attempts {
+			go func() {
+				defer wg.Done()
+				if err := s.ClientAssertionJWTValid(ctx, "race-jti"); err == nil {
+					succeeded.Add(1)
+				}
+			}()
+		}
+		wg.Wait()
+
+		assert.Equal(t, int32(1), succeeded.Load(), "exactly one concurrent validator must win the reservation")
+	})
+}
+
+func TestRedisStorage_ConsumeAssertionJWT(t *testing.T) {
+	withRedisStorage(t, func(ctx context.Context, s *RedisStorage, mr *miniredis.Miniredis) {
+		const purpose = "jwt-bearer"
+		const issuer = "https://issuer.example"
+		const jti = "shared-jti"
+		exp := time.Now().Add(time.Hour)
+		require.NoError(t, s.ConsumeAssertionJWT(ctx, purpose, issuer, jti, exp))
+		require.ErrorIs(t, s.ConsumeAssertionJWT(ctx, purpose, issuer, jti, exp), fosite.ErrJTIKnown)
+
+		assert.True(t, mr.Exists(redisAssertionJWTKey(s.keyPrefix, purpose, issuer, jti)))
+		assert.False(t, mr.Exists(redisKey(s.keyPrefix, KeyTypeAssertionJWT, jti)))
+
+		for _, assertion := range []struct {
+			purpose string
+			issuer  string
+		}{
+			{purpose: "client-auth", issuer: issuer},
+			{purpose: purpose, issuer: "https://other-issuer.example"},
+		} {
+			require.NoError(t, s.ConsumeAssertionJWT(ctx, assertion.purpose, assertion.issuer, jti, exp))
+		}
+
+		mr.FastForward(time.Hour + time.Second)
+		require.NoError(t, s.ConsumeAssertionJWT(ctx, purpose, issuer, jti, time.Now().Add(time.Hour)))
+	})
+}
+
+func TestRedisStorage_ConsumeAssertionJWT_Concurrent(t *testing.T) {
+	withRedisStorage(t, func(ctx context.Context, s *RedisStorage, _ *miniredis.Miniredis) {
+		const consumers = 32
+		var successes atomic.Int32
+		errs := make(chan error, consumers)
+		var wg sync.WaitGroup
+		wg.Add(consumers)
+		for range consumers {
+			go func() {
+				defer wg.Done()
+				err := s.ConsumeAssertionJWT(ctx, "jwt-bearer", "https://issuer.example", "concurrent-jti", time.Now().Add(time.Hour))
+				if err == nil {
+					successes.Add(1)
+					return
+				}
+				if !errors.Is(err, fosite.ErrJTIKnown) {
+					errs <- err
+				}
+			}()
+		}
+
+		done := make(chan struct{})
+		go func() {
+			wg.Wait()
+			close(done)
+		}()
+		select {
+		case <-done:
+		case <-time.After(5 * time.Second):
+			t.Fatal("timeout waiting for concurrent assertion JWT consumers")
+		}
+		close(errs)
+		for err := range errs {
+			require.NoError(t, err)
+		}
+		assert.Equal(t, int32(1), successes.Load())
 	})
 }
 
@@ -859,6 +1075,52 @@ func TestRedisStorage_AccessToken(t *testing.T) {
 			requireRedisNotFoundError(t, err)
 		})
 	})
+
+	// A clientless grant (e.g. RFC 7523 JWT-bearer) attaches a synthetic
+	// client (NewSyntheticClient) rather than a registered one, since it
+	// skips client authentication entirely and never has a real
+	// fosite.Client. Before storedSession.ClientID handled that case,
+	// marshalRequester's request.GetClient().GetID() call panicked on the
+	// resulting nil interface for every Redis-backed deployment — this test
+	// proves the full create/get round trip through Redis serialization
+	// works without ever registering the client.
+	t.Run("synthetic client from a clientless grant round-trips without registration", func(t *testing.T) {
+		withRedisStorage(t, func(ctx context.Context, s *RedisStorage, _ *miniredis.Miniredis) {
+			syntheticID := SyntheticClientIDPrefix + "jwt-bearer-test"
+			request := newRedisTestRequester("jwt-bearer-req", NewSyntheticClient(syntheticID))
+
+			require.NoError(t, s.CreateAccessTokenSession(ctx, "jwt-bearer-sig", request))
+
+			retrieved, err := s.GetAccessTokenSession(ctx, "jwt-bearer-sig", nil)
+			require.NoError(t, err)
+			assert.Equal(t, request.GetID(), retrieved.GetID())
+			require.NotNil(t, retrieved.GetClient())
+			assert.Equal(t, syntheticID, retrieved.GetClient().GetID())
+			assert.True(t, retrieved.GetClient().IsPublic())
+		})
+	})
+}
+
+// TestMarshalRequester_NilClient is defense in depth alongside the synthetic
+// client mechanism above: a request whose GetClient() is nil (rather than a
+// synthetic one) must not panic when marshaled.
+func TestMarshalRequester_NilClient(t *testing.T) {
+	t.Parallel()
+
+	request := &fosite.Request{
+		ID:          "req-nil-client",
+		RequestedAt: time.Now(),
+		Client:      nil,
+		Form:        make(url.Values),
+		Session:     session.New("test-subject", "", "", session.UserClaims{}),
+	}
+
+	data, err := marshalRequester(request)
+	require.NoError(t, err)
+
+	var stored storedSession
+	require.NoError(t, json.Unmarshal(data, &stored))
+	assert.Empty(t, stored.ClientID)
 }
 
 // --- Session Round-Trip Tests ---

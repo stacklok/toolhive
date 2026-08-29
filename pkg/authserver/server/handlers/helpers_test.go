@@ -107,6 +107,7 @@ type baseTestSetupOption func(*baseTestSetupConfig)
 type baseTestSetupConfig struct {
 	storePendingErr            error // if non-nil, StorePendingAuthorization always returns this error
 	getLatestUpstreamTokensErr error // if non-nil, GetLatestUpstreamTokensForUser always returns this error
+	createUserErr              error // if non-nil, CreateUser always returns this error
 }
 
 func withStorePendingError(err error) baseTestSetupOption {
@@ -118,6 +119,12 @@ func withStorePendingError(err error) baseTestSetupOption {
 func withGetLatestUpstreamTokensError(err error) baseTestSetupOption {
 	return func(c *baseTestSetupConfig) {
 		c.getLatestUpstreamTokensErr = err
+	}
+}
+
+func withCreateUserError(err error) baseTestSetupOption {
+	return func(c *baseTestSetupConfig) {
+		c.createUserErr = err
 	}
 }
 
@@ -184,14 +191,15 @@ func baseTestSetup(t *testing.T, opts ...baseTestSetupOption) (fosite.OAuth2Prov
 	}
 	storState.clients[testAuthClientID] = testClient
 
-	// Setup mock expectations for GetClient
-	stor.EXPECT().GetClient(gomock.Any(), testAuthClientID).DoAndReturn(func(_ context.Context, id string) (fosite.Client, error) {
+	// Setup mock expectations for GetClient. Looks up storState.clients so tests
+	// can register additional clients (e.g. a loopback client under its own ID)
+	// after baseTestSetup returns.
+	stor.EXPECT().GetClient(gomock.Any(), gomock.Any()).DoAndReturn(func(_ context.Context, id string) (fosite.Client, error) {
 		if c, ok := storState.clients[id]; ok {
 			return c, nil
 		}
 		return nil, fosite.ErrNotFound
 	}).AnyTimes()
-	stor.EXPECT().GetClient(gomock.Any(), gomock.Not(testAuthClientID)).Return(nil, fosite.ErrNotFound).AnyTimes()
 
 	// Token issuance renews the public client's registration TTL (best-effort).
 	// Record the calls so tests can assert the renewal fired on success.
@@ -288,11 +296,16 @@ func baseTestSetup(t *testing.T, opts ...baseTestSetupOption) (fosite.OAuth2Prov
 	stor.EXPECT().RevokeRefreshToken(gomock.Any(), gomock.Any()).Return(nil).AnyTimes()
 
 	// Setup mock expectations for user storage (needed by UserResolver)
-	stor.EXPECT().CreateUser(gomock.Any(), gomock.Any()).DoAndReturn(
-		func(_ context.Context, user *storage.User) error {
-			storState.users[user.ID] = user
-			return nil
-		}).AnyTimes()
+	if setupCfg.createUserErr != nil {
+		// CreateUser always fails with the configured error
+		stor.EXPECT().CreateUser(gomock.Any(), gomock.Any()).Return(setupCfg.createUserErr).AnyTimes()
+	} else {
+		stor.EXPECT().CreateUser(gomock.Any(), gomock.Any()).DoAndReturn(
+			func(_ context.Context, user *storage.User) error {
+				storState.users[user.ID] = user
+				return nil
+			}).AnyTimes()
+	}
 
 	stor.EXPECT().GetUser(gomock.Any(), gomock.Any()).DoAndReturn(
 		func(_ context.Context, id string) (*storage.User, error) {

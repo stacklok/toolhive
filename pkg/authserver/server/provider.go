@@ -44,6 +44,20 @@ const (
 	MinAuthCodeLifespan = 30 * time.Second
 	// MaxAuthCodeLifespan is the maximum allowed authorization code lifetime (RFC 6749 recommends 10 min max).
 	MaxAuthCodeLifespan = 10 * time.Minute
+	// MaxAssertionLifespan is the maximum allowed exp-now duration for a
+	// private_key_jwt client_assertion. fosite persists the replay marker
+	// (Storage.SetClientAssertionJWT/ConsumeAssertionJWT) with a TTL derived
+	// from the assertion's own exp claim, and neither fosite nor RFC 7523
+	// bounds that value — a client could otherwise set exp decades out and
+	// grow replay-tracking storage indefinitely. A client assertion
+	// authenticates a single token request, so it has no legitimate reason
+	// to outlive that request by more than a small clock-skew margin.
+	MaxAssertionLifespan = 5 * time.Minute
+	// MaxAssertionJTILength bounds the byte length of a private_key_jwt
+	// client_assertion's jti before it's persisted as a replay marker.
+	// Comfortably fits UUIDs/ULIDs and typical nonce formats with headroom
+	// while capping per-entry storage cost.
+	MaxAssertionJTILength = 256
 )
 
 // AuthorizationServerConfig wraps fosite.Config with additional configuration
@@ -74,11 +88,25 @@ type AuthorizationServerConfig struct {
 	// the DCR handler accepts client_secret_basic / client_secret_post and the
 	// discovery document advertises them in token_endpoint_auth_methods_supported.
 	AllowConfidentialClientRegistration bool
+	// AllowPrivateKeyJWTRegistration permits DCR of clients using
+	// private_key_jwt authentication. This is independent of confidential-client
+	// registration and is used by DCR validation and discovery advertisement.
+	AllowPrivateKeyJWTRegistration bool
+	// HasStaticDelegateClients indicates whether any pre-provisioned confidential
+	// delegate client is registered at startup. Discovery advertises client-secret
+	// authentication methods when this is true.
+	HasStaticDelegateClients bool
 	// ForceConfidentialRedirectURIs lists redirect URIs that the DCR handler
 	// always registers as confidential clients, overriding a requested "none"
 	// auth method. See authserver.Config.ForceConfidentialRedirectURIs for the
 	// full semantics.
 	ForceConfidentialRedirectURIs []string
+	// JWTBearerGrantEnabled indicates that at least one trusted issuer has the
+	// RFC 7523 JWT-bearer grant configured. Discovery advertises
+	// urn:ietf:params:oauth:grant-type:jwt-bearer in grant_types_supported
+	// only when this is true, mirroring how the grant itself is only
+	// registered with fosite when true (see buildProvider).
+	JWTBearerGrantEnabled bool
 }
 
 // Factory is a constructor which is used to create an OAuth2 endpoint handler.
@@ -121,11 +149,23 @@ type AuthorizationServerParams struct {
 	// the DCR handler accepts client_secret_basic / client_secret_post and the
 	// discovery document advertises them in token_endpoint_auth_methods_supported.
 	AllowConfidentialClientRegistration bool
+	// AllowPrivateKeyJWTRegistration permits DCR of clients using
+	// private_key_jwt authentication. This is independent of confidential-client
+	// registration and is used by DCR validation and discovery advertisement.
+	AllowPrivateKeyJWTRegistration bool
+	// HasStaticDelegateClients indicates whether any pre-provisioned confidential
+	// delegate client is registered at startup. Discovery advertises client-secret
+	// authentication methods when this is true.
+	HasStaticDelegateClients bool
 	// ForceConfidentialRedirectURIs lists redirect URIs that the DCR handler
 	// always registers as confidential clients, overriding a requested "none"
 	// auth method. See authserver.Config.ForceConfidentialRedirectURIs for the
 	// full semantics.
 	ForceConfidentialRedirectURIs []string
+	// JWTBearerGrantEnabled indicates that at least one trusted issuer has the
+	// RFC 7523 JWT-bearer grant configured. See AuthorizationServerConfig's
+	// field of the same name.
+	JWTBearerGrantEnabled bool
 }
 
 // validateIssuerURL validates that the issuer is a valid URL with http or https scheme
@@ -289,7 +329,10 @@ func NewAuthorizationServerConfig(cfg *AuthorizationServerParams) (*Authorizatio
 		AuthorizationEndpointBaseURL:        cfg.AuthorizationEndpointBaseURL,
 		CIMDEnabled:                         cfg.CIMDEnabled,
 		AllowConfidentialClientRegistration: cfg.AllowConfidentialClientRegistration,
+		AllowPrivateKeyJWTRegistration:      cfg.AllowPrivateKeyJWTRegistration,
+		HasStaticDelegateClients:            cfg.HasStaticDelegateClients,
 		ForceConfidentialRedirectURIs:       cfg.ForceConfidentialRedirectURIs,
+		JWTBearerGrantEnabled:               cfg.JWTBearerGrantEnabled,
 	}, nil
 }
 

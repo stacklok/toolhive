@@ -83,8 +83,8 @@ func (s *service) Info(ctx context.Context, opts skills.InfoOptions) (*skills.Sk
 	}
 	// Project-scoped, lock-managed skills carry the lock file's recorded
 	// trust state so callers can display what installs are checked against.
-	if scope == skills.ScopeProject && projectRoot != "" && skills.LockFileFeatureEnabled() {
-		if expected, expectUnsigned, trustErr := expectedLockTrust(projectRoot, opts.Name); trustErr == nil {
+	if scope == skills.ScopeProject && projectRoot != "" {
+		if expected, expectUnsigned, _, trustErr := expectedLockTrust(projectRoot, opts.Name); trustErr == nil {
 			info.Provenance = provenanceInfoFromLock(expected)
 			info.Unsigned = expectUnsigned
 		}

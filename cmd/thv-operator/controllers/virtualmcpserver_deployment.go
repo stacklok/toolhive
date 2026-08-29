@@ -142,6 +142,7 @@ func (r *VirtualMCPServerReconciler) deploymentForVirtualMCPServer(
 	ctx context.Context,
 	vmcp *mcpv1beta1.VirtualMCPServer,
 	vmcpConfigChecksum string,
+	caBundleChecksum string,
 	telemetryCfg *mcpv1beta1.MCPTelemetryConfig,
 	typedWorkloads []workloads.TypedWorkload,
 ) *appsv1.Deployment {
@@ -161,7 +162,8 @@ func (r *VirtualMCPServerReconciler) deploymentForVirtualMCPServer(
 	}
 
 	deploymentLabels, deploymentAnnotations := r.buildDeploymentMetadataForVmcp(ls, vmcp, volumesHash)
-	deploymentTemplateLabels, deploymentTemplateAnnotations := r.buildPodTemplateMetadata(ls, vmcp, vmcpConfigChecksum)
+	deploymentTemplateLabels, deploymentTemplateAnnotations := r.buildPodTemplateMetadata(
+		ls, vmcp, vmcpConfigChecksum, caBundleChecksum)
 	podSecurityContext, containerSecurityContext := r.buildSecurityContextsForVmcp(ctx, vmcp)
 	serviceAccountName := r.serviceAccountNameForVmcp(vmcp)
 
@@ -268,7 +270,10 @@ func (r *VirtualMCPServerReconciler) buildPodVolumesForVmcp(
 	}
 
 	if vmcp.Spec.AuthServerConfig != nil {
-		authServerVolumes, authServerMounts := ctrlutil.GenerateAuthServerVolumes(vmcp.Spec.AuthServerConfig)
+		authServerVolumes, authServerMounts, err := ctrlutil.GenerateAuthServerVolumes(vmcp.Spec.AuthServerConfig)
+		if err != nil {
+			return nil, nil, "", fmt.Errorf("failed to build embedded auth server CA volumes: %w", err)
+		}
 		volumes = append(volumes, authServerVolumes...)
 		volumeMounts = append(volumeMounts, authServerMounts...)
 	}
@@ -1042,12 +1047,16 @@ func (*VirtualMCPServerReconciler) buildPodTemplateMetadata(
 	baseLabels map[string]string,
 	_ *mcpv1beta1.VirtualMCPServer,
 	vmcpConfigChecksum string,
+	caBundleChecksum string,
 ) (map[string]string, map[string]string) {
 	templateLabels := baseLabels
 
 	// Add vmcp Config checksum annotation to trigger pod rollout when config changes
 	// Use the standard checksum package helper for consistency
 	templateAnnotations := checksum.AddRunConfigChecksumToPodTemplate(nil, vmcpConfigChecksum)
+	if caBundleChecksum != "" {
+		templateAnnotations[ctrlutil.AuthServerCABundleChecksumAnnotation] = caBundleChecksum
+	}
 
 	return templateLabels, templateAnnotations
 }
@@ -1188,6 +1197,18 @@ func (r *VirtualMCPServerReconciler) validateSecretReferences(
 			if err := r.validateSecretKeyRef(ctx, vmcp.Namespace,
 				oidcCfg.Spec.Inline.ClientSecretRef,
 				"MCPOIDCConfig OIDC client secret"); err != nil {
+				return err
+			}
+		}
+	}
+
+	// Validate static delegate-client secrets before creating the pod. The
+	// controller checks only the Secret metadata and key presence; it never reads
+	// or copies credential values.
+	if vmcp.Spec.AuthServerConfig != nil {
+		for _, delegateClient := range vmcp.Spec.AuthServerConfig.DelegateClients {
+			if err := r.validateSecretKeyRef(ctx, vmcp.Namespace, delegateClient.ClientSecretRef,
+				fmt.Sprintf("delegate client %q", delegateClient.ClientID)); err != nil {
 				return err
 			}
 		}

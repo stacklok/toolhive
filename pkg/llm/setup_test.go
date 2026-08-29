@@ -6,6 +6,9 @@ package llm
 import (
 	"bytes"
 	"context"
+	"errors"
+	"fmt"
+	"net"
 	"net/http"
 	"net/http/httptest"
 	"testing"
@@ -16,6 +19,7 @@ import (
 	"go.uber.org/mock/gomock"
 
 	"github.com/stacklok/toolhive/pkg/llmgateway"
+	"github.com/stacklok/toolhive/pkg/networking"
 	"github.com/stacklok/toolhive/pkg/secrets"
 	secretsmocks "github.com/stacklok/toolhive/pkg/secrets/mocks"
 )
@@ -183,7 +187,7 @@ func TestConfigureDetectedTools_BedrockClaudeCode(t *testing.T) {
 	_, err := configureDetectedTools(
 		&out, &errOut, gm,
 		[]string{"claude-code"},
-		"https://gw.example.com", "http://localhost:14000/v1", `"thv" llm token`,
+		"https://gw.example.com", "http://localhost:14000/v1",
 		"/usr/local/bin/thv", []string{"llm", "token", "--skip-browser"},
 		false, "/anthropic", nil,
 		BedrockConfig{Compat: true, Enable1M: true},
@@ -207,7 +211,7 @@ func TestConfigureDetectedTools_BedrockSkippedForNonClaudeCode(t *testing.T) {
 	_, err := configureDetectedTools(
 		&out, &errOut, gm,
 		[]string{"cursor"},
-		"https://gw.example.com", "http://localhost:14000/v1", `"thv" llm token`,
+		"https://gw.example.com", "http://localhost:14000/v1",
 		"/usr/local/bin/thv", []string{"llm", "token", "--skip-browser"},
 		false, "", nil,
 		BedrockConfig{Compat: true},
@@ -355,6 +359,118 @@ func TestTeardown_PurgeTokens_ClearsConfigRefsAndDeletesSecrets(t *testing.T) {
 	assert.Equal(t, []string{"cursor"}, gm.reverted)
 }
 
+// fullSetupConfig returns a config as "thv llm setup" would leave it, with the
+// given tools configured and every persisted setting populated.
+func fullSetupConfig(tools ...string) Config {
+	configured := make([]ToolConfig, len(tools))
+	for i, tool := range tools {
+		configured[i] = ToolConfig{Tool: tool, ConfigPath: "/tmp/" + tool + ".json"}
+	}
+	return Config{
+		GatewayURL:    "https://gw.example.com",
+		TLSSkipVerify: true,
+		OIDC: OIDCConfig{
+			Issuer:                "https://auth.example.com",
+			ClientID:              "cid",
+			CachedRefreshTokenRef: "secret-ref",
+		},
+		Proxy:           ProxyConfig{ListenPort: 14001},
+		Bedrock:         BedrockConfig{Compat: true, Enable1M: true},
+		Models:          []string{"us.anthropic.claude-opus-4-8"},
+		ConfiguredTools: configured,
+	}
+}
+
+// TestTeardown_ResetsConfigWhenLastToolReverted verifies that reverting the last
+// configured tool resets the whole LLM config. Settings like Bedrock compat are
+// deliberately sticky across "thv llm setup" re-runs, so leaving them behind
+// would let a later setup silently re-apply settings the user just tore down.
+//
+// Cached token state is the one exception: it is carried over so the keyring
+// secret it points at is not stranded, and stays the business of --purge-tokens.
+func TestTeardown_ResetsConfigWhenLastToolReverted(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name       string
+		configured []string
+		targetTool string
+	}{
+		{
+			name:       "targeted teardown of the only tool",
+			configured: []string{"claude-code"},
+			targetTool: "claude-code",
+		},
+		{
+			name:       "untargeted teardown of every tool",
+			configured: []string{"claude-code", "claude-desktop", "cursor"},
+			targetTool: "",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			provider := &stubConfigUpdater{cfg: fullSetupConfig(tt.configured...)}
+
+			var stdout, stderr bytes.Buffer
+			err := Teardown(context.Background(), &stdout, &stderr,
+				&stubGatewayManager{}, tt.targetTool, false, provider, nil)
+			require.NoError(t, err)
+
+			want := Config{OIDC: OIDCConfig{CachedRefreshTokenRef: "secret-ref"}}
+			assert.Equal(t, want, provider.cfg,
+				"no tools remain, so every persisted setting except cached token state must be reset")
+			assert.Contains(t, stdout.String(), "Cleared the LLM gateway configuration")
+		})
+	}
+}
+
+// TestTeardown_ResetsCachedTokenStateWhenPurging verifies that --purge-tokens
+// still clears the cached token refs on a full teardown, so the config keeps no
+// pointer to secrets that PurgeTokens deletes.
+func TestTeardown_ResetsCachedTokenStateWhenPurging(t *testing.T) {
+	t.Parallel()
+
+	provider := &stubConfigUpdater{cfg: fullSetupConfig("claude-code")}
+
+	var stdout, stderr bytes.Buffer
+	err := Teardown(context.Background(), &stdout, &stderr,
+		&stubGatewayManager{}, "", true, provider, nil)
+	require.NoError(t, err)
+
+	assert.Equal(t, Config{}, provider.cfg)
+}
+
+// TestTeardown_KeepsConfigWhileToolsRemain verifies that a targeted teardown
+// preserves the gateway configuration the still-configured tools depend on.
+// Zeroing it here would break "thv llm token" and "thv llm proxy start" for a
+// tool the user never asked to touch, since both gate on IsConfigured().
+func TestTeardown_KeepsConfigWhileToolsRemain(t *testing.T) {
+	t.Parallel()
+
+	provider := &stubConfigUpdater{cfg: fullSetupConfig("claude-code", "cursor")}
+
+	var stdout, stderr bytes.Buffer
+	err := Teardown(context.Background(), &stdout, &stderr,
+		&stubGatewayManager{}, "claude-code", false, provider, nil)
+	require.NoError(t, err)
+
+	assert.True(t, provider.cfg.IsConfigured(),
+		"cursor still routes through the gateway, so its config must survive")
+	assert.Equal(t, "secret-ref", provider.cfg.OIDC.CachedRefreshTokenRef,
+		"an unrelated teardown must not force a fresh login")
+	assert.Equal(t, 14001, provider.cfg.EffectiveProxyPort())
+	assert.NotContains(t, stdout.String(), "Cleared the LLM gateway configuration")
+
+	var remaining []string
+	for _, tc := range provider.cfg.ConfiguredTools {
+		remaining = append(remaining, tc.Tool)
+	}
+	assert.Equal(t, []string{"cursor"}, remaining)
+}
+
 func TestTeardown_NoPurge_LeavesTokenRefsIntact(t *testing.T) {
 	t.Parallel()
 
@@ -463,6 +579,90 @@ func TestSetup_NonLazy_InvokesLogin(t *testing.T) {
 	require.Len(t, provider.cfg.ConfiguredTools, 1)
 }
 
+func TestSetup_NonLazy_LoginFailure(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name            string
+		loginErr        error
+		wantContains    []string
+		wantNotContains string
+	}{
+		{
+			name:     "callback port in use includes remediation",
+			loginErr: &networking.CallbackPortInUseError{Port: 8666},
+			wantContains: []string{
+				"OIDC login failed",
+				"requested callback port 8666 is already in use",
+				"stop the process using it",
+				"thv llm setup --callback-port <port>",
+			},
+		},
+		{
+			name:            "other login errors keep generic handling",
+			loginErr:        errors.New("login unavailable"),
+			wantContains:    []string{"OIDC login failed", "login unavailable"},
+			wantNotContains: "--callback-port",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			gm := &setupGatewayManager{detected: []string{"cursor"}, mode: "proxy"}
+			provider := configuredSetupProvider()
+			login := func(_ context.Context, _ *Config) error { return tt.loginErr }
+
+			var stdout, stderr bytes.Buffer
+			err := Setup(
+				context.Background(), &stdout, &stderr, gm, provider, login,
+				SetOptions{}, "", true, "", false,
+			)
+
+			require.Error(t, err)
+			for _, want := range tt.wantContains {
+				assert.Contains(t, err.Error(), want)
+			}
+			if tt.wantNotContains != "" {
+				assert.NotContains(t, err.Error(), tt.wantNotContains)
+			}
+			assert.Empty(t, provider.cfg.ConfiguredTools)
+		})
+	}
+}
+
+func TestSetup_CallbackPortInUseBeforeLogin(t *testing.T) {
+	t.Parallel()
+
+	listener, err := net.Listen("tcp", "127.0.0.1:0")
+	require.NoError(t, err)
+	t.Cleanup(func() { require.NoError(t, listener.Close()) })
+	port := listener.Addr().(*net.TCPAddr).Port
+
+	provider := configuredSetupProvider()
+	provider.cfg.OIDC.CallbackPort = port
+	loginCalled := false
+	login := func(_ context.Context, _ *Config) error {
+		loginCalled = true
+		return nil
+	}
+
+	var stdout, stderr bytes.Buffer
+	err = Setup(
+		context.Background(), &stdout, &stderr,
+		&setupGatewayManager{detected: []string{"cursor"}, mode: "proxy"}, provider, login,
+		SetOptions{}, "", true, "", false,
+	)
+
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "invalid inline flag values")
+	assert.NotContains(t, err.Error(), "OIDC login failed")
+	assert.Contains(t, err.Error(), fmt.Sprintf("requested callback port %d is already in use", port))
+	assert.Contains(t, err.Error(), "thv llm setup --callback-port <port>")
+	assert.False(t, loginCalled)
+}
+
 // ── AnthropicPathPrefix / configureDetectedTools ──────────────────────────────
 
 // capturingGatewayManager records the ApplyConfig passed to ConfigureLLMGateway.
@@ -494,7 +694,7 @@ func TestConfigureDetectedTools_PathPrefixAppendedForDirectMode(t *testing.T) {
 	_, err := configureDetectedTools(
 		&out, &errOut, gm,
 		[]string{"claude-code"},
-		"https://gw.example.com", "http://localhost:14000/v1", `"thv" llm token`,
+		"https://gw.example.com", "http://localhost:14000/v1",
 		"/usr/local/bin/thv", []string{"llm", "token", "--skip-browser"},
 		false, "/anthropic", nil,
 		BedrockConfig{},
@@ -516,7 +716,7 @@ func TestConfigureDetectedTools_NoPrefixWhenEmpty(t *testing.T) {
 	_, err := configureDetectedTools(
 		&out, &errOut, gm,
 		[]string{"claude-code"},
-		"https://gw.example.com", "http://localhost:14000/v1", `"thv" llm token`,
+		"https://gw.example.com", "http://localhost:14000/v1",
 		"/usr/local/bin/thv", []string{"llm", "token", "--skip-browser"},
 		false, "", nil, // no prefix
 		BedrockConfig{},
@@ -537,7 +737,7 @@ func TestConfigureDetectedTools_PrefixNotAppliedForProxyMode(t *testing.T) {
 	_, err := configureDetectedTools(
 		&out, &errOut, gm,
 		[]string{"cursor"},
-		"https://gw.example.com", "http://localhost:14000/v1", `"thv" llm token`,
+		"https://gw.example.com", "http://localhost:14000/v1",
 		"/usr/local/bin/thv", []string{"llm", "token", "--skip-browser"},
 		false, "/anthropic", nil,
 		BedrockConfig{},
@@ -548,73 +748,6 @@ func TestConfigureDetectedTools_PrefixNotAppliedForProxyMode(t *testing.T) {
 	// Proxy-mode tools must never receive an AnthropicBaseURL.
 	assert.Empty(t, gm.applied[0].AnthropicBaseURL)
 }
-
-func TestTokenHelperCommandNeeded(t *testing.T) {
-	t.Parallel()
-	tests := []struct {
-		name     string
-		modes    map[string]string
-		detected []string
-		want     bool
-	}{
-		{
-			name:     "codex-only run never needs the shell-string helper",
-			modes:    map[string]string{"codex": llmgateway.ModeCodexAuth},
-			detected: []string{"codex"},
-			want:     false,
-		},
-		{
-			name:     "proxy-only run never needs the shell-string helper",
-			modes:    map[string]string{"cursor": llmgateway.ModeProxy},
-			detected: []string{"cursor"},
-			want:     false,
-		},
-		{
-			name:     "direct mode needs it",
-			modes:    map[string]string{"claude-code": llmgateway.ModeDirect},
-			detected: []string{"claude-code"},
-			want:     true,
-		},
-		{
-			name:     "credential-helper mode needs it",
-			modes:    map[string]string{"claude-desktop": llmgateway.ModeCredentialHelper},
-			detected: []string{"claude-desktop"},
-			want:     true,
-		},
-		{
-			name: "any detected tool needing it is enough",
-			modes: map[string]string{
-				"codex":       llmgateway.ModeCodexAuth,
-				"claude-code": llmgateway.ModeDirect,
-			},
-			detected: []string{"codex", "claude-code"},
-			want:     true,
-		},
-	}
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			t.Parallel()
-			gm := &modeLookupGatewayManager{modes: tt.modes}
-			assert.Equal(t, tt.want, tokenHelperCommandNeeded(gm, tt.detected))
-		})
-	}
-}
-
-// modeLookupGatewayManager is a minimal GatewayManager whose LLMGatewayModeFor
-// returns a per-client mode from a fixed map, for tokenHelperCommandNeeded tests.
-type modeLookupGatewayManager struct{ modes map[string]string }
-
-func (*modeLookupGatewayManager) DetectedLLMGatewayClients() []string { return nil }
-func (*modeLookupGatewayManager) ConfigureLLMGateway(_ string, _ llmgateway.ApplyConfig) (string, error) {
-	return "", nil
-}
-func (g *modeLookupGatewayManager) LLMGatewayModeFor(c string) string { return g.modes[c] }
-func (*modeLookupGatewayManager) IsManaged(_ string) bool             { return false }
-func (*modeLookupGatewayManager) ConfigureEnvFile(_ string, _ llmgateway.ApplyConfig) (string, error) {
-	return "", nil
-}
-func (*modeLookupGatewayManager) RevertEnvFile(_, _ string) error    { return nil }
-func (*modeLookupGatewayManager) RevertLLMGateway(_, _ string) error { return nil }
 
 func TestBuildTokenHelperArgv(t *testing.T) {
 	t.Parallel()

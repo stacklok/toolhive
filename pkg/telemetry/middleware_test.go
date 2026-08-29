@@ -1003,10 +1003,11 @@ func TestCreateMiddleware_ValidConfig(t *testing.T) {
 				Transport:  "sse",
 			},
 			expectError: false,
-			expectedCalls: func(runner *mocks.MockMiddlewareRunner, config *mocks.MockRunnerConfig) {
+			expectedCalls: func(runner *mocks.MockMiddlewareRunner, _ *mocks.MockRunnerConfig) {
 				runner.EXPECT().AddMiddleware(gomock.Any(), gomock.Any()).Times(1)
+				// The application port is not read here: the runner serves
+				// metrics on a separate diagnostics listener.
 				runner.EXPECT().SetPrometheusHandler(gomock.Any()).Times(1)
-				config.EXPECT().GetPort().Return(8080).Times(1)
 			},
 		},
 		{
@@ -1026,10 +1027,9 @@ func TestCreateMiddleware_ValidConfig(t *testing.T) {
 				Transport:  "stdio",
 			},
 			expectError: false,
-			expectedCalls: func(runner *mocks.MockMiddlewareRunner, config *mocks.MockRunnerConfig) {
+			expectedCalls: func(runner *mocks.MockMiddlewareRunner, _ *mocks.MockRunnerConfig) {
 				runner.EXPECT().AddMiddleware(gomock.Any(), gomock.Any()).Times(1)
 				runner.EXPECT().SetPrometheusHandler(gomock.Any()).Times(1)
-				config.EXPECT().GetPort().Return(8080).Times(1)
 			},
 		},
 		{
@@ -1527,7 +1527,6 @@ func TestFactoryMiddleware_Integration(t *testing.T) {
 		mockRunner := mocks.NewMockMiddlewareRunner(ctrl)
 		mockConfig := mocks.NewMockRunnerConfig(ctrl)
 		mockRunner.EXPECT().GetConfig().Return(mockConfig).AnyTimes()
-		mockConfig.EXPECT().GetPort().Return(8080).Times(1)
 
 		// Expect middleware to be added and Prometheus handler to be set
 		var capturedMiddleware types.Middleware

@@ -999,3 +999,78 @@ func TestCallerCancellationIsNeitherSentinel(t *testing.T) {
 	assert.NotErrorIs(t, err, ErrRequestTimeout)
 	assert.NotErrorIs(t, err, ErrServerUnreachable)
 }
+
+// TestInstallCarriesAllowUnsigned round-trips the unsigned exception through
+// the client's request body — without this, the CLI flag silently never
+// reaches the server (every --allow-unsigned install would 403 telling the
+// user to pass the flag they passed).
+func TestInstallCarriesAllowUnsigned(t *testing.T) {
+	t.Parallel()
+
+	var got installRequest
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		require.NoError(t, json.NewDecoder(r.Body).Decode(&got))
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusCreated)
+		_ = json.NewEncoder(w).Encode(installResponse{})
+	}))
+	t.Cleanup(srv.Close)
+
+	_, err := newTestClient(t, srv).Install(t.Context(), plugins.InstallOptions{
+		Name:          "my-plugin",
+		Scope:         plugins.ScopeProject,
+		ProjectRoot:   "/tmp/project",
+		AllowUnsigned: true,
+	})
+	require.NoError(t, err)
+	assert.True(t, got.AllowUnsigned, "allow_unsigned must reach the server")
+}
+
+// TestSyncCarriesAllowUnsigned mirrors TestInstallCarriesAllowUnsigned for
+// the sync/adopt path: a flag that dies at the DTO boundary would silently
+// make every adoption of an install with no stored bundle fail.
+func TestSyncCarriesAllowUnsigned(t *testing.T) {
+	t.Parallel()
+
+	var got syncRequest
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		require.NoError(t, json.NewDecoder(r.Body).Decode(&got))
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(plugins.SyncResult{})
+	}))
+	t.Cleanup(srv.Close)
+
+	_, err := newTestClient(t, srv).Sync(t.Context(), plugins.SyncOptions{
+		ProjectRoot:   "/tmp/project",
+		Adopt:         true,
+		AllowUnsigned: true,
+	})
+	require.NoError(t, err)
+	assert.True(t, got.AllowUnsigned, "allow_unsigned must reach the server")
+}
+
+// TestUpgradeCarriesAllowSignerChange pins the upgrade DTO boundary: a flag
+// that dies here would silently re-arm the signer-change guard the caller
+// just overrode, turning an explicit rotation into a blocked upgrade.
+func TestUpgradeCarriesAllowSignerChange(t *testing.T) {
+	t.Parallel()
+
+	var got upgradeRequest
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		require.NoError(t, json.NewDecoder(r.Body).Decode(&got))
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(plugins.UpgradeResult{})
+	}))
+	t.Cleanup(srv.Close)
+
+	_, err := newTestClient(t, srv).Upgrade(t.Context(), plugins.UpgradeOptions{
+		ProjectRoot:       "/tmp/project",
+		Names:             []string{"my-plugin"},
+		AllowRefChange:    true,
+		AllowSignerChange: true,
+	})
+	require.NoError(t, err)
+	assert.True(t, got.AllowSignerChange, "allow_signer_change must reach the server")
+	assert.True(t, got.AllowRefChange)
+	assert.Equal(t, []string{"my-plugin"}, got.Names)
+}

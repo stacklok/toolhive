@@ -41,8 +41,17 @@ type ClientMetadataDocument struct {
 	ResponseTypes           []string `json:"response_types,omitempty"`
 	Scope                   string   `json:"scope,omitempty"`
 	TokenEndpointAuthMethod string   `json:"token_endpoint_auth_method,omitempty"`
-	ApplicationType         string   `json:"application_type,omitempty"`
-	PostLogoutRedirectURIs  []string `json:"post_logout_redirect_uris,omitempty"`
+	// TokenEndpointAuthMethodsSupported is not part of the CIMD draft itself;
+	// it is defined by OpenID Connect RP Metadata Choices 1.0 as the plural
+	// counterpart of TokenEndpointAuthMethod, listing every method the client
+	// supports while TokenEndpointAuthMethod names its preferred one. Live
+	// clients (e.g. ChatGPT) publish it alongside a stricter singular
+	// preference the client_id-issuing party does not control per-AS; the
+	// decorator in pkg/authserver/storage uses it to negotiate a mutually
+	// supported method instead of rejecting the document outright (#6278).
+	TokenEndpointAuthMethodsSupported []string `json:"token_endpoint_auth_methods_supported,omitempty"`
+	ApplicationType                   string   `json:"application_type,omitempty"`
+	PostLogoutRedirectURIs            []string `json:"post_logout_redirect_uris,omitempty"`
 }
 
 // forbiddenAuthMethods lists token_endpoint_auth_method values that MUST NOT

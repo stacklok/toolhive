@@ -65,37 +65,47 @@ func TestNewAuthorizationServerConfig(t *testing.T) {
 	assert.Len(t, authzServerConfig.SigningJWKS.Keys, 1)
 }
 
-// TestNewAuthorizationServerConfig_AllowConfidentialClientRegistration pins the flag's
-// passage through NewAuthorizationServerConfig — the return literal is the hop
-// that silently drops the flag if a field is added to the params and config
-// structs but not copied between them.
-func TestNewAuthorizationServerConfig_AllowConfidentialClientRegistration(t *testing.T) {
+// TestNewAuthorizationServerConfig_ConfidentialClientCapabilities pins the
+// confidential-client capability flags' passage through NewAuthorizationServerConfig.
+func TestNewAuthorizationServerConfig_ConfidentialClientCapabilities(t *testing.T) {
 	t.Parallel()
 
 	rsaKey, err := rsa.GenerateKey(rand.Reader, 2048)
 	require.NoError(t, err)
 
-	newParams := func(allow bool) *AuthorizationServerParams {
-		return &AuthorizationServerParams{
-			Issuer:                              "https://auth.example.com",
-			AccessTokenLifespan:                 time.Hour,
-			RefreshTokenLifespan:                time.Hour * 24,
-			AuthCodeLifespan:                    time.Minute * 10,
-			HMACSecrets:                         servercrypto.NewHMACSecrets([]byte("test-secret-with-32-bytes-long!!")),
-			SigningKeyID:                        "key-1",
-			SigningKeyAlgorithm:                 "RS256",
-			SigningKey:                          rsaKey,
-			AllowConfidentialClientRegistration: allow,
-		}
+	tests := []struct {
+		name                    string
+		allowConfidential       bool
+		allowPrivateKeyJWT      bool
+		hasStaticDelegateClient bool
+	}{
+		{name: "public only", allowConfidential: false, hasStaticDelegateClient: false},
+		{name: "confidential DCR", allowConfidential: true, hasStaticDelegateClient: false},
+		{name: "private-key JWT registration", allowPrivateKeyJWT: true, hasStaticDelegateClient: false},
+		{name: "static delegate client", allowConfidential: false, hasStaticDelegateClient: true},
 	}
-
-	on, err := NewAuthorizationServerConfig(newParams(true))
-	require.NoError(t, err)
-	assert.True(t, on.AllowConfidentialClientRegistration)
-
-	off, err := NewAuthorizationServerConfig(newParams(false))
-	require.NoError(t, err)
-	assert.False(t, off.AllowConfidentialClientRegistration)
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			config, err := NewAuthorizationServerConfig(&AuthorizationServerParams{
+				Issuer:                              "https://auth.example.com",
+				AccessTokenLifespan:                 time.Hour,
+				RefreshTokenLifespan:                time.Hour * 24,
+				AuthCodeLifespan:                    time.Minute * 10,
+				HMACSecrets:                         servercrypto.NewHMACSecrets([]byte("test-secret-with-32-bytes-long!!")),
+				SigningKeyID:                        "key-1",
+				SigningKeyAlgorithm:                 "RS256",
+				SigningKey:                          rsaKey,
+				AllowConfidentialClientRegistration: tt.allowConfidential,
+				AllowPrivateKeyJWTRegistration:      tt.allowPrivateKeyJWT,
+				HasStaticDelegateClients:            tt.hasStaticDelegateClient,
+			})
+			require.NoError(t, err)
+			assert.Equal(t, tt.allowConfidential, config.AllowConfidentialClientRegistration)
+			assert.Equal(t, tt.allowPrivateKeyJWT, config.AllowPrivateKeyJWTRegistration)
+			assert.Equal(t, tt.hasStaticDelegateClient, config.HasStaticDelegateClients)
+		})
+	}
 }
 
 func TestNewAuthorizationServerConfig_InvalidConfig(t *testing.T) {

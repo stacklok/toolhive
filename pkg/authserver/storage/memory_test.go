@@ -20,6 +20,7 @@ package storage
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"net/url"
 	"strconv"
@@ -240,6 +241,37 @@ func TestMemoryStorage_RegisterClient(t *testing.T) {
 	})
 }
 
+func TestMemoryStorage_RegisterClient_RejectsSyntheticPrefix(t *testing.T) {
+	withStorage(t, func(ctx context.Context, s *MemoryStorage) {
+		client := &mockClient{id: SyntheticClientIDPrefix + "delegate"}
+		err := s.RegisterClient(ctx, client)
+		require.ErrorIs(t, err, ErrReservedClientID)
+
+		_, err = s.GetClient(ctx, client.id)
+		require.ErrorIs(t, err, ErrNotFound)
+	})
+}
+
+func TestMemoryStorage_StaticClientReplacesDCRClient(t *testing.T) {
+	withStorage(t, func(ctx context.Context, s *MemoryStorage) {
+		dcrClient := dcrClient(t, "delegate")
+		require.True(t, registration.DCRIssued(dcrClient))
+		require.NoError(t, s.RegisterClient(ctx, dcrClient))
+
+		staticClient, err := registration.NewStaticDelegateClient(registration.Config{
+			ID: "delegate", Secret: "new-secret", GrantTypes: []string{"urn:ietf:params:oauth:grant-type:token-exchange"},
+			Scopes: []string{"openid"}, Audience: []string{"https://mcp.example"},
+		})
+		require.NoError(t, err)
+		require.NoError(t, s.RegisterClient(ctx, staticClient))
+
+		retrieved, err := s.GetClient(ctx, "delegate")
+		require.NoError(t, err)
+		assert.False(t, registration.DCRIssued(retrieved))
+		assert.NoError(t, registration.SHA256Hasher.Compare(ctx, retrieved.GetHashedSecret(), []byte("new-secret")))
+	})
+}
+
 // TestMemoryStorage_RegisterClient_Bounded pins the anti-DoS cap: the client
 // map is bounded by maxClients with oldest-first eviction among DCR-issued
 // clients only, a re-registered client refreshes its eviction position, and
@@ -457,7 +489,7 @@ func TestMemoryStorage_ClientAssertionJWT(t *testing.T) {
 	}{
 		{"unknown JTI is valid", nil, "unknown-jti", nil},
 		{"known JTI is invalid", func(ctx context.Context, s *MemoryStorage) {
-			_ = s.SetClientAssertionJWT(ctx, "test-jti", time.Now().Add(time.Hour))
+			_ = s.SetClientAssertionJWT(ctx, "test-jti", time.Now().Add(time.Minute))
 		}, "test-jti", fosite.ErrJTIKnown},
 		{"expired JTI is valid", func(ctx context.Context, s *MemoryStorage) {
 			_ = s.SetClientAssertionJWT(ctx, "expired-jti", time.Now().Add(-time.Hour))
@@ -480,19 +512,121 @@ func TestMemoryStorage_ClientAssertionJWT(t *testing.T) {
 		})
 	}
 
-	t.Run("cleanup expired JTIs on set", func(t *testing.T) {
+	t.Run("cleanup expired JTIs on valid check", func(t *testing.T) {
 		withStorage(t, func(ctx context.Context, s *MemoryStorage) {
 			s.mu.Lock()
 			s.clientAssertionJWTs["old-jti"] = time.Now().Add(-time.Hour)
 			s.mu.Unlock()
 
-			require.NoError(t, s.SetClientAssertionJWT(ctx, "new-jti", time.Now().Add(time.Hour)))
+			// Cleanup now happens in ClientAssertionJWTValid (the atomic
+			// reservation checkpoint), not SetClientAssertionJWT, since
+			// fosite always calls Valid before Set on every assertion.
+			require.NoError(t, s.ClientAssertionJWTValid(ctx, "new-jti"))
 
 			s.mu.RLock()
 			_, exists := s.clientAssertionJWTs["old-jti"]
 			s.mu.RUnlock()
 			assert.False(t, exists, "expired JTI should have been cleaned up")
 		})
+	})
+}
+
+// TestMemoryStorage_ClientAssertionJWT_ConcurrentReplay proves
+// ClientAssertionJWTValid's reservation is atomic: of many goroutines
+// racing to validate the identical jti, exactly one must observe it as
+// unused. Before the reserve-then-confirm fix, fosite's separate
+// Valid-then-Set calls let concurrent requests carrying the same assertion
+// both pass the check before either recorded it.
+func TestMemoryStorage_ClientAssertionJWT_ConcurrentReplay(t *testing.T) {
+	withStorage(t, func(ctx context.Context, s *MemoryStorage) {
+		const attempts = 20
+		var succeeded atomic.Int32
+		var wg sync.WaitGroup
+		wg.Add(attempts)
+		for range attempts {
+			go func() {
+				defer wg.Done()
+				if err := s.ClientAssertionJWTValid(ctx, "race-jti"); err == nil {
+					succeeded.Add(1)
+				}
+			}()
+		}
+		wg.Wait()
+
+		assert.Equal(t, int32(1), succeeded.Load(), "exactly one concurrent validator must win the reservation")
+	})
+}
+
+func TestMemoryStorage_ConsumeAssertionJWT(t *testing.T) {
+	withStorage(t, func(ctx context.Context, s *MemoryStorage) {
+		exp := time.Now().Add(time.Hour)
+		require.NoError(t, s.ConsumeAssertionJWT(ctx, "jwt-bearer", "https://issuer.example", "shared-jti", exp))
+		require.ErrorIs(t, s.ConsumeAssertionJWT(ctx, "jwt-bearer", "https://issuer.example", "shared-jti", exp), fosite.ErrJTIKnown)
+
+		for _, assertion := range []struct {
+			purpose string
+			issuer  string
+		}{
+			{purpose: "client-auth", issuer: "https://issuer.example"},
+			{purpose: "jwt-bearer", issuer: "https://other-issuer.example"},
+		} {
+			require.NoError(t, s.ConsumeAssertionJWT(ctx, assertion.purpose, assertion.issuer, "shared-jti", exp))
+		}
+	})
+}
+
+func TestMemoryStorage_ConsumeAssertionJWT_Expired(t *testing.T) {
+	withStorage(t, func(ctx context.Context, s *MemoryStorage) {
+		exp := time.Now().Add(time.Hour)
+		const purpose = "jwt-bearer"
+		const issuer = "https://issuer.example"
+		const jti = "expired-jti"
+		require.NoError(t, s.ConsumeAssertionJWT(ctx, purpose, issuer, jti, exp))
+
+		s.mu.Lock()
+		s.assertionJWTs[assertionJWTKey{purpose: purpose, issuer: issuer, jti: jti}] = time.Now().Add(-time.Second)
+		s.mu.Unlock()
+
+		require.NoError(t, s.ConsumeAssertionJWT(ctx, purpose, issuer, jti, exp))
+	})
+}
+
+func TestMemoryStorage_ConsumeAssertionJWT_Concurrent(t *testing.T) {
+	withStorage(t, func(ctx context.Context, s *MemoryStorage) {
+		const consumers = 32
+		var successes atomic.Int32
+		errs := make(chan error, consumers)
+		var wg sync.WaitGroup
+		wg.Add(consumers)
+		for range consumers {
+			go func() {
+				defer wg.Done()
+				err := s.ConsumeAssertionJWT(ctx, "jwt-bearer", "https://issuer.example", "concurrent-jti", time.Now().Add(time.Hour))
+				if err == nil {
+					successes.Add(1)
+					return
+				}
+				if !errors.Is(err, fosite.ErrJTIKnown) {
+					errs <- err
+				}
+			}()
+		}
+
+		done := make(chan struct{})
+		go func() {
+			wg.Wait()
+			close(done)
+		}()
+		select {
+		case <-done:
+		case <-time.After(5 * time.Second):
+			t.Fatal("timeout waiting for concurrent assertion JWT consumers")
+		}
+		close(errs)
+		for err := range errs {
+			require.NoError(t, err)
+		}
+		assert.Equal(t, int32(1), successes.Load())
 	})
 }
 
@@ -1416,7 +1550,7 @@ func TestMemoryStorage_Stats(t *testing.T) {
 		_ = s.CreatePKCERequestSession(ctx, "pkce-1", request)
 		_ = s.StoreUpstreamTokens(ctx, "upstream-1", "provider-a", &UpstreamTokens{AccessToken: "test"})
 		_ = s.InvalidateAuthorizeCodeSession(ctx, "code-1")
-		_ = s.SetClientAssertionJWT(ctx, "jti-1", time.Now().Add(time.Hour))
+		_ = s.SetClientAssertionJWT(ctx, "jti-1", time.Now().Add(time.Minute))
 
 		now := time.Now()
 		_ = s.CreateUser(ctx, &User{ID: "user-1", CreatedAt: now, UpdatedAt: now})

@@ -5,9 +5,12 @@ package controllerutil
 
 import (
 	"context"
+	"encoding/json"
+	stderrors "errors"
 	"fmt"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -23,9 +26,199 @@ import (
 	"github.com/stacklok/toolhive/cmd/thv-operator/pkg/oidc"
 	"github.com/stacklok/toolhive/pkg/authserver"
 	authrunner "github.com/stacklok/toolhive/pkg/authserver/runner"
+	"github.com/stacklok/toolhive/pkg/authserver/server/tokenexchange"
 	"github.com/stacklok/toolhive/pkg/authserver/storage"
 	"github.com/stacklok/toolhive/pkg/runner"
 )
+
+func TestEmbeddedAuthServerCABundleChecksumForConfig(t *testing.T) {
+	t.Parallel()
+
+	pemData := testCertificatePEM(t)
+	ref := caBundleTestRef("")
+	config := &mcpv1beta1.EmbeddedAuthServerConfig{UpstreamProviders: []mcpv1beta1.UpstreamProviderConfig{{
+		Name: "issuer", Type: mcpv1beta1.UpstreamProviderTypeOIDC,
+		OIDCConfig: &mcpv1beta1.OIDCUpstreamConfig{CABundleRef: ref},
+	}}}
+	newClient := func(objects ...client.Object) client.Client {
+		scheme := runtime.NewScheme()
+		require.NoError(t, corev1.AddToScheme(scheme))
+		builder := fake.NewClientBuilder().WithScheme(scheme)
+		for _, object := range objects {
+			if object != nil {
+				builder = builder.WithObjects(object)
+			}
+		}
+		return builder.Build()
+	}
+
+	tests := []struct {
+		name        string
+		configMap   *corev1.ConfigMap
+		noBundleRef bool
+		wantErr     bool
+		wantEmpty   bool
+	}{
+		{name: "no bundle", configMap: nil, noBundleRef: true, wantEmpty: true},
+		{name: "selected value", configMap: &corev1.ConfigMap{ObjectMeta: metav1.ObjectMeta{Name: "bundle", Namespace: "ns"}, Data: map[string]string{"ca.crt": string(pemData)}}},
+		{name: "missing key", configMap: &corev1.ConfigMap{ObjectMeta: metav1.ObjectMeta{Name: "bundle", Namespace: "ns"}, Data: map[string]string{"other": string(pemData)}}, wantErr: true},
+		{name: "missing ConfigMap", wantErr: true},
+		{name: "binary data", configMap: &corev1.ConfigMap{ObjectMeta: metav1.ObjectMeta{Name: "bundle", Namespace: "ns"}, BinaryData: map[string][]byte{"ca.crt": pemData}}},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			cfg := config.DeepCopy()
+			if tt.noBundleRef {
+				cfg.UpstreamProviders[0].OIDCConfig.CABundleRef = nil
+			}
+			var c client.Client
+			if tt.configMap == nil {
+				c = newClient()
+			} else {
+				c = newClient(tt.configMap)
+			}
+			got, err := EmbeddedAuthServerCABundleChecksumForConfig(t.Context(), c, "ns", cfg)
+			if tt.wantErr {
+				require.Error(t, err)
+				return
+			}
+			require.NoError(t, err)
+			if tt.wantEmpty {
+				assert.Empty(t, got)
+			} else {
+				assert.NotEmpty(t, got)
+			}
+		})
+	}
+}
+
+func TestEmbeddedAuthServerTrustedIssuerCABundleChecksum(t *testing.T) {
+	t.Parallel()
+
+	pemData := testCertificatePEM(t)
+	config := &mcpv1beta1.EmbeddedAuthServerConfig{TrustedIssuers: []mcpv1beta1.TrustedIssuerConfig{{
+		IssuerURL:   "https://issuer.example.com",
+		CABundleRef: caBundleTestRef(""),
+	}}}
+	configMap := &corev1.ConfigMap{ObjectMeta: metav1.ObjectMeta{Name: "bundle", Namespace: "ns"}, Data: map[string]string{"ca.crt": string(pemData)}}
+	c := fake.NewClientBuilder().WithObjects(configMap).Build()
+	issuerOnly, err := EmbeddedAuthServerCABundleChecksumForConfig(t.Context(), c, "ns", config)
+	require.NoError(t, err)
+	require.NotEmpty(t, issuerOnly)
+
+	upstreamOnly := config.DeepCopy()
+	upstreamOnly.TrustedIssuers = nil
+	upstreamOnly.UpstreamProviders = []mcpv1beta1.UpstreamProviderConfig{{
+		Name: "issuer", Type: mcpv1beta1.UpstreamProviderTypeOIDC,
+		OIDCConfig: &mcpv1beta1.OIDCUpstreamConfig{CABundleRef: caBundleTestRef("")},
+	}}
+	upstreamChecksum, err := EmbeddedAuthServerCABundleChecksumForConfig(t.Context(), c, "ns", upstreamOnly)
+	require.NoError(t, err)
+	assert.NotEqual(t, upstreamChecksum, issuerOnly)
+}
+
+func TestEmbeddedAuthServerCABundleChecksumStability(t *testing.T) {
+	t.Parallel()
+
+	pemData := testCertificatePEM(t)
+	config := &mcpv1beta1.EmbeddedAuthServerConfig{UpstreamProviders: []mcpv1beta1.UpstreamProviderConfig{{
+		Name: "issuer", Type: mcpv1beta1.UpstreamProviderTypeOIDC,
+		OIDCConfig: &mcpv1beta1.OIDCUpstreamConfig{CABundleRef: caBundleTestRef("")},
+	}}}
+	newClient := func(objects ...client.Object) client.Client {
+		scheme := runtime.NewScheme()
+		require.NoError(t, corev1.AddToScheme(scheme))
+		builder := fake.NewClientBuilder().WithScheme(scheme)
+		for _, object := range objects {
+			if object != nil {
+				builder = builder.WithObjects(object)
+			}
+		}
+		return builder.Build()
+	}
+	changed := &corev1.ConfigMap{ObjectMeta: metav1.ObjectMeta{Name: "bundle", Namespace: "ns", Labels: map[string]string{"initial": "yes"}}, Data: map[string]string{"ca.crt": string(pemData), "other": "unchanged"}}
+	first, err := EmbeddedAuthServerCABundleChecksumForConfig(t.Context(), newClient(changed), "ns", config)
+	require.NoError(t, err)
+	changed.Data["other"] = "changed"
+	changed.Labels["changed"] = "yes"
+	second, err := EmbeddedAuthServerCABundleChecksumForConfig(t.Context(), newClient(changed), "ns", config)
+	require.NoError(t, err)
+	assert.Equal(t, first, second)
+	changed.Data["ca.crt"] = string(testCertificatePEM(t))
+	second, err = EmbeddedAuthServerCABundleChecksumForConfig(t.Context(), newClient(changed), "ns", config)
+	require.NoError(t, err)
+	assert.NotEqual(t, first, second)
+
+	secondConfig := config.DeepCopy()
+	secondConfig.UpstreamProviders = append(secondConfig.UpstreamProviders, mcpv1beta1.UpstreamProviderConfig{
+		Name: "oauth", Type: mcpv1beta1.UpstreamProviderTypeOAuth2,
+		OAuth2Config: &mcpv1beta1.OAuth2UpstreamConfig{CABundleRef: &mcpv1beta1.CABundleSource{ConfigMapRef: &corev1.ConfigMapKeySelector{LocalObjectReference: corev1.LocalObjectReference{Name: "bundle-two"}}}},
+	})
+	secondMap := &corev1.ConfigMap{ObjectMeta: metav1.ObjectMeta{Name: "bundle-two", Namespace: "ns"}, Data: map[string]string{"ca.crt": string(pemData)}}
+	baseline, err := EmbeddedAuthServerCABundleChecksumForConfig(t.Context(), newClient(changed, secondMap), "ns", secondConfig)
+	require.NoError(t, err)
+	secondMap.Data["ca.crt"] = string(testCertificatePEM(t))
+	rotated, err := EmbeddedAuthServerCABundleChecksumForConfig(t.Context(), newClient(changed, secondMap), "ns", secondConfig)
+	require.NoError(t, err)
+	assert.NotEqual(t, baseline, rotated)
+}
+
+func TestGenerateUpstreamCABundleVolumes(t *testing.T) {
+	t.Parallel()
+
+	providers := []mcpv1beta1.UpstreamProviderConfig{
+		{Name: "oidc", Type: mcpv1beta1.UpstreamProviderTypeOIDC, OIDCConfig: &mcpv1beta1.OIDCUpstreamConfig{CABundleRef: caBundleTestRef("")}},
+		{Name: "oauth", Type: mcpv1beta1.UpstreamProviderTypeOAuth2, OAuth2Config: &mcpv1beta1.OAuth2UpstreamConfig{CABundleRef: caBundleTestRef("custom.pem")}},
+	}
+	volumes, mounts, err := generateUpstreamCABundleVolumes(providers)
+	require.NoError(t, err)
+	require.Len(t, volumes, 2)
+	require.Len(t, mounts, 2)
+	seen := map[string]bool{}
+	for i, mount := range mounts {
+		assert.Equal(t, upstreamCABundleFilePath(i), mount.MountPath)
+		assert.Equal(t, AuthServerUpstreamCABundleFileName, mount.SubPath)
+		assert.Equal(t, fmt.Sprintf("authserver-upstream-ca-%d", i), volumes[i].Name)
+		assert.False(t, seen[volumes[i].Name])
+		seen[volumes[i].Name] = true
+		cm := volumes[i].ConfigMap
+		require.NotNil(t, cm)
+		assert.Equal(t, "bundle", cm.Name)
+		key := "ca.crt"
+		if i == 1 {
+			key = "custom.pem"
+		}
+		assert.Equal(t, []corev1.KeyToPath{{Key: key, Path: AuthServerUpstreamCABundleFileName}}, cm.Items)
+	}
+
+	providers[0].OIDCConfig.CABundleRef.ConfigMapRef = nil
+	_, _, err = generateUpstreamCABundleVolumes(providers)
+	require.Error(t, err)
+	providers[0].OIDCConfig.CABundleRef.ConfigMapRef = &corev1.ConfigMapKeySelector{}
+	_, _, err = generateUpstreamCABundleVolumes(providers)
+	require.Error(t, err)
+}
+
+func TestGenerateTrustedIssuerCABundleVolumes(t *testing.T) {
+	t.Parallel()
+
+	issuers := []mcpv1beta1.TrustedIssuerConfig{
+		{IssuerURL: "https://one.example.com", CABundleRef: caBundleTestRef("")},
+		{IssuerURL: "https://two.example.com", CABundleRef: caBundleTestRef("custom.pem")},
+	}
+	volumes, mounts, err := generateTrustedIssuerCABundleVolumes(issuers)
+	require.NoError(t, err)
+	require.Len(t, volumes, 2)
+	require.Len(t, mounts, 2)
+	assert.Equal(t, "authserver-issuer-ca-0", volumes[0].Name)
+	assert.Equal(t, trustedIssuerCABundleFilePath(0), mounts[0].MountPath)
+	assert.Equal(t, "custom.pem", volumes[1].ConfigMap.Items[0].Key)
+
+	issuers[0].CABundleRef.ConfigMapRef = nil
+	_, _, err = generateTrustedIssuerCABundleVolumes(issuers)
+	require.ErrorContains(t, err, "trustedIssuers[0]")
+}
 
 func TestGenerateAuthServerVolumes(t *testing.T) {
 	t.Parallel()
@@ -137,7 +330,8 @@ func TestGenerateAuthServerVolumes(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
 
-			volumes, mounts := GenerateAuthServerVolumes(tt.authConfig)
+			volumes, mounts, err := GenerateAuthServerVolumes(tt.authConfig)
+			require.NoError(t, err)
 
 			assert.Len(t, volumes, tt.wantVolumes)
 			assert.Len(t, mounts, tt.wantMounts)
@@ -297,7 +491,8 @@ func TestGenerateAuthServerVolumes_RedisTLS(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
 
-			volumes, mounts := GenerateAuthServerVolumes(tt.authConfig)
+			volumes, mounts, err := GenerateAuthServerVolumes(tt.authConfig)
+			require.NoError(t, err)
 
 			// Count TLS-specific volumes
 			tlsVolCount := 0
@@ -636,6 +831,37 @@ func TestGenerateAuthServerEnvVars(t *testing.T) {
 	}
 }
 
+func TestGenerateAuthServerConfigByName_DelegateClientSecretEnvVar(t *testing.T) {
+	t.Parallel()
+
+	scheme := testutil.NewScheme(t)
+	externalAuthCfg := &mcpv1beta1.MCPExternalAuthConfig{
+		ObjectMeta: metav1.ObjectMeta{Name: "embedded-auth-config", Namespace: "default"},
+		Spec: mcpv1beta1.MCPExternalAuthConfigSpec{
+			Type: mcpv1beta1.ExternalAuthTypeEmbeddedAuthServer,
+			EmbeddedAuthServer: &mcpv1beta1.EmbeddedAuthServerConfig{
+				DelegateClients: []mcpv1beta1.DelegateClientConfig{{
+					ClientID:        "client ID / does not affect env name",
+					ClientSecretRef: &mcpv1beta1.SecretKeyRef{Name: "delegate-secret", Key: "credential"},
+					Scopes:          []string{"openid"},
+					Audiences:       []string{"https://resource.example.com"},
+				}},
+			},
+		},
+	}
+	fakeClient := fake.NewClientBuilder().WithScheme(scheme).WithRuntimeObjects(externalAuthCfg).Build()
+
+	_, _, envVars, err := GenerateAuthServerConfigByName(t.Context(), fakeClient, "default", "embedded-auth-config")
+	require.NoError(t, err)
+	require.Len(t, envVars, 1)
+	assert.Equal(t, "TOOLHIVE_DELEGATE_CLIENT_SECRET_0", envVars[0].Name)
+	assert.Empty(t, envVars[0].Value)
+	require.NotNil(t, envVars[0].ValueFrom)
+	require.NotNil(t, envVars[0].ValueFrom.SecretKeyRef)
+	assert.Equal(t, "delegate-secret", envVars[0].ValueFrom.SecretKeyRef.Name)
+	assert.Equal(t, "credential", envVars[0].ValueFrom.SecretKeyRef.Key)
+}
+
 func TestGenerateAuthServerConfigByName(t *testing.T) {
 	t.Parallel()
 
@@ -972,6 +1198,7 @@ func TestBuildAuthServerRunConfig(t *testing.T) {
 				require.NotNil(t, upstream.OAuth2Config)
 				assert.Equal(t, "https://github.com/login/oauth/authorize",
 					upstream.OAuth2Config.AuthorizationEndpoint)
+
 				require.NotNil(t, upstream.OAuth2Config.UserInfo)
 				assert.Equal(t, "https://api.github.com/user",
 					upstream.OAuth2Config.UserInfo.EndpointURL)
@@ -1677,6 +1904,41 @@ func TestBuildAuthServerRunConfig(t *testing.T) {
 					"AllowConfidentialClientRegistration must default to false when the CRD field is unset")
 			},
 		},
+		{
+			name: "allowPrivateKeyJWTRegistration true is propagated to RunConfig",
+			authConfig: &mcpv1beta1.EmbeddedAuthServerConfig{
+				Issuer:                         "https://authserver.example.com",
+				AllowPrivateKeyJWTRegistration: true,
+				HMACSecretRefs: []mcpv1beta1.SecretKeyRef{
+					{Name: "hmac-secret", Key: "hmac"},
+				},
+			},
+			allowedAudiences: defaultAudiences,
+			scopesSupported:  defaultScopes,
+			checkFunc: func(t *testing.T, config *authserver.RunConfig) {
+				t.Helper()
+				assert.True(t, config.AllowPrivateKeyJWTRegistration,
+					"AllowPrivateKeyJWTRegistration must propagate from CRD field to RunConfig")
+				assert.False(t, config.AllowConfidentialClientRegistration,
+					"private-key JWT registration must not enable confidential registration")
+			},
+		},
+		{
+			name: "allowPrivateKeyJWTRegistration defaults to false",
+			authConfig: &mcpv1beta1.EmbeddedAuthServerConfig{
+				Issuer: "https://authserver.example.com",
+				HMACSecretRefs: []mcpv1beta1.SecretKeyRef{
+					{Name: "hmac-secret", Key: "hmac"},
+				},
+			},
+			allowedAudiences: defaultAudiences,
+			scopesSupported:  defaultScopes,
+			checkFunc: func(t *testing.T, config *authserver.RunConfig) {
+				t.Helper()
+				assert.False(t, config.AllowPrivateKeyJWTRegistration,
+					"AllowPrivateKeyJWTRegistration must default to false when the CRD field is unset")
+			},
+		},
 	}
 
 	for _, tt := range tests {
@@ -1688,6 +1950,160 @@ func TestBuildAuthServerRunConfig(t *testing.T) {
 			require.NoError(t, err)
 			require.NotNil(t, config)
 			tt.checkFunc(t, config)
+		})
+	}
+}
+
+func TestBuildAuthServerRunConfig_TrustedIssuerConversion(t *testing.T) {
+	t.Parallel()
+
+	allowedActors := []string{"external-agent"}
+	allowedDelegateClients := []string{"toolhive-delegate"}
+	authConfig := &mcpv1beta1.EmbeddedAuthServerConfig{
+		Issuer: "https://auth.example.com",
+		TrustedIssuers: []mcpv1beta1.TrustedIssuerConfig{{
+			IssuerURL:              "http://issuer.example.test",
+			ExpectedAudience:       "https://resource.example.com",
+			JWKSURL:                "http://issuer.example.test/jwks",
+			InsecureAllowHTTP:      true,
+			AllowPrivateIPs:        true,
+			ActorClaim:             "appid",
+			AllowedActors:          allowedActors,
+			AllowedDelegateClients: allowedDelegateClients,
+			AllowMayAct:            true,
+		}},
+	}
+
+	config, err := BuildAuthServerRunConfig(
+		"default", "test-server", authConfig,
+		[]string{"https://resource.example.com"}, []string{"openid"}, "https://resource.example.com",
+	)
+	require.NoError(t, err)
+	require.Len(t, config.TrustedIssuers, 1)
+
+	assert.Equal(t, authConfig.TrustedIssuers[0], mcpv1beta1.TrustedIssuerConfig{
+		IssuerURL:              config.TrustedIssuers[0].IssuerURL,
+		ExpectedAudience:       config.TrustedIssuers[0].ExpectedAudience,
+		JWKSURL:                config.TrustedIssuers[0].JWKSURL,
+		InsecureAllowHTTP:      config.TrustedIssuers[0].InsecureAllowHTTP,
+		AllowPrivateIPs:        config.TrustedIssuers[0].AllowPrivateIPs,
+		ActorClaim:             config.TrustedIssuers[0].ActorClaim,
+		AllowedActors:          config.TrustedIssuers[0].AllowedActors,
+		AllowedDelegateClients: config.TrustedIssuers[0].AllowedDelegateClients,
+		AllowMayAct:            config.TrustedIssuers[0].AllowMayAct,
+	})
+
+	allowedActors[0] = "mutated-actor"
+	allowedDelegateClients[0] = "mutated-client"
+	assert.Equal(t, []string{"external-agent"}, config.TrustedIssuers[0].AllowedActors)
+	assert.Equal(t, []string{"toolhive-delegate"}, config.TrustedIssuers[0].AllowedDelegateClients)
+}
+
+func TestBuildOAuth2UpstreamRunConfig_TransportOptions(t *testing.T) {
+	t.Parallel()
+
+	runConfig, err := buildOAuth2UpstreamRunConfig(&mcpv1beta1.OAuth2UpstreamConfig{
+		AuthorizationEndpoint: "http://dex.default.svc.cluster.local/auth",
+		TokenEndpoint:         "http://dex.default.svc.cluster.local/token",
+		ClientID:              "client-id",
+		InsecureAllowHTTP:     true,
+		AllowPrivateIPs:       true,
+	}, "", "", 0, "")
+	require.NoError(t, err)
+	assert.True(t, runConfig.InsecureAllowHTTP)
+	assert.True(t, runConfig.AllowPrivateIPs)
+}
+
+func TestDelegateClientsConversionAndEnvVars(t *testing.T) {
+	t.Parallel()
+
+	const secretValue = "delegate-secret-must-not-appear"
+	authConfig := &mcpv1beta1.EmbeddedAuthServerConfig{
+		Issuer: "https://auth.example.com",
+		DelegateClients: []mcpv1beta1.DelegateClientConfig{
+			{
+				ClientID:        "client ID with arbitrary / characters",
+				ClientSecretRef: &mcpv1beta1.SecretKeyRef{Name: "delegate-one", Key: "credential"},
+				Scopes:          []string{"openid"},
+				Audiences:       []string{"https://resource.example.com"},
+			},
+			{
+				ClientID:        "another-client",
+				ClientSecretRef: &mcpv1beta1.SecretKeyRef{Name: "delegate-two", Key: "secret"},
+				Scopes:          []string{"profile"},
+				Audiences:       []string{"https://resource.example.com"},
+			},
+		},
+	}
+
+	config, err := BuildAuthServerRunConfig(
+		"default", "test-server", authConfig,
+		[]string{"https://resource.example.com"},
+		[]string{"openid", "profile"}, "https://resource.example.com",
+	)
+	require.NoError(t, err)
+	require.Len(t, config.DelegateClients, 2)
+	assert.Equal(t, "TOOLHIVE_DELEGATE_CLIENT_SECRET_0", config.DelegateClients[0].ClientSecretEnvVar)
+	assert.Equal(t, "TOOLHIVE_DELEGATE_CLIENT_SECRET_1", config.DelegateClients[1].ClientSecretEnvVar)
+	assert.Equal(t, []string{"openid"}, config.DelegateClients[0].Scopes)
+	assert.Equal(t, []string{"https://resource.example.com"}, config.DelegateClients[0].Audiences)
+
+	envVars := GenerateAuthServerEnvVars(authConfig)
+	require.Len(t, envVars, 2)
+	for i, envVar := range envVars {
+		assert.Equal(t, fmt.Sprintf("TOOLHIVE_DELEGATE_CLIENT_SECRET_%d", i), envVar.Name)
+		assert.Empty(t, envVar.Value)
+		require.NotNil(t, envVar.ValueFrom)
+		require.NotNil(t, envVar.ValueFrom.SecretKeyRef)
+		assert.Equal(t, authConfig.DelegateClients[i].ClientSecretRef.Name, envVar.ValueFrom.SecretKeyRef.Name)
+		assert.Equal(t, authConfig.DelegateClients[i].ClientSecretRef.Key, envVar.ValueFrom.SecretKeyRef.Key)
+	}
+
+	runtimeConfig, err := json.Marshal(config)
+	require.NoError(t, err)
+	assert.NotContains(t, string(runtimeConfig), secretValue)
+	assert.NotContains(t, string(runtimeConfig), "delegate-one")
+	assert.NotContains(t, string(runtimeConfig), "credential")
+}
+
+func TestBuildAuthServerRunConfig_NoDelegateClientsPreservesEmptyConfig(t *testing.T) {
+	t.Parallel()
+
+	config, err := BuildAuthServerRunConfig(
+		"default", "test-server", &mcpv1beta1.EmbeddedAuthServerConfig{Issuer: "https://auth.example.com"},
+		[]string{"https://resource.example.com"}, []string{"openid"}, "https://resource.example.com",
+	)
+	require.NoError(t, err)
+	assert.Nil(t, config.DelegateClients)
+	assert.Nil(t, GenerateAuthServerEnvVars(&mcpv1beta1.EmbeddedAuthServerConfig{}))
+}
+
+func TestBuildAuthServerRunConfig_DelegateClientEffectivePermissions(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name      string
+		scopes    []string
+		audiences []string
+		wantError string
+	}{
+		{name: "scope outside effective permissions", scopes: []string{"email"}, audiences: []string{"https://resource.example.com"}, wantError: "scope"},
+		{name: "audience outside effective permissions", scopes: []string{"openid"}, audiences: []string{"https://other.example.com"}, wantError: "not in allowed_audiences"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			config, err := BuildAuthServerRunConfig("default", "test-server", &mcpv1beta1.EmbeddedAuthServerConfig{
+				Issuer: "https://auth.example.com",
+				DelegateClients: []mcpv1beta1.DelegateClientConfig{{
+					ClientID:        "delegate",
+					ClientSecretRef: &mcpv1beta1.SecretKeyRef{Name: "delegate-secret", Key: "credential"},
+					Scopes:          tt.scopes,
+					Audiences:       tt.audiences,
+				}},
+			}, []string{"https://resource.example.com"}, []string{"openid"}, "https://resource.example.com")
+			assert.Nil(t, config)
+			require.ErrorContains(t, err, tt.wantError)
 		})
 	}
 }
@@ -1884,7 +2300,8 @@ func TestVolumePathPatterns(t *testing.T) {
 		},
 	}
 
-	volumes, mounts := GenerateAuthServerVolumes(authConfig)
+	volumes, mounts, err := GenerateAuthServerVolumes(authConfig)
+	require.NoError(t, err)
 
 	require.Len(t, volumes, 4)
 	require.Len(t, mounts, 4)
@@ -2906,4 +3323,48 @@ func TestBuildAuthServerRunConfig_CIMD(t *testing.T) {
 			}
 		})
 	}
+}
+
+func TestBuildAuthServerRunConfigInvalidDelegateClientIsTyped(t *testing.T) {
+	t.Parallel()
+
+	_, err := BuildAuthServerRunConfig("default", "test-server", &mcpv1beta1.EmbeddedAuthServerConfig{
+		DelegateClients: []mcpv1beta1.DelegateClientConfig{{ClientID: "delegate"}},
+	}, []string{"https://mcp.example.com"}, []string{"openid"}, "https://mcp.example.com")
+
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "delegateClients[0].clientSecretRef.name and clientSecretRef.key are required")
+	var invalidConfigErr *InvalidEmbeddedAuthServerConfigError
+	assert.True(t, stderrors.As(err, &invalidConfigErr))
+}
+
+func TestBuildTrustedIssuerRunConfigs_JWTBearerGrant(t *testing.T) {
+	t.Parallel()
+
+	acceptedAudiences := []string{"https://auth.example.com/legacy-token"}
+	configs := buildTrustedIssuerRunConfigs([]mcpv1beta1.TrustedIssuerConfig{{
+		IssuerURL: "https://issuer.example.com",
+		JWTBearerGrant: &mcpv1beta1.JWTBearerGrantConfig{
+			MaxAssertionAge: &metav1.Duration{Duration: 5 * time.Minute},
+			SubjectBindings: []mcpv1beta1.JWTBearerSubjectBinding{{
+				Subject:          "workload-123",
+				AllowedResources: []string{"https://mcp.example.com"},
+			}},
+			AcceptedAudiences: acceptedAudiences,
+		},
+	}})
+
+	require.Len(t, configs, 1)
+	require.NotNil(t, configs[0].JWTBearerGrant)
+	assert.Equal(t, "5m0s", configs[0].JWTBearerGrant.MaxAssertionAge)
+	assert.Equal(t, []tokenexchange.JWTBearerSubjectBinding{{
+		Subject:          "workload-123",
+		AllowedResources: []string{"https://mcp.example.com"},
+	}}, configs[0].JWTBearerGrant.SubjectBindings)
+	assert.Equal(t, []string{"https://auth.example.com/legacy-token"}, configs[0].JWTBearerGrant.AcceptedAudiences)
+
+	// The runtime policy must not retain the CRD object's backing slice: the
+	// reconciler may reuse or mutate the source object after conversion.
+	acceptedAudiences[0] = "https://auth.example.com/source-mutated"
+	assert.Equal(t, "https://auth.example.com/legacy-token", configs[0].JWTBearerGrant.AcceptedAudiences[0])
 }

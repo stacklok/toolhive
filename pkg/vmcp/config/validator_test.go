@@ -1706,3 +1706,94 @@ func TestValidator_ValidateStaticBackends(t *testing.T) {
 		})
 	}
 }
+
+func TestValidateAuthServerIntegration_UpstreamCredentialScope(t *testing.T) {
+	t.Parallel()
+
+	oidcIncoming := func(issuer string) *IncomingAuthConfig {
+		return &IncomingAuthConfig{
+			Type: IncomingAuthTypeOIDC,
+			OIDC: &OIDCConfig{Issuer: issuer, Audience: "https://my-vmcp"},
+		}
+	}
+	inlineOutgoing := &OutgoingAuthConfig{Source: "inline"}
+	// validRC builds a structurally valid auth server RunConfig with the
+	// given scope and issuer, matching the fixtures used by
+	// TestValidateAuthServerIntegration.
+	validRC := func(scope authserver.UpstreamCredentialScope, issuer string) *authserver.RunConfig {
+		return &authserver.RunConfig{
+			Issuer:                  issuer,
+			UpstreamCredentialScope: scope,
+			Upstreams: []authserver.UpstreamRunConfig{
+				{Name: "default", Type: authserver.UpstreamProviderTypeOIDC},
+			},
+			AllowedAudiences: []string{"https://my-vmcp"},
+		}
+	}
+
+	tests := []struct {
+		name    string
+		cfg     *Config
+		rc      *authserver.RunConfig
+		wantErr bool
+		errMsg  string
+	}{
+		{
+			name:    "garbage scope rejected",
+			cfg:     &Config{IncomingAuth: oidcIncoming("https://auth.example"), OutgoingAuth: inlineOutgoing},
+			rc:      validRC("garbage", "https://auth.example"),
+			wantErr: true,
+			errMsg:  "invalid upstreamCredentialScope",
+		},
+		{
+			name: "platformUser without OIDC incoming rejected",
+			cfg: &Config{
+				IncomingAuth: &IncomingAuthConfig{Type: IncomingAuthTypeAnonymous},
+				OutgoingAuth: inlineOutgoing,
+			},
+			rc:      validRC(authserver.UpstreamCredentialScopePlatformUser, "https://auth.example"),
+			wantErr: true,
+			errMsg:  "platformUser requires OIDC incoming auth",
+		},
+		{
+			name:    "platformUser with mismatched incoming issuer rejected",
+			cfg:     &Config{IncomingAuth: oidcIncoming("https://login.corp.example"), OutgoingAuth: inlineOutgoing},
+			rc:      validRC(authserver.UpstreamCredentialScopePlatformUser, "https://auth.example"),
+			wantErr: true,
+			errMsg:  "to exactly match",
+		},
+		{
+			name:    "platformUser with exact issuer match passes",
+			cfg:     &Config{IncomingAuth: oidcIncoming("https://auth.example"), OutgoingAuth: inlineOutgoing},
+			rc:      validRC(authserver.UpstreamCredentialScopePlatformUser, "https://auth.example"),
+			wantErr: false,
+		},
+		{
+			name:    "session scope with mismatched issuer keeps existing error",
+			cfg:     &Config{IncomingAuth: oidcIncoming("https://login.corp.example"), OutgoingAuth: inlineOutgoing},
+			rc:      validRC(authserver.UpstreamCredentialScopeSession, "https://auth.example"),
+			wantErr: true,
+			errMsg:  "auth server issuer mismatch",
+		},
+		{
+			name:    "empty scope with mismatched issuer keeps existing error",
+			cfg:     &Config{IncomingAuth: oidcIncoming("https://login.corp.example"), OutgoingAuth: inlineOutgoing},
+			rc:      validRC("", "https://auth.example"),
+			wantErr: true,
+			errMsg:  "auth server issuer mismatch",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			err := ValidateAuthServerIntegration(tt.cfg, tt.rc)
+			if tt.wantErr {
+				require.Error(t, err)
+				require.Contains(t, err.Error(), tt.errMsg)
+				return
+			}
+			require.NoError(t, err)
+		})
+	}
+}

@@ -757,7 +757,7 @@ func AddEmbeddedAuthServerConfigOptions(
 		)
 	}
 
-	if err := validateOIDCConfigForEmbeddedAuthServer(oidcConfig); err != nil {
+	if err := validateOIDCConfigForEmbeddedAuthServer(oidcConfig, authServerConfig); err != nil {
 		return invalidEmbeddedAuthServerConfigFrom(EmbeddedAuthServerConfigSourceExternalAuthConfigRef, err)
 	}
 
@@ -792,7 +792,9 @@ func AddEmbeddedAuthServerConfigOptions(
 // overriding Audience with ResourceURL) so that operators see exactly what
 // values are in play and control both sides explicitly. This mirrors the
 // existing vMCP inline config validation (ValidateAuthServerIntegration).
-func validateOIDCConfigForEmbeddedAuthServer(oidcConfig *oidc.OIDCConfig) error {
+//
+//nolint:lll // parameter list exceeds the line limit
+func validateOIDCConfigForEmbeddedAuthServer(oidcConfig *oidc.OIDCConfig, authServerConfig *mcpv1beta1.EmbeddedAuthServerConfig) error {
 	if oidcConfig == nil {
 		return fmt.Errorf("OIDC config is required for embedded auth server: OIDCConfigRef must be set on the MCPServer")
 	}
@@ -812,6 +814,25 @@ func validateOIDCConfigForEmbeddedAuthServer(oidcConfig *oidc.OIDCConfig) error 
 				"set audience to %q or set resourceUrl to match audience",
 			oidcConfig.Audience, oidcConfig.ResourceURL, oidcConfig.ResourceURL,
 		)
+	}
+	if authServerConfig != nil {
+		scope, err := authServerConfig.EffectiveUpstreamCredentialScope()
+		if err != nil {
+			return err
+		}
+		if scope == authserver.UpstreamCredentialScopePlatformUser {
+			if oidcConfig.Issuer == "" {
+				return fmt.Errorf("oidcConfigRef.issuer is required when upstreamCredentialScope is platformUser: " +
+					"the token carrying the platform-user identity must be validated as issued by the embedded auth server")
+			}
+			if oidcConfig.Issuer != authServerConfig.Issuer {
+				return fmt.Errorf(
+					"oidcConfigRef.issuer %q must exactly match the embedded auth server issuer %q "+
+						"when upstreamCredentialScope is platformUser (no normalization or trailing-slash tolerance)",
+					oidcConfig.Issuer, authServerConfig.Issuer,
+				)
+			}
+		}
 	}
 	return nil
 }
@@ -926,6 +947,9 @@ func applySimpleAuthServerConfigFields(config *authserver.RunConfig, authConfig 
 	// Wire through upstream token injection flag
 	config.DisableUpstreamTokenInjection = authConfig.DisableUpstreamTokenInjection
 
+	// Wire through the upstream credential scope (session/platformUser).
+	config.UpstreamCredentialScope = authConfig.UpstreamCredentialScope
+
 	// Wire through the insecure HTTP issuer flag from the CRD field.
 	// This replaces any auto-inference and moves control to the deployer.
 	config.InsecureAllowHTTP = authConfig.InsecureAllowHTTP
@@ -972,8 +996,9 @@ func validateDelegateClientsAndTrustedIssuers(config *authserver.RunConfig) erro
 		InsecureAllowHTTP:              config.InsecureAllowHTTP,
 		AllowPrivateKeyJWTRegistration: config.AllowPrivateKeyJWTRegistration,
 		InsecureAllowConfidentialOverLoopbackHTTP: config.InsecureAllowConfidentialOverLoopbackHTTP,
-		DelegateClients: config.DelegateClients,
-		TrustedIssuers:  config.TrustedIssuers,
+		UpstreamCredentialScope:                   config.UpstreamCredentialScope,
+		DelegateClients:                           config.DelegateClients,
+		TrustedIssuers:                            config.TrustedIssuers,
 	}
 	if err := validationConfig.Validate(); err != nil {
 		return fmt.Errorf("invalid embedded auth server delegate clients or trusted issuers: %w", err)
@@ -1378,7 +1403,7 @@ func AddAuthServerRefOptions(
 		)
 	}
 
-	if err := validateOIDCConfigForEmbeddedAuthServer(oidcConfig); err != nil {
+	if err := validateOIDCConfigForEmbeddedAuthServer(oidcConfig, authServerConfig); err != nil {
 		return invalidEmbeddedAuthServerConfigFrom(EmbeddedAuthServerConfigSourceAuthServerRef, err)
 	}
 

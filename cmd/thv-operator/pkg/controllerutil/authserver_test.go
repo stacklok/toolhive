@@ -3368,3 +3368,133 @@ func TestBuildTrustedIssuerRunConfigs_JWTBearerGrant(t *testing.T) {
 	acceptedAudiences[0] = "https://auth.example.com/source-mutated"
 	assert.Equal(t, "https://auth.example.com/legacy-token", configs[0].JWTBearerGrant.AcceptedAudiences[0])
 }
+
+func TestBuildAuthServerRunConfig_UpstreamCredentialScope(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name  string
+		scope authserver.UpstreamCredentialScope
+	}{
+		{name: "empty stays empty", scope: ""},
+		{name: "session propagated", scope: authserver.UpstreamCredentialScopeSession},
+		{name: "platformUser propagated", scope: authserver.UpstreamCredentialScopePlatformUser},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			config, err := BuildAuthServerRunConfig(
+				"default", "test-server",
+				&mcpv1beta1.EmbeddedAuthServerConfig{
+					Issuer:                  "https://auth.example.com",
+					UpstreamCredentialScope: tt.scope,
+				},
+				[]string{"https://resource.example.com"}, []string{"openid"}, "https://resource.example.com",
+			)
+			require.NoError(t, err)
+			assert.Equal(t, tt.scope, config.UpstreamCredentialScope)
+		})
+	}
+}
+
+// The reconcile-time partial validation copy must carry the scope: a
+// platformUser config with delegate clients has to fail at reconcile with the
+// unsupported-capability error instead of silently reaching pod start.
+func TestBuildAuthServerRunConfig_PlatformUserWithDelegateClientsRejected(t *testing.T) {
+	t.Parallel()
+
+	_, err := BuildAuthServerRunConfig(
+		"default", "test-server",
+		&mcpv1beta1.EmbeddedAuthServerConfig{
+			Issuer:                  "https://auth.example.com",
+			UpstreamCredentialScope: authserver.UpstreamCredentialScopePlatformUser,
+			DelegateClients: []mcpv1beta1.DelegateClientConfig{{
+				ClientID:        "delegate",
+				ClientSecretRef: &mcpv1beta1.SecretKeyRef{Name: "delegate-secret", Key: "credential"},
+				Scopes:          []string{"openid"},
+				Audiences:       []string{"https://resource.example.com"},
+			}},
+		},
+		[]string{"https://resource.example.com"}, []string{"openid"}, "https://resource.example.com",
+	)
+
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "not supported")
+}
+
+func TestValidateOIDCConfigForEmbeddedAuthServer_UpstreamCredentialScope(t *testing.T) {
+	t.Parallel()
+
+	oidcConfig := func(issuer string) *oidc.OIDCConfig {
+		return &oidc.OIDCConfig{
+			ResourceURL: "https://my-vmcp",
+			Audience:    "https://my-vmcp",
+			Issuer:      issuer,
+		}
+	}
+	authServerConfig := func(scope authserver.UpstreamCredentialScope, issuer string) *mcpv1beta1.EmbeddedAuthServerConfig {
+		return &mcpv1beta1.EmbeddedAuthServerConfig{
+			Issuer:                  issuer,
+			UpstreamCredentialScope: scope,
+		}
+	}
+
+	tests := []struct {
+		name             string
+		oidcConfig       *oidc.OIDCConfig
+		authServerConfig *mcpv1beta1.EmbeddedAuthServerConfig
+		wantErr          bool
+		errMsg           string
+	}{
+		{
+			name:             "session scope with mismatched issuer still passes",
+			oidcConfig:       oidcConfig("https://login.corp.example"),
+			authServerConfig: authServerConfig(authserver.UpstreamCredentialScopeSession, "https://auth.example"),
+		},
+		{
+			name:             "empty scope with mismatched issuer still passes",
+			oidcConfig:       oidcConfig("https://login.corp.example"),
+			authServerConfig: authServerConfig("", "https://auth.example"),
+		},
+		{
+			name:             "platformUser requires oidc issuer",
+			oidcConfig:       oidcConfig(""),
+			authServerConfig: authServerConfig(authserver.UpstreamCredentialScopePlatformUser, "https://auth.example"),
+			wantErr:          true,
+			errMsg:           "oidcConfigRef.issuer is required",
+		},
+		{
+			name:             "platformUser rejects mismatched issuer",
+			oidcConfig:       oidcConfig("https://login.corp.example"),
+			authServerConfig: authServerConfig(authserver.UpstreamCredentialScopePlatformUser, "https://auth.example"),
+			wantErr:          true,
+			errMsg:           "must exactly match",
+		},
+		{
+			name:             "platformUser accepts exact match",
+			oidcConfig:       oidcConfig("https://auth.example"),
+			authServerConfig: authServerConfig(authserver.UpstreamCredentialScopePlatformUser, "https://auth.example"),
+		},
+		{
+			name:             "garbage scope rejected",
+			oidcConfig:       oidcConfig("https://auth.example"),
+			authServerConfig: authServerConfig("garbage", "https://auth.example"),
+			wantErr:          true,
+			errMsg:           "invalid upstreamCredentialScope",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			err := validateOIDCConfigForEmbeddedAuthServer(tt.oidcConfig, tt.authServerConfig)
+			if tt.wantErr {
+				require.Error(t, err)
+				require.Contains(t, err.Error(), tt.errMsg)
+				return
+			}
+			require.NoError(t, err)
+		})
+	}
+}

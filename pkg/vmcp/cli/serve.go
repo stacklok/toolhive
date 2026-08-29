@@ -154,6 +154,12 @@ func Serve(ctx context.Context, cfg ServeConfig) error {
 		}
 	}
 
+	// The operator validates this integration at reconcile time; the CLI must
+	// apply the same rules to directly supplied vMCP configuration.
+	if err := config.ValidateAuthServerIntegration(vmcpCfg, authServerRC); err != nil {
+		return err
+	}
+
 	// Auto-populate SubjectProviderName on backend auth strategies that
 	// omitted it when an embedded auth server is active.
 	if err := config.InjectSubjectProviderNames(vmcpCfg, authServerRC); err != nil {

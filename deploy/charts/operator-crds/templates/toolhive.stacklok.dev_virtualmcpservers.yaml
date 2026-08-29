@@ -915,6 +915,21 @@ spec:
                     maxItems: 20
                     type: array
                     x-kubernetes-list-type: atomic
+                  upstreamCredentialScope:
+                    default: session
+                    description: |-
+                      UpstreamCredentialScope selects which identity model upstream credential
+                      lookup trusts. `session` (the permanent default) keeps today's behavior:
+                      the session-based TokenReader stays wired as-is and no platform-user
+                      trust checks run. `platformUser` is the explicit opt-in to the future
+                      durable platform-user credential model; it is validated and propagated
+                      but runtime activation fails as unsupported until platform-user storage
+                      is implemented. Only a genuinely absent value maps to `session`; unknown
+                      non-empty values are rejected, never reinterpreted as the default.
+                    enum:
+                    - session
+                    - platformUser
+                    type: string
                   upstreamProviders:
                     description: |-
                       UpstreamProviders configures connections to upstream Identity Providers.
@@ -5048,6 +5063,21 @@ spec:
                     maxItems: 20
                     type: array
                     x-kubernetes-list-type: atomic
+                  upstreamCredentialScope:
+                    default: session
+                    description: |-
+                      UpstreamCredentialScope selects which identity model upstream credential
+                      lookup trusts. `session` (the permanent default) keeps today's behavior:
+                      the session-based TokenReader stays wired as-is and no platform-user
+                      trust checks run. `platformUser` is the explicit opt-in to the future
+                      durable platform-user credential model; it is validated and propagated
+                      but runtime activation fails as unsupported until platform-user storage
+                      is implemented. Only a genuinely absent value maps to `session`; unknown
+                      non-empty values are rejected, never reinterpreted as the default.
+                    enum:
+                    - session
+                    - platformUser
+                    type: string
                   upstreamProviders:
                     description: |-
                       UpstreamProviders configures connections to upstream Identity Providers.

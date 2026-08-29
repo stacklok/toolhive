@@ -1621,3 +1621,115 @@ func TestConfig_WarnTrustedIssuerAudiences(t *testing.T) {
 		})
 	}
 }
+
+func TestEffectiveUpstreamCredentialScope(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name    string
+		scope   string
+		want    UpstreamCredentialScope
+		wantErr bool
+	}{
+		{
+			name:  "empty maps to session",
+			scope: "",
+			want:  UpstreamCredentialScopeSession,
+		},
+		{
+			name:  "session passes through",
+			scope: "session",
+			want:  UpstreamCredentialScopeSession,
+		},
+		{
+			name:  "platformUser passes through",
+			scope: "platformUser",
+			want:  UpstreamCredentialScopePlatformUser,
+		},
+		{
+			name:    "capital Session rejected",
+			scope:   "Session",
+			wantErr: true,
+		},
+		{
+			name:    "trailing slash rejected",
+			scope:   "session/",
+			wantErr: true,
+		},
+		{
+			name:    "garbage rejected",
+			scope:   "garbage",
+			wantErr: true,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			got, err := EffectiveUpstreamCredentialScope(tt.scope)
+			if tt.wantErr {
+				require.Error(t, err)
+				return
+			}
+			require.NoError(t, err)
+			assert.Equal(t, tt.want, got)
+		})
+	}
+}
+
+func TestRunConfigValidate_UpstreamCredentialScope(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name    string
+		scope   UpstreamCredentialScope
+		wantErr bool
+		check   func(t *testing.T, err error)
+	}{
+		{
+			name:  "empty scope keeps existing validation result",
+			scope: "",
+		},
+		{
+			name:  "session scope keeps existing validation result",
+			scope: UpstreamCredentialScopeSession,
+		},
+		{
+			name:    "platformUser rejected as unsupported capability",
+			scope:   UpstreamCredentialScopePlatformUser,
+			wantErr: true,
+			check: func(t *testing.T, err error) {
+				t.Helper()
+				require.Regexp(t, "not.*support", err.Error())
+			},
+		},
+		{
+			name:    "garbage scope rejected mentioning the field",
+			scope:   UpstreamCredentialScope("garbage"),
+			wantErr: true,
+			check: func(t *testing.T, err error) {
+				t.Helper()
+				require.Contains(t, err.Error(), "upstreamCredentialScope")
+			},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			config := RunConfig{
+				ScopesSupported:         []string{"openid"},
+				UpstreamCredentialScope: tt.scope,
+			}
+			err := config.Validate()
+			if !tt.wantErr {
+				require.NoError(t, err)
+				return
+			}
+			require.Error(t, err)
+			if tt.check != nil {
+				tt.check(t, err)
+			}
+		})
+	}
+}

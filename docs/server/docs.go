@@ -73,6 +73,10 @@ const docTemplate = `{
                         "description": "Audience is the expected audience for the token",
                         "type": "string"
                     },
+                    "authServerIssuer": {
+                        "description": "AuthServerIssuer is the issuer of the embedded ToolHive auth server that\nowns the platform-user credential namespace. It is only required when a\nUserTokenReader is configured, in which case it must be non-empty and\nexactly equal to Issuer.",
+                        "type": "string"
+                    },
                     "authTokenFile": {
                         "description": "AuthTokenFile is the path to file containing bearer token for authentication",
                         "type": "string"
@@ -454,6 +458,10 @@ const docTemplate = `{
                         },
                         "type": "array",
                         "uniqueItems": false
+                    },
+                    "upstream_credential_scope": {
+                        "description": "UpstreamCredentialScope selects the credential-lookup identity model for\nthis auth server. Only a genuinely absent value maps to session:\nKubernetes defaulting does not cover old serialized RunConfigs, direct\nvMCP YAML, or direct Go construction.",
+                        "type": "string"
                     },
                     "upstreams": {
                         "description": "Upstreams configures connections to upstream Identity Providers for\ninteractive authorization. It may be empty only when DelegateClients or a\nTrustedIssuer with JWTBearerGrant enables token-only operation.\nMultiple upstreams are supported for sequential authorization chains.",

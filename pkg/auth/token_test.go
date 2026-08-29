@@ -3111,3 +3111,106 @@ func TestNewTokenValidator_GoogleTokeninfoRequiresAudience(t *testing.T) {
 		})
 	}
 }
+
+func TestNewTokenValidator_UserTokenReaderIssuerPrecondition(t *testing.T) {
+	t.Parallel()
+
+	const (
+		authServerIssuer = "https://auth.example"
+		otherIssuer      = "https://other.example"
+	)
+
+	// skipDiscoveryEnv returns an env reader reporting
+	// TOOLHIVE_SKIP_OIDC_DISCOVERY=true so the constructor needs no network
+	// access when an explicit JWKS URL is provided.
+	skipDiscoveryEnv := func(t *testing.T) TokenValidatorOption {
+		t.Helper()
+		ctrl := gomock.NewController(t)
+		mockEnv := envmocks.NewMockReader(ctrl)
+		mockEnv.EXPECT().Getenv(gomock.Any()).DoAndReturn(func(key string) string {
+			if key == "TOOLHIVE_SKIP_OIDC_DISCOVERY" {
+				return "true"
+			}
+			return ""
+		}).AnyTimes()
+		return WithEnvReader(mockEnv)
+	}
+
+	tests := []struct {
+		name             string
+		issuer           string
+		authServerIssuer string
+		jwksURL          string
+		withUserReader   bool
+		wantErr          error
+	}{
+		{
+			name:             "matching issuers succeeds",
+			issuer:           authServerIssuer,
+			authServerIssuer: authServerIssuer,
+			jwksURL:          authServerIssuer + "/jwks",
+			withUserReader:   true,
+		},
+		{
+			name:             "empty auth server issuer fails",
+			issuer:           authServerIssuer,
+			authServerIssuer: "",
+			withUserReader:   true,
+			wantErr:          ErrAuthServerIssuerRequired,
+		},
+		{
+			name:             "empty incoming issuer fails",
+			issuer:           "",
+			authServerIssuer: authServerIssuer,
+			withUserReader:   true,
+			wantErr:          ErrAuthServerIssuerMismatch,
+		},
+		{
+			name:             "mismatched issuers fail",
+			issuer:           otherIssuer,
+			authServerIssuer: authServerIssuer,
+			withUserReader:   true,
+			wantErr:          ErrAuthServerIssuerMismatch,
+		},
+		{
+			name:             "trailing slash mismatch fails exactly",
+			issuer:           authServerIssuer + "/",
+			authServerIssuer: authServerIssuer,
+			withUserReader:   true,
+			wantErr:          ErrAuthServerIssuerMismatch,
+		},
+		{
+			name:             "no user token reader keeps legacy behavior",
+			issuer:           authServerIssuer,
+			authServerIssuer: otherIssuer,
+			jwksURL:          authServerIssuer + "/jwks",
+			withUserReader:   false,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			ctrl := gomock.NewController(t)
+			opts := []TokenValidatorOption{skipDiscoveryEnv(t)}
+			if tt.withUserReader {
+				opts = append(opts, WithUserTokenReader(upstreamtokenmocks.NewMockUserTokenReader(ctrl)))
+			}
+
+			validator, err := NewTokenValidator(context.Background(), TokenValidatorConfig{
+				Issuer:           tt.issuer,
+				AuthServerIssuer: tt.authServerIssuer,
+				JWKSURL:          tt.jwksURL,
+				Audience:         "test-audience",
+			}, opts...)
+
+			if tt.wantErr != nil {
+				require.Error(t, err)
+				require.ErrorIs(t, err, tt.wantErr)
+				return
+			}
+			require.NoError(t, err)
+			require.NotNil(t, validator)
+		})
+	}
+}

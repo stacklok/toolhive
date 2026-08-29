@@ -702,6 +702,19 @@ type EmbeddedAuthServerConfig struct {
 	// +optional
 	DisableUpstreamTokenInjection bool `json:"disableUpstreamTokenInjection,omitempty"`
 
+	// UpstreamCredentialScope selects which identity model upstream credential
+	// lookup trusts. `session` (the permanent default) keeps today's behavior:
+	// the session-based TokenReader stays wired as-is and no platform-user
+	// trust checks run. `platformUser` is the explicit opt-in to the future
+	// durable platform-user credential model; it is validated and propagated
+	// but runtime activation fails as unsupported until platform-user storage
+	// is implemented. Only a genuinely absent value maps to `session`; unknown
+	// non-empty values are rejected, never reinterpreted as the default.
+	// +kubebuilder:default=session
+	// +optional
+	// +kubebuilder:validation:Enum=session;platformUser
+	UpstreamCredentialScope authserver.UpstreamCredentialScope `json:"upstreamCredentialScope,omitempty"`
+
 	// InsecureAllowHTTP permits an http:// issuer URL for non-localhost hosts.
 	// Only set this for in-cluster Kubernetes deployments where traffic between
 	// pods traverses a trusted network (e.g. the in-cluster service mesh).
@@ -873,6 +886,13 @@ func (c *EmbeddedAuthServerConfig) ValidateConfidentialClientTransport() error {
 		c.Issuer,
 		c.InsecureAllowConfidentialOverLoopbackHTTP,
 	)
+}
+
+// EffectiveUpstreamCredentialScope maps an absent scope to session. The CRD
+// default is applied by Kubernetes, but direct Go construction and older
+// serialized objects may still carry an empty value.
+func (c *EmbeddedAuthServerConfig) EffectiveUpstreamCredentialScope() (authserver.UpstreamCredentialScope, error) {
+	return authserver.EffectiveUpstreamCredentialScope(string(c.UpstreamCredentialScope))
 }
 
 // TokenLifespanConfig holds configuration for token lifetimes.

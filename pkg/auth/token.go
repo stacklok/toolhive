@@ -350,6 +350,17 @@ var (
 	ErrFailedToFetchJWKS       = errors.New("failed to fetch JWKS")
 	ErrFailedToDiscoverOIDC    = errors.New("failed to discover OIDC configuration")
 	ErrMissingIssuerAndJWKSURL = errors.New("either issuer or JWKS URL must be provided")
+
+	// ErrAuthServerIssuerRequired rejects a UserTokenReader configuration with
+	// no embedded auth server issuer: credential lookup by platform-user
+	// identity must know which issuer owns the credential namespace.
+	ErrAuthServerIssuerRequired = errors.New("auth server issuer is required when a user token reader is configured")
+
+	// ErrAuthServerIssuerMismatch rejects a UserTokenReader configuration whose
+	// incoming OIDC issuer does not exactly equal the embedded auth server
+	// issuer: the token carrying the platform-user identity must be validated
+	// as issued by the auth server owning the credential namespace.
+	ErrAuthServerIssuerMismatch = errors.New("token validator issuer does not exactly match the embedded auth server issuer")
 )
 
 // TokenValidator validates JWT or opaque tokens using OIDC configuration.
@@ -371,6 +382,10 @@ type TokenValidator struct {
 	// upstreamTokenReader loads upstream provider tokens for identity enrichment.
 	// nil means no enrichment (no embedded auth server).
 	upstreamTokenReader upstreamtoken.TokenReader
+
+	// userTokenReader is the seam for the future platform-user credential
+	// lookup; nil in session mode.
+	userTokenReader upstreamtoken.UserTokenReader
 
 	// keyProvider provides in-process JWKS key lookups from the embedded auth
 	// server's key provider. When set, getKeyFromJWKS resolves keys locally
@@ -397,6 +412,12 @@ type TokenValidator struct {
 type TokenValidatorConfig struct {
 	// Issuer is the OIDC issuer URL (e.g., https://accounts.google.com)
 	Issuer string
+
+	// AuthServerIssuer is the issuer of the embedded ToolHive auth server that
+	// owns the platform-user credential namespace. It is only required when a
+	// UserTokenReader is configured, in which case it must be non-empty and
+	// exactly equal to Issuer.
+	AuthServerIssuer string
 
 	// Audience is the expected audience for the token
 	Audience string
@@ -537,6 +558,7 @@ func registerIntrospectionProviders(config TokenValidatorConfig, clientSecret st
 type tokenValidatorOptions struct {
 	envReader           env.Reader
 	upstreamTokenReader upstreamtoken.TokenReader
+	userTokenReader     upstreamtoken.UserTokenReader
 	keyProvider         keys.PublicKeyProvider
 }
 
@@ -559,6 +581,17 @@ func WithEnvReader(reader env.Reader) TokenValidatorOption {
 func WithUpstreamTokenReader(reader upstreamtoken.TokenReader) TokenValidatorOption {
 	return func(o *tokenValidatorOptions) {
 		o.upstreamTokenReader = reader
+	}
+}
+
+// WithUserTokenReader configures the token validator to look up upstream
+// credentials by durable platform-user identity. It is a preparatory seam for
+// the platform-user credential storage work; nothing wires a real reader yet.
+// When set, the strict issuer precondition is enforced at construction: the
+// configured issuer must be non-empty and exactly equal to AuthServerIssuer.
+func WithUserTokenReader(reader upstreamtoken.UserTokenReader) TokenValidatorOption {
+	return func(o *tokenValidatorOptions) {
+		o.userTokenReader = reader
 	}
 }
 
@@ -643,6 +676,26 @@ func NewTokenValidator(ctx context.Context, config TokenValidatorConfig, opts ..
 		)
 	}
 
+	// Platform-user credential lookup trusts identity claims carried by tokens
+	// validated as issued by the embedded auth server that owns the credential
+	// namespace. Enforce that precondition at construction so a misconfigured
+	// trust relationship fails at startup instead of at request time. The
+	// comparison is exact: no trimming, normalization, or trailing-slash
+	// tolerance.
+	if o.userTokenReader != nil {
+		if config.AuthServerIssuer == "" {
+			return nil, ErrAuthServerIssuerRequired
+		}
+		if config.Issuer == "" {
+			return nil, fmt.Errorf("%w: token validator issuer is empty but embedded auth server issuer is %q",
+				ErrAuthServerIssuerMismatch, config.AuthServerIssuer)
+		}
+		if config.Issuer != config.AuthServerIssuer {
+			return nil, fmt.Errorf("%w: token validator issuer %q does not exactly match embedded auth server issuer %q",
+				ErrAuthServerIssuerMismatch, config.Issuer, config.AuthServerIssuer)
+		}
+	}
+
 	jwksURL, err := resolveJWKSDiscovery(config, o)
 	if err != nil {
 		return nil, err
@@ -697,6 +750,7 @@ func NewTokenValidator(ctx context.Context, config TokenValidatorConfig, opts ..
 		registry:            registry,
 		insecureAllowHTTP:   config.InsecureAllowHTTP,
 		upstreamTokenReader: o.upstreamTokenReader,
+		userTokenReader:     o.userTokenReader,
 		keyProvider:         o.keyProvider,
 	}
 

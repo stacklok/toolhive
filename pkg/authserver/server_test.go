@@ -420,6 +420,61 @@ func TestNewServer_CIMDEnabled_WrapsStorage(t *testing.T) {
 // A regression that reintroduced per-call allocation would leave the
 // refresher's own singleflight test green, so this asserts instance identity
 // at the server boundary instead.
+func TestNewServer_SPIFFEAndCIMD_WrapStorageInOrder(t *testing.T) {
+	t.Parallel()
+
+	trust, err := NewSPIFFETrustConfig(
+		[]SPIFFETrustDomainRunConfig{{
+			Name:        "production",
+			TrustDomain: "example.org",
+			Methods:     []SPIFFEAuthenticationMethod{SPIFFEAuthenticationMethodX509},
+			BundleSource: SPIFFEBundleSourceRunConfig{
+				Type:        SPIFFEBundleSourceTypeWorkloadAPI,
+				WorkloadAPI: &SPIFFEWorkloadAPIBundleSourceRunConfig{},
+			},
+		}},
+		&InboundGrantsRunConfig{SPIFFEClientAuth: []SPIFFEClientAuthRunConfig{{
+			TrustDomainRef:   "production",
+			PrincipalPattern: "spiffe://example.org/ns/default/agent",
+			ClientID:         "spiffe-client",
+			Methods:          []SPIFFEAuthenticationMethod{SPIFFEAuthenticationMethodX509},
+			Scopes:           []string{"openid"},
+			Audiences:        []string{"https://mcp.example.com"},
+			GrantTypes:       []string{SPIFFEGrantTypeTokenExchange},
+		}}},
+		[]string{"openid", "profile"},
+		[]string{"https://mcp.example.com"},
+	)
+	require.NoError(t, err)
+
+	stor := storage.NewMemoryStorage()
+	t.Cleanup(func() { _ = stor.Close() })
+	cfg := Config{
+		CIMDEnabled:          true,
+		CIMDCacheMaxSize:     16,
+		CIMDCacheFallbackTTL: 5 * time.Minute,
+		SPIFFETrust:          trust,
+	}
+
+	// decorateStorageForSPIFFE is exercised directly, not through newServer,
+	// because Config.SPIFFETrust is hard-rejected by Config.Validate() (and
+	// therefore by newServer, which calls it) until a real SVID-verification
+	// consumer lands -- see validateConfigSPIFFENotYetEnforced. This test's
+	// actual subject, the storage-decoration order, lives entirely below
+	// that policy gate.
+	decorated, err := decorateStorageForSPIFFE(context.Background(), cfg, stor)
+	require.NoError(t, err)
+
+	spiffeStorage, ok := decorated.(*storage.SPIFFEStorageDecorator)
+	require.True(t, ok, "SPIFFE static clients must wrap the CIMD storage layer")
+	_, ok = spiffeStorage.Unwrap().(*storage.CIMDStorageDecorator)
+	assert.True(t, ok, "CIMD must remain below the SPIFFE static client overlay")
+
+	client, err := decorated.GetClient(context.Background(), "spiffe-client")
+	require.NoError(t, err)
+	assert.Equal(t, "spiffe-client", client.GetID())
+}
+
 func TestNewServer_UpstreamRefresherSharedInstance(t *testing.T) {
 	t.Parallel()
 

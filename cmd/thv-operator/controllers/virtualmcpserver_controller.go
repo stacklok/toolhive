@@ -467,8 +467,6 @@ func (r *VirtualMCPServerReconciler) runAuthValidations(
 	vmcp *mcpv1beta1.VirtualMCPServer,
 	statusManager virtualmcpserverstatus.StatusManager,
 ) (bool, error) {
-	ctxLogger := log.FromContext(ctx)
-
 	// Validate inline AuthServerConfig (when specified).
 	if vmcp.Spec.AuthServerConfig != nil {
 		// Surface the IdentitySynthesized advisory upfront, before validation.
@@ -482,13 +480,13 @@ func (r *VirtualMCPServerReconciler) runAuthValidations(
 		r.applyAuthServerIdentitySynthesizedCondition(vmcp, statusManager)
 		if err := r.validateAuthServerConfig(vmcp, statusManager); err != nil {
 			if applyErr := r.applyStatusUpdates(ctx, vmcp, statusManager); applyErr != nil {
-				ctxLogger.Error(applyErr, "Failed to apply status updates after AuthServerConfig validation error")
+				return false, applyErr
 			}
 			return false, nil
 		}
 		if terminal, err := r.validateAuthServerConfigCABundles(ctx, vmcp, statusManager); err != nil {
 			if applyErr := r.applyStatusUpdates(ctx, vmcp, statusManager); applyErr != nil {
-				ctxLogger.Error(applyErr, "Failed to apply status updates after CA bundle validation error")
+				return false, applyErr
 			}
 			if terminal {
 				return false, nil
@@ -507,7 +505,7 @@ func (r *VirtualMCPServerReconciler) runAuthValidations(
 	// RemoveConditionsWithPrefix call above when AuthServerConfig is nil.
 	if err := r.validateAuthzUpstreamAvailable(ctx, vmcp, statusManager); err != nil {
 		if applyErr := r.applyStatusUpdates(ctx, vmcp, statusManager); applyErr != nil {
-			ctxLogger.Error(applyErr, "Failed to apply status updates after AuthzUpstreamAvailable validation error")
+			return false, applyErr
 		}
 		return false, nil
 	}
@@ -2899,6 +2897,13 @@ func (r *VirtualMCPServerReconciler) mapEmbeddingServerToVirtualMCPServer(
 
 // SetupWithManager sets up the controller with the Manager
 func (r *VirtualMCPServerReconciler) SetupWithManager(mgr ctrl.Manager) error {
+	if err := mgr.GetFieldIndexer().IndexField(
+		context.Background(), &mcpv1beta1.VirtualMCPServer{},
+		virtualMCPServerConfigMapIndex, indexVirtualMCPServerConfigMaps,
+	); err != nil {
+		return fmt.Errorf("failed to set up VirtualMCPServer ConfigMap reference index: %w", err)
+	}
+
 	return ctrl.NewControllerManagedBy(mgr).
 		For(&mcpv1beta1.VirtualMCPServer{}).
 		Owns(&appsv1.Deployment{}).

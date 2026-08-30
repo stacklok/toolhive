@@ -371,10 +371,10 @@ func TestBuildDeploymentMetadataForVmcp(t *testing.T) {
 	vmcp := v1beta1test.NewVirtualMCPServer("test-vmcp", "default")
 
 	r := &VirtualMCPServerReconciler{}
-	labels, annotations := r.buildDeploymentMetadataForVmcp(baseLabels, vmcp)
+	labels, annotations := r.buildDeploymentMetadataForVmcp(baseLabels, vmcp, "pod-volumes-hash")
 
 	assert.Equal(t, baseLabels, labels)
-	assert.NotNil(t, annotations)
+	assert.Equal(t, "pod-volumes-hash", annotations[podVolumesHashAnnotation])
 }
 
 // TestBuildPodTemplateMetadata tests pod template metadata generation
@@ -1186,6 +1186,141 @@ func TestDeploymentForVirtualMCPServer_AuthServerSigningKeyVolumeDrift(t *testin
 		}
 	}
 	assert.Equal(t, "keys-v2", signingKeySecretName)
+}
+
+func TestPodVolumesHash(t *testing.T) {
+	t.Parallel()
+
+	defaultMode := int32(0o444)
+	mountPropagation := corev1.MountPropagationHostToContainer
+	baseVolumes := []corev1.Volume{
+		{
+			Name: "ca-bundle",
+			VolumeSource: corev1.VolumeSource{ConfigMap: &corev1.ConfigMapVolumeSource{
+				LocalObjectReference: corev1.LocalObjectReference{Name: "bundle-a"},
+				Items:                []corev1.KeyToPath{{Key: "ca.crt", Path: "ca.crt", Mode: &defaultMode}},
+			}},
+		},
+		{
+			Name: "credentials",
+			VolumeSource: corev1.VolumeSource{Secret: &corev1.SecretVolumeSource{
+				SecretName: "credentials-a",
+			}},
+		},
+	}
+	baseMounts := []corev1.VolumeMount{
+		{
+			Name:             "ca-bundle",
+			MountPath:        "/etc/ca",
+			SubPath:          "ca.crt",
+			ReadOnly:         true,
+			MountPropagation: &mountPropagation,
+		},
+		{Name: "credentials", MountPath: "/etc/credentials", ReadOnly: true},
+	}
+
+	cloneInputs := func() ([]corev1.Volume, []corev1.VolumeMount) {
+		volumes := make([]corev1.Volume, len(baseVolumes))
+		for i := range baseVolumes {
+			volumes[i] = *baseVolumes[i].DeepCopy()
+		}
+		mounts := make([]corev1.VolumeMount, len(baseMounts))
+		for i := range baseMounts {
+			mounts[i] = *baseMounts[i].DeepCopy()
+		}
+		return volumes, mounts
+	}
+
+	baseHash, err := podVolumesHash(baseVolumes, baseMounts)
+	require.NoError(t, err)
+	require.NotEmpty(t, baseHash)
+
+	reorderedVolumes, reorderedMounts := cloneInputs()
+	reorderedVolumes[0], reorderedVolumes[1] = reorderedVolumes[1], reorderedVolumes[0]
+	reorderedMounts[0], reorderedMounts[1] = reorderedMounts[1], reorderedMounts[0]
+	reorderedHash, err := podVolumesHash(reorderedVolumes, reorderedMounts)
+	require.NoError(t, err)
+	assert.Equal(t, baseHash, reorderedHash, "slice ordering must not affect the hash")
+
+	tests := []struct {
+		name   string
+		mutate func([]corev1.Volume, []corev1.VolumeMount)
+	}{
+		{
+			name: "config map name",
+			mutate: func(volumes []corev1.Volume, _ []corev1.VolumeMount) {
+				volumes[0].ConfigMap.Name = "bundle-b"
+			},
+		},
+		{
+			name: "config map item key",
+			mutate: func(volumes []corev1.Volume, _ []corev1.VolumeMount) {
+				volumes[0].ConfigMap.Items[0].Key = "root.pem"
+			},
+		},
+		{
+			name: "config map item path",
+			mutate: func(volumes []corev1.Volume, _ []corev1.VolumeMount) {
+				volumes[0].ConfigMap.Items[0].Path = "root.pem"
+			},
+		},
+		{
+			name: "config map item mode",
+			mutate: func(volumes []corev1.Volume, _ []corev1.VolumeMount) {
+				mode := int32(0o400)
+				volumes[0].ConfigMap.Items[0].Mode = &mode
+			},
+		},
+		{
+			name: "secret name",
+			mutate: func(volumes []corev1.Volume, _ []corev1.VolumeMount) {
+				volumes[1].Secret.SecretName = "credentials-b"
+			},
+		},
+		{
+			name: "mount path",
+			mutate: func(_ []corev1.Volume, mounts []corev1.VolumeMount) {
+				mounts[0].MountPath = "/etc/root-ca"
+			},
+		},
+		{
+			name: "read only",
+			mutate: func(_ []corev1.Volume, mounts []corev1.VolumeMount) {
+				mounts[0].ReadOnly = false
+			},
+		},
+		{
+			name: "sub path",
+			mutate: func(_ []corev1.Volume, mounts []corev1.VolumeMount) {
+				mounts[0].SubPath = "root.pem"
+			},
+		},
+		{
+			name: "sub path expression",
+			mutate: func(_ []corev1.Volume, mounts []corev1.VolumeMount) {
+				mounts[0].SubPathExpr = "$(POD_NAME).pem"
+			},
+		},
+		{
+			name: "mount propagation",
+			mutate: func(_ []corev1.Volume, mounts []corev1.VolumeMount) {
+				propagation := corev1.MountPropagationBidirectional
+				mounts[0].MountPropagation = &propagation
+			},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			volumes, mounts := cloneInputs()
+			tt.mutate(volumes, mounts)
+			got, err := podVolumesHash(volumes, mounts)
+			require.NoError(t, err)
+			assert.NotEqual(t, baseHash, got, "changing a volume or mount field must change the hash")
+		})
+	}
 }
 
 // TestImagePullSecretsHash verifies the hash helper normalizes order, treats an

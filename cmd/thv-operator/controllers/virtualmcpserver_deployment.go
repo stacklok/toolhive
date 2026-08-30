@@ -986,7 +986,7 @@ func xaaSecretEnvVars(externalAuthConfig *mcpv1beta1.MCPExternalAuthConfig, conf
 func (r *VirtualMCPServerReconciler) buildDeploymentMetadataForVmcp(
 	baseLabels map[string]string,
 	vmcp *mcpv1beta1.VirtualMCPServer,
-	podVolumesHash ...string,
+	podVolumesHash string,
 ) (map[string]string, map[string]string) {
 	deploymentLabels := baseLabels
 	deploymentAnnotations := make(map[string]string)
@@ -1012,9 +1012,7 @@ func (r *VirtualMCPServerReconciler) buildDeploymentMetadataForVmcp(
 		deploymentAnnotations[imagePullRefsHashAnnotation] = hash
 	}
 
-	if len(podVolumesHash) > 0 && podVolumesHash[0] != "" {
-		deploymentAnnotations[podVolumesHashAnnotation] = podVolumesHash[0]
-	}
+	deploymentAnnotations[podVolumesHashAnnotation] = podVolumesHash
 
 	// TODO: Add support for ResourceOverrides if needed in the future
 

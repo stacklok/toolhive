@@ -166,10 +166,15 @@ func newServer(ctx context.Context, cfg Config, stor storage.Storage) (_ *server
 	// provably safe for the production backends; surfacing a bad backend as
 	// a constructor error keeps misconfiguration fail-loud at boot rather
 	// than at first DCR resolve.
-	baseStore := unwrapStorage(stor)
+	baseStore := storage.Unwrap(stor)
 	dcrStore, ok := baseStore.(storage.DCRCredentialStore)
 	if !ok {
 		return nil, fmt.Errorf("storage backend %T does not implement storage.DCRCredentialStore", baseStore)
+	}
+
+	stor, err := decorateStorageForSPIFFE(ctx, cfg, stor)
+	if err != nil {
+		return nil, err
 	}
 
 	if err := registerDelegateClients(ctx, stor, cfg.DelegateClients); err != nil {
@@ -245,15 +250,7 @@ func newServer(ctx context.Context, cfg Config, stor storage.Storage) (_ *server
 		return nil, err
 	}
 
-	// Wrap storage with the CIMD decorator before constructing the fosite provider
-	// so that GetClient calls for HTTPS client_id values are intercepted at the
-	// fosite level (not just the handler level).
-	stor, err = decorateStorageForCIMD(cfg, stor)
-	if err != nil {
-		return nil, err
-	}
-
-	// Create fosite provider with the (possibly decorated) storage.
+	// Create fosite provider with the configured storage decorators.
 	slog.Debug("creating fosite OAuth2 provider")
 	fositeProvider, trustedIssuerValidator, err := buildProvider(cfg, authServerConfig, stor)
 	if err != nil {
@@ -311,6 +308,33 @@ func registerDelegateClients(ctx context.Context, stor storage.Storage, delegate
 			"client_id", delegateClient.ClientID, "scopes", delegateClient.Scopes, "audiences", delegateClient.Audiences)
 	}
 	return nil
+}
+
+// decorateStorageForSPIFFE resolves the immutable association registry from the
+// validated SPIFFE trust model and installs the static overlay outside CIMD.
+// A nil cfg.SPIFFETrust means no SPIFFE associations are configured, which
+// yields a nil registry and leaves the storage chain unchanged.
+func decorateStorageForSPIFFE(ctx context.Context, cfg Config, stor storage.Storage) (storage.Storage, error) {
+	registry, err := NewSPIFFEAssociationRegistry(cfg.SPIFFETrust)
+	if err != nil {
+		return nil, fmt.Errorf("create SPIFFE association registry: %w", err)
+	}
+
+	// Install dynamic CIMD lookup before the static SPIFFE overlay so configured
+	// clients always take precedence over remotely resolved HTTPS client IDs.
+	stor, err = decorateStorageForCIMD(cfg, stor)
+	if err != nil {
+		return nil, err
+	}
+	clients, err := registry.staticClients()
+	if err != nil {
+		return nil, fmt.Errorf("build SPIFFE static clients: %w", err)
+	}
+	stor, err = storage.NewSPIFFEStorageDecorator(ctx, stor, clients)
+	if err != nil {
+		return nil, fmt.Errorf("initialize SPIFFE client overlay: %w", err)
+	}
+	return stor, nil
 }
 
 // decorateStorageForCIMD wraps stor with the CIMD decorator when CIMD is
@@ -588,21 +612,11 @@ func createProvider(
 	)
 }
 
-// unwrapStorage peels off one decorator layer if the storage implements
-// Unwrap(), returning the concrete backend. Both newServer (DCRCredentialStore
-// assertion) and runLegacyMigration (RedisStorage type assertion) need this.
-func unwrapStorage(stor storage.Storage) storage.Storage {
-	if unwrapper, ok := stor.(interface{ Unwrap() storage.Storage }); ok {
-		return unwrapper.Unwrap()
-	}
-	return stor
-}
-
 // runLegacyMigration runs one-shot Redis data migrations before handlers are
 // constructed. It is a no-op for non-Redis backends and passes through any
 // decorator wrapping so the concrete type can be reached.
 func runLegacyMigration(ctx context.Context, stor storage.Storage, upstreams []UpstreamConfig) error {
-	base := unwrapStorage(stor)
+	base := storage.Unwrap(stor)
 	rs, ok := base.(*storage.RedisStorage)
 	if !ok {
 		return nil

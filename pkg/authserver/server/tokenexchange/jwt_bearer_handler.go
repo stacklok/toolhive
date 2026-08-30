@@ -448,8 +448,11 @@ func JWTBearerIssuanceFactory(trustedIssuers []TrustedIssuer, shared *MultiIssue
 
 func assertionJWTConsumer(rawStorage fosite.Storage) (storage.AssertionJWTConsumer, error) {
 	baseStorage := rawStorage
-	if decorated, ok := rawStorage.(*storage.CIMDStorageDecorator); ok {
-		baseStorage = decorated.Unwrap()
+	// Peel every storage decorator, not just one: the SPIFFE static-client
+	// overlay wraps the CIMD decorator, and AssertionJWTConsumer is not part
+	// of storage.Storage, so it is not promoted through an embedded decorator.
+	if stor, ok := rawStorage.(storage.Storage); ok {
+		baseStorage = storage.Unwrap(stor)
 	}
 	consumer, ok := baseStorage.(storage.AssertionJWTConsumer)
 	if !ok {

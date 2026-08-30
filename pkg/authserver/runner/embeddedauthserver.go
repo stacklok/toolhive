@@ -144,6 +144,7 @@ func prepareInboundGrantConfiguration(
 	if err != nil {
 		return nil, nil, nil, fmt.Errorf("normalize inbound grants: %w", err)
 	}
+
 	if delegateClients == nil && len(normalized.DelegateClients) > 0 {
 		delegateClients, err = resolveDelegateClients(normalized.DelegateClients)
 		if err != nil {
@@ -160,7 +161,18 @@ func prepareInboundGrantConfiguration(
 	if err != nil {
 		return nil, nil, nil, fmt.Errorf("build SPIFFE trust config: %w", err)
 	}
+	// SPIFFE client authentication exclusively uses the token-exchange grant
+	// (validateSPIFFEGrants enforces this), so configuring any SPIFFE
+	// association implies token-exchange capability independent of
+	// legacy/canonical token-exchange enablement.
+	normalized.Capabilities.TokenExchange = normalized.Capabilities.TokenExchange || hasSPIFFEClientAuth(cfg)
 	return normalized, delegateClients, spiffeTrust, nil
+}
+
+// hasSPIFFEClientAuth reports whether cfg declares any SPIFFE client-auth
+// association.
+func hasSPIFFEClientAuth(cfg *authserver.RunConfig) bool {
+	return cfg.InboundGrants != nil && len(cfg.InboundGrants.SPIFFEClientAuth) > 0
 }
 
 func newEmbeddedAuthServerWithStorage(
@@ -169,6 +181,12 @@ func newEmbeddedAuthServerWithStorage(
 	stor storage.Storage,
 	delegateClients []authserver.DelegateClient,
 ) (retEAS *EmbeddedAuthServer, retErr error) {
+	// Validate required inputs before the deferred cleanup is installed: cfg is
+	// dereferenced during validation and stor is closed by that cleanup.
+	if err := validateEmbeddedAuthServerInputs(cfg, stor); err != nil {
+		return nil, err
+	}
+
 	// From here on, any error must close stor before returning.
 	//
 	// Both errors are passed through dcr.SanitizeErrorForLog before being
@@ -198,15 +216,16 @@ func newEmbeddedAuthServerWithStorage(
 	// otherwise skip the check. Placed inside the deferred-cleanup gate above so
 	// a validation failure still closes the caller-supplied storage per the
 	// resource-ownership contract.
-	if cfg == nil {
-		return nil, fmt.Errorf("config is required")
-	}
 	if err := cfg.Validate(); err != nil {
 		return nil, fmt.Errorf("invalid run config: %w", err)
 	}
 	normalized, delegateClients, spiffeTrust, err := prepareInboundGrantConfiguration(cfg, delegateClients)
 	if err != nil {
 		return nil, err
+	}
+
+	if err := authserver.PreflightSPIFFEStaticClientCollisions(ctx, stor, spiffeTrust); err != nil {
+		return nil, fmt.Errorf("preflight SPIFFE static client collisions: %w", err)
 	}
 
 	// 1. Create key provider from RunConfig.SigningKeyConfig
@@ -248,12 +267,9 @@ func newEmbeddedAuthServerWithStorage(
 	}
 
 	// 6. Parse delegation token lifespan if configured.
-	var delegationLifespan time.Duration
-	if cfg.DelegationTokenLifespan != "" {
-		delegationLifespan, err = time.ParseDuration(cfg.DelegationTokenLifespan)
-		if err != nil {
-			return nil, fmt.Errorf("invalid delegation token lifespan: %w", err)
-		}
+	delegationLifespan, err := parseOptionalDuration(cfg.DelegationTokenLifespan, "delegation token lifespan")
+	if err != nil {
+		return nil, err
 	}
 
 	// 7. Build the resolved Config.
@@ -297,8 +313,11 @@ func newEmbeddedAuthServerWithStorage(
 		// slice is still shared with cfg. NewMultiIssuerTokenValidator's
 		// constructor clones AllowedActors per issuer before use, so the
 		// authorization-critical data is protected without a deep copy here.
-		TrustedIssuers:       trustedIssuers,
-		DelegateClients:      delegateClients,
+		TrustedIssuers:  trustedIssuers,
+		DelegateClients: delegateClients,
+		// SPIFFE client authentication factors into Capabilities.TokenExchange
+		// already (see prepareInboundGrantConfiguration): it exclusively uses
+		// the token-exchange grant, independent of legacy/canonical enablement.
 		DisableTokenExchange: !normalized.Capabilities.TokenExchange,
 		SPIFFETrust:          spiffeTrust,
 	}
@@ -413,6 +432,18 @@ func (e *EmbeddedAuthServer) RegisterHandlers(mux *http.ServeMux) {
 	}
 }
 
+// validateEmbeddedAuthServerInputs rejects required inputs before construction
+// can dereference cfg or install cleanup that closes stor.
+func validateEmbeddedAuthServerInputs(cfg *authserver.RunConfig, stor storage.Storage) error {
+	if cfg == nil {
+		return fmt.Errorf("config is required")
+	}
+	if stor == nil {
+		return fmt.Errorf("storage is required")
+	}
+	return nil
+}
+
 // createKeyProvider creates a KeyProvider from SigningKeyRunConfig.
 // Returns a GeneratingProvider if config is nil or empty (development mode).
 func createKeyProvider(cfg *authserver.SigningKeyRunConfig) (keys.KeyProvider, error) {
@@ -474,6 +505,17 @@ func loadHMACSecrets(files []string) (*servercrypto.HMACSecrets, error) {
 	}
 
 	return secrets, nil
+}
+
+func parseOptionalDuration(value, name string) (time.Duration, error) {
+	if value == "" {
+		return 0, nil
+	}
+	duration, err := time.ParseDuration(value)
+	if err != nil {
+		return 0, fmt.Errorf("invalid %s: %w", name, err)
+	}
+	return duration, nil
 }
 
 // parseTokenLifespans parses duration strings from TokenLifespanRunConfig.

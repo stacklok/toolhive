@@ -12,6 +12,7 @@ import (
 	"net/http"
 	"os"
 	"slices"
+	"strings"
 	"sync"
 	"time"
 
@@ -136,6 +137,17 @@ func NewEmbeddedAuthServerWithStorage(
 	return newEmbeddedAuthServerWithStorage(ctx, cfg, stor, nil)
 }
 
+func warnDeprecatedInboundGrantFields(fields []authserver.DeprecatedFieldPath) {
+	if len(fields) == 0 {
+		return
+	}
+	paths := make([]string, len(fields))
+	for i, field := range fields {
+		paths[i] = field.Path + " -> " + field.Replacement
+	}
+	slog.Warn("deprecated inbound grant configuration; migrate to canonical fields", "paths", strings.Join(paths, ", "))
+}
+
 func prepareInboundGrantConfiguration(
 	cfg *authserver.RunConfig,
 	delegateClients []authserver.DelegateClient,
@@ -144,6 +156,7 @@ func prepareInboundGrantConfiguration(
 	if err != nil {
 		return nil, nil, nil, fmt.Errorf("normalize inbound grants: %w", err)
 	}
+	warnDeprecatedInboundGrantFields(normalized.DeprecatedFields)
 
 	if delegateClients == nil && len(normalized.DelegateClients) > 0 {
 		delegateClients, err = resolveDelegateClients(normalized.DelegateClients)

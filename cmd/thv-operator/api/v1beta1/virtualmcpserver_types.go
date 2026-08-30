@@ -356,6 +356,10 @@ const (
 
 	// ConditionTypeVirtualMCPServerTelemetryConfigRefValidated indicates whether the TelemetryConfigRef is valid
 	ConditionTypeVirtualMCPServerTelemetryConfigRefValidated = "TelemetryConfigRefValidated"
+
+	// ConditionTypeVirtualMCPServerDeprecatedInboundGrantConfiguration reports
+	// whether inline auth uses released legacy inbound grant fields.
+	ConditionTypeVirtualMCPServerDeprecatedInboundGrantConfiguration = "DeprecatedInboundGrantConfiguration"
 )
 
 // Condition reasons for VirtualMCPServer
@@ -422,6 +426,14 @@ const (
 
 	// ConditionReasonAuthServerConfigInvalid indicates the AuthServerConfig is invalid
 	ConditionReasonAuthServerConfigInvalid = "AuthServerConfigInvalid"
+
+	// ConditionReasonVirtualMCPServerLegacyInboundGrantFields indicates that
+	// inline auth uses released legacy inbound grant fields.
+	ConditionReasonVirtualMCPServerLegacyInboundGrantFields = "LegacyInboundGrantFields"
+
+	// ConditionReasonVirtualMCPServerCanonicalInboundGrantConfiguration indicates
+	// that inline auth uses only canonical inbound grant configuration.
+	ConditionReasonVirtualMCPServerCanonicalInboundGrantConfiguration = "CanonicalInboundGrantConfiguration"
 
 	// ConditionReasonAuthzRequiresUpstream indicates that authorization policies are
 	// configured but no upstream IDP is available to source claims from. Without an

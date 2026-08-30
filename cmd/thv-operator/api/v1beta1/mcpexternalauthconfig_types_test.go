@@ -191,7 +191,7 @@ func TestMCPExternalAuthConfig_Validate(t *testing.T) {
 				},
 			},
 			expectErr: true,
-			errMsg:    "at least one upstream provider is required",
+			errMsg:    "at least one upstream provider or inbound grant family is required",
 		},
 		{
 			name: "invalid OIDC provider without oidcConfig",
@@ -564,7 +564,7 @@ func TestMCPExternalAuthConfig_validateEmbeddedAuthServer(t *testing.T) {
 				},
 			},
 			expectErr: true,
-			errMsg:    "at least one upstream provider is required",
+			errMsg:    "at least one upstream provider or inbound grant family is required",
 		},
 		{
 			name: "nil embedded auth server config",
@@ -836,7 +836,7 @@ func TestMCPExternalAuthConfig_ZeroUpstreamAlternatives(t *testing.T) {
 		{
 			name:      "no token-only alternative is rejected",
 			config:    EmbeddedAuthServerConfig{Issuer: "https://auth.example.com"},
-			wantError: "at least one upstream provider is required",
+			wantError: "at least one upstream provider or inbound grant family is required",
 		},
 	}
 
@@ -1395,6 +1395,18 @@ func TestEmbeddedAuthServerConfig_ValidateConfidentialClientTransport(t *testing
 			config: EmbeddedAuthServerConfig{
 				Issuer:          "http://auth.example.com",
 				DelegateClients: delegateClients,
+			},
+			expectErr: true,
+		},
+		{
+			name: "canonical delegate clients reject HTTP non-loopback without explicit opt in",
+			config: EmbeddedAuthServerConfig{
+				Issuer: "http://auth.example.com",
+				InboundGrants: &InboundGrantsConfig{
+					TokenExchange: &TokenExchangeInboundGrantConfig{
+						DelegateClients: delegateClients,
+					},
+				},
 			},
 			expectErr: true,
 		},

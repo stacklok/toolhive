@@ -389,39 +389,25 @@ type DelegateClientConfig struct {
 }
 
 // TrustedIssuerConfig configures an external OIDC issuer whose tokens are
-// accepted as RFC 8693 subject tokens or RFC 7523 JWT-bearer assertions during
-// token exchange. It mirrors tokenexchange.TrustedIssuer
-// (pkg/authserver/server/tokenexchange), the runtime type the operator converts
-// this into directly — no secret is referenced by this type, so no SecretKeyRef
-// indirection is needed, unlike DelegateClientConfig.
-//
-// expectedAudience is exempted only for a grant-only issuer: jwtBearerGrant
-// present and none of actorClaim, actorMatcher, allowMayAct, or allowedActors
-// set. Any RFC 8693 delegation field (actorClaim, actorMatcher, allowMayAct,
-// allowedActors) still requires expectedAudience, even when combined with
-// jwtBearerGrant.
+// accepted as RFC 8693 subject tokens or RFC 7523 JWT-bearer assertions. Trust
+// fields remain top-level; canonical grant policy references this declaration by
+// Name. The embedded grant-policy fields are retained for released CRD compatibility.
 //
 // +kubebuilder:validation:XValidation:rule="!has(self.allowedDelegateClients) || !('*' in self.allowedDelegateClients) || size(self.allowedDelegateClients) == 1",message="allowedDelegateClients must not combine the wildcard \"*\" with specific client IDs"
-//
-// The allowedDelegateClients rule below mirrors validateDelegationPolicy
-// (pkg/authserver/server/tokenexchange/multi_issuer_validator.go): it is
-// keyed on whether ANY delegation field is set (expectedAudience,
-// actorClaim, actorMatcher, allowMayAct), not merely on whether
-// jwtBearerGrant is absent — an issuer can combine jwtBearerGrant with
-// expectedAudience for RFC 8693 delegation on the same issuer, and that
-// combination still requires allowedDelegateClients at the Go level.
-//
 // +kubebuilder:validation:XValidation:rule="!(has(self.allowMayAct) && self.allowMayAct && '*' in self.allowedDelegateClients)",message="allowMayAct must not be enabled when allowedDelegateClients contains the wildcard \"*\""
 // +kubebuilder:validation:XValidation:rule="!has(self.actorClaim) || !(self.actorClaim in ['sub', 'iss', 'aud', 'exp', 'iat', 'nbf', 'jti', 'name', 'email', 'scope', 'scp', 'may_act'])",message="actorClaim must name a readable claim; use client_id or a non-reserved claim such as azp, appid, or cid"
 // +kubebuilder:validation:XValidation:rule="!(has(self.allowPrivateIPs) && self.allowPrivateIPs) || (has(self.jwksUrl) && self.jwksUrl != \"\")",message="allowPrivateIPs requires jwksUrl to be set explicitly"
-// +kubebuilder:validation:XValidation:rule="(has(self.jwtBearerGrant) && !((has(self.actorClaim) && size(self.actorClaim) > 0) || (has(self.actorMatcher) && size(self.actorMatcher) > 0) || (has(self.allowMayAct) && self.allowMayAct) || (has(self.allowedActors) && size(self.allowedActors) > 0))) || (has(self.expectedAudience) && size(self.expectedAudience) > 0)",message="expectedAudience is required unless jwtBearerGrant is configured without actorClaim, actorMatcher, allowMayAct, or allowedActors"
-// +kubebuilder:validation:XValidation:rule="!((has(self.expectedAudience) && size(self.expectedAudience) > 0) || (has(self.actorClaim) && size(self.actorClaim) > 0) || (has(self.actorMatcher) && size(self.actorMatcher) > 0) || (has(self.allowMayAct) && self.allowMayAct)) || (has(self.allowedDelegateClients) && size(self.allowedDelegateClients) > 0)",message="allowedDelegateClients is required when expectedAudience, actorClaim, actorMatcher, or allowMayAct is set"
+// +kubebuilder:validation:XValidation:rule="!((has(self.actorClaim) && size(self.actorClaim) > 0) || (has(self.actorMatcher) && size(self.actorMatcher) > 0) || (has(self.allowMayAct) && self.allowMayAct) || (has(self.allowedActors) && size(self.allowedActors) > 0) || (has(self.allowedDelegateClients) && size(self.allowedDelegateClients) > 0)) || (has(self.expectedAudience) && size(self.expectedAudience) > 0)",message="expectedAudience is required when legacy RFC 8693 policy is configured"
+// +kubebuilder:validation:XValidation:rule="!((has(self.expectedAudience) && size(self.expectedAudience) > 0) || (has(self.actorClaim) && size(self.actorClaim) > 0) || (has(self.actorMatcher) && size(self.actorMatcher) > 0) || (has(self.allowMayAct) && self.allowMayAct) || (has(self.allowedActors) && size(self.allowedActors) > 0)) || (has(self.allowedDelegateClients) && size(self.allowedDelegateClients) > 0)",message="allowedDelegateClients is required when legacy RFC 8693 policy is configured"
 //
 //nolint:lll // CEL validation rules exceed line length limit
 type TrustedIssuerConfig struct {
-	// The actorClaim rule above uses !has(...) rather than comparing against an
-	// empty string literal: gofmt rewrites a doubled apostrophe inside a comment
-	// into a curly quote, which CEL then fails to parse.
+	// Name optionally identifies this trust declaration for canonical issuerRef references.
+	// Names must be unique within trustedIssuers when set.
+	// +kubebuilder:validation:MinLength=1
+	// +kubebuilder:validation:MaxLength=253
+	// +optional
+	Name string `json:"name,omitempty"`
 
 	// IssuerURL is the expected "iss" claim value (exact match).
 	// +kubebuilder:validation:Required
@@ -435,6 +421,8 @@ type TrustedIssuerConfig struct {
 	// +kubebuilder:validation:MinLength=1
 	// +kubebuilder:validation:MaxLength=2048
 	// +optional
+	// This legacy field is deprecated; configure RFC 8693 policy under
+	// inboundGrants.tokenExchange.issuerPolicies.
 	ExpectedAudience string `json:"expectedAudience,omitempty"`
 
 	// JWKSURL is the URL to fetch the issuer's JSON Web Key Set from. If
@@ -475,6 +463,8 @@ type TrustedIssuerConfig struct {
 	// client_id claim instead.
 	// +optional
 	// +kubebuilder:validation:MaxLength=64
+	// This legacy field is deprecated; configure RFC 8693 policy under
+	// inboundGrants.tokenExchange.issuerPolicies.
 	ActorClaim string `json:"actorClaim,omitempty"`
 
 	// AllowedActors is the allowlist of actorClaim values authorized to
@@ -488,6 +478,8 @@ type TrustedIssuerConfig struct {
 	// +kubebuilder:validation:items:MaxLength=256
 	// +listType=atomic
 	// +optional
+	// This legacy field is deprecated; configure RFC 8693 policy under
+	// inboundGrants.tokenExchange.issuerPolicies.
 	AllowedActors []string `json:"allowedActors,omitempty"`
 
 	// ActorMatcher is an admin-authored CEL expression evaluated against the
@@ -500,6 +492,8 @@ type TrustedIssuerConfig struct {
 	// not admission — there is no validating webhook for this field.
 	// +optional
 	// +kubebuilder:validation:MaxLength=4096
+	// This legacy field is deprecated; configure RFC 8693 policy under
+	// inboundGrants.tokenExchange.issuerPolicies.
 	ActorMatcher string `json:"actorMatcher,omitempty"`
 
 	// AllowedDelegateClients restricts which ToolHive client IDs may exchange
@@ -513,6 +507,8 @@ type TrustedIssuerConfig struct {
 	// +kubebuilder:validation:items:MaxLength=256
 	// +listType=atomic
 	// +optional
+	// This legacy field is deprecated; configure RFC 8693 policy under
+	// inboundGrants.tokenExchange.issuerPolicies.
 	AllowedDelegateClients []string `json:"allowedDelegateClients,omitempty"`
 
 	// AllowMayAct permits this external issuer's may_act claim to authorize
@@ -523,11 +519,15 @@ type TrustedIssuerConfig struct {
 	// this setting.
 	// +kubebuilder:default=false
 	// +optional
+	// This legacy field is deprecated; configure RFC 8693 policy under
+	// inboundGrants.tokenExchange.issuerPolicies.
 	AllowMayAct bool `json:"allowMayAct,omitempty"`
 
 	// JWTBearerGrant enables the plain RFC 7523 JWT-bearer grant for this
 	// issuer. It is independent of RFC 8693 delegation policy.
 	// +optional
+	// This legacy field is deprecated; configure RFC 7523 policy under
+	// inboundGrants.jwtBearer.issuerPolicies.
 	JWTBearerGrant *JWTBearerGrantConfig `json:"jwtBearerGrant,omitempty"`
 }
 
@@ -586,6 +586,86 @@ type JWTBearerSubjectBinding struct {
 	AllowedResources []string `json:"allowedResources"`
 }
 
+// InboundGrantsConfig groups canonical inbound OAuth grant-family configuration.
+type InboundGrantsConfig struct {
+	// TokenExchange configures RFC 8693 clients and issuer policies.
+	// +optional
+	TokenExchange *TokenExchangeInboundGrantConfig `json:"tokenExchange,omitempty"`
+
+	// JWTBearer configures RFC 7523 issuer policies.
+	// +optional
+	JWTBearer *JWTBearerInboundGrantConfig `json:"jwtBearer,omitempty"`
+}
+
+// TokenExchangeInboundGrantConfig configures canonical RFC 8693 inbound grants.
+type TokenExchangeInboundGrantConfig struct {
+	// DelegateClients configures pre-provisioned confidential clients.
+	// +kubebuilder:validation:MaxItems=10
+	// +listType=atomic
+	// +optional
+	DelegateClients []DelegateClientConfig `json:"delegateClients,omitempty"`
+
+	// IssuerPolicies binds RFC 8693 policy to named trusted issuers.
+	// +kubebuilder:validation:MaxItems=20
+	// +listType=atomic
+	// +optional
+	IssuerPolicies []TokenExchangeIssuerPolicyConfig `json:"issuerPolicies,omitempty"`
+}
+
+// TokenExchangeIssuerPolicyConfig binds RFC 8693 policy to a named trusted issuer.
+type TokenExchangeIssuerPolicyConfig struct {
+	// IssuerRef references trustedIssuers[].name.
+	// +kubebuilder:validation:MinLength=1
+	// +kubebuilder:validation:MaxLength=253
+	IssuerRef string `json:"issuerRef"`
+
+	// ExpectedAudience is the required RFC 8693 subject-token audience.
+	// +kubebuilder:validation:MinLength=1
+	// +kubebuilder:validation:MaxLength=2048
+	ExpectedAudience string `json:"expectedAudience"`
+
+	// ActorClaim names the claim containing the external actor identity.
+	// +kubebuilder:validation:MaxLength=64
+	// +optional
+	ActorClaim string `json:"actorClaim,omitempty"`
+
+	// +kubebuilder:validation:MaxItems=50
+	// +listType=atomic
+	// +optional
+	AllowedActors []string `json:"allowedActors,omitempty"`
+
+	// +kubebuilder:validation:MaxLength=4096
+	// +optional
+	ActorMatcher string `json:"actorMatcher,omitempty"`
+
+	// +kubebuilder:validation:MinItems=1
+	// +kubebuilder:validation:MaxItems=50
+	// +listType=atomic
+	AllowedDelegateClients []string `json:"allowedDelegateClients"`
+
+	// +optional
+	AllowMayAct bool `json:"allowMayAct,omitempty"`
+}
+
+// JWTBearerInboundGrantConfig configures canonical RFC 7523 inbound grants.
+type JWTBearerInboundGrantConfig struct {
+	// IssuerPolicies binds RFC 7523 policy to named trusted issuers.
+	// +kubebuilder:validation:MaxItems=20
+	// +listType=atomic
+	// +optional
+	IssuerPolicies []JWTBearerIssuerPolicyConfig `json:"issuerPolicies,omitempty"`
+}
+
+// JWTBearerIssuerPolicyConfig binds RFC 7523 policy to a named trusted issuer.
+type JWTBearerIssuerPolicyConfig struct {
+	// IssuerRef references trustedIssuers[].name.
+	// +kubebuilder:validation:MinLength=1
+	// +kubebuilder:validation:MaxLength=253
+	IssuerRef string `json:"issuerRef"`
+
+	JWTBearerGrantConfig `json:",inline"` // nolint:revive
+}
+
 // EmbeddedAuthServerConfig holds configuration for the embedded OAuth2/OIDC authorization server.
 // This enables running an authorization server that delegates authentication to upstream IDPs
 // or accepts token exchange without an interactive authorization flow.
@@ -595,18 +675,25 @@ type JWTBearerSubjectBinding struct {
 // delegate clients using an HTTP issuer; the shared Go validator performs the
 // precise loopback-host security check.
 //
-// +kubebuilder:validation:XValidation:rule="(has(self.upstreamProviders) && size(self.upstreamProviders) > 0) || (has(self.delegateClients) && size(self.delegateClients) > 0) || (has(self.trustedIssuers) && self.trustedIssuers.exists(issuer, has(issuer.jwtBearerGrant)))",message="at least one upstream provider is required unless delegateClients or a trustedIssuer with jwtBearerGrant is configured"
+// +kubebuilder:validation:XValidation:rule="(has(self.upstreamProviders) && size(self.upstreamProviders) > 0) || (has(self.delegateClients) && size(self.delegateClients) > 0) || (has(self.trustedIssuers) && self.trustedIssuers.exists(issuer, has(issuer.jwtBearerGrant))) || (has(self.inboundGrants) && (has(self.inboundGrants.tokenExchange) || has(self.inboundGrants.jwtBearer)))",message="at least one upstream provider or inbound grant family is required"
 //
 // +kubebuilder:validation:XValidation:rule="!(has(self.allowConfidentialClientRegistration) && self.allowConfidentialClientRegistration && has(self.insecureAllowHTTP) && self.insecureAllowHTTP)",message="allowConfidentialClientRegistration cannot be combined with insecureAllowHTTP; client secrets would be issued in cleartext over an unauthenticated endpoint"
 // +kubebuilder:validation:XValidation:rule="(!has(self.forceConfidentialRedirectUris) || size(self.forceConfidentialRedirectUris) == 0) || (has(self.allowConfidentialClientRegistration) && self.allowConfidentialClientRegistration)",message="forceConfidentialRedirectUris requires allowConfidentialClientRegistration to be true"
 // +kubebuilder:validation:XValidation:rule="!has(self.delegateClients) || size(self.delegateClients) == 0 || !self.issuer.startsWith('http://') || (has(self.insecureAllowConfidentialOverLoopbackHTTP) && self.insecureAllowConfidentialOverLoopbackHTTP)",message="delegateClients with an HTTP issuer require insecureAllowConfidentialOverLoopbackHTTP to be explicitly enabled; the issuer must still be loopback"
+// +kubebuilder:validation:XValidation:rule="!has(self.inboundGrants) || !has(self.inboundGrants.tokenExchange) || ((!has(self.delegateClients) || size(self.delegateClients) == 0) && (!has(self.trustedIssuers) || !self.trustedIssuers.exists(issuer, has(issuer.expectedAudience) || has(issuer.actorClaim) || has(issuer.allowedActors) || has(issuer.actorMatcher) || has(issuer.allowedDelegateClients) || (has(issuer.allowMayAct) && issuer.allowMayAct))))",message="canonical tokenExchange conflicts with legacy delegateClients or RFC 8693 trusted issuer policy"
+// +kubebuilder:validation:XValidation:rule="!has(self.inboundGrants) || !has(self.inboundGrants.jwtBearer) || !has(self.trustedIssuers) || !self.trustedIssuers.exists(issuer, has(issuer.jwtBearerGrant))",message="canonical jwtBearer conflicts with legacy jwtBearerGrant"
+// +kubebuilder:validation:XValidation:rule="!has(self.trustedIssuers) || self.trustedIssuers.all(issuer, !has(issuer.name) || self.trustedIssuers.filter(other, has(other.name) && other.name == issuer.name).size() == 1)",message="trustedIssuers must not contain duplicate names"
+// +kubebuilder:validation:XValidation:rule="!has(self.inboundGrants) || !has(self.inboundGrants.tokenExchange) || !has(self.inboundGrants.tokenExchange.issuerPolicies) || self.inboundGrants.tokenExchange.issuerPolicies.all(policy, has(self.trustedIssuers) && self.trustedIssuers.exists(issuer, has(issuer.name) && issuer.name == policy.issuerRef))",message="every tokenExchange issuerRef must reference a named trusted issuer"
+// +kubebuilder:validation:XValidation:rule="!has(self.inboundGrants) || !has(self.inboundGrants.tokenExchange) || !has(self.inboundGrants.tokenExchange.issuerPolicies) || self.inboundGrants.tokenExchange.issuerPolicies.all(policy, self.inboundGrants.tokenExchange.issuerPolicies.filter(other, other.issuerRef == policy.issuerRef).size() == 1)",message="tokenExchange issuerPolicies must not contain duplicate issuerRef values"
+// +kubebuilder:validation:XValidation:rule="!has(self.inboundGrants) || !has(self.inboundGrants.jwtBearer) || !has(self.inboundGrants.jwtBearer.issuerPolicies) || self.inboundGrants.jwtBearer.issuerPolicies.all(policy, has(self.trustedIssuers) && self.trustedIssuers.exists(issuer, has(issuer.name) && issuer.name == policy.issuerRef))",message="every jwtBearer issuerRef must reference a named trusted issuer"
+// +kubebuilder:validation:XValidation:rule="!has(self.inboundGrants) || !has(self.inboundGrants.jwtBearer) || !has(self.inboundGrants.jwtBearer.issuerPolicies) || self.inboundGrants.jwtBearer.issuerPolicies.all(policy, self.inboundGrants.jwtBearer.issuerPolicies.filter(other, other.issuerRef == policy.issuerRef).size() == 1)",message="jwtBearer issuerPolicies must not contain duplicate issuerRef values"
 //
 // The shared Go-level ValidateConfidentialClientTransport validator remains the
 // source of truth for confidential-client transport and loopback policy,
 // including delegate clients. Full issuer URL validation is performed by the
 // runtime configuration validator.
 //
-//nolint:lll // CEL validation rule exceeds line length limit
+//nolint:lll // CEL validation rules exceed line length limits.
 type EmbeddedAuthServerConfig struct {
 	// Issuer is the issuer identifier for this authorization server.
 	// This will be included in the "iss" claim of issued tokens.
@@ -651,6 +738,10 @@ type EmbeddedAuthServerConfig struct {
 	// If not specified, defaults are applied (access: 1h, refresh: 7d, authCode: 10m).
 	// +optional
 	TokenLifespans *TokenLifespanConfig `json:"tokenLifespans,omitempty"`
+
+	// InboundGrants configures canonical inbound OAuth grant families.
+	// +optional
+	InboundGrants *InboundGrantsConfig `json:"inboundGrants,omitempty"`
 
 	// UpstreamProviders configures connections to upstream Identity Providers.
 	// When configured, the embedded auth server delegates interactive authentication
@@ -810,6 +901,7 @@ type EmbeddedAuthServerConfig struct {
 	// +kubebuilder:validation:MaxItems=10
 	// +listType=atomic
 	// +optional
+	// This legacy field is deprecated; use inboundGrants.tokenExchange.delegateClients.
 	DelegateClients []DelegateClientConfig `json:"delegateClients,omitempty"`
 
 	// TrustedIssuers configures external OIDC issuers whose tokens are
@@ -867,8 +959,10 @@ type EmbeddedAuthServerConfig struct {
 // here: it never returns a secret in the DCR response, so cleartext HTTP
 // exposes nothing this check would protect.
 func (c *EmbeddedAuthServerConfig) ValidateConfidentialClientTransport() error {
+	canonicalDelegate := c.InboundGrants != nil && c.InboundGrants.TokenExchange != nil &&
+		len(c.InboundGrants.TokenExchange.DelegateClients) > 0
 	return authserver.ValidateConfidentialClientTransport(
-		c.AllowConfidentialClientRegistration || len(c.DelegateClients) > 0,
+		c.AllowConfidentialClientRegistration || len(c.DelegateClients) > 0 || canonicalDelegate,
 		c.InsecureAllowHTTP,
 		c.Issuer,
 		c.InsecureAllowConfidentialOverLoopbackHTTP,
@@ -2016,10 +2110,9 @@ func (r *MCPExternalAuthConfig) validateEmbeddedAuthServer() error {
 		return nil
 	}
 
-	if len(cfg.UpstreamProviders) == 0 && len(cfg.DelegateClients) == 0 &&
+	if len(cfg.UpstreamProviders) == 0 && len(cfg.DelegateClients) == 0 && cfg.InboundGrants == nil &&
 		!hasJWTBearerTrustedIssuer(cfg.TrustedIssuers) {
-		return fmt.Errorf("at least one upstream provider is required unless delegateClients " +
-			"or a trustedIssuer with jwtBearerGrant is configured")
+		return fmt.Errorf("at least one upstream provider or inbound grant family is required")
 	}
 	// Note: multi-upstream is accepted at the CRD level. Consumer controllers
 	// (MCPServer, MCPRemoteProxy) enforce single-upstream restrictions;
@@ -2047,8 +2140,10 @@ func (r *MCPExternalAuthConfig) validateEmbeddedAuthServer() error {
 	// available on this CRD. The same accepted_audiences/allowed_audiences
 	// disjointness check runs again once that value exists, at
 	// Config.Validate time (pkg/authserver/config.go's validateTrustedIssuers).
-	if err := tokenexchange.ValidateTrustedIssuers(buildTrustedIssuerConfigs(cfg.TrustedIssuers), cfg.Issuer, nil); err != nil {
-		return fmt.Errorf("trustedIssuers: %w", err)
+	if cfg.InboundGrants == nil {
+		if err := tokenexchange.ValidateTrustedIssuers(buildTrustedIssuerConfigs(cfg.TrustedIssuers), cfg.Issuer, nil); err != nil {
+			return fmt.Errorf("trustedIssuers: %w", err)
+		}
 	}
 	for i := range cfg.TrustedIssuers {
 		if err := validateUpstreamCABundleRef(cfg.TrustedIssuers[i].CABundleRef); err != nil {
@@ -2083,6 +2178,7 @@ func buildTrustedIssuerConfigs(issuers []TrustedIssuerConfig) []tokenexchange.Tr
 	configs := make([]tokenexchange.TrustedIssuer, len(issuers))
 	for i, issuer := range issuers {
 		configs[i] = tokenexchange.TrustedIssuer{
+			Name:                   issuer.Name,
 			IssuerURL:              issuer.IssuerURL,
 			ExpectedAudience:       issuer.ExpectedAudience,
 			JWKSURL:                issuer.JWKSURL,

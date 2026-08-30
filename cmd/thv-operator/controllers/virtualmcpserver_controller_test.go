@@ -4555,6 +4555,22 @@ func TestVirtualMCPServerValidateAuthServerConfig_ZeroUpstreamAlternatives(t *te
 				}},
 			},
 		},
+		{
+			name: "canonical inbound grants",
+			config: &mcpv1beta1.EmbeddedAuthServerConfig{
+				Issuer: "https://auth.example.com",
+				InboundGrants: &mcpv1beta1.InboundGrantsConfig{
+					TokenExchange: &mcpv1beta1.TokenExchangeInboundGrantConfig{
+						DelegateClients: []mcpv1beta1.DelegateClientConfig{{
+							ClientID:        "delegate-client",
+							ClientSecretRef: &mcpv1beta1.SecretKeyRef{Name: "delegate-secret", Key: "client-secret"},
+							Scopes:          []string{"openid"},
+							Audiences:       []string{"https://mcp.example.com"},
+						}},
+					},
+				},
+			},
+		},
 	}
 
 	for _, tt := range tests {

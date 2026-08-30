@@ -211,6 +211,67 @@ func TestNewServer_Success(t *testing.T) {
 	}
 }
 
+// TestNewServer_TrustedIssuerWithBothGrantsDisabled pins that buildProvider
+// does not start a MultiIssuerTokenValidator's per-issuer JWKS refresh
+// workers when a trusted issuer is configured but neither token exchange nor
+// JWT-bearer would ever consume it -- a reachable, if pointless,
+// configuration (nothing rejects a trusted issuer that no enabled grant
+// references). Building the validator anyway would run those goroutines for
+// the life of the server with no consumer.
+func TestNewServer_TrustedIssuerWithBothGrantsDisabled(t *testing.T) {
+	t.Parallel()
+
+	jwksServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		_, _ = w.Write([]byte(`{"keys":[]}`))
+	}))
+	t.Cleanup(jwksServer.Close)
+
+	baseCfg := func(disableTokenExchange bool) Config {
+		return Config{
+			Issuer:               "https://example.com",
+			KeyProvider:          keys.NewGeneratingProvider(keys.DefaultAlgorithm),
+			HMACSecrets:          &servercrypto.HMACSecrets{Current: validHMACSecret()},
+			Upstreams:            []UpstreamConfig{{Name: "default", Type: UpstreamProviderTypeOAuth2, OAuth2Config: validUpstreamConfig()}},
+			AllowedAudiences:     []string{"https://mcp.example.com"},
+			DisableTokenExchange: disableTokenExchange,
+			TrustedIssuers: []tokenexchange.TrustedIssuer{{
+				IssuerURL:              "https://issuer.example.com",
+				ExpectedAudience:       "https://mcp.example.com",
+				JWKSURL:                jwksServer.URL,
+				InsecureAllowHTTP:      true,
+				AllowPrivateIPs:        true,
+				AllowedDelegateClients: []string{"*"},
+			}},
+		}
+	}
+
+	t.Run("token exchange disabled and no JWT-bearer grant leaves the validator nil", func(t *testing.T) {
+		t.Parallel()
+		stor := storage.NewMemoryStorage()
+		cfg := baseCfg(true)
+
+		srv, err := newServer(context.Background(), cfg, stor)
+		require.NoError(t, err)
+		t.Cleanup(func() { _ = srv.Close() })
+
+		assert.Nil(t, srv.trustedIssuerValidator,
+			"a trusted issuer that neither enabled grant consumes must not start a live JWKS validator")
+	})
+
+	t.Run("token exchange enabled builds the validator", func(t *testing.T) {
+		t.Parallel()
+		stor := storage.NewMemoryStorage()
+		cfg := baseCfg(false)
+
+		srv, err := newServer(context.Background(), cfg, stor)
+		require.NoError(t, err)
+		t.Cleanup(func() { _ = srv.Close() })
+
+		assert.NotNil(t, srv.trustedIssuerValidator,
+			"a trusted issuer consumed by an enabled grant must build the shared validator")
+	})
+}
+
 // capturingSlogHandler records log records for assertions. slog's default
 // handler is process-global, so tests using it must not run in parallel with
 // other slog-capturing tests.

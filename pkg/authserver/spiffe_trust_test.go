@@ -85,12 +85,13 @@ func TestValidateSPIFFETrust(t *testing.T) {
 	t.Parallel()
 
 	valid := func() ([]SPIFFETrustDomainRunConfig, *InboundGrantsRunConfig) {
-		return []SPIFFETrustDomainRunConfig{{
+		domains := []SPIFFETrustDomainRunConfig{{
 			Name:         "production",
 			TrustDomain:  "example.org",
 			Methods:      []SPIFFEAuthenticationMethod{SPIFFEAuthenticationMethodX509, SPIFFEAuthenticationMethodJWT},
 			BundleSource: validWorkloadAPIBundleSource(),
-		}}, &InboundGrantsRunConfig{SPIFFEClientAuth: []SPIFFEClientAuthRunConfig{{
+		}}
+		grants := &InboundGrantsRunConfig{SPIFFEClientAuth: []SPIFFEClientAuthRunConfig{{
 			TrustDomainRef:   "production",
 			PrincipalPattern: "spiffe://example.org/ns/default/*",
 			ClientID:         "agent-client",
@@ -99,6 +100,7 @@ func TestValidateSPIFFETrust(t *testing.T) {
 			Scopes:           []string{"openid"},
 			GrantTypes:       []string{SPIFFEGrantTypeTokenExchange},
 		}}}
+		return domains, grants
 	}
 
 	tests := []struct {

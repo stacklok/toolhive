@@ -276,14 +276,45 @@ components:
     authserver.InboundGrantsRunConfig:
       description: |-
         InboundGrants declares canonical inbound grant configuration, including
-        SPIFFE client authentication. See InboundGrantsRunConfig.
+        SPIFFE client authentication, delegate clients, and issuer policy. A
+        non-nil value explicitly controls grant-family enablement.
       properties:
+        jwt_bearer:
+          $ref: '#/components/schemas/authserver.JWTBearerInboundGrantRunConfig'
         spiffe_client_auth:
           description: |-
             SPIFFEClientAuth associates SPIFFE principal patterns with explicit OAuth
             client identities and permissions. See SPIFFEClientAuthRunConfig.
           items:
             $ref: '#/components/schemas/authserver.SPIFFEClientAuthRunConfig'
+          type: array
+          uniqueItems: false
+        token_exchange:
+          $ref: '#/components/schemas/authserver.TokenExchangeInboundGrantRunConfig'
+      type: object
+    authserver.JWTBearerInboundGrantRunConfig:
+      description: JWTBearer configures RFC 7523 issuer policies.
+      properties:
+        issuer_policies:
+          items:
+            $ref: '#/components/schemas/authserver.JWTBearerIssuerPolicyRunConfig'
+          type: array
+          uniqueItems: false
+      type: object
+    authserver.JWTBearerIssuerPolicyRunConfig:
+      properties:
+        accepted_audiences:
+          items:
+            type: string
+          type: array
+          uniqueItems: false
+        issuer_ref:
+          type: string
+        max_assertion_age:
+          type: string
+        subject_bindings:
+          items:
+            $ref: '#/components/schemas/github_com_stacklok_toolhive_pkg_authserver_server_tokenexchange.JWTBearerSubjectBinding'
           type: array
           uniqueItems: false
       type: object
@@ -518,6 +549,8 @@ components:
             authorization-server startup, including clients intended for RFC 8693
             token exchange.
 
+            This legacy field is deprecated; use InboundGrants.TokenExchange.DelegateClients.
+
             Independent of AllowConfidentialClientRegistration: declaring a client
             here does not require or enable self-service confidential DCR, and
             setting that flag does not declare or enable any client here. They
@@ -649,11 +682,11 @@ components:
           $ref: '#/components/schemas/authserver.TokenLifespanRunConfig'
         trusted_issuers:
           description: |-
-            TrustedIssuers lists external OIDC issuers whose tokens are accepted as
-            RFC 8693 subject tokens or RFC 7523 JWT-bearer assertions. Issuers with
-            jwtBearerGrant enabled may be used for the JWT-bearer grant without an
-            RFC 8693 delegation policy. Empty (the default) means only self-issued
-            subject tokens are accepted.
+            TrustedIssuers lists external OIDC trust declarations.
+
+            This legacy field is deprecated; RFC 8693 and JWT-bearer policies embedded in these entries
+            remain supported for compatibility. New configurations should put policy
+            under InboundGrants and reference a named trusted issuer.
 
             See tokenexchange.TrustedIssuer for the per-issuer field reference, and
             docs/arch/17-token-exchange-delegation.md for the trust model, consent
@@ -809,6 +842,43 @@ components:
           description: |-
             SigningKeyFile is the filename of the primary signing key (relative to KeyDir).
             This key is used for signing new tokens.
+          type: string
+      type: object
+    authserver.TokenExchangeInboundGrantRunConfig:
+      description: TokenExchange configures RFC 8693 inbound clients and issuer policies.
+      properties:
+        delegate_clients:
+          items:
+            $ref: '#/components/schemas/authserver.DelegateClientRunConfig'
+          type: array
+          uniqueItems: false
+        issuer_policies:
+          items:
+            $ref: '#/components/schemas/authserver.TokenExchangeIssuerPolicyRunConfig'
+          type: array
+          uniqueItems: false
+      type: object
+    authserver.TokenExchangeIssuerPolicyRunConfig:
+      properties:
+        actor_claim:
+          type: string
+        actor_matcher:
+          type: string
+        allow_may_act:
+          type: boolean
+        allowed_actors:
+          items:
+            type: string
+          type: array
+          uniqueItems: false
+        allowed_delegate_clients:
+          items:
+            type: string
+          type: array
+          uniqueItems: false
+        expected_audience:
+          type: string
+        issuer_ref:
           type: string
       type: object
     authserver.TokenLifespanRunConfig:
@@ -1097,6 +1167,16 @@ components:
           description: |-
             ProviderName identifies which upstream provider's tokens to retrieve for injection.
             This is required and must match a configured upstream provider name.
+          type: string
+      type: object
+    github_com_stacklok_toolhive_pkg_authserver_server_tokenexchange.JWTBearerSubjectBinding:
+      properties:
+        allowed_resources:
+          items:
+            type: string
+          type: array
+          uniqueItems: false
+        subject:
           type: string
       type: object
     github_com_stacklok_toolhive_pkg_authz.Config:
@@ -5074,6 +5154,9 @@ components:
         It accepts assertions from this issuer without client authentication and
         limits their maximum age, subjects, and RFC 8707 resources. It is
         independent from RFC 8693 delegation policy.
+
+        This legacy field is deprecated; configure RFC 7523 policy under
+        inbound_grants.jwt_bearer.issuer_policies.
       properties:
         accepted_audiences:
           description: |-
@@ -5186,6 +5269,9 @@ components:
             not a client ID — required for delegation unless JWTBearerGrant is
             configured; see looksLikeResourceIdentifier). RFC 7523 assertions use
             the token endpoint as their audience instead.
+
+            This legacy field is deprecated; configure RFC 8693 policy under
+            inbound_grants.token_exchange.issuer_policies.
             See docs/arch/17-token-exchange-delegation.md ("ID/access-token
             discrimination") for why and its limits.
           type: string
@@ -5210,6 +5296,10 @@ components:
           type: string
         jwt_bearer_grant:
           $ref: '#/components/schemas/tokenexchange.JWTBearerGrantPolicy'
+        name:
+          description: Name optionally identifies this trust declaration for canonical
+            issuer_ref references.
+          type: string
       type: object
     types.MiddlewareConfig:
       properties:

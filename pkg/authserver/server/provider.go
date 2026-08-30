@@ -101,6 +101,8 @@ type AuthorizationServerConfig struct {
 	// auth method. See authserver.Config.ForceConfidentialRedirectURIs for the
 	// full semantics.
 	ForceConfidentialRedirectURIs []string
+	// TokenExchangeEnabled indicates whether RFC 8693 is registered and advertised.
+	TokenExchangeEnabled bool
 	// JWTBearerGrantEnabled indicates that at least one trusted issuer has the
 	// RFC 7523 JWT-bearer grant configured. Discovery advertises
 	// urn:ietf:params:oauth:grant-type:jwt-bearer in grant_types_supported
@@ -162,6 +164,9 @@ type AuthorizationServerParams struct {
 	// auth method. See authserver.Config.ForceConfidentialRedirectURIs for the
 	// full semantics.
 	ForceConfidentialRedirectURIs []string
+	// DisableTokenExchange prevents RFC 8693 registration and advertisement.
+	// The zero value preserves the historical enabled behavior.
+	DisableTokenExchange bool
 	// JWTBearerGrantEnabled indicates that at least one trusted issuer has the
 	// RFC 7523 JWT-bearer grant configured. See AuthorizationServerConfig's
 	// field of the same name.
@@ -332,6 +337,7 @@ func NewAuthorizationServerConfig(cfg *AuthorizationServerParams) (*Authorizatio
 		AllowPrivateKeyJWTRegistration:      cfg.AllowPrivateKeyJWTRegistration,
 		HasStaticDelegateClients:            cfg.HasStaticDelegateClients,
 		ForceConfidentialRedirectURIs:       cfg.ForceConfidentialRedirectURIs,
+		TokenExchangeEnabled:                !cfg.DisableTokenExchange,
 		JWTBearerGrantEnabled:               cfg.JWTBearerGrantEnabled,
 	}, nil
 }

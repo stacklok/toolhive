@@ -1902,6 +1902,68 @@ func TestTokenExchangeHandler_ActChainProvenance(t *testing.T) {
 	})
 }
 
+// TestBuildActClaim_NestedActOnlyCarriesSubWhenAnActorWasResolved locks in
+// the correct RFC 8693 §4.1 invariant for the nested act.act object: "sub"
+// is not a required member (the RFC only gives "iss"+"sub" as an example of
+// what "might be necessary to uniquely identify an actor"), so it must be
+// present when an external actor was actually resolved (the allowlist
+// path's ExternalActor) and absent otherwise (the may_act-bearing path,
+// which names its delegate directly via the outermost act.sub instead —
+// see resolveActorIdentity and checkDelegationConsent). A "sub" claim was
+// previously, incorrectly, backfilled from the external subject token's
+// own subject on the no-ExternalActor path; that misrepresented the
+// external principal as a prior actor in the delegation chain (they never
+// acted) and reintroduced their bare, unqualified subject into a claim
+// audit tooling parses as "acting parties" (see delegatedSubject's doc
+// comment for why the qualified form exists in the first place).
+func TestBuildActClaim_NestedActOnlyCarriesSubWhenAnActorWasResolved(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name      string
+		claims    *ValidatedClaims
+		wantSub   string
+		wantNoSub bool
+	}{
+		{
+			name: "allowlist path nests the allowlisted external actor",
+			claims: &ValidatedClaims{
+				Subject:        "ext-user-456",
+				ExternalIssuer: testExternalIssuer,
+				ExternalActor:  "ext-agent",
+			},
+			wantSub: "ext-agent",
+		},
+		{
+			name: "may_act path with no ExternalActor omits the nested sub",
+			claims: &ValidatedClaims{
+				Subject:        "ext-user-456",
+				ExternalIssuer: testExternalIssuer,
+				ExternalActor:  "",
+			},
+			wantNoSub: true,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			act, err := buildActClaim(tt.claims, testIssuer, testAgentClientID)
+			require.NoError(t, err)
+
+			nested, ok := act["act"].(map[string]any)
+			require.True(t, ok, "external delegation must nest under act.act")
+			assert.Equal(t, testExternalIssuer, nested["iss"])
+			if tt.wantNoSub {
+				_, hasSub := nested["sub"]
+				assert.False(t, hasSub, "no actor was resolved, so the nested act must not carry a sub")
+				return
+			}
+			assert.Equal(t, tt.wantSub, nested["sub"])
+		})
+	}
+}
+
 func TestChainToAct_EmptyIdentityHop(t *testing.T) {
 	t.Parallel()
 

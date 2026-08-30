@@ -203,6 +203,7 @@ func newServer(ctx context.Context, cfg Config, stor storage.Storage) (_ *server
 		AllowPrivateKeyJWTRegistration:      cfg.AllowPrivateKeyJWTRegistration,
 		HasStaticDelegateClients:            len(cfg.DelegateClients) > 0,
 		ForceConfidentialRedirectURIs:       cfg.ForceConfidentialRedirectURIs,
+		DisableTokenExchange:                cfg.DisableTokenExchange,
 		JWTBearerGrantEnabled:               JWTBearerGrantEnabled(cfg.TrustedIssuers),
 	}
 	authServerConfig, err := oauthserver.NewAuthorizationServerConfig(oauthParams)
@@ -357,12 +358,16 @@ func JWTBearerGrantEnabled(trustedIssuers []tokenexchange.TrustedIssuer) bool {
 }
 
 // buildProvider assembles the fosite OAuth2 provider, registering the RFC 8693
-// token-exchange handler as an extension grant alongside the standard grants.
+// token-exchange handler and/or the RFC 7523 JWT-bearer handler as extension
+// grants alongside the standard grants -- whichever of the two are enabled
+// for cfg (token exchange can be disabled via canonical inbound grants
+// configuration; JWT-bearer is enabled per JWTBearerGrantEnabled).
 //
 // It returns the shared MultiIssuerTokenValidator (nil when no TrustedIssuers
-// are configured) so newServer can hold it and release its per-issuer JWKS
-// worker pools on shutdown. On its own error paths it shuts that validator down
-// before returning, since the caller never receives it.
+// are configured, or when neither enabled grant would use it) so newServer
+// can hold it and release its per-issuer JWKS worker pools on shutdown. On
+// its own error paths it shuts that validator down before returning, since
+// the caller never receives it.
 func buildProvider(
 	cfg Config, authServerConfig *oauthserver.AuthorizationServerConfig, stor storage.Storage,
 ) (_ fosite.OAuth2Provider, _ *tokenexchange.MultiIssuerTokenValidator, retErr error) {
@@ -372,19 +377,28 @@ func buildProvider(
 	}
 	jwtBearerEnabled := JWTBearerGrantEnabled(cfg.TrustedIssuers)
 
-	// Built once, up front, whenever any trusted issuer is configured, and
-	// handed to both factories below: otherwise each factory closure would
-	// build its own MultiIssuerTokenValidator over the same trusted issuers at
+	// Built once, up front, and handed to whichever factories below actually
+	// need it: otherwise each factory closure would build its own
+	// MultiIssuerTokenValidator over the same trusted issuers at
 	// fosite-compose time, doubling every issuer's JWKS cache and background
 	// refresh goroutines — and, buried in a handler, leaving them unreachable
 	// for shutdown. authServerConfig is the exact *AuthorizationServerConfig
 	// each factory closure would otherwise receive at call time (see
 	// createProvider/NewAuthorizationServer), so building it here first is
-	// equivalent. NewSharedTrustedIssuerValidator returns nil when there are no
-	// trusted issuers.
-	shared, err := tokenexchange.NewSharedTrustedIssuerValidator(authServerConfig, cfg.TrustedIssuers)
-	if err != nil {
-		return nil, nil, fmt.Errorf("failed to create shared trusted-issuer validator: %w", err)
+	// equivalent. Skipped entirely (shared stays nil) when neither grant that
+	// consumes it is enabled -- trusted issuers configured with token
+	// exchange disabled and JWT-bearer not enabled is a reachable, if
+	// pointless, configuration, and building the validator anyway would
+	// start live per-issuer JWKS refresh goroutines with no consumer for the
+	// life of the server. NewSharedTrustedIssuerValidator itself also
+	// returns nil when there are no trusted issuers.
+	var shared *tokenexchange.MultiIssuerTokenValidator
+	if !cfg.DisableTokenExchange || jwtBearerEnabled {
+		var err error
+		shared, err = tokenexchange.NewSharedTrustedIssuerValidator(authServerConfig, cfg.TrustedIssuers)
+		if err != nil {
+			return nil, nil, fmt.Errorf("failed to create shared trusted-issuer validator: %w", err)
+		}
 	}
 	// Release the validator's JWKS worker pools if we fail before returning it
 	// to newServer, which otherwise owns its shutdown.
@@ -396,23 +410,23 @@ func buildProvider(
 		}
 	}()
 
-	tokenExchangeFactory, err := tokenexchange.FactoryWithSharedTrustedIssuerValidator(
-		cfg.DelegationTokenLifespan, cfg.TrustedIssuers, delegateClientIDs, shared)
-	if err != nil {
-		return nil, nil, fmt.Errorf("failed to create token exchange factory: %w", err)
-	}
-	if !jwtBearerEnabled {
-		provider, err := createProvider(authServerConfig, stor, tokenExchangeFactory)
+	factories := make([]oauthserver.Factory, 0, 2)
+	if !cfg.DisableTokenExchange {
+		tokenExchangeFactory, err := tokenexchange.FactoryWithSharedTrustedIssuerValidator(
+			cfg.DelegationTokenLifespan, cfg.TrustedIssuers, delegateClientIDs, shared)
 		if err != nil {
-			return nil, nil, err
+			return nil, nil, fmt.Errorf("failed to create token exchange factory: %w", err)
 		}
-		return provider, shared, nil
+		factories = append(factories, tokenExchangeFactory)
 	}
-	jwtBearerFactory, err := tokenexchange.JWTBearerIssuanceFactory(cfg.TrustedIssuers, shared)
-	if err != nil {
-		return nil, nil, fmt.Errorf("failed to create JWT-bearer factory: %w", err)
+	if jwtBearerEnabled {
+		jwtBearerFactory, err := tokenexchange.JWTBearerIssuanceFactory(cfg.TrustedIssuers, shared)
+		if err != nil {
+			return nil, nil, fmt.Errorf("failed to create JWT-bearer factory: %w", err)
+		}
+		factories = append(factories, jwtBearerFactory)
 	}
-	provider, err := createProvider(authServerConfig, stor, tokenExchangeFactory, jwtBearerFactory)
+	provider, err := createProvider(authServerConfig, stor, factories...)
 	if err != nil {
 		return nil, nil, err
 	}

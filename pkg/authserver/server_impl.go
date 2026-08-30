@@ -10,6 +10,7 @@ import (
 	"net/http"
 	"time"
 
+	jose "github.com/go-jose/go-jose/v4"
 	josev3 "github.com/go-jose/go-jose/v3"
 	"github.com/ory/fosite"
 	"github.com/ory/fosite/compose"
@@ -134,6 +135,27 @@ func newServer(ctx context.Context, cfg Config, stor storage.Storage, opts ...se
 		return nil, fmt.Errorf("failed to get signing key: %w", err)
 	}
 
+	// Collect additional public keys for JWKS rotation. The signing key stays
+	// the sole signer; fallback keys are published as public-only JWKS entries
+	// so consumers can verify tokens signed before rotation. The primary is
+	// kept first to preserve kid priority.
+	var additionalKeys []jose.JSONWebKey
+	if pubKeys, pubErr := cfg.KeyProvider.PublicKeys(ctx); pubErr == nil {
+		for _, pk := range pubKeys {
+			if pk.KeyID == signingKey.KeyID {
+				continue
+			}
+			additionalKeys = append(additionalKeys, jose.JSONWebKey{
+				Key:       pk.PublicKey,
+				KeyID:     pk.KeyID,
+				Algorithm: pk.Algorithm,
+				Use:       "sig",
+			})
+		}
+	} else {
+		slog.Warn("failed to get public keys for JWKS, serving signing key only", "error", pubErr)
+	}
+
 	// Create OAuth2 config from authserver.Config
 	oauthParams := &oauthserver.AuthorizationServerParams{
 		Issuer:                              cfg.Issuer,
@@ -144,6 +166,7 @@ func newServer(ctx context.Context, cfg Config, stor storage.Storage, opts ...se
 		SigningKeyID:                        signingKey.KeyID,
 		SigningKeyAlgorithm:                 signingKey.Algorithm,
 		SigningKey:                          signingKey.Key,
+		AdditionalKeys:                      additionalKeys,
 		ScopesSupported:                     cfg.ScopesSupported,
 		BaselineClientScopes:                cfg.BaselineClientScopes,
 		AllowedAudiences:                    cfg.AllowedAudiences,

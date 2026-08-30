@@ -5,13 +5,23 @@ package authserver
 
 import (
 	"context"
+	"crypto/ecdsa"
+	"crypto/elliptic"
 	"crypto/rand"
+	"crypto/x509"
+	"encoding/json"
+	"encoding/pem"
 	"log/slog"
+	"net/http"
+	"net/http/httptest"
+	"os"
+	"path/filepath"
 	"strings"
 	"sync"
 	"testing"
 	"time"
 
+	"github.com/go-jose/go-jose/v4"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 	"go.uber.org/mock/gomock"
@@ -493,4 +503,63 @@ func TestNewServer_RegistersDelegateClientsBeforeUpstreamConstruction(t *testing
 	client, err := stor.GetClient(ctx, "delegate")
 	require.NoError(t, err)
 	assert.False(t, registration.DCRIssued(client))
+}
+
+func TestNewServer_JWKSIncludesFallbackKeys(t *testing.T) {
+	t.Parallel()
+
+	dir := t.TempDir()
+	writePEM := func(key *ecdsa.PrivateKey, name string) string {
+		der, err := x509.MarshalECPrivateKey(key)
+		require.NoError(t, err)
+		path := filepath.Join(dir, name)
+		data := pem.EncodeToMemory(&pem.Block{Type: "EC PRIVATE KEY", Bytes: der})
+		require.NoError(t, os.WriteFile(path, data, 0600))
+		return name
+	}
+	k1, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
+	require.NoError(t, err)
+	k2, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
+	require.NoError(t, err)
+	signingFile := writePEM(k1, "signing.pem")
+	fallbackFile := writePEM(k2, "fallback.pem")
+
+	provider, err := keys.NewFileProvider(keys.Config{
+		KeyDir:           dir,
+		SigningKeyFile:   signingFile,
+		FallbackKeyFiles: []string{fallbackFile},
+	})
+	require.NoError(t, err)
+
+	ctrl := gomock.NewController(t)
+	defer ctrl.Finish()
+	mockUpstream := upstreammocks.NewMockOAuth2Provider(ctrl)
+	stor := storage.NewMemoryStorage()
+	t.Cleanup(func() { _ = stor.Close() })
+
+	cfg := Config{
+		Issuer:           "https://example.com",
+		KeyProvider:      provider,
+		HMACSecrets:      &servercrypto.HMACSecrets{Current: validHMACSecret()},
+		Upstreams:        []UpstreamConfig{{Name: "default", Type: UpstreamProviderTypeOAuth2, OAuth2Config: validUpstreamConfig()}},
+		AllowedAudiences: []string{"https://mcp.example.com"},
+	}
+	factory := func(_ context.Context, _ *UpstreamConfig) (upstream.OAuth2Provider, error) {
+		return mockUpstream, nil
+	}
+	srv, err := newServer(context.Background(), cfg, stor, withUpstreamFactory(factory))
+	require.NoError(t, err)
+
+	// Hit the JWKS endpoint and verify both keys are published, primary first.
+	req := httptest.NewRequest(http.MethodGet, "/.well-known/jwks.json", nil)
+	w := httptest.NewRecorder()
+	srv.Handler().ServeHTTP(w, req)
+	require.Equal(t, http.StatusOK, w.Code)
+	var jwks jose.JSONWebKeySet
+	require.NoError(t, json.Unmarshal(w.Body.Bytes(), &jwks))
+	require.Len(t, jwks.Keys, 2)
+	pubKeys, err := provider.PublicKeys(context.Background())
+	require.NoError(t, err)
+	assert.Equal(t, pubKeys[0].KeyID, jwks.Keys[0].KeyID)
+	assert.Equal(t, pubKeys[1].KeyID, jwks.Keys[1].KeyID)
 }

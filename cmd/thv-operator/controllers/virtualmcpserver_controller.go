@@ -635,12 +635,12 @@ func (*VirtualMCPServerReconciler) validateAuthServerConfig(
 		}
 	}
 
-	if len(cfg.UpstreamProviders) == 0 && len(cfg.DelegateClients) == 0 &&
+	if len(cfg.UpstreamProviders) == 0 && len(cfg.DelegateClients) == 0 && cfg.InboundGrants == nil &&
 		!slices.ContainsFunc(cfg.TrustedIssuers, func(issuer mcpv1beta1.TrustedIssuerConfig) bool {
 			return issuer.JWTBearerGrant != nil
 		}) {
 		message := "spec.authServerConfig requires at least one upstream provider unless " +
-			"delegateClients or a trustedIssuer with jwtBearerGrant is configured"
+			"delegateClients, inboundGrants, or a trustedIssuer with jwtBearerGrant is configured"
 		statusManager.SetPhase(mcpv1beta1.VirtualMCPServerPhaseFailed)
 		statusManager.SetMessage(message)
 		statusManager.SetAuthServerConfigValidatedCondition(

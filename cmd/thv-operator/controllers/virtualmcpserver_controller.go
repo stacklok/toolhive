@@ -797,8 +797,8 @@ func (r *VirtualMCPServerReconciler) emitPrimaryUpstreamProviderDeprecatedEvent(
 // to the MCP handler (HTTP 406). One-shot per spec generation.
 func (r *VirtualMCPServerReconciler) emitInlineTelemetryIgnoredEvent(
 	vmcp *mcpv1beta1.VirtualMCPServer,
-	usesIgnoredInline bool,
 ) {
+	usesIgnoredInline := vmcp.Spec.Config.Telemetry != nil && vmcp.Spec.TelemetryConfigRef == nil
 	if !usesIgnoredInline || r.Recorder == nil {
 		return
 	}

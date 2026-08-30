@@ -55,10 +55,11 @@ func (s *StatusCollector) SetMessage(message string) {
 // SetCondition sets a general condition with the specified type, reason, message, and status
 func (s *StatusCollector) SetCondition(conditionType, reason, message string, status metav1.ConditionStatus) {
 	s.conditions[conditionType] = metav1.Condition{
-		Type:    conditionType,
-		Status:  status,
-		Reason:  reason,
-		Message: message,
+		Type:               conditionType,
+		Status:             status,
+		Reason:             reason,
+		Message:            message,
+		ObservedGeneration: s.vmcp.Generation,
 	}
 	s.hasChanges = true
 }

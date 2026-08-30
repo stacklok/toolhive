@@ -16,8 +16,10 @@ import (
 	"k8s.io/apimachinery/pkg/api/meta"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/types"
+	"k8s.io/client-go/tools/events"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/client/fake"
+	"sigs.k8s.io/controller-runtime/pkg/client/interceptor"
 	"sigs.k8s.io/controller-runtime/pkg/reconcile"
 
 	mcpv1beta1 "github.com/stacklok/toolhive/cmd/thv-operator/api/v1beta1"
@@ -1356,10 +1358,125 @@ func TestMCPExternalAuthConfigReconciler_OBO_ErrorTriageInReconcile(t *testing.T
 //
 // The concurrent-writer guarantee — that a condition written by a disjoint
 // owner between the reconciler's Get and its patch survives because
+func TestMCPExternalAuthConfigReconciler_InvalidConfigReturnsStatusPatchError(t *testing.T) {
+	t.Parallel()
+
+	patchErr := stderrors.New("injected status patch failure")
+	cfg := &mcpv1beta1.MCPExternalAuthConfig{
+		ObjectMeta: metav1.ObjectMeta{
+			Name: "invalid-config", Namespace: "default",
+			Finalizers: []string{ExternalAuthConfigFinalizerName},
+		},
+		Spec: mcpv1beta1.MCPExternalAuthConfigSpec{Type: mcpv1beta1.ExternalAuthTypeEmbeddedAuthServer},
+	}
+	scheme := testutil.NewScheme(t)
+	fakeClient := withExternalAuthConfigRefIndexes(fake.NewClientBuilder().WithScheme(scheme)).
+		WithObjects(cfg).
+		WithStatusSubresource(&mcpv1beta1.MCPExternalAuthConfig{}).
+		WithInterceptorFuncs(interceptor.Funcs{
+			SubResourcePatch: func(
+				_ context.Context, _ client.Client, subResource string, _ client.Object,
+				_ client.Patch, _ ...client.SubResourcePatchOption,
+			) error {
+				assert.Equal(t, "status", subResource)
+				return patchErr
+			},
+		}).
+		Build()
+	recorder := events.NewFakeRecorder(10)
+	r := &MCPExternalAuthConfigReconciler{Client: fakeClient, Scheme: scheme, Recorder: recorder}
+
+	result, err := r.Reconcile(t.Context(), reconcile.Request{NamespacedName: client.ObjectKeyFromObject(cfg)})
+	require.ErrorIs(t, err, patchErr)
+	assert.Zero(t, result)
+	assert.Empty(t, drainEvents(recorder), "events must wait until the invalid status transition persists")
+}
+
 // MutateAndPatchStatus sends a partial merge-patch rather than a full PUT — is
 // proven against the shared ctrlutil.MutateAndPatchStatus helper (used by all
 // three config controllers) in
 // TestMCPOIDCConfigReconciler_ConcurrentForeignConditionSurvivesMergePatch.
+func TestMCPExternalAuthConfigReconciler_DeprecatedInboundGrantTransitions(t *testing.T) {
+	t.Parallel()
+
+	delegate := mcpv1beta1.DelegateClientConfig{
+		ClientID:        "sensitive-client-id",
+		ClientSecretRef: &mcpv1beta1.SecretKeyRef{Name: "sensitive-secret", Key: "sensitive-token-key"},
+		Scopes:          []string{"openid"}, Audiences: []string{"https://api.example.com"},
+	}
+	cfg := &mcpv1beta1.MCPExternalAuthConfig{
+		ObjectMeta: metav1.ObjectMeta{
+			Name: "deprecated-grants", Namespace: "default", Generation: 7,
+			Finalizers: []string{ExternalAuthConfigFinalizerName},
+		},
+		Spec: mcpv1beta1.MCPExternalAuthConfigSpec{
+			Type: mcpv1beta1.ExternalAuthTypeEmbeddedAuthServer,
+			EmbeddedAuthServer: &mcpv1beta1.EmbeddedAuthServerConfig{
+				Issuer: "https://auth.example.com", DelegateClients: []mcpv1beta1.DelegateClientConfig{delegate},
+			},
+		},
+	}
+	r, fakeClient := newTestMCPExternalAuthConfigReconciler(t, cfg)
+	recorder := events.NewFakeRecorder(10)
+	r.Recorder = recorder
+	req := reconcile.Request{NamespacedName: types.NamespacedName{Name: cfg.Name, Namespace: cfg.Namespace}}
+
+	reconcileAndGet := func() mcpv1beta1.MCPExternalAuthConfig {
+		t.Helper()
+		result, err := r.Reconcile(t.Context(), req)
+		require.NoError(t, err)
+		assert.Zero(t, result.RequeueAfter)
+		var got mcpv1beta1.MCPExternalAuthConfig
+		require.NoError(t, fakeClient.Get(t.Context(), req.NamespacedName, &got))
+		return got
+	}
+	assertCondition := func(got mcpv1beta1.MCPExternalAuthConfig, status metav1.ConditionStatus, reason string, generation int64) {
+		t.Helper()
+		condition := meta.FindStatusCondition(got.Status.Conditions,
+			mcpv1beta1.ConditionTypeDeprecatedInboundGrantConfiguration)
+		require.NotNil(t, condition)
+		assert.Equal(t, status, condition.Status)
+		assert.Equal(t, reason, condition.Reason)
+		assert.Equal(t, generation, condition.ObservedGeneration)
+		assert.NotContains(t, condition.Message, "sensitive-client-id")
+		assert.NotContains(t, condition.Message, "sensitive-secret")
+		assert.NotContains(t, condition.Message, "sensitive-token-key")
+	}
+
+	got := reconcileAndGet()
+	assertCondition(got, metav1.ConditionTrue, mcpv1beta1.ConditionReasonLegacyInboundGrantFields, 7)
+	assert.Contains(t, meta.FindStatusCondition(got.Status.Conditions,
+		mcpv1beta1.ConditionTypeDeprecatedInboundGrantConfiguration).Message,
+		"spec.embeddedAuthServer.delegateClients -> spec.embeddedAuthServer.inboundGrants.tokenExchange.delegateClients")
+	assert.Equal(t, 1, countContaining(drainEvents(recorder), inboundGrantDeprecationEventReason))
+
+	steadyResourceVersion := got.ResourceVersion
+	got = reconcileAndGet()
+	assert.Equal(t, steadyResourceVersion, got.ResourceVersion, "steady state must not write status")
+	assert.Zero(t, countContaining(drainEvents(recorder), inboundGrantDeprecationEventReason))
+
+	got.Spec.EmbeddedAuthServer.DelegateClients = nil
+	got.Spec.EmbeddedAuthServer.InboundGrants = &mcpv1beta1.InboundGrantsConfig{
+		TokenExchange: &mcpv1beta1.TokenExchangeInboundGrantConfig{
+			DelegateClients: []mcpv1beta1.DelegateClientConfig{delegate},
+		},
+	}
+	got.Generation = 8
+	require.NoError(t, fakeClient.Update(t.Context(), &got))
+	got = reconcileAndGet()
+	assertCondition(got, metav1.ConditionFalse,
+		mcpv1beta1.ConditionReasonCanonicalInboundGrantConfiguration, 8)
+	assert.Zero(t, countContaining(drainEvents(recorder), inboundGrantDeprecationEventReason))
+
+	got.Spec.EmbeddedAuthServer.InboundGrants = nil
+	got.Spec.EmbeddedAuthServer.DelegateClients = []mcpv1beta1.DelegateClientConfig{delegate}
+	got.Generation = 9
+	require.NoError(t, fakeClient.Update(t.Context(), &got))
+	got = reconcileAndGet()
+	assertCondition(got, metav1.ConditionTrue, mcpv1beta1.ConditionReasonLegacyInboundGrantFields, 9)
+	assert.Equal(t, 1, countContaining(drainEvents(recorder), inboundGrantDeprecationEventReason))
+}
+
 func TestMCPExternalAuthConfigReconciler_ReconcileKeepsExistingForeignCondition(t *testing.T) {
 	t.Parallel()
 

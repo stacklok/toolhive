@@ -1814,6 +1814,16 @@ const (
 	// declaration so a missing identity source is visible in
 	// `kubectl describe` instead of only in proxyrunner logs.
 	ConditionTypeIdentitySynthesized = "IdentitySynthesized"
+
+	// ConditionTypeDeprecatedInboundGrantConfiguration reports whether released
+	// legacy inbound grant fields remain populated.
+	ConditionTypeDeprecatedInboundGrantConfiguration = "DeprecatedInboundGrantConfiguration"
+)
+
+// Condition reasons for the deprecated inbound grant advisory.
+const (
+	ConditionReasonLegacyInboundGrantFields           = "LegacyInboundGrantFields"
+	ConditionReasonCanonicalInboundGrantConfiguration = "CanonicalInboundGrantConfiguration"
 )
 
 // Condition reasons for ConditionTypeIdentitySynthesized.

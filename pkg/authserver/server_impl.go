@@ -183,6 +183,7 @@ func newServer(ctx context.Context, cfg Config, stor storage.Storage) (_ *server
 		AllowPrivateKeyJWTRegistration:      cfg.AllowPrivateKeyJWTRegistration,
 		HasStaticDelegateClients:            len(cfg.DelegateClients) > 0,
 		ForceConfidentialRedirectURIs:       cfg.ForceConfidentialRedirectURIs,
+		DisableTokenExchange:                cfg.DisableTokenExchange,
 		JWTBearerGrantEnabled:               JWTBearerGrantEnabled(cfg.TrustedIssuers),
 	}
 	authServerConfig, err := oauthserver.NewAuthorizationServerConfig(oauthParams)
@@ -339,8 +340,8 @@ func buildProvider(
 	}
 	jwtBearerEnabled := JWTBearerGrantEnabled(cfg.TrustedIssuers)
 
-	// Built once, up front, and handed to both factories below when the
-	// JWT-bearer grant is also enabled: otherwise each factory would build
+	// Built once, up front, and handed to enabled factories below when the
+	// JWT-bearer grant is enabled: otherwise each factory would build
 	// its own MultiIssuerTokenValidator over the same trusted issuers,
 	// doubling every issuer's JWKS cache and background refresh goroutines
 	// for no benefit. authServerConfig is the exact *AuthorizationServerConfig
@@ -356,19 +357,23 @@ func buildProvider(
 		}
 	}
 
-	tokenExchangeFactory, err := tokenexchange.FactoryWithSharedTrustedIssuerValidator(
-		cfg.DelegationTokenLifespan, cfg.TrustedIssuers, delegateClientIDs, shared)
-	if err != nil {
-		return nil, fmt.Errorf("failed to create token exchange factory: %w", err)
+	factories := make([]oauthserver.Factory, 0, 2)
+	if !cfg.DisableTokenExchange {
+		tokenExchangeFactory, err := tokenexchange.FactoryWithSharedTrustedIssuerValidator(
+			cfg.DelegationTokenLifespan, cfg.TrustedIssuers, delegateClientIDs, shared)
+		if err != nil {
+			return nil, fmt.Errorf("failed to create token exchange factory: %w", err)
+		}
+		factories = append(factories, tokenExchangeFactory)
 	}
-	if !jwtBearerEnabled {
-		return createProvider(authServerConfig, stor, tokenExchangeFactory)
+	if jwtBearerEnabled {
+		jwtBearerFactory, err := tokenexchange.JWTBearerIssuanceFactory(cfg.TrustedIssuers, shared)
+		if err != nil {
+			return nil, fmt.Errorf("failed to create JWT-bearer factory: %w", err)
+		}
+		factories = append(factories, jwtBearerFactory)
 	}
-	jwtBearerFactory, err := tokenexchange.JWTBearerIssuanceFactory(cfg.TrustedIssuers, shared)
-	if err != nil {
-		return nil, fmt.Errorf("failed to create JWT-bearer factory: %w", err)
-	}
-	return createProvider(authServerConfig, stor, tokenExchangeFactory, jwtBearerFactory)
+	return createProvider(authServerConfig, stor, factories...)
 }
 
 // buildHandlerOptions assembles the handlers.Option list for NewHandler: the

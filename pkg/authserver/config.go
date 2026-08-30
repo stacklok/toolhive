@@ -124,11 +124,11 @@ type RunConfig struct {
 	//nolint:lll // field tags require full JSON+YAML names
 	InsecureAllowHTTP bool `json:"insecure_allow_http,omitempty" yaml:"insecure_allow_http,omitempty"`
 
-	// TrustedIssuers lists external OIDC issuers whose tokens are accepted as
-	// RFC 8693 subject tokens or RFC 7523 JWT-bearer assertions. Issuers with
-	// jwtBearerGrant enabled may be used for the JWT-bearer grant without an
-	// RFC 8693 delegation policy. Empty (the default) means only self-issued
-	// subject tokens are accepted.
+	// TrustedIssuers lists external OIDC trust declarations.
+	//
+	// This legacy field is deprecated; RFC 8693 and JWT-bearer policies embedded in these entries
+	// remain supported for compatibility. New configurations should put policy
+	// under InboundGrants and reference a named trusted issuer.
 	//
 	// See tokenexchange.TrustedIssuer for the per-issuer field reference, and
 	// docs/arch/17-token-exchange-delegation.md for the trust model, consent
@@ -222,6 +222,8 @@ type RunConfig struct {
 	// authorization-server startup, including clients intended for RFC 8693
 	// token exchange.
 	//
+	// This legacy field is deprecated; use InboundGrants.TokenExchange.DelegateClients.
+	//
 	// Independent of AllowConfidentialClientRegistration: declaring a client
 	// here does not require or enable self-service confidential DCR, and
 	// setting that flag does not declare or enable any client here. They
@@ -237,7 +239,8 @@ type RunConfig struct {
 	SPIFFETrustDomains []SPIFFETrustDomainRunConfig `json:"spiffe_trust_domains,omitempty" yaml:"spiffe_trust_domains,omitempty"`
 
 	// InboundGrants declares canonical inbound grant configuration, including
-	// SPIFFE client authentication. See InboundGrantsRunConfig.
+	// SPIFFE client authentication, delegate clients, and issuer policy. A
+	// non-nil value explicitly controls grant-family enablement.
 	InboundGrants *InboundGrantsRunConfig `json:"inbound_grants,omitempty" yaml:"inbound_grants,omitempty"`
 }
 
@@ -292,14 +295,18 @@ func (c *RunConfig) Validate() error {
 	if err := validateAllowedAudiences(c.AllowedAudiences); err != nil {
 		return err
 	}
-	if err := validateDelegateClients(c.DelegateClients, c.ScopesSupported, c.AllowedAudiences); err != nil {
+	normalized, err := NormalizeInboundGrants(c)
+	if err != nil {
 		return err
 	}
-	if err := validateTrustedIssuers(c.TrustedIssuers, c.Issuer, c.AllowedAudiences); err != nil {
+	if err := validateDelegateClients(normalized.DelegateClients, c.ScopesSupported, c.AllowedAudiences); err != nil {
+		return err
+	}
+	if err := validateTrustedIssuers(normalized.TrustedIssuers, c.Issuer, c.AllowedAudiences); err != nil {
 		return err
 	}
 	if err := ValidateConfidentialClientTransport(
-		c.AllowConfidentialClientRegistration || len(c.DelegateClients) > 0, c.InsecureAllowHTTP,
+		c.AllowConfidentialClientRegistration || len(normalized.DelegateClients) > 0, c.InsecureAllowHTTP,
 		c.Issuer, c.InsecureAllowConfidentialOverLoopbackHTTP); err != nil {
 		return err
 	}
@@ -1108,6 +1115,11 @@ type Config struct {
 	// or environment-variable reference. See RunConfig.DelegateClients for the
 	// serialized configuration.
 	DelegateClients []DelegateClient
+
+	// DisableTokenExchange prevents registration and advertisement of the RFC
+	// 8693 grant. The zero value preserves the released behavior. It is set only
+	// when canonical inbound_grants explicitly omits token_exchange.
+	DisableTokenExchange bool
 
 	// SPIFFETrust is the validated, immutable runtime SPIFFE trust model. It
 	// must be constructed with NewSPIFFETrustConfig; a nil value means no

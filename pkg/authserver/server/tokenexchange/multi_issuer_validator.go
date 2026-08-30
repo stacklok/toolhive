@@ -147,6 +147,8 @@ type JWTBearerGrantPolicy struct {
 // into docs/server/swagger.*; adding, renaming, or retagging a field here is
 // a schema change, not a purely internal one.
 type TrustedIssuer struct {
+	// Name optionally identifies this trust declaration for canonical issuer_ref references.
+	Name string `json:"name,omitempty" yaml:"name,omitempty"`
 	// IssuerURL is the expected "iss" claim value (exact match).
 	IssuerURL string `json:"issuer_url" yaml:"issuer_url"`
 	// ExpectedAudience is the expected "aud" claim value that must appear
@@ -154,6 +156,9 @@ type TrustedIssuer struct {
 	// not a client ID — required for delegation unless JWTBearerGrant is
 	// configured; see looksLikeResourceIdentifier). RFC 7523 assertions use
 	// the token endpoint as their audience instead.
+	//
+	// This legacy field is deprecated; configure RFC 8693 policy under
+	// inbound_grants.token_exchange.issuer_policies.
 	// See docs/arch/17-token-exchange-delegation.md ("ID/access-token
 	// discrimination") for why and its limits.
 	ExpectedAudience string `json:"expected_audience" yaml:"expected_audience"`
@@ -223,6 +228,9 @@ type TrustedIssuer struct {
 	// It accepts assertions from this issuer without client authentication and
 	// limits their maximum age, subjects, and RFC 8707 resources. It is
 	// independent from RFC 8693 delegation policy.
+	//
+	// This legacy field is deprecated; configure RFC 7523 policy under
+	// inbound_grants.jwt_bearer.issuer_policies.
 	JWTBearerGrant *JWTBearerGrantPolicy `json:"jwt_bearer_grant,omitempty" yaml:"jwt_bearer_grant,omitempty"`
 }
 

@@ -2344,6 +2344,175 @@ func TestNewEmbeddedAuthServer_TrustedIssuers(t *testing.T) {
 	})
 }
 
+// TestNewEmbeddedAuthServer_CanonicalInboundGrants pins the
+// RunConfig.InboundGrants -> Config wiring added by
+// authserver.NormalizeInboundGrants and prepareInboundGrantConfiguration: a
+// canonical delegate client and SPIFFE client resolve through the same
+// startup path as their legacy equivalents, canonical jwt_bearer policy
+// reaches discovery, and inbound_grants.token_exchange being explicitly
+// omitted (while another family is set) actually disables and stops
+// advertising RFC 8693 rather than merely being validated in isolation
+// (TestNormalizeInboundGrants, in pkg/authserver, already covers the pure
+// normalization; this proves it reaches a running server).
+func TestNewEmbeddedAuthServer_CanonicalInboundGrants(t *testing.T) {
+	t.Parallel()
+
+	base := func() *authserver.RunConfig {
+		return &authserver.RunConfig{
+			SchemaVersion: authserver.CurrentSchemaVersion,
+			Issuer:        "https://auth.example.com",
+			Upstreams: []authserver.UpstreamRunConfig{
+				{
+					Name: "test-upstream",
+					Type: authserver.UpstreamProviderTypeOAuth2,
+					OAuth2Config: &authserver.OAuth2UpstreamRunConfig{
+						AuthorizationEndpoint: "https://example.com/authorize",
+						TokenEndpoint:         "https://example.com/token",
+						ClientID:              "test-client-id",
+						RedirectURI:           "https://auth.example.com/oauth/callback",
+					},
+				},
+			},
+			ScopesSupported:  []string{"openid"},
+			AllowedAudiences: []string{"https://mcp.example.com"},
+		}
+	}
+
+	discoveryGrantTypes := func(t *testing.T, srv *EmbeddedAuthServer) []string {
+		t.Helper()
+		handler, ok := srv.Routes()["/.well-known/oauth-authorization-server"]
+		require.True(t, ok, "discovery route must be registered")
+
+		rec := httptest.NewRecorder()
+		req := httptest.NewRequest(http.MethodGet, "/.well-known/oauth-authorization-server", nil)
+		handler.ServeHTTP(rec, req)
+		require.Equal(t, http.StatusOK, rec.Code)
+
+		var metadata oauthproto.AuthorizationServerMetadata
+		require.NoError(t, json.NewDecoder(rec.Body).Decode(&metadata))
+		return metadata.GrantTypesSupported
+	}
+
+	t.Run("canonical delegate client alone builds a server with token exchange enabled", func(t *testing.T) {
+		t.Parallel()
+
+		secretFile := filepath.Join(t.TempDir(), "delegate-secret")
+		require.NoError(t, os.WriteFile(secretFile, []byte("s3cr3t-value-that-is-long-enough-for-32-chars"), 0o600))
+
+		cfg := base()
+		cfg.InboundGrants = &authserver.InboundGrantsRunConfig{
+			TokenExchange: &authserver.TokenExchangeInboundGrantRunConfig{
+				DelegateClients: []authserver.DelegateClientRunConfig{{
+					ClientID:         "coding-agent",
+					ClientSecretFile: secretFile,
+					Scopes:           []string{"openid"},
+					Audiences:        []string{"https://mcp.example.com"},
+				}},
+			},
+		}
+
+		srv, err := NewEmbeddedAuthServer(context.Background(), cfg)
+		require.NoError(t, err)
+		require.NotNil(t, srv)
+		t.Cleanup(func() { _ = srv.Close() })
+
+		assert.Contains(t, discoveryGrantTypes(t, srv), oauthproto.GrantTypeTokenExchange,
+			"canonical delegate client must not disable token exchange")
+	})
+
+	// A SPIFFE-only configuration cannot be exercised through
+	// NewEmbeddedAuthServer here: RunConfig.Validate() hard-rejects a
+	// non-empty spiffe_trust_domains until a real SVID-verification
+	// consumer lands (see config.go's validateSPIFFENotYetEnforced). This
+	// test instead calls prepareInboundGrantConfiguration directly -- the
+	// package-private function NewEmbeddedAuthServer would otherwise reach
+	// after cfg.Validate() -- to prove the underlying capability logic
+	// still holds: SPIFFE client-auth presence must force
+	// Capabilities.TokenExchange true independent of the legacy/canonical
+	// token-exchange projection, so a SPIFFE-only config does not silently
+	// disable the RFC 8693 grant handler once the hard-reject above is
+	// lifted.
+	t.Run("SPIFFE client auth alone sets the token exchange capability", func(t *testing.T) {
+		t.Parallel()
+
+		cfg := base()
+		cfg.SPIFFETrustDomains = []authserver.SPIFFETrustDomainRunConfig{{
+			Name:        "prod",
+			TrustDomain: "example.org",
+			Methods:     []authserver.SPIFFEAuthenticationMethod{authserver.SPIFFEAuthenticationMethodX509},
+			BundleSource: authserver.SPIFFEBundleSourceRunConfig{
+				Type:        authserver.SPIFFEBundleSourceTypeWorkloadAPI,
+				WorkloadAPI: &authserver.SPIFFEWorkloadAPIBundleSourceRunConfig{},
+			},
+		}}
+		cfg.InboundGrants = &authserver.InboundGrantsRunConfig{
+			SPIFFEClientAuth: []authserver.SPIFFEClientAuthRunConfig{{
+				TrustDomainRef:   "prod",
+				PrincipalPattern: "spiffe://example.org/ns/default/agent",
+				ClientID:         "spiffe-agent",
+				Methods:          []authserver.SPIFFEAuthenticationMethod{authserver.SPIFFEAuthenticationMethodX509},
+				Scopes:           []string{"openid"},
+				Audiences:        []string{"https://mcp.example.com"},
+				GrantTypes:       []string{authserver.SPIFFEGrantTypeTokenExchange},
+			}},
+		}
+
+		normalized, _, spiffeTrust, err := prepareInboundGrantConfiguration(cfg, nil)
+		require.NoError(t, err)
+		require.NotNil(t, spiffeTrust)
+		assert.True(t, normalized.Capabilities.TokenExchange,
+			"SPIFFE client auth alone must not leave the token exchange capability disabled")
+	})
+
+	t.Run("inbound_grants with token_exchange omitted disables and stops advertising RFC 8693", func(t *testing.T) {
+		t.Parallel()
+
+		cfg := base()
+		cfg.TrustedIssuers = []tokenexchange.TrustedIssuer{{Name: "idp", IssuerURL: "https://idp.example.com"}}
+		cfg.InboundGrants = &authserver.InboundGrantsRunConfig{
+			JWTBearer: &authserver.JWTBearerInboundGrantRunConfig{
+				IssuerPolicies: []authserver.JWTBearerIssuerPolicyRunConfig{{
+					IssuerRef:       "idp",
+					MaxAssertionAge: "5m",
+					SubjectBindings: []tokenexchange.JWTBearerSubjectBinding{{
+						Subject:          "workload",
+						AllowedResources: []string{"https://mcp.example.com"},
+					}},
+				}},
+			},
+		}
+
+		srv, err := NewEmbeddedAuthServer(context.Background(), cfg)
+		require.NoError(t, err)
+		require.NotNil(t, srv)
+		t.Cleanup(func() { _ = srv.Close() })
+
+		grantTypes := discoveryGrantTypes(t, srv)
+		assert.NotContains(t, grantTypes, oauthproto.GrantTypeTokenExchange,
+			"inbound_grants present with token_exchange omitted must disable RFC 8693")
+		assert.Contains(t, grantTypes, oauthproto.GrantTypeJWTBearer,
+			"canonical jwt_bearer policy must still be advertised")
+	})
+
+	t.Run("canonical token exchange conflicts with legacy delegate_clients", func(t *testing.T) {
+		t.Parallel()
+
+		cfg := base()
+		cfg.DelegateClients = []authserver.DelegateClientRunConfig{{
+			ClientID:  "legacy-delegate",
+			Scopes:    []string{"openid"},
+			Audiences: []string{"https://mcp.example.com"},
+		}}
+		cfg.InboundGrants = &authserver.InboundGrantsRunConfig{
+			TokenExchange: &authserver.TokenExchangeInboundGrantRunConfig{},
+		}
+
+		_, err := NewEmbeddedAuthServer(context.Background(), cfg)
+		require.Error(t, err)
+		assert.Contains(t, err.Error(), "conflicts with legacy delegate_clients")
+	})
+}
+
 func TestResolveCIMDConfig(t *testing.T) {
 	t.Parallel()
 

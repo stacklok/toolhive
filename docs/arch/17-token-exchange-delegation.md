@@ -73,6 +73,65 @@ binding. The Kubernetes operator also exposes `trusted_issuers` as
 `EmbeddedAuthServerConfig.trustedIssuers` — see
 [Kubernetes operator](#kubernetes-operator) below.
 
+#### Canonical `inbound_grants` configuration
+
+The top-level `delegate_clients` and the RFC 8693/7523 fields embedded
+directly on `trusted_issuers[*]` above are the legacy configuration shape.
+`RunConfig.inbound_grants` (`authserver.InboundGrantsRunConfig`) is the
+canonical replacement: it groups the same policy under
+`inbound_grants.token_exchange` (delegate clients and per-issuer RFC 8693
+policy) and `inbound_grants.jwt_bearer` (per-issuer RFC 7523 policy), each
+referencing a `trusted_issuers` entry by its `name` rather than embedding
+policy fields on the issuer itself. SPIFFE client policy is configured
+separately, as a sibling of both under `inbound_grants.spiffe_client_auth`
+(described further below) — not
+nested under `inbound_grants.token_exchange`, since a SPIFFE association
+authenticates a client but does not by itself grant it anything:
+
+```yaml
+issuer: https://auth.example.com
+scopes_supported: [openid, profile]
+allowed_audiences: [https://mcp.example.com]
+trusted_issuers:
+  - name: reporting-idp
+    issuer_url: https://login.example-idp.com
+inbound_grants:
+  token_exchange:
+    delegate_clients:
+      - client_id: reporting-delegate
+        client_secret_env_var: REPORTING_DELEGATE_CLIENT_SECRET
+        scopes: [openid]
+        audiences: [https://mcp.example.com]
+    issuer_policies:
+      - issuer_ref: reporting-idp
+        expected_audience: https://mcp.example.com
+        allowed_actors: [external-reporting-client]
+        allowed_delegate_clients: [reporting-delegate]
+```
+
+`NormalizeInboundGrants` (`pkg/authserver/inbound_grants.go`) reconciles both
+shapes at validation time, per grant family:
+
+- If `inbound_grants.token_exchange` is set, any legacy `delegate_clients` or
+  RFC 8693 fields embedded on `trusted_issuers[*]` are rejected as a
+  configuration conflict — the two token-exchange sources are mutually
+  exclusive. Likewise for `inbound_grants.jwt_bearer` against a legacy
+  `trusted_issuers[*].jwt_bearer_grant`.
+- The two grant families are independent: setting only
+  `inbound_grants.jwt_bearer` still lets legacy `delegate_clients`/RFC 8693
+  fields enable token exchange, and vice versa — `inbound_grants` does not
+  take over both families just by being non-nil.
+- `issuer_ref` resolves against `trusted_issuers[*].name`; an issuer without
+  a `name`, an unresolvable `issuer_ref`, or a duplicate `name`/`issuer_url`
+  fails validation.
+
+Existing deployments using only the legacy shape are unaffected: omitting
+`inbound_grants` entirely preserves the released behavior, including RFC
+8693 being enabled by default. SPIFFE client policy
+(`inbound_grants.spiffe_client_auth`) has no legacy equivalent
+and must reference a `spiffe_trust_domains` entry the same way issuer
+policies reference `trusted_issuers`.
+
 ### Token-only embedded authorization servers
 
 An embedded authorization server may omit upstream identity providers only when
@@ -209,7 +268,11 @@ reuse IDs between the two mechanisms.
 
 Both `/.well-known/oauth-authorization-server` and
 `/.well-known/openid-configuration` advertise the token-exchange grant in
-`grant_types_supported`. `token_endpoint_auth_methods_supported` always
+`grant_types_supported` by default. Setting `inbound_grants` with
+`token_exchange` omitted disables and stops advertising RFC 8693 entirely
+(`Config.DisableTokenExchange`, `AuthorizationServerConfig.TokenExchangeEnabled`)
+— the same flag governs both registration with fosite and discovery
+advertisement, so they cannot drift out of sync. `token_endpoint_auth_methods_supported` always
 includes `none`; it also includes `client_secret_basic` and
 `client_secret_post` when confidential DCR is enabled or a static delegate
 client is configured, and includes `private_key_jwt` when
@@ -636,7 +699,14 @@ involved. It is enabled per trusted issuer by setting
 `TrustedIssuer.JWTBearerGrant` (`jwt_bearer_grant` on a hand-written
 `authserver.RunConfig`, `jwtBearerGrant` on the operator's
 `TrustedIssuerConfig`) — independent of that issuer's RFC 8693 delegation
-fields, though both may be configured on the same issuer.
+fields, though both may be configured on the same issuer. This is the
+legacy shape; a hand-written `RunConfig` may instead configure the same
+policy under `inbound_grants.jwt_bearer.issuer_policies`, referencing the
+issuer by `name` — see [Canonical `inbound_grants`
+configuration](#canonical-inbound_grants-configuration). The two shapes are
+mutually exclusive: setting `inbound_grants.jwt_bearer` while any
+`trusted_issuers[*].jwt_bearer_grant` is still set anywhere in the config is
+rejected, regardless of which issuer each one refers to.
 
 ### JWT-bearer configuration
 

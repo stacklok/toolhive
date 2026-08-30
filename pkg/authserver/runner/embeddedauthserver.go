@@ -83,11 +83,6 @@ func NewEmbeddedAuthServer(ctx context.Context, cfg *authserver.RunConfig) (*Emb
 	if err := cfg.Validate(); err != nil {
 		return nil, fmt.Errorf("invalid run config: %w", err)
 	}
-	delegateClients, err := resolveDelegateClients(cfg.DelegateClients)
-	if err != nil {
-		return nil, err
-	}
-
 	// Create the storage backend FIRST so the DCR resolver and the auth
 	// server share the same persistence. Both MemoryStorage and RedisStorage
 	// satisfy storage.DCRCredentialStore (verified by package-level var _
@@ -100,7 +95,7 @@ func NewEmbeddedAuthServer(ctx context.Context, cfg *authserver.RunConfig) (*Emb
 	if err != nil {
 		return nil, fmt.Errorf("failed to create storage: %w", err)
 	}
-	return newEmbeddedAuthServerWithStorage(ctx, cfg, stor, delegateClients)
+	return newEmbeddedAuthServerWithStorage(ctx, cfg, stor, nil)
 }
 
 // NewEmbeddedAuthServerWithStorage is the exported core constructor that
@@ -141,6 +136,33 @@ func NewEmbeddedAuthServerWithStorage(
 	return newEmbeddedAuthServerWithStorage(ctx, cfg, stor, nil)
 }
 
+func prepareInboundGrantConfiguration(
+	cfg *authserver.RunConfig,
+	delegateClients []authserver.DelegateClient,
+) (*authserver.NormalizedInboundGrants, []authserver.DelegateClient, *authserver.SPIFFETrustConfig, error) {
+	normalized, err := authserver.NormalizeInboundGrants(cfg)
+	if err != nil {
+		return nil, nil, nil, fmt.Errorf("normalize inbound grants: %w", err)
+	}
+	if delegateClients == nil && len(normalized.DelegateClients) > 0 {
+		delegateClients, err = resolveDelegateClients(normalized.DelegateClients)
+		if err != nil {
+			return nil, nil, nil, err
+		}
+	}
+	// SPIFFE client authentication is independent of the legacy/canonical
+	// token-exchange projection above: it is read straight from cfg.InboundGrants,
+	// never through NormalizedInboundGrants, so authentication method and
+	// grant-family enablement stay separately configurable.
+	spiffeTrust, err := authserver.NewSPIFFETrustConfig(
+		cfg.SPIFFETrustDomains, cfg.InboundGrants, cfg.ScopesSupported, cfg.AllowedAudiences,
+	)
+	if err != nil {
+		return nil, nil, nil, fmt.Errorf("build SPIFFE trust config: %w", err)
+	}
+	return normalized, delegateClients, spiffeTrust, nil
+}
+
 func newEmbeddedAuthServerWithStorage(
 	ctx context.Context,
 	cfg *authserver.RunConfig,
@@ -176,8 +198,13 @@ func newEmbeddedAuthServerWithStorage(
 	// otherwise skip the check. Placed inside the deferred-cleanup gate above so
 	// a validation failure still closes the caller-supplied storage per the
 	// resource-ownership contract.
-	var err error
-	delegateClients, err = validateAndResolveDelegateClients(cfg, delegateClients)
+	if cfg == nil {
+		return nil, fmt.Errorf("config is required")
+	}
+	if err := cfg.Validate(); err != nil {
+		return nil, fmt.Errorf("invalid run config: %w", err)
+	}
+	normalized, delegateClients, spiffeTrust, err := prepareInboundGrantConfiguration(cfg, delegateClients)
 	if err != nil {
 		return nil, err
 	}
@@ -240,16 +267,9 @@ func newEmbeddedAuthServerWithStorage(
 	// for BaselineClientScopes, low cardinality in practice for the others).
 	cimdEnabled, cimdCacheMaxSize, cimdCacheFallbackTTL := resolveCIMDConfig(cfg.CIMD)
 
-	trustedIssuers, err := tokenexchange.ResolveJWTBearerGrantPolicies(cfg.TrustedIssuers)
+	trustedIssuers, err := tokenexchange.ResolveJWTBearerGrantPolicies(normalized.TrustedIssuers)
 	if err != nil {
 		return nil, fmt.Errorf("failed to resolve JWT-bearer grant policies: %w", err)
-	}
-
-	spiffeTrust, err := authserver.NewSPIFFETrustConfig(
-		cfg.SPIFFETrustDomains, cfg.InboundGrants, cfg.ScopesSupported, cfg.AllowedAudiences,
-	)
-	if err != nil {
-		return nil, fmt.Errorf("failed to build SPIFFE trust config: %w", err)
 	}
 
 	resolvedCfg := authserver.Config{
@@ -277,9 +297,10 @@ func newEmbeddedAuthServerWithStorage(
 		// slice is still shared with cfg. NewMultiIssuerTokenValidator's
 		// constructor clones AllowedActors per issuer before use, so the
 		// authorization-critical data is protected without a deep copy here.
-		TrustedIssuers:  trustedIssuers,
-		DelegateClients: delegateClients,
-		SPIFFETrust:     spiffeTrust,
+		TrustedIssuers:       trustedIssuers,
+		DelegateClients:      delegateClients,
+		DisableTokenExchange: !normalized.Capabilities.TokenExchange,
+		SPIFFETrust:          spiffeTrust,
 	}
 
 	// 8. Create the auth server. authserver.New also asserts the DCR
@@ -730,24 +751,6 @@ func resolveSecret(file, envVar string) (string, error) {
 	}
 	slog.Debug("no client secret configured (neither file nor env var specified)")
 	return "", nil
-}
-
-// validateAndResolveDelegateClients validates cfg and resolves delegate-client
-// secret references for direct constructor callers.
-func validateAndResolveDelegateClients(
-	cfg *authserver.RunConfig,
-	delegateClients []authserver.DelegateClient,
-) ([]authserver.DelegateClient, error) {
-	if cfg == nil {
-		return nil, fmt.Errorf("config is required")
-	}
-	if err := cfg.Validate(); err != nil {
-		return nil, fmt.Errorf("invalid run config: %w", err)
-	}
-	if delegateClients != nil || len(cfg.DelegateClients) == 0 {
-		return delegateClients, nil
-	}
-	return resolveDelegateClients(cfg.DelegateClients)
 }
 
 // resolveDelegateClients resolves secret references and copies authorization

@@ -104,11 +104,18 @@ type SPIFFEWorkloadAPIBundleSourceRunConfig struct{}
 // InboundGrantsRunConfig declares canonical inbound grant configuration for
 // separately declared trust roots. SPIFFE client authentication entries live
 // here, alongside other inbound grant purposes, so SPIFFE is not a parallel
-// trust path.
+// trust path, and so client authentication and grant-family enablement
+// (token exchange, JWT-bearer) remain independently configurable.
 type InboundGrantsRunConfig struct {
 	// SPIFFEClientAuth associates SPIFFE principal patterns with explicit OAuth
 	// client identities and permissions. See SPIFFEClientAuthRunConfig.
 	SPIFFEClientAuth []SPIFFEClientAuthRunConfig `json:"spiffe_client_auth,omitempty" yaml:"spiffe_client_auth,omitempty"`
+
+	// TokenExchange configures RFC 8693 inbound clients and issuer policies.
+	TokenExchange *TokenExchangeInboundGrantRunConfig `json:"token_exchange,omitempty" yaml:"token_exchange,omitempty"`
+
+	// JWTBearer configures RFC 7523 issuer policies.
+	JWTBearer *JWTBearerInboundGrantRunConfig `json:"jwt_bearer,omitempty" yaml:"jwt_bearer,omitempty"`
 }
 
 // SPIFFEClientAuthRunConfig associates one SPIFFE principal pattern from a

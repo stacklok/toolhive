@@ -10,13 +10,14 @@ import (
 	"net/http"
 	"time"
 
-	jose "github.com/go-jose/go-jose/v4"
 	josev3 "github.com/go-jose/go-jose/v3"
+	jose "github.com/go-jose/go-jose/v4"
 	"github.com/ory/fosite"
 	"github.com/ory/fosite/compose"
 
 	oauthserver "github.com/stacklok/toolhive/pkg/authserver/server"
 	"github.com/stacklok/toolhive/pkg/authserver/server/handlers"
+	"github.com/stacklok/toolhive/pkg/authserver/server/keys"
 	"github.com/stacklok/toolhive/pkg/authserver/server/registration"
 	"github.com/stacklok/toolhive/pkg/authserver/server/tokenexchange"
 	"github.com/stacklok/toolhive/pkg/authserver/storage"
@@ -79,6 +80,31 @@ func withUpstreamFactory(factory upstreamProviderFactory) serverOption {
 	}
 }
 
+func getAdditionalKeys(ctx context.Context, kp keys.KeyProvider, signingKeyID string) []jose.JSONWebKey {
+	pubKeys, err := kp.PublicKeys(ctx)
+	if err != nil {
+		slog.Warn("failed to get public keys for JWKS, serving signing key only", "error", err)
+		return nil
+	}
+	return additionalJWKs(signingKeyID, pubKeys)
+}
+
+func additionalJWKs(signingKeyID string, pubKeys []*keys.PublicKeyData) []jose.JSONWebKey {
+	var additional []jose.JSONWebKey
+	for _, pk := range pubKeys {
+		if pk.KeyID == signingKeyID {
+			continue
+		}
+		additional = append(additional, jose.JSONWebKey{
+			Key:       pk.PublicKey,
+			KeyID:     pk.KeyID,
+			Algorithm: pk.Algorithm,
+			Use:       "sig",
+		})
+	}
+	return additional
+}
+
 // newServer creates a new OAuth authorization server.
 // The opts parameter allows injecting dependencies for testing.
 func newServer(ctx context.Context, cfg Config, stor storage.Storage, opts ...serverOption) (*server, error) {
@@ -135,26 +161,7 @@ func newServer(ctx context.Context, cfg Config, stor storage.Storage, opts ...se
 		return nil, fmt.Errorf("failed to get signing key: %w", err)
 	}
 
-	// Collect additional public keys for JWKS rotation. The signing key stays
-	// the sole signer; fallback keys are published as public-only JWKS entries
-	// so consumers can verify tokens signed before rotation. The primary is
-	// kept first to preserve kid priority.
-	var additionalKeys []jose.JSONWebKey
-	if pubKeys, pubErr := cfg.KeyProvider.PublicKeys(ctx); pubErr == nil {
-		for _, pk := range pubKeys {
-			if pk.KeyID == signingKey.KeyID {
-				continue
-			}
-			additionalKeys = append(additionalKeys, jose.JSONWebKey{
-				Key:       pk.PublicKey,
-				KeyID:     pk.KeyID,
-				Algorithm: pk.Algorithm,
-				Use:       "sig",
-			})
-		}
-	} else {
-		slog.Warn("failed to get public keys for JWKS, serving signing key only", "error", pubErr)
-	}
+	additionalKeys := getAdditionalKeys(ctx, cfg.KeyProvider, signingKey.KeyID)
 
 	// Create OAuth2 config from authserver.Config
 	oauthParams := &oauthserver.AuthorizationServerParams{

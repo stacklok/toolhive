@@ -152,11 +152,22 @@ func TestVerifyOCIKeylessRejectsKeySignedArtifact(t *testing.T) {
 	ref, digest := pushTestArtifact(t, host)
 	signArtifact(t, ref, digest)
 
-	// The keyless flow requires a certificate chain to Fulcio; a key-signed
-	// bundle has none, so this must fail as an invalid signature — not as
-	// unsigned, and never as a panic.
+	// The keyless flow requires a certificate chain to Fulcio and a
+	// key-signed bundle has none, so this must fail — but as the key-pair
+	// layout it is, never as unsigned, and never as a panic.
+	//
+	// This assertion was ErrSignatureInvalid until #6442: that was the only
+	// classification available, not a claim the signature was bad. It is a
+	// real signature referrer, so retrieveBundles finds it and ErrUnsigned
+	// never fires; blaming the signature then sent users hunting a
+	// corruption that was not there, and --allow-unsigned could not override
+	// it because that exception only applies to ErrUnsigned.
 	_, err := NewDefault(nil).VerifyOCI(t.Context(), ref, digest, nil)
-	require.ErrorIs(t, err, ErrSignatureInvalid)
+	require.ErrorIs(t, err, ErrKeySigned)
+	require.NotErrorIs(t, err, ErrSignatureInvalid,
+		"the signature is intact; the missing piece is a trust anchor to check it against")
+	require.NotErrorIs(t, err, ErrUnsigned,
+		"the artifact is signed, so --allow-unsigned must not be able to record an unsigned exception")
 }
 
 func TestVerifyBundleOffline(t *testing.T) {
@@ -528,4 +539,25 @@ func TestFirstVerifiedBundleReturnsEveryRejection(t *testing.T) {
 	require.Len(t, errs, 2)
 	assert.EqualError(t, errs[0], "first")
 	assert.EqualError(t, errs[1], "second")
+}
+
+// TestVerifyOCIReportsKeySignedAgainstLockedIdentity covers a key-signed
+// artifact arriving at an entry already pinned to a keyless identity. The expectation
+// cannot be satisfied and cannot even be compared — there is no certificate to
+// read an observed identity from — so the key-pair diagnosis must win rather
+// than a signer-mismatch report naming an identity nothing produced.
+func TestVerifyOCIReportsKeySignedAgainstLockedIdentity(t *testing.T) {
+	t.Parallel()
+	host := startTestRegistry(t)
+	ref, digest := pushTestArtifact(t, host)
+	signArtifact(t, ref, digest)
+
+	expected := NewLockExpectation(&lockfile.Provenance{
+		SignerIdentity: "org/repo/.github/workflows/publish.yml",
+		CertIssuer:     "https://token.actions.githubusercontent.com",
+	})
+	_, err := NewDefault(nil).VerifyOCI(t.Context(), ref, digest, expected)
+	require.ErrorIs(t, err, ErrKeySigned)
+	require.NotErrorIs(t, err, ErrSignerMismatch,
+		"no certificate exists to compare, so reporting a signer mismatch would invent an observation")
 }

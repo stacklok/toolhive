@@ -15,6 +15,21 @@ var (
 	// ErrSignerMismatch indicates the signature verifies, but against an
 	// identity other than the expected one.
 	ErrSignerMismatch = errors.New("signer identity mismatch")
+	// ErrKeySigned indicates the artifact carries only cosign key-pair
+	// signatures, which install-time verification cannot check: the keyless
+	// (Fulcio) trust root has nothing to chain them to, and the signing
+	// public key is recoverable neither from the artifact nor from the
+	// attached bundle — cosign's manifest defines no annotation carrying it,
+	// and the reconstructed bundle holds a fixed placeholder hint in its
+	// place.
+	//
+	// Deliberately NOT wrapping ErrSignatureInvalid, unlike
+	// ErrProvenanceFieldMismatch below: the signature may be perfectly
+	// valid, so reporting it as a verification failure is precisely the
+	// misclassification this sentinel exists to end. That narrowing cannot
+	// fail open, because no caller treats ErrSignatureInvalid as permission
+	// to proceed — it only selects a failure reason.
+	ErrKeySigned = errors.New("artifact is signed with a cosign key pair, which cannot be verified at install time")
 	// ErrProvenanceFieldMismatch indicates the signature verifies against
 	// the expected signer identity and issuer, but a certificate field the
 	// Sigstore policy cannot itself express — the repository ref or runner

@@ -142,11 +142,16 @@ func TestPrintPluginInstallTrust(t *testing.T) {
 			want: "Installed my-plugin (unsigned — recorded as an explicit exception in the lock file)\n",
 		},
 		{
-			name: "user scope, no trust state",
+			// A user-scope install records no lock trust decision, so there
+			// is nothing trust-related to report and the CLI's silent-success
+			// rule applies: a bare "Installed my-plugin" would turn every
+			// previously quiet install into output while saying nothing about
+			// trust.
+			name: "user scope, no trust state, prints nothing",
 			result: &plugins.InstallResult{
 				Plugin: plugins.InstalledPlugin{Metadata: plugins.PluginMetadata{Name: "my-plugin"}},
 			},
-			want: "Installed my-plugin\n",
+			want: "",
 		},
 		{name: "nil result prints nothing", result: nil, want: ""},
 	}

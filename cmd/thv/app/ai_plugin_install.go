@@ -79,6 +79,11 @@ func aiPluginInstallCmdFunc(cmd *cobra.Command, args []string) error {
 // printPluginInstallTrust shows the trust state the install recorded — RFC
 // THV-0080 wants the pinned identity displayed prominently, not discovered
 // weeks later inside a signer-mismatch error.
+//
+// Only a recorded trust decision is printed. An install with neither — a
+// user-scope install, which writes no lock entry — returns silently, per the
+// CLI's silent-success rule: a bare "Installed <name>" carries no trust
+// information and would turn every previously quiet install into output.
 func printPluginInstallTrust(result *plugins.InstallResult) {
 	if result == nil {
 		return
@@ -92,7 +97,5 @@ func printPluginInstallTrust(result *plugins.InstallResult) {
 		fmt.Printf("Installed %s (signed by %s)\n", name, result.Provenance.SignerIdentity)
 	case result.Unsigned:
 		fmt.Printf("Installed %s (unsigned — recorded as an explicit exception in the lock file)\n", name)
-	default:
-		fmt.Printf("Installed %s\n", name)
 	}
 }

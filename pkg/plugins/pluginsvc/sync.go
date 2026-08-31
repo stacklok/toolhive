@@ -287,6 +287,12 @@ func (s *service) reinstallPinned(
 		LockResolvedReference: entry.ResolvedReference, // preserve — pinnedRef is a restore form
 		SyncRestore:           true,                    // reinstall despite unchanged Digest — drift is on disk, not the pin
 		ExpectedCanonicalName: entry.Name,
+		// Forwarded so --allow-unsigned is a real remedy: a lock entry
+		// recording no trust decision is drift, and repairing it fails closed
+		// on unsigned content (isAllowedUnsigned makes no implicit exception).
+		// Without this the documented migration would have no way to record
+		// the exception the user explicitly asked for.
+		AllowUnsigned: opts.AllowUnsigned,
 	})
 	return err
 }
@@ -358,6 +364,7 @@ func (s *service) reinstallLocalStorePin(
 		LockResolvedReference: "", // local-store pins stay empty so sync restores by digest
 		SyncRestore:           true,
 		ExpectedCanonicalName: entry.Name,
+		AllowUnsigned:         opts.AllowUnsigned, // see reinstallPinned
 	}
 	hydrateOptsFromLocalBuild(&installOpts, layerData, d, pluginConfig, entry.Source)
 	_, err = s.installAlreadyLocked(ctx, installOpts)

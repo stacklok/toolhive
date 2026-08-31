@@ -293,8 +293,24 @@ func TestVerifyLocalInstall(t *testing.T) {
 			unsigned: true,
 		},
 		{
-			name:     "lock-driven upgrade of a local build needs no flag",
-			opts:     plugins.InstallOptions{ExpectedCanonicalName: "local-plugin"},
+			// A lock-driven repair of an entry recording no trust decision
+			// must NOT invent one. Converting "no decision" to
+			// "unsigned: true" automatically is the implicit trust decision
+			// the lock file exists to prevent, so this fails closed even
+			// though no user flag reached the operation.
+			name:    "lock-driven repair of an unrecorded entry fails closed",
+			opts:    plugins.InstallOptions{ExpectedCanonicalName: "local-plugin"},
+			wantErr: true,
+		},
+		{
+			// The remedy: sync forwards --allow-unsigned, so the exception
+			// can still be recorded — deliberately, by the user.
+			name: "lock-driven repair records the exception with the flag",
+			opts: plugins.InstallOptions{
+				ExpectedCanonicalName: "local-plugin",
+				SyncRestore:           true,
+				AllowUnsigned:         true,
+			},
 			unsigned: true,
 		},
 	}
@@ -347,14 +363,16 @@ func TestClassifyInstallVerifyErrorDistinguishesProvenanceField(t *testing.T) {
 
 	fieldMismatch := fmt.Errorf("%w: %w: locked to repository ref, but the artifact carries a different one",
 		verifier.ErrSignerMismatch, verifier.ErrProvenanceFieldMismatch)
-	err := classifyInstallVerifyError(fieldMismatch, "some-plugin", &lockfile.Provenance{SignerIdentity: testSignerIdentity})
+	err := classifyInstallVerifyError(fieldMismatch, "some-plugin",
+		&lockfile.Provenance{SignerIdentity: testSignerIdentity}, plugins.InstallOptions{})
 	assert.Contains(t, err.Error(), "no longer matches its pinned provenance",
 		"a provenance-field mismatch must lead with the field-specific wording, not the identity one")
 	assert.NotContains(t, err.Error(), "signer identity mismatch for",
 		"the identity-specific phrasing (distinct from ErrSignerMismatch's own wrapped message text) must not appear")
 
 	identityMismatch := classifyInstallVerifyError(
-		verifier.ErrSignerMismatch, "some-plugin", &lockfile.Provenance{SignerIdentity: testSignerIdentity})
+		verifier.ErrSignerMismatch, "some-plugin",
+		&lockfile.Provenance{SignerIdentity: testSignerIdentity}, plugins.InstallOptions{})
 	assert.Contains(t, identityMismatch.Error(), "signer identity mismatch for",
 		"a genuine signer-identity mismatch keeps its existing wording")
 }
@@ -471,7 +489,7 @@ func TestInstallVerification_OversizedBundleIsNotStored(t *testing.T) {
 func TestClassifyInstallVerifyErrorNamesKeySigned(t *testing.T) {
 	t.Parallel()
 
-	err := classifyInstallVerifyError(verifier.ErrKeySigned, "some-plugin", nil)
+	err := classifyInstallVerifyError(verifier.ErrKeySigned, "some-plugin", nil, plugins.InstallOptions{})
 	assert.Contains(t, err.Error(), "cosign key pair")
 	assert.Contains(t, err.Error(), "re-publish it with keyless signing",
 		"the message must state the remedy, not merely the refusal")
@@ -505,9 +523,12 @@ func TestIsAllowedUnsignedRejectsKeySigned(t *testing.T) {
 		"the genuine unsigned case must still be allowed through")
 }
 
-// TestInfoReportsLockTrustState covers the four states `thv ai-plugin info`
+// TestInfoReportsLockTrustState covers the five states `thv ai-plugin info`
 // renders: a verified signer, a provisional one, an explicit unsigned
-// exception, and a plugin with no lock entry at all.
+// exception, a lock-managed entry recording no trust decision at all, and a
+// plugin with no lock entry. The last two must stay distinguishable — both
+// leave Provenance nil and Unsigned false, but one is drift sync can repair
+// and the other is simply untracked.
 //
 //nolint:paralleltest // serial: real sqlite + on-disk client materialization per test
 func TestInfoReportsLockTrustState(t *testing.T) {
@@ -518,6 +539,7 @@ func TestInfoReportsLockTrustState(t *testing.T) {
 		wantProvenance  bool
 		wantProvisional bool
 		wantUnsigned    bool
+		wantUnrecorded  bool
 	}{
 		{name: "signed records the observed identity", wantProvenance: true},
 		{
@@ -533,6 +555,16 @@ func TestInfoReportsLockTrustState(t *testing.T) {
 				e.Unsigned = true
 			},
 			wantUnsigned: true,
+		},
+		{
+			// A pre-verification entry: neither field set. sync calls this
+			// drift, so info must not render it as untracked.
+			name: "entry with no trust decision is reported as unrecorded",
+			mutateEntry: func(e *lockfile.Entry) {
+				e.Provenance = nil
+				e.Unsigned = false
+			},
+			wantUnrecorded: true,
 		},
 		{name: "no lock entry reports nothing", removeEntry: true},
 	}
@@ -561,6 +593,7 @@ func TestInfoReportsLockTrustState(t *testing.T) {
 			require.NoError(t, err)
 
 			assert.Equal(t, tc.wantUnsigned, info.Unsigned)
+			assert.Equal(t, tc.wantUnrecorded, info.TrustUnrecorded)
 			if !tc.wantProvenance {
 				assert.Nil(t, info.Provenance)
 				return

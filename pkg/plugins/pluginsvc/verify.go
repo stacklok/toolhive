@@ -126,7 +126,7 @@ func (s *service) verifyOCIInstall(
 		if isAllowedUnsigned(verifyErr, opts, expected) {
 			return &provenanceDecision{unsigned: true}, nil
 		}
-		return nil, classifyInstallVerifyError(verifyErr, pluginName, expected)
+		return nil, classifyInstallVerifyError(verifyErr, pluginName, expected, opts)
 	}
 	return signedDecision(result, pluginName)
 }
@@ -165,7 +165,7 @@ func (s *service) verifyGitInstall(
 		if isAllowedUnsigned(verifyErr, opts, expected) {
 			return &provenanceDecision{unsigned: true}, nil
 		}
-		return nil, classifyInstallVerifyError(verifyErr, pluginName, expected)
+		return nil, classifyInstallVerifyError(verifyErr, pluginName, expected, opts)
 	}
 	return signedDecision(result, pluginName)
 }
@@ -191,16 +191,12 @@ func verifyLocalInstall(opts plugins.InstallOptions, pluginName string) (*proven
 	if expectUnsigned {
 		return unsignedLockedDecision(opts, pluginName)
 	}
-	// A lock-driven restore of an entry with no recorded trust state
-	// materializes what install once accepted, so it records unsigned
-	// rather than demanding a flag the operation has no way to pass —
-	// the same allowance isAllowedUnsigned makes for OCI and git.
-	if !opts.AllowUnsigned && !lockDrivenInstall(opts) {
-		return nil, httperr.WithCode(
-			fmt.Errorf("local build for %q is unsigned; set allow_unsigned (--allow-unsigned) to record an exception",
-				pluginName),
-			http.StatusForbidden,
-		)
+	// An entry with no recorded trust state fails closed here too, including
+	// under a lock-driven restore — see isAllowedUnsigned. Repairing it
+	// automatically would record an unsigned exception nobody chose.
+	if !opts.AllowUnsigned {
+		return nil, httperr.WithCode(unrecordedTrustError(opts, pluginName,
+			fmt.Sprintf("local build for %q is unsigned", pluginName)), http.StatusForbidden)
 	}
 	return &provenanceDecision{unsigned: true}, nil
 }
@@ -231,25 +227,38 @@ func unsignedLockedDecision(opts plugins.InstallOptions, pluginName string) (*pr
 // file for pluginName: the expected signer identity (nil on first use — the
 // TOFU case), or that the entry was recorded unsigned.
 func expectedLockTrust(projectRoot, pluginName string) (*lockfile.Provenance, bool, error) {
+	provenance, unsigned, _, err := lockTrustState(projectRoot, pluginName)
+	return provenance, unsigned, err
+}
+
+// lockTrustState is expectedLockTrust plus whether the lock file has an entry
+// for pluginName at all. The verify paths do not need that distinction — an
+// absent entry and one recording no decision both mean "no trust to enforce" —
+// but Info does: an entry recording nothing is drift sync can repair, while no
+// entry means nothing is pinning the plugin, and the two must not render
+// alike. Kept as one read so both callers share a single lock file load.
+func lockTrustState(
+	projectRoot, pluginName string,
+) (provenance *lockfile.Provenance, unsigned, found bool, err error) {
 	if projectRoot == "" {
-		return nil, false, nil
+		return nil, false, false, nil
 	}
 	root, err := lockfile.OpenRoot(projectRoot)
 	if err != nil {
-		return nil, false, fmt.Errorf("reading lock trust state for %q: %w", pluginName, err)
+		return nil, false, false, fmt.Errorf("reading lock trust state for %q: %w", pluginName, err)
 	}
 	lf, err := lockfile.Load(root)
 	if err != nil {
-		return nil, false, fmt.Errorf("reading lock trust state for %q: %w", pluginName, err)
+		return nil, false, false, fmt.Errorf("reading lock trust state for %q: %w", pluginName, err)
 	}
 	entry, ok := lf.GetPlugin(pluginName)
 	if !ok {
-		return nil, false, nil
+		return nil, false, false, nil
 	}
 	if entry.Unsigned {
-		return nil, true, nil
+		return nil, true, true, nil
 	}
-	return entry.Provenance, false, nil
+	return entry.Provenance, false, true, nil
 }
 
 // provenanceInfoFromLock converts a lock file's provenance block to the
@@ -271,17 +280,29 @@ func provenanceInfoFromLock(p *lockfile.Provenance) *plugins.ProvenanceInfo {
 }
 
 // isAllowedUnsigned reports whether a verification failure is the unsigned
-// case AND the caller may proceed: either the explicit --allow-unsigned
-// exception, or a sync restore of an entry with no recorded trust state
-// (entries created before verification existed) — a restore materializes
-// what install once accepted, and the outcome is recorded as unsigned so
-// the trust state stops being ambiguous. An entry locked to a signer
-// identity is never replaceable by an unsigned artifact.
+// case AND the caller may proceed. Only the explicit --allow-unsigned
+// exception qualifies: recording "this is unsigned and I accept that" is a
+// trust decision, and nothing may make it on the user's behalf.
+//
+// A lock-driven restore (sync, upgrade re-pin) of an entry recording no trust
+// decision deliberately does NOT qualify, even though such an entry is
+// reported as drift and repaired by exactly that path. Allowing it would turn
+// "no decision" into "unsigned: true" automatically, laundering
+// pre-verification content into a standing exception the user never agreed
+// to — the implicit trust decision the lock file exists to prevent. So the
+// migration repairs an entry automatically only when a signature actually
+// verifies; unsigned content fails closed and needs --allow-unsigned to
+// record the exception on purpose.
+//
+// An entry that already records unsigned is a different case, honored
+// earlier by unsignedLockedDecision — restoring a decision the lock file
+// states is not the same as inventing one. An entry locked to a signer is
+// never replaceable by an unsigned artifact.
 func isAllowedUnsigned(verifyErr error, opts plugins.InstallOptions, expected *lockfile.Provenance) bool {
 	if !errors.Is(verifyErr, verifier.ErrUnsigned) || expected != nil {
 		return false
 	}
-	return opts.AllowUnsigned || lockDrivenInstall(opts)
+	return opts.AllowUnsigned
 }
 
 // lockDrivenInstall reports whether this install materializes an existing
@@ -305,6 +326,7 @@ func classifyInstallVerifyError(
 	verifyErr error,
 	pluginName string,
 	expected *lockfile.Provenance,
+	opts plugins.InstallOptions,
 ) error {
 	switch {
 	case errors.Is(verifyErr, verifier.ErrUnsigned):
@@ -315,11 +337,8 @@ func classifyInstallVerifyError(
 				http.StatusForbidden,
 			)
 		}
-		return httperr.WithCode(
-			fmt.Errorf("unsigned plugin %q rejected; set allow_unsigned (--allow-unsigned) to record an exception",
-				pluginName),
-			http.StatusForbidden,
-		)
+		return httperr.WithCode(unrecordedTrustError(opts, pluginName,
+			fmt.Sprintf("unsigned plugin %q rejected", pluginName)), http.StatusForbidden)
 	// Checked before the broader ErrSignerMismatch case: pinnedFieldMismatch
 	// wraps both, so a ref/runner-only mismatch would otherwise be
 	// misreported as a signer-identity change below.
@@ -376,4 +395,28 @@ func classifySignatureError(err error) plugins.FailureReason {
 	default:
 		return ""
 	}
+}
+
+// unrecordedTrustError explains how to record the missing trust decision, in
+// terms of the operation the caller actually ran. A lock-driven repair (sync,
+// upgrade re-pin) reaches here for an entry that records no decision at all,
+// and `thv ai-plugin install --allow-unsigned` is not the remedy for that —
+// sync is, because it is the operation that owns the lock entry. Upgrade has
+// no allow-unsigned flag of its own, so naming sync is the only actionable
+// answer it can give.
+//
+// Wraps verifier.ErrUnsigned so classifySignatureError reports the refusal as
+// FailureReasonUnsignedRejected. Sync reaches this path only now that a
+// lock-driven repair of an unrecorded entry fails closed; before that the
+// implicit exception meant no error was ever classified, and an unwrapped
+// message here would surface the typed reason as "unknown".
+func unrecordedTrustError(opts plugins.InstallOptions, pluginName, what string) error {
+	if lockDrivenInstall(opts) {
+		return fmt.Errorf("%s and the lock entry for %q records no trust decision (%w); "+
+			"run `thv ai-plugin sync --allow-unsigned` to record the unsigned exception explicitly, "+
+			"or reinstall from a signed artifact to record its signer",
+			what, pluginName, verifier.ErrUnsigned)
+	}
+	return fmt.Errorf("%s (%w); set allow_unsigned (--allow-unsigned) to record an exception",
+		what, verifier.ErrUnsigned)
 }

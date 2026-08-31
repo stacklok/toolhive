@@ -180,8 +180,17 @@ func (h *Handler) rejectBackChannelOnlyAuthorizeClient(ctx context.Context, w ht
 	return true
 }
 
+// isBackChannelOnlyClient reports whether client has no interactive
+// /authorize flow. It checks the explicit registration.BackChannelOnly
+// marker first -- the authoritative answer for client types that carry it
+// (registration.SPIFFEClient and the SPIFFE storage decorator's durable
+// placeholder) -- and falls back to the pre-existing metadata-shape
+// inference (empty response types, or grant types exactly
+// token-exchange) for every other client type, such as a delegate client,
+// so their current /authorize-hiding behaviour is unchanged.
 func isBackChannelOnlyClient(client fosite.Client) bool {
-	return len(client.GetResponseTypes()) == 0 ||
+	return registration.BackChannelOnly(client) ||
+		len(client.GetResponseTypes()) == 0 ||
 		client.GetGrantTypes().ExactOne(oauthproto.GrantTypeTokenExchange)
 }
 

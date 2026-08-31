@@ -589,20 +589,13 @@ func TestNewUpstreamTokenRefresher_NilWhenNoUpstreams(t *testing.T) {
 	}
 }
 
-func TestNewServer_RegistersDelegateClientsBeforeUpstreamConstruction(t *testing.T) {
+// TestNewServer_DelegateClientReconciliation covers registerDelegateClients'
+// use of ReconcileConfiguredClient: registering a delegate client is
+// create-only against a DCR-issued collision (the security fix -- an
+// operator-declared client must never silently overwrite a DCR
+// registration), and idempotent across a restart with unchanged config.
+func TestNewServer_DelegateClientReconciliation(t *testing.T) {
 	t.Parallel()
-
-	ctx := t.Context()
-	stor := storage.NewMemoryStorage()
-	t.Cleanup(func() { _ = stor.Close() })
-
-	// Seed a DCR-issued client under the same ID as the configured delegate
-	// client. The static delegate client is authoritative, so registering it
-	// must replace this DCR registration rather than being rejected as a
-	// duplicate.
-	dcrClient, err := registration.NewConfidentialPlain(registration.Config{ID: "delegate", Secret: "old-secret"})
-	require.NoError(t, err)
-	require.NoError(t, stor.RegisterClient(ctx, dcrClient))
 
 	cfg := Config{
 		Issuer:           "https://example.com",
@@ -617,30 +610,56 @@ func TestNewServer_RegistersDelegateClientsBeforeUpstreamConstruction(t *testing
 		}},
 	}
 
-	factory := func(ctx context.Context, _ *UpstreamConfig) (upstream.OAuth2Provider, error) {
+	t.Run("refuses to overwrite a DCR-issued collision, before upstream construction", func(t *testing.T) {
+		t.Parallel()
+		ctx := t.Context()
+		stor := storage.NewMemoryStorage()
+		t.Cleanup(func() { _ = stor.Close() })
+
+		dcrClient, err := registration.NewConfidentialPlain(registration.Config{ID: "delegate", Secret: "old-secret"})
+		require.NoError(t, err)
+		require.NoError(t, stor.RegisterClient(ctx, dcrClient))
+
+		factoryCalled := false
+		factory := func(context.Context, *UpstreamConfig) (upstream.OAuth2Provider, error) {
+			factoryCalled = true
+			return nil, assert.AnError
+		}
+		subCfg := cfg
+		subCfg.UpstreamFactory = factory
+
+		_, err = newServer(ctx, subCfg, stor)
+		require.ErrorIs(t, err, storage.ErrAlreadyExists)
+		assert.False(t, factoryCalled, "delegate client registration must run before upstream construction")
+
+		client, err := stor.GetClient(ctx, "delegate")
+		require.NoError(t, err, "the original DCR-issued registration must be untouched")
+		assert.True(t, registration.DCRIssued(client))
+	})
+
+	t.Run("restart with unchanged config is idempotent", func(t *testing.T) {
+		t.Parallel()
+		ctx := t.Context()
+		stor := storage.NewMemoryStorage()
+		t.Cleanup(func() { _ = stor.Close() })
+
+		factory := func(context.Context, *UpstreamConfig) (upstream.OAuth2Provider, error) {
+			return nil, assert.AnError
+		}
+		subCfg := cfg
+		subCfg.UpstreamFactory = factory
+
+		// registerDelegateClients runs on every startup; re-registering the
+		// same static client across a simulated restart must not fail.
+		_, err := newServer(ctx, subCfg, stor)
+		require.ErrorIs(t, err, assert.AnError)
+		_, err = newServer(ctx, subCfg, stor)
+		require.ErrorIs(t, err, assert.AnError)
+
 		client, err := stor.GetClient(ctx, "delegate")
 		require.NoError(t, err)
 		assert.False(t, registration.DCRIssued(client))
-		assert.False(t, client.IsPublic())
-		return nil, assert.AnError
-	}
-
-	cfg.UpstreamFactory = factory
-
-	// First boot: static registration is an upsert. Replacing a same-ID DCR
-	// client makes it permanent and unmarked rather than retaining DCR
-	// eviction semantics.
-	_, err := newServer(ctx, cfg, stor)
-	require.ErrorIs(t, err, assert.AnError)
-	client, err := stor.GetClient(ctx, "delegate")
-	require.NoError(t, err)
-	assert.False(t, registration.DCRIssued(client))
-
-	// Second boot: registerDelegateClients runs on every startup, so
-	// re-registering the same static client (not a DCR duplicate) must not
-	// fail the server on restart.
-	_, err = newServer(ctx, cfg, stor)
-	require.ErrorIs(t, err, assert.AnError)
+	})
 }
 
 // closeCountingProvider is an OAuth2Provider that implements the optional

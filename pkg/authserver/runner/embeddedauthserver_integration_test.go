@@ -54,6 +54,11 @@ func TestIntegration_EmbeddedAuthServer_SPIFFERedisRestartAndCollision(t *testin
 			Addr: fmt.Sprintf("%s:%s", host, port.Port()),
 		}), "integration:spiffe:")
 	}
+	newStorageWithPrefix := func(prefix string) *storage.RedisStorage {
+		return storage.NewRedisStorageWithClient(redis.NewClient(&redis.Options{
+			Addr: fmt.Sprintf("%s:%s", host, port.Port()),
+		}), prefix)
+	}
 	config := func(includeAssociation bool) authserver.RunConfig {
 		cfg := authserver.RunConfig{
 			SchemaVersion:    authserver.CurrentSchemaVersion,
@@ -111,11 +116,25 @@ func TestIntegration_EmbeddedAuthServer_SPIFFERedisRestartAndCollision(t *testin
 	require.NoError(t, err)
 	_, err = secondStorage.GetClient(ctx, "dynamic-client")
 	require.NoError(t, err)
-	_, err = secondStorage.GetClient(ctx, "spiffe-client")
-	require.ErrorIs(t, err, storage.ErrNotFound)
+	// The static association is gone from the current config, but the earlier
+	// SPIFFE-enabled boot durably claimed "spiffe-client" in this same Redis
+	// keyspace to close the cross-replica registration race; that durable
+	// claim is not retracted just because a later boot's config no longer
+	// configures the association. The claim must remain unauthenticatable:
+	// no secret and not a public client, so it can never pass client
+	// authentication for any grant. (fosite.DefaultClient.GetGrantTypes
+	// applies its own single-grant default when the underlying field reads
+	// back empty from Redis, so "no grant types" is asserted directly
+	// against MemoryStorage in storage/spiffe_decorator_test.go instead.)
+	claimed, err := secondStorage.GetClient(ctx, "spiffe-client")
+	require.NoError(t, err, "the earlier durable claim for spiffe-client must persist")
+	require.Nil(t, claimed.GetHashedSecret())
+	require.False(t, claimed.IsPublic())
 	require.NoError(t, second.Close())
 
-	collisionStorage := newStorage()
+	// Isolated keyspace so this collision seed isn't itself rejected by the
+	// durable claim the earlier steps above left behind.
+	collisionStorage := newStorageWithPrefix("integration:spiffe-collision:")
 	require.NoError(t, collisionStorage.RegisterClient(ctx, &fosite.DefaultClient{ID: "spiffe-client"}))
 	collision := config(true)
 	_, err = NewEmbeddedAuthServerWithStorage(ctx, &collision, collisionStorage)

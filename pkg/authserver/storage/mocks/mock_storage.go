@@ -230,6 +230,20 @@ func (mr *MockClientRegistryMockRecorder) GetClient(ctx, id any) *gomock.Call {
 	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "GetClient", reflect.TypeOf((*MockClientRegistry)(nil).GetClient), ctx, id)
 }
 
+// ReconcileConfiguredClient mocks base method.
+func (m *MockClientRegistry) ReconcileConfiguredClient(ctx context.Context, client fosite.Client) error {
+	m.ctrl.T.Helper()
+	ret := m.ctrl.Call(m, "ReconcileConfiguredClient", ctx, client)
+	ret0, _ := ret[0].(error)
+	return ret0
+}
+
+// ReconcileConfiguredClient indicates an expected call of ReconcileConfiguredClient.
+func (mr *MockClientRegistryMockRecorder) ReconcileConfiguredClient(ctx, client any) *gomock.Call {
+	mr.mock.ctrl.T.Helper()
+	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "ReconcileConfiguredClient", reflect.TypeOf((*MockClientRegistry)(nil).ReconcileConfiguredClient), ctx, client)
+}
+
 // RegisterClient mocks base method.
 func (m *MockClientRegistry) RegisterClient(ctx context.Context, client fosite.Client) error {
 	m.ctrl.T.Helper()
@@ -1002,6 +1016,20 @@ func (m *MockStorage) LoadPendingAuthorization(ctx context.Context, state string
 func (mr *MockStorageMockRecorder) LoadPendingAuthorization(ctx, state any) *gomock.Call {
 	mr.mock.ctrl.T.Helper()
 	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "LoadPendingAuthorization", reflect.TypeOf((*MockStorage)(nil).LoadPendingAuthorization), ctx, state)
+}
+
+// ReconcileConfiguredClient mocks base method.
+func (m *MockStorage) ReconcileConfiguredClient(ctx context.Context, client fosite.Client) error {
+	m.ctrl.T.Helper()
+	ret := m.ctrl.Call(m, "ReconcileConfiguredClient", ctx, client)
+	ret0, _ := ret[0].(error)
+	return ret0
+}
+
+// ReconcileConfiguredClient indicates an expected call of ReconcileConfiguredClient.
+func (mr *MockStorageMockRecorder) ReconcileConfiguredClient(ctx, client any) *gomock.Call {
+	mr.mock.ctrl.T.Helper()
+	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "ReconcileConfiguredClient", reflect.TypeOf((*MockStorage)(nil).ReconcileConfiguredClient), ctx, client)
 }
 
 // RegisterClient mocks base method.

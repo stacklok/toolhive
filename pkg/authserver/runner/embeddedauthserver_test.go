@@ -2248,13 +2248,30 @@ func TestEmbeddedAuthServer_SPIFFEAssociationDoesNotAuthenticateClient(t *testin
 	require.NoError(t, err)
 	_, err = redisStorage.GetClient(context.Background(), "dynamic-client")
 	require.NoError(t, err)
-	_, err = redisStorage.GetClient(context.Background(), "spiffe-client")
-	require.ErrorIs(t, err, storage.ErrNotFound)
+	// The static association is gone from the current config, but the earlier
+	// SPIFFE-enabled boot durably claimed "spiffe-client" to close the
+	// cross-replica registration race; that durable claim is not retracted
+	// just because a later boot's config no longer configures the
+	// association. The claim must remain structurally unauthenticatable: no
+	// secret and not a public client, so it can never pass client
+	// authentication for any grant. (fosite.DefaultClient.GetGrantTypes
+	// applies its own single-grant default when the underlying field reads
+	// back empty from Redis — see storedClientFingerprintsEqual in redis.go
+	// — so the "no grant types" property is asserted directly against
+	// MemoryStorage in storage/spiffe_decorator_test.go instead of here.)
+	claimed, err := redisStorage.GetClient(context.Background(), "spiffe-client")
+	require.NoError(t, err, "the earlier durable claim for spiffe-client must persist")
+	assert.Nil(t, claimed.GetHashedSecret())
+	assert.False(t, claimed.IsPublic())
 	require.NoError(t, embedded.Close())
 
 	// A durable row with a currently static ID is a startup collision, rather
-	// than authority that can be silently shadowed by configuration.
-	collisionStorage := newRedisStorage()
+	// than authority that can be silently shadowed by configuration. Uses an
+	// isolated Redis keyspace so the collision seed isn't itself rejected by
+	// the durable claim left behind by the earlier steps above.
+	collisionRedis := miniredis.RunT(t)
+	collisionStorage := storage.NewRedisStorageWithClient(
+		redis.NewClient(&redis.Options{Addr: collisionRedis.Addr()}), "test:spiffe-collision:")
 	require.NoError(t, collisionStorage.RegisterClient(context.Background(), &fosite.DefaultClient{ID: "spiffe-client"}))
 	_, err = NewEmbeddedAuthServerWithStorage(context.Background(), &initial, collisionStorage)
 	require.ErrorIs(t, err, storage.ErrAlreadyExists)

@@ -251,23 +251,132 @@ func TestMemoryStorage_RegisterClient_RejectsSyntheticPrefix(t *testing.T) {
 	})
 }
 
-func TestMemoryStorage_StaticClientReplacesDCRClient(t *testing.T) {
-	withStorage(t, func(ctx context.Context, s *MemoryStorage) {
-		dcrClient := dcrClient(t, "delegate")
-		require.True(t, registration.DCRIssued(dcrClient))
-		require.NoError(t, s.RegisterClient(ctx, dcrClient))
+// TestMemoryStorage_RegisterClient_AlwaysCreateOnly pins the security fix:
+// RegisterClient never overwrites an existing client, regardless of whether
+// the existing registration is DCR-issued or pre-provisioned. A caller that
+// needs authoritative replacement of an operator-declared client must use
+// ReconcileConfiguredClient instead.
+func TestMemoryStorage_RegisterClient_AlwaysCreateOnly(t *testing.T) {
+	t.Parallel()
 
-		staticClient, err := registration.NewStaticDelegateClient(registration.Config{
-			ID: "delegate", Secret: "new-secret", GrantTypes: []string{"urn:ietf:params:oauth:grant-type:token-exchange"},
-			Scopes: []string{"openid"}, Audience: []string{"https://mcp.example"},
+	tests := []struct {
+		name     string
+		existing fosite.Client
+	}{
+		{"existing is DCR-issued", nil}, // replaced with dcrClient(t, id) below
+		{"existing is pre-provisioned", &mockClient{id: "existing"}},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			ctx := t.Context()
+			s := NewMemoryStorage()
+			defer s.Close()
+
+			existing := tt.existing
+			if existing == nil {
+				existing = dcrClient(t, "existing")
+			}
+			require.NoError(t, s.RegisterClient(ctx, existing))
+
+			err := s.RegisterClient(ctx, &mockClient{id: "existing", public: true})
+			require.ErrorIs(t, err, ErrAlreadyExists)
+
+			// The original registration must be untouched.
+			retrieved, err := s.GetClient(ctx, "existing")
+			require.NoError(t, err)
+			assert.Equal(t, existing, retrieved)
 		})
-		require.NoError(t, err)
-		require.NoError(t, s.RegisterClient(ctx, staticClient))
+	}
+}
 
-		retrieved, err := s.GetClient(ctx, "delegate")
+// TestMemoryStorage_ReconcileConfiguredClient covers the create/idempotent/
+// reject matrix ReconcileConfiguredClient must implement: create when
+// absent, no-op (replace with an equivalent record) when the existing record
+// is itself configured and fingerprint-equal, and refuse with
+// ErrAlreadyExists when the existing record is DCR-issued or a different
+// configured client.
+func TestMemoryStorage_ReconcileConfiguredClient(t *testing.T) {
+	t.Parallel()
+
+	newConfigured := func(id string, scopes []string) fosite.Client {
+		return &mockClient{id: id, scopes: scopes, public: false}
+	}
+
+	t.Run("creates when absent", func(t *testing.T) {
+		t.Parallel()
+		ctx := t.Context()
+		s := NewMemoryStorage()
+		defer s.Close()
+
+		client := newConfigured("configured", []string{"openid"})
+		require.NoError(t, s.ReconcileConfiguredClient(ctx, client))
+
+		retrieved, err := s.GetClient(ctx, "configured")
 		require.NoError(t, err)
-		assert.False(t, registration.DCRIssued(retrieved))
-		assert.NoError(t, registration.SHA256Hasher.Compare(ctx, retrieved.GetHashedSecret(), []byte("new-secret")))
+		assert.Equal(t, client, retrieved)
+	})
+
+	t.Run("idempotent on matching fingerprint", func(t *testing.T) {
+		t.Parallel()
+		ctx := t.Context()
+		s := NewMemoryStorage()
+		defer s.Close()
+
+		first := newConfigured("configured", []string{"openid"})
+		require.NoError(t, s.ReconcileConfiguredClient(ctx, first))
+
+		// A second call with an equivalent (but not identical) client value --
+		// simulating a restart re-deriving the same configuration -- succeeds.
+		second := newConfigured("configured", []string{"openid"})
+		require.NoError(t, s.ReconcileConfiguredClient(ctx, second))
+
+		retrieved, err := s.GetClient(ctx, "configured")
+		require.NoError(t, err)
+		assert.Equal(t, second, retrieved)
+	})
+
+	t.Run("refuses to overwrite a DCR-issued client", func(t *testing.T) {
+		t.Parallel()
+		ctx := t.Context()
+		s := NewMemoryStorage()
+		defer s.Close()
+
+		require.NoError(t, s.RegisterClient(ctx, dcrClient(t, "configured")))
+
+		err := s.ReconcileConfiguredClient(ctx, newConfigured("configured", []string{"openid"}))
+		require.ErrorIs(t, err, ErrAlreadyExists)
+	})
+
+	t.Run("refuses a different configured client at the same ID", func(t *testing.T) {
+		t.Parallel()
+		ctx := t.Context()
+		s := NewMemoryStorage()
+		defer s.Close()
+
+		first := newConfigured("configured", []string{"openid"})
+		require.NoError(t, s.ReconcileConfiguredClient(ctx, first))
+
+		different := newConfigured("configured", []string{"profile"})
+		err := s.ReconcileConfiguredClient(ctx, different)
+		require.ErrorIs(t, err, ErrAlreadyExists)
+
+		// The original registration must be untouched.
+		retrieved, err := s.GetClient(ctx, "configured")
+		require.NoError(t, err)
+		assert.Equal(t, first, retrieved)
+	})
+
+	t.Run("rejects a client carrying the DCR-issued marker", func(t *testing.T) {
+		t.Parallel()
+		ctx := t.Context()
+		s := NewMemoryStorage()
+		defer s.Close()
+
+		err := s.ReconcileConfiguredClient(ctx, dcrClient(t, "configured"))
+		require.Error(t, err)
+		assert.Contains(t, err.Error(), "must not carry the DCR-issued marker")
 	})
 }
 

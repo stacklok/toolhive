@@ -74,6 +74,13 @@ type MemoryStorage struct {
 	mu sync.RWMutex
 
 	// clients maps client_id -> Client for client lookup (fosite.ClientManager).
+	// A SPIFFE static-client durable placeholder (see staticClientPlaceholder
+	// in spiffe_decorator.go) is stored here as the live inertPlaceholderClient
+	// Go value, so its overridden GetGrantTypes/GetResponseTypes are called
+	// directly on every read — unlike RedisStorage, which serializes the
+	// client's fields and must re-derive the same guarantee on read-back via
+	// storedClient.Reserved (see clientFromStored in redis.go). No equivalent
+	// marker is needed here.
 	clients map[string]fosite.Client
 
 	// clientOrder is the least-recently-proven-used order of clients: a
@@ -449,11 +456,11 @@ func getExpirationFromRequester(request fosite.Requester, tokenType fosite.Token
 	return expTime
 }
 
-// RegisterClient creates or replaces a client in storage. A DCR-issued
-// registration is create-only and returns ErrAlreadyExists when a client with
-// the same ID is already registered; an operator-declared static/delegate
-// client is authoritative and always replaces any existing registration,
-// including one DCR issued.
+// RegisterClient creates a client in storage. Always create-only: it returns
+// ErrAlreadyExists when a client with the same ID is already registered,
+// regardless of the new client's origin. /oauth/register is unauthenticated,
+// so this must never clobber an existing client; operator-declared clients
+// reconcile through ReconcileConfiguredClient instead.
 func (s *MemoryStorage) RegisterClient(_ context.Context, client fosite.Client) error {
 	id := client.GetID()
 	if err := ValidateRegisterableClientID(id); err != nil {
@@ -463,21 +470,56 @@ func (s *MemoryStorage) RegisterClient(_ context.Context, client fosite.Client) 
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
-	now := time.Now()
 	if _, exists := s.clients[id]; exists {
-		// DCR is unauthenticated (the /register endpoint has no caller
-		// identity), so a DCR-issued registration must never clobber an
-		// existing client. Operator-declared static/delegate clients are
-		// authoritative and may replace any existing registration, including
-		// one DCR issued: this is how a static overlay promotes a client that
-		// first appeared via DCR into permanent configuration.
-		if registration.DCRIssued(client) {
-			return fmt.Errorf("%w: client %q", ErrAlreadyExists, id)
-		}
-		// Refresh the eviction position: the replacing registration is not
-		// the oldest, and clientOrder must not carry a stale duplicate entry.
-		s.clientOrder = slices.DeleteFunc(s.clientOrder, func(e clientOrderEntry) bool { return e.id == id })
-	} else if s.maxClients > 0 && len(s.clients) >= s.maxClients {
+		return fmt.Errorf("%w: client %q", ErrAlreadyExists, id)
+	}
+	return s.insertClientLocked(id, client)
+}
+
+// ReconcileConfiguredClient applies an operator-declared client: creates it
+// if absent, idempotently replaces a matching-fingerprint configured client
+// (the restart-with-unchanged-config case), or refuses with ErrAlreadyExists
+// when the existing record is DCR-issued or a different configured client.
+// See the ClientRegistry interface doc for the full contract.
+func (s *MemoryStorage) ReconcileConfiguredClient(_ context.Context, client fosite.Client) error {
+	if registration.DCRIssued(client) {
+		return fmt.Errorf("configured client %q must not carry the DCR-issued marker", client.GetID())
+	}
+	id := client.GetID()
+	if err := ValidateRegisterableClientID(id); err != nil {
+		return err
+	}
+
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	existing, exists := s.clients[id]
+	if !exists {
+		return s.insertClientLocked(id, client)
+	}
+	if registration.DCRIssued(existing) {
+		return fmt.Errorf("%w: client %q is DCR-issued, refusing to overwrite with a configured client",
+			ErrAlreadyExists, id)
+	}
+	if !clientFingerprintsEqual(existing, client) {
+		return fmt.Errorf("%w: client %q is already registered as a different configured client",
+			ErrAlreadyExists, id)
+	}
+
+	// Idempotent restart with unchanged config: refresh the eviction position
+	// and replace the stored value so secret rotation still takes effect.
+	s.clientOrder = slices.DeleteFunc(s.clientOrder, func(e clientOrderEntry) bool { return e.id == id })
+	s.clientOrder = append(s.clientOrder, clientOrderEntry{id: id, touchedAt: time.Now()})
+	s.clients[id] = client
+	return nil
+}
+
+// insertClientLocked inserts client under id, evicting the oldest eligible
+// DCR-issued client if the map is at capacity. Callers must hold s.mu and
+// must have already verified that no client currently exists at id.
+func (s *MemoryStorage) insertClientLocked(id string, client fosite.Client) error {
+	now := time.Now()
+	if s.maxClients > 0 && len(s.clients) >= s.maxClients {
 		if idx := s.oldestEvictableClientIndex(now); idx >= 0 {
 			victim := s.clientOrder[idx].id
 			s.clientOrder = append(s.clientOrder[:idx], s.clientOrder[idx+1:]...)

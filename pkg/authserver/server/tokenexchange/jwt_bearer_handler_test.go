@@ -20,6 +20,7 @@ import (
 	"github.com/stretchr/testify/require"
 
 	"github.com/stacklok/toolhive/pkg/authserver/server"
+	"github.com/stacklok/toolhive/pkg/authserver/server/registration"
 	"github.com/stacklok/toolhive/pkg/authserver/server/session"
 	"github.com/stacklok/toolhive/pkg/authserver/storage"
 	"github.com/stacklok/toolhive/pkg/oauthproto"
@@ -381,23 +382,46 @@ func (assertionConsumerStorage) ConsumeAssertionJWT(context.Context, string, str
 	return nil
 }
 
-func TestAssertionJWTConsumer_UnwrapsCIMDAtConstruction(t *testing.T) {
+func TestAssertionJWTConsumer(t *testing.T) {
 	t.Parallel()
 
 	tests := []struct {
 		name    string
-		base    storage.Storage
+		build   func(t *testing.T) fosite.Storage
 		wantErr string
 	}{
-		{name: "unsupported backend fails", base: storageWithoutAssertionConsumer{}, wantErr: "does not implement"},
-		{name: "supported backend succeeds", base: assertionConsumerStorage{}},
+		{
+			name:    "bare storage without the capability fails",
+			build:   func(*testing.T) fosite.Storage { return storageWithoutAssertionConsumer{} },
+			wantErr: "does not implement",
+		},
+		{
+			name:  "storage implementing the capability directly succeeds",
+			build: func(*testing.T) fosite.Storage { return assertionConsumerStorage{} },
+		},
+		{
+			// CIMDStorageDecorator itself always implements
+			// storage.AssertionJWTConsumer (it forwards one level down to
+			// whatever it wraps), so it satisfies the interface here
+			// regardless of what its wrapped backend supports -- a wrapped
+			// backend lacking the capability only surfaces as an error when
+			// ConsumeAssertionJWT is actually called (see
+			// TestCIMDStorageDecorator_ConsumeAssertionJWTFailsClosedWithoutBackendCapability
+			// in the storage package).
+			name: "CIMD decorator satisfies the interface via its own forwarding method",
+			build: func(t *testing.T) fosite.Storage {
+				t.Helper()
+				decorated, err := storage.NewCIMDStorageDecorator(storageWithoutAssertionConsumer{},
+					storage.CIMDDecoratorConfig{Enabled: true, CacheMaxSize: 1, FallbackTTL: time.Minute})
+				require.NoError(t, err)
+				return decorated
+			},
+		},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
-			decorated, err := storage.NewCIMDStorageDecorator(tt.base, storage.CIMDDecoratorConfig{Enabled: true, CacheMaxSize: 1, FallbackTTL: time.Minute})
-			require.NoError(t, err)
-			consumer, err := assertionJWTConsumer(decorated)
+			consumer, err := assertionJWTConsumer(tt.build(t))
 			if tt.wantErr != "" {
 				require.Error(t, err)
 				assert.Contains(t, err.Error(), tt.wantErr)
@@ -408,6 +432,46 @@ func TestAssertionJWTConsumer_UnwrapsCIMDAtConstruction(t *testing.T) {
 			assert.NotNil(t, consumer)
 		})
 	}
+}
+
+// TestAssertionJWTConsumer_ForwardsThroughFullSPIFFEDecoratorChain is an
+// end-to-end positive proof, against the real production chain shape
+// (SPIFFEStorageDecorator wrapping CIMDStorageDecorator wrapping
+// MemoryStorage), that JWT-bearer replay protection still resolves and
+// functions correctly after the storage.Unwrap bypass fix (PR #6474 review).
+// It does not by itself distinguish "forwarded one level at a time" from
+// "unwrapped straight to the base" -- both reach the same MemoryStorage here.
+// The actual regression gate for that distinction is the
+// "CIMD decorator satisfies the interface via its own forwarding method"
+// subtest of TestAssertionJWTConsumer above, which uses a backend that only
+// a correct one-level forward (not a full Unwrap) can resolve.
+func TestAssertionJWTConsumer_ForwardsThroughFullSPIFFEDecoratorChain(t *testing.T) {
+	t.Parallel()
+	ctx := context.Background()
+
+	base := storage.NewMemoryStorage()
+	t.Cleanup(func() { _ = base.Close() })
+
+	cimdDecorated, err := storage.NewCIMDStorageDecorator(base, storage.CIMDDecoratorConfig{
+		Enabled: true, CacheMaxSize: 1, FallbackTTL: time.Minute,
+	})
+	require.NoError(t, err)
+
+	spiffeClient, err := registration.NewSPIFFEClient(
+		"spiffe-client", []string{"openid"}, []string{"https://mcp.example.com"})
+	require.NoError(t, err)
+	chain, err := storage.NewSPIFFEStorageDecorator(
+		ctx, cimdDecorated, map[string]fosite.Client{spiffeClient.GetID(): spiffeClient})
+	require.NoError(t, err)
+
+	consumer, err := assertionJWTConsumer(chain)
+	require.NoError(t, err)
+
+	exp := time.Now().Add(time.Hour)
+	require.NoError(t, consumer.ConsumeAssertionJWT(ctx, "jwt-bearer", "https://issuer.example", "chain-jti", exp))
+	require.ErrorIs(t,
+		consumer.ConsumeAssertionJWT(ctx, "jwt-bearer", "https://issuer.example", "chain-jti", exp),
+		fosite.ErrJTIKnown)
 }
 
 type storageWithoutAssertionConsumer struct{ storage.Storage }

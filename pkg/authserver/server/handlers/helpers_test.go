@@ -105,14 +105,53 @@ type testStorageState struct {
 type baseTestSetupOption func(*baseTestSetupConfig)
 
 type baseTestSetupConfig struct {
-	storePendingErr            error // if non-nil, StorePendingAuthorization always returns this error
-	getLatestUpstreamTokensErr error // if non-nil, GetLatestUpstreamTokensForUser always returns this error
-	createUserErr              error // if non-nil, CreateUser always returns this error
+	storePendingErr            error            // if non-nil, StorePendingAuthorization always returns this error
+	getLatestUpstreamTokensErr error            // if non-nil, GetLatestUpstreamTokensForUser always returns this error
+	createUserErr              error            // if non-nil, CreateUser always returns this error
+	storeUpstreamTokensErr     error            // if non-nil, StoreUpstreamTokens always returns this error
+	getAllUpstreamTokensErr    error            // if non-nil, GetAllUpstreamTokens always returns this error
+	deleteForProviderErrs      map[string]error // per-provider error for DeleteUpstreamTokensForProvider
+	getClientErr               error            // if non-nil, GetClient returns this after getClientErrAfter successful calls
+	getClientErrAfter          int              // number of GetClient calls that succeed before getClientErr kicks in
 }
 
 func withStorePendingError(err error) baseTestSetupOption {
 	return func(c *baseTestSetupConfig) {
 		c.storePendingErr = err
+	}
+}
+
+func withStoreUpstreamTokensError(err error) baseTestSetupOption {
+	return func(c *baseTestSetupConfig) {
+		c.storeUpstreamTokensErr = err
+	}
+}
+
+func withGetAllUpstreamTokensError(err error) baseTestSetupOption {
+	return func(c *baseTestSetupConfig) {
+		c.getAllUpstreamTokensErr = err
+	}
+}
+
+// withDeleteUpstreamTokensForProviderError makes DeleteUpstreamTokensForProvider return
+// err for the named provider only, so a test can exercise cleanupUpstreamTokens'
+// warn-and-continue path while sibling providers still delete.
+func withDeleteUpstreamTokensForProviderError(provider string, err error) baseTestSetupOption {
+	return func(c *baseTestSetupConfig) {
+		if c.deleteForProviderErrs == nil {
+			c.deleteForProviderErrs = make(map[string]error)
+		}
+		c.deleteForProviderErrs[provider] = err
+	}
+}
+
+// withGetClientErrorAfterCalls makes GetClient return err starting with the
+// (after+1)-th call, so a test can fail the GetClient inside writeAuthorizationResponse
+// while the earlier GetClient that builds the error-redirect requester still succeeds.
+func withGetClientErrorAfterCalls(after int, err error) baseTestSetupOption {
+	return func(c *baseTestSetupConfig) {
+		c.getClientErr = err
+		c.getClientErrAfter = after
 	}
 }
 
@@ -194,7 +233,12 @@ func baseTestSetup(t *testing.T, opts ...baseTestSetupOption) (fosite.OAuth2Prov
 	// Setup mock expectations for GetClient. Looks up storState.clients so tests
 	// can register additional clients (e.g. a loopback client under its own ID)
 	// after baseTestSetup returns.
+	getClientCalls := 0
 	stor.EXPECT().GetClient(gomock.Any(), gomock.Any()).DoAndReturn(func(_ context.Context, id string) (fosite.Client, error) {
+		getClientCalls++
+		if setupCfg.getClientErr != nil && getClientCalls > setupCfg.getClientErrAfter {
+			return nil, setupCfg.getClientErr
+		}
 		if c, ok := storState.clients[id]; ok {
 			return c, nil
 		}
@@ -354,6 +398,9 @@ func baseTestSetup(t *testing.T, opts ...baseTestSetupOption) (fosite.OAuth2Prov
 	// Keyed by "sessionID:providerName" to support multiple providers per session.
 	stor.EXPECT().StoreUpstreamTokens(gomock.Any(), gomock.Any(), gomock.Any(), gomock.Any()).DoAndReturn(
 		func(_ context.Context, sessionID, providerName string, tokens *storage.UpstreamTokens) error {
+			if setupCfg.storeUpstreamTokensErr != nil {
+				return setupCfg.storeUpstreamTokensErr
+			}
 			key := sessionID + ":" + providerName
 			storState.upstreamTokens[key] = tokens
 			storState.idpTokenCount++
@@ -381,8 +428,18 @@ func baseTestSetup(t *testing.T, opts ...baseTestSetupOption) (fosite.OAuth2Prov
 			// still carries no tokens argument, so a context-keyed storage decorator
 			// resolves the user from ctx exactly as DeleteUpstreamTokens does. Capture
 			// the ctx here too so the callback's per-provider cleanup path is covered by
-			// the same context-placement assertions. Deleting an absent row is a no-op.
+			// the same context-placement assertions.
 			storState.deleteUpstreamCtx = ctx
+			// Mirror the real backends, which reject an empty session or provider rather
+			// than deleting; cleanupUpstreamTokens filters empty names, so this only
+			// fires if a future caller bug lets one through.
+			if sessionID == "" || providerName == "" {
+				return fosite.ErrInvalidRequest
+			}
+			if err := setupCfg.deleteForProviderErrs[providerName]; err != nil {
+				return err
+			}
+			// Deleting an absent row is a no-op.
 			delete(storState.upstreamTokens, sessionID+":"+providerName)
 			return nil
 		}).AnyTimes()
@@ -394,6 +451,9 @@ func baseTestSetup(t *testing.T, opts ...baseTestSetupOption) (fosite.OAuth2Prov
 			// only from ctx. Capture the ctx here so a test can assert the callback
 			// placed the identity into it before this read runs.
 			storState.getAllUpstreamCtx = ctx
+			if setupCfg.getAllUpstreamTokensErr != nil {
+				return nil, setupCfg.getAllUpstreamTokensErr
+			}
 			result := make(map[string]*storage.UpstreamTokens)
 			prefix := sessionID + ":"
 			for key, tokens := range storState.upstreamTokens {
@@ -475,13 +535,9 @@ func handlerTestSetup(t *testing.T, opts ...baseTestSetupOption) (*Handler, *tes
 	return handler, storState, mockUpstream
 }
 
-// multiUpstreamTestSetup creates a test setup with two upstream providers ("provider-1" and "provider-2")
-// for testing multi-upstream authorization chain logic. Any Option values are forwarded to NewHandler.
-func multiUpstreamTestSetup(t *testing.T, opts ...Option) (*Handler, *testStorageState, *mockIDPProvider, *mockIDPProvider) {
-	t.Helper()
-
-	provider, oauth2Config, stor, storState := baseTestSetup(t)
-
+// multiUpstreamProviders builds the two mock IdP providers ("provider-1" and
+// "provider-2") and the NamedUpstream slice shared by the multi-upstream setups.
+func multiUpstreamProviders() (*mockIDPProvider, *mockIDPProvider, []NamedUpstream) {
 	mockProvider1 := &mockIDPProvider{
 		providerType:     upstream.ProviderTypeOAuth2,
 		authorizationURL: "https://idp1.example.com/authorize",
@@ -518,7 +574,32 @@ func multiUpstreamTestSetup(t *testing.T, opts ...Option) (*Handler, *testStorag
 		{Name: "provider-1", Provider: mockProvider1},
 		{Name: "provider-2", Provider: mockProvider2},
 	}
+	return mockProvider1, mockProvider2, upstreams
+}
+
+// multiUpstreamTestSetup creates a test setup with two upstream providers ("provider-1" and "provider-2")
+// for testing multi-upstream authorization chain logic. Any Option values are forwarded to NewHandler.
+func multiUpstreamTestSetup(t *testing.T, opts ...Option) (*Handler, *testStorageState, *mockIDPProvider, *mockIDPProvider) {
+	t.Helper()
+
+	provider, oauth2Config, stor, storState := baseTestSetup(t)
+	mockProvider1, mockProvider2, upstreams := multiUpstreamProviders()
 	handler, err := NewHandler(provider, oauth2Config, stor, upstreams, opts...)
+	require.NoError(t, err)
+
+	return handler, storState, mockProvider1, mockProvider2
+}
+
+// multiUpstreamTestSetupWithStorage is multiUpstreamTestSetup with storage-behavior
+// overrides (error injection) threaded into baseTestSetup, so a test can drive the
+// callback's cleanup paths (store failure, chain-read failure, per-provider delete
+// failure) on a real two-upstream chain.
+func multiUpstreamTestSetupWithStorage(t *testing.T, storageOpts ...baseTestSetupOption) (*Handler, *testStorageState, *mockIDPProvider, *mockIDPProvider) {
+	t.Helper()
+
+	provider, oauth2Config, stor, storState := baseTestSetup(t, storageOpts...)
+	mockProvider1, mockProvider2, upstreams := multiUpstreamProviders()
+	handler, err := NewHandler(provider, oauth2Config, stor, upstreams)
 	require.NoError(t, err)
 
 	return handler, storState, mockProvider1, mockProvider2

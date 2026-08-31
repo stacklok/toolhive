@@ -17,6 +17,12 @@ import (
 // matching on error text or treating every HTTP 500 as a lock-write failure.
 var errLockWrite = errors.New("lock file write failed")
 
+// errLockTrustUnrecorded marks a lock entry that carries no trust decision at
+// all — neither a signer identity nor unsigned: true. See
+// verifyStoredSignature for why that shape is treated as drift rather than
+// accepted, and why the check lives there rather than in lock validation.
+var errLockTrustUnrecorded = errors.New("lock entry records no trust decision")
+
 // recordLockState updates opts.ProjectRoot's lock file to reflect a
 // just-completed project-scope install: a plugins: entry for pl. It also
 // marks pl as lock-managed in the store. Callers must only invoke this for

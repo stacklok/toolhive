@@ -75,8 +75,19 @@ func TestVerifyStoredSignature(t *testing.T) {
 			entry: lockfile.Entry{Unsigned: true, Digest: ociDigest},
 		},
 		{
-			name:  "no provenance has nothing to verify",
-			entry: lockfile.Entry{Digest: ociDigest},
+			// A pre-verification entry: written while verification was gated
+			// off, so it carries no trust decision at all. Reported as drift
+			// so sync reinstalls and records one, instead of passing as
+			// AlreadyCurrent with nothing ever verified.
+			name:    "entry with no trust decision is drift",
+			entry:   lockfile.Entry{Digest: ociDigest},
+			wantErr: true,
+		},
+		{
+			// Same shape on a git pin: still no decision, still drift.
+			name:    "entry with no trust decision is drift for git",
+			entry:   lockfile.Entry{Digest: gitDigest},
+			wantErr: true,
 		},
 		{
 			name:    "provenance without stored bundle fails closed for OCI",

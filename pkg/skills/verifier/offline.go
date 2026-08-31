@@ -7,6 +7,7 @@ import (
 	"errors"
 	"fmt"
 
+	sgbundle "github.com/sigstore/sigstore-go/pkg/bundle"
 	"github.com/sigstore/sigstore-go/pkg/verify"
 
 	"github.com/stacklok/toolhive-core/container/signer"
@@ -72,9 +73,21 @@ func (*Default) VerifyBundleOfflineWithKey(bundleBytes []byte, imageRef, digest 
 // ResultFromBundle verifies a stored bundle offline (chain of trust only)
 // and returns the observed identity, for back-filling provenance of
 // adopted skills.
+//
+// A key-signed bundle is reported as ErrKeySigned rather than attempted:
+// there is no identity to observe, so the back-fill this exists for has
+// nothing to record, and the keyless verification below would fail on the
+// missing certificate with a message about the wrong thing entirely.
 func (*Default) ResultFromBundle(bundleBytes []byte, digest string) (*Result, error) {
 	if len(bundleBytes) == 0 {
 		return nil, fmt.Errorf("%w: no stored bundle to verify", ErrSignatureInvalid)
+	}
+	keySigned, err := bundleIsKeySigned(bundleBytes)
+	if err != nil {
+		return nil, wrapInvalid(err)
+	}
+	if keySigned {
+		return nil, ErrKeySigned
 	}
 	vr, err := coreverifier.VerifyBundleOffline(bundleBytes, digest, nil)
 	if err != nil {
@@ -102,4 +115,16 @@ func checkStoredBundlePins(vr *verify.VerificationResult, expected *lockfile.Pro
 		return fmt.Errorf("%w: %s", ErrSignatureInvalid, err.Error())
 	}
 	return checkPinnedCertificateFields(observed, expected)
+}
+
+// bundleIsKeySigned reports whether a stored bundle came from the cosign
+// key-pair flow, which is visible in its shape: a keyless bundle carries the
+// Fulcio certificate its identity is read from, and a key-signed one carries
+// none, since the trust anchor lives outside the artifact entirely.
+func bundleIsKeySigned(bundleBytes []byte) (bool, error) {
+	parsed := &sgbundle.Bundle{}
+	if err := parsed.UnmarshalJSON(bundleBytes); err != nil {
+		return false, fmt.Errorf("parsing stored bundle: %w", err)
+	}
+	return !coreverifier.Bundle{Parsed: parsed}.HasCertificate(), nil
 }

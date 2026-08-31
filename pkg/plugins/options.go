@@ -170,6 +170,14 @@ type PluginInfo struct {
 	// Unsigned reports that the lock file records an explicit unsigned
 	// exception for this plugin.
 	Unsigned bool `json:"unsigned,omitempty"`
+	// TrustUnrecorded reports that the project's lock file has an entry for
+	// this plugin which records neither a signer identity nor an unsigned
+	// exception — an entry written before verification existed, or
+	// hand-edited. It exists to keep that state distinguishable from having no
+	// lock entry at all, which leaves Provenance and Unsigned equally empty:
+	// sync reports this one as drift and can repair it, so Info must not
+	// render it as if nothing were pinning the plugin.
+	TrustUnrecorded bool `json:"trust_unrecorded,omitempty"`
 }
 
 // ContentOptions configures the behavior of the GetContent operation. Alias

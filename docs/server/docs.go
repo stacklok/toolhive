@@ -1262,6 +1262,10 @@ const docTemplate = `{
                     "provenance": {
                         "$ref": "#/components/schemas/github_com_stacklok_toolhive_pkg_plugins.ProvenanceInfo"
                     },
+                    "trust_unrecorded": {
+                        "description": "TrustUnrecorded reports a lock-managed plugin whose entry records\nneither a signer identity nor an unsigned exception — an entry written\nbefore verification existed, or hand-edited. Distinct from all three of\nProvenance, Unsigned, and \"not lock-managed at all\", each of which this\nwould otherwise be indistinguishable from: sync reports the state as\ndrift, so Info has to name it rather than render as if nothing is\npinning the plugin.",
+                        "type": "boolean"
+                    },
                     "unmaterialized_components": {
                         "additionalProperties": {
                             "items": {

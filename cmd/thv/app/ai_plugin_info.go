@@ -90,6 +90,8 @@ func printAIPluginInfoText(info *plugins.PluginInfo) {
 		_, _ = fmt.Fprintf(w, "Cert issuer:\t%s\n", info.Provenance.CertIssuer)
 	case info.Unsigned:
 		_, _ = fmt.Fprintf(w, "Signed by:\t(unsigned — explicit exception)\n")
+	case info.TrustUnrecorded:
+		_, _ = fmt.Fprintf(w, "Signed by:\t(trust unrecorded — run 'thv ai-plugin sync')\n")
 	}
 	_, _ = fmt.Fprintf(w, "Description:\t%s\n", info.Metadata.Description)
 

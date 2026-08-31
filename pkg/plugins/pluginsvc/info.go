@@ -47,12 +47,20 @@ func (s *service) Info(ctx context.Context, opts plugins.InfoOptions) (*plugins.
 	// A missing lock file is not an error — lockfile.Load returns an empty
 	// lockfile — so this only fires on one that exists and cannot be trusted.
 	if scope == plugins.ScopeProject && projectRoot != "" {
-		expected, expectUnsigned, trustErr := expectedLockTrust(projectRoot, opts.Name)
+		expected, expectUnsigned, found, trustErr := lockTrustState(projectRoot, opts.Name)
 		if trustErr != nil {
 			return nil, trustErr
 		}
 		info.Provenance = provenanceInfoFromLock(expected)
 		info.Unsigned = expectUnsigned
+		// An entry that exists and records neither is the pre-verification
+		// shape verifyStoredSignature reports as drift. Surfaced explicitly so
+		// this command — the promised trust-state display — does not render it
+		// identically to an install nothing is pinning. Keyed on the entry
+		// existing rather than on stored.Managed: what is unrecorded is the
+		// entry's trust decision, and an unmanaged-but-locked plugin still
+		// needs the same answer.
+		info.TrustUnrecorded = found && expected == nil && !expectUnsigned
 	}
 	return info, nil
 }

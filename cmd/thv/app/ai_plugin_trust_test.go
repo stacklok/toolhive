@@ -75,6 +75,15 @@ func TestPrintAIPluginInfoTextTrustStates(t *testing.T) {
 			wantAbsent: []string{"Cert issuer"},
 		},
 		{
+			// The state sync reports as drift. It must read differently from
+			// "no lock entry", which prints no trust line at all, and it has
+			// to name the command that repairs it.
+			name:       "trust unrecorded",
+			info:       plugins.PluginInfo{TrustUnrecorded: true},
+			wantLines:  []string{"Signed by: (trust unrecorded — run 'thv ai-plugin sync')"},
+			wantAbsent: []string{"Cert issuer", "explicit exception"},
+		},
+		{
 			name:       "no lock entry",
 			info:       plugins.PluginInfo{},
 			wantAbsent: []string{"Signed by", "Cert issuer"},

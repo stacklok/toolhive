@@ -7,6 +7,7 @@ import (
 	"errors"
 	"fmt"
 	"net"
+	"net/http"
 	"net/url"
 	"strings"
 )
@@ -67,4 +68,30 @@ func isLoopbackHost(host string) bool {
 		return ip.IsLoopback()
 	}
 	return false
+}
+
+// NoRedirectClient returns a shallow copy of base that refuses to follow
+// redirects, for requests that carry an identity token in their body.
+//
+// CheckTransport alone is not enough: it clears the base URL, but an accepted
+// HTTPS or loopback endpoint can answer with a 307 or 308, and those preserve
+// the method and replay the body — Go sets GetBody automatically for the
+// bytes.Reader the JSON encoder produces, so the credential would be re-sent
+// to whatever Location names, including a plaintext remote host. Validating
+// only the first hop would leave the guard trivially bypassable by whoever
+// controls the endpoint the CLI was pointed at.
+//
+// Refusing outright rather than re-checking each hop: the ToolHive API does
+// not redirect its own endpoints, so there is no legitimate case to preserve,
+// and "no redirects" is a property that cannot be subtly wrong. The refusal
+// happens before the second request is issued, so the token never leaves the
+// origin CheckTransport approved.
+func NoRedirectClient(base *http.Client) *http.Client {
+	guarded := *base
+	guarded.CheckRedirect = func(req *http.Request, _ []*http.Request) error {
+		return fmt.Errorf("%w: the ToolHive API redirected this request to %s; "+
+			"a push carrying an identity token is not followed across redirects",
+			ErrInsecureTransport, req.URL.Redacted())
+	}
+	return &guarded
 }

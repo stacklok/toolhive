@@ -1201,3 +1201,40 @@ func TestPushUnsignedOverRemotePlaintextIsAllowed(t *testing.T) {
 	}))
 	assert.Equal(t, 1, hits)
 }
+
+// TestPushDoesNotFollowRedirectsWithIdentityToken proves the transport guard
+// cannot be sidestepped by a redirect. A 307 preserves the method and replays
+// the body, so an accepted origin answering with one would hand the
+// Fulcio-redeemable token to whatever Location names. Two servers: the first
+// is loopback and so passes CheckTransport, the second records any request it
+// receives and must receive none.
+func TestPushDoesNotFollowRedirectsWithIdentityToken(t *testing.T) {
+	t.Parallel()
+
+	var secondHits int
+	var secondSawToken bool
+	second := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		secondHits++
+		var got pushRequest
+		if json.NewDecoder(r.Body).Decode(&got) == nil && got.IdentityToken != "" {
+			secondSawToken = true
+		}
+		w.WriteHeader(http.StatusNoContent)
+	}))
+	defer second.Close()
+
+	first := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		http.Redirect(w, r, second.URL+r.URL.Path, http.StatusTemporaryRedirect)
+	}))
+	defer first.Close()
+
+	c := NewClient(first.URL)
+	err := c.Push(t.Context(), plugins.PushOptions{
+		Reference:     "ghcr.io/org/artifact:v1.0.0",
+		IdentityToken: "a.b.c",
+	})
+	require.Error(t, err)
+	assert.ErrorIs(t, err, identitytoken.ErrInsecureTransport)
+	assert.Zero(t, secondHits, "the redirect target must never be contacted")
+	assert.False(t, secondSawToken, "the identity token must never leave the approved origin")
+}

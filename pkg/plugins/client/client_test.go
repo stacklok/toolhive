@@ -21,6 +21,7 @@ import (
 	envmocks "github.com/stacklok/toolhive-core/env/mocks"
 	"github.com/stacklok/toolhive-core/httperr"
 	"github.com/stacklok/toolhive/pkg/plugins"
+	"github.com/stacklok/toolhive/pkg/skills/identitytoken"
 )
 
 // newTestClient returns a *Client pointed at the given test server.
@@ -1145,4 +1146,58 @@ func TestUpgradeCarriesAllowSignerChange(t *testing.T) {
 	assert.True(t, got.AllowSignerChange, "allow_signer_change must reach the server")
 	assert.True(t, got.AllowRefChange)
 	assert.Equal(t, []string{"my-plugin"}, got.Names)
+}
+
+// recordingTransport fails the test if any HTTP request is attempted.
+type recordingTransport struct {
+	t      *testing.T
+	called bool
+}
+
+func (rt *recordingTransport) RoundTrip(req *http.Request) (*http.Response, error) {
+	rt.called = true
+	rt.t.Errorf("no request must be attempted, but one was sent to %s", req.URL)
+	return nil, errors.New("transport must not be reached")
+}
+
+// TestPushRefusesIdentityTokenOverRemotePlaintext pins that the credential is
+// withheld rather than transmitted: an OIDC identity token is redeemable at
+// Fulcio for a signing certificate in the caller's name, so TOOLHIVE_API_URL
+// pointing at a plaintext remote host must fail before the token is
+// serialized. Asserting on the transport rather than the error is the point —
+// an error returned after the request went out would be too late.
+func TestPushRefusesIdentityTokenOverRemotePlaintext(t *testing.T) {
+	t.Parallel()
+
+	rt := &recordingTransport{t: t}
+	c := NewClient("http://api.example.test:8080", WithHTTPClient(&http.Client{Transport: rt}))
+
+	err := c.Push(t.Context(), plugins.PushOptions{
+		Reference:     "ghcr.io/org/my-plugin:v1.0.0",
+		IdentityToken: "a.b.c",
+	})
+	require.Error(t, err)
+	assert.ErrorIs(t, err, identitytoken.ErrInsecureTransport)
+	assert.False(t, rt.called)
+}
+
+// TestPushUnsignedOverRemotePlaintextIsAllowed: the guard is about the
+// credential, not the endpoint. A --no-sign push carries nothing worth
+// protecting, so it must not be blocked by the same check.
+func TestPushUnsignedOverRemotePlaintextIsAllowed(t *testing.T) {
+	t.Parallel()
+
+	var hits int
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		hits++
+		w.WriteHeader(http.StatusNoContent)
+	}))
+	defer srv.Close()
+
+	c := NewClient(srv.URL)
+	require.NoError(t, c.Push(t.Context(), plugins.PushOptions{
+		Reference: "ghcr.io/org/my-plugin:v1.0.0",
+		NoSign:    true,
+	}))
+	assert.Equal(t, 1, hits)
 }

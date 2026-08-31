@@ -22,6 +22,7 @@ import (
 	"github.com/stacklok/toolhive-core/httperr"
 	"github.com/stacklok/toolhive/pkg/server/discovery"
 	"github.com/stacklok/toolhive/pkg/skills"
+	"github.com/stacklok/toolhive/pkg/skills/identitytoken"
 )
 
 const (
@@ -285,6 +286,16 @@ func (c *Client) Build(ctx context.Context, opts skills.BuildOptions) (*skills.B
 
 // Push pushes a built skill artifact to a remote registry.
 func (c *Client) Push(ctx context.Context, opts skills.PushOptions) error {
+	// An identity token is a bearer credential redeemable at Fulcio for a
+	// signing certificate in the caller's name, so it must not cross a
+	// plaintext link to a remote API server. Checked before the body is
+	// marshaled: nothing should serialize the token until the destination
+	// has been cleared.
+	if opts.IdentityToken != "" {
+		if err := identitytoken.CheckTransport(c.baseURL); err != nil {
+			return err
+		}
+	}
 	body := pushRequest{
 		Reference:     opts.Reference,
 		Key:           opts.Key,

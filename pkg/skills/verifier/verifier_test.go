@@ -145,6 +145,80 @@ func TestVerifyOCIWithKeyRejectsWrongKey(t *testing.T) {
 			" drop the key would send them to a path that cannot verify it either")
 }
 
+// pushTaggedTestArtifact pushes a random OCI image to the shared test
+// repository under tag and returns its digest. Same repository as
+// pushTestArtifact deliberately: a transplant within one repository is the
+// case a repository-only binding would miss.
+func pushTaggedTestArtifact(t *testing.T, host, tag string) string {
+	t.Helper()
+	img, err := random.Image(256, 1)
+	require.NoError(t, err)
+	parsed, err := name.ParseReference(host + "/test/skill:" + tag)
+	require.NoError(t, err)
+	require.NoError(t, remote.Write(parsed, img))
+	d, err := img.Digest()
+	require.NoError(t, err)
+	return d.String()
+}
+
+// transplantSignature republishes the signature manifest attached to
+// fromDigest under the tag the verifier derives from toDigest, forging the
+// only link discovery relies on. It needs no key and no write access to the
+// signature itself — just the ability to push a tag to the repository.
+func transplantSignature(t *testing.T, host, fromDigest, toDigest string) {
+	t.Helper()
+	sigTag := func(d string) name.Reference {
+		r, err := name.ParseReference(host + "/test/skill:" + strings.Replace(d, ":", "-", 1) + ".sig")
+		require.NoError(t, err)
+		return r
+	}
+	attached, err := remote.Image(sigTag(fromDigest))
+	require.NoError(t, err, "the signed artifact must have a discoverable signature manifest to copy")
+	require.NoError(t, remote.Write(sigTag(toDigest), attached))
+}
+
+// TestVerifyOCIWithKeyRejectsTransplantedSignature covers the replay a
+// digest-unbound key check would accept: the signature is genuine, the key is
+// genuinely trusted, and the only false claim is which artifact the signature
+// is about.
+//
+// Signatures are discovered by tag, derived from the digest being verified, so
+// a registry-side attacker who can push a tag can make one artifact's
+// signature appear to be another's. The signature still verifies — it covers
+// its own payload intact — so nothing about the cryptography is disturbed.
+// What must reject it is the payload naming the artifact it actually signed.
+func TestVerifyOCIWithKeyRejectsTransplantedSignature(t *testing.T) {
+	t.Parallel()
+	host := startTestRegistry(t)
+	signedRef, signedDigest := pushTestArtifact(t, host)
+	pubPEM, _ := signArtifact(t, signedRef, signedDigest)
+
+	// A second, unsigned artifact — the one the attacker wants accepted.
+	targetDigest := pushTaggedTestArtifact(t, host, "v2")
+	require.NotEqual(t, signedDigest, targetDigest)
+	repoRef := host + "/test/skill"
+
+	// Before the transplant the target is simply unsigned.
+	_, err := NewDefault(nil).VerifyOCIWithKey(t.Context(), repoRef, targetDigest, pubPEM)
+	require.ErrorIs(t, err, ErrUnsigned)
+
+	transplantSignature(t, host, signedDigest, targetDigest)
+
+	// The transplanted signature is now discoverable as the target's, and
+	// verifies against the trusted key on its own terms.
+	_, err = NewDefault(nil).VerifyOCIWithKey(t.Context(), repoRef, targetDigest, pubPEM)
+	require.ErrorIs(t, err, ErrSignatureInvalid,
+		"a signature naming a different artifact must not verify this one")
+	require.ErrorContains(t, err, "none of it signs this artifact")
+	require.NotErrorIs(t, err, ErrUnsigned,
+		"signature material IS present; calling it unsigned would invite an --allow-unsigned override")
+
+	// The signature still verifies for the artifact it was actually made for,
+	// so the check rejects the false binding rather than the signature.
+	_, err = NewDefault(nil).VerifyOCIWithKey(t.Context(), repoRef, signedDigest, pubPEM)
+	require.NoError(t, err)
+}
+
 func TestVerifyOCIUnsignedArtifact(t *testing.T) {
 	t.Parallel()
 	host := startTestRegistry(t)

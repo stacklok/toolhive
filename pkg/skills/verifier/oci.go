@@ -12,6 +12,7 @@ import (
 	"github.com/sigstore/sigstore-go/pkg/root"
 	"github.com/sigstore/sigstore-go/pkg/verify"
 
+	"github.com/stacklok/toolhive-core/container/signer"
 	coreverifier "github.com/stacklok/toolhive-core/container/verifier"
 )
 
@@ -58,9 +59,21 @@ func (d *Default) VerifyOCIWithKey(
 	if err != nil {
 		return nil, err
 	}
+	expectedPayload, err := signer.PayloadDigest(imageRef, digest)
+	if err != nil {
+		return nil, fmt.Errorf("reconstructing the signed payload for %s: %w", digest, err)
+	}
 
 	var lastErr error
+	boundCandidates := 0
 	for _, b := range bundles {
+		// Discovery is by tag — the ".sig" manifest is found by naming it
+		// after this artifact's digest — so being attached here is not
+		// evidence of being about this artifact. Only the payload says that.
+		if !bundleSignsPayload(b, expectedPayload) {
+			continue
+		}
+		boundCandidates++
 		if _, verifyErr := coreverifier.VerifyBundleWithKey(b, pubKeyPEM); verifyErr != nil {
 			lastErr = verifyErr
 			continue
@@ -74,7 +87,42 @@ func (d *Default) VerifyOCIWithKey(
 	if onlyKeylessSigned(bundles) {
 		return nil, ErrKeylessSigned
 	}
+	if boundCandidates == 0 {
+		return nil, fmt.Errorf("%w: signature material is attached to this artifact but none of it"+
+			" signs this artifact — the signed payload names a different repository or digest",
+			ErrSignatureInvalid)
+	}
 	return nil, wrapInvalid(lastErr)
+}
+
+// bundleSignsPayload reports whether b's signature covers the simple-signing
+// payload for the artifact under verification.
+//
+// core binds a candidate to the digest of the layer the candidate came from
+// (RetrieveBundles records it as DigestAlgo/DigestHex), which proves the
+// signature covers that blob intact but says nothing about which artifact the
+// blob describes. The artifact is named only inside the payload, as a
+// repository and a manifest digest, so agreeing with a payload digest
+// reconstructed from the requested reference is what ties the two together.
+//
+// Without this, a valid signature is transplantable: copying artifact A's
+// signature layer into "sha256-<B>.sig" makes it discoverable as B's, and it
+// still verifies — B is then accepted under whatever key legitimately signed
+// A. Comparing digests rather than parsing the payload keeps the check on the
+// bytes that were actually signed; a payload edited to name B no longer
+// hashes to the layer digest core verified the signature against.
+//
+// REMOVE THIS when the toolhive-core dependency moves past v0.0.42.
+// toolhive-core#263 fixes the same gap at the source and inverts the contract
+// this relies on: Bundle.DigestHex becomes the ARTIFACT digest rather than the
+// payload digest, so the comparison below turns into artifact-vs-payload and
+// can never hold. That fails closed, not open, and the sign-then-verify round
+// trip in TestVerifyOCIWithKeyRoundTrip fails with it — so a bump surfaces as
+// a red test rather than as silently disabled verification. The fix then is to
+// delete this helper and let core's ErrSignatureArtifactMismatch do the work,
+// NOT to loosen the comparison.
+func bundleSignsPayload(b coreverifier.Bundle, expectedPayload string) bool {
+	return b.DigestAlgo+":"+b.DigestHex == expectedPayload
 }
 
 // verifyKeylessBundles verifies bundles until one passes the keyless policy

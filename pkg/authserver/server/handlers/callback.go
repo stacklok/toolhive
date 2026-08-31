@@ -150,8 +150,8 @@ func (h *Handler) CallbackHandler(w http.ResponseWriter, req *http.Request) {
 
 	// Place the resolved canonical user in the request context so callback storage
 	// calls that carry no tokens argument — GetAllUpstreamTokens during chain
-	// consistency, DeleteUpstreamTokens on cleanup — can resolve the user from
-	// context. We use WithPlatformUser, not WithIdentity: no ToolHive bearer has
+	// consistency, DeleteUpstreamTokensForProvider on cleanup — can resolve the user
+	// from context. We use WithPlatformUser, not WithIdentity: no ToolHive bearer has
 	// been issued at the callback, so there is no authenticated identity to assert —
 	// only the canonical user for storage keying. (StoreUpstreamTokens does not need
 	// this; it keys off tokens.UserID below.)
@@ -182,12 +182,10 @@ func (h *Handler) CallbackHandler(w http.ResponseWriter, req *http.Request) {
 		slog.Error("failed to store upstream tokens",
 			"error", err,
 		)
-		// Clean up any tokens stored by earlier legs of a multi-upstream chain,
-		// scoped per provider so a user-keyed storage decorator that re-keys upstream
-		// tokens by (gateway, user) removes only this chain's providers and never the
-		// user's tokens for connectors outside it. providerID (this leg) is included
-		// even though its store just failed: any partial or carried-forward row is
-		// removed, and an absent row deletes as a no-op.
+		// Clean up tokens stored by earlier legs of a multi-upstream chain (see
+		// cleanupUpstreamTokens for the per-provider scoping rationale). providerID
+		// (this leg) is included even though its store just failed: any partial or
+		// carried-forward row is removed, and an absent row deletes as a no-op.
 		h.cleanupUpstreamTokens(ctx, sessionID, append([]string{providerID}, pending.ChainUpstreams...))
 		h.provider.WriteAuthorizeError(ctx, w, ar, fosite.ErrServerError.WithHint("failed to store session"))
 		return
@@ -403,15 +401,14 @@ func (h *Handler) handleUpstreamError(
 		pending, err := h.storage.LoadPendingAuthorization(ctx, internalState)
 		if err == nil {
 			_ = h.storage.DeletePendingAuthorization(ctx, internalState)
-			// Clean up any upstream tokens stored by earlier legs of a multi-upstream chain.
-			// On a subsequent leg the resolved user is carried in pending.ResolvedUserID;
-			// place it in ctx via WithPlatformUser so a context-keyed storage decorator can
-			// resolve the canonical user for the per-provider cleanup. WithPlatformUser, not
-			// WithIdentity: there is no authenticated identity at the callback, only the
-			// storage-scoped user. The cleanup is scoped to the chain's providers so a
-			// user-keyed decorator does not over-delete the user's other connectors; a
-			// first-leg error carries no ChainUpstreams and no earlier-leg tokens, so nothing
-			// is deleted there.
+			// Clean up upstream tokens stored by earlier legs of a multi-upstream chain
+			// (see cleanupUpstreamTokens for the per-provider scoping rationale). On a
+			// subsequent leg the resolved user is carried in pending.ResolvedUserID; place
+			// it in ctx via WithPlatformUser so a context-keyed storage decorator resolves
+			// the canonical user for the cleanup. WithPlatformUser, not WithIdentity: there
+			// is no authenticated identity at the callback, only the storage-scoped user. A
+			// first-leg error carries no ChainUpstreams and no earlier-leg tokens, so
+			// nothing is deleted there.
 			if pending.SessionID != "" {
 				cleanupCtx := ctx
 				if pending.ResolvedUserID != "" {
@@ -447,11 +444,18 @@ func (h *Handler) handleUpstreamError(
 // instead delete every connector token the user holds on the gateway. Naming each
 // provider lets such a decorator scope the delete to exactly this chain's providers.
 //
-// providers is the effective chain (or the chain carried forward in the pending on a
-// subsequent leg), optionally including the leg currently being processed. Passing a
-// provider whose leg has not been walked, or whose row is already absent, is a no-op:
-// the storage contract makes a missing-row delete non-fatal. Errors are logged and
-// swallowed — cleanup is best-effort and must not mask the original failure.
+// Each name is checked against the configured upstream set before it is deleted, so a
+// name that is not a configured upstream — e.g. from a corrupted or tampered pending
+// row reaching a pre-resolveChain cleanup site, which unlike the post-resolve sites has
+// not been through validateChain — is skipped rather than turned into a delete.
+//
+// providers is the set of provider names whose upstream-token rows should be removed;
+// empty entries, duplicates, and names outside the configured upstream set are ignored,
+// and deleting an already-absent row is a no-op (the storage contract makes a
+// missing-row delete non-fatal). Errors are logged and swallowed — cleanup is
+// best-effort and must not mask the original failure. Cost is one storage round-trip
+// per distinct provider; a chain is the corporate primary plus a handful of connectors,
+// so the sequential deletes are bounded and only run on error paths.
 func (h *Handler) cleanupUpstreamTokens(ctx context.Context, sessionID string, providers []string) {
 	seen := make(map[string]struct{}, len(providers))
 	for _, provider := range providers {
@@ -462,8 +466,15 @@ func (h *Handler) cleanupUpstreamTokens(ctx context.Context, sessionID string, p
 			continue
 		}
 		seen[provider] = struct{}{}
+		// Only a configured upstream can legitimately have a stored token, so skip
+		// anything else: it keeps a tampered pending row reaching a pre-resolveChain
+		// cleanup site from naming an arbitrary delete target. The post-resolveChain
+		// sites pass a validateChain-checked chain, so this is a no-op for them.
+		if _, ok := h.upstreamByName(provider); !ok {
+			continue
+		}
 		if err := h.storage.DeleteUpstreamTokensForProvider(ctx, sessionID, provider); err != nil {
-			slog.Warn("failed to clean up upstream token for provider",
+			slog.Warn("failed to clean up upstream token for provider", //nolint:gosec // G706 - provider name from server-side chain state
 				"provider", provider,
 				"error", err,
 			)

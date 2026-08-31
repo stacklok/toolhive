@@ -25,7 +25,7 @@ thv ai-plugin push [reference] [flags]
 
 ```
   -h, --help                    help for push
-      --identity-token string   OIDC identity token (or a path to a file containing one) for keyless signing. If omitted, one is acquired automatically: from the ambient CI OIDC token when running with id-token: write permission, otherwise via an interactive browser sign-in
+      --identity-token string   OIDC identity token (or a path to a file containing one) for keyless signing. If omitted, one is acquired automatically: from the GitHub Actions OIDC token when running with id-token: write permission, otherwise via an interactive browser sign-in
       --no-sign                 Push without signing (consumers will need an explicit unsigned exception to install project-scoped)
 ```
 

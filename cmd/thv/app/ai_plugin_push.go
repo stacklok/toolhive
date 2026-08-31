@@ -30,7 +30,7 @@ func init() {
 	// an artifact no project-scoped install can accept.
 	aiPluginPushCmd.Flags().StringVar(&aiPluginPushIdentityToken, "identity-token", "",
 		"OIDC identity token (or a path to a file containing one) for keyless signing. "+
-			"If omitted, one is acquired automatically: from the ambient CI OIDC token when "+
+			"If omitted, one is acquired automatically: from the GitHub Actions OIDC token when "+
 			"running with id-token: write permission, otherwise via an interactive browser sign-in")
 	aiPluginPushCmd.Flags().BoolVar(&aiPluginPushNoSign, "no-sign", false,
 		"Push without signing (consumers will need an explicit unsigned exception to install project-scoped)")
@@ -46,6 +46,10 @@ func aiPluginPushCmdFunc(cmd *cobra.Command, args []string) error {
 		FlagValue: aiPluginPushIdentityToken,
 		NoSign:    aiPluginPushNoSign,
 		Confirm:   confirmBrowserSignIn,
+		// No --key: plugin signing is keyless-only (#6442), so the
+		// remediation must not offer a flag this command does not define.
+		Remediation: "Provide --identity-token, run in CI with id-token: write permission, " +
+			"or pass --no-sign to push unsigned",
 	})
 	if err != nil {
 		return formatAIPluginError("push plugin", err)

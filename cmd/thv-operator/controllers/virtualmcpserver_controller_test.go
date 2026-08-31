@@ -4465,3 +4465,45 @@ func TestVirtualMCPServer_AuthServerConfigCABundleGetErrorIsTransient(t *testing
 	assert.NotEqual(t, mcpv1beta1.VirtualMCPServerPhaseFailed, vmcp.Status.Phase,
 		"a transient read failure must not stamp a terminal phase")
 }
+
+// TestVirtualMCPServer_RunAuthValidations_StatusWriteFailurePropagates verifies
+// that a failed status write inside runAuthValidations surfaces as an error
+// (so the caller requeues with backoff) instead of being logged and swallowed
+// as if the terminal validation path had completed cleanly.
+func TestVirtualMCPServer_RunAuthValidations_StatusWriteFailurePropagates(t *testing.T) {
+	t.Parallel()
+
+	// An empty Issuer fails validateAuthServerConfig on its first check,
+	// driving runAuthValidations into the applyStatusUpdates call whose
+	// error propagation this test targets.
+	vmcp := v1beta1test.NewVirtualMCPServer(testVmcpName, "default",
+		v1beta1test.WithVMCPAuthServerConfig(&mcpv1beta1.EmbeddedAuthServerConfig{}),
+		v1beta1test.MutateVMCP(func(v *mcpv1beta1.VirtualMCPServer) {
+			v.Generation = 1
+		}),
+	)
+
+	scheme := testutil.NewScheme(t)
+	fakeClient := fake.NewClientBuilder().WithScheme(scheme).
+		WithObjects(vmcp).
+		WithStatusSubresource(&mcpv1beta1.VirtualMCPServer{}).
+		WithInterceptorFuncs(interceptor.Funcs{
+			SubResourceUpdate: func(_ context.Context, _ client.Client, _ string, _ client.Object,
+				_ ...client.SubResourceUpdateOption) error {
+				return apierrors.NewServiceUnavailable("apiserver is having a moment")
+			},
+		}).
+		Build()
+
+	reconciler := &VirtualMCPServerReconciler{
+		Client:           fakeClient,
+		Scheme:           scheme,
+		PlatformDetector: ctrlutil.NewSharedPlatformDetector(),
+	}
+	statusManager := virtualmcpserverstatus.NewStatusManager(vmcp)
+
+	ok, err := reconciler.runAuthValidations(t.Context(), vmcp, statusManager)
+
+	require.Error(t, err, "a failed status write must surface so the caller requeues, not be swallowed")
+	assert.False(t, ok)
+}

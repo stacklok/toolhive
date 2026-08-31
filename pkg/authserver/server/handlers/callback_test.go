@@ -931,10 +931,15 @@ func TestCallbackHandler_SubsequentLeg_MissingChain_FailsClosed(t *testing.T) {
 	assert.Contains(t, location, "error=server_error")
 	assert.Contains(t, location, "state=client-original-state")
 
-	// Upstream tokens for the session are cleaned up.
-	for key := range storState.upstreamTokens {
-		assert.Failf(t, "upstream tokens should be cleaned up", "found leftover token %q", key)
-	}
+	// Fail-closed cleanup is scoped per provider so a user-keyed storage decorator does
+	// not over-delete the user's other connectors. This stale pending carries no
+	// ChainUpstreams, so only the leg just processed (provider-2) can be named and
+	// removed; the earlier leg (provider-1) is not nameable here and is left to expire
+	// by its own TTL rather than risk a session-wide delete widening to the whole user.
+	assert.NotContains(t, storState.upstreamTokens, sessionID+":provider-2",
+		"the leg just processed should be cleaned up")
+	assert.Contains(t, storState.upstreamTokens, sessionID+":provider-1",
+		"an earlier leg with no ChainUpstreams to name it is left to TTL, not session-wide deleted")
 }
 
 func TestCallbackHandler_SingleLeg_IssuesCodeWithoutChaining(t *testing.T) {
@@ -1232,6 +1237,74 @@ func TestCallbackHandler_TwoUpstreams_AuthorizationURLError_CleansUp(t *testing.
 		assert.Failf(t, "no pending authorizations should remain",
 			"found pending for provider %q with state %q", p.UpstreamProviderName, state)
 	}
+}
+
+// TestCallbackHandler_Cleanup_LeavesOutOfChainProviderTokens is the regression guard for
+// the failure that motivated per-provider cleanup. The callback's chain-cleanup must
+// delete only the providers in THIS authorization's chain, never a token the storage
+// holds for the same session under some other provider.
+//
+// It matters because a storage decorator can re-key upstream tokens from toolhive's
+// native (session, provider) scheme to a per-(gateway, user) scheme so a
+// session-independent caller can find a user's tokens. Under that decorator every one of
+// a user's connector tokens shares the session slot, so the old session-wide
+// DeleteUpstreamTokens on any failing login leg deleted the user's entire connector set.
+// Naming each chain provider lets such a decorator scope the delete to exactly this
+// chain, so a provider outside the chain survives — asserted here with a raw
+// (session, provider)-keyed backend that makes the scoping directly observable.
+func TestCallbackHandler_Cleanup_LeavesOutOfChainProviderTokens(t *testing.T) {
+	t.Parallel()
+	handler, storState, _, mockProvider2 := multiUpstreamTestSetup(t)
+
+	// provider-2 fails to build its authorization URL, driving the chain-cleanup path
+	// with the effective chain [provider-1, provider-2].
+	mockProvider2.authURLErr = errors.New("authorization URL error")
+
+	sessionID := "chain-session-out-of-chain"
+
+	// A token for a provider that is NOT part of this login's chain, stored under the
+	// same session slot — this is what a (gateway, user)-keyed decorator looks like from
+	// the backend's side: every connector the user holds shares one session key.
+	outOfChainKey := sessionID + ":provider-out-of-chain"
+	storState.upstreamTokens[outOfChainKey] = &storage.UpstreamTokens{
+		ProviderID:  "provider-out-of-chain",
+		AccessToken: "keep-me",
+		ExpiresAt:   time.Now().Add(time.Hour),
+		ClientID:    testAuthClientID,
+		UserID:      "user-1",
+	}
+
+	firstLegState := "out-of-chain-first-leg-state"
+	storState.pendingAuths[firstLegState] = &storage.PendingAuthorization{
+		ClientID:             testAuthClientID,
+		RedirectURI:          testAuthRedirectURI,
+		State:                "client-state-out-of-chain",
+		PKCEChallenge:        "challenge-out-of-chain",
+		PKCEMethod:           "S256",
+		Scopes:               []string{"openid"},
+		InternalState:        firstLegState,
+		UpstreamPKCEVerifier: "out-of-chain-verifier-1234567890123456789012",
+		UpstreamNonce:        "out-of-chain-nonce",
+		UpstreamProviderName: "provider-1",
+		SessionID:            sessionID,
+		CreatedAt:            time.Now(),
+	}
+
+	req := httptest.NewRequest(http.MethodGet, "/oauth/callback?code=p1-code&state="+firstLegState, nil)
+	rec := httptest.NewRecorder()
+	handler.CallbackHandler(rec, req)
+
+	assert.Equal(t, http.StatusSeeOther, rec.Code, "should return fosite error redirect")
+
+	// The failing chain's own provider-1 token is cleaned up...
+	assert.NotContains(t, storState.upstreamTokens, sessionID+":provider-1",
+		"the failing chain's own provider token should be cleaned up")
+	// ...but the out-of-chain provider's token is left untouched. This is the property a
+	// user-keyed decorator relies on so a failing login never wipes the user's other
+	// connectors.
+	require.Contains(t, storState.upstreamTokens, outOfChainKey,
+		"a token for a provider outside this chain must survive the cleanup")
+	assert.Equal(t, "keep-me", storState.upstreamTokens[outOfChainKey].AccessToken)
 }
 
 func TestCallbackHandler_TwoUpstreams_StorePendingError_CleansUp(t *testing.T) {
@@ -1600,15 +1673,15 @@ func TestCallbackHandler_PlacesPlatformUserInContext_OnChainRead(t *testing.T) {
 
 // TestCallbackHandler_PlacesPlatformUserInContext_OnUpstreamErrorCleanup verifies that
 // when a subsequent-leg callback returns an upstream error, the earlier-leg cleanup
-// (DeleteUpstreamTokens in handleUpstreamError) runs with the resolved canonical user
-// already in the request context.
+// (per-provider DeleteUpstreamTokensForProvider in handleUpstreamError) runs with the
+// resolved canonical user already in the request context.
 //
 // This is the error-path sibling of the chain-read test above. handleUpstreamError
 // runs from an early return at the top of CallbackHandler, before the happy-path
-// user injection, so it must place the user itself. DeleteUpstreamTokens takes only
-// (ctx, sessionID) — no tokens argument — so a context-keyed storage decorator can
-// resolve the canonical user only from ctx. The resolved user is carried forward from
-// leg 1 via pending.ResolvedUserID.
+// user injection, so it must place the user itself. DeleteUpstreamTokensForProvider
+// carries no tokens argument — so a context-keyed storage decorator can resolve the
+// canonical user only from ctx. The resolved user is carried forward from leg 1 via
+// pending.ResolvedUserID, and pending.ChainUpstreams names the earlier leg to clean.
 func TestCallbackHandler_PlacesPlatformUserInContext_OnUpstreamErrorCleanup(t *testing.T) {
 	t.Parallel()
 	handler, storState, _, _ := multiUpstreamTestSetup(t)
@@ -1638,6 +1711,7 @@ func TestCallbackHandler_PlacesPlatformUserInContext_OnUpstreamErrorCleanup(t *t
 		InternalState:        secondLegState,
 		UpstreamProviderName: "provider-2",
 		SessionID:            sessionID,
+		ChainUpstreams:       []string{"provider-1", "provider-2"},
 		ResolvedUserID:       leg1User,
 		ResolvedUserName:     "First Leg User",
 		ResolvedUserEmail:    "firstleg@example.com",
@@ -1649,11 +1723,11 @@ func TestCallbackHandler_PlacesPlatformUserInContext_OnUpstreamErrorCleanup(t *t
 	rec := httptest.NewRecorder()
 	handler.CallbackHandler(rec, req)
 
-	// handleUpstreamError cleans up earlier-leg tokens via DeleteUpstreamTokens; the
-	// harness captured the ctx it ran with. Assert the callback placed the resolved
+	// handleUpstreamError cleans up earlier-leg tokens via DeleteUpstreamTokensForProvider;
+	// the harness captured the ctx it ran with. Assert the callback placed the resolved
 	// canonical user into that ctx so a context-keyed decorator can delete the row.
 	uid, ok := auth.PlatformUserFromContext(storState.deleteUpstreamCtx)
-	require.True(t, ok, "handleUpstreamError must place platform user in ctx before the cleanup DeleteUpstreamTokens")
+	require.True(t, ok, "handleUpstreamError must place platform user in ctx before the cleanup delete")
 	require.Equal(t, leg1User, uid)
 
 	// The error path must NOT place a stub Identity under the identity key.

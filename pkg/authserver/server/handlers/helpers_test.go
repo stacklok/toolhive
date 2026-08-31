@@ -375,6 +375,18 @@ func baseTestSetup(t *testing.T, opts ...baseTestSetupOption) (fosite.OAuth2Prov
 			return nil
 		}).AnyTimes()
 
+	stor.EXPECT().DeleteUpstreamTokensForProvider(gomock.Any(), gomock.Any(), gomock.Any()).DoAndReturn(
+		func(ctx context.Context, sessionID, providerName string) error {
+			// DeleteUpstreamTokensForProvider takes (ctx, sessionID, providerName) but
+			// still carries no tokens argument, so a context-keyed storage decorator
+			// resolves the user from ctx exactly as DeleteUpstreamTokens does. Capture
+			// the ctx here too so the callback's per-provider cleanup path is covered by
+			// the same context-placement assertions. Deleting an absent row is a no-op.
+			storState.deleteUpstreamCtx = ctx
+			delete(storState.upstreamTokens, sessionID+":"+providerName)
+			return nil
+		}).AnyTimes()
+
 	stor.EXPECT().GetAllUpstreamTokens(gomock.Any(), gomock.Any()).DoAndReturn(
 		func(ctx context.Context, sessionID string) (map[string]*storage.UpstreamTokens, error) {
 			// GetAllUpstreamTokens takes only (ctx, sessionID) — no tokens argument to

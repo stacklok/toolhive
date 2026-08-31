@@ -152,7 +152,7 @@ func (c *Converter) Convert(
 	config.Operational = vmcp.Spec.Config.Operational
 
 	// Normalize telemetry config: prefer TelemetryConfigRef (shared MCPTelemetryConfig resource),
-	// The inline config.telemetry field is no longer read by the operator.
+	// fall back to deprecated inline config.telemetry when ref is unset (ref wins when both set).
 	normalizedTelemetry := c.normalizeTelemetry(ctx, vmcp, telemetryCfg)
 	config.Telemetry = normalizedTelemetry
 
@@ -500,18 +500,29 @@ func mapResolvedOIDCToVmcpConfigFromRef(
 	return config
 }
 
-// normalizeTelemetry resolves and normalizes the telemetry config from a
-// pre-fetched MCPTelemetryConfig. Returns nil when TelemetryConfigRef is not set.
-// The Config.Telemetry field is still valid for standalone CLI deployments but is
-// no longer read by the operator — use TelemetryConfigRef instead.
+// normalizeTelemetry resolves and normalizes the telemetry config.
+// Preference order:
+//  1. TelemetryConfigRef → shared MCPTelemetryConfig (preferred for operator deployments)
+//  2. Inline spec.config.telemetry (deprecated for operator; still applied for compatibility)
+//
+// Returning nil disables telemetry (no OTLP, no Prometheus /metrics handler).
+// When /metrics is not registered, GET /metrics falls through to the MCP streamable
+// HTTP handler and returns HTTP 406 JSON-RPC ("Client must accept text/event-stream").
 func (*Converter) normalizeTelemetry(
-	_ context.Context,
+	ctx context.Context,
 	vmcp *mcpv1beta1.VirtualMCPServer,
 	telemetryCfg *mcpv1beta1.MCPTelemetryConfig,
 ) *telemetry.Config {
 	if vmcp.Spec.TelemetryConfigRef != nil && telemetryCfg != nil {
 		return spectoconfig.NormalizeMCPTelemetryConfig(
 			&telemetryCfg.Spec, vmcp.Spec.TelemetryConfigRef.ServiceName, vmcp.Name)
+	}
+	if vmcp.Spec.Config.Telemetry != nil {
+		log.FromContext(ctx).V(1).Info(
+			"config.telemetry is deprecated; migrate to spec.telemetryConfigRef",
+			"vmcp", vmcp.Name,
+		)
+		return spectoconfig.NormalizeTelemetryConfig(vmcp.Spec.Config.Telemetry, vmcp.Name)
 	}
 	return nil
 }

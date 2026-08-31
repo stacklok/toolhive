@@ -1474,9 +1474,9 @@ func TestConvert_DefaultToolVisibilityPreserved(t *testing.T) {
 	}
 }
 
-// TestConverter_InlineTelemetryIgnored verifies that the operator-side converter
-// ignores Config.Telemetry (the standalone CLI field) and only uses TelemetryConfigRef.
-func TestConverter_InlineTelemetryIgnored(t *testing.T) {
+// TestConverter_InlineTelemetry verifies that the operator fallback applies
+// deprecated inline spec.config.telemetry when TelemetryConfigRef is unset.
+func TestConverter_InlineTelemetry(t *testing.T) {
 	t.Parallel()
 
 	vmcp := v1beta1test.NewVirtualMCPServer("test-vmcp", "default",
@@ -1486,8 +1486,9 @@ func TestConverter_InlineTelemetryIgnored(t *testing.T) {
 		}),
 		v1beta1test.WithVMCPConfig(vmcpconfig.Config{
 			Telemetry: &telemetry.Config{
-				Endpoint:    "otlp-collector:4317",
-				ServiceName: "should-be-ignored",
+				Endpoint:                    "otlp-collector:4317",
+				ServiceName:                 "should-be-applied",
+				EnablePrometheusMetricsPath: true,
 			},
 		}),
 	)
@@ -1498,7 +1499,59 @@ func TestConverter_InlineTelemetryIgnored(t *testing.T) {
 	config, _, err := converter.Convert(ctx, vmcp, nil)
 	require.NoError(t, err)
 	require.NotNil(t, config)
-	assert.Nil(t, config.Telemetry, "Config.Telemetry should be ignored by the operator; use TelemetryConfigRef")
+	require.NotNil(t, config.Telemetry, "inline telemetry should be applied when TelemetryConfigRef is unset")
+	assert.Equal(t, "otlp-collector:4317", config.Telemetry.Endpoint)
+	assert.Equal(t, "should-be-applied", config.Telemetry.ServiceName)
+	assert.True(t, config.Telemetry.EnablePrometheusMetricsPath, "enablePrometheusMetricsPath should be preserved")
+}
+
+// TestConverter_TelemetryConfigRefWins verifies that TelemetryConfigRef takes precedence over inline.
+func TestConverter_TelemetryConfigRefWins(t *testing.T) {
+	t.Parallel()
+
+	telemetryCfg := &mcpv1beta1.MCPTelemetryConfig{
+		ObjectMeta: metav1.ObjectMeta{Name: "shared-telemetry", Namespace: "default"},
+		Spec: mcpv1beta1.MCPTelemetryConfigSpec{
+			OpenTelemetry: &mcpv1beta1.MCPTelemetryOTelConfig{
+				Enabled:  true,
+				Endpoint: "https://otel-collector:4317",
+			},
+			Prometheus: &mcpv1beta1.PrometheusConfig{
+				Enabled: true,
+			},
+		},
+	}
+
+	vmcp := v1beta1test.NewVirtualMCPServer("test-vmcp", "default",
+		v1beta1test.WithVMCPGroupRef("test-group"),
+		v1beta1test.WithVMCPIncomingAuth(&mcpv1beta1.IncomingAuthConfig{
+			Type: "anonymous",
+		}),
+		v1beta1test.WithVMCPConfig(vmcpconfig.Config{
+			Telemetry: &telemetry.Config{
+				Endpoint:                    "inline-collector:4317",
+				EnablePrometheusMetricsPath: false,
+			},
+		}),
+		v1beta1test.MutateVMCP(func(v *mcpv1beta1.VirtualMCPServer) {
+			v.Spec.TelemetryConfigRef = &mcpv1beta1.MCPTelemetryConfigReference{
+				Name:        "shared-telemetry",
+				ServiceName: "ref-svc",
+			}
+		}),
+	)
+
+	converter := newTestConverter(t, newNoOpMockResolver(t))
+	ctx := log.IntoContext(context.Background(), logr.Discard())
+
+	config, _, err := converter.Convert(ctx, vmcp, telemetryCfg)
+	require.NoError(t, err)
+	require.NotNil(t, config)
+	require.NotNil(t, config.Telemetry)
+	// Ref wins over inline; inline values must not leak through.
+	assert.Equal(t, "ref-svc", config.Telemetry.ServiceName)
+	assert.True(t, config.Telemetry.EnablePrometheusMetricsPath, "Prometheus enabled from MCPTelemetryConfig should be used")
+	assert.Equal(t, "otel-collector:4317", config.Telemetry.Endpoint, "endpoint should be stripped prefix and come from ref, not inline")
 }
 
 // TestConverter_TelemetryNil tests that nil telemetry config is handled correctly.

@@ -266,6 +266,43 @@ func TestRegisterClientHandler_ScopeInResponse(t *testing.T) {
 		"DCR response should include granted scopes per RFC 7591 Section 3.2.1")
 }
 
+// TestRegisterClientHandler_OmittedScopeGrantsIntersection pins the
+// default-scope fallback when scopes_supported does not carry the full
+// default set: the registration proceeds with the intersection of
+// DefaultScopes and ScopesSupported instead of rejecting (issue #6186).
+func TestRegisterClientHandler_OmittedScopeGrantsIntersection(t *testing.T) {
+	t.Parallel()
+
+	ctrl := gomock.NewController(t)
+	stor := mocks.NewMockStorage(ctrl)
+	stor.EXPECT().RegisterClient(gomock.Any(), gomock.Any()).Return(nil)
+
+	handler := &Handler{
+		storage: stor,
+		config: &server.AuthorizationServerConfig{
+			Config:          &fosite.Config{AccessTokenIssuer: "https://test-authserver"},
+			ScopesSupported: []string{"openid", "email", "offline_access"}, // lacks "profile"
+		},
+	}
+
+	reqBody, err := json.Marshal(oauthproto.DynamicClientRegistrationRequest{
+		RedirectURIs: []string{"http://127.0.0.1:8080/callback"},
+	})
+	require.NoError(t, err)
+
+	req := httptest.NewRequest(http.MethodPost, "/oauth/register", bytes.NewReader(reqBody))
+	req.Header.Set("Content-Type", "application/json")
+	w := httptest.NewRecorder()
+
+	handler.RegisterClientHandler(w, req)
+	require.Equal(t, http.StatusCreated, w.Code)
+
+	var resp oauthproto.DynamicClientRegistrationResponse
+	require.NoError(t, json.Unmarshal(w.Body.Bytes(), &resp))
+	assert.Equal(t, []string{"openid", "email", "offline_access"}, []string(resp.Scopes),
+		"registration must proceed with the intersection of default scopes and scopes_supported")
+}
+
 func TestRegisterClientHandler_BaselineClientScopes(t *testing.T) {
 	t.Parallel()
 

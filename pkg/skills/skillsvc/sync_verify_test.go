@@ -4,6 +4,7 @@
 package skillsvc
 
 import (
+	"net/http"
 	"strings"
 	"testing"
 
@@ -11,6 +12,7 @@ import (
 	"github.com/stretchr/testify/require"
 	"go.uber.org/mock/gomock"
 
+	"github.com/stacklok/toolhive-core/httperr"
 	"github.com/stacklok/toolhive/pkg/skills"
 	"github.com/stacklok/toolhive/pkg/skills/lockfile"
 	"github.com/stacklok/toolhive/pkg/skills/verifier"
@@ -124,4 +126,141 @@ func TestVerifyStoredSignature(t *testing.T) {
 			require.NoError(t, err)
 		})
 	}
+}
+
+// TestVerifyStoredSignature_KeyPinnedEntry covers the branch that keeps a
+// key-pinned project from reporting drift forever. The keyless path refuses a
+// key-pinned entry outright, and sync reads a refusal as drift it can heal by
+// reinstalling — so before this branch existed the skill was reported modified
+// on every run and --check failed permanently on an intact project.
+func TestVerifyStoredSignature_KeyPinnedEntry(t *testing.T) {
+	t.Parallel()
+
+	keyPEM, err := verifier.DecodePublicKey(testPublicKeyB64)
+	require.NoError(t, err)
+	bundle := []byte(`{"bundle":true}`)
+
+	t.Run("verifies against the pinned key, not the keyless path", func(t *testing.T) {
+		t.Parallel()
+		entry := keyedLockEntry()
+		mv := verifiermocks.NewMockVerifier(gomock.NewController(t))
+		mv.EXPECT().VerifyBundleOfflineWithKey(bundle, entry.ResolvedReference, entry.Digest, keyPEM).
+			Return(nil)
+		// Not merely "the key path was taken": reaching the keyless path at
+		// all is the bug, and it fails closed in a way that looks like drift.
+		mv.EXPECT().VerifyBundleOffline(gomock.Any(), gomock.Any(), gomock.Any()).Times(0)
+
+		svc := &service{sigVerifier: mv}
+		require.NoError(t, svc.verifyStoredSignature(entry, skills.InstalledSkill{SigstoreBundle: bundle}))
+	})
+
+	t.Run("a real verification failure still propagates", func(t *testing.T) {
+		t.Parallel()
+		entry := keyedLockEntry()
+		mv := verifiermocks.NewMockVerifier(gomock.NewController(t))
+		mv.EXPECT().VerifyBundleOfflineWithKey(gomock.Any(), gomock.Any(), gomock.Any(), gomock.Any()).
+			Return(verifier.ErrSignatureInvalid)
+
+		svc := &service{sigVerifier: mv}
+		require.ErrorIs(t,
+			svc.verifyStoredSignature(entry, skills.InstalledSkill{SigstoreBundle: bundle}),
+			verifier.ErrSignatureInvalid)
+	})
+
+	t.Run("falls back to the install record when the entry pins no reference", func(t *testing.T) {
+		t.Parallel()
+		entry := keyedLockEntry()
+		entry.ResolvedReference = ""
+		mv := verifiermocks.NewMockVerifier(gomock.NewController(t))
+		mv.EXPECT().VerifyBundleOfflineWithKey(bundle, "example.com/org/from-install", entry.Digest, keyPEM).
+			Return(nil)
+
+		svc := &service{sigVerifier: mv}
+		require.NoError(t, svc.verifyStoredSignature(entry, skills.InstalledSkill{
+			SigstoreBundle: bundle,
+			Reference:      "example.com/org/from-install",
+		}))
+	})
+
+	t.Run("no reference anywhere fails closed rather than verifying nothing", func(t *testing.T) {
+		t.Parallel()
+		entry := keyedLockEntry()
+		entry.ResolvedReference = ""
+		mv := verifiermocks.NewMockVerifier(gomock.NewController(t))
+		mv.EXPECT().VerifyBundleOfflineWithKey(gomock.Any(), gomock.Any(), gomock.Any(), gomock.Any()).Times(0)
+
+		svc := &service{sigVerifier: mv}
+		err := svc.verifyStoredSignature(entry, skills.InstalledSkill{SigstoreBundle: bundle})
+		require.ErrorIs(t, err, verifier.ErrSignatureInvalid)
+		assert.Contains(t, err.Error(), "no reference to reconstruct the signed payload from")
+	})
+
+	t.Run("a missing bundle names the key anchor, not an empty signer", func(t *testing.T) {
+		t.Parallel()
+		entry := keyedLockEntry()
+		svc := &service{sigVerifier: verifiermocks.NewMockVerifier(gomock.NewController(t))}
+		err := svc.verifyStoredSignature(entry, skills.InstalledSkill{})
+		require.ErrorIs(t, err, verifier.ErrSignatureInvalid)
+		assert.Contains(t, err.Error(), "a cosign public key")
+		assert.NotContains(t, err.Error(), `signer ""`,
+			"a key entry records no signer identity; the keyless phrasing named an empty string")
+	})
+}
+
+// TestAdoptSkill_RefusesKeySignedInstall covers the one place a key-signed
+// artifact has no path through: adoption back-fills trust from what the stored
+// bundle reveals, and a key-pair bundle reveals no identity and does not carry
+// the key. Recording it as unsigned instead would file a false trust decision
+// about an artifact that IS signed, so the refusal has to name the route that
+// can anchor it.
+//
+//nolint:paralleltest // uses t.Setenv via newLockTestService, incompatible with t.Parallel
+func TestAdoptSkill_RefusesKeySignedInstall(t *testing.T) {
+	gr, fx := newGitResolverMock(t)
+	fx.register("adopt-keyed", gitSkill("adopt-keyed"))
+
+	mv := verifiermocks.NewMockVerifier(gomock.NewController(t))
+	mv.EXPECT().VerifyGit(gomock.Any(), gomock.Any(), gomock.Any(), gomock.Any()).
+		AnyTimes().Return(signedResult(), nil)
+	mv.EXPECT().VerifyBundleOffline(gomock.Any(), gomock.Any(), gomock.Any()).AnyTimes().Return(nil)
+	// The stored bundle is a key-pair one: nothing to observe.
+	mv.EXPECT().ResultFromBundle(gomock.Any(), gomock.Any()).
+		AnyTimes().Return(nil, verifier.ErrKeySigned)
+
+	svc, projectRoot := newLockTestService(t, gr, WithVerifier(mv))
+	ref, _ := gitRef("adopt-keyed")
+	_, err := svc.Install(t.Context(), skills.InstallOptions{
+		Name: ref, Scope: skills.ScopeProject, ProjectRoot: projectRoot, Clients: []string{"claude-code"},
+	})
+	require.NoError(t, err)
+
+	// Strip it back to the unmanaged state a pre-lock-tracking install is in,
+	// but leave a stored bundle behind so adoption has something to read.
+	syncer := svc.(*service) //nolint:forcetypeassert
+	root := mustOpenRoot(t, projectRoot)
+	require.NoError(t, lockfile.Update(root, func(lf *lockfile.Lockfile) error {
+		lf.Remove("adopt-keyed")
+		return nil
+	}))
+	legacy, err := syncer.store.Get(t.Context(), "adopt-keyed", skills.ScopeProject, projectRoot)
+	require.NoError(t, err)
+	legacy.Managed = false
+	legacy.SigstoreBundle = []byte(`{"bundle":true}`)
+	require.NoError(t, syncer.store.Update(t.Context(), legacy))
+
+	adoptErr := syncer.adoptSkill(t.Context(),
+		skills.SyncOptions{ProjectRoot: projectRoot}, legacy)
+
+	require.Error(t, adoptErr)
+	assert.Equal(t, http.StatusForbidden, httperr.Code(adoptErr))
+	require.ErrorIs(t, adoptErr, verifier.ErrKeySigned)
+	assert.Contains(t, adoptErr.Error(), "--public-key",
+		"the refusal must name the path that can anchor it, not merely refuse")
+	assert.Contains(t, adoptErr.Error(), "--allow-unsigned is not a substitute",
+		"the artifact is signed; recording an unsigned exception would be a false trust decision")
+
+	// The refusal must not leave a lock entry behind.
+	lf := readLockfile(t, projectRoot)
+	_, ok := lf.Get("adopt-keyed")
+	assert.False(t, ok, "a refused adoption must write nothing")
 }

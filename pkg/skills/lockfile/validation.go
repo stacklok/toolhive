@@ -156,24 +156,79 @@ func validateEntry(entry Entry) error {
 		if err := validateResolvedReference(entry.ResolvedReference); err != nil {
 			return fmt.Errorf("entry %q: resolvedReference: %w", entry.Name, err)
 		}
+		if err := validateDigestKind(entry); err != nil {
+			return fmt.Errorf("entry %q: %w", entry.Name, err)
+		}
 	}
+	if err := validateEntryTrust(entry); err != nil {
+		return fmt.Errorf("entry %q: %w", entry.Name, err)
+	}
+	return nil
+}
+
+// validateEntryTrust checks the entry's trust fields: that it records at most
+// one of a signature and an unsigned exception, that the provenance block is
+// well-formed, and that its anchor suits the kind of artifact the entry
+// restores. Separated from the rest of validateEntry because these checks
+// need the whole entry — the anchor's fitness depends on the source — where
+// validateProvenance below sees only the provenance block.
+func validateEntryTrust(entry Entry) error {
 	if entry.Provenance != nil && entry.Unsigned {
-		return fmt.Errorf("entry %q: provenance and unsigned are mutually exclusive"+
-			" — an entry is either a verified signature or a recorded unsigned exception", entry.Name)
+		return errors.New("provenance and unsigned are mutually exclusive" +
+			" — an entry is either a verified signature or a recorded unsigned exception")
 	}
-	if entry.Provenance != nil {
-		if err := validateProvenance(entry.Provenance); err != nil {
-			return fmt.Errorf("entry %q: provenance: %w", entry.Name, err)
+	if entry.Provenance == nil {
+		return nil
+	}
+	if err := validateProvenance(entry.Provenance); err != nil {
+		return fmt.Errorf("provenance: %w", err)
+	}
+	// A cosign key pair signs an OCI artifact, while a git entry's signature
+	// lives on the commit and is always certificate-based. A key-pinned git
+	// entry pins an anchor no verification of that entry could ever use.
+	if entry.Provenance.PublicKey != "" && entryIsGitSource(entry) {
+		return errors.New("provenance: publicKey is only valid for an OCI artifact;" +
+			" a git commit signature is verified against a certificate, not a key")
+	}
+	return nil
+}
+
+// entryIsGitSource classifies an entry the way the restore path does: from
+// resolvedReference, which is the field buildPinnedReference dispatches on.
+// Reading the deciding field — rather than inferring the kind from the digest
+// beside it — is what keeps this classification from drifting away from the
+// code that acts on it. An entry recording no resolved reference is
+// classified by its digest form, the only signal left.
+func entryIsGitSource(entry Entry) bool {
+	if entry.ResolvedReference != "" {
+		return gitresolver.IsGitReference(entry.ResolvedReference)
+	}
+	return !strings.HasPrefix(entry.Digest, ContentDigestPrefix)
+}
+
+// validateDigestKind rejects an entry whose digest form contradicts the
+// source it is restored from. Restore dispatches on resolvedReference but
+// pins from digest, so a git reference paired with an OCI digest yields
+// "git://host/repo@sha256:..." — a reference no fetch can satisfy, and one
+// whose malformedness surfaces only once the fetch is attempted. The install
+// path cannot write such a pair (a git install records a bare commit hash, an
+// OCI install a prefixed manifest digest); a hand edit or a botched merge
+// resolution can, which is why the lock boundary is where it belongs.
+//
+// Callers apply this only to an entry that records a resolved reference:
+// without one there is no second field to disagree with.
+func validateDigestKind(entry Entry) error {
+	ociDigest := strings.HasPrefix(entry.Digest, ContentDigestPrefix)
+	if entryIsGitSource(entry) {
+		if ociDigest {
+			return errors.New("digest is an OCI manifest digest but resolvedReference is a git reference;" +
+				" a git entry pins a full commit hash")
 		}
-		// Checked here rather than in validateProvenance, which sees only the
-		// provenance block: a cosign key pair signs an OCI artifact, while a
-		// git entry's signature lives on the commit and is always
-		// certificate-based. A key-pinned git entry pins an anchor no
-		// verification of that entry could ever use.
-		if entry.Provenance.PublicKey != "" && !strings.HasPrefix(entry.Digest, ContentDigestPrefix) {
-			return fmt.Errorf("entry %q: provenance: publicKey is only valid for an OCI artifact;"+
-				" a git commit signature is verified against a certificate, not a key", entry.Name)
-		}
+		return nil
+	}
+	if !ociDigest {
+		return fmt.Errorf("digest is a git commit hash but resolvedReference is an OCI reference;"+
+			" an OCI entry pins %q + 64 hex chars", ContentDigestPrefix)
 	}
 	return nil
 }

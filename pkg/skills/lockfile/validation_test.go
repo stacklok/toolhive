@@ -247,13 +247,27 @@ func TestValidateLockfile(t *testing.T) {
 			wantErr: "not a DER SPKI public key",
 		},
 		{
-			name: "publicKey rejected on a git entry",
+			// No resolvedReference, so the entry is classified by the only signal
+			// left: a bare commit hash means a git entry, whose signature lives
+			// on the commit and is verified against a certificate, never a key.
+			name: "publicKey rejected on a git entry classified by its digest",
 			lf: Lockfile{Version: CurrentVersion, Skills: []Entry{
-				// A bare commit hash: a git entry, whose signature lives on the
-				// commit and is verified against a certificate, never a key.
 				{Name: "keyed", Source: "s", Digest: strings.Repeat("a", 40), Provenance: &Provenance{
 					PublicKey: testPublicKeyB64,
 				}},
+			}},
+			wantErr: "only valid for an OCI artifact",
+		},
+		{
+			// The same rejection reached through the resolved reference, with a
+			// digest that agrees with it: the anchor check fires on its own
+			// account here, not as a side effect of the two fields disagreeing.
+			name: "publicKey rejected on a git entry classified by its resolved reference",
+			lf: Lockfile{Version: CurrentVersion, Skills: []Entry{
+				{Name: "keyed", Source: "s", Digest: validGitSHA1,
+					ResolvedReference: "git://github.com/org/repo@main#skills/keyed",
+					Provenance:        &Provenance{PublicKey: testPublicKeyB64},
+				},
 			}},
 			wantErr: "only valid for an OCI artifact",
 		},
@@ -341,6 +355,68 @@ func TestValidateLockfile(t *testing.T) {
 			name: "unsigned exception alone is valid",
 			lf: Lockfile{Version: CurrentVersion, Skills: []Entry{
 				{Name: "unsigned", Source: "s", Digest: validSHA256Digest, Unsigned: true},
+			}},
+		},
+		{
+			// The reported bypass: restore dispatches on resolvedReference, so
+			// classifying the entry by its digest alone let a git entry carry an
+			// OCI-only key anchor and pushed the malformed trust decision out to
+			// fetch time.
+			name: "publicKey rejected on a git entry whose digest is written in OCI form",
+			lf: Lockfile{Version: CurrentVersion, Skills: []Entry{
+				{Name: "keyed", Source: "s", Digest: validSHA256Digest,
+					ResolvedReference: "git://github.com/org/repo@main#skills/keyed",
+					Provenance:        &Provenance{PublicKey: testPublicKeyB64},
+				},
+			}},
+			wantErr: "resolvedReference is a git reference",
+		},
+		{
+			// The disagreement is malformed on its own account, key anchor or
+			// not: buildPinnedReference would splice the OCI digest into a git
+			// reference and produce "git://github.com/org/repo@sha256:...".
+			name: "git resolvedReference with an OCI digest rejected without any provenance",
+			lf: Lockfile{Version: CurrentVersion, Skills: []Entry{
+				{Name: "mixed", Source: "s", Digest: validSHA256Digest,
+					ResolvedReference: "git://github.com/org/repo@main#skills/mixed"},
+			}},
+			wantErr: "a git entry pins a full commit hash",
+		},
+		{
+			name: "OCI resolvedReference with a git commit hash digest rejected",
+			lf: Lockfile{Version: CurrentVersion, Skills: []Entry{
+				{Name: "mixed", Source: "s", Digest: validGitSHA1,
+					ResolvedReference: "ghcr.io/org/mixed:1.0.0"},
+			}},
+			wantErr: "an OCI entry pins",
+		},
+		{
+			// Plugins are a separate graph validated by the same per-entry
+			// checks; the "plugins:" prefix is what attributes the failure to
+			// the right half of the file.
+			name: "plugin git resolvedReference with an OCI digest rejected",
+			lf: Lockfile{Version: CurrentVersion, Plugins: []Entry{
+				{Name: "keyed", Source: "s", Digest: validSHA256Digest,
+					ResolvedReference: "git://github.com/org/repo@main#plugins/keyed",
+					Provenance:        &Provenance{PublicKey: testPublicKeyB64},
+				},
+			}},
+			wantErr: "plugins: entry \"keyed\": digest is an OCI manifest digest",
+		},
+		{
+			name: "git resolvedReference with a matching commit hash is valid",
+			lf: Lockfile{Version: CurrentVersion, Skills: []Entry{
+				{Name: "gitted", Source: "s", Digest: validGitSHA1,
+					ResolvedReference: "git://github.com/org/repo@main#skills/gitted"},
+			}},
+		},
+		{
+			name: "OCI resolvedReference with a matching manifest digest is valid",
+			lf: Lockfile{Version: CurrentVersion, Skills: []Entry{
+				{Name: "ocied", Source: "s", Digest: validSHA256Digest,
+					ResolvedReference: "ghcr.io/org/ocied:1.0.0",
+					Provenance:        &Provenance{PublicKey: testPublicKeyB64},
+				},
 			}},
 		},
 		{

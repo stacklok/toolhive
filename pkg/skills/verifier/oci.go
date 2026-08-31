@@ -217,7 +217,33 @@ func classifyVerifyFailure(
 			return signerMismatchError(vr, expected)
 		}
 	}
+	// Every bundle being certificate-less is the cosign key-pair layout, not
+	// a broken keyless signature — the keyless policy could never have
+	// accepted it. Falling through to wrapInvalid would report
+	// ErrSignatureInvalid, sending the user hunting a corrupt signature; and
+	// because --allow-unsigned only overrides ErrUnsigned, it would leave
+	// them a 403 with no available remedy. A mixed artifact keeps the
+	// keyless diagnosis: one of its bundles genuinely failed the policy.
+	if onlyKeySigned(bundles) {
+		return ErrKeySigned
+	}
 	return wrapInvalid(lastErr)
+}
+
+// onlyKeySigned reports whether every retrieved bundle uses the cosign
+// key-pair layout. An empty slice is not key-signed: retrieveBundles already
+// reports having found no signature material as ErrUnsigned, so classify is
+// never reached with one.
+func onlyKeySigned(bundles []coreverifier.Bundle) bool {
+	if len(bundles) == 0 {
+		return false
+	}
+	for _, b := range bundles {
+		if b.HasCertificate() {
+			return false
+		}
+	}
+	return true
 }
 
 // signerMismatchError builds the ErrSignerMismatch error, naming both the

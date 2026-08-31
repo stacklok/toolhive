@@ -1809,6 +1809,7 @@ components:
       - signature-invalid
       - signer-mismatch
       - provenance-field-mismatch
+      - key-signed-unverifiable
       - unsigned-rejected
       - unknown
       type: string
@@ -1820,6 +1821,7 @@ components:
       - FailureReasonSignatureInvalid
       - FailureReasonSignerMismatch
       - FailureReasonProvenanceFieldMismatch
+      - FailureReasonKeySigned
       - FailureReasonUnsignedRejected
       - FailureReasonUnknown
     github_com_stacklok_toolhive_pkg_skills.InstallStatus:

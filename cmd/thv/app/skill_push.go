@@ -35,7 +35,10 @@ func init() {
 	skillPushCmd.Flags().StringVar(&skillPushKey, "key", "",
 		"Path to a cosign private key to sign the pushed artifact. "+
 			"Encrypted keys are decrypted with COSIGN_PASSWORD read from the 'thv serve' process, "+
-			"which performs the signing")
+			"which performs the signing. NOTE: ToolHive cannot verify key-pair signatures at "+
+			"install time, so a project-scoped install of the result is refused and "+
+			"--allow-unsigned does not override it — use keyless signing for artifacts that "+
+			"need to be installable")
 	skillPushCmd.Flags().StringVar(&skillPushIdentityToken, "identity-token", "",
 		"OIDC identity token (or a path to a file containing one) for keyless signing. "+
 			"Mutually exclusive with --key. If omitted, one is acquired automatically: from the "+

@@ -292,6 +292,12 @@ func classifyInstallVerifyError(
 				" and reinstall, or upgrade with allow_signer_change)", skillName, verifyErr),
 			http.StatusForbidden,
 		)
+	// Reported before the default arm so a key-signed artifact is named as
+	// such rather than as a failed verification. allow_unsigned is
+	// deliberately no remedy here: the artifact IS signed, and recording it
+	// as an unsigned exception would file a false trust decision in the lock.
+	case errors.Is(verifyErr, verifier.ErrKeySigned):
+		return keySignedInstallError(skillName, verifyErr)
 	default:
 		return httperr.WithCode(
 			fmt.Errorf("signature verification failed for %q: %w", skillName, verifyErr),
@@ -309,8 +315,31 @@ func classifyCatalogVerifyError(verifyErr error, skillName string) error {
 			http.StatusForbidden,
 		)
 	}
+	// A key-signed artifact is not a provenance mismatch — nothing was
+	// compared, because the keyless policy cannot check a key-pair signature
+	// at all. The catalog constraint is beside the point, so this reports the
+	// same diagnosis and remedy the non-catalog route does.
+	if errors.Is(verifyErr, verifier.ErrKeySigned) {
+		return keySignedInstallError(skillName, verifyErr)
+	}
 	return httperr.WithCode(
 		fmt.Errorf("skill %q does not match its catalog-declared provenance: %w", skillName, verifyErr),
+		http.StatusForbidden,
+	)
+}
+
+// keySignedInstallError reports a key-signed artifact identically wherever it
+// is detected. A lock-constrained install and a catalog-constrained first
+// install reach classification by different routes, but neither could verify
+// the artifact and both have the same remedy, so the wording is shared rather
+// than duplicated — including the note that allow_unsigned is not a way out,
+// since the artifact IS signed and recording it as an unsigned exception
+// would file a false trust decision in the lock.
+func keySignedInstallError(skillName string, verifyErr error) error {
+	return httperr.WithCode(
+		fmt.Errorf("skill %q: %w; re-publish it with keyless signing"+
+			" (allow_unsigned does not apply — the artifact is signed)",
+			skillName, verifyErr),
 		http.StatusForbidden,
 	)
 }
@@ -327,6 +356,8 @@ func classifySignatureError(err error) skills.FailureReason {
 		return skills.FailureReasonSignerMismatch
 	case errors.Is(err, verifier.ErrUnsigned):
 		return skills.FailureReasonUnsignedRejected
+	case errors.Is(err, verifier.ErrKeySigned):
+		return skills.FailureReasonKeySigned
 	case errors.Is(err, verifier.ErrSignatureInvalid):
 		return skills.FailureReasonSignatureInvalid
 	default:

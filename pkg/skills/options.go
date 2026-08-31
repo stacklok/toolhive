@@ -315,6 +315,11 @@ const (
 	// is pinned — a narrower case than FailureReasonSignerMismatch, whose
 	// remediation (--allow-signer-change) is nonetheless the same.
 	FailureReasonProvenanceFieldMismatch FailureReason = "provenance-field-mismatch"
+	// FailureReasonKeySigned means the artifact carries only cosign
+	// key-pair signatures, which install-time verification cannot check.
+	// Distinct from FailureReasonSignatureInvalid: nothing is wrong with
+	// the signature, there is simply no trust anchor to check it against.
+	FailureReasonKeySigned FailureReason = "key-signed-unverifiable"
 	// FailureReasonUnsignedRejected means the artifact is unsigned and the
 	// operation did not permit unsigned installs.
 	FailureReasonUnsignedRejected FailureReason = "unsigned-rejected"

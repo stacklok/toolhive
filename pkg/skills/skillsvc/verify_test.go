@@ -991,3 +991,79 @@ func TestClassifyInstallVerifyErrorDistinguishesProvenanceField(t *testing.T) {
 	assert.Contains(t, identityMismatch.Error(), "signer identity mismatch for",
 		"a genuine signer-identity mismatch keeps its existing wording")
 }
+
+// TestClassifyInstallVerifyErrorNamesKeySigned pins the user-facing half of
+// #6442: a key-signed artifact must be diagnosed as key-signed, must not be
+// reported as a verification failure, and must say plainly that allow_unsigned
+// is no remedy — the artifact is signed, so recording an unsigned exception
+// would file a false trust decision in the lock.
+func TestClassifyInstallVerifyErrorNamesKeySigned(t *testing.T) {
+	t.Parallel()
+
+	err := classifyInstallVerifyError(verifier.ErrKeySigned, "some-skill", nil)
+	assert.Contains(t, err.Error(), "cosign key pair")
+	assert.Contains(t, err.Error(), "re-publish it with keyless signing",
+		"the message must state the remedy, not merely the refusal")
+	assert.Contains(t, err.Error(), "allow_unsigned does not apply")
+	assert.NotContains(t, err.Error(), "signature verification failed for",
+		"the generic invalid-signature wording is the misdiagnosis this replaces")
+}
+
+// TestClassifySignatureErrorNamesKeySigned keeps the sync/upgrade failure
+// reason distinct from signature-invalid for the same reason.
+func TestClassifySignatureErrorNamesKeySigned(t *testing.T) {
+	t.Parallel()
+
+	assert.Equal(t, skills.FailureReasonKeySigned, classifySignatureError(verifier.ErrKeySigned))
+	assert.Equal(t, skills.FailureReasonSignatureInvalid,
+		classifySignatureError(verifier.ErrSignatureInvalid),
+		"the pre-existing mapping must be unaffected")
+}
+
+// TestIsAllowedUnsignedRejectsKeySigned is the guard that closes #6442's
+// actual escape-hatch gap: --allow-unsigned must not rescue a key-signed
+// artifact even on true first use with the flag explicitly set.
+func TestIsAllowedUnsignedRejectsKeySigned(t *testing.T) {
+	t.Parallel()
+
+	assert.False(t, isAllowedUnsigned(verifier.ErrKeySigned,
+		skills.InstallOptions{AllowUnsigned: true}, nil),
+		"a signed artifact must never be recordable as an unsigned exception")
+	assert.True(t, isAllowedUnsigned(verifier.ErrUnsigned,
+		skills.InstallOptions{AllowUnsigned: true}, nil),
+		"the genuine unsigned case must still be allowed through")
+}
+
+// TestCatalogInstallNamesKeySignedArtifact covers the second route to
+// classification. A first install resolved from a catalog entry that declares
+// provenance is classified by classifyCatalogVerifyError, not
+// classifyInstallVerifyError, so a key-signed artifact arriving that way would
+// otherwise be reported as failing to match its catalog-declared provenance —
+// which is doubly wrong: nothing was compared, because the keyless policy
+// cannot check a key-pair signature at all, and the report would carry neither
+// the re-publish remedy nor the note that allow_unsigned cannot help.
+func TestCatalogInstallNamesKeySignedArtifact(t *testing.T) {
+	t.Parallel()
+
+	projectRoot := makeProjectRoot(t)
+	mv := verifiermocks.NewMockVerifier(gomock.NewController(t))
+	svc := &service{sigVerifier: mv}
+	opts := skills.InstallOptions{
+		ProjectRoot:       projectRoot,
+		CatalogProvenance: &regtypes.Provenance{SignerIdentity: testSignerIdentity},
+	}
+	mv.EXPECT().VerifyOCI(
+		gomock.Any(), gomock.Any(), gomock.Any(),
+		gomock.Eq(verifier.NewCatalogExpectation(opts.CatalogProvenance))).
+		Return(nil, verifier.ErrKeySigned)
+
+	_, err := svc.verifyOCIInstall(
+		t.Context(), opts, "catalog-skill", "ghcr.io/test/catalog-skill:v1", "sha256:digest")
+
+	require.Error(t, err)
+	assert.Equal(t, http.StatusForbidden, httperr.Code(err))
+	assert.Contains(t, err.Error(), "re-publish it with keyless signing")
+	assert.Contains(t, err.Error(), "allow_unsigned does not apply")
+	assert.NotContains(t, err.Error(), "does not match its catalog-declared provenance",
+		"a key-signed artifact was never compared against the catalog constraint")
+}

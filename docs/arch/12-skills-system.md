@@ -426,6 +426,8 @@ What is still trusted on faith, deliberately and visibly:
 
 Publishing is signed by default: `thv skill push` requires `--key` (a cosign private key), an OIDC identity token for keyless signing (supplied with `--identity-token` or acquired automatically), or an explicit `--no-sign`. Either signing path attaches the signature manifest next to the artifact, and the bundle is retrievable at install. See [Publishing](#3-publishing) for the full ladder.
 
+Only the **keyless** path produces an installable artifact. Install-time verification checks the keyless (Fulcio) trust root, and a cosign key pair carries no certificate to chain to it — nor is the signing public key recoverable from the artifact, since the cosign manifest defines no annotation for it. A project-scoped install of a `--key`-signed artifact is therefore refused, and `--allow-unsigned` does **not** override the refusal: the artifact *is* signed, so it never produces the unsigned verdict that exception applies to. Tracked as [#6442](https://github.com/stacklok/toolhive/issues/6442).
+
 ### Schema
 
 ```yaml

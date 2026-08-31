@@ -1696,6 +1696,7 @@
                     "signature-invalid",
                     "signer-mismatch",
                     "provenance-field-mismatch",
+                    "key-signed-unverifiable",
                     "unsigned-rejected",
                     "unknown"
                 ],
@@ -1708,6 +1709,7 @@
                     "FailureReasonSignatureInvalid",
                     "FailureReasonSignerMismatch",
                     "FailureReasonProvenanceFieldMismatch",
+                    "FailureReasonKeySigned",
                     "FailureReasonUnsignedRejected",
                     "FailureReasonUnknown"
                 ]

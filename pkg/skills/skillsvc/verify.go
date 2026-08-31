@@ -515,7 +515,7 @@ func classifyInstallVerifyError(
 	// deliberately no remedy here: the artifact IS signed, and recording it
 	// as an unsigned exception would file a false trust decision in the lock.
 	case errors.Is(verifyErr, verifier.ErrKeySigned):
-		return keySignedInstallError(skillName, verifyErr)
+		return keySignedInstallError(skillName, verifyErr, expected)
 	default:
 		return httperr.WithCode(
 			fmt.Errorf("signature verification failed for %q: %w", skillName, verifyErr),
@@ -538,7 +538,7 @@ func classifyCatalogVerifyError(verifyErr error, skillName string) error {
 	// at all. The catalog constraint is beside the point, so this reports the
 	// same diagnosis and remedy the non-catalog route does.
 	if errors.Is(verifyErr, verifier.ErrKeySigned) {
-		return keySignedInstallError(skillName, verifyErr)
+		return keySignedInstallError(skillName, verifyErr, nil)
 	}
 	return httperr.WithCode(
 		fmt.Errorf("skill %q does not match its catalog-declared provenance: %w", skillName, verifyErr),
@@ -546,17 +546,38 @@ func classifyCatalogVerifyError(verifyErr error, skillName string) error {
 	)
 }
 
-// keySignedInstallError reports a key-signed artifact identically wherever it
-// is detected. A lock-constrained install and a catalog-constrained first
-// install reach classification by different routes, but neither could verify
-// the artifact and both have the same remedy, so the wording is shared rather
-// than duplicated — including the note that allow_unsigned is not a way out,
-// since the artifact IS signed and recording it as an unsigned exception
-// would file a false trust decision in the lock.
-func keySignedInstallError(skillName string, verifyErr error) error {
+// keySignedInstallError reports a key-signed artifact that the keyless path
+// could not verify. A lock-constrained install and a catalog-constrained
+// first install both land here, but the remedy is not the same, so it is
+// chosen from what the entry already pins rather than stated generically.
+//
+// With no anchor recorded, this is a first install of a key-signed artifact
+// and --public-key is exactly the missing input. With a keyless identity
+// pinned, --public-key is NOT the remedy: resolveKeyAnchor rejects a key
+// against a certificate-pinned entry, because a key pair carries no identity
+// that could satisfy it. Naming the flag there would send the caller into a
+// conflict error one step later — the most likely way to reach this arm is
+// also the one where the obvious advice is wrong.
+//
+// Either way allow_unsigned is no way out: the artifact IS signed, and
+// recording it as an unsigned exception would file a false trust decision in
+// the lock.
+func keySignedInstallError(skillName string, verifyErr error, expected *lockfile.Provenance) error {
+	if expected != nil {
+		return httperr.WithCode(
+			fmt.Errorf("skill %q: %w, but its lock entry is pinned to keyless signer %q;"+
+				" a key pair carries no certificate identity that could satisfy that pin, so"+
+				" supplying a public key is refused rather than allowed to displace it."+
+				" Remove the lock entry and reinstall with --public-key to anchor it to the key"+
+				" (allow_unsigned does not apply — the artifact is signed)",
+				skillName, verifyErr, expected.SignerIdentity),
+			http.StatusForbidden,
+		)
+	}
 	return httperr.WithCode(
-		fmt.Errorf("skill %q: %w; re-publish it with keyless signing"+
-			" (allow_unsigned does not apply — the artifact is signed)",
+		fmt.Errorf("skill %q: %w; re-run the install with --public-key pointing at the cosign"+
+			" public key it was signed with, and that key is pinned in the lock file for"+
+			" subsequent installs (allow_unsigned does not apply — the artifact is signed)",
 			skillName, verifyErr),
 		http.StatusForbidden,
 	)

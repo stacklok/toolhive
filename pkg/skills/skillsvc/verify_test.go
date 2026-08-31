@@ -1058,16 +1058,49 @@ func TestClassifyInstallVerifyErrorDistinguishesProvenanceField(t *testing.T) {
 // reported as a verification failure, and must say plainly that allow_unsigned
 // is no remedy — the artifact is signed, so recording an unsigned exception
 // would file a false trust decision in the lock.
+//
+// The remedy differs by what the entry pins, so it is asserted per case: the
+// generic wording that once told every caller to republish keylessly now
+// directs a first install to the flag that verifies it instead.
 func TestClassifyInstallVerifyErrorNamesKeySigned(t *testing.T) {
 	t.Parallel()
 
 	err := classifyInstallVerifyError(verifier.ErrKeySigned, "some-skill", nil)
 	assert.Contains(t, err.Error(), "cosign key pair")
-	assert.Contains(t, err.Error(), "re-publish it with keyless signing",
-		"the message must state the remedy, not merely the refusal")
+	assert.Contains(t, err.Error(), "--public-key",
+		"a first install of a key-signed artifact is exactly what --public-key is for")
 	assert.Contains(t, err.Error(), "allow_unsigned does not apply")
+	assert.NotContains(t, err.Error(), "re-publish it with keyless signing",
+		"republishing is no longer the remedy — the artifact is verifiable as signed")
 	assert.NotContains(t, err.Error(), "signature verification failed for",
 		"the generic invalid-signature wording is the misdiagnosis this replaces")
+}
+
+// TestClassifyInstallVerifyErrorKeySignedAgainstKeylessPin covers the arm
+// where the obvious advice is wrong: the entry pins a certificate identity, so
+// resolveKeyAnchor refuses a supplied key rather than letting it displace the
+// pin. Telling this caller to pass --public-key would walk them into that
+// conflict one step later, so the message has to name the pin and the fact
+// that re-anchoring means removing the entry.
+func TestClassifyInstallVerifyErrorKeySignedAgainstKeylessPin(t *testing.T) {
+	t.Parallel()
+
+	err := classifyInstallVerifyError(
+		verifier.ErrKeySigned, "some-skill", &lockfile.Provenance{SignerIdentity: testSignerIdentity})
+	require.Error(t, err)
+	assert.Equal(t, http.StatusForbidden, httperr.Code(err))
+	assert.Contains(t, err.Error(), testSignerIdentity,
+		"the pinned identity is the reason the key is refused; naming it explains the refusal")
+	assert.Contains(t, err.Error(), "Remove the lock entry and reinstall",
+		"re-anchoring is deliberately not offered in place — say what does work")
+	assert.Contains(t, err.Error(), "allow_unsigned does not apply")
+
+	// The supplied key really is refused against a certificate pin, so the
+	// message is not merely cautious wording.
+	_, anchorErr := resolveKeyAnchor(
+		skills.InstallOptions{PublicKey: testPublicKeyB64}, "some-skill",
+		&lockfile.Provenance{SignerIdentity: testSignerIdentity}, false, nil)
+	require.Error(t, anchorErr)
 }
 
 // TestClassifySignatureErrorNamesKeySigned keeps the sync/upgrade failure
@@ -1123,7 +1156,7 @@ func TestCatalogInstallNamesKeySignedArtifact(t *testing.T) {
 
 	require.Error(t, err)
 	assert.Equal(t, http.StatusForbidden, httperr.Code(err))
-	assert.Contains(t, err.Error(), "re-publish it with keyless signing")
+	assert.Contains(t, err.Error(), "--public-key")
 	assert.Contains(t, err.Error(), "allow_unsigned does not apply")
 	assert.NotContains(t, err.Error(), "does not match its catalog-declared provenance",
 		"a key-signed artifact was never compared against the catalog constraint")

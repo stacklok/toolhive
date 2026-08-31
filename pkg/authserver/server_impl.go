@@ -272,7 +272,7 @@ func registerDelegateClients(ctx context.Context, stor storage.Storage, delegate
 		if err != nil {
 			return fmt.Errorf("failed to create delegate client %q: %w", delegateClient.ClientID, err)
 		}
-		if err := stor.RegisterClient(ctx, client); err != nil {
+		if err := stor.ReconcileConfiguredClient(ctx, client); err != nil {
 			return fmt.Errorf("failed to register delegate client %q: %w", delegateClient.ClientID, err)
 		}
 		slog.Warn("delegate client has blanket self-issued token exchange rights: "+

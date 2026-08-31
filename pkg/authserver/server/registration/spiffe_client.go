@@ -18,6 +18,7 @@ import (
 // credentials; this configuration-only implementation does not authenticate
 // any credentials.
 type SPIFFEClient struct {
+	BackChannelOnlyMarker
 	id         string
 	grantTypes fosite.Arguments
 	scopes     fosite.Arguments

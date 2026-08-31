@@ -658,7 +658,7 @@ func TestRedisStorage_DCRClientTTL(t *testing.T) {
 		})
 	})
 
-	t.Run("static client replaces DCR client without TTL", func(t *testing.T) {
+	t.Run("ReconcileConfiguredClient refuses to overwrite a DCR client, TTL untouched", func(t *testing.T) {
 		withRedisStorage(t, func(ctx context.Context, s *RedisStorage, mr *miniredis.Miniredis) {
 			dcrClient := newDCRClient(t, "delegate", oauthproto.TokenEndpointAuthMethodClientSecretBasic, "old-secret")
 			require.NoError(t, s.RegisterClient(ctx, dcrClient))
@@ -670,13 +670,74 @@ func TestRedisStorage_DCRClientTTL(t *testing.T) {
 				Scopes: []string{"openid"}, Audience: []string{"https://mcp.example"},
 			})
 			require.NoError(t, err)
-			require.NoError(t, s.RegisterClient(ctx, staticClient))
 
+			err = s.ReconcileConfiguredClient(ctx, staticClient)
+			require.ErrorIs(t, err, ErrAlreadyExists)
+
+			// The original DCR-issued registration and its TTL must be untouched.
 			retrieved, err := s.GetClient(ctx, "delegate")
 			require.NoError(t, err)
+			assert.True(t, registration.DCRIssued(retrieved))
+			assert.Positive(t, mr.TTL(key))
+		})
+	})
+}
+
+// TestRedisStorage_ReconcileConfiguredClient covers the create/idempotent/
+// reject matrix ReconcileConfiguredClient must implement over Redis: create
+// when absent (no TTL), no-op when the existing record is itself configured
+// and fingerprint-equal, and refuse with ErrAlreadyExists when the existing
+// record is DCR-issued or a different configured client.
+func TestRedisStorage_ReconcileConfiguredClient(t *testing.T) {
+	t.Parallel()
+
+	newConfigured := func(id, secret string, scopes []string) fosite.Client {
+		client, err := registration.NewStaticDelegateClient(registration.Config{
+			ID: id, Secret: secret, GrantTypes: []string{oauthproto.GrantTypeTokenExchange},
+			Scopes: scopes, Audience: []string{"https://mcp.example"},
+		})
+		require.NoError(t, err)
+		return client
+	}
+
+	t.Run("creates when absent, no TTL", func(t *testing.T) {
+		withRedisStorage(t, func(ctx context.Context, s *RedisStorage, mr *miniredis.Miniredis) {
+			client := newConfigured("configured", "secret", []string{"openid"})
+			require.NoError(t, s.ReconcileConfiguredClient(ctx, client))
+
+			retrieved, err := s.GetClient(ctx, "configured")
+			require.NoError(t, err)
 			assert.False(t, registration.DCRIssued(retrieved))
+			key := redisKey(s.keyPrefix, KeyTypeClient, "configured")
 			assert.Equal(t, time.Duration(0), mr.TTL(key))
+		})
+	})
+
+	t.Run("idempotent on matching fingerprint, secret rotation applies", func(t *testing.T) {
+		withRedisStorage(t, func(ctx context.Context, s *RedisStorage, _ *miniredis.Miniredis) {
+			require.NoError(t, s.ReconcileConfiguredClient(ctx, newConfigured("configured", "old-secret", []string{"openid"})))
+			require.NoError(t, s.ReconcileConfiguredClient(ctx, newConfigured("configured", "new-secret", []string{"openid"})))
+
+			retrieved, err := s.GetClient(ctx, "configured")
+			require.NoError(t, err)
 			assert.NoError(t, registration.SHA256Hasher.Compare(ctx, retrieved.GetHashedSecret(), []byte("new-secret")))
+		})
+	})
+
+	t.Run("refuses a different configured client at the same ID", func(t *testing.T) {
+		withRedisStorage(t, func(ctx context.Context, s *RedisStorage, _ *miniredis.Miniredis) {
+			require.NoError(t, s.ReconcileConfiguredClient(ctx, newConfigured("configured", "secret", []string{"openid"})))
+
+			err := s.ReconcileConfiguredClient(ctx, newConfigured("configured", "secret", []string{"profile"}))
+			require.ErrorIs(t, err, ErrAlreadyExists)
+		})
+	})
+
+	t.Run("rejects a client carrying the DCR-issued marker", func(t *testing.T) {
+		withRedisStorage(t, func(ctx context.Context, s *RedisStorage, _ *miniredis.Miniredis) {
+			err := s.ReconcileConfiguredClient(ctx, newDCRClient(t, "configured", oauthproto.TokenEndpointAuthMethodClientSecretBasic, "secret"))
+			require.Error(t, err)
+			assert.Contains(t, err.Error(), "must not carry the DCR-issued marker")
 		})
 	})
 }

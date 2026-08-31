@@ -443,17 +443,21 @@ func JWTBearerIssuanceFactory(trustedIssuers []TrustedIssuer, shared *MultiIssue
 	}, nil
 }
 
+// assertionJWTConsumer resolves rawStorage's AssertionJWTConsumer capability.
+// Every decorator in the actual composition chain must itself implement (and
+// forward, one level down) AssertionJWTConsumer for this to succeed -- there
+// is no automatic bypass via storage.Unwrap. That is deliberate: a decorator
+// that sits between rawStorage and the innermost backend gets an explicit,
+// visible opportunity to intercept or audit assertion-JWT consumption, rather
+// than being silently skipped past. See CIMDStorageDecorator.ConsumeAssertionJWT
+// and SPIFFEStorageDecorator.ConsumeAssertionJWT for the two production
+// decorators that forward it today. A future decorator that omits this method
+// breaks visibly, right here, with an error naming the offending type -- not
+// silently, by having its ConsumeAssertionJWT logic (if any) never run.
 func assertionJWTConsumer(rawStorage fosite.Storage) (storage.AssertionJWTConsumer, error) {
-	baseStorage := rawStorage
-	// Peel every storage decorator, not just one: the SPIFFE static-client
-	// overlay wraps the CIMD decorator, and AssertionJWTConsumer is not part
-	// of storage.Storage, so it is not promoted through an embedded decorator.
-	if stor, ok := rawStorage.(storage.Storage); ok {
-		baseStorage = storage.Unwrap(stor)
-	}
-	consumer, ok := baseStorage.(storage.AssertionJWTConsumer)
+	consumer, ok := rawStorage.(storage.AssertionJWTConsumer)
 	if !ok {
-		return nil, fmt.Errorf("JWT-bearer storage %T does not implement storage.AssertionJWTConsumer", baseStorage)
+		return nil, fmt.Errorf("JWT-bearer storage %T does not implement storage.AssertionJWTConsumer", rawStorage)
 	}
 	return consumer, nil
 }

@@ -80,8 +80,9 @@ func TestAuthorizeHandler_BackChannelOnlyClientsMatchMissingClient(t *testing.T)
 	t.Parallel()
 
 	tests := []struct {
-		name   string
-		client func(t *testing.T) fosite.Client
+		name           string
+		client         func(t *testing.T) fosite.Client
+		explicitMarker bool
 	}{
 		{
 			name: "SPIFFE client",
@@ -95,6 +96,7 @@ func TestAuthorizeHandler_BackChannelOnlyClientsMatchMissingClient(t *testing.T)
 				require.NoError(t, err)
 				return client
 			},
+			explicitMarker: true,
 		},
 		{
 			name: "delegate client",
@@ -110,6 +112,11 @@ func TestAuthorizeHandler_BackChannelOnlyClientsMatchMissingClient(t *testing.T)
 				require.NoError(t, err)
 				return client
 			},
+			// A delegate client is rejected via the pre-existing metadata-shape
+			// inference (isBackChannelOnlyClient's fallback), not the explicit
+			// registration.BackChannelOnly marker -- delegate clients are out of
+			// scope for that marker and must keep their current behaviour.
+			explicitMarker: false,
 		},
 	}
 
@@ -119,6 +126,12 @@ func TestAuthorizeHandler_BackChannelOnlyClientsMatchMissingClient(t *testing.T)
 			handler, state, _ := handlerTestSetup(t)
 			client := tt.client(t)
 			state.clients[client.GetID()] = client
+
+			// Prove classification for this client type is directional: the
+			// explicit marker is set (SPIFFE) or is not (delegate), rather than
+			// both client types happening to reach the same /authorize outcome
+			// via the same mechanism.
+			assert.Equal(t, tt.explicitMarker, registration.BackChannelOnly(client))
 
 			missing := httptest.NewRecorder()
 			handler.AuthorizeHandler(missing, httptest.NewRequest(http.MethodGet,

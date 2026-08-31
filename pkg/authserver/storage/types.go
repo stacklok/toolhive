@@ -591,20 +591,60 @@ func ValidateRegisterableClientID(id string) error {
 	return nil
 }
 
+// sameStringSet reports whether a and b contain the same elements as sets:
+// order and duplicate count don't matter, only membership. Canonicalisation
+// (sort, then dedup) mirrors ScopesHash's approach so the two stay consistent.
+func sameStringSet(a, b []string) bool {
+	as := slices.Clone(a)
+	bs := slices.Clone(b)
+	sort.Strings(as)
+	sort.Strings(bs)
+	as = slices.Compact(as)
+	bs = slices.Compact(bs)
+	return slices.Equal(as, bs)
+}
+
+// clientFingerprintsEqual reports whether a and b represent the same logical
+// client configuration: equal scope set, audience set, grant-type set,
+// response-type set, and public/confidential class. Client secrets are
+// deliberately excluded from the comparison — an operator rotating a
+// configured client's secret must still be able to reconcile; a secret
+// rotation is not a different logical client.
+func clientFingerprintsEqual(a, b fosite.Client) bool {
+	return sameStringSet(a.GetScopes(), b.GetScopes()) &&
+		sameStringSet(a.GetAudience(), b.GetAudience()) &&
+		sameStringSet(a.GetGrantTypes(), b.GetGrantTypes()) &&
+		sameStringSet(a.GetResponseTypes(), b.GetResponseTypes()) &&
+		a.IsPublic() == b.IsPublic()
+}
+
 // ClientRegistry provides client registration and lookup operations.
 // It embeds fosite.ClientManager for client lookup (GetClient) and adds
-// RegisterClient for dynamic client registration (RFC 7591).
+// RegisterClient for dynamic client registration (RFC 7591) and
+// ReconcileConfiguredClient for operator-declared clients.
 type ClientRegistry interface {
 	// ClientManager provides client lookup (GetClient)
 	fosite.ClientManager
 
-	// RegisterClient registers a new OAuth client.
-	// This supports both static configuration and dynamic client registration (RFC 7591).
-	// A DCR-issued client is create-only: it returns ErrAlreadyExists if a
-	// client with the same ID already exists. A static/operator-declared
-	// client is authoritative and replaces any existing client with the same
-	// ID, including one that was DCR-issued.
+	// RegisterClient registers a new OAuth client. Always create-only: it
+	// returns ErrAlreadyExists if a client with the same ID already exists,
+	// regardless of the new client's origin. Used by unauthenticated DCR
+	// (RFC 7591) and any other caller that must never silently overwrite an
+	// existing registration.
 	RegisterClient(ctx context.Context, client fosite.Client) error
+
+	// ReconcileConfiguredClient applies an operator-declared (configured)
+	// client: creates it if no client with that ID exists, or idempotently
+	// replaces an existing record with the same ID when that record is itself
+	// operator-declared AND has a matching fingerprint (scopes, audience,
+	// grant types, response types, public/confidential class) — the
+	// restart-with-unchanged-config case. It refuses with ErrAlreadyExists if
+	// the existing record is DCR-issued (registration.DCRIssued), or if it is
+	// a *different* configured client at that ID (fingerprint mismatch — a
+	// misconfiguration, e.g. two colliding associations). The passed client
+	// must not itself carry the registration.DCRIssued marker;
+	// ReconcileConfiguredClient returns an error if it does.
+	ReconcileConfiguredClient(ctx context.Context, client fosite.Client) error
 
 	// RenewClientTTL extends the registration TTL of a DCR-issued client (public or
 	// confidential, gated on the registration.DCRIssued marker) so an actively-used

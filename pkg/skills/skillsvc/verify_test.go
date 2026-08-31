@@ -31,6 +31,11 @@ const (
 	testRunnerEnvironment = "github-hosted"
 )
 
+// testPublicKeyB64 is a real P-256 public key in the base64 DER SPKI
+// form a key-pinned lock entry stores. It must genuinely parse: validation
+// rejects a value that merely decodes as base64.
+const testPublicKeyB64 = "MFkwEwYHKoZIzj0CAQYIKoZIzj0DAQcDQgAExlVDpbnOEv2fH3gS8n7UCHS9Gs0wKxIPR5EAcl8F1jSxlxAV/pll0NsSiuAK95Ws4Fpkn+5QkdVKNXy7LHgb2A=="
+
 func signedResult() *verifier.Result {
 	return &verifier.Result{
 		Signed:         true,
@@ -910,7 +915,12 @@ func TestVerifyLocalInstall(t *testing.T) {
 func TestProvenanceConversionsPreserveEveryField(t *testing.T) {
 	t.Parallel()
 
-	locked := &lockfile.Provenance{
+	// Two fixtures rather than one, because the anchors are mutually
+	// exclusive (see validateProvenanceAnchor): a single struct with every
+	// field populated would encode a lock state that validation rejects, and
+	// make it the canonical example. Coverage is asserted across the pair, so
+	// a newly added field still has to appear in one of them.
+	keyless := &lockfile.Provenance{
 		SignerIdentity:    testSignerIdentity,
 		CertIssuer:        testCertIssuer,
 		RepositoryURI:     "https://github.com/org/repo",
@@ -919,11 +929,15 @@ func TestProvenanceConversionsPreserveEveryField(t *testing.T) {
 		SigstoreURL:       "https://rekor.sigstore.dev",
 		Provisional:       true,
 	}
-	requireAllFieldsSet(t, locked)
+	keyed := &lockfile.Provenance{PublicKey: testPublicKeyB64}
+	requireEveryFieldCovered(t, keyless, keyed)
 
-	info := provenanceInfoFromLock(locked)
-	requireAllFieldsSet(t, info)
-	assert.Equal(t, locked, provenanceInfoToLock(info))
+	keylessInfo := provenanceInfoFromLock(keyless)
+	keyedInfo := provenanceInfoFromLock(keyed)
+	requireEveryFieldCovered(t, keylessInfo, keyedInfo)
+	assert.Equal(t, keyless, provenanceInfoToLock(keylessInfo))
+	assert.Equal(t, keyed, provenanceInfoToLock(keyedInfo),
+		"a key-pinned entry must survive the round trip as the only anchor it has")
 
 	assert.Nil(t, provenanceInfoFromLock(nil))
 	assert.Nil(t, provenanceInfoToLock(nil))
@@ -941,16 +955,26 @@ func TestNormalizeCatalogProvenance(t *testing.T) {
 		"a single supported constraint must not be discarded")
 }
 
-// requireAllFieldsSet fails when any field of the struct pointed to by v holds
-// its zero value, so a field added to one provenance shape without a matching
-// line in the conversions is caught here rather than in production.
-func requireAllFieldsSet(t *testing.T, v any) {
+// requireEveryFieldCovered fails when a field of the struct type is zero in
+// every one of the given values, so a field added to one provenance shape
+// without a matching line in the conversions is caught here rather than in
+// production. Values are checked as a set because mutually exclusive anchors
+// cannot be represented in a single legal fixture.
+func requireEveryFieldCovered(t *testing.T, values ...any) {
 	t.Helper()
-	rv := reflect.ValueOf(v).Elem()
-	for i := range rv.NumField() {
-		assert.False(t, rv.Field(i).IsZero(),
-			"%s.%s is zero: wire it through the provenance conversions and this fixture",
-			rv.Type().Name(), rv.Type().Field(i).Name)
+	require.NotEmpty(t, values)
+	first := reflect.ValueOf(values[0]).Elem()
+	for i := range first.NumField() {
+		covered := false
+		for _, v := range values {
+			if !reflect.ValueOf(v).Elem().Field(i).IsZero() {
+				covered = true
+				break
+			}
+		}
+		assert.True(t, covered,
+			"%s.%s is zero in every fixture: wire it through the provenance conversions and a fixture",
+			first.Type().Name(), first.Type().Field(i).Name)
 	}
 }
 

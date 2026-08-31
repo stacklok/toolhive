@@ -23,6 +23,9 @@ func (d *Default) VerifyOCI(
 	imageRef, digest string,
 	expected *ProvenanceExpectation,
 ) (*Result, error) {
+	if keyPinnedExpectation(expected) {
+		return nil, errKeyPinnedEntry
+	}
 	bundles, err := d.retrieveBundles(ctx, imageRef, digest)
 	if err != nil {
 		return nil, err

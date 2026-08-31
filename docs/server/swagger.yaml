@@ -1916,6 +1916,12 @@ components:
             Provisional marks provenance with a documented verification gap
             (git signatures until transparency-log validation lands).
           type: boolean
+        public_key:
+          description: |-
+            PublicKey is the base64-encoded DER SPKI cosign public key a
+            key-pair-signed entry is pinned to. Set only when SignerIdentity and
+            CertIssuer are empty: the two anchors are mutually exclusive.
+          type: string
         repository_ref:
           description: |-
             RepositoryRef is the git ref the signing workflow ran on, from Fulcio

@@ -92,6 +92,18 @@ func (r *Result) ToLockProvenance() *lockfile.Provenance {
 	}
 }
 
+// keyPinnedExpectation reports whether expected pins a cosign public key
+// rather than a certificate identity. Such an entry cannot be checked by the
+// keyless policy at all, and its certificate fields are empty by construction
+// — which sigstore rejects ("there must be subject alternative name
+// criteria") rather than treating as match-anything, so the failure is closed
+// either way. Detecting it up front replaces that opaque message with one
+// naming the actual mismatch: the entry is key-pinned, and the caller reached
+// for the keyless path.
+func keyPinnedExpectation(expected *ProvenanceExpectation) bool {
+	return expected != nil && expected.locked != nil && expected.locked.PublicKey != ""
+}
+
 // expectedIdentity converts a lock expectation into the core Identity bound
 // into the Sigstore verification policy. Catalog expectations and nil (trust
 // on first use) yield nil, which core treats as chain-of-trust-only

@@ -39,6 +39,14 @@ func (*Default) VerifyGit(
 	payload, signature []byte,
 	expected *ProvenanceExpectation,
 ) (*Result, error) {
+	// A git commit signature is always certificate-based (gitsign), so a
+	// key-pinned expectation cannot apply to one and PublicKey would
+	// otherwise be silently ignored — yielding an unsigned or signer-mismatch
+	// diagnosis unrelated to the real problem. Lock validation rejects such
+	// an entry, but an expectation built in memory never passes through it.
+	if keyPinnedExpectation(expected) {
+		return nil, errKeyPinnedEntry
+	}
 	if len(signature) == 0 {
 		return nil, fmt.Errorf("%w: commit is not signed", ErrUnsigned)
 	}

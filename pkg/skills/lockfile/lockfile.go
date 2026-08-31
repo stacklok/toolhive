@@ -94,7 +94,13 @@ type Entry struct {
 	Extra map[string]any `yaml:",inline"`
 }
 
-// Provenance is the Sigstore signer identity recorded for a verified entry.
+// Provenance is the Sigstore trust anchor recorded for a verified entry.
+//
+// Exactly one anchor is recorded. Keyless (Fulcio) entries record a
+// certificate identity — SignerIdentity plus CertIssuer, optionally narrowed
+// by the certificate-derived fields below. Key-pair (cosign) entries record
+// PublicKey instead and leave every certificate field empty, because a
+// key-pair signature carries no certificate to derive them from.
 type Provenance struct {
 	// SignerIdentity is the certificate subject identity: for GitHub
 	// Actions certificates, the workflow path relative to the repository;
@@ -117,6 +123,21 @@ type Provenance struct {
 	RunnerEnvironment string `yaml:"runnerEnvironment,omitempty"`
 	// SigstoreURL is the Sigstore instance the signature chains to.
 	SigstoreURL string `yaml:"sigstoreUrl,omitempty"`
+	// PublicKey is the base64-encoded DER SPKI form of the cosign public key
+	// a key-pair-signed entry is pinned to — the PEM body with its armor and
+	// line breaks removed, since a lock value may not contain whitespace
+	// (see validateProvenance).
+	//
+	// The full key is stored, not a digest of it, because the key is
+	// recoverable from neither the artifact nor the stored bundle: cosign's
+	// signature manifest defines no annotation carrying it, so there would
+	// be nothing to hash at verification time. This value is therefore the
+	// entry's only trust anchor, and re-verification depends on it.
+	//
+	// Mutually exclusive with SignerIdentity/CertIssuer. Whether the value
+	// parses as a usable key is the verifier's concern; validation here is
+	// syntactic, as for every other field.
+	PublicKey string `yaml:"publicKey,omitempty"`
 	// Provisional marks provenance whose verification has a documented
 	// gap — currently git-commit signatures, verified for signature and
 	// certificate chain but without transparency-log proof of signing

@@ -127,6 +127,10 @@ type ProvenanceInfo struct {
 	RunnerEnvironment string `json:"runner_environment,omitempty"`
 	// SigstoreURL is the Sigstore instance the signature chains to.
 	SigstoreURL string `json:"sigstore_url,omitempty"`
+	// PublicKey is the base64-encoded DER SPKI cosign public key a
+	// key-pair-signed entry is pinned to. Set only when SignerIdentity and
+	// CertIssuer are empty: the two anchors are mutually exclusive.
+	PublicKey string `json:"public_key,omitempty"`
 	// Provisional marks provenance with a documented verification gap
 	// (git signatures until transparency-log validation lands).
 	Provisional bool `json:"provisional,omitempty"`

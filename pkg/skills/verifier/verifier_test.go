@@ -30,6 +30,11 @@ import (
 )
 
 // startTestRegistry runs an in-process OCI registry and returns its host.
+// testPublicKeyB64 is a real P-256 public key in the base64 DER SPKI
+// form a key-pinned lock entry stores. It must genuinely parse: validation
+// rejects a value that merely decodes as base64.
+const testPublicKeyB64 = "MFkwEwYHKoZIzj0CAQYIKoZIzj0DAQcDQgAExlVDpbnOEv2fH3gS8n7UCHS9Gs0wKxIPR5EAcl8F1jSxlxAV/pll0NsSiuAK95Ws4Fpkn+5QkdVKNXy7LHgb2A=="
+
 func startTestRegistry(t *testing.T) string {
 	t.Helper()
 	reg := httptest.NewServer(registry.New())
@@ -560,4 +565,50 @@ func TestVerifyOCIReportsKeySignedAgainstLockedIdentity(t *testing.T) {
 	require.ErrorIs(t, err, ErrKeySigned)
 	require.NotErrorIs(t, err, ErrSignerMismatch,
 		"no certificate exists to compare, so reporting a signer mismatch would invent an observation")
+}
+
+// TestKeylessPathsRefuseKeyPinnedEntry covers the window this PR opens: the
+// lock can now express a key-pinned entry, but nothing verifies one until the
+// install path lands. Such an entry has empty certificate fields by
+// construction, and sigstore rejects an all-empty identity ("there must be
+// subject alternative name criteria") rather than treating it as
+// match-anything — so the failure was already closed. What was missing was a
+// message naming the actual problem instead of that one.
+func TestKeylessPathsRefuseKeyPinnedEntry(t *testing.T) {
+	t.Parallel()
+	host := startTestRegistry(t)
+	ref, digest := pushTestArtifact(t, host)
+	keyed := &lockfile.Provenance{PublicKey: testPublicKeyB64}
+	d := NewDefault(nil)
+
+	_, err := d.VerifyOCI(t.Context(), ref, digest, NewLockExpectation(keyed))
+	require.ErrorIs(t, err, ErrSignatureInvalid,
+		"an entry that cannot be verified this way is a verification failure")
+	require.ErrorContains(t, err, "pinned to a cosign public key")
+
+	// Refused before any registry access, so an unsigned artifact does not
+	// mask the misrouting as ErrUnsigned.
+	require.NotErrorIs(t, err, ErrUnsigned)
+
+	offlineErr := d.VerifyBundleOffline([]byte("ignored"), digest, keyed)
+	require.ErrorIs(t, offlineErr, ErrSignatureInvalid)
+	require.ErrorContains(t, offlineErr, "pinned to a cosign public key",
+		"offline re-verification has the identical hazard")
+}
+
+// TestVerifyGitRefusesKeyPinnedEntry covers the third keyless path. Lock
+// validation rejects a key-pinned git entry, but an expectation assembled in
+// memory never passes through it — and VerifyGit would otherwise ignore
+// PublicKey entirely and report an unrelated unsigned diagnosis, since a git
+// commit signature is always certificate-based.
+func TestVerifyGitRefusesKeyPinnedEntry(t *testing.T) {
+	t.Parallel()
+
+	expected := NewLockExpectation(&lockfile.Provenance{PublicKey: testPublicKeyB64})
+	_, err := NewDefault(nil).VerifyGit(t.Context(), []byte("payload"), []byte("signature"), expected)
+
+	require.ErrorIs(t, err, ErrSignatureInvalid)
+	require.ErrorContains(t, err, "pinned to a cosign public key")
+	require.NotErrorIs(t, err, ErrUnsigned,
+		"refused before the signature checks, so the misrouting is not masked as unsigned")
 }

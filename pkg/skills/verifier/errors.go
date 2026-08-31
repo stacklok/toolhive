@@ -3,7 +3,10 @@
 
 package verifier
 
-import "errors"
+import (
+	"errors"
+	"fmt"
+)
 
 var (
 	// ErrUnsigned indicates the artifact carries no Sigstore signature
@@ -45,3 +48,12 @@ var (
 	// specifically.
 	ErrProvenanceFieldMismatch = errors.New("certificate provenance field mismatch")
 )
+
+// errKeyPinnedEntry is returned when a lock entry pinned to a cosign public
+// key is handed to a keyless verification path. It wraps ErrSignatureInvalid
+// so existing callers classify it as a verification failure — which it is,
+// the entry cannot be verified this way — while the message names the real
+// problem instead of surfacing sigstore's empty-identity complaint.
+var errKeyPinnedEntry = fmt.Errorf(
+	"%w: entry is pinned to a cosign public key, which the keyless verification path cannot check",
+	ErrSignatureInvalid)

@@ -19,6 +19,9 @@ import (
 // inside the Sigstore policy; a mismatch is reported as ErrSignerMismatch,
 // any other verification failure as ErrSignatureInvalid.
 func (*Default) VerifyBundleOffline(bundleBytes []byte, digest string, expected *lockfile.Provenance) error {
+	if expected != nil && expected.PublicKey != "" {
+		return errKeyPinnedEntry
+	}
 	if len(bundleBytes) == 0 {
 		// Classified as an invalid signature because a recorded identity
 		// with nothing backing it cannot be verified; the message leads

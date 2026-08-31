@@ -4,6 +4,7 @@
 package pluginsvc
 
 import (
+	"bytes"
 	"context"
 	"errors"
 	"fmt"
@@ -74,15 +75,23 @@ func (s *service) dispatchExtraction(
 	clientTypes []string,
 ) (*plugins.InstallResult, error) {
 	// Freshly verified trust material has to reach the stored record, so an
-	// install carrying a bundle the record lacks can take neither the no-op
-	// nor the same-digest client-only path: both return `existing` verbatim
-	// without persisting anything. Project installs predating lock tracking
-	// recorded no bundle (verification was gated off), so a same-digest
-	// reinstall would otherwise write a lock entry naming a signer that
-	// verifyStoredSignature cannot re-verify offline — it fails closed on
-	// provenance-without-bundle — while leaving on-disk drift unrepaired.
-	// Routing to the upgrade path rematerializes and persists both.
-	mustPersistTrust := storeErr == nil && len(opts.SigstoreBundle) > 0 && len(existing.SigstoreBundle) == 0
+	// install carrying a bundle that differs from the record's can take
+	// neither the no-op nor the same-digest client-only path: both return
+	// `existing` verbatim without persisting anything. Project installs
+	// predating lock tracking recorded no bundle (verification was gated
+	// off), so a same-digest reinstall would otherwise write a lock entry
+	// naming a signer that verifyStoredSignature cannot re-verify offline —
+	// it fails closed on provenance-without-bundle — while leaving on-disk
+	// drift unrepaired. Routing to the upgrade path rematerializes and
+	// persists both.
+	//
+	// Compared by bytes rather than by "the record has none": a stored bundle
+	// that is present but stale or corrupt is exactly as unusable offline as
+	// a missing one, and keeping it would make an explicit reinstall — the
+	// user's remedy for a failing `sync --check` — verify a good bundle and
+	// then discard it, so the next offline sync fails identically.
+	mustPersistTrust := storeErr == nil && len(opts.SigstoreBundle) > 0 &&
+		!bytes.Equal(opts.SigstoreBundle, existing.SigstoreBundle)
 
 	if !opts.SyncRestore && !mustPersistTrust && isExtractionNoOp(existing, storeErr, opts, clientTypes) {
 		return &plugins.InstallResult{Plugin: existing}, nil
@@ -103,8 +112,8 @@ func (s *service) dispatchExtraction(
 // skillsvc.isExtractionNoOp. Callers must also check SyncRestore and whether
 // newly verified trust material still needs persisting (see
 // dispatchExtraction): a lock-driven reinstall repairs on-disk drift at the
-// same digest, and a record with no stored bundle needs one written, so the
-// no-op path must not apply to either.
+// same digest, and a record whose stored bundle differs from the freshly
+// verified one needs it written, so the no-op path must not apply to either.
 func isExtractionNoOp(existing plugins.InstalledPlugin, storeErr error, opts plugins.InstallOptions, clientTypes []string) bool {
 	if storeErr != nil || existing.Digest != opts.Digest {
 		return false

@@ -623,18 +623,34 @@ func TestDispatchExtractionPersistsNewlyVerifiedBundle(t *testing.T) {
 	const name = "my-plugin"
 
 	tests := []struct {
-		name       string
-		bundle     []byte
-		wantBundle bool
+		name string
+		// storedBundle seeds the pre-existing record's bundle. Empty stands
+		// in for a record written before lock tracking; non-empty for one
+		// whose stored material has since gone stale or corrupt.
+		storedBundle []byte
+		bundle       []byte
+		wantBundle   []byte
 	}{
 		{
 			name:       "bundle to persist is not a no-op",
 			bundle:     []byte(`{"bundle":true}`),
-			wantBundle: true,
+			wantBundle: []byte(`{"bundle":true}`),
 		},
 		{
 			name:   "no bundle still short-circuits",
 			bundle: nil,
+		},
+		{
+			name:         "stale stored bundle is replaced",
+			storedBundle: []byte(`{"bundle":"stale"}`),
+			bundle:       []byte(`{"bundle":"fresh"}`),
+			wantBundle:   []byte(`{"bundle":"fresh"}`),
+		},
+		{
+			name:         "identical stored bundle needs no rewrite",
+			storedBundle: []byte(`{"bundle":true}`),
+			bundle:       []byte(`{"bundle":true}`),
+			wantBundle:   []byte(`{"bundle":true}`),
 		},
 	}
 
@@ -645,11 +661,16 @@ func TestDispatchExtractionPersistsNewlyVerifiedBundle(t *testing.T) {
 			digest := validLockDigest()
 
 			// Stand in for a record written before lock tracking: right
-			// digest and clients, no stored bundle.
+			// digest and clients, no stored bundle unless seeded.
 			installTestPlugin(t, svc, projectRoot, digest)
 			existing, err := inner.store.Get(t.Context(), name, plugins.ScopeProject, projectRoot)
 			require.NoError(t, err)
 			require.Empty(t, existing.SigstoreBundle, "precondition: the pre-gate record stores no bundle")
+
+			if len(tt.storedBundle) > 0 {
+				existing.SigstoreBundle = tt.storedBundle
+				require.NoError(t, inner.store.Update(t.Context(), existing))
+			}
 
 			result, err := inner.dispatchExtraction(t.Context(), plugins.InstallOptions{
 				Name:           name,
@@ -662,16 +683,17 @@ func TestDispatchExtractionPersistsNewlyVerifiedBundle(t *testing.T) {
 			}, plugins.ScopeProject, existing, nil, []string{"claude-code"})
 			require.NoError(t, err)
 
-			if !tt.wantBundle {
+			if len(tt.wantBundle) == 0 {
 				assert.Empty(t, result.Plugin.SigstoreBundle)
 				return
 			}
-			assert.Equal(t, tt.bundle, result.Plugin.SigstoreBundle,
+			assert.Equal(t, tt.wantBundle, result.Plugin.SigstoreBundle,
 				"the freshly verified bundle must reach the record, or offline sync fails closed")
 
 			stored, err := inner.store.Get(t.Context(), name, plugins.ScopeProject, projectRoot)
 			require.NoError(t, err)
-			assert.Equal(t, tt.bundle, stored.SigstoreBundle, "the bundle must be persisted, not just returned")
+			assert.Equal(t, tt.wantBundle, stored.SigstoreBundle,
+				"the bundle must be persisted, not just returned")
 		})
 	}
 }

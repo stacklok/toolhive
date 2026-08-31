@@ -199,6 +199,8 @@ An entry that already records `unsigned: true` is a different case and is honore
 
 Reinstalling is the intended migration, not `--adopt`: adoption records whatever the machine already has, whereas a reinstall re-fetches and verifies against the registry. A same-digest reinstall is also the repair path for a stored bundle that has gone stale or corrupt — the freshly verified bundle replaces it rather than being discarded.
 
+**A lock entry only ever describes content the install that wrote it materialized.** An entry asserts a `contentDigest` hashed from the source just fetched, never read back from disk, so `dispatchExtraction` rematerializes whenever an install is the one bringing a record under lock tracking for the first time — even at an unchanged digest with every client already present, where it would otherwise short-circuit. Without that, a legacy tree modified since it was installed would stay active behind a brand-new entry naming a real signer and a pristine digest, and only a later `sync --check` would notice. The condition is the unmanaged-to-managed transition rather than "a bundle was freshly verified", which would miss two shapes that need it just as much: a git install produces no bundle at all (`VerifyGit` returns none — its signature lives on the commit, as above), and an `--allow-unsigned` reinstall produces no provenance, yet both write a `contentDigest`.
+
 What is still trusted on faith, deliberately and visibly:
 
 - **Unsigned plugins** install only with an explicit `--allow-unsigned`, recorded as `unsigned: true` in the lock entry. That entry is a standing exception: lock-driven operations (sync restores, upgrade re-pins) honor it without re-asking, and `thv ai-plugin info` renders it as `(unsigned — explicit exception)`.

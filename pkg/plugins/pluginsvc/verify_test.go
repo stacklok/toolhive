@@ -754,3 +754,84 @@ func TestInfoPropagatesUnreadableLockTrustState(t *testing.T) {
 	require.Error(t, err, "an unreadable lock file must not render as an untracked install")
 	assert.Contains(t, err.Error(), "reading lock trust state")
 }
+
+// gitSignedVerifier mirrors what the real VerifyGit returns: a verified
+// identity with a NIL bundle. gitsign material is not a Sigstore bundle and
+// the transparency-log proof that would let us build one is a tracked
+// follow-up, so git verification has nothing to hand back.
+//
+// That nil matters for the test below rather than being incidental detail:
+// alwaysSignedVerifier returns a bundle, which would make dispatchExtraction's
+// mustPersistTrust fire and route the reinstall to the rematerializing path
+// for a reason no git install ever has. A test built on it would pass while
+// exercising nothing.
+func gitSignedVerifier(t *testing.T) verifier.Verifier {
+	t.Helper()
+	result := signedResult()
+	result.Bundle = nil
+	mv := verifiermocks.NewMockVerifier(gomock.NewController(t))
+	mv.EXPECT().VerifyGit(gomock.Any(), gomock.Any(), gomock.Any(), gomock.Any()).
+		AnyTimes().Return(result, nil)
+	mv.EXPECT().VerifyBundleOffline(gomock.Any(), gomock.Any(), gomock.Any()).
+		AnyTimes().Return(nil)
+	return mv
+}
+
+// TestInstallVerification_SameCommitGitMigrationRematerializes pins the
+// invariant that a lock entry only ever describes content the install that
+// wrote it actually materialized.
+//
+// The shape that broke it: a project install predating lock tracking, so the
+// store record exists, is unmanaged, and carries no bundle — and whose on-disk
+// tree has been modified since. Reinstalling at the same commit verifies the
+// fresh gitsign signature and writes an entry naming that signer plus a
+// contentDigest hashed from the freshly downloaded source, never from disk.
+// With no bundle to persist there was nothing to pull the install off the
+// no-op path, so the modified files stayed active behind an entry that reads
+// as fully verified, and only a later `sync --check` noticed the mismatch.
+//
+//nolint:paralleltest // serial: real sqlite + on-disk client materialization per test
+func TestInstallVerification_SameCommitGitMigrationRematerializes(t *testing.T) {
+	const name = "my-plugin"
+
+	repoDir := createPluginTestRepo(t, "")
+	svc, projectRoot := newGitLockTestService(t, repoDir, WithVerifier(gitSignedVerifier(t)))
+	require.NoError(t, gitInstall(t, svc, projectRoot, nil))
+	inner := svc.(*service) //nolint:forcetypeassert
+
+	// Reduce the install to the pre-verification shape: no lock entry and an
+	// unmanaged record. Nothing writes this today; it is what a project
+	// install made while lock tracking was gated off looks like.
+	require.NoError(t, lockfile.RemovePluginEntry(mustOpenRoot(t, projectRoot), name))
+	legacy, err := inner.store.Get(t.Context(), name, plugins.ScopeProject, projectRoot)
+	require.NoError(t, err)
+	legacy.Managed = false
+	legacy.SigstoreBundle = nil
+	require.NoError(t, inner.store.Update(t.Context(), legacy))
+
+	// Drift: the tree on disk no longer matches the commit it came from.
+	tampered := filepath.Join(pluginOnDiskPath(projectRoot, name), "commands", "hello.md")
+	require.NoError(t, os.WriteFile(tampered, []byte("tampered content"), 0o644))
+
+	// Reinstall at the same commit, every client already present — the no-op
+	// path, and with a nil bundle nothing else would divert it.
+	require.NoError(t, gitInstall(t, svc, projectRoot, nil))
+
+	entry, ok := loadPluginLockEntry(t, projectRoot)
+	require.True(t, ok)
+	require.NotNil(t, entry.Provenance, "precondition: the reinstall recorded a verified signer")
+	assert.Equal(t, testSignerIdentity, entry.Provenance.SignerIdentity)
+
+	restored, err := os.ReadFile(tampered) //nolint:gosec // test-controlled path
+	require.NoError(t, err)
+	assert.Equal(t, "# hello", string(restored),
+		"an install recording verified provenance must rematerialize the content it vouches for")
+
+	// The contentDigest now describes what is on disk, so the entry is
+	// self-consistent at the moment it is written rather than only after a
+	// repair pass.
+	checked, err := inner.Sync(t.Context(), plugins.SyncOptions{ProjectRoot: projectRoot, Check: true})
+	require.NoError(t, err)
+	assert.Equal(t, []string{name}, checked.AlreadyCurrent)
+	assert.Empty(t, checked.Drifted)
+}

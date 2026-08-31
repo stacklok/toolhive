@@ -3685,7 +3685,7 @@ const docTemplate = `{
                 "type": "object"
             },
             "pkg_api_v1.pushPluginRequest": {
-                "description": "Request to push a built plugin artifact",
+                "description": "Request to push a built plugin artifact. Exactly one of identity_token or no_sign is required.",
                 "properties": {
                     "identity_token": {
                         "description": "IdentityToken is a short-lived OIDC identity token used for keyless\nsigning. Plugin signing is keyless-only: there is deliberately no key\nfield, because ToolHive cannot verify key-signed artifacts at install\ntime and would publish an uninstallable plugin (#6442)",
@@ -3700,6 +3700,9 @@ const docTemplate = `{
                         "type": "string"
                     }
                 },
+                "required": [
+                    "reference"
+                ],
                 "type": "object"
             },
             "pkg_api_v1.pushSkillRequest": {
@@ -6297,6 +6300,16 @@ const docTemplate = `{
                             }
                         },
                         "description": "Unauthorized (registry refused credentials)"
+                    },
+                    "403": {
+                        "content": {
+                            "application/json": {
+                                "schema": {
+                                    "type": "string"
+                                }
+                            }
+                        },
+                        "description": "Forbidden (signature verification or trust check failed)"
                     },
                     "404": {
                         "content": {

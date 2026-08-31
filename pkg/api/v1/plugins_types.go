@@ -73,10 +73,16 @@ type buildPluginRequest struct {
 
 // pushPluginRequest represents the request to push a plugin.
 //
-//	@Description	Request to push a built plugin artifact
+// The signing choice is mutually exclusive and not optional: exactly one of
+// identity_token or no_sign must be set. Swagger 2.0 cannot express "exactly
+// one of", so it is stated here and enforced at runtime
+// (pluginsvc.validateSigningInputs, HTTP 400). Unknown fields are rejected —
+// notably "key", which plugin signing does not support (#6442).
+//
+//	@Description	Request to push a built plugin artifact. Exactly one of identity_token or no_sign is required.
 type pushPluginRequest struct {
 	// OCI reference to push
-	Reference string `json:"reference"`
+	Reference string `json:"reference" binding:"required"`
 	// IdentityToken is a short-lived OIDC identity token used for keyless
 	// signing. Plugin signing is keyless-only: there is deliberately no key
 	// field, because ToolHive cannot verify key-signed artifacts at install

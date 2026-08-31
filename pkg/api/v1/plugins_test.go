@@ -487,21 +487,27 @@ func TestPluginsRouter(t *testing.T) {
 			expectedStatus: http.StatusNoContent,
 		},
 		{
-			// The request DTO has no key field, so a key sent by an older
-			// client is dropped rather than reaching the service: plugin
-			// signing is keyless-only (#6442). It must never arrive as a
-			// populated PushOptions.Key.
-			name:   "push plugin does not forward a key",
-			method: "POST",
-			path:   "/push",
-			body:   `{"reference":"ghcr.io/test/plugin:v1","key":"/tmp/cosign.key","no_sign":true}`,
-			setupMock: func(svc *plugmocks.MockPluginService, _ string) {
-				svc.EXPECT().Push(gomock.Any(), plugins.PushOptions{
-					Reference: "ghcr.io/test/plugin:v1",
-					NoSign:    true,
-				}).Return(nil)
-			},
-			expectedStatus: http.StatusNoContent,
+			// Plugin signing is keyless-only (#6442), so the request DTO has
+			// no key field. A key must be refused rather than dropped: the
+			// caller asked for a key-signed artifact, and quietly publishing
+			// an unsigned one instead is the wrong answer. The service is
+			// never reached (the mock has no expectations).
+			name:           "push plugin rejects a key",
+			method:         "POST",
+			path:           "/push",
+			body:           `{"reference":"ghcr.io/test/plugin:v1","key":"/tmp/cosign.key","no_sign":true}`,
+			setupMock:      func(_ *plugmocks.MockPluginService, _ string) {},
+			expectedStatus: http.StatusBadRequest,
+		},
+		{
+			// Same contract, any unrecognized field: a typo in a signing
+			// field must not decode to "sign however you like".
+			name:           "push plugin rejects unknown fields",
+			method:         "POST",
+			path:           "/push",
+			body:           `{"reference":"ghcr.io/test/plugin:v1","no_sign":true,"identity_tokn":"a.b.c"}`,
+			setupMock:      func(_ *plugmocks.MockPluginService, _ string) {},
+			expectedStatus: http.StatusBadRequest,
 		},
 		{
 			name:   "push plugin forwards no_sign",

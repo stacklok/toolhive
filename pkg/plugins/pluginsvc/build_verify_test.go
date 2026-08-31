@@ -5,8 +5,10 @@ package pluginsvc
 
 import (
 	"net/http"
+	"reflect"
 	"testing"
 
+	"github.com/opencontainers/go-digest"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 	"go.uber.org/mock/gomock"
@@ -22,23 +24,31 @@ import (
 	signermocks "github.com/stacklok/toolhive/pkg/skills/skillsvc/mocks"
 )
 
-// newPushFixture builds an OCI store with a manifest tagged "my-tag" and a
-// registry mock, mirroring TestPush's setup.
-func newPushFixture(t *testing.T) (*ocimocks.MockRegistryClient, *ociplugins.Store, string) {
+// testPushRef is the reference push fixtures tag locally and publish under.
+// A full registry reference rather than a bare tag because a signed push
+// derives the digest-pinned staging reference from it, and a bare name has no
+// registry or repository to pin against. Real pushes always carry one: core's
+// registry client parses the reference the same way.
+const testPushRef = "ghcr.io/example/plugin:v1"
+
+// newPushFixture builds an OCI store with a manifest tagged testPushRef and a
+// registry mock, mirroring TestPush's setup. Returns the artifact digest and
+// the digest-pinned staging reference a signed push publishes under first.
+func newPushFixture(t *testing.T) (*ocimocks.MockRegistryClient, *ociplugins.Store, string, string) {
 	t.Helper()
 	ctrl := gomock.NewController(t)
 	ociStore, err := ociplugins.NewStore(t.TempDir())
 	require.NoError(t, err)
 	d := putTestManifest(t, ociStore)
-	require.NoError(t, ociStore.Tag(t.Context(), d, "my-tag"))
-	return ocimocks.NewMockRegistryClient(ctrl), ociStore, d.String()
+	require.NoError(t, ociStore.Tag(t.Context(), d, testPushRef))
+	staged, err := stagingReference(testPushRef, d)
+	require.NoError(t, err)
+	return ocimocks.NewMockRegistryClient(ctrl), ociStore, d.String(), staged
 }
 
 // TestPushValidatesSigningInputs guards the RFC invariant that pushes are
 // signed by default: an identity token or an explicit no_sign must be given,
-// before anything is pushed. A key is refused on every combination — plugin
-// signing is keyless-only until install-time key verification exists (#6442),
-// so accepting one would publish an uninstallable artifact.
+// before anything is pushed.
 func TestPushValidatesSigningInputs(t *testing.T) {
 	t.Parallel()
 
@@ -48,18 +58,6 @@ func TestPushValidatesSigningInputs(t *testing.T) {
 	}{
 		{name: "neither identity_token nor no_sign", opts: plugins.PushOptions{}},
 		{
-			name: "key alone is refused",
-			opts: plugins.PushOptions{Key: "/tmp/cosign.key"},
-		},
-		{
-			name: "key with identity_token is refused",
-			opts: plugins.PushOptions{Key: "/tmp/cosign.key", IdentityToken: "tok"},
-		},
-		{
-			name: "key with no_sign is refused",
-			opts: plugins.PushOptions{NoSign: true, Key: "/tmp/cosign.key"},
-		},
-		{
 			name: "no_sign combined with identity_token",
 			opts: plugins.PushOptions{NoSign: true, IdentityToken: "tok"},
 		},
@@ -67,10 +65,10 @@ func TestPushValidatesSigningInputs(t *testing.T) {
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
 			t.Parallel()
-			reg, ociStore, _ := newPushFixture(t)
+			reg, ociStore, _, _ := newPushFixture(t)
 			svc := New(WithRegistryClient(reg), WithOCIStore(ociStore))
 
-			tc.opts.Reference = "my-tag"
+			tc.opts.Reference = testPushRef
 			err := svc.Push(t.Context(), tc.opts)
 			require.Error(t, err)
 			assert.Equal(t, http.StatusBadRequest, httperr.Code(err))
@@ -78,21 +76,19 @@ func TestPushValidatesSigningInputs(t *testing.T) {
 	}
 }
 
-// TestPushRejectsKeyBeforePushing proves a key-signed push is refused before
-// the artifact reaches the registry and before the signer is consulted (both
-// mocks carry no expectations). plugins.PushOptions aliases skills.PushOptions
-// so the field still exists for in-process callers; it must be answered with a
-// 400 rather than silently producing an artifact no install can accept.
-func TestPushRejectsKeyBeforePushing(t *testing.T) {
+// TestPushOptionsCarriesNoKeyField pins the keyless-only contract at the type
+// level. Plugin signing is keyless until install-time key verification exists
+// (#6442), and a settable Key had no single answer for what it meant: the
+// in-process service rejected it while the HTTP client dropped it and
+// published unsigned. Omitting the field is what makes those two agree, so
+// the absence is the invariant worth pinning — a reintroduced Key (for
+// instance by restoring the skills.PushOptions alias) fails here rather than
+// silently reopening the divergence.
+func TestPushOptionsCarriesNoKeyField(t *testing.T) {
 	t.Parallel()
-	reg, ociStore, _ := newPushFixture(t)
-
-	ms := signermocks.NewMockSigner(gomock.NewController(t)) // no expectations
-	svc := New(WithRegistryClient(reg), WithOCIStore(ociStore), WithSigner(ms))
-	err := svc.Push(t.Context(), plugins.PushOptions{Reference: "my-tag", Key: "/tmp/cosign.key"})
-	require.Error(t, err)
-	assert.Equal(t, http.StatusBadRequest, httperr.Code(err))
-	assert.Contains(t, err.Error(), "key signing is not supported for plugins")
+	_, ok := reflect.TypeOf(plugins.PushOptions{}).FieldByName("Key")
+	assert.False(t, ok,
+		"plugins.PushOptions must not carry a Key field: plugin signing is keyless-only (#6442)")
 }
 
 // TestPushSignsKeylessWithIdentityToken proves an identity token signs the
@@ -101,48 +97,81 @@ func TestPushRejectsKeyBeforePushing(t *testing.T) {
 // E2E/staging escape hatch.
 // Not run in parallel: t.Setenv forbids it.
 func TestPushSignsKeylessWithIdentityToken(t *testing.T) {
-	reg, ociStore, digest := newPushFixture(t)
+	reg, ociStore, artifactDigest, staged := newPushFixture(t)
 	t.Setenv(envFulcioURL, "https://fulcio.example.test")
 	t.Setenv(envRekorURL, "https://rekor.example.test")
 
 	ms := signermocks.NewMockSigner(gomock.NewController(t))
-	ms.EXPECT().SignOCI(gomock.Any(), "my-tag", digest, signer.Options{
-		IdentityToken: "a.b.c",
-		FulcioURL:     "https://fulcio.example.test",
-		RekorURL:      "https://rekor.example.test",
-	}).Return(&signer.Result{Bundle: []byte(`{"bundle":true}`)}, nil)
-	reg.EXPECT().Push(gomock.Any(), gomock.Any(), gomock.Any(), "my-tag").Return(nil)
+	// The full published sequence, in order: stage under the digest, sign that
+	// digest reference, then promote the requested tag. gomock.InOrder is what
+	// pins the ordering — the tag must not exist before the signature does.
+	gomock.InOrder(
+		reg.EXPECT().Push(gomock.Any(), gomock.Any(), gomock.Any(), staged).Return(nil),
+		ms.EXPECT().SignOCI(gomock.Any(), staged, artifactDigest, signer.Options{
+			IdentityToken: "a.b.c",
+			FulcioURL:     "https://fulcio.example.test",
+			RekorURL:      "https://rekor.example.test",
+		}).Return(&signer.Result{Bundle: []byte(`{"bundle":true}`)}, nil),
+		reg.EXPECT().Push(gomock.Any(), gomock.Any(), gomock.Any(), testPushRef).Return(nil),
+	)
 
 	svc := New(WithRegistryClient(reg), WithOCIStore(ociStore), WithSigner(ms))
-	err := svc.Push(t.Context(), plugins.PushOptions{Reference: "my-tag", IdentityToken: "a.b.c"})
+	err := svc.Push(t.Context(), plugins.PushOptions{Reference: testPushRef, IdentityToken: "a.b.c"})
 	require.NoError(t, err)
 }
 
-// TestPushSigningFailurePropagates: a failed signing is a failed push — the
-// artifact must not be silently published unsigned.
-func TestPushSigningFailurePropagates(t *testing.T) {
+// TestPushSigningFailureLeavesTagUnpublished: a failed signing is a failed
+// push, and — the part worth pinning — the requested tag is never published.
+// The registry mock allows only the staging push, so a promotion call after
+// the signing failure fails the test. Signing before promoting is the only
+// thing that keeps a signing failure from leaving live unsigned content at
+// the reference consumers resolve.
+func TestPushSigningFailureLeavesTagUnpublished(t *testing.T) {
 	t.Parallel()
-	reg, ociStore, _ := newPushFixture(t)
+	reg, ociStore, _, staged := newPushFixture(t)
 
 	ms := signermocks.NewMockSigner(gomock.NewController(t))
-	ms.EXPECT().SignOCI(gomock.Any(), gomock.Any(), gomock.Any(), gomock.Any()).
+	ms.EXPECT().SignOCI(gomock.Any(), staged, gomock.Any(), gomock.Any()).
 		Return(nil, signer.ErrKeyRequired)
-	reg.EXPECT().Push(gomock.Any(), gomock.Any(), gomock.Any(), "my-tag").Return(nil)
+	reg.EXPECT().Push(gomock.Any(), gomock.Any(), gomock.Any(), staged).Return(nil)
 
 	svc := New(WithRegistryClient(reg), WithOCIStore(ociStore), WithSigner(ms))
-	err := svc.Push(t.Context(), plugins.PushOptions{Reference: "my-tag", IdentityToken: "a.b.c"})
+	err := svc.Push(t.Context(), plugins.PushOptions{Reference: testPushRef, IdentityToken: "a.b.c"})
 	require.Error(t, err)
 	assert.Equal(t, http.StatusBadRequest, httperr.Code(err))
+}
+
+// TestPushDigestPinnedReferenceSkipsPromotion: a request that already pins the
+// digest has no mutable tag to promote, so the staging push published exactly
+// what was asked for and a second push would be redundant.
+func TestPushDigestPinnedReferenceSkipsPromotion(t *testing.T) {
+	t.Parallel()
+	reg, ociStore, artifactDigest, staged := newPushFixture(t)
+	// The reference is resolved in the local store before anything is pushed,
+	// so a digest-pinned request has to be tagged that way locally too.
+	require.NoError(t, ociStore.Tag(t.Context(), digest.Digest(artifactDigest), staged))
+
+	ms := signermocks.NewMockSigner(gomock.NewController(t))
+	ms.EXPECT().SignOCI(gomock.Any(), staged, artifactDigest, gomock.Any()).
+		Return(&signer.Result{Bundle: []byte(`{"bundle":true}`)}, nil)
+	// Exactly one push, for the digest reference.
+	reg.EXPECT().Push(gomock.Any(), gomock.Any(), gomock.Any(), staged).Return(nil).Times(1)
+
+	svc := New(WithRegistryClient(reg), WithOCIStore(ociStore), WithSigner(ms))
+	require.NoError(t, svc.Push(t.Context(),
+		plugins.PushOptions{Reference: staged, IdentityToken: "a.b.c"}))
 }
 
 // TestPushNoSignSkipsSigner: the explicit opt-out must reach the registry
 // without ever calling the signer (the mock has no expectations).
 func TestPushNoSignSkipsSigner(t *testing.T) {
 	t.Parallel()
-	reg, ociStore, _ := newPushFixture(t)
-	reg.EXPECT().Push(gomock.Any(), gomock.Any(), gomock.Any(), "my-tag").Return(nil)
+	reg, ociStore, _, _ := newPushFixture(t)
+	// An unsigned push publishes the requested reference directly: with no
+	// signature to order against, there is nothing to stage or promote.
+	reg.EXPECT().Push(gomock.Any(), gomock.Any(), gomock.Any(), testPushRef).Return(nil).Times(1)
 
 	ms := signermocks.NewMockSigner(gomock.NewController(t)) // no expectations
 	svc := New(WithRegistryClient(reg), WithOCIStore(ociStore), WithSigner(ms))
-	require.NoError(t, svc.Push(t.Context(), plugins.PushOptions{Reference: "my-tag", NoSign: true}))
+	require.NoError(t, svc.Push(t.Context(), plugins.PushOptions{Reference: testPushRef, NoSign: true}))
 }

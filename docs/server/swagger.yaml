@@ -3436,7 +3436,8 @@ components:
           type: boolean
       type: object
     pkg_api_v1.pushPluginRequest:
-      description: Request to push a built plugin artifact
+      description: Request to push a built plugin artifact. Exactly one of identity_token
+        or no_sign is required.
       properties:
         identity_token:
           description: |-
@@ -3451,6 +3452,8 @@ components:
         reference:
           description: OCI reference to push
           type: string
+      required:
+      - reference
       type: object
     pkg_api_v1.pushSkillRequest:
       description: Request to push a built skill artifact
@@ -5721,6 +5724,12 @@ paths:
               schema:
                 type: string
           description: Unauthorized (registry refused credentials)
+        "403":
+          content:
+            application/json:
+              schema:
+                type: string
+          description: Forbidden (signature verification or trust check failed)
         "404":
           content:
             application/json:

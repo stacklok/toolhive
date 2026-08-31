@@ -14,6 +14,8 @@ import (
 	"strings"
 
 	nameref "github.com/google/go-containerregistry/pkg/name"
+	"github.com/opencontainers/go-digest"
+	orasregistry "oras.land/oras-go/v2/registry"
 
 	"github.com/stacklok/toolhive-core/container/signer"
 	"github.com/stacklok/toolhive-core/httperr"
@@ -142,30 +144,84 @@ func (s *service) Push(ctx context.Context, opts plugins.PushOptions) error {
 		)
 	}
 
-	if err := s.registry.Push(ctx, s.ociStore, d, opts.Reference); err != nil {
+	// An unsigned push has no ordering constraint to respect: there is no
+	// signature the requested reference could be published ahead of.
+	if opts.NoSign {
+		if err := s.registry.Push(ctx, s.ociStore, d, opts.Reference); err != nil {
+			return fmt.Errorf("pushing to registry: %w", err)
+		}
+		return nil
+	}
+	return s.pushSigned(ctx, opts, d)
+}
+
+// pushSigned publishes a signed artifact so that the requested reference
+// never resolves to unsigned content (RFC THV-0080). Content is staged under
+// its immutable digest, the signature is attached to that digest, and only
+// then is the requested tag pushed.
+//
+// The ordering is the point. Pushing the tag first and signing afterwards
+// publishes exactly what signed-by-default promises not to: on any
+// Fulcio/Rekor/attachment failure the tag is already live and resolves to
+// unsigned content, which user-scoped installs consume without verification
+// and project-scoped installs can take with --allow-unsigned. Returning an
+// error does not retract it. Staged-then-promoted instead leaves the blobs
+// uploaded but nothing tagged, so a consumer resolving the tag finds nothing.
+//
+// The staged manifest is left untagged and is garbage-collectable by the
+// registry. Deleting it is not attempted: RegistryClient exposes no delete,
+// and registries commonly disallow manifest deletion anyway.
+func (s *service) pushSigned(ctx context.Context, opts plugins.PushOptions, d digest.Digest) error {
+	staged, err := stagingReference(opts.Reference, d)
+	if err != nil {
+		return httperr.WithCode(err, http.StatusBadRequest)
+	}
+
+	if err := s.registry.Push(ctx, s.ociStore, d, staged); err != nil {
 		return fmt.Errorf("pushing to registry: %w", err)
 	}
 
-	if opts.NoSign {
-		return nil
-	}
-	// Sign the pushed artifact and attach the signature manifest next to it,
-	// so project-scoped installs can verify it (RFC THV-0080). A signing
-	// failure fails the push: an artifact published as if it were signed,
-	// which consumers then have to install with --allow-unsigned, is worse
-	// than a push that visibly did not complete.
+	// Signed against the staged digest reference rather than the requested
+	// tag, which does not exist on the remote yet: attaching the signature
+	// reads the artifact back to decide whether this identity already signed
+	// it, so a not-yet-created tag would fail the attach.
 	//
-	// Key is deliberately not forwarded: plugin pushes are keyless-only until
-	// install-time key verification exists (#6442), and validateSigningInputs
-	// has already rejected a non-empty one.
-	if _, err := s.artifactSigner().SignOCI(ctx, opts.Reference, d.String(), signer.Options{
+	// No key is forwarded — plugin pushes are keyless-only until install-time
+	// key verification exists (#6442), and PushOptions carries no key field.
+	if _, err := s.artifactSigner().SignOCI(ctx, staged, d.String(), signer.Options{
 		IdentityToken: opts.IdentityToken,
 		FulcioURL:     os.Getenv(envFulcioURL),
 		RekorURL:      os.Getenv(envRekorURL),
 	}); err != nil {
 		return httperr.WithCode(fmt.Errorf("signing pushed artifact: %w", err), http.StatusBadRequest)
 	}
+
+	// Promote: from here the requested reference resolves to signed content.
+	// A digest-pinned request was already published by the staging push.
+	if staged == opts.Reference {
+		return nil
+	}
+	if err := s.registry.Push(ctx, s.ociStore, d, opts.Reference); err != nil {
+		return fmt.Errorf("promoting the signed artifact to %q failed; it is published and signed at %s "+
+			"and pushing again is safe: %w", opts.Reference, staged, err)
+	}
 	return nil
+}
+
+// stagingReference returns the digest-pinned form of ref — the reference a
+// signed artifact is published under before its tag is promoted. A ref that
+// already pins the digest is returned unchanged: there is no mutable tag to
+// promote, so the staging push has published everything the caller asked for.
+func stagingReference(ref string, d digest.Digest) (string, error) {
+	parsed, err := orasregistry.ParseReference(ref)
+	if err != nil {
+		return "", fmt.Errorf("reference %q is not a valid registry reference: %w", ref, err)
+	}
+	if parsed.Reference == d.String() {
+		return ref, nil
+	}
+	parsed.Reference = d.String()
+	return parsed.String(), nil
 }
 
 // artifactSigner returns the configured signer, defaulting to the Sigstore
@@ -259,24 +315,14 @@ func (s *service) DeleteBuild(ctx context.Context, tag string) error {
 // Ambiguous or absent input is rejected here, before the artifact is pushed,
 // rather than surfacing as a signing failure afterward.
 //
-// Diverges from skillsvc.validateSigningInputs on purpose: key signing is
-// refused rather than accepted. Install-time verification is keyless-only, and
-// the resulting failure is verifier.ErrKeySigned rather than ErrUnsigned, so
-// --allow-unsigned cannot override it — a key-signed plugin is uninstallable
-// project-scoped. Accepting a key here would publish artifacts ToolHive itself
-// refuses to consume. Tracked in #6442; the field survives because
-// plugins.PushOptions aliases skills.PushOptions, so an in-process caller can
-// still set it and has to be told no.
+// Diverges from skillsvc.validateSigningInputs on purpose: there is no key
+// branch to validate. Install-time verification is keyless-only, and a
+// key-signed artifact fails it as verifier.ErrKeySigned — a verdict distinct
+// from ErrUnsigned, so --allow-unsigned cannot override it and the plugin is
+// uninstallable project-scoped. Rather than accept a key and reject it here,
+// plugins.PushOptions omits the field entirely (#6442), so the unsupported
+// request cannot be constructed by any caller, in-process or over HTTP.
 func validateSigningInputs(opts plugins.PushOptions) error {
-	if opts.Key != "" {
-		return httperr.WithCode(
-			errors.New("key signing is not supported for plugins: ToolHive cannot verify key-signed "+
-				"artifacts at install time, so the pushed plugin would be uninstallable. Use keyless "+
-				"signing (identity_token / --identity-token, acquired automatically when omitted) "+
-				"or no_sign (--no-sign)"),
-			http.StatusBadRequest,
-		)
-	}
 	switch {
 	case opts.NoSign && opts.IdentityToken != "":
 		return httperr.WithCode(

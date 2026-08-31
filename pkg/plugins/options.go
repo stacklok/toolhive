@@ -184,9 +184,29 @@ type BuildOptions = skills.BuildOptions
 // skills.BuildResult (Reference).
 type BuildResult = skills.BuildResult
 
-// PushOptions configures the behavior of the Push operation. Alias for
-// skills.PushOptions (Reference).
-type PushOptions = skills.PushOptions
+// PushOptions configures the behavior of the Push operation.
+//
+// Deliberately NOT an alias of skills.PushOptions, unlike its Build/Sync
+// siblings: that type carries a Key for cosign key-pair signing, and plugin
+// signing is keyless-only until install-time key verification exists (#6442).
+// Aliasing left Key settable with no single answer for what it meant — the
+// in-process service rejected it with a 400 while the HTTP client dropped it
+// silently and published unsigned, so the same PluginService.Push call did
+// different things depending on which implementation was wired in. Omitting
+// the field makes the unsupported request unrepresentable instead of
+// rejected in one implementation and ignored in the other.
+type PushOptions struct {
+	// Reference is the OCI reference to push.
+	Reference string `json:"reference"`
+	// IdentityToken is a short-lived OIDC identity token (raw JWT) used for
+	// keyless signing: the server exchanges it with Fulcio for a short-lived
+	// signing certificate and records the signature in Rekor. Mutually
+	// exclusive with NoSign; exactly one of the two is required.
+	IdentityToken string `json:"identity_token,omitempty"`
+	// NoSign pushes without signing. Consumers installing the artifact
+	// project-scoped will need an explicit unsigned exception.
+	NoSign bool `json:"no_sign,omitempty"`
+}
 
 // SyncOptions configures a lock-file sync. Alias for skills.SyncOptions
 // (identical shape: ProjectRoot, Clients, Prune, Check, AllowUnsigned, Adopt).

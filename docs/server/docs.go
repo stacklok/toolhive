@@ -1263,7 +1263,7 @@ const docTemplate = `{
                         "$ref": "#/components/schemas/github_com_stacklok_toolhive_pkg_plugins.ProvenanceInfo"
                     },
                     "trust_unrecorded": {
-                        "description": "TrustUnrecorded reports a lock-managed plugin whose entry records\nneither a signer identity nor an unsigned exception — an entry written\nbefore verification existed, or hand-edited. Distinct from all three of\nProvenance, Unsigned, and \"not lock-managed at all\", each of which this\nwould otherwise be indistinguishable from: sync reports the state as\ndrift, so Info has to name it rather than render as if nothing is\npinning the plugin.",
+                        "description": "TrustUnrecorded reports that the project's lock file has an entry for\nthis plugin which records neither a signer identity nor an unsigned\nexception — an entry written before verification existed, or\nhand-edited. It exists to keep that state distinguishable from having no\nlock entry at all, which leaves Provenance and Unsigned equally empty:\nsync reports this one as drift and can repair it, so Info must not\nrender it as if nothing were pinning the plugin.",
                         "type": "boolean"
                     },
                     "unmaterialized_components": {
@@ -1327,6 +1327,10 @@ const docTemplate = `{
                     "provisional": {
                         "description": "Provisional marks provenance with a documented verification gap\n(git signatures until transparency-log validation lands).",
                         "type": "boolean"
+                    },
+                    "public_key": {
+                        "description": "PublicKey is the base64-encoded DER SPKI cosign public key a\nkey-pair-signed entry is pinned to. Set only when SignerIdentity and\nCertIssuer are empty: the two anchors are mutually exclusive.",
+                        "type": "string"
                     },
                     "repository_ref": {
                         "description": "RepositoryRef is the git ref the signing workflow ran on, from Fulcio\ncertificate extension 1.3.6.1.4.1.57264.1.14. Empty means\nunconstrained, matching lock files written before the field existed.",
@@ -3956,7 +3960,7 @@ const docTemplate = `{
                         "type": "boolean"
                     },
                     "allow_unsigned": {
-                        "description": "AllowUnsigned permits adopting plugins whose signature state cannot be\nestablished, recording them as unsigned",
+                        "description": "AllowUnsigned permits recording a plugin as unsigned in the lock file,\nin two cases: adopting an install whose signature state cannot be\nestablished (see Adopt), and repairing an entry that records no trust\ndecision at all, whose reinstall otherwise fails closed on unsigned\ncontent.",
                         "type": "boolean"
                     },
                     "check": {

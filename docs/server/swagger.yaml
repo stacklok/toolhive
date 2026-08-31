@@ -1399,13 +1399,13 @@ components:
           $ref: '#/components/schemas/github_com_stacklok_toolhive_pkg_plugins.ProvenanceInfo'
         trust_unrecorded:
           description: |-
-            TrustUnrecorded reports a lock-managed plugin whose entry records
-            neither a signer identity nor an unsigned exception — an entry written
-            before verification existed, or hand-edited. Distinct from all three of
-            Provenance, Unsigned, and "not lock-managed at all", each of which this
-            would otherwise be indistinguishable from: sync reports the state as
-            drift, so Info has to name it rather than render as if nothing is
-            pinning the plugin.
+            TrustUnrecorded reports that the project's lock file has an entry for
+            this plugin which records neither a signer identity nor an unsigned
+            exception — an entry written before verification existed, or
+            hand-edited. It exists to keep that state distinguishable from having no
+            lock entry at all, which leaves Provenance and Unsigned equally empty:
+            sync reports this one as drift and can repair it, so Info must not
+            render it as if nothing were pinning the plugin.
           type: boolean
         unmaterialized_components:
           additionalProperties:
@@ -1462,6 +1462,12 @@ components:
             Provisional marks provenance with a documented verification gap
             (git signatures until transparency-log validation lands).
           type: boolean
+        public_key:
+          description: |-
+            PublicKey is the base64-encoded DER SPKI cosign public key a
+            key-pair-signed entry is pinned to. Set only when SignerIdentity and
+            CertIssuer are empty: the two anchors are mutually exclusive.
+          type: string
         repository_ref:
           description: |-
             RepositoryRef is the git ref the signing workflow ran on, from Fulcio
@@ -3663,8 +3669,11 @@ components:
           type: boolean
         allow_unsigned:
           description: |-
-            AllowUnsigned permits adopting plugins whose signature state cannot be
-            established, recording them as unsigned
+            AllowUnsigned permits recording a plugin as unsigned in the lock file,
+            in two cases: adopting an install whose signature state cannot be
+            established (see Adopt), and repairing an entry that records no trust
+            decision at all, whose reinstall otherwise fails closed on unsigned
+            content.
           type: boolean
         check:
           description: Check verifies on-disk content against the lock file without

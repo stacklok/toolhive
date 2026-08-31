@@ -98,6 +98,59 @@ var _ = Describe("Plugins CLI lock file exit codes (RFC THV-0080)", Label("api",
 		})
 	})
 
+	// The push path is otherwise only exercised through the HTTP API, which
+	// skips the CLI's own signing behavior: flag wiring, the credential
+	// ladder, and the error a non-interactive push produces when it has no
+	// credential to use.
+	Describe("thv ai-plugin push signing", func() {
+		It("publishes with an explicit --no-sign", func() {
+			pluginName := "cli-push-no-sign-plugin"
+			ociRegistry := httptest.NewServer(registry.New())
+			DeferCleanup(ociRegistry.Close)
+			ociRef := fmt.Sprintf("%s/e2e-test/%s:v0.1.0", ociRegistry.Listener.Addr().String(), pluginName)
+
+			pluginDir := createTestPluginDir(pluginName, "A plugin pushed unsigned through the CLI")
+			buildResp := buildPlugin(apiServer, pluginDir, ociRef)
+			defer buildResp.Body.Close()
+			Expect(buildResp.StatusCode).To(Equal(http.StatusOK))
+
+			_, stderr, err := thvPluginCmd("push", ociRef, "--no-sign").Run()
+			Expect(err).ToNot(HaveOccurred(), "stderr: %s", stderr)
+
+			// Installable, which is what proves the artifact actually landed.
+			projectRoot := makeE2EProjectRoot()
+			_, stderr, err = thvPluginCmd("install", ociRef,
+				"--scope", "project", "--project-root", projectRoot, "--allow-unsigned").Run()
+			Expect(err).ToNot(HaveOccurred(), "stderr: %s", stderr)
+		})
+
+		It("fails a non-interactive push with no credential and offers only real flags", func() {
+			pluginName := "cli-push-no-cred-plugin"
+			ociRegistry := httptest.NewServer(registry.New())
+			DeferCleanup(ociRegistry.Close)
+			ociRef := fmt.Sprintf("%s/e2e-test/%s:v0.1.0", ociRegistry.Listener.Addr().String(), pluginName)
+
+			pluginDir := createTestPluginDir(pluginName, "A plugin whose push has no credential")
+			buildResp := buildPlugin(apiServer, pluginDir, ociRef)
+			defer buildResp.Body.Close()
+			Expect(buildResp.StatusCode).To(Equal(http.StatusOK))
+
+			// No --identity-token, no --no-sign, no ambient CI token, and no
+			// TTY to prompt on: the ladder runs out.
+			_, stderr, err := thvPluginCmd("push", ociRef).
+				WithEnv("ACTIONS_ID_TOKEN_REQUEST_URL=").
+				WithEnv("ACTIONS_ID_TOKEN_REQUEST_TOKEN=").
+				Run()
+			Expect(err).To(HaveOccurred(), "a push with no signing credential must fail")
+			Expect(stderr).To(ContainSubstring("no signing credential available"))
+			// Plugin signing is keyless-only (#6442). Pointing the user at
+			// --key, which this command does not define, is a dead end.
+			Expect(stderr).ToNot(ContainSubstring("--key"))
+			Expect(stderr).To(ContainSubstring("--identity-token"))
+			Expect(stderr).To(ContainSubstring("--no-sign"))
+		})
+	})
+
 	Describe("thv ai-plugin sync --check", func() {
 		It("exits 0 when the project matches its lock file", func() {
 			projectRoot := makeE2EProjectRoot()

@@ -182,11 +182,10 @@ func (h *Handler) CallbackHandler(w http.ResponseWriter, req *http.Request) {
 		slog.Error("failed to store upstream tokens",
 			"error", err,
 		)
-		// Clean up tokens stored by earlier legs of a multi-upstream chain (see
-		// cleanupUpstreamTokens for the per-provider scoping rationale). providerID
-		// (this leg) is included even though its store just failed: any partial or
-		// carried-forward row is removed, and an absent row deletes as a no-op.
-		h.cleanupUpstreamTokens(ctx, sessionID, append([]string{providerID}, pending.ChainUpstreams...))
+		// Clean up only this leg's token (see cleanupUpstreamTokens): its store just
+		// failed, so this removes any partial or carried-forward row and is otherwise a
+		// no-op. Earlier legs are the user's own valid tokens and are left intact.
+		h.cleanupUpstreamTokens(ctx, sessionID, []string{providerID})
 		h.provider.WriteAuthorizeError(ctx, w, ar, fosite.ErrServerError.WithHint("failed to store session"))
 		return
 	}
@@ -401,20 +400,20 @@ func (h *Handler) handleUpstreamError(
 		pending, err := h.storage.LoadPendingAuthorization(ctx, internalState)
 		if err == nil {
 			_ = h.storage.DeletePendingAuthorization(ctx, internalState)
-			// Clean up upstream tokens stored by earlier legs of a multi-upstream chain
-			// (see cleanupUpstreamTokens for the per-provider scoping rationale). On a
+			// Clean up only this leg's token (see cleanupUpstreamTokens); earlier legs are
+			// the user's own valid tokens and are left intact. This leg failed at the
+			// upstream IdP before a token was stored, so the delete is normally a no-op,
+			// but it also removes a row left by a prior attempt on the same leg. On a
 			// subsequent leg the resolved user is carried in pending.ResolvedUserID; place
 			// it in ctx via WithPlatformUser so a context-keyed storage decorator resolves
 			// the canonical user for the cleanup. WithPlatformUser, not WithIdentity: there
-			// is no authenticated identity at the callback, only the storage-scoped user. A
-			// first-leg error carries no ChainUpstreams and no earlier-leg tokens, so
-			// nothing is deleted there.
+			// is no authenticated identity at the callback, only the storage-scoped user.
 			if pending.SessionID != "" {
 				cleanupCtx := ctx
 				if pending.ResolvedUserID != "" {
 					cleanupCtx = auth.WithPlatformUser(ctx, pending.ResolvedUserID)
 				}
-				h.cleanupUpstreamTokens(cleanupCtx, pending.SessionID, pending.ChainUpstreams)
+				h.cleanupUpstreamTokens(cleanupCtx, pending.SessionID, []string{pending.UpstreamProviderName})
 			}
 			ar := h.buildAuthorizeRequesterFromPending(ctx, pending)
 			if ar != nil {
@@ -432,17 +431,21 @@ func (h *Handler) handleUpstreamError(
 	http.Error(w, "upstream authentication failed", http.StatusBadGateway)
 }
 
-// cleanupUpstreamTokens best-effort removes the upstream tokens an authorization
-// chain has collected, one provider at a time. It is the failure-path counterpart
-// to a successful chain: when a leg fails, the tokens earlier legs stored under this
-// session must not be left mid-chain.
+// cleanupUpstreamTokens best-effort removes upstream tokens on a failed authorization
+// leg, one provider at a time. Callers pass the leg currently being processed, so an
+// ordinary error — a transient store/read failure, or a chain that cannot be resolved —
+// takes down only that leg's token and leaves the user's earlier legs intact. That
+// matters under a storage decorator that re-keys upstream tokens by (gateway, user),
+// where each earlier leg is the user's own live credential for another connector rather
+// than throwaway session state, so a failed connector login must not delete the others.
+// The one exception is the identity-mismatch fail-closed, which passes the whole chain
+// to tear down a session whose stored identity is no longer trustworthy.
 //
 // It deletes per provider rather than calling the session-wide DeleteUpstreamTokens
-// because that method carries no provider name. A storage decorator that re-keys
-// upstream tokens by (gateway, user) — so a session-independent caller can find a
-// user's tokens — cannot narrow a session-wide delete back to this chain, and would
-// instead delete every connector token the user holds on the gateway. Naming each
-// provider lets such a decorator scope the delete to exactly this chain's providers.
+// because that method carries no provider name: a (gateway, user)-keyed decorator cannot
+// narrow a session-wide delete back to one leg and would delete every connector token
+// the user holds on the gateway. Naming the provider lets such a decorator scope the
+// delete to exactly the named leg(s).
 //
 // Each name is checked against the configured upstream set before it is deleted, so a
 // name that is not a configured upstream — e.g. from a corrupted or tampered pending
@@ -450,22 +453,15 @@ func (h *Handler) handleUpstreamError(
 // not been through validateChain — is skipped rather than turned into a delete.
 //
 // providers is the set of provider names whose upstream-token rows should be removed;
-// empty entries, duplicates, and names outside the configured upstream set are ignored,
-// and deleting an already-absent row is a no-op (the storage contract makes a
-// missing-row delete non-fatal). Errors are logged and swallowed — cleanup is
-// best-effort and must not mask the original failure. Cost is one storage round-trip
-// per distinct provider; a chain is the corporate primary plus a handful of connectors,
-// so the sequential deletes are bounded and only run on error paths.
+// empty entries and names outside the configured upstream set are skipped, and deleting
+// an already-absent row is a no-op (the storage contract makes a missing-row delete
+// non-fatal), so a repeated name is harmless. Errors are logged and swallowed — cleanup
+// is best-effort and must not mask the original failure.
 func (h *Handler) cleanupUpstreamTokens(ctx context.Context, sessionID string, providers []string) {
-	seen := make(map[string]struct{}, len(providers))
 	for _, provider := range providers {
 		if provider == "" {
 			continue
 		}
-		if _, dup := seen[provider]; dup {
-			continue
-		}
-		seen[provider] = struct{}{}
 		// Only a configured upstream can legitimately have a stored token, so skip
 		// anything else: it keeps a tampered pending row reaching a pre-resolveChain
 		// cleanup site from naming an arbitrary delete target. The post-resolveChain
@@ -530,11 +526,11 @@ func (h *Handler) continueChainOrComplete(
 	chain, err := h.resolveChain(ctx, pending, principal)
 	if err != nil {
 		slog.Error("failed to resolve upstream chain", "error", err)
-		// The chain could not be resolved, so scope the cleanup to what is known: this
-		// leg's provider plus any chain carried forward on a subsequent leg. An earlier
-		// leg not named here (e.g. a stale pending with no ChainUpstreams) is left to
-		// expire by TTL rather than risk a user-keyed decorator over-deleting.
-		h.cleanupUpstreamTokens(ctx, sessionID, append([]string{pending.UpstreamProviderName}, pending.ChainUpstreams...))
+		// Clean up only this leg's token; earlier legs are the user's own valid tokens
+		// and are left intact. This is the issue's most-reachable trigger — a transient
+		// filter/Directory failure on leg 1 — so scoping it to the one leg is what keeps
+		// a blip from taking the user's other connectors down with it.
+		h.cleanupUpstreamTokens(ctx, sessionID, []string{pending.UpstreamProviderName})
 		h.provider.WriteAuthorizeError(ctx, w, ar, fosite.ErrServerError.WithHint("failed to determine authorization chain"))
 		return
 	}
@@ -542,7 +538,8 @@ func (h *Handler) continueChainOrComplete(
 	nextProvider, err := h.nextMissingUpstream(ctx, sessionID, chain)
 	if err != nil {
 		slog.Error("failed to determine next upstream", "error", err)
-		h.cleanupUpstreamTokens(ctx, sessionID, chain)
+		// Clean up only this leg's token; earlier legs are left intact.
+		h.cleanupUpstreamTokens(ctx, sessionID, []string{pending.UpstreamProviderName})
 		h.provider.WriteAuthorizeError(ctx, w, ar, fosite.ErrServerError.WithHint("failed to check authorization chain state"))
 		return
 	}
@@ -550,7 +547,10 @@ func (h *Handler) continueChainOrComplete(
 	if nextProvider == "" {
 		if err := h.verifyChainIdentity(ctx, sessionID, chain, subject); err != nil {
 			// verifyChainIdentity already logged the specific cause (with structured
-			// fields for a mismatch); here we just clean up and fail closed.
+			// fields for a mismatch). This is the one cleanup site that tears down the
+			// WHOLE chain rather than just this leg: a detected identity mismatch means
+			// the session's stored state is no longer trustworthy, so we fail closed and
+			// remove every leg's token rather than leave a possibly cross-keyed row.
 			h.cleanupUpstreamTokens(ctx, sessionID, chain)
 			h.provider.WriteAuthorizeError(ctx, w, ar, fosite.ErrServerError.WithHint("identity verification failed"))
 			return
@@ -559,7 +559,10 @@ func (h *Handler) continueChainOrComplete(
 		// All upstreams satisfied — issue authorization code
 		if err := h.writeAuthorizationResponse(ctx, w, pending, sessionID, subject, name, email); err != nil {
 			slog.Error("failed to create authorization response", "error", err)
-			h.cleanupUpstreamTokens(ctx, sessionID, chain)
+			// The chain was fully satisfied and identity-verified; only the response
+			// write failed (a retryable server error). Clean up just this final leg and
+			// leave the earlier legs, so a retry re-collects only this one.
+			h.cleanupUpstreamTokens(ctx, sessionID, []string{pending.UpstreamProviderName})
 			h.provider.WriteAuthorizeError(ctx, w, ar, fosite.ErrServerError.WithHint("failed to create authorization code"))
 		}
 		return
@@ -597,7 +600,8 @@ func (h *Handler) continueChainOrComplete(
 
 	if err := h.storage.StorePendingAuthorization(ctx, secrets.State, nextPending); err != nil {
 		slog.Error("failed to store next chain leg", "error", err)
-		h.cleanupUpstreamTokens(ctx, sessionID, chain)
+		// Clean up only this leg's token; earlier legs are left intact.
+		h.cleanupUpstreamTokens(ctx, sessionID, []string{pending.UpstreamProviderName})
 		h.provider.WriteAuthorizeError(ctx, w, ar, fosite.ErrServerError.WithHint("failed to continue authorization chain"))
 		return
 	}
@@ -611,7 +615,8 @@ func (h *Handler) continueChainOrComplete(
 	if !ok {
 		slog.Error("next upstream provider not found", "provider", nextProvider)
 		_ = h.storage.DeletePendingAuthorization(ctx, secrets.State)
-		h.cleanupUpstreamTokens(ctx, sessionID, chain)
+		// Clean up only this leg's token; earlier legs are left intact.
+		h.cleanupUpstreamTokens(ctx, sessionID, []string{pending.UpstreamProviderName})
 		h.provider.WriteAuthorizeError(ctx, w, ar, fosite.ErrServerError.WithHint("upstream provider configuration error"))
 		return
 	}
@@ -619,7 +624,8 @@ func (h *Handler) continueChainOrComplete(
 	if err != nil {
 		slog.Error("failed to build next upstream authorization URL", "error", err)
 		_ = h.storage.DeletePendingAuthorization(ctx, secrets.State)
-		h.cleanupUpstreamTokens(ctx, sessionID, chain)
+		// Clean up only this leg's token; earlier legs are left intact.
+		h.cleanupUpstreamTokens(ctx, sessionID, []string{pending.UpstreamProviderName})
 		h.provider.WriteAuthorizeError(ctx, w, ar, fosite.ErrServerError.WithHint("failed to build authorization URL"))
 		return
 	}

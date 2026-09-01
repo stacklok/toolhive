@@ -294,6 +294,11 @@ type BaseOAuth2Provider struct {
 	config       *OAuth2Config
 	oauth2Config *oauth2.Config
 	httpClient   *http.Client
+	// ownsHTTPClient is true only when the provider built httpClient itself. A
+	// client injected via WithOAuth2HTTPClient / WithHTTPClient belongs to the
+	// caller, who may be sharing it across providers, so CloseIdleConnections
+	// must not drain it.
+	ownsHTTPClient bool
 }
 
 // IdleConnectionCloser is an optional capability an OAuth2Provider may
@@ -315,10 +320,13 @@ var _ IdleConnectionCloser = (*BaseOAuth2Provider)(nil)
 // OAuth2ProviderOption configures a BaseOAuth2Provider.
 type OAuth2ProviderOption func(*BaseOAuth2Provider)
 
-// WithOAuth2HTTPClient sets a custom HTTP client.
+// WithOAuth2HTTPClient sets a custom HTTP client. The caller retains ownership
+// of its connection pool: CloseIdleConnections leaves an injected client alone,
+// so one client can be shared safely across providers and reconstructions.
 func WithOAuth2HTTPClient(client *http.Client) OAuth2ProviderOption {
 	return func(p *BaseOAuth2Provider) {
 		p.httpClient = client
+		p.ownsHTTPClient = false
 	}
 }
 
@@ -326,15 +334,33 @@ func WithOAuth2HTTPClient(client *http.Client) OAuth2ProviderOption {
 // The hostForClient parameter determines which URL to use for HTTP client configuration
 // (e.g., TokenEndpoint for OAuth2, Issuer for OIDC).
 //
+// Options are applied before the default HTTP client is built, so a caller that
+// injects one does not pay for a discarded transport (nor for reading the CA
+// bundle) on every construction.
+//
 // IMPORTANT: Callers must ensure config is non-nil before calling this function.
-func newBaseOAuth2Provider(config *OAuth2Config, hostForClient string) (*BaseOAuth2Provider, error) {
+func newBaseOAuth2Provider(
+	config *OAuth2Config,
+	hostForClient string,
+	opts ...OAuth2ProviderOption,
+) (*BaseOAuth2Provider, error) {
 	if err := config.ValidateWithInsecure(config.InsecureAllowHTTP); err != nil {
 		return nil, fmt.Errorf("invalid config: %w", err)
 	}
 
-	httpClient, err := newHTTPClientForHost(hostForClient, config.AllowPrivateIPs, config.InsecureAllowHTTP, config.CAFilePath)
-	if err != nil {
-		return nil, fmt.Errorf("failed to create HTTP client: %w", err)
+	p := &BaseOAuth2Provider{config: config}
+	for _, opt := range opts {
+		opt(p)
+	}
+
+	if p.httpClient == nil {
+		httpClient, err := newHTTPClientForHost(
+			hostForClient, config.AllowPrivateIPs, config.InsecureAllowHTTP, config.CAFilePath)
+		if err != nil {
+			return nil, fmt.Errorf("failed to create HTTP client: %w", err)
+		}
+		p.httpClient = httpClient
+		p.ownsHTTPClient = true
 	}
 
 	// AuthStyle is derived from the negotiated token_endpoint_auth_method
@@ -345,7 +371,7 @@ func newBaseOAuth2Provider(config *OAuth2Config, hostForClient string) (*BaseOAu
 	}
 
 	// Create the oauth2.Config for use with golang.org/x/oauth2 library.
-	oauth2Cfg := &oauth2.Config{
+	p.oauth2Config = &oauth2.Config{
 		ClientID:     config.ClientID,
 		ClientSecret: config.ClientSecret,
 		RedirectURL:  config.RedirectURI,
@@ -357,11 +383,7 @@ func newBaseOAuth2Provider(config *OAuth2Config, hostForClient string) (*BaseOAu
 		},
 	}
 
-	return &BaseOAuth2Provider{
-		config:       config,
-		oauth2Config: oauth2Cfg,
-		httpClient:   httpClient,
-	}, nil
+	return p, nil
 }
 
 // CloseIdleConnections releases the idle keep-alive connections pooled by the
@@ -371,8 +393,13 @@ func newBaseOAuth2Provider(config *OAuth2Config, hostForClient string) (*BaseOAu
 // Call this when retiring a provider. Without it the pool's sockets and their
 // servicing goroutines are held until the idle timeout elapses, and a process
 // that constructs providers repeatedly accumulates them in the meantime.
+//
+// It is a no-op when the client was supplied by the caller
+// (WithOAuth2HTTPClient / WithHTTPClient): that client's pool belongs to the
+// caller, who may be sharing it across providers, and draining it here would
+// cold-start connections another live provider is using.
 func (p *BaseOAuth2Provider) CloseIdleConnections() {
-	if p.httpClient == nil {
+	if p.httpClient == nil || !p.ownsHTTPClient {
 		return
 	}
 	p.httpClient.CloseIdleConnections()
@@ -436,13 +463,9 @@ func NewOAuth2Provider(config *OAuth2Config, opts ...OAuth2ProviderOption) (*Bas
 	if err != nil {
 		return nil, fmt.Errorf("invalid token endpoint URL: %w", err)
 	}
-	p, err := newBaseOAuth2Provider(config, tokenURL.Host)
+	p, err := newBaseOAuth2Provider(config, tokenURL.Host, opts...)
 	if err != nil {
 		return nil, err
-	}
-
-	for _, opt := range opts {
-		opt(p)
 	}
 
 	slog.Info("oauth2 provider created successfully",

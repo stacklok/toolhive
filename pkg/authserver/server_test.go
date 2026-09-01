@@ -6,8 +6,12 @@ package authserver
 import (
 	"context"
 	"crypto/rand"
+	"encoding/json"
 	"fmt"
 	"log/slog"
+	"net"
+	"net/http"
+	"net/http/httptest"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -679,4 +683,112 @@ func TestNewServer_UpstreamFactoryPrecedence(t *testing.T) {
 			}
 		})
 	}
+}
+
+// TestBuildUpstreams_DrainsAlreadyBuiltProvidersOnFailure pins the pathological
+// case from #6479: a caller retrying a reconstruction against an unreachable
+// issuer must not accumulate a live connection pool per attempt for the
+// upstreams that did construct before the failure.
+func TestBuildUpstreams_DrainsAlreadyBuiltProvidersOnFailure(t *testing.T) {
+	t.Parallel()
+
+	built := &closeCountingProvider{}
+	cfg := Config{Upstreams: []UpstreamConfig{
+		{Name: "first", Type: UpstreamProviderTypeOAuth2, OAuth2Config: validUpstreamConfig()},
+		{Name: "second", Type: UpstreamProviderTypeOAuth2, OAuth2Config: validUpstreamConfig()},
+	}}
+
+	factory := func(_ context.Context, upCfg *UpstreamConfig) (upstream.OAuth2Provider, error) {
+		if upCfg.Name == "second" {
+			return nil, assert.AnError
+		}
+		return built, nil
+	}
+
+	upstreams, err := buildUpstreams(t.Context(), cfg, factory)
+	require.ErrorIs(t, err, assert.AnError)
+	assert.Contains(t, err.Error(), `"second"`, "the error must name the failing upstream")
+	assert.Nil(t, upstreams)
+	assert.Equal(t, int32(1), built.closes.Load(),
+		"the provider built before the failure must be drained")
+}
+
+// TestServer_Close_DrainsRealOIDCUpstream exercises the production wiring that
+// the other tests stub out: a server built through DefaultUpstreamFactory holds
+// an *upstream.OIDCProviderImpl, which satisfies upstream.IdleConnectionCloser
+// only by promotion from its embedded *BaseOAuth2Provider. The pool is observed
+// from the issuer's side, so this fails if the type assertion in
+// closeUpstreamIdleConnections ever silently stops matching.
+func TestServer_Close_DrainsRealOIDCUpstream(t *testing.T) {
+	t.Parallel()
+
+	var openConns atomic.Int32
+	issuer := httptest.NewUnstartedServer(nil)
+	issuer.Config.Handler = oidcDiscoveryHandler(func() string { return issuer.URL })
+	issuer.Config.ConnState = func(_ net.Conn, state http.ConnState) {
+		switch state {
+		case http.StateNew:
+			openConns.Add(1)
+		case http.StateClosed, http.StateHijacked:
+			openConns.Add(-1)
+		case http.StateActive, http.StateIdle:
+		}
+	}
+	issuer.Start()
+	t.Cleanup(issuer.Close)
+
+	stor := storage.NewMemoryStorage()
+	srv, err := newServer(t.Context(), Config{
+		Issuer:      "https://example.com",
+		KeyProvider: keys.NewGeneratingProvider(keys.DefaultAlgorithm),
+		HMACSecrets: &servercrypto.HMACSecrets{Current: validHMACSecret()},
+		Upstreams: []UpstreamConfig{{
+			Name: "oidc",
+			Type: UpstreamProviderTypeOIDC,
+			OIDCConfig: &upstream.OIDCConfig{
+				CommonOAuthConfig: upstream.CommonOAuthConfig{
+					ClientID:    "test-client",
+					RedirectURI: "https://example.com/callback",
+					Scopes:      []string{"openid"},
+				},
+				Issuer:            issuer.URL,
+				InsecureAllowHTTP: true,
+				AllowPrivateIPs:   true,
+			},
+		}},
+		AllowedAudiences: []string{"https://mcp.example.com"},
+	}, stor)
+	require.NoError(t, err)
+	require.IsType(t, &upstream.OIDCProviderImpl{}, srv.upstreams[0].Provider)
+
+	// Discovery leaves one idle keep-alive connection behind; before this change
+	// it was retained for the lifetime of the process.
+	require.Equal(t, int32(1), openConns.Load(), "discovery must leave a pooled connection")
+
+	require.NoError(t, srv.Close())
+
+	// The issuer observes the close asynchronously.
+	assert.Eventually(t, func() bool { return openConns.Load() == 0 }, 5*time.Second, 10*time.Millisecond,
+		"Close must drain the OIDC upstream's pooled connection")
+}
+
+// oidcDiscoveryHandler serves the minimum OIDC discovery document
+// upstream.NewOIDCProvider accepts. issuerURL is a func because httptest only
+// knows the bound URL after Start.
+func oidcDiscoveryHandler(issuerURL func() string) http.Handler {
+	mux := http.NewServeMux()
+	mux.HandleFunc("/.well-known/openid-configuration", func(w http.ResponseWriter, _ *http.Request) {
+		base := issuerURL()
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(map[string]any{
+			"issuer":                                base,
+			"authorization_endpoint":                base + "/auth",
+			"token_endpoint":                        base + "/token",
+			"jwks_uri":                              base + "/jwks",
+			"response_types_supported":              []string{"code"},
+			"subject_types_supported":               []string{"public"},
+			"id_token_signing_alg_values_supported": []string{"RS256"},
+		})
+	})
+	return mux
 }

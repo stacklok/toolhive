@@ -2885,12 +2885,18 @@ func TestBaseOAuth2Provider_CloseIdleConnections(t *testing.T) {
 	}))
 	t.Cleanup(srv.Close)
 
-	host, err := url.Parse(srv.URL)
+	// Built without an injected client, so the provider owns its pool.
+	p, err := NewOAuth2Provider(&OAuth2Config{
+		CommonOAuthConfig: CommonOAuthConfig{
+			ClientID:    "test-client",
+			RedirectURI: srv.URL + "/callback",
+		},
+		AuthorizationEndpoint: srv.URL + "/auth",
+		TokenEndpoint:         srv.URL + "/token",
+		InsecureAllowHTTP:     true,
+		AllowPrivateIPs:       true,
+	})
 	require.NoError(t, err)
-	client, err := newHTTPClientForHost(host.Host, true, true, "")
-	require.NoError(t, err)
-
-	p := &BaseOAuth2Provider{httpClient: client}
 
 	require.False(t, providerRequestReusedConn(t, p, srv.URL), "first request cannot reuse a connection")
 	require.True(t, providerRequestReusedConn(t, p, srv.URL), "second request must reuse the pooled connection")
@@ -2903,6 +2909,47 @@ func TestBaseOAuth2Provider_CloseIdleConnections(t *testing.T) {
 	// A provider constructed without a client (an OIDC provider that failed
 	// before its client was set) must not panic.
 	assert.NotPanics(t, (&BaseOAuth2Provider{}).CloseIdleConnections)
+}
+
+// TestBaseOAuth2Provider_CloseIdleConnections_InjectedClientNotDrained pins that
+// a caller-supplied client is left alone. Config.UpstreamFactory documents
+// sharing one client per issuer host across reconstructions; draining it when a
+// superseded provider is retired would cold-start the pool a live provider is
+// still using.
+func TestBaseOAuth2Provider_CloseIdleConnections_InjectedClientNotDrained(t *testing.T) {
+	t.Parallel()
+
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusOK)
+	}))
+	t.Cleanup(srv.Close)
+
+	host, err := url.Parse(srv.URL)
+	require.NoError(t, err)
+	shared, err := newHTTPClientForHost(host.Host, true, true, "")
+	require.NoError(t, err)
+
+	config := &OAuth2Config{
+		CommonOAuthConfig: CommonOAuthConfig{
+			ClientID:    "test-client",
+			RedirectURI: srv.URL + "/callback",
+		},
+		AuthorizationEndpoint: srv.URL + "/auth",
+		TokenEndpoint:         srv.URL + "/token",
+		InsecureAllowHTTP:     true,
+		AllowPrivateIPs:       true,
+	}
+	p, err := NewOAuth2Provider(config, WithOAuth2HTTPClient(shared))
+	require.NoError(t, err)
+	assert.Same(t, shared, p.httpClient, "the injected client must not be rebuilt")
+
+	require.False(t, providerRequestReusedConn(t, p, srv.URL), "first request cannot reuse a connection")
+	require.True(t, providerRequestReusedConn(t, p, srv.URL), "second request must reuse the pooled connection")
+
+	p.CloseIdleConnections()
+
+	assert.True(t, providerRequestReusedConn(t, p, srv.URL),
+		"a caller-owned client's pool must survive the provider being retired")
 }
 
 // providerRequestReusedConn issues a GET through the provider's HTTP client and

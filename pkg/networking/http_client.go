@@ -41,20 +41,23 @@ const HttpScheme = "http"
 // before giving up. Matches the cap used by the transparent proxy data path.
 const MaxRedirects = 10
 
-// Connection-pool bounds applied by Build. http.Transport's zero values mean
-// "never expire" and "unlimited", so a client that performs one request and is
-// then dropped pins a socket and its readLoop/writeLoop goroutine pair for the
-// lifetime of the process.
+// Connection-pool bounds applied by Build.
 const (
 	// idleConnTimeout bounds how long a pooled keep-alive connection is
-	// retained after its last use. Matches http.DefaultTransport.
+	// retained after its last use. This is the leak: http.Transport's zero
+	// value means "never expire", so a client that performs one request and is
+	// then dropped pins a socket and its readLoop/writeLoop goroutine pair for
+	// the lifetime of the process. 90s matches http.DefaultTransport.
 	idleConnTimeout = 90 * time.Second
-	// maxIdleConns caps pooled idle connections across all hosts. Matches
-	// http.DefaultTransport.
+	// maxIdleConns caps pooled idle connections across all hosts. The zero
+	// value is unlimited. 100 matches http.DefaultTransport.
 	maxIdleConns = 100
-	// maxIdleConnsPerHost caps them per host. Most clients this builder
-	// produces are host-scoped and drive a single upstream, so a small cap
-	// bounds the pool while still serving concurrent requests from it.
+	// maxIdleConnsPerHost caps them per host. Unlike the two above, the zero
+	// value here is already bounded — http.DefaultMaxIdleConnsPerHost, which is
+	// 2 — so this is a deliberate increase, not a newly imposed bound: most
+	// clients this builder produces are host-scoped and drive a single
+	// upstream, so a slightly larger per-host pool serves concurrent requests
+	// without dialing, now that the idle timeout is finite.
 	maxIdleConnsPerHost = 4
 )
 

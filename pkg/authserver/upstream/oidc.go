@@ -124,13 +124,23 @@ type OIDCProviderImpl struct {
 	verifier            *oidc.IDTokenVerifier             // ID token verifier from go-oidc
 }
 
+// Compile-time capability check: OIDCProviderImpl satisfies
+// IdleConnectionCloser only by promotion from the embedded *BaseOAuth2Provider,
+// and (*server).CloseIdleConnections reaches it through a type assertion that
+// would degrade to a silent no-op if the promotion were ever lost. This pins it.
+var _ IdleConnectionCloser = (*OIDCProviderImpl)(nil)
+
 // OIDCProviderOption configures an OIDCProvider.
 type OIDCProviderOption func(*OIDCProviderImpl)
 
-// WithHTTPClient sets a custom HTTP client for the provider.
+// WithHTTPClient sets a custom HTTP client for the provider. The caller retains
+// ownership of its connection pool: CloseIdleConnections leaves an injected
+// client alone, so one client can be shared safely across providers and
+// reconstructions.
 func WithHTTPClient(client *http.Client) OIDCProviderOption {
 	return func(p *OIDCProviderImpl) {
 		p.httpClient = client
+		p.ownsHTTPClient = false
 	}
 }
 
@@ -179,24 +189,29 @@ func NewOIDCProvider(
 		"client_id", config.ClientID,
 	)
 
-	// Create HTTP client for the issuer host
-	issuerURL, _ := url.Parse(config.Issuer) // Error already checked in ValidateWithInsecure()
-	httpClient, err := newHTTPClientForHost(issuerURL.Host, config.AllowPrivateIPs, config.InsecureAllowHTTP, config.CAFilePath)
-	if err != nil {
-		return nil, fmt.Errorf("failed to create HTTP client: %w", err)
-	}
-
 	p := &OIDCProviderImpl{
 		oidcConfig: config,
-		BaseOAuth2Provider: &BaseOAuth2Provider{
-			httpClient: httpClient,
-			// config will be set after discovery
-		},
+		// config will be set after discovery
+		BaseOAuth2Provider: &BaseOAuth2Provider{},
 	}
 
-	// Apply OIDC-specific options
+	// Apply OIDC-specific options before building the default HTTP client, so a
+	// caller that injects one does not pay for a discarded transport (nor for
+	// reading the CA bundle) on every construction.
 	for _, opt := range opts {
 		opt(p)
+	}
+
+	if p.httpClient == nil {
+		// Create HTTP client for the issuer host
+		issuerURL, _ := url.Parse(config.Issuer) // Error already checked in ValidateWithInsecure()
+		httpClient, err := newHTTPClientForHost(
+			issuerURL.Host, config.AllowPrivateIPs, config.InsecureAllowHTTP, config.CAFilePath)
+		if err != nil {
+			return nil, fmt.Errorf("failed to create HTTP client: %w", err)
+		}
+		p.httpClient = httpClient
+		p.ownsHTTPClient = true
 	}
 
 	// Use go-oidc for discovery - inject custom HTTP client via context

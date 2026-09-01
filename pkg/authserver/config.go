@@ -911,7 +911,11 @@ type Config struct {
 	//     per upstream, so a process that reconstructs the server to change its
 	//     upstream set creates a fresh connection pool each time. A factory that
 	//     passes a client shared per issuer host via upstream.WithHTTPClient /
-	//     upstream.WithOAuth2HTTPClient creates none.
+	//     upstream.WithOAuth2HTTPClient creates none: both constructors apply
+	//     options before building their default client, and an injected client
+	//     stays owned by the caller, so Server.CloseIdleConnections leaves its
+	//     warm connections intact when a superseded server is retired. The
+	//     caller is then responsible for that client's pool.
 	//   - Per-upstream failure isolation. Upstream construction inside New is
 	//     otherwise all-or-nothing: one unreachable or mistyped issuer_url fails
 	//     the whole call. A factory owning construction can apply a per-upstream

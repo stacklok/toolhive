@@ -83,6 +83,44 @@ func resolveUpstreamFactory(seam, configured UpstreamProviderFactory) UpstreamPr
 	}
 }
 
+// buildUpstreams constructs the ordered upstream provider list. A provider that
+// fails to construct aborts the whole list — but the providers already built
+// have live connection pools, so they are drained before the error is returned.
+func buildUpstreams(
+	ctx context.Context,
+	cfg Config,
+	factory UpstreamProviderFactory,
+) ([]handlers.NamedUpstream, error) {
+	upstreams := make([]handlers.NamedUpstream, 0, len(cfg.Upstreams))
+	for i := range cfg.Upstreams {
+		upCfg := &cfg.Upstreams[i]
+		slog.Debug("creating upstream IDP provider", "type", upCfg.Type, "name", upCfg.Name)
+		provider, err := factory(ctx, upCfg)
+		if err != nil {
+			closeUpstreamIdleConnections(upstreams)
+			return nil, fmt.Errorf("failed to create upstream provider %q: %w", upCfg.Name, err)
+		}
+		upstreams = append(upstreams, handlers.NamedUpstream{Name: upCfg.Name, Provider: provider})
+		slog.Debug("upstream IDP provider configured", "type", upCfg.Type, "name", upCfg.Name)
+	}
+	return upstreams, nil
+}
+
+// closeUpstreamIdleConnections drains the pooled idle connections of every
+// upstream that exposes the capability. Providers that do not implement it, and
+// providers holding a caller-supplied client, are no-ops.
+func closeUpstreamIdleConnections(upstreams []handlers.NamedUpstream) {
+	for _, u := range upstreams {
+		// Optional capability: the OAuth2Provider interface is open to external
+		// implementations, so a provider that holds no pool of its own simply
+		// does not implement it.
+		if closer, ok := u.Provider.(upstream.IdleConnectionCloser); ok {
+			slog.Debug("closing upstream idle connections", "name", u.Name)
+			closer.CloseIdleConnections()
+		}
+	}
+}
+
 // withUpstreamFactory sets a custom upstream provider factory, taking
 // precedence over Config.UpstreamFactory. This is the in-package test seam;
 // external callers use Config.UpstreamFactory.
@@ -94,7 +132,12 @@ func withUpstreamFactory(factory UpstreamProviderFactory) serverOption {
 
 // newServer creates a new OAuth authorization server.
 // The opts parameter allows injecting dependencies for testing.
-func newServer(ctx context.Context, cfg Config, stor storage.Storage, opts ...serverOption) (*server, error) {
+func newServer(
+	ctx context.Context,
+	cfg Config,
+	stor storage.Storage,
+	opts ...serverOption,
+) (_ *server, retErr error) {
 	slog.Debug("initializing OAuth authorization server")
 
 	// Apply server options
@@ -179,21 +222,19 @@ func newServer(ctx context.Context, cfg Config, stor storage.Storage, opts ...se
 	)
 
 	// Build ordered upstream provider list from all configured upstreams.
-	upstreamFactory := resolveUpstreamFactory(options.upstreamFactory, cfg.UpstreamFactory)
-	upstreams := make([]handlers.NamedUpstream, 0, len(cfg.Upstreams))
-	for i := range cfg.Upstreams {
-		upCfg := &cfg.Upstreams[i]
-		slog.Debug("creating upstream IDP provider", "type", upCfg.Type, "name", upCfg.Name)
-		upstreamProvider, upErr := upstreamFactory(ctx, upCfg)
-		if upErr != nil {
-			return nil, fmt.Errorf("failed to create upstream provider %q: %w", upCfg.Name, upErr)
-		}
-		upstreams = append(upstreams, handlers.NamedUpstream{
-			Name:     upCfg.Name,
-			Provider: upstreamProvider,
-		})
-		slog.Debug("upstream IDP provider configured", "type", upCfg.Type, "name", upCfg.Name)
+	upstreams, err := buildUpstreams(ctx, cfg, resolveUpstreamFactory(options.upstreamFactory, cfg.UpstreamFactory))
+	if err != nil {
+		return nil, err
 	}
+	// Every failure below abandons providers that have already run discovery and
+	// hold a live connection pool. Without this the pathological case from #6479
+	// — a caller retrying a reconstruction against an unreachable issuer —
+	// accumulates a transport per upstream per attempt.
+	defer func() {
+		if retErr != nil {
+			closeUpstreamIdleConnections(upstreams)
+		}
+	}()
 
 	// Run one-shot bulk migration of legacy data before handler construction.
 	// TODO(migration): Remove once all deployments have upgraded past this version.
@@ -410,15 +451,7 @@ func newUpstreamTokenRefresher(
 // server's upstream IDP providers. See the Server interface for why this is kept
 // separate from Close.
 func (s *server) CloseIdleConnections() {
-	for _, u := range s.upstreams {
-		// Optional capability: the OAuth2Provider interface is open to external
-		// implementations, so a provider that holds no pool of its own simply
-		// does not implement it.
-		if closer, ok := u.Provider.(upstream.IdleConnectionCloser); ok {
-			slog.Debug("closing upstream idle connections", "name", u.Name)
-			closer.CloseIdleConnections()
-		}
-	}
+	closeUpstreamIdleConnections(s.upstreams)
 }
 
 // Close releases resources held by the server.

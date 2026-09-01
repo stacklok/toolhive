@@ -71,7 +71,16 @@ type Server interface {
 	//
 	// Safe to call on a server that is still serving: only idle connections are
 	// closed, in-flight requests are unaffected, and later upstream calls dial
-	// again. Providers that do not expose the capability are skipped.
+	// again. Providers that do not expose the capability are skipped, as are
+	// providers built around a caller-supplied HTTP client — the caller owns
+	// that client's pool (see Config.UpstreamFactory).
+	//
+	// Unlike upstream.IdleConnectionCloser, which is an optional capability an
+	// OAuth2Provider may implement, this is a required part of the Server
+	// interface: Server has a single in-repo implementation, so requiring it
+	// keeps the call compile-time safe rather than a silent no-op, whereas
+	// OAuth2Provider is documented as open to external implementations that
+	// widening would break.
 	CloseIdleConnections()
 
 	// Close releases resources held by the server. It drains upstream idle

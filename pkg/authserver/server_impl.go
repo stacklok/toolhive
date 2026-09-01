@@ -423,7 +423,13 @@ func newUpstreamTokenRefresher(
 	}
 }
 
-// CloseIdleConnections implements Server; see that interface for the contract.
+// Compile-time check that the concrete server satisfies the capability the
+// CloseIdleConnections function detects, so that call can never degrade to a
+// no-op for a server built by New.
+var _ idleConnectionCloser = (*server)(nil)
+
+// CloseIdleConnections drains the upstream providers' pooled connections; see
+// the package-level CloseIdleConnections function for the contract.
 func (s *server) CloseIdleConnections() {
 	closeUpstreamIdleConnections(s.upstreams)
 }

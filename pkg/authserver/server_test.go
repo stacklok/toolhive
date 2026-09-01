@@ -529,6 +529,18 @@ type plainProvider struct {
 	upstream.OAuth2Provider
 }
 
+// capabilityFreeServer is a Server implementation that does NOT implement the
+// idleConnectionCloser capability, standing in for an out-of-tree implementation
+// or test double — the reason CloseIdleConnections is a function rather than a
+// Server method.
+type capabilityFreeServer struct{}
+
+func (capabilityFreeServer) Handler() http.Handler                                  { return nil }
+func (capabilityFreeServer) IDPTokenStorage() storage.UpstreamTokenStorage          { return nil }
+func (capabilityFreeServer) UpstreamTokenRefresher() storage.UpstreamTokenRefresher { return nil }
+func (capabilityFreeServer) DCRStore() storage.DCRCredentialStore                   { return nil }
+func (capabilityFreeServer) Close() error                                           { return nil }
+
 // eventRecordingStorage records when the server closes storage, so the ordering
 // between upstream draining and storage teardown can be asserted. Close does not
 // delegate: MemoryStorage.Close panics when called twice and the test cleanup
@@ -851,4 +863,44 @@ func oidcDiscoveryHandler(issuerURL func() string) http.Handler {
 		})
 	})
 	return mux
+}
+
+// TestCloseIdleConnectionsFunction pins the capability-detection contract that
+// keeps CloseIdleConnections off the Server interface: it drains a server built
+// by New and reports true, and it reports false — without panicking — for an
+// implementation that predates the capability, which is what an out-of-tree
+// Server or test double looks like.
+func TestCloseIdleConnectionsFunction(t *testing.T) {
+	t.Parallel()
+
+	t.Run("drains a server from New and reports true", func(t *testing.T) {
+		t.Parallel()
+
+		stor := storage.NewMemoryStorage()
+		t.Cleanup(func() { _ = stor.Close() })
+
+		provider := &closeCountingProvider{}
+		srv, err := newServer(t.Context(), Config{
+			Issuer:           "https://example.com",
+			KeyProvider:      keys.NewGeneratingProvider(keys.DefaultAlgorithm),
+			HMACSecrets:      &servercrypto.HMACSecrets{Current: validHMACSecret()},
+			Upstreams:        []UpstreamConfig{{Name: "only", Type: UpstreamProviderTypeOAuth2, OAuth2Config: validUpstreamConfig()}},
+			AllowedAudiences: []string{"https://mcp.example.com"},
+			UpstreamFactory: func(_ context.Context, _ *UpstreamConfig) (upstream.OAuth2Provider, error) {
+				return provider, nil
+			},
+		}, stor)
+		require.NoError(t, err)
+
+		// Called through the Server interface, exactly as an embedder would.
+		var asInterface Server = srv
+		assert.True(t, CloseIdleConnections(asInterface))
+		assert.Equal(t, int32(1), provider.closes.Load())
+	})
+
+	t.Run("reports false for an implementation without the capability", func(t *testing.T) {
+		t.Parallel()
+
+		assert.False(t, CloseIdleConnections(capabilityFreeServer{}))
+	})
 }

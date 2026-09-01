@@ -317,9 +317,9 @@ func (e *EmbeddedAuthServer) Close() error {
 
 // CloseIdleConnections releases the idle keep-alive connections pooled by the
 // underlying server's upstream IDP providers, without touching storage. See
-// authserver.Server.CloseIdleConnections for when to use this rather than Close.
+// authserver.CloseIdleConnections for when to use this rather than Close.
 func (e *EmbeddedAuthServer) CloseIdleConnections() {
-	e.server.CloseIdleConnections()
+	authserver.CloseIdleConnections(e.server)
 }
 
 // IDPTokenStorage returns storage for upstream IDP tokens.

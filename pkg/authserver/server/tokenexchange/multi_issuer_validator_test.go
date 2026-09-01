@@ -9,7 +9,6 @@ import (
 	"encoding/json"
 	"encoding/pem"
 	"fmt"
-	"io"
 	"log/slog"
 	"net/http"
 	"net/http/httptest"
@@ -26,6 +25,7 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
+	"github.com/stacklok/toolhive/pkg/auth/jwks"
 	"github.com/stacklok/toolhive/pkg/networking"
 )
 
@@ -102,6 +102,18 @@ func newMultiValidator(
 	v, err := NewMultiIssuerTokenValidator(selfValidator, testIssuer, issuers, nil)
 	require.NoError(t, err)
 	return v
+}
+
+// discoveryFetcher builds a jwks.Fetcher around the given client, for tests
+// exercising discoverJWKSURL directly: discovery reads the fetcher's client
+// (issuerConfig.jwks.HTTPClient()), so there is no separate per-issuer client
+// field to set anymore.
+func discoveryFetcher(t *testing.T, client *http.Client) *jwks.Fetcher {
+	t.Helper()
+
+	f, err := jwks.NewFetcher(context.Background(), jwks.WithHTTPClient(client))
+	require.NoError(t, err)
+	return f
 }
 
 // externalClaims returns standard JWT claims for a token issued by the external issuer.
@@ -1224,55 +1236,6 @@ func TestMultiIssuerTokenValidator_JWKSCaching(t *testing.T) {
 	assert.Equal(t, int32(1), fetchCount.Load(), "JWKS should be fetched only once due to caching")
 }
 
-// TestMultiIssuerTokenValidator_JWKSRefreshIntervalIsPinned confirms
-// registerOrRefresh actually threads jwk.WithConstantInterval(jwksRefreshInterval)
-// through to the underlying httprc.Resource, even though the JWKS endpoint
-// advertises a much longer Cache-Control max-age. Without the constant
-// interval, httprc would derive the refresh schedule from that header
-// instead — see jwksRefreshInterval's doc comment for why an external
-// issuer must not get to choose how long we keep its keys cached.
-//
-// This can't be observed by waiting for a second fetch without a wall-clock
-// sleep (forbidden by this repo's testing rules), so it asserts directly on
-// the registered resource's ConstantInterval() instead of on fetch timing.
-func TestMultiIssuerTokenValidator_JWKSRefreshIntervalIsPinned(t *testing.T) {
-	t.Parallel()
-
-	selfJWKS := newTestJWKS(t)
-	externalJWKS := newTestJWKS(t)
-
-	mux := http.NewServeMux()
-	mux.HandleFunc("/jwks", func(w http.ResponseWriter, _ *http.Request) {
-		// A long max-age that would push httprc's derived interval far past
-		// jwksRefreshInterval if the constant interval were not applied.
-		w.Header().Set("Cache-Control", "max-age=2592000") // 30 days
-		w.Header().Set("Content-Type", "application/json")
-		_ = json.NewEncoder(w).Encode(externalJWKS.publicJWKS())
-	})
-	jwksServer := httptest.NewServer(mux)
-	t.Cleanup(jwksServer.Close)
-
-	trustedIssuers := []TrustedIssuer{{
-		IssuerURL:              testExternalIssuer,
-		ExpectedAudience:       testExternalAudience,
-		JWKSURL:                jwksServer.URL + "/jwks",
-		AllowedActors:          []string{"ext-agent"},
-		AllowedDelegateClients: []string{anyDelegateClient},
-	}}
-
-	validator := newMultiValidator(t, selfJWKS, trustedIssuers)
-
-	rawToken := externalJWKS.signToken(t, externalClaims(), map[string]any{"azp": "ext-agent"})
-	_, err := validator.Validate(context.Background(), rawToken)
-	require.NoError(t, err)
-
-	issuerConfig := validator.issuers[testExternalIssuer]
-	resource, err := issuerConfig.jwksCache.LookupResource(context.Background(), issuerConfig.jwksURL)
-	require.NoError(t, err)
-	assert.Equal(t, jwksRefreshInterval, resource.ConstantInterval(),
-		"registered resource must ignore the endpoint's own Cache-Control max-age")
-}
-
 func TestNewMultiIssuerTokenValidator_Validation(t *testing.T) {
 	t.Parallel()
 
@@ -1881,7 +1844,7 @@ func TestMultiIssuerTokenValidator_DiscoverJWKSURL(t *testing.T) {
 				})
 				return &externalIssuerConfig{
 					TrustedIssuer: TrustedIssuer{IssuerURL: srv.URL, AllowedDelegateClients: []string{anyDelegateClient}},
-					httpClient:    srv.Client(),
+					jwks:          discoveryFetcher(t, srv.Client()),
 				}, srv.URL + "/jwks"
 			},
 		},
@@ -1910,7 +1873,7 @@ func TestMultiIssuerTokenValidator_DiscoverJWKSURL(t *testing.T) {
 				}
 				return &externalIssuerConfig{
 					TrustedIssuer: TrustedIssuer{IssuerURL: srv.URL + "/", AllowedDelegateClients: []string{anyDelegateClient}},
-					httpClient:    client,
+					jwks:          discoveryFetcher(t, client),
 				}, srv.URL + "/jwks"
 			},
 		},
@@ -1922,7 +1885,7 @@ func TestMultiIssuerTokenValidator_DiscoverJWKSURL(t *testing.T) {
 					// A raw control character is rejected by url.Parse inside
 					// http.NewRequestWithContext, before any network I/O.
 					TrustedIssuer: TrustedIssuer{IssuerURL: "http://example.com/\x00", AllowedDelegateClients: []string{anyDelegateClient}},
-					httpClient:    &http.Client{},
+					jwks:          discoveryFetcher(t, &http.Client{}),
 				}, ""
 			},
 			errContains: "failed to create discovery request",
@@ -1935,7 +1898,7 @@ func TestMultiIssuerTokenValidator_DiscoverJWKSURL(t *testing.T) {
 				srv.Close() // closed before use: the port is now guaranteed unreachable.
 				return &externalIssuerConfig{
 					TrustedIssuer: TrustedIssuer{IssuerURL: srv.URL, AllowedDelegateClients: []string{anyDelegateClient}},
-					httpClient:    srv.Client(),
+					jwks:          discoveryFetcher(t, srv.Client()),
 				}, ""
 			},
 			errContains: "discovery request failed",
@@ -1949,7 +1912,7 @@ func TestMultiIssuerTokenValidator_DiscoverJWKSURL(t *testing.T) {
 				})
 				return &externalIssuerConfig{
 					TrustedIssuer: TrustedIssuer{IssuerURL: srv.URL, AllowedDelegateClients: []string{anyDelegateClient}},
-					httpClient:    srv.Client(),
+					jwks:          discoveryFetcher(t, srv.Client()),
 				}, ""
 			},
 			errContains: "discovery endpoint returned status 500",
@@ -1964,7 +1927,7 @@ func TestMultiIssuerTokenValidator_DiscoverJWKSURL(t *testing.T) {
 				})
 				return &externalIssuerConfig{
 					TrustedIssuer: TrustedIssuer{IssuerURL: srv.URL, AllowedDelegateClients: []string{anyDelegateClient}},
-					httpClient:    srv.Client(),
+					jwks:          discoveryFetcher(t, srv.Client()),
 				}, ""
 			},
 			// The distinguishing substring from json.Unmarshal itself, not
@@ -1999,7 +1962,7 @@ func TestMultiIssuerTokenValidator_DiscoverJWKSURL(t *testing.T) {
 				})
 				return &externalIssuerConfig{
 					TrustedIssuer: TrustedIssuer{IssuerURL: srv.URL, AllowedDelegateClients: []string{anyDelegateClient}},
-					httpClient:    srv.Client(),
+					jwks:          discoveryFetcher(t, srv.Client()),
 				}, ""
 			},
 			errContains: "unexpected end of JSON input",
@@ -2017,7 +1980,7 @@ func TestMultiIssuerTokenValidator_DiscoverJWKSURL(t *testing.T) {
 				})
 				return &externalIssuerConfig{
 					TrustedIssuer: TrustedIssuer{IssuerURL: srv.URL, AllowedDelegateClients: []string{anyDelegateClient}},
-					httpClient:    srv.Client(),
+					jwks:          discoveryFetcher(t, srv.Client()),
 				}, ""
 			},
 			errContains: "does not match expected issuer",
@@ -2035,7 +1998,7 @@ func TestMultiIssuerTokenValidator_DiscoverJWKSURL(t *testing.T) {
 				})
 				return &externalIssuerConfig{
 					TrustedIssuer: TrustedIssuer{IssuerURL: srv.URL, AllowedDelegateClients: []string{anyDelegateClient}},
-					httpClient:    srv.Client(),
+					jwks:          discoveryFetcher(t, srv.Client()),
 				}, ""
 			},
 			errContains: "missing 'jwks_uri'",
@@ -2148,10 +2111,10 @@ func TestMultiIssuerTokenValidator_KidMismatch(t *testing.T) {
 	assert.Nil(t, result)
 }
 
-// TestValidateJWKSURL exercises ValidateJWKSURL directly: this is the SSRF
-// guard applied in ensureRegistered to every JWKS URL for a given issuer, whether
-// hand-configured on TrustedIssuer or resolved via discovery, and shared
-// verbatim with pkg/authserver/config.go's config-time check
+// TestValidateJWKSURL exercises jwks.ValidateJWKSURL directly: this is the SSRF
+// guard applied by jwks.Fetcher.EnsureRegistered to every JWKS URL for a given
+// issuer, whether hand-configured on TrustedIssuer or resolved via discovery,
+// and shared verbatim with pkg/authserver/config.go's config-time check
 // (validateJWKSEndpointURL) so the two can't drift out of sync. The
 // equivalent check on redirect hops (networking.SameHostRedirectPolicy) and
 // the dial-time IP guard (networking.NewHostScopedClientBuilder) are
@@ -2218,7 +2181,7 @@ func TestValidateJWKSURL(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
 
-			err := ValidateJWKSURL(tt.url, tt.insecureAllowHTTP, false)
+			err := jwks.ValidateJWKSURL(tt.url, tt.insecureAllowHTTP, false)
 			if tt.wantErr == "" {
 				assert.NoError(t, err)
 				return
@@ -2229,30 +2192,31 @@ func TestValidateJWKSURL(t *testing.T) {
 	}
 }
 
-// TestMultiIssuerTokenValidator_FetchJWKS exercises ensureRegistered's and
+// TestMultiIssuerTokenValidator_FetchJWKS exercises the fetcher's and
 // lookupJWKS's error paths through the full Validate path, bypassing OIDC
-// discovery via a preconfigured JWKSURL. Registration and the JWKS's own
-// zero-keys/too-many-keys checks now go through the issuer's own jwk.Cache and
-// lookupJWKS respectively rather than a private HTTP fetch.
+// discovery via a preconfigured JWKSURL. Registration and the JWKS's
+// too-many-keys check now go through the issuer's own jwks.Fetcher (whose
+// registration, body cap, and key-count internals are exercised directly by
+// pkg/auth/jwks' own tests), while the zero-keys check stays in lookupJWKS.
 //
 // For "non-200 response" and "malformed JSON body", verified empirically:
 // httprc.Resource's `ready` channel only ever closes on a *successful*
-// fetch, so Register's WithWaitReady(true) wait (ensureRegistered's
+// fetch, so Register's WithWaitReady(true) wait (the fetcher's
 // first-ever-registration path) can't distinguish "still fetching" from
 // "fetch failed" — it just blocks until fetchCtx's own deadline and returns
 // a generic timeout, discarding the real HTTP/parse error, which is why
 // these two cases assert on "context deadline exceeded" rather than on
 // jwx's own status-code or parse-error text (that text only ever surfaces
 // on a *later* validation of the same never-yet-succeeded issuer, via
-// ensureRegistered's Refresh-based retry branch — not exercised by a single
+// the fetcher's Refresh-based retry branch — not exercised by a single
 // Validate call here). "zero keys" and "too many keys" are unaffected: a
-// JWKS that parses but fails this file's own key-count checks still
-// registers successfully, so lookupJWKS's checks run immediately.
+// JWKS that parses but fails the key-count checks still
+// registers successfully, so those checks run immediately.
 func TestMultiIssuerTokenValidator_FetchJWKS(t *testing.T) {
 	t.Parallel()
 
-	// Built once: maxJWKSKeys+1 distinct public keys for the "too many keys" case.
-	tooManyKeys := make([]jose.JSONWebKey, maxJWKSKeys+1)
+	// Built once: jwks.DefaultMaxKeys+1 distinct public keys for the "too many keys" case.
+	tooManyKeys := make([]jose.JSONWebKey, jwks.DefaultMaxKeys+1)
 	for i := range tooManyKeys {
 		key := newECDSAJWK(t, fmt.Sprintf("k%d", i))
 		tooManyKeys[i] = key.Public()
@@ -2449,7 +2413,8 @@ func TestMultiIssuerTokenValidator_KeyRotationRefreshesImmediately(t *testing.T)
 }
 
 // TestMultiIssuerTokenValidator_UnknownKidRefreshIsRateLimited proves
-// refreshOnUnknownKid's minKidRefreshInterval gate: repeated subject tokens
+// jwks.Fetcher.RefreshOnUnknownKid's minKidRefreshInterval gate: repeated
+// subject tokens
 // naming a kid absent from the cached JWKS must not force a fetch per
 // request — only the first ever unknown-kid attempt (within the interval)
 // may do so.
@@ -2494,13 +2459,15 @@ func TestMultiIssuerTokenValidator_UnknownKidRefreshIsRateLimited(t *testing.T) 
 	}
 
 	// Only the first unknown-kid attempt should have forced a refresh; the
-	// gate must hold for the remaining four within minKidRefreshInterval.
+	// gate must hold for the remaining four within the fetcher's
+	// minKidRefreshInterval window.
 	assert.Equal(t, primedFetches+1, fetchCount.Load(),
 		"repeated unknown-kid tokens within the window must not each force a fetch")
 }
 
 // TestMultiIssuerTokenValidator_NeverFetchedRetryIsRateLimited proves
-// ensureRegistered's jwksFetchFailureBackoff gate: an issuer whose endpoint
+// jwks.WithFetchFailureBackoff's fetch-failure backoff gate: an issuer whose
+// endpoint
 // has never once succeeded must not be re-fetched on every request — key
 // resolution runs before signature verification, so without this gate any
 // client holding a subject token naming this issuer could drive one real
@@ -2530,13 +2497,14 @@ func TestMultiIssuerTokenValidator_NeverFetchedRetryIsRateLimited(t *testing.T) 
 	rawToken := signExternalToken(t, newECDSAJWK(t, "any-kid"), externalClaims())
 
 	// First attempt: no cached value yet, so this one genuinely fetches (and
-	// blocks on Register's own wait — see ensureRegistered's doc comment).
+	// blocks on Register's own wait — see jwks.Fetcher.EnsureRegistered's
+	// doc comment).
 	_, err := validator.Validate(context.Background(), rawToken)
 	require.Error(t, err)
 	require.Equal(t, int32(1), fetchCount.Load())
 
-	// Further attempts within jwksFetchFailureBackoff must replay the stored
-	// error instead of fetching again.
+	// Further attempts within the fetch-failure backoff window must replay the
+	// stored error instead of fetching again.
 	for range 3 {
 		_, err := validator.Validate(context.Background(), rawToken)
 		require.Error(t, err)
@@ -2548,7 +2516,8 @@ func TestMultiIssuerTokenValidator_NeverFetchedRetryIsRateLimited(t *testing.T) 
 // TestMultiIssuerTokenValidator_SharedJWKSURL_SamePolicy proves that two
 // issuers resolving to the identical jwksURL under the identical HTTP
 // transport policy both validate successfully — each through its own
-// jwk.Cache and *http.Client (see externalIssuerConfig.jwksCache). This is
+// jwks.Fetcher (see externalIssuerConfig.jwks), which owns its own jwk.Cache
+// and *http.Client. This is
 // the common real-world case: Microsoft Entra v1 tenants share one
 // tenant-independent JWKS endpoint, so two Entra tenants configured as
 // separate trusted issuers collide on the same jwks_url by construction.
@@ -2696,102 +2665,4 @@ func TestMultiIssuerTokenValidator_SharedJWKSURL_DifferingPolicy(t *testing.T) {
 	require.NoError(t, err, "the issuer permitting HTTP must validate independently, "+
 		"neither blocked by nor inheriting issuer A's stricter policy")
 	assert.Equal(t, issuerBURL, resultB.ExternalIssuer)
-}
-
-// TestMultiIssuerTokenValidator_RetryAfterFetchFailureRefreshes proves the
-// regression-safety half of the ensureRegistered rewrite (removing
-// externalIssuerConfig.added in favor of asking issuerConfig.jwksCache.IsRegistered
-// directly): once a JWKS fetch has failed but the resource was genuinely
-// registered with the issuer's own cache, a later retry — once
-// jwksFetchFailureBackoff has elapsed — must refresh the existing
-// registration rather than attempt to register it again, which would fail
-// with "already registered".
-func TestMultiIssuerTokenValidator_RetryAfterFetchFailureRefreshes(t *testing.T) {
-	t.Parallel()
-
-	selfJWKS := newTestJWKS(t)
-	externalJWKS := newTestJWKS(t)
-
-	var succeed atomic.Bool
-	var fetchCount atomic.Int32
-	mux := http.NewServeMux()
-	mux.HandleFunc("/jwks", func(w http.ResponseWriter, _ *http.Request) {
-		fetchCount.Add(1)
-		if !succeed.Load() {
-			w.WriteHeader(http.StatusInternalServerError)
-			return
-		}
-		w.Header().Set("Content-Type", "application/json")
-		_ = json.NewEncoder(w).Encode(externalJWKS.publicJWKS())
-	})
-	srv := httptest.NewServer(mux)
-	t.Cleanup(srv.Close)
-
-	trustedIssuers := []TrustedIssuer{{
-		IssuerURL:              testExternalIssuer,
-		ExpectedAudience:       testExternalAudience,
-		JWKSURL:                srv.URL + "/jwks",
-		AllowedActors:          []string{"ext-agent"},
-		AllowedDelegateClients: []string{anyDelegateClient},
-	}}
-	validator := newMultiValidator(t, selfJWKS, trustedIssuers)
-
-	tokenWithID := func(jti string) string {
-		claims := externalClaims()
-		claims.ID = jti
-		return externalJWKS.signToken(t, claims, map[string]any{"azp": "ext-agent"})
-	}
-
-	// First attempt: the endpoint is broken. This genuinely registers the
-	// resource with the issuer's own cache (per httprc.Controller.Add's own
-	// ordering), but the fetch itself fails.
-	_, err := validator.Validate(context.Background(), tokenWithID("jti-1"))
-	require.Error(t, err)
-	require.Equal(t, int32(1), fetchCount.Load())
-
-	// Force the backoff gate open, as if jwksFetchFailureBackoff had elapsed,
-	// without waiting the real 30s out.
-	issuerConfig := validator.issuers[testExternalIssuer]
-	issuerConfig.mu.Lock()
-	issuerConfig.fetchFailedAt = time.Now().Add(-jwksFetchFailureBackoff - time.Second)
-	issuerConfig.mu.Unlock()
-
-	// The endpoint now recovers. The retry must go through Refresh — a
-	// second Register call against the same URL would fail with "already
-	// registered".
-	succeed.Store(true)
-	result, err := validator.Validate(context.Background(), tokenWithID("jti-2"))
-	require.NoError(t, err, "retry after a registered-but-failed fetch must refresh, not re-register")
-	require.NotNil(t, result)
-}
-
-// TestLimitedBodyTransport asserts directly on the body cap that protects the
-// JWKS fetch path. A direct test is necessary rather than sufficient coverage
-// via Validate: jwx surfaces every fetch failure as its own WaitReady timeout,
-// so the cap's error never reaches a caller and cannot be distinguished there
-// from a 500, a parse failure, or a kid mismatch. Asserting on the cap itself
-// is the only way to pin it — the oversized case in
-// TestMultiIssuerTokenValidator_FetchJWKS proves the fetch fails, not why.
-func TestLimitedBodyTransport(t *testing.T) {
-	t.Parallel()
-
-	const bodyCap = 1024
-
-	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
-		_, _ = w.Write([]byte(strings.Repeat("a", 8*1024)))
-	}))
-	t.Cleanup(srv.Close)
-
-	client := srv.Client()
-	client.Transport = &limitedBodyTransport{base: client.Transport, max: bodyCap}
-
-	resp, err := client.Get(srv.URL)
-	require.NoError(t, err, "the cap applies to reading the body, not to the round trip")
-	t.Cleanup(func() { _ = resp.Body.Close() })
-
-	body, err := io.ReadAll(resp.Body)
-	require.Error(t, err, "reading past the cap must fail rather than truncate silently: "+
-		"a truncated JWKS would be parsed as though it were the whole document")
-	assert.LessOrEqual(t, int64(len(body)), int64(bodyCap),
-		"no more than the cap may be delivered before the error")
 }

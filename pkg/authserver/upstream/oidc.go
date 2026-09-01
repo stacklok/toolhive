@@ -185,6 +185,12 @@ func NewOIDCProvider(
 	if err != nil {
 		return nil, fmt.Errorf("failed to create HTTP client: %w", err)
 	}
+	// Note: this provider's ID-token verification uses coreos/go-oidc's
+	// RemoteKeySet for its JWKS — the third JWKS mechanism in the codebase,
+	// alongside pkg/auth/jwks.Fetcher (TokenValidator, token exchange) and
+	// the key provider of the embedded auth server. It is deliberately out
+	// of scope for the shared fetcher (issue #6319): replacing it would mean
+	// reimplementing go-oidc's ID-token verification and nonce handling.
 
 	p := &OIDCProviderImpl{
 		oidcConfig: config,

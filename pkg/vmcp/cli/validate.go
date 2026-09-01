@@ -5,8 +5,11 @@ package cli
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
+	"io"
 	"log/slog"
+	"os"
 
 	"github.com/stacklok/toolhive-core/env"
 	"github.com/stacklok/toolhive/pkg/vmcp/config"
@@ -16,6 +19,23 @@ import (
 type ValidateConfig struct {
 	// ConfigPath is the path to the vMCP YAML configuration file to validate.
 	ConfigPath string
+	// Format controls successful output. Empty or "text" preserves the log summary.
+	Format string
+	// Writer receives JSON output. Nil uses os.Stdout.
+	Writer io.Writer
+}
+
+// ValidationSummary is the stable, secret-free machine-readable validation result.
+type ValidationSummary struct {
+	Valid                bool   `json:"valid"`
+	Name                 string `json:"name"`
+	Group                string `json:"group"`
+	IncomingAuth         string `json:"incoming_auth"`
+	OutgoingAuthSource   string `json:"outgoing_auth_source"`
+	BackendAuthOverrides int    `json:"backend_auth_override_count"`
+	BackendCount         int    `json:"backend_count"`
+	ConflictResolution   string `json:"conflict_resolution"`
+	CompositeToolCount   int    `json:"composite_tool_count"`
 }
 
 // Validate loads and validates a vMCP configuration file, printing a summary
@@ -24,6 +44,9 @@ type ValidateConfig struct {
 func Validate(_ context.Context, cfg ValidateConfig) error {
 	if cfg.ConfigPath == "" {
 		return fmt.Errorf("no configuration file specified, use --config flag")
+	}
+	if cfg.Format != "" && cfg.Format != "text" && cfg.Format != "json" {
+		return fmt.Errorf("unsupported output format %q", cfg.Format)
 	}
 
 	slog.Info(fmt.Sprintf("Validating configuration: %s", cfg.ConfigPath))
@@ -42,6 +65,30 @@ func Validate(_ context.Context, cfg ValidateConfig) error {
 	if err := validator.Validate(vmcpCfg); err != nil {
 		slog.Error(fmt.Sprintf("Configuration validation failed: %v", err))
 		return fmt.Errorf("validation failed: %w", err)
+	}
+
+	summary := ValidationSummary{
+		Valid:                true,
+		Name:                 vmcpCfg.Name,
+		Group:                vmcpCfg.Group,
+		IncomingAuth:         vmcpCfg.IncomingAuth.Type,
+		OutgoingAuthSource:   vmcpCfg.OutgoingAuth.Source,
+		BackendAuthOverrides: len(vmcpCfg.OutgoingAuth.Backends),
+		BackendCount:         len(vmcpCfg.Backends),
+		ConflictResolution:   string(vmcpCfg.Aggregation.ConflictResolution),
+		CompositeToolCount:   len(vmcpCfg.CompositeTools),
+	}
+	if cfg.Format == "json" {
+		writer := cfg.Writer
+		if writer == nil {
+			writer = os.Stdout
+		}
+		encoder := json.NewEncoder(writer)
+		encoder.SetIndent("", "  ")
+		if err := encoder.Encode(summary); err != nil {
+			return fmt.Errorf("failed to encode validation summary: %w", err)
+		}
+		return nil
 	}
 
 	slog.Info("✓ Configuration is valid")

@@ -129,7 +129,7 @@ func NewPrivateIPBlockingDialContext() func(ctx context.Context, network, addr s
 // transport to drain pooled connections (it asserts an identical unexported
 // interface). Any RoundTripper in this repo that wraps another must implement it
 // and forward the call, or every CloseIdleConnections on the resulting client is
-// a silent no-op. Assert against this named type rather than re-declaring an
+// a silent no-op. Assert against this named type rather than redeclaring an
 // anonymous `interface{ CloseIdleConnections() }`.
 //
 // upstream.IdleConnectionCloser is the provider-level analogue one layer up.

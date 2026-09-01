@@ -427,7 +427,6 @@ var supportedClientIntegrations = []clientAppConfig{
 		SkillsProjectPath: []string{".github", skillsDirName},
 		// LLM gateway: patches settings.json (same dir as mcp.json, different file)
 		LLMGatewayMode:     llmgateway.ModeProxy,
-		LLMBinaryName:      "code-insiders",
 		LLMSettingsFile:    "settings.json",
 		LLMSettingsRelPath: []string{"Code - Insiders", "User"},
 		LLMSettingsPlatformPrefix: map[Platform][]string{
@@ -470,7 +469,6 @@ var supportedClientIntegrations = []clientAppConfig{
 		SkillsProjectPath: []string{".github", skillsDirName},
 		// LLM gateway: patches settings.json (same dir as mcp.json, different file)
 		LLMGatewayMode:     llmgateway.ModeProxy,
-		LLMBinaryName:      "code",
 		LLMSettingsFile:    "settings.json",
 		LLMSettingsRelPath: []string{"Code", "User"},
 		LLMSettingsPlatformPrefix: map[Platform][]string{
@@ -508,7 +506,6 @@ var supportedClientIntegrations = []clientAppConfig{
 		SkillsProjectPath: []string{".cursor", skillsDirName},
 		// LLM gateway: patches the editor settings.json (different from the MCP mcp.json)
 		LLMGatewayMode:     llmgateway.ModeProxy,
-		LLMBinaryName:      "cursor",
 		LLMSettingsFile:    "settings.json",
 		LLMSettingsRelPath: []string{"Cursor", "User"},
 		LLMSettingsPlatformPrefix: map[Platform][]string{

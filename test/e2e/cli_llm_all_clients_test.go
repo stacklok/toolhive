@@ -121,7 +121,7 @@ func allClientTestCases() []llmClientTestCase {
 			detectionDir: func(tempDir string) string {
 				return llmSettingsDirFor("cursor", tempDir)
 			},
-			binaryName: "cursor",
+			binaryName: "",
 			settingsPath: func(tempDir string) string {
 				return filepath.Join(llmSettingsDirFor("cursor", tempDir), "settings.json")
 			},
@@ -140,7 +140,7 @@ func allClientTestCases() []llmClientTestCase {
 			detectionDir: func(tempDir string) string {
 				return llmSettingsDirFor("vscode", tempDir)
 			},
-			binaryName: "code",
+			binaryName: "",
 			settingsPath: func(tempDir string) string {
 				return filepath.Join(llmSettingsDirFor("vscode", tempDir), "settings.json")
 			},
@@ -159,7 +159,7 @@ func allClientTestCases() []llmClientTestCase {
 			detectionDir: func(tempDir string) string {
 				return llmSettingsDirFor("vscode-insider", tempDir)
 			},
-			binaryName: "code-insiders",
+			binaryName: "",
 			settingsPath: func(tempDir string) string {
 				return filepath.Join(llmSettingsDirFor("vscode-insider", tempDir), "settings.json")
 			},

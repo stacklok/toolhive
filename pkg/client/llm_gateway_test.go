@@ -665,33 +665,83 @@ func TestDetectedLLMGatewayClients_NeitherDirNorBinary(t *testing.T) {
 	assert.Empty(t, cm.DetectedLLMGatewayClients())
 }
 
+func TestDetectedLLMGatewayClients_GUIEditorsIgnoreMissingBinary(t *testing.T) {
+	t.Parallel()
+	home := t.TempDir()
+	cm := NewTestClientManager(home, nil, supportedClientIntegrations, nil)
+	cm.lookPath = func(_ string) (string, error) { return "", os.ErrNotExist }
+
+	for _, clientType := range []ClientApp{VSCode, VSCodeInsider, Cursor} {
+		cfg := cm.lookupClientAppConfig(clientType)
+		require.NotNil(t, cfg)
+		require.Empty(t, cfg.LLMBinaryName)
+		require.NoError(t, os.MkdirAll(filepath.Dir(cm.buildLLMSettingsPath(cfg)), 0o700))
+	}
+
+	detected := cm.DetectedLLMGatewayClients()
+	assert.Contains(t, detected, VSCode)
+	assert.Contains(t, detected, VSCodeInsider)
+	assert.Contains(t, detected, Cursor)
+}
+
+func TestDetectedLLMGatewayClients_CLILeftoverDirStillRequiresBinary(t *testing.T) {
+	t.Parallel()
+	home := t.TempDir()
+	cm := NewTestClientManager(home, nil, supportedClientIntegrations, nil)
+	cm.lookPath = func(_ string) (string, error) { return "", os.ErrNotExist }
+
+	cfg := cm.lookupClientAppConfig(ClaudeCode)
+	require.NotNil(t, cfg)
+	require.NoError(t, os.MkdirAll(filepath.Dir(cm.buildLLMSettingsPath(cfg)), 0o700))
+
+	assert.NotContains(t, cm.DetectedLLMGatewayClients(), ClaudeCode)
+	assert.Contains(t, cm.LLMClientDetectionHint(ClaudeCode), `was not found on PATH`)
+}
+
+func TestLLMClientDetectionHint_MissingDirIsSilent(t *testing.T) {
+	t.Parallel()
+	home := t.TempDir()
+	cm := NewTestClientManager(home, nil, supportedClientIntegrations, nil)
+	cm.lookPath = func(_ string) (string, error) { return "", os.ErrNotExist }
+
+	assert.Empty(t, cm.LLMClientDetectionHint(ClaudeCode))
+	assert.Empty(t, cm.LLMClientDetectionHint(Cursor))
+}
+
 // TestRealClientConfigs_LLMBinaryNames asserts the expected binary name for
-// every LLM-gateway-capable entry in supportedClientIntegrations. This is a
-// regression guard: a silent typo (e.g. "code" instead of "code-insiders")
-// causes detection to fail on machines that only have the Insiders build.
+// every LLM-gateway-capable entry in supportedClientIntegrations. GUI editors
+// must stay empty: a PATH binary check is a false negative when the app is
+// installed as a desktop editor. CLI tools keep the binary check so leftover
+// config directories do not count as installed.
 func TestRealClientConfigs_LLMBinaryNames(t *testing.T) {
 	t.Parallel()
 
-	want := map[ClientApp]string{
-		VSCodeInsider: "code-insiders",
-		VSCode:        "code",
-		Cursor:        "cursor",
-		ClaudeCode:    "claude",
-		GeminiCli:     "gemini",
-		Codex:         "codex",
-		// Tools without a binary check (dir-only detection) are omitted.
+	wantBinary := map[ClientApp]string{
+		ClaudeCode: "claude",
+		GeminiCli:  "gemini",
+		Codex:      "codex",
 	}
+	wantEmpty := []ClientApp{VSCode, VSCodeInsider, Cursor, ClientApp(Xcode)}
 
 	home := t.TempDir()
 	cm := NewTestClientManager(home, nil, supportedClientIntegrations, nil)
 
-	for clientType, wantBinary := range want {
+	for clientType, want := range wantBinary {
 		t.Run(string(clientType), func(t *testing.T) {
 			t.Parallel()
 			cfg := cm.lookupClientAppConfig(clientType)
 			require.NotNil(t, cfg, "missing entry in supportedClientIntegrations for %s", clientType)
-			assert.Equal(t, wantBinary, cfg.LLMBinaryName,
+			assert.Equal(t, want, cfg.LLMBinaryName,
 				"wrong LLMBinaryName for %s: detection will fail on machines that only have the expected binary", clientType)
+		})
+	}
+	for _, clientType := range wantEmpty {
+		t.Run(string(clientType)+"/dir-only", func(t *testing.T) {
+			t.Parallel()
+			cfg := cm.lookupClientAppConfig(clientType)
+			require.NotNil(t, cfg, "missing entry in supportedClientIntegrations for %s", clientType)
+			assert.Empty(t, cfg.LLMBinaryName,
+				"%s is a GUI editor and must not require a PATH binary", clientType)
 		})
 	}
 }

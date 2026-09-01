@@ -100,6 +100,13 @@ func buildUpstreams(
 			closeUpstreamIdleConnections(upstreams)
 			return nil, fmt.Errorf("failed to create upstream provider %q: %w", upCfg.Name, err)
 		}
+		// A nil provider would be wired into the authorization chain and panic on
+		// the first /oauth/authorize request instead of failing at boot, so a
+		// custom Config.UpstreamFactory cannot use it to drop an upstream.
+		if provider == nil {
+			closeUpstreamIdleConnections(upstreams)
+			return nil, fmt.Errorf("upstream factory returned a nil provider for upstream %q", upCfg.Name)
+		}
 		upstreams = append(upstreams, handlers.NamedUpstream{Name: upCfg.Name, Provider: provider})
 		slog.Debug("upstream IDP provider configured", "type", upCfg.Type, "name", upCfg.Name)
 	}

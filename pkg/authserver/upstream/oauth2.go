@@ -323,6 +323,12 @@ type OAuth2ProviderOption func(*BaseOAuth2Provider)
 // WithOAuth2HTTPClient sets a custom HTTP client. The caller retains ownership
 // of its connection pool: CloseIdleConnections leaves an injected client alone,
 // so one client can be shared safely across providers and reconstructions.
+//
+// The injected client fully supersedes the one the provider would have built,
+// so the caller also owns its TLS trust and SSRF posture: the config's
+// CAFilePath, AllowPrivateIPs and InsecureAllowHTTP shape only the default
+// client and are not applied here. A set CAFilePath is logged as a warning
+// because it is otherwise inert.
 func WithOAuth2HTTPClient(client *http.Client) OAuth2ProviderOption {
 	return func(p *BaseOAuth2Provider) {
 		p.httpClient = client
@@ -361,6 +367,8 @@ func newBaseOAuth2Provider(
 		}
 		p.httpClient = httpClient
 		p.ownsHTTPClient = true
+	} else {
+		warnInjectedClientSupersedesCABundle(config.CAFilePath)
 	}
 
 	// AuthStyle is derived from the negotiated token_endpoint_auth_method
@@ -403,6 +411,19 @@ func (p *BaseOAuth2Provider) CloseIdleConnections() {
 		return
 	}
 	p.httpClient.CloseIdleConnections()
+}
+
+// warnInjectedClientSupersedesCABundle warns when an operator configured a CA
+// bundle that a caller-injected HTTP client makes inert. The bundle used to be
+// read (and validated) unconditionally, so dropping it silently would turn an
+// explicit trust decision into a no-op with no signal.
+func warnInjectedClientSupersedesCABundle(caFilePath string) {
+	if caFilePath == "" {
+		return
+	}
+	slog.Warn("ignoring upstream caFilePath: the injected HTTP client supersedes it; "+
+		"configure the CA bundle on that client instead",
+		"ca_file_path", caFilePath)
 }
 
 // authStyleFromMethod maps an RFC 7591 token_endpoint_auth_method to the

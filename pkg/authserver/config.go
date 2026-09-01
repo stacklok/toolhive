@@ -919,8 +919,14 @@ type Config struct {
 	//   - Per-upstream failure isolation. Upstream construction inside New is
 	//     otherwise all-or-nothing: one unreachable or mistyped issuer_url fails
 	//     the whole call. A factory owning construction can apply a per-upstream
-	//     deadline and skip or substitute a single failing provider while the
-	//     rest serve.
+	//     deadline and substitute a provider for a single failing upstream while
+	//     the rest serve.
+	//
+	// The factory cannot drop an upstream: every entry in Upstreams must yield a
+	// provider, and returning a nil provider with a nil error is rejected by New
+	// rather than producing an upstream that panics on the first authorization
+	// request. To serve without an upstream, omit it from Upstreams; to keep its
+	// slot in the chain, return a substitute provider.
 	//
 	// SECURITY: the returned provider validates the upstream's ID tokens and
 	// resolves user identity. A factory that returns a permissive provider

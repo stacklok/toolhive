@@ -355,12 +355,31 @@ func TestNewOIDCProvider(t *testing.T) {
 			Issuer: mock.issuer,
 		}
 
-		customClient := &http.Client{Timeout: 5 * time.Second}
+		// Built via the builder rather than a bare &http.Client so the pool is
+		// real and the ownership assertions below are meaningful.
+		issuerURL, err := url.Parse(mock.issuer)
+		require.NoError(t, err)
+		customClient, err := newHTTPClientForHost(issuerURL.Host, true, true, "")
+		require.NoError(t, err)
 
 		ctx := context.Background()
 		provider, err := NewOIDCProvider(ctx, config, WithHTTPClient(customClient))
 		require.NoError(t, err)
 		require.NotNil(t, provider)
+
+		// The injected client must be used as-is, not rebuilt — otherwise every
+		// reconstruction still allocates (and discards) a transport.
+		assert.Same(t, customClient, provider.httpClient)
+
+		// OIDCProviderImpl is the type #6479 identifies as leaking and the one
+		// DefaultUpstreamFactory builds, and WithHTTPClient clears the ownership
+		// flag on its own line — so pin that retiring this provider leaves the
+		// caller's shared pool warm. Discovery already populated it.
+		require.True(t, providerRequestReusedConn(t, provider.BaseOAuth2Provider, mock.issuer),
+			"discovery must have left a pooled connection")
+		provider.CloseIdleConnections()
+		assert.True(t, providerRequestReusedConn(t, provider.BaseOAuth2Provider, mock.issuer),
+			"a caller-owned client's pool must survive the provider being retired")
 	})
 
 	t.Run("with force consent screen", func(t *testing.T) {

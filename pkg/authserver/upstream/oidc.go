@@ -124,10 +124,12 @@ type OIDCProviderImpl struct {
 	verifier            *oidc.IDTokenVerifier             // ID token verifier from go-oidc
 }
 
-// Compile-time capability check: OIDCProviderImpl satisfies
-// IdleConnectionCloser only by promotion from the embedded *BaseOAuth2Provider,
-// and (*server).CloseIdleConnections reaches it through a type assertion that
-// would degrade to a silent no-op if the promotion were ever lost. This pins it.
+// Compile-time capability check that the embedded *BaseOAuth2Provider keeps
+// promoting CloseIdleConnections, since (*server).CloseIdleConnections reaches
+// OIDCProviderImpl through a type assertion that would degrade to a silent
+// no-op if the promotion were dropped. It does not pin the behavior — a method
+// declared on OIDCProviderImpl would shadow the promoted one and still satisfy
+// this — so TestServer_Close_DrainsRealOIDCUpstream is the actual guard.
 var _ IdleConnectionCloser = (*OIDCProviderImpl)(nil)
 
 // OIDCProviderOption configures an OIDCProvider.
@@ -137,6 +139,12 @@ type OIDCProviderOption func(*OIDCProviderImpl)
 // ownership of its connection pool: CloseIdleConnections leaves an injected
 // client alone, so one client can be shared safely across providers and
 // reconstructions.
+//
+// The injected client fully supersedes the one the provider would have built,
+// so the caller also owns its TLS trust and SSRF posture: the config's
+// CAFilePath, AllowPrivateIPs and InsecureAllowHTTP shape only the default
+// client and are not applied here. A set CAFilePath is logged as a warning
+// because it is otherwise inert.
 func WithHTTPClient(client *http.Client) OIDCProviderOption {
 	return func(p *OIDCProviderImpl) {
 		p.httpClient = client
@@ -212,6 +220,8 @@ func NewOIDCProvider(
 		}
 		p.httpClient = httpClient
 		p.ownsHTTPClient = true
+	} else {
+		warnInjectedClientSupersedesCABundle(config.CAFilePath)
 	}
 
 	// Use go-oidc for discovery - inject custom HTTP client via context

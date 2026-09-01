@@ -75,6 +75,12 @@ type Server interface {
 	// providers built around a caller-supplied HTTP client — the caller owns
 	// that client's pool (see Config.UpstreamFactory).
 	//
+	// Scope: this releases the upstream providers' HTTP connection pools and
+	// nothing else. A server configured with TrustedIssuers also holds one JWKS
+	// refresh worker pool per issuer, started against context.Background() and
+	// released by neither this method nor Close, so an embedder that
+	// reconstructs repeatedly still grows goroutines through that path.
+	//
 	// Unlike upstream.IdleConnectionCloser, which is an optional capability an
 	// OAuth2Provider may implement, this is a required part of the Server
 	// interface: Server has a single in-repo implementation, so requiring it

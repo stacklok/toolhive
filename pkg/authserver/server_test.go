@@ -713,6 +713,34 @@ func TestBuildUpstreams_DrainsAlreadyBuiltProvidersOnFailure(t *testing.T) {
 		"the provider built before the failure must be drained")
 }
 
+// TestBuildUpstreams_RejectsNilProvider pins that a custom
+// Config.UpstreamFactory cannot drop an upstream by returning (nil, nil). Such a
+// NamedUpstream would be wired into the authorization chain and panic on the
+// first /oauth/authorize request, after any startup health check had passed.
+func TestBuildUpstreams_RejectsNilProvider(t *testing.T) {
+	t.Parallel()
+
+	built := &closeCountingProvider{}
+	cfg := Config{Upstreams: []UpstreamConfig{
+		{Name: "first", Type: UpstreamProviderTypeOAuth2, OAuth2Config: validUpstreamConfig()},
+		{Name: "second", Type: UpstreamProviderTypeOAuth2, OAuth2Config: validUpstreamConfig()},
+	}}
+
+	factory := func(_ context.Context, upCfg *UpstreamConfig) (upstream.OAuth2Provider, error) {
+		if upCfg.Name == "second" {
+			return nil, nil //nolint:nilnil // the point of the test: a nil provider with no error
+		}
+		return built, nil
+	}
+
+	upstreams, err := buildUpstreams(t.Context(), cfg, factory)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), `nil provider for upstream "second"`)
+	assert.Nil(t, upstreams)
+	assert.Equal(t, int32(1), built.closes.Load(),
+		"the provider built before the rejection must be drained")
+}
+
 // TestServer_Close_DrainsRealOIDCUpstream exercises the production wiring that
 // the other tests stub out: a server built through DefaultUpstreamFactory holds
 // an *upstream.OIDCProviderImpl, which satisfies upstream.IdleConnectionCloser

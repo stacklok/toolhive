@@ -334,6 +334,18 @@ type limitedBodyTransport struct {
 // doesn't intend to parse — draining it is only ever io.Discard-ed, not
 // unbounded, so this errs on the safe side rather than special-casing status
 // codes.
+// CloseIdleConnections forwards to the wrapped transport. http.Client discovers
+// this capability by asserting the outermost transport, so a wrapper that omits
+// it makes the client's CloseIdleConnections a silent no-op — see the same
+// method on networking.ValidatingTransport. Currently there is no pool to drain
+// (this client is built WithDisableKeepAlives(true)), but the forwarder keeps
+// that an optimization decision rather than a correctness dependency.
+func (t *limitedBodyTransport) CloseIdleConnections() {
+	if closer, ok := t.base.(interface{ CloseIdleConnections() }); ok {
+		closer.CloseIdleConnections()
+	}
+}
+
 func (t *limitedBodyTransport) RoundTrip(req *http.Request) (*http.Response, error) {
 	resp, err := t.base.RoundTrip(req)
 	if err != nil {

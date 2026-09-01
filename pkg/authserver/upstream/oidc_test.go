@@ -10,9 +10,11 @@ import (
 	"encoding/base64"
 	"encoding/json"
 	"math/big"
+	"net"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -1525,4 +1527,58 @@ func TestOIDCProvider_RefreshTokens(t *testing.T) {
 		require.NoError(t, err)
 		assert.Equal(t, "refreshed-access-token", tokens.AccessToken)
 	})
+}
+
+// TestNewOIDCProvider_DrainsOwnClientOnFailure pins that a construction that
+// fails *after* discovery does not abandon the client it built. Nothing is
+// returned, so no caller can drain it — this is the retry case #6479 calls
+// pathological ("re-runs discovery on every attempt"), and neither
+// buildUpstreams' drain nor newServer's deferred drain can reach it.
+func TestNewOIDCProvider_DrainsOwnClientOnFailure(t *testing.T) {
+	t.Parallel()
+
+	var openConns atomic.Int32
+	// Discovery succeeds (so a connection is pooled) but the document omits
+	// token_endpoint, so validation fails afterwards.
+	issuer := httptest.NewUnstartedServer(nil)
+	mux := http.NewServeMux()
+	mux.HandleFunc("/.well-known/openid-configuration", func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(map[string]any{
+			"issuer":                                issuer.URL,
+			"authorization_endpoint":                issuer.URL + "/authorize",
+			"jwks_uri":                              issuer.URL + "/jwks",
+			"response_types_supported":              []string{"code"},
+			"subject_types_supported":               []string{"public"},
+			"id_token_signing_alg_values_supported": []string{"RS256"},
+		})
+	})
+	issuer.Config.Handler = mux
+	issuer.Config.ConnState = func(_ net.Conn, state http.ConnState) {
+		switch state {
+		case http.StateNew:
+			openConns.Add(1)
+		case http.StateClosed, http.StateHijacked:
+			openConns.Add(-1)
+		case http.StateActive, http.StateIdle:
+		}
+	}
+	issuer.Start()
+	t.Cleanup(issuer.Close)
+
+	_, err := NewOIDCProvider(context.Background(), &OIDCConfig{
+		CommonOAuthConfig: CommonOAuthConfig{
+			ClientID:    testClientID,
+			RedirectURI: testRedirectURI,
+			Scopes:      []string{"openid"},
+		},
+		Issuer:            issuer.URL,
+		InsecureAllowHTTP: true,
+		AllowPrivateIPs:   true,
+	})
+	require.Error(t, err, "a discovery document without token_endpoint must be rejected")
+
+	// The issuer observes the close asynchronously.
+	assert.Eventually(t, func() bool { return openConns.Load() == 0 }, 5*time.Second, 10*time.Millisecond,
+		"a failed construction must drain the client it built")
 }

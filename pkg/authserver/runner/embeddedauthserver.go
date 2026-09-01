@@ -315,6 +315,13 @@ func (e *EmbeddedAuthServer) Close() error {
 	return e.closeErr
 }
 
+// CloseIdleConnections releases the idle keep-alive connections pooled by the
+// underlying server's upstream IDP providers, without touching storage. See
+// authserver.Server.CloseIdleConnections for when to use this rather than Close.
+func (e *EmbeddedAuthServer) CloseIdleConnections() {
+	e.server.CloseIdleConnections()
+}
+
 // IDPTokenStorage returns storage for upstream IDP tokens.
 // Returns nil if no upstream IDP is configured.
 // This is used by the upstream swap middleware to exchange ToolHive JWTs

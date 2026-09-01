@@ -349,7 +349,7 @@ func newBaseOAuth2Provider(
 	config *OAuth2Config,
 	hostForClient string,
 	opts ...OAuth2ProviderOption,
-) (*BaseOAuth2Provider, error) {
+) (_ *BaseOAuth2Provider, retErr error) {
 	if err := config.ValidateWithInsecure(config.InsecureAllowHTTP); err != nil {
 		return nil, fmt.Errorf("invalid config: %w", err)
 	}
@@ -367,6 +367,14 @@ func newBaseOAuth2Provider(
 		}
 		p.httpClient = httpClient
 		p.ownsHTTPClient = true
+		// A later failure (an unsupported token_endpoint_auth_method) otherwise
+		// abandons the client with no caller able to reach it. Symmetric with
+		// NewOIDCProvider; the ownership check leaves an injected client alone.
+		defer func() {
+			if retErr != nil {
+				p.CloseIdleConnections()
+			}
+		}()
 	} else {
 		warnInjectedClientSupersedesCABundle(config.CAFilePath)
 	}
@@ -417,6 +425,12 @@ func (p *BaseOAuth2Provider) CloseIdleConnections() {
 // bundle that a caller-injected HTTP client makes inert. The bundle used to be
 // read (and validated) unconditionally, so dropping it silently would turn an
 // explicit trust decision into a no-op with no signal.
+//
+// CAFilePath is the only superseded field warned about, deliberately:
+// AllowPrivateIPs was already inert with an injected client before options moved
+// ahead of the client build (the option simply overwrote the built client), and
+// InsecureAllowHTTP still drives ValidateWithInsecure. CAFilePath is the one
+// field whose validation this ordering removed.
 func warnInjectedClientSupersedesCABundle(caFilePath string) {
 	if caFilePath == "" {
 		return

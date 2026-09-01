@@ -182,7 +182,7 @@ func NewOIDCProvider(
 	ctx context.Context,
 	config *OIDCConfig,
 	opts ...OIDCProviderOption,
-) (*OIDCProviderImpl, error) {
+) (_ *OIDCProviderImpl, retErr error) {
 	if config == nil {
 		return nil, errors.New("config is required")
 	}
@@ -220,6 +220,15 @@ func NewOIDCProvider(
 		}
 		p.httpClient = httpClient
 		p.ownsHTTPClient = true
+		// Discovery below runs before any later failure (bad claims, an invalid
+		// discovery document, a missing openid scope), so a failed construction
+		// otherwise abandons a client with a pooled connection that no caller
+		// can reach — nothing is returned to call CloseIdleConnections on.
+		defer func() {
+			if retErr != nil {
+				p.CloseIdleConnections()
+			}
+		}()
 	} else {
 		warnInjectedClientSupersedesCABundle(config.CAFilePath)
 	}

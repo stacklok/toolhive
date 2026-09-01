@@ -2381,14 +2381,14 @@ func TestIntegration_FullPKCEFlow_DefaultAudience(t *testing.T) {
 }
 
 // ============================================================================
-// OIDC Provider Integration Tests (OIDCProviderImpl via defaultUpstreamFactory)
+// OIDC Provider Integration Tests (OIDCProviderImpl via DefaultUpstreamFactory)
 // ============================================================================
 
 // setupTestServerWithOIDCProvider creates a test server with a real OIDCProviderImpl
-// created through the defaultUpstreamFactory. Unlike setupTestServerWithMockOIDC which
+// created through the DefaultUpstreamFactory. Unlike setupTestServerWithMockOIDC which
 // manually creates a BaseOAuth2Provider, this test path exercises:
 //   - UpstreamConfig{Type: OIDC, OIDCConfig: ...}
-//   - defaultUpstreamFactory dispatching to NewOIDCProvider
+//   - DefaultUpstreamFactory dispatching to NewOIDCProvider
 //   - OIDCProviderImpl with OIDC discovery, ID token validation, and nonce support
 //
 // Variadic opts allow swapping the storage backend (e.g. withRedisBackedStorage)
@@ -2438,7 +2438,7 @@ func setupTestServerWithOIDCProvider(t *testing.T, m *mockoidc.MockOIDC, opts ..
 	require.NoError(t, err)
 
 	// 5. Build OIDC upstream config - this is the key difference from setupTestServerWithMockOIDC.
-	// We use UpstreamProviderTypeOIDC with OIDCConfig so that defaultUpstreamFactory
+	// We use UpstreamProviderTypeOIDC with OIDCConfig so that DefaultUpstreamFactory
 	// creates an OIDCProviderImpl (not BaseOAuth2Provider).
 	serverCfg := Config{
 		Issuer:               testIssuer,
@@ -2465,7 +2465,7 @@ func setupTestServerWithOIDCProvider(t *testing.T, m *mockoidc.MockOIDC, opts ..
 	}
 
 	// 6. Create server using newServer WITHOUT overriding the upstream factory.
-	// This exercises the real defaultUpstreamFactory -> NewOIDCProvider path.
+	// This exercises the real DefaultUpstreamFactory -> NewOIDCProvider path.
 	srv, err := newServer(ctx, serverCfg, stor)
 	require.NoError(t, err)
 
@@ -2489,7 +2489,7 @@ func setupTestServerWithOIDCProvider(t *testing.T, m *mockoidc.MockOIDC, opts ..
 }
 
 // TestIntegration_OIDCProvider_FullFlow tests the complete OAuth flow using the real
-// OIDCProviderImpl created through defaultUpstreamFactory. This verifies that:
+// OIDCProviderImpl created through DefaultUpstreamFactory. This verifies that:
 // - OIDC discovery is performed against the mock OIDC server
 // - The authorization flow redirects through the OIDC provider correctly
 // - Token exchange produces a valid JWT access token

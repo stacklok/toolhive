@@ -334,6 +334,15 @@ type limitedBodyTransport struct {
 // doesn't intend to parse — draining it is only ever io.Discard-ed, not
 // unbounded, so this errs on the safe side rather than special-casing status
 // codes.
+func (t *limitedBodyTransport) RoundTrip(req *http.Request) (*http.Response, error) {
+	resp, err := t.base.RoundTrip(req)
+	if err != nil {
+		return nil, err
+	}
+	resp.Body = http.MaxBytesReader(nil, resp.Body, t.max)
+	return resp, nil
+}
+
 // CloseIdleConnections forwards to the wrapped transport. http.Client discovers
 // this capability by asserting the outermost transport, so a wrapper that omits
 // it makes the client's CloseIdleConnections a silent no-op — see the same
@@ -344,15 +353,6 @@ func (t *limitedBodyTransport) CloseIdleConnections() {
 	if closer, ok := t.base.(interface{ CloseIdleConnections() }); ok {
 		closer.CloseIdleConnections()
 	}
-}
-
-func (t *limitedBodyTransport) RoundTrip(req *http.Request) (*http.Response, error) {
-	resp, err := t.base.RoundTrip(req)
-	if err != nil {
-		return nil, err
-	}
-	resp.Body = http.MaxBytesReader(nil, resp.Body, t.max)
-	return resp, nil
 }
 
 // newActorMatcherEngine creates a CEL engine for admin-authored actor matcher

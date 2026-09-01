@@ -134,6 +134,14 @@ func findRequiredByCycle(entries []Entry) []string {
 // from a corrupted or hostile lock file reaching the fetch path.
 const maxReferenceLength = 512
 
+// MaxEncodedPublicKeyLength bounds the base64 DER SPKI in a provenance block.
+// Key material needs more room than an identifier: the largest key cosign can
+// import, RSA-4096, encodes to 736 characters, so the reference bound would
+// reject a legitimate anchor rather than the oversized garbage these limits
+// exist to stop. Exported because the same value must bound the field before
+// it is ever written — see verifier.EncodePublicKey.
+const MaxEncodedPublicKeyLength = 1024
+
 func validateEntry(entry Entry) error {
 	if err := skills.ValidateSkillName(entry.Name); err != nil {
 		return fmt.Errorf("entry name: %w", err)
@@ -239,9 +247,6 @@ func validateDigestKind(entry Entry) error {
 // well-formed graphic strings of bounded length. Validation is purely
 // syntactic — whether the identity is trustworthy is the verifier's job.
 func validateProvenance(p *Provenance) error {
-	if err := validateProvenanceAnchor(p); err != nil {
-		return err
-	}
 	fields := map[string]string{
 		"signerIdentity":    p.SignerIdentity,
 		"certIssuer":        p.CertIssuer,
@@ -255,8 +260,8 @@ func validateProvenance(p *Provenance) error {
 		if value == "" {
 			continue
 		}
-		if len(value) > maxReferenceLength {
-			return fmt.Errorf("%s exceeds %d characters", name, maxReferenceLength)
+		if limit := provenanceFieldLimit(name); len(value) > limit {
+			return fmt.Errorf("%s exceeds %d characters", name, limit)
 		}
 		if strings.TrimSpace(value) != value {
 			return fmt.Errorf("%s has leading or trailing whitespace", name)
@@ -267,7 +272,20 @@ func validateProvenance(p *Provenance) error {
 			}
 		}
 	}
-	return nil
+	// Ordered after the syntactic checks so publicKey is length-bounded before
+	// it is base64-decoded: this file is hand-editable, and decoding first
+	// would size the allocation off a value that has not been checked yet.
+	return validateProvenanceAnchor(p)
+}
+
+// provenanceFieldLimit returns the length bound for one provenance field.
+// Every field is a short identifier except publicKey, which carries encoded
+// key material and needs the wider bound.
+func provenanceFieldLimit(name string) int {
+	if name == "publicKey" {
+		return MaxEncodedPublicKeyLength
+	}
+	return maxReferenceLength
 }
 
 // validateProvenanceAnchor enforces that an entry records exactly one trust

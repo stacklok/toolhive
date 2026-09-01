@@ -129,6 +129,7 @@ func (s *SkillsRoutes) installSkill(w http.ResponseWriter, r *http.Request) erro
 		Force:         req.Force,
 		Group:         req.Group,
 		AllowUnsigned: req.AllowUnsigned,
+		PublicKey:     req.PublicKey,
 	})
 	if err != nil {
 		return err

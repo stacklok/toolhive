@@ -26,7 +26,7 @@ thv skill push [reference] [flags]
 ```
   -h, --help                    help for push
       --identity-token string   OIDC identity token (or a path to a file containing one) for keyless signing. Mutually exclusive with --key. If omitted, one is acquired automatically: from the ambient CI OIDC token when running with id-token: write permission, otherwise via an interactive browser sign-in
-      --key string              Path to a cosign private key to sign the pushed artifact. Encrypted keys are decrypted with COSIGN_PASSWORD read from the 'thv serve' process, which performs the signing. NOTE: ToolHive cannot verify key-pair signatures at install time, so a project-scoped install of the result is refused and --allow-unsigned does not override it — use keyless signing for artifacts that need to be installable
+      --key string              Path to a cosign private key to sign the pushed artifact. Encrypted keys are decrypted with COSIGN_PASSWORD read from the 'thv serve' process, which performs the signing. Consumers installing the result project-scoped must pass --public-key with the matching cosign public key the first time; distribute it alongside the artifact. Keyless signing needs no such out-of-band step, since the signer identity is verifiable from the artifact itself
       --no-sign                 Push without signing (consumers will need an explicit unsigned exception to install project-scoped)
 ```
 

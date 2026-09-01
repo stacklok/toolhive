@@ -40,6 +40,15 @@ type InstallOptions struct {
 	// "unsigned: true". Skill content is AI-executed instructions, so this
 	// is an explicit per-install trust decision, never a default.
 	AllowUnsigned bool `json:"allow_unsigned,omitempty"`
+	// PublicKey is the base64-encoded DER SPKI cosign public key a
+	// project-scoped install must verify the artifact against, for artifacts
+	// signed with a cosign key pair rather than keylessly. Required on true
+	// first use of such an artifact — the signing key is recoverable from
+	// neither the artifact nor its bundle, so nothing else can supply the
+	// trust anchor — and pinned into the lock entry, which supplies it on
+	// every install thereafter. A value that conflicts with what the lock
+	// already pins is rejected, never ignored.
+	PublicKey string `json:"public_key,omitempty"`
 	// LayerData is the tar.gz content from an OCI layer. Internal use only — NOT exposed via HTTP API.
 	LayerData []byte `json:"-"`
 	// Reference is the full OCI reference (e.g. ghcr.io/org/skill:v1).

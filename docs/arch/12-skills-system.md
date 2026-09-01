@@ -430,7 +430,15 @@ What is still trusted on faith, deliberately and visibly:
 
 Publishing is signed by default: `thv skill push` requires `--key` (a cosign private key), an OIDC identity token for keyless signing (supplied with `--identity-token` or acquired automatically), or an explicit `--no-sign`. Either signing path attaches the signature manifest next to the artifact, and the bundle is retrievable at install. See [Publishing](#3-publishing) for the full ladder.
 
-Only the **keyless** path produces an installable artifact. Install-time verification checks the keyless (Fulcio) trust root, and a cosign key pair carries no certificate to chain to it — nor is the signing public key recoverable from the artifact, since the cosign manifest defines no annotation for it. A project-scoped install of a `--key`-signed artifact is therefore refused, and `--allow-unsigned` does **not** override the refusal: the artifact *is* signed, so it never produces the unsigned verdict that exception applies to. Tracked as [#6442](https://github.com/stacklok/toolhive/issues/6442).
+Both paths produce an installable artifact, but they differ in what the consumer must supply. A cosign key pair carries no certificate to chain to the keyless (Fulcio) trust root, and the signing public key is recoverable neither from the artifact nor from the attached bundle — the cosign manifest defines no annotation for it. So the key has to arrive from outside the artifact: a project-scoped install of a `--key`-signed skill requires `--public-key` on first use, which verifies the signature and pins that key in the lock entry as `publicKey:`. Later installs read it back from the lock and need no flag.
+
+`--allow-unsigned` does **not** substitute for the key, in either direction: the artifact *is* signed, so it never produces the unsigned verdict that exception applies to. Nor does `--allow-signer-change` re-anchor an entry to a new key — a key-pair bundle carries no identity to observe, so honoring one would re-anchor on the strength of the caller having named it. Re-anchoring means removing the lock entry and reinstalling.
+
+Dispatch between the two paths is decided by the **lock entry, never the artifact**: a `publicKey:` pin selects the key path, a certificate pin the keyless one. Letting the artifact choose would let a republished key-signed artifact walk out of the identity its entry is pinned to. A supplied key that disagrees with what the entry pins is refused up front rather than silently ignored.
+
+Verifying a key-pair signature binds it to the artifact explicitly. The signature covers cosign's simple-signing payload, and signature manifests are discovered by a tag derived from the digest being verified — so attachment proves nothing about which artifact a signature describes. The payload digest is reconstructed from the requested reference and each candidate must sign exactly those bytes, which is what stops one artifact's signature from being replayed onto another by copying its signature layer into that artifact's `.sig` manifest (`bundleSignsPayload`).
+
+Scope for v1 (issue [#6442](https://github.com/stacklok/toolhive/issues/6442)): install only. `--public-key` is not yet accepted on `upgrade` or `sync --adopt`, and the plugins surface does not accept it at all yet.
 
 ### Schema
 

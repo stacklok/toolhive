@@ -184,8 +184,9 @@ func TestNewServer_Success(t *testing.T) {
 	}
 
 	// Call newServer with the mock factory
+	cfg.UpstreamFactory = mockFactory
 	ctx := context.Background()
-	srv, err := newServer(ctx, cfg, stor, withUpstreamFactory(mockFactory))
+	srv, err := newServer(ctx, cfg, stor)
 
 	if err != nil {
 		t.Fatalf("newServer() unexpected error: %v", err)
@@ -323,7 +324,9 @@ func TestNewServer_AllowConfidentialClientRegistration_Logs(t *testing.T) {
 			stor := storage.NewMemoryStorage()
 			t.Cleanup(func() { _ = stor.Close() })
 
-			srv, err := newServer(context.Background(), newCfg(tt.allowConfidential), stor, withUpstreamFactory(mockFactory))
+			cfg := newCfg(tt.allowConfidential)
+			cfg.UpstreamFactory = mockFactory
+			srv, err := newServer(context.Background(), cfg, stor)
 			require.NoError(t, err, "startup must succeed for every flag combination")
 			require.NotNil(t, srv)
 
@@ -388,7 +391,8 @@ func TestNewServer_CIMDEnabled_WrapsStorage(t *testing.T) {
 		return mockUpstream, nil
 	}
 
-	srv, err := newServer(context.Background(), cfg, stor, withUpstreamFactory(mockFactory))
+	cfg.UpstreamFactory = mockFactory
+	srv, err := newServer(context.Background(), cfg, stor)
 	if err != nil {
 		t.Fatalf("newServer() unexpected error: %v", err)
 	}
@@ -426,7 +430,8 @@ func TestNewServer_UpstreamRefresherSharedInstance(t *testing.T) {
 		return mockUpstream, nil
 	}
 
-	srv, err := newServer(context.Background(), cfg, stor, withUpstreamFactory(mockFactory))
+	cfg.UpstreamFactory = mockFactory
+	srv, err := newServer(context.Background(), cfg, stor)
 	require.NoError(t, err)
 
 	first := srv.UpstreamTokenRefresher()
@@ -486,7 +491,8 @@ func TestNewServer_RegistersDelegateClientsBeforeUpstreamConstruction(t *testing
 		return nil, assert.AnError
 	}
 
-	_, err := newServer(ctx, cfg, stor, withUpstreamFactory(factory))
+	cfg.UpstreamFactory = factory
+	_, err := newServer(ctx, cfg, stor)
 	require.ErrorIs(t, err, assert.AnError)
 
 	// Startup registration is an upsert. Replacing a same-ID DCR client makes
@@ -494,7 +500,7 @@ func TestNewServer_RegistersDelegateClientsBeforeUpstreamConstruction(t *testing
 	dcrClient, err := registration.NewConfidentialPlain(registration.Config{ID: "delegate", Secret: "old-secret"})
 	require.NoError(t, err)
 	require.NoError(t, stor.RegisterClient(ctx, dcrClient))
-	_, err = newServer(ctx, cfg, stor, withUpstreamFactory(factory))
+	_, err = newServer(ctx, cfg, stor)
 	require.ErrorIs(t, err, assert.AnError)
 	client, err := stor.GetClient(ctx, "delegate")
 	require.NoError(t, err)
@@ -575,7 +581,8 @@ func TestServer_CloseIdleConnections(t *testing.T) {
 			HMACSecrets:      &servercrypto.HMACSecrets{Current: validHMACSecret()},
 			Upstreams:        upstreams,
 			AllowedAudiences: []string{"https://mcp.example.com"},
-		}, stor, withUpstreamFactory(factory))
+			UpstreamFactory:  factory,
+		}, stor)
 		require.NoError(t, err)
 		return srv
 	}
@@ -623,25 +630,22 @@ func TestServer_CloseIdleConnections(t *testing.T) {
 	})
 }
 
-// TestNewServer_UpstreamFactoryPrecedence pins that a caller can own upstream
-// construction through Config.UpstreamFactory, that the in-package test seam
-// still overrides it, and that DefaultUpstreamFactory is used when neither is
-// set.
-func TestNewServer_UpstreamFactoryPrecedence(t *testing.T) {
+// TestNewServer_UpstreamFactory pins that a caller can own upstream
+// construction through Config.UpstreamFactory, and that DefaultUpstreamFactory
+// is used when the field is nil.
+func TestNewServer_UpstreamFactory(t *testing.T) {
 	t.Parallel()
 
 	tests := []struct {
 		name       string
-		setConfig  bool
-		setOption  bool
-		wantSource string
+		setFactory bool
+		// wantCustom is true when the caller's factory should have run; false
+		// means DefaultUpstreamFactory built a real BaseOAuth2Provider from
+		// validUpstreamConfig.
+		wantCustom bool
 	}{
-		{name: "config factory is used", setConfig: true, wantSource: "config"},
-		{name: "option overrides config factory", setConfig: true, setOption: true, wantSource: "option"},
-		{name: "option alone is used", setOption: true, wantSource: "option"},
-		// Neither set: DefaultUpstreamFactory runs and builds a real
-		// BaseOAuth2Provider from validUpstreamConfig.
-		{name: "default factory is used when neither is set", wantSource: ""},
+		{name: "config factory is used", setFactory: true, wantCustom: true},
+		{name: "default factory is used when the field is nil"},
 	}
 
 	for _, tt := range tests {
@@ -651,14 +655,7 @@ func TestNewServer_UpstreamFactoryPrecedence(t *testing.T) {
 			stor := storage.NewMemoryStorage()
 			t.Cleanup(func() { _ = stor.Close() })
 
-			var source string
-			factoryNamed := func(name string) UpstreamProviderFactory {
-				return func(_ context.Context, _ *UpstreamConfig) (upstream.OAuth2Provider, error) {
-					source = name
-					return &plainProvider{}, nil
-				}
-			}
-
+			var called bool
 			cfg := Config{
 				Issuer:           "https://example.com",
 				KeyProvider:      keys.NewGeneratingProvider(keys.DefaultAlgorithm),
@@ -666,19 +663,22 @@ func TestNewServer_UpstreamFactoryPrecedence(t *testing.T) {
 				Upstreams:        []UpstreamConfig{{Name: "default", Type: UpstreamProviderTypeOAuth2, OAuth2Config: validUpstreamConfig()}},
 				AllowedAudiences: []string{"https://mcp.example.com"},
 			}
-			if tt.setConfig {
-				cfg.UpstreamFactory = factoryNamed("config")
-			}
-			var opts []serverOption
-			if tt.setOption {
-				opts = append(opts, withUpstreamFactory(factoryNamed("option")))
+			if tt.setFactory {
+				cfg.UpstreamFactory = func(_ context.Context, _ *UpstreamConfig) (upstream.OAuth2Provider, error) {
+					called = true
+					return &plainProvider{}, nil
+				}
 			}
 
-			srv, err := newServer(t.Context(), cfg, stor, opts...)
+			srv, err := newServer(t.Context(), cfg, stor)
 			require.NoError(t, err)
+			// The default factory builds a provider with a live pool; drain it
+			// so the suite does not leak the resource this change fixes.
+			t.Cleanup(srv.CloseIdleConnections)
+
 			require.Len(t, srv.upstreams, 1)
-			assert.Equal(t, tt.wantSource, source)
-			if tt.wantSource == "" {
+			assert.Equal(t, tt.wantCustom, called)
+			if !tt.wantCustom {
 				assert.IsType(t, &upstream.BaseOAuth2Provider{}, srv.upstreams[0].Provider)
 			}
 		})
@@ -693,19 +693,20 @@ func TestBuildUpstreams_DrainsAlreadyBuiltProvidersOnFailure(t *testing.T) {
 	t.Parallel()
 
 	built := &closeCountingProvider{}
-	cfg := Config{Upstreams: []UpstreamConfig{
-		{Name: "first", Type: UpstreamProviderTypeOAuth2, OAuth2Config: validUpstreamConfig()},
-		{Name: "second", Type: UpstreamProviderTypeOAuth2, OAuth2Config: validUpstreamConfig()},
-	}}
-
-	factory := func(_ context.Context, upCfg *UpstreamConfig) (upstream.OAuth2Provider, error) {
-		if upCfg.Name == "second" {
-			return nil, assert.AnError
-		}
-		return built, nil
+	cfg := Config{
+		Upstreams: []UpstreamConfig{
+			{Name: "first", Type: UpstreamProviderTypeOAuth2, OAuth2Config: validUpstreamConfig()},
+			{Name: "second", Type: UpstreamProviderTypeOAuth2, OAuth2Config: validUpstreamConfig()},
+		},
+		UpstreamFactory: func(_ context.Context, upCfg *UpstreamConfig) (upstream.OAuth2Provider, error) {
+			if upCfg.Name == "second" {
+				return nil, assert.AnError
+			}
+			return built, nil
+		},
 	}
 
-	upstreams, err := buildUpstreams(t.Context(), cfg, factory)
+	upstreams, err := buildUpstreams(t.Context(), cfg)
 	require.ErrorIs(t, err, assert.AnError)
 	assert.Contains(t, err.Error(), `"second"`, "the error must name the failing upstream")
 	assert.Nil(t, upstreams)
@@ -720,25 +721,46 @@ func TestBuildUpstreams_DrainsAlreadyBuiltProvidersOnFailure(t *testing.T) {
 func TestBuildUpstreams_RejectsNilProvider(t *testing.T) {
 	t.Parallel()
 
-	built := &closeCountingProvider{}
-	cfg := Config{Upstreams: []UpstreamConfig{
-		{Name: "first", Type: UpstreamProviderTypeOAuth2, OAuth2Config: validUpstreamConfig()},
-		{Name: "second", Type: UpstreamProviderTypeOAuth2, OAuth2Config: validUpstreamConfig()},
-	}}
-
-	factory := func(_ context.Context, upCfg *UpstreamConfig) (upstream.OAuth2Provider, error) {
-		if upCfg.Name == "second" {
-			return nil, nil //nolint:nilnil // the point of the test: a nil provider with no error
-		}
-		return built, nil
+	tests := []struct {
+		name     string
+		provider upstream.OAuth2Provider
+	}{
+		// A nil interface value.
+		{name: "nil interface"},
+		// An interface holding a nil pointer — non-nil as an interface, so it
+		// passes a bare `== nil` check, satisfies the IdleConnectionCloser
+		// assertion, and then nil-derefs on the embedded *BaseOAuth2Provider
+		// during the drain. An easy mistake in the "substitute a provider"
+		// pattern Config.UpstreamFactory documents.
+		{name: "typed nil pointer", provider: (*upstream.OIDCProviderImpl)(nil)},
 	}
 
-	upstreams, err := buildUpstreams(t.Context(), cfg, factory)
-	require.Error(t, err)
-	assert.Contains(t, err.Error(), `nil provider for upstream "second"`)
-	assert.Nil(t, upstreams)
-	assert.Equal(t, int32(1), built.closes.Load(),
-		"the provider built before the rejection must be drained")
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			built := &closeCountingProvider{}
+			cfg := Config{
+				Upstreams: []UpstreamConfig{
+					{Name: "first", Type: UpstreamProviderTypeOAuth2, OAuth2Config: validUpstreamConfig()},
+					{Name: "second", Type: UpstreamProviderTypeOAuth2, OAuth2Config: validUpstreamConfig()},
+				},
+				UpstreamFactory: func(_ context.Context, upCfg *UpstreamConfig) (upstream.OAuth2Provider, error) {
+					if upCfg.Name == "second" {
+						return tt.provider, nil
+					}
+					return built, nil
+				},
+			}
+
+			upstreams, err := buildUpstreams(t.Context(), cfg)
+			require.Error(t, err)
+			assert.Contains(t, err.Error(), `nil provider for upstream "second"`)
+			assert.Nil(t, upstreams)
+			assert.Equal(t, int32(1), built.closes.Load(),
+				"the provider built before the rejection must be drained")
+		})
+	}
 }
 
 // TestServer_Close_DrainsRealOIDCUpstream exercises the production wiring that

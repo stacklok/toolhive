@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"log/slog"
 	"net/http"
+	"reflect"
 	"time"
 
 	josev3 "github.com/go-jose/go-jose/v3"
@@ -44,14 +45,6 @@ type server struct {
 	upstreams         []handlers.NamedUpstream
 }
 
-// serverOption configures the server during construction.
-type serverOption func(*serverOptions)
-
-// serverOptions holds optional configuration for server creation.
-type serverOptions struct {
-	upstreamFactory UpstreamProviderFactory
-}
-
 // DefaultUpstreamFactory creates the production upstream provider based on type.
 // For OIDC providers, it creates an OIDCProviderImpl with discovery and ID token
 // validation. For OAuth2 providers, it creates a BaseOAuth2Provider.
@@ -69,28 +62,16 @@ func DefaultUpstreamFactory(ctx context.Context, cfg *UpstreamConfig) (upstream.
 	}
 }
 
-// resolveUpstreamFactory picks the upstream provider factory to build with. The
-// in-package test seam wins over the caller-supplied Config.UpstreamFactory,
-// which in turn wins over DefaultUpstreamFactory.
-func resolveUpstreamFactory(seam, configured UpstreamProviderFactory) UpstreamProviderFactory {
-	switch {
-	case seam != nil:
-		return seam
-	case configured != nil:
-		return configured
-	default:
-		return DefaultUpstreamFactory
+// buildUpstreams constructs the ordered upstream provider list using
+// cfg.UpstreamFactory, or DefaultUpstreamFactory when the caller supplied none.
+// A provider that fails to construct aborts the whole list — but the providers
+// already built have live connection pools, so they are drained before the
+// error is returned.
+func buildUpstreams(ctx context.Context, cfg Config) ([]handlers.NamedUpstream, error) {
+	factory := cfg.UpstreamFactory
+	if factory == nil {
+		factory = DefaultUpstreamFactory
 	}
-}
-
-// buildUpstreams constructs the ordered upstream provider list. A provider that
-// fails to construct aborts the whole list — but the providers already built
-// have live connection pools, so they are drained before the error is returned.
-func buildUpstreams(
-	ctx context.Context,
-	cfg Config,
-	factory UpstreamProviderFactory,
-) ([]handlers.NamedUpstream, error) {
 	upstreams := make([]handlers.NamedUpstream, 0, len(cfg.Upstreams))
 	for i := range cfg.Upstreams {
 		upCfg := &cfg.Upstreams[i]
@@ -102,8 +83,11 @@ func buildUpstreams(
 		}
 		// A nil provider would be wired into the authorization chain and panic on
 		// the first /oauth/authorize request instead of failing at boot, so a
-		// custom Config.UpstreamFactory cannot use it to drop an upstream.
-		if provider == nil {
+		// custom Config.UpstreamFactory cannot use it to drop an upstream. The
+		// reflect check also catches a typed nil (`var p *OIDCProviderImpl;
+		// return p, nil`), which is non-nil as an interface and would instead
+		// panic during the drain, on the embedded *BaseOAuth2Provider.
+		if isNilProvider(provider) {
 			closeUpstreamIdleConnections(upstreams)
 			return nil, fmt.Errorf("upstream factory returned a nil provider for upstream %q", upCfg.Name)
 		}
@@ -111,6 +95,16 @@ func buildUpstreams(
 		slog.Debug("upstream IDP provider configured", "type", upCfg.Type, "name", upCfg.Name)
 	}
 	return upstreams, nil
+}
+
+// isNilProvider reports whether an OAuth2Provider is unusable — either a nil
+// interface value or an interface holding a nil pointer.
+func isNilProvider(provider upstream.OAuth2Provider) bool {
+	if provider == nil {
+		return true
+	}
+	v := reflect.ValueOf(provider)
+	return v.Kind() == reflect.Pointer && v.IsNil()
 }
 
 // closeUpstreamIdleConnections drains the pooled idle connections of every
@@ -128,30 +122,10 @@ func closeUpstreamIdleConnections(upstreams []handlers.NamedUpstream) {
 	}
 }
 
-// withUpstreamFactory sets a custom upstream provider factory, taking
-// precedence over Config.UpstreamFactory. This is the in-package test seam;
-// external callers use Config.UpstreamFactory.
-func withUpstreamFactory(factory UpstreamProviderFactory) serverOption {
-	return func(o *serverOptions) {
-		o.upstreamFactory = factory
-	}
-}
-
 // newServer creates a new OAuth authorization server.
 // The opts parameter allows injecting dependencies for testing.
-func newServer(
-	ctx context.Context,
-	cfg Config,
-	stor storage.Storage,
-	opts ...serverOption,
-) (_ *server, retErr error) {
+func newServer(ctx context.Context, cfg Config, stor storage.Storage) (_ *server, retErr error) {
 	slog.Debug("initializing OAuth authorization server")
-
-	// Apply server options
-	options := &serverOptions{}
-	for _, opt := range opts {
-		opt(options)
-	}
 
 	// Apply defaults to config
 	if err := cfg.applyDefaults(); err != nil {
@@ -229,14 +203,20 @@ func newServer(
 	)
 
 	// Build ordered upstream provider list from all configured upstreams.
-	upstreams, err := buildUpstreams(ctx, cfg, resolveUpstreamFactory(options.upstreamFactory, cfg.UpstreamFactory))
+	upstreams, err := buildUpstreams(ctx, cfg)
 	if err != nil {
 		return nil, err
 	}
-	// Every failure below abandons providers that have already run discovery and
-	// hold a live connection pool. Without this the pathological case from #6479
-	// — a caller retrying a reconstruction against an unreachable issuer —
-	// accumulates a transport per upstream per attempt.
+	// Defense in depth for the failure returns below, which would otherwise
+	// abandon providers that have already run discovery and hold a live
+	// connection pool. No such failure is reachable today with a Config that
+	// passes Validate — runLegacyMigration is a no-op off Redis, the CIMD cache
+	// bounds and the trusted issuers are validated up front, and every
+	// handlers.NewHandler precondition (non-nil config, non-empty and unique
+	// upstream names, non-nil providers) is already guaranteed by Validate and
+	// buildUpstreams. So this drains nothing at present; it is here so that a
+	// future step which fails after touching the network cannot strand a pool,
+	// and so a `return nil, err` added above it is covered by default.
 	defer func() {
 		if retErr != nil {
 			closeUpstreamIdleConnections(upstreams)

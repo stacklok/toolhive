@@ -335,12 +335,18 @@ func setupTestServer(t *testing.T, opts ...testServerOption) *testServer {
 	}
 
 	// 7. Create server using newServer with test options
-	srv, err := newServer(ctx, cfg, stor,
-		withUpstreamFactory(func(_ context.Context, _ *UpstreamConfig) (upstream.OAuth2Provider, error) {
-			// Return the provided upstream or nil (which is valid for tests without upstream)
+	cfg.UpstreamFactory = func(_ context.Context, _ *UpstreamConfig) (upstream.OAuth2Provider, error) {
+		if options.upstream != nil {
 			return options.upstream, nil
-		}),
-	)
+		}
+		// A test that configures an upstream slot but no provider still needs a
+		// non-nil one: newServer rejects nil (it would panic on the first
+		// /oauth/authorize instead of failing at boot). This placeholder panics
+		// if a test actually exercises the upstream, which is what a nil
+		// provider did anyway.
+		return &plainProvider{}, nil
+	}
+	srv, err := newServer(ctx, cfg, stor)
 	require.NoError(t, err)
 
 	// 8. Create HTTP test server
@@ -3311,15 +3317,14 @@ func setupTestServerWithTwoUpstreams(t *testing.T, m1, m2 *mockoidc.MockOIDC, op
 	}
 
 	// 8. Create server using newServer with a factory that returns the correct provider per name
-	srv, err := newServer(ctx, serverCfg, stor,
-		withUpstreamFactory(func(_ context.Context, cfg *UpstreamConfig) (upstream.OAuth2Provider, error) {
-			p, ok := providers[cfg.Name]
-			if !ok {
-				return nil, fmt.Errorf("unknown upstream: %s", cfg.Name)
-			}
-			return p, nil
-		}),
-	)
+	serverCfg.UpstreamFactory = func(_ context.Context, cfg *UpstreamConfig) (upstream.OAuth2Provider, error) {
+		p, ok := providers[cfg.Name]
+		if !ok {
+			return nil, fmt.Errorf("unknown upstream: %s", cfg.Name)
+		}
+		return p, nil
+	}
+	srv, err := newServer(ctx, serverCfg, stor)
 	require.NoError(t, err)
 
 	// 9. Create HTTP test server

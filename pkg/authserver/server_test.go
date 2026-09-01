@@ -788,6 +788,13 @@ func TestServer_Close_DrainsRealOIDCUpstream(t *testing.T) {
 	t.Cleanup(issuer.Close)
 
 	stor := storage.NewMemoryStorage()
+	var closeOnce sync.Once
+	closeStorage := func() { closeOnce.Do(func() { _ = stor.Close() }) }
+	// Registered so an aborted require below does not leave storage running;
+	// idempotent because srv.Close() closes the same store, and
+	// MemoryStorage.Close panics if called twice.
+	t.Cleanup(closeStorage)
+
 	srv, err := newServer(t.Context(), Config{
 		Issuer:      "https://example.com",
 		KeyProvider: keys.NewGeneratingProvider(keys.DefaultAlgorithm),
@@ -811,11 +818,14 @@ func TestServer_Close_DrainsRealOIDCUpstream(t *testing.T) {
 	require.NoError(t, err)
 	require.IsType(t, &upstream.OIDCProviderImpl{}, srv.upstreams[0].Provider)
 
-	// Discovery leaves one idle keep-alive connection behind; before this change
-	// it was retained for the lifetime of the process.
-	require.Equal(t, int32(1), openConns.Load(), "discovery must leave a pooled connection")
+	// Discovery leaves at least one idle keep-alive connection behind; before
+	// this change it was retained for the lifetime of the process. Not an exact
+	// count — go-oidc is free to add a fetch or a retry, and ConnState fires on
+	// the httptest server's own goroutines.
+	require.GreaterOrEqual(t, openConns.Load(), int32(1), "discovery must leave a pooled connection")
 
 	require.NoError(t, srv.Close())
+	closeOnce.Do(func() {}) // srv.Close closed the store; disarm the cleanup
 
 	// The issuer observes the close asynchronously.
 	assert.Eventually(t, func() bool { return openConns.Load() == 0 }, 5*time.Second, 10*time.Millisecond,

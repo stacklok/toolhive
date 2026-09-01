@@ -126,6 +126,18 @@ func NewPrivateIPBlockingDialContext() func(ctx context.Context, network, addr s
 	return (&net.Dialer{Control: protectedDialerControl}).DialContext
 }
 
+// IdleConnectionCloser is the capability http.Client discovers on its outermost
+// transport to drain pooled connections (it asserts an identical unexported
+// interface). Any RoundTripper in this repo that wraps another must implement it
+// and forward the call, or every CloseIdleConnections on the resulting client is
+// a silent no-op. Assert against this named type rather than re-declaring an
+// anonymous `interface{ CloseIdleConnections() }`.
+//
+// upstream.IdleConnectionCloser is the provider-level analogue one layer up.
+type IdleConnectionCloser interface {
+	CloseIdleConnections()
+}
+
 // ValidatingTransport is for validating URLs prior to request
 type ValidatingTransport struct {
 	Transport         http.RoundTripper
@@ -156,14 +168,12 @@ func (t *ValidatingTransport) RoundTrip(req *http.Request) (*http.Response, erro
 // CloseIdleConnections forwards to the wrapped transport so that
 // http.Client.CloseIdleConnections reaches the real connection pool.
 //
-// http.Client discovers this capability by asserting the *outermost* transport
-// against an unexported `interface{ CloseIdleConnections() }`. Because Build
-// always wraps the pool in a ValidatingTransport, omitting this method makes
-// every client's CloseIdleConnections a silent no-op. The assertion on
-// t.Transport is required because the field is an http.RoundTripper; it holds
-// an *http.Transport for every client Build produces.
+// Because Build always wraps the pool in a ValidatingTransport, omitting this
+// method would make every client's CloseIdleConnections a silent no-op — see
+// IdleConnectionCloser. The assertion is required because the field is an
+// http.RoundTripper; it holds an *http.Transport for every client Build produces.
 func (t *ValidatingTransport) CloseIdleConnections() {
-	if closer, ok := t.Transport.(interface{ CloseIdleConnections() }); ok {
+	if closer, ok := t.Transport.(IdleConnectionCloser); ok {
 		closer.CloseIdleConnections()
 	}
 }

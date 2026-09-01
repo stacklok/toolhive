@@ -947,9 +947,11 @@ func TestBuild_BoundsIdleConnectionPool(t *testing.T) {
 	transport, ok := validating.Transport.(*http.Transport)
 	require.True(t, ok, "ValidatingTransport must wrap an *http.Transport")
 
-	assert.Equal(t, idleConnTimeout, transport.IdleConnTimeout)
-	assert.Equal(t, maxIdleConns, transport.MaxIdleConns)
-	assert.Equal(t, maxIdleConnsPerHost, transport.MaxIdleConnsPerHost)
+	// Literals, not the constants: comparing a constant to itself still passes
+	// if the constant is set back to zero, which is the regression this guards.
+	assert.Equal(t, 90*time.Second, transport.IdleConnTimeout)
+	assert.Equal(t, 100, transport.MaxIdleConns)
+	assert.Equal(t, 4, transport.MaxIdleConnsPerHost)
 }
 
 // TestBuild_CloseIdleConnectionsReachesPool pins that

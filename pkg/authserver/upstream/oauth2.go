@@ -308,15 +308,18 @@ type BaseOAuth2Provider struct {
 // trust-anchor misconfiguration a boot-time error rather than a silent no-op.
 var ErrCABundleWithInjectedClient = errors.New("caFilePath cannot be combined with an injected HTTP client")
 
-// IdleConnectionCloser is an optional capability an OAuth2Provider may
-// implement to release the idle keep-alive connections held by its private HTTP
-// client. It is deliberately kept out of the OAuth2Provider interface: doc.go
-// invites external implementations of that interface, so widening it would be a
-// breaking change. Consumers should type-assert against this interface and treat
-// a provider that does not implement it as having nothing to release.
+// IdleConnectionCloser is an optional capability an OAuth2Provider may implement
+// to release the idle keep-alive connections held by its HTTP client. It is the
+// provider-level analogue of networking.IdleConnectionCloser, and is optional
+// rather than part of OAuth2Provider because doc.go invites external
+// implementations of that interface, which widening would break. Consumers
+// type-assert against it and treat a provider that does not implement it as
+// having nothing to release.
 //
-// The connections are only idle ones; in-flight requests are unaffected and the
-// provider remains usable afterwards (a subsequent call simply dials again).
+// Only idle connections are closed: in-flight requests are unaffected and the
+// provider stays usable, dialing again on its next call. An implementation must
+// leave a caller-supplied client alone — the caller may be sharing it — which is
+// the ownership rule BaseOAuth2Provider.CloseIdleConnections implements.
 type IdleConnectionCloser interface {
 	CloseIdleConnections()
 }

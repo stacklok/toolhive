@@ -343,14 +343,12 @@ func (t *limitedBodyTransport) RoundTrip(req *http.Request) (*http.Response, err
 	return resp, nil
 }
 
-// CloseIdleConnections forwards to the wrapped transport. http.Client discovers
-// this capability by asserting the outermost transport, so a wrapper that omits
-// it makes the client's CloseIdleConnections a silent no-op — see the same
-// method on networking.ValidatingTransport. Currently there is no pool to drain
-// (this client is built WithDisableKeepAlives(true)), but the forwarder keeps
-// that an optimization decision rather than a correctness dependency.
+// CloseIdleConnections forwards to the wrapped transport, as every wrapping
+// RoundTripper must — see networking.IdleConnectionCloser. There is no pool to
+// drain today (this client is built WithDisableKeepAlives(true)); the forwarder
+// keeps that an optimization decision rather than a correctness dependency.
 func (t *limitedBodyTransport) CloseIdleConnections() {
-	if closer, ok := t.base.(interface{ CloseIdleConnections() }); ok {
+	if closer, ok := t.base.(networking.IdleConnectionCloser); ok {
 		closer.CloseIdleConnections()
 	}
 }

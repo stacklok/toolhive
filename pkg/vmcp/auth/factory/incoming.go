@@ -85,6 +85,21 @@ func NewIncomingAuthMiddleware(
 		return nil, nil, nil, err
 	}
 
+	// A pinned primaryUpstreamProvider says "only claims asserted by that upstream
+	// may drive policy", which only means something when incoming auth can produce
+	// an upstream session. Under local or anonymous auth it never can, so every
+	// request would be judged on synthetic claims (sub=anonymous, or a local
+	// username) that no upstream asserted. Reject the combination here rather than
+	// serving it: the operator enforces the same rule for VirtualMCPServer at
+	// cmd/thv-operator/controllers/virtualmcpserver_controller.go, but that check
+	// does not run for a hand-written vmcp config.
+	if cfg.Authz != nil && cfg.Authz.PrimaryUpstreamProvider != "" && cfg.Type != config.IncomingAuthTypeOIDC {
+		return nil, nil, nil, fmt.Errorf(
+			"authz primaryUpstreamProvider %q requires an upstream session, which %q incoming auth cannot provide; "+
+				"remove primaryUpstreamProvider or use oidc incoming auth",
+			cfg.Authz.PrimaryUpstreamProvider, cfg.Type)
+	}
+
 	// If authorization is configured, create authz middleware separately.
 	// Authz is returned as its own middleware so the caller can place it after
 	// discovery and annotation-enrichment in the middleware chain, giving

@@ -19,6 +19,7 @@ import (
 	"github.com/golang-jwt/jwt/v5"
 
 	"github.com/stacklok/toolhive/pkg/auth"
+	"github.com/stacklok/toolhive/pkg/auth/upstreamtoken"
 	"github.com/stacklok/toolhive/pkg/authz/authorizers"
 	"github.com/stacklok/toolhive/pkg/syncutil"
 )
@@ -160,6 +161,36 @@ const (
 	claimSetPrefix = "claimset_"
 )
 
+// claimSourceAttr is the principal attribute and context key naming which trust
+// root asserted the claims this request was evaluated against. Policies read it
+// to require upstream provenance, e.g.
+//
+//	when { principal.thv_claim_source == "upstream:github" }
+//
+// The name deliberately does not start with claimPrefix or claimSetPrefix: every
+// JWT claim is emitted under claimPrefix, so a token cannot produce this key and
+// cannot spoof its own provenance. It is written after preprocessClaims for the
+// same reason.
+const claimSourceAttr = "thv_claim_source"
+
+// Claim-source values. Each names the trust root behind the claims Cedar saw, so
+// a policy can tell an upstream assertion from the request token's own word for
+// it. The upstream case carries the provider name, since which upstream asserted
+// a claim is exactly what a pinned deployment cares about.
+//
+// The three request-token values are not collapsed into one: they answer
+// different questions. claimSourceRequest means no provenance was ever demanded.
+// claimSourceNoUpstreamSession means one was demanded and the token affirmatively
+// said it has none. claimSourceUpstreamOpaque means one was demanded, a
+// credential exists, and it simply cannot be read — a degradation that until now
+// no policy could see.
+const (
+	claimSourceRequest           = "request"
+	claimSourceNoUpstreamSession = "request:no-upstream-session"
+	claimSourceUpstreamOpaque    = "request:upstream-opaque"
+	claimSourceUpstreamPrefix    = "upstream:"
+)
+
 // Authorizer authorizes MCP operations using Cedar policies.
 type Authorizer struct {
 	// Cedar policy set
@@ -201,6 +232,10 @@ type Authorizer struct {
 	// Separate from supplementLog because the two are mutually exclusive per
 	// request and describe opposite conditions.
 	missingIDTokenLog *syncutil.AtMost
+	// noSessionLog rate-limits the warning that a request has no upstream session
+	// and Cedar is using request-token claims instead. It is separate from
+	// claimKeyLog so the warning does not suppress the claim-key diagnostic.
+	noSessionLog *syncutil.AtMost
 	// multiValuedClaims lists JWT claim names normalized to a canonical unpadded
 	// space-delimited string, plus a companion Cedar Set, before Cedar evaluation.
 	// See ConfigOptions.MultiValuedClaims.
@@ -217,16 +252,21 @@ type ConfigOptions struct {
 
 	// PrimaryUpstreamProvider names the upstream IDP provider whose access
 	// token is the primary source of JWT claims for Cedar evaluation.
-	// When empty, claims from the ToolHive-issued token are used.
-	// Must match an entry in identity.UpstreamTokens (e.g. "default", "github").
+	// When empty, claims from the original client-request token are used, whether
+	// it is ToolHive-issued or another bearer token.
+	// When set, a non-nil identity.UpstreamTokens map must contain a non-empty
+	// token for this provider; otherwise authorization fails closed. The sole
+	// exception is a nil map, which indicates no upstream session (for example,
+	// a delegated or JWT-bearer token), so request-token claims are used.
 	//
 	// The profile claims in profileClaimsFromIDToken fall back to the SAME
 	// provider's id_token when its access token omits them (many OIDC providers
 	// assert `email` only in the id_token), so `principal has claim_email` keeps
 	// meaning "this upstream asserted an email". Every other claim, including all
-	// group/role/scope claims, comes from the upstream access token or not at all,
-	// and the ToolHive-issued token the client presented is never a claim source on
-	// this path. See resolveClaims for the full contract.
+	// group/role/scope claims, comes from the upstream access token or not at all.
+	// The sole nil-map exception uses only request-token claims because no upstream
+	// provider credential exists, never as a substitute for another provider's
+	// credentials. See resolveClaims for the full contract.
 	PrimaryUpstreamProvider string `json:"primary_upstream_provider,omitempty" yaml:"primary_upstream_provider,omitempty"`
 
 	// GroupClaimName is the JWT claim key that contains group membership for the
@@ -342,6 +382,7 @@ func NewCedarAuthorizer(options ConfigOptions, serverName string) (authorizers.A
 		claimKeyLog:             syncutil.NewAtMost(30 * time.Second),
 		supplementLog:           syncutil.NewAtMost(30 * time.Second),
 		missingIDTokenLog:       syncutil.NewAtMost(30 * time.Second),
+		noSessionLog:            syncutil.NewAtMost(30 * time.Second),
 		multiValuedClaims:       options.MultiValuedClaims,
 	}
 
@@ -552,7 +593,42 @@ func (a *Authorizer) IsAuthorized(
 	return decision == cedar.Allow, nil
 }
 
-// resolveClaims determines which JWT claims to use for Cedar policy evaluation.
+// mintedWithoutUpstreamSession reports whether the token behind this identity
+// affirmatively states that it was issued with no upstream IdP login, and so can
+// never carry an upstream credential. Two grants say this, in two ways:
+//
+//   - RFC 8693 delegation sets the "act" claim, parsed into DelegationChain. The
+//     subject is a real end user whose token the authorization server itself
+//     validated, one hop removed from the upstream login.
+//   - RFC 7523 JWT-bearer sets NoUpstreamSessionClaimKey. Its subject is a
+//     synthetic machine identity asserted by a separate trust root, with no end
+//     user at all.
+//
+// Both are statements inside a token this deployment's authentication middleware
+// already validated, not inferences from an absent map. An identity that merely
+// lacks upstream credentials — anonymous, local, or a bearer from an unpinned IdP
+// — says neither, and must keep failing closed under a pinned provider.
+func mintedWithoutUpstreamSession(identity *auth.Identity) bool {
+	// A chain must be well-formed to count as a statement. ParseDelegationChain
+	// never fails: a non-object act yields Malformed with no hops, and a bare
+	// "act": {} yields one empty hop — neither says anything about an upstream
+	// session, and both leave DelegationChain non-nil. The issuance side already
+	// refuses a malformed chain (see buildActClaim in
+	// pkg/authserver/server/tokenexchange); hold the same line on consumption.
+	// Truncated is deliberately admitted: that is a real chain that hit the
+	// depth cap, not garbage.
+	if c := identity.DelegationChain; c != nil && !c.Malformed && len(c.Chain) > 0 {
+		return true
+	}
+	marker, ok := identity.Claims[upstreamtoken.NoUpstreamSessionClaimKey].(bool)
+	return ok && marker
+}
+
+// resolveClaims determines which JWT claims to use for Cedar policy evaluation,
+// and returns alongside them the claim-source label naming the trust root that
+// asserted them (see claimSourceAttr and the claimSource* values). Every path
+// that returns claims returns a label, so a policy can always tell whether it is
+// looking at an upstream assertion or the request token's own word.
 //
 // When primaryUpstreamProvider is empty (the default), the claims of the token on
 // the original client request are used as-is. That may be a ToolHive-issued token
@@ -575,8 +651,15 @@ func (a *Authorizer) IsAuthorized(
 // id_token, which is why the fallback is conditional. That is not a case of one key
 // meaning two different identities.)
 //
-// The ToolHive-issued token the client presented is deliberately NOT a claim
-// source here, even though it mirrors a name/email — in a multi-upstream chain
+// The sole exception is when Identity.UpstreamTokens is nil, which means there is
+// no upstream session (no tsid claim), as with a delegated or JWT-bearer token.
+// Cedar then uses request-token claims because no upstream provider credential
+// exists. Any non-nil map without a non-empty token for the configured provider,
+// including an empty map or a map for another provider, remains an error so request
+// claims never substitute for a missing provider's credentials.
+//
+// The ToolHive-issued token the client presented is otherwise deliberately NOT a
+// claim source here, even though it mirrors a name/email — in a multi-upstream chain
 // those belong to the first configured upstream, which need not be the pinned
 // provider, so using them could attribute one IdP's email to another.
 //
@@ -604,21 +687,42 @@ func (a *Authorizer) IsAuthorized(
 // of what the upstream asserted at login, not presented as a credential, and
 // rejecting it once expired would flip a policy from permit to deny mid-session.
 // See Identity.UpstreamIDTokens for that contract and its two consumers.
-func (a *Authorizer) resolveClaims(identity *auth.Identity) (jwt.MapClaims, error) {
+func (a *Authorizer) resolveClaims(identity *auth.Identity) (jwt.MapClaims, string, error) {
 	requestClaims := jwt.MapClaims(identity.Claims)
 
 	if a.primaryUpstreamProvider == "" {
 		// Default path: use claims from the original client request's token.
-		a.logClaimKeys("token", requestClaims)
-		return requestClaims, nil
+		a.logClaimKeys(claimSourceRequest, requestClaims)
+		return requestClaims, claimSourceRequest, nil
 	}
 
 	// Embedded auth server path: the upstream IDP token is the primary claim source.
+	if identity.UpstreamTokens == nil && mintedWithoutUpstreamSession(identity) {
+		// The token says it was minted with no upstream login, so no upstream
+		// credential can exist for it. Evaluate its own claims.
+		a.noSessionLog.Do(func() {
+			slog.Info("token minted without an upstream session; using request-token claims for Cedar evaluation",
+				"provider", a.primaryUpstreamProvider)
+		})
+		a.logClaimKeys(claimSourceNoUpstreamSession, requestClaims)
+		return requestClaims, claimSourceNoUpstreamSession, nil
+	}
+
+	if identity.UpstreamTokens == nil {
+		// Nil with no marker: this identity was never enriched with upstream
+		// credentials, and nothing states why. It may be an anonymous or local
+		// identity, or a bearer token from an IdP other than the pinned
+		// provider. Its claims come from a trust root this deployment did not
+		// pin, so they must not drive policy.
+		return nil, "", fmt.Errorf("no upstream credentials for provider %q and token does not declare a missing upstream session",
+			a.primaryUpstreamProvider)
+	}
+
 	upstreamToken, tokenFound := identity.UpstreamTokens[a.primaryUpstreamProvider]
 	if !tokenFound || upstreamToken == "" {
-		// The upstream token must be present if the authorizer is configured to use it.
-		// Missing token means the session has no upstream credential; deny.
-		return nil, fmt.Errorf("upstream token for provider %q not found in identity",
+		// A session exists but lacks credentials for the configured provider.
+		// Do not substitute request claims for another provider's credentials.
+		return nil, "", fmt.Errorf("upstream token for provider %q not found in identity",
 			a.primaryUpstreamProvider)
 	}
 
@@ -640,16 +744,17 @@ func (a *Authorizer) resolveClaims(identity *auth.Identity) (jwt.MapClaims, erro
 				slog.Warn("upstream token is not a JWT; falling back to request-token claims for Cedar evaluation",
 					"provider", a.primaryUpstreamProvider)
 			})
-			a.logClaimKeys("token-fallback", requestClaims)
-			return requestClaims, nil
+			a.logClaimKeys(claimSourceUpstreamOpaque, requestClaims)
+			return requestClaims, claimSourceUpstreamOpaque, nil
 		}
-		return nil, fmt.Errorf("failed to parse upstream token for provider %q: %w",
+		return nil, "", fmt.Errorf("failed to parse upstream token for provider %q: %w",
 			a.primaryUpstreamProvider, err)
 	}
 
 	merged := a.supplementFromIDToken(identity, upstreamClaims)
-	a.logClaimKeys("upstream", merged)
-	return merged, nil
+	source := claimSourceUpstreamPrefix + a.primaryUpstreamProvider
+	a.logClaimKeys(source, merged)
+	return merged, source, nil
 }
 
 // supplementFromIDToken returns upstreamClaims with the profileClaimsFromIDToken
@@ -1186,7 +1291,7 @@ func (a *Authorizer) AuthorizeWithJWTClaims(
 	}
 
 	// Resolve the claims source: upstream IDP token or the original request's token.
-	resolvedClaims, err := a.resolveClaims(identity)
+	resolvedClaims, claimSource, err := a.resolveClaims(identity)
 	if err != nil {
 		return false, err
 	}
@@ -1228,6 +1333,11 @@ func (a *Authorizer) AuthorizeWithJWTClaims(
 	normalizedClaims := normalizeMultiValuedClaims(resolvedClaims, a.multiValuedClaims)
 	processedClaims := preprocessClaims(normalizedClaims)
 	addMultiValuedClaimSets(processedClaims, resolvedClaims, a.multiValuedClaims)
+	// Record which trust root asserted these claims. Written after prefixing so
+	// no token claim can land on this key; see claimSourceAttr. processedClaims
+	// becomes both the principal's attributes and the Cedar context, so the value
+	// is readable as principal.thv_claim_source and context.thv_claim_source.
+	processedClaims[claimSourceAttr] = claimSource
 	processedArgs := preprocessArguments(arguments)
 
 	// Authorize based on the feature and operation

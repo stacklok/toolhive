@@ -111,12 +111,23 @@ type Identity struct {
 	// Redacted in MarshalJSON() to prevent token leakage.
 	//
 	// State semantics:
-	//   - nil            — no tsid claim was present on the incoming JWT
-	//                      (middleware did not attempt to load credentials).
+	//   - nil            — no upstream credentials were loaded for this identity.
+	//                      Either the incoming JWT carried no tsid claim, or the
+	//                      Identity came from a constructor that has no upstream
+	//                      session at all: local.go, anonymous.go, or middleware
+	//                      validating a JWT from an IdP other than the embedded
+	//                      auth server (see the PlatformUserID note above).
 	//   - empty map      — tsid claim was valid but no providers had a stored
 	//                      access token for the session.
 	//   - populated map  — keys are upstream provider names; values are the
 	//                      stored access token strings.
+	//
+	// A nil map therefore says only that no credential was loaded, never why.
+	// Authorization code MUST NOT read it as "this token was minted without an
+	// upstream session" — an anonymous identity and an RFC 7523 JWT-bearer token
+	// are indistinguishable here. The token itself carries that statement: the
+	// "act" claim (DelegationChain) or upstreamtoken.NoUpstreamSessionClaimKey.
+	// See resolveClaims in pkg/authz/authorizers/cedar.
 	//
 	// MUST NOT be mutated after the Identity is placed in the publicly-reachable
 	// request context. It MAY be mutated while the Identity is reachable only via

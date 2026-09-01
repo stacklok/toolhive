@@ -505,3 +505,61 @@ func TestNewJWTBearerIssuanceHandler_RejectsMissingDependencies(t *testing.T) {
 		})
 	}
 }
+
+// TestJWTBearerHandler_StampsNoUpstreamSessionClaim pins the marker a resource
+// server relies on to tell an intentionally session-less token apart from an
+// identity that simply carries no upstream credentials. Dropping it would send
+// every JWT-bearer request back to a hard deny under a pinned Cedar provider.
+func TestJWTBearerHandler_StampsNoUpstreamSessionClaim(t *testing.T) {
+	t.Parallel()
+
+	const (
+		issuer   = "https://idp.example.com"
+		subject  = "ext-user"
+		resource = "https://mcp.example.com"
+	)
+	resolvedIssuers, err := ResolveJWTBearerGrantPolicies([]TrustedIssuer{{
+		IssuerURL:              issuer,
+		AllowedDelegateClients: []string{anyDelegateClient},
+		JWTBearerGrant: &JWTBearerGrantPolicy{
+			MaxAssertionAge: time.Hour.String(),
+			SubjectBindings: []JWTBearerSubjectBinding{
+				{Subject: subject, AllowedResources: []string{resource}},
+			},
+		},
+	}})
+	require.NoError(t, err)
+
+	tj := newTestJWKS(t)
+	now := time.Now()
+	handler, err := newJWTBearerIssuanceHandler(
+		&testJWTBearerAssertionValidator{claims: &ValidatedClaims{
+			Issuer:   issuer,
+			Subject:  subject,
+			JWTID:    "jti-no-upstream-session",
+			IssuedAt: now,
+			Expiry:   now.Add(30 * time.Minute),
+		}},
+		testTokenEndpoint,
+		testAssertionJWTConsumer{},
+		&fosite.Config{AccessTokenLifespan: time.Hour},
+		&mockAccessTokenStrategy{},
+		&mockAccessTokenStorage{},
+		resolvedIssuers,
+	)
+	require.NoError(t, err)
+
+	req := fosite.NewAccessRequest(&session.Session{})
+	req.GrantTypes = fosite.Arguments{oauthproto.GrantTypeJWTBearer}
+	req.Form = map[string][]string{
+		"assertion": {signAssertionWithType(t, tj, nil)},
+		"resource":  {resource},
+	}
+
+	require.NoError(t, handler.HandleTokenEndpointRequest(context.Background(), req))
+
+	issued, ok := req.GetSession().(*session.Session)
+	require.True(t, ok, "expected the handler to install a *session.Session")
+	assert.Equal(t, true, issued.JWTClaims.Extra[session.NoUpstreamSessionClaimKey],
+		"JWT-bearer tokens must declare that they have no upstream session")
+}

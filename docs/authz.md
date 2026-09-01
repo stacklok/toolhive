@@ -313,6 +313,73 @@ Both approaches work and can be used to make authorization decisions based on
 the client's identity. This policy allows only clients with the name "John Doe"
 to call the weather tool.
 
+#### Knowing where a claim came from
+
+Claims do not always come from the same place. When `primaryUpstreamProvider` is
+set, policies are normally evaluated against claims asserted by that upstream
+IdP — but several paths fall back to the claims in the request's own token, and
+until you check, `claim_email` looks identical either way.
+
+Every request therefore carries a `thv_claim_source` attribute, on both the
+principal and the context, naming the trust root behind the claims:
+
+| Value | Meaning |
+| --- | --- |
+| `request` | No `primaryUpstreamProvider` is configured. Claims come from the request's token, and no provenance was ever demanded. |
+| `upstream:<provider>` | Claims come from that upstream's access token (with the profile-claim id_token supplement where it applies). |
+| `request:no-upstream-session` | The token states it was minted with no upstream login — an RFC 8693 delegated token or an RFC 7523 JWT-bearer token — so no upstream credential can exist for it. |
+| `request:upstream-opaque` | An upstream credential exists but is an opaque OAuth 2.0 access token whose claims cannot be read, so evaluation degraded to the request token's claims. |
+
+A policy that must only act on what an upstream actually asserted can say so:
+
+```plain
+permit(principal, action == Action::"call_tool", resource == Tool::"deploy") when {
+  principal.thv_claim_source == "upstream:github" &&
+  principal has claim_email &&
+  principal.claim_email like "*@example.com"
+};
+```
+
+The attribute is written after claim prefixing and its name does not start with
+`claim_`, so a token carrying a claim named `thv_claim_source` becomes
+`claim_thv_claim_source` and cannot spoof its own provenance.
+
+#### Tokens with no upstream login
+
+Two grants mint a token that is not tied to any upstream IdP login, so no
+upstream credential can ever exist for it:
+
+- **RFC 8693 delegation** — the token carries an `act` claim naming the actor
+  that obtained it on the subject's behalf.
+- **RFC 7523 JWT-bearer** — the subject is a machine identity asserted by a
+  separate trust root. ToolHive's authorization server stamps
+  `https://toolhive.dev/no_upstream_session: true` on these tokens, because the
+  grant has no standard marker of its own.
+
+Under a pinned `primaryUpstreamProvider`, both are evaluated against their own
+claims and labelled `request:no-upstream-session`. Note that these tokens carry
+only `sub`, `act`, `client_id`, `name` and `email` — no group or role claims are
+copied from the subject token — so a policy guarded on `principal has
+claim_groups` still denies them.
+
+Everything else stays closed. A token that simply arrives without upstream
+credentials and says nothing about why — an anonymous or local identity, or a
+bearer token from an IdP other than the pinned one — is denied, as is a session
+that exists but holds no credential for the pinned provider.
+
+**Upgrading:** JWT-bearer tokens minted by an authorization server running a
+version before this marker existed carry no marker, so a pinned deployment
+denies them until those tokens turn over. Delegated tokens are unaffected — the
+`act` claim they already carry needs no new plumbing. Roll the authorization
+server before pinning `primaryUpstreamProvider` on a deployment that uses the
+JWT-bearer grant.
+
+Deployments that scrape the authorizer's DEBUG logs should note that the
+`source` field now uses the same vocabulary as `thv_claim_source`: the former
+`token`, `no-session-fallback`, `token-fallback` and `upstream` values are now
+`request`, `request:no-upstream-session`, `request:upstream-opaque` and
+`upstream:<provider>`.
+
 #### Using tool arguments in policies
 
 The authorization middleware also extracts tool arguments from the request and

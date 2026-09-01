@@ -72,10 +72,8 @@
 // To add a new IDP type (e.g., SAML), implement the OAuth2Provider interface.
 //
 // A provider that owns an HTTP client should also implement the optional
-// IdleConnectionCloser capability so consumers can release its pooled
-// connections when the provider is retired. It is deliberately not part of
-// OAuth2Provider: adding it there would break existing implementations, and a
-// provider that holds no pool has nothing to release.
+// IdleConnectionCloser capability, so consumers can release its pooled
+// connections when the provider is retired.
 //
 // # UserInfo Extensibility
 //

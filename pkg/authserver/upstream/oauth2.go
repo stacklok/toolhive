@@ -294,10 +294,8 @@ type BaseOAuth2Provider struct {
 	config       *OAuth2Config
 	oauth2Config *oauth2.Config
 	httpClient   *http.Client
-	// ownsHTTPClient is true only when the provider built httpClient itself. A
-	// client injected via WithOAuth2HTTPClient / WithHTTPClient belongs to the
-	// caller, who may be sharing it across providers, so CloseIdleConnections
-	// must not drain it.
+	// ownsHTTPClient is true only when the provider built httpClient itself;
+	// see CloseIdleConnections.
 	ownsHTTPClient bool
 }
 
@@ -330,8 +328,8 @@ var _ IdleConnectionCloser = (*BaseOAuth2Provider)(nil)
 // OAuth2ProviderOption configures a BaseOAuth2Provider.
 type OAuth2ProviderOption func(*BaseOAuth2Provider)
 
-// WithOAuth2HTTPClient sets a custom HTTP client. See IdleConnectionCloser for
-// the ownership rule this implies.
+// WithOAuth2HTTPClient sets a custom HTTP client. See
+// BaseOAuth2Provider.CloseIdleConnections for the ownership rule this implies.
 //
 // The injected client fully supersedes the one the provider would have built, so
 // the caller owns its request-time scheme enforcement (the HTTPS check
@@ -415,17 +413,15 @@ func newBaseOAuth2Provider(
 }
 
 // CloseIdleConnections releases the idle keep-alive connections pooled by the
-// provider's HTTP client. The provider stays usable: only idle connections are
-// closed, and later requests dial fresh ones.
+// provider's HTTP client. Call it when retiring a provider: otherwise the pool's
+// sockets and their servicing goroutines are held until the idle timeout
+// elapses, and a process that constructs providers repeatedly accumulates them.
 //
-// Call this when retiring a provider. Without it the pool's sockets and their
-// servicing goroutines are held until the idle timeout elapses, and a process
-// that constructs providers repeatedly accumulates them in the meantime.
-//
-// It is a no-op when the client was supplied by the caller
-// (WithOAuth2HTTPClient / WithHTTPClient): that client's pool belongs to the
-// caller, who may be sharing it across providers, and draining it here would
-// cold-start connections another live provider is using.
+// This is the ownership rule the package enforces: a client supplied by the
+// caller (WithOAuth2HTTPClient / WithHTTPClient) is left alone, because the
+// caller may be sharing it and draining it here would cold-start connections
+// another live provider is using. Only a client the provider built itself is
+// drained.
 func (p *BaseOAuth2Provider) CloseIdleConnections() {
 	if p.httpClient == nil || !p.ownsHTTPClient {
 		return
@@ -434,14 +430,11 @@ func (p *BaseOAuth2Provider) CloseIdleConnections() {
 }
 
 // checkInjectedClientCABundle rejects a CA bundle configured alongside a
-// caller-injected HTTP client. The two are contradictory: the injected client
-// carries its own TLS trust, so the bundle can never take effect. Failing here
-// keeps a trust-anchor misconfiguration a boot-time error, as it was when the
-// bundle was read unconditionally.
-//
-// CAFilePath is the only field checked. AllowPrivateIPs was already inert with
-// an injected client, and InsecureAllowHTTP still gates config-level scheme
-// validation via ValidateWithInsecure, so neither is silently dropped.
+// caller-injected HTTP client: the injected client carries its own TLS trust, so
+// the bundle can never take effect, and a trust-anchor decision must fail at
+// boot rather than be dropped. AllowPrivateIPs and InsecureAllowHTTP need no
+// equivalent check — the former was already inert with an injected client, the
+// latter still gates config-level scheme validation.
 func checkInjectedClientCABundle(caFilePath string) error {
 	if caFilePath == "" {
 		return nil

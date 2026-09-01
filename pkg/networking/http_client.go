@@ -52,12 +52,11 @@ const (
 	// maxIdleConns caps pooled idle connections across all hosts. The zero
 	// value is unlimited. 100 matches http.DefaultTransport.
 	maxIdleConns = 100
-	// maxIdleConnsPerHost caps them per host. Unlike the two above, the zero
-	// value here is already bounded — http.DefaultMaxIdleConnsPerHost, which is
-	// 2 — so this is a deliberate increase, not a newly imposed bound: most
-	// clients this builder produces are host-scoped and drive a single
-	// upstream, so a slightly larger per-host pool serves concurrent requests
-	// without dialing, now that the idle timeout is finite.
+	// maxIdleConnsPerHost caps them per host. The zero value here is already
+	// bounded (http.DefaultMaxIdleConnsPerHost is 2), so this is a deliberate
+	// increase rather than a new bound: these clients are host-scoped, and a
+	// slightly larger pool serves concurrent requests without dialing now that
+	// the idle timeout is finite.
 	maxIdleConnsPerHost = 4
 )
 

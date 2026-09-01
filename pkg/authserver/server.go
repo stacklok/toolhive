@@ -60,33 +60,23 @@ type Server interface {
 	DCRStore() storage.DCRCredentialStore
 
 	// CloseIdleConnections releases the idle keep-alive connections pooled by
-	// the server's upstream IDP providers, without touching storage.
+	// the server's upstream IDP providers, without touching storage. It is
+	// required rather than optional so the call cannot silently degrade to a
+	// no-op; see upstream.IdleConnectionCloser for the per-provider capability
+	// it delegates to, and for the caller-owned-client exemption.
 	//
-	// Each upstream provider owns a private HTTP client whose connection pool
-	// outlives the provider unless it is drained. An embedder that reconstructs
-	// the server to change its upstream set — passing the same storage.Storage
-	// and keys.KeyProvider so token and JWKS continuity is preserved — must
-	// retire the superseded server with this method rather than Close, because
-	// Close would also close the storage the new server is now serving through.
+	// An embedder that reconstructs the server to change its upstream set —
+	// passing the same storage.Storage and keys.KeyProvider so token and JWKS
+	// continuity is preserved — must retire the superseded server with this
+	// method rather than Close, because Close would also close the storage the
+	// new server is now serving through.
 	//
 	// Safe to call on a server that is still serving: only idle connections are
-	// closed, in-flight requests are unaffected, and later upstream calls dial
-	// again. Providers that do not expose the capability are skipped, as are
-	// providers built around a caller-supplied HTTP client — the caller owns
-	// that client's pool (see Config.UpstreamFactory).
+	// closed and in-flight requests are unaffected.
 	//
-	// Scope: this releases the upstream providers' HTTP connection pools and
-	// nothing else. A server configured with TrustedIssuers also holds one JWKS
-	// refresh worker pool per issuer, started against context.Background() and
-	// released by neither this method nor Close, so an embedder that
-	// reconstructs repeatedly still grows goroutines through that path.
-	//
-	// Unlike upstream.IdleConnectionCloser, which is an optional capability an
-	// OAuth2Provider may implement, this is a required part of the Server
-	// interface: Server has a single in-repo implementation, so requiring it
-	// keeps the call compile-time safe rather than a silent no-op, whereas
-	// OAuth2Provider is documented as open to external implementations that
-	// widening would break.
+	// Scope: upstream HTTP pools only. A server configured with TrustedIssuers
+	// also holds one JWKS refresh worker pool per issuer that neither this
+	// method nor Close releases.
 	CloseIdleConnections()
 
 	// Close releases resources held by the server. It drains upstream idle

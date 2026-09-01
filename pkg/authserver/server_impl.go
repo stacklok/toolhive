@@ -81,12 +81,9 @@ func buildUpstreams(ctx context.Context, cfg Config) ([]handlers.NamedUpstream, 
 			closeUpstreamIdleConnections(upstreams)
 			return nil, fmt.Errorf("failed to create upstream provider %q: %w", upCfg.Name, err)
 		}
-		// A nil provider would be wired into the authorization chain and panic on
-		// the first /oauth/authorize request instead of failing at boot, so a
-		// custom Config.UpstreamFactory cannot use it to drop an upstream. The
-		// reflect check also catches a typed nil (`var p *OIDCProviderImpl;
-		// return p, nil`), which is non-nil as an interface and would instead
-		// panic during the drain, on the embedded *BaseOAuth2Provider.
+		// A nil provider would reach the authorization chain and panic on the
+		// first /oauth/authorize rather than failing at boot, so a custom
+		// factory cannot use one to drop an upstream.
 		if isNilProvider(provider) {
 			closeUpstreamIdleConnections(upstreams)
 			return nil, fmt.Errorf("upstream factory returned a nil provider for upstream %q", upCfg.Name)
@@ -108,13 +105,10 @@ func isNilProvider(provider upstream.OAuth2Provider) bool {
 }
 
 // closeUpstreamIdleConnections drains the pooled idle connections of every
-// upstream that exposes the capability. Providers that do not implement it, and
-// providers holding a caller-supplied client, are no-ops.
+// upstream that implements the optional upstream.IdleConnectionCloser
+// capability; see that interface for why it is optional and what it exempts.
 func closeUpstreamIdleConnections(upstreams []handlers.NamedUpstream) {
 	for _, u := range upstreams {
-		// Optional capability: the OAuth2Provider interface is open to external
-		// implementations, so a provider that holds no pool of its own simply
-		// does not implement it.
 		if closer, ok := u.Provider.(upstream.IdleConnectionCloser); ok {
 			slog.Debug("closing upstream idle connections", "name", u.Name)
 			closer.CloseIdleConnections()
@@ -207,16 +201,11 @@ func newServer(ctx context.Context, cfg Config, stor storage.Storage) (_ *server
 	if err != nil {
 		return nil, err
 	}
-	// Defense in depth for the failure returns below, which would otherwise
-	// abandon providers that have already run discovery and hold a live
-	// connection pool. No such failure is reachable today with a Config that
-	// passes Validate — runLegacyMigration is a no-op off Redis, the CIMD cache
-	// bounds and the trusted issuers are validated up front, and every
-	// handlers.NewHandler precondition (non-nil config, non-empty and unique
-	// upstream names, non-nil providers) is already guaranteed by Validate and
-	// buildUpstreams. So this drains nothing at present; it is here so that a
-	// future step which fails after touching the network cannot strand a pool,
-	// and so a `return nil, err` added above it is covered by default.
+	// Defense in depth: the failure returns below would otherwise abandon
+	// providers holding a live pool. None is reachable today (Validate covers
+	// every precondition they check), so this drains nothing at present — it is
+	// here so a future step that fails after touching the network, or a new
+	// error return added above it, is covered by default.
 	defer func() {
 		if retErr != nil {
 			closeUpstreamIdleConnections(upstreams)
@@ -434,9 +423,7 @@ func newUpstreamTokenRefresher(
 	}
 }
 
-// CloseIdleConnections releases the idle keep-alive connections pooled by the
-// server's upstream IDP providers. See the Server interface for why this is kept
-// separate from Close.
+// CloseIdleConnections implements Server; see that interface for the contract.
 func (s *server) CloseIdleConnections() {
 	closeUpstreamIdleConnections(s.upstreams)
 }

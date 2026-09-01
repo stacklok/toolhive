@@ -26,6 +26,7 @@ import (
 	"net/http/httptest"
 	"net/http/httptrace"
 	"net/url"
+	"path/filepath"
 	"strings"
 	"sync/atomic"
 	"testing"
@@ -2970,4 +2971,63 @@ func providerRequestReusedConn(t *testing.T, p *BaseOAuth2Provider, target strin
 	require.NoError(t, resp.Body.Close())
 
 	return reused
+}
+
+// TestInjectedClientRejectsCABundle pins that a CA bundle configured alongside
+// an injected HTTP client fails construction rather than being silently
+// dropped. Before options moved ahead of the default client build, the bundle
+// was read and parsed unconditionally, so a malformed one failed at boot; a
+// trust-anchor decision must not degrade to a log line.
+func TestInjectedClientRejectsCABundle(t *testing.T) {
+	t.Parallel()
+
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusOK)
+	}))
+	t.Cleanup(srv.Close)
+
+	host, err := url.Parse(srv.URL)
+	require.NoError(t, err)
+	injected, err := newHTTPClientForHost(host.Host, true, true, "")
+	require.NoError(t, err)
+
+	newConfig := func(caFilePath string) *OAuth2Config {
+		return &OAuth2Config{
+			CommonOAuthConfig: CommonOAuthConfig{
+				ClientID:    "test-client",
+				RedirectURI: srv.URL + "/callback",
+			},
+			AuthorizationEndpoint: srv.URL + "/auth",
+			TokenEndpoint:         srv.URL + "/token",
+			InsecureAllowHTTP:     true,
+			AllowPrivateIPs:       true,
+			CAFilePath:            caFilePath,
+		}
+	}
+
+	t.Run("rejected when both are set", func(t *testing.T) {
+		t.Parallel()
+
+		_, err := NewOAuth2Provider(newConfig("/etc/ssl/certs/some-bundle.pem"),
+			WithOAuth2HTTPClient(injected))
+		require.ErrorIs(t, err, ErrCABundleWithInjectedClient)
+	})
+
+	t.Run("accepted when only the client is injected", func(t *testing.T) {
+		t.Parallel()
+
+		p, err := NewOAuth2Provider(newConfig(""), WithOAuth2HTTPClient(injected))
+		require.NoError(t, err)
+		assert.Same(t, injected, p.httpClient)
+	})
+
+	t.Run("a CA bundle alone still reaches the default client build", func(t *testing.T) {
+		t.Parallel()
+
+		// No client injected, so the bundle is read — and an unreadable one is
+		// still a construction error, the behavior this guard preserves.
+		_, err := NewOAuth2Provider(newConfig(filepath.Join(t.TempDir(), "missing.pem")))
+		require.Error(t, err)
+		assert.NotErrorIs(t, err, ErrCABundleWithInjectedClient)
+	})
 }

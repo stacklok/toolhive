@@ -135,16 +135,11 @@ var _ IdleConnectionCloser = (*OIDCProviderImpl)(nil)
 // OIDCProviderOption configures an OIDCProvider.
 type OIDCProviderOption func(*OIDCProviderImpl)
 
-// WithHTTPClient sets a custom HTTP client for the provider. The caller retains
-// ownership of its connection pool: CloseIdleConnections leaves an injected
-// client alone, so one client can be shared safely across providers and
-// reconstructions.
-//
-// The injected client fully supersedes the one the provider would have built,
-// so the caller also owns its TLS trust and SSRF posture: the config's
-// CAFilePath, AllowPrivateIPs and InsecureAllowHTTP shape only the default
-// client and are not applied here. A set CAFilePath is logged as a warning
-// because it is otherwise inert.
+// WithHTTPClient sets a custom HTTP client for the provider. See
+// IdleConnectionCloser for the ownership rule this implies, and
+// WithOAuth2HTTPClient for what the injected client takes over from the config.
+// Setting CAFilePath alongside it is rejected — see
+// ErrCABundleWithInjectedClient.
 func WithHTTPClient(client *http.Client) OIDCProviderOption {
 	return func(p *OIDCProviderImpl) {
 		p.httpClient = client
@@ -229,8 +224,8 @@ func NewOIDCProvider(
 				p.CloseIdleConnections()
 			}
 		}()
-	} else {
-		warnInjectedClientSupersedesCABundle(config.CAFilePath)
+	} else if err := checkInjectedClientCABundle(config.CAFilePath); err != nil {
+		return nil, err
 	}
 
 	// Use go-oidc for discovery - inject custom HTTP client via context

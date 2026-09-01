@@ -301,6 +301,13 @@ type BaseOAuth2Provider struct {
 	ownsHTTPClient bool
 }
 
+// ErrCABundleWithInjectedClient is returned when a provider config sets
+// CAFilePath while the caller also injects an HTTP client via
+// WithOAuth2HTTPClient / WithHTTPClient. The injected client carries its own TLS
+// trust, so the bundle could never take effect; failing loudly keeps a
+// trust-anchor misconfiguration a boot-time error rather than a silent no-op.
+var ErrCABundleWithInjectedClient = errors.New("caFilePath cannot be combined with an injected HTTP client")
+
 // IdleConnectionCloser is an optional capability an OAuth2Provider may
 // implement to release the idle keep-alive connections held by its private HTTP
 // client. It is deliberately kept out of the OAuth2Provider interface: doc.go
@@ -320,15 +327,16 @@ var _ IdleConnectionCloser = (*BaseOAuth2Provider)(nil)
 // OAuth2ProviderOption configures a BaseOAuth2Provider.
 type OAuth2ProviderOption func(*BaseOAuth2Provider)
 
-// WithOAuth2HTTPClient sets a custom HTTP client. The caller retains ownership
-// of its connection pool: CloseIdleConnections leaves an injected client alone,
-// so one client can be shared safely across providers and reconstructions.
+// WithOAuth2HTTPClient sets a custom HTTP client. See IdleConnectionCloser for
+// the ownership rule this implies.
 //
-// The injected client fully supersedes the one the provider would have built,
-// so the caller also owns its TLS trust and SSRF posture: the config's
-// CAFilePath, AllowPrivateIPs and InsecureAllowHTTP shape only the default
-// client and are not applied here. A set CAFilePath is logged as a warning
-// because it is otherwise inert.
+// The injected client fully supersedes the one the provider would have built, so
+// the caller owns its request-time scheme enforcement (the HTTPS check
+// networking.ValidatingTransport applies) and its dial-time private-IP blocking.
+// Config-level validation is unaffected: InsecureAllowHTTP still governs whether
+// a plain-http endpoint is accepted at all, via ValidateWithInsecure. Setting
+// CAFilePath alongside an injected client is a contradiction and is rejected —
+// see ErrCABundleWithInjectedClient.
 func WithOAuth2HTTPClient(client *http.Client) OAuth2ProviderOption {
 	return func(p *BaseOAuth2Provider) {
 		p.httpClient = client
@@ -367,16 +375,17 @@ func newBaseOAuth2Provider(
 		}
 		p.httpClient = httpClient
 		p.ownsHTTPClient = true
-		// A later failure (an unsupported token_endpoint_auth_method) otherwise
-		// abandons the client with no caller able to reach it. Symmetric with
-		// NewOIDCProvider; the ownership check leaves an injected client alone.
+		// Symmetric with NewOIDCProvider's drain. Nothing below issues a request
+		// today — the only later failure is authStyleFromMethod — so the pool is
+		// empty and this is currently a no-op; it is here so a future step that
+		// performs I/O before returning an error cannot strand a connection.
 		defer func() {
 			if retErr != nil {
 				p.CloseIdleConnections()
 			}
 		}()
-	} else {
-		warnInjectedClientSupersedesCABundle(config.CAFilePath)
+	} else if err := checkInjectedClientCABundle(config.CAFilePath); err != nil {
+		return nil, err
 	}
 
 	// AuthStyle is derived from the negotiated token_endpoint_auth_method
@@ -421,23 +430,22 @@ func (p *BaseOAuth2Provider) CloseIdleConnections() {
 	p.httpClient.CloseIdleConnections()
 }
 
-// warnInjectedClientSupersedesCABundle warns when an operator configured a CA
-// bundle that a caller-injected HTTP client makes inert. The bundle used to be
-// read (and validated) unconditionally, so dropping it silently would turn an
-// explicit trust decision into a no-op with no signal.
+// checkInjectedClientCABundle rejects a CA bundle configured alongside a
+// caller-injected HTTP client. The two are contradictory: the injected client
+// carries its own TLS trust, so the bundle can never take effect. Failing here
+// keeps a trust-anchor misconfiguration a boot-time error, as it was when the
+// bundle was read unconditionally.
 //
-// CAFilePath is the only superseded field warned about, deliberately:
-// AllowPrivateIPs was already inert with an injected client before options moved
-// ahead of the client build (the option simply overwrote the built client), and
-// InsecureAllowHTTP still drives ValidateWithInsecure. CAFilePath is the one
-// field whose validation this ordering removed.
-func warnInjectedClientSupersedesCABundle(caFilePath string) {
+// CAFilePath is the only field checked. AllowPrivateIPs was already inert with
+// an injected client, and InsecureAllowHTTP still gates config-level scheme
+// validation via ValidateWithInsecure, so neither is silently dropped.
+func checkInjectedClientCABundle(caFilePath string) error {
 	if caFilePath == "" {
-		return
+		return nil
 	}
-	slog.Warn("ignoring upstream caFilePath: the injected HTTP client supersedes it; "+
-		"configure the CA bundle on that client instead",
-		"ca_file_path", caFilePath)
+	return fmt.Errorf("%w: caFilePath %q cannot take effect because the injected client carries "+
+		"its own TLS trust; configure the CA bundle on that client and clear caFilePath",
+		ErrCABundleWithInjectedClient, caFilePath)
 }
 
 // authStyleFromMethod maps an RFC 7591 token_endpoint_auth_method to the

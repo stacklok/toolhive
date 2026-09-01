@@ -46,6 +46,12 @@ const (
 	// detect every input that influences the deployed PodSpec.ImagePullSecrets.
 	imagePullRefsHashAnnotation = "toolhive.stacklok.io/imagepullsecrets-hash"
 
+	// podVolumesHashAnnotation tracks the SHA256 hash of the desired vMCP
+	// container volume mounts and PodSpec volumes. The hash is stored on the
+	// Deployment so changes to referenced Secrets or ConfigMaps trigger a
+	// rollout without comparing API-server-defaulted live PodSpec fields.
+	podVolumesHashAnnotation = "toolhive.stacklok.io/podvolumes-hash"
+
 	// Log level configuration
 	logLevelDebug = "debug" // Debug log level value
 
@@ -144,7 +150,7 @@ func (r *VirtualMCPServerReconciler) deploymentForVirtualMCPServer(
 
 	// Build deployment components using helper functions
 	args := r.buildContainerArgsForVmcp(vmcp)
-	volumeMounts, volumes, err := r.buildVolumesForVmcp(ctx, vmcp)
+	volumeMounts, volumes, volumesHash, err := r.buildPodVolumesForVmcp(ctx, vmcp, telemetryCfg, typedWorkloads)
 	if err != nil {
 		log.FromContext(ctx).Error(err, "Failed to build volumes for VirtualMCPServer")
 		return nil
@@ -155,35 +161,7 @@ func (r *VirtualMCPServerReconciler) deploymentForVirtualMCPServer(
 		return nil
 	}
 
-	// Add CA bundle volumes for MCPServerEntry backends with caBundleRef
-	caVolumes, caMounts, err := r.buildCABundleVolumesForEntries(ctx, vmcp.Namespace, typedWorkloads)
-	if err != nil {
-		log.FromContext(ctx).Error(err, "Failed to build CA bundle volumes for MCPServerEntries")
-		return nil
-	}
-	volumes = append(volumes, caVolumes...)
-	volumeMounts = append(volumeMounts, caMounts...)
-
-	// Add telemetry CA bundle volumes from the pre-fetched MCPTelemetryConfig
-	if telemetryCfg != nil {
-		telVolumes, telMounts := ctrlutil.AddTelemetryCABundleVolumes(telemetryCfg)
-		volumes = append(volumes, telVolumes...)
-		volumeMounts = append(volumeMounts, telMounts...)
-	}
-
-	// Add embedded auth server volumes if configured (inline config). The matching
-	// env vars are injected by buildEnvVarsForVmcp above so the drift check stays
-	// symmetric with what is built here (see #5616).
-	if vmcp.Spec.AuthServerConfig != nil {
-		authServerVolumes, authServerMounts, err := ctrlutil.GenerateAuthServerVolumes(vmcp.Spec.AuthServerConfig)
-		if err != nil {
-			log.FromContext(ctx).Error(err, "Failed to build embedded auth server CA volumes")
-			return nil
-		}
-		volumes = append(volumes, authServerVolumes...)
-		volumeMounts = append(volumeMounts, authServerMounts...)
-	}
-	deploymentLabels, deploymentAnnotations := r.buildDeploymentMetadataForVmcp(ls, vmcp)
+	deploymentLabels, deploymentAnnotations := r.buildDeploymentMetadataForVmcp(ls, vmcp, volumesHash)
 	deploymentTemplateLabels, deploymentTemplateAnnotations := r.buildPodTemplateMetadata(
 		ls, vmcp, vmcpConfigChecksum, caBundleChecksum)
 	podSecurityContext, containerSecurityContext := r.buildSecurityContextsForVmcp(ctx, vmcp)
@@ -261,6 +239,84 @@ func (r *VirtualMCPServerReconciler) deploymentForVirtualMCPServer(
 		return nil
 	}
 	return dep
+}
+
+// buildPodVolumesForVmcp builds the complete desired volume state for the vmcp
+// container and computes its stable hash in the same pass. Keeping all volume
+// sources here ensures the PodSpec and Deployment annotation use one consistent
+// snapshot of referenced Kubernetes objects.
+func (r *VirtualMCPServerReconciler) buildPodVolumesForVmcp(
+	ctx context.Context,
+	vmcp *mcpv1beta1.VirtualMCPServer,
+	telemetryCfg *mcpv1beta1.MCPTelemetryConfig,
+	typedWorkloads []workloads.TypedWorkload,
+) ([]corev1.VolumeMount, []corev1.Volume, string, error) {
+	volumeMounts, volumes, err := r.buildVolumesForVmcp(ctx, vmcp)
+	if err != nil {
+		return nil, nil, "", err
+	}
+
+	caVolumes, caMounts, err := r.buildCABundleVolumesForEntries(ctx, vmcp.Namespace, typedWorkloads)
+	if err != nil {
+		return nil, nil, "", fmt.Errorf("failed to build CA bundle volumes for MCPServerEntries: %w", err)
+	}
+	volumes = append(volumes, caVolumes...)
+	volumeMounts = append(volumeMounts, caMounts...)
+
+	if telemetryCfg != nil {
+		telVolumes, telMounts := ctrlutil.AddTelemetryCABundleVolumes(telemetryCfg)
+		volumes = append(volumes, telVolumes...)
+		volumeMounts = append(volumeMounts, telMounts...)
+	}
+
+	if vmcp.Spec.AuthServerConfig != nil {
+		authServerVolumes, authServerMounts, err := ctrlutil.GenerateAuthServerVolumes(vmcp.Spec.AuthServerConfig)
+		if err != nil {
+			return nil, nil, "", fmt.Errorf("failed to build embedded auth server CA volumes: %w", err)
+		}
+		volumes = append(volumes, authServerVolumes...)
+		volumeMounts = append(volumeMounts, authServerMounts...)
+	}
+
+	hash, err := podVolumesHash(volumes, volumeMounts)
+	if err != nil {
+		return nil, nil, "", err
+	}
+	return volumeMounts, volumes, hash, nil
+}
+
+// podVolumesHash returns a deterministic hash of the complete desired volume
+// and volume-mount objects. Sorting by identity makes ordering-only changes a
+// no-op while hashing the full Kubernetes structs preserves all drift-relevant
+// source fields, including future VolumeSource additions.
+func podVolumesHash(volumes []corev1.Volume, volumeMounts []corev1.VolumeMount) (string, error) {
+	normalizedVolumes := append([]corev1.Volume(nil), volumes...)
+	sort.SliceStable(normalizedVolumes, func(i, j int) bool {
+		return normalizedVolumes[i].Name < normalizedVolumes[j].Name
+	})
+	normalizedMounts := append([]corev1.VolumeMount(nil), volumeMounts...)
+	sort.SliceStable(normalizedMounts, func(i, j int) bool {
+		if normalizedMounts[i].Name != normalizedMounts[j].Name {
+			return normalizedMounts[i].Name < normalizedMounts[j].Name
+		}
+		if normalizedMounts[i].MountPath != normalizedMounts[j].MountPath {
+			return normalizedMounts[i].MountPath < normalizedMounts[j].MountPath
+		}
+		return normalizedMounts[i].SubPath < normalizedMounts[j].SubPath
+	})
+
+	canonical, err := json.Marshal(struct {
+		Volumes      []corev1.Volume
+		VolumeMounts []corev1.VolumeMount
+	}{
+		Volumes:      normalizedVolumes,
+		VolumeMounts: normalizedMounts,
+	})
+	if err != nil {
+		return "", fmt.Errorf("failed to marshal pod volumes for hashing: %w", err)
+	}
+	hash := sha256.Sum256(canonical)
+	return hex.EncodeToString(hash[:]), nil
 }
 
 // buildContainerArgsForVmcp builds the container arguments for vmcp
@@ -930,6 +986,7 @@ func xaaSecretEnvVars(externalAuthConfig *mcpv1beta1.MCPExternalAuthConfig, conf
 func (r *VirtualMCPServerReconciler) buildDeploymentMetadataForVmcp(
 	baseLabels map[string]string,
 	vmcp *mcpv1beta1.VirtualMCPServer,
+	podVolumesHash string,
 ) (map[string]string, map[string]string) {
 	deploymentLabels := baseLabels
 	deploymentAnnotations := make(map[string]string)
@@ -954,6 +1011,8 @@ func (r *VirtualMCPServerReconciler) buildDeploymentMetadataForVmcp(
 	if hash, err := imagePullSecretsHash(r.imagePullSecretsForVMCP(vmcp)); err == nil && hash != "" {
 		deploymentAnnotations[imagePullRefsHashAnnotation] = hash
 	}
+
+	deploymentAnnotations[podVolumesHashAnnotation] = podVolumesHash
 
 	// TODO: Add support for ResourceOverrides if needed in the future
 

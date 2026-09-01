@@ -1908,6 +1908,10 @@ func TestVirtualMCPServerDeploymentNeedsUpdate(t *testing.T) {
 	expectedLabels, expectedAnnotations := reconciler.buildPodTemplateMetadata(
 		labelsForVirtualMCPServer(vmcp.Name), vmcp, vmcpConfigChecksum, "",
 	)
+	desiredVolumeMounts, desiredVolumes, desiredVolumesHash, err := reconciler.buildPodVolumesForVmcp(
+		context.Background(), vmcp, nil, nil,
+	)
+	require.NoError(t, err)
 
 	tests := []struct {
 		name           string
@@ -2081,7 +2085,7 @@ func TestVirtualMCPServerDeploymentNeedsUpdate(t *testing.T) {
 			deployment: &appsv1.Deployment{
 				ObjectMeta: metav1.ObjectMeta{
 					Labels:      labelsForVirtualMCPServer(vmcp.Name),
-					Annotations: make(map[string]string),
+					Annotations: map[string]string{podVolumesHashAnnotation: desiredVolumesHash},
 				},
 				Spec: appsv1.DeploymentSpec{
 					Template: corev1.PodTemplateSpec{
@@ -2097,10 +2101,12 @@ func TestVirtualMCPServerDeploymentNeedsUpdate(t *testing.T) {
 									Ports: []corev1.ContainerPort{
 										{ContainerPort: 4483},
 									},
-									Args: reconciler.buildContainerArgsForVmcp(vmcp),
-									Env:  mustBuildEnvVarsForVmcp(reconciler, vmcp),
+									Args:         reconciler.buildContainerArgsForVmcp(vmcp),
+									Env:          mustBuildEnvVarsForVmcp(reconciler, vmcp),
+									VolumeMounts: desiredVolumeMounts,
 								},
 							},
+							Volumes:            desiredVolumes,
 							ServiceAccountName: vmcpServiceAccountName(vmcp.Name),
 						},
 					},
@@ -2144,6 +2150,12 @@ func TestMergeDeploymentAnnotations(t *testing.T) {
 			name:     "prunes stale podTemplateSpecHashAnnotation when desired no longer wants it",
 			desired:  map[string]string{},
 			live:     map[string]string{podTemplateSpecHashAnnotation: "stale-hash"},
+			expected: map[string]string{},
+		},
+		{
+			name:     "prunes stale pod volumes hash annotation when desired no longer wants it",
+			desired:  map[string]string{},
+			live:     map[string]string{podVolumesHashAnnotation: "stale-hash"},
 			expected: map[string]string{},
 		},
 		{
@@ -2635,6 +2647,165 @@ func TestVirtualMCPServerEnsureDeployment_NoUpdateNeeded(t *testing.T) {
 
 	assert.NoError(t, err)
 	assert.Equal(t, ctrl.Result{}, result)
+}
+
+func TestVirtualMCPServerEnsureDeployment_BackfillsPodVolumesHashOnce(t *testing.T) {
+	t.Parallel()
+
+	ctx := t.Context()
+	scheme := testutil.NewScheme(t)
+	vmcp := v1beta1test.NewVirtualMCPServer(testVmcpName, "default",
+		v1beta1test.WithVMCPGroupRef(testGroupName),
+	)
+	configMap := &corev1.ConfigMap{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      vmcpConfigMapName(vmcp.Name),
+			Namespace: vmcp.Namespace,
+			Annotations: map[string]string{
+				checksum.ContentChecksumAnnotation: "test-checksum",
+			},
+		},
+		Data: map[string]string{"config.yaml": "test-config"},
+	}
+
+	deploymentUpdates := 0
+	k8sClient := fake.NewClientBuilder().
+		WithScheme(scheme).
+		WithObjects(vmcp, configMap).
+		WithInterceptorFuncs(interceptor.Funcs{
+			Update: func(ctx context.Context, c client.WithWatch, obj client.Object, opts ...client.UpdateOption) error {
+				if _, ok := obj.(*appsv1.Deployment); ok {
+					deploymentUpdates++
+				}
+				return c.Update(ctx, obj, opts...)
+			},
+		}).
+		Build()
+	reconciler := &VirtualMCPServerReconciler{
+		Client:           k8sClient,
+		Scheme:           scheme,
+		PlatformDetector: ctrlutil.NewSharedPlatformDetector(),
+	}
+
+	deployment := reconciler.deploymentForVirtualMCPServer(ctx, vmcp, "test-checksum", "", nil, nil)
+	require.NotNil(t, deployment)
+	require.NotEmpty(t, deployment.Annotations[podVolumesHashAnnotation])
+	delete(deployment.Annotations, podVolumesHashAnnotation)
+	require.NoError(t, k8sClient.Create(ctx, deployment))
+
+	result, err := reconciler.ensureDeployment(ctx, vmcp, nil, nil)
+	require.NoError(t, err)
+	assert.Equal(t, ctrl.Result{}, result)
+	assert.Equal(t, 1, deploymentUpdates, "a missing hash annotation must cause exactly one update")
+
+	updated := &appsv1.Deployment{}
+	require.NoError(t, k8sClient.Get(ctx, types.NamespacedName{Name: vmcp.Name, Namespace: vmcp.Namespace}, updated))
+	require.NotEmpty(t, updated.Annotations[podVolumesHashAnnotation])
+	resourceVersion := updated.ResourceVersion
+
+	result, err = reconciler.ensureDeployment(ctx, vmcp, nil, nil)
+	require.NoError(t, err)
+	assert.Equal(t, ctrl.Result{}, result)
+	assert.Equal(t, 1, deploymentUpdates, "the rebuilt deployment must be steady state")
+
+	updated = &appsv1.Deployment{}
+	require.NoError(t, k8sClient.Get(ctx, types.NamespacedName{Name: vmcp.Name, Namespace: vmcp.Namespace}, updated))
+	assert.Equal(t, resourceVersion, updated.ResourceVersion, "steady-state reconcile must not write again")
+}
+
+func TestVirtualMCPServerEnsureDeployment_UpdatesMCPServerEntryCABundleVolume(t *testing.T) {
+	t.Parallel()
+
+	ctx := t.Context()
+	scheme := testutil.NewScheme(t)
+	vmcp := v1beta1test.NewVirtualMCPServer(testVmcpName, "default",
+		v1beta1test.WithVMCPGroupRef(testGroupName),
+	)
+	configMap := &corev1.ConfigMap{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      vmcpConfigMapName(vmcp.Name),
+			Namespace: vmcp.Namespace,
+			Annotations: map[string]string{
+				checksum.ContentChecksumAnnotation: "test-checksum",
+			},
+		},
+		Data: map[string]string{"config.yaml": "test-config"},
+	}
+	entry := &mcpv1beta1.MCPServerEntry{
+		ObjectMeta: metav1.ObjectMeta{Name: "remote-entry", Namespace: vmcp.Namespace},
+		Spec: mcpv1beta1.MCPServerEntrySpec{
+			RemoteURL: "https://mcp.example.com",
+			Transport: "streamable-http",
+			GroupRef:  &mcpv1beta1.MCPGroupRef{Name: testGroupName},
+			CABundleRef: &mcpv1beta1.CABundleSource{ConfigMapRef: &corev1.ConfigMapKeySelector{
+				LocalObjectReference: corev1.LocalObjectReference{Name: "ca-bundle-v1"},
+				Key:                  "ca.crt",
+			}},
+		},
+	}
+	typedWorkloads := []workloads.TypedWorkload{{
+		Name: entry.Name,
+		Type: workloads.WorkloadTypeMCPServerEntry,
+	}}
+
+	deploymentUpdates := 0
+	k8sClient := fake.NewClientBuilder().
+		WithScheme(scheme).
+		WithObjects(vmcp, configMap, entry).
+		WithInterceptorFuncs(interceptor.Funcs{
+			Update: func(ctx context.Context, c client.WithWatch, obj client.Object, opts ...client.UpdateOption) error {
+				if _, ok := obj.(*appsv1.Deployment); ok {
+					deploymentUpdates++
+				}
+				return c.Update(ctx, obj, opts...)
+			},
+		}).
+		Build()
+	reconciler := &VirtualMCPServerReconciler{
+		Client:           k8sClient,
+		Scheme:           scheme,
+		PlatformDetector: ctrlutil.NewSharedPlatformDetector(),
+	}
+
+	deployment := reconciler.deploymentForVirtualMCPServer(
+		ctx, vmcp, "test-checksum", "", nil, typedWorkloads,
+	)
+	require.NotNil(t, deployment)
+	initialHash := deployment.Annotations[podVolumesHashAnnotation]
+	require.NotEmpty(t, initialHash)
+	require.NoError(t, k8sClient.Create(ctx, deployment))
+
+	updatedEntry := &mcpv1beta1.MCPServerEntry{}
+	require.NoError(t, k8sClient.Get(ctx, types.NamespacedName{Name: entry.Name, Namespace: entry.Namespace}, updatedEntry))
+	updatedEntry.Spec.CABundleRef.ConfigMapRef.Name = "ca-bundle-v2"
+	require.NoError(t, k8sClient.Update(ctx, updatedEntry))
+
+	result, err := reconciler.ensureDeployment(ctx, vmcp, nil, typedWorkloads)
+	require.NoError(t, err)
+	assert.Equal(t, ctrl.Result{}, result)
+	assert.Equal(t, 1, deploymentUpdates, "changing only the ConfigMap volume source must update the deployment")
+
+	updated := &appsv1.Deployment{}
+	require.NoError(t, k8sClient.Get(ctx, types.NamespacedName{Name: vmcp.Name, Namespace: vmcp.Namespace}, updated))
+	assert.NotEqual(t, initialHash, updated.Annotations[podVolumesHashAnnotation])
+	var caBundleConfigMapName string
+	for _, volume := range updated.Spec.Template.Spec.Volumes {
+		if volume.Name == caBundleVolumeName(entry.Name) && volume.ConfigMap != nil {
+			caBundleConfigMapName = volume.ConfigMap.Name
+			break
+		}
+	}
+	assert.Equal(t, "ca-bundle-v2", caBundleConfigMapName)
+	resourceVersion := updated.ResourceVersion
+
+	result, err = reconciler.ensureDeployment(ctx, vmcp, nil, typedWorkloads)
+	require.NoError(t, err)
+	assert.Equal(t, ctrl.Result{}, result)
+	assert.Equal(t, 1, deploymentUpdates, "the updated CA bundle reference must reach steady state")
+
+	updated = &appsv1.Deployment{}
+	require.NoError(t, k8sClient.Get(ctx, types.NamespacedName{Name: vmcp.Name, Namespace: vmcp.Namespace}, updated))
+	assert.Equal(t, resourceVersion, updated.ResourceVersion, "steady-state reconcile must not write again")
 }
 
 // TestVirtualMCPServerEnsureDeployment_RemovesStaleHashAnnotation is a regression test

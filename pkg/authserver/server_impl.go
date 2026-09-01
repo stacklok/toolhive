@@ -44,22 +44,21 @@ type server struct {
 	upstreams         []handlers.NamedUpstream
 }
 
-// upstreamProviderFactory creates an upstream OAuth2Provider from configuration.
-// This type enables dependency injection for testing.
-type upstreamProviderFactory func(ctx context.Context, cfg *UpstreamConfig) (upstream.OAuth2Provider, error)
-
 // serverOption configures the server during construction.
 type serverOption func(*serverOptions)
 
 // serverOptions holds optional configuration for server creation.
 type serverOptions struct {
-	upstreamFactory upstreamProviderFactory
+	upstreamFactory UpstreamProviderFactory
 }
 
-// defaultUpstreamFactory creates the production upstream provider based on type.
-// For OIDC providers, it creates an OIDCProviderImpl with discovery and ID token validation.
-// For OAuth2 providers, it creates a BaseOAuth2Provider.
-func defaultUpstreamFactory(ctx context.Context, cfg *UpstreamConfig) (upstream.OAuth2Provider, error) {
+// DefaultUpstreamFactory creates the production upstream provider based on type.
+// For OIDC providers, it creates an OIDCProviderImpl with discovery and ID token
+// validation. For OAuth2 providers, it creates a BaseOAuth2Provider.
+//
+// It is exported so a Config.UpstreamFactory implementation can delegate to the
+// built-in behavior for the upstreams it does not want to handle itself.
+func DefaultUpstreamFactory(ctx context.Context, cfg *UpstreamConfig) (upstream.OAuth2Provider, error) {
 	switch cfg.Type {
 	case UpstreamProviderTypeOIDC:
 		return upstream.NewOIDCProvider(ctx, cfg.OIDCConfig)
@@ -70,9 +69,24 @@ func defaultUpstreamFactory(ctx context.Context, cfg *UpstreamConfig) (upstream.
 	}
 }
 
-// withUpstreamFactory sets a custom upstream provider factory.
-// This is intended for testing and is not part of the public API.
-func withUpstreamFactory(factory upstreamProviderFactory) serverOption {
+// resolveUpstreamFactory picks the upstream provider factory to build with. The
+// in-package test seam wins over the caller-supplied Config.UpstreamFactory,
+// which in turn wins over DefaultUpstreamFactory.
+func resolveUpstreamFactory(seam, configured UpstreamProviderFactory) UpstreamProviderFactory {
+	switch {
+	case seam != nil:
+		return seam
+	case configured != nil:
+		return configured
+	default:
+		return DefaultUpstreamFactory
+	}
+}
+
+// withUpstreamFactory sets a custom upstream provider factory, taking
+// precedence over Config.UpstreamFactory. This is the in-package test seam;
+// external callers use Config.UpstreamFactory.
+func withUpstreamFactory(factory UpstreamProviderFactory) serverOption {
 	return func(o *serverOptions) {
 		o.upstreamFactory = factory
 	}
@@ -84,9 +98,7 @@ func newServer(ctx context.Context, cfg Config, stor storage.Storage, opts ...se
 	slog.Debug("initializing OAuth authorization server")
 
 	// Apply server options
-	options := &serverOptions{
-		upstreamFactory: defaultUpstreamFactory,
-	}
+	options := &serverOptions{}
 	for _, opt := range opts {
 		opt(options)
 	}
@@ -167,11 +179,12 @@ func newServer(ctx context.Context, cfg Config, stor storage.Storage, opts ...se
 	)
 
 	// Build ordered upstream provider list from all configured upstreams.
+	upstreamFactory := resolveUpstreamFactory(options.upstreamFactory, cfg.UpstreamFactory)
 	upstreams := make([]handlers.NamedUpstream, 0, len(cfg.Upstreams))
 	for i := range cfg.Upstreams {
 		upCfg := &cfg.Upstreams[i]
 		slog.Debug("creating upstream IDP provider", "type", upCfg.Type, "name", upCfg.Name)
-		upstreamProvider, upErr := options.upstreamFactory(ctx, upCfg)
+		upstreamProvider, upErr := upstreamFactory(ctx, upCfg)
 		if upErr != nil {
 			return nil, fmt.Errorf("failed to create upstream provider %q: %w", upCfg.Name, upErr)
 		}
@@ -393,9 +406,25 @@ func newUpstreamTokenRefresher(
 	}
 }
 
+// CloseIdleConnections releases the idle keep-alive connections pooled by the
+// server's upstream IDP providers. See the Server interface for why this is kept
+// separate from Close.
+func (s *server) CloseIdleConnections() {
+	for _, u := range s.upstreams {
+		// Optional capability: the OAuth2Provider interface is open to external
+		// implementations, so a provider that holds no pool of its own simply
+		// does not implement it.
+		if closer, ok := u.Provider.(upstream.IdleConnectionCloser); ok {
+			slog.Debug("closing upstream idle connections", "name", u.Name)
+			closer.CloseIdleConnections()
+		}
+	}
+}
+
 // Close releases resources held by the server.
 func (s *server) Close() error {
 	slog.Debug("closing OAuth authorization server")
+	s.CloseIdleConnections()
 	return s.storage.Close()
 }
 

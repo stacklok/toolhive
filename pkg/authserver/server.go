@@ -9,7 +9,13 @@ import (
 	"net/http"
 
 	"github.com/stacklok/toolhive/pkg/authserver/storage"
+	"github.com/stacklok/toolhive/pkg/authserver/upstream"
 )
+
+// UpstreamProviderFactory constructs the OAuth2Provider for one configured
+// upstream IDP. Set it on Config.UpstreamFactory to own upstream construction;
+// DefaultUpstreamFactory is the built-in implementation and can be delegated to.
+type UpstreamProviderFactory func(ctx context.Context, cfg *UpstreamConfig) (upstream.OAuth2Provider, error)
 
 // Server is the OAuth authorization server.
 // It provides HTTP handlers that serve all OAuth/OIDC endpoints.
@@ -53,7 +59,24 @@ type Server interface {
 	// its closed connection pool).
 	DCRStore() storage.DCRCredentialStore
 
-	// Close releases resources held by the server.
+	// CloseIdleConnections releases the idle keep-alive connections pooled by
+	// the server's upstream IDP providers, without touching storage.
+	//
+	// Each upstream provider owns a private HTTP client whose connection pool
+	// outlives the provider unless it is drained. An embedder that reconstructs
+	// the server to change its upstream set — passing the same storage.Storage
+	// and keys.KeyProvider so token and JWKS continuity is preserved — must
+	// retire the superseded server with this method rather than Close, because
+	// Close would also close the storage the new server is now serving through.
+	//
+	// Safe to call on a server that is still serving: only idle connections are
+	// closed, in-flight requests are unaffected, and later upstream calls dial
+	// again. Providers that do not expose the capability are skipped.
+	CloseIdleConnections()
+
+	// Close releases resources held by the server. It drains upstream idle
+	// connections (see CloseIdleConnections) and then closes storage. Do not
+	// call it on a server whose storage is shared with another live server.
 	Close() error
 }
 

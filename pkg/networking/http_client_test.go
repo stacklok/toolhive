@@ -4,6 +4,7 @@
 package networking
 
 import (
+	"context"
 	"crypto/rand"
 	"crypto/rsa"
 	"crypto/tls"
@@ -14,6 +15,7 @@ import (
 	"math/big"
 	"net/http"
 	"net/http/httptest"
+	"net/http/httptrace"
 	"net/url"
 	"os"
 	"path/filepath"
@@ -384,7 +386,11 @@ lT/G27CBRUlDiDhthwY1dccTCFhICg6ENUGqh2I=
 			expectError: false,
 			validateClient: func(t *testing.T, client *http.Client) {
 				t.Helper()
-				assert.IsType(t, &oauth2.Transport{}, client.Transport)
+				// The oauth2 transport is wrapped so that
+				// http.Client.CloseIdleConnections still reaches the pool.
+				wrapper, ok := client.Transport.(*closeIdlerTransport)
+				require.True(t, ok)
+				assert.IsType(t, &oauth2.Transport{}, wrapper.RoundTripper)
 			},
 		},
 		{
@@ -427,7 +433,10 @@ lT/G27CBRUlDiDhthwY1dccTCFhICg6ENUGqh2I=
 			validateClient: func(t *testing.T, client *http.Client) {
 				t.Helper()
 				// Should have oauth2 transport wrapping validating transport
-				authTransport := client.Transport.(*oauth2.Transport)
+				wrapper, ok := client.Transport.(*closeIdlerTransport)
+				require.True(t, ok)
+				authTransport, ok := wrapper.RoundTripper.(*oauth2.Transport)
+				require.True(t, ok)
 				assert.IsType(t, &ValidatingTransport{}, authTransport.Base)
 			},
 		},
@@ -921,4 +930,89 @@ func TestSameHostRedirectPolicy_Integration(t *testing.T) {
 		require.NoError(t, err)
 		assert.Equal(t, "OK", string(body))
 	})
+}
+
+// TestBuild_BoundsIdleConnectionPool guards the transport fields against being
+// dropped again. Zero values mean "retain idle connections forever" and
+// "unlimited", which turns every dropped client into a permanently held socket
+// and goroutine pair (see #6479).
+func TestBuild_BoundsIdleConnectionPool(t *testing.T) {
+	t.Parallel()
+
+	client, err := NewHttpClientBuilder().Build()
+	require.NoError(t, err)
+
+	validating, ok := client.Transport.(*ValidatingTransport)
+	require.True(t, ok, "Build must wrap the pool in a ValidatingTransport")
+	transport, ok := validating.Transport.(*http.Transport)
+	require.True(t, ok, "ValidatingTransport must wrap an *http.Transport")
+
+	assert.Equal(t, idleConnTimeout, transport.IdleConnTimeout)
+	assert.Equal(t, maxIdleConns, transport.MaxIdleConns)
+	assert.Equal(t, maxIdleConnsPerHost, transport.MaxIdleConnsPerHost)
+}
+
+// TestBuild_CloseIdleConnectionsReachesPool pins that
+// http.Client.CloseIdleConnections is not a silent no-op on a built client. The
+// client discovers the capability by asserting the outermost transport, so every
+// wrapper Build installs must forward the call.
+func TestBuild_CloseIdleConnectionsReachesPool(t *testing.T) {
+	t.Parallel()
+
+	tokenFile := filepath.Join(t.TempDir(), "token")
+	require.NoError(t, os.WriteFile(tokenFile, []byte("test-token"), 0o600))
+
+	tests := []struct {
+		name      string
+		tokenFile string
+	}{
+		{name: "validating transport"},
+		{name: "oauth2 token file transport", tokenFile: tokenFile},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+				w.WriteHeader(http.StatusOK)
+			}))
+			t.Cleanup(srv.Close)
+
+			builder := NewHttpClientBuilder().WithPrivateIPs(true).WithInsecureAllowHTTP(true)
+			if tt.tokenFile != "" {
+				builder = builder.WithTokenFromFile(tt.tokenFile)
+			}
+			client, err := builder.Build()
+			require.NoError(t, err)
+
+			require.False(t, getReusedConn(t, client, srv.URL), "first request cannot reuse a connection")
+			require.True(t, getReusedConn(t, client, srv.URL), "second request must reuse the pooled connection")
+
+			client.CloseIdleConnections()
+
+			assert.False(t, getReusedConn(t, client, srv.URL),
+				"CloseIdleConnections must drain the pool, so the next request dials again")
+		})
+	}
+}
+
+// getReusedConn issues a GET and reports whether it was served from the
+// client's idle connection pool.
+func getReusedConn(t *testing.T, client *http.Client, target string) bool {
+	t.Helper()
+
+	var reused bool
+	ctx := httptrace.WithClientTrace(context.Background(), &httptrace.ClientTrace{
+		GotConn: func(info httptrace.GotConnInfo) { reused = info.Reused },
+	})
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, target, nil)
+	require.NoError(t, err)
+
+	resp, err := client.Do(req)
+	require.NoError(t, err)
+	_, _ = io.Copy(io.Discard, resp.Body)
+	require.NoError(t, resp.Body.Close())
+
+	return reused
 }

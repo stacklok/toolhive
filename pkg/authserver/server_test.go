@@ -6,9 +6,11 @@ package authserver
 import (
 	"context"
 	"crypto/rand"
+	"fmt"
 	"log/slog"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -493,4 +495,188 @@ func TestNewServer_RegistersDelegateClientsBeforeUpstreamConstruction(t *testing
 	client, err := stor.GetClient(ctx, "delegate")
 	require.NoError(t, err)
 	assert.False(t, registration.DCRIssued(client))
+}
+
+// closeCountingProvider is an OAuth2Provider that implements the optional
+// upstream.IdleConnectionCloser capability and records invocations.
+type closeCountingProvider struct {
+	upstream.OAuth2Provider
+	closes  atomic.Int32
+	onClose func()
+}
+
+func (p *closeCountingProvider) CloseIdleConnections() {
+	p.closes.Add(1)
+	if p.onClose != nil {
+		p.onClose()
+	}
+}
+
+// plainProvider is an OAuth2Provider that does NOT implement
+// upstream.IdleConnectionCloser, standing in for an external implementation of
+// the open interface.
+type plainProvider struct {
+	upstream.OAuth2Provider
+}
+
+// eventRecordingStorage records when the server closes storage, so the ordering
+// between upstream draining and storage teardown can be asserted. Close does not
+// delegate: MemoryStorage.Close panics when called twice and the test cleanup
+// closes the underlying store.
+type eventRecordingStorage struct {
+	*storage.MemoryStorage
+	record func(string)
+}
+
+func (s *eventRecordingStorage) Unwrap() storage.Storage { return s.MemoryStorage }
+
+func (s *eventRecordingStorage) Close() error {
+	s.record("storage")
+	return nil
+}
+
+// TestServer_CloseIdleConnections pins the Close/CloseIdleConnections split that
+// lets an embedder retire a superseded server without closing the storage a
+// replacement server is still serving through (see #6479). It also pins that
+// providers lacking the optional capability are skipped rather than panicking.
+func TestServer_CloseIdleConnections(t *testing.T) {
+	t.Parallel()
+
+	newTestServer := func(t *testing.T, record func(string), providers ...upstream.OAuth2Provider) *server {
+		t.Helper()
+
+		base := storage.NewMemoryStorage()
+		t.Cleanup(func() { _ = base.Close() })
+		stor := &eventRecordingStorage{MemoryStorage: base, record: record}
+
+		upstreams := make([]UpstreamConfig, 0, len(providers))
+		for i := range providers {
+			upstreams = append(upstreams, UpstreamConfig{
+				Name:         fmt.Sprintf("upstream-%d", i),
+				Type:         UpstreamProviderTypeOAuth2,
+				OAuth2Config: validUpstreamConfig(),
+			})
+		}
+
+		next := 0
+		factory := func(_ context.Context, _ *UpstreamConfig) (upstream.OAuth2Provider, error) {
+			p := providers[next]
+			next++
+			return p, nil
+		}
+
+		srv, err := newServer(t.Context(), Config{
+			Issuer:           "https://example.com",
+			KeyProvider:      keys.NewGeneratingProvider(keys.DefaultAlgorithm),
+			HMACSecrets:      &servercrypto.HMACSecrets{Current: validHMACSecret()},
+			Upstreams:        upstreams,
+			AllowedAudiences: []string{"https://mcp.example.com"},
+		}, stor, withUpstreamFactory(factory))
+		require.NoError(t, err)
+		return srv
+	}
+
+	t.Run("drains every capable upstream without closing storage", func(t *testing.T) {
+		t.Parallel()
+
+		var events []string
+		first, second := &closeCountingProvider{}, &closeCountingProvider{}
+		srv := newTestServer(t, func(e string) { events = append(events, e) }, first, second)
+
+		srv.CloseIdleConnections()
+
+		assert.Equal(t, int32(1), first.closes.Load())
+		assert.Equal(t, int32(1), second.closes.Load())
+		// Leaving storage open is the whole point of the split: an embedder
+		// retiring a superseded server must not tear down the storage the
+		// replacement server is serving through.
+		assert.Empty(t, events, "CloseIdleConnections must not touch storage")
+	})
+
+	t.Run("Close drains upstreams then closes storage", func(t *testing.T) {
+		t.Parallel()
+
+		var events []string
+		record := func(e string) { events = append(events, e) }
+		provider := &closeCountingProvider{}
+		provider.onClose = func() { record("upstream") }
+		srv := newTestServer(t, record, provider)
+
+		require.NoError(t, srv.Close())
+
+		assert.Equal(t, int32(1), provider.closes.Load())
+		assert.Equal(t, []string{"upstream", "storage"}, events)
+	})
+
+	t.Run("skips upstreams without the capability", func(t *testing.T) {
+		t.Parallel()
+
+		capable := &closeCountingProvider{}
+		srv := newTestServer(t, func(string) {}, &plainProvider{}, capable)
+
+		assert.NotPanics(t, srv.CloseIdleConnections)
+		assert.Equal(t, int32(1), capable.closes.Load())
+	})
+}
+
+// TestNewServer_UpstreamFactoryPrecedence pins that a caller can own upstream
+// construction through Config.UpstreamFactory, that the in-package test seam
+// still overrides it, and that DefaultUpstreamFactory is used when neither is
+// set.
+func TestNewServer_UpstreamFactoryPrecedence(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name       string
+		setConfig  bool
+		setOption  bool
+		wantSource string
+	}{
+		{name: "config factory is used", setConfig: true, wantSource: "config"},
+		{name: "option overrides config factory", setConfig: true, setOption: true, wantSource: "option"},
+		{name: "option alone is used", setOption: true, wantSource: "option"},
+		// Neither set: DefaultUpstreamFactory runs and builds a real
+		// BaseOAuth2Provider from validUpstreamConfig.
+		{name: "default factory is used when neither is set", wantSource: ""},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			stor := storage.NewMemoryStorage()
+			t.Cleanup(func() { _ = stor.Close() })
+
+			var source string
+			factoryNamed := func(name string) UpstreamProviderFactory {
+				return func(_ context.Context, _ *UpstreamConfig) (upstream.OAuth2Provider, error) {
+					source = name
+					return &plainProvider{}, nil
+				}
+			}
+
+			cfg := Config{
+				Issuer:           "https://example.com",
+				KeyProvider:      keys.NewGeneratingProvider(keys.DefaultAlgorithm),
+				HMACSecrets:      &servercrypto.HMACSecrets{Current: validHMACSecret()},
+				Upstreams:        []UpstreamConfig{{Name: "default", Type: UpstreamProviderTypeOAuth2, OAuth2Config: validUpstreamConfig()}},
+				AllowedAudiences: []string{"https://mcp.example.com"},
+			}
+			if tt.setConfig {
+				cfg.UpstreamFactory = factoryNamed("config")
+			}
+			var opts []serverOption
+			if tt.setOption {
+				opts = append(opts, withUpstreamFactory(factoryNamed("option")))
+			}
+
+			srv, err := newServer(t.Context(), cfg, stor, opts...)
+			require.NoError(t, err)
+			require.Len(t, srv.upstreams, 1)
+			assert.Equal(t, tt.wantSource, source)
+			if tt.wantSource == "" {
+				assert.IsType(t, &upstream.BaseOAuth2Provider{}, srv.upstreams[0].Provider)
+			}
+		})
+	}
 }

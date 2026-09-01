@@ -296,6 +296,22 @@ type BaseOAuth2Provider struct {
 	httpClient   *http.Client
 }
 
+// IdleConnectionCloser is an optional capability an OAuth2Provider may
+// implement to release the idle keep-alive connections held by its private HTTP
+// client. It is deliberately kept out of the OAuth2Provider interface: doc.go
+// invites external implementations of that interface, so widening it would be a
+// breaking change. Consumers should type-assert against this interface and treat
+// a provider that does not implement it as having nothing to release.
+//
+// The connections are only idle ones; in-flight requests are unaffected and the
+// provider remains usable afterwards (a subsequent call simply dials again).
+type IdleConnectionCloser interface {
+	CloseIdleConnections()
+}
+
+// Compile-time capability check.
+var _ IdleConnectionCloser = (*BaseOAuth2Provider)(nil)
+
 // OAuth2ProviderOption configures a BaseOAuth2Provider.
 type OAuth2ProviderOption func(*BaseOAuth2Provider)
 
@@ -346,6 +362,20 @@ func newBaseOAuth2Provider(config *OAuth2Config, hostForClient string) (*BaseOAu
 		oauth2Config: oauth2Cfg,
 		httpClient:   httpClient,
 	}, nil
+}
+
+// CloseIdleConnections releases the idle keep-alive connections pooled by the
+// provider's HTTP client. The provider stays usable: only idle connections are
+// closed, and later requests dial fresh ones.
+//
+// Call this when retiring a provider. Without it the pool's sockets and their
+// servicing goroutines are held until the idle timeout elapses, and a process
+// that constructs providers repeatedly accumulates them in the meantime.
+func (p *BaseOAuth2Provider) CloseIdleConnections() {
+	if p.httpClient == nil {
+		return
+	}
+	p.httpClient.CloseIdleConnections()
 }
 
 // authStyleFromMethod maps an RFC 7591 token_endpoint_auth_method to the

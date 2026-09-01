@@ -21,8 +21,10 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"net/http"
 	"net/http/httptest"
+	"net/http/httptrace"
 	"net/url"
 	"strings"
 	"sync/atomic"
@@ -2869,4 +2871,56 @@ func TestOAuth2Config_AllowPrivateIPs(t *testing.T) {
 		require.NotNil(t, provider)
 		assert.False(t, provider.config.AllowPrivateIPs)
 	})
+}
+
+// TestBaseOAuth2Provider_CloseIdleConnections pins that retiring a provider
+// releases the connection pool its private HTTP client holds. Without it, a
+// process that constructs providers repeatedly accumulates one socket and
+// goroutine pair per provider (see #6479).
+func TestBaseOAuth2Provider_CloseIdleConnections(t *testing.T) {
+	t.Parallel()
+
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusOK)
+	}))
+	t.Cleanup(srv.Close)
+
+	host, err := url.Parse(srv.URL)
+	require.NoError(t, err)
+	client, err := newHTTPClientForHost(host.Host, true, true, "")
+	require.NoError(t, err)
+
+	p := &BaseOAuth2Provider{httpClient: client}
+
+	require.False(t, providerRequestReusedConn(t, p, srv.URL), "first request cannot reuse a connection")
+	require.True(t, providerRequestReusedConn(t, p, srv.URL), "second request must reuse the pooled connection")
+
+	p.CloseIdleConnections()
+
+	assert.False(t, providerRequestReusedConn(t, p, srv.URL),
+		"CloseIdleConnections must drain the provider's pool")
+
+	// A provider constructed without a client (an OIDC provider that failed
+	// before its client was set) must not panic.
+	assert.NotPanics(t, (&BaseOAuth2Provider{}).CloseIdleConnections)
+}
+
+// providerRequestReusedConn issues a GET through the provider's HTTP client and
+// reports whether it was served from that client's idle connection pool.
+func providerRequestReusedConn(t *testing.T, p *BaseOAuth2Provider, target string) bool {
+	t.Helper()
+
+	var reused bool
+	ctx := httptrace.WithClientTrace(context.Background(), &httptrace.ClientTrace{
+		GotConn: func(info httptrace.GotConnInfo) { reused = info.Reused },
+	})
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, target, nil)
+	require.NoError(t, err)
+
+	resp, err := p.httpClient.Do(req)
+	require.NoError(t, err)
+	_, _ = io.Copy(io.Discard, resp.Body)
+	require.NoError(t, resp.Body.Close())
+
+	return reused
 }

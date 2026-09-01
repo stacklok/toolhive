@@ -904,6 +904,26 @@ type Config struct {
 	// Multiple upstreams form a sequential authorization chain.
 	Upstreams []UpstreamConfig
 
+	// UpstreamFactory, when set, is used instead of DefaultUpstreamFactory to
+	// construct each configured upstream's OAuth2Provider. Two reasons to set it:
+	//
+	//   - Connection reuse. DefaultUpstreamFactory builds a private HTTP client
+	//     per upstream, so a process that reconstructs the server to change its
+	//     upstream set creates a fresh connection pool each time. A factory that
+	//     passes a client shared per issuer host via upstream.WithHTTPClient /
+	//     upstream.WithOAuth2HTTPClient creates none.
+	//   - Per-upstream failure isolation. Upstream construction inside New is
+	//     otherwise all-or-nothing: one unreachable or mistyped issuer_url fails
+	//     the whole call. A factory owning construction can apply a per-upstream
+	//     deadline and skip or substitute a single failing provider while the
+	//     rest serve.
+	//
+	// SECURITY: the returned provider validates the upstream's ID tokens and
+	// resolves user identity. A factory that returns a permissive provider
+	// bypasses upstream authentication for that leg of the chain. Delegate to
+	// DefaultUpstreamFactory for upstreams you do not need to customize.
+	UpstreamFactory UpstreamProviderFactory
+
 	// UpstreamFilter, when set, narrows the upstream authorization chain after the
 	// first leg resolves (see handlers.WithUpstreamFilter). When nil, all
 	// configured upstreams are walked — the current behavior. Pass nil itself,

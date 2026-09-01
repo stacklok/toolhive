@@ -1498,6 +1498,7 @@ func (s *stubServer) Handler() http.Handler                                { ret
 func (*stubServer) IDPTokenStorage() storage.UpstreamTokenStorage          { return nil }
 func (*stubServer) UpstreamTokenRefresher() storage.UpstreamTokenRefresher { return nil }
 func (*stubServer) DCRStore() storage.DCRCredentialStore                   { return nil }
+func (*stubServer) CloseIdleConnections()                                  {}
 func (*stubServer) Close() error                                           { return nil }
 
 func TestRoutes(t *testing.T) {

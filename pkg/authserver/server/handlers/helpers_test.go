@@ -109,7 +109,8 @@ type baseTestSetupConfig struct {
 	getLatestUpstreamTokensErr error            // if non-nil, GetLatestUpstreamTokensForUser always returns this error
 	createUserErr              error            // if non-nil, CreateUser always returns this error
 	storeUpstreamTokensErr     error            // if non-nil, StoreUpstreamTokens always returns this error
-	getAllUpstreamTokensErr    error            // if non-nil, GetAllUpstreamTokens always returns this error
+	getAllUpstreamTokensErr    error            // if non-nil, GetAllUpstreamTokens returns this after getAllUpstreamErrAfter calls
+	getAllUpstreamErrAfter     int              // number of GetAllUpstreamTokens calls that succeed before the error kicks in
 	deleteForProviderErrs      map[string]error // per-provider error for DeleteUpstreamTokensForProvider
 	getClientErr               error            // if non-nil, GetClient returns this after getClientErrAfter successful calls
 	getClientErrAfter          int              // number of GetClient calls that succeed before getClientErr kicks in
@@ -130,6 +131,16 @@ func withStoreUpstreamTokensError(err error) baseTestSetupOption {
 func withGetAllUpstreamTokensError(err error) baseTestSetupOption {
 	return func(c *baseTestSetupConfig) {
 		c.getAllUpstreamTokensErr = err
+	}
+}
+
+// withGetAllUpstreamTokensErrorAfterCalls makes GetAllUpstreamTokens return err starting
+// with the (after+1)-th call, so a test can let the nextMissingUpstream read succeed and
+// fail only the later verifyChainIdentity read.
+func withGetAllUpstreamTokensErrorAfterCalls(after int, err error) baseTestSetupOption {
+	return func(c *baseTestSetupConfig) {
+		c.getAllUpstreamTokensErr = err
+		c.getAllUpstreamErrAfter = after
 	}
 }
 
@@ -444,6 +455,7 @@ func baseTestSetup(t *testing.T, opts ...baseTestSetupOption) (fosite.OAuth2Prov
 			return nil
 		}).AnyTimes()
 
+	getAllUpstreamCalls := 0
 	stor.EXPECT().GetAllUpstreamTokens(gomock.Any(), gomock.Any()).DoAndReturn(
 		func(ctx context.Context, sessionID string) (map[string]*storage.UpstreamTokens, error) {
 			// GetAllUpstreamTokens takes only (ctx, sessionID) — no tokens argument to
@@ -451,7 +463,8 @@ func baseTestSetup(t *testing.T, opts ...baseTestSetupOption) (fosite.OAuth2Prov
 			// only from ctx. Capture the ctx here so a test can assert the callback
 			// placed the identity into it before this read runs.
 			storState.getAllUpstreamCtx = ctx
-			if setupCfg.getAllUpstreamTokensErr != nil {
+			getAllUpstreamCalls++
+			if setupCfg.getAllUpstreamTokensErr != nil && getAllUpstreamCalls > setupCfg.getAllUpstreamErrAfter {
 				return nil, setupCfg.getAllUpstreamTokensErr
 			}
 			result := make(map[string]*storage.UpstreamTokens)

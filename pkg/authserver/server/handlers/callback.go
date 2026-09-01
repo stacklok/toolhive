@@ -182,10 +182,12 @@ func (h *Handler) CallbackHandler(w http.ResponseWriter, req *http.Request) {
 		slog.Error("failed to store upstream tokens",
 			"error", err,
 		)
-		// Clean up only this leg's token (see cleanupUpstreamTokens): its store just
-		// failed, so this removes any partial or carried-forward row and is otherwise a
-		// no-op. Earlier legs are the user's own valid tokens and are left intact.
-		h.cleanupUpstreamTokens(ctx, sessionID, []string{providerID})
+		// Do NOT clean up upstream tokens here: the store for this attempt just failed, so
+		// this attempt wrote nothing. Under a (gateway, user)-keyed storage decorator the
+		// only row at this provider is a credential from an earlier successful
+		// authorization (e.g. a re-connect whose fresh store failed), and deleting it would
+		// disconnect that already-connected account. Earlier legs are likewise the user's
+		// own valid tokens. Leave them all; the pending is single-use and errors out below.
 		h.provider.WriteAuthorizeError(ctx, w, ar, fosite.ErrServerError.WithHint("failed to store session"))
 		return
 	}
@@ -399,22 +401,14 @@ func (h *Handler) handleUpstreamError(
 	if internalState != "" {
 		pending, err := h.storage.LoadPendingAuthorization(ctx, internalState)
 		if err == nil {
+			// Delete only the single-use pending authorization. Deliberately do NOT touch
+			// upstream tokens: the upstream IdP errored before this attempt exchanged a
+			// code, so this attempt stored nothing. Under a (gateway, user)-keyed storage
+			// decorator the only row at this provider is a credential from an earlier
+			// successful authorization — e.g. canceling a re-connect (error=access_denied)
+			// would otherwise disconnect the already-connected account — and earlier legs
+			// are likewise the user's own valid tokens. Leave them all intact.
 			_ = h.storage.DeletePendingAuthorization(ctx, internalState)
-			// Clean up only this leg's token (see cleanupUpstreamTokens); earlier legs are
-			// the user's own valid tokens and are left intact. This leg failed at the
-			// upstream IdP before a token was stored, so the delete is normally a no-op,
-			// but it also removes a row left by a prior attempt on the same leg. On a
-			// subsequent leg the resolved user is carried in pending.ResolvedUserID; place
-			// it in ctx via WithPlatformUser so a context-keyed storage decorator resolves
-			// the canonical user for the cleanup. WithPlatformUser, not WithIdentity: there
-			// is no authenticated identity at the callback, only the storage-scoped user.
-			if pending.SessionID != "" {
-				cleanupCtx := ctx
-				if pending.ResolvedUserID != "" {
-					cleanupCtx = auth.WithPlatformUser(ctx, pending.ResolvedUserID)
-				}
-				h.cleanupUpstreamTokens(cleanupCtx, pending.SessionID, []string{pending.UpstreamProviderName})
-			}
 			ar := h.buildAuthorizeRequesterFromPending(ctx, pending)
 			if ar != nil {
 				// Use generic error hint to avoid exposing upstream IDP details to clients.

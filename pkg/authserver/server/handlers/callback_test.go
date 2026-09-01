@@ -1339,11 +1339,12 @@ func TestCleanupUpstreamTokens_SkipsUnconfiguredAndEmpty(t *testing.T) {
 		"a name that is not a configured upstream must not be deleted")
 }
 
-// TestCallbackHandler_StoreUpstreamTokensError_LeavesEarlierLegs covers the
-// StoreUpstreamTokens-failure cleanup site on a subsequent leg: the cleanup is scoped to
-// the leg being processed (provider-2, whose store just failed), so the user's earlier
-// leg (provider-1) is left intact rather than wiped by the failure.
-func TestCallbackHandler_StoreUpstreamTokensError_LeavesEarlierLegs(t *testing.T) {
+// TestCallbackHandler_StoreUpstreamTokensError_LeavesExistingTokens covers the
+// StoreUpstreamTokens-failure path: a failed store wrote nothing, so it must delete
+// nothing. The user's earlier leg (provider-1) and any existing credential for the leg
+// being processed (a re-connect of provider-2 whose fresh store failed) are both left
+// intact rather than wiped by the failure.
+func TestCallbackHandler_StoreUpstreamTokensError_LeavesExistingTokens(t *testing.T) {
 	t.Parallel()
 	handler, storState, _, _ := multiUpstreamTestSetupWithStorage(t,
 		withStoreUpstreamTokensError(errors.New("storage unavailable")))
@@ -1355,6 +1356,17 @@ func TestCallbackHandler_StoreUpstreamTokensError_LeavesEarlierLegs(t *testing.T
 	storState.upstreamTokens[sessionID+":provider-1"] = &storage.UpstreamTokens{
 		ProviderID:  "provider-1",
 		AccessToken: "p1-at",
+		ExpiresAt:   time.Now().Add(time.Hour),
+		ClientID:    testAuthClientID,
+		UserID:      leg1User,
+	}
+
+	// provider-2 is already connected too — this is a re-connect whose fresh store will
+	// fail. Its existing credential must survive the failure.
+	existingP2 := sessionID + ":provider-2"
+	storState.upstreamTokens[existingP2] = &storage.UpstreamTokens{
+		ProviderID:  "provider-2",
+		AccessToken: "existing-p2-at",
 		ExpiresAt:   time.Now().Add(time.Hour),
 		ClientID:    testAuthClientID,
 		UserID:      leg1User,
@@ -1387,12 +1399,13 @@ func TestCallbackHandler_StoreUpstreamTokensError_LeavesEarlierLegs(t *testing.T
 	assert.Equal(t, http.StatusSeeOther, rec.Code, "a store failure should produce a fosite error redirect")
 	assert.Contains(t, rec.Header().Get("Location"), "error=server_error")
 
-	// The earlier leg's token survives — cleanup is scoped to the failed leg only.
+	// A failed store deletes nothing: the earlier leg and the existing provider-2
+	// credential both survive.
 	assert.Contains(t, storState.upstreamTokens, sessionID+":provider-1",
 		"an earlier leg's token must survive a later leg's store failure")
-	// provider-2's store failed, so it never had a row.
-	assert.NotContains(t, storState.upstreamTokens, sessionID+":provider-2",
-		"provider-2's store failed, so no row should exist")
+	require.Contains(t, storState.upstreamTokens, existingP2,
+		"an existing credential must survive a re-connect whose fresh store failed")
+	assert.Equal(t, "existing-p2-at", storState.upstreamTokens[existingP2].AccessToken)
 }
 
 // TestCallbackHandler_NextMissingUpstreamError_CleansUpChain covers the
@@ -1908,74 +1921,63 @@ func TestCallbackHandler_PlacesPlatformUserInContext_OnChainRead(t *testing.T) {
 	require.False(t, hasIdentity, "callback must not place an Identity (only a platform user) in ctx")
 }
 
-// TestCallbackHandler_PlacesPlatformUserInContext_OnUpstreamErrorCleanup verifies that
-// when a subsequent-leg callback returns an upstream error, the per-provider cleanup
-// (DeleteUpstreamTokensForProvider in handleUpstreamError) runs with the resolved
-// canonical user already in the request context, and that it leaves the earlier leg.
-//
-// This is the error-path sibling of the chain-read test above. handleUpstreamError
-// runs from an early return at the top of CallbackHandler, before the happy-path
-// user injection, so it must place the user itself. DeleteUpstreamTokensForProvider
-// carries no tokens argument — so a context-keyed storage decorator can resolve the
-// canonical user only from ctx. The resolved user is carried forward from leg 1 via
-// pending.ResolvedUserID. The cleanup is scoped to the leg being processed (provider-2,
-// which errored at the upstream so it has no row), so the earlier leg (provider-1)
-// survives.
-func TestCallbackHandler_PlacesPlatformUserInContext_OnUpstreamErrorCleanup(t *testing.T) {
+// TestCallbackHandler_UpstreamError_LeavesExistingProviderToken is the regression guard
+// for the re-connect data-loss bug: when the upstream IdP returns an error (e.g. the user
+// cancels a re-connect), handleUpstreamError must delete only the single-use pending and
+// leave the provider's existing token — a credential from an earlier successful
+// authorization — intact. The upstream errored before this attempt exchanged a code, so
+// this attempt stored nothing; deleting the provider's row would disconnect an
+// already-connected account.
+func TestCallbackHandler_UpstreamError_LeavesExistingProviderToken(t *testing.T) {
 	t.Parallel()
 	handler, storState, _, _ := multiUpstreamTestSetup(t)
 
-	sessionID := "error-cleanup-session"
-	const leg1User = "resolved-user-id-from-leg1"
+	sessionID := "reconnect-cancel-session"
+	const userID = "user-1"
 
-	// First leg already completed: provider-1's tokens exist, keyed to leg1User.
-	storState.upstreamTokens[sessionID+":provider-1"] = &storage.UpstreamTokens{
+	// provider-1 is already connected from a prior successful authorization.
+	existingKey := sessionID + ":provider-1"
+	storState.upstreamTokens[existingKey] = &storage.UpstreamTokens{
 		ProviderID:   "provider-1",
-		AccessToken:  "p1-at",
-		RefreshToken: "p1-rt",
+		AccessToken:  "existing-at",
+		RefreshToken: "existing-rt",
 		ExpiresAt:    time.Now().Add(time.Hour),
 		ClientID:     testAuthClientID,
-		UserID:       leg1User,
+		UserID:       userID,
 	}
 
-	// Second-leg pending carries the resolved identity forward from leg 1.
-	secondLegState := "error-cleanup-second-leg-state"
-	storState.pendingAuths[secondLegState] = &storage.PendingAuthorization{
+	// A single-leg re-connect of that same provider is in flight.
+	reconnectState := "reconnect-cancel-state"
+	storState.pendingAuths[reconnectState] = &storage.PendingAuthorization{
 		ClientID:             testAuthClientID,
 		RedirectURI:          testAuthRedirectURI,
 		State:                "client-original-state",
 		PKCEChallenge:        "client-challenge",
 		PKCEMethod:           "S256",
-		Scopes:               []string{"openid", "profile"},
-		InternalState:        secondLegState,
-		UpstreamProviderName: "provider-2",
+		Scopes:               []string{"openid"},
+		InternalState:        reconnectState,
+		UpstreamPKCEVerifier: "reconnect-verifier-1234567890123456789012345",
+		UpstreamNonce:        "reconnect-nonce",
+		UpstreamProviderName: "provider-1",
 		SessionID:            sessionID,
-		ChainUpstreams:       []string{"provider-1", "provider-2"},
-		ResolvedUserID:       leg1User,
-		ResolvedUserName:     "First Leg User",
-		ResolvedUserEmail:    "firstleg@example.com",
+		SingleLeg:            true,
+		ResolvedUserID:       userID,
 		CreatedAt:            time.Now(),
 	}
 
-	// Upstream returns an error on the second leg, driving the handleUpstreamError path.
-	req := httptest.NewRequest(http.MethodGet, "/oauth/callback?error=access_denied&state="+secondLegState, nil)
+	// The user cancels at the upstream: error=access_denied comes back.
+	req := httptest.NewRequest(http.MethodGet, "/oauth/callback?error=access_denied&state="+reconnectState, nil)
 	rec := httptest.NewRecorder()
 	handler.CallbackHandler(rec, req)
 
-	// handleUpstreamError cleans up earlier-leg tokens via DeleteUpstreamTokensForProvider;
-	// the harness captured the ctx it ran with. Assert the callback placed the resolved
-	// canonical user into that ctx so a context-keyed decorator can delete the row.
-	uid, ok := auth.PlatformUserFromContext(storState.deleteUpstreamCtx)
-	require.True(t, ok, "handleUpstreamError must place platform user in ctx before the cleanup delete")
-	require.Equal(t, leg1User, uid)
+	assert.Equal(t, http.StatusSeeOther, rec.Code, "a canceled re-connect should redirect the error to the client")
+	assert.Contains(t, rec.Header().Get("Location"), "error=access_denied")
 
-	// The earlier leg's token survives: cleanup is scoped to the leg being processed
-	// (provider-2), not the whole chain, so a failed connector login never wipes the
-	// user's other connectors.
-	assert.Contains(t, storState.upstreamTokens, sessionID+":provider-1",
-		"an earlier leg's token must survive a later leg's upstream error")
-
-	// The error path must NOT place a stub Identity under the identity key.
-	_, hasIdentity := auth.IdentityFromContext(storState.deleteUpstreamCtx)
-	require.False(t, hasIdentity, "handleUpstreamError must not place an Identity (only a platform user) in ctx")
+	// The existing token survives the canceled re-connect...
+	require.Contains(t, storState.upstreamTokens, existingKey,
+		"canceling a re-connect must not disconnect the already-connected account")
+	assert.Equal(t, "existing-at", storState.upstreamTokens[existingKey].AccessToken)
+	// ...and the single-use pending authorization is consumed.
+	assert.NotContains(t, storState.pendingAuths, reconnectState,
+		"the single-use pending authorization should be deleted")
 }

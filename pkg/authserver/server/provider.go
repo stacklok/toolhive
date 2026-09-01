@@ -129,6 +129,11 @@ type AuthorizationServerParams struct {
 	SigningKeyID         string
 	SigningKeyAlgorithm  string
 	SigningKey           crypto.Signer
+	// AdditionalKeys are extra public keys published in the JWKS alongside the
+	// signing key. They enable zero-downtime rotation: a new key can be added
+	// to FallbackKeyFiles and advertised via JWKS before it becomes the
+	// SigningKey, and an old key can remain verifiable after promotion.
+	AdditionalKeys []jose.JSONWebKey
 	// AllowedAudiences is the list of valid resource URIs that tokens can be issued for.
 	// Per RFC 8707, the "resource" parameter in token requests is validated against this list.
 	// Security: An empty list means NO audiences are permitted (secure default).
@@ -296,6 +301,11 @@ func NewAuthorizationServerConfig(cfg *AuthorizationServerParams) (*Authorizatio
 		Use:       "sig",
 	}
 
+	// Build full JWKS: signing key first, then any additional rotation keys.
+	jwksKeys := make([]jose.JSONWebKey, 0, 1+len(cfg.AdditionalKeys))
+	jwksKeys = append(jwksKeys, jwk)
+	jwksKeys = append(jwksKeys, cfg.AdditionalKeys...)
+
 	fositeConfig := &fosite.Config{
 		AccessTokenIssuer:              cfg.Issuer,
 		AccessTokenLifespan:            cfg.AccessTokenLifespan,
@@ -322,7 +332,7 @@ func NewAuthorizationServerConfig(cfg *AuthorizationServerParams) (*Authorizatio
 	return &AuthorizationServerConfig{
 		Config:                              fositeConfig,
 		SigningKey:                          &jwk,
-		SigningJWKS:                         &jose.JSONWebKeySet{Keys: []jose.JSONWebKey{jwk}},
+		SigningJWKS:                         &jose.JSONWebKeySet{Keys: jwksKeys},
 		AllowedAudiences:                    cfg.AllowedAudiences,
 		ScopesSupported:                     cfg.ScopesSupported,
 		BaselineClientScopes:                cfg.BaselineClientScopes,

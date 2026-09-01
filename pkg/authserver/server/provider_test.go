@@ -16,11 +16,14 @@ package server
 
 import (
 	"context"
+	"crypto/ecdsa"
+	"crypto/elliptic"
 	"crypto/rand"
 	"crypto/rsa"
 	"testing"
 	"time"
 
+	"github.com/go-jose/go-jose/v4"
 	"github.com/ory/fosite"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -554,6 +557,55 @@ func TestAuthorizationServerConfig_PublicJWKS(t *testing.T) {
 	// Verify it's a public key (not private)
 	_, ok := publicJWKS.Keys[0].Key.(*rsa.PublicKey)
 	assert.True(t, ok, "expected public key, got %T", publicJWKS.Keys[0].Key)
+}
+
+func TestNewAuthorizationServerConfig_WithAdditionalKeys(t *testing.T) {
+	t.Parallel()
+
+	rsaKey, err := rsa.GenerateKey(rand.Reader, 2048)
+	require.NoError(t, err)
+	ecKey, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
+	require.NoError(t, err)
+
+	fallbackJWK := jose.JSONWebKey{
+		Key:       &ecKey.PublicKey,
+		KeyID:     "fallback-ec",
+		Algorithm: "ES256",
+		Use:       "sig",
+	}
+
+	params := &AuthorizationServerParams{
+		Issuer:               "https://auth.example.com",
+		AccessTokenLifespan:  time.Hour,
+		RefreshTokenLifespan: time.Hour * 24,
+		AuthCodeLifespan:     time.Minute * 10,
+		HMACSecrets:          servercrypto.NewHMACSecrets([]byte("test-secret-with-32-bytes-long!!")),
+		SigningKeyID:         "primary-rsa",
+		SigningKeyAlgorithm:  "RS256",
+		SigningKey:           rsaKey,
+		AdditionalKeys:       []jose.JSONWebKey{fallbackJWK},
+	}
+
+	cfg, err := NewAuthorizationServerConfig(params)
+	require.NoError(t, err)
+	require.NotNil(t, cfg.SigningJWKS)
+	require.Len(t, cfg.SigningJWKS.Keys, 2)
+	// Primary must stay first
+	assert.Equal(t, "primary-rsa", cfg.SigningJWKS.Keys[0].KeyID)
+	assert.Equal(t, "fallback-ec", cfg.SigningJWKS.Keys[1].KeyID)
+
+	// PublicJWKS must expose both as public keys and preserve order
+	pub := cfg.PublicJWKS()
+	require.Len(t, pub.Keys, 2)
+	assert.Equal(t, "primary-rsa", pub.Keys[0].KeyID)
+	assert.Equal(t, "fallback-ec", pub.Keys[1].KeyID)
+	_, ok := pub.Keys[0].Key.(*rsa.PublicKey)
+	assert.True(t, ok, "primary should be public RSA, got %T", pub.Keys[0].Key)
+	_, ok = pub.Keys[1].Key.(*ecdsa.PublicKey)
+	assert.True(t, ok, "fallback should be public EC, got %T", pub.Keys[1].Key)
+
+	// SigningKey stays isolated for signing
+	assert.Equal(t, "primary-rsa", cfg.SigningKey.KeyID)
 }
 
 // mockStorage is a minimal fosite.Storage implementation for testing.

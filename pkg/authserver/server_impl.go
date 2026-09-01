@@ -11,11 +11,13 @@ import (
 	"time"
 
 	josev3 "github.com/go-jose/go-jose/v3"
+	jose "github.com/go-jose/go-jose/v4"
 	"github.com/ory/fosite"
 	"github.com/ory/fosite/compose"
 
 	oauthserver "github.com/stacklok/toolhive/pkg/authserver/server"
 	"github.com/stacklok/toolhive/pkg/authserver/server/handlers"
+	"github.com/stacklok/toolhive/pkg/authserver/server/keys"
 	"github.com/stacklok/toolhive/pkg/authserver/server/registration"
 	"github.com/stacklok/toolhive/pkg/authserver/server/tokenexchange"
 	"github.com/stacklok/toolhive/pkg/authserver/storage"
@@ -78,6 +80,31 @@ func withUpstreamFactory(factory upstreamProviderFactory) serverOption {
 	}
 }
 
+func getAdditionalKeys(ctx context.Context, kp keys.KeyProvider, signingKeyID string) []jose.JSONWebKey {
+	pubKeys, err := kp.PublicKeys(ctx)
+	if err != nil {
+		slog.Warn("failed to get public keys for JWKS, serving signing key only", "error", err)
+		return nil
+	}
+	return additionalJWKs(signingKeyID, pubKeys)
+}
+
+func additionalJWKs(signingKeyID string, pubKeys []*keys.PublicKeyData) []jose.JSONWebKey {
+	var additional []jose.JSONWebKey
+	for _, pk := range pubKeys {
+		if pk.KeyID == signingKeyID {
+			continue
+		}
+		additional = append(additional, jose.JSONWebKey{
+			Key:       pk.PublicKey,
+			KeyID:     pk.KeyID,
+			Algorithm: pk.Algorithm,
+			Use:       "sig",
+		})
+	}
+	return additional
+}
+
 // newServer creates a new OAuth authorization server.
 // The opts parameter allows injecting dependencies for testing.
 func newServer(ctx context.Context, cfg Config, stor storage.Storage, opts ...serverOption) (*server, error) {
@@ -134,6 +161,8 @@ func newServer(ctx context.Context, cfg Config, stor storage.Storage, opts ...se
 		return nil, fmt.Errorf("failed to get signing key: %w", err)
 	}
 
+	additionalKeys := getAdditionalKeys(ctx, cfg.KeyProvider, signingKey.KeyID)
+
 	// Create OAuth2 config from authserver.Config
 	oauthParams := &oauthserver.AuthorizationServerParams{
 		Issuer:                              cfg.Issuer,
@@ -144,6 +173,7 @@ func newServer(ctx context.Context, cfg Config, stor storage.Storage, opts ...se
 		SigningKeyID:                        signingKey.KeyID,
 		SigningKeyAlgorithm:                 signingKey.Algorithm,
 		SigningKey:                          signingKey.Key,
+		AdditionalKeys:                      additionalKeys,
 		ScopesSupported:                     cfg.ScopesSupported,
 		BaselineClientScopes:                cfg.BaselineClientScopes,
 		AllowedAudiences:                    cfg.AllowedAudiences,

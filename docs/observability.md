@@ -169,8 +169,8 @@ for a complete example.
 **Inline (deprecated)**: `spec.telemetry` on MCPServer and MCPRemoteProxy still
 works but is deprecated. `spec.config.telemetry` on VirtualMCPServer is ignored
 by the operator (standalone CLI only); set `spec.telemetryConfigRef` or `/metrics`
-is not registered. These inline fields are mutually exclusive with
-`telemetryConfigRef` (CEL enforced).
+is not registered. Prefer `telemetryConfigRef` over inline telemetry; the CRD
+does not CEL-reject setting both.
 
 For VirtualMCPServer telemetry, see the
 [vMCP observability docs](./operator/virtualmcpserver-observability.md).

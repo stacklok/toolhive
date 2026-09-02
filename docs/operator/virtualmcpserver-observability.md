@@ -201,8 +201,9 @@ for a complete example with an MCPGroup and backend MCPServer.
 the operator. It remains valid for standalone CLI deployments only. If it is set
 without `spec.telemetryConfigRef`, the operator emits a Warning event
 (`InlineTelemetryIgnored`) and does not register `/metrics` — Prometheus scrapes
-then receive HTTP 406 from the MCP handler. Use `telemetryConfigRef`. CEL still
-rejects setting both fields.
+then receive HTTP 406 from the MCP handler. Use `telemetryConfigRef`. Setting
+both fields is not CEL-rejected; `telemetryConfigRef` is the operator source of
+truth and inline telemetry is ignored.
 
 ```yaml
 # Deprecated — use telemetryConfigRef instead

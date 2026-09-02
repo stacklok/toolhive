@@ -4052,7 +4052,7 @@ func TestVirtualMCPServerEmitInlineTelemetryIgnoredEvent(t *testing.T) {
 				assert.Contains(t, event, "Warning")
 				assert.Contains(t, event, "InlineTelemetryIgnored")
 				assert.Contains(t, event, "spec.config.telemetry is ignored by the operator")
-			case <-time.After(50 * time.Millisecond):
+			default:
 				if tt.wantEvent {
 					t.Errorf("expected InlineTelemetryIgnored event, none recorded")
 				}

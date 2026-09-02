@@ -794,7 +794,12 @@ func (r *VirtualMCPServerReconciler) emitPrimaryUpstreamProviderDeprecatedEvent(
 // emitInlineTelemetryIgnoredEvent emits a Warning when VirtualMCPServer still
 // sets the deprecated spec.config.telemetry field without telemetryConfigRef.
 // The operator does not apply inline telemetry; GET /metrics then falls through
-// to the MCP handler (HTTP 406). One-shot per spec generation.
+// to the MCP handler (HTTP 406).
+//
+// The generation==observedGeneration guard suppresses the event after a
+// successful reconcile advances status. Retries that fail before
+// observedGeneration is updated can re-emit; Kubernetes event aggregation
+// is the practical dedupe in that window.
 func (r *VirtualMCPServerReconciler) emitInlineTelemetryIgnoredEvent(
 	vmcp *mcpv1beta1.VirtualMCPServer,
 ) {

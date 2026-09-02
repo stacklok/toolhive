@@ -488,11 +488,14 @@ func NewMultiIssuerTokenValidator(
 }
 
 // Close shuts down every per-issuer jwk.Cache, stopping the background JWKS
-// refresh worker pool (and its ~3 goroutines) each one runs, then cancels the
-// validator-scoped context those pools are rooted in as a backstop for any
-// cache whose Shutdown timed out. It is safe to call more than once and on a
-// validator with no external issuers; the validator must not be used after
-// Close.
+// refresh worker pool (and its ~3 goroutines) each one runs. It cancels the
+// validator-scoped context those pools share — signalling them all to stop at
+// once — then waits for each cache's Shutdown to drain its workers. Cancelling
+// up front (rather than after the loop) means a slow-draining cache is already
+// unwinding by the time its Shutdown is reached, so Close does not serialize on
+// each pool's full timeout. This is the same order the construction-failure
+// path uses. It is safe to call more than once and on a validator with no
+// external issuers; the validator must not be used after Close.
 //
 // A server holds its MultiIssuerTokenValidator and calls this from Close and
 // its construction error path (see pkg/authserver), so neither a normal
@@ -504,14 +507,14 @@ func (v *MultiIssuerTokenValidator) Close() error {
 	if v == nil {
 		return nil
 	}
+	if v.cancel != nil {
+		v.cancel()
+	}
 	var errs []error
 	for issuerURL, issuerConfig := range v.issuers {
 		if err := issuerConfig.shutdownJWKSCache(); err != nil {
 			errs = append(errs, fmt.Errorf("issuer %s: %w", issuerURL, err))
 		}
-	}
-	if v.cancel != nil {
-		v.cancel()
 	}
 	return errors.Join(errs...)
 }

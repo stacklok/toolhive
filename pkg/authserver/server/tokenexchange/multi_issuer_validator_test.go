@@ -101,6 +101,10 @@ func newMultiValidator(
 
 	v, err := NewMultiIssuerTokenValidator(selfValidator, testIssuer, issuers, nil)
 	require.NoError(t, err)
+	// Release each issuer's JWKS worker pool at test end — Close is idempotent,
+	// so tests that also close explicitly are unaffected. Without this the suite
+	// leaks the very worker pools this validator's Close exists to release.
+	t.Cleanup(func() { _ = v.Close() })
 	return v
 }
 

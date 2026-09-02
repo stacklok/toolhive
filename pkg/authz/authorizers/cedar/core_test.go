@@ -2156,6 +2156,52 @@ func TestAuthorizeWithJWTClaims_TransitiveHierarchyPreserved(t *testing.T) {
 		"transitive hierarchy THVGroup→THVRole from entities_json must survive entity merge")
 }
 
+func TestAuthorizeWithJWTClaims_BackendHierarchyPreserved(t *testing.T) {
+	t.Parallel()
+
+	policy := `permit(
+		principal,
+		action == Action::"call_tool",
+		resource in BackendGroup::"production-approved"
+	);`
+	entitiesJSON := `[
+		{
+			"uid": {"type": "Backend", "id": "github-mcp"},
+			"attrs": {"environment": "production"},
+			"parents": [{"type": "BackendGroup", "id": "production-approved"}]
+		},
+		{
+			"uid": {"type": "BackendGroup", "id": "production-approved"},
+			"attrs": {},
+			"parents": []
+		}
+	]`
+
+	authorizer, err := NewCedarAuthorizer(ConfigOptions{
+		Policies:     []string{policy},
+		EntitiesJSON: entitiesJSON,
+	}, "main-vmcp")
+	require.NoError(t, err)
+
+	identity := &auth.Identity{PrincipalInfo: auth.PrincipalInfo{
+		Subject: "user1",
+		Claims:  map[string]any{"sub": "user1"},
+	}}
+	ctx := auth.WithIdentity(context.Background(), identity)
+	ctx = authorizers.WithResourceMetadata(ctx, authorizers.ResourceMetadata{BackendID: "github-mcp"})
+
+	authorized, err := authorizer.AuthorizeWithJWTClaims(
+		ctx,
+		authorizers.MCPFeatureTool,
+		authorizers.MCPOperationCall,
+		"renamed-search",
+		nil,
+	)
+	require.NoError(t, err)
+	assert.True(t, authorized,
+		"request Backend entity must not overwrite the configured transitive hierarchy")
+}
+
 // TestAuthorizeWithJWTClaims_DoesNotMutateIdentity verifies that
 // AuthorizeWithJWTClaims does not mutate the Identity stored in context.
 // The Identity contract (see auth.Identity) requires that the struct MUST NOT

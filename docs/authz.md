@@ -239,6 +239,43 @@ permit(principal, action == Action::"call_tool", resource == Tool::"weather");
 
 This policy allows any client to call the weather tool.
 
+##### Allow tools from a specific vMCP backend
+
+For tools advertised by a Virtual MCP Server, Cedar receives the logical
+originating backend as a second resource parent:
+
+```text
+Tool::"search"
+  -> MCP::"main-vmcp"
+  -> Backend::"github-mcp"
+```
+
+This allows every tool from one backend without relying on the advertised tool
+name or its conflict-resolution prefix:
+
+```plain
+permit(
+  principal,
+  action == Action::"call_tool",
+  resource in Backend::"github-mcp"
+);
+```
+
+The Backend entity ID is the tool's logical vMCP `BackendID`, not a network
+address. ToolHive obtains it from the aggregated capability and uses the same
+value for list filtering and call authorization. A direct Backend policy does
+not require an entry in `entities_json`: Cedar evaluates it from the Backend UID
+in the Tool entity's parent set. Define the Backend in `entities_json` only when
+it needs attributes or parents for a transitive hierarchy.
+
+Composite tools have no single originating backend, so they have no Backend
+parent. Consequently, neither a backend-scoped `permit` nor a backend-scoped
+`forbid` matches a composite tool. If another policy permits the composite, a
+backend-scoped `forbid` does not prevent its workflow steps from reaching that
+backend because workflow steps are not authorized as separate top-level tool
+calls. Express backend restrictions as conditions on `permit` policies and
+authorize composite tools separately by their `Tool` entity.
+
 ##### Allow a specific prompt
 
 ```plain

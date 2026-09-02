@@ -1079,7 +1079,8 @@ func (a *Authorizer) authorizeToolCall(
 	// Annotations are merged first so that the standard attributes ("name",
 	// "operation", "feature") always take precedence and cannot be overwritten
 	// by annotation keys — intentionally or accidentally.
-	annotationAttrs := authorizers.AnnotationsToMap(authorizers.ToolAnnotationsFromContext(ctx))
+	resourceMetadata, _ := authorizers.ResourceMetadataFromContext(ctx)
+	annotationAttrs := authorizers.AnnotationsToMap(resourceMetadata.Annotations)
 
 	// Create attributes for the entities
 	attributes := mergeContexts(annotationAttrs, attrsMap, map[string]interface{}{
@@ -1087,10 +1088,18 @@ func (a *Authorizer) authorizeToolCall(
 		"operation": "call",
 		"feature":   "tool",
 	})
+	resourceParents := func() []cedar.EntityUID {
+		if resourceMetadata.BackendID == "" {
+			return nil
+		}
+		return []cedar.EntityUID{
+			cedar.NewEntityUID(EntityTypeBackend, cedar.String(resourceMetadata.BackendID)),
+		}
+	}()
 
 	// Create Cedar entities
 	entities, err := a.entityFactory.CreateEntitiesForRequest(
-		principal, action, resource, claimsMap, attributes, groups, a.serverName,
+		principal, action, resource, claimsMap, attributes, groups, a.serverName, resourceParents...,
 	)
 	if err != nil {
 		return false, fmt.Errorf("failed to create Cedar entities: %w", err)

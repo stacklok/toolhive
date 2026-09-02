@@ -153,10 +153,12 @@ func (a *cedarAdmission) FilterTools(
 	filtered := make([]vmcp.Tool, 0, len(tools))
 	for i := range tools {
 		tool := &tools[i]
-		toolCtx := ctx
-		if ann := convertAnnotations(tool.Annotations); ann != nil {
-			toolCtx = authorizers.WithToolAnnotations(toolCtx, ann)
-		}
+		// An empty BackendID is deliberate: composites have no Backend parent,
+		// so backend-scoped permits fail closed for them.
+		toolCtx := authorizers.WithResourceMetadata(ctx, authorizers.ResourceMetadata{
+			BackendID:   tool.BackendID,
+			Annotations: convertAnnotations(tool.Annotations),
+		})
 		allowed, err := a.authorizer.AuthorizeWithJWTClaims(
 			toolCtx, authorizers.MCPFeatureTool, authorizers.MCPOperationCall, tool.Name, nil)
 		if err != nil {
@@ -180,9 +182,11 @@ func (a *cedarAdmission) AllowToolCall(
 	ctx context.Context, identity *auth.Identity, tool *vmcp.Tool, args map[string]any,
 ) (bool, error) {
 	ctx = auth.WithIdentity(ctx, identity)
-	if ann := convertAnnotations(tool.Annotations); ann != nil {
-		ctx = authorizers.WithToolAnnotations(ctx, ann)
-	}
+	// Keep the list and call paths identical for backendless composite tools.
+	ctx = authorizers.WithResourceMetadata(ctx, authorizers.ResourceMetadata{
+		BackendID:   tool.BackendID,
+		Annotations: convertAnnotations(tool.Annotations),
+	})
 	return a.authorizer.AuthorizeWithJWTClaims(
 		ctx, authorizers.MCPFeatureTool, authorizers.MCPOperationCall, tool.Name, args)
 }

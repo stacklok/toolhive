@@ -95,8 +95,12 @@ type idleConnectionCloser interface {
 // caller-owned-client exemption.
 //
 // Scope: upstream HTTP pools only. A server configured with TrustedIssuers also
-// holds one JWKS refresh worker pool per issuer that neither this function nor
-// Close releases.
+// holds one JWKS refresh worker pool per issuer; those are released by Close,
+// not by this function — draining them would stop the background key refresh a
+// still-serving server depends on, and this function is safe to call on a live
+// server. An embedder retiring a superseded server with this function therefore
+// keeps its JWKS workers until the storage it shares with the replacement can
+// be closed via Close.
 func CloseIdleConnections(s Server) bool {
 	closer, ok := s.(idleConnectionCloser)
 	if ok {

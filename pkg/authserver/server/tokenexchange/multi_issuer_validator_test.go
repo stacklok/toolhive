@@ -202,13 +202,14 @@ func TestMultiIssuerTokenValidator_DiscoverJWKSURLWithCABundle(t *testing.T) {
 	srv.StartTLS()
 	t.Cleanup(srv.Close)
 
-	issuerConfig, err := newExternalIssuerConfig(TrustedIssuer{
+	issuerConfig, err := newExternalIssuerConfig(context.Background(), TrustedIssuer{
 		IssuerURL:              srv.URL,
 		CAFilePath:             writeTLSCABundle(t, srv),
 		AllowPrivateIPs:        true,
 		AllowedDelegateClients: []string{anyDelegateClient},
 	})
 	require.NoError(t, err)
+	t.Cleanup(func() { _ = issuerConfig.shutdownJWKSCache() })
 
 	jwksURL, err := (&MultiIssuerTokenValidator{}).discoverJWKSURL(context.Background(), issuerConfig)
 	require.NoError(t, err)
@@ -1599,6 +1600,55 @@ func TestNewMultiIssuerTokenValidator_GrantOnlyIssuerAccepted(t *testing.T) {
 	}}, nil)
 	require.NoError(t, err)
 	assert.NotNil(t, v)
+}
+
+// TestMultiIssuerTokenValidator_Close verifies Close releases each issuer's
+// JWKS refresh worker pool (issue #6482). jwk.Cache.Shutdown returns nil only
+// once its controller's goroutines have drained — it waits on the controller's
+// shutdown channel, and returns its context's error if they do not finish in
+// time — so Close returning nil well within its per-cache timeout is proof the
+// workers were stopped rather than left running for the life of the process.
+func TestMultiIssuerTokenValidator_Close(t *testing.T) {
+	t.Parallel()
+
+	selfJWKS := newTestJWKS(t)
+	externalJWKS := newTestJWKS(t)
+	jwksServer := startJWKSServer(t, externalJWKS)
+
+	validator := newMultiValidator(t, selfJWKS, []TrustedIssuer{{
+		IssuerURL:              testExternalIssuer,
+		ExpectedAudience:       testExternalAudience,
+		JWKSURL:                jwksServer.URL + "/jwks",
+		AllowedActors:          []string{"ext-agent"},
+		AllowedDelegateClients: []string{anyDelegateClient},
+	}})
+
+	// Drive a real validation so the issuer's cache is registered and its
+	// worker pool is actively running before shutdown.
+	rawToken := externalJWKS.signToken(t, externalClaims(), map[string]any{"azp": "ext-agent"})
+	_, err := validator.Validate(context.Background(), rawToken)
+	require.NoError(t, err)
+
+	require.NoError(t, validator.Close(), "Close must drain the JWKS worker pool")
+	// Idempotent: a second Close is a no-op, not a panic or error.
+	require.NoError(t, validator.Close())
+}
+
+// TestMultiIssuerTokenValidator_CloseWithoutExternalIssuers pins that Close is
+// safe on a validator that started no per-issuer caches, and on a nil receiver.
+func TestMultiIssuerTokenValidator_CloseWithoutExternalIssuers(t *testing.T) {
+	t.Parallel()
+
+	selfJWKS := newTestJWKS(t)
+	selfValidator, err := NewSelfIssuedTokenValidator(selfJWKS.publicJWKS(), testIssuer, []string{testIssuer})
+	require.NoError(t, err)
+
+	v, err := NewMultiIssuerTokenValidator(selfValidator, testIssuer, nil, nil)
+	require.NoError(t, err)
+	require.NoError(t, v.Close())
+
+	var nilValidator *MultiIssuerTokenValidator
+	require.NoError(t, nilValidator.Close())
 }
 
 // syncBuffer is a concurrency-safe io.Writer over a bytes.Buffer, used by

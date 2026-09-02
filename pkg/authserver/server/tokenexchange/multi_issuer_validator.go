@@ -242,6 +242,13 @@ type MultiIssuerTokenValidator struct {
 	selfIssuer    string
 	selfValidator *SelfIssuedTokenValidator
 	issuers       map[string]*externalIssuerConfig
+
+	// cancel tears down the validator-scoped context that every per-issuer
+	// jwksCache's background worker pool is rooted in. Close calls it after
+	// shutting each cache down individually; see Close. It is always set for a
+	// validator returned by NewMultiIssuerTokenValidator, even one with no
+	// external issuers.
+	cancel context.CancelFunc
 }
 
 // externalIssuerConfig holds the configuration and cached state for an external
@@ -414,7 +421,7 @@ func NewMultiIssuerTokenValidator(
 	selfIssuer string,
 	trustedIssuers []TrustedIssuer,
 	allowedAudiences []string,
-) (*MultiIssuerTokenValidator, error) {
+) (_ *MultiIssuerTokenValidator, retErr error) {
 	if selfValidator == nil {
 		return nil, errors.New("selfValidator must not be nil")
 	}
@@ -422,7 +429,24 @@ func NewMultiIssuerTokenValidator(
 		return nil, errors.New("selfIssuer must not be empty")
 	}
 
+	// Root every per-issuer JWKS worker pool in one validator-scoped context so
+	// Close can tear them all down; see (*MultiIssuerTokenValidator).Close and
+	// newExternalIssuerConfig.
+	ctx, cancel := context.WithCancel(context.Background())
 	issuers := make(map[string]*externalIssuerConfig, len(trustedIssuers))
+	// If construction fails after some issuers' caches have already started,
+	// release them rather than leaking their workers for the life of the
+	// process (buildProvider runs after buildUpstreams, so a later failure that
+	// abandons a half-built validator is reachable).
+	defer func() {
+		if retErr != nil {
+			cancel()
+			for _, issuerConfig := range issuers {
+				_ = issuerConfig.shutdownJWKSCache()
+			}
+		}
+	}()
+
 	for _, ti := range trustedIssuers {
 		if err := validateTrustedIssuer(ti, selfIssuer, issuers, allowedAudiences); err != nil {
 			return nil, err
@@ -448,7 +472,7 @@ func NewMultiIssuerTokenValidator(
 			)
 		}
 
-		issuerConfig, err := newExternalIssuerConfig(ti)
+		issuerConfig, err := newExternalIssuerConfig(ctx, ti)
 		if err != nil {
 			return nil, err
 		}
@@ -459,7 +483,37 @@ func NewMultiIssuerTokenValidator(
 		selfIssuer:    selfIssuer,
 		selfValidator: selfValidator,
 		issuers:       issuers,
+		cancel:        cancel,
 	}, nil
+}
+
+// Close shuts down every per-issuer jwk.Cache, stopping the background JWKS
+// refresh worker pool (and its ~3 goroutines) each one runs, then cancels the
+// validator-scoped context those pools are rooted in as a backstop for any
+// cache whose Shutdown timed out. It is safe to call more than once and on a
+// validator with no external issuers; the validator must not be used after
+// Close.
+//
+// A server holds its MultiIssuerTokenValidator and calls this from Close and
+// its construction error path (see pkg/authserver), so neither a normal
+// shutdown nor a failed reconstruction leaks these workers.
+// authserver.CloseIdleConnections deliberately does NOT reach it: that path
+// must stay safe to call on a still-serving server, which needs the workers to
+// keep refreshing external issuers' keys.
+func (v *MultiIssuerTokenValidator) Close() error {
+	if v == nil {
+		return nil
+	}
+	var errs []error
+	for issuerURL, issuerConfig := range v.issuers {
+		if err := issuerConfig.shutdownJWKSCache(); err != nil {
+			errs = append(errs, fmt.Errorf("issuer %s: %w", issuerURL, err))
+		}
+	}
+	if v.cancel != nil {
+		v.cancel()
+	}
+	return errors.Join(errs...)
 }
 
 func cloneJWTBearerGrantPolicy(policy *JWTBearerGrantPolicy) *JWTBearerGrantPolicy {
@@ -484,10 +538,12 @@ func cloneJWTBearerGrantPolicy(policy *JWTBearerGrantPolicy) *JWTBearerGrantPoli
 // newExternalIssuerConfig builds the *externalIssuerConfig for a single
 // already-validated TrustedIssuer: a dedicated HTTP client (scoped to that
 // issuer's own InsecureAllowHTTP/AllowPrivateIPs), its body-size-capped
-// transport, and its own jwk.Cache. Called once per issuer from
+// transport, and its own jwk.Cache rooted in ctx. Called once per issuer from
 // NewMultiIssuerTokenValidator's constructor loop, after validateTrustedIssuer
-// and the startup warnings have already run for ti.
-func newExternalIssuerConfig(ti TrustedIssuer) (*externalIssuerConfig, error) {
+// and the startup warnings have already run for ti. ctx is the validator-scoped
+// context (see NewMultiIssuerTokenValidator); cancelling it, or the validator's
+// Close, tears down the cache's worker pool.
+func newExternalIssuerConfig(ctx context.Context, ti TrustedIssuer) (*externalIssuerConfig, error) {
 	// Clone AllowedActors and AllowedDelegateClients so a caller mutating
 	// their original slices in place (e.g. a future config reload) cannot
 	// race with the unsynchronized reads in resolveActorAuthorization and
@@ -548,15 +604,18 @@ func newExternalIssuerConfig(ti TrustedIssuer) (*externalIssuerConfig, error) {
 
 	// One jwk.Cache per issuer (see externalIssuerConfig.jwksCache's doc
 	// comment for why), each running its own background worker pool
-	// (jwk.NewCache -> httprc.Client.Start) for the life of the process.
-	// WithWorkers(1) caps that pool to one worker per issuer instead of
-	// httprc's default five — budget roughly three goroutines per issuer
-	// including its controller loop and wait-group waiter.
-	// context.Background() is deliberate: there's no per-call context to
-	// root this in, and the loop is meant to outlive any single call,
-	// stopped only via jwk.Cache.Shutdown — which nothing here calls,
-	// matching pkg/auth/token.go's TokenValidator.
-	jwksCache, err := jwk.NewCache(context.Background(), httprc.NewClient(httprc.WithWorkers(1)))
+	// (jwk.NewCache -> httprc.Client.Start). WithWorkers(1) caps that pool to
+	// one worker per issuer instead of httprc's default five — budget roughly
+	// three goroutines per issuer including its controller loop and wait-group
+	// waiter.
+	//
+	// The pool is rooted in ctx, the validator-scoped context, so it outlives
+	// any single call but is torn down when the validator's Close cancels ctx
+	// and shuts each cache down (see shutdownJWKSCache). Before this wiring the
+	// pools ran for the life of the process, one leaked set per issuer on every
+	// server reconstruction; pkg/auth/token.go's TokenValidator still has that
+	// shape but roots its cache in a caller-supplied context.
+	jwksCache, err := jwk.NewCache(ctx, httprc.NewClient(httprc.WithWorkers(1)))
 	if err != nil {
 		return nil, fmt.Errorf("issuer_url %q: failed to create JWKS cache: %w", ti.IssuerURL, err)
 	}
@@ -568,6 +627,22 @@ func newExternalIssuerConfig(ti TrustedIssuer) (*externalIssuerConfig, error) {
 		httpClient:    httpClient,
 		jwksCache:     jwksCache,
 	}, nil
+}
+
+// shutdownJWKSCache stops this issuer's JWKS refresh worker pool, waiting up to
+// httpTimeout for its goroutines to drain. The context passed to Shutdown must
+// be fresh — not the validator-scoped one the cache was started with, which
+// Close cancels — or Shutdown returns immediately without waiting; see httprc's
+// Controller.ShutdownContext. A nil cache (an externalIssuerConfig built by
+// ValidateTrustedIssuers, which never starts one) is a no-op, as is a
+// double shutdown.
+func (c *externalIssuerConfig) shutdownJWKSCache() error {
+	if c.jwksCache == nil {
+		return nil
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), httpTimeout)
+	defer cancel()
+	return c.jwksCache.Shutdown(ctx)
 }
 
 // ValidateTrustedIssuers runs every structural check

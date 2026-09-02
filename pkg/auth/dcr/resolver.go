@@ -486,6 +486,16 @@ func registerAndCache(
 		return nil, newDCRStepError(dcrStepCacheWrite, req.Issuer, redirectURI,
 			fmt.Errorf("cache put: %w", err))
 	}
+	if authoritative.ClientID != resolution.ClientID {
+		//nolint:gosec // G706: client_id is public metadata per RFC 7591.
+		slog.Debug("dcr: registration superseded by concurrent winner",
+			"local_issuer", req.Issuer,
+			"upstream_id", key.UpstreamID,
+			"redirect_uri", redirectURI,
+			"registered_client_id", resolution.ClientID,
+			"authoritative_client_id", authoritative.ClientID,
+		)
+	}
 
 	// The authoritative row can be a concurrent claimant's stable-but-expired
 	// registration: when both the existing stored row and this replica's

@@ -1164,7 +1164,8 @@ func TestCatalogInstallNamesKeySignedArtifact(t *testing.T) {
 
 // keyedLockEntry is a lock entry pinned to testPublicKeyB64 — the shape a
 // previous key-verified install leaves behind.
-func keyedLockEntry(name string) lockfile.Entry {
+func keyedLockEntry() lockfile.Entry {
+	const name = "keyed-skill"
 	return lockfile.Entry{
 		Name:              name,
 		Source:            "example.com/org/" + name,
@@ -1196,11 +1197,11 @@ func TestVerifyOCIInstall_KeyPathDispatch(t *testing.T) {
 		},
 		{
 			name:  "pinned entry verifies against the locked key with no flag",
-			entry: ptrTo(keyedLockEntry("keyed-skill")),
+			entry: ptrTo(keyedLockEntry()),
 		},
 		{
 			name:  "supplied key that agrees with the pin is accepted",
-			entry: ptrTo(keyedLockEntry("keyed-skill")),
+			entry: ptrTo(keyedLockEntry()),
 			opts:  skills.InstallOptions{PublicKey: testPublicKeyB64},
 		},
 	}

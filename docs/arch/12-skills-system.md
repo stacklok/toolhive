@@ -438,7 +438,13 @@ Dispatch between the two paths is decided by the **lock entry, never the artifac
 
 Verifying a key-pair signature binds it to the artifact explicitly. The signature covers cosign's simple-signing payload, and signature manifests are discovered by a tag derived from the digest being verified — so attachment proves nothing about which artifact a signature describes. The payload digest is reconstructed from the requested reference and each candidate must sign exactly those bytes, which is what stops one artifact's signature from being replayed onto another by copying its signature layer into that artifact's `.sig` manifest (`bundleSignsPayload`).
 
-Scope for v1 (issue [#6442](https://github.com/stacklok/toolhive/issues/6442)): install only. `--public-key` is not yet accepted on `upgrade` or `sync --adopt`, and the plugins surface does not accept it at all yet.
+Once an entry is pinned, the key does its job on the lock-driven operations too, because the anchor is read from the entry rather than supplied again:
+
+- **`sync`** re-verifies the stored bundle against the pinned key offline. This has to be a distinct path — the keyless verifier refuses a key-pinned entry, and sync reads a refusal as drift it can heal by reinstalling, so a key-pinned skill would report as modified on every run and `--check` would fail permanently on a project that is in fact intact.
+- **`upgrade`** applies the pinned key to the candidate. Verifying against it *is* the evidence the signer has not changed, since there is no certificate identity to compare. A candidate that moved to keyless signing or lost its signature is a signer change and blocks like one — `--allow-signer-change` genuinely resolves those, by dropping the recorded key and re-verifying keylessly. A candidate signed by a *different* key is reported as a failure instead: re-anchoring in place is not supported, so it needs an uninstall and a reinstall, and printing the `--allow-signer-change` remedy would send the caller into a refusal one step later.
+- **`sync --adopt`** refuses a key-signed install. Adoption back-fills trust from what the stored bundle reveals, and a key-pair bundle reveals no identity and does not carry the key; recording the install as unsigned instead would file a false trust decision about an artifact that is signed.
+
+Scope for v1 (issue [#6442](https://github.com/stacklok/toolhive/issues/6442)): `--public-key` is accepted on `install` only — `upgrade` and `sync` use the anchor the lock already records and take no key of their own, and in-place re-anchoring to a different key is deliberately not offered. The plugins surface does not accept a key at all yet.
 
 ### Schema
 

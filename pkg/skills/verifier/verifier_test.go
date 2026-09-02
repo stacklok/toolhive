@@ -219,6 +219,24 @@ func TestVerifyOCIWithKeyRejectsTransplantedSignature(t *testing.T) {
 	require.NoError(t, err)
 }
 
+// TestResultFromBundleRejectsKeySignedBundle pins the classification adoption
+// depends on. A key-signed bundle has no certificate, so there is no identity
+// to back-fill — and the keyless verification underneath would have failed on
+// the missing certificate, reporting a broken signature for a bundle that is
+// perfectly intact.
+func TestResultFromBundleRejectsKeySignedBundle(t *testing.T) {
+	t.Parallel()
+	host := startTestRegistry(t)
+	ref, digest := pushTestArtifact(t, host)
+	_, bundle := signArtifact(t, ref, digest)
+	require.NotEmpty(t, bundle)
+
+	_, err := NewDefault(nil).ResultFromBundle(bundle, digest)
+	require.ErrorIs(t, err, ErrKeySigned)
+	require.NotErrorIs(t, err, ErrSignatureInvalid,
+		"the bundle verifies fine against its key; calling it invalid is the misdiagnosis this ends")
+}
+
 func TestVerifyOCIUnsignedArtifact(t *testing.T) {
 	t.Parallel()
 	host := startTestRegistry(t)

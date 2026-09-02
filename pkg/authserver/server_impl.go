@@ -310,6 +310,7 @@ func decorateStorageForCIMD(cfg Config, stor storage.Storage) (storage.Storage, 
 		FallbackTTL:          cfg.CIMDCacheFallbackTTL,
 		ScopesSupported:      cfg.ScopesSupported,
 		BaselineClientScopes: cfg.BaselineClientScopes,
+		AllowedAudiences:     cfg.AllowedAudiences,
 	})
 	if err != nil {
 		return nil, fmt.Errorf("failed to initialize CIMD storage decorator: %w", err)

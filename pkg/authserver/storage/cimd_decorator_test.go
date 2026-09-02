@@ -464,7 +464,7 @@ func TestCIMDStorageDecorator_GetClient_CIMDURLHitsCacheDirectly(t *testing.T) {
 func buildFositeClientWithDefaults(doc *cimd.ClientMetadataDocument, scopes []string) fosite.Client {
 	return buildFositeClient(doc, scopes,
 		[]string{"authorization_code", "refresh_token"}, []string{"code"},
-		defaultCIMDTokenEndpointAuthMethod)
+		defaultCIMDTokenEndpointAuthMethod, nil)
 }
 
 func TestBuildFositeClient_PassesThroughGrantAndResponseTypes(t *testing.T) {
@@ -479,7 +479,7 @@ func TestBuildFositeClient_PassesThroughGrantAndResponseTypes(t *testing.T) {
 	}
 
 	got := buildFositeClient(doc, nil, []string{"authorization_code"}, []string{"code"},
-		defaultCIMDTokenEndpointAuthMethod)
+		defaultCIMDTokenEndpointAuthMethod, nil)
 	assert.Equal(t, "https://example.com/meta.json", got.GetID())
 	assert.True(t, got.IsPublic())
 	assert.ElementsMatch(t, []string{"authorization_code"}, []string(got.GetGrantTypes()),
@@ -976,4 +976,130 @@ func TestCIMDStorageDecorator_PersistFailureDoesNotFailResolution(t *testing.T) 
 	client, err := dec.fetchOrCached(context.Background(), srv.URL+"/meta.json")
 	require.NoError(t, err, "a write-through persistence failure must not fail the resolution")
 	assert.NotNil(t, client)
+}
+
+// --- Audience (#6489) ---
+
+// TestBuildFositeClient_GrantsConfiguredAudience verifies that buildFositeClient
+// carries the decorator's configured allowedAudiences onto the built client,
+// mirroring how registration.New() grants DCR clients the server's
+// AllowedAudiences (#3796). Without this, fosite's refresh handler rejects
+// every refresh_token grant for a CIMD client because its audience whitelist
+// is empty.
+func TestBuildFositeClient_GrantsConfiguredAudience(t *testing.T) {
+	t.Parallel()
+	doc := &cimd.ClientMetadataDocument{
+		ClientID:     "https://example.com/meta.json",
+		RedirectURIs: []string{"https://example.com/callback"},
+	}
+	allowed := []string{"https://mcp.example.com"}
+
+	got := buildFositeClient(doc, nil, []string{"authorization_code"}, []string{"code"},
+		defaultCIMDTokenEndpointAuthMethod, allowed)
+
+	assert.Equal(t, fosite.Arguments(allowed), got.GetAudience(),
+		"CIMD client must inherit the server's AllowedAudiences so refresh token requests succeed")
+}
+
+// TestBuildFositeClient_EmptyAudienceConfigKeepsPriorNilBehaviour verifies that
+// an empty/unset AllowedAudiences config keeps the client's audience list
+// empty, exactly as before this field was introduced (no regression for
+// deployments that don't configure AllowedAudiences).
+func TestBuildFositeClient_EmptyAudienceConfigKeepsPriorNilBehaviour(t *testing.T) {
+	t.Parallel()
+	doc := &cimd.ClientMetadataDocument{
+		ClientID:     "https://example.com/meta.json",
+		RedirectURIs: []string{"https://example.com/callback"},
+	}
+
+	got := buildFositeClient(doc, nil, []string{"authorization_code"}, []string{"code"},
+		defaultCIMDTokenEndpointAuthMethod, nil)
+
+	assert.Empty(t, got.GetAudience(), "unset AllowedAudiences must leave the client's audience list empty")
+}
+
+// TestCIMDStorageDecorator_FetchOrCached_ClientCarriesConfiguredAudience is the
+// red-green regression test for #6489 at the decorator level: it drives the
+// real fetch() path (CIMD document fetch, caching) through a decorator
+// constructed with AllowedAudiences configured, and asserts the resulting
+// fosite.Client carries those audiences. Before the fix, this client's
+// GetAudience() was always empty regardless of configuration.
+func TestCIMDStorageDecorator_FetchOrCached_ClientCarriesConfiguredAudience(t *testing.T) {
+	t.Parallel()
+	srv := serveCIMDDoc(t, "/meta.json", nil)
+	allowed := []string{"https://mcp.example.com"}
+
+	got, err := NewCIMDStorageDecorator(newTestBase(t), CIMDDecoratorConfig{
+		Enabled:          true,
+		CacheMaxSize:     10,
+		FallbackTTL:      time.Minute,
+		AllowedAudiences: allowed,
+	})
+	require.NoError(t, err)
+	dec := got.(*CIMDStorageDecorator)
+
+	client, err := dec.fetchOrCached(context.Background(), cimdURL(srv, "/meta.json"))
+	require.NoError(t, err)
+	assert.Equal(t, fosite.Arguments(allowed), client.GetAudience(),
+		"a CIMD client resolved through the decorator must carry the configured AllowedAudiences")
+}
+
+// TestCIMDStorageDecorator_FetchOrCached_UnsetAudienceConfigKeepsClientAudienceEmpty
+// proves the negative: a decorator constructed without AllowedAudiences resolves
+// a client whose audience list is empty, preserving pre-fix behaviour for
+// deployments that don't configure it.
+func TestCIMDStorageDecorator_FetchOrCached_UnsetAudienceConfigKeepsClientAudienceEmpty(t *testing.T) {
+	t.Parallel()
+	srv := serveCIMDDoc(t, "/meta.json", nil)
+
+	dec := newEnabledDecorator(t, newTestBase(t), 10, time.Minute)
+
+	client, err := dec.fetchOrCached(context.Background(), cimdURL(srv, "/meta.json"))
+	require.NoError(t, err)
+	assert.Empty(t, client.GetAudience())
+}
+
+// TestCIMDStorageDecorator_RefreshGrantAudienceMatch is the #6489 regression
+// test at the boundary that actually decides a refresh_token grant's outcome:
+// fosite's RefreshTokenGrantHandler calls
+//
+//	Config.GetAudienceStrategy(ctx)(request.GetClient().GetAudience(), originalRequest.GetGrantedAudience())
+//
+// (github.com/ory/fosite/handler/oauth2/flow_refresh.go, HandleTokenEndpointRequest)
+// with fosite.DefaultAudienceMatchingStrategy as the default strategy
+// (fosite/config_default.go). This test drives that exact call with a
+// client built by the real decorator fetch() path and a granted audience
+// matching what the token handler grants for an authorization_code exchange
+// (see pkg/authserver/server/handlers/token.go, GrantAudience(AllowedAudiences[0])).
+//
+// Before the fix, dec.allowedAudiences was never threaded into the built
+// client, so client.GetAudience() was always empty and this call failed with
+// "has not been whitelisted by the OAuth 2.0 Client" for every CIMD client —
+// this test fails at pre-fix HEAD and passes with the fix.
+func TestCIMDStorageDecorator_RefreshGrantAudienceMatch(t *testing.T) {
+	t.Parallel()
+	srv := serveCIMDDoc(t, "/meta.json", nil)
+	allowedAudiences := []string{"https://mcp.example.com"}
+
+	got, err := NewCIMDStorageDecorator(newTestBase(t), CIMDDecoratorConfig{
+		Enabled:          true,
+		CacheMaxSize:     10,
+		FallbackTTL:      time.Minute,
+		AllowedAudiences: allowedAudiences,
+	})
+	require.NoError(t, err)
+	dec := got.(*CIMDStorageDecorator)
+
+	client, err := dec.fetchOrCached(context.Background(), cimdURL(srv, "/meta.json"))
+	require.NoError(t, err)
+
+	// grantedAudience mirrors what the original authorization_code exchange
+	// granted onto the session (token.go's single-AllowedAudiences default
+	// path), which the refresh handler re-validates against the client's own
+	// audience list on every refresh_token grant.
+	grantedAudience := []string{allowedAudiences[0]}
+
+	err = fosite.DefaultAudienceMatchingStrategy(client.GetAudience(), grantedAudience)
+	require.NoError(t, err,
+		"a CIMD client must pass fosite's refresh-grant audience check against its own previously granted audience")
 }

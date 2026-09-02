@@ -7,6 +7,7 @@ package session
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"log/slog"
 	"slices"
@@ -510,18 +511,30 @@ func (f *defaultMultiSessionFactory) makeBaseSession(
 	for i, b := range backends {
 		go func(i int, b *vmcp.Backend) {
 			defer wg.Done()
-			sem <- struct{}{}
-			defer func() { <-sem }()
+			// Acquire is context-aware so queued backends do not block on
+			// the semaphore after sessionInitTimeout (or cancel) has fired.
+			select {
+			case sem <- struct{}{}:
+				defer func() { <-sem }()
+			case <-ctx.Done():
+				return
+			}
 			rawResults[i], modernSkipped[i] = f.initOneBackend(ctx, b, identity, sessionHints[b.ID], sink)
 		}(i, b)
 	}
 	wg.Wait()
 
 	if err := ctx.Err(); err != nil {
-		slog.Warn("session initialize budget expired; returning with backends that connected in time",
-			"error", err,
-			"backendCount", len(backends),
-			"timeout", f.sessionInitTimeout)
+		if errors.Is(err, context.DeadlineExceeded) {
+			slog.Warn("session initialize budget expired; returning with backends that connected in time",
+				"error", err,
+				"backendCount", len(backends),
+				"timeout", f.sessionInitTimeout)
+		} else {
+			slog.Debug("session initialize cancelled; returning with backends that connected in time",
+				"error", err,
+				"backendCount", len(backends))
+		}
 	}
 
 	connections := make(map[string]backend.Session, len(backends))

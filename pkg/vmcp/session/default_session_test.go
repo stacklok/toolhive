@@ -1186,6 +1186,62 @@ func TestNewSessionFactory_SessionInitTimeoutBoundsWait(t *testing.T) {
 	require.NoError(t, sess.Close())
 }
 
+func TestNewSessionFactory_SessionInitTimeoutSkipsQueuedSemaphoreAcquire(t *testing.T) {
+	t.Parallel()
+
+	// One in-flight backend holds the only semaphore slot until the session
+	// budget expires, then delays release so queued backends would hang on
+	// `sem <-` if acquire ignored ctx. Those queued connectors ignore ctx
+	// and sleep long enough that MakeSession would miss the budget.
+	const queuedSleep = 3 * time.Second
+	started := make(chan struct{})
+	var holderStarted atomic.Bool
+	var queuedEntered atomic.Int64
+	connector := func(ctx context.Context, _ *vmcp.BackendTarget, _ *auth.Identity, _ string, _ internalbk.ListChangedSink) (internalbk.Session, *vmcp.CapabilityList, error) {
+		if holderStarted.CompareAndSwap(false, true) {
+			close(started)
+			select {
+			case <-ctx.Done():
+				// Keep the slot occupied after expiry so queued
+				// acquire must lose to ctx.Done() in the select.
+				time.Sleep(150 * time.Millisecond)
+				return nil, nil, ctx.Err()
+			case <-time.After(30 * time.Second):
+				return nil, nil, errors.New("holder did not observe session budget")
+			}
+		}
+		queuedEntered.Add(1)
+		time.Sleep(queuedSleep)
+		return nil, nil, errors.New("queued backend ran after session budget")
+	}
+
+	backends := []*vmcp.Backend{
+		{ID: "holder", Name: "holder", BaseURL: "http://x:1", TransportType: "streamable-http"},
+		{ID: "queued-a", Name: "queued-a", BaseURL: "http://x:2", TransportType: "streamable-http"},
+		{ID: "queued-b", Name: "queued-b", BaseURL: "http://x:3", TransportType: "streamable-http"},
+	}
+	factory := newSessionFactoryWithConnector(connector,
+		WithSessionInitTimeout(80*time.Millisecond),
+		WithBackendInitTimeout(30*time.Second),
+		WithMaxBackendInitConcurrency(1),
+	)
+
+	start := time.Now()
+	sess, err := factory.MakeSessionWithID(context.Background(), uuid.New().String(), nil, backends, nil)
+	elapsed := time.Since(start)
+
+	require.NoError(t, err)
+	require.NotNil(t, sess)
+	select {
+	case <-started:
+	default:
+		t.Fatal("expected the in-flight backend to start before MakeSession returned")
+	}
+	assert.Zero(t, queuedEntered.Load(), "queued backends must not acquire the semaphore after the session budget expires")
+	assert.Less(t, elapsed, queuedSleep, "MakeSession must return without waiting for queued connectors")
+	require.NoError(t, sess.Close())
+}
+
 func TestValidateSessionID(t *testing.T) {
 	t.Parallel()
 

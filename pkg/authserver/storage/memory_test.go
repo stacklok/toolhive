@@ -2227,7 +2227,9 @@ func TestMemoryStorage_DCRCredentials_RoundTrip(t *testing.T) {
 			ClientSecretExpiresAt:   time.Date(2026, 5, 1, 12, 0, 0, 0, time.UTC),
 		}
 
-		require.NoError(t, s.StoreDCRCredentials(ctx, creds))
+		authoritative, err := s.StoreDCRCredentialsIfAbsent(ctx, creds)
+		require.NoError(t, err)
+		assert.Equal(t, *creds, *authoritative)
 
 		got, err := s.GetDCRCredentials(ctx, key)
 		require.NoError(t, err)
@@ -2267,7 +2269,8 @@ func TestMemoryStorage_DCRCredentials_DistinctKeysDoNotCollide(t *testing.T) {
 			mkCreds(mkKey("https://idp-a.example.com", "https://up-b", "https://x/cb", []string{"openid"}), "e"),
 		}
 		for _, e := range entries {
-			require.NoError(t, s.StoreDCRCredentials(ctx, e))
+			_, err := s.StoreDCRCredentialsIfAbsent(ctx, e)
+			require.NoError(t, err)
 		}
 
 		for _, want := range entries {
@@ -2279,7 +2282,14 @@ func TestMemoryStorage_DCRCredentials_DistinctKeysDoNotCollide(t *testing.T) {
 	})
 }
 
-func TestMemoryStorage_DCRCredentials_OverwriteSemantics(t *testing.T) {
+// TestMemoryStorage_DCRCredentials_FirstClaimWins pins the create-if-absent
+// contract that replaced unconditional overwrite: a second
+// StoreDCRCredentialsIfAbsent for a key that already holds a (non-expired)
+// value must not replace it. It returns the existing entry as the
+// authoritative value instead, mirroring RedisStorage's create-if-absent
+// claim so the two backends behave symmetrically for a concurrent-
+// registration race.
+func TestMemoryStorage_DCRCredentials_FirstClaimWins(t *testing.T) {
 	withStorage(t, func(ctx context.Context, s *MemoryStorage) {
 		key := DCRKey{
 			Issuer:      "https://idp.example.com",
@@ -2296,12 +2306,58 @@ func TestMemoryStorage_DCRCredentials_OverwriteSemantics(t *testing.T) {
 			}
 		}
 
-		require.NoError(t, s.StoreDCRCredentials(ctx, mkCreds("first")))
-		require.NoError(t, s.StoreDCRCredentials(ctx, mkCreds("second")))
+		first, err := s.StoreDCRCredentialsIfAbsent(ctx, mkCreds("first"))
+		require.NoError(t, err)
+		assert.Equal(t, "first", first.ClientID)
+
+		second, err := s.StoreDCRCredentialsIfAbsent(ctx, mkCreds("second"))
+		require.NoError(t, err)
+		assert.Equal(t, "first", second.ClientID,
+			"the loser must get back the winner's credentials, not its own")
 
 		got, err := s.GetDCRCredentials(ctx, key)
 		require.NoError(t, err)
-		assert.Equal(t, "second", got.ClientID)
+		assert.Equal(t, "first", got.ClientID, "the store must keep the first-claimed entry")
+	})
+}
+
+// TestMemoryStorage_DCRCredentials_ExpiredEntryCanBeReclaimed pins the
+// TTL-awareness of the in-memory "absent" check: the in-memory backend has
+// no native TTL, so an existing entry whose ClientSecretExpiresAt is already
+// in the past must be treated as absent — otherwise an expired secret would
+// permanently block re-registration, unlike the Redis backend where the row
+// self-evicts.
+func TestMemoryStorage_DCRCredentials_ExpiredEntryCanBeReclaimed(t *testing.T) {
+	withStorage(t, func(ctx context.Context, s *MemoryStorage) {
+		key := DCRKey{
+			Issuer:      "https://idp.example.com",
+			UpstreamID:  "https://upstream.example.com",
+			RedirectURI: "https://x/cb",
+			ScopesHash:  ScopesHash([]string{"openid"}),
+		}
+		expired, err := s.StoreDCRCredentialsIfAbsent(ctx, &DCRCredentials{
+			Key:                   key,
+			ClientID:              "expired-client",
+			AuthorizationEndpoint: "https://idp.example.com/auth",
+			TokenEndpoint:         "https://idp.example.com/token",
+			ClientSecretExpiresAt: time.Now().Add(-time.Hour),
+		})
+		require.NoError(t, err)
+		assert.Equal(t, "expired-client", expired.ClientID)
+
+		reclaimed, err := s.StoreDCRCredentialsIfAbsent(ctx, &DCRCredentials{
+			Key:                   key,
+			ClientID:              "fresh-client",
+			AuthorizationEndpoint: "https://idp.example.com/auth",
+			TokenEndpoint:         "https://idp.example.com/token",
+		})
+		require.NoError(t, err)
+		assert.Equal(t, "fresh-client", reclaimed.ClientID,
+			"an expired entry must be treated as absent and reclaimable")
+
+		got, err := s.GetDCRCredentials(ctx, key)
+		require.NoError(t, err)
+		assert.Equal(t, "fresh-client", got.ClientID)
 	})
 }
 
@@ -2401,7 +2457,7 @@ func TestMemoryStorage_DCRCredentials_StoreInvalidInputRejected(t *testing.T) {
 		tc := tc
 		t.Run(tc.name, func(t *testing.T) {
 			withStorage(t, func(ctx context.Context, s *MemoryStorage) {
-				err := s.StoreDCRCredentials(ctx, tc.mutator(validCreds()))
+				_, err := s.StoreDCRCredentialsIfAbsent(ctx, tc.mutator(validCreds()))
 				require.Error(t, err)
 				assert.ErrorIs(t, err, fosite.ErrInvalidRequest)
 				// Confirm the rejection did not partially populate the store.
@@ -2423,12 +2479,13 @@ func TestMemoryStorage_DCRCredentials_GetReturnsDefensiveCopy(t *testing.T) {
 			RedirectURI: "https://x/cb",
 			ScopesHash:  ScopesHash([]string{"openid"}),
 		}
-		require.NoError(t, s.StoreDCRCredentials(ctx, &DCRCredentials{
+		_, err := s.StoreDCRCredentialsIfAbsent(ctx, &DCRCredentials{
 			Key:                   key,
 			ClientID:              "orig",
 			AuthorizationEndpoint: "https://idp.example.com/auth",
 			TokenEndpoint:         "https://idp.example.com/token",
-		}))
+		})
+		require.NoError(t, err)
 
 		got, err := s.GetDCRCredentials(ctx, key)
 		require.NoError(t, err)
@@ -2457,7 +2514,8 @@ func TestMemoryStorage_DCRCredentials_StoreCopyIsolatesCaller(t *testing.T) {
 			AuthorizationEndpoint: "https://idp.example.com/auth",
 			TokenEndpoint:         "https://idp.example.com/token",
 		}
-		require.NoError(t, s.StoreDCRCredentials(ctx, input))
+		_, err := s.StoreDCRCredentialsIfAbsent(ctx, input)
+		require.NoError(t, err)
 
 		input.ClientID = "tampered-after-store"
 
@@ -2479,13 +2537,14 @@ func TestMemoryStorage_DCRCredentials_ExcludedFromCleanupExpired(t *testing.T) {
 			RedirectURI: "https://x/cb",
 			ScopesHash:  ScopesHash([]string{"openid"}),
 		}
-		require.NoError(t, s.StoreDCRCredentials(ctx, &DCRCredentials{
+		_, err := s.StoreDCRCredentialsIfAbsent(ctx, &DCRCredentials{
 			Key:                   key,
 			ClientID:              "abc",
 			AuthorizationEndpoint: "https://idp.example.com/auth",
 			TokenEndpoint:         "https://idp.example.com/token",
 			CreatedAt:             time.Now().Add(-365 * 24 * time.Hour),
-		}))
+		})
+		require.NoError(t, err)
 
 		s.cleanupExpired()
 
@@ -2496,7 +2555,7 @@ func TestMemoryStorage_DCRCredentials_ExcludedFromCleanupExpired(t *testing.T) {
 }
 
 // TestMemoryStorage_DCRCredentials_ConcurrentAccess fans out N goroutines
-// performing alternating StoreDCRCredentials / GetDCRCredentials against
+// performing alternating StoreDCRCredentialsIfAbsent / GetDCRCredentials against
 // overlapping and disjoint keys, exercising the sync.RWMutex guard
 // advertised in the DCRCredentialStore contract. With go test -race this
 // catches a future change that drops the lock or returns an internal
@@ -2553,7 +2612,7 @@ func TestMemoryStorage_DCRCredentials_ConcurrentAccess(t *testing.T) {
 					} else {
 						key = disjointKey(worker, i)
 					}
-					if err := s.StoreDCRCredentials(ctx, mkCreds(key, fmt.Sprintf("worker-%d-op-%d", worker, i))); err != nil {
+					if _, err := s.StoreDCRCredentialsIfAbsent(ctx, mkCreds(key, fmt.Sprintf("worker-%d-op-%d", worker, i))); err != nil {
 						atomic.AddInt32(&errCount, 1)
 					}
 					// The disjoint Get must always hit (the goroutine that

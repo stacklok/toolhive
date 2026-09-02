@@ -170,7 +170,8 @@ func TestResolveDCRCredentials_CacheHitShortCircuits(t *testing.T) {
 		AuthorizationEndpoint: "https://preloaded/authorize",
 		TokenEndpoint:         "https://preloaded/token",
 	}
-	require.NoError(t, cache.Put(context.Background(), key, preloaded))
+	_, err := cache.PutIfAbsent(context.Background(), key, preloaded)
+	require.NoError(t, err)
 
 	req := &Request{
 		Issuer:       issuer,
@@ -1510,8 +1511,8 @@ func (c *countingStore) Get(ctx context.Context, key Key) (*Resolution, bool, er
 	return res, ok, err
 }
 
-func (c *countingStore) Put(ctx context.Context, key Key, res *Resolution) error {
-	return c.inner.Put(ctx, key, res)
+func (c *countingStore) PutIfAbsent(ctx context.Context, key Key, res *Resolution) (*Resolution, error) {
+	return c.inner.PutIfAbsent(ctx, key, res)
 }
 
 // TestResolveDCRCredentials_SingleflightCoalescesConcurrentCallers pins the
@@ -1790,8 +1791,11 @@ func (f failingDCRStore) Get(_ context.Context, _ Key) (*Resolution, bool, error
 	return nil, false, nil
 }
 
-func (f failingDCRStore) Put(_ context.Context, _ Key, _ *Resolution) error {
-	return f.putErr
+func (f failingDCRStore) PutIfAbsent(_ context.Context, _ Key, res *Resolution) (*Resolution, error) {
+	if f.putErr != nil {
+		return nil, f.putErr
+	}
+	return res, nil
 }
 
 // TestResolveDCRCredentials_CacheGetFailureWrapped covers PR #5042 review
@@ -2017,7 +2021,7 @@ func (panickingPutDCRStore) Get(_ context.Context, _ Key) (*Resolution, bool, er
 	return nil, false, nil
 }
 
-func (s panickingPutDCRStore) Put(_ context.Context, _ Key, _ *Resolution) error {
+func (s panickingPutDCRStore) PutIfAbsent(_ context.Context, _ Key, _ *Resolution) (*Resolution, error) {
 	panic(s.panicValue)
 }
 

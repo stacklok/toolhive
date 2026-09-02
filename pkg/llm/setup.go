@@ -36,6 +36,9 @@ type GatewayManager interface {
 	// IsManaged reports whether a managed-preferences profile overrides the
 	// client's local config (so the config setup writes would be ignored).
 	IsManaged(clientType string) bool
+	// LLMClientDetectionHint explains why clientType was not detected, or "".
+	// Used when --client names a CLI tool whose settings dir is leftover after uninstall.
+	LLMClientDetectionHint(clientType string) string
 	// ConfigureEnvFile writes .env file entries for the client and returns the
 	// env file path. Returns ("", nil) when the client has no env-file entries.
 	ConfigureEnvFile(clientType string, cfg llmgateway.ApplyConfig) (string, error)
@@ -98,7 +101,7 @@ func Setup(
 	// there is nothing to configure. In non-lazy mode login still runs before any
 	// files are patched, preserving the guarantee that a failed login leaves no
 	// state.
-	detected, err := filterDetectedClients(gm.DetectedLLMGatewayClients(), targetClient)
+	detected, err := filterDetectedClients(gm, targetClient)
 	if err != nil {
 		return err
 	}
@@ -398,7 +401,8 @@ func warnTLSSkipVerify(errOut io.Writer, skip bool, configured []ToolConfig) {
 // filterDetectedClients narrows the detected client list to a single entry when
 // targetClient is non-empty. It returns an error if the named client is not in
 // the detected list. When targetClient is empty the list is returned unchanged.
-func filterDetectedClients(detected []string, targetClient string) ([]string, error) {
+func filterDetectedClients(gm GatewayManager, targetClient string) ([]string, error) {
+	detected := gm.DetectedLLMGatewayClients()
 	if targetClient == "" {
 		return detected, nil
 	}
@@ -406,6 +410,9 @@ func filterDetectedClients(detected []string, targetClient string) ([]string, er
 		if c == targetClient {
 			return []string{targetClient}, nil
 		}
+	}
+	if hint := gm.LLMClientDetectionHint(targetClient); hint != "" {
+		return nil, fmt.Errorf("client %q is not installed or not detected: %s", targetClient, hint)
 	}
 	return nil, fmt.Errorf("client %q is not installed or not detected", targetClient)
 }

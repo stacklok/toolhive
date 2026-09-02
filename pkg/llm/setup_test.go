@@ -305,8 +305,9 @@ func (*stubGatewayManager) DetectedLLMGatewayClients() []string { return nil }
 func (*stubGatewayManager) ConfigureLLMGateway(_ string, _ llmgateway.ApplyConfig) (string, error) {
 	return "", nil
 }
-func (*stubGatewayManager) LLMGatewayModeFor(_ string) string { return "" }
-func (*stubGatewayManager) IsManaged(_ string) bool           { return false }
+func (*stubGatewayManager) LLMGatewayModeFor(_ string) string      { return "" }
+func (*stubGatewayManager) IsManaged(_ string) bool                { return false }
+func (*stubGatewayManager) LLMClientDetectionHint(_ string) string { return "" }
 func (*stubGatewayManager) ConfigureEnvFile(_ string, _ llmgateway.ApplyConfig) (string, error) {
 	return "", nil
 }
@@ -501,6 +502,7 @@ func TestTeardown_NoPurge_LeavesTokenRefsIntact(t *testing.T) {
 type setupGatewayManager struct {
 	detected []string
 	mode     string
+	hint     string
 }
 
 func (g *setupGatewayManager) DetectedLLMGatewayClients() []string { return g.detected }
@@ -509,6 +511,9 @@ func (*setupGatewayManager) ConfigureLLMGateway(_ string, _ llmgateway.ApplyConf
 }
 func (g *setupGatewayManager) LLMGatewayModeFor(_ string) string { return g.mode }
 func (*setupGatewayManager) IsManaged(_ string) bool             { return false }
+func (g *setupGatewayManager) LLMClientDetectionHint(_ string) string {
+	return g.hint
+}
 func (*setupGatewayManager) ConfigureEnvFile(_ string, _ llmgateway.ApplyConfig) (string, error) {
 	return "", nil
 }
@@ -554,6 +559,24 @@ func TestSetup_Lazy_SkipsLoginAndPersistsTools(t *testing.T) {
 	// User must be told that login is deferred to the first request.
 	assert.Contains(t, stdout.String(), "Lazy mode")
 	assert.Contains(t, stdout.String(), "first")
+}
+
+func TestFilterDetectedClients_LeftoverDirHint(t *testing.T) {
+	t.Parallel()
+	gm := &setupGatewayManager{
+		hint: `settings directory exists but "claude" was not found on PATH`,
+	}
+	_, err := filterDetectedClients(gm, "claude-code")
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), `"claude-code" is not installed or not detected`)
+	assert.Contains(t, err.Error(), `was not found on PATH`)
+}
+
+func TestFilterDetectedClients_GenericMiss(t *testing.T) {
+	t.Parallel()
+	_, err := filterDetectedClients(&setupGatewayManager{}, "cursor")
+	require.Error(t, err)
+	assert.Equal(t, `client "cursor" is not installed or not detected`, err.Error())
 }
 
 func TestSetup_NonLazy_InvokesLogin(t *testing.T) {
@@ -678,8 +701,11 @@ func (g *capturingGatewayManager) ConfigureLLMGateway(_ string, cfg llmgateway.A
 }
 func (g *capturingGatewayManager) LLMGatewayModeFor(_ string) string { return g.mode }
 func (*capturingGatewayManager) IsManaged(_ string) bool             { return false }
-func (*capturingGatewayManager) LLMSetupNoteFor(_ string) string     { return "" }
-func (*capturingGatewayManager) RevertLLMGateway(_, _ string) error  { return nil }
+func (*capturingGatewayManager) LLMClientDetectionHint(_ string) string {
+	return ""
+}
+func (*capturingGatewayManager) LLMSetupNoteFor(_ string) string    { return "" }
+func (*capturingGatewayManager) RevertLLMGateway(_, _ string) error { return nil }
 func (*capturingGatewayManager) ConfigureEnvFile(_ string, _ llmgateway.ApplyConfig) (string, error) {
 	return "", nil
 }
@@ -821,6 +847,9 @@ func (*managedGatewayManager) LLMGatewayModeFor(_ string) string {
 	return llmgateway.ModeCredentialHelper
 }
 func (g *managedGatewayManager) IsManaged(c string) bool { return g.managed[c] }
+func (*managedGatewayManager) LLMClientDetectionHint(_ string) string {
+	return ""
+}
 func (*managedGatewayManager) ConfigureEnvFile(_ string, _ llmgateway.ApplyConfig) (string, error) {
 	return "", nil
 }

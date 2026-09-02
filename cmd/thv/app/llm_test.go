@@ -563,6 +563,35 @@ func TestRunLLMSetup_ClientFlag_NotInstalled(t *testing.T) {
 	assert.Contains(t, err.Error(), `"cursor" is not installed or not detected`)
 }
 
+func TestRunLLMSetup_ClientFlag_LeftoverCLIDir(t *testing.T) {
+	t.Parallel()
+	dir := t.TempDir()
+
+	cfgs := client.LLMTestIntegrations([]client.LLMTestEntry{
+		{
+			ClientType:   client.ClaudeCode,
+			Mode:         "direct",
+			SettingsDir:  []string{".claude"},
+			SettingsFile: "settings.json",
+			JSONPointers: []string{"/apiKeyHelper"},
+			ValueFields:  []string{"TokenHelperCommand"},
+		},
+	})
+	cfgs[0].LLMBinaryName = "thv-test-missing-llm-bin-6292"
+	cm := client.NewTestClientManager(dir, nil, cfgs, nil)
+	require.NoError(t, os.MkdirAll(filepath.Join(dir, ".claude"), 0o700))
+	provider := llmProvider(t, llm.Config{
+		GatewayURL: "https://gw.example.com",
+		OIDC:       llm.OIDCConfig{Issuer: "https://auth.example.com", ClientID: "id"},
+	})
+
+	var stdout, stderr bytes.Buffer
+	err := runLLMSetup(context.Background(), &stdout, &stderr, cm, provider, noopLogin, llm.SetOptions{}, "", false, "claude-code", false)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), `"claude-code" is not installed or not detected`)
+	assert.Contains(t, err.Error(), `was not found on PATH`)
+}
+
 // ── --client flag (teardown) ──────────────────────────────────────────────────
 
 func TestRunLLMTeardown_ClientFlag_RevertsNamedTool(t *testing.T) {

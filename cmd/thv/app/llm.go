@@ -481,6 +481,10 @@ func (a *clientManagerAdapter) IsManaged(clientType string) bool {
 	return a.cm.IsManaged(client.ClientApp(clientType))
 }
 
+func (a *clientManagerAdapter) LLMClientDetectionHint(clientType string) string {
+	return a.cm.LLMClientDetectionHint(client.ClientApp(clientType))
+}
+
 func (a *clientManagerAdapter) ConfigureEnvFile(clientType string, cfg llmgateway.ApplyConfig) (string, error) {
 	return a.cm.ConfigureEnvFile(client.ClientApp(clientType), cfg)
 }

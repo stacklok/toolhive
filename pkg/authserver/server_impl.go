@@ -110,6 +110,20 @@ func isNilProvider(provider upstream.OAuth2Provider) bool {
 	return v.Kind() == reflect.Pointer && v.IsNil()
 }
 
+// releaseOnConstructionError runs newServer's error-path cleanup: it drains the
+// upstream idle connections and shuts down the trusted-issuer validator's JWKS
+// worker pools (when one was built). Errors are logged, not returned — retErr is
+// what the caller acts on, but a pool that fails to drain here would otherwise
+// leave its goroutines running with no diagnostic.
+func releaseOnConstructionError(upstreams []handlers.NamedUpstream, validator *tokenexchange.MultiIssuerTokenValidator) {
+	closeUpstreamIdleConnections(upstreams)
+	if validator != nil {
+		if err := validator.Close(); err != nil {
+			slog.Warn("failed to shut down trusted-issuer validator during server construction cleanup", "error", err)
+		}
+	}
+}
+
 // closeUpstreamIdleConnections drains the pooled idle connections of every
 // upstream that implements the optional upstream.IdleConnectionCloser
 // capability; see that interface for why it is optional and what it exempts.
@@ -220,10 +234,7 @@ func newServer(ctx context.Context, cfg Config, stor storage.Storage) (_ *server
 	// between buildProvider and the return below.
 	defer func() {
 		if retErr != nil {
-			closeUpstreamIdleConnections(upstreams)
-			if trustedIssuerValidator != nil {
-				_ = trustedIssuerValidator.Close()
-			}
+			releaseOnConstructionError(upstreams, trustedIssuerValidator)
 		}
 	}()
 
@@ -372,7 +383,9 @@ func buildProvider(
 	// to newServer, which otherwise owns its shutdown.
 	defer func() {
 		if retErr != nil {
-			_ = shared.Close()
+			if err := shared.Close(); err != nil {
+				slog.Warn("failed to shut down trusted-issuer validator during provider build cleanup", "error", err)
+			}
 		}
 	}()
 

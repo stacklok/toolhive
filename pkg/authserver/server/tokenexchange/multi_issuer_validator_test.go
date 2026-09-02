@@ -15,6 +15,7 @@ import (
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -213,7 +214,7 @@ func TestMultiIssuerTokenValidator_DiscoverJWKSURLWithCABundle(t *testing.T) {
 		AllowedDelegateClients: []string{anyDelegateClient},
 	})
 	require.NoError(t, err)
-	t.Cleanup(func() { _ = issuerConfig.shutdownJWKSCache() })
+	t.Cleanup(func() { _ = issuerConfig.shutdownJWKSCache(context.Background()) })
 
 	jwksURL, err := (&MultiIssuerTokenValidator{}).discoverJWKSURL(context.Background(), issuerConfig)
 	require.NoError(t, err)
@@ -1636,6 +1637,103 @@ func TestMultiIssuerTokenValidator_Close(t *testing.T) {
 	require.NoError(t, validator.Close(), "Close must drain the JWKS worker pool")
 	// Idempotent: a second Close is a no-op, not a panic or error.
 	require.NoError(t, validator.Close())
+}
+
+// TestMultiIssuerTokenValidator_CloseReleasesGoroutines is the guard the
+// nil-return check in TestMultiIssuerTokenValidator_Close cannot provide: a
+// Close that stopped calling Shutdown (or cancel) would still return nil, but
+// would leave the per-issuer worker pool running. This counts goroutines and
+// asserts they drop back after Close.
+//
+// Deliberately not parallel: Go holds t.Parallel() tests paused while
+// non-parallel tests run, so the goroutine count is not perturbed by the rest
+// of the suite.
+//
+//nolint:paralleltest // counts live goroutines; must not run concurrently with other tests
+func TestMultiIssuerTokenValidator_CloseReleasesGoroutines(t *testing.T) {
+	selfJWKS := newTestJWKS(t)
+	selfValidator, err := NewSelfIssuedTokenValidator(selfJWKS.publicJWKS(), testIssuer, []string{testIssuer})
+	require.NoError(t, err)
+
+	before := runtime.NumGoroutine()
+
+	v, err := NewMultiIssuerTokenValidator(selfValidator, testIssuer, []TrustedIssuer{{
+		IssuerURL:              testExternalIssuer,
+		ExpectedAudience:       testExternalAudience,
+		JWKSURL:                "https://external-idp.example.com/jwks",
+		AllowedActors:          []string{"ext-agent"},
+		AllowedDelegateClients: []string{anyDelegateClient},
+	}}, nil)
+	require.NoError(t, err)
+
+	// The per-issuer jwk.Cache starts its worker pool at construction (no fetch
+	// needed), so the goroutines are already running.
+	require.Greater(t, runtime.NumGoroutine(), before, "the JWKS worker pool should be running before Close")
+
+	require.NoError(t, v.Close())
+	requireGoroutinesReleased(t, before)
+}
+
+// requireGoroutinesReleased fails unless the live goroutine count drops to at
+// most want within a short window. It polls with a plain sleep loop rather than
+// require.Eventually because Eventually runs its condition in its own goroutine,
+// which would itself inflate runtime.NumGoroutine() and mask the very count it
+// is checking. Callers rely on Close/construction cleanup being synchronous
+// (Shutdown waits for the pool to drain), so this only absorbs the brief lag
+// between a goroutine returning and the runtime deregistering it.
+func requireGoroutinesReleased(t *testing.T, want int) {
+	t.Helper()
+	var last int
+	for range 200 {
+		last = runtime.NumGoroutine()
+		if last <= want {
+			return
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	require.LessOrEqualf(t, last, want, "JWKS worker pool goroutines not released: have %d, want <= %d", last, want)
+}
+
+// TestNewMultiIssuerTokenValidator_PartialConstructionDrainsStartedPools drives
+// the constructor's cleanup loop — #6482's reachable leak: a reconstruction that
+// fails partway must not abandon the caches it already started. The first issuer
+// is valid (its worker pool starts); the second fails inside
+// newExternalIssuerConfig (its CA bundle path does not exist), so construction
+// returns an error with the first pool live. The pool must then be drained.
+//
+// Not parallel, for the same goroutine-counting reason as
+// TestMultiIssuerTokenValidator_CloseReleasesGoroutines.
+//
+//nolint:paralleltest // counts live goroutines; must not run concurrently with other tests
+func TestNewMultiIssuerTokenValidator_PartialConstructionDrainsStartedPools(t *testing.T) {
+	selfJWKS := newTestJWKS(t)
+	selfValidator, err := NewSelfIssuedTokenValidator(selfJWKS.publicJWKS(), testIssuer, []string{testIssuer})
+	require.NoError(t, err)
+
+	before := runtime.NumGoroutine()
+
+	_, err = NewMultiIssuerTokenValidator(selfValidator, testIssuer, []TrustedIssuer{
+		{
+			IssuerURL:              "https://issuer-one.example.com",
+			ExpectedAudience:       testExternalAudience,
+			JWKSURL:                "https://issuer-one.example.com/jwks",
+			AllowedActors:          []string{"ext-agent"},
+			AllowedDelegateClients: []string{anyDelegateClient},
+		},
+		{
+			IssuerURL:              "https://issuer-two.example.com",
+			ExpectedAudience:       testExternalAudience,
+			JWKSURL:                "https://issuer-two.example.com/jwks",
+			CAFilePath:             filepath.Join(t.TempDir(), "does-not-exist.pem"),
+			AllowedActors:          []string{"ext-agent"},
+			AllowedDelegateClients: []string{anyDelegateClient},
+		},
+	}, nil)
+	require.Error(t, err, "construction must fail when the second issuer's CA bundle is unreadable")
+
+	// The constructor's cleanup runs synchronously before it returns the error,
+	// so the first issuer's pool is already draining.
+	requireGoroutinesReleased(t, before)
 }
 
 // TestMultiIssuerTokenValidator_CloseWithoutExternalIssuers pins that Close is

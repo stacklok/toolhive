@@ -647,6 +647,15 @@ func TestServer_CloseIdleConnections(t *testing.T) {
 // TrustedIssuers holds the shared MultiIssuerTokenValidator so Close can shut
 // down its per-issuer JWKS refresh worker pools (issue #6482), and that a server
 // with none holds no validator and still closes cleanly.
+//
+// This covers only the success path. The deferred validator-shutdown paths — the
+// one in buildProvider and the `if trustedIssuerValidator != nil` branch in
+// newServer's defer — are not exercised here: failing a post-buildProvider step
+// deterministically would require a test-only hook the testing rules discourage.
+// The equivalent drain-on-construction-failure guarantee is covered directly at
+// the validator level by
+// TestNewMultiIssuerTokenValidator_PartialConstructionDrainsStartedPools; the
+// server-level defers are thin delegations to that same Close.
 func TestServer_TrustedIssuerValidatorLifecycle(t *testing.T) {
 	t.Parallel()
 

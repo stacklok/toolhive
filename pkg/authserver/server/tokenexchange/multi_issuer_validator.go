@@ -437,12 +437,21 @@ func NewMultiIssuerTokenValidator(
 	// If construction fails after some issuers' caches have already started,
 	// release them rather than leaking their workers for the life of the
 	// process (buildProvider runs after buildUpstreams, so a later failure that
-	// abandons a half-built validator is reachable).
+	// abandons a half-built validator is reachable). Same cancel-first, single
+	// shared-deadline shape as Close.
 	defer func() {
 		if retErr != nil {
 			cancel()
-			for _, issuerConfig := range issuers {
-				_ = issuerConfig.shutdownJWKSCache()
+			shutdownCtx, cancelShutdown := context.WithTimeout(context.Background(), httpTimeout)
+			defer cancelShutdown()
+			for issuerURL, issuerConfig := range issuers {
+				// Log rather than drop: retErr is the dominant signal, but a
+				// pool that fails to drain during this cleanup would otherwise
+				// leave no diagnostic.
+				if err := issuerConfig.shutdownJWKSCache(shutdownCtx); err != nil {
+					slog.Warn("failed to shut down JWKS cache during validator construction cleanup",
+						"issuer", issuerURL, "error", err)
+				}
 			}
 		}
 	}()
@@ -490,12 +499,13 @@ func NewMultiIssuerTokenValidator(
 // Close shuts down every per-issuer jwk.Cache, stopping the background JWKS
 // refresh worker pool (and its ~3 goroutines) each one runs. It cancels the
 // validator-scoped context those pools share — signalling them all to stop at
-// once — then waits for each cache's Shutdown to drain its workers. Cancelling
-// up front (rather than after the loop) means a slow-draining cache is already
-// unwinding by the time its Shutdown is reached, so Close does not serialize on
-// each pool's full timeout. This is the same order the construction-failure
-// path uses. It is safe to call more than once and on a validator with no
-// external issuers; the validator must not be used after Close.
+// once — then waits, under a single shared httpTimeout budget, for each cache
+// to drain. Cancelling up front (rather than after the loop) means the pools
+// unwind in parallel, and the one shared deadline bounds the total wait by
+// httpTimeout rather than httpTimeout×N even if a pool ignores cancellation.
+// This is the same order the construction-failure path uses. It is safe to call
+// more than once and on a validator with no external issuers; the validator
+// must not be used after Close.
 //
 // A server holds its MultiIssuerTokenValidator and calls this from Close and
 // its construction error path (see pkg/authserver), so neither a normal
@@ -510,9 +520,11 @@ func (v *MultiIssuerTokenValidator) Close() error {
 	if v.cancel != nil {
 		v.cancel()
 	}
+	ctx, cancel := context.WithTimeout(context.Background(), httpTimeout)
+	defer cancel()
 	var errs []error
 	for issuerURL, issuerConfig := range v.issuers {
-		if err := issuerConfig.shutdownJWKSCache(); err != nil {
+		if err := issuerConfig.shutdownJWKSCache(ctx); err != nil {
 			errs = append(errs, fmt.Errorf("issuer %s: %w", issuerURL, err))
 		}
 	}
@@ -632,19 +644,18 @@ func newExternalIssuerConfig(ctx context.Context, ti TrustedIssuer) (*externalIs
 	}, nil
 }
 
-// shutdownJWKSCache stops this issuer's JWKS refresh worker pool, waiting up to
-// httpTimeout for its goroutines to drain. The context passed to Shutdown must
-// be fresh — not the validator-scoped one the cache was started with, which
-// Close cancels — or Shutdown returns immediately without waiting; see httprc's
-// Controller.ShutdownContext. A nil cache (an externalIssuerConfig built by
-// ValidateTrustedIssuers, which never starts one) is a no-op, as is a
-// double shutdown.
-func (c *externalIssuerConfig) shutdownJWKSCache() error {
+// shutdownJWKSCache stops this issuer's JWKS refresh worker pool, waiting for
+// its goroutines to drain until ctx expires. ctx must be fresh — not the
+// validator-scoped one the cache was started with, which Close cancels — or
+// Shutdown returns immediately without waiting; see httprc's
+// Controller.ShutdownContext. Callers pass one shared deadline context so a set
+// of N issuers drains within a single timeout budget, not N of them. A nil
+// cache (an externalIssuerConfig built by ValidateTrustedIssuers, which never
+// starts one) is a no-op, as is a double shutdown.
+func (c *externalIssuerConfig) shutdownJWKSCache(ctx context.Context) error {
 	if c.jwksCache == nil {
 		return nil
 	}
-	ctx, cancel := context.WithTimeout(context.Background(), httpTimeout)
-	defer cancel()
 	return c.jwksCache.Shutdown(ctx)
 }
 

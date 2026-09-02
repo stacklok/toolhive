@@ -374,7 +374,10 @@ func oidcLogin(ctx context.Context, cfg *llm.Config, skipBrowser bool) error {
 	if err != nil {
 		return fmt.Errorf("building token source: %w", err)
 	}
-	_, err = ts.Token(ctx)
+	token, err := ts.Token(ctx)
+	if err == nil {
+		cfg.SetDiscoveryAccessToken(token)
+	}
 	return err
 }
 

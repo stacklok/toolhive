@@ -107,22 +107,6 @@ func TestRealClientConfigs_ConfigureAndRevert(t *testing.T) {
 			},
 		},
 		{
-			// ~/.<platform>/Code/User/settings.json
-			clientType: VSCode,
-			wantPointers: map[string]string{
-				"/github.copilot.advanced.serverUrl": "http://localhost:14000/v1",
-				"/github.copilot.advanced.apiKey":    "thv-proxy",
-			},
-		},
-		{
-			// ~/.<platform>/Code - Insiders/User/settings.json
-			clientType: VSCodeInsider,
-			wantPointers: map[string]string{
-				"/github.copilot.advanced.serverUrl": "http://localhost:14000/v1",
-				"/github.copilot.advanced.apiKey":    "thv-proxy",
-			},
-		},
-		{
 			// ~/Library/Application Support/GitHub Copilot for Xcode/editorSettings.json
 			clientType: ClientApp(Xcode),
 			wantPointers: map[string]string{
@@ -167,6 +151,186 @@ func TestRealClientConfigs_ConfigureAndRevert(t *testing.T) {
 			}
 		})
 	}
+}
+
+func TestConfigureLLMGateway_VSCodeCustomEndpoint(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name       string
+		clientType ClientApp
+		pathPart   string
+	}{
+		{name: "stable", clientType: VSCode, pathPart: "Code"},
+		{name: "insiders", clientType: VSCodeInsider, pathPart: "Code - Insiders"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			home := t.TempDir()
+			cm := NewTestClientManager(home, nil, supportedClientIntegrations, nil)
+			appCfg := cm.lookupClientAppConfig(tt.clientType)
+			require.NotNil(t, appCfg)
+			assert.Equal(t, llmgateway.ModeVSCode, appCfg.LLMGatewayMode)
+			assert.Equal(t, "chatLanguageModels.json", appCfg.LLMSettingsFile)
+			assert.Contains(t, appCfg.LLMSettingsRelPath, tt.pathPart)
+
+			path, err := cm.ConfigureLLMGateway(tt.clientType, llmgateway.ApplyConfig{
+				ProxyBaseURL:     "http://localhost:14000/v1",
+				DiscoveredModels: []string{"model-a", "model-b"},
+			})
+			require.NoError(t, err)
+			assert.Equal(t, "chatLanguageModels.json", filepath.Base(path))
+
+			var groups []vsCodeProviderGroup
+			data, err := os.ReadFile(path)
+			require.NoError(t, err)
+			require.NoError(t, json.Unmarshal(data, &groups))
+			require.Len(t, groups, 1)
+			assert.Equal(t, "ToolHive", groups[0].Name)
+			assert.Equal(t, "customendpoint", groups[0].Vendor)
+			require.Len(t, groups[0].Models, 2)
+			for i, modelID := range []string{"model-a", "model-b"} {
+				model := groups[0].Models[i]
+				assert.Equal(t, modelID, model.ID)
+				assert.Equal(t, modelID, model.Name)
+				assert.Equal(t, "http://localhost:14000/v1", model.URL)
+				assert.True(t, model.ToolCalling)
+				assert.False(t, model.Vision)
+				assert.Positive(t, model.MaxInputTokens)
+				assert.Positive(t, model.MaxOutputTokens)
+				assert.Equal(t, "Bearer thv-proxy", model.RequestHeaders["Authorization"])
+			}
+		})
+	}
+}
+
+func TestConfigureLLMGateway_VSCodePreservesContentAndIsIdempotent(t *testing.T) {
+	t.Parallel()
+
+	home := t.TempDir()
+	cm := NewTestClientManager(home, nil, supportedClientIntegrations, nil)
+	appCfg := cm.lookupClientAppConfig(VSCode)
+	chatPath := cm.buildLLMSettingsPath(appCfg)
+	require.NoError(t, os.MkdirAll(filepath.Dir(chatPath), 0o700))
+	require.NoError(t, os.WriteFile(chatPath, []byte(`[
+		// Keep this provider and its comment.
+		{"name":"Other","vendor":"other","models":[],"unrelated":true},
+		{"name":"ToolHive","vendor":"customendpoint","models":[{"id":"stale"}]}
+	]`), 0o600))
+	settingsPath := filepath.Join(filepath.Dir(chatPath), "settings.json")
+	require.NoError(t, os.WriteFile(settingsPath, []byte(`{
+		"editor.fontSize": 15,
+		"github.copilot.enable": {"*": true},
+		"github.copilot.advanced.serverUrl": "http://obsolete",
+		"github.copilot.advanced.apiKey": "obsolete"
+	}`), 0o600))
+
+	applyCfg := llmgateway.ApplyConfig{
+		ProxyBaseURL:     "http://localhost:14000/v1",
+		DiscoveredModels: []string{"model-a"},
+	}
+	for range 2 {
+		_, err := cm.ConfigureLLMGateway(VSCode, applyCfg)
+		require.NoError(t, err)
+	}
+
+	data, err := os.ReadFile(chatPath)
+	require.NoError(t, err)
+	assert.Contains(t, string(data), "// Keep this provider and its comment.")
+	var groups []map[string]any
+	standardized, err := hujson.Standardize(data)
+	require.NoError(t, err)
+	require.NoError(t, json.Unmarshal(standardized, &groups))
+	require.Len(t, groups, 2, "repeat setup must replace, not duplicate, the ToolHive group")
+	assert.Equal(t, "Other", groups[0]["name"])
+	assert.Equal(t, true, groups[0]["unrelated"])
+	assert.Equal(t, "ToolHive", groups[1]["name"])
+
+	settings, err := os.ReadFile(settingsPath)
+	require.NoError(t, err)
+	assert.Contains(t, string(settings), `"editor.fontSize"`)
+	assert.Contains(t, string(settings), `"github.copilot.enable"`)
+	assert.NotContains(t, string(settings), "github.copilot.advanced.serverUrl")
+	assert.NotContains(t, string(settings), "github.copilot.advanced.apiKey")
+}
+
+func TestRevertLLMGateway_VSCodeMigratesLegacyConfigPath(t *testing.T) {
+	t.Parallel()
+
+	home := t.TempDir()
+	cm := NewTestClientManager(home, nil, supportedClientIntegrations, nil)
+	legacyPath := filepath.Join(filepath.Dir(cm.buildLLMSettingsPath(cm.lookupClientAppConfig(VSCode))), "settings.json")
+	require.NoError(t, os.MkdirAll(filepath.Dir(legacyPath), 0o700))
+	require.NoError(t, os.WriteFile(legacyPath, []byte(`{
+		"editor.fontSize": 15,
+		"github.copilot.advanced.serverUrl": "http://localhost:14000/v1",
+		"github.copilot.advanced.apiKey": "thv-proxy"
+	}`), 0o600))
+
+	require.NoError(t, cm.RevertLLMGateway(VSCode, legacyPath))
+	data, err := os.ReadFile(legacyPath)
+	require.NoError(t, err)
+	assert.Contains(t, string(data), `"editor.fontSize"`)
+	assert.NotContains(t, string(data), "github.copilot.advanced")
+}
+
+func TestConfigureLLMGateway_VSCodeErrors(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name    string
+		content string
+		models  []string
+		wantErr string
+	}{
+		{name: "no discovered models", models: nil, wantErr: "returned no models"},
+		{name: "malformed JSON", content: `[`, models: []string{"model-a"}, wantErr: "parsing"},
+		{name: "wrong root type", content: `{}`, models: []string{"model-a"}, wantErr: "expected an array"},
+		{name: "malformed provider", content: `[42]`, models: []string{"model-a"}, wantErr: "provider group"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			home := t.TempDir()
+			cm := NewTestClientManager(home, nil, supportedClientIntegrations, nil)
+			path := cm.buildLLMSettingsPath(cm.lookupClientAppConfig(VSCode))
+			if tt.content != "" {
+				require.NoError(t, os.MkdirAll(filepath.Dir(path), 0o700))
+				require.NoError(t, os.WriteFile(path, []byte(tt.content), 0o600))
+			}
+			_, err := cm.ConfigureLLMGateway(VSCode, llmgateway.ApplyConfig{
+				ProxyBaseURL: "http://localhost:14000/v1", DiscoveredModels: tt.models,
+			})
+			require.ErrorContains(t, err, tt.wantErr)
+		})
+	}
+}
+
+func TestRevertLLMGateway_VSCodePreservesUnrelatedGroups(t *testing.T) {
+	t.Parallel()
+
+	home := t.TempDir()
+	cm := NewTestClientManager(home, nil, supportedClientIntegrations, nil)
+	path, err := cm.ConfigureLLMGateway(VSCodeInsider, llmgateway.ApplyConfig{
+		ProxyBaseURL: "http://localhost:14000/v1", DiscoveredModels: []string{"model-a"},
+	})
+	require.NoError(t, err)
+	data := []byte(`[
+		{"name":"Other","vendor":"other","models":[]},
+		{"name":"ToolHive","vendor":"customendpoint","models":[]}
+	]`)
+	require.NoError(t, os.WriteFile(path, data, 0o600))
+
+	require.NoError(t, cm.RevertLLMGateway(VSCodeInsider, path))
+	result, err := os.ReadFile(path)
+	require.NoError(t, err)
+	var groups []vsCodeProviderGroup
+	require.NoError(t, json.Unmarshal(result, &groups))
+	require.Len(t, groups, 1)
+	assert.Equal(t, "Other", groups[0].Name)
+	assert.Equal(t, "other", groups[0].Vendor)
 }
 
 // ── helpers ───────────────────────────────────────────────────────────────────

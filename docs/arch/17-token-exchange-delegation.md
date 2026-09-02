@@ -622,19 +622,36 @@ delegate_clients:
    external subject can never collide with one. Scope names are not
    qualified this way and remain the operator's responsibility to keep
    disjoint across issuers.
-3. **Provenance is recorded for every external token.** The RFC 8693 §4.1
-   `act` claim records who acted: its outer hop always contains ToolHive's
-   issuer and client ID. The external issuer is nested one level in —
-   `ValidatedClaims.ExternalIssuer` is set for every token validated by the
-   external-issuer path, whether or not it also carries `may_act`. The nested
-   entry additionally carries `sub` (the allowlisted actor claim) when the
-   allowlist path resolved one; a `may_act`-bearing external token yields
-   `act = {iss: <toolhive-issuer>, sub: <toolhive-client>, act: {iss:
-<external-issuer>}}` — no client-namespace actor to report there, but the
-   issuer is still recorded. Either way, Cedar authorizers key on `sub` and do
-   not read `act` — it is an audit trail, not an access control. (AWS STS role
-   mapping can read arbitrary claims including `act` via its CEL matcher, so
-   "authorizers" here means Cedar specifically, not every consumer.)
+3. **Provenance is recorded for every external token, but never as a
+   phantom actor.** The RFC 8693 §4.1 `act` claim identifies parties that
+   acted: its outer hop always contains ToolHive's issuer and client ID,
+   and a genuine external actor — the allowlist path's allowlisted actor
+   claim — nests one level in, e.g. `act = {iss: <toolhive-issuer>, sub:
+   <toolhive-client>, act: {iss: <external-issuer>, sub: <external-actor>}}`.
+   A `may_act`-bearing or `ActorMatcher`-only external token has no
+   client-namespace actor to nest — `may_act.sub` already names the
+   delegate directly via the outer hop — so `act` stays a single hop for
+   those; nesting a bare `{iss: <external-issuer>}` there would misrepresent
+   the issuer as a prior actor to any RFC-8693-aware consumer walking the
+   chain, including this codebase's own audit tooling (`pkg/audit`'s
+   `DelegationChain`, documented as "the full chain of acting parties").
+   The external issuer is instead always recorded as its own top-level
+   `external_issuer` claim — set whenever `ValidatedClaims.ExternalIssuer`
+   is non-empty, regardless of whether an actor was also nested under
+   `act` — so operators and policy authors have one consistent place to
+   check for "was an external issuer involved," rather than sometimes
+   inside `act` and sometimes not. It is single-hop: it names only the
+   immediate exchange's own external contribution, not a re-exchanged
+   token's earlier external issuer, if any. `act` is not excluded from
+   Cedar's generic claim exposure (`preprocessClaims` prefixes every claim
+   key, `act` and `external_issuer` included, so they surface as
+   `context.claim_act` and `context.claim_external_issuer`), so a policy
+   CAN key on `context.claim_act.sub` — see
+   `pkg/authz/authorizers/cedar/core_test.go` for worked examples gating on
+   an actor's SPIFFE ID this way. Most policies still key on `sub` alone,
+   since `act` is populated for audit provenance rather than as the
+   primary access-control signal, but an operator authoring delegation
+   policy should not assume it is unreachable.
 4. **`may_act` trust is a per-issuer opt-in, and it bypasses more than one
    thing.** `allow_may_act` is false by default because an enabled issuer
    bypasses BOTH `allowedActors` and `actorMatcher` (external actor

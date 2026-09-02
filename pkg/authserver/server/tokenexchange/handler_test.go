@@ -1772,6 +1772,8 @@ func TestTokenExchangeHandler_ActChainProvenance(t *testing.T) {
 		assert.Equal(t, "ext-agent", nested["sub"])
 		assert.Equal(t, testExternalIssuer, nested["iss"])
 		assert.Nil(t, nested["act"], "no prior chain to nest further")
+		assert.Equal(t, testExternalIssuer, sess.JWTClaims.Extra["external_issuer"],
+			"external_issuer is always recorded, even when a genuine actor was also nested under act")
 	})
 
 	t.Run("self-issued delegation stays a single level with no external nesting", func(t *testing.T) {
@@ -1790,6 +1792,8 @@ func TestTokenExchangeHandler_ActChainProvenance(t *testing.T) {
 		assert.Equal(t, testAgentClientID, act["sub"])
 		assert.Equal(t, testIssuer, act["iss"], "outermost act.iss is always this server's own issuer")
 		assert.Nil(t, act["act"], "self-issued delegation must not nest an external actor")
+		assert.NotContains(t, sess.JWTClaims.Extra, "external_issuer",
+			"self-issued delegation involves no external issuer to record")
 	})
 
 	// #5989 fix: an external issuer choosing a "sub" equal to a native
@@ -1825,7 +1829,7 @@ func TestTokenExchangeHandler_ActChainProvenance(t *testing.T) {
 	// actor authorization, but AllowedDelegateClients still applies. Only
 	// covered at the checkDelegationConsent unit level until now — this
 	// exercises it through the full handler.
-	t.Run("external token carrying may_act still nests the issuer, with no actor to report", func(t *testing.T) {
+	t.Run("external token carrying may_act records the issuer without nesting a phantom actor", func(t *testing.T) {
 		t.Parallel()
 		h := newTestHandlerWithValidator(multiValidator)
 
@@ -1844,20 +1848,20 @@ func TestTokenExchangeHandler_ActChainProvenance(t *testing.T) {
 		require.True(t, ok, "act claim must be a map")
 		assert.Equal(t, testAgentClientID, act["sub"])
 
-		// External actor authorization is bypassed, but this path still records where
-		// the delegation came from (ValidatedClaims.ExternalIssuer is set
-		// unconditionally by validateExternalToken) — it just has no
-		// client-namespace actor claim to report, since may_act.sub already
-		// named the delegate directly via the outermost act.sub above.
-		nested, ok := act["act"].(map[string]any)
-		require.True(t, ok, "external issuer must be nested even on the may_act path")
-		assert.Equal(t, testExternalIssuer, nested["iss"])
-		_, hasSub := nested["sub"]
-		assert.False(t, hasSub, "no ExternalActor exists on the may_act path")
+		// External actor authorization is bypassed, and may_act.sub already
+		// named the delegate directly via the outermost act.sub above, so
+		// there is no client-namespace actor to nest. The external issuer is
+		// still recorded (ValidatedClaims.ExternalIssuer is set unconditionally
+		// by validateExternalToken) -- but as its own top-level claim, not as
+		// a phantom, issuer-only hop under act.act: an act entry identifies a
+		// party that acted, and an issuer alone identifies no party.
+		assert.Nil(t, act["act"], "no actor was resolved, so act must not nest an issuer-only phantom hop")
+		assert.Equal(t, testExternalIssuer, sess.JWTClaims.Extra["external_issuer"],
+			"the external issuer must still be recorded, as its own top-level claim")
 	})
 
 	// maxDelegationDepth (10) bounds the prior chain depth + newLevels. The
-	// external wrapper adds a level of its own (newLevels=2) versus the
+	// external-actor wrapper adds a level of its own (newLevels=2) versus the
 	// self-issued path (newLevels=1), so the external path's prior chain must
 	// be one level shallower to fit:
 	//   self-issued: depth 9 accepted (9+1=10); depth 10 rejected (10+1=11>10)
@@ -1900,30 +1904,105 @@ func TestTokenExchangeHandler_ActChainProvenance(t *testing.T) {
 		require.True(t, errors.As(err, &rfcErr), "expected fosite RFC6749Error")
 		assert.Contains(t, rfcErr.Reason(), "too deep")
 	})
+
+	// reExchange re-submits a first exchange's resulting session as a new
+	// subject_token: the delegated token's own "iss" is always this server's
+	// own issuer (see delegatedSubject's doc comment), so a second exchange
+	// validates it via the self-issued path, not the external-issuer path.
+	// It carries forward exactly the claims a real re-exchange would see on
+	// the wire — client_id, the nested act chain, and external_issuer.
+	reExchange := func(t *testing.T, h *Handler, sess *session.Session) (*fosite.AccessRequest, error) {
+		t.Helper()
+		extra := map[string]any{"client_id": testAgentClientID}
+		if act, ok := sess.JWTClaims.Extra["act"]; ok {
+			extra["act"] = act
+		}
+		if externalIssuer, ok := sess.JWTClaims.Extra["external_issuer"]; ok {
+			extra["external_issuer"] = externalIssuer
+		}
+		claims := validClaims()
+		claims.Subject = sess.JWTClaims.Subject
+		return requestWith(t, h, tj.signToken(t, claims, extra))
+	}
+
+	// #6473 regression: re-exchanging a delegated token that itself recorded
+	// an external_issuer must not silently drop that provenance just because
+	// the second exchange validates via the self-issued path.
+	t.Run("external_issuer survives a self-issued re-exchange (may_act path)", func(t *testing.T) {
+		t.Parallel()
+		h := newTestHandlerWithValidator(multiValidator)
+
+		claims := externalClaims()
+		claims.Audience = jwt.Audience{testExternalAudience, testIssuer}
+		token := externalJWKS.signToken(t, claims, map[string]any{
+			"may_act": map[string]any{"sub": testAgentClientID, "iss": testIssuer},
+		})
+
+		firstReq, err := requestWith(t, h, token)
+		require.NoError(t, err)
+		firstSess, ok := firstReq.GetSession().(*session.Session)
+		require.True(t, ok, "session should be *session.Session")
+		require.Equal(t, testExternalIssuer, firstSess.JWTClaims.Extra["external_issuer"],
+			"first exchange must record the external issuer")
+
+		secondReq, err := reExchange(t, h, firstSess)
+		require.NoError(t, err)
+		secondSess, ok := secondReq.GetSession().(*session.Session)
+		require.True(t, ok, "session should be *session.Session")
+		assert.Equal(t, testExternalIssuer, secondSess.JWTClaims.Extra["external_issuer"],
+			"external_issuer must survive a self-issued re-exchange, not just the first hop")
+	})
+
+	t.Run("external_issuer survives a self-issued re-exchange (ActorMatcher-only path)", func(t *testing.T) {
+		t.Parallel()
+		actorMatcherValidator := newMultiValidator(t, tj, []TrustedIssuer{{
+			IssuerURL:              testExternalIssuer,
+			ExpectedAudience:       testExternalAudience,
+			JWKSURL:                jwksServer.URL + "/jwks",
+			ActorMatcher:           `claims.azp == "trusted-app"`,
+			AllowedDelegateClients: []string{testAgentClientID},
+		}})
+		h := newTestHandlerWithValidator(actorMatcherValidator)
+
+		claims := externalClaims()
+		claims.Audience = jwt.Audience{testExternalAudience, testIssuer}
+		token := externalJWKS.signToken(t, claims, map[string]any{"azp": "trusted-app"})
+
+		firstReq, err := requestWith(t, h, token)
+		require.NoError(t, err)
+		firstSess, ok := firstReq.GetSession().(*session.Session)
+		require.True(t, ok, "session should be *session.Session")
+		require.Equal(t, testExternalIssuer, firstSess.JWTClaims.Extra["external_issuer"],
+			"first exchange must record the external issuer even with no actor resolved")
+		firstAct, ok := firstSess.JWTClaims.Extra["act"].(map[string]any)
+		require.True(t, ok, "act claim must be a map")
+		assert.Nil(t, firstAct["act"], "ActorMatcher alone resolves no actor to nest")
+
+		secondReq, err := reExchange(t, h, firstSess)
+		require.NoError(t, err)
+		secondSess, ok := secondReq.GetSession().(*session.Session)
+		require.True(t, ok, "session should be *session.Session")
+		assert.Equal(t, testExternalIssuer, secondSess.JWTClaims.Extra["external_issuer"],
+			"external_issuer must survive a self-issued re-exchange even when no client-namespace actor was ever nested")
+	})
 }
 
-// TestBuildActClaim_NestedActOnlyCarriesSubWhenAnActorWasResolved locks in
-// the correct RFC 8693 §4.1 invariant for the nested act.act object: "sub"
-// is not a required member (the RFC only gives "iss"+"sub" as an example of
-// what "might be necessary to uniquely identify an actor"), so it must be
-// present when an external actor was actually resolved (the allowlist
-// path's ExternalActor) and absent otherwise (the may_act-bearing path,
-// which names its delegate directly via the outermost act.sub instead —
-// see resolveActorIdentity and checkDelegationConsent). A "sub" claim was
-// previously, incorrectly, backfilled from the external subject token's
-// own subject on the no-ExternalActor path; that misrepresented the
-// external principal as a prior actor in the delegation chain (they never
-// acted) and reintroduced their bare, unqualified subject into a claim
-// audit tooling parses as "acting parties" (see delegatedSubject's doc
-// comment for why the qualified form exists in the first place).
-func TestBuildActClaim_NestedActOnlyCarriesSubWhenAnActorWasResolved(t *testing.T) {
+// TestBuildActClaim_ExternalIssuerIsNeverNestedAsAPhantomActor locks in the
+// design fix for a category error: an act object identifies a party that
+// acted (RFC 8693 §4.1), so a bare {"iss": externalIssuer} entry -- naming
+// no party -- must never be nested under act.act. When an actual actor was
+// resolved (the allowlist path's ExternalActor), it nests correctly with
+// both iss and sub. When no actor was resolved (the may_act-bearing or
+// ActorMatcher-only path), act stays a single hop and the external issuer
+// is reported only through buildActClaim's separate return value, which the
+// caller records as its own external_issuer claim -- never inside act.
+func TestBuildActClaim_ExternalIssuerIsNeverNestedAsAPhantomActor(t *testing.T) {
 	t.Parallel()
 
 	tests := []struct {
-		name      string
-		claims    *ValidatedClaims
-		wantSub   string
-		wantNoSub bool
+		name            string
+		claims          *ValidatedClaims
+		wantNestedActor bool
 	}{
 		{
 			name: "allowlist path nests the allowlisted external actor",
@@ -1932,34 +2011,115 @@ func TestBuildActClaim_NestedActOnlyCarriesSubWhenAnActorWasResolved(t *testing.
 				ExternalIssuer: testExternalIssuer,
 				ExternalActor:  "ext-agent",
 			},
-			wantSub: "ext-agent",
+			wantNestedActor: true,
 		},
 		{
-			name: "may_act path with no ExternalActor omits the nested sub",
+			name: "may_act path with no ExternalActor nests nothing under act",
 			claims: &ValidatedClaims{
 				Subject:        "ext-user-456",
 				ExternalIssuer: testExternalIssuer,
 				ExternalActor:  "",
 			},
-			wantNoSub: true,
+			wantNestedActor: false,
+		},
+		{
+			// newLevels stays 1 (not 2) on the no-actor path, so a prior
+			// chain of depth maxDelegationDepth-1 must fit exactly here,
+			// unlike the external-actor case in
+			// "external delegation at depth 8 fits exactly...", which only
+			// admits depth-8 because its newLevels is 2. Pins the depth
+			// arithmetic for the no-actor-plus-prior-chain combination,
+			// which no other test exercises.
+			name: "may_act path with a prior chain: no actor wrapper means one more level of prior chain fits",
+			claims: &ValidatedClaims{
+				Subject:        "ext-user-456",
+				ExternalIssuer: testExternalIssuer,
+				ExternalActor:  "",
+				Extra:          map[string]any{"act": nestedActChain(maxDelegationDepth - 1)},
+			},
+			wantNestedActor: false,
 		},
 	}
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
-			act, err := buildActClaim(tt.claims, testIssuer, testAgentClientID)
+			act, externalIssuer, err := buildActClaim(tt.claims, testIssuer, testAgentClientID)
 			require.NoError(t, err)
 
-			nested, ok := act["act"].(map[string]any)
-			require.True(t, ok, "external delegation must nest under act.act")
-			assert.Equal(t, testExternalIssuer, nested["iss"])
-			if tt.wantNoSub {
-				_, hasSub := nested["sub"]
-				assert.False(t, hasSub, "no actor was resolved, so the nested act must not carry a sub")
+			// The external issuer is always reported via the return value,
+			// regardless of whether an actor was also resolved.
+			assert.Equal(t, testExternalIssuer, externalIssuer)
+
+			if !tt.wantNestedActor {
+				if prior, ok := tt.claims.Extra["act"]; ok {
+					assert.Equal(t, prior, act["act"],
+						"with no actor to nest, the prior chain must hang directly under the outer hop, unchanged")
+				} else {
+					assert.Nil(t, act["act"], "no actor was resolved, so act must not nest a phantom, issuer-only hop")
+				}
 				return
 			}
-			assert.Equal(t, tt.wantSub, nested["sub"])
+			nested, ok := act["act"].(map[string]any)
+			require.True(t, ok, "a genuine actor must nest under act.act")
+			assert.Equal(t, testExternalIssuer, nested["iss"])
+			assert.Equal(t, "ext-agent", nested["sub"])
+		})
+	}
+}
+
+// TestBuildActClaim_ExternalIssuerCarriesForwardOnReExchange covers the fix
+// for the provenance-loss bug: a self-issued subject token being re-exchanged
+// validates via SelfIssuedTokenValidator, which never sets
+// ValidatedClaims.ExternalIssuer, so without reading back the subject
+// token's own "external_issuer" claim, a second exchange would silently drop
+// the fact that an earlier hop involved an external issuer.
+func TestBuildActClaim_ExternalIssuerCarriesForwardOnReExchange(t *testing.T) {
+	t.Parallel()
+
+	const freshIssuer = "https://fresh-external-issuer.example.com"
+	const priorIssuer = "https://prior-external-issuer.example.com"
+
+	tests := []struct {
+		name   string
+		claims *ValidatedClaims
+		want   string
+	}{
+		{
+			name: "a fresh external issuer this hop wins over a stale prior one",
+			claims: &ValidatedClaims{
+				ExternalIssuer: freshIssuer,
+				Extra:          map[string]any{"external_issuer": priorIssuer},
+			},
+			want: freshIssuer,
+		},
+		{
+			name: "no fresh external issuer this hop carries the prior one forward",
+			claims: &ValidatedClaims{
+				Extra: map[string]any{"external_issuer": priorIssuer},
+			},
+			want: priorIssuer,
+		},
+		{
+			name:   "neither this hop nor the subject token has an external issuer",
+			claims: &ValidatedClaims{},
+			want:   "",
+		},
+		{
+			name: "a non-string prior external_issuer is ignored, not carried forward",
+			claims: &ValidatedClaims{
+				Extra: map[string]any{"external_issuer": 12345},
+			},
+			want: "",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			_, externalIssuer, err := buildActClaim(tt.claims, testIssuer, testAgentClientID)
+			require.NoError(t, err)
+			assert.Equal(t, tt.want, externalIssuer)
 		})
 	}
 }

@@ -43,6 +43,7 @@ import (
 	ctrlutil "github.com/stacklok/toolhive/cmd/thv-operator/pkg/controllerutil"
 	"github.com/stacklok/toolhive/cmd/thv-operator/pkg/runconfig/configmap/checksum"
 	"github.com/stacklok/toolhive/cmd/thv-operator/pkg/virtualmcpserverstatus"
+	"github.com/stacklok/toolhive/pkg/telemetry"
 	vmcpconfig "github.com/stacklok/toolhive/pkg/vmcp/config"
 	"github.com/stacklok/toolhive/pkg/vmcp/workloads"
 )
@@ -3965,6 +3966,95 @@ func TestVirtualMCPServerValidateAuthzUpstreamAvailable_DeprecationEvent(t *test
 			case <-time.After(50 * time.Millisecond):
 				if tt.wantEvent {
 					t.Errorf("expected AuthzPrimaryUpstreamProviderDeprecated event, none recorded")
+				}
+			}
+		})
+	}
+}
+
+func TestVirtualMCPServerEmitInlineTelemetryIgnoredEvent(t *testing.T) {
+	t.Parallel()
+
+	inlineTelemetry := vmcpconfig.Config{
+		Telemetry: &telemetry.Config{Endpoint: "otlp-collector:4317"},
+	}
+
+	tests := []struct {
+		name               string
+		config             vmcpconfig.Config
+		withTelemetryRef   bool
+		observedGeneration int64
+		nilRecorder        bool
+		wantEvent          bool
+	}{
+		{
+			name:      "inline telemetry without ref emits the warning",
+			config:    inlineTelemetry,
+			wantEvent: true,
+		},
+		{
+			name:               "inline telemetry suppresses event when generation already observed",
+			config:             inlineTelemetry,
+			observedGeneration: 1,
+			wantEvent:          false,
+		},
+		{
+			name:             "inline telemetry with telemetryConfigRef does not emit",
+			config:           inlineTelemetry,
+			withTelemetryRef: true,
+			wantEvent:        false,
+		},
+		{
+			name:      "no inline telemetry does not emit",
+			wantEvent: false,
+		},
+		{
+			name:        "no-op when recorder is nil",
+			config:      inlineTelemetry,
+			nilRecorder: true,
+			wantEvent:   false,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			opts := []v1beta1test.VirtualMCPServerOption{
+				v1beta1test.WithVMCPGroupRef(testGroupName),
+				v1beta1test.WithVMCPConfig(tt.config),
+				v1beta1test.WithVMCPStatus(mcpv1beta1.VirtualMCPServerStatus{
+					ObservedGeneration: tt.observedGeneration,
+				}),
+				v1beta1test.MutateVMCP(func(v *mcpv1beta1.VirtualMCPServer) {
+					v.Generation = 1
+				}),
+			}
+			if tt.withTelemetryRef {
+				opts = append(opts, v1beta1test.WithVMCPTelemetryConfigRef("otel"))
+			}
+			vmcp := v1beta1test.NewVirtualMCPServer(testVmcpName, "default", opts...)
+
+			recorder := events.NewFakeRecorder(10)
+			r := &VirtualMCPServerReconciler{}
+			if !tt.nilRecorder {
+				r.Recorder = recorder
+			}
+
+			r.emitInlineTelemetryIgnoredEvent(vmcp)
+
+			select {
+			case event := <-recorder.Events:
+				if !tt.wantEvent {
+					t.Errorf("expected no event, got %q", event)
+					return
+				}
+				assert.Contains(t, event, "Warning")
+				assert.Contains(t, event, "InlineTelemetryIgnored")
+				assert.Contains(t, event, "spec.config.telemetry is ignored by the operator")
+			default:
+				if tt.wantEvent {
+					t.Errorf("expected InlineTelemetryIgnored event, none recorded")
 				}
 			}
 		})

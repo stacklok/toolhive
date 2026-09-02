@@ -97,3 +97,29 @@ func TestUserAgentTransport_NilBase(t *testing.T) {
 
 	assert.Equal(t, UserAgent, got)
 }
+
+// closeIdleSpy records CloseIdleConnections calls; RoundTrip exists only to
+// satisfy http.RoundTripper.
+type closeIdleSpy struct{ closed int }
+
+func (*closeIdleSpy) RoundTrip(*http.Request) (*http.Response, error) {
+	return nil, http.ErrUseLastResponse
+}
+func (s *closeIdleSpy) CloseIdleConnections() { s.closed++ }
+
+// TestUserAgentTransport_CloseIdleConnections verifies the wrapper forwards
+// CloseIdleConnections to its base rather than silently swallowing it, which
+// would make http.Client.CloseIdleConnections a no-op and leave the pool
+// pinned. http.DefaultTransport (the nil-Base fallback) implements the
+// capability, so that path forwards too.
+func TestUserAgentTransport_CloseIdleConnections(t *testing.T) {
+	t.Parallel()
+
+	spy := &closeIdleSpy{}
+	transport := &UserAgentTransport{Base: spy}
+	transport.CloseIdleConnections()
+	assert.Equal(t, 1, spy.closed)
+
+	// Nil Base must not panic; it forwards to http.DefaultTransport.
+	assert.NotPanics(t, func() { (&UserAgentTransport{}).CloseIdleConnections() })
+}

@@ -89,6 +89,13 @@ func discoverOIDCEndpointsWithClientAndValidation(
 		transport := &http.Transport{
 			TLSHandshakeTimeout:   10 * time.Second,
 			ResponseHeaderTimeout: 10 * time.Second,
+			// Bound the pool so an idle keep-alive connection cannot be retained
+			// for the process lifetime (zero IdleConnTimeout means "never
+			// expire"). Moot when blockPrivateIPs disables keep-alives below,
+			// but correct in the keep-alive path. Mirrors networking.Build.
+			IdleConnTimeout:     90 * time.Second,
+			MaxIdleConns:        100,
+			MaxIdleConnsPerHost: 4,
 		}
 		if blockPrivateIPs {
 			transport.DialContext = networking.NewPrivateIPBlockingDialContext()

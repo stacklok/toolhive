@@ -137,6 +137,20 @@ type IdleConnectionCloser interface {
 	CloseIdleConnections()
 }
 
+// ForwardCloseIdle drains the idle-connection pool reachable through rt when rt
+// implements IdleConnectionCloser — as *http.Transport, and every wrapping
+// RoundTripper in this repo that forwards the call, do. A wrapping RoundTripper
+// must call this from its own CloseIdleConnections; otherwise
+// http.Client.CloseIdleConnections stops at the wrapper and the pool underneath
+// is never drained (see IdleConnectionCloser). Using this helper keeps the
+// wrapper half from silently regressing into an anonymous
+// `interface{ CloseIdleConnections() }` assertion that drifts out of sync.
+func ForwardCloseIdle(rt http.RoundTripper) {
+	if closer, ok := rt.(IdleConnectionCloser); ok {
+		closer.CloseIdleConnections()
+	}
+}
+
 // ValidatingTransport is for validating URLs prior to request
 type ValidatingTransport struct {
 	Transport         http.RoundTripper
@@ -172,9 +186,7 @@ func (t *ValidatingTransport) RoundTrip(req *http.Request) (*http.Response, erro
 // IdleConnectionCloser. The assertion is required because the field is an
 // http.RoundTripper; it holds an *http.Transport for every client Build produces.
 func (t *ValidatingTransport) CloseIdleConnections() {
-	if closer, ok := t.Transport.(IdleConnectionCloser); ok {
-		closer.CloseIdleConnections()
-	}
+	ForwardCloseIdle(t.Transport)
 }
 
 // closeIdlerTransport wraps a RoundTripper that does not implement

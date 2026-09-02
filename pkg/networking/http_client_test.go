@@ -11,6 +11,7 @@ import (
 	"crypto/x509"
 	"crypto/x509/pkix"
 	"encoding/pem"
+	"errors"
 	"io"
 	"math/big"
 	"net/http"
@@ -997,6 +998,38 @@ func TestBuild_CloseIdleConnectionsReachesPool(t *testing.T) {
 				"CloseIdleConnections must drain the pool, so the next request dials again")
 		})
 	}
+}
+
+// forwardCloseIdleSpy records CloseIdleConnections calls; the RoundTrip method
+// exists only to satisfy http.RoundTripper.
+type forwardCloseIdleSpy struct{ closed int }
+
+func (*forwardCloseIdleSpy) RoundTrip(*http.Request) (*http.Response, error) {
+	return nil, errors.New("unused")
+}
+func (s *forwardCloseIdleSpy) CloseIdleConnections() { s.closed++ }
+
+// plainRoundTripper implements http.RoundTripper but not IdleConnectionCloser.
+type plainRoundTripper struct{}
+
+func (plainRoundTripper) RoundTrip(*http.Request) (*http.Response, error) {
+	return nil, errors.New("unused")
+}
+
+func TestForwardCloseIdle(t *testing.T) {
+	t.Parallel()
+
+	t.Run("forwards to a RoundTripper that implements the capability", func(t *testing.T) {
+		t.Parallel()
+		spy := &forwardCloseIdleSpy{}
+		ForwardCloseIdle(spy)
+		assert.Equal(t, 1, spy.closed)
+	})
+
+	t.Run("is a safe no-op when the RoundTripper does not implement it", func(t *testing.T) {
+		t.Parallel()
+		assert.NotPanics(t, func() { ForwardCloseIdle(plainRoundTripper{}) })
+	})
 }
 
 // getReusedConn issues a GET and reports whether it was served from the

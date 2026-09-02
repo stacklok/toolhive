@@ -44,6 +44,21 @@ func (t *UserAgentTransport) RoundTrip(req *http.Request) (*http.Response, error
 	return base.RoundTrip(clonedReq)
 }
 
+// CloseIdleConnections forwards to the wrapped RoundTripper so that
+// http.Client.CloseIdleConnections reaches the underlying connection pool
+// instead of stopping at this wrapper. pkg/oauthproto is imported by
+// pkg/networking, so it cannot use networking.ForwardCloseIdle here without an
+// import cycle; the anonymous assertion below is the equivalent forward.
+func (t *UserAgentTransport) CloseIdleConnections() {
+	base := t.Base
+	if base == nil {
+		base = http.DefaultTransport
+	}
+	if c, ok := base.(interface{ CloseIdleConnections() }); ok {
+		c.CloseIdleConnections()
+	}
+}
+
 // NewHTTPClient returns an *http.Client whose transport sets the ToolHive
 // User-Agent on every outbound request and that has a sensible timeout for
 // OAuth token endpoint calls. Use it for HTTP clients passed to

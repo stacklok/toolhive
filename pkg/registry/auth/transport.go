@@ -6,6 +6,8 @@ package auth
 import (
 	"fmt"
 	"net/http"
+
+	"github.com/stacklok/toolhive/pkg/networking"
 )
 
 // Transport wraps an http.RoundTripper to add OAuth authentication headers.
@@ -47,6 +49,13 @@ func (t *Transport) base() http.RoundTripper {
 		return t.Base
 	}
 	return http.DefaultTransport
+}
+
+// CloseIdleConnections forwards to the base RoundTripper so
+// http.Client.CloseIdleConnections reaches the underlying connection pool
+// instead of stopping at this wrapper (see networking.IdleConnectionCloser).
+func (t *Transport) CloseIdleConnections() {
+	networking.ForwardCloseIdle(t.base())
 }
 
 // WrapTransport wraps an http.RoundTripper with authentication support.

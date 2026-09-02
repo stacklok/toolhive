@@ -1410,6 +1410,13 @@ func (t *bearerTokenTransport) RoundTrip(req *http.Request) (*http.Response, err
 	return t.next.RoundTrip(cp)
 }
 
+// CloseIdleConnections forwards to the wrapped RoundTripper so
+// http.Client.CloseIdleConnections reaches the underlying connection pool
+// instead of stopping at this wrapper (see networking.IdleConnectionCloser).
+func (t *bearerTokenTransport) CloseIdleConnections() {
+	networking.ForwardCloseIdle(t.next)
+}
+
 // errDCRRedirectRefused is returned when a DCR registration endpoint
 // responds with a 30x. Net/http surfaces it via *url.Error so callers
 // observe a clear failure mode instead of a confusing JSON decode error.

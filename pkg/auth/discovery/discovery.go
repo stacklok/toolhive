@@ -97,6 +97,12 @@ func DetectAuthenticationFromServer(ctx context.Context, targetURI string, confi
 		Transport: &http.Transport{
 			TLSHandshakeTimeout:   config.TLSHandshakeTimeout,
 			ResponseHeaderTimeout: config.ResponseHeaderTimeout,
+			// Bound the pool: a zero IdleConnTimeout never expires an idle
+			// connection, pinning a socket and its goroutine pair for the
+			// process lifetime. Mirrors networking.Build's host-scoped bounds.
+			IdleConnTimeout:     90 * time.Second,
+			MaxIdleConns:        100,
+			MaxIdleConnsPerHost: 4,
 		},
 		CheckRedirect: networking.SameHostRedirectPolicy(),
 	}
@@ -1052,6 +1058,13 @@ func FetchResourceMetadata(ctx context.Context, metadataURL string, blockPrivate
 	transport := &http.Transport{
 		TLSHandshakeTimeout:   5 * time.Second,
 		ResponseHeaderTimeout: 5 * time.Second,
+		// Bound the pool so an idle keep-alive connection cannot be retained
+		// for the process lifetime (zero IdleConnTimeout means "never expire").
+		// Moot when blockPrivateIPs disables keep-alives below, but correct in
+		// the keep-alive path. Mirrors networking.Build's host-scoped bounds.
+		IdleConnTimeout:     90 * time.Second,
+		MaxIdleConns:        100,
+		MaxIdleConnsPerHost: 4,
 	}
 	if blockPrivateIPs {
 		transport.DialContext = networking.NewPrivateIPBlockingDialContext()

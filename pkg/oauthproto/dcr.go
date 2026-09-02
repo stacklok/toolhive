@@ -304,6 +304,13 @@ func NewDefaultDCRClient() *http.Client {
 		Transport: &http.Transport{
 			TLSHandshakeTimeout:   10 * time.Second,
 			ResponseHeaderTimeout: 10 * time.Second,
+			// Bound the pool: a zero IdleConnTimeout never expires an idle
+			// connection, pinning a socket and its goroutine pair for the
+			// process lifetime. Mirrors networking.Build's host-scoped bounds
+			// (this leaf package cannot import networking without a cycle).
+			IdleConnTimeout:     90 * time.Second,
+			MaxIdleConns:        100,
+			MaxIdleConnsPerHost: 4,
 		},
 	}
 }

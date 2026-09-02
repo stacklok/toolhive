@@ -15,6 +15,7 @@ import (
 	"log/slog"
 	"net/http"
 
+	"github.com/stacklok/toolhive/pkg/networking"
 	"github.com/stacklok/toolhive/pkg/secrets"
 	"github.com/stacklok/toolhive/pkg/transport/middleware"
 	"github.com/stacklok/toolhive/pkg/vmcp"
@@ -68,9 +69,7 @@ func (h *headerForwardRoundTripper) RoundTrip(req *http.Request) (*http.Response
 // CloseIdleConnections reaches the concrete *http.Transport at the bottom of the
 // chain (this wrapper would otherwise silently swallow the call).
 func (h *headerForwardRoundTripper) CloseIdleConnections() {
-	if c, ok := h.base.(interface{ CloseIdleConnections() }); ok {
-		c.CloseIdleConnections()
-	}
+	networking.ForwardCloseIdle(h.base)
 }
 
 // BuildHeaderForwardTripper constructs a headerForwardRoundTripper for the

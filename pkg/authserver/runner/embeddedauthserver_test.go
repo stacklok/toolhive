@@ -1487,18 +1487,46 @@ func TestConvertRedisRunConfig_WithEnvVars(t *testing.T) {
 	})
 }
 
-// stubServer is a minimal authserver.Server implementation for testing RegisterHandlers.
-// It returns a fixed http.Handler that writes a 200 response with a marker body,
-// and no-ops on all other interface methods.
+// stubServer is a minimal authserver.Server implementation for testing
+// RegisterHandlers. It returns a fixed http.Handler that writes a 200 response
+// with a marker body, and no-ops on all other interface methods.
+//
+// CloseIdleConnections is not part of authserver.Server — it is the optional
+// capability authserver.CloseIdleConnections detects — so this stub implements
+// it only to assert that the wrapper forwards. capabilityFreeStubServer covers a
+// server that does not. Note it must not be embedded to build that one: the
+// method would be promoted and the capability satisfied after all.
 type stubServer struct {
-	handler http.Handler
+	handler    http.Handler
+	idleCloses atomic.Int32
 }
 
 func (s *stubServer) Handler() http.Handler                                { return s.handler }
 func (*stubServer) IDPTokenStorage() storage.UpstreamTokenStorage          { return nil }
 func (*stubServer) UpstreamTokenRefresher() storage.UpstreamTokenRefresher { return nil }
 func (*stubServer) DCRStore() storage.DCRCredentialStore                   { return nil }
+func (s *stubServer) CloseIdleConnections()                                { s.idleCloses.Add(1) }
 func (*stubServer) Close() error                                           { return nil }
+
+// capabilityFreeStubServer omits CloseIdleConnections, as an out-of-tree
+// authserver.Server implementation written before the capability existed would.
+// It counts Close so a test can prove the wrapper does not fall back to it.
+type capabilityFreeStubServer struct {
+	closed atomic.Int32
+}
+
+func (*capabilityFreeStubServer) Handler() http.Handler                         { return nil }
+func (*capabilityFreeStubServer) IDPTokenStorage() storage.UpstreamTokenStorage { return nil }
+func (*capabilityFreeStubServer) DCRStore() storage.DCRCredentialStore          { return nil }
+
+func (*capabilityFreeStubServer) UpstreamTokenRefresher() storage.UpstreamTokenRefresher {
+	return nil
+}
+
+func (s *capabilityFreeStubServer) Close() error {
+	s.closed.Add(1)
+	return nil
+}
 
 func TestRoutes(t *testing.T) {
 	t.Parallel()
@@ -2427,4 +2455,39 @@ func TestResolveDelegateClients_ClonesPermissions(t *testing.T) {
 
 	assert.Equal(t, "openid", resolved[0].Scopes[0])
 	assert.Equal(t, "audience", resolved[0].Audiences[0])
+}
+
+// TestCloseIdleConnectionsDelegates pins that the wrapper forwards to the
+// underlying server rather than no-opping or calling Close. This is the method
+// runner-path embedders reach for when retiring a superseded server, and an
+// empty body here would pass every other test in the package.
+func TestCloseIdleConnectionsDelegates(t *testing.T) {
+	t.Parallel()
+
+	stub := &stubServer{}
+	eas := &EmbeddedAuthServer{server: stub}
+
+	eas.CloseIdleConnections()
+	assert.Equal(t, int32(1), stub.idleCloses.Load())
+
+	// Safe after Close: Close is sync.Once-guarded and draining an already
+	// closed client's pool is a no-op, so a retire-then-shutdown sequence
+	// cannot double-close anything.
+	require.NoError(t, eas.Close())
+	eas.CloseIdleConnections()
+	assert.Equal(t, int32(2), stub.idleCloses.Load())
+}
+
+// TestCloseIdleConnectionsWithoutCapability pins that the wrapper degrades
+// quietly when the underlying Server does not implement the optional capability,
+// and in particular that it does not fall back to Close — the two are separate
+// precisely because Close also tears down storage.
+func TestCloseIdleConnectionsWithoutCapability(t *testing.T) {
+	t.Parallel()
+
+	stub := &capabilityFreeStubServer{}
+	eas := &EmbeddedAuthServer{server: stub}
+
+	assert.NotPanics(t, eas.CloseIdleConnections)
+	assert.Zero(t, stub.closed.Load(), "must not fall back to Close")
 }

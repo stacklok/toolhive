@@ -9,7 +9,13 @@ import (
 	"net/http"
 
 	"github.com/stacklok/toolhive/pkg/authserver/storage"
+	"github.com/stacklok/toolhive/pkg/authserver/upstream"
 )
+
+// UpstreamProviderFactory constructs the OAuth2Provider for one configured
+// upstream IDP. Set it on Config.UpstreamFactory to own upstream construction;
+// DefaultUpstreamFactory is the built-in implementation and can be delegated to.
+type UpstreamProviderFactory func(ctx context.Context, cfg *UpstreamConfig) (upstream.OAuth2Provider, error)
 
 // Server is the OAuth authorization server.
 // It provides HTTP handlers that serve all OAuth/OIDC endpoints.
@@ -53,8 +59,50 @@ type Server interface {
 	// its closed connection pool).
 	DCRStore() storage.DCRCredentialStore
 
-	// Close releases resources held by the server.
+	// Close releases resources held by the server. It drains the upstream idle
+	// connections (see the CloseIdleConnections function) and then closes
+	// storage. Do not call it on a server whose storage is shared with another
+	// live server; retire that one with CloseIdleConnections instead.
 	Close() error
+}
+
+// idleConnectionCloser is the capability CloseIdleConnections detects. It is
+// deliberately not a method on Server: adding one would be a source-incompatible
+// change for out-of-tree implementations and test doubles, and the only in-tree
+// consumer needs a single call. Kept unexported so callers go through the
+// CloseIdleConnections function rather than asserting themselves — the
+// `var _ idleConnectionCloser = (*server)(nil)` check in server_impl.go is what
+// keeps the real implementation compile-time guaranteed to satisfy it.
+type idleConnectionCloser interface {
+	CloseIdleConnections()
+}
+
+// CloseIdleConnections releases the idle keep-alive connections pooled by s's
+// upstream IDP providers, without touching storage, and reports whether s
+// supported the operation. Only an implementation of Server that does not come
+// from New can report false; the production type is checked at compile time.
+//
+// An embedder that reconstructs the server to change its upstream set — passing
+// the same storage.Storage and keys.KeyProvider so token and JWKS continuity is
+// preserved — must retire the superseded server with this function rather than
+// Close, because Close would also close the storage the new server is now
+// serving through. That split is the whole point: without it there is no correct
+// call to make.
+//
+// Safe to call on a server that is still serving: only idle connections are
+// closed and in-flight requests are unaffected. See upstream.IdleConnectionCloser
+// for the per-provider capability this delegates to, and for the
+// caller-owned-client exemption.
+//
+// Scope: upstream HTTP pools only. A server configured with TrustedIssuers also
+// holds one JWKS refresh worker pool per issuer that neither this function nor
+// Close releases.
+func CloseIdleConnections(s Server) bool {
+	closer, ok := s.(idleConnectionCloser)
+	if ok {
+		closer.CloseIdleConnections()
+	}
+	return ok
 }
 
 // New creates a new OAuth authorization server.

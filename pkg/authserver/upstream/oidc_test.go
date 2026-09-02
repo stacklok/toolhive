@@ -10,9 +10,11 @@ import (
 	"encoding/base64"
 	"encoding/json"
 	"math/big"
+	"net"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -355,12 +357,31 @@ func TestNewOIDCProvider(t *testing.T) {
 			Issuer: mock.issuer,
 		}
 
-		customClient := &http.Client{Timeout: 5 * time.Second}
+		// Built via the builder rather than a bare &http.Client so the pool is
+		// real and the ownership assertions below are meaningful.
+		issuerURL, err := url.Parse(mock.issuer)
+		require.NoError(t, err)
+		customClient, err := newHTTPClientForHost(issuerURL.Host, true, true, "")
+		require.NoError(t, err)
 
 		ctx := context.Background()
 		provider, err := NewOIDCProvider(ctx, config, WithHTTPClient(customClient))
 		require.NoError(t, err)
 		require.NotNil(t, provider)
+
+		// The injected client must be used as-is, not rebuilt — otherwise every
+		// reconstruction still allocates (and discards) a transport.
+		assert.Same(t, customClient, provider.httpClient)
+
+		// OIDCProviderImpl is the type #6479 identifies as leaking and the one
+		// DefaultUpstreamFactory builds, and WithHTTPClient clears the ownership
+		// flag on its own line — so pin that retiring this provider leaves the
+		// caller's shared pool warm. Discovery already populated it.
+		require.True(t, providerRequestReusedConn(t, provider.BaseOAuth2Provider, mock.issuer),
+			"discovery must have left a pooled connection")
+		provider.CloseIdleConnections()
+		assert.True(t, providerRequestReusedConn(t, provider.BaseOAuth2Provider, mock.issuer),
+			"a caller-owned client's pool must survive the provider being retired")
 	})
 
 	t.Run("with force consent screen", func(t *testing.T) {
@@ -1506,4 +1527,58 @@ func TestOIDCProvider_RefreshTokens(t *testing.T) {
 		require.NoError(t, err)
 		assert.Equal(t, "refreshed-access-token", tokens.AccessToken)
 	})
+}
+
+// TestNewOIDCProvider_DrainsOwnClientOnFailure pins that a construction that
+// fails *after* discovery does not abandon the client it built. Nothing is
+// returned, so no caller can drain it — this is the retry case #6479 calls
+// pathological ("re-runs discovery on every attempt"), and neither
+// buildUpstreams' drain nor newServer's deferred drain can reach it.
+func TestNewOIDCProvider_DrainsOwnClientOnFailure(t *testing.T) {
+	t.Parallel()
+
+	var openConns atomic.Int32
+	// Discovery succeeds (so a connection is pooled) but the document omits
+	// token_endpoint, so validation fails afterwards.
+	issuer := httptest.NewUnstartedServer(nil)
+	mux := http.NewServeMux()
+	mux.HandleFunc("/.well-known/openid-configuration", func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(map[string]any{
+			"issuer":                                issuer.URL,
+			"authorization_endpoint":                issuer.URL + "/authorize",
+			"jwks_uri":                              issuer.URL + "/jwks",
+			"response_types_supported":              []string{"code"},
+			"subject_types_supported":               []string{"public"},
+			"id_token_signing_alg_values_supported": []string{"RS256"},
+		})
+	})
+	issuer.Config.Handler = mux
+	issuer.Config.ConnState = func(_ net.Conn, state http.ConnState) {
+		switch state {
+		case http.StateNew:
+			openConns.Add(1)
+		case http.StateClosed, http.StateHijacked:
+			openConns.Add(-1)
+		case http.StateActive, http.StateIdle:
+		}
+	}
+	issuer.Start()
+	t.Cleanup(issuer.Close)
+
+	_, err := NewOIDCProvider(context.Background(), &OIDCConfig{
+		CommonOAuthConfig: CommonOAuthConfig{
+			ClientID:    testClientID,
+			RedirectURI: testRedirectURI,
+			Scopes:      []string{"openid"},
+		},
+		Issuer:            issuer.URL,
+		InsecureAllowHTTP: true,
+		AllowPrivateIPs:   true,
+	})
+	require.Error(t, err, "a discovery document without token_endpoint must be rejected")
+
+	// The issuer observes the close asynchronously.
+	assert.Eventually(t, func() bool { return openConns.Load() == 0 }, 5*time.Second, 10*time.Millisecond,
+		"a failed construction must drain the client it built")
 }

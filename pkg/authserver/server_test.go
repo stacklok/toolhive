@@ -6,9 +6,15 @@ package authserver
 import (
 	"context"
 	"crypto/rand"
+	"encoding/json"
+	"fmt"
 	"log/slog"
+	"net"
+	"net/http"
+	"net/http/httptest"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -178,8 +184,9 @@ func TestNewServer_Success(t *testing.T) {
 	}
 
 	// Call newServer with the mock factory
+	cfg.UpstreamFactory = mockFactory
 	ctx := context.Background()
-	srv, err := newServer(ctx, cfg, stor, withUpstreamFactory(mockFactory))
+	srv, err := newServer(ctx, cfg, stor)
 
 	if err != nil {
 		t.Fatalf("newServer() unexpected error: %v", err)
@@ -317,7 +324,9 @@ func TestNewServer_AllowConfidentialClientRegistration_Logs(t *testing.T) {
 			stor := storage.NewMemoryStorage()
 			t.Cleanup(func() { _ = stor.Close() })
 
-			srv, err := newServer(context.Background(), newCfg(tt.allowConfidential), stor, withUpstreamFactory(mockFactory))
+			cfg := newCfg(tt.allowConfidential)
+			cfg.UpstreamFactory = mockFactory
+			srv, err := newServer(context.Background(), cfg, stor)
 			require.NoError(t, err, "startup must succeed for every flag combination")
 			require.NotNil(t, srv)
 
@@ -382,7 +391,8 @@ func TestNewServer_CIMDEnabled_WrapsStorage(t *testing.T) {
 		return mockUpstream, nil
 	}
 
-	srv, err := newServer(context.Background(), cfg, stor, withUpstreamFactory(mockFactory))
+	cfg.UpstreamFactory = mockFactory
+	srv, err := newServer(context.Background(), cfg, stor)
 	if err != nil {
 		t.Fatalf("newServer() unexpected error: %v", err)
 	}
@@ -420,7 +430,8 @@ func TestNewServer_UpstreamRefresherSharedInstance(t *testing.T) {
 		return mockUpstream, nil
 	}
 
-	srv, err := newServer(context.Background(), cfg, stor, withUpstreamFactory(mockFactory))
+	cfg.UpstreamFactory = mockFactory
+	srv, err := newServer(context.Background(), cfg, stor)
 	require.NoError(t, err)
 
 	first := srv.UpstreamTokenRefresher()
@@ -480,7 +491,8 @@ func TestNewServer_RegistersDelegateClientsBeforeUpstreamConstruction(t *testing
 		return nil, assert.AnError
 	}
 
-	_, err := newServer(ctx, cfg, stor, withUpstreamFactory(factory))
+	cfg.UpstreamFactory = factory
+	_, err := newServer(ctx, cfg, stor)
 	require.ErrorIs(t, err, assert.AnError)
 
 	// Startup registration is an upsert. Replacing a same-ID DCR client makes
@@ -488,9 +500,407 @@ func TestNewServer_RegistersDelegateClientsBeforeUpstreamConstruction(t *testing
 	dcrClient, err := registration.NewConfidentialPlain(registration.Config{ID: "delegate", Secret: "old-secret"})
 	require.NoError(t, err)
 	require.NoError(t, stor.RegisterClient(ctx, dcrClient))
-	_, err = newServer(ctx, cfg, stor, withUpstreamFactory(factory))
+	_, err = newServer(ctx, cfg, stor)
 	require.ErrorIs(t, err, assert.AnError)
 	client, err := stor.GetClient(ctx, "delegate")
 	require.NoError(t, err)
 	assert.False(t, registration.DCRIssued(client))
+}
+
+// closeCountingProvider is an OAuth2Provider that implements the optional
+// upstream.IdleConnectionCloser capability and records invocations.
+type closeCountingProvider struct {
+	upstream.OAuth2Provider
+	closes  atomic.Int32
+	onClose func()
+}
+
+func (p *closeCountingProvider) CloseIdleConnections() {
+	p.closes.Add(1)
+	if p.onClose != nil {
+		p.onClose()
+	}
+}
+
+// plainProvider is an OAuth2Provider that does NOT implement
+// upstream.IdleConnectionCloser, standing in for an external implementation of
+// the open interface.
+type plainProvider struct {
+	upstream.OAuth2Provider
+}
+
+// capabilityFreeServer is a Server implementation that does NOT implement the
+// idleConnectionCloser capability, standing in for an out-of-tree implementation
+// or test double — the reason CloseIdleConnections is a function rather than a
+// Server method.
+type capabilityFreeServer struct{}
+
+func (capabilityFreeServer) Handler() http.Handler                                  { return nil }
+func (capabilityFreeServer) IDPTokenStorage() storage.UpstreamTokenStorage          { return nil }
+func (capabilityFreeServer) UpstreamTokenRefresher() storage.UpstreamTokenRefresher { return nil }
+func (capabilityFreeServer) DCRStore() storage.DCRCredentialStore                   { return nil }
+func (capabilityFreeServer) Close() error                                           { return nil }
+
+// eventRecordingStorage records when the server closes storage, so the ordering
+// between upstream draining and storage teardown can be asserted. Close does not
+// delegate: MemoryStorage.Close panics when called twice and the test cleanup
+// closes the underlying store.
+type eventRecordingStorage struct {
+	*storage.MemoryStorage
+	record func(string)
+}
+
+func (s *eventRecordingStorage) Unwrap() storage.Storage { return s.MemoryStorage }
+
+func (s *eventRecordingStorage) Close() error {
+	s.record("storage")
+	return nil
+}
+
+// TestServer_CloseIdleConnections pins the Close/CloseIdleConnections split that
+// lets an embedder retire a superseded server without closing the storage a
+// replacement server is still serving through (see #6479). It also pins that
+// providers lacking the optional capability are skipped rather than panicking.
+func TestServer_CloseIdleConnections(t *testing.T) {
+	t.Parallel()
+
+	newTestServer := func(t *testing.T, record func(string), providers ...upstream.OAuth2Provider) *server {
+		t.Helper()
+
+		base := storage.NewMemoryStorage()
+		t.Cleanup(func() { _ = base.Close() })
+		stor := &eventRecordingStorage{MemoryStorage: base, record: record}
+
+		upstreams := make([]UpstreamConfig, 0, len(providers))
+		for i := range providers {
+			upstreams = append(upstreams, UpstreamConfig{
+				Name:         fmt.Sprintf("upstream-%d", i),
+				Type:         UpstreamProviderTypeOAuth2,
+				OAuth2Config: validUpstreamConfig(),
+			})
+		}
+
+		next := 0
+		factory := func(_ context.Context, _ *UpstreamConfig) (upstream.OAuth2Provider, error) {
+			p := providers[next]
+			next++
+			return p, nil
+		}
+
+		srv, err := newServer(t.Context(), Config{
+			Issuer:           "https://example.com",
+			KeyProvider:      keys.NewGeneratingProvider(keys.DefaultAlgorithm),
+			HMACSecrets:      &servercrypto.HMACSecrets{Current: validHMACSecret()},
+			Upstreams:        upstreams,
+			AllowedAudiences: []string{"https://mcp.example.com"},
+			UpstreamFactory:  factory,
+		}, stor)
+		require.NoError(t, err)
+		return srv
+	}
+
+	t.Run("drains every capable upstream without closing storage", func(t *testing.T) {
+		t.Parallel()
+
+		var events []string
+		first, second := &closeCountingProvider{}, &closeCountingProvider{}
+		srv := newTestServer(t, func(e string) { events = append(events, e) }, first, second)
+
+		srv.CloseIdleConnections()
+
+		assert.Equal(t, int32(1), first.closes.Load())
+		assert.Equal(t, int32(1), second.closes.Load())
+		// Leaving storage open is the whole point of the split: an embedder
+		// retiring a superseded server must not tear down the storage the
+		// replacement server is serving through.
+		assert.Empty(t, events, "CloseIdleConnections must not touch storage")
+	})
+
+	t.Run("Close drains upstreams then closes storage", func(t *testing.T) {
+		t.Parallel()
+
+		var events []string
+		record := func(e string) { events = append(events, e) }
+		provider := &closeCountingProvider{}
+		provider.onClose = func() { record("upstream") }
+		srv := newTestServer(t, record, provider)
+
+		require.NoError(t, srv.Close())
+
+		assert.Equal(t, int32(1), provider.closes.Load())
+		assert.Equal(t, []string{"upstream", "storage"}, events)
+	})
+
+	t.Run("skips upstreams without the capability", func(t *testing.T) {
+		t.Parallel()
+
+		capable := &closeCountingProvider{}
+		srv := newTestServer(t, func(string) {}, &plainProvider{}, capable)
+
+		assert.NotPanics(t, srv.CloseIdleConnections)
+		assert.Equal(t, int32(1), capable.closes.Load())
+	})
+}
+
+// TestNewServer_UpstreamFactory pins that a caller can own upstream
+// construction through Config.UpstreamFactory, and that DefaultUpstreamFactory
+// is used when the field is nil.
+func TestNewServer_UpstreamFactory(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name       string
+		setFactory bool
+		// wantCustom is true when the caller's factory should have run; false
+		// means DefaultUpstreamFactory built a real BaseOAuth2Provider from
+		// validUpstreamConfig.
+		wantCustom bool
+	}{
+		{name: "config factory is used", setFactory: true, wantCustom: true},
+		{name: "default factory is used when the field is nil"},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			stor := storage.NewMemoryStorage()
+			t.Cleanup(func() { _ = stor.Close() })
+
+			var called bool
+			cfg := Config{
+				Issuer:           "https://example.com",
+				KeyProvider:      keys.NewGeneratingProvider(keys.DefaultAlgorithm),
+				HMACSecrets:      &servercrypto.HMACSecrets{Current: validHMACSecret()},
+				Upstreams:        []UpstreamConfig{{Name: "default", Type: UpstreamProviderTypeOAuth2, OAuth2Config: validUpstreamConfig()}},
+				AllowedAudiences: []string{"https://mcp.example.com"},
+			}
+			if tt.setFactory {
+				cfg.UpstreamFactory = func(_ context.Context, _ *UpstreamConfig) (upstream.OAuth2Provider, error) {
+					called = true
+					return &plainProvider{}, nil
+				}
+			}
+
+			srv, err := newServer(t.Context(), cfg, stor)
+			require.NoError(t, err)
+			// The default factory builds a provider with a live pool; drain it
+			// so the suite does not leak the resource this change fixes.
+			t.Cleanup(srv.CloseIdleConnections)
+
+			require.Len(t, srv.upstreams, 1)
+			assert.Equal(t, tt.wantCustom, called)
+			if !tt.wantCustom {
+				assert.IsType(t, &upstream.BaseOAuth2Provider{}, srv.upstreams[0].Provider)
+			}
+		})
+	}
+}
+
+// TestBuildUpstreams_DrainsAlreadyBuiltProvidersOnFailure pins the pathological
+// case from #6479: a caller retrying a reconstruction against an unreachable
+// issuer must not accumulate a live connection pool per attempt for the
+// upstreams that did construct before the failure.
+func TestBuildUpstreams_DrainsAlreadyBuiltProvidersOnFailure(t *testing.T) {
+	t.Parallel()
+
+	built := &closeCountingProvider{}
+	cfg := Config{
+		Upstreams: []UpstreamConfig{
+			{Name: "first", Type: UpstreamProviderTypeOAuth2, OAuth2Config: validUpstreamConfig()},
+			{Name: "second", Type: UpstreamProviderTypeOAuth2, OAuth2Config: validUpstreamConfig()},
+		},
+		UpstreamFactory: func(_ context.Context, upCfg *UpstreamConfig) (upstream.OAuth2Provider, error) {
+			if upCfg.Name == "second" {
+				return nil, assert.AnError
+			}
+			return built, nil
+		},
+	}
+
+	upstreams, err := buildUpstreams(t.Context(), cfg)
+	require.ErrorIs(t, err, assert.AnError)
+	assert.Contains(t, err.Error(), `"second"`, "the error must name the failing upstream")
+	assert.Nil(t, upstreams)
+	assert.Equal(t, int32(1), built.closes.Load(),
+		"the provider built before the failure must be drained")
+}
+
+// TestBuildUpstreams_RejectsNilProvider pins that a custom
+// Config.UpstreamFactory cannot drop an upstream by returning (nil, nil). Such a
+// NamedUpstream would be wired into the authorization chain and panic on the
+// first /oauth/authorize request, after any startup health check had passed.
+func TestBuildUpstreams_RejectsNilProvider(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name     string
+		provider upstream.OAuth2Provider
+	}{
+		// A nil interface value.
+		{name: "nil interface"},
+		// An interface holding a nil pointer — non-nil as an interface, so it
+		// passes a bare `== nil` check, satisfies the IdleConnectionCloser
+		// assertion, and then nil-derefs on the embedded *BaseOAuth2Provider
+		// during the drain. An easy mistake in the "substitute a provider"
+		// pattern Config.UpstreamFactory documents.
+		{name: "typed nil pointer", provider: (*upstream.OIDCProviderImpl)(nil)},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			built := &closeCountingProvider{}
+			cfg := Config{
+				Upstreams: []UpstreamConfig{
+					{Name: "first", Type: UpstreamProviderTypeOAuth2, OAuth2Config: validUpstreamConfig()},
+					{Name: "second", Type: UpstreamProviderTypeOAuth2, OAuth2Config: validUpstreamConfig()},
+				},
+				UpstreamFactory: func(_ context.Context, upCfg *UpstreamConfig) (upstream.OAuth2Provider, error) {
+					if upCfg.Name == "second" {
+						return tt.provider, nil
+					}
+					return built, nil
+				},
+			}
+
+			upstreams, err := buildUpstreams(t.Context(), cfg)
+			require.Error(t, err)
+			assert.Contains(t, err.Error(), `nil provider for upstream "second"`)
+			assert.Nil(t, upstreams)
+			assert.Equal(t, int32(1), built.closes.Load(),
+				"the provider built before the rejection must be drained")
+		})
+	}
+}
+
+// TestServer_Close_DrainsRealOIDCUpstream exercises the production wiring that
+// the other tests stub out: a server built through DefaultUpstreamFactory holds
+// an *upstream.OIDCProviderImpl, which satisfies upstream.IdleConnectionCloser
+// only by promotion from its embedded *BaseOAuth2Provider. The pool is observed
+// from the issuer's side, so this fails if the type assertion in
+// closeUpstreamIdleConnections ever silently stops matching.
+func TestServer_Close_DrainsRealOIDCUpstream(t *testing.T) {
+	t.Parallel()
+
+	var openConns atomic.Int32
+	issuer := httptest.NewUnstartedServer(nil)
+	issuer.Config.Handler = oidcDiscoveryHandler(func() string { return issuer.URL })
+	issuer.Config.ConnState = func(_ net.Conn, state http.ConnState) {
+		switch state {
+		case http.StateNew:
+			openConns.Add(1)
+		case http.StateClosed, http.StateHijacked:
+			openConns.Add(-1)
+		case http.StateActive, http.StateIdle:
+		}
+	}
+	issuer.Start()
+	t.Cleanup(issuer.Close)
+
+	stor := storage.NewMemoryStorage()
+	var closeOnce sync.Once
+	closeStorage := func() { closeOnce.Do(func() { _ = stor.Close() }) }
+	// Registered so an aborted require below does not leave storage running;
+	// idempotent because srv.Close() closes the same store, and
+	// MemoryStorage.Close panics if called twice.
+	t.Cleanup(closeStorage)
+
+	srv, err := newServer(t.Context(), Config{
+		Issuer:      "https://example.com",
+		KeyProvider: keys.NewGeneratingProvider(keys.DefaultAlgorithm),
+		HMACSecrets: &servercrypto.HMACSecrets{Current: validHMACSecret()},
+		Upstreams: []UpstreamConfig{{
+			Name: "oidc",
+			Type: UpstreamProviderTypeOIDC,
+			OIDCConfig: &upstream.OIDCConfig{
+				CommonOAuthConfig: upstream.CommonOAuthConfig{
+					ClientID:    "test-client",
+					RedirectURI: "https://example.com/callback",
+					Scopes:      []string{"openid"},
+				},
+				Issuer:            issuer.URL,
+				InsecureAllowHTTP: true,
+				AllowPrivateIPs:   true,
+			},
+		}},
+		AllowedAudiences: []string{"https://mcp.example.com"},
+	}, stor)
+	require.NoError(t, err)
+	require.IsType(t, &upstream.OIDCProviderImpl{}, srv.upstreams[0].Provider)
+
+	// Discovery leaves at least one idle keep-alive connection behind; before
+	// this change it was retained for the lifetime of the process. Not an exact
+	// count — go-oidc is free to add a fetch or a retry, and ConnState fires on
+	// the httptest server's own goroutines.
+	require.GreaterOrEqual(t, openConns.Load(), int32(1), "discovery must leave a pooled connection")
+
+	require.NoError(t, srv.Close())
+	closeOnce.Do(func() {}) // srv.Close closed the store; disarm the cleanup
+
+	// The issuer observes the close asynchronously.
+	assert.Eventually(t, func() bool { return openConns.Load() == 0 }, 5*time.Second, 10*time.Millisecond,
+		"Close must drain the OIDC upstream's pooled connection")
+}
+
+// oidcDiscoveryHandler serves the minimum OIDC discovery document
+// upstream.NewOIDCProvider accepts. issuerURL is a func because httptest only
+// knows the bound URL after Start.
+func oidcDiscoveryHandler(issuerURL func() string) http.Handler {
+	mux := http.NewServeMux()
+	mux.HandleFunc("/.well-known/openid-configuration", func(w http.ResponseWriter, _ *http.Request) {
+		base := issuerURL()
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(map[string]any{
+			"issuer":                                base,
+			"authorization_endpoint":                base + "/auth",
+			"token_endpoint":                        base + "/token",
+			"jwks_uri":                              base + "/jwks",
+			"response_types_supported":              []string{"code"},
+			"subject_types_supported":               []string{"public"},
+			"id_token_signing_alg_values_supported": []string{"RS256"},
+		})
+	})
+	return mux
+}
+
+// TestCloseIdleConnectionsFunction pins the capability-detection contract that
+// keeps CloseIdleConnections off the Server interface: it drains a server built
+// by New and reports true, and it reports false — without panicking — for an
+// implementation that predates the capability, which is what an out-of-tree
+// Server or test double looks like.
+func TestCloseIdleConnectionsFunction(t *testing.T) {
+	t.Parallel()
+
+	t.Run("drains a server from New and reports true", func(t *testing.T) {
+		t.Parallel()
+
+		stor := storage.NewMemoryStorage()
+		t.Cleanup(func() { _ = stor.Close() })
+
+		provider := &closeCountingProvider{}
+		srv, err := newServer(t.Context(), Config{
+			Issuer:           "https://example.com",
+			KeyProvider:      keys.NewGeneratingProvider(keys.DefaultAlgorithm),
+			HMACSecrets:      &servercrypto.HMACSecrets{Current: validHMACSecret()},
+			Upstreams:        []UpstreamConfig{{Name: "only", Type: UpstreamProviderTypeOAuth2, OAuth2Config: validUpstreamConfig()}},
+			AllowedAudiences: []string{"https://mcp.example.com"},
+			UpstreamFactory: func(_ context.Context, _ *UpstreamConfig) (upstream.OAuth2Provider, error) {
+				return provider, nil
+			},
+		}, stor)
+		require.NoError(t, err)
+
+		// Called through the Server interface, exactly as an embedder would.
+		var asInterface Server = srv
+		assert.True(t, CloseIdleConnections(asInterface))
+		assert.Equal(t, int32(1), provider.closes.Load())
+	})
+
+	t.Run("reports false for an implementation without the capability", func(t *testing.T) {
+		t.Parallel()
+
+		assert.False(t, CloseIdleConnections(capabilityFreeServer{}))
+	})
 }

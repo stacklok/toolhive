@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"log/slog"
 	"net/http"
+	"reflect"
 	"time"
 
 	josev3 "github.com/go-jose/go-jose/v3"
@@ -44,22 +45,13 @@ type server struct {
 	upstreams         []handlers.NamedUpstream
 }
 
-// upstreamProviderFactory creates an upstream OAuth2Provider from configuration.
-// This type enables dependency injection for testing.
-type upstreamProviderFactory func(ctx context.Context, cfg *UpstreamConfig) (upstream.OAuth2Provider, error)
-
-// serverOption configures the server during construction.
-type serverOption func(*serverOptions)
-
-// serverOptions holds optional configuration for server creation.
-type serverOptions struct {
-	upstreamFactory upstreamProviderFactory
-}
-
-// defaultUpstreamFactory creates the production upstream provider based on type.
-// For OIDC providers, it creates an OIDCProviderImpl with discovery and ID token validation.
-// For OAuth2 providers, it creates a BaseOAuth2Provider.
-func defaultUpstreamFactory(ctx context.Context, cfg *UpstreamConfig) (upstream.OAuth2Provider, error) {
+// DefaultUpstreamFactory creates the production upstream provider based on type.
+// For OIDC providers, it creates an OIDCProviderImpl with discovery and ID token
+// validation. For OAuth2 providers, it creates a BaseOAuth2Provider.
+//
+// It is exported so a Config.UpstreamFactory implementation can delegate to the
+// built-in behavior for the upstreams it does not want to handle itself.
+func DefaultUpstreamFactory(ctx context.Context, cfg *UpstreamConfig) (upstream.OAuth2Provider, error) {
 	switch cfg.Type {
 	case UpstreamProviderTypeOIDC:
 		return upstream.NewOIDCProvider(ctx, cfg.OIDCConfig)
@@ -70,26 +62,64 @@ func defaultUpstreamFactory(ctx context.Context, cfg *UpstreamConfig) (upstream.
 	}
 }
 
-// withUpstreamFactory sets a custom upstream provider factory.
-// This is intended for testing and is not part of the public API.
-func withUpstreamFactory(factory upstreamProviderFactory) serverOption {
-	return func(o *serverOptions) {
-		o.upstreamFactory = factory
+// buildUpstreams constructs the ordered upstream provider list using
+// cfg.UpstreamFactory, or DefaultUpstreamFactory when the caller supplied none.
+// A provider that fails to construct aborts the whole list — but the providers
+// already built have live connection pools, so they are drained before the
+// error is returned.
+func buildUpstreams(ctx context.Context, cfg Config) ([]handlers.NamedUpstream, error) {
+	factory := cfg.UpstreamFactory
+	if factory == nil {
+		factory = DefaultUpstreamFactory
+	}
+	upstreams := make([]handlers.NamedUpstream, 0, len(cfg.Upstreams))
+	for i := range cfg.Upstreams {
+		upCfg := &cfg.Upstreams[i]
+		slog.Debug("creating upstream IDP provider", "type", upCfg.Type, "name", upCfg.Name)
+		provider, err := factory(ctx, upCfg)
+		if err != nil {
+			closeUpstreamIdleConnections(upstreams)
+			return nil, fmt.Errorf("failed to create upstream provider %q: %w", upCfg.Name, err)
+		}
+		// A nil provider would reach the authorization chain and panic on the
+		// first /oauth/authorize rather than failing at boot, so a custom
+		// factory cannot use one to drop an upstream.
+		if isNilProvider(provider) {
+			closeUpstreamIdleConnections(upstreams)
+			return nil, fmt.Errorf("upstream factory returned a nil provider for upstream %q", upCfg.Name)
+		}
+		upstreams = append(upstreams, handlers.NamedUpstream{Name: upCfg.Name, Provider: provider})
+		slog.Debug("upstream IDP provider configured", "type", upCfg.Type, "name", upCfg.Name)
+	}
+	return upstreams, nil
+}
+
+// isNilProvider reports whether an OAuth2Provider is unusable — either a nil
+// interface value or an interface holding a nil pointer.
+func isNilProvider(provider upstream.OAuth2Provider) bool {
+	if provider == nil {
+		return true
+	}
+	v := reflect.ValueOf(provider)
+	return v.Kind() == reflect.Pointer && v.IsNil()
+}
+
+// closeUpstreamIdleConnections drains the pooled idle connections of every
+// upstream that implements the optional upstream.IdleConnectionCloser
+// capability; see that interface for why it is optional and what it exempts.
+func closeUpstreamIdleConnections(upstreams []handlers.NamedUpstream) {
+	for _, u := range upstreams {
+		if closer, ok := u.Provider.(upstream.IdleConnectionCloser); ok {
+			slog.Debug("closing upstream idle connections", "name", u.Name)
+			closer.CloseIdleConnections()
+		}
 	}
 }
 
 // newServer creates a new OAuth authorization server.
 // The opts parameter allows injecting dependencies for testing.
-func newServer(ctx context.Context, cfg Config, stor storage.Storage, opts ...serverOption) (*server, error) {
+func newServer(ctx context.Context, cfg Config, stor storage.Storage) (_ *server, retErr error) {
 	slog.Debug("initializing OAuth authorization server")
-
-	// Apply server options
-	options := &serverOptions{
-		upstreamFactory: defaultUpstreamFactory,
-	}
-	for _, opt := range opts {
-		opt(options)
-	}
 
 	// Apply defaults to config
 	if err := cfg.applyDefaults(); err != nil {
@@ -167,20 +197,20 @@ func newServer(ctx context.Context, cfg Config, stor storage.Storage, opts ...se
 	)
 
 	// Build ordered upstream provider list from all configured upstreams.
-	upstreams := make([]handlers.NamedUpstream, 0, len(cfg.Upstreams))
-	for i := range cfg.Upstreams {
-		upCfg := &cfg.Upstreams[i]
-		slog.Debug("creating upstream IDP provider", "type", upCfg.Type, "name", upCfg.Name)
-		upstreamProvider, upErr := options.upstreamFactory(ctx, upCfg)
-		if upErr != nil {
-			return nil, fmt.Errorf("failed to create upstream provider %q: %w", upCfg.Name, upErr)
-		}
-		upstreams = append(upstreams, handlers.NamedUpstream{
-			Name:     upCfg.Name,
-			Provider: upstreamProvider,
-		})
-		slog.Debug("upstream IDP provider configured", "type", upCfg.Type, "name", upCfg.Name)
+	upstreams, err := buildUpstreams(ctx, cfg)
+	if err != nil {
+		return nil, err
 	}
+	// Defense in depth: the failure returns below would otherwise abandon
+	// providers holding a live pool. None is reachable today (Validate covers
+	// every precondition they check), so this drains nothing at present — it is
+	// here so a future step that fails after touching the network, or a new
+	// error return added above it, is covered by default.
+	defer func() {
+		if retErr != nil {
+			closeUpstreamIdleConnections(upstreams)
+		}
+	}()
 
 	// Run one-shot bulk migration of legacy data before handler construction.
 	// TODO(migration): Remove once all deployments have upgraded past this version.
@@ -393,9 +423,21 @@ func newUpstreamTokenRefresher(
 	}
 }
 
+// Compile-time check that the concrete server satisfies the capability the
+// CloseIdleConnections function detects, so that call can never degrade to a
+// no-op for a server built by New.
+var _ idleConnectionCloser = (*server)(nil)
+
+// CloseIdleConnections drains the upstream providers' pooled connections; see
+// the package-level CloseIdleConnections function for the contract.
+func (s *server) CloseIdleConnections() {
+	closeUpstreamIdleConnections(s.upstreams)
+}
+
 // Close releases resources held by the server.
 func (s *server) Close() error {
 	slog.Debug("closing OAuth authorization server")
+	s.CloseIdleConnections()
 	return s.storage.Close()
 }
 

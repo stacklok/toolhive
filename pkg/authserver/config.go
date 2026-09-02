@@ -957,6 +957,37 @@ type Config struct {
 	// Multiple upstreams form a sequential authorization chain.
 	Upstreams []UpstreamConfig
 
+	// UpstreamFactory, when set, is used instead of DefaultUpstreamFactory to
+	// construct each configured upstream's OAuth2Provider. Two reasons to set it:
+	//
+	//   - Connection reuse. DefaultUpstreamFactory builds a private HTTP client
+	//     per upstream, so a process that reconstructs the server to change its
+	//     upstream set creates a fresh connection pool each time. A factory that
+	//     passes a shared client via upstream.WithHTTPClient /
+	//     upstream.WithOAuth2HTTPClient creates none. Key the sharing by
+	//     distinct trust posture rather than by host: two upstreams can share a
+	//     host while differing in CAFilePath, AllowPrivateIPs or
+	//     InsecureAllowHTTP. An injected client stays owned by the caller — see
+	//     upstream.IdleConnectionCloser — who is then responsible for its pool,
+	//     its TLS trust and its dial-time SSRF guard.
+	//   - Per-upstream failure isolation. Upstream construction inside New is
+	//     otherwise all-or-nothing: one unreachable or mistyped issuer_url fails
+	//     the whole call. A factory owning construction can apply a per-upstream
+	//     deadline and substitute a provider for a single failing upstream while
+	//     the rest serve.
+	//
+	// The factory cannot drop an upstream: every entry in Upstreams must yield a
+	// provider, and returning a nil provider with a nil error is rejected by New
+	// rather than producing an upstream that panics on the first authorization
+	// request. To serve without an upstream, omit it from Upstreams; to keep its
+	// slot in the chain, return a substitute provider.
+	//
+	// SECURITY: the returned provider validates the upstream's ID tokens and
+	// resolves user identity. A factory that returns a permissive provider
+	// bypasses upstream authentication for that leg of the chain. Delegate to
+	// DefaultUpstreamFactory for upstreams you do not need to customize.
+	UpstreamFactory UpstreamProviderFactory
+
 	// UpstreamFilter, when set, narrows the upstream authorization chain after the
 	// first leg resolves (see handlers.WithUpstreamFilter). When nil, all
 	// configured upstreams are walked — the current behavior. Pass nil itself,

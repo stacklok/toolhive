@@ -343,6 +343,16 @@ func (t *limitedBodyTransport) RoundTrip(req *http.Request) (*http.Response, err
 	return resp, nil
 }
 
+// CloseIdleConnections forwards to the wrapped transport, as every wrapping
+// RoundTripper must — see networking.IdleConnectionCloser. There is no pool to
+// drain today (this client is built WithDisableKeepAlives(true)); the forwarder
+// keeps that an optimization decision rather than a correctness dependency.
+func (t *limitedBodyTransport) CloseIdleConnections() {
+	if closer, ok := t.base.(networking.IdleConnectionCloser); ok {
+		closer.CloseIdleConnections()
+	}
+}
+
 // newActorMatcherEngine creates a CEL engine for admin-authored actor matcher
 // expressions. The only available variable is "claims", a map[string]any.
 func newActorMatcherEngine() *cel.Engine {

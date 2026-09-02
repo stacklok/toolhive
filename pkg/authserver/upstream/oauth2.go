@@ -294,15 +294,54 @@ type BaseOAuth2Provider struct {
 	config       *OAuth2Config
 	oauth2Config *oauth2.Config
 	httpClient   *http.Client
+	// ownsHTTPClient is true only when the provider built httpClient itself;
+	// see CloseIdleConnections.
+	ownsHTTPClient bool
 }
+
+// ErrCABundleWithInjectedClient is returned when a provider config sets
+// CAFilePath while the caller also injects an HTTP client via
+// WithOAuth2HTTPClient / WithHTTPClient. The injected client carries its own TLS
+// trust, so the bundle could never take effect; failing loudly keeps a
+// trust-anchor misconfiguration a boot-time error rather than a silent no-op.
+var ErrCABundleWithInjectedClient = errors.New("caFilePath cannot be combined with an injected HTTP client")
+
+// IdleConnectionCloser is an optional capability an OAuth2Provider may implement
+// to release the idle keep-alive connections held by its HTTP client. It is the
+// provider-level analogue of networking.IdleConnectionCloser, and is optional
+// rather than part of OAuth2Provider because doc.go invites external
+// implementations of that interface, which widening would break. Consumers
+// type-assert against it and treat a provider that does not implement it as
+// having nothing to release.
+//
+// Only idle connections are closed: in-flight requests are unaffected and the
+// provider stays usable, dialing again on its next call. An implementation must
+// leave a caller-supplied client alone — the caller may be sharing it — which is
+// the ownership rule BaseOAuth2Provider.CloseIdleConnections implements.
+type IdleConnectionCloser interface {
+	CloseIdleConnections()
+}
+
+// Compile-time capability check.
+var _ IdleConnectionCloser = (*BaseOAuth2Provider)(nil)
 
 // OAuth2ProviderOption configures a BaseOAuth2Provider.
 type OAuth2ProviderOption func(*BaseOAuth2Provider)
 
-// WithOAuth2HTTPClient sets a custom HTTP client.
+// WithOAuth2HTTPClient sets a custom HTTP client. See
+// BaseOAuth2Provider.CloseIdleConnections for the ownership rule this implies.
+//
+// The injected client fully supersedes the one the provider would have built, so
+// the caller owns its request-time scheme enforcement (the HTTPS check
+// networking.ValidatingTransport applies) and its dial-time private-IP blocking.
+// Config-level validation is unaffected: InsecureAllowHTTP still governs whether
+// a plain-http endpoint is accepted at all, via ValidateWithInsecure. Setting
+// CAFilePath alongside an injected client is a contradiction and is rejected —
+// see ErrCABundleWithInjectedClient.
 func WithOAuth2HTTPClient(client *http.Client) OAuth2ProviderOption {
 	return func(p *BaseOAuth2Provider) {
 		p.httpClient = client
+		p.ownsHTTPClient = false
 	}
 }
 
@@ -310,15 +349,44 @@ func WithOAuth2HTTPClient(client *http.Client) OAuth2ProviderOption {
 // The hostForClient parameter determines which URL to use for HTTP client configuration
 // (e.g., TokenEndpoint for OAuth2, Issuer for OIDC).
 //
+// Options are applied before the default HTTP client is built, so a caller that
+// injects one does not pay for a discarded transport (nor for reading the CA
+// bundle) on every construction.
+//
 // IMPORTANT: Callers must ensure config is non-nil before calling this function.
-func newBaseOAuth2Provider(config *OAuth2Config, hostForClient string) (*BaseOAuth2Provider, error) {
+func newBaseOAuth2Provider(
+	config *OAuth2Config,
+	hostForClient string,
+	opts ...OAuth2ProviderOption,
+) (_ *BaseOAuth2Provider, retErr error) {
 	if err := config.ValidateWithInsecure(config.InsecureAllowHTTP); err != nil {
 		return nil, fmt.Errorf("invalid config: %w", err)
 	}
 
-	httpClient, err := newHTTPClientForHost(hostForClient, config.AllowPrivateIPs, config.InsecureAllowHTTP, config.CAFilePath)
-	if err != nil {
-		return nil, fmt.Errorf("failed to create HTTP client: %w", err)
+	p := &BaseOAuth2Provider{config: config}
+	for _, opt := range opts {
+		opt(p)
+	}
+
+	if p.httpClient == nil {
+		httpClient, err := newHTTPClientForHost(
+			hostForClient, config.AllowPrivateIPs, config.InsecureAllowHTTP, config.CAFilePath)
+		if err != nil {
+			return nil, fmt.Errorf("failed to create HTTP client: %w", err)
+		}
+		p.httpClient = httpClient
+		p.ownsHTTPClient = true
+		// Symmetric with NewOIDCProvider's drain. Nothing below issues a request
+		// today — the only later failure is authStyleFromMethod — so the pool is
+		// empty and this is currently a no-op; it is here so a future step that
+		// performs I/O before returning an error cannot strand a connection.
+		defer func() {
+			if retErr != nil {
+				p.CloseIdleConnections()
+			}
+		}()
+	} else if err := checkInjectedClientCABundle(config.CAFilePath); err != nil {
+		return nil, err
 	}
 
 	// AuthStyle is derived from the negotiated token_endpoint_auth_method
@@ -329,7 +397,7 @@ func newBaseOAuth2Provider(config *OAuth2Config, hostForClient string) (*BaseOAu
 	}
 
 	// Create the oauth2.Config for use with golang.org/x/oauth2 library.
-	oauth2Cfg := &oauth2.Config{
+	p.oauth2Config = &oauth2.Config{
 		ClientID:     config.ClientID,
 		ClientSecret: config.ClientSecret,
 		RedirectURL:  config.RedirectURI,
@@ -341,11 +409,39 @@ func newBaseOAuth2Provider(config *OAuth2Config, hostForClient string) (*BaseOAu
 		},
 	}
 
-	return &BaseOAuth2Provider{
-		config:       config,
-		oauth2Config: oauth2Cfg,
-		httpClient:   httpClient,
-	}, nil
+	return p, nil
+}
+
+// CloseIdleConnections releases the idle keep-alive connections pooled by the
+// provider's HTTP client. Call it when retiring a provider: otherwise the pool's
+// sockets and their servicing goroutines are held until the idle timeout
+// elapses, and a process that constructs providers repeatedly accumulates them.
+//
+// This is the ownership rule the package enforces: a client supplied by the
+// caller (WithOAuth2HTTPClient / WithHTTPClient) is left alone, because the
+// caller may be sharing it and draining it here would cold-start connections
+// another live provider is using. Only a client the provider built itself is
+// drained.
+func (p *BaseOAuth2Provider) CloseIdleConnections() {
+	if p.httpClient == nil || !p.ownsHTTPClient {
+		return
+	}
+	p.httpClient.CloseIdleConnections()
+}
+
+// checkInjectedClientCABundle rejects a CA bundle configured alongside a
+// caller-injected HTTP client: the injected client carries its own TLS trust, so
+// the bundle can never take effect, and a trust-anchor decision must fail at
+// boot rather than be dropped. AllowPrivateIPs and InsecureAllowHTTP need no
+// equivalent check — the former was already inert with an injected client, the
+// latter still gates config-level scheme validation.
+func checkInjectedClientCABundle(caFilePath string) error {
+	if caFilePath == "" {
+		return nil
+	}
+	return fmt.Errorf("%w: caFilePath %q cannot take effect because the injected client carries "+
+		"its own TLS trust; configure the CA bundle on that client and clear caFilePath",
+		ErrCABundleWithInjectedClient, caFilePath)
 }
 
 // authStyleFromMethod maps an RFC 7591 token_endpoint_auth_method to the
@@ -406,13 +502,9 @@ func NewOAuth2Provider(config *OAuth2Config, opts ...OAuth2ProviderOption) (*Bas
 	if err != nil {
 		return nil, fmt.Errorf("invalid token endpoint URL: %w", err)
 	}
-	p, err := newBaseOAuth2Provider(config, tokenURL.Host)
+	p, err := newBaseOAuth2Provider(config, tokenURL.Host, opts...)
 	if err != nil {
 		return nil, err
-	}
-
-	for _, opt := range opts {
-		opt(p)
 	}
 
 	slog.Info("oauth2 provider created successfully",

@@ -124,13 +124,23 @@ type OIDCProviderImpl struct {
 	verifier            *oidc.IDTokenVerifier             // ID token verifier from go-oidc
 }
 
+// Compile-time check that the embedded *BaseOAuth2Provider keeps promoting
+// CloseIdleConnections, which (*server).CloseIdleConnections reaches by type
+// assertion. It does not pin the behavior — a method declared here would shadow
+// the promoted one and still satisfy this — so
+// TestServer_Close_DrainsRealOIDCUpstream is the actual guard.
+var _ IdleConnectionCloser = (*OIDCProviderImpl)(nil)
+
 // OIDCProviderOption configures an OIDCProvider.
 type OIDCProviderOption func(*OIDCProviderImpl)
 
-// WithHTTPClient sets a custom HTTP client for the provider.
+// WithHTTPClient sets a custom HTTP client for the provider. See
+// WithOAuth2HTTPClient, which carries the same ownership and config-supersession
+// rules.
 func WithHTTPClient(client *http.Client) OIDCProviderOption {
 	return func(p *OIDCProviderImpl) {
 		p.httpClient = client
+		p.ownsHTTPClient = false
 	}
 }
 
@@ -164,7 +174,7 @@ func NewOIDCProvider(
 	ctx context.Context,
 	config *OIDCConfig,
 	opts ...OIDCProviderOption,
-) (*OIDCProviderImpl, error) {
+) (_ *OIDCProviderImpl, retErr error) {
 	if config == nil {
 		return nil, errors.New("config is required")
 	}
@@ -179,24 +189,40 @@ func NewOIDCProvider(
 		"client_id", config.ClientID,
 	)
 
-	// Create HTTP client for the issuer host
-	issuerURL, _ := url.Parse(config.Issuer) // Error already checked in ValidateWithInsecure()
-	httpClient, err := newHTTPClientForHost(issuerURL.Host, config.AllowPrivateIPs, config.InsecureAllowHTTP, config.CAFilePath)
-	if err != nil {
-		return nil, fmt.Errorf("failed to create HTTP client: %w", err)
-	}
-
 	p := &OIDCProviderImpl{
 		oidcConfig: config,
-		BaseOAuth2Provider: &BaseOAuth2Provider{
-			httpClient: httpClient,
-			// config will be set after discovery
-		},
+		// config will be set after discovery
+		BaseOAuth2Provider: &BaseOAuth2Provider{},
 	}
 
-	// Apply OIDC-specific options
+	// Apply OIDC-specific options before building the default HTTP client, so a
+	// caller that injects one does not pay for a discarded transport (nor for
+	// reading the CA bundle) on every construction.
 	for _, opt := range opts {
 		opt(p)
+	}
+
+	if p.httpClient == nil {
+		// Create HTTP client for the issuer host
+		issuerURL, _ := url.Parse(config.Issuer) // Error already checked in ValidateWithInsecure()
+		httpClient, err := newHTTPClientForHost(
+			issuerURL.Host, config.AllowPrivateIPs, config.InsecureAllowHTTP, config.CAFilePath)
+		if err != nil {
+			return nil, fmt.Errorf("failed to create HTTP client: %w", err)
+		}
+		p.httpClient = httpClient
+		p.ownsHTTPClient = true
+		// Discovery below runs before any later failure (bad claims, an invalid
+		// discovery document, a missing openid scope), so a failed construction
+		// otherwise abandons a client with a pooled connection that no caller
+		// can reach — nothing is returned to call CloseIdleConnections on.
+		defer func() {
+			if retErr != nil {
+				p.CloseIdleConnections()
+			}
+		}()
+	} else if err := checkInjectedClientCABundle(config.CAFilePath); err != nil {
+		return nil, err
 	}
 
 	// Use go-oidc for discovery - inject custom HTTP client via context

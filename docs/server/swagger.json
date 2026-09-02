@@ -212,6 +212,20 @@
                 },
                 "type": "object"
             },
+            "authserver.InboundGrantsRunConfig": {
+                "description": "InboundGrants declares canonical inbound grant configuration, including\nSPIFFE client authentication. See InboundGrantsRunConfig.",
+                "properties": {
+                    "spiffe_client_auth": {
+                        "description": "SPIFFEClientAuth associates SPIFFE principal patterns with explicit OAuth\nclient identities and permissions. See SPIFFEClientAuthRunConfig.",
+                        "items": {
+                            "$ref": "#/components/schemas/authserver.SPIFFEClientAuthRunConfig"
+                        },
+                        "type": "array",
+                        "uniqueItems": false
+                    }
+                },
+                "type": "object"
+            },
             "authserver.OAuth2UpstreamRunConfig": {
                 "description": "OAuth2Config contains OAuth 2.0-specific configuration.\nRequired when Type is \"oauth2\", must be nil when Type is \"oidc\".",
                 "properties": {
@@ -407,6 +421,9 @@
                         "type": "array",
                         "uniqueItems": false
                     },
+                    "inbound_grants": {
+                        "$ref": "#/components/schemas/authserver.InboundGrantsRunConfig"
+                    },
                     "insecure_allow_confidential_over_loopback_http": {
                         "description": "InsecureAllowConfidentialOverLoopbackHTTP opts in to confidential clients\nwhen Issuer is a plain-HTTP loopback URL. Without this flag, that\ncombination is rejected: a loopback http:// issuer is normally fine for\nlocal development (the traffic never leaves the machine), but client\nsecrets would otherwise travel over cleartext. Defaults to false. Has no\neffect when there are no confidential clients or Issuer is https.\n\nApplies identically to delegate clients and DCR-registered clients. The\nKubernetes CRD requires the explicit opt-in for a delegate client with an\nHTTP issuer; the shared transport validator enforces that its host is\nloopback — see EmbeddedAuthServerConfig's doc comment.\n\nprivate_key_jwt registration has no equivalent flag or transport\nrestriction: unlike confidential registration, it never returns a\nclient_secret (or any other secret) in the DCR response, so there is\nnothing here for cleartext HTTP to expose.",
                         "type": "boolean"
@@ -434,6 +451,14 @@
                     "signing_key_config": {
                         "$ref": "#/components/schemas/authserver.SigningKeyRunConfig"
                     },
+                    "spiffe_trust_domains": {
+                        "description": "SPIFFETrustDomains declares SPIFFE trust roots. Each declaration must be\nreferenced by an InboundGrants.SPIFFEClientAuth entry.",
+                        "items": {
+                            "$ref": "#/components/schemas/authserver.SPIFFETrustDomainRunConfig"
+                        },
+                        "type": "array",
+                        "uniqueItems": false
+                    },
                     "storage": {
                         "$ref": "#/components/schemas/storage.RunConfig"
                     },
@@ -457,6 +482,116 @@
                         "uniqueItems": false
                     }
                 },
+                "type": "object"
+            },
+            "authserver.SPIFFEBundleEndpointSourceRunConfig": {
+                "properties": {
+                    "profile": {
+                        "description": "Profile selects how the endpoint's TLS connection is authenticated:\nSPIFFEBundleEndpointProfileHTTPSWeb (Web PKI) or\nSPIFFEBundleEndpointProfileHTTPSSPIFFE (a separately distributed\nX.509-SVID root). Required, since the future bundle loader cannot\notherwise know which trust anchor to use for the initial connection.",
+                        "type": "string"
+                    },
+                    "url": {
+                        "type": "string"
+                    }
+                },
+                "type": "object"
+            },
+            "authserver.SPIFFEBundleSourceRunConfig": {
+                "description": "BundleSource declares exactly one future trust-bundle source. It is\nvalidated for shape only; fetching or loading a bundle from it is a\nlater step.",
+                "properties": {
+                    "endpoint": {
+                        "$ref": "#/components/schemas/authserver.SPIFFEBundleEndpointSourceRunConfig"
+                    },
+                    "type": {
+                        "type": "string"
+                    },
+                    "workload_api": {
+                        "$ref": "#/components/schemas/authserver.SPIFFEWorkloadAPIBundleSourceRunConfig"
+                    }
+                },
+                "type": "object"
+            },
+            "authserver.SPIFFEClientAuthRunConfig": {
+                "properties": {
+                    "audiences": {
+                        "description": "Audiences are RFC 8693 token audiences this association may request.\nThis is an independent request dimension from Resources: it is not\nbounded by allowed_audiences (which is an RFC 8707 resource-URI list)\nand may contain non-URI logical audience identifiers.",
+                        "items": {
+                            "type": "string"
+                        },
+                        "type": "array",
+                        "uniqueItems": false
+                    },
+                    "client_id": {
+                        "description": "ClientID is the explicit OAuth client_id. It is never derived from a\nSPIFFE ID.",
+                        "type": "string"
+                    },
+                    "grant_types": {
+                        "description": "GrantTypes are the OAuth grant types this association may use. Client\nauthentication does not by itself confer any grant.",
+                        "items": {
+                            "type": "string"
+                        },
+                        "type": "array",
+                        "uniqueItems": false
+                    },
+                    "methods": {
+                        "items": {
+                            "type": "string"
+                        },
+                        "type": "array",
+                        "uniqueItems": false
+                    },
+                    "principal_pattern": {
+                        "description": "PrincipalPattern is a concrete SPIFFE ID or a terminal /* pattern within\nthe declared trust domain.",
+                        "type": "string"
+                    },
+                    "resources": {
+                        "description": "Resources are RFC 8707 resource indicators this association may\nrequest. Must be a subset of the server's allowed_audiences allowlist\n(RunConfig.AllowedAudiences) — the same RFC 8707 resource-URI list\nDelegateClientRunConfig.Audiences is validated against. Distinct from\nAudiences: a resource permission does not imply the same value is also\na permitted token audience, or vice versa.",
+                        "items": {
+                            "type": "string"
+                        },
+                        "type": "array",
+                        "uniqueItems": false
+                    },
+                    "scopes": {
+                        "description": "Scopes are OAuth scopes granted to this association. They must be a\nsubset of the server's effective supported scopes.",
+                        "items": {
+                            "type": "string"
+                        },
+                        "type": "array",
+                        "uniqueItems": false
+                    },
+                    "trust_domain_ref": {
+                        "description": "TrustDomainRef identifies the SPIFFE trust-domain declaration governing\nthis association policy.",
+                        "type": "string"
+                    }
+                },
+                "type": "object"
+            },
+            "authserver.SPIFFETrustDomainRunConfig": {
+                "properties": {
+                    "bundle_source": {
+                        "$ref": "#/components/schemas/authserver.SPIFFEBundleSourceRunConfig"
+                    },
+                    "methods": {
+                        "description": "Methods explicitly enables the supported credential types for this trust\ndomain. No authentication method is enabled when the list is empty.",
+                        "items": {
+                            "type": "string"
+                        },
+                        "type": "array",
+                        "uniqueItems": false
+                    },
+                    "name": {
+                        "description": "Name uniquely identifies this declaration and is referenced by\nInboundGrants.SPIFFEClientAuth entries.",
+                        "type": "string"
+                    },
+                    "trust_domain": {
+                        "description": "TrustDomain is the SPIFFE trust domain accepted by this declaration.",
+                        "type": "string"
+                    }
+                },
+                "type": "object"
+            },
+            "authserver.SPIFFEWorkloadAPIBundleSourceRunConfig": {
                 "type": "object"
             },
             "authserver.SigningKeyRunConfig": {

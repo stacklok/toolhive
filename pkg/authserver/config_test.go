@@ -84,6 +84,32 @@ func TestValidateIssuerURL(t *testing.T) {
 	}
 }
 
+// mustNewSPIFFETrustConfig builds a well-formed, non-empty *SPIFFETrustConfig
+// for tests asserting that Config.Validate() rejects it as not-yet-enforced.
+func mustNewSPIFFETrustConfig(t *testing.T) *SPIFFETrustConfig {
+	t.Helper()
+	trust, err := NewSPIFFETrustConfig(
+		[]SPIFFETrustDomainRunConfig{{
+			Name:         "production",
+			TrustDomain:  "example.org",
+			Methods:      []SPIFFEAuthenticationMethod{SPIFFEAuthenticationMethodX509},
+			BundleSource: validWorkloadAPIBundleSource(),
+		}},
+		&InboundGrantsRunConfig{SPIFFEClientAuth: []SPIFFEClientAuthRunConfig{{
+			TrustDomainRef:   "production",
+			PrincipalPattern: "spiffe://example.org/ns/default/*",
+			ClientID:         "agent-client",
+			Methods:          []SPIFFEAuthenticationMethod{SPIFFEAuthenticationMethodX509},
+			Audiences:        []string{"https://mcp.example.com"},
+			Scopes:           []string{"openid"},
+			GrantTypes:       []string{SPIFFEGrantTypeTokenExchange},
+		}}},
+		[]string{"openid"}, []string{"https://mcp.example.com"},
+	)
+	require.NoError(t, err)
+	return trust
+}
+
 func TestConfigValidate(t *testing.T) {
 	t.Parallel()
 
@@ -164,6 +190,22 @@ func TestConfigValidate(t *testing.T) {
 		{name: "valid nil key provider", config: Config{Issuer: "https://example.com", HMACSecrets: validHMAC, Upstreams: validUpstreams, AllowedAudiences: []string{"https://mcp.example.com"}}},
 		{name: "valid empty upstream name defaults", config: Config{Issuer: "https://example.com", KeyProvider: validKeyProvider, HMACSecrets: validHMAC, Upstreams: []UpstreamConfig{{Type: UpstreamProviderTypeOAuth2, OAuth2Config: validUpstream}}, AllowedAudiences: []string{"https://mcp.example.com"}}},
 		{name: "valid OIDC upstream", config: Config{Issuer: "https://example.com", KeyProvider: validKeyProvider, HMACSecrets: validHMAC, Upstreams: validOIDCUpstreams, AllowedAudiences: []string{"https://mcp.example.com"}}},
+
+		// SPIFFETrust is accepted by NewSPIFFETrustConfig as well-formed, but
+		// hard-rejected here too -- mirroring RunConfig.Validate's
+		// validateSPIFFENotYetEnforced -- since a caller that constructs
+		// Config directly (e.g. authserver.New) bypasses RunConfig entirely.
+		{name: "nil SPIFFETrust passes", config: Config{Issuer: "https://example.com", KeyProvider: validKeyProvider, HMACSecrets: validHMAC, Upstreams: validUpstreams, AllowedAudiences: []string{"https://mcp.example.com"}}},
+		{
+			name: "well-formed Config.SPIFFETrust is rejected as not yet enforced",
+			config: Config{
+				Issuer: "https://example.com", KeyProvider: validKeyProvider, HMACSecrets: validHMAC,
+				Upstreams: validUpstreams, AllowedAudiences: []string{"https://mcp.example.com"},
+				SPIFFETrust: mustNewSPIFFETrustConfig(t),
+			},
+			wantErr: true,
+			errMsg:  "SPIFFE client authentication is not yet enforced",
+		},
 	}
 
 	for _, tt := range tests {
@@ -599,6 +641,34 @@ func TestRunConfigValidate(t *testing.T) {
 				Issuer:                         "http://localhost:8080",
 				AllowPrivateKeyJWTRegistration: true,
 			},
+		},
+		// SPIFFE trust is accepted by ValidateSPIFFETrust as well-formed, but
+		// hard-rejected here until a real SVID verification consumer lands.
+		{
+			name:   "no SPIFFE trust domains passes",
+			config: RunConfig{},
+		},
+		{
+			name: "well-formed SPIFFE trust configuration is rejected as not yet enforced",
+			config: RunConfig{
+				SPIFFETrustDomains: []SPIFFETrustDomainRunConfig{{
+					Name:         "production",
+					TrustDomain:  "example.org",
+					Methods:      []SPIFFEAuthenticationMethod{SPIFFEAuthenticationMethodX509},
+					BundleSource: validWorkloadAPIBundleSource(),
+				}},
+				InboundGrants: &InboundGrantsRunConfig{SPIFFEClientAuth: []SPIFFEClientAuthRunConfig{{
+					TrustDomainRef:   "production",
+					PrincipalPattern: "spiffe://example.org/ns/default/*",
+					ClientID:         "agent-client",
+					Methods:          []SPIFFEAuthenticationMethod{SPIFFEAuthenticationMethodX509},
+					Audiences:        []string{"https://mcp.example.org/resource"},
+					Scopes:           []string{"openid"},
+					GrantTypes:       []string{SPIFFEGrantTypeTokenExchange},
+				}}},
+			},
+			wantErr: true,
+			errMsg:  "SPIFFE client authentication is not yet enforced",
 		},
 	}
 

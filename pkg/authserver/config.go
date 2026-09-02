@@ -231,6 +231,14 @@ type RunConfig struct {
 	//
 	// See DelegateClientRunConfig for the per-client field reference.
 	DelegateClients []DelegateClientRunConfig `json:"delegate_clients,omitempty" yaml:"delegate_clients,omitempty"`
+
+	// SPIFFETrustDomains declares SPIFFE trust roots. Each declaration must be
+	// referenced by an InboundGrants.SPIFFEClientAuth entry.
+	SPIFFETrustDomains []SPIFFETrustDomainRunConfig `json:"spiffe_trust_domains,omitempty" yaml:"spiffe_trust_domains,omitempty"`
+
+	// InboundGrants declares canonical inbound grant configuration, including
+	// SPIFFE client authentication. See InboundGrantsRunConfig.
+	InboundGrants *InboundGrantsRunConfig `json:"inbound_grants,omitempty" yaml:"inbound_grants,omitempty"`
 }
 
 // DelegateClientRunConfig declares a pre-provisioned confidential OAuth
@@ -299,7 +307,52 @@ func (c *RunConfig) Validate() error {
 		c.ForceConfidentialRedirectURIs, c.AllowConfidentialClientRegistration); err != nil {
 		return err
 	}
+	if err := ValidateSPIFFETrust(
+		c.SPIFFETrustDomains, c.InboundGrants, c.ScopesSupported, c.AllowedAudiences,
+	); err != nil {
+		return err
+	}
+	if err := validateSPIFFENotYetEnforced(c.SPIFFETrustDomains); err != nil {
+		return err
+	}
 	return c.validateBaselineClientScopes()
+}
+
+// validateSPIFFENotYetEnforced hard-rejects a non-empty SPIFFE trust
+// configuration. ValidateSPIFFETrust above confirms the configuration is
+// well-formed, but well-formed is not the same as enforced: nothing in this
+// build ever verifies an X.509-SVID or JWT-SVID against the configured trust
+// bundle, so a valid, non-empty SPIFFE trust configuration currently has no
+// runtime authentication effect. Accepting it silently would let an operator
+// believe SPIFFE client authentication is active when no credential is ever
+// checked. This rejection must be removed by the future PR that adds real
+// SVID verification against the configured trust bundle.
+func validateSPIFFENotYetEnforced(trustDomains []SPIFFETrustDomainRunConfig) error {
+	if len(trustDomains) == 0 {
+		return nil
+	}
+	return fmt.Errorf(
+		"spiffe_trust_domains: SPIFFE client authentication is not yet enforced by this build " +
+			"(no X.509-SVID or JWT-SVID is verified against the configured trust bundle); " +
+			"remove this configuration until a verification consumer lands")
+}
+
+// validateConfigSPIFFENotYetEnforced is validateSPIFFENotYetEnforced's
+// Config-level counterpart: a caller that constructs Config directly (e.g.
+// authserver.New) bypasses RunConfig.Validate() entirely, so the same
+// fail-loud rejection must also apply to Config.SPIFFETrust -- otherwise a
+// non-empty, well-formed SPIFFE trust policy could start a server through
+// this path with no authentication consumer ever wired to it. Associations
+// is nil-safe and empty for both a nil SPIFFETrust and one with no
+// configured associations.
+func validateConfigSPIFFENotYetEnforced(trust *SPIFFETrustConfig) error {
+	if len(trust.Associations()) == 0 {
+		return nil
+	}
+	return fmt.Errorf(
+		"spiffe_trust: SPIFFE client authentication is not yet enforced by this build " +
+			"(no X.509-SVID or JWT-SVID is verified against the configured trust bundle); " +
+			"remove this configuration until a verification consumer lands")
 }
 
 // validateBaselineClientScopes ensures every entry in BaselineClientScopes is
@@ -991,6 +1044,12 @@ type Config struct {
 	// or environment-variable reference. See RunConfig.DelegateClients for the
 	// serialized configuration.
 	DelegateClients []DelegateClient
+
+	// SPIFFETrust is the validated, immutable runtime SPIFFE trust model. It
+	// must be constructed with NewSPIFFETrustConfig; a nil value means no
+	// SPIFFE associations are configured. The serialized declarations live on
+	// RunConfig and are converted at the RunConfig-to-Config boundary.
+	SPIFFETrust *SPIFFETrustConfig
 }
 
 // DelegateClient is the resolved form of DelegateClientRunConfig: the secret
@@ -1073,11 +1132,18 @@ func (c *Config) Validate() error {
 		return err
 	}
 
-	// RunConfig.Validate() also runs these checks (see the comment there for
-	// why: buildUpstreamConfigs's live DCR registration happens before this
-	// method is reached), but a caller that constructs Config directly bypasses
-	// that, same as the BaselineClientScopes check above.
+	return c.validateDelegationAndTrustConfig()
+}
+
+// validateDelegationAndTrustConfig groups the delegate-client and SPIFFE
+// trust checks. RunConfig.Validate() also runs these checks (see the
+// comment there for why), while a caller that constructs Config directly
+// bypasses them.
+func (c *Config) validateDelegationAndTrustConfig() error {
 	if err := c.validateDelegationConfig(); err != nil {
+		return err
+	}
+	if err := validateConfigSPIFFENotYetEnforced(c.SPIFFETrust); err != nil {
 		return err
 	}
 	c.warnTrustedIssuerAudiences()

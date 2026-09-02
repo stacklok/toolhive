@@ -39,6 +39,16 @@ const nullMarker = "null"
 // confuse this row with a healthy long-lived registration.
 const pastExpiryDCRTTL = time.Second
 
+// maxDCRClaimRetries bounds StoreDCRCredentialsIfAbsent's WATCH/MULTI retry
+// loop. go-redis does not retry Watch internally: a concurrent write to the
+// watched key (another replica claiming, refreshing, or evicting the same
+// row) aborts the pipelined EXEC with redis.TxFailedErr, which Watch returns
+// to the caller unwrapped. Retrying a small, fixed number of times lets a
+// real concurrent write during the exact race this method exists to close
+// resolve on its own rather than failing the caller with a spurious error.
+// Mirrors maxConfiguredClientReconcileRetries above for the same reason.
+const maxDCRClaimRetries = 3
+
 // warnOnCleanupErr logs a warning when a best-effort cleanup operation fails.
 //
 // Secondary index cleanup in Redis (SRem from reverse-lookup sets, Del of orphaned
@@ -1628,7 +1638,7 @@ func unmarshalUpstreamTokens(data []byte) (*UpstreamTokens, error) {
 // Time fields use int64 Unix epoch; 0 is the sentinel meaning "not set", matching
 // the storedUpstreamTokens convention. ClientSecretExpiresAt == 0 specifically
 // encodes the RFC 7591 §3.2.1 "client_secret does not expire" semantics, in
-// which case StoreDCRCredentials persists the entry without a Redis TTL.
+// which case StoreDCRCredentialsIfAbsent persists the entry without a Redis TTL.
 type storedDCRCredentials struct {
 	// Embed the canonical key so a row recovered without its lookup key
 	// (e.g. via SCAN during diagnostics) still self-identifies.
@@ -1687,9 +1697,50 @@ func (s *storedDCRCredentials) toDCRCredentials() *DCRCredentials {
 	}
 }
 
-// StoreDCRCredentials persists DCR credentials, overwriting any existing entry
-// for the same Key. Defensive copy is provided implicitly by JSON serialisation —
+// StoreDCRCredentialsIfAbsent claims creds.Key for creds via a Redis
+// WATCH/MULTI compare-and-set (the same pattern ReconcileConfiguredClient
+// uses above), returning the authoritative durable value: creds itself on a
+// successful claim, or the existing winner's credentials when the key
+// already holds a live (non-expired) entry. Callers MUST use the returned
+// value — RFC 7591 dynamic registration mints a unique client_id/client_secret
+// on every call, so two replicas racing a cache miss for the same Key
+// register genuinely different OAuth clients with the upstream, and only the
+// value the durable store agrees to is a credential either replica actually
+// holds. Defensive copy is provided implicitly by JSON serialisation —
 // caller mutations after the call cannot reach the persisted bytes.
+//
+// # Expired existing rows are claimable
+//
+// An existing row whose ClientSecretExpiresAt is non-zero and already in the
+// past is treated as absent, mirroring MemoryStorage.StoreDCRCredentialsIfAbsent:
+// it is overwritten with creds rather than handed back as if it were still
+// the authoritative winner — but only when creds itself is fresher (creds'
+// own ClientSecretExpiresAt is zero or still in the future). When both the
+// existing row and the incoming creds are already expired — the startup
+// case where many replicas independently re-resolve a dead upstream
+// registration and each mints equally-stale credentials — the existing row
+// is returned as-is instead. Overwriting would gain nothing there, and
+// without this guard every concurrent claimant would keep re-observing an
+// expired row and re-entering the write path, risking exhausting
+// maxDCRClaimRetries under contention instead of converging the way the
+// genuinely-absent case does. WATCH still guards the overwrite path: if
+// another replica claims or refreshes the same key between our GET and our
+// SET, EXEC aborts with redis.TxFailedErr and the loop below retries, so
+// this does not reopen the double-registration race the NX-based
+// predecessor of this method was built to close — it only changes what
+// happens when the existing row is provably expired.
+//
+// This means a caller CAN receive an already-expired credential back from
+// this call — deliberately, per the above, rather than as an oversight. The
+// only thing that later re-checks an expiry against ResolveCredentials'
+// cache is lookupCachedResolution, which only runs on a *subsequent*
+// ResolveCredentials call for the same key; nothing currently re-resolves
+// after the one-time boot-time call in embeddedauthserver.go. So a replica
+// that receives an expired credential here keeps it for the rest of its
+// process lifetime, failing cleanly with an upstream invalid_client/
+// invalid_grant on every use until restart. Closing that gap needs
+// revisiting credentials after boot, not another guard in this function —
+// tracked in #6496.
 //
 // # TTL
 //
@@ -1697,7 +1748,7 @@ func (s *storedDCRCredentials) toDCRCredentials() *DCRCredentials {
 // RFC 7591 §3.2.1 client_secret_expires_at), the entry is stored with a Redis
 // TTL derived from time.Until(ClientSecretExpiresAt) so the row evicts before
 // the upstream rejects the secret at the token endpoint. When zero (RFC 7591
-// "never"), Set with TTL=0 is used and the entry is long-lived.
+// "never"), TTL=0 is used and the entry is long-lived.
 //
 // If ClientSecretExpiresAt is already in the past at call time, the entry is
 // written with the bounded TTL pastExpiryDCRTTL (1 second) rather than rejected
@@ -1708,13 +1759,57 @@ func (s *storedDCRCredentials) toDCRCredentials() *DCRCredentials {
 //
 // Validation is delegated to validateDCRCredentialsForStore so the rejection
 // set stays in sync with MemoryStorage and any future backend.
-func (s *RedisStorage) StoreDCRCredentials(ctx context.Context, creds *DCRCredentials) error {
+func (s *RedisStorage) StoreDCRCredentialsIfAbsent(ctx context.Context, creds *DCRCredentials) (*DCRCredentials, error) {
 	if err := validateDCRCredentialsForStore(creds); err != nil {
-		return err
+		return nil, err
 	}
 
 	key := redisDCRKey(s.keyPrefix, creds.Key)
 
+	data, ttl, err := marshalDCRCredentialsForStore(creds)
+	if err != nil {
+		return nil, err
+	}
+
+	// result is set by txFn on every non-error path: either to creds (a
+	// successful claim) or to the decoded existing row (a live winner
+	// already present). It must not be read until s.client.Watch returns nil.
+	var result *DCRCredentials
+	txFn := func(tx *redis.Tx) error {
+		var txErr error
+		result, txErr = dcrClaimOrReturnWinner(ctx, tx, key, data, ttl, creds)
+		return txErr
+	}
+
+	// Retry bound mirrors ReconcileConfiguredClient's maxConfiguredClientReconcileRetries:
+	// go-redis does not retry Watch internally, so a concurrent writer to the
+	// watched key aborts EXEC with redis.TxFailedErr, which must be retried
+	// here for the race this method exists to close to resolve on its own.
+	var watchErr error
+	for attempt := 0; attempt < maxDCRClaimRetries; attempt++ {
+		watchErr = s.client.Watch(ctx, txFn, key)
+		if watchErr == nil {
+			return result, nil
+		}
+		if !errors.Is(watchErr, redis.TxFailedErr) {
+			return nil, fmt.Errorf("failed to store dcr credentials: %w", watchErr)
+		}
+	}
+	return nil, fmt.Errorf("failed to claim dcr credentials after %d attempts: %w", maxDCRClaimRetries, watchErr)
+}
+
+// marshalDCRCredentialsForStore serializes creds to its Redis wire form and
+// derives the TTL to store it with. Split out of StoreDCRCredentialsIfAbsent
+// purely to keep that method's cyclomatic complexity down; it has no
+// transaction-retry concerns of its own.
+//
+// Derive Redis TTL from ClientSecretExpiresAt:
+//   - Zero (unset)  -> TTL=0 (no expiration) per RFC 7591 §3.2.1 "never".
+//   - Future expiry -> TTL = time.Until(expiry).
+//   - Past expiry   -> TTL = pastExpiryDCRTTL (bounded eviction window).
+//
+// See StoreDCRCredentialsIfAbsent's docstring for the past-expiry rationale.
+func marshalDCRCredentialsForStore(creds *DCRCredentials) ([]byte, time.Duration, error) {
 	stored := storedDCRCredentials{
 		KeyIssuer:               creds.Key.Issuer,
 		KeyUpstreamID:           creds.Key.UpstreamID,
@@ -1738,14 +1833,9 @@ func (s *RedisStorage) StoreDCRCredentials(ctx context.Context, creds *DCRCreden
 
 	data, err := json.Marshal(stored) //nolint:gosec // G117 - internal Redis storage serialization, not exposed to users
 	if err != nil {
-		return fmt.Errorf("failed to marshal dcr credentials: %w", err)
+		return nil, 0, fmt.Errorf("failed to marshal dcr credentials: %w", err)
 	}
 
-	// Derive Redis TTL from ClientSecretExpiresAt:
-	//   * Zero (unset)   -> TTL=0 (no expiration) per RFC 7591 §3.2.1 "never".
-	//   * Future expiry  -> TTL = time.Until(expiry).
-	//   * Past expiry    -> TTL = pastExpiryDCRTTL (bounded eviction window).
-	// See the function docstring for the past-expiry rationale.
 	ttl := time.Duration(0)
 	if !creds.ClientSecretExpiresAt.IsZero() {
 		if until := time.Until(creds.ClientSecretExpiresAt); until > 0 {
@@ -1754,11 +1844,73 @@ func (s *RedisStorage) StoreDCRCredentials(ctx context.Context, creds *DCRCreden
 			ttl = pastExpiryDCRTTL
 		}
 	}
+	return data, ttl, nil
+}
 
-	if err := s.client.Set(ctx, key, data, ttl).Err(); err != nil {
-		return fmt.Errorf("failed to store dcr credentials: %w", err)
+// dcrClaimOrReturnWinner runs the read-check-write body of
+// StoreDCRCredentialsIfAbsent's WATCH transaction: an absent row, or an
+// existing row that is expired while creds is fresher, is claimed with
+// (data, ttl) inside MULTI; a live existing row — or one that is expired but
+// no fresher than creds — is decoded and returned as-is, with no write. See
+// StoreDCRCredentialsIfAbsent's "Expired existing rows" doc section for why.
+// Split out purely to keep StoreDCRCredentialsIfAbsent's cyclomatic
+// complexity down.
+func dcrClaimOrReturnWinner(
+	ctx context.Context, tx *redis.Tx, key string, data []byte, ttl time.Duration, creds *DCRCredentials,
+) (*DCRCredentials, error) {
+	claim := func() error {
+		_, err := tx.TxPipelined(ctx, func(pipe redis.Pipeliner) error {
+			pipe.Set(ctx, key, data, ttl)
+			return nil
+		})
+		return err
 	}
-	return nil
+
+	existingData, getErr := tx.Get(ctx, key).Bytes()
+	if errors.Is(getErr, redis.Nil) {
+		if err := claim(); err != nil {
+			return nil, err
+		}
+		return creds, nil
+	}
+	if getErr != nil {
+		return nil, fmt.Errorf("failed to get existing dcr credentials: %w", getErr)
+	}
+
+	var existingStored storedDCRCredentials
+	if unmarshalErr := json.Unmarshal(existingData, &existingStored); unmarshalErr != nil {
+		return nil, fmt.Errorf("failed to unmarshal existing dcr credentials: %w", unmarshalErr)
+	}
+	existing := existingStored.toDCRCredentials()
+
+	expired := !existing.ClientSecretExpiresAt.IsZero() && time.Now().After(existing.ClientSecretExpiresAt)
+	if !expired {
+		return existing, nil
+	}
+
+	// The existing row is expired. Only overwrite it when the incoming
+	// credentials are actually fresher — a genuine new registration
+	// reclaiming a dead slot. If the incoming credentials are ALSO already
+	// expired (the startup-reconciliation case: many replicas independently
+	// re-resolving a dead upstream registration all mint equally-stale
+	// credentials), overwriting gains nothing and, under contention, every
+	// concurrent claimant would keep re-observing an expired row and
+	// re-entering this write path, burning through maxDCRClaimRetries
+	// instead of converging. Returning the stable existing row lets every
+	// claimant converge without a write, matching the "genuinely absent"
+	// case's self-limiting behaviour.
+	incomingExpired := !creds.ClientSecretExpiresAt.IsZero() && time.Now().After(creds.ClientSecretExpiresAt)
+	if incomingExpired {
+		return existing, nil
+	}
+
+	// The existing row is provably expired: treat it as absent and overwrite
+	// it, matching MemoryStorage's semantics. WATCH still protects this — see
+	// StoreDCRCredentialsIfAbsent's "Expired existing rows" doc section.
+	if err := claim(); err != nil {
+		return nil, err
+	}
+	return creds, nil
 }
 
 // GetDCRCredentials retrieves the credentials previously persisted under key.
@@ -1766,7 +1918,7 @@ func (s *RedisStorage) StoreDCRCredentials(ctx context.Context, creds *DCRCreden
 // fresh struct decoded from JSON, which acts as a defensive copy.
 //
 // An unpopulated key (empty Issuer, UpstreamID, RedirectURI, or ScopesHash) cannot match
-// any stored row because StoreDCRCredentials rejects such keys, so a Get
+// any stored row because StoreDCRCredentialsIfAbsent rejects such keys, so a Get
 // against one is a normal miss — ErrNotFound — matching
 // MemoryStorage.GetDCRCredentials and the DCRCredentialStore interface contract.
 func (s *RedisStorage) GetDCRCredentials(ctx context.Context, key DCRKey) (*DCRCredentials, error) {

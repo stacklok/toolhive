@@ -289,7 +289,7 @@ func validateDCRCredentialsForStore(creds *DCRCredentials) error {
 //
 // Callers receive a defensive copy from the store. Mutations on the returned
 // value do not affect persisted state, and mutations on a value passed to
-// StoreDCRCredentials are not observed by subsequent reads. This matches the
+// StoreDCRCredentialsIfAbsent are not observed by subsequent reads. This matches the
 // UpstreamTokens contract.
 //
 // # Lifetime
@@ -384,8 +384,8 @@ type DCRCredentials struct {
 //
 // # Why the key is embedded in DCRCredentials
 //
-// StoreDCRCredentials takes a single (ctx, creds) argument rather than the
-// (ctx, key, value) shape used by sibling Store* methods on Storage. The
+// StoreDCRCredentialsIfAbsent takes a single (ctx, creds) argument rather
+// than the (ctx, key, value) shape used by sibling Store* methods on Storage. The
 // DCRKey is embedded as DCRCredentials.Key so the persisted blob is
 // self-describing: a Redis SCAN, an admin-tool dump, or a cross-replica
 // reconciliation path can identify a record's logical cache slot
@@ -400,10 +400,16 @@ type DCRCredentialStore interface {
 	// The returned value is a defensive copy.
 	GetDCRCredentials(ctx context.Context, key DCRKey) (*DCRCredentials, error)
 
-	// StoreDCRCredentials persists the credentials, overwriting any existing
-	// entry for the same Key. See the interface-level "TTL handling" section
-	// for the contract on ClientSecretExpiresAt.
-	StoreDCRCredentials(ctx context.Context, creds *DCRCredentials) error
+	// StoreDCRCredentialsIfAbsent claims creds.Key for creds. Returns the
+	// authoritative durable value: the caller's own creds on a successful
+	// claim, the concurrent winner's value otherwise. Callers MUST use the
+	// returned value, not their input creds — RFC 7591 dynamic registration
+	// mints a unique client_id/client_secret on every call, so a caller that
+	// lost the race and kept using its own creds would hold credentials the
+	// durable store does not agree it owns. See the interface-level "TTL
+	// handling" section for the contract on ClientSecretExpiresAt. The
+	// returned *DCRCredentials is always non-nil when err is nil.
+	StoreDCRCredentialsIfAbsent(ctx context.Context, creds *DCRCredentials) (*DCRCredentials, error)
 }
 
 // User represents a user account in the authorization server.
@@ -867,7 +873,7 @@ type Storage interface {
 	// and user management for multi-IDP support.
 	//
 	// DCRCredentialStore is intentionally NOT embedded here: doing so would
-	// promote GetDCRCredentials / StoreDCRCredentials onto every consumer of
+	// promote GetDCRCredentials / StoreDCRCredentialsIfAbsent onto every consumer of
 	// storage.Storage (handlers, server, registration, etc.), broadening the
 	// surface that can read raw client_secret / registration_access_token even
 	// when those consumers have no DCR responsibility. Code that legitimately

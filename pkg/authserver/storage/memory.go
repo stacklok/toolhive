@@ -157,7 +157,7 @@ type MemoryStorage struct {
 	// dcrCredentials maps DCRKey -> DCRCredentials for RFC 7591 Dynamic Client
 	// Registration credentials. These entries come from OUTBOUND DCR: ToolHive
 	// acting as a DCR client to register itself against a configured upstream
-	// IdP (see pkg/auth/dcr/store.go, the only caller of StoreDCRCredentials).
+	// IdP (see pkg/auth/dcr/store.go, the only caller of StoreDCRCredentialsIfAbsent).
 	// This is not reachable from the inbound, unauthenticated /oauth/register
 	// handler, so unlike clients (bounded by maxClients/clientOrder because
 	// every inbound registration call mints an entry), growth here is bounded
@@ -1538,29 +1538,46 @@ func cloneDCRCredentials(c *DCRCredentials) *DCRCredentials {
 	return &cp
 }
 
-// StoreDCRCredentials persists DCR credentials for the given key.
-// The credentials are stored under their own Key field; callers must populate
-// it before calling. A defensive copy is made so subsequent caller mutations
-// do not affect persisted state.
+// StoreDCRCredentialsIfAbsent claims creds.Key for creds. The credentials
+// are stored under their own Key field; callers must populate it before
+// calling. A defensive copy is made so subsequent caller mutations do not
+// affect persisted state.
 //
-// Overwrites any existing entry for the same Key. The in-memory backend
-// applies no native TTL — DCR registrations are long-lived and bounded by
-// the operator-configured upstream count, and ClientSecretExpiresAt is
-// retained verbatim for callers to re-check on read (see the interface
-// docstring's "TTL handling" section).
+// Create-if-absent, not overwrite: a single process's dcrFlight singleflight
+// (see pkg/auth/dcr) already prevents concurrent same-key writers within
+// this process, so the check below is not closing a live race here — it is
+// contract symmetry with RedisStorage.StoreDCRCredentialsIfAbsent, which
+// DOES need it to prevent two replicas from independently registering RFC
+// 7591 clients for the same Key and racing on which write wins.
+//
+// The in-memory backend has no native TTL, so "absent" cannot be a plain
+// map-presence check: the Redis backend's rows self-evict via TTL derived
+// from ClientSecretExpiresAt, so a claim there naturally succeeds again once
+// the old row expires. To keep behaviour symmetric, an existing entry whose
+// ClientSecretExpiresAt is non-zero and already in the past is treated as
+// absent — the claim proceeds and overwrites it — so a secret's expiry does
+// not permanently block re-registration on this backend the way a naive
+// presence check would.
 //
 // Validation is delegated to validateDCRCredentialsForStore so the rejection
 // set stays in sync with sibling backends.
-func (s *MemoryStorage) StoreDCRCredentials(_ context.Context, creds *DCRCredentials) error {
+func (s *MemoryStorage) StoreDCRCredentialsIfAbsent(_ context.Context, creds *DCRCredentials) (*DCRCredentials, error) {
 	if err := validateDCRCredentialsForStore(creds); err != nil {
-		return err
+		return nil, err
 	}
 
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
+	if existing, ok := s.dcrCredentials[creds.Key]; ok {
+		expired := !existing.ClientSecretExpiresAt.IsZero() && time.Now().After(existing.ClientSecretExpiresAt)
+		if !expired {
+			return cloneDCRCredentials(existing), nil
+		}
+	}
+
 	s.dcrCredentials[creds.Key] = cloneDCRCredentials(creds)
-	return nil
+	return cloneDCRCredentials(creds), nil
 }
 
 // GetDCRCredentials retrieves DCR credentials by key.

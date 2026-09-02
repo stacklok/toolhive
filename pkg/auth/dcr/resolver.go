@@ -470,9 +470,29 @@ func registerAndCache(
 	// failure leaves no in-memory state diverging from the cache: the
 	// next call simply re-resolves rather than reading a value the cache
 	// never saw.
-	if err := cache.Put(ctx, key, resolution); err != nil {
+	//
+	// authoritative may differ from resolution: RFC 7591 dynamic
+	// registration mints a brand-new, unique client_id/client_secret on
+	// every call, so if another replica raced this one to register against
+	// the same Key and won the durable claim first, cache.PutIfAbsent
+	// returns THAT replica's credentials — the only ones the shared cache
+	// (and hence any other replica or a future restart) will agree this
+	// caller holds. Returning resolution here instead would leave this
+	// process using a client_id the durable store does not recognize.
+	authoritative, err := cache.PutIfAbsent(ctx, key, resolution)
+	if err != nil {
 		return nil, newDCRStepError(dcrStepCacheWrite, req.Issuer, redirectURI,
 			fmt.Errorf("cache put: %w", err))
+	}
+	if authoritative.ClientID != resolution.ClientID {
+		//nolint:gosec // G706: client_id is public metadata per RFC 7591.
+		slog.Debug("dcr: registration superseded by concurrent winner",
+			"local_issuer", req.Issuer,
+			"upstream_id", key.UpstreamID,
+			"redirect_uri", redirectURI,
+			"registered_client_id", resolution.ClientID,
+			"authoritative_client_id", authoritative.ClientID,
+		)
 	}
 
 	//nolint:gosec // G706: client_id is public metadata per RFC 7591.
@@ -480,9 +500,9 @@ func registerAndCache(
 		"local_issuer", req.Issuer,
 		"upstream_id", key.UpstreamID,
 		"redirect_uri", redirectURI,
-		"client_id", resolution.ClientID,
+		"client_id", authoritative.ClientID,
 	)
-	return resolution, nil
+	return authoritative, nil
 }
 
 // LogStepError emits the single boundary slog.Error record for a DCR

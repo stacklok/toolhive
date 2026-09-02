@@ -58,18 +58,19 @@ func (mr *MockDCRCredentialStoreMockRecorder) GetDCRCredentials(ctx, key any) *g
 	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "GetDCRCredentials", reflect.TypeOf((*MockDCRCredentialStore)(nil).GetDCRCredentials), ctx, key)
 }
 
-// StoreDCRCredentials mocks base method.
-func (m *MockDCRCredentialStore) StoreDCRCredentials(ctx context.Context, creds *storage.DCRCredentials) error {
+// StoreDCRCredentialsIfAbsent mocks base method.
+func (m *MockDCRCredentialStore) StoreDCRCredentialsIfAbsent(ctx context.Context, creds *storage.DCRCredentials) (*storage.DCRCredentials, error) {
 	m.ctrl.T.Helper()
-	ret := m.ctrl.Call(m, "StoreDCRCredentials", ctx, creds)
-	ret0, _ := ret[0].(error)
-	return ret0
+	ret := m.ctrl.Call(m, "StoreDCRCredentialsIfAbsent", ctx, creds)
+	ret0, _ := ret[0].(*storage.DCRCredentials)
+	ret1, _ := ret[1].(error)
+	return ret0, ret1
 }
 
-// StoreDCRCredentials indicates an expected call of StoreDCRCredentials.
-func (mr *MockDCRCredentialStoreMockRecorder) StoreDCRCredentials(ctx, creds any) *gomock.Call {
+// StoreDCRCredentialsIfAbsent indicates an expected call of StoreDCRCredentialsIfAbsent.
+func (mr *MockDCRCredentialStoreMockRecorder) StoreDCRCredentialsIfAbsent(ctx, creds any) *gomock.Call {
 	mr.mock.ctrl.T.Helper()
-	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "StoreDCRCredentials", reflect.TypeOf((*MockDCRCredentialStore)(nil).StoreDCRCredentials), ctx, creds)
+	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "StoreDCRCredentialsIfAbsent", reflect.TypeOf((*MockDCRCredentialStore)(nil).StoreDCRCredentialsIfAbsent), ctx, creds)
 }
 
 // MockPendingAuthorizationStorage is a mock of PendingAuthorizationStorage interface.

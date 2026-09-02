@@ -411,6 +411,111 @@ spec:
                             type: array
                             x-kubernetes-list-type: atomic
                         type: object
+                      spiffeClientAuth:
+                        description: |-
+                          SPIFFEClientAuth associates SPIFFE principal patterns with explicit
+                          OAuth client identities and permissions. A sibling of TokenExchange and
+                          JWTBearer below, not nested under either: client authentication does
+                          not by itself confer a grant. See SPIFFEClientConfig.
+                        items:
+                          description: |-
+                            SPIFFEClientConfig associates one SPIFFE principal pattern from a declared
+                            trust domain with an explicit OAuth client identity and permissions.
+                            Configuration is not authentication: configured SPIFFE clients remain
+                            non-public OAuth clients without a secret until live SPIFFE credential
+                            validation is implemented (see SPIFFETrustDomainConfig's doc comment).
+
+                            GrantTypes is deliberately not exposed here: the runtime only accepts
+                            exactly the RFC 8693 token-exchange grant for a SPIFFE client
+                            (validateSPIFFEGrants in pkg/authserver/spiffe_trust.go), so the converter
+                            always supplies it instead of letting it be configured.
+                          properties:
+                            audiences:
+                              description: Audiences are RFC 8693 token audiences
+                                this association may request.
+                              items:
+                                type: string
+                              maxItems: 50
+                              minItems: 1
+                              type: array
+                              x-kubernetes-list-type: set
+                            clientId:
+                              description: |-
+                                ClientID is the explicit OAuth client_id. It is never derived from a
+                                SPIFFE ID.
+                              maxLength: 253
+                              minLength: 1
+                              type: string
+                            methods:
+                              description: |-
+                                Methods are the credential types this association may authenticate
+                                with. Must be a subset of the referenced trust domain's methods.
+                              items:
+                                description: |-
+                                  SPIFFEAuthenticationMethod identifies the credential type permitted for a
+                                  SPIFFE workload. Mirrors authserver.SPIFFEAuthenticationMethod field-for-field;
+                                  runtime parsing remains authoritative.
+                                enum:
+                                - spiffe_x509
+                                - spiffe_jwt
+                                type: string
+                              maxItems: 2
+                              minItems: 1
+                              type: array
+                              x-kubernetes-list-type: set
+                            principalPattern:
+                              description: |-
+                                PrincipalPattern is a concrete SPIFFE ID or a terminal /* pattern within
+                                the declared trust domain. This pattern is a best-effort CRD-level
+                                approximation; runtime parsing via spiffeid.FromString remains
+                                authoritative.
+                              maxLength: 2048
+                              pattern: ^spiffe://[a-z0-9._-]+((/[a-zA-Z0-9._-]+)+(/\*)?|/\*)$
+                              type: string
+                            resources:
+                              description: |-
+                                Resources are RFC 8707 resource indicators this association may
+                                request. Must be a subset of the server's allowed_audiences allowlist,
+                                which is derived at reconcile time and not available on this CRD, so
+                                this is validated at reconcile time, not admission. Distinct from
+                                Audiences: a resource permission does not imply the same value is also
+                                a permitted token audience, or vice versa.
+                              items:
+                                type: string
+                              maxItems: 50
+                              type: array
+                              x-kubernetes-list-type: set
+                            scopes:
+                              description: |-
+                                Scopes are OAuth scopes granted to this association. Must be a subset
+                                of the server's effective supported scopes.
+                              items:
+                                type: string
+                              maxItems: 50
+                              minItems: 1
+                              type: array
+                              x-kubernetes-list-type: set
+                            trustDomainRef:
+                              description: TrustDomainRef references spiffeTrustDomains[].name.
+                              maxLength: 253
+                              minLength: 1
+                              type: string
+                          required:
+                          - audiences
+                          - clientId
+                          - methods
+                          - principalPattern
+                          - scopes
+                          - trustDomainRef
+                          type: object
+                          x-kubernetes-validations:
+                          - message: principalPattern path must not contain . or ..
+                              segments
+                            rule: self.principalPattern.split('/').all(segment, segment
+                              != '.' && segment != '..')
+                        maxItems: 100
+                        type: array
+                        x-kubernetes-list-type: atomic
                       tokenExchange:
                         description: TokenExchange configures RFC 8693 clients and
                           issuer policies.
@@ -619,6 +724,120 @@ spec:
                       - name
                       type: object
                     maxItems: 5
+                    type: array
+                    x-kubernetes-list-type: atomic
+                  spiffeTrustDomains:
+                    description: |-
+                      SPIFFETrustDomains declares SPIFFE trust domains for
+                      inboundGrants.spiffeClientAuth associations. See SPIFFETrustDomainConfig's
+                      doc comment for why declaring a domain does not by itself enable
+                      authentication in this build.
+                    items:
+                      description: |-
+                        SPIFFETrustDomainConfig declares one SPIFFE trust domain accepted by the
+                        embedded authorization server. Configuration is not authentication: no
+                        live X.509-SVID or JWT-SVID validation exists yet, so a declared trust
+                        domain does not by itself let any workload authenticate — RunConfig.Validate
+                        (pkg/authserver/config.go) currently hard-rejects any non-empty
+                        spiffeTrustDomains at authserver startup via validateSPIFFENotYetEnforced,
+                        a deliberate placeholder until real SVID verification lands.
+                      properties:
+                        bundleSource:
+                          description: |-
+                            BundleSource declares exactly one future trust-bundle source. It is
+                            validated for shape only; fetching or loading a bundle from it is a
+                            later step.
+                          properties:
+                            endpoint:
+                              description: |-
+                                Endpoint declares a HTTPS SPIFFE Bundle Endpoint. Required when Type is
+                                "bundle_endpoint".
+                              properties:
+                                profile:
+                                  description: |-
+                                    Profile selects how the endpoint's TLS connection is authenticated:
+                                    SPIFFEBundleEndpointProfileHTTPSWeb (Web PKI) or
+                                    SPIFFEBundleEndpointProfileHTTPSSPIFFE (a separately distributed
+                                    X.509-SVID root).
+                                  enum:
+                                  - https_web
+                                  - https_spiffe
+                                  type: string
+                                url:
+                                  description: URL is the HTTPS SPIFFE Bundle Endpoint
+                                    URL.
+                                  maxLength: 2048
+                                  minLength: 1
+                                  type: string
+                              required:
+                              - profile
+                              - url
+                              type: object
+                            type:
+                              description: Type selects the trust-bundle source.
+                              enum:
+                              - bundle_endpoint
+                              - workload_api
+                              type: string
+                            workloadAPI:
+                              description: |-
+                                WorkloadAPI selects the local SPIFFE Workload API. Required when Type
+                                is "workload_api".
+                              type: object
+                          required:
+                          - type
+                          type: object
+                          x-kubernetes-validations:
+                          - message: endpoint configuration must be set if and only
+                              if type is 'bundle_endpoint'
+                            rule: 'self.type == ''bundle_endpoint'' ? has(self.endpoint)
+                              : !has(self.endpoint)'
+                          - message: workloadAPI configuration must be set if and
+                              only if type is 'workload_api'
+                            rule: 'self.type == ''workload_api'' ? has(self.workloadAPI)
+                              : !has(self.workloadAPI)'
+                        methods:
+                          description: |-
+                            Methods explicitly enables the supported credential types for this
+                            trust domain.
+                          items:
+                            description: |-
+                              SPIFFEAuthenticationMethod identifies the credential type permitted for a
+                              SPIFFE workload. Mirrors authserver.SPIFFEAuthenticationMethod field-for-field;
+                              runtime parsing remains authoritative.
+                            enum:
+                            - spiffe_x509
+                            - spiffe_jwt
+                            type: string
+                          maxItems: 2
+                          minItems: 1
+                          type: array
+                          x-kubernetes-list-type: set
+                        name:
+                          description: |-
+                            Name uniquely identifies this declaration and is referenced by
+                            inboundGrants.spiffeClientAuth[].trustDomainRef.
+                          maxLength: 253
+                          minLength: 1
+                          type: string
+                        trustDomain:
+                          description: |-
+                            TrustDomain is the SPIFFE trust domain accepted by this declaration.
+                            This pattern is a best-effort CRD-level approximation of the SPIFFE
+                            trust-domain grammar; runtime parsing via
+                            spiffeid.TrustDomainFromString remains authoritative.
+                          maxLength: 255
+                          minLength: 1
+                          pattern: ^([a-z0-9_]|[a-z0-9_]([a-z0-9_-]|\.[a-z0-9_-])*[a-z0-9_])$
+                          type: string
+                      required:
+                      - bundleSource
+                      - methods
+                      - name
+                      - trustDomain
+                      type: object
+                    maxItems: 50
+                    minItems: 1
                     type: array
                     x-kubernetes-list-type: atomic
                   storage:
@@ -1748,7 +1967,62 @@ spec:
                     > 0) || (has(self.delegateClients) && size(self.delegateClients)
                     > 0) || (has(self.trustedIssuers) && self.trustedIssuers.exists(issuer,
                     has(issuer.jwtBearerGrant))) || (has(self.inboundGrants) && (has(self.inboundGrants.tokenExchange)
-                    || has(self.inboundGrants.jwtBearer)))
+                    || has(self.inboundGrants.jwtBearer) || (has(self.inboundGrants.spiffeClientAuth)
+                    && size(self.inboundGrants.spiffeClientAuth) > 0)))
+                - message: spiffeTrustDomains and inboundGrants.spiffeClientAuth must
+                    be configured together
+                  rule: ((has(self.spiffeTrustDomains) && size(self.spiffeTrustDomains)
+                    > 0) == (has(self.inboundGrants) && has(self.inboundGrants.spiffeClientAuth)
+                    && size(self.inboundGrants.spiffeClientAuth) > 0))
+                - message: spiffeTrustDomains must not contain duplicate names
+                  rule: '!has(self.spiffeTrustDomains) || self.spiffeTrustDomains.all(domain,
+                    self.spiffeTrustDomains.filter(other, other.name == domain.name).size()
+                    == 1)'
+                - message: spiffeTrustDomains must not contain duplicate trust domains
+                  rule: '!has(self.spiffeTrustDomains) || self.spiffeTrustDomains.all(domain,
+                    self.spiffeTrustDomains.filter(other, other.trustDomain == domain.trustDomain).size()
+                    == 1)'
+                - message: every SPIFFE trust domain must be referenced by a SPIFFE
+                    client
+                  rule: '!has(self.spiffeTrustDomains) || self.spiffeTrustDomains.all(domain,
+                    has(self.inboundGrants) && has(self.inboundGrants.spiffeClientAuth)
+                    && self.inboundGrants.spiffeClientAuth.exists(client, client.trustDomainRef
+                    == domain.name))'
+                - message: every SPIFFE client trustDomainRef must reference a declared
+                    trust domain
+                  rule: '!has(self.inboundGrants) || !has(self.inboundGrants.spiffeClientAuth)
+                    || self.inboundGrants.spiffeClientAuth.all(client, has(self.spiffeTrustDomains)
+                    && self.spiffeTrustDomains.exists(domain, domain.name == client.trustDomainRef))'
+                - message: spiffeClientAuth methods must be enabled by the referenced
+                    trust domain
+                  rule: '!has(self.inboundGrants) || !has(self.inboundGrants.spiffeClientAuth)
+                    || self.inboundGrants.spiffeClientAuth.all(client, !has(self.spiffeTrustDomains)
+                    || !self.spiffeTrustDomains.exists(domain, domain.name == client.trustDomainRef)
+                    || self.spiffeTrustDomains.exists(domain, domain.name == client.trustDomainRef
+                    && client.methods.all(method, method in domain.methods)))'
+                - message: spiffeClientAuth principalPattern trust domain must match
+                    the referenced trust domain
+                  rule: '!has(self.inboundGrants) || !has(self.inboundGrants.spiffeClientAuth)
+                    || self.inboundGrants.spiffeClientAuth.all(client, !has(self.spiffeTrustDomains)
+                    || !self.spiffeTrustDomains.exists(domain, domain.name == client.trustDomainRef)
+                    || self.spiffeTrustDomains.exists(domain, domain.name == client.trustDomainRef
+                    && client.principalPattern.startsWith(''spiffe://'' + domain.trustDomain
+                    + ''/'')))'
+                - message: spiffeClientAuth must not contain duplicate client IDs
+                  rule: '!has(self.inboundGrants) || !has(self.inboundGrants.spiffeClientAuth)
+                    || self.inboundGrants.spiffeClientAuth.all(client, self.inboundGrants.spiffeClientAuth.filter(other,
+                    other.clientId == client.clientId).size() == 1)'
+                - message: spiffeClientAuth must not contain duplicate principal patterns
+                  rule: '!has(self.inboundGrants) || !has(self.inboundGrants.spiffeClientAuth)
+                    || self.inboundGrants.spiffeClientAuth.all(client, self.inboundGrants.spiffeClientAuth.filter(other,
+                    other.principalPattern == client.principalPattern).size() == 1)'
+                - message: 'spiffeClientAuth clientId must not use the reserved synthetic:
+                    prefix'
+                  rule: '!has(self.inboundGrants) || !has(self.inboundGrants.spiffeClientAuth)
+                    || self.inboundGrants.spiffeClientAuth.all(client, !client.clientId.startsWith(''synthetic:''))'
+                - message: spiffeClientAuth clientId must not be an absolute URL
+                  rule: '!has(self.inboundGrants) || !has(self.inboundGrants.spiffeClientAuth)
+                    || self.inboundGrants.spiffeClientAuth.all(client, !client.clientId.matches(''^[A-Za-z][A-Za-z0-9+.-]*://.+''))'
                 - message: allowConfidentialClientRegistration cannot be combined
                     with insecureAllowHTTP; client secrets would be issued in cleartext
                     over an unauthenticated endpoint
@@ -4799,6 +5073,111 @@ spec:
                             type: array
                             x-kubernetes-list-type: atomic
                         type: object
+                      spiffeClientAuth:
+                        description: |-
+                          SPIFFEClientAuth associates SPIFFE principal patterns with explicit
+                          OAuth client identities and permissions. A sibling of TokenExchange and
+                          JWTBearer below, not nested under either: client authentication does
+                          not by itself confer a grant. See SPIFFEClientConfig.
+                        items:
+                          description: |-
+                            SPIFFEClientConfig associates one SPIFFE principal pattern from a declared
+                            trust domain with an explicit OAuth client identity and permissions.
+                            Configuration is not authentication: configured SPIFFE clients remain
+                            non-public OAuth clients without a secret until live SPIFFE credential
+                            validation is implemented (see SPIFFETrustDomainConfig's doc comment).
+
+                            GrantTypes is deliberately not exposed here: the runtime only accepts
+                            exactly the RFC 8693 token-exchange grant for a SPIFFE client
+                            (validateSPIFFEGrants in pkg/authserver/spiffe_trust.go), so the converter
+                            always supplies it instead of letting it be configured.
+                          properties:
+                            audiences:
+                              description: Audiences are RFC 8693 token audiences
+                                this association may request.
+                              items:
+                                type: string
+                              maxItems: 50
+                              minItems: 1
+                              type: array
+                              x-kubernetes-list-type: set
+                            clientId:
+                              description: |-
+                                ClientID is the explicit OAuth client_id. It is never derived from a
+                                SPIFFE ID.
+                              maxLength: 253
+                              minLength: 1
+                              type: string
+                            methods:
+                              description: |-
+                                Methods are the credential types this association may authenticate
+                                with. Must be a subset of the referenced trust domain's methods.
+                              items:
+                                description: |-
+                                  SPIFFEAuthenticationMethod identifies the credential type permitted for a
+                                  SPIFFE workload. Mirrors authserver.SPIFFEAuthenticationMethod field-for-field;
+                                  runtime parsing remains authoritative.
+                                enum:
+                                - spiffe_x509
+                                - spiffe_jwt
+                                type: string
+                              maxItems: 2
+                              minItems: 1
+                              type: array
+                              x-kubernetes-list-type: set
+                            principalPattern:
+                              description: |-
+                                PrincipalPattern is a concrete SPIFFE ID or a terminal /* pattern within
+                                the declared trust domain. This pattern is a best-effort CRD-level
+                                approximation; runtime parsing via spiffeid.FromString remains
+                                authoritative.
+                              maxLength: 2048
+                              pattern: ^spiffe://[a-z0-9._-]+((/[a-zA-Z0-9._-]+)+(/\*)?|/\*)$
+                              type: string
+                            resources:
+                              description: |-
+                                Resources are RFC 8707 resource indicators this association may
+                                request. Must be a subset of the server's allowed_audiences allowlist,
+                                which is derived at reconcile time and not available on this CRD, so
+                                this is validated at reconcile time, not admission. Distinct from
+                                Audiences: a resource permission does not imply the same value is also
+                                a permitted token audience, or vice versa.
+                              items:
+                                type: string
+                              maxItems: 50
+                              type: array
+                              x-kubernetes-list-type: set
+                            scopes:
+                              description: |-
+                                Scopes are OAuth scopes granted to this association. Must be a subset
+                                of the server's effective supported scopes.
+                              items:
+                                type: string
+                              maxItems: 50
+                              minItems: 1
+                              type: array
+                              x-kubernetes-list-type: set
+                            trustDomainRef:
+                              description: TrustDomainRef references spiffeTrustDomains[].name.
+                              maxLength: 253
+                              minLength: 1
+                              type: string
+                          required:
+                          - audiences
+                          - clientId
+                          - methods
+                          - principalPattern
+                          - scopes
+                          - trustDomainRef
+                          type: object
+                          x-kubernetes-validations:
+                          - message: principalPattern path must not contain . or ..
+                              segments
+                            rule: self.principalPattern.split('/').all(segment, segment
+                              != '.' && segment != '..')
+                        maxItems: 100
+                        type: array
+                        x-kubernetes-list-type: atomic
                       tokenExchange:
                         description: TokenExchange configures RFC 8693 clients and
                           issuer policies.
@@ -5007,6 +5386,120 @@ spec:
                       - name
                       type: object
                     maxItems: 5
+                    type: array
+                    x-kubernetes-list-type: atomic
+                  spiffeTrustDomains:
+                    description: |-
+                      SPIFFETrustDomains declares SPIFFE trust domains for
+                      inboundGrants.spiffeClientAuth associations. See SPIFFETrustDomainConfig's
+                      doc comment for why declaring a domain does not by itself enable
+                      authentication in this build.
+                    items:
+                      description: |-
+                        SPIFFETrustDomainConfig declares one SPIFFE trust domain accepted by the
+                        embedded authorization server. Configuration is not authentication: no
+                        live X.509-SVID or JWT-SVID validation exists yet, so a declared trust
+                        domain does not by itself let any workload authenticate — RunConfig.Validate
+                        (pkg/authserver/config.go) currently hard-rejects any non-empty
+                        spiffeTrustDomains at authserver startup via validateSPIFFENotYetEnforced,
+                        a deliberate placeholder until real SVID verification lands.
+                      properties:
+                        bundleSource:
+                          description: |-
+                            BundleSource declares exactly one future trust-bundle source. It is
+                            validated for shape only; fetching or loading a bundle from it is a
+                            later step.
+                          properties:
+                            endpoint:
+                              description: |-
+                                Endpoint declares a HTTPS SPIFFE Bundle Endpoint. Required when Type is
+                                "bundle_endpoint".
+                              properties:
+                                profile:
+                                  description: |-
+                                    Profile selects how the endpoint's TLS connection is authenticated:
+                                    SPIFFEBundleEndpointProfileHTTPSWeb (Web PKI) or
+                                    SPIFFEBundleEndpointProfileHTTPSSPIFFE (a separately distributed
+                                    X.509-SVID root).
+                                  enum:
+                                  - https_web
+                                  - https_spiffe
+                                  type: string
+                                url:
+                                  description: URL is the HTTPS SPIFFE Bundle Endpoint
+                                    URL.
+                                  maxLength: 2048
+                                  minLength: 1
+                                  type: string
+                              required:
+                              - profile
+                              - url
+                              type: object
+                            type:
+                              description: Type selects the trust-bundle source.
+                              enum:
+                              - bundle_endpoint
+                              - workload_api
+                              type: string
+                            workloadAPI:
+                              description: |-
+                                WorkloadAPI selects the local SPIFFE Workload API. Required when Type
+                                is "workload_api".
+                              type: object
+                          required:
+                          - type
+                          type: object
+                          x-kubernetes-validations:
+                          - message: endpoint configuration must be set if and only
+                              if type is 'bundle_endpoint'
+                            rule: 'self.type == ''bundle_endpoint'' ? has(self.endpoint)
+                              : !has(self.endpoint)'
+                          - message: workloadAPI configuration must be set if and
+                              only if type is 'workload_api'
+                            rule: 'self.type == ''workload_api'' ? has(self.workloadAPI)
+                              : !has(self.workloadAPI)'
+                        methods:
+                          description: |-
+                            Methods explicitly enables the supported credential types for this
+                            trust domain.
+                          items:
+                            description: |-
+                              SPIFFEAuthenticationMethod identifies the credential type permitted for a
+                              SPIFFE workload. Mirrors authserver.SPIFFEAuthenticationMethod field-for-field;
+                              runtime parsing remains authoritative.
+                            enum:
+                            - spiffe_x509
+                            - spiffe_jwt
+                            type: string
+                          maxItems: 2
+                          minItems: 1
+                          type: array
+                          x-kubernetes-list-type: set
+                        name:
+                          description: |-
+                            Name uniquely identifies this declaration and is referenced by
+                            inboundGrants.spiffeClientAuth[].trustDomainRef.
+                          maxLength: 253
+                          minLength: 1
+                          type: string
+                        trustDomain:
+                          description: |-
+                            TrustDomain is the SPIFFE trust domain accepted by this declaration.
+                            This pattern is a best-effort CRD-level approximation of the SPIFFE
+                            trust-domain grammar; runtime parsing via
+                            spiffeid.TrustDomainFromString remains authoritative.
+                          maxLength: 255
+                          minLength: 1
+                          pattern: ^([a-z0-9_]|[a-z0-9_]([a-z0-9_-]|\.[a-z0-9_-])*[a-z0-9_])$
+                          type: string
+                      required:
+                      - bundleSource
+                      - methods
+                      - name
+                      - trustDomain
+                      type: object
+                    maxItems: 50
+                    minItems: 1
                     type: array
                     x-kubernetes-list-type: atomic
                   storage:
@@ -6136,7 +6629,62 @@ spec:
                     > 0) || (has(self.delegateClients) && size(self.delegateClients)
                     > 0) || (has(self.trustedIssuers) && self.trustedIssuers.exists(issuer,
                     has(issuer.jwtBearerGrant))) || (has(self.inboundGrants) && (has(self.inboundGrants.tokenExchange)
-                    || has(self.inboundGrants.jwtBearer)))
+                    || has(self.inboundGrants.jwtBearer) || (has(self.inboundGrants.spiffeClientAuth)
+                    && size(self.inboundGrants.spiffeClientAuth) > 0)))
+                - message: spiffeTrustDomains and inboundGrants.spiffeClientAuth must
+                    be configured together
+                  rule: ((has(self.spiffeTrustDomains) && size(self.spiffeTrustDomains)
+                    > 0) == (has(self.inboundGrants) && has(self.inboundGrants.spiffeClientAuth)
+                    && size(self.inboundGrants.spiffeClientAuth) > 0))
+                - message: spiffeTrustDomains must not contain duplicate names
+                  rule: '!has(self.spiffeTrustDomains) || self.spiffeTrustDomains.all(domain,
+                    self.spiffeTrustDomains.filter(other, other.name == domain.name).size()
+                    == 1)'
+                - message: spiffeTrustDomains must not contain duplicate trust domains
+                  rule: '!has(self.spiffeTrustDomains) || self.spiffeTrustDomains.all(domain,
+                    self.spiffeTrustDomains.filter(other, other.trustDomain == domain.trustDomain).size()
+                    == 1)'
+                - message: every SPIFFE trust domain must be referenced by a SPIFFE
+                    client
+                  rule: '!has(self.spiffeTrustDomains) || self.spiffeTrustDomains.all(domain,
+                    has(self.inboundGrants) && has(self.inboundGrants.spiffeClientAuth)
+                    && self.inboundGrants.spiffeClientAuth.exists(client, client.trustDomainRef
+                    == domain.name))'
+                - message: every SPIFFE client trustDomainRef must reference a declared
+                    trust domain
+                  rule: '!has(self.inboundGrants) || !has(self.inboundGrants.spiffeClientAuth)
+                    || self.inboundGrants.spiffeClientAuth.all(client, has(self.spiffeTrustDomains)
+                    && self.spiffeTrustDomains.exists(domain, domain.name == client.trustDomainRef))'
+                - message: spiffeClientAuth methods must be enabled by the referenced
+                    trust domain
+                  rule: '!has(self.inboundGrants) || !has(self.inboundGrants.spiffeClientAuth)
+                    || self.inboundGrants.spiffeClientAuth.all(client, !has(self.spiffeTrustDomains)
+                    || !self.spiffeTrustDomains.exists(domain, domain.name == client.trustDomainRef)
+                    || self.spiffeTrustDomains.exists(domain, domain.name == client.trustDomainRef
+                    && client.methods.all(method, method in domain.methods)))'
+                - message: spiffeClientAuth principalPattern trust domain must match
+                    the referenced trust domain
+                  rule: '!has(self.inboundGrants) || !has(self.inboundGrants.spiffeClientAuth)
+                    || self.inboundGrants.spiffeClientAuth.all(client, !has(self.spiffeTrustDomains)
+                    || !self.spiffeTrustDomains.exists(domain, domain.name == client.trustDomainRef)
+                    || self.spiffeTrustDomains.exists(domain, domain.name == client.trustDomainRef
+                    && client.principalPattern.startsWith(''spiffe://'' + domain.trustDomain
+                    + ''/'')))'
+                - message: spiffeClientAuth must not contain duplicate client IDs
+                  rule: '!has(self.inboundGrants) || !has(self.inboundGrants.spiffeClientAuth)
+                    || self.inboundGrants.spiffeClientAuth.all(client, self.inboundGrants.spiffeClientAuth.filter(other,
+                    other.clientId == client.clientId).size() == 1)'
+                - message: spiffeClientAuth must not contain duplicate principal patterns
+                  rule: '!has(self.inboundGrants) || !has(self.inboundGrants.spiffeClientAuth)
+                    || self.inboundGrants.spiffeClientAuth.all(client, self.inboundGrants.spiffeClientAuth.filter(other,
+                    other.principalPattern == client.principalPattern).size() == 1)'
+                - message: 'spiffeClientAuth clientId must not use the reserved synthetic:
+                    prefix'
+                  rule: '!has(self.inboundGrants) || !has(self.inboundGrants.spiffeClientAuth)
+                    || self.inboundGrants.spiffeClientAuth.all(client, !client.clientId.startsWith(''synthetic:''))'
+                - message: spiffeClientAuth clientId must not be an absolute URL
+                  rule: '!has(self.inboundGrants) || !has(self.inboundGrants.spiffeClientAuth)
+                    || self.inboundGrants.spiffeClientAuth.all(client, !client.clientId.matches(''^[A-Za-z][A-Za-z0-9+.-]*://.+''))'
                 - message: allowConfidentialClientRegistration cannot be combined
                     with insecureAllowHTTP; client secrets would be issued in cleartext
                     over an unauthenticated endpoint

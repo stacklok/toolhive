@@ -310,6 +310,73 @@ func buildJWTBearerGrantPolicy(config *mcpv1beta1.JWTBearerGrantConfig) *tokenex
 	return policy
 }
 
+// buildSPIFFETrustDomainRunConfigs converts CRD SPIFFETrustDomainConfig
+// entries to authserver.SPIFFETrustDomainRunConfig, the runtime type
+// authserver.RunConfig.SPIFFETrustDomains consumes directly. None of these
+// fields reference a Secret, so no env-var indirection is needed here.
+func buildSPIFFETrustDomainRunConfigs(
+	domains []mcpv1beta1.SPIFFETrustDomainConfig,
+) []authserver.SPIFFETrustDomainRunConfig {
+	configs := make([]authserver.SPIFFETrustDomainRunConfig, len(domains))
+	for i, domain := range domains {
+		methods := make([]authserver.SPIFFEAuthenticationMethod, len(domain.Methods))
+		for j, method := range domain.Methods {
+			methods[j] = authserver.SPIFFEAuthenticationMethod(method)
+		}
+		configs[i] = authserver.SPIFFETrustDomainRunConfig{
+			Name:         domain.Name,
+			TrustDomain:  domain.TrustDomain,
+			Methods:      methods,
+			BundleSource: buildSPIFFEBundleSourceRunConfig(domain.BundleSource),
+		}
+	}
+	return configs
+}
+
+// buildSPIFFEBundleSourceRunConfig converts the CRD's discriminated
+// bundle-source union to the runtime shape.
+func buildSPIFFEBundleSourceRunConfig(source mcpv1beta1.SPIFFEBundleSourceConfig) authserver.SPIFFEBundleSourceRunConfig {
+	converted := authserver.SPIFFEBundleSourceRunConfig{Type: authserver.SPIFFEBundleSourceType(source.Type)}
+	if source.Endpoint != nil {
+		converted.Endpoint = &authserver.SPIFFEBundleEndpointSourceRunConfig{
+			URL:     source.Endpoint.URL,
+			Profile: authserver.SPIFFEBundleEndpointProfile(source.Endpoint.Profile),
+		}
+	}
+	if source.WorkloadAPI != nil {
+		converted.WorkloadAPI = &authserver.SPIFFEWorkloadAPIBundleSourceRunConfig{}
+	}
+	return converted
+}
+
+// buildSPIFFEClientAuthRunConfigs converts CRD SPIFFEClientConfig entries to
+// authserver.SPIFFEClientAuthRunConfig. GrantTypes is not a CRD field: the
+// runtime only accepts exactly the RFC 8693 token-exchange grant for a
+// SPIFFE client (validateSPIFFEGrants in pkg/authserver/spiffe_trust.go), so
+// it is always supplied here rather than configured.
+func buildSPIFFEClientAuthRunConfigs(
+	clients []mcpv1beta1.SPIFFEClientConfig,
+) []authserver.SPIFFEClientAuthRunConfig {
+	configs := make([]authserver.SPIFFEClientAuthRunConfig, len(clients))
+	for i, spiffeClient := range clients {
+		methods := make([]authserver.SPIFFEAuthenticationMethod, len(spiffeClient.Methods))
+		for j, method := range spiffeClient.Methods {
+			methods[j] = authserver.SPIFFEAuthenticationMethod(method)
+		}
+		configs[i] = authserver.SPIFFEClientAuthRunConfig{
+			TrustDomainRef:   spiffeClient.TrustDomainRef,
+			PrincipalPattern: spiffeClient.PrincipalPattern,
+			ClientID:         spiffeClient.ClientID,
+			Methods:          methods,
+			Resources:        append([]string(nil), spiffeClient.Resources...),
+			Audiences:        append([]string(nil), spiffeClient.Audiences...),
+			Scopes:           append([]string(nil), spiffeClient.Scopes...),
+			GrantTypes:       []string{authserver.SPIFFEGrantTypeTokenExchange},
+		}
+	}
+	return configs
+}
+
 // EmbeddedAuthServerConfigName returns the config name that should be used for
 // embedded auth server volume/env generation, or empty string if neither ref applies.
 // AuthServerRef takes precedence; externalAuthConfigRef is used as a fallback.
@@ -827,7 +894,9 @@ func buildInboundGrantsRunConfig(
 	if config == nil {
 		return nil, nil
 	}
-	grants := &authserver.InboundGrantsRunConfig{}
+	grants := &authserver.InboundGrantsRunConfig{
+		SPIFFEClientAuth: buildSPIFFEClientAuthRunConfigs(config.SPIFFEClientAuth),
+	}
 	if config.TokenExchange != nil {
 		delegateClients, err := buildDelegateClientRunConfigs(config.TokenExchange.DelegateClients)
 		if err != nil {
@@ -912,6 +981,7 @@ func BuildAuthServerRunConfig(
 		ScopesSupported:              scopesSupported,
 		BaselineClientScopes:         authConfig.BaselineClientScopes,
 		InboundGrants:                inboundGrants,
+		SPIFFETrustDomains:           buildSPIFFETrustDomainRunConfigs(authConfig.SPIFFETrustDomains),
 	}
 
 	if len(authConfig.DelegateClients) > 0 {
@@ -1032,7 +1102,8 @@ func buildAuthServerSecretsConfig(config *authserver.RunConfig, authConfig *mcpv
 // or allow_may_act combined with the delegate-client wildcard) as a
 // reconcile error rather than a pod crash loop.
 func validateDelegateClientsAndTrustedIssuers(config *authserver.RunConfig) error {
-	if len(config.DelegateClients) == 0 && len(config.TrustedIssuers) == 0 && config.InboundGrants == nil {
+	if len(config.DelegateClients) == 0 && len(config.TrustedIssuers) == 0 && config.InboundGrants == nil &&
+		len(config.SPIFFETrustDomains) == 0 {
 		return nil
 	}
 
@@ -1043,9 +1114,10 @@ func validateDelegateClientsAndTrustedIssuers(config *authserver.RunConfig) erro
 		InsecureAllowHTTP:              config.InsecureAllowHTTP,
 		AllowPrivateKeyJWTRegistration: config.AllowPrivateKeyJWTRegistration,
 		InsecureAllowConfidentialOverLoopbackHTTP: config.InsecureAllowConfidentialOverLoopbackHTTP,
-		DelegateClients: config.DelegateClients,
-		TrustedIssuers:  config.TrustedIssuers,
-		InboundGrants:   config.InboundGrants,
+		DelegateClients:    config.DelegateClients,
+		TrustedIssuers:     config.TrustedIssuers,
+		InboundGrants:      config.InboundGrants,
+		SPIFFETrustDomains: config.SPIFFETrustDomains,
 	}
 	if err := validationConfig.Validate(); err != nil {
 		return fmt.Errorf("invalid embedded auth server delegate clients or trusted issuers: %w", err)

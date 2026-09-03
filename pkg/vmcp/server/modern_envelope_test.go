@@ -81,7 +81,7 @@ func TestModernEnvelopeCommonFields(t *testing.T) {
 			build: func(*testing.T) any {
 				return newModernCallToolResult(&vmcp.ToolCallResult{
 					Content: []vmcp.Content{{Type: vmcp.ContentTypeText, Text: "hello"}},
-				}, testServerName, testServerVersion)
+				}, testServerName, testServerVersion, false)
 			},
 			wantCacheable: false,
 		},
@@ -156,7 +156,7 @@ func TestModernResultMetaPreservesBackendMeta(t *testing.T) {
 		{
 			name: "tools/call",
 			build: func() any {
-				return newModernCallToolResult(&vmcp.ToolCallResult{Meta: backendMeta}, testServerName, testServerVersion)
+				return newModernCallToolResult(&vmcp.ToolCallResult{Meta: backendMeta}, testServerName, testServerVersion, false)
 			},
 		},
 		{
@@ -212,7 +212,7 @@ func TestModernResultMetaOverwritesSpoofedServerInfo(t *testing.T) {
 		modernServerInfoKey: map[string]any{"name": "attacker-server", "version": "666"},
 	}
 
-	raw, err := json.Marshal(newModernCallToolResult(&vmcp.ToolCallResult{Meta: spoofed}, testServerName, testServerVersion))
+	raw, err := json.Marshal(newModernCallToolResult(&vmcp.ToolCallResult{Meta: spoofed}, testServerName, testServerVersion, false))
 	require.NoError(t, err)
 
 	var decoded map[string]any
@@ -354,7 +354,7 @@ func TestModernEnvelopeEmptyCollections(t *testing.T) {
 			name:  "tools/call content",
 			field: "content",
 			build: func(*testing.T) any {
-				return newModernCallToolResult(&vmcp.ToolCallResult{}, testServerName, testServerVersion)
+				return newModernCallToolResult(&vmcp.ToolCallResult{}, testServerName, testServerVersion, false)
 			},
 		},
 		{
@@ -422,7 +422,7 @@ func TestModernCallToolResult(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
 
-			raw, err := json.Marshal(newModernCallToolResult(tt.domainResult, testServerName, testServerVersion))
+			raw, err := json.Marshal(newModernCallToolResult(tt.domainResult, testServerName, testServerVersion, false))
 			require.NoError(t, err)
 
 			var decoded map[string]any

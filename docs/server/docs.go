@@ -1688,6 +1688,10 @@ const docTemplate = `{
                         "description": "RateLimitNamespace is the Kubernetes namespace for Redis key derivation.",
                         "type": "string"
                     },
+                    "redact_tool_result_secrets": {
+                        "description": "RedactToolResultSecrets enables best-effort credential-shape scanning\non tools/call responses relayed by the proxy (streamable-HTTP or the\ntransparent reverse-proxy, whichever the transport resolves to):\nmatches are redacted before the response reaches the client. Opt-in\n(default false); enable it when the backend MCP server is not fully\ntrusted.",
+                        "type": "boolean"
+                    },
                     "registry_api_url": {
                         "description": "RegistryAPIURL is the registry API URL that served this server's metadata.\nEmpty when the server was not discovered via registry lookup.",
                         "type": "string"

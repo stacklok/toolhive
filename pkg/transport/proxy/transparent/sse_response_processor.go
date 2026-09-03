@@ -57,12 +57,15 @@ func (c sseRewriteConfig) hasRewriteConfig() bool {
 var sessionRe = regexp.MustCompile(`sessionId=([0-9A-Fa-f-]+)|"sessionId"\s*:\s*"([^"]+)"`)
 
 // SSEResponseProcessor handles SSE-specific response processing including:
-// - Session ID extraction from SSE streams
-// - Endpoint URL rewriting for path-based routing
+//   - Session ID extraction from SSE streams
+//   - Endpoint URL rewriting for path-based routing
+//   - Optional credential-shape redaction of tools/call results (see
+//     WithSecretRedaction)
 type SSEResponseProcessor struct {
 	proxy             *TransparentProxy
 	endpointPrefix    string
 	trustProxyHeaders bool
+	redactSecrets     bool
 }
 
 // NewSSEResponseProcessor creates a new SSE response processor.
@@ -70,11 +73,13 @@ func NewSSEResponseProcessor(
 	proxy *TransparentProxy,
 	endpointPrefix string,
 	trustProxyHeaders bool,
+	redactSecrets bool,
 ) *SSEResponseProcessor {
 	return &SSEResponseProcessor{
 		proxy:             proxy,
 		endpointPrefix:    endpointPrefix,
 		trustProxyHeaders: trustProxyHeaders,
+		redactSecrets:     redactSecrets,
 	}
 }
 
@@ -212,43 +217,88 @@ type sseLineProcessor struct {
 	rewriteConfig    sseRewriteConfig
 	currentEventType string
 	sessionFound     bool
+	redactSecrets    bool
+
+	// dataBuf accumulates consecutive raw "data:" lines belonging to the SAME
+	// SSE event. Per the SSE spec, a compliant client concatenates them
+	// (joined by "\n") into one logical value before consuming it -- URL
+	// rewriting and redaction must operate on that same reassembled value, not
+	// each "data:" line in isolation, or a hostile backend could split a
+	// single JSON-RPC message across lines specifically to evade the
+	// redaction scan while the real client still reassembles and sees it.
+	dataBuf []string
 }
 
-// processLine processes a single SSE line and returns the potentially modified line.
-func (s *sseLineProcessor) processLine(line string) string {
+// processLine processes a single SSE line and returns the lines to emit in
+// its place: zero while a "data:" run is being buffered, or more than one
+// when a buffered run is flushed ahead of a non-data line.
+func (s *sseLineProcessor) processLine(line string) []string {
 	// Parse SSE event type
 	if strings.HasPrefix(line, "event:") {
+		out := s.flushDataBuf()
 		s.currentEventType = strings.TrimSpace(strings.TrimPrefix(line, "event:"))
-		return line
+		return append(out, line)
 	}
 
 	// Empty line marks the end of an SSE event, reset event type
 	if line == "" {
+		out := s.flushDataBuf()
 		s.currentEventType = ""
-		return line
+		return append(out, line)
 	}
 
-	// Process data lines
+	// Accumulate data lines; extraction/rewrite/redaction happens once the
+	// run is flushed (see flushDataBuf), on the reassembled value.
 	if strings.HasPrefix(line, "data:") {
-		return s.processDataLine(line)
+		s.extractSessionID(line)
+		s.dataBuf = append(s.dataBuf, line)
+		return nil
 	}
 
-	return line
+	out := s.flushDataBuf()
+	return append(out, line)
 }
 
-// processDataLine handles SSE data lines for session extraction and URL rewriting.
-func (s *sseLineProcessor) processDataLine(line string) string {
-	dataContent := strings.TrimSpace(strings.TrimPrefix(line, "data:"))
+// flushDataBuf reassembles any buffered "data:" lines into one logical value
+// (per the SSE spec), applies endpoint-URL rewriting and/or secret redaction
+// to that value, and returns the line(s) to emit. When neither transform
+// changes anything, the original raw lines are returned unchanged so a
+// disabled/no-op pass is byte-identical to the pre-buffering behavior.
+func (s *sseLineProcessor) flushDataBuf() []string {
+	if len(s.dataBuf) == 0 {
+		return nil
+	}
+	rawLines := s.dataBuf
+	s.dataBuf = nil
 
-	// Extract session ID for tracking (from any data line)
-	s.extractSessionID(line)
+	value := joinSSEDataLines(rawLines)
+	changed := false
 
-	// Rewrite endpoint URLs only for "endpoint" events
 	if s.currentEventType == "endpoint" && s.rewriteConfig.hasRewriteConfig() {
-		return s.rewriteDataLine(line, dataContent)
+		rewritten, err := rewriteEndpointURL(value, s.rewriteConfig)
+		switch {
+		case err != nil:
+			//nolint:gosec // G706: logging endpoint URL from SSE stream
+			slog.Warn("failed to rewrite endpoint URL", "url", value, "error", err)
+		case rewritten != value:
+			//nolint:gosec // G706: logging endpoint URLs from SSE stream
+			slog.Debug("rewrote SSE endpoint URL", "from", value, "to", rewritten)
+			value = rewritten
+			changed = true
+		}
 	}
 
-	return line
+	if s.redactSecrets {
+		if redacted, ok, err := redactJSONRPCBody([]byte(value)); err == nil && ok {
+			value = string(redacted)
+			changed = true
+		}
+	}
+
+	if !changed {
+		return rawLines
+	}
+	return []string{"data: " + value}
 }
 
 // extractSessionID extracts and stores the session ID from a data line.
@@ -269,24 +319,6 @@ func (s *sseLineProcessor) extractSessionID(line string) {
 	}
 }
 
-// rewriteDataLine rewrites the URL in an endpoint event's data line.
-func (s *sseLineProcessor) rewriteDataLine(line, dataContent string) string {
-	rewrittenURL, err := rewriteEndpointURL(dataContent, s.rewriteConfig)
-	if err != nil {
-		//nolint:gosec // G706: logging endpoint URL from SSE stream
-		slog.Warn("failed to rewrite endpoint URL",
-			"url", dataContent, "error", err)
-		return line
-	}
-	if rewrittenURL != dataContent {
-		//nolint:gosec // G706: logging endpoint URLs from SSE stream
-		slog.Debug("rewrote SSE endpoint URL",
-			"from", dataContent, "to", rewrittenURL)
-		return "data: " + rewrittenURL
-	}
-	return line
-}
-
 // processSSEStream processes an SSE stream, extracting session IDs and rewriting URLs.
 func (s *SSEResponseProcessor) processSSEStream(originalBody io.Reader, pw *io.PipeWriter, rewriteConfig sseRewriteConfig) {
 	scanner := bufio.NewScanner(originalBody)
@@ -299,10 +331,19 @@ func (s *SSEResponseProcessor) processSSEStream(originalBody io.Reader, pw *io.P
 	processor := &sseLineProcessor{
 		proxy:         s.proxy,
 		rewriteConfig: rewriteConfig,
+		redactSecrets: s.redactSecrets,
 	}
 
 	for scanner.Scan() {
-		line := processor.processLine(scanner.Text())
+		for _, line := range processor.processLine(scanner.Text()) {
+			if _, err := pw.Write([]byte(line + "\n")); err != nil {
+				return
+			}
+		}
+	}
+	// A stream that ends without a trailing blank line still has a pending
+	// event to reassemble and forward.
+	for _, line := range processor.flushDataBuf() {
 		if _, err := pw.Write([]byte(line + "\n")); err != nil {
 			return
 		}

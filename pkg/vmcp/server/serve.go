@@ -140,6 +140,11 @@ type ServerConfig struct {
 	// AuditConfig is the cross-cutting audit configuration (also consumed by
 	// core.New). If nil, no audit logging is performed.
 	AuditConfig *audit.Config
+
+	// RedactToolResultSecrets enables best-effort credential-shape scanning
+	// (see pkg/mcp/secretscan) on tools/call results before they are relayed
+	// to the client. Opt-in (default false); see Config.RedactToolResultSecrets.
+	RedactToolResultSecrets bool
 }
 
 // Serve is the transport-side entry point of the New/Serve split: it wraps an
@@ -438,5 +443,6 @@ func buildServeConfig(cfg *ServerConfig) *Config {
 		StatusReportingInterval: cfg.StatusReportingInterval,
 		Watcher:                 cfg.Watcher,
 		SessionStorage:          cfg.SessionStorage,
+		RedactToolResultSecrets: cfg.RedactToolResultSecrets,
 	}
 }

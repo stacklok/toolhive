@@ -1569,6 +1569,33 @@ func TestWithStrictProtocolValidation(t *testing.T) {
 	}
 }
 
+// TestWithRedactToolResultSecrets verifies the builder option sets
+// RunConfig.RedactToolResultSecrets, mirroring WithStrictProtocolValidation's
+// plumbing (see cmd/thv/app/run_flags.go's --redact-tool-result-secrets flag).
+func TestWithRedactToolResultSecrets(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name    string
+		enabled bool
+	}{
+		{name: "enabled", enabled: true},
+		{name: "disabled (default)", enabled: false},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			builder := &runConfigBuilder{config: NewRunConfig()}
+			err := WithRedactToolResultSecrets(tt.enabled)(builder)
+
+			require.NoError(t, err)
+			assert.Equal(t, tt.enabled, builder.config.RedactToolResultSecrets)
+		})
+	}
+}
+
 func TestResolveRegistryServerName(t *testing.T) {
 	t.Parallel()
 

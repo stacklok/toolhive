@@ -226,6 +226,7 @@ func (r *Runner) Run(ctx context.Context) error {
 		Debug:                    r.Config.Debug,
 		TrustProxyHeaders:        r.Config.TrustProxyHeaders,
 		StrictProtocolValidation: r.Config.StrictProtocolValidation,
+		RedactToolResultSecrets:  r.Config.RedactToolResultSecrets,
 		EndpointPrefix:           r.Config.EndpointPrefix,
 		SessionTTL:               effectiveSessionTTL,
 	}

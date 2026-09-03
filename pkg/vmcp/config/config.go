@@ -201,6 +201,14 @@ type Config struct {
 	// +optional
 	// +listType=atomic
 	PassthroughHeaders []string `json:"passthroughHeaders,omitempty" yaml:"passthroughHeaders,omitempty"`
+
+	// RedactToolResultSecrets enables best-effort credential-shape scanning
+	// (see pkg/mcp/secretscan) on tools/call results before they are relayed
+	// to the client: matches are redacted in place. Opt-in (default false);
+	// enable when a backend this vMCP aggregates is not fully trusted.
+	// +optional
+	// +kubebuilder:default=false
+	RedactToolResultSecrets bool `json:"redactToolResultSecrets,omitempty" yaml:"redactToolResultSecrets,omitempty"`
 }
 
 // IncomingAuthConfig configures client authentication to the virtual MCP server.

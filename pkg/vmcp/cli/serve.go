@@ -444,6 +444,7 @@ func Serve(ctx context.Context, cfg ServeConfig) error {
 		CodeModeConfig:          codemode.FromConfig(vmcpCfg.CodeMode),
 		SessionFactory:          sessionFactory,
 		SessionStorage:          vmcpCfg.SessionStorage,
+		RedactToolResultSecrets: vmcpCfg.RedactToolResultSecrets,
 		// Core collaborators: server.New routes through core.New + Serve, so the core
 		// is the single aggregator and authorizer. The aggregator is the same instance
 		// that backs discovery; Authz feeds the core admission seam (nil = allow-all).

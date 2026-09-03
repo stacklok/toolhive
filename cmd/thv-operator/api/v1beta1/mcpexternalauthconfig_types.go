@@ -768,6 +768,8 @@ type SPIFFEClientConfig struct {
 	// +kubebuilder:validation:Required
 	// +kubebuilder:validation:MinItems=1
 	// +kubebuilder:validation:MaxItems=50
+	// +kubebuilder:validation:items:MinLength=1
+	// +kubebuilder:validation:items:MaxLength=2048
 	// +listType=set
 	Audiences []string `json:"audiences"`
 
@@ -776,6 +778,8 @@ type SPIFFEClientConfig struct {
 	// +kubebuilder:validation:Required
 	// +kubebuilder:validation:MinItems=1
 	// +kubebuilder:validation:MaxItems=50
+	// +kubebuilder:validation:items:MinLength=1
+	// +kubebuilder:validation:items:MaxLength=256
 	// +listType=set
 	Scopes []string `json:"scopes"`
 }

@@ -437,6 +437,8 @@ spec:
                               description: Audiences are RFC 8693 token audiences
                                 this association may request.
                               items:
+                                maxLength: 2048
+                                minLength: 1
                                 type: string
                               maxItems: 50
                               minItems: 1
@@ -493,6 +495,8 @@ spec:
                                 Scopes are OAuth scopes granted to this association. Must be a subset
                                 of the server's effective supported scopes.
                               items:
+                                maxLength: 256
+                                minLength: 1
                                 type: string
                               maxItems: 50
                               minItems: 1
@@ -5099,6 +5103,8 @@ spec:
                               description: Audiences are RFC 8693 token audiences
                                 this association may request.
                               items:
+                                maxLength: 2048
+                                minLength: 1
                                 type: string
                               maxItems: 50
                               minItems: 1
@@ -5155,6 +5161,8 @@ spec:
                                 Scopes are OAuth scopes granted to this association. Must be a subset
                                 of the server's effective supported scopes.
                               items:
+                                maxLength: 256
+                                minLength: 1
                                 type: string
                               maxItems: 50
                               minItems: 1

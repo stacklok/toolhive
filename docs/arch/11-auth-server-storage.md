@@ -431,3 +431,17 @@ All call sites use `unwrapStorage(stor)` or the equivalent JWT-bearer constructi
 When the embedded authorization server is deployed in an environment that cannot reach `https://toolhive.dev/oauth/client-metadata.json` or any public CIMD metadata URL, set `authServer.cimd.enabled: false`. Clients will fall back to DCR (`/oauth/register`) which uses only the local storage backend and requires no outbound connectivity.
 
 **Implementation:** `pkg/authserver/storage/cimd_decorator.go`
+
+## SPIFFE Storage Decorator
+
+When top-level `spiffeTrustDomains` and `inboundGrants.spiffeClientAuth` are configured, the embedded authorization server wraps its storage backend in a `SPIFFEStorageDecorator` — installed as the outermost decorator, after CIMD (`decorateStorageForSPIFFE` in `pkg/authserver/server_impl.go`). This decorator overlays a fixed set of statically configured OAuth clients ahead of the dynamic DCR/CIMD backend. These declarations register associations and clients; the current server does not yet verify live X.509-SVIDs or JWT-SVIDs.
+
+### What it does
+
+`SPIFFEStorageDecorator` embeds the full `storage.Storage` interface and overrides `GetClient`, `RegisterClient`, and `ReconcileConfiguredClient`. `GetClient` checks its static client map first and only falls through to the wrapped storage (CIMD, then DCR) when the requested client ID is not one of the configured associations. `RegisterClient` and `ReconcileConfiguredClient` reject any DCR, delegate-client, or configured-client attempt that targets a client ID reserved by a static SPIFFE association. CIMD never calls `RegisterClient`; it only resolves and caches HTTPS client IDs, so it cannot collide with a static association.
+
+Its clients come entirely from the configured SPIFFE trust-domain and client-association declarations (see [SPIFFE Association Declarations](18-spiffe-association-declarations.md)). They are built once at startup, held in memory, and never written to the storage backend (memory or Redis); they are never eligible for dynamic registration or replacement.
+
+At startup, the decorator durably claims each configured static client ID in the storage backend (memory or Redis) via `ReconcileConfiguredClient` (`preflightDurableCollisions`), using an inert placeholder rather than the real client. This is create-only for anything except a matching restart: it succeeds when the ID is unclaimed or already holds a matching placeholder from a prior run with the same configuration, and fails — refusing to start the server — when the ID is DCR-issued or holds a placeholder for a *different* association. This closes a cross-replica race that a read-only `GetClient` check alone cannot: with Redis and multiple replicas, an older or still-rolling replica without this SPIFFE config could otherwise DCR-register the same client ID after a newer replica's read-only check passed. The reverse collision can't happen: the decorator's `GetClient` always checks its static map first, so a durable client can never shadow a static one.
+
+**Implementation:** `pkg/authserver/storage/spiffe_decorator.go`

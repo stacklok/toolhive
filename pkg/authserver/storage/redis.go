@@ -421,6 +421,81 @@ func (s *RedisStorage) RegisterClient(ctx context.Context, client fosite.Client)
 	return nil
 }
 
+// UpsertDCRIssuedClient creates or replaces a DCR-issued client at
+// client.GetID(). Unlike RegisterClient (create-only via SetNX), an existing
+// row is replaced -- and its TTL refreshed to DefaultDCRClientTTL -- when the
+// existing row is itself DCR-issued; it refuses with ErrAlreadyExists when the
+// existing row is NOT DCR-issued, protecting a configured/SPIFFE-reconciled
+// client from being clobbered. See the ClientRegistry interface doc for the
+// full contract.
+//
+// The read-check-write sequence for an existing key runs inside a Redis
+// WATCH/MULTI transaction, mirroring ReconcileConfiguredClient, so a
+// concurrent writer cannot interleave between the DCR-issued check and the
+// write; see maxConfiguredClientReconcileRetries for why this method retries
+// redis.TxFailedErr itself, up to the same bounded count. Unlike
+// ReconcileConfiguredClient (ttl=0, permanent), the write here always uses
+// DefaultDCRClientTTL: this row is TTL-bounded like any other DCR-issued
+// client.
+func (s *RedisStorage) UpsertDCRIssuedClient(ctx context.Context, client fosite.Client) error {
+	if !registration.DCRIssued(client) {
+		return fmt.Errorf("client %q must carry the DCR-issued marker to use UpsertDCRIssuedClient", client.GetID())
+	}
+	if err := ValidateRegisterableClientID(client.GetID()); err != nil {
+		return err
+	}
+
+	key := redisKey(s.keyPrefix, KeyTypeClient, client.GetID())
+	stored := buildStoredClient(client)
+	data, err := json.Marshal(stored) //nolint:gosec // G117 - internal Redis storage serialization, not exposed to users
+	if err != nil {
+		return fmt.Errorf("failed to marshal client: %w", err)
+	}
+
+	setPipelined := func(tx *redis.Tx) error {
+		_, err := tx.TxPipelined(ctx, func(pipe redis.Pipeliner) error {
+			pipe.Set(ctx, key, data, DefaultDCRClientTTL)
+			return nil
+		})
+		return err
+	}
+
+	txFn := func(tx *redis.Tx) error {
+		existingData, getErr := tx.Get(ctx, key).Bytes()
+		if errors.Is(getErr, redis.Nil) {
+			return setPipelined(tx)
+		}
+		if getErr != nil {
+			return fmt.Errorf("failed to get existing client: %w", getErr)
+		}
+
+		ttl, ttlErr := tx.TTL(ctx, key).Result()
+		if ttlErr != nil {
+			return fmt.Errorf("failed to get existing client TTL: %w", ttlErr)
+		}
+
+		var existingStored storedClient
+		if unmarshalErr := json.Unmarshal(existingData, &existingStored); unmarshalErr != nil {
+			return fmt.Errorf("failed to unmarshal existing client: %w", unmarshalErr)
+		}
+
+		if !registration.DCRIssued(clientFromStored(existingStored, ttl >= 0)) {
+			return fmt.Errorf("%w: client %q", ErrAlreadyExists, client.GetID())
+		}
+
+		return setPipelined(tx)
+	}
+
+	var watchErr error
+	for attempt := 0; attempt < maxConfiguredClientReconcileRetries; attempt++ {
+		watchErr = s.client.Watch(ctx, txFn, key)
+		if !errors.Is(watchErr, redis.TxFailedErr) {
+			return watchErr
+		}
+	}
+	return watchErr
+}
+
 // storedClientFingerprintsEqual mirrors clientFingerprintsEqual but compares
 // the raw serialized fields directly rather than through the fosite.Client
 // interface returned by clientFromStored. This matters because

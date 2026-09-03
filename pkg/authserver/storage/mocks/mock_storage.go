@@ -287,6 +287,20 @@ func (mr *MockClientRegistryMockRecorder) SetClientAssertionJWT(ctx, jti, exp an
 	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "SetClientAssertionJWT", reflect.TypeOf((*MockClientRegistry)(nil).SetClientAssertionJWT), ctx, jti, exp)
 }
 
+// UpsertDCRIssuedClient mocks base method.
+func (m *MockClientRegistry) UpsertDCRIssuedClient(ctx context.Context, client fosite.Client) error {
+	m.ctrl.T.Helper()
+	ret := m.ctrl.Call(m, "UpsertDCRIssuedClient", ctx, client)
+	ret0, _ := ret[0].(error)
+	return ret0
+}
+
+// UpsertDCRIssuedClient indicates an expected call of UpsertDCRIssuedClient.
+func (mr *MockClientRegistryMockRecorder) UpsertDCRIssuedClient(ctx, client any) *gomock.Call {
+	mr.mock.ctrl.T.Helper()
+	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "UpsertDCRIssuedClient", reflect.TypeOf((*MockClientRegistry)(nil).UpsertDCRIssuedClient), ctx, client)
+}
+
 // MockUpstreamTokenStorage is a mock of UpstreamTokenStorage interface.
 type MockUpstreamTokenStorage struct {
 	ctrl     *gomock.Controller
@@ -1172,4 +1186,18 @@ func (m *MockStorage) UpdateProviderIdentityLastUsed(ctx context.Context, provid
 func (mr *MockStorageMockRecorder) UpdateProviderIdentityLastUsed(ctx, providerID, providerSubject, lastUsedAt any) *gomock.Call {
 	mr.mock.ctrl.T.Helper()
 	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "UpdateProviderIdentityLastUsed", reflect.TypeOf((*MockStorage)(nil).UpdateProviderIdentityLastUsed), ctx, providerID, providerSubject, lastUsedAt)
+}
+
+// UpsertDCRIssuedClient mocks base method.
+func (m *MockStorage) UpsertDCRIssuedClient(ctx context.Context, client fosite.Client) error {
+	m.ctrl.T.Helper()
+	ret := m.ctrl.Call(m, "UpsertDCRIssuedClient", ctx, client)
+	ret0, _ := ret[0].(error)
+	return ret0
+}
+
+// UpsertDCRIssuedClient indicates an expected call of UpsertDCRIssuedClient.
+func (mr *MockStorageMockRecorder) UpsertDCRIssuedClient(ctx, client any) *gomock.Call {
+	mr.mock.ctrl.T.Helper()
+	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "UpsertDCRIssuedClient", reflect.TypeOf((*MockStorage)(nil).UpsertDCRIssuedClient), ctx, client)
 }

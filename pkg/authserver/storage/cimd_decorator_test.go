@@ -950,14 +950,15 @@ func TestCIMDStorageDecorator_PersistsLoopbackResolvedClient(t *testing.T) {
 	require.NoError(t, err)
 }
 
-// registerFailingStorage wraps a Storage and fails every RegisterClient call,
-// for testing that a write-through persistence failure does not fail the
+// registerFailingStorage wraps a Storage and fails every UpsertDCRIssuedClient
+// call -- the write-through persistence path fetch() actually calls -- for
+// testing that a write-through persistence failure does not fail the
 // resolution itself.
 type registerFailingStorage struct {
 	Storage
 }
 
-func (*registerFailingStorage) RegisterClient(context.Context, fosite.Client) error {
+func (*registerFailingStorage) UpsertDCRIssuedClient(context.Context, fosite.Client) error {
 	return errors.New("register failed")
 }
 
@@ -976,4 +977,51 @@ func TestCIMDStorageDecorator_PersistFailureDoesNotFailResolution(t *testing.T) 
 	client, err := dec.fetchOrCached(context.Background(), srv.URL+"/meta.json")
 	require.NoError(t, err, "a write-through persistence failure must not fail the resolution")
 	assert.NotNil(t, client)
+}
+
+// TestCIMDStorageDecorator_RepeatFetchRenewsPersistedClient closes the gap
+// that let the RegisterClient/UpsertDCRIssuedClient bug go undetected:
+// nothing previously asserted the persisted row's state after a repeat
+// fetch of the same client_id. Two fetches of the same CIMD document, whose
+// served content changes between them, must both succeed, and the second
+// fetch's write-through must actually replace the stored row's data rather
+// than silently failing with ErrAlreadyExists (as it would have with the old
+// RegisterClient-only call, whose failure fetch() only logs).
+func TestCIMDStorageDecorator_RepeatFetchRenewsPersistedClient(t *testing.T) {
+	t.Parallel()
+
+	var callCount atomic.Int32
+	srv := serveCIMDDocWithFields(t, func(doc *cimd.ClientMetadataDocument) {
+		// Change the served document between the first and second fetch so a
+		// real re-persist is distinguishable from a no-op.
+		if callCount.Add(1) == 1 {
+			doc.RedirectURIs = []string{"https://example.com/callback-v1"}
+		} else {
+			doc.RedirectURIs = []string{"https://example.com/callback-v2"}
+		}
+	})
+	base := newTestBase(t)
+	dec := newEnabledDecorator(t, base, 10, time.Minute)
+	id := srv.URL + "/meta.json"
+	ctx := context.Background()
+
+	// Call fetch() directly (bypassing the in-process LRU cache) to force two
+	// real write-through persistence attempts, exactly as two independent
+	// process replicas resolving the same client_id would.
+	first, err := dec.fetch(ctx, id)
+	require.NoError(t, err)
+	assert.Equal(t, []string{"https://example.com/callback-v1"}, first.GetRedirectURIs())
+
+	stored, err := base.GetClient(ctx, id)
+	require.NoError(t, err, "first fetch must persist the row")
+	assert.Equal(t, []string{"https://example.com/callback-v1"}, stored.GetRedirectURIs())
+
+	second, err := dec.fetch(ctx, id)
+	require.NoError(t, err, "second fetch for the same client_id must not fail")
+	assert.Equal(t, []string{"https://example.com/callback-v2"}, second.GetRedirectURIs())
+
+	stored, err = base.GetClient(ctx, id)
+	require.NoError(t, err)
+	assert.Equal(t, []string{"https://example.com/callback-v2"}, stored.GetRedirectURIs(),
+		"the persisted row must be renewed with the newly-fetched document, not left stale")
 }

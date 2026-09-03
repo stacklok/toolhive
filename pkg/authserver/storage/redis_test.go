@@ -742,6 +742,89 @@ func TestRedisStorage_ReconcileConfiguredClient(t *testing.T) {
 	})
 }
 
+// TestRedisStorage_UpsertDCRIssuedClient covers the create/replace/reject
+// matrix UpsertDCRIssuedClient must implement: create when absent (with the
+// DCR TTL, not permanent), replace and renew the TTL when the existing row is
+// itself DCR-issued, refuse with ErrAlreadyExists when the existing row is NOT
+// DCR-issued (the critical protection: a configured/SPIFFE client must never
+// be clobbered by this path), and refuse when the incoming client itself does
+// not carry the DCR-issued marker (misuse guard).
+func TestRedisStorage_UpsertDCRIssuedClient(t *testing.T) {
+	t.Parallel()
+
+	newConfigured := func(id, secret string) fosite.Client {
+		client, err := registration.NewStaticDelegateClient(registration.Config{
+			ID: id, Secret: secret, GrantTypes: []string{oauthproto.GrantTypeTokenExchange},
+			Scopes: []string{"openid"}, Audience: []string{"https://mcp.example"},
+		})
+		require.NoError(t, err)
+		return client
+	}
+
+	t.Run("creates when absent, with the DCR TTL", func(t *testing.T) {
+		withRedisStorage(t, func(ctx context.Context, s *RedisStorage, mr *miniredis.Miniredis) {
+			client := newDCRClient(t, "cimd-client", oauthproto.TokenEndpointAuthMethodNone, "")
+			require.NoError(t, s.UpsertDCRIssuedClient(ctx, client))
+
+			retrieved, err := s.GetClient(ctx, "cimd-client")
+			require.NoError(t, err)
+			assert.True(t, registration.DCRIssued(retrieved))
+			key := redisKey(s.keyPrefix, KeyTypeClient, "cimd-client")
+			assert.InDelta(t, DefaultDCRClientTTL.Seconds(), mr.TTL(key).Seconds(), 60)
+		})
+	})
+
+	t.Run("replaces and renews when existing row is DCR-issued", func(t *testing.T) {
+		withRedisStorage(t, func(ctx context.Context, s *RedisStorage, mr *miniredis.Miniredis) {
+			first := newDCRClient(t, "cimd-client", oauthproto.TokenEndpointAuthMethodNone, "")
+			require.NoError(t, s.UpsertDCRIssuedClient(ctx, first))
+
+			key := redisKey(s.keyPrefix, KeyTypeClient, "cimd-client")
+			mr.FastForward(DefaultDCRClientTTL - time.Hour)
+
+			second, err := registration.New(registration.Config{
+				ID:                      "cimd-client",
+				TokenEndpointAuthMethod: oauthproto.TokenEndpointAuthMethodNone,
+				RedirectURIs:            []string{"https://app.example/cb-v2"},
+			})
+			require.NoError(t, err)
+			require.NoError(t, s.UpsertDCRIssuedClient(ctx, second))
+
+			retrieved, err := s.GetClient(ctx, "cimd-client")
+			require.NoError(t, err)
+			assert.Equal(t, []string{"https://app.example/cb-v2"}, retrieved.GetRedirectURIs(),
+				"second call must replace the stored row's data")
+			assert.InDelta(t, DefaultDCRClientTTL.Seconds(), mr.TTL(key).Seconds(), 60,
+				"second call must renew the TTL")
+		})
+	})
+
+	t.Run("refuses to overwrite a non-DCR-issued client", func(t *testing.T) {
+		withRedisStorage(t, func(ctx context.Context, s *RedisStorage, _ *miniredis.Miniredis) {
+			configured := newConfigured("configured", "secret")
+			require.NoError(t, s.ReconcileConfiguredClient(ctx, configured))
+
+			err := s.UpsertDCRIssuedClient(ctx, newDCRClient(t, "configured", oauthproto.TokenEndpointAuthMethodNone, ""))
+			require.ErrorIs(t, err, ErrAlreadyExists)
+
+			retrieved, err := s.GetClient(ctx, "configured")
+			require.NoError(t, err)
+			assert.False(t, registration.DCRIssued(retrieved), "the configured client must be untouched")
+		})
+	})
+
+	t.Run("rejects a client not carrying the DCR-issued marker", func(t *testing.T) {
+		withRedisStorage(t, func(ctx context.Context, s *RedisStorage, _ *miniredis.Miniredis) {
+			err := s.UpsertDCRIssuedClient(ctx, newConfigured("not-dcr", "secret"))
+			require.Error(t, err)
+			assert.Contains(t, err.Error(), "must carry the DCR-issued marker")
+
+			_, err = s.GetClient(ctx, "not-dcr")
+			require.ErrorIs(t, err, ErrNotFound)
+		})
+	})
+}
+
 // TestRedisStorage_GetClient_SupportsLoopbackRedirectMatching pins that a
 // public client round-tripped through Redis still supports RFC 8252 §7.3
 // loopback dynamic-port redirect_uri matching.

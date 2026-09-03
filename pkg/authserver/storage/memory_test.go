@@ -380,6 +380,99 @@ func TestMemoryStorage_ReconcileConfiguredClient(t *testing.T) {
 	})
 }
 
+// TestMemoryStorage_UpsertDCRIssuedClient covers the create/replace/reject
+// matrix UpsertDCRIssuedClient must implement: create when absent, replace
+// (and renew the eviction position) when the existing record is itself
+// DCR-issued, refuse with ErrAlreadyExists when the existing record is NOT
+// DCR-issued (the critical protection: a configured/SPIFFE client must never
+// be clobbered by this path), and refuse when the incoming client itself does
+// not carry the DCR-issued marker (misuse guard).
+func TestMemoryStorage_UpsertDCRIssuedClient(t *testing.T) {
+	t.Parallel()
+
+	t.Run("creates when absent", func(t *testing.T) {
+		t.Parallel()
+		ctx := t.Context()
+		s := NewMemoryStorage()
+		defer s.Close()
+
+		client := dcrClient(t, "cimd-client")
+		require.NoError(t, s.UpsertDCRIssuedClient(ctx, client))
+
+		retrieved, err := s.GetClient(ctx, "cimd-client")
+		require.NoError(t, err)
+		assert.Equal(t, client, retrieved)
+	})
+
+	t.Run("replaces and renews when existing row is DCR-issued", func(t *testing.T) {
+		t.Parallel()
+		ctx := t.Context()
+		// MinClientAge(0) isolates this test to the replace/renew behaviour;
+		// the age-floor grace window has its own tests above.
+		s := NewMemoryStorage(WithMaxClients(2), WithMinClientAge(0))
+		defer s.Close()
+
+		first := dcrClient(t, "cimd-client")
+		require.NoError(t, s.UpsertDCRIssuedClient(ctx, first))
+		require.NoError(t, s.RegisterClient(ctx, dcrClient(t, "client-b")))
+
+		// A distinguishing field on the replacement proves the replace branch
+		// actually overwrote the stored data rather than being a silent no-op.
+		second, err := registration.New(registration.Config{
+			ID:                      "cimd-client",
+			TokenEndpointAuthMethod: oauthproto.TokenEndpointAuthMethodNone,
+			RedirectURIs:            []string{"https://app.example/cb-v2"},
+		})
+		require.NoError(t, err)
+		require.NoError(t, s.UpsertDCRIssuedClient(ctx, second))
+
+		retrieved, err := s.GetClient(ctx, "cimd-client")
+		require.NoError(t, err)
+		assert.Equal(t, second, retrieved, "second call must replace the stored row")
+
+		// Renewed eviction position: cimd-client was registered first (oldest)
+		// but the upsert must have moved it to the back, so overflow evicts
+		// client-b instead.
+		require.NoError(t, s.RegisterClient(ctx, dcrClient(t, "client-c")))
+		_, err = s.GetClient(ctx, "cimd-client")
+		require.NoError(t, err, "renewed client must survive eviction")
+		_, err = s.GetClient(ctx, "client-b")
+		requireNotFoundError(t, err)
+	})
+
+	t.Run("refuses to overwrite a non-DCR-issued client", func(t *testing.T) {
+		t.Parallel()
+		ctx := t.Context()
+		s := NewMemoryStorage()
+		defer s.Close()
+
+		configured := &mockClient{id: "configured", public: false}
+		require.NoError(t, s.ReconcileConfiguredClient(ctx, configured))
+
+		err := s.UpsertDCRIssuedClient(ctx, dcrClient(t, "configured"))
+		require.ErrorIs(t, err, ErrAlreadyExists)
+
+		// The original registration must be untouched.
+		retrieved, err := s.GetClient(ctx, "configured")
+		require.NoError(t, err)
+		assert.Equal(t, configured, retrieved)
+	})
+
+	t.Run("rejects a client not carrying the DCR-issued marker", func(t *testing.T) {
+		t.Parallel()
+		ctx := t.Context()
+		s := NewMemoryStorage()
+		defer s.Close()
+
+		err := s.UpsertDCRIssuedClient(ctx, &mockClient{id: "not-dcr"})
+		require.Error(t, err)
+		assert.Contains(t, err.Error(), "must carry the DCR-issued marker")
+
+		_, err = s.GetClient(ctx, "not-dcr")
+		require.ErrorIs(t, err, ErrNotFound)
+	})
+}
+
 // TestMemoryStorage_RegisterClient_Bounded pins the anti-DoS cap: the client
 // map is bounded by maxClients with oldest-first eviction among DCR-issued
 // clients only, and duplicate registrations fail without changing stored state.

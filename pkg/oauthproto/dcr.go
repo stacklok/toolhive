@@ -304,6 +304,9 @@ func NewDefaultDCRClient() *http.Client {
 		Transport: &http.Transport{
 			TLSHandshakeTimeout:   10 * time.Second,
 			ResponseHeaderTimeout: 10 * time.Second,
+			IdleConnTimeout:       idleConnTimeout,
+			MaxIdleConns:          maxIdleConns,
+			MaxIdleConnsPerHost:   maxIdleConnsPerHost,
 		},
 	}
 }

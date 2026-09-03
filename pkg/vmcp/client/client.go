@@ -471,9 +471,7 @@ func (i *identityPropagatingRoundTripper) RoundTrip(req *http.Request) (*http.Re
 // CloseIdleConnections forwards to the wrapped RoundTripper so it reaches the
 // concrete *http.Transport at the bottom of the chain.
 func (i *identityPropagatingRoundTripper) CloseIdleConnections() {
-	if c, ok := i.base.(interface{ CloseIdleConnections() }); ok {
-		c.CloseIdleConnections()
-	}
+	networking.ForwardCloseIdle(i.base)
 }
 
 // tracePropagatingRoundTripper injects W3C Trace Context (traceparent/tracestate) and
@@ -495,9 +493,7 @@ func (t *tracePropagatingRoundTripper) RoundTrip(req *http.Request) (*http.Respo
 // CloseIdleConnections forwards to the wrapped RoundTripper so it reaches the
 // concrete *http.Transport at the bottom of the chain.
 func (t *tracePropagatingRoundTripper) CloseIdleConnections() {
-	if c, ok := t.base.(interface{ CloseIdleConnections() }); ok {
-		c.CloseIdleConnections()
-	}
+	networking.ForwardCloseIdle(t.base)
 }
 
 // authRoundTripper is an http.RoundTripper that adds authentication to backend requests.
@@ -528,10 +524,17 @@ func (a *authRoundTripper) RoundTrip(req *http.Request) (*http.Response, error) 
 // CloseIdleConnections forwards to the wrapped RoundTripper so it reaches the
 // concrete *http.Transport at the bottom of the chain.
 func (a *authRoundTripper) CloseIdleConnections() {
-	if c, ok := a.base.(interface{ CloseIdleConnections() }); ok {
-		c.CloseIdleConnections()
-	}
+	networking.ForwardCloseIdle(a.base)
 }
+
+// Compile-time assertions: a rename or typo of CloseIdleConnections on any of
+// these wrappers would silently re-hide the pool at the bottom of the chain
+// (see networking.IdleConnectionCloser).
+var (
+	_ networking.IdleConnectionCloser = (*identityPropagatingRoundTripper)(nil)
+	_ networking.IdleConnectionCloser = (*tracePropagatingRoundTripper)(nil)
+	_ networking.IdleConnectionCloser = (*authRoundTripper)(nil)
+)
 
 // resolveAuthStrategy resolves the authentication strategy for a backend target.
 // It handles defaulting to "unauthenticated" when no auth config is specified.

@@ -25,6 +25,11 @@ type UserAgentTransport struct {
 	Base http.RoundTripper
 }
 
+// Compile-time assertion that CloseIdleConnections stays present. Asserted
+// against the local shape rather than networking.IdleConnectionCloser because
+// pkg/networking imports this package (see CloseIdleConnections below).
+var _ interface{ CloseIdleConnections() } = (*UserAgentTransport)(nil)
+
 // RoundTrip implements http.RoundTripper. It clones the request before
 // mutating headers, per the RoundTripper contract, and sets User-Agent only
 // when the request has no User-Agent set so that callers layering another
@@ -42,6 +47,21 @@ func (t *UserAgentTransport) RoundTrip(req *http.Request) (*http.Response, error
 		clonedReq.Header.Set("User-Agent", UserAgent)
 	}
 	return base.RoundTrip(clonedReq)
+}
+
+// CloseIdleConnections forwards to the wrapped RoundTripper so that
+// http.Client.CloseIdleConnections reaches the underlying connection pool
+// instead of stopping at this wrapper. pkg/oauthproto is imported by
+// pkg/networking, so it cannot use networking.ForwardCloseIdle here without an
+// import cycle; the anonymous assertion below is the equivalent forward.
+func (t *UserAgentTransport) CloseIdleConnections() {
+	base := t.Base
+	if base == nil {
+		base = http.DefaultTransport
+	}
+	if c, ok := base.(interface{ CloseIdleConnections() }); ok {
+		c.CloseIdleConnections()
+	}
 }
 
 // NewHTTPClient returns an *http.Client whose transport sets the ToolHive

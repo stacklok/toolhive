@@ -79,6 +79,24 @@ func DefaultDiscoveryConfig() *Config {
 	}
 }
 
+// newDetectionClient builds the HTTP client used to probe a target server for
+// WWW-Authenticate. The remote MCP server is untrusted, so it refuses
+// cross-host / scheme-downgrade redirects to prevent the server driving the
+// host into an SSRF (CWE-918). Extracted so the pool bounds
+// networking.SetIdleConnBounds applies stay unit-testable.
+func newDetectionClient(config *Config) *http.Client {
+	transport := &http.Transport{
+		TLSHandshakeTimeout:   config.TLSHandshakeTimeout,
+		ResponseHeaderTimeout: config.ResponseHeaderTimeout,
+	}
+	networking.SetIdleConnBounds(transport)
+	return &http.Client{
+		Timeout:       config.Timeout,
+		Transport:     transport,
+		CheckRedirect: networking.SameHostRedirectPolicy(),
+	}
+}
+
 // DetectAuthenticationFromServer attempts to detect authentication requirements from the target server
 func DetectAuthenticationFromServer(ctx context.Context, targetURI string, config *Config) (*AuthInfo, error) {
 	if config == nil {
@@ -90,16 +108,7 @@ func DetectAuthenticationFromServer(ctx context.Context, targetURI string, confi
 	defer cancel()
 
 	// Make a test request to the target server to see if it returns WWW-Authenticate.
-	// The remote MCP server is untrusted, so refuse cross-host / scheme-downgrade
-	// redirects to prevent it driving the host into an SSRF (CWE-918).
-	client := &http.Client{
-		Timeout: config.Timeout,
-		Transport: &http.Transport{
-			TLSHandshakeTimeout:   config.TLSHandshakeTimeout,
-			ResponseHeaderTimeout: config.ResponseHeaderTimeout,
-		},
-		CheckRedirect: networking.SameHostRedirectPolicy(),
-	}
+	client := newDetectionClient(config)
 
 	// First try a GET request
 	authInfo, err := detectAuthWithRequest(detectCtx, client, targetURI, http.MethodGet, nil)
@@ -1020,6 +1029,26 @@ func buildOAuthFlowResult(
 	}
 }
 
+// newResourceMetadataTransport builds the transport for RFC 9728 metadata
+// fetches. The metadataURL is server-supplied, so the caller pairs it with a
+// same-host redirect policy; when blockPrivateIPs is true it also refuses to
+// dial private/loopback/link-local addresses on every hop (and disables
+// keep-alive so a pooled connection cannot skip the per-dial check).
+// Extracted so the pool bounds networking.SetIdleConnBounds applies stay
+// unit-testable.
+func newResourceMetadataTransport(blockPrivateIPs bool) *http.Transport {
+	transport := &http.Transport{
+		TLSHandshakeTimeout:   5 * time.Second,
+		ResponseHeaderTimeout: 5 * time.Second,
+	}
+	networking.SetIdleConnBounds(transport)
+	if blockPrivateIPs {
+		transport.DialContext = networking.NewPrivateIPBlockingDialContext()
+		transport.DisableKeepAlives = true
+	}
+	return transport
+}
+
 // FetchResourceMetadata fetches RFC 9728 protected-resource metadata from a
 // server-supplied URL.
 //
@@ -1046,17 +1075,7 @@ func FetchResourceMetadata(ctx context.Context, metadataURL string, blockPrivate
 		return nil, fmt.Errorf("metadata URL must use HTTPS: %s", metadataURL)
 	}
 
-	// The HTTPS check above runs once on the initial URL only, so refuse
-	// cross-host and scheme-downgrade redirects to stop a 30x reaching an
-	// internal address; optionally block private dials on every hop.
-	transport := &http.Transport{
-		TLSHandshakeTimeout:   5 * time.Second,
-		ResponseHeaderTimeout: 5 * time.Second,
-	}
-	if blockPrivateIPs {
-		transport.DialContext = networking.NewPrivateIPBlockingDialContext()
-		transport.DisableKeepAlives = true
-	}
+	transport := newResourceMetadataTransport(blockPrivateIPs)
 	client := &http.Client{
 		Timeout:       DefaultHTTPTimeout,
 		Transport:     transport,

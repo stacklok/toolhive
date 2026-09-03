@@ -5,6 +5,19 @@ package oauthproto
 
 import "time"
 
+// Idle-connection-pool bounds for the hand-built HTTP transports in this
+// package (NewDefaultDCRClient, buildDiscoveryHTTPClient). They mirror the
+// bounds pkg/networking.Build applies via networking.SetIdleConnBounds; a zero
+// IdleConnTimeout never expires a pooled connection, pinning a socket and its
+// goroutine pair for the process lifetime. pkg/networking imports this package,
+// so it cannot reference networking's constants without an import cycle — keep
+// these values in sync with networking's Build bounds by hand.
+const (
+	idleConnTimeout     = 90 * time.Second
+	maxIdleConns        = 100
+	maxIdleConnsPerHost = 4
+)
+
 // Well-known endpoint paths as defined by RFC 8414, OpenID Connect Discovery 1.0, and RFC 9728.
 const (
 	// WellKnownOIDCPath is the standard OIDC discovery endpoint path

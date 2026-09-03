@@ -163,6 +163,14 @@ func (a *authRoundTripper) RoundTrip(req *http.Request) (*http.Response, error) 
 	return a.base.RoundTrip(reqClone)
 }
 
+// CloseIdleConnections forwards to the wrapped RoundTripper so
+// http.Client.CloseIdleConnections reaches the underlying pool instead of
+// stopping at this wrapper. Mirrors the canonical twin authRoundTripper in
+// pkg/vmcp/client/client.go.
+func (a *authRoundTripper) CloseIdleConnections() {
+	networking.ForwardCloseIdle(a.base)
+}
+
 // identityRoundTripper propagates a fallback identity to outgoing backend
 // requests when the request context carries none. It is the session-backed
 // twin of identityPropagatingRoundTripper in pkg/vmcp/client/client.go, which
@@ -198,6 +206,22 @@ func (i *identityRoundTripper) RoundTrip(req *http.Request) (*http.Response, err
 	}
 	return i.base.RoundTrip(req)
 }
+
+// CloseIdleConnections forwards to the wrapped RoundTripper so
+// http.Client.CloseIdleConnections reaches the underlying pool instead of
+// stopping at this wrapper. Mirrors the canonical twin
+// identityPropagatingRoundTripper in pkg/vmcp/client/client.go.
+func (i *identityRoundTripper) CloseIdleConnections() {
+	networking.ForwardCloseIdle(i.base)
+}
+
+// Compile-time assertions: a rename or typo of CloseIdleConnections on either
+// twin would silently re-hide the backend pool (see
+// networking.IdleConnectionCloser), the anti-pattern #6483 removes.
+var (
+	_ networking.IdleConnectionCloser = (*authRoundTripper)(nil)
+	_ networking.IdleConnectionCloser = (*identityRoundTripper)(nil)
+)
 
 // Compile-time assertion: mcpSession must implement Session.
 var _ Session = (*mcpSession)(nil)

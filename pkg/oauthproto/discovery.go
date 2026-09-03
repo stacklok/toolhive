@@ -197,6 +197,9 @@ func buildDiscoveryHTTPClient(client *http.Client) *http.Client {
 		Transport: &http.Transport{
 			TLSHandshakeTimeout:   5 * time.Second,
 			ResponseHeaderTimeout: 5 * time.Second,
+			IdleConnTimeout:       idleConnTimeout,
+			MaxIdleConns:          maxIdleConns,
+			MaxIdleConnsPerHost:   maxIdleConnsPerHost,
 		},
 	}
 }

@@ -137,11 +137,47 @@ type IdleConnectionCloser interface {
 	CloseIdleConnections()
 }
 
+// SetIdleConnBounds applies Build's idle-connection-pool bounds to a
+// hand-constructed *http.Transport — the transports this package cannot build
+// through Build because they need their own DialContext, CheckRedirect, or TLS
+// config. A zero IdleConnTimeout never expires a pooled connection, so a client
+// that performs one request and is dropped pins a socket and its goroutine pair
+// for the process lifetime; this is the leak Build fixes for its own clients
+// (see the constant block above). Setting all three fields together keeps a
+// call site from bounding two of the three by mistake.
+//
+// pkg/networking imports pkg/oauthproto, so leaf packages that oauthproto's
+// import graph reaches cannot call this without a cycle; those mirror the
+// values with a local const block instead.
+func SetIdleConnBounds(t *http.Transport) {
+	t.IdleConnTimeout = idleConnTimeout
+	t.MaxIdleConns = maxIdleConns
+	t.MaxIdleConnsPerHost = maxIdleConnsPerHost
+}
+
+// ForwardCloseIdle drains the idle-connection pool reachable through rt when rt
+// implements IdleConnectionCloser — as *http.Transport, and every wrapping
+// RoundTripper in this repo that forwards the call, do. A wrapping RoundTripper
+// must call this from its own CloseIdleConnections; otherwise
+// http.Client.CloseIdleConnections stops at the wrapper and the pool underneath
+// is never drained (see IdleConnectionCloser). Using this helper keeps the
+// wrapper half from silently regressing into an anonymous
+// `interface{ CloseIdleConnections() }` assertion that drifts out of sync.
+func ForwardCloseIdle(rt http.RoundTripper) {
+	if closer, ok := rt.(IdleConnectionCloser); ok {
+		closer.CloseIdleConnections()
+	}
+}
+
 // ValidatingTransport is for validating URLs prior to request
 type ValidatingTransport struct {
 	Transport         http.RoundTripper
 	InsecureAllowHTTP bool
 }
+
+// Compile-time assertion: a rename or typo of CloseIdleConnections would
+// otherwise silently re-hide the pool it wraps (see IdleConnectionCloser).
+var _ IdleConnectionCloser = (*ValidatingTransport)(nil)
 
 // RoundTrip validates the request URL prior to forwarding
 func (t *ValidatingTransport) RoundTrip(req *http.Request) (*http.Response, error) {
@@ -172,9 +208,7 @@ func (t *ValidatingTransport) RoundTrip(req *http.Request) (*http.Response, erro
 // IdleConnectionCloser. The assertion is required because the field is an
 // http.RoundTripper; it holds an *http.Transport for every client Build produces.
 func (t *ValidatingTransport) CloseIdleConnections() {
-	if closer, ok := t.Transport.(IdleConnectionCloser); ok {
-		closer.CloseIdleConnections()
-	}
+	ForwardCloseIdle(t.Transport)
 }
 
 // closeIdlerTransport wraps a RoundTripper that does not implement
@@ -184,6 +218,8 @@ type closeIdlerTransport struct {
 	http.RoundTripper
 	pool *http.Transport
 }
+
+var _ IdleConnectionCloser = (*closeIdlerTransport)(nil)
 
 // CloseIdleConnections closes the idle connections held by the underlying pool.
 func (t *closeIdlerTransport) CloseIdleConnections() {
@@ -335,10 +371,8 @@ func (b *HttpClientBuilder) Build() (*http.Client, error) {
 	transport := &http.Transport{
 		TLSHandshakeTimeout:   b.tlsHandshakeTimeout,
 		ResponseHeaderTimeout: b.responseHeaderTimeout,
-		IdleConnTimeout:       idleConnTimeout,
-		MaxIdleConns:          maxIdleConns,
-		MaxIdleConnsPerHost:   maxIdleConnsPerHost,
 	}
+	SetIdleConnBounds(transport)
 	transport.DisableKeepAlives = b.disableKeepAlives
 
 	if !b.allowPrivate {

@@ -64,6 +64,26 @@ func discoverOIDCEndpointsWithClient(
 	return discoverOIDCEndpointsWithClientAndValidation(ctx, issuer, client, true, insecureAllowHTTP, blockPrivateIPs)
 }
 
+// newOIDCDiscoveryTransport builds the transport used to fetch OIDC/OAuth
+// discovery documents from an untrusted, remote-server-supplied issuer. The
+// caller pairs it with a same-host redirect policy to prevent a 30x driving the
+// host into an SSRF (CWE-918); when blockPrivateIPs is true it also refuses to
+// dial private/loopback/link-local addresses on every hop (and disables
+// keep-alive so a pooled connection cannot skip the per-dial check). Extracted
+// so the pool bounds networking.SetIdleConnBounds applies stay unit-testable.
+func newOIDCDiscoveryTransport(blockPrivateIPs bool) *http.Transport {
+	transport := &http.Transport{
+		TLSHandshakeTimeout:   10 * time.Second,
+		ResponseHeaderTimeout: 10 * time.Second,
+	}
+	networking.SetIdleConnBounds(transport)
+	if blockPrivateIPs {
+		transport.DialContext = networking.NewPrivateIPBlockingDialContext()
+		transport.DisableKeepAlives = true
+	}
+	return transport
+}
+
 // discoverOIDCEndpointsWithClientAndValidation discovers OAuth endpoints with optional issuer validation
 //
 //nolint:gocyclo // Function complexity justified by comprehensive OIDC discovery logic
@@ -82,21 +102,9 @@ func discoverOIDCEndpointsWithClientAndValidation(
 	}
 
 	if client == nil {
-		// The issuer/metadata URL originates from untrusted remote-server
-		// discovery, so refuse cross-host and scheme-downgrade redirects to
-		// prevent a 30x from driving the host into an SSRF (CWE-918), and
-		// optionally block private dials on every hop.
-		transport := &http.Transport{
-			TLSHandshakeTimeout:   10 * time.Second,
-			ResponseHeaderTimeout: 10 * time.Second,
-		}
-		if blockPrivateIPs {
-			transport.DialContext = networking.NewPrivateIPBlockingDialContext()
-			transport.DisableKeepAlives = true
-		}
 		client = &http.Client{
 			Timeout:       30 * time.Second,
-			Transport:     transport,
+			Transport:     newOIDCDiscoveryTransport(blockPrivateIPs),
 			CheckRedirect: networking.SameHostRedirectPolicy(),
 		}
 	}

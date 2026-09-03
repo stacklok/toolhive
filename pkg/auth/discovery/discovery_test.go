@@ -1474,3 +1474,36 @@ func TestCreateOAuthConfig_DiscoveredTokenEndpoint(t *testing.T) {
 		})
 	}
 }
+
+// TestNewDetectionClient_BoundsIdleConnectionPool pins that the auth-detection
+// client bounds its idle-connection pool. This is one of the exact sites #6483
+// names; a zero IdleConnTimeout would pin a socket and its goroutine pair for
+// the process lifetime.
+func TestNewDetectionClient_BoundsIdleConnectionPool(t *testing.T) {
+	t.Parallel()
+
+	client := newDetectionClient(DefaultDiscoveryConfig())
+	transport, ok := client.Transport.(*http.Transport)
+	require.True(t, ok, "detection client must use an *http.Transport")
+
+	assert.Equal(t, 90*time.Second, transport.IdleConnTimeout)
+	assert.Equal(t, 100, transport.MaxIdleConns)
+	assert.Equal(t, 4, transport.MaxIdleConnsPerHost)
+}
+
+// TestNewResourceMetadataTransport_BoundsIdleConnectionPool pins that the RFC
+// 9728 metadata transport bounds its pool in both dial modes. The bounds are
+// set regardless of blockPrivateIPs (they are moot only when keep-alive is
+// disabled, which is a separate field).
+func TestNewResourceMetadataTransport_BoundsIdleConnectionPool(t *testing.T) {
+	t.Parallel()
+
+	for _, blockPrivateIPs := range []bool{false, true} {
+		transport := newResourceMetadataTransport(blockPrivateIPs)
+		assert.Equal(t, 90*time.Second, transport.IdleConnTimeout)
+		assert.Equal(t, 100, transport.MaxIdleConns)
+		assert.Equal(t, 4, transport.MaxIdleConnsPerHost)
+		assert.Equal(t, blockPrivateIPs, transport.DisableKeepAlives,
+			"blockPrivateIPs must disable keep-alive so pooling cannot skip the per-dial SSRF check")
+	}
+}

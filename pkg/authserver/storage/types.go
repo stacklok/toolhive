@@ -639,6 +639,19 @@ type ClientRegistry interface {
 	// existing registration.
 	RegisterClient(ctx context.Context, client fosite.Client) error
 
+	// UpsertDCRIssuedClient creates or replaces a DCR-issued client at
+	// client.GetID(). Unlike RegisterClient (create-only, for the unauthenticated
+	// /oauth/register endpoint), this is for callers that independently
+	// re-validate the client's authoritative source on every call -- today only
+	// CIMDStorageDecorator, which re-fetches and re-validates the document at
+	// client.GetID() before calling this. Creates the row if absent. If a row
+	// exists, replaces its data and refreshes its TTL only when the existing row
+	// is itself DCR-issued; refuses with ErrAlreadyExists if the existing row is
+	// NOT DCR-issued (protects a configured/SPIFFE-reconciled client from being
+	// clobbered). client MUST carry registration.DCRIssued -- refuses otherwise
+	// (mirrors ReconcileConfiguredClient's inverse check).
+	UpsertDCRIssuedClient(ctx context.Context, client fosite.Client) error
+
 	// ReconcileConfiguredClient applies an operator-declared (configured)
 	// client: creates it if no client with that ID exists, or idempotently
 	// replaces an existing record with the same ID when that record is itself

@@ -194,5 +194,21 @@ func (d *SPIFFEStorageDecorator) ReconcileConfiguredClient(ctx context.Context, 
 	return d.Storage.ReconcileConfiguredClient(ctx, client)
 }
 
+// UpsertDCRIssuedClient rejects reserved static SPIFFE IDs and delegates
+// other DCR-issued upsert-on-fetch calls (e.g. CIMDStorageDecorator) to the
+// base backend. Without this override the guard would be skipped whenever
+// the durable SPIFFE placeholder row is absent (reconciliation hasn't run
+// yet, or persistence failed), letting a DCR row get created at a reserved
+// SPIFFE ID.
+func (d *SPIFFEStorageDecorator) UpsertDCRIssuedClient(ctx context.Context, client fosite.Client) error {
+	if client == nil {
+		return fmt.Errorf("upsert DCR-issued client: client is required")
+	}
+	if _, reserved := d.clients[client.GetID()]; reserved {
+		return fmt.Errorf("%w: client ID %q is reserved for a static SPIFFE client", ErrAlreadyExists, client.GetID())
+	}
+	return d.Storage.UpsertDCRIssuedClient(ctx, client)
+}
+
 // Unwrap returns the dynamic DCR/CIMD storage backend.
 func (d *SPIFFEStorageDecorator) Unwrap() Storage { return d.Storage }

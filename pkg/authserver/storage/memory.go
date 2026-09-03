@@ -476,6 +476,38 @@ func (s *MemoryStorage) RegisterClient(_ context.Context, client fosite.Client) 
 	return s.insertClientLocked(id, client)
 }
 
+// UpsertDCRIssuedClient creates or replaces a DCR-issued client at
+// client.GetID(). Unlike RegisterClient, an existing row is replaced (and its
+// eviction position refreshed) rather than rejected -- but only when the
+// existing row is itself DCR-issued; a configured/SPIFFE-reconciled row at
+// the same ID is protected and refuses with ErrAlreadyExists. See the
+// ClientRegistry interface doc for the full contract.
+func (s *MemoryStorage) UpsertDCRIssuedClient(_ context.Context, client fosite.Client) error {
+	if !registration.DCRIssued(client) {
+		return fmt.Errorf("client %q must carry the DCR-issued marker to use UpsertDCRIssuedClient", client.GetID())
+	}
+	id := client.GetID()
+	if err := ValidateRegisterableClientID(id); err != nil {
+		return err
+	}
+
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	existing, exists := s.clients[id]
+	if !exists {
+		return s.insertClientLocked(id, client)
+	}
+	if !registration.DCRIssued(existing) {
+		return fmt.Errorf("%w: client %q", ErrAlreadyExists, id)
+	}
+
+	s.clientOrder = slices.DeleteFunc(s.clientOrder, func(e clientOrderEntry) bool { return e.id == id })
+	s.clientOrder = append(s.clientOrder, clientOrderEntry{id: id, touchedAt: time.Now()})
+	s.clients[id] = client
+	return nil
+}
+
 // ReconcileConfiguredClient applies an operator-declared client: creates it
 // if absent, idempotently replaces a matching-fingerprint configured client
 // (the restart-with-unchanged-config case), or refuses with ErrAlreadyExists

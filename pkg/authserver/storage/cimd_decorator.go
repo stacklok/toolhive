@@ -292,10 +292,14 @@ func (d *CIMDStorageDecorator) fetch(ctx context.Context, id string) (fosite.Cli
 	// issue #6187). The client carries the DCR-issued marker (above) so the
 	// row gets the same anti-bloat TTL as DCR registrations: unauthenticated
 	// /oauth/authorize traffic can mint these rows, so they must never be
-	// permanent. Re-persisting on every fresh fetch keeps the snapshot
-	// current with the document. A persistence failure only degrades
-	// token-path rehydration, so it must not fail the resolution itself.
-	if err := d.RegisterClient(ctx, client); err != nil {
+	// permanent. UpsertDCRIssuedClient (not RegisterClient) is used because
+	// RegisterClient is strictly create-only and would fail every fetch after
+	// the first for the same client_id -- this method re-persists on every
+	// fresh fetch, keeping the stored snapshot current with the document,
+	// while still refusing to clobber a configured/SPIFFE-reconciled client
+	// at the same ID. A persistence failure only degrades token-path
+	// rehydration, so it must not fail the resolution itself.
+	if err := d.UpsertDCRIssuedClient(ctx, client); err != nil {
 		slog.WarnContext(ctx, "failed to persist resolved CIMD client",
 			"client_id", id, "error", err)
 	}

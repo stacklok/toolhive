@@ -57,6 +57,32 @@ func TestSPIFFEStorageDecoratorReconcileConfiguredClientRejectsReservedID(t *tes
 	require.ErrorIs(t, err, ErrAlreadyExists)
 }
 
+// TestSPIFFEStorageDecoratorUpsertDCRIssuedClientRejectsReservedID mirrors
+// TestSPIFFEStorageDecoratorStaticClients' RegisterClient assertion, but for
+// UpsertDCRIssuedClient: a DCR-issued client (e.g. from CIMDStorageDecorator's
+// write-through) must not be able to clobber a reserved static SPIFFE client
+// ID either, even though UpsertDCRIssuedClient's own DCR-issued guard alone
+// would otherwise let a create-when-absent slip through if the durable
+// placeholder row were ever missing.
+func TestSPIFFEStorageDecoratorUpsertDCRIssuedClientRejectsReservedID(t *testing.T) {
+	t.Parallel()
+	base := NewMemoryStorage()
+	t.Cleanup(func() { _ = base.Close() })
+
+	decorated, err := NewSPIFFEStorageDecorator(context.Background(), base, testSPIFFEClients(t))
+	require.NoError(t, err)
+
+	dcrClient, err := registration.New(registration.Config{
+		ID:                      "spiffe-client",
+		TokenEndpointAuthMethod: oauthproto.TokenEndpointAuthMethodNone,
+		RedirectURIs:            []string{"https://app.example/cb"},
+	})
+	require.NoError(t, err)
+
+	err = decorated.UpsertDCRIssuedClient(context.Background(), dcrClient)
+	require.ErrorIs(t, err, ErrAlreadyExists)
+}
+
 // TestSPIFFEStorageDecoratorDurablyClaimsPlaceholder pins the race fix:
 // construction durably claims each configured client ID in the base backend
 // with an inert placeholder (never the real, unauthenticatable-by-design

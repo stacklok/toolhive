@@ -1,6 +1,6 @@
 module github.com/stacklok/toolhive
 
-go 1.26
+go 1.26.0
 
 require (
 	dario.cat/mergo v1.0.2
@@ -356,7 +356,7 @@ require (
 	go.opentelemetry.io/otel v1.45.0
 	go.opentelemetry.io/otel/metric v1.45.0
 	go.opentelemetry.io/otel/trace v1.45.0
-	golang.org/x/crypto v0.55.0
+	golang.org/x/crypto v0.56.0
 	golang.org/x/exp v0.0.0-20260410095643-746e56fc9e2f // indirect
 	golang.org/x/sys v0.47.0
 	k8s.io/client-go v0.35.3

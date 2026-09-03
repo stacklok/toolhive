@@ -1252,6 +1252,13 @@
                         "type": "array",
                         "uniqueItems": false
                     },
+                    "provenance": {
+                        "$ref": "#/components/schemas/github_com_stacklok_toolhive_pkg_plugins.ProvenanceInfo"
+                    },
+                    "trust_unrecorded": {
+                        "description": "TrustUnrecorded reports that the project's lock file has an entry for\nthis plugin which records neither a signer identity nor an unsigned\nexception — an entry written before verification existed, or\nhand-edited. It exists to keep that state distinguishable from having no\nlock entry at all, which leaves Provenance and Unsigned equally empty:\nsync reports this one as drift and can repair it, so Info must not\nrender it as if nothing were pinning the plugin.",
+                        "type": "boolean"
+                    },
                     "unmaterialized_components": {
                         "additionalProperties": {
                             "items": {
@@ -1261,6 +1268,10 @@
                         },
                         "description": "UnmaterializedComponents lists, per client type, the component types the\nplugin declares that the installed client adapter does NOT load. Populated\nby Info by diffing InstalledPlugin.Components against each installed\nclient adapter's SupportedComponents.",
                         "type": "object"
+                    },
+                    "unsigned": {
+                        "description": "Unsigned reports that the lock file records an explicit unsigned\nexception for this plugin.",
+                        "type": "boolean"
                     }
                 },
                 "type": "object"
@@ -1294,6 +1305,44 @@
                     },
                     "version": {
                         "description": "Version is the semantic version of the plugin.",
+                        "type": "string"
+                    }
+                },
+                "type": "object"
+            },
+            "github_com_stacklok_toolhive_pkg_plugins.ProvenanceInfo": {
+                "description": "Provenance is the signer identity the project's lock file records\nfor this skill, when project-scoped and lock-managed.",
+                "properties": {
+                    "cert_issuer": {
+                        "description": "CertIssuer is the OIDC issuer that authenticated the signer.",
+                        "type": "string"
+                    },
+                    "provisional": {
+                        "description": "Provisional marks provenance with a documented verification gap\n(git signatures until transparency-log validation lands).",
+                        "type": "boolean"
+                    },
+                    "public_key": {
+                        "description": "PublicKey is the base64-encoded DER SPKI cosign public key a\nkey-pair-signed entry is pinned to. Set only when SignerIdentity and\nCertIssuer are empty: the two anchors are mutually exclusive.",
+                        "type": "string"
+                    },
+                    "repository_ref": {
+                        "description": "RepositoryRef is the git ref the signing workflow ran on, from Fulcio\ncertificate extension 1.3.6.1.4.1.57264.1.14. Empty means\nunconstrained, matching lock files written before the field existed.",
+                        "type": "string"
+                    },
+                    "repository_uri": {
+                        "description": "RepositoryURI is the source repository from the certificate\nextensions, when present.",
+                        "type": "string"
+                    },
+                    "runner_environment": {
+                        "description": "RunnerEnvironment is the runner class the signing workflow executed in\n(e.g. \"github-hosted\"), from Fulcio certificate extension\n1.3.6.1.4.1.57264.1.11. Empty means unconstrained.",
+                        "type": "string"
+                    },
+                    "signer_identity": {
+                        "description": "SignerIdentity is the certificate subject identity (workflow path for\nGitHub Actions certificates, SAN verbatim otherwise).",
+                        "type": "string"
+                    },
+                    "sigstore_url": {
+                        "description": "SigstoreURL is the Sigstore instance the signature chains to.",
                         "type": "string"
                     }
                 },
@@ -3401,6 +3450,13 @@
                 "properties": {
                     "plugin": {
                         "$ref": "#/components/schemas/github_com_stacklok_toolhive_pkg_plugins.InstalledPlugin"
+                    },
+                    "provenance": {
+                        "$ref": "#/components/schemas/github_com_stacklok_toolhive_pkg_plugins.ProvenanceInfo"
+                    },
+                    "unsigned": {
+                        "description": "Whether the install was recorded as an explicit unsigned exception.",
+                        "type": "boolean"
                     }
                 },
                 "type": "object"
@@ -3630,13 +3686,24 @@
                 "type": "object"
             },
             "pkg_api_v1.pushPluginRequest": {
-                "description": "Request to push a built plugin artifact",
+                "description": "Request to push a built plugin artifact. Exactly one of identity_token or no_sign is required.",
                 "properties": {
+                    "identity_token": {
+                        "description": "IdentityToken is a short-lived OIDC identity token used for keyless\nsigning. Plugin signing is keyless-only: there is deliberately no key\nfield, because ToolHive cannot verify key-signed artifacts at install\ntime and would publish an uninstallable plugin (#6442)",
+                        "type": "string"
+                    },
+                    "no_sign": {
+                        "description": "NoSign pushes without signing",
+                        "type": "boolean"
+                    },
                     "reference": {
                         "description": "OCI reference to push",
                         "type": "string"
                     }
                 },
+                "required": [
+                    "reference"
+                ],
                 "type": "object"
             },
             "pkg_api_v1.pushSkillRequest": {
@@ -3886,7 +3953,7 @@
                         "type": "boolean"
                     },
                     "allow_unsigned": {
-                        "description": "AllowUnsigned permits adopting plugins whose signature state cannot be\nestablished, recording them as unsigned",
+                        "description": "AllowUnsigned permits recording a plugin as unsigned in the lock file,\nin two cases: adopting an install whose signature state cannot be\nestablished (see Adopt), and repairing an entry that records no trust\ndecision at all, whose reinstall otherwise fails closed on unsigned\ncontent.",
                         "type": "boolean"
                     },
                     "check": {
@@ -6234,6 +6301,16 @@
                             }
                         },
                         "description": "Unauthorized (registry refused credentials)"
+                    },
+                    "403": {
+                        "content": {
+                            "application/json": {
+                                "schema": {
+                                    "type": "string"
+                                }
+                            }
+                        },
+                        "description": "Forbidden (signature verification or trust check failed)"
                     },
                     "404": {
                         "content": {

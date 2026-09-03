@@ -91,7 +91,7 @@ func upgradePlugins(t *testing.T, svc plugins.PluginService, opts plugins.Upgrad
 	return result.Outcomes[0]
 }
 
-//nolint:paralleltest // uses t.Setenv via newGitLockTestService
+//nolint:paralleltest // serial: real sqlite + on-disk client materialization per test
 func TestUpgrade_SameSignerProceeds(t *testing.T) {
 	svc, projectRoot := signerChangeFixture(t, func() (*verifier.Result, error) {
 		return signedResult(), nil
@@ -108,7 +108,7 @@ func TestUpgrade_SameSignerProceeds(t *testing.T) {
 	assert.Equal(t, outcome.NewDigest, entry.Digest)
 }
 
-//nolint:paralleltest // uses t.Setenv via newGitLockTestService
+//nolint:paralleltest // serial: real sqlite + on-disk client materialization per test
 func TestUpgrade_SignerChangeBlocked(t *testing.T) {
 	svc, projectRoot := signerChangeFixture(t, func() (*verifier.Result, error) {
 		return otherSignerResult(), nil
@@ -126,7 +126,7 @@ func TestUpgrade_SignerChangeBlocked(t *testing.T) {
 	assert.Equal(t, outcome.OldDigest, entry.Digest, "a blocked upgrade must not re-pin the entry")
 }
 
-//nolint:paralleltest // uses t.Setenv via newGitLockTestService
+//nolint:paralleltest // serial: real sqlite + on-disk client materialization per test
 func TestUpgrade_UnsignedCandidateBlockedAgainstSignedEntry(t *testing.T) {
 	svc, projectRoot := signerChangeFixture(t, func() (*verifier.Result, error) {
 		return nil, verifier.ErrUnsigned
@@ -145,7 +145,7 @@ func TestUpgrade_UnsignedCandidateBlockedAgainstSignedEntry(t *testing.T) {
 // signer change — and must never reach applyUpgrade's install call, leaving
 // the lock untouched.
 //
-//nolint:paralleltest // uses t.Setenv via newGitLockTestService
+//nolint:paralleltest // serial: real sqlite + on-disk client materialization per test
 func TestUpgrade_ProvenanceFieldDivergenceBlocked(t *testing.T) {
 	tests := []struct {
 		name            string
@@ -227,7 +227,7 @@ func TestUpgrade_ProvenanceFieldDivergenceBlocked(t *testing.T) {
 	}
 }
 
-//nolint:paralleltest // uses t.Setenv via newGitLockTestService
+//nolint:paralleltest // serial: real sqlite + on-disk client materialization per test
 func TestUpgrade_AllowSignerChangeRecordsNewIdentity(t *testing.T) {
 	svc, projectRoot := signerChangeFixture(t, func() (*verifier.Result, error) {
 		return otherSignerResult(), nil
@@ -251,7 +251,7 @@ func TestUpgrade_AllowSignerChangeRecordsNewIdentity(t *testing.T) {
 // carries, so the next install enforces the new values rather than the stale
 // ones.
 //
-//nolint:paralleltest // uses t.Setenv via newGitLockTestService
+//nolint:paralleltest // serial: real sqlite + on-disk client materialization per test
 func TestUpgrade_AllowSignerChangeRepinsProvenanceFields(t *testing.T) {
 	svc, projectRoot := signerChangeFixture(t, func() (*verifier.Result, error) {
 		return provenanceSignedResult("refs/tags/v0.2.0", "self-hosted"), nil
@@ -274,7 +274,7 @@ func TestUpgrade_AllowSignerChangeRepinsProvenanceFields(t *testing.T) {
 // installing, and --fail-on-changes counts it as a change. Neither carries a
 // pinned reference, so neither can install anything.
 //
-//nolint:paralleltest // uses t.Setenv via newGitLockTestService
+//nolint:paralleltest // serial: real sqlite + on-disk client materialization per test
 func TestUpgrade_SignerChangePreviewAndGateParity(t *testing.T) {
 	svc, projectRoot := signerChangeFixture(t, func() (*verifier.Result, error) {
 		return otherSignerResult(), nil
@@ -302,7 +302,7 @@ func TestUpgrade_SignerChangePreviewAndGateParity(t *testing.T) {
 // during planning rather than at install: the plan carries no pinnedRef, which
 // is what makes preview, the CI gate, and apply all agree.
 //
-//nolint:paralleltest // uses t.Setenv via newGitLockTestService
+//nolint:paralleltest // serial: real sqlite + on-disk client materialization per test
 func TestUpgrade_BlockedOutcomeCarriesNoPinnedReference(t *testing.T) {
 	svc, projectRoot := signerChangeFixture(t, func() (*verifier.Result, error) {
 		return otherSignerResult(), nil
@@ -324,7 +324,7 @@ func TestUpgrade_BlockedOutcomeCarriesNoPinnedReference(t *testing.T) {
 // would be both wasted work and a new failure mode for a plugin the lock file
 // already accepts as unsigned.
 //
-//nolint:paralleltest // uses t.Setenv via newGitLockTestService
+//nolint:paralleltest // serial: real sqlite + on-disk client materialization per test
 func TestUpgrade_UnaffectedEntrySkipsSignerProbe(t *testing.T) {
 	repoDir := createPluginTestRepo(t, "")
 

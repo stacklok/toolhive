@@ -46,7 +46,12 @@ type Result struct {
 	// Provisional marks a verification with a documented assurance gap
 	// (git signatures until Rekor proof validation lands).
 	Provisional bool
-	// Bundle is the serialized Sigstore bundle for offline re-verification.
+	// Bundle is the signature material for offline re-verification, in
+	// core's durable form: bare Sigstore bundle JSON when the signature
+	// binds to the artifact structurally, and the
+	// coreverifier.StoredBundleMediaType envelope (bundle plus the
+	// simple-signing payload) when the payload is what names the artifact.
+	// Opaque to callers — pass it back whole, with the ARTIFACT digest.
 	Bundle []byte
 }
 

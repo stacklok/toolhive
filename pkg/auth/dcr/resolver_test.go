@@ -1851,6 +1851,59 @@ func TestResolveDCRCredentials_CachePutFailureWrapped(t *testing.T) {
 		"the wrap message is part of the operator-debugging contract")
 }
 
+// expiredWinnerDCRStore simulates a concurrent claimant that already won the
+// durable claim with a credential that is already expired. This mirrors
+// dcrClaimOrReturnWinner (pkg/authserver/storage/redis.go) when both the
+// existing stored row and the incoming registration are already expired: it
+// deliberately returns the existing row without error rather than retrying
+// forever. PutIfAbsent here returns winner regardless of the resolution the
+// caller tried to store, exactly as a real "someone else already claimed
+// this key" response would.
+type expiredWinnerDCRStore struct {
+	winner *Resolution
+}
+
+func (expiredWinnerDCRStore) Get(_ context.Context, _ Key) (*Resolution, bool, error) {
+	return nil, false, nil
+}
+
+func (s expiredWinnerDCRStore) PutIfAbsent(_ context.Context, _ Key, _ *Resolution) (*Resolution, error) {
+	return s.winner, nil
+}
+
+// TestResolveDCRCredentials_ExpiredAuthoritativeCredentialErrors covers the
+// case a human reviewer flagged on PR #6474: cache.PutIfAbsent can return an
+// authoritative credential that is already expired (the storage layer
+// deliberately returns the stable expired row rather than erroring when both
+// claimants are expired). Treating that as a successful resolution would
+// hand the caller a client_secret the upstream will already reject.
+// registerAndCache must instead surface it as a failure.
+func TestResolveDCRCredentials_ExpiredAuthoritativeCredentialErrors(t *testing.T) {
+	t.Parallel()
+
+	server := newDCRTestServer(t, dcrTestHandlerConfig{})
+
+	store := expiredWinnerDCRStore{
+		winner: &Resolution{
+			ClientID:              "winner-client-id",
+			ClientSecret:          "winner-client-secret",
+			ClientSecretExpiresAt: time.Now().Add(-time.Hour),
+		},
+	}
+
+	req := &Request{
+		Issuer:       server.URL,
+		Scopes:       []string{"openid"},
+		DiscoveryURL: server.URL + "/.well-known/oauth-authorization-server",
+	}
+
+	res, err := ResolveCredentials(context.Background(), req, store)
+	require.Error(t, err, "an already-expired authoritative credential must not be returned as a success")
+	assert.Nil(t, res)
+	assert.Contains(t, err.Error(), dcrStepExpiredCredential,
+		"step identifier is part of the operator-debugging contract")
+}
+
 // TestBuildResolution_PopulatesRFC7591ExpiryFields covers the conversion of
 // the int64 epoch fields client_id_issued_at and client_secret_expires_at
 // into time.Time on Resolution. The wire convention "0 means absent /
@@ -1918,10 +1971,12 @@ func TestBuildResolution_PopulatesRFC7591ExpiryFields(t *testing.T) {
 // TestResolveDCRCredentials_RefetchesOnExpiredCachedSecret pins the fix for
 // the cache-serves-expired-secrets bug: when an entry's
 // ClientSecretExpiresAt has passed, lookupCachedResolution treats it as a
-// miss so registerAndCache re-runs and overwrites the stale entry. Without
-// this, the cached secret would be served indefinitely past the upstream-
-// asserted expiry and every token-endpoint call would 401 with no signal
-// back to the resolver.
+// miss so registerAndCache re-runs rather than serving the stale entry
+// indefinitely. Since the upstream in this test always issues an
+// already-expired secret, every call re-registers AND — per the
+// expired-authoritative-credential check in registerAndCache — every call
+// also fails, rather than handing the caller a client_secret the upstream
+// has already invalidated.
 func TestResolveDCRCredentials_RefetchesOnExpiredCachedSecret(t *testing.T) {
 	t.Parallel()
 
@@ -1929,7 +1984,8 @@ func TestResolveDCRCredentials_RefetchesOnExpiredCachedSecret(t *testing.T) {
 	server := newDCRTestServer(t, dcrTestHandlerConfig{
 		// Issue a secret that expired one minute ago. Every fresh
 		// registration call will produce an already-expired entry; the
-		// resolver will refetch on every Resolve as a result.
+		// resolver will refetch (and, per the expired-credential check,
+		// fail) on every Resolve as a result.
 		clientSecretExpiresAt: time.Now().Add(-time.Minute).Unix(),
 		observeRegistration: func(_ *http.Request, _ []byte) {
 			atomic.AddInt32(&registrationCalls, 1)
@@ -1944,20 +2000,20 @@ func TestResolveDCRCredentials_RefetchesOnExpiredCachedSecret(t *testing.T) {
 		DiscoveryURL: issuer + "/.well-known/oauth-authorization-server",
 	}
 
-	// First call: registers, populates cache with already-expired entry.
+	// First call: registers, but the issued secret is already expired, so
+	// the resolver must not report success.
 	res1, err := ResolveCredentials(context.Background(), req, cache)
-	require.NoError(t, err)
-	require.NotNil(t, res1)
-	require.False(t, res1.ClientSecretExpiresAt.IsZero(),
-		"upstream advertised an expiry — the resolution must echo it")
-	require.True(t, time.Now().After(res1.ClientSecretExpiresAt),
-		"test setup should have produced an already-expired secret")
+	require.Error(t, err)
+	assert.Nil(t, res1)
+	assert.Contains(t, err.Error(), dcrStepExpiredCredential)
 	require.EqualValues(t, 1, atomic.LoadInt32(&registrationCalls))
 
-	// Second call: the cached entry is expired, so the resolver must refetch.
+	// Second call: the cached entry is expired, so the resolver must
+	// refetch — and fail again, since the upstream keeps issuing
+	// already-expired secrets.
 	res2, err := ResolveCredentials(context.Background(), req, cache)
-	require.NoError(t, err)
-	require.NotNil(t, res2)
+	require.Error(t, err)
+	assert.Nil(t, res2)
 	assert.EqualValues(t, 2, atomic.LoadInt32(&registrationCalls),
 		"expired cache entry must trigger a re-registration; got %d total calls",
 		atomic.LoadInt32(&registrationCalls))

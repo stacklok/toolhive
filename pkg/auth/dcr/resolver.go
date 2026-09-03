@@ -262,6 +262,8 @@ const (
 	dcrStepSelectAuthMethod = "select_auth_method"
 	dcrStepRegister         = "dcr_call"
 	dcrStepCacheWrite       = "cache_write"
+	//nolint:gosec // G101: this is a log/error "step" tag, not a credential value.
+	dcrStepExpiredCredential = "expired_credential"
 )
 
 // dcrStepError annotates a resolver error with the phase it was produced
@@ -484,6 +486,22 @@ func registerAndCache(
 		return nil, newDCRStepError(dcrStepCacheWrite, req.Issuer, redirectURI,
 			fmt.Errorf("cache put: %w", err))
 	}
+
+	// The authoritative row can be a concurrent claimant's stable-but-expired
+	// registration: when both the existing stored row and this replica's
+	// fresh registration are already expired, dcrClaimOrReturnWinner
+	// (pkg/authserver/storage/redis.go) deliberately returns the existing
+	// row without error rather than retrying forever. That's the right call
+	// at the storage layer, but "expired means unusable" is DCR policy, not
+	// storage policy, so it belongs here: treat an already-expired
+	// authoritative credential as a resolution failure instead of handing
+	// callers a dead client_secret disguised as a success.
+	if !authoritative.ClientSecretExpiresAt.IsZero() && time.Now().After(authoritative.ClientSecretExpiresAt) {
+		return nil, newDCRStepError(dcrStepExpiredCredential, req.Issuer, redirectURI,
+			fmt.Errorf("authoritative credential is already expired (client_secret_expires_at=%s)",
+				authoritative.ClientSecretExpiresAt.UTC().Format(time.RFC3339)))
+	}
+
 	if authoritative.ClientID != resolution.ClientID {
 		//nolint:gosec // G706: client_id is public metadata per RFC 7591.
 		slog.Debug("dcr: registration superseded by concurrent winner",

@@ -28,6 +28,51 @@ import (
 // transport type (try streamable-http first, then fall back to SSE).
 const TransportAuto = "auto"
 
+// ProbeResult contains the MCP metadata returned by initialize.
+type ProbeResult struct {
+	ProtocolVersion string                 `json:"protocol_version"`
+	ServerInfo      mcp.Implementation     `json:"server_info"`
+	Capabilities    mcp.ServerCapabilities `json:"capabilities"`
+	Transport       string                 `json:"transport"`
+}
+
+// Probe performs only the MCP initialize handshake and closes the connection.
+// It is intended for readiness checks and CI preflight; it does not enumerate
+// or invoke any server capabilities.
+func Probe(ctx context.Context, serverURL, transport, clientName string) (*ProbeResult, error) {
+	if transport == TransportAuto {
+		for _, candidate := range []string{string(types.TransportTypeStreamableHTTP), string(types.TransportTypeSSE)} {
+			result, err := probeTransport(ctx, serverURL, candidate, clientName)
+			if err == nil {
+				return result, nil
+			}
+			slog.Debug("MCP probe transport failed", "transport", candidate, "error", err)
+		}
+		return nil, fmt.Errorf("MCP initialize failed for streamable-http and SSE")
+	}
+	return probeTransport(ctx, serverURL, transport, clientName)
+}
+
+func probeTransport(ctx context.Context, serverURL, transport, clientName string) (*ProbeResult, error) {
+	c, err := newClient(serverURL, transport)
+	if err != nil {
+		return nil, err
+	}
+	result, err := startAndInitializeResult(ctx, c, clientName)
+	if closeErr := c.Close(); err == nil && closeErr != nil {
+		err = fmt.Errorf("close MCP client after probe: %w", closeErr)
+	}
+	if err != nil {
+		return nil, err
+	}
+	return &ProbeResult{
+		ProtocolVersion: result.ProtocolVersion,
+		ServerInfo:      result.ServerInfo,
+		Capabilities:    result.Capabilities,
+		Transport:       string(resolveTransport(serverURL, transport)),
+	}, nil
+}
+
 // Connect creates an MCP SDK client for the given serverURL and transport,
 // starts the underlying transport, and performs the MCP initialize handshake.
 //
@@ -112,8 +157,13 @@ func connectWithAutoDetect(ctx context.Context, serverURL, clientName string) (*
 // startAndInitialize starts the transport and performs the MCP initialize
 // handshake using the ToolHive version.
 func startAndInitialize(ctx context.Context, c *mcpclient.Client, clientName string) error {
+	_, err := startAndInitializeResult(ctx, c, clientName)
+	return err
+}
+
+func startAndInitializeResult(ctx context.Context, c *mcpclient.Client, clientName string) (*mcp.InitializeResult, error) {
 	if err := c.Start(ctx); err != nil {
-		return fmt.Errorf("start MCP client: %w", err)
+		return nil, fmt.Errorf("start MCP client: %w", err)
 	}
 	initReq := mcp.InitializeRequest{}
 	initReq.Params.ProtocolVersion = mcp.LATEST_PROTOCOL_VERSION
@@ -122,10 +172,11 @@ func startAndInitialize(ctx context.Context, c *mcpclient.Client, clientName str
 		Name:    clientName,
 		Version: versions.GetVersionInfo().Version,
 	}
-	if _, err := c.Initialize(ctx, initReq); err != nil {
-		return fmt.Errorf("initialize MCP client: %w", err)
+	result, err := c.Initialize(ctx, initReq)
+	if err != nil {
+		return nil, fmt.Errorf("initialize MCP client: %w", err)
 	}
-	return nil
+	return result, nil
 }
 
 // resolveTransport determines the transport type from the user-supplied value

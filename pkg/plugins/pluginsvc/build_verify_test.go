@@ -141,25 +141,45 @@ func TestPushSigningFailureLeavesTagUnpublished(t *testing.T) {
 	assert.Equal(t, http.StatusBadRequest, httperr.Code(err))
 }
 
-// TestPushDigestPinnedReferenceSkipsPromotion: a request that already pins the
-// digest has no mutable tag to promote, so the staging push published exactly
-// what was asked for and a second push would be redundant.
-func TestPushDigestPinnedReferenceSkipsPromotion(t *testing.T) {
+// TestPushSignedDigestPinnedReferenceIsRejected: staging and promotion are the
+// same operation for a digest-pinned destination, so the staged-then-promoted
+// ordering cannot keep the requested reference out of the unsigned window —
+// there is no push order that upholds the guarantee. The push is refused
+// instead, and the assertion that matters is that it is refused *before*
+// anything reaches the registry: neither mock carries an expectation, so any
+// push or signing attempt fails the test. A rejection that still published
+// would leave exactly the unsigned artifact this is meant to prevent.
+func TestPushSignedDigestPinnedReferenceIsRejected(t *testing.T) {
 	t.Parallel()
 	reg, ociStore, artifactDigest, staged := newPushFixture(t)
 	// The reference is resolved in the local store before anything is pushed,
-	// so a digest-pinned request has to be tagged that way locally too.
+	// so a digest-pinned request has to be tagged that way locally too —
+	// otherwise the request would fail as not-found and prove nothing.
 	require.NoError(t, ociStore.Tag(t.Context(), digest.Digest(artifactDigest), staged))
 
-	ms := signermocks.NewMockSigner(gomock.NewController(t))
-	ms.EXPECT().SignOCI(gomock.Any(), staged, artifactDigest, gomock.Any()).
-		Return(&signer.Result{Bundle: []byte(`{"bundle":true}`)}, nil)
-	// Exactly one push, for the digest reference.
+	ms := signermocks.NewMockSigner(gomock.NewController(t)) // no expectations
+	svc := New(WithRegistryClient(reg), WithOCIStore(ociStore), WithSigner(ms))
+
+	err := svc.Push(t.Context(), plugins.PushOptions{Reference: staged, IdentityToken: "a.b.c"})
+	require.Error(t, err)
+	assert.Equal(t, http.StatusBadRequest, httperr.Code(err))
+	assert.Contains(t, err.Error(), "digest-pinned")
+}
+
+// TestPushNoSignDigestPinnedReferenceIsAllowed: the rejection is a property of
+// the signing guarantee, not of the reference shape. An unsigned push promises
+// nothing that publishing unsigned content would break, so it still publishes
+// the requested digest reference directly.
+func TestPushNoSignDigestPinnedReferenceIsAllowed(t *testing.T) {
+	t.Parallel()
+	reg, ociStore, artifactDigest, staged := newPushFixture(t)
+	require.NoError(t, ociStore.Tag(t.Context(), digest.Digest(artifactDigest), staged))
 	reg.EXPECT().Push(gomock.Any(), gomock.Any(), gomock.Any(), staged).Return(nil).Times(1)
 
+	ms := signermocks.NewMockSigner(gomock.NewController(t)) // no expectations
 	svc := New(WithRegistryClient(reg), WithOCIStore(ociStore), WithSigner(ms))
 	require.NoError(t, svc.Push(t.Context(),
-		plugins.PushOptions{Reference: staged, IdentityToken: "a.b.c"}))
+		plugins.PushOptions{Reference: staged, NoSign: true}))
 }
 
 // TestPushNoSignSkipsSigner: the explicit opt-out must reach the registry

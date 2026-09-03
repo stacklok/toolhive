@@ -134,6 +134,11 @@ func (s *service) Push(ctx context.Context, opts plugins.PushOptions) error {
 	if err := validateSigningInputs(opts); err != nil {
 		return err
 	}
+	if !opts.NoSign {
+		if err := validateSignedDestination(opts.Reference); err != nil {
+			return err
+		}
+	}
 
 	d, err := s.ociStore.Resolve(ctx, opts.Reference)
 	if err != nil {
@@ -197,10 +202,10 @@ func (s *service) pushSigned(ctx context.Context, opts plugins.PushOptions, d di
 	}
 
 	// Promote: from here the requested reference resolves to signed content.
-	// A digest-pinned request was already published by the staging push.
-	if staged == opts.Reference {
-		return nil
-	}
+	// The requested reference is always a tag, so this is always a second,
+	// distinct push — validateSignedDestination rejected the digest-pinned
+	// shape, for which promotion would be a no-op because the staging push
+	// had already published exactly what was asked for.
 	if err := s.registry.Push(ctx, s.ociStore, d, opts.Reference); err != nil {
 		return fmt.Errorf("promoting the signed artifact to %q failed; it is published and signed at %s "+
 			"and pushing again is safe: %w", opts.Reference, staged, err)
@@ -210,8 +215,9 @@ func (s *service) pushSigned(ctx context.Context, opts plugins.PushOptions, d di
 
 // stagingReference returns the digest-pinned form of ref — the reference a
 // signed artifact is published under before its tag is promoted. A ref that
-// already pins the digest is returned unchanged: there is no mutable tag to
-// promote, so the staging push has published everything the caller asked for.
+// already pins the digest is returned unchanged, which for a signed push is
+// unreachable: validateSignedDestination rejects that shape upstream,
+// precisely because staging and promoting would collapse into one push.
 func stagingReference(ref string, d digest.Digest) (string, error) {
 	parsed, err := orasregistry.ParseReference(ref)
 	if err != nil {
@@ -337,6 +343,50 @@ func validateSigningInputs(opts plugins.PushOptions) error {
 		)
 	}
 	return nil
+}
+
+// validateSignedDestination rejects a digest-pinned destination for a signed
+// push, before any registry operation.
+//
+// Signing cannot precede publication: attaching a signature reads the
+// artifact back from the remote, so a signed push must put content up before
+// it can sign it. pushSigned's staged-then-promoted ordering exists to keep
+// the *requested* reference out of that window — content is published under
+// its immutable digest, and only a successful signature promotes the tag.
+//
+// A request that already pins the digest leaves nothing to withhold. The
+// staging push publishes the exact reference the caller asked for, so a
+// Fulcio, Rekor or attachment failure leaves an unsigned artifact live at
+// precisely the reference the publisher meant consumers to resolve, which
+// user-scoped installs consume without verification. Returning an error does
+// not retract it, and unlike a tag left unpushed there is nothing that later
+// makes it correct.
+//
+// So the shape is refused rather than reordered: no push order upholds the
+// guarantee when staging and promotion are the same operation. --no-sign is
+// unaffected — it publishes the requested reference directly and promises
+// nothing that an unsigned result would break.
+func validateSignedDestination(ref string) error {
+	parsed, err := orasregistry.ParseReference(ref)
+	if err != nil {
+		return httperr.WithCode(
+			fmt.Errorf("reference %q is not a valid registry reference: %w", ref, err),
+			http.StatusBadRequest,
+		)
+	}
+	// ParseReference puts a tag or a digest in the same field; only a digest
+	// parses as one. An empty reference (no tag, no digest) is left to the
+	// local-store lookup, which reports it as not found.
+	if _, err := digest.Parse(parsed.Reference); err != nil {
+		return nil
+	}
+	return httperr.WithCode(
+		fmt.Errorf("cannot sign a push to the digest-pinned reference %q: signing requires the "+
+			"artifact to be published first, so a signing failure would leave it live and unsigned "+
+			"at that exact reference. Push to a tag, which is published only once signing has "+
+			"succeeded, or pass no_sign (--no-sign) to publish unsigned deliberately", ref),
+		http.StatusBadRequest,
+	)
 }
 
 // validateLocalPath checks that a path is non-empty, absolute, and does not

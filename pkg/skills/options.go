@@ -109,8 +109,9 @@ type InstallOptions struct {
 	// the verification step, nil when the artifact is unsigned or
 	// verification did not run. Internal use only — NOT exposed via HTTP API.
 	Provenance *ProvenanceInfo `json:"-"`
-	// SigstoreBundle is the serialized Sigstore bundle backing Provenance,
-	// persisted alongside the install record so sync can re-verify offline.
+	// SigstoreBundle is the signature material backing Provenance, in core's
+	// durable form (see verifier.Result.Bundle), persisted alongside the
+	// install record so sync can re-verify offline against the artifact digest.
 	// Internal use only — NOT exposed via HTTP API.
 	SigstoreBundle []byte `json:"-"`
 }

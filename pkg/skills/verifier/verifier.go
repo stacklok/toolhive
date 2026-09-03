@@ -61,9 +61,10 @@ type Verifier interface {
 
 	// VerifyBundleOfflineWithKey re-verifies a stored key-signed bundle
 	// against the signer's PEM public key without network access — the
-	// offline counterpart of VerifyOCIWithKey. imageRef and digest
-	// reconstruct the signed payload, binding the check to the artifact.
-	VerifyBundleOfflineWithKey(bundle []byte, imageRef, digest string, pubKeyPEM []byte) error
+	// offline counterpart of VerifyOCIWithKey. digest is the artifact's own
+	// manifest digest, as for VerifyBundleOffline: the stored bundle carries
+	// whatever the signature actually covers, so no caller reconstructs it.
+	VerifyBundleOfflineWithKey(bundle []byte, digest string, pubKeyPEM []byte) error
 
 	// ResultFromBundle verifies a stored bundle offline (chain of trust
 	// only) and returns the observed identity — used to back-fill

@@ -7,10 +7,8 @@ import (
 	"errors"
 	"fmt"
 
-	sgbundle "github.com/sigstore/sigstore-go/pkg/bundle"
 	"github.com/sigstore/sigstore-go/pkg/verify"
 
-	"github.com/stacklok/toolhive-core/container/signer"
 	coreverifier "github.com/stacklok/toolhive-core/container/verifier"
 	"github.com/stacklok/toolhive/pkg/skills/lockfile"
 )
@@ -51,20 +49,22 @@ func (*Default) VerifyBundleOffline(bundleBytes []byte, digest string, expected 
 }
 
 // VerifyBundleOfflineWithKey re-verifies a stored key-signed bundle against
-// the signer's PEM public key — the offline counterpart of
-// VerifyOCIWithKey. Key-signed bundles sign the cosign simple-signing
-// payload (which embeds the artifact digest), so the payload is
-// reconstructed from imageRef and digest and the signature checked over it
-// — that reconstruction IS the digest-binding check.
-func (*Default) VerifyBundleOfflineWithKey(bundleBytes []byte, imageRef, digest string, pubKeyPEM []byte) error {
+// the signer's PEM public key — the offline counterpart of VerifyOCIWithKey.
+//
+// The artifact digest is passed straight through. A key-signed bundle's
+// signature covers the cosign simple-signing payload rather than the artifact,
+// but the stored bundle now carries that payload with it, so core recovers it
+// and checks both that the signature covers those bytes and that those bytes
+// name this artifact. Reconstructing the payload here from the reference —
+// which is what this did before, via signer.PayloadDigest — is now refused as
+// ErrSignatureArtifactMismatch: a digest derived from the payload proves
+// nothing about which artifact it names, so a caller supplying it is exactly
+// the caller who cannot detect a transplanted signature.
+func (*Default) VerifyBundleOfflineWithKey(bundleBytes []byte, digest string, pubKeyPEM []byte) error {
 	if len(bundleBytes) == 0 {
 		return fmt.Errorf("%w: no stored bundle to verify — reinstall to restore it", ErrSignatureInvalid)
 	}
-	digestArg, err := signer.PayloadDigest(imageRef, digest)
-	if err != nil {
-		return fmt.Errorf("%w: %s", ErrSignatureInvalid, err.Error())
-	}
-	if _, err := coreverifier.VerifyBundleOfflineWithKey(bundleBytes, digestArg, pubKeyPEM); err != nil {
+	if _, err := coreverifier.VerifyBundleOfflineWithKey(bundleBytes, digest, pubKeyPEM); err != nil {
 		return wrapInvalid(err)
 	}
 	return nil
@@ -82,7 +82,7 @@ func (*Default) ResultFromBundle(bundleBytes []byte, digest string) (*Result, er
 	if len(bundleBytes) == 0 {
 		return nil, fmt.Errorf("%w: no stored bundle to verify", ErrSignatureInvalid)
 	}
-	keySigned, err := bundleIsKeySigned(bundleBytes)
+	keySigned, err := bundleIsKeySigned(bundleBytes, digest)
 	if err != nil {
 		return nil, wrapInvalid(err)
 	}
@@ -121,10 +121,19 @@ func checkStoredBundlePins(vr *verify.VerificationResult, expected *lockfile.Pro
 // key-pair flow, which is visible in its shape: a keyless bundle carries the
 // Fulcio certificate its identity is read from, and a key-signed one carries
 // none, since the trust anchor lives outside the artifact entirely.
-func bundleIsKeySigned(bundleBytes []byte) (bool, error) {
-	parsed := &sgbundle.Bundle{}
-	if err := parsed.UnmarshalJSON(bundleBytes); err != nil {
-		return false, fmt.Errorf("parsing stored bundle: %w", err)
+//
+// Decoded through core rather than straight into a Sigstore bundle: the
+// durable form is not always bare bundle JSON — a cosign signature is stored
+// wrapped with the payload it covers — and unmarshalling the envelope as a
+// bundle fails on the wrapper's own fields. A shape question must not report
+// a well-formed bundle as unparsable.
+//
+// The digest is only needed to construct the Bundle and is not checked here;
+// callers verify separately.
+func bundleIsKeySigned(bundleBytes []byte, digest string) (bool, error) {
+	b, err := coreverifier.DecodeStoredBundle(bundleBytes, digest)
+	if err != nil {
+		return false, err
 	}
-	return !coreverifier.Bundle{Parsed: parsed}.HasCertificate(), nil
+	return !b.HasCertificate(), nil
 }

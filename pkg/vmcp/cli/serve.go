@@ -206,7 +206,7 @@ func Serve(ctx context.Context, cfg ServeConfig) error {
 	if telemetryProvider != nil {
 		tracerProvider = telemetryProvider.TracerProvider()
 	}
-	agg := aggregator.NewDefaultAggregator(backendClient, conflictResolver, vmcpCfg.Aggregation, tracerProvider)
+	agg := newAggregator(backendClient, conflictResolver, vmcpCfg, tracerProvider)
 
 	// DynamicRegistry tracks backends for dynamic discovery in Kubernetes mode.
 	dynamicRegistry := vmcp.NewDynamicRegistry(backends)
@@ -475,6 +475,21 @@ func Serve(ctx context.Context, cfg ServeConfig) error {
 
 	slog.Info(fmt.Sprintf("Starting Virtual MCP Server at %s", srv.Address()))
 	return srv.Start(ctx)
+}
+
+// newAggregator constructs the default aggregator and wires the vMCP
+// configuration's operational settings (partial failure mode, backend request
+// timeouts) into it. Extracted from Serve so the production wiring is directly
+// testable: dropping the WithOperationalConfig option below would silently
+// revert production to best-effort behavior.
+func newAggregator(
+	backendClient vmcp.BackendClient,
+	conflictResolver aggregator.ConflictResolver,
+	vmcpCfg *config.Config,
+	tracerProvider trace.TracerProvider,
+) aggregator.Aggregator {
+	return aggregator.NewDefaultAggregator(backendClient, conflictResolver, vmcpCfg.Aggregation, tracerProvider,
+		aggregator.WithOperationalConfig(vmcpCfg.Operational))
 }
 
 // embeddingManager is the minimal interface over *EmbeddingServiceManager needed

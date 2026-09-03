@@ -14,6 +14,7 @@ import (
 	"github.com/ory/fosite"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+	"golang.org/x/time/rate"
 
 	"github.com/stacklok/toolhive/pkg/authserver/server"
 	servercrypto "github.com/stacklok/toolhive/pkg/authserver/server/crypto"
@@ -561,4 +562,95 @@ func TestLoopbackAuthorizeRequester_IsRedirectURIValid(t *testing.T) {
 			assert.Equal(t, tt.wantValid, wrapped.IsRedirectURIValid())
 		})
 	}
+}
+
+// --- rateLimitCIMDAuthorize (P1: /oauth/authorize CIMD rate limiting) ---
+
+// TestRateLimitCIMDAuthorize_BurstThen429 exercises the reviewer's exact
+// scenario: a flood of distinct CIMD-URL client_id values must be bounded by
+// the limiter, exhausting the burst before the gate starts returning 429,
+// entirely independent of fosite or the CIMD decorator — this test only
+// exercises the gate itself.
+func TestRateLimitCIMDAuthorize_BurstThen429(t *testing.T) {
+	t.Parallel()
+
+	var nextCalls int
+	h := &Handler{cimdAuthorizeLimiter: rate.NewLimiter(rate.Limit(1), 5)}
+	gated := h.rateLimitCIMDAuthorize(func(http.ResponseWriter, *http.Request) {
+		nextCalls++
+	})
+
+	// Burst of 5 must all be allowed through to next.
+	for i := 0; i < 5; i++ {
+		req := httptest.NewRequest(http.MethodGet,
+			"/oauth/authorize?client_id=https://evil.test/"+string(rune('a'+i))+".json", nil)
+		rec := httptest.NewRecorder()
+		gated(rec, req)
+		assert.NotEqual(t, http.StatusTooManyRequests, rec.Code, "burst request %d must not be rate limited", i)
+	}
+	assert.Equal(t, 5, nextCalls, "all 5 burst requests must reach next")
+
+	// The 6th CIMD-URL request in the same instant must be rejected with 429.
+	req := httptest.NewRequest(http.MethodGet, "/oauth/authorize?client_id=https://evil.test/f.json", nil)
+	rec := httptest.NewRecorder()
+	gated(rec, req)
+	assert.Equal(t, http.StatusTooManyRequests, rec.Code, "request past the burst must be rate limited")
+	assert.Equal(t, "1", rec.Header().Get("Retry-After"))
+	assert.Equal(t, 5, nextCalls, "the rate-limited request must not reach next")
+}
+
+// TestRateLimitCIMDAuthorize_NonURLClientIDUnaffected verifies that ordinary
+// DCR (opaque, non-URL) client_id values never consult or exhaust the CIMD
+// limiter: a flood of such requests must all reach next, and must not affect
+// the limiter's state for a later CIMD-URL request.
+func TestRateLimitCIMDAuthorize_NonURLClientIDUnaffected(t *testing.T) {
+	t.Parallel()
+
+	var nextCalls int
+	h := &Handler{cimdAuthorizeLimiter: rate.NewLimiter(rate.Limit(1), 5)}
+	gated := h.rateLimitCIMDAuthorize(func(http.ResponseWriter, *http.Request) {
+		nextCalls++
+	})
+
+	// Far more than the burst size, all with an opaque DCR-style client_id.
+	for i := 0; i < 20; i++ {
+		req := httptest.NewRequest(http.MethodGet, "/oauth/authorize?client_id=opaque-dcr-client-id", nil)
+		rec := httptest.NewRecorder()
+		gated(rec, req)
+		assert.NotEqual(t, http.StatusTooManyRequests, rec.Code,
+			"a non-URL client_id must never be rate limited by the CIMD gate")
+	}
+	assert.Equal(t, 20, nextCalls)
+
+	// The limiter's full burst must still be available to a CIMD-URL request,
+	// proving the DCR traffic above never touched cimdAuthorizeLimiter's state.
+	for i := 0; i < 5; i++ {
+		req := httptest.NewRequest(http.MethodGet,
+			"/oauth/authorize?client_id=https://example.test/"+string(rune('a'+i))+".json", nil)
+		rec := httptest.NewRecorder()
+		gated(rec, req)
+		assert.NotEqual(t, http.StatusTooManyRequests, rec.Code, "CIMD burst request %d must not be rate limited", i)
+	}
+	assert.Equal(t, 25, nextCalls)
+}
+
+// TestRateLimitCIMDAuthorize_NilLimiterAllowsThrough matches the documented
+// contract of registerLimiter's nil case: a Handler constructed without going
+// through NewHandler (as several existing tests in this package do) leaves
+// cimdAuthorizeLimiter nil, and the gate must tolerate that by always calling
+// next.
+func TestRateLimitCIMDAuthorize_NilLimiterAllowsThrough(t *testing.T) {
+	t.Parallel()
+
+	var nextCalls int
+	h := &Handler{}
+	gated := h.rateLimitCIMDAuthorize(func(http.ResponseWriter, *http.Request) {
+		nextCalls++
+	})
+
+	req := httptest.NewRequest(http.MethodGet, "/oauth/authorize?client_id=https://evil.test/a.json", nil)
+	rec := httptest.NewRecorder()
+	gated(rec, req)
+	assert.NotEqual(t, http.StatusTooManyRequests, rec.Code)
+	assert.Equal(t, 1, nextCalls)
 }

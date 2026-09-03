@@ -6,6 +6,7 @@ package storage
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -165,6 +166,107 @@ func TestCIMDStorageDecorator_GetClient_UnknownOpaqueIDReturnsError(t *testing.T
 	dec := newEnabledDecorator(t, base, 10, time.Minute)
 	_, err := dec.GetClient(context.Background(), "unknown-opaque-id")
 	require.Error(t, err)
+}
+
+// --- cimdShapeGuardStorage (P2: URL-shaped ids refused while CIMD is disabled) ---
+
+// TestCIMDShapeGuardStorage_URLShapedIDNotFoundEvenWhenRowExists is the core
+// regression this guard exists for: a row a prior CIMD-enabled period
+// write-through persisted (CIMDStorageDecorator.fetch) must not resolve once
+// CIMD is disabled, even though the row is still physically present in the
+// underlying storage and would resolve via a bare (unwrapped) GetClient.
+func TestCIMDShapeGuardStorage_URLShapedIDNotFoundEvenWhenRowExists(t *testing.T) {
+	t.Parallel()
+	base := newTestBase(t)
+	ctx := context.Background()
+
+	const cimdID = "https://example.com/meta.json"
+	stale := &fosite.DefaultClient{ID: cimdID, Public: true}
+	require.NoError(t, base.RegisterClient(ctx, stale))
+
+	// Sanity: the row really is resolvable through the bare (unwrapped) base,
+	// proving the guard — not an absent row — is what blocks resolution below.
+	got, err := base.GetClient(ctx, cimdID)
+	require.NoError(t, err, "the stale row must exist in the underlying storage")
+	assert.Equal(t, cimdID, got.GetID())
+
+	guarded := NewCIMDShapeGuardStorage(base)
+	_, err = guarded.GetClient(ctx, cimdID)
+	require.Error(t, err, "a URL-shaped id must never resolve while CIMD is disabled")
+	assert.ErrorIs(t, err, fosite.ErrNotFound)
+}
+
+// TestCIMDShapeGuardStorage_OpaqueIDDelegatesToBase verifies the guard only
+// touches URL-shaped ids: an ordinary DCR-issued or pre-provisioned client_id
+// must resolve exactly as it would through the unwrapped base.
+func TestCIMDShapeGuardStorage_OpaqueIDDelegatesToBase(t *testing.T) {
+	t.Parallel()
+	base := newTestBase(t)
+	ctx := context.Background()
+
+	dc := &fosite.DefaultClient{ID: "opaque-client-id"}
+	require.NoError(t, base.RegisterClient(ctx, dc))
+
+	guarded := NewCIMDShapeGuardStorage(base)
+	got, err := guarded.GetClient(ctx, "opaque-client-id")
+	require.NoError(t, err)
+	assert.Equal(t, "opaque-client-id", got.GetID())
+}
+
+// TestCIMDShapeGuardStorage_UnwrapReturnsBase verifies the same Unwrap()
+// contract CIMDStorageDecorator provides, so callers walking the decorator
+// chain (e.g. the DCRCredentialStore assertion in server_impl.go) reach the
+// concrete backend through this wrapper too.
+func TestCIMDShapeGuardStorage_UnwrapReturnsBase(t *testing.T) {
+	t.Parallel()
+	base := newTestBase(t)
+	guarded := NewCIMDShapeGuardStorage(base)
+	unwrapper, ok := guarded.(interface{ Unwrap() Storage })
+	require.True(t, ok)
+	assert.Same(t, base, unwrapper.Unwrap())
+}
+
+// TestCIMDShapeGuardStorage_ConsumeAssertionJWTDelegatesToBase verifies the
+// guard forwards this narrow capability exactly like CIMDStorageDecorator
+// does, so wrapping storage when CIMD is disabled does not silently break the
+// RFC 7523 JWT-bearer grant (see storage.AssertionJWTConsumer).
+func TestCIMDShapeGuardStorage_ConsumeAssertionJWTDelegatesToBase(t *testing.T) {
+	t.Parallel()
+	base := newTestBase(t)
+	guarded := NewCIMDShapeGuardStorage(base)
+	consumer, ok := guarded.(AssertionJWTConsumer)
+	require.True(t, ok, "the guard must implement AssertionJWTConsumer when its base does")
+
+	exp := time.Now().Add(time.Hour)
+	ctx := context.Background()
+	require.NoError(t, consumer.ConsumeAssertionJWT(ctx, "jwt-bearer", "https://issuer.example", "jti", exp))
+	require.ErrorIs(t, consumer.ConsumeAssertionJWT(ctx, "jwt-bearer", "https://issuer.example", "jti", exp),
+		fosite.ErrJTIKnown)
+}
+
+// TestCIMDShapeGuardStorage_DecoratorActiveStillWorks is the "decorator
+// active" counterpart to TestCIMDShapeGuardStorage_URLShapedIDNotFoundEvenWhenRowExists:
+// while the real CIMDStorageDecorator is wrapping storage (CIMD enabled),
+// resolving a URL-shaped client_id must still work normally via a live fetch,
+// confirming the shape guard is only ever applied on the disabled path (see
+// decorateStorageForCIMD in server_impl.go).
+func TestCIMDShapeGuardStorage_DecoratorActiveStillWorks(t *testing.T) {
+	t.Parallel()
+
+	var fetchCount atomic.Int32
+	srv := serveCIMDDoc(t, "/metadata.json", func() { fetchCount.Add(1) })
+	id := cimdURL(srv, "/metadata.json")
+
+	base := newTestBase(t)
+	dec := newEnabledDecorator(t, base, 10, time.Minute)
+
+	// Resolve once through the active decorator: this both proves resolution
+	// works while CIMD is enabled and leaves a write-through-persisted row in
+	// base for the disabled-guard assertions below.
+	got, err := dec.GetClient(context.Background(), id)
+	require.NoError(t, err, "GetClient must succeed while the decorator is active")
+	assert.Equal(t, id, got.GetID())
+	assert.Equal(t, int32(1), fetchCount.Load())
 }
 
 // --- fetchOrCached / fetch (loopback HTTP accepted by FetchClientMetadataDocument) ---
@@ -431,18 +533,33 @@ func TestBuildFositeClient_NonLoopbackRedirectReturnsOpenIDConnectClient(t *test
 	assert.True(t, ok, "non-loopback redirect URI must produce a DefaultOpenIDConnectClient")
 }
 
-func TestBuildFositeClient_TokenEndpointAuthMethodDefault(t *testing.T) {
+// TestNegotiateTokenEndpointAuthMethod_DeclaredNoneWithPluralList covers the
+// branch where the document already declares the singular
+// token_endpoint_auth_method as "none": negotiateTokenEndpointAuthMethod's
+// first check (declared == "" || declared == defaultCIMDTokenEndpointAuthMethod)
+// short-circuits on that alone and never consults the plural
+// TokenEndpointAuthMethodsSupported list, even when that list is present and
+// names something else entirely. This was previously exercised indirectly by
+// TestBuildFositeClient_TokenEndpointAuthMethodDefault against a fallback
+// buildFositeClient no longer applies internally (the negotiation moved to
+// fetch(), and buildFositeClient now takes the already-negotiated method as a
+// parameter) — this test targets negotiateTokenEndpointAuthMethod directly
+// instead, alongside the equivalent-but-distinct branches already covered by
+// TestFetch_TokenEndpointAuthMethodNegotiation.
+func TestNegotiateTokenEndpointAuthMethod_DeclaredNoneWithPluralList(t *testing.T) {
 	t.Parallel()
 
 	doc := &cimd.ClientMetadataDocument{
-		ClientID:     "https://example.com/meta.json",
-		RedirectURIs: []string{"https://example.com/callback"},
+		ClientID:                          "https://example.com/meta.json",
+		RedirectURIs:                      []string{"https://example.com/callback"},
+		TokenEndpointAuthMethod:           "none",
+		TokenEndpointAuthMethodsSupported: []string{"private_key_jwt", "tls_client_auth"},
 	}
 
-	got := buildFositeClientWithDefaults(doc, nil)
-	if oidc, ok := got.(fosite.OpenIDConnectClient); ok {
-		assert.Equal(t, "none", oidc.GetTokenEndpointAuthMethod())
-	}
+	got, ok := negotiateTokenEndpointAuthMethod(doc)
+	require.True(t, ok, "a declared \"none\" must negotiate successfully regardless of the plural list")
+	assert.Equal(t, "none", got,
+		"the declared \"none\" must win outright, without consulting TokenEndpointAuthMethodsSupported")
 }
 
 func TestFetch_RejectsUnsupportedTokenEndpointAuthMethod(t *testing.T) {
@@ -783,4 +900,80 @@ func TestBuildFositeClient_ScopeDefaultsToDefaultScopesWhenNoScopesSupported(t *
 	}
 	got := buildFositeClientWithDefaults(doc, nil)
 	assert.ElementsMatch(t, registration.DefaultScopes, []string(got.GetScopes()))
+}
+
+// --- write-through persistence (issue #6187) ---
+
+func TestCIMDStorageDecorator_PersistsResolvedClient(t *testing.T) {
+	t.Parallel()
+
+	base := newTestBase(t)
+	dec := newEnabledDecorator(t, base, 10, time.Minute)
+	srv := serveCIMDDocWithFields(t, nil)
+	id := srv.URL + "/meta.json"
+
+	resolved, err := dec.fetchOrCached(context.Background(), id)
+	require.NoError(t, err)
+
+	persisted, err := base.GetClient(context.Background(), id)
+	require.NoError(t, err,
+		"the resolved client must be persisted so session rehydration that resolves clients through the bare storage still finds it")
+	assert.Equal(t, resolved.GetID(), persisted.GetID())
+	assert.True(t, persisted.IsPublic())
+	assert.True(t, registration.DCRIssued(resolved),
+		"the resolved client must carry the DCR-issued marker so the persisted row gets the anti-bloat TTL")
+}
+
+// TestCIMDStorageDecorator_PersistsLoopbackResolvedClient covers a document
+// with loopback redirect URIs: buildFositeClient gives it the same
+// *fosite.DefaultOpenIDConnectClient shape as any other CIMD client (RFC 8252
+// dynamic-port matching is applied separately, by
+// registration.RegisteredLoopbackRedirectURI, not by a distinct wrapper
+// type), and the DCR-issued marker (and with it the TTL on the persisted
+// row) must survive that shape too.
+func TestCIMDStorageDecorator_PersistsLoopbackResolvedClient(t *testing.T) {
+	t.Parallel()
+
+	base := newTestBase(t)
+	dec := newEnabledDecorator(t, base, 10, time.Minute)
+	srv := serveCIMDDocWithFields(t, func(doc *cimd.ClientMetadataDocument) {
+		doc.RedirectURIs = []string{"http://localhost/callback"}
+	})
+	id := srv.URL + "/meta.json"
+
+	resolved, err := dec.fetchOrCached(context.Background(), id)
+	require.NoError(t, err)
+	assert.True(t, registration.DCRIssued(resolved),
+		"a loopback-wrapped CIMD client must also carry the DCR-issued marker")
+
+	_, err = base.GetClient(context.Background(), id)
+	require.NoError(t, err)
+}
+
+// registerFailingStorage wraps a Storage and fails every RegisterClient call,
+// for testing that a write-through persistence failure does not fail the
+// resolution itself.
+type registerFailingStorage struct {
+	Storage
+}
+
+func (*registerFailingStorage) RegisterClient(context.Context, fosite.Client) error {
+	return errors.New("register failed")
+}
+
+func TestCIMDStorageDecorator_PersistFailureDoesNotFailResolution(t *testing.T) {
+	t.Parallel()
+
+	srv := serveCIMDDocWithFields(t, nil)
+	got, err := NewCIMDStorageDecorator(&registerFailingStorage{Storage: newTestBase(t)}, CIMDDecoratorConfig{
+		Enabled:      true,
+		CacheMaxSize: 10,
+		FallbackTTL:  time.Minute,
+	})
+	require.NoError(t, err)
+	dec := got.(*CIMDStorageDecorator)
+
+	client, err := dec.fetchOrCached(context.Background(), srv.URL+"/meta.json")
+	require.NoError(t, err, "a write-through persistence failure must not fail the resolution")
+	assert.NotNil(t, client)
 }

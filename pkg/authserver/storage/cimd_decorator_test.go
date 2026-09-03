@@ -462,9 +462,13 @@ func TestCIMDStorageDecorator_GetClient_CIMDURLHitsCacheDirectly(t *testing.T) {
 // FilterPublicResponseTypes return for an omitted declaration) and the
 // default negotiated auth method, for tests that don't exercise those fields.
 func buildFositeClientWithDefaults(doc *cimd.ClientMetadataDocument, scopes []string) fosite.Client {
-	return buildFositeClient(doc, scopes,
-		[]string{"authorization_code", "refresh_token"}, []string{"code"},
-		defaultCIMDTokenEndpointAuthMethod, nil)
+	return buildFositeClient(fositeClientParams{
+		doc:                     doc,
+		resolvedScopes:          scopes,
+		grantTypes:              []string{"authorization_code", "refresh_token"},
+		responseTypes:           []string{"code"},
+		tokenEndpointAuthMethod: defaultCIMDTokenEndpointAuthMethod,
+	})
 }
 
 func TestBuildFositeClient_PassesThroughGrantAndResponseTypes(t *testing.T) {
@@ -478,8 +482,12 @@ func TestBuildFositeClient_PassesThroughGrantAndResponseTypes(t *testing.T) {
 		GrantTypes: []string{"authorization_code", "urn:ietf:params:oauth:grant-type:device_code"},
 	}
 
-	got := buildFositeClient(doc, nil, []string{"authorization_code"}, []string{"code"},
-		defaultCIMDTokenEndpointAuthMethod, nil)
+	got := buildFositeClient(fositeClientParams{
+		doc:                     doc,
+		grantTypes:              []string{"authorization_code"},
+		responseTypes:           []string{"code"},
+		tokenEndpointAuthMethod: defaultCIMDTokenEndpointAuthMethod,
+	})
 	assert.Equal(t, "https://example.com/meta.json", got.GetID())
 	assert.True(t, got.IsPublic())
 	assert.ElementsMatch(t, []string{"authorization_code"}, []string(got.GetGrantTypes()),
@@ -994,8 +1002,13 @@ func TestBuildFositeClient_GrantsConfiguredAudience(t *testing.T) {
 	}
 	allowed := []string{"https://mcp.example.com"}
 
-	got := buildFositeClient(doc, nil, []string{"authorization_code"}, []string{"code"},
-		defaultCIMDTokenEndpointAuthMethod, allowed)
+	got := buildFositeClient(fositeClientParams{
+		doc:                     doc,
+		grantTypes:              []string{"authorization_code"},
+		responseTypes:           []string{"code"},
+		tokenEndpointAuthMethod: defaultCIMDTokenEndpointAuthMethod,
+		allowedAudiences:        allowed,
+	})
 
 	assert.Equal(t, fosite.Arguments(allowed), got.GetAudience(),
 		"CIMD client must inherit the server's AllowedAudiences so refresh token requests succeed")
@@ -1012,8 +1025,12 @@ func TestBuildFositeClient_EmptyAudienceConfigKeepsPriorNilBehaviour(t *testing.
 		RedirectURIs: []string{"https://example.com/callback"},
 	}
 
-	got := buildFositeClient(doc, nil, []string{"authorization_code"}, []string{"code"},
-		defaultCIMDTokenEndpointAuthMethod, nil)
+	got := buildFositeClient(fositeClientParams{
+		doc:                     doc,
+		grantTypes:              []string{"authorization_code"},
+		responseTypes:           []string{"code"},
+		tokenEndpointAuthMethod: defaultCIMDTokenEndpointAuthMethod,
+	})
 
 	assert.Empty(t, got.GetAudience(), "unset AllowedAudiences must leave the client's audience list empty")
 }

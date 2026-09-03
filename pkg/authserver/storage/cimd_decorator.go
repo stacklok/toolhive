@@ -43,7 +43,7 @@ type cimdCacheEntry struct {
 }
 
 // CIMDDecoratorConfig holds the configuration for NewCIMDStorageDecorator.
-// Using a struct prevents silent swaps of the two adjacent []string fields.
+// Using a struct prevents silent swaps of the three adjacent []string fields.
 type CIMDDecoratorConfig struct {
 	// Enabled returns base unchanged when false, avoiding an allocation.
 	Enabled bool
@@ -276,9 +276,14 @@ func (d *CIMDStorageDecorator) fetch(ctx context.Context, id string) (fosite.Cli
 		return nil, err
 	}
 
-	client := registration.MarkDCRIssued(
-		buildFositeClient(doc, resolvedScopes, grantTypes, responseTypes, authMethod, d.allowedAudiences),
-	)
+	client := registration.MarkDCRIssued(buildFositeClient(fositeClientParams{
+		doc:                     doc,
+		resolvedScopes:          resolvedScopes,
+		grantTypes:              grantTypes,
+		responseTypes:           responseTypes,
+		tokenEndpointAuthMethod: authMethod,
+		allowedAudiences:        d.allowedAudiences,
+	}))
 
 	// Best-effort write-through: persist the resolved client in the underlying
 	// storage so backends whose session rehydration resolves the client
@@ -402,57 +407,69 @@ func negotiateTokenEndpointAuthMethod(doc *cimd.ClientMetadataDocument) (string,
 	return "", false
 }
 
+// fositeClientParams carries the inputs buildFositeClient turns into a
+// fosite.Client. Every field is computed by fetch() beforehand, so the
+// builder applies no validation, filtering, or negotiation of its own. A
+// struct keeps the four []string values from being swapped silently at the
+// call site, for the same reason CIMDDecoratorConfig is one.
+type fositeClientParams struct {
+	doc *cimd.ClientMetadataDocument
+	// resolvedScopes is the already-validated scope list computed by fetch()
+	// via registration.ValidateScopes; when empty, DefaultScopes is used —
+	// this occurs when the decorator has no ScopesSupported restriction
+	// (unconstrained AS).
+	resolvedScopes []string
+	// grantTypes and responseTypes are the already-filtered lists computed by
+	// fetch() via registration.FilterPublicGrantTypes/FilterPublicResponseTypes —
+	// the document's declared values with unsupported entries dropped, never
+	// empty (the filters apply defaults and reject empty intersections). The
+	// stored client therefore carries only grant/response types this server
+	// can actually serve, not the document's full declaration.
+	grantTypes    []string
+	responseTypes []string
+	// tokenEndpointAuthMethod is the already-negotiated value computed by
+	// fetch() via negotiateTokenEndpointAuthMethod; the builder applies no
+	// empty-to-default fallback of its own, so the resolver is the single
+	// authority over which method a CIMD-derived client ends up with.
+	tokenEndpointAuthMethod string
+	// allowedAudiences is the decorator's configured AllowedAudiences, granted
+	// to the client verbatim (mirroring registration.New() for DCR clients,
+	// #3796): CIMD documents never declare audience, so the AS applies its own
+	// audience policy by granting the audiences it would validate a "resource"
+	// parameter against, rather than leaving the client's audience list empty.
+	// An empty list reproduces the prior nil behavior.
+	allowedAudiences []string
+}
+
 // buildFositeClient converts a ClientMetadataDocument into a fosite.Client.
 // RFC 8252 §7.3 loopback dynamic-port matching for a "http://localhost" redirect
 // URI is provided generically by registration.RegisteredLoopbackRedirectURI
 // (keyed on IsPublic() + GetRedirectURIs()), so no wrapper type is needed here.
-// resolvedScopes is the already-validated scope list computed by fetch() via
-// registration.ValidateScopes; when empty, DefaultScopes is used — this occurs when
-// the decorator has no ScopesSupported restriction (unconstrained AS).
-// grantTypes and responseTypes are the already-filtered lists computed by
-// fetch() via registration.FilterPublicGrantTypes/FilterPublicResponseTypes —
-// the document's declared values with unsupported entries dropped, never
-// empty (the filters apply defaults and reject empty intersections). The
-// stored client therefore carries only grant/response types this server can
-// actually serve, not the document's full declaration.
-// tokenEndpointAuthMethod is the already-negotiated value computed by fetch()
-// via negotiateTokenEndpointAuthMethod; this function no longer applies its
-// own empty-to-default fallback, so the resolver is the single authority over
-// which method a CIMD-derived client ends up with.
-// allowedAudiences is the decorator's configured AllowedAudiences, granted to
-// the client verbatim (mirroring registration.New() for DCR clients, #3796):
-// CIMD documents never declare audience, so the AS applies its own audience
-// policy by granting the audiences it would validate a "resource" parameter
-// against, rather than leaving the client's audience list empty. An empty
-// list here reproduces the prior nil behaviour.
-func buildFositeClient(
-	doc *cimd.ClientMetadataDocument, resolvedScopes, grantTypes, responseTypes []string,
-	tokenEndpointAuthMethod string, allowedAudiences []string,
-) fosite.Client {
+func buildFositeClient(p fositeClientParams) fosite.Client {
 	// Scopes were computed and validated by fetch() via registration.ValidateScopes,
 	// consistent with the DCR handler. Fall back to DefaultScopes only when the
 	// decorator has no ScopesSupported restriction (unconstrained AS).
-	scopes := resolvedScopes
+	scopes := p.resolvedScopes
 	if len(scopes) == 0 {
 		scopes = slices.Clone(registration.DefaultScopes)
 	}
 
 	defaultClient := &fosite.DefaultClient{
-		ID:            doc.ClientID,
-		RedirectURIs:  doc.RedirectURIs,
-		GrantTypes:    grantTypes,
-		ResponseTypes: responseTypes,
+		ID:            p.doc.ClientID,
+		RedirectURIs:  p.doc.RedirectURIs,
+		GrantTypes:    p.grantTypes,
+		ResponseTypes: p.responseTypes,
 		Scopes:        scopes,
 		// CIMD clients don't pre-declare audience; the AS applies its own
 		// audience policy by granting the audiences it would validate a
-		// "resource" parameter against (see allowedAudiences doc comment
-		// above), rather than rejecting all values with an empty list.
-		Audience: slices.Clone(allowedAudiences),
+		// "resource" parameter against (see the allowedAudiences field), rather
+		// than rejecting all values with an empty list.
+		Audience: slices.Clone(p.allowedAudiences),
 		Public:   true,
 	}
 
 	return &fosite.DefaultOpenIDConnectClient{
 		DefaultClient:           defaultClient,
-		TokenEndpointAuthMethod: tokenEndpointAuthMethod,
+		TokenEndpointAuthMethod: p.tokenEndpointAuthMethod,
 	}
 }

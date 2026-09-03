@@ -44,6 +44,9 @@ jobs:
             ${{ runner.os }}-go-build-lint-
             ${{ runner.os }}-go-build-
 
+      - name: Check go.mod version format
+        run: "! grep -qE '^go [0-9]+\\.[0-9]+\\.[1-9][0-9]*$' go.mod || { echo 'ERROR: go.mod must not pin a non-zero Go patch version (go 1.26 or go 1.26.0 are fine; a dependency floor is always X.Y.0, never a later patch)'; exit 1; }"
+
       - name: Run golangci-lint
         uses: golangci/golangci-lint-action@82606bf257cbaff209d206a39f5134f0cfbfd2ee # v9.2.1
         with:

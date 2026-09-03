@@ -1,11 +1,20 @@
 ---
 paths:
   - "**/*.go"
+  - "**/go.mod"
 ---
 
 # Go Style Rules
 
 Applies to all Go files in the project.
+
+## Go Module (`go.mod`) Conventions
+
+- The `go` directive must not pin a non-zero patch version (`go 1.26.4` is
+  rejected by CI). `go 1.26` and `go 1.26.0` are both fine — a dependency's
+  own `go.mod` floor is always `X.Y.0`, never a later patch, so `X.Y.0` is
+  allowed to unblock a forced bump (e.g. picking up a CVE fix) without
+  reintroducing the patch-version churn this rule exists to prevent.
 
 ## File Organization
 - Public methods in the top half of files, private methods in the bottom half

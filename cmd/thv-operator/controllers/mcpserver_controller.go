@@ -288,6 +288,7 @@ func (r *MCPServerReconciler) Reconcile(ctx context.Context, req ctrl.Request) (
 		return ctrl.Result{}, err
 	} else if shouldTriggerRestart {
 		// Return and requeue to avoid double-processing after triggering restart
+		//nolint:staticcheck // Requeue preserves the controller's existing rate-limited update behavior.
 		return ctrl.Result{Requeue: true}, nil
 	}
 
@@ -513,6 +514,7 @@ func (r *MCPServerReconciler) Reconcile(ctx context.Context, req ctrl.Request) (
 			return ctrl.Result{}, err
 		}
 		// Deployment created successfully - return and requeue
+		//nolint:staticcheck // Requeue preserves the controller's existing rate-limited update behavior.
 		return ctrl.Result{Requeue: true}, nil
 	} else if err != nil {
 		ctxLogger.Error(err, "Failed to get Deployment")
@@ -533,6 +535,7 @@ func (r *MCPServerReconciler) Reconcile(ctx context.Context, req ctrl.Request) (
 			return ctrl.Result{}, err
 		}
 		// Spec updated - return and requeue
+		//nolint:staticcheck // Requeue preserves the controller's existing rate-limited update behavior.
 		return ctrl.Result{Requeue: true}, nil
 	}
 
@@ -554,6 +557,7 @@ func (r *MCPServerReconciler) Reconcile(ctx context.Context, req ctrl.Request) (
 			return ctrl.Result{}, err
 		}
 		// Service created successfully - return and requeue
+		//nolint:staticcheck // Requeue preserves the controller's existing rate-limited create behavior.
 		return ctrl.Result{Requeue: true}, nil
 	} else if err != nil {
 		ctxLogger.Error(err, "Failed to get Service")
@@ -612,6 +616,7 @@ func (r *MCPServerReconciler) Reconcile(ctx context.Context, req ctrl.Request) (
 			return ctrl.Result{}, err
 		}
 		// Spec updated - return and requeue
+		//nolint:staticcheck // Requeue preserves the controller's existing rate-limited update behavior.
 		return ctrl.Result{Requeue: true}, nil
 	}
 
@@ -632,6 +637,7 @@ func (r *MCPServerReconciler) Reconcile(ctx context.Context, req ctrl.Request) (
 			return ctrl.Result{}, err
 		}
 		// Spec updated - return and requeue
+		//nolint:staticcheck // Requeue preserves the controller's existing rate-limited update behavior.
 		return ctrl.Result{Requeue: true}, nil
 	}
 

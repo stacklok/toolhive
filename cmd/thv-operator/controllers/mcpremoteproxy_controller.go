@@ -557,6 +557,7 @@ func (r *MCPRemoteProxyReconciler) ensureDeployment(
 			ctxLogger.Error(err, "Failed to update Deployment")
 			return ctrl.Result{}, err
 		}
+		//nolint:staticcheck // Requeue preserves the controller's existing rate-limited update behavior.
 		return ctrl.Result{Requeue: true}, nil
 	}
 
@@ -608,6 +609,7 @@ func (r *MCPRemoteProxyReconciler) ensureService(
 			ctxLogger.Error(err, "Failed to update Service")
 			return ctrl.Result{}, err
 		}
+		//nolint:staticcheck // Requeue preserves the controller's existing rate-limited update behavior.
 		return ctrl.Result{Requeue: true}, nil
 	}
 

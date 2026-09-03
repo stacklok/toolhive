@@ -231,6 +231,14 @@ type RunConfig struct {
 	//
 	// See DelegateClientRunConfig for the per-client field reference.
 	DelegateClients []DelegateClientRunConfig `json:"delegate_clients,omitempty" yaml:"delegate_clients,omitempty"`
+
+	// SPIFFETrustDomains declares SPIFFE trust roots. Each declaration must be
+	// referenced by an InboundGrants.SPIFFEClientAuth entry.
+	SPIFFETrustDomains []SPIFFETrustDomainRunConfig `json:"spiffe_trust_domains,omitempty" yaml:"spiffe_trust_domains,omitempty"`
+
+	// InboundGrants declares canonical inbound grant configuration, including
+	// SPIFFE client authentication. See InboundGrantsRunConfig.
+	InboundGrants *InboundGrantsRunConfig `json:"inbound_grants,omitempty" yaml:"inbound_grants,omitempty"`
 }
 
 // DelegateClientRunConfig declares a pre-provisioned confidential OAuth
@@ -299,7 +307,52 @@ func (c *RunConfig) Validate() error {
 		c.ForceConfidentialRedirectURIs, c.AllowConfidentialClientRegistration); err != nil {
 		return err
 	}
+	if err := ValidateSPIFFETrust(
+		c.SPIFFETrustDomains, c.InboundGrants, c.ScopesSupported, c.AllowedAudiences,
+	); err != nil {
+		return err
+	}
+	if err := validateSPIFFENotYetEnforced(c.SPIFFETrustDomains); err != nil {
+		return err
+	}
 	return c.validateBaselineClientScopes()
+}
+
+// validateSPIFFENotYetEnforced hard-rejects a non-empty SPIFFE trust
+// configuration. ValidateSPIFFETrust above confirms the configuration is
+// well-formed, but well-formed is not the same as enforced: nothing in this
+// build ever verifies an X.509-SVID or JWT-SVID against the configured trust
+// bundle, so a valid, non-empty SPIFFE trust configuration currently has no
+// runtime authentication effect. Accepting it silently would let an operator
+// believe SPIFFE client authentication is active when no credential is ever
+// checked. This rejection must be removed by the future PR that adds real
+// SVID verification against the configured trust bundle.
+func validateSPIFFENotYetEnforced(trustDomains []SPIFFETrustDomainRunConfig) error {
+	if len(trustDomains) == 0 {
+		return nil
+	}
+	return fmt.Errorf(
+		"spiffe_trust_domains: SPIFFE client authentication is not yet enforced by this build " +
+			"(no X.509-SVID or JWT-SVID is verified against the configured trust bundle); " +
+			"remove this configuration until a verification consumer lands")
+}
+
+// validateConfigSPIFFENotYetEnforced is validateSPIFFENotYetEnforced's
+// Config-level counterpart: a caller that constructs Config directly (e.g.
+// authserver.New) bypasses RunConfig.Validate() entirely, so the same
+// fail-loud rejection must also apply to Config.SPIFFETrust -- otherwise a
+// non-empty, well-formed SPIFFE trust policy could start a server through
+// this path with no authentication consumer ever wired to it. Associations
+// is nil-safe and empty for both a nil SPIFFETrust and one with no
+// configured associations.
+func validateConfigSPIFFENotYetEnforced(trust *SPIFFETrustConfig) error {
+	if len(trust.Associations()) == 0 {
+		return nil
+	}
+	return fmt.Errorf(
+		"spiffe_trust: SPIFFE client authentication is not yet enforced by this build " +
+			"(no X.509-SVID or JWT-SVID is verified against the configured trust bundle); " +
+			"remove this configuration until a verification consumer lands")
 }
 
 // validateBaselineClientScopes ensures every entry in BaselineClientScopes is
@@ -353,6 +406,22 @@ func validateDelegateClients(
 			return fmt.Errorf("delegate_clients: duplicate client_id %q", client.ClientID)
 		}
 		seen[client.ClientID] = struct{}{}
+		// A URL-shaped client_id collides with CIMD (see
+		// oauthproto.IsClientIDMetadataDocumentURL): when CIMD is enabled, the
+		// CIMDStorageDecorator resolves any client_id matching this shape from
+		// a live-fetched document instead of this pre-provisioned row, and its
+		// write-through persistence (CIMDStorageDecorator.fetch) would then
+		// overwrite this confidential delegate client in place — downgrading
+		// it to a public client and discarding its hashed secret. Reject the
+		// shape outright regardless of whether CIMD is enabled in this
+		// particular deployment, since the config is portable across
+		// deployments where it may be.
+		if oauthproto.IsClientIDMetadataDocumentURL(client.ClientID) {
+			return fmt.Errorf(
+				"delegate_clients: client_id %q looks like a CIMD client metadata URL, "+
+					"which collides with CIMD client resolution — pre-provisioned delegate "+
+					"clients must use an opaque, non-URL client_id", client.ClientID)
+		}
 
 		if client.ClientSecretFile == "" && client.ClientSecretEnvVar == "" {
 			return fmt.Errorf(
@@ -904,6 +973,37 @@ type Config struct {
 	// Multiple upstreams form a sequential authorization chain.
 	Upstreams []UpstreamConfig
 
+	// UpstreamFactory, when set, is used instead of DefaultUpstreamFactory to
+	// construct each configured upstream's OAuth2Provider. Two reasons to set it:
+	//
+	//   - Connection reuse. DefaultUpstreamFactory builds a private HTTP client
+	//     per upstream, so a process that reconstructs the server to change its
+	//     upstream set creates a fresh connection pool each time. A factory that
+	//     passes a shared client via upstream.WithHTTPClient /
+	//     upstream.WithOAuth2HTTPClient creates none. Key the sharing by
+	//     distinct trust posture rather than by host: two upstreams can share a
+	//     host while differing in CAFilePath, AllowPrivateIPs or
+	//     InsecureAllowHTTP. An injected client stays owned by the caller — see
+	//     upstream.IdleConnectionCloser — who is then responsible for its pool,
+	//     its TLS trust and its dial-time SSRF guard.
+	//   - Per-upstream failure isolation. Upstream construction inside New is
+	//     otherwise all-or-nothing: one unreachable or mistyped issuer_url fails
+	//     the whole call. A factory owning construction can apply a per-upstream
+	//     deadline and substitute a provider for a single failing upstream while
+	//     the rest serve.
+	//
+	// The factory cannot drop an upstream: every entry in Upstreams must yield a
+	// provider, and returning a nil provider with a nil error is rejected by New
+	// rather than producing an upstream that panics on the first authorization
+	// request. To serve without an upstream, omit it from Upstreams; to keep its
+	// slot in the chain, return a substitute provider.
+	//
+	// SECURITY: the returned provider validates the upstream's ID tokens and
+	// resolves user identity. A factory that returns a permissive provider
+	// bypasses upstream authentication for that leg of the chain. Delegate to
+	// DefaultUpstreamFactory for upstreams you do not need to customize.
+	UpstreamFactory UpstreamProviderFactory
+
 	// UpstreamFilter, when set, narrows the upstream authorization chain after the
 	// first leg resolves (see handlers.WithUpstreamFilter). When nil, all
 	// configured upstreams are walked — the current behavior. Pass nil itself,
@@ -942,6 +1042,23 @@ type Config struct {
 
 	// CIMDEnabled enables the CIMD storage decorator so the authorization server
 	// accepts HTTPS URLs as client_id values without prior DCR registration.
+	//
+	// A resolved CIMD client is write-through persisted into the underlying
+	// storage (see CIMDStorageDecorator.fetch) so that token-endpoint session
+	// rehydration finds it. That row is marked DCR-issued and therefore
+	// expires (DefaultDCRClientTTL, currently 30 days), but disabling
+	// CIMDEnabled does not itself evict or invalidate any row a prior enabled
+	// period already persisted — GetClient is instead wrapped to refuse any
+	// URL-shaped client_id outright while CIMDEnabled is false (see
+	// decorateStorageForCIMD / storage.NewCIMDShapeGuardStorage), so such a
+	// row simply cannot be resolved for as long as CIMD stays disabled.
+	// Re-enabling CIMDEnabled before that TTL expires makes the stale
+	// snapshot resolvable again without a fresh document fetch, until the row
+	// expires or a new fetch overwrites it. Document rotation and revocation
+	// generally follow the same rule: an existing persisted row keeps
+	// authenticating from its stored snapshot, with no re-validation of
+	// scopes, redirect URIs, or auth method, until it is naturally re-fetched
+	// or its TTL lapses.
 	CIMDEnabled bool
 
 	// CIMDCacheMaxSize is the maximum number of CIMD documents held in the LRU
@@ -991,6 +1108,12 @@ type Config struct {
 	// or environment-variable reference. See RunConfig.DelegateClients for the
 	// serialized configuration.
 	DelegateClients []DelegateClient
+
+	// SPIFFETrust is the validated, immutable runtime SPIFFE trust model. It
+	// must be constructed with NewSPIFFETrustConfig; a nil value means no
+	// SPIFFE associations are configured. The serialized declarations live on
+	// RunConfig and are converted at the RunConfig-to-Config boundary.
+	SPIFFETrust *SPIFFETrustConfig
 }
 
 // DelegateClient is the resolved form of DelegateClientRunConfig: the secret
@@ -1073,11 +1196,18 @@ func (c *Config) Validate() error {
 		return err
 	}
 
-	// RunConfig.Validate() also runs these checks (see the comment there for
-	// why: buildUpstreamConfigs's live DCR registration happens before this
-	// method is reached), but a caller that constructs Config directly bypasses
-	// that, same as the BaselineClientScopes check above.
+	return c.validateDelegationAndTrustConfig()
+}
+
+// validateDelegationAndTrustConfig groups the delegate-client and SPIFFE
+// trust checks. RunConfig.Validate() also runs these checks (see the
+// comment there for why), while a caller that constructs Config directly
+// bypasses them.
+func (c *Config) validateDelegationAndTrustConfig() error {
 	if err := c.validateDelegationConfig(); err != nil {
+		return err
+	}
+	if err := validateConfigSPIFFENotYetEnforced(c.SPIFFETrust); err != nil {
 		return err
 	}
 	c.warnTrustedIssuerAudiences()

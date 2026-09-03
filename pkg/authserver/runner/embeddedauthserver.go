@@ -245,6 +245,13 @@ func newEmbeddedAuthServerWithStorage(
 		return nil, fmt.Errorf("failed to resolve JWT-bearer grant policies: %w", err)
 	}
 
+	spiffeTrust, err := authserver.NewSPIFFETrustConfig(
+		cfg.SPIFFETrustDomains, cfg.InboundGrants, cfg.ScopesSupported, cfg.AllowedAudiences,
+	)
+	if err != nil {
+		return nil, fmt.Errorf("failed to build SPIFFE trust config: %w", err)
+	}
+
 	resolvedCfg := authserver.Config{
 		Issuer:                                    cfg.Issuer,
 		AuthorizationEndpointBaseURL:              cfg.AuthorizationEndpointBaseURL,
@@ -272,6 +279,7 @@ func newEmbeddedAuthServerWithStorage(
 		// authorization-critical data is protected without a deep copy here.
 		TrustedIssuers:  trustedIssuers,
 		DelegateClients: delegateClients,
+		SPIFFETrust:     spiffeTrust,
 	}
 
 	// 8. Create the auth server. authserver.New also asserts the DCR
@@ -313,6 +321,13 @@ func (e *EmbeddedAuthServer) Close() error {
 		e.closeErr = e.server.Close()
 	})
 	return e.closeErr
+}
+
+// CloseIdleConnections releases the idle keep-alive connections pooled by the
+// underlying server's upstream IDP providers, without touching storage. See
+// authserver.CloseIdleConnections for when to use this rather than Close.
+func (e *EmbeddedAuthServer) CloseIdleConnections() {
+	authserver.CloseIdleConnections(e.server)
 }
 
 // IDPTokenStorage returns storage for upstream IDP tokens.

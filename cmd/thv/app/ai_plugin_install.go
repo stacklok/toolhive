@@ -4,6 +4,8 @@
 package app
 
 import (
+	"fmt"
+
 	"github.com/spf13/cobra"
 
 	"github.com/stacklok/toolhive/pkg/plugins"
@@ -57,7 +59,7 @@ func aiPluginInstallCmdFunc(cmd *cobra.Command, args []string) error {
 		return err
 	}
 
-	_, err = c.Install(cmd.Context(), plugins.InstallOptions{
+	result, err := c.Install(cmd.Context(), plugins.InstallOptions{
 		Name:          args[0],
 		Scope:         plugins.Scope(aiPluginInstallScope),
 		Clients:       parseSkillInstallClients(aiPluginInstallClientsRaw),
@@ -70,5 +72,30 @@ func aiPluginInstallCmdFunc(cmd *cobra.Command, args []string) error {
 		return formatAIPluginError("install plugin", err)
 	}
 
+	printPluginInstallTrust(result)
 	return nil
+}
+
+// printPluginInstallTrust shows the trust state the install recorded — RFC
+// THV-0080 wants the pinned identity displayed prominently, not discovered
+// weeks later inside a signer-mismatch error.
+//
+// Only a recorded trust decision is printed. An install with neither — a
+// user-scope install, which writes no lock entry — returns silently, per the
+// CLI's silent-success rule: a bare "Installed <name>" carries no trust
+// information and would turn every previously quiet install into output.
+func printPluginInstallTrust(result *plugins.InstallResult) {
+	if result == nil {
+		return
+	}
+	name := result.Plugin.Metadata.Name
+	switch {
+	case result.Provenance != nil && result.Provenance.Provisional:
+		fmt.Printf("Installed %s (signed by %s; verification provisional — see lock file)\n",
+			name, result.Provenance.SignerIdentity)
+	case result.Provenance != nil:
+		fmt.Printf("Installed %s (signed by %s)\n", name, result.Provenance.SignerIdentity)
+	case result.Unsigned:
+		fmt.Printf("Installed %s (unsigned — recorded as an explicit exception in the lock file)\n", name)
+	}
 }

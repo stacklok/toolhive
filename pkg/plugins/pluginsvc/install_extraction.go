@@ -4,6 +4,7 @@
 package pluginsvc
 
 import (
+	"bytes"
 	"context"
 	"errors"
 	"fmt"
@@ -73,12 +74,54 @@ func (s *service) dispatchExtraction(
 	storeErr error,
 	clientTypes []string,
 ) (*plugins.InstallResult, error) {
-	if !opts.SyncRestore && isExtractionNoOp(existing, storeErr, opts, clientTypes) {
+	// Freshly verified trust material has to reach the stored record, so an
+	// install carrying a bundle that differs from the record's can take
+	// neither the no-op nor the same-digest client-only path: both return
+	// `existing` verbatim without persisting anything. Project installs
+	// predating lock tracking recorded no bundle (verification was gated
+	// off), so a same-digest reinstall would otherwise write a lock entry
+	// naming a signer that verifyStoredSignature cannot re-verify offline —
+	// it fails closed on provenance-without-bundle — while leaving on-disk
+	// drift unrepaired. Routing to the upgrade path rematerializes and
+	// persists both.
+	//
+	// Compared by bytes rather than by "the record has none": a stored bundle
+	// that is present but stale or corrupt is exactly as unusable offline as
+	// a missing one, and keeping it would make an explicit reinstall — the
+	// user's remedy for a failing `sync --check` — verify a good bundle and
+	// then discard it, so the next offline sync fails identically.
+	mustPersistTrust := storeErr == nil && len(opts.SigstoreBundle) > 0 &&
+		!bytes.Equal(opts.SigstoreBundle, existing.SigstoreBundle)
+
+	// A record not yet tracked in the lock file is about to be given an entry
+	// asserting a contentDigest computed from the freshly downloaded source
+	// (lockContentDigest hashes opts.LayerData, never the disk) and, when
+	// verification succeeded, a signer identity. Nothing has established that
+	// what is on disk still matches it: the no-op and same-digest paths
+	// return `existing` verbatim. So a pre-lock-tracking tree modified since
+	// it was installed stays active while the new entry describes pristine
+	// content signed by a real identity, and only a later `sync --check`
+	// notices the contentDigest mismatch.
+	//
+	// Keyed on the unmanaged-to-managed transition rather than on freshly
+	// verified provenance, which would miss two shapes: VerifyGit returns a
+	// nil Bundle (its transparency-log proof is a tracked follow-up), so
+	// mustPersistTrust cannot fire for a git install at all, and an
+	// --allow-unsigned reinstall records a contentDigest with no provenance
+	// and the same gap. The invariant is that a lock entry only ever
+	// describes content the install that wrote it actually materialized.
+	becomesManaged := storeErr == nil && !existing.Managed && scope == plugins.ScopeProject
+
+	// Both reasons need the upgrade path: it rematerializes for every client
+	// and persists the record, where the two short-circuits below do neither.
+	mustRematerialize := mustPersistTrust || becomesManaged
+
+	if !opts.SyncRestore && !mustRematerialize && isExtractionNoOp(existing, storeErr, opts, clientTypes) {
 		return &plugins.InstallResult{Plugin: existing}, nil
 	}
 
 	digestMatches := storeErr == nil && existing.Digest == opts.Digest
-	if digestMatches && !opts.SyncRestore {
+	if digestMatches && !opts.SyncRestore && !mustRematerialize {
 		return s.installExtractionSameDigestNewClients(ctx, opts, scope, existing, clientTypes)
 	}
 	if storeErr == nil {
@@ -89,9 +132,12 @@ func (s *service) dispatchExtraction(
 
 // isExtractionNoOp reports whether the install can be short-circuited because
 // the same digest and all requested clients are already present. Mirror of
-// skillsvc.isExtractionNoOp. Callers must also check SyncRestore: a lock-driven
-// reinstall repairs on-disk drift at the same digest, so the no-op path must
-// not apply.
+// skillsvc.isExtractionNoOp. Callers must also check SyncRestore and whether
+// the install still has to rematerialize (see dispatchExtraction): a
+// lock-driven reinstall repairs on-disk drift at the same digest, a record
+// whose stored bundle differs from the freshly verified one needs it
+// written, and a record about to gain its first lock entry has to be made
+// to match the contentDigest that entry will assert.
 func isExtractionNoOp(existing plugins.InstalledPlugin, storeErr error, opts plugins.InstallOptions, clientTypes []string) bool {
 	if storeErr != nil || existing.Digest != opts.Digest {
 		return false
@@ -690,10 +736,10 @@ func missingClients(existing, requested []string) []string {
 }
 
 // lockContentDigest computes the canonical-tree dirhash for a project-scope
-// install when the lock file feature is enabled. Empty when the install is
-// not lock-scoped, so user-scope and ungated installs skip the extra extract.
+// install. Empty when the install is not lock-scoped, so user-scope installs
+// skip the extra extract.
 func lockContentDigest(opts plugins.InstallOptions, scope plugins.Scope) (string, error) {
-	if scope != plugins.ScopeProject || !plugins.LockFileFeatureEnabled() {
+	if scope != plugins.ScopeProject {
 		return "", nil
 	}
 	digest, err := computeContentDigest(opts.LayerData)

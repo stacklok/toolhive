@@ -52,6 +52,9 @@ func (cm *ClientManager) ConfigureLLMGateway(clientType ClientApp, cfg llmgatewa
 	if appCfg.LLMGatewayMode == llmgateway.ModeCodexAuth {
 		return cm.configureCodexAuth(appCfg, cfg)
 	}
+	if appCfg.LLMGatewayMode == llmgateway.ModeVSCode {
+		return cm.configureVSCode(appCfg, cfg)
+	}
 
 	path := cm.buildLLMSettingsPath(appCfg)
 
@@ -188,6 +191,9 @@ func (cm *ClientManager) RevertLLMGateway(clientType ClientApp, configPath strin
 	if appCfg.LLMGatewayMode == llmgateway.ModeCodexAuth {
 		return cm.revertCodexAuth(appCfg, configPath)
 	}
+	if appCfg.LLMGatewayMode == llmgateway.ModeVSCode {
+		return cm.revertVSCode(appCfg, configPath)
+	}
 
 	return revertJSONPointerGateway(appCfg, configPath)
 }
@@ -281,6 +287,8 @@ func (cm *ClientManager) LLMGatewayModeFor(clientType ClientApp) string {
 //
 // Requiring both CLI signals prevents false positives from leftover config
 // directories (e.g. ~/.claude or ~/.gemini) after a tool is uninstalled.
+// GUI editors leave LLMBinaryName empty so detection matches the settings-dir
+// check used by IsClientInstalled; those apps are often absent from $PATH.
 func (cm *ClientManager) DetectedLLMGatewayClients() []ClientApp {
 	var result []ClientApp
 	for i := range cm.clientIntegrations {
@@ -317,6 +325,13 @@ func (cm *ClientManager) isClientInstalled(cfg *clientAppConfig) bool {
 	return installed
 }
 
+func (cm *ClientManager) llmDetectDir(cfg *clientAppConfig) string {
+	if cfg.LLMDetectRelPath != nil {
+		return buildConfigFilePath("", cfg.LLMDetectRelPath, cfg.LLMDetectPlatformPrefix, []string{cm.homeDir})
+	}
+	return filepath.Dir(cm.buildLLMSettingsPath(cfg))
+}
+
 // sharedCLIDetection implements the generic CLI detection shared by all
 // LLM-gateway-capable clients: the detection directory (or settings directory)
 // must exist, and when LLMBinaryName is set the binary must be found on $PATH.
@@ -325,13 +340,7 @@ func (cm *ClientManager) sharedCLIDetection(cfg *clientAppConfig) bool {
 	// exist until first configured (e.g. Claude Desktop's configLibrary),
 	// LLMDetectRelPath points at a directory that exists once the app is
 	// installed. Otherwise fall back to the settings directory.
-	detectDir := func() string {
-		if cfg.LLMDetectRelPath != nil {
-			return buildConfigFilePath("", cfg.LLMDetectRelPath, cfg.LLMDetectPlatformPrefix, []string{cm.homeDir})
-		}
-		return filepath.Dir(cm.buildLLMSettingsPath(cfg))
-	}()
-	if _, err := os.Stat(detectDir); err != nil {
+	if _, err := os.Stat(cm.llmDetectDir(cfg)); err != nil {
 		return false
 	}
 	if cfg.LLMBinaryName != "" {
@@ -343,6 +352,23 @@ func (cm *ClientManager) sharedCLIDetection(cfg *clientAppConfig) bool {
 		}
 	}
 	return true
+}
+
+// LLMClientDetectionHint explains why clientType was not detected. Empty when
+// there is nothing extra to say (unknown client, already installed, or the
+// settings directory itself is missing).
+func (cm *ClientManager) LLMClientDetectionHint(clientType ClientApp) string {
+	cfg := cm.lookupClientAppConfig(clientType)
+	if cfg == nil || cfg.LLMGatewayMode == "" || cfg.LLMBinaryName == "" {
+		return ""
+	}
+	if cm.isClientInstalled(cfg) {
+		return ""
+	}
+	if _, err := os.Stat(cm.llmDetectDir(cfg)); err != nil {
+		return ""
+	}
+	return fmt.Sprintf("settings directory exists but %q was not found on PATH", cfg.LLMBinaryName)
 }
 
 // buildLLMSettingsPath resolves the absolute path to the LLM settings file

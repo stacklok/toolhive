@@ -767,10 +767,10 @@ func TestCallbackHandler_FilterError_FailsAuthorization(t *testing.T) {
 	assert.Contains(t, location, "state=client-state-error", "should preserve client state")
 	assert.Equal(t, 1, filter.calls)
 
-	// provider-1's already-stored tokens are cleaned up.
-	for key := range storState.upstreamTokens {
-		assert.Failf(t, "upstream tokens should be cleaned up", "found leftover token %q", key)
-	}
+	// A filter error does not invalidate provider-1's already-stored credential, so it is
+	// preserved; only the authorization fails.
+	assert.Contains(t, storState.upstreamTokens, sessionID+":provider-1",
+		"a filter error must not delete the already-stored credential")
 }
 
 func TestCallbackHandler_SecondLeg_ReusesChain_DoesNotReRunFilter(t *testing.T) {
@@ -931,10 +931,12 @@ func TestCallbackHandler_SubsequentLeg_MissingChain_FailsClosed(t *testing.T) {
 	assert.Contains(t, location, "error=server_error")
 	assert.Contains(t, location, "state=client-original-state")
 
-	// Upstream tokens for the session are cleaned up.
-	for key := range storState.upstreamTokens {
-		assert.Failf(t, "upstream tokens should be cleaned up", "found leftover token %q", key)
-	}
+	// A stale pending fails the authorization closed but does not invalidate any
+	// credential, so both the earlier leg and the leg just processed are preserved.
+	assert.Contains(t, storState.upstreamTokens, sessionID+":provider-1",
+		"the earlier leg's token must survive a fail-closed stale pending")
+	assert.Contains(t, storState.upstreamTokens, sessionID+":provider-2",
+		"the just-processed leg's token must survive a fail-closed stale pending")
 }
 
 func TestCallbackHandler_SingleLeg_IssuesCodeWithoutChaining(t *testing.T) {
@@ -1180,7 +1182,7 @@ func TestCallbackHandler_TwoUpstreams_FreshSecretsPerLeg(t *testing.T) {
 	assert.Equal(t, "S256", nextPending.PKCEMethod)
 }
 
-func TestCallbackHandler_TwoUpstreams_AuthorizationURLError_CleansUp(t *testing.T) {
+func TestCallbackHandler_TwoUpstreams_AuthorizationURLError_PreservesTokens(t *testing.T) {
 	t.Parallel()
 	handler, storState, _, mockProvider2 := multiUpstreamTestSetup(t)
 
@@ -1220,21 +1222,419 @@ func TestCallbackHandler_TwoUpstreams_AuthorizationURLError_CleansUp(t *testing.
 	assert.Contains(t, location, "error=server_error", "should contain server_error")
 	assert.Contains(t, location, "state=client-state-authurl", "should preserve client state")
 
-	// Upstream tokens from the completed first leg should be cleaned up
-	for key := range storState.upstreamTokens {
-		assert.Failf(t, "upstream tokens should be cleaned up",
-			"found leftover token with key %q", key)
-	}
+	// The completed first leg's credential is preserved — a failure building the NEXT
+	// leg's authorization URL does not invalidate it.
+	assert.Contains(t, storState.upstreamTokens, sessionID+":provider-1",
+		"the first leg's token must survive a next-leg authorization-URL failure")
 
-	// The pending authorization created for the second leg should also be cleaned up.
-	// Only the first-leg pending remains (but it was deleted by CallbackHandler on load).
+	// The ephemeral pending authorizations are still cleaned up: the first-leg pending was
+	// deleted on load, and the second-leg pending is deleted on this error path.
 	for state, p := range storState.pendingAuths {
 		assert.Failf(t, "no pending authorizations should remain",
 			"found pending for provider %q with state %q", p.UpstreamProviderName, state)
 	}
 }
 
-func TestCallbackHandler_TwoUpstreams_StorePendingError_CleansUp(t *testing.T) {
+// TestCallbackHandler_MismatchCleanup_LeavesFilteredOutProvider is the regression guard
+// for the one path that deletes upstream tokens — the confirmed identity-mismatch
+// fail-closed. That cleanup must be scoped to the EFFECTIVE chain, not to every
+// configured provider: a provider the upstream filter excluded from the chain is still
+// the user's live credential and must survive.
+//
+// This is stronger than skip-unconfigured coverage: the survivor here (provider-3) IS a
+// configured upstream, so the only thing keeping it alive is that cleanup deletes the
+// effective chain rather than the full configured set. Three providers are configured;
+// the effective chain carried into this (final) leg is [provider-1, provider-2], as a
+// first-leg filter would have narrowed it, excluding provider-3.
+func TestCallbackHandler_MismatchCleanup_LeavesFilteredOutProvider(t *testing.T) {
+	t.Parallel()
+
+	provider, oauth2Config, stor, storState := baseTestSetup(t)
+	p2 := &mockIDPProvider{
+		providerType: upstream.ProviderTypeOAuth2,
+		exchangeResult: &upstream.Identity{
+			Tokens:  &upstream.Tokens{AccessToken: "p2-at", ExpiresAt: time.Now().Add(time.Hour)},
+			Subject: "user-from-provider2",
+		},
+	}
+	upstreams := []NamedUpstream{
+		{Name: "provider-1", Provider: &mockIDPProvider{providerType: upstream.ProviderTypeOAuth2}},
+		{Name: "provider-2", Provider: p2},
+		{Name: "provider-3", Provider: &mockIDPProvider{providerType: upstream.ProviderTypeOAuth2}},
+	}
+	handler, err := NewHandler(provider, oauth2Config, stor, upstreams)
+	require.NoError(t, err)
+
+	sessionID := "mismatch-scoping-session"
+
+	// provider-1's stored token disagrees with the carried subject → verifyChainIdentity
+	// will report a confirmed mismatch and tear down the effective chain.
+	storState.upstreamTokens[sessionID+":provider-1"] = &storage.UpstreamTokens{
+		ProviderID:  "provider-1",
+		AccessToken: "p1-at",
+		ExpiresAt:   time.Now().Add(time.Hour),
+		ClientID:    testAuthClientID,
+		UserID:      "tampered-user-id",
+	}
+	// provider-3 is a configured upstream the filter excluded from this chain; it is the
+	// user's live credential and must survive the whole-chain cleanup.
+	filteredOutKey := sessionID + ":provider-3"
+	storState.upstreamTokens[filteredOutKey] = &storage.UpstreamTokens{
+		ProviderID:  "provider-3",
+		AccessToken: "keep-me",
+		ExpiresAt:   time.Now().Add(time.Hour),
+		ClientID:    testAuthClientID,
+		UserID:      "correct-user-id",
+	}
+
+	// Final leg (provider-2) of an effective chain that excludes provider-3.
+	secondLegState := "mismatch-scoping-state"
+	storState.pendingAuths[secondLegState] = &storage.PendingAuthorization{
+		ClientID:             testAuthClientID,
+		RedirectURI:          testAuthRedirectURI,
+		State:                "client-original-state",
+		PKCEChallenge:        "client-challenge",
+		PKCEMethod:           "S256",
+		Scopes:               []string{"openid"},
+		InternalState:        secondLegState,
+		UpstreamPKCEVerifier: "mismatch-scoping-verifier-123456789012345678",
+		UpstreamNonce:        "mismatch-scoping-nonce",
+		UpstreamProviderName: "provider-2",
+		SessionID:            sessionID,
+		ChainUpstreams:       []string{"provider-1", "provider-2"},
+		ResolvedUserID:       "correct-user-id",
+		CreatedAt:            time.Now(),
+	}
+
+	req := httptest.NewRequest(http.MethodGet, "/oauth/callback?code=provider2-code&state="+secondLegState, nil)
+	rec := httptest.NewRecorder()
+	handler.CallbackHandler(rec, req)
+
+	assert.Equal(t, http.StatusSeeOther, rec.Code, "a confirmed mismatch should fail closed")
+
+	// The effective chain [provider-1, provider-2] is torn down...
+	assert.NotContains(t, storState.upstreamTokens, sessionID+":provider-1",
+		"an in-chain provider should be cleaned up on a confirmed mismatch")
+	assert.NotContains(t, storState.upstreamTokens, sessionID+":provider-2",
+		"an in-chain provider should be cleaned up on a confirmed mismatch")
+	// ...but the configured provider the filter excluded from the chain survives. If
+	// cleanup widened from the effective chain to every configured provider, this fails.
+	require.Contains(t, storState.upstreamTokens, filteredOutKey,
+		"a configured provider outside the effective chain must survive the cleanup")
+	assert.Equal(t, "keep-me", storState.upstreamTokens[filteredOutKey].AccessToken)
+}
+
+// TestCallbackHandler_VerifyChainIdentity_StorageFailure_PreservesTokens covers the
+// distinction the callback draws between verifyChainIdentity's two failure modes. A
+// transient GetAllUpstreamTokens failure on the identity check — the second bulk read,
+// after nextMissingUpstream's first read succeeds — is NOT a confirmed mismatch, so the
+// authorization fails closed but every upstream token is preserved. Only a confirmed
+// mismatch tears the chain down.
+func TestCallbackHandler_VerifyChainIdentity_StorageFailure_PreservesTokens(t *testing.T) {
+	t.Parallel()
+	// Fail the SECOND GetAllUpstreamTokens call: nextMissingUpstream's read (call 1)
+	// succeeds, verifyChainIdentity's read (call 2) fails.
+	handler, storState, _, _ := multiUpstreamTestSetupWithStorage(t,
+		withGetAllUpstreamTokensErrorAfterCalls(1, errors.New("storage unavailable")))
+
+	sessionID := "verify-storage-fail-session"
+	const leg1User = "resolved-user-id-from-leg1"
+
+	// First leg keyed to leg1User, so identities agree — the ONLY failure is the
+	// transient read, not a mismatch.
+	storState.upstreamTokens[sessionID+":provider-1"] = &storage.UpstreamTokens{
+		ProviderID:  "provider-1",
+		AccessToken: "p1-at",
+		ExpiresAt:   time.Now().Add(time.Hour),
+		ClientID:    testAuthClientID,
+		UserID:      leg1User,
+	}
+
+	secondLegState := "verify-storage-fail-state"
+	storState.pendingAuths[secondLegState] = &storage.PendingAuthorization{
+		ClientID:             testAuthClientID,
+		RedirectURI:          testAuthRedirectURI,
+		State:                "client-original-state",
+		PKCEChallenge:        "client-challenge",
+		PKCEMethod:           "S256",
+		Scopes:               []string{"openid"},
+		InternalState:        secondLegState,
+		UpstreamPKCEVerifier: "verify-storage-fail-verifier-1234567890123456",
+		UpstreamNonce:        "verify-storage-fail-nonce",
+		UpstreamProviderName: "provider-2",
+		SessionID:            sessionID,
+		ChainUpstreams:       []string{"provider-1", "provider-2"},
+		ResolvedUserID:       leg1User,
+		CreatedAt:            time.Now(),
+	}
+
+	req := httptest.NewRequest(http.MethodGet, "/oauth/callback?code=provider2-code&state="+secondLegState, nil)
+	rec := httptest.NewRecorder()
+	handler.CallbackHandler(rec, req)
+
+	assert.Equal(t, http.StatusSeeOther, rec.Code, "a transient identity-check read failure should fail authorization")
+
+	// Neither leg is deleted: a storage failure is not a confirmed mismatch.
+	assert.Contains(t, storState.upstreamTokens, sessionID+":provider-1",
+		"a transient identity-check read failure must not delete tokens")
+	assert.Contains(t, storState.upstreamTokens, sessionID+":provider-2",
+		"a transient identity-check read failure must not delete tokens")
+}
+
+// TestCleanupUpstreamTokens_SkipsUnconfiguredAndEmpty exercises cleanupUpstreamTokens
+// directly: it skips empty names and any provider that is not a configured upstream — the
+// guard that stops a corrupted or tampered pending row reaching a pre-resolveChain
+// cleanup site from naming an arbitrary delete target — while removing the configured
+// ones.
+func TestCleanupUpstreamTokens_SkipsUnconfiguredAndEmpty(t *testing.T) {
+	t.Parallel()
+	handler, storState, _, _ := multiUpstreamTestSetup(t)
+
+	sessionID := "direct-cleanup-session"
+	for _, p := range []string{"provider-1", "provider-2", "not-configured"} {
+		storState.upstreamTokens[sessionID+":"+p] = &storage.UpstreamTokens{
+			ProviderID:  p,
+			AccessToken: "at",
+			ExpiresAt:   time.Now().Add(time.Hour),
+			ClientID:    testAuthClientID,
+			UserID:      "user-1",
+		}
+	}
+
+	handler.cleanupUpstreamTokens(t.Context(), sessionID,
+		[]string{"provider-1", "", "not-configured", "provider-2"})
+
+	// Configured providers are removed...
+	assert.NotContains(t, storState.upstreamTokens, sessionID+":provider-1")
+	assert.NotContains(t, storState.upstreamTokens, sessionID+":provider-2")
+	// ...while the unconfigured name is skipped (its row survives) and the empty name is
+	// a no-op rather than a panic.
+	assert.Contains(t, storState.upstreamTokens, sessionID+":not-configured",
+		"a name that is not a configured upstream must not be deleted")
+}
+
+// TestCallbackHandler_StoreUpstreamTokensError_LeavesExistingTokens covers the
+// StoreUpstreamTokens-failure path: a failed store wrote nothing, so it must delete
+// nothing. The user's earlier leg (provider-1) and any existing credential for the leg
+// being processed (a re-connect of provider-2 whose fresh store failed) are both left
+// intact rather than wiped by the failure.
+func TestCallbackHandler_StoreUpstreamTokensError_LeavesExistingTokens(t *testing.T) {
+	t.Parallel()
+	handler, storState, _, _ := multiUpstreamTestSetupWithStorage(t,
+		withStoreUpstreamTokensError(errors.New("storage unavailable")))
+
+	sessionID := "store-err-session"
+	const leg1User = "resolved-user-id-from-leg1"
+
+	// First leg already completed: provider-1's token exists.
+	storState.upstreamTokens[sessionID+":provider-1"] = &storage.UpstreamTokens{
+		ProviderID:  "provider-1",
+		AccessToken: "p1-at",
+		ExpiresAt:   time.Now().Add(time.Hour),
+		ClientID:    testAuthClientID,
+		UserID:      leg1User,
+	}
+
+	// provider-2 is already connected too — this is a re-connect whose fresh store will
+	// fail. Its existing credential must survive the failure.
+	existingP2 := sessionID + ":provider-2"
+	storState.upstreamTokens[existingP2] = &storage.UpstreamTokens{
+		ProviderID:  "provider-2",
+		AccessToken: "existing-p2-at",
+		ExpiresAt:   time.Now().Add(time.Hour),
+		ClientID:    testAuthClientID,
+		UserID:      leg1User,
+	}
+
+	secondLegState := "store-err-second-leg-state"
+	storState.pendingAuths[secondLegState] = &storage.PendingAuthorization{
+		ClientID:             testAuthClientID,
+		RedirectURI:          testAuthRedirectURI,
+		State:                "client-original-state",
+		PKCEChallenge:        "client-challenge",
+		PKCEMethod:           "S256",
+		Scopes:               []string{"openid"},
+		InternalState:        secondLegState,
+		UpstreamPKCEVerifier: "store-err-verifier-123456789012345678901234",
+		UpstreamNonce:        "store-err-nonce",
+		UpstreamProviderName: "provider-2",
+		SessionID:            sessionID,
+		ChainUpstreams:       []string{"provider-1", "provider-2"},
+		ResolvedUserID:       leg1User,
+		ResolvedUserName:     "First Leg User",
+		ResolvedUserEmail:    "firstleg@example.com",
+		CreatedAt:            time.Now(),
+	}
+
+	req := httptest.NewRequest(http.MethodGet, "/oauth/callback?code=provider2-code&state="+secondLegState, nil)
+	rec := httptest.NewRecorder()
+	handler.CallbackHandler(rec, req)
+
+	assert.Equal(t, http.StatusSeeOther, rec.Code, "a store failure should produce a fosite error redirect")
+	assert.Contains(t, rec.Header().Get("Location"), "error=server_error")
+
+	// A failed store deletes nothing: the earlier leg and the existing provider-2
+	// credential both survive.
+	assert.Contains(t, storState.upstreamTokens, sessionID+":provider-1",
+		"an earlier leg's token must survive a later leg's store failure")
+	require.Contains(t, storState.upstreamTokens, existingP2,
+		"an existing credential must survive a re-connect whose fresh store failed")
+	assert.Equal(t, "existing-p2-at", storState.upstreamTokens[existingP2].AccessToken)
+}
+
+// TestCallbackHandler_NextMissingUpstreamError_PreservesTokens covers the
+// nextMissingUpstream-failure path: a transient chain-state read (GetAllUpstreamTokens)
+// error after the first leg has stored its token fails the authorization but preserves
+// the token — a storage blip does not invalidate a collected credential.
+func TestCallbackHandler_NextMissingUpstreamError_PreservesTokens(t *testing.T) {
+	t.Parallel()
+	handler, storState, _, _ := multiUpstreamTestSetupWithStorage(t,
+		withGetAllUpstreamTokensError(errors.New("storage unavailable")))
+
+	sessionID := "next-missing-err-session"
+	firstLegState := "next-missing-err-first-leg-state"
+	storState.pendingAuths[firstLegState] = &storage.PendingAuthorization{
+		ClientID:             testAuthClientID,
+		RedirectURI:          testAuthRedirectURI,
+		State:                "client-state-next-missing",
+		PKCEChallenge:        "challenge-next-missing",
+		PKCEMethod:           "S256",
+		Scopes:               []string{"openid"},
+		InternalState:        firstLegState,
+		UpstreamPKCEVerifier: "next-missing-verifier-12345678901234567890",
+		UpstreamNonce:        "next-missing-nonce",
+		UpstreamProviderName: "provider-1",
+		SessionID:            sessionID,
+		CreatedAt:            time.Now(),
+	}
+
+	req := httptest.NewRequest(http.MethodGet, "/oauth/callback?code=p1-code&state="+firstLegState, nil)
+	rec := httptest.NewRecorder()
+	handler.CallbackHandler(rec, req)
+
+	assert.Equal(t, http.StatusSeeOther, rec.Code, "a chain-state read failure should produce a fosite error redirect")
+	assert.Contains(t, rec.Header().Get("Location"), "error=server_error")
+
+	// The first leg's token survives a transient chain-state read failure.
+	assert.Contains(t, storState.upstreamTokens, sessionID+":provider-1",
+		"a transient nextMissingUpstream failure must not delete the stored token")
+}
+
+// TestCallbackHandler_WriteAuthorizationResponseError_OnSatisfiedChain_PreservesTokens
+// covers the path reached when writeAuthorizationResponse fails after a multi-upstream
+// chain is fully satisfied and identity-verified. That downstream failure (client lookup
+// / redirect / code generation) does not invalidate the collected credentials, so all
+// upstream tokens are preserved — matching the SingleLeg branch. GetClient is wired to
+// fail only on its second call: the first (which builds the error-redirect requester)
+// succeeds so the failure still produces a redirect, the second (inside
+// writeAuthorizationResponse) drives the failure.
+func TestCallbackHandler_WriteAuthorizationResponseError_OnSatisfiedChain_PreservesTokens(t *testing.T) {
+	t.Parallel()
+	handler, storState, _, _ := multiUpstreamTestSetupWithStorage(t,
+		withGetClientErrorAfterCalls(1, errors.New("get client unavailable")))
+
+	sessionID := "satisfied-writeresp-err-session"
+	const leg1User = "resolved-user-id-from-leg1"
+
+	// First leg already completed, keyed to leg1User so verifyChainIdentity passes.
+	storState.upstreamTokens[sessionID+":provider-1"] = &storage.UpstreamTokens{
+		ProviderID:  "provider-1",
+		AccessToken: "p1-at",
+		ExpiresAt:   time.Now().Add(time.Hour),
+		ClientID:    testAuthClientID,
+		UserID:      leg1User,
+	}
+
+	secondLegState := "satisfied-writeresp-err-state"
+	storState.pendingAuths[secondLegState] = &storage.PendingAuthorization{
+		ClientID:             testAuthClientID,
+		RedirectURI:          testAuthRedirectURI,
+		State:                "client-original-state",
+		PKCEChallenge:        "client-challenge",
+		PKCEMethod:           "S256",
+		Scopes:               []string{"openid"},
+		InternalState:        secondLegState,
+		UpstreamPKCEVerifier: "satisfied-verifier-123456789012345678901234",
+		UpstreamNonce:        "satisfied-nonce",
+		UpstreamProviderName: "provider-2",
+		SessionID:            sessionID,
+		ChainUpstreams:       []string{"provider-1", "provider-2"},
+		ResolvedUserID:       leg1User,
+		ResolvedUserName:     "First Leg User",
+		ResolvedUserEmail:    "firstleg@example.com",
+		CreatedAt:            time.Now(),
+	}
+
+	req := httptest.NewRequest(http.MethodGet, "/oauth/callback?code=provider2-code&state="+secondLegState, nil)
+	rec := httptest.NewRecorder()
+	handler.CallbackHandler(rec, req)
+
+	assert.Equal(t, http.StatusSeeOther, rec.Code, "a response-write failure should produce a fosite error redirect")
+
+	// Both legs are preserved: the chain is complete and identity-verified, and only the
+	// downstream response write failed, which does not invalidate the credentials.
+	assert.Contains(t, storState.upstreamTokens, sessionID+":provider-1",
+		"the first leg's token must survive a downstream response-write failure")
+	assert.Contains(t, storState.upstreamTokens, sessionID+":provider-2",
+		"the final leg's token must survive a downstream response-write failure")
+}
+
+// TestCallbackHandler_Cleanup_ContinuesWhenAProviderDeleteFails covers
+// cleanupUpstreamTokens' warn-and-continue path: one provider's delete errors, and the
+// cleanup must still remove the sibling providers rather than aborting on the first
+// failure.
+func TestCallbackHandler_Cleanup_ContinuesWhenAProviderDeleteFails(t *testing.T) {
+	t.Parallel()
+	handler, storState, _, _ := multiUpstreamTestSetupWithStorage(t,
+		withDeleteUpstreamTokensForProviderError("provider-1", errors.New("delete failed")))
+
+	sessionID := "cleanup-partial-fail-session"
+
+	// provider-1 has a tampered UserID so verifyChainIdentity fails and the chain is
+	// cleaned up; provider-1's delete is wired to fail.
+	storState.upstreamTokens[sessionID+":provider-1"] = &storage.UpstreamTokens{
+		ProviderID:  "provider-1",
+		AccessToken: "p1-at",
+		ExpiresAt:   time.Now().Add(time.Hour),
+		ClientID:    testAuthClientID,
+		UserID:      "tampered-user-id",
+	}
+
+	secondLegState := "cleanup-partial-fail-state"
+	storState.pendingAuths[secondLegState] = &storage.PendingAuthorization{
+		ClientID:             testAuthClientID,
+		RedirectURI:          testAuthRedirectURI,
+		State:                "client-original-state",
+		PKCEChallenge:        "client-challenge",
+		PKCEMethod:           "S256",
+		Scopes:               []string{"openid"},
+		InternalState:        secondLegState,
+		UpstreamPKCEVerifier: "partial-fail-verifier-12345678901234567890",
+		UpstreamNonce:        "partial-fail-nonce",
+		UpstreamProviderName: "provider-2",
+		SessionID:            sessionID,
+		ChainUpstreams:       []string{"provider-1", "provider-2"},
+		ResolvedUserID:       "correct-user-id",
+		ResolvedUserName:     "Correct User",
+		ResolvedUserEmail:    "correct@example.com",
+		CreatedAt:            time.Now(),
+	}
+
+	req := httptest.NewRequest(http.MethodGet, "/oauth/callback?code=provider2-code&state="+secondLegState, nil)
+	rec := httptest.NewRecorder()
+	handler.CallbackHandler(rec, req)
+
+	assert.Equal(t, http.StatusSeeOther, rec.Code)
+
+	// provider-1's delete failed, so its row is still present...
+	assert.Contains(t, storState.upstreamTokens, sessionID+":provider-1",
+		"the provider whose delete failed should still be present")
+	// ...but the cleanup continued and removed provider-2 anyway.
+	assert.NotContains(t, storState.upstreamTokens, sessionID+":provider-2",
+		"cleanup must continue past a per-provider delete failure and remove sibling providers")
+}
+
+func TestCallbackHandler_TwoUpstreams_StorePendingError_PreservesTokens(t *testing.T) {
 	t.Parallel()
 
 	provider, oauth2Config, stor, storState := baseTestSetup(t, withStorePendingError(errors.New("storage unavailable")))
@@ -1295,11 +1695,10 @@ func TestCallbackHandler_TwoUpstreams_StorePendingError_CleansUp(t *testing.T) {
 	assert.Contains(t, location, "error=server_error", "should contain server_error")
 	assert.Contains(t, location, "state=client-state-store-err", "should preserve client state")
 
-	// Upstream tokens should be cleaned up
-	for key := range storState.upstreamTokens {
-		assert.Failf(t, "upstream tokens should be cleaned up",
-			"found leftover token with key %q", key)
-	}
+	// The first leg's credential is preserved — failing to persist the next leg's pending
+	// does not invalidate it.
+	assert.Contains(t, storState.upstreamTokens, sessionID+":provider-1",
+		"the first leg's token must survive a next-leg pending store failure")
 }
 
 // TestCallbackHandler_RefreshTokenCarryForward verifies the OAuth callback's
@@ -1598,65 +1997,63 @@ func TestCallbackHandler_PlacesPlatformUserInContext_OnChainRead(t *testing.T) {
 	require.False(t, hasIdentity, "callback must not place an Identity (only a platform user) in ctx")
 }
 
-// TestCallbackHandler_PlacesPlatformUserInContext_OnUpstreamErrorCleanup verifies that
-// when a subsequent-leg callback returns an upstream error, the earlier-leg cleanup
-// (DeleteUpstreamTokens in handleUpstreamError) runs with the resolved canonical user
-// already in the request context.
-//
-// This is the error-path sibling of the chain-read test above. handleUpstreamError
-// runs from an early return at the top of CallbackHandler, before the happy-path
-// user injection, so it must place the user itself. DeleteUpstreamTokens takes only
-// (ctx, sessionID) — no tokens argument — so a context-keyed storage decorator can
-// resolve the canonical user only from ctx. The resolved user is carried forward from
-// leg 1 via pending.ResolvedUserID.
-func TestCallbackHandler_PlacesPlatformUserInContext_OnUpstreamErrorCleanup(t *testing.T) {
+// TestCallbackHandler_UpstreamError_LeavesExistingProviderToken is the regression guard
+// for the re-connect data-loss bug: when the upstream IdP returns an error (e.g. the user
+// cancels a re-connect), handleUpstreamError must delete only the single-use pending and
+// leave the provider's existing token — a credential from an earlier successful
+// authorization — intact. The upstream errored before this attempt exchanged a code, so
+// this attempt stored nothing; deleting the provider's row would disconnect an
+// already-connected account.
+func TestCallbackHandler_UpstreamError_LeavesExistingProviderToken(t *testing.T) {
 	t.Parallel()
 	handler, storState, _, _ := multiUpstreamTestSetup(t)
 
-	sessionID := "error-cleanup-session"
-	const leg1User = "resolved-user-id-from-leg1"
+	sessionID := "reconnect-cancel-session"
+	const userID = "user-1"
 
-	// First leg already completed: provider-1's tokens exist, keyed to leg1User.
-	storState.upstreamTokens[sessionID+":provider-1"] = &storage.UpstreamTokens{
+	// provider-1 is already connected from a prior successful authorization.
+	existingKey := sessionID + ":provider-1"
+	storState.upstreamTokens[existingKey] = &storage.UpstreamTokens{
 		ProviderID:   "provider-1",
-		AccessToken:  "p1-at",
-		RefreshToken: "p1-rt",
+		AccessToken:  "existing-at",
+		RefreshToken: "existing-rt",
 		ExpiresAt:    time.Now().Add(time.Hour),
 		ClientID:     testAuthClientID,
-		UserID:       leg1User,
+		UserID:       userID,
 	}
 
-	// Second-leg pending carries the resolved identity forward from leg 1.
-	secondLegState := "error-cleanup-second-leg-state"
-	storState.pendingAuths[secondLegState] = &storage.PendingAuthorization{
+	// A single-leg re-connect of that same provider is in flight.
+	reconnectState := "reconnect-cancel-state"
+	storState.pendingAuths[reconnectState] = &storage.PendingAuthorization{
 		ClientID:             testAuthClientID,
 		RedirectURI:          testAuthRedirectURI,
 		State:                "client-original-state",
 		PKCEChallenge:        "client-challenge",
 		PKCEMethod:           "S256",
-		Scopes:               []string{"openid", "profile"},
-		InternalState:        secondLegState,
-		UpstreamProviderName: "provider-2",
+		Scopes:               []string{"openid"},
+		InternalState:        reconnectState,
+		UpstreamPKCEVerifier: "reconnect-verifier-1234567890123456789012345",
+		UpstreamNonce:        "reconnect-nonce",
+		UpstreamProviderName: "provider-1",
 		SessionID:            sessionID,
-		ResolvedUserID:       leg1User,
-		ResolvedUserName:     "First Leg User",
-		ResolvedUserEmail:    "firstleg@example.com",
+		SingleLeg:            true,
+		ResolvedUserID:       userID,
 		CreatedAt:            time.Now(),
 	}
 
-	// Upstream returns an error on the second leg, driving the handleUpstreamError path.
-	req := httptest.NewRequest(http.MethodGet, "/oauth/callback?error=access_denied&state="+secondLegState, nil)
+	// The user cancels at the upstream: error=access_denied comes back.
+	req := httptest.NewRequest(http.MethodGet, "/oauth/callback?error=access_denied&state="+reconnectState, nil)
 	rec := httptest.NewRecorder()
 	handler.CallbackHandler(rec, req)
 
-	// handleUpstreamError cleans up earlier-leg tokens via DeleteUpstreamTokens; the
-	// harness captured the ctx it ran with. Assert the callback placed the resolved
-	// canonical user into that ctx so a context-keyed decorator can delete the row.
-	uid, ok := auth.PlatformUserFromContext(storState.deleteUpstreamCtx)
-	require.True(t, ok, "handleUpstreamError must place platform user in ctx before the cleanup DeleteUpstreamTokens")
-	require.Equal(t, leg1User, uid)
+	assert.Equal(t, http.StatusSeeOther, rec.Code, "a canceled re-connect should redirect the error to the client")
+	assert.Contains(t, rec.Header().Get("Location"), "error=access_denied")
 
-	// The error path must NOT place a stub Identity under the identity key.
-	_, hasIdentity := auth.IdentityFromContext(storState.deleteUpstreamCtx)
-	require.False(t, hasIdentity, "handleUpstreamError must not place an Identity (only a platform user) in ctx")
+	// The existing token survives the canceled re-connect...
+	require.Contains(t, storState.upstreamTokens, existingKey,
+		"canceling a re-connect must not disconnect the already-connected account")
+	assert.Equal(t, "existing-at", storState.upstreamTokens[existingKey].AccessToken)
+	// ...and the single-use pending authorization is consumed.
+	assert.NotContains(t, storState.pendingAuths, reconnectState,
+		"the single-use pending authorization should be deleted")
 }

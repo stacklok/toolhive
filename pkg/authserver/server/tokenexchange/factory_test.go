@@ -129,11 +129,13 @@ type fakeFactoryStorage struct {
 	*mockAccessTokenStorage
 }
 
-// TestFactory_ValidatorSelection asserts which SubjectTokenValidator the
-// closure returned by Factory builds into the Handler: the self-issued
-// validator when trustedIssuers is empty, the multi-issuer validator when
-// it isn't, and a hard error — not a silent downgrade to the self-issued
-// validator — when a configured TrustedIssuer is itself invalid.
+// TestFactory_ValidatorSelection asserts how a SubjectTokenValidator reaches
+// the Handler: the bare Factory uses the self-issued validator when there are
+// no trusted issuers, and fails closed when trusted issuers are configured
+// (it cannot own a MultiIssuerTokenValidator's JWKS workers for shutdown);
+// trusted-issuer setups must supply a shared, closeable validator via
+// FactoryWithSharedTrustedIssuerValidator, which is then the exact instance the
+// Handler uses.
 func TestFactory_ValidatorSelection(t *testing.T) {
 	t.Parallel()
 
@@ -142,58 +144,49 @@ func TestFactory_ValidatorSelection(t *testing.T) {
 		ExpectedAudience:       "https://mcp.example.com",
 		AllowedDelegateClients: []string{anyDelegateClient},
 	}
-	invalidIssuer := TrustedIssuer{
-		IssuerURL: "https://idp.example.com",
-		// ExpectedAudience deliberately empty: invalid per validateTrustedIssuer.
-		AllowedDelegateClients: []string{anyDelegateClient},
-	}
 
-	tests := []struct {
-		name           string
-		trustedIssuers []TrustedIssuer
-		wantErr        string
-		wantValidator  any // nil when wantErr is set
-	}{
-		{
-			name:           "no trusted issuers builds self-issued validator",
-			trustedIssuers: nil,
-			wantValidator:  &SelfIssuedTokenValidator{},
-		},
-		{
-			name:           "valid trusted issuer builds multi-issuer validator",
-			trustedIssuers: []TrustedIssuer{validIssuer},
-			wantValidator:  &MultiIssuerTokenValidator{},
-		},
-		{
-			name:           "invalid trusted issuer fails closed, not silently downgraded",
-			trustedIssuers: []TrustedIssuer{invalidIssuer},
-			wantErr:        "trusted_issuers",
-		},
-	}
+	t.Run("no trusted issuers builds self-issued validator", func(t *testing.T) {
+		t.Parallel()
 
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			t.Parallel()
+		f, err := Factory(15*time.Minute, nil, nil)
+		require.NoError(t, err)
 
-			f, err := Factory(15*time.Minute, tt.trustedIssuers, nil)
-			require.NoError(t, err)
+		cfg := buildTestAuthServerConfig(t)
+		result, err := f(cfg, &fakeFactoryStorage{mockAccessTokenStorage: &mockAccessTokenStorage{}}, &mockAccessTokenStrategy{})
+		require.NoError(t, err)
 
-			cfg := buildTestAuthServerConfig(t)
-			storage := &fakeFactoryStorage{mockAccessTokenStorage: &mockAccessTokenStorage{}}
-			strategy := &mockAccessTokenStrategy{}
+		handler, ok := result.(*Handler)
+		require.True(t, ok, "Factory closure must return *Handler, got %T", result)
+		assert.IsType(t, &SelfIssuedTokenValidator{}, handler.validator)
+	})
 
-			result, err := f(cfg, storage, strategy)
-			if tt.wantErr != "" {
-				require.Error(t, err)
-				assert.Contains(t, err.Error(), tt.wantErr)
-				assert.Nil(t, result)
-				return
-			}
-			require.NoError(t, err)
+	t.Run("bare Factory with trusted issuers fails closed", func(t *testing.T) {
+		t.Parallel()
 
-			handler, ok := result.(*Handler)
-			require.True(t, ok, "Factory closure must return *Handler, got %T", result)
-			assert.IsType(t, tt.wantValidator, handler.validator)
-		})
-	}
+		// The bare Factory has no way to release a MultiIssuerTokenValidator's
+		// JWKS workers, so it must reject trusted issuers outright rather than
+		// build a leaked validator inside the compose-time closure.
+		_, err := Factory(15*time.Minute, []TrustedIssuer{validIssuer}, nil)
+		require.Error(t, err)
+		assert.Contains(t, err.Error(), "require a shared validator")
+	})
+
+	t.Run("shared validator is the instance the handler uses", func(t *testing.T) {
+		t.Parallel()
+
+		cfg := buildTestAuthServerConfig(t)
+		shared, err := NewSharedTrustedIssuerValidator(cfg, []TrustedIssuer{validIssuer})
+		require.NoError(t, err)
+		t.Cleanup(func() { _ = shared.Close() })
+
+		f, err := FactoryWithSharedTrustedIssuerValidator(15*time.Minute, []TrustedIssuer{validIssuer}, nil, shared)
+		require.NoError(t, err)
+
+		result, err := f(cfg, &fakeFactoryStorage{mockAccessTokenStorage: &mockAccessTokenStorage{}}, &mockAccessTokenStrategy{})
+		require.NoError(t, err)
+
+		handler, ok := result.(*Handler)
+		require.True(t, ok, "closure must return *Handler, got %T", result)
+		assert.Same(t, shared, handler.validator, "the caller-owned shared validator must be used verbatim")
+	})
 }

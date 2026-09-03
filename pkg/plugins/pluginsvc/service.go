@@ -14,6 +14,7 @@ import (
 	"context"
 	"sync"
 
+	"github.com/stacklok/toolhive-core/container/signer"
 	ociplugins "github.com/stacklok/toolhive-core/oci/plugins"
 	"github.com/stacklok/toolhive/pkg/client"
 	"github.com/stacklok/toolhive/pkg/git"
@@ -132,6 +133,14 @@ func WithPluginLookup(pl PluginLookup) Option {
 	}
 }
 
+// WithSigner sets the artifact signer used by Push. Defaults to the Sigstore
+// signer with the composite registry keychain.
+func WithSigner(sg signer.Signer) Option {
+	return func(s *service) {
+		s.sigSigner = sg
+	}
+}
+
 // WithVerifier sets the signature verifier used for install-time
 // verification. Defaults to the Sigstore verifier with the composite
 // registry keychain.
@@ -199,6 +208,7 @@ type service struct {
 	gitClient     git.Client
 	clientManager *client.ClientManager
 	sigVerifier   verifier.Verifier
+	sigSigner     signer.Signer
 }
 
 // New creates a new plugin service and returns it as a plugins.PluginService.

@@ -184,12 +184,12 @@ func TestConfigureDetectedTools_BedrockClaudeCode(t *testing.T) {
 	gm := &capturingGatewayManager{mode: "direct"}
 	var out, errOut bytes.Buffer
 
-	_, err := configureDetectedTools(
+	_, err := configureDetectedToolsWithDiscovery(
 		&out, &errOut, gm,
 		[]string{"claude-code"},
 		"https://gw.example.com", "http://localhost:14000/v1",
 		"/usr/local/bin/thv", []string{"llm", "token", "--skip-browser"},
-		false, "/anthropic", nil,
+		false, "/anthropic", nil, nil,
 		BedrockConfig{Compat: true, Enable1M: true},
 	)
 	require.NoError(t, err)
@@ -208,12 +208,12 @@ func TestConfigureDetectedTools_BedrockSkippedForNonClaudeCode(t *testing.T) {
 	gm := &capturingGatewayManager{mode: "proxy"}
 	var out, errOut bytes.Buffer
 
-	_, err := configureDetectedTools(
+	_, err := configureDetectedToolsWithDiscovery(
 		&out, &errOut, gm,
 		[]string{"cursor"},
 		"https://gw.example.com", "http://localhost:14000/v1",
 		"/usr/local/bin/thv", []string{"llm", "token", "--skip-browser"},
-		false, "", nil,
+		false, "", nil, nil,
 		BedrockConfig{Compat: true},
 	)
 	require.NoError(t, err)
@@ -305,8 +305,9 @@ func (*stubGatewayManager) DetectedLLMGatewayClients() []string { return nil }
 func (*stubGatewayManager) ConfigureLLMGateway(_ string, _ llmgateway.ApplyConfig) (string, error) {
 	return "", nil
 }
-func (*stubGatewayManager) LLMGatewayModeFor(_ string) string { return "" }
-func (*stubGatewayManager) IsManaged(_ string) bool           { return false }
+func (*stubGatewayManager) LLMGatewayModeFor(_ string) string      { return "" }
+func (*stubGatewayManager) IsManaged(_ string) bool                { return false }
+func (*stubGatewayManager) LLMClientDetectionHint(_ string) string { return "" }
 func (*stubGatewayManager) ConfigureEnvFile(_ string, _ llmgateway.ApplyConfig) (string, error) {
 	return "", nil
 }
@@ -318,11 +319,13 @@ func (s *stubGatewayManager) RevertLLMGateway(clientType, _ string) error {
 
 // stubConfigUpdater is a minimal ConfigUpdater for Teardown tests.
 type stubConfigUpdater struct {
-	cfg Config
+	cfg         Config
+	updateCalls int
 }
 
 func (s *stubConfigUpdater) GetLLMConfig() Config { return s.cfg }
 func (s *stubConfigUpdater) UpdateLLMConfig(fn func(*Config) error) error {
+	s.updateCalls++
 	return fn(&s.cfg)
 }
 
@@ -499,16 +502,24 @@ func TestTeardown_NoPurge_LeavesTokenRefsIntact(t *testing.T) {
 // successfully, for Setup-level tests. mode is returned by LLMGatewayModeFor;
 // use "proxy" to avoid the direct-mode Anthropic-prefix probe.
 type setupGatewayManager struct {
-	detected []string
-	mode     string
+	detected   []string
+	mode       string
+	hint       string
+	configured []string
+	applied    []llmgateway.ApplyConfig
 }
 
 func (g *setupGatewayManager) DetectedLLMGatewayClients() []string { return g.detected }
-func (*setupGatewayManager) ConfigureLLMGateway(_ string, _ llmgateway.ApplyConfig) (string, error) {
+func (g *setupGatewayManager) ConfigureLLMGateway(client string, cfg llmgateway.ApplyConfig) (string, error) {
+	g.configured = append(g.configured, client)
+	g.applied = append(g.applied, cfg)
 	return "/tmp/settings.json", nil
 }
 func (g *setupGatewayManager) LLMGatewayModeFor(_ string) string { return g.mode }
 func (*setupGatewayManager) IsManaged(_ string) bool             { return false }
+func (g *setupGatewayManager) LLMClientDetectionHint(_ string) string {
+	return g.hint
+}
 func (*setupGatewayManager) ConfigureEnvFile(_ string, _ llmgateway.ApplyConfig) (string, error) {
 	return "", nil
 }
@@ -554,6 +565,197 @@ func TestSetup_Lazy_SkipsLoginAndPersistsTools(t *testing.T) {
 	// User must be told that login is deferred to the first request.
 	assert.Contains(t, stdout.String(), "Lazy mode")
 	assert.Contains(t, stdout.String(), "first")
+}
+
+func TestSetup_Lazy_VSCodeSelectionSemantics(t *testing.T) {
+	t.Parallel()
+
+	t.Run("explicit VS Code client fails before login", func(t *testing.T) {
+		t.Parallel()
+		gm := &setupGatewayManager{detected: []string{"vscode"}, mode: llmgateway.ModeVSCode}
+		provider := configuredSetupProvider()
+		loginCalled := false
+		var stdout, stderr bytes.Buffer
+		err := Setup(context.Background(), &stdout, &stderr, gm, provider,
+			func(_ context.Context, _ *Config) error { loginCalled = true; return nil },
+			SetOptions{}, "", true, "vscode", true)
+		require.ErrorContains(t, err, "requires non-lazy setup for authenticated model discovery")
+		assert.False(t, loginCalled)
+		assert.Empty(t, gm.configured)
+	})
+
+	t.Run("multi-client setup warns, skips VS Code, and continues", func(t *testing.T) {
+		t.Parallel()
+		gm := &setupGatewayManager{detected: []string{"vscode", "cursor", "vscode-insider"}, mode: llmgateway.ModeProxy}
+		provider := configuredSetupProvider()
+		loginCalled := false
+		var stdout, stderr bytes.Buffer
+		err := Setup(context.Background(), &stdout, &stderr, gm, provider,
+			func(_ context.Context, _ *Config) error { loginCalled = true; return nil },
+			SetOptions{}, "", true, "", true)
+		require.NoError(t, err)
+		assert.False(t, loginCalled)
+		assert.Equal(t, []string{"cursor"}, gm.configured)
+		assert.Contains(t, stderr.String(), "skipping vscode in lazy mode")
+		assert.Contains(t, stderr.String(), "skipping vscode-insider in lazy mode")
+		require.Len(t, provider.cfg.ConfiguredTools, 1)
+		assert.Equal(t, "cursor", provider.cfg.ConfiguredTools[0].Tool)
+	})
+}
+
+func TestDiscoverGatewayModels(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name     string
+		status   int
+		body     string
+		setToken bool
+		want     []string
+		wantErr  string
+	}{
+		{name: "valid OpenAI list is trimmed, deduplicated, and sorted", status: http.StatusOK,
+			body: `{"object":"list","data":[{"id":" z-model "},{"id":"a-model"},{"id":"z-model"},` +
+				`{"id":" a-model "}]}`,
+			setToken: true, want: []string{"a-model", "z-model"}},
+		{name: "missing authentication", status: http.StatusOK, body: `{"object":"list","data":[{"id":"model"}]}`,
+			wantErr: "did not provide an access token"},
+		{name: "authentication failure", status: http.StatusUnauthorized, body: `{"error":"unauthorized"}`,
+			setToken: true, wantErr: "401 Unauthorized"},
+		{name: "malformed response", status: http.StatusOK, body: `{`, setToken: true,
+			wantErr: "decoding gateway model response"},
+		{name: "wrong response shape", status: http.StatusOK, body: `{"object":"other","data":[{"id":"model"}]}`,
+			setToken: true, wantErr: "expected a non-empty OpenAI model list"},
+		{name: "empty model ID", status: http.StatusOK, body: `{"object":"list","data":[{"id":" "}]}`,
+			setToken: true, wantErr: "model ID must not be empty"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				assert.Equal(t, "/v1/models", r.URL.Path)
+				if tt.setToken {
+					assert.Equal(t, "Bearer discovery-token", r.Header.Get("Authorization"))
+				}
+				w.WriteHeader(tt.status)
+				_, _ = w.Write([]byte(tt.body))
+			}))
+			t.Cleanup(server.Close)
+
+			cfg := Config{GatewayURL: server.URL}
+			if tt.setToken {
+				cfg.SetDiscoveryAccessToken("discovery-token")
+			}
+			got, err := discoverGatewayModels(context.Background(), cfg)
+			if tt.wantErr != "" {
+				require.ErrorContains(t, err, tt.wantErr)
+				return
+			}
+			require.NoError(t, err)
+			assert.Equal(t, tt.want, got)
+		})
+	}
+}
+
+func TestSetup_VSCodeDiscoversModelsAfterLogin(t *testing.T) {
+	t.Parallel()
+
+	server := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		assert.Equal(t, "Bearer discovery-token", r.Header.Get("Authorization"))
+		_, _ = w.Write([]byte(`{"object":"list","data":[{"id":"model-b"},{"id":"model-a"}]}`))
+	}))
+	t.Cleanup(server.Close)
+	gm := &setupGatewayManager{detected: []string{"vscode"}, mode: llmgateway.ModeVSCode}
+	provider := configuredSetupProvider()
+	provider.cfg.GatewayURL = server.URL
+	provider.cfg.TLSSkipVerify = true
+	var stdout, stderr bytes.Buffer
+	err := Setup(context.Background(), &stdout, &stderr, gm, provider,
+		func(_ context.Context, cfg *Config) error { cfg.SetDiscoveryAccessToken("discovery-token"); return nil },
+		SetOptions{}, "", true, "vscode", false)
+	require.NoError(t, err)
+	require.Len(t, gm.applied, 1)
+	assert.Equal(t, []string{"model-a", "model-b"}, gm.applied[0].DiscoveredModels)
+	assert.Equal(t, "http://localhost:14000/v1", gm.applied[0].ProxyBaseURL)
+}
+
+func TestSetup_VSCodeDiscoveryFailureSelectionSemantics(t *testing.T) {
+	t.Parallel()
+	server := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusServiceUnavailable)
+	}))
+	t.Cleanup(server.Close)
+	providerForTest := func() *stubConfigUpdater {
+		provider := configuredSetupProvider()
+		provider.cfg.GatewayURL = server.URL
+		provider.cfg.TLSSkipVerify = true
+		return provider
+	}
+
+	for _, clientType := range []string{"vscode", "vscode-insider"} {
+		t.Run("explicit "+clientType+" client fails", func(t *testing.T) {
+			t.Parallel()
+			gm := &setupGatewayManager{detected: []string{clientType}, mode: llmgateway.ModeVSCode}
+			provider := providerForTest()
+			var stdout, stderr bytes.Buffer
+			err := Setup(context.Background(), &stdout, &stderr, gm, provider,
+				func(_ context.Context, cfg *Config) error { cfg.SetDiscoveryAccessToken("token"); return nil },
+				SetOptions{}, "", true, clientType, false)
+			require.ErrorContains(t, err, "discovering gateway models")
+			require.ErrorContains(t, err, "503 Service Unavailable")
+			assert.Empty(t, gm.configured)
+			assert.Zero(t, provider.updateCalls)
+		})
+	}
+
+	t.Run("auto-detected VS Code is skipped while other clients continue", func(t *testing.T) {
+		t.Parallel()
+		gm := &setupGatewayManager{detected: []string{"vscode", "cursor", "vscode-insider"}, mode: llmgateway.ModeProxy}
+		provider := providerForTest()
+		var stdout, stderr bytes.Buffer
+		err := Setup(context.Background(), &stdout, &stderr, gm, provider,
+			func(_ context.Context, cfg *Config) error { cfg.SetDiscoveryAccessToken("token"); return nil },
+			SetOptions{}, "", true, "", false)
+		require.NoError(t, err)
+		assert.Equal(t, []string{"cursor"}, gm.configured)
+		assert.Contains(t, stderr.String(), "skipping auto-detected VS Code clients")
+		assert.Contains(t, stderr.String(), "gateway model discovery failed")
+		assert.Contains(t, stderr.String(), "503 Service Unavailable")
+		require.Len(t, provider.cfg.ConfiguredTools, 1)
+		assert.Equal(t, "cursor", provider.cfg.ConfiguredTools[0].Tool)
+	})
+
+	t.Run("auto-detected VS Code alone is skipped without persistence", func(t *testing.T) {
+		t.Parallel()
+		gm := &setupGatewayManager{detected: []string{"vscode"}, mode: llmgateway.ModeVSCode}
+		provider := providerForTest()
+		var stdout, stderr bytes.Buffer
+		err := Setup(context.Background(), &stdout, &stderr, gm, provider,
+			func(_ context.Context, cfg *Config) error { cfg.SetDiscoveryAccessToken("token"); return nil },
+			SetOptions{}, "", true, "", false)
+		require.NoError(t, err)
+		assert.Empty(t, gm.configured)
+		assert.Zero(t, provider.updateCalls)
+		assert.Contains(t, stderr.String(), "skipping auto-detected VS Code clients")
+	})
+}
+
+func TestFilterDetectedClients_LeftoverDirHint(t *testing.T) {
+	t.Parallel()
+	gm := &setupGatewayManager{
+		hint: `settings directory exists but "claude" was not found on PATH`,
+	}
+	_, err := filterDetectedClients(gm, "claude-code")
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), `"claude-code" is not installed or not detected`)
+	assert.Contains(t, err.Error(), `was not found on PATH`)
+}
+
+func TestFilterDetectedClients_GenericMiss(t *testing.T) {
+	t.Parallel()
+	_, err := filterDetectedClients(&setupGatewayManager{}, "cursor")
+	require.Error(t, err)
+	assert.Equal(t, `client "cursor" is not installed or not detected`, err.Error())
 }
 
 func TestSetup_NonLazy_InvokesLogin(t *testing.T) {
@@ -678,8 +880,11 @@ func (g *capturingGatewayManager) ConfigureLLMGateway(_ string, cfg llmgateway.A
 }
 func (g *capturingGatewayManager) LLMGatewayModeFor(_ string) string { return g.mode }
 func (*capturingGatewayManager) IsManaged(_ string) bool             { return false }
-func (*capturingGatewayManager) LLMSetupNoteFor(_ string) string     { return "" }
-func (*capturingGatewayManager) RevertLLMGateway(_, _ string) error  { return nil }
+func (*capturingGatewayManager) LLMClientDetectionHint(_ string) string {
+	return ""
+}
+func (*capturingGatewayManager) LLMSetupNoteFor(_ string) string    { return "" }
+func (*capturingGatewayManager) RevertLLMGateway(_, _ string) error { return nil }
 func (*capturingGatewayManager) ConfigureEnvFile(_ string, _ llmgateway.ApplyConfig) (string, error) {
 	return "", nil
 }
@@ -691,12 +896,12 @@ func TestConfigureDetectedTools_PathPrefixAppendedForDirectMode(t *testing.T) {
 	gm := &capturingGatewayManager{mode: "direct"}
 	var out, errOut bytes.Buffer
 
-	_, err := configureDetectedTools(
+	_, err := configureDetectedToolsWithDiscovery(
 		&out, &errOut, gm,
 		[]string{"claude-code"},
 		"https://gw.example.com", "http://localhost:14000/v1",
 		"/usr/local/bin/thv", []string{"llm", "token", "--skip-browser"},
-		false, "/anthropic", nil,
+		false, "/anthropic", nil, nil,
 		BedrockConfig{},
 	)
 	require.NoError(t, err)
@@ -713,12 +918,12 @@ func TestConfigureDetectedTools_NoPrefixWhenEmpty(t *testing.T) {
 	gm := &capturingGatewayManager{mode: "direct"}
 	var out, errOut bytes.Buffer
 
-	_, err := configureDetectedTools(
+	_, err := configureDetectedToolsWithDiscovery(
 		&out, &errOut, gm,
 		[]string{"claude-code"},
 		"https://gw.example.com", "http://localhost:14000/v1",
 		"/usr/local/bin/thv", []string{"llm", "token", "--skip-browser"},
-		false, "", nil, // no prefix
+		false, "", nil, nil, // no prefix
 		BedrockConfig{},
 	)
 	require.NoError(t, err)
@@ -734,12 +939,12 @@ func TestConfigureDetectedTools_PrefixNotAppliedForProxyMode(t *testing.T) {
 	gm := &capturingGatewayManager{mode: "proxy"}
 	var out, errOut bytes.Buffer
 
-	_, err := configureDetectedTools(
+	_, err := configureDetectedToolsWithDiscovery(
 		&out, &errOut, gm,
 		[]string{"cursor"},
 		"https://gw.example.com", "http://localhost:14000/v1",
 		"/usr/local/bin/thv", []string{"llm", "token", "--skip-browser"},
-		false, "/anthropic", nil,
+		false, "/anthropic", nil, nil,
 		BedrockConfig{},
 	)
 	require.NoError(t, err)
@@ -766,6 +971,17 @@ func TestWarnTLSSkipVerify_CodexWarning(t *testing.T) {
 	out := errOut.String()
 	assert.Contains(t, out, "Warning:")
 	assert.Contains(t, out, "was NOT applied to codex")
+}
+
+func TestVSCodeModeRequiresProxyAndUsesProxyTLSWarning(t *testing.T) {
+	t.Parallel()
+
+	configured := []ToolConfig{{Tool: "vscode", Mode: llmgateway.ModeVSCode}}
+	assert.True(t, hasProxyMode(configured))
+
+	var errOut bytes.Buffer
+	warnTLSSkipVerify(&errOut, true, configured)
+	assert.Contains(t, errOut.String(), "proxy's upstream gateway connection only")
 }
 
 // ── probeAnthropicPrefix ──────────────────────────────────────────────────────
@@ -821,6 +1037,9 @@ func (*managedGatewayManager) LLMGatewayModeFor(_ string) string {
 	return llmgateway.ModeCredentialHelper
 }
 func (g *managedGatewayManager) IsManaged(c string) bool { return g.managed[c] }
+func (*managedGatewayManager) LLMClientDetectionHint(_ string) string {
+	return ""
+}
 func (*managedGatewayManager) ConfigureEnvFile(_ string, _ llmgateway.ApplyConfig) (string, error) {
 	return "", nil
 }

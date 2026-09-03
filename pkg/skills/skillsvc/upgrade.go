@@ -226,6 +226,9 @@ func (s *service) guardSignerChange(
 	newRef, newDigest string,
 	outcome *skills.UpgradeOutcome,
 ) bool {
+	if entry.Provenance.PublicKey != "" {
+		return s.guardKeyedSignerChange(ctx, entry, newRef, newDigest, outcome)
+	}
 	probe, probeErr := s.probeCandidateSigner(ctx, newRef, newDigest)
 	switch {
 	case probeErr != nil && errors.Is(probeErr, verifier.ErrUnsigned):
@@ -248,6 +251,51 @@ func (s *service) guardSignerChange(
 		return true
 	}
 	return false
+}
+
+// guardKeyedSignerChange is guardSignerChange for an entry pinned to a cosign
+// public key. There is no identity to probe for and compare — a key-pair
+// bundle carries no certificate — so the pinned key is applied to the
+// candidate directly: verifying against it IS the evidence that the signer
+// has not changed, and the upgrade then proceeds on the anchor the entry
+// already records. No new key is accepted here; the lock supplies it.
+//
+// The blocked arms are split by whether --allow-signer-change would actually
+// help, because the caller is told to use it. It does for a candidate that
+// moved to keyless signing or dropped its signature: dropping the recorded
+// key and re-verifying is exactly the key-to-keyless move resolveKeyAnchor
+// supports. It does NOT for a candidate signed by a different key — that
+// needs an in-place re-anchor, which v1 does not offer — so that arm reports
+// a failure naming the route that works instead of a remedy that does not.
+func (s *service) guardKeyedSignerChange(
+	ctx context.Context,
+	entry lockfile.Entry,
+	newRef, newDigest string,
+	outcome *skills.UpgradeOutcome,
+) bool {
+	pubKeyPEM, err := verifier.DecodePublicKey(entry.Provenance.PublicKey)
+	if err != nil {
+		outcome.Status = skills.UpgradeStatusFailed
+		outcome.Reason = skills.FailureReasonUnknown
+		outcome.Error = fmt.Errorf("lock entry's pinned %w", err).Error()
+		return true
+	}
+	_, verifyErr := s.artifactVerifier().VerifyOCIWithKey(ctx, newRef, newDigest, pubKeyPEM)
+	switch {
+	case verifyErr == nil:
+		return false
+	case errors.Is(verifyErr, verifier.ErrKeylessSigned), errors.Is(verifyErr, verifier.ErrUnsigned):
+		outcome.Status = skills.UpgradeStatusSignerChangeBlocked
+		return true
+	default:
+		outcome.Status = skills.UpgradeStatusFailed
+		outcome.Reason = skills.FailureReasonSignatureInvalid
+		outcome.Error = fmt.Errorf("candidate does not verify against the cosign public key this entry"+
+			" is pinned to — either it was signed with a different key or the signature is damaged:"+
+			" %w (re-anchoring to a new key is not supported in place; uninstall and reinstall with"+
+			" --public-key)", verifyErr).Error()
+		return true
+	}
 }
 
 // runnerEnvironmentChanged reports whether the candidate's runner class

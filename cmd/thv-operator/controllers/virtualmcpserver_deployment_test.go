@@ -371,10 +371,10 @@ func TestBuildDeploymentMetadataForVmcp(t *testing.T) {
 	vmcp := v1beta1test.NewVirtualMCPServer("test-vmcp", "default")
 
 	r := &VirtualMCPServerReconciler{}
-	labels, annotations := r.buildDeploymentMetadataForVmcp(baseLabels, vmcp)
+	labels, annotations := r.buildDeploymentMetadataForVmcp(baseLabels, vmcp, "pod-volumes-hash")
 
 	assert.Equal(t, baseLabels, labels)
-	assert.NotNil(t, annotations)
+	assert.Equal(t, "pod-volumes-hash", annotations[podVolumesHashAnnotation])
 }
 
 // TestBuildPodTemplateMetadata tests pod template metadata generation
@@ -1139,6 +1139,188 @@ func TestDeploymentForVirtualMCPServer_AuthServerConfig_NoUpdateLoop(t *testing.
 	needsUpdate := r.deploymentNeedsUpdate(t.Context(), dep, vmcp, cfgChecksum, "", nil, []workloads.TypedWorkload{})
 	assert.False(t, needsUpdate,
 		"deploymentNeedsUpdate must not loop on a vMCP with AuthServerConfig (regression #5616)")
+}
+
+// TestDeploymentForVirtualMCPServer_AuthServerSigningKeyVolumeDrift verifies that
+// changing an embedded auth-server signing key Secret reference rolls the vMCP
+// Deployment. The mounted Secret is selected by the PodSpec rather than an env
+// var, so container drift checks alone cannot observe this change.
+func TestDeploymentForVirtualMCPServer_AuthServerSigningKeyVolumeDrift(t *testing.T) {
+	t.Parallel()
+
+	scheme := testutil.NewScheme(t)
+	r := &VirtualMCPServerReconciler{
+		Scheme:           scheme,
+		PlatformDetector: ctrlutil.NewSharedPlatformDetector(),
+	}
+
+	vmcp := v1beta1test.NewVirtualMCPServer("test-vmcp", "default",
+		v1beta1test.WithVMCPGroupRef("test-group"),
+		v1beta1test.WithVMCPAuthServerConfig(&mcpv1beta1.EmbeddedAuthServerConfig{
+			SigningKeySecretRefs: []mcpv1beta1.SecretKeyRef{{Name: "keys-v1", Key: "signing-key.pem"}},
+		}),
+	)
+
+	const cfgChecksum = "test-checksum"
+	initialDeployment := r.deploymentForVirtualMCPServer(t.Context(), vmcp, cfgChecksum, "", nil, nil)
+	require.NotNil(t, initialDeployment)
+	require.NotEmpty(t, initialDeployment.Annotations["toolhive.stacklok.io/podvolumes-hash"])
+
+	updatedVMCP := vmcp.DeepCopy()
+	updatedVMCP.Spec.AuthServerConfig.SigningKeySecretRefs[0].Name = "keys-v2"
+	updatedDeployment := r.deploymentForVirtualMCPServer(t.Context(), updatedVMCP, cfgChecksum, "", nil, nil)
+	require.NotNil(t, updatedDeployment)
+
+	assert.NotEqual(t,
+		initialDeployment.Annotations["toolhive.stacklok.io/podvolumes-hash"],
+		updatedDeployment.Annotations["toolhive.stacklok.io/podvolumes-hash"],
+		"changing the signing key Secret reference must change the pod volume hash")
+	assert.True(t, r.deploymentNeedsUpdate(t.Context(), initialDeployment, updatedVMCP, cfgChecksum, "", nil, nil))
+	assert.False(t, r.deploymentNeedsUpdate(t.Context(), updatedDeployment, updatedVMCP, cfgChecksum, "", nil, nil))
+
+	var signingKeySecretName string
+	for _, volume := range updatedDeployment.Spec.Template.Spec.Volumes {
+		if volume.Name == ctrlutil.AuthServerKeysVolumePrefix+"0" && volume.Secret != nil {
+			signingKeySecretName = volume.Secret.SecretName
+			break
+		}
+	}
+	assert.Equal(t, "keys-v2", signingKeySecretName)
+}
+
+func TestPodVolumesHash(t *testing.T) {
+	t.Parallel()
+
+	defaultMode := int32(0o444)
+	mountPropagation := corev1.MountPropagationHostToContainer
+	baseVolumes := []corev1.Volume{
+		{
+			Name: "ca-bundle",
+			VolumeSource: corev1.VolumeSource{ConfigMap: &corev1.ConfigMapVolumeSource{
+				LocalObjectReference: corev1.LocalObjectReference{Name: "bundle-a"},
+				Items:                []corev1.KeyToPath{{Key: "ca.crt", Path: "ca.crt", Mode: &defaultMode}},
+			}},
+		},
+		{
+			Name: "credentials",
+			VolumeSource: corev1.VolumeSource{Secret: &corev1.SecretVolumeSource{
+				SecretName: "credentials-a",
+			}},
+		},
+	}
+	baseMounts := []corev1.VolumeMount{
+		{
+			Name:             "ca-bundle",
+			MountPath:        "/etc/ca",
+			SubPath:          "ca.crt",
+			ReadOnly:         true,
+			MountPropagation: &mountPropagation,
+		},
+		{Name: "credentials", MountPath: "/etc/credentials", ReadOnly: true},
+	}
+
+	cloneInputs := func() ([]corev1.Volume, []corev1.VolumeMount) {
+		volumes := make([]corev1.Volume, len(baseVolumes))
+		for i := range baseVolumes {
+			volumes[i] = *baseVolumes[i].DeepCopy()
+		}
+		mounts := make([]corev1.VolumeMount, len(baseMounts))
+		for i := range baseMounts {
+			mounts[i] = *baseMounts[i].DeepCopy()
+		}
+		return volumes, mounts
+	}
+
+	baseHash, err := podVolumesHash(baseVolumes, baseMounts)
+	require.NoError(t, err)
+	require.NotEmpty(t, baseHash)
+
+	reorderedVolumes, reorderedMounts := cloneInputs()
+	reorderedVolumes[0], reorderedVolumes[1] = reorderedVolumes[1], reorderedVolumes[0]
+	reorderedMounts[0], reorderedMounts[1] = reorderedMounts[1], reorderedMounts[0]
+	reorderedHash, err := podVolumesHash(reorderedVolumes, reorderedMounts)
+	require.NoError(t, err)
+	assert.Equal(t, baseHash, reorderedHash, "slice ordering must not affect the hash")
+
+	tests := []struct {
+		name   string
+		mutate func([]corev1.Volume, []corev1.VolumeMount)
+	}{
+		{
+			name: "config map name",
+			mutate: func(volumes []corev1.Volume, _ []corev1.VolumeMount) {
+				volumes[0].ConfigMap.Name = "bundle-b"
+			},
+		},
+		{
+			name: "config map item key",
+			mutate: func(volumes []corev1.Volume, _ []corev1.VolumeMount) {
+				volumes[0].ConfigMap.Items[0].Key = "root.pem"
+			},
+		},
+		{
+			name: "config map item path",
+			mutate: func(volumes []corev1.Volume, _ []corev1.VolumeMount) {
+				volumes[0].ConfigMap.Items[0].Path = "root.pem"
+			},
+		},
+		{
+			name: "config map item mode",
+			mutate: func(volumes []corev1.Volume, _ []corev1.VolumeMount) {
+				mode := int32(0o400)
+				volumes[0].ConfigMap.Items[0].Mode = &mode
+			},
+		},
+		{
+			name: "secret name",
+			mutate: func(volumes []corev1.Volume, _ []corev1.VolumeMount) {
+				volumes[1].Secret.SecretName = "credentials-b"
+			},
+		},
+		{
+			name: "mount path",
+			mutate: func(_ []corev1.Volume, mounts []corev1.VolumeMount) {
+				mounts[0].MountPath = "/etc/root-ca"
+			},
+		},
+		{
+			name: "read only",
+			mutate: func(_ []corev1.Volume, mounts []corev1.VolumeMount) {
+				mounts[0].ReadOnly = false
+			},
+		},
+		{
+			name: "sub path",
+			mutate: func(_ []corev1.Volume, mounts []corev1.VolumeMount) {
+				mounts[0].SubPath = "root.pem"
+			},
+		},
+		{
+			name: "sub path expression",
+			mutate: func(_ []corev1.Volume, mounts []corev1.VolumeMount) {
+				mounts[0].SubPathExpr = "$(POD_NAME).pem"
+			},
+		},
+		{
+			name: "mount propagation",
+			mutate: func(_ []corev1.Volume, mounts []corev1.VolumeMount) {
+				propagation := corev1.MountPropagationBidirectional
+				mounts[0].MountPropagation = &propagation
+			},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			volumes, mounts := cloneInputs()
+			tt.mutate(volumes, mounts)
+			got, err := podVolumesHash(volumes, mounts)
+			require.NoError(t, err)
+			assert.NotEqual(t, baseHash, got, "changing a volume or mount field must change the hash")
+		})
+	}
 }
 
 // TestImagePullSecretsHash verifies the hash helper normalizes order, treats an

@@ -34,6 +34,7 @@ type CIMDStorageDecorator struct {
 	ttl                  time.Duration
 	scopesSupported      []string // AS-configured scopes; nil means accept any
 	baselineClientScopes []string // unioned into every client's scope set, same as DCR
+	allowedAudiences     []string // AS-configured audiences granted to every CIMD client
 }
 
 type cimdCacheEntry struct {
@@ -42,7 +43,7 @@ type cimdCacheEntry struct {
 }
 
 // CIMDDecoratorConfig holds the configuration for NewCIMDStorageDecorator.
-// Using a struct prevents silent swaps of the two adjacent []string fields.
+// Using a struct prevents silent swaps of the three adjacent []string fields.
 type CIMDDecoratorConfig struct {
 	// Enabled returns base unchanged when false, avoiding an allocation.
 	Enabled bool
@@ -56,6 +57,13 @@ type CIMDDecoratorConfig struct {
 	// BaselineClientScopes is unioned into every CIMD client's scope set,
 	// matching DCR handler behaviour.
 	BaselineClientScopes []string
+	// AllowedAudiences is the server's own allowed-audience list, granted to
+	// every CIMD client exactly as registration.New() grants it to DCR clients
+	// (see #3796). CIMD documents don't declare audience, so without this a
+	// CIMD client's fosite.Client.Audience stays empty and every refresh_token
+	// grant is rejected by fosite's DefaultAudienceMatchingStrategy, which
+	// matches the granted audience against the client's own audience list.
+	AllowedAudiences []string
 }
 
 // NewCIMDStorageDecorator wraps base with CIMD client lookup.
@@ -80,6 +88,7 @@ func NewCIMDStorageDecorator(base Storage, cfg CIMDDecoratorConfig) (Storage, er
 		ttl:                  cfg.FallbackTTL,
 		scopesSupported:      slices.Clone(cfg.ScopesSupported),
 		baselineClientScopes: slices.Clone(cfg.BaselineClientScopes),
+		allowedAudiences:     slices.Clone(cfg.AllowedAudiences),
 	}, nil
 }
 
@@ -90,6 +99,64 @@ func (d *CIMDStorageDecorator) GetClient(ctx context.Context, id string) (fosite
 		return d.Storage.GetClient(ctx, id)
 	}
 	return d.fetchOrCached(ctx, id)
+}
+
+// cimdShapeGuardStorage wraps storage.Storage and rejects URL-shaped
+// client_id values at GetClient without ever reading the underlying row.
+//
+// It exists for the case where CIMD is (or was previously) enabled and then
+// disabled: the write-through persistence in CIMDStorageDecorator.fetch may
+// have already left a resolved CIMD client's row in the underlying storage,
+// and that row's TTL — up to DefaultDCRClientTTL — can outlive the config
+// change. Without this guard, a bare Storage's GetClient does not check the
+// shape of the id it is asked for, so it would happily resolve the stale row
+// from a snapshot the document may have since changed or that the operator
+// intended to revoke by turning CIMD off, with no re-fetch and therefore no
+// re-validation of scopes, redirect URIs, or auth method. Wrapping the
+// storage when CIMD is disabled closes that gap for both backends without
+// changing GetClient's behavior for any opaque (non-URL) client_id.
+type cimdShapeGuardStorage struct {
+	Storage // embed full interface — all methods delegate
+}
+
+// GetClient rejects URL-shaped ids with fosite.ErrNotFound before consulting
+// the wrapped storage, so a stale CIMD-origin row can never be resolved while
+// CIMD is disabled. Opaque DCR-issued and pre-provisioned ids are delegated
+// to the underlying storage unchanged.
+func (g cimdShapeGuardStorage) GetClient(ctx context.Context, id string) (fosite.Client, error) {
+	if oauthproto.IsClientIDMetadataDocumentURL(id) {
+		return nil, fosite.ErrNotFound.WithHint("CIMD is disabled on this server")
+	}
+	return g.Storage.GetClient(ctx, id)
+}
+
+// ConsumeAssertionJWT delegates assertion replay consumption to the wrapped
+// backend, matching CIMDStorageDecorator's identical method: Storage embeds
+// the interface, not the concrete backend, so this narrow capability is not
+// promoted automatically and must be forwarded explicitly for callers (e.g.
+// the RFC 7523 JWT-bearer grant factory) that need it through this wrapper.
+func (g cimdShapeGuardStorage) ConsumeAssertionJWT(
+	ctx context.Context, purpose, issuer, jti string, exp time.Time,
+) error {
+	consumer, ok := g.Storage.(AssertionJWTConsumer)
+	if !ok {
+		return fmt.Errorf("wrapped storage does not support assertion JWT replay consumption")
+	}
+	return consumer.ConsumeAssertionJWT(ctx, purpose, issuer, jti, exp)
+}
+
+// Unwrap returns the underlying storage so that type assertions (e.g. for
+// storage.DCRCredentialStore in server_impl.go) can reach the concrete type.
+func (g cimdShapeGuardStorage) Unwrap() Storage {
+	return g.Storage
+}
+
+// NewCIMDShapeGuardStorage wraps base so that GetClient refuses any
+// URL-shaped client_id, regardless of whether a matching row exists in base.
+// Callers apply this when CIMD is disabled — see cimdShapeGuardStorage's doc
+// comment for why a disabled decorator alone does not close this gap.
+func NewCIMDShapeGuardStorage(base Storage) Storage {
+	return cimdShapeGuardStorage{Storage: base}
 }
 
 // ConsumeAssertionJWT delegates assertion replay consumption to the wrapped
@@ -204,12 +271,34 @@ func (d *CIMDStorageDecorator) fetch(ctx context.Context, id string) (fosite.Cli
 			"client_id", id, "declared", doc.ResponseTypes, "effective", responseTypes)
 	}
 
-	resolvedScopes, err := d.resolveCIMDScopes(ctx, id, doc)
+	resolvedScopes, err := d.resolveScopes(ctx, id, doc)
 	if err != nil {
 		return nil, err
 	}
 
-	client := buildFositeClient(doc, resolvedScopes, grantTypes, responseTypes, authMethod)
+	client := registration.MarkDCRIssued(buildFositeClient(fositeClientParams{
+		doc:                     doc,
+		resolvedScopes:          resolvedScopes,
+		grantTypes:              grantTypes,
+		responseTypes:           responseTypes,
+		tokenEndpointAuthMethod: authMethod,
+		allowedAudiences:        d.allowedAudiences,
+	}))
+
+	// Best-effort write-through: persist the resolved client in the underlying
+	// storage so backends whose session rehydration resolves the client
+	// through their own row lookup — Redis's unmarshalRequester, which never
+	// consults this decorator — find CIMD clients at the token endpoint (see
+	// issue #6187). The client carries the DCR-issued marker (above) so the
+	// row gets the same anti-bloat TTL as DCR registrations: unauthenticated
+	// /oauth/authorize traffic can mint these rows, so they must never be
+	// permanent. Re-persisting on every fresh fetch keeps the snapshot
+	// current with the document. A persistence failure only degrades
+	// token-path rehydration, so it must not fail the resolution itself.
+	if err := d.RegisterClient(ctx, client); err != nil {
+		slog.WarnContext(ctx, "failed to persist resolved CIMD client",
+			"client_id", id, "error", err)
+	}
 
 	d.cache.Add(id, &cimdCacheEntry{
 		client:  client,
@@ -219,7 +308,7 @@ func (d *CIMDStorageDecorator) fetch(ctx context.Context, id string) (fosite.Cli
 	return client, nil
 }
 
-// resolveCIMDScopes computes and validates the client scope list consistent
+// resolveScopes computes and validates the client scope list consistent
 // with DCR. When d.scopesSupported is configured:
 //   - Declared scopes are validated via registration.ValidateScopes (same
 //     function as the DCR handler); an unsupported declared scope rejects.
@@ -232,7 +321,7 @@ func (d *CIMDStorageDecorator) fetch(ctx context.Context, id string) (fosite.Cli
 // scopes are used directly, or nil to let buildFositeClient apply
 // DefaultScopes. In both cases d.baselineClientScopes is unioned in after
 // validation, matching the DCR handler's behaviour.
-func (d *CIMDStorageDecorator) resolveCIMDScopes(
+func (d *CIMDStorageDecorator) resolveScopes(
 	ctx context.Context, id string, doc *cimd.ClientMetadataDocument,
 ) ([]string, error) {
 	var resolvedScopes []string
@@ -318,49 +407,69 @@ func negotiateTokenEndpointAuthMethod(doc *cimd.ClientMetadataDocument) (string,
 	return "", false
 }
 
+// fositeClientParams carries the inputs buildFositeClient turns into a
+// fosite.Client. Every field is computed by fetch() beforehand, so the
+// builder applies no validation, filtering, or negotiation of its own. A
+// struct keeps the four []string values from being swapped silently at the
+// call site, for the same reason CIMDDecoratorConfig is one.
+type fositeClientParams struct {
+	doc *cimd.ClientMetadataDocument
+	// resolvedScopes is the already-validated scope list computed by fetch()
+	// via registration.ValidateScopes; when empty, DefaultScopes is used —
+	// this occurs when the decorator has no ScopesSupported restriction
+	// (unconstrained AS).
+	resolvedScopes []string
+	// grantTypes and responseTypes are the already-filtered lists computed by
+	// fetch() via registration.FilterPublicGrantTypes/FilterPublicResponseTypes —
+	// the document's declared values with unsupported entries dropped, never
+	// empty (the filters apply defaults and reject empty intersections). The
+	// stored client therefore carries only grant/response types this server
+	// can actually serve, not the document's full declaration.
+	grantTypes    []string
+	responseTypes []string
+	// tokenEndpointAuthMethod is the already-negotiated value computed by
+	// fetch() via negotiateTokenEndpointAuthMethod; the builder applies no
+	// empty-to-default fallback of its own, so the resolver is the single
+	// authority over which method a CIMD-derived client ends up with.
+	tokenEndpointAuthMethod string
+	// allowedAudiences is the decorator's configured AllowedAudiences, granted
+	// to the client verbatim (mirroring registration.New() for DCR clients,
+	// #3796): CIMD documents never declare audience, so the AS applies its own
+	// audience policy by granting the audiences it would validate a "resource"
+	// parameter against, rather than leaving the client's audience list empty.
+	// An empty list reproduces the prior nil behavior.
+	allowedAudiences []string
+}
+
 // buildFositeClient converts a ClientMetadataDocument into a fosite.Client.
 // RFC 8252 §7.3 loopback dynamic-port matching for a "http://localhost" redirect
 // URI is provided generically by registration.RegisteredLoopbackRedirectURI
 // (keyed on IsPublic() + GetRedirectURIs()), so no wrapper type is needed here.
-// resolvedScopes is the already-validated scope list computed by fetch() via
-// registration.ValidateScopes; when empty, DefaultScopes is used — this occurs when
-// the decorator has no ScopesSupported restriction (unconstrained AS).
-// grantTypes and responseTypes are the already-filtered lists computed by
-// fetch() via registration.FilterPublicGrantTypes/FilterPublicResponseTypes —
-// the document's declared values with unsupported entries dropped, never
-// empty (the filters apply defaults and reject empty intersections). The
-// stored client therefore carries only grant/response types this server can
-// actually serve, not the document's full declaration.
-// tokenEndpointAuthMethod is the already-negotiated value computed by fetch()
-// via negotiateTokenEndpointAuthMethod; this function no longer applies its
-// own empty-to-default fallback, so the resolver is the single authority over
-// which method a CIMD-derived client ends up with.
-func buildFositeClient(
-	doc *cimd.ClientMetadataDocument, resolvedScopes, grantTypes, responseTypes []string,
-	tokenEndpointAuthMethod string,
-) fosite.Client {
+func buildFositeClient(p fositeClientParams) fosite.Client {
 	// Scopes were computed and validated by fetch() via registration.ValidateScopes,
 	// consistent with the DCR handler. Fall back to DefaultScopes only when the
 	// decorator has no ScopesSupported restriction (unconstrained AS).
-	scopes := resolvedScopes
+	scopes := p.resolvedScopes
 	if len(scopes) == 0 {
 		scopes = slices.Clone(registration.DefaultScopes)
 	}
 
 	defaultClient := &fosite.DefaultClient{
-		ID:            doc.ClientID,
-		RedirectURIs:  doc.RedirectURIs,
-		GrantTypes:    grantTypes,
-		ResponseTypes: responseTypes,
+		ID:            p.doc.ClientID,
+		RedirectURIs:  p.doc.RedirectURIs,
+		GrantTypes:    p.grantTypes,
+		ResponseTypes: p.responseTypes,
 		Scopes:        scopes,
-		// CIMD clients don't pre-declare audience; leave empty so the AS
-		// applies its own audience policy rather than rejecting all values.
-		Audience: nil,
+		// CIMD clients don't pre-declare audience; the AS applies its own
+		// audience policy by granting the audiences it would validate a
+		// "resource" parameter against (see the allowedAudiences field), rather
+		// than rejecting all values with an empty list.
+		Audience: slices.Clone(p.allowedAudiences),
 		Public:   true,
 	}
 
 	return &fosite.DefaultOpenIDConnectClient{
 		DefaultClient:           defaultClient,
-		TokenEndpointAuthMethod: tokenEndpointAuthMethod,
+		TokenEndpointAuthMethod: p.tokenEndpointAuthMethod,
 	}
 }

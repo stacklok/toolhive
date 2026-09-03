@@ -791,6 +791,32 @@ func (r *VirtualMCPServerReconciler) emitPrimaryUpstreamProviderDeprecatedEvent(
 			"move the value to spec.authServerConfig.primaryUpstreamProvider")
 }
 
+// emitInlineTelemetryIgnoredEvent emits a Warning when VirtualMCPServer still
+// sets the deprecated spec.config.telemetry field without telemetryConfigRef.
+// The operator does not apply inline telemetry; GET /metrics then falls through
+// to the MCP handler (HTTP 406).
+//
+// The generation==observedGeneration guard suppresses the event after a
+// successful reconcile advances status. Retries that fail before
+// observedGeneration is updated can re-emit; Kubernetes event aggregation
+// is the practical dedupe in that window.
+func (r *VirtualMCPServerReconciler) emitInlineTelemetryIgnoredEvent(
+	vmcp *mcpv1beta1.VirtualMCPServer,
+) {
+	usesIgnoredInline := vmcp.Spec.Config.Telemetry != nil && vmcp.Spec.TelemetryConfigRef == nil
+	if !usesIgnoredInline || r.Recorder == nil {
+		return
+	}
+	if vmcp.Generation == vmcp.Status.ObservedGeneration {
+		return
+	}
+	r.Recorder.Eventf(vmcp, nil, corev1.EventTypeWarning,
+		"InlineTelemetryIgnored", "ConvertTelemetry",
+		"spec.config.telemetry is ignored by the operator; set spec.telemetryConfigRef "+
+			"to an MCPTelemetryConfig. Without that, GET /metrics is not registered and "+
+			"returns HTTP 406 from the MCP streamable handler.")
+}
+
 func (r *VirtualMCPServerReconciler) validateAuthzUpstreamAvailable(
 	ctx context.Context,
 	vmcp *mcpv1beta1.VirtualMCPServer,
@@ -1795,6 +1821,15 @@ func (r *VirtualMCPServerReconciler) deploymentNeedsUpdate(
 		return true
 	}
 
+	_, _, expectedVolumesHash, err := r.buildPodVolumesForVmcp(ctx, vmcp, telemetryCfg, typedWorkloads)
+	if err != nil {
+		log.FromContext(ctx).Error(err, "Failed to build volumes, assuming update needed")
+		return true
+	}
+	if deployment.Annotations[podVolumesHashAnnotation] != expectedVolumesHash {
+		return true
+	}
+
 	// Check if spec.replicas has changed. Only compare when spec.replicas is non-nil;
 	// nil means hands-off mode (HPA or external controller manages replicas) and the live count is authoritative.
 	if vmcp.Spec.Replicas != nil {
@@ -1958,6 +1993,7 @@ func mergeDeploymentAnnotations(desired, live map[string]string) map[string]stri
 	for _, key := range []string{
 		imagePullRefsHashAnnotation,
 		podTemplateSpecHashAnnotation,
+		podVolumesHashAnnotation,
 		ctrlutil.AuthServerCABundleChecksumAnnotation,
 	} {
 		if _, want := desired[key]; !want {

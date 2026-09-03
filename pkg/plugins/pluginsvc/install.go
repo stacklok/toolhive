@@ -341,8 +341,7 @@ func resolvedGroupName(groupName string) string {
 }
 
 // installAndRegister registers the just-installed plugin in the target group
-// and, for project-scope installs with the lock file feature enabled (see
-// plugins.LockFileFeatureEnabled), records it in the project's
+// and, for project-scope installs, records it in the project's
 // toolhive.lock.yaml plugins: key. If group registration or the lock write
 // fails, the DB record, on-disk files, group membership (only when this call
 // added it), and lock entry are rolled back to their pre-install state:
@@ -357,7 +356,11 @@ func (s *service) installAndRegister(
 	scope plugins.Scope,
 ) (*plugins.InstallResult, error) {
 	pluginName := result.Plugin.Metadata.Name
-	lockScoped := scope == plugins.ScopeProject && plugins.LockFileFeatureEnabled()
+	lockScoped := scope == plugins.ScopeProject
+	// Surface the verification decision on the result so callers can show
+	// what trust state this install recorded.
+	result.Provenance = provenanceInfoFromLock(opts.Provenance)
+	result.Unsigned = opts.Unsigned
 
 	// Snapshot the prior plugins: lock entry before anything below can write
 	// one, so rollback can reinstate it rather than blindly deleting it.

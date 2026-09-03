@@ -37,9 +37,7 @@ Use --adopt to record lock entries for existing unmanaged installs, and
 
 Unless --check is set, sync prompts for confirmation before installing —
 plugin content is a set of AI-followed instructions. Pass --yes to skip the
-prompt (required in non-interactive contexts such as CI).
-
-Requires TOOLHIVE_PLUGINS_LOCK_ENABLED=true.`,
+prompt (required in non-interactive contexts such as CI).`,
 	PreRunE: chainPreRunE(
 		ValidateFormat(&aiPluginSyncFormat),
 	),
@@ -62,7 +60,9 @@ func init() {
 	aiPluginSyncCmd.Flags().BoolVar(&aiPluginSyncYes, "yes", false,
 		"Skip the confirmation prompt (required when not running interactively)")
 	aiPluginSyncCmd.Flags().BoolVar(&aiPluginSyncAllowUnsigned, "allow-unsigned", false,
-		"Allow adopting plugins whose signature state cannot be established (recorded as unsigned)")
+		"Record plugins as unsigned in the lock file: when adopting installs whose signature state "+
+			"cannot be established (--adopt), and when repairing an entry that records no trust "+
+			"decision and whose content is unsigned")
 	AddFormatFlag(aiPluginSyncCmd, &aiPluginSyncFormat)
 }
 

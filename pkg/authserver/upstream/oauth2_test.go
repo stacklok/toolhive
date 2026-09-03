@@ -21,9 +21,12 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"net/http"
 	"net/http/httptest"
+	"net/http/httptrace"
 	"net/url"
+	"path/filepath"
 	"strings"
 	"sync/atomic"
 	"testing"
@@ -2868,5 +2871,163 @@ func TestOAuth2Config_AllowPrivateIPs(t *testing.T) {
 		require.NoError(t, err)
 		require.NotNil(t, provider)
 		assert.False(t, provider.config.AllowPrivateIPs)
+	})
+}
+
+// TestBaseOAuth2Provider_CloseIdleConnections pins that retiring a provider
+// releases the connection pool its private HTTP client holds. Without it, a
+// process that constructs providers repeatedly accumulates one socket and
+// goroutine pair per provider (see #6479).
+func TestBaseOAuth2Provider_CloseIdleConnections(t *testing.T) {
+	t.Parallel()
+
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusOK)
+	}))
+	t.Cleanup(srv.Close)
+
+	// Built without an injected client, so the provider owns its pool.
+	p, err := NewOAuth2Provider(&OAuth2Config{
+		CommonOAuthConfig: CommonOAuthConfig{
+			ClientID:    "test-client",
+			RedirectURI: srv.URL + "/callback",
+		},
+		AuthorizationEndpoint: srv.URL + "/auth",
+		TokenEndpoint:         srv.URL + "/token",
+		InsecureAllowHTTP:     true,
+		AllowPrivateIPs:       true,
+	})
+	require.NoError(t, err)
+
+	require.False(t, providerRequestReusedConn(t, p, srv.URL), "first request cannot reuse a connection")
+	require.True(t, providerRequestReusedConn(t, p, srv.URL), "second request must reuse the pooled connection")
+
+	p.CloseIdleConnections()
+
+	assert.False(t, providerRequestReusedConn(t, p, srv.URL),
+		"CloseIdleConnections must drain the provider's pool")
+
+	// A provider constructed without a client (an OIDC provider that failed
+	// before its client was set) must not panic.
+	assert.NotPanics(t, (&BaseOAuth2Provider{}).CloseIdleConnections)
+}
+
+// TestBaseOAuth2Provider_CloseIdleConnections_InjectedClientNotDrained pins that
+// a caller-supplied client is left alone. Config.UpstreamFactory documents
+// sharing one client per issuer host across reconstructions; draining it when a
+// superseded provider is retired would cold-start the pool a live provider is
+// still using.
+func TestBaseOAuth2Provider_CloseIdleConnections_InjectedClientNotDrained(t *testing.T) {
+	t.Parallel()
+
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusOK)
+	}))
+	t.Cleanup(srv.Close)
+
+	host, err := url.Parse(srv.URL)
+	require.NoError(t, err)
+	shared, err := newHTTPClientForHost(host.Host, true, true, "")
+	require.NoError(t, err)
+
+	config := &OAuth2Config{
+		CommonOAuthConfig: CommonOAuthConfig{
+			ClientID:    "test-client",
+			RedirectURI: srv.URL + "/callback",
+		},
+		AuthorizationEndpoint: srv.URL + "/auth",
+		TokenEndpoint:         srv.URL + "/token",
+		InsecureAllowHTTP:     true,
+		AllowPrivateIPs:       true,
+	}
+	p, err := NewOAuth2Provider(config, WithOAuth2HTTPClient(shared))
+	require.NoError(t, err)
+	assert.Same(t, shared, p.httpClient, "the injected client must not be rebuilt")
+
+	require.False(t, providerRequestReusedConn(t, p, srv.URL), "first request cannot reuse a connection")
+	require.True(t, providerRequestReusedConn(t, p, srv.URL), "second request must reuse the pooled connection")
+
+	p.CloseIdleConnections()
+
+	assert.True(t, providerRequestReusedConn(t, p, srv.URL),
+		"a caller-owned client's pool must survive the provider being retired")
+}
+
+// providerRequestReusedConn issues a GET through the provider's HTTP client and
+// reports whether it was served from that client's idle connection pool.
+func providerRequestReusedConn(t *testing.T, p *BaseOAuth2Provider, target string) bool {
+	t.Helper()
+
+	var reused bool
+	ctx := httptrace.WithClientTrace(context.Background(), &httptrace.ClientTrace{
+		GotConn: func(info httptrace.GotConnInfo) { reused = info.Reused },
+	})
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, target, nil)
+	require.NoError(t, err)
+
+	resp, err := p.httpClient.Do(req)
+	require.NoError(t, err)
+	_, _ = io.Copy(io.Discard, resp.Body)
+	require.NoError(t, resp.Body.Close())
+
+	return reused
+}
+
+// TestInjectedClientRejectsCABundle pins that a CA bundle configured alongside
+// an injected HTTP client fails construction rather than being silently
+// dropped. Before options moved ahead of the default client build, the bundle
+// was read and parsed unconditionally, so a malformed one failed at boot; a
+// trust-anchor decision must not degrade to a log line.
+func TestInjectedClientRejectsCABundle(t *testing.T) {
+	t.Parallel()
+
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusOK)
+	}))
+	t.Cleanup(srv.Close)
+
+	host, err := url.Parse(srv.URL)
+	require.NoError(t, err)
+	injected, err := newHTTPClientForHost(host.Host, true, true, "")
+	require.NoError(t, err)
+
+	newConfig := func(caFilePath string) *OAuth2Config {
+		return &OAuth2Config{
+			CommonOAuthConfig: CommonOAuthConfig{
+				ClientID:    "test-client",
+				RedirectURI: srv.URL + "/callback",
+			},
+			AuthorizationEndpoint: srv.URL + "/auth",
+			TokenEndpoint:         srv.URL + "/token",
+			InsecureAllowHTTP:     true,
+			AllowPrivateIPs:       true,
+			CAFilePath:            caFilePath,
+		}
+	}
+
+	t.Run("rejected when both are set", func(t *testing.T) {
+		t.Parallel()
+
+		_, err := NewOAuth2Provider(newConfig("/etc/ssl/certs/some-bundle.pem"),
+			WithOAuth2HTTPClient(injected))
+		require.ErrorIs(t, err, ErrCABundleWithInjectedClient)
+	})
+
+	t.Run("accepted when only the client is injected", func(t *testing.T) {
+		t.Parallel()
+
+		p, err := NewOAuth2Provider(newConfig(""), WithOAuth2HTTPClient(injected))
+		require.NoError(t, err)
+		assert.Same(t, injected, p.httpClient)
+	})
+
+	t.Run("a CA bundle alone still reaches the default client build", func(t *testing.T) {
+		t.Parallel()
+
+		// No client injected, so the bundle is read — and an unreadable one is
+		// still a construction error, the behavior this guard preserves.
+		_, err := NewOAuth2Provider(newConfig(filepath.Join(t.TempDir(), "missing.pem")))
+		require.Error(t, err)
+		assert.NotErrorIs(t, err, ErrCABundleWithInjectedClient)
 	})
 }

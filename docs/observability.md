@@ -166,11 +166,11 @@ spec:
 See [`examples/operator/mcp-servers/mcpserver_fetch_otel.yaml`](../examples/operator/mcp-servers/mcpserver_fetch_otel.yaml)
 for a complete example.
 
-**Inline (deprecated)**: The inline `spec.telemetry` (MCPServer, MCPRemoteProxy)
-and `spec.config.telemetry` (VirtualMCPServer) fields still work but are
-deprecated and will be removed in a future API version. They are mutually exclusive with
-`telemetryConfigRef` (CEL enforced). All three resource types now support
-`spec.telemetryConfigRef`.
+**Inline (deprecated)**: `spec.telemetry` on MCPServer and MCPRemoteProxy still
+works but is deprecated. `spec.config.telemetry` on VirtualMCPServer is ignored
+by the operator (standalone CLI only); set `spec.telemetryConfigRef` or `/metrics`
+is not registered. Prefer `telemetryConfigRef` over inline telemetry; the CRD
+does not CEL-reject setting both.
 
 For VirtualMCPServer telemetry, see the
 [vMCP observability docs](./operator/virtualmcpserver-observability.md).

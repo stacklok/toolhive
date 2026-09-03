@@ -147,6 +147,44 @@ func TestPluginsRouter(t *testing.T) {
 			expectedBody:   `"my-plugin"`,
 		},
 		{
+			// The recorded trust state must be encoded into the response:
+			// dropped here, every signed install would reach the CLI looking
+			// untracked.
+			name:   "install plugin returns recorded provenance",
+			method: "POST",
+			path:   "/",
+			body:   `{"name":"my-plugin"}`,
+			setupMock: func(svc *plugmocks.MockPluginService, _ string) {
+				svc.EXPECT().Install(gomock.Any(), plugins.InstallOptions{Name: "my-plugin"}).
+					Return(&plugins.InstallResult{
+						Plugin: plugins.InstalledPlugin{
+							Metadata: plugins.PluginMetadata{Name: "my-plugin"},
+						},
+						Provenance: &plugins.ProvenanceInfo{
+							SignerIdentity: "/.github/workflows/release.yml",
+							CertIssuer:     "https://token.actions.githubusercontent.com",
+						},
+					}, nil)
+			},
+			expectedStatus: http.StatusCreated,
+			expectedBody:   `"signer_identity":"/.github/workflows/release.yml"`,
+		},
+		{
+			name:   "install plugin returns unsigned exception",
+			method: "POST",
+			path:   "/",
+			body:   `{"name":"my-plugin"}`,
+			setupMock: func(svc *plugmocks.MockPluginService, _ string) {
+				svc.EXPECT().Install(gomock.Any(), plugins.InstallOptions{Name: "my-plugin"}).
+					Return(&plugins.InstallResult{
+						Plugin:   plugins.InstalledPlugin{Metadata: plugins.PluginMetadata{Name: "my-plugin"}},
+						Unsigned: true,
+					}, nil)
+			},
+			expectedStatus: http.StatusCreated,
+			expectedBody:   `"unsigned":true`,
+		},
+		{
 			name:   "install plugin empty name",
 			method: "POST",
 			path:   "/",
@@ -430,6 +468,57 @@ func TestPluginsRouter(t *testing.T) {
 			setupMock: func(svc *plugmocks.MockPluginService, _ string) {
 				svc.EXPECT().Push(gomock.Any(), plugins.PushOptions{Reference: "ghcr.io/test/plugin:v1"}).
 					Return(nil)
+			},
+			expectedStatus: http.StatusNoContent,
+		},
+		{
+			// Guards the DTO trap: the signing fields must reach PushOptions,
+			// not just decode into the request struct and get dropped.
+			name:   "push plugin forwards identity token",
+			method: "POST",
+			path:   "/push",
+			body:   `{"reference":"ghcr.io/test/plugin:v1","identity_token":"a.b.c"}`,
+			setupMock: func(svc *plugmocks.MockPluginService, _ string) {
+				svc.EXPECT().Push(gomock.Any(), plugins.PushOptions{
+					Reference:     "ghcr.io/test/plugin:v1",
+					IdentityToken: "a.b.c",
+				}).Return(nil)
+			},
+			expectedStatus: http.StatusNoContent,
+		},
+		{
+			// Plugin signing is keyless-only (#6442), so the request DTO has
+			// no key field. A key must be refused rather than dropped: the
+			// caller asked for a key-signed artifact, and quietly publishing
+			// an unsigned one instead is the wrong answer. The service is
+			// never reached (the mock has no expectations).
+			name:           "push plugin rejects a key",
+			method:         "POST",
+			path:           "/push",
+			body:           `{"reference":"ghcr.io/test/plugin:v1","key":"/tmp/cosign.key","no_sign":true}`,
+			setupMock:      func(_ *plugmocks.MockPluginService, _ string) {},
+			expectedStatus: http.StatusBadRequest,
+		},
+		{
+			// Same contract, any unrecognized field: a typo in a signing
+			// field must not decode to "sign however you like".
+			name:           "push plugin rejects unknown fields",
+			method:         "POST",
+			path:           "/push",
+			body:           `{"reference":"ghcr.io/test/plugin:v1","no_sign":true,"identity_tokn":"a.b.c"}`,
+			setupMock:      func(_ *plugmocks.MockPluginService, _ string) {},
+			expectedStatus: http.StatusBadRequest,
+		},
+		{
+			name:   "push plugin forwards no_sign",
+			method: "POST",
+			path:   "/push",
+			body:   `{"reference":"ghcr.io/test/plugin:v1","no_sign":true}`,
+			setupMock: func(svc *plugmocks.MockPluginService, _ string) {
+				svc.EXPECT().Push(gomock.Any(), plugins.PushOptions{
+					Reference: "ghcr.io/test/plugin:v1",
+					NoSign:    true,
+				}).Return(nil)
 			},
 			expectedStatus: http.StatusNoContent,
 		},

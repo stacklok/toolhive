@@ -35,13 +35,6 @@ var _ plugins.PluginLockService = (*service)(nil)
 // artifact into the pinned trust chain, so planning probes the candidate's
 // signer identity before anything is installed — see guardSignerChange.
 func (s *service) Upgrade(ctx context.Context, opts plugins.UpgradeOptions) (*plugins.UpgradeResult, error) {
-	if !plugins.LockFileFeatureEnabled() {
-		return nil, httperr.WithCode(
-			fmt.Errorf("plugin lock file is not enabled; set %s=true", plugins.LockFileEnvVar),
-			http.StatusForbidden,
-		)
-	}
-
 	_, projectRoot, err := normalizeProjectRoot(plugins.ScopeProject, opts.ProjectRoot)
 	if err != nil {
 		return nil, err

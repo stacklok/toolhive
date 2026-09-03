@@ -753,14 +753,18 @@ spec:
   computed by the same `jwtBearerGrantEnabled` helper that decides whether
   `buildProvider` registers the grant with fosite in the first place — the two
   can't drift out of sync).
-- **Validator sharing.** When both RFC 8693 token exchange and the JWT-bearer
-  grant are enabled for the same trusted issuers, `buildProvider` constructs a
-  single `MultiIssuerTokenValidator` (`tokenexchange.NewSharedTrustedIssuerValidator`)
-  and passes it to both `tokenexchange.FactoryWithSharedTrustedIssuerValidator`
-  and `tokenexchange.JWTBearerIssuanceFactory`, rather than each building its own —
-  a `MultiIssuerTokenValidator` registers a `jwk.Cache` and background refresh
-  goroutines per issuer, so building two would double that cost with no
-  benefit.
+- **Validator sharing.** Whenever any trusted issuer is configured,
+  `buildProvider` constructs a single `MultiIssuerTokenValidator`
+  (`tokenexchange.NewSharedTrustedIssuerValidator`), holds it on the server, and
+  passes it to `tokenexchange.FactoryWithSharedTrustedIssuerValidator` (and, when
+  the JWT-bearer grant is enabled, `tokenexchange.JWTBearerIssuanceFactory`),
+  which require it rather than each building its own. A `MultiIssuerTokenValidator`
+  registers a `jwk.Cache` and background refresh goroutines per issuer, so one
+  shared instance both avoids doubling that cost and gives the server a single
+  handle to shut those workers down on `Close`. (Previously the shared validator
+  was built only when the JWT-bearer grant was also enabled, and a token-exchange-only
+  server built its validator inside a factory closure where nothing could release
+  it.)
 - **No delegation consent.** The JWT-bearer grant does not apply
   `allowedActors`, `actorMatcher`, or `may_act` — those are RFC 8693 delegation
   concepts. An issuer's JWT-bearer subjects are authorized entirely by

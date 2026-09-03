@@ -1579,6 +1579,7 @@ func TestNewMultiIssuerTokenValidator_EmptyAllowedActorsAccepted(t *testing.T) {
 		AllowedDelegateClients: []string{anyDelegateClient},
 	}}, nil)
 	require.NoError(t, err)
+	t.Cleanup(func() { _ = v.Close() })
 	assert.NotNil(t, v)
 }
 
@@ -1604,6 +1605,7 @@ func TestNewMultiIssuerTokenValidator_GrantOnlyIssuerAccepted(t *testing.T) {
 		},
 	}}, nil)
 	require.NoError(t, err)
+	t.Cleanup(func() { _ = v.Close() })
 	assert.NotNil(t, v)
 }
 
@@ -1837,6 +1839,7 @@ func TestNewMultiIssuerTokenValidator_AudienceShapeWarning(t *testing.T) {
 				AllowedDelegateClients: []string{anyDelegateClient},
 			}}, nil)
 			require.NoError(t, err)
+			t.Cleanup(func() { _ = v.Close() })
 			require.NotNil(t, v)
 
 			logged := buf.String()
@@ -2259,6 +2262,7 @@ func TestMultiIssuerTokenValidator_DiscoveryRefusesPrivateAddress(t *testing.T) 
 	require.NoError(t, err)
 	validator, err := NewMultiIssuerTokenValidator(selfValidator, testIssuer, trustedIssuers, nil)
 	require.NoError(t, err)
+	t.Cleanup(func() { _ = validator.Close() })
 
 	claims := externalClaims()
 	claims.Issuer = server.URL
@@ -2819,6 +2823,7 @@ func TestMultiIssuerTokenValidator_SharedJWKSURL_DifferingPolicy(t *testing.T) {
 		},
 	}, nil)
 	require.NoError(t, err)
+	t.Cleanup(func() { _ = validator.Close() })
 
 	tokenFor := func(issuer, audience, actor, jti string) string {
 		now := time.Now()

@@ -14,12 +14,16 @@ import (
 )
 
 // NewSharedTrustedIssuerValidator builds the single MultiIssuerTokenValidator
-// a caller should pass to both Factory and JWTBearerIssuanceFactory when
-// enabling both the RFC 8693 token-exchange and RFC 7523 JWT-bearer grants
-// for the same trusted issuers, so only one JWKS cache/goroutine set per
-// issuer is ever registered. Returns (nil, nil) when trustedIssuers is
-// empty — both factories fall back to building their own validator (or none)
-// in that case.
+// that backs a server's trusted-issuer handling. buildProvider constructs it
+// whenever any trusted issuer is configured — not only when the RFC 7523
+// JWT-bearer grant is also enabled — and passes it to
+// FactoryWithSharedTrustedIssuerValidator (and, when the JWT-bearer grant is
+// enabled, JWTBearerIssuanceFactory), both of which now require it for a
+// non-empty trusted-issuer set rather than building their own. One shared
+// instance keeps a single JWKS cache/goroutine set per issuer and, crucially,
+// gives the server one validator to Close on shutdown so those goroutines are
+// released (see MultiIssuerTokenValidator.Close). Returns (nil, nil) when
+// trustedIssuers is empty, in which case no external validator is built.
 func NewSharedTrustedIssuerValidator(
 	config *server.AuthorizationServerConfig, trustedIssuers []TrustedIssuer,
 ) (*MultiIssuerTokenValidator, error) {

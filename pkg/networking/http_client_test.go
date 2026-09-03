@@ -955,6 +955,20 @@ func TestBuild_BoundsIdleConnectionPool(t *testing.T) {
 	assert.Equal(t, 4, transport.MaxIdleConnsPerHost)
 }
 
+// TestSetIdleConnBounds pins the pool bounds the helper applies. These are the
+// single source of truth the hand-rolled transports outside Build mirror, so a
+// retune here must be a deliberate, visible change.
+func TestSetIdleConnBounds(t *testing.T) {
+	t.Parallel()
+
+	transport := &http.Transport{}
+	SetIdleConnBounds(transport)
+
+	assert.Equal(t, 90*time.Second, transport.IdleConnTimeout)
+	assert.Equal(t, 100, transport.MaxIdleConns)
+	assert.Equal(t, 4, transport.MaxIdleConnsPerHost)
+}
+
 // TestBuild_CloseIdleConnectionsReachesPool pins that
 // http.Client.CloseIdleConnections is not a silent no-op on a built client. The
 // client discovers the capability by asserting the outermost transport, so every

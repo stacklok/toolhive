@@ -1532,3 +1532,20 @@ func TestBuildWellKnownURLs(t *testing.T) {
 		})
 	}
 }
+
+// TestNewOIDCDiscoveryTransport_BoundsIdleConnectionPool pins that the OIDC
+// discovery transport bounds its pool in both dial modes. This is one of the
+// exact sites #6483 names; a zero IdleConnTimeout would pin a socket and its
+// goroutine pair for the process lifetime.
+func TestNewOIDCDiscoveryTransport_BoundsIdleConnectionPool(t *testing.T) {
+	t.Parallel()
+
+	for _, blockPrivateIPs := range []bool{false, true} {
+		transport := newOIDCDiscoveryTransport(blockPrivateIPs)
+		assert.Equal(t, 90*time.Second, transport.IdleConnTimeout)
+		assert.Equal(t, 100, transport.MaxIdleConns)
+		assert.Equal(t, 4, transport.MaxIdleConnsPerHost)
+		assert.Equal(t, blockPrivateIPs, transport.DisableKeepAlives,
+			"blockPrivateIPs must disable keep-alives so pooling cannot skip the per-dial SSRF check")
+	}
+}

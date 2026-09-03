@@ -1546,6 +1546,6 @@ func TestNewOIDCDiscoveryTransport_BoundsIdleConnectionPool(t *testing.T) {
 		assert.Equal(t, 100, transport.MaxIdleConns)
 		assert.Equal(t, 4, transport.MaxIdleConnsPerHost)
 		assert.Equal(t, blockPrivateIPs, transport.DisableKeepAlives,
-			"blockPrivateIPs must disable keep-alives so pooling cannot skip the per-dial SSRF check")
+			"blockPrivateIPs must disable keep-alive so pooling cannot skip the per-dial SSRF check")
 	}
 }

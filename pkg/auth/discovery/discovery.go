@@ -1033,7 +1033,7 @@ func buildOAuthFlowResult(
 // fetches. The metadataURL is server-supplied, so the caller pairs it with a
 // same-host redirect policy; when blockPrivateIPs is true it also refuses to
 // dial private/loopback/link-local addresses on every hop (and disables
-// keep-alives so a pooled connection cannot skip the per-dial check).
+// keep-alive so a pooled connection cannot skip the per-dial check).
 // Extracted so the pool bounds networking.SetIdleConnBounds applies stay
 // unit-testable.
 func newResourceMetadataTransport(blockPrivateIPs bool) *http.Transport {

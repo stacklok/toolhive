@@ -1493,7 +1493,7 @@ func TestNewDetectionClient_BoundsIdleConnectionPool(t *testing.T) {
 
 // TestNewResourceMetadataTransport_BoundsIdleConnectionPool pins that the RFC
 // 9728 metadata transport bounds its pool in both dial modes. The bounds are
-// set regardless of blockPrivateIPs (they are moot only when keep-alives are
+// set regardless of blockPrivateIPs (they are moot only when keep-alive is
 // disabled, which is a separate field).
 func TestNewResourceMetadataTransport_BoundsIdleConnectionPool(t *testing.T) {
 	t.Parallel()
@@ -1504,6 +1504,6 @@ func TestNewResourceMetadataTransport_BoundsIdleConnectionPool(t *testing.T) {
 		assert.Equal(t, 100, transport.MaxIdleConns)
 		assert.Equal(t, 4, transport.MaxIdleConnsPerHost)
 		assert.Equal(t, blockPrivateIPs, transport.DisableKeepAlives,
-			"blockPrivateIPs must disable keep-alives so pooling cannot skip the per-dial SSRF check")
+			"blockPrivateIPs must disable keep-alive so pooling cannot skip the per-dial SSRF check")
 	}
 }

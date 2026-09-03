@@ -69,7 +69,7 @@ func discoverOIDCEndpointsWithClient(
 // caller pairs it with a same-host redirect policy to prevent a 30x driving the
 // host into an SSRF (CWE-918); when blockPrivateIPs is true it also refuses to
 // dial private/loopback/link-local addresses on every hop (and disables
-// keep-alives so a pooled connection cannot skip the per-dial check). Extracted
+// keep-alive so a pooled connection cannot skip the per-dial check). Extracted
 // so the pool bounds networking.SetIdleConnBounds applies stay unit-testable.
 func newOIDCDiscoveryTransport(blockPrivateIPs bool) *http.Transport {
 	transport := &http.Transport{

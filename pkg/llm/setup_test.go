@@ -189,7 +189,7 @@ func TestConfigureDetectedTools_BedrockClaudeCode(t *testing.T) {
 		[]string{"claude-code"},
 		"https://gw.example.com", "http://localhost:14000/v1",
 		"/usr/local/bin/thv", []string{"llm", "token", "--skip-browser"},
-		false, "/anthropic", nil, nil,
+		false, "/anthropic", nil, nil, false,
 		BedrockConfig{Compat: true, Enable1M: true},
 	)
 	require.NoError(t, err)
@@ -213,13 +213,105 @@ func TestConfigureDetectedTools_BedrockSkippedForNonClaudeCode(t *testing.T) {
 		[]string{"cursor"},
 		"https://gw.example.com", "http://localhost:14000/v1",
 		"/usr/local/bin/thv", []string{"llm", "token", "--skip-browser"},
-		false, "", nil, nil,
+		false, "", nil, nil, false,
 		BedrockConfig{Compat: true},
 	)
 	require.NoError(t, err)
 	require.Len(t, gm.applied, 1)
 	assert.False(t, gm.applied[0].BedrockCompat)
 	assert.Empty(t, gm.applied[0].BedrockOpusModel)
+}
+
+func TestConfigureDetectedTools_ExtendedTTLCacheReporting(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name             string
+		clientType       string
+		mode             string
+		supports         bool
+		conflict         string
+		conflictErr      error
+		bedrock          BedrockConfig
+		wantApplied      bool
+		wantStdout       []string
+		wantStderr       []string
+		wantStderrAbsent []string
+	}{
+		{
+			name:        "supported client applies one-hour lifetime",
+			clientType:  claudeCodeClient,
+			mode:        llmgateway.ModeDirect,
+			supports:    true,
+			wantApplied: true,
+			wantStdout:  []string{"Enabled one-hour prompt-cache lifetime", claudeCodeClient},
+		},
+		{
+			name:             "unsupported targeted client is informational",
+			clientType:       "cursor",
+			mode:             llmgateway.ModeProxy,
+			wantStdout:       []string{"Extended prompt-cache TTL not applied to cursor", "does not expose"},
+			wantStderrAbsent: []string{"Warning:"},
+		},
+		{
+			name:       "higher-precedence five-minute setting blocks application",
+			clientType: claudeCodeClient,
+			mode:       llmgateway.ModeDirect,
+			supports:   true,
+			conflict:   "CLAUDE_CODE_PROMPT_CACHE_TTL=5m",
+			wantStderr: []string{"CLAUDE_CODE_PROMPT_CACHE_TTL=5m", promptCacheVerificationCommand},
+		},
+		{
+			name:        "conflict inspection failure prevents ineffective configuration",
+			clientType:  claudeCodeClient,
+			mode:        llmgateway.ModeDirect,
+			supports:    true,
+			conflictErr: errors.New("invalid settings"),
+			wantStderr:  []string{"could not inspect claude-code", "one-hour lifetime was not applied"},
+		},
+		{
+			name:        "Bedrock combination applies and warns with verification command",
+			clientType:  claudeCodeClient,
+			mode:        llmgateway.ModeDirect,
+			supports:    true,
+			bedrock:     BedrockConfig{Compat: true},
+			wantApplied: true,
+			wantStderr:  []string{"may not take effect with Bedrock compatibility", promptCacheVerificationCommand},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			gm := &capturingGatewayManager{
+				mode:             tt.mode,
+				supportsExtended: tt.supports,
+				cacheConflict:    tt.conflict,
+				cacheConflictErr: tt.conflictErr,
+			}
+			var out, errOut bytes.Buffer
+
+			configured, err := configureDetectedToolsWithDiscovery(
+				&out, &errOut, gm, []string{tt.clientType},
+				"https://gw.example.com", "http://localhost:14000/v1",
+				"/usr/local/bin/thv", []string{"llm", "token", "--skip-browser"},
+				false, "", nil, nil, true, tt.bedrock,
+			)
+			require.NoError(t, err)
+			require.Len(t, configured, 1)
+			require.Len(t, gm.applied, 1)
+			assert.Equal(t, tt.wantApplied, gm.applied[0].ExtendedTTLCache)
+			for _, want := range tt.wantStdout {
+				assert.Contains(t, out.String(), want)
+			}
+			for _, want := range tt.wantStderr {
+				assert.Contains(t, errOut.String(), want)
+			}
+			for _, absent := range tt.wantStderrAbsent {
+				assert.NotContains(t, errOut.String(), absent)
+			}
+		})
+	}
 }
 
 // ── mergeToolConfigs ──────────────────────────────────────────────────────────
@@ -299,6 +391,13 @@ func TestIsTarget(t *testing.T) {
 // stubGatewayManager is a minimal GatewayManager for Teardown tests.
 type stubGatewayManager struct {
 	reverted []string
+	cleared  []extendedTTLCacheClearCall
+	clearErr error
+}
+
+type extendedTTLCacheClearCall struct {
+	clientType string
+	configPath string
 }
 
 func (*stubGatewayManager) DetectedLLMGatewayClients() []string { return nil }
@@ -306,6 +405,14 @@ func (*stubGatewayManager) ConfigureLLMGateway(_ string, _ llmgateway.ApplyConfi
 	return "", nil
 }
 func (*stubGatewayManager) LLMGatewayModeFor(_ string) string      { return "" }
+func (*stubGatewayManager) SupportsExtendedTTLCache(_ string) bool { return false }
+func (*stubGatewayManager) ExtendedTTLCacheConflict(_ string) (string, error) {
+	return "", nil
+}
+func (s *stubGatewayManager) ClearExtendedTTLCache(clientType, configPath string) error {
+	s.cleared = append(s.cleared, extendedTTLCacheClearCall{clientType: clientType, configPath: configPath})
+	return s.clearErr
+}
 func (*stubGatewayManager) IsManaged(_ string) bool                { return false }
 func (*stubGatewayManager) LLMClientDetectionHint(_ string) string { return "" }
 func (*stubGatewayManager) ConfigureEnvFile(_ string, _ llmgateway.ApplyConfig) (string, error) {
@@ -515,8 +622,13 @@ func (g *setupGatewayManager) ConfigureLLMGateway(client string, cfg llmgateway.
 	g.applied = append(g.applied, cfg)
 	return "/tmp/settings.json", nil
 }
-func (g *setupGatewayManager) LLMGatewayModeFor(_ string) string { return g.mode }
-func (*setupGatewayManager) IsManaged(_ string) bool             { return false }
+func (g *setupGatewayManager) LLMGatewayModeFor(_ string) string    { return g.mode }
+func (*setupGatewayManager) SupportsExtendedTTLCache(_ string) bool { return false }
+func (*setupGatewayManager) ExtendedTTLCacheConflict(_ string) (string, error) {
+	return "", nil
+}
+func (*setupGatewayManager) ClearExtendedTTLCache(_, _ string) error { return nil }
+func (*setupGatewayManager) IsManaged(_ string) bool                 { return false }
 func (g *setupGatewayManager) LLMClientDetectionHint(_ string) string {
 	return g.hint
 }
@@ -740,6 +852,137 @@ func TestSetup_VSCodeDiscoveryFailureSelectionSemantics(t *testing.T) {
 	})
 }
 
+func TestSetup_ReappliesPersistedExtendedTTLCache(t *testing.T) {
+	t.Parallel()
+
+	gm := &capturingGatewayManager{
+		detected:         []string{claudeCodeClient},
+		mode:             llmgateway.ModeDirect,
+		supportsExtended: true,
+	}
+	provider := configuredSetupProvider()
+	provider.cfg.ExtendedTTLCache = true
+
+	var stdout, stderr bytes.Buffer
+	err := Setup(
+		context.Background(), &stdout, &stderr, gm, provider,
+		func(context.Context, *Config) error { return nil },
+		SetOptions{}, "", true, "", true,
+	)
+	require.NoError(t, err)
+	require.Len(t, gm.applied, 1)
+	assert.True(t, gm.applied[0].ExtendedTTLCache,
+		"a plain setup must apply the persisted extended TTL setting")
+	assert.True(t, provider.cfg.ExtendedTTLCache)
+}
+
+func TestSetup_TargetedUnsupportedClientReportsInformation(t *testing.T) {
+	t.Parallel()
+
+	gm := &capturingGatewayManager{
+		detected: []string{"cursor"},
+		mode:     llmgateway.ModeProxy,
+	}
+	provider := configuredSetupProvider()
+
+	var stdout, stderr bytes.Buffer
+	err := Setup(
+		context.Background(), &stdout, &stderr, gm, provider,
+		func(context.Context, *Config) error { return nil },
+		SetOptions{ExtendedTTLCache: boolPtr(true)}, "", true, "cursor", true,
+	)
+	require.NoError(t, err)
+	assert.Contains(t, stdout.String(), "Extended prompt-cache TTL not applied to cursor")
+	assert.NotContains(t, stderr.String(), "does not expose")
+	assert.True(t, provider.cfg.ExtendedTTLCache,
+		"the global preference stays persisted for clients that gain support later")
+}
+
+func TestSetup_ExplicitFalseClearsRecordedExtendedTTLCacheBeforeDetection(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name         string
+		detected     []string
+		targetClient string
+		wantApplied  int
+	}{
+		{
+			name:         "targeting unsupported cursor still clears recorded Claude Code",
+			detected:     []string{"cursor"},
+			targetClient: "cursor",
+			wantApplied:  1,
+		},
+		{
+			name: "no currently detected clients still clears recorded Claude Code",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			gm := &capturingGatewayManager{
+				detected: tt.detected,
+				mode:     llmgateway.ModeProxy,
+				extendedSupport: map[string]bool{
+					claudeCodeClient: true,
+				},
+			}
+			provider := configuredSetupProvider()
+			provider.cfg.ExtendedTTLCache = true
+			provider.cfg.ConfiguredTools = []ToolConfig{{
+				Tool:       claudeCodeClient,
+				ConfigPath: "/home/test/.claude/settings.json",
+			}}
+
+			var stdout, stderr bytes.Buffer
+			err := Setup(
+				context.Background(), &stdout, &stderr, gm, provider,
+				func(context.Context, *Config) error { return nil },
+				SetOptions{ExtendedTTLCache: boolPtr(false)}, "", true, tt.targetClient, true,
+			)
+			require.NoError(t, err)
+			assert.Equal(t, []extendedTTLCacheClearCall{{
+				clientType: claudeCodeClient,
+				configPath: "/home/test/.claude/settings.json",
+			}}, gm.clearCalls)
+			assert.False(t, provider.cfg.ExtendedTTLCache)
+			assert.Len(t, gm.applied, tt.wantApplied)
+		})
+	}
+}
+
+func TestSetup_ExplicitFalseCleanupFailureLeavesPreferenceEnabled(t *testing.T) {
+	t.Parallel()
+
+	gm := &capturingGatewayManager{
+		detected: []string{"cursor"},
+		mode:     llmgateway.ModeProxy,
+		extendedSupport: map[string]bool{
+			claudeCodeClient: true,
+		},
+		clearErr: errors.New("settings are read-only"),
+	}
+	provider := configuredSetupProvider()
+	provider.cfg.ExtendedTTLCache = true
+	provider.cfg.ConfiguredTools = []ToolConfig{{
+		Tool:       claudeCodeClient,
+		ConfigPath: "/home/test/.claude/settings.json",
+	}}
+
+	var stdout, stderr bytes.Buffer
+	err := Setup(
+		context.Background(), &stdout, &stderr, gm, provider,
+		func(context.Context, *Config) error { return nil },
+		SetOptions{ExtendedTTLCache: boolPtr(false)}, "", true, "cursor", true,
+	)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "settings are read-only")
+	assert.True(t, provider.cfg.ExtendedTTLCache)
+	assert.Zero(t, provider.updateCalls)
+	assert.Empty(t, gm.applied)
+}
+
 func TestFilterDetectedClients_LeftoverDirHint(t *testing.T) {
 	t.Parallel()
 	gm := &setupGatewayManager{
@@ -869,17 +1112,37 @@ func TestSetup_CallbackPortInUseBeforeLogin(t *testing.T) {
 
 // capturingGatewayManager records the ApplyConfig passed to ConfigureLLMGateway.
 type capturingGatewayManager struct {
-	mode    string // returned by LLMGatewayModeFor
-	applied []llmgateway.ApplyConfig
+	mode             string // returned by LLMGatewayModeFor
+	detected         []string
+	supportsExtended bool
+	extendedSupport  map[string]bool
+	cacheConflict    string
+	cacheConflictErr error
+	clearCalls       []extendedTTLCacheClearCall
+	clearErr         error
+	applied          []llmgateway.ApplyConfig
 }
 
-func (*capturingGatewayManager) DetectedLLMGatewayClients() []string { return nil }
+func (g *capturingGatewayManager) DetectedLLMGatewayClients() []string { return g.detected }
 func (g *capturingGatewayManager) ConfigureLLMGateway(_ string, cfg llmgateway.ApplyConfig) (string, error) {
 	g.applied = append(g.applied, cfg)
 	return "/path/to/settings.json", nil
 }
 func (g *capturingGatewayManager) LLMGatewayModeFor(_ string) string { return g.mode }
-func (*capturingGatewayManager) IsManaged(_ string) bool             { return false }
+func (g *capturingGatewayManager) SupportsExtendedTTLCache(clientType string) bool {
+	if g.extendedSupport != nil {
+		return g.extendedSupport[clientType]
+	}
+	return g.supportsExtended
+}
+func (g *capturingGatewayManager) ExtendedTTLCacheConflict(_ string) (string, error) {
+	return g.cacheConflict, g.cacheConflictErr
+}
+func (g *capturingGatewayManager) ClearExtendedTTLCache(clientType, configPath string) error {
+	g.clearCalls = append(g.clearCalls, extendedTTLCacheClearCall{clientType: clientType, configPath: configPath})
+	return g.clearErr
+}
+func (*capturingGatewayManager) IsManaged(_ string) bool { return false }
 func (*capturingGatewayManager) LLMClientDetectionHint(_ string) string {
 	return ""
 }
@@ -901,7 +1164,7 @@ func TestConfigureDetectedTools_PathPrefixAppendedForDirectMode(t *testing.T) {
 		[]string{"claude-code"},
 		"https://gw.example.com", "http://localhost:14000/v1",
 		"/usr/local/bin/thv", []string{"llm", "token", "--skip-browser"},
-		false, "/anthropic", nil, nil,
+		false, "/anthropic", nil, nil, false,
 		BedrockConfig{},
 	)
 	require.NoError(t, err)
@@ -923,7 +1186,7 @@ func TestConfigureDetectedTools_NoPrefixWhenEmpty(t *testing.T) {
 		[]string{"claude-code"},
 		"https://gw.example.com", "http://localhost:14000/v1",
 		"/usr/local/bin/thv", []string{"llm", "token", "--skip-browser"},
-		false, "", nil, nil, // no prefix
+		false, "", nil, nil, false, // no prefix
 		BedrockConfig{},
 	)
 	require.NoError(t, err)
@@ -944,7 +1207,7 @@ func TestConfigureDetectedTools_PrefixNotAppliedForProxyMode(t *testing.T) {
 		[]string{"cursor"},
 		"https://gw.example.com", "http://localhost:14000/v1",
 		"/usr/local/bin/thv", []string{"llm", "token", "--skip-browser"},
-		false, "/anthropic", nil, nil,
+		false, "/anthropic", nil, nil, false,
 		BedrockConfig{},
 	)
 	require.NoError(t, err)
@@ -1036,7 +1299,12 @@ func (*managedGatewayManager) ConfigureLLMGateway(_ string, _ llmgateway.ApplyCo
 func (*managedGatewayManager) LLMGatewayModeFor(_ string) string {
 	return llmgateway.ModeCredentialHelper
 }
-func (g *managedGatewayManager) IsManaged(c string) bool { return g.managed[c] }
+func (*managedGatewayManager) SupportsExtendedTTLCache(_ string) bool { return false }
+func (*managedGatewayManager) ExtendedTTLCacheConflict(_ string) (string, error) {
+	return "", nil
+}
+func (*managedGatewayManager) ClearExtendedTTLCache(_, _ string) error { return nil }
+func (g *managedGatewayManager) IsManaged(c string) bool               { return g.managed[c] }
 func (*managedGatewayManager) LLMClientDetectionHint(_ string) string {
 	return ""
 }

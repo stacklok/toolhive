@@ -9,6 +9,7 @@ import (
 	"log/slog"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strconv"
 	"strings"
 
@@ -202,6 +203,29 @@ func (cm *ClientManager) RevertLLMGateway(clientType ClientApp, configPath strin
 // JSON-Pointer-based revert path shared by every LLM-gateway mode except
 // ModeCredentialHelper and ModeCodexAuth (which use dedicated writers).
 func revertJSONPointerGateway(appCfg *clientAppConfig, configPath string) error {
+	return revertJSONPointerSpecs(configPath, appCfg.LLMGatewayKeys)
+}
+
+// ClearExtendedTTLCache removes ToolHive-managed extended-TTL keys.
+func (cm *ClientManager) ClearExtendedTTLCache(clientType ClientApp, configPath string) error {
+	appCfg := cm.lookupClientAppConfig(clientType)
+	if appCfg == nil {
+		return fmt.Errorf("unknown client %q", clientType)
+	}
+	if !appCfg.SupportsExtendedTTLCache {
+		return nil
+	}
+
+	specs := make([]LLMGatewayKeySpec, 0, len(appCfg.LLMGatewayKeys))
+	for _, spec := range appCfg.LLMGatewayKeys {
+		if spec.ValueField == "ExtendedTTLCache" || spec.ValueField == "ExtendedTTLCacheLegacy" {
+			specs = append(specs, spec)
+		}
+	}
+	return revertJSONPointerSpecs(configPath, specs)
+}
+
+func revertJSONPointerSpecs(configPath string, specs []LLMGatewayKeySpec) error {
 	// Guard against a missing file (or deleted parent directory) before trying
 	// to acquire the lock — WithFileLock creates configPath+".lock", which
 	// fails when the directory no longer exists.
@@ -232,7 +256,7 @@ func revertJSONPointerGateway(appCfg *clientAppConfig, configPath string) error 
 			return fmt.Errorf("standardizing %s: %w", configPath, err)
 		}
 
-		for _, spec := range appCfg.LLMGatewayKeys {
+		for _, spec := range specs {
 			// Skip keys that are already absent — avoids brittle error-string matching.
 			if !jsonPointerExists(standardized, spec.JSONPointer) {
 				continue
@@ -258,6 +282,187 @@ func revertJSONPointerGateway(appCfg *clientAppConfig, configPath string) error 
 func (cm *ClientManager) IsLLMGatewaySupported(clientType ClientApp) bool {
 	cfg := cm.lookupClientAppConfig(clientType)
 	return cfg != nil && cfg.LLMGatewayMode != ""
+}
+
+// SupportsExtendedTTLCache reports whether clientType declares a prompt-cache
+// lifetime control in the client registry.
+func (cm *ClientManager) SupportsExtendedTTLCache(clientType ClientApp) bool {
+	cfg := cm.lookupClientAppConfig(clientType)
+	return cfg != nil && cfg.SupportsExtendedTTLCache
+}
+
+var promptCacheEnvironmentControls = [...]string{
+	"FORCE_PROMPT_CACHING_5M",
+	"CLAUDE_CODE_PROMPT_CACHE_TTL",
+	"CLAUDE_CODE_SUBAGENT_PROMPT_CACHE_TTL",
+}
+
+// ExtendedTTLCacheConflict reports a locally discoverable five-minute override.
+func (cm *ClientManager) ExtendedTTLCacheConflict(clientType ClientApp) (string, error) {
+	cfg := cm.lookupClientAppConfig(clientType)
+	if cfg == nil || !cfg.SupportsExtendedTTLCache {
+		return "", nil
+	}
+
+	controls := make(map[string]promptCacheControl, 5)
+	workingDir, _ := os.Getwd() // Failure only skips project-scope inspection.
+	settingsPaths, err := extendedTTLCacheSettingsPaths(
+		cm.buildLLMSettingsPath(cfg), workingDir, claudeCodeManagedSettingsDir(runtime.GOOS),
+	)
+	if err != nil {
+		return "", err
+	}
+	for _, path := range settingsPaths {
+		if err := mergePromptCacheControls(path, controls); err != nil {
+			return "", err
+		}
+	}
+	for _, name := range promptCacheEnvironmentControls {
+		if value, ok := os.LookupEnv(name); ok {
+			controls[name] = promptCacheControl{strings.TrimSpace(value), "the process environment"}
+		}
+	}
+
+	return promptCacheConflictDescription(controls), nil
+}
+
+type promptCacheControl struct {
+	value  string
+	source string
+}
+
+func extendedTTLCacheSettingsPaths(userSettings, workingDir, managedDir string) ([]string, error) {
+	paths := []string{userSettings}
+	if workingDir != "" {
+		workingDir = gitProjectRoot(workingDir)
+		paths = append(paths,
+			filepath.Join(workingDir, ".claude", "settings.json"),
+			filepath.Join(workingDir, ".claude", "settings.local.json"),
+		)
+	}
+	if managedDir == "" {
+		return paths, nil
+	}
+
+	paths = append(paths, filepath.Join(managedDir, "managed-settings.json"))
+	dropInDir := filepath.Join(managedDir, "managed-settings.d")
+	dropIns, err := os.ReadDir(dropInDir)
+	if err != nil {
+		if os.IsNotExist(err) {
+			return paths, nil
+		}
+		return nil, fmt.Errorf("reading Claude Code managed settings drop-in directory: %w", err)
+	}
+	for _, entry := range dropIns {
+		if entry.IsDir() || strings.HasPrefix(entry.Name(), ".") || filepath.Ext(entry.Name()) != ".json" {
+			continue
+		}
+		paths = append(paths, filepath.Join(dropInDir, entry.Name()))
+	}
+	return paths, nil
+}
+
+func gitProjectRoot(path string) string {
+	fallback := path
+	for {
+		if _, err := os.Stat(filepath.Join(path, ".git")); err == nil {
+			return path
+		}
+		parent := filepath.Dir(path)
+		if parent == path {
+			return fallback
+		}
+		path = parent
+	}
+}
+
+func mergePromptCacheControls(path string, controls map[string]promptCacheControl) error {
+	content, err := os.ReadFile(path) // #nosec G304 -- paths are registered client settings locations
+	if err != nil {
+		if os.IsNotExist(err) {
+			return nil
+		}
+		return fmt.Errorf("reading %s: %w", path, err)
+	}
+	if len(content) == 0 {
+		return nil
+	}
+
+	v, err := hujson.Parse(content)
+	if err != nil {
+		return fmt.Errorf("parsing %s: %w", path, err)
+	}
+	standardized, err := hujson.Standardize(v.Pack())
+	if err != nil {
+		return fmt.Errorf("standardizing %s: %w", path, err)
+	}
+	var settings map[string]any
+	if err := json.Unmarshal(standardized, &settings); err != nil {
+		return fmt.Errorf("decoding %s: %w", path, err)
+	}
+	env, _ := settings["env"].(map[string]any)
+	for _, name := range promptCacheEnvironmentControls {
+		value, ok := env[name].(string)
+		if !ok {
+			continue
+		}
+		controls[name] = promptCacheControl{strings.TrimSpace(value), path}
+	}
+	for _, name := range []string{"promptCacheTtl", "subagentPromptCacheTtl"} {
+		if value, ok := settings[name].(string); ok {
+			controls[name] = promptCacheControl{strings.TrimSpace(value), path}
+		}
+	}
+	return nil
+}
+
+func promptCacheConflictDescription(controls map[string]promptCacheControl) string {
+	if force, ok := controls["FORCE_PROMPT_CACHING_5M"]; ok && force.value == "1" {
+		return formatPromptCacheConflict("FORCE_PROMPT_CACHING_5M", force)
+	}
+
+	buckets := []struct {
+		environmentVariable string
+		setting             string
+	}{
+		{environmentVariable: "CLAUDE_CODE_PROMPT_CACHE_TTL", setting: "promptCacheTtl"},
+		{environmentVariable: "CLAUDE_CODE_SUBAGENT_PROMPT_CACHE_TTL", setting: "subagentPromptCacheTtl"},
+	}
+	for _, bucket := range buckets {
+		if envValue, ok := controls[bucket.environmentVariable]; ok {
+			switch strings.ToLower(envValue.value) {
+			case "5m":
+				return formatPromptCacheConflict(bucket.environmentVariable, envValue)
+			case "1h":
+				continue
+			}
+		}
+		if setting, ok := controls[bucket.setting]; ok && strings.EqualFold(setting.value, "5m") {
+			return formatPromptCacheConflict(bucket.setting, setting)
+		}
+	}
+	return ""
+}
+
+func formatPromptCacheConflict(name string, control promptCacheControl) string {
+	return fmt.Sprintf("%s=%s in %s", name, control.value, control.source)
+}
+
+func claudeCodeManagedSettingsDir(goos string) string {
+	switch goos {
+	case "darwin":
+		return filepath.Join(string(filepath.Separator), "Library", "Application Support", "ClaudeCode")
+	case "linux":
+		return filepath.Join(string(filepath.Separator), "etc", "claude-code")
+	case "windows":
+		programFiles := os.Getenv("ProgramFiles")
+		if programFiles == "" {
+			programFiles = `C:\Program Files`
+		}
+		return filepath.Join(programFiles, "ClaudeCode")
+	default:
+		return ""
+	}
 }
 
 // IsManaged reports whether an MDM/managed-preferences profile is present for
@@ -413,6 +618,16 @@ func resolveApplyConfigField(valueField string, cfg llmgateway.ApplyConfig) (str
 	case "NodeTLSRejectUnauthorized":
 		if cfg.TLSSkipVerify {
 			return "0", true
+		}
+		return "", true
+	case "ExtendedTTLCache":
+		if cfg.ExtendedTTLCache {
+			return "1h", true
+		}
+		return "", true
+	case "ExtendedTTLCacheLegacy":
+		if cfg.ExtendedTTLCache {
+			return "1", true
 		}
 		return "", true
 	default:

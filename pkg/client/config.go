@@ -167,10 +167,11 @@ const (
 //   - ValueField names which ApplyConfig field to write. Valid values:
 //     "GatewayURL", "AnthropicBaseURL", "ProxyBaseURL", "ProxyOrigin",
 //     "TokenHelperCommand", "PlaceholderAPIKey", "ClaudeCodeHelperTTLMillis",
-//     "NodeTLSRejectUnauthorized", "BedrockDisableExperimentalBetas",
-//     "BedrockHaikuModel", "BedrockOpusModel", "BedrockSonnetModel". An
-//     unrecognised ValueField is a programming error and causes
-//     ConfigureLLMGateway to return an error.
+//     "NodeTLSRejectUnauthorized", "ExtendedTTLCache",
+//     "ExtendedTTLCacheLegacy",
+//     "BedrockDisableExperimentalBetas", "BedrockHaikuModel",
+//     "BedrockOpusModel", "BedrockSonnetModel". An unrecognised ValueField is
+//     a programming error and causes ConfigureLLMGateway to return an error.
 //   - Literal is written verbatim into the settings key (e.g. a fixed auth
 //     type string). Use Literal instead of ValueField for constant values so
 //     that typos in ValueField are caught as errors rather than silently
@@ -184,8 +185,9 @@ type LLMGatewayKeySpec struct {
 	JSONPointer string // RFC 6901 path
 	// ValueField: "GatewayURL" | "AnthropicBaseURL" | "ProxyBaseURL" | "ProxyOrigin" |
 	// "TokenHelperCommand" | "PlaceholderAPIKey" | "ClaudeCodeHelperTTLMillis" |
-	// "NodeTLSRejectUnauthorized" | "BedrockDisableExperimentalBetas" |
-	// "BedrockHaikuModel" | "BedrockOpusModel" | "BedrockSonnetModel"
+	// "NodeTLSRejectUnauthorized" | "ExtendedTTLCache" | "ExtendedTTLCacheLegacy" |
+	// "BedrockDisableExperimentalBetas" | "BedrockHaikuModel" |
+	// "BedrockOpusModel" | "BedrockSonnetModel"
 	ValueField     string
 	Literal        string // constant value written verbatim; mutually exclusive with ValueField
 	ClearWhenEmpty bool   // remove the key when the resolved value is empty (ignored for Literal)
@@ -253,6 +255,8 @@ type clientAppConfig struct {
 	// LLMGatewayMode identifies the gateway integration strategy (direct token
 	// helper, proxy, credential helper, or Codex auth), or "" when unsupported.
 	LLMGatewayMode string
+	// SupportsExtendedTTLCache declares support for the conditional TTL keys.
+	SupportsExtendedTTLCache bool
 	// LLMBinaryName is the executable name looked up via exec.LookPath to
 	// confirm the tool is actually installed (not just a leftover config
 	// directory). Leave empty for tools that are not on $PATH (e.g. macOS
@@ -535,10 +539,11 @@ var supportedClientIntegrations = []clientAppConfig{
 		PluginsGlobalPath:  []string{".claude", "plugins"},
 		PluginsProjectPath: []string{".claude", "plugins"},
 		// LLM gateway: patches ~/.claude/settings.json (different from the MCP .claude.json)
-		LLMGatewayMode:     llmgateway.ModeDirect,
-		LLMBinaryName:      "claude",
-		LLMSettingsFile:    "settings.json",
-		LLMSettingsRelPath: []string{".claude"},
+		LLMGatewayMode:           llmgateway.ModeDirect,
+		SupportsExtendedTTLCache: true,
+		LLMBinaryName:            "claude",
+		LLMSettingsFile:          "settings.json",
+		LLMSettingsRelPath:       []string{".claude"},
 		LLMGatewayKeys: []LLMGatewayKeySpec{
 			{JSONPointer: "/apiKeyHelper", ValueField: "TokenHelperCommand"},
 			{JSONPointer: "/env/ANTHROPIC_BASE_URL", ValueField: "AnthropicBaseURL"},
@@ -549,6 +554,12 @@ var supportedClientIntegrations = []clientAppConfig{
 			// NODE_TLS_REJECT_UNAUTHORIZED is only written when --tls-skip-verify is set.
 			// ClearWhenEmpty ensures it is removed when the flag is later cleared.
 			{JSONPointer: "/env/NODE_TLS_REJECT_UNAUTHORIZED", ValueField: "NodeTLSRejectUnauthorized", ClearWhenEmpty: true},
+			// Current Claude Code versions expose separate controls for the main
+			// conversation and auxiliary requests. ENABLE_PROMPT_CACHING_1H is the
+			// fallback for versions that predate those per-bucket settings.
+			{JSONPointer: "/promptCacheTtl", ValueField: "ExtendedTTLCache", ClearWhenEmpty: true},
+			{JSONPointer: "/subagentPromptCacheTtl", ValueField: "ExtendedTTLCache", ClearWhenEmpty: true},
+			{JSONPointer: "/env/ENABLE_PROMPT_CACHING_1H", ValueField: "ExtendedTTLCacheLegacy", ClearWhenEmpty: true},
 			// Bedrock-compat keys (written only with --bedrock-compat). Bedrock rejects
 			// Claude Code's experimental anthropic-beta headers, so betas are disabled;
 			// the per-tier model IDs pin Bedrock inference-profile IDs. All use

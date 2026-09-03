@@ -1156,6 +1156,10 @@ func (c *Config) Validate() error {
 		return err
 	}
 
+	if err := c.validatePrivateKeyJWTRequiresTokenExchange(); err != nil {
+		return err
+	}
+
 	if c.AuthorizationEndpointBaseURL != "" {
 		if err := validateIssuerURL(c.AuthorizationEndpointBaseURL, c.InsecureAllowHTTP); err != nil {
 			return fmt.Errorf("authorization_endpoint_base_url: %w", err)
@@ -1261,6 +1265,24 @@ func (c *Config) validateConfidentialClientConfig() error {
 		return err
 	}
 	return ValidateForceConfidentialRedirectURIs(c.ForceConfidentialRedirectURIs, c.AllowConfidentialClientRegistration)
+}
+
+// validatePrivateKeyJWTRequiresTokenExchange rejects
+// AllowPrivateKeyJWTRegistration combined with a disabled token-exchange
+// grant. private_key_jwt registrations can only ever request the RFC 8693
+// token-exchange grant (see validateGrantTypes/validateResponseTypes in
+// pkg/authserver/server/registration/dcr.go): there is no independent use
+// of this auth method outside token exchange. Allowing registration while
+// token exchange is disabled would admit clients that can never
+// successfully authenticate, so reject the combination outright rather
+// than let it surface later as a confusing runtime rejection.
+func (c *Config) validatePrivateKeyJWTRequiresTokenExchange() error {
+	if c.AllowPrivateKeyJWTRegistration && c.DisableTokenExchange {
+		return fmt.Errorf(
+			"allow_private_key_jwt_registration requires token exchange to be enabled: " +
+				"private_key_jwt registrations are token-exchange-only (RFC 8693)")
+	}
+	return nil
 }
 
 // validateCIMDBounds rejects invalid CIMD cache bounds when CIMD is enabled.

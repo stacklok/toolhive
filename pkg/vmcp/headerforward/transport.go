@@ -72,6 +72,11 @@ func (h *headerForwardRoundTripper) CloseIdleConnections() {
 	networking.ForwardCloseIdle(h.base)
 }
 
+// Compile-time assertion: a rename or typo of CloseIdleConnections would
+// otherwise silently re-hide the pool this wrapper forwards to (see
+// networking.IdleConnectionCloser).
+var _ networking.IdleConnectionCloser = (*headerForwardRoundTripper)(nil)
+
 // BuildHeaderForwardTripper constructs a headerForwardRoundTripper for the
 // backend's pre-resolved HeaderForwardConfig. Returns base unchanged when no
 // header injection is configured or the effective header set is empty.

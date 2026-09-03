@@ -1401,6 +1401,11 @@ type bearerTokenTransport struct {
 	next  http.RoundTripper
 }
 
+// Compile-time assertion: a rename or typo of CloseIdleConnections would
+// otherwise silently make http.Client.CloseIdleConnections a no-op on any
+// client using this transport (see networking.IdleConnectionCloser).
+var _ networking.IdleConnectionCloser = (*bearerTokenTransport)(nil)
+
 // RoundTrip implements http.RoundTripper.
 func (t *bearerTokenTransport) RoundTrip(req *http.Request) (*http.Response, error) {
 	// Clone per http.RoundTripper contract: implementations must not modify

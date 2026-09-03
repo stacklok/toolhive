@@ -16,6 +16,11 @@ type Transport struct {
 	Source TokenSource
 }
 
+// Compile-time assertion: a rename or typo of CloseIdleConnections would
+// otherwise silently make http.Client.CloseIdleConnections a no-op on any
+// client using this transport (see networking.IdleConnectionCloser).
+var _ networking.IdleConnectionCloser = (*Transport)(nil)
+
 // RoundTrip executes a single HTTP transaction with authentication.
 func (t *Transport) RoundTrip(req *http.Request) (*http.Response, error) {
 	if t.Source == nil {

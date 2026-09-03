@@ -527,6 +527,15 @@ func (a *authRoundTripper) CloseIdleConnections() {
 	networking.ForwardCloseIdle(a.base)
 }
 
+// Compile-time assertions: a rename or typo of CloseIdleConnections on any of
+// these wrappers would silently re-hide the pool at the bottom of the chain
+// (see networking.IdleConnectionCloser).
+var (
+	_ networking.IdleConnectionCloser = (*identityPropagatingRoundTripper)(nil)
+	_ networking.IdleConnectionCloser = (*tracePropagatingRoundTripper)(nil)
+	_ networking.IdleConnectionCloser = (*authRoundTripper)(nil)
+)
+
 // resolveAuthStrategy resolves the authentication strategy for a backend target.
 // It handles defaulting to "unauthenticated" when no auth config is specified.
 // This method should be called once at client creation time to enable fail-fast

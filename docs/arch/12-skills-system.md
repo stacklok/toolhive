@@ -446,6 +446,8 @@ Once an entry is pinned, the key does its job on the lock-driven operations too,
 
 Scope for v1 (issue [#6442](https://github.com/stacklok/toolhive/issues/6442)): `--public-key` is accepted on `install` only — `upgrade` and `sync` use the anchor the lock already records and take no key of their own, and in-place re-anchoring to a different key is deliberately not offered. The plugins surface does not accept a key at all yet.
 
+Plugins carry the same trust model over the same lock file: project-scoped plugin installs are recorded under the file's `plugins:` key, verified on the same TOFU/`allow_unsigned`/`allow_signer_change` terms, and published signed-by-default through `thv ai-plugin push`. See [Trust Model](14-plugins-system.md#trust-model) in the plugins document for what differs.
+
 ### Schema
 
 ```yaml

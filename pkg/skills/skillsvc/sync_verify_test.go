@@ -144,7 +144,7 @@ func TestVerifyStoredSignature_KeyPinnedEntry(t *testing.T) {
 		t.Parallel()
 		entry := keyedLockEntry()
 		mv := verifiermocks.NewMockVerifier(gomock.NewController(t))
-		mv.EXPECT().VerifyBundleOfflineWithKey(bundle, entry.ResolvedReference, entry.Digest, keyPEM).
+		mv.EXPECT().VerifyBundleOfflineWithKey(bundle, entry.Digest, keyPEM).
 			Return(nil)
 		// Not merely "the key path was taken": reaching the keyless path at
 		// all is the bug, and it fails closed in a way that looks like drift.
@@ -158,7 +158,7 @@ func TestVerifyStoredSignature_KeyPinnedEntry(t *testing.T) {
 		t.Parallel()
 		entry := keyedLockEntry()
 		mv := verifiermocks.NewMockVerifier(gomock.NewController(t))
-		mv.EXPECT().VerifyBundleOfflineWithKey(gomock.Any(), gomock.Any(), gomock.Any(), gomock.Any()).
+		mv.EXPECT().VerifyBundleOfflineWithKey(gomock.Any(), gomock.Any(), gomock.Any()).
 			Return(verifier.ErrSignatureInvalid)
 
 		svc := &service{sigVerifier: mv}
@@ -167,32 +167,24 @@ func TestVerifyStoredSignature_KeyPinnedEntry(t *testing.T) {
 			verifier.ErrSignatureInvalid)
 	})
 
-	t.Run("falls back to the install record when the entry pins no reference", func(t *testing.T) {
+	// The signature is checked against the digest the LOCK pins, and no
+	// reference reaches the verifier at all. Both halves matter: the entry
+	// is the authority on what the project is pinned to, and a payload
+	// rebuilt from a reference would verify against whatever that reference
+	// claimed — the check a signature lifted onto another artifact passes.
+	// So a differing install record must not change what is verified.
+	t.Run("checks the digest the lock pins, ignoring the install record", func(t *testing.T) {
 		t.Parallel()
 		entry := keyedLockEntry()
 		entry.ResolvedReference = ""
 		mv := verifiermocks.NewMockVerifier(gomock.NewController(t))
-		mv.EXPECT().VerifyBundleOfflineWithKey(bundle, "example.com/org/from-install", entry.Digest, keyPEM).
-			Return(nil)
+		mv.EXPECT().VerifyBundleOfflineWithKey(bundle, entry.Digest, keyPEM).Return(nil)
 
 		svc := &service{sigVerifier: mv}
 		require.NoError(t, svc.verifyStoredSignature(entry, skills.InstalledSkill{
 			SigstoreBundle: bundle,
 			Reference:      "example.com/org/from-install",
 		}))
-	})
-
-	t.Run("no reference anywhere fails closed rather than verifying nothing", func(t *testing.T) {
-		t.Parallel()
-		entry := keyedLockEntry()
-		entry.ResolvedReference = ""
-		mv := verifiermocks.NewMockVerifier(gomock.NewController(t))
-		mv.EXPECT().VerifyBundleOfflineWithKey(gomock.Any(), gomock.Any(), gomock.Any(), gomock.Any()).Times(0)
-
-		svc := &service{sigVerifier: mv}
-		err := svc.verifyStoredSignature(entry, skills.InstalledSkill{SigstoreBundle: bundle})
-		require.ErrorIs(t, err, verifier.ErrSignatureInvalid)
-		assert.Contains(t, err.Error(), "no reference to reconstruct the signed payload from")
 	})
 
 	t.Run("a missing bundle names the key anchor, not an empty signer", func(t *testing.T) {

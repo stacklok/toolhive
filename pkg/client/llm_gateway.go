@@ -52,6 +52,9 @@ func (cm *ClientManager) ConfigureLLMGateway(clientType ClientApp, cfg llmgatewa
 	if appCfg.LLMGatewayMode == llmgateway.ModeCodexAuth {
 		return cm.configureCodexAuth(appCfg, cfg)
 	}
+	if appCfg.LLMGatewayMode == llmgateway.ModeVSCode {
+		return cm.configureVSCode(appCfg, cfg)
+	}
 
 	path := cm.buildLLMSettingsPath(appCfg)
 
@@ -187,6 +190,9 @@ func (cm *ClientManager) RevertLLMGateway(clientType ClientApp, configPath strin
 	// Codex reverts via its dedicated TOML writer.
 	if appCfg.LLMGatewayMode == llmgateway.ModeCodexAuth {
 		return cm.revertCodexAuth(appCfg, configPath)
+	}
+	if appCfg.LLMGatewayMode == llmgateway.ModeVSCode {
+		return cm.revertVSCode(appCfg, configPath)
 	}
 
 	return revertJSONPointerGateway(appCfg, configPath)

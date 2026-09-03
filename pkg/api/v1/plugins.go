@@ -108,6 +108,7 @@ func (s *PluginsRoutes) listPlugins(w http.ResponseWriter, r *http.Request) erro
 //	@Header			201		{string}	Location	"URI of the installed plugin resource"
 //	@Failure		400		{string}	string		"Bad Request"
 //	@Failure		401		{string}	string		"Unauthorized (registry refused credentials)"
+//	@Failure		403		{string}	string		"Forbidden (signature verification or trust check failed)"
 //	@Failure		404		{string}	string		"Not Found (artifact not present in registry)"
 //	@Failure		409		{string}	string		"Conflict"
 //	@Failure		429		{string}	string		"Too Many Requests (registry rate limit)"
@@ -141,7 +142,11 @@ func (s *PluginsRoutes) installPlugin(w http.ResponseWriter, r *http.Request) er
 	w.Header().Set("Content-Type", "application/json")
 	w.Header().Set("Location", fmt.Sprintf("/api/v1beta/plugins/%s", result.Plugin.Metadata.Name))
 	w.WriteHeader(http.StatusCreated)
-	return json.NewEncoder(w).Encode(installPluginResponse{Plugin: result.Plugin})
+	return json.NewEncoder(w).Encode(installPluginResponse{
+		Plugin:     result.Plugin,
+		Provenance: result.Provenance,
+		Unsigned:   result.Unsigned,
+	})
 }
 
 // uninstallPlugin removes an installed plugin.
@@ -307,7 +312,14 @@ func (s *PluginsRoutes) buildPlugin(w http.ResponseWriter, r *http.Request) erro
 //	@Router			/api/v1beta/plugins/push [post]
 func (s *PluginsRoutes) pushPlugin(w http.ResponseWriter, r *http.Request) error {
 	var req pushPluginRequest
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+	// Unknown fields are rejected on this endpoint specifically. Push is the
+	// only credential-bearing plugin request, and the field most likely to
+	// arrive unrecognized is "key": plugin signing is keyless-only (#6442),
+	// so silently discarding a key would answer "please sign this with my
+	// key" with an unsigned publish. A 400 naming the field says no.
+	dec := json.NewDecoder(r.Body)
+	dec.DisallowUnknownFields()
+	if err := dec.Decode(&req); err != nil {
 		return httperr.WithCode(
 			fmt.Errorf("invalid request body: %w", err),
 			http.StatusBadRequest,
@@ -322,7 +334,9 @@ func (s *PluginsRoutes) pushPlugin(w http.ResponseWriter, r *http.Request) error
 	}
 
 	if err := s.pluginService.Push(r.Context(), plugins.PushOptions{
-		Reference: req.Reference,
+		Reference:     req.Reference,
+		IdentityToken: req.IdentityToken,
+		NoSign:        req.NoSign,
 	}); err != nil {
 		return err
 	}

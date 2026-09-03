@@ -98,11 +98,18 @@ type InstallOptions struct {
 	// round-tripped is a place for recorded trust data to get dropped.
 	// Internal use only — NOT exposed via HTTP API.
 	Provenance *lockfile.Provenance `json:"-"`
-	// SigstoreBundle is the serialized Sigstore bundle backing Provenance,
-	// persisted alongside the install record so sync can re-verify offline.
+	// SigstoreBundle is the signature material backing Provenance, in core's
+	// durable form (see verifier.Result.Bundle), persisted alongside the
+	// install record so sync can re-verify offline against the artifact digest.
 	// Internal use only — NOT exposed via HTTP API.
 	SigstoreBundle []byte `json:"-"`
 }
+
+// ProvenanceInfo is the verified signer identity of an installed artifact,
+// the in-memory mirror of the lock file's provenance block. Alias for
+// skills.ProvenanceInfo: the RFC THV-0080 provenance contract is shared, and
+// a parallel struct would only be a place for the two to drift.
+type ProvenanceInfo = skills.ProvenanceInfo
 
 // InstallResult contains the outcome of an Install operation.
 type InstallResult struct {
@@ -123,6 +130,12 @@ type InstallResult struct {
 	// compensating; discarding it can hide a partial restore. Internal use
 	// only — NOT exposed via HTTP API.
 	RestoreFiles func(context.Context) error `json:"-"`
+	// Provenance is the verified signer identity this install recorded —
+	// surfaced so callers can display what trust-on-first-use pinned.
+	Provenance *ProvenanceInfo `json:"provenance,omitempty"`
+	// Unsigned reports that the install was recorded as an explicit
+	// unsigned exception.
+	Unsigned bool `json:"unsigned,omitempty"`
 }
 
 // UninstallOptions configures the behavior of the Uninstall operation. Alias
@@ -152,6 +165,20 @@ type PluginInfo struct {
 	// UnmaterializedComponents pattern (no persistence needed — the degradation
 	// is deterministic from scope + client type).
 	ProjectScopeDegradedClients []string `json:"project_scope_degraded_clients,omitempty"`
+	// Provenance is the signer identity the project's lock file records for
+	// this plugin, when project-scoped and lock-managed.
+	Provenance *ProvenanceInfo `json:"provenance,omitempty"`
+	// Unsigned reports that the lock file records an explicit unsigned
+	// exception for this plugin.
+	Unsigned bool `json:"unsigned,omitempty"`
+	// TrustUnrecorded reports that the project's lock file has an entry for
+	// this plugin which records neither a signer identity nor an unsigned
+	// exception — an entry written before verification existed, or
+	// hand-edited. It exists to keep that state distinguishable from having no
+	// lock entry at all, which leaves Provenance and Unsigned equally empty:
+	// sync reports this one as drift and can repair it, so Info must not
+	// render it as if nothing were pinning the plugin.
+	TrustUnrecorded bool `json:"trust_unrecorded,omitempty"`
 }
 
 // ContentOptions configures the behavior of the GetContent operation. Alias
@@ -166,9 +193,29 @@ type BuildOptions = skills.BuildOptions
 // skills.BuildResult (Reference).
 type BuildResult = skills.BuildResult
 
-// PushOptions configures the behavior of the Push operation. Alias for
-// skills.PushOptions (Reference).
-type PushOptions = skills.PushOptions
+// PushOptions configures the behavior of the Push operation.
+//
+// Deliberately NOT an alias of skills.PushOptions, unlike its Build/Sync
+// siblings: that type carries a Key for cosign key-pair signing, and plugin
+// signing is keyless-only until install-time key verification exists (#6442).
+// Aliasing left Key settable with no single answer for what it meant — the
+// in-process service rejected it with a 400 while the HTTP client dropped it
+// silently and published unsigned, so the same PluginService.Push call did
+// different things depending on which implementation was wired in. Omitting
+// the field makes the unsupported request unrepresentable instead of
+// rejected in one implementation and ignored in the other.
+type PushOptions struct {
+	// Reference is the OCI reference to push.
+	Reference string `json:"reference"`
+	// IdentityToken is a short-lived OIDC identity token (raw JWT) used for
+	// keyless signing: the server exchanges it with Fulcio for a short-lived
+	// signing certificate and records the signature in Rekor. Mutually
+	// exclusive with NoSign; exactly one of the two is required.
+	IdentityToken string `json:"identity_token,omitempty"`
+	// NoSign pushes without signing. Consumers installing the artifact
+	// project-scoped will need an explicit unsigned exception.
+	NoSign bool `json:"no_sign,omitempty"`
+}
 
 // SyncOptions configures a lock-file sync. Alias for skills.SyncOptions
 // (identical shape: ProjectRoot, Clients, Prune, Check, AllowUnsigned, Adopt).

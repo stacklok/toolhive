@@ -95,16 +95,31 @@ func TestVerifyOCIWithKeyRoundTrip(t *testing.T) {
 
 	// The stored bundle re-verifies offline with the key, and rejects a
 	// different key.
-	require.NoError(t, NewDefault(nil).VerifyBundleOfflineWithKey(result.Bundle, ref, digest, pubPEM))
+	require.NoError(t, NewDefault(nil).VerifyBundleOfflineWithKey(result.Bundle, digest, pubPEM))
 	otherPriv, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
 	require.NoError(t, err)
 	otherPub, err := cryptoutils.MarshalPublicKeyToPEM(otherPriv.Public())
 	require.NoError(t, err)
-	require.ErrorIs(t, NewDefault(nil).VerifyBundleOfflineWithKey(result.Bundle, ref, digest, otherPub),
+	require.ErrorIs(t, NewDefault(nil).VerifyBundleOfflineWithKey(result.Bundle, digest, otherPub),
 		ErrSignatureInvalid)
 	require.ErrorIs(t, NewDefault(nil).VerifyBundleOfflineWithKey(
-		result.Bundle, ref, "sha256:"+strings.Repeat("e", 64), pubPEM), ErrSignatureInvalid,
-		"a different artifact digest reconstructs a different payload and must not verify")
+		result.Bundle, "sha256:"+strings.Repeat("e", 64), pubPEM), ErrSignatureInvalid,
+		"the payload carried in the stored bundle names another artifact, so the "+
+			"signature must not verify against this one")
+
+	// The digest a caller must pass is the ARTIFACT's, and passing the
+	// simple-signing payload's digest instead is refused rather than
+	// accepted. This is the shape this wrapper itself used, via
+	// signer.PayloadDigest: it verified the signature over the payload
+	// without ever checking which artifact the payload named, so a signature
+	// lifted from one artifact onto another passed. The assertion exists to
+	// keep that reconstruction from being reintroduced as a convenience.
+	payloadDigest, err := signer.PayloadDigest(ref, digest)
+	require.NoError(t, err)
+	require.NotEqual(t, digest, payloadDigest,
+		"precondition: a cosign signature covers a payload, not the artifact")
+	require.ErrorIs(t, NewDefault(nil).VerifyBundleOfflineWithKey(result.Bundle, payloadDigest, pubPEM),
+		ErrSignatureInvalid, "the payload's own digest names no artifact and must not be accepted")
 }
 
 func TestVerifyOCIDigestGuards(t *testing.T) {

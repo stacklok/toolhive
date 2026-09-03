@@ -703,6 +703,28 @@ func TestDelegateClientRunConfigValidate(t *testing.T) {
 		{name: "scope outside supported", clients: []DelegateClientRunConfig{{ClientID: "delegate", ClientSecretEnvVar: "SECRET", Scopes: []string{"admin"}, Audiences: validClient.Audiences}}, wantErr: `"admin" which is not in scopes_supported`},
 		{name: "missing audiences", clients: []DelegateClientRunConfig{{ClientID: "delegate", ClientSecretEnvVar: "SECRET", Scopes: validClient.Scopes}}, wantErr: "audiences is required"},
 		{name: "audience outside allowed", clients: []DelegateClientRunConfig{{ClientID: "delegate", ClientSecretEnvVar: "SECRET", Scopes: validClient.Scopes, Audiences: []string{"https://other.example.com"}}}, wantErr: "is not in allowed_audiences"},
+		// P4 (PR #6284 review): a URL-shaped client_id collides with CIMD
+		// client resolution (oauthproto.IsClientIDMetadataDocumentURL) — the
+		// CIMD decorator would shadow this pre-provisioned client on reads,
+		// and with write-through persistence (CIMDStorageDecorator.fetch) an
+		// unauthenticated request resolving that same URL would overwrite
+		// this confidential delegate client in place.
+		{
+			name: "https client_id collides with CIMD and is rejected",
+			clients: []DelegateClientRunConfig{{
+				ClientID: "https://example.com/client-metadata.json", ClientSecretEnvVar: "SECRET",
+				Scopes: validClient.Scopes, Audiences: validClient.Audiences,
+			}},
+			wantErr: "looks like a CIMD client metadata URL",
+		},
+		{
+			name: "loopback http client_id also collides with CIMD and is rejected",
+			clients: []DelegateClientRunConfig{{
+				ClientID: "http://localhost:8080/client-metadata.json", ClientSecretEnvVar: "SECRET",
+				Scopes: validClient.Scopes, Audiences: validClient.Audiences,
+			}},
+			wantErr: "looks like a CIMD client metadata URL",
+		},
 	}
 
 	for _, tt := range tests {

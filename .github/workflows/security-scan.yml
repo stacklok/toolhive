@@ -139,7 +139,33 @@ jobs:
           # in sigstore/rekor#2883 (merged 2026-07-15), which landed after
           # v1.5.3 (2026-07-02) and so is not in any release yet. Bump rekor
           # past v1.5.3 once a release contains it, then drop this entry.
-          IGNORED_VULNS="GO-2026-5037 GO-2026-5038 GO-2026-5039 GO-2026-5932"
+          #
+          # GO-2026-6354 (CVE-2026-78662) and GO-2026-6355 (CVE-2026-56855):
+          # both are DoS in golang.org/x/crypto/ssh, where a malicious SSH
+          # peer deadlocks a connection. Both are fixed in x/crypto v0.56.0.
+          #
+          # We cannot take that fix yet. x/crypto v0.56.0 declares `go
+          # 1.26.0`, and Go orders the bare language version `1.26` below
+          # the release `1.26.0`, so the toolchain refuses to build until
+          # go.mod says `1.26.0`. The lint workflow's "Check go.mod version
+          # format" step forbids a patch version in the go directive, so
+          # that bump cannot land.
+          #
+          # ToolHive never opens an SSH connection. x/crypto/ssh is linked
+          # only because go-git registers every transport at package init:
+          #   pkg/git.Clone -> go-git CloneContext
+          #     -> transport registry -> plumbing/transport/ssh
+          # Every caller of pkg/git.Clone routes through
+          # gitresolver.CloneConfigForRef, and ParseGitReference
+          # (pkg/skills/gitresolver/reference.go) hardcodes the clone scheme
+          # to https (http under TOOLHIVE_DEV). No user-supplied ssh:// or
+          # git@host: URL can reach the SSH transport, so neither DoS is
+          # reachable on any ToolHive path.
+          #
+          # REMOVAL TRIGGER: `go 1.27` sorts above `1.26.0`, so moving the
+          # go directive to 1.27 satisfies x/crypto v0.56.0 without a patch
+          # version. Bump x/crypto and drop both entries then.
+          IGNORED_VULNS="GO-2026-5037 GO-2026-5038 GO-2026-5039 GO-2026-5932 GO-2026-6354 GO-2026-6355"
 
           # Show the raw output for debugging
           # A scan that produced nothing is a failed scan, not a clean one.

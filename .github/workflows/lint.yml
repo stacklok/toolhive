@@ -19,7 +19,7 @@ jobs:
         uses: actions/setup-go@924ae3a1cded613372ab5595356fb5720e22ba16 # v6
         with:
           # go.mod's directive, not 'stable': golangci-lint is pinned below
-          # v2.13.0 (see the version comment further down), and that older
+          # (see the version comment further down), and the pinned
           # release's bundled type-checker cannot parse the newer Go
           # toolchain's stdlib (e.g. a generic-method signature in
           # math/rand/v2 under Go 1.27), so linting must run on the Go
@@ -45,15 +45,12 @@ jobs:
             ${{ runner.os }}-go-build-
 
       - name: Check go.mod version format
-        run: "! grep -qE '^go [0-9]+\\.[0-9]+\\.[0-9]+' go.mod || { echo 'ERROR: go.mod must pin Go to minor version (e.g. go 1.26), not patch (e.g. go 1.26.1)'; exit 1; }"
+        run: "! grep -qE '^go [0-9]+\\.[0-9]+\\.[1-9][0-9]*$' go.mod || { echo 'ERROR: go.mod must not pin a non-zero Go patch version (go 1.26 or go 1.26.0 are fine; a dependency floor is always X.Y.0, never a later patch)'; exit 1; }"
 
       - name: Run golangci-lint
-        uses: golangci/golangci-lint-action@82606bf257cbaff209d206a39f5134f0cfbfd2ee # v9.2.1
+        uses: golangci/golangci-lint-action@ba0d7d2ec06a0ea1cb5fa41b2e4a3ab91d21278a # v9.3.0
         with:
-          # Pin to a known-good release: v2.13.0 bundles honnef.co/go/tools
-          # v0.8.0-rc.1, whose nilness analyzer panics ("unhandled builtin
-          # recover") analyzing github.com/getsentry/sentry-go. Unpin once
-          # upstream ships a fixed release.
-          version: v2.12.2
+          # Pin to a known-good release so lint behavior is reproducible.
+          version: v2.13.2
           # Enable golangci-lint's built-in caching (removes skip-cache: true)
           args: --timeout=5m

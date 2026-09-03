@@ -136,44 +136,6 @@ func allClientTestCases() []llmClientTestCase {
 			},
 		},
 		{
-			name: "vscode",
-			detectionDir: func(tempDir string) string {
-				return llmSettingsDirFor("vscode", tempDir)
-			},
-			binaryName: "",
-			settingsPath: func(tempDir string) string {
-				return filepath.Join(llmSettingsDirFor("vscode", tempDir), "settings.json")
-			},
-			mode: "proxy",
-			expectedKeys: map[string]func(string, string) string{
-				"/github.copilot.advanced.serverUrl": func(_, proxyURL string) string {
-					return proxyURL
-				},
-				"/github.copilot.advanced.apiKey": func(_, _ string) string {
-					return clientThvProxy
-				},
-			},
-		},
-		{
-			name: "vscode-insider",
-			detectionDir: func(tempDir string) string {
-				return llmSettingsDirFor("vscode-insider", tempDir)
-			},
-			binaryName: "",
-			settingsPath: func(tempDir string) string {
-				return filepath.Join(llmSettingsDirFor("vscode-insider", tempDir), "settings.json")
-			},
-			mode: "proxy",
-			expectedKeys: map[string]func(string, string) string{
-				"/github.copilot.advanced.serverUrl": func(_, proxyURL string) string {
-					return proxyURL
-				},
-				"/github.copilot.advanced.apiKey": func(_, _ string) string {
-					return clientThvProxy
-				},
-			},
-		},
-		{
 			name: "xcode",
 			detectionDir: func(tempDir string) string {
 				return llmSettingsDirFor("xcode", tempDir)

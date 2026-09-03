@@ -1024,12 +1024,19 @@ func TestBuildFositeClient_EmptyAudienceConfigKeepsPriorNilBehaviour(t *testing.
 // constructed with AllowedAudiences configured, and asserts the resulting
 // fosite.Client carries those audiences. Before the fix, this client's
 // GetAudience() was always empty regardless of configuration.
+//
+// The same audiences must reach the snapshot fetch() persists in the
+// underlying storage (#6187): Redis session rehydration resolves the client
+// through that row rather than through the decorator, so a refresh_token
+// grant on a rehydrated session is checked against the persisted audience
+// list, not the in-memory one.
 func TestCIMDStorageDecorator_FetchOrCached_ClientCarriesConfiguredAudience(t *testing.T) {
 	t.Parallel()
 	srv := serveCIMDDoc(t, "/meta.json", nil)
 	allowed := []string{"https://mcp.example.com"}
+	base := newTestBase(t)
 
-	got, err := NewCIMDStorageDecorator(newTestBase(t), CIMDDecoratorConfig{
+	got, err := NewCIMDStorageDecorator(base, CIMDDecoratorConfig{
 		Enabled:          true,
 		CacheMaxSize:     10,
 		FallbackTTL:      time.Minute,
@@ -1042,6 +1049,11 @@ func TestCIMDStorageDecorator_FetchOrCached_ClientCarriesConfiguredAudience(t *t
 	require.NoError(t, err)
 	assert.Equal(t, fosite.Arguments(allowed), client.GetAudience(),
 		"a CIMD client resolved through the decorator must carry the configured AllowedAudiences")
+
+	persisted, err := base.GetClient(context.Background(), cimdURL(srv, "/meta.json"))
+	require.NoError(t, err)
+	assert.Equal(t, fosite.Arguments(allowed), persisted.GetAudience(),
+		"the persisted snapshot that session rehydration resolves must carry the same audiences")
 }
 
 // TestCIMDStorageDecorator_FetchOrCached_UnsetAudienceConfigKeepsClientAudienceEmpty

@@ -107,19 +107,39 @@ func (*closeIdleSpy) RoundTrip(*http.Request) (*http.Response, error) {
 }
 func (s *closeIdleSpy) CloseIdleConnections() { s.closed++ }
 
+// plainRoundTripper implements http.RoundTripper but not CloseIdleConnections.
+type plainRoundTripper struct{}
+
+func (plainRoundTripper) RoundTrip(*http.Request) (*http.Response, error) {
+	return nil, http.ErrUseLastResponse
+}
+
 // TestUserAgentTransport_CloseIdleConnections verifies the wrapper forwards
-// CloseIdleConnections to its base rather than silently swallowing it, which
-// would make http.Client.CloseIdleConnections a no-op and leave the pool
-// pinned. http.DefaultTransport (the nil-Base fallback) implements the
-// capability, so that path forwards too.
+// CloseIdleConnections to a capable base and is a safe no-op otherwise, so the
+// call is never silently swallowed by this wrapper.
 func TestUserAgentTransport_CloseIdleConnections(t *testing.T) {
 	t.Parallel()
 
-	spy := &closeIdleSpy{}
-	transport := &UserAgentTransport{Base: spy}
-	transport.CloseIdleConnections()
-	assert.Equal(t, 1, spy.closed)
+	t.Run("forwards to a base that implements the capability", func(t *testing.T) {
+		t.Parallel()
+		spy := &closeIdleSpy{}
+		(&UserAgentTransport{Base: spy}).CloseIdleConnections()
+		assert.Equal(t, 1, spy.closed)
+	})
 
-	// Nil Base must not panic; it forwards to http.DefaultTransport.
-	assert.NotPanics(t, func() { (&UserAgentTransport{}).CloseIdleConnections() })
+	t.Run("safe no-op when a non-nil base lacks the capability", func(t *testing.T) {
+		t.Parallel()
+		assert.NotPanics(t, func() {
+			(&UserAgentTransport{Base: plainRoundTripper{}}).CloseIdleConnections()
+		})
+	})
+
+	t.Run("nil base does not panic", func(t *testing.T) {
+		t.Parallel()
+		// This asserts only that the nil-Base path is safe. A type assertion on
+		// a nil interface returns ok==false without panicking, so this cannot
+		// prove the http.DefaultTransport fallback actually forwards the drain —
+		// only that CloseIdleConnections never panics when Base is unset.
+		assert.NotPanics(t, func() { (&UserAgentTransport{}).CloseIdleConnections() })
+	})
 }

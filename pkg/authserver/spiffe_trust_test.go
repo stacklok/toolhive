@@ -86,19 +86,19 @@ func TestValidateSPIFFETrust(t *testing.T) {
 
 	valid := func() ([]SPIFFETrustDomainRunConfig, *InboundGrantsRunConfig) {
 		return []SPIFFETrustDomainRunConfig{{
-				Name:         "production",
-				TrustDomain:  "example.org",
-				Methods:      []SPIFFEAuthenticationMethod{SPIFFEAuthenticationMethodX509, SPIFFEAuthenticationMethodJWT},
-				BundleSource: validWorkloadAPIBundleSource(),
-			}}, &InboundGrantsRunConfig{SPIFFEClientAuth: []SPIFFEClientAuthRunConfig{{
-				TrustDomainRef:   "production",
-				PrincipalPattern: "spiffe://example.org/ns/default/*",
-				ClientID:         "agent-client",
-				Methods:          []SPIFFEAuthenticationMethod{SPIFFEAuthenticationMethodX509},
-				Audiences:        []string{"https://mcp.example.org/resource"},
-				Scopes:           []string{"openid"},
-				GrantTypes:       []string{SPIFFEGrantTypeTokenExchange},
-			}}}
+			Name:         "production",
+			TrustDomain:  "example.org",
+			Methods:      []SPIFFEAuthenticationMethod{SPIFFEAuthenticationMethodX509, SPIFFEAuthenticationMethodJWT},
+			BundleSource: validWorkloadAPIBundleSource(),
+		}}, &InboundGrantsRunConfig{SPIFFEClientAuth: []SPIFFEClientAuthRunConfig{{
+			TrustDomainRef:   "production",
+			PrincipalPattern: "spiffe://example.org/ns/default/*",
+			ClientID:         "agent-client",
+			Methods:          []SPIFFEAuthenticationMethod{SPIFFEAuthenticationMethodX509},
+			Audiences:        []string{"https://mcp.example.org/resource"},
+			Scopes:           []string{"openid"},
+			GrantTypes:       []string{SPIFFEGrantTypeTokenExchange},
+		}}}
 	}
 
 	tests := []struct {

@@ -44,7 +44,7 @@ func installGitTestPlugin(t *testing.T, svc plugins.PluginService, projectRoot s
 	require.NoError(t, err)
 }
 
-//nolint:paralleltest // uses t.Setenv via newGitLockTestService
+//nolint:paralleltest // serial: real sqlite + on-disk client materialization per test
 func TestUpgrade_ReportsUpToDateWhenSourceUnchanged(t *testing.T) {
 	repoDir := createPluginTestRepo(t, "")
 	svc, projectRoot := newGitLockTestService(t, repoDir)
@@ -56,7 +56,7 @@ func TestUpgrade_ReportsUpToDateWhenSourceUnchanged(t *testing.T) {
 	assert.Equal(t, plugins.UpgradeStatusUpToDate, result.Outcomes[0].Status)
 }
 
-//nolint:paralleltest // uses t.Setenv via newGitLockTestService
+//nolint:paralleltest // serial: real sqlite + on-disk client materialization per test
 func TestUpgrade_InstallsNewerContent(t *testing.T) {
 	repoDir := createPluginTestRepo(t, "")
 	svc, projectRoot := newGitLockTestService(t, repoDir)
@@ -87,7 +87,7 @@ func TestUpgrade_InstallsNewerContent(t *testing.T) {
 	assert.Contains(t, string(hello), "# hello v2")
 }
 
-//nolint:paralleltest // uses t.Setenv via newGitLockTestService
+//nolint:paralleltest // serial: real sqlite + on-disk client materialization per test
 func TestUpgrade_PreviewDoesNotInstall(t *testing.T) {
 	repoDir := createPluginTestRepo(t, "")
 	svc, projectRoot := newGitLockTestService(t, repoDir)
@@ -111,7 +111,7 @@ func TestUpgrade_PreviewDoesNotInstall(t *testing.T) {
 	assert.Equal(t, beforeEntry.Digest, afterEntry.Digest, "preview must not rewrite the lock file")
 }
 
-//nolint:paralleltest // uses t.Setenv via newGitLockTestService
+//nolint:paralleltest // serial: real sqlite + on-disk client materialization per test
 func TestUpgrade_PreservesExistingClients(t *testing.T) {
 	repoDir := createPluginTestRepo(t, "")
 	svc, projectRoot := newGitLockTestService(t, repoDir)
@@ -131,7 +131,7 @@ func TestUpgrade_PreservesExistingClients(t *testing.T) {
 		"upgrade must preserve the plugin's existing clients, not expand to every detected client")
 }
 
-//nolint:paralleltest // uses t.Setenv via newGitLockTestService
+//nolint:paralleltest // serial: real sqlite + on-disk client materialization per test
 func TestUpgrade_NotUpgradableForImmutableSource(t *testing.T) {
 	repoDir := createPluginTestRepo(t, "")
 	svc, projectRoot := newGitLockTestService(t, repoDir)
@@ -152,7 +152,7 @@ func TestUpgrade_NotUpgradableForImmutableSource(t *testing.T) {
 	assert.Equal(t, plugins.UpgradeStatusNotUpgradable, result.Outcomes[0].Status)
 }
 
-//nolint:paralleltest // uses t.Setenv via newGitLockTestService
+//nolint:paralleltest // serial: real sqlite + on-disk client materialization per test
 func TestUpgrade_UnknownNameReturnsNotFound(t *testing.T) {
 	repoDir := createPluginTestRepo(t, "")
 	svc, projectRoot := newGitLockTestService(t, repoDir)
@@ -164,7 +164,7 @@ func TestUpgrade_UnknownNameReturnsNotFound(t *testing.T) {
 	assert.Equal(t, http.StatusNotFound, httperr.Code(err))
 }
 
-//nolint:paralleltest // uses t.Setenv via newGitLockTestService
+//nolint:paralleltest // serial: real sqlite + on-disk client materialization per test
 func TestUpgrade_FailOnChangesReportsOutcomesWithoutError(t *testing.T) {
 	repoDir := createPluginTestRepo(t, "")
 	svc, projectRoot := newGitLockTestService(t, repoDir)
@@ -188,15 +188,6 @@ func TestUpgrade_FailOnChangesReportsOutcomesWithoutError(t *testing.T) {
 	assert.Equal(t, beforeEntry.Digest, afterEntry.Digest, "fail-on-changes must not rewrite the lock file")
 }
 
-//nolint:paralleltest // uses t.Setenv via newLockTestService
-func TestUpgrade_DisabledGateReturnsForbidden(t *testing.T) {
-	svc, projectRoot := newLockTestService(t, false)
-
-	_, err := svc.(*service).Upgrade(t.Context(), plugins.UpgradeOptions{ProjectRoot: projectRoot}) //nolint:forcetypeassert
-	require.Error(t, err)
-	assert.Equal(t, http.StatusForbidden, httperr.Code(err))
-}
-
 type countingLookup struct {
 	hits []PluginSearchHit
 	n    int
@@ -207,9 +198,9 @@ func (c *countingLookup) SearchPlugins(context.Context, string) ([]PluginSearchH
 	return c.hits, nil
 }
 
-//nolint:paralleltest // uses t.Setenv via newLockTestService
+//nolint:paralleltest // serial: real sqlite + on-disk client materialization per test
 func TestUpgrade_PlainNameResolvesLocalStoreWithoutRegistry(t *testing.T) {
-	svc, projectRoot := newLockTestService(t, true)
+	svc, projectRoot := newLockTestService(t)
 	ociStore, err := ociplugins.NewStore(tempDir(t))
 	require.NoError(t, err)
 
@@ -241,9 +232,9 @@ func TestUpgrade_PlainNameResolvesLocalStoreWithoutRegistry(t *testing.T) {
 	assert.Equal(t, 0, lookup.n, "a local-store hit must not fall through to registry lookup")
 }
 
-//nolint:paralleltest // uses t.Setenv via newLockTestService
+//nolint:paralleltest // serial: real sqlite + on-disk client materialization per test
 func TestUpgrade_AppliesSameNameLocalTagWithoutRegistry(t *testing.T) {
-	svc, projectRoot := newLockTestService(t, true)
+	svc, projectRoot := newLockTestService(t)
 	ociStore, err := ociplugins.NewStore(tempDir(t))
 	require.NoError(t, err)
 
@@ -298,9 +289,9 @@ func TestUpgrade_AppliesSameNameLocalTagWithoutRegistry(t *testing.T) {
 	assert.Contains(t, string(manifest), "2.0.0")
 }
 
-//nolint:paralleltest // uses t.Setenv via newLockTestService
+//nolint:paralleltest // serial: real sqlite + on-disk client materialization per test
 func TestUpgrade_AppliesDifferentlyNamedLocalTagWithoutRegistry(t *testing.T) {
-	svc, projectRoot := newLockTestService(t, true)
+	svc, projectRoot := newLockTestService(t)
 	ociStore, err := ociplugins.NewStore(tempDir(t))
 	require.NoError(t, err)
 
@@ -343,9 +334,9 @@ func TestUpgrade_AppliesDifferentlyNamedLocalTagWithoutRegistry(t *testing.T) {
 	assert.Equal(t, "my-plugin-dev", info.InstalledPlugin.Reference)
 }
 
-//nolint:paralleltest // uses t.Setenv via newLockTestService
+//nolint:paralleltest // serial: real sqlite + on-disk client materialization per test
 func TestUpgrade_PlainNameFallsBackToRegistryWhenLocalMisses(t *testing.T) {
-	svc, projectRoot := newLockTestService(t, true)
+	svc, projectRoot := newLockTestService(t)
 	ociStore, err := ociplugins.NewStore(tempDir(t))
 	require.NoError(t, err)
 
@@ -383,9 +374,9 @@ func TestUpgrade_PlainNameFallsBackToRegistryWhenLocalMisses(t *testing.T) {
 	assert.Equal(t, newer.String(), result.Outcomes[0].NewDigest)
 }
 
-//nolint:paralleltest // uses t.Setenv via newLockTestService
+//nolint:paralleltest // serial: real sqlite + on-disk client materialization per test
 func TestUpgrade_DoesNotResurrectRemovedLockEntry(t *testing.T) {
-	svc, projectRoot := newLockTestService(t, true)
+	svc, projectRoot := newLockTestService(t)
 	installTestPlugin(t, svc, projectRoot, validLockDigest())
 
 	require.NoError(t, lockfile.RemovePluginEntry(mustOpenRoot(t, projectRoot), "my-plugin"))

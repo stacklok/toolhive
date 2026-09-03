@@ -292,24 +292,19 @@ func describeLockAnchor(provenance *lockfile.Provenance) string {
 // so a key-pinned skill reported as modified on every run and never settled,
 // while --check failed permanently on a project that was in fact intact.
 //
-// The reference is taken from the lock rather than the install record because
-// the payload it reconstructs is part of what is being verified: the lock is
-// the authority on what the project is pinned to, and the install record is
-// the thing being checked against it.
+// What the signature is checked against is the lock entry's digest — the
+// artifact the project is pinned to. A cosign signature covers a
+// simple-signing payload rather than the artifact, but that payload is stored
+// with the bundle, so it is recovered from there and checked to name this
+// digest. Nothing is rebuilt from a reference: a payload reconstructed from a
+// reference verifies against whatever that reference claims, which is exactly
+// the check a signature lifted from another artifact passes.
 func (s *service) verifyStoredKeySignature(entry lockfile.Entry, sk skills.InstalledSkill) error {
 	pubKeyPEM, err := verifier.DecodePublicKey(entry.Provenance.PublicKey)
 	if err != nil {
 		return fmt.Errorf("%w: lock entry's pinned %s", verifier.ErrSignatureInvalid, err.Error())
 	}
-	ref := entry.ResolvedReference
-	if ref == "" {
-		ref = sk.Reference
-	}
-	if ref == "" {
-		return fmt.Errorf("%w: entry is pinned to a cosign public key but records no reference to"+
-			" reconstruct the signed payload from", verifier.ErrSignatureInvalid)
-	}
-	return s.artifactVerifier().VerifyBundleOfflineWithKey(sk.SigstoreBundle, ref, entry.Digest, pubKeyPEM)
+	return s.artifactVerifier().VerifyBundleOfflineWithKey(sk.SigstoreBundle, entry.Digest, pubKeyPEM)
 }
 
 // adoptSkill writes a lock entry for an existing, unmanaged project-scope

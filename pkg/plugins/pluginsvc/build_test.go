@@ -417,7 +417,7 @@ func TestPush(t *testing.T) {
 		},
 		{
 			name: "resolve not found returns 404",
-			opts: plugins.PushOptions{Reference: "nonexistent"},
+			opts: plugins.PushOptions{Reference: "nonexistent", NoSign: true},
 			setup: func(ctrl *gomock.Controller) (ociplugins.RegistryClient, *ociplugins.Store) {
 				ociStore, err := ociplugins.NewStore(t.TempDir())
 				require.NoError(t, err)
@@ -427,7 +427,7 @@ func TestPush(t *testing.T) {
 		},
 		{
 			name: "registry push error propagates",
-			opts: plugins.PushOptions{Reference: "my-tag"},
+			opts: plugins.PushOptions{Reference: "my-tag", NoSign: true},
 			setup: func(ctrl *gomock.Controller) (ociplugins.RegistryClient, *ociplugins.Store) {
 				ociStore, err := ociplugins.NewStore(t.TempDir())
 				require.NoError(t, err)
@@ -444,7 +444,7 @@ func TestPush(t *testing.T) {
 		},
 		{
 			name: "successful push",
-			opts: plugins.PushOptions{Reference: "my-tag"},
+			opts: plugins.PushOptions{Reference: "my-tag", NoSign: true},
 			setup: func(ctrl *gomock.Controller) (ociplugins.RegistryClient, *ociplugins.Store) {
 				ociStore, err := ociplugins.NewStore(t.TempDir())
 				require.NoError(t, err)
@@ -847,7 +847,7 @@ func TestBuildPushRoundTrip(t *testing.T) {
 		WithRegistryClient(reg),
 		WithOCIStore(srcStore),
 	)
-	require.NoError(t, srcSvc.Push(t.Context(), plugins.PushOptions{Reference: "roundtrip-plugin"}))
+	require.NoError(t, srcSvc.Push(t.Context(), plugins.PushOptions{Reference: "roundtrip-plugin", NoSign: true}))
 
 	// Pull into destination via GetContent and verify the config matches.
 	dstSvc := New(

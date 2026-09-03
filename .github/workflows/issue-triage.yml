@@ -21,6 +21,8 @@ jobs:
 
       - name: Run Claude Code for Issue Triage
         uses: anthropics/claude-code-action@16b3b310c3d7b5279df73130324d5205aeea8eac # v1.0.205
+        env:
+          ANTHROPIC_BASE_URL: https://llm-gateway.stacklok.dev/anthropic
         with:
           prompt: |
             You are an issue triage assistant. Analyze issue #${{ github.event.issue.number }} in ${{ github.repository }} and apply appropriate labels.
@@ -42,6 +44,6 @@ jobs:
             - DO NOT post comments or otherwise communicate with the issue author.
             - If no labels are clearly applicable, do not apply any.
           claude_args: --model claude-sonnet-4-6
-          anthropic_api_key: ${{ secrets.ANTHROPIC_API_KEY }}
+          anthropic_api_key: ${{ secrets.STACKLOK_GATEWAY_KEY_ISSUE_TRIAGE }}
           allowed_non_write_users: "*"
           github_token: ${{ secrets.GITHUB_TOKEN }}

@@ -21,6 +21,7 @@ import (
 	envmocks "github.com/stacklok/toolhive-core/env/mocks"
 	"github.com/stacklok/toolhive-core/httperr"
 	"github.com/stacklok/toolhive/pkg/plugins"
+	"github.com/stacklok/toolhive/pkg/skills/identitytoken"
 )
 
 // newTestClient returns a *Client pointed at the given test server.
@@ -498,13 +499,27 @@ func TestPush(t *testing.T) {
 	}{
 		{
 			name:       "success",
-			opts:       plugins.PushOptions{Reference: "ghcr.io/org/my-plugin:v1.0.0"},
-			wantBody:   pushRequest{Reference: "ghcr.io/org/my-plugin:v1.0.0"},
+			opts:       plugins.PushOptions{Reference: "ghcr.io/org/my-plugin:v1.0.0", NoSign: true},
+			wantBody:   pushRequest{Reference: "ghcr.io/org/my-plugin:v1.0.0", NoSign: true},
+			statusCode: http.StatusNoContent,
+		},
+		{
+			// Guards the DTO trap: the signing fields must reach the wire
+			// request, not just PushOptions.
+			name: "forwards identity token",
+			opts: plugins.PushOptions{
+				Reference:     "ghcr.io/org/my-plugin:v1.0.0",
+				IdentityToken: "a.b.c",
+			},
+			wantBody: pushRequest{
+				Reference:     "ghcr.io/org/my-plugin:v1.0.0",
+				IdentityToken: "a.b.c",
+			},
 			statusCode: http.StatusNoContent,
 		},
 		{
 			name:       "not found",
-			opts:       plugins.PushOptions{Reference: "ghcr.io/org/missing:v1"},
+			opts:       plugins.PushOptions{Reference: "ghcr.io/org/missing:v1", NoSign: true},
 			statusCode: http.StatusNotFound,
 			wantErr:    true,
 			wantCode:   http.StatusNotFound,
@@ -1026,6 +1041,64 @@ func TestInstallCarriesAllowUnsigned(t *testing.T) {
 	assert.True(t, got.AllowUnsigned, "allow_unsigned must reach the server")
 }
 
+// TestInstallReturnsTrustState guards the response half of the same DTO
+// boundary: the CLI is a pure HTTP client, so a provenance block dropped
+// here would make every signed install print as if it were untracked.
+func TestInstallReturnsTrustState(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name     string
+		response installResponse
+	}{
+		{
+			name: "signed",
+			response: installResponse{
+				Plugin: plugins.InstalledPlugin{Metadata: plugins.PluginMetadata{Name: "my-plugin"}},
+				Provenance: &plugins.ProvenanceInfo{
+					SignerIdentity: "/.github/workflows/release.yml",
+					CertIssuer:     "https://token.actions.githubusercontent.com",
+				},
+			},
+		},
+		{
+			name: "provisional",
+			response: installResponse{
+				Plugin: plugins.InstalledPlugin{Metadata: plugins.PluginMetadata{Name: "my-plugin"}},
+				Provenance: &plugins.ProvenanceInfo{
+					SignerIdentity: "/.github/workflows/release.yml",
+					Provisional:    true,
+				},
+			},
+		},
+		{
+			name: "unsigned exception",
+			response: installResponse{
+				Plugin:   plugins.InstalledPlugin{Metadata: plugins.PluginMetadata{Name: "my-plugin"}},
+				Unsigned: true,
+			},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+				w.Header().Set("Content-Type", "application/json")
+				w.WriteHeader(http.StatusCreated)
+				_ = json.NewEncoder(w).Encode(tt.response)
+			}))
+			t.Cleanup(srv.Close)
+
+			result, err := newTestClient(t, srv).Install(t.Context(), plugins.InstallOptions{Name: "my-plugin"})
+			require.NoError(t, err)
+			assert.Equal(t, tt.response.Provenance, result.Provenance)
+			assert.Equal(t, tt.response.Unsigned, result.Unsigned)
+		})
+	}
+}
+
 // TestSyncCarriesAllowUnsigned mirrors TestInstallCarriesAllowUnsigned for
 // the sync/adopt path: a flag that dies at the DTO boundary would silently
 // make every adoption of an install with no stored bundle fail.
@@ -1073,4 +1146,95 @@ func TestUpgradeCarriesAllowSignerChange(t *testing.T) {
 	assert.True(t, got.AllowSignerChange, "allow_signer_change must reach the server")
 	assert.True(t, got.AllowRefChange)
 	assert.Equal(t, []string{"my-plugin"}, got.Names)
+}
+
+// recordingTransport fails the test if any HTTP request is attempted.
+type recordingTransport struct {
+	t      *testing.T
+	called bool
+}
+
+func (rt *recordingTransport) RoundTrip(req *http.Request) (*http.Response, error) {
+	rt.called = true
+	rt.t.Errorf("no request must be attempted, but one was sent to %s", req.URL)
+	return nil, errors.New("transport must not be reached")
+}
+
+// TestPushRefusesIdentityTokenOverRemotePlaintext pins that the credential is
+// withheld rather than transmitted: an OIDC identity token is redeemable at
+// Fulcio for a signing certificate in the caller's name, so TOOLHIVE_API_URL
+// pointing at a plaintext remote host must fail before the token is
+// serialized. Asserting on the transport rather than the error is the point —
+// an error returned after the request went out would be too late.
+func TestPushRefusesIdentityTokenOverRemotePlaintext(t *testing.T) {
+	t.Parallel()
+
+	rt := &recordingTransport{t: t}
+	c := NewClient("http://api.example.test:8080", WithHTTPClient(&http.Client{Transport: rt}))
+
+	err := c.Push(t.Context(), plugins.PushOptions{
+		Reference:     "ghcr.io/org/my-plugin:v1.0.0",
+		IdentityToken: "a.b.c",
+	})
+	require.Error(t, err)
+	assert.ErrorIs(t, err, identitytoken.ErrInsecureTransport)
+	assert.False(t, rt.called)
+}
+
+// TestPushUnsignedOverRemotePlaintextIsAllowed: the guard is about the
+// credential, not the endpoint. A --no-sign push carries nothing worth
+// protecting, so it must not be blocked by the same check.
+func TestPushUnsignedOverRemotePlaintextIsAllowed(t *testing.T) {
+	t.Parallel()
+
+	var hits int
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		hits++
+		w.WriteHeader(http.StatusNoContent)
+	}))
+	defer srv.Close()
+
+	c := NewClient(srv.URL)
+	require.NoError(t, c.Push(t.Context(), plugins.PushOptions{
+		Reference: "ghcr.io/org/my-plugin:v1.0.0",
+		NoSign:    true,
+	}))
+	assert.Equal(t, 1, hits)
+}
+
+// TestPushDoesNotFollowRedirectsWithIdentityToken proves the transport guard
+// cannot be sidestepped by a redirect. A 307 preserves the method and replays
+// the body, so an accepted origin answering with one would hand the
+// Fulcio-redeemable token to whatever Location names. Two servers: the first
+// is loopback and so passes CheckTransport, the second records any request it
+// receives and must receive none.
+func TestPushDoesNotFollowRedirectsWithIdentityToken(t *testing.T) {
+	t.Parallel()
+
+	var secondHits int
+	var secondSawToken bool
+	second := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		secondHits++
+		var got pushRequest
+		if json.NewDecoder(r.Body).Decode(&got) == nil && got.IdentityToken != "" {
+			secondSawToken = true
+		}
+		w.WriteHeader(http.StatusNoContent)
+	}))
+	defer second.Close()
+
+	first := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		http.Redirect(w, r, second.URL+r.URL.Path, http.StatusTemporaryRedirect)
+	}))
+	defer first.Close()
+
+	c := NewClient(first.URL)
+	err := c.Push(t.Context(), plugins.PushOptions{
+		Reference:     "ghcr.io/org/artifact:v1.0.0",
+		IdentityToken: "a.b.c",
+	})
+	require.Error(t, err)
+	assert.ErrorIs(t, err, identitytoken.ErrInsecureTransport)
+	assert.Zero(t, secondHits, "the redirect target must never be contacted")
+	assert.False(t, secondSawToken, "the identity token must never leave the approved origin")
 }

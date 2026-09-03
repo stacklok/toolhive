@@ -29,13 +29,6 @@ import (
 // the lock file are reported (or removed with Prune). Check performs the
 // same reconciliation read-only: nothing is installed, written, or removed.
 func (s *service) Sync(ctx context.Context, opts plugins.SyncOptions) (*plugins.SyncResult, error) {
-	if !plugins.LockFileFeatureEnabled() {
-		return nil, httperr.WithCode(
-			fmt.Errorf("plugin lock file is not enabled; set %s=true", plugins.LockFileEnvVar),
-			http.StatusForbidden,
-		)
-	}
-
 	_, projectRoot, err := normalizeProjectRoot(plugins.ScopeProject, opts.ProjectRoot)
 	if err != nil {
 		return nil, err
@@ -294,6 +287,12 @@ func (s *service) reinstallPinned(
 		LockResolvedReference: entry.ResolvedReference, // preserve — pinnedRef is a restore form
 		SyncRestore:           true,                    // reinstall despite unchanged Digest — drift is on disk, not the pin
 		ExpectedCanonicalName: entry.Name,
+		// Forwarded so --allow-unsigned is a real remedy: a lock entry
+		// recording no trust decision is drift, and repairing it fails closed
+		// on unsigned content (isAllowedUnsigned makes no implicit exception).
+		// Without this the documented migration would have no way to record
+		// the exception the user explicitly asked for.
+		AllowUnsigned: opts.AllowUnsigned,
 	})
 	return err
 }
@@ -365,6 +364,7 @@ func (s *service) reinstallLocalStorePin(
 		LockResolvedReference: "", // local-store pins stay empty so sync restores by digest
 		SyncRestore:           true,
 		ExpectedCanonicalName: entry.Name,
+		AllowUnsigned:         opts.AllowUnsigned, // see reinstallPinned
 	}
 	hydrateOptsFromLocalBuild(&installOpts, layerData, d, pluginConfig, entry.Source)
 	_, err = s.installAlreadyLocked(ctx, installOpts)
@@ -406,11 +406,23 @@ func (s *service) syncUnlockedInstall(
 // verifyStoredSignature re-verifies the Sigstore bundle stored with an
 // installed plugin against the identity its lock entry records — entirely
 // offline, via the embedded trust root, so sync never contacts a registry to
-// decide whether an entry is current. Entries recorded unsigned or with no
-// provenance have nothing to verify. A recorded identity with no stored
-// bundle fails closed for OCI installs (the bundle should exist); git
-// installs never store a bundle — their signature lives on the commit and is
-// re-verified when content is re-resolved.
+// decide whether an entry is current. An entry recorded unsigned has nothing
+// to verify. A recorded identity with no stored bundle fails closed for OCI
+// installs (the bundle should exist); git installs never store a bundle —
+// their signature lives on the commit and is re-verified when content is
+// re-resolved.
+//
+// An entry carrying neither a signer identity nor unsigned: true is reported
+// as drift rather than accepted. Every install and adoption path records
+// exactly one of the two, so that shape means the entry was written while
+// verification was gated off, or hand-edited. Accepting it would let an
+// unverified plugin pass sync as AlreadyCurrent with no trust decision ever
+// having been made — the one thing the lock file exists to prevent. As drift
+// it is visible to sync --check and repaired by sync, which reinstalls from
+// the pinned reference and records a real decision. Note the lock schema
+// permits the shape (validateEntry enforces only that provenance and
+// unsigned are mutually exclusive, not that one is present), so this is the
+// layer that has to reject it.
 //
 // Local-store pins (isLocalStorePin) also carry an OCI-shaped digest and
 // store no bundle, but they cannot reach the fail-closed branch: a local
@@ -420,8 +432,11 @@ func (s *service) syncUnlockedInstall(
 // correctly reported as drift here, and the reinstall it triggers is then
 // refused by verifyLocalInstall.
 func (s *service) verifyStoredSignature(entry lockfile.Entry, pl plugins.InstalledPlugin) error {
-	if entry.Unsigned || entry.Provenance == nil {
+	if entry.Unsigned {
 		return nil
+	}
+	if entry.Provenance == nil {
+		return fmt.Errorf("%w: %q has neither a signer identity nor unsigned: true", errLockTrustUnrecorded, entry.Name)
 	}
 	if len(pl.SigstoreBundle) == 0 {
 		// A bare commit hash has no colon; an OCI digest is "sha256:<hex>".

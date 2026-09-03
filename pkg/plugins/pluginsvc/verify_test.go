@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"net/http"
 	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 
@@ -76,7 +77,7 @@ func gitInstall(t *testing.T, svc plugins.PluginService, projectRoot string, mut
 	return err
 }
 
-//nolint:paralleltest // uses t.Setenv via newGitLockTestService
+//nolint:paralleltest // serial: real sqlite + on-disk client materialization per test
 func TestInstallVerification_TOFURecordsProvenance(t *testing.T) {
 	repoDir := createPluginTestRepo(t, "")
 	mv := verifiermocks.NewMockVerifier(gomock.NewController(t))
@@ -112,7 +113,7 @@ func TestInstallVerification_TOFURecordsProvenance(t *testing.T) {
 	require.NoError(t, gitInstall(t, svc, projectRoot, func(o *plugins.InstallOptions) { o.Force = true }))
 }
 
-//nolint:paralleltest // uses t.Setenv via newGitLockTestService
+//nolint:paralleltest // serial: real sqlite + on-disk client materialization per test
 func TestInstallVerification_UnsignedRejectedWithoutFlag(t *testing.T) {
 	repoDir := createPluginTestRepo(t, "")
 	mv := verifiermocks.NewMockVerifier(gomock.NewController(t))
@@ -132,7 +133,7 @@ func TestInstallVerification_UnsignedRejectedWithoutFlag(t *testing.T) {
 	require.Error(t, err, "a rejected install must not create a DB record")
 }
 
-//nolint:paralleltest // uses t.Setenv via newGitLockTestService
+//nolint:paralleltest // serial: real sqlite + on-disk client materialization per test
 func TestInstallVerification_UnsignedAcceptedWithFlag(t *testing.T) {
 	repoDir := createPluginTestRepo(t, "")
 	mv := verifiermocks.NewMockVerifier(gomock.NewController(t))
@@ -155,7 +156,7 @@ func TestInstallVerification_UnsignedAcceptedWithFlag(t *testing.T) {
 	assert.Nil(t, stored.InstalledPlugin.SigstoreBundle, "an unsigned install stores no bundle")
 }
 
-//nolint:paralleltest // uses t.Setenv via newGitLockTestService
+//nolint:paralleltest // serial: real sqlite + on-disk client materialization per test
 func TestInstallVerification_SignerMismatchRejectedAndLockIntact(t *testing.T) {
 	repoDir := createPluginTestRepo(t, "")
 	mv := verifiermocks.NewMockVerifier(gomock.NewController(t))
@@ -180,7 +181,7 @@ func TestInstallVerification_SignerMismatchRejectedAndLockIntact(t *testing.T) {
 	assert.Equal(t, testSignerIdentity, entry.Provenance.SignerIdentity)
 }
 
-//nolint:paralleltest // uses t.Setenv via newGitLockTestService
+//nolint:paralleltest // serial: real sqlite + on-disk client materialization per test
 func TestInstallVerification_LockedUnsignedRequiresFlagAgain(t *testing.T) {
 	repoDir := createPluginTestRepo(t, "")
 	mv := verifiermocks.NewMockVerifier(gomock.NewController(t))
@@ -203,7 +204,7 @@ func TestInstallVerification_LockedUnsignedRequiresFlagAgain(t *testing.T) {
 // restore of an unsigned-locked entry does not demand the flag again: the
 // lock file already records the decision the restore is materializing.
 //
-//nolint:paralleltest // uses t.Setenv via newGitLockTestService
+//nolint:paralleltest // serial: real sqlite + on-disk client materialization per test
 func TestInstallVerification_LockDrivenInstallHonorsRecordedTrust(t *testing.T) {
 	repoDir := createPluginTestRepo(t, "")
 	mv := verifiermocks.NewMockVerifier(gomock.NewController(t))
@@ -229,7 +230,7 @@ func TestInstallVerification_LockDrivenInstallHonorsRecordedTrust(t *testing.T) 
 	assert.True(t, entry.Unsigned, "the restore keeps the recorded trust state")
 }
 
-//nolint:paralleltest // uses t.Setenv via newLockTestService
+//nolint:paralleltest // serial: real sqlite + on-disk client materialization per test
 func TestInstallVerification_UserScopeSkipsVerification(t *testing.T) {
 	repoDir := createPluginTestRepo(t, "")
 	// The mock has no expectations: any verifier call fails the test.
@@ -242,26 +243,6 @@ func TestInstallVerification_UserScopeSkipsVerification(t *testing.T) {
 		Clients: []string{"claude-code"},
 	})
 	require.NoError(t, err)
-}
-
-// TestInstallVerification_GateDisabledSkipsVerification pins the feature-gate
-// scoping: with the plugins lock file off there is nowhere to anchor trust on
-// first use, so verification must not run at all.
-//
-//nolint:paralleltest // uses t.Setenv
-func TestInstallVerification_GateDisabledSkipsVerification(t *testing.T) {
-	svc, projectRoot := newLockTestService(t, false, WithVerifier(
-		verifiermocks.NewMockVerifier(gomock.NewController(t)), // no expectations
-	))
-	_, err := svc.Install(t.Context(), plugins.InstallOptions{
-		Name:        "my-plugin",
-		LayerData:   makePluginLayerData(t, "my-plugin"),
-		Digest:      validLockDigest(),
-		Scope:       plugins.ScopeProject,
-		ProjectRoot: projectRoot,
-		Clients:     []string{"claude-code"},
-	})
-	require.NoError(t, err, "an unsigned local install must not be rejected while the gate is off")
 }
 
 func TestVerifyLocalInstall(t *testing.T) {
@@ -312,8 +293,24 @@ func TestVerifyLocalInstall(t *testing.T) {
 			unsigned: true,
 		},
 		{
-			name:     "lock-driven upgrade of a local build needs no flag",
-			opts:     plugins.InstallOptions{ExpectedCanonicalName: "local-plugin"},
+			// A lock-driven repair of an entry recording no trust decision
+			// must NOT invent one. Converting "no decision" to
+			// "unsigned: true" automatically is the implicit trust decision
+			// the lock file exists to prevent, so this fails closed even
+			// though no user flag reached the operation.
+			name:    "lock-driven repair of an unrecorded entry fails closed",
+			opts:    plugins.InstallOptions{ExpectedCanonicalName: "local-plugin"},
+			wantErr: true,
+		},
+		{
+			// The remedy: sync forwards --allow-unsigned, so the exception
+			// can still be recorded — deliberately, by the user.
+			name: "lock-driven repair records the exception with the flag",
+			opts: plugins.InstallOptions{
+				ExpectedCanonicalName: "local-plugin",
+				SyncRestore:           true,
+				AllowUnsigned:         true,
+			},
 			unsigned: true,
 		},
 	}
@@ -366,14 +363,16 @@ func TestClassifyInstallVerifyErrorDistinguishesProvenanceField(t *testing.T) {
 
 	fieldMismatch := fmt.Errorf("%w: %w: locked to repository ref, but the artifact carries a different one",
 		verifier.ErrSignerMismatch, verifier.ErrProvenanceFieldMismatch)
-	err := classifyInstallVerifyError(fieldMismatch, "some-plugin", &lockfile.Provenance{SignerIdentity: testSignerIdentity})
+	err := classifyInstallVerifyError(fieldMismatch, "some-plugin",
+		&lockfile.Provenance{SignerIdentity: testSignerIdentity}, plugins.InstallOptions{})
 	assert.Contains(t, err.Error(), "no longer matches its pinned provenance",
 		"a provenance-field mismatch must lead with the field-specific wording, not the identity one")
 	assert.NotContains(t, err.Error(), "signer identity mismatch for",
 		"the identity-specific phrasing (distinct from ErrSignerMismatch's own wrapped message text) must not appear")
 
 	identityMismatch := classifyInstallVerifyError(
-		verifier.ErrSignerMismatch, "some-plugin", &lockfile.Provenance{SignerIdentity: testSignerIdentity})
+		verifier.ErrSignerMismatch, "some-plugin",
+		&lockfile.Provenance{SignerIdentity: testSignerIdentity}, plugins.InstallOptions{})
 	assert.Contains(t, identityMismatch.Error(), "signer identity mismatch for",
 		"a genuine signer-identity mismatch keeps its existing wording")
 }
@@ -459,7 +458,7 @@ func TestVerify_OversizedSignatureMaterialRejected(t *testing.T) {
 // end to end: an over-limit bundle fails the install rather than reaching the
 // DB or the lock file.
 //
-//nolint:paralleltest // uses t.Setenv via newGitLockTestService
+//nolint:paralleltest // serial: real sqlite + on-disk client materialization per test
 func TestInstallVerification_OversizedBundleIsNotStored(t *testing.T) {
 	repoDir := createPluginTestRepo(t, "")
 	result := signedResult()
@@ -490,7 +489,7 @@ func TestInstallVerification_OversizedBundleIsNotStored(t *testing.T) {
 func TestClassifyInstallVerifyErrorNamesKeySigned(t *testing.T) {
 	t.Parallel()
 
-	err := classifyInstallVerifyError(verifier.ErrKeySigned, "some-plugin", nil)
+	err := classifyInstallVerifyError(verifier.ErrKeySigned, "some-plugin", nil, plugins.InstallOptions{})
 	assert.Contains(t, err.Error(), "cosign key pair")
 	assert.Contains(t, err.Error(), "re-publish it with keyless signing",
 		"the message must state the remedy, not merely the refusal")
@@ -522,4 +521,317 @@ func TestIsAllowedUnsignedRejectsKeySigned(t *testing.T) {
 	assert.True(t, isAllowedUnsigned(verifier.ErrUnsigned,
 		plugins.InstallOptions{AllowUnsigned: true}, nil),
 		"the genuine unsigned case must still be allowed through")
+}
+
+// TestInfoReportsLockTrustState covers the five states `thv ai-plugin info`
+// renders: a verified signer, a provisional one, an explicit unsigned
+// exception, a lock-managed entry recording no trust decision at all, and a
+// plugin with no lock entry. The last two must stay distinguishable — both
+// leave Provenance nil and Unsigned false, but one is drift sync can repair
+// and the other is simply untracked.
+//
+//nolint:paralleltest // serial: real sqlite + on-disk client materialization per test
+func TestInfoReportsLockTrustState(t *testing.T) {
+	tests := []struct {
+		name            string
+		mutateEntry     func(*lockfile.Entry)
+		removeEntry     bool
+		wantProvenance  bool
+		wantProvisional bool
+		wantUnsigned    bool
+		wantUnrecorded  bool
+	}{
+		{name: "signed records the observed identity", wantProvenance: true},
+		{
+			name:            "provisional signature is marked",
+			mutateEntry:     func(e *lockfile.Entry) { e.Provenance.Provisional = true },
+			wantProvenance:  true,
+			wantProvisional: true,
+		},
+		{
+			name: "unsigned exception",
+			mutateEntry: func(e *lockfile.Entry) {
+				e.Provenance = nil
+				e.Unsigned = true
+			},
+			wantUnsigned: true,
+		},
+		{
+			// A pre-verification entry: neither field set. sync calls this
+			// drift, so info must not render it as untracked.
+			name: "entry with no trust decision is reported as unrecorded",
+			mutateEntry: func(e *lockfile.Entry) {
+				e.Provenance = nil
+				e.Unsigned = false
+			},
+			wantUnrecorded: true,
+		},
+		{name: "no lock entry reports nothing", removeEntry: true},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			repoDir := createPluginTestRepo(t, "")
+			svc, projectRoot := newGitLockTestService(t, repoDir)
+			require.NoError(t, gitInstall(t, svc, projectRoot, nil))
+
+			entry, ok := loadPluginLockEntry(t, projectRoot)
+			require.True(t, ok)
+			switch {
+			case tc.removeEntry:
+				require.NoError(t, lockfile.RemovePluginEntry(mustOpenRoot(t, projectRoot), "my-plugin"))
+			case tc.mutateEntry != nil:
+				tc.mutateEntry(&entry)
+				lf := readLockfile(t, projectRoot)
+				lf.UpsertPlugin(entry)
+				require.NoError(t, lf.Save(mustOpenRoot(t, projectRoot)))
+			}
+
+			info, err := svc.Info(t.Context(), plugins.InfoOptions{
+				Name: "my-plugin", Scope: plugins.ScopeProject, ProjectRoot: projectRoot,
+			})
+			require.NoError(t, err)
+
+			assert.Equal(t, tc.wantUnsigned, info.Unsigned)
+			assert.Equal(t, tc.wantUnrecorded, info.TrustUnrecorded)
+			if !tc.wantProvenance {
+				assert.Nil(t, info.Provenance)
+				return
+			}
+			require.NotNil(t, info.Provenance)
+			assert.Equal(t, testSignerIdentity, info.Provenance.SignerIdentity)
+			assert.Equal(t, testCertIssuer, info.Provenance.CertIssuer)
+			assert.Equal(t, tc.wantProvisional, info.Provenance.Provisional)
+		})
+	}
+}
+
+// TestInstallResultCarriesTrustDecision proves the decision install recorded
+// is surfaced on the result, which is what the CLI prints after installing.
+//
+//nolint:paralleltest // serial: real sqlite + on-disk client materialization per test
+func TestInstallResultCarriesTrustDecision(t *testing.T) {
+	t.Run("signed", func(t *testing.T) {
+		repoDir := createPluginTestRepo(t, "")
+		svc, projectRoot := newGitLockTestService(t, repoDir)
+
+		result, err := svc.Install(t.Context(), plugins.InstallOptions{
+			Name: gitPluginRef, Scope: plugins.ScopeProject,
+			ProjectRoot: projectRoot, Clients: []string{"claude-code"},
+		})
+		require.NoError(t, err)
+		require.NotNil(t, result.Provenance)
+		assert.Equal(t, testSignerIdentity, result.Provenance.SignerIdentity)
+		assert.False(t, result.Unsigned)
+	})
+
+	t.Run("unsigned exception", func(t *testing.T) {
+		repoDir := createPluginTestRepo(t, "")
+		mv := verifiermocks.NewMockVerifier(gomock.NewController(t))
+		mv.EXPECT().VerifyGit(gomock.Any(), gomock.Any(), gomock.Any(), gomock.Nil()).
+			Return(nil, verifier.ErrUnsigned)
+		svc, projectRoot := newGitLockTestService(t, repoDir, WithVerifier(mv))
+
+		result, err := svc.Install(t.Context(), plugins.InstallOptions{
+			Name: gitPluginRef, Scope: plugins.ScopeProject, ProjectRoot: projectRoot,
+			Clients: []string{"claude-code"}, AllowUnsigned: true,
+		})
+		require.NoError(t, err)
+		assert.Nil(t, result.Provenance)
+		assert.True(t, result.Unsigned)
+	})
+}
+
+// TestDispatchExtractionPersistsNewlyVerifiedBundle covers the migration path
+// that removing the lock feature gate opened up. A project install recorded
+// while verification was gated off carries no Sigstore bundle, so a
+// same-digest reinstall that now verifies must not short-circuit: the no-op
+// and same-digest-new-clients paths both return the stored record verbatim
+// without persisting, which would leave the lock entry naming a signer that
+// verifyStoredSignature cannot re-verify offline (it fails closed on
+// provenance with no stored bundle) and leave on-disk drift unrepaired.
+//
+//nolint:paralleltest // serial: real sqlite + on-disk client materialization per test
+func TestDispatchExtractionPersistsNewlyVerifiedBundle(t *testing.T) {
+	const name = "my-plugin"
+
+	tests := []struct {
+		name string
+		// storedBundle seeds the pre-existing record's bundle. Empty stands
+		// in for a record written before lock tracking; non-empty for one
+		// whose stored material has since gone stale or corrupt.
+		storedBundle []byte
+		bundle       []byte
+		wantBundle   []byte
+	}{
+		{
+			name:       "bundle to persist is not a no-op",
+			bundle:     []byte(`{"bundle":true}`),
+			wantBundle: []byte(`{"bundle":true}`),
+		},
+		{
+			name:   "no bundle still short-circuits",
+			bundle: nil,
+		},
+		{
+			name:         "stale stored bundle is replaced",
+			storedBundle: []byte(`{"bundle":"stale"}`),
+			bundle:       []byte(`{"bundle":"fresh"}`),
+			wantBundle:   []byte(`{"bundle":"fresh"}`),
+		},
+		{
+			name:         "identical stored bundle needs no rewrite",
+			storedBundle: []byte(`{"bundle":true}`),
+			bundle:       []byte(`{"bundle":true}`),
+			wantBundle:   []byte(`{"bundle":true}`),
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			svc, projectRoot := newLockTestService(t)
+			inner := svc.(*service) //nolint:forcetypeassert
+			digest := validLockDigest()
+
+			// Stand in for a record written before lock tracking: right
+			// digest and clients, no stored bundle unless seeded.
+			installTestPlugin(t, svc, projectRoot, digest)
+			existing, err := inner.store.Get(t.Context(), name, plugins.ScopeProject, projectRoot)
+			require.NoError(t, err)
+			require.Empty(t, existing.SigstoreBundle, "precondition: the pre-gate record stores no bundle")
+
+			if len(tt.storedBundle) > 0 {
+				existing.SigstoreBundle = tt.storedBundle
+				require.NoError(t, inner.store.Update(t.Context(), existing))
+			}
+
+			result, err := inner.dispatchExtraction(t.Context(), plugins.InstallOptions{
+				Name:           name,
+				LayerData:      makePluginLayerData(t, name),
+				Digest:         digest,
+				Scope:          plugins.ScopeProject,
+				ProjectRoot:    projectRoot,
+				Clients:        []string{"claude-code"},
+				SigstoreBundle: tt.bundle,
+			}, plugins.ScopeProject, existing, nil, []string{"claude-code"})
+			require.NoError(t, err)
+
+			if len(tt.wantBundle) == 0 {
+				assert.Empty(t, result.Plugin.SigstoreBundle)
+				return
+			}
+			assert.Equal(t, tt.wantBundle, result.Plugin.SigstoreBundle,
+				"the freshly verified bundle must reach the record, or offline sync fails closed")
+
+			stored, err := inner.store.Get(t.Context(), name, plugins.ScopeProject, projectRoot)
+			require.NoError(t, err)
+			assert.Equal(t, tt.wantBundle, stored.SigstoreBundle,
+				"the bundle must be persisted, not just returned")
+		})
+	}
+}
+
+// TestInfoPropagatesUnreadableLockTrustState pins that a lock file which
+// exists but cannot be trusted surfaces as an error rather than as absent
+// trust state: "no provenance and not unsigned" is exactly how an untracked
+// install renders, so swallowing the read failure would leave CLI and JSON
+// callers unable to tell a malformed toolhive.lock.yaml from a plugin nothing
+// is pinning. A missing lock file stays non-fatal (lockfile.Load returns an
+// empty lockfile), which the "no lock entry" case above covers.
+//
+//nolint:paralleltest // serial: real sqlite + on-disk client materialization per test
+func TestInfoPropagatesUnreadableLockTrustState(t *testing.T) {
+	repoDir := createPluginTestRepo(t, "")
+	svc, projectRoot := newGitLockTestService(t, repoDir)
+	require.NoError(t, gitInstall(t, svc, projectRoot, nil))
+
+	require.NoError(t, os.WriteFile(
+		filepath.Join(projectRoot, lockfile.FileName), []byte("plugins: [unterminated"), 0o644))
+
+	_, err := svc.Info(t.Context(), plugins.InfoOptions{
+		Name: "my-plugin", Scope: plugins.ScopeProject, ProjectRoot: projectRoot,
+	})
+	require.Error(t, err, "an unreadable lock file must not render as an untracked install")
+	assert.Contains(t, err.Error(), "reading lock trust state")
+}
+
+// gitSignedVerifier mirrors what the real VerifyGit returns: a verified
+// identity with a NIL bundle. gitsign material is not a Sigstore bundle and
+// the transparency-log proof that would let us build one is a tracked
+// follow-up, so git verification has nothing to hand back.
+//
+// That nil matters for the test below rather than being incidental detail:
+// alwaysSignedVerifier returns a bundle, which would make dispatchExtraction's
+// mustPersistTrust fire and route the reinstall to the rematerializing path
+// for a reason no git install ever has. A test built on it would pass while
+// exercising nothing.
+func gitSignedVerifier(t *testing.T) verifier.Verifier {
+	t.Helper()
+	result := signedResult()
+	result.Bundle = nil
+	mv := verifiermocks.NewMockVerifier(gomock.NewController(t))
+	mv.EXPECT().VerifyGit(gomock.Any(), gomock.Any(), gomock.Any(), gomock.Any()).
+		AnyTimes().Return(result, nil)
+	mv.EXPECT().VerifyBundleOffline(gomock.Any(), gomock.Any(), gomock.Any()).
+		AnyTimes().Return(nil)
+	return mv
+}
+
+// TestInstallVerification_SameCommitGitMigrationRematerializes pins the
+// invariant that a lock entry only ever describes content the install that
+// wrote it actually materialized.
+//
+// The shape that broke it: a project install predating lock tracking, so the
+// store record exists, is unmanaged, and carries no bundle — and whose on-disk
+// tree has been modified since. Reinstalling at the same commit verifies the
+// fresh gitsign signature and writes an entry naming that signer plus a
+// contentDigest hashed from the freshly downloaded source, never from disk.
+// With no bundle to persist there was nothing to pull the install off the
+// no-op path, so the modified files stayed active behind an entry that reads
+// as fully verified, and only a later `sync --check` noticed the mismatch.
+//
+//nolint:paralleltest // serial: real sqlite + on-disk client materialization per test
+func TestInstallVerification_SameCommitGitMigrationRematerializes(t *testing.T) {
+	const name = "my-plugin"
+
+	repoDir := createPluginTestRepo(t, "")
+	svc, projectRoot := newGitLockTestService(t, repoDir, WithVerifier(gitSignedVerifier(t)))
+	require.NoError(t, gitInstall(t, svc, projectRoot, nil))
+	inner := svc.(*service) //nolint:forcetypeassert
+
+	// Reduce the install to the pre-verification shape: no lock entry and an
+	// unmanaged record. Nothing writes this today; it is what a project
+	// install made while lock tracking was gated off looks like.
+	require.NoError(t, lockfile.RemovePluginEntry(mustOpenRoot(t, projectRoot), name))
+	legacy, err := inner.store.Get(t.Context(), name, plugins.ScopeProject, projectRoot)
+	require.NoError(t, err)
+	legacy.Managed = false
+	legacy.SigstoreBundle = nil
+	require.NoError(t, inner.store.Update(t.Context(), legacy))
+
+	// Drift: the tree on disk no longer matches the commit it came from.
+	tampered := filepath.Join(pluginOnDiskPath(projectRoot, name), "commands", "hello.md")
+	require.NoError(t, os.WriteFile(tampered, []byte("tampered content"), 0o644))
+
+	// Reinstall at the same commit, every client already present — the no-op
+	// path, and with a nil bundle nothing else would divert it.
+	require.NoError(t, gitInstall(t, svc, projectRoot, nil))
+
+	entry, ok := loadPluginLockEntry(t, projectRoot)
+	require.True(t, ok)
+	require.NotNil(t, entry.Provenance, "precondition: the reinstall recorded a verified signer")
+	assert.Equal(t, testSignerIdentity, entry.Provenance.SignerIdentity)
+
+	restored, err := os.ReadFile(tampered) //nolint:gosec // test-controlled path
+	require.NoError(t, err)
+	assert.Equal(t, "# hello", string(restored),
+		"an install recording verified provenance must rematerialize the content it vouches for")
+
+	// The contentDigest now describes what is on disk, so the entry is
+	// self-consistent at the moment it is written rather than only after a
+	// repair pass.
+	checked, err := inner.Sync(t.Context(), plugins.SyncOptions{ProjectRoot: projectRoot, Check: true})
+	require.NoError(t, err)
+	assert.Equal(t, []string{name}, checked.AlreadyCurrent)
+	assert.Empty(t, checked.Drifted)
 }

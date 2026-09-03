@@ -56,6 +56,8 @@ func skillPushCmdFunc(cmd *cobra.Command, args []string) error {
 		Key:       skillPushKey,
 		NoSign:    skillPushNoSign,
 		Confirm:   confirmBrowserSignIn,
+		Remediation: "Provide --key or --identity-token, run in CI with id-token: write permission, " +
+			"or pass --no-sign to push unsigned",
 	})
 	if err != nil {
 		return formatSkillError("push skill", err)

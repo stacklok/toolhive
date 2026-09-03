@@ -112,8 +112,9 @@ jobs:
           # via GH_TOKEN. Read access is sufficient — publishing happens in a
           # later, deterministic step, not by the model.
           GH_TOKEN: ${{ github.token }}
+          ANTHROPIC_BASE_URL: https://llm-gateway.stacklok.dev/anthropic
         with:
-          anthropic_api_key: ${{ secrets.ANTHROPIC_API_KEY }}
+          anthropic_api_key: ${{ secrets.STACKLOK_GATEWAY_KEY_RELEASE_NOTES }}
           # Hand the action a token explicitly so it does not try to mint one via
           # OIDC (the Claude GitHub App flow), which would require `id-token: write`
           # and the app installed. We only need the API key for Anthropic auth and

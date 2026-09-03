@@ -18,7 +18,7 @@ jobs:
     # This is an allow-list rather than a deny-list. Denying NONE, FIRST_TIMER
     # and FIRST_TIME_CONTRIBUTOR still admitted CONTRIBUTOR — which anyone
     # earns permanently by getting a single pull request merged — and
-    # MANNEQUIN. This job holds contents: write and ANTHROPIC_API_KEY and
+    # MANNEQUIN. This job holds contents: write and a gateway API key and
     # allows Bash(git *), so the bar needs to be write access to the
     # repository, not a history of contributing to it.
     #
@@ -74,8 +74,10 @@ jobs:
       - name: Run Claude Code
         id: claude
         uses: anthropics/claude-code-action@16b3b310c3d7b5279df73130324d5205aeea8eac # v1.0.205
+        env:
+          ANTHROPIC_BASE_URL: https://llm-gateway.stacklok.dev/anthropic
         with:
-          anthropic_api_key: ${{ secrets.ANTHROPIC_API_KEY }}
+          anthropic_api_key: ${{ secrets.STACKLOK_GATEWAY_KEY_CLAUDE_TAG }}
           # Security: Restrict tools to prevent arbitrary code execution.
           # Bash is scoped to known-safe commands (task, go, git, helm-docs).
           # No unrestricted Bash access — prevents prompt injection from

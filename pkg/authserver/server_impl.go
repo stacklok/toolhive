@@ -5,6 +5,7 @@ package authserver
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"log/slog"
 	"net/http"
@@ -43,6 +44,11 @@ type server struct {
 	// interface when there are no upstreams, so callers can check == nil safely.
 	upstreamRefresher storage.UpstreamTokenRefresher
 	upstreams         []handlers.NamedUpstream
+	// trustedIssuerValidator is the single MultiIssuerTokenValidator shared by
+	// the token-exchange and JWT-bearer handlers, built in buildProvider when
+	// TrustedIssuers are configured (nil otherwise). Held here so Close can shut
+	// down its per-issuer JWKS refresh worker pools; nothing else releases them.
+	trustedIssuerValidator *tokenexchange.MultiIssuerTokenValidator
 }
 
 // DefaultUpstreamFactory creates the production upstream provider based on type.
@@ -102,6 +108,20 @@ func isNilProvider(provider upstream.OAuth2Provider) bool {
 	}
 	v := reflect.ValueOf(provider)
 	return v.Kind() == reflect.Pointer && v.IsNil()
+}
+
+// releaseOnConstructionError runs newServer's error-path cleanup: it drains the
+// upstream idle connections and shuts down the trusted-issuer validator's JWKS
+// worker pools (when one was built). Errors are logged, not returned — retErr is
+// what the caller acts on, but a pool that fails to drain here would otherwise
+// leave its goroutines running with no diagnostic.
+func releaseOnConstructionError(upstreams []handlers.NamedUpstream, validator *tokenexchange.MultiIssuerTokenValidator) {
+	closeUpstreamIdleConnections(upstreams)
+	if validator != nil {
+		if err := validator.Close(); err != nil {
+			slog.Warn("failed to shut down trusted-issuer validator during server construction cleanup", "error", err)
+		}
+	}
 }
 
 // closeUpstreamIdleConnections drains the pooled idle connections of every
@@ -201,14 +221,20 @@ func newServer(ctx context.Context, cfg Config, stor storage.Storage) (_ *server
 	if err != nil {
 		return nil, err
 	}
+	// trustedIssuerValidator is assigned from buildProvider below; the deferred
+	// cleanup captures it by reference so a failure after it is built releases
+	// its per-issuer JWKS worker pools rather than leaking them.
+	var trustedIssuerValidator *tokenexchange.MultiIssuerTokenValidator
 	// Defense in depth: the failure returns below would otherwise abandon
-	// providers holding a live pool. None is reachable today (Validate covers
-	// every precondition they check), so this drains nothing at present — it is
-	// here so a future step that fails after touching the network, or a new
-	// error return added above it, is covered by default.
+	// upstream providers holding a live pool, or the trusted-issuer validator's
+	// JWKS worker pools. The upstream drain is not reachable today (Validate
+	// covers every precondition they check) — it is here so a future step that
+	// fails after touching the network, or a new error return added above it, is
+	// covered by default; the validator shutdown covers the reachable failure
+	// between buildProvider and the return below.
 	defer func() {
 		if retErr != nil {
-			closeUpstreamIdleConnections(upstreams)
+			releaseOnConstructionError(upstreams, trustedIssuerValidator)
 		}
 	}()
 
@@ -228,7 +254,7 @@ func newServer(ctx context.Context, cfg Config, stor storage.Storage) (_ *server
 
 	// Create fosite provider with the (possibly decorated) storage.
 	slog.Debug("creating fosite OAuth2 provider")
-	fositeProvider, err := buildProvider(cfg, authServerConfig, stor)
+	fositeProvider, trustedIssuerValidator, err := buildProvider(cfg, authServerConfig, stor)
 	if err != nil {
 		return nil, fmt.Errorf("failed to create fosite OAuth2 provider: %w", err)
 	}
@@ -254,11 +280,12 @@ func newServer(ctx context.Context, cfg Config, stor storage.Storage) (_ *server
 	)
 
 	return &server{
-		handler:           router,
-		storage:           stor,
-		dcrStore:          dcrStore,
-		upstreams:         upstreams,
-		upstreamRefresher: refresher,
+		handler:                router,
+		storage:                stor,
+		dcrStore:               dcrStore,
+		upstreams:              upstreams,
+		upstreamRefresher:      refresher,
+		trustedIssuerValidator: trustedIssuerValidator,
 	}, nil
 }
 
@@ -330,45 +357,65 @@ func JWTBearerGrantEnabled(trustedIssuers []tokenexchange.TrustedIssuer) bool {
 
 // buildProvider assembles the fosite OAuth2 provider, registering the RFC 8693
 // token-exchange handler as an extension grant alongside the standard grants.
+//
+// It returns the shared MultiIssuerTokenValidator (nil when no TrustedIssuers
+// are configured) so newServer can hold it and release its per-issuer JWKS
+// worker pools on shutdown. On its own error paths it shuts that validator down
+// before returning, since the caller never receives it.
 func buildProvider(
 	cfg Config, authServerConfig *oauthserver.AuthorizationServerConfig, stor storage.Storage,
-) (fosite.OAuth2Provider, error) {
+) (_ fosite.OAuth2Provider, _ *tokenexchange.MultiIssuerTokenValidator, retErr error) {
 	delegateClientIDs := make([]string, len(cfg.DelegateClients))
 	for i, c := range cfg.DelegateClients {
 		delegateClientIDs[i] = c.ClientID
 	}
 	jwtBearerEnabled := JWTBearerGrantEnabled(cfg.TrustedIssuers)
 
-	// Built once, up front, and handed to both factories below when the
-	// JWT-bearer grant is also enabled: otherwise each factory would build
-	// its own MultiIssuerTokenValidator over the same trusted issuers,
-	// doubling every issuer's JWKS cache and background refresh goroutines
-	// for no benefit. authServerConfig is the exact *AuthorizationServerConfig
+	// Built once, up front, whenever any trusted issuer is configured, and
+	// handed to both factories below: otherwise each factory closure would
+	// build its own MultiIssuerTokenValidator over the same trusted issuers at
+	// fosite-compose time, doubling every issuer's JWKS cache and background
+	// refresh goroutines — and, buried in a handler, leaving them unreachable
+	// for shutdown. authServerConfig is the exact *AuthorizationServerConfig
 	// each factory closure would otherwise receive at call time (see
 	// createProvider/NewAuthorizationServer), so building it here first is
-	// equivalent.
-	var shared *tokenexchange.MultiIssuerTokenValidator
-	if jwtBearerEnabled {
-		var err error
-		shared, err = tokenexchange.NewSharedTrustedIssuerValidator(authServerConfig, cfg.TrustedIssuers)
-		if err != nil {
-			return nil, fmt.Errorf("failed to create shared trusted-issuer validator: %w", err)
-		}
+	// equivalent. NewSharedTrustedIssuerValidator returns nil when there are no
+	// trusted issuers.
+	shared, err := tokenexchange.NewSharedTrustedIssuerValidator(authServerConfig, cfg.TrustedIssuers)
+	if err != nil {
+		return nil, nil, fmt.Errorf("failed to create shared trusted-issuer validator: %w", err)
 	}
+	// Release the validator's JWKS worker pools if we fail before returning it
+	// to newServer, which otherwise owns its shutdown.
+	defer func() {
+		if retErr != nil {
+			if err := shared.Close(); err != nil {
+				slog.Warn("failed to shut down trusted-issuer validator during provider build cleanup", "error", err)
+			}
+		}
+	}()
 
 	tokenExchangeFactory, err := tokenexchange.FactoryWithSharedTrustedIssuerValidator(
 		cfg.DelegationTokenLifespan, cfg.TrustedIssuers, delegateClientIDs, shared)
 	if err != nil {
-		return nil, fmt.Errorf("failed to create token exchange factory: %w", err)
+		return nil, nil, fmt.Errorf("failed to create token exchange factory: %w", err)
 	}
 	if !jwtBearerEnabled {
-		return createProvider(authServerConfig, stor, tokenExchangeFactory)
+		provider, err := createProvider(authServerConfig, stor, tokenExchangeFactory)
+		if err != nil {
+			return nil, nil, err
+		}
+		return provider, shared, nil
 	}
 	jwtBearerFactory, err := tokenexchange.JWTBearerIssuanceFactory(cfg.TrustedIssuers, shared)
 	if err != nil {
-		return nil, fmt.Errorf("failed to create JWT-bearer factory: %w", err)
+		return nil, nil, fmt.Errorf("failed to create JWT-bearer factory: %w", err)
 	}
-	return createProvider(authServerConfig, stor, tokenExchangeFactory, jwtBearerFactory)
+	provider, err := createProvider(authServerConfig, stor, tokenExchangeFactory, jwtBearerFactory)
+	if err != nil {
+		return nil, nil, err
+	}
+	return provider, shared, nil
 }
 
 // buildHandlerOptions assembles the handlers.Option list for NewHandler: the
@@ -440,11 +487,24 @@ func (s *server) CloseIdleConnections() {
 	closeUpstreamIdleConnections(s.upstreams)
 }
 
-// Close releases resources held by the server.
+// Close releases resources held by the server: it drains upstream idle
+// connections, shuts down the trusted-issuer validator's per-issuer JWKS
+// refresh worker pools (see MultiIssuerTokenValidator.Close), and closes
+// storage. Errors from the validator shutdown and the storage close are
+// joined so neither hides the other.
 func (s *server) Close() error {
 	slog.Debug("closing OAuth authorization server")
 	s.CloseIdleConnections()
-	return s.storage.Close()
+	var errs []error
+	if s.trustedIssuerValidator != nil {
+		if err := s.trustedIssuerValidator.Close(); err != nil {
+			errs = append(errs, fmt.Errorf("failed to shut down trusted-issuer validator: %w", err))
+		}
+	}
+	if err := s.storage.Close(); err != nil {
+		errs = append(errs, err)
+	}
+	return errors.Join(errs...)
 }
 
 // createProvider creates a fosite OAuth2Provider configured for the authorization code flow.

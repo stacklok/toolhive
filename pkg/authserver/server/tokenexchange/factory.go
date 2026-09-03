@@ -40,13 +40,16 @@ func NewSharedTrustedIssuerValidator(
 // or negative value would produce delegated tokens with an expiry already in the past, and a
 // value above the access token ceiling would only be caught at request time by the per-request cap.
 //
-// When trustedIssuers is non-empty, subject tokens are validated by a
-// MultiIssuerTokenValidator wrapping the self-issued validator; otherwise the
-// self-issued validator is used directly, preserving prior behavior exactly.
-// Each TrustedIssuer carries its own InsecureAllowHTTP/AllowPrivateIPs (see
-// NewMultiIssuerTokenValidator) — this Factory takes no validator-wide
-// equivalent, so a self-issuer setting can never reach the external path
-// through here.
+// trustedIssuers must be empty here. A MultiIssuerTokenValidator owns
+// per-issuer JWKS refresh worker pools that only its Close releases, and the
+// bare Factory has no way to hand that instance back to the caller for
+// shutdown (it is built at fosite-compose time, from config not available at
+// this call). Passing a non-empty set therefore returns an error rather than
+// silently building a validator whose workers leak; callers with trusted
+// issuers must build it via NewSharedTrustedIssuerValidator, hold it for Close,
+// and pass it to FactoryWithSharedTrustedIssuerValidator. With no trusted
+// issuers the self-issued validator is used directly, preserving prior
+// behavior exactly.
 //
 // configuredDelegateClients is the operator-configured list of delegate
 // client IDs (Config.DelegateClients, projected down to just their
@@ -62,11 +65,14 @@ func Factory(
 		delegationLifespan, trustedIssuers, configuredDelegateClients, nil)
 }
 
-// FactoryWithSharedTrustedIssuerValidator is Factory with an optional shared
-// external-issuer validator. When shared is non-nil, it is used instead of
-// building a second MultiIssuerTokenValidator. Callers enabling both the RFC
-// 8693 token-exchange and RFC 7523 JWT-bearer grants for the same trusted
-// issuers can share the validator created by NewSharedTrustedIssuerValidator.
+// FactoryWithSharedTrustedIssuerValidator is Factory with a shared
+// external-issuer validator. shared is used as the subject-token validator when
+// non-nil; it is REQUIRED whenever trustedIssuers is non-empty (an error is
+// returned otherwise), because a locally-built MultiIssuerTokenValidator's JWKS
+// refresh workers would have no owner to Close them — see the error below.
+// Callers build it once with NewSharedTrustedIssuerValidator, hold it for Close,
+// and can reuse the same instance across the RFC 8693 token-exchange and RFC
+// 7523 JWT-bearer grants.
 func FactoryWithSharedTrustedIssuerValidator(
 	delegationLifespan time.Duration, trustedIssuers []TrustedIssuer, configuredDelegateClients []string,
 	shared *MultiIssuerTokenValidator,
@@ -80,28 +86,34 @@ func FactoryWithSharedTrustedIssuerValidator(
 			return nil, fmt.Errorf("tokenexchange: configuredDelegateClients must not contain an empty client ID")
 		}
 	}
+	// A trusted-issuer validator owns per-issuer JWKS refresh worker pools that
+	// only its Close releases, but the returned closure (built at fosite-compose
+	// time, from a config not available here) cannot hand that instance back to
+	// the caller for shutdown. Requiring the caller to build it up front via
+	// NewSharedTrustedIssuerValidator and pass it as shared is the only
+	// construction path that stays releasable — fail loudly rather than silently
+	// build a leaked one.
+	if shared == nil && len(trustedIssuers) > 0 {
+		return nil, fmt.Errorf("tokenexchange: trusted issuers require a shared validator built via " +
+			"NewSharedTrustedIssuerValidator so its JWKS refresh workers can be released on shutdown")
+	}
 	return func(config *server.AuthorizationServerConfig, storage fosite.Storage, strategy any) (any, error) {
 		selfValidator, err := NewSelfIssuedTokenValidator(config.PublicJWKS(), config.GetAccessTokenIssuer(), config.AllowedAudiences)
 		if err != nil {
 			return nil, fmt.Errorf("tokenexchange: failed to create subject token validator: %w", err)
 		}
 
-		// IIFE keeps validator a single immutable assignment rather than a
-		// mutable var reassigned across branches (go-style): reassigning it
-		// in place risked ending up with a non-nil SubjectTokenValidator
-		// wrapping a nil *MultiIssuerTokenValidator on the error path.
-		validator, err := func() (SubjectTokenValidator, error) {
+		// shared is guaranteed non-nil whenever trustedIssuers is non-empty
+		// (checked above), so the trusted-issuer path always uses the
+		// caller-owned, closeable validator; this closure never constructs one
+		// whose JWKS workers nothing can release. The IIFE keeps validator a
+		// single immutable assignment (go-style).
+		validator := func() SubjectTokenValidator {
 			if shared != nil {
-				return shared, nil
+				return shared
 			}
-			if len(trustedIssuers) == 0 {
-				return selfValidator, nil
-			}
-			return NewMultiIssuerTokenValidator(selfValidator, config.GetAccessTokenIssuer(), trustedIssuers, config.AllowedAudiences)
+			return selfValidator
 		}()
-		if err != nil {
-			return nil, fmt.Errorf("tokenexchange: trusted_issuers: %w", err)
-		}
 
 		// Use the embedded *fosite.Config for HandleHelper and handlerConfig
 		// because AuthorizationServerConfig shadows GetAccessTokenLifespan() without

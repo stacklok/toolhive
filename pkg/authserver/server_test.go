@@ -25,6 +25,7 @@ import (
 	servercrypto "github.com/stacklok/toolhive/pkg/authserver/server/crypto"
 	"github.com/stacklok/toolhive/pkg/authserver/server/keys"
 	"github.com/stacklok/toolhive/pkg/authserver/server/registration"
+	"github.com/stacklok/toolhive/pkg/authserver/server/tokenexchange"
 	"github.com/stacklok/toolhive/pkg/authserver/storage"
 	storagemocks "github.com/stacklok/toolhive/pkg/authserver/storage/mocks"
 	"github.com/stacklok/toolhive/pkg/authserver/upstream"
@@ -647,6 +648,73 @@ func TestServer_CloseIdleConnections(t *testing.T) {
 
 		assert.NotPanics(t, srv.CloseIdleConnections)
 		assert.Equal(t, int32(1), capable.closes.Load())
+	})
+}
+
+// TestServer_TrustedIssuerValidatorLifecycle pins that a server configured with
+// TrustedIssuers holds the shared MultiIssuerTokenValidator so Close can shut
+// down its per-issuer JWKS refresh worker pools (issue #6482), and that a server
+// with none holds no validator and still closes cleanly.
+//
+// This covers only the success path. The deferred validator-shutdown paths — the
+// one in buildProvider and the `if trustedIssuerValidator != nil` branch in
+// newServer's defer — are not exercised here: failing a post-buildProvider step
+// deterministically would require a test-only hook the testing rules discourage.
+// The equivalent drain-on-construction-failure guarantee is covered directly at
+// the validator level by
+// TestNewMultiIssuerTokenValidator_PartialConstructionDrainsStartedPools; the
+// server-level defers are thin delegations to that same Close.
+func TestServer_TrustedIssuerValidatorLifecycle(t *testing.T) {
+	t.Parallel()
+
+	newServerWithIssuers := func(t *testing.T, issuers []tokenexchange.TrustedIssuer) *server {
+		t.Helper()
+		stor := storage.NewMemoryStorage()
+		srv, err := newServer(t.Context(), Config{
+			Issuer:           "https://example.com",
+			KeyProvider:      keys.NewGeneratingProvider(keys.DefaultAlgorithm),
+			HMACSecrets:      &servercrypto.HMACSecrets{Current: validHMACSecret()},
+			AllowedAudiences: []string{"https://mcp.example.com"},
+			TrustedIssuers:   issuers,
+			// An upstream is required unless delegate clients or a JWT-bearer
+			// issuer is configured; a plain trusted issuer alone does not satisfy
+			// that, so give the config one placeholder upstream.
+			Upstreams: []UpstreamConfig{{Name: "default", Type: UpstreamProviderTypeOAuth2, OAuth2Config: validUpstreamConfig()}},
+			UpstreamFactory: func(_ context.Context, _ *UpstreamConfig) (upstream.OAuth2Provider, error) {
+				return &plainProvider{}, nil
+			},
+		}, stor)
+		require.NoError(t, err)
+		return srv
+	}
+
+	t.Run("Close shuts down the validator when issuers are configured", func(t *testing.T) {
+		t.Parallel()
+
+		srv := newServerWithIssuers(t, []tokenexchange.TrustedIssuer{{
+			IssuerURL:              "https://external-idp.example.com",
+			ExpectedAudience:       "https://mcp.example.com",
+			JWKSURL:                "https://external-idp.example.com/jwks",
+			AllowedActors:          []string{"ext-agent"},
+			AllowedDelegateClients: []string{"*"},
+		}})
+
+		require.NotNil(t, srv.trustedIssuerValidator,
+			"a server with TrustedIssuers must hold the validator so Close can release its JWKS workers")
+
+		// A nil return proves Close reached the validator and its per-issuer
+		// worker pools drained; MultiIssuerTokenValidator.Close's own test pins
+		// that the goroutines actually exit.
+		require.NoError(t, srv.Close())
+	})
+
+	t.Run("no validator and clean Close without issuers", func(t *testing.T) {
+		t.Parallel()
+
+		srv := newServerWithIssuers(t, nil)
+
+		assert.Nil(t, srv.trustedIssuerValidator)
+		require.NoError(t, srv.Close())
 	})
 }
 

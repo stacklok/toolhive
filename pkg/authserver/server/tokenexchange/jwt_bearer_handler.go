@@ -378,17 +378,28 @@ func audienceIntersects(audience jwt.Audience, accepted []string) bool {
 // JWTBearerIssuanceFactory builds the production RFC 7523 handler. It is only
 // registered by composition when a trusted issuer opts into the grant.
 //
-// shared, when non-nil, is used as the JWTBearerAssertionValidator instead of
-// building a second MultiIssuerTokenValidator: the RFC 8693 token-exchange
-// Factory and this one are usually enabled for the same trusted issuers, and
-// each MultiIssuerTokenValidator registers its own per-issuer jwk.Cache and
-// background refresh goroutines, so building one from each factory would
-// double that cost for no benefit. Pass nil to build one locally (e.g. when
-// only the JWT-bearer grant is enabled).
+// shared is used as the JWTBearerAssertionValidator and is REQUIRED whenever
+// trustedIssuers is non-empty (an error is returned otherwise). The RFC 8693
+// token-exchange Factory and this one are usually enabled for the same trusted
+// issuers, and each MultiIssuerTokenValidator registers its own per-issuer
+// jwk.Cache and background refresh goroutines; sharing one instance avoids
+// doubling that cost, and — since the validator's JWKS workers are released
+// only by its Close — keeps them owned by the caller rather than built and
+// abandoned inside this compose-time closure. Build it once with
+// NewSharedTrustedIssuerValidator and hold it for Close.
 func JWTBearerIssuanceFactory(trustedIssuers []TrustedIssuer, shared *MultiIssuerTokenValidator) (server.Factory, error) {
 	resolvedIssuers, err := ResolveJWTBearerGrantPolicies(trustedIssuers)
 	if err != nil {
 		return nil, fmt.Errorf("JWT-bearer trusted issuers: %w", err)
+	}
+	// Unconditionally required (unlike the token-exchange Factory, which validly
+	// supports self-issued-only): JWT-bearer issuance is meaningful only against
+	// trusted issuers, so there is no no-issuer case that would legitimately
+	// leave shared nil. Requiring it also keeps the validator's JWKS workers
+	// owned by the caller for Close rather than built and abandoned here.
+	if shared == nil {
+		return nil, fmt.Errorf("JWT-bearer: a shared validator built via NewSharedTrustedIssuerValidator " +
+			"is required so its JWKS refresh workers can be released on shutdown")
 	}
 	return func(config *server.AuthorizationServerConfig, rawStorage fosite.Storage, strategy any) (any, error) {
 		consumer, err := assertionJWTConsumer(rawStorage)
@@ -415,10 +426,10 @@ func JWTBearerIssuanceFactory(trustedIssuers []TrustedIssuer, shared *MultiIssue
 				}
 			}
 			// accepted_audiences identifies this authorization server, not a
-			// resource; checked here too (not only inside
-			// NewMultiIssuerTokenValidator below) because that constructor is
-			// skipped entirely when shared is non-nil — this is the runtime
-			// choke point every JWTBearerIssuanceFactory call goes through.
+			// resource; checked here (this is the runtime choke point every
+			// JWTBearerIssuanceFactory call goes through) as well as inside
+			// NewSharedTrustedIssuerValidator, so a caller that builds shared
+			// separately is still covered.
 			for _, audience := range issuer.JWTBearerGrant.AcceptedAudiences {
 				if slices.Contains(config.AllowedAudiences, audience) {
 					return nil, fmt.Errorf(
@@ -427,18 +438,10 @@ func JWTBearerIssuanceFactory(trustedIssuers []TrustedIssuer, shared *MultiIssue
 				}
 			}
 		}
+		// shared is guaranteed non-nil (checked when this factory was built), so
+		// the validator is always the caller-owned, closeable one — this closure
+		// never builds a MultiIssuerTokenValidator whose JWKS workers leak.
 		var validator JWTBearerAssertionValidator = shared
-		if shared == nil {
-			selfValidator, err := NewSelfIssuedTokenValidator(config.PublicJWKS(), config.GetAccessTokenIssuer(), config.AllowedAudiences)
-			if err != nil {
-				return nil, fmt.Errorf("JWT-bearer: failed to create self validator: %w", err)
-			}
-			validator, err = NewMultiIssuerTokenValidator(
-				selfValidator, config.GetAccessTokenIssuer(), resolvedIssuers, config.AllowedAudiences)
-			if err != nil {
-				return nil, fmt.Errorf("JWT-bearer: trusted_issuers: %w", err)
-			}
-		}
 		return newJWTBearerIssuanceHandler(validator, config.TokenURL, consumer, config.Config, atStrategy, atStorage, resolvedIssuers)
 	}, nil
 }

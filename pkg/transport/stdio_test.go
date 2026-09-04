@@ -1195,3 +1195,61 @@ func TestFactory_Create_PreservesAuthFields(t *testing.T) {
 		})
 	}
 }
+
+func TestFactory_Create_PreservesReadTimeout(t *testing.T) {
+	t.Parallel()
+
+	const readTimeout = 45 * time.Second
+	tests := []struct {
+		name          string
+		transportType types.TransportType
+		check         func(t *testing.T, tr types.Transport)
+	}{
+		{
+			name:          "stdio",
+			transportType: types.TransportTypeStdio,
+			check: func(t *testing.T, tr types.Transport) {
+				t.Helper()
+				stdio, ok := tr.(*StdioTransport)
+				require.True(t, ok, "expected *StdioTransport")
+				assert.Equal(t, readTimeout, stdio.readTimeout)
+			},
+		},
+		{
+			name:          "direct SSE",
+			transportType: types.TransportTypeSSE,
+			check: func(t *testing.T, tr types.Transport) {
+				t.Helper()
+				httpTransport, ok := tr.(*HTTPTransport)
+				require.True(t, ok, "expected *HTTPTransport")
+				assert.Equal(t, readTimeout, httpTransport.readTimeout)
+			},
+		},
+		{
+			name:          "direct streamable HTTP",
+			transportType: types.TransportTypeStreamableHTTP,
+			check: func(t *testing.T, tr types.Transport) {
+				t.Helper()
+				httpTransport, ok := tr.(*HTTPTransport)
+				require.True(t, ok, "expected *HTTPTransport")
+				assert.Equal(t, readTimeout, httpTransport.readTimeout)
+			},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			factory := NewFactory()
+			tr, err := factory.Create(types.Config{
+				Type:        tt.transportType,
+				Host:        "localhost",
+				ProxyPort:   8080,
+				ReadTimeout: readTimeout,
+			})
+			require.NoError(t, err)
+			tt.check(t, tr)
+		})
+	}
+}

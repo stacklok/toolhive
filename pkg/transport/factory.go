@@ -57,6 +57,7 @@ func (*Factory) Create(config types.Config, opts ...Option) (types.Transport, er
 			stdio.SetSessionStorage(config.SessionStorage)
 		}
 		stdio.SetSessionTTL(config.SessionTTL)
+		stdio.SetReadTimeout(config.ReadTimeout)
 		if config.AuthInfoHandler != nil {
 			stdio.SetAuthInfoHandler(config.AuthInfoHandler)
 		}
@@ -82,6 +83,7 @@ func (*Factory) Create(config types.Config, opts ...Option) (types.Transport, er
 		)
 		httpTransport.sessionStorage = config.SessionStorage
 		httpTransport.sessionTTL = config.SessionTTL
+		httpTransport.readTimeout = config.ReadTimeout
 		tr = httpTransport
 	case types.TransportTypeStreamableHTTP:
 		httpTransport := NewHTTPTransport(
@@ -101,6 +103,7 @@ func (*Factory) Create(config types.Config, opts ...Option) (types.Transport, er
 		)
 		httpTransport.sessionStorage = config.SessionStorage
 		httpTransport.sessionTTL = config.SessionTTL
+		httpTransport.readTimeout = config.ReadTimeout
 		tr = httpTransport
 	case types.TransportTypeInspector:
 		// HTTP transport is not implemented yet

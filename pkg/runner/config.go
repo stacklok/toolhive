@@ -232,6 +232,13 @@ type RunConfig struct {
 	// when the RunConfig is built or used at runtime.
 	MaxRequestBodySize int64 `json:"max_request_body_size,omitempty" yaml:"max_request_body_size,omitempty"`
 
+	// ProxyReadTimeout bounds reading the entire request (headers + body) on the
+	// proxy HTTP server, expressed as a Go duration string (e.g. "30s", "1m").
+	// Empty uses the proxy default (30s). Negative durations and values that fail
+	// time.ParseDuration are rejected at runtime. Applies to all HTTP transports.
+	// String (not time.Duration) keeps the wire format unit-explicit.
+	ProxyReadTimeout string `json:"proxy_read_timeout,omitempty" yaml:"proxy_read_timeout,omitempty" example:"30s"`
+
 	// ProxyMode is the effective HTTP protocol the proxy uses.
 	// For stdio transports, this is the configured mode (sse or streamable-http).
 	// For direct transports (sse/streamable-http), this matches the transport type.

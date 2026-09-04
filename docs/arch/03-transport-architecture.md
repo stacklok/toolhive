@@ -386,6 +386,19 @@ auth server's 64 KiB cap, and vMCP's 8 MiB cap are unaffected.
 
 **Implementation**: `pkg/bodylimit`, `pkg/runner/middleware.go`
 
+### Proxy Request Read Timeout (All Transports)
+
+Every proxy HTTP server limits reading a complete inbound request, including its body, to 30 seconds by default.
+This prevents a slow or stalled upload from holding a connection open indefinitely.
+Operators can override the limit per workload with `thv run --proxy-read-timeout` or the MCPServer `spec.proxyReadTimeout` field.
+RunConfig stores the same setting as `proxy_read_timeout`, using a Go duration string such as `45s` or `2m`.
+
+Omitting the setting or specifying zero retains the 30-second default; it never disables the timeout.
+The read timeout does not limit response streaming, so long-lived SSE responses remain unaffected.
+
+This setting is distinct from `TOOLHIVE_PROXY_REQUEST_TIMEOUT` above: the read timeout bounds the client-to-proxy HTTP upload,
+while the stdio proxy request timeout bounds how long an MCP request waits for its correlated server response.
+
 ### Health Check Tuning Parameters
 
 **Implementation**: `pkg/transport/proxy/transparent/transparent_proxy.go`

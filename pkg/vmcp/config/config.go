@@ -11,6 +11,7 @@ package config
 import (
 	"encoding/json"
 	"fmt"
+	"log/slog"
 	"time"
 
 	"github.com/stacklok/toolhive/pkg/audit"
@@ -425,6 +426,54 @@ func (c *OutgoingAuthConfig) ResolveForBackend(backendID string) *authtypes.Back
 
 	// No authentication configured
 	return nil
+}
+
+// ApplyToBackend applies this outgoing auth configuration to a backend, choosing
+// between the backend's own discovered auth and config-based auth. It is the single
+// implementation shared by startup discovery (pkg/vmcp/aggregator) and the Kubernetes
+// backend watcher's reconciler (pkg/vmcp/k8s), so both paths resolve auth identically.
+//
+// Auth resolution logic:
+//   - "discovered" mode: keep discovered auth if the backend has any, otherwise fall
+//     back to config-based auth via ResolveForBackend (backend-specific entry, then
+//     Default, then no auth)
+//   - "inline" mode (or ""): always use config-based auth, ignore discovered auth
+//   - unknown mode: default to config-based auth for safety
+//
+// A nil receiver is a no-op: the backend keeps whatever auth it already carries.
+func (c *OutgoingAuthConfig) ApplyToBackend(backend *vmcp.Backend, backendName string) {
+	if c == nil {
+		return
+	}
+
+	// Determine if we should use discovered auth or config-based auth
+	var useDiscoveredAuth bool
+	switch c.Source {
+	case "discovered":
+		// In discovered mode, use auth discovered from MCPServer (if any exists)
+		// If no auth is discovered, fall back to config-based auth via ResolveForBackend
+		// which will use backend-specific config, then Default, then no auth
+		useDiscoveredAuth = backend.AuthConfig != nil
+	case "inline", "":
+		// For inline mode or empty source, always use config-based auth
+		// Ignore any discovered auth from backends
+		useDiscoveredAuth = false
+	default:
+		// Unknown source mode - default to config-based auth for safety
+		slog.Warn("unknown auth source mode, defaulting to config-based auth", "source", c.Source)
+		useDiscoveredAuth = false
+	}
+
+	if useDiscoveredAuth {
+		// Keep the auth discovered from MCPServer (already populated in backend)
+		slog.Debug("backend using discovered auth strategy", "backend", backendName, "strategy", backend.AuthConfig.Type)
+	} else {
+		// Use auth from config (inline mode)
+		if authConfig := c.ResolveForBackend(backendName); authConfig != nil {
+			backend.AuthConfig = authConfig
+			slog.Debug("backend configured with auth strategy from config", "backend", backendName, "strategy", authConfig.Type)
+		}
+	}
 }
 
 // AggregationConfig defines tool aggregation, filtering, and conflict resolution strategies.

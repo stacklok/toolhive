@@ -18,6 +18,7 @@ import (
 
 	mcpv1beta1 "github.com/stacklok/toolhive/cmd/thv-operator/api/v1beta1"
 	"github.com/stacklok/toolhive/pkg/vmcp"
+	"github.com/stacklok/toolhive/pkg/vmcp/config"
 	"github.com/stacklok/toolhive/pkg/vmcp/workloads"
 )
 
@@ -55,7 +56,8 @@ const (
 //  3. If groupRef doesn't match → Remove from registry (moved to different group)
 //  4. Convert to vmcp.Backend using discoverer
 //  5. If conversion fails or returns nil (auth failed) → Remove from registry
-//  6. Upsert backend to registry (triggers version increment + cache invalidation)
+//  6. Apply config-level outgoing auth (same semantics as startup discovery)
+//  7. Upsert backend to registry (triggers version increment + cache invalidation)
 type BackendReconciler struct {
 	client.Client
 
@@ -70,6 +72,13 @@ type BackendReconciler struct {
 
 	// Discoverer converts K8s resources to vmcp.Backend (reuses existing code)
 	Discoverer workloads.Discoverer
+
+	// OutgoingAuth is the vMCP config-level outgoing auth configuration. It is
+	// applied to every reconciled backend with the same precedence startup
+	// discovery uses (discovered CR-side auth first, then backends[<name>],
+	// then Default), so a reconcile does not strip auth that only exists in
+	// the config. May be nil: backends then keep only their discovered auth.
+	OutgoingAuth *config.OutgoingAuthConfig
 }
 
 // SetupIndexes registers field indexes required by the reconciler's watch handlers.
@@ -282,6 +291,13 @@ func (r *BackendReconciler) convertAndUpsertBackend(
 		ctxLogger.Info("Backend conversion returned nil (auth failure or no URL)", "backendID", backendID)
 		return r.removeBackendFromRegistry(ctx, backendID, "Auth failure or no URL")
 	}
+
+	// Apply config-level outgoing auth with the same precedence startup discovery
+	// uses (discovered CR-side auth first, then backends[<name>], then Default).
+	// The discoverer above only resolves auth from the resource's own references,
+	// so without this step a reconcile would strip auth that exists only in the
+	// vMCP config (outgoingAuth.default / outgoingAuth.backends).
+	r.OutgoingAuth.ApplyToBackend(backend, resourceInfo.Name)
 
 	// Upsert backend to registry (triggers version increment + cache invalidation)
 	if err := r.Registry.Upsert(*backend); err != nil {

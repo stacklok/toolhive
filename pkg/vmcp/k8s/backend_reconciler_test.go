@@ -20,6 +20,8 @@ import (
 	mcpv1beta1 "github.com/stacklok/toolhive/cmd/thv-operator/api/v1beta1"
 	"github.com/stacklok/toolhive/cmd/thv-operator/api/v1beta1/v1beta1test"
 	"github.com/stacklok/toolhive/pkg/vmcp"
+	authtypes "github.com/stacklok/toolhive/pkg/vmcp/auth/types"
+	"github.com/stacklok/toolhive/pkg/vmcp/config"
 	"github.com/stacklok/toolhive/pkg/vmcp/k8s"
 	"github.com/stacklok/toolhive/pkg/vmcp/workloads"
 )
@@ -644,4 +646,141 @@ func TestMapAuthConfigToEntries(t *testing.T) {
 			assert.Equal(t, tt.wantNames, gotNames)
 		})
 	}
+}
+
+// newOutgoingAuthTestFixture creates the fake client, discoverer, and registry
+// shared by the outgoing-auth reconciliation tests below. The MCPServer carries
+// no ExternalAuthConfigRef, so any auth on the upserted backend must come from
+// the reconciler's OutgoingAuth config (or from discoveredAuth when non-nil,
+// simulating auth resolved from the resource's own references).
+func newOutgoingAuthTestFixture(
+	t *testing.T,
+	discoveredAuth *authtypes.BackendAuthStrategy,
+) (client.Client, *mockDiscoverer, *mockRegistry) {
+	t.Helper()
+
+	scheme := runtime.NewScheme()
+	require.NoError(t, mcpv1beta1.AddToScheme(scheme))
+
+	mcpServer := &mcpv1beta1.MCPServer{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      "test-server",
+			Namespace: "default",
+		},
+		Spec: mcpv1beta1.MCPServerSpec{
+			GroupRef: &mcpv1beta1.MCPGroupRef{Name: "test-group"},
+		},
+	}
+
+	k8sClient := fake.NewClientBuilder().
+		WithScheme(scheme).
+		WithObjects(mcpServer).
+		Build()
+
+	mockBackend := &vmcp.Backend{
+		ID:         "test-server",
+		Name:       "test-server",
+		BaseURL:    "http://test-server:8080",
+		AuthConfig: discoveredAuth,
+	}
+
+	return k8sClient, &mockDiscoverer{backend: mockBackend}, &mockRegistry{}
+}
+
+// reconcileTestServer runs one reconcile of the "test-server" MCPServer and
+// returns the single upserted backend.
+func reconcileTestServer(t *testing.T, reconciler *k8s.BackendReconciler, mockReg *mockRegistry) vmcp.Backend {
+	t.Helper()
+
+	req := ctrl.Request{
+		NamespacedName: types.NamespacedName{
+			Name:      "test-server",
+			Namespace: "default",
+		},
+	}
+
+	result, err := reconciler.Reconcile(context.Background(), req)
+	require.NoError(t, err)
+	assert.Equal(t, ctrl.Result{}, result)
+	require.Len(t, mockReg.upsertedBackends, 1, "Backend should be upserted to registry")
+	return mockReg.upsertedBackends[0]
+}
+
+// TestReconcile_OutgoingAuthBackendsEntry verifies that a config-level
+// outgoingAuth.backends.<name> entry survives reconciliation for a backend whose
+// own resource carries no discovered auth. Regression test for the watcher path
+// silently dropping config-level outgoing auth (#6454).
+func TestReconcile_OutgoingAuthBackendsEntry(t *testing.T) {
+	t.Parallel()
+
+	k8sClient, mockDisc, mockReg := newOutgoingAuthTestFixture(t, nil)
+
+	wantStrategy := &authtypes.BackendAuthStrategy{Type: authtypes.StrategyTypeUpstreamInject}
+	reconciler := newTestReconciler(k8sClient, "default", "test-group", mockReg, mockDisc)
+	reconciler.OutgoingAuth = &config.OutgoingAuthConfig{
+		Source: "discovered",
+		Backends: map[string]*authtypes.BackendAuthStrategy{
+			"test-server": wantStrategy,
+		},
+	}
+
+	upserted := reconcileTestServer(t, reconciler, mockReg)
+	require.NotNil(t, upserted.AuthConfig, "backends[<name>] auth config must survive reconciliation")
+	assert.Equal(t, authtypes.StrategyTypeUpstreamInject, upserted.AuthConfig.Type)
+}
+
+// TestReconcile_OutgoingAuthDefault verifies that the config-level
+// outgoingAuth.default survives reconciliation for a backend whose own resource
+// carries no discovered auth. Regression test for #6454.
+func TestReconcile_OutgoingAuthDefault(t *testing.T) {
+	t.Parallel()
+
+	k8sClient, mockDisc, mockReg := newOutgoingAuthTestFixture(t, nil)
+
+	reconciler := newTestReconciler(k8sClient, "default", "test-group", mockReg, mockDisc)
+	reconciler.OutgoingAuth = &config.OutgoingAuthConfig{
+		Source:  "discovered",
+		Default: &authtypes.BackendAuthStrategy{Type: authtypes.StrategyTypeHeaderInjection},
+	}
+
+	upserted := reconcileTestServer(t, reconciler, mockReg)
+	require.NotNil(t, upserted.AuthConfig, "default auth config must survive reconciliation")
+	assert.Equal(t, authtypes.StrategyTypeHeaderInjection, upserted.AuthConfig.Type)
+}
+
+// TestReconcile_OutgoingAuthDiscoveredWins verifies that in discovered mode the
+// auth resolved from the backend's own resource references takes precedence over
+// a conflicting config-level backends entry — the same precedence startup
+// discovery applies.
+func TestReconcile_OutgoingAuthDiscoveredWins(t *testing.T) {
+	t.Parallel()
+
+	discovered := &authtypes.BackendAuthStrategy{Type: authtypes.StrategyTypeUpstreamInject}
+	k8sClient, mockDisc, mockReg := newOutgoingAuthTestFixture(t, discovered)
+
+	reconciler := newTestReconciler(k8sClient, "default", "test-group", mockReg, mockDisc)
+	reconciler.OutgoingAuth = &config.OutgoingAuthConfig{
+		Source: "discovered",
+		Backends: map[string]*authtypes.BackendAuthStrategy{
+			"test-server": {Type: authtypes.StrategyTypeHeaderInjection},
+		},
+	}
+
+	upserted := reconcileTestServer(t, reconciler, mockReg)
+	require.NotNil(t, upserted.AuthConfig)
+	assert.Equal(t, authtypes.StrategyTypeUpstreamInject, upserted.AuthConfig.Type,
+		"discovered auth must win over the config-level entry in discovered mode")
+}
+
+// TestReconcile_OutgoingAuthNilConfig verifies that a nil OutgoingAuth leaves
+// the reconciled backend untouched (the pre-existing behavior).
+func TestReconcile_OutgoingAuthNilConfig(t *testing.T) {
+	t.Parallel()
+
+	k8sClient, mockDisc, mockReg := newOutgoingAuthTestFixture(t, nil)
+
+	reconciler := newTestReconciler(k8sClient, "default", "test-group", mockReg, mockDisc)
+
+	upserted := reconcileTestServer(t, reconciler, mockReg)
+	assert.Nil(t, upserted.AuthConfig, "backend without discovered auth stays unauthenticated when no config is supplied")
 }

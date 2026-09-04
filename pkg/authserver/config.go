@@ -113,6 +113,13 @@ type RunConfig struct {
 	//nolint:lll // field tags require full JSON+YAML names
 	DisableUpstreamTokenInjection bool `json:"disable_upstream_token_injection,omitempty" yaml:"disable_upstream_token_injection,omitempty"`
 
+	// UpstreamCredentialScope selects the credential-lookup identity model for
+	// this auth server. Only a genuinely absent value maps to session:
+	// Kubernetes defaulting does not cover old serialized RunConfigs, direct
+	// vMCP YAML, or direct Go construction.
+	//nolint:lll // field tags require full JSON+YAML names
+	UpstreamCredentialScope UpstreamCredentialScope `json:"upstream_credential_scope,omitempty" yaml:"upstream_credential_scope,omitempty"`
+
 	// CIMD controls client_id metadata document support. When enabled, the
 	// embedded authorization server accepts HTTPS URLs as client_id values
 	// and resolves them via the CIMD protocol instead of requiring DCR.
@@ -277,6 +284,19 @@ type DelegateClientRunConfig struct {
 // catches operator-supplied misconfiguration early so server startup fails
 // loudly instead of degrading silently at runtime.
 func (c *RunConfig) Validate() error {
+	// Resolve the credential-lookup scope first so an unknown value fails as
+	// a configuration error and platformUser fails closed before any other
+	// startup work runs.
+	scope, err := EffectiveUpstreamCredentialScope(string(c.UpstreamCredentialScope))
+	if err != nil {
+		return err
+	}
+	if scope == UpstreamCredentialScopePlatformUser {
+		return fmt.Errorf(
+			"upstreamCredentialScope %q is not supported yet: platform-user credential storage is not implemented; "+
+				"the scope is reserved for upcoming work", scope)
+	}
+
 	if c.CIMD != nil {
 		if err := c.CIMD.Validate(); err != nil {
 			return fmt.Errorf("cimd: %w", err)
@@ -565,6 +585,40 @@ const (
 	// UpstreamProviderTypeOAuth2 is for pure OAuth 2.0 providers with explicit endpoints.
 	UpstreamProviderTypeOAuth2 UpstreamProviderType = "oauth2"
 )
+
+// UpstreamCredentialScope selects which identity model upstream credential
+// lookup trusts. session (permanent default) preserves today's session-based
+// behavior; platformUser opts in to the future durable platform-user model.
+type UpstreamCredentialScope string
+
+const (
+	// UpstreamCredentialScopeSession keeps the session-based credential lookup
+	// wired as-is; no platform-user trust checks run. This is the permanent default.
+	UpstreamCredentialScopeSession UpstreamCredentialScope = "session"
+
+	// UpstreamCredentialScopePlatformUser opts in to the future durable
+	// platform-user credential model. It is validated and propagated, but
+	// runtime activation fails as unsupported until platform-user storage is
+	// implemented.
+	UpstreamCredentialScopePlatformUser UpstreamCredentialScope = "platformUser"
+)
+
+// EffectiveUpstreamCredentialScope resolves an upstreamCredentialScope value
+// to its effective scope. Only a genuinely absent value maps to session;
+// unknown non-empty values are rejected, never reinterpreted as the default.
+func EffectiveUpstreamCredentialScope(scope string) (UpstreamCredentialScope, error) {
+	switch UpstreamCredentialScope(scope) {
+	case "":
+		return UpstreamCredentialScopeSession, nil
+	case UpstreamCredentialScopeSession:
+		return UpstreamCredentialScopeSession, nil
+	case UpstreamCredentialScopePlatformUser:
+		return UpstreamCredentialScopePlatformUser, nil
+	default:
+		return "", fmt.Errorf(
+			"invalid upstreamCredentialScope %q: must be empty, \"session\", or \"platformUser\"", scope)
+	}
+}
 
 // DefaultUpstreamName is the name assigned to a single unnamed upstream.
 const DefaultUpstreamName = "default"

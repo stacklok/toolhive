@@ -646,6 +646,11 @@ func ValidateAuthServerIntegration(cfg *Config, rc *authserver.RunConfig) error 
 		return err
 	}
 
+	// PlatformUser scope trust requirements (unknown scope values also fail here).
+	if err := validateAuthServerCredentialScope(cfg, rc); err != nil {
+		return err
+	}
+
 	// Auth server requires OIDC incoming auth to validate issued tokens.
 	if err := validateAuthServerRequiresOIDC(cfg); err != nil {
 		return err
@@ -677,6 +682,34 @@ func validateAuthServerRunConfig(rc *authserver.RunConfig) error {
 	// AllowedAudiences is required for MCP compliance (RFC 8707).
 	if len(rc.AllowedAudiences) == 0 {
 		return fmt.Errorf("auth server requires at least one allowed audience (MCP clients must send RFC 8707 resource parameter)")
+	}
+	return nil
+}
+
+// validateAuthServerCredentialScope enforces the platformUser
+// upstreamCredentialScope trust requirements: the incoming OIDC issuer
+// must be present and exactly equal the auth server issuer. Session-mode
+// configs are untouched: these checks deliberately do not run for them.
+func validateAuthServerCredentialScope(cfg *Config, rc *authserver.RunConfig) error {
+	if rc == nil {
+		return nil
+	}
+	scope, err := authserver.EffectiveUpstreamCredentialScope(string(rc.UpstreamCredentialScope))
+	if err != nil {
+		return err
+	}
+	if scope != authserver.UpstreamCredentialScopePlatformUser {
+		return nil
+	}
+	if !hasOIDCIncoming(cfg) {
+		return fmt.Errorf("upstreamCredentialScope platformUser requires OIDC incoming auth: " +
+			"the token carrying the platform-user identity must be validated against the embedded auth server issuer")
+	}
+	if cfg.IncomingAuth.OIDC.Issuer != rc.Issuer {
+		return fmt.Errorf(
+			"upstreamCredentialScope platformUser requires incomingAuth.oidc.issuer %q to exactly match the auth server issuer %q",
+			cfg.IncomingAuth.OIDC.Issuer, rc.Issuer,
+		)
 	}
 	return nil
 }

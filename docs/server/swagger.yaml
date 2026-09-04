@@ -88,6 +88,13 @@ components:
         audience:
           description: Audience is the expected audience for the token
           type: string
+        authServerIssuer:
+          description: |-
+            AuthServerIssuer is the issuer of the embedded ToolHive auth server that
+            owns the platform-user credential namespace. It is only required when a
+            UserTokenReader is configured, in which case it must be non-empty and
+            exactly equal to Issuer.
+          type: string
         authTokenFile:
           description: AuthTokenFile is the path to file containing bearer token for
             authentication
@@ -664,6 +671,13 @@ components:
             $ref: '#/components/schemas/tokenexchange.TrustedIssuer'
           type: array
           uniqueItems: false
+        upstream_credential_scope:
+          description: |-
+            UpstreamCredentialScope selects the credential-lookup identity model for
+            this auth server. Only a genuinely absent value maps to session:
+            Kubernetes defaulting does not cover old serialized RunConfigs, direct
+            vMCP YAML, or direct Go construction.
+          type: string
         upstreams:
           description: |-
             Upstreams configures connections to upstream Identity Providers for

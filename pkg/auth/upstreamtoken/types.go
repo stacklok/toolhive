@@ -6,6 +6,7 @@
 package upstreamtoken
 
 //go:generate go run go.uber.org/mock/mockgen -destination=mocks/mock_token_reader.go -package=mocks github.com/stacklok/toolhive/pkg/auth/upstreamtoken TokenReader
+//go:generate go run go.uber.org/mock/mockgen -destination=mocks/mock_user_token_reader.go -package=mocks github.com/stacklok/toolhive/pkg/auth/upstreamtoken UserTokenReader
 
 import "context"
 
@@ -73,6 +74,19 @@ type TokenReader interface {
 	// Returns an empty map and nil failed slice (not error) for unknown sessions.
 	GetAllUpstreamCredentials(ctx context.Context, sessionID string) (
 		creds map[string]UpstreamCredential, failed []string, err error)
+}
+
+// UserTokenReader retrieves upstream provider credentials for a durable
+// platform-user identity. It is a preparatory seam for the platform-user
+// credential model: it is deliberately separate from TokenReader, which
+// resolves credentials per token session (tsid). A real implementation
+// arrives with platform-user storage; nothing in this repository may wrap
+// or reuse the session TokenReader as a UserTokenReader.
+type UserTokenReader interface {
+	// GetUserUpstreamCredential returns the stored upstream credential for
+	// the given durable platform-user identity and upstream provider name.
+	// Returns an error if the user has no stored credential for the provider.
+	GetUserUpstreamCredential(ctx context.Context, userID, providerName string) (*UpstreamCredential, error)
 }
 
 // Service owns the upstream token lifecycle: read, refresh, error handling.

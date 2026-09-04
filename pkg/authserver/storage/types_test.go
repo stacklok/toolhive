@@ -202,6 +202,7 @@ func TestClientFingerprintFieldsAreJustified(t *testing.T) {
 		"audience":      "a different RFC 8707/8693 audience allowlist is a different logical client authorization",
 		"grantTypes":    "a different grant-type set is a different logical client capability",
 		"responseTypes": "a different response-type set is a different logical client capability",
+		"resources":     "a different RFC 8707 resource allowlist is a different logical client authorization",
 		"public":        "public vs. confidential is a different logical client class",
 	}
 
@@ -226,6 +227,7 @@ func TestClientFingerprintFieldsAreJustified(t *testing.T) {
 		audience:      []string{"audience-a"},
 		grantTypes:    []string{"grant-a"},
 		responseTypes: []string{"response-a"},
+		resources:     []string{"resource-a"},
 		public:        false,
 	}
 
@@ -243,6 +245,8 @@ func TestClientFingerprintFieldsAreJustified(t *testing.T) {
 				other.grantTypes = []string{"grant-b"}
 			case "responseTypes":
 				other.responseTypes = []string{"response-b"}
+			case "resources":
+				other.resources = []string{"resource-b"}
 			case "public":
 				other.public = !base.public
 			default:

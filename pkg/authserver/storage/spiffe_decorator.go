@@ -7,6 +7,7 @@ import (
 	"context"
 	"fmt"
 	"maps"
+	"slices"
 	"time"
 
 	"github.com/ory/fosite"
@@ -83,6 +84,16 @@ func preflightDurableCollisions(ctx context.Context, base Storage, clients map[s
 	return nil
 }
 
+// resourceScopedClient is implemented by fosite.Client types (e.g.
+// registration.SPIFFEClient) that maintain an RFC 8707 resource allowlist
+// independent of GetAudience's audience allowlist. This mirrors the
+// identically-shaped interface in pkg/authserver/server/tokenexchange -- both
+// packages match it structurally against the same concrete client types
+// without either importing the other's unexported interface.
+type resourceScopedClient interface {
+	Resources() []string
+}
+
 // inertPlaceholderClient wraps a *fosite.DefaultClient to suppress its
 // implicit defaulting: fosite.DefaultClient.GetGrantTypes and
 // GetResponseTypes each return a single-element default
@@ -107,10 +118,18 @@ func preflightDurableCollisions(ctx context.Context, base Storage, clients map[s
 type inertPlaceholderClient struct {
 	registration.BackChannelOnlyMarker
 	*fosite.DefaultClient
+	resources []string
 }
 
 func (inertPlaceholderClient) GetGrantTypes() fosite.Arguments    { return nil }
 func (inertPlaceholderClient) GetResponseTypes() fosite.Arguments { return nil }
+
+// Resources returns the placeholder's RFC 8707 resource allowlist, satisfying
+// resourceScopedClient so the fingerprint comparison (see clientFingerprint)
+// distinguishes associations that differ only in their resource allowlist.
+// Returns a defensive copy, matching SPIFFEClient.Resources and
+// SPIFFEAuthorizationPolicy.Resources.
+func (c inertPlaceholderClient) Resources() []string { return slices.Clone(c.resources) }
 
 // isReservedPlaceholder reports whether client is a staticClientPlaceholder
 // value, letting buildStoredClient (redis.go) mark the persisted row so
@@ -131,22 +150,30 @@ func isReservedPlaceholder(client fosite.Client) bool {
 // server registers, and it carries no secret. This guarantee holds on every
 // backend, including a bare read-back from Redis by a replica with no SPIFFE
 // overlay — see inertPlaceholderClient and storedClient.Reserved. It keeps
-// the real client's Scopes and Audience so the fingerprint comparison in
-// ReconcileConfiguredClient can distinguish "same association, restarted"
-// (idempotent) from "different, colliding association at this ID" (a loud
-// failure).
+// the real client's Scopes, Audience, and (RFC 8707) Resources so the
+// fingerprint comparison in ReconcileConfiguredClient can distinguish "same
+// association, restarted" (idempotent) from "different, colliding
+// association at this ID" (a loud failure).
 // Scopes and Audience are taken directly from actual.GetScopes() /
 // GetAudience() without an extra defensive clone here: the only production
 // caller (registration.SPIFFEClient) already returns a fresh slice.Clone
 // from both getters (see its doc comments), so there is no live backing
-// array to alias.
+// array to alias. The same applies to Resources() when actual implements
+// resourceScopedClient; a client that doesn't (falls back to nil).
 func staticClientPlaceholder(actual fosite.Client) fosite.Client {
-	return inertPlaceholderClient{DefaultClient: &fosite.DefaultClient{
-		ID:       actual.GetID(),
-		Scopes:   actual.GetScopes(),
-		Audience: actual.GetAudience(),
-		Public:   false,
-	}}
+	var resources []string
+	if rc, ok := actual.(resourceScopedClient); ok {
+		resources = rc.Resources()
+	}
+	return inertPlaceholderClient{
+		DefaultClient: &fosite.DefaultClient{
+			ID:       actual.GetID(),
+			Scopes:   actual.GetScopes(),
+			Audience: actual.GetAudience(),
+			Public:   false,
+		},
+		resources: resources,
+	}
 }
 
 // ConsumeAssertionJWT delegates assertion replay consumption to the wrapped

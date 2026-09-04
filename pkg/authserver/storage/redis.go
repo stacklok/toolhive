@@ -188,7 +188,14 @@ type storedClient struct {
 	ResponseTypes []string `json:"response_types"`
 	Scopes        []string `json:"scopes"`
 	Audience      []string `json:"audience"`
-	Public        bool     `json:"public"`
+	// Resources is the RFC 8707 resource allowlist, populated only for a
+	// Reserved client that implements resourceScopedClient (today, always the
+	// SPIFFE static-client placeholder). Gated on Reserved rather than the
+	// interface check alone so buildStoredClient's write and clientFromStored's
+	// read stay symmetric by construction. Nil for every other client shape,
+	// and omitted from the JSON encoding in that case.
+	Resources []string `json:"resources,omitempty"`
+	Public    bool     `json:"public"`
 	// TokenEndpointAuthMethod is the auth method registered for the client
 	// ("none", "client_secret_basic", "client_secret_post"). Empty means the
 	// row predates confidential-client support; see GetClient for how legacy
@@ -303,12 +310,15 @@ func clientFromStored(stored storedClient, hasTTL bool) fosite.Client {
 	// below: a reserved row never carries a TokenEndpointAuthMethod, but even
 	// if it somehow did, Reserved must still win.
 	if stored.Reserved {
-		return inertPlaceholderClient{DefaultClient: &fosite.DefaultClient{
-			ID:       stored.ID,
-			Scopes:   stored.Scopes,
-			Audience: stored.Audience,
-			Public:   false,
-		}}
+		return inertPlaceholderClient{
+			DefaultClient: &fosite.DefaultClient{
+				ID:       stored.ID,
+				Scopes:   stored.Scopes,
+				Audience: stored.Audience,
+				Public:   false,
+			},
+			resources: stored.Resources,
+		}
 	}
 
 	method := stored.TokenEndpointAuthMethod
@@ -368,13 +378,22 @@ func buildStoredClient(client fosite.Client) storedClient {
 		Audience:      client.GetAudience(),
 		Public:        client.IsPublic(),
 	}
+	stored.Reserved = isReservedPlaceholder(client)
+	// Resources is only ever restored on read for a Reserved row (see
+	// clientFromStored); gating the write the same way keeps the two
+	// symmetric by construction instead of relying on every
+	// resourceScopedClient implementation always being Reserved.
+	if stored.Reserved {
+		if rc, ok := client.(resourceScopedClient); ok {
+			stored.Resources = rc.Resources()
+		}
+	}
 	if oidcClient, ok := client.(fosite.OpenIDConnectClient); ok {
 		stored.TokenEndpointAuthMethod = oidcClient.GetTokenEndpointAuthMethod()
 		stored.JSONWebKeys = publicJSONWebKeySet(oidcClient.GetJSONWebKeys())
 		stored.TokenEndpointAuthSigningAlgorithm = oidcClient.GetTokenEndpointAuthSigningAlgorithm()
 	}
 	stored.DCRIssued = registration.DCRIssued(client)
-	stored.Reserved = isReservedPlaceholder(client)
 	return stored
 }
 
@@ -511,6 +530,7 @@ func (s storedClient) fingerprint() clientFingerprint {
 		audience:      s.Audience,
 		grantTypes:    s.GrantTypes,
 		responseTypes: s.ResponseTypes,
+		resources:     s.Resources,
 		public:        s.Public,
 	}
 }

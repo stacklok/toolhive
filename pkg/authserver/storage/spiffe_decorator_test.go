@@ -220,6 +220,99 @@ func TestSPIFFEStorageDecoratorRejectsDifferentConfiguredClientCollision(t *test
 	assert.Contains(t, err.Error(), "different configured client")
 }
 
+// TestSPIFFEStorageDecoratorResourcesOnlyDifferenceIsACollision is the
+// regression test for the review finding on PR #6473: staticClientPlaceholder
+// used to durably fingerprint a SPIFFE association on scopes and audiences
+// only, so two associations at the same client ID differing solely in their
+// RFC 8707 resource allowlist would reconcile as "the same client, restarted"
+// instead of failing loudly as a misconfiguration.
+func TestSPIFFEStorageDecoratorResourcesOnlyDifferenceIsACollision(t *testing.T) {
+	t.Parallel()
+	ctx := context.Background()
+	base := NewMemoryStorage()
+	t.Cleanup(func() { _ = base.Close() })
+
+	first, err := registration.NewSPIFFEClient(
+		"spiffe-client", []string{"openid"}, []string{"https://api.example.com"}, []string{"https://mcp-a.example.com"})
+	require.NoError(t, err)
+	_, err = NewSPIFFEStorageDecorator(ctx, base, map[string]fosite.Client{first.GetID(): first})
+	require.NoError(t, err)
+
+	second, err := registration.NewSPIFFEClient(
+		"spiffe-client", []string{"openid"}, []string{"https://api.example.com"}, []string{"https://mcp-b.example.com"})
+	require.NoError(t, err)
+	_, err = NewSPIFFEStorageDecorator(ctx, base, map[string]fosite.Client{second.GetID(): second})
+	require.ErrorIs(t, err, ErrAlreadyExists,
+		"two associations differing only in resources must collide, not reconcile idempotently")
+	assert.Contains(t, err.Error(), "different configured client")
+}
+
+// TestSPIFFEStorageDecoratorResourcesOnlyDifferenceIsACollisionRedis is the
+// Redis-backed equivalent of
+// TestSPIFFEStorageDecoratorResourcesOnlyDifferenceIsACollision. The memory
+// test alone left storedClient.fingerprint's resources wiring (redis.go)
+// completely uncovered: deleting `resources: s.Resources,` from that method
+// left the full storage test suite green.
+func TestSPIFFEStorageDecoratorResourcesOnlyDifferenceIsACollisionRedis(t *testing.T) {
+	t.Parallel()
+	ctx := context.Background()
+	base, mr := newTestRedisStorage(t)
+	t.Cleanup(func() { _ = base.Close(); mr.Close() })
+
+	first, err := registration.NewSPIFFEClient(
+		"spiffe-client", []string{"openid"}, []string{"https://api.example.com"}, []string{"https://mcp-a.example.com"})
+	require.NoError(t, err)
+	require.NoError(t, PreflightSPIFFEStaticClientCollisions(ctx, base, map[string]fosite.Client{first.GetID(): first}))
+
+	second, err := registration.NewSPIFFEClient(
+		"spiffe-client", []string{"openid"}, []string{"https://api.example.com"}, []string{"https://mcp-b.example.com"})
+	require.NoError(t, err)
+	err = PreflightSPIFFEStaticClientCollisions(ctx, base, map[string]fosite.Client{second.GetID(): second})
+	require.ErrorIs(t, err, ErrAlreadyExists,
+		"two associations differing only in resources must collide, not reconcile idempotently, on Redis-backed storage")
+	assert.Contains(t, err.Error(), "different configured client")
+}
+
+// TestSPIFFEStorageDecoratorPlaceholderResourcesRoundTripThroughRedis proves
+// staticClientPlaceholder's resource allowlist survives a real Redis
+// round-trip (buildStoredClient -> storedClient.Resources ->
+// clientFromStored), not just the in-process placeholder value.
+func TestSPIFFEStorageDecoratorPlaceholderResourcesRoundTripThroughRedis(t *testing.T) {
+	t.Parallel()
+	ctx := context.Background()
+	raw, mr := newTestRedisStorage(t)
+	t.Cleanup(func() { _ = raw.Close(); mr.Close() })
+
+	client, err := registration.NewSPIFFEClient(
+		"spiffe-client", []string{"openid"}, []string{"https://api.example.com"}, []string{"https://mcp.example.com"})
+	require.NoError(t, err)
+
+	require.NoError(t, PreflightSPIFFEStaticClientCollisions(ctx, raw, map[string]fosite.Client{client.GetID(): client}))
+
+	readBack, err := raw.GetClient(ctx, "spiffe-client")
+	require.NoError(t, err)
+	rc, ok := readBack.(resourceScopedClient)
+	require.True(t, ok, "placeholder read back from raw Redis storage must still expose Resources()")
+	assert.Equal(t, []string{"https://mcp.example.com"}, rc.Resources())
+}
+
+// TestSPIFFEStorageDecoratorPlaceholderNoResourcesStillIdempotent pins the
+// zero-value case: an association with no RFC 8707 resources configured must
+// still reconcile against itself on restart, not be treated as a collision
+// merely because both sides carry a nil/empty resource allowlist.
+func TestSPIFFEStorageDecoratorPlaceholderNoResourcesStillIdempotent(t *testing.T) {
+	t.Parallel()
+	ctx := context.Background()
+	base := NewMemoryStorage()
+	t.Cleanup(func() { _ = base.Close() })
+
+	_, err := NewSPIFFEStorageDecorator(ctx, base, testSPIFFEClients(t))
+	require.NoError(t, err)
+
+	_, err = NewSPIFFEStorageDecorator(ctx, base, testSPIFFEClients(t))
+	require.NoError(t, err, "restarting with an unchanged, resource-less association must be idempotent")
+}
+
 func TestSPIFFEStorageDecoratorLeavesEmptyClientsUnchanged(t *testing.T) {
 	t.Parallel()
 	base := NewMemoryStorage()

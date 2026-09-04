@@ -631,29 +631,44 @@ type clientFingerprint struct {
 	audience      []string
 	grantTypes    []string
 	responseTypes []string
-	public        bool
+	// resources is the RFC 8707 resource allowlist, distinct from audience
+	// (see resourceScopedClient in spiffe_decorator.go). Two clients sharing
+	// every other field but differing in their resource allowlist are
+	// different logical clients -- this is the field #6473's review found
+	// missing from the SPIFFE static-client placeholder's durable identity.
+	resources []string
+	public    bool
 }
 
 // equal reports whether f and o represent the same logical client
 // configuration: equal scope set, audience set, grant-type set,
-// response-type set, and public/confidential class.
+// response-type set, resource set, and public/confidential class.
 func (f clientFingerprint) equal(o clientFingerprint) bool {
 	return sameStringSet(f.scopes, o.scopes) &&
 		sameStringSet(f.audience, o.audience) &&
 		sameStringSet(f.grantTypes, o.grantTypes) &&
 		sameStringSet(f.responseTypes, o.responseTypes) &&
+		sameStringSet(f.resources, o.resources) &&
 		f.public == o.public
 }
 
 // fingerprintOfClient reads a live fosite.Client. Safe here because a
 // deliberately-empty client is the live inertPlaceholderClient, whose
 // overridden getters correctly return nil on both sides of the comparison.
+// resources is read through resourceScopedClient (nil when a client type
+// doesn't implement it), the same narrow interface staticClientPlaceholder
+// and buildStoredClient use.
 func fingerprintOfClient(c fosite.Client) clientFingerprint {
+	var resources []string
+	if rc, ok := c.(resourceScopedClient); ok {
+		resources = rc.Resources()
+	}
 	return clientFingerprint{
 		scopes:        c.GetScopes(),
 		audience:      c.GetAudience(),
 		grantTypes:    c.GetGrantTypes(),
 		responseTypes: c.GetResponseTypes(),
+		resources:     resources,
 		public:        c.IsPublic(),
 	}
 }

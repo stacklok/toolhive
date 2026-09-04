@@ -58,6 +58,7 @@ func NewIncomingAuthMiddleware(
 	passThroughTools map[string]struct{},
 	upstreamReader upstreamtoken.TokenReader,
 	keyProvider keys.PublicKeyProvider,
+	embeddedAuthServerIssuer string,
 ) (
 	authMw func(http.Handler) http.Handler,
 	authzMw func(http.Handler) http.Handler,
@@ -72,7 +73,8 @@ func NewIncomingAuthMiddleware(
 
 	switch cfg.Type {
 	case "oidc":
-		authMiddleware, authInfoHandler, err = newOIDCAuthMiddleware(ctx, cfg.OIDC, upstreamReader, keyProvider)
+		authMiddleware, authInfoHandler, err = newOIDCAuthMiddleware(
+			ctx, cfg.OIDC, upstreamReader, keyProvider, embeddedAuthServerIssuer)
 	case "local":
 		authMiddleware, authInfoHandler, err = newLocalAuthMiddleware(ctx)
 	case "anonymous":
@@ -213,6 +215,7 @@ func newOIDCAuthMiddleware(
 	oidcCfg *config.OIDCConfig,
 	reader upstreamtoken.TokenReader,
 	keyProvider keys.PublicKeyProvider,
+	embeddedAuthServerIssuer string,
 ) (func(http.Handler) http.Handler, http.Handler, error) {
 	if oidcCfg == nil {
 		return nil, nil, fmt.Errorf("OIDC configuration required when Type='oidc'")
@@ -247,6 +250,9 @@ func newOIDCAuthMiddleware(
 	}
 	if reader != nil {
 		opts = append(opts, auth.WithUpstreamTokenReader(reader))
+	}
+	if embeddedAuthServerIssuer != "" {
+		opts = append(opts, auth.WithEmbeddedAuthServerIssuer(embeddedAuthServerIssuer))
 	}
 
 	// pkg/auth.GetAuthenticationMiddleware now returns middleware that creates Identity

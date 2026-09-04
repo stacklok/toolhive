@@ -670,12 +670,38 @@ presented to anyone as a credential. Since a session can outlive an `id_token` b
 days, expiring it out of policy evaluation would let the same user be permitted
 early in a session and denied later, with no configuration change.
 
-The token the client presented — the one ToolHive's auth server issued — is
-never a claim source here, even though it mirrors a `name` and `email`. In a
+The token the client presented — the one ToolHive's auth server issued — is not
+a claim source here, even though it mirrors a `name` and `email`. In a
 multi-upstream chain those mirrored values come from the **first** configured
 upstream (the identity provider), which need not be the provider
 `primaryUpstreamProvider` names, so using them could attribute one IdP's email to
 another.
+
+There is one exception, and it applies only to tokens that can have no upstream
+session at all: those minted by the RFC 8693 delegation grant or the RFC 7523
+JWT-bearer grant. No upstream ever logged the subject in, so no upstream
+credential exists to read, and those tokens are evaluated against their own
+claims. Every request carries a `thv_claim_source` attribute naming which trust
+root asserted the claims Cedar saw — `upstream:<provider>` on the normal path
+above, `request:no-upstream-session` for these — so a policy that must only act
+on what an upstream actually asserted can require it:
+
+```plain
+permit(principal, action == Action::"call_tool", resource == Tool::"deploy") when {
+  principal.thv_claim_source == "upstream:okta" &&
+  principal has claim_email
+};
+```
+
+Because those tokens carry no upstream attributes, policies keyed on `groups`,
+`roles` or similar will not match them. See [Knowing where a claim came from and
+tokens with no upstream login](../authz.md#tokens-with-no-upstream-login) for the
+full contract, including how this affects `forbid` rules.
+
+Everything else still fails closed: an identity that simply arrives without
+upstream credentials and says nothing about why — anonymous, local, or a bearer
+token from an IdP other than the pinned one — is denied, as is a session that
+exists but holds no credential for the pinned provider.
 
 An OAuth 2.0 upstream that was never asked for the `openid` scope has no stored
 `id_token`, so nothing is available to fall back to and the claim stays absent.

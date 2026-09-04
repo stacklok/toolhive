@@ -1490,26 +1490,36 @@ func TestAuthorizeWithJWTClaims_UpstreamProvider(t *testing.T) {
 			errContains: "failed to parse upstream token",
 		},
 		{
-			name: "delegated_token_act_claim_falls_back_to_request_claims_permitted",
+			name: "session_less_grant_falls_back_to_request_claims_permitted",
 			identity: &auth.Identity{
 				PrincipalInfo: auth.PrincipalInfo{
 					Subject: "upstream-user",
 					Claims:  map[string]any{"sub": "upstream-user"},
-					// An RFC 8693 delegated token: the act claim states that this
-					// token was minted from a subject token, with no upstream login
-					// of its own.
+				},
+				SessionlessGrant: true,
+				UpstreamTokens:   nil,
+			},
+			wantAuthorize: true,
+		},
+		{
+			name: "raw_delegation_chain_does_not_fall_back",
+			identity: &auth.Identity{
+				PrincipalInfo: auth.PrincipalInfo{
+					Subject: "upstream-user",
+					Claims:  map[string]any{"sub": "upstream-user"},
 					DelegationChain: &audit.DelegationChain{
 						Chain: []audit.DelegatedActor{
-							{Subject: "agent-1", Issuer: "https://thv.example.com"},
+							{Subject: "delegated-agent", Issuer: "https://thv.example.com"},
 						},
 					},
 				},
 				UpstreamTokens: nil,
 			},
-			wantAuthorize: true,
+			wantErr:     true,
+			errContains: "no session-less grant provenance",
 		},
 		{
-			name: "jwt_bearer_token_no_session_marker_falls_back_to_request_claims_permitted",
+			name: "raw_no_session_marker_does_not_fall_back",
 			identity: &auth.Identity{
 				PrincipalInfo: auth.PrincipalInfo{
 					Subject: "upstream-user",
@@ -1522,10 +1532,11 @@ func TestAuthorizeWithJWTClaims_UpstreamProvider(t *testing.T) {
 				},
 				UpstreamTokens: nil,
 			},
-			wantAuthorize: true,
+			wantErr:     true,
+			errContains: "no session-less grant provenance",
 		},
 		{
-			name: "upstream_tokens_nil_without_any_marker_errors",
+			name: "upstream_tokens_nil_without_sessionless_grant_errors",
 			identity: &auth.Identity{
 				PrincipalInfo: auth.PrincipalInfo{
 					Subject: "upstream-user",
@@ -1537,7 +1548,7 @@ func TestAuthorizeWithJWTClaims_UpstreamProvider(t *testing.T) {
 				UpstreamTokens: nil,
 			},
 			wantErr:     true,
-			errContains: "does not declare a missing upstream session",
+			errContains: "no session-less grant provenance",
 		},
 		{
 			name: "anonymous_identity_errors_under_pinned_provider",
@@ -1555,7 +1566,7 @@ func TestAuthorizeWithJWTClaims_UpstreamProvider(t *testing.T) {
 				UpstreamTokens: nil,
 			},
 			wantErr:     true,
-			errContains: "does not declare a missing upstream session",
+			errContains: "no session-less grant provenance",
 		},
 		{
 			name: "malformed_act_claim_is_not_a_delegation_statement",
@@ -1576,7 +1587,7 @@ func TestAuthorizeWithJWTClaims_UpstreamProvider(t *testing.T) {
 				UpstreamTokens: nil,
 			},
 			wantErr:     true,
-			errContains: "does not declare a missing upstream session",
+			errContains: "no session-less grant provenance",
 		},
 		{
 			name: "empty_act_object_is_not_a_delegation_statement",
@@ -1593,7 +1604,7 @@ func TestAuthorizeWithJWTClaims_UpstreamProvider(t *testing.T) {
 				UpstreamTokens: nil,
 			},
 			wantErr:     true,
-			errContains: "does not declare a missing upstream session",
+			errContains: "no session-less grant provenance",
 		},
 		{
 			name: "no_session_marker_false_errors",
@@ -1608,7 +1619,7 @@ func TestAuthorizeWithJWTClaims_UpstreamProvider(t *testing.T) {
 				UpstreamTokens: nil,
 			},
 			wantErr:     true,
-			errContains: "does not declare a missing upstream session",
+			errContains: "no session-less grant provenance",
 		},
 		{
 			name: "upstream_token_has_no_sub_claim",
@@ -4501,6 +4512,7 @@ func TestAuthorizeWithJWTClaims_ClaimSourceAttribute(t *testing.T) {
 						upstreamtoken.NoUpstreamSessionClaimKey: true,
 					},
 				},
+				SessionlessGrant: true,
 			},
 			wantAuthorize: true,
 		},
@@ -4551,6 +4563,7 @@ func TestAuthorizeWithJWTClaims_ClaimSourceAttribute(t *testing.T) {
 						upstreamtoken.NoUpstreamSessionClaimKey: true,
 					},
 				},
+				SessionlessGrant: true,
 			},
 			wantAuthorize: false,
 		},

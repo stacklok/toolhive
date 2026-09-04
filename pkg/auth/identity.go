@@ -105,6 +105,13 @@ type Identity struct {
 	// Metadata stores additional identity information.
 	Metadata map[string]string
 
+	// SessionlessGrant is true only when TokenValidator validated this token for
+	// the configured embedded authorization-server issuer, no upstream session
+	// credentials were loaded, and the token affirmatively proves that it was
+	// minted by a session-less grant. It is internal runtime provenance and is
+	// intentionally not included in PrincipalInfo or MarshalJSON.
+	SessionlessGrant bool
+
 	// UpstreamTokens maps upstream provider names to their access tokens.
 	// This is populated by the auth middleware when an embedded auth server
 	// is active and the JWT contains a token session ID (tsid claim).
@@ -123,11 +130,9 @@ type Identity struct {
 	//                      stored access token strings.
 	//
 	// A nil map therefore says only that no credential was loaded, never why.
-	// Authorization code MUST NOT read it as "this token was minted without an
-	// upstream session" — an anonymous identity and an RFC 7523 JWT-bearer token
-	// are indistinguishable here. The token itself carries that statement: the
-	// "act" claim (DelegationChain) or upstreamtoken.NoUpstreamSessionClaimKey.
-	// See resolveClaims in pkg/authz/authorizers/cedar.
+	// Authorization code must use SessionlessGrant, which TokenValidator sets
+	// only for a validated embedded-auth-server token that affirmatively proves
+	// it was minted without an upstream session.
 	//
 	// MUST NOT be mutated after the Identity is placed in the publicly-reachable
 	// request context. It MAY be mutated while the Identity is reachable only via

@@ -327,7 +327,7 @@ principal and the context, naming the trust root behind the claims:
 | --- | --- |
 | `request` | No `primaryUpstreamProvider` is configured. Claims come from the request's token, and no provenance was ever demanded. |
 | `upstream:<provider>` | Claims come from that upstream's access token (with the profile-claim id_token supplement where it applies). |
-| `request:no-upstream-session` | The token states it was minted with no upstream login — an RFC 8693 delegated token or an RFC 7523 JWT-bearer token — so no upstream credential can exist for it. |
+| `request:no-upstream-session` | The validated embedded-auth-server token was proven to have been minted with no upstream login, so no upstream credential can exist for it. |
 | `request:upstream-opaque` | An upstream credential exists but is an opaque OAuth 2.0 access token whose claims cannot be read, so evaluation degraded to the request token's claims. |
 
 A policy that must only act on what an upstream actually asserted can say so:
@@ -357,10 +357,52 @@ upstream credential can ever exist for it:
   grant has no standard marker of its own.
 
 Under a pinned `primaryUpstreamProvider`, both are evaluated against their own
-claims and labelled `request:no-upstream-session`. Note that these tokens carry
-only `sub`, `act`, `client_id`, `name` and `email` — no group or role claims are
-copied from the subject token — so a policy guarded on `principal has
-claim_groups` still denies them.
+claims and labelled `request:no-upstream-session` only after the incoming token
+has been validated for the configured embedded authorization-server issuer.
+
+##### What these tokens can and cannot express
+
+A session-less token carries at most `sub`, `act`, `client_id` and `scope`, plus
+`name` and `email` when the grant supplies them (RFC 8693 delegation copies them
+from the subject token; RFC 7523 JWT-bearer has no end user and carries neither).
+Nothing else crosses. In particular **no upstream attribute is carried** — no
+`groups`, no `roles`, no `department`, nothing the pinned IdP asserted about the
+subject.
+
+That bounds which policies work under delegation. Policies keyed on the identity
+of the actor, the subject, or the delegated scope work:
+
+```plain
+permit(principal, action == Action::"call_tool", resource) when {
+  principal.thv_claim_source == "request:no-upstream-session" &&
+  principal.claim_act.sub == "my-delegate" &&
+  principal.claim_scope like "*mcp:tools*"
+};
+```
+
+Policies keyed on upstream attributes do not. A rule guarded on
+`principal has claim_department` simply stops matching, so the request is denied
+— the same outcome as before this fallback existed, reached at policy evaluation
+instead of at claim resolution. If your policies depend on upstream attributes,
+delegated tokens are not yet usable under a pinned provider. Carrying those
+attributes across the exchange (claims transcription,
+[draft-ietf-oauth-identity-chaining](https://datatracker.ietf.org/doc/draft-ietf-oauth-identity-chaining/)
+§2.5) is tracked in
+[#6511](https://github.com/stacklok/toolhive/issues/6511).
+
+Two consequences worth planning around:
+
+- **`forbid` rules over upstream attributes do not survive delegation.** Their
+  `has` guard goes false when the attribute is absent, so the rule never fires
+  and the restriction lifts. Express upstream restrictions as conditions on a
+  `permit` rather than as a `forbid`, or require
+  `principal.thv_claim_source == "upstream:<provider>"` in the `forbid` so it is
+  clear the rule only governs directly-authenticated requests.
+- **With more than one upstream provider, `claim_email` and `claim_name` on a
+  delegated token may come from a provider other than the pinned one.** They are
+  copied from the subject token, whose profile claims mirror the first configured
+  upstream. Check `thv_claim_source` before treating them as an assertion by the
+  pinned provider.
 
 Everything else stays closed. A token that simply arrives without upstream
 credentials and says nothing about why — an anonymous or local identity, or a
@@ -376,9 +418,9 @@ JWT-bearer grant.
 
 Deployments that scrape the authorizer's DEBUG logs should note that the
 `source` field now uses the same vocabulary as `thv_claim_source`: the former
-`token`, `no-session-fallback`, `token-fallback` and `upstream` values are now
-`request`, `request:no-upstream-session`, `request:upstream-opaque` and
-`upstream:<provider>`.
+`token`, `token-fallback` and `upstream` values are now `request`,
+`request:upstream-opaque` and `upstream:<provider>`, and the session-less path
+that previously denied now logs `request:no-upstream-session`.
 
 #### Using tool arguments in policies
 

@@ -100,8 +100,15 @@ func PopulateMiddlewareConfigs(config *RunConfig) error {
 	}
 
 	// Authentication middleware (always present)
+	embeddedAuthServerIssuer := func() string {
+		if config.EmbeddedAuthServerConfig != nil {
+			return config.EmbeddedAuthServerConfig.Issuer
+		}
+		return ""
+	}()
 	authParams := auth.MiddlewareParams{
-		OIDCConfig: config.OIDCConfig,
+		OIDCConfig:               config.OIDCConfig,
+		EmbeddedAuthServerIssuer: embeddedAuthServerIssuer,
 	}
 	authConfig, authErr := types.NewMiddlewareConfig(auth.MiddlewareType, authParams)
 	if authErr != nil {

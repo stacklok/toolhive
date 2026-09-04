@@ -19,7 +19,6 @@ import (
 	"github.com/golang-jwt/jwt/v5"
 
 	"github.com/stacklok/toolhive/pkg/auth"
-	"github.com/stacklok/toolhive/pkg/auth/upstreamtoken"
 	"github.com/stacklok/toolhive/pkg/authz/authorizers"
 	"github.com/stacklok/toolhive/pkg/syncutil"
 )
@@ -256,8 +255,9 @@ type ConfigOptions struct {
 	// it is ToolHive-issued or another bearer token.
 	// When set, a non-nil identity.UpstreamTokens map must contain a non-empty
 	// token for this provider; otherwise authorization fails closed. The sole
-	// exception is a nil map, which indicates no upstream session (for example,
-	// a delegated or JWT-bearer token), so request-token claims are used.
+	// exception is a nil map with identity.SessionlessGrant set by TokenValidator
+	// after validation for the configured embedded authorization server; then
+	// request-token claims are used.
 	//
 	// The profile claims in profileClaimsFromIDToken fall back to the SAME
 	// provider's id_token when its access token omits them (many OIDC providers
@@ -593,37 +593,6 @@ func (a *Authorizer) IsAuthorized(
 	return decision == cedar.Allow, nil
 }
 
-// mintedWithoutUpstreamSession reports whether the token behind this identity
-// affirmatively states that it was issued with no upstream IdP login, and so can
-// never carry an upstream credential. Two grants say this, in two ways:
-//
-//   - RFC 8693 delegation sets the "act" claim, parsed into DelegationChain. The
-//     subject is a real end user whose token the authorization server itself
-//     validated, one hop removed from the upstream login.
-//   - RFC 7523 JWT-bearer sets NoUpstreamSessionClaimKey. Its subject is a
-//     synthetic machine identity asserted by a separate trust root, with no end
-//     user at all.
-//
-// Both are statements inside a token this deployment's authentication middleware
-// already validated, not inferences from an absent map. An identity that merely
-// lacks upstream credentials — anonymous, local, or a bearer from an unpinned IdP
-// — says neither, and must keep failing closed under a pinned provider.
-func mintedWithoutUpstreamSession(identity *auth.Identity) bool {
-	// A chain must be well-formed to count as a statement. ParseDelegationChain
-	// never fails: a non-object act yields Malformed with no hops, and a bare
-	// "act": {} yields one empty hop — neither says anything about an upstream
-	// session, and both leave DelegationChain non-nil. The issuance side already
-	// refuses a malformed chain (see buildActClaim in
-	// pkg/authserver/server/tokenexchange); hold the same line on consumption.
-	// Truncated is deliberately admitted: that is a real chain that hit the
-	// depth cap, not garbage.
-	if c := identity.DelegationChain; c != nil && !c.Malformed && len(c.Chain) > 0 {
-		return true
-	}
-	marker, ok := identity.Claims[upstreamtoken.NoUpstreamSessionClaimKey].(bool)
-	return ok && marker
-}
-
 // resolveClaims determines which JWT claims to use for Cedar policy evaluation,
 // and returns alongside them the claim-source label naming the trust root that
 // asserted them (see claimSourceAttr and the claimSource* values). Every path
@@ -651,10 +620,10 @@ func mintedWithoutUpstreamSession(identity *auth.Identity) bool {
 // id_token, which is why the fallback is conditional. That is not a case of one key
 // meaning two different identities.)
 //
-// The sole exception is when Identity.UpstreamTokens is nil, which means there is
-// no upstream session (no tsid claim), as with a delegated or JWT-bearer token.
-// Cedar then uses request-token claims because no upstream provider credential
-// exists. Any non-nil map without a non-empty token for the configured provider,
+// The sole exception is a session-less grant proven by
+// Identity.SessionlessGrant. TokenValidator sets that internal runtime fact only
+// after validating a token for the configured embedded authorization-server
+// issuer. Any non-nil map without a non-empty token for the configured provider,
 // including an empty map or a map for another provider, remains an error so request
 // claims never substitute for a missing provider's credentials.
 //
@@ -697,9 +666,9 @@ func (a *Authorizer) resolveClaims(identity *auth.Identity) (jwt.MapClaims, stri
 	}
 
 	// Embedded auth server path: the upstream IDP token is the primary claim source.
-	if identity.UpstreamTokens == nil && mintedWithoutUpstreamSession(identity) {
-		// The token says it was minted with no upstream login, so no upstream
-		// credential can exist for it. Evaluate its own claims.
+	if identity.UpstreamTokens == nil && identity.SessionlessGrant {
+		// TokenValidator proved this token was minted without an upstream login,
+		// so no upstream credential can exist for it. Evaluate its own claims.
 		a.noSessionLog.Do(func() {
 			slog.Info("token minted without an upstream session; using request-token claims for Cedar evaluation",
 				"provider", a.primaryUpstreamProvider)
@@ -709,12 +678,10 @@ func (a *Authorizer) resolveClaims(identity *auth.Identity) (jwt.MapClaims, stri
 	}
 
 	if identity.UpstreamTokens == nil {
-		// Nil with no marker: this identity was never enriched with upstream
-		// credentials, and nothing states why. It may be an anonymous or local
-		// identity, or a bearer token from an IdP other than the pinned
-		// provider. Its claims come from a trust root this deployment did not
-		// pin, so they must not drive policy.
-		return nil, "", fmt.Errorf("no upstream credentials for provider %q and token does not declare a missing upstream session",
+		// Nil without the validator-established fact: this identity was never
+		// enriched with upstream credentials, and nothing authorizes a fallback.
+		// It may be anonymous, local, or validated for another issuer.
+		return nil, "", fmt.Errorf("no upstream credentials for provider %q and no session-less grant provenance",
 			a.primaryUpstreamProvider)
 	}
 

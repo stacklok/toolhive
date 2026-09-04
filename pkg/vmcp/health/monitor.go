@@ -264,6 +264,7 @@ func NewMonitor(
 	// Create status tracker with circuit breaker configuration
 	// The status tracker will lazily initialize circuit breakers as needed
 	statusTracker := newStatusTracker(config.UnhealthyThreshold, config.CircuitBreaker)
+	statusTracker.checkInterval = config.CheckInterval
 
 	// The client (directly or via the telemetry decorator) optionally reports the
 	// negotiated MCP revision for the status read-model; nil when unsupported.
@@ -458,6 +459,10 @@ func (m *Monitor) UpdateBackends(newBackends []vmcp.Backend) {
 		}
 	}
 
+	// Prune expired tombstones to bound removedBackends (covers churn where
+	// old IDs are never re-checked via isRemoved).
+	m.statusTracker.pruneExpiredRemovedBackends()
+
 	if membershipChanged {
 		m.changes.notify()
 	}
@@ -502,6 +507,9 @@ func (m *Monitor) monitorBackend(ctx context.Context, backend *vmcp.Backend, isI
 
 // performHealthCheck performs a single health check for a backend and updates status.
 func (m *Monitor) performHealthCheck(ctx context.Context, backend *vmcp.Backend) {
+	// Opportunistically prune expired tombstones to bound removedBackends
+	// even when UpdateBackends is not called for a long period.
+	m.statusTracker.pruneExpiredRemovedBackends()
 	slog.Debug("performing health check for backend", "backend", backend.Name, "url", backend.BaseURL)
 
 	// Check if circuit breaker allows health check

@@ -133,6 +133,7 @@ thv run [flags] SERVER_OR_IMAGE_OR_PROTOCOL [-- ARGS...]
       --jwks-allow-private-ip                       Allow JWKS/OIDC endpoints on private IP addresses (use with caution) (default false)
       --jwks-auth-token-file string                 Path to file containing bearer token for authenticating JWKS/OIDC requests
   -l, --label stringArray                           Set labels on the container (format: key=value)
+      --max-request-body-size int                   Maximum inbound request body size in bytes; zero uses the default (8 MiB)
       --name string                                 Name of the MCP server (default to auto-generated from image)
       --network string                              Connect the container to a network (e.g., 'host' for host networking). Note: 'host' and 'none' cannot enforce network isolation, so isolation is dropped for those modes.
       --oidc-audience string                        Expected audience for the token

@@ -557,6 +557,18 @@ func TestUpdateWorkload(t *testing.T) {
 			expectedStatus: http.StatusBadRequest,
 			expectedBody:   "runtime_config is only supported for protocol-scheme images",
 		},
+		{
+			name:         "negative max request body size is rejected",
+			workloadName: "test-workload",
+			requestBody:  `{"image": "test-image", "max_request_body_size": -1}`,
+			setupMock: func(_ *testing.T, wm *workloadsmocks.MockManager, _ *runtimemocks.MockRuntime, gm *groupsmocks.MockManager) {
+				wm.EXPECT().GetWorkload(gomock.Any(), "test-workload").
+					Return(core.Workload{Name: "test-workload"}, nil)
+				gm.EXPECT().Exists(gomock.Any(), "default").Return(true, nil)
+			},
+			expectedStatus: http.StatusBadRequest,
+			expectedBody:   "must be non-negative",
+		},
 	}
 
 	for _, tt := range tests {
@@ -605,6 +617,78 @@ func TestUpdateWorkload(t *testing.T) {
 			assert.Contains(t, w.Body.String(), tt.expectedBody)
 		})
 	}
+}
+
+// TestUpdateWorkload_MaxRequestBodySizeRoundTrip verifies that the Workloads
+// API includes the body limit in GET responses and preserves it when that
+// response is submitted unchanged to the edit endpoint.
+//
+//nolint:paralleltest // SaveState/LoadState use process-wide XDG state settings; keep sequential.
+func TestUpdateWorkload_MaxRequestBodySizeRoundTrip(t *testing.T) {
+	t.Cleanup(xdg.Reload)
+	t.Setenv("XDG_STATE_HOME", t.TempDir())
+	xdg.Reload()
+
+	ctx := context.Background()
+	const (
+		workloadName = "body-limit-workload"
+		maxBytes     = int64(16 << 20)
+	)
+
+	persisted := runner.NewRunConfig()
+	persisted.Name = workloadName
+	persisted.BaseName = workloadName
+	persisted.ContainerName = workloadName
+	persisted.RemoteURL = "https://mcp.example.com/mcp"
+	persisted.MaxRequestBodySize = maxBytes
+	require.NoError(t, persisted.SaveState(ctx))
+
+	ctrl := gomock.NewController(t)
+	defer ctrl.Finish()
+
+	mockWorkloadManager := workloadsmocks.NewMockManager(ctrl)
+	mockRuntime := runtimemocks.NewMockRuntime(ctrl)
+	mockGroupManager := groupsmocks.NewMockManager(ctrl)
+	routes := &WorkloadRoutes{
+		workloadManager:  mockWorkloadManager,
+		containerRuntime: mockRuntime,
+		groupManager:     mockGroupManager,
+		workloadService: &WorkloadService{
+			groupManager:      mockGroupManager,
+			workloadManager:   mockWorkloadManager,
+			configProvider:    config.NewDefaultProvider(),
+			imageVerification: retriever.VerifyImageWarn,
+		},
+	}
+
+	mockWorkloadManager.EXPECT().GetWorkload(gomock.Any(), workloadName).
+		Return(core.Workload{Name: workloadName}, nil)
+	getReq := httptest.NewRequest(http.MethodGet, "/"+workloadName, nil)
+	getRouteCtx := chi.NewRouteContext()
+	getRouteCtx.URLParams.Add("name", workloadName)
+	getReq = getReq.WithContext(context.WithValue(getReq.Context(), chi.RouteCtxKey, getRouteCtx))
+	getRecorder := httptest.NewRecorder()
+	apierrors.ErrorHandler(routes.getWorkload).ServeHTTP(getRecorder, getReq)
+	require.Equal(t, http.StatusOK, getRecorder.Code, getRecorder.Body.String())
+	assert.Contains(t, getRecorder.Body.String(), `"max_request_body_size":16777216`)
+
+	mockWorkloadManager.EXPECT().GetWorkload(gomock.Any(), workloadName).
+		Return(core.Workload{Name: workloadName}, nil)
+	mockGroupManager.EXPECT().Exists(gomock.Any(), "default").Return(true, nil)
+	mockWorkloadManager.EXPECT().UpdateWorkload(gomock.Any(), workloadName, gomock.Any()).
+		DoAndReturn(func(_ context.Context, _ string, runConfig *runner.RunConfig) (workloads.CompletionFunc, error) {
+			assert.Equal(t, maxBytes, runConfig.MaxRequestBodySize)
+			return nil, nil
+		})
+
+	editReq := httptest.NewRequest(http.MethodPost, "/"+workloadName+"/edit", bytes.NewReader(getRecorder.Body.Bytes()))
+	editReq.Header.Set("Content-Type", "application/json")
+	editRouteCtx := chi.NewRouteContext()
+	editRouteCtx.URLParams.Add("name", workloadName)
+	editReq = editReq.WithContext(context.WithValue(editReq.Context(), chi.RouteCtxKey, editRouteCtx))
+	editRecorder := httptest.NewRecorder()
+	apierrors.ErrorHandler(routes.updateWorkload).ServeHTTP(editRecorder, editReq)
+	assert.Equal(t, http.StatusOK, editRecorder.Code, editRecorder.Body.String())
 }
 
 // TestUpdateWorkload_ProtocolBuiltRuntimeConfigRoundTrip guards the GET-edit-PUT

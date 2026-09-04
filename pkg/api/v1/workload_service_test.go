@@ -323,6 +323,55 @@ func TestBuildFullRunConfig_ThreadsAllowDockerGateway(t *testing.T) {
 	assert.True(t, runConfig.AllowDockerGateway)
 }
 
+func TestBuildFullRunConfig_MaxRequestBodySize(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name      string
+		maxBytes  int64
+		wantError bool
+	}{
+		{name: "zero preserves default semantics", maxBytes: 0},
+		{name: "positive value is preserved", maxBytes: 16 << 20},
+		{name: "negative value is rejected", maxBytes: -1, wantError: true},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			ctrl := gomock.NewController(t)
+			defer ctrl.Finish()
+
+			mockGroupManager := groupsmocks.NewMockManager(ctrl)
+			mockGroupManager.EXPECT().Exists(gomock.Any(), "default").Return(true, nil)
+
+			service := &WorkloadService{
+				groupManager:   mockGroupManager,
+				configProvider: config.NewDefaultProvider(),
+			}
+			req := &createRequest{
+				Name: "testserver",
+				updateRequest: updateRequest{
+					URL:                "https://mcp.example.com/mcp",
+					MaxRequestBodySize: tt.maxBytes,
+				},
+			}
+
+			runConfig, err := service.BuildFullRunConfig(context.Background(), req, 0, nil)
+			if tt.wantError {
+				require.Error(t, err)
+				assert.Nil(t, runConfig)
+				assert.Contains(t, err.Error(), "must be non-negative")
+				return
+			}
+
+			require.NoError(t, err)
+			assert.Equal(t, tt.maxBytes, runConfig.MaxRequestBodySize)
+		})
+	}
+}
+
 // TestBuildFullRunConfig_NoOtelConfigLeavesTelemetryNil verifies that when no
 // OpenTelemetry config is set, the RunConfig's TelemetryConfig remains nil —
 // the API path does not invent an endpoint.

@@ -92,6 +92,7 @@ func TestAuthorizeHandler_BackChannelOnlyClientsMatchMissingClient(t *testing.T)
 					"spiffe-client",
 					[]string{"openid"},
 					[]string{"https://mcp.example.com"},
+					nil,
 				)
 				require.NoError(t, err)
 				return client

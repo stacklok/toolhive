@@ -22,6 +22,7 @@ func testSPIFFEClients(t *testing.T) map[string]fosite.Client {
 		"spiffe-client",
 		[]string{"openid"},
 		[]string{"https://api.example.com"},
+		nil,
 	)
 	require.NoError(t, err)
 	return map[string]fosite.Client{client.GetID(): client}
@@ -286,7 +287,7 @@ func TestSPIFFEStorageDecoratorDurableClaimRedisBacked(t *testing.T) {
 	// Reconstructing with a different/conflicting association at the same ID
 	// fails loudly.
 	conflicting, err := registration.NewSPIFFEClient(
-		"spiffe-client", []string{"a-different-scope"}, []string{"https://api.example.com"})
+		"spiffe-client", []string{"a-different-scope"}, []string{"https://api.example.com"}, nil)
 	require.NoError(t, err)
 	_, err = NewSPIFFEStorageDecorator(ctx, base, map[string]fosite.Client{"spiffe-client": conflicting})
 	require.ErrorIs(t, err, ErrAlreadyExists)

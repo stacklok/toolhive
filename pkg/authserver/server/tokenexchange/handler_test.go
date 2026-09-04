@@ -20,6 +20,7 @@ import (
 
 	coreaudit "github.com/stacklok/toolhive-core/audit"
 	"github.com/stacklok/toolhive/pkg/authserver/server"
+	"github.com/stacklok/toolhive/pkg/authserver/server/registration"
 	"github.com/stacklok/toolhive/pkg/authserver/server/session"
 	"github.com/stacklok/toolhive/pkg/oauthproto"
 )
@@ -2449,5 +2450,49 @@ func TestTokenExchangeHandler_PopulateTokenEndpointResponse(t *testing.T) {
 		assert.Contains(t, err.Error(), "storage failure")
 		// issued_token_type must NOT be set when token issuance failed.
 		assert.Nil(t, responder.GetExtra("issued_token_type"))
+	})
+}
+
+// TestGrantResourceAudience_SPIFFEClientEnforcesResourcesIndependentlyOfAudiences
+// is a regression test for a bug where the RFC 8707 "resource" parameter was
+// checked against a SPIFFE client's audience allowlist instead of its
+// independently configured resource allowlist: a resource the client was
+// registered for was rejected, and a resource the client was NOT registered
+// for -- but which happened to be one of its audiences -- was granted.
+func TestGrantResourceAudience_SPIFFEClientEnforcesResourcesIndependentlyOfAudiences(t *testing.T) {
+	t.Parallel()
+
+	tj := newTestJWKS(t)
+	h := newTestHandler(t, tj, time.Hour)
+	// Both values must be server-wide allowed so the test isolates the
+	// per-client check (grantResourceAudience) from the server-wide one.
+	h.allowedAudiences = []string{testIssuer, "https://other.example.com"}
+
+	const registeredResource = testIssuer
+	const registeredAudience = "https://other.example.com"
+	client, err := registration.NewSPIFFEClient(
+		"spiffe-client",
+		[]string{"openid"},
+		[]string{registeredAudience},
+		[]string{registeredResource},
+	)
+	require.NoError(t, err)
+
+	t.Run("resource in the client's resources is granted", func(t *testing.T) {
+		t.Parallel()
+
+		req := newAccessRequest(t, client, url.Values{"resource": {registeredResource}})
+		require.NoError(t, h.grantResourceAudience(context.Background(), req, client))
+		assert.Contains(t, req.GetGrantedAudience(), registeredResource)
+	})
+
+	t.Run("resource that is only an audience, not a resource, is rejected", func(t *testing.T) {
+		t.Parallel()
+
+		req := newAccessRequest(t, client, url.Values{"resource": {registeredAudience}})
+		err := h.grantResourceAudience(context.Background(), req, client)
+		require.Error(t, err)
+		assert.True(t, errors.Is(err, server.ErrInvalidTarget))
+		assert.Empty(t, req.GetGrantedAudience())
 	})
 }

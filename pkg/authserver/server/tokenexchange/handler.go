@@ -817,9 +817,20 @@ func (h *Handler) grantAudiences(ctx context.Context, requester fosite.AccessReq
 	return nil
 }
 
+// resourceScopedClient is implemented by fosite.Client types (e.g.
+// SPIFFEClient) that maintain an RFC 8707 resource allowlist independent of
+// GetAudience's RFC 8693 audience allowlist. Resources and audiences are
+// independent request dimensions: permission in one must never imply
+// permission in the other. A client that doesn't implement this interface
+// falls back to GetAudience for the resource check, preserving prior
+// behavior for clients (e.g. DelegateClient) that only ever had one list.
+type resourceScopedClient interface {
+	Resources() []string
+}
+
 // grantResourceAudience validates the RFC 8707 resource parameter against
-// both the server's allowedAudiences and the client's own registered
-// audiences, and grants it as an additional audience claim, binding the
+// the server's allowedAudiences and the client's own registered resource
+// allowlist, and grants it as an additional audience claim, binding the
 // issued token to a specific resource server (e.g., an MCP server).
 //
 // Per RFC 8707 §2, a request MAY carry multiple resource parameters; this
@@ -839,12 +850,15 @@ func (h *Handler) grantResourceAudience(ctx context.Context, requester fosite.Ac
 		if err := server.ValidateAudienceAllowed(resource, h.allowedAudiences); err != nil {
 			return errorsx.WithStack(err)
 		}
-		// The resource parameter is RFC 8707's mechanism for requesting an
-		// audience, so it must be subject to the same per-client audience
-		// registration as the "audience" parameter (grantAudiences) — otherwise
-		// a client could bypass its registered audiences simply by using
-		// "resource" instead of "audience".
-		if err := h.config.GetAudienceStrategy(ctx)(client.GetAudience(), []string{resource}); err != nil {
+		// The resource parameter is RFC 8707's mechanism for requesting a
+		// resource-bound token, so it must be subject to the client's own
+		// registered allowlist — otherwise a client could bypass its
+		// registration simply by using "resource" instead of "audience".
+		allowedResources := client.GetAudience()
+		if rc, ok := client.(resourceScopedClient); ok {
+			allowedResources = rc.Resources()
+		}
+		if err := h.config.GetAudienceStrategy(ctx)(allowedResources, []string{resource}); err != nil {
 			return errorsx.WithStack(server.ErrInvalidTarget.WithHintf(
 				"The client is not permitted to request a token for resource %q.", resource))
 		}

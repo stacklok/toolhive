@@ -54,7 +54,7 @@ func (r *SPIFFEAssociationRegistry) staticClients() (map[string]fosite.Client, e
 	for clientID, association := range r.byClientID {
 		policy := association.AuthorizationPolicy()
 		client, err := registration.NewSPIFFEClient(
-			association.ClientID(), policy.Scopes(), policy.Audiences(),
+			association.ClientID(), policy.Scopes(), policy.Audiences(), policy.Resources(),
 		)
 		if err != nil {
 			return nil, fmt.Errorf("SPIFFE client %q: %w", clientID, err)

@@ -23,12 +23,14 @@ type SPIFFEClient struct {
 	grantTypes fosite.Arguments
 	scopes     fosite.Arguments
 	audiences  []string
+	resources  []string
 }
 
 // NewSPIFFEClient creates an immutable, secretless, non-public client for a
-// configured SPIFFE association. GetAudience returns the configured allowlist;
-// token exchange checks both audience and resource request parameters against it.
-func NewSPIFFEClient(id string, scopes, audiences []string) (*SPIFFEClient, error) {
+// configured SPIFFE association. GetAudience returns the configured audience
+// allowlist. resources is the independent RFC 8707 resource allowlist,
+// available via Resources(); it may be empty.
+func NewSPIFFEClient(id string, scopes, audiences, resources []string) (*SPIFFEClient, error) {
 	if id == "" {
 		return nil, fmt.Errorf("SPIFFE client ID is required")
 	}
@@ -41,6 +43,7 @@ func NewSPIFFEClient(id string, scopes, audiences []string) (*SPIFFEClient, erro
 		grantTypes: fosite.Arguments{oauthproto.GrantTypeTokenExchange},
 		scopes:     slices.Clone(scopes),
 		audiences:  slices.Clone(audiences),
+		resources:  slices.Clone(resources),
 	}, nil
 }
 
@@ -63,12 +66,16 @@ func (*SPIFFEClient) GetResponseTypes() fosite.Arguments { return nil }
 // GetScopes returns a copy of the configured scopes.
 func (c *SPIFFEClient) GetScopes() fosite.Arguments { return slices.Clone(c.scopes) }
 
-// Audiences returns a copy of the allowed token-exchange target identifiers.
+// Audiences returns a copy of the allowed RFC 8693 audience request values.
 func (c *SPIFFEClient) Audiences() []string { return slices.Clone(c.audiences) }
 
-// GetAudience returns the allowed token-exchange target identifiers. The token
-// exchange handler checks both the RFC 8693 audience and RFC 8707 resource
-// request parameters against this Fosite client field.
+// Resources returns a copy of the allowed RFC 8707 resource request values.
+// Resources and audiences are independent request dimensions; the token
+// exchange handler checks the "resource" request parameter against this,
+// not against GetAudience.
+func (c *SPIFFEClient) Resources() []string { return slices.Clone(c.resources) }
+
+// GetAudience returns the allowed RFC 8693 audience request values.
 func (c *SPIFFEClient) GetAudience() fosite.Arguments { return slices.Clone(c.audiences) }
 
 // IsPublic returns false so Fosite does not treat unauthenticated requests as

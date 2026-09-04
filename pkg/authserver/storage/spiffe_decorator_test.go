@@ -28,6 +28,27 @@ func testSPIFFEClients(t *testing.T) map[string]fosite.Client {
 	return map[string]fosite.Client{client.GetID(): client}
 }
 
+// testIdentityClient wraps a *registration.SPIFFEClient the same way the
+// production spiffeStaticClient wrapper (pkg/authserver) does, so tests in
+// this package can construct a client carrying an identity fingerprint
+// without depending on the authserver package (which would be an import
+// cycle: authserver already imports storage).
+type testIdentityClient struct {
+	*registration.SPIFFEClient
+	identityFingerprint string
+}
+
+func (c testIdentityClient) IdentityFingerprint() string { return c.identityFingerprint }
+
+func testSPIFFEClientWithIdentity(t *testing.T, identityFingerprint string) fosite.Client {
+	t.Helper()
+	client, err := registration.NewSPIFFEClient(
+		"spiffe-client", []string{"openid"}, []string{"https://api.example.com"}, nil,
+	)
+	require.NoError(t, err)
+	return testIdentityClient{SPIFFEClient: client, identityFingerprint: identityFingerprint}
+}
+
 func TestSPIFFEStorageDecoratorStaticClients(t *testing.T) {
 	t.Parallel()
 	base := NewMemoryStorage()
@@ -294,6 +315,75 @@ func TestSPIFFEStorageDecoratorPlaceholderResourcesRoundTripThroughRedis(t *test
 	rc, ok := readBack.(resourceScopedClient)
 	require.True(t, ok, "placeholder read back from raw Redis storage must still expose Resources()")
 	assert.Equal(t, []string{"https://mcp.example.com"}, rc.Resources())
+}
+
+// TestSPIFFEStorageDecoratorIdentityOnlyDifferenceIsACollision is the
+// identity-fingerprint equivalent of
+// TestSPIFFEStorageDecoratorResourcesOnlyDifferenceIsACollision: two
+// associations at the same client ID, same scopes/audience/resources, but a
+// genuinely different SPIFFE association identity (trust domain, principal,
+// or methods -- summarized here as an opaque identityFingerprint, mirroring
+// how fingerprintSPIFFEAssociation in pkg/authserver produces it) must
+// collide loudly on reconciliation, not be accepted as "the same client,
+// restarted".
+func TestSPIFFEStorageDecoratorIdentityOnlyDifferenceIsACollision(t *testing.T) {
+	t.Parallel()
+	ctx := context.Background()
+	base := NewMemoryStorage()
+	t.Cleanup(func() { _ = base.Close() })
+
+	first := testSPIFFEClientWithIdentity(t, "identity-a")
+	_, err := NewSPIFFEStorageDecorator(ctx, base, map[string]fosite.Client{first.GetID(): first})
+	require.NoError(t, err)
+
+	second := testSPIFFEClientWithIdentity(t, "identity-b")
+	_, err = NewSPIFFEStorageDecorator(ctx, base, map[string]fosite.Client{second.GetID(): second})
+	require.ErrorIs(t, err, ErrAlreadyExists,
+		"two associations differing only in identity must collide, not reconcile idempotently")
+	assert.Contains(t, err.Error(), "different configured client")
+}
+
+// TestSPIFFEStorageDecoratorIdentityOnlyDifferenceIsACollisionRedis is the
+// Redis-backed equivalent of
+// TestSPIFFEStorageDecoratorIdentityOnlyDifferenceIsACollision. The memory
+// test alone would leave storedClient.fingerprint's identityFingerprint
+// wiring (redis.go) completely uncovered, mirroring the exact gap the
+// resources fix's Redis test closed.
+func TestSPIFFEStorageDecoratorIdentityOnlyDifferenceIsACollisionRedis(t *testing.T) {
+	t.Parallel()
+	ctx := context.Background()
+	base, mr := newTestRedisStorage(t)
+	t.Cleanup(func() { _ = base.Close(); mr.Close() })
+
+	first := testSPIFFEClientWithIdentity(t, "identity-a")
+	require.NoError(t, PreflightSPIFFEStaticClientCollisions(ctx, base, map[string]fosite.Client{first.GetID(): first}))
+
+	second := testSPIFFEClientWithIdentity(t, "identity-b")
+	err := PreflightSPIFFEStaticClientCollisions(ctx, base, map[string]fosite.Client{second.GetID(): second})
+	require.ErrorIs(t, err, ErrAlreadyExists,
+		"two associations differing only in identity must collide, not reconcile idempotently, on Redis-backed storage")
+	assert.Contains(t, err.Error(), "different configured client")
+}
+
+// TestSPIFFEStorageDecoratorPlaceholderIdentityRoundTripThroughRedis proves
+// staticClientPlaceholder's identity fingerprint survives a real Redis
+// round-trip (buildStoredClient -> storedClient.IdentityFingerprint ->
+// clientFromStored), not just the in-process placeholder value, mirroring
+// TestSPIFFEStorageDecoratorPlaceholderResourcesRoundTripThroughRedis.
+func TestSPIFFEStorageDecoratorPlaceholderIdentityRoundTripThroughRedis(t *testing.T) {
+	t.Parallel()
+	ctx := context.Background()
+	raw, mr := newTestRedisStorage(t)
+	t.Cleanup(func() { _ = raw.Close(); mr.Close() })
+
+	client := testSPIFFEClientWithIdentity(t, "identity-a")
+	require.NoError(t, PreflightSPIFFEStaticClientCollisions(ctx, raw, map[string]fosite.Client{client.GetID(): client}))
+
+	readBack, err := raw.GetClient(ctx, "spiffe-client")
+	require.NoError(t, err)
+	identity, ok := readBack.(spiffeIdentityClient)
+	require.True(t, ok, "placeholder read back from raw Redis storage must still expose IdentityFingerprint()")
+	assert.Equal(t, "identity-a", identity.IdentityFingerprint())
 }
 
 // TestSPIFFEStorageDecoratorPlaceholderNoResourcesStillIdempotent pins the

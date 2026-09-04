@@ -194,8 +194,9 @@ type storedClient struct {
 	// interface check alone so buildStoredClient's write and clientFromStored's
 	// read stay symmetric by construction. Nil for every other client shape,
 	// and omitted from the JSON encoding in that case.
-	Resources []string `json:"resources,omitempty"`
-	Public    bool     `json:"public"`
+	Resources           []string `json:"resources,omitempty"`
+	IdentityFingerprint string   `json:"identity_fingerprint,omitempty"`
+	Public              bool     `json:"public"`
 	// TokenEndpointAuthMethod is the auth method registered for the client
 	// ("none", "client_secret_basic", "client_secret_post"). Empty means the
 	// row predates confidential-client support; see GetClient for how legacy
@@ -317,7 +318,8 @@ func clientFromStored(stored storedClient, hasTTL bool) fosite.Client {
 				Audience: stored.Audience,
 				Public:   false,
 			},
-			resources: stored.Resources,
+			resources:           stored.Resources,
+			identityFingerprint: stored.IdentityFingerprint,
 		}
 	}
 
@@ -379,13 +381,17 @@ func buildStoredClient(client fosite.Client) storedClient {
 		Public:        client.IsPublic(),
 	}
 	stored.Reserved = isReservedPlaceholder(client)
-	// Resources is only ever restored on read for a Reserved row (see
-	// clientFromStored); gating the write the same way keeps the two
-	// symmetric by construction instead of relying on every
-	// resourceScopedClient implementation always being Reserved.
+	// Resources and IdentityFingerprint are only ever restored on read for a
+	// Reserved row (see clientFromStored); gating the write the same way
+	// keeps the two symmetric by construction instead of relying on every
+	// resourceScopedClient/spiffeIdentityClient implementation always being
+	// Reserved.
 	if stored.Reserved {
 		if rc, ok := client.(resourceScopedClient); ok {
 			stored.Resources = rc.Resources()
+		}
+		if identity, ok := client.(spiffeIdentityClient); ok {
+			stored.IdentityFingerprint = identity.IdentityFingerprint()
 		}
 	}
 	if oidcClient, ok := client.(fosite.OpenIDConnectClient); ok {
@@ -526,12 +532,13 @@ func (s *RedisStorage) UpsertDCRIssuedClient(ctx context.Context, client fosite.
 // directly sidesteps that defaulting entirely.
 func (s storedClient) fingerprint() clientFingerprint {
 	return clientFingerprint{
-		scopes:        s.Scopes,
-		audience:      s.Audience,
-		grantTypes:    s.GrantTypes,
-		responseTypes: s.ResponseTypes,
-		resources:     s.Resources,
-		public:        s.Public,
+		scopes:              s.Scopes,
+		audience:            s.Audience,
+		grantTypes:          s.GrantTypes,
+		responseTypes:       s.ResponseTypes,
+		resources:           s.Resources,
+		identityFingerprint: s.IdentityFingerprint,
+		public:              s.Public,
 	}
 }
 

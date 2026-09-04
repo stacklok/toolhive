@@ -4,7 +4,10 @@
 package authserver
 
 import (
+	"crypto/sha256"
+	"encoding/hex"
 	"fmt"
+	"slices"
 
 	"github.com/ory/fosite"
 
@@ -45,7 +48,19 @@ func NewSPIFFEAssociationRegistry(trust *SPIFFETrustConfig) (*SPIFFEAssociationR
 	return registry, nil
 }
 
-// staticClients builds immutable OAuth clients for all configured associations.
+// spiffeStaticClient embeds the concrete *registration.SPIFFEClient (not the
+// fosite.Client interface) so that embedding still promotes Resources() and
+// the BackChannelOnlyMarker -- an interface embedding would silently drop
+// both, since neither is part of the fosite.Client method set.
+type spiffeStaticClient struct {
+	*registration.SPIFFEClient
+	identityFingerprint string
+}
+
+func (c spiffeStaticClient) IdentityFingerprint() string { return c.identityFingerprint }
+
+// staticClients builds immutable OAuth clients and their association identity for
+// durable placeholder reconciliation.
 func (r *SPIFFEAssociationRegistry) staticClients() (map[string]fosite.Client, error) {
 	if r == nil {
 		return nil, nil
@@ -59,7 +74,42 @@ func (r *SPIFFEAssociationRegistry) staticClients() (map[string]fosite.Client, e
 		if err != nil {
 			return nil, fmt.Errorf("SPIFFE client %q: %w", clientID, err)
 		}
-		clients[clientID] = client
+		clients[clientID] = spiffeStaticClient{
+			SPIFFEClient:        client,
+			identityFingerprint: fingerprintSPIFFEAssociation(association),
+		}
 	}
 	return clients, nil
+}
+
+// fingerprintSPIFFEAssociation hashes the SPIFFE association identity (trust
+// domain reference, principal pattern, and accepted methods) so two
+// associations with a differing identity durably reconcile as different
+// clients rather than being silently accepted as the same one. Each value is
+// length-prefixed with an unambiguous decimal-and-colon marker so
+// concatenation can't alias two different value sequences to the same hash,
+// and methods are sorted first so their original order never affects the
+// result.
+//
+// Note: TrustDomainRef() hashes the trust-domain *reference name* (e.g.
+// "production"), not the trust domain value itself. In practice this doesn't
+// weaken the fingerprint because a principal pattern always embeds its trust
+// domain, so a genuine trust-domain difference still changes the hash via the
+// principal -- but repointing a trust domain ref's bundle source to a
+// different CA while keeping the same ref name and trust domain would not be
+// detected by this fingerprint alone.
+func fingerprintSPIFFEAssociation(association SPIFFEClientAuthConfig) string {
+	hash := sha256.New()
+	write := func(value string) {
+		_, _ = fmt.Fprintf(hash, "%d:", len(value))
+		_, _ = hash.Write([]byte(value))
+	}
+	write(association.TrustDomainRef())
+	write(association.Principal())
+	methods := association.Methods()
+	slices.Sort(methods)
+	for _, method := range methods {
+		write(string(method))
+	}
+	return hex.EncodeToString(hash.Sum(nil))
 }

@@ -94,6 +94,14 @@ type resourceScopedClient interface {
 	Resources() []string
 }
 
+// spiffeIdentityClient is implemented by fosite.Client types (e.g.
+// spiffeStaticClient) that carry a durable SPIFFE association identity
+// fingerprint independent of OAuth policy. Mirrors resourceScopedClient's
+// structural-matching pattern above.
+type spiffeIdentityClient interface {
+	IdentityFingerprint() string
+}
+
 // inertPlaceholderClient wraps a *fosite.DefaultClient to suppress its
 // implicit defaulting: fosite.DefaultClient.GetGrantTypes and
 // GetResponseTypes each return a single-element default
@@ -118,7 +126,8 @@ type resourceScopedClient interface {
 type inertPlaceholderClient struct {
 	registration.BackChannelOnlyMarker
 	*fosite.DefaultClient
-	resources []string
+	resources           []string
+	identityFingerprint string
 }
 
 func (inertPlaceholderClient) GetGrantTypes() fosite.Arguments    { return nil }
@@ -130,6 +139,8 @@ func (inertPlaceholderClient) GetResponseTypes() fosite.Arguments { return nil }
 // Returns a defensive copy, matching SPIFFEClient.Resources and
 // SPIFFEAuthorizationPolicy.Resources.
 func (c inertPlaceholderClient) Resources() []string { return slices.Clone(c.resources) }
+
+func (c inertPlaceholderClient) IdentityFingerprint() string { return c.identityFingerprint }
 
 // isReservedPlaceholder reports whether client is a staticClientPlaceholder
 // value, letting buildStoredClient (redis.go) mark the persisted row so
@@ -150,10 +161,11 @@ func isReservedPlaceholder(client fosite.Client) bool {
 // server registers, and it carries no secret. This guarantee holds on every
 // backend, including a bare read-back from Redis by a replica with no SPIFFE
 // overlay — see inertPlaceholderClient and storedClient.Reserved. It keeps
-// the real client's Scopes, Audience, and (RFC 8707) Resources so the
-// fingerprint comparison in ReconcileConfiguredClient can distinguish "same
-// association, restarted" (idempotent) from "different, colliding
-// association at this ID" (a loud failure).
+// the real client's Scopes, Audience, (RFC 8707) Resources, and SPIFFE
+// association identity fingerprint so the fingerprint comparison in
+// ReconcileConfiguredClient can distinguish "same association, restarted"
+// (idempotent) from "different, colliding association at this ID" (a loud
+// failure).
 // Scopes and Audience are taken directly from actual.GetScopes() /
 // GetAudience() without an extra defensive clone here: the only production
 // caller (registration.SPIFFEClient) already returns a fresh slice.Clone
@@ -162,8 +174,12 @@ func isReservedPlaceholder(client fosite.Client) bool {
 // resourceScopedClient; a client that doesn't (falls back to nil).
 func staticClientPlaceholder(actual fosite.Client) fosite.Client {
 	var resources []string
+	var identityFingerprint string
 	if rc, ok := actual.(resourceScopedClient); ok {
 		resources = rc.Resources()
+	}
+	if identity, ok := actual.(spiffeIdentityClient); ok {
+		identityFingerprint = identity.IdentityFingerprint()
 	}
 	return inertPlaceholderClient{
 		DefaultClient: &fosite.DefaultClient{
@@ -172,7 +188,8 @@ func staticClientPlaceholder(actual fosite.Client) fosite.Client {
 			Audience: actual.GetAudience(),
 			Public:   false,
 		},
-		resources: resources,
+		resources:           resources,
+		identityFingerprint: identityFingerprint,
 	}
 }
 

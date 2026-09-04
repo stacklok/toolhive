@@ -203,7 +203,9 @@ func TestClientFingerprintFieldsAreJustified(t *testing.T) {
 		"grantTypes":    "a different grant-type set is a different logical client capability",
 		"responseTypes": "a different response-type set is a different logical client capability",
 		"resources":     "a different RFC 8707 resource allowlist is a different logical client authorization",
-		"public":        "public vs. confidential is a different logical client class",
+		"identityFingerprint": "a different SPIFFE association identity (trust domain, principal, methods) " +
+			"behind the same client ID is a different logical client authorization",
+		"public": "public vs. confidential is a different logical client class",
 	}
 
 	var gotFields []string
@@ -223,12 +225,13 @@ func TestClientFingerprintFieldsAreJustified(t *testing.T) {
 		gotFields)
 
 	base := clientFingerprint{
-		scopes:        []string{"scope-a"},
-		audience:      []string{"audience-a"},
-		grantTypes:    []string{"grant-a"},
-		responseTypes: []string{"response-a"},
-		resources:     []string{"resource-a"},
-		public:        false,
+		scopes:              []string{"scope-a"},
+		audience:            []string{"audience-a"},
+		grantTypes:          []string{"grant-a"},
+		responseTypes:       []string{"response-a"},
+		resources:           []string{"resource-a"},
+		identityFingerprint: "identity-a",
+		public:              false,
 	}
 
 	for name := range justifications {
@@ -247,6 +250,8 @@ func TestClientFingerprintFieldsAreJustified(t *testing.T) {
 				other.responseTypes = []string{"response-b"}
 			case "resources":
 				other.resources = []string{"resource-b"}
+			case "identityFingerprint":
+				other.identityFingerprint = "identity-b"
 			case "public":
 				other.public = !base.public
 			default:

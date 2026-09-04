@@ -636,8 +636,9 @@ type clientFingerprint struct {
 	// every other field but differing in their resource allowlist are
 	// different logical clients -- this is the field #6473's review found
 	// missing from the SPIFFE static-client placeholder's durable identity.
-	resources []string
-	public    bool
+	resources           []string
+	identityFingerprint string
+	public              bool
 }
 
 // equal reports whether f and o represent the same logical client
@@ -649,6 +650,7 @@ func (f clientFingerprint) equal(o clientFingerprint) bool {
 		sameStringSet(f.grantTypes, o.grantTypes) &&
 		sameStringSet(f.responseTypes, o.responseTypes) &&
 		sameStringSet(f.resources, o.resources) &&
+		f.identityFingerprint == o.identityFingerprint &&
 		f.public == o.public
 }
 
@@ -660,16 +662,21 @@ func (f clientFingerprint) equal(o clientFingerprint) bool {
 // and buildStoredClient use.
 func fingerprintOfClient(c fosite.Client) clientFingerprint {
 	var resources []string
+	var identityFingerprint string
 	if rc, ok := c.(resourceScopedClient); ok {
 		resources = rc.Resources()
 	}
+	if identity, ok := c.(spiffeIdentityClient); ok {
+		identityFingerprint = identity.IdentityFingerprint()
+	}
 	return clientFingerprint{
-		scopes:        c.GetScopes(),
-		audience:      c.GetAudience(),
-		grantTypes:    c.GetGrantTypes(),
-		responseTypes: c.GetResponseTypes(),
-		resources:     resources,
-		public:        c.IsPublic(),
+		scopes:              c.GetScopes(),
+		audience:            c.GetAudience(),
+		grantTypes:          c.GetGrantTypes(),
+		responseTypes:       c.GetResponseTypes(),
+		resources:           resources,
+		identityFingerprint: identityFingerprint,
+		public:              c.IsPublic(),
 	}
 }
 

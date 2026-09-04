@@ -16,7 +16,6 @@ import (
 	"github.com/stacklok/toolhive-core/mcpcompat/server"
 	"github.com/stacklok/toolhive/pkg/vmcp"
 	"github.com/stacklok/toolhive/pkg/vmcp/health"
-	"github.com/stacklok/toolhive/pkg/vmcp/optimizer"
 	vmcpsession "github.com/stacklok/toolhive/pkg/vmcp/session"
 )
 
@@ -156,32 +155,41 @@ func TestResyncSessionsOnBackendHealthChange_CoalescesBurst(t *testing.T) {
 		"a burst of deliveries must coalesce instead of re-deriving once per delivery")
 }
 
-// TestResyncSessionsOnBackendHealthChange_OptimizerModeIsNoOp verifies the
-// #5786 PR1 passthrough-only gate: with the optimizer enabled the fan-out does
-// nothing (rebuilding the optimizer's backing index is deferred to the
-// optimizer-mode follow-up).
-func TestResyncSessionsOnBackendHealthChange_OptimizerModeIsNoOp(t *testing.T) {
+// TestResyncSessionsOnBackendHealthChange_OptimizerModeReindexesQuietly
+// verifies the #5786 PR2 behavior that replaces PR1's optimizer-mode no-op:
+// the fan-out DOES reach an optimizer-mode session (its index is rebuilt over
+// the current health-filtered core set) but must NOT rewrite the session's
+// advertised tool store — find_tool/call_tool are the only advertised names and
+// they do not change on a health flip, so re-applying them would emit a
+// downstream notifications/tools/list_changed carrying no news.
+func TestResyncSessionsOnBackendHealthChange_OptimizerModeReindexesQuietly(t *testing.T) {
 	t.Parallel()
 
 	fc := &fakeCore{tools: []vmcp.Tool{{Name: "t"}}}
+	factory := &recordingOptimizerFactory{}
 	srv := &Server{
-		core:           fc,
-		vmcpSessionMgr: &stubSessionManager{alive: true},
-		resyncBaseCtx:  context.Background(),
-		optimizerFactory: func(context.Context, []server.ServerTool) (optimizer.Optimizer, error) {
-			panic("optimizer factory must not be invoked by the health-change fan-out")
-		},
+		core:             &healthEnabledCore{fakeCore: fc, reporter: newTestHealthReporter(t)},
+		vmcpSessionMgr:   &stubSessionManager{alive: true},
+		resyncBaseCtx:    context.Background(),
+		optimizerFactory: factory.build,
 	}
+
+	// Give the session a registered optimizer handle, as registration does.
 	sess := &fakeToolsSession{id: "sess-1"}
+	_, err := srv.serveSessionTools(context.Background(), "sess-1", nil)
+	require.NoError(t, err)
+	buildsAfterRegistration := factory.calls.Load()
 	_, toolsWorker := srv.buildListChangedSink("sess-1", sess, nil, nil)
 	srv.healthResync.add("sess-1", toolsWorker)
 
 	srv.resyncSessionsOnBackendHealthChange(1)
 
-	// Synchronous no-op: nothing was triggered, so no async work to wait out.
-	assert.Equal(t, int32(0), fc.listToolsCalls.Load())
-	assert.Equal(t, 0, sess.setToolsCalls())
-	assert.Equal(t, int32(0), fc.invalidateCacheCalls.Load())
+	require.Eventually(t, func() bool { return factory.calls.Load() > buildsAfterRegistration },
+		2*time.Second, 10*time.Millisecond, "health change must rebuild the session's optimizer index")
+	require.Eventually(t, func() bool { return fc.listToolsCalls.Load() >= 1 },
+		2*time.Second, 10*time.Millisecond, "re-index must re-derive the core tool set")
+	assert.Equal(t, 0, sess.setToolsCalls(),
+		"optimizer mode must not rewrite the session tool store (no spurious tools/list_changed)")
 }
 
 // TestResyncSessionsOnBackendHealthChange_PrunesDeadSession verifies the lazy
@@ -294,22 +302,11 @@ func (c *healthEnabledCore) BackendHealth() health.Reporter { return c.reporter 
 func TestHandleSessionRegistration_HealthResyncRegistrationGate(t *testing.T) {
 	t.Parallel()
 
-	newReporter := func(t *testing.T) health.Reporter {
-		t.Helper()
-		mon, err := health.NewMonitor(nil, nil, health.MonitorConfig{
-			CheckInterval:      time.Minute,
-			UnhealthyThreshold: 1,
-			Timeout:            time.Second,
-		})
-		require.NoError(t, err)
-		return mon
-	}
-
 	t.Run("health monitoring enabled registers the session", func(t *testing.T) {
 		t.Parallel()
 
 		srv := &Server{
-			core:           &healthEnabledCore{fakeCore: &fakeCore{}, reporter: newReporter(t)},
+			core:           &healthEnabledCore{fakeCore: &fakeCore{}, reporter: newTestHealthReporter(t)},
 			vmcpSessionMgr: &registrationStubSessionManager{},
 			resyncBaseCtx:  context.Background(),
 		}
@@ -355,4 +352,18 @@ func TestHealthResyncRegistry_AddRemoveSnapshot(t *testing.T) {
 
 	r.remove("missing") // no-op
 	assert.Len(t, r.snapshot(), 1)
+}
+
+// newTestHealthReporter returns a real (unstarted) Monitor to stand in as an
+// enabled health reporter: the code under test only checks that
+// core.BackendHealth() is non-nil, never that the monitor is running.
+func newTestHealthReporter(t *testing.T) health.Reporter {
+	t.Helper()
+	mon, err := health.NewMonitor(nil, nil, health.MonitorConfig{
+		CheckInterval:      time.Minute,
+		UnhealthyThreshold: 1,
+		Timeout:            time.Second,
+	})
+	require.NoError(t, err)
+	return mon
 }

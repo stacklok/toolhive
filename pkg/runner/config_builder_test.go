@@ -1542,6 +1542,50 @@ func TestWithSessionTTL(t *testing.T) {
 	}
 }
 
+func TestWithMaxRequestBodySize(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name             string
+		maxBytes         int64
+		expectErr        bool
+		expectedMaxBytes int64
+	}{
+		{
+			name:             "zero is accepted and uses the middleware default",
+			maxBytes:         0,
+			expectedMaxBytes: 0,
+		},
+		{
+			name:             "positive size is stored",
+			maxBytes:         16 << 20,
+			expectedMaxBytes: 16 << 20,
+		},
+		{
+			name:      "negative size returns an error",
+			maxBytes:  -1,
+			expectErr: true,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			builder := &runConfigBuilder{config: NewRunConfig()}
+			err := WithMaxRequestBodySize(tt.maxBytes)(builder)
+
+			if tt.expectErr {
+				require.Error(t, err)
+				assert.Contains(t, err.Error(), "max-request-body-size must be non-negative")
+				return
+			}
+			require.NoError(t, err)
+			assert.Equal(t, tt.expectedMaxBytes, builder.config.MaxRequestBodySize)
+		})
+	}
+}
+
 // TestWithStrictProtocolValidation verifies the builder option sets
 // RunConfig.StrictProtocolValidation, mirroring WithTrustProxyHeaders's
 // plumbing (see cmd/thv/app/run_flags.go's --strict-protocol-validation flag).

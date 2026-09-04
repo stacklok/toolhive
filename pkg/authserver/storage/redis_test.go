@@ -683,6 +683,33 @@ func TestRedisStorage_DCRClientTTL(t *testing.T) {
 	})
 }
 
+// TestClientFingerprint_StoredAndReconstructedAgree builds a storedClient by
+// hand and the fosite.Client it round-trips to via clientFromStored, then
+// asserts their fingerprints agree. This is the stronger companion to
+// TestClientFingerprintFieldsAreJustified (types_test.go): the field-name
+// canary only catches a field left out of clientFingerprint entirely, not one
+// wired to the wrong source. If, say, fingerprintOfClient read GetAudience()
+// into the responseTypes slot, the canary would still pass but this test
+// would fail, because a fully-populated stored row's live-client fingerprint
+// would then have a mismatched responseTypes value.
+func TestClientFingerprint_StoredAndReconstructedAgree(t *testing.T) {
+	t.Parallel()
+
+	stored := storedClient{
+		ID:            "configured",
+		Scopes:        []string{"openid", "profile"},
+		Audience:      []string{"https://mcp.example"},
+		GrantTypes:    []string{oauthproto.GrantTypeTokenExchange},
+		ResponseTypes: []string{"token"},
+		Public:        false,
+	}
+
+	rebuilt := clientFromStored(stored, false)
+
+	assert.True(t, fingerprintOfClient(rebuilt).equal(stored.fingerprint()),
+		"a storedClient's fingerprint must agree with the fingerprint of the fosite.Client it reconstructs to")
+}
+
 // TestRedisStorage_ReconcileConfiguredClient covers the create/idempotent/
 // reject matrix ReconcileConfiguredClient must implement over Redis: create
 // when absent (no TTL), no-op when the existing record is itself configured

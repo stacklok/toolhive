@@ -533,7 +533,7 @@ func (s *MemoryStorage) ReconcileConfiguredClient(_ context.Context, client fosi
 		return fmt.Errorf("%w: client %q is DCR-issued, refusing to overwrite with a configured client",
 			ErrAlreadyExists, id)
 	}
-	if !clientFingerprintsEqual(existing, client) {
+	if !fingerprintOfClient(existing).equal(fingerprintOfClient(client)) {
 		return fmt.Errorf("%w: client %q is already registered as a different configured client",
 			ErrAlreadyExists, id)
 	}

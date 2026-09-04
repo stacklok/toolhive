@@ -610,18 +610,52 @@ func sameStringSet(a, b []string) bool {
 	return slices.Equal(as, bs)
 }
 
-// clientFingerprintsEqual reports whether a and b represent the same logical
-// client configuration: equal scope set, audience set, grant-type set,
-// response-type set, and public/confidential class. Client secrets are
-// deliberately excluded from the comparison — an operator rotating a
-// configured client's secret must still be able to reconcile; a secret
-// rotation is not a different logical client.
-func clientFingerprintsEqual(a, b fosite.Client) bool {
-	return sameStringSet(a.GetScopes(), b.GetScopes()) &&
-		sameStringSet(a.GetAudience(), b.GetAudience()) &&
-		sameStringSet(a.GetGrantTypes(), b.GetGrantTypes()) &&
-		sameStringSet(a.GetResponseTypes(), b.GetResponseTypes()) &&
-		a.IsPublic() == b.IsPublic()
+// clientFingerprint is the identity of a configured client registration: the
+// fields that decide whether two records at the same client ID are the same
+// logical client (idempotent restart) or two different colliding ones (a loud
+// failure). Client secrets are deliberately excluded -- an operator rotating a
+// secret must still be able to reconcile. TokenEndpointAuthMethod is excluded
+// for the same reason -- both memory.go and redis.go fully overwrite the
+// stored record on a fingerprint match rather than merging, so a match never
+// "keeps stale data": reconfiguring either field is always applied on the
+// next reconcile regardless of whether the fingerprint matched.
+//
+// Deliberately NOT fosite.Client: fosite.DefaultClient's GetGrantTypes/
+// GetResponseTypes substitute an interactive default when the underlying list
+// is empty, so a deliberately-empty SPIFFE placeholder compared through that
+// interface can mismatch itself. Each backend converts its own representation
+// into this type; the comparison exists once, so memory- and Redis-backed
+// deployments cannot disagree about what "same client" means.
+type clientFingerprint struct {
+	scopes        []string
+	audience      []string
+	grantTypes    []string
+	responseTypes []string
+	public        bool
+}
+
+// equal reports whether f and o represent the same logical client
+// configuration: equal scope set, audience set, grant-type set,
+// response-type set, and public/confidential class.
+func (f clientFingerprint) equal(o clientFingerprint) bool {
+	return sameStringSet(f.scopes, o.scopes) &&
+		sameStringSet(f.audience, o.audience) &&
+		sameStringSet(f.grantTypes, o.grantTypes) &&
+		sameStringSet(f.responseTypes, o.responseTypes) &&
+		f.public == o.public
+}
+
+// fingerprintOfClient reads a live fosite.Client. Safe here because a
+// deliberately-empty client is the live inertPlaceholderClient, whose
+// overridden getters correctly return nil on both sides of the comparison.
+func fingerprintOfClient(c fosite.Client) clientFingerprint {
+	return clientFingerprint{
+		scopes:        c.GetScopes(),
+		audience:      c.GetAudience(),
+		grantTypes:    c.GetGrantTypes(),
+		responseTypes: c.GetResponseTypes(),
+		public:        c.IsPublic(),
+	}
 }
 
 // ClientRegistry provides client registration and lookup operations.

@@ -2256,7 +2256,7 @@ func TestEmbeddedAuthServer_SPIFFEAssociationDoesNotAuthenticateClient(t *testin
 	// secret and not a public client, so it can never pass client
 	// authentication for any grant. (fosite.DefaultClient.GetGrantTypes
 	// applies its own single-grant default when the underlying field reads
-	// back empty from Redis — see storedClientFingerprintsEqual in redis.go
+	// back empty from Redis — see clientFromStored in redis.go
 	// — so the "no grant types" property is asserted directly against
 	// MemoryStorage in storage/spiffe_decorator_test.go instead of here.)
 	claimed, err := redisStorage.GetClient(context.Background(), "spiffe-client")

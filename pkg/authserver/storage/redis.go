@@ -496,23 +496,23 @@ func (s *RedisStorage) UpsertDCRIssuedClient(ctx context.Context, client fosite.
 	return watchErr
 }
 
-// storedClientFingerprintsEqual mirrors clientFingerprintsEqual but compares
-// the raw serialized fields directly rather than through the fosite.Client
-// interface returned by clientFromStored. This matters because
-// fosite.DefaultClient.GetGrantTypes and GetResponseTypes each silently
-// substitute a single-element default (["authorization_code"] / ["code"])
-// whenever the underlying field is empty (see clientFromStored) — comparing
-// through the reconstructed client would report a false mismatch between
-// two rows that both deliberately carry no grant/response types, such as
-// the SPIFFE static-client placeholder in spiffe_decorator.go reconciling
-// against itself. Comparing the stored bytes directly sidesteps that
-// defaulting entirely.
-func storedClientFingerprintsEqual(a, b storedClient) bool {
-	return sameStringSet(a.Scopes, b.Scopes) &&
-		sameStringSet(a.Audience, b.Audience) &&
-		sameStringSet(a.GrantTypes, b.GrantTypes) &&
-		sameStringSet(a.ResponseTypes, b.ResponseTypes) &&
-		a.Public == b.Public
+// fingerprint reads the persisted fields directly rather than going through
+// clientFromStored. This matters because fosite.DefaultClient.GetGrantTypes
+// and GetResponseTypes each silently substitute a single-element default
+// (["authorization_code"] / ["code"]) whenever the underlying field is empty
+// (see clientFromStored) — comparing through the reconstructed client would
+// report a false mismatch between two rows that both deliberately carry no
+// grant/response types, such as the SPIFFE static-client placeholder in
+// spiffe_decorator.go reconciling against itself. Reading the stored fields
+// directly sidesteps that defaulting entirely.
+func (s storedClient) fingerprint() clientFingerprint {
+	return clientFingerprint{
+		scopes:        s.Scopes,
+		audience:      s.Audience,
+		grantTypes:    s.GrantTypes,
+		responseTypes: s.ResponseTypes,
+		public:        s.Public,
+	}
 }
 
 // maxConfiguredClientReconcileRetries bounds the retry loop
@@ -588,12 +588,12 @@ func (s *RedisStorage) ReconcileConfiguredClient(ctx context.Context, client fos
 		// raw existingStored.DCRIssued field) so it inherits clientFromStored's
 		// legacy-row compensation for rows written before the DCRIssued field
 		// existed. The fingerprint comparison below deliberately does NOT go
-		// through the reconstructed client — see storedClientFingerprintsEqual.
+		// through the reconstructed client — see storedClient.fingerprint.
 		if registration.DCRIssued(clientFromStored(existingStored, ttl >= 0)) {
 			return fmt.Errorf("%w: client %q is DCR-issued, refusing to overwrite with a configured client",
 				ErrAlreadyExists, client.GetID())
 		}
-		if !storedClientFingerprintsEqual(existingStored, stored) {
+		if !existingStored.fingerprint().equal(stored.fingerprint()) {
 			return fmt.Errorf("%w: client %q is already registered as a different configured client",
 				ErrAlreadyExists, client.GetID())
 		}

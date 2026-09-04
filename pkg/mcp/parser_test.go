@@ -401,6 +401,27 @@ func TestExtractResourceAndArguments(t *testing.T) {
 			},
 		},
 		{
+			name:               "skills/get with exact URI",
+			method:             "skills/get",
+			params:             `{"uri":"mcp://example/skill?version=1"}`,
+			expectedResourceID: "mcp://example/skill?version=1",
+			expectedArguments:  nil,
+		},
+		{
+			name:               "skills/get with non-string URI",
+			method:             "skills/get",
+			params:             `{"uri":42}`,
+			expectedResourceID: "",
+			expectedArguments:  nil,
+		},
+		{
+			name:               "skills/list with cursor",
+			method:             "skills/list",
+			params:             `{"cursor":"next-page"}`,
+			expectedResourceID: "next-page",
+			expectedArguments:  nil,
+		},
+		{
 			name:               "resources/read with URI",
 			method:             "resources/read",
 			params:             `{"uri":"file:///test.txt"}`,

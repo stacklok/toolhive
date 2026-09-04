@@ -521,12 +521,13 @@ func (rfw *ResponseFilteringWriter) filterSSEEventData(data []byte) (replacement
 }
 
 // requiresResponseFiltering reports whether the method needs response filtering.
-// This covers the three MCP list operations and the optimizer's find_tool call,
+// This covers the MCP list operations and the optimizer's find_tool call,
 // whose response embeds a filtered tool list inside a CallToolResult.
 func requiresResponseFiltering(method string) bool {
 	return method == string(mcp.MethodToolsList) ||
 		method == string(mcp.MethodPromptsList) ||
 		method == string(mcp.MethodResourcesList) ||
+		method == "skills/list" ||
 		method == optimizerdec.FindToolName
 }
 
@@ -656,6 +657,8 @@ func (rfw *ResponseFilteringWriter) filterListResponse(response *jsonrpc2.Respon
 		return rfw.filterPromptsResponse(response)
 	case string(mcp.MethodResourcesList):
 		return rfw.filterResourcesResponse(response)
+	case "skills/list":
+		return rfw.filterSkillsResponse(response)
 	case optimizerdec.FindToolName:
 		return rfw.filterFindToolResponse(response)
 	default:
@@ -844,6 +847,79 @@ func (rfw *ResponseFilteringWriter) filterResourcesResponse(response *jsonrpc2.R
 	}
 
 	return filteredResponse, nil
+}
+
+// filterSkillsResponse filters skills/list entries by get_skill authorization.
+// It retains each permitted entry as its original JSON value and preserves all
+// result-level fields, including SEP extension fields the proxy does not own.
+func (rfw *ResponseFilteringWriter) filterSkillsResponse(response *jsonrpc2.Response) (*jsonrpc2.Response, error) {
+	var result map[string]json.RawMessage
+	if err := json.Unmarshal(response.Result, &result); err != nil {
+		return nil, fmt.Errorf("invalid skills/list result: %w", err)
+	}
+
+	rawSkills, ok := result["skills"]
+	if !ok {
+		return nil, errors.New("skills/list result is missing skills")
+	}
+	if !bytes.HasPrefix(bytes.TrimSpace(rawSkills), []byte("[")) {
+		return nil, errors.New("skills/list skills is not an array")
+	}
+	var entries []json.RawMessage
+	if err := json.Unmarshal(rawSkills, &entries); err != nil {
+		return nil, fmt.Errorf("invalid skills/list skills: %w", err)
+	}
+
+	permitted := make([]json.RawMessage, 0, len(entries))
+	for _, entry := range entries {
+		allowed, err := rfw.isSkillEntryAllowed(entry)
+		if err != nil {
+			return nil, err
+		}
+		if allowed {
+			permitted = append(permitted, entry)
+		}
+	}
+
+	filteredSkills, err := json.Marshal(permitted)
+	if err != nil {
+		return nil, fmt.Errorf("encode filtered skills: %w", err)
+	}
+	result["skills"] = filteredSkills
+	filteredResult, err := json.Marshal(result)
+	if err != nil {
+		return nil, fmt.Errorf("encode filtered skills/list result: %w", err)
+	}
+	return &jsonrpc2.Response{ID: response.ID, Result: json.RawMessage(filteredResult)}, nil
+}
+
+// isSkillEntryAllowed validates one opaque skills/list entry and checks its get_skill policy.
+func (rfw *ResponseFilteringWriter) isSkillEntryAllowed(entry json.RawMessage) (bool, error) {
+	duplicateURI, err := hasDuplicateURI(entry)
+	if err != nil || duplicateURI {
+		return false, errors.New("skill entry has a duplicate uri")
+	}
+	var skill map[string]json.RawMessage
+	if err := json.Unmarshal(entry, &skill); err != nil {
+		return false, fmt.Errorf("invalid skill entry: %w", err)
+	}
+	rawURI, ok := skill["uri"]
+	if !ok {
+		return false, errors.New("skill entry is missing uri")
+	}
+	var uri string
+	if err := json.Unmarshal(rawURI, &uri); err != nil || uri == "" {
+		return false, errors.New("skill entry has an invalid uri")
+	}
+
+	authorized, err := rfw.authorizer.AuthorizeWithJWTClaims(
+		rfw.request.Context(), authorizers.MCPFeatureSkill, authorizers.MCPOperationGet, uri, nil,
+	)
+	if err != nil {
+		slog.Warn("authorization check failed for skill, skipping", "uri", uri, "error", err)
+		return false, nil
+	}
+	return authorized, nil
 }
 
 // errorResponseBody logs the full filtering error server-side and encodes a

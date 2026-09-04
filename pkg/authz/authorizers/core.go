@@ -8,10 +8,11 @@ import (
 )
 
 // MCPFeature represents an MCP feature type.
-// In the MCP protocol, there are three main features:
+// In the MCP protocol, ToolHive authorizes tools, prompts, resources, and skills.
 // - Tools: Allow models to call functions in external systems
 // - Prompts: Provide structured templates for interacting with language models
 // - Resources: Share data that provides context to language models
+// - Skills: Package reusable MCP capabilities
 type MCPFeature string
 
 const (
@@ -21,6 +22,8 @@ const (
 	MCPFeaturePrompt MCPFeature = "prompt"
 	// MCPFeatureResource represents the MCP resource feature.
 	MCPFeatureResource MCPFeature = "resource"
+	// MCPFeatureSkill represents the MCP skill feature.
+	MCPFeatureSkill MCPFeature = "skill"
 )
 
 // MCPOperation represents an operation on an MCP feature.

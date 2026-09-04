@@ -33,21 +33,31 @@ import (
 
 // stubAuthorizer is a minimal Authorizer for unit tests, avoiding Cedar setup overhead.
 type stubAuthorizer struct {
-	allowed    bool
-	err        error
-	lastToolID string
-	lastCtx    context.Context
+	allowed       bool
+	err           error
+	lastID        string
+	lastFeature   authorizers.MCPFeature
+	lastOperation authorizers.MCPOperation
+	lastCtx       context.Context
+	calls         int
+	authorize     func(authorizers.MCPFeature, authorizers.MCPOperation, string) (bool, error)
 }
 
 func (s *stubAuthorizer) AuthorizeWithJWTClaims(
 	ctx context.Context,
-	_ authorizers.MCPFeature,
-	_ authorizers.MCPOperation,
+	feature authorizers.MCPFeature,
+	operation authorizers.MCPOperation,
 	resourceID string,
 	_ map[string]interface{},
 ) (bool, error) {
-	s.lastToolID = resourceID
+	s.lastID = resourceID
+	s.lastFeature = feature
+	s.lastOperation = operation
 	s.lastCtx = ctx
+	s.calls++
+	if s.authorize != nil {
+		return s.authorize(feature, operation, resourceID)
+	}
 	return s.allowed, s.err
 }
 

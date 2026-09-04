@@ -1050,75 +1050,74 @@ func TestPopulateMiddlewareConfigs_BodyLimitIsOutermost(t *testing.T) {
 	}
 }
 
-// TestAddBodyLimitMiddleware verifies the shared helper that guarantees the
-// body-size-limit middleware is the outermost (index 0) entry of the chain. This
-// is the regression guard for the gap where pre-populated MiddlewareConfigs (e.g.
-// via WithMiddlewareFromFlags on the `thv run`/management API path) bypassed
-// PopulateMiddlewareConfigs and so never received a body cap.
+// TestAddBodyLimitMiddleware verifies the shared helper that guarantees exactly
+// one body-size-limit middleware at index 0 with the configured size. This is the
+// regression guard for pre-populated MiddlewareConfigs (for example, the CLI
+// flags path) bypassing or retaining a stale body-limit configuration.
 func TestAddBodyLimitMiddleware(t *testing.T) {
 	t.Parallel()
 
-	// authConfig builds a non-body-limit middleware config to seed pre-populated chains.
-	authConfig := func(t *testing.T) types.MiddlewareConfig {
+	middlewareConfig := func(t *testing.T, middlewareType string, parameters any) types.MiddlewareConfig {
 		t.Helper()
-		cfg, err := types.NewMiddlewareConfig(auth.MiddlewareType, auth.MiddlewareParams{})
+		cfg, err := types.NewMiddlewareConfig(middlewareType, parameters)
 		require.NoError(t, err)
 		return *cfg
 	}
 
 	tests := []struct {
-		name  string
-		input func(t *testing.T) []types.MiddlewareConfig
-		// assert receives the result and the (possibly nil) input for comparison.
-		assert func(t *testing.T, input, result []types.MiddlewareConfig)
+		name          string
+		maxBytes      int64
+		input         func(t *testing.T) []types.MiddlewareConfig
+		expectErr     bool
+		expectedTypes []string
+		expectedLimit int64
 	}{
 		{
-			name:  "empty slice gets body limit at index 0",
-			input: func(*testing.T) []types.MiddlewareConfig { return nil },
-			assert: func(t *testing.T, _, result []types.MiddlewareConfig) {
-				t.Helper()
-				require.Len(t, result, 1)
-				assert.Equal(t, bodylimit.MiddlewareType, result[0].Type)
-			},
+			name:          "zero uses default limit",
+			input:         func(*testing.T) []types.MiddlewareConfig { return nil },
+			expectedTypes: []string{bodylimit.MiddlewareType},
+			expectedLimit: bodylimit.DefaultMaxRequestBodySize,
 		},
 		{
-			name: "pre-populated slice without body limit gets it prepended (CLI/flags path)",
-			input: func(t *testing.T) []types.MiddlewareConfig {
-				t.Helper()
-				return []types.MiddlewareConfig{authConfig(t)}
-			},
-			assert: func(t *testing.T, input, result []types.MiddlewareConfig) {
-				t.Helper()
-				require.Len(t, result, 2)
-				assert.Equal(t, bodylimit.MiddlewareType, result[0].Type,
-					"body limit must be prepended as the outermost entry")
-				assert.Equal(t, input[0].Type, result[1].Type,
-					"original entries must follow body limit, in order")
-			},
+			name:          "positive size configures body limit at index zero",
+			maxBytes:      16 << 20,
+			input:         func(*testing.T) []types.MiddlewareConfig { return nil },
+			expectedTypes: []string{bodylimit.MiddlewareType},
+			expectedLimit: 16 << 20,
 		},
 		{
-			name: "slice already starting with body limit is unchanged (idempotent)",
+			name:      "negative size returns an error",
+			maxBytes:  -1,
+			input:     func(*testing.T) []types.MiddlewareConfig { return nil },
+			expectErr: true,
+		},
+		{
+			name:     "stale outermost body limit is replaced",
+			maxBytes: 32 << 20,
 			input: func(t *testing.T) []types.MiddlewareConfig {
 				t.Helper()
-				cfg, err := types.NewMiddlewareConfig(bodylimit.MiddlewareType, bodylimit.MiddlewareParams{
-					MaxBytes: bodylimit.DefaultMaxRequestBodySize,
-				})
-				require.NoError(t, err)
-				return []types.MiddlewareConfig{*cfg, authConfig(t)}
-			},
-			assert: func(t *testing.T, input, result []types.MiddlewareConfig) {
-				t.Helper()
-				require.Len(t, result, len(input), "no duplicate body limit should be added")
-				assert.Equal(t, bodylimit.MiddlewareType, result[0].Type)
-				// Exactly one body limit entry remains.
-				count := 0
-				for _, mw := range result {
-					if mw.Type == bodylimit.MiddlewareType {
-						count++
-					}
+				return []types.MiddlewareConfig{
+					middlewareConfig(t, bodylimit.MiddlewareType, bodylimit.MiddlewareParams{MaxBytes: 1}),
+					middlewareConfig(t, auth.MiddlewareType, auth.MiddlewareParams{}),
 				}
-				assert.Equal(t, 1, count, "body limit must not be duplicated")
 			},
+			expectedTypes: []string{bodylimit.MiddlewareType, auth.MiddlewareType},
+			expectedLimit: 32 << 20,
+		},
+		{
+			name:     "duplicates collapse and non-body-limit order is preserved",
+			maxBytes: 64 << 20,
+			input: func(t *testing.T) []types.MiddlewareConfig {
+				t.Helper()
+				return []types.MiddlewareConfig{
+					middlewareConfig(t, auth.MiddlewareType, auth.MiddlewareParams{}),
+					middlewareConfig(t, bodylimit.MiddlewareType, bodylimit.MiddlewareParams{MaxBytes: 1}),
+					middlewareConfig(t, recovery.MiddlewareType, struct{}{}),
+					middlewareConfig(t, bodylimit.MiddlewareType, bodylimit.MiddlewareParams{MaxBytes: 2}),
+				}
+			},
+			expectedTypes: []string{bodylimit.MiddlewareType, auth.MiddlewareType, recovery.MiddlewareType},
+			expectedLimit: 64 << 20,
 		},
 	}
 
@@ -1126,9 +1125,29 @@ func TestAddBodyLimitMiddleware(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
 			input := tt.input(t)
-			result, err := addBodyLimitMiddleware(input)
+			result, err := addBodyLimitMiddleware(input, tt.maxBytes)
+			if tt.expectErr {
+				require.Error(t, err)
+				assert.Contains(t, err.Error(), "max_request_body_size must be non-negative")
+				return
+			}
 			require.NoError(t, err)
-			tt.assert(t, input, result)
+			require.Len(t, result, len(tt.expectedTypes))
+			for i, expectedType := range tt.expectedTypes {
+				assert.Equal(t, expectedType, result[i].Type)
+			}
+
+			var params bodylimit.MiddlewareParams
+			require.NoError(t, json.Unmarshal(result[0].Parameters, &params))
+			assert.Equal(t, tt.expectedLimit, params.MaxBytes)
+
+			count := 0
+			for _, middleware := range result {
+				if middleware.Type == bodylimit.MiddlewareType {
+					count++
+				}
+			}
+			assert.Equal(t, 1, count, "body limit must occur exactly once")
 		})
 	}
 }

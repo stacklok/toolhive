@@ -530,6 +530,7 @@ const (
 	responseFilterPrompts
 	responseFilterResources
 	responseFilterResourceTemplates
+	responseFilterSkills
 	responseFilterFindTool
 )
 
@@ -547,6 +548,8 @@ func responseFilterForMethod(method string) responseFilterKind {
 		return responseFilterResources
 	case string(mcp.MethodResourcesTemplatesList):
 		return responseFilterResourceTemplates
+	case "skills/list":
+		return responseFilterSkills
 	case optimizerdec.FindToolName:
 		return responseFilterFindTool
 	default:
@@ -688,6 +691,8 @@ func (rfw *ResponseFilteringWriter) filterListResponse(response *jsonrpc2.Respon
 		return rfw.filterResourcesResponse(response)
 	case responseFilterResourceTemplates:
 		return rfw.filterResourceTemplatesResponse(response)
+	case responseFilterSkills:
+		return rfw.filterSkillsResponse(response)
 	case responseFilterFindTool:
 		return rfw.filterFindToolResponse(response)
 	case responseFilterNone:
@@ -1141,6 +1146,58 @@ func uniqueCanonicalMember(
 		found = true
 	}
 	return value, found, nil
+}
+
+// filterSkillsResponse filters skills/list entries by get_skill authorization.
+// It retains each permitted entry as its original JSON value and preserves all
+// result-level fields, including SEP extension fields the proxy does not own.
+func (rfw *ResponseFilteringWriter) filterSkillsResponse(response *jsonrpc2.Response) (*jsonrpc2.Response, error) {
+	if err := validateListResult(response.Result, "skills", "uri"); err != nil {
+		return nil, fmt.Errorf("validating skills list response: %w", err)
+	}
+
+	var result map[string]json.RawMessage
+	if err := json.Unmarshal(response.Result, &result); err != nil {
+		return nil, fmt.Errorf("decoding skills list response: %w", err)
+	}
+	var entries []json.RawMessage
+	if err := json.Unmarshal(result["skills"], &entries); err != nil {
+		return nil, fmt.Errorf("decoding skills: %w", err)
+	}
+
+	permitted := make([]json.RawMessage, 0, len(entries))
+	for _, entry := range entries {
+		var skill struct {
+			URI string `json:"uri"`
+		}
+		if err := json.Unmarshal(entry, &skill); err != nil {
+			return nil, fmt.Errorf("decoding skill entry: %w", err)
+		}
+		if skill.URI == "" {
+			return nil, errors.New("skill entry has an empty uri")
+		}
+		authorized, err := rfw.authorizer.AuthorizeWithJWTClaims(
+			rfw.request.Context(), authorizers.MCPFeatureSkill, authorizers.MCPOperationGet, skill.URI, nil,
+		)
+		if err != nil {
+			slog.Warn("authorization check failed for skill, skipping", "uri", skill.URI, "error", err)
+			continue
+		}
+		if authorized {
+			permitted = append(permitted, entry)
+		}
+	}
+
+	filteredSkills, err := json.Marshal(permitted)
+	if err != nil {
+		return nil, fmt.Errorf("encoding filtered skills: %w", err)
+	}
+	result["skills"] = filteredSkills
+	filteredResult, err := json.Marshal(result)
+	if err != nil {
+		return nil, fmt.Errorf("encoding filtered skills list result: %w", err)
+	}
+	return &jsonrpc2.Response{ID: response.ID, Result: json.RawMessage(filteredResult)}, nil
 }
 
 // errorResponseBody logs the full filtering error server-side and encodes a

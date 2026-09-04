@@ -389,7 +389,7 @@ func TestAddCoreMiddlewares_TokenExchangeIntegration(t *testing.T) {
 
 		var mws []types.MiddlewareConfig
 		// OIDC config can be empty for this unit test since we're only testing token-exchange behavior.
-		mws = addCoreMiddlewares(mws, &auth.TokenValidatorConfig{}, nil, false)
+		mws = addCoreMiddlewares(mws, &auth.TokenValidatorConfig{}, nil, "", false)
 
 		// Expect only auth + mcp parser when token-exchange config == nil
 		assert.Equal(t, auth.MiddlewareType, mws[0].Type, "first middleware should be auth")
@@ -417,7 +417,7 @@ func TestAddCoreMiddlewares_TokenExchangeIntegration(t *testing.T) {
 			// ExternalTokenHeaderName not required for replace strategy
 		}
 
-		mws = addCoreMiddlewares(mws, &auth.TokenValidatorConfig{}, teCfg, false)
+		mws = addCoreMiddlewares(mws, &auth.TokenValidatorConfig{}, teCfg, "", false)
 
 		// Expect auth, token-exchange, then mcp parser — verify correct order and count.
 		assert.Equal(t, auth.MiddlewareType, mws[0].Type, "first middleware should be auth")
@@ -441,6 +441,41 @@ func TestAddCoreMiddlewares_TokenExchangeIntegration(t *testing.T) {
 		assert.Equal(t, teCfg.Scopes, mwParams.TokenExchangeConfig.Scopes, "Scopes should propagate into middleware params")
 		assert.Equal(t, teCfg.HeaderStrategy, mwParams.TokenExchangeConfig.HeaderStrategy, "HeaderStrategy should propagate into middleware params")
 	})
+}
+
+func TestWithMiddlewareFromFlags_BindsEmbeddedAuthServerIssuer(t *testing.T) {
+	t.Parallel()
+
+	builder := &runConfigBuilder{config: NewRunConfig()}
+	require.NoError(t, WithEmbeddedAuthServerConfig(&authserver.RunConfig{
+		Issuer: "https://auth.toolhive.example.com",
+	})(builder))
+	require.NoError(t, WithMiddlewareFromFlags(
+		nil,   // oidcConfig
+		nil,   // tokenExchangeConfig
+		nil,   // toolsFilter
+		nil,   // toolsOverride
+		nil,   // telemetryConfig
+		"",    // authzConfigPath
+		false, // enableAudit
+		"",    // auditConfigPath
+		"",    // serverName
+		"",    // transportType
+		true,  // disableUsageMetrics
+	)(builder))
+
+	var authConfig types.MiddlewareConfig
+	for _, config := range builder.config.MiddlewareConfigs {
+		if config.Type == auth.MiddlewareType {
+			authConfig = config
+			break
+		}
+	}
+	require.NotEmpty(t, authConfig.Parameters, "auth middleware must be present")
+
+	var authParams auth.MiddlewareParams
+	require.NoError(t, json.Unmarshal(authConfig.Parameters, &authParams))
+	assert.Equal(t, "https://auth.toolhive.example.com", authParams.EmbeddedAuthServerIssuer)
 }
 
 func TestRunConfigBuilder_WithToolOverride(t *testing.T) {

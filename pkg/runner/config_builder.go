@@ -704,7 +704,19 @@ func WithMiddlewareFromFlags(
 		middlewareConfigs = addToolFilterMiddlewares(middlewareConfigs, toolsFilter, toolsOverride)
 
 		// Add core middlewares (always present)
-		middlewareConfigs = addCoreMiddlewares(middlewareConfigs, oidcConfig, tokenExchangeConfig, disableUsageMetrics)
+		embeddedAuthServerIssuer := func() string {
+			if b.config.EmbeddedAuthServerConfig != nil {
+				return b.config.EmbeddedAuthServerConfig.Issuer
+			}
+			return ""
+		}()
+		middlewareConfigs = addCoreMiddlewares(
+			middlewareConfigs,
+			oidcConfig,
+			tokenExchangeConfig,
+			embeddedAuthServerIssuer,
+			disableUsageMetrics,
+		)
 
 		// NOTE: Header forward middleware is NOT added here because secret-backed
 		// headers are not yet resolved at builder time. It is added in Runner.Run()
@@ -851,11 +863,13 @@ func addCoreMiddlewares(
 	middlewareConfigs []types.MiddlewareConfig,
 	oidcConfig *auth.TokenValidatorConfig,
 	tokenExchangeConfig *tokenexchange.Config,
+	embeddedAuthServerIssuer string,
 	disableUsageMetrics bool,
 ) []types.MiddlewareConfig {
 	// Authentication middleware (always present)
 	authParams := auth.MiddlewareParams{
-		OIDCConfig: oidcConfig,
+		OIDCConfig:               oidcConfig,
+		EmbeddedAuthServerIssuer: embeddedAuthServerIssuer,
 	}
 	if authConfig, err := types.NewMiddlewareConfig(auth.MiddlewareType, authParams); err == nil {
 		middlewareConfigs = append(middlewareConfigs, *authConfig)

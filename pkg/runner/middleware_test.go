@@ -1550,6 +1550,27 @@ func TestPopulateMiddlewareConfigs_AuditWrapsChain(t *testing.T) {
 		"audit must wrap authz so authorization denials (403) are audited")
 }
 
+func TestPopulateMiddlewareConfigs_BindsEmbeddedAuthServerIssuer(t *testing.T) {
+	t.Parallel()
+
+	embeddedAuthServerConfig := createMinimalAuthServerConfig()
+	config := &RunConfig{EmbeddedAuthServerConfig: embeddedAuthServerConfig}
+	require.NoError(t, PopulateMiddlewareConfigs(config))
+
+	for _, middlewareConfig := range config.MiddlewareConfigs {
+		if middlewareConfig.Type != auth.MiddlewareType {
+			continue
+		}
+
+		var params auth.MiddlewareParams
+		require.NoError(t, json.Unmarshal(middlewareConfig.Parameters, &params))
+		assert.Equal(t, embeddedAuthServerConfig.Issuer, params.EmbeddedAuthServerIssuer)
+		return
+	}
+
+	t.Fatal("authentication middleware configuration not found")
+}
+
 // TestPopulateMiddlewareConfigs_StripAuthOrdering pins the ordering invariant
 // for strip-auth: the auth middleware must precede it in the chain so the
 // client JWT is fully validated (and the identity stored in the request

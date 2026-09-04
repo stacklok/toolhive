@@ -58,6 +58,7 @@ func NewIncomingAuthMiddleware(
 	passThroughTools map[string]struct{},
 	upstreamReader upstreamtoken.TokenReader,
 	keyProvider keys.PublicKeyProvider,
+	embeddedAuthServerIssuer string,
 ) (
 	authMw func(http.Handler) http.Handler,
 	authzMw func(http.Handler) http.Handler,
@@ -72,7 +73,8 @@ func NewIncomingAuthMiddleware(
 
 	switch cfg.Type {
 	case "oidc":
-		authMiddleware, authInfoHandler, err = newOIDCAuthMiddleware(ctx, cfg.OIDC, upstreamReader, keyProvider)
+		authMiddleware, authInfoHandler, err = newOIDCAuthMiddleware(
+			ctx, cfg.OIDC, upstreamReader, keyProvider, embeddedAuthServerIssuer)
 	case "local":
 		authMiddleware, authInfoHandler, err = newLocalAuthMiddleware(ctx)
 	case "anonymous":
@@ -83,6 +85,21 @@ func NewIncomingAuthMiddleware(
 
 	if err != nil {
 		return nil, nil, nil, err
+	}
+
+	// A pinned primaryUpstreamProvider says "only claims asserted by that upstream
+	// may drive policy", which only means something when incoming auth can produce
+	// an upstream session. Under local or anonymous auth it never can, so every
+	// request would be judged on synthetic claims (sub=anonymous, or a local
+	// username) that no upstream asserted. Reject the combination here rather than
+	// serving it: the operator enforces the same rule for VirtualMCPServer at
+	// cmd/thv-operator/controllers/virtualmcpserver_controller.go, but that check
+	// does not run for a hand-written vmcp config.
+	if cfg.Authz != nil && cfg.Authz.PrimaryUpstreamProvider != "" && cfg.Type != config.IncomingAuthTypeOIDC {
+		return nil, nil, nil, fmt.Errorf(
+			"authz primaryUpstreamProvider %q requires an upstream session, which %q incoming auth cannot provide; "+
+				"remove primaryUpstreamProvider or use oidc incoming auth",
+			cfg.Authz.PrimaryUpstreamProvider, cfg.Type)
 	}
 
 	// If authorization is configured, create authz middleware separately.
@@ -198,6 +215,7 @@ func newOIDCAuthMiddleware(
 	oidcCfg *config.OIDCConfig,
 	reader upstreamtoken.TokenReader,
 	keyProvider keys.PublicKeyProvider,
+	embeddedAuthServerIssuer string,
 ) (func(http.Handler) http.Handler, http.Handler, error) {
 	if oidcCfg == nil {
 		return nil, nil, fmt.Errorf("OIDC configuration required when Type='oidc'")
@@ -232,6 +250,9 @@ func newOIDCAuthMiddleware(
 	}
 	if reader != nil {
 		opts = append(opts, auth.WithUpstreamTokenReader(reader))
+	}
+	if embeddedAuthServerIssuer != "" {
+		opts = append(opts, auth.WithEmbeddedAuthServerIssuer(embeddedAuthServerIssuer))
 	}
 
 	// pkg/auth.GetAuthenticationMiddleware now returns middleware that creates Identity

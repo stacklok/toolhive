@@ -202,6 +202,12 @@ func (h *JWTBearerHandler) HandleTokenEndpointRequest(ctx context.Context, reque
 	}
 	clientID := jwtBearerClientID(claims.Issuer, claims.Subject)
 	issuedSession := session.New(claims.Issuer+"#"+claims.Subject, "", clientID, session.UserClaims{})
+	// This grant links to no upstream IdP login, so the issued token can never
+	// carry an upstream credential. Say so in the token rather than leaving a
+	// resource server to infer it from the absence of a tsid claim, which is
+	// also how an unenriched or foreign-issued identity looks. See
+	// session.NoUpstreamSessionClaimKey.
+	issuedSession.JWTClaims.Extra[session.NoUpstreamSessionClaimKey] = true
 	issuedSession.SetExpiresAt(fosite.AccessToken, time.Now().UTC().Add(lifetime))
 	// This grant skips client authentication (CanSkipClientAuth), so fosite
 	// never populates requester's client — attach a synthetic one so every

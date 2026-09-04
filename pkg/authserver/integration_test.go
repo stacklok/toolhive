@@ -5438,3 +5438,20 @@ func TestIntegration_PrivateKeyJWTDCRTokenExchange(t *testing.T) {
 		})
 	}
 }
+
+// TestNoUpstreamSessionClaimKeysMatch pins the two spellings of the
+// no-upstream-session marker together. The issuing side (session) and the
+// consuming side (upstreamtoken) deliberately do not import each other, so
+// nothing but this assertion stops one from being edited without the other.
+// A silent divergence is invisible: the auth server would keep stamping a
+// marker no resource server reads, and every RFC 7523 JWT-bearer request
+// would fail closed under a pinned Cedar primaryUpstreamProvider.
+//
+// This file is the seam — it already imports both packages — which is why the
+// test lives here rather than in either of them.
+func TestNoUpstreamSessionClaimKeysMatch(t *testing.T) {
+	t.Parallel()
+
+	assert.Equal(t, session.NoUpstreamSessionClaimKey, upstreamtoken.NoUpstreamSessionClaimKey,
+		"the issuing and consuming spellings of the no-upstream-session claim must stay identical")
+}

@@ -11,7 +11,6 @@ import (
 	"encoding/base64"
 	stderrors "errors"
 	"fmt"
-	"maps"
 	"net/url"
 	"reflect"
 	"slices"
@@ -21,6 +20,7 @@ import (
 	appsv1 "k8s.io/api/apps/v1"
 	corev1 "k8s.io/api/core/v1"
 	rbacv1 "k8s.io/api/rbac/v1"
+	"k8s.io/apimachinery/pkg/api/equality"
 	"k8s.io/apimachinery/pkg/api/errors"
 	"k8s.io/apimachinery/pkg/api/meta"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
@@ -1877,7 +1877,10 @@ func (r *VirtualMCPServerReconciler) containerNeedsUpdate(
 	if err != nil {
 		return true // Trigger update to surface the error
 	}
-	if !reflect.DeepEqual(container.Env, expectedEnv) {
+	// Semantic equality ignores Kubernetes defaulting on pointer fields
+	// (e.g. SecretKeyRef.Optional) so telemetry/OIDC env vars do not look
+	// like drift after the first apply (#6340).
+	if !equality.Semantic.DeepEqual(container.Env, expectedEnv) {
 		return true
 	}
 
@@ -1935,7 +1938,12 @@ func (r *VirtualMCPServerReconciler) podTemplateMetadataNeedsUpdate(
 		labelsForVirtualMCPServer(vmcp.Name), vmcp, vmcpConfigChecksum, caBundleChecksum,
 	)
 
-	if !maps.Equal(deployment.Spec.Template.Labels, expectedPodTemplateLabels) {
+	// Subset check, not maps.Equal: applyPodTemplateSpecToDeployment merges
+	// user PodTemplateSpec labels onto the live template. Exact equality then
+	// flags those extras as drift on every status requeue
+	// (statusReportingInterval), which updates the Deployment without
+	// creating a new ReplicaSet (#6340).
+	if !ctrlutil.MapIsSubset(expectedPodTemplateLabels, deployment.Spec.Template.Labels) {
 		return true
 	}
 

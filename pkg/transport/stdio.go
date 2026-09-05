@@ -65,6 +65,7 @@ type StdioTransport struct {
 	trustProxyHeaders bool
 	sessionStorage    session.Storage
 	sessionTTL        time.Duration
+	readTimeout       time.Duration
 	authInfoHandler   http.Handler
 	prefixHandlers    map[string]http.Handler
 
@@ -163,6 +164,12 @@ func (t *StdioTransport) SetSessionStorage(storage session.Storage) {
 // underlying proxy. Zero is valid and means "use the proxy's default".
 func (t *StdioTransport) SetSessionTTL(ttl time.Duration) {
 	t.sessionTTL = ttl
+}
+
+// SetReadTimeout configures http.Server.ReadTimeout on the underlying proxy.
+// Zero is valid and means "use the proxy's default".
+func (t *StdioTransport) SetReadTimeout(d time.Duration) {
+	t.readTimeout = d
 }
 
 // SetAuthInfoHandler sets the RFC 9728 OAuth protected resource discovery handler.
@@ -271,6 +278,9 @@ func (t *StdioTransport) streamableProxyOptions() []streamable.Option {
 	if t.sessionTTL > 0 {
 		opts = append(opts, streamable.WithSessionTTL(t.sessionTTL))
 	}
+	if t.readTimeout > 0 {
+		opts = append(opts, streamable.WithReadTimeout(t.readTimeout))
+	}
 	if t.sessionStorage != nil {
 		opts = append(opts, streamable.WithSessionStorage(t.sessionStorage))
 	}
@@ -287,6 +297,9 @@ func (t *StdioTransport) sseProxyOptions() []httpsse.Option {
 	var opts []httpsse.Option
 	if t.sessionTTL > 0 {
 		opts = append(opts, httpsse.WithSessionTTL(t.sessionTTL))
+	}
+	if t.readTimeout > 0 {
+		opts = append(opts, httpsse.WithReadTimeout(t.readTimeout))
 	}
 	if t.sessionStorage != nil {
 		opts = append(opts, httpsse.WithSessionStorage(t.sessionStorage))

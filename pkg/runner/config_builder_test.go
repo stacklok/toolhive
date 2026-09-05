@@ -1577,6 +1577,49 @@ func TestWithSessionTTL(t *testing.T) {
 	}
 }
 
+func TestWithProxyReadTimeout(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name        string
+		value       time.Duration
+		expectErr   bool
+		expectedStr string
+	}{
+		{
+			name:        "zero is serialized as empty to use the proxy default",
+			value:       0,
+			expectedStr: "",
+		},
+		{
+			name:        "positive duration is stored as a Go duration string",
+			value:       45 * time.Second,
+			expectedStr: "45s",
+		},
+		{
+			name:      "negative duration returns an error",
+			value:     -1 * time.Second,
+			expectErr: true,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			builder := &runConfigBuilder{config: NewRunConfig()}
+			err := WithProxyReadTimeout(tt.value)(builder)
+
+			if tt.expectErr {
+				require.Error(t, err)
+				return
+			}
+			require.NoError(t, err)
+			assert.Equal(t, tt.expectedStr, builder.config.ProxyReadTimeout)
+		})
+	}
+}
+
 // TestWithStrictProtocolValidation verifies the builder option sets
 // RunConfig.StrictProtocolValidation, mirroring WithTrustProxyHeaders's
 // plumbing (see cmd/thv/app/run_flags.go's --strict-protocol-validation flag).

@@ -1466,14 +1466,15 @@ func TestIntegration_TokenExchange_TrustedExternalIssuer(t *testing.T) {
 			"the outer act hop must carry ToolHive's own issuer alongside sub")
 
 		// may_act carries no ExternalActor (see ValidatedClaims.ExternalActor's
-		// doc comment), but the external issuer must still be recorded — this
-		// is the path that bypasses the allowlist entirely, so it needs the
-		// audit trail at least as much as the allowlist path does.
-		nested, ok := act["act"].(map[string]any)
-		require.True(t, ok, "external issuer must still be nested even without an allowlisted actor")
-		assert.Equal(t, idpServer.URL, nested["iss"])
-		_, hasSub := nested["sub"]
-		assert.False(t, hasSub, "no client-namespace actor claim exists to report on the may_act path")
+		// doc comment), so there is no client-namespace actor to nest under
+		// act.act -- an act entry identifies a party that acted, and an
+		// issuer alone identifies no party. The external issuer is still
+		// recorded, as its own top-level claim rather than a phantom hop:
+		// this is the path that bypasses the allowlist entirely, so it needs
+		// the audit trail at least as much as the allowlist path does.
+		assert.Nil(t, act["act"], "no actor was resolved, so act must not nest an issuer-only phantom hop")
+		assert.Equal(t, idpServer.URL, claims["external_issuer"],
+			"the external issuer must still be recorded, as its own top-level claim")
 	})
 
 	t.Run("may_act-bearing token rejected when issuer has not opted in", func(t *testing.T) {
@@ -1702,12 +1703,13 @@ func TestIntegration_TokenExchange_TrustedExternalIssuer(t *testing.T) {
 		require.True(t, ok, "delegated token must carry an 'act' claim")
 		assert.Equal(t, agentClientID, act["sub"], "outermost act.sub must be the ToolHive acting client")
 
-		nested, ok := act["act"].(map[string]any)
-		require.True(t, ok, "external issuer provenance must still be nested")
-		assert.Equal(t, idpServer.URL, nested["iss"], "nested act.iss is the external issuer")
-		_, hasSub := nested["sub"]
-		assert.False(t, hasSub,
-			"a matcher-only authorization resolves no actor claim, so there is no client-namespace value to report")
+		// A matcher-only authorization resolves no actor claim, so there is
+		// no client-namespace value to nest under act.act -- an issuer alone
+		// identifies no party. The external issuer is still recorded, as its
+		// own top-level claim.
+		assert.Nil(t, act["act"], "no actor was resolved, so act must not nest an issuer-only phantom hop")
+		assert.Equal(t, idpServer.URL, claims["external_issuer"],
+			"the external issuer must still be recorded, as its own top-level claim")
 	})
 
 	t.Run("actor matcher false with no allowlist match rejected", func(t *testing.T) {

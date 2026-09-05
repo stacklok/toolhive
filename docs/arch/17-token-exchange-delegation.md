@@ -73,6 +73,65 @@ binding. The Kubernetes operator also exposes `trusted_issuers` as
 `EmbeddedAuthServerConfig.trustedIssuers` — see
 [Kubernetes operator](#kubernetes-operator) below.
 
+#### Canonical `inbound_grants` configuration
+
+The top-level `delegate_clients` and the RFC 8693/7523 fields embedded
+directly on `trusted_issuers[*]` above are the legacy configuration shape.
+`RunConfig.inbound_grants` (`authserver.InboundGrantsRunConfig`) is the
+canonical replacement: it groups the same policy under
+`inbound_grants.token_exchange` (delegate clients and per-issuer RFC 8693
+policy) and `inbound_grants.jwt_bearer` (per-issuer RFC 7523 policy), each
+referencing a `trusted_issuers` entry by its `name` rather than embedding
+policy fields on the issuer itself. SPIFFE client policy is configured
+separately, as a sibling of both under `inbound_grants.spiffe_client_auth`
+(described further below) — not
+nested under `inbound_grants.token_exchange`, since a SPIFFE association
+authenticates a client but does not by itself grant it anything:
+
+```yaml
+issuer: https://auth.example.com
+scopes_supported: [openid, profile]
+allowed_audiences: [https://mcp.example.com]
+trusted_issuers:
+  - name: reporting-idp
+    issuer_url: https://login.example-idp.com
+inbound_grants:
+  token_exchange:
+    delegate_clients:
+      - client_id: reporting-delegate
+        client_secret_env_var: REPORTING_DELEGATE_CLIENT_SECRET
+        scopes: [openid]
+        audiences: [https://mcp.example.com]
+    issuer_policies:
+      - issuer_ref: reporting-idp
+        expected_audience: https://mcp.example.com
+        allowed_actors: [external-reporting-client]
+        allowed_delegate_clients: [reporting-delegate]
+```
+
+`NormalizeInboundGrants` (`pkg/authserver/inbound_grants.go`) reconciles both
+shapes at validation time, per grant family:
+
+- If `inbound_grants.token_exchange` is set, any legacy `delegate_clients` or
+  RFC 8693 fields embedded on `trusted_issuers[*]` are rejected as a
+  configuration conflict — the two token-exchange sources are mutually
+  exclusive. Likewise for `inbound_grants.jwt_bearer` against a legacy
+  `trusted_issuers[*].jwt_bearer_grant`.
+- The two grant families are independent: setting only
+  `inbound_grants.jwt_bearer` still lets legacy `delegate_clients`/RFC 8693
+  fields enable token exchange, and vice versa — `inbound_grants` does not
+  take over both families just by being non-nil.
+- `issuer_ref` resolves against `trusted_issuers[*].name`; an issuer without
+  a `name`, an unresolvable `issuer_ref`, or a duplicate `name`/`issuer_url`
+  fails validation.
+
+Existing deployments using only the legacy shape are unaffected: omitting
+`inbound_grants` entirely preserves the released behavior, including RFC
+8693 being enabled by default. SPIFFE client policy
+(`inbound_grants.spiffe_client_auth`) has no legacy equivalent
+and must reference a `spiffe_trust_domains` entry the same way issuer
+policies reference `trusted_issuers`.
+
 ### Token-only embedded authorization servers
 
 An embedded authorization server may omit upstream identity providers only when
@@ -209,7 +268,11 @@ reuse IDs between the two mechanisms.
 
 Both `/.well-known/oauth-authorization-server` and
 `/.well-known/openid-configuration` advertise the token-exchange grant in
-`grant_types_supported`. `token_endpoint_auth_methods_supported` always
+`grant_types_supported` by default. Setting `inbound_grants` with
+`token_exchange` omitted disables and stops advertising RFC 8693 entirely
+(`Config.DisableTokenExchange`, `AuthorizationServerConfig.TokenExchangeEnabled`)
+— the same flag governs both registration with fosite and discovery
+advertisement, so they cannot drift out of sync. `token_endpoint_auth_methods_supported` always
 includes `none`; it also includes `client_secret_basic` and
 `client_secret_post` when confidential DCR is enabled or a static delegate
 client is configured, and includes `private_key_jwt` when
@@ -559,19 +622,36 @@ delegate_clients:
    external subject can never collide with one. Scope names are not
    qualified this way and remain the operator's responsibility to keep
    disjoint across issuers.
-3. **Provenance is recorded for every external token.** The RFC 8693 §4.1
-   `act` claim records who acted: its outer hop always contains ToolHive's
-   issuer and client ID. The external issuer is nested one level in —
-   `ValidatedClaims.ExternalIssuer` is set for every token validated by the
-   external-issuer path, whether or not it also carries `may_act`. The nested
-   entry additionally carries `sub` (the allowlisted actor claim) when the
-   allowlist path resolved one; a `may_act`-bearing external token yields
-   `act = {iss: <toolhive-issuer>, sub: <toolhive-client>, act: {iss:
-<external-issuer>}}` — no client-namespace actor to report there, but the
-   issuer is still recorded. Either way, Cedar authorizers key on `sub` and do
-   not read `act` — it is an audit trail, not an access control. (AWS STS role
-   mapping can read arbitrary claims including `act` via its CEL matcher, so
-   "authorizers" here means Cedar specifically, not every consumer.)
+3. **Provenance is recorded for every external token, but never as a
+   phantom actor.** The RFC 8693 §4.1 `act` claim identifies parties that
+   acted: its outer hop always contains ToolHive's issuer and client ID,
+   and a genuine external actor — the allowlist path's allowlisted actor
+   claim — nests one level in, e.g. `act = {iss: <toolhive-issuer>, sub:
+   <toolhive-client>, act: {iss: <external-issuer>, sub: <external-actor>}}`.
+   A `may_act`-bearing or `ActorMatcher`-only external token has no
+   client-namespace actor to nest — `may_act.sub` already names the
+   delegate directly via the outer hop — so `act` stays a single hop for
+   those; nesting a bare `{iss: <external-issuer>}` there would misrepresent
+   the issuer as a prior actor to any RFC-8693-aware consumer walking the
+   chain, including this codebase's own audit tooling (`pkg/audit`'s
+   `DelegationChain`, documented as "the full chain of acting parties").
+   The external issuer is instead always recorded as its own top-level
+   `external_issuer` claim — set whenever `ValidatedClaims.ExternalIssuer`
+   is non-empty, regardless of whether an actor was also nested under
+   `act` — so operators and policy authors have one consistent place to
+   check for "was an external issuer involved," rather than sometimes
+   inside `act` and sometimes not. It is single-hop: it names only the
+   immediate exchange's own external contribution, not a re-exchanged
+   token's earlier external issuer, if any. `act` is not excluded from
+   Cedar's generic claim exposure (`preprocessClaims` prefixes every claim
+   key, `act` and `external_issuer` included, so they surface as
+   `context.claim_act` and `context.claim_external_issuer`), so a policy
+   CAN key on `context.claim_act.sub` — see
+   `pkg/authz/authorizers/cedar/core_test.go` for worked examples gating on
+   an actor's SPIFFE ID this way. Most policies still key on `sub` alone,
+   since `act` is populated for audit provenance rather than as the
+   primary access-control signal, but an operator authoring delegation
+   policy should not assume it is unreachable.
 4. **`may_act` trust is a per-issuer opt-in, and it bypasses more than one
    thing.** `allow_may_act` is false by default because an enabled issuer
    bypasses BOTH `allowedActors` and `actorMatcher` (external actor
@@ -636,7 +716,14 @@ involved. It is enabled per trusted issuer by setting
 `TrustedIssuer.JWTBearerGrant` (`jwt_bearer_grant` on a hand-written
 `authserver.RunConfig`, `jwtBearerGrant` on the operator's
 `TrustedIssuerConfig`) — independent of that issuer's RFC 8693 delegation
-fields, though both may be configured on the same issuer.
+fields, though both may be configured on the same issuer. This is the
+legacy shape; a hand-written `RunConfig` may instead configure the same
+policy under `inbound_grants.jwt_bearer.issuer_policies`, referencing the
+issuer by `name` — see [Canonical `inbound_grants`
+configuration](#canonical-inbound_grants-configuration). The two shapes are
+mutually exclusive: setting `inbound_grants.jwt_bearer` while any
+`trusted_issuers[*].jwt_bearer_grant` is still set anywhere in the config is
+rejected, regardless of which issuer each one refers to.
 
 ### JWT-bearer configuration
 

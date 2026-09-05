@@ -54,6 +54,7 @@ func TestNewAuthorizationServerConfig(t *testing.T) {
 	assert.Equal(t, params.AccessTokenLifespan, authzServerConfig.AccessTokenLifespan)
 	assert.Equal(t, params.RefreshTokenLifespan, authzServerConfig.RefreshTokenLifespan)
 	assert.Equal(t, params.AuthCodeLifespan, authzServerConfig.AuthorizeCodeLifespan)
+	assert.True(t, authzServerConfig.TokenExchangeEnabled, "zero-value params preserve released token exchange behavior")
 
 	// Verify signing key is set
 	require.NotNil(t, authzServerConfig.SigningKey)
@@ -78,11 +79,14 @@ func TestNewAuthorizationServerConfig_ConfidentialClientCapabilities(t *testing.
 		allowConfidential       bool
 		allowPrivateKeyJWT      bool
 		hasStaticDelegateClient bool
+		disableTokenExchange    bool
+		jwtBearerGrantEnabled   bool
 	}{
 		{name: "public only", allowConfidential: false, hasStaticDelegateClient: false},
 		{name: "confidential DCR", allowConfidential: true, hasStaticDelegateClient: false},
 		{name: "private-key JWT registration", allowPrivateKeyJWT: true, hasStaticDelegateClient: false},
 		{name: "static delegate client", allowConfidential: false, hasStaticDelegateClient: true},
+		{name: "JWT bearer without token exchange", disableTokenExchange: true, jwtBearerGrantEnabled: true},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -99,11 +103,15 @@ func TestNewAuthorizationServerConfig_ConfidentialClientCapabilities(t *testing.
 				AllowConfidentialClientRegistration: tt.allowConfidential,
 				AllowPrivateKeyJWTRegistration:      tt.allowPrivateKeyJWT,
 				HasStaticDelegateClients:            tt.hasStaticDelegateClient,
+				DisableTokenExchange:                tt.disableTokenExchange,
+				JWTBearerGrantEnabled:               tt.jwtBearerGrantEnabled,
 			})
 			require.NoError(t, err)
 			assert.Equal(t, tt.allowConfidential, config.AllowConfidentialClientRegistration)
 			assert.Equal(t, tt.allowPrivateKeyJWT, config.AllowPrivateKeyJWTRegistration)
 			assert.Equal(t, tt.hasStaticDelegateClient, config.HasStaticDelegateClients)
+			assert.Equal(t, !tt.disableTokenExchange, config.TokenExchangeEnabled)
+			assert.Equal(t, tt.jwtBearerGrantEnabled, config.JWTBearerGrantEnabled)
 		})
 	}
 }

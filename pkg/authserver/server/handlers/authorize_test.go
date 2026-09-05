@@ -4,6 +4,7 @@
 package handlers
 
 import (
+	"context"
 	"errors"
 	"net/http"
 	"net/http/httptest"
@@ -11,7 +12,9 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/alicebob/miniredis/v2"
 	"github.com/ory/fosite"
+	"github.com/redis/go-redis/v9"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 	"golang.org/x/time/rate"
@@ -19,6 +22,7 @@ import (
 	"github.com/stacklok/toolhive/pkg/authserver/server"
 	servercrypto "github.com/stacklok/toolhive/pkg/authserver/server/crypto"
 	"github.com/stacklok/toolhive/pkg/authserver/server/registration"
+	"github.com/stacklok/toolhive/pkg/authserver/storage"
 	"github.com/stacklok/toolhive/pkg/oauthproto"
 )
 
@@ -70,6 +74,114 @@ func TestAuthorizeHandler_ClientNotFound(t *testing.T) {
 	// fosite returns 401 with invalid_client for unknown clients
 	assert.Equal(t, http.StatusUnauthorized, rec.Code)
 	assert.Contains(t, rec.Body.String(), "invalid_client")
+}
+
+func TestAuthorizeHandler_BackChannelOnlyClientsMatchMissingClient(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name           string
+		client         func(t *testing.T) fosite.Client
+		explicitMarker bool
+	}{
+		{
+			name: "SPIFFE client",
+			client: func(t *testing.T) fosite.Client {
+				t.Helper()
+				client, err := registration.NewSPIFFEClient(
+					"spiffe-client",
+					[]string{"openid"},
+					[]string{"https://mcp.example.com"},
+					nil,
+				)
+				require.NoError(t, err)
+				return client
+			},
+			explicitMarker: true,
+		},
+		{
+			name: "delegate client",
+			client: func(t *testing.T) fosite.Client {
+				t.Helper()
+				client, err := registration.NewStaticDelegateClient(registration.Config{
+					ID:         "delegate-client",
+					Secret:     "test-secret",
+					GrantTypes: []string{"urn:ietf:params:oauth:grant-type:token-exchange"},
+					Scopes:     []string{"openid"},
+					Audience:   []string{"https://mcp.example.com"},
+				})
+				require.NoError(t, err)
+				return client
+			},
+			// A delegate client is rejected via the pre-existing metadata-shape
+			// inference (isBackChannelOnlyClient's fallback), not the explicit
+			// registration.BackChannelOnly marker -- delegate clients are out of
+			// scope for that marker and must keep their current behaviour.
+			explicitMarker: false,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			handler, state, _ := handlerTestSetup(t)
+			client := tt.client(t)
+			state.clients[client.GetID()] = client
+
+			// Prove classification for this client type is directional: the
+			// explicit marker is set (SPIFFE) or is not (delegate), rather than
+			// both client types happening to reach the same /authorize outcome
+			// via the same mechanism.
+			assert.Equal(t, tt.explicitMarker, registration.BackChannelOnly(client))
+
+			missing := httptest.NewRecorder()
+			handler.AuthorizeHandler(missing, httptest.NewRequest(http.MethodGet,
+				"/oauth/authorize?client_id=missing-client&redirect_uri=https://invalid.example/callback", nil))
+
+			configured := httptest.NewRecorder()
+			handler.AuthorizeHandler(configured, httptest.NewRequest(http.MethodGet,
+				"/oauth/authorize?client_id="+client.GetID()+"&redirect_uri=https://invalid.example/callback", nil))
+
+			require.Equal(t, http.StatusUnauthorized, configured.Code)
+			assert.Equal(t, missing.Code, configured.Code)
+			assert.Equal(t, missing.Body.String(), configured.Body.String())
+			assert.Contains(t, configured.Body.String(), "invalid_client")
+		})
+	}
+}
+
+func TestAuthorizeHandler_RedisLoadedDelegateClientMatchesMissingClient(t *testing.T) {
+	t.Parallel()
+
+	handler, _, _ := handlerTestSetup(t)
+	mr := miniredis.RunT(t)
+	redisClient := redis.NewClient(&redis.Options{Addr: mr.Addr()})
+	stor := storage.NewRedisStorageWithClient(redisClient, "test:authorize:")
+	t.Cleanup(func() { _ = stor.Close() })
+
+	client, err := registration.NewStaticDelegateClient(registration.Config{
+		ID:         "delegate-client",
+		Secret:     "test-secret",
+		GrantTypes: []string{oauthproto.GrantTypeTokenExchange},
+		Scopes:     []string{"openid"},
+		Audience:   []string{"https://mcp.example.com"},
+	})
+	require.NoError(t, err)
+	require.NoError(t, stor.RegisterClient(context.Background(), client))
+	handler.storage = stor
+
+	missing := httptest.NewRecorder()
+	handler.AuthorizeHandler(missing, httptest.NewRequest(http.MethodGet,
+		"/oauth/authorize?client_id=missing-client&redirect_uri=https://invalid.example/callback", nil))
+
+	configured := httptest.NewRecorder()
+	handler.AuthorizeHandler(configured, httptest.NewRequest(http.MethodGet,
+		"/oauth/authorize?client_id=delegate-client&redirect_uri=https://invalid.example/callback", nil))
+
+	require.Equal(t, http.StatusUnauthorized, configured.Code)
+	assert.Equal(t, missing.Code, configured.Code)
+	assert.Equal(t, missing.Body.String(), configured.Body.String())
+	assert.Contains(t, configured.Body.String(), "invalid_client")
 }
 
 func TestAuthorizeHandler_InvalidRedirectURI(t *testing.T) {

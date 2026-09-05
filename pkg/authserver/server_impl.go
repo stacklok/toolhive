@@ -166,10 +166,15 @@ func newServer(ctx context.Context, cfg Config, stor storage.Storage) (_ *server
 	// provably safe for the production backends; surfacing a bad backend as
 	// a constructor error keeps misconfiguration fail-loud at boot rather
 	// than at first DCR resolve.
-	baseStore := unwrapStorage(stor)
+	baseStore := storage.Unwrap(stor)
 	dcrStore, ok := baseStore.(storage.DCRCredentialStore)
 	if !ok {
 		return nil, fmt.Errorf("storage backend %T does not implement storage.DCRCredentialStore", baseStore)
+	}
+
+	stor, err := decorateStorageForSPIFFE(ctx, cfg, stor)
+	if err != nil {
+		return nil, err
 	}
 
 	if err := registerDelegateClients(ctx, stor, cfg.DelegateClients); err != nil {
@@ -203,6 +208,7 @@ func newServer(ctx context.Context, cfg Config, stor storage.Storage) (_ *server
 		AllowPrivateKeyJWTRegistration:      cfg.AllowPrivateKeyJWTRegistration,
 		HasStaticDelegateClients:            len(cfg.DelegateClients) > 0,
 		ForceConfidentialRedirectURIs:       cfg.ForceConfidentialRedirectURIs,
+		DisableTokenExchange:                cfg.DisableTokenExchange,
 		JWTBearerGrantEnabled:               JWTBearerGrantEnabled(cfg.TrustedIssuers),
 	}
 	authServerConfig, err := oauthserver.NewAuthorizationServerConfig(oauthParams)
@@ -244,15 +250,7 @@ func newServer(ctx context.Context, cfg Config, stor storage.Storage) (_ *server
 		return nil, err
 	}
 
-	// Wrap storage with the CIMD decorator before constructing the fosite provider
-	// so that GetClient calls for HTTPS client_id values are intercepted at the
-	// fosite level (not just the handler level).
-	stor, err = decorateStorageForCIMD(cfg, stor)
-	if err != nil {
-		return nil, err
-	}
-
-	// Create fosite provider with the (possibly decorated) storage.
+	// Create fosite provider with the configured storage decorators.
 	slog.Debug("creating fosite OAuth2 provider")
 	fositeProvider, trustedIssuerValidator, err := buildProvider(cfg, authServerConfig, stor)
 	if err != nil {
@@ -301,7 +299,7 @@ func registerDelegateClients(ctx context.Context, stor storage.Storage, delegate
 		if err != nil {
 			return fmt.Errorf("failed to create delegate client %q: %w", delegateClient.ClientID, err)
 		}
-		if err := stor.RegisterClient(ctx, client); err != nil {
+		if err := stor.ReconcileConfiguredClient(ctx, client); err != nil {
 			return fmt.Errorf("failed to register delegate client %q: %w", delegateClient.ClientID, err)
 		}
 		slog.Warn("delegate client has blanket self-issued token exchange rights: "+
@@ -310,6 +308,33 @@ func registerDelegateClients(ctx context.Context, stor storage.Storage, delegate
 			"client_id", delegateClient.ClientID, "scopes", delegateClient.Scopes, "audiences", delegateClient.Audiences)
 	}
 	return nil
+}
+
+// decorateStorageForSPIFFE resolves the immutable association registry from the
+// validated SPIFFE trust model and installs the static overlay outside CIMD.
+// A nil cfg.SPIFFETrust means no SPIFFE associations are configured, which
+// yields a nil registry and leaves the storage chain unchanged.
+func decorateStorageForSPIFFE(ctx context.Context, cfg Config, stor storage.Storage) (storage.Storage, error) {
+	registry, err := NewSPIFFEAssociationRegistry(cfg.SPIFFETrust)
+	if err != nil {
+		return nil, fmt.Errorf("create SPIFFE association registry: %w", err)
+	}
+
+	// Install dynamic CIMD lookup before the static SPIFFE overlay so configured
+	// clients always take precedence over remotely resolved HTTPS client IDs.
+	stor, err = decorateStorageForCIMD(cfg, stor)
+	if err != nil {
+		return nil, err
+	}
+	clients, err := registry.staticClients()
+	if err != nil {
+		return nil, fmt.Errorf("build SPIFFE static clients: %w", err)
+	}
+	stor, err = storage.NewSPIFFEStorageDecorator(ctx, stor, clients)
+	if err != nil {
+		return nil, fmt.Errorf("initialize SPIFFE client overlay: %w", err)
+	}
+	return stor, nil
 }
 
 // decorateStorageForCIMD wraps stor with the CIMD decorator when CIMD is
@@ -357,12 +382,16 @@ func JWTBearerGrantEnabled(trustedIssuers []tokenexchange.TrustedIssuer) bool {
 }
 
 // buildProvider assembles the fosite OAuth2 provider, registering the RFC 8693
-// token-exchange handler as an extension grant alongside the standard grants.
+// token-exchange handler and/or the RFC 7523 JWT-bearer handler as extension
+// grants alongside the standard grants -- whichever of the two are enabled
+// for cfg (token exchange can be disabled via canonical inbound grants
+// configuration; JWT-bearer is enabled per JWTBearerGrantEnabled).
 //
 // It returns the shared MultiIssuerTokenValidator (nil when no TrustedIssuers
-// are configured) so newServer can hold it and release its per-issuer JWKS
-// worker pools on shutdown. On its own error paths it shuts that validator down
-// before returning, since the caller never receives it.
+// are configured, or when neither enabled grant would use it) so newServer
+// can hold it and release its per-issuer JWKS worker pools on shutdown. On
+// its own error paths it shuts that validator down before returning, since
+// the caller never receives it.
 func buildProvider(
 	cfg Config, authServerConfig *oauthserver.AuthorizationServerConfig, stor storage.Storage,
 ) (_ fosite.OAuth2Provider, _ *tokenexchange.MultiIssuerTokenValidator, retErr error) {
@@ -372,19 +401,28 @@ func buildProvider(
 	}
 	jwtBearerEnabled := JWTBearerGrantEnabled(cfg.TrustedIssuers)
 
-	// Built once, up front, whenever any trusted issuer is configured, and
-	// handed to both factories below: otherwise each factory closure would
-	// build its own MultiIssuerTokenValidator over the same trusted issuers at
+	// Built once, up front, and handed to whichever factories below actually
+	// need it: otherwise each factory closure would build its own
+	// MultiIssuerTokenValidator over the same trusted issuers at
 	// fosite-compose time, doubling every issuer's JWKS cache and background
 	// refresh goroutines — and, buried in a handler, leaving them unreachable
 	// for shutdown. authServerConfig is the exact *AuthorizationServerConfig
 	// each factory closure would otherwise receive at call time (see
 	// createProvider/NewAuthorizationServer), so building it here first is
-	// equivalent. NewSharedTrustedIssuerValidator returns nil when there are no
-	// trusted issuers.
-	shared, err := tokenexchange.NewSharedTrustedIssuerValidator(authServerConfig, cfg.TrustedIssuers)
-	if err != nil {
-		return nil, nil, fmt.Errorf("failed to create shared trusted-issuer validator: %w", err)
+	// equivalent. Skipped entirely (shared stays nil) when neither grant that
+	// consumes it is enabled -- trusted issuers configured with token
+	// exchange disabled and JWT-bearer not enabled is a reachable, if
+	// pointless, configuration, and building the validator anyway would
+	// start live per-issuer JWKS refresh goroutines with no consumer for the
+	// life of the server. NewSharedTrustedIssuerValidator itself also
+	// returns nil when there are no trusted issuers.
+	var shared *tokenexchange.MultiIssuerTokenValidator
+	if !cfg.DisableTokenExchange || jwtBearerEnabled {
+		var err error
+		shared, err = tokenexchange.NewSharedTrustedIssuerValidator(authServerConfig, cfg.TrustedIssuers)
+		if err != nil {
+			return nil, nil, fmt.Errorf("failed to create shared trusted-issuer validator: %w", err)
+		}
 	}
 	// Release the validator's JWKS worker pools if we fail before returning it
 	// to newServer, which otherwise owns its shutdown.
@@ -396,23 +434,23 @@ func buildProvider(
 		}
 	}()
 
-	tokenExchangeFactory, err := tokenexchange.FactoryWithSharedTrustedIssuerValidator(
-		cfg.DelegationTokenLifespan, cfg.TrustedIssuers, delegateClientIDs, shared)
-	if err != nil {
-		return nil, nil, fmt.Errorf("failed to create token exchange factory: %w", err)
-	}
-	if !jwtBearerEnabled {
-		provider, err := createProvider(authServerConfig, stor, tokenExchangeFactory)
+	factories := make([]oauthserver.Factory, 0, 2)
+	if !cfg.DisableTokenExchange {
+		tokenExchangeFactory, err := tokenexchange.FactoryWithSharedTrustedIssuerValidator(
+			cfg.DelegationTokenLifespan, cfg.TrustedIssuers, delegateClientIDs, shared)
 		if err != nil {
-			return nil, nil, err
+			return nil, nil, fmt.Errorf("failed to create token exchange factory: %w", err)
 		}
-		return provider, shared, nil
+		factories = append(factories, tokenExchangeFactory)
 	}
-	jwtBearerFactory, err := tokenexchange.JWTBearerIssuanceFactory(cfg.TrustedIssuers, shared)
-	if err != nil {
-		return nil, nil, fmt.Errorf("failed to create JWT-bearer factory: %w", err)
+	if jwtBearerEnabled {
+		jwtBearerFactory, err := tokenexchange.JWTBearerIssuanceFactory(cfg.TrustedIssuers, shared)
+		if err != nil {
+			return nil, nil, fmt.Errorf("failed to create JWT-bearer factory: %w", err)
+		}
+		factories = append(factories, jwtBearerFactory)
 	}
-	provider, err := createProvider(authServerConfig, stor, tokenExchangeFactory, jwtBearerFactory)
+	provider, err := createProvider(authServerConfig, stor, factories...)
 	if err != nil {
 		return nil, nil, err
 	}
@@ -574,21 +612,11 @@ func createProvider(
 	)
 }
 
-// unwrapStorage peels off one decorator layer if the storage implements
-// Unwrap(), returning the concrete backend. Both newServer (DCRCredentialStore
-// assertion) and runLegacyMigration (RedisStorage type assertion) need this.
-func unwrapStorage(stor storage.Storage) storage.Storage {
-	if unwrapper, ok := stor.(interface{ Unwrap() storage.Storage }); ok {
-		return unwrapper.Unwrap()
-	}
-	return stor
-}
-
 // runLegacyMigration runs one-shot Redis data migrations before handlers are
 // constructed. It is a no-op for non-Redis backends and passes through any
 // decorator wrapping so the concrete type can be reached.
 func runLegacyMigration(ctx context.Context, stor storage.Storage, upstreams []UpstreamConfig) error {
-	base := unwrapStorage(stor)
+	base := storage.Unwrap(stor)
 	rs, ok := base.(*storage.RedisStorage)
 	if !ok {
 		return nil

@@ -58,18 +58,19 @@ func (mr *MockDCRCredentialStoreMockRecorder) GetDCRCredentials(ctx, key any) *g
 	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "GetDCRCredentials", reflect.TypeOf((*MockDCRCredentialStore)(nil).GetDCRCredentials), ctx, key)
 }
 
-// StoreDCRCredentials mocks base method.
-func (m *MockDCRCredentialStore) StoreDCRCredentials(ctx context.Context, creds *storage.DCRCredentials) error {
+// StoreDCRCredentialsIfAbsent mocks base method.
+func (m *MockDCRCredentialStore) StoreDCRCredentialsIfAbsent(ctx context.Context, creds *storage.DCRCredentials) (*storage.DCRCredentials, error) {
 	m.ctrl.T.Helper()
-	ret := m.ctrl.Call(m, "StoreDCRCredentials", ctx, creds)
-	ret0, _ := ret[0].(error)
-	return ret0
+	ret := m.ctrl.Call(m, "StoreDCRCredentialsIfAbsent", ctx, creds)
+	ret0, _ := ret[0].(*storage.DCRCredentials)
+	ret1, _ := ret[1].(error)
+	return ret0, ret1
 }
 
-// StoreDCRCredentials indicates an expected call of StoreDCRCredentials.
-func (mr *MockDCRCredentialStoreMockRecorder) StoreDCRCredentials(ctx, creds any) *gomock.Call {
+// StoreDCRCredentialsIfAbsent indicates an expected call of StoreDCRCredentialsIfAbsent.
+func (mr *MockDCRCredentialStoreMockRecorder) StoreDCRCredentialsIfAbsent(ctx, creds any) *gomock.Call {
 	mr.mock.ctrl.T.Helper()
-	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "StoreDCRCredentials", reflect.TypeOf((*MockDCRCredentialStore)(nil).StoreDCRCredentials), ctx, creds)
+	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "StoreDCRCredentialsIfAbsent", reflect.TypeOf((*MockDCRCredentialStore)(nil).StoreDCRCredentialsIfAbsent), ctx, creds)
 }
 
 // MockPendingAuthorizationStorage is a mock of PendingAuthorizationStorage interface.
@@ -230,6 +231,20 @@ func (mr *MockClientRegistryMockRecorder) GetClient(ctx, id any) *gomock.Call {
 	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "GetClient", reflect.TypeOf((*MockClientRegistry)(nil).GetClient), ctx, id)
 }
 
+// ReconcileConfiguredClient mocks base method.
+func (m *MockClientRegistry) ReconcileConfiguredClient(ctx context.Context, client fosite.Client) error {
+	m.ctrl.T.Helper()
+	ret := m.ctrl.Call(m, "ReconcileConfiguredClient", ctx, client)
+	ret0, _ := ret[0].(error)
+	return ret0
+}
+
+// ReconcileConfiguredClient indicates an expected call of ReconcileConfiguredClient.
+func (mr *MockClientRegistryMockRecorder) ReconcileConfiguredClient(ctx, client any) *gomock.Call {
+	mr.mock.ctrl.T.Helper()
+	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "ReconcileConfiguredClient", reflect.TypeOf((*MockClientRegistry)(nil).ReconcileConfiguredClient), ctx, client)
+}
+
 // RegisterClient mocks base method.
 func (m *MockClientRegistry) RegisterClient(ctx context.Context, client fosite.Client) error {
 	m.ctrl.T.Helper()
@@ -270,6 +285,20 @@ func (m *MockClientRegistry) SetClientAssertionJWT(ctx context.Context, jti stri
 func (mr *MockClientRegistryMockRecorder) SetClientAssertionJWT(ctx, jti, exp any) *gomock.Call {
 	mr.mock.ctrl.T.Helper()
 	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "SetClientAssertionJWT", reflect.TypeOf((*MockClientRegistry)(nil).SetClientAssertionJWT), ctx, jti, exp)
+}
+
+// UpsertDCRIssuedClient mocks base method.
+func (m *MockClientRegistry) UpsertDCRIssuedClient(ctx context.Context, client fosite.Client) error {
+	m.ctrl.T.Helper()
+	ret := m.ctrl.Call(m, "UpsertDCRIssuedClient", ctx, client)
+	ret0, _ := ret[0].(error)
+	return ret0
+}
+
+// UpsertDCRIssuedClient indicates an expected call of UpsertDCRIssuedClient.
+func (mr *MockClientRegistryMockRecorder) UpsertDCRIssuedClient(ctx, client any) *gomock.Call {
+	mr.mock.ctrl.T.Helper()
+	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "UpsertDCRIssuedClient", reflect.TypeOf((*MockClientRegistry)(nil).UpsertDCRIssuedClient), ctx, client)
 }
 
 // MockUpstreamTokenStorage is a mock of UpstreamTokenStorage interface.
@@ -1004,6 +1033,20 @@ func (mr *MockStorageMockRecorder) LoadPendingAuthorization(ctx, state any) *gom
 	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "LoadPendingAuthorization", reflect.TypeOf((*MockStorage)(nil).LoadPendingAuthorization), ctx, state)
 }
 
+// ReconcileConfiguredClient mocks base method.
+func (m *MockStorage) ReconcileConfiguredClient(ctx context.Context, client fosite.Client) error {
+	m.ctrl.T.Helper()
+	ret := m.ctrl.Call(m, "ReconcileConfiguredClient", ctx, client)
+	ret0, _ := ret[0].(error)
+	return ret0
+}
+
+// ReconcileConfiguredClient indicates an expected call of ReconcileConfiguredClient.
+func (mr *MockStorageMockRecorder) ReconcileConfiguredClient(ctx, client any) *gomock.Call {
+	mr.mock.ctrl.T.Helper()
+	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "ReconcileConfiguredClient", reflect.TypeOf((*MockStorage)(nil).ReconcileConfiguredClient), ctx, client)
+}
+
 // RegisterClient mocks base method.
 func (m *MockStorage) RegisterClient(ctx context.Context, client fosite.Client) error {
 	m.ctrl.T.Helper()
@@ -1143,4 +1186,18 @@ func (m *MockStorage) UpdateProviderIdentityLastUsed(ctx context.Context, provid
 func (mr *MockStorageMockRecorder) UpdateProviderIdentityLastUsed(ctx, providerID, providerSubject, lastUsedAt any) *gomock.Call {
 	mr.mock.ctrl.T.Helper()
 	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "UpdateProviderIdentityLastUsed", reflect.TypeOf((*MockStorage)(nil).UpdateProviderIdentityLastUsed), ctx, providerID, providerSubject, lastUsedAt)
+}
+
+// UpsertDCRIssuedClient mocks base method.
+func (m *MockStorage) UpsertDCRIssuedClient(ctx context.Context, client fosite.Client) error {
+	m.ctrl.T.Helper()
+	ret := m.ctrl.Call(m, "UpsertDCRIssuedClient", ctx, client)
+	ret0, _ := ret[0].(error)
+	return ret0
+}
+
+// UpsertDCRIssuedClient indicates an expected call of UpsertDCRIssuedClient.
+func (mr *MockStorageMockRecorder) UpsertDCRIssuedClient(ctx, client any) *gomock.Call {
+	mr.mock.ctrl.T.Helper()
+	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "UpsertDCRIssuedClient", reflect.TypeOf((*MockStorage)(nil).UpsertDCRIssuedClient), ctx, client)
 }

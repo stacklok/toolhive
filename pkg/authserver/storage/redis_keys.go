@@ -131,7 +131,7 @@ func redisProviderKey(prefix, providerID, providerSubject string) string {
 // format, so entries written by an older binary (without the segment) will
 // miss on lookup and be harmlessly re-registered under the new key. Orphaned
 // old rows self-evict only when the upstream asserted an RFC 7591 §3.2.1
-// client_secret_expires_at (StoreDCRCredentials sets a matching Redis TTL for
+// client_secret_expires_at (StoreDCRCredentialsIfAbsent sets a matching Redis TTL for
 // those); entries for non-expiring secrets — the common §3.2.1 "never" case —
 // carry no TTL and persist indefinitely, so they require manual cleanup.
 // There is no automated one-shot migration for this key-format change today.

@@ -289,7 +289,7 @@ func validateDCRCredentialsForStore(creds *DCRCredentials) error {
 //
 // Callers receive a defensive copy from the store. Mutations on the returned
 // value do not affect persisted state, and mutations on a value passed to
-// StoreDCRCredentials are not observed by subsequent reads. This matches the
+// StoreDCRCredentialsIfAbsent are not observed by subsequent reads. This matches the
 // UpstreamTokens contract.
 //
 // # Lifetime
@@ -384,8 +384,8 @@ type DCRCredentials struct {
 //
 // # Why the key is embedded in DCRCredentials
 //
-// StoreDCRCredentials takes a single (ctx, creds) argument rather than the
-// (ctx, key, value) shape used by sibling Store* methods on Storage. The
+// StoreDCRCredentialsIfAbsent takes a single (ctx, creds) argument rather
+// than the (ctx, key, value) shape used by sibling Store* methods on Storage. The
 // DCRKey is embedded as DCRCredentials.Key so the persisted blob is
 // self-describing: a Redis SCAN, an admin-tool dump, or a cross-replica
 // reconciliation path can identify a record's logical cache slot
@@ -400,10 +400,16 @@ type DCRCredentialStore interface {
 	// The returned value is a defensive copy.
 	GetDCRCredentials(ctx context.Context, key DCRKey) (*DCRCredentials, error)
 
-	// StoreDCRCredentials persists the credentials, overwriting any existing
-	// entry for the same Key. See the interface-level "TTL handling" section
-	// for the contract on ClientSecretExpiresAt.
-	StoreDCRCredentials(ctx context.Context, creds *DCRCredentials) error
+	// StoreDCRCredentialsIfAbsent claims creds.Key for creds. Returns the
+	// authoritative durable value: the caller's own creds on a successful
+	// claim, the concurrent winner's value otherwise. Callers MUST use the
+	// returned value, not their input creds — RFC 7591 dynamic registration
+	// mints a unique client_id/client_secret on every call, so a caller that
+	// lost the race and kept using its own creds would hold credentials the
+	// durable store does not agree it owns. See the interface-level "TTL
+	// handling" section for the contract on ClientSecretExpiresAt. The
+	// returned *DCRCredentials is always non-nil when err is nil.
+	StoreDCRCredentialsIfAbsent(ctx context.Context, creds *DCRCredentials) (*DCRCredentials, error)
 }
 
 // User represents a user account in the authorization server.
@@ -591,26 +597,129 @@ func ValidateRegisterableClientID(id string) error {
 	return nil
 }
 
+// sameStringSet reports whether a and b contain the same elements as sets:
+// order and duplicate count don't matter, only membership. Canonicalisation
+// (sort, then dedup) mirrors ScopesHash's approach so the two stay consistent.
+func sameStringSet(a, b []string) bool {
+	as := slices.Clone(a)
+	bs := slices.Clone(b)
+	sort.Strings(as)
+	sort.Strings(bs)
+	as = slices.Compact(as)
+	bs = slices.Compact(bs)
+	return slices.Equal(as, bs)
+}
+
+// clientFingerprint is the identity of a configured client registration: the
+// fields that decide whether two records at the same client ID are the same
+// logical client (idempotent restart) or two different colliding ones (a loud
+// failure). Client secrets are deliberately excluded -- an operator rotating a
+// secret must still be able to reconcile. TokenEndpointAuthMethod is excluded
+// for the same reason -- both memory.go and redis.go fully overwrite the
+// stored record on a fingerprint match rather than merging, so a match never
+// "keeps stale data": reconfiguring either field is always applied on the
+// next reconcile regardless of whether the fingerprint matched.
+//
+// Deliberately NOT fosite.Client: fosite.DefaultClient's GetGrantTypes/
+// GetResponseTypes substitute an interactive default when the underlying list
+// is empty, so a deliberately-empty SPIFFE placeholder compared through that
+// interface can mismatch itself. Each backend converts its own representation
+// into this type; the comparison exists once, so memory- and Redis-backed
+// deployments cannot disagree about what "same client" means.
+type clientFingerprint struct {
+	scopes        []string
+	audience      []string
+	grantTypes    []string
+	responseTypes []string
+	// resources is the RFC 8707 resource allowlist, distinct from audience
+	// (see resourceScopedClient in spiffe_decorator.go). Two clients sharing
+	// every other field but differing in their resource allowlist are
+	// different logical clients -- this is the field #6473's review found
+	// missing from the SPIFFE static-client placeholder's durable identity.
+	resources           []string
+	identityFingerprint string
+	public              bool
+}
+
+// equal reports whether f and o represent the same logical client
+// configuration: equal scope set, audience set, grant-type set,
+// response-type set, resource set, and public/confidential class.
+func (f clientFingerprint) equal(o clientFingerprint) bool {
+	return sameStringSet(f.scopes, o.scopes) &&
+		sameStringSet(f.audience, o.audience) &&
+		sameStringSet(f.grantTypes, o.grantTypes) &&
+		sameStringSet(f.responseTypes, o.responseTypes) &&
+		sameStringSet(f.resources, o.resources) &&
+		f.identityFingerprint == o.identityFingerprint &&
+		f.public == o.public
+}
+
+// fingerprintOfClient reads a live fosite.Client. Safe here because a
+// deliberately-empty client is the live inertPlaceholderClient, whose
+// overridden getters correctly return nil on both sides of the comparison.
+// resources is read through resourceScopedClient (nil when a client type
+// doesn't implement it), the same narrow interface staticClientPlaceholder
+// and buildStoredClient use.
+func fingerprintOfClient(c fosite.Client) clientFingerprint {
+	var resources []string
+	var identityFingerprint string
+	if rc, ok := c.(resourceScopedClient); ok {
+		resources = rc.Resources()
+	}
+	if identity, ok := c.(spiffeIdentityClient); ok {
+		identityFingerprint = identity.IdentityFingerprint()
+	}
+	return clientFingerprint{
+		scopes:              c.GetScopes(),
+		audience:            c.GetAudience(),
+		grantTypes:          c.GetGrantTypes(),
+		responseTypes:       c.GetResponseTypes(),
+		resources:           resources,
+		identityFingerprint: identityFingerprint,
+		public:              c.IsPublic(),
+	}
+}
+
 // ClientRegistry provides client registration and lookup operations.
 // It embeds fosite.ClientManager for client lookup (GetClient) and adds
-// RegisterClient for dynamic client registration (RFC 7591).
+// RegisterClient for dynamic client registration (RFC 7591) and
+// ReconcileConfiguredClient for operator-declared clients.
 type ClientRegistry interface {
 	// ClientManager provides client lookup (GetClient)
 	fosite.ClientManager
 
-	// RegisterClient registers a new OAuth client. This supports both static
-	// configuration and dynamic client registration (RFC 7591).
-	//
-	// This is an upsert, not an insert: both backends store()/SET the client
-	// unconditionally, overwriting any existing row with the same ID rather
-	// than rejecting it. Re-registering an existing ID is the only mechanism
-	// that renews a DCR-issued client's TTL on the CIMD write-through path
-	// (see CIMDStorageDecorator.fetch), so callers rely on this upsert
-	// behavior, not merely tolerate it. The one exception is the in-memory
-	// backend at capacity: when the client map is full and no DCR-issued
-	// client is old enough to evict, RegisterClient returns ErrClientCapacity
-	// instead of completing the upsert.
+	// RegisterClient registers a new OAuth client. Always create-only: it
+	// returns ErrAlreadyExists if a client with the same ID already exists,
+	// regardless of the new client's origin. Used by unauthenticated DCR
+	// (RFC 7591) and any other caller that must never silently overwrite an
+	// existing registration.
 	RegisterClient(ctx context.Context, client fosite.Client) error
+
+	// UpsertDCRIssuedClient creates or replaces a DCR-issued client at
+	// client.GetID(). Unlike RegisterClient (create-only, for the unauthenticated
+	// /oauth/register endpoint), this is for callers that independently
+	// re-validate the client's authoritative source on every call -- today only
+	// CIMDStorageDecorator, which re-fetches and re-validates the document at
+	// client.GetID() before calling this. Creates the row if absent. If a row
+	// exists, replaces its data and refreshes its TTL only when the existing row
+	// is itself DCR-issued; refuses with ErrAlreadyExists if the existing row is
+	// NOT DCR-issued (protects a configured/SPIFFE-reconciled client from being
+	// clobbered). client MUST carry registration.DCRIssued -- refuses otherwise
+	// (mirrors ReconcileConfiguredClient's inverse check).
+	UpsertDCRIssuedClient(ctx context.Context, client fosite.Client) error
+
+	// ReconcileConfiguredClient applies an operator-declared (configured)
+	// client: creates it if no client with that ID exists, or idempotently
+	// replaces an existing record with the same ID when that record is itself
+	// operator-declared AND has a matching fingerprint (scopes, audience,
+	// grant types, response types, public/confidential class) — the
+	// restart-with-unchanged-config case. It refuses with ErrAlreadyExists if
+	// the existing record is DCR-issued (registration.DCRIssued), or if it is
+	// a *different* configured client at that ID (fingerprint mismatch — a
+	// misconfiguration, e.g. two colliding associations). The passed client
+	// must not itself carry the registration.DCRIssued marker;
+	// ReconcileConfiguredClient returns an error if it does.
+	ReconcileConfiguredClient(ctx context.Context, client fosite.Client) error
 
 	// RenewClientTTL extends the registration TTL of a DCR-issued client (public or
 	// confidential, gated on the registration.DCRIssued marker) so an actively-used
@@ -833,7 +942,7 @@ type Storage interface {
 	// and user management for multi-IDP support.
 	//
 	// DCRCredentialStore is intentionally NOT embedded here: doing so would
-	// promote GetDCRCredentials / StoreDCRCredentials onto every consumer of
+	// promote GetDCRCredentials / StoreDCRCredentialsIfAbsent onto every consumer of
 	// storage.Storage (handlers, server, registration, etc.), broadening the
 	// surface that can read raw client_secret / registration_access_token even
 	// when those consumers have no DCR responsibility. Code that legitimately

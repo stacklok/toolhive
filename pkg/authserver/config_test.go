@@ -184,6 +184,7 @@ func TestConfigValidate(t *testing.T) {
 		// Confidential-client transport gate (same predicate RunConfig.Validate uses)
 		{name: "confidential clients combined with insecure HTTP rejects", config: Config{Issuer: "http://example.com", KeyProvider: validKeyProvider, HMACSecrets: validHMAC, Upstreams: validUpstreams, AllowedAudiences: []string{"https://mcp.example.com"}, AllowConfidentialClientRegistration: true, InsecureAllowHTTP: true}, wantErr: true, errMsg: "allow_confidential_client_registration cannot be combined with insecure_allow_http"},
 		{name: "private-key JWT registration combined with insecure HTTP passes (no secret to protect)", config: Config{Issuer: "http://example.com", KeyProvider: validKeyProvider, HMACSecrets: validHMAC, Upstreams: validUpstreams, AllowedAudiences: []string{"https://mcp.example.com"}, AllowPrivateKeyJWTRegistration: true, InsecureAllowHTTP: true}},
+		{name: "private-key JWT registration combined with token exchange disabled rejects", config: Config{Issuer: "https://example.com", KeyProvider: validKeyProvider, HMACSecrets: validHMAC, Upstreams: validUpstreams, AllowedAudiences: []string{"https://mcp.example.com"}, AllowPrivateKeyJWTRegistration: true, DisableTokenExchange: true}, wantErr: true, errMsg: "token-exchange-only"},
 
 		// Valid configs
 		{name: "valid minimal", config: Config{Issuer: "https://example.com", KeyProvider: validKeyProvider, HMACSecrets: validHMAC, Upstreams: validUpstreams, AllowedAudiences: []string{"https://mcp.example.com"}}},

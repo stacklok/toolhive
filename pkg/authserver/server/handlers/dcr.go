@@ -237,8 +237,26 @@ func (h *Handler) validateDCRRequest(
 ) (*oauthproto.DynamicClientRegistrationRequest, *registration.DCRError) {
 	validated, dcrErr := registration.ValidateDCRRequest(
 		req, h.config.AllowConfidentialClientRegistration, h.config.AllowPrivateKeyJWTRegistration)
-	if dcrErr != nil || !h.tokenOnly {
+	if dcrErr != nil {
 		return validated, dcrErr
+	}
+	// validated.GrantTypes is the effective, post-defaulting grant set (e.g. an
+	// empty grant_types on a private_key_jwt request defaults to token exchange
+	// inside registration.validateGrantTypes), so this check catches both an
+	// explicit and an implicit token-exchange request. Without it, DCR would
+	// register a client whose GetGrantTypes() durably includes token exchange
+	// even though the RFC 8693 factory is never registered at the token
+	// endpoint when disabled, and every token request against that client
+	// would fail confusingly with unsupported_grant_type instead of being
+	// rejected here at registration time.
+	if !h.config.TokenExchangeEnabled && slices.Contains(validated.GrantTypes, oauthproto.GrantTypeTokenExchange) {
+		return nil, &registration.DCRError{
+			Error:            registration.DCRErrorInvalidClientMetadata,
+			ErrorDescription: "token exchange is disabled on this authorization server",
+		}
+	}
+	if !h.tokenOnly {
+		return validated, nil
 	}
 	if validated.TokenEndpointAuthMethod == oauthproto.TokenEndpointAuthMethodPrivateKeyJWT &&
 		slices.Contains(validated.GrantTypes, oauthproto.GrantTypeTokenExchange) {

@@ -691,6 +691,80 @@ func TestPostSSE_ProgressTokenClearedAfterRequestCompletes(t *testing.T) {
 	}, time.Second, 5*time.Millisecond, "progress token must be dropped once its request completes")
 }
 
+// TestPostSSE_ProgressQueuedWithFinalResponseIsPreserved verifies that a
+// progress notification already queued when the final response is delivered
+// is written before the final response rather than lost to select scheduling.
+func TestPostSSE_ProgressQueuedWithFinalResponseIsPreserved(t *testing.T) {
+	t.Parallel()
+
+	port := pickFreePort(t)
+	proxy, ctx := startProxyOnly(t, port)
+	received := make(chan *jsonrpc2.Request, 1)
+
+	go func() {
+		for {
+			select {
+			case msg := <-proxy.GetMessageChannel():
+				req, ok := msg.(*jsonrpc2.Request)
+				if !ok {
+					continue
+				}
+				if _, ok := extractMetaProgressToken(req.Params); ok {
+					received <- req
+					continue
+				}
+				response, err := jsonrpc2.NewResponse(req.ID, map[string]any{"ok": true}, nil)
+				if err == nil {
+					proxy.responseCh <- response
+				}
+			case <-ctx.Done():
+				return
+			}
+		}
+	}()
+
+	sessID := establishSession(t, port)
+	body := `{"jsonrpc":"2.0","id":"call-queued","method":"tools/call","params":{"_meta":{"progressToken":"client-token"}}}`
+	resp, reader := postSSE(ctx, t, port, sessID, body)
+	t.Cleanup(func() { _ = resp.Body.Close() })
+
+	var req *jsonrpc2.Request
+	select {
+	case req = <-received:
+	case <-time.After(2 * time.Second):
+		t.Fatal("timed out waiting for backend request")
+	}
+	_, ok := extractMetaProgressToken(req.Params)
+	require.True(t, ok)
+	var route progressRoute
+	require.Eventually(t, func() bool {
+		proxy.routing.ptMu.Lock()
+		defer proxy.routing.ptMu.Unlock()
+		for _, candidate := range proxy.routing.ptToks {
+			route = candidate
+			return true
+		}
+		return false
+	}, time.Second, time.Millisecond, "progress route should be registered")
+
+	progress, err := jsonrpc2.NewNotification("notifications/progress", map[string]any{
+		"progressToken": "client-token",
+		"progress":      1,
+	})
+	require.NoError(t, err)
+	route.deliver <- progress
+
+	final, err := jsonrpc2.NewResponse(req.ID, map[string]any{"ok": true}, nil)
+	require.NoError(t, err)
+	proxy.responseCh <- final
+
+	first := readSSEData(t, reader)
+	assert.Contains(t, first, "notifications/progress")
+	assert.Contains(t, first, `"progressToken":"client-token"`)
+	second := readSSEData(t, reader)
+	assert.Contains(t, second, `"id":"call-queued"`)
+}
+
 // TestPostSSE_ResourcesUpdated_SubscribersOnlyAndUpstreamRefCounted is the
 // resources/subscribe|unsubscribe SECURITY + ref-counting regression:
 //   - A subscribes uri1, B subscribes uri2: a resources/updated{uri1}

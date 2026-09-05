@@ -248,6 +248,7 @@ func (r *VirtualMCPServerReconciler) Reconcile(ctx context.Context, req ctrl.Req
 
 	// Create status manager for batched updates
 	statusManager := virtualmcpserverstatus.NewStatusManager(vmcp)
+	r.applyInlineInboundGrantDeprecationCondition(vmcp, statusManager)
 
 	// Run all pre-reconciliation validations.
 	// Returns (true, nil) to continue, (false, nil) when validation failed but
@@ -325,6 +326,33 @@ func (r *VirtualMCPServerReconciler) Reconcile(ctx context.Context, req ctrl.Req
 	return ctrl.Result{}, nil
 }
 
+func (*VirtualMCPServerReconciler) applyInlineInboundGrantDeprecationCondition(
+	vmcp *mcpv1beta1.VirtualMCPServer,
+	statusManager virtualmcpserverstatus.StatusManager,
+) {
+	if vmcp.Spec.AuthServerConfig == nil {
+		statusManager.RemoveConditionsWithPrefix(
+			mcpv1beta1.ConditionTypeVirtualMCPServerDeprecatedInboundGrantConfiguration, nil)
+		return
+	}
+	fields := deprecatedInboundGrantFields(vmcp.Spec.AuthServerConfig, "spec.authServerConfig")
+	if len(fields) == 0 {
+		statusManager.SetCondition(
+			mcpv1beta1.ConditionTypeVirtualMCPServerDeprecatedInboundGrantConfiguration,
+			mcpv1beta1.ConditionReasonVirtualMCPServerCanonicalInboundGrantConfiguration,
+			"Only canonical inbound grant configuration is populated",
+			metav1.ConditionFalse,
+		)
+		return
+	}
+	statusManager.SetCondition(
+		mcpv1beta1.ConditionTypeVirtualMCPServerDeprecatedInboundGrantConfiguration,
+		mcpv1beta1.ConditionReasonVirtualMCPServerLegacyInboundGrantFields,
+		deprecatedInboundGrantMessage(fields),
+		metav1.ConditionTrue,
+	)
+}
+
 // validateSpec validates the VirtualMCPServer spec and updates status on error.
 // Returns an error if validation fails, which signals the caller to stop reconciliation.
 func (r *VirtualMCPServerReconciler) validateSpec(
@@ -369,20 +397,24 @@ func (r *VirtualMCPServerReconciler) applyStatusUpdates(
 		return fmt.Errorf("failed to get latest VirtualMCPServer: %w", err)
 	}
 
-	// Apply collected changes to the latest status
-	hasUpdates := statusManager.UpdateStatus(ctx, &latest.Status)
-
-	// Only update if there are changes
-	if hasUpdates {
-		if err := r.Status().Update(ctx, latest); err != nil {
-			// Handle conflicts by returning error to trigger requeue
-			if errors.IsConflict(err) {
-				ctxLogger.V(1).Info("Conflict updating status, will requeue")
-				return err
-			}
-			return fmt.Errorf("failed to update VirtualMCPServer status: %w", err)
+	wasDeprecated := conditionStatusIs(latest.Status.Conditions,
+		mcpv1beta1.ConditionTypeVirtualMCPServerDeprecatedInboundGrantConfiguration, metav1.ConditionTrue)
+	becameDeprecated := false
+	if err := ctrlutil.MutateAndPatchStatus(ctx, r.Client, latest,
+		func(c *mcpv1beta1.VirtualMCPServer) {
+			statusManager.UpdateStatus(ctx, &c.Status)
+			becameDeprecated = conditionStatusIs(c.Status.Conditions,
+				mcpv1beta1.ConditionTypeVirtualMCPServerDeprecatedInboundGrantConfiguration, metav1.ConditionTrue)
+		}); err != nil {
+		if errors.IsConflict(err) {
+			ctxLogger.V(1).Info("Conflict updating status, will requeue")
 		}
-		ctxLogger.V(1).Info("Successfully applied batched status updates")
+		return fmt.Errorf("failed to update VirtualMCPServer status: %w", err)
+	}
+	if !wasDeprecated && becameDeprecated && r.Recorder != nil {
+		r.Recorder.Eventf(latest, nil, corev1.EventTypeWarning,
+			inboundGrantDeprecationEventReason, "MigrateInboundGrants",
+			"Released legacy inbound grant fields are deprecated; see status condition for canonical replacement paths")
 	}
 
 	return nil
@@ -635,12 +667,12 @@ func (*VirtualMCPServerReconciler) validateAuthServerConfig(
 		}
 	}
 
-	if len(cfg.UpstreamProviders) == 0 && len(cfg.DelegateClients) == 0 &&
+	if len(cfg.UpstreamProviders) == 0 && len(cfg.DelegateClients) == 0 && cfg.InboundGrants == nil &&
 		!slices.ContainsFunc(cfg.TrustedIssuers, func(issuer mcpv1beta1.TrustedIssuerConfig) bool {
 			return issuer.JWTBearerGrant != nil
 		}) {
 		message := "spec.authServerConfig requires at least one upstream provider unless " +
-			"delegateClients or a trustedIssuer with jwtBearerGrant is configured"
+			"delegateClients, inboundGrants, or a trustedIssuer with jwtBearerGrant is configured"
 		statusManager.SetPhase(mcpv1beta1.VirtualMCPServerPhaseFailed)
 		statusManager.SetMessage(message)
 		statusManager.SetAuthServerConfigValidatedCondition(

@@ -2721,6 +2721,29 @@ func (b *syncBuffer) String() string {
 	return b.buf.String()
 }
 
+//nolint:paralleltest // swaps the process-global slog default
+func TestWarnDeprecatedInboundGrantFields(t *testing.T) {
+	var buf syncBuffer
+	previous := slog.Default()
+	slog.SetDefault(slog.New(slog.NewTextHandler(&buf, &slog.HandlerOptions{Level: slog.LevelWarn})))
+	t.Cleanup(func() { slog.SetDefault(previous) })
+
+	warnDeprecatedInboundGrantFields(nil)
+	warnDeprecatedInboundGrantFields([]authserver.DeprecatedFieldPath{
+		{Path: "delegate_clients", Replacement: "inbound_grants.token_exchange.delegate_clients"},
+		{Path: "trusted_issuers[0].jwt_bearer_grant", Replacement: "inbound_grants.jwt_bearer.issuer_policies"},
+	})
+
+	logged := buf.String()
+	assert.Equal(t, 1, strings.Count(logged, "level=WARN"))
+	assert.Contains(t, logged, "delegate_clients -> inbound_grants.token_exchange.delegate_clients")
+	assert.Contains(t, logged,
+		"trusted_issuers[0].jwt_bearer_grant -> inbound_grants.jwt_bearer.issuer_policies")
+	assert.NotContains(t, logged, "subject-value")
+	assert.NotContains(t, logged, "spiffe://")
+	assert.NotContains(t, logged, "secret-value")
+}
+
 // TestNewEmbeddedAuthServer_DeferredCleanupSanitizesLog pins the post-#5196
 // invariant that the deferred-cleanup slog.Warn at the top of
 // NewEmbeddedAuthServerWithStorage routes both closeErr and retErr through

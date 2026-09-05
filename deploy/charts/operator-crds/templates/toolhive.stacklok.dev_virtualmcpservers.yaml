@@ -189,6 +189,7 @@ spec:
                       This is independent of allowConfidentialClientRegistration: it neither
                       enables nor requires unauthenticated confidential dynamic client
                       registration.
+                      This legacy field is deprecated; use inboundGrants.tokenExchange.delegateClients.
                     items:
                       description: |-
                         DelegateClientConfig configures a pre-provisioned confidential OAuth client
@@ -324,6 +325,215 @@ spec:
                       type: object
                     type: array
                     x-kubernetes-list-type: atomic
+                  inboundGrants:
+                    description: InboundGrants configures canonical inbound OAuth
+                      grant families.
+                    properties:
+                      jwtBearer:
+                        description: JWTBearer configures RFC 7523 issuer policies.
+                        properties:
+                          issuerPolicies:
+                            description: IssuerPolicies binds RFC 7523 policy to named
+                              trusted issuers.
+                            items:
+                              description: JWTBearerIssuerPolicyConfig binds RFC 7523
+                                policy to a named trusted issuer.
+                              properties:
+                                acceptedAudiences:
+                                  description: |-
+                                    AcceptedAudiences identifies this authorization server's accepted
+                                    assertion audiences. When omitted, runtime validation defaults to the
+                                    token endpoint.
+                                  items:
+                                    maxLength: 2048
+                                    minLength: 1
+                                    pattern: ^https?://[^[:space:]]+$
+                                    type: string
+                                  maxItems: 50
+                                  type: array
+                                  x-kubernetes-list-type: atomic
+                                issuerRef:
+                                  description: IssuerRef references trustedIssuers[].name.
+                                  maxLength: 253
+                                  minLength: 1
+                                  type: string
+                                maxAssertionAge:
+                                  description: MaxAssertionAge caps the exp-iat interval
+                                    independently of exp.
+                                  type: string
+                                subjectBindings:
+                                  description: |-
+                                    SubjectBindings maps an exact external subject to allowed RFC 8707
+                                    resources.
+                                  items:
+                                    description: |-
+                                      JWTBearerSubjectBinding configures the exact subject and allowed resources
+                                      for one RFC 7523 JWT-bearer assertion identity.
+                                    properties:
+                                      allowedResources:
+                                        description: |-
+                                          AllowedResources is the exact set of RFC 8707 resources this subject may
+                                          request.
+                                        items:
+                                          maxLength: 2048
+                                          minLength: 1
+                                          pattern: ^https?://[^[:space:]]+$
+                                          type: string
+                                        maxItems: 50
+                                        minItems: 1
+                                        type: array
+                                        x-kubernetes-list-type: atomic
+                                      subject:
+                                        description: Subject is an exact assertion
+                                          sub value. Wildcards are not supported.
+                                        maxLength: 256
+                                        minLength: 1
+                                        pattern: ^[^*]+$
+                                        type: string
+                                    required:
+                                    - allowedResources
+                                    - subject
+                                    type: object
+                                  maxItems: 50
+                                  minItems: 1
+                                  type: array
+                                  x-kubernetes-list-type: atomic
+                              required:
+                              - issuerRef
+                              - maxAssertionAge
+                              - subjectBindings
+                              type: object
+                              x-kubernetes-validations:
+                              - message: maxAssertionAge must be greater than zero
+                                rule: duration(self.maxAssertionAge) > duration('0s')
+                              - message: subjectBindings must not contain duplicate
+                                  subjects
+                                rule: self.subjectBindings.all(binding, self.subjectBindings.filter(other,
+                                  other.subject == binding.subject).size() == 1)
+                            maxItems: 20
+                            type: array
+                            x-kubernetes-list-type: atomic
+                        type: object
+                      tokenExchange:
+                        description: TokenExchange configures RFC 8693 clients and
+                          issuer policies.
+                        properties:
+                          delegateClients:
+                            description: DelegateClients configures pre-provisioned
+                              confidential clients.
+                            items:
+                              description: |-
+                                DelegateClientConfig configures a pre-provisioned confidential OAuth client
+                                for RFC 8693 token exchange. Its secret is referenced from a Kubernetes
+                                Secret and is never represented inline.
+                              properties:
+                                audiences:
+                                  description: Audiences is the narrowed set of RFC
+                                    8707 resources this client may request.
+                                  items:
+                                    maxLength: 2048
+                                    minLength: 1
+                                    type: string
+                                  maxItems: 10
+                                  minItems: 1
+                                  type: array
+                                  x-kubernetes-list-type: atomic
+                                clientId:
+                                  description: ClientID is the OAuth client_id presented
+                                    at the token endpoint.
+                                  maxLength: 256
+                                  minLength: 1
+                                  type: string
+                                clientSecretRef:
+                                  description: ClientSecretRef references the Kubernetes
+                                    Secret key containing the client secret.
+                                  properties:
+                                    key:
+                                      description: Key is the key within the secret
+                                      type: string
+                                    name:
+                                      description: Name is the name of the secret
+                                      type: string
+                                  required:
+                                  - key
+                                  - name
+                                  type: object
+                                scopes:
+                                  description: Scopes is the narrowed set of OAuth
+                                    scopes this client may request.
+                                  items:
+                                    maxLength: 256
+                                    minLength: 1
+                                    type: string
+                                  maxItems: 10
+                                  minItems: 1
+                                  type: array
+                                  x-kubernetes-list-type: atomic
+                              required:
+                              - audiences
+                              - clientId
+                              - clientSecretRef
+                              - scopes
+                              type: object
+                              x-kubernetes-validations:
+                              - message: clientSecretRef.name and clientSecretRef.key
+                                  are required and must be non-empty
+                                rule: has(self.clientSecretRef) && size(self.clientSecretRef.name)
+                                  > 0 && size(self.clientSecretRef.key) > 0
+                            maxItems: 10
+                            type: array
+                            x-kubernetes-list-type: atomic
+                          issuerPolicies:
+                            description: IssuerPolicies binds RFC 8693 policy to named
+                              trusted issuers.
+                            items:
+                              description: TokenExchangeIssuerPolicyConfig binds RFC
+                                8693 policy to a named trusted issuer.
+                              properties:
+                                actorClaim:
+                                  description: ActorClaim names the claim containing
+                                    the external actor identity.
+                                  maxLength: 64
+                                  type: string
+                                actorMatcher:
+                                  maxLength: 4096
+                                  type: string
+                                allowMayAct:
+                                  type: boolean
+                                allowedActors:
+                                  items:
+                                    type: string
+                                  maxItems: 50
+                                  type: array
+                                  x-kubernetes-list-type: atomic
+                                allowedDelegateClients:
+                                  items:
+                                    type: string
+                                  maxItems: 50
+                                  minItems: 1
+                                  type: array
+                                  x-kubernetes-list-type: atomic
+                                expectedAudience:
+                                  description: ExpectedAudience is the required RFC
+                                    8693 subject-token audience.
+                                  maxLength: 2048
+                                  minLength: 1
+                                  type: string
+                                issuerRef:
+                                  description: IssuerRef references trustedIssuers[].name.
+                                  maxLength: 253
+                                  minLength: 1
+                                  type: string
+                              required:
+                              - allowedDelegateClients
+                              - expectedAudience
+                              - issuerRef
+                              type: object
+                            maxItems: 20
+                            type: array
+                            x-kubernetes-list-type: atomic
+                        type: object
+                    type: object
                   insecureAllowConfidentialOverLoopbackHTTP:
                     default: false
                     description: |-
@@ -649,25 +859,9 @@ spec:
                     items:
                       description: |-
                         TrustedIssuerConfig configures an external OIDC issuer whose tokens are
-                        accepted as RFC 8693 subject tokens or RFC 7523 JWT-bearer assertions during
-                        token exchange. It mirrors tokenexchange.TrustedIssuer
-                        (pkg/authserver/server/tokenexchange), the runtime type the operator converts
-                        this into directly — no secret is referenced by this type, so no SecretKeyRef
-                        indirection is needed, unlike DelegateClientConfig.
-
-                        expectedAudience is exempted only for a grant-only issuer: jwtBearerGrant
-                        present and none of actorClaim, actorMatcher, allowMayAct, or allowedActors
-                        set. Any RFC 8693 delegation field (actorClaim, actorMatcher, allowMayAct,
-                        allowedActors) still requires expectedAudience, even when combined with
-                        jwtBearerGrant.
-
-                        The allowedDelegateClients rule below mirrors validateDelegationPolicy
-                        (pkg/authserver/server/tokenexchange/multi_issuer_validator.go): it is
-                        keyed on whether ANY delegation field is set (expectedAudience,
-                        actorClaim, actorMatcher, allowMayAct), not merely on whether
-                        jwtBearerGrant is absent — an issuer can combine jwtBearerGrant with
-                        expectedAudience for RFC 8693 delegation on the same issuer, and that
-                        combination still requires allowedDelegateClients at the Go level.
+                        accepted as RFC 8693 subject tokens or RFC 7523 JWT-bearer assertions. Trust
+                        fields remain top-level; canonical grant policy references this declaration by
+                        Name. The embedded grant-policy fields are retained for released CRD compatibility.
                       properties:
                         actorClaim:
                           description: |-
@@ -676,6 +870,8 @@ spec:
                             Defaults to "azp" when empty; use "appid" for Microsoft Entra v1, "cid"
                             for Okta. The special value "client_id" reads the subject token's
                             client_id claim instead.
+                            This legacy field is deprecated; configure RFC 8693 policy under
+                            inboundGrants.tokenExchange.issuerPolicies.
                           maxLength: 64
                           type: string
                         actorMatcher:
@@ -688,6 +884,8 @@ spec:
                             not at reconcile time. A syntactically invalid expression fails
                             reconciliation (surfaced via the AuthServerConfigValidated condition),
                             not admission — there is no validating webhook for this field.
+                            This legacy field is deprecated; configure RFC 8693 policy under
+                            inboundGrants.tokenExchange.issuerPolicies.
                           maxLength: 4096
                           type: string
                         allowMayAct:
@@ -699,6 +897,8 @@ spec:
                             Does not affect self-issued subject tokens. The wildcard is never
                             permitted alongside specific allowedDelegateClients, regardless of
                             this setting.
+                            This legacy field is deprecated; configure RFC 8693 policy under
+                            inboundGrants.tokenExchange.issuerPolicies.
                           type: boolean
                         allowPrivateIPs:
                           description: |-
@@ -717,6 +917,8 @@ spec:
                             either signal is sufficient. Empty denies every token unless
                             actorMatcher is set, or allowMayAct is true and the token carries a
                             permitted may_act claim.
+                            This legacy field is deprecated; configure RFC 8693 policy under
+                            inboundGrants.tokenExchange.issuerPolicies.
                           items:
                             maxLength: 256
                             minLength: 1
@@ -731,6 +933,8 @@ spec:
                             jwtBearerGrant is configured; set it to ["*"] to permit any confidential
                             client holding the token-exchange grant, or list specific client IDs to
                             bind delegation to them.
+                            This legacy field is deprecated; configure RFC 8693 policy under
+                            inboundGrants.tokenExchange.issuerPolicies.
                           items:
                             maxLength: 256
                             minLength: 1
@@ -784,6 +988,8 @@ spec:
                             ExpectedAudience is the expected "aud" claim value that must appear in
                             an RFC 8693 subject token's audience list. It is not used by an RFC 7523
                             JWT-bearer assertion, whose audience is the token endpoint.
+                            This legacy field is deprecated; configure RFC 8693 policy under
+                            inboundGrants.tokenExchange.issuerPolicies.
                           maxLength: 2048
                           minLength: 1
                           type: string
@@ -810,6 +1016,8 @@ spec:
                           description: |-
                             JWTBearerGrant enables the plain RFC 7523 JWT-bearer grant for this
                             issuer. It is independent of RFC 8693 delegation policy.
+                            This legacy field is deprecated; configure RFC 7523 policy under
+                            inboundGrants.jwtBearer.issuerPolicies.
                           properties:
                             acceptedAudiences:
                               description: |-
@@ -875,6 +1083,13 @@ spec:
                           - message: subjectBindings must not contain duplicate subjects
                             rule: self.subjectBindings.all(binding, self.subjectBindings.filter(other,
                               other.subject == binding.subject).size() == 1)
+                        name:
+                          description: |-
+                            Name optionally identifies this trust declaration for canonical issuerRef references.
+                            Names must be unique within trustedIssuers when set.
+                          maxLength: 253
+                          minLength: 1
+                          type: string
                       required:
                       - issuerUrl
                       type: object
@@ -895,23 +1110,22 @@ spec:
                       - message: allowPrivateIPs requires jwksUrl to be set explicitly
                         rule: '!(has(self.allowPrivateIPs) && self.allowPrivateIPs)
                           || (has(self.jwksUrl) && self.jwksUrl != "")'
-                      - message: expectedAudience is required unless jwtBearerGrant
-                          is configured without actorClaim, actorMatcher, allowMayAct,
-                          or allowedActors
-                        rule: (has(self.jwtBearerGrant) && !((has(self.actorClaim)
-                          && size(self.actorClaim) > 0) || (has(self.actorMatcher)
-                          && size(self.actorMatcher) > 0) || (has(self.allowMayAct)
-                          && self.allowMayAct) || (has(self.allowedActors) && size(self.allowedActors)
-                          > 0))) || (has(self.expectedAudience) && size(self.expectedAudience)
-                          > 0)
-                      - message: allowedDelegateClients is required when expectedAudience,
-                          actorClaim, actorMatcher, or allowMayAct is set
+                      - message: expectedAudience is required when legacy RFC 8693
+                          policy is configured
+                        rule: '!((has(self.actorClaim) && size(self.actorClaim) >
+                          0) || (has(self.actorMatcher) && size(self.actorMatcher)
+                          > 0) || (has(self.allowMayAct) && self.allowMayAct) || (has(self.allowedActors)
+                          && size(self.allowedActors) > 0) || (has(self.allowedDelegateClients)
+                          && size(self.allowedDelegateClients) > 0)) || (has(self.expectedAudience)
+                          && size(self.expectedAudience) > 0)'
+                      - message: allowedDelegateClients is required when legacy RFC
+                          8693 policy is configured
                         rule: '!((has(self.expectedAudience) && size(self.expectedAudience)
                           > 0) || (has(self.actorClaim) && size(self.actorClaim) >
                           0) || (has(self.actorMatcher) && size(self.actorMatcher)
-                          > 0) || (has(self.allowMayAct) && self.allowMayAct)) ||
-                          (has(self.allowedDelegateClients) && size(self.allowedDelegateClients)
-                          > 0)'
+                          > 0) || (has(self.allowMayAct) && self.allowMayAct) || (has(self.allowedActors)
+                          && size(self.allowedActors) > 0)) || (has(self.allowedDelegateClients)
+                          && size(self.allowedDelegateClients) > 0)'
                     maxItems: 20
                     type: array
                     x-kubernetes-list-type: atomic
@@ -1531,12 +1745,13 @@ spec:
                 - issuer
                 type: object
                 x-kubernetes-validations:
-                - message: at least one upstream provider is required unless delegateClients
-                    or a trustedIssuer with jwtBearerGrant is configured
+                - message: at least one upstream provider or inbound grant family
+                    is required
                   rule: (has(self.upstreamProviders) && size(self.upstreamProviders)
                     > 0) || (has(self.delegateClients) && size(self.delegateClients)
                     > 0) || (has(self.trustedIssuers) && self.trustedIssuers.exists(issuer,
-                    has(issuer.jwtBearerGrant)))
+                    has(issuer.jwtBearerGrant))) || (has(self.inboundGrants) && (has(self.inboundGrants.tokenExchange)
+                    || has(self.inboundGrants.jwtBearer)))
                 - message: allowConfidentialClientRegistration cannot be combined
                     with insecureAllowHTTP; client secrets would be issued in cleartext
                     over an unauthenticated endpoint
@@ -1551,6 +1766,46 @@ spec:
                   rule: '!has(self.delegateClients) || size(self.delegateClients)
                     == 0 || !self.issuer.startsWith(''http://'') || (has(self.insecureAllowConfidentialOverLoopbackHTTP)
                     && self.insecureAllowConfidentialOverLoopbackHTTP)'
+                - message: canonical tokenExchange conflicts with legacy delegateClients
+                    or RFC 8693 trusted issuer policy
+                  rule: '!has(self.inboundGrants) || !has(self.inboundGrants.tokenExchange)
+                    || ((!has(self.delegateClients) || size(self.delegateClients)
+                    == 0) && (!has(self.trustedIssuers) || !self.trustedIssuers.exists(issuer,
+                    has(issuer.expectedAudience) || has(issuer.actorClaim) || has(issuer.allowedActors)
+                    || has(issuer.actorMatcher) || has(issuer.allowedDelegateClients)
+                    || (has(issuer.allowMayAct) && issuer.allowMayAct))))'
+                - message: canonical jwtBearer conflicts with legacy jwtBearerGrant
+                  rule: '!has(self.inboundGrants) || !has(self.inboundGrants.jwtBearer)
+                    || !has(self.trustedIssuers) || !self.trustedIssuers.exists(issuer,
+                    has(issuer.jwtBearerGrant))'
+                - message: trustedIssuers must not contain duplicate names
+                  rule: '!has(self.trustedIssuers) || self.trustedIssuers.all(issuer,
+                    !has(issuer.name) || self.trustedIssuers.filter(other, has(other.name)
+                    && other.name == issuer.name).size() == 1)'
+                - message: every tokenExchange issuerRef must reference a named trusted
+                    issuer
+                  rule: '!has(self.inboundGrants) || !has(self.inboundGrants.tokenExchange)
+                    || !has(self.inboundGrants.tokenExchange.issuerPolicies) || self.inboundGrants.tokenExchange.issuerPolicies.all(policy,
+                    has(self.trustedIssuers) && self.trustedIssuers.exists(issuer,
+                    has(issuer.name) && issuer.name == policy.issuerRef))'
+                - message: tokenExchange issuerPolicies must not contain duplicate
+                    issuerRef values
+                  rule: '!has(self.inboundGrants) || !has(self.inboundGrants.tokenExchange)
+                    || !has(self.inboundGrants.tokenExchange.issuerPolicies) || self.inboundGrants.tokenExchange.issuerPolicies.all(policy,
+                    self.inboundGrants.tokenExchange.issuerPolicies.filter(other,
+                    other.issuerRef == policy.issuerRef).size() == 1)'
+                - message: every jwtBearer issuerRef must reference a named trusted
+                    issuer
+                  rule: '!has(self.inboundGrants) || !has(self.inboundGrants.jwtBearer)
+                    || !has(self.inboundGrants.jwtBearer.issuerPolicies) || self.inboundGrants.jwtBearer.issuerPolicies.all(policy,
+                    has(self.trustedIssuers) && self.trustedIssuers.exists(issuer,
+                    has(issuer.name) && issuer.name == policy.issuerRef))'
+                - message: jwtBearer issuerPolicies must not contain duplicate issuerRef
+                    values
+                  rule: '!has(self.inboundGrants) || !has(self.inboundGrants.jwtBearer)
+                    || !has(self.inboundGrants.jwtBearer.issuerPolicies) || self.inboundGrants.jwtBearer.issuerPolicies.all(policy,
+                    self.inboundGrants.jwtBearer.issuerPolicies.filter(other, other.issuerRef
+                    == policy.issuerRef).size() == 1)'
               config:
                 description: |-
                   Config is the Virtual MCP server configuration.
@@ -4322,6 +4577,7 @@ spec:
                       This is independent of allowConfidentialClientRegistration: it neither
                       enables nor requires unauthenticated confidential dynamic client
                       registration.
+                      This legacy field is deprecated; use inboundGrants.tokenExchange.delegateClients.
                     items:
                       description: |-
                         DelegateClientConfig configures a pre-provisioned confidential OAuth client
@@ -4457,6 +4713,215 @@ spec:
                       type: object
                     type: array
                     x-kubernetes-list-type: atomic
+                  inboundGrants:
+                    description: InboundGrants configures canonical inbound OAuth
+                      grant families.
+                    properties:
+                      jwtBearer:
+                        description: JWTBearer configures RFC 7523 issuer policies.
+                        properties:
+                          issuerPolicies:
+                            description: IssuerPolicies binds RFC 7523 policy to named
+                              trusted issuers.
+                            items:
+                              description: JWTBearerIssuerPolicyConfig binds RFC 7523
+                                policy to a named trusted issuer.
+                              properties:
+                                acceptedAudiences:
+                                  description: |-
+                                    AcceptedAudiences identifies this authorization server's accepted
+                                    assertion audiences. When omitted, runtime validation defaults to the
+                                    token endpoint.
+                                  items:
+                                    maxLength: 2048
+                                    minLength: 1
+                                    pattern: ^https?://[^[:space:]]+$
+                                    type: string
+                                  maxItems: 50
+                                  type: array
+                                  x-kubernetes-list-type: atomic
+                                issuerRef:
+                                  description: IssuerRef references trustedIssuers[].name.
+                                  maxLength: 253
+                                  minLength: 1
+                                  type: string
+                                maxAssertionAge:
+                                  description: MaxAssertionAge caps the exp-iat interval
+                                    independently of exp.
+                                  type: string
+                                subjectBindings:
+                                  description: |-
+                                    SubjectBindings maps an exact external subject to allowed RFC 8707
+                                    resources.
+                                  items:
+                                    description: |-
+                                      JWTBearerSubjectBinding configures the exact subject and allowed resources
+                                      for one RFC 7523 JWT-bearer assertion identity.
+                                    properties:
+                                      allowedResources:
+                                        description: |-
+                                          AllowedResources is the exact set of RFC 8707 resources this subject may
+                                          request.
+                                        items:
+                                          maxLength: 2048
+                                          minLength: 1
+                                          pattern: ^https?://[^[:space:]]+$
+                                          type: string
+                                        maxItems: 50
+                                        minItems: 1
+                                        type: array
+                                        x-kubernetes-list-type: atomic
+                                      subject:
+                                        description: Subject is an exact assertion
+                                          sub value. Wildcards are not supported.
+                                        maxLength: 256
+                                        minLength: 1
+                                        pattern: ^[^*]+$
+                                        type: string
+                                    required:
+                                    - allowedResources
+                                    - subject
+                                    type: object
+                                  maxItems: 50
+                                  minItems: 1
+                                  type: array
+                                  x-kubernetes-list-type: atomic
+                              required:
+                              - issuerRef
+                              - maxAssertionAge
+                              - subjectBindings
+                              type: object
+                              x-kubernetes-validations:
+                              - message: maxAssertionAge must be greater than zero
+                                rule: duration(self.maxAssertionAge) > duration('0s')
+                              - message: subjectBindings must not contain duplicate
+                                  subjects
+                                rule: self.subjectBindings.all(binding, self.subjectBindings.filter(other,
+                                  other.subject == binding.subject).size() == 1)
+                            maxItems: 20
+                            type: array
+                            x-kubernetes-list-type: atomic
+                        type: object
+                      tokenExchange:
+                        description: TokenExchange configures RFC 8693 clients and
+                          issuer policies.
+                        properties:
+                          delegateClients:
+                            description: DelegateClients configures pre-provisioned
+                              confidential clients.
+                            items:
+                              description: |-
+                                DelegateClientConfig configures a pre-provisioned confidential OAuth client
+                                for RFC 8693 token exchange. Its secret is referenced from a Kubernetes
+                                Secret and is never represented inline.
+                              properties:
+                                audiences:
+                                  description: Audiences is the narrowed set of RFC
+                                    8707 resources this client may request.
+                                  items:
+                                    maxLength: 2048
+                                    minLength: 1
+                                    type: string
+                                  maxItems: 10
+                                  minItems: 1
+                                  type: array
+                                  x-kubernetes-list-type: atomic
+                                clientId:
+                                  description: ClientID is the OAuth client_id presented
+                                    at the token endpoint.
+                                  maxLength: 256
+                                  minLength: 1
+                                  type: string
+                                clientSecretRef:
+                                  description: ClientSecretRef references the Kubernetes
+                                    Secret key containing the client secret.
+                                  properties:
+                                    key:
+                                      description: Key is the key within the secret
+                                      type: string
+                                    name:
+                                      description: Name is the name of the secret
+                                      type: string
+                                  required:
+                                  - key
+                                  - name
+                                  type: object
+                                scopes:
+                                  description: Scopes is the narrowed set of OAuth
+                                    scopes this client may request.
+                                  items:
+                                    maxLength: 256
+                                    minLength: 1
+                                    type: string
+                                  maxItems: 10
+                                  minItems: 1
+                                  type: array
+                                  x-kubernetes-list-type: atomic
+                              required:
+                              - audiences
+                              - clientId
+                              - clientSecretRef
+                              - scopes
+                              type: object
+                              x-kubernetes-validations:
+                              - message: clientSecretRef.name and clientSecretRef.key
+                                  are required and must be non-empty
+                                rule: has(self.clientSecretRef) && size(self.clientSecretRef.name)
+                                  > 0 && size(self.clientSecretRef.key) > 0
+                            maxItems: 10
+                            type: array
+                            x-kubernetes-list-type: atomic
+                          issuerPolicies:
+                            description: IssuerPolicies binds RFC 8693 policy to named
+                              trusted issuers.
+                            items:
+                              description: TokenExchangeIssuerPolicyConfig binds RFC
+                                8693 policy to a named trusted issuer.
+                              properties:
+                                actorClaim:
+                                  description: ActorClaim names the claim containing
+                                    the external actor identity.
+                                  maxLength: 64
+                                  type: string
+                                actorMatcher:
+                                  maxLength: 4096
+                                  type: string
+                                allowMayAct:
+                                  type: boolean
+                                allowedActors:
+                                  items:
+                                    type: string
+                                  maxItems: 50
+                                  type: array
+                                  x-kubernetes-list-type: atomic
+                                allowedDelegateClients:
+                                  items:
+                                    type: string
+                                  maxItems: 50
+                                  minItems: 1
+                                  type: array
+                                  x-kubernetes-list-type: atomic
+                                expectedAudience:
+                                  description: ExpectedAudience is the required RFC
+                                    8693 subject-token audience.
+                                  maxLength: 2048
+                                  minLength: 1
+                                  type: string
+                                issuerRef:
+                                  description: IssuerRef references trustedIssuers[].name.
+                                  maxLength: 253
+                                  minLength: 1
+                                  type: string
+                              required:
+                              - allowedDelegateClients
+                              - expectedAudience
+                              - issuerRef
+                              type: object
+                            maxItems: 20
+                            type: array
+                            x-kubernetes-list-type: atomic
+                        type: object
+                    type: object
                   insecureAllowConfidentialOverLoopbackHTTP:
                     default: false
                     description: |-
@@ -4782,25 +5247,9 @@ spec:
                     items:
                       description: |-
                         TrustedIssuerConfig configures an external OIDC issuer whose tokens are
-                        accepted as RFC 8693 subject tokens or RFC 7523 JWT-bearer assertions during
-                        token exchange. It mirrors tokenexchange.TrustedIssuer
-                        (pkg/authserver/server/tokenexchange), the runtime type the operator converts
-                        this into directly — no secret is referenced by this type, so no SecretKeyRef
-                        indirection is needed, unlike DelegateClientConfig.
-
-                        expectedAudience is exempted only for a grant-only issuer: jwtBearerGrant
-                        present and none of actorClaim, actorMatcher, allowMayAct, or allowedActors
-                        set. Any RFC 8693 delegation field (actorClaim, actorMatcher, allowMayAct,
-                        allowedActors) still requires expectedAudience, even when combined with
-                        jwtBearerGrant.
-
-                        The allowedDelegateClients rule below mirrors validateDelegationPolicy
-                        (pkg/authserver/server/tokenexchange/multi_issuer_validator.go): it is
-                        keyed on whether ANY delegation field is set (expectedAudience,
-                        actorClaim, actorMatcher, allowMayAct), not merely on whether
-                        jwtBearerGrant is absent — an issuer can combine jwtBearerGrant with
-                        expectedAudience for RFC 8693 delegation on the same issuer, and that
-                        combination still requires allowedDelegateClients at the Go level.
+                        accepted as RFC 8693 subject tokens or RFC 7523 JWT-bearer assertions. Trust
+                        fields remain top-level; canonical grant policy references this declaration by
+                        Name. The embedded grant-policy fields are retained for released CRD compatibility.
                       properties:
                         actorClaim:
                           description: |-
@@ -4809,6 +5258,8 @@ spec:
                             Defaults to "azp" when empty; use "appid" for Microsoft Entra v1, "cid"
                             for Okta. The special value "client_id" reads the subject token's
                             client_id claim instead.
+                            This legacy field is deprecated; configure RFC 8693 policy under
+                            inboundGrants.tokenExchange.issuerPolicies.
                           maxLength: 64
                           type: string
                         actorMatcher:
@@ -4821,6 +5272,8 @@ spec:
                             not at reconcile time. A syntactically invalid expression fails
                             reconciliation (surfaced via the AuthServerConfigValidated condition),
                             not admission — there is no validating webhook for this field.
+                            This legacy field is deprecated; configure RFC 8693 policy under
+                            inboundGrants.tokenExchange.issuerPolicies.
                           maxLength: 4096
                           type: string
                         allowMayAct:
@@ -4832,6 +5285,8 @@ spec:
                             Does not affect self-issued subject tokens. The wildcard is never
                             permitted alongside specific allowedDelegateClients, regardless of
                             this setting.
+                            This legacy field is deprecated; configure RFC 8693 policy under
+                            inboundGrants.tokenExchange.issuerPolicies.
                           type: boolean
                         allowPrivateIPs:
                           description: |-
@@ -4850,6 +5305,8 @@ spec:
                             either signal is sufficient. Empty denies every token unless
                             actorMatcher is set, or allowMayAct is true and the token carries a
                             permitted may_act claim.
+                            This legacy field is deprecated; configure RFC 8693 policy under
+                            inboundGrants.tokenExchange.issuerPolicies.
                           items:
                             maxLength: 256
                             minLength: 1
@@ -4864,6 +5321,8 @@ spec:
                             jwtBearerGrant is configured; set it to ["*"] to permit any confidential
                             client holding the token-exchange grant, or list specific client IDs to
                             bind delegation to them.
+                            This legacy field is deprecated; configure RFC 8693 policy under
+                            inboundGrants.tokenExchange.issuerPolicies.
                           items:
                             maxLength: 256
                             minLength: 1
@@ -4917,6 +5376,8 @@ spec:
                             ExpectedAudience is the expected "aud" claim value that must appear in
                             an RFC 8693 subject token's audience list. It is not used by an RFC 7523
                             JWT-bearer assertion, whose audience is the token endpoint.
+                            This legacy field is deprecated; configure RFC 8693 policy under
+                            inboundGrants.tokenExchange.issuerPolicies.
                           maxLength: 2048
                           minLength: 1
                           type: string
@@ -4943,6 +5404,8 @@ spec:
                           description: |-
                             JWTBearerGrant enables the plain RFC 7523 JWT-bearer grant for this
                             issuer. It is independent of RFC 8693 delegation policy.
+                            This legacy field is deprecated; configure RFC 7523 policy under
+                            inboundGrants.jwtBearer.issuerPolicies.
                           properties:
                             acceptedAudiences:
                               description: |-
@@ -5008,6 +5471,13 @@ spec:
                           - message: subjectBindings must not contain duplicate subjects
                             rule: self.subjectBindings.all(binding, self.subjectBindings.filter(other,
                               other.subject == binding.subject).size() == 1)
+                        name:
+                          description: |-
+                            Name optionally identifies this trust declaration for canonical issuerRef references.
+                            Names must be unique within trustedIssuers when set.
+                          maxLength: 253
+                          minLength: 1
+                          type: string
                       required:
                       - issuerUrl
                       type: object
@@ -5028,23 +5498,22 @@ spec:
                       - message: allowPrivateIPs requires jwksUrl to be set explicitly
                         rule: '!(has(self.allowPrivateIPs) && self.allowPrivateIPs)
                           || (has(self.jwksUrl) && self.jwksUrl != "")'
-                      - message: expectedAudience is required unless jwtBearerGrant
-                          is configured without actorClaim, actorMatcher, allowMayAct,
-                          or allowedActors
-                        rule: (has(self.jwtBearerGrant) && !((has(self.actorClaim)
-                          && size(self.actorClaim) > 0) || (has(self.actorMatcher)
-                          && size(self.actorMatcher) > 0) || (has(self.allowMayAct)
-                          && self.allowMayAct) || (has(self.allowedActors) && size(self.allowedActors)
-                          > 0))) || (has(self.expectedAudience) && size(self.expectedAudience)
-                          > 0)
-                      - message: allowedDelegateClients is required when expectedAudience,
-                          actorClaim, actorMatcher, or allowMayAct is set
+                      - message: expectedAudience is required when legacy RFC 8693
+                          policy is configured
+                        rule: '!((has(self.actorClaim) && size(self.actorClaim) >
+                          0) || (has(self.actorMatcher) && size(self.actorMatcher)
+                          > 0) || (has(self.allowMayAct) && self.allowMayAct) || (has(self.allowedActors)
+                          && size(self.allowedActors) > 0) || (has(self.allowedDelegateClients)
+                          && size(self.allowedDelegateClients) > 0)) || (has(self.expectedAudience)
+                          && size(self.expectedAudience) > 0)'
+                      - message: allowedDelegateClients is required when legacy RFC
+                          8693 policy is configured
                         rule: '!((has(self.expectedAudience) && size(self.expectedAudience)
                           > 0) || (has(self.actorClaim) && size(self.actorClaim) >
                           0) || (has(self.actorMatcher) && size(self.actorMatcher)
-                          > 0) || (has(self.allowMayAct) && self.allowMayAct)) ||
-                          (has(self.allowedDelegateClients) && size(self.allowedDelegateClients)
-                          > 0)'
+                          > 0) || (has(self.allowMayAct) && self.allowMayAct) || (has(self.allowedActors)
+                          && size(self.allowedActors) > 0)) || (has(self.allowedDelegateClients)
+                          && size(self.allowedDelegateClients) > 0)'
                     maxItems: 20
                     type: array
                     x-kubernetes-list-type: atomic
@@ -5664,12 +6133,13 @@ spec:
                 - issuer
                 type: object
                 x-kubernetes-validations:
-                - message: at least one upstream provider is required unless delegateClients
-                    or a trustedIssuer with jwtBearerGrant is configured
+                - message: at least one upstream provider or inbound grant family
+                    is required
                   rule: (has(self.upstreamProviders) && size(self.upstreamProviders)
                     > 0) || (has(self.delegateClients) && size(self.delegateClients)
                     > 0) || (has(self.trustedIssuers) && self.trustedIssuers.exists(issuer,
-                    has(issuer.jwtBearerGrant)))
+                    has(issuer.jwtBearerGrant))) || (has(self.inboundGrants) && (has(self.inboundGrants.tokenExchange)
+                    || has(self.inboundGrants.jwtBearer)))
                 - message: allowConfidentialClientRegistration cannot be combined
                     with insecureAllowHTTP; client secrets would be issued in cleartext
                     over an unauthenticated endpoint
@@ -5684,6 +6154,46 @@ spec:
                   rule: '!has(self.delegateClients) || size(self.delegateClients)
                     == 0 || !self.issuer.startsWith(''http://'') || (has(self.insecureAllowConfidentialOverLoopbackHTTP)
                     && self.insecureAllowConfidentialOverLoopbackHTTP)'
+                - message: canonical tokenExchange conflicts with legacy delegateClients
+                    or RFC 8693 trusted issuer policy
+                  rule: '!has(self.inboundGrants) || !has(self.inboundGrants.tokenExchange)
+                    || ((!has(self.delegateClients) || size(self.delegateClients)
+                    == 0) && (!has(self.trustedIssuers) || !self.trustedIssuers.exists(issuer,
+                    has(issuer.expectedAudience) || has(issuer.actorClaim) || has(issuer.allowedActors)
+                    || has(issuer.actorMatcher) || has(issuer.allowedDelegateClients)
+                    || (has(issuer.allowMayAct) && issuer.allowMayAct))))'
+                - message: canonical jwtBearer conflicts with legacy jwtBearerGrant
+                  rule: '!has(self.inboundGrants) || !has(self.inboundGrants.jwtBearer)
+                    || !has(self.trustedIssuers) || !self.trustedIssuers.exists(issuer,
+                    has(issuer.jwtBearerGrant))'
+                - message: trustedIssuers must not contain duplicate names
+                  rule: '!has(self.trustedIssuers) || self.trustedIssuers.all(issuer,
+                    !has(issuer.name) || self.trustedIssuers.filter(other, has(other.name)
+                    && other.name == issuer.name).size() == 1)'
+                - message: every tokenExchange issuerRef must reference a named trusted
+                    issuer
+                  rule: '!has(self.inboundGrants) || !has(self.inboundGrants.tokenExchange)
+                    || !has(self.inboundGrants.tokenExchange.issuerPolicies) || self.inboundGrants.tokenExchange.issuerPolicies.all(policy,
+                    has(self.trustedIssuers) && self.trustedIssuers.exists(issuer,
+                    has(issuer.name) && issuer.name == policy.issuerRef))'
+                - message: tokenExchange issuerPolicies must not contain duplicate
+                    issuerRef values
+                  rule: '!has(self.inboundGrants) || !has(self.inboundGrants.tokenExchange)
+                    || !has(self.inboundGrants.tokenExchange.issuerPolicies) || self.inboundGrants.tokenExchange.issuerPolicies.all(policy,
+                    self.inboundGrants.tokenExchange.issuerPolicies.filter(other,
+                    other.issuerRef == policy.issuerRef).size() == 1)'
+                - message: every jwtBearer issuerRef must reference a named trusted
+                    issuer
+                  rule: '!has(self.inboundGrants) || !has(self.inboundGrants.jwtBearer)
+                    || !has(self.inboundGrants.jwtBearer.issuerPolicies) || self.inboundGrants.jwtBearer.issuerPolicies.all(policy,
+                    has(self.trustedIssuers) && self.trustedIssuers.exists(issuer,
+                    has(issuer.name) && issuer.name == policy.issuerRef))'
+                - message: jwtBearer issuerPolicies must not contain duplicate issuerRef
+                    values
+                  rule: '!has(self.inboundGrants) || !has(self.inboundGrants.jwtBearer)
+                    || !has(self.inboundGrants.jwtBearer.issuerPolicies) || self.inboundGrants.jwtBearer.issuerPolicies.all(policy,
+                    self.inboundGrants.jwtBearer.issuerPolicies.filter(other, other.issuerRef
+                    == policy.issuerRef).size() == 1)'
               config:
                 description: |-
                   Config is the Virtual MCP server configuration.

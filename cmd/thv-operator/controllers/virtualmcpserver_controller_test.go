@@ -4555,6 +4555,22 @@ func TestVirtualMCPServerValidateAuthServerConfig_ZeroUpstreamAlternatives(t *te
 				}},
 			},
 		},
+		{
+			name: "canonical inbound grants",
+			config: &mcpv1beta1.EmbeddedAuthServerConfig{
+				Issuer: "https://auth.example.com",
+				InboundGrants: &mcpv1beta1.InboundGrantsConfig{
+					TokenExchange: &mcpv1beta1.TokenExchangeInboundGrantConfig{
+						DelegateClients: []mcpv1beta1.DelegateClientConfig{{
+							ClientID:        "delegate-client",
+							ClientSecretRef: &mcpv1beta1.SecretKeyRef{Name: "delegate-secret", Key: "client-secret"},
+							Scopes:          []string{"openid"},
+							Audiences:       []string{"https://mcp.example.com"},
+						}},
+					},
+				},
+			},
+		},
 	}
 
 	for _, tt := range tests {
@@ -4689,7 +4705,86 @@ func TestVirtualMCPServer_AuthServerConfigCABundleInvalidIsTerminal(t *testing.T
 	assert.True(t, terminal, "malformed bundle content is terminal")
 }
 
-// A ConfigMap read that fails for reasons unrelated to its content is transient:
+func TestVirtualMCPServerInlineInboundGrantDeprecationTransitions(t *testing.T) {
+	t.Parallel()
+
+	delegate := mcpv1beta1.DelegateClientConfig{
+		ClientID:        "sensitive-client-id",
+		ClientSecretRef: &mcpv1beta1.SecretKeyRef{Name: "sensitive-secret", Key: "sensitive-token-key"},
+		Scopes:          []string{"openid"}, Audiences: []string{"https://api.example.com"},
+	}
+	vmcp := v1beta1test.NewVirtualMCPServer("deprecated-inline-grants", "default",
+		v1beta1test.MutateVMCP(func(v *mcpv1beta1.VirtualMCPServer) {
+			v.Generation = 4
+			v.Spec.AuthServerConfig = &mcpv1beta1.EmbeddedAuthServerConfig{
+				Issuer: "https://auth.example.com", DelegateClients: []mcpv1beta1.DelegateClientConfig{delegate},
+			}
+		}),
+	)
+	r, fakeClient := newTestVirtualMCPServerReconciler(t, vmcp)
+	recorder := events.NewFakeRecorder(10)
+	r.Recorder = recorder
+	key := types.NamespacedName{Name: vmcp.Name, Namespace: vmcp.Namespace}
+
+	applyAndGet := func(current *mcpv1beta1.VirtualMCPServer) mcpv1beta1.VirtualMCPServer {
+		t.Helper()
+		manager := virtualmcpserverstatus.NewStatusManager(current)
+		r.applyInlineInboundGrantDeprecationCondition(current, manager)
+		manager.SetObservedGeneration(current.Generation)
+		require.NoError(t, r.applyStatusUpdates(t.Context(), current, manager))
+		var got mcpv1beta1.VirtualMCPServer
+		require.NoError(t, fakeClient.Get(t.Context(), key, &got))
+		return got
+	}
+	assertCondition := func(got mcpv1beta1.VirtualMCPServer, status metav1.ConditionStatus, reason string, generation int64) {
+		t.Helper()
+		condition := meta.FindStatusCondition(got.Status.Conditions,
+			mcpv1beta1.ConditionTypeVirtualMCPServerDeprecatedInboundGrantConfiguration)
+		require.NotNil(t, condition)
+		assert.Equal(t, status, condition.Status)
+		assert.Equal(t, reason, condition.Reason)
+		assert.Equal(t, generation, condition.ObservedGeneration)
+		assert.NotContains(t, condition.Message, "sensitive-client-id")
+		assert.NotContains(t, condition.Message, "sensitive-secret")
+		assert.NotContains(t, condition.Message, "sensitive-token-key")
+	}
+
+	got := applyAndGet(vmcp)
+	assertCondition(got, metav1.ConditionTrue,
+		mcpv1beta1.ConditionReasonVirtualMCPServerLegacyInboundGrantFields, 4)
+	assert.Contains(t, meta.FindStatusCondition(got.Status.Conditions,
+		mcpv1beta1.ConditionTypeVirtualMCPServerDeprecatedInboundGrantConfiguration).Message,
+		"spec.authServerConfig.delegateClients -> spec.authServerConfig.inboundGrants.tokenExchange.delegateClients")
+	assert.Equal(t, 1, countContaining(drainEvents(recorder), inboundGrantDeprecationEventReason))
+
+	steadyResourceVersion := got.ResourceVersion
+	got = applyAndGet(&got)
+	assert.Equal(t, steadyResourceVersion, got.ResourceVersion, "steady state must not write status")
+	assert.Zero(t, countContaining(drainEvents(recorder), inboundGrantDeprecationEventReason))
+
+	got.Spec.AuthServerConfig.DelegateClients = nil
+	got.Spec.AuthServerConfig.InboundGrants = &mcpv1beta1.InboundGrantsConfig{
+		TokenExchange: &mcpv1beta1.TokenExchangeInboundGrantConfig{
+			DelegateClients: []mcpv1beta1.DelegateClientConfig{delegate},
+		},
+	}
+	got.Generation = 5
+	require.NoError(t, fakeClient.Update(t.Context(), &got))
+	got = applyAndGet(&got)
+	assertCondition(got, metav1.ConditionFalse,
+		mcpv1beta1.ConditionReasonVirtualMCPServerCanonicalInboundGrantConfiguration, 5)
+	assert.Zero(t, countContaining(drainEvents(recorder), inboundGrantDeprecationEventReason))
+
+	got.Spec.AuthServerConfig.InboundGrants = nil
+	got.Spec.AuthServerConfig.DelegateClients = []mcpv1beta1.DelegateClientConfig{delegate}
+	got.Generation = 6
+	require.NoError(t, fakeClient.Update(t.Context(), &got))
+	got = applyAndGet(&got)
+	assertCondition(got, metav1.ConditionTrue,
+		mcpv1beta1.ConditionReasonVirtualMCPServerLegacyInboundGrantFields, 6)
+	assert.Equal(t, 1, countContaining(drainEvents(recorder), inboundGrantDeprecationEventReason))
+}
+
 // it must propagate so the caller requeues, and must not be painted onto status
 // as a spec defect that would outlive the outage.
 func TestVirtualMCPServer_AuthServerConfigCABundleGetErrorIsTransient(t *testing.T) {
@@ -4751,8 +4846,8 @@ func TestVirtualMCPServer_RunAuthValidations_StatusWriteFailurePropagates(t *tes
 		WithObjects(vmcp).
 		WithStatusSubresource(&mcpv1beta1.VirtualMCPServer{}).
 		WithInterceptorFuncs(interceptor.Funcs{
-			SubResourceUpdate: func(_ context.Context, _ client.Client, _ string, _ client.Object,
-				_ ...client.SubResourceUpdateOption) error {
+			SubResourcePatch: func(_ context.Context, _ client.Client, _ string, _ client.Object,
+				_ client.Patch, _ ...client.SubResourcePatchOption) error {
 				return apierrors.NewServiceUnavailable("apiserver is having a moment")
 			},
 		}).

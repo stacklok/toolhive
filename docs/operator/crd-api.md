@@ -1903,6 +1903,7 @@ Secret and is never represented inline.
 
 _Appears in:_
 - [api.v1beta1.EmbeddedAuthServerConfig](#apiv1beta1embeddedauthserverconfig)
+- [api.v1beta1.TokenExchangeInboundGrantConfig](#apiv1beta1tokenexchangeinboundgrantconfig)
 
 | Field | Description | Default | Validation |
 | --- | --- | --- | --- |
@@ -1977,6 +1978,7 @@ _Appears in:_
 | `signingKeySecretRefs` _[api.v1beta1.SecretKeyRef](#apiv1beta1secretkeyref) array_ | SigningKeySecretRefs references Kubernetes Secrets containing signing keys for JWT operations.<br />Supports key rotation by allowing multiple keys (oldest keys are used for verification only).<br />If not specified, an ephemeral signing key will be auto-generated (development only -<br />JWTs will be invalid after restart). |  | MaxItems: 5 <br />Optional: \{\} <br /> |
 | `hmacSecretRefs` _[api.v1beta1.SecretKeyRef](#apiv1beta1secretkeyref) array_ | HMACSecretRefs references Kubernetes Secrets containing symmetric secrets for signing<br />authorization codes and refresh tokens (opaque tokens).<br />Current secret must be at least 32 bytes and cryptographically random.<br />Supports secret rotation via multiple entries (first is current, rest are for verification).<br />If not specified, an ephemeral secret will be auto-generated (development only -<br />auth codes and refresh tokens will be invalid after restart). |  | Optional: \{\} <br /> |
 | `tokenLifespans` _[api.v1beta1.TokenLifespanConfig](#apiv1beta1tokenlifespanconfig)_ | TokenLifespans configures the duration that various tokens are valid.<br />If not specified, defaults are applied (access: 1h, refresh: 7d, authCode: 10m). |  | Optional: \{\} <br /> |
+| `inboundGrants` _[api.v1beta1.InboundGrantsConfig](#apiv1beta1inboundgrantsconfig)_ | InboundGrants configures canonical inbound OAuth grant families. |  | Optional: \{\} <br /> |
 | `upstreamProviders` _[api.v1beta1.UpstreamProviderConfig](#apiv1beta1upstreamproviderconfig) array_ | UpstreamProviders configures connections to upstream Identity Providers.<br />When configured, the embedded auth server delegates interactive authentication<br />to these providers. It may be omitted only when delegateClients or a trusted<br />issuer with jwtBearerGrant enables token-only operation.<br />MCPServer and MCPRemoteProxy support a single upstream; VirtualMCPServer supports multiple. |  | Optional: \{\} <br /> |
 | `primaryUpstreamProvider` _string_ | PrimaryUpstreamProvider names the upstream IDP whose access token Cedar<br />should read claims from when authorising a request. Must match the name<br />of one of the entries in UpstreamProviders. When empty, the controller<br />auto-selects the first entry of UpstreamProviders.<br />Only meaningful on VirtualMCPServer, where multiple upstream providers<br />can be configured and Cedar needs to pick which token's claims to<br />evaluate. The VirtualMCPServer controller validates this field against<br />UpstreamProviders at admission and rejects unresolvable values.<br />On MCPServer and MCPRemoteProxy this field is structurally present (the<br />EmbeddedAuthServerConfig struct is shared) but has no runtime effect:<br />those CRDs are restricted to a single upstream so there is no choice to<br />make. Setting it on those CRDs is silently ignored. |  | MaxLength: 63 <br />MinLength: 1 <br />Pattern: `^[a-z0-9]([a-z0-9-]*[a-z0-9])?$` <br />Optional: \{\} <br /> |
 | `storage` _[api.v1beta1.AuthServerStorageConfig](#apiv1beta1authserverstorageconfig)_ | Storage configures the storage backend for the embedded auth server.<br />If not specified, defaults to in-memory storage. |  | Optional: \{\} <br /> |
@@ -1986,7 +1988,7 @@ _Appears in:_
 | `allowConfidentialClientRegistration` _boolean_ | AllowConfidentialClientRegistration permits RFC 7591 Dynamic Client<br />Registration of confidential clients: when true, /oauth/register<br />accepts token_endpoint_auth_method values client_secret_basic and<br />client_secret_post in addition to "none" (still the default on<br />omission) and mints a client_secret returned exactly once.<br />Confidential registrations are restricted to https non-loopback<br />redirect URIs, and on the Redis storage backend all DCR-issued<br />registrations are evicted after 30 days of inactivity and must<br />re-register. This gates registration only: disabling it does not<br />revoke or reject already-minted secrets at the token endpoint.<br />Security: registration is unauthenticated, so enabling this lets any<br />caller who can reach the endpoint obtain a client credential.<br />Combining it with insecureAllowHTTP is rejected at validation. | false | Optional: \{\} <br /> |
 | `allowPrivateKeyJWTRegistration` _boolean_ | AllowPrivateKeyJWTRegistration permits Dynamic Client Registration of<br />clients using private_key_jwt authentication. Registration behavior is<br />intentionally configured separately from confidential-client registration.<br />Security: registration is unauthenticated, so enabling this lets any<br />caller who can reach the endpoint register a private_key_jwt client.<br />Unlike allowConfidentialClientRegistration, this is NOT rejected when<br />combined with insecureAllowHTTP: registration never returns a secret<br />for a private_key_jwt client, so there is nothing for cleartext HTTP<br />to expose. | false | Optional: \{\} <br /> |
 | `insecureAllowConfidentialOverLoopbackHTTP` _boolean_ | InsecureAllowConfidentialOverLoopbackHTTP opts in to confidential<br />Dynamic Client Registration (DCR) and delegate clients when issuer is a<br />plain-HTTP loopback URL (e.g. "http://localhost:8080"). Without this<br />flag, that combination is rejected at reconcile time: a loopback http://<br />issuer is normally fine for local development since the traffic never<br />leaves the machine, but confidential clients send secrets over cleartext.<br />Forcing TLS onto every loopback deployment instead would just push<br />operators toward insecureAllowHTTP, which is worse: that also disables<br />the non-loopback host check. Has no effect when there are no confidential<br />clients or issuer is https.<br />private_key_jwt registration has no equivalent flag or transport<br />restriction: unlike confidential registration, it never returns a<br />client_secret (or any other secret) in the DCR response, so there is<br />nothing here for cleartext HTTP to expose. | false | Optional: \{\} <br /> |
-| `delegateClients` _[api.v1beta1.DelegateClientConfig](#apiv1beta1delegateclientconfig) array_ | DelegateClients configures pre-provisioned confidential clients for RFC 8693<br />token exchange. Each secret is referenced from a Kubernetes Secret; no<br />plaintext secret, redirect URI, or grant selection is accepted here. The<br />operator always supplies the token-exchange grant when it converts this<br />configuration to the runtime contract.<br />This is independent of allowConfidentialClientRegistration: it neither<br />enables nor requires unauthenticated confidential dynamic client<br />registration. |  | MaxItems: 10 <br />Optional: \{\} <br /> |
+| `delegateClients` _[api.v1beta1.DelegateClientConfig](#apiv1beta1delegateclientconfig) array_ | DelegateClients configures pre-provisioned confidential clients for RFC 8693<br />token exchange. Each secret is referenced from a Kubernetes Secret; no<br />plaintext secret, redirect URI, or grant selection is accepted here. The<br />operator always supplies the token-exchange grant when it converts this<br />configuration to the runtime contract.<br />This is independent of allowConfidentialClientRegistration: it neither<br />enables nor requires unauthenticated confidential dynamic client<br />registration.<br />This legacy field is deprecated; use inboundGrants.tokenExchange.delegateClients. |  | MaxItems: 10 <br />Optional: \{\} <br /> |
 | `trustedIssuers` _[api.v1beta1.TrustedIssuerConfig](#apiv1beta1trustedissuerconfig) array_ | TrustedIssuers configures external OIDC issuers whose tokens are<br />accepted as RFC 8693 subject tokens during token exchange, in addition<br />to self-issued subject tokens. Empty (the default) means only<br />self-issued subject tokens are accepted. See<br />docs/arch/17-token-exchange-delegation.md for the trust model. |  | MaxItems: 20 <br />Optional: \{\} <br /> |
 | `forceConfidentialRedirectUris` _string array_ | ForceConfidentialRedirectURIs lists redirect URIs that must be<br />registered as confidential clients regardless of the<br />token_endpoint_auth_method the DCR request declares. A registration<br />whose redirectUris contains an EXACT match for one of these entries is<br />issued a real client_secret and reported back as<br />token_endpoint_auth_method "client_secret_post", even if the request<br />said "none" or omitted the field.<br />Intended for MCP clients that declare themselves public<br />(token_endpoint_auth_method: "none") per RFC 7591 but then refuse to<br />proceed because the response carries no client_secret — a<br />self-contradictory request. RFC 7591 §3.2.1 permits the server to<br />substitute client metadata, so this takes such a client at its word<br />that it wants a secret. Remove an entry once the client is fixed to<br />handle "none" registrations correctly.<br />Exact matching is deliberate: an attacker who registers with someone<br />else's callback URI is issued a secret for a client whose<br />authorization codes are delivered to that someone else's redirect<br />endpoint, not to the attacker, so this is not a way to obtain a usable<br />credential for another client.<br />Requires allowConfidentialClientRegistration to be true. Every entry<br />must be an https non-loopback URI — a loopback client is a public<br />client by construction (OAuth 2.1 §2.1) and must not be issued a<br />secret; this is enforced at reconcile time since CEL cannot express<br />the loopback-hostname check. |  | MaxItems: 10 <br />items:Pattern: `^https://[^\s?#]+$` <br />Optional: \{\} <br /> |
 | `cimd` _[api.v1beta1.EmbeddedAuthServerCIMDConfig](#apiv1beta1embeddedauthservercimdconfig)_ | CIMD configures Client ID Metadata Document support. When omitted, CIMD is disabled. |  | Optional: \{\} <br /> |
@@ -2305,6 +2307,23 @@ _Appears in:_
 | `emailPath` _string_ | EmailPath is the dot-notation path to the email address field in the token response.<br />If not specified or if the path does not resolve to a string, the email is omitted.<br />Omit the field entirely rather than setting it to an empty string. |  | MaxLength: 256 <br />MinLength: 1 <br />Optional: \{\} <br /> |
 
 
+#### api.v1beta1.InboundGrantsConfig
+
+
+
+InboundGrantsConfig groups canonical inbound OAuth grant-family configuration.
+
+
+
+_Appears in:_
+- [api.v1beta1.EmbeddedAuthServerConfig](#apiv1beta1embeddedauthserverconfig)
+
+| Field | Description | Default | Validation |
+| --- | --- | --- | --- |
+| `tokenExchange` _[api.v1beta1.TokenExchangeInboundGrantConfig](#apiv1beta1tokenexchangeinboundgrantconfig)_ | TokenExchange configures RFC 8693 clients and issuer policies. |  | Optional: \{\} <br /> |
+| `jwtBearer` _[api.v1beta1.JWTBearerInboundGrantConfig](#apiv1beta1jwtbearerinboundgrantconfig)_ | JWTBearer configures RFC 7523 issuer policies. |  | Optional: \{\} <br /> |
+
+
 #### api.v1beta1.IncomingAuthConfig
 
 
@@ -2384,6 +2403,7 @@ one of that binding's allowed resources.
 
 
 _Appears in:_
+- [api.v1beta1.JWTBearerIssuerPolicyConfig](#apiv1beta1jwtbearerissuerpolicyconfig)
 - [api.v1beta1.TrustedIssuerConfig](#apiv1beta1trustedissuerconfig)
 
 | Field | Description | Default | Validation |
@@ -2393,22 +2413,41 @@ _Appears in:_
 | `acceptedAudiences` _string array_ | AcceptedAudiences identifies this authorization server's accepted<br />assertion audiences. When omitted, runtime validation defaults to the<br />token endpoint. |  | MaxItems: 50 <br />items:MaxLength: 2048 <br />items:MinLength: 1 <br />items:Pattern: `^https?://[^[:space:]]+$` <br />Optional: \{\} <br /> |
 
 
-#### api.v1beta1.JWTBearerSubjectBinding
+#### api.v1beta1.JWTBearerInboundGrantConfig
 
 
 
-JWTBearerSubjectBinding configures the exact subject and allowed resources
-for one RFC 7523 JWT-bearer assertion identity.
+JWTBearerInboundGrantConfig configures canonical RFC 7523 inbound grants.
 
 
 
 _Appears in:_
-- [api.v1beta1.JWTBearerGrantConfig](#apiv1beta1jwtbearergrantconfig)
+- [api.v1beta1.InboundGrantsConfig](#apiv1beta1inboundgrantsconfig)
 
 | Field | Description | Default | Validation |
 | --- | --- | --- | --- |
-| `subject` _string_ | Subject is an exact assertion sub value. Wildcards are not supported. |  | MaxLength: 256 <br />MinLength: 1 <br />Pattern: `^[^*]+$` <br />Required: \{\} <br /> |
-| `allowedResources` _string array_ | AllowedResources is the exact set of RFC 8707 resources this subject may<br />request. |  | MaxItems: 50 <br />MinItems: 1 <br />Required: \{\} <br />items:MaxLength: 2048 <br />items:MinLength: 1 <br />items:Pattern: `^https?://[^[:space:]]+$` <br /> |
+| `issuerPolicies` _[api.v1beta1.JWTBearerIssuerPolicyConfig](#apiv1beta1jwtbearerissuerpolicyconfig) array_ | IssuerPolicies binds RFC 7523 policy to named trusted issuers. |  | MaxItems: 20 <br />Optional: \{\} <br /> |
+
+
+#### api.v1beta1.JWTBearerIssuerPolicyConfig
+
+
+
+JWTBearerIssuerPolicyConfig binds RFC 7523 policy to a named trusted issuer.
+
+
+
+_Appears in:_
+- [api.v1beta1.JWTBearerInboundGrantConfig](#apiv1beta1jwtbearerinboundgrantconfig)
+
+| Field | Description | Default | Validation |
+| --- | --- | --- | --- |
+| `issuerRef` _string_ | IssuerRef references trustedIssuers[].name. |  | MaxLength: 253 <br />MinLength: 1 <br /> |
+| `maxAssertionAge` _[Duration](https://kubernetes.io/docs/reference/generated/kubernetes-api/v1.27/#duration-v1-meta)_ | MaxAssertionAge caps the exp-iat interval independently of exp. |  | Required: \{\} <br /> |
+| `subjectBindings` _[api.v1beta1.JWTBearerSubjectBinding](#apiv1beta1jwtbearersubjectbinding) array_ | SubjectBindings maps an exact external subject to allowed RFC 8707<br />resources. |  | MaxItems: 50 <br />MinItems: 1 <br />Required: \{\} <br /> |
+| `acceptedAudiences` _string array_ | AcceptedAudiences identifies this authorization server's accepted<br />assertion audiences. When omitted, runtime validation defaults to the<br />token endpoint. |  | MaxItems: 50 <br />items:MaxLength: 2048 <br />items:MinLength: 1 <br />items:Pattern: `^https?://[^[:space:]]+$` <br />Optional: \{\} <br /> |
+
+
 
 
 #### api.v1beta1.KubernetesServiceAccountOIDCConfig
@@ -4248,6 +4287,45 @@ _Appears in:_
 | `subjectProviderName` _string_ | SubjectProviderName is the name of the upstream provider whose token is used as the<br />RFC 8693 subject token instead of identity.Token when performing token exchange.<br />When left empty and an embedded authorization server is configured on the VirtualMCPServer,<br />the controller automatically populates this field with the first configured upstream<br />provider name. Set it explicitly to override that default or to select a specific<br />provider when multiple upstreams are configured. |  | Optional: \{\} <br /> |
 
 
+#### api.v1beta1.TokenExchangeInboundGrantConfig
+
+
+
+TokenExchangeInboundGrantConfig configures canonical RFC 8693 inbound grants.
+
+
+
+_Appears in:_
+- [api.v1beta1.InboundGrantsConfig](#apiv1beta1inboundgrantsconfig)
+
+| Field | Description | Default | Validation |
+| --- | --- | --- | --- |
+| `delegateClients` _[api.v1beta1.DelegateClientConfig](#apiv1beta1delegateclientconfig) array_ | DelegateClients configures pre-provisioned confidential clients. |  | MaxItems: 10 <br />Optional: \{\} <br /> |
+| `issuerPolicies` _[api.v1beta1.TokenExchangeIssuerPolicyConfig](#apiv1beta1tokenexchangeissuerpolicyconfig) array_ | IssuerPolicies binds RFC 8693 policy to named trusted issuers. |  | MaxItems: 20 <br />Optional: \{\} <br /> |
+
+
+#### api.v1beta1.TokenExchangeIssuerPolicyConfig
+
+
+
+TokenExchangeIssuerPolicyConfig binds RFC 8693 policy to a named trusted issuer.
+
+
+
+_Appears in:_
+- [api.v1beta1.TokenExchangeInboundGrantConfig](#apiv1beta1tokenexchangeinboundgrantconfig)
+
+| Field | Description | Default | Validation |
+| --- | --- | --- | --- |
+| `issuerRef` _string_ | IssuerRef references trustedIssuers[].name. |  | MaxLength: 253 <br />MinLength: 1 <br /> |
+| `expectedAudience` _string_ | ExpectedAudience is the required RFC 8693 subject-token audience. |  | MaxLength: 2048 <br />MinLength: 1 <br /> |
+| `actorClaim` _string_ | ActorClaim names the claim containing the external actor identity. |  | MaxLength: 64 <br />Optional: \{\} <br /> |
+| `allowedActors` _string array_ |  |  | MaxItems: 50 <br />Optional: \{\} <br /> |
+| `actorMatcher` _string_ |  |  | MaxLength: 4096 <br />Optional: \{\} <br /> |
+| `allowedDelegateClients` _string array_ |  |  | MaxItems: 50 <br />MinItems: 1 <br /> |
+| `allowMayAct` _boolean_ |  |  | Optional: \{\} <br /> |
+
+
 #### api.v1beta1.TokenLifespanConfig
 
 
@@ -4366,25 +4444,9 @@ ToolRateLimitConfig defines rate limits for a specific tool.
 
 
 TrustedIssuerConfig configures an external OIDC issuer whose tokens are
-accepted as RFC 8693 subject tokens or RFC 7523 JWT-bearer assertions during
-token exchange. It mirrors tokenexchange.TrustedIssuer
-(pkg/authserver/server/tokenexchange), the runtime type the operator converts
-this into directly — no secret is referenced by this type, so no SecretKeyRef
-indirection is needed, unlike DelegateClientConfig.
-
-expectedAudience is exempted only for a grant-only issuer: jwtBearerGrant
-present and none of actorClaim, actorMatcher, allowMayAct, or allowedActors
-set. Any RFC 8693 delegation field (actorClaim, actorMatcher, allowMayAct,
-allowedActors) still requires expectedAudience, even when combined with
-jwtBearerGrant.
-
-The allowedDelegateClients rule below mirrors validateDelegationPolicy
-(pkg/authserver/server/tokenexchange/multi_issuer_validator.go): it is
-keyed on whether ANY delegation field is set (expectedAudience,
-actorClaim, actorMatcher, allowMayAct), not merely on whether
-jwtBearerGrant is absent — an issuer can combine jwtBearerGrant with
-expectedAudience for RFC 8693 delegation on the same issuer, and that
-combination still requires allowedDelegateClients at the Go level.
+accepted as RFC 8693 subject tokens or RFC 7523 JWT-bearer assertions. Trust
+fields remain top-level; canonical grant policy references this declaration by
+Name. The embedded grant-policy fields are retained for released CRD compatibility.
 
 
 
@@ -4393,18 +4455,19 @@ _Appears in:_
 
 | Field | Description | Default | Validation |
 | --- | --- | --- | --- |
+| `name` _string_ | Name optionally identifies this trust declaration for canonical issuerRef references.<br />Names must be unique within trustedIssuers when set. |  | MaxLength: 253 <br />MinLength: 1 <br />Optional: \{\} <br /> |
 | `issuerUrl` _string_ | IssuerURL is the expected "iss" claim value (exact match). |  | MaxLength: 2048 <br />MinLength: 1 <br />Required: \{\} <br /> |
-| `expectedAudience` _string_ | ExpectedAudience is the expected "aud" claim value that must appear in<br />an RFC 8693 subject token's audience list. It is not used by an RFC 7523<br />JWT-bearer assertion, whose audience is the token endpoint. |  | MaxLength: 2048 <br />MinLength: 1 <br />Optional: \{\} <br /> |
+| `expectedAudience` _string_ | ExpectedAudience is the expected "aud" claim value that must appear in<br />an RFC 8693 subject token's audience list. It is not used by an RFC 7523<br />JWT-bearer assertion, whose audience is the token endpoint.<br />This legacy field is deprecated; configure RFC 8693 policy under<br />inboundGrants.tokenExchange.issuerPolicies. |  | MaxLength: 2048 <br />MinLength: 1 <br />Optional: \{\} <br /> |
 | `jwksUrl` _string_ | JWKSURL is the URL to fetch the issuer's JSON Web Key Set from. If<br />empty, it is resolved via OIDC discovery at<br />\{issuerUrl\}/.well-known/openid-configuration. |  | MaxLength: 2048 <br />Optional: \{\} <br /> |
 | `insecureAllowHTTP` _boolean_ | InsecureAllowHTTP permits plain-HTTP OIDC discovery and JWKS fetches<br />for THIS issuer only. Development and testing only — never set in<br />production. |  | Optional: \{\} <br /> |
 | `allowPrivateIPs` _boolean_ | AllowPrivateIPs permits OIDC discovery and JWKS fetches for THIS issuer<br />to resolve to a private or loopback address. Use only when the issuer<br />is hosted inside the same cluster and has no public endpoint. Requires<br />jwksUrl to be set explicitly (enforced at reconcile time), since<br />otherwise OIDC discovery — fetched from the external issuer itself —<br />would choose the private dial target. |  | Optional: \{\} <br /> |
 | `caBundleRef` _[api.v1beta1.CABundleSource](#apiv1beta1cabundlesource)_ | CABundleRef references a ConfigMap containing PEM CA certificates used when<br />fetching this issuer's OIDC discovery document and JWKS. The bundle is added<br />to the system roots for this issuer's client only; public roots still apply<br />and other issuers are unaffected. Write access to the referenced ConfigMap is<br />equivalent to controlling this issuer's trust anchor for subject-token<br />validation — restrict it with the same care as a signing-key Secret. |  | Optional: \{\} <br /> |
-| `actorClaim` _string_ | ActorClaim names the claim identifying the client that requested the<br />subject token from this external issuer (used by allowedActors below).<br />Defaults to "azp" when empty; use "appid" for Microsoft Entra v1, "cid"<br />for Okta. The special value "client_id" reads the subject token's<br />client_id claim instead. |  | MaxLength: 64 <br />Optional: \{\} <br /> |
-| `allowedActors` _string array_ | AllowedActors is the allowlist of actorClaim values authorized to<br />exchange a subject token from this issuer when it carries no<br />"may_act" claim, in addition to (not instead of) actorMatcher below —<br />either signal is sufficient. Empty denies every token unless<br />actorMatcher is set, or allowMayAct is true and the token carries a<br />permitted may_act claim. |  | MaxItems: 50 <br />items:MaxLength: 256 <br />items:MinLength: 1 <br />Optional: \{\} <br /> |
-| `actorMatcher` _string_ | ActorMatcher is an admin-authored CEL expression evaluated against the<br />subject token's complete signature-verified claims map (bound as<br />"claims") to authorize a class of external actors, in addition to (not<br />instead of) allowedActors — either signal is sufficient. Must evaluate<br />to a boolean; a non-boolean result denies the token at evaluation time,<br />not at reconcile time. A syntactically invalid expression fails<br />reconciliation (surfaced via the AuthServerConfigValidated condition),<br />not admission — there is no validating webhook for this field. |  | MaxLength: 4096 <br />Optional: \{\} <br /> |
-| `allowedDelegateClients` _string array_ | AllowedDelegateClients restricts which ToolHive client IDs may exchange<br />an RFC 8693 subject token from this issuer. Required unless only<br />jwtBearerGrant is configured; set it to ["*"] to permit any confidential<br />client holding the token-exchange grant, or list specific client IDs to<br />bind delegation to them. |  | MaxItems: 50 <br />MinItems: 1 <br />items:MaxLength: 256 <br />items:MinLength: 1 <br />Optional: \{\} <br /> |
-| `allowMayAct` _boolean_ | AllowMayAct permits this external issuer's may_act claim to authorize<br />delegation. Defaults to false; external issuers must be opted in<br />explicitly because may_act bypasses allowedActors and actorMatcher.<br />Does not affect self-issued subject tokens. The wildcard is never<br />permitted alongside specific allowedDelegateClients, regardless of<br />this setting. | false | Optional: \{\} <br /> |
-| `jwtBearerGrant` _[api.v1beta1.JWTBearerGrantConfig](#apiv1beta1jwtbearergrantconfig)_ | JWTBearerGrant enables the plain RFC 7523 JWT-bearer grant for this<br />issuer. It is independent of RFC 8693 delegation policy. |  | Optional: \{\} <br /> |
+| `actorClaim` _string_ | ActorClaim names the claim identifying the client that requested the<br />subject token from this external issuer (used by allowedActors below).<br />Defaults to "azp" when empty; use "appid" for Microsoft Entra v1, "cid"<br />for Okta. The special value "client_id" reads the subject token's<br />client_id claim instead.<br />This legacy field is deprecated; configure RFC 8693 policy under<br />inboundGrants.tokenExchange.issuerPolicies. |  | MaxLength: 64 <br />Optional: \{\} <br /> |
+| `allowedActors` _string array_ | AllowedActors is the allowlist of actorClaim values authorized to<br />exchange a subject token from this issuer when it carries no<br />"may_act" claim, in addition to (not instead of) actorMatcher below —<br />either signal is sufficient. Empty denies every token unless<br />actorMatcher is set, or allowMayAct is true and the token carries a<br />permitted may_act claim.<br />This legacy field is deprecated; configure RFC 8693 policy under<br />inboundGrants.tokenExchange.issuerPolicies. |  | MaxItems: 50 <br />items:MaxLength: 256 <br />items:MinLength: 1 <br />Optional: \{\} <br /> |
+| `actorMatcher` _string_ | ActorMatcher is an admin-authored CEL expression evaluated against the<br />subject token's complete signature-verified claims map (bound as<br />"claims") to authorize a class of external actors, in addition to (not<br />instead of) allowedActors — either signal is sufficient. Must evaluate<br />to a boolean; a non-boolean result denies the token at evaluation time,<br />not at reconcile time. A syntactically invalid expression fails<br />reconciliation (surfaced via the AuthServerConfigValidated condition),<br />not admission — there is no validating webhook for this field.<br />This legacy field is deprecated; configure RFC 8693 policy under<br />inboundGrants.tokenExchange.issuerPolicies. |  | MaxLength: 4096 <br />Optional: \{\} <br /> |
+| `allowedDelegateClients` _string array_ | AllowedDelegateClients restricts which ToolHive client IDs may exchange<br />an RFC 8693 subject token from this issuer. Required unless only<br />jwtBearerGrant is configured; set it to ["*"] to permit any confidential<br />client holding the token-exchange grant, or list specific client IDs to<br />bind delegation to them.<br />This legacy field is deprecated; configure RFC 8693 policy under<br />inboundGrants.tokenExchange.issuerPolicies. |  | MaxItems: 50 <br />MinItems: 1 <br />items:MaxLength: 256 <br />items:MinLength: 1 <br />Optional: \{\} <br /> |
+| `allowMayAct` _boolean_ | AllowMayAct permits this external issuer's may_act claim to authorize<br />delegation. Defaults to false; external issuers must be opted in<br />explicitly because may_act bypasses allowedActors and actorMatcher.<br />Does not affect self-issued subject tokens. The wildcard is never<br />permitted alongside specific allowedDelegateClients, regardless of<br />this setting.<br />This legacy field is deprecated; configure RFC 8693 policy under<br />inboundGrants.tokenExchange.issuerPolicies. | false | Optional: \{\} <br /> |
+| `jwtBearerGrant` _[api.v1beta1.JWTBearerGrantConfig](#apiv1beta1jwtbearergrantconfig)_ | JWTBearerGrant enables the plain RFC 7523 JWT-bearer grant for this<br />issuer. It is independent of RFC 8693 delegation policy.<br />This legacy field is deprecated; configure RFC 7523 policy under<br />inboundGrants.jwtBearer.issuerPolicies. |  | Optional: \{\} <br /> |
 
 
 #### api.v1beta1.UpstreamInjectSpec

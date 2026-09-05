@@ -853,6 +853,9 @@ func buildInboundGrantsRunConfig(
 	if config.JWTBearer != nil {
 		policies := make([]authserver.JWTBearerIssuerPolicyRunConfig, len(config.JWTBearer.IssuerPolicies))
 		for i, policy := range config.JWTBearer.IssuerPolicies {
+			if policy.MaxAssertionAge == nil {
+				return nil, fmt.Errorf("jwtBearer.issuerPolicies[%d].maxAssertionAge is required", i)
+			}
 			policies[i] = authserver.JWTBearerIssuerPolicyRunConfig{
 				IssuerRef:         policy.IssuerRef,
 				MaxAssertionAge:   policy.MaxAssertionAge.Duration.String(),
@@ -900,6 +903,9 @@ func BuildAuthServerRunConfig(
 		}
 	}()
 
+	if err := authConfig.ValidateInboundGrants(); err != nil {
+		return nil, err
+	}
 	inboundGrants, err := buildInboundGrantsRunConfig(authConfig.InboundGrants)
 	if err != nil {
 		return nil, err

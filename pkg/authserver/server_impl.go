@@ -207,9 +207,11 @@ func newServer(ctx context.Context, cfg Config, stor storage.Storage) (_ *server
 		AllowConfidentialClientRegistration: cfg.AllowConfidentialClientRegistration,
 		AllowPrivateKeyJWTRegistration:      cfg.AllowPrivateKeyJWTRegistration,
 		HasStaticDelegateClients:            len(cfg.DelegateClients) > 0,
-		ForceConfidentialRedirectURIs:       cfg.ForceConfidentialRedirectURIs,
-		DisableTokenExchange:                cfg.DisableTokenExchange,
-		JWTBearerGrantEnabled:               JWTBearerGrantEnabled(cfg.TrustedIssuers),
+		InsecureAllowHTTP:                   cfg.InsecureAllowHTTP,
+		InsecureAllowConfidentialOverLoopbackHTTP: cfg.InsecureAllowConfidentialOverLoopbackHTTP,
+		ForceConfidentialRedirectURIs:             cfg.ForceConfidentialRedirectURIs,
+		DisableTokenExchange:                      cfg.DisableTokenExchange,
+		JWTBearerGrantEnabled:                     JWTBearerGrantEnabled(cfg.TrustedIssuers),
 	}
 	authServerConfig, err := oauthserver.NewAuthorizationServerConfig(oauthParams)
 	if err != nil {

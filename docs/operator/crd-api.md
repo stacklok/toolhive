@@ -1962,8 +1962,9 @@ precise loopback-host security check.
 
 The shared Go-level ValidateConfidentialClientTransport validator remains the
 source of truth for confidential-client transport and loopback policy,
-including delegate clients. Full issuer URL validation is performed by the
-runtime configuration validator.
+including delegate clients. Trusted issuer endpoint shape is validated by
+ValidateInboundGrants; audience and outbound DNS/private-IP checks remain
+runtime-only.
 
 
 
@@ -1983,7 +1984,7 @@ _Appears in:_
 | `primaryUpstreamProvider` _string_ | PrimaryUpstreamProvider names the upstream IDP whose access token Cedar<br />should read claims from when authorising a request. Must match the name<br />of one of the entries in UpstreamProviders. When empty, the controller<br />auto-selects the first entry of UpstreamProviders.<br />Only meaningful on VirtualMCPServer, where multiple upstream providers<br />can be configured and Cedar needs to pick which token's claims to<br />evaluate. The VirtualMCPServer controller validates this field against<br />UpstreamProviders at admission and rejects unresolvable values.<br />On MCPServer and MCPRemoteProxy this field is structurally present (the<br />EmbeddedAuthServerConfig struct is shared) but has no runtime effect:<br />those CRDs are restricted to a single upstream so there is no choice to<br />make. Setting it on those CRDs is silently ignored. |  | MaxLength: 63 <br />MinLength: 1 <br />Pattern: `^[a-z0-9]([a-z0-9-]*[a-z0-9])?$` <br />Optional: \{\} <br /> |
 | `storage` _[api.v1beta1.AuthServerStorageConfig](#apiv1beta1authserverstorageconfig)_ | Storage configures the storage backend for the embedded auth server.<br />If not specified, defaults to in-memory storage. |  | Optional: \{\} <br /> |
 | `disableUpstreamTokenInjection` _boolean_ | DisableUpstreamTokenInjection prevents the embedded auth server from injecting<br />upstream IdP tokens into requests forwarded to the backend MCP server.<br />When true, the embedded auth server still handles OAuth flows for clients,<br />but instead of swapping ToolHive JWTs for upstream tokens the proxy STRIPS<br />the client's credential headers (Authorization, Cookie, Proxy-Authorization)<br />after validating the JWT — the backend receives an unauthenticated request.<br />Use headerForward to attach static credentials (e.g. an API key) if the<br />backend needs them. Cannot be combined with token exchange, AWS STS, or OBO<br />middleware, which would re-add credentials after the strip.<br />This is useful when the backend MCP server does not require authentication<br />(e.g., public documentation servers) but you still want client authentication. | false | Optional: \{\} <br /> |
-| `insecureAllowHTTP` _boolean_ | InsecureAllowHTTP permits an http:// issuer URL for non-localhost hosts.<br />Only set this for in-cluster Kubernetes deployments where traffic between<br />pods traverses a trusted network (e.g. the in-cluster service mesh).<br />Production deployments reachable outside the cluster MUST use https://.<br />On VirtualMCPServer: when false (the default), http:// issuers for non-localhost<br />hosts are rejected at reconcile time with an AuthServerConfigValidated=False condition.<br />On MCPServer and MCPRemoteProxy (via MCPExternalAuthConfig): this field is<br />structurally present but enforcement is deferred to pod startup via Config.Validate();<br />a misconfigured issuer will cause the pod to crash at startup rather than surface<br />as an operator condition.<br />One combination is rejected at admission on all three CRDs regardless of the<br />above: setting this field alongside allowConfidentialClientRegistration, which<br />would issue client secrets in cleartext over an unauthenticated registration<br />endpoint (see the XValidation rule on EmbeddedAuthServerConfig). | false | Optional: \{\} <br /> |
+| `insecureAllowHTTP` _boolean_ | InsecureAllowHTTP permits an http:// issuer URL for non-localhost hosts.<br />Only set this for in-cluster Kubernetes deployments where traffic between<br />pods traverses a trusted network (e.g. the in-cluster service mesh).<br />Production deployments reachable outside the cluster MUST use https://.<br />On VirtualMCPServer: when false (the default), http:// issuers for non-localhost<br />hosts are rejected at reconcile time with an AuthServerConfigValidated=False condition.<br />On MCPServer and MCPRemoteProxy (via MCPExternalAuthConfig): this field is<br />structurally present but enforcement is deferred to pod startup via Config.Validate();<br />a misconfigured issuer will cause the pod to crash at startup rather than surface<br />as an operator condition.<br />One combination is rejected at admission on all three CRDs regardless of the<br />above: setting this field alongside confidential client registration or<br />delegate clients, which would issue or use client secrets in cleartext over<br />an unauthenticated endpoint (see the XValidation rule on<br />EmbeddedAuthServerConfig). | false | Optional: \{\} <br /> |
 | `baselineClientScopes` _string array_ | BaselineClientScopes is a baseline set of OAuth 2.0 scopes guaranteed to be<br />included in every client registration. The embedded auth server unions these<br />scopes into the registered set returned by RFC 7591 Dynamic Client<br />Registration, so a client that narrows the `scope` field at /oauth/register<br />can still request the baseline scopes at /oauth/authorize. All values must<br />be present in the upstream-derived scopesSupported set; the auth server<br />fails to start if any value is missing.<br />Security: every client registered via /oauth/register will gain the<br />ability to request these scopes at /oauth/authorize, regardless of what<br />the client itself requested. Keep the baseline narrow (typically<br />"openid" and "offline_access"). Adding a privileged scope here — e.g.<br />"admin:read" — would grant it to every DCR-registered client, including<br />public clients like Claude Code, Cursor, and VS Code.<br />When cimd.enabled is true, every dynamically resolved CIMD client will<br />also gain the ability to request these scopes, including third-party<br />clients resolved from arbitrary HTTPS URLs. |  | MaxItems: 10 <br />items:MinLength: 1 <br />items:Pattern: `^[\x21\x23-\x5B\x5D-\x7E]+$` <br />Optional: \{\} <br /> |
 | `allowConfidentialClientRegistration` _boolean_ | AllowConfidentialClientRegistration permits RFC 7591 Dynamic Client<br />Registration of confidential clients: when true, /oauth/register<br />accepts token_endpoint_auth_method values client_secret_basic and<br />client_secret_post in addition to "none" (still the default on<br />omission) and mints a client_secret returned exactly once.<br />Confidential registrations are restricted to https non-loopback<br />redirect URIs, and on the Redis storage backend all DCR-issued<br />registrations are evicted after 30 days of inactivity and must<br />re-register. This gates registration only: disabling it does not<br />revoke or reject already-minted secrets at the token endpoint.<br />Security: registration is unauthenticated, so enabling this lets any<br />caller who can reach the endpoint obtain a client credential.<br />Combining it with insecureAllowHTTP is rejected at validation. | false | Optional: \{\} <br /> |
 | `allowPrivateKeyJWTRegistration` _boolean_ | AllowPrivateKeyJWTRegistration permits Dynamic Client Registration of<br />clients using private_key_jwt authentication. Registration behavior is<br />intentionally configured separately from confidential-client registration.<br />Security: registration is unauthenticated, so enabling this lets any<br />caller who can reach the endpoint register a private_key_jwt client.<br />Unlike allowConfidentialClientRegistration, this is NOT rejected when<br />combined with insecureAllowHTTP: registration never returns a secret<br />for a private_key_jwt client, so there is nothing for cleartext HTTP<br />to expose. | false | Optional: \{\} <br /> |
@@ -4320,9 +4321,9 @@ _Appears in:_
 | `issuerRef` _string_ | IssuerRef references trustedIssuers[].name. |  | MaxLength: 253 <br />MinLength: 1 <br /> |
 | `expectedAudience` _string_ | ExpectedAudience is the required RFC 8693 subject-token audience. |  | MaxLength: 2048 <br />MinLength: 1 <br /> |
 | `actorClaim` _string_ | ActorClaim names the claim containing the external actor identity. |  | MaxLength: 64 <br />Optional: \{\} <br /> |
-| `allowedActors` _string array_ |  |  | MaxItems: 50 <br />Optional: \{\} <br /> |
+| `allowedActors` _string array_ |  |  | MaxItems: 50 <br />items:MaxLength: 256 <br />items:MinLength: 1 <br />Optional: \{\} <br /> |
 | `actorMatcher` _string_ |  |  | MaxLength: 4096 <br />Optional: \{\} <br /> |
-| `allowedDelegateClients` _string array_ |  |  | MaxItems: 50 <br />MinItems: 1 <br /> |
+| `allowedDelegateClients` _string array_ |  |  | MaxItems: 50 <br />MinItems: 1 <br />items:MaxLength: 256 <br />items:MinLength: 1 <br /> |
 | `allowMayAct` _boolean_ |  |  | Optional: \{\} <br /> |
 
 
@@ -4460,7 +4461,7 @@ _Appears in:_
 | `expectedAudience` _string_ | ExpectedAudience is the expected "aud" claim value that must appear in<br />an RFC 8693 subject token's audience list. It is not used by an RFC 7523<br />JWT-bearer assertion, whose audience is the token endpoint.<br />This legacy field is deprecated; configure RFC 8693 policy under<br />inboundGrants.tokenExchange.issuerPolicies. |  | MaxLength: 2048 <br />MinLength: 1 <br />Optional: \{\} <br /> |
 | `jwksUrl` _string_ | JWKSURL is the URL to fetch the issuer's JSON Web Key Set from. If<br />empty, it is resolved via OIDC discovery at<br />\{issuerUrl\}/.well-known/openid-configuration. |  | MaxLength: 2048 <br />Optional: \{\} <br /> |
 | `insecureAllowHTTP` _boolean_ | InsecureAllowHTTP permits plain-HTTP OIDC discovery and JWKS fetches<br />for THIS issuer only. Development and testing only — never set in<br />production. |  | Optional: \{\} <br /> |
-| `allowPrivateIPs` _boolean_ | AllowPrivateIPs permits OIDC discovery and JWKS fetches for THIS issuer<br />to resolve to a private or loopback address. Use only when the issuer<br />is hosted inside the same cluster and has no public endpoint. Requires<br />jwksUrl to be set explicitly (enforced at reconcile time), since<br />otherwise OIDC discovery — fetched from the external issuer itself —<br />would choose the private dial target. |  | Optional: \{\} <br /> |
+| `allowPrivateIPs` _boolean_ | AllowPrivateIPs permits OIDC discovery and JWKS fetches for THIS issuer<br />to resolve to a private or loopback address. Use only when the issuer<br />is hosted inside the same cluster and has no public endpoint. Requires<br />jwksUrl to be set explicitly (enforced at admission and by shared<br />validation), since otherwise OIDC discovery — fetched from the external<br />issuer itself — would choose the private dial target. |  | Optional: \{\} <br /> |
 | `caBundleRef` _[api.v1beta1.CABundleSource](#apiv1beta1cabundlesource)_ | CABundleRef references a ConfigMap containing PEM CA certificates used when<br />fetching this issuer's OIDC discovery document and JWKS. The bundle is added<br />to the system roots for this issuer's client only; public roots still apply<br />and other issuers are unaffected. Write access to the referenced ConfigMap is<br />equivalent to controlling this issuer's trust anchor for subject-token<br />validation — restrict it with the same care as a signing-key Secret. |  | Optional: \{\} <br /> |
 | `actorClaim` _string_ | ActorClaim names the claim identifying the client that requested the<br />subject token from this external issuer (used by allowedActors below).<br />Defaults to "azp" when empty; use "appid" for Microsoft Entra v1, "cid"<br />for Okta. The special value "client_id" reads the subject token's<br />client_id claim instead.<br />This legacy field is deprecated; configure RFC 8693 policy under<br />inboundGrants.tokenExchange.issuerPolicies. |  | MaxLength: 64 <br />Optional: \{\} <br /> |
 | `allowedActors` _string array_ | AllowedActors is the allowlist of actorClaim values authorized to<br />exchange a subject token from this issuer when it carries no<br />"may_act" claim, in addition to (not instead of) actorMatcher below —<br />either signal is sufficient. Empty denies every token unless<br />actorMatcher is set, or allowMayAct is true and the token carries a<br />permitted may_act claim.<br />This legacy field is deprecated; configure RFC 8693 policy under<br />inboundGrants.tokenExchange.issuerPolicies. |  | MaxItems: 50 <br />items:MaxLength: 256 <br />items:MinLength: 1 <br />Optional: \{\} <br /> |
@@ -4742,6 +4743,7 @@ _Validation:_
 - Enum: [Pending Ready Degraded Failed]
 
 _Appears in:_
+- [api.v1beta1.VirtualMCPServerRuntimeStatus](#apiv1beta1virtualmcpserverruntimestatus)
 - [api.v1beta1.VirtualMCPServerStatus](#apiv1beta1virtualmcpserverstatus)
 
 | Field | Description |
@@ -4750,6 +4752,28 @@ _Appears in:_
 | `Ready` | VirtualMCPServerPhaseReady indicates the VirtualMCPServer is ready and serving requests<br /> |
 | `Degraded` | VirtualMCPServerPhaseDegraded indicates the VirtualMCPServer is running but some backends are unavailable<br /> |
 | `Failed` | VirtualMCPServerPhaseFailed indicates the VirtualMCPServer has failed<br /> |
+
+
+#### api.v1beta1.VirtualMCPServerRuntimeStatus
+
+
+
+VirtualMCPServerRuntimeStatus is the runtime-owned status snapshot. The
+operator projects this snapshot into the top-level compatibility fields and
+remains the sole writer of the top-level Conditions array.
+
+
+
+_Appears in:_
+- [api.v1beta1.VirtualMCPServerStatus](#apiv1beta1virtualmcpserverstatus)
+
+| Field | Description | Default | Validation |
+| --- | --- | --- | --- |
+| `phase` _[api.v1beta1.VirtualMCPServerPhase](#apiv1beta1virtualmcpserverphase)_ | Phase is the lifecycle phase observed by the running vMCP process. |  | Enum: [Pending Ready Degraded Failed] <br />Optional: \{\} <br /> |
+| `message` _string_ | Message provides detail about the runtime phase. |  | Optional: \{\} <br /> |
+| `conditions` _[Condition](https://kubernetes.io/docs/reference/generated/kubernetes-api/v1.27/#condition-v1-meta) array_ | Conditions contains runtime health observations. |  | Optional: \{\} <br /> |
+| `discoveredBackends` _[api.v1beta1.DiscoveredBackend](#apiv1beta1discoveredbackend) array_ | DiscoveredBackends contains the runtime's latest backend observations. |  | Optional: \{\} <br /> |
+| `backendCount` _integer_ | BackendCount is the number of routable backends observed by the runtime. |  | Optional: \{\} <br /> |
 
 
 #### api.v1beta1.VirtualMCPServerSpec
@@ -4795,6 +4819,7 @@ _Appears in:_
 
 | Field | Description | Default | Validation |
 | --- | --- | --- | --- |
+| `runtime` _[api.v1beta1.VirtualMCPServerRuntimeStatus](#apiv1beta1virtualmcpserverruntimestatus)_ | Runtime is the status snapshot written exclusively by the vMCP process.<br />The operator projects it into the top-level compatibility fields. |  | Optional: \{\} <br /> |
 | `conditions` _[Condition](https://kubernetes.io/docs/reference/generated/kubernetes-api/v1.27/#condition-v1-meta) array_ | Conditions represent the latest available observations of the VirtualMCPServer's state |  | Optional: \{\} <br /> |
 | `observedGeneration` _integer_ | ObservedGeneration is the most recent generation observed for this VirtualMCPServer |  | Optional: \{\} <br /> |
 | `phase` _[api.v1beta1.VirtualMCPServerPhase](#apiv1beta1virtualmcpserverphase)_ | Phase is the current phase of the VirtualMCPServer | Pending | Enum: [Pending Ready Degraded Failed] <br />Optional: \{\} <br /> |

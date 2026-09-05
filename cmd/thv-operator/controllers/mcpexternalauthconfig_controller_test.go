@@ -1396,6 +1396,104 @@ func TestMCPExternalAuthConfigReconciler_InvalidConfigReturnsStatusPatchError(t 
 // proven against the shared ctrlutil.MutateAndPatchStatus helper (used by all
 // three config controllers) in
 // TestMCPOIDCConfigReconciler_ConcurrentForeignConditionSurvivesMergePatch.
+func TestMCPExternalAuthConfigReconciler_CanonicalTrustedIssuerEndpointValidationOnCreateAndUpdate(t *testing.T) {
+	t.Parallel()
+
+	const unsafeJWKSURL = "https://sentinel-user:sentinel-password@issuer.example.com/keys"
+
+	cfg := &mcpv1beta1.MCPExternalAuthConfig{
+		ObjectMeta: metav1.ObjectMeta{Name: "canonical-validation", Namespace: "default"},
+		Spec: mcpv1beta1.MCPExternalAuthConfigSpec{
+			Type: mcpv1beta1.ExternalAuthTypeEmbeddedAuthServer,
+			EmbeddedAuthServer: &mcpv1beta1.EmbeddedAuthServerConfig{
+				Issuer:               "https://auth.example.com",
+				SigningKeySecretRefs: []mcpv1beta1.SecretKeyRef{{Name: "signing-key", Key: "private.pem"}},
+				TrustedIssuers: []mcpv1beta1.TrustedIssuerConfig{{
+					Name: "external", IssuerURL: "https://issuer.example.com", JWKSURL: unsafeJWKSURL,
+				}},
+				InboundGrants: &mcpv1beta1.InboundGrantsConfig{
+					TokenExchange: &mcpv1beta1.TokenExchangeInboundGrantConfig{
+						IssuerPolicies: []mcpv1beta1.TokenExchangeIssuerPolicyConfig{{
+							IssuerRef: "external", ExpectedAudience: "audience",
+							AllowedDelegateClients: []string{"delegate"},
+						}},
+					},
+				},
+			},
+		},
+	}
+	r, fakeClient := newTestMCPExternalAuthConfigReconciler(t, cfg)
+	req := reconcile.Request{NamespacedName: client.ObjectKeyFromObject(cfg)}
+
+	result, err := r.Reconcile(t.Context(), req)
+	require.NoError(t, err)
+	if result.RequeueAfter > 0 {
+		_, err = r.Reconcile(t.Context(), req)
+		require.NoError(t, err)
+	}
+	var got mcpv1beta1.MCPExternalAuthConfig
+	require.NoError(t, fakeClient.Get(t.Context(), req.NamespacedName, &got))
+	valid := findCondition(got.Status.Conditions, mcpv1beta1.ConditionTypeValid)
+	require.NotNil(t, valid)
+	assert.Equal(t, metav1.ConditionFalse, valid.Status)
+	assert.Contains(t, valid.Message, "jwks_url: must not contain userinfo")
+	assert.NotContains(t, valid.Message, unsafeJWKSURL)
+	assert.NotContains(t, valid.Message, "sentinel-user")
+	assert.NotContains(t, valid.Message, "sentinel-password")
+
+	got.Spec.EmbeddedAuthServer.TrustedIssuers[0].JWKSURL = "https://issuer.example.com/keys"
+	require.NoError(t, fakeClient.Update(t.Context(), &got))
+	_, err = r.Reconcile(t.Context(), req)
+	require.NoError(t, err)
+	require.NoError(t, fakeClient.Get(t.Context(), req.NamespacedName, &got))
+	valid = findCondition(got.Status.Conditions, mcpv1beta1.ConditionTypeValid)
+	require.NotNil(t, valid)
+	assert.Equal(t, metav1.ConditionTrue, valid.Status)
+}
+
+func TestMCPExternalAuthConfigReconciler_DuplicateCredentialIssuerStatusIsRedacted(t *testing.T) {
+	t.Parallel()
+
+	const credentialIssuerURL = "https://sentinel-user:sentinel-password@issuer.example.com"
+	cfg := &mcpv1beta1.MCPExternalAuthConfig{
+		ObjectMeta: metav1.ObjectMeta{Name: "duplicate-credential-issuer", Namespace: "default"},
+		Spec: mcpv1beta1.MCPExternalAuthConfigSpec{
+			Type: mcpv1beta1.ExternalAuthTypeEmbeddedAuthServer,
+			EmbeddedAuthServer: &mcpv1beta1.EmbeddedAuthServerConfig{
+				Issuer:               "https://auth.example.com",
+				SigningKeySecretRefs: []mcpv1beta1.SecretKeyRef{{Name: "signing-key", Key: "private.pem"}},
+				TrustedIssuers: []mcpv1beta1.TrustedIssuerConfig{
+					{Name: "external", IssuerURL: credentialIssuerURL},
+					{Name: "duplicate", IssuerURL: credentialIssuerURL},
+				},
+				InboundGrants: &mcpv1beta1.InboundGrantsConfig{TokenExchange: &mcpv1beta1.TokenExchangeInboundGrantConfig{
+					IssuerPolicies: []mcpv1beta1.TokenExchangeIssuerPolicyConfig{{
+						IssuerRef: "external", ExpectedAudience: "audience", AllowedDelegateClients: []string{"delegate"},
+					}},
+				}},
+			},
+		},
+	}
+	r, fakeClient := newTestMCPExternalAuthConfigReconciler(t, cfg)
+	req := reconcile.Request{NamespacedName: client.ObjectKeyFromObject(cfg)}
+
+	result, err := r.Reconcile(t.Context(), req)
+	require.NoError(t, err)
+	if result.RequeueAfter > 0 {
+		_, err = r.Reconcile(t.Context(), req)
+		require.NoError(t, err)
+	}
+	var got mcpv1beta1.MCPExternalAuthConfig
+	require.NoError(t, fakeClient.Get(t.Context(), req.NamespacedName, &got))
+	valid := findCondition(got.Status.Conditions, mcpv1beta1.ConditionTypeValid)
+	require.NotNil(t, valid)
+	assert.Equal(t, metav1.ConditionFalse, valid.Status)
+	assert.Contains(t, valid.Message, "duplicates")
+	assert.NotContains(t, valid.Message, credentialIssuerURL)
+	assert.NotContains(t, valid.Message, "sentinel-user")
+	assert.NotContains(t, valid.Message, "sentinel-password")
+}
+
 func TestMCPExternalAuthConfigReconciler_DeprecatedInboundGrantTransitions(t *testing.T) {
 	t.Parallel()
 
@@ -1475,6 +1573,16 @@ func TestMCPExternalAuthConfigReconciler_DeprecatedInboundGrantTransitions(t *te
 	got = reconcileAndGet()
 	assertCondition(got, metav1.ConditionTrue, mcpv1beta1.ConditionReasonLegacyInboundGrantFields, 9)
 	assert.Equal(t, 1, countContaining(drainEvents(recorder), inboundGrantDeprecationEventReason))
+
+	got.Spec.Type = mcpv1beta1.ExternalAuthTypeTokenExchange
+	got.Spec.EmbeddedAuthServer = nil
+	got.Spec.TokenExchange = &mcpv1beta1.TokenExchangeConfig{TokenURL: "https://issuer.example.com/token"}
+	got.Generation = 10
+	require.NoError(t, fakeClient.Update(t.Context(), &got))
+	got = reconcileAndGet()
+	assert.Nil(t, meta.FindStatusCondition(got.Status.Conditions,
+		mcpv1beta1.ConditionTypeDeprecatedInboundGrantConfiguration))
+	assert.Zero(t, countContaining(drainEvents(recorder), inboundGrantDeprecationEventReason))
 }
 
 func TestMCPExternalAuthConfigReconciler_ReconcileKeepsExistingForeignCondition(t *testing.T) {

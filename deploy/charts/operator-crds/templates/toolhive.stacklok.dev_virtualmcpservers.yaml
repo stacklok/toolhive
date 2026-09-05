@@ -502,12 +502,16 @@ spec:
                                   type: boolean
                                 allowedActors:
                                   items:
+                                    maxLength: 256
+                                    minLength: 1
                                     type: string
                                   maxItems: 50
                                   type: array
                                   x-kubernetes-list-type: atomic
                                 allowedDelegateClients:
                                   items:
+                                    maxLength: 256
+                                    minLength: 1
                                     type: string
                                   maxItems: 50
                                   minItems: 1
@@ -529,6 +533,21 @@ spec:
                               - expectedAudience
                               - issuerRef
                               type: object
+                              x-kubernetes-validations:
+                              - message: allowedDelegateClients must not combine the
+                                  wildcard "*" with specific client IDs
+                                rule: '!(''*'' in self.allowedDelegateClients) ||
+                                  size(self.allowedDelegateClients) == 1'
+                              - message: allowMayAct must not be enabled when allowedDelegateClients
+                                  contains the wildcard "*"
+                                rule: '!(self.allowMayAct && ''*'' in self.allowedDelegateClients)'
+                              - message: actorClaim must name a readable claim; use
+                                  client_id or a non-reserved claim such as azp, appid,
+                                  or cid
+                                rule: '!has(self.actorClaim) || !(self.actorClaim
+                                  in [''sub'', ''iss'', ''aud'', ''exp'', ''iat'',
+                                  ''nbf'', ''jti'', ''name'', ''email'', ''scope'',
+                                  ''scp'', ''may_act''])'
                             maxItems: 20
                             type: array
                             x-kubernetes-list-type: atomic
@@ -570,9 +589,10 @@ spec:
                       as an operator condition.
 
                       One combination is rejected at admission on all three CRDs regardless of the
-                      above: setting this field alongside allowConfidentialClientRegistration, which
-                      would issue client secrets in cleartext over an unauthenticated registration
-                      endpoint (see the XValidation rule on EmbeddedAuthServerConfig).
+                      above: setting this field alongside confidential client registration or
+                      delegate clients, which would issue or use client secrets in cleartext over
+                      an unauthenticated endpoint (see the XValidation rule on
+                      EmbeddedAuthServerConfig).
                     type: boolean
                   issuer:
                     description: |-
@@ -905,9 +925,9 @@ spec:
                             AllowPrivateIPs permits OIDC discovery and JWKS fetches for THIS issuer
                             to resolve to a private or loopback address. Use only when the issuer
                             is hosted inside the same cluster and has no public endpoint. Requires
-                            jwksUrl to be set explicitly (enforced at reconcile time), since
-                            otherwise OIDC discovery — fetched from the external issuer itself —
-                            would choose the private dial target.
+                            jwksUrl to be set explicitly (enforced at admission and by shared
+                            validation), since otherwise OIDC discovery — fetched from the external
+                            issuer itself — would choose the private dial target.
                           type: boolean
                         allowedActors:
                           description: |-
@@ -1752,20 +1772,28 @@ spec:
                     > 0) || (has(self.trustedIssuers) && self.trustedIssuers.exists(issuer,
                     has(issuer.jwtBearerGrant))) || (has(self.inboundGrants) && (has(self.inboundGrants.tokenExchange)
                     || has(self.inboundGrants.jwtBearer)))
-                - message: allowConfidentialClientRegistration cannot be combined
-                    with insecureAllowHTTP; client secrets would be issued in cleartext
-                    over an unauthenticated endpoint
-                  rule: '!(has(self.allowConfidentialClientRegistration) && self.allowConfidentialClientRegistration
-                    && has(self.insecureAllowHTTP) && self.insecureAllowHTTP)'
+                - message: insecureAllowHTTP cannot be combined with confidential
+                    client registration or delegateClients; client secrets would be
+                    issued or used in cleartext over an unauthenticated endpoint
+                  rule: '!(has(self.insecureAllowHTTP) && self.insecureAllowHTTP &&
+                    ((has(self.allowConfidentialClientRegistration) && self.allowConfidentialClientRegistration)
+                    || (has(self.delegateClients) && size(self.delegateClients) >
+                    0) || (has(self.inboundGrants) && has(self.inboundGrants.tokenExchange)
+                    && has(self.inboundGrants.tokenExchange.delegateClients) && size(self.inboundGrants.tokenExchange.delegateClients)
+                    > 0)))'
                 - message: forceConfidentialRedirectUris requires allowConfidentialClientRegistration
                     to be true
                   rule: (!has(self.forceConfidentialRedirectUris) || size(self.forceConfidentialRedirectUris)
                     == 0) || (has(self.allowConfidentialClientRegistration) && self.allowConfidentialClientRegistration)
-                - message: delegateClients with an HTTP issuer require insecureAllowConfidentialOverLoopbackHTTP
+                - message: confidential client registration or delegateClients with
+                    an HTTP issuer require insecureAllowConfidentialOverLoopbackHTTP
                     to be explicitly enabled; the issuer must still be loopback
-                  rule: '!has(self.delegateClients) || size(self.delegateClients)
-                    == 0 || !self.issuer.startsWith(''http://'') || (has(self.insecureAllowConfidentialOverLoopbackHTTP)
-                    && self.insecureAllowConfidentialOverLoopbackHTTP)'
+                  rule: '!self.issuer.startsWith(''http://'') || (has(self.insecureAllowConfidentialOverLoopbackHTTP)
+                    && self.insecureAllowConfidentialOverLoopbackHTTP) || ((!has(self.allowConfidentialClientRegistration)
+                    || !self.allowConfidentialClientRegistration) && (!has(self.delegateClients)
+                    || size(self.delegateClients) == 0) && (!has(self.inboundGrants)
+                    || !has(self.inboundGrants.tokenExchange) || !has(self.inboundGrants.tokenExchange.delegateClients)
+                    || size(self.inboundGrants.tokenExchange.delegateClients) == 0))'
                 - message: canonical tokenExchange conflicts with legacy delegateClients
                     or RFC 8693 trusted issuer policy
                   rule: '!has(self.inboundGrants) || !has(self.inboundGrants.tokenExchange)
@@ -4399,6 +4427,157 @@ spec:
                 - Degraded
                 - Failed
                 type: string
+              runtime:
+                description: |-
+                  Runtime is the status snapshot written exclusively by the vMCP process.
+                  The operator projects it into the top-level compatibility fields.
+                properties:
+                  backendCount:
+                    description: BackendCount is the number of routable backends observed
+                      by the runtime.
+                    format: int32
+                    type: integer
+                  conditions:
+                    description: Conditions contains runtime health observations.
+                    items:
+                      description: Condition contains details for one aspect of the
+                        current state of this API Resource.
+                      properties:
+                        lastTransitionTime:
+                          description: |-
+                            lastTransitionTime is the last time the condition transitioned from one status to another.
+                            This should be when the underlying condition changed.  If that is not known, then using the time when the API field changed is acceptable.
+                          format: date-time
+                          type: string
+                        message:
+                          description: |-
+                            message is a human readable message indicating details about the transition.
+                            This may be an empty string.
+                          maxLength: 32768
+                          type: string
+                        observedGeneration:
+                          description: |-
+                            observedGeneration represents the .metadata.generation that the condition was set based upon.
+                            For instance, if .metadata.generation is currently 12, but the .status.conditions[x].observedGeneration is 9, the condition is out of date
+                            with respect to the current state of the instance.
+                          format: int64
+                          minimum: 0
+                          type: integer
+                        reason:
+                          description: |-
+                            reason contains a programmatic identifier indicating the reason for the condition's last transition.
+                            Producers of specific condition types may define expected values and meanings for this field,
+                            and whether the values are considered a guaranteed API.
+                            The value should be a CamelCase string.
+                            This field may not be empty.
+                          maxLength: 1024
+                          minLength: 1
+                          pattern: ^[A-Za-z]([A-Za-z0-9_,:]*[A-Za-z0-9_])?$
+                          type: string
+                        status:
+                          description: status of the condition, one of True, False,
+                            Unknown.
+                          enum:
+                          - "True"
+                          - "False"
+                          - Unknown
+                          type: string
+                        type:
+                          description: type of condition in CamelCase or in foo.example.com/CamelCase.
+                          maxLength: 316
+                          pattern: ^([a-z0-9]([-a-z0-9]*[a-z0-9])?(\.[a-z0-9]([-a-z0-9]*[a-z0-9])?)*/)?(([A-Za-z0-9][-A-Za-z0-9_.]*)?[A-Za-z0-9])$
+                          type: string
+                      required:
+                      - lastTransitionTime
+                      - message
+                      - reason
+                      - status
+                      - type
+                      type: object
+                    type: array
+                    x-kubernetes-list-map-keys:
+                    - type
+                    x-kubernetes-list-type: map
+                  discoveredBackends:
+                    description: DiscoveredBackends contains the runtime's latest
+                      backend observations.
+                    items:
+                      description: |-
+                        DiscoveredBackend represents a backend server discovered by vMCP runtime.
+                        This type is shared with the Kubernetes operator CRD (VirtualMCPServer.Status.DiscoveredBackends).
+                      properties:
+                        authConfigRef:
+                          description: AuthConfigRef is the name of the discovered
+                            MCPExternalAuthConfig (if any)
+                          type: string
+                        authType:
+                          description: AuthType is the type of authentication configured
+                          type: string
+                        circuitBreakerState:
+                          description: |-
+                            CircuitBreakerState is the current circuit breaker state (closed, open, half-open).
+                            Empty when circuit breaker is disabled or not configured.
+                          enum:
+                          - closed
+                          - open
+                          - half-open
+                          type: string
+                        circuitLastChanged:
+                          description: |-
+                            CircuitLastChanged is the timestamp when the circuit breaker state last changed.
+                            Empty when circuit breaker is disabled or has never changed state.
+                          format: date-time
+                          type: string
+                        consecutiveFailures:
+                          description: |-
+                            ConsecutiveFailures is the current count of consecutive health check failures.
+                            Resets to 0 when the backend becomes healthy again.
+                          type: integer
+                        lastHealthCheck:
+                          description: LastHealthCheck is the timestamp of the last
+                            health check
+                          format: date-time
+                          type: string
+                        mcpRevision:
+                          description: |-
+                            MCPRevision is the backend's negotiated MCP protocol revision
+                            ("2026-07-28" or "2025-11-25"). Empty when the backend has not been probed.
+                          type: string
+                        message:
+                          description: Message provides additional information about
+                            the backend status
+                          type: string
+                        name:
+                          description: Name is the name of the backend MCPServer
+                          type: string
+                        status:
+                          description: |-
+                            Status is the current status of the backend (ready, degraded, unavailable, unauthenticated, unknown).
+                            Use BackendHealthStatus.ToCRDStatus() to populate this field.
+                          type: string
+                        url:
+                          description: URL is the URL of the backend MCPServer
+                          type: string
+                      required:
+                      - name
+                      type: object
+                    type: array
+                    x-kubernetes-list-map-keys:
+                    - name
+                    x-kubernetes-list-type: map
+                  message:
+                    description: Message provides detail about the runtime phase.
+                    type: string
+                  phase:
+                    description: Phase is the lifecycle phase observed by the running
+                      vMCP process.
+                    enum:
+                    - Pending
+                    - Ready
+                    - Degraded
+                    - Failed
+                    type: string
+                type: object
               telemetryConfigHash:
                 description: |-
                   TelemetryConfigHash is the hash of the referenced MCPTelemetryConfig spec for change detection.
@@ -4890,12 +5069,16 @@ spec:
                                   type: boolean
                                 allowedActors:
                                   items:
+                                    maxLength: 256
+                                    minLength: 1
                                     type: string
                                   maxItems: 50
                                   type: array
                                   x-kubernetes-list-type: atomic
                                 allowedDelegateClients:
                                   items:
+                                    maxLength: 256
+                                    minLength: 1
                                     type: string
                                   maxItems: 50
                                   minItems: 1
@@ -4917,6 +5100,21 @@ spec:
                               - expectedAudience
                               - issuerRef
                               type: object
+                              x-kubernetes-validations:
+                              - message: allowedDelegateClients must not combine the
+                                  wildcard "*" with specific client IDs
+                                rule: '!(''*'' in self.allowedDelegateClients) ||
+                                  size(self.allowedDelegateClients) == 1'
+                              - message: allowMayAct must not be enabled when allowedDelegateClients
+                                  contains the wildcard "*"
+                                rule: '!(self.allowMayAct && ''*'' in self.allowedDelegateClients)'
+                              - message: actorClaim must name a readable claim; use
+                                  client_id or a non-reserved claim such as azp, appid,
+                                  or cid
+                                rule: '!has(self.actorClaim) || !(self.actorClaim
+                                  in [''sub'', ''iss'', ''aud'', ''exp'', ''iat'',
+                                  ''nbf'', ''jti'', ''name'', ''email'', ''scope'',
+                                  ''scp'', ''may_act''])'
                             maxItems: 20
                             type: array
                             x-kubernetes-list-type: atomic
@@ -4958,9 +5156,10 @@ spec:
                       as an operator condition.
 
                       One combination is rejected at admission on all three CRDs regardless of the
-                      above: setting this field alongside allowConfidentialClientRegistration, which
-                      would issue client secrets in cleartext over an unauthenticated registration
-                      endpoint (see the XValidation rule on EmbeddedAuthServerConfig).
+                      above: setting this field alongside confidential client registration or
+                      delegate clients, which would issue or use client secrets in cleartext over
+                      an unauthenticated endpoint (see the XValidation rule on
+                      EmbeddedAuthServerConfig).
                     type: boolean
                   issuer:
                     description: |-
@@ -5293,9 +5492,9 @@ spec:
                             AllowPrivateIPs permits OIDC discovery and JWKS fetches for THIS issuer
                             to resolve to a private or loopback address. Use only when the issuer
                             is hosted inside the same cluster and has no public endpoint. Requires
-                            jwksUrl to be set explicitly (enforced at reconcile time), since
-                            otherwise OIDC discovery — fetched from the external issuer itself —
-                            would choose the private dial target.
+                            jwksUrl to be set explicitly (enforced at admission and by shared
+                            validation), since otherwise OIDC discovery — fetched from the external
+                            issuer itself — would choose the private dial target.
                           type: boolean
                         allowedActors:
                           description: |-
@@ -6140,20 +6339,28 @@ spec:
                     > 0) || (has(self.trustedIssuers) && self.trustedIssuers.exists(issuer,
                     has(issuer.jwtBearerGrant))) || (has(self.inboundGrants) && (has(self.inboundGrants.tokenExchange)
                     || has(self.inboundGrants.jwtBearer)))
-                - message: allowConfidentialClientRegistration cannot be combined
-                    with insecureAllowHTTP; client secrets would be issued in cleartext
-                    over an unauthenticated endpoint
-                  rule: '!(has(self.allowConfidentialClientRegistration) && self.allowConfidentialClientRegistration
-                    && has(self.insecureAllowHTTP) && self.insecureAllowHTTP)'
+                - message: insecureAllowHTTP cannot be combined with confidential
+                    client registration or delegateClients; client secrets would be
+                    issued or used in cleartext over an unauthenticated endpoint
+                  rule: '!(has(self.insecureAllowHTTP) && self.insecureAllowHTTP &&
+                    ((has(self.allowConfidentialClientRegistration) && self.allowConfidentialClientRegistration)
+                    || (has(self.delegateClients) && size(self.delegateClients) >
+                    0) || (has(self.inboundGrants) && has(self.inboundGrants.tokenExchange)
+                    && has(self.inboundGrants.tokenExchange.delegateClients) && size(self.inboundGrants.tokenExchange.delegateClients)
+                    > 0)))'
                 - message: forceConfidentialRedirectUris requires allowConfidentialClientRegistration
                     to be true
                   rule: (!has(self.forceConfidentialRedirectUris) || size(self.forceConfidentialRedirectUris)
                     == 0) || (has(self.allowConfidentialClientRegistration) && self.allowConfidentialClientRegistration)
-                - message: delegateClients with an HTTP issuer require insecureAllowConfidentialOverLoopbackHTTP
+                - message: confidential client registration or delegateClients with
+                    an HTTP issuer require insecureAllowConfidentialOverLoopbackHTTP
                     to be explicitly enabled; the issuer must still be loopback
-                  rule: '!has(self.delegateClients) || size(self.delegateClients)
-                    == 0 || !self.issuer.startsWith(''http://'') || (has(self.insecureAllowConfidentialOverLoopbackHTTP)
-                    && self.insecureAllowConfidentialOverLoopbackHTTP)'
+                  rule: '!self.issuer.startsWith(''http://'') || (has(self.insecureAllowConfidentialOverLoopbackHTTP)
+                    && self.insecureAllowConfidentialOverLoopbackHTTP) || ((!has(self.allowConfidentialClientRegistration)
+                    || !self.allowConfidentialClientRegistration) && (!has(self.delegateClients)
+                    || size(self.delegateClients) == 0) && (!has(self.inboundGrants)
+                    || !has(self.inboundGrants.tokenExchange) || !has(self.inboundGrants.tokenExchange.delegateClients)
+                    || size(self.inboundGrants.tokenExchange.delegateClients) == 0))'
                 - message: canonical tokenExchange conflicts with legacy delegateClients
                     or RFC 8693 trusted issuer policy
                   rule: '!has(self.inboundGrants) || !has(self.inboundGrants.tokenExchange)
@@ -8787,6 +8994,157 @@ spec:
                 - Degraded
                 - Failed
                 type: string
+              runtime:
+                description: |-
+                  Runtime is the status snapshot written exclusively by the vMCP process.
+                  The operator projects it into the top-level compatibility fields.
+                properties:
+                  backendCount:
+                    description: BackendCount is the number of routable backends observed
+                      by the runtime.
+                    format: int32
+                    type: integer
+                  conditions:
+                    description: Conditions contains runtime health observations.
+                    items:
+                      description: Condition contains details for one aspect of the
+                        current state of this API Resource.
+                      properties:
+                        lastTransitionTime:
+                          description: |-
+                            lastTransitionTime is the last time the condition transitioned from one status to another.
+                            This should be when the underlying condition changed.  If that is not known, then using the time when the API field changed is acceptable.
+                          format: date-time
+                          type: string
+                        message:
+                          description: |-
+                            message is a human readable message indicating details about the transition.
+                            This may be an empty string.
+                          maxLength: 32768
+                          type: string
+                        observedGeneration:
+                          description: |-
+                            observedGeneration represents the .metadata.generation that the condition was set based upon.
+                            For instance, if .metadata.generation is currently 12, but the .status.conditions[x].observedGeneration is 9, the condition is out of date
+                            with respect to the current state of the instance.
+                          format: int64
+                          minimum: 0
+                          type: integer
+                        reason:
+                          description: |-
+                            reason contains a programmatic identifier indicating the reason for the condition's last transition.
+                            Producers of specific condition types may define expected values and meanings for this field,
+                            and whether the values are considered a guaranteed API.
+                            The value should be a CamelCase string.
+                            This field may not be empty.
+                          maxLength: 1024
+                          minLength: 1
+                          pattern: ^[A-Za-z]([A-Za-z0-9_,:]*[A-Za-z0-9_])?$
+                          type: string
+                        status:
+                          description: status of the condition, one of True, False,
+                            Unknown.
+                          enum:
+                          - "True"
+                          - "False"
+                          - Unknown
+                          type: string
+                        type:
+                          description: type of condition in CamelCase or in foo.example.com/CamelCase.
+                          maxLength: 316
+                          pattern: ^([a-z0-9]([-a-z0-9]*[a-z0-9])?(\.[a-z0-9]([-a-z0-9]*[a-z0-9])?)*/)?(([A-Za-z0-9][-A-Za-z0-9_.]*)?[A-Za-z0-9])$
+                          type: string
+                      required:
+                      - lastTransitionTime
+                      - message
+                      - reason
+                      - status
+                      - type
+                      type: object
+                    type: array
+                    x-kubernetes-list-map-keys:
+                    - type
+                    x-kubernetes-list-type: map
+                  discoveredBackends:
+                    description: DiscoveredBackends contains the runtime's latest
+                      backend observations.
+                    items:
+                      description: |-
+                        DiscoveredBackend represents a backend server discovered by vMCP runtime.
+                        This type is shared with the Kubernetes operator CRD (VirtualMCPServer.Status.DiscoveredBackends).
+                      properties:
+                        authConfigRef:
+                          description: AuthConfigRef is the name of the discovered
+                            MCPExternalAuthConfig (if any)
+                          type: string
+                        authType:
+                          description: AuthType is the type of authentication configured
+                          type: string
+                        circuitBreakerState:
+                          description: |-
+                            CircuitBreakerState is the current circuit breaker state (closed, open, half-open).
+                            Empty when circuit breaker is disabled or not configured.
+                          enum:
+                          - closed
+                          - open
+                          - half-open
+                          type: string
+                        circuitLastChanged:
+                          description: |-
+                            CircuitLastChanged is the timestamp when the circuit breaker state last changed.
+                            Empty when circuit breaker is disabled or has never changed state.
+                          format: date-time
+                          type: string
+                        consecutiveFailures:
+                          description: |-
+                            ConsecutiveFailures is the current count of consecutive health check failures.
+                            Resets to 0 when the backend becomes healthy again.
+                          type: integer
+                        lastHealthCheck:
+                          description: LastHealthCheck is the timestamp of the last
+                            health check
+                          format: date-time
+                          type: string
+                        mcpRevision:
+                          description: |-
+                            MCPRevision is the backend's negotiated MCP protocol revision
+                            ("2026-07-28" or "2025-11-25"). Empty when the backend has not been probed.
+                          type: string
+                        message:
+                          description: Message provides additional information about
+                            the backend status
+                          type: string
+                        name:
+                          description: Name is the name of the backend MCPServer
+                          type: string
+                        status:
+                          description: |-
+                            Status is the current status of the backend (ready, degraded, unavailable, unauthenticated, unknown).
+                            Use BackendHealthStatus.ToCRDStatus() to populate this field.
+                          type: string
+                        url:
+                          description: URL is the URL of the backend MCPServer
+                          type: string
+                      required:
+                      - name
+                      type: object
+                    type: array
+                    x-kubernetes-list-map-keys:
+                    - name
+                    x-kubernetes-list-type: map
+                  message:
+                    description: Message provides detail about the runtime phase.
+                    type: string
+                  phase:
+                    description: Phase is the lifecycle phase observed by the running
+                      vMCP process.
+                    enum:
+                    - Pending
+                    - Ready
+                    - Degraded
+                    - Failed
+                    type: string
+                type: object
               telemetryConfigHash:
                 description: |-
                   TelemetryConfigHash is the hash of the referenced MCPTelemetryConfig spec for change detection.

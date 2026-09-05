@@ -628,7 +628,7 @@ func (*VirtualMCPServerReconciler) validateAuthServerConfig(
 		return stderrors.New(message)
 	}
 
-	if err := cfg.ValidateConfidentialClientTransport(); err != nil {
+	if err := cfg.ValidateInboundGrants(); err != nil {
 		message := fmt.Sprintf("spec.authServerConfig: %v", err)
 		statusManager.SetPhase(mcpv1beta1.VirtualMCPServerPhaseFailed)
 		statusManager.SetMessage(message)
@@ -2193,6 +2193,19 @@ func countBackendHealth(ctx context.Context, backends []mcpv1beta1.DiscoveredBac
 	return routable, unhealthy
 }
 
+// runtimeDiscoveredBackends returns the freshest backend observations available on vmcp.
+// Status.Runtime is the vMCP process's own snapshot; the top-level DiscoveredBackends is
+// only a projection of it that the operator writes once per reconcile, so a vmcp fetched
+// mid-reconcile can have a current Runtime snapshot alongside a top-level field still
+// reflecting the previous reconcile's patch. Preferring Runtime keeps phase decisions
+// from acting on that stale projection.
+func runtimeDiscoveredBackends(vmcp *mcpv1beta1.VirtualMCPServer) []mcpv1beta1.DiscoveredBackend {
+	if vmcp.Status.Runtime != nil {
+		return vmcp.Status.Runtime.DiscoveredBackends
+	}
+	return vmcp.Status.DiscoveredBackends
+}
+
 // determineStatusFromBackends evaluates backend health to determine status
 func (*VirtualMCPServerReconciler) determineStatusFromBackends(
 	ctx context.Context,
@@ -2200,7 +2213,8 @@ func (*VirtualMCPServerReconciler) determineStatusFromBackends(
 ) statusDecision {
 	ctxLogger := log.FromContext(ctx)
 
-	routable, unhealthy := countBackendHealth(ctx, vmcp.Status.DiscoveredBackends)
+	backends := runtimeDiscoveredBackends(vmcp)
+	routable, unhealthy := countBackendHealth(ctx, backends)
 	total := routable + unhealthy
 
 	// All backends unhealthy
@@ -2238,7 +2252,7 @@ func (*VirtualMCPServerReconciler) determineStatusFromBackends(
 
 	// Edge case: backends exist but none counted
 	ctxLogger.V(1).Info("No backends were counted, treating as degraded",
-		"discoveredBackendsCount", len(vmcp.Status.DiscoveredBackends))
+		"discoveredBackendsCount", len(backends))
 	return statusDecision{
 		phase:          mcpv1beta1.VirtualMCPServerPhaseDegraded,
 		message:        "Virtual MCP server is running but backend status cannot be determined",
@@ -2283,7 +2297,7 @@ func (r *VirtualMCPServerReconciler) determineStatusFromPods(
 	}
 
 	// Pods are ready (passed readiness probes) - check backend health if backends exist
-	if len(vmcp.Status.DiscoveredBackends) == 0 {
+	if len(runtimeDiscoveredBackends(vmcp)) == 0 {
 		// No backends discovered yet - pods ready is sufficient for Ready
 		return statusDecision{
 			phase:          mcpv1beta1.VirtualMCPServerPhaseReady,
@@ -2345,7 +2359,13 @@ func (r *VirtualMCPServerReconciler) updateVirtualMCPServerStatus(
 	// Determine status in one place (no branching/repetition)
 	decision := r.determineStatusFromPods(ctx, vmcp, ready, pending, failed)
 
-	// Apply all status updates at once
+	// Apply all status updates at once.
+	//
+	// SetReadyCondition here deliberately overwrites the runtime's own Ready condition
+	// (reason AllBackendsRoutable, projected from Status.Runtime). The operator's
+	// decision already folds in the runtime's backend health via
+	// determineStatusFromBackends, plus pod/deployment readiness the runtime cannot
+	// observe, so it is the more complete verdict and stays authoritative for Ready.
 	statusManager.SetPhase(decision.phase)
 	statusManager.SetMessage(decision.message)
 	statusManager.SetReadyCondition(decision.reason, decision.conditionMsg, decision.conditionState)

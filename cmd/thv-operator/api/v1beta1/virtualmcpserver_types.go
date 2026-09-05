@@ -255,8 +255,42 @@ const (
 // +gendoc
 type DiscoveredBackend = vmcptypes.DiscoveredBackend
 
+// VirtualMCPServerRuntimeStatus is the runtime-owned status snapshot. The
+// operator projects this snapshot into the top-level compatibility fields and
+// remains the sole writer of the top-level Conditions array.
+type VirtualMCPServerRuntimeStatus struct {
+	// Phase is the lifecycle phase observed by the running vMCP process.
+	// +optional
+	Phase VirtualMCPServerPhase `json:"phase,omitempty"`
+
+	// Message provides detail about the runtime phase.
+	// +optional
+	Message string `json:"message,omitempty"`
+
+	// Conditions contains runtime health observations.
+	// +listType=map
+	// +listMapKey=type
+	// +optional
+	Conditions []metav1.Condition `json:"conditions,omitempty"`
+
+	// DiscoveredBackends contains the runtime's latest backend observations.
+	// +listType=map
+	// +listMapKey=name
+	// +optional
+	DiscoveredBackends []DiscoveredBackend `json:"discoveredBackends,omitempty"`
+
+	// BackendCount is the number of routable backends observed by the runtime.
+	// +optional
+	BackendCount int32 `json:"backendCount,omitempty"`
+}
+
 // VirtualMCPServerStatus defines the observed state of VirtualMCPServer
 type VirtualMCPServerStatus struct {
+	// Runtime is the status snapshot written exclusively by the vMCP process.
+	// The operator projects it into the top-level compatibility fields.
+	// +optional
+	Runtime *VirtualMCPServerRuntimeStatus `json:"runtime,omitempty"`
+
 	// Conditions represent the latest available observations of the VirtualMCPServer's state
 	// +listType=map
 	// +listMapKey=type

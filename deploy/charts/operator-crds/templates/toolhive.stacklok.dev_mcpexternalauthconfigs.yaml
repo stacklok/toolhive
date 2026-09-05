@@ -626,12 +626,16 @@ spec:
                                   type: boolean
                                 allowedActors:
                                   items:
+                                    maxLength: 256
+                                    minLength: 1
                                     type: string
                                   maxItems: 50
                                   type: array
                                   x-kubernetes-list-type: atomic
                                 allowedDelegateClients:
                                   items:
+                                    maxLength: 256
+                                    minLength: 1
                                     type: string
                                   maxItems: 50
                                   minItems: 1
@@ -653,6 +657,21 @@ spec:
                               - expectedAudience
                               - issuerRef
                               type: object
+                              x-kubernetes-validations:
+                              - message: allowedDelegateClients must not combine the
+                                  wildcard "*" with specific client IDs
+                                rule: '!(''*'' in self.allowedDelegateClients) ||
+                                  size(self.allowedDelegateClients) == 1'
+                              - message: allowMayAct must not be enabled when allowedDelegateClients
+                                  contains the wildcard "*"
+                                rule: '!(self.allowMayAct && ''*'' in self.allowedDelegateClients)'
+                              - message: actorClaim must name a readable claim; use
+                                  client_id or a non-reserved claim such as azp, appid,
+                                  or cid
+                                rule: '!has(self.actorClaim) || !(self.actorClaim
+                                  in [''sub'', ''iss'', ''aud'', ''exp'', ''iat'',
+                                  ''nbf'', ''jti'', ''name'', ''email'', ''scope'',
+                                  ''scp'', ''may_act''])'
                             maxItems: 20
                             type: array
                             x-kubernetes-list-type: atomic
@@ -694,9 +713,10 @@ spec:
                       as an operator condition.
 
                       One combination is rejected at admission on all three CRDs regardless of the
-                      above: setting this field alongside allowConfidentialClientRegistration, which
-                      would issue client secrets in cleartext over an unauthenticated registration
-                      endpoint (see the XValidation rule on EmbeddedAuthServerConfig).
+                      above: setting this field alongside confidential client registration or
+                      delegate clients, which would issue or use client secrets in cleartext over
+                      an unauthenticated endpoint (see the XValidation rule on
+                      EmbeddedAuthServerConfig).
                     type: boolean
                   issuer:
                     description: |-
@@ -1029,9 +1049,9 @@ spec:
                             AllowPrivateIPs permits OIDC discovery and JWKS fetches for THIS issuer
                             to resolve to a private or loopback address. Use only when the issuer
                             is hosted inside the same cluster and has no public endpoint. Requires
-                            jwksUrl to be set explicitly (enforced at reconcile time), since
-                            otherwise OIDC discovery — fetched from the external issuer itself —
-                            would choose the private dial target.
+                            jwksUrl to be set explicitly (enforced at admission and by shared
+                            validation), since otherwise OIDC discovery — fetched from the external
+                            issuer itself — would choose the private dial target.
                           type: boolean
                         allowedActors:
                           description: |-
@@ -1876,20 +1896,28 @@ spec:
                     > 0) || (has(self.trustedIssuers) && self.trustedIssuers.exists(issuer,
                     has(issuer.jwtBearerGrant))) || (has(self.inboundGrants) && (has(self.inboundGrants.tokenExchange)
                     || has(self.inboundGrants.jwtBearer)))
-                - message: allowConfidentialClientRegistration cannot be combined
-                    with insecureAllowHTTP; client secrets would be issued in cleartext
-                    over an unauthenticated endpoint
-                  rule: '!(has(self.allowConfidentialClientRegistration) && self.allowConfidentialClientRegistration
-                    && has(self.insecureAllowHTTP) && self.insecureAllowHTTP)'
+                - message: insecureAllowHTTP cannot be combined with confidential
+                    client registration or delegateClients; client secrets would be
+                    issued or used in cleartext over an unauthenticated endpoint
+                  rule: '!(has(self.insecureAllowHTTP) && self.insecureAllowHTTP &&
+                    ((has(self.allowConfidentialClientRegistration) && self.allowConfidentialClientRegistration)
+                    || (has(self.delegateClients) && size(self.delegateClients) >
+                    0) || (has(self.inboundGrants) && has(self.inboundGrants.tokenExchange)
+                    && has(self.inboundGrants.tokenExchange.delegateClients) && size(self.inboundGrants.tokenExchange.delegateClients)
+                    > 0)))'
                 - message: forceConfidentialRedirectUris requires allowConfidentialClientRegistration
                     to be true
                   rule: (!has(self.forceConfidentialRedirectUris) || size(self.forceConfidentialRedirectUris)
                     == 0) || (has(self.allowConfidentialClientRegistration) && self.allowConfidentialClientRegistration)
-                - message: delegateClients with an HTTP issuer require insecureAllowConfidentialOverLoopbackHTTP
+                - message: confidential client registration or delegateClients with
+                    an HTTP issuer require insecureAllowConfidentialOverLoopbackHTTP
                     to be explicitly enabled; the issuer must still be loopback
-                  rule: '!has(self.delegateClients) || size(self.delegateClients)
-                    == 0 || !self.issuer.startsWith(''http://'') || (has(self.insecureAllowConfidentialOverLoopbackHTTP)
-                    && self.insecureAllowConfidentialOverLoopbackHTTP)'
+                  rule: '!self.issuer.startsWith(''http://'') || (has(self.insecureAllowConfidentialOverLoopbackHTTP)
+                    && self.insecureAllowConfidentialOverLoopbackHTTP) || ((!has(self.allowConfidentialClientRegistration)
+                    || !self.allowConfidentialClientRegistration) && (!has(self.delegateClients)
+                    || size(self.delegateClients) == 0) && (!has(self.inboundGrants)
+                    || !has(self.inboundGrants.tokenExchange) || !has(self.inboundGrants.tokenExchange.delegateClients)
+                    || size(self.inboundGrants.tokenExchange.delegateClients) == 0))'
                 - message: canonical tokenExchange conflicts with legacy delegateClients
                     or RFC 8693 trusted issuer policy
                   rule: '!has(self.inboundGrants) || !has(self.inboundGrants.tokenExchange)
@@ -3003,12 +3031,16 @@ spec:
                                   type: boolean
                                 allowedActors:
                                   items:
+                                    maxLength: 256
+                                    minLength: 1
                                     type: string
                                   maxItems: 50
                                   type: array
                                   x-kubernetes-list-type: atomic
                                 allowedDelegateClients:
                                   items:
+                                    maxLength: 256
+                                    minLength: 1
                                     type: string
                                   maxItems: 50
                                   minItems: 1
@@ -3030,6 +3062,21 @@ spec:
                               - expectedAudience
                               - issuerRef
                               type: object
+                              x-kubernetes-validations:
+                              - message: allowedDelegateClients must not combine the
+                                  wildcard "*" with specific client IDs
+                                rule: '!(''*'' in self.allowedDelegateClients) ||
+                                  size(self.allowedDelegateClients) == 1'
+                              - message: allowMayAct must not be enabled when allowedDelegateClients
+                                  contains the wildcard "*"
+                                rule: '!(self.allowMayAct && ''*'' in self.allowedDelegateClients)'
+                              - message: actorClaim must name a readable claim; use
+                                  client_id or a non-reserved claim such as azp, appid,
+                                  or cid
+                                rule: '!has(self.actorClaim) || !(self.actorClaim
+                                  in [''sub'', ''iss'', ''aud'', ''exp'', ''iat'',
+                                  ''nbf'', ''jti'', ''name'', ''email'', ''scope'',
+                                  ''scp'', ''may_act''])'
                             maxItems: 20
                             type: array
                             x-kubernetes-list-type: atomic
@@ -3071,9 +3118,10 @@ spec:
                       as an operator condition.
 
                       One combination is rejected at admission on all three CRDs regardless of the
-                      above: setting this field alongside allowConfidentialClientRegistration, which
-                      would issue client secrets in cleartext over an unauthenticated registration
-                      endpoint (see the XValidation rule on EmbeddedAuthServerConfig).
+                      above: setting this field alongside confidential client registration or
+                      delegate clients, which would issue or use client secrets in cleartext over
+                      an unauthenticated endpoint (see the XValidation rule on
+                      EmbeddedAuthServerConfig).
                     type: boolean
                   issuer:
                     description: |-
@@ -3406,9 +3454,9 @@ spec:
                             AllowPrivateIPs permits OIDC discovery and JWKS fetches for THIS issuer
                             to resolve to a private or loopback address. Use only when the issuer
                             is hosted inside the same cluster and has no public endpoint. Requires
-                            jwksUrl to be set explicitly (enforced at reconcile time), since
-                            otherwise OIDC discovery — fetched from the external issuer itself —
-                            would choose the private dial target.
+                            jwksUrl to be set explicitly (enforced at admission and by shared
+                            validation), since otherwise OIDC discovery — fetched from the external
+                            issuer itself — would choose the private dial target.
                           type: boolean
                         allowedActors:
                           description: |-
@@ -4253,20 +4301,28 @@ spec:
                     > 0) || (has(self.trustedIssuers) && self.trustedIssuers.exists(issuer,
                     has(issuer.jwtBearerGrant))) || (has(self.inboundGrants) && (has(self.inboundGrants.tokenExchange)
                     || has(self.inboundGrants.jwtBearer)))
-                - message: allowConfidentialClientRegistration cannot be combined
-                    with insecureAllowHTTP; client secrets would be issued in cleartext
-                    over an unauthenticated endpoint
-                  rule: '!(has(self.allowConfidentialClientRegistration) && self.allowConfidentialClientRegistration
-                    && has(self.insecureAllowHTTP) && self.insecureAllowHTTP)'
+                - message: insecureAllowHTTP cannot be combined with confidential
+                    client registration or delegateClients; client secrets would be
+                    issued or used in cleartext over an unauthenticated endpoint
+                  rule: '!(has(self.insecureAllowHTTP) && self.insecureAllowHTTP &&
+                    ((has(self.allowConfidentialClientRegistration) && self.allowConfidentialClientRegistration)
+                    || (has(self.delegateClients) && size(self.delegateClients) >
+                    0) || (has(self.inboundGrants) && has(self.inboundGrants.tokenExchange)
+                    && has(self.inboundGrants.tokenExchange.delegateClients) && size(self.inboundGrants.tokenExchange.delegateClients)
+                    > 0)))'
                 - message: forceConfidentialRedirectUris requires allowConfidentialClientRegistration
                     to be true
                   rule: (!has(self.forceConfidentialRedirectUris) || size(self.forceConfidentialRedirectUris)
                     == 0) || (has(self.allowConfidentialClientRegistration) && self.allowConfidentialClientRegistration)
-                - message: delegateClients with an HTTP issuer require insecureAllowConfidentialOverLoopbackHTTP
+                - message: confidential client registration or delegateClients with
+                    an HTTP issuer require insecureAllowConfidentialOverLoopbackHTTP
                     to be explicitly enabled; the issuer must still be loopback
-                  rule: '!has(self.delegateClients) || size(self.delegateClients)
-                    == 0 || !self.issuer.startsWith(''http://'') || (has(self.insecureAllowConfidentialOverLoopbackHTTP)
-                    && self.insecureAllowConfidentialOverLoopbackHTTP)'
+                  rule: '!self.issuer.startsWith(''http://'') || (has(self.insecureAllowConfidentialOverLoopbackHTTP)
+                    && self.insecureAllowConfidentialOverLoopbackHTTP) || ((!has(self.allowConfidentialClientRegistration)
+                    || !self.allowConfidentialClientRegistration) && (!has(self.delegateClients)
+                    || size(self.delegateClients) == 0) && (!has(self.inboundGrants)
+                    || !has(self.inboundGrants.tokenExchange) || !has(self.inboundGrants.tokenExchange.delegateClients)
+                    || size(self.inboundGrants.tokenExchange.delegateClients) == 0))'
                 - message: canonical tokenExchange conflicts with legacy delegateClients
                     or RFC 8693 trusted issuer policy
                   rule: '!has(self.inboundGrants) || !has(self.inboundGrants.tokenExchange)

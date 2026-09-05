@@ -441,9 +441,9 @@ type TrustedIssuerConfig struct {
 	// AllowPrivateIPs permits OIDC discovery and JWKS fetches for THIS issuer
 	// to resolve to a private or loopback address. Use only when the issuer
 	// is hosted inside the same cluster and has no public endpoint. Requires
-	// jwksUrl to be set explicitly (enforced at reconcile time), since
-	// otherwise OIDC discovery — fetched from the external issuer itself —
-	// would choose the private dial target.
+	// jwksUrl to be set explicitly (enforced at admission and by shared
+	// validation), since otherwise OIDC discovery — fetched from the external
+	// issuer itself — would choose the private dial target.
 	// +optional
 	AllowPrivateIPs bool `json:"allowPrivateIPs,omitempty"`
 
@@ -613,6 +613,12 @@ type TokenExchangeInboundGrantConfig struct {
 }
 
 // TokenExchangeIssuerPolicyConfig binds RFC 8693 policy to a named trusted issuer.
+//
+// +kubebuilder:validation:XValidation:rule="!('*' in self.allowedDelegateClients) || size(self.allowedDelegateClients) == 1",message="allowedDelegateClients must not combine the wildcard \"*\" with specific client IDs"
+// +kubebuilder:validation:XValidation:rule="!(self.allowMayAct && '*' in self.allowedDelegateClients)",message="allowMayAct must not be enabled when allowedDelegateClients contains the wildcard \"*\""
+// +kubebuilder:validation:XValidation:rule="!has(self.actorClaim) || !(self.actorClaim in ['sub', 'iss', 'aud', 'exp', 'iat', 'nbf', 'jti', 'name', 'email', 'scope', 'scp', 'may_act'])",message="actorClaim must name a readable claim; use client_id or a non-reserved claim such as azp, appid, or cid"
+//
+//nolint:lll // CEL validation rules exceed line length limits.
 type TokenExchangeIssuerPolicyConfig struct {
 	// IssuerRef references trustedIssuers[].name.
 	// +kubebuilder:validation:MinLength=1
@@ -630,6 +636,8 @@ type TokenExchangeIssuerPolicyConfig struct {
 	ActorClaim string `json:"actorClaim,omitempty"`
 
 	// +kubebuilder:validation:MaxItems=50
+	// +kubebuilder:validation:items:MinLength=1
+	// +kubebuilder:validation:items:MaxLength=256
 	// +listType=atomic
 	// +optional
 	AllowedActors []string `json:"allowedActors,omitempty"`
@@ -640,6 +648,8 @@ type TokenExchangeIssuerPolicyConfig struct {
 
 	// +kubebuilder:validation:MinItems=1
 	// +kubebuilder:validation:MaxItems=50
+	// +kubebuilder:validation:items:MinLength=1
+	// +kubebuilder:validation:items:MaxLength=256
 	// +listType=atomic
 	AllowedDelegateClients []string `json:"allowedDelegateClients"`
 
@@ -677,9 +687,9 @@ type JWTBearerIssuerPolicyConfig struct {
 //
 // +kubebuilder:validation:XValidation:rule="(has(self.upstreamProviders) && size(self.upstreamProviders) > 0) || (has(self.delegateClients) && size(self.delegateClients) > 0) || (has(self.trustedIssuers) && self.trustedIssuers.exists(issuer, has(issuer.jwtBearerGrant))) || (has(self.inboundGrants) && (has(self.inboundGrants.tokenExchange) || has(self.inboundGrants.jwtBearer)))",message="at least one upstream provider or inbound grant family is required"
 //
-// +kubebuilder:validation:XValidation:rule="!(has(self.allowConfidentialClientRegistration) && self.allowConfidentialClientRegistration && has(self.insecureAllowHTTP) && self.insecureAllowHTTP)",message="allowConfidentialClientRegistration cannot be combined with insecureAllowHTTP; client secrets would be issued in cleartext over an unauthenticated endpoint"
+// +kubebuilder:validation:XValidation:rule="!(has(self.insecureAllowHTTP) && self.insecureAllowHTTP && ((has(self.allowConfidentialClientRegistration) && self.allowConfidentialClientRegistration) || (has(self.delegateClients) && size(self.delegateClients) > 0) || (has(self.inboundGrants) && has(self.inboundGrants.tokenExchange) && has(self.inboundGrants.tokenExchange.delegateClients) && size(self.inboundGrants.tokenExchange.delegateClients) > 0)))",message="insecureAllowHTTP cannot be combined with confidential client registration or delegateClients; client secrets would be issued or used in cleartext over an unauthenticated endpoint"
 // +kubebuilder:validation:XValidation:rule="(!has(self.forceConfidentialRedirectUris) || size(self.forceConfidentialRedirectUris) == 0) || (has(self.allowConfidentialClientRegistration) && self.allowConfidentialClientRegistration)",message="forceConfidentialRedirectUris requires allowConfidentialClientRegistration to be true"
-// +kubebuilder:validation:XValidation:rule="!has(self.delegateClients) || size(self.delegateClients) == 0 || !self.issuer.startsWith('http://') || (has(self.insecureAllowConfidentialOverLoopbackHTTP) && self.insecureAllowConfidentialOverLoopbackHTTP)",message="delegateClients with an HTTP issuer require insecureAllowConfidentialOverLoopbackHTTP to be explicitly enabled; the issuer must still be loopback"
+// +kubebuilder:validation:XValidation:rule="!self.issuer.startsWith('http://') || (has(self.insecureAllowConfidentialOverLoopbackHTTP) && self.insecureAllowConfidentialOverLoopbackHTTP) || ((!has(self.allowConfidentialClientRegistration) || !self.allowConfidentialClientRegistration) && (!has(self.delegateClients) || size(self.delegateClients) == 0) && (!has(self.inboundGrants) || !has(self.inboundGrants.tokenExchange) || !has(self.inboundGrants.tokenExchange.delegateClients) || size(self.inboundGrants.tokenExchange.delegateClients) == 0))",message="confidential client registration or delegateClients with an HTTP issuer require insecureAllowConfidentialOverLoopbackHTTP to be explicitly enabled; the issuer must still be loopback"
 // +kubebuilder:validation:XValidation:rule="!has(self.inboundGrants) || !has(self.inboundGrants.tokenExchange) || ((!has(self.delegateClients) || size(self.delegateClients) == 0) && (!has(self.trustedIssuers) || !self.trustedIssuers.exists(issuer, has(issuer.expectedAudience) || has(issuer.actorClaim) || has(issuer.allowedActors) || has(issuer.actorMatcher) || has(issuer.allowedDelegateClients) || (has(issuer.allowMayAct) && issuer.allowMayAct))))",message="canonical tokenExchange conflicts with legacy delegateClients or RFC 8693 trusted issuer policy"
 // +kubebuilder:validation:XValidation:rule="!has(self.inboundGrants) || !has(self.inboundGrants.jwtBearer) || !has(self.trustedIssuers) || !self.trustedIssuers.exists(issuer, has(issuer.jwtBearerGrant))",message="canonical jwtBearer conflicts with legacy jwtBearerGrant"
 // +kubebuilder:validation:XValidation:rule="!has(self.trustedIssuers) || self.trustedIssuers.all(issuer, !has(issuer.name) || self.trustedIssuers.filter(other, has(other.name) && other.name == issuer.name).size() == 1)",message="trustedIssuers must not contain duplicate names"
@@ -690,8 +700,9 @@ type JWTBearerIssuerPolicyConfig struct {
 //
 // The shared Go-level ValidateConfidentialClientTransport validator remains the
 // source of truth for confidential-client transport and loopback policy,
-// including delegate clients. Full issuer URL validation is performed by the
-// runtime configuration validator.
+// including delegate clients. Trusted issuer endpoint shape is validated by
+// ValidateInboundGrants; audience and outbound DNS/private-IP checks remain
+// runtime-only.
 //
 //nolint:lll // CEL validation rules exceed line length limits.
 type EmbeddedAuthServerConfig struct {
@@ -807,9 +818,10 @@ type EmbeddedAuthServerConfig struct {
 	// as an operator condition.
 	//
 	// One combination is rejected at admission on all three CRDs regardless of the
-	// above: setting this field alongside allowConfidentialClientRegistration, which
-	// would issue client secrets in cleartext over an unauthenticated registration
-	// endpoint (see the XValidation rule on EmbeddedAuthServerConfig).
+	// above: setting this field alongside confidential client registration or
+	// delegate clients, which would issue or use client secrets in cleartext over
+	// an unauthenticated endpoint (see the XValidation rule on
+	// EmbeddedAuthServerConfig).
 	// +kubebuilder:default=false
 	// +optional
 	InsecureAllowHTTP bool `json:"insecureAllowHTTP,omitempty"`
@@ -952,21 +964,198 @@ type EmbeddedAuthServerConfig struct {
 	CIMD *EmbeddedAuthServerCIMDConfig `json:"cimd,omitempty"`
 }
 
-// ValidateConfidentialClientTransport rejects cleartext issuer configurations
-// when confidential DCR or delegate clients are configured. Delegate clients
-// do not enable DCR; they share its transport policy because they send a
-// secret to the token endpoint. private_key_jwt registration is not gated
-// here: it never returns a secret in the DCR response, so cleartext HTTP
-// exposes nothing this check would protect.
-func (c *EmbeddedAuthServerConfig) ValidateConfidentialClientTransport() error {
-	canonicalDelegate := c.InboundGrants != nil && c.InboundGrants.TokenExchange != nil &&
-		len(c.InboundGrants.TokenExchange.DelegateClients) > 0
-	return authserver.ValidateConfidentialClientTransport(
-		c.AllowConfidentialClientRegistration || len(c.DelegateClients) > 0 || canonicalDelegate,
+// effectiveInboundGrants is the folded validation view of legacy and canonical
+// inbound grant configuration. Its slice fields are cloned from the source
+// EmbeddedAuthServerConfig when built, so mutating them cannot affect it.
+type effectiveInboundGrants struct {
+	tokenExchange   bool
+	jwtBearer       bool
+	delegateClients []DelegateClientConfig
+	trustedIssuers  []tokenexchange.TrustedIssuer
+}
+
+// EffectiveGrants folds legacy and canonical inbound grants using the same
+// conflict and overlay semantics as authserver.NormalizeInboundGrants.
+func (c *EmbeddedAuthServerConfig) EffectiveGrants() (effectiveInboundGrants, error) {
+	if err := c.validateJWTBearerMaxAssertionAges(); err != nil {
+		return effectiveInboundGrants{}, err
+	}
+	result := effectiveInboundGrants{
+		tokenExchange:   c.InboundGrants == nil,
+		delegateClients: cloneDelegateClientConfigs(c.DelegateClients),
+		trustedIssuers:  buildTrustedIssuerConfigs(c.TrustedIssuers),
+	}
+	issuerByName, legacyTokenExchange, legacyJWTBearer, err := c.indexEffectiveTrustedIssuers(result.trustedIssuers)
+	if err != nil {
+		return effectiveInboundGrants{}, err
+	}
+	result.jwtBearer = legacyJWTBearer
+	if c.InboundGrants == nil {
+		return result, nil
+	}
+	if err := applyEffectiveTokenExchange(&result, c.InboundGrants.TokenExchange, issuerByName, legacyTokenExchange); err != nil {
+		return effectiveInboundGrants{}, err
+	}
+	if err := applyEffectiveJWTBearer(&result, c.InboundGrants.JWTBearer, issuerByName, legacyJWTBearer); err != nil {
+		return effectiveInboundGrants{}, err
+	}
+	return result, nil
+}
+
+func (c *EmbeddedAuthServerConfig) validateJWTBearerMaxAssertionAges() error {
+	for i, issuer := range c.TrustedIssuers {
+		if issuer.JWTBearerGrant != nil && issuer.JWTBearerGrant.MaxAssertionAge == nil {
+			return fmt.Errorf("trustedIssuers[%d].jwtBearerGrant.maxAssertionAge is required", i)
+		}
+	}
+	if c.InboundGrants == nil || c.InboundGrants.JWTBearer == nil {
+		return nil
+	}
+	for i, policy := range c.InboundGrants.JWTBearer.IssuerPolicies {
+		if policy.MaxAssertionAge == nil {
+			return fmt.Errorf("inboundGrants.jwtBearer.issuerPolicies[%d].maxAssertionAge is required", i)
+		}
+	}
+	return nil
+}
+
+func (c *EmbeddedAuthServerConfig) indexEffectiveTrustedIssuers(
+	issuers []tokenexchange.TrustedIssuer,
+) (map[string]int, bool, bool, error) {
+	byName := make(map[string]int, len(issuers))
+	byURL := make(map[string]int, len(issuers))
+	legacyTokenExchange := len(c.DelegateClients) > 0
+	legacyJWTBearer := false
+	for i, issuer := range issuers {
+		if previous, ok := byURL[issuer.IssuerURL]; ok {
+			return nil, false, false, fmt.Errorf(
+				"trustedIssuers[%d].issuerUrl duplicates trustedIssuers[%d].issuerUrl", i, previous)
+		}
+		byURL[issuer.IssuerURL] = i
+		if issuer.Name != "" {
+			if previous, ok := byName[issuer.Name]; ok {
+				return nil, false, false, fmt.Errorf(
+					"trustedIssuers[%d].name duplicates trustedIssuers[%d].name %q", i, previous, issuer.Name)
+			}
+			byName[issuer.Name] = i
+		}
+		legacyTokenExchange = legacyTokenExchange || hasLegacyTokenExchangePolicy(c.TrustedIssuers[i])
+		legacyJWTBearer = legacyJWTBearer || issuer.JWTBearerGrant != nil
+	}
+	return byName, legacyTokenExchange, legacyJWTBearer, nil
+}
+
+func applyEffectiveTokenExchange(
+	result *effectiveInboundGrants,
+	config *TokenExchangeInboundGrantConfig,
+	issuerByName map[string]int,
+	legacy bool,
+) error {
+	if config == nil {
+		result.tokenExchange = legacy
+		return nil
+	}
+	if legacy {
+		return fmt.Errorf("inboundGrants.tokenExchange conflicts with legacy delegateClients or RFC 8693 policy in trustedIssuers")
+	}
+	result.tokenExchange = true
+	result.delegateClients = cloneDelegateClientConfigs(config.DelegateClients)
+	seen := make(map[string]int, len(config.IssuerPolicies))
+	for i, policy := range config.IssuerPolicies {
+		issuerIndex, err := resolveEffectiveIssuerRef(issuerByName, seen, policy.IssuerRef,
+			fmt.Sprintf("inboundGrants.tokenExchange.issuerPolicies[%d]", i))
+		if err != nil {
+			return err
+		}
+		seen[policy.IssuerRef] = i
+		issuer := &result.trustedIssuers[issuerIndex]
+		issuer.ExpectedAudience = policy.ExpectedAudience
+		issuer.ActorClaim = policy.ActorClaim
+		issuer.AllowedActors = slices.Clone(policy.AllowedActors)
+		issuer.ActorMatcher = policy.ActorMatcher
+		issuer.AllowedDelegateClients = slices.Clone(policy.AllowedDelegateClients)
+		issuer.AllowMayAct = policy.AllowMayAct
+	}
+	return nil
+}
+
+func applyEffectiveJWTBearer(
+	result *effectiveInboundGrants,
+	config *JWTBearerInboundGrantConfig,
+	issuerByName map[string]int,
+	legacy bool,
+) error {
+	if config == nil {
+		return nil
+	}
+	if legacy {
+		return fmt.Errorf("inboundGrants.jwtBearer conflicts with legacy trustedIssuers[*].jwtBearerGrant")
+	}
+	result.jwtBearer = true
+	seen := make(map[string]int, len(config.IssuerPolicies))
+	for i, policy := range config.IssuerPolicies {
+		issuerIndex, err := resolveEffectiveIssuerRef(issuerByName, seen, policy.IssuerRef,
+			fmt.Sprintf("inboundGrants.jwtBearer.issuerPolicies[%d]", i))
+		if err != nil {
+			return err
+		}
+		seen[policy.IssuerRef] = i
+		result.trustedIssuers[issuerIndex].JWTBearerGrant = buildJWTBearerGrantPolicy(&policy.JWTBearerGrantConfig)
+	}
+	return nil
+}
+
+// ValidateInboundGrants validates the effective grant projection shared by
+// MCPExternalAuthConfig and inline VirtualMCPServer auth configuration.
+func (c *EmbeddedAuthServerConfig) ValidateInboundGrants() error {
+	grants, err := c.EffectiveGrants()
+	if err != nil {
+		return err
+	}
+	if err := authserver.ValidateConfidentialClientTransport(
+		c.AllowConfidentialClientRegistration || len(grants.delegateClients) > 0,
 		c.InsecureAllowHTTP,
 		c.Issuer,
 		c.InsecureAllowConfidentialOverLoopbackHTTP,
-	)
+	); err != nil {
+		return err
+	}
+	if err := tokenexchange.ValidateTrustedIssuers(grants.trustedIssuers, c.Issuer, nil); err != nil {
+		return fmt.Errorf("trustedIssuers: %w", err)
+	}
+	return nil
+}
+
+func hasLegacyTokenExchangePolicy(issuer TrustedIssuerConfig) bool {
+	return issuer.ExpectedAudience != "" || issuer.ActorClaim != "" || len(issuer.AllowedActors) > 0 ||
+		issuer.ActorMatcher != "" || len(issuer.AllowedDelegateClients) > 0 || issuer.AllowMayAct
+}
+
+func resolveEffectiveIssuerRef(byName, seen map[string]int, ref, path string) (int, error) {
+	if ref == "" {
+		return 0, fmt.Errorf("%s.issuerRef is required", path)
+	}
+	if previous, ok := seen[ref]; ok {
+		return 0, fmt.Errorf("%s.issuerRef duplicates issuer policy [%d] for %q", path, previous, ref)
+	}
+	index, ok := byName[ref]
+	if !ok {
+		return 0, fmt.Errorf("%s.issuerRef references unknown or unnamed trusted issuer %q", path, ref)
+	}
+	return index, nil
+}
+
+func cloneDelegateClientConfigs(clients []DelegateClientConfig) []DelegateClientConfig {
+	cloned := slices.Clone(clients)
+	for i := range cloned {
+		cloned[i].Scopes = slices.Clone(cloned[i].Scopes)
+		cloned[i].Audiences = slices.Clone(cloned[i].Audiences)
+		if cloned[i].ClientSecretRef != nil {
+			secretRef := *cloned[i].ClientSecretRef
+			cloned[i].ClientSecretRef = &secretRef
+		}
+	}
+	return cloned
 }
 
 // TokenLifespanConfig holds configuration for token lifetimes.
@@ -2128,9 +2317,10 @@ func (r *MCPExternalAuthConfig) validateEmbeddedAuthServer() error {
 	// (MCPServer, MCPRemoteProxy) enforce single-upstream restrictions;
 	// VirtualMCPServer allows multiple upstreams.
 
-	// Defense-in-depth with the shared runtime policy. This checks confidential
-	// DCR and statically declared delegate clients for unsafe HTTP issuers.
-	if err := cfg.ValidateConfidentialClientTransport(); err != nil {
+	// Defense-in-depth with the shared runtime policy. This folds legacy and
+	// canonical grant declarations before checking confidential transport and
+	// trusted issuer policy.
+	if err := cfg.ValidateInboundGrants(); err != nil {
 		return err
 	}
 
@@ -2145,16 +2335,6 @@ func (r *MCPExternalAuthConfig) validateEmbeddedAuthServer() error {
 		return err
 	}
 
-	// allowedAudiences is intentionally nil here: it is derived later from the
-	// resolved incoming OIDC config (see deriveAllowedAudiences), not
-	// available on this CRD. The same accepted_audiences/allowed_audiences
-	// disjointness check runs again once that value exists, at
-	// Config.Validate time (pkg/authserver/config.go's validateTrustedIssuers).
-	if cfg.InboundGrants == nil {
-		if err := tokenexchange.ValidateTrustedIssuers(buildTrustedIssuerConfigs(cfg.TrustedIssuers), cfg.Issuer, nil); err != nil {
-			return fmt.Errorf("trustedIssuers: %w", err)
-		}
-	}
 	for i := range cfg.TrustedIssuers {
 		if err := validateUpstreamCABundleRef(cfg.TrustedIssuers[i].CABundleRef); err != nil {
 			return fmt.Errorf("trustedIssuers[%d] (%q) caBundleRef: %w", i, cfg.TrustedIssuers[i].IssuerURL, err)

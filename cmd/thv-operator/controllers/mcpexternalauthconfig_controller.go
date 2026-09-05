@@ -247,6 +247,10 @@ func setDeprecatedInboundGrantCondition(
 func (*MCPExternalAuthConfigReconciler) applyDeprecatedInboundGrantCondition(
 	cfg *mcpv1beta1.MCPExternalAuthConfig,
 ) {
+	if cfg.Spec.Type != mcpv1beta1.ExternalAuthTypeEmbeddedAuthServer || cfg.Spec.EmbeddedAuthServer == nil {
+		meta.RemoveStatusCondition(&cfg.Status.Conditions, mcpv1beta1.ConditionTypeDeprecatedInboundGrantConfiguration)
+		return
+	}
 	setDeprecatedInboundGrantCondition(
 		&cfg.Status.Conditions,
 		cfg.Generation,

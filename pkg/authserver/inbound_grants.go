@@ -150,10 +150,9 @@ func indexTrustedIssuers(issuers []tx.TrustedIssuer) (map[string]int, error) {
 	for i, issuer := range issuers {
 		if previous, ok := byURL[issuer.IssuerURL]; ok {
 			return nil, fmt.Errorf(
-				"trusted_issuers[%d].issuer_url duplicates trusted_issuers[%d].issuer_url %q (configured more than once)",
+				"trusted_issuers[%d].issuer_url duplicates trusted_issuers[%d].issuer_url (configured more than once)",
 				i,
 				previous,
-				issuer.IssuerURL,
 			)
 		}
 		byURL[issuer.IssuerURL] = i

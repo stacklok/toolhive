@@ -3386,6 +3386,42 @@ func TestBuildAuthServerRunConfigInvalidDelegateClientIsTyped(t *testing.T) {
 	assert.True(t, stderrors.As(err, &invalidConfigErr))
 }
 
+func TestBuildAuthServerRunConfig_RejectsNilJWTBearerMaxAssertionAge(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name       string
+		authConfig *mcpv1beta1.EmbeddedAuthServerConfig
+		wantErr    string
+	}{
+		{
+			name: "legacy JWT bearer grant",
+			authConfig: &mcpv1beta1.EmbeddedAuthServerConfig{TrustedIssuers: []mcpv1beta1.TrustedIssuerConfig{{
+				IssuerURL: "https://issuer.example.com", JWTBearerGrant: &mcpv1beta1.JWTBearerGrantConfig{},
+			}}},
+			wantErr: "trustedIssuers[0].jwtBearerGrant.maxAssertionAge is required",
+		},
+		{
+			name: "canonical JWT bearer grant",
+			authConfig: &mcpv1beta1.EmbeddedAuthServerConfig{
+				TrustedIssuers: []mcpv1beta1.TrustedIssuerConfig{{Name: "issuer", IssuerURL: "https://issuer.example.com"}},
+				InboundGrants: &mcpv1beta1.InboundGrantsConfig{JWTBearer: &mcpv1beta1.JWTBearerInboundGrantConfig{
+					IssuerPolicies: []mcpv1beta1.JWTBearerIssuerPolicyConfig{{IssuerRef: "issuer"}},
+				}},
+			},
+			wantErr: "inboundGrants.jwtBearer.issuerPolicies[0].maxAssertionAge is required",
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			config, err := BuildAuthServerRunConfig("default", "test-server", tt.authConfig, nil, nil, "")
+			require.ErrorContains(t, err, tt.wantErr)
+			assert.Nil(t, config)
+		})
+	}
+}
+
 func TestBuildTrustedIssuerRunConfigs_JWTBearerGrant(t *testing.T) {
 	t.Parallel()
 

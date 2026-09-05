@@ -116,6 +116,55 @@ func TestNewAuthorizationServerConfig_ConfidentialClientCapabilities(t *testing.
 	}
 }
 
+func TestNewAuthorizationServerConfig_ConfidentialHTTPTransport(t *testing.T) {
+	t.Parallel()
+
+	rsaKey, err := rsa.GenerateKey(rand.Reader, 2048)
+	require.NoError(t, err)
+	base := func() AuthorizationServerParams {
+		return AuthorizationServerParams{
+			Issuer: "https://auth.example.com", AccessTokenLifespan: time.Hour,
+			RefreshTokenLifespan: 24 * time.Hour, AuthCodeLifespan: 10 * time.Minute,
+			HMACSecrets:  servercrypto.NewHMACSecrets([]byte("test-secret-with-32-bytes-long!!")),
+			SigningKeyID: "key-1", SigningKeyAlgorithm: "RS256", SigningKey: rsaKey,
+		}
+	}
+	tests := []struct {
+		name    string
+		mutate  func(*AuthorizationServerParams)
+		wantErr string
+	}{
+		{name: "confidential registration rejects non-loopback HTTP", mutate: func(p *AuthorizationServerParams) {
+			p.Issuer = "http://auth.example.com"
+			p.AllowConfidentialClientRegistration = true
+		}, wantErr: "plain-HTTP non-loopback"},
+		{name: "static delegate client rejects non-loopback HTTP", mutate: func(p *AuthorizationServerParams) {
+			p.Issuer = "http://auth.example.com"
+			p.HasStaticDelegateClients = true
+		}, wantErr: "plain-HTTP non-loopback"},
+		{name: "loopback opt-in permits confidential HTTP", mutate: func(p *AuthorizationServerParams) {
+			p.Issuer = "http://localhost:8080"
+			p.AllowConfidentialClientRegistration = true
+			p.InsecureAllowConfidentialOverLoopbackHTTP = true
+		}},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			params := base()
+			tt.mutate(&params)
+			config, err := NewAuthorizationServerConfig(&params)
+			if tt.wantErr == "" {
+				require.NoError(t, err)
+				require.NotNil(t, config)
+				return
+			}
+			require.ErrorContains(t, err, tt.wantErr)
+			assert.Nil(t, config)
+		})
+	}
+}
+
 func TestNewAuthorizationServerConfig_InvalidConfig(t *testing.T) {
 	t.Parallel()
 
@@ -617,6 +666,54 @@ type mockRevocationHandler struct{}
 
 func (*mockRevocationHandler) RevokeToken(_ context.Context, _ string, _ fosite.TokenType, _ fosite.Client) error {
 	return nil
+}
+
+func TestNewAuthorizationServer_ConfidentialHTTPTransport(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name    string
+		config  *AuthorizationServerConfig
+		wantErr string
+	}{
+		{
+			name: "direct confidential configuration rejects non-loopback HTTP",
+			config: &AuthorizationServerConfig{
+				Config:                              &fosite.Config{AccessTokenIssuer: "http://auth.example.com"},
+				AllowConfidentialClientRegistration: true,
+			},
+			wantErr: "plain-HTTP non-loopback",
+		},
+		{
+			name: "direct static delegate configuration rejects non-loopback HTTP",
+			config: &AuthorizationServerConfig{
+				Config:                   &fosite.Config{AccessTokenIssuer: "http://auth.example.com"},
+				HasStaticDelegateClients: true,
+			},
+			wantErr: "plain-HTTP non-loopback",
+		},
+		{
+			name: "direct loopback opt-in permits confidential HTTP",
+			config: &AuthorizationServerConfig{
+				Config:                              &fosite.Config{AccessTokenIssuer: "http://localhost:8080"},
+				AllowConfidentialClientRegistration: true,
+				InsecureAllowConfidentialOverLoopbackHTTP: true,
+			},
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			provider, err := NewAuthorizationServer(tt.config, &mockStorage{}, nil)
+			if tt.wantErr == "" {
+				require.NoError(t, err)
+				require.NotNil(t, provider)
+				return
+			}
+			require.ErrorContains(t, err, tt.wantErr)
+			assert.Nil(t, provider)
+		})
+	}
 }
 
 func TestNewAuthorizationServer(t *testing.T) {

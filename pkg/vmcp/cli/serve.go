@@ -358,6 +358,15 @@ func Serve(ctx context.Context, cfg ServeConfig) error {
 		sessionFactoryOpts,
 		vmcpsession.WithRequestTimeoutResolver(backendRequestTimeoutResolver(vmcpCfg)),
 	)
+	// Bound client-facing initialize to the same budget as a health probe
+	// so Ready + /health cannot stay green while initialize hangs past
+	// typical gateway timeouts (#6345). Unset keeps the factory default (10s).
+	if vmcpCfg.Operational != nil &&
+		vmcpCfg.Operational.FailureHandling != nil &&
+		vmcpCfg.Operational.FailureHandling.HealthCheckTimeout > 0 {
+		sessionFactoryOpts = append(sessionFactoryOpts, vmcpsession.WithSessionInitTimeout(
+			time.Duration(vmcpCfg.Operational.FailureHandling.HealthCheckTimeout)))
+	}
 	sessionFactory := vmcpsession.NewSessionFactory(outgoingRegistry, sessionFactoryOpts...)
 
 	// When the optimizer is enabled, its meta-tools are pass-through tools.

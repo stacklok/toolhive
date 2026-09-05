@@ -733,6 +733,8 @@ type FailureHandlingConfig struct {
 
 	// HealthCheckTimeout is the maximum duration for a single health check operation.
 	// Should be less than HealthCheckInterval to prevent checks from queuing up.
+	// The same value also bounds a new client session's initialize handshake
+	// across backends, so set it below your gateway/client timeout.
 	// +kubebuilder:default="10s"
 	// +optional
 	HealthCheckTimeout Duration `json:"healthCheckTimeout,omitempty" yaml:"healthCheckTimeout,omitempty"`

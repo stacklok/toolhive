@@ -685,6 +685,18 @@ status:
     compositeToolCount: 1
 ```
 
+## Health, Ready, and initialize
+
+These three signals mean different things:
+
+| Signal | What it means | What it does not mean |
+| --- | --- | --- |
+| `GET /health` | Process is up (liveness). Always 200 if the HTTP server answers. | A new MCP session can `initialize` before your gateway times out. |
+| CR `Ready` / backend `Healthy` | Last `ListCapabilities` probe succeeded within `healthCheckTimeout`. | The next client `initialize` will finish in that same budget. |
+| Client `initialize` | A new session connected to backends (best-effort). Bounded by `healthCheckTimeout` (default 10s). | Every backend completed the full handshake. Slow ones are skipped when the budget expires. |
+
+Set `spec.config.operational.failureHandling.healthCheckTimeout` below the client or gateway timeout so initialize cannot hang with a 0-byte response.
+
 ## Validation
 
 The VirtualMCPServer CRD includes comprehensive validation:

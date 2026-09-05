@@ -586,8 +586,211 @@ type JWTBearerSubjectBinding struct {
 	AllowedResources []string `json:"allowedResources"`
 }
 
+// SPIFFEAuthenticationMethod identifies the credential type permitted for a
+// SPIFFE workload. Mirrors authserver.SPIFFEAuthenticationMethod field-for-field;
+// runtime parsing remains authoritative.
+type SPIFFEAuthenticationMethod string
+
+// SPIFFEBundleSourceType identifies the selected trust-bundle source. Mirrors
+// authserver.SPIFFEBundleSourceType.
+type SPIFFEBundleSourceType string
+
+// SPIFFEBundleEndpointProfile identifies how a SPIFFE Bundle Endpoint's TLS
+// connection is authenticated. Mirrors authserver.SPIFFEBundleEndpointProfile.
+type SPIFFEBundleEndpointProfile string
+
+const (
+	// SPIFFEAuthenticationMethodX509 authenticates a workload with an X.509-SVID.
+	SPIFFEAuthenticationMethodX509 SPIFFEAuthenticationMethod = "spiffe_x509"
+	// SPIFFEAuthenticationMethodJWT authenticates a workload with a JWT-SVID.
+	SPIFFEAuthenticationMethodJWT SPIFFEAuthenticationMethod = "spiffe_jwt"
+
+	// SPIFFEBundleSourceTypeEndpoint selects a HTTPS SPIFFE Bundle Endpoint.
+	SPIFFEBundleSourceTypeEndpoint SPIFFEBundleSourceType = "bundle_endpoint"
+	// SPIFFEBundleSourceTypeWorkloadAPI selects the local SPIFFE Workload API.
+	SPIFFEBundleSourceTypeWorkloadAPI SPIFFEBundleSourceType = "workload_api"
+
+	// SPIFFEBundleEndpointProfileHTTPSWeb authenticates the bundle endpoint's
+	// TLS connection with a Web PKI certificate.
+	SPIFFEBundleEndpointProfileHTTPSWeb SPIFFEBundleEndpointProfile = "https_web"
+	// SPIFFEBundleEndpointProfileHTTPSSPIFFE authenticates the bundle
+	// endpoint's TLS connection with a separately distributed X.509-SVID root.
+	SPIFFEBundleEndpointProfileHTTPSSPIFFE SPIFFEBundleEndpointProfile = "https_spiffe"
+)
+
+// SPIFFEBundleSourceConfig is a discriminated bundle-source declaration. Type
+// determines which, and only which, source payload may be set. It is
+// validated for shape only; fetching or loading a bundle from the declared
+// source is not implemented yet.
+//
+// +kubebuilder:validation:XValidation:rule="self.type == 'bundle_endpoint' ? has(self.endpoint) : !has(self.endpoint)",message="endpoint configuration must be set if and only if type is 'bundle_endpoint'"
+// +kubebuilder:validation:XValidation:rule="self.type == 'workload_api' ? has(self.workloadAPI) : !has(self.workloadAPI)",message="workloadAPI configuration must be set if and only if type is 'workload_api'"
+//
+//nolint:lll // CEL validation rules exceed line length limit
+type SPIFFEBundleSourceConfig struct {
+	// Type selects the trust-bundle source.
+	// +kubebuilder:validation:Required
+	// +kubebuilder:validation:Enum=bundle_endpoint;workload_api
+	Type SPIFFEBundleSourceType `json:"type"`
+
+	// Endpoint declares a HTTPS SPIFFE Bundle Endpoint. Required when Type is
+	// "bundle_endpoint".
+	// +optional
+	Endpoint *SPIFFEBundleEndpointSourceConfig `json:"endpoint,omitempty"`
+
+	// WorkloadAPI selects the local SPIFFE Workload API. Required when Type
+	// is "workload_api".
+	// +optional
+	WorkloadAPI *SPIFFEWorkloadAPIBundleSourceConfig `json:"workloadAPI,omitempty"`
+}
+
+// SPIFFEBundleEndpointSourceConfig declares a HTTPS SPIFFE Bundle Endpoint.
+type SPIFFEBundleEndpointSourceConfig struct {
+	// URL is the HTTPS SPIFFE Bundle Endpoint URL.
+	// +kubebuilder:validation:Required
+	// +kubebuilder:validation:MinLength=1
+	// +kubebuilder:validation:MaxLength=2048
+	URL string `json:"url"`
+
+	// Profile selects how the endpoint's TLS connection is authenticated:
+	// SPIFFEBundleEndpointProfileHTTPSWeb (Web PKI) or
+	// SPIFFEBundleEndpointProfileHTTPSSPIFFE (a separately distributed
+	// X.509-SVID root).
+	// +kubebuilder:validation:Required
+	// +kubebuilder:validation:Enum=https_web;https_spiffe
+	Profile SPIFFEBundleEndpointProfile `json:"profile"`
+}
+
+// SPIFFEWorkloadAPIBundleSourceConfig selects the local SPIFFE Workload API.
+// It deliberately has no payload; loading and deployment details are
+// deferred to the bundle-loading implementation.
+type SPIFFEWorkloadAPIBundleSourceConfig struct{}
+
+// SPIFFETrustDomainConfig declares one SPIFFE trust domain accepted by the
+// embedded authorization server. Configuration is not authentication: no
+// live X.509-SVID or JWT-SVID validation exists yet, so a declared trust
+// domain does not by itself let any workload authenticate — RunConfig.Validate
+// (pkg/authserver/config.go) currently hard-rejects any non-empty
+// spiffeTrustDomains at authserver startup via validateSPIFFENotYetEnforced,
+// a deliberate placeholder until real SVID verification lands.
+type SPIFFETrustDomainConfig struct {
+	// Name uniquely identifies this declaration and is referenced by
+	// inboundGrants.spiffeClientAuth[].trustDomainRef.
+	// +kubebuilder:validation:Required
+	// +kubebuilder:validation:MinLength=1
+	// +kubebuilder:validation:MaxLength=253
+	Name string `json:"name"`
+
+	// TrustDomain is the SPIFFE trust domain accepted by this declaration.
+	// This pattern is a best-effort CRD-level approximation of the SPIFFE
+	// trust-domain grammar; runtime parsing via
+	// spiffeid.TrustDomainFromString remains authoritative.
+	// +kubebuilder:validation:Required
+	// +kubebuilder:validation:MinLength=1
+	// +kubebuilder:validation:MaxLength=255
+	// +kubebuilder:validation:Pattern=`^([a-z0-9_]|[a-z0-9_]([a-z0-9_-]|\.[a-z0-9_-])*[a-z0-9_])$`
+	TrustDomain string `json:"trustDomain"`
+
+	// Methods explicitly enables the supported credential types for this
+	// trust domain.
+	// +kubebuilder:validation:Required
+	// +kubebuilder:validation:MinItems=1
+	// +kubebuilder:validation:MaxItems=2
+	// +kubebuilder:validation:items:Enum=spiffe_x509;spiffe_jwt
+	// +listType=set
+	Methods []SPIFFEAuthenticationMethod `json:"methods"`
+
+	// BundleSource declares exactly one future trust-bundle source. It is
+	// validated for shape only; fetching or loading a bundle from it is a
+	// later step.
+	// +kubebuilder:validation:Required
+	BundleSource SPIFFEBundleSourceConfig `json:"bundleSource"`
+}
+
+// SPIFFEClientConfig associates one SPIFFE principal pattern from a declared
+// trust domain with an explicit OAuth client identity and permissions.
+// Configuration is not authentication: configured SPIFFE clients remain
+// non-public OAuth clients without a secret until live SPIFFE credential
+// validation is implemented (see SPIFFETrustDomainConfig's doc comment).
+//
+// GrantTypes is deliberately not exposed here: the runtime only accepts
+// exactly the RFC 8693 token-exchange grant for a SPIFFE client
+// (validateSPIFFEGrants in pkg/authserver/spiffe_trust.go), so the converter
+// always supplies it instead of letting it be configured.
+//
+// +kubebuilder:validation:XValidation:rule="self.principalPattern.split('/').all(segment, segment != '.' && segment != '..')",message="principalPattern path must not contain . or .. segments"
+//
+//nolint:lll // CEL validation rule exceeds line length limit
+type SPIFFEClientConfig struct {
+	// TrustDomainRef references spiffeTrustDomains[].name.
+	// +kubebuilder:validation:Required
+	// +kubebuilder:validation:MinLength=1
+	// +kubebuilder:validation:MaxLength=253
+	TrustDomainRef string `json:"trustDomainRef"`
+
+	// PrincipalPattern is a concrete SPIFFE ID or a terminal /* pattern within
+	// the declared trust domain. This pattern is a best-effort CRD-level
+	// approximation; runtime parsing via spiffeid.FromString remains
+	// authoritative.
+	// +kubebuilder:validation:Required
+	// +kubebuilder:validation:MaxLength=2048
+	// +kubebuilder:validation:Pattern=`^spiffe://[a-z0-9._-]+((/[a-zA-Z0-9._-]+)+(/\*)?|/\*)$`
+	PrincipalPattern string `json:"principalPattern"`
+
+	// ClientID is the explicit OAuth client_id. It is never derived from a
+	// SPIFFE ID.
+	// +kubebuilder:validation:Required
+	// +kubebuilder:validation:MinLength=1
+	// +kubebuilder:validation:MaxLength=253
+	ClientID string `json:"clientId"`
+
+	// Methods are the credential types this association may authenticate
+	// with. Must be a subset of the referenced trust domain's methods.
+	// +kubebuilder:validation:Required
+	// +kubebuilder:validation:MinItems=1
+	// +kubebuilder:validation:MaxItems=2
+	// +kubebuilder:validation:items:Enum=spiffe_x509;spiffe_jwt
+	// +listType=set
+	Methods []SPIFFEAuthenticationMethod `json:"methods"`
+
+	// Resources are RFC 8707 resource indicators this association may
+	// request. Must be a subset of the server's allowed_audiences allowlist,
+	// which is derived at reconcile time and not available on this CRD, so
+	// this is validated at reconcile time, not admission. Distinct from
+	// Audiences: a resource permission does not imply the same value is also
+	// a permitted token audience, or vice versa.
+	// +kubebuilder:validation:MaxItems=50
+	// +listType=set
+	// +optional
+	Resources []string `json:"resources,omitempty"`
+
+	// Audiences are RFC 8693 token audiences this association may request.
+	// +kubebuilder:validation:Required
+	// +kubebuilder:validation:MinItems=1
+	// +kubebuilder:validation:MaxItems=50
+	// +listType=set
+	Audiences []string `json:"audiences"`
+
+	// Scopes are OAuth scopes granted to this association. Must be a subset
+	// of the server's effective supported scopes.
+	// +kubebuilder:validation:Required
+	// +kubebuilder:validation:MinItems=1
+	// +kubebuilder:validation:MaxItems=50
+	// +listType=set
+	Scopes []string `json:"scopes"`
+}
+
 // InboundGrantsConfig groups canonical inbound OAuth grant-family configuration.
 type InboundGrantsConfig struct {
+	// SPIFFEClientAuth associates SPIFFE principal patterns with explicit
+	// OAuth client identities and permissions. A sibling of TokenExchange and
+	// JWTBearer below, not nested under either: client authentication does
+	// not by itself confer a grant. See SPIFFEClientConfig.
+	// +kubebuilder:validation:MaxItems=100
+	// +listType=atomic
+	// +optional
+	SPIFFEClientAuth []SPIFFEClientConfig `json:"spiffeClientAuth,omitempty"`
+
 	// TokenExchange configures RFC 8693 clients and issuer policies.
 	// +optional
 	TokenExchange *TokenExchangeInboundGrantConfig `json:"tokenExchange,omitempty"`
@@ -675,7 +878,19 @@ type JWTBearerIssuerPolicyConfig struct {
 // delegate clients using an HTTP issuer; the shared Go validator performs the
 // precise loopback-host security check.
 //
-// +kubebuilder:validation:XValidation:rule="(has(self.upstreamProviders) && size(self.upstreamProviders) > 0) || (has(self.delegateClients) && size(self.delegateClients) > 0) || (has(self.trustedIssuers) && self.trustedIssuers.exists(issuer, has(issuer.jwtBearerGrant))) || (has(self.inboundGrants) && (has(self.inboundGrants.tokenExchange) || has(self.inboundGrants.jwtBearer)))",message="at least one upstream provider or inbound grant family is required"
+// +kubebuilder:validation:XValidation:rule="(has(self.upstreamProviders) && size(self.upstreamProviders) > 0) || (has(self.delegateClients) && size(self.delegateClients) > 0) || (has(self.trustedIssuers) && self.trustedIssuers.exists(issuer, has(issuer.jwtBearerGrant))) || (has(self.inboundGrants) && (has(self.inboundGrants.tokenExchange) || has(self.inboundGrants.jwtBearer) || (has(self.inboundGrants.spiffeClientAuth) && size(self.inboundGrants.spiffeClientAuth) > 0)))",message="at least one upstream provider or inbound grant family is required"
+//
+// +kubebuilder:validation:XValidation:rule="((has(self.spiffeTrustDomains) && size(self.spiffeTrustDomains) > 0) == (has(self.inboundGrants) && has(self.inboundGrants.spiffeClientAuth) && size(self.inboundGrants.spiffeClientAuth) > 0))",message="spiffeTrustDomains and inboundGrants.spiffeClientAuth must be configured together"
+// +kubebuilder:validation:XValidation:rule="!has(self.spiffeTrustDomains) || self.spiffeTrustDomains.all(domain, self.spiffeTrustDomains.filter(other, other.name == domain.name).size() == 1)",message="spiffeTrustDomains must not contain duplicate names"
+// +kubebuilder:validation:XValidation:rule="!has(self.spiffeTrustDomains) || self.spiffeTrustDomains.all(domain, self.spiffeTrustDomains.filter(other, other.trustDomain == domain.trustDomain).size() == 1)",message="spiffeTrustDomains must not contain duplicate trust domains"
+// +kubebuilder:validation:XValidation:rule="!has(self.spiffeTrustDomains) || self.spiffeTrustDomains.all(domain, has(self.inboundGrants) && has(self.inboundGrants.spiffeClientAuth) && self.inboundGrants.spiffeClientAuth.exists(client, client.trustDomainRef == domain.name))",message="every SPIFFE trust domain must be referenced by a SPIFFE client"
+// +kubebuilder:validation:XValidation:rule="!has(self.inboundGrants) || !has(self.inboundGrants.spiffeClientAuth) || self.inboundGrants.spiffeClientAuth.all(client, has(self.spiffeTrustDomains) && self.spiffeTrustDomains.exists(domain, domain.name == client.trustDomainRef))",message="every SPIFFE client trustDomainRef must reference a declared trust domain"
+// +kubebuilder:validation:XValidation:rule="!has(self.inboundGrants) || !has(self.inboundGrants.spiffeClientAuth) || self.inboundGrants.spiffeClientAuth.all(client, !has(self.spiffeTrustDomains) || !self.spiffeTrustDomains.exists(domain, domain.name == client.trustDomainRef) || self.spiffeTrustDomains.exists(domain, domain.name == client.trustDomainRef && client.methods.all(method, method in domain.methods)))",message="spiffeClientAuth methods must be enabled by the referenced trust domain"
+// +kubebuilder:validation:XValidation:rule="!has(self.inboundGrants) || !has(self.inboundGrants.spiffeClientAuth) || self.inboundGrants.spiffeClientAuth.all(client, !has(self.spiffeTrustDomains) || !self.spiffeTrustDomains.exists(domain, domain.name == client.trustDomainRef) || self.spiffeTrustDomains.exists(domain, domain.name == client.trustDomainRef && client.principalPattern.startsWith('spiffe://' + domain.trustDomain + '/')))",message="spiffeClientAuth principalPattern trust domain must match the referenced trust domain"
+// +kubebuilder:validation:XValidation:rule="!has(self.inboundGrants) || !has(self.inboundGrants.spiffeClientAuth) || self.inboundGrants.spiffeClientAuth.all(client, self.inboundGrants.spiffeClientAuth.filter(other, other.clientId == client.clientId).size() == 1)",message="spiffeClientAuth must not contain duplicate client IDs"
+// +kubebuilder:validation:XValidation:rule="!has(self.inboundGrants) || !has(self.inboundGrants.spiffeClientAuth) || self.inboundGrants.spiffeClientAuth.all(client, self.inboundGrants.spiffeClientAuth.filter(other, other.principalPattern == client.principalPattern).size() == 1)",message="spiffeClientAuth must not contain duplicate principal patterns"
+// +kubebuilder:validation:XValidation:rule="!has(self.inboundGrants) || !has(self.inboundGrants.spiffeClientAuth) || self.inboundGrants.spiffeClientAuth.all(client, !client.clientId.startsWith('synthetic:'))",message="spiffeClientAuth clientId must not use the reserved synthetic: prefix"
+// +kubebuilder:validation:XValidation:rule="!has(self.inboundGrants) || !has(self.inboundGrants.spiffeClientAuth) || self.inboundGrants.spiffeClientAuth.all(client, !client.clientId.matches('^[A-Za-z][A-Za-z0-9+.-]*://.+'))",message="spiffeClientAuth clientId must not be an absolute URL"
 //
 // +kubebuilder:validation:XValidation:rule="!(has(self.allowConfidentialClientRegistration) && self.allowConfidentialClientRegistration && has(self.insecureAllowHTTP) && self.insecureAllowHTTP)",message="allowConfidentialClientRegistration cannot be combined with insecureAllowHTTP; client secrets would be issued in cleartext over an unauthenticated endpoint"
 // +kubebuilder:validation:XValidation:rule="(!has(self.forceConfidentialRedirectUris) || size(self.forceConfidentialRedirectUris) == 0) || (has(self.allowConfidentialClientRegistration) && self.allowConfidentialClientRegistration)",message="forceConfidentialRedirectUris requires allowConfidentialClientRegistration to be true"
@@ -738,6 +953,16 @@ type EmbeddedAuthServerConfig struct {
 	// If not specified, defaults are applied (access: 1h, refresh: 7d, authCode: 10m).
 	// +optional
 	TokenLifespans *TokenLifespanConfig `json:"tokenLifespans,omitempty"`
+
+	// SPIFFETrustDomains declares SPIFFE trust domains for
+	// inboundGrants.spiffeClientAuth associations. See SPIFFETrustDomainConfig's
+	// doc comment for why declaring a domain does not by itself enable
+	// authentication in this build.
+	// +kubebuilder:validation:MinItems=1
+	// +kubebuilder:validation:MaxItems=50
+	// +listType=atomic
+	// +optional
+	SPIFFETrustDomains []SPIFFETrustDomainConfig `json:"spiffeTrustDomains,omitempty"`
 
 	// InboundGrants configures canonical inbound OAuth grant families.
 	// +optional
@@ -2139,6 +2364,23 @@ func (r *MCPExternalAuthConfig) validateEmbeddedAuthServer() error {
 	// same reasoning as ValidateConfidentialClientTransport). The
 	// https-non-loopback-per-entry check has no CEL equivalent here since it
 	// needs the loopback-hostname helper, so it lives only in Go.
+	//
+	// The permission-shaped half of SPIFFE trust/client-auth config (grant
+	// types, scopes, resources, audiences) has no equivalent Go-level
+	// pre-check here, matching the DelegateClients precedent below — a
+	// meaningful check needs AllowedAudiences/ScopesSupported, which are only
+	// known once derived at reconcile time. controllerutil.
+	// validateDelegateClientsAndTrustedIssuers revalidates the full SPIFFE
+	// trust config (via RunConfig.Validate) once those derived values exist.
+	//
+	// The two checks below are admission-time-safe: they depend only on this
+	// object's own spec, so they run here instead of waiting for reconcile.
+	if err := validateSPIFFEBundleEndpoints(cfg.SPIFFETrustDomains); err != nil {
+		return err
+	}
+	if err := validateSPIFFEPrincipalPatternOverlap(cfg.InboundGrants); err != nil {
+		return err
+	}
 	if err := authserver.ValidateForceConfidentialRedirectURIs(
 		cfg.ForceConfidentialRedirectURIs, cfg.AllowConfidentialClientRegistration,
 	); err != nil {
@@ -2150,15 +2392,8 @@ func (r *MCPExternalAuthConfig) validateEmbeddedAuthServer() error {
 	// available on this CRD. The same accepted_audiences/allowed_audiences
 	// disjointness check runs again once that value exists, at
 	// Config.Validate time (pkg/authserver/config.go's validateTrustedIssuers).
-	if cfg.InboundGrants == nil {
-		if err := tokenexchange.ValidateTrustedIssuers(buildTrustedIssuerConfigs(cfg.TrustedIssuers), cfg.Issuer, nil); err != nil {
-			return fmt.Errorf("trustedIssuers: %w", err)
-		}
-	}
-	for i := range cfg.TrustedIssuers {
-		if err := validateUpstreamCABundleRef(cfg.TrustedIssuers[i].CABundleRef); err != nil {
-			return fmt.Errorf("trustedIssuers[%d] (%q) caBundleRef: %w", i, cfg.TrustedIssuers[i].IssuerURL, err)
-		}
+	if err := validateEmbeddedTrustedIssuers(cfg); err != nil {
+		return err
 	}
 
 	seen := make(map[string]bool, len(cfg.UpstreamProviders))
@@ -2173,6 +2408,82 @@ func (r *MCPExternalAuthConfig) validateEmbeddedAuthServer() error {
 		}
 	}
 
+	return nil
+}
+
+// validateEmbeddedTrustedIssuers validates trustedIssuers: the
+// accepted_audiences/allowed_audiences disjointness check (skipped here when
+// InboundGrants is set, matching the allowedAudiences-not-yet-derived note
+// above) and each entry's caBundleRef.
+func validateEmbeddedTrustedIssuers(cfg *EmbeddedAuthServerConfig) error {
+	if cfg.InboundGrants == nil {
+		if err := tokenexchange.ValidateTrustedIssuers(buildTrustedIssuerConfigs(cfg.TrustedIssuers), cfg.Issuer, nil); err != nil {
+			return fmt.Errorf("trustedIssuers: %w", err)
+		}
+	}
+	for i := range cfg.TrustedIssuers {
+		if err := validateUpstreamCABundleRef(cfg.TrustedIssuers[i].CABundleRef); err != nil {
+			return fmt.Errorf("trustedIssuers[%d] (%q) caBundleRef: %w", i, cfg.TrustedIssuers[i].IssuerURL, err)
+		}
+	}
+	return nil
+}
+
+// validateSPIFFEBundleEndpoints rejects a structurally invalid SPIFFE Bundle
+// Endpoint URL (wrong scheme, an IP-literal or loopback host, credentials,
+// a query, or a fragment) at admission time. Not CEL-expressible: it needs
+// real IP-literal and loopback-range detection, not a best-effort regex.
+func validateSPIFFEBundleEndpoints(domains []SPIFFETrustDomainConfig) error {
+	for i, domain := range domains {
+		if domain.BundleSource.Type != SPIFFEBundleSourceTypeEndpoint || domain.BundleSource.Endpoint == nil {
+			continue
+		}
+		endpoint := domain.BundleSource.Endpoint
+		if err := authserver.ValidateSPIFFEBundleEndpoint(authserver.SPIFFEBundleEndpointSourceRunConfig{
+			URL:     endpoint.URL,
+			Profile: authserver.SPIFFEBundleEndpointProfile(endpoint.Profile),
+		}); err != nil {
+			return fmt.Errorf("spiffeTrustDomains[%d].bundleSource: %w", i, err)
+		}
+	}
+	return nil
+}
+
+// validateSPIFFEPrincipalPatternOverlap rejects two SPIFFE client-auth
+// entries whose principalPattern values overlap (e.g. a "/agent/*" wildcard
+// and a concrete "/agent/one") at admission time. Not CEL-expressible: real
+// overlap semantics need the go-spiffe parser for normalization, the same
+// runtime-parser dependency this epic has deliberately kept in Go elsewhere.
+func validateSPIFFEPrincipalPatternOverlap(inboundGrants *InboundGrantsConfig) error {
+	if inboundGrants == nil {
+		return nil
+	}
+	entries := inboundGrants.SPIFFEClientAuth
+	// Validate each entry's own pattern first, in its own index, so a
+	// malformed pattern is always attributed to the entry that owns it
+	// rather than to whichever earlier index the pairwise loop below
+	// happened to be comparing it against.
+	for i := range entries {
+		if err := authserver.ValidateSPIFFEPrincipalPattern(entries[i].PrincipalPattern); err != nil {
+			return fmt.Errorf("inboundGrants.spiffeClientAuth[%d].principalPattern: %w", i, err)
+		}
+	}
+	for i := range entries {
+		for j := i + 1; j < len(entries); j++ {
+			// Patterns were already validated above, so the error return
+			// here is unreachable in practice.
+			overlaps, err := authserver.SPIFFEPatternsOverlap(entries[i].PrincipalPattern, entries[j].PrincipalPattern)
+			if err != nil {
+				return fmt.Errorf("inboundGrants.spiffeClientAuth[%d].principalPattern: %w", i, err)
+			}
+			if overlaps {
+				return fmt.Errorf(
+					"inboundGrants.spiffeClientAuth[%d].principalPattern %q overlaps spiffeClientAuth[%d].principalPattern %q",
+					i, entries[i].PrincipalPattern, j, entries[j].PrincipalPattern,
+				)
+			}
+		}
+	}
 	return nil
 }
 

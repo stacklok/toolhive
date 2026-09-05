@@ -1978,6 +1978,7 @@ _Appears in:_
 | `signingKeySecretRefs` _[api.v1beta1.SecretKeyRef](#apiv1beta1secretkeyref) array_ | SigningKeySecretRefs references Kubernetes Secrets containing signing keys for JWT operations.<br />Supports key rotation by allowing multiple keys (oldest keys are used for verification only).<br />If not specified, an ephemeral signing key will be auto-generated (development only -<br />JWTs will be invalid after restart). |  | MaxItems: 5 <br />Optional: \{\} <br /> |
 | `hmacSecretRefs` _[api.v1beta1.SecretKeyRef](#apiv1beta1secretkeyref) array_ | HMACSecretRefs references Kubernetes Secrets containing symmetric secrets for signing<br />authorization codes and refresh tokens (opaque tokens).<br />Current secret must be at least 32 bytes and cryptographically random.<br />Supports secret rotation via multiple entries (first is current, rest are for verification).<br />If not specified, an ephemeral secret will be auto-generated (development only -<br />auth codes and refresh tokens will be invalid after restart). |  | Optional: \{\} <br /> |
 | `tokenLifespans` _[api.v1beta1.TokenLifespanConfig](#apiv1beta1tokenlifespanconfig)_ | TokenLifespans configures the duration that various tokens are valid.<br />If not specified, defaults are applied (access: 1h, refresh: 7d, authCode: 10m). |  | Optional: \{\} <br /> |
+| `spiffeTrustDomains` _[api.v1beta1.SPIFFETrustDomainConfig](#apiv1beta1spiffetrustdomainconfig) array_ | SPIFFETrustDomains declares SPIFFE trust domains for<br />inboundGrants.spiffeClientAuth associations. See SPIFFETrustDomainConfig's<br />doc comment for why declaring a domain does not by itself enable<br />authentication in this build. |  | MaxItems: 50 <br />MinItems: 1 <br />Optional: \{\} <br /> |
 | `inboundGrants` _[api.v1beta1.InboundGrantsConfig](#apiv1beta1inboundgrantsconfig)_ | InboundGrants configures canonical inbound OAuth grant families. |  | Optional: \{\} <br /> |
 | `upstreamProviders` _[api.v1beta1.UpstreamProviderConfig](#apiv1beta1upstreamproviderconfig) array_ | UpstreamProviders configures connections to upstream Identity Providers.<br />When configured, the embedded auth server delegates interactive authentication<br />to these providers. It may be omitted only when delegateClients or a trusted<br />issuer with jwtBearerGrant enables token-only operation.<br />MCPServer and MCPRemoteProxy support a single upstream; VirtualMCPServer supports multiple. |  | Optional: \{\} <br /> |
 | `primaryUpstreamProvider` _string_ | PrimaryUpstreamProvider names the upstream IDP whose access token Cedar<br />should read claims from when authorising a request. Must match the name<br />of one of the entries in UpstreamProviders. When empty, the controller<br />auto-selects the first entry of UpstreamProviders.<br />Only meaningful on VirtualMCPServer, where multiple upstream providers<br />can be configured and Cedar needs to pick which token's claims to<br />evaluate. The VirtualMCPServer controller validates this field against<br />UpstreamProviders at admission and rejects unresolvable values.<br />On MCPServer and MCPRemoteProxy this field is structurally present (the<br />EmbeddedAuthServerConfig struct is shared) but has no runtime effect:<br />those CRDs are restricted to a single upstream so there is no choice to<br />make. Setting it on those CRDs is silently ignored. |  | MaxLength: 63 <br />MinLength: 1 <br />Pattern: `^[a-z0-9]([a-z0-9-]*[a-z0-9])?$` <br />Optional: \{\} <br /> |
@@ -2320,6 +2321,7 @@ _Appears in:_
 
 | Field | Description | Default | Validation |
 | --- | --- | --- | --- |
+| `spiffeClientAuth` _[api.v1beta1.SPIFFEClientConfig](#apiv1beta1spiffeclientconfig) array_ | SPIFFEClientAuth associates SPIFFE principal patterns with explicit<br />OAuth client identities and permissions. A sibling of TokenExchange and<br />JWTBearer below, not nested under either: client authentication does<br />not by itself confer a grant. See SPIFFEClientConfig. |  | MaxItems: 100 <br />Optional: \{\} <br /> |
 | `tokenExchange` _[api.v1beta1.TokenExchangeInboundGrantConfig](#apiv1beta1tokenexchangeinboundgrantconfig)_ | TokenExchange configures RFC 8693 clients and issuer policies. |  | Optional: \{\} <br /> |
 | `jwtBearer` _[api.v1beta1.JWTBearerInboundGrantConfig](#apiv1beta1jwtbearerinboundgrantconfig)_ | JWTBearer configures RFC 7523 issuer policies. |  | Optional: \{\} <br /> |
 
@@ -4146,6 +4148,171 @@ _Appears in:_
 | `matcher` _string_ | Matcher is a CEL expression for complex matching against JWT claims<br />The expression has access to a "claims" variable containing all JWT claims as map[string]any<br />Examples:<br />  - "admins" in claims["groups"]<br />  - claims["sub"] == "user123" && !("act" in claims)<br />Mutually exclusive with Claim |  | MinLength: 1 <br />Optional: \{\} <br /> |
 | `roleArn` _string_ | RoleArn is the IAM role ARN to assume when this mapping matches |  | Pattern: `^arn:(aws\|aws-cn\|aws-us-gov):iam::\d\{12\}:role/[\w+=,.@\-_/]+$` <br />Required: \{\} <br /> |
 | `priority` _integer_ | Priority determines evaluation order (lower values = higher priority)<br />Allows fine-grained control over role selection precedence<br />When omitted, this mapping has the lowest possible priority and<br />configuration order acts as tie-breaker via stable sort |  | Minimum: 0 <br />Optional: \{\} <br /> |
+
+
+#### api.v1beta1.SPIFFEAuthenticationMethod
+
+_Underlying type:_ _string_
+
+SPIFFEAuthenticationMethod identifies the credential type permitted for a
+SPIFFE workload. Mirrors authserver.SPIFFEAuthenticationMethod field-for-field;
+runtime parsing remains authoritative.
+
+
+
+_Appears in:_
+- [api.v1beta1.SPIFFEClientConfig](#apiv1beta1spiffeclientconfig)
+- [api.v1beta1.SPIFFETrustDomainConfig](#apiv1beta1spiffetrustdomainconfig)
+
+| Field | Description |
+| --- | --- |
+| `spiffe_x509` | SPIFFEAuthenticationMethodX509 authenticates a workload with an X.509-SVID.<br /> |
+| `spiffe_jwt` | SPIFFEAuthenticationMethodJWT authenticates a workload with a JWT-SVID.<br /> |
+
+
+#### api.v1beta1.SPIFFEBundleEndpointProfile
+
+_Underlying type:_ _string_
+
+SPIFFEBundleEndpointProfile identifies how a SPIFFE Bundle Endpoint's TLS
+connection is authenticated. Mirrors authserver.SPIFFEBundleEndpointProfile.
+
+
+
+_Appears in:_
+- [api.v1beta1.SPIFFEBundleEndpointSourceConfig](#apiv1beta1spiffebundleendpointsourceconfig)
+
+| Field | Description |
+| --- | --- |
+| `https_web` | SPIFFEBundleEndpointProfileHTTPSWeb authenticates the bundle endpoint's<br />TLS connection with a Web PKI certificate.<br /> |
+| `https_spiffe` | SPIFFEBundleEndpointProfileHTTPSSPIFFE authenticates the bundle<br />endpoint's TLS connection with a separately distributed X.509-SVID root.<br /> |
+
+
+#### api.v1beta1.SPIFFEBundleEndpointSourceConfig
+
+
+
+SPIFFEBundleEndpointSourceConfig declares a HTTPS SPIFFE Bundle Endpoint.
+
+
+
+_Appears in:_
+- [api.v1beta1.SPIFFEBundleSourceConfig](#apiv1beta1spiffebundlesourceconfig)
+
+| Field | Description | Default | Validation |
+| --- | --- | --- | --- |
+| `url` _string_ | URL is the HTTPS SPIFFE Bundle Endpoint URL. |  | MaxLength: 2048 <br />MinLength: 1 <br />Required: \{\} <br /> |
+| `profile` _[api.v1beta1.SPIFFEBundleEndpointProfile](#apiv1beta1spiffebundleendpointprofile)_ | Profile selects how the endpoint's TLS connection is authenticated:<br />SPIFFEBundleEndpointProfileHTTPSWeb (Web PKI) or<br />SPIFFEBundleEndpointProfileHTTPSSPIFFE (a separately distributed<br />X.509-SVID root). |  | Enum: [https_web https_spiffe] <br />Required: \{\} <br /> |
+
+
+#### api.v1beta1.SPIFFEBundleSourceConfig
+
+
+
+SPIFFEBundleSourceConfig is a discriminated bundle-source declaration. Type
+determines which, and only which, source payload may be set. It is
+validated for shape only; fetching or loading a bundle from the declared
+source is not implemented yet.
+
+
+
+_Appears in:_
+- [api.v1beta1.SPIFFETrustDomainConfig](#apiv1beta1spiffetrustdomainconfig)
+
+| Field | Description | Default | Validation |
+| --- | --- | --- | --- |
+| `type` _[api.v1beta1.SPIFFEBundleSourceType](#apiv1beta1spiffebundlesourcetype)_ | Type selects the trust-bundle source. |  | Enum: [bundle_endpoint workload_api] <br />Required: \{\} <br /> |
+| `endpoint` _[api.v1beta1.SPIFFEBundleEndpointSourceConfig](#apiv1beta1spiffebundleendpointsourceconfig)_ | Endpoint declares a HTTPS SPIFFE Bundle Endpoint. Required when Type is<br />"bundle_endpoint". |  | Optional: \{\} <br /> |
+| `workloadAPI` _[api.v1beta1.SPIFFEWorkloadAPIBundleSourceConfig](#apiv1beta1spiffeworkloadapibundlesourceconfig)_ | WorkloadAPI selects the local SPIFFE Workload API. Required when Type<br />is "workload_api". |  | Optional: \{\} <br /> |
+
+
+#### api.v1beta1.SPIFFEBundleSourceType
+
+_Underlying type:_ _string_
+
+SPIFFEBundleSourceType identifies the selected trust-bundle source. Mirrors
+authserver.SPIFFEBundleSourceType.
+
+
+
+_Appears in:_
+- [api.v1beta1.SPIFFEBundleSourceConfig](#apiv1beta1spiffebundlesourceconfig)
+
+| Field | Description |
+| --- | --- |
+| `bundle_endpoint` | SPIFFEBundleSourceTypeEndpoint selects a HTTPS SPIFFE Bundle Endpoint.<br /> |
+| `workload_api` | SPIFFEBundleSourceTypeWorkloadAPI selects the local SPIFFE Workload API.<br /> |
+
+
+#### api.v1beta1.SPIFFEClientConfig
+
+
+
+SPIFFEClientConfig associates one SPIFFE principal pattern from a declared
+trust domain with an explicit OAuth client identity and permissions.
+Configuration is not authentication: configured SPIFFE clients remain
+non-public OAuth clients without a secret until live SPIFFE credential
+validation is implemented (see SPIFFETrustDomainConfig's doc comment).
+
+GrantTypes is deliberately not exposed here: the runtime only accepts
+exactly the RFC 8693 token-exchange grant for a SPIFFE client
+(validateSPIFFEGrants in pkg/authserver/spiffe_trust.go), so the converter
+always supplies it instead of letting it be configured.
+
+
+
+_Appears in:_
+- [api.v1beta1.InboundGrantsConfig](#apiv1beta1inboundgrantsconfig)
+
+| Field | Description | Default | Validation |
+| --- | --- | --- | --- |
+| `trustDomainRef` _string_ | TrustDomainRef references spiffeTrustDomains[].name. |  | MaxLength: 253 <br />MinLength: 1 <br />Required: \{\} <br /> |
+| `principalPattern` _string_ | PrincipalPattern is a concrete SPIFFE ID or a terminal /* pattern within<br />the declared trust domain. This pattern is a best-effort CRD-level<br />approximation; runtime parsing via spiffeid.FromString remains<br />authoritative. |  | MaxLength: 2048 <br />Pattern: `^spiffe://[a-z0-9._-]+((/[a-zA-Z0-9._-]+)+(/\*)?\|/\*)$` <br />Required: \{\} <br /> |
+| `clientId` _string_ | ClientID is the explicit OAuth client_id. It is never derived from a<br />SPIFFE ID. |  | MaxLength: 253 <br />MinLength: 1 <br />Required: \{\} <br /> |
+| `methods` _[api.v1beta1.SPIFFEAuthenticationMethod](#apiv1beta1spiffeauthenticationmethod) array_ | Methods are the credential types this association may authenticate<br />with. Must be a subset of the referenced trust domain's methods. |  | MaxItems: 2 <br />MinItems: 1 <br />Required: \{\} <br />items:Enum: [spiffe_x509 spiffe_jwt] <br /> |
+| `resources` _string array_ | Resources are RFC 8707 resource indicators this association may<br />request. Must be a subset of the server's allowed_audiences allowlist,<br />which is derived at reconcile time and not available on this CRD, so<br />this is validated at reconcile time, not admission. Distinct from<br />Audiences: a resource permission does not imply the same value is also<br />a permitted token audience, or vice versa. |  | MaxItems: 50 <br />Optional: \{\} <br /> |
+| `audiences` _string array_ | Audiences are RFC 8693 token audiences this association may request. |  | MaxItems: 50 <br />MinItems: 1 <br />Required: \{\} <br /> |
+| `scopes` _string array_ | Scopes are OAuth scopes granted to this association. Must be a subset<br />of the server's effective supported scopes. |  | MaxItems: 50 <br />MinItems: 1 <br />Required: \{\} <br /> |
+
+
+#### api.v1beta1.SPIFFETrustDomainConfig
+
+
+
+SPIFFETrustDomainConfig declares one SPIFFE trust domain accepted by the
+embedded authorization server. Configuration is not authentication: no
+live X.509-SVID or JWT-SVID validation exists yet, so a declared trust
+domain does not by itself let any workload authenticate — RunConfig.Validate
+(pkg/authserver/config.go) currently hard-rejects any non-empty
+spiffeTrustDomains at authserver startup via validateSPIFFENotYetEnforced,
+a deliberate placeholder until real SVID verification lands.
+
+
+
+_Appears in:_
+- [api.v1beta1.EmbeddedAuthServerConfig](#apiv1beta1embeddedauthserverconfig)
+
+| Field | Description | Default | Validation |
+| --- | --- | --- | --- |
+| `name` _string_ | Name uniquely identifies this declaration and is referenced by<br />inboundGrants.spiffeClientAuth[].trustDomainRef. |  | MaxLength: 253 <br />MinLength: 1 <br />Required: \{\} <br /> |
+| `trustDomain` _string_ | TrustDomain is the SPIFFE trust domain accepted by this declaration.<br />This pattern is a best-effort CRD-level approximation of the SPIFFE<br />trust-domain grammar; runtime parsing via<br />spiffeid.TrustDomainFromString remains authoritative. |  | MaxLength: 255 <br />MinLength: 1 <br />Pattern: `^([a-z0-9_]\|[a-z0-9_]([a-z0-9_-]\|\.[a-z0-9_-])*[a-z0-9_])$` <br />Required: \{\} <br /> |
+| `methods` _[api.v1beta1.SPIFFEAuthenticationMethod](#apiv1beta1spiffeauthenticationmethod) array_ | Methods explicitly enables the supported credential types for this<br />trust domain. |  | MaxItems: 2 <br />MinItems: 1 <br />Required: \{\} <br />items:Enum: [spiffe_x509 spiffe_jwt] <br /> |
+| `bundleSource` _[api.v1beta1.SPIFFEBundleSourceConfig](#apiv1beta1spiffebundlesourceconfig)_ | BundleSource declares exactly one future trust-bundle source. It is<br />validated for shape only; fetching or loading a bundle from it is a<br />later step. |  | Required: \{\} <br /> |
+
+
+#### api.v1beta1.SPIFFEWorkloadAPIBundleSourceConfig
+
+
+
+SPIFFEWorkloadAPIBundleSourceConfig selects the local SPIFFE Workload API.
+It deliberately has no payload; loading and deployment details are
+deferred to the bundle-loading implementation.
+
+
+
+_Appears in:_
+- [api.v1beta1.SPIFFEBundleSourceConfig](#apiv1beta1spiffebundlesourceconfig)
+
 
 
 #### api.v1beta1.SecretKeyRef

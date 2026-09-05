@@ -115,7 +115,7 @@ func NewHandler(allowedOrigins []string) types.MiddlewareFunction {
 	// insensitive) match predictably. Preserve the sorted list for logging.
 	allowedSet := make(map[string]struct{}, len(allowedOrigins))
 	for _, o := range allowedOrigins {
-		allowedSet[canonicalizeOrigin(o)] = struct{}{}
+		allowedSet[CanonicalizeOrigin(o)] = struct{}{}
 	}
 	slog.Debug("origin middleware configured",
 		"allowed_origin_count", len(allowedSet),
@@ -147,7 +147,7 @@ func NewHandler(allowedOrigins []string) types.MiddlewareFunction {
 				next.ServeHTTP(w, r)
 				return
 			}
-			if _, ok := allowedSet[canonicalizeOrigin(origin)]; !ok {
+			if _, ok := allowedSet[CanonicalizeOrigin(origin)]; !ok {
 				slog.Warn("rejecting request with disallowed Origin",
 					"origin", origin,
 					"method", r.Method,
@@ -162,7 +162,7 @@ func NewHandler(allowedOrigins []string) types.MiddlewareFunction {
 	}
 }
 
-// canonicalizeOrigin normalizes an Origin value for exact-match comparison.
+// CanonicalizeOrigin normalizes an Origin value for exact-match comparison.
 // It parses the value with net/url.Parse and rebuilds it as
 // "scheme://host[:port]" with the scheme and host lowercased (RFC 6454 §4
 // makes both ASCII-case-insensitive) and the port preserved verbatim. Using
@@ -176,7 +176,11 @@ func NewHandler(allowedOrigins []string) types.MiddlewareFunction {
 // legitimate allowlist entry. This makes such values fail closed: a malformed
 // configured entry will not match anything, and a malformed request Origin
 // will not match the allowlist.
-func canonicalizeOrigin(raw string) string {
+//
+// Exported so the CORS middleware (pkg/transport/middleware) matches origins
+// with exactly the same canonicalization as this request-time validator,
+// keeping the "preflight-allowed iff request-allowed" invariant.
+func CanonicalizeOrigin(raw string) string {
 	if raw == "" {
 		return raw
 	}

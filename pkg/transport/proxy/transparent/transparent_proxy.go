@@ -19,6 +19,7 @@ import (
 	"net/http/httputil"
 	"net/url"
 	"os"
+	"slices"
 	"strconv"
 	"strings"
 	"sync"
@@ -34,6 +35,7 @@ import (
 	"github.com/stacklok/toolhive/pkg/diagnostics"
 	"github.com/stacklok/toolhive/pkg/healthcheck"
 	"github.com/stacklok/toolhive/pkg/mcp"
+	"github.com/stacklok/toolhive/pkg/transport/middleware"
 	"github.com/stacklok/toolhive/pkg/transport/proxy/socket"
 	"github.com/stacklok/toolhive/pkg/transport/session"
 	"github.com/stacklok/toolhive/pkg/transport/types"
@@ -151,6 +153,12 @@ type TransparentProxy struct {
 
 	// Shutdown timeout for graceful HTTP server shutdown (default: 30 seconds)
 	shutdownTimeout time.Duration
+
+	// corsOrigins holds the list of allowed CORS origins. When non-empty, the
+	// proxy answers OPTIONS preflights with 204 and injects
+	// Access-Control-Allow-* headers for these origins. Empty (default) keeps
+	// the current behaviour with no CORS support.
+	corsOrigins []string
 }
 
 const (
@@ -335,6 +343,26 @@ func WithReadTimeout(d time.Duration) Option {
 			return
 		}
 		p.readTimeout = d
+	}
+}
+
+// WithAllowedOrigins enables CORS support on the transparent proxy by setting
+// the list of permitted origins. An empty slice (the default) leaves CORS
+// disabled so the security posture is unchanged for deployments that do not
+// need browser access.
+//
+// Each entry is matched exactly (canonicalized like the origin middleware):
+// only an Origin header that equals one of these values after RFC 6454
+// canonicalization receives Access-Control-Allow-* headers.
+//
+// The caller's slice is cloned before storage so later mutations cannot race
+// with the running middleware, which keeps the list for the process lifetime.
+func WithAllowedOrigins(origins []string) Option {
+	return func(p *TransparentProxy) {
+		cloned := slices.Clone(origins)
+		if len(cloned) > 0 {
+			p.corsOrigins = cloned
+		}
 	}
 }
 
@@ -1348,6 +1376,20 @@ func (p *TransparentProxy) Start(ctx context.Context) error {
 	// Note: No manual path checking needed - ServeMux longest-match routing ensures
 	// more specific paths registered above take precedence over this catch-all.
 	finalHandler = p.methodGate(finalHandler)
+
+	// 6. Apply CORS as the outermost wrapper on the catch-all so OPTIONS
+	// preflights are intercepted before the method gate, auth middleware, or
+	// backend can reject them. Only active when corsOrigins is non-empty
+	// (opt-in, no behaviour change by default). /health, /metrics,
+	// /.well-known/, and prefix handlers stay outside this wrapper — they are
+	// mounted separately above.
+	if len(p.corsOrigins) > 0 {
+		corsMethods := p.corsAllowedMethods()
+		finalHandler = middleware.CORS(p.corsOrigins, corsMethods)(finalHandler)
+		slog.Debug("CORS middleware applied",
+			"allowed_origin_count", len(p.corsOrigins), "allowed_methods", corsMethods)
+	}
+
 	mux.Handle("/", finalHandler)
 
 	// Use ListenConfig with SO_REUSEADDR to allow port reuse after unclean shutdown
@@ -1604,6 +1646,35 @@ func (*TransparentProxy) ForwardResponseToClients(_ context.Context, _ jsonrpc2.
 	return fmt.Errorf("ForwardResponseToClients not implemented for TransparentProxy")
 }
 
+// HTTP method sets advertised to clients. These are the single source of truth
+// shared by methodGate's "Allow" header and the CORS preflight
+// (Access-Control-Allow-Methods) so a browser never preflights a method the
+// backend would then reject.
+const (
+	// statelessAllowedMethods are the methods a stateless (POST-only) MCP server
+	// accepts. OPTIONS is included for CORS preflight handling.
+	statelessAllowedMethods = "POST, OPTIONS"
+
+	// statefulAllowedMethods are the methods a full streamable-HTTP MCP server
+	// accepts (GET for the SSE stream, DELETE for session teardown).
+	statefulAllowedMethods = "GET, POST, DELETE, OPTIONS"
+)
+
+// corsAllowedMethods returns the method set the CORS preflight should advertise
+// for this proxy, derived from the same source of truth the request path
+// enforces (see methodGate).
+//
+// Known limitation: under the Modern (2026-07-28) revision the stateful
+// preflight advertises GET/DELETE while methodGate may still 405 those methods
+// for requests tagged with the Modern version. Modern clients use POST only,
+// so this asymmetry is theoretical; behavior is intentionally unchanged.
+func (p *TransparentProxy) corsAllowedMethods() string {
+	if p.stateless {
+		return statelessAllowedMethods
+	}
+	return statefulAllowedMethods
+}
+
 // methodGate wraps a handler to reject GET, HEAD, and DELETE requests with 405
 // when the proxy is running stateless (--stateless) or the request is tagged
 // with the Modern (stateless-only) MCP-Protocol-Version: neither has any
@@ -1623,7 +1694,7 @@ func (p *TransparentProxy) methodGate(next http.Handler) http.Handler {
 		isGateableMethod := r.Method == http.MethodGet || r.Method == http.MethodHead || r.Method == http.MethodDelete
 		isModern := r.Header.Get("MCP-Protocol-Version") == mcp.MCPVersionModern
 		if isGateableMethod && (p.stateless || isModern) {
-			w.Header().Set("Allow", "POST, OPTIONS")
+			w.Header().Set("Allow", statelessAllowedMethods)
 			http.Error(w, "method not allowed: server is stateless / stateless MCP revision (POST only)", http.StatusMethodNotAllowed)
 			return
 		}

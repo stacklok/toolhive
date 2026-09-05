@@ -4271,8 +4271,8 @@ _Appears in:_
 | `clientId` _string_ | ClientID is the explicit OAuth client_id. It is never derived from a<br />SPIFFE ID. |  | MaxLength: 253 <br />MinLength: 1 <br />Required: \{\} <br /> |
 | `methods` _[api.v1beta1.SPIFFEAuthenticationMethod](#apiv1beta1spiffeauthenticationmethod) array_ | Methods are the credential types this association may authenticate<br />with. Must be a subset of the referenced trust domain's methods. |  | MaxItems: 2 <br />MinItems: 1 <br />Required: \{\} <br />items:Enum: [spiffe_x509 spiffe_jwt] <br /> |
 | `resources` _string array_ | Resources are RFC 8707 resource indicators this association may<br />request. Must be a subset of the server's allowed_audiences allowlist,<br />which is derived at reconcile time and not available on this CRD, so<br />this is validated at reconcile time, not admission. Distinct from<br />Audiences: a resource permission does not imply the same value is also<br />a permitted token audience, or vice versa. |  | MaxItems: 50 <br />Optional: \{\} <br /> |
-| `audiences` _string array_ | Audiences are RFC 8693 token audiences this association may request. |  | MaxItems: 50 <br />MinItems: 1 <br />Required: \{\} <br /> |
-| `scopes` _string array_ | Scopes are OAuth scopes granted to this association. Must be a subset<br />of the server's effective supported scopes. |  | MaxItems: 50 <br />MinItems: 1 <br />Required: \{\} <br /> |
+| `audiences` _string array_ | Audiences are RFC 8693 token audiences this association may request. |  | MaxItems: 50 <br />MinItems: 1 <br />Required: \{\} <br />items:MaxLength: 2048 <br />items:MinLength: 1 <br /> |
+| `scopes` _string array_ | Scopes are OAuth scopes granted to this association. Must be a subset<br />of the server's effective supported scopes. |  | MaxItems: 50 <br />MinItems: 1 <br />Required: \{\} <br />items:MaxLength: 256 <br />items:MinLength: 1 <br /> |
 
 
 #### api.v1beta1.SPIFFETrustDomainConfig

@@ -141,6 +141,11 @@ Welcome to the ToolHive architecture documentation. This directory contains comp
     - Accepted limitations: client-set equivalence, disjoint subject namespaces, partial provenance
     - Operational gotchas: audience/scope binding, discovery redirects, JWKS caching, diagnostics
 
+18. **[SPIFFE Association Declarations](18-spiffe-association-declarations.md)**
+    - Configuration-only SPIFFE trust, association, and static-client model
+    - Fail-closed policy validation and durable, restart-safe static-client reservation
+    - Explicit authentication and bundle-loading delivery boundaries
+
 ### Existing Documentation
 
 For middleware architecture, see: **[docs/middleware.md](../middleware.md)**

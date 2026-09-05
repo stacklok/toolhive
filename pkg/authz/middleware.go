@@ -7,8 +7,10 @@
 package authz
 
 import (
+	"bytes"
 	"encoding/json"
 	"fmt"
+	"io"
 	"log/slog"
 	"net/http"
 	"strings"
@@ -51,6 +53,10 @@ var MCPMethodToFeatureOperation = map[string]featureOperation{
 	"resources/templates/list": {Feature: authorizers.MCPFeatureResource, Operation: authorizers.MCPOperationList},
 	"resources/subscribe":      {Feature: authorizers.MCPFeatureResource, Operation: authorizers.MCPOperationRead},
 	"resources/unsubscribe":    {Feature: authorizers.MCPFeatureResource, Operation: authorizers.MCPOperationRead},
+
+	// Skill operations - list responses are filtered by get authorization.
+	"skills/get":  {Feature: authorizers.MCPFeatureSkill, Operation: authorizers.MCPOperationGet},
+	"skills/list": {Feature: authorizers.MCPFeatureSkill, Operation: authorizers.MCPOperationList},
 
 	// Discovery and capability methods - always allowed
 	"features/list": {Feature: "", Operation: authorizers.MCPOperationList}, // Capability discovery
@@ -140,6 +146,59 @@ func shouldSkipSubsequentAuthorization(method string) bool {
 	return false
 }
 
+// invalidSkillGet reports whether a skills/get request lacks exactly one valid URI.
+func invalidSkillGet(featureOp featureOperation, resourceID string, params json.RawMessage) bool {
+	if featureOp.Feature != authorizers.MCPFeatureSkill || featureOp.Operation != authorizers.MCPOperationGet {
+		return false
+	}
+	return resourceID == "" || duplicateSkillURI(params)
+}
+
+// hasDuplicateURI reports whether an immediate JSON object has more than one uri member.
+// It uses a token decoder because unmarshalling into a map would silently retain only
+// the final duplicate member.
+func hasDuplicateURI(raw json.RawMessage) (bool, error) {
+	dec := json.NewDecoder(bytes.NewReader(raw))
+	token, err := dec.Token()
+	if err != nil {
+		return false, err
+	}
+	if delimiter, ok := token.(json.Delim); !ok || delimiter != '{' {
+		return false, nil
+	}
+
+	seen := false
+	for dec.More() {
+		key, err := dec.Token()
+		if err != nil {
+			return false, err
+		}
+		if key == "uri" {
+			if seen {
+				return true, nil
+			}
+			seen = true
+		}
+		var value json.RawMessage
+		if err := dec.Decode(&value); err != nil {
+			return false, err
+		}
+	}
+	if _, err := dec.Token(); err != nil {
+		return false, err
+	}
+	var trailing json.RawMessage
+	if err := dec.Decode(&trailing); err != io.EOF {
+		return false, err
+	}
+	return false, nil
+}
+
+func duplicateSkillURI(raw json.RawMessage) bool {
+	duplicate, err := hasDuplicateURI(raw)
+	return err != nil || duplicate
+}
+
 // handleUnauthorized handles unauthorized requests. The client always sees the fixed
 // "Unauthorized" message -- err (an authorizer failure) can carry policy detail that
 // security.md forbids returning to callers, so it is logged server-side instead.
@@ -179,9 +238,10 @@ func rejectInvalidMCPRequest(w http.ResponseWriter) {
 // This middleware extracts the MCP message from the request, determines the feature,
 // operation, and resource ID, and authorizes the request using the configured authorizer.
 //
-// For list operations (tools/list, prompts/list, resources/list), the middleware allows
+// For list operations (tools/list, prompts/list, resources/list, skills/list), the middleware allows
 // the request to proceed but intercepts the response to filter out items that the user
-// is not authorized to access based on the corresponding call/get/read policies.
+// is not authorized to access based on the corresponding call/get/read policy. In
+// particular, skills/list entries are filtered individually by get_skill authorization.
 //
 // An in-memory annotation cache is maintained per middleware instance. When a
 // tools/list response passes through, tool annotations are captured. When a
@@ -252,6 +312,14 @@ func Middleware(a authorizers.Authorizer, next http.Handler, passThroughTools ma
 		// Methods with empty feature and operation are always allowed (protocol-level)
 		if featureOp.Feature == "" && featureOp.Operation == "" {
 			next.ServeHTTP(w, r)
+			return
+		}
+
+		// skills/get identifies its target only by params.uri. An absent, empty,
+		// or non-string URI must never reach an authorizer, whose policy might
+		// otherwise accidentally permit an empty identifier.
+		if invalidSkillGet(featureOp, parsedRequest.ResourceID, parsedRequest.Params) {
+			handleUnauthorized(w, parsedRequest.ID, nil)
 			return
 		}
 

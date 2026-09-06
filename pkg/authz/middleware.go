@@ -222,6 +222,15 @@ func Middleware(a authorizers.Authorizer, next http.Handler, passThroughTools ma
 		// Get parsed MCP request from context (set by parsing middleware)
 		parsedRequest := mcp.GetParsedMCPRequest(r.Context())
 		if parsedRequest == nil {
+			// A JSON-RPC response or error answers a request the SERVER
+			// initiated (ping, elicitation, sampling). It names no method and
+			// reaches no tool, so there is nothing to authorize, and the
+			// streamable-HTTP spec requires the transport to accept it with
+			// 202. Rejecting it tears the client's session down (#5009).
+			if mcp.IsClientResponse(r.Context()) {
+				next.ServeHTTP(w, r)
+				return
+			}
 			// Non-JSON POSTs are already rejected by the early return above,
 			// so a nil parsed request here means a malformed JSON body or a
 			// missing parsing middleware. This branch is now only a

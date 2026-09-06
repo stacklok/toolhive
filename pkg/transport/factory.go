@@ -6,6 +6,8 @@
 package transport
 
 import (
+	"fmt"
+
 	"github.com/stacklok/toolhive/pkg/transport/errors"
 	"github.com/stacklok/toolhive/pkg/transport/types"
 )
@@ -43,6 +45,10 @@ func WithTargetURI(targetURI string) Option {
 
 // Create creates a transport based on the provided configuration
 func (*Factory) Create(config types.Config, opts ...Option) (types.Transport, error) {
+	if config.ReadTimeout < 0 {
+		return nil, fmt.Errorf("read timeout must be non-negative, got %s", config.ReadTimeout)
+	}
+
 	var tr types.Transport
 
 	switch config.Type {

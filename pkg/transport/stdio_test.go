@@ -1253,3 +1253,16 @@ func TestFactory_Create_PreservesReadTimeout(t *testing.T) {
 		})
 	}
 }
+
+func TestFactory_Create_RejectsNegativeReadTimeout(t *testing.T) {
+	t.Parallel()
+
+	transport, err := NewFactory().Create(types.Config{
+		Type:        types.TransportTypeStdio,
+		ReadTimeout: -time.Second,
+	})
+
+	require.Error(t, err)
+	assert.Nil(t, transport)
+	assert.EqualError(t, err, "read timeout must be non-negative, got -1s")
+}

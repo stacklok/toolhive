@@ -290,8 +290,9 @@ type Config struct {
 	SessionTTL time.Duration
 
 	// ReadTimeout bounds reading the entire request (headers + body) on the proxy
-	// http.Server. Zero uses the proxy package default. Applies to all HTTP
-	// transports; it never affects SSE responses, which stream on the response side.
+	// http.Server. Zero uses the proxy package default; negative values are
+	// rejected. Applies to all HTTP transports; it never affects SSE responses,
+	// which stream on the response side.
 	ReadTimeout time.Duration
 }
 

@@ -366,7 +366,9 @@ export TOOLHIVE_PROXY_REQUEST_TIMEOUT=5m
 thv run my-slow-server
 ```
 
-**Note:** This timeout only affects the streamable HTTP proxy used with stdio transport. The transparent proxy used by SSE and streamable-http transports (where the container runs its own HTTP server) does not impose a request timeout.
+**Note:** This MCP response-correlation timeout only affects the streamable HTTP proxy used with stdio transport.
+The transparent proxy used by SSE and streamable-http transports (where the container runs its own HTTP server)
+does not impose an MCP response-correlation timeout, but it does enforce the HTTP request read timeout described below.
 
 ### Proxy Request Body Size Limit (All Proxy Transports)
 

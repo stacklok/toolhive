@@ -410,6 +410,7 @@ func preserveUserConfigFields(dst, old *runner.RunConfig) {
 
 	// Proxy session / runtime / scheduling knobs.
 	dst.SessionTTL = old.SessionTTL
+	dst.ProxyReadTimeout = old.ProxyReadTimeout
 	dst.RuntimeConfig = old.RuntimeConfig
 	dst.IgnoreConfig = old.IgnoreConfig
 	dst.K8sPodTemplatePatch = old.K8sPodTemplatePatch

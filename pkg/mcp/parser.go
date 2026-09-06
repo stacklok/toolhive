@@ -133,7 +133,7 @@ func ParsingMiddleware(next http.Handler) http.Handler {
 		if parsedRequest == nil && isClientResponseBody(bodyBytes) {
 			// Not a request, but well-formed: it answers a request the server
 			// initiated. Record that so downstream middleware does not confuse
-			// it with an unparseable body.
+			// it with an unparsable body.
 			r = r.WithContext(context.WithValue(r.Context(), ClientResponseContextKey, true))
 		}
 		if parsedRequest != nil {
@@ -286,7 +286,7 @@ func isClientResponseBody(bodyBytes []byte) bool {
 
 // IsClientResponse reports whether the request body decoded as a JSON-RPC
 // response or error rather than a request. A nil result from
-// [GetParsedMCPRequest] means either this or an unparseable body; callers that
+// [GetParsedMCPRequest] means either this or an unparsable body; callers that
 // must distinguish the two use this.
 func IsClientResponse(ctx context.Context) bool {
 	v, _ := ctx.Value(ClientResponseContextKey).(bool)

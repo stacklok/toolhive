@@ -525,3 +525,105 @@ func TestVirtualMCPServerEnsureDeployment_PodTemplateSpecSteadyState(t *testing.
 	assert.Equal(t, resourceVersion, live.ResourceVersion,
 		"status-interval requeue must not write the Deployment when the pod template is unchanged")
 }
+
+// TestVirtualMCPServerEnsureDeployment_PodTemplateSpecTenantAndEnvDrift
+// covers the #6377 review cases: a deleted or mutated spec.podTemplateSpec
+// tenant label must look like drift, while extra live keys and API-defaulted
+// env representations must not.
+func TestVirtualMCPServerEnsureDeployment_PodTemplateSpecTenantAndEnvDrift(t *testing.T) {
+	t.Parallel()
+	scheme := testutil.NewScheme(t)
+
+	namespace := testPodTemplateNamespace
+	vmcpName := testPodTemplateVmcpName
+	groupName := testPodTemplateGroupName
+
+	mcpGroup := &mcpv1beta1.MCPGroup{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      groupName,
+			Namespace: namespace,
+		},
+		Status: mcpv1beta1.MCPGroupStatus{
+			Phase: mcpv1beta1.MCPGroupPhaseReady,
+		},
+	}
+
+	vmcp := v1beta1test.NewVirtualMCPServer(vmcpName, namespace,
+		v1beta1test.WithVMCPGroupRef(groupName),
+		v1beta1test.WithVMCPPodTemplateSpec(&runtime.RawExtension{
+			Raw: []byte(`{"metadata":{"labels":{"tenant":"lava"}},"spec":{"containers":[{"name":"vmcp","env":[{"name":"CUSTOM_FOO","value":"from-pts"},{"name":"POD_NS","valueFrom":{"fieldRef":{"fieldPath":"metadata.namespace"}}}]}]}}`),
+		}),
+	)
+
+	configMap := &corev1.ConfigMap{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      vmcpConfigMapName(vmcpName),
+			Namespace: namespace,
+			Annotations: map[string]string{
+				checksum.ContentChecksumAnnotation: "test-checksum",
+			},
+		},
+		Data: map[string]string{
+			"config.yaml": "test-config",
+		},
+	}
+
+	k8sClient := fake.NewClientBuilder().
+		WithScheme(scheme).
+		WithObjects(mcpGroup, vmcp, configMap).
+		Build()
+	reconciler := &VirtualMCPServerReconciler{Client: k8sClient, Scheme: scheme}
+
+	desired := reconciler.deploymentForVirtualMCPServer(
+		context.Background(), vmcp, "test-checksum", "", nil, []workloads.TypedWorkload{})
+	require.NotNil(t, desired)
+	require.Equal(t, "lava", desired.Spec.Template.Labels["tenant"])
+	require.NotEmpty(t, desired.Spec.Template.Spec.Containers)
+
+	t.Run("tenant label removed needs update", func(t *testing.T) {
+		t.Parallel()
+		live := desired.DeepCopy()
+		delete(live.Spec.Template.Labels, "tenant")
+		assert.True(t, reconciler.deploymentNeedsUpdate(
+			context.Background(), live, vmcp, "test-checksum", "", nil, []workloads.TypedWorkload{}),
+			"removing the configured tenant label must look like drift")
+	})
+
+	t.Run("tenant label mutated needs update", func(t *testing.T) {
+		t.Parallel()
+		live := desired.DeepCopy()
+		live.Spec.Template.Labels["tenant"] = "other"
+		assert.True(t, reconciler.deploymentNeedsUpdate(
+			context.Background(), live, vmcp, "test-checksum", "", nil, []workloads.TypedWorkload{}),
+			"changing the configured tenant label must look like drift")
+	})
+
+	t.Run("PodTemplateSpec env override missing needs update", func(t *testing.T) {
+		t.Parallel()
+		live := desired.DeepCopy()
+		filtered := live.Spec.Template.Spec.Containers[0].Env[:0]
+		for _, env := range live.Spec.Template.Spec.Containers[0].Env {
+			if env.Name != "CUSTOM_FOO" {
+				filtered = append(filtered, env)
+			}
+		}
+		live.Spec.Template.Spec.Containers[0].Env = filtered
+		assert.True(t, reconciler.containerNeedsUpdate(
+			context.Background(), live, vmcp, nil, []workloads.TypedWorkload{}),
+			"missing PodTemplateSpec env override must look like drift")
+	})
+
+	t.Run("defaulted env representations are not drift", func(t *testing.T) {
+		t.Parallel()
+		live := desired.DeepCopy()
+		live.Spec.Template.Spec.Containers[0].Env = envWithDefaultedFieldRefAPIVersion(
+			envWithDefaultedSecretOptional(live.Spec.Template.Spec.Containers[0].Env),
+		)
+		assert.False(t, reconciler.containerNeedsUpdate(
+			context.Background(), live, vmcp, nil, []workloads.TypedWorkload{}),
+			"API-defaulted Optional and FieldRef.APIVersion must not look like drift")
+		assert.False(t, reconciler.deploymentNeedsUpdate(
+			context.Background(), live, vmcp, "test-checksum", "", nil, []workloads.TypedWorkload{}),
+			"defaulted env must not trigger a Deployment update")
+	})
+}

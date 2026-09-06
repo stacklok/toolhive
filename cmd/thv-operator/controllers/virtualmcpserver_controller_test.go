@@ -17,6 +17,7 @@ package controllers
 import (
 	"context"
 	stderrors "errors"
+	"maps"
 	"testing"
 	"time"
 
@@ -28,6 +29,7 @@ import (
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	"k8s.io/apimachinery/pkg/api/meta"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/types"
 	"k8s.io/apimachinery/pkg/util/intstr"
 	"k8s.io/client-go/tools/events"
@@ -1400,6 +1402,22 @@ func TestVirtualMCPServerContainerNeedsUpdate(t *testing.T) {
 	vmcp := v1beta1test.NewVirtualMCPServer(testVmcpName, "default",
 		v1beta1test.WithVMCPGroupRef(testGroupName),
 	)
+	vmcpWithEnvOverride := v1beta1test.NewVirtualMCPServer(testVmcpName, "default",
+		v1beta1test.WithVMCPGroupRef(testGroupName),
+		v1beta1test.WithVMCPPodTemplateSpec(&runtime.RawExtension{
+			Raw: []byte(`{"spec":{"containers":[{"name":"vmcp","env":[{"name":"CUSTOM_FOO","value":"from-pts"}]}]}}`),
+		}),
+	)
+	vmcpWithFieldRefEnv := v1beta1test.NewVirtualMCPServer(testVmcpName, "default",
+		v1beta1test.WithVMCPGroupRef(testGroupName),
+		v1beta1test.WithVMCPPodTemplateSpec(&runtime.RawExtension{
+			Raw: []byte(`{"spec":{"containers":[{"name":"vmcp","env":[{"name":"POD_NS","valueFrom":{"fieldRef":{"fieldPath":"metadata.namespace"}}}]}]}}`),
+		}),
+	)
+
+	baseEnv := mustBuildEnvVarsForVmcp(reconciler, vmcp)
+	mergedEnvOverride := mustDesiredMainContainerEnv(reconciler, vmcpWithEnvOverride)
+	mergedFieldRefEnv := mustDesiredMainContainerEnv(reconciler, vmcpWithFieldRefEnv)
 
 	tests := []struct {
 		name           string
@@ -1628,6 +1646,46 @@ func TestVirtualMCPServerContainerNeedsUpdate(t *testing.T) {
 			vmcp:           vmcp,
 			expectedUpdate: false,
 		},
+		{
+			name: "PodTemplateSpec env override present - no update needed",
+			deployment: vmcpContainerDeployment(
+				reconciler.buildContainerArgsForVmcp(vmcpWithEnvOverride),
+				mergedEnvOverride,
+				vmcpServiceAccountName(vmcpWithEnvOverride.Name),
+			),
+			vmcp:           vmcpWithEnvOverride,
+			expectedUpdate: false,
+		},
+		{
+			name: "PodTemplateSpec env override missing from live needs update",
+			deployment: vmcpContainerDeployment(
+				reconciler.buildContainerArgsForVmcp(vmcpWithEnvOverride),
+				baseEnv,
+				vmcpServiceAccountName(vmcpWithEnvOverride.Name),
+			),
+			vmcp:           vmcpWithEnvOverride,
+			expectedUpdate: true,
+		},
+		{
+			name: "defaulted SecretKeyRef.Optional is not drift",
+			deployment: vmcpContainerDeployment(
+				reconciler.buildContainerArgsForVmcp(vmcp),
+				envWithDefaultedSecretOptional(baseEnv),
+				vmcpServiceAccountName(vmcp.Name),
+			),
+			vmcp:           vmcp,
+			expectedUpdate: false,
+		},
+		{
+			name: "defaulted FieldRef.APIVersion is not drift",
+			deployment: vmcpContainerDeployment(
+				reconciler.buildContainerArgsForVmcp(vmcpWithFieldRefEnv),
+				envWithDefaultedFieldRefAPIVersion(mergedFieldRefEnv),
+				vmcpServiceAccountName(vmcpWithFieldRefEnv.Name),
+			),
+			vmcp:           vmcpWithFieldRefEnv,
+			expectedUpdate: false,
+		},
 	}
 
 	for _, tt := range tests {
@@ -1728,11 +1786,17 @@ func TestVirtualMCPServerPodTemplateMetadataNeedsUpdate(t *testing.T) {
 	}
 
 	vmcp := v1beta1test.NewVirtualMCPServer(testVmcpName, "default")
+	vmcpWithTenant := v1beta1test.NewVirtualMCPServer(testVmcpName, "default",
+		v1beta1test.WithVMCPPodTemplateSpec(&runtime.RawExtension{
+			Raw: []byte(`{"metadata":{"labels":{"tenant":"lava"}}}`),
+		}),
+	)
 
 	vmcpConfigChecksum := testChecksumValue
 	expectedLabels, expectedAnnotations := reconciler.buildPodTemplateMetadata(
 		labelsForVirtualMCPServer(vmcp.Name), vmcp, vmcpConfigChecksum, "",
 	)
+	labelsWithTenant := cloneLabelsWith(expectedLabels, map[string]string{"tenant": "lava"})
 
 	tests := []struct {
 		name           string
@@ -1879,6 +1943,70 @@ func TestVirtualMCPServerPodTemplateMetadataNeedsUpdate(t *testing.T) {
 			vmcp:           vmcp,
 			checksum:       vmcpConfigChecksum,
 			expectedUpdate: false,
+		},
+		{
+			name: "configured tenant label present is not drift",
+			deployment: &appsv1.Deployment{
+				Spec: appsv1.DeploymentSpec{
+					Template: corev1.PodTemplateSpec{
+						ObjectMeta: metav1.ObjectMeta{
+							Labels:      labelsWithTenant,
+							Annotations: expectedAnnotations,
+						},
+					},
+				},
+			},
+			vmcp:           vmcpWithTenant,
+			checksum:       vmcpConfigChecksum,
+			expectedUpdate: false,
+		},
+		{
+			name: "configured tenant label plus extra live keys is not drift",
+			deployment: &appsv1.Deployment{
+				Spec: appsv1.DeploymentSpec{
+					Template: corev1.PodTemplateSpec{
+						ObjectMeta: metav1.ObjectMeta{
+							Labels:      cloneLabelsWith(labelsWithTenant, map[string]string{"pod-template-hash": "abc123"}),
+							Annotations: expectedAnnotations,
+						},
+					},
+				},
+			},
+			vmcp:           vmcpWithTenant,
+			checksum:       vmcpConfigChecksum,
+			expectedUpdate: false,
+		},
+		{
+			name: "configured tenant label mutated needs update",
+			deployment: &appsv1.Deployment{
+				Spec: appsv1.DeploymentSpec{
+					Template: corev1.PodTemplateSpec{
+						ObjectMeta: metav1.ObjectMeta{
+							Labels:      cloneLabelsWith(expectedLabels, map[string]string{"tenant": "other"}),
+							Annotations: expectedAnnotations,
+						},
+					},
+				},
+			},
+			vmcp:           vmcpWithTenant,
+			checksum:       vmcpConfigChecksum,
+			expectedUpdate: true,
+		},
+		{
+			name: "configured tenant label removed needs update",
+			deployment: &appsv1.Deployment{
+				Spec: appsv1.DeploymentSpec{
+					Template: corev1.PodTemplateSpec{
+						ObjectMeta: metav1.ObjectMeta{
+							Labels:      expectedLabels,
+							Annotations: expectedAnnotations,
+						},
+					},
+				},
+			},
+			vmcp:           vmcpWithTenant,
+			checksum:       vmcpConfigChecksum,
+			expectedUpdate: true,
 		},
 	}
 
@@ -3356,6 +3484,70 @@ func mustBuildEnvVarsForVmcp(r *VirtualMCPServerReconciler, vmcp *mcpv1beta1.Vir
 		panic("mustBuildEnvVarsForVmcp: " + err.Error())
 	}
 	return env
+}
+
+func mustDesiredMainContainerEnv(r *VirtualMCPServerReconciler, vmcp *mcpv1beta1.VirtualMCPServer) []corev1.EnvVar {
+	env, err := r.desiredMainContainerEnv(context.Background(), vmcp, nil, []workloads.TypedWorkload{})
+	if err != nil {
+		panic("mustDesiredMainContainerEnv: " + err.Error())
+	}
+	return env
+}
+
+func vmcpContainerDeployment(args []string, env []corev1.EnvVar, serviceAccount string) *appsv1.Deployment {
+	return &appsv1.Deployment{
+		Spec: appsv1.DeploymentSpec{
+			Template: corev1.PodTemplateSpec{
+				Spec: corev1.PodSpec{
+					Containers: []corev1.Container{
+						{
+							Name:  "vmcp",
+							Image: getVmcpImage(),
+							Ports: []corev1.ContainerPort{
+								{ContainerPort: 4483},
+							},
+							Args: args,
+							Env:  env,
+						},
+					},
+					ServiceAccountName: serviceAccount,
+				},
+			},
+		},
+	}
+}
+
+func cloneLabelsWith(base map[string]string, extra map[string]string) map[string]string {
+	out := maps.Clone(base)
+	if out == nil {
+		out = map[string]string{}
+	}
+	for k, v := range extra {
+		out[k] = v
+	}
+	return out
+}
+
+func envWithDefaultedSecretOptional(env []corev1.EnvVar) []corev1.EnvVar {
+	out := make([]corev1.EnvVar, len(env))
+	for i := range env {
+		out[i] = *env[i].DeepCopy()
+		if src := out[i].ValueFrom; src != nil && src.SecretKeyRef != nil {
+			out[i].ValueFrom.SecretKeyRef.Optional = ptr.To(false)
+		}
+	}
+	return out
+}
+
+func envWithDefaultedFieldRefAPIVersion(env []corev1.EnvVar) []corev1.EnvVar {
+	out := make([]corev1.EnvVar, len(env))
+	for i := range env {
+		out[i] = *env[i].DeepCopy()
+		if src := out[i].ValueFrom; src != nil && src.FieldRef != nil {
+			out[i].ValueFrom.FieldRef.APIVersion = "v1"
+		}
+	}
+	return out
 }
 
 // TestGetExternalAuthConfigNameFromWorkload tests auth config ref extraction from all workload types

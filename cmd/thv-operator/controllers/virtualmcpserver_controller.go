@@ -11,6 +11,7 @@ import (
 	"encoding/base64"
 	stderrors "errors"
 	"fmt"
+	"maps"
 	"net/url"
 	"reflect"
 	"slices"
@@ -1872,15 +1873,15 @@ func (r *VirtualMCPServerReconciler) containerNeedsUpdate(
 		return true
 	}
 
-	// Check if environment variables have changed
-	expectedEnv, err := r.buildEnvVarsForVmcp(ctx, vmcp, telemetryCfg, typedWorkloads)
+	// Compare against the fully rendered desired vmcp env (controller env plus
+	// spec.podTemplateSpec merges). Semantic equality still treats nil vs
+	// pointer-to-zero as different for some API fields, so normalize known
+	// defaults before comparing (#6340, #6377).
+	expectedEnv, err := r.desiredMainContainerEnv(ctx, vmcp, telemetryCfg, typedWorkloads)
 	if err != nil {
 		return true // Trigger update to surface the error
 	}
-	// Semantic equality ignores Kubernetes defaulting on pointer fields
-	// (e.g. SecretKeyRef.Optional) so telemetry/OIDC env vars do not look
-	// like drift after the first apply (#6340).
-	if !equality.Semantic.DeepEqual(container.Env, expectedEnv) {
+	if !envVarsEqual(container.Env, expectedEnv) {
 		return true
 	}
 
@@ -1934,15 +1935,17 @@ func (r *VirtualMCPServerReconciler) podTemplateMetadataNeedsUpdate(
 		return true
 	}
 
-	expectedPodTemplateLabels, expectedPodTemplateAnnotations := r.buildPodTemplateMetadata(
-		labelsForVirtualMCPServer(vmcp.Name), vmcp, vmcpConfigChecksum, caBundleChecksum,
+	expectedPodTemplateLabels, expectedPodTemplateAnnotations, err := r.desiredPodTemplateMetadata(
+		vmcp, vmcpConfigChecksum, caBundleChecksum,
 	)
+	if err != nil {
+		return true
+	}
 
-	// Subset check, not maps.Equal: applyPodTemplateSpecToDeployment merges
-	// user PodTemplateSpec labels onto the live template. Exact equality then
-	// flags those extras as drift on every status requeue
-	// (statusReportingInterval), which updates the Deployment without
-	// creating a new ReplicaSet (#6340).
+	// Subset check, not maps.Equal: desired is the fully rendered set
+	// (controller labels plus spec.podTemplateSpec merges). Extra live keys
+	// such as pod-template-hash or kubectl restartedAt are not drift
+	// (statusReportingInterval must not Update, #6340).
 	if !ctrlutil.MapIsSubset(expectedPodTemplateLabels, deployment.Spec.Template.Labels) {
 		return true
 	}
@@ -1957,6 +1960,113 @@ func (r *VirtualMCPServerReconciler) podTemplateMetadataNeedsUpdate(
 	}
 
 	return false
+}
+
+const vmcpMainContainerName = "vmcp"
+
+// desiredPodTemplateMetadata returns the fully rendered desired pod-template
+// labels and annotations: controller-generated metadata plus any keys merged
+// from spec.podTemplateSpec. Callers compare this set as a subset of live
+// metadata so externally owned extras (pod-template-hash, restartedAt) are
+// not treated as drift.
+func (r *VirtualMCPServerReconciler) desiredPodTemplateMetadata(
+	vmcp *mcpv1beta1.VirtualMCPServer,
+	vmcpConfigChecksum string,
+	caBundleChecksum string,
+) (map[string]string, map[string]string, error) {
+	labels, annotations := r.buildPodTemplateMetadata(
+		labelsForVirtualMCPServer(vmcp.Name), vmcp, vmcpConfigChecksum, caBundleChecksum,
+	)
+	// Clone: buildPodTemplateMetadata aliases the caller-owned base label map,
+	// and ApplyPodTemplateSpecPatch must not mutate it.
+	labels = maps.Clone(labels)
+	annotations = maps.Clone(annotations)
+
+	if vmcp.Spec.PodTemplateSpec == nil || len(vmcp.Spec.PodTemplateSpec.Raw) == 0 {
+		return labels, annotations, nil
+	}
+
+	merged, err := ctrlutil.ApplyPodTemplateSpecPatch(corev1.PodTemplateSpec{
+		ObjectMeta: metav1.ObjectMeta{
+			Labels:      labels,
+			Annotations: annotations,
+		},
+	}, vmcp.Spec.PodTemplateSpec.Raw)
+	if err != nil {
+		return nil, nil, err
+	}
+	return merged.Labels, merged.Annotations, nil
+}
+
+// desiredMainContainerEnv returns the fully rendered desired env for the vmcp
+// container: buildEnvVarsForVmcp plus any env merged from spec.podTemplateSpec.
+func (r *VirtualMCPServerReconciler) desiredMainContainerEnv(
+	ctx context.Context,
+	vmcp *mcpv1beta1.VirtualMCPServer,
+	telemetryCfg *mcpv1beta1.MCPTelemetryConfig,
+	typedWorkloads []workloads.TypedWorkload,
+) ([]corev1.EnvVar, error) {
+	expectedEnv, err := r.buildEnvVarsForVmcp(ctx, vmcp, telemetryCfg, typedWorkloads)
+	if err != nil {
+		return nil, err
+	}
+
+	if vmcp.Spec.PodTemplateSpec == nil || len(vmcp.Spec.PodTemplateSpec.Raw) == 0 {
+		return expectedEnv, nil
+	}
+
+	merged, err := ctrlutil.ApplyPodTemplateSpecPatch(corev1.PodTemplateSpec{
+		Spec: corev1.PodSpec{
+			Containers: []corev1.Container{{
+				Name: vmcpMainContainerName,
+				Env:  expectedEnv,
+			}},
+		},
+	}, vmcp.Spec.PodTemplateSpec.Raw)
+	if err != nil {
+		return nil, err
+	}
+
+	if container, ok := findContainerByName(merged.Spec.Containers, vmcpMainContainerName); ok {
+		return container.Env, nil
+	}
+	return expectedEnv, nil
+}
+
+// envVarsEqual compares container env after normalizing known Kubernetes API
+// defaults. equality.Semantic.DeepEqual still treats nil vs pointer-to-zero
+// (and "" vs "v1" on ObjectFieldSelector.APIVersion) as different.
+func envVarsEqual(live, desired []corev1.EnvVar) bool {
+	return equality.Semantic.DeepEqual(normalizeEnvVarsForCompare(live), normalizeEnvVarsForCompare(desired))
+}
+
+// normalizeEnvVarsForCompare copies env and collapses known API-server
+// defaults so persisted and freshly built representations compare equal.
+func normalizeEnvVarsForCompare(env []corev1.EnvVar) []corev1.EnvVar {
+	if env == nil {
+		return nil
+	}
+	out := make([]corev1.EnvVar, len(env))
+	for i := range env {
+		out[i] = *env[i].DeepCopy()
+		normalizeEnvVarSource(out[i].ValueFrom)
+	}
+	return out
+}
+
+func normalizeEnvVarSource(src *corev1.EnvVarSource) {
+	if src == nil {
+		return
+	}
+	if ref := src.SecretKeyRef; ref != nil && ref.Optional != nil && !*ref.Optional {
+		ref.Optional = nil
+	}
+	if ref := src.ConfigMapKeyRef; ref != nil && ref.Optional != nil && !*ref.Optional {
+		ref.Optional = nil
+	}
+	if ref := src.FieldRef; ref != nil && ref.APIVersion == "v1" {
+		ref.APIVersion = ""
+	}
 }
 
 // podTemplateSpecNeedsUpdate checks if the user-provided PodTemplateSpec has changed, by

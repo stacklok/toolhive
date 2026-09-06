@@ -844,7 +844,7 @@ func (r *VirtualMCPServerReconciler) discoverInlineExternalAuthConfigSecrets(
 
 	// Sort by name for the same reason as discoverExternalAuthConfigSecrets: Go map
 	// iteration over Spec.OutgoingAuth.Backends is non-deterministic, which would
-	// cause a continuous deployment update loop via reflect.DeepEqual in containerNeedsUpdate.
+	// cause a continuous deployment update loop via the env comparison in containerNeedsUpdate.
 	sort.Slice(envVars, func(i, j int) bool {
 		return envVars[i].Name < envVars[j].Name
 	})

@@ -27,19 +27,28 @@ func TestSPIFFEIDFromCertificate(t *testing.T) {
 		wantErr string
 	}{
 		{
-			name:   "ignores non SPIFFE URI SAN",
-			uris:   []*url.URL{mustParseURI(t, "https://example.org/workload"), validURI},
+			name:   "accepts exactly one SPIFFE URI SAN",
+			uris:   []*url.URL{validURI},
 			wantID: spiffeid.RequireFromString("spiffe://example.org/workload/service"),
 		},
 		{
-			name:    "rejects no SPIFFE URI SAN",
-			uris:    []*url.URL{mustParseURI(t, "https://example.org/workload")},
-			wantErr: "required",
+			name:    "rejects no URI SAN",
+			wantErr: "no URI SAN",
 		},
 		{
-			name:    "rejects multiple SPIFFE URI SANs",
-			uris:    []*url.URL{validURI, mustParseURI(t, "spiffe://example.org/workload/other")},
-			wantErr: "multiple",
+			name:    "rejects non SPIFFE URI SAN",
+			uris:    []*url.URL{mustParseURI(t, "https://example.org/workload")},
+			wantErr: "scheme",
+		},
+		{
+			name:    "rejects non SPIFFE plus SPIFFE URI SAN",
+			uris:    []*url.URL{mustParseURI(t, "https://example.org/workload"), validURI},
+			wantErr: "more than one URI SAN",
+		},
+		{
+			name:    "rejects root SPIFFE URI SAN",
+			uris:    []*url.URL{mustParseURI(t, "spiffe://example.org")},
+			wantErr: "path is invalid",
 		},
 		{
 			name:    "rejects traversal in SPIFFE URI SAN",
@@ -68,7 +77,11 @@ func TestMiddleware(t *testing.T) {
 	t.Parallel()
 
 	validCert := &x509.Certificate{URIs: []*url.URL{mustParseURI(t, "spiffe://example.org/workload/service")}}
-	invalidCert := &x509.Certificate{URIs: []*url.URL{mustParseURI(t, "https://example.org/workload")}}
+	nonSPIFFECert := &x509.Certificate{URIs: []*url.URL{mustParseURI(t, "https://example.org/workload")}}
+	mixedCert := &x509.Certificate{URIs: []*url.URL{
+		mustParseURI(t, "https://example.org/workload"),
+		mustParseURI(t, "spiffe://example.org/workload/service"),
+	}}
 	tests := []struct {
 		name             string
 		path             string
@@ -80,7 +93,7 @@ func TestMiddleware(t *testing.T) {
 		{
 			name:             "only examines token endpoint",
 			path:             "/other",
-			peerCertificates: []*x509.Certificate{invalidCert},
+			peerCertificates: []*x509.Certificate{nonSPIFFECert},
 			wantStatus:       http.StatusNoContent,
 			wantNextCalls:    1,
 		},
@@ -99,9 +112,16 @@ func TestMiddleware(t *testing.T) {
 			wantNextCalls:    1,
 		},
 		{
-			name:             "rejects invalid SAN without calling next",
+			name:             "passes non SPIFFE certificate without identity",
 			path:             "/oauth/token",
-			peerCertificates: []*x509.Certificate{invalidCert},
+			peerCertificates: []*x509.Certificate{nonSPIFFECert},
+			wantStatus:       http.StatusNoContent,
+			wantNextCalls:    1,
+		},
+		{
+			name:             "rejects mixed URI SANs without calling next",
+			path:             "/oauth/token",
+			peerCertificates: []*x509.Certificate{mixedCert},
 			wantStatus:       http.StatusUnauthorized,
 		},
 	}

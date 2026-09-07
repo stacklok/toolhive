@@ -205,6 +205,14 @@ When stdio transport is selected, the proxy mode determines which HTTP protocol 
 | **sse** | HTTP (SSE) | Transparent | `transparent_proxy.go` |
 | **streamable-http** | HTTP (Streamable) | Transparent | `transparent_proxy.go` |
 
+### Client-facing listener TLS
+
+`RunConfig.tls_config` enables TLS on the proxy listener with `cert_file` and `key_file`. It changes the entire client-facing listener from HTTP to HTTPS, including MCP endpoints, health endpoints, and embedded authorization-server routes; it does not change the proxy-to-container or proxy-to-remote-server connection. The setting is supported by native SSE and Streamable HTTP transports and by both SSE and Streamable HTTP proxy modes for stdio workloads.
+
+The runner validates the certificate/key pair at startup and uses `tls.Config.GetCertificate` to reload both files on every handshake. This permits serving-certificate rotation without restarting the proxy when the files are updated atomically, as they are by the operator's projected Secret directory. TLS 1.2 is the minimum. When SPIFFE X.509 client authentication is configured, the listener requests a client certificate; application-layer verification at `/oauth/token` performs the authoritative SPIFFE profile, chain, and association checks described in [SPIFFE Association Declarations](18-spiffe-association-declarations.md).
+
+Generated MCP URLs use `https` when listener TLS is active. The runner's initialization check verifies the configured serving certificate, and MCPServer/MCPRemoteProxy Kubernetes probes and status URLs also switch to HTTPS. VirtualMCPServer does not support this listener TLS path and explicitly rejects it.
+
 ### Session Ownership
 
 Ordinary proxies use `pkg/auth/sessionbinding` to bind each session to the
@@ -263,7 +271,7 @@ ToolHive can proxy to **remote MCP servers** without running containers. This is
 
 ```mermaid
 graph TB
-    Client[MCP Client] -->|Local HTTP| Proxy[ToolHive Proxy<br/>with Middleware]
+    Client[MCP Client] -->|Local HTTP/HTTPS| Proxy[ToolHive Proxy<br/>with Middleware]
     Proxy -->|Remote HTTP/HTTPS| Remote[Remote MCP Server<br/>https://example.com]
 
     subgraph "ToolHive (Local)"
@@ -293,7 +301,7 @@ When a remote URL is configured in RunConfig:
 **What happens:**
 
 1. **No container created** - ToolHive recognizes URL as remote endpoint
-2. **Proxy started** - Local HTTP proxy on specified port (or auto-assigned)
+2. **Proxy started** - Local HTTP or configured HTTPS proxy on the specified port (or auto-assigned)
 3. **Transparent proxy used** - Same proxy as SSE/Streamable transports
 4. **RunConfig saved** - Contains `RemoteURL` field: `pkg/runner/config.go`
 5. **Middleware applied** - Auth, authz, audit, etc. applied to remote traffic
@@ -842,7 +850,7 @@ when delivery lands it does not also require rewriting the fan-out primitives.
 **Architecture:**
 - **Remote MCP servers**: Full HTTPS support with certificate validation
 - **Custom CA bundles**: Configurable for clients that connect to private-CA or self-signed endpoints
-- **Local proxy**: HTTP only (localhost binding for security)
+- **Client-facing proxy**: HTTP by default; `RunConfig.tls_config` enables HTTPS for SSE, Streamable HTTP, and both stdio HTTP proxy modes
 - **Trust store**: Clients either use the system CA bundle, a pinned custom bundle, or (for embedded auth-server upstreams and trusted issuers) system roots plus a custom bundle
 
 A custom CA bundle does not disable the HTTPS and network protections applied to the client. In particular, the server-supplied endpoint paths retain redirect and private-IP safeguards unless the corresponding explicit development or in-cluster options are configured.

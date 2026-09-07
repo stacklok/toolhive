@@ -837,6 +837,42 @@ spec:
                       insecureAllowHTTP is true) without query, fragment, or trailing slash (per RFC 8414).
                     pattern: ^https?://[^\s?#]+[^/\s?#]$
                     type: string
+                  listenerTLS:
+                    description: |-
+                      ListenerTLS configures TLS for the proxy listener that serves the embedded
+                      authorization server. It is required for SPIFFE X.509 client authentication.
+                      MCPServer and MCPRemoteProxy support this field; VirtualMCPServer rejects it
+                      until vMCP implements TLS and X.509 end to end.
+                    properties:
+                      certificateSecretRef:
+                        description: CertificateSecretRef references the PEM-encoded
+                          TLS certificate.
+                        properties:
+                          key:
+                            description: Key is the key within the secret
+                            type: string
+                          name:
+                            description: Name is the name of the secret
+                            type: string
+                        required:
+                        - key
+                        - name
+                        type: object
+                      privateKeySecretRef:
+                        description: PrivateKeySecretRef references the PEM-encoded
+                          TLS private key.
+                        properties:
+                          key:
+                            description: Key is the key within the secret
+                            type: string
+                          name:
+                            description: Name is the name of the secret
+                            type: string
+                        required:
+                        - key
+                        - name
+                        type: object
+                    type: object
                   primaryUpstreamProvider:
                     description: |-
                       PrimaryUpstreamProvider names the upstream IDP whose access token Cedar
@@ -2385,6 +2421,15 @@ spec:
                     || !has(self.inboundGrants.jwtBearer.issuerPolicies) || self.inboundGrants.jwtBearer.issuerPolicies.all(policy,
                     self.inboundGrants.jwtBearer.issuerPolicies.filter(other, other.issuerRef
                     == policy.issuerRef).size() == 1)'
+                - message: listenerTLS certificateSecretRef and privateKeySecretRef
+                    must be configured together
+                  rule: '!has(self.listenerTLS) || (has(self.listenerTLS.certificateSecretRef)
+                    && has(self.listenerTLS.privateKeySecretRef))'
+                - message: listenerTLS is required when SPIFFE X.509 client authentication
+                    is configured
+                  rule: '!has(self.inboundGrants) || !has(self.inboundGrants.spiffeClientAuth)
+                    || !self.inboundGrants.spiffeClientAuth.exists(association, association.methods.exists(method,
+                    method == ''spiffe_x509'')) || has(self.listenerTLS)'
               headerInjection:
                 description: |-
                   HeaderInjection configures custom HTTP header injection
@@ -3672,6 +3717,42 @@ spec:
                       insecureAllowHTTP is true) without query, fragment, or trailing slash (per RFC 8414).
                     pattern: ^https?://[^\s?#]+[^/\s?#]$
                     type: string
+                  listenerTLS:
+                    description: |-
+                      ListenerTLS configures TLS for the proxy listener that serves the embedded
+                      authorization server. It is required for SPIFFE X.509 client authentication.
+                      MCPServer and MCPRemoteProxy support this field; VirtualMCPServer rejects it
+                      until vMCP implements TLS and X.509 end to end.
+                    properties:
+                      certificateSecretRef:
+                        description: CertificateSecretRef references the PEM-encoded
+                          TLS certificate.
+                        properties:
+                          key:
+                            description: Key is the key within the secret
+                            type: string
+                          name:
+                            description: Name is the name of the secret
+                            type: string
+                        required:
+                        - key
+                        - name
+                        type: object
+                      privateKeySecretRef:
+                        description: PrivateKeySecretRef references the PEM-encoded
+                          TLS private key.
+                        properties:
+                          key:
+                            description: Key is the key within the secret
+                            type: string
+                          name:
+                            description: Name is the name of the secret
+                            type: string
+                        required:
+                        - key
+                        - name
+                        type: object
+                    type: object
                   primaryUpstreamProvider:
                     description: |-
                       PrimaryUpstreamProvider names the upstream IDP whose access token Cedar
@@ -5220,6 +5301,15 @@ spec:
                     || !has(self.inboundGrants.jwtBearer.issuerPolicies) || self.inboundGrants.jwtBearer.issuerPolicies.all(policy,
                     self.inboundGrants.jwtBearer.issuerPolicies.filter(other, other.issuerRef
                     == policy.issuerRef).size() == 1)'
+                - message: listenerTLS certificateSecretRef and privateKeySecretRef
+                    must be configured together
+                  rule: '!has(self.listenerTLS) || (has(self.listenerTLS.certificateSecretRef)
+                    && has(self.listenerTLS.privateKeySecretRef))'
+                - message: listenerTLS is required when SPIFFE X.509 client authentication
+                    is configured
+                  rule: '!has(self.inboundGrants) || !has(self.inboundGrants.spiffeClientAuth)
+                    || !self.inboundGrants.spiffeClientAuth.exists(association, association.methods.exists(method,
+                    method == ''spiffe_x509'')) || has(self.listenerTLS)'
               headerInjection:
                 description: |-
                   HeaderInjection configures custom HTTP header injection

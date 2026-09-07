@@ -992,6 +992,8 @@ type EmbeddedAuthServerConfig struct {
 
 	// ListenerTLS configures TLS for the proxy listener that serves the embedded
 	// authorization server. It is required for SPIFFE X.509 client authentication.
+	// MCPServer and MCPRemoteProxy support this field; VirtualMCPServer rejects it
+	// until vMCP implements TLS and X.509 end to end.
 	// +optional
 	ListenerTLS *ListenerTLSConfig `json:"listenerTLS,omitempty"`
 

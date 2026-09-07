@@ -141,11 +141,11 @@ Welcome to the ToolHive architecture documentation. This directory contains comp
     - Operational gotchas: audience/scope binding, discovery redirects, JWKS caching, diagnostics
 
 18. **[SPIFFE Association Declarations](18-spiffe-association-declarations.md)**
-    - Not yet deployable: rejected at startup pending real SVID verification
-    - Configuration-only SPIFFE trust, association, and static-client model
-    - JWT-SVID client-authentication dispatch and validation logic implemented but not yet wired to a trust bundle source
-    - Fail-closed policy validation and durable, restart-safe static-client reservation
-    - X.509-SVID validation, trust-bundle loading, and SPIFFE grant/discovery integration remain pending
+    - Not yet deployable: rejected at startup pending trust-bundle source construction and wiring
+    - SPIFFE trust, association, and static-client model
+    - X.509-SVID and JWT-SVID client-authentication consumers with fail-closed verification
+    - Listener-wide TLS for MCPServer and MCPRemoteProxy, including certificate rotation and HTTPS probes/status URLs
+    - Durable, restart-safe static-client reservation; SPIFFE grant/discovery integration remains pending
 
 ### Existing Documentation
 

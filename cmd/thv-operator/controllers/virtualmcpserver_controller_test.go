@@ -4699,6 +4699,34 @@ func TestVirtualMCPServerReconciler_IdentitySynthesizedTransitionsOnValidationFa
 		"stale message naming the now-removed upstream must not survive the broken edit")
 }
 
+func TestVirtualMCPServerValidateAuthServerConfig_RejectsListenerTLS(t *testing.T) {
+	t.Parallel()
+
+	vmcp := v1beta1test.NewVirtualMCPServer(testVmcpName, "default",
+		v1beta1test.WithVMCPGroupRef("test-group"),
+		v1beta1test.WithVMCPAuthServerConfig(&mcpv1beta1.EmbeddedAuthServerConfig{
+			Issuer:      "https://auth.example.com",
+			ListenerTLS: &mcpv1beta1.ListenerTLSConfig{},
+		}),
+		v1beta1test.MutateVMCP(func(v *mcpv1beta1.VirtualMCPServer) {
+			v.Generation = 2
+		}),
+	)
+	statusManager := virtualmcpserverstatus.NewStatusManager(vmcp)
+
+	err := (&VirtualMCPServerReconciler{}).validateAuthServerConfig(vmcp, statusManager)
+	statusManager.UpdateStatus(t.Context(), &vmcp.Status)
+
+	require.ErrorContains(t, err, "listenerTLS is not supported for VirtualMCPServer")
+	assert.Equal(t, mcpv1beta1.VirtualMCPServerPhaseFailed, vmcp.Status.Phase)
+	assert.Equal(t, int64(2), vmcp.Status.ObservedGeneration)
+	condition := findCondition(vmcp.Status.Conditions, mcpv1beta1.ConditionTypeAuthServerConfigValidated)
+	require.NotNil(t, condition)
+	assert.Equal(t, metav1.ConditionFalse, condition.Status)
+	assert.Equal(t, mcpv1beta1.ConditionReasonAuthServerConfigInvalid, condition.Reason)
+	assert.Contains(t, condition.Message, "remove spec.authServerConfig.listenerTLS")
+}
+
 // TestVirtualMCPServerValidateAuthServerConfig_InsecureAllowHTTP exercises the
 // admission-time check that rejects http:// issuers for non-localhost hosts
 // unless insecureAllowHTTP is explicitly set.

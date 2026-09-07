@@ -238,7 +238,11 @@ MCPExternalAuthConfig resources can be referenced via two paths:
 
 **Controller**: `cmd/thv-operator/controllers/mcpexternalauthconfig_controller.go`
 
-`EmbeddedAuthServerConfig` can also carry top-level SPIFFE trust-domain declarations in `spiffeTrustDomains` and canonical client associations in `inboundGrants.spiffeClientAuth` (`cmd/thv-operator/api/v1beta1/mcpexternalauthconfig_types.go`). The operator converts these CRD fields into runtime config via `buildSPIFFETrustDomainRunConfigs`/`buildSPIFFEClientAuthRunConfigs` in `cmd/thv-operator/pkg/controllerutil/authserver.go`, which flow into the RunConfig delivered to the proxy-runner alongside the rest of the embedded auth server settings. See [SPIFFE Association Declarations](18-spiffe-association-declarations.md) for the full configuration and policy model — **any non-empty configuration here is currently rejected by `RunConfig.Validate()` before the runner starts**, pending real SVID verification; the CRD fields, conversion, and runtime model exist, but this is not yet a deployable feature.
+`EmbeddedAuthServerConfig` can also carry top-level SPIFFE trust-domain declarations in `spiffeTrustDomains` and canonical client associations in `inboundGrants.spiffeClientAuth` (`cmd/thv-operator/api/v1beta1/mcpexternalauthconfig_types.go`). The operator converts these CRD fields into runtime config via `buildSPIFFETrustDomainRunConfigs`/`buildSPIFFEClientAuthRunConfigs` in `cmd/thv-operator/pkg/controllerutil/authserver.go`, which flow into the RunConfig delivered to the proxy-runner alongside the rest of the embedded auth server settings.
+
+`listenerTLS` references the serving certificate and private-key Secret keys. The operator projects both into one read-only directory (without `subPath`, so Kubernetes Secret rotation updates the mounted files), writes their paths to `RunConfig.tls_config`, and requires this listener configuration when an association selects `spiffe_x509`. The runner reloads the key pair on each TLS handshake. TLS terminates at the proxy and covers every client-facing route, including MCP traffic and embedded auth-server endpoints. For MCPServer and MCPRemoteProxy, the operator consequently emits HTTPS status URLs and configures startup, readiness, and liveness probes to use HTTPS.
+
+See [SPIFFE Association Declarations](18-spiffe-association-declarations.md) for the full configuration, verification, and policy model. **This remains non-deployable:** `RunConfig.Validate()` rejects every non-empty SPIFFE configuration until [#6201](https://github.com/stacklok/toolhive/issues/6201) constructs the X.509 and JWT trust-bundle sources and removes that startup guard.
 
 ### MCPOIDCConfig
 
@@ -434,6 +438,8 @@ VirtualMCPServer creates a virtual MCP server that aggregates tools, resources, 
 - Detailed conditions for validation, discovery, and readiness
 
 **References**: MCPGroup (via `spec.groupRef.name`)
+
+VirtualMCPServer does not support the proxy-runner listener TLS or X.509 path. Its CRD validation and controller reject non-empty `spec.authServerConfig.listenerTLS`; configure SPIFFE X.509 only on MCPServer or MCPRemoteProxy once the trust-bundle wiring described in [SPIFFE Association Declarations](18-spiffe-association-declarations.md) is complete.
 
 **Controller**: `cmd/thv-operator/controllers/virtualmcpserver_controller.go`
 

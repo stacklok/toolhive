@@ -616,6 +616,20 @@ func (*VirtualMCPServerReconciler) validateAuthServerConfig(
 ) error {
 	cfg := vmcp.Spec.AuthServerConfig
 
+	if cfg.ListenerTLS != nil {
+		message := "spec.authServerConfig.listenerTLS is not supported for VirtualMCPServer; " +
+			"remove spec.authServerConfig.listenerTLS"
+		statusManager.SetPhase(mcpv1beta1.VirtualMCPServerPhaseFailed)
+		statusManager.SetMessage(message)
+		statusManager.SetAuthServerConfigValidatedCondition(
+			mcpv1beta1.ConditionReasonAuthServerConfigInvalid,
+			message,
+			metav1.ConditionFalse,
+		)
+		statusManager.SetObservedGeneration(vmcp.Generation)
+		return stderrors.New(message)
+	}
+
 	if cfg.Issuer == "" {
 		message := "spec.authServerConfig.issuer is required"
 		statusManager.SetPhase(mcpv1beta1.VirtualMCPServerPhaseFailed)

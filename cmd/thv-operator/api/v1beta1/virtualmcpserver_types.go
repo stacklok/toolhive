@@ -16,6 +16,7 @@ import (
 
 // VirtualMCPServerSpec defines the desired state of VirtualMCPServer
 //
+// +kubebuilder:validation:XValidation:rule="!(has(self.authServerConfig) && has(self.authServerConfig.listenerTLS))",message="authServerConfig.listenerTLS is not supported for VirtualMCPServer; remove spec.authServerConfig.listenerTLS"
 // +kubebuilder:validation:XValidation:rule="!has(self.config) || !has(self.config.rateLimiting) || (has(self.sessionStorage) && self.sessionStorage.provider == 'redis')",message="config.rateLimiting requires sessionStorage with provider 'redis'"
 // +kubebuilder:validation:XValidation:rule="!(has(self.config) && has(self.config.rateLimiting) && has(self.config.rateLimiting.perUser)) || (has(self.incomingAuth) && self.incomingAuth.type == 'oidc')",message="config.rateLimiting.perUser requires incomingAuth.type oidc"
 // +kubebuilder:validation:XValidation:rule="!has(self.config) || !has(self.config.rateLimiting) || !has(self.config.rateLimiting.tools) || self.config.rateLimiting.tools.all(t, !has(t.perUser)) || (has(self.incomingAuth) && self.incomingAuth.type == 'oidc')",message="per-tool perUser rate limiting requires incomingAuth.type oidc"
@@ -104,6 +105,8 @@ type VirtualMCPServerSpec struct {
 	// upstream IDPs, and issues ToolHive JWTs. The embedded AS becomes the
 	// IncomingAuth OIDC provider — its issuer must match IncomingAuth.OIDCConfigRef
 	// so that tokens it issues are accepted by the vMCP's incoming auth middleware.
+	// ListenerTLS is not supported for VirtualMCPServer until vMCP implements
+	// TLS and X.509 end to end.
 	// When nil, IncomingAuth uses an external IDP and behavior is unchanged.
 	// +optional
 	AuthServerConfig *EmbeddedAuthServerConfig `json:"authServerConfig,omitempty"`

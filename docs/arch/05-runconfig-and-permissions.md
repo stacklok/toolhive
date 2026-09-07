@@ -27,7 +27,7 @@ The complete `RunConfig` struct is defined in `pkg/runner/config.go`.
 - **What to run**: `image` or `remoteURL` - Container image or remote endpoint
 - **Transport**: `transport`, `host`, `port`, `targetPort`, `proxyMode` - Communication configuration
 - **Execution**: `cmdArgs`, `envVars` - Runtime parameters
-- **Security**: `permissionProfile`, `isolateNetwork` - Permission boundaries
+- **Security**: `permissionProfile`, `isolateNetwork`, `tls_config` - Permission boundaries and proxy-listener TLS
 - **Middleware**: `oidcConfig`, `authzConfig`, `auditConfig`, `middlewareConfigs` - Request processing
 - **Tool filtering**: `toolsFilter`, `toolsOverride` - Tool control
 - **Storage**: `volumes`, `secrets` - Data and credentials
@@ -151,7 +151,21 @@ thv run uvx://mcp-server \
 - `max_request_body_size`: Maximum inbound MCP request body size in bytes; omitted or zero uses the 8 MiB default
 - `proxy_read_timeout`: Maximum time to read a complete client request, as a Go duration string; omitted or zero uses the secure 30-second default
 
-**Implementation**: `pkg/runner/config.go`
+**Client-facing TLS:**
+```json
+{
+  "tls_config": {
+    "cert_file": "/etc/toolhive/authserver/tls/tls.crt",
+    "key_file": "/etc/toolhive/authserver/tls/tls.key"
+  }
+}
+```
+
+When `tls_config` is present, both fields are required and the proxy serves HTTPS on its entire client-facing listener. This applies to native SSE and Streamable HTTP transports and to SSE or Streamable HTTP proxy modes over a stdio backend. The runner validates the initial key pair and reloads both files on every TLS handshake, allowing projected Kubernetes Secret updates to rotate the serving certificate without a restart. Generated URLs and local initialization checks use HTTPS.
+
+SPIFFE X.509 associations require this TLS configuration because the listener must request a client certificate. The certificate is not accepted as workload identity at the TLS layer: the token-endpoint strategy re-verifies its URI SAN, profile, and chain against the configured SPIFFE bundle. SPIFFE remains non-deployable until [#6201](https://github.com/stacklok/toolhive/issues/6201) constructs that bundle source and removes the separate `RunConfig.Validate()` startup guard. VirtualMCPServer explicitly rejects listener TLS and X.509 configuration; see [SPIFFE Association Declarations](18-spiffe-association-declarations.md).
+
+**Implementation**: `pkg/runner/config.go`, `pkg/runner/runner.go`, `pkg/transport/`
 
 #### Environment Variables
 

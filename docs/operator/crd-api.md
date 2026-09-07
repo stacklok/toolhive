@@ -2008,6 +2008,7 @@ _Appears in:_
 | `tokenLifespans` _[api.v1beta1.TokenLifespanConfig](#apiv1beta1tokenlifespanconfig)_ | TokenLifespans configures the duration that various tokens are valid.<br />If not specified, defaults are applied (access: 1h, refresh: 7d, authCode: 10m). |  | Optional: \{\} <br /> |
 | `spiffeTrustDomains` _[api.v1beta1.SPIFFETrustDomainConfig](#apiv1beta1spiffetrustdomainconfig) array_ | SPIFFETrustDomains declares SPIFFE trust domains for<br />inboundGrants.spiffeClientAuth associations. See SPIFFETrustDomainConfig's<br />doc comment for why declaring a domain does not by itself enable<br />authentication in this build. |  | MaxItems: 50 <br />MinItems: 1 <br />Optional: \{\} <br /> |
 | `inboundGrants` _[api.v1beta1.InboundGrantsConfig](#apiv1beta1inboundgrantsconfig)_ | InboundGrants configures canonical inbound OAuth grant families. |  | Optional: \{\} <br /> |
+| `listenerTLS` _[api.v1beta1.ListenerTLSConfig](#apiv1beta1listenertlsconfig)_ | ListenerTLS configures TLS for the proxy listener that serves the embedded<br />authorization server. It is required for SPIFFE X.509 client authentication. |  | Optional: \{\} <br /> |
 | `upstreamProviders` _[api.v1beta1.UpstreamProviderConfig](#apiv1beta1upstreamproviderconfig) array_ | UpstreamProviders configures connections to upstream Identity Providers.<br />When configured, the embedded auth server delegates interactive authentication<br />to these providers. It may be omitted only when delegateClients or a trusted<br />issuer with jwtBearerGrant enables token-only operation.<br />MCPServer and MCPRemoteProxy support a single upstream; VirtualMCPServer supports multiple. |  | Optional: \{\} <br /> |
 | `primaryUpstreamProvider` _string_ | PrimaryUpstreamProvider names the upstream IDP whose access token Cedar<br />should read claims from when authorising a request. Must match the name<br />of one of the entries in UpstreamProviders. When empty, the controller<br />auto-selects the first entry of UpstreamProviders.<br />Only meaningful on VirtualMCPServer, where multiple upstream providers<br />can be configured and Cedar needs to pick which token's claims to<br />evaluate. The VirtualMCPServer controller validates this field against<br />UpstreamProviders at admission and rejects unresolvable values.<br />On MCPServer and MCPRemoteProxy this field is structurally present (the<br />EmbeddedAuthServerConfig struct is shared) but has no runtime effect:<br />those CRDs are restricted to a single upstream so there is no choice to<br />make. Setting it on those CRDs is silently ignored. |  | MaxLength: 63 <br />MinLength: 1 <br />Pattern: `^[a-z0-9]([a-z0-9-]*[a-z0-9])?$` <br />Optional: \{\} <br /> |
 | `storage` _[api.v1beta1.AuthServerStorageConfig](#apiv1beta1authserverstorageconfig)_ | Storage configures the storage backend for the embedded auth server.<br />If not specified, defaults to in-memory storage. |  | Optional: \{\} <br /> |
@@ -2500,6 +2501,24 @@ _Appears in:_
 | `jwksUrl` _string_ | JWKSURL is the URL to fetch the JWKS from.<br />If empty, OIDC discovery will be used to automatically determine the JWKS URL. |  | Optional: \{\} <br /> |
 | `introspectionUrl` _string_ | IntrospectionURL is the URL for token introspection endpoint.<br />If empty, OIDC discovery will be used to automatically determine the introspection URL. |  | Optional: \{\} <br /> |
 | `useClusterAuth` _boolean_ | UseClusterAuth enables using the Kubernetes cluster's CA bundle and service account token.<br />When true, uses /var/run/secrets/kubernetes.io/serviceaccount/ca.crt for TLS verification<br />and /var/run/secrets/kubernetes.io/serviceaccount/token for bearer token authentication.<br />Defaults to true if not specified. |  | Optional: \{\} <br /> |
+
+
+#### api.v1beta1.ListenerTLSConfig
+
+
+
+ListenerTLSConfig configures the embedded auth server listener's certificate.
+Both secret references must be set together.
+
+
+
+_Appears in:_
+- [api.v1beta1.EmbeddedAuthServerConfig](#apiv1beta1embeddedauthserverconfig)
+
+| Field | Description | Default | Validation |
+| --- | --- | --- | --- |
+| `certificateSecretRef` _[api.v1beta1.SecretKeyRef](#apiv1beta1secretkeyref)_ | CertificateSecretRef references the PEM-encoded TLS certificate. |  | Optional: \{\} <br /> |
+| `privateKeySecretRef` _[api.v1beta1.SecretKeyRef](#apiv1beta1secretkeyref)_ | PrivateKeySecretRef references the PEM-encoded TLS private key. |  | Optional: \{\} <br /> |
 
 
 #### api.v1beta1.MCPAuthzConfig
@@ -4365,6 +4384,7 @@ _Appears in:_
 - [api.v1beta1.HeaderFromSecret](#apiv1beta1headerfromsecret)
 - [api.v1beta1.HeaderInjectionConfig](#apiv1beta1headerinjectionconfig)
 - [api.v1beta1.InlineOIDCSharedConfig](#apiv1beta1inlineoidcsharedconfig)
+- [api.v1beta1.ListenerTLSConfig](#apiv1beta1listenertlsconfig)
 - [api.v1beta1.OAuth2UpstreamConfig](#apiv1beta1oauth2upstreamconfig)
 - [api.v1beta1.OBOConfig](#apiv1beta1oboconfig)
 - [api.v1beta1.OIDCUpstreamConfig](#apiv1beta1oidcupstreamconfig)

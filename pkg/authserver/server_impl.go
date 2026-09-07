@@ -16,6 +16,7 @@ import (
 	"github.com/ory/fosite"
 	"github.com/ory/fosite/compose"
 
+
 	oauthserver "github.com/stacklok/toolhive/pkg/authserver/server"
 	"github.com/stacklok/toolhive/pkg/authserver/server/deviceflow"
 	"github.com/stacklok/toolhive/pkg/authserver/server/handlers"

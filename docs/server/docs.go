@@ -3835,10 +3835,14 @@ const docTemplate = `{
                 "type": "object"
             },
             "pkg_api_v1.pushPluginRequest": {
-                "description": "Request to push a built plugin artifact. Exactly one of identity_token or no_sign is required.",
+                "description": "Request to push a built plugin artifact. Exactly one of key, identity_token, or no_sign is required.",
                 "properties": {
                     "identity_token": {
-                        "description": "IdentityToken is a short-lived OIDC identity token used for keyless\nsigning. Plugin signing is keyless-only: there is deliberately no key\nfield, because ToolHive cannot verify key-signed artifacts at install\ntime and would publish an uninstallable plugin (#6442)",
+                        "description": "IdentityToken is a short-lived OIDC identity token used for keyless\nsigning, mutually exclusive with Key",
+                        "type": "string"
+                    },
+                    "key": {
+                        "description": "Key is the path to a cosign private key used to sign the pushed\nartifact. Consumers installing the result project-scoped must supply\nthe matching public key on first use (install's public_key)",
                         "type": "string"
                     },
                     "no_sign": {

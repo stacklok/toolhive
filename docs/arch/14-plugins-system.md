@@ -115,11 +115,11 @@ builds from artifacts cached by pull or content inspection.
 
 ### 3. Publishing
 
-`thv ai-plugin push <reference>` publishes a local build. Push is signed
-keylessly by default: an OIDC identity token can be supplied with
-`--identity-token`, acquired from GitHub Actions OIDC, or acquired through an
-interactive browser sign-in. `--no-sign` is the explicit unsigned alternative.
-There is no plugin push `--key` option.
+`thv ai-plugin push <reference>` publishes a local build. Push is signed by
+default, keylessly unless a key is given: an OIDC identity token can be supplied
+with `--identity-token`, acquired from GitHub Actions OIDC, or acquired through
+an interactive browser sign-in, and `--key` signs with a cosign private key
+instead. `--no-sign` is the explicit unsigned alternative.
 
 A signed push stages content at its immutable digest, attaches the signature,
 and only then promotes the requested tag. A signing failure therefore does not
@@ -236,9 +236,12 @@ existing unsigned decision. A legacy entry with neither provenance nor
 `unsigned: true` is drift and fails closed until sync can verify it or the user
 explicitly runs `sync --allow-unsigned` for genuinely unsigned content.
 
-Plugin publishing remains keyless-by-default or explicit `--no-sign`; plugin
-push has no `--key`, even though project installation can verify externally
-key-pair-signed artifacts with `--public-key`.
+Plugin publishing carries the same two signing paths as skills. `thv ai-plugin
+push --key` signs with a cosign key pair; because the public key is recoverable
+from neither the artifact nor its bundle, consumers must receive it out of band
+and pass `--public-key` on their first project-scoped install. Keyless signing
+needs no such step, since the signer identity is verifiable from the artifact
+itself.
 
 The lock file is repository-editable policy. Review changes to `provenance`,
 `publicKey`, `unsigned`, `digest`, and `resolvedReference` as carefully as the

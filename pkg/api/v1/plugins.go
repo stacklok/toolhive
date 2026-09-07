@@ -313,11 +313,11 @@ func (s *PluginsRoutes) buildPlugin(w http.ResponseWriter, r *http.Request) erro
 //	@Router			/api/v1beta/plugins/push [post]
 func (s *PluginsRoutes) pushPlugin(w http.ResponseWriter, r *http.Request) error {
 	var req pushPluginRequest
-	// Unknown fields are rejected on this endpoint specifically. Push is the
-	// only credential-bearing plugin request, and the field most likely to
-	// arrive unrecognized is "key": plugin signing is keyless-only (#6442),
-	// so silently discarding a key would answer "please sign this with my
-	// key" with an unsigned publish. A 400 naming the field says no.
+	// Unknown fields are rejected on this endpoint specifically: push is the
+	// only credential-bearing plugin request, so a misspelled signing field
+	// must fail loudly rather than decode to "sign however you like" — the
+	// worst outcome being an unsigned publish in answer to a request that
+	// asked to be signed.
 	dec := json.NewDecoder(r.Body)
 	dec.DisallowUnknownFields()
 	if err := dec.Decode(&req); err != nil {
@@ -336,6 +336,7 @@ func (s *PluginsRoutes) pushPlugin(w http.ResponseWriter, r *http.Request) error
 
 	if err := s.pluginService.Push(r.Context(), plugins.PushOptions{
 		Reference:     req.Reference,
+		Key:           req.Key,
 		IdentityToken: req.IdentityToken,
 		NoSign:        req.NoSign,
 	}); err != nil {

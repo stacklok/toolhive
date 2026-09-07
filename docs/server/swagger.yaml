@@ -3574,15 +3574,19 @@ components:
           type: boolean
       type: object
     pkg_api_v1.pushPluginRequest:
-      description: Request to push a built plugin artifact. Exactly one of identity_token
+      description: Request to push a built plugin artifact. Exactly one of key, identity_token,
         or no_sign is required.
       properties:
         identity_token:
           description: |-
             IdentityToken is a short-lived OIDC identity token used for keyless
-            signing. Plugin signing is keyless-only: there is deliberately no key
-            field, because ToolHive cannot verify key-signed artifacts at install
-            time and would publish an uninstallable plugin (#6442)
+            signing, mutually exclusive with Key
+          type: string
+        key:
+          description: |-
+            Key is the path to a cosign private key used to sign the pushed
+            artifact. Consumers installing the result project-scoped must supply
+            the matching public key on first use (install's public_key)
           type: string
         no_sign:
           description: NoSign pushes without signing

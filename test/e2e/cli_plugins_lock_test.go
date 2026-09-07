@@ -143,9 +143,10 @@ var _ = Describe("Plugins CLI lock file exit codes (RFC THV-0080)", Label("api",
 				Run()
 			Expect(err).To(HaveOccurred(), "a push with no signing credential must fail")
 			Expect(stderr).To(ContainSubstring("no signing credential available"))
-			// Plugin signing is keyless-only (#6442). Pointing the user at
-			// --key, which this command does not define, is a dead end.
-			Expect(stderr).ToNot(ContainSubstring("--key"))
+			// The remediation must name every signing choice this command
+			// actually offers, and only those: a message pointing at a flag
+			// push does not define is a dead end.
+			Expect(stderr).To(ContainSubstring("--key"))
 			Expect(stderr).To(ContainSubstring("--identity-token"))
 			Expect(stderr).To(ContainSubstring("--no-sign"))
 		})

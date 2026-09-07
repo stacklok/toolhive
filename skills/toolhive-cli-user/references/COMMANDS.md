@@ -558,7 +558,7 @@ thv ai-plugin builds remove TAG
 
 ### thv ai-plugin push
 
-Push a previously built local artifact. Signing is keyless by default: use `--identity-token TOKEN_OR_PATH`, GitHub Actions OIDC with `id-token: write`, or interactive browser sign-in. Use `--no-sign` only when intentionally publishing unsigned content; project consumers must explicitly consent to an unsigned install. No `--key` option exists.
+Push a previously built local artifact. Signing is keyless by default: use `--identity-token TOKEN_OR_PATH`, GitHub Actions OIDC with `id-token: write`, or interactive browser sign-in. Use `--no-sign` only when intentionally publishing unsigned content; project consumers must explicitly consent to an unsigned install. Use `--key PATH` to sign with a cosign private key instead; consumers then need the matching public key (`thv ai-plugin install --public-key`) on their first project-scoped install.
 
 ```
 thv ai-plugin push [flags] REFERENCE

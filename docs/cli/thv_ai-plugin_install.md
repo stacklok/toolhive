@@ -31,6 +31,7 @@ thv ai-plugin install [plugin-name] [flags]
       --group string          Group to add the plugin to after installation
   -h, --help                  help for install
       --project-root string   Project root path for project-scoped installs
+      --public-key string     Path to the cosign public key (cosign.pub) a key-pair-signed plugin must verify against. Required the first time such a plugin is installed project-scoped; the key is then pinned in the lock file and reused automatically
       --scope string          Installation scope (user, project) (default "user")
 ```
 

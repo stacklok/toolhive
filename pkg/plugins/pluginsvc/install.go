@@ -48,6 +48,16 @@ func (s *service) install(
 		opts.LockSource = opts.Name
 	}
 
+	// Checked here, before any resolve or fetch work: this is the only path a
+	// caller-supplied public key arrives through, and rejecting it now means a
+	// key that could never be used is reported as bad input rather than as a
+	// verification failure after the artifact has been pulled. Lock-driven
+	// callers (sync, upgrade) never set it — they verify against the key the
+	// lock records.
+	if err := validateInstallPublicKey(opts, scope); err != nil {
+		return nil, err
+	}
+
 	// Git references are dispatched first; the prefix is unambiguous and
 	// cannot collide with OCI references. installFromGit holds the per-plugin
 	// lock across extraction, DB, group, lock-file, and rollback unless the

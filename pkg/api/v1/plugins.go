@@ -134,6 +134,7 @@ func (s *PluginsRoutes) installPlugin(w http.ResponseWriter, r *http.Request) er
 		Force:         req.Force,
 		Group:         req.Group,
 		AllowUnsigned: req.AllowUnsigned,
+		PublicKey:     req.PublicKey,
 	})
 	if err != nil {
 		return err

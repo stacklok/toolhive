@@ -18,6 +18,10 @@ type installRequest struct {
 	// AllowUnsigned mirrors plugins.InstallOptions.AllowUnsigned; without
 	// it here the CLI flag would silently never reach the server.
 	AllowUnsigned bool `json:"allow_unsigned,omitempty"`
+	// PublicKey mirrors plugins.InstallOptions.PublicKey: the base64 DER SPKI
+	// the CLI encoded from the --public-key file, since a path would not
+	// resolve on a server in another process or on another host.
+	PublicKey string `json:"public_key,omitempty"`
 }
 
 type validateRequest struct {

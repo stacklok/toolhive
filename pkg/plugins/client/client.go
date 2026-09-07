@@ -215,6 +215,7 @@ func (c *Client) Install(ctx context.Context, opts plugins.InstallOptions) (*plu
 		Force:         opts.Force,
 		Group:         opts.Group,
 		AllowUnsigned: opts.AllowUnsigned,
+		PublicKey:     opts.PublicKey,
 	}
 
 	var resp installResponse

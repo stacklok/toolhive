@@ -870,3 +870,49 @@ func TestBuildRunnerConfig_NetworkIsolationExplicitWiring(t *testing.T) {
 		})
 	}
 }
+
+// TestBuildRunnerConfig_MaxRequestBodySizeWiring guards the CLI-to-RunConfig
+// handoff for --max-request-body-size. The builder tests cover validation in
+// isolation; this test ensures the command layer does not drop the flag value.
+func TestBuildRunnerConfig_MaxRequestBodySizeWiring(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name      string
+		flagValue string
+		want      int64
+		wantErr   bool
+	}{
+		{name: "zero preserves default semantics", flagValue: "0", want: 0},
+		{name: "positive value is wired", flagValue: "16777216", want: 16 << 20},
+		{name: "negative value is rejected", flagValue: "-1", wantErr: true},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			runFlags := &RunFlags{}
+			cmd := &cobra.Command{}
+			AddRunFlags(cmd, runFlags)
+
+			require.NoError(t, cmd.Flags().Set("permission-profile", "none"))
+			require.NoError(t, cmd.Flags().Set("transport", "stdio"))
+			require.NoError(t, cmd.Flags().Set("max-request-body-size", tt.flagValue))
+
+			cfg, err := buildRunnerConfig(
+				t.Context(), runFlags, nil, false, "127.0.0.1", nil, "test:latest", nil,
+				map[string]string{}, &runner.DetachedEnvVarValidator{}, nil, nil, &config.Config{},
+			)
+
+			if tt.wantErr {
+				require.Error(t, err)
+				assert.Contains(t, err.Error(), "max-request-body-size must be non-negative")
+				return
+			}
+			require.NoError(t, err)
+			require.NotNil(t, cfg)
+			assert.Equal(t, tt.want, cfg.MaxRequestBodySize)
+		})
+	}
+}

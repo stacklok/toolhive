@@ -1838,6 +1838,12 @@ components:
             K8sPodTemplatePatch is a JSON string to patch the Kubernetes pod template
             Only applicable when using Kubernetes runtime
           type: string
+        max_request_body_size:
+          description: |-
+            MaxRequestBodySize is the maximum inbound MCP proxy request body size in bytes.
+            Zero uses the default limit of 8 MiB. Negative values are rejected
+            when the RunConfig is built or used at runtime.
+          type: integer
         mcpserver_generation:
           description: |-
             MCPServerGeneration is the K8s .metadata.generation of the MCPServer CR that rendered
@@ -3120,6 +3126,10 @@ components:
         image:
           description: Docker image to use
           type: string
+        max_request_body_size:
+          description: Maximum inbound MCP proxy request body size in bytes. Zero
+            uses the default limit of 8 MiB.
+          type: integer
         name:
           description: Name of the workload
           type: string
@@ -3860,6 +3870,10 @@ components:
         image:
           description: Docker image to use
           type: string
+        max_request_body_size:
+          description: Maximum inbound MCP proxy request body size in bytes. Zero
+            uses the default limit of 8 MiB.
+          type: integer
         network_isolation:
           description: |-
             Whether network isolation is turned on. This applies the rules in the permission profile.

@@ -95,6 +95,7 @@ func TestRunConfigToCreateRequest(t *testing.T) {
 			Port:               3000,
 			CmdArgs:            []string{"arg1", "arg2"},
 			TargetPort:         8080,
+			MaxRequestBodySize: 16 << 20,
 			EnvVars:            map[string]string{"ENV1": "value1"},
 			Secrets:            []string{"secret1,target=/path1", "secret2,target=/path2"},
 			Volumes:            []string{"/host:/container"},
@@ -115,6 +116,7 @@ func TestRunConfigToCreateRequest(t *testing.T) {
 		assert.Equal(t, []string{"arg1", "arg2"}, result.CmdArguments)
 		assert.Equal(t, 8080, result.TargetPort)
 		assert.Equal(t, 3000, result.ProxyPort)
+		assert.Equal(t, int64(16<<20), result.MaxRequestBodySize)
 		assert.Equal(t, map[string]string{"ENV1": "value1"}, result.EnvVars)
 		require.Len(t, result.Secrets, 2)
 		assert.Equal(t, "secret1", result.Secrets[0].Name)

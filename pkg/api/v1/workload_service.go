@@ -377,6 +377,7 @@ func (s *WorkloadService) BuildFullRunConfig(
 		runner.WithK8sPodPatch(""),
 		runner.WithProxyMode(types.ProxyMode(req.ProxyMode)),
 		runner.WithTransportAndPorts(req.Transport, req.ProxyPort, req.TargetPort),
+		runner.WithMaxRequestBodySize(req.MaxRequestBodySize),
 		runner.WithAuditEnabled(false, ""),
 		runner.WithOIDCConfig(req.OIDC.Issuer, req.OIDC.Audience, req.OIDC.JwksURL, "",
 			req.OIDC.ClientID, "", "", "", "", false, false, req.OIDC.Scopes),

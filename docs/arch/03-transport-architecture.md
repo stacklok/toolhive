@@ -368,6 +368,24 @@ thv run my-slow-server
 
 **Note:** This timeout only affects the streamable HTTP proxy used with stdio transport. The transparent proxy used by SSE and streamable-http transports (where the container runs its own HTTP server) does not impose a request timeout.
 
+### Proxy Request Body Size Limit (All Proxy Transports)
+
+ToolHive proxy listeners reject request bodies larger than 8 MiB by default,
+before authentication or MCP parsing can buffer them. This bounds the memory a
+single inbound request may consume. Operators can override the limit with
+`thv run --max-request-body-size`, `thv proxy --max-request-body-size`, or
+MCPServer `spec.maxRequestBodySize`. RunConfig stores the workload setting as
+`max_request_body_size`, expressed as a number of bytes.
+
+Omitting the setting or specifying zero retains the 8 MiB default; zero never
+disables the limit. Raising the limit supports unusually large `tools/call`
+payloads, such as inline images or documents, but also increases the memory
+available to each concurrent request. The setting applies only to inbound MCP
+proxy requests. Response bodies, the management API's 1 MiB cap, the embedded
+auth server's 64 KiB cap, and vMCP's 8 MiB cap are unaffected.
+
+**Implementation**: `pkg/bodylimit`, `pkg/runner/middleware.go`
+
 ### Health Check Tuning Parameters
 
 **Implementation**: `pkg/transport/proxy/transparent/transparent_proxy.go`

@@ -423,6 +423,18 @@ func WithSessionTTL(ttl time.Duration) RunConfigBuilderOption {
 	}
 }
 
+// WithMaxRequestBodySize sets the maximum inbound MCP proxy request body size in bytes.
+// Zero uses the default limit of 8 MiB. Negative values return an error.
+func WithMaxRequestBodySize(maxBytes int64) RunConfigBuilderOption {
+	return func(b *runConfigBuilder) error {
+		if maxBytes < 0 {
+			return fmt.Errorf("max-request-body-size must be non-negative, got %d", maxBytes)
+		}
+		b.config.MaxRequestBodySize = maxBytes
+		return nil
+	}
+}
+
 // WithNetworkMode sets the network mode for the container.
 // The network mode will be applied to the permission profile after it is loaded.
 func WithNetworkMode(networkMode string) RunConfigBuilderOption {

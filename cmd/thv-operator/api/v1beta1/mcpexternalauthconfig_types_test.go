@@ -191,7 +191,7 @@ func TestMCPExternalAuthConfig_Validate(t *testing.T) {
 				},
 			},
 			expectErr: true,
-			errMsg:    "at least one upstream provider is required",
+			errMsg:    "at least one upstream provider or inbound grant family is required",
 		},
 		{
 			name: "invalid OIDC provider without oidcConfig",
@@ -466,6 +466,156 @@ func TestMCPExternalAuthConfig_Validate(t *testing.T) {
 	}
 }
 
+func TestEmbeddedAuthServerConfig_EffectiveGrants(t *testing.T) {
+	t.Parallel()
+
+	jwtPolicy := JWTBearerGrantConfig{
+		MaxAssertionAge: &metav1.Duration{Duration: time.Minute},
+		SubjectBindings: []JWTBearerSubjectBinding{{
+			Subject: "workload", AllowedResources: []string{"https://mcp.example.com"},
+		}},
+	}
+	t.Run("nil canonical config keeps legacy default", func(t *testing.T) {
+		t.Parallel()
+		grants, err := (&EmbeddedAuthServerConfig{}).EffectiveGrants()
+		require.NoError(t, err)
+		assert.True(t, grants.tokenExchange)
+		assert.False(t, grants.jwtBearer)
+	})
+	t.Run("empty canonical config disables implicit token exchange", func(t *testing.T) {
+		t.Parallel()
+		grants, err := (&EmbeddedAuthServerConfig{InboundGrants: &InboundGrantsConfig{}}).EffectiveGrants()
+		require.NoError(t, err)
+		assert.False(t, grants.tokenExchange)
+		assert.False(t, grants.jwtBearer)
+	})
+	t.Run("canonical policies overlay copied issuers and clients", func(t *testing.T) {
+		t.Parallel()
+		cfg := &EmbeddedAuthServerConfig{
+			TrustedIssuers: []TrustedIssuerConfig{{Name: "external", IssuerURL: "https://issuer.example.com"}},
+			InboundGrants: &InboundGrantsConfig{
+				TokenExchange: &TokenExchangeInboundGrantConfig{
+					DelegateClients: []DelegateClientConfig{{
+						ClientID: "canonical", ClientSecretRef: &SecretKeyRef{Name: "secret", Key: "key"},
+						Scopes: []string{"openid"}, Audiences: []string{"https://mcp.example.com"},
+					}},
+					IssuerPolicies: []TokenExchangeIssuerPolicyConfig{{
+						IssuerRef: "external", ExpectedAudience: "audience", ActorClaim: "azp",
+						AllowedActors: []string{"actor"}, AllowedDelegateClients: []string{"canonical"},
+					}},
+				},
+				JWTBearer: &JWTBearerInboundGrantConfig{IssuerPolicies: []JWTBearerIssuerPolicyConfig{{
+					IssuerRef: "external", JWTBearerGrantConfig: jwtPolicy,
+				}}},
+			},
+		}
+		grants, err := cfg.EffectiveGrants()
+		require.NoError(t, err)
+		assert.True(t, grants.tokenExchange)
+		assert.True(t, grants.jwtBearer)
+		clients := grants.delegateClients
+		require.Len(t, clients, 1)
+		assert.Equal(t, "canonical", clients[0].ClientID)
+		issuers := grants.trustedIssuers
+		require.Len(t, issuers, 1)
+		assert.Equal(t, "audience", issuers[0].ExpectedAudience)
+		require.NotNil(t, issuers[0].JWTBearerGrant)
+
+		clients[0].Scopes[0] = "changed"
+		clients[0].ClientSecretRef.Name = "changed"
+		issuers[0].AllowedActors[0] = "changed"
+		issuers[0].JWTBearerGrant.SubjectBindings[0].AllowedResources[0] = "https://changed.example.com"
+		assert.Equal(t, "openid", cfg.InboundGrants.TokenExchange.DelegateClients[0].Scopes[0])
+		assert.Equal(t, "secret", cfg.InboundGrants.TokenExchange.DelegateClients[0].ClientSecretRef.Name)
+		assert.Equal(t, "actor", cfg.InboundGrants.TokenExchange.IssuerPolicies[0].AllowedActors[0])
+		assert.Equal(t, "https://mcp.example.com",
+			cfg.InboundGrants.JWTBearer.IssuerPolicies[0].SubjectBindings[0].AllowedResources[0])
+	})
+	t.Run("legacy token exchange and canonical JWT bearer can coexist", func(t *testing.T) {
+		t.Parallel()
+		cfg := &EmbeddedAuthServerConfig{
+			TrustedIssuers: []TrustedIssuerConfig{{
+				Name: "external", IssuerURL: "https://issuer.example.com", ExpectedAudience: "audience",
+				AllowedDelegateClients: []string{"legacy"},
+			}},
+			InboundGrants: &InboundGrantsConfig{JWTBearer: &JWTBearerInboundGrantConfig{
+				IssuerPolicies: []JWTBearerIssuerPolicyConfig{{IssuerRef: "external", JWTBearerGrantConfig: jwtPolicy}},
+			}},
+		}
+		grants, err := cfg.EffectiveGrants()
+		require.NoError(t, err)
+		assert.True(t, grants.tokenExchange)
+		assert.True(t, grants.jwtBearer)
+	})
+
+	conflicts := []struct {
+		name string
+		cfg  EmbeddedAuthServerConfig
+		want string
+	}{
+		{
+			name: "canonical and legacy token exchange",
+			cfg: EmbeddedAuthServerConfig{
+				DelegateClients: []DelegateClientConfig{{ClientID: "legacy"}},
+				InboundGrants:   &InboundGrantsConfig{TokenExchange: &TokenExchangeInboundGrantConfig{}},
+			},
+			want: "tokenExchange conflicts",
+		},
+		{
+			name: "canonical and legacy JWT bearer",
+			cfg: EmbeddedAuthServerConfig{
+				TrustedIssuers: []TrustedIssuerConfig{{
+					Name: "external", IssuerURL: "https://issuer.example.com", JWTBearerGrant: &jwtPolicy,
+				}},
+				InboundGrants: &InboundGrantsConfig{JWTBearer: &JWTBearerInboundGrantConfig{}},
+			},
+			want: "jwtBearer conflicts",
+		},
+		{
+			name: "unknown issuer reference",
+			cfg: EmbeddedAuthServerConfig{
+				InboundGrants: &InboundGrantsConfig{TokenExchange: &TokenExchangeInboundGrantConfig{
+					IssuerPolicies: []TokenExchangeIssuerPolicyConfig{{IssuerRef: "missing"}},
+				}},
+			},
+			want: "unknown or unnamed trusted issuer",
+		},
+		{
+			name: "duplicate issuer reference",
+			cfg: EmbeddedAuthServerConfig{
+				TrustedIssuers: []TrustedIssuerConfig{{Name: "external", IssuerURL: "https://issuer.example.com"}},
+				InboundGrants: &InboundGrantsConfig{TokenExchange: &TokenExchangeInboundGrantConfig{
+					IssuerPolicies: []TokenExchangeIssuerPolicyConfig{{IssuerRef: "external"}, {IssuerRef: "external"}},
+				}},
+			},
+			want: "duplicates issuer policy",
+		},
+		{
+			name: "duplicate issuer name",
+			cfg: EmbeddedAuthServerConfig{TrustedIssuers: []TrustedIssuerConfig{
+				{Name: "external", IssuerURL: "https://one.example.com"},
+				{Name: "external", IssuerURL: "https://two.example.com"},
+			}},
+			want: "name duplicates",
+		},
+		{
+			name: "duplicate issuer URL",
+			cfg: EmbeddedAuthServerConfig{TrustedIssuers: []TrustedIssuerConfig{
+				{Name: "one", IssuerURL: "https://issuer.example.com"},
+				{Name: "two", IssuerURL: "https://issuer.example.com"},
+			}},
+			want: "issuerUrl duplicates",
+		},
+	}
+	for _, tt := range conflicts {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			_, err := tt.cfg.EffectiveGrants()
+			require.ErrorContains(t, err, tt.want)
+		})
+	}
+}
+
 func TestMCPExternalAuthConfig_validateEmbeddedAuthServer(t *testing.T) {
 	t.Parallel()
 
@@ -564,7 +714,7 @@ func TestMCPExternalAuthConfig_validateEmbeddedAuthServer(t *testing.T) {
 				},
 			},
 			expectErr: true,
-			errMsg:    "at least one upstream provider is required",
+			errMsg:    "at least one upstream provider or inbound grant family is required",
 		},
 		{
 			name: "nil embedded auth server config",
@@ -796,6 +946,130 @@ func TestMCPExternalAuthConfig_validateEmbeddedAuthServer(t *testing.T) {
 	}
 }
 
+func TestMCPExternalAuthConfig_ValidateCanonicalTrustedIssuers(t *testing.T) {
+	t.Parallel()
+
+	newConfig := func(issuerURL string) *MCPExternalAuthConfig {
+		return &MCPExternalAuthConfig{Spec: MCPExternalAuthConfigSpec{
+			Type: ExternalAuthTypeEmbeddedAuthServer,
+			EmbeddedAuthServer: &EmbeddedAuthServerConfig{
+				Issuer:         "https://auth.example.com",
+				TrustedIssuers: []TrustedIssuerConfig{{Name: "external", IssuerURL: issuerURL}},
+				InboundGrants: &InboundGrantsConfig{TokenExchange: &TokenExchangeInboundGrantConfig{
+					IssuerPolicies: []TokenExchangeIssuerPolicyConfig{{
+						IssuerRef: "external", ExpectedAudience: "audience", AllowedDelegateClients: []string{"delegate"},
+					}},
+				}},
+			},
+		}}
+	}
+
+	require.NoError(t, newConfig("https://issuer.example.com").validateEmbeddedAuthServer())
+	err := newConfig("https://auth.example.com").validateEmbeddedAuthServer()
+	require.ErrorContains(t, err, "must not equal the authorization server's own issuer")
+}
+
+func TestEmbeddedAuthServerConfig_ValidateInboundGrants_TrustedIssuerEndpoints(t *testing.T) {
+	t.Parallel()
+
+	newConfig := func(canonical bool, issuerURL, jwksURL string, allowPrivateIPs bool) EmbeddedAuthServerConfig {
+		config := EmbeddedAuthServerConfig{
+			Issuer: "https://auth.example.com",
+			TrustedIssuers: []TrustedIssuerConfig{{
+				Name: "external", IssuerURL: issuerURL, JWKSURL: jwksURL, AllowPrivateIPs: allowPrivateIPs,
+			}},
+		}
+		if canonical {
+			config.InboundGrants = &InboundGrantsConfig{TokenExchange: &TokenExchangeInboundGrantConfig{
+				IssuerPolicies: []TokenExchangeIssuerPolicyConfig{{
+					IssuerRef: "external", ExpectedAudience: "audience", AllowedDelegateClients: []string{"delegate"},
+				}},
+			}}
+			return config
+		}
+		config.TrustedIssuers[0].ExpectedAudience = "audience"
+		config.TrustedIssuers[0].AllowedDelegateClients = []string{"delegate"}
+		return config
+	}
+
+	tests := []struct {
+		name            string
+		canonical       bool
+		issuerURL       string
+		jwksURL         string
+		allowPrivateIPs bool
+		wantErr         string
+	}{
+		{name: "legacy HTTPS endpoints accepted", issuerURL: "https://issuer.example.com", jwksURL: "https://issuer.example.com/keys"},
+		{name: "canonical HTTPS endpoints accepted", canonical: true, issuerURL: "https://issuer.example.com", jwksURL: "https://issuer.example.com/keys"},
+		{name: "legacy issuer endpoint failure identifies entry", issuerURL: "http://issuer.example.com", wantErr: "scheme must be https"},
+		{name: "canonical issuer endpoint failure identifies entry", canonical: true, issuerURL: "http://issuer.example.com", wantErr: "scheme must be https"},
+		{name: "legacy issuer empty hostname with port rejected", issuerURL: "https://:443", wantErr: "host is required"},
+		{name: "canonical issuer empty hostname with port rejected", canonical: true, issuerURL: "https://:443", wantErr: "host is required"},
+		{name: "legacy JWKS endpoint failure identifies entry", issuerURL: "https://issuer.example.com", jwksURL: "ftp://issuer.example.com/keys", wantErr: "jwks_url:"},
+		{name: "canonical JWKS endpoint failure identifies entry", canonical: true, issuerURL: "https://issuer.example.com", jwksURL: "ftp://issuer.example.com/keys", wantErr: "jwks_url:"},
+		{name: "legacy JWKS empty hostname with port rejected", issuerURL: "https://issuer.example.com", jwksURL: "https://:443/keys", wantErr: "jwks_url: host is required"},
+		{name: "canonical JWKS empty hostname with port rejected", canonical: true, issuerURL: "https://issuer.example.com", jwksURL: "https://:443/keys", wantErr: "jwks_url: host is required"},
+		{name: "legacy private IP JWKS rejected without opt in", issuerURL: "https://issuer.example.com", jwksURL: "https://10.0.0.5/keys", wantErr: "jwks_url:"},
+		{name: "canonical private IP JWKS rejected without opt in", canonical: true, issuerURL: "https://issuer.example.com", jwksURL: "https://10.0.0.5/keys", wantErr: "jwks_url:"},
+		{name: "legacy private IP JWKS accepted with opt in", issuerURL: "https://issuer.example.com", jwksURL: "https://10.0.0.5/keys", allowPrivateIPs: true},
+		{name: "canonical private IP JWKS accepted with opt in", canonical: true, issuerURL: "https://issuer.example.com", jwksURL: "https://10.0.0.5/keys", allowPrivateIPs: true},
+		{name: "private IP opt in requires explicit JWKS URL", canonical: true, issuerURL: "https://issuer.example.com", allowPrivateIPs: true, wantErr: "allow_private_ips requires jwks_url"},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			config := newConfig(tt.canonical, tt.issuerURL, tt.jwksURL, tt.allowPrivateIPs)
+			err := config.ValidateInboundGrants()
+			if tt.wantErr == "" {
+				require.NoError(t, err)
+				return
+			}
+			require.ErrorContains(t, err, tt.wantErr)
+		})
+	}
+}
+
+func TestEmbeddedAuthServerConfig_ValidateInboundGrants_DuplicateCredentialIssuerRedaction(t *testing.T) {
+	t.Parallel()
+
+	const credentialIssuerURL = "https://sentinel-user:sentinel-password@issuer.example.com"
+	newConfig := func(canonical bool) EmbeddedAuthServerConfig {
+		config := EmbeddedAuthServerConfig{
+			Issuer: "https://auth.example.com",
+			TrustedIssuers: []TrustedIssuerConfig{
+				{Name: "external", IssuerURL: credentialIssuerURL},
+				{Name: "duplicate", IssuerURL: credentialIssuerURL},
+			},
+		}
+		if canonical {
+			config.InboundGrants = &InboundGrantsConfig{TokenExchange: &TokenExchangeInboundGrantConfig{
+				IssuerPolicies: []TokenExchangeIssuerPolicyConfig{{
+					IssuerRef: "external", ExpectedAudience: "audience", AllowedDelegateClients: []string{"delegate"},
+				}},
+			}}
+		}
+		return config
+	}
+
+	for _, canonical := range []bool{false, true} {
+		name := "legacy"
+		if canonical {
+			name = "canonical"
+		}
+		t.Run(name, func(t *testing.T) {
+			t.Parallel()
+			config := newConfig(canonical)
+			err := config.ValidateInboundGrants()
+			require.ErrorContains(t, err, "duplicates")
+			assert.NotContains(t, err.Error(), credentialIssuerURL)
+			assert.NotContains(t, err.Error(), "sentinel-user")
+			assert.NotContains(t, err.Error(), "sentinel-password")
+		})
+	}
+}
+
 func TestMCPExternalAuthConfig_ZeroUpstreamAlternatives(t *testing.T) {
 	t.Parallel()
 
@@ -836,7 +1110,7 @@ func TestMCPExternalAuthConfig_ZeroUpstreamAlternatives(t *testing.T) {
 		{
 			name:      "no token-only alternative is rejected",
 			config:    EmbeddedAuthServerConfig{Issuer: "https://auth.example.com"},
-			wantError: "at least one upstream provider is required",
+			wantError: "at least one upstream provider or inbound grant family is required",
 		},
 	}
 
@@ -1352,7 +1626,7 @@ func TestDelegateClientConfig_JSON(t *testing.T) {
 	assert.False(t, existing.AllowPrivateKeyJWTRegistration)
 }
 
-func TestEmbeddedAuthServerConfig_ValidateConfidentialClientTransport(t *testing.T) {
+func TestEmbeddedAuthServerConfig_ValidateInboundGrants_ConfidentialClientTransport(t *testing.T) {
 	t.Parallel()
 
 	delegateClients := []DelegateClientConfig{{
@@ -1395,6 +1669,18 @@ func TestEmbeddedAuthServerConfig_ValidateConfidentialClientTransport(t *testing
 			config: EmbeddedAuthServerConfig{
 				Issuer:          "http://auth.example.com",
 				DelegateClients: delegateClients,
+			},
+			expectErr: true,
+		},
+		{
+			name: "canonical delegate clients reject HTTP non-loopback without explicit opt in",
+			config: EmbeddedAuthServerConfig{
+				Issuer: "http://auth.example.com",
+				InboundGrants: &InboundGrantsConfig{
+					TokenExchange: &TokenExchangeInboundGrantConfig{
+						DelegateClients: delegateClients,
+					},
+				},
 			},
 			expectErr: true,
 		},
@@ -1443,7 +1729,7 @@ func TestEmbeddedAuthServerConfig_ValidateConfidentialClientTransport(t *testing
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
 
-			err := tt.config.ValidateConfidentialClientTransport()
+			err := tt.config.ValidateInboundGrants()
 			if tt.expectErr {
 				require.Error(t, err)
 				return

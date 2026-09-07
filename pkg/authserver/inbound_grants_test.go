@@ -213,11 +213,7 @@ func TestNormalizeInboundGrantsRejectsInvalidConfiguration(t *testing.T) {
 			cfg:     &RunConfig{TrustedIssuers: []tokenexchange.TrustedIssuer{issuer, {Name: "idp", IssuerURL: "https://other.example.com"}}},
 			errText: `trusted_issuers[1].name duplicates trusted_issuers[0].name "idp"`,
 		},
-		{
-			name:    "duplicate issuer URLs",
-			cfg:     &RunConfig{TrustedIssuers: []tokenexchange.TrustedIssuer{issuer, {Name: "other", IssuerURL: "https://idp.example.com"}}},
-			errText: `trusted_issuers[1].issuer_url duplicates trusted_issuers[0].issuer_url "https://idp.example.com"`,
-		},
+		{name: "duplicate issuer URLs", cfg: &RunConfig{TrustedIssuers: []tokenexchange.TrustedIssuer{issuer, {Name: "other", IssuerURL: "https://idp.example.com"}}}, errText: "trusted_issuers[1].issuer_url duplicates trusted_issuers[0].issuer_url (configured more than once)"},
 		{
 			name: "empty token exchange issuer ref",
 			cfg: &RunConfig{TrustedIssuers: []tokenexchange.TrustedIssuer{issuer}, InboundGrants: &InboundGrantsRunConfig{

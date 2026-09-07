@@ -410,7 +410,7 @@ func ResolveJWTBearerGrantPolicies(issuers []TrustedIssuer) ([]TrustedIssuer, er
 		policy := cloneJWTBearerGrantPolicy(resolved[i].JWTBearerGrant)
 		age, err := time.ParseDuration(policy.MaxAssertionAge)
 		if err != nil || age <= 0 {
-			return nil, fmt.Errorf("issuer_url %q: jwt_bearer_grant.max_assertion_age must be a positive duration", resolved[i].IssuerURL)
+			return nil, fmt.Errorf("trusted_issuers[%d].jwt_bearer_grant.max_assertion_age must be a positive duration", i)
 		}
 		policy.maxAssertionAge = age
 		resolved[i].JWTBearerGrant = policy
@@ -1169,7 +1169,7 @@ func (*MultiIssuerTokenValidator) discoverJWKSURL(ctx context.Context, issuerCon
 	}
 
 	if doc.Issuer != issuerConfig.IssuerURL {
-		return "", fmt.Errorf("discovery document issuer %q does not match expected issuer %q", doc.Issuer, issuerConfig.IssuerURL)
+		return "", fmt.Errorf("discovery document issuer does not match configured issuer")
 	}
 
 	if doc.JWKSURI == "" {
@@ -1182,6 +1182,40 @@ func (*MultiIssuerTokenValidator) discoverJWKSURL(ctx context.Context, issuerCon
 	return doc.JWKSURI, nil
 }
 
+// ValidateTrustedIssuerURL checks that issuerURL is a valid trusted external
+// OIDC issuer identifier. Trusted issuers require HTTPS unless their own
+// insecureAllowHTTP opt-in is set; unlike this server's issuer, localhost is
+// not exempt. Query, fragment, and userinfo are forbidden, while a trailing
+// slash is permitted for providers such as Microsoft Entra ID v1.
+func ValidateTrustedIssuerURL(issuerURL string, insecureAllowHTTP bool) error {
+	if issuerURL == "" {
+		return errors.New("issuer_url is required")
+	}
+	parsed, err := url.Parse(issuerURL)
+	if err != nil {
+		return errors.New("invalid URL")
+	}
+	if parsed.Scheme == "" {
+		return errors.New("scheme is required")
+	}
+	if parsed.Hostname() == "" {
+		return errors.New("host is required")
+	}
+	if parsed.RawQuery != "" {
+		return errors.New("must not contain query component")
+	}
+	if parsed.Fragment != "" {
+		return errors.New("must not contain fragment component")
+	}
+	if parsed.User != nil {
+		return errors.New("must not contain userinfo (credentials in the URL)")
+	}
+	if parsed.Scheme != "https" && (parsed.Scheme != "http" || !insecureAllowHTTP) {
+		return errors.New("scheme must be https (or http with insecure_allow_http)")
+	}
+	return nil
+}
+
 // ValidateJWKSURL checks that jwksURL parses, has a host, uses HTTPS unless
 // insecureAllowHTTP permits plain HTTP — and only exactly the "http" scheme,
 // not any other non-https scheme such as "file" or "ftp" — and, when the
@@ -1192,27 +1226,29 @@ func (*MultiIssuerTokenValidator) discoverJWKSURL(ctx context.Context, issuerCon
 // discovery document — or a hand-configured jwks_url — points to internal
 // services.
 //
-// This is the single implementation shared by the runtime choke point above
-// (ensureRegistered, on every fetch) and pkg/authserver/config.go's config-time
-// check (validateJWKSEndpointURL): the two must not drift out of sync, or a
-// laxer runtime check would silently defeat the config-time guard.
+// This is shared by endpoint-only config-time validation and the runtime fetch
+// choke point. Both use the issuer's allowPrivateIPs policy for literal IP
+// hosts; runtime additionally protects DNS resolution on every outbound fetch.
 func ValidateJWKSURL(jwksURL string, insecureAllowHTTP, allowPrivateIPs bool) error {
 	u, err := url.Parse(jwksURL)
 	if err != nil {
-		return fmt.Errorf("invalid URL: %w", err)
+		return errors.New("invalid URL")
 	}
 
-	if u.Host == "" {
+	if u.Hostname() == "" {
 		return errors.New("host is required")
+	}
+
+	if u.Fragment != "" {
+		return errors.New("must not contain fragment component")
 	}
 
 	// Unlike issuer_url, a jwks_url carrying userinfo would actually work —
 	// net/http turns it into a Basic auth header on every JWKS fetch — which
 	// is precisely why it is rejected rather than tolerated: it would put a
-	// live credential in the RunConfig, in this function's error strings, and
-	// in any log that quotes the URL. A JWKS endpoint is public by
-	// definition (it serves verification keys), so there is no legitimate
-	// reason to authenticate to one.
+	// live credential in the RunConfig or in any log that quotes the URL. A
+	// JWKS endpoint is public by definition (it serves verification keys), so
+	// there is no legitimate reason to authenticate to one.
 	if u.User != nil {
 		return errors.New("must not contain userinfo (credentials in the URL)")
 	}
@@ -1227,6 +1263,21 @@ func ValidateJWKSURL(jwksURL string, insecureAllowHTTP, allowPrivateIPs bool) er
 		return errors.New("must not point to a private or loopback address")
 	}
 
+	return nil
+}
+
+func validateTrustedIssuerEndpoints(ti TrustedIssuer) error {
+	if err := ValidateTrustedIssuerURL(ti.IssuerURL, ti.InsecureAllowHTTP); err != nil {
+		return err
+	}
+	if ti.JWKSURL != "" {
+		if err := ValidateJWKSURL(ti.JWKSURL, ti.InsecureAllowHTTP, ti.AllowPrivateIPs); err != nil {
+			return fmt.Errorf("jwks_url: %w", err)
+		}
+	}
+	if ti.AllowPrivateIPs && ti.JWKSURL == "" {
+		return errors.New("allow_private_ips requires jwks_url to be set explicitly")
+	}
 	return nil
 }
 
@@ -1246,8 +1297,8 @@ func ValidateJWKSURL(jwksURL string, insecureAllowHTTP, allowPrivateIPs bool) er
 func validateTrustedIssuer(
 	ti TrustedIssuer, selfIssuer string, issuers map[string]*externalIssuerConfig, allowedAudiences []string,
 ) error {
-	if ti.IssuerURL == "" {
-		return errors.New("issuer_url is required")
+	if err := validateTrustedIssuerEndpoints(ti); err != nil {
+		return err
 	}
 	if ti.ExpectedAudience == "" && ti.JWTBearerGrant == nil {
 		return fmt.Errorf("issuer_url %q: expected_audience is required when JWT-bearer grant is disabled", ti.IssuerURL)
@@ -1257,7 +1308,7 @@ func validateTrustedIssuer(
 			"self-issued tokens are already handled separately", ti.IssuerURL)
 	}
 	if _, dup := issuers[ti.IssuerURL]; dup {
-		return fmt.Errorf("issuer_url %q: configured more than once", ti.IssuerURL)
+		return errors.New("issuer_url configured more than once")
 	}
 	if ti.ActorClaim != "" && slices.Contains(actorClaimsNotInExtra, ti.ActorClaim) {
 		return fmt.Errorf(
@@ -1278,20 +1329,6 @@ func validateTrustedIssuer(
 		return fmt.Errorf(
 			"issuer_url %q: allow_may_act must not be enabled when allowed_delegate_clients contains the wildcard %q",
 			ti.IssuerURL, anyDelegateClient)
-	}
-	// AllowPrivateIPs without a hand-configured jwks_url would let OIDC
-	// discovery — a document fetched from, and thus influenceable by, the
-	// external issuer itself — choose the private target the dial is
-	// allowed to reach. Requiring jwks_url pins that target to
-	// operator-supplied config. Mirrors the config-time check in
-	// pkg/authserver/config.go's validateTrustedIssuers; duplicated here so
-	// a caller that builds the validator directly (factory, tests) without
-	// running Config.Validate cannot bypass it.
-	if ti.AllowPrivateIPs && ti.JWKSURL == "" {
-		return fmt.Errorf(
-			"issuer_url %q: allow_private_ips requires jwks_url to be set explicitly; "+
-				"otherwise OIDC discovery — fetched from the external issuer — would choose the private target",
-			ti.IssuerURL)
 	}
 	return nil
 }

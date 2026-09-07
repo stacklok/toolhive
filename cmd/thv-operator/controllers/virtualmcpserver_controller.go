@@ -248,6 +248,7 @@ func (r *VirtualMCPServerReconciler) Reconcile(ctx context.Context, req ctrl.Req
 
 	// Create status manager for batched updates
 	statusManager := virtualmcpserverstatus.NewStatusManager(vmcp)
+	r.applyInlineInboundGrantDeprecationCondition(vmcp, statusManager)
 
 	// Run all pre-reconciliation validations.
 	// Returns (true, nil) to continue, (false, nil) when validation failed but
@@ -325,6 +326,33 @@ func (r *VirtualMCPServerReconciler) Reconcile(ctx context.Context, req ctrl.Req
 	return ctrl.Result{}, nil
 }
 
+func (*VirtualMCPServerReconciler) applyInlineInboundGrantDeprecationCondition(
+	vmcp *mcpv1beta1.VirtualMCPServer,
+	statusManager virtualmcpserverstatus.StatusManager,
+) {
+	if vmcp.Spec.AuthServerConfig == nil {
+		statusManager.RemoveConditionsWithPrefix(
+			mcpv1beta1.ConditionTypeVirtualMCPServerDeprecatedInboundGrantConfiguration, nil)
+		return
+	}
+	fields := deprecatedInboundGrantFields(vmcp.Spec.AuthServerConfig, "spec.authServerConfig")
+	if len(fields) == 0 {
+		statusManager.SetCondition(
+			mcpv1beta1.ConditionTypeVirtualMCPServerDeprecatedInboundGrantConfiguration,
+			mcpv1beta1.ConditionReasonVirtualMCPServerCanonicalInboundGrantConfiguration,
+			"Only canonical inbound grant configuration is populated",
+			metav1.ConditionFalse,
+		)
+		return
+	}
+	statusManager.SetCondition(
+		mcpv1beta1.ConditionTypeVirtualMCPServerDeprecatedInboundGrantConfiguration,
+		mcpv1beta1.ConditionReasonVirtualMCPServerLegacyInboundGrantFields,
+		deprecatedInboundGrantMessage(fields),
+		metav1.ConditionTrue,
+	)
+}
+
 // validateSpec validates the VirtualMCPServer spec and updates status on error.
 // Returns an error if validation fails, which signals the caller to stop reconciliation.
 func (r *VirtualMCPServerReconciler) validateSpec(
@@ -369,20 +397,24 @@ func (r *VirtualMCPServerReconciler) applyStatusUpdates(
 		return fmt.Errorf("failed to get latest VirtualMCPServer: %w", err)
 	}
 
-	// Apply collected changes to the latest status
-	hasUpdates := statusManager.UpdateStatus(ctx, &latest.Status)
-
-	// Only update if there are changes
-	if hasUpdates {
-		if err := r.Status().Update(ctx, latest); err != nil {
-			// Handle conflicts by returning error to trigger requeue
-			if errors.IsConflict(err) {
-				ctxLogger.V(1).Info("Conflict updating status, will requeue")
-				return err
-			}
-			return fmt.Errorf("failed to update VirtualMCPServer status: %w", err)
+	wasDeprecated := conditionStatusIs(latest.Status.Conditions,
+		mcpv1beta1.ConditionTypeVirtualMCPServerDeprecatedInboundGrantConfiguration, metav1.ConditionTrue)
+	becameDeprecated := false
+	if err := ctrlutil.MutateAndPatchStatus(ctx, r.Client, latest,
+		func(c *mcpv1beta1.VirtualMCPServer) {
+			statusManager.UpdateStatus(ctx, &c.Status)
+			becameDeprecated = conditionStatusIs(c.Status.Conditions,
+				mcpv1beta1.ConditionTypeVirtualMCPServerDeprecatedInboundGrantConfiguration, metav1.ConditionTrue)
+		}); err != nil {
+		if errors.IsConflict(err) {
+			ctxLogger.V(1).Info("Conflict updating status, will requeue")
 		}
-		ctxLogger.V(1).Info("Successfully applied batched status updates")
+		return fmt.Errorf("failed to update VirtualMCPServer status: %w", err)
+	}
+	if !wasDeprecated && becameDeprecated && r.Recorder != nil {
+		r.Recorder.Eventf(latest, nil, corev1.EventTypeWarning,
+			inboundGrantDeprecationEventReason, "MigrateInboundGrants",
+			"Released legacy inbound grant fields are deprecated; see status condition for canonical replacement paths")
 	}
 
 	return nil
@@ -596,7 +628,7 @@ func (*VirtualMCPServerReconciler) validateAuthServerConfig(
 		return stderrors.New(message)
 	}
 
-	if err := cfg.ValidateConfidentialClientTransport(); err != nil {
+	if err := cfg.ValidateInboundGrants(); err != nil {
 		message := fmt.Sprintf("spec.authServerConfig: %v", err)
 		statusManager.SetPhase(mcpv1beta1.VirtualMCPServerPhaseFailed)
 		statusManager.SetMessage(message)
@@ -635,12 +667,12 @@ func (*VirtualMCPServerReconciler) validateAuthServerConfig(
 		}
 	}
 
-	if len(cfg.UpstreamProviders) == 0 && len(cfg.DelegateClients) == 0 &&
+	if len(cfg.UpstreamProviders) == 0 && len(cfg.DelegateClients) == 0 && cfg.InboundGrants == nil &&
 		!slices.ContainsFunc(cfg.TrustedIssuers, func(issuer mcpv1beta1.TrustedIssuerConfig) bool {
 			return issuer.JWTBearerGrant != nil
 		}) {
 		message := "spec.authServerConfig requires at least one upstream provider unless " +
-			"delegateClients or a trustedIssuer with jwtBearerGrant is configured"
+			"delegateClients, inboundGrants, or a trustedIssuer with jwtBearerGrant is configured"
 		statusManager.SetPhase(mcpv1beta1.VirtualMCPServerPhaseFailed)
 		statusManager.SetMessage(message)
 		statusManager.SetAuthServerConfigValidatedCondition(
@@ -2161,6 +2193,19 @@ func countBackendHealth(ctx context.Context, backends []mcpv1beta1.DiscoveredBac
 	return routable, unhealthy
 }
 
+// runtimeDiscoveredBackends returns the freshest backend observations available on vmcp.
+// Status.Runtime is the vMCP process's own snapshot; the top-level DiscoveredBackends is
+// only a projection of it that the operator writes once per reconcile, so a vmcp fetched
+// mid-reconcile can have a current Runtime snapshot alongside a top-level field still
+// reflecting the previous reconcile's patch. Preferring Runtime keeps phase decisions
+// from acting on that stale projection.
+func runtimeDiscoveredBackends(vmcp *mcpv1beta1.VirtualMCPServer) []mcpv1beta1.DiscoveredBackend {
+	if vmcp.Status.Runtime != nil {
+		return vmcp.Status.Runtime.DiscoveredBackends
+	}
+	return vmcp.Status.DiscoveredBackends
+}
+
 // determineStatusFromBackends evaluates backend health to determine status
 func (*VirtualMCPServerReconciler) determineStatusFromBackends(
 	ctx context.Context,
@@ -2168,7 +2213,8 @@ func (*VirtualMCPServerReconciler) determineStatusFromBackends(
 ) statusDecision {
 	ctxLogger := log.FromContext(ctx)
 
-	routable, unhealthy := countBackendHealth(ctx, vmcp.Status.DiscoveredBackends)
+	backends := runtimeDiscoveredBackends(vmcp)
+	routable, unhealthy := countBackendHealth(ctx, backends)
 	total := routable + unhealthy
 
 	// All backends unhealthy
@@ -2206,7 +2252,7 @@ func (*VirtualMCPServerReconciler) determineStatusFromBackends(
 
 	// Edge case: backends exist but none counted
 	ctxLogger.V(1).Info("No backends were counted, treating as degraded",
-		"discoveredBackendsCount", len(vmcp.Status.DiscoveredBackends))
+		"discoveredBackendsCount", len(backends))
 	return statusDecision{
 		phase:          mcpv1beta1.VirtualMCPServerPhaseDegraded,
 		message:        "Virtual MCP server is running but backend status cannot be determined",
@@ -2251,7 +2297,7 @@ func (r *VirtualMCPServerReconciler) determineStatusFromPods(
 	}
 
 	// Pods are ready (passed readiness probes) - check backend health if backends exist
-	if len(vmcp.Status.DiscoveredBackends) == 0 {
+	if len(runtimeDiscoveredBackends(vmcp)) == 0 {
 		// No backends discovered yet - pods ready is sufficient for Ready
 		return statusDecision{
 			phase:          mcpv1beta1.VirtualMCPServerPhaseReady,
@@ -2313,7 +2359,13 @@ func (r *VirtualMCPServerReconciler) updateVirtualMCPServerStatus(
 	// Determine status in one place (no branching/repetition)
 	decision := r.determineStatusFromPods(ctx, vmcp, ready, pending, failed)
 
-	// Apply all status updates at once
+	// Apply all status updates at once.
+	//
+	// SetReadyCondition here deliberately overwrites the runtime's own Ready condition
+	// (reason AllBackendsRoutable, projected from Status.Runtime). The operator's
+	// decision already folds in the runtime's backend health via
+	// determineStatusFromBackends, plus pod/deployment readiness the runtime cannot
+	// observe, so it is the more complete verdict and stays authoritative for Ready.
 	statusManager.SetPhase(decision.phase)
 	statusManager.SetMessage(decision.message)
 	statusManager.SetReadyCondition(decision.reason, decision.conditionMsg, decision.conditionState)

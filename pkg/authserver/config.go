@@ -1324,43 +1324,12 @@ func (c *Config) validateDelegationTokenLifespan() error {
 // validateBaselineClientScopes); NewMultiIssuerTokenValidator repeats these
 // checks again at server startup as defence in depth.
 //
-// issuer_url is checked by validateTrustedIssuerURL, jwks_url (when set) by
-// validateJWKSEndpointURL — see their doc comments for the URL rules each
-// enforces. The remaining structural checks (required fields, self-issuer
-// collision, duplicate issuers, ActorClaim reachability, and ActorMatcher
-// compilation) run via tokenexchange.ValidateTrustedIssuers.
+// issuer_url/jwks_url endpoint shape is validated by
+// tokenexchange.ValidateTrustedIssuers itself (via validateTrustedIssuer),
+// so both this path and MCPExternalAuthConfig's admission-time
+// ValidateInboundGrants get it from the one place, rather than each
+// re-implementing the same check.
 func validateTrustedIssuers(issuers []tokenexchange.TrustedIssuer, selfIssuer string, allowedAudiences []string) error {
-	for _, ti := range issuers {
-		if err := validateTrustedIssuerURL(ti.IssuerURL, ti.InsecureAllowHTTP); err != nil {
-			return fmt.Errorf("trusted_issuers: issuer_url %q: %w", ti.IssuerURL, err)
-		}
-		// AllowPrivateIPs without a hand-configured jwks_url would let OIDC
-		// discovery — a document fetched from, and thus influenceable by,
-		// the external issuer itself — choose the private target the dial
-		// is allowed to reach. Requiring jwks_url pins that target to
-		// operator-supplied config instead.
-		//
-		// This is the fail-fast layer, not the only one: validateTrustedIssuer
-		// (multi_issuer_validator.go) enforces the same invariant inside
-		// NewMultiIssuerTokenValidator, so a caller constructing a validator
-		// without routing through Config.Validate is still covered. Note that
-		// ensureRegistered's ValidateJWKSURL does NOT cover it — that check is
-		// gated on net.ParseIP, so it only rejects private IP *literals*, and a
-		// discovery document advertising a private *hostname* passes it
-		// cleanly. Checking here and in the constructor is deliberate
-		// duplication, not redundancy.
-		if ti.AllowPrivateIPs && ti.JWKSURL == "" {
-			return fmt.Errorf(
-				"trusted_issuers: issuer_url %q: allow_private_ips requires jwks_url to be set explicitly; "+
-					"otherwise OIDC discovery — fetched from the external issuer — would choose the private target",
-				ti.IssuerURL)
-		}
-		if ti.JWKSURL != "" {
-			if err := validateJWKSEndpointURL(ti.JWKSURL, ti.InsecureAllowHTTP, ti.AllowPrivateIPs); err != nil {
-				return fmt.Errorf("trusted_issuers: jwks_url %q: %w", ti.JWKSURL, err)
-			}
-		}
-	}
 	if err := tokenexchange.ValidateTrustedIssuers(issuers, selfIssuer, allowedAudiences); err != nil {
 		return fmt.Errorf("trusted_issuers: %w", err)
 	}
@@ -1379,30 +1348,6 @@ func validateTrustedIssuers(issuers []tokenexchange.TrustedIssuer, selfIssuer st
 		}
 	}
 	return nil
-}
-
-// validateJWKSEndpointURL checks that rawURL parses, has a host, uses the
-// "https" scheme (or "http" when insecureAllowHTTP is set), and — when the
-// host is an IP literal — is not a private or loopback address unless
-// allowPrivateIPs permits it. Unlike validateIssuerURL, it does not enforce
-// OIDC issuer-identifier rules (no query/fragment/trailing-slash) since a
-// JWKS endpoint legitimately carries those.
-//
-// Delegates to tokenexchange.ValidateJWKSURL, the same predicate the runtime
-// choke point (ensureRegistered, called on every JWKS fetch) enforces — the two
-// were previously separate implementations that had drifted apart (a
-// runtime check laxer than this one would silently defeat this config-time
-// guard), so this is now the single source of truth for both.
-//
-// Deliberately not networking.ValidateEndpointURL /
-// ValidateEndpointURLWithInsecure: both also honor the
-// INSECURE_DISABLE_URL_VALIDATION environment variable, which would let an
-// unrelated env var silently disable this SSRF-relevant scheme check; the
-// insecure variant also skips the parse/host check entirely rather than
-// only relaxing the scheme. This helper takes its "insecure" bits solely
-// from the issuer's own explicit InsecureAllowHTTP/AllowPrivateIPs fields.
-func validateJWKSEndpointURL(rawURL string, insecureAllowHTTP, allowPrivateIPs bool) error {
-	return tokenexchange.ValidateJWKSURL(rawURL, insecureAllowHTTP, allowPrivateIPs)
 }
 
 // warnTrustedIssuerAudiences logs a warning for each TrustedIssuer whose
@@ -1697,54 +1642,15 @@ func (c *Config) applyDefaults() error {
 }
 
 // ValidateConfidentialClientTransport rejects cleartext HTTP configurations
-// when any confidential client is enabled, whether it is admitted through DCR
-// or statically declared. Static clients do not enable DCR; they share this
-// validation because their secrets are sent to the token endpoint.
-//
-//  1. insecureAllowHTTP is set: the server accepts a plain-HTTP issuer for
-//     any host, not just loopback. Always rejected for confidential clients.
-//  2. issuer is a plain-HTTP loopback URL (e.g. "http://localhost:18080").
-//     This is rejected by default but may be explicitly enabled with
-//     insecureAllowConfidentialOverLoopbackHTTP. The opt-in does not permit
-//     non-loopback HTTP issuers and still requires a valid issuer URL.
+// when any confidential client is enabled. It delegates to the server-layer
+// validator so direct AuthorizationServerParams construction cannot bypass the
+// same transport policy.
 func ValidateConfidentialClientTransport(
 	allowConfidential, insecureAllowHTTP bool,
 	issuer string, insecureAllowConfidentialOverLoopbackHTTP bool,
 ) error {
-	if !allowConfidential {
-		return nil
-	}
-	if insecureAllowHTTP {
-		return fmt.Errorf("allow_confidential_client_registration cannot be combined with insecure_allow_http: " +
-			"confidential clients would send secrets over cleartext HTTP")
-	}
-	parsed, err := url.Parse(issuer)
-	if err != nil {
-		return errors.New("confidential clients require a valid issuer URL")
-	}
-	if parsed.Scheme != "http" {
-		return nil
-	}
-	if insecureAllowConfidentialOverLoopbackHTTP && networking.IsLocalhost(parsed.Host) {
-		if err := validateIssuerURL(issuer, false); err != nil {
-			return errors.New("confidential clients require a valid issuer URL")
-		}
-	}
-	if insecureAllowConfidentialOverLoopbackHTTP && !networking.IsLocalhost(parsed.Host) {
-		return fmt.Errorf(
-			"allow_confidential_client_registration cannot use the loopback HTTP opt-in with a non-loopback issuer (%q): "+
-				"confidential clients would send secrets over cleartext HTTP", issuer)
-	}
-	if !insecureAllowConfidentialOverLoopbackHTTP && networking.IsLocalhost(parsed.Host) {
-		return fmt.Errorf("allow_confidential_client_registration cannot be combined with a plain-HTTP loopback issuer (%q) unless "+
-			"insecure_allow_confidential_over_loopback_http is set: confidential clients would send secrets over cleartext HTTP",
-			issuer)
-	}
-	if !networking.IsLocalhost(parsed.Host) {
-		return fmt.Errorf("allow_confidential_client_registration cannot use a plain-HTTP non-loopback issuer (%q): "+
-			"confidential clients would send secrets over cleartext HTTP", issuer)
-	}
-	return nil
+	return oauthserver.ValidateConfidentialClientTransport(
+		allowConfidential, insecureAllowHTTP, issuer, insecureAllowConfidentialOverLoopbackHTTP)
 }
 
 // ValidateForceConfidentialRedirectURIs rejects a misconfigured
@@ -1789,57 +1695,28 @@ func ValidateForceConfidentialRedirectURIs(uris []string, allowConfidential bool
 // hosts (for in-cluster Kubernetes deployments on trusted networks).
 //
 // This server's own issuer is additionally held to a no-trailing-slash rule
-// that OIDC itself does not require (see validateIssuerURLCore's
-// allowTrailingSlash parameter) — defensible here only because we control
-// this value, unlike a trusted external issuer (validateTrustedIssuerURL).
+// that OIDC itself does not require; we control this value, unlike trusted
+// external issuers.
 func validateIssuerURL(issuer string, insecureAllowHTTP bool) error {
-	return validateIssuerURLCore(issuer, insecureAllowHTTP, true, false)
+	return validateIssuerURLCore(issuer, insecureAllowHTTP)
 }
 
-// validateTrustedIssuerURL is like validateIssuerURL but never exempts
-// localhost from the HTTPS requirement: a trusted external issuer is not
-// this server's own issuer, so it must not inherit the same-host
-// development convenience validateIssuerURL grants the server's own issuer
-// and AuthorizationEndpointBaseURL. Without this, "issuer_url:
-// http://localhost:9000" with insecure_allow_http: false would pass config
-// validation here yet fail at runtime, since the per-issuer HTTP client is
-// still built with InsecureAllowHTTP=false (see NewMultiIssuerTokenValidator)
-// — jwks_url has no such exemption, so the two would otherwise disagree.
-//
-// Unlike validateIssuerURL, a trailing slash is accepted: OIDC Discovery §3
-// forbids query and fragment components on an issuer identifier, but not a
-// trailing slash — §4.1 only requires one be trimmed before the well-known
-// discovery path is appended, which presupposes a trailing-slash issuer is
-// legal in the first place, and §4.3 requires the discovery document's
-// "issuer" to match the token's "iss" verbatim. Microsoft Entra ID v1 — the
-// default for a newly registered API — issues
-// "iss": "https://sts.windows.net/{tenant}/" with a trailing slash, so
-// rejecting it here would make v1 tokens impossible to configure at all.
-func validateTrustedIssuerURL(issuer string, insecureAllowHTTP bool) error {
-	return validateIssuerURLCore(issuer, insecureAllowHTTP, false, true)
-}
-
-// validateIssuerURLCore is the shared implementation behind validateIssuerURL
-// and validateTrustedIssuerURL. localhostExempt controls whether a loopback
-// host is treated as HTTPS-exempt regardless of insecureAllowHTTP.
-// allowTrailingSlash controls whether a trailing slash on the issuer is
-// accepted — see validateTrustedIssuerURL's doc comment for why the trusted-
-// issuer path must allow it while this server's own issuer does not.
-func validateIssuerURLCore(issuer string, insecureAllowHTTP, localhostExempt, allowTrailingSlash bool) error {
+// validateIssuerURLCore validates this authorization server's issuer.
+func validateIssuerURLCore(issuer string, insecureAllowHTTP bool) error {
 	if issuer == "" {
 		return fmt.Errorf("issuer is required")
 	}
 
 	parsed, err := url.Parse(issuer)
 	if err != nil {
-		return fmt.Errorf("invalid URL: %w", err)
+		return errors.New("invalid URL")
 	}
 
 	if parsed.Scheme == "" {
 		return fmt.Errorf("scheme is required")
 	}
 
-	if parsed.Host == "" {
+	if parsed.Hostname() == "" {
 		return fmt.Errorf("host is required")
 	}
 
@@ -1854,9 +1731,9 @@ func validateIssuerURLCore(issuer string, insecureAllowHTTP, localhostExempt, al
 	// Discovery 1.0 Section 4.3 compares the discovery document's "issuer"
 	// against this value by exact string match, and no provider echoes back
 	// embedded credentials, so such an issuer always fails discovery. And it
-	// must not be stored: a password here would sit in the RunConfig and be
-	// echoed by the validation errors and startup warnings that quote the
-	// issuer URL. Rejecting it outright beats redacting it at every use.
+	// must not be stored: a password here would sit in the RunConfig and could
+	// be exposed by callers that log the configured endpoint. Rejecting it
+	// outright beats relying on every caller to redact it.
 	// Note that parsed.User is non-nil even for "https://user@host" with no
 	// password, which is equally unusable as an issuer identifier.
 	if parsed.User != nil {
@@ -1869,15 +1746,14 @@ func validateIssuerURLCore(issuer string, insecureAllowHTTP, localhostExempt, al
 		if parsed.Scheme != "http" {
 			return fmt.Errorf("scheme must be https (or http for localhost)")
 		}
-		if !insecureAllowHTTP && (!localhostExempt || !networking.IsLocalhost(parsed.Host)) {
-			return fmt.Errorf("http scheme is only allowed for localhost, use https for %s", parsed.Hostname())
+		if !insecureAllowHTTP && !networking.IsLocalhost(parsed.Host) {
+			return fmt.Errorf("http scheme is only allowed for localhost, use https")
 		}
 	}
 
-	// Not an OIDC requirement — see validateTrustedIssuerURL's doc comment.
 	// ToolHive's own issuer is held to this stricter, self-imposed rule
-	// since we control the value; a trusted external issuer is not.
-	if !allowTrailingSlash && strings.HasSuffix(issuer, "/") {
+	// since we control the value.
+	if strings.HasSuffix(issuer, "/") {
 		return fmt.Errorf("must not have trailing slash")
 	}
 

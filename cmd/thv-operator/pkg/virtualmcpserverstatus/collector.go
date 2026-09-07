@@ -34,9 +34,38 @@ type StatusCollector struct {
 
 // NewStatusManager creates a new StatusManager for the given VirtualMCPServer resource.
 func NewStatusManager(vmcp *mcpv1beta1.VirtualMCPServer) StatusManager {
-	return &StatusCollector{
+	collector := &StatusCollector{
 		vmcp:       vmcp,
 		conditions: make(map[string]metav1.Condition),
+	}
+	collector.projectRuntimeStatus()
+	return collector
+}
+
+// projectRuntimeStatus projects the runtime-owned snapshot into the top-level
+// compatibility fields. Keeping this projection in the operator makes it the
+// sole writer of the top-level Conditions array.
+func (s *StatusCollector) projectRuntimeStatus() {
+	runtimeStatus := s.vmcp.Status.Runtime
+	if runtimeStatus == nil {
+		return
+	}
+
+	s.SetPhase(runtimeStatus.Phase)
+	s.SetMessage(runtimeStatus.Message)
+	backends := append([]mcpv1beta1.DiscoveredBackend{}, runtimeStatus.DiscoveredBackends...)
+	s.SetDiscoveredBackends(backends)
+
+	conditionTypes := make(map[string]struct{}, len(runtimeStatus.Conditions))
+	for _, condition := range runtimeStatus.Conditions {
+		conditionTypes[condition.Type] = struct{}{}
+		s.SetCondition(condition.Type, condition.Reason, condition.Message, condition.Status)
+	}
+	for _, conditionType := range []string{"Ready", "Degraded", "BackendsDiscovered"} {
+		if _, exists := conditionTypes[conditionType]; !exists {
+			s.conditions[conditionType] = metav1.Condition{Type: conditionType}
+			s.hasChanges = true
+		}
 	}
 }
 
@@ -55,10 +84,11 @@ func (s *StatusCollector) SetMessage(message string) {
 // SetCondition sets a general condition with the specified type, reason, message, and status
 func (s *StatusCollector) SetCondition(conditionType, reason, message string, status metav1.ConditionStatus) {
 	s.conditions[conditionType] = metav1.Condition{
-		Type:    conditionType,
-		Status:  status,
-		Reason:  reason,
-		Message: message,
+		Type:               conditionType,
+		Status:             status,
+		Reason:             reason,
+		Message:            message,
+		ObservedGeneration: s.vmcp.Generation,
 	}
 	s.hasChanges = true
 }

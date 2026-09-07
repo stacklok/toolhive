@@ -1551,6 +1551,68 @@ func TestNewMultiIssuerTokenValidator_Validation(t *testing.T) {
 	}
 }
 
+func TestResolveJWTBearerGrantPolicies_RedactsCredentialIssuerOnInvalidDuration(t *testing.T) {
+	t.Parallel()
+
+	const credentialIssuerURL = "https://sentinel-user:sentinel-password@issuer.example.com"
+	resolved, err := ResolveJWTBearerGrantPolicies([]TrustedIssuer{{
+		IssuerURL: credentialIssuerURL,
+		JWTBearerGrant: &JWTBearerGrantPolicy{
+			MaxAssertionAge: "not-a-duration",
+		},
+	}})
+	require.ErrorContains(t, err, "trusted_issuers[0].jwt_bearer_grant.max_assertion_age")
+	assert.Nil(t, resolved)
+	assert.NotContains(t, err.Error(), credentialIssuerURL)
+	assert.NotContains(t, err.Error(), "sentinel-user")
+	assert.NotContains(t, err.Error(), "sentinel-password")
+}
+
+func TestNewMultiIssuerTokenValidator_TrustedIssuerEndpointValidation(t *testing.T) {
+	t.Parallel()
+
+	selfJWKS := newTestJWKS(t)
+	selfValidator, err := NewSelfIssuedTokenValidator(selfJWKS.publicJWKS(), testIssuer, []string{testIssuer})
+	require.NoError(t, err)
+
+	const credentialIssuerURL = "https://sentinel-user:sentinel-password@issuer.example.com"
+	tests := []struct {
+		name            string
+		issuerURL       string
+		jwksURL         string
+		allowPrivateIPs bool
+		wantErr         string
+		wantValid       bool
+	}{
+		{name: "credential-bearing issuer rejected without leaking credentials", issuerURL: credentialIssuerURL, wantErr: "must not contain userinfo"},
+		{name: "unsafe issuer scheme rejected", issuerURL: "ftp://issuer.example.com", wantErr: "scheme must be https"},
+		{name: "HTTP localhost without per issuer opt in rejected", issuerURL: "http://localhost:8080", wantErr: "scheme must be https"},
+		{name: "credential-bearing JWKS rejected without leaking credentials", issuerURL: testExternalIssuer, jwksURL: "https://sentinel-user:sentinel-password@issuer.example.com/keys", wantErr: "jwks_url: must not contain userinfo"},
+		{name: "JWKS unsafe scheme rejected", issuerURL: testExternalIssuer, jwksURL: "ftp://issuer.example.com/keys", wantErr: "jwks_url: must use HTTPS"},
+		{name: "private JWKS rejected without opt in", issuerURL: testExternalIssuer, jwksURL: "https://10.0.0.5/keys", wantErr: "jwks_url: must not point to a private or loopback address"},
+		{name: "private JWKS accepted with opt in", issuerURL: testExternalIssuer, jwksURL: "https://10.0.0.5/keys", allowPrivateIPs: true, wantValid: true},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			validator, err := NewMultiIssuerTokenValidator(selfValidator, testIssuer, []TrustedIssuer{{
+				IssuerURL: tt.issuerURL, JWKSURL: tt.jwksURL, AllowPrivateIPs: tt.allowPrivateIPs,
+				ExpectedAudience: testExternalAudience, AllowedDelegateClients: []string{anyDelegateClient},
+			}}, nil)
+			if tt.wantValid {
+				require.NoError(t, err)
+				require.NoError(t, validator.Close())
+				return
+			}
+			require.ErrorContains(t, err, tt.wantErr)
+			assert.Nil(t, validator)
+			assert.NotContains(t, err.Error(), credentialIssuerURL)
+			assert.NotContains(t, err.Error(), "sentinel-user")
+			assert.NotContains(t, err.Error(), "sentinel-password")
+		})
+	}
+}
+
 func TestValidateJWTBearerAcceptedAudiences_RejectsResourceAudienceOverlap(t *testing.T) {
 	t.Parallel()
 
@@ -2175,7 +2237,7 @@ func TestMultiIssuerTokenValidator_DiscoverJWKSURL(t *testing.T) {
 					httpClient:    srv.Client(),
 				}, ""
 			},
-			errContains: "does not match expected issuer",
+			errContains: "discovery document issuer does not match configured issuer",
 		},
 		{
 			name: "missing jwks_uri is rejected",
@@ -2328,6 +2390,8 @@ func TestValidateJWKSURL(t *testing.T) {
 		wantErr           string
 	}{
 		{name: "https accepted", url: "https://issuer.example.com/jwks"},
+		{name: "fragment rejected", url: "https://issuer.example.com/jwks#fragment", wantErr: "must not contain fragment"},
+		{name: "query string accepted", url: "https://issuer.example.com/jwks?p=B2C_1_signin"},
 		{name: "http rejected", url: "http://issuer.example.com/jwks", wantErr: "must use HTTPS"},
 		{
 			name:    "userinfo with password rejected",
@@ -2368,6 +2432,7 @@ func TestValidateJWKSURL(t *testing.T) {
 		{name: "private IP literal rejected", url: "https://10.1.2.3/jwks", wantErr: "private or loopback"},
 		{name: "malformed URL rejected", url: "://not-a-url", wantErr: "invalid URL"},
 		{name: "missing host rejected", url: "https:///jwks", wantErr: "host is required"},
+		{name: "empty hostname with port rejected", url: "https://:443/jwks", wantErr: "host is required"},
 	}
 
 	for _, tt := range tests {
@@ -2763,16 +2828,9 @@ func TestMultiIssuerTokenValidator_SharedJWKSURL_SamePolicy(t *testing.T) {
 	assert.Equal(t, issuerBURL, resultB.ExternalIssuer)
 }
 
-// TestMultiIssuerTokenValidator_SharedJWKSURL_DifferingPolicy proves the
-// property a per-issuer jwk.Cache adds over a shared one: two issuers
-// resolving to the same jwks_url but configuring DIFFERENT
-// insecure_allow_http/allow_private_ips settings both validate
-// independently, each fetching through its own dedicated *http.Client. A
-// shared cache could not do this — httprc keys a cached resource by URL
-// alone and only honors jwk.WithHTTPClient on a URL's first Register call,
-// so the second issuer would have silently inherited the first one's client
-// and transport policy. Splitting the cache per issuer removes that
-// collision instead of merely guarding against it.
+// TestMultiIssuerTokenValidator_SharedJWKSURL_DifferingPolicy confirms that
+// configured JWKS endpoints are validated against each issuer's own transport
+// policy before construction starts.
 func TestMultiIssuerTokenValidator_SharedJWKSURL_DifferingPolicy(t *testing.T) {
 	t.Parallel()
 
@@ -2788,18 +2846,8 @@ func TestMultiIssuerTokenValidator_SharedJWKSURL_DifferingPolicy(t *testing.T) {
 	jwksServer := startJWKSServer(t, sharedJWKS)
 	sharedJWKSURL := jwksServer.URL + "/jwks"
 
-	// Deliberately NOT newMultiValidator: that helper forces
-	// InsecureAllowHTTP and AllowPrivateIPs to true on every issuer so its
-	// loopback httptest servers are reachable, which would erase the very
-	// difference this test exists to exercise. Both issuers share one
-	// plain-HTTP loopback jwks_url and allow private IPs, and differ ONLY in
-	// InsecureAllowHTTP — so each is judged against its own transport policy:
-	// A is refused for its own reason (no HTTP permitted), B succeeds.
-	//
-	// Under a shared cache B could not succeed here: the policy-claim guard
-	// rejected any second issuer whose policy differed from the URL's first
-	// claimant, and without that guard B would have silently inherited A's
-	// client. Per-issuer caches make both outcomes independent.
+	// The first issuer does not permit the shared plain-HTTP endpoint, so
+	// construction must fail before either cache is created.
 	selfValidator, err := NewSelfIssuedTokenValidator(selfJWKS.publicJWKS(), testIssuer, []string{testIssuer})
 	require.NoError(t, err)
 	validator, err := NewMultiIssuerTokenValidator(selfValidator, testIssuer, []TrustedIssuer{
@@ -2822,37 +2870,8 @@ func TestMultiIssuerTokenValidator_SharedJWKSURL_DifferingPolicy(t *testing.T) {
 			AllowedDelegateClients: []string{anyDelegateClient},
 		},
 	}, nil)
-	require.NoError(t, err)
-	t.Cleanup(func() { _ = validator.Close() })
-
-	tokenFor := func(issuer, audience, actor, jti string) string {
-		now := time.Now()
-		claims := jwt.Claims{
-			Subject:   "shared-user",
-			Issuer:    issuer,
-			Audience:  jwt.Audience{audience},
-			Expiry:    jwt.NewNumericDate(now.Add(time.Hour)),
-			IssuedAt:  jwt.NewNumericDate(now),
-			NotBefore: jwt.NewNumericDate(now.Add(-time.Minute)),
-			ID:        jti,
-		}
-		return sharedJWKS.signToken(t, claims, map[string]any{"azp": actor})
-	}
-
-	// A is judged against its OWN policy: it forbids plain HTTP, so its fetch
-	// of the shared http:// jwks_url is refused. Not a policy-conflict error —
-	// A is simply misconfigured for this URL.
-	_, err = validator.Validate(context.Background(), tokenFor(issuerAURL, audienceA, "agent-a", "jti-a"))
-	require.Error(t, err, "the issuer forbidding plain HTTP must be refused for its own jwks_url")
-	assert.Contains(t, err.Error(), "must use HTTPS",
-		"the refusal must come from issuer A's own transport policy")
-
-	// B shares that exact URL but permits HTTP, and succeeds — the outcome a
-	// shared cache could not produce, since A reached the URL first.
-	resultB, err := validator.Validate(context.Background(), tokenFor(issuerBURL, audienceB, "agent-b", "jti-b"))
-	require.NoError(t, err, "the issuer permitting HTTP must validate independently, "+
-		"neither blocked by nor inheriting issuer A's stricter policy")
-	assert.Equal(t, issuerBURL, resultB.ExternalIssuer)
+	require.ErrorContains(t, err, "jwks_url: must use HTTPS")
+	assert.Nil(t, validator)
 }
 
 // TestMultiIssuerTokenValidator_RetryAfterFetchFailureRefreshes proves the

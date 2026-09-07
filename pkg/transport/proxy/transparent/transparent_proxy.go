@@ -108,6 +108,12 @@ type TransparentProxy struct {
 	// stateless indicates the server is POST-only (no SSE/GET support)
 	stateless bool
 
+	// redactToolResultSecrets enables scanning tools/call responses for
+	// credential-shaped content and redacting matches before relaying them
+	// to the client (see pkg/mcp/secretscan). Default false. Set via
+	// WithSecretRedaction.
+	redactToolResultSecrets bool
+
 	// Callback when health check fails (for remote servers)
 	onHealthCheckFailed types.HealthCheckFailedCallback
 
@@ -266,6 +272,17 @@ func WithRemoteRawQuery(rawQuery string) Option {
 func WithStateless() Option {
 	return func(p *TransparentProxy) {
 		p.stateless = true
+	}
+}
+
+// WithSecretRedaction enables best-effort credential-shape scanning (see
+// pkg/mcp/secretscan) on tools/call responses before they are relayed to the
+// client. Opt-in (default false): the MCP backend behind this proxy is often
+// operator-trusted, and scanning adds per-response overhead, so this is only
+// worth enabling when the backend is not fully trusted.
+func WithSecretRedaction(enabled bool) Option {
+	return func(p *TransparentProxy) {
+		p.redactToolResultSecrets = enabled
 	}
 }
 
@@ -497,6 +514,7 @@ func NewTransparentProxyWithOptions(
 		proxy,
 		endpointPrefix,
 		trustProxyHeaders,
+		proxy.redactToolResultSecrets,
 	)
 
 	// Create health checker always for Kubernetes probes

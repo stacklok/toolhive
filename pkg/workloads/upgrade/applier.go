@@ -308,6 +308,7 @@ func (a *Applier) buildUpgradedConfig(
 		runner.WithAllowDockerGateway(old.AllowDockerGateway),
 		runner.WithTrustProxyHeaders(old.TrustProxyHeaders),
 		runner.WithStrictProtocolValidation(old.StrictProtocolValidation),
+		runner.WithRedactToolResultSecrets(old.RedactToolResultSecrets),
 		runner.WithProxyMode(old.ProxyMode),
 		runner.WithCmdArgs(slices.Clone(old.CmdArgs)),
 		runner.WithStateless(old.Stateless),

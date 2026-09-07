@@ -153,12 +153,13 @@ type fakeCore struct {
 	lastCompleteRef atomic.Value // vmcp.CompletionRef
 	completeValues  []string     // returned by Complete when completeErr is nil
 
-	callErr           error          // when set, CallTool returns it (e.g. vmcp.ErrAuthorizationFailed)
-	readErr           error          // when set, ReadResource returns it
-	readMeta          map[string]any // when set, ReadResource sets it as result.Meta on success
-	promptErr         error          // when set, GetPrompt returns it (e.g. vmcp.ErrAuthorizationFailed)
-	completeErr       error          // when set, Complete returns it (e.g. vmcp.ErrAuthorizationFailed)
-	lookupResourceErr error          // when set, LookupResource returns it for an ADVERTISED URI (admission denial)
+	callErr           error                // when set, CallTool returns it (e.g. vmcp.ErrAuthorizationFailed)
+	callResult        *vmcp.ToolCallResult // when set, CallTool returns it instead of the default {Text:"ok"}
+	readErr           error                // when set, ReadResource returns it
+	readMeta          map[string]any       // when set, ReadResource sets it as result.Meta on success
+	promptErr         error                // when set, GetPrompt returns it (e.g. vmcp.ErrAuthorizationFailed)
+	completeErr       error                // when set, Complete returns it (e.g. vmcp.ErrAuthorizationFailed)
+	lookupResourceErr error                // when set, LookupResource returns it for an ADVERTISED URI (admission denial)
 
 	// invalidateCacheCalls counts InvalidateCapabilityCache invocations, so tests
 	// covering the list_changed sink can assert the cache was re-swept (#5748).
@@ -213,6 +214,9 @@ func (f *fakeCore) CallTool(
 	f.recordCallIdentity(args, identity)
 	if f.callErr != nil {
 		return nil, f.callErr
+	}
+	if f.callResult != nil {
+		return f.callResult, nil
 	}
 	return &vmcp.ToolCallResult{Content: []vmcp.Content{{Type: vmcp.ContentTypeText, Text: "ok"}}}, nil
 }

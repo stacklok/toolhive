@@ -88,8 +88,9 @@ func deriveServerConfig(
 		SessionStorage:          cfg.SessionStorage,
 		SessionManagerConfig:    sessionManagerConfig,
 		// Cross-cutting (also on core.Config) — R3, not a clean partition:
-		TelemetryProvider: cfg.TelemetryProvider,
-		AuditConfig:       cfg.AuditConfig,
+		TelemetryProvider:       cfg.TelemetryProvider,
+		AuditConfig:             cfg.AuditConfig,
+		RedactToolResultSecrets: cfg.RedactToolResultSecrets,
 	}
 }
 

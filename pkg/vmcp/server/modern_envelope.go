@@ -11,6 +11,7 @@ import (
 
 	"github.com/stacklok/toolhive-core/mcpcompat/mcp"
 	mcpparser "github.com/stacklok/toolhive/pkg/mcp"
+	"github.com/stacklok/toolhive/pkg/mcp/secretscan"
 	transportsession "github.com/stacklok/toolhive/pkg/transport/session"
 	"github.com/stacklok/toolhive/pkg/vmcp"
 	"github.com/stacklok/toolhive/pkg/vmcp/conversion"
@@ -411,19 +412,26 @@ func newModernPromptsList(
 // newModernCallToolResult builds the tools/call wire result from the core's
 // ToolCallResult. StructuredContent is omitted entirely (not merely
 // omitempty-false) when the core did not set it, matching the SDK's
-// omitempty behavior.
+// omitempty behavior. When redactSecrets is set, Content is scanned for
+// credential-shaped text (see pkg/mcp/secretscan) before being returned.
 //
 // result is non-nil on every call: dispatchModernToolCall (modern_dispatch.go)
 // dereferences result.BackendID before calling this builder, so a nil result
 // would already have panicked upstream.
-func newModernCallToolResult(result *vmcp.ToolCallResult, serverName, serverVersion string) modernCallToolResult {
+func newModernCallToolResult(
+	result *vmcp.ToolCallResult, serverName, serverVersion string, redactSecrets bool,
+) modernCallToolResult {
 	var structuredContent any
 	if len(result.StructuredContent) > 0 {
 		structuredContent = result.StructuredContent
 	}
+	content := conversion.ToMCPContents(result.Content)
+	if redactSecrets {
+		secretscan.RedactContentInPlace(content)
+	}
 	return modernCallToolResult{
 		ResultType:        modernResultTypeComplete,
-		Content:           conversion.ToMCPContents(result.Content),
+		Content:           content,
 		StructuredContent: structuredContent,
 		IsError:           result.IsError,
 		Meta:              newModernResultMeta(result.Meta, serverName, serverVersion),

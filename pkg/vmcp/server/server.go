@@ -264,6 +264,16 @@ type Config struct {
 	// from the HTTP middleware. When non-nil, Name must be non-empty (the Cedar resource
 	// entity name).
 	Authz *authz.Config
+
+	// RedactToolResultSecrets enables best-effort credential-shape scanning
+	// (see pkg/mcp/secretscan) on tools/call results before they are relayed
+	// to the client: matches are redacted in place. Opt-in (default false),
+	// matching the same knob on ToolHive's own proxies (streamable.
+	// WithSecretRedaction / transparent.WithSecretRedaction) -- the backend
+	// MCP servers this vMCP aggregates are often operator-trusted, and the
+	// scan adds per-call overhead, so this is only worth enabling when a
+	// backend is not fully trusted.
+	RedactToolResultSecrets bool
 }
 
 // Server is the Virtual MCP Server that aggregates multiple backends.

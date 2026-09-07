@@ -386,6 +386,17 @@ func WithStrictProtocolValidation(strict bool) RunConfigBuilderOption {
 	}
 }
 
+// WithRedactToolResultSecrets sets whether the streamable HTTP proxy scans
+// tools/call responses for credential-shaped content and redacts matches
+// before relaying them to the client. Opt-in (default false); enable it
+// when the backend MCP server is not fully trusted.
+func WithRedactToolResultSecrets(enabled bool) RunConfigBuilderOption {
+	return func(b *runConfigBuilder) error {
+		b.config.RedactToolResultSecrets = enabled
+		return nil
+	}
+}
+
 // WithStateless declares the server is stateless (POST-only, no SSE).
 func WithStateless(stateless bool) RunConfigBuilderOption {
 	return func(b *runConfigBuilder) error {

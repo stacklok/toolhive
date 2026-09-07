@@ -515,6 +515,18 @@ spec:
                 - message: at least one of shared, perUser, or tools must be configured
                   rule: has(self.shared) || has(self.perUser) || (has(self.tools)
                     && size(self.tools) > 0)
+              redactToolResultSecrets:
+                default: false
+                description: |-
+                  RedactToolResultSecrets enables best-effort credential-shape scanning
+                  on tools/call responses (AWS/GitHub/Slack/Google/Stripe keys, JWTs, PEM
+                  private keys): matches are redacted before the response reaches the
+                  client. Off by default; enable when the backend MCP server is not
+                  fully trusted. This setting is ONLY applicable when Transport is
+                  "stdio" (the streamable-HTTP proxy path) -- it has no effect when
+                  Transport is "streamable-http" or "sse" (those reverse-proxy to an
+                  already-HTTP backend without inspecting message content).
+                type: boolean
               replicas:
                 description: |-
                   Replicas is the desired number of proxy runner (thv run) pod replicas.
@@ -2442,6 +2454,18 @@ spec:
                 - message: at least one of shared, perUser, or tools must be configured
                   rule: has(self.shared) || has(self.perUser) || (has(self.tools)
                     && size(self.tools) > 0)
+              redactToolResultSecrets:
+                default: false
+                description: |-
+                  RedactToolResultSecrets enables best-effort credential-shape scanning
+                  on tools/call responses (AWS/GitHub/Slack/Google/Stripe keys, JWTs, PEM
+                  private keys): matches are redacted before the response reaches the
+                  client. Off by default; enable when the backend MCP server is not
+                  fully trusted. This setting is ONLY applicable when Transport is
+                  "stdio" (the streamable-HTTP proxy path) -- it has no effect when
+                  Transport is "streamable-http" or "sse" (those reverse-proxy to an
+                  already-HTTP backend without inspecting message content).
+                type: boolean
               replicas:
                 description: |-
                   Replicas is the desired number of proxy runner (thv run) pod replicas.

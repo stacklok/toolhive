@@ -255,6 +255,15 @@ type Config struct {
 	// consulted for the stdio/streamable-HTTP proxy path (see factory.go).
 	StrictProtocolValidation bool
 
+	// RedactToolResultSecrets enables best-effort credential-shape scanning
+	// (see pkg/mcp/secretscan) on tools/call responses relayed by the
+	// streamable HTTP proxy: matches are redacted before the response
+	// reaches the client. Opt-in (default false) because the backend MCP
+	// server is often operator-trusted and the scan adds per-response
+	// overhead; enable it when the backend is not fully trusted. Only
+	// consulted for the stdio/streamable-HTTP proxy path (see factory.go).
+	RedactToolResultSecrets bool
+
 	// ProxyMode is the proxy mode for stdio transport ("sse" or "streamable-http")
 	ProxyMode ProxyMode
 

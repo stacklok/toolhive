@@ -62,6 +62,12 @@ type HTTPTransport struct {
 	// stateless indicates the server is POST-only (no SSE/GET support)
 	stateless bool
 
+	// redactToolResultSecrets controls whether the underlying transparent
+	// proxy scans tools/call responses for credential-shaped content and
+	// redacts matches before relaying them to the client. Default false.
+	// See transparent.WithSecretRedaction.
+	redactToolResultSecrets bool
+
 	// tokenSource is the OAuth token source for remote authentication
 	tokenSource oauth2.TokenSource
 
@@ -443,6 +449,7 @@ func (t *HTTPTransport) buildProxyOptions(remoteBasePath, remoteRawQuery string)
 	if t.sessionStorage != nil {
 		opts = append(opts, transparent.WithSessionStorage(t.sessionStorage))
 	}
+	opts = append(opts, transparent.WithSecretRedaction(t.redactToolResultSecrets))
 	return opts
 }
 

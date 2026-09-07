@@ -37,17 +37,23 @@ func (*NoOpResponseProcessor) ShouldProcess(_ *http.Response) bool {
 }
 
 // createResponseProcessor is a factory function that creates the appropriate
-// response processor based on transport type.
+// response processor based on transport type. redactSecrets enables the
+// pkg/mcp/secretscan-backed scan of tools/call results (see
+// WithSecretRedaction); false preserves prior behavior exactly.
 func createResponseProcessor(
 	transportType string,
 	proxy *TransparentProxy,
 	endpointPrefix string,
 	trustProxyHeaders bool,
+	redactSecrets bool,
 ) ResponseProcessor {
 	switch transportType {
 	case types.TransportTypeSSE.String():
-		return NewSSEResponseProcessor(proxy, endpointPrefix, trustProxyHeaders)
+		return NewSSEResponseProcessor(proxy, endpointPrefix, trustProxyHeaders, redactSecrets)
 	case types.TransportTypeStreamableHTTP.String():
+		if redactSecrets {
+			return NewSecretRedactionResponseProcessor()
+		}
 		return &NoOpResponseProcessor{}
 	default:
 		// Default to no-op for unknown transport types

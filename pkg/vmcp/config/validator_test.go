@@ -1483,7 +1483,7 @@ func TestValidator_ValidatePassthroughHeaders(t *testing.T) {
 
 	// validBaseConfig returns a minimally-valid Config so that only
 	// passthroughHeaders validation is under test.
-	validBaseConfig := func(headers []string) *Config {
+	validBaseConfig := func(headers []string, allowCredentials bool) *Config {
 		return &Config{
 			Name:  "test-vmcp",
 			Group: "test-group",
@@ -1499,15 +1499,17 @@ func TestValidator_ValidatePassthroughHeaders(t *testing.T) {
 					PrefixFormat: "{workload}_",
 				},
 			},
-			PassthroughHeaders: headers,
+			PassthroughHeaders:               headers,
+			AllowCredentialHeaderPassthrough: allowCredentials,
 		}
 	}
 
 	tests := []struct {
-		name    string
-		headers []string
-		wantErr bool
-		errMsg  string
+		name             string
+		headers          []string
+		allowCredentials bool
+		wantErr          bool
+		errMsg           string
 	}{
 		{
 			// nil and []string{} both produce zero iterations in range — same code path.
@@ -1530,19 +1532,46 @@ func TestValidator_ValidatePassthroughHeaders(t *testing.T) {
 			errMsg:  "X-Forwarded-For",
 		},
 		{
-			// Documented contract (virtualmcpserver-api.md): Authorization is
-			// rejected at startup. Forwarding caller-supplied credentials
-			// verbatim to every backend is a credential-leak footgun.
-			name:    "Authorization is restricted",
+			// Credential headers are rejected by default; allowCredentialHeaderPassthrough
+			// is the only way to forward them.
+			name:    "Authorization is rejected without the opt-in",
 			headers: []string{"authorization"},
 			wantErr: true,
-			errMsg:  "Authorization",
+			errMsg:  "allowCredentialHeaderPassthrough",
 		},
 		{
-			name:    "Cookie is restricted",
+			name:    "Cookie is rejected without the opt-in",
 			headers: []string{"Cookie"},
 			wantErr: true,
-			errMsg:  "Cookie",
+			errMsg:  "allowCredentialHeaderPassthrough",
+		},
+		{
+			name:             "Authorization is allowed with the opt-in",
+			headers:          []string{"authorization"},
+			allowCredentials: true,
+			wantErr:          false,
+		},
+		{
+			name:             "Cookie is allowed with the opt-in",
+			headers:          []string{"Cookie"},
+			allowCredentials: true,
+			wantErr:          false,
+		},
+		{
+			// The opt-in is scoped to credential headers; smuggling and spoofing
+			// vectors stay rejected.
+			name:             "opt-in does not unblock X-Forwarded-For",
+			headers:          []string{"X-Forwarded-For"},
+			allowCredentials: true,
+			wantErr:          true,
+			errMsg:           "X-Forwarded-For",
+		},
+		{
+			name:             "opt-in does not unblock Transfer-Encoding",
+			headers:          []string{"Transfer-Encoding"},
+			allowCredentials: true,
+			wantErr:          true,
+			errMsg:           "Transfer-Encoding",
 		},
 		{
 			name:    "empty string header name is rejected",
@@ -1562,7 +1591,7 @@ func TestValidator_ValidatePassthroughHeaders(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
 			v := NewValidator()
-			err := v.Validate(validBaseConfig(tt.headers))
+			err := v.Validate(validBaseConfig(tt.headers, tt.allowCredentials))
 
 			if tt.wantErr {
 				require.Error(t, err)

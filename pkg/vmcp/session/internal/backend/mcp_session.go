@@ -634,6 +634,10 @@ func createMCPClient(
 	// rejected at resolve time by resolveHeaderForward, so user-supplied
 	// HeaderForward cannot inject them in the first place.
 	// The per-transport sections below may add a size-limiting wrapper on top.
+	//
+	// SECURITY: this ordering is load-bearing for Config.AllowCredentialHeaderPassthrough.
+	// It is what keeps a caller's forwarded Authorization off backends that mint
+	// their own token. Reordering these stages leaks that credential to every backend.
 	base := backendBaseTransport(dialControl)
 	base = &authRoundTripper{
 		base:         base,

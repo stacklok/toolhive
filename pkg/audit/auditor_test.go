@@ -34,6 +34,65 @@ func TestNewAuditor(t *testing.T) {
 	assert.Equal(t, config, auditor.config)
 }
 
+func TestAuditorCredentialPassthroughMetadata(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name       string
+		configured []string
+		reqHeaders map[string]string
+		want       []string // nil means the key must be absent
+	}{
+		{
+			name:       "not configured records nothing",
+			reqHeaders: map[string]string{"Authorization": "Bearer t"},
+		},
+		{
+			name:       "configured but header absent records nothing",
+			configured: []string{"Authorization"},
+		},
+		{
+			name:       "records only the names present on the request",
+			configured: []string{"Authorization", "Cookie"},
+			reqHeaders: map[string]string{"Authorization": "Bearer t"},
+			want:       []string{"Authorization"},
+		},
+		{
+			name:       "non-canonical configuration still matches",
+			configured: []string{"authorization"},
+			reqHeaders: map[string]string{"Authorization": "Bearer t"},
+			want:       []string{"Authorization"},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			auditor, err := NewAuditorWithTransport(&Config{}, "sse",
+				WithCredentialPassthroughHeaders(tt.configured))
+			require.NoError(t, err)
+
+			req := httptest.NewRequest("POST", "/test", nil)
+			for k, v := range tt.reqHeaders {
+				req.Header.Set(k, v)
+			}
+
+			event := &AuditEvent{}
+			auditor.addMetadata(event, req, time.Millisecond, &responseWriter{})
+
+			got, ok := event.Metadata.Extra[MetadataExtraKeyCredentialPassthrough]
+			if tt.want == nil {
+				assert.False(t, ok, "credential passthrough key must be absent")
+				return
+			}
+			require.True(t, ok)
+			assert.Equal(t, tt.want, got)
+			// The credential value itself must never reach the event.
+			assert.NotContains(t, fmt.Sprint(event.Metadata.Extra), "Bearer t")
+		})
+	}
+}
+
 func TestAuditorMiddlewareDisabled(t *testing.T) {
 	t.Parallel()
 	config := &Config{}

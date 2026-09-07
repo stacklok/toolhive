@@ -591,14 +591,25 @@ func (*DefaultValidator) validateCompositeToolRefs(refs []CompositeToolRef) erro
 	return nil
 }
 
-// The standalone header-forward middleware deliberately allows Authorization
-// (an operator may legitimately forward it), but for vMCP passthrough the
-// documented contract is stricter: Authorization and Cookie are rejected at
-// startup because forwarding caller-supplied credentials verbatim to every
-// backend is a credential-leak footgun, not a pass-through use case.
-var vmcpRestrictedHeaders = map[string]bool{
+// vmcpCredentialHeaders are rejected in passthroughHeaders unless
+// Config.AllowCredentialHeaderPassthrough is set. That opt-in applies to this set
+// only, never to middleware.RestrictedHeaders.
+var vmcpCredentialHeaders = map[string]bool{
 	"Authorization": true,
 	"Cookie":        true,
+}
+
+// CredentialPassthroughHeaders returns the canonicalized credential header names
+// in a passthrough allowlist. Empty unless AllowCredentialHeaderPassthrough is
+// set, since validatePassthroughHeaders rejects those names otherwise.
+func CredentialPassthroughHeaders(passthroughHeaders []string) []string {
+	var names []string
+	for _, name := range passthroughHeaders {
+		if canonical := http.CanonicalHeaderKey(name); vmcpCredentialHeaders[canonical] {
+			names = append(names, canonical)
+		}
+	}
+	return names
 }
 
 func (*DefaultValidator) validatePassthroughHeaders(cfg *Config) error {
@@ -609,8 +620,16 @@ func (*DefaultValidator) validatePassthroughHeaders(cfg *Config) error {
 
 		canonical := http.CanonicalHeaderKey(name)
 
-		if middleware.RestrictedHeaders[canonical] || vmcpRestrictedHeaders[canonical] {
+		if middleware.RestrictedHeaders[canonical] {
 			return fmt.Errorf("passthroughHeaders[%d]: %q is a restricted header and cannot be forwarded", i, canonical)
+		}
+
+		if vmcpCredentialHeaders[canonical] && !cfg.AllowCredentialHeaderPassthrough {
+			return fmt.Errorf(
+				"passthroughHeaders[%d]: %q is a credential header and cannot be forwarded "+
+					"unless allowCredentialHeaderPassthrough is true",
+				i, canonical,
+			)
 		}
 
 		if err := httpval.ValidateHeaderName(name); err != nil {

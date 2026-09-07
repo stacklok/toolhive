@@ -202,6 +202,21 @@ type Config struct {
 	// +optional
 	// +listType=atomic
 	PassthroughHeaders []string `json:"passthroughHeaders,omitempty" yaml:"passthroughHeaders,omitempty"`
+
+	// AllowCredentialHeaderPassthrough opts in to listing Authorization and Cookie
+	// in PassthroughHeaders. Defaults to false, which rejects them at startup.
+	// Only enable it when a trusted upstream mints per-backend, audience-scoped
+	// credentials: vMCP cannot check that the caller's token was ever intended for
+	// the backends it reaches.
+	//
+	// SECURITY: this is safe only because of the backend transport chain's nesting
+	// order — header-forward is outermost and skips headers already present, auth
+	// is innermost and Sets unconditionally, so backends on a real auth strategy
+	// get their own token, not the caller's. Reordering those stages, or making
+	// header-forward overwrite instead of skip, leaks the caller's credential to
+	// every backend. See pkg/vmcp/session/internal/backend/mcp_session.go.
+	// +optional
+	AllowCredentialHeaderPassthrough bool `json:"allowCredentialHeaderPassthrough,omitempty" yaml:"allowCredentialHeaderPassthrough,omitempty"` //nolint:lll
 }
 
 // IncomingAuthConfig configures client authentication to the virtual MCP server.

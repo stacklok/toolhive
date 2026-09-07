@@ -769,6 +769,185 @@ func TestRedisStorage_ReconcileConfiguredClient(t *testing.T) {
 	})
 }
 
+// TestRedisStorage_ReconcileConfiguredClients covers ReconcileConfiguredClients'
+// last-write-wins bulk semantics: it writes every desired client, prunes a
+// previously configured client no longer desired, and leaves legacy/DCR-issued/
+// reserved rows untouched regardless of the desired set.
+func TestRedisStorage_ReconcileConfiguredClients(t *testing.T) {
+	t.Parallel()
+
+	newConfigured := func(id string, scopes ...string) fosite.Client {
+		client, err := registration.NewStaticDelegateClient(registration.Config{
+			ID: id, Secret: "secret", GrantTypes: []string{oauthproto.GrantTypeTokenExchange},
+			Scopes: scopes, Audience: []string{"https://mcp.example"},
+		})
+		require.NoError(t, err)
+		return client
+	}
+
+	t.Run("repeated call with the same desired set is idempotent", func(t *testing.T) {
+		withRedisStorage(t, func(ctx context.Context, s *RedisStorage, _ *miniredis.Miniredis) {
+			client := newConfigured("stable", "openid")
+			require.NoError(t, s.ReconcileConfiguredClients(ctx, []fosite.Client{client}))
+			key := redisKey(s.keyPrefix, KeyTypeClient, "stable")
+			before, err := s.client.Get(ctx, key).Bytes()
+			require.NoError(t, err)
+
+			require.NoError(t, s.ReconcileConfiguredClients(ctx, []fosite.Client{client}))
+			after, err := s.client.Get(ctx, key).Bytes()
+			require.NoError(t, err)
+			assert.Equal(t, before, after)
+		})
+	})
+
+	t.Run("last write wins when a configured client's material changes", func(t *testing.T) {
+		withRedisStorage(t, func(ctx context.Context, s *RedisStorage, _ *miniredis.Miniredis) {
+			require.NoError(t, s.ReconcileConfiguredClients(ctx, []fosite.Client{newConfigured("shared", "openid")}))
+			require.NoError(t, s.ReconcileConfiguredClients(ctx, []fosite.Client{newConfigured("shared", "profile")}))
+
+			retrieved, err := s.GetClient(ctx, "shared")
+			require.NoError(t, err)
+			assert.ElementsMatch(t, []string{"profile"}, retrieved.GetScopes())
+		})
+	})
+
+	t.Run("marks stale rows before pruning them after the grace period", func(t *testing.T) {
+		withRedisStorage(t, func(ctx context.Context, s *RedisStorage, _ *miniredis.Miniredis) {
+			stale := newConfigured("stale", "openid")
+			require.NoError(t, s.ReconcileConfiguredClients(ctx, []fosite.Client{stale}))
+
+			require.NoError(t, s.ReconcileConfiguredClients(ctx, nil))
+			_, err := s.GetClient(ctx, "stale")
+			require.NoError(t, err, "a stale client must survive the initial grace period")
+
+			key := redisKey(s.keyPrefix, KeyTypeClient, "stale")
+			data, err := s.client.Get(ctx, key).Bytes()
+			require.NoError(t, err)
+			var stored storedClient
+			require.NoError(t, json.Unmarshal(data, &stored))
+			assert.NotZero(t, stored.StaleSinceUnix)
+
+			stored.StaleSinceUnix = time.Now().Add(-configuredClientStaleGracePeriod).Unix()
+			data, err = json.Marshal(stored)
+			require.NoError(t, err)
+			require.NoError(t, s.client.Set(ctx, key, data, 0).Err())
+			require.NoError(t, s.ReconcileConfiguredClients(ctx, nil))
+			_, err = s.GetClient(ctx, "stale")
+			assert.ErrorIs(t, err, ErrNotFound)
+		})
+	})
+
+	t.Run("never prunes a legacy row with no configured marker", func(t *testing.T) {
+		withRedisStorage(t, func(ctx context.Context, s *RedisStorage, _ *miniredis.Miniredis) {
+			require.NoError(t, s.RegisterClient(ctx, newConfigured("legacy", "openid")))
+
+			require.NoError(t, s.ReconcileConfiguredClients(ctx, nil))
+
+			_, err := s.GetClient(ctx, "legacy")
+			require.NoError(t, err, "a row with no configured marker predates this feature and must never be pruned")
+		})
+	})
+
+	t.Run("never prunes a DCR-issued row", func(t *testing.T) {
+		withRedisStorage(t, func(ctx context.Context, s *RedisStorage, _ *miniredis.Miniredis) {
+			require.NoError(t, s.UpsertDCRIssuedClient(ctx, newDCRClient(t, "dcr", oauthproto.TokenEndpointAuthMethodNone, "")))
+
+			require.NoError(t, s.ReconcileConfiguredClients(ctx, nil))
+
+			_, err := s.GetClient(ctx, "dcr")
+			require.NoError(t, err)
+		})
+	})
+
+	t.Run("a DCR-issued row is never overwritten by a configured client at the same ID", func(t *testing.T) {
+		withRedisStorage(t, func(ctx context.Context, s *RedisStorage, _ *miniredis.Miniredis) {
+			require.NoError(t, s.UpsertDCRIssuedClient(ctx, newDCRClient(t, "dcr", oauthproto.TokenEndpointAuthMethodNone, "")))
+
+			err := s.ReconcileConfiguredClients(ctx, []fosite.Client{newConfigured("dcr", "openid")})
+			require.ErrorIs(t, err, ErrAlreadyExists)
+		})
+	})
+
+	t.Run("refuses to replace a reserved configured row", func(t *testing.T) {
+		withRedisStorage(t, func(ctx context.Context, s *RedisStorage, _ *miniredis.Miniredis) {
+			reserved := storedClient{ID: "reserved", Configured: true, Reserved: true}
+			data, err := json.Marshal(reserved)
+			require.NoError(t, err)
+			require.NoError(t, s.client.Set(ctx, redisKey(s.keyPrefix, KeyTypeClient, "reserved"), data, 0).Err())
+
+			err = s.ReconcileConfiguredClients(ctx, []fosite.Client{newConfigured("reserved", "openid")})
+			require.ErrorIs(t, err, ErrAlreadyExists)
+
+			require.NoError(t, s.ReconcileConfiguredClients(ctx, nil))
+			assert.Equal(t, int64(1), s.client.Exists(ctx, redisKey(s.keyPrefix, KeyTypeClient, "reserved")).Val())
+		})
+	})
+
+	t.Run("adopts an unmarked legacy row whose shape matches", func(t *testing.T) {
+		withRedisStorage(t, func(ctx context.Context, s *RedisStorage, _ *miniredis.Miniredis) {
+			client := newConfigured("legacy-match", "openid")
+			require.NoError(t, s.RegisterClient(ctx, client))
+
+			require.NoError(t, s.ReconcileConfiguredClients(ctx, []fosite.Client{client}))
+
+			key := redisKey(s.keyPrefix, KeyTypeClient, "legacy-match")
+			data, err := s.client.Get(ctx, key).Bytes()
+			require.NoError(t, err)
+			var stored storedClient
+			require.NoError(t, json.Unmarshal(data, &stored))
+			assert.True(t, stored.Configured)
+		})
+	})
+
+	t.Run("rejects an unmarked legacy row whose shape differs as a genuine collision", func(t *testing.T) {
+		withRedisStorage(t, func(ctx context.Context, s *RedisStorage, _ *miniredis.Miniredis) {
+			require.NoError(t, s.RegisterClient(ctx, newConfigured("legacy-mismatch", "openid")))
+
+			err := s.ReconcileConfiguredClients(ctx, []fosite.Client{newConfigured("legacy-mismatch", "profile")})
+			require.ErrorIs(t, err, ErrAlreadyExists)
+		})
+	})
+
+	t.Run("rejects a duplicate client ID in the desired set", func(t *testing.T) {
+		withRedisStorage(t, func(ctx context.Context, s *RedisStorage, _ *miniredis.Miniredis) {
+			err := s.ReconcileConfiguredClients(ctx,
+				[]fosite.Client{newConfigured("dup", "openid"), newConfigured("dup", "openid")})
+			require.Error(t, err)
+			assert.Contains(t, err.Error(), "duplicate configured client")
+		})
+	})
+
+	t.Run("rejects a desired set larger than the configured limit", func(t *testing.T) {
+		withRedisStorage(t, func(ctx context.Context, s *RedisStorage, _ *miniredis.Miniredis) {
+			clients := make([]fosite.Client, 10_001)
+			for i := range clients {
+				clients[i] = &mockClient{id: fmt.Sprintf("client-%d", i)}
+			}
+			err := s.ReconcileConfiguredClients(ctx, clients)
+			require.Error(t, err)
+			assert.Contains(t, err.Error(), "too many configured clients")
+		})
+	})
+
+	t.Run("sweep skips a corrupt row without failing the whole reconcile", func(t *testing.T) {
+		withRedisStorage(t, func(ctx context.Context, s *RedisStorage, _ *miniredis.Miniredis) {
+			require.NoError(t, s.ReconcileConfiguredClients(ctx,
+				[]fosite.Client{newConfigured("keep", "openid"), newConfigured("stale", "openid")}))
+
+			corruptKey := redisKey(s.keyPrefix, KeyTypeClient, "corrupt")
+			require.NoError(t, s.client.Set(ctx, corruptKey, "not-json", 0).Err())
+
+			require.NoError(t, s.ReconcileConfiguredClients(ctx, []fosite.Client{newConfigured("keep", "openid")}))
+
+			_, err := s.GetClient(ctx, "keep")
+			require.NoError(t, err)
+			_, err = s.GetClient(ctx, "stale")
+			require.NoError(t, err, "the stale row remains during its grace period")
+			assert.Equal(t, int64(1), s.client.Exists(ctx, corruptKey).Val(), "the corrupt row itself is left alone")
+		})
+	})
+}
+
 // TestRedisStorage_UpsertDCRIssuedClient covers the create/replace/reject
 // matrix UpsertDCRIssuedClient must implement: create when absent (with the
 // DCR TTL, not permanent), replace and renew the TTL when the existing row is

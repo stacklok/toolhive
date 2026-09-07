@@ -4,6 +4,7 @@
 package storage
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
@@ -38,6 +39,12 @@ const nullMarker = "null"
 // the broadly-tested path), and short enough that operational metrics do not
 // confuse this row with a healthy long-lived registration.
 const pastExpiryDCRTTL = time.Second
+
+// configuredClientStaleGracePeriod allows replicas from an older configuration
+// to finish draining before a replacement replica removes their client row.
+// The heartbeat runs every 10 seconds, so this covers several normal heartbeats
+// without requiring cross-replica coordination.
+const configuredClientStaleGracePeriod = 30 * time.Second
 
 // maxDCRClaimRetries bounds StoreDCRCredentialsIfAbsent's WATCH/MULTI retry
 // loop. go-redis does not retry Watch internally: a concurrent write to the
@@ -219,6 +226,12 @@ type storedClient struct {
 	// is not compensated for — it predates confidential DCR support entirely,
 	// so it cannot be DCR-issued.
 	DCRIssued bool `json:"dcr_issued,omitempty"`
+	// Configured is true only for rows explicitly owned by operator configuration.
+	// Missing values decode false so legacy rows remain exempt from pruning.
+	Configured bool `json:"configured,omitempty"`
+	// StaleSinceUnix is set when a configured row is first absent from a
+	// replica's desired set. It is cleared whenever a replica writes the row.
+	StaleSinceUnix int64 `json:"stale_since_unix,omitempty"`
 	// Reserved is true when the row is a SPIFFE static-client durable
 	// placeholder (see staticClientPlaceholder in spiffe_decorator.go) —
 	// never a real, authenticatable client. It is checked before GrantTypes/
@@ -369,7 +382,7 @@ func clientFromStored(stored storedClient, hasTTL bool) fosite.Client {
 // clientFromStored treats the empty method as a legacy row. Do NOT substitute
 // a "none" fallback here — that would silently reclassify a confidential row
 // as public on read-back.
-func buildStoredClient(client fosite.Client) storedClient {
+func buildStoredClient(client fosite.Client, configured bool) storedClient {
 	stored := storedClient{
 		ID:            client.GetID(),
 		Secret:        client.GetHashedSecret(),
@@ -379,6 +392,7 @@ func buildStoredClient(client fosite.Client) storedClient {
 		Scopes:        client.GetScopes(),
 		Audience:      client.GetAudience(),
 		Public:        client.IsPublic(),
+		Configured:    configured,
 	}
 	stored.Reserved = isReservedPlaceholder(client)
 	// Resources and IdentityFingerprint are only ever restored on read for a
@@ -415,7 +429,7 @@ func (s *RedisStorage) RegisterClient(ctx context.Context, client fosite.Client)
 	}
 
 	key := redisKey(s.keyPrefix, KeyTypeClient, client.GetID())
-	stored := buildStoredClient(client)
+	stored := buildStoredClient(client, false)
 
 	data, err := json.Marshal(stored) //nolint:gosec // G117 - internal Redis storage serialization, not exposed to users
 	if err != nil {
@@ -471,7 +485,7 @@ func (s *RedisStorage) UpsertDCRIssuedClient(ctx context.Context, client fosite.
 	}
 
 	key := redisKey(s.keyPrefix, KeyTypeClient, client.GetID())
-	stored := buildStoredClient(client)
+	stored := buildStoredClient(client, false)
 	data, err := json.Marshal(stored) //nolint:gosec // G117 - internal Redis storage serialization, not exposed to users
 	if err != nil {
 		return fmt.Errorf("failed to marshal client: %w", err)
@@ -578,7 +592,7 @@ func (s *RedisStorage) ReconcileConfiguredClient(ctx context.Context, client fos
 	}
 
 	key := redisKey(s.keyPrefix, KeyTypeClient, client.GetID())
-	stored := buildStoredClient(client)
+	stored := buildStoredClient(client, true)
 	data, err := json.Marshal(stored) //nolint:gosec // G117 - internal Redis storage serialization, not exposed to users
 	if err != nil {
 		return fmt.Errorf("failed to marshal client: %w", err)
@@ -636,6 +650,199 @@ func (s *RedisStorage) ReconcileConfiguredClient(ctx context.Context, client fos
 		}
 	}
 	return watchErr
+}
+
+// maxConfiguredClients bounds the desired set ReconcileConfiguredClients will
+// accept in one call: operator configuration is expected to hold at most a
+// few hundred entries, never anywhere near this ceiling. Guards against an
+// unbounded per-client write loop from a malformed or malicious config.
+const maxConfiguredClients = 10_000
+
+// ReconcileConfiguredClients validates the complete desired set, writes each
+// client's row, then marks any previously-configured row no longer in the
+// desired set for grace-period pruning. See the ConfiguredClientReconciler
+// interface doc for the full last-write-wins contract.
+func (s *RedisStorage) ReconcileConfiguredClients(ctx context.Context, clients []fosite.Client) error {
+	if len(clients) > maxConfiguredClients {
+		return fmt.Errorf("too many configured clients: %d exceeds limit of %d", len(clients), maxConfiguredClients)
+	}
+	desired := make(map[string]struct{}, len(clients))
+	for _, client := range clients {
+		if client == nil {
+			return fmt.Errorf("configured client is required")
+		}
+		if registration.DCRIssued(client) {
+			return fmt.Errorf("configured client %q must not carry the DCR-issued marker", client.GetID())
+		}
+		if err := ValidateRegisterableClientID(client.GetID()); err != nil {
+			return err
+		}
+		if _, exists := desired[client.GetID()]; exists {
+			return fmt.Errorf("duplicate configured client %q", client.GetID())
+		}
+		desired[client.GetID()] = struct{}{}
+	}
+
+	for _, client := range clients {
+		if err := s.writeConfiguredClient(ctx, client); err != nil {
+			return err
+		}
+	}
+
+	return s.sweepConfiguredClients(ctx, desired)
+}
+
+// writeConfiguredClient atomically writes a single configured client's row.
+// An existing DCR-issued or Reserved row is never touched. An existing row
+// that is not yet marked configured is adopted (and stamped configured) only
+// if its stored shape exactly matches client; otherwise the write fails as a
+// genuine collision. An existing row already marked configured is always
+// overwritten (last-write-wins), regardless of whether its material matches.
+func (s *RedisStorage) writeConfiguredClient(ctx context.Context, client fosite.Client) error {
+	key := redisKey(s.keyPrefix, KeyTypeClient, client.GetID())
+	stored := buildStoredClient(client, true)
+	data, err := json.Marshal(stored) //nolint:gosec // G117 - internal Redis storage serialization, not exposed to users
+	if err != nil {
+		return fmt.Errorf("marshal configured client %q: %w", client.GetID(), err)
+	}
+
+	setPipelined := func(tx *redis.Tx) error {
+		_, err := tx.TxPipelined(ctx, func(pipe redis.Pipeliner) error {
+			pipe.Set(ctx, key, data, 0)
+			return nil
+		})
+		return err
+	}
+
+	txFn := func(tx *redis.Tx) error {
+		existingData, getErr := tx.Get(ctx, key).Bytes()
+		if errors.Is(getErr, redis.Nil) {
+			return setPipelined(tx)
+		}
+		if getErr != nil {
+			return fmt.Errorf("get existing client %q: %w", client.GetID(), getErr)
+		}
+
+		var existingStored storedClient
+		if unmarshalErr := json.Unmarshal(existingData, &existingStored); unmarshalErr != nil {
+			return fmt.Errorf("unmarshal existing client %q: %w", client.GetID(), unmarshalErr)
+		}
+		if existingStored.DCRIssued || existingStored.Reserved {
+			return fmt.Errorf("%w: configured client %q collides with an existing non-configured registration",
+				ErrAlreadyExists, client.GetID())
+		}
+		if !existingStored.Configured && !existingStored.fingerprint().equal(stored.fingerprint()) {
+			return fmt.Errorf("%w: configured client %q collides with an existing non-configured registration",
+				ErrAlreadyExists, client.GetID())
+		}
+
+		return setPipelined(tx)
+	}
+
+	var watchErr error
+	for attempt := 0; attempt < maxConfiguredClientReconcileRetries; attempt++ {
+		watchErr = s.client.Watch(ctx, txFn, key)
+		if !errors.Is(watchErr, redis.TxFailedErr) {
+			return watchErr
+		}
+	}
+	return watchErr
+}
+
+// sweepConfiguredClients marks configured rows absent from desired and deletes
+// them only after a grace period. The mark is reset by writeConfiguredClient,
+// allowing a replica that still desires the row to keep it alive without
+// cross-replica coordination. SCAN only discovers candidates; the conditional
+// update/delete makes the decision against the row's current content.
+func (s *RedisStorage) sweepConfiguredClients(ctx context.Context, desired map[string]struct{}) error {
+	var cursor uint64
+	pattern := redisKey(s.keyPrefix, KeyTypeClient, "*")
+	now := time.Now().Unix()
+	for {
+		keys, next, err := s.client.Scan(ctx, cursor, pattern, 100).Result()
+		if err != nil {
+			return fmt.Errorf("scan configured clients: %w", err)
+		}
+		for _, key := range keys {
+			data, err := s.client.Get(ctx, key).Bytes()
+			if errors.Is(err, redis.Nil) {
+				continue
+			}
+			if err != nil {
+				return fmt.Errorf("read configured client %q: %w", key, err)
+			}
+			var stored storedClient
+			if err := json.Unmarshal(data, &stored); err != nil {
+				slog.Warn("skipping unmarshalable row during configured-client sweep", "key", key, "error", err)
+				continue
+			}
+			if !stored.Configured || stored.DCRIssued || stored.Reserved {
+				continue
+			}
+			if _, keep := desired[stored.ID]; keep {
+				continue
+			}
+			if err := s.markOrDeleteStaleConfiguredClient(ctx, key, data, now); err != nil {
+				return err
+			}
+		}
+		cursor = next
+		if cursor == 0 {
+			return nil
+		}
+	}
+}
+
+// markOrDeleteStaleConfiguredClient atomically marks a stale row or deletes it
+// after the grace period. A concurrent configured write changes the row and
+// therefore prevents this operation from clobbering it.
+func (s *RedisStorage) markOrDeleteStaleConfiguredClient(ctx context.Context, key string, expected []byte, now int64) error {
+	var watchErr error
+	for attempt := 0; attempt < maxConfiguredClientReconcileRetries; attempt++ {
+		watchErr = s.client.Watch(ctx, func(tx *redis.Tx) error {
+			current, getErr := tx.Get(ctx, key).Bytes()
+			if errors.Is(getErr, redis.Nil) {
+				return nil
+			}
+			if getErr != nil {
+				return fmt.Errorf("read client %q: %w", key, getErr)
+			}
+			if !bytes.Equal(current, expected) {
+				return nil
+			}
+			var stored storedClient
+			if err := json.Unmarshal(current, &stored); err != nil {
+				return nil
+			}
+			if stored.StaleSinceUnix == 0 {
+				stored.StaleSinceUnix = now
+				data, err := json.Marshal(stored) //nolint:gosec // G117 - internal Redis storage serialization
+				if err != nil {
+					return fmt.Errorf("marshal stale configured client %q: %w", key, err)
+				}
+				_, err = tx.TxPipelined(ctx, func(pipe redis.Pipeliner) error {
+					pipe.Set(ctx, key, data, 0)
+					return nil
+				})
+				return err
+			}
+			if stored.StaleSinceUnix > now-int64(configuredClientStaleGracePeriod/time.Second) {
+				return nil
+			}
+			_, err := tx.TxPipelined(ctx, func(pipe redis.Pipeliner) error {
+				pipe.Del(ctx, key)
+				return nil
+			})
+			return err
+		}, key)
+		if !errors.Is(watchErr, redis.TxFailedErr) {
+			break
+		}
+	}
+	if watchErr != nil {
+		return fmt.Errorf("update stale configured client %q: %w", key, watchErr)
+	}
+	return nil
 }
 
 // GetClient loads the client by its ID.

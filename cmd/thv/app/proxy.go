@@ -137,9 +137,10 @@ func init() {
 	proxyCmd.Flags().StringVar(&proxyHost, "host", transport.LocalhostIPv4, "Host for the HTTP proxy to listen on (IP or hostname)")
 	proxyCmd.Flags().IntVar(&proxyPort, "port", 0, "Port for the HTTP proxy to listen on (host port)")
 	proxyCmd.Flags().StringArrayVar(&proxyAllowedOrigins, "allowed-origins", nil,
-		"Exact-match allowlist for the HTTP Origin header (repeatable). Recommended when binding publicly; "+
-			"loopback binds derive a default allowlist automatically, non-loopback binds log a warning when "+
-			"no value is supplied. Example: https://my-mcp.example.com")
+		"Exact-match allowlist for the HTTP Origin header (repeatable). When set, also enables CORS for exactly "+
+			"these origins on the MCP proxy endpoint. CORS is disabled by default; omit this flag when CORS is "+
+			"handled by an upstream gateway. Loopback binds derive a default origin allowlist automatically but "+
+			"never enable CORS. Example: https://my-mcp.example.com")
 	proxyCmd.Flags().StringVar(
 		&proxyTargetURI,
 		"target-uri",
@@ -244,18 +245,7 @@ func proxyCmdFunc(cmd *cobra.Command, args []string) error {
 	// Origin-header validation (DNS-rebinding protection per MCP 2025-11-25
 	// §"Security Warning"). Added after body-limit so disallowed Origins are
 	// rejected before authentication or any outbound token acquisition runs.
-	if allowed := origin.ResolveAllowedOrigins(proxyHost, port, proxyAllowedOrigins); len(allowed) > 0 {
-		middlewares = append(middlewares, types.NamedMiddleware{
-			Name:     origin.MiddlewareType,
-			Function: origin.NewHandler(allowed),
-		})
-	} else {
-		slog.Warn("Origin validation disabled — no allowlist configured for non-loopback bind",
-			"host", proxyHost,
-			"port", port,
-			"hint", "pass --allowed-origins=https://your-client.example to enable DNS-rebind protection",
-		)
-	}
+	addOriginMiddleware(&middlewares, proxyHost, port)
 
 	// Get OIDC configuration if enabled (for protecting the proxy endpoint)
 	oidcConfig := getProxyOIDCConfig(cmd)
@@ -286,8 +276,14 @@ func proxyCmdFunc(cmd *cobra.Command, args []string) error {
 	slog.Debug(fmt.Sprintf("Setting up transparent proxy to forward from host port %d to %s",
 		port, proxyTargetURI))
 
+	// Build optional functional options (e.g. CORS), only when configured.
+	proxyOptions, err := buildCORSProxyOptions(proxyAllowedOrigins)
+	if err != nil {
+		return fmt.Errorf("invalid --allowed-origins: %w", err)
+	}
+
 	// Create the transparent proxy with middlewares
-	proxy := transparent.NewTransparentProxy(
+	proxy := transparent.NewTransparentProxyWithOptions(
 		proxyHost,
 		port,
 		proxyTargetURI,
@@ -301,7 +297,8 @@ func proxyCmdFunc(cmd *cobra.Command, args []string) error {
 		nil,   // onUnauthorizedResponse - not needed for local proxies
 		"",    // endpointPrefix - not configured for proxy command
 		false, // trustProxyHeaders - not configured for proxy command
-		middlewares...)
+		middlewares,
+		proxyOptions...)
 	if err := proxy.Start(ctx); err != nil {
 		return fmt.Errorf("failed to start proxy: %w", err)
 	}
@@ -518,6 +515,25 @@ func addExternalTokenMiddleware(middlewares *[]types.NamedMiddleware, tokenSourc
 	return nil
 }
 
+// addOriginMiddleware appends the Origin-header validation middleware
+// (DNS-rebinding protection per MCP 2025-11-25 §"Security Warning"), built
+// from the effective allowlist for the given host/port. It logs a warning when
+// no allowlist could be resolved (non-loopback bind with no explicit origins).
+func addOriginMiddleware(middlewares *[]types.NamedMiddleware, host string, port int) {
+	if allowed := origin.ResolveAllowedOrigins(host, port, proxyAllowedOrigins); len(allowed) > 0 {
+		*middlewares = append(*middlewares, types.NamedMiddleware{
+			Name:     origin.MiddlewareType,
+			Function: origin.NewHandler(allowed),
+		})
+	} else {
+		slog.Warn("Origin validation disabled — no allowlist configured for non-loopback bind",
+			"host", host,
+			"port", port,
+			"hint", "pass --allowed-origins=https://your-client.example to enable DNS-rebind protection",
+		)
+	}
+}
+
 // addHeaderForwardMiddleware adds header forward middleware to the middleware chain if headers are configured.
 // Secret references are resolved immediately via the secrets manager.
 func addHeaderForwardMiddleware(
@@ -576,4 +592,20 @@ func validateProxyTargetURI(targetURI string) error {
 	}
 
 	return nil
+}
+
+// buildCORSProxyOptions validates the explicit --allowed-origins list and
+// builds the transparent-proxy option that enables CORS for those origins.
+// It returns no options when the list is empty so default behaviour is
+// unchanged. Invalid entries (missing scheme, wildcard, garbage) fail loudly
+// at startup instead of silently never matching a browser Origin.
+func buildCORSProxyOptions(allowedOrigins []string) ([]transparent.Option, error) {
+	if len(allowedOrigins) == 0 {
+		return nil, nil
+	}
+	validated, err := middleware.ValidateAllowedOrigins(allowedOrigins)
+	if err != nil {
+		return nil, err
+	}
+	return []transparent.Option{transparent.WithAllowedOrigins(validated)}, nil
 }

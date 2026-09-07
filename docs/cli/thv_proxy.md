@@ -97,7 +97,7 @@ thv proxy [flags] SERVER_NAME
 ### Options
 
 ```
-      --allowed-origins stringArray                 Exact-match allowlist for the HTTP Origin header (repeatable). Recommended when binding publicly; loopback binds derive a default allowlist automatically, non-loopback binds log a warning when no value is supplied. Example: https://my-mcp.example.com
+      --allowed-origins stringArray                 Exact-match allowlist for the HTTP Origin header (repeatable). When set, also enables CORS for exactly these origins on the MCP proxy endpoint. CORS is disabled by default; omit this flag when CORS is handled by an upstream gateway. Loopback binds derive a default origin allowlist automatically but never enable CORS. Example: https://my-mcp.example.com
   -h, --help                                        help for proxy
       --host string                                 Host for the HTTP proxy to listen on (IP or hostname) (default "127.0.0.1")
       --oidc-audience string                        Expected audience for the token

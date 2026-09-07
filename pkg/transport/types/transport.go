@@ -288,6 +288,12 @@ type Config struct {
 	// Sessions idle for longer than this duration are cleaned up by the session
 	// manager's background worker. Zero uses session.DefaultSessionTTL.
 	SessionTTL time.Duration
+
+	// AllowedCORSOrigins is the explicit Origin allowlist used to enable CORS
+	// on the transparent MCP proxy. Empty (default) leaves CORS disabled.
+	// Unlike the origin middleware, it must only ever be fed the explicit
+	// operator-supplied list — loopback-derived defaults must never enable CORS.
+	AllowedCORSOrigins []string
 }
 
 // ProxyMode represents the proxy mode for stdio transport.

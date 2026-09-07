@@ -487,21 +487,28 @@ func validateSPIFFEBundleSource(source SPIFFEBundleSourceRunConfig, index int) e
 }
 
 func validateSPIFFEBundleEndpoint(endpoint SPIFFEBundleEndpointSourceRunConfig, index int) error {
+	if err := ValidateSPIFFEBundleEndpoint(endpoint); err != nil {
+		return fmt.Errorf("spiffe_trust_domains[%d].bundle_source.endpoint: %w", index, err)
+	}
+	return nil
+}
+
+// ValidateSPIFFEBundleEndpoint validates a SPIFFE Bundle Endpoint URL and its
+// TLS-authentication profile. Exported so the operator CRD admission path
+// can reject the same structurally invalid endpoints at admission time
+// instead of only at reconcile time; fetching or loading a bundle from the
+// endpoint remains a separate, later step.
+func ValidateSPIFFEBundleEndpoint(endpoint SPIFFEBundleEndpointSourceRunConfig) error {
 	endpointURL := endpoint.URL
 	u, err := url.ParseRequestURI(endpointURL)
 	if err != nil || u.Scheme != "https" || u.Host == "" || u.Hostname() == "" {
-		return fmt.Errorf(
-			"spiffe_trust_domains[%d].bundle_source.endpoint.url must be an absolute HTTPS URL with a valid authority",
-			index,
-		)
+		return fmt.Errorf("url must be an absolute HTTPS URL with a valid authority")
 	}
 	if u.User != nil || u.RawQuery != "" || u.Fragment != "" ||
 		strings.Contains(endpointURL, "?") || strings.Contains(endpointURL, "#") ||
 		net.ParseIP(u.Hostname()) != nil || networking.IsLoopbackHost(u.Hostname()) {
 		return fmt.Errorf(
-			"spiffe_trust_domains[%d].bundle_source.endpoint.url must not contain credentials, query, "+
-				"fragment, an IP-literal host, or a loopback host",
-			index,
+			"url must not contain credentials, query, fragment, an IP-literal host, or a loopback host",
 		)
 	}
 	switch endpoint.Profile {
@@ -509,8 +516,7 @@ func validateSPIFFEBundleEndpoint(endpoint SPIFFEBundleEndpointSourceRunConfig, 
 		return nil
 	default:
 		return fmt.Errorf(
-			"spiffe_trust_domains[%d].bundle_source.endpoint.profile must be %q or %q",
-			index, SPIFFEBundleEndpointProfileHTTPSWeb, SPIFFEBundleEndpointProfileHTTPSSPIFFE,
+			"profile must be %q or %q", SPIFFEBundleEndpointProfileHTTPSWeb, SPIFFEBundleEndpointProfileHTTPSSPIFFE,
 		)
 	}
 }
@@ -710,7 +716,7 @@ func validateSPIFFEResources(values []string, field string, allowedResources []s
 	if len(values) == 0 {
 		return nil
 	}
-	if err := validateResourceIndicators(values, field); err != nil {
+	if err := ValidateResourceIndicators(values, field); err != nil {
 		return err
 	}
 	for _, value := range values {
@@ -721,7 +727,13 @@ func validateSPIFFEResources(values []string, field string, allowedResources []s
 	return nil
 }
 
-func validateResourceIndicators(values []string, field string) error {
+// ValidateResourceIndicators validates the context-independent shape of RFC
+// 8707 resource indicators: each must be a syntactically valid absolute
+// HTTP(S) URI with a non-empty host, no userinfo, and no fragment. It does
+// not check allowlist membership, which needs the reconcile-time-derived
+// allowed_audiences value (see validateSPIFFEResources and
+// MCPExternalAuthConfig's own admission-time call for this shape-only half).
+func ValidateResourceIndicators(values []string, field string) error {
 	if len(values) == 0 {
 		return nil
 	}
@@ -730,7 +742,7 @@ func validateResourceIndicators(values []string, field string) error {
 	}
 	for _, value := range values {
 		u, err := url.ParseRequestURI(value)
-		if err != nil || (u.Scheme != "https" && u.Scheme != "http") || u.Host == "" || u.User != nil ||
+		if err != nil || (u.Scheme != "https" && u.Scheme != "http") || u.Hostname() == "" || u.User != nil ||
 			u.Fragment != "" || strings.Contains(value, "#") {
 			return fmt.Errorf("%s: resource indicator %q must be an absolute HTTP(S) URI without a fragment", field, value)
 		}
@@ -772,6 +784,35 @@ func overlapsSPIFFEPatterns(patterns []string, principal string) bool {
 		}
 	}
 	return false
+}
+
+// ValidateSPIFFEPrincipalPattern validates a single principal pattern — a
+// concrete SPIFFE ID or a terminal /* wildcard — using the same
+// normalization as the runtime association validator, without comparing it
+// to any other pattern. Exported so an admission-time caller can validate
+// each entry in a set up front and attribute a normalization failure to the
+// correct entry, before running SPIFFEPatternsOverlap pairwise across the set.
+func ValidateSPIFFEPrincipalPattern(pattern string) error {
+	_, err := normalizeSPIFFEPrincipal(pattern, true)
+	return err
+}
+
+// SPIFFEPatternsOverlap reports whether two principal patterns — each a
+// concrete SPIFFE ID or a terminal /* wildcard — overlap, using the same
+// normalization (via the go-spiffe parser) and prefix semantics as the
+// runtime association validator. Exported so the operator CRD admission
+// path can reject overlapping principal patterns (e.g. "/agent/*" and
+// "/agent/one") at admission time instead of only at reconcile time.
+func SPIFFEPatternsOverlap(first, second string) (bool, error) {
+	normalizedFirst, err := normalizeSPIFFEPrincipal(first, true)
+	if err != nil {
+		return false, err
+	}
+	normalizedSecond, err := normalizeSPIFFEPrincipal(second, true)
+	if err != nil {
+		return false, err
+	}
+	return spiffePatternsOverlap(normalizedFirst, normalizedSecond), nil
 }
 
 func spiffePatternsOverlap(first, second string) bool {

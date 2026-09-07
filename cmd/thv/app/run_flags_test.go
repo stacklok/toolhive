@@ -4,6 +4,7 @@
 package app
 
 import (
+	"encoding/json"
 	"log/slog"
 	"os"
 	"path/filepath"
@@ -17,6 +18,7 @@ import (
 
 	"github.com/stacklok/toolhive-core/logging"
 	regtypes "github.com/stacklok/toolhive-core/registry/types"
+	"github.com/stacklok/toolhive/pkg/auth"
 	"github.com/stacklok/toolhive/pkg/config"
 	"github.com/stacklok/toolhive/pkg/runner"
 	"github.com/stacklok/toolhive/pkg/webhook"
@@ -915,4 +917,58 @@ func TestBuildRunnerConfig_MaxRequestBodySizeWiring(t *testing.T) {
 			assert.Equal(t, tt.want, cfg.MaxRequestBodySize)
 		})
 	}
+}
+
+// TestSetupOIDCConfiguration_MiddlewareFlagWiring guards the JWKS/OIDC
+// transport flags (--thv-ca-bundle, --jwks-auth-token-file,
+// --jwks-allow-private-ip, --oidc-insecure-allow-http) from being dropped on
+// the way into the auth middleware config. The runtime validator is built
+// from the middleware config, not the deprecated top-level OIDCConfig, so a
+// value that only reaches the latter is silently ignored. See #6522.
+func TestSetupOIDCConfiguration_MiddlewareFlagWiring(t *testing.T) {
+	t.Parallel()
+
+	runFlags := &RunFlags{}
+	cmd := &cobra.Command{}
+	AddRunFlags(cmd, runFlags)
+	AddOIDCFlags(cmd)
+
+	for flag, value := range map[string]string{
+		"permission-profile":       "none",
+		"transport":                "stdio",
+		"oidc-issuer":              "http://localhost:8099",
+		"oidc-audience":            "test",
+		"thv-ca-bundle":            "/path/to/ca.pem",
+		"jwks-auth-token-file":     "/path/to/token",
+		"jwks-allow-private-ip":    "true",
+		"oidc-insecure-allow-http": "true",
+	} {
+		require.NoError(t, cmd.Flags().Set(flag, value))
+	}
+
+	oidcConfig, err := setupOIDCConfiguration(cmd, runFlags)
+	require.NoError(t, err)
+	require.NotNil(t, oidcConfig)
+
+	cfg, err := buildRunnerConfig(
+		t.Context(), runFlags, nil, false, "127.0.0.1", nil, "test:latest", nil,
+		map[string]string{}, &runner.DetachedEnvVarValidator{}, oidcConfig, nil, &config.Config{},
+	)
+	require.NoError(t, err)
+
+	var authParams auth.MiddlewareParams
+	for _, mw := range cfg.MiddlewareConfigs {
+		if mw.Type == auth.MiddlewareType {
+			require.NoError(t, json.Unmarshal(mw.Parameters, &authParams))
+			break
+		}
+	}
+	got := authParams.OIDCConfig
+	require.NotNil(t, got, "auth middleware must be present")
+
+	assert.Equal(t, "http://localhost:8099", got.Issuer)
+	assert.Equal(t, "/path/to/ca.pem", got.CACertPath)
+	assert.Equal(t, "/path/to/token", got.AuthTokenFile)
+	assert.True(t, got.AllowPrivateIP)
+	assert.True(t, got.InsecureAllowHTTP)
 }

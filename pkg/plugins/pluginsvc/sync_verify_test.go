@@ -4,6 +4,7 @@
 package pluginsvc
 
 import (
+	"net/http"
 	"strings"
 	"testing"
 
@@ -11,6 +12,7 @@ import (
 	"github.com/stretchr/testify/require"
 	"go.uber.org/mock/gomock"
 
+	"github.com/stacklok/toolhive-core/httperr"
 	"github.com/stacklok/toolhive/pkg/plugins"
 	"github.com/stacklok/toolhive/pkg/skills/lockfile"
 	"github.com/stacklok/toolhive/pkg/skills/verifier"
@@ -310,4 +312,192 @@ func TestSyncMigratesUnrecordedTrustEntry(t *testing.T) {
 	require.True(t, ok)
 	assert.True(t, migrated.Unsigned, "the exception the user asked for must be recorded")
 	assert.Nil(t, migrated.Provenance)
+}
+
+// keyPinnedSyncFixture installs the fixture plugin, then rewrites its lock
+// entry into the shape a key-verified OCI install leaves behind — pinned to
+// testPublicKeyB64, with a stored bundle to re-verify offline. The install
+// itself goes through the local path because what is under test is sync's
+// re-verification, not how the entry came to be pinned.
+func keyPinnedSyncFixture(t *testing.T, mv verifier.Verifier) (*service, string) {
+	t.Helper()
+
+	svc, projectRoot := newLockTestService(t, WithVerifier(mv))
+	installTestPlugin(t, svc, projectRoot, validLockDigest())
+	inner := svc.(*service) //nolint:forcetypeassert
+
+	entry, ok := readLockfile(t, projectRoot).GetPlugin("my-plugin")
+	require.True(t, ok)
+	entry.Unsigned = false
+	entry.Provenance = &lockfile.Provenance{PublicKey: testPublicKeyB64}
+	entry.ResolvedReference = "ghcr.io/org/my-plugin@" + validLockDigest()
+	require.NoError(t, lockfile.UpsertPluginEntry(mustOpenRoot(t, projectRoot), entry))
+
+	stored, err := inner.store.Get(t.Context(), "my-plugin", plugins.ScopeProject, projectRoot)
+	require.NoError(t, err)
+	stored.SigstoreBundle = []byte(`{"bundle":true}`)
+	require.NoError(t, inner.store.Update(t.Context(), stored))
+
+	return inner, projectRoot
+}
+
+// TestVerifyStoredSignature_KeyPinnedEntry covers the branch that keeps a
+// key-pinned project from reporting drift forever. The keyless path refuses a
+// key-pinned entry outright, and sync reads a refusal as drift it can heal by
+// reinstalling — so before this branch existed the plugin was reported
+// modified on every run and --check failed permanently on an intact project.
+func TestVerifyStoredSignature_KeyPinnedEntry(t *testing.T) {
+	t.Parallel()
+
+	keyPEM, err := verifier.DecodePublicKey(testPublicKeyB64)
+	require.NoError(t, err)
+	bundle := []byte(`{"bundle":true}`)
+
+	t.Run("verifies against the pinned key, not the keyless path", func(t *testing.T) {
+		t.Parallel()
+		entry := keyedLockEntry("keyed-plugin")
+		mv := verifiermocks.NewMockVerifier(gomock.NewController(t))
+		mv.EXPECT().VerifyBundleOfflineWithKey(bundle, entry.Digest, keyPEM).Return(nil)
+		// Not merely "the key path was taken": reaching the keyless path at
+		// all is the bug, and it fails closed in a way that looks like drift.
+		mv.EXPECT().VerifyBundleOffline(gomock.Any(), gomock.Any(), gomock.Any()).Times(0)
+
+		svc := &service{sigVerifier: mv}
+		require.NoError(t, svc.verifyStoredSignature(entry, plugins.InstalledPlugin{SigstoreBundle: bundle}))
+	})
+
+	t.Run("a real verification failure still propagates", func(t *testing.T) {
+		t.Parallel()
+		mv := verifiermocks.NewMockVerifier(gomock.NewController(t))
+		mv.EXPECT().VerifyBundleOfflineWithKey(gomock.Any(), gomock.Any(), gomock.Any()).
+			Return(verifier.ErrSignatureInvalid)
+
+		svc := &service{sigVerifier: mv}
+		require.ErrorIs(t,
+			svc.verifyStoredSignature(keyedLockEntry("keyed-plugin"),
+				plugins.InstalledPlugin{SigstoreBundle: bundle}),
+			verifier.ErrSignatureInvalid)
+	})
+
+	t.Run("an undecodable pinned key fails closed", func(t *testing.T) {
+		t.Parallel()
+		entry := keyedLockEntry("keyed-plugin")
+		entry.Provenance = &lockfile.Provenance{PublicKey: "not-base64!!"}
+		mv := verifiermocks.NewMockVerifier(gomock.NewController(t))
+		mv.EXPECT().VerifyBundleOfflineWithKey(gomock.Any(), gomock.Any(), gomock.Any()).Times(0)
+
+		svc := &service{sigVerifier: mv}
+		require.ErrorIs(t,
+			svc.verifyStoredSignature(entry, plugins.InstalledPlugin{SigstoreBundle: bundle}),
+			verifier.ErrSignatureInvalid)
+	})
+
+	t.Run("a missing bundle names the key anchor, not an empty signer", func(t *testing.T) {
+		t.Parallel()
+		svc := &service{sigVerifier: verifiermocks.NewMockVerifier(gomock.NewController(t))}
+		err := svc.verifyStoredSignature(keyedLockEntry("keyed-plugin"), plugins.InstalledPlugin{})
+		require.ErrorIs(t, err, verifier.ErrSignatureInvalid)
+		assert.Contains(t, err.Error(), "a cosign public key")
+		assert.NotContains(t, err.Error(), `signer ""`,
+			"a key entry records no signer identity; the keyless phrasing named an empty string")
+	})
+}
+
+// TestSync_KeyPinnedEntrySettles is the end-to-end statement of the bug: a
+// key-pinned project must report as intact. Before the key branch existed
+// `sync --check` failed permanently on a project nothing was wrong with, and
+// an apply reinstalled the plugin on every single run.
+//
+//nolint:paralleltest // serial: real sqlite + on-disk client materialization per test
+func TestSync_KeyPinnedEntrySettles(t *testing.T) {
+	keyPEM, err := verifier.DecodePublicKey(testPublicKeyB64)
+	require.NoError(t, err)
+
+	mv := verifiermocks.NewMockVerifier(gomock.NewController(t))
+	mv.EXPECT().VerifyBundleOfflineWithKey([]byte(`{"bundle":true}`), validLockDigest(), keyPEM).
+		AnyTimes().Return(nil)
+	// The keyless verifier cannot check a key-pair bundle; routing there is
+	// what produced the permanent drift report.
+	mv.EXPECT().VerifyBundleOffline(gomock.Any(), gomock.Any(), gomock.Any()).Times(0)
+
+	inner, projectRoot := keyPinnedSyncFixture(t, mv)
+
+	checked, err := inner.Sync(t.Context(), plugins.SyncOptions{ProjectRoot: projectRoot, Check: true})
+	require.NoError(t, err)
+	assert.Equal(t, []string{"my-plugin"}, checked.AlreadyCurrent)
+	assert.Empty(t, checked.Drifted, "--check must succeed on an intact key-pinned project")
+	assert.Empty(t, checked.Failed)
+
+	// Apply mode must agree: an entry that verifies is not repaired.
+	applied, err := inner.Sync(t.Context(), plugins.SyncOptions{ProjectRoot: projectRoot})
+	require.NoError(t, err)
+	assert.Equal(t, []string{"my-plugin"}, applied.AlreadyCurrent)
+	assert.Empty(t, applied.Installed, "a settled key-pinned entry must not be reinstalled")
+}
+
+// TestSync_AdoptRefusesKeySignedInstall covers the one place a key-signed
+// artifact has no path through: adoption back-fills trust from what the stored
+// bundle reveals, and a key-pair bundle reveals no identity and does not carry
+// the key. Recording it as unsigned instead would file a false trust decision
+// about an artifact that IS signed, so the refusal has to name the route that
+// can anchor it.
+//
+//nolint:paralleltest // serial: real sqlite + on-disk client materialization per test
+func TestSync_AdoptRefusesKeySignedInstall(t *testing.T) {
+	for _, allowUnsigned := range []bool{false, true} {
+		mv := verifiermocks.NewMockVerifier(gomock.NewController(t))
+		mv.EXPECT().ResultFromBundle(gomock.Any(), gomock.Any()).
+			AnyTimes().Return(nil, verifier.ErrKeySigned)
+		mv.EXPECT().VerifyBundleOffline(gomock.Any(), gomock.Any(), gomock.Any()).
+			AnyTimes().Return(nil)
+
+		svc, projectRoot := newLockTestService(t, WithVerifier(mv))
+		installTestPlugin(t, svc, projectRoot, validLockDigest())
+		inner := svc.(*service) //nolint:forcetypeassert
+
+		// Strip it back to the unmanaged state a pre-lock-tracking install is
+		// in, but leave a stored bundle so adoption has something to read.
+		require.NoError(t, lockfile.RemovePluginEntry(mustOpenRoot(t, projectRoot), "my-plugin"))
+		legacy, err := inner.store.Get(t.Context(), "my-plugin", plugins.ScopeProject, projectRoot)
+		require.NoError(t, err)
+		legacy.Managed = false
+		legacy.Reference = "ghcr.io/org/my-plugin:v1"
+		legacy.SigstoreBundle = []byte(`{"bundle":true}`)
+		require.NoError(t, inner.store.Update(t.Context(), legacy))
+
+		result, err := inner.Sync(t.Context(), plugins.SyncOptions{
+			ProjectRoot: projectRoot, Adopt: true, AllowUnsigned: allowUnsigned,
+		})
+		require.NoError(t, err)
+		require.Len(t, result.Failed, 1, "allow_unsigned=%v", allowUnsigned)
+		assert.Equal(t, plugins.FailureReasonKeySigned, result.Failed[0].Reason,
+			"--allow-unsigned is not a substitute: the artifact is signed (allow_unsigned=%v)", allowUnsigned)
+		assert.Contains(t, result.Failed[0].Error, "thv ai-plugin install --public-key",
+			"the refusal must name the path that can anchor it, not merely refuse")
+
+		_, ok := readLockfile(t, projectRoot).GetPlugin("my-plugin")
+		assert.False(t, ok, "a refused adoption must write nothing")
+	}
+}
+
+// TestAdoptionTrust_KeySignedIsForbidden pins the status code and wrapped
+// sentinel directly, which the Sync-level test only sees through the typed
+// failure reason.
+func TestAdoptionTrust_KeySignedIsForbidden(t *testing.T) {
+	t.Parallel()
+
+	mv := verifiermocks.NewMockVerifier(gomock.NewController(t))
+	mv.EXPECT().ResultFromBundle(gomock.Any(), gomock.Any()).Return(nil, verifier.ErrKeySigned)
+
+	svc := &service{sigVerifier: mv}
+	_, _, err := svc.adoptionTrust(
+		plugins.SyncOptions{AllowUnsigned: true},
+		plugins.InstalledPlugin{
+			SigstoreBundle: []byte(`{"bundle":true}`),
+			Metadata:       plugins.PluginMetadata{Name: "keyed-plugin"},
+		})
+
+	require.ErrorIs(t, err, verifier.ErrKeySigned)
+	assert.Equal(t, http.StatusForbidden, httperr.Code(err))
+	assert.Contains(t, err.Error(), "--allow-unsigned is not a substitute")
 }

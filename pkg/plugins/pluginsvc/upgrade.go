@@ -231,6 +231,9 @@ func (s *service) planUpgrade(ctx context.Context, opts plugins.UpgradeOptions, 
 // signature cannot be verified at all, or its certificate's repository ref
 // or runner class differs from what is recorded. Returns true when blocked.
 //
+// A key-pinned entry has no identity to probe and is handed to
+// guardKeyedSignerChange instead.
+//
 // The repository ref has NO automatic allowance for a tag-shaped rotation.
 // An earlier version of the skills guard this mirrors let a recorded tag
 // ref rotate to any other tag ref, reasoning that a release workflow signs
@@ -251,6 +254,9 @@ func (s *service) guardSignerChange(
 	latest resolvedLatest,
 	outcome *plugins.UpgradeOutcome,
 ) bool {
+	if entry.Provenance.PublicKey != "" {
+		return s.guardKeyedSignerChange(ctx, entry, latest, outcome)
+	}
 	probe, probeErr := s.probeCandidateSigner(ctx, entry.Name, latest)
 	switch {
 	case probeErr != nil && errors.Is(probeErr, verifier.ErrUnsigned):
@@ -273,6 +279,56 @@ func (s *service) guardSignerChange(
 		return true
 	}
 	return false
+}
+
+// guardKeyedSignerChange is guardSignerChange for an entry pinned to a cosign
+// public key. There is no identity to probe for and compare — a key-pair
+// bundle carries no certificate — so the pinned key is applied to the
+// candidate directly: verifying against it IS the evidence that the signer
+// has not changed, and the upgrade then proceeds on the anchor the entry
+// already records. No new key is accepted here; the lock supplies it.
+//
+// The candidate is verified over OCI unconditionally, with no git arm: the
+// lock schema refuses publicKey on a git entry (a commit signature is checked
+// against a certificate, never a key), so a key-pinned entry is always an OCI
+// one and latest.commitPayload is always empty here.
+//
+// The blocked arms are split by whether --allow-signer-change would actually
+// help, because the caller is told to use it. It does for a candidate that
+// moved to keyless signing or dropped its signature: dropping the recorded
+// key and re-verifying is exactly the key-to-keyless move resolveKeyAnchor
+// supports. It does NOT for a candidate signed by a different key — that
+// needs an in-place re-anchor, which v1 does not offer — so that arm reports
+// a failure naming the route that works instead of a remedy that does not.
+func (s *service) guardKeyedSignerChange(
+	ctx context.Context,
+	entry lockfile.Entry,
+	latest resolvedLatest,
+	outcome *plugins.UpgradeOutcome,
+) bool {
+	pubKeyPEM, err := verifier.DecodePublicKey(entry.Provenance.PublicKey)
+	if err != nil {
+		outcome.Status = plugins.UpgradeStatusFailed
+		outcome.Reason = plugins.FailureReasonUnknown
+		outcome.Error = fmt.Errorf("lock entry's pinned %w", err).Error()
+		return true
+	}
+	_, verifyErr := s.artifactVerifier().VerifyOCIWithKey(ctx, latest.ref, latest.digest, pubKeyPEM)
+	switch {
+	case verifyErr == nil:
+		return false
+	case errors.Is(verifyErr, verifier.ErrKeylessSigned), errors.Is(verifyErr, verifier.ErrUnsigned):
+		outcome.Status = plugins.UpgradeStatusSignerChangeBlocked
+		return true
+	default:
+		outcome.Status = plugins.UpgradeStatusFailed
+		outcome.Reason = plugins.FailureReasonSignatureInvalid
+		outcome.Error = fmt.Errorf("candidate does not verify against the cosign public key this entry"+
+			" is pinned to — either it was signed with a different key or the signature is damaged:"+
+			" %w (re-anchoring to a new key is not supported in place; uninstall the plugin and"+
+			" reinstall it with `thv ai-plugin install --public-key`)", verifyErr).Error()
+		return true
+	}
 }
 
 // runnerEnvironmentChanged reports whether the candidate's runner class

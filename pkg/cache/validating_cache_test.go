@@ -729,3 +729,64 @@ func TestRemoveMatching_ConcurrentWithSetAndGet(t *testing.T) {
 	defer mu.Unlock()
 	assert.GreaterOrEqual(t, evictions, 0) // sanity: onEvict never negative/paniced
 }
+
+// TestRemoveMatching_SlowOnEvictDoesNotBlockOtherKeys proves onEvict runs off
+// the cache lock: while RemoveMatching's onEvict for one key is deliberately
+// blocked mid-teardown, a Set on a different key must still complete promptly.
+// If onEvict ran under the cache lock, the Set would block until the slow
+// teardown finished and this test would time out.
+func TestRemoveMatching_SlowOnEvictDoesNotBlockOtherKeys(t *testing.T) {
+	t.Parallel()
+
+	const slowKey, otherKey = 1, 2
+	closing := make(chan struct{}) // closed when the slow onEvict starts
+	release := make(chan struct{}) // test releases the slow onEvict
+
+	c := New[int, int](
+		1000,
+		func(_ context.Context, k int) (int, error) { return k, nil },
+		func(context.Context, int, int) error { return nil },
+		func(k, _ int) {
+			if k == slowKey {
+				close(closing)
+				<-release
+			}
+		},
+	)
+	c.Set(slowKey, 1)
+	c.Set(otherKey, 1)
+
+	removeDone := make(chan struct{})
+	go func() {
+		defer close(removeDone)
+		c.RemoveMatching(func(k, _ int) bool { return k == slowKey })
+	}()
+
+	// Wait until the slow onEvict is in progress (RemoveMatching is past the
+	// cache lock and blocked inside onEvict).
+	select {
+	case <-closing:
+	case <-time.After(5 * time.Second):
+		t.Fatal("timeout waiting for slow onEvict to start")
+	}
+
+	// The cache lock must be free now: a Set on an unrelated key completes.
+	setDone := make(chan struct{})
+	go func() {
+		defer close(setDone)
+		c.Set(otherKey, 2)
+	}()
+	select {
+	case <-setDone:
+	case <-time.After(5 * time.Second):
+		close(release) // unblock so the test can exit cleanly before failing
+		t.Fatal("Set blocked while onEvict of another key was in progress: onEvict is holding the cache lock")
+	}
+
+	close(release) // let the slow onEvict finish
+	select {
+	case <-removeDone:
+	case <-time.After(5 * time.Second):
+		t.Fatal("timeout waiting for RemoveMatching to finish")
+	}
+}

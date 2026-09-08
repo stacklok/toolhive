@@ -188,6 +188,36 @@ func (c *ValidatingCache[K, V]) Len() int {
 	return c.lruCache.Len()
 }
 
+// RemoveMatching evicts every entry for which pred reports true, invoking the
+// eviction callback (onEvict) for each removed entry, and returns the number
+// removed.
+//
+// pred and onEvict both run while the cache's internal lock is held — the same
+// lock Set contends for — matching the eviction path in getHit. pred must
+// therefore not call back into the cache, and a slow onEvict blocks concurrent
+// Set calls. This is intended for infrequent bulk eviction (e.g. reconciling
+// sessions after a backend is removed from the registry), not a hot path.
+func (c *ValidatingCache[K, V]) RemoveMatching(pred func(K, V) bool) int {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+
+	var removed int
+	// Keys() returns a snapshot slice, so removing entries while ranging over it
+	// is safe. Peek does not update recency, so evaluating pred leaves the LRU
+	// order of surviving entries unchanged.
+	for _, key := range c.lruCache.Keys() {
+		val, ok := c.lruCache.Peek(key)
+		if !ok {
+			continue
+		}
+		if pred(key, val) {
+			c.lruCache.Remove(key) // fires onEvict synchronously
+			removed++
+		}
+	}
+	return removed
+}
+
 // sameEntry reports whether a and b are the same cache entry.
 // For pointer types it compares addresses (identity), so a concurrent Set that
 // stores a distinct new value is never mistaken for the stale entry. For

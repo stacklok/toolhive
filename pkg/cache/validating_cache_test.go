@@ -7,6 +7,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"testing"
@@ -581,4 +582,61 @@ func TestValidatingCache_Singleflight_DeduplicatesConcurrentMisses(t *testing.T)
 		assert.True(t, oks[i], "all goroutines should get ok=true")
 		assert.Equal(t, "v", results[i])
 	}
+}
+
+// TestRemoveMatching verifies that RemoveMatching evicts exactly the entries the
+// predicate selects, fires onEvict for each, returns the count, and leaves
+// non-matching entries in place.
+func TestRemoveMatching(t *testing.T) {
+	t.Parallel()
+
+	var evicted []string
+	c := newStringCache(
+		func(_ context.Context, key string) (string, error) { return "loaded-" + key, nil },
+		alwaysAliveCheck,
+		func(key, _ string) { evicted = append(evicted, key) },
+	)
+
+	// "drop-*" entries should be removed; "keep-*" entries retained.
+	c.Set("drop-a", "va")
+	c.Set("keep-b", "vb")
+	c.Set("drop-c", "vc")
+	c.Set("keep-d", "vd")
+
+	removed := c.RemoveMatching(func(key, _ string) bool {
+		return strings.HasPrefix(key, "drop-")
+	})
+
+	assert.Equal(t, 2, removed, "two drop-* entries should be removed")
+	assert.ElementsMatch(t, []string{"drop-a", "drop-c"}, evicted,
+		"onEvict should fire once per removed entry")
+	assert.Equal(t, 2, c.Len(), "only keep-* entries should remain")
+
+	// Surviving entries are still cache hits (no reload).
+	for _, key := range []string{"keep-b", "keep-d"} {
+		v, ok := c.Get(context.Background(), key)
+		require.True(t, ok)
+		assert.NotEqual(t, "loaded-"+key, v, "%s should be served from cache, not reloaded", key)
+	}
+}
+
+// TestRemoveMatching_NoMatch verifies RemoveMatching is a no-op (and fires no
+// eviction) when the predicate matches nothing.
+func TestRemoveMatching_NoMatch(t *testing.T) {
+	t.Parallel()
+
+	evictCount := 0
+	c := newStringCache(
+		func(_ context.Context, key string) (string, error) { return key, nil },
+		alwaysAliveCheck,
+		func(string, string) { evictCount++ },
+	)
+	c.Set("a", "va")
+	c.Set("b", "vb")
+
+	removed := c.RemoveMatching(func(string, string) bool { return false })
+
+	assert.Zero(t, removed)
+	assert.Zero(t, evictCount)
+	assert.Equal(t, 2, c.Len())
 }

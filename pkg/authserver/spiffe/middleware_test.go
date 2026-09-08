@@ -27,19 +27,19 @@ func TestSPIFFEIDFromCertificate(t *testing.T) {
 		wantErr string
 	}{
 		{
-			name:   "ignores non SPIFFE URI SAN",
-			uris:   []*url.URL{mustParseURI(t, "https://example.org/workload"), validURI},
-			wantID: spiffeid.RequireFromString("spiffe://example.org/workload/service"),
+			name:    "rejects additional non-SPIFFE URI SAN",
+			uris:    []*url.URL{mustParseURI(t, "https://example.org/workload"), validURI},
+			wantErr: "more than one URI SAN",
 		},
 		{
 			name:    "rejects no SPIFFE URI SAN",
 			uris:    []*url.URL{mustParseURI(t, "https://example.org/workload")},
-			wantErr: "required",
+			wantErr: "scheme is missing or invalid",
 		},
 		{
 			name:    "rejects multiple SPIFFE URI SANs",
 			uris:    []*url.URL{validURI, mustParseURI(t, "spiffe://example.org/workload/other")},
-			wantErr: "multiple",
+			wantErr: "more than one URI SAN",
 		},
 		{
 			name:    "rejects traversal in SPIFFE URI SAN",

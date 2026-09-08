@@ -546,15 +546,9 @@ func TestNewServer_CIMDEnabled_WrapsStorage(t *testing.T) {
 	}
 }
 
-// TestNewServer_UpstreamRefresherSharedInstance verifies the wiring this PR
-// fixes: UpstreamTokenRefresher() must return the single refresher constructed
-// in newServer rather than reallocating one per call. The pre-fix accessor
-// rebuilt the refresher (and its singleflight.Group) on every call, so the
-// handler chain-walk path and the runtime token-swap path ended up with
-// independent groups and cross-path refresh deduplication was impossible.
-// A regression that reintroduced per-call allocation would leave the
-// refresher's own singleflight test green, so this asserts instance identity
-// at the server boundary instead.
+// TestNewServer_SPIFFEAndCIMD_WrapStorageInOrder verifies that the SPIFFE
+// static-client overlay wraps the CIMD storage decorator, preserving both
+// configured SPIFFE clients and CIMD caching behavior.
 func TestNewServer_SPIFFEAndCIMD_WrapStorageInOrder(t *testing.T) {
 	t.Parallel()
 
@@ -591,12 +585,8 @@ func TestNewServer_SPIFFEAndCIMD_WrapStorageInOrder(t *testing.T) {
 		SPIFFETrust:          trust,
 	}
 
-	// decorateStorageForSPIFFE is exercised directly, not through newServer,
-	// because Config.SPIFFETrust is hard-rejected by Config.Validate() (and
-	// therefore by newServer, which calls it) until a real SVID-verification
-	// consumer lands -- see validateConfigSPIFFENotYetEnforced. This test's
-	// actual subject, the storage-decoration order, lives entirely below
-	// that policy gate.
+	// decorateStorageForSPIFFE owns storage decoration. This focused test avoids
+	// the unrelated server construction dependencies.
 	decorated, _, err := decorateStorageForSPIFFE(context.Background(), cfg, stor)
 	require.NoError(t, err)
 

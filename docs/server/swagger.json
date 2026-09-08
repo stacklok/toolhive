@@ -393,6 +393,10 @@
                         "description": "SubjectClaim names the validated ID-token claim to use as the upstream\nsubject. Defaults to \"sub\" when empty. Set for IdPs where \"sub\" isn't\nstable per user (e.g. Entra/Azure AD's \"oid\"). See upstream.OIDCConfig.",
                         "type": "string"
                     },
+                    "token_endpoint_auth_method": {
+                        "description": "TokenEndpointAuthMethod is the client authentication method used at the token endpoint.\nWhen empty and a client secret is configured, client_secret_basic is used.",
+                        "type": "string"
+                    },
                     "userinfo_override": {
                         "$ref": "#/components/schemas/authserver.UserInfoRunConfig"
                     }

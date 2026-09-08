@@ -231,13 +231,13 @@ func TestNewOAuth2Provider(t *testing.T) {
 
 		config := &OAuth2Config{
 			CommonOAuthConfig: CommonOAuthConfig{
-				ClientID:     "test-client",
-				ClientSecret: "test-secret",
-				RedirectURI:  "http://localhost:8080/callback",
+				ClientID:                "test-client",
+				ClientSecret:            "test-secret",
+				RedirectURI:             "http://localhost:8080/callback",
+				TokenEndpointAuthMethod: "private_key_jwt",
 			},
-			AuthorizationEndpoint:   mock.URL + "/authorize",
-			TokenEndpoint:           mock.URL + "/token",
-			TokenEndpointAuthMethod: "private_key_jwt",
+			AuthorizationEndpoint: mock.URL + "/authorize",
+			TokenEndpoint:         mock.URL + "/token",
 		}
 
 		_, err := NewOAuth2Provider(config)
@@ -357,13 +357,13 @@ func TestNewOAuth2Provider_TokenEndpointAuthMethod(t *testing.T) {
 
 			config := &OAuth2Config{
 				CommonOAuthConfig: CommonOAuthConfig{
-					ClientID:     clientID,
-					ClientSecret: clientSecret,
-					RedirectURI:  "http://localhost:8080/callback",
+					ClientID:                clientID,
+					ClientSecret:            clientSecret,
+					RedirectURI:             "http://localhost:8080/callback",
+					TokenEndpointAuthMethod: tt.authMethod,
 				},
-				AuthorizationEndpoint:   mock.URL + "/authorize",
-				TokenEndpoint:           mock.URL + "/token",
-				TokenEndpointAuthMethod: tt.authMethod,
+				AuthorizationEndpoint: mock.URL + "/authorize",
+				TokenEndpoint:         mock.URL + "/token",
 			}
 
 			provider, err := NewOAuth2Provider(config)
@@ -429,13 +429,13 @@ func TestBaseOAuth2Provider_RefreshTokens_TokenEndpointAuthMethod(t *testing.T) 
 
 	config := &OAuth2Config{
 		CommonOAuthConfig: CommonOAuthConfig{
-			ClientID:     clientID,
-			ClientSecret: clientSecret,
-			RedirectURI:  "http://localhost:8080/callback",
+			ClientID:                clientID,
+			ClientSecret:            clientSecret,
+			RedirectURI:             "http://localhost:8080/callback",
+			TokenEndpointAuthMethod: oauthproto.TokenEndpointAuthMethodClientSecretBasic,
 		},
-		AuthorizationEndpoint:   mock.URL + "/authorize",
-		TokenEndpoint:           mock.URL + "/token",
-		TokenEndpointAuthMethod: oauthproto.TokenEndpointAuthMethodClientSecretBasic,
+		AuthorizationEndpoint: mock.URL + "/authorize",
+		TokenEndpoint:         mock.URL + "/token",
 	}
 
 	provider, err := NewOAuth2Provider(config)

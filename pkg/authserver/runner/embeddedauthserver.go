@@ -26,6 +26,7 @@ import (
 	"github.com/stacklok/toolhive/pkg/authserver/storage"
 	"github.com/stacklok/toolhive/pkg/authserver/upstream"
 	"github.com/stacklok/toolhive/pkg/bodylimit"
+	"github.com/stacklok/toolhive/pkg/oauthproto"
 )
 
 // Redis ACL credential environment variable names.
@@ -689,6 +690,9 @@ func buildOIDCConfig(rc *authserver.UpstreamRunConfig, insecureAllowHTTP bool) (
 	}
 
 	oidc := rc.OIDCConfig
+	if err := oidc.Validate(); err != nil {
+		return nil, err
+	}
 
 	// Warn if UserInfoOverride is configured but won't be used
 	if oidc.UserInfoOverride != nil {
@@ -701,6 +705,16 @@ func buildOIDCConfig(rc *authserver.UpstreamRunConfig, insecureAllowHTTP bool) (
 	clientSecret, err := resolveSecret(oidc.ClientSecretFile, oidc.ClientSecretEnvVar)
 	if err != nil {
 		return nil, fmt.Errorf("failed to resolve OIDC client secret: %w", err)
+	}
+
+	authMethod := oidc.TokenEndpointAuthMethod
+	if authMethod == "" && clientSecret != "" {
+		authMethod = oauthproto.TokenEndpointAuthMethodClientSecretBasic
+	}
+	if isConfidentialAuthMethod(authMethod) && clientSecret == "" {
+		return nil, fmt.Errorf(
+			"oidc upstream: token_endpoint_auth_method %q requires a non-empty client secret, "+
+				"but the configured secret resolved to an empty value", authMethod)
 	}
 
 	// Default scopes if not specified. The default includes offline_access
@@ -716,6 +730,7 @@ func buildOIDCConfig(rc *authserver.UpstreamRunConfig, insecureAllowHTTP bool) (
 		CommonOAuthConfig: upstream.CommonOAuthConfig{
 			ClientID:                      oidc.ClientID,
 			ClientSecret:                  clientSecret,
+			TokenEndpointAuthMethod:       authMethod,
 			RedirectURI:                   oidc.RedirectURI,
 			Scopes:                        scopes,
 			AdditionalAuthorizationParams: oidc.AdditionalAuthorizationParams,
@@ -782,6 +797,20 @@ func buildPureOAuth2Config(rc *authserver.UpstreamRunConfig, insecureAllowHTTP b
 	}
 
 	return cfg, nil
+}
+
+// isConfidentialAuthMethod reports whether method requires a client secret to
+// be presented at the token endpoint. Used to catch a secret file that reads
+// successfully but is empty after trimming -- a case Validate cannot see, since
+// it only knows whether a secret source is configured, not what it resolves to.
+// Shared by buildPureOAuth2Config and buildOIDCConfig.
+func isConfidentialAuthMethod(method string) bool {
+	switch method {
+	case oauthproto.TokenEndpointAuthMethodClientSecretBasic, oauthproto.TokenEndpointAuthMethodClientSecretPost:
+		return true
+	default:
+		return false
+	}
 }
 
 // resolveSecret reads a secret from file or environment variable.

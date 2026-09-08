@@ -32,10 +32,6 @@ func (m *evictCountingSessionManager) EvictStaleSessions(context.Context) int {
 func TestReconcileSessionsOnRegistryChange_EvictsOnVersionChange(t *testing.T) {
 	t.Parallel()
 
-	orig := versionPollInterval
-	versionPollInterval = 10 * time.Millisecond
-	t.Cleanup(func() { versionPollInterval = orig })
-
 	reg := &testDynamicRegistry{}
 	mgr := &evictCountingSessionManager{}
 	srv := &Server{backendRegistry: reg, vmcpSessionMgr: mgr}
@@ -43,10 +39,12 @@ func TestReconcileSessionsOnRegistryChange_EvictsOnVersionChange(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
 	defer cancel()
 
+	// Pass the poll interval directly rather than mutating the package-level
+	// versionPollInterval, which a parallel test (status reporting) also drives.
 	done := make(chan struct{})
 	go func() {
 		defer close(done)
-		srv.reconcileSessionsOnRegistryChange(ctx)
+		srv.reconcileSessionsOnRegistryChange(ctx, 10*time.Millisecond)
 	}()
 
 	// No change yet -> no eviction.
@@ -78,7 +76,7 @@ func TestReconcileSessionsOnRegistryChange_StaticRegistryReturns(t *testing.T) {
 	go func() {
 		defer close(done)
 		// A never-cancelled context would hang here if the loop kept running.
-		srv.reconcileSessionsOnRegistryChange(context.Background())
+		srv.reconcileSessionsOnRegistryChange(context.Background(), 10*time.Millisecond)
 	}()
 
 	select {

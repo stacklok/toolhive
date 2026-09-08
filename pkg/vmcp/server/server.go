@@ -846,7 +846,7 @@ func (s *Server) Start(ctx context.Context) error {
 	// (#6546). Runs independently of status reporting; a no-op for static registries.
 	if _, isDynamic := s.backendRegistry.(vmcp.DynamicRegistry); isDynamic && s.vmcpSessionMgr != nil {
 		reconcileCtx, reconcileCancel := context.WithCancel(ctx)
-		go s.reconcileSessionsOnRegistryChange(reconcileCtx)
+		go s.reconcileSessionsOnRegistryChange(reconcileCtx, versionPollInterval)
 		s.shutdownFuncs = append(s.shutdownFuncs, func(context.Context) error {
 			reconcileCancel()
 			return nil

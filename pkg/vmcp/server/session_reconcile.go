@@ -22,14 +22,16 @@ import (
 // enabled. Only a DynamicRegistry can drop a backend; for a static registry
 // membership never changes, so this returns immediately.
 //
-// The loop runs until ctx is cancelled (on server Stop).
-func (s *Server) reconcileSessionsOnRegistryChange(ctx context.Context) {
+// The loop runs until ctx is cancelled (on server Stop). pollInterval is passed
+// in (rather than read from the package-level versionPollInterval) so tests can
+// drive it without mutating shared state that a parallel test also touches.
+func (s *Server) reconcileSessionsOnRegistryChange(ctx context.Context, pollInterval time.Duration) {
 	dynamicReg, isDynamic := s.backendRegistry.(vmcp.DynamicRegistry)
 	if !isDynamic || s.vmcpSessionMgr == nil {
 		return
 	}
 
-	ticker := time.NewTicker(versionPollInterval)
+	ticker := time.NewTicker(pollInterval)
 	defer ticker.Stop()
 
 	lastVersion := dynamicReg.Version()

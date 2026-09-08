@@ -325,14 +325,9 @@ func (a *Applier) buildUpgradedConfig(
 	if old.PermissionProfileNameOrPath != "" {
 		options = append(options, runner.WithPermissionProfileNameOrPath(old.PermissionProfileNameOrPath))
 	} else if old.PermissionProfile != nil {
-		// Clone before handing it over: processVolumeMounts appends to Read/Write,
-		// which would otherwise mutate old's profile through the shared pointer and
-		// break this builder's "never mutates old" contract. The clone is shallow
-		// except for Read/Write: the builder only ever appends to those two slices
-		// here. The shared Network pointer is safe today because the builder mutates
-		// it solely via WithNetworkMode, which buildUpgradedConfig never sets; if a
-		// future change adds WithNetworkMode (or the builder starts touching Network
-		// unconditionally), Network must be cloned here too.
+		// Retain an upgrade-local copy of mount slices so this method's
+		// "never mutates old" contract does not depend on builder internals.
+		// The runner builder deep-clones the full profile before mutation.
 		cloned := *old.PermissionProfile
 		cloned.Read = slices.Clone(old.PermissionProfile.Read)
 		cloned.Write = slices.Clone(old.PermissionProfile.Write)

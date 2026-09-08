@@ -1210,10 +1210,11 @@ func (b *runConfigBuilder) validateConfig(imageMetadata *regtypes.ImageMetadata)
 
 	// Load or default the permission profile
 	// NOTE: This must be done before processing volume mounts
-	c.PermissionProfile, err = b.loadPermissionProfile(imageMetadata)
+	permissionProfile, err := b.loadPermissionProfile(imageMetadata)
 	if err != nil {
 		return err
 	}
+	c.PermissionProfile = clonePermissionProfile(permissionProfile)
 
 	// Apply network mode to permission profile if specified
 	if b.networkMode != "" {
@@ -1387,6 +1388,37 @@ func (b *runConfigBuilder) loadPermissionProfile(imageMetadata *regtypes.ImageMe
 	// If no metadata is available, use the network permission profile as default.
 	slog.Debug("Using default permission profile", "profile", permissions.ProfileNetwork)
 	return permissions.BuiltinNetworkProfile(), nil
+}
+
+// clonePermissionProfile returns a deep copy that the builder can safely mutate.
+func clonePermissionProfile(profile *permissions.Profile) *permissions.Profile {
+	if profile == nil {
+		return nil
+	}
+
+	cloned := *profile
+	cloned.Read = slices.Clone(profile.Read)
+	cloned.Write = slices.Clone(profile.Write)
+
+	if profile.Network != nil {
+		network := *profile.Network
+		cloned.Network = &network
+
+		if profile.Network.Outbound != nil {
+			outbound := *profile.Network.Outbound
+			outbound.AllowHost = slices.Clone(profile.Network.Outbound.AllowHost)
+			outbound.AllowPort = slices.Clone(profile.Network.Outbound.AllowPort)
+			network.Outbound = &outbound
+		}
+
+		if profile.Network.Inbound != nil {
+			inbound := *profile.Network.Inbound
+			inbound.AllowHost = slices.Clone(profile.Network.Inbound.AllowHost)
+			network.Inbound = &inbound
+		}
+	}
+
+	return &cloned
 }
 
 // processVolumeMounts processes volume mounts and adds them to the permission profile

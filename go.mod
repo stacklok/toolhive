@@ -27,7 +27,7 @@ require (
 	github.com/go-jose/go-jose/v4 v4.1.4
 	github.com/gofrs/flock v0.13.0
 	github.com/google/go-cmp v0.7.0
-	github.com/google/go-containerregistry v0.22.0
+	github.com/google/go-containerregistry v0.22.1
 	github.com/google/uuid v1.6.0
 	github.com/lestrrat-go/httprc/v3 v3.0.6
 	github.com/lestrrat-go/jwx/v3 v3.2.0
@@ -48,7 +48,7 @@ require (
 	github.com/shirou/gopsutil/v4 v4.26.8
 	github.com/spf13/viper v1.21.0
 	github.com/spiffe/go-spiffe/v2 v2.7.0
-	github.com/stacklok/toolhive-catalog v0.20260831.0
+	github.com/stacklok/toolhive-catalog v0.20260908.0
 	github.com/stacklok/toolhive-core v0.0.43
 	github.com/stretchr/testify v1.12.1
 	github.com/swaggo/swag/v2 v2.0.0-rc5

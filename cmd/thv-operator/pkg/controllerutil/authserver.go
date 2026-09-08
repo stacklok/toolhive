@@ -1369,6 +1369,7 @@ func buildOAuth2UpstreamRunConfig(
 		AuthorizationEndpoint:         cfg.AuthorizationEndpoint,
 		TokenEndpoint:                 cfg.TokenEndpoint,
 		ClientID:                      cfg.ClientID,
+		TokenEndpointAuthMethod:       cfg.TokenEndpointAuthMethod,
 		RedirectURI:                   redirectURI,
 		Scopes:                        cfg.Scopes,
 		AdditionalAuthorizationParams: cfg.AdditionalAuthorizationParams,

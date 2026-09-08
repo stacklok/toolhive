@@ -337,6 +337,10 @@ const docTemplate = `{
                         "description": "TokenEndpoint is the URL for the OAuth token endpoint.",
                         "type": "string"
                     },
+                    "token_endpoint_auth_method": {
+                        "description": "TokenEndpointAuthMethod selects how the client authenticates at the OAuth token\nendpoint. When empty and a client secret is configured, client_secret_basic is\nused, matching the RFC 7591 default for confidential clients. Set this to\nclient_secret_post only for providers that require credentials in the request body.\nPublic clients without a secret use the \"none\" method.",
+                        "type": "string"
+                    },
                     "token_response_mapping": {
                         "$ref": "#/components/schemas/authserver.TokenResponseMappingRunConfig"
                     },

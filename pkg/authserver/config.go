@@ -703,6 +703,13 @@ type OAuth2UpstreamRunConfig struct {
 	// Mutually exclusive with ClientSecretFile. Optional for public clients using PKCE.
 	ClientSecretEnvVar string `json:"client_secret_env_var,omitempty" yaml:"client_secret_env_var,omitempty"`
 
+	// TokenEndpointAuthMethod selects how the client authenticates at the OAuth token
+	// endpoint. When empty and a client secret is configured, client_secret_basic is
+	// used, matching the RFC 7591 default for confidential clients. Set this to
+	// client_secret_post only for providers that require credentials in the request body.
+	// Public clients without a secret use the "none" method.
+	TokenEndpointAuthMethod string `json:"token_endpoint_auth_method,omitempty" yaml:"token_endpoint_auth_method,omitempty"`
+
 	// RedirectURI is the callback URL where the upstream IDP will redirect after authentication.
 	// When not specified, defaults to `{issuer}/oauth/callback`.
 	RedirectURI string `json:"redirect_uri,omitempty" yaml:"redirect_uri,omitempty"`
@@ -1418,6 +1425,33 @@ func (c *OAuth2UpstreamRunConfig) Validate() error {
 
 	if c.IdentityFromToken != nil && c.IdentityFromToken.SubjectPath == "" {
 		return fmt.Errorf("oauth2 upstream: identity_from_token.subject_path must not be empty when identity_from_token is configured")
+	}
+
+	return c.validateTokenEndpointAuthMethod()
+}
+
+// validateTokenEndpointAuthMethod checks TokenEndpointAuthMethod against the
+// set of methods buildPureOAuth2Config/authStyleFromMethod support, and that
+// the method is consistent with whether a client secret source is configured.
+// Split out of Validate to keep that method's cyclomatic complexity down.
+func (c *OAuth2UpstreamRunConfig) validateTokenEndpointAuthMethod() error {
+	hasSecretSource := c.ClientSecretFile != "" || c.ClientSecretEnvVar != ""
+
+	switch c.TokenEndpointAuthMethod {
+	case "":
+		// Resolved from the presence of a secret in buildPureOAuth2Config.
+	case oauthproto.TokenEndpointAuthMethodNone:
+		if hasSecretSource {
+			return fmt.Errorf("oauth2 upstream: token_endpoint_auth_method none cannot be used with a client secret")
+		}
+	case oauthproto.TokenEndpointAuthMethodClientSecretBasic, oauthproto.TokenEndpointAuthMethodClientSecretPost:
+		if !hasSecretSource {
+			return fmt.Errorf(
+				"oauth2 upstream: token_endpoint_auth_method %q requires client_secret_file or client_secret_env_var",
+				c.TokenEndpointAuthMethod)
+		}
+	default:
+		return fmt.Errorf("oauth2 upstream: unsupported token_endpoint_auth_method %q", c.TokenEndpointAuthMethod)
 	}
 
 	return nil

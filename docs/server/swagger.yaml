@@ -4863,7 +4863,12 @@ components:
           type: string
       type: object
     storage.ACLUserRunConfig:
-      description: ACLUserConfig contains ACL user authentication configuration.
+      description: |-
+        ACLUserConfig contains ACL user authentication configuration.
+        A nil value is a valid no-auth configuration: the store connects without
+        credentials. A populated block whose password resolves to empty is a
+        misconfiguration (mis-keyed or unsynced secret) and is rejected rather
+        than silently downgraded to an unauthenticated connection.
       properties:
         password_env_var:
           description: PasswordEnvVar is the environment variable containing the Redis
@@ -4885,8 +4890,12 @@ components:
             Mutually exclusive with SentinelConfig.
           type: string
         auth_type:
-          description: AuthType must be "aclUser" - only ACL user authentication is
-            supported.
+          description: |-
+            AuthType selects the Redis authentication mode. "aclUser" is the only
+            authenticated mode. Leave it empty, with a nil ACLUserConfig, for a
+            no-auth connection to a Redis/Valkey instance that has no authentication
+            configured. The conversion code does not branch on this field; presence
+            of ACLUserConfig is what enables authentication.
           type: string
         cluster_mode:
           description: ClusterMode enables the Redis Cluster protocol. Requires Addr

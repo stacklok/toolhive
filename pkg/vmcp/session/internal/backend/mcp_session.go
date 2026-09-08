@@ -9,7 +9,6 @@ import (
 	"fmt"
 	"io"
 	"log/slog"
-	"net"
 	"net/http"
 	"syscall"
 	"time"
@@ -85,7 +84,9 @@ func WithRequestTimeoutResolver(resolver func(workloadID string) time.Duration) 
 //
 //   - Per-TCP-dial, not per-request: the hook fires once per TCP connection.
 //     A pooled connection is reused without re-invoking the hook until it is
-//     recycled.
+//     recycled. Because each backend gets its own isolated transport and
+//     connection pool, a reused connection is always one this hook already
+//     approved on its first dial — reuse cannot reach an unclassified peer.
 //   - Proxy transparency: when http.ProxyFromEnvironment selects a proxy
 //     (HTTP_PROXY/HTTPS_PROXY set), the dial target is the proxy server, so the
 //     hook receives the proxy's IP, not the backend's. Embedders relying on this
@@ -186,39 +187,16 @@ func (f httpRoundTripperFunc) RoundTrip(req *http.Request) (*http.Response, erro
 // backendBaseTransport returns the innermost RoundTripper for backend
 // connections. With a nil dialControl it returns http.DefaultTransport
 // unchanged, so the no-hook path is byte-for-byte identical to before
-// WithDialControl existed. With a non-nil hook it clones DefaultTransport
-// (preserving proxy, HTTP/2, and idle-connection settings) and installs a
-// net.Dialer whose Control hook fires on the resolved peer IP before the TCP
-// handshake. The 30 s dial timeouts match backendDialer in pkg/vmcp/client —
-// keep the two in sync (this is the session-init twin of that path's
-// newBackendTransport, minus the CA-bundle handling the session path does not
-// use).
+// WithDialControl existed. With a non-nil hook it delegates to
+// networking.CloneDefaultTransportWithDialControl — the single backend
+// transport construction point shared with pkg/vmcp/client — which clones
+// DefaultTransport and installs a net.Dialer whose Control hook fires on the
+// resolved peer IP before the TCP handshake.
 func backendBaseTransport(dialControl func(network, address string, c syscall.RawConn) error) http.RoundTripper {
 	if dialControl == nil {
 		return http.DefaultTransport
 	}
-	var t *http.Transport
-	if dt, ok := http.DefaultTransport.(*http.Transport); ok {
-		t = dt.Clone()
-	} else {
-		// http.DefaultTransport has been replaced (e.g. in tests). Reconstruct
-		// the Go standard-library defaults so proxy/timeout/HTTP2 settings are
-		// not silently dropped.
-		t = &http.Transport{
-			Proxy:                 http.ProxyFromEnvironment,
-			ForceAttemptHTTP2:     true,
-			MaxIdleConns:          100,
-			IdleConnTimeout:       90 * time.Second,
-			TLSHandshakeTimeout:   10 * time.Second,
-			ExpectContinueTimeout: 1 * time.Second,
-		}
-	}
-	t.DialContext = (&net.Dialer{
-		Timeout:   30 * time.Second,
-		KeepAlive: 30 * time.Second,
-		Control:   dialControl,
-	}).DialContext
-	return t
+	return networking.CloneDefaultTransportWithDialControl(dialControl)
 }
 
 // authRoundTripper adds pre-resolved authentication to outgoing backend requests.

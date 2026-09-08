@@ -125,6 +125,59 @@ func NewPrivateIPBlockingDialContext() func(ctx context.Context, network, addr s
 	return (&net.Dialer{Control: protectedDialerControl}).DialContext
 }
 
+// Dial timeouts applied to backend connections. Both match the Go standard
+// library's http.DefaultTransport dialer.
+const (
+	backendDialTimeout   = 30 * time.Second
+	backendDialKeepAlive = 30 * time.Second
+)
+
+// CloneDefaultTransportWithDialControl returns an *http.Transport equivalent to
+// http.DefaultTransport, optionally carrying a per-connection dial Control hook.
+//
+// When http.DefaultTransport is the standard *http.Transport it is cloned
+// (preserving proxy, HTTP/2, and idle-connection settings). If it has been
+// replaced (e.g. in tests) a transport with the Go standard-library defaults is
+// reconstructed instead, so proxy/timeout/HTTP2 settings are not silently
+// dropped.
+//
+// When control is non-nil, a net.Dialer carrying it — with the standard backend
+// dial timeout and keep-alive — is installed as DialContext. The hook fires on
+// the resolved peer IP before the TCP handshake, which is what lets callers
+// defeat DNS-rebinding: a name-based check cannot, because the name can resolve
+// to a blocked IP after the check passes. A nil control leaves the cloned
+// dialer untouched.
+//
+// This is the single construction point for the vMCP backend transport, shared
+// by the per-call backend client and the persistent session connector so the
+// two dial paths cannot drift.
+func CloneDefaultTransportWithDialControl(
+	control func(network, address string, c syscall.RawConn) error,
+) *http.Transport {
+	var t *http.Transport
+	if dt, ok := http.DefaultTransport.(*http.Transport); ok {
+		t = dt.Clone()
+	} else {
+		t = &http.Transport{
+			Proxy:                 http.ProxyFromEnvironment,
+			DialContext:           (&net.Dialer{Timeout: backendDialTimeout, KeepAlive: backendDialKeepAlive}).DialContext,
+			ForceAttemptHTTP2:     true,
+			MaxIdleConns:          maxIdleConns,
+			IdleConnTimeout:       idleConnTimeout,
+			TLSHandshakeTimeout:   10 * time.Second,
+			ExpectContinueTimeout: 1 * time.Second,
+		}
+	}
+	if control != nil {
+		t.DialContext = (&net.Dialer{
+			Timeout:   backendDialTimeout,
+			KeepAlive: backendDialKeepAlive,
+			Control:   control,
+		}).DialContext
+	}
+	return t
+}
+
 // IdleConnectionCloser is the capability http.Client discovers on its outermost
 // transport to drain pooled connections (it asserts an identical unexported
 // interface). Any RoundTripper in this repo that wraps another must implement it

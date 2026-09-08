@@ -579,10 +579,9 @@ func TestResponseFilteringWriter_LegacyListsRejectMalformedOrAmbiguousResults(t 
 	}
 }
 
-// TestResponseFilteringWriter_ResourceTemplatesList is the regression test for
-// GHSA-5vxv-9f7g-x8j2. Resource-template enumeration is admitted before any
-// individual resource ID is known, so every descriptor must be filtered against
-// the same read_resource authorization used when resources are read.
+// TestResponseFilteringWriter_ResourceTemplatesList verifies that resource-
+// template enumeration filters every descriptor against the same read_resource
+// authorization used when resources are read.
 func TestResponseFilteringWriter_ResourceTemplatesList(t *testing.T) {
 	t.Parallel()
 

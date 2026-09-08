@@ -1573,7 +1573,8 @@ func TestPopulateMiddlewareConfigs_BindsEmbeddedAuthServerIssuer(t *testing.T) {
 	t.Parallel()
 
 	embeddedAuthServerConfig := createMinimalAuthServerConfig()
-	config := &RunConfig{EmbeddedAuthServerConfig: embeddedAuthServerConfig}
+	oidcConfig := &auth.TokenValidatorConfig{Issuer: "https://issuer.example.com", Scopes: []string{"openid", "profile"}}
+	config := &RunConfig{EmbeddedAuthServerConfig: embeddedAuthServerConfig, OIDCConfig: oidcConfig}
 	require.NoError(t, PopulateMiddlewareConfigs(config))
 
 	for _, middlewareConfig := range config.MiddlewareConfigs {
@@ -1584,10 +1585,144 @@ func TestPopulateMiddlewareConfigs_BindsEmbeddedAuthServerIssuer(t *testing.T) {
 		var params auth.MiddlewareParams
 		require.NoError(t, json.Unmarshal(middlewareConfig.Parameters, &params))
 		assert.Equal(t, embeddedAuthServerConfig.Issuer, params.EmbeddedAuthServerIssuer)
+		assert.Equal(t, oidcConfig, params.OIDCConfig)
 		return
 	}
 
 	t.Fatal("authentication middleware configuration not found")
+}
+
+func TestCanonicalizeOIDCMiddlewareConfig(t *testing.T) {
+	t.Parallel()
+
+	canonical := &auth.TokenValidatorConfig{
+		Issuer: "https://issuer.example.com", JWKSURL: "https://issuer.example.com/keys",
+		CACertPath: "/certs/ca.pem", AuthTokenFile: "/secrets/jwks-token",
+		ResourceURL: "https://resource.example.com", AllowPrivateIP: true,
+		InsecureAllowHTTP: true, Scopes: []string{"openid", "profile"},
+	}
+	authConfig := func(t *testing.T, params auth.MiddlewareParams) types.MiddlewareConfig {
+		t.Helper()
+		config, err := types.NewMiddlewareConfig(auth.MiddlewareType, params)
+		require.NoError(t, err)
+		return *config
+	}
+
+	tests := []struct {
+		name                     string
+		canonical                *auth.TokenValidatorConfig
+		middlewares              []types.MiddlewareConfig
+		embeddedAuthServerConfig *authserver.RunConfig
+		wantErr                  string
+		assertion                func(t *testing.T, middlewares []types.MiddlewareConfig)
+	}{
+		{
+			name:      "repairs legacy nil OIDC configuration",
+			canonical: canonical,
+			middlewares: []types.MiddlewareConfig{
+				authConfig(t, auth.MiddlewareParams{EmbeddedAuthServerIssuer: "https://embedded.example.com"}),
+			},
+			assertion: func(t *testing.T, middlewares []types.MiddlewareConfig) {
+				t.Helper()
+				var params auth.MiddlewareParams
+				require.NoError(t, json.Unmarshal(middlewares[0].Parameters, &params))
+				assert.Equal(t, canonical, params.OIDCConfig)
+				assert.Equal(t, "https://embedded.example.com", params.EmbeddedAuthServerIssuer)
+			},
+		},
+		{
+			name:      "replaces stale embedded auth server issuer",
+			canonical: canonical,
+			middlewares: []types.MiddlewareConfig{
+				authConfig(t, auth.MiddlewareParams{EmbeddedAuthServerIssuer: "https://stale-embedded.example.com"}),
+			},
+			embeddedAuthServerConfig: &authserver.RunConfig{Issuer: "https://embedded.example.com"},
+			assertion: func(t *testing.T, middlewares []types.MiddlewareConfig) {
+				t.Helper()
+				var params auth.MiddlewareParams
+				require.NoError(t, json.Unmarshal(middlewares[0].Parameters, &params))
+				assert.Equal(t, "https://embedded.example.com", params.EmbeddedAuthServerIssuer)
+			},
+		},
+		{
+			name:      "replaces stale OIDC configuration and preserves ordering",
+			canonical: canonical,
+			middlewares: []types.MiddlewareConfig{
+				{Type: mcp.ParserMiddlewareType},
+				authConfig(t, auth.MiddlewareParams{OIDCConfig: &auth.TokenValidatorConfig{Issuer: "https://stale.example.com"}}),
+				{Type: recovery.MiddlewareType},
+			},
+			assertion: func(t *testing.T, middlewares []types.MiddlewareConfig) {
+				t.Helper()
+				assert.Equal(t, mcp.ParserMiddlewareType, middlewares[0].Type)
+				assert.Equal(t, auth.MiddlewareType, middlewares[1].Type)
+				assert.Equal(t, recovery.MiddlewareType, middlewares[2].Type)
+				var params auth.MiddlewareParams
+				require.NoError(t, json.Unmarshal(middlewares[1].Parameters, &params))
+				assert.Equal(t, canonical, params.OIDCConfig)
+			},
+		},
+		{
+			name:        "leaves valid canonical configuration intact",
+			canonical:   canonical,
+			middlewares: []types.MiddlewareConfig{authConfig(t, auth.MiddlewareParams{OIDCConfig: canonical})},
+		},
+		{
+			name:        "rejects missing authentication middleware",
+			canonical:   canonical,
+			middlewares: []types.MiddlewareConfig{{Type: mcp.ParserMiddlewareType}},
+			wantErr:     "exactly one authentication middleware",
+		},
+		{
+			name: "rejects malformed authentication parameters", canonical: canonical,
+			middlewares: []types.MiddlewareConfig{{Type: auth.MiddlewareType, Parameters: []byte(`{`)}},
+			wantErr:     "failed to decode authentication middleware parameters",
+		},
+		{
+			name: "rejects null authentication parameters", canonical: canonical,
+			middlewares: []types.MiddlewareConfig{{Type: auth.MiddlewareType, Parameters: []byte(`null`)}},
+			wantErr:     "authentication middleware parameters cannot be null",
+		},
+		{
+			name: "rejects duplicate authentication middleware", canonical: canonical,
+			middlewares: []types.MiddlewareConfig{
+				authConfig(t, auth.MiddlewareParams{OIDCConfig: canonical}),
+				authConfig(t, auth.MiddlewareParams{OIDCConfig: canonical}),
+			},
+			wantErr: "exactly one authentication middleware",
+		},
+		{
+			name:        "leaves chain unchanged without canonical OIDC configuration",
+			middlewares: []types.MiddlewareConfig{authConfig(t, auth.MiddlewareParams{})},
+			assertion: func(t *testing.T, middlewares []types.MiddlewareConfig) {
+				t.Helper()
+				var params auth.MiddlewareParams
+				require.NoError(t, json.Unmarshal(middlewares[0].Parameters, &params))
+				assert.Nil(t, params.OIDCConfig)
+			},
+		},
+		{name: "allows empty deferred chain", canonical: canonical},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			config := &RunConfig{
+				OIDCConfig:               tt.canonical,
+				MiddlewareConfigs:        tt.middlewares,
+				EmbeddedAuthServerConfig: tt.embeddedAuthServerConfig,
+			}
+			err := canonicalizeOIDCMiddlewareConfig(config)
+			if tt.wantErr != "" {
+				require.ErrorContains(t, err, tt.wantErr)
+				return
+			}
+			require.NoError(t, err)
+			if tt.assertion != nil {
+				tt.assertion(t, config.MiddlewareConfigs)
+			}
+		})
+	}
 }
 
 // TestPopulateMiddlewareConfigs_StripAuthOrdering pins the ordering invariant

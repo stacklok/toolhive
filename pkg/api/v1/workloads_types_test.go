@@ -227,7 +227,7 @@ func TestRunConfigToCreateRequest(t *testing.T) {
 		assert.Equal(t, "https://oidc.example.com/jwks", result.OIDC.JwksURL)
 		assert.Equal(t, "https://oidc.example.com/introspect", result.OIDC.IntrospectionURL)
 		assert.Equal(t, "test-client", result.OIDC.ClientID)
-		assert.Equal(t, "test-secret", result.OIDC.ClientSecret)
+		assert.Empty(t, result.OIDC.ClientSecret)
 	})
 
 	t.Run("with remote OAuth config", func(t *testing.T) {

@@ -302,6 +302,10 @@ func (r *Runner) Run(ctx context.Context) error {
 		}
 	}
 
+	if err := canonicalizeOIDCMiddlewareConfig(r.Config); err != nil {
+		return fmt.Errorf("invalid OIDC middleware configuration: %w", err)
+	}
+
 	if err := validateCredentialStrippingMiddleware(r.Config.MiddlewareConfigs, r.Config); err != nil {
 		return fmt.Errorf("invalid credential stripping middleware configuration: %w", err)
 	}

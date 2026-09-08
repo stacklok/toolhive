@@ -5,6 +5,7 @@ package runner
 
 import (
 	"context"
+	"encoding/json"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -17,6 +18,7 @@ import (
 	"github.com/stretchr/testify/require"
 	"go.uber.org/mock/gomock"
 
+	"github.com/stacklok/toolhive/pkg/auth"
 	"github.com/stacklok/toolhive/pkg/auth/remote"
 	"github.com/stacklok/toolhive/pkg/auth/upstreamtoken"
 	"github.com/stacklok/toolhive/pkg/authserver"
@@ -219,6 +221,33 @@ func TestRunner_RunRejectsPrePopulatedChainWithoutCredentialStrip(t *testing.T) 
 
 	err := NewRunner(config, nil).Run(t.Context())
 	require.ErrorContains(t, err, "credential stripping requires strip-auth middleware")
+}
+
+func TestRunner_RunCanonicalizesPrePopulatedOIDCMiddleware(t *testing.T) {
+	t.Parallel()
+
+	authConfig, err := types.NewMiddlewareConfig(auth.MiddlewareType, auth.MiddlewareParams{})
+	require.NoError(t, err)
+
+	config := NewRunConfig()
+	config.OIDCConfig = &auth.TokenValidatorConfig{Issuer: "https://issuer.example.com"}
+	config.MiddlewareConfigs = []types.MiddlewareConfig{{Type: "unsupported"}, *authConfig}
+
+	// The unsupported entry makes Run return after canonicalization, before any
+	// middleware factory can open a connection or listener.
+	err = NewRunner(config, nil).Run(t.Context())
+	require.ErrorContains(t, err, "unsupported middleware type")
+
+	for _, middlewareConfig := range config.MiddlewareConfigs {
+		if middlewareConfig.Type != auth.MiddlewareType {
+			continue
+		}
+		var params auth.MiddlewareParams
+		require.NoError(t, json.Unmarshal(middlewareConfig.Parameters, &params))
+		assert.Equal(t, config.OIDCConfig, params.OIDCConfig)
+		return
+	}
+	t.Fatal("authentication middleware configuration not found")
 }
 
 func TestStatusManagerAdapter_SetWorkloadStatus(t *testing.T) {

@@ -296,7 +296,6 @@ func runConfigToCreateRequest(runConfig *runner.RunConfig) *createRequest {
 			JwksURL:          runConfig.OIDCConfig.JWKSURL,
 			IntrospectionURL: runConfig.OIDCConfig.IntrospectionURL,
 			ClientID:         runConfig.OIDCConfig.ClientID,
-			ClientSecret:     runConfig.OIDCConfig.ClientSecret,
 			Scopes:           runConfig.OIDCConfig.Scopes,
 		}
 	}

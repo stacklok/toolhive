@@ -4,6 +4,9 @@
 package runner
 
 import (
+	"bytes"
+	"encoding/json"
+	"errors"
 	"fmt"
 	"log/slog"
 	"slices"
@@ -291,6 +294,54 @@ func PopulateMiddlewareConfigs(config *RunConfig) error {
 
 	// Set the populated middleware configs
 	config.MiddlewareConfigs = middlewareConfigs
+	return nil
+}
+
+var errOIDCAuthenticationMiddlewareCount = errors.New("OIDC configuration requires exactly one authentication middleware")
+
+// canonicalizeOIDCMiddlewareConfig synchronizes the serialized authentication
+// middleware with the canonical OIDC configuration when the chain is populated.
+func canonicalizeOIDCMiddlewareConfig(config *RunConfig) error {
+	if config.OIDCConfig == nil || len(config.MiddlewareConfigs) == 0 {
+		return nil
+	}
+
+	authMiddlewareIndex := -1
+	for i, middlewareConfig := range config.MiddlewareConfigs {
+		if middlewareConfig.Type != auth.MiddlewareType {
+			continue
+		}
+		if authMiddlewareIndex >= 0 {
+			return errOIDCAuthenticationMiddlewareCount
+		}
+		authMiddlewareIndex = i
+	}
+	if authMiddlewareIndex < 0 {
+		return errOIDCAuthenticationMiddlewareCount
+	}
+
+	var params auth.MiddlewareParams
+	parameters := config.MiddlewareConfigs[authMiddlewareIndex].Parameters
+	if string(bytes.TrimSpace(parameters)) == "null" {
+		return errors.New("authentication middleware parameters cannot be null")
+	}
+	if err := json.Unmarshal(parameters, &params); err != nil {
+		return fmt.Errorf("failed to decode authentication middleware parameters: %w", err)
+	}
+
+	if embeddedAuthServerConfig := config.EmbeddedAuthServerConfig; embeddedAuthServerConfig != nil &&
+		embeddedAuthServerConfig.Issuer != "" {
+		params.EmbeddedAuthServerIssuer = embeddedAuthServerConfig.Issuer
+	}
+
+	canonicalConfig := *config.OIDCConfig
+	canonicalConfig.Scopes = slices.Clone(config.OIDCConfig.Scopes)
+	params.OIDCConfig = &canonicalConfig
+	middlewareConfig, err := types.NewMiddlewareConfig(auth.MiddlewareType, params)
+	if err != nil {
+		return fmt.Errorf("failed to encode authentication middleware parameters: %w", err)
+	}
+	config.MiddlewareConfigs[authMiddlewareIndex] = *middlewareConfig
 	return nil
 }
 

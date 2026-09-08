@@ -523,6 +523,21 @@ func WithAuditEnabled(enableAudit bool, auditConfigPath string) RunConfigBuilder
 	}
 }
 
+// WithTokenValidatorConfig sets a copy of the canonical OIDC token validator configuration.
+func WithTokenValidatorConfig(config *auth.TokenValidatorConfig) RunConfigBuilderOption {
+	return func(b *runConfigBuilder) error {
+		if config == nil {
+			b.config.OIDCConfig = nil
+			return nil
+		}
+
+		configCopy := *config
+		configCopy.Scopes = slices.Clone(config.Scopes)
+		b.config.OIDCConfig = &configCopy
+		return nil
+	}
+}
+
 // WithOIDCConfig configures OIDC settings
 func WithOIDCConfig(
 	oidcIssuer string,
@@ -1092,6 +1107,10 @@ func internalRunConfigBuilder(
 			scopes = registration.DefaultScopes
 		}
 		b.config.OIDCConfig.Scopes = scopes
+	}
+
+	if err := canonicalizeOIDCMiddlewareConfig(b.config); err != nil {
+		return nil, fmt.Errorf("invalid OIDC middleware configuration: %w", err)
 	}
 
 	// When using the CLI validation strategy, this is where the prompting for

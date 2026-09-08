@@ -1147,6 +1147,73 @@ func TestRunConfigBuilder_WithRegistryProxyPort(t *testing.T) {
 	}
 }
 
+func TestRunConfigBuilder_CanonicalizesOIDCMiddlewareConfig(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name      string
+		operator  bool
+		options   []RunConfigBuilderOption
+		assertion func(t *testing.T, config *RunConfig)
+	}{
+		{
+			name: "canonicalizes production CLI option ordering after embedded scope derivation",
+			options: []RunConfigBuilderOption{
+				WithMiddlewareFromFlags(nil, nil, nil, nil, nil, "", false, "", "", "", true),
+				WithOIDCConfig(
+					"https://issuer.example.com", "api://toolhive", "https://issuer.example.com/keys", "",
+					"client", "", "/certs/ca.pem", "/secrets/jwks-token", "https://resource.example.com", true, true, nil,
+				),
+				WithEmbeddedAuthServerConfig(&authserver.RunConfig{ScopesSupported: []string{"openid", "offline_access"}}),
+			},
+			assertion: func(t *testing.T, config *RunConfig) {
+				t.Helper()
+				want := &auth.TokenValidatorConfig{
+					Issuer: "https://issuer.example.com", Audience: "api://toolhive", JWKSURL: "https://issuer.example.com/keys",
+					ClientID: "client", CACertPath: "/certs/ca.pem", AuthTokenFile: "/secrets/jwks-token",
+					ResourceURL: "https://resource.example.com", AllowPrivateIP: true, InsecureAllowHTTP: true,
+					Scopes: []string{"openid", "offline_access"},
+				}
+				assert.Equal(t, want, config.OIDCConfig)
+				for _, middlewareConfig := range config.MiddlewareConfigs {
+					if middlewareConfig.Type != auth.MiddlewareType {
+						continue
+					}
+					var params auth.MiddlewareParams
+					require.NoError(t, json.Unmarshal(middlewareConfig.Parameters, &params))
+					assert.Equal(t, want, params.OIDCConfig)
+					return
+				}
+				t.Fatal("authentication middleware configuration not found")
+			},
+		},
+		{
+			name:     "allows deferred operator middleware assembly",
+			operator: true,
+			options: []RunConfigBuilderOption{
+				WithTokenValidatorConfig(&auth.TokenValidatorConfig{Issuer: "https://issuer.example.com"}),
+			},
+			assertion: func(t *testing.T, config *RunConfig) {
+				t.Helper()
+				assert.Empty(t, config.MiddlewareConfigs)
+			},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			build := NewRunConfigBuilder
+			if tt.operator {
+				build = NewOperatorRunConfigBuilder
+			}
+			config, err := build(context.Background(), nil, nil, &mockEnvVarValidator{}, tt.options...)
+			require.NoError(t, err)
+			tt.assertion(t, config)
+		})
+	}
+}
+
 // TestEmbeddedAuthServerScopePropagation verifies that the builder propagates
 // EmbeddedAuthServerConfig.ScopesSupported to OIDCConfig.Scopes when no
 // explicit PRM scopes are configured, and that explicit scopes are preserved.

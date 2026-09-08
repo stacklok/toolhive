@@ -402,6 +402,11 @@ func ReadJSON(r io.Reader) (*RunConfig, error) {
 		return nil, fmt.Errorf("failed to migrate bearer token: %w", err)
 	}
 
+	// Repair legacy serialized auth middleware in memory without rewriting the source config.
+	if err := canonicalizeOIDCMiddlewareConfig(&config); err != nil {
+		return nil, fmt.Errorf("invalid OIDC middleware configuration: %w", err)
+	}
+
 	// Normalize proxyMode so pre-existing configs always reflect the effective protocol
 	config.NormalizeProxyMode()
 

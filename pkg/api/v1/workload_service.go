@@ -17,6 +17,7 @@ import (
 	regtypes "github.com/stacklok/toolhive-core/registry/types"
 	groupval "github.com/stacklok/toolhive-core/validation/group"
 	httpval "github.com/stacklok/toolhive-core/validation/http"
+	"github.com/stacklok/toolhive/pkg/auth"
 	"github.com/stacklok/toolhive/pkg/auth/remote"
 	"github.com/stacklok/toolhive/pkg/config"
 	"github.com/stacklok/toolhive/pkg/container/runtime"
@@ -126,21 +127,26 @@ func (s *WorkloadService) UpdateWorkloadFromRequest(ctx context.Context, name st
 	// the policy gate below evaluates it - a policy can't be bypassed by
 	// echoing an unchanged config back.
 	//
-	// Only load state when an echo is even possible, to keep the extra I/O
-	// off requests that don't need it. Missing state falls through with
-	// persisted left nil - the workload exists (the handler already
-	// checked), only its state file doesn't, so this can't be an echo and
-	// the protocol-scheme guard below is the correct 400, not a 404. Any
-	// other load error (corrupt file, cancelled context) is surfaced
-	// instead of silently disabling the echo check and producing a
-	// misleading 400.
+	// Only load state when an echo or a write-only OIDC secret is even
+	// possible, to keep the extra I/O off requests that don't need it.
+	// Missing state falls through with persisted left nil - the workload
+	// exists (the handler already checked), only its state file doesn't,
+	// so this can't be an echo and the protocol-scheme guard below is the
+	// correct 400, not a 404. Likewise, an absent stored OIDC config cannot
+	// supply a secret. Any other load error (corrupt file, cancelled context)
+	// is surfaced instead of silently disabling the echo check and producing
+	// a misleading 400.
 	// runtimeConfigFromRequest is called again in BuildFullRunConfig; it's
 	// pure (Clone-then-normalize), so the duplicate call just decides whether
 	// a state read is needed at all. Gating on it rather than the raw
 	// req.RuntimeConfig != nil means a request with an empty/whitespace-only
 	// runtime_config (which normalizes away to nothing) never reads state.
 	persisted, err := func() (*runner.RunConfig, error) {
-		if runtimeConfigFromRequest(req) == nil || (req.URL == "" && runner.IsImageProtocolScheme(req.Image)) {
+		runtimeConfig := runtimeConfigFromRequest(req)
+		needsRuntimeConfig := runtimeConfig != nil &&
+			(req.URL != "" || !runner.IsImageProtocolScheme(req.Image))
+		needsOIDCSecret := hasOIDCValidatorConfig(req.OIDC) && req.OIDC.ClientSecret == ""
+		if !needsRuntimeConfig && !needsOIDCSecret {
 			return nil, nil
 		}
 		p, err := runner.LoadState(ctx, name)
@@ -148,8 +154,7 @@ func (s *WorkloadService) UpdateWorkloadFromRequest(ctx context.Context, name st
 		case err == nil:
 			return p, nil
 		case errors.Is(err, wterrors.ErrRunConfigNotFound):
-			// No persisted state to echo against; fall through to the
-			// protocol-scheme guard.
+			// No persisted state to echo against or retrieve a secret from.
 			return nil, nil
 		default:
 			return nil, fmt.Errorf("failed to load persisted state for workload %q: %w", name, err)
@@ -176,8 +181,10 @@ func (s *WorkloadService) UpdateWorkloadFromRequest(ctx context.Context, name st
 
 // BuildFullRunConfig builds a complete RunConfig. persisted is the
 // workload's existing RunConfig on update, or nil on create; it is used
-// only to recognize an unchanged runtime_config echo on a non-protocol
-// image (see runtimeConfigForImageBuild).
+// to recognize an unchanged runtime_config echo on a non-protocol image
+// (see runtimeConfigForImageBuild) and preserve a write-only OIDC client
+// secret only when the request retains its OIDC credential binding and omits
+// the secret.
 //
 //nolint:gocyclo // TODO: refactor this into shorter functions
 func (s *WorkloadService) BuildFullRunConfig(
@@ -355,6 +362,30 @@ func (s *WorkloadService) BuildFullRunConfig(
 	regAPIURL, regURL := runner.ResolveRegistrySourceURLs(serverMetadata, cfg)
 	regServerName := runner.ResolveRegistryServerName(serverMetadata)
 
+	// API OIDC authentication is enabled only when one of the supported
+	// validator fields is configured. Scopes alone advertise no authentication.
+	apiOIDCConfig := func() *auth.TokenValidatorConfig {
+		if !hasOIDCValidatorConfig(req.OIDC) {
+			return nil
+		}
+		clientSecret := req.OIDC.ClientSecret
+		if clientSecret == "" && persisted != nil && persisted.OIDCConfig != nil &&
+			req.OIDC.Issuer == persisted.OIDCConfig.Issuer &&
+			req.OIDC.IntrospectionURL == persisted.OIDCConfig.IntrospectionURL &&
+			req.OIDC.ClientID == persisted.OIDCConfig.ClientID {
+			clientSecret = persisted.OIDCConfig.ClientSecret
+		}
+		return &auth.TokenValidatorConfig{
+			Issuer:           req.OIDC.Issuer,
+			Audience:         req.OIDC.Audience,
+			JWKSURL:          req.OIDC.JwksURL,
+			IntrospectionURL: req.OIDC.IntrospectionURL,
+			ClientID:         req.OIDC.ClientID,
+			ClientSecret:     clientSecret,
+			Scopes:           req.OIDC.Scopes,
+		}
+	}()
+
 	options := []runner.RunConfigBuilderOption{
 		runner.WithRuntime(s.containerRuntime),
 		runner.WithCmdArgs(req.CmdArguments),
@@ -379,8 +410,7 @@ func (s *WorkloadService) BuildFullRunConfig(
 		runner.WithTransportAndPorts(req.Transport, req.ProxyPort, req.TargetPort),
 		runner.WithMaxRequestBodySize(req.MaxRequestBodySize),
 		runner.WithAuditEnabled(false, ""),
-		runner.WithOIDCConfig(req.OIDC.Issuer, req.OIDC.Audience, req.OIDC.JwksURL, "",
-			req.OIDC.ClientID, "", "", "", "", false, false, req.OIDC.Scopes),
+		runner.WithTokenValidatorConfig(apiOIDCConfig),
 		runner.WithToolsFilter(req.ToolsFilter),
 		runner.WithToolsOverride(toolsOverride),
 		runner.WithTelemetryConfig(telemetryConfig),
@@ -432,7 +462,7 @@ func (s *WorkloadService) BuildFullRunConfig(
 	// Configure middleware from flags
 	options = append(options,
 		runner.WithMiddlewareFromFlags(
-			nil,
+			apiOIDCConfig,
 			nil, // tokenExchangeConfig - not supported via API yet
 			req.ToolsFilter,
 			toolsOverride,
@@ -536,6 +566,13 @@ func createRequestToRemoteAuthConfig(
 	}
 
 	return remoteAuthConfig
+}
+
+// hasOIDCValidatorConfig reports whether options enable OIDC authentication.
+// Scopes alone only advertise authentication metadata and do not enable it.
+func hasOIDCValidatorConfig(oidc oidcOptions) bool {
+	return oidc.Issuer != "" || oidc.Audience != "" || oidc.JwksURL != "" ||
+		oidc.IntrospectionURL != "" || oidc.ClientID != "" || oidc.ClientSecret != ""
 }
 
 // runtimeConfigFromRequest normalizes the request's runtime config in place

@@ -5,6 +5,7 @@ package v1
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"net/http"
 	"os"
@@ -19,6 +20,7 @@ import (
 	"github.com/stacklok/toolhive-core/httperr"
 	"github.com/stacklok/toolhive-core/permissions"
 	regtypes "github.com/stacklok/toolhive-core/registry/types"
+	"github.com/stacklok/toolhive/pkg/auth"
 	"github.com/stacklok/toolhive/pkg/config"
 	"github.com/stacklok/toolhive/pkg/container/templates"
 	groupsmocks "github.com/stacklok/toolhive/pkg/groups/mocks"
@@ -26,6 +28,7 @@ import (
 	"github.com/stacklok/toolhive/pkg/runner/retriever"
 	"github.com/stacklok/toolhive/pkg/secrets"
 	"github.com/stacklok/toolhive/pkg/state"
+	"github.com/stacklok/toolhive/pkg/workloads"
 	workloadsmocks "github.com/stacklok/toolhive/pkg/workloads/mocks"
 )
 
@@ -211,6 +214,79 @@ func TestBuildFullRunConfig_ThreadsImageVerification(t *testing.T) {
 	require.NoError(t, err)
 	assert.Equal(t, retriever.VerifyImageDisabled, observed,
 		"imageRetriever must receive s.imageVerification verbatim")
+}
+
+func TestBuildFullRunConfig_BindsCanonicalOIDCToAuthMiddleware(t *testing.T) {
+	t.Parallel()
+
+	const testImage = "test-image"
+	tests := []struct {
+		name     string
+		oidc     oidcOptions
+		wantOIDC *auth.TokenValidatorConfig
+	}{
+		{
+			name: "ordinary configuration",
+			oidc: oidcOptions{
+				Issuer: "https://issuer.example.com", Audience: "api://toolhive",
+				JwksURL: "https://issuer.example.com/keys", ClientID: "toolhive",
+				Scopes: []string{"openid", "profile"},
+			},
+			wantOIDC: &auth.TokenValidatorConfig{
+				Issuer: "https://issuer.example.com", Audience: "api://toolhive",
+				JWKSURL: "https://issuer.example.com/keys", ClientID: "toolhive",
+				Scopes: []string{"openid", "profile"},
+			},
+		},
+		{
+			name: "introspection and client secret activate authentication",
+			oidc: oidcOptions{
+				IntrospectionURL: "https://issuer.example.com/introspect", ClientSecret: "test-secret",
+			},
+			wantOIDC: &auth.TokenValidatorConfig{
+				IntrospectionURL: "https://issuer.example.com/introspect", ClientSecret: "test-secret",
+			},
+		},
+		{name: "scopes only does not enable authentication", oidc: oidcOptions{Scopes: []string{"openid"}}},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			ctrl := gomock.NewController(t)
+			mockGroupManager := groupsmocks.NewMockManager(ctrl)
+			mockGroupManager.EXPECT().Exists(gomock.Any(), "default").Return(true, nil)
+			service := &WorkloadService{
+				groupManager: mockGroupManager,
+				imageRetriever: func(
+					_ context.Context, _ string, _ string, _ string, _ string, _ *templates.RuntimeConfig,
+				) (string, regtypes.ServerMetadata, error) {
+					return testImage, &regtypes.ImageMetadata{Image: testImage}, nil
+				},
+				imagePuller:       func(_ context.Context, _ string) error { return nil },
+				configProvider:    config.NewPathProvider(t.TempDir() + "/config.yaml"),
+				imageVerification: retriever.VerifyImageWarn,
+			}
+
+			runConfig, err := service.BuildFullRunConfig(context.Background(), &createRequest{
+				Name: "testserver", updateRequest: updateRequest{Image: testImage, OIDC: tt.oidc},
+			}, 0, nil)
+			require.NoError(t, err)
+			assert.Equal(t, tt.wantOIDC, runConfig.OIDCConfig)
+
+			for _, middlewareConfig := range runConfig.MiddlewareConfigs {
+				if middlewareConfig.Type != auth.MiddlewareType {
+					continue
+				}
+				var params auth.MiddlewareParams
+				require.NoError(t, json.Unmarshal(middlewareConfig.Parameters, &params))
+				assert.Equal(t, tt.wantOIDC, params.OIDCConfig)
+				return
+			}
+			t.Fatal("authentication middleware configuration not found")
+		})
+	}
 }
 
 // TestBuildFullRunConfig_AppliesOtelFromConfig verifies that workloads created
@@ -831,6 +907,153 @@ func TestBuildFullRunConfig_EchoedRuntimeConfigVisibleToPolicyGate(t *testing.T)
 			"restricting builder images, packages, build constraints or runtime env must not be "+
 			"bypassable by echoing an unchanged config back")
 	assert.Equal(t, echoedConfig, gate.snapshot)
+}
+
+// TestUpdateWorkloadFromRequest_PreservesRedactedOIDCSecret verifies that an
+// OIDC-configured request reconstructed from a redacted API response retains
+// the persisted write-only client secret when its credential binding is
+// unchanged, without mutating the request.
+//
+//nolint:paralleltest // SaveState/LoadState use process-wide XDG state settings; keep sequential.
+func TestUpdateWorkloadFromRequest_PreservesRedactedOIDCSecret(t *testing.T) {
+	t.Cleanup(xdg.Reload)
+	t.Setenv("XDG_STATE_HOME", t.TempDir())
+	xdg.Reload()
+
+	const (
+		workloadName = "test-workload"
+		testImage    = "test-image"
+		clientSecret = "test-secret"
+	)
+	persisted := runner.NewRunConfig()
+	persisted.Name = workloadName
+	persisted.BaseName = workloadName
+	persisted.ContainerName = workloadName
+	persisted.Image = testImage
+	persisted.OIDCConfig = &auth.TokenValidatorConfig{
+		Issuer:           "https://issuer.example.com",
+		IntrospectionURL: "https://issuer.example.com/introspect",
+		ClientID:         "test-client",
+		ClientSecret:     clientSecret,
+	}
+	require.NoError(t, persisted.SaveState(context.Background()))
+
+	request := runConfigToCreateRequest(persisted)
+	require.NotNil(t, request)
+	assert.Empty(t, request.OIDC.ClientSecret)
+
+	ctrl := gomock.NewController(t)
+	mockGroupManager := groupsmocks.NewMockManager(ctrl)
+	mockGroupManager.EXPECT().Exists(gomock.Any(), "default").Return(true, nil)
+	mockWorkloadManager := workloadsmocks.NewMockManager(ctrl)
+	mockWorkloadManager.EXPECT().UpdateWorkload(gomock.Any(), workloadName, gomock.Any()).
+		DoAndReturn(func(_ context.Context, _ string, runConfig *runner.RunConfig) (workloads.CompletionFunc, error) {
+			require.NotNil(t, runConfig.OIDCConfig)
+			assert.Equal(t, clientSecret, runConfig.OIDCConfig.ClientSecret)
+			for _, middlewareConfig := range runConfig.MiddlewareConfigs {
+				if middlewareConfig.Type != auth.MiddlewareType {
+					continue
+				}
+				var params auth.MiddlewareParams
+				require.NoError(t, json.Unmarshal(middlewareConfig.Parameters, &params))
+				require.NotNil(t, params.OIDCConfig)
+				assert.Equal(t, clientSecret, params.OIDCConfig.ClientSecret)
+				return nil, nil
+			}
+			t.Fatal("authentication middleware configuration not found")
+			return nil, nil
+		})
+
+	service := &WorkloadService{
+		workloadManager: mockWorkloadManager,
+		groupManager:    mockGroupManager,
+		imageRetriever: func(
+			_ context.Context, _ string, _ string, _ string, _ string, _ *templates.RuntimeConfig,
+		) (string, regtypes.ServerMetadata, error) {
+			return testImage, &regtypes.ImageMetadata{Image: testImage}, nil
+		},
+		imagePuller:       func(_ context.Context, _ string) error { return nil },
+		configProvider:    config.NewDefaultProvider(),
+		imageVerification: retriever.VerifyImageWarn,
+	}
+
+	_, err := service.UpdateWorkloadFromRequest(context.Background(), workloadName, request, 0)
+	require.NoError(t, err)
+	assert.Empty(t, request.OIDC.ClientSecret, "UpdateWorkloadFromRequest must not mutate the caller request")
+}
+
+func TestBuildFullRunConfig_DoesNotPreserveOIDCSecretForChangedCredentialBinding(t *testing.T) {
+	t.Parallel()
+
+	const (
+		testImage    = "test-image"
+		clientSecret = "test-secret"
+	)
+	persisted := runner.NewRunConfig()
+	persisted.OIDCConfig = &auth.TokenValidatorConfig{
+		Issuer:           "https://issuer.example.com",
+		IntrospectionURL: "https://issuer.example.com/introspect",
+		ClientID:         "test-client",
+		ClientSecret:     clientSecret,
+	}
+
+	tests := []struct {
+		name string
+		oidc oidcOptions
+	}{
+		{
+			name: "changed issuer",
+			oidc: oidcOptions{
+				Issuer:           "https://other-issuer.example.com",
+				IntrospectionURL: persisted.OIDCConfig.IntrospectionURL,
+				ClientID:         persisted.OIDCConfig.ClientID,
+			},
+		},
+		{
+			name: "changed introspection endpoint",
+			oidc: oidcOptions{
+				Issuer:           persisted.OIDCConfig.Issuer,
+				IntrospectionURL: "https://issuer.example.com/other-introspect",
+				ClientID:         persisted.OIDCConfig.ClientID,
+			},
+		},
+		{
+			name: "changed client ID",
+			oidc: oidcOptions{
+				Issuer:           persisted.OIDCConfig.Issuer,
+				IntrospectionURL: persisted.OIDCConfig.IntrospectionURL,
+				ClientID:         "other-client",
+			},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			ctrl := gomock.NewController(t)
+			mockGroupManager := groupsmocks.NewMockManager(ctrl)
+			mockGroupManager.EXPECT().Exists(gomock.Any(), "default").Return(true, nil)
+			service := &WorkloadService{
+				groupManager: mockGroupManager,
+				imageRetriever: func(
+					_ context.Context, _ string, _ string, _ string, _ string, _ *templates.RuntimeConfig,
+				) (string, regtypes.ServerMetadata, error) {
+					return testImage, &regtypes.ImageMetadata{Image: testImage}, nil
+				},
+				imagePuller:       func(_ context.Context, _ string) error { return nil },
+				configProvider:    config.NewDefaultProvider(),
+				imageVerification: retriever.VerifyImageWarn,
+			}
+			request := &createRequest{updateRequest: updateRequest{Image: testImage, OIDC: tt.oidc}}
+
+			runConfig, err := service.BuildFullRunConfig(context.Background(), request, 0, persisted)
+			require.NoError(t, err)
+			require.NotNil(t, runConfig.OIDCConfig)
+			assert.Empty(t, runConfig.OIDCConfig.ClientSecret)
+			assert.Empty(t, request.OIDC.ClientSecret, "BuildFullRunConfig must not mutate the caller request")
+		})
+	}
 }
 
 // TestUpdateWorkloadFromRequest_CorruptStateSurfacesError guards the

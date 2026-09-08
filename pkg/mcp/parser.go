@@ -292,6 +292,7 @@ func shouldParseMCPRequest(r *http.Request) bool {
 
 // parseMCPRequest parses the JSON-RPC message and extracts MCP-specific information.
 func parseMCPRequest(bodyBytes []byte) *ParsedMCPRequest {
+	bodyBytes = bytes.TrimPrefix(bodyBytes, UTF8BOM)
 	if len(bodyBytes) == 0 {
 		return nil
 	}

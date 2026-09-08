@@ -235,6 +235,18 @@ func TestParsingMiddleware(t *testing.T) {
 	}
 }
 
+func TestParseMCPRequest_LeadingBOM(t *testing.T) {
+	t.Parallel()
+
+	parsed := parseMCPRequest([]byte("\xEF\xBB\xBF" +
+		`{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"weather"}}`))
+
+	require.NotNil(t, parsed)
+	assert.Equal(t, "tools/call", parsed.Method)
+	assert.Equal(t, int64(1), parsed.ID)
+	assert.Equal(t, "weather", parsed.ResourceID)
+}
+
 func TestParsingMiddlewareRejectsBatch(t *testing.T) {
 	t.Parallel()
 	tests := []struct {

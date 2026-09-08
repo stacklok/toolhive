@@ -37,8 +37,20 @@ const upstreamDeleteTimeout = 5 * time.Second
 // a set of upstream OAuth2Providers (keyed by provider name) and
 // UpstreamTokenStorage (for persisting the refreshed tokens). On each refresh
 // call it dispatches to the correct provider based on the expired token's
-// ProviderID. It deduplicates concurrent refreshes by the opaque storage-row
-// identity returned by UpstreamTokenStorage, within this process only.
+// ProviderID.
+//
+// Two layers cooperate to make redeeming a single-use, rotating upstream
+// refresh token safe under concurrency:
+//   - sfGroup deduplicates concurrent refreshes by the opaque storage-row
+//     identity returned by UpstreamTokenStorage, but only WITHIN THIS PROCESS
+//     — it saves redundant upstream calls and redis round-trips when this
+//     process alone receives several concurrent requests for the same row.
+//   - CompareAndSwapUpstreamTokens (see refreshAndStore) is what actually
+//     protects correctness ACROSS PROCESSES: every write is conditioned on
+//     the refresh token this call redeemed still being the one stored, so a
+//     replica that loses a cross-process race fails its write instead of
+//     clobbering a winning replica's rotated token. singleflight is an
+//     optimization layered on top of that guarantee, not a substitute for it.
 type upstreamTokenRefresher struct {
 	providers            map[string]upstream.OAuth2Provider
 	storage              storage.UpstreamTokenStorage
@@ -194,7 +206,21 @@ func (r *upstreamTokenRefresher) refreshAndStore(
 		updated.IDToken = expired.IDToken
 	}
 
-	if err := r.storeWithRetry(ctx, sessionID, expired.ProviderID, updated); err != nil {
+	// expectedRefreshToken is the value this call actually redeemed with the
+	// upstream provider. Writing through CompareAndSwapUpstreamTokens (rather
+	// than an unconditional StoreUpstreamTokens) protects against another
+	// process — a different replica of this auth server sharing this storage —
+	// having already redeemed and persisted a rotation of the SAME refresh
+	// token concurrently: only the replica whose expected value still matches
+	// the stored row may write, so a losing replica cannot clobber the
+	// winner's rotated token with its own now-stale redemption.
+	expectedRefreshToken := expired.RefreshToken
+
+	if err := r.compareAndSwapWithRetry(ctx, sessionID, expired.ProviderID, expectedRefreshToken, updated); err != nil {
+		if errors.Is(err, storage.ErrConcurrentRefresh) {
+			return r.resolveConcurrentRefreshConflict(ctx, sessionID, expired.ProviderID)
+		}
+
 		if !rotated {
 			// The old refresh token is still valid in storage; the caller can
 			// proceed with the refreshed access token for this request.
@@ -236,22 +262,73 @@ func (r *upstreamTokenRefresher) refreshAndStore(
 	return updated, nil
 }
 
-// storeWithRetry attempts to store updated tokens up to upstreamStoreMaxAttempts times,
-// waiting upstreamStoreRetryBackoff between attempts. Returns nil on first success.
-// Returns the last error after all attempts are exhausted. Ctx-cancellation short-circuits
-// between attempts and returns the last store error (not ctx.Err()).
-func (r *upstreamTokenRefresher) storeWithRetry(
+// resolveConcurrentRefreshConflict is reached when this call's redemption
+// lost a compare-and-swap race against another process (typically a
+// different replica of this auth server) that refreshed and persisted the same
+// row concurrently — CompareAndSwapUpstreamTokens returned
+// storage.ErrConcurrentRefresh because the stored refresh token had already
+// moved past the value this call redeemed with.
+//
+// It re-reads the authoritative row: if that read is unexpired, the other
+// process's write is the correct result for this call to hand back — this
+// call's own redemption produced an access/refresh token pair the IdP (or the
+// winning replica) has already superseded, so it must not be used or written.
+// If the re-read is still expired, missing, or otherwise unusable, the loss is
+// unrecoverable for this attempt: the refresh token this call redeemed is now
+// dead both at the IdP (which enforces single-use) and in storage (the winner
+// overwrote it before this call's CAS ran), so the caller must surface an
+// error — retrying would only redeem the same already-consumed refresh token
+// again.
+func (r *upstreamTokenRefresher) resolveConcurrentRefreshConflict(
+	ctx context.Context, sessionID, providerID string,
+) (*storage.UpstreamTokens, error) {
+	readCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), refreshTimeout)
+	defer cancel()
+
+	winner, err := r.storage.GetUpstreamTokens(readCtx, sessionID, providerID)
+	if err == nil && winner != nil && !winner.IsExpired(time.Now()) {
+		slog.Debug("lost concurrent upstream token refresh race; using winning replica's tokens",
+			"session_id", sessionID,
+			"provider_id", providerID,
+		)
+		return winner, nil
+	}
+
+	slog.Error("lost concurrent upstream token refresh race and re-read found no usable winner; "+
+		"the redeemed refresh token is unrecoverable for this attempt",
+		"session_id", sessionID,
+		"provider_id", providerID,
+	)
+	return nil, fmt.Errorf(
+		"concurrent upstream token refresh for session %q provider %q: %w",
+		sessionID, providerID, storage.ErrConcurrentRefresh,
+	)
+}
+
+// compareAndSwapWithRetry attempts CompareAndSwapUpstreamTokens up to
+// upstreamStoreMaxAttempts times, waiting upstreamStoreRetryBackoff between
+// attempts. Returns nil on first success. A storage.ErrConcurrentRefresh
+// result is returned immediately without retrying: the comparison failed
+// because expectedRefreshToken is now definitively stale, and retrying the
+// identical compare-and-swap cannot change that outcome. For any other error,
+// returns the last error after all attempts are exhausted; ctx-cancellation
+// short-circuits between attempts and returns the last store error (not
+// ctx.Err()).
+func (r *upstreamTokenRefresher) compareAndSwapWithRetry(
 	ctx context.Context,
-	sessionID, providerID string,
+	sessionID, providerID, expectedRefreshToken string,
 	updated *storage.UpstreamTokens,
 ) error {
 	var lastErr error
 	for attempt := 1; attempt <= upstreamStoreMaxAttempts; attempt++ {
-		storeErr := r.storage.StoreUpstreamTokens(ctx, sessionID, providerID, updated)
-		if storeErr == nil {
+		casErr := r.storage.CompareAndSwapUpstreamTokens(ctx, sessionID, providerID, expectedRefreshToken, updated)
+		if casErr == nil {
 			return nil
 		}
-		lastErr = storeErr
+		if errors.Is(casErr, storage.ErrConcurrentRefresh) {
+			return casErr
+		}
+		lastErr = casErr
 		slog.Debug("failed to store refreshed upstream tokens",
 			"session_id", sessionID,
 			"provider_id", providerID,

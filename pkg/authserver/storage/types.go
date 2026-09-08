@@ -65,6 +65,15 @@ var (
 	// fosite.ErrAccessDenied instead of treating the refusal as an internal
 	// server error.
 	ErrUserNotProvisioned = errors.New("storage: user not provisioned")
+
+	// ErrConcurrentRefresh is returned by
+	// UpstreamTokenStorage.CompareAndSwapUpstreamTokens when the currently
+	// stored refresh token no longer equals the caller's expected value,
+	// meaning another writer (a concurrent refresh in this process or another
+	// replica sharing the same storage) already moved the row past it. The
+	// caller's own redemption is stale and must not be written; see
+	// CompareAndSwapUpstreamTokens for the coordination contract.
+	ErrConcurrentRefresh = errors.New("storage: upstream token row changed concurrently")
 )
 
 // DefaultPendingAuthorizationTTL is the default TTL for pending authorization requests.
@@ -780,7 +789,49 @@ type UpstreamTokenStorage interface {
 
 	// StoreUpstreamTokens stores the upstream IDP tokens for a session and provider.
 	// The providerName identifies which upstream provider these tokens belong to.
+	//
+	// This is an unconditional overwrite: it does not check what is currently
+	// stored. A refresher redeeming a single-use, rotating refresh token MUST
+	// use CompareAndSwapUpstreamTokens instead, so that a redemption raced by
+	// another process cannot silently clobber a winning write with a stale
+	// one. StoreUpstreamTokens remains correct for every other writer (initial
+	// login, the OAuth callback), which has no prior row to race against.
 	StoreUpstreamTokens(ctx context.Context, sessionID, providerName string, tokens *UpstreamTokens) error
+
+	// CompareAndSwapUpstreamTokens stores tokens for (sessionID, providerName)
+	// only if the refresh token currently stored there equals
+	// expectedRefreshToken (pass "" to require that no row currently exists,
+	// or that the existing row carries no refresh token). Returns
+	// ErrConcurrentRefresh, and leaves the stored row untouched, when the
+	// comparison fails.
+	//
+	// # Purpose
+	//
+	// This is the coordination primitive for redeeming a single-use, rotating
+	// upstream refresh token safely across MULTIPLE PROCESSES sharing the same
+	// storage backend (e.g. several horizontally-scaled replicas of an
+	// application embedding this auth server, behind the same Redis).
+	// ResolveUpstreamTokenRowID's singleflight dedup is process-local
+	// only; it prevents redundant redemptions within one process but cannot
+	// stop two different processes from redeeming the same refresh token at
+	// the same time. Read the row, redeem it with the upstream provider, then
+	// write with expectedRefreshToken set to the RefreshToken value that was
+	// actually redeemed. If another process's redemption already rotated the
+	// row in the meantime, this call fails instead of silently overwriting
+	// that process's (valid) rotated token with this caller's now-stale one.
+	// The caller must then re-read the row: if it is unexpired, another
+	// process already won the race and its tokens are the correct result;
+	// otherwise the loss is unrecoverable for this attempt (the refresh token
+	// this call redeemed is now dead both at the IdP, which enforces
+	// single-use, and in storage) and the caller must surface an error rather
+	// than retry the same redemption.
+	//
+	// Implementations must perform the comparison and the write atomically
+	// with respect to any other writer of the same row (e.g. a Lua script on
+	// Redis, or a mutex-guarded read-modify-write in memory).
+	CompareAndSwapUpstreamTokens(
+		ctx context.Context, sessionID, providerName, expectedRefreshToken string, tokens *UpstreamTokens,
+	) error
 
 	// GetUpstreamTokens retrieves the upstream IDP tokens for a session and provider.
 	// Returns ErrNotFound if the session/provider combination does not exist.

@@ -1297,6 +1297,87 @@ end
 return 1
 `)
 
+// casUpstreamTokensScript is the compare-and-swap sibling of
+// storeUpstreamTokensScript: it additionally gates the write on the existing
+// row's refresh_token matching ARGV[5] before doing anything else, returning
+// 0 (no write performed) on a mismatch instead of 1. This is what makes
+// CompareAndSwapUpstreamTokens safe for redeeming a single-use, rotating
+// upstream refresh token across multiple replicas of an application sharing
+// this Redis: a replica whose read is stale by the time it tries to write
+// loses the CAS instead of clobbering a winning replica's rotated token.
+//
+// KEYS[1] = per-provider token key
+// KEYS[2] = session index set key
+// ARGV[1] = new token data (JSON or "null" marker)
+// ARGV[2] = TTL in milliseconds
+// ARGV[3] = new UserID ("" if no user)
+// ARGV[4] = user upstream set key prefix
+// ARGV[5] = expected refresh token ("" means "no row exists yet, or the
+//
+//	existing row carries no refresh token")
+//
+// The write-and-index body below (from "local ttlMs" through "return 1") is
+// intentionally identical to storeUpstreamTokensScript's — see that script's
+// doc comment for the index-TTL invariants and the Cluster hash-tag
+// requirement, both of which apply here unchanged. Keep the two bodies in
+// sync if either changes.
+var casUpstreamTokensScript = redis.NewScript(`
+local oldUserID = ""
+local existingRefreshToken = ""
+local existing = redis.call('GET', KEYS[1])
+if existing and existing ~= "null" then
+    local ok, decoded = pcall(cjson.decode, existing)
+    if ok and type(decoded) == "table" then
+        if decoded.user_id and decoded.user_id ~= "" then
+            oldUserID = decoded.user_id
+        end
+        if decoded.refresh_token then
+            existingRefreshToken = decoded.refresh_token
+        end
+    end
+end
+
+if existingRefreshToken ~= ARGV[5] then
+    return 0
+end
+
+local ttlMs = tonumber(ARGV[2])
+if ttlMs > 0 then
+    redis.call('SET', KEYS[1], ARGV[1], 'PX', ttlMs)
+else
+    redis.call('SET', KEYS[1], ARGV[1])
+end
+
+local idxExisted = redis.call('EXISTS', KEYS[2])
+redis.call('SADD', KEYS[2], KEYS[1])
+
+if ttlMs == 0 then
+    redis.call('PERSIST', KEYS[2])
+elseif idxExisted == 0 then
+    redis.call('PEXPIRE', KEYS[2], ttlMs)
+else
+    local idxTTL = redis.call('PTTL', KEYS[2])
+    if idxTTL == -1 then
+        -- A previous non-expiring write PERSIST'd it. Leave it alone.
+    elseif idxTTL < ttlMs then
+        redis.call('PEXPIRE', KEYS[2], ttlMs)
+    end
+end
+
+local newUserID = ARGV[3]
+local setPrefix = ARGV[4]
+
+if oldUserID ~= "" and oldUserID ~= newUserID then
+    redis.call('SREM', setPrefix .. oldUserID, KEYS[1])
+end
+
+if newUserID ~= "" then
+    redis.call('SADD', setPrefix .. newUserID, KEYS[1])
+end
+
+return 1
+`)
+
 // marshalUpstreamTokensWithTTL marshals tokens and calculates TTL.
 func marshalUpstreamTokensWithTTL(tokens *UpstreamTokens) ([]byte, time.Duration, error) {
 	if tokens == nil {
@@ -1389,6 +1470,55 @@ func (s *RedisStorage) StoreUpstreamTokens(ctx context.Context, sessionID, provi
 	).Result()
 	if err != nil {
 		return fmt.Errorf("failed to store upstream tokens: %w", err)
+	}
+
+	return nil
+}
+
+// CompareAndSwapUpstreamTokens stores tokens for (sessionID, providerName)
+// only if the refresh token currently stored there equals
+// expectedRefreshToken; see the interface doc
+// (UpstreamTokenStorage.CompareAndSwapUpstreamTokens) for the coordination
+// contract. Uses casUpstreamTokensScript so the comparison and the write (and
+// its index maintenance) happen as one atomic Redis operation.
+func (s *RedisStorage) CompareAndSwapUpstreamTokens(
+	ctx context.Context, sessionID, providerName, expectedRefreshToken string, tokens *UpstreamTokens,
+) error {
+	if sessionID == "" {
+		return fosite.ErrInvalidRequest.WithHint("session ID cannot be empty")
+	}
+	if providerName == "" {
+		return fosite.ErrInvalidRequest.WithHint("provider name cannot be empty")
+	}
+
+	key := redisUpstreamKey(s.keyPrefix, sessionID, providerName)
+	idxKey := redisSetKey(s.keyPrefix, KeyTypeUpstreamIdx, sessionID)
+
+	data, ttl, err := marshalUpstreamTokensWithTTL(tokens)
+	if err != nil {
+		return err
+	}
+
+	newUserID := ""
+	if tokens != nil {
+		newUserID = tokens.UserID
+	}
+
+	userSetKeyPrefix := s.keyPrefix + KeyTypeUserUpstream + ":"
+
+	wrote, err := casUpstreamTokensScript.Run(ctx, s.client,
+		[]string{key, idxKey},
+		string(data),
+		ttl.Milliseconds(),
+		newUserID,
+		userSetKeyPrefix,
+		expectedRefreshToken,
+	).Int64()
+	if err != nil {
+		return fmt.Errorf("failed to compare-and-swap upstream tokens: %w", err)
+	}
+	if wrote == 0 {
+		return ErrConcurrentRefresh
 	}
 
 	return nil

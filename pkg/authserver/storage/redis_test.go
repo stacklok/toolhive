@@ -2046,6 +2046,120 @@ func TestRedisStorage_UpstreamTokens(t *testing.T) {
 
 }
 
+// TestRedisStorage_CompareAndSwapUpstreamTokens exercises the coordination
+// primitive for redeeming a single-use, rotating upstream refresh
+// token safely across multiple replicas of an application sharing this Redis:
+// a write only lands if the caller's expected refresh token still matches
+// what is currently stored, via casUpstreamTokensScript.
+func TestRedisStorage_CompareAndSwapUpstreamTokens(t *testing.T) {
+	t.Parallel()
+
+	t.Run("matching expected value writes and returns nil", func(t *testing.T) {
+		withRedisStorage(t, func(ctx context.Context, s *RedisStorage, _ *miniredis.Miniredis) {
+			require.NoError(t, s.StoreUpstreamTokens(ctx, "session", "provider-a", &UpstreamTokens{
+				AccessToken: "old-access", RefreshToken: "old-refresh", ExpiresAt: time.Now().Add(time.Hour),
+			}))
+
+			err := s.CompareAndSwapUpstreamTokens(ctx, "session", "provider-a", "old-refresh", &UpstreamTokens{
+				AccessToken: "new-access", RefreshToken: "new-refresh", ExpiresAt: time.Now().Add(time.Hour),
+			})
+			require.NoError(t, err)
+
+			retrieved, err := s.GetUpstreamTokens(ctx, "session", "provider-a")
+			require.NoError(t, err)
+			assert.Equal(t, "new-access", retrieved.AccessToken)
+			assert.Equal(t, "new-refresh", retrieved.RefreshToken)
+		})
+	})
+
+	t.Run("stale expected value returns ErrConcurrentRefresh and leaves the row untouched", func(t *testing.T) {
+		withRedisStorage(t, func(ctx context.Context, s *RedisStorage, _ *miniredis.Miniredis) {
+			require.NoError(t, s.StoreUpstreamTokens(ctx, "session", "provider-a", &UpstreamTokens{
+				AccessToken: "winner-access", RefreshToken: "winner-refresh", ExpiresAt: time.Now().Add(time.Hour),
+			}))
+
+			// A loser redeemed "old-refresh" (the value before the winner's write
+			// above) and now tries to persist its own rotation.
+			err := s.CompareAndSwapUpstreamTokens(ctx, "session", "provider-a", "old-refresh", &UpstreamTokens{
+				AccessToken: "loser-access", RefreshToken: "loser-refresh", ExpiresAt: time.Now().Add(time.Hour),
+			})
+			require.ErrorIs(t, err, ErrConcurrentRefresh)
+
+			retrieved, err := s.GetUpstreamTokens(ctx, "session", "provider-a")
+			require.NoError(t, err)
+			assert.Equal(t, "winner-access", retrieved.AccessToken,
+				"the winner's write must survive a losing CAS attempt")
+			assert.Equal(t, "winner-refresh", retrieved.RefreshToken)
+		})
+	})
+
+	t.Run("empty expected value matches an absent row - first write succeeds", func(t *testing.T) {
+		withRedisStorage(t, func(ctx context.Context, s *RedisStorage, _ *miniredis.Miniredis) {
+			err := s.CompareAndSwapUpstreamTokens(ctx, "session", "provider-a", "", &UpstreamTokens{
+				AccessToken: "first-access", RefreshToken: "first-refresh", ExpiresAt: time.Now().Add(time.Hour),
+			})
+			require.NoError(t, err)
+
+			retrieved, err := s.GetUpstreamTokens(ctx, "session", "provider-a")
+			require.NoError(t, err)
+			assert.Equal(t, "first-access", retrieved.AccessToken)
+		})
+	})
+
+	t.Run("concurrent CAS attempts against the same row - exactly one wins", func(t *testing.T) {
+		withRedisStorage(t, func(ctx context.Context, s *RedisStorage, _ *miniredis.Miniredis) {
+			require.NoError(t, s.StoreUpstreamTokens(ctx, "session", "provider-a", &UpstreamTokens{
+				AccessToken: "old-access", RefreshToken: "shared-old-refresh", ExpiresAt: time.Now().Add(time.Hour),
+			}))
+
+			const n = 10
+			errs := make([]error, n)
+			var wg sync.WaitGroup
+			wg.Add(n)
+			for i := range n {
+				go func(i int) {
+					defer wg.Done()
+					errs[i] = s.CompareAndSwapUpstreamTokens(ctx, "session", "provider-a", "shared-old-refresh", &UpstreamTokens{
+						AccessToken:  fmt.Sprintf("access-%d", i),
+						RefreshToken: fmt.Sprintf("refresh-%d", i),
+						ExpiresAt:    time.Now().Add(time.Hour),
+					})
+				}(i)
+			}
+			wg.Wait()
+
+			successes, conflicts := 0, 0
+			for _, err := range errs {
+				switch {
+				case err == nil:
+					successes++
+				case errors.Is(err, ErrConcurrentRefresh):
+					conflicts++
+				default:
+					require.NoError(t, err, "unexpected error from concurrent CAS")
+				}
+			}
+			assert.Equal(t, 1, successes,
+				"exactly one of %d concurrent CAS attempts against the same row must win", n)
+			assert.Equal(t, n-1, conflicts,
+				"every other attempt must observe ErrConcurrentRefresh, never silently overwrite the winner")
+
+			// The stored row must be exactly one of the attempted writes, never a
+			// mix (which would be impossible anyway under SET, but pins the intent).
+			retrieved, err := s.GetUpstreamTokens(ctx, "session", "provider-a")
+			require.NoError(t, err)
+			assert.Contains(t, retrieved.RefreshToken, "refresh-")
+		})
+	})
+
+	t.Run("empty session ID or provider name is rejected", func(t *testing.T) {
+		withRedisStorage(t, func(ctx context.Context, s *RedisStorage, _ *miniredis.Miniredis) {
+			assert.Error(t, s.CompareAndSwapUpstreamTokens(ctx, "", "provider-a", "", &UpstreamTokens{}))
+			assert.Error(t, s.CompareAndSwapUpstreamTokens(ctx, "session", "", "", &UpstreamTokens{}))
+		})
+	})
+}
+
 // --- Bulk Migration Tests ---
 
 func TestRedisStorage_MigrateLegacyUpstreamData(t *testing.T) {

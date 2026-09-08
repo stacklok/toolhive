@@ -1495,7 +1495,11 @@ type UpstreamProviderConfig struct {
 }
 
 // OIDCUpstreamConfig contains configuration for OIDC providers.
-// OIDC providers support automatic endpoint discovery via the issuer URL.
+// +kubebuilder:validation:XValidation:rule="(has(self.clientId) && size(self.clientId) > 0) ? !has(self.dcrConfig) : has(self.dcrConfig)",message="exactly one of clientId or dcrConfig must be set"
+// +kubebuilder:validation:XValidation:rule="!(has(self.dcrConfig) && has(self.clientSecretRef))",message="clientSecretRef must not be set when dcrConfig is set; the client_secret is obtained at runtime via Dynamic Client Registration"
+// +kubebuilder:validation:XValidation:rule="!(has(self.dcrConfig) && has(self.dcrConfig.discoveryUrl) && has(self.dcrConfig.registrationEndpoint))",message="at most one of discoveryUrl or registrationEndpoint may be set"
+//
+//nolint:lll // CEL validation rules exceed line length limit
 type OIDCUpstreamConfig struct {
 	// IssuerURL is the OIDC issuer URL for automatic endpoint discovery.
 	// Must be a valid HTTPS URL.
@@ -1504,8 +1508,14 @@ type OIDCUpstreamConfig struct {
 	IssuerURL string `json:"issuerUrl"`
 
 	// ClientID is the OAuth 2.0 client identifier registered with the upstream IdP.
-	// +kubebuilder:validation:Required
-	ClientID string `json:"clientId"`
+	// +optional
+	ClientID string `json:"clientId,omitempty"`
+
+	// DCRConfig enables RFC 7591 Dynamic Client Registration. When set, ClientID
+	// and ClientSecretRef must be omitted. If neither discoveryUrl nor
+	// registrationEndpoint is set, discovery is derived from issuerUrl.
+	// +optional
+	DCRConfig *DCRUpstreamConfig `json:"dcrConfig,omitempty"`
 
 	// ClientSecretRef references a Kubernetes Secret containing the OAuth 2.0 client secret.
 	// Optional for public clients using PKCE instead of client secret.
@@ -1618,6 +1628,7 @@ type OIDCUpstreamConfig struct {
 // message is still actionable.
 //
 // +kubebuilder:validation:XValidation:rule="(has(self.clientId) && size(self.clientId) > 0) ? !has(self.dcrConfig) : has(self.dcrConfig)",message="exactly one of clientId or dcrConfig must be set"
+// +kubebuilder:validation:XValidation:rule="!has(self.dcrConfig) || (has(self.dcrConfig.discoveryUrl) != has(self.dcrConfig.registrationEndpoint))",message="exactly one of discoveryUrl or registrationEndpoint must be set when dcrConfig is set"
 // +kubebuilder:validation:XValidation:rule="!(has(self.dcrConfig) && has(self.clientSecretRef))",message="clientSecretRef must not be set when dcrConfig is set; the client_secret is obtained at runtime via Dynamic Client Registration"
 //
 //nolint:lll // CEL validation rules exceed line length limit
@@ -1723,9 +1734,8 @@ type OAuth2UpstreamConfig struct {
 }
 
 // DCRUpstreamConfig configures RFC 7591 Dynamic Client Registration for an
-// OAuth 2.0 upstream. When present on an OAuth2 upstream, the authserver
-// performs registration at runtime to obtain client credentials, replacing
-// the need to pre-provision a ClientID.
+// OAuth2 or OIDC upstream. OAuth2 requires one of DiscoveryURL or
+// RegistrationEndpoint; OIDC may omit both and derive discovery from IssuerURL.
 //
 // Exactly one of DiscoveryURL or RegistrationEndpoint must be set. DiscoveryURL
 // points at an RFC 8414 / OIDC Discovery document from which the registration
@@ -1738,7 +1748,7 @@ type OAuth2UpstreamConfig struct {
 // returns false; the explicit-empty-string edge case is rejected at reconcile
 // time by ValidateOAuth2DCRConfig.
 //
-// +kubebuilder:validation:XValidation:rule="has(self.discoveryUrl) != has(self.registrationEndpoint)",message="exactly one of discoveryUrl or registrationEndpoint must be set"
+// +kubebuilder:validation:XValidation:rule="!(has(self.discoveryUrl) && has(self.registrationEndpoint))",message="at most one of discoveryUrl or registrationEndpoint may be set"
 //
 //nolint:lll // CEL validation rules exceed line length limit
 type DCRUpstreamConfig struct {
@@ -2743,7 +2753,12 @@ func (*MCPExternalAuthConfig) validateUpstreamProvider(index int, provider *Upst
 		return err
 	}
 
-	// Validate OAuth2-specific constraints (defense-in-depth with CEL).
+	if provider.Type == UpstreamProviderTypeOIDC {
+		if err := ValidateOIDCDCRConfig(provider.OIDCConfig); err != nil {
+			return fmt.Errorf("%s: %w", prefix, err)
+		}
+	}
+
 	// The discriminator above guarantees OAuth2Config != nil when type is oauth2.
 	if provider.Type == UpstreamProviderTypeOAuth2 {
 		if err := ValidateOAuth2DCRConfig(provider.OAuth2Config); err != nil {
@@ -2795,6 +2810,38 @@ func validateUpstreamCABundleRef(ref *CABundleSource) error {
 	}
 	if ref.ConfigMapRef.Name == "" {
 		return fmt.Errorf("configMapRef.name must not be empty")
+	}
+	return nil
+}
+
+// ValidateOIDCDCRConfig enforces OIDC client/DCR exclusivity and DCR field
+// limits. OIDC permits an empty endpoint selector because the issuer-derived
+// well-known discovery URL is used at runtime.
+func ValidateOIDCDCRConfig(cfg *OIDCUpstreamConfig) error {
+	hasClientID := cfg.ClientID != ""
+	hasDCR := cfg.DCRConfig != nil
+	if hasClientID == hasDCR {
+		return fmt.Errorf("oidcConfig: exactly one of clientId or dcrConfig must be set")
+	}
+	if !hasDCR {
+		return nil
+	}
+	if cfg.ClientSecretRef != nil {
+		return fmt.Errorf(
+			"oidcConfig: clientSecretRef must not be set when dcrConfig is set; " +
+				"the client_secret is obtained at runtime via Dynamic Client Registration")
+	}
+	if cfg.DCRConfig.DiscoveryURL != "" && cfg.DCRConfig.RegistrationEndpoint != "" {
+		return fmt.Errorf("oidcConfig.dcrConfig: at most one of discoveryUrl or registrationEndpoint may be set")
+	}
+	if l := len(cfg.DCRConfig.DiscoveryURL); l > MaxDCRURLLength {
+		return fmt.Errorf("oidcConfig.dcrConfig.discoveryUrl: length %d exceeds maximum %d", l, MaxDCRURLLength)
+	}
+	if l := len(cfg.DCRConfig.RegistrationEndpoint); l > MaxDCRURLLength {
+		return fmt.Errorf("oidcConfig.dcrConfig.registrationEndpoint: length %d exceeds maximum %d", l, MaxDCRURLLength)
+	}
+	if l := len(cfg.DCRConfig.SoftwareStatement); l > MaxSoftwareStatementLength {
+		return fmt.Errorf("oidcConfig.dcrConfig.softwareStatement: length %d exceeds maximum %d", l, MaxSoftwareStatementLength)
 	}
 	return nil
 }

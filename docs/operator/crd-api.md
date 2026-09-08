@@ -1862,9 +1862,8 @@ _Appears in:_
 
 
 DCRUpstreamConfig configures RFC 7591 Dynamic Client Registration for an
-OAuth 2.0 upstream. When present on an OAuth2 upstream, the authserver
-performs registration at runtime to obtain client credentials, replacing
-the need to pre-provision a ClientID.
+OAuth2 or OIDC upstream. OAuth2 requires one of DiscoveryURL or
+RegistrationEndpoint; OIDC may omit both and derive discovery from IssuerURL.
 
 Exactly one of DiscoveryURL or RegistrationEndpoint must be set. DiscoveryURL
 points at an RFC 8414 / OIDC Discovery document from which the registration
@@ -1881,6 +1880,7 @@ time by ValidateOAuth2DCRConfig.
 
 _Appears in:_
 - [api.v1beta1.OAuth2UpstreamConfig](#apiv1beta1oauth2upstreamconfig)
+- [api.v1beta1.OIDCUpstreamConfig](#apiv1beta1oidcupstreamconfig)
 
 | Field | Description | Default | Validation |
 | --- | --- | --- | --- |
@@ -3785,7 +3785,6 @@ _Appears in:_
 
 
 OIDCUpstreamConfig contains configuration for OIDC providers.
-OIDC providers support automatic endpoint discovery via the issuer URL.
 
 
 
@@ -3795,7 +3794,8 @@ _Appears in:_
 | Field | Description | Default | Validation |
 | --- | --- | --- | --- |
 | `issuerUrl` _string_ | IssuerURL is the OIDC issuer URL for automatic endpoint discovery.<br />Must be a valid HTTPS URL. |  | Pattern: `^https://.*$` <br />Required: \{\} <br /> |
-| `clientId` _string_ | ClientID is the OAuth 2.0 client identifier registered with the upstream IdP. |  | Required: \{\} <br /> |
+| `clientId` _string_ | ClientID is the OAuth 2.0 client identifier registered with the upstream IdP. |  | Optional: \{\} <br /> |
+| `dcrConfig` _[api.v1beta1.DCRUpstreamConfig](#apiv1beta1dcrupstreamconfig)_ | DCRConfig enables RFC 7591 Dynamic Client Registration. When set, ClientID<br />and ClientSecretRef must be omitted. If neither discoveryUrl nor<br />registrationEndpoint is set, discovery is derived from issuerUrl. |  | Optional: \{\} <br /> |
 | `clientSecretRef` _[api.v1beta1.SecretKeyRef](#apiv1beta1secretkeyref)_ | ClientSecretRef references a Kubernetes Secret containing the OAuth 2.0 client secret.<br />Optional for public clients using PKCE instead of client secret. |  | Optional: \{\} <br /> |
 | `redirectUri` _string_ | RedirectURI is the callback URL where the upstream IdP will redirect after authentication.<br />When not specified, defaults to `\{resourceUrl\}/oauth/callback` where `resourceUrl` is the<br />URL associated with the resource (e.g., MCPServer or vMCP) using this config. |  | Optional: \{\} <br /> |
 | `scopes` _string array_ | Scopes are the OAuth scopes to request from the upstream IdP.<br />If not specified, defaults to ["openid", "offline_access"].<br />When using additionalAuthorizationParams with provider-specific refresh token<br />mechanisms (e.g., Google's access_type=offline), set explicit scopes to avoid<br />sending both offline_access and the provider-specific parameter. |  | Optional: \{\} <br /> |

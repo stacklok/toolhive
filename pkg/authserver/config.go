@@ -663,6 +663,13 @@ type OIDCUpstreamRunConfig struct {
 	// stable per user (e.g. Entra/Azure AD's "oid"). See upstream.OIDCConfig.
 	SubjectClaim string `json:"subject_claim,omitempty" yaml:"subject_claim,omitempty"`
 
+	// DCRConfig enables RFC 7591 Dynamic Client Registration against the
+	// upstream authorization server. When set, the client credentials are
+	// obtained at runtime rather than being pre-provisioned via ClientID /
+	// ClientSecretFile / ClientSecretEnvVar, and ClientID must be left empty.
+	// Mutually exclusive with ClientID.
+	DCRConfig *DCRUpstreamConfig `json:"dcr_config,omitempty" yaml:"dcr_config,omitempty"`
+
 	// CAFilePath is the path to a PEM CA bundle added to the system roots.
 	CAFilePath string `json:"ca_file_path,omitempty" yaml:"ca_file_path,omitempty"`
 
@@ -767,11 +774,13 @@ type OAuth2UpstreamRunConfig struct {
 }
 
 // DCRUpstreamConfig configures RFC 7591 Dynamic Client Registration for an
-// upstream authorization server. When present on an OAuth2 upstream, the
-// authserver performs registration at runtime to obtain client credentials,
-// replacing the need to pre-provision a ClientID.
+// OAuth2 or OIDC upstream. When present, the authserver performs registration
+// at runtime to obtain client credentials, replacing the need to pre-provision
+// a ClientID.
 //
-// Exactly one of DiscoveryURL or RegistrationEndpoint must be set. DiscoveryURL
+// OAuth2 upstreams must set exactly one of DiscoveryURL or
+// RegistrationEndpoint. OIDC upstreams may omit both and derive DiscoveryURL
+// from IssuerURL.
 // points at RFC 8414 / OIDC Discovery metadata from which the registration
 // endpoint is resolved; RegistrationEndpoint is used directly when the upstream
 // does not publish discovery metadata.
@@ -1368,6 +1377,36 @@ func (c *Config) warnTrustedIssuerAudiences() {
 				"issuer", ti.IssuerURL, "expected_audience", ti.ExpectedAudience)
 		}
 	}
+}
+
+// Validate checks that the OIDCUpstreamRunConfig has either a pre-provisioned
+// client ID or a DCR configuration, but not both. OIDC DCR may omit both endpoint
+// selectors because discovery is derived from IssuerURL.
+func (c *OIDCUpstreamRunConfig) Validate() error {
+	hasClientID := c.ClientID != ""
+	hasDCR := c.DCRConfig != nil
+	if hasClientID == hasDCR {
+		return fmt.Errorf("oidc upstream: exactly one of client_id or dcr_config must be set")
+	}
+	if !hasDCR {
+		return nil
+	}
+	if c.DCRConfig.DiscoveryURL != "" && c.DCRConfig.RegistrationEndpoint != "" {
+		return fmt.Errorf("oidc upstream: dcr_config discovery_url and registration_endpoint are mutually exclusive")
+	}
+	if c.DCRConfig.DiscoveryURL == "" && c.DCRConfig.RegistrationEndpoint == "" {
+		if c.DCRConfig.InitialAccessTokenFile != "" && c.DCRConfig.InitialAccessTokenEnvVar != "" {
+			return fmt.Errorf("oidc upstream: dcr_config initial_access_token_file and initial_access_token_env_var are mutually exclusive")
+		}
+		if c.IssuerURL == "" {
+			return fmt.Errorf("oidc upstream: issuer_url is required when dcr_config omits discovery_url and registration_endpoint")
+		}
+		return nil
+	}
+	if err := c.DCRConfig.Validate(); err != nil {
+		return fmt.Errorf("oidc upstream: invalid dcr_config: %w", err)
+	}
+	return nil
 }
 
 // Validate checks that the OAuth2UpstreamRunConfig is internally consistent.

@@ -595,32 +595,41 @@ func buildUpstreamConfigs(
 		rcCopy := rc
 
 		var dcrResolution *dcr.Resolution
-		// needsDCR returns false for nil input, so the explicit Type ==
-		// OAuth2 guard is redundant. Keeping a single source of truth for
-		// "does this upstream require DCR" avoids drift if the condition
-		// ever needs to be extended (e.g., to support OIDC DCR).
-		if needsDCR(rcCopy.OAuth2Config) {
-			// Take a local copy of the OAuth2 sub-config. dcr.ResolveCredentials
-			// reads it but does not mutate; consumeResolution is value-in /
-			// value-out, so the caller's original OAuth2Config pointer target
-			// is never reached by either call.
-			o2 := *rcCopy.OAuth2Config
-
-			req, err := newDCRRequest(&o2, issuer)
-			if err != nil {
+		switch rcCopy.Type {
+		case authserver.UpstreamProviderTypeOIDC:
+			if rcCopy.OIDCConfig == nil {
+				return nil, fmt.Errorf("upstream %q: oidc_config required", rc.Name)
+			}
+			if err := rcCopy.OIDCConfig.Validate(); err != nil {
 				return nil, fmt.Errorf("upstream %q: %w", rc.Name, err)
 			}
-			resolution, err := dcr.ResolveCredentials(ctx, req, dcrStore)
-			if err != nil {
-				// Emit the single boundary Error record with enough context to
-				// correlate the failure back to this upstream; then return the
-				// wrapped error without further logging.
-				dcr.LogStepError(rc.Name, err)
+		case authserver.UpstreamProviderTypeOAuth2:
+			if rcCopy.OAuth2Config == nil {
+				return nil, fmt.Errorf("upstream %q: oauth2_config required", rc.Name)
+			}
+			if err := rcCopy.OAuth2Config.Validate(); err != nil {
 				return nil, fmt.Errorf("upstream %q: %w", rc.Name, err)
 			}
-			o2 = consumeResolution(o2, resolution)
-			rcCopy.OAuth2Config = &o2
+		}
+		req, err := newDCRRequest(&rcCopy, issuer)
+		if err != nil {
+			return nil, fmt.Errorf("upstream %q: %w", rc.Name, err)
+		}
+		if req != nil {
+			resolution, resolveErr := dcr.ResolveCredentials(ctx, req, dcrStore)
+			if resolveErr != nil {
+				dcr.LogStepError(rc.Name, resolveErr)
+				return nil, fmt.Errorf("upstream %q: %w", rc.Name, resolveErr)
+			}
 			dcrResolution = resolution
+			switch rcCopy.Type {
+			case authserver.UpstreamProviderTypeOIDC:
+				resolved := consumeOIDCResolution(*rcCopy.OIDCConfig, resolution)
+				rcCopy.OIDCConfig = &resolved
+			case authserver.UpstreamProviderTypeOAuth2:
+				resolved := consumeResolution(*rcCopy.OAuth2Config, resolution)
+				rcCopy.OAuth2Config = &resolved
+			}
 		}
 
 		cfg, err := buildUpstreamConfig(&rcCopy, insecureAllowHTTP)
@@ -633,9 +642,19 @@ func buildUpstreamConfigs(
 		// applyResolutionToOAuth2Config (inline-only ClientSecret) is
 		// documented in dcr_adapter.go — both calls must be paired to
 		// produce a fully-resolved DCR client.
-		if dcrResolution != nil && cfg.OAuth2Config != nil {
-			applied := applyResolutionToOAuth2Config(*cfg.OAuth2Config, dcrResolution)
-			cfg.OAuth2Config = &applied
+		if dcrResolution != nil {
+			switch rcCopy.Type {
+			case authserver.UpstreamProviderTypeOIDC:
+				if cfg.OIDCConfig != nil {
+					applied := applyResolutionToOIDCConfig(*cfg.OIDCConfig, dcrResolution)
+					cfg.OIDCConfig = &applied
+				}
+			case authserver.UpstreamProviderTypeOAuth2:
+				if cfg.OAuth2Config != nil {
+					applied := applyResolutionToOAuth2Config(*cfg.OAuth2Config, dcrResolution)
+					cfg.OAuth2Config = &applied
+				}
+			}
 		}
 
 		configs = append(configs, *cfg)
@@ -689,6 +708,9 @@ func buildOIDCConfig(rc *authserver.UpstreamRunConfig, insecureAllowHTTP bool) (
 	}
 
 	oidc := rc.OIDCConfig
+	if err := oidc.Validate(); err != nil {
+		return nil, err
+	}
 
 	// Warn if UserInfoOverride is configured but won't be used
 	if oidc.UserInfoOverride != nil {

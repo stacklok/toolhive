@@ -208,6 +208,9 @@ func extractUpstreamSecretRefs(
 	case mcpv1beta1.UpstreamProviderTypeOIDC:
 		if provider.OIDCConfig != nil {
 			clientSecretRef = provider.OIDCConfig.ClientSecretRef
+			if provider.OIDCConfig.DCRConfig != nil {
+				initialAccessTokenRef = provider.OIDCConfig.DCRConfig.InitialAccessTokenRef
+			}
 		}
 	case mcpv1beta1.UpstreamProviderTypeOAuth2:
 		if provider.OAuth2Config != nil {
@@ -1287,7 +1290,11 @@ func buildUpstreamRunConfig(
 	switch provider.Type {
 	case mcpv1beta1.UpstreamProviderTypeOIDC:
 		if provider.OIDCConfig != nil {
-			config.OIDCConfig = buildOIDCUpstreamRunConfig(provider.OIDCConfig, b.EnvVarName, index, resourceURL)
+			oidcRunConfig, err := buildOIDCUpstreamRunConfig(provider.OIDCConfig, b.EnvVarName, b.DCRInitialAccessTokenEnvVar, index, resourceURL)
+			if err != nil {
+				return nil, err
+			}
+			config.OIDCConfig = oidcRunConfig
 		}
 	case mcpv1beta1.UpstreamProviderTypeOAuth2:
 		if provider.OAuth2Config != nil {
@@ -1309,9 +1316,13 @@ func buildUpstreamRunConfig(
 func buildOIDCUpstreamRunConfig(
 	cfg *mcpv1beta1.OIDCUpstreamConfig,
 	clientSecretEnvVar string,
+	initialAccessTokenEnvVar string,
 	index int,
 	resourceURL string,
-) *authserver.OIDCUpstreamRunConfig {
+) (*authserver.OIDCUpstreamRunConfig, error) {
+	if err := mcpv1beta1.ValidateOIDCDCRConfig(cfg); err != nil {
+		return nil, err
+	}
 	redirectURI := cfg.RedirectURI
 	if redirectURI == "" && resourceURL != "" {
 		redirectURI = defaultRedirectURI(resourceURL)
@@ -1331,10 +1342,13 @@ func buildOIDCUpstreamRunConfig(
 	if cfg.CABundleRef != nil {
 		runConfig.CAFilePath = upstreamCABundleFilePath(index)
 	}
+	if cfg.DCRConfig != nil {
+		runConfig.DCRConfig = buildDCRUpstreamRunConfig(cfg.DCRConfig, initialAccessTokenEnvVar)
+	}
 	if cfg.UserInfoOverride != nil {
 		runConfig.UserInfoOverride = buildUserInfoRunConfig(cfg.UserInfoOverride)
 	}
-	return runConfig
+	return runConfig, nil
 }
 
 // buildOAuth2UpstreamRunConfig converts a CRD OAuth2UpstreamConfig to the

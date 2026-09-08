@@ -13,12 +13,17 @@ import (
 	"github.com/stacklok/toolhive/pkg/plugins"
 )
 
+// testCLIPublicKeyB64 stands in for the base64 DER SPKI a key-pinned lock
+// entry records; the CLI renders it verbatim and parses nothing.
+const testCLIPublicKeyB64 = "MFkwEwYHKoZIzj0CAQYIKoZIzj0DAQcDQgAExlVDpbnOEv2fH3gS8n7UCHS9Gs0wKxIPR5EAcl8F1jSxlxAV/pll0NsSiuAK95Ws4Fpkn+5QkdVKNXy7LHgb2A=="
+
 // TestAIPluginPushSigningFlags pins the signed-by-default publish surface:
 // the keyless flags must exist, the opt-out must not be preset (a defaulted
 // --no-sign would publish unsigned artifacts silently), and --key must NOT be
 // offered — ToolHive cannot verify key-signed artifacts at install time, so
-// the flag would only produce uninstallable plugins (#6442). Re-add it in the
-// change that makes key verification work.
+// the flag would only produce uninstallable plugins (#6442). Install-time key
+// verification now exists; re-add the flag in the change that restores plugin
+// push signing, which is what closes #6442.
 func TestAIPluginPushSigningFlags(t *testing.T) {
 	t.Parallel()
 
@@ -27,10 +32,22 @@ func TestAIPluginPushSigningFlags(t *testing.T) {
 		require.NotNil(t, flag, "thv ai-plugin push must expose --%s", name)
 	}
 	assert.Nil(t, aiPluginPushCmd.Flags().Lookup("key"),
-		"plugin signing is keyless-only; --key must not be advertised until install can verify it")
+		"plugin push is still keyless-only; --key returns with the push half of #6442")
 	assert.Equal(t, "false", aiPluginPushCmd.Flags().Lookup("no-sign").DefValue,
 		"pushing unsigned must always be an explicit choice")
 	assert.Empty(t, aiPluginPushCmd.Flags().Lookup("identity-token").DefValue)
+}
+
+// TestAIPluginInstallKeyFlag pins the consuming half of key signing: without
+// --public-key on install there is no way to supply the trust anchor a
+// key-signed artifact needs, since the key is recoverable from neither the
+// artifact nor its bundle.
+func TestAIPluginInstallKeyFlag(t *testing.T) {
+	t.Parallel()
+
+	flag := aiPluginInstallCmd.Flags().Lookup("public-key")
+	require.NotNil(t, flag, "thv ai-plugin install must expose --public-key")
+	assert.Empty(t, flag.DefValue, "there is no default trust anchor to assume")
 }
 
 // TestPrintAIPluginInfoTextTrustStates covers each trust state the info
@@ -58,6 +75,20 @@ func TestPrintAIPluginInfoTextTrustStates(t *testing.T) {
 				"Cert issuer: https://token.actions.githubusercontent.com",
 			},
 			wantAbsent: []string{"provisional", "unsigned"},
+		},
+		{
+			// A key-pinned entry has no signer identity and no cert issuer, so
+			// the identity rendering would print empty values and read exactly
+			// like an untracked install.
+			name: "key pinned",
+			info: plugins.PluginInfo{Provenance: &plugins.ProvenanceInfo{
+				PublicKey: testCLIPublicKeyB64,
+			}},
+			wantLines: []string{
+				"Signed by: (cosign key pair)",
+				"Public key: " + testCLIPublicKeyB64,
+			},
+			wantAbsent: []string{"Cert issuer", "provisional", "unsigned"},
 		},
 		{
 			name: "provisional",
@@ -129,6 +160,15 @@ func TestPrintPluginInstallTrust(t *testing.T) {
 				Provenance: &plugins.ProvenanceInfo{SignerIdentity: "/.github/workflows/release.yml"},
 			},
 			want: "Installed my-plugin (signed by /.github/workflows/release.yml)\n",
+		},
+		{
+			name: "key pinned",
+			result: &plugins.InstallResult{
+				Plugin:     plugins.InstalledPlugin{Metadata: plugins.PluginMetadata{Name: "my-plugin"}},
+				Provenance: &plugins.ProvenanceInfo{PublicKey: testCLIPublicKeyB64},
+			},
+			want: "Installed my-plugin (signed by a cosign key pair; " +
+				"the pinned public key is in the lock file)\n",
 		},
 		{
 			name: "provisional",

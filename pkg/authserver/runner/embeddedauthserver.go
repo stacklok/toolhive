@@ -904,17 +904,6 @@ func convertRedisRunConfig(rc *storage.RedisRunConfig) (tcredis.Config, error) {
 	cfg.Username = acl.username
 	cfg.Password = acl.password
 
-	// A nil ACL config resolves to a no-auth connection. Emit exactly one
-	// startup WARN naming the store so an unintended downgrade (e.g. an
-	// operator that forgot to wire acl_user_config) is visible in logs rather
-	// than silent. A populated-but-empty config already returned an error in
-	// convertRedisACLConfig, so reaching here without credentials means no
-	// credential was intended.
-	if rc.ACLUserConfig == nil {
-		slog.Warn("Redis storage connecting without authentication (no acl_user_config configured)",
-			"store", redisStoreName(rc), "key_prefix", rc.KeyPrefix)
-	}
-
 	if err := applyRedisTimeouts(rc, &cfg); err != nil {
 		return tcredis.Config{}, fmt.Errorf("failed to apply redis timeouts: %w", err)
 	}
@@ -932,6 +921,19 @@ func convertRedisRunConfig(rc *storage.RedisRunConfig) (tcredis.Config, error) {
 			return tcredis.Config{}, fmt.Errorf("sentinel TLS config: %w", err)
 		}
 		cfg.SentinelTLS = sentinelTLSCfg
+	}
+
+	// A nil ACL config resolves to a no-auth connection. Emit exactly one
+	// startup WARN naming the store so an unintended downgrade (e.g. a caller
+	// that constructed a RedisRunConfig without an ACL config) is visible in
+	// logs rather than silent. Logged only after the fallible timeout/TLS steps
+	// succeed, so the message describes a config that will actually be used to
+	// connect. A populated-but-empty config already returned an error in
+	// convertRedisACLConfig, so reaching here without credentials means no
+	// credential was intended.
+	if rc.ACLUserConfig == nil {
+		slog.Warn("Redis storage connecting without authentication (no acl_user_config configured)",
+			"store", redisStoreName(rc), "key_prefix", rc.KeyPrefix)
 	}
 
 	return cfg, nil

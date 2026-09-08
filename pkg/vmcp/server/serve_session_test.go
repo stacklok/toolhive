@@ -803,8 +803,10 @@ func TestBuildSessionDataStorageRedis_NoAuthWarns(t *testing.T) {
 	require.Error(t, err)
 
 	logged := buf.String()
-	assert.Equal(t, 1, strings.Count(logged, "level=WARN"))
-	assert.Contains(t, logged, "without authentication")
+	// Count the distinctive message rather than the generic level=WARN token,
+	// so an unrelated WARN captured by the process-global default cannot skew
+	// the assertion.
+	assert.Equal(t, 1, strings.Count(logged, "without authentication"))
 	assert.Contains(t, logged, "127.0.0.1:1")
 }
 

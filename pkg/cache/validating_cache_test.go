@@ -727,7 +727,7 @@ func TestRemoveMatching_ConcurrentWithSetAndGet(t *testing.T) {
 
 	mu.Lock()
 	defer mu.Unlock()
-	assert.GreaterOrEqual(t, evictions, 0) // sanity: onEvict never negative/paniced
+	assert.GreaterOrEqual(t, evictions, 0) // sanity: onEvict never went negative/panicked
 }
 
 // TestRemoveMatching_SlowOnEvictDoesNotBlockOtherKeys proves onEvict runs off

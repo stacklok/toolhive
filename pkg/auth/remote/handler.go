@@ -501,25 +501,8 @@ func (h *Handler) tryRestoreFromCachedTokens(
 
 	slog.Debug("Restored OAuth session from cached tokens", "issuer", issuer)
 
-	// A legacy bare-string token just verified against effectiveIssuer/tokenURL:
-	// persist the bound envelope now rather than waiting for a future refresh,
-	// so the migration is deterministic and happens exactly once. Use whatever
-	// refresh token/expiry the AS just returned, falling back to the
-	// pre-verification values if it didn't rotate them.
 	if migrated {
-		newRefreshToken := tok.RefreshToken
-		if newRefreshToken == "" {
-			newRefreshToken = refreshToken
-		}
-		expiry := tok.Expiry
-		if expiry.IsZero() {
-			expiry = h.config.CachedTokenExpiry
-		}
-		if persister := h.tokenPersisterFor(effectiveIssuer, tokenURL); persister != nil {
-			if err := persister(newRefreshToken, expiry); err != nil {
-				slog.Warn("Failed to persist migrated cached refresh token", "error", err)
-			}
-		}
+		h.persistMigratedRefreshToken(tok, refreshToken, effectiveIssuer, tokenURL)
 	}
 
 	// Wrap with a persisting token source to save refreshed tokens bound to the
@@ -529,6 +512,26 @@ func (h *Handler) tryRestoreFromCachedTokens(
 	}
 
 	return baseSource, nil
+}
+
+// persistMigratedRefreshToken persists a bound envelope after a legacy bare-string
+// token has been verified against issuer/tokenURL, rather than waiting for a
+// future refresh. It uses the refresh token/expiry the AS just returned, falling
+// back to the pre-verification values if it didn't rotate them.
+func (h *Handler) persistMigratedRefreshToken(tok *oauth2.Token, refreshToken, issuer, tokenURL string) {
+	newRefreshToken := tok.RefreshToken
+	if newRefreshToken == "" {
+		newRefreshToken = refreshToken
+	}
+	expiry := tok.Expiry
+	if expiry.IsZero() {
+		expiry = h.config.CachedTokenExpiry
+	}
+	if persister := h.tokenPersisterFor(issuer, tokenURL); persister != nil {
+		if err := persister(newRefreshToken, expiry); err != nil {
+			slog.Warn("Failed to persist migrated cached refresh token", "error", err)
+		}
+	}
 }
 
 // discoverIssuerAndScopes attempts to discover the OAuth issuer and scopes from various sources

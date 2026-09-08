@@ -148,9 +148,10 @@ const (
 // to a blocked IP after the check passes. A nil control leaves the cloned
 // dialer untouched.
 //
-// This is the single construction point for the vMCP backend transport, shared
-// by the per-call backend client and the persistent session connector so the
-// two dial paths cannot drift.
+// This is the single construction point for the backend transport used by every
+// caller that needs a dial-control hook, so callers building similar transports
+// cannot drift apart. Currently used by pkg/vmcp/client and
+// pkg/vmcp/session/internal/backend.
 func CloneDefaultTransportWithDialControl(
 	control func(network, address string, c syscall.RawConn) error,
 ) *http.Transport {

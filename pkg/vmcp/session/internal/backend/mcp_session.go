@@ -50,6 +50,22 @@ type httpConnectorConfig struct {
 	dialControl            func(network, address string, c syscall.RawConn) error
 }
 
+// mcpClientParams carries the per-connection options NewHTTPConnector's closure
+// threads into createMCPClient. They are grouped into a struct — rather than
+// passed positionally — because sink and dialControl are both func-typed and
+// frequently nil, so as bare adjacent arguments a future reorder could
+// transpose them with no compiler error. Named fields remove that risk.
+type mcpClientParams struct {
+	// sink, when non-nil, enables persistent backend-notification consumption
+	// (see createMCPClient); nil leaves it disabled.
+	sink ListChangedSink
+	// dialControl, when non-nil, installs a net.Dialer.Control hook on the
+	// backend transport (see WithDialControl); nil uses http.DefaultTransport.
+	dialControl func(network, address string, c syscall.RawConn) error
+	// requestTimeout bounds each backend operation and the transport dial.
+	requestTimeout time.Duration
+}
+
 // WithRequestTimeoutResolver configures the timeout used for each backend
 // operation. The resolver receives the backend workload ID and may return a
 // workload-specific duration. A nil resolver, or a non-positive result, uses
@@ -87,6 +103,7 @@ func WithRequestTimeoutResolver(resolver func(workloadID string) time.Duration) 
 //     recycled. Because each backend gets its own isolated transport and
 //     connection pool, a reused connection is always one this hook already
 //     approved on its first dial — reuse cannot reach an unclassified peer.
+//     This connector does not offer per-request re-classification.
 //   - Proxy transparency: when http.ProxyFromEnvironment selects a proxy
 //     (HTTP_PROXY/HTTPS_PROXY set), the dial target is the proxy server, so the
 //     hook receives the proxy's IP, not the backend's. Embedders relying on this
@@ -94,7 +111,9 @@ func WithRequestTimeoutResolver(resolver func(workloadID string) time.Duration) 
 //     additionally validate the backend URL's host before dialing.
 //   - Both IP families: the address argument may be an IPv4 or IPv6 literal
 //     (host:port form); embedders must handle both — including IPv4-mapped IPv6
-//     such as ::ffff:127.0.0.1 — in their check.
+//     such as ::ffff:127.0.0.1 — in their check. See the OWASP SSRF Prevention
+//     Cheat Sheet for the full set of ranges to deny (loopback, RFC 1918,
+//     link-local 169.254/16, CGNAT 100.64/10, IPv6 ULA).
 func WithDialControl(control func(network, address string, c syscall.RawConn) error) HTTPConnectorOption {
 	return func(cfg *httpConnectorConfig) {
 		cfg.dialControl = control
@@ -466,7 +485,12 @@ func NewHTTPConnector(registry vmcpauth.OutgoingAuthRegistry, opts ...HTTPConnec
 		}
 
 		c, err := createMCPClient(
-			ctx, target, identity, registry, sessionHint, provider, sink, connectorConfig.dialControl, transportTimeout,
+			ctx, target, identity, registry, sessionHint, provider,
+			mcpClientParams{
+				sink:           sink,
+				dialControl:    connectorConfig.dialControl,
+				requestTimeout: transportTimeout,
+			},
 		)
 		if err != nil {
 			return nil, nil, fmt.Errorf("failed to create MCP client for backend %s: %w", target.WorkloadID, err)
@@ -523,10 +547,15 @@ func createMCPClient(
 	registry vmcpauth.OutgoingAuthRegistry,
 	sessionHint string,
 	provider secrets.Provider,
-	sink ListChangedSink,
-	dialControl func(network, address string, c syscall.RawConn) error,
-	requestTimeout time.Duration,
+	params mcpClientParams,
 ) (*mcpclient.Client, error) {
+	// Destructure once so the body below reads unchanged. The named fields on
+	// mcpClientParams are what protect the two adjacent nil-able func members
+	// (sink, dialControl) from being silently transposed at call sites.
+	sink := params.sink
+	dialControl := params.dialControl
+	requestTimeout := params.requestTimeout
+
 	// Resolve and validate the auth strategy once at client creation time.
 	strategyName := authtypes.StrategyTypeUnauthenticated
 	if target.AuthConfig != nil {

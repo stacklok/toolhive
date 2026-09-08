@@ -55,13 +55,23 @@ func TestHTTPConnector_DialControlGuardsSessionInit(t *testing.T) {
 			ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 			t.Cleanup(cancel)
 
-			// Guarded: the deny-all hook must block the dial before any request.
-			guarded := NewHTTPConnector(newTestRegistry(t), WithDialControl(denyAllDial))
+			// Guarded: the deny-all hook must fire and block the dial before any
+			// request. Recording invocation (rather than only asserting error +
+			// zero hits) ensures an unrelated earlier failure — transport
+			// construction, auth, URL parsing — cannot pass this test for the
+			// wrong reason.
+			var fired atomic.Bool
+			control := func(_, _ string, _ syscall.RawConn) error {
+				fired.Store(true)
+				return errors.New("dial blocked by test policy")
+			}
+			guarded := NewHTTPConnector(newTestRegistry(t), WithDialControl(control))
 			sess, _, err := guarded(ctx, target, nil, "", nil)
 			if sess != nil {
 				_ = sess.Close()
 			}
 			require.Error(t, err, "deny-all dial control must fail session init")
+			assert.True(t, fired.Load(), "the dial-control hook must have been invoked")
 			assert.Zero(t, hits.Load(), "guarded session-init dial must not reach the backend")
 
 			// Unguarded: the same target IS dialed, proving the server is

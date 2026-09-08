@@ -884,6 +884,15 @@ func convertRedisRunConfig(rc *storage.RedisRunConfig) (tcredis.Config, error) {
 		return tcredis.Config{}, fmt.Errorf("redis config is required when storage type is redis")
 	}
 
+	// AuthType declares authenticated intent. If it selects ACL-user auth, a
+	// nil ACLUserConfig is a misconfiguration, not a no-auth request: fail
+	// loudly rather than silently downgrading to an unauthenticated connection.
+	// An empty AuthType with a nil ACLUserConfig remains a valid no-auth config.
+	if rc.AuthType == storage.AuthTypeACLUser && rc.ACLUserConfig == nil {
+		return tcredis.Config{}, fmt.Errorf(
+			"auth_type %q requires acl_user_config; omit auth_type for a no-auth connection", rc.AuthType)
+	}
+
 	cfg := tcredis.Config{
 		Addr:        rc.Addr,
 		ClusterMode: rc.ClusterMode,
@@ -974,6 +983,14 @@ func convertRedisACLConfig(rc *storage.ACLUserRunConfig) (redisACLCredentials, e
 		if err != nil {
 			return redisACLCredentials{}, fmt.Errorf("failed to resolve Redis username: %w", err)
 		}
+	}
+	// A populated ACL config with no password_env_var is a misconfiguration.
+	// Guard it explicitly so the message matches the empty-resolved-password
+	// case below, rather than resolveEnvVar's generic "name is empty" error.
+	if rc.PasswordEnvVar == "" {
+		return redisACLCredentials{}, fmt.Errorf(
+			"populated ACL user config has no password_env_var; " +
+				"omit acl_user_config for a no-auth connection")
 	}
 	password, err := resolveEnvVar(rc.PasswordEnvVar)
 	if err != nil {

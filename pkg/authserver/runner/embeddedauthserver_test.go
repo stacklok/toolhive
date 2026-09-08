@@ -1359,6 +1359,37 @@ func TestConvertRedisRunConfig(t *testing.T) {
 		require.Error(t, err)
 		assert.Contains(t, err.Error(), "failed to resolve Redis username")
 	})
+
+	t.Run("aclUser auth type with nil ACL config returns error", func(t *testing.T) {
+		t.Parallel()
+		// AuthType declares authenticated intent; a nil ACLUserConfig alongside
+		// it is a misconfiguration, not a no-auth request, and must fail loudly
+		// rather than silently downgrade to unauthenticated.
+		_, err := convertRedisRunConfig(&storage.RedisRunConfig{
+			Addr:      "redis.example.com:6379",
+			KeyPrefix: "test:",
+			AuthType:  storage.AuthTypeACLUser,
+		})
+		require.Error(t, err)
+		assert.Contains(t, err.Error(), "requires acl_user_config")
+	})
+
+	t.Run("populated ACL config with unset password env var returns actionable error", func(t *testing.T) {
+		t.Parallel()
+		// A populated block with no password_env_var must return the same
+		// actionable guidance as the empty-resolved-password case, not
+		// resolveEnvVar's generic "environment variable name is empty".
+		_, err := convertRedisRunConfig(&storage.RedisRunConfig{
+			Addr:      "redis.example.com:6379",
+			KeyPrefix: "test:",
+			ACLUserConfig: &storage.ACLUserRunConfig{
+				PasswordEnvVar: "", // populated block, but no password source
+			},
+		})
+		require.Error(t, err)
+		assert.Contains(t, err.Error(), "no password_env_var")
+		assert.Contains(t, err.Error(), "omit acl_user_config for a no-auth connection")
+	})
 }
 
 // TestConvertRedisRunConfig_WithEnvVars tests convertRedisRunConfig with environment variables.
@@ -1537,6 +1568,28 @@ func TestConvertRedisRunConfig_NoAuthWarns(t *testing.T) {
 		assert.Contains(t, logged, "redis.example.com:6379")
 	})
 
+	t.Run("no-auth WARN names the Sentinel master in Sentinel mode", func(t *testing.T) {
+		var buf syncBuffer
+		previous := slog.Default()
+		slog.SetDefault(slog.New(slog.NewTextHandler(&buf, &slog.HandlerOptions{Level: slog.LevelWarn})))
+		t.Cleanup(func() { slog.SetDefault(previous) })
+
+		// Sentinel mode leaves Addr empty, so redisStoreName must fall back to
+		// the master name for the store identifier in the WARN.
+		_, err := convertRedisRunConfig(&storage.RedisRunConfig{
+			KeyPrefix: "thv:auth:ns:name:",
+			SentinelConfig: &storage.SentinelRunConfig{
+				MasterName:    "mymaster",
+				SentinelAddrs: []string{"localhost:26379"},
+			},
+		})
+		require.NoError(t, err)
+
+		logged := buf.String()
+		assert.Equal(t, 1, strings.Count(logged, "without authentication"))
+		assert.Contains(t, logged, "sentinel:mymaster")
+	})
+
 	t.Run("authenticated resolution emits no WARN", func(t *testing.T) {
 		t.Setenv("TEST_REDIS_PASS_WARN", "mypass")
 
@@ -1555,6 +1608,36 @@ func TestConvertRedisRunConfig_NoAuthWarns(t *testing.T) {
 		require.NoError(t, err)
 		assert.Equal(t, 0, strings.Count(buf.String(), "without authentication"))
 	})
+}
+
+// TestCreateStorage_NoAuthRedisConnects covers the second half of issue #6550's
+// suggested test #1: a config with no ACLUserConfig must not only yield empty
+// credentials but actually connect to an unauthenticated Redis. It builds the
+// storage backend through createStorage/convertRedisRunConfig (the production
+// path) against a no-auth miniredis and proves a real round-trip succeeds.
+func TestCreateStorage_NoAuthRedisConnects(t *testing.T) {
+	t.Parallel()
+
+	mr := miniredis.RunT(t) // miniredis requires no auth unless RequireAuth is set
+
+	stor, err := createStorage(context.Background(), &storage.RunConfig{
+		Type: string(storage.TypeRedis),
+		RedisConfig: &storage.RedisRunConfig{
+			Addr:      mr.Addr(),
+			KeyPrefix: "test:noauth:",
+			// No ACLUserConfig and no AuthType: a no-auth connection.
+		},
+	})
+	require.NoError(t, err) // NewRedisStorage pings on construction, so this proves connectivity
+	t.Cleanup(func() { _ = stor.Close() })
+
+	// A real write/read round-trip proves the unauthenticated client is usable,
+	// not merely that construction's ping succeeded.
+	ctx := context.Background()
+	require.NoError(t, stor.RegisterClient(ctx, &fosite.DefaultClient{ID: "noauth-client"}))
+	got, err := stor.GetClient(ctx, "noauth-client")
+	require.NoError(t, err)
+	assert.Equal(t, "noauth-client", got.GetID())
 }
 
 // stubServer is a minimal authserver.Server implementation for testing

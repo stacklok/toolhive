@@ -48,7 +48,7 @@ require (
 	github.com/shirou/gopsutil/v4 v4.26.8
 	github.com/spf13/viper v1.21.0
 	github.com/spiffe/go-spiffe/v2 v2.7.0
-	github.com/stacklok/toolhive-catalog v0.20260824.0
+	github.com/stacklok/toolhive-catalog v0.20260831.0
 	github.com/stacklok/toolhive-core v0.0.43
 	github.com/stretchr/testify v1.12.1
 	github.com/swaggo/swag/v2 v2.0.0-rc5

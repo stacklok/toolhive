@@ -9,7 +9,10 @@ permissions:
 jobs:
   lint-go-code:
     name: Lint Go Code
-    runs-on: ubuntu-8cores-32gb
+    # golangci-lint itself runs for well under a minute here; the job is
+    # dominated by checkout, toolchain setup and cache restore, none of which
+    # scale with cores. The standard runner is free for this public repo.
+    runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
         with:

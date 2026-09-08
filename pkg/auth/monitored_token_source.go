@@ -9,10 +9,8 @@ import (
 	"fmt"
 	"log/slog"
 	"net"
-	"net/http"
 	"os"
 	"strconv"
-	"strings"
 	"sync"
 	"syscall"
 	"time"
@@ -21,6 +19,7 @@ import (
 	"golang.org/x/oauth2"
 	"golang.org/x/sync/singleflight"
 
+	"github.com/stacklok/toolhive/pkg/auth/oautherr"
 	"github.com/stacklok/toolhive/pkg/container/runtime"
 )
 
@@ -648,92 +647,28 @@ func isTransientNetworkError(err error) bool {
 	return false
 }
 
-// isPermanentTokenEndpointError reports whether err is an *oauth2.RetrieveError
-// whose response carries a structured RFC 6749 'error' code, implying the
-// OAuth server itself rendered a verdict on the cached credentials
-// (invalid_grant, invalid_client, etc.). Used at state-transition
-// boundaries to decide whether to emit a DCR/CIMD remediation hint
-// alongside the unauthentication.
-//
-// This is the strict inverse of isTransientRetrieveError on the
-// *oauth2.RetrieveError branch: a response is "permanent" iff the
-// classifier would NOT call it transient. Concretely, the Warn fires
-// only when ErrorCode is populated. 4xx responses without an OAuth
-// error code (HTML pages from a WAF, CDN, or reverse proxy) — like
-// 5xx, 429, 408, and nil-Response shapes — are treated as
-// non-permanent because we have no OAuth-protocol verdict to act on.
-// Recommending the user delete cached credentials based on a non-
-// spec-compliant response would frequently mislead operators whose
-// real problem is upstream of the OAuth server.
+// isPermanentTokenEndpointError reports whether the OAuth server itself
+// rendered a verdict on the cached credentials (invalid_grant, invalid_client,
+// etc.). Used at state-transition boundaries to decide whether to emit a
+// DCR/CIMD remediation hint alongside the unauthentication. The rules live in
+// pkg/auth/oautherr; see IsPermanentCredentialError for why a non-spec-compliant
+// 4xx is deliberately not "permanent".
 func isPermanentTokenEndpointError(err error) bool {
-	retrieveErr, ok := errors.AsType[*oauth2.RetrieveError](err)
-	if !ok || retrieveErr.Response == nil {
-		return false
-	}
-	return !isTransientRetrieveError(retrieveErr)
+	return oautherr.IsPermanentCredentialError(err)
 }
 
 // isTransientRetrieveError reports whether an *oauth2.RetrieveError should
-// be treated as transient. The classification rules are:
-//
-//   - nil Response: non-transient. There is no signal to act on, so we fall
-//     through to the unauthenticated path rather than retry blindly.
-//   - 5xx status: transient (server-side issue, likely to resolve).
-//   - 429 Too Many Requests: transient regardless of body (HTTP standard).
-//   - 4xx with an empty ErrorCode: transient. The oauth2 library populates
-//     ErrorCode from the RFC 6749 'error' field in a JSON response body. An
-//     empty ErrorCode means the response was not a parseable OAuth error —
-//     typically an HTML page from a WAF, CDN, or reverse proxy that
-//     intercepted the request before it reached the OAuth server. These
-//     infrastructure errors (Cloudflare blocks, residential-IP allowlist
-//     misses, transient bad-config deploys) commonly resolve on their own.
-//   - 4xx with a populated ErrorCode: permanent. The OAuth server returned
-//     a structured error code (invalid_grant, invalid_client, etc.) telling
-//     us specifically what's wrong; retrying won't help.
+// be treated as transient. The rules live in pkg/auth/oautherr so this
+// package and the LLM-gateway token source cannot drift on them.
 func isTransientRetrieveError(retrieveErr *oauth2.RetrieveError) bool {
-	if retrieveErr.Response == nil {
-		return false
-	}
-	statusCode := retrieveErr.Response.StatusCode
-
-	if statusCode >= 500 {
-		slog.Debug("treating OAuth server error as transient",
-			"status_code", statusCode,
-		)
-		return true
-	}
-
-	if statusCode == http.StatusTooManyRequests {
-		slog.Debug("treating OAuth rate-limit response as transient",
-			"status_code", statusCode,
-			"error_code", retrieveErr.ErrorCode,
-		)
-		return true
-	}
-
-	if retrieveErr.ErrorCode == "" {
-		slog.Debug("treating OAuth 4xx without error code as transient",
-			"status_code", statusCode,
-		)
-		return true
-	}
-
-	return false
+	return oautherr.IsTransientRetrieveError(retrieveErr)
 }
 
 // isOAuthParseError detects errors from the oauth2 library that indicate the
-// token endpoint returned an unparsable response body on a 2xx status. This
-// typically happens when a load balancer, CDN, or reverse proxy intercepts the
-// request and returns its own HTML page instead of the expected JSON token
-// response. The oauth2 library uses fmt.Errorf with %v (not %w) for these
-// errors, so string matching is the only reliable detection method.
+// token endpoint returned an unparsable response body on a 2xx status. The
+// detection lives in pkg/auth/oautherr.
 func isOAuthParseError(err error) bool {
-	if err == nil {
-		return false
-	}
-	msg := err.Error()
-	return strings.Contains(msg, "oauth2: cannot parse json") ||
-		strings.Contains(msg, "oauth2: cannot parse response")
+	return oautherr.IsParseError(err)
 }
 
 // stopMonitoringOnce idempotently closes the stopMonitoring channel. It

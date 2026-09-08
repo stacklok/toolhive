@@ -8,6 +8,7 @@ import (
 	"os"
 	"path/filepath"
 	"testing"
+	"time"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -22,6 +23,52 @@ import (
 	"github.com/stacklok/toolhive/pkg/vmcp/config"
 	vmcpmocks "github.com/stacklok/toolhive/pkg/vmcp/mocks"
 )
+
+func TestBackendRequestTimeoutResolver(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name       string
+		cfg        *config.Config
+		workloadID string
+		want       time.Duration
+	}{
+		{
+			name:       "missing operational config uses default",
+			cfg:        &config.Config{},
+			workloadID: "elastic",
+			want:       30 * time.Second,
+		},
+		{
+			name: "configured default applies to unmatched workload",
+			cfg: &config.Config{Operational: &config.OperationalConfig{
+				Timeouts: &config.TimeoutConfig{Default: config.Duration(90 * time.Second)},
+			}},
+			workloadID: "other",
+			want:       90 * time.Second,
+		},
+		{
+			name: "per workload timeout overrides configured default",
+			cfg: &config.Config{Operational: &config.OperationalConfig{
+				Timeouts: &config.TimeoutConfig{
+					Default: config.Duration(90 * time.Second),
+					PerWorkload: map[string]config.Duration{
+						"elastic": config.Duration(240 * time.Second),
+					},
+				},
+			}},
+			workloadID: "elastic",
+			want:       240 * time.Second,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			assert.Equal(t, tt.want, backendRequestTimeoutResolver(tt.cfg)(tt.workloadID))
+		})
+	}
+}
 
 // TestLoadAndValidateConfig covers all config-loading paths.
 func TestLoadAndValidateConfig(t *testing.T) {

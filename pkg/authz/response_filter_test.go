@@ -427,6 +427,521 @@ func TestResponseFilteringWriter(t *testing.T) {
 	}
 }
 
+func TestResponseFilteringWriter_LegacyListsRejectMalformedOrAmbiguousResults(t *testing.T) {
+	t.Parallel()
+
+	const protectedDescriptor = "protected-descriptor-sentinel"
+	type listMethod struct {
+		name               string
+		method             string
+		listField          string
+		identifier         string
+		typedInvalidMember string
+	}
+	methods := []listMethod{
+		{
+			name: "tools", method: string(mcp.MethodToolsList), listField: "tools", identifier: "name",
+			typedInvalidMember: `"inputSchema":17,"annotations":{"readOnlyHint":true}`,
+		},
+		{
+			name: "prompts", method: string(mcp.MethodPromptsList), listField: "prompts", identifier: "name",
+			typedInvalidMember: `"arguments":17`,
+		},
+		{
+			name: "resources", method: string(mcp.MethodResourcesList), listField: "resources", identifier: "uri",
+			typedInvalidMember: `"size":"bad"`,
+		},
+	}
+
+	testCases := []struct {
+		name   string
+		result func(listMethod) json.RawMessage
+	}{
+		{
+			name: "result is not an object",
+			result: func(_ listMethod) json.RawMessage {
+				return json.RawMessage(`["` + protectedDescriptor + `"]`)
+			},
+		},
+		{
+			name: "list is not an array",
+			result: func(method listMethod) json.RawMessage {
+				return json.RawMessage(`{"` + method.listField + `":{"` +
+					method.identifier + `":"` + protectedDescriptor + `"}}`)
+			},
+		},
+		{
+			name: "case-folded list alias",
+			result: func(method listMethod) json.RawMessage {
+				return json.RawMessage(`{"` + method.listField + `":[],"` +
+					strings.ToUpper(method.listField) + `":[{"` + method.identifier + `":"` +
+					protectedDescriptor + `"}]}`)
+			},
+		},
+		{
+			name: "duplicate list member",
+			result: func(method listMethod) json.RawMessage {
+				return json.RawMessage(`{"` + method.listField + `":[],"` + method.listField +
+					`":[{"` + method.identifier + `":"` + protectedDescriptor + `"}]}`)
+			},
+		},
+		{
+			name: "list item is not an object",
+			result: func(method listMethod) json.RawMessage {
+				return json.RawMessage(`{"` + method.listField + `":["` + protectedDescriptor + `"]}`)
+			},
+		},
+		{
+			name: "case-folded identifier alias",
+			result: func(method listMethod) json.RawMessage {
+				return json.RawMessage(`{"` + method.listField + `":[{"` + method.identifier + `":"` +
+					protectedDescriptor + `","` + strings.ToUpper(method.identifier) + `":"allowed"}]}`)
+			},
+		},
+		{
+			name: "duplicate identifier member",
+			result: func(method listMethod) json.RawMessage {
+				return json.RawMessage(`{"` + method.listField + `":[{"` + method.identifier + `":"` +
+					protectedDescriptor + `","` + method.identifier + `":"allowed"}]}`)
+			},
+		},
+		{
+			name: "identifier is not a string",
+			result: func(method listMethod) json.RawMessage {
+				return json.RawMessage(`{"` + method.listField + `":[{"` + method.identifier +
+					`":17,"description":"` + protectedDescriptor + `"}]}`)
+			},
+		},
+		{
+			name: "descriptor fails typed MCP decoding",
+			result: func(method listMethod) json.RawMessage {
+				return json.RawMessage(`{"` + method.listField + `":[{"` + method.identifier + `":"` +
+					protectedDescriptor + `",` + method.typedInvalidMember + `}]}`)
+			},
+		},
+	}
+
+	for _, method := range methods {
+		for _, tc := range testCases {
+			t.Run(method.name+"/"+tc.name, func(t *testing.T) {
+				t.Parallel()
+
+				responseBytes, err := jsonrpc2.EncodeMessage(&jsonrpc2.Response{
+					ID:     jsonrpc2.Int64ID(103),
+					Result: tc.result(method),
+				})
+				require.NoError(t, err)
+
+				authorizer := &mockAuthorizer{results: map[string]mockResult{
+					"allowed":           {authorized: true},
+					protectedDescriptor: {authorized: false},
+				}}
+				annotationCache := NewAnnotationCache()
+				cachedAnnotations := &authorizers.ToolAnnotations{}
+				annotationCache.Set("previously-cached-tool", cachedAnnotations)
+				rr := httptest.NewRecorder()
+				rfw := NewResponseFilteringWriter(
+					rr, authorizer, newUser1Request(t), method.method, annotationCache, nil,
+				)
+				rfw.ResponseWriter.Header().Set("Content-Type", "application/json")
+				_, err = rfw.Write(responseBytes)
+				require.NoError(t, err)
+				require.NoError(t, rfw.FlushAndFilter())
+
+				assert.Equal(t, http.StatusInternalServerError, rr.Code)
+				assert.NotContains(t, rr.Body.String(), protectedDescriptor,
+					"an invalid list result must not expose an unfiltered descriptor")
+				assert.Empty(t, authorizer.calls,
+					"the whole list must be validated before any authorization decision")
+				assert.Same(t, cachedAnnotations, annotationCache.Get("previously-cached-tool"),
+					"a malformed response must not replace the existing annotation cache")
+				assert.Nil(t, annotationCache.Get(protectedDescriptor),
+					"a malformed descriptor must not be partially added to the annotation cache")
+
+				message, err := jsonrpc2.DecodeMessage(rr.Body.Bytes())
+				require.NoError(t, err)
+				response, ok := message.(*jsonrpc2.Response)
+				require.True(t, ok)
+				require.NotNil(t, response.Error)
+				assert.Nil(t, response.Result)
+
+				var envelope struct {
+					Error struct {
+						Code    int64  `json:"code"`
+						Message string `json:"message"`
+					} `json:"error"`
+				}
+				require.NoError(t, json.Unmarshal(rr.Body.Bytes(), &envelope))
+				assert.Equal(t, mcpparser.CodeInternalError, envelope.Error.Code)
+				assert.Equal(t, "internal error", envelope.Error.Message)
+			})
+		}
+	}
+}
+
+// TestResponseFilteringWriter_ResourceTemplatesList verifies that resource-
+// template enumeration filters every descriptor against the same read_resource
+// authorization used when resources are read.
+func TestResponseFilteringWriter_ResourceTemplatesList(t *testing.T) {
+	t.Parallel()
+
+	const (
+		allowedTemplate = "file:///public/{name}"
+		deniedTemplate  = "file:///private/{name}"
+		errorTemplate   = "file:///error/{name}"
+	)
+
+	authorizer := &mockAuthorizer{results: map[string]mockResult{
+		allowedTemplate: {authorized: true},
+		deniedTemplate:  {authorized: false},
+		// An authorizer error must fail closed even if its boolean result is true.
+		errorTemplate: {authorized: true, err: errors.New("policy backend unavailable")},
+	}}
+
+	// Use raw JSON so the test also guards descriptor and pagination metadata
+	// that are not represented by dedicated fields in the compatibility types.
+	result := json.RawMessage(`{
+		"_meta":{"page":"one"},
+		"nextCursor":"cursor-2",
+		"cacheScope":"public",
+		"ttlMs":60000,
+		"resultExtension":{"preserve":true},
+		"resourceTemplates":[
+			{
+				"uriTemplate":"file:///public/{name}",
+				"name":"public-file",
+				"title":"Public file",
+				"description":"Read a public file",
+				"mimeType":"text/plain",
+				"icons":[{"src":"https://example.com/public.svg","mimeType":"image/svg+xml","sizes":["any"],"theme":"light"}],
+				"annotations":{"audience":["user"],"priority":0.8,"lastModified":"2026-09-08T12:00:00Z"},
+				"_meta":{"source":"backend"},
+				"templateExtension":{"preserve":true}
+			},
+			{"uriTemplate":"file:///private/{name}","name":"private-file"},
+			{"uriTemplate":"file:///error/{name}","name":"error-file"}
+		]
+	}`)
+	responseBytes, err := jsonrpc2.EncodeMessage(&jsonrpc2.Response{
+		ID:     jsonrpc2.Int64ID(1),
+		Result: result,
+	})
+	require.NoError(t, err)
+
+	rr := httptest.NewRecorder()
+	rfw := NewResponseFilteringWriter(
+		rr,
+		authorizer,
+		newUser1Request(t),
+		string(mcp.MethodResourcesTemplatesList),
+		nil,
+		nil,
+	)
+	rfw.ResponseWriter.Header().Set("Content-Type", "application/json")
+	_, err = rfw.Write(responseBytes)
+	require.NoError(t, err)
+	require.NoError(t, rfw.FlushAndFilter())
+
+	message, err := jsonrpc2.DecodeMessage(rr.Body.Bytes())
+	require.NoError(t, err)
+	response, ok := message.(*jsonrpc2.Response)
+	require.True(t, ok)
+	require.Nil(t, response.Error)
+
+	const expectedResult = `{
+		"_meta":{"page":"one"},
+		"nextCursor":"cursor-2",
+		"cacheScope":"private",
+		"ttlMs":0,
+		"resultExtension":{"preserve":true},
+		"resourceTemplates":[{
+			"uriTemplate":"file:///public/{name}",
+			"name":"public-file",
+			"title":"Public file",
+			"description":"Read a public file",
+			"mimeType":"text/plain",
+			"icons":[{"src":"https://example.com/public.svg","mimeType":"image/svg+xml","sizes":["any"],"theme":"light"}],
+			"annotations":{"audience":["user"],"priority":0.8,"lastModified":"2026-09-08T12:00:00Z"},
+			"_meta":{"source":"backend"},
+			"templateExtension":{"preserve":true}
+		}]
+	}`
+	assert.JSONEq(t, expectedResult, string(response.Result))
+	assert.Equal(t, "private, no-store", rr.Header().Get("Cache-Control"),
+		"identity-filtered template results must not be stored by shared HTTP caches")
+	assert.Equal(t, []mockCall{
+		{feature: authorizers.MCPFeatureResource, operation: authorizers.MCPOperationRead, resourceID: allowedTemplate},
+		{feature: authorizers.MCPFeatureResource, operation: authorizers.MCPOperationRead, resourceID: deniedTemplate},
+		{feature: authorizers.MCPFeatureResource, operation: authorizers.MCPOperationRead, resourceID: errorTemplate},
+	}, authorizer.calls)
+}
+
+func TestResponseFilteringWriter_ResourceTemplatesList_SSEForcesPrivateCaching(t *testing.T) {
+	t.Parallel()
+
+	const allowedTemplate = "file:///public/{name}"
+	result := json.RawMessage(`{
+		"_meta":{"source":"backend"},
+		"cacheScope":"public",
+		"ttlMs":60000,
+		"resourceTemplates":[{"uriTemplate":"file:///public/{name}","name":"public-file"}]
+	}`)
+	responseBytes, err := jsonrpc2.EncodeMessage(&jsonrpc2.Response{
+		ID:     jsonrpc2.Int64ID(100),
+		Result: result,
+	})
+	require.NoError(t, err)
+
+	authorizer := &mockAuthorizer{results: map[string]mockResult{
+		allowedTemplate: {authorized: true},
+	}}
+	rr := httptest.NewRecorder()
+	rfw := NewResponseFilteringWriter(
+		rr,
+		authorizer,
+		newUser1Request(t),
+		string(mcp.MethodResourcesTemplatesList),
+		nil,
+		nil,
+	)
+	rfw.ResponseWriter.Header().Set("Content-Type", "text/event-stream")
+	rfw.ResponseWriter.Header().Set("Cache-Control", "public, max-age=60")
+	rfw.WriteHeader(http.StatusOK)
+	rfw.Flush()
+	assert.Equal(t, "private, no-store", rr.Header().Get("Cache-Control"),
+		"the private cache policy must be committed before an SSE stream flushes")
+
+	_, err = rfw.Write([]byte("data: " + string(responseBytes) + "\n\n"))
+	require.NoError(t, err)
+	require.NoError(t, rfw.FlushAndFilter())
+
+	events := parseSSEStream(t, rr.Body.Bytes())
+	require.Len(t, events, 1)
+	message, err := jsonrpc2.DecodeMessage([]byte(events[0].data))
+	require.NoError(t, err)
+	response, ok := message.(*jsonrpc2.Response)
+	require.True(t, ok)
+
+	var filteredResult map[string]json.RawMessage
+	require.NoError(t, json.Unmarshal(response.Result, &filteredResult))
+	assert.JSONEq(t, `"private"`, string(filteredResult["cacheScope"]))
+	assert.JSONEq(t, `0`, string(filteredResult["ttlMs"]))
+	assert.JSONEq(t, `{"source":"backend"}`, string(filteredResult["_meta"]))
+}
+
+func TestResponseFilteringWriter_ResourceTemplatesList_RejectsAmbiguousResultMembers(t *testing.T) {
+	t.Parallel()
+
+	const (
+		allowedTemplate = "file:///public/{name}"
+		deniedTemplate  = "file:///private/{name}"
+	)
+
+	canonicalTemplates := `"resourceTemplates":[` +
+		`{"uriTemplate":"file:///public/{name}","name":"public-file"}]`
+	testCases := []struct {
+		name   string
+		result json.RawMessage
+	}{
+		{
+			name: "case-folded resourceTemplates alias",
+			result: json.RawMessage(`{` + canonicalTemplates + `,` +
+				`"resourcetemplates":[{"uriTemplate":"file:///private/{name}","name":"private-file"}]}`),
+		},
+		{
+			name:   "duplicate canonical resourceTemplates member",
+			result: json.RawMessage(`{` + canonicalTemplates + `,` + canonicalTemplates + `}`),
+		},
+		{
+			name:   "case-folded cacheScope alias",
+			result: json.RawMessage(`{` + canonicalTemplates + `,"cacheScope":"private","CACHESCOPE":"public"}`),
+		},
+		{
+			name:   "duplicate canonical cacheScope member",
+			result: json.RawMessage(`{` + canonicalTemplates + `,"cacheScope":"private","cacheScope":"public"}`),
+		},
+		{
+			name:   "case-folded ttlMs alias",
+			result: json.RawMessage(`{` + canonicalTemplates + `,"ttlMs":0,"TTLMS":60000}`),
+		},
+		{
+			name:   "duplicate canonical ttlMs member",
+			result: json.RawMessage(`{` + canonicalTemplates + `,"ttlMs":0,"ttlMs":60000}`),
+		},
+	}
+
+	for _, tc := range testCases {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+
+			if tc.name == "case-folded resourceTemplates alias" {
+				// Pin the client behavior that makes this security-sensitive:
+				// Go matches struct fields case-insensitively, and the later
+				// alias overwrites the canonical member.
+				var unfiltered mcp.ListResourceTemplatesResult
+				require.NoError(t, json.Unmarshal(tc.result, &unfiltered))
+				require.Len(t, unfiltered.ResourceTemplates, 1)
+				require.Equal(t, deniedTemplate, unfiltered.ResourceTemplates[0].URITemplate)
+			}
+
+			responseBytes, err := jsonrpc2.EncodeMessage(&jsonrpc2.Response{
+				ID:     jsonrpc2.Int64ID(101),
+				Result: tc.result,
+			})
+			require.NoError(t, err)
+
+			authorizer := &mockAuthorizer{results: map[string]mockResult{
+				allowedTemplate: {authorized: true},
+				deniedTemplate:  {authorized: false},
+			}}
+			rr := httptest.NewRecorder()
+			rfw := NewResponseFilteringWriter(
+				rr,
+				authorizer,
+				newParsedUser1Request(t, `{"jsonrpc":"2.0","id":101,"method":"resources/templates/list"}`),
+				string(mcp.MethodResourcesTemplatesList),
+				nil,
+				nil,
+			)
+			rfw.ResponseWriter.Header().Set("Content-Type", "application/json")
+			_, err = rfw.Write(responseBytes)
+			require.NoError(t, err)
+			require.NoError(t, rfw.FlushAndFilter())
+
+			message, err := jsonrpc2.DecodeMessage(rr.Body.Bytes())
+			require.NoError(t, err)
+			response, ok := message.(*jsonrpc2.Response)
+			require.True(t, ok)
+			require.NotNil(t, response.Error, "ambiguous result members must fail closed")
+			assert.Nil(t, response.Result, "no client-decodable template list may survive ambiguous members")
+			assert.Empty(t, authorizer.calls,
+				"ambiguous result members must be rejected before an authorization decision")
+		})
+	}
+}
+
+func TestResponseFilteringWriter_ResourceTemplatesList_RejectsDescriptorAliasesAndDuplicates(t *testing.T) {
+	t.Parallel()
+
+	testCases := []struct {
+		name       string
+		descriptor string
+	}{
+		{
+			name: "case-folded alias selects an allowed URI over the denied canonical URI",
+			descriptor: `{"uriTemplate":"file:///private/{name}",` +
+				`"URITEMPLATE":"file:///public/{name}","name":"ambiguous"}`,
+		},
+		{
+			name: "duplicate canonical member selects an allowed URI over the denied URI",
+			descriptor: `{"uriTemplate":"file:///private/{name}",` +
+				`"uriTemplate":"file:///public/{name}","name":"ambiguous"}`,
+		},
+	}
+
+	for _, tc := range testCases {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+
+			result := json.RawMessage(`{"resourceTemplates":[` + tc.descriptor + `]}`)
+			responseBytes, err := jsonrpc2.EncodeMessage(&jsonrpc2.Response{
+				ID:     jsonrpc2.Int64ID(102),
+				Result: result,
+			})
+			require.NoError(t, err)
+
+			authorizer := &mockAuthorizer{results: map[string]mockResult{
+				"file:///public/{name}":  {authorized: true},
+				"file:///private/{name}": {authorized: false},
+			}}
+			rr := httptest.NewRecorder()
+			rfw := NewResponseFilteringWriter(
+				rr,
+				authorizer,
+				newParsedUser1Request(t, `{"jsonrpc":"2.0","id":102,"method":"resources/templates/list"}`),
+				string(mcp.MethodResourcesTemplatesList),
+				nil,
+				nil,
+			)
+			rfw.ResponseWriter.Header().Set("Content-Type", "application/json")
+			_, err = rfw.Write(responseBytes)
+			require.NoError(t, err)
+			require.NoError(t, rfw.FlushAndFilter())
+
+			message, err := jsonrpc2.DecodeMessage(rr.Body.Bytes())
+			require.NoError(t, err)
+			response, ok := message.(*jsonrpc2.Response)
+			require.True(t, ok)
+			require.NotNil(t, response.Error, "ambiguous uriTemplate members must fail closed")
+			assert.Nil(t, response.Result)
+			assert.NotContains(t, rr.Body.String(), "file:///private/{name}")
+			assert.Empty(t, authorizer.calls,
+				"ambiguous descriptors must be rejected before an authorization decision")
+		})
+	}
+}
+
+func TestResponseFilteringWriter_ResourceTemplatesList_MalformedDescriptorFailsClosed(t *testing.T) {
+	t.Parallel()
+
+	authorizer := &mockAuthorizer{results: map[string]mockResult{
+		"file:///private/{name}": {authorized: true},
+	}}
+	result := json.RawMessage(`{
+		"resourceTemplates":[
+			{"uriTemplate":17,"name":"malformed"},
+			{"uriTemplate":"file:///private/{name}","name":"private-file"}
+		]
+	}`)
+	responseBytes, err := jsonrpc2.EncodeMessage(&jsonrpc2.Response{
+		ID:     jsonrpc2.Int64ID(99),
+		Result: result,
+	})
+	require.NoError(t, err)
+
+	rr := httptest.NewRecorder()
+	rfw := NewResponseFilteringWriter(
+		rr,
+		authorizer,
+		newParsedUser1Request(t, `{"jsonrpc":"2.0","id":99,"method":"resources/templates/list"}`),
+		string(mcp.MethodResourcesTemplatesList),
+		nil,
+		nil,
+	)
+	rfw.ResponseWriter.Header().Set("Content-Type", "application/json")
+	_, err = rfw.Write(responseBytes)
+	require.NoError(t, err)
+	require.NoError(t, rfw.FlushAndFilter())
+
+	assert.Equal(t, http.StatusInternalServerError, rr.Code)
+	assert.NotContains(t, rr.Body.String(), "private-file",
+		"a malformed descriptor must not cause the unfiltered result to pass through")
+	message, err := jsonrpc2.DecodeMessage(rr.Body.Bytes())
+	require.NoError(t, err)
+	response, ok := message.(*jsonrpc2.Response)
+	require.True(t, ok)
+	require.NotNil(t, response.Error)
+	assert.Equal(t, jsonrpc2.Int64ID(99), response.ID)
+	assert.Empty(t, authorizer.calls,
+		"filtering must stop before making decisions from a structurally invalid descriptor list")
+}
+
+// TestProtectedListMethodsRequireResponseFiltering prevents the middleware's
+// list-operation classification from drifting away from the response filter's
+// dispatch table. A protected list skips request-time authorization, so missing
+// response filtering would expose every descriptor returned by the backend.
+func TestProtectedListMethodsRequireResponseFiltering(t *testing.T) {
+	t.Parallel()
+
+	for method, featureOp := range MCPMethodToFeatureOperation {
+		if featureOp.Feature == "" || featureOp.Operation != authorizers.MCPOperationList {
+			continue
+		}
+		assert.Truef(t, requiresResponseFiltering(method),
+			"protected list method %q must be handled by response filtering", method)
+	}
+}
+
 func TestResponseFilteringWriter_NonListOperations(t *testing.T) {
 	t.Parallel()
 	// Create a Cedar authorizer
@@ -1024,14 +1539,14 @@ func newParsedUser1Request(t *testing.T, reqBody string) *http.Request {
 // offending event through and continue filtering the rest of the stream.
 //
 // The same code path runs for every method covered by
-// requiresResponseFiltering, so each of tools/list, prompts/list, and
-// resources/list is exercised below.
+// requiresResponseFiltering, so each protected list method is exercised below.
 func TestResponseFilteringWriter_SSE_PerEventFallthrough(t *testing.T) {
 	t.Parallel()
 
 	authorizer := newWeatherOnlyAuthorizer(t,
 		`permit(principal, action == Action::"get_prompt", resource == Prompt::"greeting");`,
 		`permit(principal, action == Action::"read_resource", resource == Resource::"data");`,
+		`permit(principal, action == Action::"read_resource", resource == Resource::"file:///public/{name}");`,
 	)
 
 	// encodeListResponse marshals a list result type into a JSON-RPC Response
@@ -1122,6 +1637,28 @@ func TestResponseFilteringWriter_SSE_PerEventFallthrough(t *testing.T) {
 				names := make([]string, len(r.Resources))
 				for i, res := range r.Resources {
 					names[i] = res.URI
+				}
+				return names
+			},
+		},
+		{
+			name:   "resources/templates/list",
+			method: string(mcp.MethodResourcesTemplatesList),
+			respLine: encodeListResponse(t, mcp.ListResourceTemplatesResult{
+				ResourceTemplates: []mcp.ResourceTemplate{
+					{URITemplate: "file:///public/{name}", Name: "Public File"},
+					{URITemplate: "file:///private/{name}", Name: "Private File"},
+				},
+			}),
+			authorizedName:   "file:///public/{name}",
+			unauthorizedName: "file:///private/{name}",
+			extractNames: func(t *testing.T, result json.RawMessage) []string {
+				t.Helper()
+				var r mcp.ListResourceTemplatesResult
+				require.NoError(t, json.Unmarshal(result, &r))
+				names := make([]string, len(r.ResourceTemplates))
+				for i, resourceTemplate := range r.ResourceTemplates {
+					names[i] = resourceTemplate.URITemplate
 				}
 				return names
 			},
@@ -2089,6 +2626,11 @@ func TestResponseFilteringWriter_FilterBypassAttempts(t *testing.T) {
 	})
 	require.NoError(t, err)
 	sseListBody := []byte("event: message\ndata: " + string(listBody) + "\n\n")
+	errorBody, err := jsonrpc2.EncodeMessage(&jsonrpc2.Response{
+		ID:    jsonrpc2.Int64ID(1),
+		Error: jsonrpc2.NewError(mcpparser.CodeInternalError, "backend failed"),
+	})
+	require.NoError(t, err)
 
 	testCases := []struct {
 		name        string
@@ -2142,10 +2684,24 @@ func TestResponseFilteringWriter_FilterBypassAttempts(t *testing.T) {
 			wantFiltered: false,
 		},
 		{
-			name:         "non-2xx error response passes through unfiltered",
+			name:         "non-2xx JSON result is filtered",
 			contentType:  "application/json",
 			statusCode:   http.StatusInternalServerError,
 			body:         listBody,
+			wantFiltered: true,
+		},
+		{
+			name:         "non-2xx SSE result is filtered",
+			contentType:  "text/event-stream",
+			statusCode:   http.StatusInternalServerError,
+			body:         sseListBody,
+			wantFiltered: true,
+		},
+		{
+			name:         "non-2xx JSON-RPC error passes through",
+			contentType:  "application/json",
+			statusCode:   http.StatusInternalServerError,
+			body:         errorBody,
 			wantFiltered: false,
 		},
 	}

@@ -20,6 +20,7 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"slices"
 	"testing"
 	"time"
 
@@ -31,6 +32,7 @@ import (
 
 	"github.com/stacklok/toolhive/pkg/authserver/server"
 	servercrypto "github.com/stacklok/toolhive/pkg/authserver/server/crypto"
+	"github.com/stacklok/toolhive/pkg/authserver/server/registration"
 	"github.com/stacklok/toolhive/pkg/authserver/storage/mocks"
 	sharedobauth "github.com/stacklok/toolhive/pkg/oauthproto"
 )
@@ -40,7 +42,9 @@ type testSetupOptions struct {
 	AuthorizationEndpointBaseURL        string
 	CIMDEnabled                         bool
 	AllowConfidentialClientRegistration bool
+	AllowPrivateKeyJWTRegistration      bool
 	HasStaticDelegateClients            bool
+	DisableTokenExchange                bool
 	JWTBearerGrantEnabled               bool
 }
 
@@ -72,7 +76,9 @@ func testSetupWithOptions(t *testing.T, opts testSetupOptions) *Handler {
 		AuthorizationEndpointBaseURL:        opts.AuthorizationEndpointBaseURL,
 		CIMDEnabled:                         opts.CIMDEnabled,
 		AllowConfidentialClientRegistration: opts.AllowConfidentialClientRegistration,
+		AllowPrivateKeyJWTRegistration:      opts.AllowPrivateKeyJWTRegistration,
 		HasStaticDelegateClients:            opts.HasStaticDelegateClients,
+		DisableTokenExchange:                opts.DisableTokenExchange,
 		JWTBearerGrantEnabled:               opts.JWTBearerGrantEnabled,
 		AccessTokenLifespan:                 time.Hour,
 		RefreshTokenLifespan:                time.Hour * 24,
@@ -264,34 +270,50 @@ func TestOIDCDiscoveryHandler(t *testing.T) {
 }
 
 // TestDiscoveryHandlers_ConfidentialAuthMethods verifies both discovery endpoints
-// advertise the client authentication methods needed for configured confidential
-// clients. "none" must stay at index 0 (readability convention; RFC 8414 defines
-// no ordering).
+// advertise the client authentication methods enabled by configuration, including
+// the independent private_key_jwt capability. "none" must stay at index 0
+// (readability convention; RFC 8414 defines no ordering).
 func TestDiscoveryHandlers_ConfidentialAuthMethods(t *testing.T) {
 	t.Parallel()
 
 	wantOff := []string{sharedobauth.TokenEndpointAuthMethodNone}
-	wantOn := []string{
+	wantSecrets := []string{
 		sharedobauth.TokenEndpointAuthMethodNone,
 		sharedobauth.TokenEndpointAuthMethodClientSecretBasic,
 		sharedobauth.TokenEndpointAuthMethodClientSecretPost,
 	}
+	wantPrivateKeyJWT := []string{
+		sharedobauth.TokenEndpointAuthMethodNone,
+		sharedobauth.TokenEndpointAuthMethodPrivateKeyJWT,
+	}
+	wantSecretsAndPrivateKeyJWT := append(
+		append([]string(nil), wantSecrets...), sharedobauth.TokenEndpointAuthMethodPrivateKeyJWT,
+	)
+	wantAlgorithms := registration.SupportedSigningAlgorithms()
 
 	tests := []struct {
 		name              string
 		allowConfidential bool
+		allowPrivate      bool
 		hasStaticClient   bool
 		wantMethods       []string
+		wantAlgorithms    []string
 	}{
-		{"public only advertises only none", false, false, wantOff},
-		{"confidential DCR advertises client_secret methods", true, false, wantOn},
-		{"static delegate client advertises client_secret methods", false, true, wantOn},
+		{"public only advertises only none", false, false, false, wantOff, nil},
+		{"private_key_jwt only advertises private_key_jwt", false, true, false, wantPrivateKeyJWT, wantAlgorithms},
+		{"confidential DCR advertises client_secret methods", true, false, false, wantSecrets, nil},
+		{"confidential DCR and private_key_jwt advertise both", true, true, false, wantSecretsAndPrivateKeyJWT, wantAlgorithms},
+		{"static delegate advertises client_secret methods", false, false, true, wantSecrets, nil},
+		{"static delegate and private_key_jwt advertise both", false, true, true, wantSecretsAndPrivateKeyJWT, wantAlgorithms},
+		{"confidential DCR and static delegate advertise client_secret methods", true, false, true, wantSecrets, nil},
+		{"all authentication methods are advertised", true, true, true, wantSecretsAndPrivateKeyJWT, wantAlgorithms},
 	}
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
 			t.Parallel()
 			handler := testSetupWithOptions(t, testSetupOptions{
 				AllowConfidentialClientRegistration: tc.allowConfidential,
+				AllowPrivateKeyJWTRegistration:      tc.allowPrivate,
 				HasStaticDelegateClients:            tc.hasStaticClient,
 			})
 
@@ -303,6 +325,8 @@ func TestDiscoveryHandlers_ConfidentialAuthMethods(t *testing.T) {
 			require.NoError(t, json.NewDecoder(rec.Body).Decode(&metadata))
 			assert.Equal(t, tc.wantMethods, metadata.TokenEndpointAuthMethodsSupported,
 				"oauth-authorization-server must advertise configured client authentication methods")
+			assert.Equal(t, tc.wantAlgorithms, metadata.TokenEndpointAuthSigningAlgValuesSupported,
+				"oauth-authorization-server must advertise private_key_jwt signing algorithms only when enabled")
 			assert.Equal(t, sharedobauth.TokenEndpointAuthMethodNone, metadata.TokenEndpointAuthMethodsSupported[0],
 				"none must remain at index 0")
 
@@ -314,6 +338,8 @@ func TestDiscoveryHandlers_ConfidentialAuthMethods(t *testing.T) {
 			require.NoError(t, json.NewDecoder(rec2.Body).Decode(&discovery))
 			assert.Equal(t, tc.wantMethods, discovery.TokenEndpointAuthMethodsSupported,
 				"openid-configuration must advertise configured client authentication methods")
+			assert.Equal(t, tc.wantAlgorithms, discovery.TokenEndpointAuthSigningAlgValuesSupported,
+				"openid-configuration must advertise private_key_jwt signing algorithms only when enabled")
 		})
 	}
 }
@@ -407,19 +433,25 @@ func TestWellKnownRoutes(t *testing.T) {
 	}
 }
 
-func TestDiscoveryHandlers_JWTBearerGrant(t *testing.T) {
+func TestDiscoveryHandlers_InboundGrantCapabilities(t *testing.T) {
 	t.Parallel()
 
 	for _, tc := range []struct {
-		name    string
-		enabled bool
+		name                  string
+		disableTokenExchange  bool
+		jwtBearerGrantEnabled bool
 	}{
-		{"enabled", true},
-		{"disabled", false},
+		{name: "historical token exchange default"},
+		{name: "token exchange and JWT bearer", jwtBearerGrantEnabled: true},
+		{name: "all inbound grants disabled", disableTokenExchange: true},
+		{name: "JWT bearer independent of token exchange", disableTokenExchange: true, jwtBearerGrantEnabled: true},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			t.Parallel()
-			handler := testSetupWithOptions(t, testSetupOptions{JWTBearerGrantEnabled: tc.enabled})
+			handler := testSetupWithOptions(t, testSetupOptions{
+				DisableTokenExchange:  tc.disableTokenExchange,
+				JWTBearerGrantEnabled: tc.jwtBearerGrantEnabled,
+			})
 
 			for _, endpoint := range []struct {
 				name string
@@ -437,11 +469,10 @@ func TestDiscoveryHandlers_JWTBearerGrant(t *testing.T) {
 
 					var meta sharedobauth.AuthorizationServerMetadata
 					require.NoError(t, json.NewDecoder(rec.Body).Decode(&meta))
-					if tc.enabled {
-						assert.Contains(t, meta.GrantTypesSupported, sharedobauth.GrantTypeJWTBearer)
-					} else {
-						assert.NotContains(t, meta.GrantTypesSupported, sharedobauth.GrantTypeJWTBearer)
-					}
+					assert.Equal(t, !tc.disableTokenExchange,
+						slices.Contains(meta.GrantTypesSupported, sharedobauth.GrantTypeTokenExchange))
+					assert.Equal(t, tc.jwtBearerGrantEnabled,
+						slices.Contains(meta.GrantTypesSupported, sharedobauth.GrantTypeJWTBearer))
 				})
 			}
 		})

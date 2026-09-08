@@ -16,6 +16,18 @@ IdP (e.g. a corporate IdP), so a client already holding a token from that IdP
 can exchange it for a ToolHive delegated token without a separate ToolHive
 login.
 
+This document also describes how a DCR-registered client can authenticate to the
+exchange without receiving a secret. That is RFC 7523 §2.2 `private_key_jwt`
+**client authentication**: the client registers an inline public JWKS and signs
+a `client_assertion` with its private key. It is not the RFC 7523 §2.1
+JWT-bearer grant, which uses a JWT as the grant assertion itself and does not
+authenticate a registered client. The two mechanisms are independent.
+
+ToolHive requires every registered private-key JWT JWK to be public, have
+`use: "sig"`, and identify a signing algorithm compatible with the registered
+`token_endpoint_auth_signing_alg`. ToolHive requires this explicit `use` value
+even though the JWK specification makes the member optional.
+
 ## Deployment and configuration
 
 RFC 8693 is reachable through a pre-provisioned **delegate client**. A delegate
@@ -60,6 +72,91 @@ token. See [Trust model](#trust-model) for the required external-issuer
 binding. The Kubernetes operator also exposes `trusted_issuers` as
 `EmbeddedAuthServerConfig.trustedIssuers` — see
 [Kubernetes operator](#kubernetes-operator) below.
+
+#### Canonical `inbound_grants` configuration
+
+The top-level `delegate_clients` and the RFC 8693/7523 fields embedded
+directly on `trusted_issuers[*]` above are the legacy configuration shape.
+`RunConfig.inbound_grants` (`authserver.InboundGrantsRunConfig`) is the
+canonical replacement: it groups the same policy under
+`inbound_grants.token_exchange` (delegate clients and per-issuer RFC 8693
+policy) and `inbound_grants.jwt_bearer` (per-issuer RFC 7523 policy), each
+referencing a `trusted_issuers` entry by its `name` rather than embedding
+policy fields on the issuer itself. SPIFFE client policy is configured
+separately, as a sibling of both under `inbound_grants.spiffe_client_auth`
+(described further below) — not
+nested under `inbound_grants.token_exchange`, since a SPIFFE association
+authenticates a client but does not by itself grant it anything:
+
+```yaml
+issuer: https://auth.example.com
+scopes_supported: [openid, profile]
+allowed_audiences: [https://mcp.example.com]
+trusted_issuers:
+  - name: reporting-idp
+    issuer_url: https://login.example-idp.com
+inbound_grants:
+  token_exchange:
+    delegate_clients:
+      - client_id: reporting-delegate
+        client_secret_env_var: REPORTING_DELEGATE_CLIENT_SECRET
+        scopes: [openid]
+        audiences: [https://mcp.example.com]
+    issuer_policies:
+      - issuer_ref: reporting-idp
+        expected_audience: https://mcp.example.com
+        allowed_actors: [external-reporting-client]
+        allowed_delegate_clients: [reporting-delegate]
+```
+
+`NormalizeInboundGrants` (`pkg/authserver/inbound_grants.go`) reconciles both
+shapes at validation time, per grant family:
+
+- If `inbound_grants.token_exchange` is set, any legacy `delegate_clients` or
+  RFC 8693 fields embedded on `trusted_issuers[*]` are rejected as a
+  configuration conflict — the two token-exchange sources are mutually
+  exclusive. Likewise for `inbound_grants.jwt_bearer` against a legacy
+  `trusted_issuers[*].jwt_bearer_grant`.
+- The two grant families are independent: setting only
+  `inbound_grants.jwt_bearer` still lets legacy `delegate_clients`/RFC 8693
+  fields enable token exchange, and vice versa — `inbound_grants` does not
+  take over both families just by being non-nil.
+- `issuer_ref` resolves against `trusted_issuers[*].name`; an issuer without
+  a `name`, an unresolvable `issuer_ref`, or a duplicate `name`/`issuer_url`
+  fails validation.
+
+Existing deployments using only the legacy shape are unaffected: omitting
+`inbound_grants` entirely preserves the released behavior, including RFC
+8693 being enabled by default. SPIFFE client policy
+(`inbound_grants.spiffe_client_auth`) has no legacy equivalent
+and must reference a `spiffe_trust_domains` entry the same way issuer
+policies reference `trusted_issuers`.
+
+### Token-only embedded authorization servers
+
+An embedded authorization server may omit upstream identity providers only when
+it has a pre-provisioned delegate client or a trusted issuer with
+`jwtBearerGrant`. This mode serves token exchange without an interactive login:
+`/oauth/authorize` validates the OAuth client and redirect URI, then returns
+`unsupported_response_type`. Discovery omits authorization-code, refresh-token,
+and PKCE capabilities while retaining token exchange (and JWT bearer when a
+trusted issuer enables it). Generic MCP and OIDC authorization-code clients
+cannot use token-only servers: the metadata deliberately lacks the
+authorization-code and PKCE fields those clients require to start an interactive
+flow. The OpenID well-known route returns the same RFC 8414 token-only metadata
+alias, not OIDC-only fields.
+
+Token-only metadata continues to advertise configured scopes such as `openid`
+and `offline_access`. Scopes describe permissions that token exchange can issue,
+not interactive-login availability; removing them would falsely imply those
+valid exchanged-token permissions are unavailable.
+
+In token-only mode, ordinary dynamic registrations are rejected. The
+registration endpoint is advertised only when `private_key_jwt` registration is
+enabled, and then accepts only private-key-JWT token-exchange clients. Backend
+requests strip inbound credential headers after ToolHive authentication because
+there is no upstream credential to inject; outgoing token exchange and AWS STS
+remain incompatible because they would add credentials after the strip.
 
 ### Kubernetes operator
 
@@ -119,6 +216,10 @@ spec:
         audiences: [https://mcp.example.com]
 ```
 
+A token-only vMCP cannot use Cedar authorization: grant-only issuance does not
+create the provenance-bound upstream-token entries Cedar needs for
+upstream-derived claims.
+
 The CRD accepts Secret references only: no plaintext secret, redirect URI, or
 arbitrary grant selection is available. A non-empty `clientSecretRef.name` and
 `.key`, at least one scope, and at least one audience are required. Delegate
@@ -148,6 +249,11 @@ spec:
         actorMatcher: "has(claims.roles) && 'trusted-delegator' in claims.roles"
         allowedDelegateClients: [reporting-delegate]
         allowMayAct: false
+        # Optional: trust a private CA for this issuer's discovery/JWKS fetch.
+        caBundleRef:
+          configMapRef:
+            name: login-example-idp-ca
+            key: ca.crt
 ```
 
 Static delegate clients and confidential Dynamic Client Registration (DCR) are
@@ -162,16 +268,82 @@ reuse IDs between the two mechanisms.
 
 Both `/.well-known/oauth-authorization-server` and
 `/.well-known/openid-configuration` advertise the token-exchange grant in
-`grant_types_supported`. When confidential DCR is enabled **or** at least one
-static delegate client is configured, they also advertise
-`client_secret_basic` and `client_secret_post` in
-`token_endpoint_auth_methods_supported`; otherwise only `none` is advertised.
+`grant_types_supported` by default. Setting `inbound_grants` with
+`token_exchange` omitted disables and stops advertising RFC 8693 entirely
+(`Config.DisableTokenExchange`, `AuthorizationServerConfig.TokenExchangeEnabled`)
+— the same flag governs both registration with fosite and discovery
+advertisement, so they cannot drift out of sync. `token_endpoint_auth_methods_supported` always
+includes `none`; it also includes `client_secret_basic` and
+`client_secret_post` when confidential DCR is enabled or a static delegate
+client is configured, and includes `private_key_jwt` when
+`allowPrivateKeyJWTRegistration` is enabled. In the latter case,
+`token_endpoint_auth_signing_alg_values_supported` lists the implemented
+algorithms. The RFC 7523 §2.1 JWT-bearer grant is advertised only when a trusted
+issuer opts into it. A private-key JWT DCR client is limited to token exchange;
+it is not an authorization-code client.
 
 On Kubernetes, a delegate-client Secret is injected as a pod environment
 variable and is resolved when the authorization server starts. Updating that
 Secret does not change the environment of an already running pod. The operator
 has no delegate-client Secret watch or automatic rollout for this feature, so
 restart or otherwise roll out the workload after rotating the secret.
+
+## Secretless DCR delegate flow
+
+Set `allowPrivateKeyJWTRegistration: true` without enabling
+`allowConfidentialClientRegistration` when the authorization server should
+accept key-based registrations but must not mint secret-based confidential
+clients. Registration is still unauthenticated, so protect the endpoint through
+network policy and enable it only for callers that are trusted to register.
+
+The request uses an inline public JWK. This example intentionally uses a
+placeholder key and contains no private key or secret; the client keeps the
+corresponding private key locally and never sends it to ToolHive:
+
+```http
+POST /oauth/register HTTP/1.1
+Host: auth.example.com
+Content-Type: application/json
+
+{
+  "redirect_uris": ["https://client.example/callback"],
+  "token_endpoint_auth_method": "private_key_jwt",
+  "token_endpoint_auth_signing_alg": "RS256",
+  "grant_types": ["urn:ietf:params:oauth:grant-type:token-exchange"],
+  "jwks": {"keys": [{"kty": "RSA", "use": "sig", "alg": "RS256", "kid": "client-key", "n": "<base64url-public-modulus>", "e": "AQAB"}]}
+}
+```
+
+The successful response returns a `client_id`, the registered metadata, and no
+`client_secret`. The client then signs a short-lived `client_assertion` with
+its private key and sends it to `/oauth/token` together with the token-exchange
+request:
+
+```text
+grant_type=urn:ietf:params:oauth:grant-type:token-exchange&
+subject_token=<subject-token>&
+subject_token_type=urn:ietf:params:oauth:token-type:access_token&
+client_assertion_type=urn:ietf:params:oauth:client-assertion-type:jwt-bearer&
+client_assertion=<signed-assertion>
+```
+
+The assertion identifies the registered `client_id` in `iss` and `sub`, targets
+the token endpoint in `aud`, and includes a unique `jti` and an `exp`. The
+server verifies it against the stored inline JWKS and rejects replay while the
+assertion is valid. No `client_secret` is included in registration or token
+exchange.
+
+Private-key JWT registration accepts only inline `jwks`; `jwks_uri`, SPIFFE/SVID
+authentication, AWS STS `act` mapping, and ID-JAG chaining are deferred and out
+of scope. `token_endpoint_auth_signing_alg` is required and the supported
+values are `RS256`, `RS384`, `RS512`, `PS256`, `PS384`, `PS512`, `ES256`,
+`ES384`, and `ES512` (not `EdDSA` — the pinned fosite version's
+client-assertion verification doesn't handle it). Unlike confidential-client
+registration, this has no transport restriction of its own: the DCR response
+for a `private_key_jwt` client never contains a `client_secret` or any other
+secret, so there is nothing for cleartext HTTP to expose. It is governed only
+by the issuer's general transport policy (`insecureAllowHTTP`), the same as a
+public (`none`) client.
 
 ## Trust model
 
@@ -450,19 +622,36 @@ delegate_clients:
    external subject can never collide with one. Scope names are not
    qualified this way and remain the operator's responsibility to keep
    disjoint across issuers.
-3. **Provenance is recorded for every external token.** The RFC 8693 §4.1
-   `act` claim records who acted: its outer hop always contains ToolHive's
-   issuer and client ID. The external issuer is nested one level in —
-   `ValidatedClaims.ExternalIssuer` is set for every token validated by the
-   external-issuer path, whether or not it also carries `may_act`. The nested
-   entry additionally carries `sub` (the allowlisted actor claim) when the
-   allowlist path resolved one; a `may_act`-bearing external token yields
-   `act = {iss: <toolhive-issuer>, sub: <toolhive-client>, act: {iss:
-<external-issuer>}}` — no client-namespace actor to report there, but the
-   issuer is still recorded. Either way, Cedar authorizers key on `sub` and do
-   not read `act` — it is an audit trail, not an access control. (AWS STS role
-   mapping can read arbitrary claims including `act` via its CEL matcher, so
-   "authorizers" here means Cedar specifically, not every consumer.)
+3. **Provenance is recorded for every external token, but never as a
+   phantom actor.** The RFC 8693 §4.1 `act` claim identifies parties that
+   acted: its outer hop always contains ToolHive's issuer and client ID,
+   and a genuine external actor — the allowlist path's allowlisted actor
+   claim — nests one level in, e.g. `act = {iss: <toolhive-issuer>, sub:
+   <toolhive-client>, act: {iss: <external-issuer>, sub: <external-actor>}}`.
+   A `may_act`-bearing or `ActorMatcher`-only external token has no
+   client-namespace actor to nest — `may_act.sub` already names the
+   delegate directly via the outer hop — so `act` stays a single hop for
+   those; nesting a bare `{iss: <external-issuer>}` there would misrepresent
+   the issuer as a prior actor to any RFC-8693-aware consumer walking the
+   chain, including this codebase's own audit tooling (`pkg/audit`'s
+   `DelegationChain`, documented as "the full chain of acting parties").
+   The external issuer is instead always recorded as its own top-level
+   `external_issuer` claim — set whenever `ValidatedClaims.ExternalIssuer`
+   is non-empty, regardless of whether an actor was also nested under
+   `act` — so operators and policy authors have one consistent place to
+   check for "was an external issuer involved," rather than sometimes
+   inside `act` and sometimes not. It is single-hop: it names only the
+   immediate exchange's own external contribution, not a re-exchanged
+   token's earlier external issuer, if any. `act` is not excluded from
+   Cedar's generic claim exposure (`preprocessClaims` prefixes every claim
+   key, `act` and `external_issuer` included, so they surface as
+   `context.claim_act` and `context.claim_external_issuer`), so a policy
+   CAN key on `context.claim_act.sub` — see
+   `pkg/authz/authorizers/cedar/core_test.go` for worked examples gating on
+   an actor's SPIFFE ID this way. Most policies still key on `sub` alone,
+   since `act` is populated for audit provenance rather than as the
+   primary access-control signal, but an operator authoring delegation
+   policy should not assume it is unreachable.
 4. **`may_act` trust is a per-issuer opt-in, and it bypasses more than one
    thing.** `allow_may_act` is false by default because an enabled issuer
    bypasses BOTH `allowedActors` and `actorMatcher` (external actor
@@ -527,7 +716,14 @@ involved. It is enabled per trusted issuer by setting
 `TrustedIssuer.JWTBearerGrant` (`jwt_bearer_grant` on a hand-written
 `authserver.RunConfig`, `jwtBearerGrant` on the operator's
 `TrustedIssuerConfig`) — independent of that issuer's RFC 8693 delegation
-fields, though both may be configured on the same issuer.
+fields, though both may be configured on the same issuer. This is the
+legacy shape; a hand-written `RunConfig` may instead configure the same
+policy under `inbound_grants.jwt_bearer.issuer_policies`, referencing the
+issuer by `name` — see [Canonical `inbound_grants`
+configuration](#canonical-inbound_grants-configuration). The two shapes are
+mutually exclusive: setting `inbound_grants.jwt_bearer` while any
+`trusted_issuers[*].jwt_bearer_grant` is still set anywhere in the config is
+rejected, regardless of which issuer each one refers to.
 
 ### JWT-bearer configuration
 
@@ -644,14 +840,18 @@ spec:
   computed by the same `jwtBearerGrantEnabled` helper that decides whether
   `buildProvider` registers the grant with fosite in the first place — the two
   can't drift out of sync).
-- **Validator sharing.** When both RFC 8693 token exchange and the JWT-bearer
-  grant are enabled for the same trusted issuers, `buildProvider` constructs a
-  single `MultiIssuerTokenValidator` (`tokenexchange.NewSharedTrustedIssuerValidator`)
-  and passes it to both `tokenexchange.FactoryWithSharedTrustedIssuerValidator`
-  and `tokenexchange.JWTBearerIssuanceFactory`, rather than each building its own —
-  a `MultiIssuerTokenValidator` registers a `jwk.Cache` and background refresh
-  goroutines per issuer, so building two would double that cost with no
-  benefit.
+- **Validator sharing.** Whenever any trusted issuer is configured,
+  `buildProvider` constructs a single `MultiIssuerTokenValidator`
+  (`tokenexchange.NewSharedTrustedIssuerValidator`), holds it on the server, and
+  passes it to `tokenexchange.FactoryWithSharedTrustedIssuerValidator` (and, when
+  the JWT-bearer grant is enabled, `tokenexchange.JWTBearerIssuanceFactory`),
+  which require it rather than each building its own. A `MultiIssuerTokenValidator`
+  registers a `jwk.Cache` and background refresh goroutines per issuer, so one
+  shared instance both avoids doubling that cost and gives the server a single
+  handle to shut those workers down on `Close`. (Previously the shared validator
+  was built only when the JWT-bearer grant was also enabled, and a token-exchange-only
+  server built its validator inside a factory closure where nothing could release
+  it.)
 - **No delegation consent.** The JWT-bearer grant does not apply
   `allowedActors`, `actorMatcher`, or `may_act` — those are RFC 8693 delegation
   concepts. An issuer's JWT-bearer subjects are authorized entirely by
@@ -722,8 +922,18 @@ spec:
   from, and thus influenceable by, the external issuer itself — would choose
   the private JWKS dial target, which is exactly what pinning it to
   operator-supplied config prevents.
-- **Misconfiguration surfaces as a pod crash**, not an operator condition —
-  check pod logs, not `kubectl describe`.
+- **Private-CA discovery/JWKS fetch.** A trusted issuer's `caBundleRef`
+  (`cmd/thv-operator/api/v1beta1/mcpexternalauthconfig_types.go`) names a
+  namespace-local ConfigMap whose PEM bytes are added to the system roots for
+  that issuer's own HTTP client only (`WithSystemRootsPlusCABundle`) — other
+  issuers and the upstream-provider clients are unaffected. It has no effect
+  when `insecureAllowHTTP` is set, since a plain-HTTP fetch never consults it.
+- **Misconfiguration surfaces as a pod crash** for a hand-authored RunConfig
+  passed directly to `pkg/authserver`, not an operator condition — check pod
+  logs, not `kubectl describe`. Through the operator, a malformed `caBundleRef`
+  is instead caught at reconcile time and reported as
+  `ConditionReasonInvalidCABundle` on the owning MCPServer, MCPRemoteProxy, or
+  VirtualMCPServer before any RunConfig is built.
 
 ## Implementation
 

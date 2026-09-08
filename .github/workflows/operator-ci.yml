@@ -10,7 +10,9 @@ permissions:
 jobs:
   operator-tests:
     name: Operator Tests
-    runs-on: ubuntu-8cores-32gb
+    # Short, setup-dominated job; the standard runner is free for this
+    # public repo. Integration and E2E jobs below keep the large runner.
+    runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
         with:
@@ -56,7 +58,9 @@ jobs:
 
   build-operator:
     name: Build Operator
-    runs-on: ubuntu-8cores-32gb
+    # Short, setup-dominated job; the standard runner is free for this
+    # public repo.
+    runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
         with:
@@ -156,14 +160,19 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
+        # Pull requests run against the newest Kubernetes version only; pushes
+        # to main and manual dispatches run the full set. Cross-version
+        # compatibility rarely breaks within a single PR, and the full matrix
+        # still runs on every merge, so a regression surfaces on main within
+        # one CI cycle instead of costing three E2E runs on every PR update.
+        #
         # Before someone says it, yes we could just put the number here and not the full image name,
         # but we want to make sure renovate bumps the versions when new ones are released. Doing that with
-        # just the number is a bit more difficult and i like simple things.
-        version: [
-          "kindest/node:v1.33.7",
-          "kindest/node:v1.34.3",
-          "kindest/node:v1.35.1"
-        ]
+        # just the number is a bit more difficult and i like simple things. The newest version appears in
+        # both lists so renovate keeps them in step.
+        version: ${{ github.event_name == 'pull_request'
+          && fromJSON('["kindest/node:v1.35.1"]')
+          || fromJSON('["kindest/node:v1.33.7", "kindest/node:v1.34.3", "kindest/node:v1.35.1"]') }}
     
     steps:
     - name: Checkout code

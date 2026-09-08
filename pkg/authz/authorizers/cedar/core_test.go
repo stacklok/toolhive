@@ -18,7 +18,9 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
+	"github.com/stacklok/toolhive-core/audit"
 	"github.com/stacklok/toolhive/pkg/auth"
+	"github.com/stacklok/toolhive/pkg/auth/upstreamtoken"
 	"github.com/stacklok/toolhive/pkg/authz/authorizers"
 )
 
@@ -1396,13 +1398,40 @@ func TestAuthorizeWithJWTClaims_UpstreamProvider(t *testing.T) {
 			wantAuthorize: false,
 		},
 		{
-			name: "upstream_token_missing_from_identity",
+			name: "upstream_tokens_empty_map_missing_primary_provider_errors",
 			identity: &auth.Identity{
 				PrincipalInfo: auth.PrincipalInfo{
 					Subject: "thv-user",
 					Claims:  map[string]any{"sub": "thv-user"},
 				},
+				// A non-nil empty map means a session exists but has no stored tokens.
 				UpstreamTokens: map[string]string{},
+			},
+			wantErr:     true,
+			errContains: "upstream token for provider",
+		},
+		{
+			name: "upstream_tokens_populated_other_provider_missing_primary_errors",
+			identity: &auth.Identity{
+				PrincipalInfo: auth.PrincipalInfo{
+					Subject: "thv-user",
+					Claims:  map[string]any{"sub": "thv-user"},
+				},
+				// The session has another provider's token, not the configured primary.
+				UpstreamTokens: map[string]string{"other-provider": upstreamToken},
+			},
+			wantErr:     true,
+			errContains: "upstream token for provider",
+		},
+		{
+			name: "upstream_tokens_primary_provider_empty_token_errors",
+			identity: &auth.Identity{
+				PrincipalInfo: auth.PrincipalInfo{
+					Subject: "thv-user",
+					Claims:  map[string]any{"sub": "thv-user"},
+				},
+				// The configured provider is present but its stored token is empty.
+				UpstreamTokens: map[string]string{providerName: ""},
 			},
 			wantErr:     true,
 			errContains: "upstream token for provider",
@@ -1461,16 +1490,136 @@ func TestAuthorizeWithJWTClaims_UpstreamProvider(t *testing.T) {
 			errContains: "failed to parse upstream token",
 		},
 		{
-			name: "upstream_tokens_nil_map",
+			name: "session_less_grant_falls_back_to_request_claims_permitted",
 			identity: &auth.Identity{
 				PrincipalInfo: auth.PrincipalInfo{
-					Subject: "thv-user",
-					Claims:  map[string]any{"sub": "thv-user"},
+					Subject: "upstream-user",
+					Claims:  map[string]any{"sub": "upstream-user"},
+				},
+				SessionlessGrant: true,
+				UpstreamTokens:   nil,
+			},
+			wantAuthorize: true,
+		},
+		{
+			name: "raw_delegation_chain_does_not_fall_back",
+			identity: &auth.Identity{
+				PrincipalInfo: auth.PrincipalInfo{
+					Subject: "upstream-user",
+					Claims:  map[string]any{"sub": "upstream-user"},
+					DelegationChain: &audit.DelegationChain{
+						Chain: []audit.DelegatedActor{
+							{Subject: "delegated-agent", Issuer: "https://thv.example.com"},
+						},
+					},
 				},
 				UpstreamTokens: nil,
 			},
 			wantErr:     true,
-			errContains: "upstream token for provider",
+			errContains: "no session-less grant provenance",
+		},
+		{
+			name: "raw_no_session_marker_does_not_fall_back",
+			identity: &auth.Identity{
+				PrincipalInfo: auth.PrincipalInfo{
+					Subject: "upstream-user",
+					Claims: map[string]any{
+						"sub": "upstream-user",
+						// An RFC 7523 JWT-bearer token: the auth server stamped
+						// this marker because the grant links to no upstream login.
+						upstreamtoken.NoUpstreamSessionClaimKey: true,
+					},
+				},
+				UpstreamTokens: nil,
+			},
+			wantErr:     true,
+			errContains: "no session-less grant provenance",
+		},
+		{
+			name: "upstream_tokens_nil_without_sessionless_grant_errors",
+			identity: &auth.Identity{
+				PrincipalInfo: auth.PrincipalInfo{
+					Subject: "upstream-user",
+					// Nil map and neither marker: nothing states why credentials
+					// are absent, so request claims must not drive policy even
+					// though they would satisfy the policy.
+					Claims: map[string]any{"sub": "upstream-user"},
+				},
+				UpstreamTokens: nil,
+			},
+			wantErr:     true,
+			errContains: "no session-less grant provenance",
+		},
+		{
+			name: "anonymous_identity_errors_under_pinned_provider",
+			identity: &auth.Identity{
+				PrincipalInfo: auth.PrincipalInfo{
+					Subject: "anonymous",
+					// The shape pkg/auth/anonymous.go produces. It must never
+					// reach policy evaluation while a provider is pinned.
+					Claims: map[string]any{
+						"sub":   "anonymous",
+						"iss":   "toolhive-local",
+						"email": "anonymous@localhost",
+					},
+				},
+				UpstreamTokens: nil,
+			},
+			wantErr:     true,
+			errContains: "no session-less grant provenance",
+		},
+		{
+			name: "malformed_act_claim_is_not_a_delegation_statement",
+			identity: &auth.Identity{
+				PrincipalInfo: auth.PrincipalInfo{
+					Subject: "upstream-user",
+					Claims:  map[string]any{"sub": "upstream-user"},
+					// ParseDelegationChain never fails: a non-object "act" yields
+					// a chain that is Malformed with no hops, leaving
+					// DelegationChain non-nil. Garbage in act is not a statement
+					// that the token has no upstream session.
+					DelegationChain: &audit.DelegationChain{
+						Chain:           []audit.DelegatedActor{},
+						Malformed:       true,
+						MalformedReason: audit.MalformedReasonActNotObject,
+					},
+				},
+				UpstreamTokens: nil,
+			},
+			wantErr:     true,
+			errContains: "no session-less grant provenance",
+		},
+		{
+			name: "empty_act_object_is_not_a_delegation_statement",
+			identity: &auth.Identity{
+				PrincipalInfo: auth.PrincipalInfo{
+					Subject: "upstream-user",
+					Claims:  map[string]any{"sub": "upstream-user"},
+					// A bare "act": {} parses to one hop with no iss and no sub.
+					// It names no actor, so it asserts no delegation.
+					DelegationChain: &audit.DelegationChain{
+						Chain: []audit.DelegatedActor{},
+					},
+				},
+				UpstreamTokens: nil,
+			},
+			wantErr:     true,
+			errContains: "no session-less grant provenance",
+		},
+		{
+			name: "no_session_marker_false_errors",
+			identity: &auth.Identity{
+				PrincipalInfo: auth.PrincipalInfo{
+					Subject: "upstream-user",
+					Claims: map[string]any{
+						"sub":                                   "upstream-user",
+						upstreamtoken.NoUpstreamSessionClaimKey: false,
+					},
+				},
+				UpstreamTokens: nil,
+			},
+			wantErr:     true,
+			errContains: "no session-less grant provenance",
 		},
 		{
 			name: "upstream_token_has_no_sub_claim",
@@ -1811,7 +1960,7 @@ func TestResolveClaimsUpstreamSupplement(t *testing.T) {
 			}
 			claimsBefore := maps.Clone(tt.requestClaims)
 
-			resolved, err := authorizer.(*Authorizer).resolveClaims(identity)
+			resolved, _, err := authorizer.(*Authorizer).resolveClaims(identity)
 			require.NoError(t, err)
 
 			assert.Equal(t, tt.wantClaims, resolved)
@@ -4291,4 +4440,156 @@ func TestFactory_ConfigKeyMatchesStructTag(t *testing.T) {
 		"envelope built around Factory.ConfigKey() must parse into Config")
 	require.NotNil(t, cfg.Options,
 		"Config.Options must be set after Unmarshal — if nil, Factory.ConfigKey() and the Options struct tag have drifted apart")
+}
+
+// TestAuthorizeWithJWTClaims_ClaimSourceAttribute pins the value of the
+// thv_claim_source attribute on every path that reaches policy evaluation.
+// Cedar cannot return an attribute, so each case carries a policy keyed on the
+// exact value it expects: a permit proves the label, and the mismatch cases
+// prove the labels are distinct rather than collapsed.
+func TestAuthorizeWithJWTClaims_ClaimSourceAttribute(t *testing.T) {
+	t.Parallel()
+
+	const providerName = "github"
+
+	policyFor := func(source string) string {
+		return fmt.Sprintf(`
+			permit(
+				principal,
+				action == Action::"call_tool",
+				resource == Tool::"deploy"
+			)
+			when { principal.thv_claim_source == %q };
+		`, source)
+	}
+
+	upstreamJWT := makeUnsignedJWT(jwt.MapClaims{
+		"sub": "upstream-user",
+		"iss": "https://idp.example.com",
+	})
+
+	tests := []struct {
+		name          string
+		policySource  string
+		provider      string
+		identity      *auth.Identity
+		wantAuthorize bool
+	}{
+		{
+			name:         "no_provider_pinned_is_request",
+			policySource: claimSourceRequest,
+			provider:     "",
+			identity: &auth.Identity{
+				PrincipalInfo: auth.PrincipalInfo{
+					Subject: "thv-user",
+					Claims:  map[string]any{"sub": "thv-user"},
+				},
+			},
+			wantAuthorize: true,
+		},
+		{
+			name:         "upstream_jwt_names_the_provider",
+			policySource: claimSourceUpstreamPrefix + providerName,
+			provider:     providerName,
+			identity: &auth.Identity{
+				PrincipalInfo: auth.PrincipalInfo{
+					Subject: "thv-user",
+					Claims:  map[string]any{"sub": "thv-user"},
+				},
+				UpstreamTokens: map[string]string{providerName: upstreamJWT},
+			},
+			wantAuthorize: true,
+		},
+		{
+			name:         "jwt_bearer_marker_is_no_upstream_session",
+			policySource: claimSourceNoUpstreamSession,
+			provider:     providerName,
+			identity: &auth.Identity{
+				PrincipalInfo: auth.PrincipalInfo{
+					Subject: "machine-user",
+					Claims: map[string]any{
+						"sub":                                   "machine-user",
+						upstreamtoken.NoUpstreamSessionClaimKey: true,
+					},
+				},
+				SessionlessGrant: true,
+			},
+			wantAuthorize: true,
+		},
+		{
+			name:         "opaque_upstream_token_is_upstream_opaque",
+			policySource: claimSourceUpstreamOpaque,
+			provider:     providerName,
+			identity: &auth.Identity{
+				PrincipalInfo: auth.PrincipalInfo{
+					Subject: "thv-user",
+					Claims:  map[string]any{"sub": "thv-user"},
+				},
+				// GitHub-style opaque token: a credential exists but its claims
+				// cannot be read, so evaluation silently degrades to request
+				// claims. This label is the only way a policy can see that.
+				UpstreamTokens: map[string]string{providerName: "gho_opaque_access_token"},
+			},
+			wantAuthorize: true,
+		},
+		{
+			name: "opaque_fallback_does_not_pass_as_upstream",
+			// The degraded path must not satisfy a policy demanding the real
+			// upstream label, or the whole attribute is decorative.
+			policySource: claimSourceUpstreamPrefix + providerName,
+			provider:     providerName,
+			identity: &auth.Identity{
+				PrincipalInfo: auth.PrincipalInfo{
+					Subject: "thv-user",
+					Claims:  map[string]any{"sub": "thv-user"},
+				},
+				UpstreamTokens: map[string]string{providerName: "gho_opaque_access_token"},
+			},
+			wantAuthorize: false,
+		},
+		{
+			name: "token_cannot_spoof_its_own_provenance",
+			// A claim literally named thv_claim_source is emitted as
+			// claim_thv_claim_source by preprocessClaims, so it cannot reach
+			// the attribute the policy reads.
+			policySource: claimSourceUpstreamPrefix + providerName,
+			provider:     providerName,
+			identity: &auth.Identity{
+				PrincipalInfo: auth.PrincipalInfo{
+					Subject: "machine-user",
+					Claims: map[string]any{
+						"sub":                                   "machine-user",
+						claimSourceAttr:                         claimSourceUpstreamPrefix + providerName,
+						upstreamtoken.NoUpstreamSessionClaimKey: true,
+					},
+				},
+				SessionlessGrant: true,
+			},
+			wantAuthorize: false,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			authorizer, err := NewCedarAuthorizer(ConfigOptions{
+				Policies:                []string{policyFor(tt.policySource)},
+				EntitiesJSON:            `[]`,
+				PrimaryUpstreamProvider: tt.provider,
+			}, "")
+			require.NoError(t, err)
+
+			ctx := auth.WithIdentity(context.Background(), tt.identity)
+			authorized, err := authorizer.AuthorizeWithJWTClaims(
+				ctx,
+				authorizers.MCPFeatureTool,
+				authorizers.MCPOperationCall,
+				"deploy",
+				nil,
+			)
+			require.NoError(t, err)
+			assert.Equal(t, tt.wantAuthorize, authorized)
+		})
+	}
 }

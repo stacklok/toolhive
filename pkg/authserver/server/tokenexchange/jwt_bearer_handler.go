@@ -202,6 +202,12 @@ func (h *JWTBearerHandler) HandleTokenEndpointRequest(ctx context.Context, reque
 	}
 	clientID := jwtBearerClientID(claims.Issuer, claims.Subject)
 	issuedSession := session.New(claims.Issuer+"#"+claims.Subject, "", clientID, session.UserClaims{})
+	// This grant links to no upstream IdP login, so the issued token can never
+	// carry an upstream credential. Say so in the token rather than leaving a
+	// resource server to infer it from the absence of a tsid claim, which is
+	// also how an unenriched or foreign-issued identity looks. See
+	// session.NoUpstreamSessionClaimKey.
+	issuedSession.JWTClaims.Extra[session.NoUpstreamSessionClaimKey] = true
 	issuedSession.SetExpiresAt(fosite.AccessToken, time.Now().UTC().Add(lifetime))
 	// This grant skips client authentication (CanSkipClientAuth), so fosite
 	// never populates requester's client — attach a synthetic one so every
@@ -378,17 +384,28 @@ func audienceIntersects(audience jwt.Audience, accepted []string) bool {
 // JWTBearerIssuanceFactory builds the production RFC 7523 handler. It is only
 // registered by composition when a trusted issuer opts into the grant.
 //
-// shared, when non-nil, is used as the JWTBearerAssertionValidator instead of
-// building a second MultiIssuerTokenValidator: the RFC 8693 token-exchange
-// Factory and this one are usually enabled for the same trusted issuers, and
-// each MultiIssuerTokenValidator registers its own per-issuer jwk.Cache and
-// background refresh goroutines, so building one from each factory would
-// double that cost for no benefit. Pass nil to build one locally (e.g. when
-// only the JWT-bearer grant is enabled).
+// shared is used as the JWTBearerAssertionValidator and is REQUIRED whenever
+// trustedIssuers is non-empty (an error is returned otherwise). The RFC 8693
+// token-exchange Factory and this one are usually enabled for the same trusted
+// issuers, and each MultiIssuerTokenValidator registers its own per-issuer
+// jwk.Cache and background refresh goroutines; sharing one instance avoids
+// doubling that cost, and — since the validator's JWKS workers are released
+// only by its Close — keeps them owned by the caller rather than built and
+// abandoned inside this compose-time closure. Build it once with
+// NewSharedTrustedIssuerValidator and hold it for Close.
 func JWTBearerIssuanceFactory(trustedIssuers []TrustedIssuer, shared *MultiIssuerTokenValidator) (server.Factory, error) {
 	resolvedIssuers, err := ResolveJWTBearerGrantPolicies(trustedIssuers)
 	if err != nil {
 		return nil, fmt.Errorf("JWT-bearer trusted issuers: %w", err)
+	}
+	// Unconditionally required (unlike the token-exchange Factory, which validly
+	// supports self-issued-only): JWT-bearer issuance is meaningful only against
+	// trusted issuers, so there is no no-issuer case that would legitimately
+	// leave shared nil. Requiring it also keeps the validator's JWKS workers
+	// owned by the caller for Close rather than built and abandoned here.
+	if shared == nil {
+		return nil, fmt.Errorf("JWT-bearer: a shared validator built via NewSharedTrustedIssuerValidator " +
+			"is required so its JWKS refresh workers can be released on shutdown")
 	}
 	return func(config *server.AuthorizationServerConfig, rawStorage fosite.Storage, strategy any) (any, error) {
 		consumer, err := assertionJWTConsumer(rawStorage)
@@ -415,10 +432,10 @@ func JWTBearerIssuanceFactory(trustedIssuers []TrustedIssuer, shared *MultiIssue
 				}
 			}
 			// accepted_audiences identifies this authorization server, not a
-			// resource; checked here too (not only inside
-			// NewMultiIssuerTokenValidator below) because that constructor is
-			// skipped entirely when shared is non-nil — this is the runtime
-			// choke point every JWTBearerIssuanceFactory call goes through.
+			// resource; checked here (this is the runtime choke point every
+			// JWTBearerIssuanceFactory call goes through) as well as inside
+			// NewSharedTrustedIssuerValidator, so a caller that builds shared
+			// separately is still covered.
 			for _, audience := range issuer.JWTBearerGrant.AcceptedAudiences {
 				if slices.Contains(config.AllowedAudiences, audience) {
 					return nil, fmt.Errorf(
@@ -427,30 +444,29 @@ func JWTBearerIssuanceFactory(trustedIssuers []TrustedIssuer, shared *MultiIssue
 				}
 			}
 		}
+		// shared is guaranteed non-nil (checked when this factory was built), so
+		// the validator is always the caller-owned, closeable one — this closure
+		// never builds a MultiIssuerTokenValidator whose JWKS workers leak.
 		var validator JWTBearerAssertionValidator = shared
-		if shared == nil {
-			selfValidator, err := NewSelfIssuedTokenValidator(config.PublicJWKS(), config.GetAccessTokenIssuer(), config.AllowedAudiences)
-			if err != nil {
-				return nil, fmt.Errorf("JWT-bearer: failed to create self validator: %w", err)
-			}
-			validator, err = NewMultiIssuerTokenValidator(
-				selfValidator, config.GetAccessTokenIssuer(), resolvedIssuers, config.AllowedAudiences)
-			if err != nil {
-				return nil, fmt.Errorf("JWT-bearer: trusted_issuers: %w", err)
-			}
-		}
 		return newJWTBearerIssuanceHandler(validator, config.TokenURL, consumer, config.Config, atStrategy, atStorage, resolvedIssuers)
 	}, nil
 }
 
+// assertionJWTConsumer resolves rawStorage's AssertionJWTConsumer capability.
+// Every decorator in the actual composition chain must itself implement (and
+// forward, one level down) AssertionJWTConsumer for this to succeed -- there
+// is no automatic bypass via storage.Unwrap. That is deliberate: a decorator
+// that sits between rawStorage and the innermost backend gets an explicit,
+// visible opportunity to intercept or audit assertion-JWT consumption, rather
+// than being silently skipped past. See CIMDStorageDecorator.ConsumeAssertionJWT
+// and SPIFFEStorageDecorator.ConsumeAssertionJWT for the two production
+// decorators that forward it today. A future decorator that omits this method
+// breaks visibly, right here, with an error naming the offending type -- not
+// silently, by having its ConsumeAssertionJWT logic (if any) never run.
 func assertionJWTConsumer(rawStorage fosite.Storage) (storage.AssertionJWTConsumer, error) {
-	baseStorage := rawStorage
-	if decorated, ok := rawStorage.(*storage.CIMDStorageDecorator); ok {
-		baseStorage = decorated.Unwrap()
-	}
-	consumer, ok := baseStorage.(storage.AssertionJWTConsumer)
+	consumer, ok := rawStorage.(storage.AssertionJWTConsumer)
 	if !ok {
-		return nil, fmt.Errorf("JWT-bearer storage %T does not implement storage.AssertionJWTConsumer", baseStorage)
+		return nil, fmt.Errorf("JWT-bearer storage %T does not implement storage.AssertionJWTConsumer", rawStorage)
 	}
 	return consumer, nil
 }

@@ -15,10 +15,16 @@ import (
 	"github.com/stacklok/toolhive/pkg/auth/oauth"
 )
 
-// TokenPersister is a callback function that persists OAuth refresh tokens.
-// It is called whenever tokens are refreshed. Only the refresh token is persisted
-// since the access token can be regenerated from it.
-type TokenPersister func(refreshToken string, expiry time.Time) error
+// TokenPersister is a callback function that persists a cached OAuth session.
+// It is called whenever tokens are refreshed. Only the cached session is
+// persisted since the access token can be regenerated from it.
+//
+// The value passed is opaque and must be stored and returned unchanged:
+// Handler may pass either a bare refresh token (legacy) or a versioned
+// envelope binding the token to the authorization server that issued it
+// (see cachedRefreshTokenEnvelope). Persisters must not assume the value is
+// a directly-usable refresh token.
+type TokenPersister func(cachedSession string, expiry time.Time) error
 
 // ClientCredentialsPersister is called when DCR client credentials need to be persisted.
 // This is used to store client_id, client_secret, and renewal metadata obtained during

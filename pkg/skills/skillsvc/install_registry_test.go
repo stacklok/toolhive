@@ -391,11 +391,13 @@ func TestSplitQualifiedName(t *testing.T) {
 func TestResolveRegistryPackagesSubfolder(t *testing.T) {
 	t.Parallel()
 
-	result, err := resolveRegistryPackages("my-skill", []regtypes.SkillPackage{
-		{
-			RegistryType: "git",
-			URL:          "https://github.com/org/repo",
-			Subfolder:    "skills/my-skill",
+	result, err := resolveRegistryPackages("my-skill", regtypes.Skill{
+		Packages: []regtypes.SkillPackage{
+			{
+				RegistryType: "git",
+				URL:          "https://github.com/org/repo",
+				Subfolder:    "skills/my-skill",
+			},
 		},
 	})
 	require.NoError(t, err)

@@ -106,14 +106,15 @@ jobs:
 
       - name: Generate release notes with Claude
         id: claude
-        uses: anthropics/claude-code-action@d40ddef4c030e508327d6e35a9c45f3368482c50 # v1.0.195
+        uses: anthropics/claude-code-action@9c5ddab2e6d17b83ea679153b31f1d5f023cf636 # v1.0.217
         env:
           # gh CLI used by the skill (read-only PR/issue lookups) authenticates
           # via GH_TOKEN. Read access is sufficient — publishing happens in a
           # later, deterministic step, not by the model.
           GH_TOKEN: ${{ github.token }}
+          ANTHROPIC_BASE_URL: https://llm-gateway.stacklok.dev/anthropic
         with:
-          anthropic_api_key: ${{ secrets.ANTHROPIC_API_KEY }}
+          anthropic_api_key: ${{ secrets.STACKLOK_GATEWAY_KEY_RELEASE_NOTES }}
           # Hand the action a token explicitly so it does not try to mint one via
           # OIDC (the Claude GitHub App flow), which would require `id-token: write`
           # and the app installed. We only need the API key for Anthropic auth and
@@ -138,9 +139,17 @@ jobs:
               `release-notes-${{ steps.tag.outputs.tag }}.md` in the repo root.
             - Do not post comments or run `gh release edit`. Stop after writing the file.
           # Tools: gh/git for read-only data gathering, Task for the expert
-          # subagents, and file tools for reading the skill and writing the output.
+          # subagents (kubernetes-expert, mcp-protocol-expert, oauth-expert,
+          # toolhive-expert, site-reliability-engineer), file tools for reading
+          # the skill and writing the output, WebFetch/context7 for the specs
+          # those experts consult. The extra Bash(...) entries cover the
+          # local code-exploration commands those experts actually run
+          # (grep/find/cat/ls/go doc) without opening up network or
+          # write-capable commands (curl, go get/install, etc.) — this job
+          # runs unattended over PR/issue content it doesn't control, so
+          # Bash stays scoped rather than fully unrestricted.
           claude_args: |
-            --allowedTools "Bash(gh *),Bash(git *),Task,Read,Write,Edit,Glob,Grep,TodoWrite"
+            --allowedTools "Bash(gh *),Bash(git *),Bash(grep *),Bash(rg *),Bash(find *),Bash(cat *),Bash(ls *),Bash(head *),Bash(tail *),Bash(go doc *),Task,Read,Write,Edit,Glob,Grep,TodoWrite,WebFetch,mcp__context7__resolve-library-id,mcp__context7__get-library-docs"
             --max-turns 60
 
       - name: Verify notes were generated

@@ -7,6 +7,12 @@ import (
 	"github.com/spf13/cobra"
 
 	"github.com/stacklok/toolhive/pkg/plugins"
+	"github.com/stacklok/toolhive/pkg/skills/identitytoken"
+)
+
+var (
+	aiPluginPushIdentityToken string
+	aiPluginPushNoSign        bool
 )
 
 var aiPluginPushCmd = &cobra.Command{
@@ -19,13 +25,41 @@ var aiPluginPushCmd = &cobra.Command{
 
 func init() {
 	aiPluginCmd.AddCommand(aiPluginPushCmd)
+	// No --key flag: plugin signing is keyless-only until install-time key
+	// verification exists (#6442). Pushing a key-signed plugin would produce
+	// an artifact no project-scoped install can accept.
+	aiPluginPushCmd.Flags().StringVar(&aiPluginPushIdentityToken, "identity-token", "",
+		"OIDC identity token (or a path to a file containing one) for keyless signing. "+
+			"If omitted, one is acquired automatically: from the GitHub Actions OIDC token when "+
+			"running with id-token: write permission, otherwise via an interactive browser sign-in")
+	aiPluginPushCmd.Flags().BoolVar(&aiPluginPushNoSign, "no-sign", false,
+		"Push without signing (consumers will need an explicit unsigned exception to install project-scoped)")
 }
 
 func aiPluginPushCmdFunc(cmd *cobra.Command, args []string) error {
-	c := newAIPluginClient(cmd.Context())
+	ctx := cmd.Context()
 
-	err := c.Push(cmd.Context(), plugins.PushOptions{
-		Reference: args[0],
+	// Shared with `thv skill push`: the acquisition ladder (explicit flag →
+	// ambient CI token → interactive browser sign-in) is a property of
+	// Sigstore keyless signing, not of the artifact kind being pushed.
+	token, err := identitytoken.Acquire(ctx, identitytoken.Options{
+		FlagValue: aiPluginPushIdentityToken,
+		NoSign:    aiPluginPushNoSign,
+		Confirm:   confirmBrowserSignIn,
+		// No --key: plugin signing is keyless-only (#6442), so the
+		// remediation must not offer a flag this command does not define.
+		Remediation: "Provide --identity-token, run in CI with id-token: write permission, " +
+			"or pass --no-sign to push unsigned",
+	})
+	if err != nil {
+		return formatAIPluginError("push plugin", err)
+	}
+
+	c := newAIPluginClient(ctx)
+	err = c.Push(ctx, plugins.PushOptions{
+		Reference:     args[0],
+		IdentityToken: token,
+		NoSign:        aiPluginPushNoSign,
 	})
 	if err != nil {
 		return formatAIPluginError("push plugin", err)

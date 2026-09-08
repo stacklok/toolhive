@@ -25,11 +25,13 @@ thv ai-plugin install [plugin-name] [flags]
 ### Options
 
 ```
+      --allow-unsigned        Allow installing a project-scoped plugin without a verified signature (recorded in the lock file)
       --clients string        Comma-separated target client apps (e.g. claude-code,codex), or "all" for every available client
       --force                 Overwrite existing plugin directory
       --group string          Group to add the plugin to after installation
   -h, --help                  help for install
       --project-root string   Project root path for project-scoped installs
+      --public-key string     Path to the cosign public key (cosign.pub) a key-pair-signed plugin must verify against. Required the first time such a plugin is installed project-scoped; the key is then pinned in the lock file and reused automatically
       --scope string          Installation scope (user, project) (default "user")
 ```
 

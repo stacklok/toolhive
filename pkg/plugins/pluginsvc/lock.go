@@ -17,11 +17,16 @@ import (
 // matching on error text or treating every HTTP 500 as a lock-write failure.
 var errLockWrite = errors.New("lock file write failed")
 
+// errLockTrustUnrecorded marks a lock entry that carries no trust decision at
+// all — neither a signer identity nor unsigned: true. See
+// verifyStoredSignature for why that shape is treated as drift rather than
+// accepted, and why the check lives there rather than in lock validation.
+var errLockTrustUnrecorded = errors.New("lock entry records no trust decision")
+
 // recordLockState updates opts.ProjectRoot's lock file to reflect a
 // just-completed project-scope install: a plugins: entry for pl. It also
 // marks pl as lock-managed in the store. Callers must only invoke this for
-// project-scope installs with the lock file feature enabled (see
-// plugins.LockFileFeatureEnabled) — pl is returned updated so the caller
+// project-scope installs — pl is returned updated so the caller
 // can reflect the Managed flag back to its own result.
 //
 // Plugin requires is parsed today but not materialized; requiredBy/explicit
@@ -53,6 +58,8 @@ func (s *service) recordLockState(
 		ResolvedReference: resolvedReference,
 		Digest:            pl.Digest,
 		ContentDigest:     contentDigest,
+		Provenance:        opts.Provenance,
+		Unsigned:          opts.Unsigned,
 	}); err != nil {
 		return pl, fmt.Errorf("writing lock entry: %w", errors.Join(errLockWrite, err))
 	}
@@ -75,6 +82,11 @@ type lockEntryInput struct {
 	ResolvedReference string
 	Digest            string
 	ContentDigest     string
+	// Provenance is the verified signer identity to record, nil for
+	// unsigned or unverified entries.
+	Provenance *lockfile.Provenance
+	// Unsigned records the explicit unsigned-install exception.
+	Unsigned bool
 }
 
 // recordLockEntry upserts a single plugins: entry into projectRoot's lock
@@ -94,6 +106,8 @@ func recordLockEntry(projectRoot string, in lockEntryInput) error {
 			ResolvedReference: in.ResolvedReference,
 			Digest:            in.Digest,
 			ContentDigest:     in.ContentDigest,
+			Provenance:        in.Provenance,
+			Unsigned:          in.Unsigned,
 			Explicit:          true,
 		}
 		existing, exists := lf.GetPlugin(in.Name)

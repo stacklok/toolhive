@@ -79,8 +79,8 @@ func TestVirtualMCPServerPodTemplateSpecDeterministic(t *testing.T) {
 	}
 
 	// Generate deployment twice with same input
-	dep1 := reconciler.deploymentForVirtualMCPServer(context.Background(), vmcp, "test-checksum", nil, []workloads.TypedWorkload{})
-	dep2 := reconciler.deploymentForVirtualMCPServer(context.Background(), vmcp, "test-checksum", nil, []workloads.TypedWorkload{})
+	dep1 := reconciler.deploymentForVirtualMCPServer(context.Background(), vmcp, "test-checksum", "", nil, []workloads.TypedWorkload{})
+	dep2 := reconciler.deploymentForVirtualMCPServer(context.Background(), vmcp, "test-checksum", "", nil, []workloads.TypedWorkload{})
 
 	// Both should be non-nil
 	assert.NotNil(t, dep1, "First deployment should not be nil")
@@ -145,7 +145,7 @@ func TestVirtualMCPServerPodTemplateSpecPreservesContainer(t *testing.T) {
 		Scheme: scheme,
 	}
 
-	dep := reconciler.deploymentForVirtualMCPServer(context.Background(), vmcp, "test-checksum", nil, []workloads.TypedWorkload{})
+	dep := reconciler.deploymentForVirtualMCPServer(context.Background(), vmcp, "test-checksum", "", nil, []workloads.TypedWorkload{})
 
 	// Verify deployment was created
 	assert.NotNil(t, dep, "Deployment should not be nil")
@@ -361,7 +361,7 @@ func TestVirtualMCPServerPodTemplateSpecPreservesUndetectedFields(t *testing.T) 
 			}
 
 			dep := reconciler.deploymentForVirtualMCPServer(
-				context.Background(), vmcp, "test-checksum", nil, []workloads.TypedWorkload{})
+				context.Background(), vmcp, "test-checksum", "", nil, []workloads.TypedWorkload{})
 
 			require.NotNil(t, dep, "Deployment should not be nil")
 			assert.Len(t, dep.Spec.Template.Spec.Containers, 1, "vmcp container should be preserved")
@@ -416,7 +416,7 @@ func TestVirtualMCPServerPodTemplateSpecResourceOverride(t *testing.T) {
 		Scheme: scheme,
 	}
 
-	dep := reconciler.deploymentForVirtualMCPServer(context.Background(), vmcp, "test-checksum", nil, []workloads.TypedWorkload{})
+	dep := reconciler.deploymentForVirtualMCPServer(context.Background(), vmcp, "test-checksum", "", nil, []workloads.TypedWorkload{})
 
 	require.NotNil(t, dep, "Deployment should not be nil")
 	require.Len(t, dep.Spec.Template.Spec.Containers, 1, "Should have exactly one container")

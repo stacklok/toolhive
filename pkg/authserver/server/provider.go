@@ -28,6 +28,7 @@ import (
 
 	servercrypto "github.com/stacklok/toolhive/pkg/authserver/server/crypto"
 	"github.com/stacklok/toolhive/pkg/authserver/server/registration"
+	"github.com/stacklok/toolhive/pkg/networking"
 )
 
 // Token lifespan bounds for validation.
@@ -44,6 +45,20 @@ const (
 	MinAuthCodeLifespan = 30 * time.Second
 	// MaxAuthCodeLifespan is the maximum allowed authorization code lifetime (RFC 6749 recommends 10 min max).
 	MaxAuthCodeLifespan = 10 * time.Minute
+	// MaxAssertionLifespan is the maximum allowed exp-now duration for a
+	// private_key_jwt client_assertion. fosite persists the replay marker
+	// (Storage.SetClientAssertionJWT/ConsumeAssertionJWT) with a TTL derived
+	// from the assertion's own exp claim, and neither fosite nor RFC 7523
+	// bounds that value — a client could otherwise set exp decades out and
+	// grow replay-tracking storage indefinitely. A client assertion
+	// authenticates a single token request, so it has no legitimate reason
+	// to outlive that request by more than a small clock-skew margin.
+	MaxAssertionLifespan = 5 * time.Minute
+	// MaxAssertionJTILength bounds the byte length of a private_key_jwt
+	// client_assertion's jti before it's persisted as a replay marker.
+	// Comfortably fits UUIDs/ULIDs and typical nonce formats with headroom
+	// while capping per-entry storage cost.
+	MaxAssertionJTILength = 256
 )
 
 // AuthorizationServerConfig wraps fosite.Config with additional configuration
@@ -74,15 +89,27 @@ type AuthorizationServerConfig struct {
 	// the DCR handler accepts client_secret_basic / client_secret_post and the
 	// discovery document advertises them in token_endpoint_auth_methods_supported.
 	AllowConfidentialClientRegistration bool
+	// AllowPrivateKeyJWTRegistration permits DCR of clients using
+	// private_key_jwt authentication. This is independent of confidential-client
+	// registration and is used by DCR validation and discovery advertisement.
+	AllowPrivateKeyJWTRegistration bool
 	// HasStaticDelegateClients indicates whether any pre-provisioned confidential
 	// delegate client is registered at startup. Discovery advertises client-secret
 	// authentication methods when this is true.
 	HasStaticDelegateClients bool
+	// InsecureAllowHTTP permits a non-loopback HTTP issuer. It is incompatible
+	// with confidential clients.
+	InsecureAllowHTTP bool
+	// InsecureAllowConfidentialOverLoopbackHTTP explicitly permits confidential
+	// clients with a loopback HTTP issuer.
+	InsecureAllowConfidentialOverLoopbackHTTP bool
 	// ForceConfidentialRedirectURIs lists redirect URIs that the DCR handler
 	// always registers as confidential clients, overriding a requested "none"
 	// auth method. See authserver.Config.ForceConfidentialRedirectURIs for the
 	// full semantics.
 	ForceConfidentialRedirectURIs []string
+	// TokenExchangeEnabled indicates whether RFC 8693 is registered and advertised.
+	TokenExchangeEnabled bool
 	// JWTBearerGrantEnabled indicates that at least one trusted issuer has the
 	// RFC 7523 JWT-bearer grant configured. Discovery advertises
 	// urn:ietf:params:oauth:grant-type:jwt-bearer in grant_types_supported
@@ -131,15 +158,28 @@ type AuthorizationServerParams struct {
 	// the DCR handler accepts client_secret_basic / client_secret_post and the
 	// discovery document advertises them in token_endpoint_auth_methods_supported.
 	AllowConfidentialClientRegistration bool
+	// AllowPrivateKeyJWTRegistration permits DCR of clients using
+	// private_key_jwt authentication. This is independent of confidential-client
+	// registration and is used by DCR validation and discovery advertisement.
+	AllowPrivateKeyJWTRegistration bool
 	// HasStaticDelegateClients indicates whether any pre-provisioned confidential
 	// delegate client is registered at startup. Discovery advertises client-secret
 	// authentication methods when this is true.
 	HasStaticDelegateClients bool
+	// InsecureAllowHTTP permits a non-loopback HTTP issuer. It is incompatible
+	// with confidential clients.
+	InsecureAllowHTTP bool
+	// InsecureAllowConfidentialOverLoopbackHTTP explicitly permits confidential
+	// clients with a loopback HTTP issuer.
+	InsecureAllowConfidentialOverLoopbackHTTP bool
 	// ForceConfidentialRedirectURIs lists redirect URIs that the DCR handler
 	// always registers as confidential clients, overriding a requested "none"
 	// auth method. See authserver.Config.ForceConfidentialRedirectURIs for the
 	// full semantics.
 	ForceConfidentialRedirectURIs []string
+	// DisableTokenExchange prevents RFC 8693 registration and advertisement.
+	// The zero value preserves the historical enabled behavior.
+	DisableTokenExchange bool
 	// JWTBearerGrantEnabled indicates that at least one trusted issuer has the
 	// RFC 7523 JWT-bearer grant configured. See AuthorizationServerConfig's
 	// field of the same name.
@@ -162,7 +202,7 @@ func validateIssuerURL(issuer string) error {
 		return fmt.Errorf("issuer must use http or https scheme")
 	}
 
-	if parsedURL.Host == "" {
+	if parsedURL.Hostname() == "" {
 		return fmt.Errorf("issuer must have a host")
 	}
 
@@ -213,6 +253,50 @@ func validateTokenLifespans(cfg *AuthorizationServerParams) error {
 	return nil
 }
 
+// ValidateConfidentialClientTransport rejects cleartext HTTP configurations
+// when any confidential client is enabled, whether it is admitted through DCR
+// or statically declared.
+func ValidateConfidentialClientTransport(
+	allowConfidential, insecureAllowHTTP bool,
+	issuer string, insecureAllowConfidentialOverLoopbackHTTP bool,
+) error {
+	if !allowConfidential {
+		return nil
+	}
+	if insecureAllowHTTP {
+		return fmt.Errorf("allow_confidential_client_registration cannot be combined with insecure_allow_http: " +
+			"confidential clients would send secrets over cleartext HTTP")
+	}
+	parsed, err := url.Parse(issuer)
+	if err != nil {
+		return fmt.Errorf("confidential clients require a valid issuer URL")
+	}
+	if parsed.Scheme != "http" {
+		return nil
+	}
+	// Mirrors the query/fragment/userinfo shape validateIssuerURLCore enforces
+	// (pkg/authserver/config.go) for the same reasons: an issuer identifier
+	// with any of these is malformed under RFC 8414 §2 regardless of scheme,
+	// and this function is the sole transport authority for the loopback
+	// opt-in path once a caller reaches it directly.
+	if parsed.User != nil || parsed.RawQuery != "" || parsed.Fragment != "" {
+		return fmt.Errorf("confidential clients require a valid issuer URL")
+	}
+	if insecureAllowConfidentialOverLoopbackHTTP && !networking.IsLocalhost(parsed.Host) {
+		return fmt.Errorf("allow_confidential_client_registration cannot use the loopback HTTP opt-in with a non-loopback issuer: " +
+			"confidential clients would send secrets over cleartext HTTP")
+	}
+	if !insecureAllowConfidentialOverLoopbackHTTP && networking.IsLocalhost(parsed.Host) {
+		return fmt.Errorf("allow_confidential_client_registration cannot be combined with a plain-HTTP loopback issuer unless " +
+			"insecure_allow_confidential_over_loopback_http is set: confidential clients would send secrets over cleartext HTTP")
+	}
+	if !networking.IsLocalhost(parsed.Host) {
+		return fmt.Errorf("allow_confidential_client_registration cannot use a plain-HTTP non-loopback issuer: " +
+			"confidential clients would send secrets over cleartext HTTP")
+	}
+	return nil
+}
+
 // validateParams validates all fields on AuthorizationServerParams.
 func validateParams(cfg *AuthorizationServerParams) error {
 	if err := validateIssuerURL(cfg.Issuer); err != nil {
@@ -242,6 +326,12 @@ func validateParams(cfg *AuthorizationServerParams) error {
 		}
 	}
 	if err := validateAllowedAudiences(cfg.AllowedAudiences); err != nil {
+		return err
+	}
+	if err := ValidateConfidentialClientTransport(
+		cfg.AllowConfidentialClientRegistration || cfg.HasStaticDelegateClients,
+		cfg.InsecureAllowHTTP, cfg.Issuer, cfg.InsecureAllowConfidentialOverLoopbackHTTP,
+	); err != nil {
 		return err
 	}
 	// Defense-in-depth: re-check the baseline-⊆-scopes_supported invariant.
@@ -307,9 +397,13 @@ func NewAuthorizationServerConfig(cfg *AuthorizationServerParams) (*Authorizatio
 		AuthorizationEndpointBaseURL:        cfg.AuthorizationEndpointBaseURL,
 		CIMDEnabled:                         cfg.CIMDEnabled,
 		AllowConfidentialClientRegistration: cfg.AllowConfidentialClientRegistration,
+		AllowPrivateKeyJWTRegistration:      cfg.AllowPrivateKeyJWTRegistration,
 		HasStaticDelegateClients:            cfg.HasStaticDelegateClients,
-		ForceConfidentialRedirectURIs:       cfg.ForceConfidentialRedirectURIs,
-		JWTBearerGrantEnabled:               cfg.JWTBearerGrantEnabled,
+		InsecureAllowHTTP:                   cfg.InsecureAllowHTTP,
+		InsecureAllowConfidentialOverLoopbackHTTP: cfg.InsecureAllowConfidentialOverLoopbackHTTP,
+		ForceConfidentialRedirectURIs:             cfg.ForceConfidentialRedirectURIs,
+		TokenExchangeEnabled:                      !cfg.DisableTokenExchange,
+		JWTBearerGrantEnabled:                     cfg.JWTBearerGrantEnabled,
 	}, nil
 }
 
@@ -321,6 +415,14 @@ func NewAuthorizationServer(
 	strategy any,
 	factories ...Factory,
 ) (fosite.OAuth2Provider, error) {
+	if err := ValidateConfidentialClientTransport(
+		config.AllowConfidentialClientRegistration || config.HasStaticDelegateClients,
+		config.InsecureAllowHTTP,
+		config.AccessTokenIssuer,
+		config.InsecureAllowConfidentialOverLoopbackHTTP,
+	); err != nil {
+		return nil, err
+	}
 	fositeConfig := config.Config
 	provider := fosite.NewOAuth2Provider(storage, fositeConfig)
 

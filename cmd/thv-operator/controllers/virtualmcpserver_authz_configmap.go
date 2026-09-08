@@ -18,6 +18,44 @@ import (
 	mcpv1beta1 "github.com/stacklok/toolhive/cmd/thv-operator/api/v1beta1"
 )
 
+const virtualMCPServerConfigMapIndex = "toolhive.stacklok.dev/virtualmcpserver-configmap"
+
+// indexVirtualMCPServerConfigMaps returns namespace-local ConfigMap references
+// whose data changes require the VirtualMCPServer to reconcile.
+func indexVirtualMCPServerConfigMaps(obj client.Object) []string {
+	vmcp, ok := obj.(*mcpv1beta1.VirtualMCPServer)
+	if !ok {
+		return nil
+	}
+
+	names := make(map[string]struct{})
+	if vmcp.Spec.IncomingAuth != nil && vmcp.Spec.IncomingAuth.AuthzConfig != nil &&
+		vmcp.Spec.IncomingAuth.AuthzConfig.Type == mcpv1beta1.AuthzConfigTypeConfigMap &&
+		vmcp.Spec.IncomingAuth.AuthzConfig.ConfigMap != nil &&
+		vmcp.Spec.IncomingAuth.AuthzConfig.ConfigMap.Name != "" {
+		names[vmcp.Spec.IncomingAuth.AuthzConfig.ConfigMap.Name] = struct{}{}
+	}
+	if vmcp.Spec.AuthServerConfig != nil {
+		for _, provider := range vmcp.Spec.AuthServerConfig.UpstreamProviders {
+			if name := providerCABundleConfigMapName(provider); name != "" {
+				names[name] = struct{}{}
+			}
+		}
+		for i := range vmcp.Spec.AuthServerConfig.TrustedIssuers {
+			ref := vmcp.Spec.AuthServerConfig.TrustedIssuers[i].CABundleRef
+			if ref != nil && ref.ConfigMapRef != nil && ref.ConfigMapRef.Name != "" {
+				names[ref.ConfigMapRef.Name] = struct{}{}
+			}
+		}
+	}
+
+	result := make([]string, 0, len(names))
+	for name := range names {
+		result = append(result, name)
+	}
+	return result
+}
+
 // mapAuthzConfigMapToVirtualMCPServer maps ConfigMap changes to VirtualMCPServer reconciliation
 // requests. Used by SetupWithManager to trigger reconciliation when a ConfigMap referenced via
 // spec.incomingAuth.authzConfig.configMap is updated, so the converter can re-resolve policies
@@ -35,20 +73,20 @@ func (r *VirtualMCPServerReconciler) mapAuthzConfigMapToVirtualMCPServer(
 	}
 
 	vmcpList := &mcpv1beta1.VirtualMCPServerList{}
-	if err := r.List(ctx, vmcpList, client.InNamespace(cm.Namespace)); err != nil {
-		log.FromContext(ctx).Error(err, "Failed to list VirtualMCPServers for authz ConfigMap watch")
+	if err := r.List(ctx, vmcpList,
+		client.InNamespace(cm.Namespace),
+		client.MatchingFields{virtualMCPServerConfigMapIndex: cm.Name},
+	); err != nil {
+		log.FromContext(ctx).Error(err, "Failed to list VirtualMCPServers for ConfigMap watch")
 		return nil
 	}
 
-	var requests []reconcile.Request
-	for _, vmcp := range vmcpList.Items {
-		if !vmcpReferencesAuthzConfigMap(&vmcp, cm.Name) {
-			continue
-		}
+	requests := make([]reconcile.Request, 0, len(vmcpList.Items))
+	for i := range vmcpList.Items {
 		requests = append(requests, reconcile.Request{
 			NamespacedName: types.NamespacedName{
-				Name:      vmcp.Name,
-				Namespace: vmcp.Namespace,
+				Name:      vmcpList.Items[i].Name,
+				Namespace: vmcpList.Items[i].Namespace,
 			},
 		})
 	}
@@ -56,19 +94,6 @@ func (r *VirtualMCPServerReconciler) mapAuthzConfigMapToVirtualMCPServer(
 	return requests
 }
 
-// vmcpReferencesAuthzConfigMap reports whether the VirtualMCPServer references the named
-// ConfigMap via spec.incomingAuth.authzConfig.
-func vmcpReferencesAuthzConfigMap(vmcp *mcpv1beta1.VirtualMCPServer, configMapName string) bool {
-	if vmcp.Spec.IncomingAuth == nil ||
-		vmcp.Spec.IncomingAuth.AuthzConfig == nil ||
-		vmcp.Spec.IncomingAuth.AuthzConfig.Type != mcpv1beta1.AuthzConfigTypeConfigMap ||
-		vmcp.Spec.IncomingAuth.AuthzConfig.ConfigMap == nil {
-		return false
-	}
-	return vmcp.Spec.IncomingAuth.AuthzConfig.ConfigMap.Name == configMapName
-}
-
-// configMapDataChangedPredicate admits ConfigMap events that may affect a VirtualMCPServer's
 // resolved authz config. Update events are admitted only when .Data or .BinaryData actually
 // change, so metadata-only updates (labels, annotations, resourceVersion bumps) do not trigger
 // reconciliation. Create and Delete events are passed through so the controller can pick up a

@@ -9,14 +9,29 @@ import (
 	"fmt"
 	"log/slog"
 	"net/http"
+	"os"
 	"path/filepath"
 	"strings"
 
 	nameref "github.com/google/go-containerregistry/pkg/name"
+	"github.com/opencontainers/go-digest"
+	orasregistry "oras.land/oras-go/v2/registry"
 
+	"github.com/stacklok/toolhive-core/container/signer"
 	"github.com/stacklok/toolhive-core/httperr"
 	ociplugins "github.com/stacklok/toolhive-core/oci/plugins"
+	"github.com/stacklok/toolhive/pkg/container/images"
 	"github.com/stacklok/toolhive/pkg/plugins"
+)
+
+// Environment variable overrides for the Fulcio/Rekor instances used by
+// keyless signing. Unset means the sigstore public-good instances (core's
+// defaults). Intended for E2E and staging use only — not a supported
+// production configuration knob. Mirror skillsvc's pair: the plugin push
+// path signs through the same core signer and needs the same escape hatch.
+const (
+	envFulcioURL = "TOOLHIVE_SIGSTORE_FULCIO_URL"
+	envRekorURL  = "TOOLHIVE_SIGSTORE_REKOR_URL"
 )
 
 // Validate checks whether a plugin definition is valid. It runs the
@@ -116,6 +131,14 @@ func (s *service) Push(ctx context.Context, opts plugins.PushOptions) error {
 			http.StatusBadRequest,
 		)
 	}
+	if err := validateSigningInputs(opts); err != nil {
+		return err
+	}
+	if !opts.NoSign {
+		if err := validateSignedDestination(opts.Reference); err != nil {
+			return err
+		}
+	}
 
 	d, err := s.ociStore.Resolve(ctx, opts.Reference)
 	if err != nil {
@@ -126,11 +149,94 @@ func (s *service) Push(ctx context.Context, opts plugins.PushOptions) error {
 		)
 	}
 
-	if err := s.registry.Push(ctx, s.ociStore, d, opts.Reference); err != nil {
+	// An unsigned push has no ordering constraint to respect: there is no
+	// signature the requested reference could be published ahead of.
+	if opts.NoSign {
+		if err := s.registry.Push(ctx, s.ociStore, d, opts.Reference); err != nil {
+			return fmt.Errorf("pushing to registry: %w", err)
+		}
+		return nil
+	}
+	return s.pushSigned(ctx, opts, d)
+}
+
+// pushSigned publishes a signed artifact so that the requested reference
+// never resolves to unsigned content (RFC THV-0080). Content is staged under
+// its immutable digest, the signature is attached to that digest, and only
+// then is the requested tag pushed.
+//
+// The ordering is the point. Pushing the tag first and signing afterwards
+// publishes exactly what signed-by-default promises not to: on any
+// Fulcio/Rekor/attachment failure the tag is already live and resolves to
+// unsigned content, which user-scoped installs consume without verification
+// and project-scoped installs can take with --allow-unsigned. Returning an
+// error does not retract it. Staged-then-promoted instead leaves the blobs
+// uploaded but nothing tagged, so a consumer resolving the tag finds nothing.
+//
+// The staged manifest is left untagged and is garbage-collectable by the
+// registry. Deleting it is not attempted: RegistryClient exposes no delete,
+// and registries commonly disallow manifest deletion anyway.
+func (s *service) pushSigned(ctx context.Context, opts plugins.PushOptions, d digest.Digest) error {
+	staged, err := stagingReference(opts.Reference, d)
+	if err != nil {
+		return httperr.WithCode(err, http.StatusBadRequest)
+	}
+
+	if err := s.registry.Push(ctx, s.ociStore, d, staged); err != nil {
 		return fmt.Errorf("pushing to registry: %w", err)
 	}
 
+	// Signed against the staged digest reference rather than the requested
+	// tag, which does not exist on the remote yet: attaching the signature
+	// reads the artifact back to decide whether this identity already signed
+	// it, so a not-yet-created tag would fail the attach.
+	//
+	// No key is forwarded — plugin pushes are keyless-only until install-time
+	// key verification exists (#6442), and PushOptions carries no key field.
+	if _, err := s.artifactSigner().SignOCI(ctx, staged, d.String(), signer.Options{
+		IdentityToken: opts.IdentityToken,
+		FulcioURL:     os.Getenv(envFulcioURL),
+		RekorURL:      os.Getenv(envRekorURL),
+	}); err != nil {
+		return httperr.WithCode(fmt.Errorf("signing pushed artifact: %w", err), http.StatusBadRequest)
+	}
+
+	// Promote: from here the requested reference resolves to signed content.
+	// The requested reference is always a tag, so this is always a second,
+	// distinct push — validateSignedDestination rejected the digest-pinned
+	// shape, for which promotion would be a no-op because the staging push
+	// had already published exactly what was asked for.
+	if err := s.registry.Push(ctx, s.ociStore, d, opts.Reference); err != nil {
+		return fmt.Errorf("promoting the signed artifact to %q failed; it is published and signed at %s "+
+			"and pushing again is safe: %w", opts.Reference, staged, err)
+	}
 	return nil
+}
+
+// stagingReference returns the digest-pinned form of ref — the reference a
+// signed artifact is published under before its tag is promoted. A ref that
+// already pins the digest is returned unchanged, which for a signed push is
+// unreachable: validateSignedDestination rejects that shape upstream,
+// precisely because staging and promoting would collapse into one push.
+func stagingReference(ref string, d digest.Digest) (string, error) {
+	parsed, err := orasregistry.ParseReference(ref)
+	if err != nil {
+		return "", fmt.Errorf("reference %q is not a valid registry reference: %w", ref, err)
+	}
+	if parsed.Reference == d.String() {
+		return ref, nil
+	}
+	parsed.Reference = d.String()
+	return parsed.String(), nil
+}
+
+// artifactSigner returns the configured signer, defaulting to the Sigstore
+// signer with the composite registry keychain. Mirror skillsvc.artifactSigner.
+func (s *service) artifactSigner() signer.Signer {
+	if s.sigSigner != nil {
+		return s.sigSigner
+	}
+	return signer.NewDefault(images.NewCompositeKeychain())
 }
 
 // ListBuilds returns all locally-built OCI plugin artifacts in the local store.
@@ -208,6 +314,79 @@ func (s *service) DeleteBuild(ctx context.Context, tag string) error {
 		)
 	}
 	return s.ociStore.DeleteBuild(ctx, tag)
+}
+
+// validateSigningInputs enforces that a push declares exactly one signing
+// method: an OIDC identity token for keyless signing, or an explicit opt-out.
+// Ambiguous or absent input is rejected here, before the artifact is pushed,
+// rather than surfacing as a signing failure afterward.
+//
+// Diverges from skillsvc.validateSigningInputs on purpose: there is no key
+// branch to validate. Install-time verification is keyless-only, and a
+// key-signed artifact fails it as verifier.ErrKeySigned — a verdict distinct
+// from ErrUnsigned, so --allow-unsigned cannot override it and the plugin is
+// uninstallable project-scoped. Rather than accept a key and reject it here,
+// plugins.PushOptions omits the field entirely (#6442), so the unsupported
+// request cannot be constructed by any caller, in-process or over HTTP.
+func validateSigningInputs(opts plugins.PushOptions) error {
+	switch {
+	case opts.NoSign && opts.IdentityToken != "":
+		return httperr.WithCode(
+			errors.New("no_sign (--no-sign) cannot be combined with identity_token (--identity-token)"),
+			http.StatusBadRequest,
+		)
+	case !opts.NoSign && opts.IdentityToken == "":
+		return httperr.WithCode(
+			errors.New("signing credential required: set identity_token (--identity-token) for "+
+				"CI/OIDC keyless signing, or no_sign (--no-sign) to push unsigned"),
+			http.StatusBadRequest,
+		)
+	}
+	return nil
+}
+
+// validateSignedDestination rejects a digest-pinned destination for a signed
+// push, before any registry operation.
+//
+// Signing cannot precede publication: attaching a signature reads the
+// artifact back from the remote, so a signed push must put content up before
+// it can sign it. pushSigned's staged-then-promoted ordering exists to keep
+// the *requested* reference out of that window — content is published under
+// its immutable digest, and only a successful signature promotes the tag.
+//
+// A request that already pins the digest leaves nothing to withhold. The
+// staging push publishes the exact reference the caller asked for, so a
+// Fulcio, Rekor or attachment failure leaves an unsigned artifact live at
+// precisely the reference the publisher meant consumers to resolve, which
+// user-scoped installs consume without verification. Returning an error does
+// not retract it, and unlike a tag left unpushed there is nothing that later
+// makes it correct.
+//
+// So the shape is refused rather than reordered: no push order upholds the
+// guarantee when staging and promotion are the same operation. --no-sign is
+// unaffected — it publishes the requested reference directly and promises
+// nothing that an unsigned result would break.
+func validateSignedDestination(ref string) error {
+	parsed, err := orasregistry.ParseReference(ref)
+	if err != nil {
+		return httperr.WithCode(
+			fmt.Errorf("reference %q is not a valid registry reference: %w", ref, err),
+			http.StatusBadRequest,
+		)
+	}
+	// ParseReference puts a tag or a digest in the same field; only a digest
+	// parses as one. An empty reference (no tag, no digest) is left to the
+	// local-store lookup, which reports it as not found.
+	if _, err := digest.Parse(parsed.Reference); err != nil {
+		return nil
+	}
+	return httperr.WithCode(
+		fmt.Errorf("cannot sign a push to the digest-pinned reference %q: signing requires the "+
+			"artifact to be published first, so a signing failure would leave it live and unsigned "+
+			"at that exact reference. Push to a tag, which is published only once signing has "+
+			"succeeded, or pass no_sign (--no-sign) to publish unsigned deliberately", ref),
+		http.StatusBadRequest,
+	)
 }
 
 // validateLocalPath checks that a path is non-empty, absolute, and does not

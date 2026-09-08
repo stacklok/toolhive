@@ -226,7 +226,9 @@ var ErrUnmirrorableValue = errors.New("parameter value cannot be mirrored into a
 // A designated parameter that is absent from args contributes no header. That is
 // deliberate rather than an error: an optional parameter the caller did not
 // supply has no value to mirror, and SEP-2243's -32020 covers the server's view
-// of a genuinely missing designated value.
+// of a genuinely missing designated value. A provided empty string is instead
+// sent as the base64 sentinel so it remains distinguishable from an absent
+// header.
 //
 // Annotations reached through an array element ("[]" in the path) are skipped: an
 // array holds many elements and a header holds one value, so there is no
@@ -317,6 +319,8 @@ func isCombinatorSegment(seg string) bool {
 
 // renderHeaderValue converts a designated parameter's value to its header
 // spelling, enforcing the schema's declared type and SEP-2243's integer range.
+// A present empty string is sentinel-encoded so it remains distinguishable from
+// an absent mirrored parameter; absent values are omitted by MirrorParamHeaders.
 func renderHeaderValue(h ParamHeader, value any) (string, error) {
 	where := strings.Join(h.Path, ".")
 	switch h.Type {
@@ -328,6 +332,9 @@ func renderHeaderValue(h ParamHeader, value any) (string, error) {
 		if bad, invalid := firstControlChar(s); invalid {
 			return "", fmt.Errorf(
 				"%w: parameter %q contains a control character (%q)", ErrUnmirrorableValue, where, bad)
+		}
+		if s == "" {
+			return EncodeSentinelName(s), nil
 		}
 		return s, nil
 	case "boolean":

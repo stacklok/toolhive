@@ -65,6 +65,8 @@ const (
 	// shell), rather than the JSON-Pointer LLMGatewayKeys mechanism the other
 	// modes share.
 	ModeCodexAuth = "codex-auth" //nolint:gosec // G101: mode identifier, not a credential
+	// ModeVSCode configures VS Code's chatLanguageModels.json provider groups.
+	ModeVSCode = "vscode"
 )
 
 // ProxyOriginOf returns rawURL with its path, query, fragment, and userinfo
@@ -108,6 +110,10 @@ type ApplyConfig struct {
 	// a model override (e.g. Claude Desktop's inferenceModels). Empty means the
 	// client falls back to gateway-side model auto-discovery.
 	Models []string
+	// DiscoveredModels contains model IDs returned by the authenticated gateway
+	// discovery request. It is used only by integrations that require an explicit
+	// model catalogue, such as VS Code's customendpoint provider.
+	DiscoveredModels []string
 	// BedrockCompat and the per-tier Bedrock model IDs configure Claude Code for a
 	// gateway that forwards to AWS Bedrock. When BedrockCompat is true, Claude Code
 	// is configured with CLAUDE_CODE_DISABLE_EXPERIMENTAL_BETAS=1 (Bedrock rejects

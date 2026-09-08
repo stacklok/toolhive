@@ -28,6 +28,7 @@ import (
 	asrunner "github.com/stacklok/toolhive/pkg/authserver/runner"
 	"github.com/stacklok/toolhive/pkg/authz"
 	"github.com/stacklok/toolhive/pkg/bodylimit"
+	"github.com/stacklok/toolhive/pkg/diagnostics"
 	mcpparser "github.com/stacklok/toolhive/pkg/mcp"
 	baseratelimit "github.com/stacklok/toolhive/pkg/ratelimit"
 	"github.com/stacklok/toolhive/pkg/recovery"
@@ -59,8 +60,9 @@ const (
 
 	// defaultWriteTimeout is the server-level write deadline set on http.Server.WriteTimeout.
 	// It protects all routes (health, metrics, well-known, etc.) from slow-write clients.
-	// For qualifying SSE (GET) connections, transportmiddleware.WriteTimeout clears this
-	// per-request via http.ResponseController.SetWriteDeadline(time.Time{}) (golang/go#16100).
+	// For MCP POST requests, transportmiddleware.WriteTimeout clears this during
+	// handler computation and re-arms it when a non-streaming response starts.
+	// Qualifying SSE connections remain unbounded (golang/go#16100).
 	defaultWriteTimeout = 30 * time.Second
 
 	// defaultIdleTimeout is the maximum amount of time to wait for the next request when keep-alive's are enabled.
@@ -298,6 +300,11 @@ type Server struct {
 	// HTTP server for Streamable HTTP transport
 	httpServer *http.Server
 
+	// diagnosticsServer serves the Prometheus /metrics endpoint on its own
+	// listener, keeping it off the port that serves MCP traffic. Nil unless the
+	// telemetry provider exposes a Prometheus handler.
+	diagnosticsServer *diagnostics.Server
+
 	// Network listener (tracks actual bound port when using port 0)
 	listener   net.Listener
 	listenerMu sync.RWMutex
@@ -344,6 +351,11 @@ type Server struct {
 	// server. Set by Serve; nil for direct-Serve callers that never register a
 	// list_changed sink.
 	resyncBaseCtx context.Context
+
+	// healthResync tracks each live session's tools resync worker so a backend
+	// health change can fan out to every session (#5786). The zero value is
+	// usable; see serve_health_resync.go for registration/pruning lifecycle.
+	healthResync healthResyncRegistry
 }
 
 // buildSessionDataStorage constructs the DataStorage backend from cfg.
@@ -568,10 +580,16 @@ func New(
 // All returned handlers share the same underlying MCPServer and SessionManager,
 // so callers should not serve concurrent traffic through multiple handlers.
 func (s *Server) Handler(_ context.Context) (http.Handler, error) {
-	// Create Streamable HTTP server with ToolHive session management.
+	// Create Streamable HTTP server with ToolHive session management. The
+	// session-id manager is wrapped so an SDK-initiated termination (HTTP
+	// DELETE) eagerly deregisters the session's health-resync worker (#5786);
+	// see pruneOnTerminateSessionIDManager.
 	streamableOpts := []server.StreamableHTTPOption{
 		server.WithEndpointPath(s.config.EndpointPath),
-		server.WithSessionIdManager(s.vmcpSessionMgr),
+		server.WithSessionIdManager(&pruneOnTerminateSessionIDManager{
+			SessionIdManager: s.vmcpSessionMgr,
+			registry:         &s.healthResync,
+		}),
 		server.WithHeartbeatInterval(heartbeatInterval(s.config.HeartbeatInterval)),
 	}
 	// Install the pre-dispatch authorization gate only when authz is configured
@@ -594,14 +612,20 @@ func (s *Server) Handler(_ context.Context) (http.Handler, error) {
 	mux.HandleFunc("/status", s.handleStatus)
 	mux.HandleFunc("/api/backends/health", s.handleBackendHealth)
 
-	// Optional Prometheus metrics endpoint (unauthenticated)
-	if s.config.TelemetryProvider != nil {
-		if prometheusHandler := s.config.TelemetryProvider.PrometheusHandler(); prometheusHandler != nil {
-			mux.Handle("/metrics", prometheusHandler)
-			slog.Info("prometheus metrics endpoint enabled at /metrics")
-		} else {
-			slog.Warn("prometheus metrics endpoint is not enabled, but telemetry provider is configured")
-		}
+	// Prometheus metrics belong on the dedicated diagnostics listener (see
+	// pkg/diagnostics and startDiagnostics below), so that access can be restricted
+	// by port: NetworkPolicy matches on port and not on HTTP path, so a shared port
+	// makes "allow MCP traffic, deny metrics scraping" impossible to express.
+	//
+	// During the migration window they are also served here, so an existing scrape
+	// configuration keeps working while it is moved; see
+	// telemetry.DefaultMetricsOnTransportPort. Once that is off, answer with a 404
+	// rather than leaving /metrics to the "/" catch-all, which would hand a scrape
+	// to the MCP handler.
+	if h := s.transportPortMetricsHandler(); h != nil {
+		mux.Handle(diagnostics.MetricsPath, h)
+	} else {
+		mux.Handle(diagnostics.MetricsPath, diagnostics.NotServedHereHandler())
 	}
 
 	// RFC 9728 protected resource metadata.
@@ -702,12 +726,11 @@ func (s *Server) Handler(_ context.Context) (http.Handler, error) {
 	// Apply Accept header validation (rejects GET requests without Accept: text/event-stream)
 	mcpHandler = headerValidatingMiddleware(mcpHandler)
 
-	// Clear the write deadline for qualifying SSE connections (GET +
-	// Accept: text/event-stream + MCP endpoint path) so the server-level
-	// WriteTimeout does not kill long-lived SSE streams (see golang/go#16100).
-	// Non-qualifying requests are left untouched; http.Server.WriteTimeout
-	// (defaultWriteTimeout) remains in effect for them.
-	mcpHandler = transportmiddleware.WriteTimeout(s.config.EndpointPath)(mcpHandler)
+	// Suspend the server write deadline while MCP POST handlers perform bounded
+	// backend operations, then re-arm it when a non-streaming response starts.
+	// Qualifying SSE connections remain long-lived (see golang/go#16100). Other
+	// requests retain the server-level defaultWriteTimeout.
+	mcpHandler = transportmiddleware.WriteTimeout(s.config.EndpointPath, defaultWriteTimeout)(mcpHandler)
 
 	// Cap request body size before the MCP parser (and all inner middleware)
 	// buffers it via io.ReadAll, rejecting oversized bodies with 413. This is
@@ -759,9 +782,34 @@ func (s *Server) Start(ctx context.Context) error {
 		MaxHeaderBytes:    defaultMaxHeaderBytes,
 	}
 
+	// Start the diagnostics listener before the MCP listener, matching the
+	// runner's ordering (pkg/runner/runner.go), so a failure here has nothing to
+	// unwind: nothing has bound or started serving MCP traffic yet. Starting it
+	// after Serve, as an earlier version of this method did, left a window where
+	// an error here returned from Start with the MCP listener already accepting
+	// connections in its background goroutine and s.ready never closed --
+	// anything blocked on Ready() would hang forever.
+	//
+	// A failure here is fatal to Start, matching the runner's choice for the
+	// same tradeoff: metrics are opt-in, so failing loudly at startup beats
+	// silently shipping without the observability #6271 exists to provide. This
+	// is deliberately harder to hit than it looks -- diagnostics.Server.bind
+	// itself retries when the configured port is merely occupied, so what
+	// reaches here is either a genuinely invalid configuration or a machine with
+	// no ports left, not routine contention.
+	if err := s.startDiagnostics(); err != nil {
+		return err
+	}
+
 	// Create listener (allows port 0 to bind to random available port)
 	listener, err := net.Listen("tcp", addr)
 	if err != nil {
+		// Diagnostics already started above; without this, a failure here would
+		// leak its listener and background goroutine, since nothing else on this
+		// path calls Stop.
+		if stopErr := s.stopDiagnostics(ctx); stopErr != nil {
+			slog.Warn("failed to stop diagnostics server after listener creation failed", "error", stopErr)
+		}
 		return fmt.Errorf("failed to create listener: %w", err)
 	}
 
@@ -860,6 +908,10 @@ func (s *Server) Stop(ctx context.Context) error {
 	s.listenerMu.Lock()
 	s.listener = nil
 	s.listenerMu.Unlock()
+
+	if err := s.stopDiagnostics(ctx); err != nil {
+		errs = append(errs, err)
+	}
 
 	// The backend health monitor is stopped by core.Close (the core owns it); Serve registered
 	// a shutdown function that closes the core, run in the loop below.
@@ -1222,6 +1274,7 @@ func (s *Server) handleSessionRegistrationImpl(ctx context.Context, session serv
 	// Defer cleanup: if any error occurs, terminate the session and log failures.
 	defer func() {
 		if retErr != nil {
+			s.healthResync.remove(sessionID)
 			if _, termErr := s.vmcpSessionMgr.Terminate(sessionID); termErr != nil {
 				slog.Warn("failed to clean up session after error",
 					"session_id", sessionID,
@@ -1254,12 +1307,40 @@ func (s *Server) handleSessionRegistrationImpl(ctx context.Context, session serv
 	// enumerate unauthenticated. See buildListChangedSink.
 	identity, _ := auth.IdentityFromContext(ctx)
 	forwardedHeaders := headerforward.ForwardedHeadersFromContext(ctx)
-	sink := s.buildListChangedSink(sessionID, session, identity, forwardedHeaders)
+	sink, toolsResyncWorker := s.buildListChangedSink(sessionID, session, identity, forwardedHeaders)
 	if _, retErr = s.vmcpSessionMgr.CreateSession(ctx, sessionID, sink); retErr != nil {
 		slog.Error("failed to create session-scoped backends",
 			"session_id", sessionID,
 			"error", retErr)
 		return retErr
+	}
+
+	// Register the session's tools resync worker for backend-health-driven
+	// fan-out (#5786, serve_health_resync.go) as soon as the session exists:
+	// a health change firing during the capability injection below then
+	// triggers a (coalesced) re-derivation rather than being missed. That
+	// early registration means a fan-out can run the worker's SetSessionTools
+	// (replace) concurrently with injectCoreSessionCapabilities' merge below;
+	// both derive from the live health-filtered core view and the SDK tool
+	// store is internally locked, so the overlap is benign and self-heals on
+	// the next fan-out. The error-path defer above deregisters alongside
+	// Terminate.
+	//
+	// Optimizer-mode sessions are not registered: the health fan-out is a
+	// no-op there (#5786 PR1 is passthrough-only, see
+	// resyncSessionsOnBackendHealthChange), so registering would only retain
+	// the worker closure until termination. The optimizer-mode follow-up (PR2)
+	// removes this gate together with the fan-out's.
+	//
+	// Also gated on health monitoring being enabled: with no monitor there is
+	// no OnChange subscription (see Serve), so no fan-out would ever run the
+	// registry's lazy liveness prune — an entry for a session that ends
+	// without a server-observed Terminate (TTL expiry, node-local cache
+	// eviction, which only calls Close) would retain its worker closure (SDK
+	// session, captured identity and forwarded headers) forever. With no
+	// subscriber the registration could never be triggered anyway.
+	if s.optimizerFactory == nil && s.backendHealth() != nil {
+		s.healthResync.add(sessionID, toolsResyncWorker)
 	}
 
 	// The core is the single authoritative aggregation: source the advertised tool/resource

@@ -15,13 +15,14 @@ import (
 )
 
 var (
-	aiPluginSyncProjectRoot string
-	aiPluginSyncClientsRaw  string
-	aiPluginSyncCheck       bool
-	aiPluginSyncAdopt       bool
-	aiPluginSyncPrune       bool
-	aiPluginSyncYes         bool
-	aiPluginSyncFormat      string
+	aiPluginSyncProjectRoot   string
+	aiPluginSyncClientsRaw    string
+	aiPluginSyncCheck         bool
+	aiPluginSyncAdopt         bool
+	aiPluginSyncPrune         bool
+	aiPluginSyncYes           bool
+	aiPluginSyncAllowUnsigned bool
+	aiPluginSyncFormat        string
 )
 
 var aiPluginSyncCmd = &cobra.Command{
@@ -36,9 +37,7 @@ Use --adopt to record lock entries for existing unmanaged installs, and
 
 Unless --check is set, sync prompts for confirmation before installing —
 plugin content is a set of AI-followed instructions. Pass --yes to skip the
-prompt (required in non-interactive contexts such as CI).
-
-Requires TOOLHIVE_PLUGINS_LOCK_ENABLED=true.`,
+prompt (required in non-interactive contexts such as CI).`,
 	PreRunE: chainPreRunE(
 		ValidateFormat(&aiPluginSyncFormat),
 	),
@@ -60,6 +59,10 @@ func init() {
 		"Remove installs no longer present in the lock file")
 	aiPluginSyncCmd.Flags().BoolVar(&aiPluginSyncYes, "yes", false,
 		"Skip the confirmation prompt (required when not running interactively)")
+	aiPluginSyncCmd.Flags().BoolVar(&aiPluginSyncAllowUnsigned, "allow-unsigned", false,
+		"Record plugins as unsigned in the lock file: when adopting installs whose signature state "+
+			"cannot be established (--adopt), and when repairing an entry that records no trust "+
+			"decision and whose content is unsigned")
 	AddFormatFlag(aiPluginSyncCmd, &aiPluginSyncFormat)
 }
 
@@ -85,11 +88,12 @@ func aiPluginSyncCmdFunc(cmd *cobra.Command, _ []string) error {
 
 	c := newAIPluginClient(cmd.Context())
 	result, err := c.Sync(cmd.Context(), plugins.SyncOptions{
-		ProjectRoot: projectRoot,
-		Clients:     parseSkillInstallClients(aiPluginSyncClientsRaw),
-		Check:       aiPluginSyncCheck,
-		Adopt:       aiPluginSyncAdopt,
-		Prune:       aiPluginSyncPrune,
+		ProjectRoot:   projectRoot,
+		Clients:       parseSkillInstallClients(aiPluginSyncClientsRaw),
+		Check:         aiPluginSyncCheck,
+		Adopt:         aiPluginSyncAdopt,
+		Prune:         aiPluginSyncPrune,
+		AllowUnsigned: aiPluginSyncAllowUnsigned,
 	})
 	if err != nil {
 		return formatAIPluginError("sync plugins", err)

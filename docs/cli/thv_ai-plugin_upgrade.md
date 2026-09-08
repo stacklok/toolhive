@@ -31,8 +31,6 @@ Unless --preview is set, upgrade prompts for confirmation before installing —
 plugin content is a set of AI-followed instructions. Pass --yes to skip the
 prompt (required in non-interactive contexts such as CI).
 
-Requires TOOLHIVE_PLUGINS_LOCK_ENABLED=true.
-
 ```
 thv ai-plugin upgrade [plugin-name...] [flags]
 ```
@@ -41,6 +39,7 @@ thv ai-plugin upgrade [plugin-name...] [flags]
 
 ```
       --allow-ref-change      Permit the artifact to move to a different repository during upgrade
+      --allow-signer-change   Permit upgrading to an artifact signed by a different identity; the new identity replaces the recorded one
       --clients string        Comma-separated target client apps (e.g. claude-code,opencode), or "all" for every available client
       --fail-on-changes       Report what would change without installing anything; a CI freshness gate
       --format string         Output format (json, text) (default "text")

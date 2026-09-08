@@ -4,6 +4,7 @@
 package skillsvc
 
 import (
+	"strings"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
@@ -40,7 +41,7 @@ func signerChangeFixture(
 	mv := verifiermocks.NewMockVerifier(gomock.NewController(t))
 	mv.EXPECT().VerifyGit(gomock.Any(), gomock.Any(), gomock.Any(), gomock.Any()).
 		AnyTimes().
-		DoAndReturn(func(_ any, _, _ []byte, expected *lockfile.Provenance) (*verifier.Result, error) {
+		DoAndReturn(func(_ any, _, _ []byte, expected *verifier.ProvenanceExpectation) (*verifier.Result, error) {
 			installs++
 			if installs == 1 {
 				return signedResult(), nil // initial install (TOFU)
@@ -49,7 +50,7 @@ func signerChangeFixture(
 			if err != nil {
 				return nil, err
 			}
-			if expected != nil && expected.SignerIdentity != result.SignerIdentity {
+			if expected != nil && result.SignerIdentity != testSignerIdentity {
 				return nil, verifier.ErrSignerMismatch
 			}
 			return result, nil
@@ -100,7 +101,7 @@ func TestUpgrade_RefChangeRequiresAllowSignerChange(t *testing.T) {
 	mv := verifiermocks.NewMockVerifier(gomock.NewController(t))
 	mv.EXPECT().VerifyGit(gomock.Any(), gomock.Any(), gomock.Any(), gomock.Any()).
 		AnyTimes().
-		DoAndReturn(func(_ any, _, _ []byte, expected *lockfile.Provenance) (*verifier.Result, error) {
+		DoAndReturn(func(_ any, _, _ []byte, expected *verifier.ProvenanceExpectation) (*verifier.Result, error) {
 			calls++
 			if calls == 1 {
 				return refSignedResult(installedRef), nil // initial install (TOFU)
@@ -109,10 +110,7 @@ func TestUpgrade_RefChangeRequiresAllowSignerChange(t *testing.T) {
 			if expected == nil {
 				return candidate, nil // the upgrade's plan-time signer probe
 			}
-			if expected.RepositoryRef != "" && expected.RepositoryRef != candidate.RepositoryRef {
-				return nil, verifier.ErrSignerMismatch
-			}
-			return candidate, nil
+			return nil, verifier.ErrSignerMismatch
 		})
 	mv.EXPECT().VerifyBundleOffline(gomock.Any(), gomock.Any(), gomock.Any()).AnyTimes().Return(nil)
 
@@ -223,7 +221,7 @@ func TestUpgrade_RefTransitionBlocked(t *testing.T) {
 			mv := verifiermocks.NewMockVerifier(gomock.NewController(t))
 			mv.EXPECT().VerifyGit(gomock.Any(), gomock.Any(), gomock.Any(), gomock.Any()).
 				AnyTimes().
-				DoAndReturn(func(_ any, _, _ []byte, expected *lockfile.Provenance) (*verifier.Result, error) {
+				DoAndReturn(func(_ any, _, _ []byte, expected *verifier.ProvenanceExpectation) (*verifier.Result, error) {
 					calls++
 					if calls == 1 {
 						return refSignedResult(tc.lockedRef), nil // initial install (TOFU)
@@ -356,4 +354,104 @@ func TestUpgrade_SignerChangePreviewParity(t *testing.T) {
 	entry, ok := lf.Get("guarded-skill")
 	require.True(t, ok)
 	assert.Equal(t, testSignerIdentity, entry.Provenance.SignerIdentity)
+}
+
+// TestGuardKeyedSignerChange covers the guard for a key-pinned entry. The
+// keyless guard probes for a certificate identity to compare, which a
+// key-pair bundle does not have — so before this branch a key-pinned entry
+// could never be upgraded at all: the probe returned "key-signed" and the
+// plan failed with a signature error that named none of the real situation.
+//
+// The blocked arms are split by whether the remedy the CLI prints actually
+// works. "signer change blocked" tells the user to pass --allow-signer-change,
+// which drops the recorded key and re-verifies keylessly — a real fix when the
+// candidate moved to keyless signing or lost its signature, and a dead end
+// when it is simply signed by a different key.
+func TestGuardKeyedSignerChange(t *testing.T) {
+	t.Parallel()
+
+	keyPEM, err := verifier.DecodePublicKey(testPublicKeyB64)
+	require.NoError(t, err)
+	entry := keyedLockEntry()
+	newRef, newDigest := "example.com/org/keyed-skill:v2", "sha256:"+strings.Repeat("c", 64)
+
+	tests := []struct {
+		name        string
+		verifyErr   error
+		wantBlocked bool
+		wantStatus  skills.UpgradeStatus
+		wantErrText string
+	}{
+		{
+			name:        "verifying against the pinned key is the evidence the signer is unchanged",
+			wantBlocked: false,
+		},
+		{
+			name:        "a candidate that moved to keyless signing is a signer change",
+			verifyErr:   verifier.ErrKeylessSigned,
+			wantBlocked: true,
+			wantStatus:  skills.UpgradeStatusSignerChangeBlocked,
+		},
+		{
+			name:        "a candidate that lost its signature is a signer change",
+			verifyErr:   verifier.ErrUnsigned,
+			wantBlocked: true,
+			wantStatus:  skills.UpgradeStatusSignerChangeBlocked,
+		},
+		{
+			name:        "a different key is a failure, since allow_signer_change cannot re-anchor",
+			verifyErr:   verifier.ErrSignatureInvalid,
+			wantBlocked: true,
+			wantStatus:  skills.UpgradeStatusFailed,
+			wantErrText: "uninstall and reinstall with --public-key",
+		},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			mv := verifiermocks.NewMockVerifier(gomock.NewController(t))
+			mv.EXPECT().VerifyOCIWithKey(gomock.Any(), newRef, newDigest, keyPEM).
+				Return(nil, tc.verifyErr)
+			// The keyless probe must not run: it is what produced the
+			// unhelpful diagnosis this branch exists to replace.
+			mv.EXPECT().VerifyOCI(gomock.Any(), gomock.Any(), gomock.Any(), gomock.Any()).Times(0)
+
+			svc := &service{sigVerifier: mv}
+			outcome := skills.UpgradeOutcome{Name: entry.Name}
+			blocked := svc.guardSignerChange(t.Context(), entry, newRef, newDigest, &outcome)
+
+			assert.Equal(t, tc.wantBlocked, blocked)
+			if !tc.wantBlocked {
+				return
+			}
+			assert.Equal(t, tc.wantStatus, outcome.Status)
+			if tc.wantErrText != "" {
+				assert.Contains(t, outcome.Error, tc.wantErrText)
+			}
+			if tc.wantStatus == skills.UpgradeStatusSignerChangeBlocked {
+				assert.Empty(t, outcome.NewSignerIdentity,
+					"a key-signed candidate has no identity to report, and inventing one would"+
+						" print a signer the artifact never claimed")
+			}
+		})
+	}
+}
+
+// TestGuardKeyedSignerChange_UndecodablePinnedKey fails the plan rather than
+// treating a corrupt anchor as a signer change: the lock file is hand-editable
+// and the entry cannot be evaluated at all, which is not the same claim.
+func TestGuardKeyedSignerChange_UndecodablePinnedKey(t *testing.T) {
+	t.Parallel()
+
+	entry := keyedLockEntry()
+	entry.Provenance = &lockfile.Provenance{PublicKey: "not-base64!!"}
+	mv := verifiermocks.NewMockVerifier(gomock.NewController(t))
+	mv.EXPECT().VerifyOCIWithKey(gomock.Any(), gomock.Any(), gomock.Any(), gomock.Any()).Times(0)
+
+	svc := &service{sigVerifier: mv}
+	outcome := skills.UpgradeOutcome{Name: entry.Name}
+	require.True(t, svc.guardSignerChange(
+		t.Context(), entry, "example.com/org/keyed-skill:v2", "sha256:"+strings.Repeat("c", 64), &outcome))
+	assert.Equal(t, skills.UpgradeStatusFailed, outcome.Status)
+	assert.NotEqual(t, skills.UpgradeStatusSignerChangeBlocked, outcome.Status)
 }

@@ -15,6 +15,13 @@ type installRequest struct {
 	Clients     []string      `json:"clients,omitempty"`
 	Force       bool          `json:"force,omitempty"`
 	Group       string        `json:"group,omitempty"`
+	// AllowUnsigned mirrors plugins.InstallOptions.AllowUnsigned; without
+	// it here the CLI flag would silently never reach the server.
+	AllowUnsigned bool `json:"allow_unsigned,omitempty"`
+	// PublicKey mirrors plugins.InstallOptions.PublicKey: the base64 DER SPKI
+	// the CLI encoded from the --public-key file, since a path would not
+	// resolve on a server in another process or on another host.
+	PublicKey string `json:"public_key,omitempty"`
 }
 
 type validateRequest struct {
@@ -28,6 +35,12 @@ type buildRequest struct {
 
 type pushRequest struct {
 	Reference string `json:"reference"`
+	// IdentityToken and NoSign mirror pushPluginRequest. Without them here the
+	// CLI's signing flags would be dropped at the HTTP boundary and every push
+	// would be rejected as missing a signing credential. There is no key field:
+	// plugin signing is keyless-only (#6442).
+	IdentityToken string `json:"identity_token,omitempty"`
+	NoSign        bool   `json:"no_sign,omitempty"`
 }
 
 type listResponse struct {
@@ -36,6 +49,12 @@ type listResponse struct {
 
 type installResponse struct {
 	Plugin plugins.InstalledPlugin `json:"plugin"`
+	// Provenance and Unsigned mirror installPluginResponse. Without them the
+	// CLI — which is a pure HTTP client — could never report the trust state
+	// the server recorded, and would silently print every install as if it
+	// were untracked.
+	Provenance *plugins.ProvenanceInfo `json:"provenance,omitempty"`
+	Unsigned   bool                    `json:"unsigned,omitempty"`
 }
 
 type listBuildsResponse struct {
@@ -48,13 +67,17 @@ type syncRequest struct {
 	Prune       bool     `json:"prune,omitempty"`
 	Check       bool     `json:"check,omitempty"`
 	Adopt       bool     `json:"adopt,omitempty"`
+	// AllowUnsigned mirrors plugins.SyncOptions.AllowUnsigned for adoption.
+	AllowUnsigned bool `json:"allow_unsigned,omitempty"`
 }
 
 type upgradeRequest struct {
-	ProjectRoot    string   `json:"project_root"`
-	Names          []string `json:"names,omitempty"`
-	Preview        bool     `json:"preview,omitempty"`
-	FailOnChanges  bool     `json:"fail_on_changes,omitempty"`
-	AllowRefChange bool     `json:"allow_ref_change,omitempty"`
-	Clients        []string `json:"clients,omitempty"`
+	ProjectRoot string   `json:"project_root"`
+	Names       []string `json:"names,omitempty"`
+	// AllowSignerChange mirrors plugins.UpgradeOptions.AllowSignerChange.
+	AllowSignerChange bool     `json:"allow_signer_change,omitempty"`
+	Preview           bool     `json:"preview,omitempty"`
+	FailOnChanges     bool     `json:"fail_on_changes,omitempty"`
+	AllowRefChange    bool     `json:"allow_ref_change,omitempty"`
+	Clients           []string `json:"clients,omitempty"`
 }

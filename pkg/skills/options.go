@@ -3,6 +3,8 @@
 
 package skills
 
+import regtypes "github.com/stacklok/toolhive-core/registry/types"
+
 // ListOptions configures the behavior of the List operation.
 type ListOptions struct {
 	// Scope filters results by installation scope.
@@ -38,6 +40,15 @@ type InstallOptions struct {
 	// "unsigned: true". Skill content is AI-executed instructions, so this
 	// is an explicit per-install trust decision, never a default.
 	AllowUnsigned bool `json:"allow_unsigned,omitempty"`
+	// PublicKey is the base64-encoded DER SPKI cosign public key a
+	// project-scoped install must verify the artifact against, for artifacts
+	// signed with a cosign key pair rather than keylessly. Required on true
+	// first use of such an artifact — the signing key is recoverable from
+	// neither the artifact nor its bundle, so nothing else can supply the
+	// trust anchor — and pinned into the lock entry, which supplies it on
+	// every install thereafter. A value that conflicts with what the lock
+	// already pins is rejected, never ignored.
+	PublicKey string `json:"public_key,omitempty"`
 	// LayerData is the tar.gz content from an OCI layer. Internal use only — NOT exposed via HTTP API.
 	LayerData []byte `json:"-"`
 	// Reference is the full OCI reference (e.g. ghcr.io/org/skill:v1).
@@ -86,13 +97,21 @@ type InstallOptions struct {
 	// install-time verification; recorded as `unsigned: true` in the lock
 	// entry.
 	Unsigned bool `json:"-"`
+	// CatalogProvenance is the independently optional provenance constraints
+	// declared by the skill registry/catalog entry this install resolved
+	// from. On true first use, install-time verification checks each non-empty
+	// field against the observed signature. A lock entry, including a legacy
+	// entry with no trust state, always takes precedence over this. Internal
+	// use only — NOT exposed via HTTP API.
+	CatalogProvenance *regtypes.Provenance `json:"-"`
 	// Provenance carries the verified signer identity established during
 	// install-time verification, for recording into the lock entry. Set by
 	// the verification step, nil when the artifact is unsigned or
 	// verification did not run. Internal use only — NOT exposed via HTTP API.
 	Provenance *ProvenanceInfo `json:"-"`
-	// SigstoreBundle is the serialized Sigstore bundle backing Provenance,
-	// persisted alongside the install record so sync can re-verify offline.
+	// SigstoreBundle is the signature material backing Provenance, in core's
+	// durable form (see verifier.Result.Bundle), persisted alongside the
+	// install record so sync can re-verify offline against the artifact digest.
 	// Internal use only — NOT exposed via HTTP API.
 	SigstoreBundle []byte `json:"-"`
 }
@@ -118,6 +137,10 @@ type ProvenanceInfo struct {
 	RunnerEnvironment string `json:"runner_environment,omitempty"`
 	// SigstoreURL is the Sigstore instance the signature chains to.
 	SigstoreURL string `json:"sigstore_url,omitempty"`
+	// PublicKey is the base64-encoded DER SPKI cosign public key a
+	// key-pair-signed entry is pinned to. Set only when SignerIdentity and
+	// CertIssuer are empty: the two anchors are mutually exclusive.
+	PublicKey string `json:"public_key,omitempty"`
 	// Provisional marks provenance with a documented verification gap
 	// (git signatures until transparency-log validation lands).
 	Provisional bool `json:"provisional,omitempty"`
@@ -306,6 +329,11 @@ const (
 	// is pinned — a narrower case than FailureReasonSignerMismatch, whose
 	// remediation (--allow-signer-change) is nonetheless the same.
 	FailureReasonProvenanceFieldMismatch FailureReason = "provenance-field-mismatch"
+	// FailureReasonKeySigned means the artifact carries only cosign
+	// key-pair signatures, which install-time verification cannot check.
+	// Distinct from FailureReasonSignatureInvalid: nothing is wrong with
+	// the signature, there is simply no trust anchor to check it against.
+	FailureReasonKeySigned FailureReason = "key-signed-unverifiable"
 	// FailureReasonUnsignedRejected means the artifact is unsigned and the
 	// operation did not permit unsigned installs.
 	FailureReasonUnsignedRejected FailureReason = "unsigned-rejected"

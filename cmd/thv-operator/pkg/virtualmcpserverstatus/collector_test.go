@@ -8,6 +8,7 @@ import (
 	"testing"
 
 	"github.com/stretchr/testify/assert"
+	"k8s.io/apimachinery/pkg/api/meta"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 
 	mcpv1beta1 "github.com/stacklok/toolhive/cmd/thv-operator/api/v1beta1"
@@ -362,6 +363,45 @@ func TestStatusCollector_SetTelemetryConfigHash_Clear(t *testing.T) {
 
 	assert.True(t, hasUpdates)
 	assert.Empty(t, status.TelemetryConfigHash)
+}
+
+func TestStatusCollector_ProjectsRuntimeStatus(t *testing.T) {
+	t.Parallel()
+
+	vmcp := &mcpv1beta1.VirtualMCPServer{
+		ObjectMeta: metav1.ObjectMeta{Generation: 4},
+		Status: mcpv1beta1.VirtualMCPServerStatus{
+			Conditions: []metav1.Condition{
+				{Type: "Degraded", Status: metav1.ConditionTrue},
+				{Type: mcpv1beta1.ConditionTypeValid, Status: metav1.ConditionTrue},
+			},
+			Runtime: &mcpv1beta1.VirtualMCPServerRuntimeStatus{
+				Phase:   mcpv1beta1.VirtualMCPServerPhaseReady,
+				Message: "runtime ready",
+				Conditions: []metav1.Condition{{
+					Type: "Ready", Status: metav1.ConditionTrue, Reason: "AllBackendsRoutable",
+				}},
+				DiscoveredBackends: []mcpv1beta1.DiscoveredBackend{{
+					Name: "backend", Status: mcpv1beta1.BackendStatusReady,
+				}},
+			},
+		},
+	}
+
+	collector := NewStatusManager(vmcp)
+	status := vmcp.Status.DeepCopy()
+	hasUpdates := collector.UpdateStatus(context.Background(), status)
+
+	assert.True(t, hasUpdates)
+	assert.Equal(t, mcpv1beta1.VirtualMCPServerPhaseReady, status.Phase)
+	assert.Equal(t, "runtime ready", status.Message)
+	assert.Equal(t, int32(1), status.BackendCount)
+	assert.Equal(t, "backend", status.DiscoveredBackends[0].Name)
+	assert.Condition(t, func() bool {
+		return meta.FindStatusCondition(status.Conditions, "Ready") != nil
+	})
+	assert.Nil(t, meta.FindStatusCondition(status.Conditions, "Degraded"))
+	assert.NotNil(t, meta.FindStatusCondition(status.Conditions, mcpv1beta1.ConditionTypeValid))
 }
 
 func TestStatusCollector_SetTelemetryConfigRefValidatedCondition(t *testing.T) {

@@ -267,10 +267,44 @@ func (s *service) verifyStoredSignature(entry lockfile.Entry, sk skills.Installe
 		if !strings.Contains(entry.Digest, ":") {
 			return nil // git install: no stored bundle by design
 		}
-		return fmt.Errorf("%w: lock entry records signer %q but no bundle is stored",
-			verifier.ErrSignatureInvalid, entry.Provenance.SignerIdentity)
+		return fmt.Errorf("%w: lock entry is pinned to %s but no bundle is stored",
+			verifier.ErrSignatureInvalid, describeLockAnchor(entry.Provenance))
+	}
+	if entry.Provenance.PublicKey != "" {
+		return s.verifyStoredKeySignature(entry, sk)
 	}
 	return s.artifactVerifier().VerifyBundleOffline(sk.SigstoreBundle, entry.Digest, entry.Provenance)
+}
+
+// describeLockAnchor names the trust anchor an entry pins, for errors that
+// report what could not be satisfied. A key entry records no signer identity,
+// so the keyless phrasing would have named an empty string.
+func describeLockAnchor(provenance *lockfile.Provenance) string {
+	if provenance.PublicKey != "" {
+		return "a cosign public key"
+	}
+	return fmt.Sprintf("signer %q", provenance.SignerIdentity)
+}
+
+// verifyStoredKeySignature re-verifies a key-signed stored bundle against the
+// public key its lock entry pins. Without this the keyless path rejects the
+// entry outright, and sync reads that as drift it can heal by reinstalling —
+// so a key-pinned skill reported as modified on every run and never settled,
+// while --check failed permanently on a project that was in fact intact.
+//
+// What the signature is checked against is the lock entry's digest — the
+// artifact the project is pinned to. A cosign signature covers a
+// simple-signing payload rather than the artifact, but that payload is stored
+// with the bundle, so it is recovered from there and checked to name this
+// digest. Nothing is rebuilt from a reference: a payload reconstructed from a
+// reference verifies against whatever that reference claims, which is exactly
+// the check a signature lifted from another artifact passes.
+func (s *service) verifyStoredKeySignature(entry lockfile.Entry, sk skills.InstalledSkill) error {
+	pubKeyPEM, err := verifier.DecodePublicKey(entry.Provenance.PublicKey)
+	if err != nil {
+		return fmt.Errorf("%w: lock entry's pinned %s", verifier.ErrSignatureInvalid, err.Error())
+	}
+	return s.artifactVerifier().VerifyBundleOfflineWithKey(sk.SigstoreBundle, entry.Digest, pubKeyPEM)
 }
 
 // adoptSkill writes a lock entry for an existing, unmanaged project-scope
@@ -295,6 +329,22 @@ func (s *service) adoptSkill(ctx context.Context, opts skills.SyncOptions, sk sk
 	unsigned := false
 	if len(sk.SigstoreBundle) > 0 {
 		result, verifyErr := s.artifactVerifier().ResultFromBundle(sk.SigstoreBundle, sk.Digest)
+		if errors.Is(verifyErr, verifier.ErrKeySigned) {
+			// Adoption back-fills trust from what the bundle itself reveals,
+			// and a key-signed bundle reveals nothing: the key is not in it,
+			// and sync takes no --public-key to supply one. Recording the
+			// install as unsigned instead would be a lie about a signed
+			// artifact, so the honest move is to send it through the one
+			// path that can anchor it.
+			return httperr.WithCode(
+				fmt.Errorf("%w: %q is signed with a cosign key pair, so adopting it cannot record"+
+					" a trust anchor — the key is carried neither by the artifact nor by its bundle."+
+					" Install it with --public-key instead, which verifies the signature and pins"+
+					" the key (--allow-unsigned is not a substitute: the artifact is signed)",
+					verifyErr, sk.Metadata.Name),
+				http.StatusForbidden,
+			)
+		}
 		if verifyErr != nil {
 			return fmt.Errorf("verifying stored bundle for adoption: %w", verifyErr)
 		}

@@ -230,7 +230,7 @@ func Serve(ctx context.Context, cfg ServeConfig) error {
 			return fmt.Errorf("VMCP_NAMESPACE environment variable not set")
 		}
 
-		backendWatcher, err = k8s.NewBackendWatcher(restConfig, namespace, vmcpCfg.Group, dynamicRegistry)
+		backendWatcher, err = k8s.NewBackendWatcher(restConfig, namespace, vmcpCfg.Group, dynamicRegistry, vmcpCfg.OutgoingAuth)
 		if err != nil {
 			return fmt.Errorf("failed to create backend watcher: %w", err)
 		}
@@ -354,6 +354,10 @@ func Serve(ctx context.Context, cfg ServeConfig) error {
 	if revisions, ok := backendClient.(vmcp.RevisionReporter); ok {
 		sessionFactoryOpts = append(sessionFactoryOpts, vmcpsession.WithRevisionLookup(revisions.CachedRevision))
 	}
+	sessionFactoryOpts = append(
+		sessionFactoryOpts,
+		vmcpsession.WithRequestTimeoutResolver(backendRequestTimeoutResolver(vmcpCfg)),
+	)
 	sessionFactory := vmcpsession.NewSessionFactory(outgoingRegistry, sessionFactoryOpts...)
 
 	// When the optimizer is enabled, its meta-tools are pass-through tools.
@@ -369,15 +373,18 @@ func Serve(ctx context.Context, cfg ServeConfig) error {
 	// Extract dependencies from the embedded auth server.
 	var upstreamReader upstreamtoken.TokenReader
 	var keyProvider keys.PublicKeyProvider
+	var embeddedAuthServerIssuer string
 	if embeddedAuthServer != nil {
 		stor := embeddedAuthServer.IDPTokenStorage()
 		refresher := embeddedAuthServer.UpstreamTokenRefresher()
 		upstreamReader = upstreamtoken.NewInProcessService(stor, refresher)
 		keyProvider = embeddedAuthServer.KeyProvider()
+		embeddedAuthServerIssuer = authServerRC.Issuer
 	}
 
 	authMiddleware, authzMiddleware, authInfoHandler, err :=
-		authfactory.NewIncomingAuthMiddleware(ctx, vmcpCfg.IncomingAuth, vmcpCfg.Name, passThroughTools, upstreamReader, keyProvider)
+		authfactory.NewIncomingAuthMiddleware(ctx, vmcpCfg.IncomingAuth, vmcpCfg.Name, passThroughTools,
+			upstreamReader, keyProvider, embeddedAuthServerIssuer)
 	if err != nil {
 		return fmt.Errorf("failed to create authentication middleware: %w", err)
 	}
@@ -520,6 +527,24 @@ func getStatusReportingInterval(cfg *config.Config) time.Duration {
 	return 0
 }
 
+// backendRequestTimeoutResolver resolves the documented operational timeout
+// for a backend workload. Configuration loaded from YAML has defaults applied
+// and is immutable after startup; the defensive fallback also supports quick
+// mode and direct embedders that omit Operational.
+func backendRequestTimeoutResolver(cfg *config.Config) func(workloadID string) time.Duration {
+	timeouts := config.DefaultOperationalConfig().Timeouts
+	if cfg != nil && cfg.Operational != nil && cfg.Operational.Timeouts != nil {
+		timeouts = cfg.Operational.Timeouts
+	}
+
+	return func(workloadID string) time.Duration {
+		if timeout, ok := timeouts.PerWorkload[workloadID]; ok && timeout > 0 {
+			return time.Duration(timeout)
+		}
+		return time.Duration(timeouts.Default)
+	}
+}
+
 // loadAndValidateConfig loads and validates the vMCP configuration file.
 func loadAndValidateConfig(configPath string) (*config.Config, error) {
 	slog.Info(fmt.Sprintf("Loading configuration from: %s", configPath))
@@ -624,7 +649,10 @@ func discoverBackends(
 		return nil, nil, nil, fmt.Errorf("failed to create outgoing authentication registry: %w", err)
 	}
 
-	backendClient, err := vmcpclient.NewHTTPBackendClient(outgoingRegistry)
+	backendClient, err := vmcpclient.NewHTTPBackendClient(
+		outgoingRegistry,
+		vmcpclient.WithRequestTimeoutResolver(backendRequestTimeoutResolver(cfg)),
+	)
 	if err != nil {
 		return nil, nil, nil, fmt.Errorf("failed to create backend client: %w", err)
 	}

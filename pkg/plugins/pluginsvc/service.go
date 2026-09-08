@@ -14,11 +14,13 @@ import (
 	"context"
 	"sync"
 
+	"github.com/stacklok/toolhive-core/container/signer"
 	ociplugins "github.com/stacklok/toolhive-core/oci/plugins"
 	"github.com/stacklok/toolhive/pkg/client"
 	"github.com/stacklok/toolhive/pkg/git"
 	"github.com/stacklok/toolhive/pkg/groups"
 	"github.com/stacklok/toolhive/pkg/plugins"
+	"github.com/stacklok/toolhive/pkg/skills/verifier"
 	"github.com/stacklok/toolhive/pkg/storage"
 )
 
@@ -131,6 +133,23 @@ func WithPluginLookup(pl PluginLookup) Option {
 	}
 }
 
+// WithSigner sets the artifact signer used by Push. Defaults to the Sigstore
+// signer with the composite registry keychain.
+func WithSigner(sg signer.Signer) Option {
+	return func(s *service) {
+		s.sigSigner = sg
+	}
+}
+
+// WithVerifier sets the signature verifier used for install-time
+// verification. Defaults to the Sigstore verifier with the composite
+// registry keychain.
+func WithVerifier(v verifier.Verifier) Option {
+	return func(s *service) {
+		s.sigVerifier = v
+	}
+}
+
 // pluginLock provides per-plugin mutual exclusion keyed by scope/name/projectRoot.
 // Entries are never evicted. This is acceptable because the number of distinct
 // plugins on a single machine is expected to remain small (< 1000). The key
@@ -188,6 +207,8 @@ type service struct {
 	pluginLookup  PluginLookup
 	gitClient     git.Client
 	clientManager *client.ClientManager
+	sigVerifier   verifier.Verifier
+	sigSigner     signer.Signer
 }
 
 // New creates a new plugin service and returns it as a plugins.PluginService.

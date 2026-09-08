@@ -79,6 +79,12 @@ func printSkillInfoText(info *skills.SkillInfo) {
 	_, _ = fmt.Fprintf(w, "Name:\t%s\n", info.Metadata.Name)
 	_, _ = fmt.Fprintf(w, "Version:\t%s\n", info.Metadata.Version)
 	switch {
+	// Checked before the identity cases: a key-pinned entry has no signer
+	// identity and no cert issuer, so those would render as empty values and
+	// read exactly like an untracked install.
+	case info.Provenance != nil && info.Provenance.PublicKey != "":
+		_, _ = fmt.Fprintf(w, "Signed by:\t(cosign key pair)\n")
+		_, _ = fmt.Fprintf(w, "Public key:\t%s\n", info.Provenance.PublicKey)
 	case info.Provenance != nil && info.Provenance.Provisional:
 		_, _ = fmt.Fprintf(w, "Signed by:\t%s (provisional)\n", info.Provenance.SignerIdentity)
 		_, _ = fmt.Fprintf(w, "Cert issuer:\t%s\n", info.Provenance.CertIssuer)

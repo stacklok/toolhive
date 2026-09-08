@@ -1005,7 +1005,7 @@ _Appears in:_
 | `insecure` _boolean_ | Insecure indicates whether to use HTTP instead of HTTPS for the OTLP endpoint. | false | Optional: \{\} <br /> |
 | `enablePrometheusMetricsPath` _boolean_ | EnablePrometheusMetricsPath controls whether to expose Prometheus-style /metrics endpoint.<br />The metrics are served at /metrics on a dedicated diagnostics port rather than on the<br />main transport port, so the endpoint can be restricted by port and is not routed<br />alongside application traffic. The endpoint is unauthenticated either way.<br />See PrometheusPort and pkg/diagnostics.<br />This is separate from OTLP metrics which are sent to the Endpoint. | false | Optional: \{\} <br /> |
 | `prometheusPort` _integer_ | PrometheusPort is the port the Prometheus /metrics endpoint is served on when<br />EnablePrometheusMetricsPath is true. It is deliberately not the main transport port,<br />so that access can be restricted with a NetworkPolicy: NetworkPolicy matches on port,<br />not on HTTP path, so a shared port makes "allow MCP traffic, deny metrics scraping"<br />impossible to express. The endpoint itself is unauthenticated, so restricting who can<br />reach this port is how it is protected.<br />Zero selects the default diagnostics port (9464, the OpenTelemetry specification's<br />Prometheus exporter default). If that port is taken the listener falls back to an<br />available one and logs the resolved address. Do not route this port publicly. |  | Optional: \{\} <br /> |
-| `metricsOnTransportPort` _boolean_ | MetricsOnTransportPort controls whether /metrics is ALSO served on the main<br />transport port, in addition to the diagnostics port. It exists to give<br />deployments a migration window: while true, an existing scrape configuration<br />aimed at the transport port keeps working, and a new one aimed at<br />PrometheusPort works too, so a scraper can be moved and verified before the<br />old location goes away. See https://github.com/stacklok/toolhive/issues/6384 for<br />the removal timeline.<br />Deliberately a pointer with NO kubebuilder default. Nil means "unset", and is<br />resolved against DefaultMetricsOnTransportPort at the point of use rather than<br />written into config. A plain bool with a default marker would be materialised<br />into the persisted RunConfig and into CRD objects at admission, so changing<br />the default later would not move any workload that already exists — the flip<br />would silently do nothing. |  | Optional: \{\} <br /> |
+| `metricsOnTransportPort` _boolean_ | MetricsOnTransportPort controls whether /metrics is ALSO served on the main<br />transport port, in addition to the diagnostics port. It exists to give<br />deployments a migration window: while true, an existing scrape configuration<br />aimed at the transport port keeps working, and a new one aimed at<br />PrometheusPort works too, so a scraper can be moved and verified before the<br />old location goes away. See https://github.com/stacklok/toolhive/issues/6384 for<br />the removal timeline. |  | Optional: \{\} <br /> |
 | `environmentVariables` _string array_ | EnvironmentVariables is a list of environment variable names that should be<br />included in telemetry spans as attributes. Only variables in this list will<br />be read from the host machine and included in spans for observability.<br />Example: ["NODE_ENV", "DEPLOYMENT_ENV", "SERVICE_VERSION"] |  | Optional: \{\} <br /> |
 | `customAttributes` _object (keys:string, values:string)_ | CustomAttributes contains custom resource attributes to be added to all telemetry signals.<br />These are parsed from CLI flags (--otel-custom-attributes) or environment variables<br />(OTEL_RESOURCE_ATTRIBUTES) as key=value pairs. |  | Optional: \{\} <br /> |
 | `useLegacyAttributes` _boolean_ | UseLegacyAttributes controls whether legacy (pre-MCP OTEL semconv) attribute names<br />are emitted alongside the new standard attribute names. When true, spans include both<br />old and new attribute names for backward compatibility with existing dashboards.<br />Currently defaults to true; this will change to false in a future release. | true | Optional: \{\} <br /> |
@@ -1831,10 +1831,13 @@ _Appears in:_
 - [api.v1beta1.InlineOIDCSharedConfig](#apiv1beta1inlineoidcsharedconfig)
 - [api.v1beta1.MCPServerEntrySpec](#apiv1beta1mcpserverentryspec)
 - [api.v1beta1.MCPTelemetryOTelConfig](#apiv1beta1mcptelemetryotelconfig)
+- [api.v1beta1.OAuth2UpstreamConfig](#apiv1beta1oauth2upstreamconfig)
+- [api.v1beta1.OIDCUpstreamConfig](#apiv1beta1oidcupstreamconfig)
+- [api.v1beta1.TrustedIssuerConfig](#apiv1beta1trustedissuerconfig)
 
 | Field | Description | Default | Validation |
 | --- | --- | --- | --- |
-| `configMapRef` _[ConfigMapKeySelector](https://kubernetes.io/docs/reference/generated/kubernetes-api/v1.27/#configmapkeyselector-v1-core)_ | ConfigMapRef references a ConfigMap containing the CA certificate bundle.<br />If Key is not specified, it defaults to "ca.crt". |  | Optional: \{\} <br /> |
+| `configMapRef` _[ConfigMapKeySelector](https://kubernetes.io/docs/reference/generated/kubernetes-api/v1.27/#configmapkeyselector-v1-core)_ | ConfigMapRef references a ConfigMap containing the CA certificate bundle.<br />The ConfigMap key is required by the API. If omitted in a stored object, it<br />defaults to "ca.crt" for backwards compatibility. |  | Optional: \{\} <br /> |
 
 
 #### api.v1beta1.ConfigMapAuthzRef
@@ -1859,9 +1862,8 @@ _Appears in:_
 
 
 DCRUpstreamConfig configures RFC 7591 Dynamic Client Registration for an
-OAuth 2.0 upstream. When present on an OAuth2 upstream, the authserver
-performs registration at runtime to obtain client credentials, replacing
-the need to pre-provision a ClientID.
+OAuth2 or OIDC upstream. OAuth2 requires one of DiscoveryURL or
+RegistrationEndpoint; OIDC may omit both and derive discovery from IssuerURL.
 
 Exactly one of DiscoveryURL or RegistrationEndpoint must be set. DiscoveryURL
 points at an RFC 8414 / OIDC Discovery document from which the registration
@@ -1878,6 +1880,7 @@ time by ValidateOAuth2DCRConfig.
 
 _Appears in:_
 - [api.v1beta1.OAuth2UpstreamConfig](#apiv1beta1oauth2upstreamconfig)
+- [api.v1beta1.OIDCUpstreamConfig](#apiv1beta1oidcupstreamconfig)
 
 | Field | Description | Default | Validation |
 | --- | --- | --- | --- |
@@ -1900,6 +1903,7 @@ Secret and is never represented inline.
 
 _Appears in:_
 - [api.v1beta1.EmbeddedAuthServerConfig](#apiv1beta1embeddedauthserverconfig)
+- [api.v1beta1.TokenExchangeInboundGrantConfig](#apiv1beta1tokenexchangeinboundgrantconfig)
 
 | Field | Description | Default | Validation |
 | --- | --- | --- | --- |
@@ -1948,24 +1952,19 @@ _Appears in:_
 
 
 EmbeddedAuthServerConfig holds configuration for the embedded OAuth2/OIDC authorization server.
-This enables running an authorization server that delegates authentication to upstream IDPs.
+This enables running an authorization server that delegates authentication to upstream IDPs
+or accepts token exchange without an interactive authorization flow.
 This type is shared by MCPExternalAuthConfig.Spec.EmbeddedAuthServer and
-VirtualMCPServer.Spec.AuthServerConfig, so the XValidation rule below is
-enforced at admission for both CRDs.
+VirtualMCPServer.Spec.AuthServerConfig, so the XValidation rules below are
+enforced at admission for both CRDs. CEL only requires the explicit opt-in for
+delegate clients using an HTTP issuer; the shared Go validator performs the
+precise loopback-host security check.
 
-Delegate clients categorically require HTTPS at admission. CEL has no URL
-parser, so this deliberately conservative check rejects every plaintext HTTP
-issuer rather than attempting a loopback exception that could admit a
-non-loopback host. The runtime transport validation remains defense in depth
-for direct Go callers and confidential DCR.
-
-This is stricter than the Go-level ValidateConfidentialClientTransport,
-which still permits a loopback-HTTP issuer with delegate clients when
-InsecureAllowConfidentialOverLoopbackHTTP is set — intentionally, since that
-flag's loopback-is-safe rationale applies equally to delegate-client
-secrets. Do not tighten the Go-level check to match this CEL rule; the CRD
-is stricter only because CEL cannot express the loopback exception, not
-because delegate clients need one.
+The shared Go-level ValidateConfidentialClientTransport validator remains the
+source of truth for confidential-client transport and loopback policy,
+including delegate clients. Trusted issuer endpoint shape is validated by
+ValidateInboundGrants; audience and outbound DNS/private-IP checks remain
+runtime-only.
 
 
 
@@ -1980,15 +1979,18 @@ _Appears in:_
 | `signingKeySecretRefs` _[api.v1beta1.SecretKeyRef](#apiv1beta1secretkeyref) array_ | SigningKeySecretRefs references Kubernetes Secrets containing signing keys for JWT operations.<br />Supports key rotation by allowing multiple keys (oldest keys are used for verification only).<br />If not specified, an ephemeral signing key will be auto-generated (development only -<br />JWTs will be invalid after restart). |  | MaxItems: 5 <br />Optional: \{\} <br /> |
 | `hmacSecretRefs` _[api.v1beta1.SecretKeyRef](#apiv1beta1secretkeyref) array_ | HMACSecretRefs references Kubernetes Secrets containing symmetric secrets for signing<br />authorization codes and refresh tokens (opaque tokens).<br />Current secret must be at least 32 bytes and cryptographically random.<br />Supports secret rotation via multiple entries (first is current, rest are for verification).<br />If not specified, an ephemeral secret will be auto-generated (development only -<br />auth codes and refresh tokens will be invalid after restart). |  | Optional: \{\} <br /> |
 | `tokenLifespans` _[api.v1beta1.TokenLifespanConfig](#apiv1beta1tokenlifespanconfig)_ | TokenLifespans configures the duration that various tokens are valid.<br />If not specified, defaults are applied (access: 1h, refresh: 7d, authCode: 10m). |  | Optional: \{\} <br /> |
-| `upstreamProviders` _[api.v1beta1.UpstreamProviderConfig](#apiv1beta1upstreamproviderconfig) array_ | UpstreamProviders configures connections to upstream Identity Providers.<br />The embedded auth server delegates authentication to these providers.<br />MCPServer and MCPRemoteProxy support a single upstream; VirtualMCPServer supports multiple. |  | MinItems: 1 <br />Required: \{\} <br /> |
+| `spiffeTrustDomains` _[api.v1beta1.SPIFFETrustDomainConfig](#apiv1beta1spiffetrustdomainconfig) array_ | SPIFFETrustDomains declares SPIFFE trust domains for<br />inboundGrants.spiffeClientAuth associations. See SPIFFETrustDomainConfig's<br />doc comment for why declaring a domain does not by itself enable<br />authentication in this build. |  | MaxItems: 50 <br />MinItems: 1 <br />Optional: \{\} <br /> |
+| `inboundGrants` _[api.v1beta1.InboundGrantsConfig](#apiv1beta1inboundgrantsconfig)_ | InboundGrants configures canonical inbound OAuth grant families. |  | Optional: \{\} <br /> |
+| `upstreamProviders` _[api.v1beta1.UpstreamProviderConfig](#apiv1beta1upstreamproviderconfig) array_ | UpstreamProviders configures connections to upstream Identity Providers.<br />When configured, the embedded auth server delegates interactive authentication<br />to these providers. It may be omitted only when delegateClients or a trusted<br />issuer with jwtBearerGrant enables token-only operation.<br />MCPServer and MCPRemoteProxy support a single upstream; VirtualMCPServer supports multiple. |  | Optional: \{\} <br /> |
 | `primaryUpstreamProvider` _string_ | PrimaryUpstreamProvider names the upstream IDP whose access token Cedar<br />should read claims from when authorising a request. Must match the name<br />of one of the entries in UpstreamProviders. When empty, the controller<br />auto-selects the first entry of UpstreamProviders.<br />Only meaningful on VirtualMCPServer, where multiple upstream providers<br />can be configured and Cedar needs to pick which token's claims to<br />evaluate. The VirtualMCPServer controller validates this field against<br />UpstreamProviders at admission and rejects unresolvable values.<br />On MCPServer and MCPRemoteProxy this field is structurally present (the<br />EmbeddedAuthServerConfig struct is shared) but has no runtime effect:<br />those CRDs are restricted to a single upstream so there is no choice to<br />make. Setting it on those CRDs is silently ignored. |  | MaxLength: 63 <br />MinLength: 1 <br />Pattern: `^[a-z0-9]([a-z0-9-]*[a-z0-9])?$` <br />Optional: \{\} <br /> |
 | `storage` _[api.v1beta1.AuthServerStorageConfig](#apiv1beta1authserverstorageconfig)_ | Storage configures the storage backend for the embedded auth server.<br />If not specified, defaults to in-memory storage. |  | Optional: \{\} <br /> |
-| `disableUpstreamTokenInjection` _boolean_ | DisableUpstreamTokenInjection prevents the embedded auth server from injecting<br />upstream IdP tokens into requests forwarded to the backend MCP server.<br />When true, the embedded auth server still handles OAuth flows for clients,<br />but instead of swapping ToolHive JWTs for upstream tokens the proxy STRIPS<br />the client's credential headers (Authorization, Cookie, Proxy-Authorization)<br />after validating the JWT — the backend receives an unauthenticated request.<br />Use headerForward to attach static credentials (e.g. an API key) if the<br />backend needs them. Cannot be combined with token exchange or AWS STS,<br />which would re-add credentials after the strip.<br />This is useful when the backend MCP server does not require authentication<br />(e.g., public documentation servers) but you still want client authentication. | false | Optional: \{\} <br /> |
-| `insecureAllowHTTP` _boolean_ | InsecureAllowHTTP permits an http:// issuer URL for non-localhost hosts.<br />Only set this for in-cluster Kubernetes deployments where traffic between<br />pods traverses a trusted network (e.g. the in-cluster service mesh).<br />Production deployments reachable outside the cluster MUST use https://.<br />On VirtualMCPServer: when false (the default), http:// issuers for non-localhost<br />hosts are rejected at reconcile time with an AuthServerConfigValidated=False condition.<br />On MCPServer and MCPRemoteProxy (via MCPExternalAuthConfig): this field is<br />structurally present but enforcement is deferred to pod startup via Config.Validate();<br />a misconfigured issuer will cause the pod to crash at startup rather than surface<br />as an operator condition.<br />One combination is rejected at admission on all three CRDs regardless of the<br />above: setting this field alongside allowConfidentialClientRegistration, which<br />would issue client secrets in cleartext over an unauthenticated registration<br />endpoint (see the XValidation rule on EmbeddedAuthServerConfig). | false | Optional: \{\} <br /> |
+| `disableUpstreamTokenInjection` _boolean_ | DisableUpstreamTokenInjection prevents the embedded auth server from injecting<br />upstream IdP tokens into requests forwarded to the backend MCP server.<br />When true, the embedded auth server still handles OAuth flows for clients,<br />but instead of swapping ToolHive JWTs for upstream tokens the proxy STRIPS<br />the client's credential headers (Authorization, Cookie, Proxy-Authorization)<br />after validating the JWT — the backend receives an unauthenticated request.<br />Use headerForward to attach static credentials (e.g. an API key) if the<br />backend needs them. Cannot be combined with token exchange, AWS STS, or OBO<br />middleware, which would re-add credentials after the strip.<br />This is useful when the backend MCP server does not require authentication<br />(e.g., public documentation servers) but you still want client authentication. | false | Optional: \{\} <br /> |
+| `insecureAllowHTTP` _boolean_ | InsecureAllowHTTP permits an http:// issuer URL for non-localhost hosts.<br />Only set this for in-cluster Kubernetes deployments where traffic between<br />pods traverses a trusted network (e.g. the in-cluster service mesh).<br />Production deployments reachable outside the cluster MUST use https://.<br />On VirtualMCPServer: when false (the default), http:// issuers for non-localhost<br />hosts are rejected at reconcile time with an AuthServerConfigValidated=False condition.<br />On MCPServer and MCPRemoteProxy (via MCPExternalAuthConfig): this field is<br />structurally present but enforcement is deferred to pod startup via Config.Validate();<br />a misconfigured issuer will cause the pod to crash at startup rather than surface<br />as an operator condition.<br />One combination is rejected at admission on all three CRDs regardless of the<br />above: setting this field alongside confidential client registration or<br />delegate clients, which would issue or use client secrets in cleartext over<br />an unauthenticated endpoint (see the XValidation rule on<br />EmbeddedAuthServerConfig). | false | Optional: \{\} <br /> |
 | `baselineClientScopes` _string array_ | BaselineClientScopes is a baseline set of OAuth 2.0 scopes guaranteed to be<br />included in every client registration. The embedded auth server unions these<br />scopes into the registered set returned by RFC 7591 Dynamic Client<br />Registration, so a client that narrows the `scope` field at /oauth/register<br />can still request the baseline scopes at /oauth/authorize. All values must<br />be present in the upstream-derived scopesSupported set; the auth server<br />fails to start if any value is missing.<br />Security: every client registered via /oauth/register will gain the<br />ability to request these scopes at /oauth/authorize, regardless of what<br />the client itself requested. Keep the baseline narrow (typically<br />"openid" and "offline_access"). Adding a privileged scope here — e.g.<br />"admin:read" — would grant it to every DCR-registered client, including<br />public clients like Claude Code, Cursor, and VS Code.<br />When cimd.enabled is true, every dynamically resolved CIMD client will<br />also gain the ability to request these scopes, including third-party<br />clients resolved from arbitrary HTTPS URLs. |  | MaxItems: 10 <br />items:MinLength: 1 <br />items:Pattern: `^[\x21\x23-\x5B\x5D-\x7E]+$` <br />Optional: \{\} <br /> |
 | `allowConfidentialClientRegistration` _boolean_ | AllowConfidentialClientRegistration permits RFC 7591 Dynamic Client<br />Registration of confidential clients: when true, /oauth/register<br />accepts token_endpoint_auth_method values client_secret_basic and<br />client_secret_post in addition to "none" (still the default on<br />omission) and mints a client_secret returned exactly once.<br />Confidential registrations are restricted to https non-loopback<br />redirect URIs, and on the Redis storage backend all DCR-issued<br />registrations are evicted after 30 days of inactivity and must<br />re-register. This gates registration only: disabling it does not<br />revoke or reject already-minted secrets at the token endpoint.<br />Security: registration is unauthenticated, so enabling this lets any<br />caller who can reach the endpoint obtain a client credential.<br />Combining it with insecureAllowHTTP is rejected at validation. | false | Optional: \{\} <br /> |
-| `insecureAllowConfidentialOverLoopbackHTTP` _boolean_ | InsecureAllowConfidentialOverLoopbackHTTP opts in to<br />allowConfidentialClientRegistration when issuer is a plain-HTTP loopback<br />URL (e.g. "http://localhost:8080"). Without this flag, that combination<br />is rejected at reconcile time: a loopback http:// issuer is normally<br />fine for local development since the traffic never leaves the machine,<br />but combined with confidential registration it means /oauth/register —<br />which is unauthenticated — mints client secrets over cleartext. Forcing<br />TLS onto every loopback deployment instead would just push operators<br />toward insecureAllowHTTP, which is worse: that also disables the<br />non-loopback host check. Has no effect when<br />allowConfidentialClientRegistration is false or issuer is https. | false | Optional: \{\} <br /> |
-| `delegateClients` _[api.v1beta1.DelegateClientConfig](#apiv1beta1delegateclientconfig) array_ | DelegateClients configures pre-provisioned confidential clients for RFC 8693<br />token exchange. Each secret is referenced from a Kubernetes Secret; no<br />plaintext secret, redirect URI, or grant selection is accepted here. The<br />operator always supplies the token-exchange grant when it converts this<br />configuration to the runtime contract.<br />This is independent of allowConfidentialClientRegistration: it neither<br />enables nor requires unauthenticated confidential dynamic client<br />registration. |  | MaxItems: 10 <br />Optional: \{\} <br /> |
+| `allowPrivateKeyJWTRegistration` _boolean_ | AllowPrivateKeyJWTRegistration permits Dynamic Client Registration of<br />clients using private_key_jwt authentication. Registration behavior is<br />intentionally configured separately from confidential-client registration.<br />Security: registration is unauthenticated, so enabling this lets any<br />caller who can reach the endpoint register a private_key_jwt client.<br />Unlike allowConfidentialClientRegistration, this is NOT rejected when<br />combined with insecureAllowHTTP: registration never returns a secret<br />for a private_key_jwt client, so there is nothing for cleartext HTTP<br />to expose. | false | Optional: \{\} <br /> |
+| `insecureAllowConfidentialOverLoopbackHTTP` _boolean_ | InsecureAllowConfidentialOverLoopbackHTTP opts in to confidential<br />Dynamic Client Registration (DCR) and delegate clients when issuer is a<br />plain-HTTP loopback URL (e.g. "http://localhost:8080"). Without this<br />flag, that combination is rejected at reconcile time: a loopback http://<br />issuer is normally fine for local development since the traffic never<br />leaves the machine, but confidential clients send secrets over cleartext.<br />Forcing TLS onto every loopback deployment instead would just push<br />operators toward insecureAllowHTTP, which is worse: that also disables<br />the non-loopback host check. Has no effect when there are no confidential<br />clients or issuer is https.<br />private_key_jwt registration has no equivalent flag or transport<br />restriction: unlike confidential registration, it never returns a<br />client_secret (or any other secret) in the DCR response, so there is<br />nothing here for cleartext HTTP to expose. | false | Optional: \{\} <br /> |
+| `delegateClients` _[api.v1beta1.DelegateClientConfig](#apiv1beta1delegateclientconfig) array_ | DelegateClients configures pre-provisioned confidential clients for RFC 8693<br />token exchange. Each secret is referenced from a Kubernetes Secret; no<br />plaintext secret, redirect URI, or grant selection is accepted here. The<br />operator always supplies the token-exchange grant when it converts this<br />configuration to the runtime contract.<br />This is independent of allowConfidentialClientRegistration: it neither<br />enables nor requires unauthenticated confidential dynamic client<br />registration.<br />This legacy field is deprecated; use inboundGrants.tokenExchange.delegateClients. |  | MaxItems: 10 <br />Optional: \{\} <br /> |
 | `trustedIssuers` _[api.v1beta1.TrustedIssuerConfig](#apiv1beta1trustedissuerconfig) array_ | TrustedIssuers configures external OIDC issuers whose tokens are<br />accepted as RFC 8693 subject tokens during token exchange, in addition<br />to self-issued subject tokens. Empty (the default) means only<br />self-issued subject tokens are accepted. See<br />docs/arch/17-token-exchange-delegation.md for the trust model. |  | MaxItems: 20 <br />Optional: \{\} <br /> |
 | `forceConfidentialRedirectUris` _string array_ | ForceConfidentialRedirectURIs lists redirect URIs that must be<br />registered as confidential clients regardless of the<br />token_endpoint_auth_method the DCR request declares. A registration<br />whose redirectUris contains an EXACT match for one of these entries is<br />issued a real client_secret and reported back as<br />token_endpoint_auth_method "client_secret_post", even if the request<br />said "none" or omitted the field.<br />Intended for MCP clients that declare themselves public<br />(token_endpoint_auth_method: "none") per RFC 7591 but then refuse to<br />proceed because the response carries no client_secret — a<br />self-contradictory request. RFC 7591 §3.2.1 permits the server to<br />substitute client metadata, so this takes such a client at its word<br />that it wants a secret. Remove an entry once the client is fixed to<br />handle "none" registrations correctly.<br />Exact matching is deliberate: an attacker who registers with someone<br />else's callback URI is issued a secret for a client whose<br />authorization codes are delivered to that someone else's redirect<br />endpoint, not to the attacker, so this is not a way to obtain a usable<br />credential for another client.<br />Requires allowConfidentialClientRegistration to be true. Every entry<br />must be an https non-loopback URI — a loopback client is a public<br />client by construction (OAuth 2.1 §2.1) and must not be issued a<br />secret; this is enforced at reconcile time since CEL cannot express<br />the loopback-hostname check. |  | MaxItems: 10 <br />items:Pattern: `^https://[^\s?#]+$` <br />Optional: \{\} <br /> |
 | `cimd` _[api.v1beta1.EmbeddedAuthServerCIMDConfig](#apiv1beta1embeddedauthservercimdconfig)_ | CIMD configures Client ID Metadata Document support. When omitted, CIMD is disabled. |  | Optional: \{\} <br /> |
@@ -2307,6 +2309,24 @@ _Appears in:_
 | `emailPath` _string_ | EmailPath is the dot-notation path to the email address field in the token response.<br />If not specified or if the path does not resolve to a string, the email is omitted.<br />Omit the field entirely rather than setting it to an empty string. |  | MaxLength: 256 <br />MinLength: 1 <br />Optional: \{\} <br /> |
 
 
+#### api.v1beta1.InboundGrantsConfig
+
+
+
+InboundGrantsConfig groups canonical inbound OAuth grant-family configuration.
+
+
+
+_Appears in:_
+- [api.v1beta1.EmbeddedAuthServerConfig](#apiv1beta1embeddedauthserverconfig)
+
+| Field | Description | Default | Validation |
+| --- | --- | --- | --- |
+| `spiffeClientAuth` _[api.v1beta1.SPIFFEClientConfig](#apiv1beta1spiffeclientconfig) array_ | SPIFFEClientAuth associates SPIFFE principal patterns with explicit<br />OAuth client identities and permissions. A sibling of TokenExchange and<br />JWTBearer below, not nested under either: client authentication does<br />not by itself confer a grant. See SPIFFEClientConfig. |  | MaxItems: 100 <br />Optional: \{\} <br /> |
+| `tokenExchange` _[api.v1beta1.TokenExchangeInboundGrantConfig](#apiv1beta1tokenexchangeinboundgrantconfig)_ | TokenExchange configures RFC 8693 clients and issuer policies. |  | Optional: \{\} <br /> |
+| `jwtBearer` _[api.v1beta1.JWTBearerInboundGrantConfig](#apiv1beta1jwtbearerinboundgrantconfig)_ | JWTBearer configures RFC 7523 issuer policies. |  | Optional: \{\} <br /> |
+
+
 #### api.v1beta1.IncomingAuthConfig
 
 
@@ -2386,6 +2406,7 @@ one of that binding's allowed resources.
 
 
 _Appears in:_
+- [api.v1beta1.JWTBearerIssuerPolicyConfig](#apiv1beta1jwtbearerissuerpolicyconfig)
 - [api.v1beta1.TrustedIssuerConfig](#apiv1beta1trustedissuerconfig)
 
 | Field | Description | Default | Validation |
@@ -2395,22 +2416,41 @@ _Appears in:_
 | `acceptedAudiences` _string array_ | AcceptedAudiences identifies this authorization server's accepted<br />assertion audiences. When omitted, runtime validation defaults to the<br />token endpoint. |  | MaxItems: 50 <br />items:MaxLength: 2048 <br />items:MinLength: 1 <br />items:Pattern: `^https?://[^[:space:]]+$` <br />Optional: \{\} <br /> |
 
 
-#### api.v1beta1.JWTBearerSubjectBinding
+#### api.v1beta1.JWTBearerInboundGrantConfig
 
 
 
-JWTBearerSubjectBinding configures the exact subject and allowed resources
-for one RFC 7523 JWT-bearer assertion identity.
+JWTBearerInboundGrantConfig configures canonical RFC 7523 inbound grants.
 
 
 
 _Appears in:_
-- [api.v1beta1.JWTBearerGrantConfig](#apiv1beta1jwtbearergrantconfig)
+- [api.v1beta1.InboundGrantsConfig](#apiv1beta1inboundgrantsconfig)
 
 | Field | Description | Default | Validation |
 | --- | --- | --- | --- |
-| `subject` _string_ | Subject is an exact assertion sub value. Wildcards are not supported. |  | MaxLength: 256 <br />MinLength: 1 <br />Pattern: `^[^*]+$` <br />Required: \{\} <br /> |
-| `allowedResources` _string array_ | AllowedResources is the exact set of RFC 8707 resources this subject may<br />request. |  | MaxItems: 50 <br />MinItems: 1 <br />Required: \{\} <br />items:MaxLength: 2048 <br />items:MinLength: 1 <br />items:Pattern: `^https?://[^[:space:]]+$` <br /> |
+| `issuerPolicies` _[api.v1beta1.JWTBearerIssuerPolicyConfig](#apiv1beta1jwtbearerissuerpolicyconfig) array_ | IssuerPolicies binds RFC 7523 policy to named trusted issuers. |  | MaxItems: 20 <br />Optional: \{\} <br /> |
+
+
+#### api.v1beta1.JWTBearerIssuerPolicyConfig
+
+
+
+JWTBearerIssuerPolicyConfig binds RFC 7523 policy to a named trusted issuer.
+
+
+
+_Appears in:_
+- [api.v1beta1.JWTBearerInboundGrantConfig](#apiv1beta1jwtbearerinboundgrantconfig)
+
+| Field | Description | Default | Validation |
+| --- | --- | --- | --- |
+| `issuerRef` _string_ | IssuerRef references trustedIssuers[].name. |  | MaxLength: 253 <br />MinLength: 1 <br /> |
+| `maxAssertionAge` _[Duration](https://kubernetes.io/docs/reference/generated/kubernetes-api/v1.27/#duration-v1-meta)_ | MaxAssertionAge caps the exp-iat interval independently of exp. |  | Required: \{\} <br /> |
+| `subjectBindings` _[api.v1beta1.JWTBearerSubjectBinding](#apiv1beta1jwtbearersubjectbinding) array_ | SubjectBindings maps an exact external subject to allowed RFC 8707<br />resources. |  | MaxItems: 50 <br />MinItems: 1 <br />Required: \{\} <br /> |
+| `acceptedAudiences` _string array_ | AcceptedAudiences identifies this authorization server's accepted<br />assertion audiences. When omitted, runtime validation defaults to the<br />token endpoint. |  | MaxItems: 50 <br />items:MaxLength: 2048 <br />items:MinLength: 1 <br />items:Pattern: `^https?://[^[:space:]]+$` <br />Optional: \{\} <br /> |
+
+
 
 
 #### api.v1beta1.KubernetesServiceAccountOIDCConfig
@@ -3311,6 +3351,7 @@ _Appears in:_
 | `telemetryConfigRef` _[api.v1beta1.MCPTelemetryConfigReference](#apiv1beta1mcptelemetryconfigreference)_ | TelemetryConfigRef references an MCPTelemetryConfig resource for shared telemetry configuration.<br />The referenced MCPTelemetryConfig must exist in the same namespace as this MCPServer.<br />Cross-namespace references are not supported for security and isolation reasons. |  | Optional: \{\} <br /> |
 | `trustProxyHeaders` _boolean_ | TrustProxyHeaders indicates whether to trust X-Forwarded-* headers from reverse proxies<br />When enabled, the proxy will use X-Forwarded-Proto, X-Forwarded-Host, X-Forwarded-Port,<br />and X-Forwarded-Prefix headers to construct endpoint URLs | false | Optional: \{\} <br /> |
 | `endpointPrefix` _string_ | EndpointPrefix is the path prefix to prepend to SSE endpoint URLs.<br />This is used to handle path-based ingress routing scenarios where the ingress<br />strips a path prefix before forwarding to the backend. |  | Optional: \{\} <br /> |
+| `maxRequestBodySize` _integer_ | MaxRequestBodySize is the maximum inbound MCP proxy request body size in bytes.<br />Zero uses the default limit of 8 MiB. |  | Minimum: 0 <br />Optional: \{\} <br /> |
 | `groupRef` _[api.v1beta1.MCPGroupRef](#apiv1beta1mcpgroupref)_ | GroupRef references the MCPGroup this server belongs to.<br />The referenced MCPGroup must be in the same namespace. |  | Optional: \{\} <br /> |
 | `sessionAffinity` _string_ | SessionAffinity controls whether the Service routes repeated client connections to the same pod.<br />MCP protocols (SSE, streamable-http) are stateful, so ClientIP is the default.<br />Set to "None" for stateless servers or when using an external load balancer with its own affinity. | ClientIP | Enum: [ClientIP None] <br />Optional: \{\} <br /> |
 | `replicas` _integer_ | Replicas is the desired number of proxy runner (thv run) pod replicas.<br />MCPServer creates two separate Deployments: one for the proxy runner and one<br />for the MCP server backend. This field controls the proxy runner Deployment.<br />When nil, the operator does not set Deployment.Spec.Replicas, leaving replica<br />management to an HPA or other external controller. |  | Minimum: 0 <br />Optional: \{\} <br /> |
@@ -3676,6 +3717,7 @@ _Appears in:_
 | `tokenResponseMapping` _[api.v1beta1.TokenResponseMapping](#apiv1beta1tokenresponsemapping)_ | TokenResponseMapping configures custom field extraction from non-standard token responses.<br />Some OAuth providers (e.g., GovSlack) nest token fields under non-standard paths<br />instead of returning them at the top level. When set, ToolHive performs the token<br />exchange HTTP call directly and extracts fields using the configured dot-notation paths.<br />If nil, standard OAuth 2.0 token response parsing is used.<br />For extracting user identity from the token response, see IdentityFromToken. |  | Optional: \{\} <br /> |
 | `identityFromToken` _[api.v1beta1.IdentityFromTokenConfig](#apiv1beta1identityfromtokenconfig)_ | IdentityFromToken extracts user identity (subject, name, email) directly<br />from the OAuth2 token-endpoint response body using gjson dot-notation paths.<br />When set, the embedded auth server skips the userinfo HTTP call entirely<br />and resolves identity from the token response. See IdentityFromTokenConfig<br />for trust-model and uniqueness considerations. |  | Optional: \{\} <br /> |
 | `additionalAuthorizationParams` _object (keys:string, values:string)_ | AdditionalAuthorizationParams are extra query parameters to include in<br />authorization requests sent to the upstream provider.<br />This is useful for providers that require custom parameters, such as<br />Google's access_type=offline for obtaining refresh tokens.<br />Framework-managed parameters (response_type, client_id, redirect_uri,<br />scope, state, code_challenge, code_challenge_method, nonce) are not allowed. |  | MaxProperties: 16 <br />Optional: \{\} <br /> |
+| `caBundleRef` _[api.v1beta1.CABundleSource](#apiv1beta1cabundlesource)_ | CABundleRef references a ConfigMap containing a CA bundle added to the<br />system roots when connecting to this upstream; it does not restrict trust<br />to this bundle or disable public-root trust. The selected key is projected<br />as ca.crt. |  | Optional: \{\} <br /> |
 | `insecureAllowHTTP` _boolean_ | InsecureAllowHTTP permits plain-HTTP authorization and token endpoint URLs<br />for this upstream. Only for in-cluster development environments (e.g. an<br />OAuth2 provider served over HTTP in a kind cluster) where TLS is not<br />available. Never set this in production. |  | Optional: \{\} <br /> |
 | `allowPrivateIPs` _boolean_ | AllowPrivateIPs permits the upstream provider's HTTP client to connect to<br />private IP ranges (RFC-1918, link-local). Use only when the upstream is<br />hosted inside the same cluster and has no public endpoint. HTTP-scheme<br />restrictions are unchanged — HTTPS is still required for non-localhost<br />hosts unless InsecureAllowHTTP is set. Defaults to false. |  | Optional: \{\} <br /> |
 | `dcrConfig` _[api.v1beta1.DCRUpstreamConfig](#apiv1beta1dcrupstreamconfig)_ | DCRConfig enables RFC 7591 Dynamic Client Registration against the upstream<br />authorization server. When set, the client credentials are obtained at<br />runtime rather than being pre-provisioned, and ClientID must be left empty.<br />Mutually exclusive with ClientID. |  | Optional: \{\} <br /> |
@@ -3743,7 +3785,6 @@ _Appears in:_
 
 
 OIDCUpstreamConfig contains configuration for OIDC providers.
-OIDC providers support automatic endpoint discovery via the issuer URL.
 
 
 
@@ -3753,13 +3794,16 @@ _Appears in:_
 | Field | Description | Default | Validation |
 | --- | --- | --- | --- |
 | `issuerUrl` _string_ | IssuerURL is the OIDC issuer URL for automatic endpoint discovery.<br />Must be a valid HTTPS URL. |  | Pattern: `^https://.*$` <br />Required: \{\} <br /> |
-| `clientId` _string_ | ClientID is the OAuth 2.0 client identifier registered with the upstream IdP. |  | Required: \{\} <br /> |
+| `clientId` _string_ | ClientID is the OAuth 2.0 client identifier registered with the upstream IdP. |  | Optional: \{\} <br /> |
+| `dcrConfig` _[api.v1beta1.DCRUpstreamConfig](#apiv1beta1dcrupstreamconfig)_ | DCRConfig enables RFC 7591 Dynamic Client Registration. When set, ClientID<br />and ClientSecretRef must be omitted. If neither discoveryUrl nor<br />registrationEndpoint is set, discovery is derived from issuerUrl. |  | Optional: \{\} <br /> |
 | `clientSecretRef` _[api.v1beta1.SecretKeyRef](#apiv1beta1secretkeyref)_ | ClientSecretRef references a Kubernetes Secret containing the OAuth 2.0 client secret.<br />Optional for public clients using PKCE instead of client secret. |  | Optional: \{\} <br /> |
 | `redirectUri` _string_ | RedirectURI is the callback URL where the upstream IdP will redirect after authentication.<br />When not specified, defaults to `\{resourceUrl\}/oauth/callback` where `resourceUrl` is the<br />URL associated with the resource (e.g., MCPServer or vMCP) using this config. |  | Optional: \{\} <br /> |
 | `scopes` _string array_ | Scopes are the OAuth scopes to request from the upstream IdP.<br />If not specified, defaults to ["openid", "offline_access"].<br />When using additionalAuthorizationParams with provider-specific refresh token<br />mechanisms (e.g., Google's access_type=offline), set explicit scopes to avoid<br />sending both offline_access and the provider-specific parameter. |  | Optional: \{\} <br /> |
 | `userInfoOverride` _[api.v1beta1.UserInfoConfig](#apiv1beta1userinfoconfig)_ | UserInfoOverride allows customizing UserInfo fetching behavior for OIDC providers.<br />By default, the UserInfo endpoint is discovered automatically via OIDC discovery.<br />Use this to override the endpoint URL, HTTP method, or field mappings for providers<br />that return non-standard claim names in their UserInfo response. |  | Optional: \{\} <br /> |
 | `additionalAuthorizationParams` _object (keys:string, values:string)_ | AdditionalAuthorizationParams are extra query parameters to include in<br />authorization requests sent to the upstream provider.<br />This is useful for providers that require custom parameters, such as<br />Google's access_type=offline for obtaining refresh tokens.<br />Note: when using access_type=offline, also set explicit scopes to avoid<br />the default offline_access scope being sent alongside it.<br />Framework-managed parameters (response_type, client_id, redirect_uri,<br />scope, state, code_challenge, code_challenge_method, nonce) are not allowed. |  | MaxProperties: 16 <br />Optional: \{\} <br /> |
 | `subjectClaim` _string_ | SubjectClaim names the validated ID-token claim to use as the upstream<br />subject. Defaults to "sub" when empty. Set it for IdPs where "sub" isn't<br />stable per user — e.g. Entra/Azure AD, whose "sub" rotates per application<br />and whose stable identifier is "oid".<br />The value is looked up verbatim as a top-level claim name, so it is<br />constrained to a claim-name shape: it must start with a letter or<br />underscore and contain only letters, digits, and underscores. This rejects<br />dotted, colon-namespaced, or whitespace-containing values at admission<br />rather than letting a typo silently miss the claim at login, and keeps the<br />field aligned with the directory service's per-issuer bindingClaim.<br />Changing this on a live deployment re-keys existing users (the value<br />resolves to the internal user ID), so treat it as immutable once users<br />exist.<br />Per-IdP notes:<br />  - Entra/Azure AD: use "oid"; it is only emitted when the upstream scopes<br />    include "profile". "oid" is unique within a single tenant — multi-tenant<br />    apps need oid+tid, which this single-claim field cannot express.<br />  - Okta: the org auth server already puts the stable id in "sub" (default<br />    works). A custom auth server's "sub" is the mutable login/email and the<br />    stable "uid" lives only in the access token, not the ID token — map a<br />    custom ID-token claim and point subjectClaim at it.<br />The pattern matches the claim-name shape and allows empty (defaults to<br />"sub"). Using Pattern rather than a CEL XValidation rule keeps this off the<br />CRD's CEL cost budget — a single-field format check via CEL is rejected by<br />the apiserver as too expensive once multiplied across the upstreams list. |  | MaxLength: 128 <br />Pattern: `^([a-zA-Z_][a-zA-Z0-9_]*)?$` <br />Optional: \{\} <br /> |
+| `caBundleRef` _[api.v1beta1.CABundleSource](#apiv1beta1cabundlesource)_ | CABundleRef references a ConfigMap containing a CA bundle added to the<br />system roots when connecting to this upstream; it does not restrict trust<br />to this bundle or disable public-root trust. The selected key is projected<br />as ca.crt. |  | Optional: \{\} <br /> |
+| `allowPrivateIPs` _boolean_ | AllowPrivateIPs permits the upstream provider's HTTP client to connect to<br />private IP ranges (RFC-1918, link-local). Use only when the upstream is<br />hosted inside the same cluster and has no public endpoint. |  | Optional: \{\} <br /> |
 
 
 #### api.v1beta1.OpenTelemetryMetricsConfig
@@ -3880,6 +3924,7 @@ _Appears in:_
 | Field | Description | Default | Validation |
 | --- | --- | --- | --- |
 | `enabled` _boolean_ | Enabled controls whether Prometheus metrics endpoint is exposed | false | Optional: \{\} <br /> |
+| `metricsOnTransportPort` _boolean_ | MetricsOnTransportPort controls whether /metrics is ALSO served on the main<br />transport port, in addition to the dedicated diagnostics port. It exists to<br />give deployments a migration window: while true, an existing scrape<br />configuration aimed at the transport port keeps working, so a scraper can be<br />moved to the diagnostics port and verified before the old location goes away.<br />Leave unset to follow the current default, which is true during the migration<br />window and becomes false when it closes. Setting it explicitly opts out of<br />that change: an explicit value is honoured before and after the cutover.<br />See https://github.com/stacklok/toolhive/issues/6384 for the removal timeline. |  | Optional: \{\} <br /> |
 
 
 #### api.v1beta1.ProxyDeploymentOverrides
@@ -3900,6 +3945,9 @@ _Appears in:_
 | `podTemplateMetadataOverrides` _[api.v1beta1.ResourceMetadataOverrides](#apiv1beta1resourcemetadataoverrides)_ |  |  |  |
 | `env` _[api.v1beta1.EnvVar](#apiv1beta1envvar) array_ | Env are environment variables to set in the proxy container (thv run process)<br />These affect the toolhive proxy itself, not the MCP server it manages<br />Use TOOLHIVE_DEBUG=true to enable debug logging in the proxy |  | Optional: \{\} <br /> |
 | `imagePullSecrets` _[LocalObjectReference](https://kubernetes.io/docs/reference/generated/kubernetes-api/v1.27/#localobjectreference-v1-core) array_ | ImagePullSecrets allows specifying image pull secrets for the proxy runner<br />These are applied to both the Deployment and the ServiceAccount |  | Optional: \{\} <br /> |
+| `nodeSelector` _object (keys:string, values:string)_ | NodeSelector constrains the proxy pod to nodes with matching labels.<br />Mirrors the scheduling control podTemplateSpec gives the MCP server pod, so<br />the proxy can be steered onto the same nodes (e.g. a pre-warmed pool).<br />On MCPRemoteProxy, spec.podTemplateSpec also reaches the proxy pod: the two<br />maps are merged, and podTemplateSpec wins on keys set in both. |  | Optional: \{\} <br /> |
+| `tolerations` _[Toleration](https://kubernetes.io/docs/reference/generated/kubernetes-api/v1.27/#toleration-v1-core) array_ | Tolerations allow the proxy pod to schedule onto tainted nodes, such as a<br />dedicated pre-warmed pool.<br />On MCPRemoteProxy, spec.podTemplateSpec also reaches the proxy pod, and this<br />list is atomic: a podTemplateSpec that sets tolerations replaces this field<br />rather than adding to it. |  | Optional: \{\} <br /> |
+| `affinity` _[Affinity](https://kubernetes.io/docs/reference/generated/kubernetes-api/v1.27/#affinity-v1-core)_ | Affinity sets node/pod affinity and anti-affinity for the proxy pod.<br />On MCPRemoteProxy, spec.podTemplateSpec also reaches the proxy pod: the two<br />are merged per sub-field, and podTemplateSpec wins on sub-fields set in both. |  | Optional: \{\} <br /> |
 
 
 #### api.v1beta1.RateLimitBucket
@@ -4104,6 +4152,171 @@ _Appears in:_
 | `priority` _integer_ | Priority determines evaluation order (lower values = higher priority)<br />Allows fine-grained control over role selection precedence<br />When omitted, this mapping has the lowest possible priority and<br />configuration order acts as tie-breaker via stable sort |  | Minimum: 0 <br />Optional: \{\} <br /> |
 
 
+#### api.v1beta1.SPIFFEAuthenticationMethod
+
+_Underlying type:_ _string_
+
+SPIFFEAuthenticationMethod identifies the credential type permitted for a
+SPIFFE workload. Mirrors authserver.SPIFFEAuthenticationMethod field-for-field;
+runtime parsing remains authoritative.
+
+
+
+_Appears in:_
+- [api.v1beta1.SPIFFEClientConfig](#apiv1beta1spiffeclientconfig)
+- [api.v1beta1.SPIFFETrustDomainConfig](#apiv1beta1spiffetrustdomainconfig)
+
+| Field | Description |
+| --- | --- |
+| `spiffe_x509` | SPIFFEAuthenticationMethodX509 authenticates a workload with an X.509-SVID.<br /> |
+| `spiffe_jwt` | SPIFFEAuthenticationMethodJWT authenticates a workload with a JWT-SVID.<br /> |
+
+
+#### api.v1beta1.SPIFFEBundleEndpointProfile
+
+_Underlying type:_ _string_
+
+SPIFFEBundleEndpointProfile identifies how a SPIFFE Bundle Endpoint's TLS
+connection is authenticated. Mirrors authserver.SPIFFEBundleEndpointProfile.
+
+
+
+_Appears in:_
+- [api.v1beta1.SPIFFEBundleEndpointSourceConfig](#apiv1beta1spiffebundleendpointsourceconfig)
+
+| Field | Description |
+| --- | --- |
+| `https_web` | SPIFFEBundleEndpointProfileHTTPSWeb authenticates the bundle endpoint's<br />TLS connection with a Web PKI certificate.<br /> |
+| `https_spiffe` | SPIFFEBundleEndpointProfileHTTPSSPIFFE authenticates the bundle<br />endpoint's TLS connection with a separately distributed X.509-SVID root.<br /> |
+
+
+#### api.v1beta1.SPIFFEBundleEndpointSourceConfig
+
+
+
+SPIFFEBundleEndpointSourceConfig declares a HTTPS SPIFFE Bundle Endpoint.
+
+
+
+_Appears in:_
+- [api.v1beta1.SPIFFEBundleSourceConfig](#apiv1beta1spiffebundlesourceconfig)
+
+| Field | Description | Default | Validation |
+| --- | --- | --- | --- |
+| `url` _string_ | URL is the HTTPS SPIFFE Bundle Endpoint URL. |  | MaxLength: 2048 <br />MinLength: 1 <br />Required: \{\} <br /> |
+| `profile` _[api.v1beta1.SPIFFEBundleEndpointProfile](#apiv1beta1spiffebundleendpointprofile)_ | Profile selects how the endpoint's TLS connection is authenticated:<br />SPIFFEBundleEndpointProfileHTTPSWeb (Web PKI) or<br />SPIFFEBundleEndpointProfileHTTPSSPIFFE (a separately distributed<br />X.509-SVID root). |  | Enum: [https_web https_spiffe] <br />Required: \{\} <br /> |
+
+
+#### api.v1beta1.SPIFFEBundleSourceConfig
+
+
+
+SPIFFEBundleSourceConfig is a discriminated bundle-source declaration. Type
+determines which, and only which, source payload may be set. It is
+validated for shape only; fetching or loading a bundle from the declared
+source is not implemented yet.
+
+
+
+_Appears in:_
+- [api.v1beta1.SPIFFETrustDomainConfig](#apiv1beta1spiffetrustdomainconfig)
+
+| Field | Description | Default | Validation |
+| --- | --- | --- | --- |
+| `type` _[api.v1beta1.SPIFFEBundleSourceType](#apiv1beta1spiffebundlesourcetype)_ | Type selects the trust-bundle source. |  | Enum: [bundle_endpoint workload_api] <br />Required: \{\} <br /> |
+| `endpoint` _[api.v1beta1.SPIFFEBundleEndpointSourceConfig](#apiv1beta1spiffebundleendpointsourceconfig)_ | Endpoint declares a HTTPS SPIFFE Bundle Endpoint. Required when Type is<br />"bundle_endpoint". |  | Optional: \{\} <br /> |
+| `workloadAPI` _[api.v1beta1.SPIFFEWorkloadAPIBundleSourceConfig](#apiv1beta1spiffeworkloadapibundlesourceconfig)_ | WorkloadAPI selects the local SPIFFE Workload API. Required when Type<br />is "workload_api". |  | Optional: \{\} <br /> |
+
+
+#### api.v1beta1.SPIFFEBundleSourceType
+
+_Underlying type:_ _string_
+
+SPIFFEBundleSourceType identifies the selected trust-bundle source. Mirrors
+authserver.SPIFFEBundleSourceType.
+
+
+
+_Appears in:_
+- [api.v1beta1.SPIFFEBundleSourceConfig](#apiv1beta1spiffebundlesourceconfig)
+
+| Field | Description |
+| --- | --- |
+| `bundle_endpoint` | SPIFFEBundleSourceTypeEndpoint selects a HTTPS SPIFFE Bundle Endpoint.<br /> |
+| `workload_api` | SPIFFEBundleSourceTypeWorkloadAPI selects the local SPIFFE Workload API.<br /> |
+
+
+#### api.v1beta1.SPIFFEClientConfig
+
+
+
+SPIFFEClientConfig associates one SPIFFE principal pattern from a declared
+trust domain with an explicit OAuth client identity and permissions.
+Configuration is not authentication: configured SPIFFE clients remain
+non-public OAuth clients without a secret until live SPIFFE credential
+validation is implemented (see SPIFFETrustDomainConfig's doc comment).
+
+GrantTypes is deliberately not exposed here: the runtime only accepts
+exactly the RFC 8693 token-exchange grant for a SPIFFE client
+(validateSPIFFEGrants in pkg/authserver/spiffe_trust.go), so the converter
+always supplies it instead of letting it be configured.
+
+
+
+_Appears in:_
+- [api.v1beta1.InboundGrantsConfig](#apiv1beta1inboundgrantsconfig)
+
+| Field | Description | Default | Validation |
+| --- | --- | --- | --- |
+| `trustDomainRef` _string_ | TrustDomainRef references spiffeTrustDomains[].name. |  | MaxLength: 253 <br />MinLength: 1 <br />Required: \{\} <br /> |
+| `principalPattern` _string_ | PrincipalPattern is a concrete SPIFFE ID or a terminal /* pattern within<br />the declared trust domain. This pattern is a best-effort CRD-level<br />approximation; runtime parsing via spiffeid.FromString remains<br />authoritative. |  | MaxLength: 2048 <br />Pattern: `^spiffe://[a-z0-9._-]+((/[a-zA-Z0-9._-]+)+(/\*)?\|/\*)$` <br />Required: \{\} <br /> |
+| `clientId` _string_ | ClientID is the explicit OAuth client_id. It is never derived from a<br />SPIFFE ID. |  | MaxLength: 253 <br />MinLength: 1 <br />Required: \{\} <br /> |
+| `methods` _[api.v1beta1.SPIFFEAuthenticationMethod](#apiv1beta1spiffeauthenticationmethod) array_ | Methods are the credential types this association may authenticate<br />with. Must be a subset of the referenced trust domain's methods. |  | MaxItems: 2 <br />MinItems: 1 <br />Required: \{\} <br />items:Enum: [spiffe_x509 spiffe_jwt] <br /> |
+| `resources` _string array_ | Resources are RFC 8707 resource indicators this association may<br />request. Must be a subset of the server's allowed_audiences allowlist,<br />which is derived at reconcile time and not available on this CRD, so<br />allowlist membership is validated at reconcile time, not admission.<br />Shape (a well-formed absolute HTTP(S) URI) is independent of that<br />derived allowlist and is validated here. Distinct from Audiences: a<br />resource permission does not imply the same value is also a permitted<br />token audience, or vice versa. |  | MaxItems: 50 <br />items:MaxLength: 2048 <br />items:MinLength: 1 <br />items:Pattern: `^https?://[^@#[:space:]]+$` <br />Optional: \{\} <br /> |
+| `audiences` _string array_ | Audiences are RFC 8693 token audiences this association may request. |  | MaxItems: 50 <br />MinItems: 1 <br />Required: \{\} <br />items:MaxLength: 2048 <br />items:MinLength: 1 <br /> |
+| `scopes` _string array_ | Scopes are OAuth scopes granted to this association. Must be a subset<br />of the server's effective supported scopes. |  | MaxItems: 50 <br />MinItems: 1 <br />Required: \{\} <br />items:MaxLength: 256 <br />items:MinLength: 1 <br /> |
+
+
+#### api.v1beta1.SPIFFETrustDomainConfig
+
+
+
+SPIFFETrustDomainConfig declares one SPIFFE trust domain accepted by the
+embedded authorization server. Configuration is not authentication: no
+live X.509-SVID or JWT-SVID validation exists yet, so a declared trust
+domain does not by itself let any workload authenticate — RunConfig.Validate
+(pkg/authserver/config.go) currently hard-rejects any non-empty
+spiffeTrustDomains at authserver startup via validateSPIFFENotYetEnforced,
+a deliberate placeholder until real SVID verification lands.
+
+
+
+_Appears in:_
+- [api.v1beta1.EmbeddedAuthServerConfig](#apiv1beta1embeddedauthserverconfig)
+
+| Field | Description | Default | Validation |
+| --- | --- | --- | --- |
+| `name` _string_ | Name uniquely identifies this declaration and is referenced by<br />inboundGrants.spiffeClientAuth[].trustDomainRef. |  | MaxLength: 253 <br />MinLength: 1 <br />Required: \{\} <br /> |
+| `trustDomain` _string_ | TrustDomain is the SPIFFE trust domain accepted by this declaration.<br />This pattern is a best-effort CRD-level approximation of the SPIFFE<br />trust-domain grammar; runtime parsing via<br />spiffeid.TrustDomainFromString remains authoritative. |  | MaxLength: 255 <br />MinLength: 1 <br />Pattern: `^([a-z0-9_]\|[a-z0-9_]([a-z0-9_-]\|\.[a-z0-9_-])*[a-z0-9_])$` <br />Required: \{\} <br /> |
+| `methods` _[api.v1beta1.SPIFFEAuthenticationMethod](#apiv1beta1spiffeauthenticationmethod) array_ | Methods explicitly enables the supported credential types for this<br />trust domain. |  | MaxItems: 2 <br />MinItems: 1 <br />Required: \{\} <br />items:Enum: [spiffe_x509 spiffe_jwt] <br /> |
+| `bundleSource` _[api.v1beta1.SPIFFEBundleSourceConfig](#apiv1beta1spiffebundlesourceconfig)_ | BundleSource declares exactly one future trust-bundle source. It is<br />validated for shape only; fetching or loading a bundle from it is a<br />later step. |  | Required: \{\} <br /> |
+
+
+#### api.v1beta1.SPIFFEWorkloadAPIBundleSourceConfig
+
+
+
+SPIFFEWorkloadAPIBundleSourceConfig selects the local SPIFFE Workload API.
+It deliberately has no payload; loading and deployment details are
+deferred to the bundle-loading implementation.
+
+
+
+_Appears in:_
+- [api.v1beta1.SPIFFEBundleSourceConfig](#apiv1beta1spiffebundlesourceconfig)
+
+
+
 #### api.v1beta1.SecretKeyRef
 
 
@@ -4243,6 +4456,45 @@ _Appears in:_
 | `subjectProviderName` _string_ | SubjectProviderName is the name of the upstream provider whose token is used as the<br />RFC 8693 subject token instead of identity.Token when performing token exchange.<br />When left empty and an embedded authorization server is configured on the VirtualMCPServer,<br />the controller automatically populates this field with the first configured upstream<br />provider name. Set it explicitly to override that default or to select a specific<br />provider when multiple upstreams are configured. |  | Optional: \{\} <br /> |
 
 
+#### api.v1beta1.TokenExchangeInboundGrantConfig
+
+
+
+TokenExchangeInboundGrantConfig configures canonical RFC 8693 inbound grants.
+
+
+
+_Appears in:_
+- [api.v1beta1.InboundGrantsConfig](#apiv1beta1inboundgrantsconfig)
+
+| Field | Description | Default | Validation |
+| --- | --- | --- | --- |
+| `delegateClients` _[api.v1beta1.DelegateClientConfig](#apiv1beta1delegateclientconfig) array_ | DelegateClients configures pre-provisioned confidential clients. |  | MaxItems: 10 <br />Optional: \{\} <br /> |
+| `issuerPolicies` _[api.v1beta1.TokenExchangeIssuerPolicyConfig](#apiv1beta1tokenexchangeissuerpolicyconfig) array_ | IssuerPolicies binds RFC 8693 policy to named trusted issuers. |  | MaxItems: 20 <br />Optional: \{\} <br /> |
+
+
+#### api.v1beta1.TokenExchangeIssuerPolicyConfig
+
+
+
+TokenExchangeIssuerPolicyConfig binds RFC 8693 policy to a named trusted issuer.
+
+
+
+_Appears in:_
+- [api.v1beta1.TokenExchangeInboundGrantConfig](#apiv1beta1tokenexchangeinboundgrantconfig)
+
+| Field | Description | Default | Validation |
+| --- | --- | --- | --- |
+| `issuerRef` _string_ | IssuerRef references trustedIssuers[].name. |  | MaxLength: 253 <br />MinLength: 1 <br /> |
+| `expectedAudience` _string_ | ExpectedAudience is the required RFC 8693 subject-token audience. |  | MaxLength: 2048 <br />MinLength: 1 <br /> |
+| `actorClaim` _string_ | ActorClaim names the claim containing the external actor identity. |  | MaxLength: 64 <br />Optional: \{\} <br /> |
+| `allowedActors` _string array_ |  |  | MaxItems: 50 <br />items:MaxLength: 256 <br />items:MinLength: 1 <br />Optional: \{\} <br /> |
+| `actorMatcher` _string_ |  |  | MaxLength: 4096 <br />Optional: \{\} <br /> |
+| `allowedDelegateClients` _string array_ |  |  | MaxItems: 50 <br />MinItems: 1 <br />items:MaxLength: 256 <br />items:MinLength: 1 <br /> |
+| `allowMayAct` _boolean_ |  |  | Optional: \{\} <br /> |
+
+
 #### api.v1beta1.TokenLifespanConfig
 
 
@@ -4361,25 +4613,9 @@ ToolRateLimitConfig defines rate limits for a specific tool.
 
 
 TrustedIssuerConfig configures an external OIDC issuer whose tokens are
-accepted as RFC 8693 subject tokens or RFC 7523 JWT-bearer assertions during
-token exchange. It mirrors tokenexchange.TrustedIssuer
-(pkg/authserver/server/tokenexchange), the runtime type the operator converts
-this into directly — no secret is referenced by this type, so no SecretKeyRef
-indirection is needed, unlike DelegateClientConfig.
-
-expectedAudience is exempted only for a grant-only issuer: jwtBearerGrant
-present and none of actorClaim, actorMatcher, allowMayAct, or allowedActors
-set. Any RFC 8693 delegation field (actorClaim, actorMatcher, allowMayAct,
-allowedActors) still requires expectedAudience, even when combined with
-jwtBearerGrant.
-
-The allowedDelegateClients rule below mirrors validateDelegationPolicy
-(pkg/authserver/server/tokenexchange/multi_issuer_validator.go): it is
-keyed on whether ANY delegation field is set (expectedAudience,
-actorClaim, actorMatcher, allowMayAct), not merely on whether
-jwtBearerGrant is absent — an issuer can combine jwtBearerGrant with
-expectedAudience for RFC 8693 delegation on the same issuer, and that
-combination still requires allowedDelegateClients at the Go level.
+accepted as RFC 8693 subject tokens or RFC 7523 JWT-bearer assertions. Trust
+fields remain top-level; canonical grant policy references this declaration by
+Name. The embedded grant-policy fields are retained for released CRD compatibility.
 
 
 
@@ -4388,17 +4624,19 @@ _Appears in:_
 
 | Field | Description | Default | Validation |
 | --- | --- | --- | --- |
+| `name` _string_ | Name optionally identifies this trust declaration for canonical issuerRef references.<br />Names must be unique within trustedIssuers when set. |  | MaxLength: 253 <br />MinLength: 1 <br />Optional: \{\} <br /> |
 | `issuerUrl` _string_ | IssuerURL is the expected "iss" claim value (exact match). |  | MaxLength: 2048 <br />MinLength: 1 <br />Required: \{\} <br /> |
-| `expectedAudience` _string_ | ExpectedAudience is the expected "aud" claim value that must appear in<br />an RFC 8693 subject token's audience list. It is not used by an RFC 7523<br />JWT-bearer assertion, whose audience is the token endpoint. |  | MaxLength: 2048 <br />MinLength: 1 <br />Optional: \{\} <br /> |
+| `expectedAudience` _string_ | ExpectedAudience is the expected "aud" claim value that must appear in<br />an RFC 8693 subject token's audience list. It is not used by an RFC 7523<br />JWT-bearer assertion, whose audience is the token endpoint.<br />This legacy field is deprecated; configure RFC 8693 policy under<br />inboundGrants.tokenExchange.issuerPolicies. |  | MaxLength: 2048 <br />MinLength: 1 <br />Optional: \{\} <br /> |
 | `jwksUrl` _string_ | JWKSURL is the URL to fetch the issuer's JSON Web Key Set from. If<br />empty, it is resolved via OIDC discovery at<br />\{issuerUrl\}/.well-known/openid-configuration. |  | MaxLength: 2048 <br />Optional: \{\} <br /> |
 | `insecureAllowHTTP` _boolean_ | InsecureAllowHTTP permits plain-HTTP OIDC discovery and JWKS fetches<br />for THIS issuer only. Development and testing only — never set in<br />production. |  | Optional: \{\} <br /> |
-| `allowPrivateIPs` _boolean_ | AllowPrivateIPs permits OIDC discovery and JWKS fetches for THIS issuer<br />to resolve to a private or loopback address. Use only when the issuer<br />is hosted inside the same cluster and has no public endpoint. Requires<br />jwksUrl to be set explicitly (enforced at reconcile time), since<br />otherwise OIDC discovery — fetched from the external issuer itself —<br />would choose the private dial target. |  | Optional: \{\} <br /> |
-| `actorClaim` _string_ | ActorClaim names the claim identifying the client that requested the<br />subject token from this external issuer (used by allowedActors below).<br />Defaults to "azp" when empty; use "appid" for Microsoft Entra v1, "cid"<br />for Okta. The special value "client_id" reads the subject token's<br />client_id claim instead. |  | MaxLength: 64 <br />Optional: \{\} <br /> |
-| `allowedActors` _string array_ | AllowedActors is the allowlist of actorClaim values authorized to<br />exchange a subject token from this issuer when it carries no<br />"may_act" claim, in addition to (not instead of) actorMatcher below —<br />either signal is sufficient. Empty denies every token unless<br />actorMatcher is set, or allowMayAct is true and the token carries a<br />permitted may_act claim. |  | MaxItems: 50 <br />items:MaxLength: 256 <br />items:MinLength: 1 <br />Optional: \{\} <br /> |
-| `actorMatcher` _string_ | ActorMatcher is an admin-authored CEL expression evaluated against the<br />subject token's complete signature-verified claims map (bound as<br />"claims") to authorize a class of external actors, in addition to (not<br />instead of) allowedActors — either signal is sufficient. Must evaluate<br />to a boolean; a non-boolean result denies the token at evaluation time,<br />not at reconcile time. A syntactically invalid expression fails<br />reconciliation (surfaced via the AuthServerConfigValidated condition),<br />not admission — there is no validating webhook for this field. |  | MaxLength: 4096 <br />Optional: \{\} <br /> |
-| `allowedDelegateClients` _string array_ | AllowedDelegateClients restricts which ToolHive client IDs may exchange<br />an RFC 8693 subject token from this issuer. Required unless only<br />jwtBearerGrant is configured; set it to ["*"] to permit any confidential<br />client holding the token-exchange grant, or list specific client IDs to<br />bind delegation to them. |  | MaxItems: 50 <br />MinItems: 1 <br />items:MaxLength: 256 <br />items:MinLength: 1 <br />Optional: \{\} <br /> |
-| `allowMayAct` _boolean_ | AllowMayAct permits this external issuer's may_act claim to authorize<br />delegation. Defaults to false; external issuers must be opted in<br />explicitly because may_act bypasses allowedActors and actorMatcher.<br />Does not affect self-issued subject tokens. The wildcard is never<br />permitted alongside specific allowedDelegateClients, regardless of<br />this setting. | false | Optional: \{\} <br /> |
-| `jwtBearerGrant` _[api.v1beta1.JWTBearerGrantConfig](#apiv1beta1jwtbearergrantconfig)_ | JWTBearerGrant enables the plain RFC 7523 JWT-bearer grant for this<br />issuer. It is independent of RFC 8693 delegation policy. |  | Optional: \{\} <br /> |
+| `allowPrivateIPs` _boolean_ | AllowPrivateIPs permits OIDC discovery and JWKS fetches for THIS issuer<br />to resolve to a private or loopback address. Use only when the issuer<br />is hosted inside the same cluster and has no public endpoint. Requires<br />jwksUrl to be set explicitly (enforced at admission and by shared<br />validation), since otherwise OIDC discovery — fetched from the external<br />issuer itself — would choose the private dial target. |  | Optional: \{\} <br /> |
+| `caBundleRef` _[api.v1beta1.CABundleSource](#apiv1beta1cabundlesource)_ | CABundleRef references a ConfigMap containing PEM CA certificates used when<br />fetching this issuer's OIDC discovery document and JWKS. The bundle is added<br />to the system roots for this issuer's client only; public roots still apply<br />and other issuers are unaffected. Write access to the referenced ConfigMap is<br />equivalent to controlling this issuer's trust anchor for subject-token<br />validation — restrict it with the same care as a signing-key Secret. |  | Optional: \{\} <br /> |
+| `actorClaim` _string_ | ActorClaim names the claim identifying the client that requested the<br />subject token from this external issuer (used by allowedActors below).<br />Defaults to "azp" when empty; use "appid" for Microsoft Entra v1, "cid"<br />for Okta. The special value "client_id" reads the subject token's<br />client_id claim instead.<br />This legacy field is deprecated; configure RFC 8693 policy under<br />inboundGrants.tokenExchange.issuerPolicies. |  | MaxLength: 64 <br />Optional: \{\} <br /> |
+| `allowedActors` _string array_ | AllowedActors is the allowlist of actorClaim values authorized to<br />exchange a subject token from this issuer when it carries no<br />"may_act" claim, in addition to (not instead of) actorMatcher below —<br />either signal is sufficient. Empty denies every token unless<br />actorMatcher is set, or allowMayAct is true and the token carries a<br />permitted may_act claim.<br />This legacy field is deprecated; configure RFC 8693 policy under<br />inboundGrants.tokenExchange.issuerPolicies. |  | MaxItems: 50 <br />items:MaxLength: 256 <br />items:MinLength: 1 <br />Optional: \{\} <br /> |
+| `actorMatcher` _string_ | ActorMatcher is an admin-authored CEL expression evaluated against the<br />subject token's complete signature-verified claims map (bound as<br />"claims") to authorize a class of external actors, in addition to (not<br />instead of) allowedActors — either signal is sufficient. Must evaluate<br />to a boolean; a non-boolean result denies the token at evaluation time,<br />not at reconcile time. A syntactically invalid expression fails<br />reconciliation (surfaced via the AuthServerConfigValidated condition),<br />not admission — there is no validating webhook for this field.<br />This legacy field is deprecated; configure RFC 8693 policy under<br />inboundGrants.tokenExchange.issuerPolicies. |  | MaxLength: 4096 <br />Optional: \{\} <br /> |
+| `allowedDelegateClients` _string array_ | AllowedDelegateClients restricts which ToolHive client IDs may exchange<br />an RFC 8693 subject token from this issuer. Required unless only<br />jwtBearerGrant is configured; set it to ["*"] to permit any confidential<br />client holding the token-exchange grant, or list specific client IDs to<br />bind delegation to them.<br />This legacy field is deprecated; configure RFC 8693 policy under<br />inboundGrants.tokenExchange.issuerPolicies. |  | MaxItems: 50 <br />MinItems: 1 <br />items:MaxLength: 256 <br />items:MinLength: 1 <br />Optional: \{\} <br /> |
+| `allowMayAct` _boolean_ | AllowMayAct permits this external issuer's may_act claim to authorize<br />delegation. Defaults to false; external issuers must be opted in<br />explicitly because may_act bypasses allowedActors and actorMatcher.<br />Does not affect self-issued subject tokens. The wildcard is never<br />permitted alongside specific allowedDelegateClients, regardless of<br />this setting.<br />This legacy field is deprecated; configure RFC 8693 policy under<br />inboundGrants.tokenExchange.issuerPolicies. | false | Optional: \{\} <br /> |
+| `jwtBearerGrant` _[api.v1beta1.JWTBearerGrantConfig](#apiv1beta1jwtbearergrantconfig)_ | JWTBearerGrant enables the plain RFC 7523 JWT-bearer grant for this<br />issuer. It is independent of RFC 8693 delegation policy.<br />This legacy field is deprecated; configure RFC 7523 policy under<br />inboundGrants.jwtBearer.issuerPolicies. |  | Optional: \{\} <br /> |
 
 
 #### api.v1beta1.UpstreamInjectSpec
@@ -4673,6 +4911,7 @@ _Validation:_
 - Enum: [Pending Ready Degraded Failed]
 
 _Appears in:_
+- [api.v1beta1.VirtualMCPServerRuntimeStatus](#apiv1beta1virtualmcpserverruntimestatus)
 - [api.v1beta1.VirtualMCPServerStatus](#apiv1beta1virtualmcpserverstatus)
 
 | Field | Description |
@@ -4681,6 +4920,28 @@ _Appears in:_
 | `Ready` | VirtualMCPServerPhaseReady indicates the VirtualMCPServer is ready and serving requests<br /> |
 | `Degraded` | VirtualMCPServerPhaseDegraded indicates the VirtualMCPServer is running but some backends are unavailable<br /> |
 | `Failed` | VirtualMCPServerPhaseFailed indicates the VirtualMCPServer has failed<br /> |
+
+
+#### api.v1beta1.VirtualMCPServerRuntimeStatus
+
+
+
+VirtualMCPServerRuntimeStatus is the runtime-owned status snapshot. The
+operator projects this snapshot into the top-level compatibility fields and
+remains the sole writer of the top-level Conditions array.
+
+
+
+_Appears in:_
+- [api.v1beta1.VirtualMCPServerStatus](#apiv1beta1virtualmcpserverstatus)
+
+| Field | Description | Default | Validation |
+| --- | --- | --- | --- |
+| `phase` _[api.v1beta1.VirtualMCPServerPhase](#apiv1beta1virtualmcpserverphase)_ | Phase is the lifecycle phase observed by the running vMCP process. |  | Enum: [Pending Ready Degraded Failed] <br />Optional: \{\} <br /> |
+| `message` _string_ | Message provides detail about the runtime phase. |  | Optional: \{\} <br /> |
+| `conditions` _[Condition](https://kubernetes.io/docs/reference/generated/kubernetes-api/v1.27/#condition-v1-meta) array_ | Conditions contains runtime health observations. |  | Optional: \{\} <br /> |
+| `discoveredBackends` _[api.v1beta1.DiscoveredBackend](#apiv1beta1discoveredbackend) array_ | DiscoveredBackends contains the runtime's latest backend observations. |  | Optional: \{\} <br /> |
+| `backendCount` _integer_ | BackendCount is the number of routable backends observed by the runtime. |  | Optional: \{\} <br /> |
 
 
 #### api.v1beta1.VirtualMCPServerSpec
@@ -4726,6 +4987,7 @@ _Appears in:_
 
 | Field | Description | Default | Validation |
 | --- | --- | --- | --- |
+| `runtime` _[api.v1beta1.VirtualMCPServerRuntimeStatus](#apiv1beta1virtualmcpserverruntimestatus)_ | Runtime is the status snapshot written exclusively by the vMCP process.<br />The operator projects it into the top-level compatibility fields. |  | Optional: \{\} <br /> |
 | `conditions` _[Condition](https://kubernetes.io/docs/reference/generated/kubernetes-api/v1.27/#condition-v1-meta) array_ | Conditions represent the latest available observations of the VirtualMCPServer's state |  | Optional: \{\} <br /> |
 | `observedGeneration` _integer_ | ObservedGeneration is the most recent generation observed for this VirtualMCPServer |  | Optional: \{\} <br /> |
 | `phase` _[api.v1beta1.VirtualMCPServerPhase](#apiv1beta1virtualmcpserverphase)_ | Phase is the current phase of the VirtualMCPServer | Pending | Enum: [Pending Ready Degraded Failed] <br />Optional: \{\} <br /> |

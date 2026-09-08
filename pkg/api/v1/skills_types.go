@@ -35,6 +35,11 @@ type installSkillRequest struct {
 	// verified signature; the exception is recorded in the project's lock
 	// file.
 	AllowUnsigned bool `json:"allow_unsigned,omitempty"`
+	// PublicKey is the base64-encoded DER SPKI cosign public key the artifact
+	// must verify against, for artifacts signed with a cosign key pair rather
+	// than keylessly. Required the first time such an artifact is installed
+	// project-scoped, and pinned in the lock file from then on.
+	PublicKey string `json:"public_key,omitempty"`
 	// Group is the group name to add the skill to after installation
 	Group string `json:"group,omitempty"`
 }

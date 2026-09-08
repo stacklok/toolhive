@@ -262,6 +262,8 @@ const (
 	dcrStepSelectAuthMethod = "select_auth_method"
 	dcrStepRegister         = "dcr_call"
 	dcrStepCacheWrite       = "cache_write"
+	//nolint:gosec // G101: this is a log/error "step" tag, not a credential value.
+	dcrStepExpiredCredential = "expired_credential"
 )
 
 // dcrStepError annotates a resolver error with the phase it was produced
@@ -458,7 +460,8 @@ func registerAndCache(
 	registrationScopes := chooseRegistrationScopes(scopes, endpoints.scopesSupported, req.Issuer)
 
 	response, err := performRegistration(ctx, req, endpoints.registrationEndpoint,
-		redirectURI, authMethod, registrationScopes, endpoints.registrationEndpointServerSupplied)
+		redirectURI, authMethod, registrationScopes, endpoints.registrationEndpointServerSupplied,
+		req.CAFilePath)
 	if err != nil {
 		return nil, newDCRStepError(dcrStepRegister, req.Issuer, redirectURI, err)
 	}
@@ -469,9 +472,45 @@ func registerAndCache(
 	// failure leaves no in-memory state diverging from the cache: the
 	// next call simply re-resolves rather than reading a value the cache
 	// never saw.
-	if err := cache.Put(ctx, key, resolution); err != nil {
+	//
+	// authoritative may differ from resolution: RFC 7591 dynamic
+	// registration mints a brand-new, unique client_id/client_secret on
+	// every call, so if another replica raced this one to register against
+	// the same Key and won the durable claim first, cache.PutIfAbsent
+	// returns THAT replica's credentials — the only ones the shared cache
+	// (and hence any other replica or a future restart) will agree this
+	// caller holds. Returning resolution here instead would leave this
+	// process using a client_id the durable store does not recognize.
+	authoritative, err := cache.PutIfAbsent(ctx, key, resolution)
+	if err != nil {
 		return nil, newDCRStepError(dcrStepCacheWrite, req.Issuer, redirectURI,
 			fmt.Errorf("cache put: %w", err))
+	}
+
+	// The authoritative row can be a concurrent claimant's stable-but-expired
+	// registration: when both the existing stored row and this replica's
+	// fresh registration are already expired, dcrClaimOrReturnWinner
+	// (pkg/authserver/storage/redis.go) deliberately returns the existing
+	// row without error rather than retrying forever. That's the right call
+	// at the storage layer, but "expired means unusable" is DCR policy, not
+	// storage policy, so it belongs here: treat an already-expired
+	// authoritative credential as a resolution failure instead of handing
+	// callers a dead client_secret disguised as a success.
+	if !authoritative.ClientSecretExpiresAt.IsZero() && time.Now().After(authoritative.ClientSecretExpiresAt) {
+		return nil, newDCRStepError(dcrStepExpiredCredential, req.Issuer, redirectURI,
+			fmt.Errorf("authoritative credential is already expired (client_secret_expires_at=%s)",
+				authoritative.ClientSecretExpiresAt.UTC().Format(time.RFC3339)))
+	}
+
+	if authoritative.ClientID != resolution.ClientID {
+		//nolint:gosec // G706: client_id is public metadata per RFC 7591.
+		slog.Debug("dcr: registration superseded by concurrent winner",
+			"local_issuer", req.Issuer,
+			"upstream_id", key.UpstreamID,
+			"redirect_uri", redirectURI,
+			"registered_client_id", resolution.ClientID,
+			"authoritative_client_id", authoritative.ClientID,
+		)
 	}
 
 	//nolint:gosec // G706: client_id is public metadata per RFC 7591.
@@ -479,9 +518,9 @@ func registerAndCache(
 		"local_issuer", req.Issuer,
 		"upstream_id", key.UpstreamID,
 		"redirect_uri", redirectURI,
-		"client_id", resolution.ClientID,
+		"client_id", authoritative.ClientID,
 	)
-	return resolution, nil
+	return authoritative, nil
 }
 
 // LogStepError emits the single boundary slog.Error record for a DCR
@@ -786,12 +825,14 @@ func performRegistration(
 	registrationEndpoint, redirectURI, authMethod string,
 	scopes []string,
 	registrationEndpointServerSupplied bool,
+	caFilePath string,
 ) (*oauthproto.DynamicClientRegistrationResponse, error) {
 	httpClient, err := newDCRHTTPClient(
 		req.InitialAccessToken,
 		registrationEndpoint,
 		req.AllowPrivateIPs,
 		req.ServerSuppliedEndpoints || registrationEndpointServerSupplied,
+		caFilePath,
 	)
 	if err != nil {
 		return nil, fmt.Errorf("dcr: build registration http client: %w", err)
@@ -971,6 +1012,7 @@ func resolveDCREndpoints(
 		discoveryHost,
 		req.AllowPrivateIPs,
 		req.ServerSuppliedEndpoints,
+		req.CAFilePath,
 	)
 	if err != nil {
 		return nil, fmt.Errorf("dcr: build discovery http client: %w", err)
@@ -1397,6 +1439,11 @@ type bearerTokenTransport struct {
 	next  http.RoundTripper
 }
 
+// Compile-time assertion: a rename or typo of CloseIdleConnections would
+// otherwise silently make http.Client.CloseIdleConnections a no-op on any
+// client using this transport (see networking.IdleConnectionCloser).
+var _ networking.IdleConnectionCloser = (*bearerTokenTransport)(nil)
+
 // RoundTrip implements http.RoundTripper.
 func (t *bearerTokenTransport) RoundTrip(req *http.Request) (*http.Response, error) {
 	// Clone per http.RoundTripper contract: implementations must not modify
@@ -1404,6 +1451,13 @@ func (t *bearerTokenTransport) RoundTrip(req *http.Request) (*http.Response, err
 	cp := req.Clone(req.Context())
 	cp.Header.Set("Authorization", "Bearer "+t.token)
 	return t.next.RoundTrip(cp)
+}
+
+// CloseIdleConnections forwards to the wrapped RoundTripper so
+// http.Client.CloseIdleConnections reaches the underlying connection pool
+// instead of stopping at this wrapper (see networking.IdleConnectionCloser).
+func (t *bearerTokenTransport) CloseIdleConnections() {
+	networking.ForwardCloseIdle(t.next)
 }
 
 // errDCRRedirectRefused is returned when a DCR registration endpoint
@@ -1429,12 +1483,13 @@ var errDCRRedirectRefused = errors.New(
 func newDCRHTTPClient(
 	initialAccessToken, registrationEndpoint string,
 	allowPrivateIPs, serverSuppliedEndpoints bool,
+	caFilePath string,
 ) (*http.Client, error) {
 	host, err := hostFromURL(registrationEndpoint)
 	if err != nil {
 		return nil, err
 	}
-	client, err := newGuardedDCRClient(host, allowPrivateIPs, serverSuppliedEndpoints)
+	client, err := newGuardedDCRClient(host, allowPrivateIPs, serverSuppliedEndpoints, caFilePath)
 	if err != nil {
 		return nil, err
 	}
@@ -1470,13 +1525,16 @@ func newDCRHTTPClient(
 // the discovery client restricts them to the same host). The dial guard alone
 // does not stop a redirect to a different public host, so the redirect policy
 // is a required complement, not an optional one.
-func newGuardedDCRClient(host string, allowPrivateIPs, serverSuppliedEndpoints bool) (*http.Client, error) {
+func newGuardedDCRClient(host string, allowPrivateIPs, serverSuppliedEndpoints bool, caFilePath string) (*http.Client, error) {
 	builder := func() *networking.HttpClientBuilder {
 		if serverSuppliedEndpoints {
 			return networking.NewServerSuppliedHostClientBuilder(host, allowPrivateIPs, false)
 		}
 		return networking.NewHostScopedClientBuilder(host, allowPrivateIPs, false)
 	}()
+	if caFilePath != "" {
+		builder.WithSystemRootsPlusCABundle(caFilePath)
+	}
 	return builder.WithDisableKeepAlives(true).Build()
 }
 

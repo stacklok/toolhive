@@ -16,6 +16,8 @@ import (
 	"path/filepath"
 
 	"github.com/Microsoft/go-winio"
+
+	"github.com/stacklok/toolhive/pkg/server/discovery"
 )
 
 // namedPipeBufferSize is the size of the input/output buffers winio allocates
@@ -97,20 +99,15 @@ func cleanupUnixSocket(address string) {
 // socketURL returns the URL form of a Unix-socket or named-pipe address for
 // the discovery file. Named pipes are emitted as npipe://<name> where <name>
 // is everything after the \\.\pipe\ prefix. AF_UNIX paths are emitted as
-// unix:///<path> so a Windows drive-letter path round-trips through net/url
-// cleanly (the previous concatenation form produced unix://C:\... , which
-// url.Parse rejects with "invalid port").
-//
-// The synthetic leading slash is required: with Host == "" and a Path that
-// does not start with /, url.URL.String() emits only scheme://+path (two
-// slashes), and url.Parse then mis-reads the drive letter as host:port.
-// Forcing the leading slash yields the three-slash form, and the consumer
-// (ParseUnixSocketPath) strips that synthetic slash before the drive letter
-// so the round-trip closes.
+// unix:///<path>. AF_UNIX emit is discovery.UnixSocketURL so POSIX paths keep
+// three slashes (unix:///tmp/...) and drive-letter paths still get the
+// synthetic slash that net/url needs (unix:///C:%5C...). Concatenating
+// unix://+C:\... used to produce an invalid port; prepending / onto an
+// already-absolute POSIX path used to produce four slashes.
 func socketURL(address string) string {
 	if isNamedPipeAddress(address) {
 		name := address[len(namedPipePrefix):]
 		return (&url.URL{Scheme: "npipe", Host: name}).String()
 	}
-	return (&url.URL{Scheme: "unix", Path: "/" + address}).String()
+	return discovery.UnixSocketURL(address)
 }

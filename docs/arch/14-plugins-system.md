@@ -175,6 +175,43 @@ ports of the skills analogues.
 
 ## Security Model
 
+### Trust Model
+
+Project-scoped plugin installs are verified against Sigstore signatures, and the project's `toolhive.lock.yaml` — the same file skills use, under its own `plugins:` key — records the trust decisions those verifications produce. A plugin contributes hooks, agents, commands, and MCP server declarations to whichever client loads it, so this is a strictly larger blast radius than a skill: the trust decision is never implicit.
+
+On first install of a signed plugin the observed signer identity is recorded (trust on first use) as the entry's `provenance:` block and **displayed to the user** — by `thv ai-plugin install` when it completes, and by `thv ai-plugin info` on every later read. Each subsequent install, sync, and upgrade enforces that identity *inside* the Sigstore verification policy: OCI artifacts through their attached signature bundles, git commits through gitsign signature-and-chain verification (recorded `provisional: true` — the transparency-log proof of signing time is not yet validated, so the replay window is unbounded until that lands, and the marker is rendered wherever the identity is). `thv ai-plugin sync` additionally re-verifies each **OCI** entry's stored signature bundle offline — embedded trust root, no network — before counting it current, so a tampered-with stored bundle is caught in CI rather than at the next install. Git entries are not re-verified this way: a git install stores no bundle by design, because its signature lives on the commit rather than beside an artifact, so sync has nothing to re-check offline and an unchanged git plugin passes as current on its digest and content hash alone. A git entry's recorded identity is enforced when its content is next re-resolved — on drift, upgrade, or reinstall — not on every sync. `thv ai-plugin upgrade` refuses to move to an artifact signed by a different identity, or to an unsigned one, without an explicit `--allow-signer-change`.
+
+Publishing is signed by default, and **keyless only**. `thv ai-plugin push` requires either an OIDC identity token (`--identity-token`, or acquired automatically from a GitHub Actions OIDC token — the only ambient provider implemented — or an interactive browser sign-in) or an explicit `--no-sign`. Signing attaches the signature manifest next to the pushed artifact, where install-time verification finds it.
+
+A signed push is **staged and then promoted**: the content is published under its immutable digest, the signature is attached to that digest, and only then is the requested tag pushed. The ordering carries the guarantee. Publishing the tag first and signing afterwards would mean that any Fulcio, Rekor, or attachment failure leaves the tag already live and resolving to unsigned content — consumable by user-scoped installs with no verification at all — and returning an error does not retract it. Staged-then-promoted leaves the blobs uploaded but nothing tagged, so a consumer resolving the tag finds nothing. The staged manifest is untagged and garbage-collectable by the registry; ToolHive does not attempt to delete it, since the registry client exposes no delete and registries commonly forbid manifest deletion. An unsigned (`--no-sign`) push has no ordering constraint and publishes the requested reference directly.
+
+The identity token itself is withheld from unprotected transports: the CLI refuses to send it to a `http://` ToolHive API on a non-loopback host, because it is a bearer credential redeemable at Fulcio for a certificate in the caller's name. HTTPS, loopback HTTP, and the Unix socket / named pipe transports are all accepted. A token-bearing push additionally **refuses to follow redirects** — clearing the base URL says nothing about where a 307 or 308 from that URL would replay the body, and those status codes preserve both method and body, so following one would hand the credential to whatever `Location` names. The ToolHive API does not redirect its own endpoints, so there is no legitimate case being given up.
+
+There is deliberately **no `--key` flag**, and key signing is unrepresentable rather than rejected: `plugins.PushOptions` does not alias `skills.PushOptions` precisely so that it carries no `Key` field, the push DTO has none, and the push endpoint rejects unknown JSON fields so a `key` from an older client is a 400 naming the field instead of a silent unsigned publish. Making the request impossible to construct is the point — while the field existed, the in-process service answered a key with a 400 while the HTTP client dropped it and published unsigned, so the same `PluginService.Push` call meant different things depending on which implementation was wired in.
+
+The reason is that install-time verification is keyless-only (`verifier.VerifyOCI` checks a Fulcio certificate chain), and neither the lock schema nor the install API carries a public key, so a key-signed artifact fails verification as `verifier.ErrKeySigned` — a verdict distinct from both `ErrUnsigned` and `ErrSignatureInvalid`, which means `--allow-unsigned` cannot override it and a project-scoped install is refused outright. Offering key signing would only let publishers produce plugins nobody can install. `thv skill push --key` still accepts one — carrying a caveat on the flag and in the [skills lock-file model](12-skills-system.md#project-lock-file) — and produces exactly this outcome. The flag returns here once install, sync, and the lock can carry a public key, tracked in [#6442](https://github.com/stacklok/toolhive/issues/6442).
+
+**Migrating entries written before verification.** A lock entry recording neither a `provenance:` block nor `unsigned: true` predates trust recording — it was written while verification was gated off, or hand-edited. The lock schema permits that shape (validation enforces only that the two are mutually exclusive, not that one is present), so `pluginsvc.verifyStoredSignature` is the layer that rejects it: such an entry is reported as **drift**, never as current. `thv ai-plugin sync --check` surfaces it as drifted, `thv ai-plugin info` renders it as `(trust unrecorded)` rather than leaving it indistinguishable from an untracked install, and `thv ai-plugin sync` repairs it by reinstalling from the pinned reference, which runs install-time verification.
+
+The repair completes on its own **only when a signature actually verifies**. Unsigned content fails closed and needs `thv ai-plugin sync --allow-unsigned` to proceed. This is the whole point of the migration rather than an inconvenience in it: repairing an unsigned legacy entry automatically would rewrite "no trust decision" into `unsigned: true` with nobody having chosen it, converting an entry that is visibly ambiguous into a standing exception that looks deliberate. Recording an unsigned exception is a trust decision, and nothing makes it on the user's behalf — so a lock-driven restore gets no implicit allowance (`isAllowedUnsigned` grants only the explicit flag), and the failure names `sync --allow-unsigned` as the remedy because `install --allow-unsigned` is not the operation that owns the lock entry.
+
+An entry that already records `unsigned: true` is a different case and is honored without re-asking: restoring a decision the lock file states is not the same as inventing one.
+
+Reinstalling is the intended migration, not `--adopt`: adoption records whatever the machine already has, whereas a reinstall re-fetches and verifies against the registry. A same-digest reinstall is also the repair path for a stored bundle that has gone stale or corrupt — the freshly verified bundle replaces it rather than being discarded.
+
+**A lock entry only ever describes content the install that wrote it materialized.** An entry asserts a `contentDigest` hashed from the source just fetched, never read back from disk, so `dispatchExtraction` rematerializes whenever an install is the one bringing a record under lock tracking for the first time — even at an unchanged digest with every client already present, where it would otherwise short-circuit. Without that, a legacy tree modified since it was installed would stay active behind a brand-new entry naming a real signer and a pristine digest, and only a later `sync --check` would notice. The condition is the unmanaged-to-managed transition rather than "a bundle was freshly verified", which would miss two shapes that need it just as much: a git install produces no bundle at all (`VerifyGit` returns none — its signature lives on the commit, as above), and an `--allow-unsigned` reinstall produces no provenance, yet both write a `contentDigest`.
+
+What is still trusted on faith, deliberately and visibly:
+
+- **Unsigned plugins** install only with an explicit `--allow-unsigned`, recorded as `unsigned: true` in the lock entry. That entry is a standing exception: lock-driven operations (sync restores, upgrade re-pins) honor it without re-asking, and `thv ai-plugin info` renders it as `(unsigned — explicit exception)`.
+- **The lock file itself** remains a repository-editable policy document. A diff converting a `provenance:` block to `unsigned: true` is a trust downgrade that sync will honor — it cannot happen without a lock file edit, which is exactly what lock-file review must catch. Reviewing `provenance`, `unsigned`, `digest`, and `resolvedReference` changes carries the same weight as reviewing the plugin content itself.
+- **First use** anchors trust to whatever identity signed the artifact at that moment; verify the printed identity is the publisher you expect.
+- **Declared-but-unmanaged components** (`mcpServers`, `lspServers`) are recorded in the inventory and shown by `info`, but ToolHive neither materializes nor lifecycle-manages them — their content is not covered by anything above beyond the artifact digest.
+
+Plugins do not yet consume catalog-declared provenance the way skills do (`registry.Skill.Provenance`), so a plugin's first project-scoped install is always ordinary trust on first use.
+
+See [Project Lock File](12-skills-system.md#project-lock-file) in the skills document for the lock file's schema and the shared verification internals.
+
 ### Archive Extraction Safety
 
 Both adapters delegate to `skills.Installer.Extract`, which enforces:
@@ -253,8 +290,8 @@ no remaining `@toolhive` plugins are enabled.
 
 The OCI install path rejects artifacts whose declared name doesn't match the
 reference's repository last segment. This is a consistency check, not publisher
-authenticity — `pluginConfig.Name` is self-declared. Signature verification is a
-separate concern.
+authenticity — `pluginConfig.Name` is self-declared. Publisher authenticity is
+established separately, by signature verification (see [Trust Model](#trust-model)).
 
 ### Git Clone Bounds
 

@@ -25,6 +25,7 @@ import (
 	appsv1 "k8s.io/api/apps/v1"
 	corev1 "k8s.io/api/core/v1"
 	rbacv1 "k8s.io/api/rbac/v1"
+	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	"k8s.io/apimachinery/pkg/api/meta"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/types"
@@ -34,6 +35,7 @@ import (
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/client/fake"
+	"sigs.k8s.io/controller-runtime/pkg/client/interceptor"
 
 	mcpv1beta1 "github.com/stacklok/toolhive/cmd/thv-operator/api/v1beta1"
 	"github.com/stacklok/toolhive/cmd/thv-operator/api/v1beta1/v1beta1test"
@@ -41,6 +43,7 @@ import (
 	ctrlutil "github.com/stacklok/toolhive/cmd/thv-operator/pkg/controllerutil"
 	"github.com/stacklok/toolhive/cmd/thv-operator/pkg/runconfig/configmap/checksum"
 	"github.com/stacklok/toolhive/cmd/thv-operator/pkg/virtualmcpserverstatus"
+	"github.com/stacklok/toolhive/pkg/telemetry"
 	vmcpconfig "github.com/stacklok/toolhive/pkg/vmcp/config"
 	"github.com/stacklok/toolhive/pkg/vmcp/workloads"
 )
@@ -923,6 +926,47 @@ func TestVirtualMCPServerUpdateStatus(t *testing.T) {
 			},
 			expectedPhase: mcpv1beta1.VirtualMCPServerPhaseFailed,
 		},
+		{
+			// Regression for NEW-1: the runtime snapshot (Status.Runtime) is the
+			// freshest backend data, but the top-level DiscoveredBackends is only a
+			// projection the operator writes once per reconcile. A vmcp fetched
+			// mid-reconcile can carry a current Runtime snapshot (all unhealthy)
+			// alongside a stale top-level field (all ready) from the previous
+			// reconcile's patch. The phase decision must follow Runtime, not the
+			// stale projection, within this same reconcile.
+			name: "runtime snapshot overrides stale top-level backend field",
+			vmcp: func() *mcpv1beta1.VirtualMCPServer {
+				v := v1beta1test.NewVirtualMCPServer(testVmcpName, "default")
+				v.Status.DiscoveredBackends = []mcpv1beta1.DiscoveredBackend{
+					{Name: "backend", Status: mcpv1beta1.BackendStatusReady},
+				}
+				v.Status.Runtime = &mcpv1beta1.VirtualMCPServerRuntimeStatus{
+					DiscoveredBackends: []mcpv1beta1.DiscoveredBackend{
+						{Name: "backend", Status: mcpv1beta1.BackendStatusUnavailable},
+					},
+				}
+				return v
+			}(),
+			pods: []corev1.Pod{
+				{
+					ObjectMeta: metav1.ObjectMeta{
+						Name:      testVmcpName + "-pod-1",
+						Namespace: "default",
+						Labels:    labelsForVirtualMCPServer(testVmcpName),
+					},
+					Status: corev1.PodStatus{
+						Phase: corev1.PodRunning,
+						Conditions: []corev1.PodCondition{
+							{
+								Type:   corev1.PodReady,
+								Status: corev1.ConditionTrue,
+							},
+						},
+					},
+				},
+			},
+			expectedPhase: mcpv1beta1.VirtualMCPServerPhaseDegraded,
+		},
 	}
 
 	for _, tt := range tests {
@@ -944,6 +988,53 @@ func TestVirtualMCPServerUpdateStatus(t *testing.T) {
 			assert.Equal(t, tt.expectedPhase, tt.vmcp.Status.Phase)
 		})
 	}
+}
+
+// TestVirtualMCPServerUpdateStatus_ReadyConditionOwnership locks in that the operator's
+// derived Ready condition (reason DeploymentReady) wins over the runtime's own Ready
+// condition (reason AllBackendsRoutable) projected from Status.Runtime. This is
+// deliberate: the operator's decision already folds in the runtime's backend health
+// plus pod/deployment readiness the runtime cannot observe, so it stays authoritative.
+func TestVirtualMCPServerUpdateStatus_ReadyConditionOwnership(t *testing.T) {
+	t.Parallel()
+
+	vmcp := v1beta1test.NewVirtualMCPServer(testVmcpName, "default")
+	vmcp.Status.Runtime = &mcpv1beta1.VirtualMCPServerRuntimeStatus{
+		Phase: mcpv1beta1.VirtualMCPServerPhaseReady,
+		Conditions: []metav1.Condition{{
+			Type: "Ready", Status: metav1.ConditionTrue, Reason: "AllBackendsRoutable",
+		}},
+		DiscoveredBackends: []mcpv1beta1.DiscoveredBackend{
+			{Name: "backend", Status: mcpv1beta1.BackendStatusReady},
+		},
+	}
+	pod := &corev1.Pod{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      testVmcpName + "-pod-1",
+			Namespace: "default",
+			Labels:    labelsForVirtualMCPServer(testVmcpName),
+		},
+		Status: corev1.PodStatus{
+			Phase: corev1.PodRunning,
+			Conditions: []corev1.PodCondition{
+				{Type: corev1.PodReady, Status: corev1.ConditionTrue},
+			},
+		},
+	}
+
+	r, _ := newTestVirtualMCPServerReconciler(t, vmcp, pod)
+
+	// NewStatusManager projects the runtime's Ready condition (AllBackendsRoutable)
+	// into the collector's pending state, mirroring what happens at the top of Reconcile.
+	statusManager := virtualmcpserverstatus.NewStatusManager(vmcp)
+	err := r.updateVirtualMCPServerStatus(context.Background(), vmcp, statusManager)
+	require.NoError(t, err)
+	_ = statusManager.UpdateStatus(context.Background(), &vmcp.Status)
+
+	condition := findCondition(vmcp.Status.Conditions, mcpv1beta1.ConditionTypeVirtualMCPServerReady)
+	require.NotNil(t, condition)
+	assert.Equal(t, "DeploymentReady", condition.Reason)
+	assert.NotEqual(t, "AllBackendsRoutable", condition.Reason)
 }
 
 // TestVirtualMCPServerLabels tests label generation
@@ -1728,7 +1819,7 @@ func TestVirtualMCPServerPodTemplateMetadataNeedsUpdate(t *testing.T) {
 
 	vmcpConfigChecksum := testChecksumValue
 	expectedLabels, expectedAnnotations := reconciler.buildPodTemplateMetadata(
-		labelsForVirtualMCPServer(vmcp.Name), vmcp, vmcpConfigChecksum,
+		labelsForVirtualMCPServer(vmcp.Name), vmcp, vmcpConfigChecksum, "",
 	)
 
 	tests := []struct {
@@ -1883,7 +1974,7 @@ func TestVirtualMCPServerPodTemplateMetadataNeedsUpdate(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
 
-			needsUpdate := reconciler.podTemplateMetadataNeedsUpdate(tt.deployment, tt.vmcp, tt.checksum)
+			needsUpdate := reconciler.podTemplateMetadataNeedsUpdate(tt.deployment, tt.vmcp, tt.checksum, "")
 			assert.Equal(t, tt.expectedUpdate, needsUpdate)
 		})
 	}
@@ -1904,8 +1995,12 @@ func TestVirtualMCPServerDeploymentNeedsUpdate(t *testing.T) {
 
 	vmcpConfigChecksum := testChecksumValue
 	expectedLabels, expectedAnnotations := reconciler.buildPodTemplateMetadata(
-		labelsForVirtualMCPServer(vmcp.Name), vmcp, vmcpConfigChecksum,
+		labelsForVirtualMCPServer(vmcp.Name), vmcp, vmcpConfigChecksum, "",
 	)
+	desiredVolumeMounts, desiredVolumes, desiredVolumesHash, err := reconciler.buildPodVolumesForVmcp(
+		context.Background(), vmcp, nil, nil,
+	)
+	require.NoError(t, err)
 
 	tests := []struct {
 		name           string
@@ -2079,7 +2174,7 @@ func TestVirtualMCPServerDeploymentNeedsUpdate(t *testing.T) {
 			deployment: &appsv1.Deployment{
 				ObjectMeta: metav1.ObjectMeta{
 					Labels:      labelsForVirtualMCPServer(vmcp.Name),
-					Annotations: make(map[string]string),
+					Annotations: map[string]string{podVolumesHashAnnotation: desiredVolumesHash},
 				},
 				Spec: appsv1.DeploymentSpec{
 					Template: corev1.PodTemplateSpec{
@@ -2095,10 +2190,12 @@ func TestVirtualMCPServerDeploymentNeedsUpdate(t *testing.T) {
 									Ports: []corev1.ContainerPort{
 										{ContainerPort: 4483},
 									},
-									Args: reconciler.buildContainerArgsForVmcp(vmcp),
-									Env:  mustBuildEnvVarsForVmcp(reconciler, vmcp),
+									Args:         reconciler.buildContainerArgsForVmcp(vmcp),
+									Env:          mustBuildEnvVarsForVmcp(reconciler, vmcp),
+									VolumeMounts: desiredVolumeMounts,
 								},
 							},
+							Volumes:            desiredVolumes,
 							ServiceAccountName: vmcpServiceAccountName(vmcp.Name),
 						},
 					},
@@ -2112,7 +2209,7 @@ func TestVirtualMCPServerDeploymentNeedsUpdate(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
 
-			needsUpdate := reconciler.deploymentNeedsUpdate(context.Background(), tt.deployment, vmcp, vmcpConfigChecksum, nil, []workloads.TypedWorkload{})
+			needsUpdate := reconciler.deploymentNeedsUpdate(context.Background(), tt.deployment, vmcp, vmcpConfigChecksum, "", nil, []workloads.TypedWorkload{})
 			assert.Equal(t, tt.expectedUpdate, needsUpdate)
 		})
 	}
@@ -2142,6 +2239,12 @@ func TestMergeDeploymentAnnotations(t *testing.T) {
 			name:     "prunes stale podTemplateSpecHashAnnotation when desired no longer wants it",
 			desired:  map[string]string{},
 			live:     map[string]string{podTemplateSpecHashAnnotation: "stale-hash"},
+			expected: map[string]string{},
+		},
+		{
+			name:     "prunes stale pod volumes hash annotation when desired no longer wants it",
+			desired:  map[string]string{},
+			live:     map[string]string{podVolumesHashAnnotation: "stale-hash"},
 			expected: map[string]string{},
 		},
 		{
@@ -2586,7 +2689,7 @@ func TestVirtualMCPServerEnsureDeployment_NoUpdateNeeded(t *testing.T) {
 
 	// Create deployment matching current spec
 	expectedLabels, expectedAnnotations := reconciler.buildPodTemplateMetadata(
-		labelsForVirtualMCPServer(vmcp.Name), vmcp, "test-checksum",
+		labelsForVirtualMCPServer(vmcp.Name), vmcp, "test-checksum", "",
 	)
 
 	correctDeployment := &appsv1.Deployment{
@@ -2635,6 +2738,165 @@ func TestVirtualMCPServerEnsureDeployment_NoUpdateNeeded(t *testing.T) {
 	assert.Equal(t, ctrl.Result{}, result)
 }
 
+func TestVirtualMCPServerEnsureDeployment_BackfillsPodVolumesHashOnce(t *testing.T) {
+	t.Parallel()
+
+	ctx := t.Context()
+	scheme := testutil.NewScheme(t)
+	vmcp := v1beta1test.NewVirtualMCPServer(testVmcpName, "default",
+		v1beta1test.WithVMCPGroupRef(testGroupName),
+	)
+	configMap := &corev1.ConfigMap{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      vmcpConfigMapName(vmcp.Name),
+			Namespace: vmcp.Namespace,
+			Annotations: map[string]string{
+				checksum.ContentChecksumAnnotation: "test-checksum",
+			},
+		},
+		Data: map[string]string{"config.yaml": "test-config"},
+	}
+
+	deploymentUpdates := 0
+	k8sClient := fake.NewClientBuilder().
+		WithScheme(scheme).
+		WithObjects(vmcp, configMap).
+		WithInterceptorFuncs(interceptor.Funcs{
+			Update: func(ctx context.Context, c client.WithWatch, obj client.Object, opts ...client.UpdateOption) error {
+				if _, ok := obj.(*appsv1.Deployment); ok {
+					deploymentUpdates++
+				}
+				return c.Update(ctx, obj, opts...)
+			},
+		}).
+		Build()
+	reconciler := &VirtualMCPServerReconciler{
+		Client:           k8sClient,
+		Scheme:           scheme,
+		PlatformDetector: ctrlutil.NewSharedPlatformDetector(),
+	}
+
+	deployment := reconciler.deploymentForVirtualMCPServer(ctx, vmcp, "test-checksum", "", nil, nil)
+	require.NotNil(t, deployment)
+	require.NotEmpty(t, deployment.Annotations[podVolumesHashAnnotation])
+	delete(deployment.Annotations, podVolumesHashAnnotation)
+	require.NoError(t, k8sClient.Create(ctx, deployment))
+
+	result, err := reconciler.ensureDeployment(ctx, vmcp, nil, nil)
+	require.NoError(t, err)
+	assert.Equal(t, ctrl.Result{}, result)
+	assert.Equal(t, 1, deploymentUpdates, "a missing hash annotation must cause exactly one update")
+
+	updated := &appsv1.Deployment{}
+	require.NoError(t, k8sClient.Get(ctx, types.NamespacedName{Name: vmcp.Name, Namespace: vmcp.Namespace}, updated))
+	require.NotEmpty(t, updated.Annotations[podVolumesHashAnnotation])
+	resourceVersion := updated.ResourceVersion
+
+	result, err = reconciler.ensureDeployment(ctx, vmcp, nil, nil)
+	require.NoError(t, err)
+	assert.Equal(t, ctrl.Result{}, result)
+	assert.Equal(t, 1, deploymentUpdates, "the rebuilt deployment must be steady state")
+
+	updated = &appsv1.Deployment{}
+	require.NoError(t, k8sClient.Get(ctx, types.NamespacedName{Name: vmcp.Name, Namespace: vmcp.Namespace}, updated))
+	assert.Equal(t, resourceVersion, updated.ResourceVersion, "steady-state reconcile must not write again")
+}
+
+func TestVirtualMCPServerEnsureDeployment_UpdatesMCPServerEntryCABundleVolume(t *testing.T) {
+	t.Parallel()
+
+	ctx := t.Context()
+	scheme := testutil.NewScheme(t)
+	vmcp := v1beta1test.NewVirtualMCPServer(testVmcpName, "default",
+		v1beta1test.WithVMCPGroupRef(testGroupName),
+	)
+	configMap := &corev1.ConfigMap{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      vmcpConfigMapName(vmcp.Name),
+			Namespace: vmcp.Namespace,
+			Annotations: map[string]string{
+				checksum.ContentChecksumAnnotation: "test-checksum",
+			},
+		},
+		Data: map[string]string{"config.yaml": "test-config"},
+	}
+	entry := &mcpv1beta1.MCPServerEntry{
+		ObjectMeta: metav1.ObjectMeta{Name: "remote-entry", Namespace: vmcp.Namespace},
+		Spec: mcpv1beta1.MCPServerEntrySpec{
+			RemoteURL: "https://mcp.example.com",
+			Transport: "streamable-http",
+			GroupRef:  &mcpv1beta1.MCPGroupRef{Name: testGroupName},
+			CABundleRef: &mcpv1beta1.CABundleSource{ConfigMapRef: &corev1.ConfigMapKeySelector{
+				LocalObjectReference: corev1.LocalObjectReference{Name: "ca-bundle-v1"},
+				Key:                  "ca.crt",
+			}},
+		},
+	}
+	typedWorkloads := []workloads.TypedWorkload{{
+		Name: entry.Name,
+		Type: workloads.WorkloadTypeMCPServerEntry,
+	}}
+
+	deploymentUpdates := 0
+	k8sClient := fake.NewClientBuilder().
+		WithScheme(scheme).
+		WithObjects(vmcp, configMap, entry).
+		WithInterceptorFuncs(interceptor.Funcs{
+			Update: func(ctx context.Context, c client.WithWatch, obj client.Object, opts ...client.UpdateOption) error {
+				if _, ok := obj.(*appsv1.Deployment); ok {
+					deploymentUpdates++
+				}
+				return c.Update(ctx, obj, opts...)
+			},
+		}).
+		Build()
+	reconciler := &VirtualMCPServerReconciler{
+		Client:           k8sClient,
+		Scheme:           scheme,
+		PlatformDetector: ctrlutil.NewSharedPlatformDetector(),
+	}
+
+	deployment := reconciler.deploymentForVirtualMCPServer(
+		ctx, vmcp, "test-checksum", "", nil, typedWorkloads,
+	)
+	require.NotNil(t, deployment)
+	initialHash := deployment.Annotations[podVolumesHashAnnotation]
+	require.NotEmpty(t, initialHash)
+	require.NoError(t, k8sClient.Create(ctx, deployment))
+
+	updatedEntry := &mcpv1beta1.MCPServerEntry{}
+	require.NoError(t, k8sClient.Get(ctx, types.NamespacedName{Name: entry.Name, Namespace: entry.Namespace}, updatedEntry))
+	updatedEntry.Spec.CABundleRef.ConfigMapRef.Name = "ca-bundle-v2"
+	require.NoError(t, k8sClient.Update(ctx, updatedEntry))
+
+	result, err := reconciler.ensureDeployment(ctx, vmcp, nil, typedWorkloads)
+	require.NoError(t, err)
+	assert.Equal(t, ctrl.Result{}, result)
+	assert.Equal(t, 1, deploymentUpdates, "changing only the ConfigMap volume source must update the deployment")
+
+	updated := &appsv1.Deployment{}
+	require.NoError(t, k8sClient.Get(ctx, types.NamespacedName{Name: vmcp.Name, Namespace: vmcp.Namespace}, updated))
+	assert.NotEqual(t, initialHash, updated.Annotations[podVolumesHashAnnotation])
+	var caBundleConfigMapName string
+	for _, volume := range updated.Spec.Template.Spec.Volumes {
+		if volume.Name == caBundleVolumeName(entry.Name) && volume.ConfigMap != nil {
+			caBundleConfigMapName = volume.ConfigMap.Name
+			break
+		}
+	}
+	assert.Equal(t, "ca-bundle-v2", caBundleConfigMapName)
+	resourceVersion := updated.ResourceVersion
+
+	result, err = reconciler.ensureDeployment(ctx, vmcp, nil, typedWorkloads)
+	require.NoError(t, err)
+	assert.Equal(t, ctrl.Result{}, result)
+	assert.Equal(t, 1, deploymentUpdates, "the updated CA bundle reference must reach steady state")
+
+	updated = &appsv1.Deployment{}
+	require.NoError(t, k8sClient.Get(ctx, types.NamespacedName{Name: vmcp.Name, Namespace: vmcp.Namespace}, updated))
+	assert.Equal(t, resourceVersion, updated.ResourceVersion, "steady-state reconcile must not write again")
+}
+
 // TestVirtualMCPServerEnsureDeployment_RemovesStaleHashAnnotation is a regression test
 // for #5817/#5818: a stale operator-owned hash annotation left over from a prior
 // reconcile (when the corresponding field was non-empty) must be removed once that
@@ -2680,7 +2942,7 @@ func TestVirtualMCPServerEnsureDeployment_RemovesStaleHashAnnotation(t *testing.
 			}
 
 			expectedLabels, expectedAnnotations := reconciler.buildPodTemplateMetadata(
-				labelsForVirtualMCPServer(vmcp.Name), vmcp, "test-checksum",
+				labelsForVirtualMCPServer(vmcp.Name), vmcp, "test-checksum", "",
 			)
 
 			// Deployment otherwise matches the desired state exactly, except it
@@ -3356,7 +3618,8 @@ func TestVirtualMCPServerValidateAuthzUpstreamAvailable(t *testing.T) {
 		return &mcpv1beta1.AuthzConfigRef{
 			Type: "inline",
 			Inline: &mcpv1beta1.InlineAuthzConfig{
-				Policies:                []string{`permit(principal, action, resource);`},
+				Policies: []string{`permit(principal, action, resource);`},
+				//nolint:staticcheck // Exercises backward compatibility for the deprecated field.
 				PrimaryUpstreamProvider: primary,
 			},
 		}
@@ -3379,6 +3642,7 @@ func TestVirtualMCPServerValidateAuthzUpstreamAvailable(t *testing.T) {
 		authServerConfig *mcpv1beta1.EmbeddedAuthServerConfig
 		expectError      bool
 		expectedReason   string
+		expectedMessage  string
 		expectedWarning  warningExpectation
 	}{
 		{
@@ -3402,6 +3666,39 @@ func TestVirtualMCPServerValidateAuthzUpstreamAvailable(t *testing.T) {
 			authServerConfig: nil,
 			expectError:      false,
 			expectedWarning:  warningExpectation{expectPresent: false},
+		},
+		{
+			name: "authz with empty upstream providers and delegate client is invalid",
+			incomingAuth: &mcpv1beta1.IncomingAuthConfig{
+				Type:        "oidc",
+				AuthzConfig: inlineAuthzRef,
+			},
+			authServerConfig: &mcpv1beta1.EmbeddedAuthServerConfig{
+				Issuer:          "https://authserver.example.com",
+				DelegateClients: []mcpv1beta1.DelegateClientConfig{{ClientID: "delegate-client"}},
+			},
+			expectError:     true,
+			expectedReason:  mcpv1beta1.ConditionReasonAuthzRequiresUpstream,
+			expectedMessage: "Grant-only token issuance does not create the provenance-bound upstream-token entries Cedar needs to select upstream-derived claims.",
+			expectedWarning: warningExpectation{expectPresent: false},
+		},
+		{
+			name: "authz with empty upstream providers and JWT bearer issuer is invalid",
+			incomingAuth: &mcpv1beta1.IncomingAuthConfig{
+				Type:        "oidc",
+				AuthzConfig: inlineAuthzRef,
+			},
+			authServerConfig: &mcpv1beta1.EmbeddedAuthServerConfig{
+				Issuer: "https://authserver.example.com",
+				TrustedIssuers: []mcpv1beta1.TrustedIssuerConfig{{
+					IssuerURL:      "https://issuer.example.com",
+					JWTBearerGrant: &mcpv1beta1.JWTBearerGrantConfig{},
+				}},
+			},
+			expectError:     true,
+			expectedReason:  mcpv1beta1.ConditionReasonAuthzRequiresUpstream,
+			expectedMessage: "Grant-only token issuance does not create the provenance-bound upstream-token entries Cedar needs to select upstream-derived claims.",
+			expectedWarning: warningExpectation{expectPresent: false},
 		},
 		{
 			name: "authz with empty upstream providers is invalid",
@@ -3554,6 +3851,9 @@ func TestVirtualMCPServerValidateAuthzUpstreamAvailable(t *testing.T) {
 				assert.True(t, statusManager.UpdateStatus(t.Context(), &vmcp.Status))
 				assert.Equal(t, mcpv1beta1.VirtualMCPServerPhaseFailed, vmcp.Status.Phase)
 				assert.NotEmpty(t, vmcp.Status.Message)
+				if tt.expectedMessage != "" {
+					assert.Contains(t, vmcp.Status.Message, tt.expectedMessage)
+				}
 
 				found := false
 				for _, cond := range vmcp.Status.Conditions {
@@ -3561,6 +3861,9 @@ func TestVirtualMCPServerValidateAuthzUpstreamAvailable(t *testing.T) {
 						found = true
 						assert.Equal(t, metav1.ConditionFalse, cond.Status)
 						assert.Equal(t, tt.expectedReason, cond.Reason)
+						if tt.expectedMessage != "" {
+							assert.Contains(t, cond.Message, tt.expectedMessage)
+						}
 					}
 				}
 				assert.True(t, found, "AuthServerConfigValidated condition should be set to False")
@@ -3615,7 +3918,8 @@ func TestVirtualMCPServerValidateAuthzUpstreamAvailable_DeprecationEvent(t *test
 	inlineAuthzRefWithDeprecatedPrimary := &mcpv1beta1.AuthzConfigRef{
 		Type: "inline",
 		Inline: &mcpv1beta1.InlineAuthzConfig{
-			Policies:                []string{`permit(principal, action, resource);`},
+			Policies: []string{`permit(principal, action, resource);`},
+			//nolint:staticcheck // Exercises backward compatibility for the deprecated field.
 			PrimaryUpstreamProvider: "okta",
 		},
 	}
@@ -3752,6 +4056,95 @@ func TestVirtualMCPServerValidateAuthzUpstreamAvailable_DeprecationEvent(t *test
 			case <-time.After(50 * time.Millisecond):
 				if tt.wantEvent {
 					t.Errorf("expected AuthzPrimaryUpstreamProviderDeprecated event, none recorded")
+				}
+			}
+		})
+	}
+}
+
+func TestVirtualMCPServerEmitInlineTelemetryIgnoredEvent(t *testing.T) {
+	t.Parallel()
+
+	inlineTelemetry := vmcpconfig.Config{
+		Telemetry: &telemetry.Config{Endpoint: "otlp-collector:4317"},
+	}
+
+	tests := []struct {
+		name               string
+		config             vmcpconfig.Config
+		withTelemetryRef   bool
+		observedGeneration int64
+		nilRecorder        bool
+		wantEvent          bool
+	}{
+		{
+			name:      "inline telemetry without ref emits the warning",
+			config:    inlineTelemetry,
+			wantEvent: true,
+		},
+		{
+			name:               "inline telemetry suppresses event when generation already observed",
+			config:             inlineTelemetry,
+			observedGeneration: 1,
+			wantEvent:          false,
+		},
+		{
+			name:             "inline telemetry with telemetryConfigRef does not emit",
+			config:           inlineTelemetry,
+			withTelemetryRef: true,
+			wantEvent:        false,
+		},
+		{
+			name:      "no inline telemetry does not emit",
+			wantEvent: false,
+		},
+		{
+			name:        "no-op when recorder is nil",
+			config:      inlineTelemetry,
+			nilRecorder: true,
+			wantEvent:   false,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			opts := []v1beta1test.VirtualMCPServerOption{
+				v1beta1test.WithVMCPGroupRef(testGroupName),
+				v1beta1test.WithVMCPConfig(tt.config),
+				v1beta1test.WithVMCPStatus(mcpv1beta1.VirtualMCPServerStatus{
+					ObservedGeneration: tt.observedGeneration,
+				}),
+				v1beta1test.MutateVMCP(func(v *mcpv1beta1.VirtualMCPServer) {
+					v.Generation = 1
+				}),
+			}
+			if tt.withTelemetryRef {
+				opts = append(opts, v1beta1test.WithVMCPTelemetryConfigRef("otel"))
+			}
+			vmcp := v1beta1test.NewVirtualMCPServer(testVmcpName, "default", opts...)
+
+			recorder := events.NewFakeRecorder(10)
+			r := &VirtualMCPServerReconciler{}
+			if !tt.nilRecorder {
+				r.Recorder = recorder
+			}
+
+			r.emitInlineTelemetryIgnoredEvent(vmcp)
+
+			select {
+			case event := <-recorder.Events:
+				if !tt.wantEvent {
+					t.Errorf("expected no event, got %q", event)
+					return
+				}
+				assert.Contains(t, event, "Warning")
+				assert.Contains(t, event, "InlineTelemetryIgnored")
+				assert.Contains(t, event, "spec.config.telemetry is ignored by the operator")
+			default:
+				if tt.wantEvent {
+					t.Errorf("expected InlineTelemetryIgnored event, none recorded")
 				}
 			}
 		})
@@ -4214,14 +4607,159 @@ func TestVirtualMCPServerValidateAuthServerConfig_InsecureAllowHTTP(t *testing.T
 	}
 }
 
+func TestVirtualMCPServerValidateAuthServerConfig_ZeroUpstreamAlternatives(t *testing.T) {
+	t.Parallel()
+
+	jwtGrant := &mcpv1beta1.JWTBearerGrantConfig{
+		MaxAssertionAge: &metav1.Duration{Duration: time.Minute},
+		SubjectBindings: []mcpv1beta1.JWTBearerSubjectBinding{{
+			Subject:          "service-account",
+			AllowedResources: []string{"https://mcp.example.com"},
+		}},
+	}
+	tests := []struct {
+		name   string
+		config *mcpv1beta1.EmbeddedAuthServerConfig
+	}{
+		{
+			name: "delegate client",
+			config: &mcpv1beta1.EmbeddedAuthServerConfig{
+				Issuer: "https://auth.example.com",
+				DelegateClients: []mcpv1beta1.DelegateClientConfig{{
+					ClientID:        "delegate-client",
+					ClientSecretRef: &mcpv1beta1.SecretKeyRef{Name: "delegate-secret", Key: "client-secret"},
+					Scopes:          []string{"openid"},
+					Audiences:       []string{"https://mcp.example.com"},
+				}},
+			},
+		},
+		{
+			name: "JWT bearer trusted issuer",
+			config: &mcpv1beta1.EmbeddedAuthServerConfig{
+				Issuer: "https://auth.example.com",
+				TrustedIssuers: []mcpv1beta1.TrustedIssuerConfig{{
+					IssuerURL:      "https://issuer.example.com",
+					JWTBearerGrant: jwtGrant,
+				}},
+			},
+		},
+		{
+			name: "canonical inbound grants",
+			config: &mcpv1beta1.EmbeddedAuthServerConfig{
+				Issuer: "https://auth.example.com",
+				InboundGrants: &mcpv1beta1.InboundGrantsConfig{
+					TokenExchange: &mcpv1beta1.TokenExchangeInboundGrantConfig{
+						DelegateClients: []mcpv1beta1.DelegateClientConfig{{
+							ClientID:        "delegate-client",
+							ClientSecretRef: &mcpv1beta1.SecretKeyRef{Name: "delegate-secret", Key: "client-secret"},
+							Scopes:          []string{"openid"},
+							Audiences:       []string{"https://mcp.example.com"},
+						}},
+					},
+				},
+			},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			vmcp := v1beta1test.NewVirtualMCPServer(testVmcpName, "default",
+				v1beta1test.WithVMCPGroupRef("test-group"),
+				v1beta1test.WithVMCPAuthServerConfig(tt.config),
+			)
+			statusManager := virtualmcpserverstatus.NewStatusManager(vmcp)
+
+			require.NoError(t, (&VirtualMCPServerReconciler{}).validateAuthServerConfig(vmcp, statusManager))
+			statusManager.UpdateStatus(t.Context(), &vmcp.Status)
+			condition := findCondition(vmcp.Status.Conditions, mcpv1beta1.ConditionTypeAuthServerConfigValidated)
+			require.NotNil(t, condition)
+			assert.Equal(t, metav1.ConditionTrue, condition.Status)
+			assert.Equal(t, mcpv1beta1.ConditionReasonAuthServerConfigValid, condition.Reason)
+		})
+	}
+}
+
+func TestVirtualMCPServerValidateAuthServerConfig_CanonicalTrustedIssuer(t *testing.T) {
+	t.Parallel()
+
+	vmcp := v1beta1test.NewVirtualMCPServer(testVmcpName, "default",
+		v1beta1test.WithVMCPGroupRef("test-group"),
+		v1beta1test.WithVMCPAuthServerConfig(&mcpv1beta1.EmbeddedAuthServerConfig{
+			Issuer: "https://auth.example.com",
+			TrustedIssuers: []mcpv1beta1.TrustedIssuerConfig{{
+				Name: "external", IssuerURL: "https://auth.example.com",
+			}},
+			InboundGrants: &mcpv1beta1.InboundGrantsConfig{
+				TokenExchange: &mcpv1beta1.TokenExchangeInboundGrantConfig{
+					IssuerPolicies: []mcpv1beta1.TokenExchangeIssuerPolicyConfig{{
+						IssuerRef: "external", ExpectedAudience: "audience",
+						AllowedDelegateClients: []string{"delegate"},
+					}},
+				},
+			},
+		}),
+	)
+	statusManager := virtualmcpserverstatus.NewStatusManager(vmcp)
+
+	err := (&VirtualMCPServerReconciler{}).validateAuthServerConfig(vmcp, statusManager)
+	statusManager.UpdateStatus(t.Context(), &vmcp.Status)
+
+	require.ErrorContains(t, err, "must not equal the authorization server's own issuer")
+	condition := findCondition(vmcp.Status.Conditions, mcpv1beta1.ConditionTypeAuthServerConfigValidated)
+	require.NotNil(t, condition)
+	assert.Equal(t, metav1.ConditionFalse, condition.Status)
+}
+
+func TestVirtualMCPServerValidateAuthServerConfig_TrustedIssuerEndpointRecovery(t *testing.T) {
+	t.Parallel()
+
+	const unsafeIssuerURL = "https://sentinel-user:sentinel-password@issuer.example.com"
+
+	vmcp := v1beta1test.NewVirtualMCPServer(testVmcpName, "default",
+		v1beta1test.WithVMCPGroupRef("test-group"),
+		v1beta1test.WithVMCPAuthServerConfig(&mcpv1beta1.EmbeddedAuthServerConfig{
+			Issuer: "https://auth.example.com",
+			TrustedIssuers: []mcpv1beta1.TrustedIssuerConfig{{
+				Name: "external", IssuerURL: unsafeIssuerURL,
+			}},
+			InboundGrants: &mcpv1beta1.InboundGrantsConfig{TokenExchange: &mcpv1beta1.TokenExchangeInboundGrantConfig{
+				IssuerPolicies: []mcpv1beta1.TokenExchangeIssuerPolicyConfig{{
+					IssuerRef: "external", ExpectedAudience: "audience", AllowedDelegateClients: []string{"delegate"},
+				}},
+			}},
+		}),
+	)
+	r := &VirtualMCPServerReconciler{}
+	statusManager := virtualmcpserverstatus.NewStatusManager(vmcp)
+
+	require.ErrorContains(t, r.validateAuthServerConfig(vmcp, statusManager), "must not contain userinfo")
+	statusManager.UpdateStatus(t.Context(), &vmcp.Status)
+	condition := findCondition(vmcp.Status.Conditions, mcpv1beta1.ConditionTypeAuthServerConfigValidated)
+	require.NotNil(t, condition)
+	assert.Equal(t, metav1.ConditionFalse, condition.Status)
+	assert.Contains(t, condition.Message, "must not contain userinfo")
+	assert.NotContains(t, condition.Message, unsafeIssuerURL)
+	assert.NotContains(t, condition.Message, "sentinel-user")
+	assert.NotContains(t, condition.Message, "sentinel-password")
+
+	vmcp.Spec.AuthServerConfig.TrustedIssuers[0].IssuerURL = "https://issuer.example.com"
+	statusManager = virtualmcpserverstatus.NewStatusManager(vmcp)
+	require.NoError(t, r.validateAuthServerConfig(vmcp, statusManager))
+	statusManager.UpdateStatus(t.Context(), &vmcp.Status)
+	condition = findCondition(vmcp.Status.Conditions, mcpv1beta1.ConditionTypeAuthServerConfigValidated)
+	require.NotNil(t, condition)
+	assert.Equal(t, metav1.ConditionTrue, condition.Status)
+	assert.Equal(t, mcpv1beta1.ConditionReasonAuthServerConfigValid, condition.Reason)
+}
+
 func TestVirtualMCPServerValidateAuthServerConfig_DelegateClientsRejectUnsafeHTTP(t *testing.T) {
 	t.Parallel()
 
 	vmcp := v1beta1test.NewVirtualMCPServer(testVmcpName, "default",
 		v1beta1test.WithVMCPGroupRef("test-group"),
 		v1beta1test.WithVMCPAuthServerConfig(&mcpv1beta1.EmbeddedAuthServerConfig{
-			Issuer:            "http://vmcp-test.default.svc.cluster.local:4483",
-			InsecureAllowHTTP: true,
+			Issuer: "http://vmcp-test.default.svc.cluster.local:4483",
 			DelegateClients: []mcpv1beta1.DelegateClientConfig{{
 				ClientID:        "delegate-client",
 				ClientSecretRef: &mcpv1beta1.SecretKeyRef{Name: "delegate-secret", Key: "client-secret"},
@@ -4248,7 +4786,8 @@ func TestVirtualMCPServerValidateAuthServerConfig_DelegateClientsRejectUnsafeHTT
 	cond := findCondition(vmcp.Status.Conditions, mcpv1beta1.ConditionTypeAuthServerConfigValidated)
 	require.NotNil(t, cond)
 	assert.Equal(t, metav1.ConditionFalse, cond.Status)
-	assert.Contains(t, cond.Message, "insecure_allow_http")
+	assert.Contains(t, cond.Message, "plain-HTTP non-loopback")
+	assert.NotContains(t, cond.Message, "set spec.authServerConfig.insecureAllowHTTP: true")
 }
 
 func TestVirtualMCPServerReconciler_handleInvalidEmbeddedAuthServerConfig(t *testing.T) {
@@ -4283,4 +4822,207 @@ func TestVirtualMCPServerReconciler_handleInvalidEmbeddedAuthServerConfig(t *tes
 	ready := findCondition(updated.Status.Conditions, mcpv1beta1.ConditionTypeReady)
 	require.NotNil(t, ready)
 	assert.Equal(t, metav1.ConditionFalse, ready.Status)
+}
+
+// vmcpCABundleAuthServerConfig returns an inline auth server config whose only
+// defect is whatever state the referenced "bundle" ConfigMap is left in.
+func vmcpCABundleAuthServerConfig() *mcpv1beta1.EmbeddedAuthServerConfig {
+	return &mcpv1beta1.EmbeddedAuthServerConfig{
+		Issuer:               "https://auth.example.com",
+		SigningKeySecretRefs: []mcpv1beta1.SecretKeyRef{{Name: "signing-key", Key: "private.pem"}},
+		HMACSecretRefs:       []mcpv1beta1.SecretKeyRef{{Name: "hmac-secret", Key: "hmac"}},
+		UpstreamProviders: []mcpv1beta1.UpstreamProviderConfig{{
+			Name: "upstream",
+			Type: mcpv1beta1.UpstreamProviderTypeOIDC,
+			OIDCConfig: &mcpv1beta1.OIDCUpstreamConfig{
+				IssuerURL: "https://idp.example.com",
+				ClientID:  "client",
+				CABundleRef: &mcpv1beta1.CABundleSource{ConfigMapRef: &corev1.ConfigMapKeySelector{
+					LocalObjectReference: corev1.LocalObjectReference{Name: "bundle"}, Key: "ca.crt",
+				}},
+			},
+		}},
+	}
+}
+
+// A bundle ConfigMap without the key it names cannot be fixed by retrying, so
+// the failure is recorded and reported as terminal rather than propagated.
+func TestVirtualMCPServer_AuthServerConfigCABundleInvalidIsTerminal(t *testing.T) {
+	t.Parallel()
+
+	vmcp := v1beta1test.NewVirtualMCPServer(testVmcpName, "default",
+		v1beta1test.MutateVMCP(func(v *mcpv1beta1.VirtualMCPServer) {
+			v.Generation = 1
+			v.Spec.AuthServerConfig = vmcpCABundleAuthServerConfig()
+		}),
+	)
+	bundle := &corev1.ConfigMap{ObjectMeta: metav1.ObjectMeta{Name: "bundle", Namespace: "default"}}
+	reconciler, _ := newTestVirtualMCPServerReconciler(t, vmcp, bundle)
+	statusManager := virtualmcpserverstatus.NewStatusManager(vmcp)
+
+	terminal, err := reconciler.validateAuthServerConfigCABundles(t.Context(), vmcp, statusManager)
+
+	require.Error(t, err)
+	assert.True(t, terminal, "malformed bundle content is terminal")
+}
+
+func TestVirtualMCPServerInlineInboundGrantDeprecationTransitions(t *testing.T) {
+	t.Parallel()
+
+	delegate := mcpv1beta1.DelegateClientConfig{
+		ClientID:        "sensitive-client-id",
+		ClientSecretRef: &mcpv1beta1.SecretKeyRef{Name: "sensitive-secret", Key: "sensitive-token-key"},
+		Scopes:          []string{"openid"}, Audiences: []string{"https://api.example.com"},
+	}
+	vmcp := v1beta1test.NewVirtualMCPServer("deprecated-inline-grants", "default",
+		v1beta1test.MutateVMCP(func(v *mcpv1beta1.VirtualMCPServer) {
+			v.Generation = 4
+			v.Spec.AuthServerConfig = &mcpv1beta1.EmbeddedAuthServerConfig{
+				Issuer: "https://auth.example.com", DelegateClients: []mcpv1beta1.DelegateClientConfig{delegate},
+			}
+		}),
+	)
+	r, fakeClient := newTestVirtualMCPServerReconciler(t, vmcp)
+	recorder := events.NewFakeRecorder(10)
+	r.Recorder = recorder
+	key := types.NamespacedName{Name: vmcp.Name, Namespace: vmcp.Namespace}
+
+	applyAndGet := func(current *mcpv1beta1.VirtualMCPServer) mcpv1beta1.VirtualMCPServer {
+		t.Helper()
+		manager := virtualmcpserverstatus.NewStatusManager(current)
+		r.applyInlineInboundGrantDeprecationCondition(current, manager)
+		manager.SetObservedGeneration(current.Generation)
+		require.NoError(t, r.applyStatusUpdates(t.Context(), current, manager))
+		var got mcpv1beta1.VirtualMCPServer
+		require.NoError(t, fakeClient.Get(t.Context(), key, &got))
+		return got
+	}
+	assertCondition := func(got mcpv1beta1.VirtualMCPServer, status metav1.ConditionStatus, reason string, generation int64) {
+		t.Helper()
+		condition := meta.FindStatusCondition(got.Status.Conditions,
+			mcpv1beta1.ConditionTypeVirtualMCPServerDeprecatedInboundGrantConfiguration)
+		require.NotNil(t, condition)
+		assert.Equal(t, status, condition.Status)
+		assert.Equal(t, reason, condition.Reason)
+		assert.Equal(t, generation, condition.ObservedGeneration)
+		assert.NotContains(t, condition.Message, "sensitive-client-id")
+		assert.NotContains(t, condition.Message, "sensitive-secret")
+		assert.NotContains(t, condition.Message, "sensitive-token-key")
+	}
+
+	got := applyAndGet(vmcp)
+	assertCondition(got, metav1.ConditionTrue,
+		mcpv1beta1.ConditionReasonVirtualMCPServerLegacyInboundGrantFields, 4)
+	assert.Contains(t, meta.FindStatusCondition(got.Status.Conditions,
+		mcpv1beta1.ConditionTypeVirtualMCPServerDeprecatedInboundGrantConfiguration).Message,
+		"spec.authServerConfig.delegateClients -> spec.authServerConfig.inboundGrants.tokenExchange.delegateClients")
+	assert.Equal(t, 1, countContaining(drainEvents(recorder), inboundGrantDeprecationEventReason))
+
+	steadyResourceVersion := got.ResourceVersion
+	got = applyAndGet(&got)
+	assert.Equal(t, steadyResourceVersion, got.ResourceVersion, "steady state must not write status")
+	assert.Zero(t, countContaining(drainEvents(recorder), inboundGrantDeprecationEventReason))
+
+	got.Spec.AuthServerConfig.DelegateClients = nil
+	got.Spec.AuthServerConfig.InboundGrants = &mcpv1beta1.InboundGrantsConfig{
+		TokenExchange: &mcpv1beta1.TokenExchangeInboundGrantConfig{
+			DelegateClients: []mcpv1beta1.DelegateClientConfig{delegate},
+		},
+	}
+	got.Generation = 5
+	require.NoError(t, fakeClient.Update(t.Context(), &got))
+	got = applyAndGet(&got)
+	assertCondition(got, metav1.ConditionFalse,
+		mcpv1beta1.ConditionReasonVirtualMCPServerCanonicalInboundGrantConfiguration, 5)
+	assert.Zero(t, countContaining(drainEvents(recorder), inboundGrantDeprecationEventReason))
+
+	got.Spec.AuthServerConfig.InboundGrants = nil
+	got.Spec.AuthServerConfig.DelegateClients = []mcpv1beta1.DelegateClientConfig{delegate}
+	got.Generation = 6
+	require.NoError(t, fakeClient.Update(t.Context(), &got))
+	got = applyAndGet(&got)
+	assertCondition(got, metav1.ConditionTrue,
+		mcpv1beta1.ConditionReasonVirtualMCPServerLegacyInboundGrantFields, 6)
+	assert.Equal(t, 1, countContaining(drainEvents(recorder), inboundGrantDeprecationEventReason))
+}
+
+// it must propagate so the caller requeues, and must not be painted onto status
+// as a spec defect that would outlive the outage.
+func TestVirtualMCPServer_AuthServerConfigCABundleGetErrorIsTransient(t *testing.T) {
+	t.Parallel()
+
+	vmcp := v1beta1test.NewVirtualMCPServer(testVmcpName, "default",
+		v1beta1test.MutateVMCP(func(v *mcpv1beta1.VirtualMCPServer) {
+			v.Generation = 1
+			v.Spec.AuthServerConfig = vmcpCABundleAuthServerConfig()
+		}),
+	)
+	scheme := testutil.NewScheme(t)
+	fakeClient := fake.NewClientBuilder().WithScheme(scheme).
+		WithObjects(vmcp, &corev1.ConfigMap{ObjectMeta: metav1.ObjectMeta{Name: "bundle", Namespace: "default"}}).
+		WithStatusSubresource(&mcpv1beta1.VirtualMCPServer{}).
+		WithInterceptorFuncs(interceptor.Funcs{
+			Get: func(ctx context.Context, c client.WithWatch, key client.ObjectKey, obj client.Object, opts ...client.GetOption) error {
+				if _, ok := obj.(*corev1.ConfigMap); ok && key.Name == "bundle" {
+					return apierrors.NewServiceUnavailable("apiserver is having a moment")
+				}
+				return c.Get(ctx, key, obj, opts...)
+			},
+		}).
+		Build()
+	reconciler := &VirtualMCPServerReconciler{
+		Client:           fakeClient,
+		Scheme:           scheme,
+		PlatformDetector: ctrlutil.NewSharedPlatformDetector(),
+	}
+	statusManager := virtualmcpserverstatus.NewStatusManager(vmcp)
+
+	terminal, err := reconciler.validateAuthServerConfigCABundles(t.Context(), vmcp, statusManager)
+
+	require.Error(t, err, "a transient read failure must surface so the caller requeues")
+	assert.False(t, terminal, "an unavailable apiserver is not a spec defect")
+	assert.NotEqual(t, mcpv1beta1.VirtualMCPServerPhaseFailed, vmcp.Status.Phase,
+		"a transient read failure must not stamp a terminal phase")
+}
+
+// TestVirtualMCPServer_RunAuthValidations_StatusWriteFailurePropagates verifies
+// that a failed status write inside runAuthValidations surfaces as an error
+// (so the caller requeues with backoff) instead of being logged and swallowed
+// as if the terminal validation path had completed cleanly.
+func TestVirtualMCPServer_RunAuthValidations_StatusWriteFailurePropagates(t *testing.T) {
+	t.Parallel()
+
+	// An empty Issuer fails validateAuthServerConfig on its first check,
+	// driving runAuthValidations into the applyStatusUpdates call whose
+	// error propagation this test targets.
+	vmcp := v1beta1test.NewVirtualMCPServer(testVmcpName, "default",
+		v1beta1test.WithVMCPAuthServerConfig(&mcpv1beta1.EmbeddedAuthServerConfig{}),
+		v1beta1test.MutateVMCP(func(v *mcpv1beta1.VirtualMCPServer) {
+			v.Generation = 1
+		}),
+	)
+
+	scheme := testutil.NewScheme(t)
+	fakeClient := fake.NewClientBuilder().WithScheme(scheme).
+		WithObjects(vmcp).
+		WithStatusSubresource(&mcpv1beta1.VirtualMCPServer{}).
+		WithInterceptorFuncs(interceptor.Funcs{
+			SubResourcePatch: func(_ context.Context, _ client.Client, _ string, _ client.Object,
+				_ client.Patch, _ ...client.SubResourcePatchOption) error {
+				return apierrors.NewServiceUnavailable("apiserver is having a moment")
+			},
+		}).
+		Build()
+
+	reconciler := &VirtualMCPServerReconciler{
+		Client:           fakeClient,
+		Scheme:           scheme,
+		PlatformDetector: ctrlutil.NewSharedPlatformDetector(),
+	}
+	statusManager := virtualmcpserverstatus.NewStatusManager(vmcp)
+
+	ok, err := reconciler.runAuthValidations(t.Context(), vmcp, statusManager)
+
+	require.Error(t, err, "a failed status write must surface so the caller requeues, not be swallowed")
+	assert.False(t, ok)
 }

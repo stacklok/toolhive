@@ -4,10 +4,19 @@
 package networking
 
 import (
+	"context"
+	"crypto/rand"
+	"crypto/rsa"
 	"crypto/tls"
+	"crypto/x509"
+	"crypto/x509/pkix"
+	"encoding/pem"
+	"errors"
 	"io"
+	"math/big"
 	"net/http"
 	"net/http/httptest"
+	"net/http/httptrace"
 	"net/url"
 	"os"
 	"path/filepath"
@@ -193,6 +202,66 @@ func TestHttpClientBuilder_WithCABundle(t *testing.T) {
 	assert.Equal(t, path, builder.caCertPath)
 }
 
+func TestHttpClientBuilder_CABundleTrustSemantics(t *testing.T) {
+	t.Parallel()
+
+	key, err := rsa.GenerateKey(rand.Reader, 2048)
+	require.NoError(t, err)
+	certDER, err := x509.CreateCertificate(rand.Reader, &x509.Certificate{
+		SerialNumber:          big.NewInt(1),
+		Subject:               pkix.Name{CommonName: "ToolHive test CA"},
+		NotBefore:             time.Now().Add(-time.Hour),
+		NotAfter:              time.Now().Add(time.Hour),
+		IsCA:                  true,
+		BasicConstraintsValid: true,
+	}, &x509.Certificate{
+		SerialNumber:          big.NewInt(1),
+		Subject:               pkix.Name{CommonName: "ToolHive test CA"},
+		IsCA:                  true,
+		BasicConstraintsValid: true,
+	}, &key.PublicKey, key)
+	require.NoError(t, err)
+	caPath := filepath.Join(t.TempDir(), "ca.crt")
+	require.NoError(t, os.WriteFile(caPath, pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: certDER}), 0600))
+
+	tests := []struct {
+		name      string
+		configure func(*HttpClientBuilder)
+		additive  bool
+	}{
+		{
+			name:      "pinned custom bundle",
+			configure: func(builder *HttpClientBuilder) { builder.WithCABundle(caPath) },
+		},
+		{
+			name:      "system roots plus custom bundle",
+			configure: func(builder *HttpClientBuilder) { builder.WithSystemRootsPlusCABundle(caPath) },
+			additive:  true,
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			builder := NewHttpClientBuilder().WithPrivateIPs(true)
+			tt.configure(builder)
+			client, err := builder.Build()
+			require.NoError(t, err)
+			transport := client.Transport.(*ValidatingTransport).Transport.(*http.Transport)
+			require.NotNil(t, transport.TLSClientConfig)
+			require.NotNil(t, transport.TLSClientConfig.RootCAs)
+
+			pinnedPool := x509.NewCertPool()
+			require.True(t, pinnedPool.AppendCertsFromPEM(
+				pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: certDER})))
+			if tt.additive {
+				assert.False(t, transport.TLSClientConfig.RootCAs.Equal(pinnedPool))
+			} else {
+				assert.True(t, transport.TLSClientConfig.RootCAs.Equal(pinnedPool))
+			}
+		})
+	}
+}
 func TestHttpClientBuilder_WithTokenFromFile(t *testing.T) {
 	t.Parallel()
 
@@ -318,7 +387,11 @@ lT/G27CBRUlDiDhthwY1dccTCFhICg6ENUGqh2I=
 			expectError: false,
 			validateClient: func(t *testing.T, client *http.Client) {
 				t.Helper()
-				assert.IsType(t, &oauth2.Transport{}, client.Transport)
+				// The oauth2 transport is wrapped so that
+				// http.Client.CloseIdleConnections still reaches the pool.
+				wrapper, ok := client.Transport.(*closeIdlerTransport)
+				require.True(t, ok)
+				assert.IsType(t, &oauth2.Transport{}, wrapper.RoundTripper)
 			},
 		},
 		{
@@ -361,7 +434,10 @@ lT/G27CBRUlDiDhthwY1dccTCFhICg6ENUGqh2I=
 			validateClient: func(t *testing.T, client *http.Client) {
 				t.Helper()
 				// Should have oauth2 transport wrapping validating transport
-				authTransport := client.Transport.(*oauth2.Transport)
+				wrapper, ok := client.Transport.(*closeIdlerTransport)
+				require.True(t, ok)
+				authTransport, ok := wrapper.RoundTripper.(*oauth2.Transport)
+				require.True(t, ok)
 				assert.IsType(t, &ValidatingTransport{}, authTransport.Base)
 			},
 		},
@@ -855,4 +931,137 @@ func TestSameHostRedirectPolicy_Integration(t *testing.T) {
 		require.NoError(t, err)
 		assert.Equal(t, "OK", string(body))
 	})
+}
+
+// TestBuild_BoundsIdleConnectionPool guards the transport fields against being
+// dropped again. Zero values mean "retain idle connections forever" and
+// "unlimited", which turns every dropped client into a permanently held socket
+// and goroutine pair (see #6479).
+func TestBuild_BoundsIdleConnectionPool(t *testing.T) {
+	t.Parallel()
+
+	client, err := NewHttpClientBuilder().Build()
+	require.NoError(t, err)
+
+	validating, ok := client.Transport.(*ValidatingTransport)
+	require.True(t, ok, "Build must wrap the pool in a ValidatingTransport")
+	transport, ok := validating.Transport.(*http.Transport)
+	require.True(t, ok, "ValidatingTransport must wrap an *http.Transport")
+
+	// Literals, not the constants: comparing a constant to itself still passes
+	// if the constant is set back to zero, which is the regression this guards.
+	assert.Equal(t, 90*time.Second, transport.IdleConnTimeout)
+	assert.Equal(t, 100, transport.MaxIdleConns)
+	assert.Equal(t, 4, transport.MaxIdleConnsPerHost)
+}
+
+// TestSetIdleConnBounds pins the pool bounds the helper applies. These are the
+// single source of truth the hand-rolled transports outside Build mirror, so a
+// retune here must be a deliberate, visible change.
+func TestSetIdleConnBounds(t *testing.T) {
+	t.Parallel()
+
+	transport := &http.Transport{}
+	SetIdleConnBounds(transport)
+
+	assert.Equal(t, 90*time.Second, transport.IdleConnTimeout)
+	assert.Equal(t, 100, transport.MaxIdleConns)
+	assert.Equal(t, 4, transport.MaxIdleConnsPerHost)
+}
+
+// TestBuild_CloseIdleConnectionsReachesPool pins that
+// http.Client.CloseIdleConnections is not a silent no-op on a built client. The
+// client discovers the capability by asserting the outermost transport, so every
+// wrapper Build installs must forward the call.
+func TestBuild_CloseIdleConnectionsReachesPool(t *testing.T) {
+	t.Parallel()
+
+	tokenFile := filepath.Join(t.TempDir(), "token")
+	require.NoError(t, os.WriteFile(tokenFile, []byte("test-token"), 0o600))
+
+	tests := []struct {
+		name      string
+		tokenFile string
+	}{
+		{name: "validating transport"},
+		{name: "oauth2 token file transport", tokenFile: tokenFile},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+				w.WriteHeader(http.StatusOK)
+			}))
+			t.Cleanup(srv.Close)
+
+			builder := NewHttpClientBuilder().WithPrivateIPs(true).WithInsecureAllowHTTP(true)
+			if tt.tokenFile != "" {
+				builder = builder.WithTokenFromFile(tt.tokenFile)
+			}
+			client, err := builder.Build()
+			require.NoError(t, err)
+
+			require.False(t, getReusedConn(t, client, srv.URL), "first request cannot reuse a connection")
+			require.True(t, getReusedConn(t, client, srv.URL), "second request must reuse the pooled connection")
+
+			client.CloseIdleConnections()
+
+			assert.False(t, getReusedConn(t, client, srv.URL),
+				"CloseIdleConnections must drain the pool, so the next request dials again")
+		})
+	}
+}
+
+// forwardCloseIdleSpy records CloseIdleConnections calls; the RoundTrip method
+// exists only to satisfy http.RoundTripper.
+type forwardCloseIdleSpy struct{ closed int }
+
+func (*forwardCloseIdleSpy) RoundTrip(*http.Request) (*http.Response, error) {
+	return nil, errors.New("unused")
+}
+func (s *forwardCloseIdleSpy) CloseIdleConnections() { s.closed++ }
+
+// plainRoundTripper implements http.RoundTripper but not IdleConnectionCloser.
+type plainRoundTripper struct{}
+
+func (plainRoundTripper) RoundTrip(*http.Request) (*http.Response, error) {
+	return nil, errors.New("unused")
+}
+
+func TestForwardCloseIdle(t *testing.T) {
+	t.Parallel()
+
+	t.Run("forwards to a RoundTripper that implements the capability", func(t *testing.T) {
+		t.Parallel()
+		spy := &forwardCloseIdleSpy{}
+		ForwardCloseIdle(spy)
+		assert.Equal(t, 1, spy.closed)
+	})
+
+	t.Run("is a safe no-op when the RoundTripper does not implement it", func(t *testing.T) {
+		t.Parallel()
+		assert.NotPanics(t, func() { ForwardCloseIdle(plainRoundTripper{}) })
+	})
+}
+
+// getReusedConn issues a GET and reports whether it was served from the
+// client's idle connection pool.
+func getReusedConn(t *testing.T, client *http.Client, target string) bool {
+	t.Helper()
+
+	var reused bool
+	ctx := httptrace.WithClientTrace(context.Background(), &httptrace.ClientTrace{
+		GotConn: func(info httptrace.GotConnInfo) { reused = info.Reused },
+	})
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, target, nil)
+	require.NoError(t, err)
+
+	resp, err := client.Do(req)
+	require.NoError(t, err)
+	_, _ = io.Copy(io.Discard, resp.Body)
+	require.NoError(t, resp.Body.Close())
+
+	return reused
 }

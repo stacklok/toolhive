@@ -105,18 +105,34 @@ type Identity struct {
 	// Metadata stores additional identity information.
 	Metadata map[string]string
 
+	// SessionlessGrant is true only when TokenValidator validated this token for
+	// the configured embedded authorization-server issuer, no upstream session
+	// credentials were loaded, and the token affirmatively proves that it was
+	// minted by a session-less grant. It is internal runtime provenance and is
+	// intentionally not included in PrincipalInfo or MarshalJSON.
+	SessionlessGrant bool
+
 	// UpstreamTokens maps upstream provider names to their access tokens.
 	// This is populated by the auth middleware when an embedded auth server
 	// is active and the JWT contains a token session ID (tsid claim).
 	// Redacted in MarshalJSON() to prevent token leakage.
 	//
 	// State semantics:
-	//   - nil            — no tsid claim was present on the incoming JWT
-	//                      (middleware did not attempt to load credentials).
+	//   - nil            — no upstream credentials were loaded for this identity.
+	//                      Either the incoming JWT carried no tsid claim, or the
+	//                      Identity came from a constructor that has no upstream
+	//                      session at all: local.go, anonymous.go, or middleware
+	//                      validating a JWT from an IdP other than the embedded
+	//                      auth server (see the PlatformUserID note above).
 	//   - empty map      — tsid claim was valid but no providers had a stored
 	//                      access token for the session.
 	//   - populated map  — keys are upstream provider names; values are the
 	//                      stored access token strings.
+	//
+	// A nil map therefore says only that no credential was loaded, never why.
+	// Authorization code must use SessionlessGrant, which TokenValidator sets
+	// only for a validated embedded-auth-server token that affirmatively proves
+	// it was minted without an upstream session.
 	//
 	// MUST NOT be mutated after the Identity is placed in the publicly-reachable
 	// request context. It MAY be mutated while the Identity is reachable only via

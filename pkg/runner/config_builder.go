@@ -423,6 +423,18 @@ func WithSessionTTL(ttl time.Duration) RunConfigBuilderOption {
 	}
 }
 
+// WithMaxRequestBodySize sets the maximum inbound MCP proxy request body size in bytes.
+// Zero uses the default limit of 8 MiB. Negative values return an error.
+func WithMaxRequestBodySize(maxBytes int64) RunConfigBuilderOption {
+	return func(b *runConfigBuilder) error {
+		if maxBytes < 0 {
+			return fmt.Errorf("max-request-body-size must be non-negative, got %d", maxBytes)
+		}
+		b.config.MaxRequestBodySize = maxBytes
+		return nil
+	}
+}
+
 // WithNetworkMode sets the network mode for the container.
 // The network mode will be applied to the permission profile after it is loaded.
 func WithNetworkMode(networkMode string) RunConfigBuilderOption {
@@ -507,6 +519,21 @@ func WithAuditEnabled(enableAudit bool, auditConfigPath string) RunConfigBuilder
 		if enableAudit && auditConfigPath == "" {
 			b.config.AuditConfig = audit.DefaultConfig()
 		}
+		return nil
+	}
+}
+
+// WithTokenValidatorConfig sets a copy of the canonical OIDC token validator configuration.
+func WithTokenValidatorConfig(config *auth.TokenValidatorConfig) RunConfigBuilderOption {
+	return func(b *runConfigBuilder) error {
+		if config == nil {
+			b.config.OIDCConfig = nil
+			return nil
+		}
+
+		configCopy := *config
+		configCopy.Scopes = slices.Clone(config.Scopes)
+		b.config.OIDCConfig = &configCopy
 		return nil
 	}
 }
@@ -606,6 +633,22 @@ func WithTelemetryConfigFromFlags(
 	return WithTelemetryConfig(config)
 }
 
+// WithMetricsOnTransportPort records whether /metrics should also be served on the
+// main transport port. Nil means the caller expressed no preference and the current
+// default applies at startup; see telemetry.DefaultMetricsOnTransportPort.
+//
+// Must be applied after the telemetry configuration; it is a no-op when telemetry is
+// disabled, since there is no config to record it on.
+func WithMetricsOnTransportPort(v *bool) RunConfigBuilderOption {
+	return func(b *runConfigBuilder) error {
+		if v == nil || b.config.TelemetryConfig == nil {
+			return nil
+		}
+		b.config.TelemetryConfig.MetricsOnTransportPort = v
+		return nil
+	}
+}
+
 // WithTelemetryConfig sets the telemetry configuration
 func WithTelemetryConfig(config *telemetry.Config) RunConfigBuilderOption {
 	return func(b *runConfigBuilder) error {
@@ -688,7 +731,19 @@ func WithMiddlewareFromFlags(
 		middlewareConfigs = addToolFilterMiddlewares(middlewareConfigs, toolsFilter, toolsOverride)
 
 		// Add core middlewares (always present)
-		middlewareConfigs = addCoreMiddlewares(middlewareConfigs, oidcConfig, tokenExchangeConfig, disableUsageMetrics)
+		embeddedAuthServerIssuer := func() string {
+			if b.config.EmbeddedAuthServerConfig != nil {
+				return b.config.EmbeddedAuthServerConfig.Issuer
+			}
+			return ""
+		}()
+		middlewareConfigs = addCoreMiddlewares(
+			middlewareConfigs,
+			oidcConfig,
+			tokenExchangeConfig,
+			embeddedAuthServerIssuer,
+			disableUsageMetrics,
+		)
 
 		// NOTE: Header forward middleware is NOT added here because secret-backed
 		// headers are not yet resolved at builder time. It is added in Runner.Run()
@@ -835,11 +890,13 @@ func addCoreMiddlewares(
 	middlewareConfigs []types.MiddlewareConfig,
 	oidcConfig *auth.TokenValidatorConfig,
 	tokenExchangeConfig *tokenexchange.Config,
+	embeddedAuthServerIssuer string,
 	disableUsageMetrics bool,
 ) []types.MiddlewareConfig {
 	// Authentication middleware (always present)
 	authParams := auth.MiddlewareParams{
-		OIDCConfig: oidcConfig,
+		OIDCConfig:               oidcConfig,
+		EmbeddedAuthServerIssuer: embeddedAuthServerIssuer,
 	}
 	if authConfig, err := types.NewMiddlewareConfig(auth.MiddlewareType, authParams); err == nil {
 		middlewareConfigs = append(middlewareConfigs, *authConfig)
@@ -1052,6 +1109,10 @@ func internalRunConfigBuilder(
 		b.config.OIDCConfig.Scopes = scopes
 	}
 
+	if err := canonicalizeOIDCMiddlewareConfig(b.config); err != nil {
+		return nil, fmt.Errorf("invalid OIDC middleware configuration: %w", err)
+	}
+
 	// When using the CLI validation strategy, this is where the prompting for
 	// missing environment variables will happen.
 	processedEnvVars := envVars
@@ -1149,10 +1210,11 @@ func (b *runConfigBuilder) validateConfig(imageMetadata *regtypes.ImageMetadata)
 
 	// Load or default the permission profile
 	// NOTE: This must be done before processing volume mounts
-	c.PermissionProfile, err = b.loadPermissionProfile(imageMetadata)
+	permissionProfile, err := b.loadPermissionProfile(imageMetadata)
 	if err != nil {
 		return err
 	}
+	c.PermissionProfile = clonePermissionProfile(permissionProfile)
 
 	// Apply network mode to permission profile if specified
 	if b.networkMode != "" {
@@ -1326,6 +1388,37 @@ func (b *runConfigBuilder) loadPermissionProfile(imageMetadata *regtypes.ImageMe
 	// If no metadata is available, use the network permission profile as default.
 	slog.Debug("Using default permission profile", "profile", permissions.ProfileNetwork)
 	return permissions.BuiltinNetworkProfile(), nil
+}
+
+// clonePermissionProfile returns a deep copy that the builder can safely mutate.
+func clonePermissionProfile(profile *permissions.Profile) *permissions.Profile {
+	if profile == nil {
+		return nil
+	}
+
+	cloned := *profile
+	cloned.Read = slices.Clone(profile.Read)
+	cloned.Write = slices.Clone(profile.Write)
+
+	if profile.Network != nil {
+		network := *profile.Network
+		cloned.Network = &network
+
+		if profile.Network.Outbound != nil {
+			outbound := *profile.Network.Outbound
+			outbound.AllowHost = slices.Clone(profile.Network.Outbound.AllowHost)
+			outbound.AllowPort = slices.Clone(profile.Network.Outbound.AllowPort)
+			network.Outbound = &outbound
+		}
+
+		if profile.Network.Inbound != nil {
+			inbound := *profile.Network.Inbound
+			inbound.AllowHost = slices.Clone(profile.Network.Inbound.AllowHost)
+			network.Inbound = &inbound
+		}
+	}
+
+	return &cloned
 }
 
 // processVolumeMounts processes volume mounts and adds them to the permission profile

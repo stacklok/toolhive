@@ -45,7 +45,7 @@ var _ storage.PluginStore = (*PluginStore)(nil)
 const pluginColumns = `ip_.id, e.name, ip_.scope, ip_.project_root, ip_.reference, ip_.tag,
 			ip_.digest, ip_.version, ip_.description, ip_.author, ip_.license, json(ip_.keywords),
 			json(ip_.client_apps), json(ip_.components), ip_.signature, ip_.status, ip_.installed_at,
-			ip_.managed`
+			ip_.managed, ip_.sigstore_bundle`
 
 // errPluginManagedRequiresProjectScope is returned by Create/Update when a
 // user-scoped plugin has Managed set. Managed pins a plugin in a project's
@@ -106,8 +106,8 @@ func (s *PluginStore) Create(ctx context.Context, plugin plugins.InstalledPlugin
 		INSERT INTO installed_plugins (
 			entry_id, scope, project_root, reference, tag, digest,
 			version, description, author, license, keywords, client_apps, components,
-			signature, status, managed
-		) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, jsonb(?), jsonb(?), jsonb(?), ?, ?, ?)`,
+			signature, status, managed, sigstore_bundle
+		) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, jsonb(?), jsonb(?), jsonb(?), ?, ?, ?, ?)`,
 		entryID,
 		string(plugin.Scope),
 		plugin.ProjectRoot,
@@ -124,6 +124,7 @@ func (s *PluginStore) Create(ctx context.Context, plugin plugins.InstalledPlugin
 		nullableSignature(plugin.Signature),
 		string(plugin.Status),
 		boolToInt(plugin.Managed),
+		plugin.SigstoreBundle,
 	)
 	if err != nil {
 		if isUniqueViolation(err) {
@@ -297,7 +298,8 @@ func (s *PluginStore) Update(ctx context.Context, plugin plugins.InstalledPlugin
 		UPDATE installed_plugins SET
 			reference = ?, tag = ?, digest = ?, version = ?, description = ?,
 			author = ?, license = ?, keywords = jsonb(?), client_apps = jsonb(?),
-			components = jsonb(?), signature = ?, status = ?, managed = ?
+			components = jsonb(?), signature = ?, status = ?, managed = ?,
+			sigstore_bundle = ?
 		WHERE id = ?`,
 		plugin.Reference,
 		plugin.Tag,
@@ -312,6 +314,7 @@ func (s *PluginStore) Update(ctx context.Context, plugin plugins.InstalledPlugin
 		nullableSignature(plugin.Signature),
 		string(plugin.Status),
 		boolToInt(plugin.Managed),
+		plugin.SigstoreBundle,
 		installedPluginID,
 	); err != nil {
 		return fmt.Errorf("updating installed plugin: %w", err)
@@ -386,9 +389,10 @@ func (s *PluginStore) Delete(ctx context.Context, name string, scope plugins.Sco
 }
 
 // scanPluginFields scans a plugin row into an InstalledPlugin and its DB id.
-// The column list must match pluginColumns (18 fields: id, name, scope,
+// The column list must match pluginColumns (19 fields: id, name, scope,
 // project_root, reference, tag, digest, version, description, author, license,
-// keywords, client_apps, components, signature, status, installed_at, managed).
+// keywords, client_apps, components, signature, status, installed_at, managed,
+// sigstore_bundle).
 func scanPluginFields(sc scanner) (plugins.InstalledPlugin, int64, error) {
 	var (
 		installedPluginID int64
@@ -409,13 +413,14 @@ func scanPluginFields(sc scanner) (plugins.InstalledPlugin, int64, error) {
 		status            string
 		installedAtStr    string
 		managed           int
+		sigstoreBundle    []byte
 	)
 
 	err := sc.Scan(
 		&installedPluginID, &name, &scope, &projectRoot, &reference, &tag,
 		&digest, &version, &description, &author, &license, &keywordsBlob,
 		&clientsBlob, &componentsBlob, &signature, &status, &installedAtStr,
-		&managed,
+		&managed, &sigstoreBundle,
 	)
 	if err != nil {
 		if errors.Is(err, sql.ErrNoRows) {
@@ -449,16 +454,17 @@ func scanPluginFields(sc scanner) (plugins.InstalledPlugin, int64, error) {
 			License:     license,
 			Keywords:    keywords,
 		},
-		Scope:       plugins.Scope(scope),
-		ProjectRoot: projectRoot,
-		Reference:   reference,
-		Tag:         tag,
-		Digest:      digest,
-		Status:      plugins.InstallStatus(status),
-		InstalledAt: installedAt,
-		Clients:     clients,
-		Components:  components,
-		Managed:     managed != 0,
+		Scope:          plugins.Scope(scope),
+		ProjectRoot:    projectRoot,
+		Reference:      reference,
+		Tag:            tag,
+		Digest:         digest,
+		Status:         plugins.InstallStatus(status),
+		InstalledAt:    installedAt,
+		Clients:        clients,
+		Components:     components,
+		Managed:        managed != 0,
+		SigstoreBundle: sigstoreBundle,
 	}
 	// signature is nullable — set Signature only when Valid.
 	if signature.Valid {

@@ -50,9 +50,18 @@ func NormalizeMCPTelemetryConfig(
 		}
 	}
 
-	// Map Prometheus configuration
+	// Map Prometheus configuration. MetricsOnTransportPort is cloned rather than
+	// aliased: "unset" (nil) must survive the conversion so the runtime side
+	// resolves it against the current default at startup, but the value must not
+	// share a pointer with the CRD spec. NormalizeTelemetryConfig below only
+	// shallow-copies config, so an aliased pointer here would let a write through
+	// config.MetricsOnTransportPort reach back into the caller's spec object.
 	if spec.Prometheus != nil {
 		config.EnablePrometheusMetricsPath = spec.Prometheus.Enabled
+		if spec.Prometheus.MetricsOnTransportPort != nil {
+			v := *spec.Prometheus.MetricsOnTransportPort
+			config.MetricsOnTransportPort = &v
+		}
 	}
 
 	// Apply per-server service name override from the TelemetryConfigRef

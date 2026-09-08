@@ -227,6 +227,11 @@ type RunConfig struct {
 	// time.Duration field serializes as nanoseconds in JSON.
 	SessionTTL string `json:"session_ttl,omitempty" yaml:"session_ttl,omitempty" example:"2h"`
 
+	// MaxRequestBodySize is the maximum inbound MCP proxy request body size in bytes.
+	// Zero uses the default limit of 8 MiB. Negative values are rejected
+	// when the RunConfig is built or used at runtime.
+	MaxRequestBodySize int64 `json:"max_request_body_size,omitempty" yaml:"max_request_body_size,omitempty"`
+
 	// ProxyMode is the effective HTTP protocol the proxy uses.
 	// For stdio transports, this is the configured mode (sse or streamable-http).
 	// For direct transports (sse/streamable-http), this matches the transport type.
@@ -395,6 +400,11 @@ func ReadJSON(r io.Reader) (*RunConfig, error) {
 	// Migrate plain text bearer tokens to CLI format
 	if err := migrateBearerToken(&config); err != nil {
 		return nil, fmt.Errorf("failed to migrate bearer token: %w", err)
+	}
+
+	// Repair legacy serialized auth middleware in memory without rewriting the source config.
+	if err := canonicalizeOIDCMiddlewareConfig(&config); err != nil {
+		return nil, fmt.Errorf("invalid OIDC middleware configuration: %w", err)
 	}
 
 	// Normalize proxyMode so pre-existing configs always reflect the effective protocol

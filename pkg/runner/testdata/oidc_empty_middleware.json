@@ -1,0 +1,7 @@
+{
+  "name": "oidc-empty-middleware",
+  "oidc_config": {
+    "Issuer": "https://issuer.example.com"
+  },
+  "middleware_configs": null
+}

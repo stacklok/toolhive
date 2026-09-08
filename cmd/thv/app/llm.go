@@ -374,7 +374,10 @@ func oidcLogin(ctx context.Context, cfg *llm.Config, skipBrowser bool) error {
 	if err != nil {
 		return fmt.Errorf("building token source: %w", err)
 	}
-	_, err = ts.Token(ctx)
+	token, err := ts.Token(ctx)
+	if err == nil {
+		cfg.SetDiscoveryAccessToken(token)
+	}
 	return err
 }
 
@@ -479,6 +482,10 @@ func (a *clientManagerAdapter) LLMGatewayModeFor(clientType string) string {
 
 func (a *clientManagerAdapter) IsManaged(clientType string) bool {
 	return a.cm.IsManaged(client.ClientApp(clientType))
+}
+
+func (a *clientManagerAdapter) LLMClientDetectionHint(clientType string) string {
+	return a.cm.LLMClientDetectionHint(client.ClientApp(clientType))
 }
 
 func (a *clientManagerAdapter) ConfigureEnvFile(clientType string, cfg llmgateway.ApplyConfig) (string, error) {

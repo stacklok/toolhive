@@ -248,6 +248,7 @@ func (r *VirtualMCPServerReconciler) Reconcile(ctx context.Context, req ctrl.Req
 
 	// Create status manager for batched updates
 	statusManager := virtualmcpserverstatus.NewStatusManager(vmcp)
+	r.applyInlineInboundGrantDeprecationCondition(vmcp, statusManager)
 
 	// Run all pre-reconciliation validations.
 	// Returns (true, nil) to continue, (false, nil) when validation failed but
@@ -325,6 +326,33 @@ func (r *VirtualMCPServerReconciler) Reconcile(ctx context.Context, req ctrl.Req
 	return ctrl.Result{}, nil
 }
 
+func (*VirtualMCPServerReconciler) applyInlineInboundGrantDeprecationCondition(
+	vmcp *mcpv1beta1.VirtualMCPServer,
+	statusManager virtualmcpserverstatus.StatusManager,
+) {
+	if vmcp.Spec.AuthServerConfig == nil {
+		statusManager.RemoveConditionsWithPrefix(
+			mcpv1beta1.ConditionTypeVirtualMCPServerDeprecatedInboundGrantConfiguration, nil)
+		return
+	}
+	fields := deprecatedInboundGrantFields(vmcp.Spec.AuthServerConfig, "spec.authServerConfig")
+	if len(fields) == 0 {
+		statusManager.SetCondition(
+			mcpv1beta1.ConditionTypeVirtualMCPServerDeprecatedInboundGrantConfiguration,
+			mcpv1beta1.ConditionReasonVirtualMCPServerCanonicalInboundGrantConfiguration,
+			"Only canonical inbound grant configuration is populated",
+			metav1.ConditionFalse,
+		)
+		return
+	}
+	statusManager.SetCondition(
+		mcpv1beta1.ConditionTypeVirtualMCPServerDeprecatedInboundGrantConfiguration,
+		mcpv1beta1.ConditionReasonVirtualMCPServerLegacyInboundGrantFields,
+		deprecatedInboundGrantMessage(fields),
+		metav1.ConditionTrue,
+	)
+}
+
 // validateSpec validates the VirtualMCPServer spec and updates status on error.
 // Returns an error if validation fails, which signals the caller to stop reconciliation.
 func (r *VirtualMCPServerReconciler) validateSpec(
@@ -369,20 +397,24 @@ func (r *VirtualMCPServerReconciler) applyStatusUpdates(
 		return fmt.Errorf("failed to get latest VirtualMCPServer: %w", err)
 	}
 
-	// Apply collected changes to the latest status
-	hasUpdates := statusManager.UpdateStatus(ctx, &latest.Status)
-
-	// Only update if there are changes
-	if hasUpdates {
-		if err := r.Status().Update(ctx, latest); err != nil {
-			// Handle conflicts by returning error to trigger requeue
-			if errors.IsConflict(err) {
-				ctxLogger.V(1).Info("Conflict updating status, will requeue")
-				return err
-			}
-			return fmt.Errorf("failed to update VirtualMCPServer status: %w", err)
+	wasDeprecated := conditionStatusIs(latest.Status.Conditions,
+		mcpv1beta1.ConditionTypeVirtualMCPServerDeprecatedInboundGrantConfiguration, metav1.ConditionTrue)
+	becameDeprecated := false
+	if err := ctrlutil.MutateAndPatchStatus(ctx, r.Client, latest,
+		func(c *mcpv1beta1.VirtualMCPServer) {
+			statusManager.UpdateStatus(ctx, &c.Status)
+			becameDeprecated = conditionStatusIs(c.Status.Conditions,
+				mcpv1beta1.ConditionTypeVirtualMCPServerDeprecatedInboundGrantConfiguration, metav1.ConditionTrue)
+		}); err != nil {
+		if errors.IsConflict(err) {
+			ctxLogger.V(1).Info("Conflict updating status, will requeue")
 		}
-		ctxLogger.V(1).Info("Successfully applied batched status updates")
+		return fmt.Errorf("failed to update VirtualMCPServer status: %w", err)
+	}
+	if !wasDeprecated && becameDeprecated && r.Recorder != nil {
+		r.Recorder.Eventf(latest, nil, corev1.EventTypeWarning,
+			inboundGrantDeprecationEventReason, "MigrateInboundGrants",
+			"Released legacy inbound grant fields are deprecated; see status condition for canonical replacement paths")
 	}
 
 	return nil
@@ -445,7 +477,9 @@ func (r *VirtualMCPServerReconciler) runValidations(
 	}
 
 	// Validate auth-related spec fields (AuthServerConfig + AuthzConfig coherence).
-	if ok := r.runAuthValidations(ctx, vmcp, statusManager); !ok {
+	if ok, err := r.runAuthValidations(ctx, vmcp, statusManager); err != nil {
+		return false, err
+	} else if !ok {
 		return false, nil
 	}
 
@@ -457,15 +491,14 @@ func (r *VirtualMCPServerReconciler) runValidations(
 
 // runAuthValidations runs the auth-related spec validations: the inline
 // AuthServerConfig (when specified) and the AuthzConfig/upstream coherence
-// check. Returns false when a validation fails and the caller should stop
-// reconciliation (user must fix the spec); true to continue.
+// check. Returns (true, nil) to continue; (false, nil) when a spec validation
+// failed and the user must fix it, so reconciliation stops without requeue;
+// (false, err) for a transient failure the caller should requeue on.
 func (r *VirtualMCPServerReconciler) runAuthValidations(
 	ctx context.Context,
 	vmcp *mcpv1beta1.VirtualMCPServer,
 	statusManager virtualmcpserverstatus.StatusManager,
-) bool {
-	ctxLogger := log.FromContext(ctx)
-
+) (bool, error) {
 	// Validate inline AuthServerConfig (when specified).
 	if vmcp.Spec.AuthServerConfig != nil {
 		// Surface the IdentitySynthesized advisory upfront, before validation.
@@ -479,9 +512,18 @@ func (r *VirtualMCPServerReconciler) runAuthValidations(
 		r.applyAuthServerIdentitySynthesizedCondition(vmcp, statusManager)
 		if err := r.validateAuthServerConfig(vmcp, statusManager); err != nil {
 			if applyErr := r.applyStatusUpdates(ctx, vmcp, statusManager); applyErr != nil {
-				ctxLogger.Error(applyErr, "Failed to apply status updates after AuthServerConfig validation error")
+				return false, applyErr
 			}
-			return false
+			return false, nil
+		}
+		if terminal, err := r.validateAuthServerConfigCABundles(ctx, vmcp, statusManager); err != nil {
+			if applyErr := r.applyStatusUpdates(ctx, vmcp, statusManager); applyErr != nil {
+				return false, applyErr
+			}
+			if terminal {
+				return false, nil
+			}
+			return false, err
 		}
 	} else {
 		// Remove stale conditions if AuthServerConfig was previously set then removed.
@@ -495,12 +537,40 @@ func (r *VirtualMCPServerReconciler) runAuthValidations(
 	// RemoveConditionsWithPrefix call above when AuthServerConfig is nil.
 	if err := r.validateAuthzUpstreamAvailable(ctx, vmcp, statusManager); err != nil {
 		if applyErr := r.applyStatusUpdates(ctx, vmcp, statusManager); applyErr != nil {
-			ctxLogger.Error(applyErr, "Failed to apply status updates after AuthzUpstreamAvailable validation error")
+			return false, applyErr
 		}
-		return false
+		return false, nil
 	}
 
-	return true
+	return true, nil
+}
+
+// validateAuthServerConfigCABundles resolves inline upstream CA dependencies.
+//
+// Returns (true, err) when the failure is terminal — a malformed reference or
+// non-PEM content, which no retry fixes — with the failure already stamped on
+// status. Returns (false, err) when the ConfigMap read itself failed, which may
+// be transient: nothing is stamped, because recording a spec defect for an
+// unavailable apiserver would outlive its cause. Returns (false, nil) on
+// success.
+func (r *VirtualMCPServerReconciler) validateAuthServerConfigCABundles(
+	ctx context.Context, vmcp *mcpv1beta1.VirtualMCPServer, statusManager virtualmcpserverstatus.StatusManager,
+) (bool, error) {
+	err := ctrlutil.ValidateEmbeddedAuthServerCABundles(ctx, r.Client, vmcp.Namespace, vmcp.Spec.AuthServerConfig)
+	if err == nil {
+		return false, nil
+	}
+	var invalidCABundleErr *ctrlutil.InvalidCABundleError
+	if !stderrors.As(err, &invalidCABundleErr) {
+		return false, err
+	}
+	message := fmt.Sprintf("invalid CA bundle: %v", err)
+	statusManager.SetPhase(mcpv1beta1.VirtualMCPServerPhaseFailed)
+	statusManager.SetMessage(message)
+	statusManager.SetAuthServerConfigValidatedCondition(
+		mcpv1beta1.ConditionReasonAuthServerConfigInvalid, message, metav1.ConditionFalse)
+	statusManager.SetObservedGeneration(vmcp.Generation)
+	return true, err
 }
 
 // validateSessionStorageForReplicas emits a SessionStorageWarning condition when
@@ -558,6 +628,19 @@ func (*VirtualMCPServerReconciler) validateAuthServerConfig(
 		return stderrors.New(message)
 	}
 
+	if err := cfg.ValidateInboundGrants(); err != nil {
+		message := fmt.Sprintf("spec.authServerConfig: %v", err)
+		statusManager.SetPhase(mcpv1beta1.VirtualMCPServerPhaseFailed)
+		statusManager.SetMessage(message)
+		statusManager.SetAuthServerConfigValidatedCondition(
+			mcpv1beta1.ConditionReasonAuthServerConfigInvalid,
+			message,
+			metav1.ConditionFalse,
+		)
+		statusManager.SetObservedGeneration(vmcp.Generation)
+		return stderrors.New(message)
+	}
+
 	// Admission-time check: http:// issuers for non-localhost hosts require
 	// insecureAllowHTTP to be set explicitly. Without it the proxyrunner pod
 	// will crash at startup with a validateIssuerURL failure.
@@ -584,21 +667,12 @@ func (*VirtualMCPServerReconciler) validateAuthServerConfig(
 		}
 	}
 
-	if err := cfg.ValidateConfidentialClientTransport(); err != nil {
-		message := fmt.Sprintf("spec.authServerConfig: %v", err)
-		statusManager.SetPhase(mcpv1beta1.VirtualMCPServerPhaseFailed)
-		statusManager.SetMessage(message)
-		statusManager.SetAuthServerConfigValidatedCondition(
-			mcpv1beta1.ConditionReasonAuthServerConfigInvalid,
-			message,
-			metav1.ConditionFalse,
-		)
-		statusManager.SetObservedGeneration(vmcp.Generation)
-		return stderrors.New(message)
-	}
-
-	if len(cfg.UpstreamProviders) == 0 {
-		message := "spec.authServerConfig.upstreamProviders is required"
+	if len(cfg.UpstreamProviders) == 0 && len(cfg.DelegateClients) == 0 && cfg.InboundGrants == nil &&
+		!slices.ContainsFunc(cfg.TrustedIssuers, func(issuer mcpv1beta1.TrustedIssuerConfig) bool {
+			return issuer.JWTBearerGrant != nil
+		}) {
+		message := "spec.authServerConfig requires at least one upstream provider unless " +
+			"delegateClients, inboundGrants, or a trustedIssuer with jwtBearerGrant is configured"
 		statusManager.SetPhase(mcpv1beta1.VirtualMCPServerPhaseFailed)
 		statusManager.SetMessage(message)
 		statusManager.SetAuthServerConfigValidatedCondition(
@@ -749,6 +823,32 @@ func (r *VirtualMCPServerReconciler) emitPrimaryUpstreamProviderDeprecatedEvent(
 			"move the value to spec.authServerConfig.primaryUpstreamProvider")
 }
 
+// emitInlineTelemetryIgnoredEvent emits a Warning when VirtualMCPServer still
+// sets the deprecated spec.config.telemetry field without telemetryConfigRef.
+// The operator does not apply inline telemetry; GET /metrics then falls through
+// to the MCP handler (HTTP 406).
+//
+// The generation==observedGeneration guard suppresses the event after a
+// successful reconcile advances status. Retries that fail before
+// observedGeneration is updated can re-emit; Kubernetes event aggregation
+// is the practical dedupe in that window.
+func (r *VirtualMCPServerReconciler) emitInlineTelemetryIgnoredEvent(
+	vmcp *mcpv1beta1.VirtualMCPServer,
+) {
+	usesIgnoredInline := vmcp.Spec.Config.Telemetry != nil && vmcp.Spec.TelemetryConfigRef == nil
+	if !usesIgnoredInline || r.Recorder == nil {
+		return
+	}
+	if vmcp.Generation == vmcp.Status.ObservedGeneration {
+		return
+	}
+	r.Recorder.Eventf(vmcp, nil, corev1.EventTypeWarning,
+		"InlineTelemetryIgnored", "ConvertTelemetry",
+		"spec.config.telemetry is ignored by the operator; set spec.telemetryConfigRef "+
+			"to an MCPTelemetryConfig. Without that, GET /metrics is not registered and "+
+			"returns HTTP 406 from the MCP streamable handler.")
+}
+
 func (r *VirtualMCPServerReconciler) validateAuthzUpstreamAvailable(
 	ctx context.Context,
 	vmcp *mcpv1beta1.VirtualMCPServer,
@@ -798,18 +898,20 @@ func (r *VirtualMCPServerReconciler) validateAuthzUpstreamAvailable(
 		return nil
 	}
 
-	// Embedded AS configured but no upstreams: this is the misconfiguration
-	// that silently evaluates policies against the AS-issued token.
+	// Embedded AS configured but no upstreams: token-only issuance does not
+	// create provenance-bound upstream-token entries that Cedar needs to select
+	// upstream-derived claims. Reject rather than allowing policies that cannot
+	// resolve their configured claim source.
 	if len(vmcp.Spec.AuthServerConfig.UpstreamProviders) == 0 {
 		// User-facing message includes full remediation guidance and ends with
 		// a period, matching other validator messages. The returned error uses
 		// a trimmed form without trailing punctuation to satisfy staticcheck.
 		message := "spec.authServerConfig is set but has no upstream providers, and " +
-			"spec.incomingAuth.authzConfig references claims. Cedar would evaluate " +
-			"against the ToolHive-issued AS token rather than the upstream IDP token. " +
-			"Configure spec.authServerConfig.upstreamProviders with at least one " +
-			"upstream IDP, or remove authServerConfig if clients will present IdP " +
-			"tokens directly."
+			"spec.incomingAuth.authzConfig references claims. Grant-only token issuance " +
+			"does not create the provenance-bound upstream-token entries Cedar needs to " +
+			"select upstream-derived claims. Configure spec.authServerConfig.upstreamProviders " +
+			"with at least one upstream IDP, or remove authServerConfig if clients will " +
+			"present IdP tokens directly."
 		return rejectAuthzAdmission(ctx, vmcp, statusManager,
 			"authz configured without an upstream IDP; rejecting VirtualMCPServer",
 			mcpv1beta1.ConditionReasonAuthzRequiresUpstream,
@@ -1525,85 +1627,102 @@ func (r *VirtualMCPServerReconciler) ensureDeployment(
 		return ctrl.Result{}, err
 	}
 
+	// Fetch the selected inline auth-server CA content checksum. This is intentionally
+	// computed from the current ConfigMaps so both rollout and drift detection use
+	// the same value.
+	caBundleChecksum, err := ctrlutil.EmbeddedAuthServerCABundleChecksumForConfig(
+		ctx, r.Client, vmcp.Namespace, vmcp.Spec.AuthServerConfig)
+	if err != nil {
+		// runAuthValidations gates this path, so a terminal bundle error should
+		// not reach here. Stop rather than requeue if one does: retrying cannot
+		// fix malformed content, and the validation above has already recorded it.
+		var invalidCABundleErr *ctrlutil.InvalidCABundleError
+		if stderrors.As(err, &invalidCABundleErr) {
+			return ctrl.Result{}, nil
+		}
+		return ctrl.Result{}, err
+	}
+
 	deployment := &appsv1.Deployment{}
 	err = r.Get(ctx, types.NamespacedName{Name: vmcp.Name, Namespace: vmcp.Namespace}, deployment)
 
 	if errors.IsNotFound(err) {
-		dep := r.deploymentForVirtualMCPServer(ctx, vmcp, vmcpConfigChecksum, telemetryCfg, typedWorkloads)
-		if dep == nil {
-			return ctrl.Result{}, fmt.Errorf("failed to create Deployment object")
-		}
-		ctxLogger.Info("Creating a new Deployment", "Deployment.Namespace", dep.Namespace, "Deployment.Name", dep.Name)
-		if err := r.Create(ctx, dep); err != nil {
-			ctxLogger.Error(err, "Failed to create new Deployment")
-			// Record event for deployment creation failure
-			if r.Recorder != nil {
-				r.Recorder.Eventf(vmcp, nil, corev1.EventTypeWarning, "DeploymentCreationFailed", "CreateDeployment",
-					"Failed to create Deployment: %v", err)
-			}
-			return ctrl.Result{}, err
-		}
-		// Record event for successful deployment creation
-		if r.Recorder != nil {
-			r.Recorder.Eventf(vmcp, nil, corev1.EventTypeNormal, "DeploymentCreated", "CreateDeployment",
-				"Deployment created successfully")
-		}
-		// Return empty result to continue with rest of reconciliation (Service, status update, etc.)
-		// Kubernetes will automatically requeue when Deployment status changes
-		return ctrl.Result{}, nil
-	} else if err != nil {
+		return r.createDeployment(ctx, vmcp, telemetryCfg, typedWorkloads, vmcpConfigChecksum, caBundleChecksum)
+	}
+	if err != nil {
 		ctxLogger.Error(err, "Failed to get Deployment")
 		return ctrl.Result{}, err
 	}
 
-	// Deployment exists - check if it needs to be updated
-	// deploymentNeedsUpdate performs a detailed comparison to avoid unnecessary updates
-	if r.deploymentNeedsUpdate(ctx, deployment, vmcp, vmcpConfigChecksum, telemetryCfg, typedWorkloads) {
-		newDeployment := r.deploymentForVirtualMCPServer(ctx, vmcp, vmcpConfigChecksum, telemetryCfg, typedWorkloads)
-		if newDeployment == nil {
-			return ctrl.Result{}, fmt.Errorf("failed to create updated Deployment object")
-		}
-
-		// Selective field update strategy:
-		// - Update Spec.Template: Contains container spec, volumes, pod metadata (triggers rollout)
-		// - Update Labels: For label selectors and queries
-		// - Update Annotations: For metadata and tooling
-		// - Sync Spec.Replicas when spec.replicas is non-nil (operator authoritative)
-		// - Preserve Spec.Replicas when spec.replicas is nil (HPA or external controller manages scaling)
-		// - Preserve ResourceVersion, UID: Required for optimistic concurrency control
-		//
-		// Note: If update conflicts occur due to concurrent modifications, the reconcile
-		// loop will retry automatically. Kubernetes' optimistic locking prevents data loss.
-		newDeployment.Spec.Template.Annotations = ctrlutil.PreserveKubectlRestartedAt(
-			newDeployment.Spec.Template.Annotations, deployment.Spec.Template.Annotations)
-		deployment.Spec.Template = newDeployment.Spec.Template
-		deployment.Labels = newDeployment.Labels
-		deployment.Annotations = mergeDeploymentAnnotations(newDeployment.Annotations, deployment.Annotations)
-		if newDeployment.Spec.Replicas != nil {
-			deployment.Spec.Replicas = newDeployment.Spec.Replicas
-		}
-
-		ctxLogger.Info("Updating Deployment", "Deployment.Namespace", deployment.Namespace, "Deployment.Name", deployment.Name)
-		if err := r.Update(ctx, deployment); err != nil {
-			ctxLogger.Error(err, "Failed to update Deployment")
-			// Record event for deployment update failure
-			if r.Recorder != nil {
-				r.Recorder.Eventf(vmcp, nil, corev1.EventTypeWarning, "DeploymentUpdateFailed", "UpdateDeployment",
-					"Failed to update Deployment: %v", err)
-			}
-			// Return error to trigger reconcile retry (handles transient failures and conflicts)
-			return ctrl.Result{}, err
-		}
-		// Record event for successful deployment update (config change triggers rollout)
-		if r.Recorder != nil {
-			r.Recorder.Eventf(vmcp, nil, corev1.EventTypeNormal, "DeploymentUpdated", "UpdateDeployment",
-				"Deployment updated, rolling out new configuration")
-		}
-		// Return empty result to continue with rest of reconciliation
-		// Deployment rollout will be monitored when Kubernetes triggers subsequent reconciles
-		return ctrl.Result{}, nil
+	if r.deploymentNeedsUpdate(ctx, deployment, vmcp, vmcpConfigChecksum, caBundleChecksum, telemetryCfg, typedWorkloads) {
+		return r.updateDeployment(ctx, vmcp, deployment, telemetryCfg, typedWorkloads, vmcpConfigChecksum, caBundleChecksum)
 	}
 
+	return ctrl.Result{}, nil
+}
+
+func (r *VirtualMCPServerReconciler) createDeployment(
+	ctx context.Context,
+	vmcp *mcpv1beta1.VirtualMCPServer,
+	telemetryCfg *mcpv1beta1.MCPTelemetryConfig,
+	typedWorkloads []workloads.TypedWorkload,
+	vmcpConfigChecksum, caBundleChecksum string,
+) (ctrl.Result, error) {
+	ctxLogger := log.FromContext(ctx)
+	dep := r.deploymentForVirtualMCPServer(ctx, vmcp, vmcpConfigChecksum, caBundleChecksum, telemetryCfg, typedWorkloads)
+	if dep == nil {
+		return ctrl.Result{}, fmt.Errorf("failed to create Deployment object")
+	}
+	ctxLogger.Info("Creating a new Deployment", "Deployment.Namespace", dep.Namespace, "Deployment.Name", dep.Name)
+	if err := r.Create(ctx, dep); err != nil {
+		ctxLogger.Error(err, "Failed to create new Deployment")
+		if r.Recorder != nil {
+			r.Recorder.Eventf(vmcp, nil, corev1.EventTypeWarning, "DeploymentCreationFailed", "CreateDeployment",
+				"Failed to create Deployment: %v", err)
+		}
+		return ctrl.Result{}, err
+	}
+	if r.Recorder != nil {
+		r.Recorder.Eventf(vmcp, nil, corev1.EventTypeNormal, "DeploymentCreated", "CreateDeployment",
+			"Deployment created successfully")
+	}
+	return ctrl.Result{}, nil
+}
+
+func (r *VirtualMCPServerReconciler) updateDeployment(
+	ctx context.Context,
+	vmcp *mcpv1beta1.VirtualMCPServer,
+	deployment *appsv1.Deployment,
+	telemetryCfg *mcpv1beta1.MCPTelemetryConfig,
+	typedWorkloads []workloads.TypedWorkload,
+	vmcpConfigChecksum, caBundleChecksum string,
+) (ctrl.Result, error) {
+	ctxLogger := log.FromContext(ctx)
+	newDeployment := r.deploymentForVirtualMCPServer(ctx, vmcp, vmcpConfigChecksum, caBundleChecksum, telemetryCfg, typedWorkloads)
+	if newDeployment == nil {
+		return ctrl.Result{}, fmt.Errorf("failed to create updated Deployment object")
+	}
+	newDeployment.Spec.Template.Annotations = ctrlutil.PreserveKubectlRestartedAt(
+		newDeployment.Spec.Template.Annotations, deployment.Spec.Template.Annotations)
+	deployment.Spec.Template = newDeployment.Spec.Template
+	deployment.Labels = newDeployment.Labels
+	deployment.Annotations = mergeDeploymentAnnotations(newDeployment.Annotations, deployment.Annotations)
+	if newDeployment.Spec.Replicas != nil {
+		deployment.Spec.Replicas = newDeployment.Spec.Replicas
+	}
+	ctxLogger.Info("Updating Deployment", "Deployment.Namespace", deployment.Namespace, "Deployment.Name", deployment.Name)
+	if err := r.Update(ctx, deployment); err != nil {
+		ctxLogger.Error(err, "Failed to update Deployment")
+		if r.Recorder != nil {
+			r.Recorder.Eventf(vmcp, nil, corev1.EventTypeWarning, "DeploymentUpdateFailed", "UpdateDeployment",
+				"Failed to update Deployment: %v", err)
+		}
+		return ctrl.Result{}, err
+	}
+	if r.Recorder != nil {
+		r.Recorder.Eventf(vmcp, nil, corev1.EventTypeNormal, "DeploymentUpdated", "UpdateDeployment",
+			"Deployment updated, rolling out new configuration")
+	}
 	return ctrl.Result{}, nil
 }
 
@@ -1702,6 +1821,7 @@ func (r *VirtualMCPServerReconciler) deploymentNeedsUpdate(
 	deployment *appsv1.Deployment,
 	vmcp *mcpv1beta1.VirtualMCPServer,
 	vmcpConfigChecksum string,
+	caBundleChecksum string,
 	telemetryCfg *mcpv1beta1.MCPTelemetryConfig,
 	typedWorkloads []workloads.TypedWorkload,
 ) bool {
@@ -1721,7 +1841,7 @@ func (r *VirtualMCPServerReconciler) deploymentNeedsUpdate(
 		return true
 	}
 
-	if r.podTemplateMetadataNeedsUpdate(deployment, vmcp, vmcpConfigChecksum) {
+	if r.podTemplateMetadataNeedsUpdate(deployment, vmcp, vmcpConfigChecksum, caBundleChecksum) {
 		return true
 	}
 
@@ -1730,6 +1850,15 @@ func (r *VirtualMCPServerReconciler) deploymentNeedsUpdate(
 	}
 
 	if r.imagePullSecretsNeedsUpdate(ctx, deployment, vmcp) {
+		return true
+	}
+
+	_, _, expectedVolumesHash, err := r.buildPodVolumesForVmcp(ctx, vmcp, telemetryCfg, typedWorkloads)
+	if err != nil {
+		log.FromContext(ctx).Error(err, "Failed to build volumes, assuming update needed")
+		return true
+	}
+	if deployment.Annotations[podVolumesHashAnnotation] != expectedVolumesHash {
 		return true
 	}
 
@@ -1828,13 +1957,14 @@ func (r *VirtualMCPServerReconciler) podTemplateMetadataNeedsUpdate(
 	deployment *appsv1.Deployment,
 	vmcp *mcpv1beta1.VirtualMCPServer,
 	vmcpConfigChecksum string,
+	caBundleChecksum string,
 ) bool {
 	if deployment == nil || vmcp == nil {
 		return true
 	}
 
 	expectedPodTemplateLabels, expectedPodTemplateAnnotations := r.buildPodTemplateMetadata(
-		labelsForVirtualMCPServer(vmcp.Name), vmcp, vmcpConfigChecksum,
+		labelsForVirtualMCPServer(vmcp.Name), vmcp, vmcpConfigChecksum, caBundleChecksum,
 	)
 
 	if !maps.Equal(deployment.Spec.Template.Labels, expectedPodTemplateLabels) {
@@ -1843,6 +1973,11 @@ func (r *VirtualMCPServerReconciler) podTemplateMetadataNeedsUpdate(
 
 	if !ctrlutil.MapIsSubset(expectedPodTemplateAnnotations, deployment.Spec.Template.Annotations) {
 		return true
+	}
+	if _, expected := expectedPodTemplateAnnotations[ctrlutil.AuthServerCABundleChecksumAnnotation]; !expected {
+		if _, actual := deployment.Spec.Template.Annotations[ctrlutil.AuthServerCABundleChecksumAnnotation]; actual {
+			return true
+		}
 	}
 
 	return false
@@ -1877,12 +2012,22 @@ func (*VirtualMCPServerReconciler) podTemplateSpecNeedsUpdate(
 }
 
 // mergeDeploymentAnnotations merges desired annotations onto the live ones via
-// ctrlutil.MergeAnnotations, then prunes the operator-owned hash annotations
-// (imagePullRefsHashAnnotation, podTemplateSpecHashAnnotation) that desired no longer wants —
-// MergeAnnotations otherwise preserves them forever once their source field goes empty (#5817, #5818).
+// ctrlutil.MergeAnnotations, then prunes operator-owned hash annotations that
+// desired no longer wants — MergeAnnotations otherwise preserves them forever
+// once their source field goes empty (#5817, #5818).
+//
+// ctrlutil.AuthServerCABundleChecksumAnnotation is included defensively: today
+// buildDeploymentMetadataForVmcp only ever writes it onto the pod template
+// (see buildPodTemplateMetadata), never onto the Deployment's own annotations,
+// so this branch is a no-op in practice. Kept in case that changes.
 func mergeDeploymentAnnotations(desired, live map[string]string) map[string]string {
 	merged := ctrlutil.MergeAnnotations(desired, live)
-	for _, key := range []string{imagePullRefsHashAnnotation, podTemplateSpecHashAnnotation} {
+	for _, key := range []string{
+		imagePullRefsHashAnnotation,
+		podTemplateSpecHashAnnotation,
+		podVolumesHashAnnotation,
+		ctrlutil.AuthServerCABundleChecksumAnnotation,
+	} {
 		if _, want := desired[key]; !want {
 			delete(merged, key)
 		}
@@ -2048,6 +2193,19 @@ func countBackendHealth(ctx context.Context, backends []mcpv1beta1.DiscoveredBac
 	return routable, unhealthy
 }
 
+// runtimeDiscoveredBackends returns the freshest backend observations available on vmcp.
+// Status.Runtime is the vMCP process's own snapshot; the top-level DiscoveredBackends is
+// only a projection of it that the operator writes once per reconcile, so a vmcp fetched
+// mid-reconcile can have a current Runtime snapshot alongside a top-level field still
+// reflecting the previous reconcile's patch. Preferring Runtime keeps phase decisions
+// from acting on that stale projection.
+func runtimeDiscoveredBackends(vmcp *mcpv1beta1.VirtualMCPServer) []mcpv1beta1.DiscoveredBackend {
+	if vmcp.Status.Runtime != nil {
+		return vmcp.Status.Runtime.DiscoveredBackends
+	}
+	return vmcp.Status.DiscoveredBackends
+}
+
 // determineStatusFromBackends evaluates backend health to determine status
 func (*VirtualMCPServerReconciler) determineStatusFromBackends(
 	ctx context.Context,
@@ -2055,7 +2213,8 @@ func (*VirtualMCPServerReconciler) determineStatusFromBackends(
 ) statusDecision {
 	ctxLogger := log.FromContext(ctx)
 
-	routable, unhealthy := countBackendHealth(ctx, vmcp.Status.DiscoveredBackends)
+	backends := runtimeDiscoveredBackends(vmcp)
+	routable, unhealthy := countBackendHealth(ctx, backends)
 	total := routable + unhealthy
 
 	// All backends unhealthy
@@ -2093,7 +2252,7 @@ func (*VirtualMCPServerReconciler) determineStatusFromBackends(
 
 	// Edge case: backends exist but none counted
 	ctxLogger.V(1).Info("No backends were counted, treating as degraded",
-		"discoveredBackendsCount", len(vmcp.Status.DiscoveredBackends))
+		"discoveredBackendsCount", len(backends))
 	return statusDecision{
 		phase:          mcpv1beta1.VirtualMCPServerPhaseDegraded,
 		message:        "Virtual MCP server is running but backend status cannot be determined",
@@ -2138,7 +2297,7 @@ func (r *VirtualMCPServerReconciler) determineStatusFromPods(
 	}
 
 	// Pods are ready (passed readiness probes) - check backend health if backends exist
-	if len(vmcp.Status.DiscoveredBackends) == 0 {
+	if len(runtimeDiscoveredBackends(vmcp)) == 0 {
 		// No backends discovered yet - pods ready is sufficient for Ready
 		return statusDecision{
 			phase:          mcpv1beta1.VirtualMCPServerPhaseReady,
@@ -2200,7 +2359,13 @@ func (r *VirtualMCPServerReconciler) updateVirtualMCPServerStatus(
 	// Determine status in one place (no branching/repetition)
 	decision := r.determineStatusFromPods(ctx, vmcp, ready, pending, failed)
 
-	// Apply all status updates at once
+	// Apply all status updates at once.
+	//
+	// SetReadyCondition here deliberately overwrites the runtime's own Ready condition
+	// (reason AllBackendsRoutable, projected from Status.Runtime). The operator's
+	// decision already folds in the runtime's backend health via
+	// determineStatusFromBackends, plus pod/deployment readiness the runtime cannot
+	// observe, so it is the more complete verdict and stays authoritative for Ready.
 	statusManager.SetPhase(decision.phase)
 	statusManager.SetMessage(decision.message)
 	statusManager.SetReadyCondition(decision.reason, decision.conditionMsg, decision.conditionState)
@@ -2665,6 +2830,9 @@ func injectSubjectProviderIfNeeded(
 	if strategy == nil || embeddedCfg == nil {
 		return strategy, nil
 	}
+	if len(embeddedCfg.UpstreamProviders) == 0 {
+		return strategy, nil
+	}
 	return authtypes.DefaultSubjectProviderName(
 		strategy,
 		resolveFirstUpstreamProvider(embeddedCfg),
@@ -2673,8 +2841,9 @@ func injectSubjectProviderIfNeeded(
 }
 
 // resolveFirstUpstreamProvider returns the resolved name of the first upstream
-// provider configured on the embedded auth server, or the default name if none
-// are configured.
+// provider configured on the embedded auth server. It is total and returns the
+// default provider name when there are no upstreams; callers guard that case to
+// avoid injecting a default-provider reference where no provider exists.
 func resolveFirstUpstreamProvider(embeddedCfg *mcpv1beta1.EmbeddedAuthServerConfig) string {
 	names := make([]string, len(embeddedCfg.UpstreamProviders))
 	for i, p := range embeddedCfg.UpstreamProviders {
@@ -2816,6 +2985,13 @@ func (r *VirtualMCPServerReconciler) mapEmbeddingServerToVirtualMCPServer(
 
 // SetupWithManager sets up the controller with the Manager
 func (r *VirtualMCPServerReconciler) SetupWithManager(mgr ctrl.Manager) error {
+	if err := mgr.GetFieldIndexer().IndexField(
+		context.Background(), &mcpv1beta1.VirtualMCPServer{},
+		virtualMCPServerConfigMapIndex, indexVirtualMCPServerConfigMaps,
+	); err != nil {
+		return fmt.Errorf("failed to set up VirtualMCPServer ConfigMap reference index: %w", err)
+	}
+
 	return ctrl.NewControllerManagedBy(mgr).
 		For(&mcpv1beta1.VirtualMCPServer{}).
 		Owns(&appsv1.Deployment{}).

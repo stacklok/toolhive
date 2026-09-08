@@ -46,8 +46,9 @@ type classificationErrorBody struct {
 func classifyingHandlerTestServer() *Server {
 	return &Server{
 		config: &Config{
-			Name:    testServerName,
-			Version: testServerVersion,
+			Name:         testServerName,
+			Version:      testServerVersion,
+			EndpointPath: defaultEndpointPath,
 		},
 		core: &modernFakeCore{tools: []vmcp.Tool{{Name: "echo", InputSchema: map[string]any{"type": "object"}}}},
 	}
@@ -431,6 +432,80 @@ func TestClassifyingHandler_ModernCapabilityGate(t *testing.T) {
 			assert.Equal(t, mcpparser.MCPVersionModern, body.Error.Data.Requested)
 			assert.Equal(t, []string{mcpparser.MCPVersionLegacy}, body.Error.Data.Supported,
 				"the refusal must list the Legacy version so the client can negotiate down")
+		})
+	}
+}
+
+func TestClassifyingHandlerModernEndpointPath(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name         string
+		endpointPath string
+		requestPath  string
+		wantDispatch bool
+	}{
+		{
+			name:         "default endpoint dispatches Modern request",
+			endpointPath: defaultEndpointPath,
+			requestPath:  defaultEndpointPath,
+			wantDispatch: true,
+		},
+		{
+			name:         "default endpoint query dispatches Modern request",
+			endpointPath: defaultEndpointPath,
+			requestPath:  defaultEndpointPath + "?cursor=next",
+			wantDispatch: true,
+		},
+		{
+			name:         "SSE endpoint falls through",
+			endpointPath: defaultEndpointPath,
+			requestPath:  "/sse",
+		},
+		{
+			name:         "custom endpoint dispatches Modern request",
+			endpointPath: "/custom/mcp",
+			requestPath:  "/custom/mcp",
+			wantDispatch: true,
+		},
+		{
+			name:         "custom endpoint query dispatches Modern request",
+			endpointPath: "/custom/mcp",
+			requestPath:  "/custom/mcp?cursor=next",
+			wantDispatch: true,
+		},
+		{
+			name:         "custom endpoint suffix falls through",
+			endpointPath: "/custom/mcp",
+			requestPath:  "/custom/mcp/sse",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			srv := classifyingHandlerTestServer()
+			srv.config.EndpointPath = tt.endpointPath
+			ctx := context.WithValue(t.Context(), mcpparser.MCPRequestContextKey, wellFormedModernToolsList())
+			req := httptest.NewRequest(http.MethodPost, tt.requestPath, nil).WithContext(ctx)
+			req.Header.Set("MCP-Protocol-Version", mcpparser.MCPVersionModern)
+
+			nextCalled := false
+			next := http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+				nextCalled = true
+				w.WriteHeader(http.StatusOK)
+			})
+
+			rec := httptest.NewRecorder()
+			srv.classifyingHandler(next).ServeHTTP(rec, req)
+
+			assert.Equal(t, !tt.wantDispatch, nextCalled,
+				"path %q with endpoint %q: unexpected dispatch result", tt.requestPath, tt.endpointPath)
+			if tt.wantDispatch {
+				assert.Contains(t, rec.Body.String(), `"resultType":"complete"`,
+					"path %q with endpoint %q: Modern dispatch response", tt.requestPath, tt.endpointPath)
+			}
 		})
 	}
 }

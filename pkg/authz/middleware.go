@@ -11,13 +11,11 @@ import (
 	"fmt"
 	"log/slog"
 	"net/http"
-	"strings"
 
 	"golang.org/x/exp/jsonrpc2"
 
 	"github.com/stacklok/toolhive/pkg/authz/authorizers"
 	"github.com/stacklok/toolhive/pkg/mcp"
-	"github.com/stacklok/toolhive/pkg/transport/ssecommon"
 	"github.com/stacklok/toolhive/pkg/transport/types"
 	"github.com/stacklok/toolhive/pkg/vmcp/optimizer"
 	"github.com/stacklok/toolhive/pkg/vmcp/schema"
@@ -116,17 +114,7 @@ var MCPMethodToFeatureOperation = map[string]featureOperation{
 // here: the middleware body refuses non-JSON POSTs with an explicit early
 // return before this function is reached.
 func shouldSkipInitialAuthorization(r *http.Request) bool {
-	// Skip authorization for non-POST requests
-	if r.Method != http.MethodPost {
-		return true
-	}
-
-	// Skip authorization for the SSE endpoint
-	if strings.HasSuffix(r.URL.Path, ssecommon.HTTPSSEEndpoint) {
-		return true
-	}
-
-	return false
+	return r.Method != http.MethodPost
 }
 
 // shouldSkipSubsequentAuthorization checks if the request should skip authorization

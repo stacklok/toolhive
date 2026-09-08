@@ -5,6 +5,7 @@ package pluginsvc
 
 import (
 	"context"
+	"fmt"
 	"net/http"
 	"strings"
 	"testing"
@@ -575,9 +576,11 @@ func TestGuardKeyedSignerChange(t *testing.T) {
 	tests := []struct {
 		name        string
 		verifyErr   error
+		probe       *verifier.Result
 		wantBlocked bool
 		wantStatus  plugins.UpgradeStatus
 		wantReason  plugins.FailureReason
+		wantSigner  string
 		wantErrText string
 	}{
 		{
@@ -587,14 +590,22 @@ func TestGuardKeyedSignerChange(t *testing.T) {
 		{
 			name:        "a candidate that moved to keyless signing is a signer change",
 			verifyErr:   verifier.ErrKeylessSigned,
+			probe:       &verifier.Result{Signed: true, SignerIdentity: "ci@example.com"},
 			wantBlocked: true,
 			wantStatus:  plugins.UpgradeStatusSignerChangeBlocked,
+			wantSigner:  "ci@example.com",
 		},
 		{
-			name:        "a candidate that lost its signature is a signer change",
+			// --allow-signer-change bypasses this guard but not verification,
+			// and upgrade has no --allow-unsigned to pair with it, so calling
+			// this a signer change would advertise a route that dead-ends in
+			// unsigned-rejected one step later.
+			name:        "a candidate that lost its signature is an unsigned rejection, not a signer change",
 			verifyErr:   verifier.ErrUnsigned,
 			wantBlocked: true,
-			wantStatus:  plugins.UpgradeStatusSignerChangeBlocked,
+			wantStatus:  plugins.UpgradeStatusFailed,
+			wantReason:  plugins.FailureReasonUnsignedRejected,
+			wantErrText: "reinstall it with `thv ai-plugin install --allow-unsigned`",
 		},
 		{
 			name:        "a different key is a failure, since allow_signer_change cannot re-anchor",
@@ -611,9 +622,15 @@ func TestGuardKeyedSignerChange(t *testing.T) {
 			mv := verifiermocks.NewMockVerifier(gomock.NewController(t))
 			mv.EXPECT().VerifyOCIWithKey(gomock.Any(), latest.ref, latest.digest, keyPEM).
 				Return(nil, tc.verifyErr)
-			// The keyless probe must not run: it is what produced the
-			// unhelpful diagnosis this branch exists to replace.
-			mv.EXPECT().VerifyOCI(gomock.Any(), gomock.Any(), gomock.Any(), gomock.Any()).Times(0)
+			// The keyless probe runs only to name the identity a
+			// key-to-keyless move landed on. Every other arm decides without
+			// it, and must not pay for a second verification.
+			probeCalls := 0
+			if tc.probe != nil {
+				probeCalls = 1
+			}
+			mv.EXPECT().VerifyOCI(gomock.Any(), latest.ref, latest.digest, gomock.Nil()).
+				Times(probeCalls).Return(tc.probe, nil)
 
 			svc := &service{sigVerifier: mv}
 			outcome := plugins.UpgradeOutcome{Name: "keyed-plugin"}
@@ -629,13 +646,42 @@ func TestGuardKeyedSignerChange(t *testing.T) {
 			if tc.wantErrText != "" {
 				assert.Contains(t, outcome.Error, tc.wantErrText)
 			}
-			if tc.wantStatus == plugins.UpgradeStatusSignerChangeBlocked {
-				assert.Empty(t, outcome.NewSignerIdentity,
-					"a key-signed candidate has no identity to report, and inventing one would"+
-						" print a signer the artifact never claimed")
-			}
+			// The CLI renders a blocked outcome carrying no identity as
+			// "unsigned", so a keyless candidate that arrives unnamed is
+			// reported as the one thing it demonstrably is not.
+			assert.Equal(t, tc.wantSigner, outcome.NewSignerIdentity)
 		})
 	}
+}
+
+// TestGuardKeyedSignerChange_KeylessProbeFailure keeps a candidate whose
+// keyless signature does not verify out of the blocked bucket. Blocked tells
+// the caller to re-run with --allow-signer-change, which skips this guard but
+// still verifies, so the flag cannot get such a candidate installed either.
+func TestGuardKeyedSignerChange_KeylessProbeFailure(t *testing.T) {
+	t.Parallel()
+
+	keyPEM, err := verifier.DecodePublicKey(testPublicKeyB64)
+	require.NoError(t, err)
+	latest := resolvedLatest{
+		ref:    "ghcr.io/org/keyed-plugin:v2",
+		digest: "sha256:" + strings.Repeat("c", 64),
+	}
+
+	mv := verifiermocks.NewMockVerifier(gomock.NewController(t))
+	mv.EXPECT().VerifyOCIWithKey(gomock.Any(), latest.ref, latest.digest, keyPEM).
+		Return(nil, verifier.ErrKeylessSigned)
+	mv.EXPECT().VerifyOCI(gomock.Any(), latest.ref, latest.digest, gomock.Nil()).
+		Return(nil, fmt.Errorf("probing: %w", verifier.ErrSignatureInvalid))
+
+	svc := &service{sigVerifier: mv}
+	outcome := plugins.UpgradeOutcome{Name: "keyed-plugin"}
+	require.True(t, svc.guardSignerChange(
+		t.Context(), keyedLockEntry("keyed-plugin"), latest, &outcome))
+
+	assert.Equal(t, plugins.UpgradeStatusFailed, outcome.Status)
+	assert.Equal(t, plugins.FailureReasonSignatureInvalid, outcome.Reason)
+	assert.Empty(t, outcome.NewSignerIdentity)
 }
 
 // TestGuardKeyedSignerChange_UndecodablePinnedKey fails the plan rather than

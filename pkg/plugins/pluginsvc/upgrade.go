@@ -293,13 +293,17 @@ func (s *service) guardSignerChange(
 // against a certificate, never a key), so a key-pinned entry is always an OCI
 // one and latest.commitPayload is always empty here.
 //
-// The blocked arms are split by whether --allow-signer-change would actually
-// help, because the caller is told to use it. It does for a candidate that
-// moved to keyless signing or dropped its signature: dropping the recorded
+// The arms are split by whether --allow-signer-change would actually help,
+// because a blocked outcome is what tells the caller to reach for it. It
+// helps for a candidate that moved to keyless signing: dropping the recorded
 // key and re-verifying is exactly the key-to-keyless move resolveKeyAnchor
-// supports. It does NOT for a candidate signed by a different key — that
-// needs an in-place re-anchor, which v1 does not offer — so that arm reports
-// a failure naming the route that works instead of a remedy that does not.
+// supports. It does NOT help for a candidate that dropped its signature —
+// the override re-verifies from scratch, and upgrade carries no
+// unsigned-consent flag to pair with it, so the install it waves through
+// fails unsigned-rejected anyway — nor for a candidate signed by a different
+// key, which needs an in-place re-anchor v1 does not offer. Both of those
+// report a failure naming the route that works instead of a remedy that
+// leads nowhere.
 func (s *service) guardKeyedSignerChange(
 	ctx context.Context,
 	entry lockfile.Entry,
@@ -317,8 +321,16 @@ func (s *service) guardKeyedSignerChange(
 	switch {
 	case verifyErr == nil:
 		return false
-	case errors.Is(verifyErr, verifier.ErrKeylessSigned), errors.Is(verifyErr, verifier.ErrUnsigned):
-		outcome.Status = plugins.UpgradeStatusSignerChangeBlocked
+	case errors.Is(verifyErr, verifier.ErrKeylessSigned):
+		return s.blockKeyToKeylessChange(ctx, entry, latest, outcome)
+	case errors.Is(verifyErr, verifier.ErrUnsigned):
+		outcome.Status = plugins.UpgradeStatusFailed
+		outcome.Reason = plugins.FailureReasonUnsignedRejected
+		outcome.Error = fmt.Errorf("candidate is unsigned, and this entry is pinned to a cosign"+
+			" public key: %w. Upgrade has no unsigned-consent flag, and --allow-signer-change is"+
+			" not one — it re-verifies from scratch, which an unsigned artifact still fails. To"+
+			" move this plugin to an unsigned artifact, uninstall it and reinstall it with"+
+			" `thv ai-plugin install --allow-unsigned`", verifyErr).Error()
 		return true
 	default:
 		outcome.Status = plugins.UpgradeStatusFailed
@@ -329,6 +341,39 @@ func (s *service) guardKeyedSignerChange(
 			" reinstall it with `thv ai-plugin install --public-key`)", verifyErr).Error()
 		return true
 	}
+}
+
+// blockKeyToKeylessChange reports a candidate that moved from key-pair to
+// keyless signing, naming the identity it moved to. The identity costs a
+// second verification because VerifyOCIWithKey cannot report one — it was
+// asked about a key — and an unnamed signer change is worse than it looks:
+// the CLI renders a blocked outcome with no identity as "unsigned", so
+// leaving the field empty here would describe a signed candidate as
+// unsigned, which is the opposite of what the guard just established.
+//
+// A probe that fails is a failure rather than a signer change. The candidate
+// carries a keyless signature that does not verify, and --allow-signer-change
+// re-verifies rather than skipping verification, so calling this blocked
+// would advise a flag that cannot get past it either.
+func (s *service) blockKeyToKeylessChange(
+	ctx context.Context,
+	entry lockfile.Entry,
+	latest resolvedLatest,
+	outcome *plugins.UpgradeOutcome,
+) bool {
+	probe, probeErr := s.probeCandidateSigner(ctx, entry.Name, latest)
+	if probeErr != nil {
+		outcome.Status = plugins.UpgradeStatusFailed
+		outcome.Reason = classifySignatureError(probeErr)
+		if outcome.Reason == "" {
+			outcome.Reason = plugins.FailureReasonUnknown
+		}
+		outcome.Error = probeErr.Error()
+		return true
+	}
+	outcome.Status = plugins.UpgradeStatusSignerChangeBlocked
+	outcome.NewSignerIdentity = probe.SignerIdentity
+	return true
 }
 
 // runnerEnvironmentChanged reports whether the candidate's runner class

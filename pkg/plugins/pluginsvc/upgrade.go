@@ -133,6 +133,12 @@ type upgradePlan struct {
 	pinnedRef   string // set only when the upgrade needs installing
 	resolvedRef string // the resolved reference to record as ResolvedReference
 	layerData   []byte // set when the new content was resolved from the local OCI store
+	// allowSignerChange is opts.AllowSignerChange narrowed to this entry. The
+	// flag is project-wide, but honoring it per entry is not: forwarding it
+	// for a key-pinned entry whose candidate still verifies against the pin
+	// drops the key and sends a key-signed artifact through keyless
+	// verification, which refuses it.
+	allowSignerChange bool
 }
 
 // resolvedLatest is the current state of a lock entry's Source, before any
@@ -180,11 +186,12 @@ func (s *service) planUpgrade(ctx context.Context, opts plugins.UpgradeOptions, 
 		// local digest).
 		outcome.Status = plugins.UpgradeStatusUpgraded
 		return upgradePlan{
-			entry:       entry,
-			outcome:     outcome,
-			pinnedRef:   entry.Name,
-			resolvedRef: latest.ref,
-			layerData:   latest.layerData,
+			entry:             entry,
+			outcome:           outcome,
+			pinnedRef:         entry.Name,
+			resolvedRef:       latest.ref,
+			layerData:         latest.layerData,
+			allowSignerChange: opts.AllowSignerChange,
 		}
 	}
 
@@ -207,9 +214,14 @@ func (s *service) planUpgrade(ctx context.Context, opts plugins.UpgradeOptions, 
 	// with layerData set — because they carry no signature to probe.
 	// verifyLocalInstall refuses them outright at install time when the
 	// entry is locked to a signer, which is the stronger check.
-	if entry.Provenance != nil && !opts.AllowSignerChange {
-		if blocked := s.guardSignerChange(ctx, entry, latest, &outcome); blocked {
-			return upgradePlan{entry: entry, outcome: outcome}
+	allowSignerChange := opts.AllowSignerChange
+	if entry.Provenance != nil {
+		if !opts.AllowSignerChange {
+			if blocked := s.guardSignerChange(ctx, entry, latest, &outcome); blocked {
+				return upgradePlan{entry: entry, outcome: outcome}
+			}
+		} else if entry.Provenance.PublicKey != "" {
+			allowSignerChange = !s.candidateMatchesPinnedKey(ctx, entry, latest)
 		}
 	}
 
@@ -222,7 +234,13 @@ func (s *service) planUpgrade(ctx context.Context, opts plugins.UpgradeOptions, 
 	}
 
 	outcome.Status = plugins.UpgradeStatusUpgraded
-	return upgradePlan{entry: entry, outcome: outcome, pinnedRef: pinnedRef, resolvedRef: latest.ref}
+	return upgradePlan{
+		entry:             entry,
+		outcome:           outcome,
+		pinnedRef:         pinnedRef,
+		resolvedRef:       latest.ref,
+		allowSignerChange: allowSignerChange,
+	}
 }
 
 // guardSignerChange probes the candidate artifact's signer identity and
@@ -318,12 +336,12 @@ func (s *service) guardKeyedSignerChange(
 		return true
 	}
 	_, verifyErr := s.artifactVerifier().VerifyOCIWithKey(ctx, latest.ref, latest.digest, pubKeyPEM)
-	switch {
-	case verifyErr == nil:
+	if verifyErr == nil {
 		return false
-	case errors.Is(verifyErr, verifier.ErrKeylessSigned):
-		return s.blockKeyToKeylessChange(ctx, entry, latest, outcome)
-	case errors.Is(verifyErr, verifier.ErrUnsigned):
+	}
+	if errors.Is(verifyErr, verifier.ErrUnsigned) {
+		// Nothing is attached at all, so there is no keyless bundle to find
+		// and no signer change to authorize.
 		outcome.Status = plugins.UpgradeStatusFailed
 		outcome.Reason = plugins.FailureReasonUnsignedRejected
 		outcome.Error = fmt.Errorf("candidate is unsigned, and this entry is pinned to a cosign"+
@@ -332,8 +350,82 @@ func (s *service) guardKeyedSignerChange(
 			" move this plugin to an unsigned artifact, uninstall it and reinstall it with"+
 			" `thv ai-plugin install --allow-unsigned`", verifyErr).Error()
 		return true
-	default:
+	}
+	return s.classifyKeyedCandidate(ctx, entry, latest, verifyErr, outcome)
+}
+
+// candidateMatchesPinnedKey reports whether the candidate still verifies
+// against the public key the entry pins.
+//
+// It exists because --allow-signer-change is a project-wide flag applied per
+// entry. The override authorizes dropping a recorded anchor when the
+// artifact has genuinely moved off it — not ignoring an anchor the artifact
+// still satisfies. resolveKeyAnchor drops the recorded key whenever the flag
+// is set, so forwarding it here would push a still-key-signed candidate
+// through keyless verification and fail it with ErrKeySigned. That is
+// reachable without asking for it: needing the override for one plugin in a
+// multi-plugin project would otherwise break every key-pinned plugin
+// alongside it.
+//
+// An undecodable pin reports false. There is nothing to preserve, and the
+// override is exactly the escape hatch for an entry whose anchor can no
+// longer be applied.
+func (s *service) candidateMatchesPinnedKey(
+	ctx context.Context, entry lockfile.Entry, latest resolvedLatest,
+) bool {
+	pubKeyPEM, err := verifier.DecodePublicKey(entry.Provenance.PublicKey)
+	if err != nil {
+		return false
+	}
+	_, verifyErr := s.artifactVerifier().VerifyOCIWithKey(ctx, latest.ref, latest.digest, pubKeyPEM)
+	return verifyErr == nil
+}
+
+// classifyKeyedCandidate decides what a candidate that failed verification
+// against the pinned key actually is, by verifying it keylessly before
+// committing to a diagnosis. A keyless bundle that verifies means the
+// artifact moved to keyless signing: a signer change --allow-signer-change
+// authorizes, reported with the identity it moved to.
+//
+// The probe is not only for the all-keyless case. VerifyOCIWithKey reports
+// ErrKeylessSigned only when EVERY attached bundle carries a certificate, so
+// an artifact mid-migration — a valid keyless bundle alongside a stale
+// key-pair one — comes back as ErrSignatureInvalid instead. Deciding on the
+// keyed error alone would call that a damaged signature and send the caller
+// to uninstall-and-reinstall, when the override resolves it: dropping the
+// pin lets ordinary keyless verification accept the valid bundle. Only the
+// probe tells the two apart.
+//
+// Naming the identity is load-bearing rather than cosmetic. The CLI renders
+// a blocked outcome carrying no NewSignerIdentity as "unsigned", so a
+// keyless candidate left unnamed is reported as the one thing the guard has
+// just established it is not.
+func (s *service) classifyKeyedCandidate(
+	ctx context.Context,
+	entry lockfile.Entry,
+	latest resolvedLatest,
+	verifyErr error,
+	outcome *plugins.UpgradeOutcome,
+) bool {
+	if probe, probeErr := s.probeCandidateSigner(ctx, entry.Name, latest); probeErr == nil {
+		outcome.Status = plugins.UpgradeStatusSignerChangeBlocked
+		outcome.NewSignerIdentity = probe.SignerIdentity
+		return true
+	} else if errors.Is(verifyErr, verifier.ErrKeylessSigned) {
+		// Every bundle is keyless, so the pinned key never had one to check
+		// and the keyless verdict is the whole diagnosis.
 		outcome.Status = plugins.UpgradeStatusFailed
+		outcome.Reason = classifySignatureError(probeErr)
+		if outcome.Reason == "" {
+			outcome.Reason = plugins.FailureReasonUnknown
+		}
+		outcome.Error = fmt.Errorf("candidate dropped key-pair signing for keyless, but its keyless"+
+			" signature does not verify: %w", probeErr).Error()
+		return true
+	}
+
+	outcome.Status = plugins.UpgradeStatusFailed
+	if errors.Is(verifyErr, verifier.ErrSignatureInvalid) {
 		outcome.Reason = plugins.FailureReasonSignatureInvalid
 		outcome.Error = fmt.Errorf("candidate does not verify against the cosign public key this entry"+
 			" is pinned to — either it was signed with a different key or the signature is damaged:"+
@@ -341,38 +433,12 @@ func (s *service) guardKeyedSignerChange(
 			" reinstall it with `thv ai-plugin install --public-key`)", verifyErr).Error()
 		return true
 	}
-}
-
-// blockKeyToKeylessChange reports a candidate that moved from key-pair to
-// keyless signing, naming the identity it moved to. The identity costs a
-// second verification because VerifyOCIWithKey cannot report one — it was
-// asked about a key — and an unnamed signer change is worse than it looks:
-// the CLI renders a blocked outcome with no identity as "unsigned", so
-// leaving the field empty here would describe a signed candidate as
-// unsigned, which is the opposite of what the guard just established.
-//
-// A probe that fails is a failure rather than a signer change. The candidate
-// carries a keyless signature that does not verify, and --allow-signer-change
-// re-verifies rather than skipping verification, so calling this blocked
-// would advise a flag that cannot get past it either.
-func (s *service) blockKeyToKeylessChange(
-	ctx context.Context,
-	entry lockfile.Entry,
-	latest resolvedLatest,
-	outcome *plugins.UpgradeOutcome,
-) bool {
-	probe, probeErr := s.probeCandidateSigner(ctx, entry.Name, latest)
-	if probeErr != nil {
-		outcome.Status = plugins.UpgradeStatusFailed
-		outcome.Reason = classifySignatureError(probeErr)
-		if outcome.Reason == "" {
-			outcome.Reason = plugins.FailureReasonUnknown
-		}
-		outcome.Error = probeErr.Error()
-		return true
-	}
-	outcome.Status = plugins.UpgradeStatusSignerChangeBlocked
-	outcome.NewSignerIdentity = probe.SignerIdentity
+	// A registry, transport, or context failure says nothing about the
+	// signature. Calling it signature-invalid would advise uninstalling a
+	// working plugin over a network blip.
+	outcome.Reason = plugins.FailureReasonUnknown
+	outcome.Error = fmt.Errorf("verifying candidate against the pinned cosign public key: %w",
+		verifyErr).Error()
 	return true
 }
 
@@ -450,7 +516,7 @@ func (s *service) applyUpgrade(ctx context.Context, opts plugins.UpgradeOptions,
 		Clients:               clients,
 		LockSource:            plan.entry.Source,
 		LockResolvedReference: lockResolved,
-		AllowSignerChange:     opts.AllowSignerChange,
+		AllowSignerChange:     plan.allowSignerChange,
 		ExpectedCanonicalName: plan.entry.Name,
 	}); err != nil {
 		outcome := plan.outcome

@@ -577,14 +577,18 @@ func TestGuardKeyedSignerChange(t *testing.T) {
 		name        string
 		verifyErr   error
 		probe       *verifier.Result
+		probeErr    error
+		noProbe     bool
 		wantBlocked bool
 		wantStatus  plugins.UpgradeStatus
 		wantReason  plugins.FailureReason
 		wantSigner  string
 		wantErrText string
+		wantNoText  string
 	}{
 		{
 			name:        "verifying against the pinned key is the evidence the signer is unchanged",
+			noProbe:     true,
 			wantBlocked: false,
 		},
 		{
@@ -602,6 +606,7 @@ func TestGuardKeyedSignerChange(t *testing.T) {
 			// unsigned-rejected one step later.
 			name:        "a candidate that lost its signature is an unsigned rejection, not a signer change",
 			verifyErr:   verifier.ErrUnsigned,
+			noProbe:     true,
 			wantBlocked: true,
 			wantStatus:  plugins.UpgradeStatusFailed,
 			wantReason:  plugins.FailureReasonUnsignedRejected,
@@ -610,10 +615,36 @@ func TestGuardKeyedSignerChange(t *testing.T) {
 		{
 			name:        "a different key is a failure, since allow_signer_change cannot re-anchor",
 			verifyErr:   verifier.ErrSignatureInvalid,
+			probeErr:    verifier.ErrKeySigned,
 			wantBlocked: true,
 			wantStatus:  plugins.UpgradeStatusFailed,
 			wantReason:  plugins.FailureReasonSignatureInvalid,
 			wantErrText: "reinstall it with `thv ai-plugin install --public-key`",
+		},
+		{
+			// VerifyOCIWithKey reports ErrKeylessSigned only when EVERY
+			// bundle is keyless, so an artifact mid-migration — valid
+			// keyless bundle beside a stale key-pair one — arrives as
+			// ErrSignatureInvalid. It is still the supported key-to-keyless
+			// transition, and must not be sent to uninstall-and-reinstall.
+			name:        "a mixed keyless and stale-key artifact is the supported transition",
+			verifyErr:   verifier.ErrSignatureInvalid,
+			probe:       &verifier.Result{Signed: true, SignerIdentity: "ci@example.com"},
+			wantBlocked: true,
+			wantStatus:  plugins.UpgradeStatusSignerChangeBlocked,
+			wantSigner:  "ci@example.com",
+		},
+		{
+			// A registry or transport failure says nothing about the
+			// signature, so it must not advise uninstalling the plugin.
+			name:        "an operational verifier failure is not a signature verdict",
+			verifyErr:   fmt.Errorf("fetching signatures: %w", context.DeadlineExceeded),
+			probeErr:    context.DeadlineExceeded,
+			wantBlocked: true,
+			wantStatus:  plugins.UpgradeStatusFailed,
+			wantReason:  plugins.FailureReasonUnknown,
+			wantErrText: "context deadline exceeded",
+			wantNoText:  "uninstall",
 		},
 	}
 	for _, tc := range tests {
@@ -622,15 +653,15 @@ func TestGuardKeyedSignerChange(t *testing.T) {
 			mv := verifiermocks.NewMockVerifier(gomock.NewController(t))
 			mv.EXPECT().VerifyOCIWithKey(gomock.Any(), latest.ref, latest.digest, keyPEM).
 				Return(nil, tc.verifyErr)
-			// The keyless probe runs only to name the identity a
-			// key-to-keyless move landed on. Every other arm decides without
-			// it, and must not pay for a second verification.
-			probeCalls := 0
-			if tc.probe != nil {
-				probeCalls = 1
+			// A keyed success and a bare unsigned artifact decide without a
+			// probe; every other arm must establish what the candidate
+			// actually carries before naming a diagnosis.
+			probeCalls := 1
+			if tc.noProbe {
+				probeCalls = 0
 			}
 			mv.EXPECT().VerifyOCI(gomock.Any(), latest.ref, latest.digest, gomock.Nil()).
-				Times(probeCalls).Return(tc.probe, nil)
+				Times(probeCalls).Return(tc.probe, tc.probeErr)
 
 			svc := &service{sigVerifier: mv}
 			outcome := plugins.UpgradeOutcome{Name: "keyed-plugin"}
@@ -645,6 +676,10 @@ func TestGuardKeyedSignerChange(t *testing.T) {
 			assert.Equal(t, tc.wantReason, outcome.Reason)
 			if tc.wantErrText != "" {
 				assert.Contains(t, outcome.Error, tc.wantErrText)
+			}
+			if tc.wantNoText != "" {
+				assert.NotContains(t, outcome.Error, tc.wantNoText,
+					"an operational failure must not carry a destructive remedy")
 			}
 			// The CLI renders a blocked outcome carrying no identity as
 			// "unsigned", so a keyless candidate that arrives unnamed is
@@ -817,8 +852,18 @@ func TestUpgrade_KeyPinnedEntryVerifiesAgainstPinnedKey(t *testing.T) {
 //nolint:paralleltest // serial: real sqlite + on-disk client materialization per test
 func TestUpgrade_AllowSignerChangeMovesKeyPinnedEntryToKeyless(t *testing.T) {
 	mv := verifiermocks.NewMockVerifier(gomock.NewController(t))
+	// The install pins the key; the candidate has since moved to keyless
+	// signing, which is what makes the override applicable at all.
+	installed := false
 	mv.EXPECT().VerifyOCIWithKey(gomock.Any(), gomock.Any(), gomock.Any(), gomock.Any()).
-		AnyTimes().Return(&verifier.Result{Signed: true, Bundle: []byte(`{"bundle":true}`)}, nil)
+		AnyTimes().
+		DoAndReturn(func(_ any, _, _ string, _ []byte) (*verifier.Result, error) {
+			if !installed {
+				installed = true
+				return &verifier.Result{Signed: true, Bundle: []byte(`{"bundle":true}`)}, nil
+			}
+			return nil, verifier.ErrKeylessSigned
+		})
 	mv.EXPECT().VerifyOCI(gomock.Any(), gomock.Any(), gomock.Any(), gomock.Any()).
 		AnyTimes().Return(signedResult(), nil)
 	mv.EXPECT().VerifyBundleOfflineWithKey(gomock.Any(), gomock.Any(), gomock.Any()).
@@ -832,7 +877,7 @@ func TestUpgrade_AllowSignerChangeMovesKeyPinnedEntryToKeyless(t *testing.T) {
 	outcome := upgradePlugins(t, inner, plugins.UpgradeOptions{
 		ProjectRoot: projectRoot, AllowSignerChange: true,
 	})
-	assert.Equal(t, plugins.UpgradeStatusUpgraded, outcome.Status)
+	assert.Equal(t, plugins.UpgradeStatusUpgraded, outcome.Status, "error: %s", outcome.Error)
 
 	entry, ok := loadPluginLockEntry(t, projectRoot)
 	require.True(t, ok)
@@ -842,4 +887,40 @@ func TestUpgrade_AllowSignerChangeMovesKeyPinnedEntryToKeyless(t *testing.T) {
 	assert.Equal(t, testSignerIdentity, entry.Provenance.SignerIdentity,
 		"the entry must be re-anchored to the identity actually observed")
 	assert.Equal(t, testCertIssuer, entry.Provenance.CertIssuer)
+}
+
+// TestUpgrade_AllowSignerChangeKeepsSameKeyPin is the multi-plugin case:
+// --allow-signer-change is a project-wide flag, so needing it for one plugin
+// must not silently unpin another. The override authorizes dropping a
+// recorded key only when the candidate actually moved off it; a candidate
+// still signed by the pinned key keeps the pin, because dropping it sends a
+// key-signed artifact through keyless verification, which refuses it.
+//
+//nolint:paralleltest // serial: real sqlite + on-disk client materialization per test
+func TestUpgrade_AllowSignerChangeKeepsSameKeyPin(t *testing.T) {
+	mv := verifiermocks.NewMockVerifier(gomock.NewController(t))
+	mv.EXPECT().VerifyOCIWithKey(gomock.Any(), gomock.Any(), gomock.Any(), gomock.Any()).
+		AnyTimes().Return(&verifier.Result{Signed: true, Bundle: []byte(`{"bundle":true}`)}, nil)
+	// What a key-signed artifact really answers when verified keylessly.
+	mv.EXPECT().VerifyOCI(gomock.Any(), gomock.Any(), gomock.Any(), gomock.Any()).
+		AnyTimes().Return(nil, verifier.ErrKeySigned)
+	mv.EXPECT().VerifyBundleOfflineWithKey(gomock.Any(), gomock.Any(), gomock.Any()).
+		AnyTimes().Return(nil)
+	mv.EXPECT().VerifyBundleOffline(gomock.Any(), gomock.Any(), gomock.Any()).
+		AnyTimes().Return(nil)
+
+	inner, projectRoot, publishV2 := keyPinnedUpgradeFixture(t, mv)
+	publishV2()
+
+	outcome := upgradePlugins(t, inner, plugins.UpgradeOptions{
+		ProjectRoot: projectRoot, AllowSignerChange: true,
+	})
+	assert.Equal(t, plugins.UpgradeStatusUpgraded, outcome.Status, "error: %s", outcome.Error)
+
+	entry, ok := loadPluginLockEntry(t, projectRoot)
+	require.True(t, ok)
+	require.NotNil(t, entry.Provenance)
+	assert.Equal(t, testPublicKeyB64, entry.Provenance.PublicKey,
+		"a candidate that still verifies against the pinned key stays pinned to it")
+	assert.Empty(t, entry.Provenance.SignerIdentity)
 }

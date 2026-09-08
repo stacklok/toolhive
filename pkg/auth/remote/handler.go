@@ -102,8 +102,7 @@ func (h *Handler) Authenticate(ctx context.Context, remoteURL string) (oauth2.To
 		tokenSource, err := h.tryRestoreFromCachedTokens(ctx, issuer, scopes, authServerInfo)
 		if err != nil {
 			slog.Warn("Failed to restore from cached tokens, will perform fresh OAuth flow", "error", err)
-			// Clear invalid cached tokens
-			h.config.ClearCachedTokens()
+			h.clearCachedSessionMetadata()
 		} else if tokenSource != nil {
 			slog.Debug("Successfully restored OAuth session from cached tokens")
 			return tokenSource, nil
@@ -171,7 +170,7 @@ func (h *Handler) performOAuthFlow(
 		return nil, err
 	}
 
-	return h.wrapWithPersistence(result), nil
+	return h.wrapWithPersistence(result, h.effectiveIssuer(issuer, authServerInfo)), nil
 }
 
 // buildOAuthFlowConfig creates the OAuth flow configuration
@@ -229,51 +228,149 @@ func (h *Handler) tokenEndpointTrusted(tokenURL string) bool {
 	return networking.AuthorityMatchesAny(tokenURL, h.config.TokenURL, h.config.Issuer)
 }
 
-// wrapWithPersistence wraps the OAuth result with token persistence
-func (h *Handler) wrapWithPersistence(result *discovery.OAuthFlowResult) oauth2.TokenSource {
-	// Persist the refresh token for future restarts
-	if h.tokenPersister != nil && result.RefreshToken != "" {
-		if err := h.tokenPersister(result.RefreshToken, result.Expiry); err != nil {
+// clearCachedSessionMetadata prevents a failed restore from reusing any cached
+// session credential. It deliberately leaves the secret manager unchanged.
+func (h *Handler) clearCachedSessionMetadata() {
+	h.config.ClearCachedTokens()
+	h.config.ClearCachedClientCredentials()
+	h.config.CachedCIMDClientID = ""
+}
+
+// wrapWithPersistence wraps the OAuth result with token persistence.
+func (h *Handler) wrapWithPersistence(result *discovery.OAuthFlowResult, issuer string) oauth2.TokenSource {
+	endpoint := ""
+	if result.Config != nil {
+		endpoint = result.Config.TokenURL
+	}
+	persister := h.tokenPersisterFor(issuer, endpoint)
+
+	// The client identity is written before the refresh token. A cached refresh
+	// token is only usable with the client credentials it was issued to, so if
+	// the process dies between the two writes we want the harmless order: client
+	// credentials with no cached token (a fresh flow follows) rather than a
+	// cached token with no credentials to redeem it.
+	if err := h.persistClientIdentity(result); err != nil {
+		slog.Warn("Failed to persist client credentials; refresh token will not be cached", "error", err)
+		return result.TokenSource
+	}
+
+	// Persist the refresh token for future restarts.
+	if persister != nil && result.RefreshToken != "" {
+		if err := persister(result.RefreshToken, result.Expiry); err != nil {
 			slog.Warn("Failed to persist OAuth tokens", "error", err)
 		} else {
 			slog.Debug("Successfully persisted OAuth tokens for future restarts")
 		}
 	}
 
-	// Persist DCR client credentials if available (for servers that use Dynamic Client Registration)
-	// Only persist if client_id exists - client_secret may be empty for PKCE flows
-	// CIMD client IDs (HTTPS URLs) are stable constants and are stored separately below.
-	if h.clientCredentialsPersister != nil && result.ClientID != "" &&
-		!oauthproto.IsClientIDMetadataDocumentURL(result.ClientID) {
-		if err := h.clientCredentialsPersister(
-			result.ClientID,
-			result.ClientSecret,
-			result.SecretExpiry,
-			result.RegistrationAccessToken,
-			result.RegistrationClientURI,
-			result.TokenEndpointAuthMethod,
-			result.RegisteredCallbackPort,
-		); err != nil {
-			slog.Warn("Failed to persist DCR client credentials", "error", err)
-		} else {
-			slog.Debug("Successfully persisted DCR client credentials for future restarts")
-		}
-	}
-
-	// Persist the CIMD metadata URL separately so it can be used as client_id
-	// on token refresh without conflating it with DCR-issued credentials.
-	if oauthproto.IsClientIDMetadataDocumentURL(result.ClientID) {
-		h.config.CachedCIMDClientID = result.ClientID
-		slog.Debug("Persisted CIMD client_id for future restarts", "url", result.ClientID)
-	}
-
 	// Wrap the token source to persist refreshed tokens
 	tokenSource := result.TokenSource
-	if h.tokenPersister != nil {
-		tokenSource = NewPersistingTokenSource(result.TokenSource, h.tokenPersister)
+	if persister != nil {
+		tokenSource = NewPersistingTokenSource(result.TokenSource, persister)
 	}
 
 	return tokenSource
+}
+
+// persistClientIdentity stores the client credentials the flow ended up using,
+// so a later restore has an identity to redeem its cached refresh token with.
+// It returns nil when there is nothing to store.
+func (h *Handler) persistClientIdentity(result *discovery.OAuthFlowResult) error {
+	// CIMD client IDs (HTTPS URLs) are stable constants, not DCR-issued
+	// credentials, so they are recorded on the config instead.
+	if oauthproto.IsClientIDMetadataDocumentURL(result.ClientID) {
+		h.config.CachedCIMDClientID = result.ClientID
+		slog.Debug("Persisted CIMD client_id for future restarts", "url", result.ClientID)
+		return nil
+	}
+
+	// Only persist if client_id exists - client_secret may be empty for PKCE flows.
+	if h.clientCredentialsPersister == nil || result.ClientID == "" {
+		return nil
+	}
+
+	if err := h.clientCredentialsPersister(
+		result.ClientID,
+		result.ClientSecret,
+		result.SecretExpiry,
+		result.RegistrationAccessToken,
+		result.RegistrationClientURI,
+		result.TokenEndpointAuthMethod,
+		result.RegisteredCallbackPort,
+	); err != nil {
+		return err
+	}
+
+	slog.Debug("Successfully persisted DCR client credentials for future restarts")
+	return nil
+}
+
+func (h *Handler) tokenPersisterFor(issuer, endpoint string) TokenPersister {
+	if h.tokenPersister == nil {
+		return nil
+	}
+	return func(token string, expiry time.Time) error {
+		envelope, err := encodeCachedRefreshToken(token, issuer, endpoint)
+		if err != nil {
+			return err
+		}
+		return h.tokenPersister(envelope, expiry)
+	}
+}
+
+func (*Handler) effectiveIssuer(issuer string, authServerInfo *discovery.AuthServerInfo) string {
+	if authServerInfo != nil && authServerInfo.Issuer != "" {
+		return authServerInfo.Issuer
+	}
+	return issuer
+}
+
+// restoreCachedRefreshToken resolves the cached refresh token and the
+// authorization server it should be bound to. The returned migrated flag is
+// true when the cached value was a pre-upgrade bare string rather than a
+// bound envelope; callers must persist a bound envelope once the token is
+// verified so the migration only happens once per session.
+func (h *Handler) restoreCachedRefreshToken(
+	ctx context.Context,
+	issuer string,
+	authServerInfo *discovery.AuthServerInfo,
+) (token, effectiveIssuer, tokenURL string, migrated bool, err error) {
+	tokenURL = h.config.TokenURL
+	if tokenURL == "" && authServerInfo != nil {
+		tokenURL = authServerInfo.TokenURL
+	}
+	refreshTokenValue, err := h.secretProvider.GetSecret(ctx, h.config.CachedRefreshTokenRef)
+	if err != nil {
+		return "", "", "", false, fmt.Errorf("failed to retrieve cached refresh token: %w", err)
+	}
+	effectiveIssuer = h.effectiveIssuer(issuer, authServerInfo)
+	envelope, err := decodeCachedRefreshToken(refreshTokenValue)
+	if err != nil {
+		if !errors.Is(err, errLegacyCachedRefreshToken) {
+			return "", "", "", false, fmt.Errorf("unsafe legacy cached refresh token: %w", err)
+		}
+		// Pre-upgrade bare-string token. An operator-pinned issuer/token
+		// endpoint was never exposed to GHSA-pc64-52fx-5v22 — the attacker
+		// cannot change what the operator configured — so binding to it is
+		// not a trust extension. effectiveIssuer already resolves to the
+		// operator-configured issuer when authServerInfo is unavailable, and
+		// to the issuer validated against the operator-configured metadata
+		// URL otherwise — never to a bare-token-time guess.
+		if h.config.Issuer != "" || h.config.TokenURL != "" {
+			return refreshTokenValue, effectiveIssuer, tokenURL, true, nil
+		}
+		// Auto-discovery deployment: this is exactly the class the advisory
+		// describes. A bare legacy token carries no independently trusted
+		// issuer to bind to, so migrating it would mean trusting whatever
+		// the remote currently advertises — replaying the original exploit
+		// instead of closing it. Force a fresh OAuth flow.
+		return "", "", "", false,
+			fmt.Errorf("legacy cached refresh token has no trusted authorization server binding, re-authentication required")
+	}
+	if envelope.Issuer != effectiveIssuer || envelope.TokenURL != tokenURL {
+		return "", "", "", false, fmt.Errorf("cached refresh token authorization server does not match current discovery")
+	}
+	return envelope.Token, effectiveIssuer, tokenURL, false, nil
 }
 
 // resolveClientCredentials returns the client ID and secret to use, preferring
@@ -324,12 +421,19 @@ func (h *Handler) tryRestoreFromCachedTokens(
 		return nil, fmt.Errorf("secret provider not configured, cannot restore cached tokens")
 	}
 
+	// Decode and bind the refresh token before using any cached credential.
+	// This must precede DCR renewal and client credential retrieval.
+	refreshToken, effectiveIssuer, tokenURL, migrated, err := h.restoreCachedRefreshToken(ctx, issuer, authServerInfo)
+	if err != nil {
+		return nil, err
+	}
+
 	// Check if the cached client secret is expired before attempting token refresh.
 	// If it has fully expired and renewal also fails we must force a fresh OAuth flow.
 	if h.isSecretExpiredOrExpiringSoon() {
 		slog.Debug("Cached client secret is expiring or expired; attempting renewal before token restore",
 			"expiry", h.config.CachedSecretExpiry)
-		if renewErr := h.renewClientSecret(ctx, issuer); renewErr != nil {
+		if renewErr := h.renewClientSecret(ctx, effectiveIssuer); renewErr != nil {
 			slog.Warn("Client secret renewal failed", "error", renewErr)
 			// Hard-fail only when the secret is already past its expiry.
 			// If we are still in the buffer window the existing secret may work.
@@ -345,12 +449,7 @@ func (h *Handler) tryRestoreFromCachedTokens(
 		}
 	}
 
-	refreshToken, err := h.secretProvider.GetSecret(ctx, h.config.CachedRefreshTokenRef)
-	if err != nil {
-		return nil, fmt.Errorf("failed to retrieve cached refresh token: %w", err)
-	}
-
-	// Resolve client credentials - prefer cached DCR credentials over config
+	// Resolve client credentials - prefer cached DCR credentials over config.
 	clientID, clientSecret := h.resolveClientCredentials(ctx)
 
 	// Public clients (no secret) must use AuthStyleInParams: strict OAuth 2.1 servers
@@ -363,26 +462,21 @@ func (h *Handler) tryRestoreFromCachedTokens(
 		authStyle = oauth2.AuthStyleAutoDetect
 	}
 
-	// Build OAuth2 config for token refresh
+	// Build OAuth2 config for token refresh.
 	oauth2Config := &oauth2.Config{
 		ClientID:     clientID,
 		ClientSecret: clientSecret,
 		Scopes:       scopes,
 		Endpoint: oauth2.Endpoint{
 			AuthURL:   h.config.AuthorizeURL,
-			TokenURL:  h.config.TokenURL,
+			TokenURL:  tokenURL,
 			AuthStyle: authStyle,
 		},
 	}
 
-	// Use discovered endpoints if available
-	if authServerInfo != nil {
-		if h.config.AuthorizeURL == "" {
-			oauth2Config.Endpoint.AuthURL = authServerInfo.AuthorizationURL
-		}
-		if h.config.TokenURL == "" {
-			oauth2Config.Endpoint.TokenURL = authServerInfo.TokenURL
-		}
+	// Use the discovered authorization endpoint if available.
+	if authServerInfo != nil && h.config.AuthorizeURL == "" {
+		oauth2Config.Endpoint.AuthURL = authServerInfo.AuthorizationURL
 	}
 
 	// Create token source from cached refresh token.
@@ -400,16 +494,38 @@ func (h *Handler) tryRestoreFromCachedTokens(
 
 	// Try to get a token to verify the cached tokens are valid
 	// This will trigger a refresh since we don't have an access token
-	_, err = baseSource.Token()
+	tok, err := baseSource.Token()
 	if err != nil {
 		return nil, fmt.Errorf("cached tokens are invalid or expired: %w", err)
 	}
 
 	slog.Debug("Restored OAuth session from cached tokens", "issuer", issuer)
 
-	// Wrap with persisting token source to save refreshed tokens
-	if h.tokenPersister != nil {
-		return NewPersistingTokenSource(baseSource, h.tokenPersister), nil
+	// A legacy bare-string token just verified against effectiveIssuer/tokenURL:
+	// persist the bound envelope now rather than waiting for a future refresh,
+	// so the migration is deterministic and happens exactly once. Use whatever
+	// refresh token/expiry the AS just returned, falling back to the
+	// pre-verification values if it didn't rotate them.
+	if migrated {
+		newRefreshToken := tok.RefreshToken
+		if newRefreshToken == "" {
+			newRefreshToken = refreshToken
+		}
+		expiry := tok.Expiry
+		if expiry.IsZero() {
+			expiry = h.config.CachedTokenExpiry
+		}
+		if persister := h.tokenPersisterFor(effectiveIssuer, tokenURL); persister != nil {
+			if err := persister(newRefreshToken, expiry); err != nil {
+				slog.Warn("Failed to persist migrated cached refresh token", "error", err)
+			}
+		}
+	}
+
+	// Wrap with a persisting token source to save refreshed tokens bound to the
+	// same authorization server and token endpoint.
+	if persister := h.tokenPersisterFor(effectiveIssuer, tokenURL); persister != nil {
+		return NewPersistingTokenSource(baseSource, persister), nil
 	}
 
 	return baseSource, nil

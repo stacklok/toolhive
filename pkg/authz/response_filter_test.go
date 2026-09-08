@@ -427,6 +427,158 @@ func TestResponseFilteringWriter(t *testing.T) {
 	}
 }
 
+func TestResponseFilteringWriter_LegacyListsRejectMalformedOrAmbiguousResults(t *testing.T) {
+	t.Parallel()
+
+	const protectedDescriptor = "protected-descriptor-sentinel"
+	type listMethod struct {
+		name               string
+		method             string
+		listField          string
+		identifier         string
+		typedInvalidMember string
+	}
+	methods := []listMethod{
+		{
+			name: "tools", method: string(mcp.MethodToolsList), listField: "tools", identifier: "name",
+			typedInvalidMember: `"inputSchema":17,"annotations":{"readOnlyHint":true}`,
+		},
+		{
+			name: "prompts", method: string(mcp.MethodPromptsList), listField: "prompts", identifier: "name",
+			typedInvalidMember: `"arguments":17`,
+		},
+		{
+			name: "resources", method: string(mcp.MethodResourcesList), listField: "resources", identifier: "uri",
+			typedInvalidMember: `"size":"bad"`,
+		},
+	}
+
+	testCases := []struct {
+		name   string
+		result func(listMethod) json.RawMessage
+	}{
+		{
+			name: "result is not an object",
+			result: func(_ listMethod) json.RawMessage {
+				return json.RawMessage(`["` + protectedDescriptor + `"]`)
+			},
+		},
+		{
+			name: "list is not an array",
+			result: func(method listMethod) json.RawMessage {
+				return json.RawMessage(`{"` + method.listField + `":{"` +
+					method.identifier + `":"` + protectedDescriptor + `"}}`)
+			},
+		},
+		{
+			name: "case-folded list alias",
+			result: func(method listMethod) json.RawMessage {
+				return json.RawMessage(`{"` + method.listField + `":[],"` +
+					strings.ToUpper(method.listField) + `":[{"` + method.identifier + `":"` +
+					protectedDescriptor + `"}]}`)
+			},
+		},
+		{
+			name: "duplicate list member",
+			result: func(method listMethod) json.RawMessage {
+				return json.RawMessage(`{"` + method.listField + `":[],"` + method.listField +
+					`":[{"` + method.identifier + `":"` + protectedDescriptor + `"}]}`)
+			},
+		},
+		{
+			name: "list item is not an object",
+			result: func(method listMethod) json.RawMessage {
+				return json.RawMessage(`{"` + method.listField + `":["` + protectedDescriptor + `"]}`)
+			},
+		},
+		{
+			name: "case-folded identifier alias",
+			result: func(method listMethod) json.RawMessage {
+				return json.RawMessage(`{"` + method.listField + `":[{"` + method.identifier + `":"` +
+					protectedDescriptor + `","` + strings.ToUpper(method.identifier) + `":"allowed"}]}`)
+			},
+		},
+		{
+			name: "duplicate identifier member",
+			result: func(method listMethod) json.RawMessage {
+				return json.RawMessage(`{"` + method.listField + `":[{"` + method.identifier + `":"` +
+					protectedDescriptor + `","` + method.identifier + `":"allowed"}]}`)
+			},
+		},
+		{
+			name: "identifier is not a string",
+			result: func(method listMethod) json.RawMessage {
+				return json.RawMessage(`{"` + method.listField + `":[{"` + method.identifier +
+					`":17,"description":"` + protectedDescriptor + `"}]}`)
+			},
+		},
+		{
+			name: "descriptor fails typed MCP decoding",
+			result: func(method listMethod) json.RawMessage {
+				return json.RawMessage(`{"` + method.listField + `":[{"` + method.identifier + `":"` +
+					protectedDescriptor + `",` + method.typedInvalidMember + `}]}`)
+			},
+		},
+	}
+
+	for _, method := range methods {
+		for _, tc := range testCases {
+			t.Run(method.name+"/"+tc.name, func(t *testing.T) {
+				t.Parallel()
+
+				responseBytes, err := jsonrpc2.EncodeMessage(&jsonrpc2.Response{
+					ID:     jsonrpc2.Int64ID(103),
+					Result: tc.result(method),
+				})
+				require.NoError(t, err)
+
+				authorizer := &mockAuthorizer{results: map[string]mockResult{
+					"allowed":           {authorized: true},
+					protectedDescriptor: {authorized: false},
+				}}
+				annotationCache := NewAnnotationCache()
+				cachedAnnotations := &authorizers.ToolAnnotations{}
+				annotationCache.Set("previously-cached-tool", cachedAnnotations)
+				rr := httptest.NewRecorder()
+				rfw := NewResponseFilteringWriter(
+					rr, authorizer, newUser1Request(t), method.method, annotationCache, nil,
+				)
+				rfw.ResponseWriter.Header().Set("Content-Type", "application/json")
+				_, err = rfw.Write(responseBytes)
+				require.NoError(t, err)
+				require.NoError(t, rfw.FlushAndFilter())
+
+				assert.Equal(t, http.StatusInternalServerError, rr.Code)
+				assert.NotContains(t, rr.Body.String(), protectedDescriptor,
+					"an invalid list result must not expose an unfiltered descriptor")
+				assert.Empty(t, authorizer.calls,
+					"the whole list must be validated before any authorization decision")
+				assert.Same(t, cachedAnnotations, annotationCache.Get("previously-cached-tool"),
+					"a malformed response must not replace the existing annotation cache")
+				assert.Nil(t, annotationCache.Get(protectedDescriptor),
+					"a malformed descriptor must not be partially added to the annotation cache")
+
+				message, err := jsonrpc2.DecodeMessage(rr.Body.Bytes())
+				require.NoError(t, err)
+				response, ok := message.(*jsonrpc2.Response)
+				require.True(t, ok)
+				require.NotNil(t, response.Error)
+				assert.Nil(t, response.Result)
+
+				var envelope struct {
+					Error struct {
+						Code    int64  `json:"code"`
+						Message string `json:"message"`
+					} `json:"error"`
+				}
+				require.NoError(t, json.Unmarshal(rr.Body.Bytes(), &envelope))
+				assert.Equal(t, mcpparser.CodeInternalError, envelope.Error.Code)
+				assert.Equal(t, "internal error", envelope.Error.Message)
+			})
+		}
+	}
+}
+
 // TestResponseFilteringWriter_ResourceTemplatesList is the regression test for
 // GHSA-5vxv-9f7g-x8j2. Resource-template enumeration is admitted before any
 // individual resource ID is known, so every descriptor must be filtered against

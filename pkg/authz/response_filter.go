@@ -697,11 +697,14 @@ func (rfw *ResponseFilteringWriter) filterListResponse(response *jsonrpc2.Respon
 
 // filterToolsResponse filters tools based on call_tool authorization
 func (rfw *ResponseFilteringWriter) filterToolsResponse(response *jsonrpc2.Response) (*jsonrpc2.Response, error) {
+	if err := validateListResult(response.Result, "tools", "name"); err != nil {
+		return nil, fmt.Errorf("validating tools list response: %w", err)
+	}
+
 	// Parse the result as a ListToolsResult
 	var listResult mcp.ListToolsResult
 	if err := json.Unmarshal(response.Result, &listResult); err != nil {
-		// If we can't parse it as a list response, just return it as-is
-		return response, nil
+		return nil, fmt.Errorf("decoding tools list response: %w", err)
 	}
 
 	// Populate annotation cache from tools/list response so that
@@ -757,11 +760,14 @@ func (rfw *ResponseFilteringWriter) filterToolsResponse(response *jsonrpc2.Respo
 
 // filterPromptsResponse filters prompts based on get_prompt authorization
 func (rfw *ResponseFilteringWriter) filterPromptsResponse(response *jsonrpc2.Response) (*jsonrpc2.Response, error) {
+	if err := validateListResult(response.Result, "prompts", "name"); err != nil {
+		return nil, fmt.Errorf("validating prompts list response: %w", err)
+	}
+
 	// Parse the result as a ListPromptsResult
 	var listResult mcp.ListPromptsResult
 	if err := json.Unmarshal(response.Result, &listResult); err != nil {
-		// If we can't parse it as a list response, just return it as-is
-		return response, nil
+		return nil, fmt.Errorf("decoding prompts list response: %w", err)
 	}
 
 	// Note: instantiating the list ensures that no null value is sent over the wire.
@@ -818,11 +824,14 @@ func (rfw *ResponseFilteringWriter) filterPromptsResponse(response *jsonrpc2.Res
 
 // filterResourcesResponse filters resources based on read_resource authorization
 func (rfw *ResponseFilteringWriter) filterResourcesResponse(response *jsonrpc2.Response) (*jsonrpc2.Response, error) {
+	if err := validateListResult(response.Result, "resources", "uri"); err != nil {
+		return nil, fmt.Errorf("validating resources list response: %w", err)
+	}
+
 	// Parse the result as a ListResourcesResult
 	var listResult mcp.ListResourcesResult
 	if err := json.Unmarshal(response.Result, &listResult); err != nil {
-		// If we can't parse it as a list response, just return it as-is
-		return response, nil
+		return nil, fmt.Errorf("decoding resources list response: %w", err)
 	}
 
 	// Note: instantiating the list ensures that no null value is sent over the wire.
@@ -976,6 +985,54 @@ func decodeResourceTemplatesListResult(
 		return nil, nil, nil, err
 	}
 	return result, resourceTemplates, uriTemplates, nil
+}
+
+// validateListResult rejects malformed list results and ambiguous spellings
+// of the fields used to decide authorization. encoding/json otherwise accepts
+// case-folded aliases and resolves duplicate members using the last value,
+// which could make authorization inspect a different list or identifier than
+// a client consuming the response.
+func validateListResult(data json.RawMessage, listField, identifierField string) error {
+	members, err := decodeJSONObjectMembers(data)
+	if err != nil {
+		return err
+	}
+	rawItems, ok, err := uniqueCanonicalMember(members, listField)
+	if err != nil {
+		return err
+	}
+	if !ok {
+		return fmt.Errorf("result is missing %q", listField)
+	}
+
+	var items []json.RawMessage
+	if err := json.Unmarshal(rawItems, &items); err != nil {
+		return fmt.Errorf("decoding %s: %w", listField, err)
+	}
+	if items == nil {
+		return fmt.Errorf("field %q must be an array", listField)
+	}
+	for i, item := range items {
+		itemMembers, err := decodeJSONObjectMembers(item)
+		if err != nil {
+			return fmt.Errorf("decoding %s item at index %d: %w", listField, i, err)
+		}
+		rawIdentifier, ok, err := uniqueCanonicalMember(itemMembers, identifierField)
+		if err != nil {
+			return fmt.Errorf("%s item at index %d: %w", listField, i, err)
+		}
+		if !ok {
+			return fmt.Errorf("%s item at index %d is missing %q", listField, i, identifierField)
+		}
+		var identifier *string
+		if err := json.Unmarshal(rawIdentifier, &identifier); err != nil {
+			return fmt.Errorf("%s item at index %d has an invalid %s: %w", listField, i, identifierField, err)
+		}
+		if identifier == nil {
+			return fmt.Errorf("%s item at index %d is missing a string %s", listField, i, identifierField)
+		}
+	}
+	return nil
 }
 
 // decodeResourceTemplateURIs validates every descriptor before any

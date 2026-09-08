@@ -83,10 +83,18 @@ type RedisRunConfig struct {
 	// Mutually exclusive with Addr.
 	SentinelConfig *SentinelRunConfig `json:"sentinel_config,omitempty" yaml:"sentinel_config,omitempty"`
 
-	// AuthType must be "aclUser" - only ACL user authentication is supported.
+	// AuthType selects the Redis authentication mode. "aclUser" is the only
+	// authenticated mode. Leave it empty, with a nil ACLUserConfig, for a
+	// no-auth connection to a Redis/Valkey instance that has no authentication
+	// configured. The conversion code does not branch on this field; presence
+	// of ACLUserConfig is what enables authentication.
 	AuthType string `json:"auth_type" yaml:"auth_type"`
 
 	// ACLUserConfig contains ACL user authentication configuration.
+	// A nil value is a valid no-auth configuration: the store connects without
+	// credentials. A populated block whose password resolves to empty is a
+	// misconfiguration (mis-keyed or unsynced secret) and is rejected rather
+	// than silently downgraded to an unauthenticated connection.
 	ACLUserConfig *ACLUserRunConfig `json:"acl_user_config,omitempty" yaml:"acl_user_config,omitempty"`
 
 	// KeyPrefix for multi-tenancy, typically "thv:auth:{ns}:{name}:".

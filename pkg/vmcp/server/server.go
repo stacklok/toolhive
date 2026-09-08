@@ -364,6 +364,11 @@ type Server struct {
 // using the address, DB, and key prefix from cfg.SessionStorage; the password
 // is read from the THV_SESSION_REDIS_PASSWORD environment variable.
 // Any other provider value is a misconfiguration and returns an error.
+//
+// An empty THV_SESSION_REDIS_PASSWORD is tolerated (a no-auth Redis/Valkey
+// instance) but emits one startup WARN naming the store, so an unintended
+// downgrade to an unauthenticated connection is visible in logs rather than
+// silent; an authenticated connection logs at INFO.
 func buildSessionDataStorage(ctx context.Context, cfg *Config) (transportsession.DataStorage, error) {
 	// Default to in-process storage when session storage is not configured,
 	// or when the provider is explicitly "memory" or left empty.
@@ -380,16 +385,31 @@ func buildSessionDataStorage(ctx context.Context, cfg *Config) (transportsession
 	if keyPrefix == "" {
 		keyPrefix = "thv:vmcp:session:"
 	}
+	password := os.Getenv(vmcpconfig.RedisPasswordEnvVar)
 	redisCfg := tcredis.Config{
 		Addr:     cfg.SessionStorage.Address,
-		Password: os.Getenv(vmcpconfig.RedisPasswordEnvVar),
+		Password: password,
 		DB:       int(cfg.SessionStorage.DB),
 	}
-	slog.Info("using Redis session storage",
-		"address", cfg.SessionStorage.Address,
-		"db", cfg.SessionStorage.DB,
-		"key_prefix", keyPrefix,
-	)
+	// Distinguish an authenticated connection (INFO) from a no-auth one (WARN):
+	// an empty password is tolerated for a no-auth Redis/Valkey instance, but a
+	// downgrade that was not intended (e.g. an unset or unsynced
+	// THV_SESSION_REDIS_PASSWORD secret) should be visible in logs rather than
+	// silent. The store holds session data, so name it either way.
+	if password == "" {
+		slog.Warn("vMCP Redis session storage connecting without authentication "+
+			"(THV_SESSION_REDIS_PASSWORD is empty)",
+			"address", cfg.SessionStorage.Address,
+			"db", cfg.SessionStorage.DB,
+			"key_prefix", keyPrefix,
+		)
+	} else {
+		slog.Info("using Redis session storage",
+			"address", cfg.SessionStorage.Address,
+			"db", cfg.SessionStorage.DB,
+			"key_prefix", keyPrefix,
+		)
+	}
 	return transportsession.NewRedisSessionDataStorage(ctx, redisCfg, keyPrefix, cfg.SessionTTL)
 }
 

@@ -10,6 +10,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"log/slog"
 	"net/http"
 	"net/http/httptest"
 	"sort"
@@ -753,6 +754,58 @@ func TestBuildSessionDataStorageRedis(t *testing.T) {
 	// error can't satisfy this test. ("redis" alone is unsuitable — the unsupported-
 	// provider error text also lists "redis".)
 	assert.ErrorContains(t, err, "redis: failed to connect")
+}
+
+// logSyncBuffer is a concurrency-safe io.Writer over a bytes.Buffer. slog.SetDefault
+// is process-global, so while a capturing handler is installed any parallel test in
+// this package can write a record into it; a plain bytes.Buffer would be a data race.
+type logSyncBuffer struct {
+	mu  sync.Mutex
+	buf bytes.Buffer
+}
+
+func (b *logSyncBuffer) Write(p []byte) (int, error) {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	return b.buf.Write(p)
+}
+
+func (b *logSyncBuffer) String() string {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	return b.buf.String()
+}
+
+// TestBuildSessionDataStorageRedis_NoAuthWarns verifies the "redis" provider emits
+// exactly one startup WARN naming the store when THV_SESSION_REDIS_PASSWORD resolves
+// to empty (a no-auth connection). The WARN is emitted before the connection Ping, so
+// it is captured even though the unreachable address makes the overall call fail.
+// Not parallel: it uses t.Setenv and swaps the process-global slog default.
+//
+//nolint:paralleltest // t.Setenv and slog.SetDefault mutate process-global state
+func TestBuildSessionDataStorageRedis_NoAuthWarns(t *testing.T) {
+	t.Setenv(vmcpconfig.RedisPasswordEnvVar, "")
+
+	var buf logSyncBuffer
+	previous := slog.Default()
+	slog.SetDefault(slog.New(slog.NewTextHandler(&buf, &slog.HandlerOptions{Level: slog.LevelWarn})))
+	t.Cleanup(func() { slog.SetDefault(previous) })
+
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+	_, err := buildSessionDataStorage(ctx, &Config{
+		SessionTTL: time.Minute,
+		SessionStorage: &vmcpconfig.SessionStorageConfig{
+			Provider: "redis",
+			Address:  "127.0.0.1:1", // unreachable: Ping fails after the WARN is emitted
+		},
+	})
+	require.Error(t, err)
+
+	logged := buf.String()
+	assert.Equal(t, 1, strings.Count(logged, "level=WARN"))
+	assert.Contains(t, logged, "without authentication")
+	assert.Contains(t, logged, "127.0.0.1:1")
 }
 
 // TestServeHandlerSkipsDiscoveryAndRoutesCallThroughCore drives the FULL shared

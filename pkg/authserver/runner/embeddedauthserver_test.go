@@ -1331,17 +1331,16 @@ func TestConvertRedisRunConfig(t *testing.T) {
 		assert.Contains(t, err.Error(), "redis config is required")
 	})
 
-	t.Run("missing ACL user config returns error", func(t *testing.T) {
+	t.Run("nil ACL user config resolves to no-auth", func(t *testing.T) {
 		t.Parallel()
-		_, err := convertRedisRunConfig(&storage.RedisRunConfig{
+		cfg, err := convertRedisRunConfig(&storage.RedisRunConfig{
+			Addr:      "redis.example.com:6379",
 			KeyPrefix: "test:",
-			SentinelConfig: &storage.SentinelRunConfig{
-				MasterName:    "mymaster",
-				SentinelAddrs: []string{"localhost:26379"},
-			},
+			// No ACLUserConfig: a no-auth connection to an unauthenticated Redis.
 		})
-		require.Error(t, err)
-		assert.Contains(t, err.Error(), "acl user config is required")
+		require.NoError(t, err)
+		assert.Empty(t, cfg.Username)
+		assert.Empty(t, cfg.Password)
 	})
 
 	t.Run("unset username env var returns error", func(t *testing.T) {
@@ -1471,6 +1470,24 @@ func TestConvertRedisRunConfig_WithEnvVars(t *testing.T) {
 		assert.Equal(t, "mypass", cfg.Password)
 	})
 
+	t.Run("populated ACL config with empty-resolved password returns error", func(t *testing.T) {
+		// Env var is set but empty: a populated ACL block that resolves to no
+		// password is a misconfiguration (mis-keyed / unsynced secret), not a
+		// request for no-auth, and must not silently downgrade to unauthenticated.
+		t.Setenv("TEST_REDIS_PASS_EMPTY", "")
+
+		_, err := convertRedisRunConfig(&storage.RedisRunConfig{
+			Addr:      "redis.example.com:6379",
+			KeyPrefix: "thv:auth:ns:name:",
+			ACLUserConfig: &storage.ACLUserRunConfig{
+				UsernameEnvVar: "", // no username; only the password path matters here
+				PasswordEnvVar: "TEST_REDIS_PASS_EMPTY",
+			},
+		})
+		require.Error(t, err)
+		assert.Contains(t, err.Error(), "password is empty for a populated ACL user config")
+	})
+
 	t.Run("cluster mode resolves correctly", func(t *testing.T) {
 		t.Setenv("TEST_REDIS_USER_CLUSTER", "clusteruser")
 		t.Setenv("TEST_REDIS_PASS_CLUSTER", "clusterpass")
@@ -1490,6 +1507,51 @@ func TestConvertRedisRunConfig_WithEnvVars(t *testing.T) {
 		assert.Nil(t, cfg.SentinelConfig)
 		assert.Equal(t, "clusteruser", cfg.Username)
 		assert.Equal(t, "clusterpass", cfg.Password)
+	})
+}
+
+// TestConvertRedisRunConfig_NoAuthWarns asserts a no-auth resolution (nil
+// ACLUserConfig) emits exactly one startup WARN naming the store, while an
+// authenticated resolution emits none. It swaps the process-global slog default,
+// so it is not parallel.
+//
+//nolint:paralleltest // mutates the package-global slog.Default()
+func TestConvertRedisRunConfig_NoAuthWarns(t *testing.T) {
+	t.Run("no-auth emits one WARN naming the store", func(t *testing.T) {
+		var buf syncBuffer
+		previous := slog.Default()
+		slog.SetDefault(slog.New(slog.NewTextHandler(&buf, &slog.HandlerOptions{Level: slog.LevelWarn})))
+		t.Cleanup(func() { slog.SetDefault(previous) })
+
+		_, err := convertRedisRunConfig(&storage.RedisRunConfig{
+			Addr:      "redis.example.com:6379",
+			KeyPrefix: "thv:auth:ns:name:",
+		})
+		require.NoError(t, err)
+
+		logged := buf.String()
+		assert.Equal(t, 1, strings.Count(logged, "level=WARN"))
+		assert.Contains(t, logged, "without authentication")
+		assert.Contains(t, logged, "redis.example.com:6379")
+	})
+
+	t.Run("authenticated resolution emits no WARN", func(t *testing.T) {
+		t.Setenv("TEST_REDIS_PASS_WARN", "mypass")
+
+		var buf syncBuffer
+		previous := slog.Default()
+		slog.SetDefault(slog.New(slog.NewTextHandler(&buf, &slog.HandlerOptions{Level: slog.LevelWarn})))
+		t.Cleanup(func() { slog.SetDefault(previous) })
+
+		_, err := convertRedisRunConfig(&storage.RedisRunConfig{
+			Addr:      "redis.example.com:6379",
+			KeyPrefix: "thv:auth:ns:name:",
+			ACLUserConfig: &storage.ACLUserRunConfig{
+				PasswordEnvVar: "TEST_REDIS_PASS_WARN",
+			},
+		})
+		require.NoError(t, err)
+		assert.Equal(t, 0, strings.Count(buf.String(), "level=WARN"))
 	})
 }
 

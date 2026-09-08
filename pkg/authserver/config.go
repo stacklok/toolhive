@@ -637,6 +637,10 @@ type OIDCUpstreamRunConfig struct {
 	// Mutually exclusive with ClientSecretFile. Optional for public clients using PKCE.
 	ClientSecretEnvVar string `json:"client_secret_env_var,omitempty" yaml:"client_secret_env_var,omitempty"`
 
+	// TokenEndpointAuthMethod is the client authentication method used at the token endpoint.
+	// When empty and a client secret is configured, client_secret_basic is used.
+	TokenEndpointAuthMethod string `json:"token_endpoint_auth_method,omitempty" yaml:"token_endpoint_auth_method,omitempty"`
+
 	// RedirectURI is the callback URL where the upstream IDP will redirect after authentication.
 	// When not specified, defaults to `{issuer}/oauth/callback`.
 	RedirectURI string `json:"redirect_uri,omitempty" yaml:"redirect_uri,omitempty"`
@@ -1368,6 +1372,32 @@ func (c *Config) warnTrustedIssuerAudiences() {
 				"issuer", ti.IssuerURL, "expected_audience", ti.ExpectedAudience)
 		}
 	}
+}
+
+// Validate checks that the OIDCUpstreamRunConfig has a supported token endpoint
+// authentication method and does not combine public-client authentication with a
+// configured client secret.
+func (c *OIDCUpstreamRunConfig) Validate() error {
+	hasSecretSource := c.ClientSecretFile != "" || c.ClientSecretEnvVar != ""
+
+	switch c.TokenEndpointAuthMethod {
+	case "":
+		// Resolved from the presence of a secret in buildOIDCConfig.
+	case oauthproto.TokenEndpointAuthMethodNone:
+		if hasSecretSource {
+			return fmt.Errorf("oidc upstream: token_endpoint_auth_method none cannot be used with a client secret")
+		}
+	case oauthproto.TokenEndpointAuthMethodClientSecretBasic, oauthproto.TokenEndpointAuthMethodClientSecretPost:
+		if !hasSecretSource {
+			return fmt.Errorf(
+				"oidc upstream: token_endpoint_auth_method %q requires client_secret_file or client_secret_env_var",
+				c.TokenEndpointAuthMethod)
+		}
+	default:
+		return fmt.Errorf("oidc upstream: unsupported token_endpoint_auth_method %q", c.TokenEndpointAuthMethod)
+	}
+
+	return nil
 }
 
 // Validate checks that the OAuth2UpstreamRunConfig is internally consistent.

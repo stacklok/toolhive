@@ -18,6 +18,7 @@ import (
 	"github.com/stacklok/toolhive/pkg/authserver/server/registration"
 	"github.com/stacklok/toolhive/pkg/authserver/server/tokenexchange"
 	"github.com/stacklok/toolhive/pkg/authserver/upstream"
+	"github.com/stacklok/toolhive/pkg/oauthproto"
 )
 
 func TestValidateIssuerURL(t *testing.T) {
@@ -387,6 +388,67 @@ func assertError(t *testing.T, err error, wantErr bool, errMsg string) {
 		}
 	} else if err != nil {
 		t.Errorf("unexpected error: %v", err)
+	}
+}
+
+func TestOIDCUpstreamRunConfigValidate(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name    string
+		config  OIDCUpstreamRunConfig
+		wantErr bool
+		errMsg  string
+	}{
+		{name: "empty method is valid", config: OIDCUpstreamRunConfig{}},
+		{name: "none is valid without secret", config: OIDCUpstreamRunConfig{TokenEndpointAuthMethod: oauthproto.TokenEndpointAuthMethodNone}},
+		{name: "basic is valid", config: OIDCUpstreamRunConfig{TokenEndpointAuthMethod: oauthproto.TokenEndpointAuthMethodClientSecretBasic}},
+		{name: "post is valid", config: OIDCUpstreamRunConfig{TokenEndpointAuthMethod: oauthproto.TokenEndpointAuthMethodClientSecretPost}},
+		{
+			name:    "unknown method rejects",
+			config:  OIDCUpstreamRunConfig{TokenEndpointAuthMethod: "private_key_jwt"},
+			wantErr: true,
+			errMsg:  "unsupported token_endpoint_auth_method",
+		},
+		{
+			name:    "none with secret file rejects",
+			config:  OIDCUpstreamRunConfig{TokenEndpointAuthMethod: oauthproto.TokenEndpointAuthMethodNone, ClientSecretFile: "secret"},
+			wantErr: true,
+			errMsg:  "none cannot be used with a client secret",
+		},
+		{
+			name:    "none with secret env rejects",
+			config:  OIDCUpstreamRunConfig{TokenEndpointAuthMethod: oauthproto.TokenEndpointAuthMethodNone, ClientSecretEnvVar: "SECRET"},
+			wantErr: true,
+			errMsg:  "none cannot be used with a client secret",
+		},
+		{
+			name:    "basic without a secret source rejects",
+			config:  OIDCUpstreamRunConfig{TokenEndpointAuthMethod: oauthproto.TokenEndpointAuthMethodClientSecretBasic},
+			wantErr: true,
+			errMsg:  `requires client_secret_file or client_secret_env_var`,
+		},
+		{
+			name:    "post without a secret source rejects",
+			config:  OIDCUpstreamRunConfig{TokenEndpointAuthMethod: oauthproto.TokenEndpointAuthMethodClientSecretPost},
+			wantErr: true,
+			errMsg:  `requires client_secret_file or client_secret_env_var`,
+		},
+		{
+			name: "basic with a client secret env var configured is valid",
+			config: OIDCUpstreamRunConfig{
+				TokenEndpointAuthMethod: oauthproto.TokenEndpointAuthMethodClientSecretBasic,
+				ClientSecretEnvVar:      "MY_CLIENT_SECRET",
+			},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			err := tt.config.Validate()
+			assertError(t, err, tt.wantErr, tt.errMsg)
+		})
 	}
 }
 

@@ -1100,6 +1100,7 @@ func TestBuildOIDCConfig(t *testing.T) {
 		// Verify client config is passed through
 		assert.Equal(t, "test-client-id", cfg.ClientID)
 		assert.Equal(t, "http://localhost:8080/callback", cfg.RedirectURI)
+		assert.Empty(t, cfg.TokenEndpointAuthMethod)
 		assert.Equal(t, []string{"openid", "profile"}, cfg.Scopes)
 	})
 
@@ -1147,6 +1148,43 @@ func TestBuildOIDCConfig(t *testing.T) {
 		require.NotNil(t, cfg)
 
 		assert.Equal(t, "my-oidc-client-secret", cfg.ClientSecret)
+		assert.Equal(t, oauthproto.TokenEndpointAuthMethodClientSecretBasic, cfg.TokenEndpointAuthMethod)
+	})
+
+	t.Run("preserves explicit client_secret_post", func(t *testing.T) {
+		t.Parallel()
+
+		rc := &authserver.UpstreamRunConfig{
+			Type: authserver.UpstreamProviderTypeOIDC,
+			OIDCConfig: &authserver.OIDCUpstreamRunConfig{
+				IssuerURL:               "https://example.com",
+				ClientID:                "test-client-id",
+				TokenEndpointAuthMethod: oauthproto.TokenEndpointAuthMethodClientSecretPost,
+				RedirectURI:             "http://localhost:8080/callback",
+			},
+		}
+
+		cfg, err := buildOIDCConfig(rc, false)
+		require.NoError(t, err)
+		assert.Equal(t, oauthproto.TokenEndpointAuthMethodClientSecretPost, cfg.TokenEndpointAuthMethod)
+	})
+
+	t.Run("rejects invalid token endpoint auth method", func(t *testing.T) {
+		t.Parallel()
+
+		rc := &authserver.UpstreamRunConfig{
+			Type: authserver.UpstreamProviderTypeOIDC,
+			OIDCConfig: &authserver.OIDCUpstreamRunConfig{
+				IssuerURL:               "https://example.com",
+				ClientID:                "test-client-id",
+				TokenEndpointAuthMethod: "private_key_jwt",
+				RedirectURI:             "http://localhost:8080/callback",
+			},
+		}
+
+		_, err := buildOIDCConfig(rc, false)
+		require.Error(t, err)
+		assert.Contains(t, err.Error(), "unsupported token_endpoint_auth_method")
 	})
 
 	t.Run("missing secret file returns error", func(t *testing.T) {

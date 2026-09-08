@@ -109,6 +109,12 @@ type CommonOAuthConfig struct {
 	// after authentication.
 	RedirectURI string `json:"redirect_uri" yaml:"redirect_uri"`
 
+	// TokenEndpointAuthMethod is the RFC 7591 client authentication method used
+	// at the token endpoint; see authStyleFromMethod for the mapping to
+	// oauth2.AuthStyle and the rationale.
+	//nolint:lll // field tags require full JSON+YAML names
+	TokenEndpointAuthMethod string `json:"token_endpoint_auth_method,omitempty" yaml:"token_endpoint_auth_method,omitempty"`
+
 	// AdditionalAuthorizationParams are extra query parameters to include in the
 	// authorization URL. This is useful for providers that require custom parameters
 	// such as Google's access_type=offline for obtaining refresh tokens.
@@ -146,18 +152,6 @@ type OAuth2Config struct {
 
 	// TokenEndpoint is the URL for the OAuth token endpoint.
 	TokenEndpoint string `json:"token_endpoint" yaml:"token_endpoint"`
-
-	// TokenEndpointAuthMethod is the RFC 7591 client authentication method used
-	// at the token endpoint; see authStyleFromMethod for the mapping to
-	// oauth2.AuthStyle and the rationale. When empty, the historical default
-	// (POST body) is used.
-	//
-	// Only the DCR path populates this, via applyResolutionToOAuth2Config.
-	// OAuth2UpstreamRunConfig has no corresponding field, so a statically-
-	// configured upstream cannot set it and always gets the default — an
-	// intentional limitation scoped to issue #5865 (DCR-negotiated clients).
-	//nolint:lll // field tags require full JSON+YAML names
-	TokenEndpointAuthMethod string `json:"token_endpoint_auth_method,omitempty" yaml:"token_endpoint_auth_method,omitempty"`
 
 	// UserInfo contains configuration for fetching user information (optional).
 	// When nil, the provider does not support UserInfo fetching.

@@ -277,11 +277,14 @@ func NewOIDCProvider(
 	}
 	p.config = oauth2Config
 
-	// Create the oauth2.Config for use with golang.org/x/oauth2 library
-	// Use go-oidc's endpoint which handles discovery, but explicitly set AuthStyle
-	// to ensure client credentials are sent in the request body (not Basic auth header)
-	// for consistent behavior across different IDP implementations.
+	// Create the oauth2.Config for use with golang.org/x/oauth2 library.
+	// Use go-oidc's discovered endpoint URLs, but explicitly set AuthStyle from
+	// the configured method so client authentication is consistent across IDPs.
 	providerEndpoint := oidcProvider.Endpoint()
+	authStyle, err := authStyleFromMethod(config.TokenEndpointAuthMethod)
+	if err != nil {
+		return nil, err
+	}
 	p.oauth2Config = &oauth2.Config{
 		ClientID:     config.ClientID,
 		ClientSecret: config.ClientSecret,
@@ -290,7 +293,7 @@ func NewOIDCProvider(
 		Endpoint: oauth2.Endpoint{
 			AuthURL:   providerEndpoint.AuthURL,
 			TokenURL:  providerEndpoint.TokenURL,
-			AuthStyle: oauth2.AuthStyleInParams,
+			AuthStyle: authStyle,
 		},
 	}
 

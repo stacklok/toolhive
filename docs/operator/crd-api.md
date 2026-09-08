@@ -1993,6 +1993,18 @@ including delegate clients. Trusted issuer endpoint shape is validated by
 ValidateInboundGrants; audience and outbound DNS/private-IP checks remain
 runtime-only.
 
+"listenerTLS is required when SPIFFE X.509 client authentication is
+configured" is deliberately NOT expressed here as a CEL rule: the natural
+expression (self.inboundGrants.spiffeClientAuth.exists(a,
+a.methods.exists(m, m == 'spiffe_x509'))) is a nested exists() over two
+unbounded arrays, whose estimated worst-case cost alone pushed this
+schema's total x-kubernetes-validations cost over the apiserver's CEL
+budget by more than 100x — confirmed by dry-run apply against a real
+cluster, not a hunch. validateListenerTLS (below) already enforces the
+identical check in Go at reconcile time; this is exactly the "CEL
+genuinely cannot express it" exception the operator rules carve out, not a
+dropped guard.
+
 
 
 _Appears in:_
@@ -2006,7 +2018,7 @@ _Appears in:_
 | `signingKeySecretRefs` _[api.v1beta1.SecretKeyRef](#apiv1beta1secretkeyref) array_ | SigningKeySecretRefs references Kubernetes Secrets containing signing keys for JWT operations.<br />Supports key rotation by allowing multiple keys (oldest keys are used for verification only).<br />If not specified, an ephemeral signing key will be auto-generated (development only -<br />JWTs will be invalid after restart). |  | MaxItems: 5 <br />Optional: \{\} <br /> |
 | `hmacSecretRefs` _[api.v1beta1.SecretKeyRef](#apiv1beta1secretkeyref) array_ | HMACSecretRefs references Kubernetes Secrets containing symmetric secrets for signing<br />authorization codes and refresh tokens (opaque tokens).<br />Current secret must be at least 32 bytes and cryptographically random.<br />Supports secret rotation via multiple entries (first is current, rest are for verification).<br />If not specified, an ephemeral secret will be auto-generated (development only -<br />auth codes and refresh tokens will be invalid after restart). |  | Optional: \{\} <br /> |
 | `tokenLifespans` _[api.v1beta1.TokenLifespanConfig](#apiv1beta1tokenlifespanconfig)_ | TokenLifespans configures the duration that various tokens are valid.<br />If not specified, defaults are applied (access: 1h, refresh: 7d, authCode: 10m). |  | Optional: \{\} <br /> |
-| `spiffeTrustDomains` _[api.v1beta1.SPIFFETrustDomainConfig](#apiv1beta1spiffetrustdomainconfig) array_ | SPIFFETrustDomains declares SPIFFE trust domains for<br />inboundGrants.spiffeClientAuth associations. See SPIFFETrustDomainConfig's<br />doc comment for why declaring a domain does not by itself enable<br />authentication in this build. |  | MaxItems: 50 <br />MinItems: 1 <br />Optional: \{\} <br /> |
+| `spiffeTrustDomains` _[api.v1beta1.SPIFFETrustDomainConfig](#apiv1beta1spiffetrustdomainconfig) array_ | SPIFFETrustDomains declares SPIFFE trust domains for<br />inboundGrants.spiffeClientAuth associations. Each configured source must<br />supply initial trust material before the authorization server starts. |  | MaxItems: 50 <br />MinItems: 1 <br />Optional: \{\} <br /> |
 | `inboundGrants` _[api.v1beta1.InboundGrantsConfig](#apiv1beta1inboundgrantsconfig)_ | InboundGrants configures canonical inbound OAuth grant families. |  | Optional: \{\} <br /> |
 | `listenerTLS` _[api.v1beta1.ListenerTLSConfig](#apiv1beta1listenertlsconfig)_ | ListenerTLS configures TLS for the proxy listener that serves the embedded<br />authorization server. It is required for SPIFFE X.509 client authentication. |  | Optional: \{\} <br /> |
 | `upstreamProviders` _[api.v1beta1.UpstreamProviderConfig](#apiv1beta1upstreamproviderconfig) array_ | UpstreamProviders configures connections to upstream Identity Providers.<br />When configured, the embedded auth server delegates interactive authentication<br />to these providers. It may be omitted only when delegateClients or a trusted<br />issuer with jwtBearerGrant enables token-only operation.<br />MCPServer and MCPRemoteProxy support a single upstream; VirtualMCPServer supports multiple. |  | Optional: \{\} <br /> |
@@ -4254,7 +4266,7 @@ _Appears in:_
 | Field | Description | Default | Validation |
 | --- | --- | --- | --- |
 | `url` _string_ | URL is the HTTPS SPIFFE Bundle Endpoint URL. |  | MaxLength: 2048 <br />MinLength: 1 <br />Required: \{\} <br /> |
-| `profile` _[api.v1beta1.SPIFFEBundleEndpointProfile](#apiv1beta1spiffebundleendpointprofile)_ | Profile selects how the endpoint's TLS connection is authenticated:<br />SPIFFEBundleEndpointProfileHTTPSWeb (Web PKI) or<br />SPIFFEBundleEndpointProfileHTTPSSPIFFE (a separately distributed<br />X.509-SVID root). |  | Enum: [https_web https_spiffe] <br />Required: \{\} <br /> |
+| `profile` _[api.v1beta1.SPIFFEBundleEndpointProfile](#apiv1beta1spiffebundleendpointprofile)_ | Profile selects Web PKI authentication for the endpoint TLS connection.<br />The https_spiffe profile is reserved until the configuration can provide<br />an endpoint SPIFFE ID and independently bootstrapped trust. |  | Enum: [https_web] <br />Required: \{\} <br /> |
 
 
 #### api.v1beta1.SPIFFEBundleSourceConfig
@@ -4262,9 +4274,9 @@ _Appears in:_
 
 
 SPIFFEBundleSourceConfig is a discriminated bundle-source declaration. Type
-determines which, and only which, source payload may be set. It is
-validated for shape only; fetching or loading a bundle from the declared
-source is not implemented yet.
+determines which, and only which, source payload may be set. The embedded
+authorization server loads configured bundles at startup and keeps them
+refreshed for its lifetime.
 
 
 
@@ -4332,12 +4344,8 @@ _Appears in:_
 
 
 SPIFFETrustDomainConfig declares one SPIFFE trust domain accepted by the
-embedded authorization server. Configuration is not authentication: no
-live X.509-SVID or JWT-SVID validation exists yet, so a declared trust
-domain does not by itself let any workload authenticate — RunConfig.Validate
-(pkg/authserver/config.go) currently hard-rejects any non-empty
-spiffeTrustDomains at authserver startup via validateSPIFFENotYetEnforced,
-a deliberate placeholder until real SVID verification lands.
+embedded authorization server. A declared domain becomes usable only after
+the configured source supplies trust material during auth-server startup.
 
 
 
@@ -4357,8 +4365,8 @@ _Appears in:_
 
 
 SPIFFEWorkloadAPIBundleSourceConfig selects the local SPIFFE Workload API.
-It deliberately has no payload; loading and deployment details are
-deferred to the bundle-loading implementation.
+It deliberately has no payload; the authorization server obtains bundles
+from the standard local Workload API endpoint.
 
 
 

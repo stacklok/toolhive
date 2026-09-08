@@ -513,6 +513,44 @@ func EmbeddedAuthServerCABundleChecksumForConfig(
 	return hex.EncodeToString(hash.Sum(nil)), nil
 }
 
+// generateListenerTLSVolumes generates volumes and mounts for the listener TLS
+// certificate and private key when both secret references are configured.
+func generateListenerTLSVolumes(
+	listenerTLS *mcpv1beta1.ListenerTLSConfig,
+) ([]corev1.Volume, []corev1.VolumeMount) {
+	if listenerTLS == nil || listenerTLS.CertificateSecretRef == nil || listenerTLS.PrivateKeySecretRef == nil {
+		return nil, nil
+	}
+
+	credentials := []struct {
+		volumeName string
+		fileName   string
+		ref        *mcpv1beta1.SecretKeyRef
+	}{
+		{AuthServerTLSVolumeName + "-cert", AuthServerTLSCertFileName, listenerTLS.CertificateSecretRef},
+		{AuthServerTLSVolumeName + "-key", AuthServerTLSKeyFileName, listenerTLS.PrivateKeySecretRef},
+	}
+	volumes := make([]corev1.Volume, 0, len(credentials))
+	mounts := make([]corev1.VolumeMount, 0, len(credentials))
+	for _, credential := range credentials {
+		volumes = append(volumes, corev1.Volume{
+			Name: credential.volumeName,
+			VolumeSource: corev1.VolumeSource{Secret: &corev1.SecretVolumeSource{
+				SecretName:  credential.ref.Name,
+				Items:       []corev1.KeyToPath{{Key: credential.ref.Key, Path: credential.fileName}},
+				DefaultMode: k8sptr.To(int32(0400)),
+			}},
+		})
+		mounts = append(mounts, corev1.VolumeMount{
+			Name:      credential.volumeName,
+			MountPath: fmt.Sprintf("%s/%s", AuthServerTLSMountPath, credential.fileName),
+			SubPath:   credential.fileName,
+			ReadOnly:  true,
+		})
+	}
+	return volumes, mounts
+}
+
 // GenerateAuthServerVolumes generates volumes and mounts for auth server
 // signing keys, HMAC secrets, Redis CA certificates, and CA bundles.
 // Returns an error when a CA bundle reference is malformed.
@@ -532,35 +570,9 @@ func GenerateAuthServerVolumes(
 	var volumes []corev1.Volume
 	var volumeMounts []corev1.VolumeMount
 
-	if authConfig.ListenerTLS != nil &&
-		authConfig.ListenerTLS.CertificateSecretRef != nil &&
-		authConfig.ListenerTLS.PrivateKeySecretRef != nil {
-		certificateRef := authConfig.ListenerTLS.CertificateSecretRef
-		privateKeyRef := authConfig.ListenerTLS.PrivateKeySecretRef
-		for _, credential := range []struct {
-			volumeName string
-			fileName   string
-			ref        *mcpv1beta1.SecretKeyRef
-		}{
-			{AuthServerTLSVolumeName + "-cert", AuthServerTLSCertFileName, certificateRef},
-			{AuthServerTLSVolumeName + "-key", AuthServerTLSKeyFileName, privateKeyRef},
-		} {
-			volumes = append(volumes, corev1.Volume{
-				Name: credential.volumeName,
-				VolumeSource: corev1.VolumeSource{Secret: &corev1.SecretVolumeSource{
-					SecretName:  credential.ref.Name,
-					Items:       []corev1.KeyToPath{{Key: credential.ref.Key, Path: credential.fileName}},
-					DefaultMode: k8sptr.To(int32(0400)),
-				}},
-			})
-			volumeMounts = append(volumeMounts, corev1.VolumeMount{
-				Name:      credential.volumeName,
-				MountPath: fmt.Sprintf("%s/%s", AuthServerTLSMountPath, credential.fileName),
-				SubPath:   credential.fileName,
-				ReadOnly:  true,
-			})
-		}
-	}
+	listenerTLSVolumes, listenerTLSMounts := generateListenerTLSVolumes(authConfig.ListenerTLS)
+	volumes = append(volumes, listenerTLSVolumes...)
+	volumeMounts = append(volumeMounts, listenerTLSMounts...)
 
 	// Generate volumes for signing keys
 	for idx, keyRef := range authConfig.SigningKeySecretRefs {

@@ -919,18 +919,13 @@ spec:
                   spiffeTrustDomains:
                     description: |-
                       SPIFFETrustDomains declares SPIFFE trust domains for
-                      inboundGrants.spiffeClientAuth associations. See SPIFFETrustDomainConfig's
-                      doc comment for why declaring a domain does not by itself enable
-                      authentication in this build.
+                      inboundGrants.spiffeClientAuth associations. Each configured source must
+                      supply initial trust material before the authorization server starts.
                     items:
                       description: |-
                         SPIFFETrustDomainConfig declares one SPIFFE trust domain accepted by the
-                        embedded authorization server. Configuration is not authentication: no
-                        live X.509-SVID or JWT-SVID validation exists yet, so a declared trust
-                        domain does not by itself let any workload authenticate — RunConfig.Validate
-                        (pkg/authserver/config.go) currently hard-rejects any non-empty
-                        spiffeTrustDomains at authserver startup via validateSPIFFENotYetEnforced,
-                        a deliberate placeholder until real SVID verification lands.
+                        embedded authorization server. A declared domain becomes usable only after
+                        the configured source supplies trust material during auth-server startup.
                       properties:
                         bundleSource:
                           description: |-
@@ -945,13 +940,11 @@ spec:
                               properties:
                                 profile:
                                   description: |-
-                                    Profile selects how the endpoint's TLS connection is authenticated:
-                                    SPIFFEBundleEndpointProfileHTTPSWeb (Web PKI) or
-                                    SPIFFEBundleEndpointProfileHTTPSSPIFFE (a separately distributed
-                                    X.509-SVID root).
+                                    Profile selects Web PKI authentication for the endpoint TLS connection.
+                                    The https_spiffe profile is reserved until the configuration can provide
+                                    an endpoint SPIFFE ID and independently bootstrapped trust.
                                   enum:
                                   - https_web
-                                  - https_spiffe
                                   type: string
                                 url:
                                   description: URL is the HTTPS SPIFFE Bundle Endpoint
@@ -3792,18 +3785,13 @@ spec:
                   spiffeTrustDomains:
                     description: |-
                       SPIFFETrustDomains declares SPIFFE trust domains for
-                      inboundGrants.spiffeClientAuth associations. See SPIFFETrustDomainConfig's
-                      doc comment for why declaring a domain does not by itself enable
-                      authentication in this build.
+                      inboundGrants.spiffeClientAuth associations. Each configured source must
+                      supply initial trust material before the authorization server starts.
                     items:
                       description: |-
                         SPIFFETrustDomainConfig declares one SPIFFE trust domain accepted by the
-                        embedded authorization server. Configuration is not authentication: no
-                        live X.509-SVID or JWT-SVID validation exists yet, so a declared trust
-                        domain does not by itself let any workload authenticate — RunConfig.Validate
-                        (pkg/authserver/config.go) currently hard-rejects any non-empty
-                        spiffeTrustDomains at authserver startup via validateSPIFFENotYetEnforced,
-                        a deliberate placeholder until real SVID verification lands.
+                        embedded authorization server. A declared domain becomes usable only after
+                        the configured source supplies trust material during auth-server startup.
                       properties:
                         bundleSource:
                           description: |-
@@ -3818,13 +3806,11 @@ spec:
                               properties:
                                 profile:
                                   description: |-
-                                    Profile selects how the endpoint's TLS connection is authenticated:
-                                    SPIFFEBundleEndpointProfileHTTPSWeb (Web PKI) or
-                                    SPIFFEBundleEndpointProfileHTTPSSPIFFE (a separately distributed
-                                    X.509-SVID root).
+                                    Profile selects Web PKI authentication for the endpoint TLS connection.
+                                    The https_spiffe profile is reserved until the configuration can provide
+                                    an endpoint SPIFFE ID and independently bootstrapped trust.
                                   enum:
                                   - https_web
-                                  - https_spiffe
                                   type: string
                                 url:
                                   description: URL is the HTTPS SPIFFE Bundle Endpoint

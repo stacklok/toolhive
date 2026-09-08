@@ -3631,19 +3631,13 @@ func TestBuildSPIFFEClientAuthRunConfigs(t *testing.T) {
 	assert.Equal(t, "https://mcp.example.com", configs[0].Audiences[0])
 }
 
-// TestBuildAuthServerRunConfigInvalidSPIFFEIsTypedAndNotYetEnforced covers the
-// "not yet enforced" gate documented in
-// pkg/authserver/config.go's validateSPIFFENotYetEnforced: a well-formed,
-// non-empty SPIFFE trust configuration is admitted by the CRD's CEL rules
-// (see spiffe_cel_test.go), but BuildAuthServerRunConfig's reconcile-time
-// revalidation (validateDelegateClientsAndTrustedIssuers) still rejects it
-// via RunConfig.Validate(), as a terminal InvalidEmbeddedAuthServerConfigError
-// rather than a pod crash loop. This is expected until real SVID verification
-// lands.
-func TestBuildAuthServerRunConfigInvalidSPIFFEIsTypedAndNotYetEnforced(t *testing.T) {
+// TestBuildAuthServerRunConfigAcceptsValidSPIFFE verifies that a well-formed
+// SPIFFE trust configuration is accepted by reconcile-time RunConfig validation
+// after the CRD converter supplies the derived audiences and scopes.
+func TestBuildAuthServerRunConfigAcceptsValidSPIFFE(t *testing.T) {
 	t.Parallel()
 
-	_, err := BuildAuthServerRunConfig("default", "test-server", &mcpv1beta1.EmbeddedAuthServerConfig{
+	config, err := BuildAuthServerRunConfig("default", "test-server", &mcpv1beta1.EmbeddedAuthServerConfig{
 		ListenerTLS: &mcpv1beta1.ListenerTLSConfig{
 			CertificateSecretRef: &mcpv1beta1.SecretKeyRef{Name: "listener-tls", Key: "certificate"},
 			PrivateKeySecretRef:  &mcpv1beta1.SecretKeyRef{Name: "listener-tls", Key: "private-key"},
@@ -3667,11 +3661,8 @@ func TestBuildAuthServerRunConfigInvalidSPIFFEIsTypedAndNotYetEnforced(t *testin
 			}},
 		},
 	}, []string{"https://mcp.example.com"}, []string{"openid"}, "https://mcp.example.com")
-
-	require.Error(t, err)
-	assert.Contains(t, err.Error(), "SPIFFE client authentication is not yet enforced")
-	var invalidConfigErr *InvalidEmbeddedAuthServerConfigError
-	assert.True(t, stderrors.As(err, &invalidConfigErr))
+	require.NoError(t, err)
+	assert.NotNil(t, config)
 }
 
 // TestBuildAuthServerRunConfigSPIFFEResourcesAndScopesValidateOnceDerivedValuesExist
@@ -3718,15 +3709,12 @@ func TestBuildAuthServerRunConfigSPIFFEResourcesAndScopesValidateOnceDerivedValu
 		}
 	}
 
-	// Resource is in AllowedAudiences and scope is in ScopesSupported: the
-	// only remaining rejection is the unrelated "not yet enforced" gate,
-	// proving resources/scopes passed on real derived values.
-	_, err := BuildAuthServerRunConfig("default", "test-server", authConfig("https://backend.example.com"),
+	// Resource is in AllowedAudiences and scope is in ScopesSupported, so
+	// reconcile-time validation accepts the configuration.
+	config, err := BuildAuthServerRunConfig("default", "test-server", authConfig("https://backend.example.com"),
 		[]string{"https://backend.example.com"}, []string{"custom:scope"}, "https://mcp.example.com")
-	require.Error(t, err)
-	assert.Contains(t, err.Error(), "SPIFFE client authentication is not yet enforced")
-	assert.NotContains(t, err.Error(), "resource")
-	assert.NotContains(t, err.Error(), "scopes")
+	require.NoError(t, err)
+	assert.NotNil(t, config)
 
 	// Resource is NOT in AllowedAudiences: still rejected, but for the
 	// correct reason, proving the check still runs with real derived values.

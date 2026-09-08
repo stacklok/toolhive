@@ -25,6 +25,8 @@ import (
 	"time"
 
 	"github.com/ory/fosite"
+	"github.com/spiffe/go-spiffe/v2/bundle/jwtbundle"
+	"github.com/spiffe/go-spiffe/v2/bundle/x509bundle"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
@@ -69,6 +71,49 @@ func TestNewAuthorizationServerConfig(t *testing.T) {
 	// Verify JWKS contains the key
 	require.NotNil(t, authzServerConfig.SigningJWKS)
 	assert.Len(t, authzServerConfig.SigningJWKS.Keys, 1)
+}
+
+func TestNewAuthorizationServerConfigRequiresConsistentSPIFFEComponents(t *testing.T) {
+	t.Parallel()
+
+	rsaKey, err := rsa.GenerateKey(rand.Reader, 2048)
+	require.NoError(t, err)
+	resolver := SPIFFEClientResolver(func(context.Context, string, string, spiffeauth.SPIFFEAuthenticationMethod) (fosite.Client, error) {
+		return nil, nil
+	})
+	tests := []struct {
+		name       string
+		resolver   SPIFFEClientResolver
+		x509Source x509bundle.Source
+		jwtSource  jwtbundle.Source
+		wantErr    bool
+	}{
+		{name: "all absent"},
+		{name: "resolver only", resolver: resolver, wantErr: true},
+		{name: "X.509 source only", x509Source: x509bundle.NewSet(), wantErr: true},
+		{name: "resolver and X.509 source", resolver: resolver, x509Source: x509bundle.NewSet(), wantErr: true},
+		{name: "all configured", resolver: resolver, x509Source: x509bundle.NewSet(), jwtSource: jwtbundle.NewSet()},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			params := &AuthorizationServerParams{
+				Issuer: "https://auth.example.com", AccessTokenLifespan: time.Hour,
+				RefreshTokenLifespan: 24 * time.Hour, AuthCodeLifespan: 10 * time.Minute,
+				HMACSecrets:  servercrypto.NewHMACSecrets([]byte("test-secret-with-32-bytes-long!!")),
+				SigningKeyID: "key-1", SigningKeyAlgorithm: "RS256", SigningKey: rsaKey,
+				SPIFFEClientResolver: tt.resolver, SPIFFEX509BundleSource: tt.x509Source, SPIFFEJWTBundleSource: tt.jwtSource,
+			}
+			config, err := NewAuthorizationServerConfig(params)
+			if tt.wantErr {
+				require.ErrorContains(t, err, "SPIFFE client resolver and both SPIFFE bundle sources must be configured together")
+				assert.Nil(t, config)
+				return
+			}
+			require.NoError(t, err)
+			assert.NotNil(t, config)
+		})
+	}
 }
 
 // TestNewAuthorizationServerConfig_ConfidentialClientCapabilities pins the

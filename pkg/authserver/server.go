@@ -59,10 +59,11 @@ type Server interface {
 	// its closed connection pool).
 	DCRStore() storage.DCRCredentialStore
 
-	// Close releases resources held by the server. It drains the upstream idle
-	// connections (see the CloseIdleConnections function) and then closes
-	// storage. Do not call it on a server whose storage is shared with another
-	// live server; retire that one with CloseIdleConnections instead.
+	// Close releases resources held by the server. It drains upstream idle
+	// connections, stops SPIFFE bundle and trusted-issuer refresh workers, and
+	// closes storage. It joins shutdown errors. Do not call it on a server whose
+	// storage is shared with another live server; retire that one with
+	// CloseIdleConnections instead.
 	Close() error
 }
 

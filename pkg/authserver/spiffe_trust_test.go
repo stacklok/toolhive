@@ -205,6 +205,14 @@ func TestValidateSPIFFETrust(t *testing.T) {
 				},
 			}
 		}},
+		{name: "bundle_source https_spiffe requires bootstrap configuration", mutate: func(domains []SPIFFETrustDomainRunConfig, _ *InboundGrantsRunConfig) {
+			domains[0].BundleSource = SPIFFEBundleSourceRunConfig{
+				Type: SPIFFEBundleSourceTypeEndpoint,
+				Endpoint: &SPIFFEBundleEndpointSourceRunConfig{
+					URL: "https://bundle.example.org/bundle", Profile: SPIFFEBundleEndpointProfileHTTPSSPIFFE,
+				},
+			}
+		}, wantErr: "bootstrap trust are configurable"},
 		{name: "bundle_source endpoint requires a known profile", mutate: func(domains []SPIFFETrustDomainRunConfig, _ *InboundGrantsRunConfig) {
 			domains[0].BundleSource = SPIFFEBundleSourceRunConfig{
 				Type:     SPIFFEBundleSourceTypeEndpoint,
@@ -299,7 +307,7 @@ func TestSPIFFETrustConfigTrustDomainLookup(t *testing.T) {
 			BundleSource: SPIFFEBundleSourceRunConfig{
 				Type: SPIFFEBundleSourceTypeEndpoint,
 				Endpoint: &SPIFFEBundleEndpointSourceRunConfig{
-					URL: "https://bundle.example.org/bundle", Profile: SPIFFEBundleEndpointProfileHTTPSSPIFFE,
+					URL: "https://bundle.example.org/bundle", Profile: SPIFFEBundleEndpointProfileHTTPSWeb,
 				},
 			},
 		}},
@@ -319,7 +327,7 @@ func TestSPIFFETrustConfigTrustDomainLookup(t *testing.T) {
 	assert.Equal(t, []SPIFFEAuthenticationMethod{SPIFFEAuthenticationMethodX509, SPIFFEAuthenticationMethodJWT}, domain.Methods())
 	assert.Equal(t, SPIFFEBundleSourceTypeEndpoint, domain.BundleSource().Type())
 	assert.Equal(t, "https://bundle.example.org/bundle", domain.BundleSource().Endpoint())
-	assert.Equal(t, SPIFFEBundleEndpointProfileHTTPSSPIFFE, domain.BundleSource().Profile())
+	assert.Equal(t, SPIFFEBundleEndpointProfileHTTPSWeb, domain.BundleSource().Profile())
 
 	_, ok = trust.TrustDomain("unknown")
 	assert.False(t, ok)

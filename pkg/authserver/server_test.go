@@ -858,9 +858,9 @@ func (capabilityFreeServer) DCRStore() storage.DCRCredentialStore               
 func (capabilityFreeServer) Close() error                                           { return nil }
 
 // eventRecordingStorage records when the server closes storage, so the ordering
-// between upstream draining and storage teardown can be asserted. Close does not
-// delegate: MemoryStorage.Close panics when called twice and the test cleanup
-// closes the underlying store.
+// between upstream draining and storage teardown can be asserted. Its Close
+// deliberately leaves the embedded MemoryStorage open because the test cleanup
+// owns that store and MemoryStorage.Close panics when called twice.
 type eventRecordingStorage struct {
 	*storage.MemoryStorage
 	record func(string)

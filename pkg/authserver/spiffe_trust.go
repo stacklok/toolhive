@@ -41,6 +41,8 @@ const (
 	// SPIFFEBundleEndpointProfileHTTPSSPIFFE authenticates the bundle
 	// endpoint's TLS connection with an X.509-SVID trusted by a separately
 	// distributed root (the SPIFFE Bundle Endpoint "https_spiffe" profile).
+	// This profile is structurally valid but unavailable at runtime until
+	// bootstrap trust configuration is supported.
 	SPIFFEBundleEndpointProfileHTTPSSPIFFE SPIFFEBundleEndpointProfile = "https_spiffe"
 )
 
@@ -69,9 +71,8 @@ type SPIFFETrustDomainRunConfig struct {
 	// domain. No authentication method is enabled when the list is empty.
 	Methods []SPIFFEAuthenticationMethod `json:"methods" yaml:"methods"`
 
-	// BundleSource declares exactly one future trust-bundle source. It is
-	// validated for shape only; fetching or loading a bundle from it is a
-	// later step.
+	// BundleSource declares exactly one trust-bundle source. It is validated for
+	// shape here and loaded when the authorization server starts.
 	BundleSource SPIFFEBundleSourceRunConfig `json:"bundle_source" yaml:"bundle_source"`
 }
 
@@ -91,14 +92,15 @@ type SPIFFEBundleEndpointSourceRunConfig struct {
 	// Profile selects how the endpoint's TLS connection is authenticated:
 	// SPIFFEBundleEndpointProfileHTTPSWeb (Web PKI) or
 	// SPIFFEBundleEndpointProfileHTTPSSPIFFE (a separately distributed
-	// X.509-SVID root). Required, since the future bundle loader cannot
-	// otherwise know which trust anchor to use for the initial connection.
+	// X.509-SVID root). Required so the runtime bundle loader knows how to
+	// authenticate the initial connection; https_spiffe is rejected until
+	// bootstrap trust configuration is supported.
 	Profile SPIFFEBundleEndpointProfile `json:"profile" yaml:"profile"`
 }
 
 // SPIFFEWorkloadAPIBundleSourceRunConfig selects the local SPIFFE Workload API.
-// It deliberately has no payload; loading and deployment details are deferred
-// to the bundle-loading implementation.
+// It deliberately has no payload; the local Workload API supplies live bundles
+// at runtime.
 type SPIFFEWorkloadAPIBundleSourceRunConfig struct{}
 
 // InboundGrantsRunConfig declares canonical inbound grant configuration for
@@ -494,10 +496,9 @@ func validateSPIFFEBundleEndpoint(endpoint SPIFFEBundleEndpointSourceRunConfig, 
 }
 
 // ValidateSPIFFEBundleEndpoint validates a SPIFFE Bundle Endpoint URL and its
-// TLS-authentication profile. Exported so the operator CRD admission path
-// can reject the same structurally invalid endpoints at admission time
-// instead of only at reconcile time; fetching or loading a bundle from the
-// endpoint remains a separate, later step.
+// TLS-authentication profile. Exported so the operator CRD admission path can
+// reject the same invalid endpoints at admission time instead of only at
+// reconcile time. Bundle loading occurs during authorization-server startup.
 func ValidateSPIFFEBundleEndpoint(endpoint SPIFFEBundleEndpointSourceRunConfig) error {
 	endpointURL := endpoint.URL
 	u, err := url.ParseRequestURI(endpointURL)
@@ -512,12 +513,15 @@ func ValidateSPIFFEBundleEndpoint(endpoint SPIFFEBundleEndpointSourceRunConfig) 
 		)
 	}
 	switch endpoint.Profile {
-	case SPIFFEBundleEndpointProfileHTTPSWeb, SPIFFEBundleEndpointProfileHTTPSSPIFFE:
+	case SPIFFEBundleEndpointProfileHTTPSWeb:
 		return nil
-	default:
+	case SPIFFEBundleEndpointProfileHTTPSSPIFFE:
 		return fmt.Errorf(
-			"profile must be %q or %q", SPIFFEBundleEndpointProfileHTTPSWeb, SPIFFEBundleEndpointProfileHTTPSSPIFFE,
+			"profile %q is not supported until endpoint SPIFFE identity and bootstrap trust are configurable",
+			endpoint.Profile,
 		)
+	default:
+		return fmt.Errorf("profile must be %q", SPIFFEBundleEndpointProfileHTTPSWeb)
 	}
 }
 

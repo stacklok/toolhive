@@ -145,10 +145,8 @@ type AuthorizationServerConfig struct {
 	// (authserver imports server), so the caller supplies it as a closure.
 	SPIFFEClientResolver SPIFFEClientResolver
 	// SPIFFEX509BundleSource provides X.509 bundles for verifying SPIFFE
-	// X.509-SVID client certificates. Not yet read by this package: carried
-	// here, copied through from AuthorizationServerParams, so the X.509 and
-	// JWT SPIFFE client-authentication arms land on a shared field instead of
-	// each independently extending this struct.
+	// X.509-SVID client certificates. It and SPIFFEJWTBundleSource are both
+	// configured exactly when SPIFFEClientResolver is configured.
 	SPIFFEX509BundleSource x509bundle.Source
 	// SPIFFEJWTBundleSource provides JWT bundles for verifying SPIFFE
 	// JWT-SVID client assertions, read by newSPIFFEClientAuthenticationStrategy.
@@ -241,10 +239,8 @@ type AuthorizationServerParams struct {
 	// See the identically named field on AuthorizationServerConfig.
 	SPIFFEClientResolver SPIFFEClientResolver
 	// SPIFFEX509BundleSource provides X.509 bundles for verifying SPIFFE
-	// X.509-SVID client certificates. Not yet read by this package: threaded
-	// through here so the X.509 and JWT SPIFFE client-authentication arms
-	// land on a shared field instead of each independently extending this
-	// struct.
+	// X.509-SVID client certificates. It and SPIFFEJWTBundleSource are both
+	// configured exactly when SPIFFEClientResolver is configured.
 	SPIFFEX509BundleSource x509bundle.Source
 	// SPIFFEJWTBundleSource provides JWT bundles for verifying SPIFFE
 	// JWT-SVID client assertions, copied through to AuthorizationServerConfig.
@@ -362,11 +358,8 @@ func ValidateConfidentialClientTransport(
 	return nil
 }
 
-// validateParams validates all fields on AuthorizationServerParams.
-func validateParams(cfg *AuthorizationServerParams) error {
-	if err := validateIssuerURL(cfg.Issuer); err != nil {
-		return err
-	}
+// validateSigningConfiguration validates the signing-key fields and their compatibility.
+func validateSigningConfiguration(cfg *AuthorizationServerParams) error {
 	if cfg.SigningKeyID == "" {
 		return fmt.Errorf("signing key ID is required")
 	}
@@ -376,11 +369,33 @@ func validateParams(cfg *AuthorizationServerParams) error {
 	if cfg.SigningKey == nil {
 		return fmt.Errorf("signing key is required")
 	}
-	if err := validateHMACSecrets(cfg.HMACSecrets); err != nil {
-		return err
-	}
 	if err := servercrypto.ValidateAlgorithmForKey(cfg.SigningKeyAlgorithm, cfg.SigningKey); err != nil {
 		return fmt.Errorf("invalid signing configuration: %w", err)
+	}
+	return nil
+}
+
+// validateSPIFFEComponents ensures all SPIFFE client-authentication dependencies
+// are configured as a complete set.
+func validateSPIFFEComponents(cfg *AuthorizationServerParams) error {
+	hasBundleSource := cfg.SPIFFEX509BundleSource != nil || cfg.SPIFFEJWTBundleSource != nil
+	if (cfg.SPIFFEClientResolver == nil && hasBundleSource) ||
+		(cfg.SPIFFEClientResolver != nil && (cfg.SPIFFEX509BundleSource == nil || cfg.SPIFFEJWTBundleSource == nil)) {
+		return fmt.Errorf("SPIFFE client resolver and both SPIFFE bundle sources must be configured together")
+	}
+	return nil
+}
+
+// validateParams validates all fields on AuthorizationServerParams.
+func validateParams(cfg *AuthorizationServerParams) error {
+	if err := validateIssuerURL(cfg.Issuer); err != nil {
+		return err
+	}
+	if err := validateSigningConfiguration(cfg); err != nil {
+		return err
+	}
+	if err := validateHMACSecrets(cfg.HMACSecrets); err != nil {
+		return err
 	}
 	if err := validateTokenLifespans(cfg); err != nil {
 		return err
@@ -397,6 +412,9 @@ func validateParams(cfg *AuthorizationServerParams) error {
 		cfg.AllowConfidentialClientRegistration || cfg.HasStaticDelegateClients,
 		cfg.InsecureAllowHTTP, cfg.Issuer, cfg.InsecureAllowConfidentialOverLoopbackHTTP,
 	); err != nil {
+		return err
+	}
+	if err := validateSPIFFEComponents(cfg); err != nil {
 		return err
 	}
 	// Defense-in-depth: re-check the baseline-⊆-scopes_supported invariant.

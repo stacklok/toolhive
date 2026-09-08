@@ -619,9 +619,9 @@ const (
 )
 
 // SPIFFEBundleSourceConfig is a discriminated bundle-source declaration. Type
-// determines which, and only which, source payload may be set. It is
-// validated for shape only; fetching or loading a bundle from the declared
-// source is not implemented yet.
+// determines which, and only which, source payload may be set. The embedded
+// authorization server loads configured bundles at startup and keeps them
+// refreshed for its lifetime.
 //
 // +kubebuilder:validation:XValidation:rule="self.type == 'bundle_endpoint' ? has(self.endpoint) : !has(self.endpoint)",message="endpoint configuration must be set if and only if type is 'bundle_endpoint'"
 // +kubebuilder:validation:XValidation:rule="self.type == 'workload_api' ? has(self.workloadAPI) : !has(self.workloadAPI)",message="workloadAPI configuration must be set if and only if type is 'workload_api'"
@@ -652,27 +652,22 @@ type SPIFFEBundleEndpointSourceConfig struct {
 	// +kubebuilder:validation:MaxLength=2048
 	URL string `json:"url"`
 
-	// Profile selects how the endpoint's TLS connection is authenticated:
-	// SPIFFEBundleEndpointProfileHTTPSWeb (Web PKI) or
-	// SPIFFEBundleEndpointProfileHTTPSSPIFFE (a separately distributed
-	// X.509-SVID root).
+	// Profile selects Web PKI authentication for the endpoint TLS connection.
+	// The https_spiffe profile is reserved until the configuration can provide
+	// an endpoint SPIFFE ID and independently bootstrapped trust.
 	// +kubebuilder:validation:Required
-	// +kubebuilder:validation:Enum=https_web;https_spiffe
+	// +kubebuilder:validation:Enum=https_web
 	Profile SPIFFEBundleEndpointProfile `json:"profile"`
 }
 
 // SPIFFEWorkloadAPIBundleSourceConfig selects the local SPIFFE Workload API.
-// It deliberately has no payload; loading and deployment details are
-// deferred to the bundle-loading implementation.
+// It deliberately has no payload; the authorization server obtains bundles
+// from the standard local Workload API endpoint.
 type SPIFFEWorkloadAPIBundleSourceConfig struct{}
 
 // SPIFFETrustDomainConfig declares one SPIFFE trust domain accepted by the
-// embedded authorization server. Configuration is not authentication: no
-// live X.509-SVID or JWT-SVID validation exists yet, so a declared trust
-// domain does not by itself let any workload authenticate — RunConfig.Validate
-// (pkg/authserver/config.go) currently hard-rejects any non-empty
-// spiffeTrustDomains at authserver startup via validateSPIFFENotYetEnforced,
-// a deliberate placeholder until real SVID verification lands.
+// embedded authorization server. A declared domain becomes usable only after
+// the configured source supplies trust material during auth-server startup.
 type SPIFFETrustDomainConfig struct {
 	// Name uniquely identifies this declaration and is referenced by
 	// inboundGrants.spiffeClientAuth[].trustDomainRef.
@@ -988,9 +983,8 @@ type EmbeddedAuthServerConfig struct {
 	TokenLifespans *TokenLifespanConfig `json:"tokenLifespans,omitempty"`
 
 	// SPIFFETrustDomains declares SPIFFE trust domains for
-	// inboundGrants.spiffeClientAuth associations. See SPIFFETrustDomainConfig's
-	// doc comment for why declaring a domain does not by itself enable
-	// authentication in this build.
+	// inboundGrants.spiffeClientAuth associations. Each configured source must
+	// supply initial trust material before the authorization server starts.
 	// +kubebuilder:validation:MinItems=1
 	// +kubebuilder:validation:MaxItems=50
 	// +listType=atomic

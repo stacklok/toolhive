@@ -329,47 +329,7 @@ func (c *RunConfig) Validate() error {
 	); err != nil {
 		return err
 	}
-	if err := validateSPIFFENotYetEnforced(c.SPIFFETrustDomains); err != nil {
-		return err
-	}
 	return c.validateBaselineClientScopes()
-}
-
-// validateSPIFFENotYetEnforced hard-rejects a non-empty SPIFFE trust
-// configuration. ValidateSPIFFETrust above confirms the configuration is
-// well-formed, but well-formed is not the same as enforced: nothing in this
-// build ever verifies an X.509-SVID or JWT-SVID against the configured trust
-// bundle, so a valid, non-empty SPIFFE trust configuration currently has no
-// runtime authentication effect. Accepting it silently would let an operator
-// believe SPIFFE client authentication is active when no credential is ever
-// checked. This rejection must be removed by the future PR that adds real
-// SVID verification against the configured trust bundle.
-func validateSPIFFENotYetEnforced(trustDomains []SPIFFETrustDomainRunConfig) error {
-	if len(trustDomains) == 0 {
-		return nil
-	}
-	return fmt.Errorf(
-		"spiffe_trust_domains: SPIFFE client authentication is not yet enforced by this build " +
-			"(no X.509-SVID or JWT-SVID is verified against the configured trust bundle); " +
-			"remove this configuration until a verification consumer lands")
-}
-
-// validateConfigSPIFFENotYetEnforced is validateSPIFFENotYetEnforced's
-// Config-level counterpart: a caller that constructs Config directly (e.g.
-// authserver.New) bypasses RunConfig.Validate() entirely, so the same
-// fail-loud rejection must also apply to Config.SPIFFETrust -- otherwise a
-// non-empty, well-formed SPIFFE trust policy could start a server through
-// this path with no authentication consumer ever wired to it. Associations
-// is nil-safe and empty for both a nil SPIFFETrust and one with no
-// configured associations.
-func validateConfigSPIFFENotYetEnforced(trust *SPIFFETrustConfig) error {
-	if len(trust.Associations()) == 0 {
-		return nil
-	}
-	return fmt.Errorf(
-		"spiffe_trust: SPIFFE client authentication is not yet enforced by this build " +
-			"(no X.509-SVID or JWT-SVID is verified against the configured trust bundle); " +
-			"remove this configuration until a verification consumer lands")
 }
 
 // validateBaselineClientScopes ensures every entry in BaselineClientScopes is
@@ -1275,7 +1235,7 @@ func (c *Config) validateDelegationAndTrustConfig() error {
 	if err := c.validateDelegationConfig(); err != nil {
 		return err
 	}
-	if err := validateConfigSPIFFENotYetEnforced(c.SPIFFETrust); err != nil {
+	if err := c.validateRuntimeSPIFFEBundleSources(); err != nil {
 		return err
 	}
 	c.warnTrustedIssuerAudiences()
@@ -1295,6 +1255,19 @@ func (c *Config) validateBaselineClientScopes() error {
 		effective = registration.DefaultScopes
 	}
 	return registration.ValidateScopeSubset(c.BaselineClientScopes, effective, "baseline_client_scopes")
+}
+
+func (c *Config) validateRuntimeSPIFFEBundleSources() error {
+	if c.SPIFFETrust == nil {
+		return nil
+	}
+	for _, domain := range c.SPIFFETrust.trustDomains {
+		if domain.BundleSource().Type() == SPIFFEBundleSourceTypeEndpoint &&
+			domain.BundleSource().Profile() == SPIFFEBundleEndpointProfileHTTPSSPIFFE {
+			return fmt.Errorf("spiffe_trust: https_spiffe bundle endpoints are not supported: configure bootstrap trust with https_web")
+		}
+	}
+	return nil
 }
 
 // validateDelegationConfig validates delegate clients and trusted issuers for

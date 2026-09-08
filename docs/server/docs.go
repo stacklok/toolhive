@@ -563,7 +563,7 @@ const docTemplate = `{
             "authserver.SPIFFEBundleEndpointSourceRunConfig": {
                 "properties": {
                     "profile": {
-                        "description": "Profile selects how the endpoint's TLS connection is authenticated:\nSPIFFEBundleEndpointProfileHTTPSWeb (Web PKI) or\nSPIFFEBundleEndpointProfileHTTPSSPIFFE (a separately distributed\nX.509-SVID root). Required, since the future bundle loader cannot\notherwise know which trust anchor to use for the initial connection.",
+                        "description": "Profile selects how the endpoint's TLS connection is authenticated:\nSPIFFEBundleEndpointProfileHTTPSWeb (Web PKI) or\nSPIFFEBundleEndpointProfileHTTPSSPIFFE (a separately distributed\nX.509-SVID root). Required so the runtime bundle loader knows how to\nauthenticate the initial connection; https_spiffe is rejected until\nbootstrap trust configuration is supported.",
                         "type": "string"
                     },
                     "url": {
@@ -573,7 +573,7 @@ const docTemplate = `{
                 "type": "object"
             },
             "authserver.SPIFFEBundleSourceRunConfig": {
-                "description": "BundleSource declares exactly one future trust-bundle source. It is\nvalidated for shape only; fetching or loading a bundle from it is a\nlater step.",
+                "description": "BundleSource declares exactly one trust-bundle source. It is validated for\nshape here and loaded when the authorization server starts.",
                 "properties": {
                     "endpoint": {
                         "$ref": "#/components/schemas/authserver.SPIFFEBundleEndpointSourceRunConfig"
@@ -1900,6 +1900,9 @@ const docTemplate = `{
                         "description": "DEPRECATED: No longer appears to be used.\nThvCABundle is the path to the CA certificate bundle for ToolHive HTTP operations",
                         "type": "string"
                     },
+                    "tls_config": {
+                        "$ref": "#/components/schemas/github_com_stacklok_toolhive_pkg_runner.TLSConfig"
+                    },
                     "token_exchange_config": {
                         "$ref": "#/components/schemas/tokenexchange.Config"
                     },
@@ -1980,6 +1983,18 @@ const docTemplate = `{
                     },
                     "key_prefix": {
                         "description": "KeyPrefix is an optional prefix applied to all Redis keys used by ToolHive.",
+                        "type": "string"
+                    }
+                },
+                "type": "object"
+            },
+            "github_com_stacklok_toolhive_pkg_runner.TLSConfig": {
+                "description": "TLSConfig configures TLS for the proxy listener.",
+                "properties": {
+                    "cert_file": {
+                        "type": "string"
+                    },
+                    "key_file": {
                         "type": "string"
                     }
                 },

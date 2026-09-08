@@ -1977,13 +1977,8 @@ func TestNewEmbeddedAuthServerWithStorage_RequiredInputs(t *testing.T) {
 // inbound token-exchange configurations construct together through RunConfig.
 func TestNewEmbeddedAuthServer_SPIFFEAndJWTBearerGrant(t *testing.T) {
 	t.Parallel()
-	t.Skip("RunConfig.Validate() now hard-rejects any non-empty spiffe_trust_domains " +
-		"(config.go's validateSPIFFENotYetEnforced, per PR #6467 review) until a real " +
-		"SVID-verification consumer lands, so a server can no longer be constructed with " +
-		"a SPIFFE association configured at all -- there is no way to exercise this " +
-		"combination through NewEmbeddedAuthServer without routing around cfg.Validate() " +
-		"in production code. Re-enable this test -- unmodified -- when the future PR that " +
-		"adds real SVID verification removes the hard-reject.")
+	t.Skip("requires a reachable local SPIFFE Workload API to load the configured " +
+		"bundle before server startup. Re-enable when this test provides one.")
 
 	cfg := &authserver.RunConfig{
 		SchemaVersion:    authserver.CurrentSchemaVersion,
@@ -2041,13 +2036,8 @@ func TestNewEmbeddedAuthServer_SPIFFEAndJWTBearerGrant(t *testing.T) {
 // and the production storage-decoration order with both features enabled.
 func TestNewEmbeddedAuthServer_SPIFFEAndCIMD(t *testing.T) {
 	t.Parallel()
-	t.Skip("RunConfig.Validate() now hard-rejects any non-empty spiffe_trust_domains " +
-		"(config.go's validateSPIFFENotYetEnforced, per PR #6467 review) until a real " +
-		"SVID-verification consumer lands, so a server can no longer be constructed with " +
-		"a SPIFFE association configured at all -- there is no way to exercise this " +
-		"combination through NewEmbeddedAuthServer without routing around cfg.Validate() " +
-		"in production code. Re-enable this test -- unmodified -- when the future PR that " +
-		"adds real SVID verification removes the hard-reject.")
+	t.Skip("requires a reachable local SPIFFE Workload API to load the configured " +
+		"bundle before server startup. Re-enable when this test provides one.")
 
 	cfg := &authserver.RunConfig{
 		SchemaVersion:    authserver.CurrentSchemaVersion,
@@ -2101,13 +2091,8 @@ func TestNewEmbeddedAuthServer_SPIFFEAndCIMD(t *testing.T) {
 // a registration request.
 func TestNewEmbeddedAuthServerWithStorage_SPIFFECollisionPrecedesDCR(t *testing.T) {
 	t.Parallel()
-	t.Skip("RunConfig.Validate() now hard-rejects any non-empty spiffe_trust_domains " +
-		"(config.go's validateSPIFFENotYetEnforced, per PR #6467 review) before " +
-		"construction ever reaches the SPIFFE storage decorator, so the collision-vs-DCR " +
-		"ordering this test proved is no longer observable through NewEmbeddedAuthServerWithStorage " +
-		"-- it now fails even earlier, for a different reason, without the ordering property " +
-		"itself being tested. Re-enable this test -- unmodified -- when the future PR that " +
-		"adds real SVID verification removes the hard-reject.")
+	t.Skip("requires a reachable local SPIFFE Workload API to load the configured " +
+		"bundle before server startup. Re-enable when this test provides one.")
 
 	upstreamServer, requestCount := newMockAuthorizationServer(t)
 	stor := storage.NewMemoryStorage()
@@ -2243,24 +2228,16 @@ func TestEmbeddedAuthServer_SPIFFESerializedRestartPolicy(t *testing.T) {
 		t.Run(format, func(t *testing.T) {
 			t.Parallel()
 
-			// A non-empty spiffe_trust_domains is hard-rejected by
-			// RunConfig.Validate() until a real SVID-verification consumer
-			// lands (see config.go's validateSPIFFENotYetEnforced), so the
-			// "initial"/"changed" cases below prove serialization fidelity
-			// and authority reconstruction directly against
-			// NewSPIFFETrustConfig -- unaffected by that policy-layer
-			// rejection -- and separately confirm the rejection itself
-			// survives a JSON/YAML round trip, rather than constructing a
-			// full server.
+			// Serialization preserves the validated SPIFFE authority model. These
+			// cases intentionally do not construct a server: the workload_api
+			// source requires a real local Workload API at runtime.
 			initial := decode(t, newConfig("openid", true), yamlFormat)
 			assertAuthority(t, initial, "openid")
-			require.ErrorContains(t, initial.Validate(), "not yet enforced",
-				"a decoded non-empty SPIFFE configuration must still be hard-rejected")
+			require.NoError(t, initial.Validate())
 
 			changed := decode(t, newConfig("profile", true), yamlFormat)
 			assertAuthority(t, changed, "profile")
-			require.ErrorContains(t, changed.Validate(), "not yet enforced",
-				"a decoded non-empty SPIFFE configuration must still be hard-rejected")
+			require.NoError(t, changed.Validate())
 
 			removed := decode(t, newConfig("", false), yamlFormat)
 			trust, err := authserver.NewSPIFFETrustConfig(
@@ -2271,9 +2248,9 @@ func TestEmbeddedAuthServer_SPIFFESerializedRestartPolicy(t *testing.T) {
 			registry, err := authserver.NewSPIFFEAssociationRegistry(trust)
 			require.NoError(t, err)
 			require.NotNil(t, registry)
-			// Every restart uses fresh memory; an empty (SPIFFE-removed)
-			// configuration is the only shape in this test that can still
-			// build a full server, since it does not trip the hard-reject.
+			// Every restart uses fresh memory. Keep startup coverage focused on the
+			// SPIFFE-removed configuration so this serialization test does not
+			// require a real local Workload API.
 			for range 2 {
 				stor := storage.NewMemoryStorage()
 				server, err := NewEmbeddedAuthServerWithStorage(context.Background(), &removed, stor)
@@ -2381,14 +2358,10 @@ func TestEmbeddedAuthServer_SPIFFEAssociationDoesNotAuthenticateClient(t *testin
 	require.Len(t, trust.Associations(), 1, "the association above must parse")
 
 	// registry.staticClients() is unexported (package authserver); this test
-	// lives in package runner, so the static client is built directly here
-	// with the same values the association above declares, rather than
-	// asserting it out of the registry. This is what routes around
-	// cfg.Validate()'s hard-reject of non-empty spiffe_trust_domains (see
-	// TestEmbeddedAuthServer_SPIFFEAssociationDoesNotAuthenticateClient's own
-	// history): NewEmbeddedAuthServerWithStorage below is never given a cfg
-	// with SPIFFETrustDomains/InboundGrants set, only a storage chain
-	// pre-decorated with the static client it would have produced.
+	// lives in package runner, so it constructs the equivalent static client
+	// directly. This isolates the token endpoint's rejection of an unverified
+	// SPIFFE-looking header from live bundle loading, which requires a local
+	// Workload API for this configuration.
 	spiffeClient, err := registration.NewSPIFFEClient(
 		"spiffe-client", []string{"openid"}, []string{"https://mcp.example.com"}, []string{"https://mcp.example.com"},
 	)
@@ -3194,18 +3167,11 @@ func TestNewEmbeddedAuthServer_CanonicalInboundGrants(t *testing.T) {
 			"canonical delegate client must not disable token exchange")
 	})
 
-	// A SPIFFE-only configuration cannot be exercised through
-	// NewEmbeddedAuthServer here: RunConfig.Validate() hard-rejects a
-	// non-empty spiffe_trust_domains until a real SVID-verification
-	// consumer lands (see config.go's validateSPIFFENotYetEnforced). This
-	// test instead calls prepareInboundGrantConfiguration directly -- the
-	// package-private function NewEmbeddedAuthServer would otherwise reach
-	// after cfg.Validate() -- to prove the underlying capability logic
-	// still holds: SPIFFE client-auth presence must force
-	// Capabilities.TokenExchange true independent of the legacy/canonical
-	// token-exchange projection, so a SPIFFE-only config does not silently
-	// disable the RFC 8693 grant handler once the hard-reject above is
-	// lifted.
+	// This test calls prepareInboundGrantConfiguration directly to isolate the
+	// capability projection from live bundle loading, which requires a local
+	// Workload API for this configuration. SPIFFE client authentication must
+	// enable token exchange independently of the legacy/canonical
+	// token-exchange projection.
 	t.Run("SPIFFE client auth alone sets the token exchange capability", func(t *testing.T) {
 		t.Parallel()
 

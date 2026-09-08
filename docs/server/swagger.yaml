@@ -752,17 +752,17 @@ components:
             Profile selects how the endpoint's TLS connection is authenticated:
             SPIFFEBundleEndpointProfileHTTPSWeb (Web PKI) or
             SPIFFEBundleEndpointProfileHTTPSSPIFFE (a separately distributed
-            X.509-SVID root). Required, since the future bundle loader cannot
-            otherwise know which trust anchor to use for the initial connection.
+            X.509-SVID root). Required so the runtime bundle loader knows how to
+            authenticate the initial connection; https_spiffe is rejected until
+            bootstrap trust configuration is supported.
           type: string
         url:
           type: string
       type: object
     authserver.SPIFFEBundleSourceRunConfig:
       description: |-
-        BundleSource declares exactly one future trust-bundle source. It is
-        validated for shape only; fetching or loading a bundle from it is a
-        later step.
+        BundleSource declares exactly one trust-bundle source. It is validated for
+        shape here and loaded when the authorization server starts.
       properties:
         endpoint:
           $ref: '#/components/schemas/authserver.SPIFFEBundleEndpointSourceRunConfig'
@@ -2021,6 +2021,8 @@ components:
             DEPRECATED: No longer appears to be used.
             ThvCABundle is the path to the CA certificate bundle for ToolHive HTTP operations
           type: string
+        tls_config:
+          $ref: '#/components/schemas/github_com_stacklok_toolhive_pkg_runner.TLSConfig'
         token_exchange_config:
           $ref: '#/components/schemas/tokenexchange.Config'
         tools_filter:
@@ -2099,6 +2101,14 @@ components:
         key_prefix:
           description: KeyPrefix is an optional prefix applied to all Redis keys used
             by ToolHive.
+          type: string
+      type: object
+    github_com_stacklok_toolhive_pkg_runner.TLSConfig:
+      description: TLSConfig configures TLS for the proxy listener.
+      properties:
+        cert_file:
+          type: string
+        key_file:
           type: string
       type: object
     github_com_stacklok_toolhive_pkg_runner.ToolOverride:

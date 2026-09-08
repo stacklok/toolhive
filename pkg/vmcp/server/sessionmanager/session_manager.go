@@ -681,7 +681,10 @@ func (sm *Manager) EvictStaleSessions(ctx context.Context) int {
 		return referencesMissingBackend(sess.GetMetadata()[vmcpsession.MetadataKeyBackendIDs], present)
 	})
 	if evicted > 0 {
-		slog.Info("evicted sessions referencing backends removed from the registry",
+		// DEBUG for consistency with New's eviction closure: a backend leaving
+		// the registry is a routine lifecycle transition, not a fault, and the
+		// project convention is "INFO sparingly".
+		slog.Debug("evicted sessions referencing backends removed from the registry",
 			"evicted_sessions", evicted)
 	}
 	return evicted
@@ -691,11 +694,7 @@ func (sm *Manager) EvictStaleSessions(ctx context.Context) int {
 // MetadataKeyBackendIDs value) names at least one backend absent from present.
 // An empty or whitespace-only list references no backend and is never stale.
 func referencesMissingBackend(backendIDs string, present map[string]struct{}) bool {
-	for _, id := range strings.Split(backendIDs, ",") {
-		id = strings.TrimSpace(id)
-		if id == "" {
-			continue
-		}
+	for _, id := range vmcpsession.ParseBackendIDs(backendIDs) {
 		if _, ok := present[id]; !ok {
 			return true
 		}

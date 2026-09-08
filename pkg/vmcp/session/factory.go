@@ -43,6 +43,23 @@ const (
 	MetadataKeyBackendSessionPrefix = "vmcp.backend.session."
 )
 
+// ParseBackendIDs decodes the MetadataKeyBackendIDs wire format — a
+// comma-separated list of backend workload IDs — into a slice of trimmed,
+// non-empty IDs, preserving order. It is the single decoder for that format
+// (populateBackendMetadata is the matching encoder); callers that need set
+// membership build a map from the result. An empty or whitespace-only input
+// yields an empty slice.
+func ParseBackendIDs(csv string) []string {
+	parts := strings.Split(csv, ",")
+	ids := make([]string, 0, len(parts))
+	for _, p := range parts {
+		if t := strings.TrimSpace(p); t != "" {
+			ids = append(ids, t)
+		}
+	}
+	return ids
+}
+
 // MultiSessionFactory creates new MultiSessions for connecting clients.
 type MultiSessionFactory interface {
 	// MakeSessionWithID creates a new MultiSession with a specific session ID.
@@ -660,15 +677,13 @@ func (f *defaultMultiSessionFactory) RestoreSession(
 // omit the key entirely (corrupted/absent metadata) must be handled by the caller before
 // invoking this function — relying on empty-string to mean "all backends" is a footgun.
 func filterBackendsByStoredIDs(allBackends []*vmcp.Backend, storedIDs string) []*vmcp.Backend {
-	if storedIDs == "" {
+	ids := ParseBackendIDs(storedIDs)
+	if len(ids) == 0 {
 		return nil
 	}
-	parts := strings.Split(storedIDs, ",")
-	idSet := make(map[string]struct{}, len(parts))
-	for _, p := range parts {
-		if t := strings.TrimSpace(p); t != "" {
-			idSet[t] = struct{}{}
-		}
+	idSet := make(map[string]struct{}, len(ids))
+	for _, id := range ids {
+		idSet[id] = struct{}{}
 	}
 	filtered := make([]*vmcp.Backend, 0, len(idSet))
 	for _, b := range allBackends {

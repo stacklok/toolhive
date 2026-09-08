@@ -13,6 +13,11 @@ on:
     # Run daily at 2 AM UTC
     - cron: '0 2 * * *'
 
+# Cancel superseded PR runs; keep other events independent.
+concurrency:
+  group: security-scan-${{ github.event.pull_request.number || github.run_id }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
 # security-events: write is granted per job rather than here, so only the two
 # jobs that upload SARIF can write security events.
 permissions:

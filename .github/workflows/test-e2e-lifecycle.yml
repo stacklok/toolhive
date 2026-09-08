@@ -15,6 +15,11 @@ on:
       - 'test/e2e/images/**'
       - '.github/workflows/test-e2e-lifecycle.yml'
 
+# Cancel superseded PR runs; keep other events independent.
+concurrency:
+  group: test-e2e-lifecycle-${{ github.event.pull_request.number || github.run_id }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
 permissions:
   contents: read
 

@@ -4,6 +4,11 @@ on:
   pull_request:
     types: [opened, synchronize, reopened, edited]
 
+# Cancel superseded PR runs; keep other events independent.
+concurrency:
+  group: pr-size-labeler-${{ github.event.pull_request.number || github.run_id }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
 permissions:
   contents: read
 

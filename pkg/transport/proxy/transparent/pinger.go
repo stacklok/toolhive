@@ -13,6 +13,7 @@ import (
 	"time"
 
 	"github.com/stacklok/toolhive/pkg/healthcheck"
+	"github.com/stacklok/toolhive/pkg/networking"
 )
 
 // MCPPinger implements healthcheck.MCPPinger for transparent proxies
@@ -26,7 +27,21 @@ const (
 	DefaultPingerTimeout = 5 * time.Second
 )
 
+// redirectPolicy is installed on both pinger clients. It refuses redirects to a
+// different host (or an HTTPS-to-HTTP downgrade) rather than following Go's
+// http.Client default of any host, any number of hosts, indefinitely. See
+// networking.SameHostRedirectPolicy's doc comment for the full rationale; this
+// package's data-plane forwarder (followRedirects, in transparent_proxy.go)
+// enforces the same same-host-only policy and the two must stay in sync.
+var redirectPolicy = networking.SameHostRedirectPolicy()
+
 // NewMCPPingerWithTimeout creates a new MCP pinger with a custom timeout
+//
+// The configured MCP endpoint may be a remote server outside our control, so
+// the client restricts redirects with SameHostRedirectPolicy: without it, a
+// malicious or compromised remote could return a 3xx pointing this GET at a
+// loopback, private, or otherwise host-reachable address, and the default
+// http.Client would follow it (CWE-918, blind SSRF).
 func NewMCPPingerWithTimeout(targetURL string, timeout time.Duration) healthcheck.MCPPinger {
 	if timeout <= 0 {
 		timeout = DefaultPingerTimeout
@@ -34,7 +49,8 @@ func NewMCPPingerWithTimeout(targetURL string, timeout time.Duration) healthchec
 	return &MCPPinger{
 		targetURL: targetURL,
 		client: &http.Client{
-			Timeout: timeout,
+			Timeout:       timeout,
+			CheckRedirect: redirectPolicy,
 		},
 	}
 }
@@ -97,6 +113,13 @@ func NewStatelessMCPPinger(targetURL string) healthcheck.MCPPinger {
 }
 
 // NewStatelessMCPPingerWithTimeout creates a stateless pinger with a custom timeout.
+//
+// Same redirect restriction as NewMCPPingerWithTimeout, and for the same
+// reason: the target may be an untrusted remote endpoint. A 307/308 here would
+// otherwise carry the POST body and method to whatever host the response
+// names; 301/302/303 already lose the body under Go's default redirect
+// handling, so refusing cross-host keeps that residual GET on the configured
+// host too.
 func NewStatelessMCPPingerWithTimeout(targetURL string, timeout time.Duration) healthcheck.MCPPinger {
 	if timeout <= 0 {
 		timeout = DefaultPingerTimeout
@@ -104,7 +127,8 @@ func NewStatelessMCPPingerWithTimeout(targetURL string, timeout time.Duration) h
 	return &StatelessMCPPinger{
 		targetURL: targetURL,
 		client: &http.Client{
-			Timeout: timeout,
+			Timeout:       timeout,
+			CheckRedirect: redirectPolicy,
 		},
 	}
 }

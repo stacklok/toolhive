@@ -640,3 +640,92 @@ func TestRemoveMatching_NoMatch(t *testing.T) {
 	assert.Zero(t, evictCount)
 	assert.Equal(t, 2, c.Len())
 }
+
+// TestRemoveMatching_SkipsEntryNoLongerMatchingOnRecheck exercises the phase-2
+// re-check guard: a key selected during the snapshot whose predicate verdict
+// flips to false before removal (modeling a concurrent Set that replaced the
+// value with one pred no longer selects) must be left in place and not counted
+// or closed.
+func TestRemoveMatching_SkipsEntryNoLongerMatchingOnRecheck(t *testing.T) {
+	t.Parallel()
+
+	var evicted []string
+	c := newStringCache(
+		func(_ context.Context, key string) (string, error) { return "reloaded-" + key, nil },
+		alwaysAliveCheck,
+		func(key, _ string) { evicted = append(evicted, key) },
+	)
+	c.Set("flip", "v")
+	c.Set("drop", "v")
+
+	// pred selects each key on its first evaluation (the phase-1 snapshot) but
+	// rejects "flip" on its second (the phase-2 re-check), standing in for a
+	// value concurrently replaced with one pred no longer selects.
+	seen := map[string]int{}
+	pred := func(key, _ string) bool {
+		seen[key]++
+		return key != "flip" || seen[key] < 2
+	}
+
+	removed := c.RemoveMatching(pred)
+
+	assert.Equal(t, 1, removed, "only 'drop' should be removed; 'flip' is skipped on re-check")
+	assert.Equal(t, []string{"drop"}, evicted, "onEvict must fire only for 'drop'")
+
+	v, ok := c.Get(context.Background(), "flip")
+	require.True(t, ok)
+	assert.Equal(t, "v", v, "'flip' must remain the cached value, not evicted or reloaded")
+}
+
+// TestRemoveMatching_ConcurrentWithSetAndGet stresses RemoveMatching against
+// concurrent Set/Get on overlapping keys. Run under -race (task test), it locks
+// in the no-deadlock / no-panic / no-double-panic guarantees of the split-lock
+// rework; eviction counts are nondeterministic and deliberately not asserted.
+func TestRemoveMatching_ConcurrentWithSetAndGet(t *testing.T) {
+	t.Parallel()
+
+	var mu sync.Mutex
+	evictions := 0
+	c := New[int, int](
+		1000,
+		func(_ context.Context, k int) (int, error) { return k, nil },
+		func(context.Context, int, int) error { return nil },
+		func(int, int) { mu.Lock(); evictions++; mu.Unlock() },
+	)
+
+	const iterations = 300
+	const keyspace = 50
+
+	var wg sync.WaitGroup
+	wg.Add(3)
+	go func() {
+		defer wg.Done()
+		for i := range iterations {
+			c.Set(i%keyspace, i)
+		}
+	}()
+	go func() {
+		defer wg.Done()
+		for range iterations / 10 {
+			c.RemoveMatching(func(k, _ int) bool { return k%2 == 0 })
+		}
+	}()
+	go func() {
+		defer wg.Done()
+		for i := range iterations {
+			c.Get(context.Background(), i%keyspace)
+		}
+	}()
+
+	done := make(chan struct{})
+	go func() { wg.Wait(); close(done) }()
+	select {
+	case <-done:
+	case <-time.After(10 * time.Second):
+		t.Fatal("timeout: RemoveMatching concurrent with Set/Get appears deadlocked")
+	}
+
+	mu.Lock()
+	defer mu.Unlock()
+	assert.GreaterOrEqual(t, evictions, 0) // sanity: onEvict never negative/paniced
+}

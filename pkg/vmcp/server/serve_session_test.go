@@ -810,6 +810,35 @@ func TestBuildSessionDataStorageRedis_NoAuthWarns(t *testing.T) {
 	assert.Contains(t, logged, "127.0.0.1:1")
 }
 
+// TestBuildSessionDataStorageRedis_AuthenticatedNoWarn is the counterpart to the
+// no-auth test: a non-empty THV_SESSION_REDIS_PASSWORD must take the INFO branch
+// and emit no "without authentication" WARN. Mirrors the auth-server package's
+// "authenticated resolution emits no WARN" symmetry.
+// Not parallel: it uses t.Setenv and swaps the process-global slog default.
+//
+//nolint:paralleltest // t.Setenv and slog.SetDefault mutate process-global state
+func TestBuildSessionDataStorageRedis_AuthenticatedNoWarn(t *testing.T) {
+	t.Setenv(vmcpconfig.RedisPasswordEnvVar, "a-real-password")
+
+	var buf logSyncBuffer
+	previous := slog.Default()
+	slog.SetDefault(slog.New(slog.NewTextHandler(&buf, &slog.HandlerOptions{Level: slog.LevelWarn})))
+	t.Cleanup(func() { slog.SetDefault(previous) })
+
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+	_, err := buildSessionDataStorage(ctx, &Config{
+		SessionTTL: time.Minute,
+		SessionStorage: &vmcpconfig.SessionStorageConfig{
+			Provider: "redis",
+			Address:  "127.0.0.1:1", // unreachable: the INFO fires before the Ping fails
+		},
+	})
+	require.Error(t, err)
+
+	assert.Equal(t, 0, strings.Count(buf.String(), "without authentication"))
+}
+
 // TestServeHandlerSkipsDiscoveryAndRoutesCallThroughCore drives the FULL shared
 // Handler (not the bare streamable server) against a Serve-built server. It proves
 // the discovery middleware is guarded off on the Serve path: a Serve-built server

@@ -395,16 +395,21 @@ func buildSessionDataStorage(ctx context.Context, cfg *Config) (transportsession
 	// an empty password is tolerated for a no-auth Redis/Valkey instance, but a
 	// downgrade that was not intended (e.g. an unset or unsynced
 	// THV_SESSION_REDIS_PASSWORD secret) should be visible in logs rather than
-	// silent. The store holds session data, so name it either way.
+	// silent. The store holds session data, so name it either way. Both records
+	// carry a "store" attribute matching the embedded auth server's no-auth WARN
+	// (convertRedisRunConfig), so a single log-based alert can match one key
+	// across both Redis consumers.
 	if password == "" {
 		slog.Warn("vMCP Redis session storage connecting without authentication "+
 			"(THV_SESSION_REDIS_PASSWORD is empty)",
+			"store", cfg.SessionStorage.Address,
 			"address", cfg.SessionStorage.Address,
 			"db", cfg.SessionStorage.DB,
 			"key_prefix", keyPrefix,
 		)
 	} else {
 		slog.Info("using Redis session storage",
+			"store", cfg.SessionStorage.Address,
 			"address", cfg.SessionStorage.Address,
 			"db", cfg.SessionStorage.DB,
 			"key_prefix", keyPrefix,

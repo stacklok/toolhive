@@ -448,6 +448,58 @@ func TestBuildFullRunConfig_MaxRequestBodySize(t *testing.T) {
 	}
 }
 
+func TestBuildFullRunConfig_ProxyReadTimeout(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name         string
+		readTimeout  string
+		wantTimeout  string
+		wantErrorMsg string
+	}{
+		{name: "empty preserves default semantics"},
+		{name: "positive value is preserved", readTimeout: "45s", wantTimeout: "45s"},
+		{name: "duration is normalized", readTimeout: "1m", wantTimeout: "1m0s"},
+		{name: "invalid duration is rejected", readTimeout: "not-a-duration", wantErrorMsg: "proxy_read_timeout"},
+		{name: "negative duration is rejected", readTimeout: "-1s", wantErrorMsg: "must be non-negative"},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			ctrl := gomock.NewController(t)
+			defer ctrl.Finish()
+
+			mockGroupManager := groupsmocks.NewMockManager(ctrl)
+			mockGroupManager.EXPECT().Exists(gomock.Any(), "default").Return(true, nil)
+
+			service := &WorkloadService{
+				groupManager:   mockGroupManager,
+				configProvider: config.NewDefaultProvider(),
+			}
+			req := &createRequest{
+				Name: "testserver",
+				updateRequest: updateRequest{
+					URL:              "https://mcp.example.com/mcp",
+					ProxyReadTimeout: tt.readTimeout,
+				},
+			}
+
+			runConfig, err := service.BuildFullRunConfig(context.Background(), req, 0, nil)
+			if tt.wantErrorMsg != "" {
+				require.Error(t, err)
+				assert.Nil(t, runConfig)
+				assert.Contains(t, err.Error(), tt.wantErrorMsg)
+				return
+			}
+
+			require.NoError(t, err)
+			assert.Equal(t, tt.wantTimeout, runConfig.ProxyReadTimeout)
+		})
+	}
+}
+
 // TestBuildFullRunConfig_NoOtelConfigLeavesTelemetryNil verifies that when no
 // OpenTelemetry config is set, the RunConfig's TelemetryConfig remains nil —
 // the API path does not invent an endpoint.

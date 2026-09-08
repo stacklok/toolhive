@@ -3332,6 +3332,11 @@ const docTemplate = `{
                         "description": "Port for the HTTP proxy to listen on",
                         "type": "integer"
                     },
+                    "proxy_read_timeout": {
+                        "description": "Maximum time to read a complete MCP proxy request, expressed as a Go duration string.\nEmpty or zero uses the default timeout of 30 seconds.",
+                        "example": "30s",
+                        "type": "string"
+                    },
                     "registry": {
                         "description": "Registry is the optional registry name to resolve the server from (e.g. \"default\").",
                         "type": "string"
@@ -4243,6 +4248,11 @@ const docTemplate = `{
                     "proxy_port": {
                         "description": "Port for the HTTP proxy to listen on",
                         "type": "integer"
+                    },
+                    "proxy_read_timeout": {
+                        "description": "Maximum time to read a complete MCP proxy request, expressed as a Go duration string.\nEmpty or zero uses the default timeout of 30 seconds.",
+                        "example": "30s",
+                        "type": "string"
                     },
                     "runtime_config": {
                         "$ref": "#/components/schemas/templates.RuntimeConfig"

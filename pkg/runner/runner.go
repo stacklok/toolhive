@@ -905,12 +905,19 @@ func (r *Runner) persistRefreshToken(
 		return fmt.Errorf("failed to store refresh token: %w", err)
 	}
 
-	r.Config.RemoteAuthConfig.CachedRefreshTokenRef = secretName
-	r.Config.RemoteAuthConfig.CachedTokenExpiry = expiry
+	updatedConfig := *r.Config
+	updatedRemoteAuthConfig := *r.Config.RemoteAuthConfig
+	updatedConfig.RemoteAuthConfig = &updatedRemoteAuthConfig
+	updatedRemoteAuthConfig.CachedRefreshTokenRef = secretName
+	updatedRemoteAuthConfig.CachedTokenExpiry = expiry
 
-	if err := r.Config.SaveState(ctx); err != nil {
+	if err := updatedConfig.SaveState(ctx); err != nil {
 		return fmt.Errorf("failed to save config with token reference: %w", err)
 	}
+
+	// Preserve pointer identity so the auth handler and runner observe the same
+	// complete config only after the durable write succeeds.
+	*r.Config.RemoteAuthConfig = updatedRemoteAuthConfig
 
 	slog.Debug("Stored OAuth refresh token in secret manager", "secret_name", secretName)
 	return nil

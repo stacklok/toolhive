@@ -192,28 +192,38 @@ func (c *ValidatingCache[K, V]) Len() int {
 // eviction callback (onEvict) for each removed entry, and returns the number
 // removed.
 //
-// pred and onEvict both run while the cache's internal lock is held — the same
-// lock Set contends for — matching the eviction path in getHit. pred must
-// therefore not call back into the cache, and a slow onEvict blocks concurrent
-// Set calls. This is intended for infrequent bulk eviction (e.g. reconciling
-// sessions after a backend is removed from the registry), not a hot path.
+// pred and onEvict run while the cache's internal lock is held — the same lock
+// Set contends for — so pred must not call back into the cache. The lock is
+// acquired and released once per matched entry rather than held across the whole
+// scan, so a bulk eviction whose onEvict does slow teardown (e.g. closing backend
+// connections) does not starve concurrent Set for the full duration; the
+// per-entry hold matches the single-entry eviction path in getHit. This is
+// intended for infrequent bulk eviction (e.g. reconciling sessions after a
+// backend is removed from the registry), not a hot path.
 func (c *ValidatingCache[K, V]) RemoveMatching(pred func(K, V) bool) int {
+	// Snapshot the candidate keys under a short lock. Keys() returns a copy and
+	// Peek does not update recency, so evaluating pred here leaves the LRU order
+	// of surviving entries unchanged.
 	c.mu.Lock()
-	defer c.mu.Unlock()
+	var candidates []K
+	for _, key := range c.lruCache.Keys() {
+		if val, ok := c.lruCache.Peek(key); ok && pred(key, val) {
+			candidates = append(candidates, key)
+		}
+	}
+	c.mu.Unlock()
 
 	var removed int
-	// Keys() returns a snapshot slice, so removing entries while ranging over it
-	// is safe. Peek does not update recency, so evaluating pred leaves the LRU
-	// order of surviving entries unchanged.
-	for _, key := range c.lruCache.Keys() {
-		val, ok := c.lruCache.Peek(key)
-		if !ok {
-			continue
-		}
-		if pred(key, val) {
+	for _, key := range candidates {
+		c.mu.Lock()
+		// Re-check under the lock: a concurrent Set may have replaced the entry
+		// with a value pred no longer selects, or another path may have evicted
+		// it. Peek+pred both guards that race and keeps eviction correct.
+		if val, ok := c.lruCache.Peek(key); ok && pred(key, val) {
 			c.lruCache.Remove(key) // fires onEvict synchronously
 			removed++
 		}
+		c.mu.Unlock()
 	}
 	return removed
 }

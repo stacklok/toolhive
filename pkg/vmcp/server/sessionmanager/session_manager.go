@@ -163,7 +163,12 @@ func New(
 				slog.Warn("session cache: error closing evicted session",
 					"session_id", id, "error", closeErr)
 			}
-			slog.Warn("session cache: session evicted from node-local cache",
+			// Eviction is a routine lifecycle transition (LRU capacity, TTL
+			// expiry, or a backend dropped from the registry), not a fault: the
+			// session is recoverable from storage via RestoreSession. Log at
+			// DEBUG so a generation swap that evicts many sessions does not emit
+			// a burst of WARNs (a real close failure is still surfaced above).
+			slog.Debug("session cache: session evicted from node-local cache",
 				"session_id", id)
 		},
 	)
@@ -655,6 +660,16 @@ func (sm *Manager) NotifyBackendExpired(sessionID, workloadID string, metadata m
 // lazy-eviction/RestoreSession machinery rather than mutating a live session in
 // place to close a single connection (vMCP anti-pattern #10: reconstruct, don't
 // mutate).
+//
+// Residual window: eviction operates on sessions already in the cache. A session
+// whose RestoreSession is in flight when the drop commits may have read the
+// pre-drop registry and opened a connection to the soon-dropped backend; it is
+// cached only after this pass has scanned, so it escapes this eviction. Such a
+// session's stale connection is reclaimed on the next registry change, on
+// checkSession metadata drift, or ultimately at session end — i.e. it falls back
+// to the original session-lifetime bound, never worse. Closing this window fully
+// would require re-filtering each restored session against current membership
+// before caching it; it is left as the accepted best-effort of a polling model.
 func (sm *Manager) EvictStaleSessions(ctx context.Context) int {
 	raw := sm.backendReg.List(ctx)
 	present := make(map[string]struct{}, len(raw))

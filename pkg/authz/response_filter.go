@@ -9,6 +9,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"log/slog"
 	"net/http"
 	"strings"
@@ -70,19 +71,7 @@ func (rfw *ResponseFilteringWriter) WriteHeader(statusCode int) {
 // FlushAndFilter processes the captured response and applies filtering if needed.
 // Returns an error if filtering or writing fails.
 func (rfw *ResponseFilteringWriter) FlushAndFilter() error {
-	// Only successful responses can deliver a list result to a client, so
-	// non-2xx responses pass through unfiltered: an error body isn't a list,
-	// and rewriting it would only hurt debuggability. This deliberately
-	// covers the whole 2xx range, not just 200/202: fetch-based MCP clients
-	// (including the reference TypeScript transport) gate on response.ok,
-	// which accepts 200-299, so a backend answering tools/list with e.g. 201
-	// could otherwise smuggle an unfiltered list past the filter. A 204 has
-	// no body and is passed through by the empty-response check below.
-	if rfw.statusCode < http.StatusOK || rfw.statusCode >= http.StatusMultipleChoices {
-		rfw.ResponseWriter.WriteHeader(rfw.statusCode)
-		_, err := rfw.ResponseWriter.Write(rfw.buffer.Bytes()) //nolint:gosec // G705 - JSON-RPC response, not rendered as HTML
-		return err
-	}
+	rfw.applyResponseCachePolicy()
 
 	// Check if this response needs filtering
 	if !requiresResponseFiltering(rfw.method) {
@@ -130,7 +119,7 @@ func (rfw *ResponseFilteringWriter) FlushAndFilter() error {
 		rfw.ResponseWriter.Header().Del("Content-Length")
 		return rfw.processSSEResponse(rawResponse)
 	default:
-		// A successful response to a method whose result must be filtered,
+		// A response to a method whose result must be filtered,
 		// yet labeled with neither MCP-supported media type. That could be an
 		// accident, or a backend deliberately mislabeling the response to
 		// smuggle an unfiltered list past the filter -- the same
@@ -172,19 +161,26 @@ func (rfw *ResponseFilteringWriter) FlushAndFilter() error {
 // Content-Length is still present at that point, it's too late to remove it in
 // FlushAndFilter().
 //
-// Commit the recorded status before the first flush. Without this, the implicit
-// 200 would also rewrite a non-2xx backend status (e.g. 500) to 200 on the
-// wire, defeating the non-2xx passthrough precondition in FlushAndFilter(): a
-// fetch-based MCP client gates list delivery on response.ok, so an unfiltered
-// list body would be delivered under a fabricated 200. Committing here keeps
-// the wire status identical to the recorded backend status; SSE (statusCode
-// 200) is unaffected and later WriteHeader calls in FlushAndFilter become
-// no-ops instead of corrupting the status.
+// Commit the recorded status before the first flush. Without this, the
+// implicit 200 would rewrite a non-2xx backend status (e.g. 500) on the wire.
+// Committing here keeps the wire status identical to the recorded backend
+// status; SSE (statusCode 200) is unaffected and later WriteHeader calls in
+// FlushAndFilter become no-ops instead of corrupting the status.
 func (rfw *ResponseFilteringWriter) Flush() {
 	if flusher, ok := rfw.ResponseWriter.(http.Flusher); ok {
+		rfw.applyResponseCachePolicy()
 		rfw.ResponseWriter.Header().Del("Content-Length")
 		rfw.ResponseWriter.WriteHeader(rfw.statusCode)
 		flusher.Flush()
+	}
+}
+
+// applyResponseCachePolicy prevents a caller-specific resource-template view
+// from being reused across authorization contexts. Flush calls this before an
+// SSE response commits its headers; FlushAndFilter covers buffered JSON.
+func (rfw *ResponseFilteringWriter) applyResponseCachePolicy() {
+	if responseFilterForMethod(rfw.method) == responseFilterResourceTemplates {
+		rfw.ResponseWriter.Header().Set("Cache-Control", "private, no-store")
 	}
 }
 
@@ -273,6 +269,11 @@ func (rfw *ResponseFilteringWriter) processSSEResponse(rawResponse []byte) error
 	// I don't see an obvious way to factor out the commonalities, so I'm
 	// duplicating it here, but we should refactor response parsing
 	// respecting mime types to a common routine.
+	// Commit the recorded status before writing the first event. On streaming
+	// proxy paths Flush has already done this and WriteHeader is a no-op; on a
+	// buffered non-2xx response this prevents the first body write from
+	// implicitly changing the status to 200.
+	rfw.ResponseWriter.WriteHeader(rfw.statusCode)
 
 	// A client strips a leading BOM per the WHATWG UTF-8 decode algorithm
 	// before parsing lines, so strip it here too: otherwise the first line's
@@ -520,14 +521,41 @@ func (rfw *ResponseFilteringWriter) filterSSEEventData(data []byte) (replacement
 	}
 }
 
+type responseFilterKind uint8
+
+const (
+	responseFilterNone responseFilterKind = iota
+	responseFilterTools
+	responseFilterPrompts
+	responseFilterResources
+	responseFilterResourceTemplates
+	responseFilterFindTool
+)
+
+// responseFilterForMethod is the authoritative mapping from an MCP method to
+// its response filter. Keeping eligibility and dispatch behind this one mapping
+// prevents a protected list method from being intercepted but passed through
+// because it was added to only one of two method lists.
+func responseFilterForMethod(method string) responseFilterKind {
+	switch method {
+	case string(mcp.MethodToolsList):
+		return responseFilterTools
+	case string(mcp.MethodPromptsList):
+		return responseFilterPrompts
+	case string(mcp.MethodResourcesList):
+		return responseFilterResources
+	case string(mcp.MethodResourcesTemplatesList):
+		return responseFilterResourceTemplates
+	case optimizerdec.FindToolName:
+		return responseFilterFindTool
+	default:
+		return responseFilterNone
+	}
+}
+
 // requiresResponseFiltering reports whether the method needs response filtering.
-// This covers the three MCP list operations and the optimizer's find_tool call,
-// whose response embeds a filtered tool list inside a CallToolResult.
 func requiresResponseFiltering(method string) bool {
-	return method == string(mcp.MethodToolsList) ||
-		method == string(mcp.MethodPromptsList) ||
-		method == string(mcp.MethodResourcesList) ||
-		method == optimizerdec.FindToolName
+	return responseFilterForMethod(method) != responseFilterNone
 }
 
 // carriesResult reports whether a data payload contains a JSON-RPC "result"
@@ -594,7 +622,7 @@ func valueCarriesResult(value json.RawMessage) bool {
 
 // sseCarriesResult reports whether rawResponse contains an SSE "data:" line
 // whose payload carries a JSON-RPC result. It is a lightweight detector, used
-// only to decide whether a 2xx body with an unrecognized media type needs the
+// only to decide whether a body with an unrecognized media type needs the
 // full SSE processing path (which applies its own event-based filtering and
 // fail-closed rules); it mirrors sniffSSEToolsList in pkg/mcp/tool_filter.go.
 func sseCarriesResult(rawResponse []byte) bool {
@@ -648,20 +676,23 @@ func (rfw *ResponseFilteringWriter) filterListResponse(response *jsonrpc2.Respon
 		return response, nil
 	}
 
-	// Filter based on the method
-	switch rfw.method {
-	case string(mcp.MethodToolsList):
+	// Filter based on the method. responseFilterForMethod is shared with the
+	// eligibility check in FlushAndFilter so these cases cannot drift apart.
+	switch responseFilterForMethod(rfw.method) {
+	case responseFilterTools:
 		return rfw.filterToolsResponse(response)
-	case string(mcp.MethodPromptsList):
+	case responseFilterPrompts:
 		return rfw.filterPromptsResponse(response)
-	case string(mcp.MethodResourcesList):
+	case responseFilterResources:
 		return rfw.filterResourcesResponse(response)
-	case optimizerdec.FindToolName:
+	case responseFilterResourceTemplates:
+		return rfw.filterResourceTemplatesResponse(response)
+	case responseFilterFindTool:
 		return rfw.filterFindToolResponse(response)
-	default:
-		// Unknown method, just return as-is
-		return response, nil
+	case responseFilterNone:
+		return nil, fmt.Errorf("no response filter for method %q", rfw.method)
 	}
+	return nil, fmt.Errorf("unknown response filter for method %q", rfw.method)
 }
 
 // filterToolsResponse filters tools based on call_tool authorization
@@ -844,6 +875,214 @@ func (rfw *ResponseFilteringWriter) filterResourcesResponse(response *jsonrpc2.R
 	}
 
 	return filteredResponse, nil
+}
+
+// filterResourceTemplatesResponse filters resource templates based on
+// read_resource authorization. A template's RFC 6570 URI template is treated
+// as the resource identifier, matching the admission semantics used by vMCP.
+func (rfw *ResponseFilteringWriter) filterResourceTemplatesResponse(
+	response *jsonrpc2.Response,
+) (*jsonrpc2.Response, error) {
+	result, resourceTemplates, uriTemplates, err := decodeResourceTemplatesListResult(response.Result)
+	if err != nil {
+		return nil, err
+	}
+
+	filteredTemplates := make([]json.RawMessage, 0, len(resourceTemplates))
+	for i, resourceTemplate := range resourceTemplates {
+		authorized, err := rfw.authorizer.AuthorizeWithJWTClaims(
+			rfw.request.Context(),
+			authorizers.MCPFeatureResource,
+			authorizers.MCPOperationRead,
+			uriTemplates[i],
+			nil,
+		)
+		if err != nil {
+			slog.Warn("Authorization check failed for resource template, skipping",
+				"resourceTemplate", uriTemplates[i], "error", err)
+			continue
+		}
+
+		if authorized {
+			filteredTemplates = append(filteredTemplates, resourceTemplate)
+		} else {
+			slog.Debug("Resource template denied by authorization policy",
+				"resourceTemplate", uriTemplates[i])
+		}
+	}
+
+	if denied := len(resourceTemplates) - len(filteredTemplates); denied > 0 {
+		slog.Debug("Authorization policy filtered resource templates",
+			"total", len(resourceTemplates), "allowed", len(filteredTemplates), "denied", denied)
+	}
+
+	filteredTemplatesData, err := json.Marshal(filteredTemplates)
+	if err != nil {
+		return nil, err
+	}
+	result["resourceTemplates"] = filteredTemplatesData
+	result["cacheScope"] = json.RawMessage(`"private"`)
+	result["ttlMs"] = json.RawMessage(`0`)
+
+	filteredResultData, err := json.Marshal(result)
+	if err != nil {
+		return nil, err
+	}
+
+	return &jsonrpc2.Response{
+		ID:     response.ID,
+		Result: json.RawMessage(filteredResultData),
+	}, nil
+}
+
+// decodeResourceTemplatesListResult validates security-sensitive list and
+// descriptor members before authorization while retaining raw descriptors and
+// result extensions for the filtered response.
+func decodeResourceTemplatesListResult(
+	data json.RawMessage,
+) (map[string]json.RawMessage, []json.RawMessage, []string, error) {
+	members, err := decodeJSONObjectMembers(data)
+	if err != nil {
+		return nil, nil, nil, fmt.Errorf("decoding resource templates list response: %w", err)
+	}
+	result := make(map[string]json.RawMessage, len(members)+2)
+	for _, member := range members {
+		result[member.name] = member.value
+	}
+
+	rawTemplates, ok, err := uniqueCanonicalMember(members, "resourceTemplates")
+	if err != nil {
+		return nil, nil, nil, err
+	}
+	if !ok {
+		return nil, nil, nil, errors.New("resource templates list result is missing resourceTemplates")
+	}
+	if _, _, err := uniqueCanonicalMember(members, "cacheScope"); err != nil {
+		return nil, nil, nil, err
+	}
+	if _, _, err := uniqueCanonicalMember(members, "ttlMs"); err != nil {
+		return nil, nil, nil, err
+	}
+
+	var resourceTemplates []json.RawMessage
+	if err := json.Unmarshal(rawTemplates, &resourceTemplates); err != nil {
+		return nil, nil, nil, fmt.Errorf("decoding resourceTemplates: %w", err)
+	}
+	if resourceTemplates == nil {
+		return nil, nil, nil, errors.New("resourceTemplates must be an array")
+	}
+	uriTemplates, err := decodeResourceTemplateURIs(resourceTemplates)
+	if err != nil {
+		return nil, nil, nil, err
+	}
+	return result, resourceTemplates, uriTemplates, nil
+}
+
+// decodeResourceTemplateURIs validates every descriptor before any
+// authorization calls. The caller separately retains the original RawMessages
+// so standard fields and backend extensions survive filtering unchanged.
+func decodeResourceTemplateURIs(resourceTemplates []json.RawMessage) ([]string, error) {
+	uriTemplates := make([]string, len(resourceTemplates))
+	for i, rawTemplate := range resourceTemplates {
+		descriptorMembers, err := decodeJSONObjectMembers(rawTemplate)
+		if err != nil {
+			return nil, fmt.Errorf("decoding resource template at index %d: %w", i, err)
+		}
+		rawURITemplate, ok, err := uniqueCanonicalMember(descriptorMembers, "uriTemplate")
+		if err != nil {
+			return nil, fmt.Errorf("resource template at index %d: %w", i, err)
+		}
+		if !ok {
+			return nil, fmt.Errorf("resource template at index %d is missing a string uriTemplate", i)
+		}
+		var uriTemplate *string
+		if err := json.Unmarshal(rawURITemplate, &uriTemplate); err != nil {
+			return nil, fmt.Errorf("resource template at index %d has an invalid uriTemplate: %w", i, err)
+		}
+		if uriTemplate == nil {
+			return nil, fmt.Errorf("resource template at index %d is missing a string uriTemplate", i)
+		}
+		uriTemplates[i] = *uriTemplate
+	}
+	return uriTemplates, nil
+}
+
+type jsonObjectMember struct {
+	name  string
+	value json.RawMessage
+}
+
+// decodeJSONObjectMembers retains object member order and duplicates so
+// security-sensitive keys can be validated before encoding/json's usual
+// case-insensitive matching or last-value-wins behavior can hide them.
+func decodeJSONObjectMembers(data []byte) ([]jsonObjectMember, error) {
+	decoder := json.NewDecoder(bytes.NewReader(data))
+	opening, err := decoder.Token()
+	if err != nil {
+		return nil, err
+	}
+	if delimiter, ok := opening.(json.Delim); !ok || delimiter != '{' {
+		return nil, errors.New("value must be an object")
+	}
+
+	members := make([]jsonObjectMember, 0)
+	for decoder.More() {
+		nameToken, err := decoder.Token()
+		if err != nil {
+			return nil, err
+		}
+		name, ok := nameToken.(string)
+		if !ok {
+			return nil, errors.New("object member name must be a string")
+		}
+		var value json.RawMessage
+		if err := decoder.Decode(&value); err != nil {
+			return nil, err
+		}
+		members = append(members, jsonObjectMember{name: name, value: value})
+	}
+
+	closing, err := decoder.Token()
+	if err != nil {
+		return nil, err
+	}
+	if delimiter, ok := closing.(json.Delim); !ok || delimiter != '}' {
+		return nil, errors.New("unterminated object")
+	}
+	var trailing json.RawMessage
+	if err := decoder.Decode(&trailing); !errors.Is(err, io.EOF) {
+		if err == nil {
+			return nil, errors.New("unexpected data after object")
+		}
+		return nil, err
+	}
+	return members, nil
+}
+
+// uniqueCanonicalMember returns the value of canonical when it occurs exactly
+// once. Case-folded aliases are rejected because common Go JSON decoders may
+// treat them as the canonical field and select a different value than the one
+// used for authorization or filtering.
+func uniqueCanonicalMember(
+	members []jsonObjectMember,
+	canonical string,
+) (json.RawMessage, bool, error) {
+	var value json.RawMessage
+	found := false
+	for _, member := range members {
+		if !strings.EqualFold(member.name, canonical) {
+			continue
+		}
+		if member.name != canonical {
+			return nil, false, fmt.Errorf("field %q has non-canonical alias %q", canonical, member.name)
+		}
+		if found {
+			return nil, false, fmt.Errorf("field %q occurs more than once", canonical)
+		}
+		value = member.value
+		found = true
+	}
+	return value, found, nil
 }
 
 // errorResponseBody logs the full filtering error server-side and encodes a

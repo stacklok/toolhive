@@ -590,77 +590,130 @@ func buildUpstreamConfigs(
 	configs := make([]authserver.UpstreamConfig, 0, len(runConfigs))
 
 	for _, rc := range runConfigs {
-		// Shallow copy of the outer UpstreamRunConfig so DCR resolution never
-		// mutates the caller's slice element.
-		rcCopy := rc
-
-		var dcrResolution *dcr.Resolution
-		switch rcCopy.Type {
-		case authserver.UpstreamProviderTypeOIDC:
-			if rcCopy.OIDCConfig == nil {
-				return nil, fmt.Errorf("upstream %q: oidc_config required", rc.Name)
-			}
-			if err := rcCopy.OIDCConfig.Validate(); err != nil {
-				return nil, fmt.Errorf("upstream %q: %w", rc.Name, err)
-			}
-		case authserver.UpstreamProviderTypeOAuth2:
-			if rcCopy.OAuth2Config == nil {
-				return nil, fmt.Errorf("upstream %q: oauth2_config required", rc.Name)
-			}
-			if err := rcCopy.OAuth2Config.Validate(); err != nil {
-				return nil, fmt.Errorf("upstream %q: %w", rc.Name, err)
-			}
-		}
-		req, err := newDCRRequest(&rcCopy, issuer)
+		cfg, err := buildOneUpstreamConfig(ctx, rc, issuer, dcrStore, insecureAllowHTTP)
 		if err != nil {
-			return nil, fmt.Errorf("upstream %q: %w", rc.Name, err)
+			return nil, err
 		}
-		if req != nil {
-			resolution, resolveErr := dcr.ResolveCredentials(ctx, req, dcrStore)
-			if resolveErr != nil {
-				dcr.LogStepError(rc.Name, resolveErr)
-				return nil, fmt.Errorf("upstream %q: %w", rc.Name, resolveErr)
-			}
-			dcrResolution = resolution
-			switch rcCopy.Type {
-			case authserver.UpstreamProviderTypeOIDC:
-				resolved := consumeOIDCResolution(*rcCopy.OIDCConfig, resolution)
-				rcCopy.OIDCConfig = &resolved
-			case authserver.UpstreamProviderTypeOAuth2:
-				resolved := consumeResolution(*rcCopy.OAuth2Config, resolution)
-				rcCopy.OAuth2Config = &resolved
-			}
-		}
-
-		cfg, err := buildUpstreamConfig(&rcCopy, insecureAllowHTTP)
-		if err != nil {
-			return nil, fmt.Errorf("upstream %q: %w", rc.Name, err)
-		}
-
-		// Apply the DCR-resolved ClientSecret to the built OAuth2Config.
-		// The split between consumeResolution (run-config fields) and
-		// applyResolutionToOAuth2Config (inline-only ClientSecret) is
-		// documented in dcr_adapter.go — both calls must be paired to
-		// produce a fully-resolved DCR client.
-		if dcrResolution != nil {
-			switch rcCopy.Type {
-			case authserver.UpstreamProviderTypeOIDC:
-				if cfg.OIDCConfig != nil {
-					applied := applyResolutionToOIDCConfig(*cfg.OIDCConfig, dcrResolution)
-					cfg.OIDCConfig = &applied
-				}
-			case authserver.UpstreamProviderTypeOAuth2:
-				if cfg.OAuth2Config != nil {
-					applied := applyResolutionToOAuth2Config(*cfg.OAuth2Config, dcrResolution)
-					cfg.OAuth2Config = &applied
-				}
-			}
-		}
-
 		configs = append(configs, *cfg)
 	}
 
 	return configs, nil
+}
+
+// buildOneUpstreamConfig validates rc, resolves DCR credentials if required,
+// and builds the resulting authserver.UpstreamConfig. Split out of
+// buildUpstreamConfigs to keep the per-upstream steps (validate, resolve,
+// build, apply) independently testable and under the complexity limit.
+func buildOneUpstreamConfig(
+	ctx context.Context,
+	rc authserver.UpstreamRunConfig,
+	issuer string,
+	dcrStore dcr.CredentialStore,
+	insecureAllowHTTP bool,
+) (*authserver.UpstreamConfig, error) {
+	// Shallow copy of the outer UpstreamRunConfig so DCR resolution never
+	// mutates the caller's slice element.
+	rcCopy := rc
+
+	if err := validateUpstreamRunConfig(&rcCopy); err != nil {
+		return nil, fmt.Errorf("upstream %q: %w", rc.Name, err)
+	}
+
+	resolution, err := resolveUpstreamDCR(ctx, &rcCopy, issuer, dcrStore)
+	if err != nil {
+		return nil, fmt.Errorf("upstream %q: %w", rc.Name, err)
+	}
+
+	cfg, err := buildUpstreamConfig(&rcCopy, insecureAllowHTTP)
+	if err != nil {
+		return nil, fmt.Errorf("upstream %q: %w", rc.Name, err)
+	}
+
+	// Apply the DCR-resolved ClientSecret to the built provider config. The
+	// split between consumeResolution/consumeOIDCResolution (run-config
+	// fields) and applyResolutionTo*Config (inline-only ClientSecret) is
+	// documented in dcr_adapter.go — both calls must be paired to produce a
+	// fully-resolved DCR client.
+	applyDCRResolutionToConfig(cfg, rcCopy.Type, resolution)
+
+	return cfg, nil
+}
+
+// validateUpstreamRunConfig enforces that rc carries the sub-config matching
+// its declared Type and that the sub-config's own invariants hold.
+func validateUpstreamRunConfig(rc *authserver.UpstreamRunConfig) error {
+	switch rc.Type {
+	case authserver.UpstreamProviderTypeOIDC:
+		if rc.OIDCConfig == nil {
+			return fmt.Errorf("oidc_config required")
+		}
+		return rc.OIDCConfig.Validate()
+	case authserver.UpstreamProviderTypeOAuth2:
+		if rc.OAuth2Config == nil {
+			return fmt.Errorf("oauth2_config required")
+		}
+		return rc.OAuth2Config.Validate()
+	}
+	return nil
+}
+
+// resolveUpstreamDCR performs Dynamic Client Registration for rc when
+// required, folding the result back into rc's sub-config in place. It
+// returns a nil Resolution when rc has a pre-provisioned client and no DCR
+// is needed.
+func resolveUpstreamDCR(
+	ctx context.Context,
+	rc *authserver.UpstreamRunConfig,
+	issuer string,
+	dcrStore dcr.CredentialStore,
+) (*dcr.Resolution, error) {
+	req, err := newDCRRequest(rc, issuer)
+	if err != nil {
+		return nil, err
+	}
+	if req == nil {
+		return nil, nil
+	}
+
+	resolution, err := dcr.ResolveCredentials(ctx, req, dcrStore)
+	if err != nil {
+		dcr.LogStepError(rc.Name, err)
+		return nil, err
+	}
+
+	switch rc.Type {
+	case authserver.UpstreamProviderTypeOIDC:
+		resolved := consumeOIDCResolution(*rc.OIDCConfig, resolution)
+		rc.OIDCConfig = &resolved
+	case authserver.UpstreamProviderTypeOAuth2:
+		resolved := consumeResolution(*rc.OAuth2Config, resolution)
+		rc.OAuth2Config = &resolved
+	}
+	return resolution, nil
+}
+
+// applyDCRResolutionToConfig overlays the DCR-resolved ClientSecret onto the
+// built provider config. No-op when resolution is nil (no DCR was performed).
+func applyDCRResolutionToConfig(
+	cfg *authserver.UpstreamConfig,
+	upstreamType authserver.UpstreamProviderType,
+	resolution *dcr.Resolution,
+) {
+	if resolution == nil {
+		return
+	}
+	switch upstreamType {
+	case authserver.UpstreamProviderTypeOIDC:
+		if cfg.OIDCConfig != nil {
+			applied := applyResolutionToOIDCConfig(*cfg.OIDCConfig, resolution)
+			cfg.OIDCConfig = &applied
+		}
+	case authserver.UpstreamProviderTypeOAuth2:
+		if cfg.OAuth2Config != nil {
+			applied := applyResolutionToOAuth2Config(*cfg.OAuth2Config, resolution)
+			cfg.OAuth2Config = &applied
+		}
+	}
 }
 
 // buildUpstreamConfig builds an authserver.UpstreamConfig from UpstreamRunConfig.

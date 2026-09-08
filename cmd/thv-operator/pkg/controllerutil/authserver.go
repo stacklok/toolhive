@@ -1290,7 +1290,8 @@ func buildUpstreamRunConfig(
 	switch provider.Type {
 	case mcpv1beta1.UpstreamProviderTypeOIDC:
 		if provider.OIDCConfig != nil {
-			oidcRunConfig, err := buildOIDCUpstreamRunConfig(provider.OIDCConfig, b.EnvVarName, b.DCRInitialAccessTokenEnvVar, index, resourceURL)
+			oidcRunConfig, err := buildOIDCUpstreamRunConfig(
+				provider.OIDCConfig, b.EnvVarName, b.DCRInitialAccessTokenEnvVar, index, resourceURL)
 			if err != nil {
 				return nil, err
 			}

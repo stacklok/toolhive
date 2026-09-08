@@ -1396,7 +1396,8 @@ func (c *OIDCUpstreamRunConfig) Validate() error {
 	}
 	if c.DCRConfig.DiscoveryURL == "" && c.DCRConfig.RegistrationEndpoint == "" {
 		if c.DCRConfig.InitialAccessTokenFile != "" && c.DCRConfig.InitialAccessTokenEnvVar != "" {
-			return fmt.Errorf("oidc upstream: dcr_config initial_access_token_file and initial_access_token_env_var are mutually exclusive")
+			return fmt.Errorf(
+				"oidc upstream: dcr_config initial_access_token_file and initial_access_token_env_var are mutually exclusive")
 		}
 		if c.IssuerURL == "" {
 			return fmt.Errorf("oidc upstream: issuer_url is required when dcr_config omits discovery_url and registration_endpoint")

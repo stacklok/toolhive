@@ -436,6 +436,8 @@ components:
             ClientSecretFile is the path to a file containing the OAuth 2.0 client secret.
             Mutually exclusive with ClientSecretEnvVar. Optional for public clients using PKCE.
           type: string
+        dcr_config:
+          $ref: '#/components/schemas/authserver.DCRUpstreamConfig'
         insecure_allow_http:
           description: |-
             InsecureAllowHTTP permits a plain-HTTP issuer URL and HTTP discovery

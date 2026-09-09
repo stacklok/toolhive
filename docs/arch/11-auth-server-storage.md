@@ -202,10 +202,39 @@ distinct rows would cross credentials between sessions. This prevents
 duplicate redemption from stale concurrent callers served by the same
 process; the identity is not persisted, logged, or exposed.
 
-This is deliberately narrower than #4122: it does not provide distributed
-coordination across replicas, row-addressed mutation, compare-and-swap, or any
-other cross-process consistency guarantee. Redis remains the durable storage
-backend, while each replica coordinates only its own in-flight refreshes.
+This is deliberately narrower than #4122's original in-process-only scope: it
+does not by itself provide distributed coordination across replicas. That
+coordination now exists as a second, independent layer:
+`UpstreamTokenStorage.CompareAndSwapUpstreamTokens` conditions a refresh write
+on the refresh token currently stored still matching the value the caller
+redeemed with, failing the write (`ErrConcurrentRefresh`) instead of
+overwriting when another replica already rotated the row first. `refreshAndStore`
+writes through this method rather than an unconditional `StoreUpstreamTokens`.
+Redis implements the comparison and the write as one atomic Lua script;
+`MemoryStorage` implements it under its existing mutex. `singleflight` remains
+the process-local optimization described above — it avoids a redundant
+upstream call and Redis round-trip for concurrent requests inside one
+process — while the CAS write is what makes the *stored* row deterministic
+across processes: whichever replica's write lands first wins, and every
+losing replica's write fails instead of silently clobbering it.
+
+This is a storage-ordering guarantee, not a guarantee that concurrent
+redemption is safe at the upstream provider. Both replicas still call
+`provider.RefreshTokens` before either one's CAS write runs, so for a
+provider enforcing strict single-use rotation (RFC 9700 §4.14.2 replay
+detection), two concurrent redemptions of the same refresh token can still
+be indistinguishable from a replay at the IdP, which may revoke the grant
+regardless of which replica's write wins here. CAS is fully sufficient only
+where the provider tolerates a short grace/leeway window in which more than
+one redeemed child stays valid (e.g. Read.ai's stated behavior) — outside
+that window, closing the gap requires serializing the *redemption* itself
+(a distributed lock around the read-redeem-write sequence), not just the
+write. That lock is a deliberate follow-up, not implemented here: this layer
+only prevents storage corruption from a lost write race, and its own log
+distinguishes a genuine lost race (an unexpired row on re-read) from a row
+that is simply gone (deleted by logout or evicted by TTL, `ErrNotFound` on
+re-read) — the latter is expected behavior, not a race, and refuses to
+resurrect the deleted row.
 
 ### Serialization
 

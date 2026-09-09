@@ -1171,6 +1171,117 @@ func TestMemoryStorage_UpstreamTokens(t *testing.T) {
 	})
 }
 
+// TestMemoryStorage_CompareAndSwapUpstreamTokens exercises the coordination
+// primitive for redeeming a single-use, rotating upstream refresh
+// token safely: a write only lands if the caller's expected refresh token
+// still matches what is currently stored.
+func TestMemoryStorage_CompareAndSwapUpstreamTokens(t *testing.T) {
+	t.Parallel()
+
+	t.Run("matching expected value writes and returns nil", func(t *testing.T) {
+		withStorage(t, func(ctx context.Context, s *MemoryStorage) {
+			require.NoError(t, s.StoreUpstreamTokens(ctx, "session", "provider-a", &UpstreamTokens{
+				AccessToken: "old-access", RefreshToken: "old-refresh",
+			}))
+
+			err := s.CompareAndSwapUpstreamTokens(ctx, "session", "provider-a", "old-refresh", &UpstreamTokens{
+				AccessToken: "new-access", RefreshToken: "new-refresh",
+			})
+			require.NoError(t, err)
+
+			retrieved, err := s.GetUpstreamTokens(ctx, "session", "provider-a")
+			require.NoError(t, err)
+			assert.Equal(t, "new-access", retrieved.AccessToken)
+			assert.Equal(t, "new-refresh", retrieved.RefreshToken)
+		})
+	})
+
+	t.Run("stale expected value returns ErrConcurrentRefresh and leaves the row untouched", func(t *testing.T) {
+		withStorage(t, func(ctx context.Context, s *MemoryStorage) {
+			require.NoError(t, s.StoreUpstreamTokens(ctx, "session", "provider-a", &UpstreamTokens{
+				AccessToken: "winner-access", RefreshToken: "winner-refresh",
+			}))
+
+			// A loser redeemed "old-refresh" (the value before the winner's write
+			// above) and now tries to persist its own rotation.
+			err := s.CompareAndSwapUpstreamTokens(ctx, "session", "provider-a", "old-refresh", &UpstreamTokens{
+				AccessToken: "loser-access", RefreshToken: "loser-refresh",
+			})
+			require.ErrorIs(t, err, ErrConcurrentRefresh)
+
+			retrieved, err := s.GetUpstreamTokens(ctx, "session", "provider-a")
+			require.NoError(t, err)
+			assert.Equal(t, "winner-access", retrieved.AccessToken,
+				"the winner's write must survive a losing CAS attempt")
+			assert.Equal(t, "winner-refresh", retrieved.RefreshToken)
+		})
+	})
+
+	t.Run("does not resurrect a row deleted between read and write", func(t *testing.T) {
+		withStorage(t, func(ctx context.Context, s *MemoryStorage) {
+			require.NoError(t, s.StoreUpstreamTokens(ctx, "session", "provider-a", &UpstreamTokens{
+				AccessToken: "old-access", RefreshToken: "old-refresh",
+			}))
+
+			// Simulates a logout (or TTL eviction) racing a refresh: the row is
+			// gone by the time the refresher's redemption tries to persist.
+			require.NoError(t, s.DeleteUpstreamTokensForProvider(ctx, "session", "provider-a"))
+
+			err := s.CompareAndSwapUpstreamTokens(ctx, "session", "provider-a", "old-refresh", &UpstreamTokens{
+				AccessToken: "redeemed-access", RefreshToken: "redeemed-refresh",
+			})
+			require.ErrorIs(t, err, ErrConcurrentRefresh,
+				"CAS must refuse to write over an absent row rather than resurrect it "+
+					"(unlike StoreUpstreamTokens, which would happily recreate it)")
+
+			_, err = s.GetUpstreamTokens(ctx, "session", "provider-a")
+			requireNotFoundError(t, err)
+		})
+	})
+
+	t.Run("empty expected value matches an absent row - first write succeeds", func(t *testing.T) {
+		withStorage(t, func(ctx context.Context, s *MemoryStorage) {
+			err := s.CompareAndSwapUpstreamTokens(ctx, "session", "provider-a", "", &UpstreamTokens{
+				AccessToken: "first-access", RefreshToken: "first-refresh",
+			})
+			require.NoError(t, err)
+
+			retrieved, err := s.GetUpstreamTokens(ctx, "session", "provider-a")
+			require.NoError(t, err)
+			assert.Equal(t, "first-access", retrieved.AccessToken)
+		})
+	})
+
+	t.Run("empty expected value against an already-populated row returns ErrConcurrentRefresh", func(t *testing.T) {
+		withStorage(t, func(ctx context.Context, s *MemoryStorage) {
+			require.NoError(t, s.StoreUpstreamTokens(ctx, "session", "provider-a", &UpstreamTokens{
+				AccessToken: "existing-access", RefreshToken: "existing-refresh",
+			}))
+
+			// "" must never be usable to silently overwrite a row that already
+			// carries a non-empty refresh token. ("" also matches a present row
+			// whose RefreshToken is itself empty, or a nil-tokens row - this test
+			// pins only the has-a-real-refresh-token case, which must be rejected.)
+			err := s.CompareAndSwapUpstreamTokens(ctx, "session", "provider-a", "", &UpstreamTokens{
+				AccessToken: "attacker-access", RefreshToken: "attacker-refresh",
+			})
+			require.ErrorIs(t, err, ErrConcurrentRefresh)
+
+			retrieved, err := s.GetUpstreamTokens(ctx, "session", "provider-a")
+			require.NoError(t, err)
+			assert.Equal(t, "existing-access", retrieved.AccessToken,
+				"the existing row must survive a mismatched empty-expected CAS attempt")
+		})
+	})
+
+	t.Run("empty session ID or provider name is rejected", func(t *testing.T) {
+		withStorage(t, func(ctx context.Context, s *MemoryStorage) {
+			assert.Error(t, s.CompareAndSwapUpstreamTokens(ctx, "", "provider-a", "", &UpstreamTokens{}))
+			assert.Error(t, s.CompareAndSwapUpstreamTokens(ctx, "session", "", "", &UpstreamTokens{}))
+		})
+	})
+}
+
 func TestMemoryStorage_GetLatestUpstreamTokensForUser(t *testing.T) {
 	t.Parallel()
 

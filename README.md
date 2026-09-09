@@ -97,6 +97,7 @@ Deploy, run, and manage MCP servers locally or in a Kubernetes cluster with secu
 - Proxy remote MCP servers securely for unified management
 - Kubernetes Operator for fleet and resource management
 - Leverage OpenTelemetry and Prometheus for monitoring and audit logging
+- Optional offline [TOA](https://github.com/Carmel-Labs-Inc/toa) verify before promote ([docs](docs/toa-optional-runtime-gate.md))
 
 ### 💻 Interfaces
 

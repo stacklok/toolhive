@@ -17,6 +17,9 @@ This document defines the criteria for including MCP (Model Context Protocol) se
 - Pinned dependencies and GitHub Actions
 - Published Software Bill of Materials (SBOMs)
 
+### Optional delivery evidence (not a registry inclusion requirement)
+- Offline [Tool Outcome Attestation](https://github.com/Carmel-Labs-Inc/toa) (`toa/0.1`) verify before promote / runtime enable. Separate from Sigstore provenance. See [Optional TOA runtime gate](../toa-optional-runtime-gate.md).
+
 ### Continuous Integration
 - Automated dependency updates (Dependabot, Renovate, etc.)
 - Automated security scanning

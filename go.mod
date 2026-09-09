@@ -30,7 +30,7 @@ require (
 	github.com/google/go-containerregistry v0.22.1
 	github.com/google/uuid v1.6.0
 	github.com/lestrrat-go/httprc/v3 v3.0.6
-	github.com/lestrrat-go/jwx/v3 v3.2.0
+	github.com/lestrrat-go/jwx/v4 v4.5.0
 	github.com/moby/moby/client v0.5.1
 	github.com/modelcontextprotocol/registry v1.8.1
 	github.com/oauth2-proxy/mockoidc v0.0.0-20240214162133-caebfff84d25
@@ -87,6 +87,7 @@ require github.com/hashicorp/golang-lru/v2 v2.0.7
 require (
 	cel.dev/cel-go v0.32.0
 	github.com/github/smimesign v0.2.0
+	github.com/lestrrat-go/jwx/v3 v3.2.0
 	go.starlark.net v0.0.0-20260908191801-89a6a09411d5
 )
 

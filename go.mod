@@ -17,7 +17,7 @@ require (
 	github.com/charmbracelet/x/ansi v0.11.8
 	github.com/containerd/errdefs v1.0.0
 	github.com/coreos/go-oidc/v3 v3.21.0
-	github.com/docker/go-connections v0.7.0 // indirect
+	github.com/docker/go-connections v0.8.1 // indirect
 	github.com/evanphx/json-patch/v5 v5.9.11
 	github.com/go-chi/chi/v5 v5.3.2
 	github.com/go-git/go-billy/v5 v5.9.1
@@ -38,7 +38,7 @@ require (
 	github.com/ory/fosite v0.49.0
 	github.com/pelletier/go-toml/v2 v2.3.1
 	github.com/pkg/browser v0.0.0-20240102092130-5ac0b6a4141c
-	github.com/pressly/goose/v3 v3.27.1
+	github.com/pressly/goose/v3 v3.28.0
 	github.com/prometheus/client_golang v1.24.1 // indirect
 	github.com/prometheus/client_model v0.6.2
 	github.com/prometheus/common v0.70.1
@@ -95,7 +95,7 @@ require (
 	github.com/Azure/azure-sdk-for-go/sdk/azcore v1.23.1 // indirect
 	github.com/Azure/azure-sdk-for-go/sdk/azidentity v1.14.1 // indirect
 	github.com/Azure/azure-sdk-for-go/sdk/internal v1.12.0 // indirect
-	github.com/AzureAD/microsoft-authentication-library-for-go v1.8.0 // indirect
+	github.com/AzureAD/microsoft-authentication-library-for-go v1.9.0 // indirect
 	github.com/aws/aws-sdk-go-v2/internal/v4a v1.5.3 // indirect
 	github.com/go-openapi/runtime/server-middleware v0.33.1 // indirect
 	github.com/go-openapi/swag/pools v0.28.0 // indirect
@@ -255,7 +255,7 @@ require (
 	github.com/pjbgf/sha1cd v0.6.0 // indirect
 	github.com/power-devops/perfstat v0.0.0-20240221224432-82ca36839d55 // indirect
 	github.com/prometheus/otlptranslator v1.0.0 // indirect
-	github.com/prometheus/procfs v0.21.1 // indirect
+	github.com/prometheus/procfs v0.22.0 // indirect
 	github.com/remyoudompheng/bigfft v0.0.0-20230129092748-24d4a6f8daec // indirect
 	github.com/rivo/uniseg v0.4.7 // indirect
 	github.com/russross/blackfriday/v2 v2.1.0 // indirect
@@ -263,7 +263,7 @@ require (
 	github.com/seatgeek/logrus-gelf-formatter v0.0.0-20210414080842-5b05eb8ff761 // indirect
 	github.com/secure-systems-lab/go-securesystemslib v0.11.1 // indirect
 	github.com/sergi/go-diff v1.4.0 // indirect
-	github.com/sethvargo/go-retry v0.3.0 // indirect
+	github.com/sethvargo/go-retry v0.4.0 // indirect
 	github.com/shibumi/go-pathspec v1.3.0 // indirect
 	github.com/sigstore/protobuf-specs v0.5.2
 	github.com/sigstore/rekor v1.5.4 // indirect
@@ -315,7 +315,7 @@ require (
 	golang.org/x/xerrors v0.0.0-20240903120638-7835f813f4da // indirect
 	gomodules.xyz/jsonpatch/v2 v2.4.0 // indirect
 	google.golang.org/genproto/googleapis/api v0.0.0-20260819154853-08b0e4226688 // indirect
-	google.golang.org/genproto/googleapis/rpc v0.0.0-20260819154853-08b0e4226688 // indirect
+	google.golang.org/genproto/googleapis/rpc v0.0.0-20260831171406-18b4a7587f8a // indirect
 	google.golang.org/grpc v1.83.2 // indirect
 	google.golang.org/protobuf v1.36.12
 	gopkg.in/evanphx/json-patch.v4 v4.13.0 // indirect
@@ -358,12 +358,12 @@ require (
 	github.com/spf13/cobra v1.10.2
 	github.com/spf13/pflag v1.0.10
 	go.opentelemetry.io/auto/sdk v1.2.1 // indirect
-	go.opentelemetry.io/contrib/instrumentation/net/http/otelhttp v0.70.0
+	go.opentelemetry.io/contrib/instrumentation/net/http/otelhttp v0.71.0
 	go.opentelemetry.io/otel v1.46.0
 	go.opentelemetry.io/otel/metric v1.46.0
 	go.opentelemetry.io/otel/trace v1.46.0
 	golang.org/x/crypto v0.56.0
-	golang.org/x/exp v0.0.0-20260410095643-746e56fc9e2f // indirect
+	golang.org/x/exp v0.0.0-20260824195058-e88cd73687aa // indirect
 	golang.org/x/sys v0.48.0
 	k8s.io/client-go v0.35.3
 )

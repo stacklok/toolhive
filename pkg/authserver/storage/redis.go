@@ -1227,7 +1227,18 @@ if existing and existing ~= "null" then
         oldUserID = decoded.user_id
     end
 end
+` + upstreamRowWriteAndIndexScriptBody)
 
+// upstreamRowWriteAndIndexScriptBody is the write-and-index Lua fragment
+// shared verbatim by storeUpstreamTokensScript (unconditional overwrite) and
+// casUpstreamTokensScript (compare-and-swap): it SETs the new value, then
+// maintains the session index set's TTL/PERSIST invariants (see the comment
+// above), then updates the user reverse-index sets. Both scripts read the
+// existing row into oldUserID (and, for the CAS script, existingRefreshToken)
+// before this fragment runs, so it is textually identical between the two —
+// concatenated in Go rather than duplicated, so a future change to one script's
+// write/index behavior cannot silently drift from the other's.
+const upstreamRowWriteAndIndexScriptBody = `
 local ttlMs = tonumber(ARGV[2])
 if ttlMs > 0 then
     redis.call('SET', KEYS[1], ARGV[1], 'PX', ttlMs)
@@ -1295,7 +1306,52 @@ if newUserID ~= "" then
 end
 
 return 1
-`)
+`
+
+// casUpstreamTokensScript is the compare-and-swap sibling of
+// storeUpstreamTokensScript: it additionally gates the write on the existing
+// row's refresh_token matching ARGV[5] before doing anything else, returning
+// 0 (no write performed) on a mismatch instead of 1. This is what makes
+// CompareAndSwapUpstreamTokens's stored row deterministic when redeeming a
+// single-use, rotating upstream refresh token across multiple replicas of an
+// application sharing this Redis: a replica whose read is stale by the time
+// it tries to write loses the CAS instead of clobbering a winning replica's
+// rotated token. (This orders writes to storage; it is not by itself a
+// guarantee that the redemption is safe at the upstream provider — see the
+// CompareAndSwapUpstreamTokens interface doc.)
+//
+// KEYS[1] = per-provider token key
+// KEYS[2] = session index set key
+// ARGV[1] = new token data (JSON or "null" marker)
+// ARGV[2] = TTL in milliseconds
+// ARGV[3] = new UserID ("" if no user)
+// ARGV[4] = user upstream set key prefix
+// ARGV[5] = expected refresh token ("" means "no row exists yet, or the
+//
+//	existing row carries no refresh token")
+//
+// The write-and-index body is shared verbatim with storeUpstreamTokensScript
+// via upstreamRowWriteAndIndexScriptBody — see that constant's doc comment.
+var casUpstreamTokensScript = redis.NewScript(`
+local oldUserID = ""
+local existingRefreshToken = ""
+local existing = redis.call('GET', KEYS[1])
+if existing and existing ~= "null" then
+    local ok, decoded = pcall(cjson.decode, existing)
+    if ok and type(decoded) == "table" then
+        if decoded.user_id and decoded.user_id ~= "" then
+            oldUserID = decoded.user_id
+        end
+        if decoded.refresh_token then
+            existingRefreshToken = decoded.refresh_token
+        end
+    end
+end
+
+if existingRefreshToken ~= ARGV[5] then
+    return 0
+end
+` + upstreamRowWriteAndIndexScriptBody)
 
 // marshalUpstreamTokensWithTTL marshals tokens and calculates TTL.
 func marshalUpstreamTokensWithTTL(tokens *UpstreamTokens) ([]byte, time.Duration, error) {
@@ -1389,6 +1445,55 @@ func (s *RedisStorage) StoreUpstreamTokens(ctx context.Context, sessionID, provi
 	).Result()
 	if err != nil {
 		return fmt.Errorf("failed to store upstream tokens: %w", err)
+	}
+
+	return nil
+}
+
+// CompareAndSwapUpstreamTokens stores tokens for (sessionID, providerName)
+// only if the refresh token currently stored there equals
+// expectedRefreshToken; see the interface doc
+// (UpstreamTokenStorage.CompareAndSwapUpstreamTokens) for the coordination
+// contract. Uses casUpstreamTokensScript so the comparison and the write (and
+// its index maintenance) happen as one atomic Redis operation.
+func (s *RedisStorage) CompareAndSwapUpstreamTokens(
+	ctx context.Context, sessionID, providerName, expectedRefreshToken string, tokens *UpstreamTokens,
+) error {
+	if sessionID == "" {
+		return fosite.ErrInvalidRequest.WithHint("session ID cannot be empty")
+	}
+	if providerName == "" {
+		return fosite.ErrInvalidRequest.WithHint("provider name cannot be empty")
+	}
+
+	key := redisUpstreamKey(s.keyPrefix, sessionID, providerName)
+	idxKey := redisSetKey(s.keyPrefix, KeyTypeUpstreamIdx, sessionID)
+
+	data, ttl, err := marshalUpstreamTokensWithTTL(tokens)
+	if err != nil {
+		return err
+	}
+
+	newUserID := ""
+	if tokens != nil {
+		newUserID = tokens.UserID
+	}
+
+	userSetKeyPrefix := s.keyPrefix + KeyTypeUserUpstream + ":"
+
+	wrote, err := casUpstreamTokensScript.Run(ctx, s.client,
+		[]string{key, idxKey},
+		string(data),
+		ttl.Milliseconds(),
+		newUserID,
+		userSetKeyPrefix,
+		expectedRefreshToken,
+	).Int64()
+	if err != nil {
+		return fmt.Errorf("failed to compare-and-swap upstream tokens: %w", err)
+	}
+	if wrote == 0 {
+		return ErrConcurrentRefresh
 	}
 
 	return nil

@@ -325,6 +325,20 @@ func (m *MockUpstreamTokenStorage) EXPECT() *MockUpstreamTokenStorageMockRecorde
 	return m.recorder
 }
 
+// CompareAndSwapUpstreamTokens mocks base method.
+func (m *MockUpstreamTokenStorage) CompareAndSwapUpstreamTokens(ctx context.Context, sessionID, providerName, expectedRefreshToken string, tokens *storage.UpstreamTokens) error {
+	m.ctrl.T.Helper()
+	ret := m.ctrl.Call(m, "CompareAndSwapUpstreamTokens", ctx, sessionID, providerName, expectedRefreshToken, tokens)
+	ret0, _ := ret[0].(error)
+	return ret0
+}
+
+// CompareAndSwapUpstreamTokens indicates an expected call of CompareAndSwapUpstreamTokens.
+func (mr *MockUpstreamTokenStorageMockRecorder) CompareAndSwapUpstreamTokens(ctx, sessionID, providerName, expectedRefreshToken, tokens any) *gomock.Call {
+	mr.mock.ctrl.T.Helper()
+	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "CompareAndSwapUpstreamTokens", reflect.TypeOf((*MockUpstreamTokenStorage)(nil).CompareAndSwapUpstreamTokens), ctx, sessionID, providerName, expectedRefreshToken, tokens)
+}
+
 // DeleteUpstreamTokens mocks base method.
 func (m *MockUpstreamTokenStorage) DeleteUpstreamTokens(ctx context.Context, sessionID string) error {
 	m.ctrl.T.Helper()
@@ -641,6 +655,20 @@ func (m *MockStorage) Close() error {
 func (mr *MockStorageMockRecorder) Close() *gomock.Call {
 	mr.mock.ctrl.T.Helper()
 	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "Close", reflect.TypeOf((*MockStorage)(nil).Close))
+}
+
+// CompareAndSwapUpstreamTokens mocks base method.
+func (m *MockStorage) CompareAndSwapUpstreamTokens(ctx context.Context, sessionID, providerName, expectedRefreshToken string, tokens *storage.UpstreamTokens) error {
+	m.ctrl.T.Helper()
+	ret := m.ctrl.Call(m, "CompareAndSwapUpstreamTokens", ctx, sessionID, providerName, expectedRefreshToken, tokens)
+	ret0, _ := ret[0].(error)
+	return ret0
+}
+
+// CompareAndSwapUpstreamTokens indicates an expected call of CompareAndSwapUpstreamTokens.
+func (mr *MockStorageMockRecorder) CompareAndSwapUpstreamTokens(ctx, sessionID, providerName, expectedRefreshToken, tokens any) *gomock.Call {
+	mr.mock.ctrl.T.Helper()
+	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "CompareAndSwapUpstreamTokens", reflect.TypeOf((*MockStorage)(nil).CompareAndSwapUpstreamTokens), ctx, sessionID, providerName, expectedRefreshToken, tokens)
 }
 
 // CreateAccessTokenSession mocks base method.

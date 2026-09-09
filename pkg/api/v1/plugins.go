@@ -19,17 +19,20 @@ import (
 
 // PluginsRoutes defines the routes for plugin management.
 type PluginsRoutes struct {
-	pluginService plugins.PluginService
-	lockService   plugins.PluginLockService
+	pluginService        plugins.PluginService
+	lockService          plugins.PluginLockService
+	keySigningCapability string
 }
 
 // PluginsRouter creates a new router for plugin management endpoints. If
 // pluginService's concrete implementation also satisfies plugins.PluginLockService
 // (as pluginsvc.New's does), /sync and /upgrade are served; otherwise both
 // return 501.
-func PluginsRouter(pluginService plugins.PluginService) http.Handler {
+func PluginsRouter(pluginService plugins.PluginService, opts ...RouterOption) http.Handler {
+	cfg := newRouterConfig(opts)
 	routes := PluginsRoutes{
-		pluginService: pluginService,
+		pluginService:        pluginService,
+		keySigningCapability: cfg.keySigningCapability,
 	}
 	if lockSvc, ok := pluginService.(plugins.PluginLockService); ok {
 		routes.lockService = lockSvc
@@ -306,8 +309,10 @@ func (s *PluginsRoutes) buildPlugin(w http.ResponseWriter, r *http.Request) erro
 //	@Tags			plugins
 //	@Accept			json
 //	@Param			request	body	pushPluginRequest	true	"Push request"
+//	@Param			X-Toolhive-Key-Signing-Capability	header	string	false	"Local discovery capability (required with request.key)"
 //	@Success		204		{string}	string	"No Content"
 //	@Failure		400		{string}	string	"Bad Request"
+//	@Failure		403		{string}	string	"Forbidden (key signing requires the local discovery capability)"
 //	@Failure		404		{string}	string	"Not Found"
 //	@Failure		500		{string}	string	"Internal Server Error"
 //	@Router			/api/v1beta/plugins/push [post]
@@ -332,6 +337,14 @@ func (s *PluginsRoutes) pushPlugin(w http.ResponseWriter, r *http.Request) error
 			fmt.Errorf("reference is required"),
 			http.StatusBadRequest,
 		)
+	}
+
+	// Checked before dispatch: the service would otherwise open the key.
+	// Same guard as skills/push — a private-key path is resolved by THIS
+	// process, so a remote caller naming one would be asking the server to
+	// sign with a key it never supplied.
+	if err := requireKeySigningCapability(r, s.keySigningCapability, req.Key); err != nil {
+		return err
 	}
 
 	if err := s.pluginService.Push(r.Context(), plugins.PushOptions{

@@ -672,6 +672,11 @@ func TestPluginsRouter(t *testing.T) {
 
 			req := httptest.NewRequest(tt.method, path, strings.NewReader(body))
 			req.Header.Set("Content-Type", "application/json")
+			// httptest defaults RemoteAddr to a non-loopback address, which
+			// requireLocalKeySigning refuses for a key-bearing push. These
+			// cases exercise routing and decoding rather than that guard —
+			// TestPluginsRouter_RemoteKeyPushRejectedBeforeDispatch owns it.
+			req.RemoteAddr = "127.0.0.1:53124"
 			rec := httptest.NewRecorder()
 
 			router.ServeHTTP(rec, req)

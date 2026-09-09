@@ -3842,7 +3842,7 @@ const docTemplate = `{
                         "type": "string"
                     },
                     "key": {
-                        "description": "Key is the path to a cosign private key used to sign the pushed\nartifact. Consumers installing the result project-scoped must supply\nthe matching public key on first use (install's public_key)",
+                        "description": "Key is the path to a cosign private key, resolved on the server's\nfilesystem. Accepted only from a caller on this machine (an IPC\ntransport or a loopback peer); a remote request naming a key is\nrefused with 403, since honoring it would let the caller have the\nserver sign with any key it can read. Use IdentityToken to have a\nremote server sign. Consumers installing the result project-scoped\nmust supply the matching public key on first use (install's\npublic_key)",
                         "type": "string"
                     },
                     "no_sign": {

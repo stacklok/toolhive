@@ -806,7 +806,7 @@ connector wiring), `pkg/vmcp/aggregator/aggregator.go` and
 `runListChangedResync`, `resyncSessionTools`, `resyncSessionResources`,
 `resyncSessionPrompts`) with `Server.resyncBaseCtx` cancelled on `Stop`.
 
-### Health-driven tools resync (#5786, PR1: passthrough mode)
+### Health-driven tools resync (#5786)
 
 The propagation above only fires when a connected backend itself emits a
 `list_changed` notification. A backend that flips
@@ -860,13 +860,32 @@ observes — including SDK-initiated HTTP DELETE, via a thin
 expiry) are pruned lazily when a triggered resync's liveness guard finds them
 gone.
 
-**Scope**: passthrough mode, tools only. When the optimizer is enabled the
-fan-out is a no-op — the advertised `find_tool`/`call_tool` meta-tools do not
-change on a health flip, and rebuilding the optimizer's per-session backing
-index for live sessions is the deferred optimizer-mode follow-up (PR2 of
-#5786). Resources/resource-templates/prompts re-derivation on health change is
-likewise not wired (a recovered backend's resources appear to new sessions,
-and to existing sessions on the backend's own `list_changed`). `UpdateBackends`
+**Optimizer mode** (PR 2 of #5786) takes the same delivery down a different
+path. The advertised set there is only the `find_tool`/`call_tool` meta-tools,
+whose **names never change** on a health flip, so the session's tool store is
+deliberately left alone: rewriting it would emit a downstream
+`notifications/tools/list_changed` carrying no news (go-sdk's `AddTool`
+notifies unconditionally — *"Assume there was a change, since add replaces
+existing tools"*). What does go stale is the meta-tools' **backing index**:
+`find_tool` scopes its search to the tool names its optimizer instance was
+built over (passed to `ToolStore.Search` as an allow-list) and `call_tool`
+dispatches through that instance's handler map, so an instance built while a
+backend was unhealthy keeps hiding that backend's tools after it recovers, and
+keeps offering a failed backend's tools until reconnect. So instead of
+re-advertising, the per-session optimizer instance sits behind a stable handle
+(`sessionOptimizer`) that the meta-tool handlers close over, and a health
+change rebuilds the instance and swaps it in atomically. A swap publishes a
+whole new instance rather than mutating one, so a `find_tool` already in flight
+keeps its consistent snapshot; the next call sees the new scope, and a tool the
+re-index dropped resolves as "tool not found". The handle is shared across
+re-derivations of the same session (cross-pod re-injection, or a resync falling
+back to rebuild-and-replace), so handlers installed earlier never pin a stale
+instance. A session with no registered handle — health monitoring disabled —
+falls back to the pre-PR2 rebuild-and-replace path.
+
+**Scope**: tools only. Resources/resource-templates/prompts re-derivation on health change is
+not wired in either mode (a recovered backend's resources appear to new
+sessions, and to existing sessions on the backend's own `list_changed`). `UpdateBackends`
 notifies on membership changes only: a property change to an existing backend
 (URL/transport) restarts its health-check goroutine but does not notify —
 if the relocated backend serves a different tool set, existing sessions pick
@@ -877,8 +896,10 @@ agreed membership-only scope.
 debounce), `pkg/vmcp/health/monitor.go` (`OnChange`, fire points),
 `pkg/vmcp/health/status.go` (advertisability-transition detection),
 `pkg/vmcp/server/serve_health_resync.go` (`healthResyncRegistry`,
-`resyncSessionsOnBackendHealthChange`), subscription in
-`pkg/vmcp/server/serve.go`.
+`resyncSessionsOnBackendHealthChange`),
+`pkg/vmcp/server/serve_optimizer_reindex.go` (`sessionOptimizer`,
+`reindexSessionOptimizer`), the mode split in `runListChangedResync`'s
+`KindTools` branch, subscription in `pkg/vmcp/server/serve.go`.
 
 ### Mid-call forwarding (elicitation / sampling / progress / logging)
 

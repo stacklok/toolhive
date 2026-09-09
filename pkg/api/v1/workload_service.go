@@ -386,6 +386,17 @@ func (s *WorkloadService) BuildFullRunConfig(
 		}
 	}()
 
+	proxyReadTimeout, parseErr := func() (time.Duration, error) {
+		if req.ProxyReadTimeout == "" {
+			return 0, nil
+		}
+		return time.ParseDuration(req.ProxyReadTimeout)
+	}()
+	if parseErr != nil {
+		return nil, fmt.Errorf("%w: invalid proxy_read_timeout %q: %w",
+			retriever.ErrInvalidRunConfig, req.ProxyReadTimeout, parseErr)
+	}
+
 	options := []runner.RunConfigBuilderOption{
 		runner.WithRuntime(s.containerRuntime),
 		runner.WithCmdArgs(req.CmdArguments),
@@ -409,6 +420,7 @@ func (s *WorkloadService) BuildFullRunConfig(
 		runner.WithProxyMode(types.ProxyMode(req.ProxyMode)),
 		runner.WithTransportAndPorts(req.Transport, req.ProxyPort, req.TargetPort),
 		runner.WithMaxRequestBodySize(req.MaxRequestBodySize),
+		runner.WithProxyReadTimeout(proxyReadTimeout),
 		runner.WithAuditEnabled(false, ""),
 		runner.WithTokenValidatorConfig(apiOIDCConfig),
 		runner.WithToolsFilter(req.ToolsFilter),

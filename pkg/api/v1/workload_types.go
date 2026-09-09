@@ -60,6 +60,9 @@ type updateRequest struct {
 	ProxyPort int `json:"proxy_port"`
 	// Maximum inbound MCP proxy request body size in bytes. Zero uses the default limit of 8 MiB.
 	MaxRequestBodySize int64 `json:"max_request_body_size,omitempty"`
+	// Maximum time to read a complete MCP proxy request, expressed as a Go duration string.
+	// Empty or zero uses the default timeout of 30 seconds.
+	ProxyReadTimeout string `json:"proxy_read_timeout,omitempty" example:"30s"`
 	// Environment variables to set in the container
 	EnvVars map[string]string `json:"env_vars"`
 	// Secret parameters to inject
@@ -373,6 +376,7 @@ func runConfigToCreateRequest(runConfig *runner.RunConfig) *createRequest {
 			TargetPort:         runConfig.TargetPort,
 			ProxyPort:          runConfig.Port,
 			MaxRequestBodySize: runConfig.MaxRequestBodySize,
+			ProxyReadTimeout:   runConfig.ProxyReadTimeout,
 			EnvVars:            runConfig.EnvVars,
 			Secrets:            secretParams,
 			Volumes:            runConfig.Volumes,

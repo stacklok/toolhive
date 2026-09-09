@@ -64,7 +64,7 @@ require (
 	go.opentelemetry.io/otel/sdk/metric v1.46.0
 	go.uber.org/mock v0.6.0
 	go.uber.org/zap v1.28.0
-	golang.ngrok.com/ngrok/v2 v2.1.4
+	golang.ngrok.com/ngrok/v2 v2.2.0
 	golang.org/x/exp/jsonrpc2 v0.0.0-20260908205506-85c1c2202aba
 	golang.org/x/mod v0.40.0
 	golang.org/x/oauth2 v0.36.0

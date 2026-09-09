@@ -21,15 +21,20 @@ import (
 type SkillsRoutes struct {
 	skillService skills.SkillService
 	lockService  skills.SkillLockService
+	// localTransport is set when the router is served over IPC, where the
+	// peer is local by construction. See requireLocalKeySigning.
+	localTransport localTransport
 }
 
 // SkillsRouter creates a new router for skill management endpoints. If
 // skillService's concrete implementation also satisfies skills.SkillLockService
 // (as skillsvc.New's does), /sync and /upgrade are served; otherwise both
 // return 501.
-func SkillsRouter(skillService skills.SkillService) http.Handler {
+func SkillsRouter(skillService skills.SkillService, opts ...RouterOption) http.Handler {
+	cfg := newRouterConfig(opts)
 	routes := SkillsRoutes{
-		skillService: skillService,
+		skillService:   skillService,
+		localTransport: localTransport(cfg.localTransport),
 	}
 	if lockSvc, ok := skillService.(skills.SkillLockService); ok {
 		routes.lockService = lockSvc
@@ -299,6 +304,11 @@ func (s *SkillsRoutes) pushSkill(w http.ResponseWriter, r *http.Request) error {
 			fmt.Errorf("invalid request body: %w", err),
 			http.StatusBadRequest,
 		)
+	}
+
+	// Checked before dispatch: the service would otherwise open the key.
+	if err := requireLocalKeySigning(r, s.localTransport, req.Key); err != nil {
+		return err
 	}
 
 	if err := s.skillService.Push(r.Context(), skills.PushOptions{

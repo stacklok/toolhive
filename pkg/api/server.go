@@ -449,7 +449,8 @@ func (b *ServerBuilder) setupDefaultRoutes(r *chi.Mux) {
 
 	// Skills router does the same: install, sync, and upgrade pull OCI
 	// artifacts, so a flat 60s cap would sever them mid-transfer.
-	r.Mount("/api/v1beta/skills", v1.SkillsRouter(b.skillManager))
+	r.Mount("/api/v1beta/skills", v1.SkillsRouter(b.skillManager,
+		v1.WithLocalTransport(b.isUnixSocket)))
 
 	// Plugins router likewise: install, build, and push move OCI artifacts.
 	r.Mount("/api/v1beta/plugins", v1.PluginsRouter(b.pluginManager))

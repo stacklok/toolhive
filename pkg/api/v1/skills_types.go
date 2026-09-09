@@ -82,8 +82,12 @@ type buildSkillRequest struct {
 type pushSkillRequest struct {
 	// OCI reference to push
 	Reference string `json:"reference"`
-	// Key is the path to a cosign private key used to sign the pushed
-	// artifact
+	// Key is the path to a cosign private key, resolved on the server's
+	// filesystem. Accepted only from a caller on this machine (an IPC
+	// transport or a loopback peer); a remote request naming a key is
+	// refused with 403, since honoring it would let the caller have the
+	// server sign with any key it can read. Use IdentityToken to have a
+	// remote server sign.
 	Key string `json:"key,omitempty"`
 	// IdentityToken is a short-lived OIDC identity token used for keyless
 	// signing, mutually exclusive with Key

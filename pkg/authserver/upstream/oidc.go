@@ -8,10 +8,12 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"net"
 	"net/http"
 	"net/url"
 	"regexp"
 	"slices"
+	"strings"
 
 	"github.com/coreos/go-oidc/v3/oidc"
 	"golang.org/x/oauth2"
@@ -23,6 +25,12 @@ import (
 const (
 	// ProviderTypeOIDC is for OIDC providers that support discovery.
 	ProviderTypeOIDC ProviderType = "oidc"
+
+	// idTokenValidationAttempts is how many times RefreshTokens will try to
+	// verify a newly issued ID token after a successful token-endpoint
+	// exchange. The exchange itself is not retried: rotating refresh tokens
+	// are single-use, so a second token request would send a consumed grant.
+	idTokenValidationAttempts = 3
 )
 
 // OIDCConfig contains configuration for OIDC providers that support discovery.
@@ -422,6 +430,65 @@ func (p *OIDCProviderImpl) resolveSubject(token *oidc.IDToken) (string, error) {
 	return value, nil
 }
 
+// validateRefreshedIDToken verifies the ID token returned by a successful
+// refresh exchange. Transient JWKS/network failures are retried in place so
+// the already-consumed refresh token is not replayed. If every attempt is
+// still a transient fetch failure, the unvalidated ID token is dropped and
+// (nil, nil) is returned so the caller can keep the new access/refresh tokens
+// (the storage layer already carries forward the previous ID token when the
+// new one is empty). Permanent verification failures still fail closed.
+func (p *OIDCProviderImpl) validateRefreshedIDToken(ctx context.Context, tokens *Tokens) (*oidc.IDToken, error) {
+	var lastErr error
+	for attempt := 1; attempt <= idTokenValidationAttempts; attempt++ {
+		token, err := p.validateIDToken(ctx, tokens.IDToken, "")
+		if err == nil {
+			return token, nil
+		}
+		lastErr = err
+		if !isTransientIDTokenValidationError(err) {
+			return nil, fmt.Errorf("ID token validation failed: %w", err)
+		}
+		slog.Warn("transient ID token validation failure after token refresh; retrying without re-exchanging",
+			"attempt", attempt,
+			"error", err,
+		)
+	}
+
+	// The token endpoint already succeeded and, for rotating refresh tokens,
+	// consumed the grant. Returning an error here would make the caller retry
+	// the exchange with the old token and get invalid_grant (#6194). Drop the
+	// unvalidated ID token rather than using it; access and refresh tokens
+	// still came from the trusted token endpoint.
+	slog.Warn("ID token validation failed after token refresh; dropping unvalidated ID token to preserve rotated refresh token",
+		"error", lastErr,
+	)
+	tokens.IDToken = ""
+	return nil, nil
+}
+
+// isTransientIDTokenValidationError reports whether ID-token verification
+// failed because keys could not be fetched, not because the token itself was
+// rejected. Permanent failures (bad signature, missing/mismatched nonce) must
+// not be retried or bypassed.
+func isTransientIDTokenValidationError(err error) bool {
+	if err == nil {
+		return false
+	}
+	if errors.Is(err, ErrNonceMismatch) || errors.Is(err, ErrNonceMissing) || errors.Is(err, ErrSubjectMismatch) {
+		return false
+	}
+	if errors.Is(err, context.DeadlineExceeded) {
+		return true
+	}
+	var netErr net.Error
+	if errors.As(err, &netErr) && netErr.Timeout() {
+		return true
+	}
+	// go-oidc wraps a JWKS HTTP failure as "fetching keys oidc: get keys failed".
+	msg := err.Error()
+	return strings.Contains(msg, "fetching keys") || strings.Contains(msg, "get keys failed")
+}
+
 // validateIDToken validates an ID token and returns the parsed token.
 func (p *OIDCProviderImpl) validateIDToken(ctx context.Context, idToken, nonce string) (*oidc.IDToken, error) {
 	if p.verifier == nil {
@@ -510,6 +577,11 @@ func (p *OIDCProviderImpl) buildOIDCParams() map[string]string {
 
 // RefreshTokens refreshes the upstream IDP tokens.
 // This overrides the base implementation to add OIDC-specific ID token validation.
+// After a successful token-endpoint exchange, ID-token verification is retried
+// on transient JWKS/network failures so a rotating refresh token is not
+// replayed. If verification still cannot fetch keys, the unvalidated ID token
+// is dropped and the new access/refresh tokens are returned; the storage layer
+// carries forward the previous ID token when the new one is empty.
 func (p *OIDCProviderImpl) RefreshTokens(ctx context.Context, refreshToken, expectedSubject string) (*Tokens, error) {
 	if p.endpoints == nil {
 		return nil, errors.New("OIDC endpoints not discovered")
@@ -533,22 +605,24 @@ func (p *OIDCProviderImpl) RefreshTokens(ctx context.Context, refreshToken, expe
 	// authorization request exists to provide an expected nonce value.
 	// Full nonce validation occurs in ExchangeCodeForIdentity during the initial auth flow.
 	if tokens.IDToken != "" && p.verifier != nil {
-		token, err := p.validateIDToken(ctx, tokens.IDToken, "")
+		token, err := p.validateRefreshedIDToken(ctx, tokens)
 		if err != nil {
-			return nil, fmt.Errorf("ID token validation failed: %w", err)
+			return nil, err
 		}
-		// The stored expectedSubject is the resolved subject (SubjectClaim, or
-		// "sub" by default). Resolve the refreshed token through the same path
-		// before comparing — comparing the raw "sub" would wrongly reject a
-		// refresh whenever a non-"sub" SubjectClaim is configured. OIDC Core
-		// Section 12.2 still holds: for the default "sub" this is identical to
-		// the original, and a custom claim must likewise be identical.
-		refreshedSubject, err := p.resolveSubject(token)
-		if err != nil {
-			return nil, fmt.Errorf("%w: %w", ErrIdentityResolutionFailed, err)
-		}
-		if expectedSubject != "" && refreshedSubject != expectedSubject {
-			return nil, ErrSubjectMismatch
+		if token != nil {
+			// The stored expectedSubject is the resolved subject (SubjectClaim, or
+			// "sub" by default). Resolve the refreshed token through the same path
+			// before comparing — comparing the raw "sub" would wrongly reject a
+			// refresh whenever a non-"sub" SubjectClaim is configured. OIDC Core
+			// Section 12.2 still holds: for the default "sub" this is identical to
+			// the original, and a custom claim must likewise be identical.
+			refreshedSubject, err := p.resolveSubject(token)
+			if err != nil {
+				return nil, fmt.Errorf("%w: %w", ErrIdentityResolutionFailed, err)
+			}
+			if expectedSubject != "" && refreshedSubject != expectedSubject {
+				return nil, ErrSubjectMismatch
+			}
 		}
 	}
 

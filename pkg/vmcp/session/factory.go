@@ -13,6 +13,7 @@ import (
 	"sort"
 	"strings"
 	"sync"
+	"syscall"
 	"time"
 
 	"github.com/stacklok/toolhive/pkg/auth"
@@ -153,6 +154,7 @@ type defaultMultiSessionFactory struct {
 	backendInitTimeout     time.Duration
 	revisionLookup         func(workloadID string) (mcpparser.Revision, bool)
 	requestTimeoutResolver func(workloadID string) time.Duration
+	dialControl            func(network, address string, c syscall.RawConn) error
 }
 
 // MultiSessionFactoryOption configures a defaultMultiSessionFactory.
@@ -221,6 +223,26 @@ func WithRevisionLookup(lookup func(workloadID string) (mcpparser.Revision, bool
 	}
 }
 
+// WithDialControl installs a per-connection Control hook on the dialer used to
+// open the per-backend connections this factory establishes at session init
+// (MakeSessionWithID and RestoreSession). The hook fires after DNS resolution
+// and before the TCP handshake, receiving the resolved peer IP — so it can
+// enforce a dial policy (e.g. refuse dials into private ranges to blunt SSRF /
+// DNS-rebinding) on backend endpoints that may be operator- or
+// attacker-influenceable.
+//
+// It is the session-factory counterpart to pkg/vmcp/client.WithDialControl,
+// which guards the aggregation and tool-call paths; without this option those
+// paths could be guarded while session-init dials were not. The signature
+// matches net.Dialer.Control exactly, and a nil control (the default) leaves
+// the dial path unchanged. See backend.WithDialControl for the full security
+// caveats (per-TCP-dial not per-request, proxy transparency, both IP families).
+func WithDialControl(control func(network, address string, c syscall.RawConn) error) MultiSessionFactoryOption {
+	return func(f *defaultMultiSessionFactory) {
+		f.dialControl = control
+	}
+}
+
 // NewSessionFactory creates a MultiSessionFactory that connects to backends
 // over HTTP using the given outgoing auth registry.
 func NewSessionFactory(registry vmcpauth.OutgoingAuthRegistry, opts ...MultiSessionFactoryOption) MultiSessionFactory {
@@ -228,6 +250,7 @@ func NewSessionFactory(registry vmcpauth.OutgoingAuthRegistry, opts ...MultiSess
 	f.connector = backend.NewHTTPConnector(
 		registry,
 		backend.WithRequestTimeoutResolver(f.requestTimeoutResolver),
+		backend.WithDialControl(f.dialControl),
 	)
 	return f
 }

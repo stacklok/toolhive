@@ -283,23 +283,13 @@ func (h *httpBackendClient) requestContext(
 	return context.WithTimeout(ctx, h.requestTimeout(target.WorkloadID))
 }
 
-// backendDialer returns a net.Dialer with the standard backend timeouts and an
-// optional Control hook. Centralising the timeout constants here ensures the
-// fallback-construction branch and the dial-control replacement branch always
-// stay in sync — no "kept in sync with the branch below" promise required.
-func backendDialer(control func(network, address string, c syscall.RawConn) error) *net.Dialer {
-	return &net.Dialer{
-		Timeout:   30 * time.Second,
-		KeepAlive: 30 * time.Second,
-		Control:   control,
-	}
-}
-
-// newBackendTransport creates a *http.Transport with the same defaults as http.DefaultTransport.
-// If http.DefaultTransport is a *http.Transport, it is cloned directly (preserving any
-// environment-specific settings like TLS config or proxy overrides). Otherwise a transport
-// with the standard Go defaults is constructed, preserving proxy, dial timeout, HTTP/2, and
-// idle-connection settings that a zero-value &http.Transport{} would drop.
+// newBackendTransport creates a *http.Transport with the same defaults as http.DefaultTransport,
+// optionally carrying a per-connection dial Control hook, then layers CA-bundle handling on top.
+//
+// The base transport (clone-or-reconstruct plus the optional dial-control dialer) is built by
+// networking.CloneDefaultTransportWithDialControl, the single construction point shared with the
+// persistent session connector (pkg/vmcp/session/internal/backend) so the two dial paths — and
+// their timeout constants — cannot drift. See that helper for the DNS-rebinding rationale.
 //
 // If caBundlePath is non-empty, a custom TLS configuration is applied that trusts both
 // the system root CAs and the certificate(s) in the specified file. This is used for
@@ -308,39 +298,12 @@ func backendDialer(control func(network, address string, c syscall.RawConn) erro
 // If caBundleData is non-empty, the raw PEM bytes are used directly instead of reading
 // from a file. This is used in dynamic mode where CA bundles are fetched from K8s
 // ConfigMaps at discovery time. caBundleData takes precedence over caBundlePath.
-//
-// If dialControl is non-nil, a fresh net.Dialer carrying the hook is installed on the
-// transport. The hook fires per-connection on the resolved peer IP, which is what
-// defeats DNS-rebinding attacks — a name-based check cannot, because the name can
-// resolve to a blocked IP after the check passes. A cloned *http.Transport exposes
-// DialContext only as an opaque func, so we cannot read back the original dialer's
-// settings; we reconstruct the dialer via backendDialer instead.
 func newBackendTransport(
 	caBundlePath string,
 	caBundleData []byte,
 	dialControl func(network, address string, c syscall.RawConn) error,
 ) (*http.Transport, error) {
-	var t *http.Transport
-	if dt, ok := http.DefaultTransport.(*http.Transport); ok {
-		t = dt.Clone()
-	} else {
-		// http.DefaultTransport has been replaced (e.g. in tests or by a third-party library).
-		// Construct a transport with the same defaults as the Go standard library uses for
-		// http.DefaultTransport so we don't silently drop proxy, timeout, or HTTP/2 settings.
-		t = &http.Transport{
-			Proxy:                 http.ProxyFromEnvironment,
-			DialContext:           backendDialer(nil).DialContext,
-			ForceAttemptHTTP2:     true,
-			MaxIdleConns:          100,
-			IdleConnTimeout:       90 * time.Second,
-			TLSHandshakeTimeout:   10 * time.Second,
-			ExpectContinueTimeout: 1 * time.Second,
-		}
-	}
-
-	if dialControl != nil {
-		t.DialContext = backendDialer(dialControl).DialContext
-	}
+	t := networking.CloneDefaultTransportWithDialControl(dialControl)
 
 	// Resolve CA certificate PEM data: caBundleData takes precedence over caBundlePath
 	var caPEM []byte

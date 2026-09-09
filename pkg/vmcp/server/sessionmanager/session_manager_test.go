@@ -1921,3 +1921,73 @@ func TestTerminate_LegacyFormatSession_TakesPlaceholderPath(t *testing.T) {
 	assert.Equal(t, MetadataValTrue, metadata[MetadataKeyTerminated],
 		"legacy session Terminate must set MetadataKeyTerminated rather than deleting")
 }
+
+// ---------------------------------------------------------------------------
+// Tests: EvictStaleSessions
+// ---------------------------------------------------------------------------
+
+// newEvictionTestSession builds a MockMultiSession whose MetadataKeyBackendIDs
+// lists backendIDs. It only wires the methods EvictStaleSessions touches
+// (GetMetadata via the eviction predicate, Close via onEvict); Close is expected
+// exactly wantClose times so tests pin whether a session was evicted.
+func newEvictionTestSession(
+	t *testing.T, ctrl *gomock.Controller, backendIDs string, wantClose int,
+) *sessionmocks.MockMultiSession {
+	t.Helper()
+	sess := sessionmocks.NewMockMultiSession(ctrl)
+	sess.EXPECT().GetMetadata().Return(map[string]string{
+		vmcpsession.MetadataKeyBackendIDs: backendIDs,
+	}).AnyTimes()
+	sess.EXPECT().Close().Return(nil).Times(wantClose)
+	return sess
+}
+
+// TestSessionManager_EvictStaleSessions verifies that EvictStaleSessions closes
+// exactly the sessions holding a backend absent from the registry — tearing down
+// the dropped backend's lingering connection — while leaving sessions whose
+// backends are all still present untouched (#6546).
+func TestSessionManager_EvictStaleSessions(t *testing.T) {
+	t.Parallel()
+
+	ctrl := gomock.NewController(t)
+
+	// Registry currently lists backend-a and backend-b; backend-c has been dropped.
+	registry := &fakeBackendRegistry{backends: []vmcp.Backend{{ID: "backend-a"}, {ID: "backend-b"}}}
+	factory := newMockFactory(t, ctrl, nil)
+	sm, _ := newTestSessionManager(t, factory, registry)
+
+	// allPresent references only surviving backends -> not stale, not evicted.
+	allPresent := newEvictionTestSession(t, ctrl, "backend-a,backend-b", 0)
+	// holdsDropped references the dropped backend-c -> stale, evicted (Close once).
+	holdsDropped := newEvictionTestSession(t, ctrl, "backend-a,backend-c", 1)
+	// zeroBackends holds no connections -> never stale, not evicted.
+	zeroBackends := newEvictionTestSession(t, ctrl, "", 0)
+
+	sm.sessions.Set("s-all-present", allPresent)
+	sm.sessions.Set("s-holds-dropped", holdsDropped)
+	sm.sessions.Set("s-zero-backends", zeroBackends)
+
+	evicted := sm.EvictStaleSessions(context.Background())
+
+	assert.Equal(t, 1, evicted, "only the session holding the dropped backend should be evicted")
+	assert.Equal(t, 2, sm.sessions.Len(), "the two unaffected sessions must remain cached")
+}
+
+// TestSessionManager_EvictStaleSessions_NoStale verifies EvictStaleSessions is a
+// no-op (no session closed, none evicted) when every session's backends are
+// still present — e.g. after an Upsert that only adds a backend.
+func TestSessionManager_EvictStaleSessions_NoStale(t *testing.T) {
+	t.Parallel()
+
+	ctrl := gomock.NewController(t)
+
+	registry := &fakeBackendRegistry{backends: []vmcp.Backend{{ID: "backend-a"}, {ID: "backend-b"}}}
+	factory := newMockFactory(t, ctrl, nil)
+	sm, _ := newTestSessionManager(t, factory, registry)
+
+	sm.sessions.Set("s1", newEvictionTestSession(t, ctrl, "backend-a", 0))
+	sm.sessions.Set("s2", newEvictionTestSession(t, ctrl, "backend-a,backend-b", 0))
+
+	assert.Zero(t, sm.EvictStaleSessions(context.Background()))
+	assert.Equal(t, 2, sm.sessions.Len())
+}

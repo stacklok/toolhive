@@ -6,8 +6,12 @@ package session
 import (
 	"context"
 	"errors"
+	"fmt"
+	"sync"
+	"sync/atomic"
 	"syscall"
 	"testing"
+	"time"
 
 	"github.com/google/uuid"
 	"github.com/stretchr/testify/assert"
@@ -132,4 +136,153 @@ func TestSessionFactory_WithDialControlResolver_AppliesPerBackend(t *testing.T) 
 	assert.Contains(t, conns, "allowed-backend", "the workload the resolver returns nil for must be connected")
 	assert.NotContains(t, conns, "blocked-backend", "the workload with a deny-all hook must be excluded")
 	assert.NotEmpty(t, sess.Tools(), "the allowed backend's capabilities must still be discovered")
+}
+
+// TestSessionFactory_WithDialControlResolver_AppliesPerBackendOnRestore is the
+// RestoreSession counterpart to _AppliesPerBackend. It proves the resolver is keyed
+// on each backend's own workload ID during restore, not only under a blanket
+// deny-all: a bug threading the wrong workload ID into the resolver on the restore
+// path (e.g. always the first backend's) would still pass GuardsRestoreSession but
+// fail here.
+func TestSessionFactory_WithDialControlResolver_AppliesPerBackendOnRestore(t *testing.T) {
+	t.Parallel()
+
+	allowedURL := startInProcessMCPServer(t)
+	blockedURL := startInProcessMCPServer(t)
+	allowed := &vmcp.Backend{
+		ID: "allowed-backend", Name: "allowed-backend", BaseURL: allowedURL, TransportType: "streamable-http",
+	}
+	blocked := &vmcp.Backend{
+		ID: "blocked-backend", Name: "blocked-backend", BaseURL: blockedURL, TransportType: "streamable-http",
+	}
+	backends := []*vmcp.Backend{allowed, blocked}
+
+	// Seed valid stored metadata (backend IDs + identity binding) from a real
+	// unguarded session over both backends.
+	seed := NewSessionFactory(newUnauthenticatedRegistry(t))
+	orig, err := seed.MakeSessionWithID(context.Background(), uuid.New().String(), nil, backends, nil)
+	require.NoError(t, err)
+	require.NotEmpty(t, orig.Tools(), "sanity: the unguarded seed session must reach both backends")
+	storedMeta := orig.GetMetadata()
+	require.NoError(t, orig.Close())
+
+	// Restore with a resolver that denies only the blocked workload ID.
+	guarded := NewSessionFactory(newUnauthenticatedRegistry(t),
+		WithDialControlResolver(func(workloadID string) func(network, address string, c syscall.RawConn) error {
+			if workloadID != blocked.ID {
+				return nil
+			}
+			return func(_, _ string, _ syscall.RawConn) error {
+				return errors.New("dial blocked by test policy")
+			}
+		}))
+	restored, err := guarded.RestoreSession(context.Background(), uuid.New().String(), storedMeta, backends)
+	require.NoError(t, err)
+	require.NotNil(t, restored)
+	t.Cleanup(func() { require.NoError(t, restored.Close()) })
+
+	conns := restored.BackendSessions()
+	assert.Contains(t, conns, "allowed-backend", "the workload the resolver returns nil for must survive restore")
+	assert.NotContains(t, conns, "blocked-backend", "the workload the resolver denies must be excluded on restore")
+}
+
+// TestSessionFactory_WithDialControlResolver_IsolatesPanickingResolver proves an
+// embedder resolver that panics for one workload is isolated to that backend: the
+// backend is excluded like any other init failure and the session is still created
+// with the surviving backend, rather than the panic crashing the per-backend init
+// goroutine (and the process).
+func TestSessionFactory_WithDialControlResolver_IsolatesPanickingResolver(t *testing.T) {
+	t.Parallel()
+
+	allowedURL := startInProcessMCPServer(t)
+	panicURL := startInProcessMCPServer(t)
+	allowed := &vmcp.Backend{
+		ID: "allowed-backend", Name: "allowed-backend", BaseURL: allowedURL, TransportType: "streamable-http",
+	}
+	panicky := &vmcp.Backend{
+		ID: "panic-backend", Name: "panic-backend", BaseURL: panicURL, TransportType: "streamable-http",
+	}
+
+	factory := NewSessionFactory(newUnauthenticatedRegistry(t),
+		WithDialControlResolver(func(workloadID string) func(network, address string, c syscall.RawConn) error {
+			if workloadID == panicky.ID {
+				panic("resolver boom for " + workloadID)
+			}
+			return nil
+		}))
+
+	sess, err := factory.MakeSessionWithID(
+		context.Background(), uuid.New().String(), nil, []*vmcp.Backend{allowed, panicky}, nil)
+	require.NoError(t, err, "a resolver panic for one backend must not fail whole-session creation")
+	require.NotNil(t, sess)
+	t.Cleanup(func() { require.NoError(t, sess.Close()) })
+
+	conns := sess.BackendSessions()
+	assert.Contains(t, conns, "allowed-backend", "the backend whose resolver did not panic must connect")
+	assert.NotContains(t, conns, "panic-backend", "the backend whose resolver panicked must be excluded")
+}
+
+// TestSessionFactory_WithDialControlResolver_InvokedConcurrently pins the documented
+// contract that the resolver is called from the per-backend init goroutines
+// concurrently (up to maxConcurrency). A barrier proves it deterministically: every
+// invocation announces arrival and then blocks until all backends' resolvers have
+// arrived, which can only complete if the invocations overlap in time — a serial
+// caller would leave the first invocation waiting and the test would hit its timeout.
+// Run under -race, the shared arrival state also exercises the safe-for-concurrent-use
+// claim.
+func TestSessionFactory_WithDialControlResolver_InvokedConcurrently(t *testing.T) {
+	t.Parallel()
+
+	const n = 3
+	backends := make([]*vmcp.Backend, n)
+	for i := range backends {
+		url := startInProcessMCPServer(t)
+		id := fmt.Sprintf("backend-%d", i)
+		backends[i] = &vmcp.Backend{ID: id, Name: id, BaseURL: url, TransportType: "streamable-http"}
+	}
+
+	var arrived sync.WaitGroup
+	arrived.Add(n)
+	release := make(chan struct{})
+	var inFlight, maxObserved atomic.Int32
+
+	factory := NewSessionFactory(newUnauthenticatedRegistry(t),
+		WithDialControlResolver(func(_ string) func(network, address string, c syscall.RawConn) error {
+			cur := inFlight.Add(1)
+			for {
+				old := maxObserved.Load()
+				if cur <= old || maxObserved.CompareAndSwap(old, cur) {
+					break
+				}
+			}
+			arrived.Done()
+			// Block until every backend's resolver has also arrived — only reachable
+			// if the invocations run concurrently.
+			select {
+			case <-release:
+			case <-time.After(5 * time.Second):
+			}
+			inFlight.Add(-1)
+			return nil
+		}))
+
+	// Release the barrier once all n resolvers are concurrently in flight.
+	barrierMet := make(chan struct{})
+	go func() {
+		arrived.Wait()
+		close(release)
+		close(barrierMet)
+	}()
+
+	sess, err := factory.MakeSessionWithID(context.Background(), uuid.New().String(), nil, backends, nil)
+	require.NoError(t, err)
+	t.Cleanup(func() { require.NoError(t, sess.Close()) })
+
+	select {
+	case <-barrierMet:
+	case <-time.After(10 * time.Second):
+		t.Fatal("resolvers were not invoked concurrently: barrier never reached n arrivals")
+	}
+	assert.GreaterOrEqual(t, int(maxObserved.Load()), 2,
+		"the resolver must be invoked concurrently for multiple backends")
 }

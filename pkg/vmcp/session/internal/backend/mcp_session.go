@@ -138,6 +138,28 @@ func WithDialControlResolver(
 	}
 }
 
+// resolveDialControl invokes the per-workload dial-control resolver, isolating a
+// panicking embedder resolver to this one backend: a panic is recovered and
+// returned as an error, so the backend is excluded from the session like any
+// other init failure rather than crashing the per-backend init goroutine (and
+// with it the process). A nil resolver, or one that returns nil for this
+// workload, yields a nil hook — the transport stays on http.DefaultTransport.
+func resolveDialControl(
+	resolver func(workloadID string) func(network, address string, c syscall.RawConn) error,
+	workloadID string,
+) (hook func(network, address string, c syscall.RawConn) error, err error) {
+	if resolver == nil {
+		return nil, nil
+	}
+	defer func() {
+		if r := recover(); r != nil {
+			hook = nil
+			err = fmt.Errorf("dial-control resolver panicked for backend %s: %v", workloadID, r)
+		}
+	}()
+	return resolver(workloadID), nil
+}
+
 func (c *httpConnectorConfig) requestTimeout(workloadID string) time.Duration {
 	if c.requestTimeoutResolver != nil {
 		if timeout := c.requestTimeoutResolver(workloadID); timeout > 0 {
@@ -505,9 +527,11 @@ func NewHTTPConnector(registry vmcpauth.OutgoingAuthRegistry, opts ...HTTPConnec
 		// Resolve the dial-control hook for this backend. A nil resolver, or a
 		// resolver that returns nil for this workload, leaves dialControl nil so
 		// the transport stays on http.DefaultTransport (see WithDialControlResolver).
-		var dialControl func(network, address string, c syscall.RawConn) error
-		if connectorConfig.dialControlResolver != nil {
-			dialControl = connectorConfig.dialControlResolver(target.WorkloadID)
+		// A panicking resolver is isolated to this backend rather than crashing the
+		// per-backend init goroutine (and the process).
+		dialControl, err := resolveDialControl(connectorConfig.dialControlResolver, target.WorkloadID)
+		if err != nil {
+			return nil, nil, err
 		}
 
 		c, err := createMCPClient(

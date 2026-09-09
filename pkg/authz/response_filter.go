@@ -12,6 +12,7 @@ import (
 	"io"
 	"log/slog"
 	"net/http"
+	"reflect"
 	"strings"
 
 	"golang.org/x/exp/jsonrpc2"
@@ -1197,58 +1198,48 @@ func (rfw *ResponseFilteringWriter) requestID() jsonrpc2.ID {
 }
 
 // filterFindToolResponse filters the tools list embedded in a find_tool tools/call
-// response. The response is a CallToolResult whose first text content item contains
-// a JSON-encoded optimizer.FindToolOutput. Only tools the caller is authorized to
-// call are retained.
-//
-// mcp.CallToolResult is used directly with its built-in UnmarshalJSON so that the
-// Content interface slice is deserialized correctly into concrete types
-// (TextContent, ImageContent, etc.) without a bespoke minimal struct.
-//
-// To identify which content item carries the find_tool output, each TextContent item
-// is tentatively unmarshaled as optimizer.FindToolOutput. A successful unmarshal is a
-// stronger signal than checking tc.Type == "text" alone — it confirms the item actually
-// carries a find_tool result rather than an arbitrary text payload (e.g. an error string).
+// response. Successful output must have exactly one text content item containing a
+// JSON-encoded optimizer.FindToolOutput. Modern responses may repeat that output in
+// structuredContent; when present, both representations must agree.
 func (rfw *ResponseFilteringWriter) filterFindToolResponse(response *jsonrpc2.Response) (*jsonrpc2.Response, error) {
-	// Use mcp.CallToolResult's built-in UnmarshalJSON for correct Content interface dispatch.
-	var callResult mcp.CallToolResult
-	if err := json.Unmarshal(response.Result, &callResult); err != nil || callResult.IsError {
-		return response, nil
+	callResult, err := decodeFindToolCallResult(response.Result)
+	if err != nil {
+		return nil, fmt.Errorf("validating find_tool response: %w", err)
 	}
 
-	// Find the first TextContent item that successfully unmarshals as optimizer.FindToolOutput.
-	textIdx := -1
-	var output optimizer.FindToolOutput
-	for i, c := range callResult.Content {
-		tc, ok := c.(mcp.TextContent)
-		if !ok {
-			continue
+	if callResult.isError {
+		if len(callResult.outputs) != 0 || callResult.structuredContent != nil {
+			return nil, errors.New("find_tool error result carried output")
 		}
-		if err := json.Unmarshal([]byte(tc.Text), &output); err == nil {
-			textIdx = i
-			break
-		}
-	}
-	if textIdx == -1 {
 		return response, nil
+	}
+	if len(callResult.content) != 1 {
+		return nil, fmt.Errorf("find_tool result must contain exactly one content item, got %d", len(callResult.content))
+	}
+	if len(callResult.outputs) != 1 {
+		return nil, fmt.Errorf("find_tool result must contain exactly one text output, got %d", len(callResult.outputs))
+	}
+
+	textOutput := callResult.outputs[0]
+	if callResult.structuredContent != nil {
+		equivalent, err := equivalentJSONValues(textOutput.rawOutput, callResult.structuredContent.rawOutput)
+		if err != nil {
+			return nil, fmt.Errorf("comparing find_tool output representations: %w", err)
+		}
+		if !equivalent {
+			return nil, errors.New("find_tool text and structured outputs differ")
+		}
 	}
 
 	// Populate annotation cache before filtering, mirroring filterToolsResponse.
 	// Subsequent call_tool requests use these annotations for Cedar when-clause evaluation
 	// (e.g. resource.readOnlyHint). The cache is populated from the unfiltered list so
 	// that annotations are available even for tools that Cedar will deny.
-	rfw.annotationCache.SetFromToolsList(output.Tools)
+	rfw.annotationCache.SetFromToolsList(textOutput.output.Tools)
 
-	output.Tools = filterToolsByPolicy(rfw.request.Context(), rfw.authorizer, output.Tools)
+	authorizedIndexes := authorizedToolIndexes(rfw.request.Context(), rfw.authorizer, textOutput.output.Tools)
 
-	filteredText, err := json.Marshal(output)
-	if err != nil {
-		return nil, fmt.Errorf("re-encoding find_tool output: %w", err)
-	}
-	original := callResult.Content[textIdx].(mcp.TextContent)
-	callResult.Content[textIdx] = mcp.TextContent{Type: original.Type, Text: string(filteredText)}
-
-	filteredResult, err := json.Marshal(callResult)
+	filteredResult, err := callResult.withFilteredToolIndexes(authorizedIndexes)
 	if err != nil {
 		return nil, fmt.Errorf("re-encoding call result: %w", err)
 	}
@@ -1257,4 +1248,307 @@ func (rfw *ResponseFilteringWriter) filterFindToolResponse(response *jsonrpc2.Re
 		ID:     response.ID,
 		Result: json.RawMessage(filteredResult),
 	}, nil
+}
+
+type findToolOutputCarrier struct {
+	contentIndex   int
+	contentMembers []jsonObjectMember
+	rawOutput      json.RawMessage
+	outputMembers  []jsonObjectMember
+	rawTools       []json.RawMessage
+	output         optimizer.FindToolOutput
+}
+
+type decodedFindToolCallResult struct {
+	members           []jsonObjectMember
+	content           []json.RawMessage
+	isError           bool
+	outputs           []findToolOutputCarrier
+	structuredContent *findToolOutputCarrier
+}
+
+type findToolCallResultEnvelope struct {
+	members       []jsonObjectMember
+	content       []json.RawMessage
+	isError       bool
+	rawStructured json.RawMessage
+	hasStructured bool
+}
+
+// decodeFindToolCallResult validates every output representation before any
+// authorization or cache mutation while retaining raw metadata and extensions.
+func decodeFindToolCallResult(data json.RawMessage) (*decodedFindToolCallResult, error) {
+	envelope, err := decodeFindToolCallResultEnvelope(data)
+	if err != nil {
+		return nil, err
+	}
+
+	decoded := &decodedFindToolCallResult{
+		members: envelope.members,
+		content: envelope.content,
+		isError: envelope.isError,
+		outputs: make([]findToolOutputCarrier, 0, 1),
+	}
+	for i, item := range envelope.content {
+		carrier, ok, err := decodeFindToolTextContent(i, item)
+		if err != nil {
+			return nil, err
+		}
+		if ok {
+			decoded.outputs = append(decoded.outputs, *carrier)
+		}
+	}
+
+	if envelope.hasStructured {
+		carrier, ok, err := decodeFindToolOutput(envelope.rawStructured)
+		if err != nil {
+			return nil, fmt.Errorf("decoding find_tool structuredContent: %w", err)
+		}
+		if !ok {
+			if !envelope.isError {
+				return nil, errors.New("find_tool structuredContent is missing tools")
+			}
+			return decoded, nil
+		}
+		decoded.structuredContent = carrier
+	}
+
+	return decoded, nil
+}
+
+func decodeFindToolCallResultEnvelope(data json.RawMessage) (*findToolCallResultEnvelope, error) {
+	members, err := decodeJSONObjectMembers(data)
+	if err != nil {
+		return nil, err
+	}
+
+	rawContent, ok, err := uniqueCanonicalMember(members, "content")
+	if err != nil {
+		return nil, err
+	}
+	if !ok {
+		return nil, errors.New("find_tool result is missing content")
+	}
+	rawIsError, hasIsError, err := uniqueCanonicalMember(members, "isError")
+	if err != nil {
+		return nil, err
+	}
+	rawStructured, hasStructured, err := uniqueCanonicalMember(members, "structuredContent")
+	if err != nil {
+		return nil, err
+	}
+
+	var content []json.RawMessage
+	if err := json.Unmarshal(rawContent, &content); err != nil {
+		return nil, fmt.Errorf("decoding find_tool content: %w", err)
+	}
+	if content == nil {
+		return nil, errors.New("find_tool content must be an array")
+	}
+
+	isError := false
+	if hasIsError {
+		var value *bool
+		if err := json.Unmarshal(rawIsError, &value); err != nil {
+			return nil, fmt.Errorf("decoding find_tool isError: %w", err)
+		}
+		if value == nil {
+			return nil, errors.New("find_tool isError must be a boolean")
+		}
+		isError = *value
+	}
+
+	return &findToolCallResultEnvelope{
+		members:       members,
+		content:       content,
+		isError:       isError,
+		rawStructured: rawStructured,
+		hasStructured: hasStructured,
+	}, nil
+}
+
+func decodeFindToolTextContent(index int, data json.RawMessage) (*findToolOutputCarrier, bool, error) {
+	members, err := decodeJSONObjectMembers(data)
+	if err != nil {
+		return nil, false, fmt.Errorf("decoding find_tool content at index %d: %w", index, err)
+	}
+	rawType, ok, err := uniqueCanonicalMember(members, "type")
+	if err != nil {
+		return nil, false, fmt.Errorf("find_tool content at index %d: %w", index, err)
+	}
+	if !ok {
+		return nil, false, fmt.Errorf("find_tool content at index %d is missing type", index)
+	}
+	var contentType *string
+	if err := json.Unmarshal(rawType, &contentType); err != nil || contentType == nil {
+		return nil, false, fmt.Errorf("find_tool content at index %d has an invalid type", index)
+	}
+	if *contentType != "text" {
+		return nil, false, nil
+	}
+
+	rawText, ok, err := uniqueCanonicalMember(members, "text")
+	if err != nil {
+		return nil, false, fmt.Errorf("find_tool text content at index %d: %w", index, err)
+	}
+	if !ok {
+		return nil, false, fmt.Errorf("find_tool text content at index %d is missing text", index)
+	}
+	var text *string
+	if err := json.Unmarshal(rawText, &text); err != nil || text == nil {
+		return nil, false, fmt.Errorf("find_tool text content at index %d has invalid text", index)
+	}
+
+	carrier, isOutput, err := decodeFindToolOutput(json.RawMessage(*text))
+	if err != nil {
+		return nil, false, fmt.Errorf("decoding find_tool text content at index %d: %w", index, err)
+	}
+	if !isOutput {
+		return nil, false, nil
+	}
+	carrier.contentIndex = index
+	carrier.contentMembers = members
+	return carrier, true, nil
+}
+
+// decodeFindToolOutput returns ok=false for ancillary text that is not a JSON
+// object or does not contain a tools member. A tools-bearing object is always
+// validated strictly and decoded into the concrete output type.
+func decodeFindToolOutput(data json.RawMessage) (*findToolOutputCarrier, bool, error) {
+	members, err := decodeJSONObjectMembers(data)
+	if err != nil {
+		if trimmed := bytes.TrimSpace(data); len(trimmed) != 0 && trimmed[0] == '{' {
+			return nil, false, fmt.Errorf("decoding tools-bearing object: %w", err)
+		}
+		return nil, false, nil
+	}
+	rawToolsValue, ok, err := uniqueCanonicalMember(members, "tools")
+	if err != nil {
+		return nil, false, err
+	}
+	if !ok {
+		return nil, false, nil
+	}
+	if err := validateListResult(data, "tools", "name"); err != nil {
+		return nil, false, err
+	}
+	var rawTools []json.RawMessage
+	if err := json.Unmarshal(rawToolsValue, &rawTools); err != nil {
+		return nil, false, fmt.Errorf("decoding raw find_tool tools: %w", err)
+	}
+
+	var output optimizer.FindToolOutput
+	if err := json.Unmarshal(data, &output); err != nil {
+		return nil, false, fmt.Errorf("decoding typed find_tool output: %w", err)
+	}
+	return &findToolOutputCarrier{
+		rawOutput:     data,
+		outputMembers: members,
+		rawTools:      rawTools,
+		output:        output,
+	}, true, nil
+}
+
+func equivalentJSONValues(left, right json.RawMessage) (bool, error) {
+	var leftValue any
+	leftDecoder := json.NewDecoder(bytes.NewReader(left))
+	leftDecoder.UseNumber()
+	if err := leftDecoder.Decode(&leftValue); err != nil {
+		return false, err
+	}
+	var rightValue any
+	rightDecoder := json.NewDecoder(bytes.NewReader(right))
+	rightDecoder.UseNumber()
+	if err := rightDecoder.Decode(&rightValue); err != nil {
+		return false, err
+	}
+	return reflect.DeepEqual(leftValue, rightValue), nil
+}
+
+func (result *decodedFindToolCallResult) withFilteredToolIndexes(indexes []int) ([]byte, error) {
+	textCarrier := result.outputs[0]
+	filteredTextOutput, err := textCarrier.withFilteredToolIndexes(indexes)
+	if err != nil {
+		return nil, err
+	}
+	textValue, err := json.Marshal(string(filteredTextOutput))
+	if err != nil {
+		return nil, err
+	}
+	filteredTextContent, err := encodeJSONObjectMembers(
+		textCarrier.contentMembers,
+		map[string]json.RawMessage{"text": textValue},
+	)
+	if err != nil {
+		return nil, err
+	}
+	result.content[textCarrier.contentIndex] = filteredTextContent
+
+	filteredContent, err := json.Marshal(result.content)
+	if err != nil {
+		return nil, err
+	}
+	replacements := map[string]json.RawMessage{"content": filteredContent}
+	if result.structuredContent != nil {
+		filteredStructuredOutput, err := result.structuredContent.withFilteredToolIndexes(indexes)
+		if err != nil {
+			return nil, err
+		}
+		replacements["structuredContent"] = filteredStructuredOutput
+	}
+	return encodeJSONObjectMembers(result.members, replacements)
+}
+
+func (carrier *findToolOutputCarrier) withFilteredToolIndexes(indexes []int) ([]byte, error) {
+	filteredTools := make([]json.RawMessage, 0, len(indexes))
+	for _, index := range indexes {
+		if index < 0 || index >= len(carrier.rawTools) {
+			return nil, fmt.Errorf("authorized tool index %d is out of range", index)
+		}
+		filteredTools = append(filteredTools, carrier.rawTools[index])
+	}
+	return encodeJSONObjectMembers(
+		carrier.outputMembers,
+		map[string]json.RawMessage{"tools": encodeJSONArrayValues(filteredTools)},
+	)
+}
+
+func encodeJSONArrayValues(values []json.RawMessage) json.RawMessage {
+	var encoded bytes.Buffer
+	encoded.WriteByte('[')
+	for i, value := range values {
+		if i != 0 {
+			encoded.WriteByte(',')
+		}
+		encoded.Write(value)
+	}
+	encoded.WriteByte(']')
+	return encoded.Bytes()
+}
+
+// encodeJSONObjectMembers replaces canonical values while retaining raw extensions.
+func encodeJSONObjectMembers(
+	members []jsonObjectMember,
+	replacements map[string]json.RawMessage,
+) ([]byte, error) {
+	var encoded bytes.Buffer
+	encoded.WriteByte('{')
+	for i, member := range members {
+		if i != 0 {
+			encoded.WriteByte(',')
+		}
+		name, err := json.Marshal(member.name)
+		if err != nil {
+			return nil, err
+		}
+		encoded.Write(name)
+		encoded.WriteByte(':')
+		value := member.value
+		if replacement, ok := replacements[member.name]; ok {
+			value = replacement
+		}
+		encoded.Write(value)
+	}
+	encoded.WriteByte('}')
+	return encoded.Bytes(), nil
 }

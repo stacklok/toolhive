@@ -4,14 +4,20 @@
 package pluginsvc
 
 import (
+	"context"
+	"fmt"
 	"net/http"
+	"strings"
 	"testing"
 
+	godigest "github.com/opencontainers/go-digest"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 	"go.uber.org/mock/gomock"
 
 	"github.com/stacklok/toolhive-core/httperr"
+	ociplugins "github.com/stacklok/toolhive-core/oci/plugins"
+	ocimocks "github.com/stacklok/toolhive-core/oci/plugins/mocks"
 	"github.com/stacklok/toolhive/pkg/plugins"
 	"github.com/stacklok/toolhive/pkg/skills/lockfile"
 	"github.com/stacklok/toolhive/pkg/skills/verifier"
@@ -543,4 +549,433 @@ func TestUpgrade_OversizedCommitMaterialFailsRatherThanBlocks(t *testing.T) {
 	assert.Equal(t, plugins.UpgradeStatusFailed, outcome.Status)
 	assert.Equal(t, plugins.FailureReasonUnknown, outcome.Reason)
 	assert.Contains(t, outcome.Error, "over the")
+}
+
+// TestJudgeKeyedCandidate measures a candidate against a pinned key and then
+// runs the verdict through both modes. One measurement serves the guard and
+// the --allow-signer-change override, so the table asserts what each mode
+// does with it: only a genuine key-to-keyless move differs.
+func TestJudgeKeyedCandidate(t *testing.T) {
+	t.Parallel()
+
+	keyPEM, err := verifier.DecodePublicKey(testPublicKeyB64)
+	require.NoError(t, err)
+	latest := resolvedLatest{
+		ref:    "ghcr.io/org/keyed-plugin:v2",
+		digest: "sha256:" + strings.Repeat("c", 64),
+	}
+
+	tests := []struct {
+		name      string
+		verifyErr error
+		probe     *verifier.Result
+		probeErr  error
+		noProbe   bool
+
+		wantKind     keyedVerdictKind
+		wantIdentity string
+		wantReason   plugins.FailureReason
+		wantErrText  string
+		wantNoText   string
+
+		// what each mode does with the verdict
+		wantBlocked         bool
+		wantBlockedOverride bool
+		wantStatus          plugins.UpgradeStatus
+	}{
+		{
+			name:        "verifying against the pinned key is the evidence the signer is unchanged",
+			noProbe:     true,
+			wantKind:    keyedPinHolds,
+			wantBlocked: false, wantBlockedOverride: false,
+		},
+		{
+			name:         "a candidate that moved to keyless signing is a signer change",
+			verifyErr:    verifier.ErrKeylessSigned,
+			probe:        &verifier.Result{Signed: true, SignerIdentity: "ci@example.com"},
+			wantKind:     keyedMovedToKeyless,
+			wantIdentity: "ci@example.com",
+			// Blocked without the override, permitted with it: this is the
+			// one transition --allow-signer-change exists to authorize.
+			wantBlocked: true, wantBlockedOverride: false,
+			wantStatus: plugins.UpgradeStatusSignerChangeBlocked,
+		},
+		{
+			// VerifyOCIWithKey reports ErrKeylessSigned only when EVERY
+			// bundle is keyless, so an artifact mid-migration — valid
+			// keyless bundle beside a stale key-pair one — arrives as
+			// ErrSignatureInvalid. It is still the supported transition.
+			name:         "a mixed keyless and stale-key artifact is the supported transition",
+			verifyErr:    verifier.ErrSignatureInvalid,
+			probe:        &verifier.Result{Signed: true, SignerIdentity: "ci@example.com"},
+			wantKind:     keyedMovedToKeyless,
+			wantIdentity: "ci@example.com",
+			wantBlocked:  true, wantBlockedOverride: false,
+			wantStatus: plugins.UpgradeStatusSignerChangeBlocked,
+		},
+		{
+			// --allow-signer-change bypasses the guard but not verification,
+			// and upgrade has no --allow-unsigned to pair with it.
+			name:        "a candidate that lost its signature is an unsigned rejection",
+			verifyErr:   verifier.ErrUnsigned,
+			noProbe:     true,
+			wantKind:    keyedUndecided,
+			wantReason:  plugins.FailureReasonUnsignedRejected,
+			wantErrText: "--scope project --allow-unsigned",
+			wantBlocked: true, wantBlockedOverride: true,
+			wantStatus: plugins.UpgradeStatusFailed,
+		},
+		{
+			name:        "a different key is a failure, since allow_signer_change cannot re-anchor",
+			verifyErr:   verifier.ErrSignatureInvalid,
+			probeErr:    verifier.ErrKeySigned,
+			wantKind:    keyedUndecided,
+			wantReason:  plugins.FailureReasonSignatureInvalid,
+			wantErrText: "--scope project --public-key",
+			wantBlocked: true, wantBlockedOverride: true,
+			wantStatus: plugins.UpgradeStatusFailed,
+		},
+		{
+			name:        "an all-keyless candidate whose signature is broken is a failure",
+			verifyErr:   verifier.ErrKeylessSigned,
+			probeErr:    verifier.ErrSignatureInvalid,
+			wantKind:    keyedUndecided,
+			wantReason:  plugins.FailureReasonSignatureInvalid,
+			wantErrText: "dropped key-pair signing for keyless",
+			wantBlocked: true, wantBlockedOverride: true,
+			wantStatus: plugins.UpgradeStatusFailed,
+		},
+		{
+			// SECURITY: an operational failure is not evidence about which
+			// key signed the artifact, so it must not read as "the pin no
+			// longer applies" — under the override that would be enough to
+			// drop the pin. The probe is given a result that WOULD succeed
+			// and asserted never called: an artifact can carry a valid
+			// keyless signature beside a still-valid pinned-key one, so
+			// consulting it here would re-anchor on a transient fault.
+			name:        "an operational verifier failure is not a signature verdict",
+			verifyErr:   fmt.Errorf("fetching signatures: %w", context.DeadlineExceeded),
+			probe:       &verifier.Result{Signed: true, SignerIdentity: "ci@example.com"},
+			noProbe:     true,
+			wantKind:    keyedUndecided,
+			wantReason:  plugins.FailureReasonUnknown,
+			wantErrText: "context deadline exceeded",
+			wantNoText:  "uninstall",
+			wantBlocked: true, wantBlockedOverride: true,
+			wantStatus: plugins.UpgradeStatusFailed,
+		},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			mv := verifiermocks.NewMockVerifier(gomock.NewController(t))
+			mv.EXPECT().VerifyOCIWithKey(gomock.Any(), latest.ref, latest.digest, keyPEM).
+				Return(nil, tc.verifyErr)
+			// A keyed success and a bare unsigned artifact decide without a
+			// probe; every other arm must establish what the candidate
+			// actually carries before naming a diagnosis.
+			probeCalls := 1
+			if tc.noProbe {
+				probeCalls = 0
+			}
+			mv.EXPECT().VerifyOCI(gomock.Any(), latest.ref, latest.digest, gomock.Nil()).
+				Times(probeCalls).Return(tc.probe, tc.probeErr)
+
+			svc := &service{sigVerifier: mv}
+			verdict := svc.judgeKeyedCandidate(t.Context(), keyedLockEntry("keyed-plugin"), latest)
+
+			assert.Equal(t, tc.wantKind, verdict.kind)
+			assert.Equal(t, tc.wantIdentity, verdict.identity)
+			assert.Equal(t, tc.wantReason, verdict.reason)
+			if tc.wantErrText != "" {
+				assert.Contains(t, verdict.err, tc.wantErrText)
+			}
+			if tc.wantNoText != "" {
+				assert.NotContains(t, verdict.err, tc.wantNoText,
+					"an operational failure must not carry a destructive remedy")
+			}
+
+			for _, override := range []bool{false, true} {
+				outcome := plugins.UpgradeOutcome{Name: "keyed-plugin"}
+				blocked := recordKeyedVerdict(verdict, override, &outcome)
+				want := tc.wantBlocked
+				if override {
+					want = tc.wantBlockedOverride
+				}
+				assert.Equal(t, want, blocked, "allow_signer_change=%v", override)
+				if !blocked {
+					continue
+				}
+				assert.Equal(t, tc.wantStatus, outcome.Status)
+				// The CLI renders a blocked outcome carrying no identity as
+				// "unsigned", so a keyless candidate that arrives unnamed is
+				// reported as the one thing it demonstrably is not.
+				assert.Equal(t, tc.wantIdentity, outcome.NewSignerIdentity)
+			}
+		})
+	}
+}
+
+// TestJudgeKeyedCandidate_UndecodablePinnedKey fails the plan rather than
+// treating a corrupt anchor as a signer change: the lock file is
+// hand-editable and the entry cannot be evaluated at all, which is not the
+// same claim. It must not become permission to drop the pin either.
+func TestJudgeKeyedCandidate_UndecodablePinnedKey(t *testing.T) {
+	t.Parallel()
+
+	entry := keyedLockEntry("keyed-plugin")
+	entry.Provenance = &lockfile.Provenance{PublicKey: "not-base64!!"}
+	mv := verifiermocks.NewMockVerifier(gomock.NewController(t))
+	mv.EXPECT().VerifyOCIWithKey(gomock.Any(), gomock.Any(), gomock.Any(), gomock.Any()).Times(0)
+	mv.EXPECT().VerifyOCI(gomock.Any(), gomock.Any(), gomock.Any(), gomock.Any()).Times(0)
+
+	svc := &service{sigVerifier: mv}
+	verdict := svc.judgeKeyedCandidate(t.Context(), entry, resolvedLatest{
+		ref:    "ghcr.io/org/keyed-plugin:v2",
+		digest: "sha256:" + strings.Repeat("c", 64),
+	})
+	assert.Equal(t, keyedUndecided, verdict.kind)
+	assert.Equal(t, plugins.FailureReasonUnknown, verdict.reason)
+
+	for _, override := range []bool{false, true} {
+		outcome := plugins.UpgradeOutcome{Name: entry.Name}
+		require.True(t, recordKeyedVerdict(verdict, override, &outcome),
+			"allow_signer_change must not rescue an anchor that cannot be read")
+		assert.Equal(t, plugins.UpgradeStatusFailed, outcome.Status)
+	}
+}
+
+// keyPinnedUpgradeFixture installs an OCI plugin against testPublicKeyB64 —
+// so the lock entry is genuinely key-pinned by the install path rather than
+// hand-written — and publishes a second version so an upgrade is planned. The
+// returned function switches which digest the tag resolves to; callers move it
+// before upgrading.
+//
+// The registry client is mocked but the OCI store is real: Pull only reports
+// which digest a reference names, and the content is read back out of the
+// store, so both the guard and the install exercise their real code paths.
+func keyPinnedUpgradeFixture(
+	t *testing.T, mv verifier.Verifier,
+) (*service, string, func()) {
+	t.Helper()
+
+	svc, projectRoot := newLockTestService(t, WithVerifier(mv))
+	ociStore, err := ociplugins.NewStore(tempDir(t))
+	require.NoError(t, err)
+
+	d1 := buildTestPlugin(t, ociStore, "my-plugin", "1.0.0")
+	d2 := buildTestPlugin(t, ociStore, "my-plugin", "2.0.0")
+	tagged := d1
+
+	reg := ocimocks.NewMockRegistryClient(gomock.NewController(t))
+	reg.EXPECT().Pull(gomock.Any(), ociStore, gomock.Any()).AnyTimes().
+		DoAndReturn(func(_ context.Context, _ *ociplugins.Store, ref string) (godigest.Digest, error) {
+			// A digest-pinned reference names its own artifact; the tag
+			// resolves to whatever is currently published under it.
+			if _, after, found := strings.Cut(ref, "@"); found {
+				return godigest.Digest(after), nil
+			}
+			return tagged, nil
+		})
+
+	inner := svc.(*service) //nolint:forcetypeassert
+	inner.ociStore = ociStore
+	inner.registry = reg
+
+	_, err = svc.Install(t.Context(), plugins.InstallOptions{
+		Name:        "ghcr.io/org/my-plugin:v1",
+		PublicKey:   testPublicKeyB64,
+		Scope:       plugins.ScopeProject,
+		ProjectRoot: projectRoot,
+		Clients:     []string{"claude-code"},
+	})
+	require.NoError(t, err)
+
+	entry, ok := loadPluginLockEntry(t, projectRoot)
+	require.True(t, ok)
+	require.NotNil(t, entry.Provenance)
+	require.Equal(t, testPublicKeyB64, entry.Provenance.PublicKey,
+		"precondition: the install must have pinned the key")
+
+	return inner, projectRoot, func() { tagged = d2 }
+}
+
+// TestUpgrade_KeyPinnedEntryVerifiesAgainstPinnedKey proves the whole keyed
+// upgrade, not just the guard: the candidate is checked against the pinned
+// key, and the install applyUpgrade then performs is checked against it too.
+// That install carries no key of its own — resolveKeyAnchor reads the anchor
+// back out of the lock — so a regression that dropped the pin would surface
+// here as a keyless verification call rather than as a wrong result.
+//
+//nolint:paralleltest // serial: real sqlite + on-disk client materialization per test
+func TestUpgrade_KeyPinnedEntryVerifiesAgainstPinnedKey(t *testing.T) {
+	keyPEM, err := verifier.DecodePublicKey(testPublicKeyB64)
+	require.NoError(t, err)
+
+	keyCalls := 0
+	mv := verifiermocks.NewMockVerifier(gomock.NewController(t))
+	mv.EXPECT().VerifyOCIWithKey(gomock.Any(), gomock.Any(), gomock.Any(), gomock.Eq(keyPEM)).
+		AnyTimes().
+		DoAndReturn(func(_ context.Context, _, _ string, _ []byte) (*verifier.Result, error) {
+			keyCalls++
+			return &verifier.Result{Signed: true, Bundle: []byte(`{"bundle":true}`)}, nil
+		})
+	mv.EXPECT().VerifyBundleOfflineWithKey(gomock.Any(), gomock.Any(), gomock.Any()).
+		AnyTimes().Return(nil)
+	// Neither the guard nor the install may fall back to the keyless path.
+	mv.EXPECT().VerifyOCI(gomock.Any(), gomock.Any(), gomock.Any(), gomock.Any()).Times(0)
+
+	inner, projectRoot, publishV2 := keyPinnedUpgradeFixture(t, mv)
+	installCalls := keyCalls
+	publishV2()
+
+	outcome := upgradePlugins(t, inner, plugins.UpgradeOptions{ProjectRoot: projectRoot})
+	assert.Equal(t, plugins.UpgradeStatusUpgraded, outcome.Status,
+		"a candidate that verifies against the pinned key must not be blocked")
+
+	assert.Equal(t, 2, keyCalls-installCalls,
+		"the signer guard and the install applyUpgrade performs must each verify against the key")
+
+	entry, ok := loadPluginLockEntry(t, projectRoot)
+	require.True(t, ok)
+	require.NotNil(t, entry.Provenance)
+	assert.Equal(t, testPublicKeyB64, entry.Provenance.PublicKey,
+		"the upgrade must leave the entry pinned to the same key")
+	assert.Empty(t, entry.Provenance.SignerIdentity,
+		"a key-pair bundle carries no certificate identity to record")
+	assert.Equal(t, outcome.NewDigest, entry.Digest)
+}
+
+// TestUpgrade_AllowSignerChangeMovesKeyPinnedEntryToKeyless covers the one
+// supported way off a key: --allow-signer-change drops the recorded key and
+// re-verifies keylessly, so the entry ends up anchored to the identity that
+// was actually observed. This is why a keyless candidate blocks as a signer
+// change rather than failing — the remedy the CLI prints genuinely works.
+//
+//nolint:paralleltest // serial: real sqlite + on-disk client materialization per test
+func TestUpgrade_AllowSignerChangeMovesKeyPinnedEntryToKeyless(t *testing.T) {
+	mv := verifiermocks.NewMockVerifier(gomock.NewController(t))
+	// The install pins the key; the candidate has since moved to keyless
+	// signing, which is what makes the override applicable at all.
+	installed := false
+	mv.EXPECT().VerifyOCIWithKey(gomock.Any(), gomock.Any(), gomock.Any(), gomock.Any()).
+		AnyTimes().
+		DoAndReturn(func(_ any, _, _ string, _ []byte) (*verifier.Result, error) {
+			if !installed {
+				installed = true
+				return &verifier.Result{Signed: true, Bundle: []byte(`{"bundle":true}`)}, nil
+			}
+			return nil, verifier.ErrKeylessSigned
+		})
+	mv.EXPECT().VerifyOCI(gomock.Any(), gomock.Any(), gomock.Any(), gomock.Any()).
+		AnyTimes().Return(signedResult(), nil)
+	mv.EXPECT().VerifyBundleOfflineWithKey(gomock.Any(), gomock.Any(), gomock.Any()).
+		AnyTimes().Return(nil)
+	mv.EXPECT().VerifyBundleOffline(gomock.Any(), gomock.Any(), gomock.Any()).
+		AnyTimes().Return(nil)
+
+	inner, projectRoot, publishV2 := keyPinnedUpgradeFixture(t, mv)
+	publishV2()
+
+	outcome := upgradePlugins(t, inner, plugins.UpgradeOptions{
+		ProjectRoot: projectRoot, AllowSignerChange: true,
+	})
+	assert.Equal(t, plugins.UpgradeStatusUpgraded, outcome.Status, "error: %s", outcome.Error)
+
+	entry, ok := loadPluginLockEntry(t, projectRoot)
+	require.True(t, ok)
+	require.NotNil(t, entry.Provenance)
+	assert.Empty(t, entry.Provenance.PublicKey,
+		"the override drops the recorded key rather than keeping a pin it did not enforce")
+	assert.Equal(t, testSignerIdentity, entry.Provenance.SignerIdentity,
+		"the entry must be re-anchored to the identity actually observed")
+	assert.Equal(t, testCertIssuer, entry.Provenance.CertIssuer)
+}
+
+// TestUpgrade_AllowSignerChangeKeepsSameKeyPin is the multi-plugin case:
+// --allow-signer-change is a project-wide flag, so needing it for one plugin
+// must not silently unpin another. The override authorizes dropping a
+// recorded key only when the candidate actually moved off it; a candidate
+// still signed by the pinned key keeps the pin, because dropping it sends a
+// key-signed artifact through keyless verification, which refuses it.
+//
+//nolint:paralleltest // serial: real sqlite + on-disk client materialization per test
+func TestUpgrade_AllowSignerChangeKeepsSameKeyPin(t *testing.T) {
+	mv := verifiermocks.NewMockVerifier(gomock.NewController(t))
+	mv.EXPECT().VerifyOCIWithKey(gomock.Any(), gomock.Any(), gomock.Any(), gomock.Any()).
+		AnyTimes().Return(&verifier.Result{Signed: true, Bundle: []byte(`{"bundle":true}`)}, nil)
+	// What a key-signed artifact really answers when verified keylessly.
+	mv.EXPECT().VerifyOCI(gomock.Any(), gomock.Any(), gomock.Any(), gomock.Any()).
+		AnyTimes().Return(nil, verifier.ErrKeySigned)
+	mv.EXPECT().VerifyBundleOfflineWithKey(gomock.Any(), gomock.Any(), gomock.Any()).
+		AnyTimes().Return(nil)
+	mv.EXPECT().VerifyBundleOffline(gomock.Any(), gomock.Any(), gomock.Any()).
+		AnyTimes().Return(nil)
+
+	inner, projectRoot, publishV2 := keyPinnedUpgradeFixture(t, mv)
+	publishV2()
+
+	outcome := upgradePlugins(t, inner, plugins.UpgradeOptions{
+		ProjectRoot: projectRoot, AllowSignerChange: true,
+	})
+	assert.Equal(t, plugins.UpgradeStatusUpgraded, outcome.Status, "error: %s", outcome.Error)
+
+	entry, ok := loadPluginLockEntry(t, projectRoot)
+	require.True(t, ok)
+	require.NotNil(t, entry.Provenance)
+	assert.Equal(t, testPublicKeyB64, entry.Provenance.PublicKey,
+		"a candidate that still verifies against the pinned key stays pinned to it")
+	assert.Empty(t, entry.Provenance.SignerIdentity)
+}
+
+// TestUpgrade_OperationalKeyedErrorDoesNotDropPin is the fail-closed case for
+// a project-wide --allow-signer-change. A registry or transport fault during
+// planning says nothing about which key signed the candidate, so it must not
+// stand in as evidence that the plugin moved off its pinned key. If it did,
+// a transient fault would be enough to drop the pin and re-anchor an artifact
+// that still carries a valid signature by that very key.
+//
+//nolint:paralleltest // serial: real sqlite + on-disk client materialization per test
+func TestUpgrade_OperationalKeyedErrorDoesNotDropPin(t *testing.T) {
+	mv := verifiermocks.NewMockVerifier(gomock.NewController(t))
+	installed := false
+	mv.EXPECT().VerifyOCIWithKey(gomock.Any(), gomock.Any(), gomock.Any(), gomock.Any()).
+		AnyTimes().
+		DoAndReturn(func(_ any, _, _ string, _ []byte) (*verifier.Result, error) {
+			if !installed {
+				installed = true
+				return &verifier.Result{Signed: true, Bundle: []byte(`{"bundle":true}`)}, nil
+			}
+			return nil, fmt.Errorf("fetching signatures: %w", context.DeadlineExceeded)
+		})
+	// The candidate also carries a perfectly good keyless signature, so a
+	// probe would succeed. That is the trap: the artifact still carries a
+	// valid pinned-key signature too, and only the transient keyed fault
+	// makes it look like it moved. The probe must never be reached.
+	mv.EXPECT().VerifyOCI(gomock.Any(), gomock.Any(), gomock.Any(), gomock.Any()).
+		AnyTimes().Return(signedResult(), nil)
+	mv.EXPECT().VerifyBundleOfflineWithKey(gomock.Any(), gomock.Any(), gomock.Any()).
+		AnyTimes().Return(nil)
+	mv.EXPECT().VerifyBundleOffline(gomock.Any(), gomock.Any(), gomock.Any()).
+		AnyTimes().Return(nil)
+
+	inner, projectRoot, publishV2 := keyPinnedUpgradeFixture(t, mv)
+	before, ok := loadPluginLockEntry(t, projectRoot)
+	require.True(t, ok)
+	publishV2()
+
+	outcome := upgradePlugins(t, inner, plugins.UpgradeOptions{
+		ProjectRoot: projectRoot, AllowSignerChange: true,
+	})
+	assert.Equal(t, plugins.UpgradeStatusFailed, outcome.Status)
+	assert.Equal(t, plugins.FailureReasonUnknown, outcome.Reason)
+	assert.NotContains(t, outcome.Error, "uninstall",
+		"a transport fault must not advise uninstalling the plugin")
+
+	after, ok := loadPluginLockEntry(t, projectRoot)
+	require.True(t, ok)
+	require.NotNil(t, after.Provenance)
+	assert.Equal(t, testPublicKeyB64, after.Provenance.PublicKey, "the pin must survive a transport fault")
+	assert.Empty(t, after.Provenance.SignerIdentity, "nothing may be re-anchored to keyless")
+	assert.Equal(t, before.Digest, after.Digest, "a failed plan must not re-pin the entry")
 }

@@ -1312,10 +1312,13 @@ return 1
 // storeUpstreamTokensScript: it additionally gates the write on the existing
 // row's refresh_token matching ARGV[5] before doing anything else, returning
 // 0 (no write performed) on a mismatch instead of 1. This is what makes
-// CompareAndSwapUpstreamTokens safe for redeeming a single-use, rotating
-// upstream refresh token across multiple replicas of an application sharing
-// this Redis: a replica whose read is stale by the time it tries to write
-// loses the CAS instead of clobbering a winning replica's rotated token.
+// CompareAndSwapUpstreamTokens's stored row deterministic when redeeming a
+// single-use, rotating upstream refresh token across multiple replicas of an
+// application sharing this Redis: a replica whose read is stale by the time
+// it tries to write loses the CAS instead of clobbering a winning replica's
+// rotated token. (This orders writes to storage; it is not by itself a
+// guarantee that the redemption is safe at the upstream provider — see the
+// CompareAndSwapUpstreamTokens interface doc.)
 //
 // KEYS[1] = per-provider token key
 // KEYS[2] = session index set key

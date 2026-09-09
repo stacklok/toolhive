@@ -22,6 +22,37 @@ type roundTripperFunc func(*http.Request) (*http.Response, error)
 
 func (f roundTripperFunc) RoundTrip(r *http.Request) (*http.Response, error) { return f(r) }
 
+// TestProtectedDialerControl verifies the exported dial-control hook refuses
+// private/loopback/link-local peers while allowing a public one. It is the
+// policy wired into the vMCP backend dial paths by pkg/vmcp/cli.
+func TestProtectedDialerControl(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name    string
+		address string
+		wantErr bool
+	}{
+		{name: "loopback IPv4 blocked", address: "127.0.0.1:8080", wantErr: true},
+		{name: "loopback IPv6 blocked", address: "[::1]:8080", wantErr: true},
+		{name: "RFC 1918 blocked", address: "10.0.0.5:443", wantErr: true},
+		{name: "link-local blocked", address: "169.254.169.254:80", wantErr: true},
+		{name: "public IPv4 allowed", address: "93.184.216.34:443", wantErr: false},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			err := ProtectedDialerControl("tcp", tt.address, nil)
+			if tt.wantErr {
+				require.Error(t, err)
+			} else {
+				require.NoError(t, err)
+			}
+		})
+	}
+}
+
 // TestCloneDefaultTransportWithDialControl verifies the shared backend
 // transport construction: a nil control clones DefaultTransport (a distinct
 // value that still reaches the server), and a non-nil control's hook fires on

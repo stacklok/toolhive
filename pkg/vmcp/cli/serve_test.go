@@ -70,6 +70,31 @@ func TestBackendRequestTimeoutResolver(t *testing.T) {
 	}
 }
 
+// TestBackendDialControl covers the guarded default and the opt-out path for the
+// backend dial-control policy wired into both production dial paths in serve.go.
+func TestBackendDialControl(t *testing.T) {
+	t.Parallel()
+
+	t.Run("guarded by default", func(t *testing.T) {
+		t.Parallel()
+		// Nil config and BackendAllowPrivateIP=false both mean "guard".
+		for _, cfg := range []*config.Config{nil, {}, {BackendAllowPrivateIP: false}} {
+			control := backendDialControl(cfg)
+			require.NotNil(t, control, "guarded default must install a dial control")
+			// The installed control must refuse a private-range dial.
+			require.Error(t, control("tcp", "127.0.0.1:8080", nil))
+			// ...and permit a public one.
+			require.NoError(t, control("tcp", "93.184.216.34:443", nil))
+		}
+	})
+
+	t.Run("opt-out disables the guard", func(t *testing.T) {
+		t.Parallel()
+		control := backendDialControl(&config.Config{BackendAllowPrivateIP: true})
+		require.Nil(t, control, "opt-out must return no dial control so private dials are allowed")
+	})
+}
+
 // TestLoadAndValidateConfig covers all config-loading paths.
 func TestLoadAndValidateConfig(t *testing.T) {
 	t.Parallel()

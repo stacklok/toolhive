@@ -101,8 +101,16 @@ func SameHostRedirectPolicy() func(req *http.Request, via []*http.Request) error
 	}
 }
 
-// Dialer control function for validating addresses prior to connection
-func protectedDialerControl(_, address string, _ syscall.RawConn) error {
+// ProtectedDialerControl is a net.Dialer.Control hook that refuses to connect to
+// private, loopback, or link-local addresses. It runs on the resolved peer IP
+// (in address) before the TCP handshake, so it also defends against DNS
+// rebinding: a name that passed a host-based check can still resolve to a
+// blocked IP, and this hook catches that at dial time.
+//
+// The signature matches net.Dialer.Control exactly, so it can be passed
+// directly to the WithDialControl options in pkg/vmcp/client and
+// pkg/vmcp/session, or installed on a net.Dialer.
+func ProtectedDialerControl(_, address string, _ syscall.RawConn) error {
 	err := AddressReferencesPrivateIp(address)
 	if err != nil {
 		return err
@@ -122,7 +130,7 @@ func protectedDialerControl(_, address string, _ syscall.RawConn) error {
 // operator-configured target is public; SameHostRedirectPolicy is the
 // redirect-following counterpart.
 func NewPrivateIPBlockingDialContext() func(ctx context.Context, network, addr string) (net.Conn, error) {
-	return (&net.Dialer{Control: protectedDialerControl}).DialContext
+	return (&net.Dialer{Control: ProtectedDialerControl}).DialContext
 }
 
 // Dial timeouts applied to backend connections. Both match the Go standard
@@ -431,7 +439,7 @@ func (b *HttpClientBuilder) Build() (*http.Client, error) {
 
 	if !b.allowPrivate {
 		transport.DialContext = (&net.Dialer{
-			Control: protectedDialerControl,
+			Control: ProtectedDialerControl,
 		}).DialContext
 	}
 

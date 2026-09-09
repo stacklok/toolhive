@@ -146,6 +146,15 @@ type Config struct {
 	// Operational configures operational settings.
 	Operational *OperationalConfig `json:"operational,omitempty" yaml:"operational,omitempty"`
 
+	// BackendAllowPrivateIP allows the virtual MCP server to dial backend
+	// endpoints that resolve to private, loopback, or link-local addresses.
+	// When false (the default), backend dials into those ranges are refused
+	// after DNS resolution to blunt SSRF / DNS-rebinding, which is the safe
+	// production behavior. Enable only for in-cluster or development
+	// deployments where backends legitimately resolve to private addresses.
+	// +optional
+	BackendAllowPrivateIP bool `json:"backendAllowPrivateIp,omitempty" yaml:"backendAllowPrivateIp,omitempty"`
+
 	// Metadata stores additional configuration metadata.
 	Metadata map[string]string `json:"metadata,omitempty" yaml:"metadata,omitempty"`
 

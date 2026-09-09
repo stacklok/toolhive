@@ -15,6 +15,7 @@ import (
 	"net"
 	"os"
 	"path/filepath"
+	"syscall"
 	"time"
 
 	"go.opentelemetry.io/otel/trace"
@@ -31,6 +32,7 @@ import (
 	"github.com/stacklok/toolhive/pkg/container/runtime"
 	"github.com/stacklok/toolhive/pkg/groups"
 	"github.com/stacklok/toolhive/pkg/migration"
+	"github.com/stacklok/toolhive/pkg/networking"
 	"github.com/stacklok/toolhive/pkg/telemetry"
 	"github.com/stacklok/toolhive/pkg/versions"
 	"github.com/stacklok/toolhive/pkg/vmcp"
@@ -142,6 +144,15 @@ func Serve(ctx context.Context, cfg ServeConfig) error {
 		vmcpCfg.Audit = audit.DefaultConfig()
 		vmcpCfg.Audit.Component = "vmcp-server"
 		slog.Info("audit logging enabled with default configuration")
+	}
+
+	// Warn when the backend SSRF / DNS-rebinding guard is disabled. Both backend
+	// dial paths (per-call client and session factory) then dial private ranges
+	// unchecked; this is intended only for in-cluster / development use.
+	if vmcpCfg.BackendAllowPrivateIP {
+		slog.Warn("backendAllowPrivateIp is enabled; backend dials into private, loopback, and " +
+			"link-local ranges are NOT blocked (SSRF / DNS-rebinding guard disabled). " +
+			"Intended for in-cluster / development use only.")
 	}
 
 	// Load auth server config from sibling file if present.
@@ -358,6 +369,12 @@ func Serve(ctx context.Context, cfg ServeConfig) error {
 		sessionFactoryOpts,
 		vmcpsession.WithRequestTimeoutResolver(backendRequestTimeoutResolver(vmcpCfg)),
 	)
+	// Guard session-init dials against SSRF / DNS-rebinding into private ranges,
+	// unless the operator opted out for in-cluster / development use. The same
+	// policy guards the per-call backend client built in discoverBackends.
+	if dialControl := backendDialControl(vmcpCfg); dialControl != nil {
+		sessionFactoryOpts = append(sessionFactoryOpts, vmcpsession.WithDialControl(dialControl))
+	}
 	sessionFactory := vmcpsession.NewSessionFactory(outgoingRegistry, sessionFactoryOpts...)
 
 	// When the optimizer is enabled, its meta-tools are pass-through tools.
@@ -545,6 +562,22 @@ func backendRequestTimeoutResolver(cfg *config.Config) func(workloadID string) t
 	}
 }
 
+// backendDialControl returns the net.Dialer.Control hook that guards backend
+// dials against SSRF / DNS-rebinding into private, loopback, or link-local
+// ranges. It is the single policy source shared by both production dial paths —
+// the per-call backend client (discoverBackends) and the session factory
+// (Serve) — so neither can drift from the other.
+//
+// It returns nil (no guard) when cfg.BackendAllowPrivateIP is true, which is the
+// opt-out for in-cluster / development deployments where backends legitimately
+// resolve to private addresses. The default (false) returns the guarding hook.
+func backendDialControl(cfg *config.Config) func(network, address string, c syscall.RawConn) error {
+	if cfg != nil && cfg.BackendAllowPrivateIP {
+		return nil
+	}
+	return networking.ProtectedDialerControl
+}
+
 // loadAndValidateConfig loads and validates the vMCP configuration file.
 func loadAndValidateConfig(configPath string) (*config.Config, error) {
 	slog.Info(fmt.Sprintf("Loading configuration from: %s", configPath))
@@ -649,10 +682,15 @@ func discoverBackends(
 		return nil, nil, nil, fmt.Errorf("failed to create outgoing authentication registry: %w", err)
 	}
 
-	backendClient, err := vmcpclient.NewHTTPBackendClient(
-		outgoingRegistry,
+	clientOpts := []vmcpclient.Option{
 		vmcpclient.WithRequestTimeoutResolver(backendRequestTimeoutResolver(cfg)),
-	)
+	}
+	// Guard per-call backend dials against SSRF / DNS-rebinding into private
+	// ranges, unless the operator opted out. Mirrors the session factory in Serve.
+	if dialControl := backendDialControl(cfg); dialControl != nil {
+		clientOpts = append(clientOpts, vmcpclient.WithDialControl(dialControl))
+	}
+	backendClient, err := vmcpclient.NewHTTPBackendClient(outgoingRegistry, clientOpts...)
 	if err != nil {
 		return nil, nil, nil, fmt.Errorf("failed to create backend client: %w", err)
 	}

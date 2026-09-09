@@ -86,8 +86,10 @@ type RedisRunConfig struct {
 	// AuthType selects the Redis authentication mode. "aclUser" is the only
 	// authenticated mode. Leave it empty, with a nil ACLUserConfig, for a
 	// no-auth connection to a Redis/Valkey instance that has no authentication
-	// configured. The conversion code does not branch on this field; presence
-	// of ACLUserConfig is what enables authentication.
+	// configured. Setting AuthType to "aclUser" declares authenticated intent:
+	// the conversion rejects that pairing with a nil ACLUserConfig rather than
+	// downgrading to no-auth. Otherwise presence of ACLUserConfig is what
+	// enables authentication.
 	AuthType string `json:"auth_type" yaml:"auth_type"`
 
 	// ACLUserConfig contains ACL user authentication configuration.

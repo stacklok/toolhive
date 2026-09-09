@@ -5309,7 +5309,7 @@ const docTemplate = `{
                         "type": "string"
                     },
                     "auth_type": {
-                        "description": "AuthType selects the Redis authentication mode. \"aclUser\" is the only\nauthenticated mode. Leave it empty, with a nil ACLUserConfig, for a\nno-auth connection to a Redis/Valkey instance that has no authentication\nconfigured. The conversion code does not branch on this field; presence\nof ACLUserConfig is what enables authentication.",
+                        "description": "AuthType selects the Redis authentication mode. \"aclUser\" is the only\nauthenticated mode. Leave it empty, with a nil ACLUserConfig, for a\nno-auth connection to a Redis/Valkey instance that has no authentication\nconfigured. Setting AuthType to \"aclUser\" declares authenticated intent:\nthe conversion rejects that pairing with a nil ACLUserConfig rather than\ndowngrading to no-auth. Otherwise presence of ACLUserConfig is what\nenables authentication.",
                         "type": "string"
                     },
                     "cluster_mode": {

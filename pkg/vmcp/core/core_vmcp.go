@@ -565,8 +565,9 @@ func (c *coreVMCP) aggregatedView(ctx context.Context) (*aggregator.AggregatedCa
 // decides the backend set: aggregatedView passes the health-filtered subset (the
 // data path), while authorizedBackends passes the full registry (backend
 // visibility, per #5741: health is a status, not a visibility filter). It exists so
-// both share one aggregation error-wrap. Unreachable backends fail their live
-// capability query and simply contribute nothing.
+// both share one aggregation error-wrap. Whether a backend that fails its live
+// capability query fails the whole aggregation or merely contributes nothing
+// follows the configured partial failure mode (fail vs best_effort).
 func (c *coreVMCP) aggregateBackends(
 	ctx context.Context, backends []vmcp.Backend,
 ) (*aggregator.AggregatedCapabilities, error) {

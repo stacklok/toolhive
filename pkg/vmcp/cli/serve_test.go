@@ -4,6 +4,8 @@
 package cli
 
 import (
+	"context"
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -282,6 +284,51 @@ func TestGenerateQuickModeConfig(t *testing.T) {
 			require.NoError(t, config.NewValidator().Validate(cfg))
 		})
 	}
+}
+
+// TestNewAggregator_WiresOperationalFailureMode pins the production aggregator
+// wiring behind Serve (via newAggregator): the
+// operational.failureHandling.partialFailureMode=fail setting from the loaded
+// vMCP config must reach the aggregator the CLI constructs. If the
+// WithOperationalConfig option is dropped from newAggregator, the aggregator
+// silently reverts to best-effort behavior and this test fails.
+func TestNewAggregator_WiresOperationalFailureMode(t *testing.T) {
+	t.Parallel()
+	ctrl := gomock.NewController(t)
+	defer ctrl.Finish()
+
+	mockClient := vmcpmocks.NewMockBackendClient(ctrl)
+	conflictResolver := aggregatormocks.NewMockConflictResolver(ctrl)
+
+	backends := []vmcp.Backend{
+		{ID: "backend1", Name: "backend1", BaseURL: "http://127.0.0.1:9001/sse", TransportType: "sse"},
+		{ID: "backend2", Name: "backend2", BaseURL: "http://127.0.0.1:9002/sse", TransportType: "sse"},
+	}
+
+	caps2 := &vmcp.CapabilityList{Tools: []vmcp.Tool{}}
+	mockClient.EXPECT().ListCapabilities(gomock.Any(), gomock.Any()).
+		DoAndReturn(func(_ context.Context, target *vmcp.BackendTarget) (*vmcp.CapabilityList, error) {
+			if target.WorkloadID == "backend1" {
+				return nil, errors.New("backend1 unavailable")
+			}
+			return caps2, nil
+		}).Times(2)
+
+	vmcpCfg := &config.Config{
+		Operational: &config.OperationalConfig{
+			FailureHandling: &config.FailureHandlingConfig{
+				PartialFailureMode: "fail",
+			},
+		},
+	}
+
+	agg := newAggregator(mockClient, conflictResolver, vmcpCfg, nil)
+	result, err := agg.QueryAllCapabilities(context.Background(), backends)
+
+	// With fail mode wired, backend1's error must surface and no partial result
+	// may be returned.
+	require.Error(t, err)
+	assert.Nil(t, result)
 }
 
 // TestServe_NeitherConfigNorGroup verifies that Serve returns an error when

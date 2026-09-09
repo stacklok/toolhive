@@ -14,6 +14,7 @@ import (
 
 	"github.com/stacklok/toolhive-core/mcpcompat/mcp"
 	"github.com/stacklok/toolhive-core/mcpcompat/server"
+	"github.com/stacklok/toolhive/pkg/auth"
 	"github.com/stacklok/toolhive/pkg/vmcp"
 	"github.com/stacklok/toolhive/pkg/vmcp/health"
 	"github.com/stacklok/toolhive/pkg/vmcp/optimizer"
@@ -100,20 +101,36 @@ func (f *fakeToolsSession) setToolsCalls() int {
 	return f.setSessionToolsCalls
 }
 
-// gatedSessionManager is a stubSessionManager whose GetMultiSession blocks on
-// gate (a closed channel unblocks all callers), letting the coalescing test
-// deterministically hold the first resync in flight while further deliveries
-// arrive.
+// gatedSessionManager is a stubSessionManager whose GetMultiSession is
+// counted but not blocking. The coalescing test now blocks on the backend
+// sweep (ListTools) via gatedFakeCore, not on GetMultiSession, because the
+// fan-out liveness filter (#5860) also calls GetMultiSession synchronously
+// and would otherwise block the burst delivery.
 type gatedSessionManager struct {
 	stubSessionManager
+	calls atomic.Int32
+}
+
+func (m *gatedSessionManager) GetMultiSession(_ context.Context, _ string) (vmcpsession.MultiSession, bool) {
+	m.calls.Add(1)
+	return nil, true
+}
+
+// gatedFakeCore blocks the first ListTools call on gate, letting the
+// coalescing test hold the first resync's backend sweep in flight.
+type gatedFakeCore struct {
+	*fakeCore
 	gate  chan struct{}
 	calls atomic.Int32
 }
 
-func (m *gatedSessionManager) GetMultiSession(context.Context, string) (vmcpsession.MultiSession, bool) {
-	m.calls.Add(1)
-	<-m.gate
-	return nil, true
+func (c *gatedFakeCore) ListTools(ctx context.Context, id *auth.Identity) ([]vmcp.Tool, error) {
+	// Only the first ListTools should block; the follow-up should proceed
+	// after gate is closed.
+	if c.calls.Add(1) == 1 {
+		<-c.gate
+	}
+	return c.fakeCore.ListTools(ctx, id)
 }
 
 // TestResyncSessionsOnBackendHealthChange_CoalescesBurst verifies a burst of
@@ -124,9 +141,11 @@ func TestResyncSessionsOnBackendHealthChange_CoalescesBurst(t *testing.T) {
 	t.Parallel()
 
 	fc := &fakeCore{tools: []vmcp.Tool{{Name: "t"}}}
-	mgr := &gatedSessionManager{stubSessionManager: stubSessionManager{alive: true}, gate: make(chan struct{})}
+	gate := make(chan struct{})
+	gfc := &gatedFakeCore{fakeCore: fc, gate: gate}
+	mgr := &gatedSessionManager{stubSessionManager: stubSessionManager{alive: true}}
 	srv := &Server{
-		core:           fc,
+		core:           gfc,
 		vmcpSessionMgr: mgr,
 		resyncBaseCtx:  context.Background(),
 	}
@@ -134,9 +153,9 @@ func TestResyncSessionsOnBackendHealthChange_CoalescesBurst(t *testing.T) {
 	_, toolsWorker := srv.buildListChangedSink("sess-1", sess, nil, nil)
 	srv.healthResync.add("sess-1", toolsWorker)
 
-	// First delivery starts the worker; it blocks inside the liveness guard.
+	// First delivery starts the worker; it blocks inside ListTools.
 	srv.resyncSessionsOnBackendHealthChange(1)
-	require.Eventually(t, func() bool { return mgr.calls.Load() == 1 },
+	require.Eventually(t, func() bool { return gfc.calls.Load() == 1 },
 		2*time.Second, 10*time.Millisecond, "first resync must be in flight")
 
 	// Nine more deliveries arrive while the first resync is blocked: they must
@@ -144,7 +163,7 @@ func TestResyncSessionsOnBackendHealthChange_CoalescesBurst(t *testing.T) {
 	for gen := uint64(2); gen <= 10; gen++ {
 		srv.resyncSessionsOnBackendHealthChange(gen)
 	}
-	close(mgr.gate)
+	close(gate)
 
 	// The blocked run completes and exactly one follow-up run drains the
 	// coalesced deliveries: two re-derivations total, never ten.

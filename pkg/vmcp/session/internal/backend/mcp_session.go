@@ -94,11 +94,13 @@ func WithRequestTimeoutResolver(resolver func(workloadID string) time.Duration) 
 // DNS-rebinding attacks that a host-name–based check cannot: a hostname can
 // legitimately resolve to a blocked IP after the name-based check passes.
 //
-// It is the session-init twin of pkg/vmcp/client.WithDialControl (which guards
-// the aggregation and tool-call paths); the returned hook shares that signature
-// and the same standard 30 s dial timeouts. A nil resolver (the default), or a
-// resolver that returns nil for a given workload, leaves that backend's dial path
-// byte-for-byte identical to before this hook existed.
+// The returned hook has the same net.Dialer.Control signature as
+// pkg/vmcp/client.WithDialControl (which guards the aggregation and tool-call
+// paths) and the same standard 30 s dial timeouts. The option shapes differ,
+// though: this one is a per-backend resolver, whereas client.WithDialControl is
+// not (yet) per-backend — it installs one hook for every backend. A nil resolver
+// (the default), or a resolver that returns nil for a given workload, leaves that
+// backend's dial path byte-for-byte identical to before this hook existed.
 //
 // The resolver is called once per backend from the per-backend init goroutines,
 // so it must be safe for concurrent use. The hook it returns matches
@@ -106,6 +108,12 @@ func WithRequestTimeoutResolver(resolver func(workloadID string) time.Duration) 
 //
 // Security limitations embedders must understand:
 //
+//   - The resolver only SELECTS a hook; it is not itself the guard. The SSRF /
+//     DNS-rebinding protection exists only if the RETURNED hook inspects the
+//     resolved address. A resolver that decides allow/deny purely from the
+//     workloadID — never looking at address inside the hook it returns — looks
+//     like a per-backend guard but gives zero protection against that workload's
+//     endpoint resolving into a blocked range. Return an address-checking hook.
 //   - Per-TCP-dial, not per-request: the hook fires once per TCP connection.
 //     A pooled connection is reused without re-invoking the hook until it is
 //     recycled. Because each backend gets its own isolated transport and
@@ -123,10 +131,10 @@ func WithRequestTimeoutResolver(resolver func(workloadID string) time.Duration) 
 //     Cheat Sheet for the full set of ranges to deny (loopback, RFC 1918,
 //     link-local 169.254/16, CGNAT 100.64/10, IPv6 ULA).
 func WithDialControlResolver(
-	resolve func(workloadID string) func(network, address string, c syscall.RawConn) error,
+	resolver func(workloadID string) func(network, address string, c syscall.RawConn) error,
 ) HTTPConnectorOption {
 	return func(cfg *httpConnectorConfig) {
-		cfg.dialControlResolver = resolve
+		cfg.dialControlResolver = resolver
 	}
 }
 

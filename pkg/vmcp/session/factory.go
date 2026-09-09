@@ -241,18 +241,21 @@ func WithRevisionLookup(lookup func(workloadID string) (mcpparser.Revision, bool
 // It is the session-factory counterpart to pkg/vmcp/client.WithDialControl,
 // which guards the aggregation and tool-call paths; without this option those
 // paths could be guarded while session-init dials were not. The returned hook
-// matches net.Dialer.Control exactly. See backend.WithDialControlResolver for
-// the full security caveats (per-TCP-dial not per-request, proxy transparency,
-// both IP families).
+// matches net.Dialer.Control exactly, but the option shapes differ: this one is
+// a per-backend resolver, whereas client.WithDialControl is not (yet) per-backend.
+// See backend.WithDialControlResolver for the full security caveats — including
+// that the resolver only SELECTS a hook, so the returned hook must itself inspect
+// the resolved address or it gives no SSRF/DNS-rebinding protection (per-TCP-dial
+// not per-request, proxy transparency, both IP families).
 //
 // Concurrency: the resolver is called from the per-backend init goroutines
 // started by makeBaseSession, up to maxConcurrency at once, so it must be safe
 // for concurrent use.
 func WithDialControlResolver(
-	resolve func(workloadID string) func(network, address string, c syscall.RawConn) error,
+	resolver func(workloadID string) func(network, address string, c syscall.RawConn) error,
 ) MultiSessionFactoryOption {
 	return func(f *defaultMultiSessionFactory) {
-		f.dialControlResolver = resolve
+		f.dialControlResolver = resolver
 	}
 }
 

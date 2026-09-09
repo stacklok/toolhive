@@ -551,19 +551,11 @@ func TestUpgrade_OversizedCommitMaterialFailsRatherThanBlocks(t *testing.T) {
 	assert.Contains(t, outcome.Error, "over the")
 }
 
-// TestGuardKeyedSignerChange covers the guard for a key-pinned entry. The
-// keyless guard probes for a certificate identity to compare, which a
-// key-pair bundle does not have — so before this branch a key-pinned entry
-// could never be upgraded at all: probeCandidateSigner returned ErrKeySigned
-// and the plan failed with a signature error, where a policy decision was
-// intended.
-//
-// The blocked arms are split by whether the remedy the CLI prints actually
-// works. "signer change blocked" tells the user to pass --allow-signer-change,
-// which drops the recorded key and re-verifies keylessly — a real fix when the
-// candidate moved to keyless signing or lost its signature, and a dead end
-// when it is simply signed by a different key.
-func TestGuardKeyedSignerChange(t *testing.T) {
+// TestJudgeKeyedCandidate measures a candidate against a pinned key and then
+// runs the verdict through both modes. One measurement serves the guard and
+// the --allow-signer-change override, so the table asserts what each mode
+// does with it: only a genuine key-to-keyless move differs.
+func TestJudgeKeyedCandidate(t *testing.T) {
 	t.Parallel()
 
 	keyPEM, err := verifier.DecodePublicKey(testPublicKeyB64)
@@ -574,77 +566,103 @@ func TestGuardKeyedSignerChange(t *testing.T) {
 	}
 
 	tests := []struct {
-		name        string
-		verifyErr   error
-		probe       *verifier.Result
-		probeErr    error
-		noProbe     bool
-		wantBlocked bool
-		wantStatus  plugins.UpgradeStatus
-		wantReason  plugins.FailureReason
-		wantSigner  string
-		wantErrText string
-		wantNoText  string
+		name      string
+		verifyErr error
+		probe     *verifier.Result
+		probeErr  error
+		noProbe   bool
+
+		wantKind     keyedVerdictKind
+		wantIdentity string
+		wantReason   plugins.FailureReason
+		wantErrText  string
+		wantNoText   string
+
+		// what each mode does with the verdict
+		wantBlocked         bool
+		wantBlockedOverride bool
+		wantStatus          plugins.UpgradeStatus
 	}{
 		{
 			name:        "verifying against the pinned key is the evidence the signer is unchanged",
 			noProbe:     true,
-			wantBlocked: false,
+			wantKind:    keyedPinHolds,
+			wantBlocked: false, wantBlockedOverride: false,
 		},
 		{
-			name:        "a candidate that moved to keyless signing is a signer change",
-			verifyErr:   verifier.ErrKeylessSigned,
-			probe:       &verifier.Result{Signed: true, SignerIdentity: "ci@example.com"},
-			wantBlocked: true,
-			wantStatus:  plugins.UpgradeStatusSignerChangeBlocked,
-			wantSigner:  "ci@example.com",
-		},
-		{
-			// --allow-signer-change bypasses this guard but not verification,
-			// and upgrade has no --allow-unsigned to pair with it, so calling
-			// this a signer change would advertise a route that dead-ends in
-			// unsigned-rejected one step later.
-			name:        "a candidate that lost its signature is an unsigned rejection, not a signer change",
-			verifyErr:   verifier.ErrUnsigned,
-			noProbe:     true,
-			wantBlocked: true,
-			wantStatus:  plugins.UpgradeStatusFailed,
-			wantReason:  plugins.FailureReasonUnsignedRejected,
-			wantErrText: "reinstall it with `thv ai-plugin install --allow-unsigned`",
-		},
-		{
-			name:        "a different key is a failure, since allow_signer_change cannot re-anchor",
-			verifyErr:   verifier.ErrSignatureInvalid,
-			probeErr:    verifier.ErrKeySigned,
-			wantBlocked: true,
-			wantStatus:  plugins.UpgradeStatusFailed,
-			wantReason:  plugins.FailureReasonSignatureInvalid,
-			wantErrText: "reinstall it with `thv ai-plugin install --public-key`",
+			name:         "a candidate that moved to keyless signing is a signer change",
+			verifyErr:    verifier.ErrKeylessSigned,
+			probe:        &verifier.Result{Signed: true, SignerIdentity: "ci@example.com"},
+			wantKind:     keyedMovedToKeyless,
+			wantIdentity: "ci@example.com",
+			// Blocked without the override, permitted with it: this is the
+			// one transition --allow-signer-change exists to authorize.
+			wantBlocked: true, wantBlockedOverride: false,
+			wantStatus: plugins.UpgradeStatusSignerChangeBlocked,
 		},
 		{
 			// VerifyOCIWithKey reports ErrKeylessSigned only when EVERY
 			// bundle is keyless, so an artifact mid-migration — valid
 			// keyless bundle beside a stale key-pair one — arrives as
-			// ErrSignatureInvalid. It is still the supported key-to-keyless
-			// transition, and must not be sent to uninstall-and-reinstall.
-			name:        "a mixed keyless and stale-key artifact is the supported transition",
-			verifyErr:   verifier.ErrSignatureInvalid,
-			probe:       &verifier.Result{Signed: true, SignerIdentity: "ci@example.com"},
-			wantBlocked: true,
-			wantStatus:  plugins.UpgradeStatusSignerChangeBlocked,
-			wantSigner:  "ci@example.com",
+			// ErrSignatureInvalid. It is still the supported transition.
+			name:         "a mixed keyless and stale-key artifact is the supported transition",
+			verifyErr:    verifier.ErrSignatureInvalid,
+			probe:        &verifier.Result{Signed: true, SignerIdentity: "ci@example.com"},
+			wantKind:     keyedMovedToKeyless,
+			wantIdentity: "ci@example.com",
+			wantBlocked:  true, wantBlockedOverride: false,
+			wantStatus: plugins.UpgradeStatusSignerChangeBlocked,
 		},
 		{
-			// A registry or transport failure says nothing about the
-			// signature, so it must not advise uninstalling the plugin.
+			// --allow-signer-change bypasses the guard but not verification,
+			// and upgrade has no --allow-unsigned to pair with it.
+			name:        "a candidate that lost its signature is an unsigned rejection",
+			verifyErr:   verifier.ErrUnsigned,
+			noProbe:     true,
+			wantKind:    keyedUndecided,
+			wantReason:  plugins.FailureReasonUnsignedRejected,
+			wantErrText: "--scope project --allow-unsigned",
+			wantBlocked: true, wantBlockedOverride: true,
+			wantStatus: plugins.UpgradeStatusFailed,
+		},
+		{
+			name:        "a different key is a failure, since allow_signer_change cannot re-anchor",
+			verifyErr:   verifier.ErrSignatureInvalid,
+			probeErr:    verifier.ErrKeySigned,
+			wantKind:    keyedUndecided,
+			wantReason:  plugins.FailureReasonSignatureInvalid,
+			wantErrText: "--scope project --public-key",
+			wantBlocked: true, wantBlockedOverride: true,
+			wantStatus: plugins.UpgradeStatusFailed,
+		},
+		{
+			name:        "an all-keyless candidate whose signature is broken is a failure",
+			verifyErr:   verifier.ErrKeylessSigned,
+			probeErr:    verifier.ErrSignatureInvalid,
+			wantKind:    keyedUndecided,
+			wantReason:  plugins.FailureReasonSignatureInvalid,
+			wantErrText: "dropped key-pair signing for keyless",
+			wantBlocked: true, wantBlockedOverride: true,
+			wantStatus: plugins.UpgradeStatusFailed,
+		},
+		{
+			// SECURITY: an operational failure is not evidence about which
+			// key signed the artifact, so it must not read as "the pin no
+			// longer applies" — under the override that would be enough to
+			// drop the pin. The probe is given a result that WOULD succeed
+			// and asserted never called: an artifact can carry a valid
+			// keyless signature beside a still-valid pinned-key one, so
+			// consulting it here would re-anchor on a transient fault.
 			name:        "an operational verifier failure is not a signature verdict",
 			verifyErr:   fmt.Errorf("fetching signatures: %w", context.DeadlineExceeded),
-			probeErr:    context.DeadlineExceeded,
-			wantBlocked: true,
-			wantStatus:  plugins.UpgradeStatusFailed,
+			probe:       &verifier.Result{Signed: true, SignerIdentity: "ci@example.com"},
+			noProbe:     true,
+			wantKind:    keyedUndecided,
 			wantReason:  plugins.FailureReasonUnknown,
 			wantErrText: "context deadline exceeded",
 			wantNoText:  "uninstall",
+			wantBlocked: true, wantBlockedOverride: true,
+			wantStatus: plugins.UpgradeStatusFailed,
 		},
 	}
 	for _, tc := range tests {
@@ -664,65 +682,45 @@ func TestGuardKeyedSignerChange(t *testing.T) {
 				Times(probeCalls).Return(tc.probe, tc.probeErr)
 
 			svc := &service{sigVerifier: mv}
-			outcome := plugins.UpgradeOutcome{Name: "keyed-plugin"}
-			blocked := svc.guardSignerChange(
-				t.Context(), keyedLockEntry("keyed-plugin"), latest, &outcome)
+			verdict := svc.judgeKeyedCandidate(t.Context(), keyedLockEntry("keyed-plugin"), latest)
 
-			assert.Equal(t, tc.wantBlocked, blocked)
-			if !tc.wantBlocked {
-				return
-			}
-			assert.Equal(t, tc.wantStatus, outcome.Status)
-			assert.Equal(t, tc.wantReason, outcome.Reason)
+			assert.Equal(t, tc.wantKind, verdict.kind)
+			assert.Equal(t, tc.wantIdentity, verdict.identity)
+			assert.Equal(t, tc.wantReason, verdict.reason)
 			if tc.wantErrText != "" {
-				assert.Contains(t, outcome.Error, tc.wantErrText)
+				assert.Contains(t, verdict.err, tc.wantErrText)
 			}
 			if tc.wantNoText != "" {
-				assert.NotContains(t, outcome.Error, tc.wantNoText,
+				assert.NotContains(t, verdict.err, tc.wantNoText,
 					"an operational failure must not carry a destructive remedy")
 			}
-			// The CLI renders a blocked outcome carrying no identity as
-			// "unsigned", so a keyless candidate that arrives unnamed is
-			// reported as the one thing it demonstrably is not.
-			assert.Equal(t, tc.wantSigner, outcome.NewSignerIdentity)
+
+			for _, override := range []bool{false, true} {
+				outcome := plugins.UpgradeOutcome{Name: "keyed-plugin"}
+				blocked := recordKeyedVerdict(verdict, override, &outcome)
+				want := tc.wantBlocked
+				if override {
+					want = tc.wantBlockedOverride
+				}
+				assert.Equal(t, want, blocked, "allow_signer_change=%v", override)
+				if !blocked {
+					continue
+				}
+				assert.Equal(t, tc.wantStatus, outcome.Status)
+				// The CLI renders a blocked outcome carrying no identity as
+				// "unsigned", so a keyless candidate that arrives unnamed is
+				// reported as the one thing it demonstrably is not.
+				assert.Equal(t, tc.wantIdentity, outcome.NewSignerIdentity)
+			}
 		})
 	}
 }
 
-// TestGuardKeyedSignerChange_KeylessProbeFailure keeps a candidate whose
-// keyless signature does not verify out of the blocked bucket. Blocked tells
-// the caller to re-run with --allow-signer-change, which skips this guard but
-// still verifies, so the flag cannot get such a candidate installed either.
-func TestGuardKeyedSignerChange_KeylessProbeFailure(t *testing.T) {
-	t.Parallel()
-
-	keyPEM, err := verifier.DecodePublicKey(testPublicKeyB64)
-	require.NoError(t, err)
-	latest := resolvedLatest{
-		ref:    "ghcr.io/org/keyed-plugin:v2",
-		digest: "sha256:" + strings.Repeat("c", 64),
-	}
-
-	mv := verifiermocks.NewMockVerifier(gomock.NewController(t))
-	mv.EXPECT().VerifyOCIWithKey(gomock.Any(), latest.ref, latest.digest, keyPEM).
-		Return(nil, verifier.ErrKeylessSigned)
-	mv.EXPECT().VerifyOCI(gomock.Any(), latest.ref, latest.digest, gomock.Nil()).
-		Return(nil, fmt.Errorf("probing: %w", verifier.ErrSignatureInvalid))
-
-	svc := &service{sigVerifier: mv}
-	outcome := plugins.UpgradeOutcome{Name: "keyed-plugin"}
-	require.True(t, svc.guardSignerChange(
-		t.Context(), keyedLockEntry("keyed-plugin"), latest, &outcome))
-
-	assert.Equal(t, plugins.UpgradeStatusFailed, outcome.Status)
-	assert.Equal(t, plugins.FailureReasonSignatureInvalid, outcome.Reason)
-	assert.Empty(t, outcome.NewSignerIdentity)
-}
-
-// TestGuardKeyedSignerChange_UndecodablePinnedKey fails the plan rather than
-// treating a corrupt anchor as a signer change: the lock file is hand-editable
-// and the entry cannot be evaluated at all, which is not the same claim.
-func TestGuardKeyedSignerChange_UndecodablePinnedKey(t *testing.T) {
+// TestJudgeKeyedCandidate_UndecodablePinnedKey fails the plan rather than
+// treating a corrupt anchor as a signer change: the lock file is
+// hand-editable and the entry cannot be evaluated at all, which is not the
+// same claim. It must not become permission to drop the pin either.
+func TestJudgeKeyedCandidate_UndecodablePinnedKey(t *testing.T) {
 	t.Parallel()
 
 	entry := keyedLockEntry("keyed-plugin")
@@ -732,14 +730,19 @@ func TestGuardKeyedSignerChange_UndecodablePinnedKey(t *testing.T) {
 	mv.EXPECT().VerifyOCI(gomock.Any(), gomock.Any(), gomock.Any(), gomock.Any()).Times(0)
 
 	svc := &service{sigVerifier: mv}
-	outcome := plugins.UpgradeOutcome{Name: entry.Name}
-	require.True(t, svc.guardSignerChange(t.Context(), entry, resolvedLatest{
+	verdict := svc.judgeKeyedCandidate(t.Context(), entry, resolvedLatest{
 		ref:    "ghcr.io/org/keyed-plugin:v2",
 		digest: "sha256:" + strings.Repeat("c", 64),
-	}, &outcome))
-	assert.Equal(t, plugins.UpgradeStatusFailed, outcome.Status)
-	assert.Equal(t, plugins.FailureReasonUnknown, outcome.Reason)
-	assert.NotEqual(t, plugins.UpgradeStatusSignerChangeBlocked, outcome.Status)
+	})
+	assert.Equal(t, keyedUndecided, verdict.kind)
+	assert.Equal(t, plugins.FailureReasonUnknown, verdict.reason)
+
+	for _, override := range []bool{false, true} {
+		outcome := plugins.UpgradeOutcome{Name: entry.Name}
+		require.True(t, recordKeyedVerdict(verdict, override, &outcome),
+			"allow_signer_change must not rescue an anchor that cannot be read")
+		assert.Equal(t, plugins.UpgradeStatusFailed, outcome.Status)
+	}
 }
 
 // keyPinnedUpgradeFixture installs an OCI plugin against testPublicKeyB64 —
@@ -923,4 +926,56 @@ func TestUpgrade_AllowSignerChangeKeepsSameKeyPin(t *testing.T) {
 	assert.Equal(t, testPublicKeyB64, entry.Provenance.PublicKey,
 		"a candidate that still verifies against the pinned key stays pinned to it")
 	assert.Empty(t, entry.Provenance.SignerIdentity)
+}
+
+// TestUpgrade_OperationalKeyedErrorDoesNotDropPin is the fail-closed case for
+// a project-wide --allow-signer-change. A registry or transport fault during
+// planning says nothing about which key signed the candidate, so it must not
+// stand in as evidence that the plugin moved off its pinned key. If it did,
+// a transient fault would be enough to drop the pin and re-anchor an artifact
+// that still carries a valid signature by that very key.
+//
+//nolint:paralleltest // serial: real sqlite + on-disk client materialization per test
+func TestUpgrade_OperationalKeyedErrorDoesNotDropPin(t *testing.T) {
+	mv := verifiermocks.NewMockVerifier(gomock.NewController(t))
+	installed := false
+	mv.EXPECT().VerifyOCIWithKey(gomock.Any(), gomock.Any(), gomock.Any(), gomock.Any()).
+		AnyTimes().
+		DoAndReturn(func(_ any, _, _ string, _ []byte) (*verifier.Result, error) {
+			if !installed {
+				installed = true
+				return &verifier.Result{Signed: true, Bundle: []byte(`{"bundle":true}`)}, nil
+			}
+			return nil, fmt.Errorf("fetching signatures: %w", context.DeadlineExceeded)
+		})
+	// The candidate also carries a perfectly good keyless signature, so a
+	// probe would succeed. That is the trap: the artifact still carries a
+	// valid pinned-key signature too, and only the transient keyed fault
+	// makes it look like it moved. The probe must never be reached.
+	mv.EXPECT().VerifyOCI(gomock.Any(), gomock.Any(), gomock.Any(), gomock.Any()).
+		AnyTimes().Return(signedResult(), nil)
+	mv.EXPECT().VerifyBundleOfflineWithKey(gomock.Any(), gomock.Any(), gomock.Any()).
+		AnyTimes().Return(nil)
+	mv.EXPECT().VerifyBundleOffline(gomock.Any(), gomock.Any(), gomock.Any()).
+		AnyTimes().Return(nil)
+
+	inner, projectRoot, publishV2 := keyPinnedUpgradeFixture(t, mv)
+	before, ok := loadPluginLockEntry(t, projectRoot)
+	require.True(t, ok)
+	publishV2()
+
+	outcome := upgradePlugins(t, inner, plugins.UpgradeOptions{
+		ProjectRoot: projectRoot, AllowSignerChange: true,
+	})
+	assert.Equal(t, plugins.UpgradeStatusFailed, outcome.Status)
+	assert.Equal(t, plugins.FailureReasonUnknown, outcome.Reason)
+	assert.NotContains(t, outcome.Error, "uninstall",
+		"a transport fault must not advise uninstalling the plugin")
+
+	after, ok := loadPluginLockEntry(t, projectRoot)
+	require.True(t, ok)
+	require.NotNil(t, after.Provenance)
+	assert.Equal(t, testPublicKeyB64, after.Provenance.PublicKey, "the pin must survive a transport fault")
+	assert.Empty(t, after.Provenance.SignerIdentity, "nothing may be re-anchored to keyless")
+	assert.Equal(t, before.Digest, after.Digest, "a failed plan must not re-pin the entry")
 }

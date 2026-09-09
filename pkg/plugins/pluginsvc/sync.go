@@ -577,10 +577,12 @@ func (s *service) adoptionTrust(
 			return nil, false, httperr.WithCode(
 				fmt.Errorf("%w: plugin %q is signed with a cosign key pair, so adopting it cannot"+
 					" record a trust anchor — the key is carried neither by the artifact nor by its"+
-					" bundle. Install it with `thv ai-plugin install --public-key` instead, which"+
-					" verifies the signature and pins the key (--allow-unsigned is not a substitute:"+
-					" the artifact is signed)",
-					err, pl.Metadata.Name),
+					" bundle. Install it project-scoped against the key instead, which verifies the"+
+					" signature and pins it: `thv ai-plugin install %s --scope project --public-key"+
+					" <path-or-base64>` (add --project-root if you are not in the project directory;"+
+					" --public-key applies only project-scoped, and --allow-unsigned is not a"+
+					" substitute because the artifact is signed)",
+					err, pl.Metadata.Name, pl.Metadata.Name),
 				http.StatusForbidden,
 			)
 		}

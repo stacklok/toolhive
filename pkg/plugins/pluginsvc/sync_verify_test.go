@@ -472,7 +472,7 @@ func TestSync_AdoptRefusesKeySignedInstall(t *testing.T) {
 		require.Len(t, result.Failed, 1, "allow_unsigned=%v", allowUnsigned)
 		assert.Equal(t, plugins.FailureReasonKeySigned, result.Failed[0].Reason,
 			"--allow-unsigned is not a substitute: the artifact is signed (allow_unsigned=%v)", allowUnsigned)
-		assert.Contains(t, result.Failed[0].Error, "thv ai-plugin install --public-key",
+		assert.Contains(t, result.Failed[0].Error, "--scope project --public-key",
 			"the refusal must name the path that can anchor it, not merely refuse")
 
 		_, ok := readLockfile(t, projectRoot).GetPlugin("my-plugin")

@@ -30,12 +30,14 @@ instead, or --no-sign to publish unsigned.`,
 func init() {
 	aiPluginCmd.AddCommand(aiPluginPushCmd)
 	aiPluginPushCmd.Flags().StringVar(&aiPluginPushKey, "key", "",
-		"Path to a cosign private key to sign the pushed artifact. "+
-			"Encrypted keys are decrypted with COSIGN_PASSWORD read from the 'thv serve' process, "+
-			"which performs the signing. Consumers installing the result project-scoped must pass "+
-			"--public-key with the matching cosign public key the first time; distribute it "+
-			"alongside the artifact. Keyless signing needs no such out-of-band step, since the "+
-			"signer identity is verifiable from the artifact itself")
+		"Path to a cosign private key to sign the pushed artifact. The path is resolved by the "+
+			"'thv serve' process that performs the signing, NOT by this command: against a remote "+
+			"server the key file and COSIGN_PASSWORD must both be present there, so provision or "+
+			"mount the key on that host — or use keyless signing, which needs no key at all. "+
+			"Consumers installing the result project-scoped must pass --public-key with the "+
+			"matching cosign public key the first time; distribute it alongside the artifact. "+
+			"Keyless signing needs no such out-of-band step, since the signer identity is "+
+			"verifiable from the artifact itself")
 	aiPluginPushCmd.Flags().StringVar(&aiPluginPushIdentityToken, "identity-token", "",
 		"OIDC identity token (or a path to a file containing one) for keyless signing. "+
 			"Mutually exclusive with --key. If omitted, one is acquired automatically: from the "+

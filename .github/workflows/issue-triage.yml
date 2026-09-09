@@ -43,7 +43,7 @@ jobs:
             - DO NOT add the "good-first-issue" label.
             - DO NOT post comments or otherwise communicate with the issue author.
             - If no labels are clearly applicable, do not apply any.
-          claude_args: --model claude-sonnet-4-6
+          claude_args: --model claude-sonnet-5
           anthropic_api_key: ${{ secrets.STACKLOK_GATEWAY_KEY_ISSUE_TRIAGE }}
           allowed_non_write_users: "*"
           github_token: ${{ secrets.GITHUB_TOKEN }}

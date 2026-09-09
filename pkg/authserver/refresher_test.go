@@ -4,9 +4,11 @@
 package authserver
 
 import (
+	"bytes"
 	"context"
 	"errors"
 	"fmt"
+	"log/slog"
 	"sync"
 	"sync/atomic"
 	"testing"
@@ -986,4 +988,67 @@ func TestUpstreamTokenRefresher_ConcurrentRefreshConflict(t *testing.T) {
 		assert.Nil(t, result)
 		assert.ErrorIs(t, err, storage.ErrConcurrentRefresh)
 	})
+}
+
+// TestUpstreamTokenRefresher_ConcurrentRefreshConflict_LogLevel proves
+// resolveConcurrentRefreshConflict logs a row that no longer exists
+// (ErrNotFound on re-read - e.g. deleted by logout or evicted by TTL) at WARN,
+// not ERROR: it is not a lost race and must not read as one in production
+// logs. Any other unrecoverable re-read outcome still logs at ERROR.
+//
+//nolint:paralleltest // captures the package-global slog.Default(); must not run concurrently with parallel tests
+func TestUpstreamTokenRefresher_ConcurrentRefreshConflict_LogLevel(t *testing.T) {
+	expired := &storage.UpstreamTokens{ProviderID: "github", RefreshToken: "stale", UpstreamSubject: "subject"}
+	redeemed := &upstream.Tokens{AccessToken: "redeemed", RefreshToken: "redeemed-rt", ExpiresAt: time.Now().Add(time.Hour)}
+
+	tests := []struct {
+		name      string
+		reReadErr error
+		wantLevel string
+		wantNot   string
+	}{
+		{
+			name:      "row absent on re-read logs at WARN",
+			reReadErr: fmt.Errorf("%w: row evicted", storage.ErrNotFound),
+			wantLevel: "WARN",
+			wantNot:   "ERROR",
+		},
+		{
+			name:      "other re-read failure logs at ERROR",
+			reReadErr: errors.New("redis timeout"),
+			wantLevel: "ERROR",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			var buf bytes.Buffer
+			prev := slog.Default()
+			slog.SetDefault(slog.New(slog.NewTextHandler(&buf, &slog.HandlerOptions{Level: slog.LevelDebug})))
+			t.Cleanup(func() { slog.SetDefault(prev) })
+
+			ctrl := gomock.NewController(t)
+			store := storagemocks.NewMockUpstreamTokenStorage(ctrl)
+			provider := upstreammocks.NewMockOAuth2Provider(ctrl)
+
+			store.EXPECT().ResolveUpstreamTokenRowID(gomock.Any(), "session", "github").
+				Return(storage.UpstreamTokenRowID("row"), nil)
+			gomock.InOrder(
+				store.EXPECT().GetUpstreamTokens(gomock.Any(), "session", "github").Return(expired, storage.ErrExpired),
+				store.EXPECT().GetUpstreamTokens(gomock.Any(), "session", "github").Return(nil, tt.reReadErr),
+			)
+			provider.EXPECT().RefreshTokens(gomock.Any(), "stale", "subject").Return(redeemed, nil)
+			store.EXPECT().CompareAndSwapUpstreamTokens(gomock.Any(), "session", "github", "stale", gomock.Any()).
+				Return(storage.ErrConcurrentRefresh)
+
+			refresher := &upstreamTokenRefresher{providers: map[string]upstream.OAuth2Provider{"github": provider}, storage: store}
+			_, err := refresher.RefreshAndStore(context.Background(), "session", expired)
+			require.Error(t, err)
+
+			assert.Contains(t, buf.String(), "level="+tt.wantLevel)
+			if tt.wantNot != "" {
+				assert.NotContains(t, buf.String(), "level="+tt.wantNot)
+			}
+		})
+	}
 }

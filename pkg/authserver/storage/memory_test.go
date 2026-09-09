@@ -1217,6 +1217,28 @@ func TestMemoryStorage_CompareAndSwapUpstreamTokens(t *testing.T) {
 		})
 	})
 
+	t.Run("does not resurrect a row deleted between read and write", func(t *testing.T) {
+		withStorage(t, func(ctx context.Context, s *MemoryStorage) {
+			require.NoError(t, s.StoreUpstreamTokens(ctx, "session", "provider-a", &UpstreamTokens{
+				AccessToken: "old-access", RefreshToken: "old-refresh",
+			}))
+
+			// Simulates a logout (or TTL eviction) racing a refresh: the row is
+			// gone by the time the refresher's redemption tries to persist.
+			require.NoError(t, s.DeleteUpstreamTokensForProvider(ctx, "session", "provider-a"))
+
+			err := s.CompareAndSwapUpstreamTokens(ctx, "session", "provider-a", "old-refresh", &UpstreamTokens{
+				AccessToken: "redeemed-access", RefreshToken: "redeemed-refresh",
+			})
+			require.ErrorIs(t, err, ErrConcurrentRefresh,
+				"CAS must refuse to write over an absent row rather than resurrect it "+
+					"(unlike StoreUpstreamTokens, which would happily recreate it)")
+
+			_, err = s.GetUpstreamTokens(ctx, "session", "provider-a")
+			requireNotFoundError(t, err)
+		})
+	})
+
 	t.Run("empty expected value matches an absent row - first write succeeds", func(t *testing.T) {
 		withStorage(t, func(ctx context.Context, s *MemoryStorage) {
 			err := s.CompareAndSwapUpstreamTokens(ctx, "session", "provider-a", "", &UpstreamTokens{
@@ -1237,7 +1259,9 @@ func TestMemoryStorage_CompareAndSwapUpstreamTokens(t *testing.T) {
 			}))
 
 			// "" must never be usable to silently overwrite a row that already
-			// carries a refresh token - it only matches a genuinely absent row.
+			// carries a non-empty refresh token. ("" also matches a present row
+			// whose RefreshToken is itself empty, or a nil-tokens row - this test
+			// pins only the has-a-real-refresh-token case, which must be rejected.)
 			err := s.CompareAndSwapUpstreamTokens(ctx, "session", "provider-a", "", &UpstreamTokens{
 				AccessToken: "attacker-access", RefreshToken: "attacker-refresh",
 			})

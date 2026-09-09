@@ -214,9 +214,27 @@ Redis implements the comparison and the write as one atomic Lua script;
 `MemoryStorage` implements it under its existing mutex. `singleflight` remains
 the process-local optimization described above — it avoids a redundant
 upstream call and Redis round-trip for concurrent requests inside one
-process — while the CAS write is what makes concurrent redemption safe across
-processes. Redis remains the durable storage backend and source of truth for
-which redemption, if more than one raced, actually won.
+process — while the CAS write is what makes the *stored* row deterministic
+across processes: whichever replica's write lands first wins, and every
+losing replica's write fails instead of silently clobbering it.
+
+This is a storage-ordering guarantee, not a guarantee that concurrent
+redemption is safe at the upstream provider. Both replicas still call
+`provider.RefreshTokens` before either one's CAS write runs, so for a
+provider enforcing strict single-use rotation (RFC 9700 §4.14.2 replay
+detection), two concurrent redemptions of the same refresh token can still
+be indistinguishable from a replay at the IdP, which may revoke the grant
+regardless of which replica's write wins here. CAS is fully sufficient only
+where the provider tolerates a short grace/leeway window in which more than
+one redeemed child stays valid (e.g. Read.ai's stated behavior) — outside
+that window, closing the gap requires serializing the *redemption* itself
+(a distributed lock around the read-redeem-write sequence), not just the
+write. That lock is a deliberate follow-up, not implemented here: this layer
+only prevents storage corruption from a lost write race, and its own log
+distinguishes a genuine lost race (an unexpired row on re-read) from a row
+that is simply gone (deleted by logout or evicted by TTL, `ErrNotFound` on
+re-read) — the latter is expected behavior, not a race, and refuses to
+resurrect the deleted row.
 
 ### Serialization
 

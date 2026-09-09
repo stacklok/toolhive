@@ -47,7 +47,7 @@ type HTTPConnectorOption func(*httpConnectorConfig)
 
 type httpConnectorConfig struct {
 	requestTimeoutResolver func(workloadID string) time.Duration
-	dialControl            func(network, address string, c syscall.RawConn) error
+	dialControlResolver    func(workloadID string) func(network, address string, c syscall.RawConn) error
 }
 
 // mcpClientParams carries the per-connection options NewHTTPConnector's closure
@@ -59,8 +59,9 @@ type mcpClientParams struct {
 	// sink, when non-nil, enables persistent backend-notification consumption
 	// (see createMCPClient); nil leaves it disabled.
 	sink ListChangedSink
-	// dialControl, when non-nil, installs a net.Dialer.Control hook on the
-	// backend transport (see WithDialControl); nil uses http.DefaultTransport.
+	// dialControl is the hook resolved for this backend's workload ID (see
+	// WithDialControlResolver). When non-nil it installs a net.Dialer.Control hook
+	// on the backend transport; nil uses http.DefaultTransport.
 	dialControl func(network, address string, c syscall.RawConn) error
 	// requestTimeout bounds each backend operation and the transport dial.
 	requestTimeout time.Duration
@@ -82,19 +83,26 @@ func WithRequestTimeoutResolver(resolver func(workloadID string) time.Duration) 
 	}
 }
 
-// WithDialControl installs a per-connection Control hook on the dialer used to
-// open every backend connection at session init (the MCP handshake and
-// capability listing). The hook fires after DNS resolution and before the TCP
-// handshake, receiving the resolved peer IP in address — which is why it
-// defeats DNS-rebinding attacks that a host-name–based check cannot: a hostname
-// can legitimately resolve to a blocked IP after the name-based check passes.
+// WithDialControlResolver supplies a dial-control hook chosen per backend, so an
+// embedder can apply a per-backend dial policy to the connections opened at
+// session init (the MCP handshake and capability listing). The resolver receives
+// a backend workload ID and returns the net.Dialer.Control hook to install for
+// that backend, or nil to leave it on http.DefaultTransport.
+//
+// The returned hook fires after DNS resolution and before the TCP handshake,
+// receiving the resolved peer IP in address — which is why it defeats
+// DNS-rebinding attacks that a host-name–based check cannot: a hostname can
+// legitimately resolve to a blocked IP after the name-based check passes.
 //
 // It is the session-init twin of pkg/vmcp/client.WithDialControl (which guards
-// the aggregation and tool-call paths); the two share the same signature and
-// the same standard 30 s dial timeouts. A nil control (the default) leaves the
-// dial path byte-for-byte identical to before this hook existed.
+// the aggregation and tool-call paths); the returned hook shares that signature
+// and the same standard 30 s dial timeouts. A nil resolver (the default), or a
+// resolver that returns nil for a given workload, leaves that backend's dial path
+// byte-for-byte identical to before this hook existed.
 //
-// The signature matches net.Dialer.Control exactly.
+// The resolver is called once per backend from the per-backend init goroutines,
+// so it must be safe for concurrent use. The hook it returns matches
+// net.Dialer.Control exactly.
 //
 // Security limitations embedders must understand:
 //
@@ -114,9 +122,11 @@ func WithRequestTimeoutResolver(resolver func(workloadID string) time.Duration) 
 //     such as ::ffff:127.0.0.1 — in their check. See the OWASP SSRF Prevention
 //     Cheat Sheet for the full set of ranges to deny (loopback, RFC 1918,
 //     link-local 169.254/16, CGNAT 100.64/10, IPv6 ULA).
-func WithDialControl(control func(network, address string, c syscall.RawConn) error) HTTPConnectorOption {
+func WithDialControlResolver(
+	resolve func(workloadID string) func(network, address string, c syscall.RawConn) error,
+) HTTPConnectorOption {
 	return func(cfg *httpConnectorConfig) {
-		cfg.dialControl = control
+		cfg.dialControlResolver = resolve
 	}
 }
 
@@ -206,7 +216,7 @@ func (f httpRoundTripperFunc) RoundTrip(req *http.Request) (*http.Response, erro
 // backendBaseTransport returns the innermost RoundTripper for backend
 // connections. With a nil dialControl it returns http.DefaultTransport
 // unchanged, so the no-hook path is byte-for-byte identical to before
-// WithDialControl existed. With a non-nil hook it delegates to
+// any dial-control hook existed. With a non-nil hook it delegates to
 // networking.CloneDefaultTransportWithDialControl — the single backend
 // transport construction point shared with pkg/vmcp/client — which clones
 // DefaultTransport and installs a net.Dialer whose Control hook fires on the
@@ -484,11 +494,19 @@ func NewHTTPConnector(registry vmcpauth.OutgoingAuthRegistry, opts ...HTTPConnec
 			}
 		}
 
+		// Resolve the dial-control hook for this backend. A nil resolver, or a
+		// resolver that returns nil for this workload, leaves dialControl nil so
+		// the transport stays on http.DefaultTransport (see WithDialControlResolver).
+		var dialControl func(network, address string, c syscall.RawConn) error
+		if connectorConfig.dialControlResolver != nil {
+			dialControl = connectorConfig.dialControlResolver(target.WorkloadID)
+		}
+
 		c, err := createMCPClient(
 			ctx, target, identity, registry, sessionHint, provider,
 			mcpClientParams{
 				sink:           sink,
-				dialControl:    connectorConfig.dialControl,
+				dialControl:    dialControl,
 				requestTimeout: transportTimeout,
 			},
 		)
@@ -573,9 +591,9 @@ func createMCPClient(
 
 	// Build shared transport chain (innermost first → outermost):
 	//   backendBaseTransport → authRoundTripper → identityRoundTripper → headerForwardRoundTripper
-	// The innermost stage is http.DefaultTransport unless a dial-control hook is
-	// configured (see WithDialControl), in which case it is a cloned transport
-	// carrying that hook on its dialer.
+	// The innermost stage is http.DefaultTransport unless a dial-control hook was
+	// resolved for this backend (see WithDialControlResolver), in which case it is
+	// a cloned transport carrying that hook on its dialer.
 	// On an outbound request, the outermost stage runs first: header-forward
 	// injects its headers onto a request that does not yet carry auth/identity
 	// headers, then inner stages run and call Set() unconditionally so any

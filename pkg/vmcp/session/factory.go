@@ -154,7 +154,7 @@ type defaultMultiSessionFactory struct {
 	backendInitTimeout     time.Duration
 	revisionLookup         func(workloadID string) (mcpparser.Revision, bool)
 	requestTimeoutResolver func(workloadID string) time.Duration
-	dialControl            func(network, address string, c syscall.RawConn) error
+	dialControlResolver    func(workloadID string) func(network, address string, c syscall.RawConn) error
 }
 
 // MultiSessionFactoryOption configures a defaultMultiSessionFactory.
@@ -223,23 +223,36 @@ func WithRevisionLookup(lookup func(workloadID string) (mcpparser.Revision, bool
 	}
 }
 
-// WithDialControl installs a per-connection Control hook on the dialer used to
-// open the per-backend connections this factory establishes at session init
-// (MakeSessionWithID and RestoreSession). The hook fires after DNS resolution
-// and before the TCP handshake, receiving the resolved peer IP — so it can
-// enforce a dial policy (e.g. refuse dials into private ranges to blunt SSRF /
-// DNS-rebinding) on backend endpoints that may be operator- or
-// attacker-influenceable.
+// WithDialControlResolver supplies a dial-control hook chosen per backend, so an
+// embedder can apply a per-backend dial policy to the connections opened at
+// session init (MakeSessionWithID and RestoreSession). Mirrors WithRevisionLookup
+// / WithRequestTimeoutResolver: the resolver receives a backend workload ID and
+// returns the net.Dialer.Control hook to install for that backend, or nil to
+// leave it on http.DefaultTransport.
+//
+// The returned hook fires after DNS resolution and before the TCP handshake,
+// receiving the resolved peer IP — so it can enforce a per-backend dial policy
+// (e.g. refuse dials into private ranges to blunt SSRF / DNS-rebinding) on
+// backend endpoints that may be operator- or attacker-influenceable. A nil
+// resolver (the default), or a resolver that returns nil for a given workload,
+// leaves that backend's transport on http.DefaultTransport — byte-for-byte
+// unchanged from the no-hook path.
 //
 // It is the session-factory counterpart to pkg/vmcp/client.WithDialControl,
 // which guards the aggregation and tool-call paths; without this option those
-// paths could be guarded while session-init dials were not. The signature
-// matches net.Dialer.Control exactly, and a nil control (the default) leaves
-// the dial path unchanged. See backend.WithDialControl for the full security
-// caveats (per-TCP-dial not per-request, proxy transparency, both IP families).
-func WithDialControl(control func(network, address string, c syscall.RawConn) error) MultiSessionFactoryOption {
+// paths could be guarded while session-init dials were not. The returned hook
+// matches net.Dialer.Control exactly. See backend.WithDialControlResolver for
+// the full security caveats (per-TCP-dial not per-request, proxy transparency,
+// both IP families).
+//
+// Concurrency: the resolver is called from the per-backend init goroutines
+// started by makeBaseSession, up to maxConcurrency at once, so it must be safe
+// for concurrent use.
+func WithDialControlResolver(
+	resolve func(workloadID string) func(network, address string, c syscall.RawConn) error,
+) MultiSessionFactoryOption {
 	return func(f *defaultMultiSessionFactory) {
-		f.dialControl = control
+		f.dialControlResolver = resolve
 	}
 }
 
@@ -250,7 +263,7 @@ func NewSessionFactory(registry vmcpauth.OutgoingAuthRegistry, opts ...MultiSess
 	f.connector = backend.NewHTTPConnector(
 		registry,
 		backend.WithRequestTimeoutResolver(f.requestTimeoutResolver),
-		backend.WithDialControl(f.dialControl),
+		backend.WithDialControlResolver(f.dialControlResolver),
 	)
 	return f
 }

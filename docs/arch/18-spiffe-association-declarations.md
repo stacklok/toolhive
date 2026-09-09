@@ -80,15 +80,26 @@ On every startup, the server reconstructs the static registry and its overlay fr
 
 ## JWT-SVID client authentication
 
-The dispatch and validation logic for JWT-SVID client authentication is implemented for configured associations, though it is not yet reachable end to end (see "Security and delivery scope" below). The immutable dispatcher selects the SPIFFE JWT arm only when the first `client_assertion_type` form value is the SPIFFE JWT type. If its first value is non-SPIFFE, dispatch falls through to Fosite's default strategy even when a later duplicate value is the SPIFFE JWT type. Only after the SPIFFE JWT arm is selected does it enforce the malformed-field and mixed-credential rules below.
+The dispatch and validation logic for JWT-SVID client authentication is implemented for configured associations, though it is not yet reachable end to end (see "Security and delivery scope" below). The immutable dispatcher selects the SPIFFE JWT arm only when the sole `client_assertion_type` form value is the SPIFFE JWT type. Duplicate assertion-type values are rejected before dispatch, regardless of their order or whether they are identical. A single non-SPIFFE value, or an absent value, falls through to Fosite's default strategy unless an ambient SPIFFE X.509 identity is present; that identity selects the fail-closed, not-yet-implemented X.509 arm instead.
 
-The authorization server accepts a serialized JWT-SVID client assertion, limited to 16 KiB, and validates it with go-spiffe `jwtsvid.ParseAndValidate` against the configured JWT bundle source (`AuthorizationServerParams.SPIFFEJWTBundleSource`). Validation requires the assertion's sole audience to be the configured authorization-server issuer. This path reaches go-jose/v4's default one-minute claim leeway through go-spiffe v2.7.0; the leeway is inherited and not configurable in this code path.
+The authorization server accepts a serialized JWT-SVID client assertion, limited to 16 KiB, and validates it with go-spiffe `jwtsvid.ParseAndValidate` against the configured JWT bundle source (`AuthorizationServerParams.SPIFFEJWTBundleSource`). Validation requires the assertion's sole audience to be the configured authorization-server issuer and its `iss` claim to equal the trust domain derived from its SPIFFE-ID subject. This path reaches go-jose/v4's default one-minute claim leeway through go-spiffe v2.7.0; the leeway is inherited and not configurable in this code path. The server also rejects an assertion whose remaining validity exceeds six minutes, representing the recommended five-minute JWT-SVID issuer lifetime plus that one-minute clock-skew allowance.
 
-After validation, the authentication strategy derives the SPIFFE ID context solely to call the shared `SPIFFEAssociationRegistry.Resolve` path synchronously through its JWT resolver. The registry verifies the configured client-ID ownership and enabled JWT method, then returns the configured immutable static OAuth client. The derived identity context is not propagated to downstream request handling.
+`client_id` is optional for this authentication method. When it is omitted, the registry derives the configured OAuth client from the verified SPIFFE ID association. When it is supplied, it is treated as an exact selector and must match that association's configured client ID; the server does not normalize the value. For example:
+
+```console
+curl -X POST https://auth.example.com/oauth/token \
+  --data-urlencode 'grant_type=urn:ietf:params:oauth:grant-type:token-exchange' \
+  --data-urlencode "subject_token=$SUBJECT_TOKEN" \
+  --data-urlencode 'subject_token_type=urn:ietf:params:oauth:token-type:access_token' \
+  --data-urlencode 'client_assertion_type=urn:ietf:params:oauth:client-assertion-type:jwt-spiffe' \
+  --data-urlencode "client_assertion=$JWT_SVID"
+```
+
+After validation, the authentication strategy calls the shared `SPIFFEAssociationRegistry.Resolve` path synchronously through its JWT resolver. The registry verifies the enabled JWT method and either derives the association's configured client ID or checks the supplied selector's ownership, then returns the configured immutable static OAuth client. The derived identity context is not propagated to downstream request handling.
 
 After the SPIFFE JWT arm is selected, malformed request fields use generic OAuth `invalid_request` errors; validation, association, and mixed-credential failures use generic `invalid_client` errors. In that arm, an HTTP Basic authorization header or any `client_secret` form field causes client authentication to fail. Credential material is not logged or included in errors.
 
-JWT-SVID assertions currently have no application-level replay protection, `jti` persistence, nonce, or proof-of-possession binding. A captured valid assertion can therefore be reused until its expiry, including any acceptance allowed by the inherited claim leeway.
+JWT-SVID assertions currently have no application-level replay protection, `jti` persistence, nonce, or proof-of-possession binding. A captured valid assertion can therefore be reused until its expiry, subject to the six-minute maximum remaining-validity policy and any acceptance allowed by the inherited claim leeway.
 
 ## Security and delivery scope
 

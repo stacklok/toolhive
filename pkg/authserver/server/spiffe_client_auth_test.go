@@ -154,11 +154,11 @@ func TestSPIFFEJWTClientAuthentication(t *testing.T) {
 		wantErr        error
 		wantCall       bool
 	}{
-		{name: "valid JWT-SVID", form: jwtForm(validToken), source: source, wantCall: true},
+		{name: "valid JWT-SVID without jti", form: jwtForm(validToken), source: source, wantCall: true},
+		{name: "valid JWT-SVID with omitted client ID", form: url.Values{"client_assertion_type": {spiffeauth.SPIFFEJWTAssertionType}, "client_assertion": {validToken}}, source: source, wantCall: true},
 		{name: "missing assertion", form: url.Values{"client_assertion_type": {spiffeauth.SPIFFEJWTAssertionType}, "client_id": {"client"}}, source: source, wantErr: fosite.ErrInvalidRequest},
 		{name: "empty assertion", form: url.Values{"client_assertion_type": {spiffeauth.SPIFFEJWTAssertionType}, "client_assertion": {""}, "client_id": {"client"}}, source: source, wantErr: fosite.ErrInvalidRequest},
 		{name: "duplicate assertion type", form: url.Values{"client_assertion_type": {spiffeauth.SPIFFEJWTAssertionType, spiffeauth.SPIFFEJWTAssertionType}, "client_assertion": {validToken}, "client_id": {"client"}}, source: source, wantErr: fosite.ErrInvalidRequest},
-		{name: "missing client ID", form: url.Values{"client_assertion_type": {spiffeauth.SPIFFEJWTAssertionType}, "client_assertion": {validToken}}, source: source, wantErr: fosite.ErrInvalidRequest},
 		{name: "empty client ID", form: url.Values{"client_assertion_type": {spiffeauth.SPIFFEJWTAssertionType}, "client_assertion": {validToken}, "client_id": {""}}, source: source, wantErr: fosite.ErrInvalidRequest},
 		{name: "whitespace client ID", form: url.Values{"client_assertion_type": {spiffeauth.SPIFFEJWTAssertionType}, "client_assertion": {validToken}, "client_id": {" \t"}}, source: source, wantErr: fosite.ErrInvalidRequest},
 		{name: "whitespace assertion", form: url.Values{"client_assertion_type": {spiffeauth.SPIFFEJWTAssertionType}, "client_assertion": {" \t"}, "client_id": {"client"}}, source: source, wantErr: fosite.ErrInvalidRequest},
@@ -189,7 +189,14 @@ func TestSPIFFEJWTClientAuthentication(t *testing.T) {
 		{name: "missing key ID", form: jwtForm(signedJWT(t, jose.RS256, key, "", "JWT", standardClaims(id, []string{testIssuer}))), source: source, wantErr: fosite.ErrInvalidClient},
 		{name: "invalid type", form: jwtForm(signedJWT(t, jose.RS256, key, "key-1", "not-jwt", standardClaims(id, []string{testIssuer}))), source: source, wantErr: fosite.ErrInvalidClient},
 		{name: "wrong audience", form: jwtForm(signedJWT(t, jose.RS256, key, "key-1", "JWT", standardClaims(id, []string{"wrong"}))), source: source, wantErr: fosite.ErrInvalidClient},
+		{name: "issuer does not match subject trust domain", form: jwtForm(signedJWT(t, jose.RS256, key, "key-1", "JWT", func() jwt.Claims {
+			claims := standardClaims(id, []string{testIssuer})
+			claims.Issuer = "example.org"
+			return claims
+		}())), source: source, wantErr: fosite.ErrInvalidClient},
 		{name: "multiple audience", form: jwtForm(signedJWT(t, jose.RS256, key, "key-1", "JWT", standardClaims(id, []string{testIssuer, "other"}))), source: source, wantErr: fosite.ErrInvalidClient},
+		{name: "validity comfortably within six minutes", form: jwtForm(signedJWT(t, jose.RS256, key, "key-1", "JWT", claimsExpiringIn(id, 5*time.Minute))), source: source, wantCall: true},
+		{name: "validity comfortably beyond six minutes", form: jwtForm(signedJWT(t, jose.RS256, key, "key-1", "JWT", claimsExpiringIn(id, 7*time.Minute))), source: source, wantErr: fosite.ErrInvalidClient},
 		{name: "expired token", form: jwtForm(signedJWT(t, jose.RS256, key, "key-1", "JWT", expiredClaims(id))), source: source, wantErr: fosite.ErrInvalidClient},
 		{name: "wrong trust domain", form: jwtForm(signedJWT(t, jose.RS256, key, "key-1", "JWT", standardClaims(spiffeid.RequireFromString("spiffe://other.org/workload"), []string{testIssuer}))), source: source, wantErr: fosite.ErrInvalidClient},
 		{name: "resolver rejection", form: jwtForm(validToken), source: source, resolverErr: errors.New("association denied"), wantErr: fosite.ErrInvalidClient, wantCall: true},
@@ -212,7 +219,7 @@ func TestSPIFFEJWTClientAuthentication(t *testing.T) {
 					called = true
 					assert.Equal(t, id.String(), gotSPIFFEID)
 					assert.Equal(t, spiffeauth.SPIFFEAuthenticationMethodJWT, method)
-					assert.Equal(t, tt.form["client_id"][0], clientID)
+					assert.Equal(t, tt.form.Get("client_id"), clientID)
 					var resolvedClient fosite.Client = client
 					if tt.resolverClient != nil {
 						resolvedClient = tt.resolverClient
@@ -286,28 +293,44 @@ func TestSPIFFEJWTClientAuthenticationAlgorithmsAndPrecedence(t *testing.T) {
 	}
 }
 
-func TestSPIFFEJWTDispatchFallsThroughForNonSPIFFEFirstValue(t *testing.T) {
+func TestSPIFFEJWTDispatchRejectsDuplicateAssertionType(t *testing.T) {
 	t.Parallel()
 
 	tests := []struct {
-		name string
-		ctx  context.Context
-		form url.Values
+		name         string
+		form         url.Values
+		wantDelegate bool
 	}{
 		{
-			name: "non SPIFFE first assertion type",
-			ctx:  context.Background(),
-			form: url.Values{"client_assertion_type": {"jwt-bearer", spiffeauth.SPIFFEJWTAssertionType}},
+			name: "SPIFFE then non-SPIFFE",
+			form: url.Values{"client_assertion_type": {
+				spiffeauth.SPIFFEJWTAssertionType,
+				"urn:ietf:params:oauth:client-assertion-type:jwt-bearer",
+			}},
 		},
 		{
-			name: "JWT bearer assertion type",
-			ctx:  context.Background(),
-			form: url.Values{"client_assertion_type": {"urn:ietf:params:oauth:client-assertion-type:jwt-bearer"}},
+			name: "non-SPIFFE then SPIFFE",
+			form: url.Values{"client_assertion_type": {
+				"urn:ietf:params:oauth:client-assertion-type:jwt-bearer",
+				spiffeauth.SPIFFEJWTAssertionType,
+			}},
 		},
 		{
-			name: "no SPIFFE credentials",
-			ctx:  context.Background(),
-			form: url.Values{"client_id": {"client"}},
+			name: "identical non-SPIFFE duplicates",
+			form: url.Values{"client_assertion_type": {
+				"urn:ietf:params:oauth:client-assertion-type:jwt-bearer",
+				"urn:ietf:params:oauth:client-assertion-type:jwt-bearer",
+			}},
+		},
+		{
+			name:         "one non-SPIFFE assertion type",
+			form:         url.Values{"client_assertion_type": {"urn:ietf:params:oauth:client-assertion-type:jwt-bearer"}},
+			wantDelegate: true,
+		},
+		{
+			name:         "absent assertion type",
+			form:         url.Values{"client_id": {"client"}},
+			wantDelegate: true,
 		},
 	}
 	for _, tt := range tests {
@@ -319,11 +342,30 @@ func TestSPIFFEJWTDispatchFallsThroughForNonSPIFFEFirstValue(t *testing.T) {
 				called = true
 				return nil, errors.New("default")
 			}, testIssuer, nil, stubResolver)
-			_, err := strategy(tt.ctx, httptest.NewRequest(http.MethodPost, "/", nil), tt.form)
-			assert.True(t, called)
-			assert.EqualError(t, err, "default")
+			_, err := strategy(context.Background(), httptest.NewRequest(http.MethodPost, "/", nil), tt.form)
+			assert.Equal(t, tt.wantDelegate, called)
+			if tt.wantDelegate {
+				assert.EqualError(t, err, "default")
+				return
+			}
+			require.ErrorIs(t, err, fosite.ErrInvalidRequest)
 		})
 	}
+}
+
+func TestSPIFFEJWTDispatchRejectsDuplicateAssertionTypeWithoutResolver(t *testing.T) {
+	t.Parallel()
+
+	defaultCalled := false
+	strategy := newSPIFFEClientAuthenticationStrategy(func(context.Context, *http.Request, url.Values) (fosite.Client, error) {
+		defaultCalled = true
+		return nil, nil
+	}, testIssuer, nil, nil)
+	_, err := strategy(context.Background(), httptest.NewRequest(http.MethodPost, "/", nil), url.Values{
+		"client_assertion_type": {spiffeauth.SPIFFEJWTAssertionType, spiffeauth.SPIFFEJWTAssertionType},
+	})
+	require.ErrorIs(t, err, fosite.ErrInvalidRequest)
+	assert.False(t, defaultCalled)
 }
 
 func TestSPIFFEX509ClientAuthenticationDoesNotFallThrough(t *testing.T) {
@@ -346,10 +388,15 @@ func standardClaims(id spiffeid.ID, audience []string) jwt.Claims {
 		Issuer:    id.TrustDomain().IDString(),
 		Subject:   id.String(),
 		Audience:  audience,
-		Expiry:    jwt.NewNumericDate(time.Now().Add(time.Hour)),
+		Expiry:    jwt.NewNumericDate(time.Now().Add(2 * time.Minute)),
 		NotBefore: jwt.NewNumericDate(time.Now().Add(-time.Minute)),
 		IssuedAt:  jwt.NewNumericDate(time.Now()),
 	}
+}
+func claimsExpiringIn(id spiffeid.ID, validity time.Duration) jwt.Claims {
+	claims := standardClaims(id, []string{testIssuer})
+	claims.Expiry = jwt.NewNumericDate(time.Now().Add(validity))
+	return claims
 }
 func expiredClaims(id spiffeid.ID) jwt.Claims {
 	c := standardClaims(id, []string{testIssuer})

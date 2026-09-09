@@ -20,11 +20,11 @@ func TestSPIFFEAssociationRegistryResolve(t *testing.T) {
 	wildcard.PrincipalPattern = "spiffe://example.org/ns/workloads/*"
 	other := testSPIFFEAssociation("other-client", "profile")
 	other.PrincipalPattern = "spiffe://example.org/ns/other/agent"
-	registry := newTestSPIFFEAssociationRegistry(t, []SPIFFEClientAuthRunConfig{exact, wildcard, other})
 
 	tests := []struct {
 		name         string
-		registry     *SPIFFEAssociationRegistry
+		associations []SPIFFEClientAuthRunConfig
+		nilRegistry  bool
 		spiffeID     string
 		clientID     string
 		method       SPIFFEAuthenticationMethod
@@ -33,53 +33,63 @@ func TestSPIFFEAssociationRegistryResolve(t *testing.T) {
 		wantErr      string
 	}{
 		{
-			name: "exact identity", registry: registry,
-			spiffeID: "spiffe://example.org/ns/default/agent", clientID: "exact-client",
+			name:         "exact identity",
+			associations: []SPIFFEClientAuthRunConfig{exact, wildcard, other},
+			spiffeID:     "spiffe://example.org/ns/default/agent", clientID: "exact-client",
 			method: SPIFFEAuthenticationMethodX509, wantScope: "openid",
 		},
 		{
-			name: "empty client ID derives from association", registry: registry,
-			spiffeID: "spiffe://example.org/ns/default/agent", clientID: "",
+			name:         "empty client ID derives from association",
+			associations: []SPIFFEClientAuthRunConfig{exact, wildcard, other},
+			spiffeID:     "spiffe://example.org/ns/default/agent", clientID: "",
 			method: SPIFFEAuthenticationMethodX509, wantScope: "openid", wantClientID: "exact-client",
 		},
 		{
-			name: "wildcard identity", registry: registry,
-			spiffeID: "spiffe://example.org/ns/workloads/agent", clientID: "wildcard-client",
+			name:         "wildcard identity",
+			associations: []SPIFFEClientAuthRunConfig{exact, wildcard, other},
+			spiffeID:     "spiffe://example.org/ns/workloads/agent", clientID: "wildcard-client",
 			method: SPIFFEAuthenticationMethodX509, wantScope: "profile",
 		},
 		{
-			name: "nil registry", registry: nil,
-			spiffeID: "spiffe://example.org/ns/default/agent", clientID: "exact-client",
+			name:        "nil registry",
+			nilRegistry: true,
+			spiffeID:    "spiffe://example.org/ns/default/agent", clientID: "exact-client",
 			method: SPIFFEAuthenticationMethodX509, wantErr: "no SPIFFE associations",
 		},
 		{
-			name: "malformed identity", registry: registry,
-			spiffeID: "not-a-spiffe-id", clientID: "exact-client",
+			name:         "malformed identity",
+			associations: []SPIFFEClientAuthRunConfig{exact},
+			spiffeID:     "not-a-spiffe-id", clientID: "exact-client",
 			method: SPIFFEAuthenticationMethodX509, wantErr: "invalid SPIFFE ID",
 		},
 		{
-			name: "unknown identity", registry: registry,
-			spiffeID: "spiffe://example.org/ns/missing/agent", clientID: "exact-client",
+			name:         "unknown identity",
+			associations: []SPIFFEClientAuthRunConfig{exact},
+			spiffeID:     "spiffe://example.org/ns/missing/agent", clientID: "exact-client",
 			method: SPIFFEAuthenticationMethodX509, wantErr: "no SPIFFE association for ID",
 		},
 		{
-			name: "identity client mismatch", registry: registry,
-			spiffeID: "spiffe://example.org/ns/default/agent", clientID: "other-client",
+			name:         "identity client mismatch",
+			associations: []SPIFFEClientAuthRunConfig{exact, other},
+			spiffeID:     "spiffe://example.org/ns/default/agent", clientID: "other-client",
 			method: SPIFFEAuthenticationMethodX509, wantErr: "not associated with client ID",
 		},
 		{
-			name: "unknown client", registry: registry,
-			spiffeID: "spiffe://example.org/ns/default/agent", clientID: "missing-client",
+			name:         "unknown client",
+			associations: []SPIFFEClientAuthRunConfig{exact},
+			spiffeID:     "spiffe://example.org/ns/default/agent", clientID: "missing-client",
 			method: SPIFFEAuthenticationMethodX509, wantErr: "not associated with client ID",
 		},
 		{
-			name: "disabled method", registry: registry,
-			spiffeID: "spiffe://example.org/ns/default/agent", clientID: "exact-client",
+			name:         "disabled method",
+			associations: []SPIFFEClientAuthRunConfig{exact},
+			spiffeID:     "spiffe://example.org/ns/default/agent", clientID: "exact-client",
 			method: SPIFFEAuthenticationMethodJWT, wantErr: "is not enabled",
 		},
 		{
-			name: "unknown method", registry: registry,
-			spiffeID: "spiffe://example.org/ns/default/agent", clientID: "exact-client",
+			name:         "unknown method",
+			associations: []SPIFFEClientAuthRunConfig{exact},
+			spiffeID:     "spiffe://example.org/ns/default/agent", clientID: "exact-client",
 			method: SPIFFEAuthenticationMethod("unknown"), wantErr: "is not enabled",
 		},
 	}
@@ -88,7 +98,11 @@ func TestSPIFFEAssociationRegistryResolve(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
 
-			principal, err := tt.registry.Resolve(tt.spiffeID, tt.clientID, tt.method)
+			var registry *SPIFFEAssociationRegistry
+			if !tt.nilRegistry {
+				registry = newTestSPIFFEAssociationRegistry(t, tt.associations)
+			}
+			principal, err := registry.Resolve(tt.spiffeID, tt.clientID, tt.method)
 			if tt.wantErr != "" {
 				require.ErrorContains(t, err, tt.wantErr)
 				assert.Equal(t, NormalizedSPIFFEPrincipal{}, principal)

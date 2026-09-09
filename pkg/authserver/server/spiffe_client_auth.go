@@ -9,6 +9,7 @@ import (
 	"net/url"
 	"slices"
 	"strings"
+	"time"
 
 	"github.com/ory/fosite"
 	"github.com/spiffe/go-spiffe/v2/bundle/jwtbundle"
@@ -17,10 +18,16 @@ import (
 	spiffeauth "github.com/stacklok/toolhive/pkg/authserver/spiffe"
 )
 
+// maxSPIFFEJWTAssertionRemainingValidity permits the recommended five-minute
+// JWT-SVID lifetime plus the one-minute clock skew tolerated by go-spiffe.
+const maxSPIFFEJWTAssertionRemainingValidity = 6 * time.Minute
+
 // SPIFFEClientResolver resolves a verified SPIFFE identity to its configured
 // OAuth client. It is the seam that lets the client-authentication strategy
 // here reach the association registry and storage constructed in package
 // authserver, which this package cannot import (authserver imports server).
+// clientID is an optional exact selector; an empty value asks the resolver to
+// derive the configured client from the verified SPIFFE identity.
 // One signature covers both X.509 and JWT credentials, with method as an
 // explicit discriminator, so the two arms share a single resolution path
 // instead of each inventing its own. spiffeID is passed explicitly rather
@@ -37,8 +44,12 @@ func newSPIFFEClientAuthenticationStrategy(
 	resolver SPIFFEClientResolver,
 ) fosite.ClientAuthenticationStrategy {
 	return func(ctx context.Context, r *http.Request, form url.Values) (fosite.Client, error) {
-		// No SPIFFE trust configured: this server genuinely does not do SPIFFE,
-		// so neither arm applies and every request goes to the default strategy.
+		if len(form["client_assertion_type"]) > 1 {
+			return nil, fosite.ErrInvalidRequest
+		}
+		// Without SPIFFE trust, otherwise well-formed requests go to the
+		// default strategy. Duplicate assertion types are rejected above as
+		// ambiguous before either authentication strategy is selected.
 		if resolver == nil {
 			return defaultStrategy(ctx, r, form)
 		}
@@ -76,7 +87,7 @@ func authenticateSPIFFEJWTClient(
 	if !ok {
 		return nil, fosite.ErrInvalidRequest
 	}
-	clientID, ok := exactNonEmptyFormValue(form, "client_id")
+	clientID, ok := optionalExactNonEmptyFormValue(form, "client_id")
 	if !ok {
 		return nil, fosite.ErrInvalidRequest
 	}
@@ -88,14 +99,29 @@ func authenticateSPIFFEJWTClient(
 	}
 
 	svid, err := jwtsvid.ParseAndValidate(assertion, jwtBundleSource, []string{issuer})
-	if err != nil || svid == nil || len(svid.Audience) != 1 || svid.Audience[0] != issuer {
+	if err != nil || !validSPIFFEJWTIdentityClaims(svid, issuer) {
+		return nil, fosite.ErrInvalidClient
+	}
+	if svid.Expiry.After(time.Now().Add(maxSPIFFEJWTAssertionRemainingValidity)) {
 		return nil, fosite.ErrInvalidClient
 	}
 	client, err := resolver(ctx, svid.ID.String(), clientID, spiffeauth.SPIFFEAuthenticationMethodJWT)
-	if err != nil || client == nil || client.GetID() != clientID {
+	if !validResolvedSPIFFEClient(client, err, clientID) {
 		return nil, fosite.ErrInvalidClient
 	}
 	return client, nil
+}
+
+func validSPIFFEJWTIdentityClaims(svid *jwtsvid.SVID, audience string) bool {
+	if svid == nil || len(svid.Audience) != 1 || svid.Audience[0] != audience {
+		return false
+	}
+	issuer, ok := svid.Claims["iss"].(string)
+	return ok && issuer == svid.ID.TrustDomain().IDString()
+}
+
+func validResolvedSPIFFEClient(client fosite.Client, err error, requestedClientID string) bool {
+	return err == nil && client != nil && (requestedClientID == "" || client.GetID() == requestedClientID)
 }
 
 // exactNonEmptyFormValue returns the sole value for key, rejecting an absent,
@@ -108,6 +134,16 @@ func exactNonEmptyFormValue(form url.Values, key string) (string, bool) {
 		return "", false
 	}
 	return values[0], true
+}
+
+// optionalExactNonEmptyFormValue returns an absent field as an empty value.
+// A supplied field must contain exactly one non-whitespace value, which is
+// returned without normalization.
+func optionalExactNonEmptyFormValue(form url.Values, key string) (string, bool) {
+	if !form.Has(key) {
+		return "", true
+	}
+	return exactNonEmptyFormValue(form, key)
 }
 
 // rejectedSPIFFEJWTRequest reports whether a request mixes SPIFFE JWT

@@ -141,7 +141,6 @@ Welcome to the ToolHive architecture documentation. This directory contains comp
     - Operational gotchas: audience/scope binding, discovery redirects, JWKS caching, diagnostics
 
 18. **[SPIFFE Association Declarations](18-spiffe-association-declarations.md)**
-18. **[SPIFFE Association Declarations](18-spiffe-association-declarations.md)**
     - Not yet deployable: rejected at startup pending real SVID verification
     - Configuration-only SPIFFE trust, association, and static-client model
     - JWT-SVID client-authentication dispatch and validation logic implemented but not yet wired to a trust bundle source

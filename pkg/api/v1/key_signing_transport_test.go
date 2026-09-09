@@ -17,6 +17,7 @@ import (
 	"go.uber.org/mock/gomock"
 
 	"github.com/stacklok/toolhive-core/httperr"
+	"github.com/stacklok/toolhive/pkg/plugins"
 	plugmocks "github.com/stacklok/toolhive/pkg/plugins/mocks"
 	"github.com/stacklok/toolhive/pkg/server/discovery"
 	skillsmocks "github.com/stacklok/toolhive/pkg/skills/mocks"
@@ -234,7 +235,10 @@ func TestPluginsRouter_KeySigningCapabilityCheckedBeforeDispatch(t *testing.T) {
 			ctrl := gomock.NewController(t)
 			svc := plugmocks.NewMockPluginService(ctrl)
 			if tc.wantStatus == http.StatusNoContent {
-				svc.EXPECT().Push(gomock.Any(), gomock.Any()).Return(nil)
+				svc.EXPECT().Push(gomock.Any(), plugins.PushOptions{
+					Reference: "ghcr.io/test/plugin:v1",
+					Key:       "/home/dev/cosign.key",
+				}).Return(nil)
 			}
 
 			req := httptest.NewRequest(http.MethodPost, "/push",

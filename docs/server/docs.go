@@ -3842,7 +3842,7 @@ const docTemplate = `{
                         "type": "string"
                     },
                     "key": {
-                        "description": "Key is the path to a cosign private key, resolved on the server's\nfilesystem. Accepted only from a caller on this machine (an IPC\ntransport or a loopback peer); a remote request naming a key is\nrefused with 403, since honoring it would let the caller have the\nserver sign with any key it can read. Use IdentityToken to have a\nremote server sign. Consumers installing the result project-scoped\nmust supply the matching public key on first use (install's\npublic_key)",
+                        "description": "Key is the path to a cosign private key, resolved on the server's\nfilesystem. Accepted only when the request carries the secret capability\nfrom the owner-protected local server discovery file; other requests are\nrefused with 403, since honoring one would let an untrusted caller have\nthe server sign with any key it can read. Use IdentityToken when calling\na remote or manually configured server. Consumers installing the result\nproject-scoped must supply the matching public key on first use\n(install's public_key).",
                         "type": "string"
                     },
                     "no_sign": {
@@ -6794,6 +6794,16 @@ const docTemplate = `{
         "/api/v1beta/plugins/push": {
             "post": {
                 "description": "Push a built plugin artifact to a remote registry",
+                "parameters": [
+                    {
+                        "description": "Local discovery capability (required with request.key)",
+                        "in": "header",
+                        "name": "X-Toolhive-Key-Signing-Capability",
+                        "schema": {
+                            "type": "string"
+                        }
+                    }
+                ],
                 "requestBody": {
                     "content": {
                         "application/json": {
@@ -6834,6 +6844,16 @@ const docTemplate = `{
                             }
                         },
                         "description": "Bad Request"
+                    },
+                    "403": {
+                        "content": {
+                            "application/json": {
+                                "schema": {
+                                    "type": "string"
+                                }
+                            }
+                        },
+                        "description": "Forbidden (key signing requires the local discovery capability)"
                     },
                     "404": {
                         "content": {

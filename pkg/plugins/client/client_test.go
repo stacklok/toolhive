@@ -21,6 +21,7 @@ import (
 	envmocks "github.com/stacklok/toolhive-core/env/mocks"
 	"github.com/stacklok/toolhive-core/httperr"
 	"github.com/stacklok/toolhive/pkg/plugins"
+	"github.com/stacklok/toolhive/pkg/server/discovery"
 	"github.com/stacklok/toolhive/pkg/skills/identitytoken"
 )
 
@@ -490,18 +491,21 @@ func TestPush(t *testing.T) {
 	t.Parallel()
 
 	tests := []struct {
-		name       string
-		opts       plugins.PushOptions
-		wantBody   pushRequest
-		statusCode int
-		wantErr    bool
-		wantCode   int
+		name             string
+		opts             plugins.PushOptions
+		clientCapability string
+		wantCapability   bool
+		wantBody         pushRequest
+		statusCode       int
+		wantErr          bool
+		wantCode         int
 	}{
 		{
-			name:       "success",
-			opts:       plugins.PushOptions{Reference: "ghcr.io/org/my-plugin:v1.0.0", NoSign: true},
-			wantBody:   pushRequest{Reference: "ghcr.io/org/my-plugin:v1.0.0", NoSign: true},
-			statusCode: http.StatusNoContent,
+			name:             "no-sign push does not forward signing capability",
+			opts:             plugins.PushOptions{Reference: "ghcr.io/org/my-plugin:v1.0.0", NoSign: true},
+			clientCapability: "must-not-be-sent",
+			wantBody:         pushRequest{Reference: "ghcr.io/org/my-plugin:v1.0.0", NoSign: true},
+			statusCode:       http.StatusNoContent,
 		},
 		{
 			// Guards the DTO trap: the signing fields must reach the wire
@@ -515,16 +519,17 @@ func TestPush(t *testing.T) {
 				Reference:     "ghcr.io/org/my-plugin:v1.0.0",
 				IdentityToken: "a.b.c",
 			},
-			statusCode: http.StatusNoContent,
+			clientCapability: "must-not-be-sent",
+			statusCode:       http.StatusNoContent,
 		},
 		{
-			// Same guard for the key: a field dropped here would answer a
-			// key-signed push with an unsigned publish.
-			name: "forwards key",
+			name: "key push forwards signing capability",
 			opts: plugins.PushOptions{
 				Reference: "ghcr.io/org/my-plugin:v1.0.0",
 				Key:       "/tmp/cosign.key",
 			},
+			clientCapability: "protected-discovery-capability",
+			wantCapability:   true,
 			wantBody: pushRequest{
 				Reference: "ghcr.io/org/my-plugin:v1.0.0",
 				Key:       "/tmp/cosign.key",
@@ -547,6 +552,11 @@ func TestPush(t *testing.T) {
 			srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 				assert.Equal(t, http.MethodPost, r.Method)
 				assert.Equal(t, pluginsBasePath+"/push", r.URL.Path)
+				if tt.wantCapability {
+					assert.Equal(t, tt.clientCapability, r.Header.Get(discovery.KeySigningCapabilityHeader))
+				} else {
+					assert.Empty(t, r.Header.Values(discovery.KeySigningCapabilityHeader))
+				}
 
 				if tt.wantBody.Reference != "" {
 					var got pushRequest
@@ -560,9 +570,9 @@ func TestPush(t *testing.T) {
 				}
 				w.WriteHeader(tt.statusCode)
 			}))
-			defer srv.Close()
+			t.Cleanup(srv.Close)
 
-			c := newTestClient(t, srv)
+			c := NewClient(srv.URL, WithKeySigningCapability(tt.clientCapability))
 			err := c.Push(t.Context(), tt.opts)
 
 			if tt.wantErr {
@@ -809,6 +819,7 @@ func TestNewDefaultClient(t *testing.T) {
 
 		c := newDefaultClientWithEnv(t.Context(), mockEnv, noDiscovery)
 		assert.Equal(t, defaultBaseURL, c.baseURL)
+		assert.Empty(t, c.keySigningCapability)
 	})
 
 	t.Run("uses TOOLHIVE_API_URL from env", func(t *testing.T) {
@@ -820,6 +831,8 @@ func TestNewDefaultClient(t *testing.T) {
 
 		c := newDefaultClientWithEnv(t.Context(), mockEnv, failDiscovery(t))
 		assert.Equal(t, "http://localhost:9999", c.baseURL)
+		assert.Empty(t, c.keySigningCapability,
+			"an arbitrary environment URL must not inherit a local discovery secret")
 	})
 
 	t.Run("uses discovered server when env is empty", func(t *testing.T) {
@@ -830,10 +843,13 @@ func TestNewDefaultClient(t *testing.T) {
 		mockEnv.EXPECT().Getenv(envAPITimeout).Return("").AnyTimes()
 
 		discover := func(context.Context) (string, []Option) {
-			return "http://127.0.0.1:54321", nil
+			return "http://127.0.0.1:54321", []Option{
+				WithKeySigningCapability("protected-discovery-capability"),
+			}
 		}
 		c := newDefaultClientWithEnv(t.Context(), mockEnv, discover)
 		assert.Equal(t, "http://127.0.0.1:54321", c.baseURL)
+		assert.Equal(t, "protected-discovery-capability", c.keySigningCapability)
 	})
 
 	t.Run("applies options", func(t *testing.T) {
@@ -1223,6 +1239,25 @@ func TestPushRefusesIdentityTokenOverRemotePlaintext(t *testing.T) {
 	assert.False(t, rt.called)
 }
 
+// TestPushRefusesKeySigningCapabilityOverRemotePlaintext pins that the local
+// discovery secret never crosses a plaintext connection to a remote server.
+func TestPushRefusesKeySigningCapabilityOverRemotePlaintext(t *testing.T) {
+	t.Parallel()
+
+	rt := &recordingTransport{t: t}
+	c := NewClient("http://api.example.test:8080",
+		WithHTTPClient(&http.Client{Transport: rt}),
+		WithKeySigningCapability("protected-discovery-capability"))
+
+	err := c.Push(t.Context(), plugins.PushOptions{
+		Reference: "ghcr.io/org/my-plugin:v1.0.0",
+		Key:       "/home/user/cosign.key",
+	})
+	require.Error(t, err)
+	assert.ErrorIs(t, err, identitytoken.ErrInsecureTransport)
+	assert.False(t, rt.called)
+}
+
 // TestPushUnsignedOverRemotePlaintextIsAllowed: the guard is about the
 // credential, not the endpoint. A --no-sign push carries nothing worth
 // protecting, so it must not be blocked by the same check.
@@ -1234,7 +1269,7 @@ func TestPushUnsignedOverRemotePlaintextIsAllowed(t *testing.T) {
 		hits++
 		w.WriteHeader(http.StatusNoContent)
 	}))
-	defer srv.Close()
+	t.Cleanup(srv.Close)
 
 	c := NewClient(srv.URL)
 	require.NoError(t, c.Push(t.Context(), plugins.PushOptions{
@@ -1263,12 +1298,12 @@ func TestPushDoesNotFollowRedirectsWithIdentityToken(t *testing.T) {
 		}
 		w.WriteHeader(http.StatusNoContent)
 	}))
-	defer second.Close()
+	t.Cleanup(second.Close)
 
 	first := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		http.Redirect(w, r, second.URL+r.URL.Path, http.StatusTemporaryRedirect)
 	}))
-	defer first.Close()
+	t.Cleanup(first.Close)
 
 	c := NewClient(first.URL)
 	err := c.Push(t.Context(), plugins.PushOptions{
@@ -1279,4 +1314,38 @@ func TestPushDoesNotFollowRedirectsWithIdentityToken(t *testing.T) {
 	assert.ErrorIs(t, err, identitytoken.ErrInsecureTransport)
 	assert.Zero(t, secondHits, "the redirect target must never be contacted")
 	assert.False(t, secondSawToken, "the identity token must never leave the approved origin")
+}
+
+// TestPushDoesNotFollowRedirectsWithKeySigningCapability proves a server
+// cannot redirect the discovery capability to another origin. A 307 would
+// otherwise preserve the push body and Go's default redirect handling copies
+// the custom header to the next request.
+func TestPushDoesNotFollowRedirectsWithKeySigningCapability(t *testing.T) {
+	t.Parallel()
+
+	var secondHits int
+	var secondSawCapability bool
+	second := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		secondHits++
+		secondSawCapability = r.Header.Get(discovery.KeySigningCapabilityHeader) != ""
+		w.WriteHeader(http.StatusNoContent)
+	}))
+	t.Cleanup(second.Close)
+
+	first := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		assert.Equal(t, "protected-discovery-capability",
+			r.Header.Get(discovery.KeySigningCapabilityHeader))
+		http.Redirect(w, r, second.URL+r.URL.Path, http.StatusTemporaryRedirect)
+	}))
+	t.Cleanup(first.Close)
+
+	c := NewClient(first.URL, WithKeySigningCapability("protected-discovery-capability"))
+	err := c.Push(t.Context(), plugins.PushOptions{
+		Reference: "ghcr.io/org/artifact:v1.0.0",
+		Key:       "/home/user/cosign.key",
+	})
+	require.Error(t, err)
+	assert.ErrorIs(t, err, identitytoken.ErrInsecureTransport)
+	assert.Zero(t, secondHits, "the redirect target must never be contacted")
+	assert.False(t, secondSawCapability, "the capability must never leave the approved origin")
 }

@@ -123,8 +123,9 @@ instead. `--no-sign` is the explicit unsigned alternative.
 
 A signed push stages content at its immutable digest, attaches the signature,
 and only then promotes the requested tag. A signing failure therefore does not
-leave the requested tag resolving to unsigned content. Identity tokens are not
-sent over non-loopback HTTP and token-bearing requests do not follow redirects.
+leave the requested tag resolving to unsigned content. Neither credential — the
+identity token or the key-signing capability — is sent over non-loopback HTTP,
+and credential-bearing requests do not follow redirects.
 
 ### 4. Installation
 
@@ -242,6 +243,13 @@ from neither the artifact nor its bundle, consumers must receive it out of band
 and pass `--public-key` on their first project-scoped install. Keyless signing
 needs no such step, since the signer identity is verifiable from the artifact
 itself.
+
+Key signing is accepted only through automatic local server discovery. The
+owner-protected discovery file supplies a separate random capability that the
+CLI sends with the key-bearing request; loopback or IPC transport alone is not
+authorization, because a public reverse proxy can make an untrusted caller
+appear local. Remote and manually configured API URLs must use keyless signing
+instead.
 
 The lock file is repository-editable policy. Review changes to `provenance`,
 `publicKey`, `unsigned`, `digest`, and `resolvedReference` as carefully as the

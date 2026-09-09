@@ -20,6 +20,7 @@ import (
 	"github.com/stacklok/toolhive-core/httperr"
 	"github.com/stacklok/toolhive/pkg/plugins"
 	plugmocks "github.com/stacklok/toolhive/pkg/plugins/mocks"
+	"github.com/stacklok/toolhive/pkg/server/discovery"
 	"github.com/stacklok/toolhive/pkg/storage"
 )
 
@@ -31,6 +32,7 @@ func TestPluginsRouter(t *testing.T) {
 		method         string
 		path           string
 		body           string
+		capability     string
 		setupMock      func(*plugmocks.MockPluginService, string)
 		expectedStatus int
 		expectedBody   string
@@ -491,10 +493,11 @@ func TestPluginsRouter(t *testing.T) {
 			// than decode into the request struct and get dropped: quietly
 			// publishing unsigned in answer to "sign this with my key" is the
 			// failure this forwarding prevents.
-			name:   "push plugin forwards key",
-			method: "POST",
-			path:   "/push",
-			body:   `{"reference":"ghcr.io/test/plugin:v1","key":"/tmp/cosign.key"}`,
+			name:       "push plugin forwards key",
+			method:     "POST",
+			path:       "/push",
+			body:       `{"reference":"ghcr.io/test/plugin:v1","key":"/tmp/cosign.key"}`,
+			capability: "protected-discovery-capability",
 			setupMock: func(svc *plugmocks.MockPluginService, _ string) {
 				svc.EXPECT().Push(gomock.Any(), plugins.PushOptions{
 					Reference: "ghcr.io/test/plugin:v1",
@@ -668,15 +671,14 @@ func TestPluginsRouter(t *testing.T) {
 			tt.setupMock(mockSvc, projectRoot)
 
 			router := chi.NewRouter()
-			router.Mount("/", PluginsRouter(mockSvc))
+			router.Mount("/", PluginsRouter(mockSvc,
+				WithKeySigningCapability("protected-discovery-capability")))
 
 			req := httptest.NewRequest(tt.method, path, strings.NewReader(body))
 			req.Header.Set("Content-Type", "application/json")
-			// httptest defaults RemoteAddr to a non-loopback address, which
-			// requireLocalKeySigning refuses for a key-bearing push. These
-			// cases exercise routing and decoding rather than that guard —
-			// TestPluginsRouter_RemoteKeyPushRejectedBeforeDispatch owns it.
-			req.RemoteAddr = "127.0.0.1:53124"
+			if tt.capability != "" {
+				req.Header.Set(discovery.KeySigningCapabilityHeader, tt.capability)
+			}
 			rec := httptest.NewRecorder()
 
 			router.ServeHTTP(rec, req)

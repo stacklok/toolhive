@@ -37,6 +37,8 @@ func TestAIPluginPushSigningFlags(t *testing.T) {
 	assert.Empty(t, aiPluginPushCmd.Flags().Lookup("identity-token").DefValue)
 	assert.Contains(t, aiPluginPushCmd.Flags().Lookup("key").Usage, "--public-key",
 		"--key must tell publishers consumers need --public-key on first install")
+	assert.Contains(t, aiPluginPushCmd.Flags().Lookup("key").Usage, "locally discovered ToolHive server",
+		"--key must explain that remote and manually configured API URLs cannot use server-side keys")
 	assert.Contains(t, aiPluginPushCmd.Flags().Lookup("identity-token").Usage, "Mutually exclusive with --key",
 		"the two signing methods are mutually exclusive and the help must say so")
 }

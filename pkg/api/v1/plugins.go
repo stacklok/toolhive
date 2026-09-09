@@ -341,7 +341,7 @@ func (s *PluginsRoutes) pushPlugin(w http.ResponseWriter, r *http.Request) error
 
 	// Checked before dispatch: the service would otherwise open the key.
 	// Same guard as skills/push — a private-key path is resolved by THIS
-	// process, so a remote caller naming one would be asking the server to
+	// process, so an untrusted caller naming one would be asking the server to
 	// sign with a key it never supplied.
 	if err := requireKeySigningCapability(r, s.keySigningCapability, req.Key); err != nil {
 		return err

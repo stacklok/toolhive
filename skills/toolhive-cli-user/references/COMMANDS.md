@@ -566,8 +566,9 @@ thv ai-plugin push [flags] REFERENCE
 
 | Flag | Description |
 |------|-------------|
+| `--key` | Path to a cosign private key; requires the locally discovered ToolHive server |
 | `--identity-token` | OIDC identity token or path to a token file |
-| `--no-sign` | Publish unsigned instead of keyless signing |
+| `--no-sign` | Publish unsigned instead of signing |
 
 ### thv ai-plugin install
 

@@ -36,6 +36,24 @@ func TestNewHTTPProxy(t *testing.T) {
 	assert.NotNil(t, proxy.responseCh)
 }
 
+func TestWritePendingSSEProgressDrainsBeforeFinalResponse(t *testing.T) {
+	proxy := NewHTTPProxy("localhost", 8080, nil, nil)
+	progressCh := make(chan jsonrpc2.Message, 1)
+	progress, err := jsonrpc2.NewNotification("notifications/progress", map[string]any{
+		"progressToken": "client-token",
+		"progress":      1,
+	})
+	require.NoError(t, err)
+	progressCh <- progress
+
+	recorder := httptest.NewRecorder()
+	flusher, ok := any(recorder).(http.Flusher)
+	require.True(t, ok)
+	require.False(t, proxy.writePendingSSEProgress(recorder, flusher, progressCh))
+	assert.Contains(t, recorder.Body.String(), "notifications/progress")
+	assert.Len(t, progressCh, 0)
+}
+
 // TestProxyChannelCommunication tests basic proxy channel communication
 //
 //nolint:paralleltest // Test modifies shared proxy state

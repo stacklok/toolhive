@@ -109,24 +109,6 @@ func (r *SPIFFEAssociationRegistry) Resolve(
 	), nil
 }
 
-// staticClient returns the configured immutable OAuth client for clientID.
-func (r *SPIFFEAssociationRegistry) staticClient(clientID string) (*registration.SPIFFEClient, bool, error) {
-	if r == nil {
-		return nil, false, nil
-	}
-	association, ok := r.byClientID[clientID]
-	if !ok {
-		return nil, false, nil
-	}
-	policy := association.AuthorizationPolicy()
-	client, err := registration.NewSPIFFEClient(
-		association.ClientID(), policy.GrantTypes(), policy.Scopes(), policy.Audiences(), policy.Resources(),
-	)
-	if err != nil {
-		return nil, false, fmt.Errorf("SPIFFE client %q: %w", clientID, err)
-	}
-	return client, true, nil
-}
 
 func (r *SPIFFEAssociationRegistry) permitsGrant(grant string) bool {
 	if r == nil {

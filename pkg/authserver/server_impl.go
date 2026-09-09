@@ -427,11 +427,11 @@ func newSPIFFEClientResolver(
 		if err != nil {
 			return nil, err
 		}
-		staticClient, ok := client.(*registration.SPIFFEClient)
-		if !ok || staticClient == nil {
+		wrapper, ok := client.(spiffeStaticClient)
+		if !ok || wrapper.SPIFFEClient == nil {
 			return nil, fmt.Errorf("SPIFFE client %q is not a static SPIFFE client", principal.ClientID())
 		}
-		return registration.NewAuthenticatedSPIFFEClient(staticClient, principal)
+		return registration.NewAuthenticatedSPIFFEClient(wrapper.SPIFFEClient, principal)
 	}
 }
 

@@ -93,10 +93,10 @@ func TestSPIFFEClientResolver(t *testing.T) {
 			t.Cleanup(func() { _ = store.Close() })
 			client := tt.client
 			if client == nil {
-				var found bool
-				var err error
-				client, found, err = registry.staticClient(tt.clientID)
+				staticClients, err := registry.staticClients()
 				require.NoError(t, err)
+				var found bool
+				client, found = staticClients[tt.clientID]
 				require.True(t, found)
 			}
 			require.NoError(t, store.RegisterClient(context.Background(), client))

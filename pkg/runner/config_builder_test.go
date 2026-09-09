@@ -360,6 +360,94 @@ func TestRunConfigBuilder_Build_WithVolumeMounts(t *testing.T) {
 	}
 }
 
+func TestRunConfigBuilder_Build_IsolatesImageMetadataPermissionProfile(t *testing.T) {
+	t.Parallel()
+
+	baseRead := permissions.MountDeclaration(t.TempDir() + ":/base-read")
+	baseWrite := permissions.MountDeclaration(t.TempDir() + ":/base-write")
+	profile := &permissions.Profile{
+		Name:  "shared-profile",
+		Read:  append(make([]permissions.MountDeclaration, 0, 2), baseRead),
+		Write: append(make([]permissions.MountDeclaration, 0, 2), baseWrite),
+		Network: &permissions.NetworkPermissions{
+			Mode: "none",
+			Outbound: &permissions.OutboundNetworkPermissions{
+				AllowHost: []string{"registry.example.com"},
+				AllowPort: []int{443},
+			},
+			Inbound: &permissions.InboundNetworkPermissions{
+				AllowHost: []string{"127.0.0.1"},
+			},
+		},
+	}
+	imageMetadata := &regtypes.ImageMetadata{
+		BaseServerMetadata: regtypes.BaseServerMetadata{Name: "shared-image"},
+		Permissions:        profile,
+	}
+	expectedCallerProfile := &permissions.Profile{
+		Name:  "shared-profile",
+		Read:  []permissions.MountDeclaration{baseRead},
+		Write: []permissions.MountDeclaration{baseWrite},
+		Network: &permissions.NetworkPermissions{
+			Mode: "none",
+			Outbound: &permissions.OutboundNetworkPermissions{
+				AllowHost: []string{"registry.example.com"},
+				AllowPort: []int{443},
+			},
+			Inbound: &permissions.InboundNetworkPermissions{
+				AllowHost: []string{"127.0.0.1"},
+			},
+		},
+	}
+
+	firstRead := permissions.MountDeclaration(t.TempDir() + ":/first-read")
+	firstWrite := permissions.MountDeclaration(t.TempDir() + ":/first-write")
+	secondRead := permissions.MountDeclaration(t.TempDir() + ":/second-read")
+	secondWrite := permissions.MountDeclaration(t.TempDir() + ":/second-write")
+
+	build := func(t *testing.T, mode string, read, write permissions.MountDeclaration) *RunConfig {
+		t.Helper()
+
+		config, err := NewRunConfigBuilder(
+			context.Background(),
+			imageMetadata,
+			nil,
+			&mockEnvVarValidator{},
+			WithNetworkMode(mode),
+			WithVolumes([]string{string(read) + ":ro", string(write)}),
+		)
+		require.NoError(t, err)
+		require.NotNil(t, config.PermissionProfile)
+		return config
+	}
+
+	first := build(t, "host", firstRead, firstWrite)
+	second := build(t, "bridge", secondRead, secondWrite)
+
+	assert.Equal(t, expectedCallerProfile, profile, "building configs must not mutate the metadata-owned profile")
+	assert.Equal(t, []permissions.MountDeclaration{baseRead, firstRead}, first.PermissionProfile.Read)
+	assert.Equal(t, []permissions.MountDeclaration{baseWrite, firstWrite}, first.PermissionProfile.Write)
+	assert.Equal(t, "host", first.PermissionProfile.Network.Mode)
+	assert.Equal(t, []permissions.MountDeclaration{baseRead, secondRead}, second.PermissionProfile.Read)
+	assert.Equal(t, []permissions.MountDeclaration{baseWrite, secondWrite}, second.PermissionProfile.Write)
+	assert.Equal(t, "bridge", second.PermissionProfile.Network.Mode)
+
+	first.PermissionProfile.Read[0] = permissions.MountDeclaration("/mutated:/read")
+	first.PermissionProfile.Write[0] = permissions.MountDeclaration("/mutated:/write")
+	first.PermissionProfile.Network.Mode = "mutated"
+	first.PermissionProfile.Network.Outbound.AllowHost[0] = "mutated.example.com"
+	first.PermissionProfile.Network.Outbound.AllowPort[0] = 8443
+	first.PermissionProfile.Network.Inbound.AllowHost[0] = "0.0.0.0"
+
+	assert.Equal(t, expectedCallerProfile, profile, "returned profiles must not share storage with the metadata-owned profile")
+	assert.Equal(t, baseRead, second.PermissionProfile.Read[0], "returned read slices must not share backing storage")
+	assert.Equal(t, baseWrite, second.PermissionProfile.Write[0], "returned write slices must not share backing storage")
+	assert.Equal(t, "bridge", second.PermissionProfile.Network.Mode, "returned network profiles must not alias")
+	assert.Equal(t, []string{"registry.example.com"}, second.PermissionProfile.Network.Outbound.AllowHost)
+	assert.Equal(t, []int{443}, second.PermissionProfile.Network.Outbound.AllowPort)
+	assert.Equal(t, []string{"127.0.0.1"}, second.PermissionProfile.Network.Inbound.AllowHost)
+}
+
 // createTempProfileFile creates a temporary JSON profile file with the provided content
 // and returns its path. The caller is responsible for removing the file using the
 // returned cleanup function.

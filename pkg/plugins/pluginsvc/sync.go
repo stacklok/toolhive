@@ -404,13 +404,14 @@ func (s *service) syncUnlockedInstall(
 }
 
 // verifyStoredSignature re-verifies the Sigstore bundle stored with an
-// installed plugin against the identity its lock entry records — entirely
-// offline, via the embedded trust root, so sync never contacts a registry to
-// decide whether an entry is current. An entry recorded unsigned has nothing
-// to verify. A recorded identity with no stored bundle fails closed for OCI
-// installs (the bundle should exist); git installs never store a bundle —
-// their signature lives on the commit and is re-verified when content is
-// re-resolved.
+// installed plugin against the trust anchor its lock entry records — a
+// certificate identity, or a cosign public key for a key-pinned entry —
+// entirely offline, via the embedded trust root, so sync never contacts a
+// registry to decide whether an entry is current. An entry recorded unsigned
+// has nothing to verify. A recorded anchor with no stored bundle fails closed
+// for OCI installs (the bundle should exist); git installs never store a
+// bundle — their signature lives on the commit and is re-verified when
+// content is re-resolved.
 //
 // An entry carrying neither a signer identity nor unsigned: true is reported
 // as drift rather than accepted. Every install and adoption path records
@@ -443,10 +444,34 @@ func (s *service) verifyStoredSignature(entry lockfile.Entry, pl plugins.Install
 		if !strings.Contains(entry.Digest, ":") {
 			return nil // git install: no stored bundle by design
 		}
-		return fmt.Errorf("%w: lock entry records signer %q but no bundle is stored",
-			verifier.ErrSignatureInvalid, entry.Provenance.SignerIdentity)
+		return fmt.Errorf("%w: lock entry is pinned to %s but no bundle is stored",
+			verifier.ErrSignatureInvalid, lockedAnchorDescription(entry.Provenance))
+	}
+	if entry.Provenance.PublicKey != "" {
+		return s.verifyStoredKeySignature(entry, pl)
 	}
 	return s.artifactVerifier().VerifyBundleOffline(pl.SigstoreBundle, entry.Digest, entry.Provenance)
+}
+
+// verifyStoredKeySignature re-verifies a key-signed stored bundle against the
+// public key its lock entry pins. Without this the keyless path rejects the
+// entry outright, and sync reads that as drift it can heal by reinstalling —
+// so a key-pinned plugin reported as modified on every run and never settled,
+// while --check failed permanently on a project that was in fact intact.
+//
+// What the signature is checked against is the lock entry's digest — the
+// artifact the project is pinned to. A cosign signature covers a
+// simple-signing payload rather than the artifact, but that payload is stored
+// with the bundle, so it is recovered from there and checked to name this
+// digest. Nothing is rebuilt from a reference: a payload reconstructed from a
+// reference verifies against whatever that reference claims, which is exactly
+// the check a signature lifted from another artifact passes.
+func (s *service) verifyStoredKeySignature(entry lockfile.Entry, pl plugins.InstalledPlugin) error {
+	pubKeyPEM, err := verifier.DecodePublicKey(entry.Provenance.PublicKey)
+	if err != nil {
+		return fmt.Errorf("%w: lock entry's pinned %s", verifier.ErrSignatureInvalid, err.Error())
+	}
+	return s.artifactVerifier().VerifyBundleOfflineWithKey(pl.SigstoreBundle, entry.Digest, pubKeyPEM)
 }
 
 // adoptLocked writes a lock entry for an existing, unmanaged project-scope
@@ -533,11 +558,34 @@ func (s *service) adoptLocked(ctx context.Context, opts plugins.SyncOptions, pl 
 // exists its identity is back-filled into the lock entry, and when it does not
 // adopting is the same trust decision as an unsigned install — it records an
 // explicit unsigned exception, which the caller must have opted into.
+//
+// A key-signed bundle is the one case with no landing place: it reveals no
+// identity to back-fill and does not carry the key that would anchor it, so it
+// is refused rather than recorded as unsigned.
 func (s *service) adoptionTrust(
 	opts plugins.SyncOptions, pl plugins.InstalledPlugin,
 ) (*lockfile.Provenance, bool, error) {
 	if len(pl.SigstoreBundle) > 0 {
 		result, err := s.artifactVerifier().ResultFromBundle(pl.SigstoreBundle, pl.Digest)
+		if errors.Is(err, verifier.ErrKeySigned) {
+			// Adoption back-fills trust from what the bundle itself reveals,
+			// and a key-signed bundle reveals nothing: the key is not in it,
+			// and sync takes no --public-key to supply one. Recording the
+			// install as unsigned instead would be a lie about a signed
+			// artifact, so the honest move is to send it through the one
+			// path that can anchor it.
+			return nil, false, httperr.WithCode(
+				fmt.Errorf("%w: plugin %q is signed with a cosign key pair, so adopting it cannot"+
+					" record a trust anchor — the key is carried neither by the artifact nor by its"+
+					" bundle. Install it project-scoped against the key instead, which verifies the"+
+					" signature and pins it: `thv ai-plugin install %s --scope project --public-key"+
+					" <path-or-base64>` (add --project-root if you are not in the project directory;"+
+					" --public-key applies only project-scoped, and --allow-unsigned is not a"+
+					" substitute because the artifact is signed)",
+					err, pl.Metadata.Name, pl.Metadata.Name),
+				http.StatusForbidden,
+			)
+		}
 		if err != nil {
 			return nil, false, fmt.Errorf("verifying stored bundle for adoption: %w", err)
 		}

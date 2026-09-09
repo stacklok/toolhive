@@ -596,10 +596,79 @@ func TestBuildPureOAuth2Config(t *testing.T) {
 		assert.Equal(t, "https://example.com/token", cfg.TokenEndpoint)
 		assert.Equal(t, "my-client-id", cfg.ClientID)
 		assert.Equal(t, "my-client-secret", cfg.ClientSecret)
+		assert.Equal(t, oauthproto.TokenEndpointAuthMethodClientSecretBasic, cfg.TokenEndpointAuthMethod)
 		assert.Equal(t, "https://my-app.com/callback", cfg.RedirectURI)
 		assert.Equal(t, []string{"read", "write"}, cfg.Scopes)
 		require.NotNil(t, cfg.UserInfo)
 		assert.Equal(t, "https://example.com/userinfo", cfg.UserInfo.EndpointURL)
+	})
+
+	t.Run("leaves TokenEndpointAuthMethod empty for public client without secret", func(t *testing.T) {
+		t.Parallel()
+
+		rc := &authserver.UpstreamRunConfig{
+			Type: authserver.UpstreamProviderTypeOAuth2,
+			OAuth2Config: &authserver.OAuth2UpstreamRunConfig{
+				AuthorizationEndpoint: "https://example.com/authorize",
+				TokenEndpoint:         "https://example.com/token",
+				ClientID:              "my-client-id",
+				RedirectURI:           "https://my-app.com/callback",
+			},
+		}
+
+		cfg, err := buildPureOAuth2Config(rc, false)
+		require.NoError(t, err)
+		require.NotNil(t, cfg)
+		assert.Empty(t, cfg.TokenEndpointAuthMethod)
+	})
+
+	t.Run("preserves explicit client_secret_post over the client_secret_basic default", func(t *testing.T) {
+		t.Parallel()
+
+		tmpDir := t.TempDir()
+		secretFile := filepath.Join(tmpDir, "client-secret")
+		require.NoError(t, os.WriteFile(secretFile, []byte("my-client-secret"), 0600))
+
+		rc := &authserver.UpstreamRunConfig{
+			Type: authserver.UpstreamProviderTypeOAuth2,
+			OAuth2Config: &authserver.OAuth2UpstreamRunConfig{
+				AuthorizationEndpoint:   "https://example.com/authorize",
+				TokenEndpoint:           "https://example.com/token",
+				ClientID:                "my-client-id",
+				ClientSecretFile:        secretFile,
+				RedirectURI:             "https://my-app.com/callback",
+				TokenEndpointAuthMethod: oauthproto.TokenEndpointAuthMethodClientSecretPost,
+			},
+		}
+
+		cfg, err := buildPureOAuth2Config(rc, false)
+		require.NoError(t, err)
+		require.NotNil(t, cfg)
+		assert.Equal(t, oauthproto.TokenEndpointAuthMethodClientSecretPost, cfg.TokenEndpointAuthMethod)
+	})
+
+	t.Run("rejects client_secret_basic when the secret file resolves to empty", func(t *testing.T) {
+		t.Parallel()
+
+		tmpDir := t.TempDir()
+		secretFile := filepath.Join(tmpDir, "empty-secret")
+		require.NoError(t, os.WriteFile(secretFile, []byte("   \n"), 0600))
+
+		rc := &authserver.UpstreamRunConfig{
+			Type: authserver.UpstreamProviderTypeOAuth2,
+			OAuth2Config: &authserver.OAuth2UpstreamRunConfig{
+				AuthorizationEndpoint:   "https://example.com/authorize",
+				TokenEndpoint:           "https://example.com/token",
+				ClientID:                "my-client-id",
+				ClientSecretFile:        secretFile,
+				RedirectURI:             "https://my-app.com/callback",
+				TokenEndpointAuthMethod: oauthproto.TokenEndpointAuthMethodClientSecretBasic,
+			},
+		}
+
+		_, err := buildPureOAuth2Config(rc, false)
+		require.Error(t, err)
+		assert.Contains(t, err.Error(), "requires a non-empty client secret")
 	})
 
 	t.Run("propagates AdditionalAuthorizationParams", func(t *testing.T) {

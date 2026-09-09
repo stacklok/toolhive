@@ -1772,6 +1772,18 @@ spec:
                                 token endpoint.
                               pattern: ^https?://.*$
                               type: string
+                            tokenEndpointAuthMethod:
+                              description: |-
+                                TokenEndpointAuthMethod selects how the client authenticates at the OAuth token
+                                endpoint. When empty and a client secret is configured, client_secret_basic is
+                                used, matching the RFC 7591 default for confidential clients. Set this to
+                                client_secret_post only for providers that require credentials in the request body.
+                                Public clients without a secret use the "none" method.
+                              enum:
+                              - none
+                              - client_secret_basic
+                              - client_secret_post
+                              type: string
                             tokenResponseMapping:
                               description: |-
                                 TokenResponseMapping configures custom field extraction from non-standard token responses.
@@ -4560,6 +4572,18 @@ spec:
                               description: TokenEndpoint is the URL for the OAuth
                                 token endpoint.
                               pattern: ^https?://.*$
+                              type: string
+                            tokenEndpointAuthMethod:
+                              description: |-
+                                TokenEndpointAuthMethod selects how the client authenticates at the OAuth token
+                                endpoint. When empty and a client secret is configured, client_secret_basic is
+                                used, matching the RFC 7591 default for confidential clients. Set this to
+                                client_secret_post only for providers that require credentials in the request body.
+                                Public clients without a secret use the "none" method.
+                              enum:
+                              - none
+                              - client_secret_basic
+                              - client_secret_post
                               type: string
                             tokenResponseMapping:
                               description: |-

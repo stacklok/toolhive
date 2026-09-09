@@ -121,13 +121,19 @@ func (t *rateLimitTelemetry) recordRejected(ctx context.Context, check limitChec
 }
 
 func (t *rateLimitTelemetry) recordDecision(ctx context.Context, decision string, check limitCheck) {
-	t.decisions.Add(ctx, 1, metric.WithAttributes(
+	attrs := []attribute.KeyValue{
 		attribute.String("namespace", t.namespace),
 		attribute.String("server", t.serverName),
 		attribute.String("decision", decision),
 		attribute.String("scope", check.scope),
 		attribute.String("operation_type", check.operationType),
-	))
+	}
+	// Only tool-scoped checks carry a tool name. Emitting it blank for server-scoped
+	// decisions would add a label to every series for no information.
+	if check.toolName != "" {
+		attrs = append(attrs, attribute.String("tool_name", check.toolName))
+	}
+	t.decisions.Add(ctx, 1, metric.WithAttributes(attrs...))
 }
 
 func (t *rateLimitTelemetry) recordRedisError(ctx context.Context, err error) {
@@ -159,6 +165,25 @@ func (t *rateLimitTelemetry) recordCheckLatency(ctx context.Context, duration ti
 		attribute.String("namespace", t.namespace),
 		attribute.String("server", t.serverName),
 	))
+}
+
+// recordRateLimitSpanAttribution records who the request belonged to and which tool it
+// targeted. This lives on the span rather than on toolhive_rate_limit_decisions_total
+// because user identity is unbounded: as a metric attribute it would create one time
+// series per caller per bucket. On a span it costs nothing and answers "which user is
+// being throttled", which the counter alone cannot.
+func recordRateLimitSpanAttribution(ctx context.Context, toolName, userID string) {
+	attrs := make([]attribute.KeyValue, 0, 2)
+	if toolName != "" {
+		attrs = append(attrs, attribute.String("rate_limit.tool_name", toolName))
+	}
+	if userID != "" {
+		attrs = append(attrs, attribute.String("rate_limit.user_id", userID))
+	}
+	if len(attrs) == 0 {
+		return
+	}
+	trace.SpanFromContext(ctx).SetAttributes(attrs...)
 }
 
 func recordRateLimitSpanOutcome(ctx context.Context, decision, rejectedBy string, failOpen bool) {

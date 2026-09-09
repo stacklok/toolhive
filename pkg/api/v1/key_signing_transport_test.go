@@ -4,8 +4,11 @@
 package v1
 
 import (
+	"net"
 	"net/http"
 	"net/http/httptest"
+	"net/http/httputil"
+	"net/url"
 	"strings"
 	"testing"
 
@@ -14,64 +17,65 @@ import (
 	"go.uber.org/mock/gomock"
 
 	"github.com/stacklok/toolhive-core/httperr"
+	"github.com/stacklok/toolhive/pkg/server/discovery"
 	skillsmocks "github.com/stacklok/toolhive/pkg/skills/mocks"
 )
 
-// TestRequireLocalKeySigning pins who may name a private key on the server's
-// filesystem. A key-bearing push is a request for THIS process to read a key
-// and sign with it, so the decision rests on the listener and the kernel's
-// view of the peer — never on anything the request can set.
-func TestRequireLocalKeySigning(t *testing.T) {
+func TestRequireKeySigningCapability(t *testing.T) {
 	t.Parallel()
 
+	const capability = "protected-discovery-capability"
 	tests := []struct {
-		name       string
-		key        string
-		local      localTransport
-		remoteAddr string
-		wantAllow  bool
+		name               string
+		key                string
+		expectedCapability string
+		suppliedCapability string
+		remoteAddr         string
+		wantAllow          bool
 	}{
 		{
-			name:       "no key is not a key-signing request",
+			name:       "no key needs no capability",
 			remoteAddr: "203.0.113.7:44321",
 			wantAllow:  true,
 		},
 		{
-			// An IPC peer has no host:port to inspect, so the listener is
-			// the only thing that can vouch for it.
-			name:       "an IPC listener vouches for its peer",
-			key:        "/home/dev/cosign.key",
-			local:      true,
-			remoteAddr: "@",
-			wantAllow:  true,
+			name:               "matching capability authorizes key signing",
+			key:                "/home/dev/cosign.key",
+			expectedCapability: capability,
+			suppliedCapability: capability,
+			remoteAddr:         "203.0.113.7:44321",
+			wantAllow:          true,
 		},
 		{
-			name:       "a loopback TCP peer is on this machine",
-			key:        "/home/dev/cosign.key",
-			remoteAddr: "127.0.0.1:53124",
-			wantAllow:  true,
+			name:               "missing capability is refused",
+			key:                "/home/dev/cosign.key",
+			expectedCapability: capability,
+			remoteAddr:         "203.0.113.7:44321",
 		},
 		{
-			name:       "so is an IPv6 loopback peer",
-			key:        "/home/dev/cosign.key",
-			remoteAddr: "[::1]:53124",
-			wantAllow:  true,
+			name:               "wrong capability is refused",
+			key:                "/home/dev/cosign.key",
+			expectedCapability: capability,
+			suppliedCapability: "wrong-capability",
+			remoteAddr:         "203.0.113.7:44321",
 		},
 		{
-			// The exposure this guard exists for: a non-loopback bind gets
-			// no Origin allowlist and assigns a synthetic local identity, so
-			// this caller is unauthenticated.
-			name:       "a remote peer may not name a key",
-			key:        "/home/dev/cosign.key",
-			remoteAddr: "203.0.113.7:44321",
-			wantAllow:  false,
+			name:               "empty configured capability fails closed",
+			key:                "/home/dev/cosign.key",
+			suppliedCapability: capability,
+			remoteAddr:         "203.0.113.7:44321",
 		},
 		{
-			// Fail closed: a peer this function cannot judge is not local
-			// unless the listener says so.
-			name:      "an unjudgeable peer on a TCP listener is refused",
-			key:       "/home/dev/cosign.key",
-			wantAllow: false,
+			name:               "loopback alone is not authorization",
+			key:                "/home/dev/cosign.key",
+			expectedCapability: capability,
+			remoteAddr:         "127.0.0.1:53124",
+		},
+		{
+			name:               "IPC-shaped peer alone is not authorization",
+			key:                "/home/dev/cosign.key",
+			expectedCapability: capability,
+			remoteAddr:         "@",
 		},
 	}
 	for _, tc := range tests {
@@ -79,8 +83,11 @@ func TestRequireLocalKeySigning(t *testing.T) {
 			t.Parallel()
 			req := httptest.NewRequest(http.MethodPost, "/push", nil)
 			req.RemoteAddr = tc.remoteAddr
+			if tc.suppliedCapability != "" {
+				req.Header.Set(discovery.KeySigningCapabilityHeader, tc.suppliedCapability)
+			}
 
-			err := requireLocalKeySigning(req, tc.local, tc.key)
+			err := requireKeySigningCapability(req, tc.expectedCapability, tc.key)
 			if tc.wantAllow {
 				assert.NoError(t, err)
 				return
@@ -89,61 +96,36 @@ func TestRequireLocalKeySigning(t *testing.T) {
 			assert.Equal(t, http.StatusForbidden, httperr.Code(err))
 			assert.Contains(t, err.Error(), "identity_token",
 				"the refusal must name the credential that does work remotely")
+			assert.NotContains(t, err.Error(), capability)
 		})
 	}
 }
 
-// TestRequireLocalKeySigning_HeadersCannotForgeLocality guards the obvious
-// bypass. RemoteAddr is the kernel's view of the peer; the headers a proxy
-// or a caller can set must not stand in for it.
-func TestRequireLocalKeySigning_HeadersCannotForgeLocality(t *testing.T) {
+func TestSkillsRouter_KeySigningCapabilityCheckedBeforeDispatch(t *testing.T) {
 	t.Parallel()
 
-	for _, header := range []string{"X-Forwarded-For", "X-Real-IP", "Forwarded"} {
-		t.Run(header, func(t *testing.T) {
-			t.Parallel()
-			req := httptest.NewRequest(http.MethodPost, "/push", nil)
-			req.RemoteAddr = "203.0.113.7:44321"
-			req.Header.Set(header, "127.0.0.1")
-
-			err := requireLocalKeySigning(req, false, "/home/dev/cosign.key")
-			require.Error(t, err, "%s must not make a remote caller local", header)
-			assert.Equal(t, http.StatusForbidden, httperr.Code(err))
-		})
-	}
-}
-
-// TestSkillsRouter_RemoteKeyPushRejectedBeforeDispatch runs the guard through
-// the real router. The mock has no expectations, so reaching the service at
-// all fails the test: the refusal has to land before anything opens the key.
-func TestSkillsRouter_RemoteKeyPushRejectedBeforeDispatch(t *testing.T) {
-	t.Parallel()
-
+	const capability = "protected-discovery-capability"
 	tests := []struct {
-		name       string
-		opts       []RouterOption
-		remoteAddr string
-		body       string
-		wantStatus int
+		name               string
+		suppliedCapability string
+		remoteAddr         string
+		wantStatus         int
 	}{
 		{
-			name:       "remote caller naming a key",
-			remoteAddr: "203.0.113.7:44321",
-			body:       `{"reference":"ghcr.io/test/skill:v1","key":"/home/dev/cosign.key"}`,
+			name:       "loopback caller without capability",
+			remoteAddr: "127.0.0.1:53124",
 			wantStatus: http.StatusForbidden,
 		},
 		{
-			name:       "IPC listener permits the same request",
-			opts:       []RouterOption{WithLocalTransport(true)},
+			name:       "IPC-shaped caller without capability",
 			remoteAddr: "@",
-			body:       `{"reference":"ghcr.io/test/skill:v1","key":"/home/dev/cosign.key"}`,
-			wantStatus: http.StatusNoContent,
+			wantStatus: http.StatusForbidden,
 		},
 		{
-			name:       "loopback caller permits the same request",
-			remoteAddr: "127.0.0.1:53124",
-			body:       `{"reference":"ghcr.io/test/skill:v1","key":"/home/dev/cosign.key"}`,
-			wantStatus: http.StatusNoContent,
+			name:               "caller with matching capability",
+			suppliedCapability: capability,
+			remoteAddr:         "203.0.113.7:44321",
+			wantStatus:         http.StatusNoContent,
 		},
 	}
 	for _, tc := range tests {
@@ -155,13 +137,56 @@ func TestSkillsRouter_RemoteKeyPushRejectedBeforeDispatch(t *testing.T) {
 				svc.EXPECT().Push(gomock.Any(), gomock.Any()).Return(nil)
 			}
 
-			req := httptest.NewRequest(http.MethodPost, "/push", strings.NewReader(tc.body))
+			body := `{"reference":"ghcr.io/test/skill:v1","key":"/home/dev/cosign.key"}`
+			req := httptest.NewRequest(http.MethodPost, "/push", strings.NewReader(body))
 			req.Header.Set("Content-Type", "application/json")
+			if tc.suppliedCapability != "" {
+				req.Header.Set(discovery.KeySigningCapabilityHeader, tc.suppliedCapability)
+			}
 			req.RemoteAddr = tc.remoteAddr
 			rec := httptest.NewRecorder()
-			SkillsRouter(svc, tc.opts...).ServeHTTP(rec, req)
+			SkillsRouter(svc, WithKeySigningCapability(capability)).ServeHTTP(rec, req)
 
 			assert.Equal(t, tc.wantStatus, rec.Code, "body: %s", rec.Body.String())
 		})
 	}
+}
+
+// TestSkillsRouter_ReverseProxyCannotForgeKeySigningAuthorization covers the
+// deployment that defeats peer-address checks: an internet-facing reverse
+// proxy reaches the API over loopback, so the backend sees a local TCP peer.
+// The request must still be refused before the service can open the key.
+func TestSkillsRouter_ReverseProxyCannotForgeKeySigningAuthorization(t *testing.T) {
+	t.Parallel()
+
+	ctrl := gomock.NewController(t)
+	svc := skillsmocks.NewMockSkillService(ctrl)
+	router := SkillsRouter(svc, WithKeySigningCapability("protected-discovery-capability"))
+
+	var backendRemoteAddr string
+	backend := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		backendRemoteAddr = r.RemoteAddr
+		router.ServeHTTP(w, r)
+	}))
+	t.Cleanup(backend.Close)
+
+	backendURL, err := url.Parse(backend.URL)
+	require.NoError(t, err)
+	proxy := httptest.NewServer(httputil.NewSingleHostReverseProxy(backendURL))
+	t.Cleanup(proxy.Close)
+
+	body := `{"reference":"ghcr.io/test/skill:v1","key":"/home/dev/cosign.key"}`
+	req, err := http.NewRequestWithContext(t.Context(), http.MethodPost, proxy.URL+"/push", strings.NewReader(body))
+	require.NoError(t, err)
+	req.Header.Set("Content-Type", "application/json")
+	resp, err := http.DefaultClient.Do(req)
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = resp.Body.Close() })
+	assert.Equal(t, http.StatusForbidden, resp.StatusCode)
+
+	host, _, err := net.SplitHostPort(backendRemoteAddr)
+	require.NoError(t, err)
+	ip := net.ParseIP(host)
+	require.NotNil(t, ip)
+	assert.True(t, ip.IsLoopback(), "backend peer %q should demonstrate the proxy appears local", backendRemoteAddr)
 }

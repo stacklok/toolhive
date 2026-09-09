@@ -193,7 +193,12 @@ mutually exclusive choices:
 
 - `--key <path>`: sign with a cosign private key (`COSIGN_PASSWORD`
   decrypts encrypted keys, read server-side by `thv serve`, which performs
-  the signing).
+  the signing). This is accepted only through automatic local server
+  discovery: the owner-protected discovery file supplies a separate random
+  capability that the CLI sends with the key-bearing request. Loopback or IPC
+  transport alone is not authorization, because a public reverse proxy can
+  make an untrusted caller appear local. Remote and manually configured API
+  URLs must use keyless signing instead.
 - `--identity-token <token-or-path>`: sign keylessly. The CLI acquires an
   OIDC identity token and forwards it in the push request; the server
   exchanges it with Fulcio for a short-lived certificate, signs, and records

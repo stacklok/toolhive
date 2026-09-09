@@ -2062,6 +2062,35 @@ func TestBuildOAuth2UpstreamRunConfig_TransportOptions(t *testing.T) {
 	assert.True(t, runConfig.AllowPrivateIPs)
 }
 
+func TestBuildOAuth2UpstreamRunConfig_TokenEndpointAuthMethod(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name   string
+		method string
+	}{
+		{name: "empty passes through unset", method: ""},
+		{name: "client_secret_basic propagates", method: "client_secret_basic"},
+		{name: "client_secret_post propagates", method: "client_secret_post"},
+		{name: "none propagates", method: "none"},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			runConfig, err := buildOAuth2UpstreamRunConfig(&mcpv1beta1.OAuth2UpstreamConfig{
+				AuthorizationEndpoint:   "http://dex.default.svc.cluster.local/auth",
+				TokenEndpoint:           "http://dex.default.svc.cluster.local/token",
+				ClientID:                "client-id",
+				TokenEndpointAuthMethod: tt.method,
+			}, "", "", 0, "")
+			require.NoError(t, err)
+			assert.Equal(t, tt.method, runConfig.TokenEndpointAuthMethod)
+		})
+	}
+}
+
 func TestDelegateClientsConversionAndEnvVars(t *testing.T) {
 	t.Parallel()
 

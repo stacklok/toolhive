@@ -18,6 +18,7 @@ import (
 	"github.com/stacklok/toolhive/pkg/authserver/server/registration"
 	"github.com/stacklok/toolhive/pkg/authserver/server/tokenexchange"
 	"github.com/stacklok/toolhive/pkg/authserver/upstream"
+	"github.com/stacklok/toolhive/pkg/oauthproto"
 )
 
 func TestValidateIssuerURL(t *testing.T) {
@@ -513,6 +514,53 @@ func TestOAuth2UpstreamRunConfigValidate(t *testing.T) {
 			name: "nil IdentityFromToken is valid",
 			config: OAuth2UpstreamRunConfig{
 				ClientID: "c",
+			},
+		},
+
+		// TokenEndpointAuthMethod / client secret source consistency.
+		{
+			name: "unrecognized TokenEndpointAuthMethod rejects",
+			config: OAuth2UpstreamRunConfig{
+				ClientID:                "c",
+				TokenEndpointAuthMethod: "not_a_real_method",
+			},
+			wantErr: true,
+			errMsg:  "unsupported token_endpoint_auth_method",
+		},
+		{
+			name: "none with a configured client secret file rejects",
+			config: OAuth2UpstreamRunConfig{
+				ClientID:                "c",
+				ClientSecretFile:        "/tmp/secret",
+				TokenEndpointAuthMethod: oauthproto.TokenEndpointAuthMethodNone,
+			},
+			wantErr: true,
+			errMsg:  "token_endpoint_auth_method none cannot be used with a client secret",
+		},
+		{
+			name: "client_secret_basic without a secret source rejects",
+			config: OAuth2UpstreamRunConfig{
+				ClientID:                "c",
+				TokenEndpointAuthMethod: oauthproto.TokenEndpointAuthMethodClientSecretBasic,
+			},
+			wantErr: true,
+			errMsg:  `token_endpoint_auth_method "client_secret_basic" requires client_secret_file or client_secret_env_var`,
+		},
+		{
+			name: "client_secret_post without a secret source rejects",
+			config: OAuth2UpstreamRunConfig{
+				ClientID:                "c",
+				TokenEndpointAuthMethod: oauthproto.TokenEndpointAuthMethodClientSecretPost,
+			},
+			wantErr: true,
+			errMsg:  `token_endpoint_auth_method "client_secret_post" requires client_secret_file or client_secret_env_var`,
+		},
+		{
+			name: "client_secret_basic with a client secret env var configured is valid",
+			config: OAuth2UpstreamRunConfig{
+				ClientID:                "c",
+				ClientSecretEnvVar:      "MY_CLIENT_SECRET",
+				TokenEndpointAuthMethod: oauthproto.TokenEndpointAuthMethodClientSecretBasic,
 			},
 		},
 	}

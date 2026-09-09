@@ -26,6 +26,7 @@ import (
 	"github.com/stacklok/toolhive/pkg/authserver/storage"
 	"github.com/stacklok/toolhive/pkg/authserver/upstream"
 	"github.com/stacklok/toolhive/pkg/bodylimit"
+	"github.com/stacklok/toolhive/pkg/oauthproto"
 )
 
 // Redis ACL credential environment variable names.
@@ -823,6 +824,16 @@ func buildPureOAuth2Config(rc *authserver.UpstreamRunConfig, insecureAllowHTTP b
 		return nil, fmt.Errorf("failed to resolve OAuth2 client secret: %w", err)
 	}
 
+	authMethod := oauth2.TokenEndpointAuthMethod
+	if authMethod == "" && clientSecret != "" {
+		authMethod = oauthproto.TokenEndpointAuthMethodClientSecretBasic
+	}
+	if isConfidentialAuthMethod(authMethod) && clientSecret == "" {
+		return nil, fmt.Errorf(
+			"oauth2 upstream: token_endpoint_auth_method %q requires a non-empty client secret, "+
+				"but the configured secret resolved to an empty value", authMethod)
+	}
+
 	cfg := &upstream.OAuth2Config{
 		CommonOAuthConfig: upstream.CommonOAuthConfig{
 			ClientID:                      oauth2.ClientID,
@@ -831,12 +842,13 @@ func buildPureOAuth2Config(rc *authserver.UpstreamRunConfig, insecureAllowHTTP b
 			Scopes:                        oauth2.Scopes,
 			AdditionalAuthorizationParams: oauth2.AdditionalAuthorizationParams,
 		},
-		AuthorizationEndpoint: oauth2.AuthorizationEndpoint,
-		TokenEndpoint:         oauth2.TokenEndpoint,
-		UserInfo:              convertUserInfoConfig(oauth2.UserInfo),
-		CAFilePath:            oauth2.CAFilePath,
-		AllowPrivateIPs:       oauth2.AllowPrivateIPs,
-		InsecureAllowHTTP:     insecureAllowHTTP || oauth2.InsecureAllowHTTP,
+		AuthorizationEndpoint:   oauth2.AuthorizationEndpoint,
+		TokenEndpoint:           oauth2.TokenEndpoint,
+		TokenEndpointAuthMethod: authMethod,
+		UserInfo:                convertUserInfoConfig(oauth2.UserInfo),
+		CAFilePath:              oauth2.CAFilePath,
+		AllowPrivateIPs:         oauth2.AllowPrivateIPs,
+		InsecureAllowHTTP:       insecureAllowHTTP || oauth2.InsecureAllowHTTP,
 	}
 
 	if oauth2.TokenResponseMapping != nil {
@@ -857,6 +869,20 @@ func buildPureOAuth2Config(rc *authserver.UpstreamRunConfig, insecureAllowHTTP b
 	}
 
 	return cfg, nil
+}
+
+// isConfidentialAuthMethod reports whether method requires a client secret to
+// be presented at the token endpoint. Used to catch a secret file that reads
+// successfully but is empty after trimming -- a case OAuth2UpstreamRunConfig.Validate
+// cannot see, since it only knows whether a secret source is configured, not
+// what that source resolves to.
+func isConfidentialAuthMethod(method string) bool {
+	switch method {
+	case oauthproto.TokenEndpointAuthMethodClientSecretBasic, oauthproto.TokenEndpointAuthMethodClientSecretPost:
+		return true
+	default:
+		return false
+	}
 }
 
 // resolveSecret reads a secret from file or environment variable.

@@ -24,6 +24,7 @@ import (
 	appsv1 "k8s.io/api/apps/v1"
 	corev1 "k8s.io/api/core/v1"
 	rbacv1 "k8s.io/api/rbac/v1"
+	"k8s.io/apimachinery/pkg/api/resource"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/types"
@@ -79,6 +80,12 @@ func TestDeploymentForMCPRemoteProxy(t *testing.T) {
 				// Verify service account
 				assert.Equal(t, proxyRunnerServiceAccountNameForRemoteProxy("basic-proxy"),
 					dep.Spec.Template.Spec.ServiceAccountName)
+
+				// Verify default resource requirements when Spec.Resources is empty
+				assert.Equal(t, resource.MustParse("50m"), container.Resources.Requests[corev1.ResourceCPU])
+				assert.Equal(t, resource.MustParse("64Mi"), container.Resources.Requests[corev1.ResourceMemory])
+				assert.Equal(t, resource.MustParse("200m"), container.Resources.Limits[corev1.ResourceCPU])
+				assert.Equal(t, resource.MustParse("256Mi"), container.Resources.Limits[corev1.ResourceMemory])
 			},
 		},
 		{
@@ -104,6 +111,30 @@ func TestDeploymentForMCPRemoteProxy(t *testing.T) {
 				assert.Equal(t, "512Mi", container.Resources.Limits.Memory().String())
 				assert.Equal(t, "100m", container.Resources.Requests.Cpu().String())
 				assert.Equal(t, "128Mi", container.Resources.Requests.Memory().String())
+			},
+		},
+		{
+			name: "with partial resource overrides",
+			proxy: v1beta1test.NewMCPRemoteProxy("partial-resources-proxy", "default",
+				v1beta1test.MutateRemoteProxy(func(p *mcpv1beta1.MCPRemoteProxy) {
+					p.Spec.Resources = mcpv1beta1.ResourceRequirements{
+						Limits: mcpv1beta1.ResourceList{
+							CPU: "1",
+						},
+						Requests: mcpv1beta1.ResourceList{
+							Memory: "128Mi",
+						},
+					}
+				}),
+			),
+			validate: func(t *testing.T, dep *appsv1.Deployment) {
+				t.Helper()
+				container := dep.Spec.Template.Spec.Containers[0]
+				// User-provided fields take precedence; missing fields keep defaults.
+				assert.Equal(t, resource.MustParse("50m"), container.Resources.Requests[corev1.ResourceCPU])
+				assert.Equal(t, resource.MustParse("128Mi"), container.Resources.Requests[corev1.ResourceMemory])
+				assert.Equal(t, resource.MustParse("1"), container.Resources.Limits[corev1.ResourceCPU])
+				assert.Equal(t, resource.MustParse("256Mi"), container.Resources.Limits[corev1.ResourceMemory])
 			},
 		},
 		{
@@ -331,6 +362,84 @@ func TestBuildResourceRequirements(t *testing.T) {
 			}
 		})
 	}
+}
+
+
+// TestResourceRequirementsForRemoteProxy tests default injection and merge behavior
+func TestResourceRequirementsForRemoteProxy(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name     string
+		proxy    *mcpv1beta1.MCPRemoteProxy
+		validate func(*testing.T, corev1.ResourceRequirements)
+	}{
+		{
+			name:  "defaults when resources omitted",
+			proxy: v1beta1test.NewMCPRemoteProxy("defaults-proxy", "default"),
+			validate: func(t *testing.T, res corev1.ResourceRequirements) {
+				t.Helper()
+				assert.Equal(t, resource.MustParse("50m"), res.Requests[corev1.ResourceCPU])
+				assert.Equal(t, resource.MustParse("64Mi"), res.Requests[corev1.ResourceMemory])
+				assert.Equal(t, resource.MustParse("200m"), res.Limits[corev1.ResourceCPU])
+				assert.Equal(t, resource.MustParse("256Mi"), res.Limits[corev1.ResourceMemory])
+			},
+		},
+		{
+			name: "user overrides win over defaults",
+			proxy: v1beta1test.NewMCPRemoteProxy("override-resources-proxy", "default",
+				v1beta1test.MutateRemoteProxy(func(p *mcpv1beta1.MCPRemoteProxy) {
+					p.Spec.Resources = mcpv1beta1.ResourceRequirements{
+						Limits: mcpv1beta1.ResourceList{
+							CPU:    "1",
+							Memory: "512Mi",
+						},
+						Requests: mcpv1beta1.ResourceList{
+							CPU:    "100m",
+							Memory: "128Mi",
+						},
+					}
+				}),
+			),
+			validate: func(t *testing.T, res corev1.ResourceRequirements) {
+				t.Helper()
+				assert.Equal(t, resource.MustParse("100m"), res.Requests[corev1.ResourceCPU])
+				assert.Equal(t, resource.MustParse("128Mi"), res.Requests[corev1.ResourceMemory])
+				assert.Equal(t, resource.MustParse("1"), res.Limits[corev1.ResourceCPU])
+				assert.Equal(t, resource.MustParse("512Mi"), res.Limits[corev1.ResourceMemory])
+			},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			result := resourceRequirementsForRemoteProxy(tt.proxy)
+			if tt.validate != nil {
+				tt.validate(t, result)
+			}
+		})
+	}
+}
+
+// TestMCPRemoteProxyDeploymentNeedsUpdate_Resources detects resource drift with defaults
+func TestMCPRemoteProxyDeploymentNeedsUpdate_Resources(t *testing.T) {
+	t.Parallel()
+
+	scheme := testutil.NewScheme(t)
+	proxy := v1beta1test.NewMCPRemoteProxy("resources-drift-proxy", "default")
+	reconciler := &MCPRemoteProxyReconciler{
+		Scheme:           scheme,
+		PlatformDetector: ctrlutil.NewSharedPlatformDetector(),
+	}
+
+	deployment := reconciler.deploymentForMCPRemoteProxy(t.Context(), proxy, "test-checksum")
+	require.NotNil(t, deployment)
+	assert.False(t, reconciler.deploymentNeedsUpdate(t.Context(), deployment, proxy, "test-checksum"))
+
+	// Simulate a deployment created before defaults existed.
+	deployment.Spec.Template.Spec.Containers[0].Resources = corev1.ResourceRequirements{}
+	assert.True(t, reconciler.deploymentNeedsUpdate(t.Context(), deployment, proxy, "test-checksum"))
 }
 
 // TestBuildHeaderForwardSecretEnvVars tests the buildHeaderForwardSecretEnvVars function

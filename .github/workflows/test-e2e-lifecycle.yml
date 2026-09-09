@@ -83,7 +83,7 @@ jobs:
       uses: helm/kind-action@ef37e7f390d99f746eb8b610417061a60e82a6cc # v1.14.0
       with:
         cluster_name: toolhive
-        version: v0.31.0 # kind
+        version: v0.33.0 # kind
         config: test/e2e/thv-operator/kind-config.yaml
         node_image: ${{ matrix.version }}
 

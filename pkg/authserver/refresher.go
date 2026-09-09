@@ -198,7 +198,7 @@ func (r *upstreamTokenRefresher) refreshAndStore(
 
 	// OIDC Core 1.0 §12.2 permits but does not require a new id_token on refresh.
 	// When the provider omits one, keep the ID token captured at the initial login
-	// so it is not erased from storage. StoreUpstreamTokens replaces the whole row,
+	// so it is not erased from storage. The write below replaces the whole row,
 	// so without this the persisted IDToken would be overwritten with "" and the
 	// original login ID token would be lost for the remainder of the session.
 	// Mirrors the RefreshToken carry-forward above.
@@ -298,7 +298,14 @@ func (r *upstreamTokenRefresher) resolveConcurrentRefreshConflict(
 		"the redeemed refresh token is unrecoverable for this attempt",
 		"session_id", sessionID,
 		"provider_id", providerID,
+		"error", err,
 	)
+	if err != nil {
+		return nil, fmt.Errorf(
+			"concurrent upstream token refresh for session %q provider %q: %w: %w",
+			sessionID, providerID, storage.ErrConcurrentRefresh, err,
+		)
+	}
 	return nil, fmt.Errorf(
 		"concurrent upstream token refresh for session %q provider %q: %w",
 		sessionID, providerID, storage.ErrConcurrentRefresh,

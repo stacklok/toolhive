@@ -1227,7 +1227,18 @@ if existing and existing ~= "null" then
         oldUserID = decoded.user_id
     end
 end
+` + upstreamRowWriteAndIndexScriptBody)
 
+// upstreamRowWriteAndIndexScriptBody is the write-and-index Lua fragment
+// shared verbatim by storeUpstreamTokensScript (unconditional overwrite) and
+// casUpstreamTokensScript (compare-and-swap): it SETs the new value, then
+// maintains the session index set's TTL/PERSIST invariants (see the comment
+// above), then updates the user reverse-index sets. Both scripts read the
+// existing row into oldUserID (and, for the CAS script, existingRefreshToken)
+// before this fragment runs, so it is textually identical between the two —
+// concatenated in Go rather than duplicated, so a future change to one script's
+// write/index behavior cannot silently drift from the other's.
+const upstreamRowWriteAndIndexScriptBody = `
 local ttlMs = tonumber(ARGV[2])
 if ttlMs > 0 then
     redis.call('SET', KEYS[1], ARGV[1], 'PX', ttlMs)
@@ -1295,7 +1306,7 @@ if newUserID ~= "" then
 end
 
 return 1
-`)
+`
 
 // casUpstreamTokensScript is the compare-and-swap sibling of
 // storeUpstreamTokensScript: it additionally gates the write on the existing
@@ -1316,11 +1327,8 @@ return 1
 //
 //	existing row carries no refresh token")
 //
-// The write-and-index body below (from "local ttlMs" through "return 1") is
-// intentionally identical to storeUpstreamTokensScript's — see that script's
-// doc comment for the index-TTL invariants and the Cluster hash-tag
-// requirement, both of which apply here unchanged. Keep the two bodies in
-// sync if either changes.
+// The write-and-index body is shared verbatim with storeUpstreamTokensScript
+// via upstreamRowWriteAndIndexScriptBody — see that constant's doc comment.
 var casUpstreamTokensScript = redis.NewScript(`
 local oldUserID = ""
 local existingRefreshToken = ""
@@ -1340,43 +1348,7 @@ end
 if existingRefreshToken ~= ARGV[5] then
     return 0
 end
-
-local ttlMs = tonumber(ARGV[2])
-if ttlMs > 0 then
-    redis.call('SET', KEYS[1], ARGV[1], 'PX', ttlMs)
-else
-    redis.call('SET', KEYS[1], ARGV[1])
-end
-
-local idxExisted = redis.call('EXISTS', KEYS[2])
-redis.call('SADD', KEYS[2], KEYS[1])
-
-if ttlMs == 0 then
-    redis.call('PERSIST', KEYS[2])
-elseif idxExisted == 0 then
-    redis.call('PEXPIRE', KEYS[2], ttlMs)
-else
-    local idxTTL = redis.call('PTTL', KEYS[2])
-    if idxTTL == -1 then
-        -- A previous non-expiring write PERSIST'd it. Leave it alone.
-    elseif idxTTL < ttlMs then
-        redis.call('PEXPIRE', KEYS[2], ttlMs)
-    end
-end
-
-local newUserID = ARGV[3]
-local setPrefix = ARGV[4]
-
-if oldUserID ~= "" and oldUserID ~= newUserID then
-    redis.call('SREM', setPrefix .. oldUserID, KEYS[1])
-end
-
-if newUserID ~= "" then
-    redis.call('SADD', setPrefix .. newUserID, KEYS[1])
-end
-
-return 1
-`)
+` + upstreamRowWriteAndIndexScriptBody)
 
 // marshalUpstreamTokensWithTTL marshals tokens and calculates TTL.
 func marshalUpstreamTokensWithTTL(tokens *UpstreamTokens) ([]byte, time.Duration, error) {

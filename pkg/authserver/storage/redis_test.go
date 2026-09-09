@@ -2055,13 +2055,13 @@ func TestRedisStorage_CompareAndSwapUpstreamTokens(t *testing.T) {
 	t.Parallel()
 
 	t.Run("matching expected value writes and returns nil", func(t *testing.T) {
-		withRedisStorage(t, func(ctx context.Context, s *RedisStorage, _ *miniredis.Miniredis) {
+		withRedisStorage(t, func(ctx context.Context, s *RedisStorage, mr *miniredis.Miniredis) {
 			require.NoError(t, s.StoreUpstreamTokens(ctx, "session", "provider-a", &UpstreamTokens{
-				AccessToken: "old-access", RefreshToken: "old-refresh", ExpiresAt: time.Now().Add(time.Hour),
+				AccessToken: "old-access", RefreshToken: "old-refresh", UserID: "user-1", ExpiresAt: time.Now().Add(time.Hour),
 			}))
 
 			err := s.CompareAndSwapUpstreamTokens(ctx, "session", "provider-a", "old-refresh", &UpstreamTokens{
-				AccessToken: "new-access", RefreshToken: "new-refresh", ExpiresAt: time.Now().Add(time.Hour),
+				AccessToken: "new-access", RefreshToken: "new-refresh", UserID: "user-2", ExpiresAt: time.Now().Add(time.Hour),
 			})
 			require.NoError(t, err)
 
@@ -2069,6 +2069,30 @@ func TestRedisStorage_CompareAndSwapUpstreamTokens(t *testing.T) {
 			require.NoError(t, err)
 			assert.Equal(t, "new-access", retrieved.AccessToken)
 			assert.Equal(t, "new-refresh", retrieved.RefreshToken)
+
+			// A successful CAS write must run the same index/TTL maintenance as
+			// StoreUpstreamTokens: the shared Lua body (see
+			// upstreamTokenWriteAndIndexScriptBody) must have applied the session
+			// index TTL and rolled the user reverse-index from the old to the new
+			// UserID.
+			key := redisUpstreamKey(s.keyPrefix, "session", "provider-a")
+			idxKey := redisSetKey(s.keyPrefix, KeyTypeUpstreamIdx, "session")
+			assert.Greater(t, mr.TTL(idxKey), time.Duration(0),
+				"session index set must carry a TTL after an expiring CAS write")
+			members, err := mr.SMembers(idxKey)
+			require.NoError(t, err)
+			assert.Contains(t, members, key, "session index set must reference the written row")
+
+			oldUserSetKey := redisSetKey(s.keyPrefix, KeyTypeUserUpstream, "user-1")
+			oldMembers, _ := mr.SMembers(oldUserSetKey)
+			assert.NotContains(t, oldMembers, key,
+				"the old UserID's reverse index must be cleared by a CAS write that changes UserID")
+
+			newUserSetKey := redisSetKey(s.keyPrefix, KeyTypeUserUpstream, "user-2")
+			newMembers, err := mr.SMembers(newUserSetKey)
+			require.NoError(t, err)
+			assert.Contains(t, newMembers, key,
+				"the new UserID's reverse index must be updated by the CAS write")
 		})
 	})
 
@@ -2106,6 +2130,26 @@ func TestRedisStorage_CompareAndSwapUpstreamTokens(t *testing.T) {
 		})
 	})
 
+	t.Run("empty expected value against an already-populated row returns ErrConcurrentRefresh", func(t *testing.T) {
+		withRedisStorage(t, func(ctx context.Context, s *RedisStorage, _ *miniredis.Miniredis) {
+			require.NoError(t, s.StoreUpstreamTokens(ctx, "session", "provider-a", &UpstreamTokens{
+				AccessToken: "existing-access", RefreshToken: "existing-refresh", ExpiresAt: time.Now().Add(time.Hour),
+			}))
+
+			// "" must never be usable to silently overwrite a row that already
+			// carries a refresh token - it only matches a genuinely absent row.
+			err := s.CompareAndSwapUpstreamTokens(ctx, "session", "provider-a", "", &UpstreamTokens{
+				AccessToken: "attacker-access", RefreshToken: "attacker-refresh", ExpiresAt: time.Now().Add(time.Hour),
+			})
+			require.ErrorIs(t, err, ErrConcurrentRefresh)
+
+			retrieved, err := s.GetUpstreamTokens(ctx, "session", "provider-a")
+			require.NoError(t, err)
+			assert.Equal(t, "existing-access", retrieved.AccessToken,
+				"the existing row must survive a mismatched empty-expected CAS attempt")
+		})
+	})
+
 	t.Run("concurrent CAS attempts against the same row - exactly one wins", func(t *testing.T) {
 		withRedisStorage(t, func(ctx context.Context, s *RedisStorage, _ *miniredis.Miniredis) {
 			require.NoError(t, s.StoreUpstreamTokens(ctx, "session", "provider-a", &UpstreamTokens{
@@ -2126,7 +2170,17 @@ func TestRedisStorage_CompareAndSwapUpstreamTokens(t *testing.T) {
 					})
 				}(i)
 			}
-			wg.Wait()
+
+			done := make(chan struct{})
+			go func() {
+				wg.Wait()
+				close(done)
+			}()
+			select {
+			case <-done:
+			case <-time.After(5 * time.Second):
+				t.Fatal("timeout waiting for concurrent CAS attempts")
+			}
 
 			successes, conflicts := 0, 0
 			for _, err := range errs {

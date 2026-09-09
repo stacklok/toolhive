@@ -1230,6 +1230,26 @@ func TestMemoryStorage_CompareAndSwapUpstreamTokens(t *testing.T) {
 		})
 	})
 
+	t.Run("empty expected value against an already-populated row returns ErrConcurrentRefresh", func(t *testing.T) {
+		withStorage(t, func(ctx context.Context, s *MemoryStorage) {
+			require.NoError(t, s.StoreUpstreamTokens(ctx, "session", "provider-a", &UpstreamTokens{
+				AccessToken: "existing-access", RefreshToken: "existing-refresh",
+			}))
+
+			// "" must never be usable to silently overwrite a row that already
+			// carries a refresh token - it only matches a genuinely absent row.
+			err := s.CompareAndSwapUpstreamTokens(ctx, "session", "provider-a", "", &UpstreamTokens{
+				AccessToken: "attacker-access", RefreshToken: "attacker-refresh",
+			})
+			require.ErrorIs(t, err, ErrConcurrentRefresh)
+
+			retrieved, err := s.GetUpstreamTokens(ctx, "session", "provider-a")
+			require.NoError(t, err)
+			assert.Equal(t, "existing-access", retrieved.AccessToken,
+				"the existing row must survive a mismatched empty-expected CAS attempt")
+		})
+	})
+
 	t.Run("empty session ID or provider name is rejected", func(t *testing.T) {
 		withStorage(t, func(ctx context.Context, s *MemoryStorage) {
 			assert.Error(t, s.CompareAndSwapUpstreamTokens(ctx, "", "provider-a", "", &UpstreamTokens{}))

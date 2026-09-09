@@ -957,4 +957,33 @@ func TestUpstreamTokenRefresher_ConcurrentRefreshConflict(t *testing.T) {
 		assert.Nil(t, result)
 		assert.ErrorIs(t, err, storage.ErrConcurrentRefresh)
 	})
+
+	t.Run("winner still expired on re-read - surfaces an error instead of retrying the dead refresh token", func(t *testing.T) {
+		t.Parallel()
+		ctrl := gomock.NewController(t)
+		store := storagemocks.NewMockUpstreamTokenStorage(ctrl)
+		provider := upstreammocks.NewMockOAuth2Provider(ctrl)
+		// The re-read succeeds (no error) but returns a row that is itself still
+		// expired - a materially different shape than the "not found" case above
+		// (nil, err) - and must be treated the same way: unrecoverable for this call.
+		stillExpired := &storage.UpstreamTokens{
+			ProviderID: "github", RefreshToken: "someone-elses-rt", ExpiresAt: time.Now().Add(-time.Hour),
+		}
+
+		store.EXPECT().ResolveUpstreamTokenRowID(gomock.Any(), "session", "github").
+			Return(storage.UpstreamTokenRowID("row"), nil)
+		gomock.InOrder(
+			store.EXPECT().GetUpstreamTokens(gomock.Any(), "session", "github").Return(expired, storage.ErrExpired),
+			store.EXPECT().GetUpstreamTokens(gomock.Any(), "session", "github").Return(stillExpired, nil),
+		)
+		provider.EXPECT().RefreshTokens(gomock.Any(), "stale", "subject").Return(redeemed, nil)
+		store.EXPECT().CompareAndSwapUpstreamTokens(gomock.Any(), "session", "github", "stale", gomock.Any()).
+			Return(storage.ErrConcurrentRefresh)
+
+		refresher := &upstreamTokenRefresher{providers: map[string]upstream.OAuth2Provider{"github": provider}, storage: store}
+		result, err := refresher.RefreshAndStore(context.Background(), "session", expired)
+		require.Error(t, err)
+		assert.Nil(t, result)
+		assert.ErrorIs(t, err, storage.ErrConcurrentRefresh)
+	})
 }

@@ -202,10 +202,21 @@ distinct rows would cross credentials between sessions. This prevents
 duplicate redemption from stale concurrent callers served by the same
 process; the identity is not persisted, logged, or exposed.
 
-This is deliberately narrower than #4122: it does not provide distributed
-coordination across replicas, row-addressed mutation, compare-and-swap, or any
-other cross-process consistency guarantee. Redis remains the durable storage
-backend, while each replica coordinates only its own in-flight refreshes.
+This is deliberately narrower than #4122's original in-process-only scope: it
+does not by itself provide distributed coordination across replicas. That
+coordination now exists as a second, independent layer:
+`UpstreamTokenStorage.CompareAndSwapUpstreamTokens` conditions a refresh write
+on the refresh token currently stored still matching the value the caller
+redeemed with, failing the write (`ErrConcurrentRefresh`) instead of
+overwriting when another replica already rotated the row first. `refreshAndStore`
+writes through this method rather than an unconditional `StoreUpstreamTokens`.
+Redis implements the comparison and the write as one atomic Lua script;
+`MemoryStorage` implements it under its existing mutex. `singleflight` remains
+the process-local optimization described above — it avoids a redundant
+upstream call and Redis round-trip for concurrent requests inside one
+process — while the CAS write is what makes concurrent redemption safe across
+processes. Redis remains the durable storage backend and source of truth for
+which redemption, if more than one raced, actually won.
 
 ### Serialization
 

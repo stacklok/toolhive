@@ -29,6 +29,7 @@ thv vmcp validate [flags]
 
 ```
   -c, --config string   Path to vMCP configuration file (required)
+      --format string   Output format (json, text) (default "text")
   -h, --help            help for validate
 ```
 

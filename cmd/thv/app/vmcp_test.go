@@ -4,6 +4,10 @@
 package app
 
 import (
+	"bytes"
+	"encoding/json"
+	"os"
+	"path/filepath"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
@@ -55,4 +59,49 @@ func TestNewVMCPCommand_InitRegistered(t *testing.T) {
 		}
 	}
 	assert.True(t, found, "expected 'init' to be registered as a subcommand of 'vmcp'")
+}
+
+func TestNewVMCPValidateCommand_FormatFlag(t *testing.T) {
+	t.Parallel()
+
+	cmd := newVMCPValidateCommand()
+	formatFlag := cmd.Flags().Lookup("format")
+	require.NotNil(t, formatFlag, "expected --format flag to be registered")
+	assert.Equal(t, FormatText, formatFlag.DefValue)
+
+	require.NoError(t, formatFlag.Value.Set("yaml"))
+	err := cmd.PreRunE(cmd, nil)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), `invalid format "yaml"`)
+}
+
+func TestNewVMCPValidateCommand_JSONOutput(t *testing.T) {
+	t.Parallel()
+
+	configPath := filepath.Join(t.TempDir(), "vmcp.yaml")
+	require.NoError(t, os.WriteFile(configPath, []byte(`
+name: cli-json-vmcp
+groupRef: cli-json-group
+incomingAuth:
+  type: anonymous
+outgoingAuth:
+  source: inline
+  default:
+    type: unauthenticated
+aggregation:
+  conflictResolution: prefix
+  conflictResolutionConfig:
+    prefixFormat: "{workload}_"
+`), 0o600))
+
+	cmd := newVMCPValidateCommand()
+	var output bytes.Buffer
+	cmd.SetOut(&output)
+	cmd.SetArgs([]string{"--config", configPath, "--format", FormatJSON})
+	require.NoError(t, cmd.Execute())
+
+	var summary map[string]any
+	require.NoError(t, json.Unmarshal(output.Bytes(), &summary))
+	assert.Equal(t, true, summary["valid"])
+	assert.Equal(t, "cli-json-vmcp", summary["name"])
 }

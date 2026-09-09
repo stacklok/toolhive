@@ -368,10 +368,11 @@ func newSPIFFEClientResolver(
 	return func(
 		ctx context.Context, spiffeID, clientID string, method spiffeauth.SPIFFEAuthenticationMethod,
 	) (fosite.Client, error) {
-		if _, err := registry.Resolve(spiffeID, clientID, method); err != nil {
+		principal, err := registry.Resolve(spiffeID, clientID, method)
+		if err != nil {
 			return nil, err
 		}
-		return stor.GetClient(ctx, clientID)
+		return stor.GetClient(ctx, principal.ClientID())
 	}
 }
 

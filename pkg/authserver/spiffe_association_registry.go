@@ -26,6 +26,12 @@ type SPIFFEAssociationRegistry struct {
 // NewSPIFFEAssociationRegistry creates an immutable lookup registry from a
 // trust configuration. A nil trust configuration represents an absent SPIFFE
 // configuration and returns nil without enabling SPIFFE clients.
+//
+// It rejects any two associations whose patterns could both match the same
+// concrete SPIFFE ID (including an exact duplicate, which is the identical
+// pattern matching itself) — associationForSPIFFEID resolves wildcard
+// patterns by an unordered map scan, so an unrejected overlap would make
+// resolution depend on random iteration order.
 func NewSPIFFEAssociationRegistry(trust *SPIFFETrustConfig) (*SPIFFEAssociationRegistry, error) {
 	if trust == nil {
 		return nil, nil
@@ -37,11 +43,16 @@ func NewSPIFFEAssociationRegistry(trust *SPIFFETrustConfig) (*SPIFFEAssociationR
 		byClientID: make(map[string]SPIFFEClientAuthConfig, len(associations)),
 	}
 	for _, association := range associations {
-		if _, exists := registry.byPattern[association.Principal()]; exists {
-			return nil, fmt.Errorf("duplicate SPIFFE association pattern %q", association.Principal())
-		}
 		if _, exists := registry.byClientID[association.ClientID()]; exists {
 			return nil, fmt.Errorf("duplicate SPIFFE association client ID %q", association.ClientID())
+		}
+		for existingPattern := range registry.byPattern {
+			if spiffePatternsOverlap(association.Principal(), existingPattern) {
+				return nil, fmt.Errorf(
+					"SPIFFE association pattern %q overlaps with existing pattern %q: resolution would be ambiguous",
+					association.Principal(), existingPattern,
+				)
+			}
 		}
 		registry.byPattern[association.Principal()] = association.clone()
 		registry.byClientID[association.ClientID()] = association.clone()
@@ -86,8 +97,11 @@ func (p NormalizedSPIFFEPrincipal) AuthorizationPolicy() SPIFFEAuthorizationPoli
 
 // Resolve selects a configured association for a canonical concrete SPIFFE ID,
 // requested OAuth client ID, and explicitly selected authentication method.
-// It fails closed for unknown IDs, mismatched client ownership, and disabled
-// methods. This method does not validate a credential.
+// When clientID is empty, the client ID is derived entirely from the
+// resolved SPIFFE association (the "optional client ID" case); otherwise
+// clientID must match the association's client ID. It fails closed for
+// unknown IDs, mismatched client ownership, and disabled methods. This
+// method does not validate a credential.
 func (r *SPIFFEAssociationRegistry) Resolve(
 	spiffeID, clientID string, method SPIFFEAuthenticationMethod,
 ) (NormalizedSPIFFEPrincipal, error) {
@@ -106,16 +120,12 @@ func (r *SPIFFEAssociationRegistry) Resolve(
 	if !ok {
 		return NormalizedSPIFFEPrincipal{}, fmt.Errorf("no SPIFFE association for ID %q", canonicalID)
 	}
-	clientAssociation, ok := r.byClientID[clientID]
-	if !ok {
-		return NormalizedSPIFFEPrincipal{}, fmt.Errorf("no SPIFFE association for client ID %q", clientID)
-	}
-	if clientAssociation.ClientID() != association.ClientID() {
+	if clientID != "" && association.ClientID() != clientID {
 		return NormalizedSPIFFEPrincipal{}, fmt.Errorf("SPIFFE ID is not associated with client ID %q", clientID)
 	}
 	if !containsSPIFFEAuthenticationMethod(association.Methods(), method) {
 		return NormalizedSPIFFEPrincipal{}, fmt.Errorf(
-			"SPIFFE authentication method %q is not enabled for client ID %q", method, clientID,
+			"SPIFFE authentication method %q is not enabled for client ID %q", method, association.ClientID(),
 		)
 	}
 

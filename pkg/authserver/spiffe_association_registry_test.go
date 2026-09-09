@@ -23,18 +23,24 @@ func TestSPIFFEAssociationRegistryResolve(t *testing.T) {
 	registry := newTestSPIFFEAssociationRegistry(t, []SPIFFEClientAuthRunConfig{exact, wildcard, other})
 
 	tests := []struct {
-		name      string
-		registry  *SPIFFEAssociationRegistry
-		spiffeID  string
-		clientID  string
-		method    SPIFFEAuthenticationMethod
-		wantScope string
-		wantErr   string
+		name         string
+		registry     *SPIFFEAssociationRegistry
+		spiffeID     string
+		clientID     string
+		method       SPIFFEAuthenticationMethod
+		wantClientID string
+		wantScope    string
+		wantErr      string
 	}{
 		{
 			name: "exact identity", registry: registry,
 			spiffeID: "spiffe://example.org/ns/default/agent", clientID: "exact-client",
 			method: SPIFFEAuthenticationMethodX509, wantScope: "openid",
+		},
+		{
+			name: "empty client ID derives from association", registry: registry,
+			spiffeID: "spiffe://example.org/ns/default/agent", clientID: "",
+			method: SPIFFEAuthenticationMethodX509, wantScope: "openid", wantClientID: "exact-client",
 		},
 		{
 			name: "wildcard identity", registry: registry,
@@ -64,7 +70,7 @@ func TestSPIFFEAssociationRegistryResolve(t *testing.T) {
 		{
 			name: "unknown client", registry: registry,
 			spiffeID: "spiffe://example.org/ns/default/agent", clientID: "missing-client",
-			method: SPIFFEAuthenticationMethodX509, wantErr: "no SPIFFE association for client ID",
+			method: SPIFFEAuthenticationMethodX509, wantErr: "not associated with client ID",
 		},
 		{
 			name: "disabled method", registry: registry,
@@ -89,7 +95,11 @@ func TestSPIFFEAssociationRegistryResolve(t *testing.T) {
 				return
 			}
 			require.NoError(t, err)
-			assert.Equal(t, tt.clientID, principal.ClientID())
+			wantClientID := tt.wantClientID
+			if wantClientID == "" {
+				wantClientID = tt.clientID
+			}
+			assert.Equal(t, wantClientID, principal.ClientID())
 			assert.Equal(t, tt.spiffeID, principal.SPIFFEID())
 			assert.Equal(t, "example.org", principal.TrustDomain())
 			assert.Equal(t, tt.method, principal.AuthenticationMethod())
@@ -268,6 +278,76 @@ func TestSPIFFEAssociationFingerprintFieldsDoNotConcatenateAmbiguously(t *testin
 	a := fingerprintSPIFFEAssociation(SPIFFEClientAuthConfig{trustDomainRef: "12", principal: "3"})
 	b := fingerprintSPIFFEAssociation(SPIFFEClientAuthConfig{trustDomainRef: "1", principal: "23"})
 	assert.NotEqual(t, a, b, "length prefixing must keep field boundaries unambiguous")
+}
+
+// TestNewSPIFFEAssociationRegistryRejectsOverlappingPatterns proves
+// NewSPIFFEAssociationRegistry itself fails closed when two associations'
+// patterns could both match the same concrete SPIFFE ID, since resolution at
+// runtime would otherwise depend on random map iteration order. It builds the
+// SPIFFETrustConfig directly (bypassing NewSPIFFETrustConfig's own upstream
+// overlap validation) so the registry constructor's defense is exercised on
+// its own, as it must be for any other in-package caller that builds a
+// SPIFFETrustConfig without going through that validation.
+func TestNewSPIFFEAssociationRegistryRejectsOverlappingPatterns(t *testing.T) {
+	t.Parallel()
+
+	wildcard := testNormalizedSPIFFEAssociation("wildcard-client", "spiffe://example.org/ns/workloads/*")
+	narrowerWildcard := testNormalizedSPIFFEAssociation("narrower-client", "spiffe://example.org/ns/workloads/agent/*")
+	exactUnderWildcard := testNormalizedSPIFFEAssociation("exact-client", "spiffe://example.org/ns/workloads/agent")
+	other := testNormalizedSPIFFEAssociation("other-client", "spiffe://example.org/ns/other/*")
+
+	tests := []struct {
+		name         string
+		associations []SPIFFEClientAuthConfig
+		wantErr      string
+	}{
+		{
+			name:         "overlapping wildcards",
+			associations: []SPIFFEClientAuthConfig{wildcard, narrowerWildcard},
+			wantErr:      "overlaps with existing pattern",
+		},
+		{
+			name:         "exact pattern added after covering wildcard",
+			associations: []SPIFFEClientAuthConfig{wildcard, exactUnderWildcard},
+			wantErr:      "overlaps with existing pattern",
+		},
+		{
+			name:         "exact pattern added before covering wildcard",
+			associations: []SPIFFEClientAuthConfig{exactUnderWildcard, wildcard},
+			wantErr:      "overlaps with existing pattern",
+		},
+		{
+			name:         "non-overlapping wildcards succeed",
+			associations: []SPIFFEClientAuthConfig{wildcard, other},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			trust := &SPIFFETrustConfig{associations: tt.associations}
+			registry, err := NewSPIFFEAssociationRegistry(trust)
+			if tt.wantErr != "" {
+				require.Error(t, err)
+				assert.Contains(t, err.Error(), tt.wantErr)
+				assert.Nil(t, registry)
+				return
+			}
+			require.NoError(t, err)
+			assert.NotNil(t, registry)
+		})
+	}
+}
+
+func testNormalizedSPIFFEAssociation(clientID, principal string) SPIFFEClientAuthConfig {
+	return SPIFFEClientAuthConfig{
+		trustDomainRef: "production",
+		principal:      principal,
+		clientID:       clientID,
+		methods:        []SPIFFEAuthenticationMethod{SPIFFEAuthenticationMethodX509},
+		authorization:  SPIFFEAuthorizationPolicy{scopes: []string{"openid"}},
+	}
 }
 
 func newTestSPIFFEAssociationRegistry(t *testing.T, associations []SPIFFEClientAuthRunConfig) *SPIFFEAssociationRegistry {

@@ -575,6 +575,14 @@ func TestNewSPIFFEClientResolver(t *testing.T) {
 			spiffeID: "spiffe://example.org/ns/other/agent", clientID: "client",
 		},
 		{
+			name: "empty client ID resolves via association", registry: registry,
+			spiffeID: "spiffe://example.org/ns/default/agent", clientID: "",
+			setupStore: func(store *storagemocks.MockStorage) {
+				store.EXPECT().GetClient(gomock.Any(), "client").Return(client, nil)
+			},
+			wantClient: true,
+		},
+		{
 			name: "storage error is propagated", registry: registry,
 			spiffeID: "spiffe://example.org/ns/default/agent", clientID: "client",
 			setupStore: func(store *storagemocks.MockStorage) {

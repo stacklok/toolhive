@@ -292,6 +292,31 @@ func TestEnabled(t *testing.T) {
 	initialized.Store(false)
 }
 
+// TestNoPIIDataCollection guards the replacement for the deprecated
+// SendDefaultPII=false against being loosened by accident. Every assertion here
+// is a PII decision, not a style preference.
+func TestNoPIIDataCollection(t *testing.T) {
+	t.Parallel()
+
+	dc := noPIIDataCollection()
+
+	assert.True(t, dc.UserInfo.IsSet, "UserInfo must be set explicitly, or the SDK defaults it to true")
+	assert.False(t, dc.UserInfo.Value, "user info must not be auto-populated")
+	assert.Empty(t, dc.HTTPBodies, "request and response bodies must never be collected")
+	assert.Equal(t, gosentry.CollectionOff, dc.Cookies.Mode, "cookies must not be collected")
+
+	// Headers and query params are collected but scrubbed, so each needs the
+	// extended deny-list the SDK only applies via the deprecated flag.
+	for name, behavior := range map[string]*gosentry.KeyValueCollectionBehavior{
+		"request headers":  dc.HTTPHeaders.Request,
+		"response headers": dc.HTTPHeaders.Response,
+		"query params":     dc.QueryParams,
+	} {
+		assert.Equal(t, gosentry.CollectionDenyList, behavior.Mode, "%s: mode", name)
+		assert.Equal(t, piiSensitiveTerms, behavior.Terms, "%s: deny-list terms", name)
+	}
+}
+
 // resetSentryForTest clears the package and registry state Init mutates, both
 // before the test runs and after it finishes.
 func resetSentryForTest(t *testing.T) {

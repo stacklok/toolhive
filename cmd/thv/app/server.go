@@ -131,12 +131,17 @@ var serveCmd = &cobra.Command{
 		if err != nil {
 			return err
 		}
+		keySigningCapability, err := s.GenerateKeySigningCapability()
+		if err != nil {
+			return err
+		}
 		builder := s.NewServerBuilder().
 			WithAddress(address).
 			WithUnixSocket(isUnixSocket).
 			WithDebugMode(debugMode).
 			WithDocs(enableDocs).
 			WithNonce(nonce).
+			WithKeySigningCapability(keySigningCapability).
 			WithOIDCConfig(oidcConfig).
 			WithOtelEnabled(otelEnabled)
 

@@ -460,7 +460,13 @@ func isAllowedUnsigned(verifyErr error, opts skills.InstallOptions, expected *lo
 	if !errors.Is(verifyErr, verifier.ErrUnsigned) || expected != nil {
 		return false
 	}
-	return opts.AllowUnsigned || lockDrivenInstall(opts)
+	// A lock-driven install honors the trust state the entry records — but
+	// under allow_signer_change the caller has just cleared that state to
+	// re-verify from scratch, so a nil expectation here says nothing about
+	// what the entry recorded. Granting on it would let the signer-change
+	// override double as unsigned consent, converting a signer-pinned entry
+	// into an unsigned one with no --allow-unsigned ever given.
+	return opts.AllowUnsigned || (lockDrivenInstall(opts) && !opts.AllowSignerChange)
 }
 
 // lockDrivenInstall reports whether this install materializes an existing

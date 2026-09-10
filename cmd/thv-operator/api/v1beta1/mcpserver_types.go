@@ -380,6 +380,12 @@ type MCPServerSpec struct {
 	// +optional
 	EndpointPrefix string `json:"endpointPrefix,omitempty"`
 
+	// MaxRequestBodySize is the maximum inbound MCP proxy request body size in bytes.
+	// Zero uses the default limit of 8 MiB.
+	// +kubebuilder:validation:Minimum=0
+	// +optional
+	MaxRequestBodySize int64 `json:"maxRequestBodySize,omitempty"`
+
 	// GroupRef references the MCPGroup this server belongs to.
 	// The referenced MCPGroup must be in the same namespace.
 	// +optional
@@ -420,6 +426,15 @@ type MCPServerSpec struct {
 	// Requires Redis session storage to be configured for distributed rate limiting.
 	// +optional
 	RateLimiting *ratelimittypes.RateLimitConfig `json:"rateLimiting,omitempty"`
+
+	// ProxyReadTimeout bounds how long the proxy spends reading a full request
+	// (headers + body), mitigating slow-upload connection exhaustion. Applies to
+	// all transports. Defaults to 30s if not specified. Example: "1m".
+	// +kubebuilder:validation:Type=string
+	// +kubebuilder:validation:Format=duration
+	// +kubebuilder:validation:XValidation:rule="duration(self) >= duration('0s')",message="proxyReadTimeout must be non-negative"
+	// +optional
+	ProxyReadTimeout *metav1.Duration `json:"proxyReadTimeout,omitempty"`
 }
 
 // ResourceOverrides defines overrides for annotations and labels on created resources

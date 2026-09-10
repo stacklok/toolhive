@@ -85,12 +85,13 @@ func TestValidateSPIFFETrust(t *testing.T) {
 	t.Parallel()
 
 	valid := func() ([]SPIFFETrustDomainRunConfig, *InboundGrantsRunConfig) {
-		return []SPIFFETrustDomainRunConfig{{
+		domains := []SPIFFETrustDomainRunConfig{{
 			Name:         "production",
 			TrustDomain:  "example.org",
 			Methods:      []SPIFFEAuthenticationMethod{SPIFFEAuthenticationMethodX509, SPIFFEAuthenticationMethodJWT},
 			BundleSource: validWorkloadAPIBundleSource(),
-		}}, &InboundGrantsRunConfig{SPIFFEClientAuth: []SPIFFEClientAuthRunConfig{{
+		}}
+		grants := &InboundGrantsRunConfig{SPIFFEClientAuth: []SPIFFEClientAuthRunConfig{{
 			TrustDomainRef:   "production",
 			PrincipalPattern: "spiffe://example.org/ns/default/*",
 			ClientID:         "agent-client",
@@ -99,6 +100,7 @@ func TestValidateSPIFFETrust(t *testing.T) {
 			Scopes:           []string{"openid"},
 			GrantTypes:       []string{SPIFFEGrantTypeTokenExchange},
 		}}}
+		return domains, grants
 	}
 
 	tests := []struct {
@@ -149,6 +151,15 @@ func TestValidateSPIFFETrust(t *testing.T) {
 		}},
 		{name: "resource indicator must be an absolute HTTP(S) URI", mutate: func(_ []SPIFFETrustDomainRunConfig, grants *InboundGrantsRunConfig) {
 			grants.SPIFFEClientAuth[0].Resources = []string{"not-a-uri"}
+		}, wantErr: "must be an absolute HTTP(S) URI"},
+		{name: "resource indicator with empty-host authority is rejected", mutate: func(_ []SPIFFETrustDomainRunConfig, grants *InboundGrantsRunConfig) {
+			grants.SPIFFEClientAuth[0].Resources = []string{"https://:443/resource"}
+		}, wantErr: "must be an absolute HTTP(S) URI"},
+		{name: "resource indicator with userinfo is rejected", mutate: func(_ []SPIFFETrustDomainRunConfig, grants *InboundGrantsRunConfig) {
+			grants.SPIFFEClientAuth[0].Resources = []string{"https://user@mcp.example.org/resource"}
+		}, wantErr: "must be an absolute HTTP(S) URI"},
+		{name: "resource indicator with fragment is rejected", mutate: func(_ []SPIFFETrustDomainRunConfig, grants *InboundGrantsRunConfig) {
+			grants.SPIFFEClientAuth[0].Resources = []string{"https://mcp.example.org/resource#fragment"}
 		}, wantErr: "must be an absolute HTTP(S) URI"},
 		{name: "resource in global allowlist is valid", mutate: func(_ []SPIFFETrustDomainRunConfig, grants *InboundGrantsRunConfig) {
 			grants.SPIFFEClientAuth[0].Resources = []string{"https://mcp.example.org/resource"}

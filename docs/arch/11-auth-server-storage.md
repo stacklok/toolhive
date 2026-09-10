@@ -202,10 +202,39 @@ distinct rows would cross credentials between sessions. This prevents
 duplicate redemption from stale concurrent callers served by the same
 process; the identity is not persisted, logged, or exposed.
 
-This is deliberately narrower than #4122: it does not provide distributed
-coordination across replicas, row-addressed mutation, compare-and-swap, or any
-other cross-process consistency guarantee. Redis remains the durable storage
-backend, while each replica coordinates only its own in-flight refreshes.
+This is deliberately narrower than #4122's original in-process-only scope: it
+does not by itself provide distributed coordination across replicas. That
+coordination now exists as a second, independent layer:
+`UpstreamTokenStorage.CompareAndSwapUpstreamTokens` conditions a refresh write
+on the refresh token currently stored still matching the value the caller
+redeemed with, failing the write (`ErrConcurrentRefresh`) instead of
+overwriting when another replica already rotated the row first. `refreshAndStore`
+writes through this method rather than an unconditional `StoreUpstreamTokens`.
+Redis implements the comparison and the write as one atomic Lua script;
+`MemoryStorage` implements it under its existing mutex. `singleflight` remains
+the process-local optimization described above — it avoids a redundant
+upstream call and Redis round-trip for concurrent requests inside one
+process — while the CAS write is what makes the *stored* row deterministic
+across processes: whichever replica's write lands first wins, and every
+losing replica's write fails instead of silently clobbering it.
+
+This is a storage-ordering guarantee, not a guarantee that concurrent
+redemption is safe at the upstream provider. Both replicas still call
+`provider.RefreshTokens` before either one's CAS write runs, so for a
+provider enforcing strict single-use rotation (RFC 9700 §4.14.2 replay
+detection), two concurrent redemptions of the same refresh token can still
+be indistinguishable from a replay at the IdP, which may revoke the grant
+regardless of which replica's write wins here. CAS is fully sufficient only
+where the provider tolerates a short grace/leeway window in which more than
+one redeemed child stays valid (e.g. Read.ai's stated behavior) — outside
+that window, closing the gap requires serializing the *redemption* itself
+(a distributed lock around the read-redeem-write sequence), not just the
+write. That lock is a deliberate follow-up, not implemented here: this layer
+only prevents storage corruption from a lost write race, and its own log
+distinguishes a genuine lost race (an unexpired row on re-read) from a row
+that is simply gone (deleted by logout or evicted by TTL, `ErrNotFound` on
+re-read) — the latter is expected behavior, not a race, and refuses to
+resurrect the deleted row.
 
 ### Serialization
 
@@ -431,3 +460,19 @@ All call sites use `unwrapStorage(stor)` or the equivalent JWT-bearer constructi
 When the embedded authorization server is deployed in an environment that cannot reach `https://toolhive.dev/oauth/client-metadata.json` or any public CIMD metadata URL, set `authServer.cimd.enabled: false`. Clients will fall back to DCR (`/oauth/register`) which uses only the local storage backend and requires no outbound connectivity.
 
 **Implementation:** `pkg/authserver/storage/cimd_decorator.go`
+
+## SPIFFE Storage Decorator
+
+**Current status: not reachable in this build.** `RunConfig.Validate()` rejects any non-empty `spiffeTrustDomains`/`inboundGrants.spiffeClientAuth` before the authorization-server runner is created (`validateSPIFFENotYetEnforced` in `pkg/authserver/config.go`; `pkg/authserver/runner/embeddedauthserver.go`), so storage creation and decorator installation never happen. The decorator, overlay, and durable-reservation behavior below is the design this epic has implemented and tested in isolation, not current operational behavior — see [SPIFFE Association Declarations](18-spiffe-association-declarations.md) for the full status.
+
+When top-level `spiffeTrustDomains` and `inboundGrants.spiffeClientAuth` are configured, the embedded authorization server wraps its storage backend in a `SPIFFEStorageDecorator` — installed as the outermost decorator, after CIMD (`decorateStorageForSPIFFE` in `pkg/authserver/server_impl.go`). This decorator overlays a fixed set of statically configured OAuth clients ahead of the dynamic DCR/CIMD backend. These declarations register associations and clients; the current server does not yet verify live X.509-SVIDs or JWT-SVIDs.
+
+### What it does
+
+`SPIFFEStorageDecorator` embeds the full `storage.Storage` interface and overrides `GetClient`, `RegisterClient`, and `ReconcileConfiguredClient`. `GetClient` checks its static client map first and only falls through to the wrapped storage (CIMD, then DCR) when the requested client ID is not one of the configured associations. `RegisterClient` and `ReconcileConfiguredClient` reject any DCR, delegate-client, or configured-client attempt that targets a client ID reserved by a static SPIFFE association. CIMD never calls `RegisterClient`; it durably persists resolved clients via `UpsertDCRIssuedClient` instead (a best-effort write-through for token-endpoint session rehydration — see the CIMD section above), which explicitly refuses to clobber a configured/SPIFFE-reconciled client at the same ID, so it cannot collide with a static association.
+
+Its clients come entirely from the configured SPIFFE trust-domain and client-association declarations (see [SPIFFE Association Declarations](18-spiffe-association-declarations.md)). They are built once at startup, held in memory, and never written to the storage backend (memory or Redis); they are never eligible for dynamic registration or replacement.
+
+At startup, the decorator durably claims each configured static client ID in the storage backend (memory or Redis) via `ReconcileConfiguredClient` (`preflightDurableCollisions`), using an inert placeholder rather than the real client. This is create-only for anything except a matching restart: it succeeds when the ID is unclaimed or already holds a matching placeholder from a prior run with the same configuration, and fails — refusing to start the server — when the ID is DCR-issued or holds a placeholder for a *different* association. This closes a cross-replica race that a read-only `GetClient` check alone cannot: with Redis and multiple replicas, an older or still-rolling replica without this SPIFFE config could otherwise DCR-register the same client ID after a newer replica's read-only check passed. The reverse collision can't happen: the decorator's `GetClient` always checks its static map first, so a durable client can never shadow a static one.
+
+**Implementation:** `pkg/authserver/storage/spiffe_decorator.go`

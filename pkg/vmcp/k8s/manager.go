@@ -25,6 +25,7 @@ import (
 
 	mcpv1beta1 "github.com/stacklok/toolhive/cmd/thv-operator/api/v1beta1"
 	"github.com/stacklok/toolhive/pkg/vmcp"
+	"github.com/stacklok/toolhive/pkg/vmcp/config"
 	"github.com/stacklok/toolhive/pkg/vmcp/workloads"
 )
 
@@ -61,6 +62,10 @@ type BackendWatcher struct {
 	// registry is the DynamicRegistry to update when backends change
 	registry vmcp.DynamicRegistry
 
+	// outgoingAuth is the vMCP config-level outgoing auth configuration,
+	// applied to reconciled backends with startup-discovery semantics (may be nil)
+	outgoingAuth *config.OutgoingAuthConfig
+
 	// mu protects the started field for thread-safe access
 	mu sync.Mutex
 
@@ -79,6 +84,10 @@ type BackendWatcher struct {
 //   - namespace: Namespace to watch for resources
 //   - groupRef: MCPGroup reference in "namespace/name" format
 //   - registry: DynamicRegistry to update when backends change
+//   - outgoingAuth: vMCP config-level outgoing auth configuration, applied to
+//     every reconciled backend with the same precedence startup discovery uses
+//     (discovered CR-side auth first, then backends[<name>], then Default).
+//     May be nil: reconciled backends then keep only their discovered auth.
 //
 // Returns:
 //   - *BackendWatcher: Configured watcher ready to Start()
@@ -88,7 +97,7 @@ type BackendWatcher struct {
 //
 //	restConfig, _ := rest.InClusterConfig()
 //	registry := vmcp.NewDynamicRegistry(initialBackends)
-//	watcher, err := k8s.NewBackendWatcher(restConfig, "default", "default/my-group", registry)
+//	watcher, err := k8s.NewBackendWatcher(restConfig, "default", "default/my-group", registry, cfg.OutgoingAuth)
 //	if err != nil {
 //	    return err
 //	}
@@ -101,6 +110,7 @@ func NewBackendWatcher(
 	namespace string,
 	groupRef string,
 	registry vmcp.DynamicRegistry,
+	outgoingAuth *config.OutgoingAuthConfig,
 ) (*BackendWatcher, error) {
 	if cfg == nil {
 		return nil, fmt.Errorf("rest config cannot be nil")
@@ -151,11 +161,12 @@ func NewBackendWatcher(
 	}
 
 	return &BackendWatcher{
-		ctrlManager: ctrlManager,
-		namespace:   namespace,
-		groupRef:    groupRef,
-		registry:    registry,
-		started:     false,
+		ctrlManager:  ctrlManager,
+		namespace:    namespace,
+		groupRef:     groupRef,
+		registry:     registry,
+		outgoingAuth: outgoingAuth,
+		started:      false,
 	}, nil
 }
 
@@ -295,11 +306,12 @@ func (w *BackendWatcher) addBackendWatchController(ctx context.Context) error {
 
 	// Create backend reconciler with references to namespace, groupRef, and registry
 	reconciler := &BackendReconciler{
-		Client:     w.ctrlManager.GetClient(),
-		Namespace:  w.namespace,
-		GroupRef:   w.groupRef,
-		Registry:   w.registry,
-		Discoverer: discoverer,
+		Client:       w.ctrlManager.GetClient(),
+		Namespace:    w.namespace,
+		GroupRef:     w.groupRef,
+		Registry:     w.registry,
+		Discoverer:   discoverer,
+		OutgoingAuth: w.outgoingAuth,
 	}
 
 	// Register field indexes required by the reconciler's watch handlers.

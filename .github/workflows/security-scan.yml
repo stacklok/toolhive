@@ -13,6 +13,11 @@ on:
     # Run daily at 2 AM UTC
     - cron: '0 2 * * *'
 
+# Cancel superseded PR runs; keep other events independent.
+concurrency:
+  group: security-scan-${{ github.event.pull_request.number || github.run_id }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
 # security-events: write is granted per job rather than here, so only the two
 # jobs that upload SARIF can write security events.
 permissions:
@@ -33,14 +38,14 @@ jobs:
 
       - name: Run Grype vulnerability scanner
         id: grype-scan
-        uses: anchore/scan-action@e1165082ffb1fe366ebaf02d8526e7c4989ea9d2 # v7.4.0
+        uses: anchore/scan-action@27805bf3b4e84b4a5c980df22ed233c00390a439 # v7.4.2
         with:
           path: "."
           output-format: "sarif"
           fail-build: false
 
       - name: Upload Grype scan results to GitHub Security tab
-        uses: github/codeql-action/upload-sarif@5595ccaf912efad79be6eef63a5619ff05969be3 # v4.37.6
+        uses: github/codeql-action/upload-sarif@b96794f015dfd88f77b49b1c93e0fa7110f94c63 # v4.38.0
         if: always()
         with:
           sarif_file: ${{ steps.grype-scan.outputs.sarif }}
@@ -65,7 +70,7 @@ jobs:
       # code when the output format is SARIF, which is what advanced-security
       # selects. The upload happens inside the action.
       - name: Report findings
-        uses: zizmorcore/zizmor-action@3dc1ecc9bcb9e94e9b2c709687979e1298497054 # v0.6.2
+        uses: zizmorcore/zizmor-action@cc914d7f3750a2d13d75c7f184a1060aa0e9d482 # v0.6.4
         with:
           version: "1.29.0"
           inputs: .github/
@@ -83,7 +88,7 @@ jobs:
       # expressions carrying values GitHub constrains to characters that cannot
       # reach a shell. Lowering this threshold means dealing with those first.
       - name: Fail on new findings
-        uses: zizmorcore/zizmor-action@3dc1ecc9bcb9e94e9b2c709687979e1298497054 # v0.6.2
+        uses: zizmorcore/zizmor-action@cc914d7f3750a2d13d75c7f184a1060aa0e9d482 # v0.6.4
         with:
           version: "1.29.0"
           inputs: .github/

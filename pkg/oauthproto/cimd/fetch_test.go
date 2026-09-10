@@ -7,6 +7,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"net"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -201,8 +202,7 @@ func TestFetchClientMetadataDocument(t *testing.T) {
 	t.Run("SSRF: dial-guard blocks private IP served via HTTPS hostname", func(t *testing.T) {
 		t.Parallel()
 
-		// Spin up a real server on loopback so we have a valid port, then
-		// attempt to reach a private non-loopback IP over HTTPS — the DialContext
+		// Attempt to reach a private non-loopback IP over HTTPS — the DialContext
 		// SSRF guard must reject it at dial time. We use the HTTPS scheme so the
 		// URL passes validateCIMDClientURL and reaches the transport layer.
 		//
@@ -212,6 +212,37 @@ func TestFetchClientMetadataDocument(t *testing.T) {
 		require.Error(t, err)
 		// The error must come from the dial guard, not a network timeout.
 		assert.Contains(t, err.Error(), "private address")
+	})
+
+	t.Run("SSRF: HTTPS loopback addresses are rejected", func(t *testing.T) {
+		t.Parallel()
+
+		server := httptest.NewTLSServer(http.NotFoundHandler())
+		t.Cleanup(server.Close)
+
+		_, port, err := net.SplitHostPort(strings.TrimPrefix(server.URL, "https://"))
+		require.NoError(t, err)
+
+		tests := []struct {
+			name string
+			host string
+		}{
+			{name: "IPv4 loopback", host: "127.0.0.1"},
+			{name: "IPv6 loopback", host: "::1"},
+		}
+
+		for _, tt := range tests {
+			tt := tt
+			t.Run(tt.name, func(t *testing.T) {
+				t.Parallel()
+
+				rawURL := "https://" + net.JoinHostPort(tt.host, port) + "/metadata.json"
+
+				_, err := FetchClientMetadataDocument(context.Background(), rawURL)
+				require.Error(t, err)
+				assert.Contains(t, err.Error(), "private address")
+			})
+		}
 	})
 }
 

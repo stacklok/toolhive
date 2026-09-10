@@ -10,6 +10,7 @@ import (
 	"io"
 	"log/slog"
 	"net/http"
+	"syscall"
 	"time"
 
 	mcpclient "github.com/stacklok/toolhive-core/mcpcompat/client"
@@ -46,6 +47,23 @@ type HTTPConnectorOption func(*httpConnectorConfig)
 
 type httpConnectorConfig struct {
 	requestTimeoutResolver func(workloadID string) time.Duration
+	dialControl            func(network, address string, c syscall.RawConn) error
+}
+
+// mcpClientParams carries the per-connection options NewHTTPConnector's closure
+// threads into createMCPClient. They are grouped into a struct — rather than
+// passed positionally — because sink and dialControl are both func-typed and
+// frequently nil, so as bare adjacent arguments a future reorder could
+// transpose them with no compiler error. Named fields remove that risk.
+type mcpClientParams struct {
+	// sink, when non-nil, enables persistent backend-notification consumption
+	// (see createMCPClient); nil leaves it disabled.
+	sink ListChangedSink
+	// dialControl, when non-nil, installs a net.Dialer.Control hook on the
+	// backend transport (see WithDialControl); nil uses http.DefaultTransport.
+	dialControl func(network, address string, c syscall.RawConn) error
+	// requestTimeout bounds each backend operation and the transport dial.
+	requestTimeout time.Duration
 }
 
 // WithRequestTimeoutResolver configures the timeout used for each backend
@@ -61,6 +79,44 @@ func WithRequestTimeoutResolver(resolver func(workloadID string) time.Duration) 
 		if resolver != nil {
 			cfg.requestTimeoutResolver = resolver
 		}
+	}
+}
+
+// WithDialControl installs a per-connection Control hook on the dialer used to
+// open every backend connection at session init (the MCP handshake and
+// capability listing). The hook fires after DNS resolution and before the TCP
+// handshake, receiving the resolved peer IP in address — which is why it
+// defeats DNS-rebinding attacks that a host-name–based check cannot: a hostname
+// can legitimately resolve to a blocked IP after the name-based check passes.
+//
+// It is the session-init twin of pkg/vmcp/client.WithDialControl (which guards
+// the aggregation and tool-call paths); the two share the same signature and
+// the same standard 30 s dial timeouts. A nil control (the default) leaves the
+// dial path byte-for-byte identical to before this hook existed.
+//
+// The signature matches net.Dialer.Control exactly.
+//
+// Security limitations embedders must understand:
+//
+//   - Per-TCP-dial, not per-request: the hook fires once per TCP connection.
+//     A pooled connection is reused without re-invoking the hook until it is
+//     recycled. Because each backend gets its own isolated transport and
+//     connection pool, a reused connection is always one this hook already
+//     approved on its first dial — reuse cannot reach an unclassified peer.
+//     This connector does not offer per-request re-classification.
+//   - Proxy transparency: when http.ProxyFromEnvironment selects a proxy
+//     (HTTP_PROXY/HTTPS_PROXY set), the dial target is the proxy server, so the
+//     hook receives the proxy's IP, not the backend's. Embedders relying on this
+//     hook for SSRF or IP allow-listing must either unset the proxy env vars or
+//     additionally validate the backend URL's host before dialing.
+//   - Both IP families: the address argument may be an IPv4 or IPv6 literal
+//     (host:port form); embedders must handle both — including IPv4-mapped IPv6
+//     such as ::ffff:127.0.0.1 — in their check. See the OWASP SSRF Prevention
+//     Cheat Sheet for the full set of ranges to deny (loopback, RFC 1918,
+//     link-local 169.254/16, CGNAT 100.64/10, IPv6 ULA).
+func WithDialControl(control func(network, address string, c syscall.RawConn) error) HTTPConnectorOption {
+	return func(cfg *httpConnectorConfig) {
+		cfg.dialControl = control
 	}
 }
 
@@ -146,6 +202,21 @@ func newListChangedNotificationHandler(workloadID string, sink ListChangedSink) 
 type httpRoundTripperFunc func(*http.Request) (*http.Response, error)
 
 func (f httpRoundTripperFunc) RoundTrip(req *http.Request) (*http.Response, error) { return f(req) }
+
+// backendBaseTransport returns the innermost RoundTripper for backend
+// connections. With a nil dialControl it returns http.DefaultTransport
+// unchanged, so the no-hook path is byte-for-byte identical to before
+// WithDialControl existed. With a non-nil hook it delegates to
+// networking.CloneDefaultTransportWithDialControl — the single backend
+// transport construction point shared with pkg/vmcp/client — which clones
+// DefaultTransport and installs a net.Dialer whose Control hook fires on the
+// resolved peer IP before the TCP handshake.
+func backendBaseTransport(dialControl func(network, address string, c syscall.RawConn) error) http.RoundTripper {
+	if dialControl == nil {
+		return http.DefaultTransport
+	}
+	return networking.CloneDefaultTransportWithDialControl(dialControl)
+}
 
 // authRoundTripper adds pre-resolved authentication to outgoing backend requests.
 type authRoundTripper struct {
@@ -414,7 +485,12 @@ func NewHTTPConnector(registry vmcpauth.OutgoingAuthRegistry, opts ...HTTPConnec
 		}
 
 		c, err := createMCPClient(
-			ctx, target, identity, registry, sessionHint, provider, sink, transportTimeout,
+			ctx, target, identity, registry, sessionHint, provider,
+			mcpClientParams{
+				sink:           sink,
+				dialControl:    connectorConfig.dialControl,
+				requestTimeout: transportTimeout,
+			},
 		)
 		if err != nil {
 			return nil, nil, fmt.Errorf("failed to create MCP client for backend %s: %w", target.WorkloadID, err)
@@ -471,9 +547,15 @@ func createMCPClient(
 	registry vmcpauth.OutgoingAuthRegistry,
 	sessionHint string,
 	provider secrets.Provider,
-	sink ListChangedSink,
-	requestTimeout time.Duration,
+	params mcpClientParams,
 ) (*mcpclient.Client, error) {
+	// Destructure once so the body below reads unchanged. The named fields on
+	// mcpClientParams are what protect the two adjacent nil-able func members
+	// (sink, dialControl) from being silently transposed at call sites.
+	sink := params.sink
+	dialControl := params.dialControl
+	requestTimeout := params.requestTimeout
+
 	// Resolve and validate the auth strategy once at client creation time.
 	strategyName := authtypes.StrategyTypeUnauthenticated
 	if target.AuthConfig != nil {
@@ -490,7 +572,10 @@ func createMCPClient(
 	slog.Debug("Applied authentication strategy", "strategy", strategy.Name(), "backendID", target.WorkloadID)
 
 	// Build shared transport chain (innermost first → outermost):
-	//   http.DefaultTransport → authRoundTripper → identityRoundTripper → headerForwardRoundTripper
+	//   backendBaseTransport → authRoundTripper → identityRoundTripper → headerForwardRoundTripper
+	// The innermost stage is http.DefaultTransport unless a dial-control hook is
+	// configured (see WithDialControl), in which case it is a cloned transport
+	// carrying that hook on its dialer.
 	// On an outbound request, the outermost stage runs first: header-forward
 	// injects its headers onto a request that does not yet carry auth/identity
 	// headers, then inner stages run and call Set() unconditionally so any
@@ -499,7 +584,7 @@ func createMCPClient(
 	// rejected at resolve time by resolveHeaderForward, so user-supplied
 	// HeaderForward cannot inject them in the first place.
 	// The per-transport sections below may add a size-limiting wrapper on top.
-	base := http.RoundTripper(http.DefaultTransport)
+	base := backendBaseTransport(dialControl)
 	base = &authRoundTripper{
 		base:         base,
 		authStrategy: strategy,

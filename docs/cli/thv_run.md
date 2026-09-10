@@ -133,6 +133,7 @@ thv run [flags] SERVER_OR_IMAGE_OR_PROTOCOL [-- ARGS...]
       --jwks-allow-private-ip                       Allow JWKS/OIDC endpoints on private IP addresses (use with caution) (default false)
       --jwks-auth-token-file string                 Path to file containing bearer token for authenticating JWKS/OIDC requests
   -l, --label stringArray                           Set labels on the container (format: key=value)
+      --max-request-body-size int                   Maximum inbound request body size in bytes; zero uses the default (8 MiB)
       --name string                                 Name of the MCP server (default to auto-generated from image)
       --network string                              Connect the container to a network (e.g., 'host' for host networking). Note: 'host' and 'none' cannot enforce network isolation, so isolation is dropped for those modes.
       --oidc-audience string                        Expected audience for the token
@@ -159,6 +160,7 @@ thv run [flags] SERVER_OR_IMAGE_OR_PROTOCOL [-- ARGS...]
       --print-resolved-overlays                     Debug: show resolved container paths for tmpfs overlays (default false)
       --proxy-mode string                           Proxy mode for stdio (streamable-http or sse (deprecated, will be removed)) (default "streamable-http")
       --proxy-port int                              Port for the HTTP proxy to listen on (host port)
+      --proxy-read-timeout duration                 Maximum time to read a full request on the proxy (e.g., 30s, 1m); zero uses the default (30s)
   -p, --publish stringArray                         Publish a container's port(s) to the host (format: hostPort:containerPort)
       --remote-auth                                 Enable OAuth/OIDC authentication to remote MCP server (default false)
       --remote-auth-authorize-url string            OAuth authorization endpoint URL (alternative to --remote-auth-issuer for non-OIDC OAuth)

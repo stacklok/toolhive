@@ -69,9 +69,10 @@ func runConfigToMCPServer(config *runner.RunConfig) (*v1beta1.MCPServer, error) 
 			Name: name,
 		},
 		Spec: v1beta1.MCPServerSpec{
-			Image:     config.Image,
-			Transport: string(config.Transport),
-			Args:      config.CmdArgs,
+			Image:              config.Image,
+			Transport:          string(config.Transport),
+			Args:               config.CmdArgs,
+			MaxRequestBodySize: config.MaxRequestBodySize,
 		},
 	}
 

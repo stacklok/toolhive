@@ -18,6 +18,14 @@ import (
 	servercrypto "github.com/stacklok/toolhive/pkg/authserver/server/crypto"
 )
 
+func TestNewSharedTrustedIssuerValidator_NilConfig(t *testing.T) {
+	t.Parallel()
+
+	validator, err := NewSharedTrustedIssuerValidator(nil, []TrustedIssuer{{IssuerURL: "https://issuer.example.com"}})
+	require.ErrorContains(t, err, "authorization server config is required")
+	assert.Nil(t, validator)
+}
+
 func TestFactory(t *testing.T) {
 	t.Parallel()
 

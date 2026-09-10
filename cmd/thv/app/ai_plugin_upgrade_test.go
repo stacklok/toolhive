@@ -93,3 +93,62 @@ func TestPluginUpgradeAllowSignerChangeFlag(t *testing.T) {
 	assert.True(t, aiPluginUpgradeAllowSignerChange,
 		"the flag must bind to the variable threaded into plugins.UpgradeOptions")
 }
+
+// TestPrintPluginUpgradeResultSignerRendering pins the distinction the
+// blocked-outcome line draws between a candidate that changed signer and one
+// that has no signer at all. The renderer infers "unsigned" from an absent
+// NewSignerIdentity, so that field is load-bearing: a keyless candidate that
+// reaches this point unnamed is printed as unsigned, telling the user the
+// artifact carries no signature when it carries one they have not approved.
+//
+//nolint:paralleltest // Test captures os.Stdout which cannot be done in parallel
+func TestPrintPluginUpgradeResultSignerRendering(t *testing.T) {
+	tests := []struct {
+		name       string
+		outcome    plugins.UpgradeOutcome
+		wantOutput string
+	}{
+		{
+			name: "a key-to-keyless move names the identity it moved to",
+			outcome: plugins.UpgradeOutcome{
+				Name:              "keyed-plugin",
+				Status:            plugins.UpgradeStatusSignerChangeBlocked,
+				NewSignerIdentity: "ci@example.com",
+			},
+			wantOutput: "keyed-plugin: signer change blocked (candidate is ci@example.com;" +
+				" use --allow-signer-change)\n",
+		},
+		{
+			name: "only a candidate with no identity is called unsigned",
+			outcome: plugins.UpgradeOutcome{
+				Name:   "keyless-plugin",
+				Status: plugins.UpgradeStatusSignerChangeBlocked,
+			},
+			wantOutput: "keyless-plugin: signer change blocked (candidate is unsigned;" +
+				" use --allow-signer-change)\n",
+		},
+		{
+			// The keyed guard routes an unsigned candidate here instead, so
+			// the flag above is never suggested for one.
+			name: "an unsigned candidate under a pinned key reports the rejection",
+			outcome: plugins.UpgradeOutcome{
+				Name:   "keyed-plugin",
+				Status: plugins.UpgradeStatusFailed,
+				Reason: plugins.FailureReasonUnsignedRejected,
+				Error:  "candidate is unsigned, and this entry is pinned to a cosign public key",
+			},
+			wantOutput: "keyed-plugin: failed [unsigned-rejected]: candidate is unsigned," +
+				" and this entry is pinned to a cosign public key\n",
+		},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			output := captureStdout(t, func() {
+				require.NoError(t, printPluginUpgradeResult(
+					&plugins.UpgradeResult{Outcomes: []plugins.UpgradeOutcome{tc.outcome}},
+					FormatText, false))
+			})
+			assert.Equal(t, tc.wantOutput, output)
+		})
+	}
+}

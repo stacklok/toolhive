@@ -25,6 +25,10 @@ import (
 func (h *Handler) CallbackHandler(w http.ResponseWriter, req *http.Request) {
 	ctx := req.Context()
 
+	// Do not forward the upstream identity provider as the Referer when the
+	// browser follows the final redirect to a native client's loopback listener.
+	w.Header().Set("Referrer-Policy", "no-referrer")
+
 	// Parse query parameters
 	code := req.URL.Query().Get("code")
 	internalState := req.URL.Query().Get("state")

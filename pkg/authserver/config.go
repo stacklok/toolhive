@@ -124,11 +124,11 @@ type RunConfig struct {
 	//nolint:lll // field tags require full JSON+YAML names
 	InsecureAllowHTTP bool `json:"insecure_allow_http,omitempty" yaml:"insecure_allow_http,omitempty"`
 
-	// TrustedIssuers lists external OIDC issuers whose tokens are accepted as
-	// RFC 8693 subject tokens or RFC 7523 JWT-bearer assertions. Issuers with
-	// jwtBearerGrant enabled may be used for the JWT-bearer grant without an
-	// RFC 8693 delegation policy. Empty (the default) means only self-issued
-	// subject tokens are accepted.
+	// TrustedIssuers lists external OIDC trust declarations.
+	//
+	// This legacy field is deprecated; RFC 8693 and JWT-bearer policies embedded in these entries
+	// remain supported for compatibility. New configurations should put policy
+	// under InboundGrants and reference a named trusted issuer.
 	//
 	// See tokenexchange.TrustedIssuer for the per-issuer field reference, and
 	// docs/arch/17-token-exchange-delegation.md for the trust model, consent
@@ -222,6 +222,8 @@ type RunConfig struct {
 	// authorization-server startup, including clients intended for RFC 8693
 	// token exchange.
 	//
+	// This legacy field is deprecated; use InboundGrants.TokenExchange.DelegateClients.
+	//
 	// Independent of AllowConfidentialClientRegistration: declaring a client
 	// here does not require or enable self-service confidential DCR, and
 	// setting that flag does not declare or enable any client here. They
@@ -237,7 +239,8 @@ type RunConfig struct {
 	SPIFFETrustDomains []SPIFFETrustDomainRunConfig `json:"spiffe_trust_domains,omitempty" yaml:"spiffe_trust_domains,omitempty"`
 
 	// InboundGrants declares canonical inbound grant configuration, including
-	// SPIFFE client authentication. See InboundGrantsRunConfig.
+	// SPIFFE client authentication, delegate clients, and issuer policy. A
+	// non-nil value explicitly controls grant-family enablement.
 	InboundGrants *InboundGrantsRunConfig `json:"inbound_grants,omitempty" yaml:"inbound_grants,omitempty"`
 }
 
@@ -292,14 +295,18 @@ func (c *RunConfig) Validate() error {
 	if err := validateAllowedAudiences(c.AllowedAudiences); err != nil {
 		return err
 	}
-	if err := validateDelegateClients(c.DelegateClients, c.ScopesSupported, c.AllowedAudiences); err != nil {
+	normalized, err := NormalizeInboundGrants(c)
+	if err != nil {
 		return err
 	}
-	if err := validateTrustedIssuers(c.TrustedIssuers, c.Issuer, c.AllowedAudiences); err != nil {
+	if err := validateDelegateClients(normalized.DelegateClients, c.ScopesSupported, c.AllowedAudiences); err != nil {
+		return err
+	}
+	if err := validateTrustedIssuers(normalized.TrustedIssuers, c.Issuer, c.AllowedAudiences); err != nil {
 		return err
 	}
 	if err := ValidateConfidentialClientTransport(
-		c.AllowConfidentialClientRegistration || len(c.DelegateClients) > 0, c.InsecureAllowHTTP,
+		c.AllowConfidentialClientRegistration || len(normalized.DelegateClients) > 0, c.InsecureAllowHTTP,
 		c.Issuer, c.InsecureAllowConfidentialOverLoopbackHTTP); err != nil {
 		return err
 	}
@@ -656,6 +663,13 @@ type OIDCUpstreamRunConfig struct {
 	// stable per user (e.g. Entra/Azure AD's "oid"). See upstream.OIDCConfig.
 	SubjectClaim string `json:"subject_claim,omitempty" yaml:"subject_claim,omitempty"`
 
+	// DCRConfig enables RFC 7591 Dynamic Client Registration against the
+	// upstream authorization server. When set, the client credentials are
+	// obtained at runtime rather than being pre-provisioned via ClientID /
+	// ClientSecretFile / ClientSecretEnvVar, and ClientID must be left empty.
+	// Mutually exclusive with ClientID.
+	DCRConfig *DCRUpstreamConfig `json:"dcr_config,omitempty" yaml:"dcr_config,omitempty"`
+
 	// CAFilePath is the path to a PEM CA bundle added to the system roots.
 	CAFilePath string `json:"ca_file_path,omitempty" yaml:"ca_file_path,omitempty"`
 
@@ -695,6 +709,13 @@ type OAuth2UpstreamRunConfig struct {
 	// ClientSecretEnvVar is the name of an environment variable containing the client secret.
 	// Mutually exclusive with ClientSecretFile. Optional for public clients using PKCE.
 	ClientSecretEnvVar string `json:"client_secret_env_var,omitempty" yaml:"client_secret_env_var,omitempty"`
+
+	// TokenEndpointAuthMethod selects how the client authenticates at the OAuth token
+	// endpoint. When empty and a client secret is configured, client_secret_basic is
+	// used, matching the RFC 7591 default for confidential clients. Set this to
+	// client_secret_post only for providers that require credentials in the request body.
+	// Public clients without a secret use the "none" method.
+	TokenEndpointAuthMethod string `json:"token_endpoint_auth_method,omitempty" yaml:"token_endpoint_auth_method,omitempty"`
 
 	// RedirectURI is the callback URL where the upstream IDP will redirect after authentication.
 	// When not specified, defaults to `{issuer}/oauth/callback`.
@@ -760,11 +781,13 @@ type OAuth2UpstreamRunConfig struct {
 }
 
 // DCRUpstreamConfig configures RFC 7591 Dynamic Client Registration for an
-// upstream authorization server. When present on an OAuth2 upstream, the
-// authserver performs registration at runtime to obtain client credentials,
-// replacing the need to pre-provision a ClientID.
+// OAuth2 or OIDC upstream. When present, the authserver performs registration
+// at runtime to obtain client credentials, replacing the need to pre-provision
+// a ClientID.
 //
-// Exactly one of DiscoveryURL or RegistrationEndpoint must be set. DiscoveryURL
+// OAuth2 upstreams must set exactly one of DiscoveryURL or
+// RegistrationEndpoint. OIDC upstreams may omit both and derive DiscoveryURL
+// from IssuerURL.
 // points at RFC 8414 / OIDC Discovery metadata from which the registration
 // endpoint is resolved; RegistrationEndpoint is used directly when the upstream
 // does not publish discovery metadata.
@@ -1109,6 +1132,11 @@ type Config struct {
 	// serialized configuration.
 	DelegateClients []DelegateClient
 
+	// DisableTokenExchange prevents registration and advertisement of the RFC
+	// 8693 grant. The zero value preserves the released behavior. It is set only
+	// when canonical inbound_grants explicitly omits token_exchange.
+	DisableTokenExchange bool
+
 	// SPIFFETrust is the validated, immutable runtime SPIFFE trust model. It
 	// must be constructed with NewSPIFFETrustConfig; a nil value means no
 	// SPIFFE associations are configured. The serialized declarations live on
@@ -1141,6 +1169,10 @@ func (c *Config) Validate() error {
 	}
 
 	if err := c.validateConfidentialClientConfig(); err != nil {
+		return err
+	}
+
+	if err := c.validatePrivateKeyJWTRequiresTokenExchange(); err != nil {
 		return err
 	}
 
@@ -1251,6 +1283,24 @@ func (c *Config) validateConfidentialClientConfig() error {
 	return ValidateForceConfidentialRedirectURIs(c.ForceConfidentialRedirectURIs, c.AllowConfidentialClientRegistration)
 }
 
+// validatePrivateKeyJWTRequiresTokenExchange rejects
+// AllowPrivateKeyJWTRegistration combined with a disabled token-exchange
+// grant. private_key_jwt registrations can only ever request the RFC 8693
+// token-exchange grant (see validateGrantTypes/validateResponseTypes in
+// pkg/authserver/server/registration/dcr.go): there is no independent use
+// of this auth method outside token exchange. Allowing registration while
+// token exchange is disabled would admit clients that can never
+// successfully authenticate, so reject the combination outright rather
+// than let it surface later as a confusing runtime rejection.
+func (c *Config) validatePrivateKeyJWTRequiresTokenExchange() error {
+	if c.AllowPrivateKeyJWTRegistration && c.DisableTokenExchange {
+		return fmt.Errorf(
+			"allow_private_key_jwt_registration requires token exchange to be enabled: " +
+				"private_key_jwt registrations are token-exchange-only (RFC 8693)")
+	}
+	return nil
+}
+
 // validateCIMDBounds rejects invalid CIMD cache bounds when CIMD is enabled.
 // When CIMD is disabled the cache fields are ignored.
 func (c *Config) validateCIMDBounds() error {
@@ -1290,43 +1340,12 @@ func (c *Config) validateDelegationTokenLifespan() error {
 // validateBaselineClientScopes); NewMultiIssuerTokenValidator repeats these
 // checks again at server startup as defence in depth.
 //
-// issuer_url is checked by validateTrustedIssuerURL, jwks_url (when set) by
-// validateJWKSEndpointURL — see their doc comments for the URL rules each
-// enforces. The remaining structural checks (required fields, self-issuer
-// collision, duplicate issuers, ActorClaim reachability, and ActorMatcher
-// compilation) run via tokenexchange.ValidateTrustedIssuers.
+// issuer_url/jwks_url endpoint shape is validated by
+// tokenexchange.ValidateTrustedIssuers itself (via validateTrustedIssuer),
+// so both this path and MCPExternalAuthConfig's admission-time
+// ValidateInboundGrants get it from the one place, rather than each
+// re-implementing the same check.
 func validateTrustedIssuers(issuers []tokenexchange.TrustedIssuer, selfIssuer string, allowedAudiences []string) error {
-	for _, ti := range issuers {
-		if err := validateTrustedIssuerURL(ti.IssuerURL, ti.InsecureAllowHTTP); err != nil {
-			return fmt.Errorf("trusted_issuers: issuer_url %q: %w", ti.IssuerURL, err)
-		}
-		// AllowPrivateIPs without a hand-configured jwks_url would let OIDC
-		// discovery — a document fetched from, and thus influenceable by,
-		// the external issuer itself — choose the private target the dial
-		// is allowed to reach. Requiring jwks_url pins that target to
-		// operator-supplied config instead.
-		//
-		// This is the fail-fast layer, not the only one: validateTrustedIssuer
-		// (multi_issuer_validator.go) enforces the same invariant inside
-		// NewMultiIssuerTokenValidator, so a caller constructing a validator
-		// without routing through Config.Validate is still covered. Note that
-		// ensureRegistered's ValidateJWKSURL does NOT cover it — that check is
-		// gated on net.ParseIP, so it only rejects private IP *literals*, and a
-		// discovery document advertising a private *hostname* passes it
-		// cleanly. Checking here and in the constructor is deliberate
-		// duplication, not redundancy.
-		if ti.AllowPrivateIPs && ti.JWKSURL == "" {
-			return fmt.Errorf(
-				"trusted_issuers: issuer_url %q: allow_private_ips requires jwks_url to be set explicitly; "+
-					"otherwise OIDC discovery — fetched from the external issuer — would choose the private target",
-				ti.IssuerURL)
-		}
-		if ti.JWKSURL != "" {
-			if err := validateJWKSEndpointURL(ti.JWKSURL, ti.InsecureAllowHTTP, ti.AllowPrivateIPs); err != nil {
-				return fmt.Errorf("trusted_issuers: jwks_url %q: %w", ti.JWKSURL, err)
-			}
-		}
-	}
 	if err := tokenexchange.ValidateTrustedIssuers(issuers, selfIssuer, allowedAudiences); err != nil {
 		return fmt.Errorf("trusted_issuers: %w", err)
 	}
@@ -1347,30 +1366,6 @@ func validateTrustedIssuers(issuers []tokenexchange.TrustedIssuer, selfIssuer st
 	return nil
 }
 
-// validateJWKSEndpointURL checks that rawURL parses, has a host, uses the
-// "https" scheme (or "http" when insecureAllowHTTP is set), and — when the
-// host is an IP literal — is not a private or loopback address unless
-// allowPrivateIPs permits it. Unlike validateIssuerURL, it does not enforce
-// OIDC issuer-identifier rules (no query/fragment/trailing-slash) since a
-// JWKS endpoint legitimately carries those.
-//
-// Delegates to tokenexchange.ValidateJWKSURL, the same predicate the runtime
-// choke point (ensureRegistered, called on every JWKS fetch) enforces — the two
-// were previously separate implementations that had drifted apart (a
-// runtime check laxer than this one would silently defeat this config-time
-// guard), so this is now the single source of truth for both.
-//
-// Deliberately not networking.ValidateEndpointURL /
-// ValidateEndpointURLWithInsecure: both also honor the
-// INSECURE_DISABLE_URL_VALIDATION environment variable, which would let an
-// unrelated env var silently disable this SSRF-relevant scheme check; the
-// insecure variant also skips the parse/host check entirely rather than
-// only relaxing the scheme. This helper takes its "insecure" bits solely
-// from the issuer's own explicit InsecureAllowHTTP/AllowPrivateIPs fields.
-func validateJWKSEndpointURL(rawURL string, insecureAllowHTTP, allowPrivateIPs bool) error {
-	return tokenexchange.ValidateJWKSURL(rawURL, insecureAllowHTTP, allowPrivateIPs)
-}
-
 // warnTrustedIssuerAudiences logs a warning for each TrustedIssuer whose
 // ExpectedAudience is absent from AllowedAudiences. This is not a hard
 // error: a subject token may carry additional audiences beyond
@@ -1389,6 +1384,37 @@ func (c *Config) warnTrustedIssuerAudiences() {
 				"issuer", ti.IssuerURL, "expected_audience", ti.ExpectedAudience)
 		}
 	}
+}
+
+// Validate checks that the OIDCUpstreamRunConfig has either a pre-provisioned
+// client ID or a DCR configuration, but not both. OIDC DCR may omit both endpoint
+// selectors because discovery is derived from IssuerURL.
+func (c *OIDCUpstreamRunConfig) Validate() error {
+	hasClientID := c.ClientID != ""
+	hasDCR := c.DCRConfig != nil
+	if hasClientID == hasDCR {
+		return fmt.Errorf("oidc upstream: exactly one of client_id or dcr_config must be set")
+	}
+	if !hasDCR {
+		return nil
+	}
+	if c.DCRConfig.DiscoveryURL != "" && c.DCRConfig.RegistrationEndpoint != "" {
+		return fmt.Errorf("oidc upstream: dcr_config discovery_url and registration_endpoint are mutually exclusive")
+	}
+	if c.DCRConfig.DiscoveryURL == "" && c.DCRConfig.RegistrationEndpoint == "" {
+		if c.DCRConfig.InitialAccessTokenFile != "" && c.DCRConfig.InitialAccessTokenEnvVar != "" {
+			return fmt.Errorf(
+				"oidc upstream: dcr_config initial_access_token_file and initial_access_token_env_var are mutually exclusive")
+		}
+		if c.IssuerURL == "" {
+			return fmt.Errorf("oidc upstream: issuer_url is required when dcr_config omits discovery_url and registration_endpoint")
+		}
+		return nil
+	}
+	if err := c.DCRConfig.Validate(); err != nil {
+		return fmt.Errorf("oidc upstream: invalid dcr_config: %w", err)
+	}
+	return nil
 }
 
 // Validate checks that the OAuth2UpstreamRunConfig is internally consistent.
@@ -1439,6 +1465,33 @@ func (c *OAuth2UpstreamRunConfig) Validate() error {
 
 	if c.IdentityFromToken != nil && c.IdentityFromToken.SubjectPath == "" {
 		return fmt.Errorf("oauth2 upstream: identity_from_token.subject_path must not be empty when identity_from_token is configured")
+	}
+
+	return c.validateTokenEndpointAuthMethod()
+}
+
+// validateTokenEndpointAuthMethod checks TokenEndpointAuthMethod against the
+// set of methods buildPureOAuth2Config/authStyleFromMethod support, and that
+// the method is consistent with whether a client secret source is configured.
+// Split out of Validate to keep that method's cyclomatic complexity down.
+func (c *OAuth2UpstreamRunConfig) validateTokenEndpointAuthMethod() error {
+	hasSecretSource := c.ClientSecretFile != "" || c.ClientSecretEnvVar != ""
+
+	switch c.TokenEndpointAuthMethod {
+	case "":
+		// Resolved from the presence of a secret in buildPureOAuth2Config.
+	case oauthproto.TokenEndpointAuthMethodNone:
+		if hasSecretSource {
+			return fmt.Errorf("oauth2 upstream: token_endpoint_auth_method none cannot be used with a client secret")
+		}
+	case oauthproto.TokenEndpointAuthMethodClientSecretBasic, oauthproto.TokenEndpointAuthMethodClientSecretPost:
+		if !hasSecretSource {
+			return fmt.Errorf(
+				"oauth2 upstream: token_endpoint_auth_method %q requires client_secret_file or client_secret_env_var",
+				c.TokenEndpointAuthMethod)
+		}
+	default:
+		return fmt.Errorf("oauth2 upstream: unsupported token_endpoint_auth_method %q", c.TokenEndpointAuthMethod)
 	}
 
 	return nil
@@ -1663,54 +1716,15 @@ func (c *Config) applyDefaults() error {
 }
 
 // ValidateConfidentialClientTransport rejects cleartext HTTP configurations
-// when any confidential client is enabled, whether it is admitted through DCR
-// or statically declared. Static clients do not enable DCR; they share this
-// validation because their secrets are sent to the token endpoint.
-//
-//  1. insecureAllowHTTP is set: the server accepts a plain-HTTP issuer for
-//     any host, not just loopback. Always rejected for confidential clients.
-//  2. issuer is a plain-HTTP loopback URL (e.g. "http://localhost:18080").
-//     This is rejected by default but may be explicitly enabled with
-//     insecureAllowConfidentialOverLoopbackHTTP. The opt-in does not permit
-//     non-loopback HTTP issuers and still requires a valid issuer URL.
+// when any confidential client is enabled. It delegates to the server-layer
+// validator so direct AuthorizationServerParams construction cannot bypass the
+// same transport policy.
 func ValidateConfidentialClientTransport(
 	allowConfidential, insecureAllowHTTP bool,
 	issuer string, insecureAllowConfidentialOverLoopbackHTTP bool,
 ) error {
-	if !allowConfidential {
-		return nil
-	}
-	if insecureAllowHTTP {
-		return fmt.Errorf("allow_confidential_client_registration cannot be combined with insecure_allow_http: " +
-			"confidential clients would send secrets over cleartext HTTP")
-	}
-	parsed, err := url.Parse(issuer)
-	if err != nil {
-		return errors.New("confidential clients require a valid issuer URL")
-	}
-	if parsed.Scheme != "http" {
-		return nil
-	}
-	if insecureAllowConfidentialOverLoopbackHTTP && networking.IsLocalhost(parsed.Host) {
-		if err := validateIssuerURL(issuer, false); err != nil {
-			return errors.New("confidential clients require a valid issuer URL")
-		}
-	}
-	if insecureAllowConfidentialOverLoopbackHTTP && !networking.IsLocalhost(parsed.Host) {
-		return fmt.Errorf(
-			"allow_confidential_client_registration cannot use the loopback HTTP opt-in with a non-loopback issuer (%q): "+
-				"confidential clients would send secrets over cleartext HTTP", issuer)
-	}
-	if !insecureAllowConfidentialOverLoopbackHTTP && networking.IsLocalhost(parsed.Host) {
-		return fmt.Errorf("allow_confidential_client_registration cannot be combined with a plain-HTTP loopback issuer (%q) unless "+
-			"insecure_allow_confidential_over_loopback_http is set: confidential clients would send secrets over cleartext HTTP",
-			issuer)
-	}
-	if !networking.IsLocalhost(parsed.Host) {
-		return fmt.Errorf("allow_confidential_client_registration cannot use a plain-HTTP non-loopback issuer (%q): "+
-			"confidential clients would send secrets over cleartext HTTP", issuer)
-	}
-	return nil
+	return oauthserver.ValidateConfidentialClientTransport(
+		allowConfidential, insecureAllowHTTP, issuer, insecureAllowConfidentialOverLoopbackHTTP)
 }
 
 // ValidateForceConfidentialRedirectURIs rejects a misconfigured
@@ -1755,57 +1769,28 @@ func ValidateForceConfidentialRedirectURIs(uris []string, allowConfidential bool
 // hosts (for in-cluster Kubernetes deployments on trusted networks).
 //
 // This server's own issuer is additionally held to a no-trailing-slash rule
-// that OIDC itself does not require (see validateIssuerURLCore's
-// allowTrailingSlash parameter) — defensible here only because we control
-// this value, unlike a trusted external issuer (validateTrustedIssuerURL).
+// that OIDC itself does not require; we control this value, unlike trusted
+// external issuers.
 func validateIssuerURL(issuer string, insecureAllowHTTP bool) error {
-	return validateIssuerURLCore(issuer, insecureAllowHTTP, true, false)
+	return validateIssuerURLCore(issuer, insecureAllowHTTP)
 }
 
-// validateTrustedIssuerURL is like validateIssuerURL but never exempts
-// localhost from the HTTPS requirement: a trusted external issuer is not
-// this server's own issuer, so it must not inherit the same-host
-// development convenience validateIssuerURL grants the server's own issuer
-// and AuthorizationEndpointBaseURL. Without this, "issuer_url:
-// http://localhost:9000" with insecure_allow_http: false would pass config
-// validation here yet fail at runtime, since the per-issuer HTTP client is
-// still built with InsecureAllowHTTP=false (see NewMultiIssuerTokenValidator)
-// — jwks_url has no such exemption, so the two would otherwise disagree.
-//
-// Unlike validateIssuerURL, a trailing slash is accepted: OIDC Discovery §3
-// forbids query and fragment components on an issuer identifier, but not a
-// trailing slash — §4.1 only requires one be trimmed before the well-known
-// discovery path is appended, which presupposes a trailing-slash issuer is
-// legal in the first place, and §4.3 requires the discovery document's
-// "issuer" to match the token's "iss" verbatim. Microsoft Entra ID v1 — the
-// default for a newly registered API — issues
-// "iss": "https://sts.windows.net/{tenant}/" with a trailing slash, so
-// rejecting it here would make v1 tokens impossible to configure at all.
-func validateTrustedIssuerURL(issuer string, insecureAllowHTTP bool) error {
-	return validateIssuerURLCore(issuer, insecureAllowHTTP, false, true)
-}
-
-// validateIssuerURLCore is the shared implementation behind validateIssuerURL
-// and validateTrustedIssuerURL. localhostExempt controls whether a loopback
-// host is treated as HTTPS-exempt regardless of insecureAllowHTTP.
-// allowTrailingSlash controls whether a trailing slash on the issuer is
-// accepted — see validateTrustedIssuerURL's doc comment for why the trusted-
-// issuer path must allow it while this server's own issuer does not.
-func validateIssuerURLCore(issuer string, insecureAllowHTTP, localhostExempt, allowTrailingSlash bool) error {
+// validateIssuerURLCore validates this authorization server's issuer.
+func validateIssuerURLCore(issuer string, insecureAllowHTTP bool) error {
 	if issuer == "" {
 		return fmt.Errorf("issuer is required")
 	}
 
 	parsed, err := url.Parse(issuer)
 	if err != nil {
-		return fmt.Errorf("invalid URL: %w", err)
+		return errors.New("invalid URL")
 	}
 
 	if parsed.Scheme == "" {
 		return fmt.Errorf("scheme is required")
 	}
 
-	if parsed.Host == "" {
+	if parsed.Hostname() == "" {
 		return fmt.Errorf("host is required")
 	}
 
@@ -1820,9 +1805,9 @@ func validateIssuerURLCore(issuer string, insecureAllowHTTP, localhostExempt, al
 	// Discovery 1.0 Section 4.3 compares the discovery document's "issuer"
 	// against this value by exact string match, and no provider echoes back
 	// embedded credentials, so such an issuer always fails discovery. And it
-	// must not be stored: a password here would sit in the RunConfig and be
-	// echoed by the validation errors and startup warnings that quote the
-	// issuer URL. Rejecting it outright beats redacting it at every use.
+	// must not be stored: a password here would sit in the RunConfig and could
+	// be exposed by callers that log the configured endpoint. Rejecting it
+	// outright beats relying on every caller to redact it.
 	// Note that parsed.User is non-nil even for "https://user@host" with no
 	// password, which is equally unusable as an issuer identifier.
 	if parsed.User != nil {
@@ -1835,15 +1820,14 @@ func validateIssuerURLCore(issuer string, insecureAllowHTTP, localhostExempt, al
 		if parsed.Scheme != "http" {
 			return fmt.Errorf("scheme must be https (or http for localhost)")
 		}
-		if !insecureAllowHTTP && (!localhostExempt || !networking.IsLocalhost(parsed.Host)) {
-			return fmt.Errorf("http scheme is only allowed for localhost, use https for %s", parsed.Hostname())
+		if !insecureAllowHTTP && !networking.IsLocalhost(parsed.Host) {
+			return fmt.Errorf("http scheme is only allowed for localhost, use https")
 		}
 	}
 
-	// Not an OIDC requirement — see validateTrustedIssuerURL's doc comment.
 	// ToolHive's own issuer is held to this stricter, self-imposed rule
-	// since we control the value; a trusted external issuer is not.
-	if !allowTrailingSlash && strings.HasSuffix(issuer, "/") {
+	// since we control the value.
+	if strings.HasSuffix(issuer, "/") {
 		return fmt.Errorf("must not have trailing slash")
 	}
 

@@ -189,6 +189,7 @@ spec:
                       This is independent of allowConfidentialClientRegistration: it neither
                       enables nor requires unauthenticated confidential dynamic client
                       registration.
+                      This legacy field is deprecated; use inboundGrants.tokenExchange.delegateClients.
                     items:
                       description: |-
                         DelegateClientConfig configures a pre-provisioned confidential OAuth client
@@ -324,6 +325,348 @@ spec:
                       type: object
                     type: array
                     x-kubernetes-list-type: atomic
+                  inboundGrants:
+                    description: InboundGrants configures canonical inbound OAuth
+                      grant families.
+                    properties:
+                      jwtBearer:
+                        description: JWTBearer configures RFC 7523 issuer policies.
+                        properties:
+                          issuerPolicies:
+                            description: IssuerPolicies binds RFC 7523 policy to named
+                              trusted issuers.
+                            items:
+                              description: JWTBearerIssuerPolicyConfig binds RFC 7523
+                                policy to a named trusted issuer.
+                              properties:
+                                acceptedAudiences:
+                                  description: |-
+                                    AcceptedAudiences identifies this authorization server's accepted
+                                    assertion audiences. When omitted, runtime validation defaults to the
+                                    token endpoint.
+                                  items:
+                                    maxLength: 2048
+                                    minLength: 1
+                                    pattern: ^https?://[^[:space:]]+$
+                                    type: string
+                                  maxItems: 50
+                                  type: array
+                                  x-kubernetes-list-type: atomic
+                                issuerRef:
+                                  description: IssuerRef references trustedIssuers[].name.
+                                  maxLength: 253
+                                  minLength: 1
+                                  type: string
+                                maxAssertionAge:
+                                  description: MaxAssertionAge caps the exp-iat interval
+                                    independently of exp.
+                                  type: string
+                                subjectBindings:
+                                  description: |-
+                                    SubjectBindings maps an exact external subject to allowed RFC 8707
+                                    resources.
+                                  items:
+                                    description: |-
+                                      JWTBearerSubjectBinding configures the exact subject and allowed resources
+                                      for one RFC 7523 JWT-bearer assertion identity.
+                                    properties:
+                                      allowedResources:
+                                        description: |-
+                                          AllowedResources is the exact set of RFC 8707 resources this subject may
+                                          request.
+                                        items:
+                                          maxLength: 2048
+                                          minLength: 1
+                                          pattern: ^https?://[^[:space:]]+$
+                                          type: string
+                                        maxItems: 50
+                                        minItems: 1
+                                        type: array
+                                        x-kubernetes-list-type: atomic
+                                      subject:
+                                        description: Subject is an exact assertion
+                                          sub value. Wildcards are not supported.
+                                        maxLength: 256
+                                        minLength: 1
+                                        pattern: ^[^*]+$
+                                        type: string
+                                    required:
+                                    - allowedResources
+                                    - subject
+                                    type: object
+                                  maxItems: 50
+                                  minItems: 1
+                                  type: array
+                                  x-kubernetes-list-type: atomic
+                              required:
+                              - issuerRef
+                              - maxAssertionAge
+                              - subjectBindings
+                              type: object
+                              x-kubernetes-validations:
+                              - message: maxAssertionAge must be greater than zero
+                                rule: duration(self.maxAssertionAge) > duration('0s')
+                              - message: subjectBindings must not contain duplicate
+                                  subjects
+                                rule: self.subjectBindings.all(binding, self.subjectBindings.filter(other,
+                                  other.subject == binding.subject).size() == 1)
+                            maxItems: 20
+                            type: array
+                            x-kubernetes-list-type: atomic
+                        type: object
+                      spiffeClientAuth:
+                        description: |-
+                          SPIFFEClientAuth associates SPIFFE principal patterns with explicit
+                          OAuth client identities and permissions. A sibling of TokenExchange and
+                          JWTBearer below, not nested under either: client authentication does
+                          not by itself confer a grant. See SPIFFEClientConfig.
+                        items:
+                          description: |-
+                            SPIFFEClientConfig associates one SPIFFE principal pattern from a declared
+                            trust domain with an explicit OAuth client identity and permissions.
+                            Configuration is not authentication: configured SPIFFE clients remain
+                            non-public OAuth clients without a secret until live SPIFFE credential
+                            validation is implemented (see SPIFFETrustDomainConfig's doc comment).
+
+                            GrantTypes is deliberately not exposed here: the runtime only accepts
+                            exactly the RFC 8693 token-exchange grant for a SPIFFE client
+                            (validateSPIFFEGrants in pkg/authserver/spiffe_trust.go), so the converter
+                            always supplies it instead of letting it be configured.
+                          properties:
+                            audiences:
+                              description: Audiences are RFC 8693 token audiences
+                                this association may request.
+                              items:
+                                maxLength: 2048
+                                minLength: 1
+                                type: string
+                              maxItems: 50
+                              minItems: 1
+                              type: array
+                              x-kubernetes-list-type: set
+                            clientId:
+                              description: |-
+                                ClientID is the explicit OAuth client_id. It is never derived from a
+                                SPIFFE ID.
+                              maxLength: 253
+                              minLength: 1
+                              type: string
+                            methods:
+                              description: |-
+                                Methods are the credential types this association may authenticate
+                                with. Must be a subset of the referenced trust domain's methods.
+                              items:
+                                description: |-
+                                  SPIFFEAuthenticationMethod identifies the credential type permitted for a
+                                  SPIFFE workload. Mirrors authserver.SPIFFEAuthenticationMethod field-for-field;
+                                  runtime parsing remains authoritative.
+                                enum:
+                                - spiffe_x509
+                                - spiffe_jwt
+                                type: string
+                              maxItems: 2
+                              minItems: 1
+                              type: array
+                              x-kubernetes-list-type: set
+                            principalPattern:
+                              description: |-
+                                PrincipalPattern is a concrete SPIFFE ID or a terminal /* pattern within
+                                the declared trust domain. This pattern is a best-effort CRD-level
+                                approximation; runtime parsing via spiffeid.FromString remains
+                                authoritative.
+                              maxLength: 2048
+                              pattern: ^spiffe://[a-z0-9._-]+((/[a-zA-Z0-9._-]+)+(/\*)?|/\*)$
+                              type: string
+                            resources:
+                              description: |-
+                                Resources are RFC 8707 resource indicators this association may
+                                request. Must be a subset of the server's allowed_audiences allowlist,
+                                which is derived at reconcile time and not available on this CRD, so
+                                allowlist membership is validated at reconcile time, not admission.
+                                Shape (a well-formed absolute HTTP(S) URI) is independent of that
+                                derived allowlist and is validated here. Distinct from Audiences: a
+                                resource permission does not imply the same value is also a permitted
+                                token audience, or vice versa.
+                              items:
+                                maxLength: 2048
+                                minLength: 1
+                                pattern: ^https?://[^@#[:space:]]+$
+                                type: string
+                              maxItems: 50
+                              type: array
+                              x-kubernetes-list-type: set
+                            scopes:
+                              description: |-
+                                Scopes are OAuth scopes granted to this association. Must be a subset
+                                of the server's effective supported scopes.
+                              items:
+                                maxLength: 256
+                                minLength: 1
+                                type: string
+                              maxItems: 50
+                              minItems: 1
+                              type: array
+                              x-kubernetes-list-type: set
+                            trustDomainRef:
+                              description: TrustDomainRef references spiffeTrustDomains[].name.
+                              maxLength: 253
+                              minLength: 1
+                              type: string
+                          required:
+                          - audiences
+                          - clientId
+                          - methods
+                          - principalPattern
+                          - scopes
+                          - trustDomainRef
+                          type: object
+                          x-kubernetes-validations:
+                          - message: principalPattern path must not contain . or ..
+                              segments
+                            rule: self.principalPattern.split('/').all(segment, segment
+                              != '.' && segment != '..')
+                        maxItems: 100
+                        type: array
+                        x-kubernetes-list-type: atomic
+                      tokenExchange:
+                        description: TokenExchange configures RFC 8693 clients and
+                          issuer policies.
+                        properties:
+                          delegateClients:
+                            description: DelegateClients configures pre-provisioned
+                              confidential clients.
+                            items:
+                              description: |-
+                                DelegateClientConfig configures a pre-provisioned confidential OAuth client
+                                for RFC 8693 token exchange. Its secret is referenced from a Kubernetes
+                                Secret and is never represented inline.
+                              properties:
+                                audiences:
+                                  description: Audiences is the narrowed set of RFC
+                                    8707 resources this client may request.
+                                  items:
+                                    maxLength: 2048
+                                    minLength: 1
+                                    type: string
+                                  maxItems: 10
+                                  minItems: 1
+                                  type: array
+                                  x-kubernetes-list-type: atomic
+                                clientId:
+                                  description: ClientID is the OAuth client_id presented
+                                    at the token endpoint.
+                                  maxLength: 256
+                                  minLength: 1
+                                  type: string
+                                clientSecretRef:
+                                  description: ClientSecretRef references the Kubernetes
+                                    Secret key containing the client secret.
+                                  properties:
+                                    key:
+                                      description: Key is the key within the secret
+                                      type: string
+                                    name:
+                                      description: Name is the name of the secret
+                                      type: string
+                                  required:
+                                  - key
+                                  - name
+                                  type: object
+                                scopes:
+                                  description: Scopes is the narrowed set of OAuth
+                                    scopes this client may request.
+                                  items:
+                                    maxLength: 256
+                                    minLength: 1
+                                    type: string
+                                  maxItems: 10
+                                  minItems: 1
+                                  type: array
+                                  x-kubernetes-list-type: atomic
+                              required:
+                              - audiences
+                              - clientId
+                              - clientSecretRef
+                              - scopes
+                              type: object
+                              x-kubernetes-validations:
+                              - message: clientSecretRef.name and clientSecretRef.key
+                                  are required and must be non-empty
+                                rule: has(self.clientSecretRef) && size(self.clientSecretRef.name)
+                                  > 0 && size(self.clientSecretRef.key) > 0
+                            maxItems: 10
+                            type: array
+                            x-kubernetes-list-type: atomic
+                          issuerPolicies:
+                            description: IssuerPolicies binds RFC 8693 policy to named
+                              trusted issuers.
+                            items:
+                              description: TokenExchangeIssuerPolicyConfig binds RFC
+                                8693 policy to a named trusted issuer.
+                              properties:
+                                actorClaim:
+                                  description: ActorClaim names the claim containing
+                                    the external actor identity.
+                                  maxLength: 64
+                                  type: string
+                                actorMatcher:
+                                  maxLength: 4096
+                                  type: string
+                                allowMayAct:
+                                  type: boolean
+                                allowedActors:
+                                  items:
+                                    maxLength: 256
+                                    minLength: 1
+                                    type: string
+                                  maxItems: 50
+                                  type: array
+                                  x-kubernetes-list-type: atomic
+                                allowedDelegateClients:
+                                  items:
+                                    maxLength: 256
+                                    minLength: 1
+                                    type: string
+                                  maxItems: 50
+                                  minItems: 1
+                                  type: array
+                                  x-kubernetes-list-type: atomic
+                                expectedAudience:
+                                  description: ExpectedAudience is the required RFC
+                                    8693 subject-token audience.
+                                  maxLength: 2048
+                                  minLength: 1
+                                  type: string
+                                issuerRef:
+                                  description: IssuerRef references trustedIssuers[].name.
+                                  maxLength: 253
+                                  minLength: 1
+                                  type: string
+                              required:
+                              - allowedDelegateClients
+                              - expectedAudience
+                              - issuerRef
+                              type: object
+                              x-kubernetes-validations:
+                              - message: allowedDelegateClients must not combine the
+                                  wildcard "*" with specific client IDs
+                                rule: '!(''*'' in self.allowedDelegateClients) ||
+                                  size(self.allowedDelegateClients) == 1'
+                              - message: allowMayAct must not be enabled when allowedDelegateClients
+                                  contains the wildcard "*"
+                                rule: '!(self.allowMayAct && ''*'' in self.allowedDelegateClients)'
+                              - message: actorClaim must name a readable claim; use
+                                  client_id or a non-reserved claim such as azp, appid,
+                                  or cid
+                                rule: '!has(self.actorClaim) || !(self.actorClaim
+                                  in [''sub'', ''iss'', ''aud'', ''exp'', ''iat'',
+                                  ''nbf'', ''jti'', ''name'', ''email'', ''scope'',
+                                  ''scp'', ''may_act''])'
+                            maxItems: 20
+                            type: array
+                            x-kubernetes-list-type: atomic
+                        type: object
+                    type: object
                   insecureAllowConfidentialOverLoopbackHTTP:
                     default: false
                     description: |-
@@ -360,9 +703,10 @@ spec:
                       as an operator condition.
 
                       One combination is rejected at admission on all three CRDs regardless of the
-                      above: setting this field alongside allowConfidentialClientRegistration, which
-                      would issue client secrets in cleartext over an unauthenticated registration
-                      endpoint (see the XValidation rule on EmbeddedAuthServerConfig).
+                      above: setting this field alongside confidential client registration or
+                      delegate clients, which would issue or use client secrets in cleartext over
+                      an unauthenticated endpoint (see the XValidation rule on
+                      EmbeddedAuthServerConfig).
                     type: boolean
                   issuer:
                     description: |-
@@ -412,6 +756,120 @@ spec:
                       - name
                       type: object
                     maxItems: 5
+                    type: array
+                    x-kubernetes-list-type: atomic
+                  spiffeTrustDomains:
+                    description: |-
+                      SPIFFETrustDomains declares SPIFFE trust domains for
+                      inboundGrants.spiffeClientAuth associations. See SPIFFETrustDomainConfig's
+                      doc comment for why declaring a domain does not by itself enable
+                      authentication in this build.
+                    items:
+                      description: |-
+                        SPIFFETrustDomainConfig declares one SPIFFE trust domain accepted by the
+                        embedded authorization server. Configuration is not authentication: no
+                        live X.509-SVID or JWT-SVID validation exists yet, so a declared trust
+                        domain does not by itself let any workload authenticate — RunConfig.Validate
+                        (pkg/authserver/config.go) currently hard-rejects any non-empty
+                        spiffeTrustDomains at authserver startup via validateSPIFFENotYetEnforced,
+                        a deliberate placeholder until real SVID verification lands.
+                      properties:
+                        bundleSource:
+                          description: |-
+                            BundleSource declares exactly one future trust-bundle source. It is
+                            validated for shape only; fetching or loading a bundle from it is a
+                            later step.
+                          properties:
+                            endpoint:
+                              description: |-
+                                Endpoint declares a HTTPS SPIFFE Bundle Endpoint. Required when Type is
+                                "bundle_endpoint".
+                              properties:
+                                profile:
+                                  description: |-
+                                    Profile selects how the endpoint's TLS connection is authenticated:
+                                    SPIFFEBundleEndpointProfileHTTPSWeb (Web PKI) or
+                                    SPIFFEBundleEndpointProfileHTTPSSPIFFE (a separately distributed
+                                    X.509-SVID root).
+                                  enum:
+                                  - https_web
+                                  - https_spiffe
+                                  type: string
+                                url:
+                                  description: URL is the HTTPS SPIFFE Bundle Endpoint
+                                    URL.
+                                  maxLength: 2048
+                                  minLength: 1
+                                  type: string
+                              required:
+                              - profile
+                              - url
+                              type: object
+                            type:
+                              description: Type selects the trust-bundle source.
+                              enum:
+                              - bundle_endpoint
+                              - workload_api
+                              type: string
+                            workloadAPI:
+                              description: |-
+                                WorkloadAPI selects the local SPIFFE Workload API. Required when Type
+                                is "workload_api".
+                              type: object
+                          required:
+                          - type
+                          type: object
+                          x-kubernetes-validations:
+                          - message: endpoint configuration must be set if and only
+                              if type is 'bundle_endpoint'
+                            rule: 'self.type == ''bundle_endpoint'' ? has(self.endpoint)
+                              : !has(self.endpoint)'
+                          - message: workloadAPI configuration must be set if and
+                              only if type is 'workload_api'
+                            rule: 'self.type == ''workload_api'' ? has(self.workloadAPI)
+                              : !has(self.workloadAPI)'
+                        methods:
+                          description: |-
+                            Methods explicitly enables the supported credential types for this
+                            trust domain.
+                          items:
+                            description: |-
+                              SPIFFEAuthenticationMethod identifies the credential type permitted for a
+                              SPIFFE workload. Mirrors authserver.SPIFFEAuthenticationMethod field-for-field;
+                              runtime parsing remains authoritative.
+                            enum:
+                            - spiffe_x509
+                            - spiffe_jwt
+                            type: string
+                          maxItems: 2
+                          minItems: 1
+                          type: array
+                          x-kubernetes-list-type: set
+                        name:
+                          description: |-
+                            Name uniquely identifies this declaration and is referenced by
+                            inboundGrants.spiffeClientAuth[].trustDomainRef.
+                          maxLength: 253
+                          minLength: 1
+                          type: string
+                        trustDomain:
+                          description: |-
+                            TrustDomain is the SPIFFE trust domain accepted by this declaration.
+                            This pattern is a best-effort CRD-level approximation of the SPIFFE
+                            trust-domain grammar; runtime parsing via
+                            spiffeid.TrustDomainFromString remains authoritative.
+                          maxLength: 255
+                          minLength: 1
+                          pattern: ^([a-z0-9_]|[a-z0-9_]([a-z0-9_-]|\.[a-z0-9_-])*[a-z0-9_])$
+                          type: string
+                      required:
+                      - bundleSource
+                      - methods
+                      - name
+                      - trustDomain
+                      type: object
+                    maxItems: 50
+                    minItems: 1
                     type: array
                     x-kubernetes-list-type: atomic
                   storage:
@@ -649,25 +1107,9 @@ spec:
                     items:
                       description: |-
                         TrustedIssuerConfig configures an external OIDC issuer whose tokens are
-                        accepted as RFC 8693 subject tokens or RFC 7523 JWT-bearer assertions during
-                        token exchange. It mirrors tokenexchange.TrustedIssuer
-                        (pkg/authserver/server/tokenexchange), the runtime type the operator converts
-                        this into directly — no secret is referenced by this type, so no SecretKeyRef
-                        indirection is needed, unlike DelegateClientConfig.
-
-                        expectedAudience is exempted only for a grant-only issuer: jwtBearerGrant
-                        present and none of actorClaim, actorMatcher, allowMayAct, or allowedActors
-                        set. Any RFC 8693 delegation field (actorClaim, actorMatcher, allowMayAct,
-                        allowedActors) still requires expectedAudience, even when combined with
-                        jwtBearerGrant.
-
-                        The allowedDelegateClients rule below mirrors validateDelegationPolicy
-                        (pkg/authserver/server/tokenexchange/multi_issuer_validator.go): it is
-                        keyed on whether ANY delegation field is set (expectedAudience,
-                        actorClaim, actorMatcher, allowMayAct), not merely on whether
-                        jwtBearerGrant is absent — an issuer can combine jwtBearerGrant with
-                        expectedAudience for RFC 8693 delegation on the same issuer, and that
-                        combination still requires allowedDelegateClients at the Go level.
+                        accepted as RFC 8693 subject tokens or RFC 7523 JWT-bearer assertions. Trust
+                        fields remain top-level; canonical grant policy references this declaration by
+                        Name. The embedded grant-policy fields are retained for released CRD compatibility.
                       properties:
                         actorClaim:
                           description: |-
@@ -676,6 +1118,8 @@ spec:
                             Defaults to "azp" when empty; use "appid" for Microsoft Entra v1, "cid"
                             for Okta. The special value "client_id" reads the subject token's
                             client_id claim instead.
+                            This legacy field is deprecated; configure RFC 8693 policy under
+                            inboundGrants.tokenExchange.issuerPolicies.
                           maxLength: 64
                           type: string
                         actorMatcher:
@@ -688,6 +1132,8 @@ spec:
                             not at reconcile time. A syntactically invalid expression fails
                             reconciliation (surfaced via the AuthServerConfigValidated condition),
                             not admission — there is no validating webhook for this field.
+                            This legacy field is deprecated; configure RFC 8693 policy under
+                            inboundGrants.tokenExchange.issuerPolicies.
                           maxLength: 4096
                           type: string
                         allowMayAct:
@@ -699,15 +1145,17 @@ spec:
                             Does not affect self-issued subject tokens. The wildcard is never
                             permitted alongside specific allowedDelegateClients, regardless of
                             this setting.
+                            This legacy field is deprecated; configure RFC 8693 policy under
+                            inboundGrants.tokenExchange.issuerPolicies.
                           type: boolean
                         allowPrivateIPs:
                           description: |-
                             AllowPrivateIPs permits OIDC discovery and JWKS fetches for THIS issuer
                             to resolve to a private or loopback address. Use only when the issuer
                             is hosted inside the same cluster and has no public endpoint. Requires
-                            jwksUrl to be set explicitly (enforced at reconcile time), since
-                            otherwise OIDC discovery — fetched from the external issuer itself —
-                            would choose the private dial target.
+                            jwksUrl to be set explicitly (enforced at admission and by shared
+                            validation), since otherwise OIDC discovery — fetched from the external
+                            issuer itself — would choose the private dial target.
                           type: boolean
                         allowedActors:
                           description: |-
@@ -717,6 +1165,8 @@ spec:
                             either signal is sufficient. Empty denies every token unless
                             actorMatcher is set, or allowMayAct is true and the token carries a
                             permitted may_act claim.
+                            This legacy field is deprecated; configure RFC 8693 policy under
+                            inboundGrants.tokenExchange.issuerPolicies.
                           items:
                             maxLength: 256
                             minLength: 1
@@ -731,6 +1181,8 @@ spec:
                             jwtBearerGrant is configured; set it to ["*"] to permit any confidential
                             client holding the token-exchange grant, or list specific client IDs to
                             bind delegation to them.
+                            This legacy field is deprecated; configure RFC 8693 policy under
+                            inboundGrants.tokenExchange.issuerPolicies.
                           items:
                             maxLength: 256
                             minLength: 1
@@ -784,6 +1236,8 @@ spec:
                             ExpectedAudience is the expected "aud" claim value that must appear in
                             an RFC 8693 subject token's audience list. It is not used by an RFC 7523
                             JWT-bearer assertion, whose audience is the token endpoint.
+                            This legacy field is deprecated; configure RFC 8693 policy under
+                            inboundGrants.tokenExchange.issuerPolicies.
                           maxLength: 2048
                           minLength: 1
                           type: string
@@ -810,6 +1264,8 @@ spec:
                           description: |-
                             JWTBearerGrant enables the plain RFC 7523 JWT-bearer grant for this
                             issuer. It is independent of RFC 8693 delegation policy.
+                            This legacy field is deprecated; configure RFC 7523 policy under
+                            inboundGrants.jwtBearer.issuerPolicies.
                           properties:
                             acceptedAudiences:
                               description: |-
@@ -875,6 +1331,13 @@ spec:
                           - message: subjectBindings must not contain duplicate subjects
                             rule: self.subjectBindings.all(binding, self.subjectBindings.filter(other,
                               other.subject == binding.subject).size() == 1)
+                        name:
+                          description: |-
+                            Name optionally identifies this trust declaration for canonical issuerRef references.
+                            Names must be unique within trustedIssuers when set.
+                          maxLength: 253
+                          minLength: 1
+                          type: string
                       required:
                       - issuerUrl
                       type: object
@@ -895,23 +1358,22 @@ spec:
                       - message: allowPrivateIPs requires jwksUrl to be set explicitly
                         rule: '!(has(self.allowPrivateIPs) && self.allowPrivateIPs)
                           || (has(self.jwksUrl) && self.jwksUrl != "")'
-                      - message: expectedAudience is required unless jwtBearerGrant
-                          is configured without actorClaim, actorMatcher, allowMayAct,
-                          or allowedActors
-                        rule: (has(self.jwtBearerGrant) && !((has(self.actorClaim)
-                          && size(self.actorClaim) > 0) || (has(self.actorMatcher)
-                          && size(self.actorMatcher) > 0) || (has(self.allowMayAct)
-                          && self.allowMayAct) || (has(self.allowedActors) && size(self.allowedActors)
-                          > 0))) || (has(self.expectedAudience) && size(self.expectedAudience)
-                          > 0)
-                      - message: allowedDelegateClients is required when expectedAudience,
-                          actorClaim, actorMatcher, or allowMayAct is set
+                      - message: expectedAudience is required when legacy RFC 8693
+                          policy is configured
+                        rule: '!((has(self.actorClaim) && size(self.actorClaim) >
+                          0) || (has(self.actorMatcher) && size(self.actorMatcher)
+                          > 0) || (has(self.allowMayAct) && self.allowMayAct) || (has(self.allowedActors)
+                          && size(self.allowedActors) > 0) || (has(self.allowedDelegateClients)
+                          && size(self.allowedDelegateClients) > 0)) || (has(self.expectedAudience)
+                          && size(self.expectedAudience) > 0)'
+                      - message: allowedDelegateClients is required when legacy RFC
+                          8693 policy is configured
                         rule: '!((has(self.expectedAudience) && size(self.expectedAudience)
                           > 0) || (has(self.actorClaim) && size(self.actorClaim) >
                           0) || (has(self.actorMatcher) && size(self.actorMatcher)
-                          > 0) || (has(self.allowMayAct) && self.allowMayAct)) ||
-                          (has(self.allowedDelegateClients) && size(self.allowedDelegateClients)
-                          > 0)'
+                          > 0) || (has(self.allowMayAct) && self.allowMayAct) || (has(self.allowedActors)
+                          && size(self.allowedActors) > 0)) || (has(self.allowedDelegateClients)
+                          && size(self.allowedDelegateClients) > 0)'
                     maxItems: 20
                     type: array
                     x-kubernetes-list-type: atomic
@@ -1119,9 +1581,9 @@ spec:
                                   type: string
                               type: object
                               x-kubernetes-validations:
-                              - message: exactly one of discoveryUrl or registrationEndpoint
-                                  must be set
-                                rule: has(self.discoveryUrl) != has(self.registrationEndpoint)
+                              - message: at most one of discoveryUrl or registrationEndpoint
+                                  may be set
+                                rule: '!(has(self.discoveryUrl) && has(self.registrationEndpoint))'
                             identityFromToken:
                               description: |-
                                 IdentityFromToken extracts user identity (subject, name, email) directly
@@ -1185,6 +1647,18 @@ spec:
                               description: TokenEndpoint is the URL for the OAuth
                                 token endpoint.
                               pattern: ^https?://.*$
+                              type: string
+                            tokenEndpointAuthMethod:
+                              description: |-
+                                TokenEndpointAuthMethod selects how the client authenticates at the OAuth token
+                                endpoint. When empty and a client secret is configured, client_secret_basic is
+                                used, matching the RFC 7591 default for confidential clients. Set this to
+                                client_secret_post only for providers that require credentials in the request body.
+                                Public clients without a secret use the "none" method.
+                              enum:
+                              - none
+                              - client_secret_basic
+                              - client_secret_post
                               type: string
                             tokenResponseMapping:
                               description: |-
@@ -1295,6 +1769,10 @@ spec:
                               set
                             rule: '(has(self.clientId) && size(self.clientId) > 0)
                               ? !has(self.dcrConfig) : has(self.dcrConfig)'
+                          - message: exactly one of discoveryUrl or registrationEndpoint
+                              must be set when dcrConfig is set
+                            rule: '!has(self.dcrConfig) || (has(self.dcrConfig.discoveryUrl)
+                              != has(self.dcrConfig.registrationEndpoint))'
                           - message: clientSecretRef must not be set when dcrConfig
                               is set; the client_secret is obtained at runtime via
                               Dynamic Client Registration
@@ -1382,6 +1860,91 @@ spec:
                               - key
                               - name
                               type: object
+                            dcrConfig:
+                              description: |-
+                                DCRConfig enables RFC 7591 Dynamic Client Registration. When set, ClientID
+                                and ClientSecretRef must be omitted. If neither discoveryUrl nor
+                                registrationEndpoint is set, discovery is derived from issuerUrl.
+                              properties:
+                                discoveryUrl:
+                                  description: |-
+                                    DiscoveryURL is the RFC 8414 / OIDC Discovery document URL. The resolver
+                                    issues a single GET against this URL (no well-known-path fallback) and
+                                    reads registration_endpoint, authorization_endpoint, token_endpoint,
+                                    token_endpoint_auth_methods_supported, and scopes_supported from the
+                                    response.
+                                    Mutually exclusive with RegistrationEndpoint.
+                                    HTTPS is required because the registration endpoint resolved from this
+                                    document carries the initial access token and the issued client_secret
+                                    (RFC 7591 §3, RFC 8414 §3). MaxLength is a defensive size cap (etcd
+                                    object budget, regex evaluation cost) and matches the conventional URL
+                                    length cap.
+                                  maxLength: 2048
+                                  pattern: ^https://[^\s?#]+[^/\s?#]$
+                                  type: string
+                                initialAccessTokenRef:
+                                  description: |-
+                                    InitialAccessTokenRef is an optional reference to a Kubernetes Secret
+                                    carrying an RFC 7591 §3 initial access token. When set, the resolver
+                                    presents the token value as a Bearer credential on the registration
+                                    request. Mirrors the ClientSecretRef pattern.
+                                  properties:
+                                    key:
+                                      description: Key is the key within the secret
+                                      type: string
+                                    name:
+                                      description: Name is the name of the secret
+                                      type: string
+                                  required:
+                                  - key
+                                  - name
+                                  type: object
+                                registrationEndpoint:
+                                  description: |-
+                                    RegistrationEndpoint is the RFC 7591 registration endpoint URL used
+                                    directly, bypassing discovery. When using this field, the caller is
+                                    expected to also supply AuthorizationEndpoint, TokenEndpoint, and an
+                                    explicit Scopes list on the parent OAuth2UpstreamConfig.
+                                    Mutually exclusive with DiscoveryURL.
+                                    HTTPS is required because the registration endpoint carries the initial
+                                    access token and the issued client_secret (RFC 7591 §3, RFC 8414 §3).
+                                    MaxLength is a defensive size cap (etcd object budget, regex evaluation
+                                    cost) and matches the conventional URL length cap.
+                                  maxLength: 2048
+                                  pattern: ^https://[^\s?#]+[^/\s?#]$
+                                  type: string
+                                softwareId:
+                                  description: |-
+                                    SoftwareID is the RFC 7591 "software_id" registration metadata value,
+                                    identifying the client software independent of any particular
+                                    registration instance. Typically a UUID or short identifier.
+                                  maxLength: 255
+                                  type: string
+                                softwareStatement:
+                                  description: |-
+                                    SoftwareStatement is the RFC 7591 "software_statement" JWT asserting
+                                    metadata about the client software, signed by a party the authorization
+                                    server trusts.
+
+                                    Stored inline on the CR. The JWT is signed but not encrypted, so its
+                                    contents are visible to anyone with get/list/watch on this resource and
+                                    appear in etcd backups in plaintext. Treat the value as non-confidential
+                                    (signed attestation, not a secret). Operators that rotate software
+                                    statements like bearer credentials should keep them at the authorization
+                                    server side and rely on the registration endpoint's initial access
+                                    token (see InitialAccessTokenRef) instead of placing them on the CR.
+
+                                    Bounded to 16384 characters as a defensive size cap (etcd object
+                                    budget, regex evaluation cost). Real-world signed statements with
+                                    embedded x5c certificate chains, JWKS keys, or OIDC-Federation
+                                    trust-framework metadata routinely exceed 4 KB.
+                                  maxLength: 16384
+                                  type: string
+                              type: object
+                              x-kubernetes-validations:
+                              - message: at most one of discoveryUrl or registrationEndpoint
+                                  may be set
+                                rule: '!(has(self.discoveryUrl) && has(self.registrationEndpoint))'
                             issuerUrl:
                               description: |-
                                 IssuerURL is the OIDC issuer URL for automatic endpoint discovery.
@@ -1502,9 +2065,21 @@ spec:
                               - endpointUrl
                               type: object
                           required:
-                          - clientId
                           - issuerUrl
                           type: object
+                          x-kubernetes-validations:
+                          - message: exactly one of clientId or dcrConfig must be
+                              set
+                            rule: '(has(self.clientId) && size(self.clientId) > 0)
+                              ? !has(self.dcrConfig) : has(self.dcrConfig)'
+                          - message: clientSecretRef must not be set when dcrConfig
+                              is set; the client_secret is obtained at runtime via
+                              Dynamic Client Registration
+                            rule: '!(has(self.dcrConfig) && has(self.clientSecretRef))'
+                          - message: at most one of discoveryUrl or registrationEndpoint
+                              may be set
+                            rule: '!(has(self.dcrConfig) && has(self.dcrConfig.discoveryUrl)
+                              && has(self.dcrConfig.registrationEndpoint))'
                         type:
                           description: 'Type specifies the provider type: "oidc" or
                             "oauth2"'
@@ -1531,26 +2106,130 @@ spec:
                 - issuer
                 type: object
                 x-kubernetes-validations:
-                - message: at least one upstream provider is required unless delegateClients
-                    or a trustedIssuer with jwtBearerGrant is configured
+                - message: at least one upstream provider or inbound grant family
+                    is required
                   rule: (has(self.upstreamProviders) && size(self.upstreamProviders)
                     > 0) || (has(self.delegateClients) && size(self.delegateClients)
                     > 0) || (has(self.trustedIssuers) && self.trustedIssuers.exists(issuer,
-                    has(issuer.jwtBearerGrant)))
-                - message: allowConfidentialClientRegistration cannot be combined
-                    with insecureAllowHTTP; client secrets would be issued in cleartext
-                    over an unauthenticated endpoint
-                  rule: '!(has(self.allowConfidentialClientRegistration) && self.allowConfidentialClientRegistration
-                    && has(self.insecureAllowHTTP) && self.insecureAllowHTTP)'
+                    has(issuer.jwtBearerGrant))) || (has(self.inboundGrants) && (has(self.inboundGrants.tokenExchange)
+                    || has(self.inboundGrants.jwtBearer) || (has(self.inboundGrants.spiffeClientAuth)
+                    && size(self.inboundGrants.spiffeClientAuth) > 0)))
+                - message: spiffeTrustDomains and inboundGrants.spiffeClientAuth must
+                    be configured together
+                  rule: ((has(self.spiffeTrustDomains) && size(self.spiffeTrustDomains)
+                    > 0) == (has(self.inboundGrants) && has(self.inboundGrants.spiffeClientAuth)
+                    && size(self.inboundGrants.spiffeClientAuth) > 0))
+                - message: spiffeTrustDomains must not contain duplicate names
+                  rule: '!has(self.spiffeTrustDomains) || self.spiffeTrustDomains.all(domain,
+                    self.spiffeTrustDomains.filter(other, other.name == domain.name).size()
+                    == 1)'
+                - message: spiffeTrustDomains must not contain duplicate trust domains
+                  rule: '!has(self.spiffeTrustDomains) || self.spiffeTrustDomains.all(domain,
+                    self.spiffeTrustDomains.filter(other, other.trustDomain == domain.trustDomain).size()
+                    == 1)'
+                - message: every SPIFFE trust domain must be referenced by a SPIFFE
+                    client
+                  rule: '!has(self.spiffeTrustDomains) || self.spiffeTrustDomains.all(domain,
+                    has(self.inboundGrants) && has(self.inboundGrants.spiffeClientAuth)
+                    && self.inboundGrants.spiffeClientAuth.exists(client, client.trustDomainRef
+                    == domain.name))'
+                - message: every SPIFFE client trustDomainRef must reference a declared
+                    trust domain
+                  rule: '!has(self.inboundGrants) || !has(self.inboundGrants.spiffeClientAuth)
+                    || self.inboundGrants.spiffeClientAuth.all(client, has(self.spiffeTrustDomains)
+                    && self.spiffeTrustDomains.exists(domain, domain.name == client.trustDomainRef))'
+                - message: spiffeClientAuth methods must be enabled by the referenced
+                    trust domain
+                  rule: '!has(self.inboundGrants) || !has(self.inboundGrants.spiffeClientAuth)
+                    || self.inboundGrants.spiffeClientAuth.all(client, !has(self.spiffeTrustDomains)
+                    || !self.spiffeTrustDomains.exists(domain, domain.name == client.trustDomainRef)
+                    || self.spiffeTrustDomains.exists(domain, domain.name == client.trustDomainRef
+                    && client.methods.all(method, method in domain.methods)))'
+                - message: spiffeClientAuth principalPattern trust domain must match
+                    the referenced trust domain
+                  rule: '!has(self.inboundGrants) || !has(self.inboundGrants.spiffeClientAuth)
+                    || self.inboundGrants.spiffeClientAuth.all(client, !has(self.spiffeTrustDomains)
+                    || !self.spiffeTrustDomains.exists(domain, domain.name == client.trustDomainRef)
+                    || self.spiffeTrustDomains.exists(domain, domain.name == client.trustDomainRef
+                    && client.principalPattern.startsWith(''spiffe://'' + domain.trustDomain
+                    + ''/'')))'
+                - message: spiffeClientAuth must not contain duplicate client IDs
+                  rule: '!has(self.inboundGrants) || !has(self.inboundGrants.spiffeClientAuth)
+                    || self.inboundGrants.spiffeClientAuth.all(client, self.inboundGrants.spiffeClientAuth.filter(other,
+                    other.clientId == client.clientId).size() == 1)'
+                - message: spiffeClientAuth must not contain duplicate principal patterns
+                  rule: '!has(self.inboundGrants) || !has(self.inboundGrants.spiffeClientAuth)
+                    || self.inboundGrants.spiffeClientAuth.all(client, self.inboundGrants.spiffeClientAuth.filter(other,
+                    other.principalPattern == client.principalPattern).size() == 1)'
+                - message: 'spiffeClientAuth clientId must not use the reserved synthetic:
+                    prefix'
+                  rule: '!has(self.inboundGrants) || !has(self.inboundGrants.spiffeClientAuth)
+                    || self.inboundGrants.spiffeClientAuth.all(client, !client.clientId.startsWith(''synthetic:''))'
+                - message: spiffeClientAuth clientId must not be an absolute URL
+                  rule: '!has(self.inboundGrants) || !has(self.inboundGrants.spiffeClientAuth)
+                    || self.inboundGrants.spiffeClientAuth.all(client, !client.clientId.matches(''^[A-Za-z][A-Za-z0-9+.-]*://.+''))'
+                - message: insecureAllowHTTP cannot be combined with confidential
+                    client registration or delegateClients; client secrets would be
+                    issued or used in cleartext over an unauthenticated endpoint
+                  rule: '!(has(self.insecureAllowHTTP) && self.insecureAllowHTTP &&
+                    ((has(self.allowConfidentialClientRegistration) && self.allowConfidentialClientRegistration)
+                    || (has(self.delegateClients) && size(self.delegateClients) >
+                    0) || (has(self.inboundGrants) && has(self.inboundGrants.tokenExchange)
+                    && has(self.inboundGrants.tokenExchange.delegateClients) && size(self.inboundGrants.tokenExchange.delegateClients)
+                    > 0)))'
                 - message: forceConfidentialRedirectUris requires allowConfidentialClientRegistration
                     to be true
                   rule: (!has(self.forceConfidentialRedirectUris) || size(self.forceConfidentialRedirectUris)
                     == 0) || (has(self.allowConfidentialClientRegistration) && self.allowConfidentialClientRegistration)
-                - message: delegateClients with an HTTP issuer require insecureAllowConfidentialOverLoopbackHTTP
+                - message: confidential client registration or delegateClients with
+                    an HTTP issuer require insecureAllowConfidentialOverLoopbackHTTP
                     to be explicitly enabled; the issuer must still be loopback
-                  rule: '!has(self.delegateClients) || size(self.delegateClients)
-                    == 0 || !self.issuer.startsWith(''http://'') || (has(self.insecureAllowConfidentialOverLoopbackHTTP)
-                    && self.insecureAllowConfidentialOverLoopbackHTTP)'
+                  rule: '!self.issuer.startsWith(''http://'') || (has(self.insecureAllowConfidentialOverLoopbackHTTP)
+                    && self.insecureAllowConfidentialOverLoopbackHTTP) || ((!has(self.allowConfidentialClientRegistration)
+                    || !self.allowConfidentialClientRegistration) && (!has(self.delegateClients)
+                    || size(self.delegateClients) == 0) && (!has(self.inboundGrants)
+                    || !has(self.inboundGrants.tokenExchange) || !has(self.inboundGrants.tokenExchange.delegateClients)
+                    || size(self.inboundGrants.tokenExchange.delegateClients) == 0))'
+                - message: canonical tokenExchange conflicts with legacy delegateClients
+                    or RFC 8693 trusted issuer policy
+                  rule: '!has(self.inboundGrants) || !has(self.inboundGrants.tokenExchange)
+                    || ((!has(self.delegateClients) || size(self.delegateClients)
+                    == 0) && (!has(self.trustedIssuers) || !self.trustedIssuers.exists(issuer,
+                    has(issuer.expectedAudience) || has(issuer.actorClaim) || has(issuer.allowedActors)
+                    || has(issuer.actorMatcher) || has(issuer.allowedDelegateClients)
+                    || (has(issuer.allowMayAct) && issuer.allowMayAct))))'
+                - message: canonical jwtBearer conflicts with legacy jwtBearerGrant
+                  rule: '!has(self.inboundGrants) || !has(self.inboundGrants.jwtBearer)
+                    || !has(self.trustedIssuers) || !self.trustedIssuers.exists(issuer,
+                    has(issuer.jwtBearerGrant))'
+                - message: trustedIssuers must not contain duplicate names
+                  rule: '!has(self.trustedIssuers) || self.trustedIssuers.all(issuer,
+                    !has(issuer.name) || self.trustedIssuers.filter(other, has(other.name)
+                    && other.name == issuer.name).size() == 1)'
+                - message: every tokenExchange issuerRef must reference a named trusted
+                    issuer
+                  rule: '!has(self.inboundGrants) || !has(self.inboundGrants.tokenExchange)
+                    || !has(self.inboundGrants.tokenExchange.issuerPolicies) || self.inboundGrants.tokenExchange.issuerPolicies.all(policy,
+                    has(self.trustedIssuers) && self.trustedIssuers.exists(issuer,
+                    has(issuer.name) && issuer.name == policy.issuerRef))'
+                - message: tokenExchange issuerPolicies must not contain duplicate
+                    issuerRef values
+                  rule: '!has(self.inboundGrants) || !has(self.inboundGrants.tokenExchange)
+                    || !has(self.inboundGrants.tokenExchange.issuerPolicies) || self.inboundGrants.tokenExchange.issuerPolicies.all(policy,
+                    self.inboundGrants.tokenExchange.issuerPolicies.filter(other,
+                    other.issuerRef == policy.issuerRef).size() == 1)'
+                - message: every jwtBearer issuerRef must reference a named trusted
+                    issuer
+                  rule: '!has(self.inboundGrants) || !has(self.inboundGrants.jwtBearer)
+                    || !has(self.inboundGrants.jwtBearer.issuerPolicies) || self.inboundGrants.jwtBearer.issuerPolicies.all(policy,
+                    has(self.trustedIssuers) && self.trustedIssuers.exists(issuer,
+                    has(issuer.name) && issuer.name == policy.issuerRef))'
+                - message: jwtBearer issuerPolicies must not contain duplicate issuerRef
+                    values
+                  rule: '!has(self.inboundGrants) || !has(self.inboundGrants.jwtBearer)
+                    || !has(self.inboundGrants.jwtBearer.issuerPolicies) || self.inboundGrants.jwtBearer.issuerPolicies.all(policy,
+                    self.inboundGrants.jwtBearer.issuerPolicies.filter(other, other.issuerRef
+                    == policy.issuerRef).size() == 1)'
               config:
                 description: |-
                   Config is the Virtual MCP server configuration.
@@ -4146,6 +4825,157 @@ spec:
                 - Degraded
                 - Failed
                 type: string
+              runtime:
+                description: |-
+                  Runtime is the status snapshot written exclusively by the vMCP process.
+                  The operator projects it into the top-level compatibility fields.
+                properties:
+                  backendCount:
+                    description: BackendCount is the number of routable backends observed
+                      by the runtime.
+                    format: int32
+                    type: integer
+                  conditions:
+                    description: Conditions contains runtime health observations.
+                    items:
+                      description: Condition contains details for one aspect of the
+                        current state of this API Resource.
+                      properties:
+                        lastTransitionTime:
+                          description: |-
+                            lastTransitionTime is the last time the condition transitioned from one status to another.
+                            This should be when the underlying condition changed.  If that is not known, then using the time when the API field changed is acceptable.
+                          format: date-time
+                          type: string
+                        message:
+                          description: |-
+                            message is a human readable message indicating details about the transition.
+                            This may be an empty string.
+                          maxLength: 32768
+                          type: string
+                        observedGeneration:
+                          description: |-
+                            observedGeneration represents the .metadata.generation that the condition was set based upon.
+                            For instance, if .metadata.generation is currently 12, but the .status.conditions[x].observedGeneration is 9, the condition is out of date
+                            with respect to the current state of the instance.
+                          format: int64
+                          minimum: 0
+                          type: integer
+                        reason:
+                          description: |-
+                            reason contains a programmatic identifier indicating the reason for the condition's last transition.
+                            Producers of specific condition types may define expected values and meanings for this field,
+                            and whether the values are considered a guaranteed API.
+                            The value should be a CamelCase string.
+                            This field may not be empty.
+                          maxLength: 1024
+                          minLength: 1
+                          pattern: ^[A-Za-z]([A-Za-z0-9_,:]*[A-Za-z0-9_])?$
+                          type: string
+                        status:
+                          description: status of the condition, one of True, False,
+                            Unknown.
+                          enum:
+                          - "True"
+                          - "False"
+                          - Unknown
+                          type: string
+                        type:
+                          description: type of condition in CamelCase or in foo.example.com/CamelCase.
+                          maxLength: 316
+                          pattern: ^([a-z0-9]([-a-z0-9]*[a-z0-9])?(\.[a-z0-9]([-a-z0-9]*[a-z0-9])?)*/)?(([A-Za-z0-9][-A-Za-z0-9_.]*)?[A-Za-z0-9])$
+                          type: string
+                      required:
+                      - lastTransitionTime
+                      - message
+                      - reason
+                      - status
+                      - type
+                      type: object
+                    type: array
+                    x-kubernetes-list-map-keys:
+                    - type
+                    x-kubernetes-list-type: map
+                  discoveredBackends:
+                    description: DiscoveredBackends contains the runtime's latest
+                      backend observations.
+                    items:
+                      description: |-
+                        DiscoveredBackend represents a backend server discovered by vMCP runtime.
+                        This type is shared with the Kubernetes operator CRD (VirtualMCPServer.Status.DiscoveredBackends).
+                      properties:
+                        authConfigRef:
+                          description: AuthConfigRef is the name of the discovered
+                            MCPExternalAuthConfig (if any)
+                          type: string
+                        authType:
+                          description: AuthType is the type of authentication configured
+                          type: string
+                        circuitBreakerState:
+                          description: |-
+                            CircuitBreakerState is the current circuit breaker state (closed, open, half-open).
+                            Empty when circuit breaker is disabled or not configured.
+                          enum:
+                          - closed
+                          - open
+                          - half-open
+                          type: string
+                        circuitLastChanged:
+                          description: |-
+                            CircuitLastChanged is the timestamp when the circuit breaker state last changed.
+                            Empty when circuit breaker is disabled or has never changed state.
+                          format: date-time
+                          type: string
+                        consecutiveFailures:
+                          description: |-
+                            ConsecutiveFailures is the current count of consecutive health check failures.
+                            Resets to 0 when the backend becomes healthy again.
+                          type: integer
+                        lastHealthCheck:
+                          description: LastHealthCheck is the timestamp of the last
+                            health check
+                          format: date-time
+                          type: string
+                        mcpRevision:
+                          description: |-
+                            MCPRevision is the backend's negotiated MCP protocol revision
+                            ("2026-07-28" or "2025-11-25"). Empty when the backend has not been probed.
+                          type: string
+                        message:
+                          description: Message provides additional information about
+                            the backend status
+                          type: string
+                        name:
+                          description: Name is the name of the backend MCPServer
+                          type: string
+                        status:
+                          description: |-
+                            Status is the current status of the backend (ready, degraded, unavailable, unauthenticated, unknown).
+                            Use BackendHealthStatus.ToCRDStatus() to populate this field.
+                          type: string
+                        url:
+                          description: URL is the URL of the backend MCPServer
+                          type: string
+                      required:
+                      - name
+                      type: object
+                    type: array
+                    x-kubernetes-list-map-keys:
+                    - name
+                    x-kubernetes-list-type: map
+                  message:
+                    description: Message provides detail about the runtime phase.
+                    type: string
+                  phase:
+                    description: Phase is the lifecycle phase observed by the running
+                      vMCP process.
+                    enum:
+                    - Pending
+                    - Ready
+                    - Degraded
+                    - Failed
+                    type: string
+                type: object
               telemetryConfigHash:
                 description: |-
                   TelemetryConfigHash is the hash of the referenced MCPTelemetryConfig spec for change detection.
@@ -4324,6 +5154,7 @@ spec:
                       This is independent of allowConfidentialClientRegistration: it neither
                       enables nor requires unauthenticated confidential dynamic client
                       registration.
+                      This legacy field is deprecated; use inboundGrants.tokenExchange.delegateClients.
                     items:
                       description: |-
                         DelegateClientConfig configures a pre-provisioned confidential OAuth client
@@ -4459,6 +5290,348 @@ spec:
                       type: object
                     type: array
                     x-kubernetes-list-type: atomic
+                  inboundGrants:
+                    description: InboundGrants configures canonical inbound OAuth
+                      grant families.
+                    properties:
+                      jwtBearer:
+                        description: JWTBearer configures RFC 7523 issuer policies.
+                        properties:
+                          issuerPolicies:
+                            description: IssuerPolicies binds RFC 7523 policy to named
+                              trusted issuers.
+                            items:
+                              description: JWTBearerIssuerPolicyConfig binds RFC 7523
+                                policy to a named trusted issuer.
+                              properties:
+                                acceptedAudiences:
+                                  description: |-
+                                    AcceptedAudiences identifies this authorization server's accepted
+                                    assertion audiences. When omitted, runtime validation defaults to the
+                                    token endpoint.
+                                  items:
+                                    maxLength: 2048
+                                    minLength: 1
+                                    pattern: ^https?://[^[:space:]]+$
+                                    type: string
+                                  maxItems: 50
+                                  type: array
+                                  x-kubernetes-list-type: atomic
+                                issuerRef:
+                                  description: IssuerRef references trustedIssuers[].name.
+                                  maxLength: 253
+                                  minLength: 1
+                                  type: string
+                                maxAssertionAge:
+                                  description: MaxAssertionAge caps the exp-iat interval
+                                    independently of exp.
+                                  type: string
+                                subjectBindings:
+                                  description: |-
+                                    SubjectBindings maps an exact external subject to allowed RFC 8707
+                                    resources.
+                                  items:
+                                    description: |-
+                                      JWTBearerSubjectBinding configures the exact subject and allowed resources
+                                      for one RFC 7523 JWT-bearer assertion identity.
+                                    properties:
+                                      allowedResources:
+                                        description: |-
+                                          AllowedResources is the exact set of RFC 8707 resources this subject may
+                                          request.
+                                        items:
+                                          maxLength: 2048
+                                          minLength: 1
+                                          pattern: ^https?://[^[:space:]]+$
+                                          type: string
+                                        maxItems: 50
+                                        minItems: 1
+                                        type: array
+                                        x-kubernetes-list-type: atomic
+                                      subject:
+                                        description: Subject is an exact assertion
+                                          sub value. Wildcards are not supported.
+                                        maxLength: 256
+                                        minLength: 1
+                                        pattern: ^[^*]+$
+                                        type: string
+                                    required:
+                                    - allowedResources
+                                    - subject
+                                    type: object
+                                  maxItems: 50
+                                  minItems: 1
+                                  type: array
+                                  x-kubernetes-list-type: atomic
+                              required:
+                              - issuerRef
+                              - maxAssertionAge
+                              - subjectBindings
+                              type: object
+                              x-kubernetes-validations:
+                              - message: maxAssertionAge must be greater than zero
+                                rule: duration(self.maxAssertionAge) > duration('0s')
+                              - message: subjectBindings must not contain duplicate
+                                  subjects
+                                rule: self.subjectBindings.all(binding, self.subjectBindings.filter(other,
+                                  other.subject == binding.subject).size() == 1)
+                            maxItems: 20
+                            type: array
+                            x-kubernetes-list-type: atomic
+                        type: object
+                      spiffeClientAuth:
+                        description: |-
+                          SPIFFEClientAuth associates SPIFFE principal patterns with explicit
+                          OAuth client identities and permissions. A sibling of TokenExchange and
+                          JWTBearer below, not nested under either: client authentication does
+                          not by itself confer a grant. See SPIFFEClientConfig.
+                        items:
+                          description: |-
+                            SPIFFEClientConfig associates one SPIFFE principal pattern from a declared
+                            trust domain with an explicit OAuth client identity and permissions.
+                            Configuration is not authentication: configured SPIFFE clients remain
+                            non-public OAuth clients without a secret until live SPIFFE credential
+                            validation is implemented (see SPIFFETrustDomainConfig's doc comment).
+
+                            GrantTypes is deliberately not exposed here: the runtime only accepts
+                            exactly the RFC 8693 token-exchange grant for a SPIFFE client
+                            (validateSPIFFEGrants in pkg/authserver/spiffe_trust.go), so the converter
+                            always supplies it instead of letting it be configured.
+                          properties:
+                            audiences:
+                              description: Audiences are RFC 8693 token audiences
+                                this association may request.
+                              items:
+                                maxLength: 2048
+                                minLength: 1
+                                type: string
+                              maxItems: 50
+                              minItems: 1
+                              type: array
+                              x-kubernetes-list-type: set
+                            clientId:
+                              description: |-
+                                ClientID is the explicit OAuth client_id. It is never derived from a
+                                SPIFFE ID.
+                              maxLength: 253
+                              minLength: 1
+                              type: string
+                            methods:
+                              description: |-
+                                Methods are the credential types this association may authenticate
+                                with. Must be a subset of the referenced trust domain's methods.
+                              items:
+                                description: |-
+                                  SPIFFEAuthenticationMethod identifies the credential type permitted for a
+                                  SPIFFE workload. Mirrors authserver.SPIFFEAuthenticationMethod field-for-field;
+                                  runtime parsing remains authoritative.
+                                enum:
+                                - spiffe_x509
+                                - spiffe_jwt
+                                type: string
+                              maxItems: 2
+                              minItems: 1
+                              type: array
+                              x-kubernetes-list-type: set
+                            principalPattern:
+                              description: |-
+                                PrincipalPattern is a concrete SPIFFE ID or a terminal /* pattern within
+                                the declared trust domain. This pattern is a best-effort CRD-level
+                                approximation; runtime parsing via spiffeid.FromString remains
+                                authoritative.
+                              maxLength: 2048
+                              pattern: ^spiffe://[a-z0-9._-]+((/[a-zA-Z0-9._-]+)+(/\*)?|/\*)$
+                              type: string
+                            resources:
+                              description: |-
+                                Resources are RFC 8707 resource indicators this association may
+                                request. Must be a subset of the server's allowed_audiences allowlist,
+                                which is derived at reconcile time and not available on this CRD, so
+                                allowlist membership is validated at reconcile time, not admission.
+                                Shape (a well-formed absolute HTTP(S) URI) is independent of that
+                                derived allowlist and is validated here. Distinct from Audiences: a
+                                resource permission does not imply the same value is also a permitted
+                                token audience, or vice versa.
+                              items:
+                                maxLength: 2048
+                                minLength: 1
+                                pattern: ^https?://[^@#[:space:]]+$
+                                type: string
+                              maxItems: 50
+                              type: array
+                              x-kubernetes-list-type: set
+                            scopes:
+                              description: |-
+                                Scopes are OAuth scopes granted to this association. Must be a subset
+                                of the server's effective supported scopes.
+                              items:
+                                maxLength: 256
+                                minLength: 1
+                                type: string
+                              maxItems: 50
+                              minItems: 1
+                              type: array
+                              x-kubernetes-list-type: set
+                            trustDomainRef:
+                              description: TrustDomainRef references spiffeTrustDomains[].name.
+                              maxLength: 253
+                              minLength: 1
+                              type: string
+                          required:
+                          - audiences
+                          - clientId
+                          - methods
+                          - principalPattern
+                          - scopes
+                          - trustDomainRef
+                          type: object
+                          x-kubernetes-validations:
+                          - message: principalPattern path must not contain . or ..
+                              segments
+                            rule: self.principalPattern.split('/').all(segment, segment
+                              != '.' && segment != '..')
+                        maxItems: 100
+                        type: array
+                        x-kubernetes-list-type: atomic
+                      tokenExchange:
+                        description: TokenExchange configures RFC 8693 clients and
+                          issuer policies.
+                        properties:
+                          delegateClients:
+                            description: DelegateClients configures pre-provisioned
+                              confidential clients.
+                            items:
+                              description: |-
+                                DelegateClientConfig configures a pre-provisioned confidential OAuth client
+                                for RFC 8693 token exchange. Its secret is referenced from a Kubernetes
+                                Secret and is never represented inline.
+                              properties:
+                                audiences:
+                                  description: Audiences is the narrowed set of RFC
+                                    8707 resources this client may request.
+                                  items:
+                                    maxLength: 2048
+                                    minLength: 1
+                                    type: string
+                                  maxItems: 10
+                                  minItems: 1
+                                  type: array
+                                  x-kubernetes-list-type: atomic
+                                clientId:
+                                  description: ClientID is the OAuth client_id presented
+                                    at the token endpoint.
+                                  maxLength: 256
+                                  minLength: 1
+                                  type: string
+                                clientSecretRef:
+                                  description: ClientSecretRef references the Kubernetes
+                                    Secret key containing the client secret.
+                                  properties:
+                                    key:
+                                      description: Key is the key within the secret
+                                      type: string
+                                    name:
+                                      description: Name is the name of the secret
+                                      type: string
+                                  required:
+                                  - key
+                                  - name
+                                  type: object
+                                scopes:
+                                  description: Scopes is the narrowed set of OAuth
+                                    scopes this client may request.
+                                  items:
+                                    maxLength: 256
+                                    minLength: 1
+                                    type: string
+                                  maxItems: 10
+                                  minItems: 1
+                                  type: array
+                                  x-kubernetes-list-type: atomic
+                              required:
+                              - audiences
+                              - clientId
+                              - clientSecretRef
+                              - scopes
+                              type: object
+                              x-kubernetes-validations:
+                              - message: clientSecretRef.name and clientSecretRef.key
+                                  are required and must be non-empty
+                                rule: has(self.clientSecretRef) && size(self.clientSecretRef.name)
+                                  > 0 && size(self.clientSecretRef.key) > 0
+                            maxItems: 10
+                            type: array
+                            x-kubernetes-list-type: atomic
+                          issuerPolicies:
+                            description: IssuerPolicies binds RFC 8693 policy to named
+                              trusted issuers.
+                            items:
+                              description: TokenExchangeIssuerPolicyConfig binds RFC
+                                8693 policy to a named trusted issuer.
+                              properties:
+                                actorClaim:
+                                  description: ActorClaim names the claim containing
+                                    the external actor identity.
+                                  maxLength: 64
+                                  type: string
+                                actorMatcher:
+                                  maxLength: 4096
+                                  type: string
+                                allowMayAct:
+                                  type: boolean
+                                allowedActors:
+                                  items:
+                                    maxLength: 256
+                                    minLength: 1
+                                    type: string
+                                  maxItems: 50
+                                  type: array
+                                  x-kubernetes-list-type: atomic
+                                allowedDelegateClients:
+                                  items:
+                                    maxLength: 256
+                                    minLength: 1
+                                    type: string
+                                  maxItems: 50
+                                  minItems: 1
+                                  type: array
+                                  x-kubernetes-list-type: atomic
+                                expectedAudience:
+                                  description: ExpectedAudience is the required RFC
+                                    8693 subject-token audience.
+                                  maxLength: 2048
+                                  minLength: 1
+                                  type: string
+                                issuerRef:
+                                  description: IssuerRef references trustedIssuers[].name.
+                                  maxLength: 253
+                                  minLength: 1
+                                  type: string
+                              required:
+                              - allowedDelegateClients
+                              - expectedAudience
+                              - issuerRef
+                              type: object
+                              x-kubernetes-validations:
+                              - message: allowedDelegateClients must not combine the
+                                  wildcard "*" with specific client IDs
+                                rule: '!(''*'' in self.allowedDelegateClients) ||
+                                  size(self.allowedDelegateClients) == 1'
+                              - message: allowMayAct must not be enabled when allowedDelegateClients
+                                  contains the wildcard "*"
+                                rule: '!(self.allowMayAct && ''*'' in self.allowedDelegateClients)'
+                              - message: actorClaim must name a readable claim; use
+                                  client_id or a non-reserved claim such as azp, appid,
+                                  or cid
+                                rule: '!has(self.actorClaim) || !(self.actorClaim
+                                  in [''sub'', ''iss'', ''aud'', ''exp'', ''iat'',
+                                  ''nbf'', ''jti'', ''name'', ''email'', ''scope'',
+                                  ''scp'', ''may_act''])'
+                            maxItems: 20
+                            type: array
+                            x-kubernetes-list-type: atomic
+                        type: object
+                    type: object
                   insecureAllowConfidentialOverLoopbackHTTP:
                     default: false
                     description: |-
@@ -4495,9 +5668,10 @@ spec:
                       as an operator condition.
 
                       One combination is rejected at admission on all three CRDs regardless of the
-                      above: setting this field alongside allowConfidentialClientRegistration, which
-                      would issue client secrets in cleartext over an unauthenticated registration
-                      endpoint (see the XValidation rule on EmbeddedAuthServerConfig).
+                      above: setting this field alongside confidential client registration or
+                      delegate clients, which would issue or use client secrets in cleartext over
+                      an unauthenticated endpoint (see the XValidation rule on
+                      EmbeddedAuthServerConfig).
                     type: boolean
                   issuer:
                     description: |-
@@ -4547,6 +5721,120 @@ spec:
                       - name
                       type: object
                     maxItems: 5
+                    type: array
+                    x-kubernetes-list-type: atomic
+                  spiffeTrustDomains:
+                    description: |-
+                      SPIFFETrustDomains declares SPIFFE trust domains for
+                      inboundGrants.spiffeClientAuth associations. See SPIFFETrustDomainConfig's
+                      doc comment for why declaring a domain does not by itself enable
+                      authentication in this build.
+                    items:
+                      description: |-
+                        SPIFFETrustDomainConfig declares one SPIFFE trust domain accepted by the
+                        embedded authorization server. Configuration is not authentication: no
+                        live X.509-SVID or JWT-SVID validation exists yet, so a declared trust
+                        domain does not by itself let any workload authenticate — RunConfig.Validate
+                        (pkg/authserver/config.go) currently hard-rejects any non-empty
+                        spiffeTrustDomains at authserver startup via validateSPIFFENotYetEnforced,
+                        a deliberate placeholder until real SVID verification lands.
+                      properties:
+                        bundleSource:
+                          description: |-
+                            BundleSource declares exactly one future trust-bundle source. It is
+                            validated for shape only; fetching or loading a bundle from it is a
+                            later step.
+                          properties:
+                            endpoint:
+                              description: |-
+                                Endpoint declares a HTTPS SPIFFE Bundle Endpoint. Required when Type is
+                                "bundle_endpoint".
+                              properties:
+                                profile:
+                                  description: |-
+                                    Profile selects how the endpoint's TLS connection is authenticated:
+                                    SPIFFEBundleEndpointProfileHTTPSWeb (Web PKI) or
+                                    SPIFFEBundleEndpointProfileHTTPSSPIFFE (a separately distributed
+                                    X.509-SVID root).
+                                  enum:
+                                  - https_web
+                                  - https_spiffe
+                                  type: string
+                                url:
+                                  description: URL is the HTTPS SPIFFE Bundle Endpoint
+                                    URL.
+                                  maxLength: 2048
+                                  minLength: 1
+                                  type: string
+                              required:
+                              - profile
+                              - url
+                              type: object
+                            type:
+                              description: Type selects the trust-bundle source.
+                              enum:
+                              - bundle_endpoint
+                              - workload_api
+                              type: string
+                            workloadAPI:
+                              description: |-
+                                WorkloadAPI selects the local SPIFFE Workload API. Required when Type
+                                is "workload_api".
+                              type: object
+                          required:
+                          - type
+                          type: object
+                          x-kubernetes-validations:
+                          - message: endpoint configuration must be set if and only
+                              if type is 'bundle_endpoint'
+                            rule: 'self.type == ''bundle_endpoint'' ? has(self.endpoint)
+                              : !has(self.endpoint)'
+                          - message: workloadAPI configuration must be set if and
+                              only if type is 'workload_api'
+                            rule: 'self.type == ''workload_api'' ? has(self.workloadAPI)
+                              : !has(self.workloadAPI)'
+                        methods:
+                          description: |-
+                            Methods explicitly enables the supported credential types for this
+                            trust domain.
+                          items:
+                            description: |-
+                              SPIFFEAuthenticationMethod identifies the credential type permitted for a
+                              SPIFFE workload. Mirrors authserver.SPIFFEAuthenticationMethod field-for-field;
+                              runtime parsing remains authoritative.
+                            enum:
+                            - spiffe_x509
+                            - spiffe_jwt
+                            type: string
+                          maxItems: 2
+                          minItems: 1
+                          type: array
+                          x-kubernetes-list-type: set
+                        name:
+                          description: |-
+                            Name uniquely identifies this declaration and is referenced by
+                            inboundGrants.spiffeClientAuth[].trustDomainRef.
+                          maxLength: 253
+                          minLength: 1
+                          type: string
+                        trustDomain:
+                          description: |-
+                            TrustDomain is the SPIFFE trust domain accepted by this declaration.
+                            This pattern is a best-effort CRD-level approximation of the SPIFFE
+                            trust-domain grammar; runtime parsing via
+                            spiffeid.TrustDomainFromString remains authoritative.
+                          maxLength: 255
+                          minLength: 1
+                          pattern: ^([a-z0-9_]|[a-z0-9_]([a-z0-9_-]|\.[a-z0-9_-])*[a-z0-9_])$
+                          type: string
+                      required:
+                      - bundleSource
+                      - methods
+                      - name
+                      - trustDomain
+                      type: object
+                    maxItems: 50
+                    minItems: 1
                     type: array
                     x-kubernetes-list-type: atomic
                   storage:
@@ -4784,25 +6072,9 @@ spec:
                     items:
                       description: |-
                         TrustedIssuerConfig configures an external OIDC issuer whose tokens are
-                        accepted as RFC 8693 subject tokens or RFC 7523 JWT-bearer assertions during
-                        token exchange. It mirrors tokenexchange.TrustedIssuer
-                        (pkg/authserver/server/tokenexchange), the runtime type the operator converts
-                        this into directly — no secret is referenced by this type, so no SecretKeyRef
-                        indirection is needed, unlike DelegateClientConfig.
-
-                        expectedAudience is exempted only for a grant-only issuer: jwtBearerGrant
-                        present and none of actorClaim, actorMatcher, allowMayAct, or allowedActors
-                        set. Any RFC 8693 delegation field (actorClaim, actorMatcher, allowMayAct,
-                        allowedActors) still requires expectedAudience, even when combined with
-                        jwtBearerGrant.
-
-                        The allowedDelegateClients rule below mirrors validateDelegationPolicy
-                        (pkg/authserver/server/tokenexchange/multi_issuer_validator.go): it is
-                        keyed on whether ANY delegation field is set (expectedAudience,
-                        actorClaim, actorMatcher, allowMayAct), not merely on whether
-                        jwtBearerGrant is absent — an issuer can combine jwtBearerGrant with
-                        expectedAudience for RFC 8693 delegation on the same issuer, and that
-                        combination still requires allowedDelegateClients at the Go level.
+                        accepted as RFC 8693 subject tokens or RFC 7523 JWT-bearer assertions. Trust
+                        fields remain top-level; canonical grant policy references this declaration by
+                        Name. The embedded grant-policy fields are retained for released CRD compatibility.
                       properties:
                         actorClaim:
                           description: |-
@@ -4811,6 +6083,8 @@ spec:
                             Defaults to "azp" when empty; use "appid" for Microsoft Entra v1, "cid"
                             for Okta. The special value "client_id" reads the subject token's
                             client_id claim instead.
+                            This legacy field is deprecated; configure RFC 8693 policy under
+                            inboundGrants.tokenExchange.issuerPolicies.
                           maxLength: 64
                           type: string
                         actorMatcher:
@@ -4823,6 +6097,8 @@ spec:
                             not at reconcile time. A syntactically invalid expression fails
                             reconciliation (surfaced via the AuthServerConfigValidated condition),
                             not admission — there is no validating webhook for this field.
+                            This legacy field is deprecated; configure RFC 8693 policy under
+                            inboundGrants.tokenExchange.issuerPolicies.
                           maxLength: 4096
                           type: string
                         allowMayAct:
@@ -4834,15 +6110,17 @@ spec:
                             Does not affect self-issued subject tokens. The wildcard is never
                             permitted alongside specific allowedDelegateClients, regardless of
                             this setting.
+                            This legacy field is deprecated; configure RFC 8693 policy under
+                            inboundGrants.tokenExchange.issuerPolicies.
                           type: boolean
                         allowPrivateIPs:
                           description: |-
                             AllowPrivateIPs permits OIDC discovery and JWKS fetches for THIS issuer
                             to resolve to a private or loopback address. Use only when the issuer
                             is hosted inside the same cluster and has no public endpoint. Requires
-                            jwksUrl to be set explicitly (enforced at reconcile time), since
-                            otherwise OIDC discovery — fetched from the external issuer itself —
-                            would choose the private dial target.
+                            jwksUrl to be set explicitly (enforced at admission and by shared
+                            validation), since otherwise OIDC discovery — fetched from the external
+                            issuer itself — would choose the private dial target.
                           type: boolean
                         allowedActors:
                           description: |-
@@ -4852,6 +6130,8 @@ spec:
                             either signal is sufficient. Empty denies every token unless
                             actorMatcher is set, or allowMayAct is true and the token carries a
                             permitted may_act claim.
+                            This legacy field is deprecated; configure RFC 8693 policy under
+                            inboundGrants.tokenExchange.issuerPolicies.
                           items:
                             maxLength: 256
                             minLength: 1
@@ -4866,6 +6146,8 @@ spec:
                             jwtBearerGrant is configured; set it to ["*"] to permit any confidential
                             client holding the token-exchange grant, or list specific client IDs to
                             bind delegation to them.
+                            This legacy field is deprecated; configure RFC 8693 policy under
+                            inboundGrants.tokenExchange.issuerPolicies.
                           items:
                             maxLength: 256
                             minLength: 1
@@ -4919,6 +6201,8 @@ spec:
                             ExpectedAudience is the expected "aud" claim value that must appear in
                             an RFC 8693 subject token's audience list. It is not used by an RFC 7523
                             JWT-bearer assertion, whose audience is the token endpoint.
+                            This legacy field is deprecated; configure RFC 8693 policy under
+                            inboundGrants.tokenExchange.issuerPolicies.
                           maxLength: 2048
                           minLength: 1
                           type: string
@@ -4945,6 +6229,8 @@ spec:
                           description: |-
                             JWTBearerGrant enables the plain RFC 7523 JWT-bearer grant for this
                             issuer. It is independent of RFC 8693 delegation policy.
+                            This legacy field is deprecated; configure RFC 7523 policy under
+                            inboundGrants.jwtBearer.issuerPolicies.
                           properties:
                             acceptedAudiences:
                               description: |-
@@ -5010,6 +6296,13 @@ spec:
                           - message: subjectBindings must not contain duplicate subjects
                             rule: self.subjectBindings.all(binding, self.subjectBindings.filter(other,
                               other.subject == binding.subject).size() == 1)
+                        name:
+                          description: |-
+                            Name optionally identifies this trust declaration for canonical issuerRef references.
+                            Names must be unique within trustedIssuers when set.
+                          maxLength: 253
+                          minLength: 1
+                          type: string
                       required:
                       - issuerUrl
                       type: object
@@ -5030,23 +6323,22 @@ spec:
                       - message: allowPrivateIPs requires jwksUrl to be set explicitly
                         rule: '!(has(self.allowPrivateIPs) && self.allowPrivateIPs)
                           || (has(self.jwksUrl) && self.jwksUrl != "")'
-                      - message: expectedAudience is required unless jwtBearerGrant
-                          is configured without actorClaim, actorMatcher, allowMayAct,
-                          or allowedActors
-                        rule: (has(self.jwtBearerGrant) && !((has(self.actorClaim)
-                          && size(self.actorClaim) > 0) || (has(self.actorMatcher)
-                          && size(self.actorMatcher) > 0) || (has(self.allowMayAct)
-                          && self.allowMayAct) || (has(self.allowedActors) && size(self.allowedActors)
-                          > 0))) || (has(self.expectedAudience) && size(self.expectedAudience)
-                          > 0)
-                      - message: allowedDelegateClients is required when expectedAudience,
-                          actorClaim, actorMatcher, or allowMayAct is set
+                      - message: expectedAudience is required when legacy RFC 8693
+                          policy is configured
+                        rule: '!((has(self.actorClaim) && size(self.actorClaim) >
+                          0) || (has(self.actorMatcher) && size(self.actorMatcher)
+                          > 0) || (has(self.allowMayAct) && self.allowMayAct) || (has(self.allowedActors)
+                          && size(self.allowedActors) > 0) || (has(self.allowedDelegateClients)
+                          && size(self.allowedDelegateClients) > 0)) || (has(self.expectedAudience)
+                          && size(self.expectedAudience) > 0)'
+                      - message: allowedDelegateClients is required when legacy RFC
+                          8693 policy is configured
                         rule: '!((has(self.expectedAudience) && size(self.expectedAudience)
                           > 0) || (has(self.actorClaim) && size(self.actorClaim) >
                           0) || (has(self.actorMatcher) && size(self.actorMatcher)
-                          > 0) || (has(self.allowMayAct) && self.allowMayAct)) ||
-                          (has(self.allowedDelegateClients) && size(self.allowedDelegateClients)
-                          > 0)'
+                          > 0) || (has(self.allowMayAct) && self.allowMayAct) || (has(self.allowedActors)
+                          && size(self.allowedActors) > 0)) || (has(self.allowedDelegateClients)
+                          && size(self.allowedDelegateClients) > 0)'
                     maxItems: 20
                     type: array
                     x-kubernetes-list-type: atomic
@@ -5254,9 +6546,9 @@ spec:
                                   type: string
                               type: object
                               x-kubernetes-validations:
-                              - message: exactly one of discoveryUrl or registrationEndpoint
-                                  must be set
-                                rule: has(self.discoveryUrl) != has(self.registrationEndpoint)
+                              - message: at most one of discoveryUrl or registrationEndpoint
+                                  may be set
+                                rule: '!(has(self.discoveryUrl) && has(self.registrationEndpoint))'
                             identityFromToken:
                               description: |-
                                 IdentityFromToken extracts user identity (subject, name, email) directly
@@ -5320,6 +6612,18 @@ spec:
                               description: TokenEndpoint is the URL for the OAuth
                                 token endpoint.
                               pattern: ^https?://.*$
+                              type: string
+                            tokenEndpointAuthMethod:
+                              description: |-
+                                TokenEndpointAuthMethod selects how the client authenticates at the OAuth token
+                                endpoint. When empty and a client secret is configured, client_secret_basic is
+                                used, matching the RFC 7591 default for confidential clients. Set this to
+                                client_secret_post only for providers that require credentials in the request body.
+                                Public clients without a secret use the "none" method.
+                              enum:
+                              - none
+                              - client_secret_basic
+                              - client_secret_post
                               type: string
                             tokenResponseMapping:
                               description: |-
@@ -5430,6 +6734,10 @@ spec:
                               set
                             rule: '(has(self.clientId) && size(self.clientId) > 0)
                               ? !has(self.dcrConfig) : has(self.dcrConfig)'
+                          - message: exactly one of discoveryUrl or registrationEndpoint
+                              must be set when dcrConfig is set
+                            rule: '!has(self.dcrConfig) || (has(self.dcrConfig.discoveryUrl)
+                              != has(self.dcrConfig.registrationEndpoint))'
                           - message: clientSecretRef must not be set when dcrConfig
                               is set; the client_secret is obtained at runtime via
                               Dynamic Client Registration
@@ -5517,6 +6825,91 @@ spec:
                               - key
                               - name
                               type: object
+                            dcrConfig:
+                              description: |-
+                                DCRConfig enables RFC 7591 Dynamic Client Registration. When set, ClientID
+                                and ClientSecretRef must be omitted. If neither discoveryUrl nor
+                                registrationEndpoint is set, discovery is derived from issuerUrl.
+                              properties:
+                                discoveryUrl:
+                                  description: |-
+                                    DiscoveryURL is the RFC 8414 / OIDC Discovery document URL. The resolver
+                                    issues a single GET against this URL (no well-known-path fallback) and
+                                    reads registration_endpoint, authorization_endpoint, token_endpoint,
+                                    token_endpoint_auth_methods_supported, and scopes_supported from the
+                                    response.
+                                    Mutually exclusive with RegistrationEndpoint.
+                                    HTTPS is required because the registration endpoint resolved from this
+                                    document carries the initial access token and the issued client_secret
+                                    (RFC 7591 §3, RFC 8414 §3). MaxLength is a defensive size cap (etcd
+                                    object budget, regex evaluation cost) and matches the conventional URL
+                                    length cap.
+                                  maxLength: 2048
+                                  pattern: ^https://[^\s?#]+[^/\s?#]$
+                                  type: string
+                                initialAccessTokenRef:
+                                  description: |-
+                                    InitialAccessTokenRef is an optional reference to a Kubernetes Secret
+                                    carrying an RFC 7591 §3 initial access token. When set, the resolver
+                                    presents the token value as a Bearer credential on the registration
+                                    request. Mirrors the ClientSecretRef pattern.
+                                  properties:
+                                    key:
+                                      description: Key is the key within the secret
+                                      type: string
+                                    name:
+                                      description: Name is the name of the secret
+                                      type: string
+                                  required:
+                                  - key
+                                  - name
+                                  type: object
+                                registrationEndpoint:
+                                  description: |-
+                                    RegistrationEndpoint is the RFC 7591 registration endpoint URL used
+                                    directly, bypassing discovery. When using this field, the caller is
+                                    expected to also supply AuthorizationEndpoint, TokenEndpoint, and an
+                                    explicit Scopes list on the parent OAuth2UpstreamConfig.
+                                    Mutually exclusive with DiscoveryURL.
+                                    HTTPS is required because the registration endpoint carries the initial
+                                    access token and the issued client_secret (RFC 7591 §3, RFC 8414 §3).
+                                    MaxLength is a defensive size cap (etcd object budget, regex evaluation
+                                    cost) and matches the conventional URL length cap.
+                                  maxLength: 2048
+                                  pattern: ^https://[^\s?#]+[^/\s?#]$
+                                  type: string
+                                softwareId:
+                                  description: |-
+                                    SoftwareID is the RFC 7591 "software_id" registration metadata value,
+                                    identifying the client software independent of any particular
+                                    registration instance. Typically a UUID or short identifier.
+                                  maxLength: 255
+                                  type: string
+                                softwareStatement:
+                                  description: |-
+                                    SoftwareStatement is the RFC 7591 "software_statement" JWT asserting
+                                    metadata about the client software, signed by a party the authorization
+                                    server trusts.
+
+                                    Stored inline on the CR. The JWT is signed but not encrypted, so its
+                                    contents are visible to anyone with get/list/watch on this resource and
+                                    appear in etcd backups in plaintext. Treat the value as non-confidential
+                                    (signed attestation, not a secret). Operators that rotate software
+                                    statements like bearer credentials should keep them at the authorization
+                                    server side and rely on the registration endpoint's initial access
+                                    token (see InitialAccessTokenRef) instead of placing them on the CR.
+
+                                    Bounded to 16384 characters as a defensive size cap (etcd object
+                                    budget, regex evaluation cost). Real-world signed statements with
+                                    embedded x5c certificate chains, JWKS keys, or OIDC-Federation
+                                    trust-framework metadata routinely exceed 4 KB.
+                                  maxLength: 16384
+                                  type: string
+                              type: object
+                              x-kubernetes-validations:
+                              - message: at most one of discoveryUrl or registrationEndpoint
+                                  may be set
+                                rule: '!(has(self.discoveryUrl) && has(self.registrationEndpoint))'
                             issuerUrl:
                               description: |-
                                 IssuerURL is the OIDC issuer URL for automatic endpoint discovery.
@@ -5637,9 +7030,21 @@ spec:
                               - endpointUrl
                               type: object
                           required:
-                          - clientId
                           - issuerUrl
                           type: object
+                          x-kubernetes-validations:
+                          - message: exactly one of clientId or dcrConfig must be
+                              set
+                            rule: '(has(self.clientId) && size(self.clientId) > 0)
+                              ? !has(self.dcrConfig) : has(self.dcrConfig)'
+                          - message: clientSecretRef must not be set when dcrConfig
+                              is set; the client_secret is obtained at runtime via
+                              Dynamic Client Registration
+                            rule: '!(has(self.dcrConfig) && has(self.clientSecretRef))'
+                          - message: at most one of discoveryUrl or registrationEndpoint
+                              may be set
+                            rule: '!(has(self.dcrConfig) && has(self.dcrConfig.discoveryUrl)
+                              && has(self.dcrConfig.registrationEndpoint))'
                         type:
                           description: 'Type specifies the provider type: "oidc" or
                             "oauth2"'
@@ -5666,26 +7071,130 @@ spec:
                 - issuer
                 type: object
                 x-kubernetes-validations:
-                - message: at least one upstream provider is required unless delegateClients
-                    or a trustedIssuer with jwtBearerGrant is configured
+                - message: at least one upstream provider or inbound grant family
+                    is required
                   rule: (has(self.upstreamProviders) && size(self.upstreamProviders)
                     > 0) || (has(self.delegateClients) && size(self.delegateClients)
                     > 0) || (has(self.trustedIssuers) && self.trustedIssuers.exists(issuer,
-                    has(issuer.jwtBearerGrant)))
-                - message: allowConfidentialClientRegistration cannot be combined
-                    with insecureAllowHTTP; client secrets would be issued in cleartext
-                    over an unauthenticated endpoint
-                  rule: '!(has(self.allowConfidentialClientRegistration) && self.allowConfidentialClientRegistration
-                    && has(self.insecureAllowHTTP) && self.insecureAllowHTTP)'
+                    has(issuer.jwtBearerGrant))) || (has(self.inboundGrants) && (has(self.inboundGrants.tokenExchange)
+                    || has(self.inboundGrants.jwtBearer) || (has(self.inboundGrants.spiffeClientAuth)
+                    && size(self.inboundGrants.spiffeClientAuth) > 0)))
+                - message: spiffeTrustDomains and inboundGrants.spiffeClientAuth must
+                    be configured together
+                  rule: ((has(self.spiffeTrustDomains) && size(self.spiffeTrustDomains)
+                    > 0) == (has(self.inboundGrants) && has(self.inboundGrants.spiffeClientAuth)
+                    && size(self.inboundGrants.spiffeClientAuth) > 0))
+                - message: spiffeTrustDomains must not contain duplicate names
+                  rule: '!has(self.spiffeTrustDomains) || self.spiffeTrustDomains.all(domain,
+                    self.spiffeTrustDomains.filter(other, other.name == domain.name).size()
+                    == 1)'
+                - message: spiffeTrustDomains must not contain duplicate trust domains
+                  rule: '!has(self.spiffeTrustDomains) || self.spiffeTrustDomains.all(domain,
+                    self.spiffeTrustDomains.filter(other, other.trustDomain == domain.trustDomain).size()
+                    == 1)'
+                - message: every SPIFFE trust domain must be referenced by a SPIFFE
+                    client
+                  rule: '!has(self.spiffeTrustDomains) || self.spiffeTrustDomains.all(domain,
+                    has(self.inboundGrants) && has(self.inboundGrants.spiffeClientAuth)
+                    && self.inboundGrants.spiffeClientAuth.exists(client, client.trustDomainRef
+                    == domain.name))'
+                - message: every SPIFFE client trustDomainRef must reference a declared
+                    trust domain
+                  rule: '!has(self.inboundGrants) || !has(self.inboundGrants.spiffeClientAuth)
+                    || self.inboundGrants.spiffeClientAuth.all(client, has(self.spiffeTrustDomains)
+                    && self.spiffeTrustDomains.exists(domain, domain.name == client.trustDomainRef))'
+                - message: spiffeClientAuth methods must be enabled by the referenced
+                    trust domain
+                  rule: '!has(self.inboundGrants) || !has(self.inboundGrants.spiffeClientAuth)
+                    || self.inboundGrants.spiffeClientAuth.all(client, !has(self.spiffeTrustDomains)
+                    || !self.spiffeTrustDomains.exists(domain, domain.name == client.trustDomainRef)
+                    || self.spiffeTrustDomains.exists(domain, domain.name == client.trustDomainRef
+                    && client.methods.all(method, method in domain.methods)))'
+                - message: spiffeClientAuth principalPattern trust domain must match
+                    the referenced trust domain
+                  rule: '!has(self.inboundGrants) || !has(self.inboundGrants.spiffeClientAuth)
+                    || self.inboundGrants.spiffeClientAuth.all(client, !has(self.spiffeTrustDomains)
+                    || !self.spiffeTrustDomains.exists(domain, domain.name == client.trustDomainRef)
+                    || self.spiffeTrustDomains.exists(domain, domain.name == client.trustDomainRef
+                    && client.principalPattern.startsWith(''spiffe://'' + domain.trustDomain
+                    + ''/'')))'
+                - message: spiffeClientAuth must not contain duplicate client IDs
+                  rule: '!has(self.inboundGrants) || !has(self.inboundGrants.spiffeClientAuth)
+                    || self.inboundGrants.spiffeClientAuth.all(client, self.inboundGrants.spiffeClientAuth.filter(other,
+                    other.clientId == client.clientId).size() == 1)'
+                - message: spiffeClientAuth must not contain duplicate principal patterns
+                  rule: '!has(self.inboundGrants) || !has(self.inboundGrants.spiffeClientAuth)
+                    || self.inboundGrants.spiffeClientAuth.all(client, self.inboundGrants.spiffeClientAuth.filter(other,
+                    other.principalPattern == client.principalPattern).size() == 1)'
+                - message: 'spiffeClientAuth clientId must not use the reserved synthetic:
+                    prefix'
+                  rule: '!has(self.inboundGrants) || !has(self.inboundGrants.spiffeClientAuth)
+                    || self.inboundGrants.spiffeClientAuth.all(client, !client.clientId.startsWith(''synthetic:''))'
+                - message: spiffeClientAuth clientId must not be an absolute URL
+                  rule: '!has(self.inboundGrants) || !has(self.inboundGrants.spiffeClientAuth)
+                    || self.inboundGrants.spiffeClientAuth.all(client, !client.clientId.matches(''^[A-Za-z][A-Za-z0-9+.-]*://.+''))'
+                - message: insecureAllowHTTP cannot be combined with confidential
+                    client registration or delegateClients; client secrets would be
+                    issued or used in cleartext over an unauthenticated endpoint
+                  rule: '!(has(self.insecureAllowHTTP) && self.insecureAllowHTTP &&
+                    ((has(self.allowConfidentialClientRegistration) && self.allowConfidentialClientRegistration)
+                    || (has(self.delegateClients) && size(self.delegateClients) >
+                    0) || (has(self.inboundGrants) && has(self.inboundGrants.tokenExchange)
+                    && has(self.inboundGrants.tokenExchange.delegateClients) && size(self.inboundGrants.tokenExchange.delegateClients)
+                    > 0)))'
                 - message: forceConfidentialRedirectUris requires allowConfidentialClientRegistration
                     to be true
                   rule: (!has(self.forceConfidentialRedirectUris) || size(self.forceConfidentialRedirectUris)
                     == 0) || (has(self.allowConfidentialClientRegistration) && self.allowConfidentialClientRegistration)
-                - message: delegateClients with an HTTP issuer require insecureAllowConfidentialOverLoopbackHTTP
+                - message: confidential client registration or delegateClients with
+                    an HTTP issuer require insecureAllowConfidentialOverLoopbackHTTP
                     to be explicitly enabled; the issuer must still be loopback
-                  rule: '!has(self.delegateClients) || size(self.delegateClients)
-                    == 0 || !self.issuer.startsWith(''http://'') || (has(self.insecureAllowConfidentialOverLoopbackHTTP)
-                    && self.insecureAllowConfidentialOverLoopbackHTTP)'
+                  rule: '!self.issuer.startsWith(''http://'') || (has(self.insecureAllowConfidentialOverLoopbackHTTP)
+                    && self.insecureAllowConfidentialOverLoopbackHTTP) || ((!has(self.allowConfidentialClientRegistration)
+                    || !self.allowConfidentialClientRegistration) && (!has(self.delegateClients)
+                    || size(self.delegateClients) == 0) && (!has(self.inboundGrants)
+                    || !has(self.inboundGrants.tokenExchange) || !has(self.inboundGrants.tokenExchange.delegateClients)
+                    || size(self.inboundGrants.tokenExchange.delegateClients) == 0))'
+                - message: canonical tokenExchange conflicts with legacy delegateClients
+                    or RFC 8693 trusted issuer policy
+                  rule: '!has(self.inboundGrants) || !has(self.inboundGrants.tokenExchange)
+                    || ((!has(self.delegateClients) || size(self.delegateClients)
+                    == 0) && (!has(self.trustedIssuers) || !self.trustedIssuers.exists(issuer,
+                    has(issuer.expectedAudience) || has(issuer.actorClaim) || has(issuer.allowedActors)
+                    || has(issuer.actorMatcher) || has(issuer.allowedDelegateClients)
+                    || (has(issuer.allowMayAct) && issuer.allowMayAct))))'
+                - message: canonical jwtBearer conflicts with legacy jwtBearerGrant
+                  rule: '!has(self.inboundGrants) || !has(self.inboundGrants.jwtBearer)
+                    || !has(self.trustedIssuers) || !self.trustedIssuers.exists(issuer,
+                    has(issuer.jwtBearerGrant))'
+                - message: trustedIssuers must not contain duplicate names
+                  rule: '!has(self.trustedIssuers) || self.trustedIssuers.all(issuer,
+                    !has(issuer.name) || self.trustedIssuers.filter(other, has(other.name)
+                    && other.name == issuer.name).size() == 1)'
+                - message: every tokenExchange issuerRef must reference a named trusted
+                    issuer
+                  rule: '!has(self.inboundGrants) || !has(self.inboundGrants.tokenExchange)
+                    || !has(self.inboundGrants.tokenExchange.issuerPolicies) || self.inboundGrants.tokenExchange.issuerPolicies.all(policy,
+                    has(self.trustedIssuers) && self.trustedIssuers.exists(issuer,
+                    has(issuer.name) && issuer.name == policy.issuerRef))'
+                - message: tokenExchange issuerPolicies must not contain duplicate
+                    issuerRef values
+                  rule: '!has(self.inboundGrants) || !has(self.inboundGrants.tokenExchange)
+                    || !has(self.inboundGrants.tokenExchange.issuerPolicies) || self.inboundGrants.tokenExchange.issuerPolicies.all(policy,
+                    self.inboundGrants.tokenExchange.issuerPolicies.filter(other,
+                    other.issuerRef == policy.issuerRef).size() == 1)'
+                - message: every jwtBearer issuerRef must reference a named trusted
+                    issuer
+                  rule: '!has(self.inboundGrants) || !has(self.inboundGrants.jwtBearer)
+                    || !has(self.inboundGrants.jwtBearer.issuerPolicies) || self.inboundGrants.jwtBearer.issuerPolicies.all(policy,
+                    has(self.trustedIssuers) && self.trustedIssuers.exists(issuer,
+                    has(issuer.name) && issuer.name == policy.issuerRef))'
+                - message: jwtBearer issuerPolicies must not contain duplicate issuerRef
+                    values
+                  rule: '!has(self.inboundGrants) || !has(self.inboundGrants.jwtBearer)
+                    || !has(self.inboundGrants.jwtBearer.issuerPolicies) || self.inboundGrants.jwtBearer.issuerPolicies.all(policy,
+                    self.inboundGrants.jwtBearer.issuerPolicies.filter(other, other.issuerRef
+                    == policy.issuerRef).size() == 1)'
               config:
                 description: |-
                   Config is the Virtual MCP server configuration.
@@ -8281,6 +9790,157 @@ spec:
                 - Degraded
                 - Failed
                 type: string
+              runtime:
+                description: |-
+                  Runtime is the status snapshot written exclusively by the vMCP process.
+                  The operator projects it into the top-level compatibility fields.
+                properties:
+                  backendCount:
+                    description: BackendCount is the number of routable backends observed
+                      by the runtime.
+                    format: int32
+                    type: integer
+                  conditions:
+                    description: Conditions contains runtime health observations.
+                    items:
+                      description: Condition contains details for one aspect of the
+                        current state of this API Resource.
+                      properties:
+                        lastTransitionTime:
+                          description: |-
+                            lastTransitionTime is the last time the condition transitioned from one status to another.
+                            This should be when the underlying condition changed.  If that is not known, then using the time when the API field changed is acceptable.
+                          format: date-time
+                          type: string
+                        message:
+                          description: |-
+                            message is a human readable message indicating details about the transition.
+                            This may be an empty string.
+                          maxLength: 32768
+                          type: string
+                        observedGeneration:
+                          description: |-
+                            observedGeneration represents the .metadata.generation that the condition was set based upon.
+                            For instance, if .metadata.generation is currently 12, but the .status.conditions[x].observedGeneration is 9, the condition is out of date
+                            with respect to the current state of the instance.
+                          format: int64
+                          minimum: 0
+                          type: integer
+                        reason:
+                          description: |-
+                            reason contains a programmatic identifier indicating the reason for the condition's last transition.
+                            Producers of specific condition types may define expected values and meanings for this field,
+                            and whether the values are considered a guaranteed API.
+                            The value should be a CamelCase string.
+                            This field may not be empty.
+                          maxLength: 1024
+                          minLength: 1
+                          pattern: ^[A-Za-z]([A-Za-z0-9_,:]*[A-Za-z0-9_])?$
+                          type: string
+                        status:
+                          description: status of the condition, one of True, False,
+                            Unknown.
+                          enum:
+                          - "True"
+                          - "False"
+                          - Unknown
+                          type: string
+                        type:
+                          description: type of condition in CamelCase or in foo.example.com/CamelCase.
+                          maxLength: 316
+                          pattern: ^([a-z0-9]([-a-z0-9]*[a-z0-9])?(\.[a-z0-9]([-a-z0-9]*[a-z0-9])?)*/)?(([A-Za-z0-9][-A-Za-z0-9_.]*)?[A-Za-z0-9])$
+                          type: string
+                      required:
+                      - lastTransitionTime
+                      - message
+                      - reason
+                      - status
+                      - type
+                      type: object
+                    type: array
+                    x-kubernetes-list-map-keys:
+                    - type
+                    x-kubernetes-list-type: map
+                  discoveredBackends:
+                    description: DiscoveredBackends contains the runtime's latest
+                      backend observations.
+                    items:
+                      description: |-
+                        DiscoveredBackend represents a backend server discovered by vMCP runtime.
+                        This type is shared with the Kubernetes operator CRD (VirtualMCPServer.Status.DiscoveredBackends).
+                      properties:
+                        authConfigRef:
+                          description: AuthConfigRef is the name of the discovered
+                            MCPExternalAuthConfig (if any)
+                          type: string
+                        authType:
+                          description: AuthType is the type of authentication configured
+                          type: string
+                        circuitBreakerState:
+                          description: |-
+                            CircuitBreakerState is the current circuit breaker state (closed, open, half-open).
+                            Empty when circuit breaker is disabled or not configured.
+                          enum:
+                          - closed
+                          - open
+                          - half-open
+                          type: string
+                        circuitLastChanged:
+                          description: |-
+                            CircuitLastChanged is the timestamp when the circuit breaker state last changed.
+                            Empty when circuit breaker is disabled or has never changed state.
+                          format: date-time
+                          type: string
+                        consecutiveFailures:
+                          description: |-
+                            ConsecutiveFailures is the current count of consecutive health check failures.
+                            Resets to 0 when the backend becomes healthy again.
+                          type: integer
+                        lastHealthCheck:
+                          description: LastHealthCheck is the timestamp of the last
+                            health check
+                          format: date-time
+                          type: string
+                        mcpRevision:
+                          description: |-
+                            MCPRevision is the backend's negotiated MCP protocol revision
+                            ("2026-07-28" or "2025-11-25"). Empty when the backend has not been probed.
+                          type: string
+                        message:
+                          description: Message provides additional information about
+                            the backend status
+                          type: string
+                        name:
+                          description: Name is the name of the backend MCPServer
+                          type: string
+                        status:
+                          description: |-
+                            Status is the current status of the backend (ready, degraded, unavailable, unauthenticated, unknown).
+                            Use BackendHealthStatus.ToCRDStatus() to populate this field.
+                          type: string
+                        url:
+                          description: URL is the URL of the backend MCPServer
+                          type: string
+                      required:
+                      - name
+                      type: object
+                    type: array
+                    x-kubernetes-list-map-keys:
+                    - name
+                    x-kubernetes-list-type: map
+                  message:
+                    description: Message provides detail about the runtime phase.
+                    type: string
+                  phase:
+                    description: Phase is the lifecycle phase observed by the running
+                      vMCP process.
+                    enum:
+                    - Pending
+                    - Ready
+                    - Degraded
+                    - Failed
+                    type: string
+                type: object
               telemetryConfigHash:
                 description: |-
                   TelemetryConfigHash is the hash of the referenced MCPTelemetryConfig spec for change detection.

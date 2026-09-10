@@ -841,6 +841,18 @@ func (s *Server) Start(ctx context.Context) error {
 	// The backend health monitor is owned by the core (built and started in core.New, stopped
 	// in core.Close), so the server no longer starts or stops it here.
 
+	// Evict sessions whose backends are dropped from a dynamic registry so their
+	// lingering per-session connections (e.g. SSE streams) are reclaimed promptly
+	// (#6546). Runs independently of status reporting; a no-op for static registries.
+	if _, isDynamic := s.backendRegistry.(vmcp.DynamicRegistry); isDynamic && s.vmcpSessionMgr != nil {
+		reconcileCtx, reconcileCancel := context.WithCancel(ctx)
+		go s.reconcileSessionsOnRegistryChange(reconcileCtx, versionPollInterval)
+		s.shutdownFuncs = append(s.shutdownFuncs, func(context.Context) error {
+			reconcileCancel()
+			return nil
+		})
+	}
+
 	// Start status reporter if configured
 	if s.statusReporter != nil {
 		shutdown, err := s.statusReporter.Start(ctx)

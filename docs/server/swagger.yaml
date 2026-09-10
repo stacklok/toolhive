@@ -276,14 +276,45 @@ components:
     authserver.InboundGrantsRunConfig:
       description: |-
         InboundGrants declares canonical inbound grant configuration, including
-        SPIFFE client authentication. See InboundGrantsRunConfig.
+        SPIFFE client authentication, delegate clients, and issuer policy. A
+        non-nil value explicitly controls grant-family enablement.
       properties:
+        jwt_bearer:
+          $ref: '#/components/schemas/authserver.JWTBearerInboundGrantRunConfig'
         spiffe_client_auth:
           description: |-
             SPIFFEClientAuth associates SPIFFE principal patterns with explicit OAuth
             client identities and permissions. See SPIFFEClientAuthRunConfig.
           items:
             $ref: '#/components/schemas/authserver.SPIFFEClientAuthRunConfig'
+          type: array
+          uniqueItems: false
+        token_exchange:
+          $ref: '#/components/schemas/authserver.TokenExchangeInboundGrantRunConfig'
+      type: object
+    authserver.JWTBearerInboundGrantRunConfig:
+      description: JWTBearer configures RFC 7523 issuer policies.
+      properties:
+        issuer_policies:
+          items:
+            $ref: '#/components/schemas/authserver.JWTBearerIssuerPolicyRunConfig'
+          type: array
+          uniqueItems: false
+      type: object
+    authserver.JWTBearerIssuerPolicyRunConfig:
+      properties:
+        accepted_audiences:
+          items:
+            type: string
+          type: array
+          uniqueItems: false
+        issuer_ref:
+          type: string
+        max_assertion_age:
+          type: string
+        subject_bindings:
+          items:
+            $ref: '#/components/schemas/github_com_stacklok_toolhive_pkg_authserver_server_tokenexchange.JWTBearerSubjectBinding'
           type: array
           uniqueItems: false
       type: object
@@ -361,6 +392,14 @@ components:
         token_endpoint:
           description: TokenEndpoint is the URL for the OAuth token endpoint.
           type: string
+        token_endpoint_auth_method:
+          description: |-
+            TokenEndpointAuthMethod selects how the client authenticates at the OAuth token
+            endpoint. When empty and a client secret is configured, client_secret_basic is
+            used, matching the RFC 7591 default for confidential clients. Set this to
+            client_secret_post only for providers that require credentials in the request body.
+            Public clients without a secret use the "none" method.
+          type: string
         token_response_mapping:
           $ref: '#/components/schemas/authserver.TokenResponseMappingRunConfig'
         userinfo:
@@ -405,6 +444,8 @@ components:
             ClientSecretFile is the path to a file containing the OAuth 2.0 client secret.
             Mutually exclusive with ClientSecretEnvVar. Optional for public clients using PKCE.
           type: string
+        dcr_config:
+          $ref: '#/components/schemas/authserver.DCRUpstreamConfig'
         insecure_allow_http:
           description: |-
             InsecureAllowHTTP permits a plain-HTTP issuer URL and HTTP discovery
@@ -517,6 +558,8 @@ components:
             DelegateClients declares confidential OAuth clients to register at
             authorization-server startup, including clients intended for RFC 8693
             token exchange.
+
+            This legacy field is deprecated; use InboundGrants.TokenExchange.DelegateClients.
 
             Independent of AllowConfidentialClientRegistration: declaring a client
             here does not require or enable self-service confidential DCR, and
@@ -649,11 +692,11 @@ components:
           $ref: '#/components/schemas/authserver.TokenLifespanRunConfig'
         trusted_issuers:
           description: |-
-            TrustedIssuers lists external OIDC issuers whose tokens are accepted as
-            RFC 8693 subject tokens or RFC 7523 JWT-bearer assertions. Issuers with
-            jwtBearerGrant enabled may be used for the JWT-bearer grant without an
-            RFC 8693 delegation policy. Empty (the default) means only self-issued
-            subject tokens are accepted.
+            TrustedIssuers lists external OIDC trust declarations.
+
+            This legacy field is deprecated; RFC 8693 and JWT-bearer policies embedded in these entries
+            remain supported for compatibility. New configurations should put policy
+            under InboundGrants and reference a named trusted issuer.
 
             See tokenexchange.TrustedIssuer for the per-issuer field reference, and
             docs/arch/17-token-exchange-delegation.md for the trust model, consent
@@ -809,6 +852,43 @@ components:
           description: |-
             SigningKeyFile is the filename of the primary signing key (relative to KeyDir).
             This key is used for signing new tokens.
+          type: string
+      type: object
+    authserver.TokenExchangeInboundGrantRunConfig:
+      description: TokenExchange configures RFC 8693 inbound clients and issuer policies.
+      properties:
+        delegate_clients:
+          items:
+            $ref: '#/components/schemas/authserver.DelegateClientRunConfig'
+          type: array
+          uniqueItems: false
+        issuer_policies:
+          items:
+            $ref: '#/components/schemas/authserver.TokenExchangeIssuerPolicyRunConfig'
+          type: array
+          uniqueItems: false
+      type: object
+    authserver.TokenExchangeIssuerPolicyRunConfig:
+      properties:
+        actor_claim:
+          type: string
+        actor_matcher:
+          type: string
+        allow_may_act:
+          type: boolean
+        allowed_actors:
+          items:
+            type: string
+          type: array
+          uniqueItems: false
+        allowed_delegate_clients:
+          items:
+            type: string
+          type: array
+          uniqueItems: false
+        expected_audience:
+          type: string
+        issuer_ref:
           type: string
       type: object
     authserver.TokenLifespanRunConfig:
@@ -1097,6 +1177,16 @@ components:
           description: |-
             ProviderName identifies which upstream provider's tokens to retrieve for injection.
             This is required and must match a configured upstream provider name.
+          type: string
+      type: object
+    github_com_stacklok_toolhive_pkg_authserver_server_tokenexchange.JWTBearerSubjectBinding:
+      properties:
+        allowed_resources:
+          items:
+            type: string
+          type: array
+          uniqueItems: false
+        subject:
           type: string
       type: object
     github_com_stacklok_toolhive_pkg_authz.Config:
@@ -1758,6 +1848,12 @@ components:
             K8sPodTemplatePatch is a JSON string to patch the Kubernetes pod template
             Only applicable when using Kubernetes runtime
           type: string
+        max_request_body_size:
+          description: |-
+            MaxRequestBodySize is the maximum inbound MCP proxy request body size in bytes.
+            Zero uses the default limit of 8 MiB. Negative values are rejected
+            when the RunConfig is built or used at runtime.
+          type: integer
         mcpserver_generation:
           description: |-
             MCPServerGeneration is the K8s .metadata.generation of the MCPServer CR that rendered
@@ -1802,6 +1898,15 @@ components:
           enum:
           - sse
           - streamable-http
+          type: string
+        proxy_read_timeout:
+          description: |-
+            ProxyReadTimeout bounds reading the entire request (headers + body) on the
+            proxy HTTP server, expressed as a Go duration string (e.g. "30s", "1m").
+            Empty uses the proxy default (30s). Negative durations and values that fail
+            time.ParseDuration are rejected at runtime. Applies to all HTTP transports.
+            String (not time.Duration) keeps the wire format unit-explicit.
+          example: 30s
           type: string
         publish:
           description: Publish lists ports to publish to the host in format "hostPort:containerPort"
@@ -3040,6 +3145,10 @@ components:
         image:
           description: Docker image to use
           type: string
+        max_request_body_size:
+          description: Maximum inbound MCP proxy request body size in bytes. Zero
+            uses the default limit of 8 MiB.
+          type: integer
         name:
           description: Name of the workload
           type: string
@@ -3064,6 +3173,12 @@ components:
         proxy_port:
           description: Port for the HTTP proxy to listen on
           type: integer
+        proxy_read_timeout:
+          description: |-
+            Maximum time to read a complete MCP proxy request, expressed as a Go duration string.
+            Empty or zero uses the default timeout of 30 seconds.
+          example: 30s
+          type: string
         registry:
           description: Registry is the optional registry name to resolve the server
             from (e.g. "default").
@@ -3261,6 +3376,13 @@ components:
           type: string
         project_root:
           description: ProjectRoot is the project root path for project-scoped installs
+          type: string
+        public_key:
+          description: |-
+            PublicKey is the base64-encoded DER SPKI cosign public key the artifact
+            must verify against, for artifacts signed with a cosign key pair rather
+            than keylessly. Required the first time such an artifact is installed
+            project-scoped, and pinned in the lock file from then on.
           type: string
         scope:
           $ref: '#/components/schemas/github_com_stacklok_toolhive_pkg_plugins.Scope'
@@ -3780,6 +3902,10 @@ components:
         image:
           description: Docker image to use
           type: string
+        max_request_body_size:
+          description: Maximum inbound MCP proxy request body size in bytes. Zero
+            uses the default limit of 8 MiB.
+          type: integer
         network_isolation:
           description: |-
             Whether network isolation is turned on. This applies the rules in the permission profile.
@@ -3801,6 +3927,12 @@ components:
         proxy_port:
           description: Port for the HTTP proxy to listen on
           type: integer
+        proxy_read_timeout:
+          description: |-
+            Maximum time to read a complete MCP proxy request, expressed as a Go duration string.
+            Empty or zero uses the default timeout of 30 seconds.
+          example: 30s
+          type: string
         runtime_config:
           $ref: '#/components/schemas/templates.RuntimeConfig'
         secrets:
@@ -5074,6 +5206,9 @@ components:
         It accepts assertions from this issuer without client authentication and
         limits their maximum age, subjects, and RFC 8707 resources. It is
         independent from RFC 8693 delegation policy.
+
+        This legacy field is deprecated; configure RFC 7523 policy under
+        inbound_grants.jwt_bearer.issuer_policies.
       properties:
         accepted_audiences:
           description: |-
@@ -5186,6 +5321,9 @@ components:
             not a client ID — required for delegation unless JWTBearerGrant is
             configured; see looksLikeResourceIdentifier). RFC 7523 assertions use
             the token endpoint as their audience instead.
+
+            This legacy field is deprecated; configure RFC 8693 policy under
+            inbound_grants.token_exchange.issuer_policies.
             See docs/arch/17-token-exchange-delegation.md ("ID/access-token
             discrimination") for why and its limits.
           type: string
@@ -5210,6 +5348,10 @@ components:
           type: string
         jwt_bearer_grant:
           $ref: '#/components/schemas/tokenexchange.JWTBearerGrantPolicy'
+        name:
+          description: Name optionally identifies this trust declaration for canonical
+            issuer_ref references.
+          type: string
       type: object
     types.MiddlewareConfig:
       properties:

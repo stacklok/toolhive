@@ -1041,6 +1041,34 @@ func TestInstallCarriesAllowUnsigned(t *testing.T) {
 	assert.True(t, got.AllowUnsigned, "allow_unsigned must reach the server")
 }
 
+// TestInstallCarriesPublicKey is the same guard for the cosign public key: the
+// CLI reads the key file and sends the material, so a field dropped here would
+// make every --public-key install fail as though no key had been given.
+func TestInstallCarriesPublicKey(t *testing.T) {
+	t.Parallel()
+
+	const encodedKey = "MFkwEwYHKoZIzj0CAQYIKoZIzj0DAQcDQgAExlVDpbnOEv2fH3gS8n7UCHS9Gs0wKxIPR5" +
+		"EAcl8F1jSxlxAV/pll0NsSiuAK95Ws4Fpkn+5QkdVKNXy7LHgb2A=="
+
+	var got installRequest
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		require.NoError(t, json.NewDecoder(r.Body).Decode(&got))
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusCreated)
+		_ = json.NewEncoder(w).Encode(installResponse{})
+	}))
+	t.Cleanup(srv.Close)
+
+	_, err := newTestClient(t, srv).Install(t.Context(), plugins.InstallOptions{
+		Name:        "my-plugin",
+		Scope:       plugins.ScopeProject,
+		ProjectRoot: "/tmp/project",
+		PublicKey:   encodedKey,
+	})
+	require.NoError(t, err)
+	assert.Equal(t, encodedKey, got.PublicKey, "public_key must reach the server")
+}
+
 // TestInstallReturnsTrustState guards the response half of the same DTO
 // boundary: the CLI is a pure HTTP client, so a provenance block dropped
 // here would make every signed install print as if it were untracked.

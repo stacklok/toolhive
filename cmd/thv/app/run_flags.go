@@ -121,6 +121,12 @@ type RunFlags struct {
 	// SessionTTL is the session inactivity timeout. Zero uses the transport default.
 	SessionTTL time.Duration
 
+	// MaxRequestBodySize is the maximum inbound request body size in bytes. Zero uses the default.
+	MaxRequestBodySize int64
+
+	// ProxyReadTimeout bounds reading a full request on the proxy. Zero uses the default.
+	ProxyReadTimeout time.Duration
+
 	// Network mode
 	Network string
 
@@ -310,6 +316,10 @@ func AddRunFlags(cmd *cobra.Command, config *RunFlags) {
 			"Use for MCP servers implementing streamable-HTTP stateless mode.")
 	cmd.Flags().DurationVar(&config.SessionTTL, "session-ttl", 0,
 		"Session inactivity timeout (e.g., 30m, 2h); zero uses the default (2h)")
+	cmd.Flags().Int64Var(&config.MaxRequestBodySize, "max-request-body-size", 0,
+		"Maximum inbound request body size in bytes; zero uses the default (8 MiB)")
+	cmd.Flags().DurationVar(&config.ProxyReadTimeout, "proxy-read-timeout", 0,
+		"Maximum time to read a full request on the proxy (e.g., 30s, 1m); zero uses the default (30s)")
 	cmd.Flags().StringVar(&config.EndpointPrefix, "endpoint-prefix", "",
 		"Path prefix to prepend to SSE endpoint URLs (e.g., /playwright)")
 	cmd.Flags().StringVar(&config.Network, "network", "",
@@ -735,6 +745,8 @@ func buildRunnerConfig(
 		runner.WithStrictProtocolValidation(runFlags.StrictProtocolValidation),
 		runner.WithStateless(runFlags.Stateless),
 		runner.WithSessionTTL(runFlags.SessionTTL),
+		runner.WithMaxRequestBodySize(runFlags.MaxRequestBodySize),
+		runner.WithProxyReadTimeout(runFlags.ProxyReadTimeout),
 		runner.WithEndpointPrefix(runFlags.EndpointPrefix),
 		runner.WithNetworkMode(runFlags.Network),
 		runner.WithK8sPodPatch(runFlags.K8sPodPatch),

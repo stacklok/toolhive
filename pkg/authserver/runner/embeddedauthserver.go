@@ -12,6 +12,7 @@ import (
 	"net/http"
 	"os"
 	"slices"
+	"strings"
 	"sync"
 	"time"
 
@@ -25,6 +26,7 @@ import (
 	"github.com/stacklok/toolhive/pkg/authserver/storage"
 	"github.com/stacklok/toolhive/pkg/authserver/upstream"
 	"github.com/stacklok/toolhive/pkg/bodylimit"
+	"github.com/stacklok/toolhive/pkg/oauthproto"
 )
 
 // Redis ACL credential environment variable names.
@@ -83,11 +85,6 @@ func NewEmbeddedAuthServer(ctx context.Context, cfg *authserver.RunConfig) (*Emb
 	if err := cfg.Validate(); err != nil {
 		return nil, fmt.Errorf("invalid run config: %w", err)
 	}
-	delegateClients, err := resolveDelegateClients(cfg.DelegateClients)
-	if err != nil {
-		return nil, err
-	}
-
 	// Create the storage backend FIRST so the DCR resolver and the auth
 	// server share the same persistence. Both MemoryStorage and RedisStorage
 	// satisfy storage.DCRCredentialStore (verified by package-level var _
@@ -100,7 +97,7 @@ func NewEmbeddedAuthServer(ctx context.Context, cfg *authserver.RunConfig) (*Emb
 	if err != nil {
 		return nil, fmt.Errorf("failed to create storage: %w", err)
 	}
-	return newEmbeddedAuthServerWithStorage(ctx, cfg, stor, delegateClients)
+	return newEmbeddedAuthServerWithStorage(ctx, cfg, stor, nil)
 }
 
 // NewEmbeddedAuthServerWithStorage is the exported core constructor that
@@ -141,12 +138,69 @@ func NewEmbeddedAuthServerWithStorage(
 	return newEmbeddedAuthServerWithStorage(ctx, cfg, stor, nil)
 }
 
+func warnDeprecatedInboundGrantFields(fields []authserver.DeprecatedFieldPath) {
+	if len(fields) == 0 {
+		return
+	}
+	paths := make([]string, len(fields))
+	for i, field := range fields {
+		paths[i] = field.Path + " -> " + field.Replacement
+	}
+	slog.Warn("deprecated inbound grant configuration; migrate to canonical fields", "paths", strings.Join(paths, ", "))
+}
+
+func prepareInboundGrantConfiguration(
+	cfg *authserver.RunConfig,
+	delegateClients []authserver.DelegateClient,
+) (*authserver.NormalizedInboundGrants, []authserver.DelegateClient, *authserver.SPIFFETrustConfig, error) {
+	normalized, err := authserver.NormalizeInboundGrants(cfg)
+	if err != nil {
+		return nil, nil, nil, fmt.Errorf("normalize inbound grants: %w", err)
+	}
+	warnDeprecatedInboundGrantFields(normalized.DeprecatedFields)
+
+	if delegateClients == nil && len(normalized.DelegateClients) > 0 {
+		delegateClients, err = resolveDelegateClients(normalized.DelegateClients)
+		if err != nil {
+			return nil, nil, nil, err
+		}
+	}
+	// SPIFFE client authentication is independent of the legacy/canonical
+	// token-exchange projection above: it is read straight from cfg.InboundGrants,
+	// never through NormalizedInboundGrants, so authentication method and
+	// grant-family enablement stay separately configurable.
+	spiffeTrust, err := authserver.NewSPIFFETrustConfig(
+		cfg.SPIFFETrustDomains, cfg.InboundGrants, cfg.ScopesSupported, cfg.AllowedAudiences,
+	)
+	if err != nil {
+		return nil, nil, nil, fmt.Errorf("build SPIFFE trust config: %w", err)
+	}
+	// SPIFFE client authentication exclusively uses the token-exchange grant
+	// (validateSPIFFEGrants enforces this), so configuring any SPIFFE
+	// association implies token-exchange capability independent of
+	// legacy/canonical token-exchange enablement.
+	normalized.Capabilities.TokenExchange = normalized.Capabilities.TokenExchange || hasSPIFFEClientAuth(cfg)
+	return normalized, delegateClients, spiffeTrust, nil
+}
+
+// hasSPIFFEClientAuth reports whether cfg declares any SPIFFE client-auth
+// association.
+func hasSPIFFEClientAuth(cfg *authserver.RunConfig) bool {
+	return cfg.InboundGrants != nil && len(cfg.InboundGrants.SPIFFEClientAuth) > 0
+}
+
 func newEmbeddedAuthServerWithStorage(
 	ctx context.Context,
 	cfg *authserver.RunConfig,
 	stor storage.Storage,
 	delegateClients []authserver.DelegateClient,
 ) (retEAS *EmbeddedAuthServer, retErr error) {
+	// Validate required inputs before the deferred cleanup is installed: cfg is
+	// dereferenced during validation and stor is closed by that cleanup.
+	if err := validateEmbeddedAuthServerInputs(cfg, stor); err != nil {
+		return nil, err
+	}
+
 	// From here on, any error must close stor before returning.
 	//
 	// Both errors are passed through dcr.SanitizeErrorForLog before being
@@ -176,10 +230,16 @@ func newEmbeddedAuthServerWithStorage(
 	// otherwise skip the check. Placed inside the deferred-cleanup gate above so
 	// a validation failure still closes the caller-supplied storage per the
 	// resource-ownership contract.
-	var err error
-	delegateClients, err = validateAndResolveDelegateClients(cfg, delegateClients)
+	if err := cfg.Validate(); err != nil {
+		return nil, fmt.Errorf("invalid run config: %w", err)
+	}
+	normalized, delegateClients, spiffeTrust, err := prepareInboundGrantConfiguration(cfg, delegateClients)
 	if err != nil {
 		return nil, err
+	}
+
+	if err := authserver.PreflightSPIFFEStaticClientCollisions(ctx, stor, spiffeTrust); err != nil {
+		return nil, fmt.Errorf("preflight SPIFFE static client collisions: %w", err)
 	}
 
 	// 1. Create key provider from RunConfig.SigningKeyConfig
@@ -221,12 +281,9 @@ func newEmbeddedAuthServerWithStorage(
 	}
 
 	// 6. Parse delegation token lifespan if configured.
-	var delegationLifespan time.Duration
-	if cfg.DelegationTokenLifespan != "" {
-		delegationLifespan, err = time.ParseDuration(cfg.DelegationTokenLifespan)
-		if err != nil {
-			return nil, fmt.Errorf("invalid delegation token lifespan: %w", err)
-		}
+	delegationLifespan, err := parseOptionalDuration(cfg.DelegationTokenLifespan, "delegation token lifespan")
+	if err != nil {
+		return nil, err
 	}
 
 	// 7. Build the resolved Config.
@@ -240,16 +297,9 @@ func newEmbeddedAuthServerWithStorage(
 	// for BaselineClientScopes, low cardinality in practice for the others).
 	cimdEnabled, cimdCacheMaxSize, cimdCacheFallbackTTL := resolveCIMDConfig(cfg.CIMD)
 
-	trustedIssuers, err := tokenexchange.ResolveJWTBearerGrantPolicies(cfg.TrustedIssuers)
+	trustedIssuers, err := tokenexchange.ResolveJWTBearerGrantPolicies(normalized.TrustedIssuers)
 	if err != nil {
 		return nil, fmt.Errorf("failed to resolve JWT-bearer grant policies: %w", err)
-	}
-
-	spiffeTrust, err := authserver.NewSPIFFETrustConfig(
-		cfg.SPIFFETrustDomains, cfg.InboundGrants, cfg.ScopesSupported, cfg.AllowedAudiences,
-	)
-	if err != nil {
-		return nil, fmt.Errorf("failed to build SPIFFE trust config: %w", err)
 	}
 
 	resolvedCfg := authserver.Config{
@@ -279,7 +329,11 @@ func newEmbeddedAuthServerWithStorage(
 		// authorization-critical data is protected without a deep copy here.
 		TrustedIssuers:  trustedIssuers,
 		DelegateClients: delegateClients,
-		SPIFFETrust:     spiffeTrust,
+		// SPIFFE client authentication factors into Capabilities.TokenExchange
+		// already (see prepareInboundGrantConfiguration): it exclusively uses
+		// the token-exchange grant, independent of legacy/canonical enablement.
+		DisableTokenExchange: !normalized.Capabilities.TokenExchange,
+		SPIFFETrust:          spiffeTrust,
 	}
 
 	// 8. Create the auth server. authserver.New also asserts the DCR
@@ -392,6 +446,18 @@ func (e *EmbeddedAuthServer) RegisterHandlers(mux *http.ServeMux) {
 	}
 }
 
+// validateEmbeddedAuthServerInputs rejects required inputs before construction
+// can dereference cfg or install cleanup that closes stor.
+func validateEmbeddedAuthServerInputs(cfg *authserver.RunConfig, stor storage.Storage) error {
+	if cfg == nil {
+		return fmt.Errorf("config is required")
+	}
+	if stor == nil {
+		return fmt.Errorf("storage is required")
+	}
+	return nil
+}
+
 // createKeyProvider creates a KeyProvider from SigningKeyRunConfig.
 // Returns a GeneratingProvider if config is nil or empty (development mode).
 func createKeyProvider(cfg *authserver.SigningKeyRunConfig) (keys.KeyProvider, error) {
@@ -455,6 +521,17 @@ func loadHMACSecrets(files []string) (*servercrypto.HMACSecrets, error) {
 	return secrets, nil
 }
 
+func parseOptionalDuration(value, name string) (time.Duration, error) {
+	if value == "" {
+		return 0, nil
+	}
+	duration, err := time.ParseDuration(value)
+	if err != nil {
+		return 0, fmt.Errorf("invalid %s: %w", name, err)
+	}
+	return duration, nil
+}
+
 // parseTokenLifespans parses duration strings from TokenLifespanRunConfig.
 // Returns zero values for unset durations (defaults applied by authserver).
 func parseTokenLifespans(cfg *authserver.TokenLifespanRunConfig) (access, refresh, authCode time.Duration, err error) {
@@ -514,58 +591,130 @@ func buildUpstreamConfigs(
 	configs := make([]authserver.UpstreamConfig, 0, len(runConfigs))
 
 	for _, rc := range runConfigs {
-		// Shallow copy of the outer UpstreamRunConfig so DCR resolution never
-		// mutates the caller's slice element.
-		rcCopy := rc
-
-		var dcrResolution *dcr.Resolution
-		// needsDCR returns false for nil input, so the explicit Type ==
-		// OAuth2 guard is redundant. Keeping a single source of truth for
-		// "does this upstream require DCR" avoids drift if the condition
-		// ever needs to be extended (e.g., to support OIDC DCR).
-		if needsDCR(rcCopy.OAuth2Config) {
-			// Take a local copy of the OAuth2 sub-config. dcr.ResolveCredentials
-			// reads it but does not mutate; consumeResolution is value-in /
-			// value-out, so the caller's original OAuth2Config pointer target
-			// is never reached by either call.
-			o2 := *rcCopy.OAuth2Config
-
-			req, err := newDCRRequest(&o2, issuer)
-			if err != nil {
-				return nil, fmt.Errorf("upstream %q: %w", rc.Name, err)
-			}
-			resolution, err := dcr.ResolveCredentials(ctx, req, dcrStore)
-			if err != nil {
-				// Emit the single boundary Error record with enough context to
-				// correlate the failure back to this upstream; then return the
-				// wrapped error without further logging.
-				dcr.LogStepError(rc.Name, err)
-				return nil, fmt.Errorf("upstream %q: %w", rc.Name, err)
-			}
-			o2 = consumeResolution(o2, resolution)
-			rcCopy.OAuth2Config = &o2
-			dcrResolution = resolution
-		}
-
-		cfg, err := buildUpstreamConfig(&rcCopy, insecureAllowHTTP)
+		cfg, err := buildOneUpstreamConfig(ctx, rc, issuer, dcrStore, insecureAllowHTTP)
 		if err != nil {
-			return nil, fmt.Errorf("upstream %q: %w", rc.Name, err)
+			return nil, err
 		}
-
-		// Apply the DCR-resolved ClientSecret to the built OAuth2Config.
-		// The split between consumeResolution (run-config fields) and
-		// applyResolutionToOAuth2Config (inline-only ClientSecret) is
-		// documented in dcr_adapter.go — both calls must be paired to
-		// produce a fully-resolved DCR client.
-		if dcrResolution != nil && cfg.OAuth2Config != nil {
-			applied := applyResolutionToOAuth2Config(*cfg.OAuth2Config, dcrResolution)
-			cfg.OAuth2Config = &applied
-		}
-
 		configs = append(configs, *cfg)
 	}
 
 	return configs, nil
+}
+
+// buildOneUpstreamConfig validates rc, resolves DCR credentials if required,
+// and builds the resulting authserver.UpstreamConfig. Split out of
+// buildUpstreamConfigs to keep the per-upstream steps (validate, resolve,
+// build, apply) independently testable and under the complexity limit.
+func buildOneUpstreamConfig(
+	ctx context.Context,
+	rc authserver.UpstreamRunConfig,
+	issuer string,
+	dcrStore dcr.CredentialStore,
+	insecureAllowHTTP bool,
+) (*authserver.UpstreamConfig, error) {
+	// Shallow copy of the outer UpstreamRunConfig so DCR resolution never
+	// mutates the caller's slice element.
+	rcCopy := rc
+
+	if err := validateUpstreamRunConfig(&rcCopy); err != nil {
+		return nil, fmt.Errorf("upstream %q: %w", rc.Name, err)
+	}
+
+	resolution, err := resolveUpstreamDCR(ctx, &rcCopy, issuer, dcrStore)
+	if err != nil {
+		return nil, fmt.Errorf("upstream %q: %w", rc.Name, err)
+	}
+
+	cfg, err := buildUpstreamConfig(&rcCopy, insecureAllowHTTP)
+	if err != nil {
+		return nil, fmt.Errorf("upstream %q: %w", rc.Name, err)
+	}
+
+	// Apply the DCR-resolved ClientSecret to the built provider config. The
+	// split between consumeResolution/consumeOIDCResolution (run-config
+	// fields) and applyResolutionTo*Config (inline-only ClientSecret) is
+	// documented in dcr_adapter.go — both calls must be paired to produce a
+	// fully-resolved DCR client.
+	applyDCRResolutionToConfig(cfg, rcCopy.Type, resolution)
+
+	return cfg, nil
+}
+
+// validateUpstreamRunConfig enforces that rc carries the sub-config matching
+// its declared Type and that the sub-config's own invariants hold.
+func validateUpstreamRunConfig(rc *authserver.UpstreamRunConfig) error {
+	switch rc.Type {
+	case authserver.UpstreamProviderTypeOIDC:
+		if rc.OIDCConfig == nil {
+			return fmt.Errorf("oidc_config required")
+		}
+		return rc.OIDCConfig.Validate()
+	case authserver.UpstreamProviderTypeOAuth2:
+		if rc.OAuth2Config == nil {
+			return fmt.Errorf("oauth2_config required")
+		}
+		return rc.OAuth2Config.Validate()
+	}
+	return nil
+}
+
+// resolveUpstreamDCR performs Dynamic Client Registration for rc when
+// required, folding the result back into rc's sub-config in place. It
+// returns a nil Resolution when rc has a pre-provisioned client and no DCR
+// is needed.
+func resolveUpstreamDCR(
+	ctx context.Context,
+	rc *authserver.UpstreamRunConfig,
+	issuer string,
+	dcrStore dcr.CredentialStore,
+) (*dcr.Resolution, error) {
+	req, err := newDCRRequest(rc, issuer)
+	if err != nil {
+		return nil, err
+	}
+	if req == nil {
+		return nil, nil
+	}
+
+	resolution, err := dcr.ResolveCredentials(ctx, req, dcrStore)
+	if err != nil {
+		dcr.LogStepError(rc.Name, err)
+		return nil, err
+	}
+
+	switch rc.Type {
+	case authserver.UpstreamProviderTypeOIDC:
+		resolved := consumeOIDCResolution(*rc.OIDCConfig, resolution)
+		rc.OIDCConfig = &resolved
+	case authserver.UpstreamProviderTypeOAuth2:
+		resolved := consumeResolution(*rc.OAuth2Config, resolution)
+		rc.OAuth2Config = &resolved
+	}
+	return resolution, nil
+}
+
+// applyDCRResolutionToConfig overlays the DCR-resolved ClientSecret onto the
+// built provider config. No-op when resolution is nil (no DCR was performed).
+func applyDCRResolutionToConfig(
+	cfg *authserver.UpstreamConfig,
+	upstreamType authserver.UpstreamProviderType,
+	resolution *dcr.Resolution,
+) {
+	if resolution == nil {
+		return
+	}
+	switch upstreamType {
+	case authserver.UpstreamProviderTypeOIDC:
+		if cfg.OIDCConfig != nil {
+			applied := applyResolutionToOIDCConfig(*cfg.OIDCConfig, resolution)
+			cfg.OIDCConfig = &applied
+		}
+	case authserver.UpstreamProviderTypeOAuth2:
+		if cfg.OAuth2Config != nil {
+			applied := applyResolutionToOAuth2Config(*cfg.OAuth2Config, resolution)
+			cfg.OAuth2Config = &applied
+		}
+	}
 }
 
 // buildUpstreamConfig builds an authserver.UpstreamConfig from UpstreamRunConfig.
@@ -613,6 +762,9 @@ func buildOIDCConfig(rc *authserver.UpstreamRunConfig, insecureAllowHTTP bool) (
 	}
 
 	oidc := rc.OIDCConfig
+	if err := oidc.Validate(); err != nil {
+		return nil, err
+	}
 
 	// Warn if UserInfoOverride is configured but won't be used
 	if oidc.UserInfoOverride != nil {
@@ -672,6 +824,16 @@ func buildPureOAuth2Config(rc *authserver.UpstreamRunConfig, insecureAllowHTTP b
 		return nil, fmt.Errorf("failed to resolve OAuth2 client secret: %w", err)
 	}
 
+	authMethod := oauth2.TokenEndpointAuthMethod
+	if authMethod == "" && clientSecret != "" {
+		authMethod = oauthproto.TokenEndpointAuthMethodClientSecretBasic
+	}
+	if isConfidentialAuthMethod(authMethod) && clientSecret == "" {
+		return nil, fmt.Errorf(
+			"oauth2 upstream: token_endpoint_auth_method %q requires a non-empty client secret, "+
+				"but the configured secret resolved to an empty value", authMethod)
+	}
+
 	cfg := &upstream.OAuth2Config{
 		CommonOAuthConfig: upstream.CommonOAuthConfig{
 			ClientID:                      oauth2.ClientID,
@@ -680,12 +842,13 @@ func buildPureOAuth2Config(rc *authserver.UpstreamRunConfig, insecureAllowHTTP b
 			Scopes:                        oauth2.Scopes,
 			AdditionalAuthorizationParams: oauth2.AdditionalAuthorizationParams,
 		},
-		AuthorizationEndpoint: oauth2.AuthorizationEndpoint,
-		TokenEndpoint:         oauth2.TokenEndpoint,
-		UserInfo:              convertUserInfoConfig(oauth2.UserInfo),
-		CAFilePath:            oauth2.CAFilePath,
-		AllowPrivateIPs:       oauth2.AllowPrivateIPs,
-		InsecureAllowHTTP:     insecureAllowHTTP || oauth2.InsecureAllowHTTP,
+		AuthorizationEndpoint:   oauth2.AuthorizationEndpoint,
+		TokenEndpoint:           oauth2.TokenEndpoint,
+		TokenEndpointAuthMethod: authMethod,
+		UserInfo:                convertUserInfoConfig(oauth2.UserInfo),
+		CAFilePath:              oauth2.CAFilePath,
+		AllowPrivateIPs:         oauth2.AllowPrivateIPs,
+		InsecureAllowHTTP:       insecureAllowHTTP || oauth2.InsecureAllowHTTP,
 	}
 
 	if oauth2.TokenResponseMapping != nil {
@@ -706,6 +869,20 @@ func buildPureOAuth2Config(rc *authserver.UpstreamRunConfig, insecureAllowHTTP b
 	}
 
 	return cfg, nil
+}
+
+// isConfidentialAuthMethod reports whether method requires a client secret to
+// be presented at the token endpoint. Used to catch a secret file that reads
+// successfully but is empty after trimming -- a case OAuth2UpstreamRunConfig.Validate
+// cannot see, since it only knows whether a secret source is configured, not
+// what that source resolves to.
+func isConfidentialAuthMethod(method string) bool {
+	switch method {
+	case oauthproto.TokenEndpointAuthMethodClientSecretBasic, oauthproto.TokenEndpointAuthMethodClientSecretPost:
+		return true
+	default:
+		return false
+	}
 }
 
 // resolveSecret reads a secret from file or environment variable.
@@ -730,24 +907,6 @@ func resolveSecret(file, envVar string) (string, error) {
 	}
 	slog.Debug("no client secret configured (neither file nor env var specified)")
 	return "", nil
-}
-
-// validateAndResolveDelegateClients validates cfg and resolves delegate-client
-// secret references for direct constructor callers.
-func validateAndResolveDelegateClients(
-	cfg *authserver.RunConfig,
-	delegateClients []authserver.DelegateClient,
-) ([]authserver.DelegateClient, error) {
-	if cfg == nil {
-		return nil, fmt.Errorf("config is required")
-	}
-	if err := cfg.Validate(); err != nil {
-		return nil, fmt.Errorf("invalid run config: %w", err)
-	}
-	if delegateClients != nil || len(cfg.DelegateClients) == 0 {
-		return delegateClients, nil
-	}
-	return resolveDelegateClients(cfg.DelegateClients)
 }
 
 // resolveDelegateClients resolves secret references and copies authorization

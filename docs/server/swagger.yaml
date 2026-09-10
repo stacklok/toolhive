@@ -3603,8 +3603,12 @@ components:
           type: string
         key:
           description: |-
-            Key is the path to a cosign private key used to sign the pushed
-            artifact
+            Key is the path to a cosign private key, resolved on the server's
+            filesystem. Accepted only when the request carries the secret capability
+            from the owner-protected local server discovery file; other requests are
+            refused with 403, since honoring one would let an untrusted caller have
+            the server sign with any key it can read. Use IdentityToken when calling
+            a remote or manually configured server.
           type: string
         no_sign:
           description: NoSign pushes without signing
@@ -7282,6 +7286,12 @@ paths:
   /api/v1beta/skills/push:
     post:
       description: Push a built skill artifact to a remote registry
+      parameters:
+      - description: Local discovery capability (required with request.key)
+        in: header
+        name: X-Toolhive-Key-Signing-Capability
+        schema:
+          type: string
       requestBody:
         content:
           application/json:
@@ -7306,6 +7316,12 @@ paths:
               schema:
                 type: string
           description: Bad Request
+        "403":
+          content:
+            application/json:
+              schema:
+                type: string
+          description: Forbidden (key signing requires the local discovery capability)
         "404":
           content:
             application/json:

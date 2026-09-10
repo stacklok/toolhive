@@ -1052,6 +1052,15 @@ the list side (`ListTools`/`ListResources`/`ListPrompts` filter the advertised s
 the call side (`CallTool`/`ReadResource`/`GetPrompt` deny before dispatch), closing the
 "list says yes / call says no" gap.
 
+For tool decisions, admission carries the advertised capability's trusted logical
+`BackendID` into Cedar. The request's `Tool` entity remains a child of the vMCP's
+`MCP` entity and also becomes a child of `Backend::<BackendID>`. The Backend entity
+is materialized in the request entity map so `resource in Backend::"..."` policies
+work with dynamically discovered backends. Tool names and arguments are never used
+to infer backend membership. Composite tools with no single origin have no Backend
+parent. If `entities_json` configures the same Backend with attributes or a parent
+hierarchy, that configured entity is preserved.
+
 Because the SDK maps a call-side deny to a tool result, a raw denied `tools/call` would
 otherwise return **HTTP 200** (either the SDK's `-32602 "not found"` for a list-filtered
 tool, or a `200 + IsError` tool result for an argument-gated deny). To make a denial a

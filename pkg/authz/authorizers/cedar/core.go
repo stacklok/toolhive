@@ -568,6 +568,15 @@ func (a *Authorizer) IsAuthorized(
 			mergedEntities[k] = v
 		}
 		for k, v := range entities[0] {
+			// A request materializes a minimal Backend entity so direct
+			// resource-in-Backend policies work without static configuration.
+			// Preserve a configured Backend with the same UID because it may
+			// carry attributes or parents for transitive backend hierarchies.
+			if k.Type == EntityTypeBackend {
+				if _, configured := mergedEntities[k]; configured {
+					continue
+				}
+			}
 			mergedEntities[k] = v
 		}
 
@@ -1087,10 +1096,11 @@ func (a *Authorizer) authorizeToolCall(
 		"operation": "call",
 		"feature":   "tool",
 	})
+	resourceMetadata, _ := authorizers.ResourceMetadataFromContext(ctx)
 
 	// Create Cedar entities
-	entities, err := a.entityFactory.CreateEntitiesForRequest(
-		principal, action, resource, claimsMap, attributes, groups, a.serverName,
+	entities, err := a.entityFactory.createEntitiesForRequest(
+		principal, action, resource, claimsMap, attributes, groups, a.serverName, resourceMetadata.BackendID,
 	)
 	if err != nil {
 		return false, fmt.Errorf("failed to create Cedar entities: %w", err)

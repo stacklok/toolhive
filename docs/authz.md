@@ -215,6 +215,35 @@ permit(principal, action == Action::"call_tool", resource == Tool::"weather");
 
 This policy allows any client to call the weather tool.
 
+##### Allow tools from a specific vMCP backend
+
+For tools advertised by a Virtual MCP Server, Cedar receives the logical
+originating backend as a second resource parent:
+
+```text
+Tool::"search"
+  -> MCP::"main-vmcp"
+  -> Backend::"github-mcp"
+```
+
+This allows every tool from one backend without relying on the advertised tool
+name or its conflict-resolution prefix:
+
+```plain
+permit(
+  principal,
+  action == Action::"call_tool",
+  resource in Backend::"github-mcp"
+);
+```
+
+The Backend entity ID is the tool's logical vMCP `BackendID`, not a network
+address. ToolHive obtains it from the aggregated capability and uses the same
+value for list filtering and call authorization. A direct Backend policy does
+not require an entry in `entities_json`; ToolHive materializes the Backend entity
+for the request. A configured Backend entity with the same ID is retained when
+it supplies attributes or parents for a transitive hierarchy.
+
 ##### Allow a specific prompt
 
 ```plain

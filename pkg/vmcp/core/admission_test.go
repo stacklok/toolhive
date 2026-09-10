@@ -37,13 +37,15 @@ type mockResult struct {
 }
 
 type mockCall struct {
-	feature         authorizers.MCPFeature
-	operation       authorizers.MCPOperation
-	resourceID      string
-	args            map[string]interface{}
-	identitySubject string // "" when no identity was present in ctx
-	identityPresent bool
-	annotations     *authorizers.ToolAnnotations
+	feature          authorizers.MCPFeature
+	operation        authorizers.MCPOperation
+	resourceID       string
+	args             map[string]interface{}
+	identitySubject  string // "" when no identity was present in ctx
+	identityPresent  bool
+	annotations      *authorizers.ToolAnnotations
+	resourceMetadata authorizers.ResourceMetadata
+	metadataPresent  bool
 }
 
 func (m *mockAuthorizer) AuthorizeWithJWTClaims(
@@ -54,13 +56,16 @@ func (m *mockAuthorizer) AuthorizeWithJWTClaims(
 	args map[string]interface{},
 ) (bool, error) {
 	id, present := auth.IdentityFromContext(ctx)
+	metadata, metadataPresent := authorizers.ResourceMetadataFromContext(ctx)
 	call := mockCall{
-		feature:         feature,
-		operation:       operation,
-		resourceID:      resourceID,
-		args:            args,
-		identityPresent: present,
-		annotations:     authorizers.ToolAnnotationsFromContext(ctx),
+		feature:          feature,
+		operation:        operation,
+		resourceID:       resourceID,
+		args:             args,
+		identityPresent:  present,
+		annotations:      authorizers.ToolAnnotationsFromContext(ctx),
+		resourceMetadata: metadata,
+		metadataPresent:  metadataPresent,
 	}
 	if present && id != nil {
 		call.identitySubject = id.Subject
@@ -184,8 +189,8 @@ func TestCedarAdmission_InvokesToolAuthorizerCorrectly(t *testing.T) {
 	adm := newCedarAdmission(mock)
 
 	tools := []vmcp.Tool{
-		{Name: "hinted", Annotations: &vmcp.ToolAnnotations{ReadOnlyHint: boolPtr(true)}},
-		{Name: "plain"},
+		{Name: "hinted", BackendID: "backend-a", Annotations: &vmcp.ToolAnnotations{ReadOnlyHint: boolPtr(true)}},
+		{Name: "plain", BackendID: "backend-b"},
 	}
 	_, err := adm.FilterTools(context.Background(), cedarIdentity(), tools)
 	require.NoError(t, err)
@@ -196,12 +201,15 @@ func TestCedarAdmission_InvokesToolAuthorizerCorrectly(t *testing.T) {
 		assert.Equal(t, authorizers.MCPOperationCall, c.operation)
 		assert.True(t, c.identityPresent, "adapter must re-inject identity into ctx")
 		assert.Equal(t, "user123", c.identitySubject)
+		assert.True(t, c.metadataPresent, "adapter must inject trusted resource metadata")
 	}
 	// Annotations are injected only for the tool that carries a hint.
 	byName := map[string]mockCall{mock.calls[0].resourceID: mock.calls[0], mock.calls[1].resourceID: mock.calls[1]}
 	require.NotNil(t, byName["hinted"].annotations)
 	assert.Equal(t, boolPtr(true), byName["hinted"].annotations.ReadOnlyHint)
+	assert.Equal(t, "backend-a", byName["hinted"].resourceMetadata.BackendID)
 	assert.Nil(t, byName["plain"].annotations, "no annotation ctx written when the tool has no hints")
+	assert.Equal(t, "backend-b", byName["plain"].resourceMetadata.BackendID)
 }
 
 func TestCedarAdmission_AllowToolCall(t *testing.T) {
@@ -237,6 +245,42 @@ func TestCedarAdmission_AllowToolCall(t *testing.T) {
 			assert.Equal(t, authorizers.MCPFeatureTool, mock.calls[0].feature)
 			assert.Equal(t, authorizers.MCPOperationCall, mock.calls[0].operation)
 			assert.True(t, mock.calls[0].identityPresent)
+		})
+	}
+}
+
+func TestCedarAdmission_BackendScopedPolicy(t *testing.T) {
+	t.Parallel()
+
+	adm := cedarAdmissionWith(t,
+		`permit(principal, action == Action::"call_tool", resource in Backend::"backend-a");`)
+	id := cedarIdentity()
+	ctx := context.Background()
+
+	allowed := vmcp.Tool{Name: "manually-renamed", BackendID: "backend-a"}
+	nameSpoof := vmcp.Tool{Name: "backend-a_looks-allowed", BackendID: "backend-b"}
+	composite := vmcp.Tool{Name: "workflow", BackendID: ""}
+
+	got, err := adm.FilterTools(ctx, id, []vmcp.Tool{allowed, nameSpoof, composite})
+	require.NoError(t, err)
+	assert.Equal(t, []string{"manually-renamed"}, toolNames(got),
+		"authorization must use BackendID rather than the advertised name")
+
+	for _, tc := range []struct {
+		name string
+		tool *vmcp.Tool
+		want bool
+	}{
+		{name: "matching backend", tool: &allowed, want: true},
+		{name: "misleading name from another backend", tool: &nameSpoof, want: false},
+		{name: "empty BackendID", tool: &composite, want: false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+
+			ok, err := adm.AllowToolCall(ctx, id, tc.tool, nil)
+			require.NoError(t, err)
+			assert.Equal(t, tc.want, ok)
 		})
 	}
 }

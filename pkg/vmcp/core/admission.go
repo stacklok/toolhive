@@ -153,7 +153,7 @@ func (a *cedarAdmission) FilterTools(
 	filtered := make([]vmcp.Tool, 0, len(tools))
 	for i := range tools {
 		tool := &tools[i]
-		toolCtx := ctx
+		toolCtx := authorizers.WithResourceMetadata(ctx, authorizers.ResourceMetadata{BackendID: tool.BackendID})
 		if ann := convertAnnotations(tool.Annotations); ann != nil {
 			toolCtx = authorizers.WithToolAnnotations(toolCtx, ann)
 		}
@@ -180,6 +180,7 @@ func (a *cedarAdmission) AllowToolCall(
 	ctx context.Context, identity *auth.Identity, tool *vmcp.Tool, args map[string]any,
 ) (bool, error) {
 	ctx = auth.WithIdentity(ctx, identity)
+	ctx = authorizers.WithResourceMetadata(ctx, authorizers.ResourceMetadata{BackendID: tool.BackendID})
 	if ann := convertAnnotations(tool.Annotations); ann != nil {
 		ctx = authorizers.WithToolAnnotations(ctx, ann)
 	}

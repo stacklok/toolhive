@@ -26,6 +26,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/alicebob/miniredis/v2"
 	"github.com/ory/fosite"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"

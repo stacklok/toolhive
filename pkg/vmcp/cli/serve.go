@@ -372,8 +372,15 @@ func Serve(ctx context.Context, cfg ServeConfig) error {
 	// Guard session-init dials against SSRF / DNS-rebinding into private ranges,
 	// unless the operator opted out for in-cluster / development use. The same
 	// policy guards the per-call backend client built in discoverBackends.
+	//
+	// The policy is currently global (config.BackendAllowPrivateIP), so the
+	// per-workload resolver returns the same hook for every backend; its shape
+	// leaves room for a future per-backend policy without re-wiring here.
 	if dialControl := backendDialControl(vmcpCfg); dialControl != nil {
-		sessionFactoryOpts = append(sessionFactoryOpts, vmcpsession.WithDialControl(dialControl))
+		sessionFactoryOpts = append(sessionFactoryOpts,
+			vmcpsession.WithDialControlResolver(func(string) func(network, address string, c syscall.RawConn) error {
+				return dialControl
+			}))
 	}
 	sessionFactory := vmcpsession.NewSessionFactory(outgoingRegistry, sessionFactoryOpts...)
 

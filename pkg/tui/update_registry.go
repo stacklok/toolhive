@@ -7,15 +7,15 @@ import (
 	"context"
 	"strings"
 
+	"charm.land/bubbles/v2/key"
+	tea "charm.land/bubbletea/v2"
 	"github.com/atotto/clipboard"
-	"github.com/charmbracelet/bubbles/key"
-	tea "github.com/charmbracelet/bubbletea"
 
 	regtypes "github.com/stacklok/toolhive-core/registry/types"
 )
 
 // handleRegistryKey handles key input while the registry overlay is open.
-func (m *Model) handleRegistryKey(msg tea.KeyMsg) tea.Cmd {
+func (m *Model) handleRegistryKey(msg tea.KeyPressMsg) tea.Cmd {
 	// Run form captures all input while open.
 	if m.runForm.open {
 		return m.handleRunFormKey(msg)
@@ -48,7 +48,7 @@ func (m *Model) handleRegistryKey(msg tea.KeyMsg) tea.Cmd {
 			m.registry.idx++
 			m.clampRegistryScroll()
 		}
-	case msg.Type == tea.KeyBackspace:
+	case msg.Code == tea.KeyBackspace:
 		if len(m.registry.filter) > 0 {
 			r := []rune(m.registry.filter)
 			m.registry.filter = string(r[:len(r)-1])
@@ -56,8 +56,8 @@ func (m *Model) handleRegistryKey(msg tea.KeyMsg) tea.Cmd {
 			m.registry.scrollOff = 0
 		}
 	default:
-		if msg.Type == tea.KeyRunes {
-			m.registry.filter += msg.String()
+		if msg.Text != "" {
+			m.registry.filter += msg.Text
 			m.registry.idx = 0
 			m.registry.scrollOff = 0
 		}
@@ -66,7 +66,7 @@ func (m *Model) handleRegistryKey(msg tea.KeyMsg) tea.Cmd {
 }
 
 // handleRegistryDetailKey handles key input in the detail view.
-func (m *Model) handleRegistryDetailKey(msg tea.KeyMsg) tea.Cmd {
+func (m *Model) handleRegistryDetailKey(msg tea.KeyPressMsg) tea.Cmd {
 	switch {
 	case key.Matches(msg, keys.Escape):
 		m.registry.detail = false
@@ -136,7 +136,7 @@ func (m *Model) openRunForm(item regtypes.ServerMetadata) tea.Cmd {
 }
 
 // handleRunFormKey handles key input while the run form is open.
-func (m *Model) handleRunFormKey(msg tea.KeyMsg) tea.Cmd {
+func (m *Model) handleRunFormKey(msg tea.KeyPressMsg) tea.Cmd {
 	if m.runForm.running {
 		return nil
 	}
@@ -171,8 +171,8 @@ func (m *Model) blurAllRunFormFields() {
 	formBlurAll(m.runForm.fields, &m.runForm.idx)
 }
 
-func (m *Model) runFormForwardToField(msg tea.KeyMsg) tea.Cmd {
-	return formForwardKey(m.runForm.fields, m.runForm.idx, msg)
+func (m *Model) runFormForwardToField(msg tea.Msg) tea.Cmd {
+	return formForwardMessage(m.runForm.fields, m.runForm.idx, msg)
 }
 
 // runFormSubmit validates required fields and launches the run command.

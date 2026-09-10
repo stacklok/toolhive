@@ -6,9 +6,9 @@ package tui
 import (
 	"context"
 
+	"charm.land/bubbles/v2/key"
+	tea "charm.land/bubbletea/v2"
 	"github.com/atotto/clipboard"
-	"github.com/charmbracelet/bubbles/key"
-	tea "github.com/charmbracelet/bubbletea"
 
 	mcpclient "github.com/stacklok/toolhive-core/mcpcompat/client"
 	"github.com/stacklok/toolhive/pkg/core"
@@ -17,7 +17,7 @@ import (
 )
 
 // handleConfirmDeleteKey handles key input while waiting for delete confirmation.
-func (m *Model) handleConfirmDeleteKey(msg tea.KeyMsg) tea.Cmd {
+func (m *Model) handleConfirmDeleteKey(msg tea.KeyPressMsg) tea.Cmd {
 	switch {
 	case key.Matches(msg, keys.Delete):
 		m.confirmDelete = false
@@ -29,7 +29,7 @@ func (m *Model) handleConfirmDeleteKey(msg tea.KeyMsg) tea.Cmd {
 }
 
 // handleFilterKey handles key input while the filter prompt is active.
-func (m *Model) handleFilterKey(msg tea.KeyMsg) tea.Cmd {
+func (m *Model) handleFilterKey(msg tea.KeyPressMsg) tea.Cmd {
 	switch {
 	case key.Matches(msg, keys.Escape) || key.Matches(msg, keys.Quit):
 		m.filterActive = false
@@ -37,14 +37,14 @@ func (m *Model) handleFilterKey(msg tea.KeyMsg) tea.Cmd {
 		m.selectedIdx = 0
 	case key.Matches(msg, keys.Enter):
 		m.filterActive = false
-	case msg.Type == tea.KeyBackspace:
+	case msg.Code == tea.KeyBackspace:
 		if len(m.filterQuery) > 0 {
 			r := []rune(m.filterQuery)
 			m.filterQuery = string(r[:len(r)-1])
 		}
 	default:
-		if msg.Type == tea.KeyRunes {
-			m.filterQuery += msg.String()
+		if msg.Text != "" {
+			m.filterQuery += msg.Text
 		}
 	}
 	return nil
@@ -53,7 +53,7 @@ func (m *Model) handleFilterKey(msg tea.KeyMsg) tea.Cmd {
 // handleNormalKey handles key input in normal (non-filter) mode.
 //
 //nolint:gocyclo // key-handler switch; complexity is inherent to dispatching over all normal-mode key bindings
-func (m *Model) handleNormalKey(msg tea.KeyMsg) tea.Cmd {
+func (m *Model) handleNormalKey(msg tea.KeyPressMsg) tea.Cmd {
 	switch {
 	case key.Matches(msg, keys.Quit):
 		if m.mcpClient != nil {
@@ -128,13 +128,13 @@ func (m *Model) handleNormalKey(msg tea.KeyMsg) tea.Cmd {
 			m.logSearchQuery = ""
 			m.logSearchMatches = nil
 			m.logSearchIdx = 0
-			m.logView.SetContent(buildHScrollContent(m.logLines, m.logView.Width, m.logHScrollOff))
+			m.logView.SetContent(buildHScrollContent(m.logLines, m.logView.Width(), m.logHScrollOff))
 		}
 		if m.panel == panelProxyLogs && m.proxyLogSearchQuery != "" {
 			m.proxyLogSearchQuery = ""
 			m.proxyLogSearchMatches = nil
 			m.proxyLogSearchIdx = 0
-			m.proxyLogView.SetContent(buildHScrollContent(m.proxyLogLines, m.proxyLogView.Width, m.proxyLogHScrollOff))
+			m.proxyLogView.SetContent(buildHScrollContent(m.proxyLogLines, m.proxyLogView.Width(), m.proxyLogHScrollOff))
 		}
 
 	case key.Matches(msg, keys.SearchNext):
@@ -179,7 +179,7 @@ func (m *Model) handleNormalKey(msg tea.KeyMsg) tea.Cmd {
 func (m *Model) toolsNavigateUp() tea.Cmd {
 	if m.toolsSelectedIdx > 0 {
 		m.toolsSelectedIdx--
-		m.toolsView.SetContent(buildToolsContent(m.tools, m.toolsView.Width, m.toolsSelectedIdx))
+		m.toolsView.SetContent(buildToolsContent(m.tools, m.toolsView.Width(), m.toolsSelectedIdx))
 		m.toolsScrollToSelected()
 	}
 	return nil
@@ -189,7 +189,7 @@ func (m *Model) toolsNavigateUp() tea.Cmd {
 func (m *Model) toolsNavigateDown() tea.Cmd {
 	if m.toolsSelectedIdx < len(m.tools)-1 {
 		m.toolsSelectedIdx++
-		m.toolsView.SetContent(buildToolsContent(m.tools, m.toolsView.Width, m.toolsSelectedIdx))
+		m.toolsView.SetContent(buildToolsContent(m.tools, m.toolsView.Width(), m.toolsSelectedIdx))
 		m.toolsScrollToSelected()
 	}
 	return nil
@@ -201,10 +201,10 @@ func (m *Model) toolsScrollToSelected() {
 	// The header is 2 lines (count + blank line).
 	const headerLines = 2
 	line := headerLines + m.toolsSelectedIdx
-	if line < m.toolsView.YOffset {
+	if line < m.toolsView.YOffset() {
 		m.toolsView.SetYOffset(line)
-	} else if line >= m.toolsView.YOffset+m.toolsView.Height {
-		m.toolsView.SetYOffset(line - m.toolsView.Height + 1)
+	} else if line >= m.toolsView.YOffset()+m.toolsView.Height() {
+		m.toolsView.SetYOffset(line - m.toolsView.Height() + 1)
 	}
 }
 
@@ -253,7 +253,7 @@ func (m *Model) hScrollLeft() {
 			if m.logHScrollOff < 0 {
 				m.logHScrollOff = 0
 			}
-			m.logView.SetContent(buildHScrollContent(m.logLines, m.logView.Width, m.logHScrollOff))
+			m.logView.SetContent(buildHScrollContent(m.logLines, m.logView.Width(), m.logHScrollOff))
 		}
 	case panelProxyLogs:
 		if m.proxyLogHScrollOff > 0 {
@@ -261,7 +261,7 @@ func (m *Model) hScrollLeft() {
 			if m.proxyLogHScrollOff < 0 {
 				m.proxyLogHScrollOff = 0
 			}
-			m.proxyLogView.SetContent(buildHScrollContent(m.proxyLogLines, m.proxyLogView.Width, m.proxyLogHScrollOff))
+			m.proxyLogView.SetContent(buildHScrollContent(m.proxyLogLines, m.proxyLogView.Width(), m.proxyLogHScrollOff))
 		}
 	case panelInfo, panelTools, panelInspector:
 		// h-scroll not applicable to these panels
@@ -276,13 +276,13 @@ func (m *Model) hScrollRight() {
 		maxOff := maxLineLen(m.logLines)
 		if m.logHScrollOff+step <= maxOff {
 			m.logHScrollOff += step
-			m.logView.SetContent(buildHScrollContent(m.logLines, m.logView.Width, m.logHScrollOff))
+			m.logView.SetContent(buildHScrollContent(m.logLines, m.logView.Width(), m.logHScrollOff))
 		}
 	case panelProxyLogs:
 		maxOff := maxLineLen(m.proxyLogLines)
 		if m.proxyLogHScrollOff+step <= maxOff {
 			m.proxyLogHScrollOff += step
-			m.proxyLogView.SetContent(buildHScrollContent(m.proxyLogLines, m.proxyLogView.Width, m.proxyLogHScrollOff))
+			m.proxyLogView.SetContent(buildHScrollContent(m.proxyLogLines, m.proxyLogView.Width(), m.proxyLogHScrollOff))
 		}
 	case panelInfo, panelTools, panelInspector:
 		// h-scroll not applicable to these panels
@@ -493,14 +493,14 @@ func (m *Model) resizeViewport() {
 	mainWidth := m.width - sidebarWidth - 1 // 1 for the divider
 	// mainStyle Height = m.height-2; title(1)+tabBar(1)+sep(1)+toolbar(1) = 4 overhead
 	logHeight := max(m.height-6, 1)
-	m.logView.Width = mainWidth
-	m.logView.Height = logHeight
-	m.proxyLogView.Width = mainWidth
-	m.proxyLogView.Height = logHeight
+	m.logView.SetWidth(mainWidth)
+	m.logView.SetHeight(logHeight)
+	m.proxyLogView.SetWidth(mainWidth)
+	m.proxyLogView.SetHeight(logHeight)
 	// Tools viewport: same height as logs, rebuild content to reflect new width.
-	if m.toolsView.Width != mainWidth || m.toolsView.Height != logHeight {
-		m.toolsView.Width = mainWidth
-		m.toolsView.Height = logHeight
+	if m.toolsView.Width() != mainWidth || m.toolsView.Height() != logHeight {
+		m.toolsView.SetWidth(mainWidth)
+		m.toolsView.SetHeight(logHeight)
 		if len(m.tools) > 0 {
 			m.toolsView.SetContent(buildToolsContent(m.tools, mainWidth, m.toolsSelectedIdx))
 		}
@@ -509,10 +509,10 @@ func (m *Model) resizeViewport() {
 	const inspLogHeight = 6
 	// inspH = m.height - 5 (from renderInspector); 8 lines of REQUEST/RESPONSE headers overhead.
 	const inspHeaderOverhead = 8
-	m.insp.logView.Width = mainWidth
-	m.insp.logView.Height = inspLogHeight
-	m.insp.respView.Width = mainWidth
-	m.insp.respView.Height = max(m.height-10-inspLogHeight, 3)
+	m.insp.logView.SetWidth(mainWidth)
+	m.insp.logView.SetHeight(inspLogHeight)
+	m.insp.respView.SetWidth(mainWidth)
+	m.insp.respView.SetHeight(max(m.height-10-inspLogHeight, 3))
 	m.insp.treeVisH = max(m.height-5-inspHeaderOverhead, 3)
 }
 

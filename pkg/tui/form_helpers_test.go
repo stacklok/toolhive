@@ -6,7 +6,7 @@ package tui
 import (
 	"testing"
 
-	"github.com/charmbracelet/bubbles/textinput"
+	"charm.land/bubbles/v2/textinput"
 	"github.com/stretchr/testify/assert"
 )
 

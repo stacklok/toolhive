@@ -7,7 +7,7 @@ import (
 	"fmt"
 	"strings"
 
-	"github.com/charmbracelet/lipgloss"
+	"charm.land/lipgloss/v2"
 
 	"github.com/stacklok/toolhive/cmd/thv/app/ui"
 )
@@ -16,8 +16,8 @@ import (
 //
 //nolint:gocyclo // renders all status-bar states per panel; helper extraction done in separate funcs
 func (m Model) renderStatusBar() string {
-	const statusBg = lipgloss.Color("#1e2030")
-	const badgeBg = lipgloss.Color("#2a2f45")
+	statusBg := lipgloss.Color("#1e2030")
+	badgeBg := lipgloss.Color("#2a2f45")
 
 	// badge renders a key name with a contrasting background box.
 	// We use manual spaces instead of Padding to keep measurement predictable.
@@ -207,7 +207,7 @@ func (m Model) renderHelpOverlay() string {
 		lipgloss.Center, lipgloss.Center,
 		helpContent,
 		lipgloss.WithWhitespaceChars(" "),
-		lipgloss.WithWhitespaceForeground(ui.ColorDim),
+		lipgloss.WithWhitespaceStyle(lipgloss.NewStyle().Foreground(ui.ColorDim)),
 	) + "\n(press any key to close)"
 }
 

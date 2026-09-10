@@ -6,9 +6,9 @@ package tui
 import (
 	"time"
 
+	"charm.land/bubbles/v2/key"
+	tea "charm.land/bubbletea/v2"
 	"github.com/atotto/clipboard"
-	"github.com/charmbracelet/bubbles/key"
-	tea "github.com/charmbracelet/bubbletea"
 
 	"github.com/stacklok/toolhive-core/mcpcompat/mcp"
 )
@@ -16,7 +16,7 @@ import (
 // handleInspectorKey handles key input when the inspector panel is active.
 //
 //nolint:gocyclo // key-handler switch; complexity is inherent to dispatching over all inspector key bindings
-func (m *Model) handleInspectorKey(msg tea.KeyMsg) tea.Cmd {
+func (m *Model) handleInspectorKey(msg tea.KeyPressMsg) tea.Cmd {
 	// Info modal captures all input — any key closes it.
 	if m.insp.showInfo {
 		m.insp.showInfo = false
@@ -165,7 +165,7 @@ func (m *Model) handleInspectorKey(msg tea.KeyMsg) tea.Cmd {
 }
 
 // handleInspFilterKey handles key input while the inspector tool filter is active.
-func (m *Model) handleInspFilterKey(msg tea.KeyMsg) tea.Cmd {
+func (m *Model) handleInspFilterKey(msg tea.KeyPressMsg) tea.Cmd {
 	switch {
 	case key.Matches(msg, keys.Escape):
 		m.insp.filterActive = false
@@ -200,7 +200,7 @@ func (m *Model) handleInspFilterKey(msg tea.KeyMsg) tea.Cmd {
 		return m.inspNavigateUp()
 	case key.Matches(msg, keys.Down):
 		return m.inspNavigateDown()
-	case msg.Type == tea.KeyBackspace:
+	case msg.Code == tea.KeyBackspace:
 		if len(m.insp.filterQuery) > 0 {
 			r := []rune(m.insp.filterQuery)
 			m.insp.filterQuery = string(r[:len(r)-1])
@@ -208,8 +208,8 @@ func (m *Model) handleInspFilterKey(msg tea.KeyMsg) tea.Cmd {
 			m.inspRebuildForm()
 		}
 	default:
-		if msg.Type == tea.KeyRunes {
-			m.insp.filterQuery += msg.String()
+		if msg.Text != "" {
+			m.insp.filterQuery += msg.Text
 			m.insp.toolIdx = 0
 			m.inspRebuildForm()
 		}
@@ -323,9 +323,9 @@ func (m *Model) inspCopyNode() {
 	}
 }
 
-// inspForwardToField forwards a key message to the currently focused field.
-func (m *Model) inspForwardToField(msg tea.KeyMsg) tea.Cmd {
-	return formForwardKey(m.insp.fields, m.insp.fieldIdx, msg)
+// inspForwardToField forwards a message to the currently focused field.
+func (m *Model) inspForwardToField(msg tea.Msg) tea.Cmd {
+	return formForwardMessage(m.insp.fields, m.insp.fieldIdx, msg)
 }
 
 // inspDoCall starts an async tool call with the current field values.

@@ -9,7 +9,7 @@ import (
 	"sort"
 	"strings"
 
-	"github.com/charmbracelet/lipgloss"
+	"charm.land/lipgloss/v2"
 	xansi "github.com/charmbracelet/x/ansi"
 
 	"github.com/stacklok/toolhive/cmd/thv/app/ui"

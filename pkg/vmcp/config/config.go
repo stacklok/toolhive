@@ -726,6 +726,7 @@ type ListChangedConfig struct {
 	// DisabledWorkloads names backends to exclude while leaving the rest
 	// subscribed. Prefer this over Enabled when a single backend misbehaves.
 	// +optional
+	// +listType=set
 	DisabledWorkloads []string `json:"disabledWorkloads,omitempty" yaml:"disabledWorkloads,omitempty"`
 }
 

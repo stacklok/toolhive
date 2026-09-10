@@ -3133,6 +3133,7 @@ spec:
                             items:
                               type: string
                             type: array
+                            x-kubernetes-list-type: set
                           enabled:
                             description: Enabled turns propagation on or off for every
                               backend. Defaults to true.
@@ -8112,6 +8113,7 @@ spec:
                             items:
                               type: string
                             type: array
+                            x-kubernetes-list-type: set
                           enabled:
                             description: Enabled turns propagation on or off for every
                               backend. Defaults to true.

@@ -63,7 +63,7 @@ func TestSPIFFEClientAuthenticationStrategy(t *testing.T) {
 			wantErr: "SPIFFE X.509 client authentication is not implemented",
 		},
 		{
-			name:     "SPIFFE JWT assertion is detected when not the first value",
+			name:     "SPIFFE JWT assertion is detected when not the first value, then rejected as duplicated",
 			ctx:      context.Background(),
 			resolver: stubResolver,
 			form: url.Values{
@@ -72,7 +72,7 @@ func TestSPIFFEClientAuthenticationStrategy(t *testing.T) {
 					spiffeauth.SPIFFEJWTAssertionType,
 				},
 			},
-			wantErr: "SPIFFE JWT client authentication is not implemented",
+			wantErr: fosite.ErrInvalidRequest.HintField,
 		},
 		{
 			name:     "RFC 7523 assertion delegates to default strategy",

@@ -16,7 +16,7 @@
 // OAuth authorization server.
 package storage
 
-//go:generate mockgen -destination=mocks/mock_storage.go -package=mocks -source=types.go Storage,PendingAuthorizationStorage,AssertionJWTConsumer,ClientRegistry,UpstreamTokenStorage,UpstreamTokenRefresher,UserStorage,DCRCredentialStore
+//go:generate mockgen -destination=mocks/mock_storage.go -package=mocks -source=types.go Storage,PendingAuthorizationStorage,AssertionJWTConsumer,ClientRegistry,ConfiguredClientReconciler,UpstreamTokenStorage,UpstreamTokenRefresher,UserStorage,DCRCredentialStore
 
 import (
 	"context"
@@ -610,17 +610,19 @@ func ValidateRegisterableClientID(id string) error {
 	return nil
 }
 
+// canonicalStringSet returns a sorted, deduplicated copy of values.
+// Canonicalisation mirrors ScopesHash's approach so every configured-client
+// material comparison uses the same set semantics.
+func canonicalStringSet(values []string) []string {
+	canonical := slices.Clone(values)
+	sort.Strings(canonical)
+	return slices.Compact(canonical)
+}
+
 // sameStringSet reports whether a and b contain the same elements as sets:
-// order and duplicate count don't matter, only membership. Canonicalisation
-// (sort, then dedup) mirrors ScopesHash's approach so the two stay consistent.
+// order and duplicate count don't matter, only membership.
 func sameStringSet(a, b []string) bool {
-	as := slices.Clone(a)
-	bs := slices.Clone(b)
-	sort.Strings(as)
-	sort.Strings(bs)
-	as = slices.Compact(as)
-	bs = slices.Compact(bs)
-	return slices.Equal(as, bs)
+	return slices.Equal(canonicalStringSet(a), canonicalStringSet(b))
 }
 
 // clientFingerprint is the identity of a configured client registration: the
@@ -745,6 +747,29 @@ type ClientRegistry interface {
 	// eviction order so it is not the next one dropped when WithMaxClients is reached.
 	// A renewal failure is non-fatal to the caller's primary operation.
 	RenewClientTTL(ctx context.Context, client fosite.Client) error
+}
+
+// ConfiguredClientReconciler lets a storage backend durably reconcile the
+// complete set of operator-configured (not dynamically registered) OAuth
+// clients: unconditionally write every client in the desired set, and
+// eventually prune any previously-configured row no longer in it. Redis
+// implementations retain an undesired row for a bounded grace period so
+// another replica can continue refreshing it during a rollout. It is
+// last-write-wins by design — multiple replicas calling this concurrently
+// with different desired sets (e.g. mid rolling-update) may transiently
+// overwrite each other's view,
+// but every replica's own periodic call converges the shared storage to its
+// own current configuration, and the moment every "stale" replica has exited
+// (or is next reconciled with the new configuration), the row settles.
+// Implementations must never prune or overwrite a DCR-issued or SPIFFE
+// reserved-placeholder row — those are owned by a different mechanism
+// entirely. A row that predates this marker (no "configured" ownership tag
+// at all) may be adopted into the marker scheme only if its stored shape
+// exactly matches the desired client being written for that ID; otherwise it
+// is treated as a genuine, unrelated collision and reconciliation fails for
+// that entry.
+type ConfiguredClientReconciler interface {
+	ReconcileConfiguredClients(ctx context.Context, clients []fosite.Client) error
 }
 
 // UpstreamTokenRowID is an opaque, process-local coordination key for one

@@ -280,7 +280,16 @@ behavior (their stored row has no auth method and reads back as a bare
 `*fosite.DefaultClient`). This brings the Redis backend in line with the
 in-memory backend, which has always enforced the pinned method.
 
-## Configuration
+## Configured-client reconciliation
+
+Operator-declared delegate clients are reconciled as one desired set at embedded auth-server startup and on a periodic heartbeat while the server runs. Each reconcile writes every client in the desired set and marks any previously-configured row no longer in it as stale. A stale row is retained for a bounded grace period before pruning, so a replacement replica does not immediately remove a client still used by an older replica. SPIFFE associations are not part of that delegate desired set: their durable rows are inert, reserved placeholders, not usable OAuth clients. Redis rows written by the configured path carry a `configured` ownership marker. A row without that marker is legacy data — adopted into the marker scheme only if its stored shape exactly matches the client being reconciled at that ID, otherwise reconciliation fails for that one entry as a genuine collision. DCR-issued and reserved rows are never touched by reconciliation, regardless of the desired set.
+
+Reconciliation is last-write-wins, with no cross-replica coordination beyond the shared Redis rows themselves: each replica's own periodic call unconditionally writes its own desired set and marks away whatever it does not want. During a rolling update, replicas running the old and new configuration briefly disagree, and a row can flip between old and new content until every old replica has been reconciled with (or replaced by) the new configuration. The stale-row grace period gives old replicas time to continue refreshing rows they still need; once no replica refreshes a removed row and the grace period elapses, a later reconcile prunes it. This is a bounded, self-healing transient and never blocks a replica's own startup or readiness. Same-ID material rotation remains last-write-wins during the rollout.
+
+Memory storage applies the same desired-set write-and-prune logic under its
+mutex, single-process, so there is no cross-replica disagreement to consider.
+DCR-issued and legacy/unowned rows remain protected there too.
+
 
 ### CRD Configuration
 

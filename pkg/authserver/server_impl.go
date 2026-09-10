@@ -49,6 +49,13 @@ type server struct {
 	// TrustedIssuers are configured (nil otherwise). Held here so Close can shut
 	// down its per-issuer JWKS refresh worker pools; nothing else releases them.
 	trustedIssuerValidator *tokenexchange.MultiIssuerTokenValidator
+	configuredReconciler   storage.ConfiguredClientReconciler
+	// configuredClients is the desired operator-configured client set,
+	// re-asserted on every reconciliation-loop tick so a live replica keeps
+	// re-publishing (and sweeping toward) its own current configuration.
+	configuredClients []fosite.Client
+	configuredCancel  context.CancelFunc
+	configuredDone    chan struct{}
 }
 
 // DefaultUpstreamFactory creates the production upstream provider based on type.
@@ -172,12 +179,8 @@ func newServer(ctx context.Context, cfg Config, stor storage.Storage) (_ *server
 		return nil, fmt.Errorf("storage backend %T does not implement storage.DCRCredentialStore", baseStore)
 	}
 
-	stor, err := decorateStorageForSPIFFE(ctx, cfg, stor)
+	stor, configuredReconciler, desiredConfiguredClients, err := setupConfiguredClients(ctx, cfg, stor)
 	if err != nil {
-		return nil, err
-	}
-
-	if err := registerDelegateClients(ctx, stor, cfg.DelegateClients); err != nil {
 		return nil, err
 	}
 
@@ -279,14 +282,113 @@ func newServer(ctx context.Context, cfg Config, stor storage.Storage) (_ *server
 		"issuer", cfg.Issuer,
 	)
 
-	return &server{
+	srv := &server{
 		handler:                router,
 		storage:                stor,
 		dcrStore:               dcrStore,
 		upstreams:              upstreams,
 		upstreamRefresher:      refresher,
 		trustedIssuerValidator: trustedIssuerValidator,
-	}, nil
+		configuredReconciler:   configuredReconciler,
+		configuredClients:      desiredConfiguredClients,
+	}
+	if configuredReconciler != nil {
+		srv.startConfiguredClientReconciliationLoop()
+	}
+	return srv, nil
+}
+
+// startConfiguredClientReconciliationLoop starts a background worker that
+// periodically re-runs ReconcileConfiguredClients with this replica's own
+// desired set on a ticker. Unlike a lease renewal, this is a full reconcile
+// every tick: a live replica re-asserts (writes) every client it wants and
+// sweeps away anything it doesn't, so a client removed from configuration
+// converges to pruned once every replica has been reconciled with (or
+// replaced by) the new configuration -- not just at startup. The worker
+// stops, and its done channel closes, once s.configuredCancel is called
+// (from Close).
+func (s *server) startConfiguredClientReconciliationLoop() {
+	renewCtx, cancel := context.WithCancel(context.Background())
+	s.configuredCancel = cancel
+	s.configuredDone = make(chan struct{})
+	done := s.configuredDone
+	go func() {
+		ticker := time.NewTicker(10 * time.Second)
+		defer ticker.Stop()
+		defer close(done)
+		for {
+			select {
+			case <-renewCtx.Done():
+				return
+			case <-ticker.C:
+				err := s.configuredReconciler.ReconcileConfiguredClients(renewCtx, s.configuredClients)
+				if err != nil {
+					slog.Warn("configured client reconciliation failed", "error", err)
+				}
+			}
+		}
+	}()
+}
+
+// setupConfiguredClients decorates storage for SPIFFE, then reconciles the
+// desired set of operator-configured (delegate) clients against durable
+// storage if the backend supports it, falling back to one-shot delegate
+// registration otherwise. It returns the (possibly wrapped) storage, the
+// reconciler the caller must use for the periodic reconciliation loop (nil if
+// the backend doesn't support reconciliation), and the desired client set the
+// loop must keep re-asserting on every tick.
+func setupConfiguredClients(ctx context.Context, cfg Config, stor storage.Storage) (
+	storage.Storage, storage.ConfiguredClientReconciler, []fosite.Client, error,
+) {
+	desiredClients, err := configuredClients(cfg)
+	if err != nil {
+		return nil, nil, nil, err
+	}
+	stor, err = decorateStorageForSPIFFE(ctx, cfg, stor)
+	if err != nil {
+		return nil, nil, nil, err
+	}
+
+	baseStore := storage.Unwrap(stor)
+	reconciler, ok := baseStore.(storage.ConfiguredClientReconciler)
+	if !ok {
+		if err := registerDelegateClients(ctx, stor, cfg.DelegateClients); err != nil {
+			return nil, nil, nil, err
+		}
+		return stor, nil, nil, nil
+	}
+
+	if err := reconciler.ReconcileConfiguredClients(ctx, desiredClients); err != nil {
+		return nil, nil, nil, fmt.Errorf("reconcile configured clients: %w", err)
+	}
+	return stor, reconciler, desiredClients, nil
+}
+
+// configuredClients builds the desired set of operator-declared clients for
+// ClientRegistry reconciliation. SPIFFE static clients are deliberately
+// excluded: they are durably claimed as inert placeholders by
+// decorateStorageForSPIFFE/preflightDurableCollisions, never as the real,
+// token-exchange-capable client this function would otherwise build via
+// registry.staticClients(). Reconciling the real client here would fight
+// that placeholder for the same row (mismatched fingerprint, since the
+// placeholder carries no grant types) and, if it ever won, would durably
+// persist a usable client where only an inert stand-in must ever exist.
+func configuredClients(cfg Config) ([]fosite.Client, error) {
+	clients := make([]fosite.Client, 0, len(cfg.DelegateClients))
+	for _, delegateClient := range cfg.DelegateClients {
+		client, err := registration.NewStaticDelegateClient(registration.Config{
+			ID:         delegateClient.ClientID,
+			Secret:     delegateClient.ClientSecret,
+			GrantTypes: []string{oauthproto.GrantTypeTokenExchange},
+			Scopes:     delegateClient.Scopes,
+			Audience:   delegateClient.Audiences,
+		})
+		if err != nil {
+			return nil, fmt.Errorf("failed to create delegate client %q: %w", delegateClient.ClientID, err)
+		}
+		clients = append(clients, client)
+	}
+	return clients, nil
 }
 
 func registerDelegateClients(ctx context.Context, stor storage.Storage, delegateClients []DelegateClient) error {
@@ -537,6 +639,10 @@ func (s *server) Close() error {
 	slog.Debug("closing OAuth authorization server")
 	s.CloseIdleConnections()
 	var errs []error
+	if s.configuredCancel != nil {
+		s.configuredCancel()
+		<-s.configuredDone
+	}
 	if s.trustedIssuerValidator != nil {
 		if err := s.trustedIssuerValidator.Close(); err != nil {
 			errs = append(errs, fmt.Errorf("failed to shut down trusted-issuer validator: %w", err))

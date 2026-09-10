@@ -23,6 +23,7 @@ import (
 	"errors"
 	"fmt"
 	"net/url"
+	"slices"
 	"sync"
 	"sync/atomic"
 	"testing"
@@ -380,7 +381,90 @@ func TestMemoryStorage_ReconcileConfiguredClient(t *testing.T) {
 	})
 }
 
-// TestMemoryStorage_UpsertDCRIssuedClient covers the create/replace/reject
+func TestMemoryStorage_ReconcileConfiguredClientsPrunesStaleRows(t *testing.T) {
+	t.Parallel()
+
+	ctx := t.Context()
+	s := NewMemoryStorage()
+	defer s.Close()
+
+	keep := &mockClient{id: "keep", scopes: []string{"openid"}, public: false}
+	stale := &mockClient{id: "stale", scopes: []string{"openid"}, public: false}
+	dcr := dcrClient(t, "dcr")
+	require.NoError(t, s.ReconcileConfiguredClient(ctx, keep))
+	require.NoError(t, s.ReconcileConfiguredClient(ctx, stale))
+	require.NoError(t, s.RegisterClient(ctx, dcr))
+
+	require.NoError(t, s.ReconcileConfiguredClients(ctx, []fosite.Client{keep}))
+	_, err := s.GetClient(ctx, "stale")
+	assert.ErrorIs(t, err, ErrNotFound)
+	_, err = s.GetClient(ctx, "keep")
+	require.NoError(t, err)
+	_, err = s.GetClient(ctx, "dcr")
+	require.NoError(t, err)
+}
+
+func TestMemoryStorage_ReconcileConfiguredClientsLeavesStateUnchangedOnCapacityFailure(t *testing.T) {
+	t.Parallel()
+
+	ctx := t.Context()
+	s := NewMemoryStorage(WithMaxClients(3))
+	defer s.Close()
+
+	keep := &mockClient{id: "keep", scopes: []string{"openid"}, public: false}
+	stale := &mockClient{id: "stale", scopes: []string{"openid"}, public: false}
+	legacy := &mockClient{id: "legacy", scopes: []string{"openid"}, public: false}
+	require.NoError(t, s.ReconcileConfiguredClients(ctx, []fosite.Client{keep, stale}))
+	require.NoError(t, s.RegisterClient(ctx, legacy))
+
+	s.mu.RLock()
+	beforeClients := make(map[string]fosite.Client, len(s.clients))
+	for id, client := range s.clients {
+		beforeClients[id] = client
+	}
+	beforeConfigured := make(map[string]struct{}, len(s.configuredClients))
+	for id := range s.configuredClients {
+		beforeConfigured[id] = struct{}{}
+	}
+	beforeOrder := slices.Clone(s.clientOrder)
+	s.mu.RUnlock()
+
+	// The desired set removes stale and adds two clients. The first addition can
+	// fit after pruning, but the second cannot because legacy is not evictable.
+	newOne := &mockClient{id: "new-one", scopes: []string{"openid"}, public: false}
+	newTwo := &mockClient{id: "new-two", scopes: []string{"openid"}, public: false}
+	err := s.ReconcileConfiguredClients(ctx, []fosite.Client{keep, newOne, newTwo})
+	require.ErrorIs(t, err, ErrClientCapacity)
+
+	s.mu.RLock()
+	assert.Equal(t, beforeClients, s.clients)
+	assert.Equal(t, beforeConfigured, s.configuredClients)
+	assert.Equal(t, beforeOrder, s.clientOrder)
+	s.mu.RUnlock()
+}
+
+func TestMemoryStorage_ReconcileConfiguredClientsReplacesOwnedClient(t *testing.T) {
+	t.Parallel()
+
+	ctx := t.Context()
+	s := NewMemoryStorage()
+	defer s.Close()
+
+	first := &mockClient{id: "configured", scopes: []string{"openid"}, public: false}
+	second := &mockClient{id: "configured", scopes: []string{"profile"}, public: false}
+	require.NoError(t, s.ReconcileConfiguredClient(ctx, first))
+	require.NoError(t, s.ReconcileConfiguredClients(ctx, []fosite.Client{second}))
+
+	retrieved, err := s.GetClient(ctx, "configured")
+	require.NoError(t, err)
+	assert.Equal(t, second, retrieved)
+
+	legacy := &mockClient{id: "legacy", public: false}
+	require.NoError(t, s.RegisterClient(ctx, legacy))
+	err = s.ReconcileConfiguredClients(ctx, []fosite.Client{&mockClient{id: "legacy", scopes: []string{"openid"}}})
+	require.ErrorIs(t, err, ErrAlreadyExists)
+}
+
 // matrix UpsertDCRIssuedClient must implement: create when absent, replace
 // (and renew the eviction position) when the existing record is itself
 // DCR-issued, refuse with ErrAlreadyExists when the existing record is NOT

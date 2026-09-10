@@ -83,6 +83,11 @@ type MemoryStorage struct {
 	// marker is needed here.
 	clients map[string]fosite.Client
 
+	// configuredClients records rows explicitly owned by operator configuration.
+	// It is separate from the client value so SPIFFE placeholder behavior is not
+	// altered by an ownership marker.
+	configuredClients map[string]struct{}
+
 	// clientOrder is the least-recently-proven-used order of clients: a
 	// registration starts at the back, and RenewClientTTL moves a DCR-issued
 	// client to the back again on proven use (a successful token
@@ -235,6 +240,7 @@ func WithMinClientAge(d time.Duration) MemoryStorageOption {
 func NewMemoryStorage(opts ...MemoryStorageOption) *MemoryStorage {
 	s := &MemoryStorage{
 		clients:               make(map[string]fosite.Client),
+		configuredClients:     make(map[string]struct{}),
 		authCodes:             make(map[string]*timedEntry[fosite.Requester]),
 		accessTokens:          make(map[string]*timedEntry[fosite.Requester]),
 		refreshTokens:         make(map[string]*timedEntry[fosite.Requester]),
@@ -505,6 +511,85 @@ func (s *MemoryStorage) UpsertDCRIssuedClient(_ context.Context, client fosite.C
 	s.clientOrder = slices.DeleteFunc(s.clientOrder, func(e clientOrderEntry) bool { return e.id == id })
 	s.clientOrder = append(s.clientOrder, clientOrderEntry{id: id, touchedAt: time.Now()})
 	s.clients[id] = client
+	delete(s.configuredClients, id)
+	return nil
+}
+
+// ReconcileConfiguredClients atomically applies the complete desired configured
+// client set and removes stale explicitly configured clients.
+func (s *MemoryStorage) ReconcileConfiguredClients(_ context.Context, clients []fosite.Client) error {
+	desired := make(map[string]fosite.Client, len(clients))
+	for _, client := range clients {
+		if client == nil {
+			return fmt.Errorf("configured client is required")
+		}
+		if registration.DCRIssued(client) {
+			return fmt.Errorf("configured client %q must not carry the DCR-issued marker", client.GetID())
+		}
+		if err := ValidateRegisterableClientID(client.GetID()); err != nil {
+			return err
+		}
+		if _, exists := desired[client.GetID()]; exists {
+			return fmt.Errorf("duplicate configured client %q", client.GetID())
+		}
+		desired[client.GetID()] = client
+	}
+
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	for id := range desired {
+		if existing, exists := s.clients[id]; exists {
+			_, configured := s.configuredClients[id]
+			if registration.DCRIssued(existing) || !configured {
+				return fmt.Errorf("%w: client %q is already registered", ErrAlreadyExists, id)
+			}
+		}
+	}
+	workingClients := make(map[string]fosite.Client, len(s.clients))
+	for id, client := range s.clients {
+		workingClients[id] = client
+	}
+	workingConfigured := make(map[string]struct{}, len(s.configuredClients))
+	for id := range s.configuredClients {
+		workingConfigured[id] = struct{}{}
+	}
+	working := &MemoryStorage{
+		clients:           workingClients,
+		configuredClients: workingConfigured,
+		clientOrder:       slices.Clone(s.clientOrder),
+		maxClients:        s.maxClients,
+		minClientAge:      s.minClientAge,
+	}
+	if err := applyConfiguredClientsLocked(working, desired); err != nil {
+		return err
+	}
+
+	s.clients = working.clients
+	s.configuredClients = working.configuredClients
+	s.clientOrder = working.clientOrder
+	return nil
+}
+
+// applyConfiguredClientsLocked applies a desired set to isolated working state.
+// The caller owns the live-state lock; working must not be shared with callers.
+func applyConfiguredClientsLocked(working *MemoryStorage, desired map[string]fosite.Client) error {
+	for id := range working.configuredClients {
+		if _, keep := desired[id]; !keep {
+			delete(working.clients, id)
+			delete(working.configuredClients, id)
+		}
+	}
+	for id, client := range desired {
+		if _, exists := working.clients[id]; exists {
+			working.clientOrder = slices.DeleteFunc(working.clientOrder, func(e clientOrderEntry) bool { return e.id == id })
+		} else if err := working.insertClientLocked(id, client); err != nil {
+			return err
+		}
+		working.clients[id] = client
+		working.configuredClients[id] = struct{}{}
+		working.clientOrder = slices.DeleteFunc(working.clientOrder, func(e clientOrderEntry) bool { return e.id == id })
+		working.clientOrder = append(working.clientOrder, clientOrderEntry{id: id, touchedAt: time.Now()})
+	}
 	return nil
 }
 
@@ -527,7 +612,11 @@ func (s *MemoryStorage) ReconcileConfiguredClient(_ context.Context, client fosi
 
 	existing, exists := s.clients[id]
 	if !exists {
-		return s.insertClientLocked(id, client)
+		if err := s.insertClientLocked(id, client); err != nil {
+			return err
+		}
+		s.configuredClients[id] = struct{}{}
+		return nil
 	}
 	if registration.DCRIssued(existing) {
 		return fmt.Errorf("%w: client %q is DCR-issued, refusing to overwrite with a configured client",
@@ -543,6 +632,7 @@ func (s *MemoryStorage) ReconcileConfiguredClient(_ context.Context, client fosi
 	s.clientOrder = slices.DeleteFunc(s.clientOrder, func(e clientOrderEntry) bool { return e.id == id })
 	s.clientOrder = append(s.clientOrder, clientOrderEntry{id: id, touchedAt: time.Now()})
 	s.clients[id] = client
+	s.configuredClients[id] = struct{}{}
 	return nil
 }
 
@@ -556,6 +646,7 @@ func (s *MemoryStorage) insertClientLocked(id string, client fosite.Client) erro
 			victim := s.clientOrder[idx].id
 			s.clientOrder = append(s.clientOrder[:idx], s.clientOrder[idx+1:]...)
 			delete(s.clients, victim)
+			delete(s.configuredClients, victim)
 			slog.Debug("evicted oldest DCR-issued client registration at capacity",
 				"client_id", victim, "max_clients", s.maxClients)
 		} else {

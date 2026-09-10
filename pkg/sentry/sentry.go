@@ -14,7 +14,6 @@ import (
 	"github.com/getsentry/sentry-go"
 	sentryotel "github.com/getsentry/sentry-go/otel"
 
-	"github.com/stacklok/toolhive/pkg/telemetry"
 	"github.com/stacklok/toolhive/pkg/updates"
 	"github.com/stacklok/toolhive/pkg/versions"
 )
@@ -56,6 +55,9 @@ func Init(cfg Config) error {
 		EnableTracing:    true,
 		AttachStacktrace: true,
 		SendDefaultPII:   false,
+		Integrations: func(integrations []sentry.Integration) []sentry.Integration {
+			return append(integrations, sentryotel.NewOtelIntegration())
+		},
 	})
 	if err != nil {
 		return fmt.Errorf("sentry init: %w", err)
@@ -75,12 +77,6 @@ func Init(cfg Config) error {
 		})
 		slog.Debug("sentry anonymous instance ID tagged", "id", id)
 	}
-
-	// Self-register the Sentry span processor with the global OTEL registry so
-	// that any telemetry.NewProvider call automatically includes it. This decouples
-	// the OTEL provider setup from Sentry-specific code.
-	telemetry.RegisterSpanProcessor(sentryotel.NewSentrySpanProcessor())
-	slog.Debug("sentry span processor registered with OTEL registry")
 
 	return nil
 }
@@ -107,8 +103,9 @@ func Enabled() bool {
 //
 // The API server's error handler calls this alongside span.RecordError so that
 // 5xx errors appear as both OTEL span errors (distributed tracing) and
-// standalone Sentry Issues (error tracking). The Sentry span processor only
-// creates transactions; explicit hub calls are required for Issues.
+// standalone Sentry Issues (error tracking). The Sentry OTEL integration links
+// those issues to the active OTEL trace; explicit hub calls are required to
+// create Issues.
 func CaptureException(r *http.Request, err error) {
 	if !initialized.Load() || err == nil {
 		return

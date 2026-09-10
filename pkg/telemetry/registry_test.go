@@ -214,3 +214,67 @@ func TestMergeRegisteredResourceAttributes(t *testing.T) {
 		})
 	}
 }
+
+// TestRegisterSamplingRate_Overwrites covers the one behaviour
+// TestApplyProcessorOnlySampling does not: a repeated registration replaces the
+// previous rate. The unset default and an explicit zero are asserted there.
+//
+//nolint:paralleltest // mutates global registry state
+func TestRegisterSamplingRate_Overwrites(t *testing.T) {
+	ResetSpanProcessorsForTesting()
+	t.Cleanup(ResetSpanProcessorsForTesting)
+
+	RegisterSamplingRate(0.5)
+	RegisterSamplingRate(0.01)
+	assert.InDelta(t, 0.01, RegisteredSamplingRate(), 1e-9)
+}
+
+// TestApplyProcessorOnlySampling verifies that a rate registered by an
+// integration replaces the hardcoded 100% sampling that processor-only mode
+// used to apply unconditionally.
+//
+//nolint:paralleltest // mutates global registry state
+func TestApplyProcessorOnlySampling(t *testing.T) {
+	tests := []struct {
+		name         string
+		register     bool
+		registerRate float64
+		wantRate     float64
+	}{
+		{
+			name:     "samples everything when the integration registered no rate",
+			wantRate: 1.0,
+		},
+		{
+			name:         "honours a low registered rate",
+			register:     true,
+			registerRate: 0.01,
+			wantRate:     0.01,
+		},
+		{
+			name:     "honours a registered zero rate",
+			register: true,
+			wantRate: 0,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			ResetSpanProcessorsForTesting()
+			t.Cleanup(ResetSpanProcessorsForTesting)
+			if tt.register {
+				RegisterSamplingRate(tt.registerRate)
+			}
+
+			// Start from the 5% default NewServeProvider applies beforehand, to
+			// prove the registered rate overrides it.
+			cfg := Config{SamplingRate: "0.05"}
+			applyProcessorOnlySampling(&cfg)
+
+			assert.True(t, cfg.TracingEnabled,
+				"registered processors are the only consumers, so tracing must be forced on")
+			// Assert on the parsed value handed to the sampler, not its string form.
+			assert.InDelta(t, tt.wantRate, cfg.GetSamplingRateFloat(), 1e-9)
+		})
+	}
+}

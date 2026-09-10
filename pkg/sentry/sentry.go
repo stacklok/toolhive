@@ -131,10 +131,10 @@ func Init(cfg Config) error {
 // registry) would register a second processor and double-export every span while
 // leaking the first exporter's goroutine.
 //
-// Caching means a second Init keeps the first call's DSN and sample rate. thv
-// serve calls Init exactly once per process, and the registry already only
-// feeds processors to providers created after registration, so re-initialising
-// with different values is not supported either way.
+// Caching means a second Init keeps the first call's DSN. thv serve calls Init
+// exactly once per process, and the registry already only feeds processors to
+// providers created after registration, so re-initialising is not supported
+// either way.
 func registerTraceExporter(cfg Config) error {
 	spanProcessorMu.Lock()
 	defer spanProcessorMu.Unlock()
@@ -144,13 +144,14 @@ func registerTraceExporter(cfg Config) error {
 		if err != nil {
 			return fmt.Errorf("create Sentry trace exporter: %w", err)
 		}
-		spanProcessor = newSamplingSpanProcessor(
-			sdktrace.NewBatchSpanProcessor(exporter),
-			cfg.TracesSampleRate,
-		)
+		spanProcessor = sdktrace.NewBatchSpanProcessor(exporter)
 	}
 
 	telemetry.RegisterSpanProcessor(spanProcessor)
+	// Spans no longer pass through the Sentry client, so TracesSampleRate has to
+	// reach the OTEL sampler or --sentry-traces-sample-rate would be ignored and
+	// every span would be exported.
+	telemetry.RegisterSamplingRate(cfg.TracesSampleRate)
 	slog.Debug("sentry trace exporter registered with OTEL registry",
 		"traces_sample_rate", cfg.TracesSampleRate)
 	return nil

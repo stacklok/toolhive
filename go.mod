@@ -23,7 +23,7 @@ require (
 	github.com/coreos/go-oidc/v3 v3.21.0
 	github.com/evanphx/json-patch/v5 v5.9.11
 	github.com/getsentry/sentry-go v0.49.0
-	github.com/getsentry/sentry-go/otel v0.44.1
+	github.com/getsentry/sentry-go/otel v0.49.0
 	github.com/github/smimesign v0.2.0
 	github.com/go-chi/chi/v5 v5.3.2
 	github.com/go-git/go-billy/v5 v5.9.1

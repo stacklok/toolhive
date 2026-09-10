@@ -91,6 +91,24 @@ func TestInit_RegistersExactlyOneSpanProcessor(t *testing.T) {
 }
 
 //nolint:paralleltest // mutates global initialized and telemetry registry state
+func TestInit_RegistersSamplingRate(t *testing.T) {
+	// Regression test: spans are exported straight to Sentry's OTLP endpoint and
+	// no longer pass through the Sentry client's sampler, so the rate has to
+	// reach the OTEL sampler or --sentry-traces-sample-rate is silently ignored
+	// and every span is exported.
+	resetSentryForTest(t)
+
+	require.NoError(t, Init(Config{
+		DSN:              "https://examplePublicKey@o0.ingest.sentry.io/0",
+		Environment:      "test",
+		TracesSampleRate: 0.01,
+	}))
+
+	assert.InDelta(t, 0.01, telemetry.RegisteredSamplingRate(), 1e-9,
+		"--sentry-traces-sample-rate must reach the OTEL sampler")
+}
+
+//nolint:paralleltest // mutates global initialized and telemetry registry state
 func TestInit_RegistersResourceAttributes(t *testing.T) {
 	// Regression test: spans are exported straight to Sentry's OTLP endpoint
 	// and never pass through the Sentry client, so without these resource

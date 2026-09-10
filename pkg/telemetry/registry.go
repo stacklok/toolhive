@@ -10,9 +10,15 @@ import (
 	sdktrace "go.opentelemetry.io/otel/sdk/trace"
 )
 
+// DefaultRegisteredSamplingRate is the rate used when a registered integration
+// did not specify one, preserving the "sample everything" behaviour that
+// processor-only mode had before rates were configurable.
+const DefaultRegisteredSamplingRate = 1.0
+
 var (
 	globalProcessors    []sdktrace.SpanProcessor
 	globalResourceAttrs map[string]string
+	globalSamplingRate  *float64
 	globalProcessorsMu  sync.Mutex
 )
 
@@ -64,6 +70,32 @@ func RegisterResourceAttributes(attrs map[string]string) {
 	maps.Copy(globalResourceAttrs, attrs)
 }
 
+// RegisterSamplingRate records the trace sampling rate an integration wants
+// applied to the spans it receives. In processor-only mode (no OTLP endpoint)
+// NewServeProvider hands this to the SDK sampler, so unsampled spans are never
+// constructed at all.
+//
+// The SDK sampler is shared by the whole provider, so this rate is not
+// per-processor: when an OTLP endpoint is also configured its own sampling rate
+// wins and this value is ignored. Repeated registrations overwrite the previous
+// value; only one integration is expected to register a rate.
+func RegisterSamplingRate(rate float64) {
+	globalProcessorsMu.Lock()
+	defer globalProcessorsMu.Unlock()
+	globalSamplingRate = &rate
+}
+
+// RegisteredSamplingRate returns the rate registered via RegisterSamplingRate,
+// or DefaultRegisteredSamplingRate when no integration registered one.
+func RegisteredSamplingRate() float64 {
+	globalProcessorsMu.Lock()
+	defer globalProcessorsMu.Unlock()
+	if globalSamplingRate == nil {
+		return DefaultRegisteredSamplingRate
+	}
+	return *globalSamplingRate
+}
+
 // HasRegisteredSpanProcessors returns true if any extra span processors have
 // been registered. Callers can use this to decide whether to initialise an
 // OTEL provider even when no OTLP endpoint is configured.
@@ -90,13 +122,14 @@ func RegisteredResourceAttributes() map[string]string {
 	return maps.Clone(globalResourceAttrs)
 }
 
-// ResetSpanProcessorsForTesting clears all registered span processors and
-// resource attributes. For use in tests only.
+// ResetSpanProcessorsForTesting clears all registered span processors, resource
+// attributes and the sampling rate. For use in tests only.
 func ResetSpanProcessorsForTesting() {
 	globalProcessorsMu.Lock()
 	defer globalProcessorsMu.Unlock()
 	globalProcessors = nil
 	globalResourceAttrs = nil
+	globalSamplingRate = nil
 }
 
 // registeredSpanProcessors returns a snapshot of all registered processors.

@@ -52,21 +52,8 @@ func NewServeProvider(ctx context.Context) (provider *Provider, otelEnabled bool
 		telemetryCfg.SamplingRate = "0.05"
 	}
 
-	// No OTLP endpoint but registered processors are active (e.g. a Sentry bridge).
-	// Force tracing on with 100% OTEL sampling so every span reaches the processors.
-	// Because the SDK sampler is global and shared by every backend, it cannot
-	// express a per-backend rate; each registered processor is therefore
-	// responsible for applying its own sampling before exporting (see
-	// pkg/sentry.newSamplingSpanProcessor). A processor that does not will
-	// receive — and export — every span.
-	// Note: at high RPS with 100% OTEL sampling, the OTEL SDK still constructs
-	// every span even if the processor's own rate drops most of them. This is an
-	// acceptable trade-off for Sentry-only mode where an external collector is
-	// not running. Configure thv config otel set-endpoint to use a real sampler
-	// when throughput is a concern.
 	if otelCfg.Endpoint == "" && hasRegisteredProcessors {
-		telemetryCfg.TracingEnabled = true
-		telemetryCfg.SamplingRate = "1.0"
+		applyProcessorOnlySampling(&telemetryCfg)
 	}
 
 	p, err := NewProvider(ctx, telemetryCfg)
@@ -80,6 +67,17 @@ func NewServeProvider(ctx context.Context) (provider *Provider, otelEnabled bool
 		"metrics", telemetryCfg.MetricsEnabled)
 
 	return p, true, nil
+}
+
+// applyProcessorOnlySampling configures tracing for the case where no OTLP
+// endpoint is set but registered processors are active (e.g. a Sentry bridge).
+// Tracing has to be forced on because the registered processors are the only
+// consumers, and the SDK sampler is given their requested rate directly so that
+// unsampled spans are never constructed. A processor that registered no rate
+// gets DefaultRegisteredSamplingRate.
+func applyProcessorOnlySampling(cfg *Config) {
+	cfg.TracingEnabled = true
+	cfg.SetSamplingRateFromFloat(RegisteredSamplingRate())
 }
 
 // handleUnusedEndpoint enables tracing by default when an OTLP endpoint is

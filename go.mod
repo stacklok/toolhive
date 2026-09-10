@@ -80,6 +80,8 @@ require (
 
 require github.com/getsentry/sentry-go/otel v0.49.0
 
+require github.com/getsentry/sentry-go/otel/otlp v0.49.0
+
 require github.com/hashicorp/golang-lru/v2 v2.0.7
 
 require (

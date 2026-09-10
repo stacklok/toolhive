@@ -232,6 +232,8 @@ github.com/getsentry/sentry-go v0.49.0 h1:Ehejknu1l023Ub7QoRBVLAI7g3Jnhqku4oWx4B
 github.com/getsentry/sentry-go v0.49.0/go.mod h1:nuMJAoCfe1u0Bts2ocyNI+TW8HT84vRMqwA5Qq/SKUI=
 github.com/getsentry/sentry-go/otel v0.49.0 h1:BRMzf4PqYEGsgxNS8BMX54I0DYVcBWbCtQ1s+aS67n0=
 github.com/getsentry/sentry-go/otel v0.49.0/go.mod h1:FVrBdl+7ofh9neiuGLYtaGwEIv8fsW8LmV62pYMIrKk=
+github.com/getsentry/sentry-go/otel/otlp v0.49.0 h1:gZgeRBzBQ2utfwno7MqSGXXRLdxX+48pBjp1WDAcb00=
+github.com/getsentry/sentry-go/otel/otlp v0.49.0/go.mod h1:xq+r0C0F5T6JZwNOud7168JZLXXfPJ6jT0Y0vkrhAds=
 github.com/github/smimesign v0.2.0 h1:Hho4YcX5N1I9XNqhq0fNx0Sts8MhLonHd+HRXVGNjvk=
 github.com/github/smimesign v0.2.0/go.mod h1:iZiiwNT4HbtGRVqCQu7uJPEZCuEE5sfSSttcnePkDl4=
 github.com/gkampitakis/ciinfo v0.3.2 h1:JcuOPk8ZU7nZQjdUhctuhQofk7BGHuIy0c9Ez8BNhXs=

@@ -358,6 +358,9 @@ func Serve(ctx context.Context, cfg ServeConfig) error {
 		sessionFactoryOpts,
 		vmcpsession.WithRequestTimeoutResolver(backendRequestTimeoutResolver(vmcpCfg)),
 	)
+	if filter := listChangedFilter(vmcpCfg); filter != nil {
+		sessionFactoryOpts = append(sessionFactoryOpts, vmcpsession.WithListChangedFilter(filter))
+	}
 	sessionFactory := vmcpsession.NewSessionFactory(outgoingRegistry, sessionFactoryOpts...)
 
 	// When the optimizer is enabled, its meta-tools are pass-through tools.
@@ -542,6 +545,30 @@ func backendRequestTimeoutResolver(cfg *config.Config) func(workloadID string) t
 			return time.Duration(timeout)
 		}
 		return time.Duration(timeouts.Default)
+	}
+}
+
+// listChangedFilter builds the per-backend list_changed predicate from cfg, or
+// returns nil when the config asks for the default (subscribe to everything) so
+// the factory keeps its own behaviour.
+func listChangedFilter(cfg *config.Config) func(workloadID string) bool {
+	if cfg == nil || cfg.Operational == nil || cfg.Operational.ListChanged == nil {
+		return nil
+	}
+	lc := cfg.Operational.ListChanged
+	if lc.Enabled != nil && !*lc.Enabled {
+		return func(string) bool { return false }
+	}
+	if len(lc.DisabledWorkloads) == 0 {
+		return nil
+	}
+	disabled := make(map[string]struct{}, len(lc.DisabledWorkloads))
+	for _, id := range lc.DisabledWorkloads {
+		disabled[id] = struct{}{}
+	}
+	return func(workloadID string) bool {
+		_, off := disabled[workloadID]
+		return !off
 	}
 }
 

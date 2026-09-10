@@ -3125,6 +3125,22 @@ spec:
                               failures before marking unhealthy.
                             type: integer
                         type: object
+                      listChanged:
+                        description: ListChanged configures live list_changed propagation
+                          from backends.
+                        properties:
+                          disabledWorkloads:
+                            description: |-
+                              DisabledWorkloads names backends to exclude while leaving the rest
+                              subscribed. Prefer this over Enabled when a single backend misbehaves.
+                            items:
+                              type: string
+                            type: array
+                          enabled:
+                            description: Enabled turns propagation on or off for every
+                              backend. Defaults to true.
+                            type: boolean
+                        type: object
                       logLevel:
                         description: |-
                           LogLevel sets the logging level for the Virtual MCP server.
@@ -8087,6 +8103,22 @@ spec:
                             description: UnhealthyThreshold is the number of consecutive
                               failures before marking unhealthy.
                             type: integer
+                        type: object
+                      listChanged:
+                        description: ListChanged configures live list_changed propagation
+                          from backends.
+                        properties:
+                          disabledWorkloads:
+                            description: |-
+                              DisabledWorkloads names backends to exclude while leaving the rest
+                              subscribed. Prefer this over Enabled when a single backend misbehaves.
+                            items:
+                              type: string
+                            type: array
+                          enabled:
+                            description: Enabled turns propagation on or off for every
+                              backend. Defaults to true.
+                            type: boolean
                         type: object
                       logLevel:
                         description: |-

@@ -24,6 +24,74 @@ import (
 	vmcpmocks "github.com/stacklok/toolhive/pkg/vmcp/mocks"
 )
 
+func TestListChangedFilter(t *testing.T) {
+	t.Parallel()
+
+	enabled, disabled := true, false
+
+	tests := []struct {
+		name      string
+		cfg       *config.Config
+		wantNil   bool
+		wantAllow map[string]bool
+	}{
+		{name: "nil config keeps the factory default", cfg: nil, wantNil: true},
+		{name: "no operational config keeps the default", cfg: &config.Config{}, wantNil: true},
+		{
+			name:    "no listChanged block keeps the default",
+			cfg:     &config.Config{Operational: &config.OperationalConfig{}},
+			wantNil: true,
+		},
+		{
+			name: "enabled true with no exclusions keeps the default",
+			cfg: &config.Config{Operational: &config.OperationalConfig{
+				ListChanged: &config.ListChangedConfig{Enabled: &enabled},
+			}},
+			wantNil: true,
+		},
+		{
+			name: "enabled false excludes every backend",
+			cfg: &config.Config{Operational: &config.OperationalConfig{
+				ListChanged: &config.ListChangedConfig{Enabled: &disabled},
+			}},
+			wantAllow: map[string]bool{"anything": false},
+		},
+		{
+			name: "disabledWorkloads excludes only those named",
+			cfg: &config.Config{Operational: &config.OperationalConfig{
+				ListChanged: &config.ListChangedConfig{DisabledWorkloads: []string{"grafana"}},
+			}},
+			wantAllow: map[string]bool{"grafana": false, "github": true},
+		},
+		{
+			name: "enabled false wins over an exclusion list",
+			cfg: &config.Config{Operational: &config.OperationalConfig{
+				ListChanged: &config.ListChangedConfig{
+					Enabled:           &disabled,
+					DisabledWorkloads: []string{"grafana"},
+				},
+			}},
+			wantAllow: map[string]bool{"grafana": false, "github": false},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			filter := listChangedFilter(tt.cfg)
+			if tt.wantNil {
+				assert.Nil(t, filter)
+				return
+			}
+			require.NotNil(t, filter)
+			for id, want := range tt.wantAllow {
+				assert.Equal(t, want, filter(id), "workload %q", id)
+			}
+		})
+	}
+}
+
 func TestBackendRequestTimeoutResolver(t *testing.T) {
 	t.Parallel()
 

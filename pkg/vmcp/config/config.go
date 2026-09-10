@@ -701,6 +701,32 @@ type OperationalConfig struct {
 	// FailureHandling configures failure handling behavior.
 	// +optional
 	FailureHandling *FailureHandlingConfig `json:"failureHandling,omitempty" yaml:"failureHandling,omitempty"`
+
+	// ListChanged configures live list_changed propagation from backends.
+	// +optional
+	ListChanged *ListChangedConfig `json:"listChanged,omitempty" yaml:"listChanged,omitempty"`
+}
+
+// ListChangedConfig configures which backends vMCP subscribes to for
+// list_changed notifications.
+//
+// Subscribing opens a standalone notification stream to the backend during
+// session initialization. A backend that accepts that subscribe and then never
+// services it stalls the handshake until the init deadline, and clients with
+// their own connect timeout give up first. Excluding such a backend costs it
+// live propagation only: its tools are still aggregated and callable, and they
+// refresh on the next session.
+// +kubebuilder:object:generate=true
+// +gendoc
+type ListChangedConfig struct {
+	// Enabled turns propagation on or off for every backend. Defaults to true.
+	// +optional
+	Enabled *bool `json:"enabled,omitempty" yaml:"enabled,omitempty"`
+
+	// DisabledWorkloads names backends to exclude while leaving the rest
+	// subscribed. Prefer this over Enabled when a single backend misbehaves.
+	// +optional
+	DisabledWorkloads []string `json:"disabledWorkloads,omitempty" yaml:"disabledWorkloads,omitempty"`
 }
 
 // TimeoutConfig configures timeout settings.

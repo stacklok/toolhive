@@ -154,6 +154,7 @@ type defaultMultiSessionFactory struct {
 	backendInitTimeout     time.Duration
 	revisionLookup         func(workloadID string) (mcpparser.Revision, bool)
 	requestTimeoutResolver func(workloadID string) time.Duration
+	listChangedAllowed     func(workloadID string) bool
 	dialControl            func(network, address string, c syscall.RawConn) error
 }
 
@@ -193,6 +194,30 @@ func WithRequestTimeoutResolver(resolver func(workloadID string) time.Duration) 
 	return func(f *defaultMultiSessionFactory) {
 		if resolver != nil {
 			f.requestTimeoutResolver = resolver
+		}
+	}
+}
+
+// WithListChangedFilter decides, per backend, whether this factory subscribes
+// to that backend's list_changed notifications. Returning false drops the sink
+// for that backend only, which is what stops the connector opening a standalone
+// notification stream against it.
+//
+// The point is to make session init independent of a stream some backends never
+// service. The connector already treats a nil sink as "do not subscribe", but
+// the server supplies a sink for every session, so that path was unreachable in
+// production: a backend that accepts the subscribe and then never answers it
+// stalls the handshake for the whole init allowance, and clients with their own
+// connect timeout give up first. Excluding such a backend costs it live
+// list_changed propagation and nothing else; its tools are still aggregated and
+// callable, and it refreshes on the next session.
+//
+// A nil filter, the default, subscribes to every backend exactly as before.
+// The filter may be called concurrently and must be safe for concurrent use.
+func WithListChangedFilter(allowed func(workloadID string) bool) MultiSessionFactoryOption {
+	return func(f *defaultMultiSessionFactory) {
+		if allowed != nil {
+			f.listChangedAllowed = allowed
 		}
 	}
 }
@@ -358,6 +383,17 @@ func (f *defaultMultiSessionFactory) initOneBackend(
 	bCtx, cancel := context.WithTimeout(ctx, initTimeout)
 	defer cancel()
 
+	// Dropping the sink here is what keeps a backend that never services the
+	// subscribe from stalling this handshake: the connector only opens the
+	// standalone notification stream when it has a sink to feed.
+	if sink != nil && !f.listChangedEnabled(target.WorkloadID) {
+		slog.Debug("Backend excluded from list_changed propagation; not subscribing",
+			"backendID", b.ID,
+			"backendName", b.Name,
+		)
+		sink = nil
+	}
+
 	conn, caps, err := f.connector(bCtx, target, identity, sessionHint, sink)
 	if err != nil {
 		if conn != nil {
@@ -399,6 +435,15 @@ func (f *defaultMultiSessionFactory) initOneBackend(
 // isKnownModern reports whether workloadID's cached revision is confirmed
 // Modern. Returns false for an unprobed backend or when no lookup is
 // configured — indistinguishable from "attempt the connect" in either case.
+// listChangedEnabled reports whether workloadID should be subscribed to. No
+// filter means subscribe, preserving the historical behaviour.
+func (f *defaultMultiSessionFactory) listChangedEnabled(workloadID string) bool {
+	if f.listChangedAllowed == nil {
+		return true
+	}
+	return f.listChangedAllowed(workloadID)
+}
+
 func (f *defaultMultiSessionFactory) isKnownModern(workloadID string) bool {
 	if f.revisionLookup == nil {
 		return false

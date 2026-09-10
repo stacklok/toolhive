@@ -30,6 +30,7 @@ import (
 	"github.com/spiffe/go-spiffe/v2/bundle/x509bundle"
 
 	servercrypto "github.com/stacklok/toolhive/pkg/authserver/server/crypto"
+	"github.com/stacklok/toolhive/pkg/authserver/server/keys"
 	"github.com/stacklok/toolhive/pkg/authserver/server/registration"
 	"github.com/stacklok/toolhive/pkg/networking"
 )
@@ -156,6 +157,13 @@ type AuthorizationServerParams struct {
 	SigningKeyID         string
 	SigningKeyAlgorithm  string
 	SigningKey           crypto.Signer
+	// AdditionalPublicKeys are published in the JWKS alongside the primary
+	// signing key, in public form only, so that tokens signed with a
+	// previous key remain verifiable during rotation. Typically sourced from
+	// keys.KeyProvider.PublicKeys(ctx), which includes the primary signing
+	// key itself; the entry matching SigningKeyID is skipped to avoid
+	// publishing it twice.
+	AdditionalPublicKeys []*keys.PublicKeyData
 	// AllowedAudiences is the list of valid resource URIs that tokens can be issued for.
 	// Per RFC 8707, the "resource" parameter in token requests is validated against this list.
 	// Security: An empty list means NO audiences are permitted (secure default).
@@ -395,6 +403,24 @@ func NewAuthorizationServerConfig(cfg *AuthorizationServerParams) (*Authorizatio
 		Use:       "sig",
 	}
 
+	// The JWKS published at /.well-known/jwks.json must include every
+	// fallback key still in rotation, not just the primary signing key,
+	// or the documented key-rotation procedure never opens its overlap
+	// window (#6451). The primary key is listed first; any additional
+	// key matching its KeyID is skipped to avoid publishing it twice.
+	signingJWKS := &jose.JSONWebKeySet{Keys: []jose.JSONWebKey{jwk}}
+	for _, pubKey := range cfg.AdditionalPublicKeys {
+		if pubKey.KeyID == cfg.SigningKeyID {
+			continue
+		}
+		signingJWKS.Keys = append(signingJWKS.Keys, jose.JSONWebKey{
+			Key:       pubKey.PublicKey,
+			KeyID:     pubKey.KeyID,
+			Algorithm: pubKey.Algorithm,
+			Use:       "sig",
+		})
+	}
+
 	fositeConfig := &fosite.Config{
 		AccessTokenIssuer:              cfg.Issuer,
 		AccessTokenLifespan:            cfg.AccessTokenLifespan,
@@ -419,18 +445,18 @@ func NewAuthorizationServerConfig(cfg *AuthorizationServerParams) (*Authorizatio
 	}
 
 	return &AuthorizationServerConfig{
-		Config:                              fositeConfig,
-		SigningKey:                          &jwk,
-		SigningJWKS:                         &jose.JSONWebKeySet{Keys: []jose.JSONWebKey{jwk}},
-		AllowedAudiences:                    cfg.AllowedAudiences,
-		ScopesSupported:                     cfg.ScopesSupported,
-		BaselineClientScopes:                cfg.BaselineClientScopes,
-		AuthorizationEndpointBaseURL:        cfg.AuthorizationEndpointBaseURL,
-		CIMDEnabled:                         cfg.CIMDEnabled,
-		AllowConfidentialClientRegistration: cfg.AllowConfidentialClientRegistration,
-		AllowPrivateKeyJWTRegistration:      cfg.AllowPrivateKeyJWTRegistration,
-		HasStaticDelegateClients:            cfg.HasStaticDelegateClients,
-		InsecureAllowHTTP:                   cfg.InsecureAllowHTTP,
+		Config:                                    fositeConfig,
+		SigningKey:                                &jwk,
+		SigningJWKS:                               signingJWKS,
+		AllowedAudiences:                          cfg.AllowedAudiences,
+		ScopesSupported:                           cfg.ScopesSupported,
+		BaselineClientScopes:                      cfg.BaselineClientScopes,
+		AuthorizationEndpointBaseURL:              cfg.AuthorizationEndpointBaseURL,
+		CIMDEnabled:                               cfg.CIMDEnabled,
+		AllowConfidentialClientRegistration:       cfg.AllowConfidentialClientRegistration,
+		AllowPrivateKeyJWTRegistration:            cfg.AllowPrivateKeyJWTRegistration,
+		HasStaticDelegateClients:                  cfg.HasStaticDelegateClients,
+		InsecureAllowHTTP:                         cfg.InsecureAllowHTTP,
 		InsecureAllowConfidentialOverLoopbackHTTP: cfg.InsecureAllowConfidentialOverLoopbackHTTP,
 		ForceConfidentialRedirectURIs:             cfg.ForceConfidentialRedirectURIs,
 		TokenExchangeEnabled:                      !cfg.DisableTokenExchange,

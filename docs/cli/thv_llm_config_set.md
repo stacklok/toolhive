@@ -35,6 +35,7 @@ thv llm config set [flags]
       --callback-port int    OIDC callback port (omit to keep current; default: ephemeral)
       --client-id string     OIDC client ID
       --enable-1m            With Bedrock compat, opt into the 1M context window by appending [1m] to opus/sonnet model IDs.
+      --extended-ttl-cache   Persist the one-hour prompt-cache lifetime for clients that support it. Applied by "thv llm setup". Use --extended-ttl-cache=false to clear.
       --gateway-url string   LLM gateway base URL (must use HTTPS)
   -h, --help                 help for set
       --issuer string        OIDC issuer URL

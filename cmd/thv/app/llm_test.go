@@ -7,6 +7,7 @@ import (
 	"bytes"
 	"context"
 	"errors"
+	"fmt"
 	"os"
 	"path/filepath"
 	"runtime"
@@ -46,6 +47,28 @@ func llmProvider(t *testing.T, llmCfg llm.Config) config.Provider {
 // noopLogin is a LoginFunc that always succeeds without touching the keyring.
 // Use it in tests that don't exercise the authentication path.
 var noopLogin llm.LoginFunc = func(context.Context, *llm.Config) error { return nil }
+
+func TestConfigSetCommand_ExtendedTTLCacheFlagWiring(t *testing.T) {
+	t.Parallel()
+
+	for _, enabled := range []bool{true, false} {
+		t.Run(fmt.Sprintf("enabled=%t", enabled), func(t *testing.T) {
+			t.Parallel()
+			cmd := newConfigSetCommand()
+			flag := cmd.Flags().Lookup("extended-ttl-cache")
+			require.NotNil(t, flag)
+			require.NoError(t, cmd.Flags().Set("extended-ttl-cache", fmt.Sprintf("%t", enabled)))
+
+			parsed, err := cmd.Flags().GetBool("extended-ttl-cache")
+			require.NoError(t, err)
+			var opts llm.SetOptions
+			applyChangedLLMFlags(cmd, &opts, false, parsed, false, false, nil)
+
+			require.NotNil(t, opts.ExtendedTTLCache)
+			assert.Equal(t, enabled, *opts.ExtendedTTLCache)
+		})
+	}
+}
 
 // errOnUpdateProvider wraps a base Provider but returns a fixed error from
 // UpdateConfig. Used to inject deterministic failures without relying on

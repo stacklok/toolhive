@@ -7,6 +7,7 @@ import (
 	"context"
 	"net/http"
 	"net/url"
+	"slices"
 
 	"github.com/ory/fosite"
 
@@ -37,7 +38,10 @@ func newSPIFFEClientAuthenticationStrategy(
 			return defaultStrategy(ctx, r, form)
 		}
 		// An explicit assertion type takes precedence over an ambient mTLS identity.
-		if form.Get("client_assertion_type") == spiffeauth.SPIFFEJWTAssertionType {
+		// A repeated form key must be checked in full: form.Get would only see the
+		// first value, letting a SPIFFE assertion type hidden behind an earlier
+		// value slip through to the default strategy.
+		if slices.Contains(form["client_assertion_type"], spiffeauth.SPIFFEJWTAssertionType) {
 			return nil, fosite.ErrInvalidClient.WithHint("SPIFFE JWT client authentication is not implemented")
 		}
 		if _, ok := spiffeauth.SPIFFEIDFromContext(ctx); ok {

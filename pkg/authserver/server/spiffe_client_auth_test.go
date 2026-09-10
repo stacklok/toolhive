@@ -61,6 +61,18 @@ func TestSPIFFEClientAuthenticationStrategy(t *testing.T) {
 			wantErr: "SPIFFE X.509 client authentication is not implemented",
 		},
 		{
+			name:     "SPIFFE JWT assertion is detected when not the first value",
+			ctx:      context.Background(),
+			resolver: stubResolver,
+			form: url.Values{
+				"client_assertion_type": {
+					"urn:ietf:params:oauth:client-assertion-type:jwt-bearer",
+					spiffeauth.SPIFFEJWTAssertionType,
+				},
+			},
+			wantErr: "SPIFFE JWT client authentication is not implemented",
+		},
+		{
 			name:     "RFC 7523 assertion delegates to default strategy",
 			ctx:      context.Background(),
 			resolver: stubResolver,

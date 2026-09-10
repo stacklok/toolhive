@@ -9,6 +9,7 @@ import (
 	"fmt"
 	"log/slog"
 	"net/http"
+	"sync"
 	"sync/atomic"
 	"time"
 
@@ -24,8 +25,29 @@ import (
 
 const flushTimeout = 2 * time.Second
 
+const (
+	// environmentKey and releaseKey are the attribute names Sentry itself uses
+	// to carry Environment and Release on OTLP payloads (see sentry-go's
+	// log.go/metrics.go), so exported spans must use the same names to be
+	// grouped alongside Issues.
+	environmentKey = "sentry.environment"
+	releaseKey     = "sentry.release"
+	// instanceIDKey carries the anonymous instance ID on both Sentry events
+	// (as a scope tag) and exported spans (as a resource attribute), so Issues
+	// and Traces can be correlated with toolhive-studio by the same value.
+	instanceIDKey = "custom.instance_id"
+)
+
 // initialized tracks whether Sentry was successfully initialized.
 var initialized atomic.Bool
+
+// spanProcessor is the single Sentry OTLP span processor for this process,
+// created on the first Init and reused by every subsequent one. Guarded by
+// spanProcessorMu.
+var (
+	spanProcessorMu sync.Mutex
+	spanProcessor   sdktrace.SpanProcessor
+)
 
 // Config holds the configuration for Sentry integration.
 type Config struct {
@@ -49,11 +71,14 @@ func Init(cfg Config) error {
 	}
 
 	vi := versions.GetVersionInfo()
+	// Reused verbatim as a span resource attribute below so Issues and Traces
+	// report the same release string.
+	release := fmt.Sprintf("toolhive@%s", vi.Version)
 
 	err := sentry.Init(sentry.ClientOptions{
 		Dsn:              cfg.DSN,
 		Environment:      cfg.Environment,
-		Release:          fmt.Sprintf("toolhive@%s", vi.Version),
+		Release:          release,
 		TracesSampleRate: cfg.TracesSampleRate,
 		Debug:            cfg.Debug,
 		EnableTracing:    true,
@@ -67,28 +92,85 @@ func Init(cfg Config) error {
 		return fmt.Errorf("sentry init: %w", err)
 	}
 
-	exporter, err := sentryotlp.NewTraceExporter(context.Background(), cfg.DSN)
-	if err != nil {
-		return fmt.Errorf("create Sentry trace exporter: %w", err)
+	if err := registerTraceExporter(cfg); err != nil {
+		return err
 	}
-	telemetry.RegisterSpanProcessor(sdktrace.NewBatchSpanProcessor(exporter))
 	initialized.Store(true)
 	slog.Debug("sentry initialized", "environment", cfg.Environment)
-	slog.Debug("sentry trace exporter registered with OTEL registry")
 
 	// Tag every event and transaction with the anonymous instance ID so that
 	// Sentry events from the API server can be correlated with those from
 	// toolhive-studio. Note: toolhive-studio currently uses "custom.user_id"
 	// for the same value; these should be aligned to "custom.instance_id" in
 	// both repos in a follow-up to avoid misleading PII detection heuristics.
+	instanceID := ""
 	if id, err := updates.TryGetAnonymousID(); err == nil && id != "" {
+		instanceID = id
 		sentry.ConfigureScope(func(scope *sentry.Scope) {
-			scope.SetTag("custom.instance_id", id)
+			scope.SetTag(instanceIDKey, id)
 		})
 		slog.Debug("sentry anonymous instance ID tagged", "id", id)
 	}
 
+	// Spans are exported straight to Sentry's OTLP endpoint and never pass
+	// through the Sentry client, so neither ClientOptions nor the scope
+	// configured above reach them. Environment, release and instance ID have to
+	// travel as OTEL resource attributes instead, or Traces would lose the
+	// grouping that Issues keep and the two would disagree.
+	telemetry.RegisterResourceAttributes(resourceAttributes(cfg.Environment, release, instanceID))
+
 	return nil
+}
+
+// registerTraceExporter registers the Sentry OTLP span processor with the global
+// OTEL registry, creating it on first use.
+//
+// The processor is cached because the registry deduplicates by pointer identity:
+// sdktrace.NewBatchSpanProcessor allocates a fresh processor on every call, so
+// without this a second Init (config reload, or a test that does not reset the
+// registry) would register a second processor and double-export every span while
+// leaking the first exporter's goroutine.
+//
+// Caching means a second Init keeps the first call's DSN and sample rate. thv
+// serve calls Init exactly once per process, and the registry already only
+// feeds processors to providers created after registration, so re-initialising
+// with different values is not supported either way.
+func registerTraceExporter(cfg Config) error {
+	spanProcessorMu.Lock()
+	defer spanProcessorMu.Unlock()
+
+	if spanProcessor == nil {
+		exporter, err := sentryotlp.NewTraceExporter(context.Background(), cfg.DSN)
+		if err != nil {
+			return fmt.Errorf("create Sentry trace exporter: %w", err)
+		}
+		spanProcessor = newSamplingSpanProcessor(
+			sdktrace.NewBatchSpanProcessor(exporter),
+			cfg.TracesSampleRate,
+		)
+	}
+
+	telemetry.RegisterSpanProcessor(spanProcessor)
+	slog.Debug("sentry trace exporter registered with OTEL registry",
+		"traces_sample_rate", cfg.TracesSampleRate)
+	return nil
+}
+
+// resourceAttributes returns the OTEL resource attributes Sentry needs to group
+// OTLP-ingested traces the same way it groups Issues. Empty values are omitted
+// so they do not show up as blank attributes on other OTLP backends.
+func resourceAttributes(environment, release, instanceID string) map[string]string {
+	attrs := make(map[string]string, 3)
+	for key, value := range map[string]string{
+		environmentKey: environment,
+		releaseKey:     release,
+		instanceIDKey:  instanceID,
+	} {
+		if value != "" {
+			attrs[key] = value
+		}
+	}
+	return attrs
 }
 
 // Close flushes buffered Sentry events and shuts down the SDK.

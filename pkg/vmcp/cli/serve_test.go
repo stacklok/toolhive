@@ -17,12 +17,77 @@ import (
 
 	authserverconfig "github.com/stacklok/toolhive/pkg/authserver"
 	"github.com/stacklok/toolhive/pkg/groups"
+	mcpparser "github.com/stacklok/toolhive/pkg/mcp"
 	"github.com/stacklok/toolhive/pkg/vmcp"
 	aggregatormocks "github.com/stacklok/toolhive/pkg/vmcp/aggregator/mocks"
 	clientmocks "github.com/stacklok/toolhive/pkg/vmcp/client/mocks"
 	"github.com/stacklok/toolhive/pkg/vmcp/config"
 	vmcpmocks "github.com/stacklok/toolhive/pkg/vmcp/mocks"
 )
+
+// revisionReportingClient is a BackendClient that also satisfies
+// vmcp.RevisionReporter, so sessionFactoryOptions takes the revision-lookup
+// branch. Only the two methods the branch touches need real behaviour.
+type revisionReportingClient struct {
+	vmcp.BackendClient
+}
+
+func (*revisionReportingClient) CachedRevision(string) (mcpparser.Revision, bool) {
+	return mcpparser.RevisionLegacy, false
+}
+
+func TestSessionFactoryOptions(t *testing.T) {
+	t.Parallel()
+
+	withBackendInit := &config.Config{Operational: &config.OperationalConfig{
+		Timeouts: &config.TimeoutConfig{
+			Default:     config.Duration(90 * time.Second),
+			BackendInit: config.Duration(5 * time.Second),
+		},
+	}}
+
+	tests := []struct {
+		name          string
+		cfg           *config.Config
+		backendClient vmcp.BackendClient
+		// The option set is opaque (a slice of funcs), so assert on its size:
+		// the request-timeout resolver is always present, and each of the other
+		// two branches adds exactly one more when taken.
+		wantOptions int
+	}{
+		{
+			name:          "resolver only",
+			cfg:           &config.Config{},
+			backendClient: nil,
+			wantOptions:   1,
+		},
+		{
+			name:          "revision reporter adds a lookup",
+			cfg:           &config.Config{},
+			backendClient: &revisionReportingClient{},
+			wantOptions:   2,
+		},
+		{
+			name:          "backendInit adds a cap",
+			cfg:           withBackendInit,
+			backendClient: nil,
+			wantOptions:   2,
+		},
+		{
+			name:          "both branches taken",
+			cfg:           withBackendInit,
+			backendClient: &revisionReportingClient{},
+			wantOptions:   3,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			assert.Len(t, sessionFactoryOptions(tt.cfg, tt.backendClient), tt.wantOptions)
+		})
+	}
+}
 
 func TestBackendInitTimeout(t *testing.T) {
 	t.Parallel()

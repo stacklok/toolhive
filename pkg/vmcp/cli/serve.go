@@ -350,18 +350,10 @@ func Serve(ctx context.Context, cfg ServeConfig) error {
 	}
 	// The factory never aggregates — the core is the single source of capability
 	// aggregation (agg feeds it via Config.Aggregator below).
-	var sessionFactoryOpts []vmcpsession.MultiSessionFactoryOption
-	if revisions, ok := backendClient.(vmcp.RevisionReporter); ok {
-		sessionFactoryOpts = append(sessionFactoryOpts, vmcpsession.WithRevisionLookup(revisions.CachedRevision))
-	}
-	sessionFactoryOpts = append(
-		sessionFactoryOpts,
-		vmcpsession.WithRequestTimeoutResolver(backendRequestTimeoutResolver(vmcpCfg)),
+	sessionFactory := vmcpsession.NewSessionFactory(
+		outgoingRegistry,
+		sessionFactoryOptions(vmcpCfg, backendClient)...,
 	)
-	if backendInit := backendInitTimeout(vmcpCfg); backendInit > 0 {
-		sessionFactoryOpts = append(sessionFactoryOpts, vmcpsession.WithBackendInitTimeout(backendInit))
-	}
-	sessionFactory := vmcpsession.NewSessionFactory(outgoingRegistry, sessionFactoryOpts...)
 
 	// When the optimizer is enabled, its meta-tools are pass-through tools.
 	// Authz uses this for optimizer-aware authorization/filtering.
@@ -546,6 +538,24 @@ func backendRequestTimeoutResolver(cfg *config.Config) func(workloadID string) t
 		}
 		return time.Duration(timeouts.Default)
 	}
+}
+
+// sessionFactoryOptions builds the session factory options implied by cfg and
+// the backend client. Split out of Serve so the config-driven choices are
+// unit-testable without standing up a whole server.
+func sessionFactoryOptions(
+	cfg *config.Config,
+	backendClient vmcp.BackendClient,
+) []vmcpsession.MultiSessionFactoryOption {
+	var opts []vmcpsession.MultiSessionFactoryOption
+	if revisions, ok := backendClient.(vmcp.RevisionReporter); ok {
+		opts = append(opts, vmcpsession.WithRevisionLookup(revisions.CachedRevision))
+	}
+	opts = append(opts, vmcpsession.WithRequestTimeoutResolver(backendRequestTimeoutResolver(cfg)))
+	if backendInit := backendInitTimeout(cfg); backendInit > 0 {
+		opts = append(opts, vmcpsession.WithBackendInitTimeout(backendInit))
+	}
+	return opts
 }
 
 // backendInitTimeout returns the configured session-init cap, or 0 when unset

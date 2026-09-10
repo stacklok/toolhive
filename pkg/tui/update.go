@@ -8,7 +8,7 @@ import (
 	"strings"
 	"time"
 
-	tea "github.com/charmbracelet/bubbletea"
+	tea "charm.land/bubbletea/v2"
 
 	mcpclient "github.com/stacklok/toolhive-core/mcpcompat/client"
 	"github.com/stacklok/toolhive-core/mcpcompat/mcp"
@@ -208,8 +208,10 @@ func (m *Model) handleMsg(msg tea.Msg) (tea.Cmd, bool) {
 		m.height = msg.Height
 		m.resizeViewport()
 		return nil, true
-	case tea.KeyMsg:
+	case tea.KeyPressMsg:
 		return m.handleKey(msg), false
+	case tea.PasteMsg:
+		return m.handlePaste(msg), true
 	case tickMsg:
 		return tea.Batch(m.refreshWorkloads(), scheduleRefresh()), false
 	case workloadsRefreshMsg:
@@ -267,6 +269,42 @@ func (m *Model) handleMsg(msg tea.Msg) (tea.Cmd, bool) {
 	return nil, false
 }
 
+func (m *Model) handlePaste(msg tea.PasteMsg) tea.Cmd {
+	if m.showHelp {
+		return nil
+	}
+	if m.registry.open {
+		if m.runForm.open {
+			return m.runFormForwardToField(msg)
+		}
+		if !m.registry.detail {
+			m.registry.filter += msg.Content
+			m.registry.idx = 0
+			m.registry.scrollOff = 0
+		}
+		return nil
+	}
+
+	switch {
+	case m.panel == panelInspector && m.insp.fieldIdx >= 0:
+		return m.inspForwardToField(msg)
+	case m.panel == panelInspector && m.insp.filterActive:
+		m.insp.filterQuery += msg.Content
+		m.insp.toolIdx = 0
+		m.inspRebuildForm()
+	case m.logSearchActive:
+		m.logSearchQuery += msg.Content
+		rebuildSearch(m.logSearchParams())
+	case m.proxyLogSearchActive:
+		m.proxyLogSearchQuery += msg.Content
+		rebuildSearch(m.proxyLogSearchParams())
+	case m.filterActive:
+		m.filterQuery += msg.Content
+		m.selectedIdx = 0
+	}
+	return nil
+}
+
 func (m *Model) handleWorkloadsRefresh(msg workloadsRefreshMsg) (tea.Cmd, bool) {
 	core.SortWorkloadsByName(msg.workloads)
 	m.workloads = msg.workloads
@@ -291,7 +329,7 @@ func (m *Model) handleLogLine(msg logLineMsg) (tea.Cmd, bool) {
 	if len(m.logLines) > maxLogLines {
 		m.logLines = m.logLines[len(m.logLines)-maxLogLines:]
 	}
-	m.logView.SetContent(buildHScrollContent(m.logLines, m.logView.Width, m.logHScrollOff))
+	m.logView.SetContent(buildHScrollContent(m.logLines, m.logView.Width(), m.logHScrollOff))
 	if m.logFollow {
 		m.logView.GotoBottom()
 	}
@@ -306,7 +344,7 @@ func (m *Model) handleProxyLogLine(msg proxyLogLineMsg) (tea.Cmd, bool) {
 	if len(m.proxyLogLines) > maxLogLines {
 		m.proxyLogLines = m.proxyLogLines[len(m.proxyLogLines)-maxLogLines:]
 	}
-	m.proxyLogView.SetContent(buildHScrollContent(m.proxyLogLines, m.proxyLogView.Width, m.proxyLogHScrollOff))
+	m.proxyLogView.SetContent(buildHScrollContent(m.proxyLogLines, m.proxyLogView.Width(), m.proxyLogHScrollOff))
 	m.proxyLogView.GotoBottom()
 	if m.proxyLogCh != nil {
 		return readProxyLogLine(m.proxyLogCh), false
@@ -341,7 +379,7 @@ func (m *Model) handleToolsFetched(msg toolsFetchedMsg) {
 		m.toolsErr = msg.err
 		m.toolsLoading = false
 		m.toolsSelectedIdx = 0
-		m.toolsView.SetContent(buildToolsContent(m.tools, m.toolsView.Width, m.toolsSelectedIdx))
+		m.toolsView.SetContent(buildToolsContent(m.tools, m.toolsView.Width(), m.toolsSelectedIdx))
 		m.toolsView.GotoTop()
 	}
 }
@@ -399,7 +437,7 @@ func (m *Model) handleInspCallResult(msg inspCallResultMsg) {
 }
 
 // handleKey dispatches key events and returns a follow-up tea.Cmd if any.
-func (m *Model) handleKey(msg tea.KeyMsg) tea.Cmd {
+func (m *Model) handleKey(msg tea.KeyPressMsg) tea.Cmd {
 	// Registry overlay has its own key handling.
 	if m.registry.open {
 		return m.handleRegistryKey(msg)

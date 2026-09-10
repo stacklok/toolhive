@@ -6,8 +6,8 @@ package tui
 import (
 	"strings"
 
-	"github.com/charmbracelet/bubbles/textinput"
-	"github.com/charmbracelet/lipgloss"
+	"charm.land/bubbles/v2/textinput"
+	"charm.land/lipgloss/v2"
 
 	"github.com/stacklok/toolhive/cmd/thv/app/ui"
 	rt "github.com/stacklok/toolhive/pkg/container/runtime"

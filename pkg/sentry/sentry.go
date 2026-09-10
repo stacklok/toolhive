@@ -83,7 +83,7 @@ func Init(cfg Config) error {
 		Debug:            cfg.Debug,
 		EnableTracing:    true,
 		AttachStacktrace: true,
-		SendDefaultPII:   false,
+		DataCollection:   noPIIDataCollection(),
 		Integrations: func(integrations []sentry.Integration) []sentry.Integration {
 			return append(integrations, sentryotel.NewOtelIntegration())
 		},
@@ -155,6 +155,50 @@ func registerTraceExporter(cfg Config) error {
 	slog.Debug("sentry trace exporter registered with OTEL registry",
 		"traces_sample_rate", cfg.TracesSampleRate)
 	return nil
+}
+
+// piiSensitiveTerms mirrors the deny-list that sentry-go applies internally for
+// SendDefaultPII=false (its unexported extendedSensitiveTerms). These cover
+// client-identifying data that an API server behind a proxy routinely sees:
+// forwarding headers, remote addresses and user identifiers.
+//
+// The list has to be repeated here because sentry-go reaches it only through
+// the deprecated SendDefaultPII path; the DataCollection API exposes no way to
+// set it. In CollectionDenyList mode a behaviour's Terms are OR-ed with the
+// SDK's built-in terms, so passing them per behaviour is equivalent.
+//
+// Re-check this against sentry-go's extendedSensitiveTerms on SDK upgrades — a
+// term added upstream will not reach us automatically.
+var piiSensitiveTerms = []string{
+	"forwarded",
+	"-ip",
+	"remote-",
+	"via",
+	"-user",
+}
+
+// noPIIDataCollection returns the DataCollection that replaces the deprecated
+// SendDefaultPII=false. It is deliberately equivalent to what sentry-go's
+// legacyDataCollection built for that flag: no auto-populated user info, no
+// HTTP bodies, no cookies, and headers and query params scrubbed against both
+// the built-in and the extended deny-lists.
+func noPIIDataCollection() *sentry.DataCollection {
+	denyList := func() *sentry.KeyValueCollectionBehavior {
+		return &sentry.KeyValueCollectionBehavior{
+			Mode:  sentry.CollectionDenyList,
+			Terms: piiSensitiveTerms,
+		}
+	}
+	return &sentry.DataCollection{
+		UserInfo:   sentry.Set(false),
+		HTTPBodies: []sentry.BodyType{},
+		Cookies:    &sentry.KeyValueCollectionBehavior{Mode: sentry.CollectionOff},
+		HTTPHeaders: &sentry.HeaderCollectionConfig{
+			Request:  denyList(),
+			Response: denyList(),
+		},
+		QueryParams: denyList(),
+	}
 }
 
 // resourceAttributes returns the OTEL resource attributes Sentry needs to group

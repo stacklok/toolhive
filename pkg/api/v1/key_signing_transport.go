@@ -62,9 +62,10 @@ func requireKeySigningCapability(r *http.Request, expectedCapability, key string
 	return httperr.WithCode(
 		errors.New("key names a cosign private key on the server's filesystem, but this request"+
 			" does not have the protected local discovery capability — accepting it would let an"+
-			" untrusted caller have the server sign with any key it can read. Use the locally"+
-			" discovered ToolHive server, or sign keylessly with identity_token, which carries a"+
-			" short-lived scoped credential instead"),
+			" untrusted caller have the server sign with any key it can read. Push through the"+
+			" locally discovered ToolHive server, or sign keylessly instead: drop --key and the CLI"+
+			" acquires a short-lived identity token itself, or hands one over with"+
+			" --identity-token; a direct API caller sends identity_token in place of key"),
 		http.StatusForbidden,
 	)
 }

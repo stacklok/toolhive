@@ -94,8 +94,14 @@ func TestRequireKeySigningCapability(t *testing.T) {
 			}
 			require.Error(t, err)
 			assert.Equal(t, http.StatusForbidden, httperr.Code(err))
+			// The CLI relays this body verbatim, so the remediation has to be
+			// runnable from a terminal, not only from a JSON request.
+			assert.Contains(t, err.Error(), "--identity-token",
+				"the refusal must name the CLI flag that does work remotely")
+			assert.Contains(t, err.Error(), "drop --key",
+				"omitting --key is the zero-config keyless path and must be offered")
 			assert.Contains(t, err.Error(), "identity_token",
-				"the refusal must name the credential that does work remotely")
+				"direct API callers need the request field named too")
 			assert.NotContains(t, err.Error(), capability)
 		})
 	}

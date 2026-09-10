@@ -767,6 +767,47 @@ func TestPluginsInstallLocationHeader(t *testing.T) {
 	assert.Equal(t, "/api/v1beta/plugins/my-plugin", rec.Header().Get("Location"))
 }
 
+// TestPluginsInstallCarriesPublicKey pins the API-side half of the key path: a
+// public_key that dies at the handler would leave a key-signed artifact
+// failing verification while the caller is told to supply the key they did.
+func TestPluginsInstallCarriesPublicKey(t *testing.T) {
+	t.Parallel()
+
+	const encodedKey = "MFkwEwYHKoZIzj0CAQYIKoZIzj0DAQcDQgAExlVDpbnOEv2fH3gS8n7UCHS9Gs0wKxIPR5" +
+		"EAcl8F1jSxlxAV/pll0NsSiuAK95Ws4Fpkn+5QkdVKNXy7LHgb2A=="
+
+	ctrl := gomock.NewController(t)
+	mockSvc := plugmocks.NewMockPluginService(ctrl)
+
+	mockSvc.EXPECT().Install(gomock.Any(), plugins.InstallOptions{
+		Name:        "my-plugin",
+		Scope:       plugins.ScopeProject,
+		ProjectRoot: "/tmp/project",
+		PublicKey:   encodedKey,
+	}).Return(&plugins.InstallResult{
+		Plugin: plugins.InstalledPlugin{
+			Metadata: plugins.PluginMetadata{Name: "my-plugin"},
+			Scope:    plugins.ScopeProject,
+			Status:   plugins.InstallStatusInstalled,
+		},
+		Provenance: &plugins.ProvenanceInfo{PublicKey: encodedKey},
+	}, nil)
+
+	router := chi.NewRouter()
+	router.Mount("/", PluginsRouter(mockSvc))
+
+	body := `{"name":"my-plugin","scope":"project","project_root":"/tmp/project",` +
+		`"public_key":"` + encodedKey + `"}`
+	req := httptest.NewRequest(http.MethodPost, "/", strings.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
+	rec := httptest.NewRecorder()
+	router.ServeHTTP(rec, req)
+
+	require.Equal(t, http.StatusCreated, rec.Code)
+	assert.Contains(t, rec.Body.String(), `"public_key":"`+encodedKey+`"`,
+		"the pinned key must come back so the CLI can report the anchor it recorded")
+}
+
 // TestPluginsInstallCarriesAllowUnsigned pins the API-side half of the
 // unsigned-install exception: a request body that sets allow_unsigned must
 // reach the service as InstallOptions.AllowUnsigned, or the flag dies at the

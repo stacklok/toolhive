@@ -112,12 +112,26 @@ func TestParsingMiddleware(t *testing.T) {
 			expectParsed: false,
 		},
 		{
-			name:         "SSE endpoint - not parsed",
-			method:       "POST",
-			path:         "/sse",
-			contentType:  "application/json",
-			body:         `{"jsonrpc":"2.0","id":1,"method":"tools/call"}`,
-			expectParsed: false,
+			name:           "SSE endpoint - parsed",
+			method:         "POST",
+			path:           "/sse",
+			contentType:    "application/json",
+			body:           `{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"sse-tool"}}`,
+			expectParsed:   true,
+			expectedMethod: "tools/call",
+			expectedID:     int64(1),
+			expectedResID:  "sse-tool",
+		},
+		{
+			name:           "SSE suffix endpoint with query - parsed",
+			method:         "POST",
+			path:           "/x/sse?source=test",
+			contentType:    "application/json",
+			body:           `{"jsonrpc":"2.0","id":11,"method":"resources/read","params":{"uri":"file:///sse.txt"}}`,
+			expectParsed:   true,
+			expectedMethod: "resources/read",
+			expectedID:     int64(11),
+			expectedResID:  "file:///sse.txt",
 		},
 		{
 			name:           "non-MCP path - now parsed",
@@ -233,6 +247,18 @@ func TestParsingMiddleware(t *testing.T) {
 			}
 		})
 	}
+}
+
+func TestParseMCPRequest_LeadingBOM(t *testing.T) {
+	t.Parallel()
+
+	parsed := parseMCPRequest([]byte("\xEF\xBB\xBF" +
+		`{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"weather"}}`))
+
+	require.NotNil(t, parsed)
+	assert.Equal(t, "tools/call", parsed.Method)
+	assert.Equal(t, int64(1), parsed.ID)
+	assert.Equal(t, "weather", parsed.ResourceID)
 }
 
 func TestParsingMiddlewareRejectsBatch(t *testing.T) {
@@ -1435,7 +1461,14 @@ func TestShouldParseMCPRequest(t *testing.T) {
 			method:      "POST",
 			path:        "/sse",
 			contentType: "application/json",
-			expected:    false,
+			expected:    true,
+		},
+		{
+			name:        "POST to SSE suffix endpoint",
+			method:      "POST",
+			path:        "/x/sse",
+			contentType: "application/json",
+			expected:    true,
 		},
 		{
 			name:        "POST to non-MCP path - now parsed",

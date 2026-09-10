@@ -50,11 +50,20 @@ type CredentialStore interface {
 	// key is not present. An error is returned only on backend failure.
 	Get(ctx context.Context, key Key) (*Resolution, bool, error)
 
-	// Put stores the resolution for key, overwriting any existing entry.
+	// PutIfAbsent claims key for resolution. Returns the authoritative
+	// durable value: the caller's own resolution on a successful claim, the
+	// concurrent winner's otherwise. Callers MUST use the returned value,
+	// not their input resolution — RFC 7591 dynamic registration mints a
+	// unique client_id/client_secret on every call, so a caller that lost
+	// the race and kept using its own resolution would hold credentials the
+	// durable store does not agree it owns.
+	//
 	// Implementations must reject a nil resolution with an error rather
 	// than silently succeeding — a no-op would leave callers with no
 	// debug trail for the subsequent Get miss.
-	Put(ctx context.Context, key Key, resolution *Resolution) error
+	//
+	// The returned *Resolution is always non-nil when err is nil.
+	PutIfAbsent(ctx context.Context, key Key, resolution *Resolution) (*Resolution, error)
 }
 
 // NewStorageBackedStore returns a CredentialStore that delegates to a
@@ -154,15 +163,19 @@ func (s *inMemoryStore) Get(ctx context.Context, key Key) (*Resolution, bool, er
 	return credentialsToResolution(creds), true, nil
 }
 
-// Put implements CredentialStore by delegating to the embedded
+// PutIfAbsent implements CredentialStore by delegating to the embedded
 // *storage.MemoryStorage. The nil-resolution rejection matches
-// storageBackedStore.Put; see that method for the rationale.
-func (s *inMemoryStore) Put(ctx context.Context, key Key, resolution *Resolution) error {
+// storageBackedStore.PutIfAbsent; see that method for the rationale.
+func (s *inMemoryStore) PutIfAbsent(ctx context.Context, key Key, resolution *Resolution) (*Resolution, error) {
 	if resolution == nil {
-		return fmt.Errorf("dcr: resolution must not be nil")
+		return nil, fmt.Errorf("dcr: resolution must not be nil")
 	}
 	creds := resolutionToCredentials(key, resolution)
-	return s.mem.StoreDCRCredentials(ctx, creds)
+	authoritative, err := s.mem.StoreDCRCredentialsIfAbsent(ctx, creds)
+	if err != nil {
+		return nil, err
+	}
+	return credentialsToResolution(authoritative), nil
 }
 
 // Close releases the embedded MemoryStorage cleanup goroutine. Safe to
@@ -201,18 +214,27 @@ func (s *storageBackedStore) Get(ctx context.Context, key Key) (*Resolution, boo
 	return credentialsToResolution(creds), true, nil
 }
 
-// Put implements CredentialStore.
+// PutIfAbsent implements CredentialStore.
 //
 // A nil resolution is rejected rather than silently no-oped: a caller
 // passing nil would otherwise get a successful return, observe a miss on
 // the next Get, and have no error trail to debug from. Failing loudly at
 // the boundary makes such bugs visible at the first call.
-func (s *storageBackedStore) Put(ctx context.Context, key Key, resolution *Resolution) error {
+//
+// The returned *Resolution is the authoritative durable value —
+// s.backend.StoreDCRCredentialsIfAbsent's own contract — so a caller whose
+// registration lost a concurrent claim on this key gets back the winner's
+// credentials, not its own.
+func (s *storageBackedStore) PutIfAbsent(ctx context.Context, key Key, resolution *Resolution) (*Resolution, error) {
 	if resolution == nil {
-		return fmt.Errorf("dcr: resolution must not be nil")
+		return nil, fmt.Errorf("dcr: resolution must not be nil")
 	}
 	creds := resolutionToCredentials(key, resolution)
-	return s.backend.StoreDCRCredentials(ctx, creds)
+	authoritative, err := s.backend.StoreDCRCredentialsIfAbsent(ctx, creds)
+	if err != nil {
+		return nil, err
+	}
+	return credentialsToResolution(authoritative), nil
 }
 
 // resolutionToCredentials converts a resolver-side *Resolution into the

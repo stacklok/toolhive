@@ -6,6 +6,7 @@ package runner
 import (
 	"bytes"
 	"context"
+	"encoding/json"
 	"fmt"
 	"net"
 	"os"
@@ -19,6 +20,7 @@ import (
 
 	"github.com/stacklok/toolhive-core/permissions"
 	regtypes "github.com/stacklok/toolhive-core/registry/types"
+	"github.com/stacklok/toolhive/pkg/auth"
 	"github.com/stacklok/toolhive/pkg/auth/remote"
 	"github.com/stacklok/toolhive/pkg/authserver"
 	"github.com/stacklok/toolhive/pkg/authz"
@@ -1096,6 +1098,78 @@ func TestRunConfig_WriteJSON_ReadJSON(t *testing.T) {
 	require.NotNil(t, readConfig.HeaderForward, "HeaderForward should not be nil")
 	assert.Equal(t, originalConfig.HeaderForward.AddPlaintextHeaders, readConfig.HeaderForward.AddPlaintextHeaders, "AddPlaintextHeaders should match")
 	assert.Equal(t, originalConfig.HeaderForward.AddHeadersFromSecret, readConfig.HeaderForward.AddHeadersFromSecret, "AddHeadersFromSecret should match")
+}
+
+func TestReadJSON_OIDCMiddlewareConfiguration(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name      string
+		fixture   string
+		populate  bool
+		wantErr   string
+		assertion func(*testing.T, *RunConfig)
+	}{
+		{
+			name:    "repairs legacy middleware",
+			fixture: "testdata/legacy_oidc_middleware.json",
+			assertion: func(t *testing.T, config *RunConfig) {
+				t.Helper()
+				require.NotNil(t, config.OIDCConfig)
+
+				var params auth.MiddlewareParams
+				require.NoError(t, json.Unmarshal(config.MiddlewareConfigs[0].Parameters, &params))
+				assert.Equal(t, config.OIDCConfig, params.OIDCConfig)
+				assert.Equal(t, "https://embedded.example.com", params.EmbeddedAuthServerIssuer)
+			},
+		},
+		{
+			name:    "rejects null authentication parameters",
+			fixture: "testdata/oidc_null_middleware_parameters.json",
+			wantErr: "invalid OIDC middleware configuration: authentication middleware parameters cannot be null",
+		},
+		{
+			name:     "populates empty middleware chain",
+			fixture:  "testdata/oidc_empty_middleware.json",
+			populate: true,
+			assertion: func(t *testing.T, config *RunConfig) {
+				t.Helper()
+				for _, middlewareConfig := range config.MiddlewareConfigs {
+					if middlewareConfig.Type != auth.MiddlewareType {
+						continue
+					}
+
+					var params auth.MiddlewareParams
+					require.NoError(t, json.Unmarshal(middlewareConfig.Parameters, &params))
+					assert.Equal(t, config.OIDCConfig, params.OIDCConfig)
+					return
+				}
+				t.Fatal("authentication middleware configuration not found")
+			},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			file, err := os.Open(tt.fixture) // #nosec G304 -- fixed test fixture
+			require.NoError(t, err)
+			t.Cleanup(func() { require.NoError(t, file.Close()) })
+
+			config, err := ReadJSON(file)
+			if tt.wantErr != "" {
+				require.ErrorContains(t, err, tt.wantErr)
+				return
+			}
+			require.NoError(t, err)
+
+			if tt.populate {
+				require.NoError(t, PopulateMiddlewareConfigs(config))
+			}
+			tt.assertion(t, config)
+		})
+	}
 }
 
 func TestCommaSeparatedEnvVars(t *testing.T) {
@@ -2190,6 +2264,48 @@ func TestRunConfig_WriteJSON_ReadJSON_EmbeddedAuthServer(t *testing.T) {
 				},
 				ScopesSupported:  []string{"openid", "profile", "email"},
 				AllowedAudiences: []string{"https://api.example.com", "https://mcp.example.com"},
+				SPIFFETrustDomains: []authserver.SPIFFETrustDomainRunConfig{
+					{
+						Name:        "production",
+						TrustDomain: "example.org",
+						Methods:     []authserver.SPIFFEAuthenticationMethod{authserver.SPIFFEAuthenticationMethodX509},
+						BundleSource: authserver.SPIFFEBundleSourceRunConfig{
+							Type:        authserver.SPIFFEBundleSourceTypeWorkloadAPI,
+							WorkloadAPI: &authserver.SPIFFEWorkloadAPIBundleSourceRunConfig{},
+						},
+					},
+					{
+						Name:        "development",
+						TrustDomain: "dev.example.org",
+						Methods:     []authserver.SPIFFEAuthenticationMethod{authserver.SPIFFEAuthenticationMethodJWT},
+						BundleSource: authserver.SPIFFEBundleSourceRunConfig{
+							Type:        authserver.SPIFFEBundleSourceTypeWorkloadAPI,
+							WorkloadAPI: &authserver.SPIFFEWorkloadAPIBundleSourceRunConfig{},
+						},
+					},
+				},
+				InboundGrants: &authserver.InboundGrantsRunConfig{
+					SPIFFEClientAuth: []authserver.SPIFFEClientAuthRunConfig{
+						{
+							TrustDomainRef:   "production",
+							PrincipalPattern: "spiffe://example.org/ns/default/agent",
+							ClientID:         "spiffe-client",
+							Methods:          []authserver.SPIFFEAuthenticationMethod{authserver.SPIFFEAuthenticationMethodX509},
+							Scopes:           []string{"openid"},
+							Audiences:        []string{"https://mcp.example.com"},
+							GrantTypes:       []string{authserver.SPIFFEGrantTypeTokenExchange},
+						},
+						{
+							TrustDomainRef:   "development",
+							PrincipalPattern: "spiffe://dev.example.org/ns/default/agent",
+							ClientID:         "development-spiffe-client",
+							Methods:          []authserver.SPIFFEAuthenticationMethod{authserver.SPIFFEAuthenticationMethodJWT},
+							Scopes:           []string{"profile"},
+							Audiences:        []string{"https://api.example.com"},
+							GrantTypes:       []string{authserver.SPIFFEGrantTypeTokenExchange},
+						},
+					},
+				},
 			},
 		}
 
@@ -2254,6 +2370,14 @@ func TestRunConfig_WriteJSON_ReadJSON_EmbeddedAuthServer(t *testing.T) {
 		// Verify scopes and audiences
 		assert.Equal(t, []string{"openid", "profile", "email"}, authConfig.ScopesSupported, "ScopesSupported should match")
 		assert.Equal(t, []string{"https://api.example.com", "https://mcp.example.com"}, authConfig.AllowedAudiences, "AllowedAudiences should match")
+		require.Len(t, authConfig.SPIFFETrustDomains, 2)
+		assert.Equal(t, []authserver.SPIFFEAuthenticationMethod{authserver.SPIFFEAuthenticationMethodX509}, authConfig.SPIFFETrustDomains[0].Methods)
+		assert.Equal(t, []authserver.SPIFFEAuthenticationMethod{authserver.SPIFFEAuthenticationMethodJWT}, authConfig.SPIFFETrustDomains[1].Methods)
+		require.NotNil(t, authConfig.InboundGrants)
+		spiffeClients := authConfig.InboundGrants.SPIFFEClientAuth
+		require.Len(t, spiffeClients, 2)
+		assert.Equal(t, []string{"https://mcp.example.com"}, spiffeClients[0].Audiences)
+		assert.Equal(t, []string{"https://api.example.com"}, spiffeClients[1].Audiences)
 	})
 
 	t.Run("serializes and deserializes with OIDC upstream", func(t *testing.T) {

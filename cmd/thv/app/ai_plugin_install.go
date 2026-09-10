@@ -18,6 +18,7 @@ var (
 	aiPluginInstallProjectRoot   string
 	aiPluginInstallGroup         string
 	aiPluginInstallAllowUnsigned bool
+	aiPluginInstallPublicKey     string
 )
 
 var aiPluginInstallCmd = &cobra.Command{
@@ -49,12 +50,24 @@ func init() {
 	aiPluginInstallCmd.Flags().StringVar(&aiPluginInstallGroup, "group", "", "Group to add the plugin to after installation")
 	aiPluginInstallCmd.Flags().BoolVar(&aiPluginInstallAllowUnsigned, "allow-unsigned", false,
 		"Allow installing a project-scoped plugin without a verified signature (recorded in the lock file)")
+	aiPluginInstallCmd.Flags().StringVar(&aiPluginInstallPublicKey, "public-key", "",
+		"Path to the cosign public key (cosign.pub) a key-pair-signed plugin must verify against."+
+			" Required the first time such a plugin is installed project-scoped; the key is then pinned"+
+			" in the lock file and reused automatically")
 }
 
 func aiPluginInstallCmdFunc(cmd *cobra.Command, args []string) error {
 	c := newAIPluginClient(cmd.Context())
 
 	projectRoot, err := absProjectRoot(aiPluginInstallProjectRoot)
+	if err != nil {
+		return err
+	}
+
+	// Shared with `thv skill install`: the flag names a file, but the API
+	// carries the key material, because the server may be another process on
+	// another host where that path names nothing — or something else.
+	publicKey, err := readInstallPublicKey(aiPluginInstallPublicKey)
 	if err != nil {
 		return err
 	}
@@ -67,6 +80,7 @@ func aiPluginInstallCmdFunc(cmd *cobra.Command, args []string) error {
 		ProjectRoot:   projectRoot,
 		Group:         aiPluginInstallGroup,
 		AllowUnsigned: aiPluginInstallAllowUnsigned,
+		PublicKey:     publicKey,
 	})
 	if err != nil {
 		return formatAIPluginError("install plugin", err)
@@ -90,6 +104,10 @@ func printPluginInstallTrust(result *plugins.InstallResult) {
 	}
 	name := result.Plugin.Metadata.Name
 	switch {
+	// Before the identity cases: a key-pinned install has no signer identity
+	// to name, and "signed by " with nothing after it is worse than silence.
+	case result.Provenance != nil && result.Provenance.PublicKey != "":
+		fmt.Printf("Installed %s (signed by a cosign key pair; the pinned public key is in the lock file)\n", name)
 	case result.Provenance != nil && result.Provenance.Provisional:
 		fmt.Printf("Installed %s (signed by %s; verification provisional — see lock file)\n",
 			name, result.Provenance.SignerIdentity)

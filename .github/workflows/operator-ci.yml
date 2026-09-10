@@ -10,20 +10,22 @@ permissions:
 jobs:
   operator-tests:
     name: Operator Tests
-    runs-on: ubuntu-8cores-32gb
+    # Short, setup-dominated job; the standard runner is free for this
+    # public repo. Integration and E2E jobs below keep the large runner.
+    runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
         with:
           persist-credentials: false
 
       - name: Set up Go
-        uses: actions/setup-go@924ae3a1cded613372ab5595356fb5720e22ba16 # v6
+        uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7
         with:
           go-version: 'stable'
           cache: true
 
       - name: Install Task
-        uses: arduino/setup-task@b91d5d2c96a56797b48ac1e0e89220bf64044611 # v2
+        uses: arduino/setup-task@c0bc642852239c2689f73f4ea6459c29405f3c52 # v3.0.0
         with:
           version: 3.44.1
           repo-token: ${{ secrets.GITHUB_TOKEN }}
@@ -40,13 +42,13 @@ jobs:
           persist-credentials: false
 
       - name: Set up Go
-        uses: actions/setup-go@924ae3a1cded613372ab5595356fb5720e22ba16 # v6
+        uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7
         with:
           go-version: 'stable'
           cache: true
 
       - name: Install Task
-        uses: arduino/setup-task@b91d5d2c96a56797b48ac1e0e89220bf64044611 # v2
+        uses: arduino/setup-task@c0bc642852239c2689f73f4ea6459c29405f3c52 # v3.0.0
         with:
           version: 3.44.1
           repo-token: ${{ secrets.GITHUB_TOKEN }}
@@ -56,20 +58,22 @@ jobs:
 
   build-operator:
     name: Build Operator
-    runs-on: ubuntu-8cores-32gb
+    # Short, setup-dominated job; the standard runner is free for this
+    # public repo.
+    runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
         with:
           persist-credentials: false
 
       - name: Set up Go
-        uses: actions/setup-go@924ae3a1cded613372ab5595356fb5720e22ba16 # v6
+        uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7
         with:
           go-version: 'stable'
           cache: true
 
       - name: Install Task
-        uses: arduino/setup-task@b91d5d2c96a56797b48ac1e0e89220bf64044611 # v2
+        uses: arduino/setup-task@c0bc642852239c2689f73f4ea6459c29405f3c52 # v3.0.0
         with:
           version: 3.44.1
           repo-token: ${{ secrets.GITHUB_TOKEN }}
@@ -86,13 +90,13 @@ jobs:
           persist-credentials: false
 
       - name: Set up Go
-        uses: actions/setup-go@924ae3a1cded613372ab5595356fb5720e22ba16 # v6
+        uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7
         with:
           go-version: 'stable'
           cache: true
 
       - name: Install Task
-        uses: arduino/setup-task@b91d5d2c96a56797b48ac1e0e89220bf64044611 # v2
+        uses: arduino/setup-task@c0bc642852239c2689f73f4ea6459c29405f3c52 # v3.0.0
         with:
           version: 3.44.1
           repo-token: ${{ secrets.GITHUB_TOKEN }}
@@ -121,13 +125,13 @@ jobs:
           persist-credentials: false
 
       - name: Set up Go
-        uses: actions/setup-go@924ae3a1cded613372ab5595356fb5720e22ba16 # v6
+        uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7
         with:
           go-version: 'stable'
           cache: true
 
       - name: Install Task
-        uses: arduino/setup-task@b91d5d2c96a56797b48ac1e0e89220bf64044611 # v2
+        uses: arduino/setup-task@c0bc642852239c2689f73f4ea6459c29405f3c52 # v3.0.0
         with:
           version: 3.44.1
           repo-token: ${{ secrets.GITHUB_TOKEN }}
@@ -156,14 +160,19 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
+        # Pull requests run against the newest Kubernetes version only; pushes
+        # to main and manual dispatches run the full set. Cross-version
+        # compatibility rarely breaks within a single PR, and the full matrix
+        # still runs on every merge, so a regression surfaces on main within
+        # one CI cycle instead of costing three E2E runs on every PR update.
+        #
         # Before someone says it, yes we could just put the number here and not the full image name,
         # but we want to make sure renovate bumps the versions when new ones are released. Doing that with
-        # just the number is a bit more difficult and i like simple things.
-        version: [
-          "kindest/node:v1.33.7",
-          "kindest/node:v1.34.3",
-          "kindest/node:v1.35.1"
-        ]
+        # just the number is a bit more difficult and i like simple things. The newest version appears in
+        # both lists so renovate keeps them in step.
+        version: ${{ github.event_name == 'pull_request'
+          && fromJSON('["kindest/node:v1.35.1"]')
+          || fromJSON('["kindest/node:v1.33.7", "kindest/node:v1.34.3", "kindest/node:v1.35.1"]') }}
     
     steps:
     - name: Checkout code
@@ -178,13 +187,13 @@ jobs:
       uses: ko-build/setup-ko@61b4d1d396f5b2e7d6bb6fefdce3dc38d1a13445 # v0.10
 
     - name: Set up Go
-      uses: actions/setup-go@924ae3a1cded613372ab5595356fb5720e22ba16 # v6
+      uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7
       with:
         go-version: 'stable'
         cache: true
         
     - name: Install Task
-      uses: arduino/setup-task@b91d5d2c96a56797b48ac1e0e89220bf64044611 # v2
+      uses: arduino/setup-task@c0bc642852239c2689f73f4ea6459c29405f3c52 # v3.0.0
       with:
         version: 3.44.1
         repo-token: ${{ secrets.GITHUB_TOKEN }}
@@ -212,10 +221,10 @@ jobs:
         sudo systemctl restart docker
 
     - name: Create KIND Cluster
-      uses: helm/kind-action@ef37e7f390d99f746eb8b610417061a60e82a6cc # v1.14.0
+      uses: helm/kind-action@06c1ae10762d3b9c1644e7fe69596ae519e015a2 # v1.15.0
       with:
         cluster_name: toolhive
-        version: v0.31.0 # kind
+        version: v0.33.0 # kind
         cloud_provider: true
         node_image: ${{ matrix.version }}
 

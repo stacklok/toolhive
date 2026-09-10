@@ -208,6 +208,9 @@ func extractUpstreamSecretRefs(
 	case mcpv1beta1.UpstreamProviderTypeOIDC:
 		if provider.OIDCConfig != nil {
 			clientSecretRef = provider.OIDCConfig.ClientSecretRef
+			if provider.OIDCConfig.DCRConfig != nil {
+				initialAccessTokenRef = provider.OIDCConfig.DCRConfig.InitialAccessTokenRef
+			}
 		}
 	case mcpv1beta1.UpstreamProviderTypeOAuth2:
 		if provider.OAuth2Config != nil {
@@ -270,6 +273,7 @@ func buildTrustedIssuerRunConfigs(issuers []mcpv1beta1.TrustedIssuerConfig) []to
 	configs := make([]tokenexchange.TrustedIssuer, len(issuers))
 	for i, ti := range issuers {
 		configs[i] = tokenexchange.TrustedIssuer{
+			Name:                   ti.Name,
 			IssuerURL:              ti.IssuerURL,
 			ExpectedAudience:       ti.ExpectedAudience,
 			JWKSURL:                ti.JWKSURL,
@@ -307,6 +311,73 @@ func buildJWTBearerGrantPolicy(config *mcpv1beta1.JWTBearerGrantConfig) *tokenex
 		}
 	}
 	return policy
+}
+
+// buildSPIFFETrustDomainRunConfigs converts CRD SPIFFETrustDomainConfig
+// entries to authserver.SPIFFETrustDomainRunConfig, the runtime type
+// authserver.RunConfig.SPIFFETrustDomains consumes directly. None of these
+// fields reference a Secret, so no env-var indirection is needed here.
+func buildSPIFFETrustDomainRunConfigs(
+	domains []mcpv1beta1.SPIFFETrustDomainConfig,
+) []authserver.SPIFFETrustDomainRunConfig {
+	configs := make([]authserver.SPIFFETrustDomainRunConfig, len(domains))
+	for i, domain := range domains {
+		methods := make([]authserver.SPIFFEAuthenticationMethod, len(domain.Methods))
+		for j, method := range domain.Methods {
+			methods[j] = authserver.SPIFFEAuthenticationMethod(method)
+		}
+		configs[i] = authserver.SPIFFETrustDomainRunConfig{
+			Name:         domain.Name,
+			TrustDomain:  domain.TrustDomain,
+			Methods:      methods,
+			BundleSource: buildSPIFFEBundleSourceRunConfig(domain.BundleSource),
+		}
+	}
+	return configs
+}
+
+// buildSPIFFEBundleSourceRunConfig converts the CRD's discriminated
+// bundle-source union to the runtime shape.
+func buildSPIFFEBundleSourceRunConfig(source mcpv1beta1.SPIFFEBundleSourceConfig) authserver.SPIFFEBundleSourceRunConfig {
+	converted := authserver.SPIFFEBundleSourceRunConfig{Type: authserver.SPIFFEBundleSourceType(source.Type)}
+	if source.Endpoint != nil {
+		converted.Endpoint = &authserver.SPIFFEBundleEndpointSourceRunConfig{
+			URL:     source.Endpoint.URL,
+			Profile: authserver.SPIFFEBundleEndpointProfile(source.Endpoint.Profile),
+		}
+	}
+	if source.WorkloadAPI != nil {
+		converted.WorkloadAPI = &authserver.SPIFFEWorkloadAPIBundleSourceRunConfig{}
+	}
+	return converted
+}
+
+// buildSPIFFEClientAuthRunConfigs converts CRD SPIFFEClientConfig entries to
+// authserver.SPIFFEClientAuthRunConfig. GrantTypes is not a CRD field: the
+// runtime only accepts exactly the RFC 8693 token-exchange grant for a
+// SPIFFE client (validateSPIFFEGrants in pkg/authserver/spiffe_trust.go), so
+// it is always supplied here rather than configured.
+func buildSPIFFEClientAuthRunConfigs(
+	clients []mcpv1beta1.SPIFFEClientConfig,
+) []authserver.SPIFFEClientAuthRunConfig {
+	configs := make([]authserver.SPIFFEClientAuthRunConfig, len(clients))
+	for i, spiffeClient := range clients {
+		methods := make([]authserver.SPIFFEAuthenticationMethod, len(spiffeClient.Methods))
+		for j, method := range spiffeClient.Methods {
+			methods[j] = authserver.SPIFFEAuthenticationMethod(method)
+		}
+		configs[i] = authserver.SPIFFEClientAuthRunConfig{
+			TrustDomainRef:   spiffeClient.TrustDomainRef,
+			PrincipalPattern: spiffeClient.PrincipalPattern,
+			ClientID:         spiffeClient.ClientID,
+			Methods:          methods,
+			Resources:        append([]string(nil), spiffeClient.Resources...),
+			Audiences:        append([]string(nil), spiffeClient.Audiences...),
+			Scopes:           append([]string(nil), spiffeClient.Scopes...),
+			GrantTypes:       []string{authserver.SPIFFEGrantTypeTokenExchange},
+		}
+	}
+	return configs
 }
 
 // EmbeddedAuthServerConfigName returns the config name that should be used for
@@ -663,7 +734,11 @@ func GenerateAuthServerEnvVars(
 	// Generate env vars for static delegate client secrets. Their names are
 	// indexed by list position to avoid deriving a reserved env-var name from
 	// arbitrary client ID text.
-	for i, delegateClient := range authConfig.DelegateClients {
+	delegateClients := authConfig.DelegateClients
+	if authConfig.InboundGrants != nil && authConfig.InboundGrants.TokenExchange != nil {
+		delegateClients = authConfig.InboundGrants.TokenExchange.DelegateClients
+	}
+	for i, delegateClient := range delegateClients {
 		if delegateClient.ClientSecretRef != nil {
 			envVars = append(envVars, envVarFromSecretRef(
 				delegateClientSecretEnvVarName(i), delegateClient.ClientSecretRef))
@@ -816,6 +891,67 @@ func validateOIDCConfigForEmbeddedAuthServer(oidcConfig *oidc.OIDCConfig) error 
 	return nil
 }
 
+func buildInboundGrantsRunConfig(
+	config *mcpv1beta1.InboundGrantsConfig,
+) (*authserver.InboundGrantsRunConfig, error) {
+	if config == nil {
+		return nil, nil
+	}
+	grants := &authserver.InboundGrantsRunConfig{
+		SPIFFEClientAuth: buildSPIFFEClientAuthRunConfigs(config.SPIFFEClientAuth),
+	}
+	if config.TokenExchange != nil {
+		delegateClients, err := buildDelegateClientRunConfigs(config.TokenExchange.DelegateClients)
+		if err != nil {
+			return nil, err
+		}
+		policies := make([]authserver.TokenExchangeIssuerPolicyRunConfig, len(config.TokenExchange.IssuerPolicies))
+		for i, policy := range config.TokenExchange.IssuerPolicies {
+			policies[i] = authserver.TokenExchangeIssuerPolicyRunConfig{
+				IssuerRef:              policy.IssuerRef,
+				ExpectedAudience:       policy.ExpectedAudience,
+				ActorClaim:             policy.ActorClaim,
+				AllowedActors:          append([]string(nil), policy.AllowedActors...),
+				ActorMatcher:           policy.ActorMatcher,
+				AllowedDelegateClients: append([]string(nil), policy.AllowedDelegateClients...),
+				AllowMayAct:            policy.AllowMayAct,
+			}
+		}
+		grants.TokenExchange = &authserver.TokenExchangeInboundGrantRunConfig{
+			DelegateClients: delegateClients,
+			IssuerPolicies:  policies,
+		}
+	}
+	if config.JWTBearer != nil {
+		policies := make([]authserver.JWTBearerIssuerPolicyRunConfig, len(config.JWTBearer.IssuerPolicies))
+		for i, policy := range config.JWTBearer.IssuerPolicies {
+			if policy.MaxAssertionAge == nil {
+				return nil, fmt.Errorf("jwtBearer.issuerPolicies[%d].maxAssertionAge is required", i)
+			}
+			policies[i] = authserver.JWTBearerIssuerPolicyRunConfig{
+				IssuerRef:         policy.IssuerRef,
+				MaxAssertionAge:   policy.MaxAssertionAge.Duration.String(),
+				SubjectBindings:   buildJWTBearerSubjectBindings(policy.SubjectBindings),
+				AcceptedAudiences: append([]string(nil), policy.AcceptedAudiences...),
+			}
+		}
+		grants.JWTBearer = &authserver.JWTBearerInboundGrantRunConfig{IssuerPolicies: policies}
+	}
+	return grants, nil
+}
+
+func buildJWTBearerSubjectBindings(
+	bindings []mcpv1beta1.JWTBearerSubjectBinding,
+) []tokenexchange.JWTBearerSubjectBinding {
+	converted := make([]tokenexchange.JWTBearerSubjectBinding, len(bindings))
+	for i, binding := range bindings {
+		converted[i] = tokenexchange.JWTBearerSubjectBinding{
+			Subject: binding.Subject, AllowedResources: append([]string(nil), binding.AllowedResources...),
+		}
+	}
+	return converted
+}
+
 // BuildAuthServerRunConfig converts CRD EmbeddedAuthServerConfig to authserver.RunConfig.
 // The RunConfig is serializable and contains file paths for secrets (not the secrets themselves).
 //
@@ -839,6 +975,13 @@ func BuildAuthServerRunConfig(
 		}
 	}()
 
+	if err := authConfig.ValidateInboundGrants(); err != nil {
+		return nil, err
+	}
+	inboundGrants, err := buildInboundGrantsRunConfig(authConfig.InboundGrants)
+	if err != nil {
+		return nil, err
+	}
 	config = &authserver.RunConfig{
 		SchemaVersion:                authserver.CurrentSchemaVersion,
 		Issuer:                       authConfig.Issuer,
@@ -846,6 +989,8 @@ func BuildAuthServerRunConfig(
 		AllowedAudiences:             allowedAudiences,
 		ScopesSupported:              scopesSupported,
 		BaselineClientScopes:         authConfig.BaselineClientScopes,
+		InboundGrants:                inboundGrants,
+		SPIFFETrustDomains:           buildSPIFFETrustDomainRunConfigs(authConfig.SPIFFETrustDomains),
 	}
 
 	if len(authConfig.DelegateClients) > 0 {
@@ -860,36 +1005,8 @@ func BuildAuthServerRunConfig(
 		config.TrustedIssuers = buildTrustedIssuerRunConfigs(authConfig.TrustedIssuers)
 	}
 
-	// Build signing key configuration
-	if len(authConfig.SigningKeySecretRefs) > 0 {
-		signingKeyConfig := &authserver.SigningKeyRunConfig{
-			KeyDir: AuthServerKeysMountPath,
-		}
-		for idx := range authConfig.SigningKeySecretRefs {
-			fileName := fmt.Sprintf(AuthServerKeyFilePattern, idx)
-			if idx == 0 {
-				signingKeyConfig.SigningKeyFile = fileName
-			} else {
-				signingKeyConfig.FallbackKeyFiles = append(signingKeyConfig.FallbackKeyFiles, fileName)
-			}
-		}
-		config.SigningKeyConfig = signingKeyConfig
-	}
-
-	// Build HMAC secret file paths
-	for idx := range authConfig.HMACSecretRefs {
-		hmacPath := fmt.Sprintf("%s/%s", AuthServerHMACMountPath, fmt.Sprintf(AuthServerHMACFilePattern, idx))
-		config.HMACSecretFiles = append(config.HMACSecretFiles, hmacPath)
-	}
-
-	// Set token lifespans from config (as strings, will be parsed at runtime)
-	if authConfig.TokenLifespans != nil {
-		config.TokenLifespans = &authserver.TokenLifespanRunConfig{
-			AccessTokenLifespan:  authConfig.TokenLifespans.AccessTokenLifespan,
-			RefreshTokenLifespan: authConfig.TokenLifespans.RefreshTokenLifespan,
-			AuthCodeLifespan:     authConfig.TokenLifespans.AuthCodeLifespan,
-		}
-	}
+	// Wire signing-key file paths, HMAC secret file paths, and token lifespans.
+	buildAuthServerSecretsConfig(config, authConfig)
 
 	// Build upstream provider configs using shared bindings
 	bindings := buildUpstreamSecretBindings(authConfig.UpstreamProviders)
@@ -941,9 +1058,42 @@ func applySimpleAuthServerConfigFields(config *authserver.RunConfig, authConfig 
 
 	// Wire through the confidential-over-loopback-http opt-in (default off).
 	config.InsecureAllowConfidentialOverLoopbackHTTP = authConfig.InsecureAllowConfidentialOverLoopbackHTTP
+}
 
-	// Build CIMD configuration. CacheFallbackTTL is passed as-is (string);
-	// resolveCIMDConfig in the runner parses it to time.Duration at startup.
+// buildAuthServerSecretsConfig wires signing-key file paths, HMAC secret file
+// paths, token lifespans, and CIMD settings from the CRD onto config.
+func buildAuthServerSecretsConfig(config *authserver.RunConfig, authConfig *mcpv1beta1.EmbeddedAuthServerConfig) {
+	if len(authConfig.SigningKeySecretRefs) > 0 {
+		signingKeyConfig := &authserver.SigningKeyRunConfig{
+			KeyDir: AuthServerKeysMountPath,
+		}
+		for idx := range authConfig.SigningKeySecretRefs {
+			fileName := fmt.Sprintf(AuthServerKeyFilePattern, idx)
+			if idx == 0 {
+				signingKeyConfig.SigningKeyFile = fileName
+			} else {
+				signingKeyConfig.FallbackKeyFiles = append(signingKeyConfig.FallbackKeyFiles, fileName)
+			}
+		}
+		config.SigningKeyConfig = signingKeyConfig
+	}
+
+	for idx := range authConfig.HMACSecretRefs {
+		hmacPath := fmt.Sprintf("%s/%s", AuthServerHMACMountPath, fmt.Sprintf(AuthServerHMACFilePattern, idx))
+		config.HMACSecretFiles = append(config.HMACSecretFiles, hmacPath)
+	}
+
+	// Set token lifespans from config (as strings, will be parsed at runtime)
+	if authConfig.TokenLifespans != nil {
+		config.TokenLifespans = &authserver.TokenLifespanRunConfig{
+			AccessTokenLifespan:  authConfig.TokenLifespans.AccessTokenLifespan,
+			RefreshTokenLifespan: authConfig.TokenLifespans.RefreshTokenLifespan,
+			AuthCodeLifespan:     authConfig.TokenLifespans.AuthCodeLifespan,
+		}
+	}
+
+	// CacheFallbackTTL is passed as-is (string); resolveCIMDConfig in the
+	// runner parses it to time.Duration at startup.
 	if authConfig.CIMD != nil && authConfig.CIMD.Enabled {
 		config.CIMD = &authserver.CIMDRunConfig{
 			Enabled:          authConfig.CIMD.Enabled,
@@ -961,7 +1111,8 @@ func applySimpleAuthServerConfigFields(config *authserver.RunConfig, authConfig 
 // or allow_may_act combined with the delegate-client wildcard) as a
 // reconcile error rather than a pod crash loop.
 func validateDelegateClientsAndTrustedIssuers(config *authserver.RunConfig) error {
-	if len(config.DelegateClients) == 0 && len(config.TrustedIssuers) == 0 {
+	if len(config.DelegateClients) == 0 && len(config.TrustedIssuers) == 0 && config.InboundGrants == nil &&
+		len(config.SPIFFETrustDomains) == 0 {
 		return nil
 	}
 
@@ -972,8 +1123,10 @@ func validateDelegateClientsAndTrustedIssuers(config *authserver.RunConfig) erro
 		InsecureAllowHTTP:              config.InsecureAllowHTTP,
 		AllowPrivateKeyJWTRegistration: config.AllowPrivateKeyJWTRegistration,
 		InsecureAllowConfidentialOverLoopbackHTTP: config.InsecureAllowConfidentialOverLoopbackHTTP,
-		DelegateClients: config.DelegateClients,
-		TrustedIssuers:  config.TrustedIssuers,
+		DelegateClients:    config.DelegateClients,
+		TrustedIssuers:     config.TrustedIssuers,
+		InboundGrants:      config.InboundGrants,
+		SPIFFETrustDomains: config.SPIFFETrustDomains,
 	}
 	if err := validationConfig.Validate(); err != nil {
 		return fmt.Errorf("invalid embedded auth server delegate clients or trusted issuers: %w", err)
@@ -1137,7 +1290,12 @@ func buildUpstreamRunConfig(
 	switch provider.Type {
 	case mcpv1beta1.UpstreamProviderTypeOIDC:
 		if provider.OIDCConfig != nil {
-			config.OIDCConfig = buildOIDCUpstreamRunConfig(provider.OIDCConfig, b.EnvVarName, index, resourceURL)
+			oidcRunConfig, err := buildOIDCUpstreamRunConfig(
+				provider.OIDCConfig, b.EnvVarName, b.DCRInitialAccessTokenEnvVar, index, resourceURL)
+			if err != nil {
+				return nil, err
+			}
+			config.OIDCConfig = oidcRunConfig
 		}
 	case mcpv1beta1.UpstreamProviderTypeOAuth2:
 		if provider.OAuth2Config != nil {
@@ -1159,9 +1317,13 @@ func buildUpstreamRunConfig(
 func buildOIDCUpstreamRunConfig(
 	cfg *mcpv1beta1.OIDCUpstreamConfig,
 	clientSecretEnvVar string,
+	initialAccessTokenEnvVar string,
 	index int,
 	resourceURL string,
-) *authserver.OIDCUpstreamRunConfig {
+) (*authserver.OIDCUpstreamRunConfig, error) {
+	if err := mcpv1beta1.ValidateOIDCDCRConfig(cfg); err != nil {
+		return nil, err
+	}
 	redirectURI := cfg.RedirectURI
 	if redirectURI == "" && resourceURL != "" {
 		redirectURI = defaultRedirectURI(resourceURL)
@@ -1181,10 +1343,13 @@ func buildOIDCUpstreamRunConfig(
 	if cfg.CABundleRef != nil {
 		runConfig.CAFilePath = upstreamCABundleFilePath(index)
 	}
+	if cfg.DCRConfig != nil {
+		runConfig.DCRConfig = buildDCRUpstreamRunConfig(cfg.DCRConfig, initialAccessTokenEnvVar)
+	}
 	if cfg.UserInfoOverride != nil {
 		runConfig.UserInfoOverride = buildUserInfoRunConfig(cfg.UserInfoOverride)
 	}
-	return runConfig
+	return runConfig, nil
 }
 
 // buildOAuth2UpstreamRunConfig converts a CRD OAuth2UpstreamConfig to the
@@ -1219,6 +1384,7 @@ func buildOAuth2UpstreamRunConfig(
 		AuthorizationEndpoint:         cfg.AuthorizationEndpoint,
 		TokenEndpoint:                 cfg.TokenEndpoint,
 		ClientID:                      cfg.ClientID,
+		TokenEndpointAuthMethod:       cfg.TokenEndpointAuthMethod,
 		RedirectURI:                   redirectURI,
 		Scopes:                        cfg.Scopes,
 		AdditionalAuthorizationParams: cfg.AdditionalAuthorizationParams,

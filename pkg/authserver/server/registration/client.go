@@ -200,6 +200,32 @@ type dcrIssuedMarker struct{}
 
 func (dcrIssuedMarker) dcrIssued() {}
 
+// backChannelOnly marks a client with no interactive /authorize flow -- it
+// must never be resolvable there, regardless of what its response types or
+// grant types happen to look like. Explicit, not inferred, so a future
+// client class does not get silently hidden from /authorize just because it
+// happens to share metadata shape with a back-channel-only client.
+type backChannelOnly interface {
+	backChannelOnly()
+}
+
+// BackChannelOnly reports whether client is explicitly marked as having no
+// interactive /authorize flow.
+func BackChannelOnly(client fosite.Client) bool {
+	_, ok := client.(backChannelOnly)
+	return ok
+}
+
+// BackChannelOnlyMarker is embedded anonymously by a client type -- in this
+// package or any other -- to mark it as never resolvable at /authorize. The
+// backChannelOnly method it carries is unexported, but Go resolves interface
+// satisfaction for a promoted method by the method's defining package, not
+// the embedder's, so embedding this exported struct is sufficient for the
+// embedding type to satisfy the unexported backChannelOnly interface above.
+type BackChannelOnlyMarker struct{}
+
+func (BackChannelOnlyMarker) backChannelOnly() {}
+
 // publicClient is the DCR-issued public client shape: an OIDC client (so the
 // "none" method is recorded and enforced). RFC 8252 Section 7.3 loopback
 // dynamic-port matching for native apps is provided separately by

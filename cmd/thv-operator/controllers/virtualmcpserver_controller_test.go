@@ -928,6 +928,47 @@ func TestVirtualMCPServerUpdateStatus(t *testing.T) {
 			},
 			expectedPhase: mcpv1beta1.VirtualMCPServerPhaseFailed,
 		},
+		{
+			// Regression for NEW-1: the runtime snapshot (Status.Runtime) is the
+			// freshest backend data, but the top-level DiscoveredBackends is only a
+			// projection the operator writes once per reconcile. A vmcp fetched
+			// mid-reconcile can carry a current Runtime snapshot (all unhealthy)
+			// alongside a stale top-level field (all ready) from the previous
+			// reconcile's patch. The phase decision must follow Runtime, not the
+			// stale projection, within this same reconcile.
+			name: "runtime snapshot overrides stale top-level backend field",
+			vmcp: func() *mcpv1beta1.VirtualMCPServer {
+				v := v1beta1test.NewVirtualMCPServer(testVmcpName, "default")
+				v.Status.DiscoveredBackends = []mcpv1beta1.DiscoveredBackend{
+					{Name: "backend", Status: mcpv1beta1.BackendStatusReady},
+				}
+				v.Status.Runtime = &mcpv1beta1.VirtualMCPServerRuntimeStatus{
+					DiscoveredBackends: []mcpv1beta1.DiscoveredBackend{
+						{Name: "backend", Status: mcpv1beta1.BackendStatusUnavailable},
+					},
+				}
+				return v
+			}(),
+			pods: []corev1.Pod{
+				{
+					ObjectMeta: metav1.ObjectMeta{
+						Name:      testVmcpName + "-pod-1",
+						Namespace: "default",
+						Labels:    labelsForVirtualMCPServer(testVmcpName),
+					},
+					Status: corev1.PodStatus{
+						Phase: corev1.PodRunning,
+						Conditions: []corev1.PodCondition{
+							{
+								Type:   corev1.PodReady,
+								Status: corev1.ConditionTrue,
+							},
+						},
+					},
+				},
+			},
+			expectedPhase: mcpv1beta1.VirtualMCPServerPhaseDegraded,
+		},
 	}
 
 	for _, tt := range tests {
@@ -949,6 +990,53 @@ func TestVirtualMCPServerUpdateStatus(t *testing.T) {
 			assert.Equal(t, tt.expectedPhase, tt.vmcp.Status.Phase)
 		})
 	}
+}
+
+// TestVirtualMCPServerUpdateStatus_ReadyConditionOwnership locks in that the operator's
+// derived Ready condition (reason DeploymentReady) wins over the runtime's own Ready
+// condition (reason AllBackendsRoutable) projected from Status.Runtime. This is
+// deliberate: the operator's decision already folds in the runtime's backend health
+// plus pod/deployment readiness the runtime cannot observe, so it stays authoritative.
+func TestVirtualMCPServerUpdateStatus_ReadyConditionOwnership(t *testing.T) {
+	t.Parallel()
+
+	vmcp := v1beta1test.NewVirtualMCPServer(testVmcpName, "default")
+	vmcp.Status.Runtime = &mcpv1beta1.VirtualMCPServerRuntimeStatus{
+		Phase: mcpv1beta1.VirtualMCPServerPhaseReady,
+		Conditions: []metav1.Condition{{
+			Type: "Ready", Status: metav1.ConditionTrue, Reason: "AllBackendsRoutable",
+		}},
+		DiscoveredBackends: []mcpv1beta1.DiscoveredBackend{
+			{Name: "backend", Status: mcpv1beta1.BackendStatusReady},
+		},
+	}
+	pod := &corev1.Pod{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      testVmcpName + "-pod-1",
+			Namespace: "default",
+			Labels:    labelsForVirtualMCPServer(testVmcpName),
+		},
+		Status: corev1.PodStatus{
+			Phase: corev1.PodRunning,
+			Conditions: []corev1.PodCondition{
+				{Type: corev1.PodReady, Status: corev1.ConditionTrue},
+			},
+		},
+	}
+
+	r, _ := newTestVirtualMCPServerReconciler(t, vmcp, pod)
+
+	// NewStatusManager projects the runtime's Ready condition (AllBackendsRoutable)
+	// into the collector's pending state, mirroring what happens at the top of Reconcile.
+	statusManager := virtualmcpserverstatus.NewStatusManager(vmcp)
+	err := r.updateVirtualMCPServerStatus(context.Background(), vmcp, statusManager)
+	require.NoError(t, err)
+	_ = statusManager.UpdateStatus(context.Background(), &vmcp.Status)
+
+	condition := findCondition(vmcp.Status.Conditions, mcpv1beta1.ConditionTypeVirtualMCPServerReady)
+	require.NotNil(t, condition)
+	assert.Equal(t, "DeploymentReady", condition.Reason)
+	assert.NotEqual(t, "AllBackendsRoutable", condition.Reason)
 }
 
 // TestVirtualMCPServerLabels tests label generation
@@ -4747,6 +4835,22 @@ func TestVirtualMCPServerValidateAuthServerConfig_ZeroUpstreamAlternatives(t *te
 				}},
 			},
 		},
+		{
+			name: "canonical inbound grants",
+			config: &mcpv1beta1.EmbeddedAuthServerConfig{
+				Issuer: "https://auth.example.com",
+				InboundGrants: &mcpv1beta1.InboundGrantsConfig{
+					TokenExchange: &mcpv1beta1.TokenExchangeInboundGrantConfig{
+						DelegateClients: []mcpv1beta1.DelegateClientConfig{{
+							ClientID:        "delegate-client",
+							ClientSecretRef: &mcpv1beta1.SecretKeyRef{Name: "delegate-secret", Key: "client-secret"},
+							Scopes:          []string{"openid"},
+							Audiences:       []string{"https://mcp.example.com"},
+						}},
+					},
+				},
+			},
+		},
 	}
 
 	for _, tt := range tests {
@@ -4766,6 +4870,79 @@ func TestVirtualMCPServerValidateAuthServerConfig_ZeroUpstreamAlternatives(t *te
 			assert.Equal(t, mcpv1beta1.ConditionReasonAuthServerConfigValid, condition.Reason)
 		})
 	}
+}
+
+func TestVirtualMCPServerValidateAuthServerConfig_CanonicalTrustedIssuer(t *testing.T) {
+	t.Parallel()
+
+	vmcp := v1beta1test.NewVirtualMCPServer(testVmcpName, "default",
+		v1beta1test.WithVMCPGroupRef("test-group"),
+		v1beta1test.WithVMCPAuthServerConfig(&mcpv1beta1.EmbeddedAuthServerConfig{
+			Issuer: "https://auth.example.com",
+			TrustedIssuers: []mcpv1beta1.TrustedIssuerConfig{{
+				Name: "external", IssuerURL: "https://auth.example.com",
+			}},
+			InboundGrants: &mcpv1beta1.InboundGrantsConfig{
+				TokenExchange: &mcpv1beta1.TokenExchangeInboundGrantConfig{
+					IssuerPolicies: []mcpv1beta1.TokenExchangeIssuerPolicyConfig{{
+						IssuerRef: "external", ExpectedAudience: "audience",
+						AllowedDelegateClients: []string{"delegate"},
+					}},
+				},
+			},
+		}),
+	)
+	statusManager := virtualmcpserverstatus.NewStatusManager(vmcp)
+
+	err := (&VirtualMCPServerReconciler{}).validateAuthServerConfig(vmcp, statusManager)
+	statusManager.UpdateStatus(t.Context(), &vmcp.Status)
+
+	require.ErrorContains(t, err, "must not equal the authorization server's own issuer")
+	condition := findCondition(vmcp.Status.Conditions, mcpv1beta1.ConditionTypeAuthServerConfigValidated)
+	require.NotNil(t, condition)
+	assert.Equal(t, metav1.ConditionFalse, condition.Status)
+}
+
+func TestVirtualMCPServerValidateAuthServerConfig_TrustedIssuerEndpointRecovery(t *testing.T) {
+	t.Parallel()
+
+	const unsafeIssuerURL = "https://sentinel-user:sentinel-password@issuer.example.com"
+
+	vmcp := v1beta1test.NewVirtualMCPServer(testVmcpName, "default",
+		v1beta1test.WithVMCPGroupRef("test-group"),
+		v1beta1test.WithVMCPAuthServerConfig(&mcpv1beta1.EmbeddedAuthServerConfig{
+			Issuer: "https://auth.example.com",
+			TrustedIssuers: []mcpv1beta1.TrustedIssuerConfig{{
+				Name: "external", IssuerURL: unsafeIssuerURL,
+			}},
+			InboundGrants: &mcpv1beta1.InboundGrantsConfig{TokenExchange: &mcpv1beta1.TokenExchangeInboundGrantConfig{
+				IssuerPolicies: []mcpv1beta1.TokenExchangeIssuerPolicyConfig{{
+					IssuerRef: "external", ExpectedAudience: "audience", AllowedDelegateClients: []string{"delegate"},
+				}},
+			}},
+		}),
+	)
+	r := &VirtualMCPServerReconciler{}
+	statusManager := virtualmcpserverstatus.NewStatusManager(vmcp)
+
+	require.ErrorContains(t, r.validateAuthServerConfig(vmcp, statusManager), "must not contain userinfo")
+	statusManager.UpdateStatus(t.Context(), &vmcp.Status)
+	condition := findCondition(vmcp.Status.Conditions, mcpv1beta1.ConditionTypeAuthServerConfigValidated)
+	require.NotNil(t, condition)
+	assert.Equal(t, metav1.ConditionFalse, condition.Status)
+	assert.Contains(t, condition.Message, "must not contain userinfo")
+	assert.NotContains(t, condition.Message, unsafeIssuerURL)
+	assert.NotContains(t, condition.Message, "sentinel-user")
+	assert.NotContains(t, condition.Message, "sentinel-password")
+
+	vmcp.Spec.AuthServerConfig.TrustedIssuers[0].IssuerURL = "https://issuer.example.com"
+	statusManager = virtualmcpserverstatus.NewStatusManager(vmcp)
+	require.NoError(t, r.validateAuthServerConfig(vmcp, statusManager))
+	statusManager.UpdateStatus(t.Context(), &vmcp.Status)
+	condition = findCondition(vmcp.Status.Conditions, mcpv1beta1.ConditionTypeAuthServerConfigValidated)
+	require.NotNil(t, condition)
+	assert.Equal(t, metav1.ConditionTrue, condition.Status)
+	assert.Equal(t, mcpv1beta1.ConditionReasonAuthServerConfigValid, condition.Reason)
 }
 
 func TestVirtualMCPServerValidateAuthServerConfig_DelegateClientsRejectUnsafeHTTP(t *testing.T) {
@@ -4881,7 +5058,86 @@ func TestVirtualMCPServer_AuthServerConfigCABundleInvalidIsTerminal(t *testing.T
 	assert.True(t, terminal, "malformed bundle content is terminal")
 }
 
-// A ConfigMap read that fails for reasons unrelated to its content is transient:
+func TestVirtualMCPServerInlineInboundGrantDeprecationTransitions(t *testing.T) {
+	t.Parallel()
+
+	delegate := mcpv1beta1.DelegateClientConfig{
+		ClientID:        "sensitive-client-id",
+		ClientSecretRef: &mcpv1beta1.SecretKeyRef{Name: "sensitive-secret", Key: "sensitive-token-key"},
+		Scopes:          []string{"openid"}, Audiences: []string{"https://api.example.com"},
+	}
+	vmcp := v1beta1test.NewVirtualMCPServer("deprecated-inline-grants", "default",
+		v1beta1test.MutateVMCP(func(v *mcpv1beta1.VirtualMCPServer) {
+			v.Generation = 4
+			v.Spec.AuthServerConfig = &mcpv1beta1.EmbeddedAuthServerConfig{
+				Issuer: "https://auth.example.com", DelegateClients: []mcpv1beta1.DelegateClientConfig{delegate},
+			}
+		}),
+	)
+	r, fakeClient := newTestVirtualMCPServerReconciler(t, vmcp)
+	recorder := events.NewFakeRecorder(10)
+	r.Recorder = recorder
+	key := types.NamespacedName{Name: vmcp.Name, Namespace: vmcp.Namespace}
+
+	applyAndGet := func(current *mcpv1beta1.VirtualMCPServer) mcpv1beta1.VirtualMCPServer {
+		t.Helper()
+		manager := virtualmcpserverstatus.NewStatusManager(current)
+		r.applyInlineInboundGrantDeprecationCondition(current, manager)
+		manager.SetObservedGeneration(current.Generation)
+		require.NoError(t, r.applyStatusUpdates(t.Context(), current, manager))
+		var got mcpv1beta1.VirtualMCPServer
+		require.NoError(t, fakeClient.Get(t.Context(), key, &got))
+		return got
+	}
+	assertCondition := func(got mcpv1beta1.VirtualMCPServer, status metav1.ConditionStatus, reason string, generation int64) {
+		t.Helper()
+		condition := meta.FindStatusCondition(got.Status.Conditions,
+			mcpv1beta1.ConditionTypeVirtualMCPServerDeprecatedInboundGrantConfiguration)
+		require.NotNil(t, condition)
+		assert.Equal(t, status, condition.Status)
+		assert.Equal(t, reason, condition.Reason)
+		assert.Equal(t, generation, condition.ObservedGeneration)
+		assert.NotContains(t, condition.Message, "sensitive-client-id")
+		assert.NotContains(t, condition.Message, "sensitive-secret")
+		assert.NotContains(t, condition.Message, "sensitive-token-key")
+	}
+
+	got := applyAndGet(vmcp)
+	assertCondition(got, metav1.ConditionTrue,
+		mcpv1beta1.ConditionReasonVirtualMCPServerLegacyInboundGrantFields, 4)
+	assert.Contains(t, meta.FindStatusCondition(got.Status.Conditions,
+		mcpv1beta1.ConditionTypeVirtualMCPServerDeprecatedInboundGrantConfiguration).Message,
+		"spec.authServerConfig.delegateClients -> spec.authServerConfig.inboundGrants.tokenExchange.delegateClients")
+	assert.Equal(t, 1, countContaining(drainEvents(recorder), inboundGrantDeprecationEventReason))
+
+	steadyResourceVersion := got.ResourceVersion
+	got = applyAndGet(&got)
+	assert.Equal(t, steadyResourceVersion, got.ResourceVersion, "steady state must not write status")
+	assert.Zero(t, countContaining(drainEvents(recorder), inboundGrantDeprecationEventReason))
+
+	got.Spec.AuthServerConfig.DelegateClients = nil
+	got.Spec.AuthServerConfig.InboundGrants = &mcpv1beta1.InboundGrantsConfig{
+		TokenExchange: &mcpv1beta1.TokenExchangeInboundGrantConfig{
+			DelegateClients: []mcpv1beta1.DelegateClientConfig{delegate},
+		},
+	}
+	got.Generation = 5
+	require.NoError(t, fakeClient.Update(t.Context(), &got))
+	got = applyAndGet(&got)
+	assertCondition(got, metav1.ConditionFalse,
+		mcpv1beta1.ConditionReasonVirtualMCPServerCanonicalInboundGrantConfiguration, 5)
+	assert.Zero(t, countContaining(drainEvents(recorder), inboundGrantDeprecationEventReason))
+
+	got.Spec.AuthServerConfig.InboundGrants = nil
+	got.Spec.AuthServerConfig.DelegateClients = []mcpv1beta1.DelegateClientConfig{delegate}
+	got.Generation = 6
+	require.NoError(t, fakeClient.Update(t.Context(), &got))
+	got = applyAndGet(&got)
+	assertCondition(got, metav1.ConditionTrue,
+		mcpv1beta1.ConditionReasonVirtualMCPServerLegacyInboundGrantFields, 6)
+	assert.Equal(t, 1, countContaining(drainEvents(recorder), inboundGrantDeprecationEventReason))
+}
+
 // it must propagate so the caller requeues, and must not be painted onto status
 // as a spec defect that would outlive the outage.
 func TestVirtualMCPServer_AuthServerConfigCABundleGetErrorIsTransient(t *testing.T) {
@@ -4943,8 +5199,8 @@ func TestVirtualMCPServer_RunAuthValidations_StatusWriteFailurePropagates(t *tes
 		WithObjects(vmcp).
 		WithStatusSubresource(&mcpv1beta1.VirtualMCPServer{}).
 		WithInterceptorFuncs(interceptor.Funcs{
-			SubResourceUpdate: func(_ context.Context, _ client.Client, _ string, _ client.Object,
-				_ ...client.SubResourceUpdateOption) error {
+			SubResourcePatch: func(_ context.Context, _ client.Client, _ string, _ client.Object,
+				_ client.Patch, _ ...client.SubResourcePatchOption) error {
 				return apierrors.NewServiceUnavailable("apiserver is having a moment")
 			},
 		}).

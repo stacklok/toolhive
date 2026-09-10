@@ -220,12 +220,56 @@ const docTemplate = `{
                 "type": "object"
             },
             "authserver.InboundGrantsRunConfig": {
-                "description": "InboundGrants declares canonical inbound grant configuration, including\nSPIFFE client authentication. See InboundGrantsRunConfig.",
+                "description": "InboundGrants declares canonical inbound grant configuration, including\nSPIFFE client authentication, delegate clients, and issuer policy. A\nnon-nil value explicitly controls grant-family enablement.",
                 "properties": {
+                    "jwt_bearer": {
+                        "$ref": "#/components/schemas/authserver.JWTBearerInboundGrantRunConfig"
+                    },
                     "spiffe_client_auth": {
                         "description": "SPIFFEClientAuth associates SPIFFE principal patterns with explicit OAuth\nclient identities and permissions. See SPIFFEClientAuthRunConfig.",
                         "items": {
                             "$ref": "#/components/schemas/authserver.SPIFFEClientAuthRunConfig"
+                        },
+                        "type": "array",
+                        "uniqueItems": false
+                    },
+                    "token_exchange": {
+                        "$ref": "#/components/schemas/authserver.TokenExchangeInboundGrantRunConfig"
+                    }
+                },
+                "type": "object"
+            },
+            "authserver.JWTBearerInboundGrantRunConfig": {
+                "description": "JWTBearer configures RFC 7523 issuer policies.",
+                "properties": {
+                    "issuer_policies": {
+                        "items": {
+                            "$ref": "#/components/schemas/authserver.JWTBearerIssuerPolicyRunConfig"
+                        },
+                        "type": "array",
+                        "uniqueItems": false
+                    }
+                },
+                "type": "object"
+            },
+            "authserver.JWTBearerIssuerPolicyRunConfig": {
+                "properties": {
+                    "accepted_audiences": {
+                        "items": {
+                            "type": "string"
+                        },
+                        "type": "array",
+                        "uniqueItems": false
+                    },
+                    "issuer_ref": {
+                        "type": "string"
+                    },
+                    "max_assertion_age": {
+                        "type": "string"
+                    },
+                    "subject_bindings": {
+                        "items": {
+                            "$ref": "#/components/schemas/github_com_stacklok_toolhive_pkg_authserver_server_tokenexchange.JWTBearerSubjectBinding"
                         },
                         "type": "array",
                         "uniqueItems": false
@@ -293,6 +337,10 @@ const docTemplate = `{
                         "description": "TokenEndpoint is the URL for the OAuth token endpoint.",
                         "type": "string"
                     },
+                    "token_endpoint_auth_method": {
+                        "description": "TokenEndpointAuthMethod selects how the client authenticates at the OAuth token\nendpoint. When empty and a client secret is configured, client_secret_basic is\nused, matching the RFC 7591 default for confidential clients. Set this to\nclient_secret_post only for providers that require credentials in the request body.\nPublic clients without a secret use the \"none\" method.",
+                        "type": "string"
+                    },
                     "token_response_mapping": {
                         "$ref": "#/components/schemas/authserver.TokenResponseMappingRunConfig"
                     },
@@ -331,6 +379,9 @@ const docTemplate = `{
                     "client_secret_file": {
                         "description": "ClientSecretFile is the path to a file containing the OAuth 2.0 client secret.\nMutually exclusive with ClientSecretEnvVar. Optional for public clients using PKCE.",
                         "type": "string"
+                    },
+                    "dcr_config": {
+                        "$ref": "#/components/schemas/authserver.DCRUpstreamConfig"
                     },
                     "insecure_allow_http": {
                         "description": "InsecureAllowHTTP permits a plain-HTTP issuer URL and HTTP discovery\nendpoints for this upstream. Only for in-cluster development environments\n(e.g. Dex served over HTTP in a kind cluster) where TLS is not available.\nNever set this in production.",
@@ -397,7 +448,7 @@ const docTemplate = `{
                         "$ref": "#/components/schemas/authserver.CIMDRunConfig"
                     },
                     "delegate_clients": {
-                        "description": "DelegateClients declares confidential OAuth clients to register at\nauthorization-server startup, including clients intended for RFC 8693\ntoken exchange.\n\nIndependent of AllowConfidentialClientRegistration: declaring a client\nhere does not require or enable self-service confidential DCR, and\nsetting that flag does not declare or enable any client here. They\ngovern different endpoints — this field is static configuration the\noperator controls directly, while the flag is admission policy for the\nunauthenticated /oauth/register endpoint.\n\nSee DelegateClientRunConfig for the per-client field reference.",
+                        "description": "DelegateClients declares confidential OAuth clients to register at\nauthorization-server startup, including clients intended for RFC 8693\ntoken exchange.\n\nThis legacy field is deprecated; use InboundGrants.TokenExchange.DelegateClients.\n\nIndependent of AllowConfidentialClientRegistration: declaring a client\nhere does not require or enable self-service confidential DCR, and\nsetting that flag does not declare or enable any client here. They\ngovern different endpoints — this field is static configuration the\noperator controls directly, while the flag is admission policy for the\nunauthenticated /oauth/register endpoint.\n\nSee DelegateClientRunConfig for the per-client field reference.",
                         "items": {
                             "$ref": "#/components/schemas/authserver.DelegateClientRunConfig"
                         },
@@ -473,7 +524,7 @@ const docTemplate = `{
                         "$ref": "#/components/schemas/authserver.TokenLifespanRunConfig"
                     },
                     "trusted_issuers": {
-                        "description": "TrustedIssuers lists external OIDC issuers whose tokens are accepted as\nRFC 8693 subject tokens or RFC 7523 JWT-bearer assertions. Issuers with\njwtBearerGrant enabled may be used for the JWT-bearer grant without an\nRFC 8693 delegation policy. Empty (the default) means only self-issued\nsubject tokens are accepted.\n\nSee tokenexchange.TrustedIssuer for the per-issuer field reference, and\ndocs/arch/17-token-exchange-delegation.md for the trust model, consent\nsignals, and operator-facing constraints (audience/scope bounding,\nsubject namespace qualification, required client binding) that aren't\nvisible from the config shape alone.",
+                        "description": "TrustedIssuers lists external OIDC trust declarations.\n\nThis legacy field is deprecated; RFC 8693 and JWT-bearer policies embedded in these entries\nremain supported for compatibility. New configurations should put policy\nunder InboundGrants and reference a named trusted issuer.\n\nSee tokenexchange.TrustedIssuer for the per-issuer field reference, and\ndocs/arch/17-token-exchange-delegation.md for the trust model, consent\nsignals, and operator-facing constraints (audience/scope bounding,\nsubject namespace qualification, required client binding) that aren't\nvisible from the config shape alone.",
                         "items": {
                             "$ref": "#/components/schemas/tokenexchange.TrustedIssuer"
                         },
@@ -618,6 +669,60 @@ const docTemplate = `{
                     },
                     "signing_key_file": {
                         "description": "SigningKeyFile is the filename of the primary signing key (relative to KeyDir).\nThis key is used for signing new tokens.",
+                        "type": "string"
+                    }
+                },
+                "type": "object"
+            },
+            "authserver.TokenExchangeInboundGrantRunConfig": {
+                "description": "TokenExchange configures RFC 8693 inbound clients and issuer policies.",
+                "properties": {
+                    "delegate_clients": {
+                        "items": {
+                            "$ref": "#/components/schemas/authserver.DelegateClientRunConfig"
+                        },
+                        "type": "array",
+                        "uniqueItems": false
+                    },
+                    "issuer_policies": {
+                        "items": {
+                            "$ref": "#/components/schemas/authserver.TokenExchangeIssuerPolicyRunConfig"
+                        },
+                        "type": "array",
+                        "uniqueItems": false
+                    }
+                },
+                "type": "object"
+            },
+            "authserver.TokenExchangeIssuerPolicyRunConfig": {
+                "properties": {
+                    "actor_claim": {
+                        "type": "string"
+                    },
+                    "actor_matcher": {
+                        "type": "string"
+                    },
+                    "allow_may_act": {
+                        "type": "boolean"
+                    },
+                    "allowed_actors": {
+                        "items": {
+                            "type": "string"
+                        },
+                        "type": "array",
+                        "uniqueItems": false
+                    },
+                    "allowed_delegate_clients": {
+                        "items": {
+                            "type": "string"
+                        },
+                        "type": "array",
+                        "uniqueItems": false
+                    },
+                    "expected_audience": {
+                        "type": "string"
+                    },
+                    "issuer_ref": {
                         "type": "string"
                     }
                 },
@@ -899,6 +1004,21 @@ const docTemplate = `{
                     },
                     "provider_name": {
                         "description": "ProviderName identifies which upstream provider's tokens to retrieve for injection.\nThis is required and must match a configured upstream provider name.",
+                        "type": "string"
+                    }
+                },
+                "type": "object"
+            },
+            "github_com_stacklok_toolhive_pkg_authserver_server_tokenexchange.JWTBearerSubjectBinding": {
+                "properties": {
+                    "allowed_resources": {
+                        "items": {
+                            "type": "string"
+                        },
+                        "type": "array",
+                        "uniqueItems": false
+                    },
+                    "subject": {
                         "type": "string"
                     }
                 },
@@ -1630,6 +1750,10 @@ const docTemplate = `{
                         "description": "K8sPodTemplatePatch is a JSON string to patch the Kubernetes pod template\nOnly applicable when using Kubernetes runtime",
                         "type": "string"
                     },
+                    "max_request_body_size": {
+                        "description": "MaxRequestBodySize is the maximum inbound MCP proxy request body size in bytes.\nZero uses the default limit of 8 MiB. Negative values are rejected\nwhen the RunConfig is built or used at runtime.",
+                        "type": "integer"
+                    },
                     "mcpserver_generation": {
                         "description": "MCPServerGeneration is the K8s .metadata.generation of the MCPServer CR that rendered\nthis RunConfig. The Kubernetes runtime uses it as a monotonic version to prevent stale\nrolling-update pods from overwriting a newer RunConfig's StatefulSet apply. Zero value\nmeans unversioned (backward-compat with older operators, or non-operator callers).",
                         "type": "integer"
@@ -1671,6 +1795,11 @@ const docTemplate = `{
                             "sse",
                             "streamable-http"
                         ],
+                        "type": "string"
+                    },
+                    "proxy_read_timeout": {
+                        "description": "ProxyReadTimeout bounds reading the entire request (headers + body) on the\nproxy HTTP server, expressed as a Go duration string (e.g. \"30s\", \"1m\").\nEmpty uses the proxy default (30s). Negative durations and values that fail\ntime.ParseDuration are rejected at runtime. Applies to all HTTP transports.\nString (not time.Duration) keeps the wire format unit-explicit.",
+                        "example": "30s",
                         "type": "string"
                     },
                     "publish": {
@@ -3174,6 +3303,10 @@ const docTemplate = `{
                         "description": "Docker image to use",
                         "type": "string"
                     },
+                    "max_request_body_size": {
+                        "description": "Maximum inbound MCP proxy request body size in bytes. Zero uses the default limit of 8 MiB.",
+                        "type": "integer"
+                    },
                     "name": {
                         "description": "Name of the workload",
                         "type": "string"
@@ -3198,6 +3331,11 @@ const docTemplate = `{
                     "proxy_port": {
                         "description": "Port for the HTTP proxy to listen on",
                         "type": "integer"
+                    },
+                    "proxy_read_timeout": {
+                        "description": "Maximum time to read a complete MCP proxy request, expressed as a Go duration string.\nEmpty or zero uses the default timeout of 30 seconds.",
+                        "example": "30s",
+                        "type": "string"
                     },
                     "registry": {
                         "description": "Registry is the optional registry name to resolve the server from (e.g. \"default\").",
@@ -3440,6 +3578,10 @@ const docTemplate = `{
                     },
                     "project_root": {
                         "description": "ProjectRoot is the project root path for project-scoped installs",
+                        "type": "string"
+                    },
+                    "public_key": {
+                        "description": "PublicKey is the base64-encoded DER SPKI cosign public key the artifact\nmust verify against, for artifacts signed with a cosign key pair rather\nthan keylessly. Required the first time such an artifact is installed\nproject-scoped, and pinned in the lock file from then on.",
                         "type": "string"
                     },
                     "scope": {
@@ -4082,6 +4224,10 @@ const docTemplate = `{
                         "description": "Docker image to use",
                         "type": "string"
                     },
+                    "max_request_body_size": {
+                        "description": "Maximum inbound MCP proxy request body size in bytes. Zero uses the default limit of 8 MiB.",
+                        "type": "integer"
+                    },
                     "network_isolation": {
                         "description": "Whether network isolation is turned on. This applies the rules in the permission profile.\nPointer so that omitting the field defaults to network isolation ENABLED (matching the\n` + "`" + `thv run` + "`" + ` CLI default); set it explicitly to false to disable network isolation.\nThis also applies on update: a request that omits this field enables isolation, so\nclients that build update requests from scratch should send it explicitly to avoid\nunintentionally turning isolation on for a workload that had it off.",
                         "type": "boolean"
@@ -4102,6 +4248,11 @@ const docTemplate = `{
                     "proxy_port": {
                         "description": "Port for the HTTP proxy to listen on",
                         "type": "integer"
+                    },
+                    "proxy_read_timeout": {
+                        "description": "Maximum time to read a complete MCP proxy request, expressed as a Go duration string.\nEmpty or zero uses the default timeout of 30 seconds.",
+                        "example": "30s",
+                        "type": "string"
                     },
                     "runtime_config": {
                         "$ref": "#/components/schemas/templates.RuntimeConfig"
@@ -5416,7 +5567,7 @@ const docTemplate = `{
                 "type": "object"
             },
             "tokenexchange.JWTBearerGrantPolicy": {
-                "description": "JWTBearerGrant optionally enables the plain RFC 7523 JWT-bearer grant.\nIt accepts assertions from this issuer without client authentication and\nlimits their maximum age, subjects, and RFC 8707 resources. It is\nindependent from RFC 8693 delegation policy.",
+                "description": "JWTBearerGrant optionally enables the plain RFC 7523 JWT-bearer grant.\nIt accepts assertions from this issuer without client authentication and\nlimits their maximum age, subjects, and RFC 8707 resources. It is\nindependent from RFC 8693 delegation policy.\n\nThis legacy field is deprecated; configure RFC 7523 policy under\ninbound_grants.jwt_bearer.issuer_policies.",
                 "properties": {
                     "accepted_audiences": {
                         "description": "AcceptedAudiences is the set of \"this AS\" identity strings an\nassertion's \"aud\" claim must intersect — e.g. to support migrating\nthis server's issuer/token-endpoint URL, or exposing it under more\nthan one valid name. Each value uniquely identifies this\nauthorization server for this grant; it is NOT a resource/API\nidentifier — a bare resource audience is deliberately not accepted\nhere, that would let any RFC 8707 resource-scoped token satisfy the\ngrant instead of only tokens minted for this AS. Defaults to\n[tokenEndpoint] when empty, preserving prior exact-match behavior.",
@@ -5493,7 +5644,7 @@ const docTemplate = `{
                         "type": "string"
                     },
                     "expected_audience": {
-                        "description": "ExpectedAudience is the expected \"aud\" claim value that must appear\nin an RFC 8693 subject token's audience list (a resource/API identifier,\nnot a client ID — required for delegation unless JWTBearerGrant is\nconfigured; see looksLikeResourceIdentifier). RFC 7523 assertions use\nthe token endpoint as their audience instead.\nSee docs/arch/17-token-exchange-delegation.md (\"ID/access-token\ndiscrimination\") for why and its limits.",
+                        "description": "ExpectedAudience is the expected \"aud\" claim value that must appear\nin an RFC 8693 subject token's audience list (a resource/API identifier,\nnot a client ID — required for delegation unless JWTBearerGrant is\nconfigured; see looksLikeResourceIdentifier). RFC 7523 assertions use\nthe token endpoint as their audience instead.\n\nThis legacy field is deprecated; configure RFC 8693 policy under\ninbound_grants.token_exchange.issuer_policies.\nSee docs/arch/17-token-exchange-delegation.md (\"ID/access-token\ndiscrimination\") for why and its limits.",
                         "type": "string"
                     },
                     "insecure_allow_http": {
@@ -5510,6 +5661,10 @@ const docTemplate = `{
                     },
                     "jwt_bearer_grant": {
                         "$ref": "#/components/schemas/tokenexchange.JWTBearerGrantPolicy"
+                    },
+                    "name": {
+                        "description": "Name optionally identifies this trust declaration for canonical issuer_ref references.",
+                        "type": "string"
                     }
                 },
                 "type": "object"

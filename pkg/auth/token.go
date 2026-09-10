@@ -378,6 +378,10 @@ type TokenValidator struct {
 	// nil when no embedded auth server is configured.
 	keyProvider keys.PublicKeyProvider
 
+	// embeddedAuthServerIssuer binds session-less-grant provenance to tokens
+	// validated for this embedded authorization server only.
+	embeddedAuthServerIssuer string
+
 	// Lazy JWKS registration
 	jwksRegistered      bool
 	jwksRegistrationMu  sync.Mutex
@@ -535,9 +539,10 @@ func registerIntrospectionProviders(config TokenValidatorConfig, clientSecret st
 
 // tokenValidatorOptions holds optional dependencies for NewTokenValidator.
 type tokenValidatorOptions struct {
-	envReader           env.Reader
-	upstreamTokenReader upstreamtoken.TokenReader
-	keyProvider         keys.PublicKeyProvider
+	envReader                env.Reader
+	upstreamTokenReader      upstreamtoken.TokenReader
+	keyProvider              keys.PublicKeyProvider
+	embeddedAuthServerIssuer string
 }
 
 // TokenValidatorOption is a functional option for NewTokenValidator.
@@ -559,6 +564,15 @@ func WithEnvReader(reader env.Reader) TokenValidatorOption {
 func WithUpstreamTokenReader(reader upstreamtoken.TokenReader) TokenValidatorOption {
 	return func(o *tokenValidatorOptions) {
 		o.upstreamTokenReader = reader
+	}
+}
+
+// WithEmbeddedAuthServerIssuer binds session-less-grant provenance to tokens
+// validated for this embedded authorization server. This runtime-only value is
+// deliberately separate from TokenValidatorConfig, which is user configuration.
+func WithEmbeddedAuthServerIssuer(issuer string) TokenValidatorOption {
+	return func(o *tokenValidatorOptions) {
+		o.embeddedAuthServerIssuer = issuer
 	}
 }
 
@@ -684,20 +698,21 @@ func NewTokenValidator(ctx context.Context, config TokenValidatorConfig, opts ..
 	}
 
 	validator := &TokenValidator{
-		issuer:              config.Issuer,
-		audience:            config.Audience,
-		jwksURL:             jwksURL,
-		introspectURL:       config.IntrospectionURL,
-		clientID:            config.ClientID,
-		clientSecret:        clientSecret,
-		jwksClient:          cache,
-		client:              config.httpClient,
-		resourceURL:         config.ResourceURL,
-		scopes:              config.Scopes,
-		registry:            registry,
-		insecureAllowHTTP:   config.InsecureAllowHTTP,
-		upstreamTokenReader: o.upstreamTokenReader,
-		keyProvider:         o.keyProvider,
+		issuer:                   config.Issuer,
+		audience:                 config.Audience,
+		jwksURL:                  jwksURL,
+		introspectURL:            config.IntrospectionURL,
+		clientID:                 config.ClientID,
+		clientSecret:             clientSecret,
+		jwksClient:               cache,
+		client:                   config.httpClient,
+		resourceURL:              config.ResourceURL,
+		scopes:                   config.Scopes,
+		registry:                 registry,
+		insecureAllowHTTP:        config.InsecureAllowHTTP,
+		upstreamTokenReader:      o.upstreamTokenReader,
+		keyProvider:              o.keyProvider,
+		embeddedAuthServerIssuer: o.embeddedAuthServerIssuer,
 	}
 
 	return validator, nil
@@ -1242,6 +1257,39 @@ func (v *TokenValidator) loadUpstreamTokens(
 	return creds, failed, nil
 }
 
+// isSessionlessGrant reports whether a validated token from the configured
+// embedded authorization server affirmatively proves it was minted without an
+// upstream session. A nil upstream-token map alone is never sufficient.
+//
+// The gate requires the validator's own issuer to be the embedded authorization
+// server's, rather than trusting the token's "iss" claim on its own. validateClaims
+// only verifies "iss" when v.issuer is set, so on a JWKS-only configuration the
+// claim is unverified beyond the signature and would be a self-assertion. Binding
+// to v.issuer makes "validated for the configured embedded authorization-server
+// issuer" true by construction instead of by deployment convention, and leaves the
+// claim comparison below as a redundant restatement of what validateClaims proved.
+func (v *TokenValidator) isSessionlessGrant(identity *Identity, claims jwt.MapClaims) bool {
+	// Trim on both sides, as validateClaims does: an issuer configured with stray
+	// whitespace must not silently turn this gate off and deny every session-less
+	// grant with no diagnostic.
+	embeddedIssuer := strings.TrimSpace(v.embeddedAuthServerIssuer)
+	if embeddedIssuer == "" || strings.TrimSpace(v.issuer) != embeddedIssuer {
+		return false
+	}
+	if identity.UpstreamTokens != nil {
+		return false
+	}
+	issuer, ok := claims["iss"].(string)
+	if !ok || strings.TrimSpace(issuer) != embeddedIssuer {
+		return false
+	}
+	if chain := identity.DelegationChain; chain != nil && !chain.Malformed && len(chain.Chain) > 0 {
+		return true
+	}
+	marker, ok := claims[upstreamtoken.NoUpstreamSessionClaimKey].(bool)
+	return ok && marker
+}
+
 // Middleware creates an HTTP middleware that validates JWT tokens and creates Identity.
 func (v *TokenValidator) Middleware(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -1329,6 +1377,8 @@ func (v *TokenValidator) Middleware(next http.Handler) http.Handler {
 				identity.UpstreamIDTokens = idTokens
 			}
 		}
+
+		identity.SessionlessGrant = v.isSessionlessGrant(identity, claims)
 
 		// Add the fully-populated Identity to the request context and serve.
 		ctx := WithIdentity(r.Context(), identity)

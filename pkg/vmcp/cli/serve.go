@@ -230,7 +230,7 @@ func Serve(ctx context.Context, cfg ServeConfig) error {
 			return fmt.Errorf("VMCP_NAMESPACE environment variable not set")
 		}
 
-		backendWatcher, err = k8s.NewBackendWatcher(restConfig, namespace, vmcpCfg.Group, dynamicRegistry)
+		backendWatcher, err = k8s.NewBackendWatcher(restConfig, namespace, vmcpCfg.Group, dynamicRegistry, vmcpCfg.OutgoingAuth)
 		if err != nil {
 			return fmt.Errorf("failed to create backend watcher: %w", err)
 		}
@@ -373,15 +373,18 @@ func Serve(ctx context.Context, cfg ServeConfig) error {
 	// Extract dependencies from the embedded auth server.
 	var upstreamReader upstreamtoken.TokenReader
 	var keyProvider keys.PublicKeyProvider
+	var embeddedAuthServerIssuer string
 	if embeddedAuthServer != nil {
 		stor := embeddedAuthServer.IDPTokenStorage()
 		refresher := embeddedAuthServer.UpstreamTokenRefresher()
 		upstreamReader = upstreamtoken.NewInProcessService(stor, refresher)
 		keyProvider = embeddedAuthServer.KeyProvider()
+		embeddedAuthServerIssuer = authServerRC.Issuer
 	}
 
 	authMiddleware, authzMiddleware, authInfoHandler, err :=
-		authfactory.NewIncomingAuthMiddleware(ctx, vmcpCfg.IncomingAuth, vmcpCfg.Name, passThroughTools, upstreamReader, keyProvider)
+		authfactory.NewIncomingAuthMiddleware(ctx, vmcpCfg.IncomingAuth, vmcpCfg.Name, passThroughTools,
+			upstreamReader, keyProvider, embeddedAuthServerIssuer)
 	if err != nil {
 		return fmt.Errorf("failed to create authentication middleware: %w", err)
 	}

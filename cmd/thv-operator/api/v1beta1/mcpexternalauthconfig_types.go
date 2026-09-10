@@ -389,39 +389,25 @@ type DelegateClientConfig struct {
 }
 
 // TrustedIssuerConfig configures an external OIDC issuer whose tokens are
-// accepted as RFC 8693 subject tokens or RFC 7523 JWT-bearer assertions during
-// token exchange. It mirrors tokenexchange.TrustedIssuer
-// (pkg/authserver/server/tokenexchange), the runtime type the operator converts
-// this into directly — no secret is referenced by this type, so no SecretKeyRef
-// indirection is needed, unlike DelegateClientConfig.
-//
-// expectedAudience is exempted only for a grant-only issuer: jwtBearerGrant
-// present and none of actorClaim, actorMatcher, allowMayAct, or allowedActors
-// set. Any RFC 8693 delegation field (actorClaim, actorMatcher, allowMayAct,
-// allowedActors) still requires expectedAudience, even when combined with
-// jwtBearerGrant.
+// accepted as RFC 8693 subject tokens or RFC 7523 JWT-bearer assertions. Trust
+// fields remain top-level; canonical grant policy references this declaration by
+// Name. The embedded grant-policy fields are retained for released CRD compatibility.
 //
 // +kubebuilder:validation:XValidation:rule="!has(self.allowedDelegateClients) || !('*' in self.allowedDelegateClients) || size(self.allowedDelegateClients) == 1",message="allowedDelegateClients must not combine the wildcard \"*\" with specific client IDs"
-//
-// The allowedDelegateClients rule below mirrors validateDelegationPolicy
-// (pkg/authserver/server/tokenexchange/multi_issuer_validator.go): it is
-// keyed on whether ANY delegation field is set (expectedAudience,
-// actorClaim, actorMatcher, allowMayAct), not merely on whether
-// jwtBearerGrant is absent — an issuer can combine jwtBearerGrant with
-// expectedAudience for RFC 8693 delegation on the same issuer, and that
-// combination still requires allowedDelegateClients at the Go level.
-//
 // +kubebuilder:validation:XValidation:rule="!(has(self.allowMayAct) && self.allowMayAct && '*' in self.allowedDelegateClients)",message="allowMayAct must not be enabled when allowedDelegateClients contains the wildcard \"*\""
 // +kubebuilder:validation:XValidation:rule="!has(self.actorClaim) || !(self.actorClaim in ['sub', 'iss', 'aud', 'exp', 'iat', 'nbf', 'jti', 'name', 'email', 'scope', 'scp', 'may_act'])",message="actorClaim must name a readable claim; use client_id or a non-reserved claim such as azp, appid, or cid"
 // +kubebuilder:validation:XValidation:rule="!(has(self.allowPrivateIPs) && self.allowPrivateIPs) || (has(self.jwksUrl) && self.jwksUrl != \"\")",message="allowPrivateIPs requires jwksUrl to be set explicitly"
-// +kubebuilder:validation:XValidation:rule="(has(self.jwtBearerGrant) && !((has(self.actorClaim) && size(self.actorClaim) > 0) || (has(self.actorMatcher) && size(self.actorMatcher) > 0) || (has(self.allowMayAct) && self.allowMayAct) || (has(self.allowedActors) && size(self.allowedActors) > 0))) || (has(self.expectedAudience) && size(self.expectedAudience) > 0)",message="expectedAudience is required unless jwtBearerGrant is configured without actorClaim, actorMatcher, allowMayAct, or allowedActors"
-// +kubebuilder:validation:XValidation:rule="!((has(self.expectedAudience) && size(self.expectedAudience) > 0) || (has(self.actorClaim) && size(self.actorClaim) > 0) || (has(self.actorMatcher) && size(self.actorMatcher) > 0) || (has(self.allowMayAct) && self.allowMayAct)) || (has(self.allowedDelegateClients) && size(self.allowedDelegateClients) > 0)",message="allowedDelegateClients is required when expectedAudience, actorClaim, actorMatcher, or allowMayAct is set"
+// +kubebuilder:validation:XValidation:rule="!((has(self.actorClaim) && size(self.actorClaim) > 0) || (has(self.actorMatcher) && size(self.actorMatcher) > 0) || (has(self.allowMayAct) && self.allowMayAct) || (has(self.allowedActors) && size(self.allowedActors) > 0) || (has(self.allowedDelegateClients) && size(self.allowedDelegateClients) > 0)) || (has(self.expectedAudience) && size(self.expectedAudience) > 0)",message="expectedAudience is required when legacy RFC 8693 policy is configured"
+// +kubebuilder:validation:XValidation:rule="!((has(self.expectedAudience) && size(self.expectedAudience) > 0) || (has(self.actorClaim) && size(self.actorClaim) > 0) || (has(self.actorMatcher) && size(self.actorMatcher) > 0) || (has(self.allowMayAct) && self.allowMayAct) || (has(self.allowedActors) && size(self.allowedActors) > 0)) || (has(self.allowedDelegateClients) && size(self.allowedDelegateClients) > 0)",message="allowedDelegateClients is required when legacy RFC 8693 policy is configured"
 //
 //nolint:lll // CEL validation rules exceed line length limit
 type TrustedIssuerConfig struct {
-	// The actorClaim rule above uses !has(...) rather than comparing against an
-	// empty string literal: gofmt rewrites a doubled apostrophe inside a comment
-	// into a curly quote, which CEL then fails to parse.
+	// Name optionally identifies this trust declaration for canonical issuerRef references.
+	// Names must be unique within trustedIssuers when set.
+	// +kubebuilder:validation:MinLength=1
+	// +kubebuilder:validation:MaxLength=253
+	// +optional
+	Name string `json:"name,omitempty"`
 
 	// IssuerURL is the expected "iss" claim value (exact match).
 	// +kubebuilder:validation:Required
@@ -435,6 +421,8 @@ type TrustedIssuerConfig struct {
 	// +kubebuilder:validation:MinLength=1
 	// +kubebuilder:validation:MaxLength=2048
 	// +optional
+	// This legacy field is deprecated; configure RFC 8693 policy under
+	// inboundGrants.tokenExchange.issuerPolicies.
 	ExpectedAudience string `json:"expectedAudience,omitempty"`
 
 	// JWKSURL is the URL to fetch the issuer's JSON Web Key Set from. If
@@ -453,9 +441,9 @@ type TrustedIssuerConfig struct {
 	// AllowPrivateIPs permits OIDC discovery and JWKS fetches for THIS issuer
 	// to resolve to a private or loopback address. Use only when the issuer
 	// is hosted inside the same cluster and has no public endpoint. Requires
-	// jwksUrl to be set explicitly (enforced at reconcile time), since
-	// otherwise OIDC discovery — fetched from the external issuer itself —
-	// would choose the private dial target.
+	// jwksUrl to be set explicitly (enforced at admission and by shared
+	// validation), since otherwise OIDC discovery — fetched from the external
+	// issuer itself — would choose the private dial target.
 	// +optional
 	AllowPrivateIPs bool `json:"allowPrivateIPs,omitempty"`
 
@@ -475,6 +463,8 @@ type TrustedIssuerConfig struct {
 	// client_id claim instead.
 	// +optional
 	// +kubebuilder:validation:MaxLength=64
+	// This legacy field is deprecated; configure RFC 8693 policy under
+	// inboundGrants.tokenExchange.issuerPolicies.
 	ActorClaim string `json:"actorClaim,omitempty"`
 
 	// AllowedActors is the allowlist of actorClaim values authorized to
@@ -488,6 +478,8 @@ type TrustedIssuerConfig struct {
 	// +kubebuilder:validation:items:MaxLength=256
 	// +listType=atomic
 	// +optional
+	// This legacy field is deprecated; configure RFC 8693 policy under
+	// inboundGrants.tokenExchange.issuerPolicies.
 	AllowedActors []string `json:"allowedActors,omitempty"`
 
 	// ActorMatcher is an admin-authored CEL expression evaluated against the
@@ -500,6 +492,8 @@ type TrustedIssuerConfig struct {
 	// not admission — there is no validating webhook for this field.
 	// +optional
 	// +kubebuilder:validation:MaxLength=4096
+	// This legacy field is deprecated; configure RFC 8693 policy under
+	// inboundGrants.tokenExchange.issuerPolicies.
 	ActorMatcher string `json:"actorMatcher,omitempty"`
 
 	// AllowedDelegateClients restricts which ToolHive client IDs may exchange
@@ -513,6 +507,8 @@ type TrustedIssuerConfig struct {
 	// +kubebuilder:validation:items:MaxLength=256
 	// +listType=atomic
 	// +optional
+	// This legacy field is deprecated; configure RFC 8693 policy under
+	// inboundGrants.tokenExchange.issuerPolicies.
 	AllowedDelegateClients []string `json:"allowedDelegateClients,omitempty"`
 
 	// AllowMayAct permits this external issuer's may_act claim to authorize
@@ -523,11 +519,15 @@ type TrustedIssuerConfig struct {
 	// this setting.
 	// +kubebuilder:default=false
 	// +optional
+	// This legacy field is deprecated; configure RFC 8693 policy under
+	// inboundGrants.tokenExchange.issuerPolicies.
 	AllowMayAct bool `json:"allowMayAct,omitempty"`
 
 	// JWTBearerGrant enables the plain RFC 7523 JWT-bearer grant for this
 	// issuer. It is independent of RFC 8693 delegation policy.
 	// +optional
+	// This legacy field is deprecated; configure RFC 7523 policy under
+	// inboundGrants.jwtBearer.issuerPolicies.
 	JWTBearerGrant *JWTBearerGrantConfig `json:"jwtBearerGrant,omitempty"`
 }
 
@@ -586,6 +586,308 @@ type JWTBearerSubjectBinding struct {
 	AllowedResources []string `json:"allowedResources"`
 }
 
+// SPIFFEAuthenticationMethod identifies the credential type permitted for a
+// SPIFFE workload. Mirrors authserver.SPIFFEAuthenticationMethod field-for-field;
+// runtime parsing remains authoritative.
+type SPIFFEAuthenticationMethod string
+
+// SPIFFEBundleSourceType identifies the selected trust-bundle source. Mirrors
+// authserver.SPIFFEBundleSourceType.
+type SPIFFEBundleSourceType string
+
+// SPIFFEBundleEndpointProfile identifies how a SPIFFE Bundle Endpoint's TLS
+// connection is authenticated. Mirrors authserver.SPIFFEBundleEndpointProfile.
+type SPIFFEBundleEndpointProfile string
+
+const (
+	// SPIFFEAuthenticationMethodX509 authenticates a workload with an X.509-SVID.
+	SPIFFEAuthenticationMethodX509 SPIFFEAuthenticationMethod = "spiffe_x509"
+	// SPIFFEAuthenticationMethodJWT authenticates a workload with a JWT-SVID.
+	SPIFFEAuthenticationMethodJWT SPIFFEAuthenticationMethod = "spiffe_jwt"
+
+	// SPIFFEBundleSourceTypeEndpoint selects a HTTPS SPIFFE Bundle Endpoint.
+	SPIFFEBundleSourceTypeEndpoint SPIFFEBundleSourceType = "bundle_endpoint"
+	// SPIFFEBundleSourceTypeWorkloadAPI selects the local SPIFFE Workload API.
+	SPIFFEBundleSourceTypeWorkloadAPI SPIFFEBundleSourceType = "workload_api"
+
+	// SPIFFEBundleEndpointProfileHTTPSWeb authenticates the bundle endpoint's
+	// TLS connection with a Web PKI certificate.
+	SPIFFEBundleEndpointProfileHTTPSWeb SPIFFEBundleEndpointProfile = "https_web"
+	// SPIFFEBundleEndpointProfileHTTPSSPIFFE authenticates the bundle
+	// endpoint's TLS connection with a separately distributed X.509-SVID root.
+	SPIFFEBundleEndpointProfileHTTPSSPIFFE SPIFFEBundleEndpointProfile = "https_spiffe"
+)
+
+// SPIFFEBundleSourceConfig is a discriminated bundle-source declaration. Type
+// determines which, and only which, source payload may be set. It is
+// validated for shape only; fetching or loading a bundle from the declared
+// source is not implemented yet.
+//
+// +kubebuilder:validation:XValidation:rule="self.type == 'bundle_endpoint' ? has(self.endpoint) : !has(self.endpoint)",message="endpoint configuration must be set if and only if type is 'bundle_endpoint'"
+// +kubebuilder:validation:XValidation:rule="self.type == 'workload_api' ? has(self.workloadAPI) : !has(self.workloadAPI)",message="workloadAPI configuration must be set if and only if type is 'workload_api'"
+//
+//nolint:lll // CEL validation rules exceed line length limit
+type SPIFFEBundleSourceConfig struct {
+	// Type selects the trust-bundle source.
+	// +kubebuilder:validation:Required
+	// +kubebuilder:validation:Enum=bundle_endpoint;workload_api
+	Type SPIFFEBundleSourceType `json:"type"`
+
+	// Endpoint declares a HTTPS SPIFFE Bundle Endpoint. Required when Type is
+	// "bundle_endpoint".
+	// +optional
+	Endpoint *SPIFFEBundleEndpointSourceConfig `json:"endpoint,omitempty"`
+
+	// WorkloadAPI selects the local SPIFFE Workload API. Required when Type
+	// is "workload_api".
+	// +optional
+	WorkloadAPI *SPIFFEWorkloadAPIBundleSourceConfig `json:"workloadAPI,omitempty"`
+}
+
+// SPIFFEBundleEndpointSourceConfig declares a HTTPS SPIFFE Bundle Endpoint.
+type SPIFFEBundleEndpointSourceConfig struct {
+	// URL is the HTTPS SPIFFE Bundle Endpoint URL.
+	// +kubebuilder:validation:Required
+	// +kubebuilder:validation:MinLength=1
+	// +kubebuilder:validation:MaxLength=2048
+	URL string `json:"url"`
+
+	// Profile selects how the endpoint's TLS connection is authenticated:
+	// SPIFFEBundleEndpointProfileHTTPSWeb (Web PKI) or
+	// SPIFFEBundleEndpointProfileHTTPSSPIFFE (a separately distributed
+	// X.509-SVID root).
+	// +kubebuilder:validation:Required
+	// +kubebuilder:validation:Enum=https_web;https_spiffe
+	Profile SPIFFEBundleEndpointProfile `json:"profile"`
+}
+
+// SPIFFEWorkloadAPIBundleSourceConfig selects the local SPIFFE Workload API.
+// It deliberately has no payload; loading and deployment details are
+// deferred to the bundle-loading implementation.
+type SPIFFEWorkloadAPIBundleSourceConfig struct{}
+
+// SPIFFETrustDomainConfig declares one SPIFFE trust domain accepted by the
+// embedded authorization server. Configuration is not authentication: no
+// live X.509-SVID or JWT-SVID validation exists yet, so a declared trust
+// domain does not by itself let any workload authenticate — RunConfig.Validate
+// (pkg/authserver/config.go) currently hard-rejects any non-empty
+// spiffeTrustDomains at authserver startup via validateSPIFFENotYetEnforced,
+// a deliberate placeholder until real SVID verification lands.
+type SPIFFETrustDomainConfig struct {
+	// Name uniquely identifies this declaration and is referenced by
+	// inboundGrants.spiffeClientAuth[].trustDomainRef.
+	// +kubebuilder:validation:Required
+	// +kubebuilder:validation:MinLength=1
+	// +kubebuilder:validation:MaxLength=253
+	Name string `json:"name"`
+
+	// TrustDomain is the SPIFFE trust domain accepted by this declaration.
+	// This pattern is a best-effort CRD-level approximation of the SPIFFE
+	// trust-domain grammar; runtime parsing via
+	// spiffeid.TrustDomainFromString remains authoritative.
+	// +kubebuilder:validation:Required
+	// +kubebuilder:validation:MinLength=1
+	// +kubebuilder:validation:MaxLength=255
+	// +kubebuilder:validation:Pattern=`^([a-z0-9_]|[a-z0-9_]([a-z0-9_-]|\.[a-z0-9_-])*[a-z0-9_])$`
+	TrustDomain string `json:"trustDomain"`
+
+	// Methods explicitly enables the supported credential types for this
+	// trust domain.
+	// +kubebuilder:validation:Required
+	// +kubebuilder:validation:MinItems=1
+	// +kubebuilder:validation:MaxItems=2
+	// +kubebuilder:validation:items:Enum=spiffe_x509;spiffe_jwt
+	// +listType=set
+	Methods []SPIFFEAuthenticationMethod `json:"methods"`
+
+	// BundleSource declares exactly one future trust-bundle source. It is
+	// validated for shape only; fetching or loading a bundle from it is a
+	// later step.
+	// +kubebuilder:validation:Required
+	BundleSource SPIFFEBundleSourceConfig `json:"bundleSource"`
+}
+
+// SPIFFEClientConfig associates one SPIFFE principal pattern from a declared
+// trust domain with an explicit OAuth client identity and permissions.
+// Configuration is not authentication: configured SPIFFE clients remain
+// non-public OAuth clients without a secret until live SPIFFE credential
+// validation is implemented (see SPIFFETrustDomainConfig's doc comment).
+//
+// GrantTypes is deliberately not exposed here: the runtime only accepts
+// exactly the RFC 8693 token-exchange grant for a SPIFFE client
+// (validateSPIFFEGrants in pkg/authserver/spiffe_trust.go), so the converter
+// always supplies it instead of letting it be configured.
+//
+// +kubebuilder:validation:XValidation:rule="self.principalPattern.split('/').all(segment, segment != '.' && segment != '..')",message="principalPattern path must not contain . or .. segments"
+//
+//nolint:lll // CEL validation rule exceeds line length limit
+type SPIFFEClientConfig struct {
+	// TrustDomainRef references spiffeTrustDomains[].name.
+	// +kubebuilder:validation:Required
+	// +kubebuilder:validation:MinLength=1
+	// +kubebuilder:validation:MaxLength=253
+	TrustDomainRef string `json:"trustDomainRef"`
+
+	// PrincipalPattern is a concrete SPIFFE ID or a terminal /* pattern within
+	// the declared trust domain. This pattern is a best-effort CRD-level
+	// approximation; runtime parsing via spiffeid.FromString remains
+	// authoritative.
+	// +kubebuilder:validation:Required
+	// +kubebuilder:validation:MaxLength=2048
+	// +kubebuilder:validation:Pattern=`^spiffe://[a-z0-9._-]+((/[a-zA-Z0-9._-]+)+(/\*)?|/\*)$`
+	PrincipalPattern string `json:"principalPattern"`
+
+	// ClientID is the explicit OAuth client_id. It is never derived from a
+	// SPIFFE ID.
+	// +kubebuilder:validation:Required
+	// +kubebuilder:validation:MinLength=1
+	// +kubebuilder:validation:MaxLength=253
+	ClientID string `json:"clientId"`
+
+	// Methods are the credential types this association may authenticate
+	// with. Must be a subset of the referenced trust domain's methods.
+	// +kubebuilder:validation:Required
+	// +kubebuilder:validation:MinItems=1
+	// +kubebuilder:validation:MaxItems=2
+	// +kubebuilder:validation:items:Enum=spiffe_x509;spiffe_jwt
+	// +listType=set
+	Methods []SPIFFEAuthenticationMethod `json:"methods"`
+
+	// Resources are RFC 8707 resource indicators this association may
+	// request. Must be a subset of the server's allowed_audiences allowlist,
+	// which is derived at reconcile time and not available on this CRD, so
+	// allowlist membership is validated at reconcile time, not admission.
+	// Shape (a well-formed absolute HTTP(S) URI) is independent of that
+	// derived allowlist and is validated here. Distinct from Audiences: a
+	// resource permission does not imply the same value is also a permitted
+	// token audience, or vice versa.
+	// +kubebuilder:validation:MaxItems=50
+	// +kubebuilder:validation:items:MinLength=1
+	// +kubebuilder:validation:items:MaxLength=2048
+	// +kubebuilder:validation:items:Pattern=`^https?://[^@#[:space:]]+$`
+	// +listType=set
+	// +optional
+	Resources []string `json:"resources,omitempty"`
+
+	// Audiences are RFC 8693 token audiences this association may request.
+	// +kubebuilder:validation:Required
+	// +kubebuilder:validation:MinItems=1
+	// +kubebuilder:validation:MaxItems=50
+	// +kubebuilder:validation:items:MinLength=1
+	// +kubebuilder:validation:items:MaxLength=2048
+	// +listType=set
+	Audiences []string `json:"audiences"`
+
+	// Scopes are OAuth scopes granted to this association. Must be a subset
+	// of the server's effective supported scopes.
+	// +kubebuilder:validation:Required
+	// +kubebuilder:validation:MinItems=1
+	// +kubebuilder:validation:MaxItems=50
+	// +kubebuilder:validation:items:MinLength=1
+	// +kubebuilder:validation:items:MaxLength=256
+	// +listType=set
+	Scopes []string `json:"scopes"`
+}
+
+// InboundGrantsConfig groups canonical inbound OAuth grant-family configuration.
+type InboundGrantsConfig struct {
+	// SPIFFEClientAuth associates SPIFFE principal patterns with explicit
+	// OAuth client identities and permissions. A sibling of TokenExchange and
+	// JWTBearer below, not nested under either: client authentication does
+	// not by itself confer a grant. See SPIFFEClientConfig.
+	// +kubebuilder:validation:MaxItems=100
+	// +listType=atomic
+	// +optional
+	SPIFFEClientAuth []SPIFFEClientConfig `json:"spiffeClientAuth,omitempty"`
+
+	// TokenExchange configures RFC 8693 clients and issuer policies.
+	// +optional
+	TokenExchange *TokenExchangeInboundGrantConfig `json:"tokenExchange,omitempty"`
+
+	// JWTBearer configures RFC 7523 issuer policies.
+	// +optional
+	JWTBearer *JWTBearerInboundGrantConfig `json:"jwtBearer,omitempty"`
+}
+
+// TokenExchangeInboundGrantConfig configures canonical RFC 8693 inbound grants.
+type TokenExchangeInboundGrantConfig struct {
+	// DelegateClients configures pre-provisioned confidential clients.
+	// +kubebuilder:validation:MaxItems=10
+	// +listType=atomic
+	// +optional
+	DelegateClients []DelegateClientConfig `json:"delegateClients,omitempty"`
+
+	// IssuerPolicies binds RFC 8693 policy to named trusted issuers.
+	// +kubebuilder:validation:MaxItems=20
+	// +listType=atomic
+	// +optional
+	IssuerPolicies []TokenExchangeIssuerPolicyConfig `json:"issuerPolicies,omitempty"`
+}
+
+// TokenExchangeIssuerPolicyConfig binds RFC 8693 policy to a named trusted issuer.
+//
+// +kubebuilder:validation:XValidation:rule="!('*' in self.allowedDelegateClients) || size(self.allowedDelegateClients) == 1",message="allowedDelegateClients must not combine the wildcard \"*\" with specific client IDs"
+// +kubebuilder:validation:XValidation:rule="!(self.allowMayAct && '*' in self.allowedDelegateClients)",message="allowMayAct must not be enabled when allowedDelegateClients contains the wildcard \"*\""
+// +kubebuilder:validation:XValidation:rule="!has(self.actorClaim) || !(self.actorClaim in ['sub', 'iss', 'aud', 'exp', 'iat', 'nbf', 'jti', 'name', 'email', 'scope', 'scp', 'may_act'])",message="actorClaim must name a readable claim; use client_id or a non-reserved claim such as azp, appid, or cid"
+//
+//nolint:lll // CEL validation rules exceed line length limits.
+type TokenExchangeIssuerPolicyConfig struct {
+	// IssuerRef references trustedIssuers[].name.
+	// +kubebuilder:validation:MinLength=1
+	// +kubebuilder:validation:MaxLength=253
+	IssuerRef string `json:"issuerRef"`
+
+	// ExpectedAudience is the required RFC 8693 subject-token audience.
+	// +kubebuilder:validation:MinLength=1
+	// +kubebuilder:validation:MaxLength=2048
+	ExpectedAudience string `json:"expectedAudience"`
+
+	// ActorClaim names the claim containing the external actor identity.
+	// +kubebuilder:validation:MaxLength=64
+	// +optional
+	ActorClaim string `json:"actorClaim,omitempty"`
+
+	// +kubebuilder:validation:MaxItems=50
+	// +kubebuilder:validation:items:MinLength=1
+	// +kubebuilder:validation:items:MaxLength=256
+	// +listType=atomic
+	// +optional
+	AllowedActors []string `json:"allowedActors,omitempty"`
+
+	// +kubebuilder:validation:MaxLength=4096
+	// +optional
+	ActorMatcher string `json:"actorMatcher,omitempty"`
+
+	// +kubebuilder:validation:MinItems=1
+	// +kubebuilder:validation:MaxItems=50
+	// +kubebuilder:validation:items:MinLength=1
+	// +kubebuilder:validation:items:MaxLength=256
+	// +listType=atomic
+	AllowedDelegateClients []string `json:"allowedDelegateClients"`
+
+	// +optional
+	AllowMayAct bool `json:"allowMayAct,omitempty"`
+}
+
+// JWTBearerInboundGrantConfig configures canonical RFC 7523 inbound grants.
+type JWTBearerInboundGrantConfig struct {
+	// IssuerPolicies binds RFC 7523 policy to named trusted issuers.
+	// +kubebuilder:validation:MaxItems=20
+	// +listType=atomic
+	// +optional
+	IssuerPolicies []JWTBearerIssuerPolicyConfig `json:"issuerPolicies,omitempty"`
+}
+
+// JWTBearerIssuerPolicyConfig binds RFC 7523 policy to a named trusted issuer.
+type JWTBearerIssuerPolicyConfig struct {
+	// IssuerRef references trustedIssuers[].name.
+	// +kubebuilder:validation:MinLength=1
+	// +kubebuilder:validation:MaxLength=253
+	IssuerRef string `json:"issuerRef"`
+
+	JWTBearerGrantConfig `json:",inline"` // nolint:revive
+}
+
 // EmbeddedAuthServerConfig holds configuration for the embedded OAuth2/OIDC authorization server.
 // This enables running an authorization server that delegates authentication to upstream IDPs
 // or accepts token exchange without an interactive authorization flow.
@@ -595,18 +897,38 @@ type JWTBearerSubjectBinding struct {
 // delegate clients using an HTTP issuer; the shared Go validator performs the
 // precise loopback-host security check.
 //
-// +kubebuilder:validation:XValidation:rule="(has(self.upstreamProviders) && size(self.upstreamProviders) > 0) || (has(self.delegateClients) && size(self.delegateClients) > 0) || (has(self.trustedIssuers) && self.trustedIssuers.exists(issuer, has(issuer.jwtBearerGrant)))",message="at least one upstream provider is required unless delegateClients or a trustedIssuer with jwtBearerGrant is configured"
+// +kubebuilder:validation:XValidation:rule="(has(self.upstreamProviders) && size(self.upstreamProviders) > 0) || (has(self.delegateClients) && size(self.delegateClients) > 0) || (has(self.trustedIssuers) && self.trustedIssuers.exists(issuer, has(issuer.jwtBearerGrant))) || (has(self.inboundGrants) && (has(self.inboundGrants.tokenExchange) || has(self.inboundGrants.jwtBearer) || (has(self.inboundGrants.spiffeClientAuth) && size(self.inboundGrants.spiffeClientAuth) > 0)))",message="at least one upstream provider or inbound grant family is required"
 //
-// +kubebuilder:validation:XValidation:rule="!(has(self.allowConfidentialClientRegistration) && self.allowConfidentialClientRegistration && has(self.insecureAllowHTTP) && self.insecureAllowHTTP)",message="allowConfidentialClientRegistration cannot be combined with insecureAllowHTTP; client secrets would be issued in cleartext over an unauthenticated endpoint"
+// +kubebuilder:validation:XValidation:rule="((has(self.spiffeTrustDomains) && size(self.spiffeTrustDomains) > 0) == (has(self.inboundGrants) && has(self.inboundGrants.spiffeClientAuth) && size(self.inboundGrants.spiffeClientAuth) > 0))",message="spiffeTrustDomains and inboundGrants.spiffeClientAuth must be configured together"
+// +kubebuilder:validation:XValidation:rule="!has(self.spiffeTrustDomains) || self.spiffeTrustDomains.all(domain, self.spiffeTrustDomains.filter(other, other.name == domain.name).size() == 1)",message="spiffeTrustDomains must not contain duplicate names"
+// +kubebuilder:validation:XValidation:rule="!has(self.spiffeTrustDomains) || self.spiffeTrustDomains.all(domain, self.spiffeTrustDomains.filter(other, other.trustDomain == domain.trustDomain).size() == 1)",message="spiffeTrustDomains must not contain duplicate trust domains"
+// +kubebuilder:validation:XValidation:rule="!has(self.spiffeTrustDomains) || self.spiffeTrustDomains.all(domain, has(self.inboundGrants) && has(self.inboundGrants.spiffeClientAuth) && self.inboundGrants.spiffeClientAuth.exists(client, client.trustDomainRef == domain.name))",message="every SPIFFE trust domain must be referenced by a SPIFFE client"
+// +kubebuilder:validation:XValidation:rule="!has(self.inboundGrants) || !has(self.inboundGrants.spiffeClientAuth) || self.inboundGrants.spiffeClientAuth.all(client, has(self.spiffeTrustDomains) && self.spiffeTrustDomains.exists(domain, domain.name == client.trustDomainRef))",message="every SPIFFE client trustDomainRef must reference a declared trust domain"
+// +kubebuilder:validation:XValidation:rule="!has(self.inboundGrants) || !has(self.inboundGrants.spiffeClientAuth) || self.inboundGrants.spiffeClientAuth.all(client, !has(self.spiffeTrustDomains) || !self.spiffeTrustDomains.exists(domain, domain.name == client.trustDomainRef) || self.spiffeTrustDomains.exists(domain, domain.name == client.trustDomainRef && client.methods.all(method, method in domain.methods)))",message="spiffeClientAuth methods must be enabled by the referenced trust domain"
+// +kubebuilder:validation:XValidation:rule="!has(self.inboundGrants) || !has(self.inboundGrants.spiffeClientAuth) || self.inboundGrants.spiffeClientAuth.all(client, !has(self.spiffeTrustDomains) || !self.spiffeTrustDomains.exists(domain, domain.name == client.trustDomainRef) || self.spiffeTrustDomains.exists(domain, domain.name == client.trustDomainRef && client.principalPattern.startsWith('spiffe://' + domain.trustDomain + '/')))",message="spiffeClientAuth principalPattern trust domain must match the referenced trust domain"
+// +kubebuilder:validation:XValidation:rule="!has(self.inboundGrants) || !has(self.inboundGrants.spiffeClientAuth) || self.inboundGrants.spiffeClientAuth.all(client, self.inboundGrants.spiffeClientAuth.filter(other, other.clientId == client.clientId).size() == 1)",message="spiffeClientAuth must not contain duplicate client IDs"
+// +kubebuilder:validation:XValidation:rule="!has(self.inboundGrants) || !has(self.inboundGrants.spiffeClientAuth) || self.inboundGrants.spiffeClientAuth.all(client, self.inboundGrants.spiffeClientAuth.filter(other, other.principalPattern == client.principalPattern).size() == 1)",message="spiffeClientAuth must not contain duplicate principal patterns"
+// +kubebuilder:validation:XValidation:rule="!has(self.inboundGrants) || !has(self.inboundGrants.spiffeClientAuth) || self.inboundGrants.spiffeClientAuth.all(client, !client.clientId.startsWith('synthetic:'))",message="spiffeClientAuth clientId must not use the reserved synthetic: prefix"
+// +kubebuilder:validation:XValidation:rule="!has(self.inboundGrants) || !has(self.inboundGrants.spiffeClientAuth) || self.inboundGrants.spiffeClientAuth.all(client, !client.clientId.matches('^[A-Za-z][A-Za-z0-9+.-]*://.+'))",message="spiffeClientAuth clientId must not be an absolute URL"
+//
+// +kubebuilder:validation:XValidation:rule="!(has(self.insecureAllowHTTP) && self.insecureAllowHTTP && ((has(self.allowConfidentialClientRegistration) && self.allowConfidentialClientRegistration) || (has(self.delegateClients) && size(self.delegateClients) > 0) || (has(self.inboundGrants) && has(self.inboundGrants.tokenExchange) && has(self.inboundGrants.tokenExchange.delegateClients) && size(self.inboundGrants.tokenExchange.delegateClients) > 0)))",message="insecureAllowHTTP cannot be combined with confidential client registration or delegateClients; client secrets would be issued or used in cleartext over an unauthenticated endpoint"
 // +kubebuilder:validation:XValidation:rule="(!has(self.forceConfidentialRedirectUris) || size(self.forceConfidentialRedirectUris) == 0) || (has(self.allowConfidentialClientRegistration) && self.allowConfidentialClientRegistration)",message="forceConfidentialRedirectUris requires allowConfidentialClientRegistration to be true"
-// +kubebuilder:validation:XValidation:rule="!has(self.delegateClients) || size(self.delegateClients) == 0 || !self.issuer.startsWith('http://') || (has(self.insecureAllowConfidentialOverLoopbackHTTP) && self.insecureAllowConfidentialOverLoopbackHTTP)",message="delegateClients with an HTTP issuer require insecureAllowConfidentialOverLoopbackHTTP to be explicitly enabled; the issuer must still be loopback"
+// +kubebuilder:validation:XValidation:rule="!self.issuer.startsWith('http://') || (has(self.insecureAllowConfidentialOverLoopbackHTTP) && self.insecureAllowConfidentialOverLoopbackHTTP) || ((!has(self.allowConfidentialClientRegistration) || !self.allowConfidentialClientRegistration) && (!has(self.delegateClients) || size(self.delegateClients) == 0) && (!has(self.inboundGrants) || !has(self.inboundGrants.tokenExchange) || !has(self.inboundGrants.tokenExchange.delegateClients) || size(self.inboundGrants.tokenExchange.delegateClients) == 0))",message="confidential client registration or delegateClients with an HTTP issuer require insecureAllowConfidentialOverLoopbackHTTP to be explicitly enabled; the issuer must still be loopback"
+// +kubebuilder:validation:XValidation:rule="!has(self.inboundGrants) || !has(self.inboundGrants.tokenExchange) || ((!has(self.delegateClients) || size(self.delegateClients) == 0) && (!has(self.trustedIssuers) || !self.trustedIssuers.exists(issuer, has(issuer.expectedAudience) || has(issuer.actorClaim) || has(issuer.allowedActors) || has(issuer.actorMatcher) || has(issuer.allowedDelegateClients) || (has(issuer.allowMayAct) && issuer.allowMayAct))))",message="canonical tokenExchange conflicts with legacy delegateClients or RFC 8693 trusted issuer policy"
+// +kubebuilder:validation:XValidation:rule="!has(self.inboundGrants) || !has(self.inboundGrants.jwtBearer) || !has(self.trustedIssuers) || !self.trustedIssuers.exists(issuer, has(issuer.jwtBearerGrant))",message="canonical jwtBearer conflicts with legacy jwtBearerGrant"
+// +kubebuilder:validation:XValidation:rule="!has(self.trustedIssuers) || self.trustedIssuers.all(issuer, !has(issuer.name) || self.trustedIssuers.filter(other, has(other.name) && other.name == issuer.name).size() == 1)",message="trustedIssuers must not contain duplicate names"
+// +kubebuilder:validation:XValidation:rule="!has(self.inboundGrants) || !has(self.inboundGrants.tokenExchange) || !has(self.inboundGrants.tokenExchange.issuerPolicies) || self.inboundGrants.tokenExchange.issuerPolicies.all(policy, has(self.trustedIssuers) && self.trustedIssuers.exists(issuer, has(issuer.name) && issuer.name == policy.issuerRef))",message="every tokenExchange issuerRef must reference a named trusted issuer"
+// +kubebuilder:validation:XValidation:rule="!has(self.inboundGrants) || !has(self.inboundGrants.tokenExchange) || !has(self.inboundGrants.tokenExchange.issuerPolicies) || self.inboundGrants.tokenExchange.issuerPolicies.all(policy, self.inboundGrants.tokenExchange.issuerPolicies.filter(other, other.issuerRef == policy.issuerRef).size() == 1)",message="tokenExchange issuerPolicies must not contain duplicate issuerRef values"
+// +kubebuilder:validation:XValidation:rule="!has(self.inboundGrants) || !has(self.inboundGrants.jwtBearer) || !has(self.inboundGrants.jwtBearer.issuerPolicies) || self.inboundGrants.jwtBearer.issuerPolicies.all(policy, has(self.trustedIssuers) && self.trustedIssuers.exists(issuer, has(issuer.name) && issuer.name == policy.issuerRef))",message="every jwtBearer issuerRef must reference a named trusted issuer"
+// +kubebuilder:validation:XValidation:rule="!has(self.inboundGrants) || !has(self.inboundGrants.jwtBearer) || !has(self.inboundGrants.jwtBearer.issuerPolicies) || self.inboundGrants.jwtBearer.issuerPolicies.all(policy, self.inboundGrants.jwtBearer.issuerPolicies.filter(other, other.issuerRef == policy.issuerRef).size() == 1)",message="jwtBearer issuerPolicies must not contain duplicate issuerRef values"
 //
 // The shared Go-level ValidateConfidentialClientTransport validator remains the
 // source of truth for confidential-client transport and loopback policy,
-// including delegate clients. Full issuer URL validation is performed by the
-// runtime configuration validator.
+// including delegate clients. Trusted issuer endpoint shape is validated by
+// ValidateInboundGrants; audience and outbound DNS/private-IP checks remain
+// runtime-only.
 //
-//nolint:lll // CEL validation rule exceeds line length limit
+//nolint:lll // CEL validation rules exceed line length limits.
 type EmbeddedAuthServerConfig struct {
 	// Issuer is the issuer identifier for this authorization server.
 	// This will be included in the "iss" claim of issued tokens.
@@ -651,6 +973,20 @@ type EmbeddedAuthServerConfig struct {
 	// If not specified, defaults are applied (access: 1h, refresh: 7d, authCode: 10m).
 	// +optional
 	TokenLifespans *TokenLifespanConfig `json:"tokenLifespans,omitempty"`
+
+	// SPIFFETrustDomains declares SPIFFE trust domains for
+	// inboundGrants.spiffeClientAuth associations. See SPIFFETrustDomainConfig's
+	// doc comment for why declaring a domain does not by itself enable
+	// authentication in this build.
+	// +kubebuilder:validation:MinItems=1
+	// +kubebuilder:validation:MaxItems=50
+	// +listType=atomic
+	// +optional
+	SPIFFETrustDomains []SPIFFETrustDomainConfig `json:"spiffeTrustDomains,omitempty"`
+
+	// InboundGrants configures canonical inbound OAuth grant families.
+	// +optional
+	InboundGrants *InboundGrantsConfig `json:"inboundGrants,omitempty"`
 
 	// UpstreamProviders configures connections to upstream Identity Providers.
 	// When configured, the embedded auth server delegates interactive authentication
@@ -716,9 +1052,10 @@ type EmbeddedAuthServerConfig struct {
 	// as an operator condition.
 	//
 	// One combination is rejected at admission on all three CRDs regardless of the
-	// above: setting this field alongside allowConfidentialClientRegistration, which
-	// would issue client secrets in cleartext over an unauthenticated registration
-	// endpoint (see the XValidation rule on EmbeddedAuthServerConfig).
+	// above: setting this field alongside confidential client registration or
+	// delegate clients, which would issue or use client secrets in cleartext over
+	// an unauthenticated endpoint (see the XValidation rule on
+	// EmbeddedAuthServerConfig).
 	// +kubebuilder:default=false
 	// +optional
 	InsecureAllowHTTP bool `json:"insecureAllowHTTP,omitempty"`
@@ -810,6 +1147,7 @@ type EmbeddedAuthServerConfig struct {
 	// +kubebuilder:validation:MaxItems=10
 	// +listType=atomic
 	// +optional
+	// This legacy field is deprecated; use inboundGrants.tokenExchange.delegateClients.
 	DelegateClients []DelegateClientConfig `json:"delegateClients,omitempty"`
 
 	// TrustedIssuers configures external OIDC issuers whose tokens are
@@ -860,19 +1198,198 @@ type EmbeddedAuthServerConfig struct {
 	CIMD *EmbeddedAuthServerCIMDConfig `json:"cimd,omitempty"`
 }
 
-// ValidateConfidentialClientTransport rejects cleartext issuer configurations
-// when confidential DCR or delegate clients are configured. Delegate clients
-// do not enable DCR; they share its transport policy because they send a
-// secret to the token endpoint. private_key_jwt registration is not gated
-// here: it never returns a secret in the DCR response, so cleartext HTTP
-// exposes nothing this check would protect.
-func (c *EmbeddedAuthServerConfig) ValidateConfidentialClientTransport() error {
-	return authserver.ValidateConfidentialClientTransport(
-		c.AllowConfidentialClientRegistration || len(c.DelegateClients) > 0,
+// effectiveInboundGrants is the folded validation view of legacy and canonical
+// inbound grant configuration. Its slice fields are cloned from the source
+// EmbeddedAuthServerConfig when built, so mutating them cannot affect it.
+type effectiveInboundGrants struct {
+	tokenExchange   bool
+	jwtBearer       bool
+	delegateClients []DelegateClientConfig
+	trustedIssuers  []tokenexchange.TrustedIssuer
+}
+
+// EffectiveGrants folds legacy and canonical inbound grants using the same
+// conflict and overlay semantics as authserver.NormalizeInboundGrants.
+func (c *EmbeddedAuthServerConfig) EffectiveGrants() (effectiveInboundGrants, error) {
+	if err := c.validateJWTBearerMaxAssertionAges(); err != nil {
+		return effectiveInboundGrants{}, err
+	}
+	result := effectiveInboundGrants{
+		tokenExchange:   c.InboundGrants == nil,
+		delegateClients: cloneDelegateClientConfigs(c.DelegateClients),
+		trustedIssuers:  buildTrustedIssuerConfigs(c.TrustedIssuers),
+	}
+	issuerByName, legacyTokenExchange, legacyJWTBearer, err := c.indexEffectiveTrustedIssuers(result.trustedIssuers)
+	if err != nil {
+		return effectiveInboundGrants{}, err
+	}
+	result.jwtBearer = legacyJWTBearer
+	if c.InboundGrants == nil {
+		return result, nil
+	}
+	if err := applyEffectiveTokenExchange(&result, c.InboundGrants.TokenExchange, issuerByName, legacyTokenExchange); err != nil {
+		return effectiveInboundGrants{}, err
+	}
+	if err := applyEffectiveJWTBearer(&result, c.InboundGrants.JWTBearer, issuerByName, legacyJWTBearer); err != nil {
+		return effectiveInboundGrants{}, err
+	}
+	return result, nil
+}
+
+func (c *EmbeddedAuthServerConfig) validateJWTBearerMaxAssertionAges() error {
+	for i, issuer := range c.TrustedIssuers {
+		if issuer.JWTBearerGrant != nil && issuer.JWTBearerGrant.MaxAssertionAge == nil {
+			return fmt.Errorf("trustedIssuers[%d].jwtBearerGrant.maxAssertionAge is required", i)
+		}
+	}
+	if c.InboundGrants == nil || c.InboundGrants.JWTBearer == nil {
+		return nil
+	}
+	for i, policy := range c.InboundGrants.JWTBearer.IssuerPolicies {
+		if policy.MaxAssertionAge == nil {
+			return fmt.Errorf("inboundGrants.jwtBearer.issuerPolicies[%d].maxAssertionAge is required", i)
+		}
+	}
+	return nil
+}
+
+func (c *EmbeddedAuthServerConfig) indexEffectiveTrustedIssuers(
+	issuers []tokenexchange.TrustedIssuer,
+) (map[string]int, bool, bool, error) {
+	byName := make(map[string]int, len(issuers))
+	byURL := make(map[string]int, len(issuers))
+	legacyTokenExchange := len(c.DelegateClients) > 0
+	legacyJWTBearer := false
+	for i, issuer := range issuers {
+		if previous, ok := byURL[issuer.IssuerURL]; ok {
+			return nil, false, false, fmt.Errorf(
+				"trustedIssuers[%d].issuerUrl duplicates trustedIssuers[%d].issuerUrl", i, previous)
+		}
+		byURL[issuer.IssuerURL] = i
+		if issuer.Name != "" {
+			if previous, ok := byName[issuer.Name]; ok {
+				return nil, false, false, fmt.Errorf(
+					"trustedIssuers[%d].name duplicates trustedIssuers[%d].name %q", i, previous, issuer.Name)
+			}
+			byName[issuer.Name] = i
+		}
+		legacyTokenExchange = legacyTokenExchange || hasLegacyTokenExchangePolicy(c.TrustedIssuers[i])
+		legacyJWTBearer = legacyJWTBearer || issuer.JWTBearerGrant != nil
+	}
+	return byName, legacyTokenExchange, legacyJWTBearer, nil
+}
+
+func applyEffectiveTokenExchange(
+	result *effectiveInboundGrants,
+	config *TokenExchangeInboundGrantConfig,
+	issuerByName map[string]int,
+	legacy bool,
+) error {
+	if config == nil {
+		result.tokenExchange = legacy
+		return nil
+	}
+	if legacy {
+		return fmt.Errorf("inboundGrants.tokenExchange conflicts with legacy delegateClients or RFC 8693 policy in trustedIssuers")
+	}
+	result.tokenExchange = true
+	result.delegateClients = cloneDelegateClientConfigs(config.DelegateClients)
+	seen := make(map[string]int, len(config.IssuerPolicies))
+	for i, policy := range config.IssuerPolicies {
+		issuerIndex, err := resolveEffectiveIssuerRef(issuerByName, seen, policy.IssuerRef,
+			fmt.Sprintf("inboundGrants.tokenExchange.issuerPolicies[%d]", i))
+		if err != nil {
+			return err
+		}
+		seen[policy.IssuerRef] = i
+		issuer := &result.trustedIssuers[issuerIndex]
+		issuer.ExpectedAudience = policy.ExpectedAudience
+		issuer.ActorClaim = policy.ActorClaim
+		issuer.AllowedActors = slices.Clone(policy.AllowedActors)
+		issuer.ActorMatcher = policy.ActorMatcher
+		issuer.AllowedDelegateClients = slices.Clone(policy.AllowedDelegateClients)
+		issuer.AllowMayAct = policy.AllowMayAct
+	}
+	return nil
+}
+
+func applyEffectiveJWTBearer(
+	result *effectiveInboundGrants,
+	config *JWTBearerInboundGrantConfig,
+	issuerByName map[string]int,
+	legacy bool,
+) error {
+	if config == nil {
+		return nil
+	}
+	if legacy {
+		return fmt.Errorf("inboundGrants.jwtBearer conflicts with legacy trustedIssuers[*].jwtBearerGrant")
+	}
+	result.jwtBearer = true
+	seen := make(map[string]int, len(config.IssuerPolicies))
+	for i, policy := range config.IssuerPolicies {
+		issuerIndex, err := resolveEffectiveIssuerRef(issuerByName, seen, policy.IssuerRef,
+			fmt.Sprintf("inboundGrants.jwtBearer.issuerPolicies[%d]", i))
+		if err != nil {
+			return err
+		}
+		seen[policy.IssuerRef] = i
+		result.trustedIssuers[issuerIndex].JWTBearerGrant = buildJWTBearerGrantPolicy(&policy.JWTBearerGrantConfig)
+	}
+	return nil
+}
+
+// ValidateInboundGrants validates the effective grant projection shared by
+// MCPExternalAuthConfig and inline VirtualMCPServer auth configuration.
+func (c *EmbeddedAuthServerConfig) ValidateInboundGrants() error {
+	grants, err := c.EffectiveGrants()
+	if err != nil {
+		return err
+	}
+	if err := authserver.ValidateConfidentialClientTransport(
+		c.AllowConfidentialClientRegistration || len(grants.delegateClients) > 0,
 		c.InsecureAllowHTTP,
 		c.Issuer,
 		c.InsecureAllowConfidentialOverLoopbackHTTP,
-	)
+	); err != nil {
+		return err
+	}
+	if err := tokenexchange.ValidateTrustedIssuers(grants.trustedIssuers, c.Issuer, nil); err != nil {
+		return fmt.Errorf("trustedIssuers: %w", err)
+	}
+	return nil
+}
+
+func hasLegacyTokenExchangePolicy(issuer TrustedIssuerConfig) bool {
+	return issuer.ExpectedAudience != "" || issuer.ActorClaim != "" || len(issuer.AllowedActors) > 0 ||
+		issuer.ActorMatcher != "" || len(issuer.AllowedDelegateClients) > 0 || issuer.AllowMayAct
+}
+
+func resolveEffectiveIssuerRef(byName, seen map[string]int, ref, path string) (int, error) {
+	if ref == "" {
+		return 0, fmt.Errorf("%s.issuerRef is required", path)
+	}
+	if previous, ok := seen[ref]; ok {
+		return 0, fmt.Errorf("%s.issuerRef duplicates issuer policy [%d] for %q", path, previous, ref)
+	}
+	index, ok := byName[ref]
+	if !ok {
+		return 0, fmt.Errorf("%s.issuerRef references unknown or unnamed trusted issuer %q", path, ref)
+	}
+	return index, nil
+}
+
+func cloneDelegateClientConfigs(clients []DelegateClientConfig) []DelegateClientConfig {
+	cloned := slices.Clone(clients)
+	for i := range cloned {
+		cloned[i].Scopes = slices.Clone(cloned[i].Scopes)
+		cloned[i].Audiences = slices.Clone(cloned[i].Audiences)
+		if cloned[i].ClientSecretRef != nil {
+			secretRef := *cloned[i].ClientSecretRef
+			cloned[i].ClientSecretRef = &secretRef
+		}
+	}
+	return cloned
 }
 
 // TokenLifespanConfig holds configuration for token lifetimes.
@@ -978,7 +1495,11 @@ type UpstreamProviderConfig struct {
 }
 
 // OIDCUpstreamConfig contains configuration for OIDC providers.
-// OIDC providers support automatic endpoint discovery via the issuer URL.
+// +kubebuilder:validation:XValidation:rule="(has(self.clientId) && size(self.clientId) > 0) ? !has(self.dcrConfig) : has(self.dcrConfig)",message="exactly one of clientId or dcrConfig must be set"
+// +kubebuilder:validation:XValidation:rule="!(has(self.dcrConfig) && has(self.clientSecretRef))",message="clientSecretRef must not be set when dcrConfig is set; the client_secret is obtained at runtime via Dynamic Client Registration"
+// +kubebuilder:validation:XValidation:rule="!(has(self.dcrConfig) && has(self.dcrConfig.discoveryUrl) && has(self.dcrConfig.registrationEndpoint))",message="at most one of discoveryUrl or registrationEndpoint may be set"
+//
+//nolint:lll // CEL validation rules exceed line length limit
 type OIDCUpstreamConfig struct {
 	// IssuerURL is the OIDC issuer URL for automatic endpoint discovery.
 	// Must be a valid HTTPS URL.
@@ -987,8 +1508,14 @@ type OIDCUpstreamConfig struct {
 	IssuerURL string `json:"issuerUrl"`
 
 	// ClientID is the OAuth 2.0 client identifier registered with the upstream IdP.
-	// +kubebuilder:validation:Required
-	ClientID string `json:"clientId"`
+	// +optional
+	ClientID string `json:"clientId,omitempty"`
+
+	// DCRConfig enables RFC 7591 Dynamic Client Registration. When set, ClientID
+	// and ClientSecretRef must be omitted. If neither discoveryUrl nor
+	// registrationEndpoint is set, discovery is derived from issuerUrl.
+	// +optional
+	DCRConfig *DCRUpstreamConfig `json:"dcrConfig,omitempty"`
 
 	// ClientSecretRef references a Kubernetes Secret containing the OAuth 2.0 client secret.
 	// Optional for public clients using PKCE instead of client secret.
@@ -1101,6 +1628,7 @@ type OIDCUpstreamConfig struct {
 // message is still actionable.
 //
 // +kubebuilder:validation:XValidation:rule="(has(self.clientId) && size(self.clientId) > 0) ? !has(self.dcrConfig) : has(self.dcrConfig)",message="exactly one of clientId or dcrConfig must be set"
+// +kubebuilder:validation:XValidation:rule="!has(self.dcrConfig) || (has(self.dcrConfig.discoveryUrl) != has(self.dcrConfig.registrationEndpoint))",message="exactly one of discoveryUrl or registrationEndpoint must be set when dcrConfig is set"
 // +kubebuilder:validation:XValidation:rule="!(has(self.dcrConfig) && has(self.clientSecretRef))",message="clientSecretRef must not be set when dcrConfig is set; the client_secret is obtained at runtime via Dynamic Client Registration"
 //
 //nolint:lll // CEL validation rules exceed line length limit
@@ -1136,6 +1664,15 @@ type OAuth2UpstreamConfig struct {
 	// Optional for public clients using PKCE instead of client secret.
 	// +optional
 	ClientSecretRef *SecretKeyRef `json:"clientSecretRef,omitempty"`
+
+	// TokenEndpointAuthMethod selects how the client authenticates at the OAuth token
+	// endpoint. When empty and a client secret is configured, client_secret_basic is
+	// used, matching the RFC 7591 default for confidential clients. Set this to
+	// client_secret_post only for providers that require credentials in the request body.
+	// Public clients without a secret use the "none" method.
+	// +kubebuilder:validation:Enum=none;client_secret_basic;client_secret_post
+	// +optional
+	TokenEndpointAuthMethod string `json:"tokenEndpointAuthMethod,omitempty"`
 
 	// RedirectURI is the callback URL where the upstream IdP will redirect after authentication.
 	// When not specified, defaults to `{resourceUrl}/oauth/callback` where `resourceUrl` is the
@@ -1206,9 +1743,8 @@ type OAuth2UpstreamConfig struct {
 }
 
 // DCRUpstreamConfig configures RFC 7591 Dynamic Client Registration for an
-// OAuth 2.0 upstream. When present on an OAuth2 upstream, the authserver
-// performs registration at runtime to obtain client credentials, replacing
-// the need to pre-provision a ClientID.
+// OAuth2 or OIDC upstream. OAuth2 requires one of DiscoveryURL or
+// RegistrationEndpoint; OIDC may omit both and derive discovery from IssuerURL.
 //
 // Exactly one of DiscoveryURL or RegistrationEndpoint must be set. DiscoveryURL
 // points at an RFC 8414 / OIDC Discovery document from which the registration
@@ -1221,7 +1757,7 @@ type OAuth2UpstreamConfig struct {
 // returns false; the explicit-empty-string edge case is rejected at reconcile
 // time by ValidateOAuth2DCRConfig.
 //
-// +kubebuilder:validation:XValidation:rule="has(self.discoveryUrl) != has(self.registrationEndpoint)",message="exactly one of discoveryUrl or registrationEndpoint must be set"
+// +kubebuilder:validation:XValidation:rule="!(has(self.discoveryUrl) && has(self.registrationEndpoint))",message="at most one of discoveryUrl or registrationEndpoint may be set"
 //
 //nolint:lll // CEL validation rules exceed line length limit
 type DCRUpstreamConfig struct {
@@ -1720,6 +2256,16 @@ const (
 	// declaration so a missing identity source is visible in
 	// `kubectl describe` instead of only in proxyrunner logs.
 	ConditionTypeIdentitySynthesized = "IdentitySynthesized"
+
+	// ConditionTypeDeprecatedInboundGrantConfiguration reports whether released
+	// legacy inbound grant fields remain populated.
+	ConditionTypeDeprecatedInboundGrantConfiguration = "DeprecatedInboundGrantConfiguration"
+)
+
+// Condition reasons for the deprecated inbound grant advisory.
+const (
+	ConditionReasonLegacyInboundGrantFields           = "LegacyInboundGrantFields"
+	ConditionReasonCanonicalInboundGrantConfiguration = "CanonicalInboundGrantConfiguration"
 )
 
 // Condition reasons for ConditionTypeIdentitySynthesized.
@@ -2016,18 +2562,18 @@ func (r *MCPExternalAuthConfig) validateEmbeddedAuthServer() error {
 		return nil
 	}
 
-	if len(cfg.UpstreamProviders) == 0 && len(cfg.DelegateClients) == 0 &&
+	if len(cfg.UpstreamProviders) == 0 && len(cfg.DelegateClients) == 0 && cfg.InboundGrants == nil &&
 		!hasJWTBearerTrustedIssuer(cfg.TrustedIssuers) {
-		return fmt.Errorf("at least one upstream provider is required unless delegateClients " +
-			"or a trustedIssuer with jwtBearerGrant is configured")
+		return fmt.Errorf("at least one upstream provider or inbound grant family is required")
 	}
 	// Note: multi-upstream is accepted at the CRD level. Consumer controllers
 	// (MCPServer, MCPRemoteProxy) enforce single-upstream restrictions;
 	// VirtualMCPServer allows multiple upstreams.
 
-	// Defense-in-depth with the shared runtime policy. This checks confidential
-	// DCR and statically declared delegate clients for unsafe HTTP issuers.
-	if err := cfg.ValidateConfidentialClientTransport(); err != nil {
+	// Defense-in-depth with the shared runtime policy. This folds legacy and
+	// canonical grant declarations before checking confidential transport and
+	// trusted issuer policy.
+	if err := cfg.ValidateInboundGrants(); err != nil {
 		return err
 	}
 
@@ -2036,24 +2582,27 @@ func (r *MCPExternalAuthConfig) validateEmbeddedAuthServer() error {
 	// same reasoning as ValidateConfidentialClientTransport). The
 	// https-non-loopback-per-entry check has no CEL equivalent here since it
 	// needs the loopback-hostname helper, so it lives only in Go.
+	//
+	// The permission-shaped half of SPIFFE trust/client-auth config (grant
+	// types, scopes, resources, audiences) has no equivalent Go-level
+	// pre-check here, matching the DelegateClients precedent below — a
+	// meaningful check needs AllowedAudiences/ScopesSupported, which are only
+	// known once derived at reconcile time. controllerutil.
+	// validateDelegateClientsAndTrustedIssuers revalidates the full SPIFFE
+	// trust config (via RunConfig.Validate) once those derived values exist.
+	//
+	// The two checks below are admission-time-safe: they depend only on this
+	// object's own spec, so they run here instead of waiting for reconcile.
+	if err := validateSPIFFEBundleEndpoints(cfg.SPIFFETrustDomains); err != nil {
+		return err
+	}
+	if err := validateSPIFFEPrincipalPatternOverlap(cfg.InboundGrants); err != nil {
+		return err
+	}
 	if err := authserver.ValidateForceConfidentialRedirectURIs(
 		cfg.ForceConfidentialRedirectURIs, cfg.AllowConfidentialClientRegistration,
 	); err != nil {
 		return err
-	}
-
-	// allowedAudiences is intentionally nil here: it is derived later from the
-	// resolved incoming OIDC config (see deriveAllowedAudiences), not
-	// available on this CRD. The same accepted_audiences/allowed_audiences
-	// disjointness check runs again once that value exists, at
-	// Config.Validate time (pkg/authserver/config.go's validateTrustedIssuers).
-	if err := tokenexchange.ValidateTrustedIssuers(buildTrustedIssuerConfigs(cfg.TrustedIssuers), cfg.Issuer, nil); err != nil {
-		return fmt.Errorf("trustedIssuers: %w", err)
-	}
-	for i := range cfg.TrustedIssuers {
-		if err := validateUpstreamCABundleRef(cfg.TrustedIssuers[i].CABundleRef); err != nil {
-			return fmt.Errorf("trustedIssuers[%d] (%q) caBundleRef: %w", i, cfg.TrustedIssuers[i].IssuerURL, err)
-		}
 	}
 
 	seen := make(map[string]bool, len(cfg.UpstreamProviders))
@@ -2068,6 +2617,79 @@ func (r *MCPExternalAuthConfig) validateEmbeddedAuthServer() error {
 		}
 	}
 
+	for i := range cfg.TrustedIssuers {
+		if err := validateUpstreamCABundleRef(cfg.TrustedIssuers[i].CABundleRef); err != nil {
+			return fmt.Errorf("trustedIssuers[%d] (%q) caBundleRef: %w", i, cfg.TrustedIssuers[i].IssuerURL, err)
+		}
+	}
+	return nil
+}
+
+// validateSPIFFEBundleEndpoints rejects a structurally invalid SPIFFE Bundle
+// Endpoint URL (wrong scheme, an IP-literal or loopback host, credentials,
+// a query, or a fragment) at admission time. Not CEL-expressible: it needs
+// real IP-literal and loopback-range detection, not a best-effort regex.
+func validateSPIFFEBundleEndpoints(domains []SPIFFETrustDomainConfig) error {
+	for i, domain := range domains {
+		if domain.BundleSource.Type != SPIFFEBundleSourceTypeEndpoint || domain.BundleSource.Endpoint == nil {
+			continue
+		}
+		endpoint := domain.BundleSource.Endpoint
+		if err := authserver.ValidateSPIFFEBundleEndpoint(authserver.SPIFFEBundleEndpointSourceRunConfig{
+			URL:     endpoint.URL,
+			Profile: authserver.SPIFFEBundleEndpointProfile(endpoint.Profile),
+		}); err != nil {
+			return fmt.Errorf("spiffeTrustDomains[%d].bundleSource: %w", i, err)
+		}
+	}
+	return nil
+}
+
+// validateSPIFFEPrincipalPatternOverlap validates each SPIFFE client-auth
+// entry's own principalPattern and resources, then rejects two entries whose
+// principalPattern values overlap (e.g. a "/agent/*" wildcard and a concrete
+// "/agent/one"), all at admission time. Not CEL-expressible: real overlap
+// semantics need the go-spiffe parser for normalization, the same
+// runtime-parser dependency this epic has deliberately kept in Go elsewhere;
+// resource shape is folded in here (rather than its own top-level call) to
+// keep validateEmbeddedAuthServer's own branching within the complexity
+// budget, since both are per-entry, admission-time-safe checks over the same
+// slice.
+func validateSPIFFEPrincipalPatternOverlap(inboundGrants *InboundGrantsConfig) error {
+	if inboundGrants == nil {
+		return nil
+	}
+	entries := inboundGrants.SPIFFEClientAuth
+	// Validate each entry's own pattern and resources first, in its own
+	// index, so a malformed value is always attributed to the entry that
+	// owns it rather than to whichever earlier index the pairwise loop below
+	// happened to be comparing it against.
+	for i := range entries {
+		if err := authserver.ValidateSPIFFEPrincipalPattern(entries[i].PrincipalPattern); err != nil {
+			return fmt.Errorf("inboundGrants.spiffeClientAuth[%d].principalPattern: %w", i, err)
+		}
+		if err := authserver.ValidateResourceIndicators(
+			entries[i].Resources, fmt.Sprintf("inboundGrants.spiffeClientAuth[%d].resources", i),
+		); err != nil {
+			return err
+		}
+	}
+	for i := range entries {
+		for j := i + 1; j < len(entries); j++ {
+			// Patterns were already validated above, so the error return
+			// here is unreachable in practice.
+			overlaps, err := authserver.SPIFFEPatternsOverlap(entries[i].PrincipalPattern, entries[j].PrincipalPattern)
+			if err != nil {
+				return fmt.Errorf("inboundGrants.spiffeClientAuth[%d].principalPattern: %w", i, err)
+			}
+			if overlaps {
+				return fmt.Errorf(
+					"inboundGrants.spiffeClientAuth[%d].principalPattern %q overlaps spiffeClientAuth[%d].principalPattern %q",
+					i, entries[i].PrincipalPattern, j, entries[j].PrincipalPattern,
+				)
+			}
+		}
+	}
 	return nil
 }
 
@@ -2083,6 +2705,7 @@ func buildTrustedIssuerConfigs(issuers []TrustedIssuerConfig) []tokenexchange.Tr
 	configs := make([]tokenexchange.TrustedIssuer, len(issuers))
 	for i, issuer := range issuers {
 		configs[i] = tokenexchange.TrustedIssuer{
+			Name:                   issuer.Name,
 			IssuerURL:              issuer.IssuerURL,
 			ExpectedAudience:       issuer.ExpectedAudience,
 			JWKSURL:                issuer.JWKSURL,
@@ -2139,7 +2762,12 @@ func (*MCPExternalAuthConfig) validateUpstreamProvider(index int, provider *Upst
 		return err
 	}
 
-	// Validate OAuth2-specific constraints (defense-in-depth with CEL).
+	if provider.Type == UpstreamProviderTypeOIDC {
+		if err := ValidateOIDCDCRConfig(provider.OIDCConfig); err != nil {
+			return fmt.Errorf("%s: %w", prefix, err)
+		}
+	}
+
 	// The discriminator above guarantees OAuth2Config != nil when type is oauth2.
 	if provider.Type == UpstreamProviderTypeOAuth2 {
 		if err := ValidateOAuth2DCRConfig(provider.OAuth2Config); err != nil {
@@ -2191,6 +2819,38 @@ func validateUpstreamCABundleRef(ref *CABundleSource) error {
 	}
 	if ref.ConfigMapRef.Name == "" {
 		return fmt.Errorf("configMapRef.name must not be empty")
+	}
+	return nil
+}
+
+// ValidateOIDCDCRConfig enforces OIDC client/DCR exclusivity and DCR field
+// limits. OIDC permits an empty endpoint selector because the issuer-derived
+// well-known discovery URL is used at runtime.
+func ValidateOIDCDCRConfig(cfg *OIDCUpstreamConfig) error {
+	hasClientID := cfg.ClientID != ""
+	hasDCR := cfg.DCRConfig != nil
+	if hasClientID == hasDCR {
+		return fmt.Errorf("oidcConfig: exactly one of clientId or dcrConfig must be set")
+	}
+	if !hasDCR {
+		return nil
+	}
+	if cfg.ClientSecretRef != nil {
+		return fmt.Errorf(
+			"oidcConfig: clientSecretRef must not be set when dcrConfig is set; " +
+				"the client_secret is obtained at runtime via Dynamic Client Registration")
+	}
+	if cfg.DCRConfig.DiscoveryURL != "" && cfg.DCRConfig.RegistrationEndpoint != "" {
+		return fmt.Errorf("oidcConfig.dcrConfig: at most one of discoveryUrl or registrationEndpoint may be set")
+	}
+	if l := len(cfg.DCRConfig.DiscoveryURL); l > MaxDCRURLLength {
+		return fmt.Errorf("oidcConfig.dcrConfig.discoveryUrl: length %d exceeds maximum %d", l, MaxDCRURLLength)
+	}
+	if l := len(cfg.DCRConfig.RegistrationEndpoint); l > MaxDCRURLLength {
+		return fmt.Errorf("oidcConfig.dcrConfig.registrationEndpoint: length %d exceeds maximum %d", l, MaxDCRURLLength)
+	}
+	if l := len(cfg.DCRConfig.SoftwareStatement); l > MaxSoftwareStatementLength {
+		return fmt.Errorf("oidcConfig.dcrConfig.softwareStatement: length %d exceeds maximum %d", l, MaxSoftwareStatementLength)
 	}
 	return nil
 }

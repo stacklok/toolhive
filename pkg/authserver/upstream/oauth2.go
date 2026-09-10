@@ -152,10 +152,9 @@ type OAuth2Config struct {
 	// oauth2.AuthStyle and the rationale. When empty, the historical default
 	// (POST body) is used.
 	//
-	// Only the DCR path populates this, via applyResolutionToOAuth2Config.
-	// OAuth2UpstreamRunConfig has no corresponding field, so a statically-
-	// configured upstream cannot set it and always gets the default — an
-	// intentional limitation scoped to issue #5865 (DCR-negotiated clients).
+	// When empty, the caller's provider-specific default applies. Static
+	// OAuth2UpstreamRunConfig clients with a secret default to client_secret_basic;
+	// DCR clients receive the negotiated method via applyResolutionToOAuth2Config.
 	//nolint:lll // field tags require full JSON+YAML names
 	TokenEndpointAuthMethod string `json:"token_endpoint_auth_method,omitempty" yaml:"token_endpoint_auth_method,omitempty"`
 

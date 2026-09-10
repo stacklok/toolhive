@@ -1147,6 +1147,7 @@ Status reporting enables vMCP runtime to report operational status directly inst
   - Phase: Pending, Ready, Degraded, Failed
   - Conditions: `metav1.Condition` (ready, backends discovered, auth configured) using shared constants
   - DiscoveredBackends: backend URL/auth type/health with timestamps
+- Kubernetes reporter: writes the runtime-owned `status.runtime` snapshot. The operator is the sole writer of top-level status fields and projects runtime phase, message, backend observations, and runtime conditions into their existing top-level compatibility fields during reconciliation. This ownership boundary prevents the runtime and operator from replacing the same conditions array concurrently.
 - CLI reporter: Logging-only reporter (no persistence) logs status updates at Debug level (visible when `--debug` is set).
 - Lifecycle hook: server starts the reporter, collects shutdown funcs, and stops them during graceful shutdown.
 
@@ -1159,7 +1160,7 @@ Status reporting enables vMCP runtime to report operational status directly inst
 ### Extensibility
 
 - Additional reporters can be added under `pkg/vmcp/status/` implementing `Reporter` and using shared `vmcp.Status` types.
-- Future sinks: Kubernetes status writer, file-based reporter for CLI (`thv status`), metrics exporter.
+- Future sinks: file-based reporter for CLI (`thv status`), metrics exporter.
 
 **Implementation**: `pkg/vmcp/status/`
 

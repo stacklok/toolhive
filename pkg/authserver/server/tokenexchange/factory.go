@@ -30,6 +30,9 @@ func NewSharedTrustedIssuerValidator(
 	if len(trustedIssuers) == 0 {
 		return nil, nil
 	}
+	if config == nil {
+		return nil, fmt.Errorf("authorization server config is required when trusted issuers are configured")
+	}
 	selfValidator, err := NewSelfIssuedTokenValidator(config.PublicJWKS(), config.GetAccessTokenIssuer(), config.AllowedAudiences)
 	if err != nil {
 		return nil, fmt.Errorf("failed to create self validator: %w", err)

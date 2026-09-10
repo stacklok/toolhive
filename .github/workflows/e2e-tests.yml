@@ -16,13 +16,13 @@ jobs:
           persist-credentials: false
 
       - name: Set up Go
-        uses: actions/setup-go@924ae3a1cded613372ab5595356fb5720e22ba16 # v6
+        uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7
         with:
           go-version: 'stable'
           cache: true
 
       - name: Install Task
-        uses: arduino/setup-task@b91d5d2c96a56797b48ac1e0e89220bf64044611 # v2
+        uses: arduino/setup-task@c0bc642852239c2689f73f4ea6459c29405f3c52 # v3.0.0
         with:
           version: 3.44.1
           repo-token: ${{ secrets.GITHUB_TOKEN }}
@@ -43,7 +43,11 @@ jobs:
 
   e2e-tests-core:
     name: E2E Tests Core (${{ matrix.title }})
-    runs-on: ubuntu-8cores-32gb
+    # Shards default to the large runner. Shards whose test phase runs for
+    # only a couple of minutes are container- and network-bound rather than
+    # CPU-bound, and set `runner` to the standard runner, which is free for
+    # this public repo. Long shards keep the large runner for wall time.
+    runs-on: ${{ matrix.runner || 'ubuntu-8cores-32gb' }}
     needs: build-binary
     strategy:
       fail-fast: false
@@ -53,6 +57,7 @@ jobs:
             label_filter: core
             artifact: e2e-test-results-core
             procs: 4
+            runner: ubuntu-latest
           - title: mcp-run
             label_filter: mcp-run
             artifact: e2e-test-results-mcp-run
@@ -72,10 +77,12 @@ jobs:
           - title: api-registry
             label_filter: api-registry
             artifact: e2e-test-results-api-registry
+            runner: ubuntu-latest
           - title: api-workloads
             label_filter: "api-workloads && !lifecycle"
             artifact: e2e-test-results-api-workloads
             test_timeout: 25m
+            runner: ubuntu-latest
           - title: api-workloads-lifecycle
             label_filter: "api-workloads && lifecycle"
             artifact: e2e-test-results-api-workloads-lifecycle
@@ -83,22 +90,25 @@ jobs:
           - title: api-clients
             label_filter: api-clients
             artifact: e2e-test-results-api-clients
+            runner: ubuntu-latest
           - title: api-misc
             label_filter: api-misc
             artifact: e2e-test-results-api-misc
+            runner: ubuntu-latest
           - title: vmcp
             label_filter: vmcp
             artifact: e2e-test-results-vmcp
           - title: llm
             label_filter: llm
             artifact: e2e-test-results-llm
+            runner: ubuntu-latest
     steps:
       - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
         with:
           persist-credentials: false
 
       - name: Set up Go
-        uses: actions/setup-go@924ae3a1cded613372ab5595356fb5720e22ba16 # v6
+        uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7
         with:
           go-version: 'stable'
           cache: true
@@ -123,7 +133,7 @@ jobs:
 
       - name: Set up container runtime (Docker)
         run: |
-          # Docker is already installed on ubuntu-8cores-32gb
+          # Docker is preinstalled on both runner sizes used by this matrix
           docker --version
           # Start Docker daemon if not running
           sudo systemctl start docker
@@ -197,7 +207,8 @@ jobs:
 
   conformance:
     name: MCP Conformance
-    runs-on: ubuntu-8cores-32gb
+    # Runs for about a minute; the standard runner is free for this public repo.
+    runs-on: ubuntu-latest
     needs: build-binary
     timeout-minutes: 20
     strategy:
@@ -210,9 +221,9 @@ jobs:
           persist-credentials: false
 
       - name: Set up Node.js
-        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
+        uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
         with:
-          node-version: '22'
+          node-version: '24'
 
       - name: Download ToolHive binary
         uses: actions/download-artifact@37930b1c2abaa49bbe596cd826c3c89aef350131 # v7

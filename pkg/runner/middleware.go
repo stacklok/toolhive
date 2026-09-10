@@ -4,6 +4,9 @@
 package runner
 
 import (
+	"bytes"
+	"encoding/json"
+	"errors"
 	"fmt"
 	"log/slog"
 	"slices"
@@ -72,7 +75,7 @@ func PopulateMiddlewareConfigs(config *RunConfig) error {
 	// effective Host/Port/AllowedOrigins are fully resolved.
 
 	// Body size limit middleware (always present, outermost). See addBodyLimitMiddleware.
-	middlewareConfigs, err := addBodyLimitMiddleware(middlewareConfigs)
+	middlewareConfigs, err := addBodyLimitMiddleware(middlewareConfigs, config.MaxRequestBodySize)
 	if err != nil {
 		return err
 	}
@@ -100,8 +103,15 @@ func PopulateMiddlewareConfigs(config *RunConfig) error {
 	}
 
 	// Authentication middleware (always present)
+	embeddedAuthServerIssuer := func() string {
+		if config.EmbeddedAuthServerConfig != nil {
+			return config.EmbeddedAuthServerConfig.Issuer
+		}
+		return ""
+	}()
 	authParams := auth.MiddlewareParams{
-		OIDCConfig: config.OIDCConfig,
+		OIDCConfig:               config.OIDCConfig,
+		EmbeddedAuthServerIssuer: embeddedAuthServerIssuer,
 	}
 	authConfig, authErr := types.NewMiddlewareConfig(auth.MiddlewareType, authParams)
 	if authErr != nil {
@@ -287,6 +297,54 @@ func PopulateMiddlewareConfigs(config *RunConfig) error {
 	return nil
 }
 
+var errOIDCAuthenticationMiddlewareCount = errors.New("OIDC configuration requires exactly one authentication middleware")
+
+// canonicalizeOIDCMiddlewareConfig synchronizes the serialized authentication
+// middleware with the canonical OIDC configuration when the chain is populated.
+func canonicalizeOIDCMiddlewareConfig(config *RunConfig) error {
+	if config.OIDCConfig == nil || len(config.MiddlewareConfigs) == 0 {
+		return nil
+	}
+
+	authMiddlewareIndex := -1
+	for i, middlewareConfig := range config.MiddlewareConfigs {
+		if middlewareConfig.Type != auth.MiddlewareType {
+			continue
+		}
+		if authMiddlewareIndex >= 0 {
+			return errOIDCAuthenticationMiddlewareCount
+		}
+		authMiddlewareIndex = i
+	}
+	if authMiddlewareIndex < 0 {
+		return errOIDCAuthenticationMiddlewareCount
+	}
+
+	var params auth.MiddlewareParams
+	parameters := config.MiddlewareConfigs[authMiddlewareIndex].Parameters
+	if string(bytes.TrimSpace(parameters)) == "null" {
+		return errors.New("authentication middleware parameters cannot be null")
+	}
+	if err := json.Unmarshal(parameters, &params); err != nil {
+		return fmt.Errorf("failed to decode authentication middleware parameters: %w", err)
+	}
+
+	if embeddedAuthServerConfig := config.EmbeddedAuthServerConfig; embeddedAuthServerConfig != nil &&
+		embeddedAuthServerConfig.Issuer != "" {
+		params.EmbeddedAuthServerIssuer = embeddedAuthServerConfig.Issuer
+	}
+
+	canonicalConfig := *config.OIDCConfig
+	canonicalConfig.Scopes = slices.Clone(config.OIDCConfig.Scopes)
+	params.OIDCConfig = &canonicalConfig
+	middlewareConfig, err := types.NewMiddlewareConfig(auth.MiddlewareType, params)
+	if err != nil {
+		return fmt.Errorf("failed to encode authentication middleware parameters: %w", err)
+	}
+	config.MiddlewareConfigs[authMiddlewareIndex] = *middlewareConfig
+	return nil
+}
+
 // addMutatingWebhookMiddleware configures the mutating webhook middleware if any webhooks are defined.
 // It must be called before addValidatingWebhookMiddleware to preserve the RFC-specified ordering.
 func addMutatingWebhookMiddleware(configs []types.MiddlewareConfig, runConfig *RunConfig) ([]types.MiddlewareConfig, error) {
@@ -360,19 +418,34 @@ func addTokenExchangeMiddleware(
 // oversized request body is rejected with 413 before auth, the MCP parser, or any
 // handler buffers it via io.ReadAll — regardless of which builder assembled the chain.
 //
-// Idempotent: if the chain already starts with body-limit, the slice is returned
-// unchanged. Defaults to bodylimit.DefaultMaxRequestBodySize.
-func addBodyLimitMiddleware(middlewares []types.MiddlewareConfig) ([]types.MiddlewareConfig, error) {
-	if len(middlewares) > 0 && middlewares[0].Type == bodylimit.MiddlewareType {
-		return middlewares, nil
+// Existing body-limit entries are replaced so the typed RunConfig field remains
+// authoritative. The relative order of every other middleware is preserved.
+// Zero defaults to bodylimit.DefaultMaxRequestBodySize; negative values are rejected.
+func addBodyLimitMiddleware(
+	middlewares []types.MiddlewareConfig,
+	maxRequestBodySize int64,
+) ([]types.MiddlewareConfig, error) {
+	if maxRequestBodySize < 0 {
+		return nil, fmt.Errorf("max_request_body_size must be non-negative, got %d", maxRequestBodySize)
+	}
+	if maxRequestBodySize == 0 {
+		maxRequestBodySize = bodylimit.DefaultMaxRequestBodySize
 	}
 	bodyLimitConfig, err := types.NewMiddlewareConfig(bodylimit.MiddlewareType, bodylimit.MiddlewareParams{
-		MaxBytes: bodylimit.DefaultMaxRequestBodySize,
+		MaxBytes: maxRequestBodySize,
 	})
 	if err != nil {
 		return nil, fmt.Errorf("failed to create body limit middleware config: %w", err)
 	}
-	return append([]types.MiddlewareConfig{*bodyLimitConfig}, middlewares...), nil
+
+	result := make([]types.MiddlewareConfig, 0, len(middlewares)+1)
+	result = append(result, *bodyLimitConfig)
+	for _, middleware := range middlewares {
+		if middleware.Type != bodylimit.MiddlewareType {
+			result = append(result, middleware)
+		}
+	}
+	return result, nil
 }
 
 // addHeaderForwardMiddleware adds header forward middleware if configured for remote servers

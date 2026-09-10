@@ -366,7 +366,40 @@ export TOOLHIVE_PROXY_REQUEST_TIMEOUT=5m
 thv run my-slow-server
 ```
 
-**Note:** This timeout only affects the streamable HTTP proxy used with stdio transport. The transparent proxy used by SSE and streamable-http transports (where the container runs its own HTTP server) does not impose a request timeout.
+**Note:** This MCP response-correlation timeout only affects the streamable HTTP proxy used with stdio transport.
+The transparent proxy used by SSE and streamable-http transports (where the container runs its own HTTP server)
+does not impose an MCP response-correlation timeout, but it does enforce the HTTP request read timeout described below.
+
+### Proxy Request Body Size Limit (All Proxy Transports)
+
+ToolHive proxy listeners reject request bodies larger than 8 MiB by default,
+before authentication or MCP parsing can buffer them. This bounds the memory a
+single inbound request may consume. Operators can override the limit with
+`thv run --max-request-body-size`, `thv proxy --max-request-body-size`, or
+MCPServer `spec.maxRequestBodySize`. RunConfig stores the workload setting as
+`max_request_body_size`, expressed as a number of bytes.
+
+Omitting the setting or specifying zero retains the 8 MiB default; zero never
+disables the limit. Raising the limit supports unusually large `tools/call`
+payloads, such as inline images or documents, but also increases the memory
+available to each concurrent request. The setting applies only to inbound MCP
+proxy requests. Response bodies, the management API's 1 MiB cap, the embedded
+auth server's 64 KiB cap, and vMCP's 8 MiB cap are unaffected.
+
+**Implementation**: `pkg/bodylimit`, `pkg/runner/middleware.go`
+
+### Proxy Request Read Timeout (All Transports)
+
+Every proxy HTTP server limits reading a complete inbound request, including its body, to 30 seconds by default.
+This prevents a slow or stalled upload from holding a connection open indefinitely.
+Operators can override the limit per workload with `thv run --proxy-read-timeout` or the MCPServer `spec.proxyReadTimeout` field.
+RunConfig stores the same setting as `proxy_read_timeout`, using a Go duration string such as `45s` or `2m`.
+
+Omitting the setting or specifying zero retains the 30-second default; it never disables the timeout.
+The read timeout does not limit response streaming, so long-lived SSE responses remain unaffected.
+
+This setting is distinct from `TOOLHIVE_PROXY_REQUEST_TIMEOUT` above: the read timeout bounds the client-to-proxy HTTP upload,
+while the stdio proxy request timeout bounds how long an MCP request waits for its correlated server response.
 
 ### Health Check Tuning Parameters
 

@@ -211,6 +211,67 @@ func TestNewServer_Success(t *testing.T) {
 	}
 }
 
+// TestNewServer_TrustedIssuerWithBothGrantsDisabled pins that buildProvider
+// does not start a MultiIssuerTokenValidator's per-issuer JWKS refresh
+// workers when a trusted issuer is configured but neither token exchange nor
+// JWT-bearer would ever consume it -- a reachable, if pointless,
+// configuration (nothing rejects a trusted issuer that no enabled grant
+// references). Building the validator anyway would run those goroutines for
+// the life of the server with no consumer.
+func TestNewServer_TrustedIssuerWithBothGrantsDisabled(t *testing.T) {
+	t.Parallel()
+
+	jwksServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		_, _ = w.Write([]byte(`{"keys":[]}`))
+	}))
+	t.Cleanup(jwksServer.Close)
+
+	baseCfg := func(disableTokenExchange bool) Config {
+		return Config{
+			Issuer:               "https://example.com",
+			KeyProvider:          keys.NewGeneratingProvider(keys.DefaultAlgorithm),
+			HMACSecrets:          &servercrypto.HMACSecrets{Current: validHMACSecret()},
+			Upstreams:            []UpstreamConfig{{Name: "default", Type: UpstreamProviderTypeOAuth2, OAuth2Config: validUpstreamConfig()}},
+			AllowedAudiences:     []string{"https://mcp.example.com"},
+			DisableTokenExchange: disableTokenExchange,
+			TrustedIssuers: []tokenexchange.TrustedIssuer{{
+				IssuerURL:              "https://issuer.example.com",
+				ExpectedAudience:       "https://mcp.example.com",
+				JWKSURL:                jwksServer.URL,
+				InsecureAllowHTTP:      true,
+				AllowPrivateIPs:        true,
+				AllowedDelegateClients: []string{"*"},
+			}},
+		}
+	}
+
+	t.Run("token exchange disabled and no JWT-bearer grant leaves the validator nil", func(t *testing.T) {
+		t.Parallel()
+		stor := storage.NewMemoryStorage()
+		cfg := baseCfg(true)
+
+		srv, err := newServer(context.Background(), cfg, stor)
+		require.NoError(t, err)
+		t.Cleanup(func() { _ = srv.Close() })
+
+		assert.Nil(t, srv.trustedIssuerValidator,
+			"a trusted issuer that neither enabled grant consumes must not start a live JWKS validator")
+	})
+
+	t.Run("token exchange enabled builds the validator", func(t *testing.T) {
+		t.Parallel()
+		stor := storage.NewMemoryStorage()
+		cfg := baseCfg(false)
+
+		srv, err := newServer(context.Background(), cfg, stor)
+		require.NoError(t, err)
+		t.Cleanup(func() { _ = srv.Close() })
+
+		assert.NotNil(t, srv.trustedIssuerValidator,
+			"a trusted issuer consumed by an enabled grant must build the shared validator")
+	})
+}
+
 // capturingSlogHandler records log records for assertions. slog's default
 // handler is process-global, so tests using it must not run in parallel with
 // other slog-capturing tests.
@@ -421,6 +482,61 @@ func TestNewServer_CIMDEnabled_WrapsStorage(t *testing.T) {
 // A regression that reintroduced per-call allocation would leave the
 // refresher's own singleflight test green, so this asserts instance identity
 // at the server boundary instead.
+func TestNewServer_SPIFFEAndCIMD_WrapStorageInOrder(t *testing.T) {
+	t.Parallel()
+
+	trust, err := NewSPIFFETrustConfig(
+		[]SPIFFETrustDomainRunConfig{{
+			Name:        "production",
+			TrustDomain: "example.org",
+			Methods:     []SPIFFEAuthenticationMethod{SPIFFEAuthenticationMethodX509},
+			BundleSource: SPIFFEBundleSourceRunConfig{
+				Type:        SPIFFEBundleSourceTypeWorkloadAPI,
+				WorkloadAPI: &SPIFFEWorkloadAPIBundleSourceRunConfig{},
+			},
+		}},
+		&InboundGrantsRunConfig{SPIFFEClientAuth: []SPIFFEClientAuthRunConfig{{
+			TrustDomainRef:   "production",
+			PrincipalPattern: "spiffe://example.org/ns/default/agent",
+			ClientID:         "spiffe-client",
+			Methods:          []SPIFFEAuthenticationMethod{SPIFFEAuthenticationMethodX509},
+			Scopes:           []string{"openid"},
+			Audiences:        []string{"https://mcp.example.com"},
+			GrantTypes:       []string{SPIFFEGrantTypeTokenExchange},
+		}}},
+		[]string{"openid", "profile"},
+		[]string{"https://mcp.example.com"},
+	)
+	require.NoError(t, err)
+
+	stor := storage.NewMemoryStorage()
+	t.Cleanup(func() { _ = stor.Close() })
+	cfg := Config{
+		CIMDEnabled:          true,
+		CIMDCacheMaxSize:     16,
+		CIMDCacheFallbackTTL: 5 * time.Minute,
+		SPIFFETrust:          trust,
+	}
+
+	// decorateStorageForSPIFFE is exercised directly, not through newServer,
+	// because Config.SPIFFETrust is hard-rejected by Config.Validate() (and
+	// therefore by newServer, which calls it) until a real SVID-verification
+	// consumer lands -- see validateConfigSPIFFENotYetEnforced. This test's
+	// actual subject, the storage-decoration order, lives entirely below
+	// that policy gate.
+	decorated, err := decorateStorageForSPIFFE(context.Background(), cfg, stor)
+	require.NoError(t, err)
+
+	spiffeStorage, ok := decorated.(*storage.SPIFFEStorageDecorator)
+	require.True(t, ok, "SPIFFE static clients must wrap the CIMD storage layer")
+	_, ok = spiffeStorage.Unwrap().(*storage.CIMDStorageDecorator)
+	assert.True(t, ok, "CIMD must remain below the SPIFFE static client overlay")
+
+	client, err := decorated.GetClient(context.Background(), "spiffe-client")
+	require.NoError(t, err)
+	assert.Equal(t, "spiffe-client", client.GetID())
+}
+
 func TestNewServer_UpstreamRefresherSharedInstance(t *testing.T) {
 	t.Parallel()
 
@@ -473,12 +589,14 @@ func TestNewUpstreamTokenRefresher_NilWhenNoUpstreams(t *testing.T) {
 	}
 }
 
-func TestNewServer_RegistersDelegateClientsBeforeUpstreamConstruction(t *testing.T) {
+// TestNewServer_DelegateClientReconciliation covers registerDelegateClients'
+// use of ReconcileConfiguredClient: registering a delegate client is
+// create-only against a DCR-issued collision (the security fix -- an
+// operator-declared client must never silently overwrite a DCR
+// registration), and idempotent across a restart with unchanged config.
+func TestNewServer_DelegateClientReconciliation(t *testing.T) {
 	t.Parallel()
 
-	ctx := t.Context()
-	stor := storage.NewMemoryStorage()
-	t.Cleanup(func() { _ = stor.Close() })
 	cfg := Config{
 		Issuer:           "https://example.com",
 		KeyProvider:      keys.NewGeneratingProvider(keys.DefaultAlgorithm),
@@ -492,28 +610,56 @@ func TestNewServer_RegistersDelegateClientsBeforeUpstreamConstruction(t *testing
 		}},
 	}
 
-	factory := func(ctx context.Context, _ *UpstreamConfig) (upstream.OAuth2Provider, error) {
+	t.Run("refuses to overwrite a DCR-issued collision, before upstream construction", func(t *testing.T) {
+		t.Parallel()
+		ctx := t.Context()
+		stor := storage.NewMemoryStorage()
+		t.Cleanup(func() { _ = stor.Close() })
+
+		dcrClient, err := registration.NewConfidentialPlain(registration.Config{ID: "delegate", Secret: "old-secret"})
+		require.NoError(t, err)
+		require.NoError(t, stor.RegisterClient(ctx, dcrClient))
+
+		factoryCalled := false
+		factory := func(context.Context, *UpstreamConfig) (upstream.OAuth2Provider, error) {
+			factoryCalled = true
+			return nil, assert.AnError
+		}
+		subCfg := cfg
+		subCfg.UpstreamFactory = factory
+
+		_, err = newServer(ctx, subCfg, stor)
+		require.ErrorIs(t, err, storage.ErrAlreadyExists)
+		assert.False(t, factoryCalled, "delegate client registration must run before upstream construction")
+
+		client, err := stor.GetClient(ctx, "delegate")
+		require.NoError(t, err, "the original DCR-issued registration must be untouched")
+		assert.True(t, registration.DCRIssued(client))
+	})
+
+	t.Run("restart with unchanged config is idempotent", func(t *testing.T) {
+		t.Parallel()
+		ctx := t.Context()
+		stor := storage.NewMemoryStorage()
+		t.Cleanup(func() { _ = stor.Close() })
+
+		factory := func(context.Context, *UpstreamConfig) (upstream.OAuth2Provider, error) {
+			return nil, assert.AnError
+		}
+		subCfg := cfg
+		subCfg.UpstreamFactory = factory
+
+		// registerDelegateClients runs on every startup; re-registering the
+		// same static client across a simulated restart must not fail.
+		_, err := newServer(ctx, subCfg, stor)
+		require.ErrorIs(t, err, assert.AnError)
+		_, err = newServer(ctx, subCfg, stor)
+		require.ErrorIs(t, err, assert.AnError)
+
 		client, err := stor.GetClient(ctx, "delegate")
 		require.NoError(t, err)
 		assert.False(t, registration.DCRIssued(client))
-		assert.False(t, client.IsPublic())
-		return nil, assert.AnError
-	}
-
-	cfg.UpstreamFactory = factory
-	_, err := newServer(ctx, cfg, stor)
-	require.ErrorIs(t, err, assert.AnError)
-
-	// Startup registration is an upsert. Replacing a same-ID DCR client makes
-	// it permanent and unmarked rather than retaining DCR eviction semantics.
-	dcrClient, err := registration.NewConfidentialPlain(registration.Config{ID: "delegate", Secret: "old-secret"})
-	require.NoError(t, err)
-	require.NoError(t, stor.RegisterClient(ctx, dcrClient))
-	_, err = newServer(ctx, cfg, stor)
-	require.ErrorIs(t, err, assert.AnError)
-	client, err := stor.GetClient(ctx, "delegate")
-	require.NoError(t, err)
-	assert.False(t, registration.DCRIssued(client))
+	})
 }
 
 // closeCountingProvider is an OAuth2Provider that implements the optional

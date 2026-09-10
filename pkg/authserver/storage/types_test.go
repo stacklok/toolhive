@@ -17,11 +17,13 @@ package storage
 import (
 	"context"
 	"errors"
+	"reflect"
 	"strings"
 	"testing"
 	"time"
 
 	"github.com/ory/fosite"
+	"github.com/stretchr/testify/assert"
 )
 
 func TestUpstreamTokens_IsExpired(t *testing.T) {
@@ -174,5 +176,90 @@ func TestDefaultConfig(t *testing.T) {
 
 	if cfg.Type != TypeMemory {
 		t.Errorf("DefaultConfig().Type = %q, want %q", cfg.Type, TypeMemory)
+	}
+}
+
+// TestClientFingerprintFieldsAreJustified is a drift guard over
+// clientFingerprint's field set: every field must carry a one-sentence
+// justification here, so a field added to clientFingerprint without a
+// matching entry fails loudly instead of silently compiling green. Unlike a
+// bare []string of names, an unjustified addition can't be satisfied by
+// just appending the name — the reviewer has to say why the field belongs in
+// the identity comparison.
+//
+// Listing a field here is not enough on its own: a field added to the struct
+// and to this map, but never wired into equal(), previously still passed
+// this test (only a memory-backend collision test happened to catch it).
+// The second half of this test closes that gap by constructing, for every
+// justified field, two fingerprints that differ ONLY in that field and
+// asserting equal() reports them as different -- proving each field actually
+// participates in the comparison, not just that it exists on the struct.
+func TestClientFingerprintFieldsAreJustified(t *testing.T) {
+	t.Parallel()
+
+	justifications := map[string]string{
+		"scopes":        "a different OAuth scope set is a different logical client authorization",
+		"audience":      "a different RFC 8707/8693 audience allowlist is a different logical client authorization",
+		"grantTypes":    "a different grant-type set is a different logical client capability",
+		"responseTypes": "a different response-type set is a different logical client capability",
+		"resources":     "a different RFC 8707 resource allowlist is a different logical client authorization",
+		"identityFingerprint": "a different SPIFFE association identity (trust domain, principal, methods) " +
+			"behind the same client ID is a different logical client authorization",
+		"public": "public vs. confidential is a different logical client class",
+	}
+
+	var gotFields []string
+	for _, f := range reflect.VisibleFields(reflect.TypeOf(clientFingerprint{})) {
+		gotFields = append(gotFields, f.Name)
+	}
+
+	var wantFields []string
+	for name, justification := range justifications {
+		assert.NotEmptyf(t, justification, "field %q must carry a non-empty justification", name)
+		wantFields = append(wantFields, name)
+	}
+
+	assert.ElementsMatchf(t, wantFields, gotFields,
+		"clientFingerprint's field set changed (got %v); add or remove a justification entry in this test "+
+			"and confirm the new field is actually wired into fingerprintOfClient and storedClient.fingerprint",
+		gotFields)
+
+	base := clientFingerprint{
+		scopes:              []string{"scope-a"},
+		audience:            []string{"audience-a"},
+		grantTypes:          []string{"grant-a"},
+		responseTypes:       []string{"response-a"},
+		resources:           []string{"resource-a"},
+		identityFingerprint: "identity-a",
+		public:              false,
+	}
+
+	for name := range justifications {
+		t.Run(name, func(t *testing.T) {
+			t.Parallel()
+
+			other := base
+			switch name {
+			case "scopes":
+				other.scopes = []string{"scope-b"}
+			case "audience":
+				other.audience = []string{"audience-b"}
+			case "grantTypes":
+				other.grantTypes = []string{"grant-b"}
+			case "responseTypes":
+				other.responseTypes = []string{"response-b"}
+			case "resources":
+				other.resources = []string{"resource-b"}
+			case "identityFingerprint":
+				other.identityFingerprint = "identity-b"
+			case "public":
+				other.public = !base.public
+			default:
+				t.Fatalf("field %q has a justification but no wiring check in this test -- add one", name)
+			}
+
+			assert.False(t, base.equal(other),
+				"clientFingerprint.equal() must report a mismatch when only %q differs", name)
+		})
 	}
 }

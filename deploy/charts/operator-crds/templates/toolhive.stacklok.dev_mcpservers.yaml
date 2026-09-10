@@ -294,6 +294,13 @@ spec:
               image:
                 description: Image is the container image for the MCP server
                 type: string
+              maxRequestBodySize:
+                description: |-
+                  MaxRequestBodySize is the maximum inbound MCP proxy request body size in bytes.
+                  Zero uses the default limit of 8 MiB.
+                format: int64
+                minimum: 0
+                type: integer
               mcpPort:
                 description: MCPPort is the port that MCP server listens to
                 format: int32
@@ -393,6 +400,16 @@ spec:
                 maximum: 65535
                 minimum: 1
                 type: integer
+              proxyReadTimeout:
+                description: |-
+                  ProxyReadTimeout bounds how long the proxy spends reading a full request
+                  (headers + body), mitigating slow-upload connection exhaustion. Applies to
+                  all transports. Defaults to 30s if not specified. Example: "1m".
+                format: duration
+                type: string
+                x-kubernetes-validations:
+                - message: proxyReadTimeout must be non-negative
+                  rule: duration(self) >= duration('0s')
               rateLimiting:
                 description: |-
                   RateLimiting defines rate limiting configuration for the MCP server.
@@ -2221,6 +2238,13 @@ spec:
               image:
                 description: Image is the container image for the MCP server
                 type: string
+              maxRequestBodySize:
+                description: |-
+                  MaxRequestBodySize is the maximum inbound MCP proxy request body size in bytes.
+                  Zero uses the default limit of 8 MiB.
+                format: int64
+                minimum: 0
+                type: integer
               mcpPort:
                 description: MCPPort is the port that MCP server listens to
                 format: int32
@@ -2320,6 +2344,16 @@ spec:
                 maximum: 65535
                 minimum: 1
                 type: integer
+              proxyReadTimeout:
+                description: |-
+                  ProxyReadTimeout bounds how long the proxy spends reading a full request
+                  (headers + body), mitigating slow-upload connection exhaustion. Applies to
+                  all transports. Defaults to 30s if not specified. Example: "1m".
+                format: duration
+                type: string
+                x-kubernetes-validations:
+                - message: proxyReadTimeout must be non-negative
+                  rule: duration(self) >= duration('0s')
               rateLimiting:
                 description: |-
                   RateLimiting defines rate limiting configuration for the MCP server.

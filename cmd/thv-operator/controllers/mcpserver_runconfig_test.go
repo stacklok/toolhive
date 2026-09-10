@@ -9,6 +9,7 @@ import (
 	"fmt"
 	"reflect"
 	"testing"
+	"time"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -59,6 +60,36 @@ func TestCreateRunConfigFromMCPServer(t *testing.T) {
 				assert.Equal(t, "test-image:latest", config.Image)
 				assert.Equal(t, transporttypes.TransportTypeStdio, config.Transport)
 				assert.Equal(t, 8080, config.Port)
+			},
+		},
+		{
+			name:      "nil proxy read timeout leaves the RunConfig value empty",
+			mcpServer: v1beta1test.NewMCPServer("nil-timeout-server", "test-ns"),
+			//nolint:thelper // We want to see the error at the specific line
+			expected: func(t *testing.T, config *runner.RunConfig) {
+				assert.Empty(t, config.ProxyReadTimeout)
+			},
+		},
+		{
+			name: "zero proxy read timeout uses the proxy default",
+			mcpServer: v1beta1test.NewMCPServer("zero-timeout-server", "test-ns",
+				v1beta1test.Mutate(func(m *mcpv1beta1.MCPServer) {
+					m.Spec.ProxyReadTimeout = &metav1.Duration{}
+				})),
+			//nolint:thelper // We want to see the error at the specific line
+			expected: func(t *testing.T, config *runner.RunConfig) {
+				assert.Empty(t, config.ProxyReadTimeout)
+			},
+		},
+		{
+			name: "positive proxy read timeout is translated",
+			mcpServer: v1beta1test.NewMCPServer("positive-timeout-server", "test-ns",
+				v1beta1test.Mutate(func(m *mcpv1beta1.MCPServer) {
+					m.Spec.ProxyReadTimeout = &metav1.Duration{Duration: time.Minute}
+				})),
+			//nolint:thelper // We want to see the error at the specific line
+			expected: func(t *testing.T, config *runner.RunConfig) {
+				assert.Equal(t, "1m0s", config.ProxyReadTimeout)
 			},
 		},
 		{
@@ -346,6 +377,25 @@ func TestCreateRunConfigFromMCPServer(t *testing.T) {
 				assert.Len(t, cedarCfg.Options.Policies, 1)
 				assert.Contains(t, cedarCfg.Options.Policies[0], "call_tool")
 				assert.Equal(t, "[]", cedarCfg.Options.EntitiesJSON)
+			},
+		},
+		{
+			name:      "max request body size omitted",
+			mcpServer: v1beta1test.NewMCPServer("body-limit-omitted", "test-ns"),
+			//nolint:thelper // We want to see the error at the specific line
+			expected: func(t *testing.T, config *runner.RunConfig) {
+				assert.Zero(t, config.MaxRequestBodySize)
+			},
+		},
+		{
+			name: "with max request body size",
+			mcpServer: v1beta1test.NewMCPServer("body-limit-configured", "test-ns",
+				v1beta1test.Mutate(func(m *mcpv1beta1.MCPServer) {
+					m.Spec.MaxRequestBodySize = 16 << 20
+				})),
+			//nolint:thelper // We want to see the error at the specific line
+			expected: func(t *testing.T, config *runner.RunConfig) {
+				assert.Equal(t, int64(16<<20), config.MaxRequestBodySize)
 			},
 		},
 	}

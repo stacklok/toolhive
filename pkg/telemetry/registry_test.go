@@ -278,3 +278,57 @@ func TestApplyProcessorOnlySampling(t *testing.T) {
 		})
 	}
 }
+
+// TestIgnoredRegisteredSamplingRate verifies which cases warrant warning the
+// operator that a registered rate cannot be honoured.
+//
+//nolint:paralleltest // mutates global registry state
+func TestIgnoredRegisteredSamplingRate(t *testing.T) {
+	tests := []struct {
+		name                    string
+		hasRegisteredProcessors bool
+		register                bool
+		registerRate            float64
+		wantIgnored             bool
+	}{
+		{
+			name:        "silent when no integration is registered at all",
+			wantIgnored: false,
+		},
+		{
+			name:                    "silent when the integration wants every trace",
+			hasRegisteredProcessors: true,
+			wantIgnored:             false,
+		},
+		{
+			name:                    "warns when the integration asked for a lower rate",
+			hasRegisteredProcessors: true,
+			register:                true,
+			registerRate:            0.01,
+			wantIgnored:             true,
+		},
+		{
+			name:                    "warns when the integration asked for no traces",
+			hasRegisteredProcessors: true,
+			register:                true,
+			registerRate:            0,
+			wantIgnored:             true,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			ResetSpanProcessorsForTesting()
+			t.Cleanup(ResetSpanProcessorsForTesting)
+			if tt.register {
+				RegisterSamplingRate(tt.registerRate)
+			}
+
+			rate, ignored := ignoredRegisteredSamplingRate(tt.hasRegisteredProcessors)
+			assert.Equal(t, tt.wantIgnored, ignored)
+			if tt.wantIgnored {
+				assert.InDelta(t, tt.registerRate, rate, 1e-9)
+			}
+		})
+	}
+}

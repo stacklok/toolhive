@@ -54,6 +54,13 @@ func NewServeProvider(ctx context.Context) (provider *Provider, otelEnabled bool
 
 	if otelCfg.Endpoint == "" && hasRegisteredProcessors {
 		applyProcessorOnlySampling(&telemetryCfg)
+	} else if rate, ignored := ignoredRegisteredSamplingRate(hasRegisteredProcessors); ignored {
+		slog.Warn("integration sampling rate is ignored because an OTLP endpoint is configured; "+
+			"the endpoint's sampling rate applies to every backend, so the integration receives "+
+			"more traces than it requested",
+			"ignored_sampling_rate", rate,
+			"effective_sampling_rate", telemetryCfg.GetSamplingRateFloat(),
+			"endpoint", otelCfg.Endpoint)
 	}
 
 	p, err := NewProvider(ctx, telemetryCfg)
@@ -78,6 +85,25 @@ func NewServeProvider(ctx context.Context) (provider *Provider, otelEnabled bool
 func applyProcessorOnlySampling(cfg *Config) {
 	cfg.TracingEnabled = true
 	cfg.SetSamplingRateFromFloat(RegisteredSamplingRate())
+}
+
+// ignoredRegisteredSamplingRate returns the rate a registered integration asked
+// for, and whether that rate is being ignored.
+//
+// It is ignored as soon as an OTLP endpoint is configured: the SDK sampler is
+// shared by the whole provider, so the endpoint's rate applies to every backend
+// and the integration receives everything that sampler passes instead of its own
+// share of it. An integration that wants everything (the default rate) is never
+// short-changed, so only a rate below the default is reported.
+//
+// This is a warning rather than an error because exporting more traces than
+// requested is not worth refusing to start the server over.
+func ignoredRegisteredSamplingRate(hasRegisteredProcessors bool) (float64, bool) {
+	if !hasRegisteredProcessors {
+		return 0, false
+	}
+	rate := RegisteredSamplingRate()
+	return rate, rate < DefaultRegisteredSamplingRate
 }
 
 // handleUnusedEndpoint enables tracing by default when an OTLP endpoint is

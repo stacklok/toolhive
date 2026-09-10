@@ -1,0 +1,17 @@
+version: '3'
+
+tasks:
+  tidy:
+    desc: Synchronize SDK module dependencies
+    cmds:
+      - go mod tidy
+
+  test:
+    desc: Test the generated SDK and its behavioral contract
+    cmds:
+      - go test ./...
+
+  lint:
+    desc: Lint the generated SDK and its adapter
+    cmds:
+      - go vet ./...

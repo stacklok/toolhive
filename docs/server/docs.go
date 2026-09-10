@@ -7298,20 +7298,11 @@ const docTemplate = `{
                 ]
             },
             "post": {
-                "description": "Add a new registry",
-                "requestBody": {
-                    "content": {
-                        "application/json": {
-                            "schema": {
-                                "type": "object"
-                            }
-                        }
-                    }
-                },
+                "description": "This endpoint is retained for API compatibility, accepts no request body, and always returns 501 Not Implemented.\nCustom registries are not currently supported.",
                 "responses": {
                     "501": {
                         "content": {
-                            "application/json": {
+                            "text/plain": {
                                 "schema": {
                                     "type": "string"
                                 }
@@ -7320,7 +7311,7 @@ const docTemplate = `{
                         "description": "Not Implemented"
                     }
                 },
-                "summary": "Add a registry",
+                "summary": "Add a registry (unavailable)",
                 "tags": [
                     "registry"
                 ]

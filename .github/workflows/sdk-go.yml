@@ -1,31 +1,31 @@
-name: Docgen
+name: Go SDK
 
 on:
   workflow_call:
 
 jobs:
-  verify-swagger-docs:
-    name: Verify Swagger Documentation
+  verify-sdk:
+    name: Verify generated Go SDK
     runs-on: ubuntu-24.04
     permissions:
       contents: read
-
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
         with:
           persist-credentials: false
       - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7
         with:
-          go-version-file: go.mod
+          go-version-file: sdk/go/go.mod
       - name: Install Task
         uses: arduino/setup-task@c0bc642852239c2689f73f4ea6459c29405f3c52 # v3.0.0
         with:
           version: 3.44.1
           repo-token: ${{ secrets.GITHUB_TOKEN }}
-      - name: Install swag
-        # Pinned to match go.mod and Taskfile.yml — see the comment on the
-        # swagger-install task for why this alone doesn't make the check
-        # fully deterministic.
-        run: go install github.com/swaggo/swag/v2/cmd/swag@v2.0.0-rc5
-      - name: Verify generated documentation and SDK artifacts
-        run: task docs-verify
+      - name: Install SDK generator
+        run: go install github.com/ogen-go/ogen/cmd/ogen@v1.15.0
+      - name: Verify generated artifacts
+        run: task sdk-verify
+      - name: Test SDK
+        run: task sdk-test
+      - name: Lint SDK
+        run: task sdk-lint

@@ -148,8 +148,9 @@ func TestInitializeSetsSessionHeader(t *testing.T) {
 	require.NotEmpty(t, sessID, "server should set Mcp-Session-Id header")
 }
 
-// TestPOSTNotificationOnlyAccepted checks single notification POST returns 202 with no body.
-func TestPOSTNotificationOnlyAccepted(t *testing.T) {
+// TestPOSTNotificationAndClientResponseAccepted checks that one-way client
+// messages return 202 with no body and are forwarded to the destination.
+func TestPOSTNotificationAndClientResponseAccepted(t *testing.T) {
 	t.Parallel()
 
 	const port = 8104
@@ -163,18 +164,32 @@ func TestPOSTNotificationOnlyAccepted(t *testing.T) {
 	time.Sleep(50 * time.Millisecond)
 
 	url := "http://127.0.0.1:8104" + StreamableHTTPEndpoint
-	// Notification (no id)
-	notif := `{"jsonrpc":"2.0","method":"progress","params":{"pct":50}}`
+	assertAccepted := func(name, message string) {
+		t.Helper()
+		req, err := http.NewRequestWithContext(t.Context(), http.MethodPost, url, bytes.NewReader([]byte(message)))
+		require.NoError(t, err)
+		req.Header.Set("Content-Type", "application/json")
+		resp, err := http.DefaultClient.Do(req)
+		require.NoError(t, err)
+		defer resp.Body.Close()
 
-	req, _ := http.NewRequest(http.MethodPost, url, bytes.NewReader([]byte(notif)))
-	req.Header.Set("Content-Type", "application/json")
-	resp, err := http.DefaultClient.Do(req)
-	require.NoError(t, err)
-	defer resp.Body.Close()
+		assert.Equal(t, http.StatusAccepted, resp.StatusCode, name)
+		body, err := io.ReadAll(resp.Body)
+		require.NoError(t, err)
+		assert.Empty(t, body, "%s: 202 should have no body", name)
 
-	assert.Equal(t, http.StatusAccepted, resp.StatusCode)
-	body, _ := io.ReadAll(resp.Body)
-	assert.Equal(t, 0, len(body), "202 should have no body")
+		select {
+		case msg := <-proxy.GetMessageChannel():
+			encoded, err := jsonrpc2.EncodeMessage(msg)
+			require.NoError(t, err)
+			assert.JSONEq(t, message, string(encoded), name)
+		case <-time.After(time.Second):
+			t.Fatalf("%s was not forwarded to the destination", name)
+		}
+	}
+
+	assertAccepted("notification", `{"jsonrpc":"2.0","method":"progress","params":{"pct":50}}`)
+	assertAccepted("client response", `{"jsonrpc":"2.0","id":"server-1","result":{}}`)
 }
 
 // TestBatchRequestsRejected verifies that the streamable proxy rejects every

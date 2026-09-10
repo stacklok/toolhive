@@ -160,7 +160,7 @@ func TestNew_CloseReleasesWorkflowAuditLogFile(t *testing.T) {
 		require.ErrorIs(t, c.(*coreVMCP).workflowAuditor.Close(), os.ErrClosed)
 	})
 
-	t.Run("logs close errors without failing Close", func(t *testing.T) {
+	t.Run("returns first close error and keeps later Close idempotent", func(t *testing.T) {
 		t.Parallel()
 
 		cfg, _ := baseConfig(t)
@@ -171,6 +171,9 @@ func TestNew_CloseReleasesWorkflowAuditLogFile(t *testing.T) {
 		core := c.(*coreVMCP)
 		require.NoError(t, core.workflowAuditor.Close())
 
+		err = c.Close()
+		require.Error(t, err)
+		assert.ErrorIs(t, err, os.ErrClosed)
 		require.NoError(t, c.Close())
 	})
 }

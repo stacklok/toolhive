@@ -5,6 +5,7 @@ package core
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"log/slog"
 	"sync"
@@ -85,6 +86,7 @@ type coreVMCP struct {
 	stopStore func()
 
 	closeOnce sync.Once
+	closeErr  error
 }
 
 var _ VMCP = (*coreVMCP)(nil)
@@ -142,13 +144,15 @@ func New(cfg *Config) (VMCP, error) {
 		}
 		slog.Info("workflow audit logging enabled")
 	}
-	closeWorkflowAuditor := func() {
+	closeWorkflowAuditor := func() error {
 		if workflowAuditor == nil {
-			return
+			return nil
 		}
 		if err := workflowAuditor.Close(); err != nil {
 			slog.Warn("failed to close workflow auditor", "error", err)
+			return err
 		}
+		return nil
 	}
 
 	// The elicitation handler depends only on the domain-typed ElicitationRequester
@@ -180,8 +184,11 @@ func New(cfg *Config) (VMCP, error) {
 	instruments, err := newWorkflowInstruments(cfg.TelemetryProvider)
 	if err != nil {
 		stopStore()
-		closeWorkflowAuditor()
-		return nil, fmt.Errorf("failed to create workflow telemetry instruments: %w", err)
+		cleanupErr := closeWorkflowAuditor()
+		return nil, errors.Join(
+			fmt.Errorf("failed to create workflow telemetry instruments: %w", err),
+			cleanupErr,
+		)
 	}
 
 	// composerFactory builds a composite-tool engine bound to a specific routing
@@ -208,8 +215,8 @@ func New(cfg *Config) (VMCP, error) {
 	workflowDefs, err := validateWorkflowDefs(validationEngine, cfg.WorkflowDefs)
 	if err != nil {
 		stopStore()
-		closeWorkflowAuditor()
-		return nil, fmt.Errorf("workflow validation failed: %w", err)
+		cleanupErr := closeWorkflowAuditor()
+		return nil, errors.Join(fmt.Errorf("workflow validation failed: %w", err), cleanupErr)
 	}
 
 	// Build and start the backend health monitor (#5443 reversal: the core owns its
@@ -220,8 +227,8 @@ func New(cfg *Config) (VMCP, error) {
 	healthMonitor, healthProvider, err := buildHealthMonitor(cfg)
 	if err != nil {
 		stopStore()
-		closeWorkflowAuditor()
-		return nil, err
+		cleanupErr := closeWorkflowAuditor()
+		return nil, errors.Join(err, cleanupErr)
 	}
 
 	return &coreVMCP{
@@ -553,24 +560,32 @@ func (c *coreVMCP) InvalidateCapabilityCache() {
 	invalidator.InvalidateAll()
 }
 
-// Close stops the workflow state store's cleanup goroutine. It is idempotent:
-// the underlying Stop closes a channel that cannot be closed twice, so the work
-// is guarded by sync.Once and subsequent calls return nil.
+// Close stops the workflow state store's cleanup goroutine, closes the optional
+// workflow auditor, and stops the health monitor. It returns cleanup errors from
+// the first call, and is idempotent: the underlying cleanup work is guarded by
+// sync.Once and subsequent calls return nil.
 func (c *coreVMCP) Close() error {
+	ran := false
 	c.closeOnce.Do(func() {
+		ran = true
 		c.stopStore()
 		if c.workflowAuditor != nil {
 			if err := c.workflowAuditor.Close(); err != nil {
 				slog.Warn("failed to close workflow auditor", "error", err)
+				c.closeErr = errors.Join(c.closeErr, err)
 			}
 		}
 		if c.healthMonitor != nil {
 			if err := c.healthMonitor.Stop(); err != nil {
 				slog.Warn("failed to stop health monitor", "error", err)
+				c.closeErr = errors.Join(c.closeErr, err)
 			}
 		}
 	})
-	return nil
+	if !ran {
+		return nil
+	}
+	return c.closeErr
 }
 
 // aggregatedView health-filters the backend registry and aggregates capabilities

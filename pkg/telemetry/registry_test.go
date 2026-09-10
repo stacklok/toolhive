@@ -10,6 +10,7 @@ import (
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+	"go.opentelemetry.io/otel/attribute"
 	sdktrace "go.opentelemetry.io/otel/sdk/trace"
 	"go.opentelemetry.io/otel/sdk/trace/tracetest"
 )
@@ -96,4 +97,238 @@ func TestNewProvider_PicksUpRegisteredProcessor(t *testing.T) {
 	spans := recorder.Ended()
 	require.Len(t, spans, 1, "the registered processor should have received OnEnd for the test span")
 	assert.Equal(t, "test-span", spans[0].Name())
+}
+
+// TestNewProvider_PicksUpRegisteredResourceAttributes is an end-to-end test
+// that verifies attributes registered via RegisterResourceAttributes actually
+// reach the OTEL resource attached to exported spans. Integrations that export
+// out of band (e.g. Sentry's OTLP exporter) depend on this for grouping.
+//
+//nolint:paralleltest // mutates global registry state
+func TestNewProvider_PicksUpRegisteredResourceAttributes(t *testing.T) {
+	ResetSpanProcessorsForTesting()
+	t.Cleanup(ResetSpanProcessorsForTesting)
+
+	recorder := tracetest.NewSpanRecorder()
+	RegisterSpanProcessor(recorder)
+	RegisterResourceAttributes(map[string]string{"sentry.environment": "staging"})
+
+	ctx := context.Background()
+	provider, err := NewProvider(ctx, Config{
+		ServiceName:    "test-svc",
+		ServiceVersion: "0.0.1",
+		TracingEnabled: true,
+		SamplingRate:   "1.0",
+		// No OTLP endpoint — processor-only mode, as in Sentry-only serve.
+	})
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = provider.Shutdown(context.Background()) })
+
+	_, span := provider.TracerProvider().Tracer("test-tracer").Start(ctx, "test-span")
+	span.End()
+
+	spans := recorder.Ended()
+	require.Len(t, spans, 1)
+
+	attrs := spans[0].Resource().Attributes()
+	assert.Contains(t, attrs, attribute.String("sentry.environment", "staging"),
+		"registered resource attributes must be present on the exported span's resource")
+}
+
+// TestRegisterResourceAttributes verifies merge and copy semantics of the
+// resource attribute registry.
+//
+//nolint:paralleltest // mutates global registry state
+func TestRegisterResourceAttributes(t *testing.T) {
+	t.Run("returns nil when nothing is registered", func(t *testing.T) {
+		ResetSpanProcessorsForTesting()
+		t.Cleanup(ResetSpanProcessorsForTesting)
+
+		RegisterResourceAttributes(nil)
+		RegisterResourceAttributes(map[string]string{})
+		assert.Nil(t, RegisteredResourceAttributes())
+	})
+
+	t.Run("merges successive registrations and overwrites repeated keys", func(t *testing.T) {
+		ResetSpanProcessorsForTesting()
+		t.Cleanup(ResetSpanProcessorsForTesting)
+
+		RegisterResourceAttributes(map[string]string{"a": "1", "b": "2"})
+		RegisterResourceAttributes(map[string]string{"b": "overwritten", "c": "3"})
+
+		assert.Equal(t, map[string]string{"a": "1", "b": "overwritten", "c": "3"},
+			RegisteredResourceAttributes())
+	})
+
+	t.Run("does not expose the registry to mutation by callers", func(t *testing.T) {
+		ResetSpanProcessorsForTesting()
+		t.Cleanup(ResetSpanProcessorsForTesting)
+
+		input := map[string]string{"a": "1"}
+		RegisterResourceAttributes(input)
+		input["a"] = "mutated by caller"
+
+		returned := RegisteredResourceAttributes()
+		returned["a"] = "mutated by reader"
+
+		assert.Equal(t, map[string]string{"a": "1"}, RegisteredResourceAttributes())
+	})
+}
+
+// TestMergeRegisteredResourceAttributes verifies that explicitly configured
+// attributes win over those a self-registered integration supplied.
+//
+//nolint:paralleltest // mutates global registry state
+func TestMergeRegisteredResourceAttributes(t *testing.T) {
+	tests := []struct {
+		name       string
+		registered map[string]string
+		configured map[string]string
+		want       map[string]string
+	}{
+		{
+			name:       "passes configured attributes through when none are registered",
+			configured: map[string]string{"a": "1"},
+			want:       map[string]string{"a": "1"},
+		},
+		{
+			name:       "surfaces registered attributes when none are configured",
+			registered: map[string]string{"sentry.environment": "staging"},
+			want:       map[string]string{"sentry.environment": "staging"},
+		},
+		{
+			name:       "explicit configuration wins over registered defaults",
+			registered: map[string]string{"sentry.environment": "staging", "a": "1"},
+			configured: map[string]string{"sentry.environment": "operator-override"},
+			want:       map[string]string{"sentry.environment": "operator-override", "a": "1"},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			ResetSpanProcessorsForTesting()
+			t.Cleanup(ResetSpanProcessorsForTesting)
+			RegisterResourceAttributes(tt.registered)
+
+			assert.Equal(t, tt.want, mergeRegisteredResourceAttributes(tt.configured))
+		})
+	}
+}
+
+// TestRegisterSamplingRate_Overwrites covers the one behaviour
+// TestApplyProcessorOnlySampling does not: a repeated registration replaces the
+// previous rate. The unset default and an explicit zero are asserted there.
+//
+//nolint:paralleltest // mutates global registry state
+func TestRegisterSamplingRate_Overwrites(t *testing.T) {
+	ResetSpanProcessorsForTesting()
+	t.Cleanup(ResetSpanProcessorsForTesting)
+
+	RegisterSamplingRate(0.5)
+	RegisterSamplingRate(0.01)
+	assert.InDelta(t, 0.01, RegisteredSamplingRate(), 1e-9)
+}
+
+// TestApplyProcessorOnlySampling verifies that a rate registered by an
+// integration replaces the hardcoded 100% sampling that processor-only mode
+// used to apply unconditionally.
+//
+//nolint:paralleltest // mutates global registry state
+func TestApplyProcessorOnlySampling(t *testing.T) {
+	tests := []struct {
+		name         string
+		register     bool
+		registerRate float64
+		wantRate     float64
+	}{
+		{
+			name:     "samples everything when the integration registered no rate",
+			wantRate: 1.0,
+		},
+		{
+			name:         "honours a low registered rate",
+			register:     true,
+			registerRate: 0.01,
+			wantRate:     0.01,
+		},
+		{
+			name:     "honours a registered zero rate",
+			register: true,
+			wantRate: 0,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			ResetSpanProcessorsForTesting()
+			t.Cleanup(ResetSpanProcessorsForTesting)
+			if tt.register {
+				RegisterSamplingRate(tt.registerRate)
+			}
+
+			// Start from the 5% default NewServeProvider applies beforehand, to
+			// prove the registered rate overrides it.
+			cfg := Config{SamplingRate: "0.05"}
+			applyProcessorOnlySampling(&cfg)
+
+			assert.True(t, cfg.TracingEnabled,
+				"registered processors are the only consumers, so tracing must be forced on")
+			// Assert on the parsed value handed to the sampler, not its string form.
+			assert.InDelta(t, tt.wantRate, cfg.GetSamplingRateFloat(), 1e-9)
+		})
+	}
+}
+
+// TestIgnoredRegisteredSamplingRate verifies which cases warrant warning the
+// operator that a registered rate cannot be honoured.
+//
+//nolint:paralleltest // mutates global registry state
+func TestIgnoredRegisteredSamplingRate(t *testing.T) {
+	tests := []struct {
+		name                    string
+		hasRegisteredProcessors bool
+		register                bool
+		registerRate            float64
+		wantIgnored             bool
+	}{
+		{
+			name:        "silent when no integration is registered at all",
+			wantIgnored: false,
+		},
+		{
+			name:                    "silent when the integration wants every trace",
+			hasRegisteredProcessors: true,
+			wantIgnored:             false,
+		},
+		{
+			name:                    "warns when the integration asked for a lower rate",
+			hasRegisteredProcessors: true,
+			register:                true,
+			registerRate:            0.01,
+			wantIgnored:             true,
+		},
+		{
+			name:                    "warns when the integration asked for no traces",
+			hasRegisteredProcessors: true,
+			register:                true,
+			registerRate:            0,
+			wantIgnored:             true,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			ResetSpanProcessorsForTesting()
+			t.Cleanup(ResetSpanProcessorsForTesting)
+			if tt.register {
+				RegisterSamplingRate(tt.registerRate)
+			}
+
+			rate, ignored := ignoredRegisteredSamplingRate(tt.hasRegisteredProcessors)
+			assert.Equal(t, tt.wantIgnored, ignored)
+			if tt.wantIgnored {
+				assert.InDelta(t, tt.registerRate, rate, 1e-9)
+			}
+		})
+	}
 }

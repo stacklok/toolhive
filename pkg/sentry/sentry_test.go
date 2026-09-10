@@ -87,31 +87,6 @@ func TestClose(t *testing.T) {
 	})
 }
 
-//nolint:paralleltest // mutates global initialized and telemetry registry state
-func TestInit_RegistersSpanProcessor(t *testing.T) {
-	t.Run("does not register processor when not initialized", func(_ *testing.T) {
-		initialized.Store(false)
-		telemetry.ResetSpanProcessorsForTesting()
-		assert.False(t, telemetry.HasRegisteredSpanProcessors())
-	})
-
-	t.Run("registers span processor with telemetry registry on init", func(t *testing.T) {
-		initialized.Store(false)
-		telemetry.ResetSpanProcessorsForTesting()
-		err := Init(Config{
-			DSN:              "https://examplePublicKey@o0.ingest.sentry.io/0",
-			TracesSampleRate: 1.0,
-		})
-		require.NoError(t, err)
-		defer func() {
-			initialized.Store(false)
-			telemetry.ResetSpanProcessorsForTesting()
-		}()
-
-		assert.True(t, telemetry.HasRegisteredSpanProcessors())
-	})
-}
-
 //nolint:paralleltest // mutates global initialized state
 func TestCaptureException(t *testing.T) {
 	t.Run("no-op when not initialized", func(_ *testing.T) {

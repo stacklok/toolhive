@@ -189,11 +189,11 @@ func TestSPIFFEJWTClientAuthentication(t *testing.T) {
 		{name: "missing key ID", form: jwtForm(signedJWT(t, jose.RS256, key, "", "JWT", standardClaims(id, []string{testIssuer}))), source: source, wantErr: fosite.ErrInvalidClient},
 		{name: "invalid type", form: jwtForm(signedJWT(t, jose.RS256, key, "key-1", "not-jwt", standardClaims(id, []string{testIssuer}))), source: source, wantErr: fosite.ErrInvalidClient},
 		{name: "wrong audience", form: jwtForm(signedJWT(t, jose.RS256, key, "key-1", "JWT", standardClaims(id, []string{"wrong"}))), source: source, wantErr: fosite.ErrInvalidClient},
-		{name: "issuer does not match subject trust domain", form: jwtForm(signedJWT(t, jose.RS256, key, "key-1", "JWT", func() jwt.Claims {
+		{name: "iss claim is not required and a mismatched one is ignored", form: jwtForm(signedJWT(t, jose.RS256, key, "key-1", "JWT", func() jwt.Claims {
 			claims := standardClaims(id, []string{testIssuer})
 			claims.Issuer = "example.org"
 			return claims
-		}())), source: source, wantErr: fosite.ErrInvalidClient},
+		}())), source: source, wantCall: true},
 		{name: "multiple audience", form: jwtForm(signedJWT(t, jose.RS256, key, "key-1", "JWT", standardClaims(id, []string{testIssuer, "other"}))), source: source, wantErr: fosite.ErrInvalidClient},
 		{name: "validity comfortably within six minutes", form: jwtForm(signedJWT(t, jose.RS256, key, "key-1", "JWT", claimsExpiringIn(id, 5*time.Minute))), source: source, wantCall: true},
 		{name: "validity comfortably beyond six minutes", form: jwtForm(signedJWT(t, jose.RS256, key, "key-1", "JWT", claimsExpiringIn(id, 7*time.Minute))), source: source, wantErr: fosite.ErrInvalidClient},
@@ -321,6 +321,7 @@ func TestSPIFFEJWTDispatchRejectsDuplicateAssertionType(t *testing.T) {
 				"urn:ietf:params:oauth:client-assertion-type:jwt-bearer",
 				"urn:ietf:params:oauth:client-assertion-type:jwt-bearer",
 			}},
+			wantDelegate: true,
 		},
 		{
 			name:         "one non-SPIFFE assertion type",
@@ -353,7 +354,7 @@ func TestSPIFFEJWTDispatchRejectsDuplicateAssertionType(t *testing.T) {
 	}
 }
 
-func TestSPIFFEJWTDispatchRejectsDuplicateAssertionTypeWithoutResolver(t *testing.T) {
+func TestSPIFFEJWTDispatchDelegatesWithoutResolverEvenWithDuplicateAssertionType(t *testing.T) {
 	t.Parallel()
 
 	defaultCalled := false
@@ -364,8 +365,8 @@ func TestSPIFFEJWTDispatchRejectsDuplicateAssertionTypeWithoutResolver(t *testin
 	_, err := strategy(context.Background(), httptest.NewRequest(http.MethodPost, "/", nil), url.Values{
 		"client_assertion_type": {spiffeauth.SPIFFEJWTAssertionType, spiffeauth.SPIFFEJWTAssertionType},
 	})
-	require.ErrorIs(t, err, fosite.ErrInvalidRequest)
-	assert.False(t, defaultCalled)
+	require.NoError(t, err)
+	assert.True(t, defaultCalled)
 }
 
 func TestSPIFFEX509ClientAuthenticationDoesNotFallThrough(t *testing.T) {

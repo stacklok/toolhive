@@ -44,19 +44,18 @@ func newSPIFFEClientAuthenticationStrategy(
 	resolver SPIFFEClientResolver,
 ) fosite.ClientAuthenticationStrategy {
 	return func(ctx context.Context, r *http.Request, form url.Values) (fosite.Client, error) {
-		if len(form["client_assertion_type"]) > 1 {
-			return nil, fosite.ErrInvalidRequest
-		}
-		// Without SPIFFE trust, otherwise well-formed requests go to the
-		// default strategy. Duplicate assertion types are rejected above as
-		// ambiguous before either authentication strategy is selected.
+		// Without SPIFFE trust, every request goes to the default strategy
+		// untouched — this arm must not change shared-dispatcher behavior for
+		// entirely non-SPIFFE requests (e.g. RFC 7523 private-key JWT).
 		if resolver == nil {
 			return defaultStrategy(ctx, r, form)
 		}
 		// An explicit assertion type takes precedence over an ambient mTLS identity.
 		// A repeated form key must be checked in full: form.Get would only see the
 		// first value, letting a SPIFFE assertion type hidden behind an earlier
-		// value slip through to the default strategy.
+		// value slip through to the default strategy. A duplicated
+		// client_assertion_type is rejected as ambiguous by
+		// authenticateSPIFFEJWTClient itself, once SPIFFE is actually selected.
 		if slices.Contains(form["client_assertion_type"], spiffeauth.SPIFFEJWTAssertionType) {
 			return authenticateSPIFFEJWTClient(ctx, r, form, issuer, jwtBundleSource, resolver)
 		}
@@ -112,12 +111,12 @@ func authenticateSPIFFEJWTClient(
 	return client, nil
 }
 
+// validSPIFFEJWTIdentityClaims reports whether svid carries exactly the AS as
+// its sole audience. It does not require an `iss` claim: RFC 7519 states iss
+// is OPTIONAL, and the SPIFFE JWT-SVID spec does not mandate it either — a
+// conformant SVID signed by a bundle-trusted key can omit it entirely.
 func validSPIFFEJWTIdentityClaims(svid *jwtsvid.SVID, audience string) bool {
-	if svid == nil || len(svid.Audience) != 1 || svid.Audience[0] != audience {
-		return false
-	}
-	issuer, ok := svid.Claims["iss"].(string)
-	return ok && issuer == svid.ID.TrustDomain().IDString()
+	return svid != nil && len(svid.Audience) == 1 && svid.Audience[0] == audience
 }
 
 func validResolvedSPIFFEClient(client fosite.Client, err error, requestedClientID string) bool {

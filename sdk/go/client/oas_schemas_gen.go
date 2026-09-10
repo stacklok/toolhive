@@ -19366,6 +19366,10 @@ type StopWorkloadsBadRequestApplicationJSON string
 func (*StopWorkloadsBadRequestApplicationJSON) stopWorkloadsRes() {}
 
 // ACLUserConfig contains ACL user authentication configuration.
+// A nil value is a valid no-auth configuration: the store connects without
+// credentials. A populated block whose password resolves to empty is a
+// misconfiguration (mis-keyed or unsynced secret) and is rejected rather
+// than silently downgraded to an unauthenticated connection.
 // Ref: #/components/schemas/StorageACLUserRunConfig
 type StorageACLUserRunConfig struct {
 	// PasswordEnvVar is the environment variable containing the Redis password.
@@ -19401,7 +19405,13 @@ type StorageRedisRunConfig struct {
 	// Addr is the Redis server address (host:port). Required for standalone and cluster modes.
 	// Mutually exclusive with SentinelConfig.
 	Addr OptString `json:"addr"`
-	// AuthType must be "aclUser" - only ACL user authentication is supported.
+	// AuthType selects the Redis authentication mode. "aclUser" is the only
+	// authenticated mode. Leave it empty, with a nil ACLUserConfig, for a
+	// no-auth connection to a Redis/Valkey instance that has no authentication
+	// configured. Setting AuthType to "aclUser" declares authenticated intent:
+	// the conversion rejects that pairing with a nil ACLUserConfig rather than
+	// downgrading to no-auth. Otherwise presence of ACLUserConfig is what
+	// enables authentication.
 	AuthType OptString `json:"auth_type"`
 	// ClusterMode enables the Redis Cluster protocol. Requires Addr to be set.
 	ClusterMode OptBool `json:"cluster_mode"`

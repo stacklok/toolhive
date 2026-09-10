@@ -358,6 +358,9 @@ func Serve(ctx context.Context, cfg ServeConfig) error {
 		sessionFactoryOpts,
 		vmcpsession.WithRequestTimeoutResolver(backendRequestTimeoutResolver(vmcpCfg)),
 	)
+	if backendInit := backendInitTimeout(vmcpCfg); backendInit > 0 {
+		sessionFactoryOpts = append(sessionFactoryOpts, vmcpsession.WithBackendInitTimeout(backendInit))
+	}
 	sessionFactory := vmcpsession.NewSessionFactory(outgoingRegistry, sessionFactoryOpts...)
 
 	// When the optimizer is enabled, its meta-tools are pass-through tools.
@@ -543,6 +546,17 @@ func backendRequestTimeoutResolver(cfg *config.Config) func(workloadID string) t
 		}
 		return time.Duration(timeouts.Default)
 	}
+}
+
+// backendInitTimeout returns the configured session-init cap, or 0 when unset
+// so the factory keeps its own default. Mirrors backendRequestTimeoutResolver's
+// nil-safety; there is no per-workload form because the cap exists to bound the
+// whole session handshake, which is only as fast as its slowest backend.
+func backendInitTimeout(cfg *config.Config) time.Duration {
+	if cfg == nil || cfg.Operational == nil || cfg.Operational.Timeouts == nil {
+		return 0
+	}
+	return time.Duration(cfg.Operational.Timeouts.BackendInit)
 }
 
 // loadAndValidateConfig loads and validates the vMCP configuration file.

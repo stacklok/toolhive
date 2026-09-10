@@ -715,6 +715,23 @@ type TimeoutConfig struct {
 	// PerWorkload defines per-workload timeout overrides.
 	// +optional
 	PerWorkload map[string]Duration `json:"perWorkload,omitempty" yaml:"perWorkload,omitempty"`
+
+	// BackendInit caps how long session initialization waits for a single
+	// backend to connect and hand back its capabilities. Unlike Default, which
+	// only ever extends that deadline, an explicit BackendInit is authoritative:
+	// it bounds session init even when a workload's request timeout is longer.
+	//
+	// Leave it unset unless a backend can stall the handshake. It exists for
+	// backends that neither answer nor fail promptly: a stateless MCP server
+	// that requires per-user auth cannot be classified by the unauthenticated
+	// health probe, so vMCP opens the persistent connection its Modern skip
+	// path would otherwise avoid, and that connection can hang until the
+	// deadline. Clients with their own connect timeout give up first, and
+	// because they never complete a call, the revision cache never warms and
+	// the next session repeats it. A few seconds here lets session init fail
+	// fast, which partialFailureMode: best_effort turns into a usable session.
+	// +optional
+	BackendInit Duration `json:"backendInit,omitempty" yaml:"backendInit,omitempty"`
 }
 
 // FailureHandlingConfig configures failure handling behavior.

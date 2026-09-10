@@ -24,6 +24,51 @@ import (
 	vmcpmocks "github.com/stacklok/toolhive/pkg/vmcp/mocks"
 )
 
+func TestBackendInitTimeout(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name string
+		cfg  *config.Config
+		want time.Duration
+	}{
+		{
+			name: "nil config leaves the factory default",
+			cfg:  nil,
+			want: 0,
+		},
+		{
+			name: "missing operational config leaves the factory default",
+			cfg:  &config.Config{},
+			want: 0,
+		},
+		{
+			name: "unset backendInit leaves the factory default",
+			cfg: &config.Config{Operational: &config.OperationalConfig{
+				Timeouts: &config.TimeoutConfig{Default: config.Duration(90 * time.Second)},
+			}},
+			want: 0,
+		},
+		{
+			name: "configured backendInit is returned",
+			cfg: &config.Config{Operational: &config.OperationalConfig{
+				Timeouts: &config.TimeoutConfig{
+					Default:     config.Duration(90 * time.Second),
+					BackendInit: config.Duration(5 * time.Second),
+				},
+			}},
+			want: 5 * time.Second,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			assert.Equal(t, tt.want, backendInitTimeout(tt.cfg))
+		})
+	}
+}
+
 func TestBackendRequestTimeoutResolver(t *testing.T) {
 	t.Parallel()
 

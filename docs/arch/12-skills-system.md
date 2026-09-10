@@ -193,7 +193,12 @@ mutually exclusive choices:
 
 - `--key <path>`: sign with a cosign private key (`COSIGN_PASSWORD`
   decrypts encrypted keys, read server-side by `thv serve`, which performs
-  the signing).
+  the signing). This is accepted only through automatic local server
+  discovery: the owner-protected discovery file supplies a separate random
+  capability that the CLI sends with the key-bearing request. Loopback or IPC
+  transport alone is not authorization, because a public reverse proxy can
+  make an untrusted caller appear local. Remote and manually configured API
+  URLs must use keyless signing instead.
 - `--identity-token <token-or-path>`: sign keylessly. The CLI acquires an
   OIDC identity token and forwards it in the push request; the server
   exchanges it with Fulcio for a short-lived certificate, signs, and records
@@ -441,7 +446,7 @@ Verifying a key-pair signature binds it to the artifact explicitly. The signatur
 Once an entry is pinned, the key does its job on the lock-driven operations too, because the anchor is read from the entry rather than supplied again:
 
 - **`sync`** re-verifies the stored bundle against the pinned key offline. This has to be a distinct path — the keyless verifier refuses a key-pinned entry, and sync reads a refusal as drift it can heal by reinstalling, so a key-pinned skill would report as modified on every run and `--check` would fail permanently on a project that is in fact intact.
-- **`upgrade`** applies the pinned key to the candidate. Verifying against it *is* the evidence the signer has not changed, since there is no certificate identity to compare. A candidate that moved to keyless signing or lost its signature is a signer change and blocks like one — `--allow-signer-change` genuinely resolves those, by dropping the recorded key and re-verifying keylessly. A candidate signed by a *different* key is reported as a failure instead: re-anchoring in place is not supported, so it needs an uninstall and a reinstall, and printing the `--allow-signer-change` remedy would send the caller into a refusal one step later.
+- **`upgrade`** applies the pinned key to the candidate. Verifying against it *is* the evidence the signer has not changed, since there is no certificate identity to compare. The candidate is measured against the pin whether or not `--allow-signer-change` was passed, and the two modes differ in exactly one case: a candidate that conclusively no longer verifies against the key *and* carries a keyless signature that does verify is a genuine key-to-keyless move — blocked as a signer change without the override, and permitted with it, which drops the recorded key and re-anchors to the observed identity. Everything else is the same in both modes. A candidate signed by a *different* key is a failure: re-anchoring in place is not supported, so it needs an uninstall and a reinstall, and the failure prints that command. An unsigned candidate is an `unsigned-rejected` failure rather than a signer change, because upgrade has no unsigned-consent flag and `--allow-signer-change` is not one — it re-verifies from scratch, which an unsigned artifact still fails. And an operational failure — registry, transport, or context — is never read as evidence about which key signed the artifact: it fails the plan and leaves the pin exactly where it was, in both modes, so a transient fault under a project-wide override cannot unpin an artifact that still carries a valid signature by the pinned key. The override is also narrowed per entry: a skill that needs it does not unpin every key-pinned skill beside it.
 - **`sync --adopt`** refuses a key-signed install. Adoption back-fills trust from what the stored bundle reveals, and a key-pair bundle reveals no identity and does not carry the key; recording the install as unsigned instead would file a false trust decision about an artifact that is signed.
 
 `--public-key` is accepted on `install` only — `upgrade` and `sync` use the anchor the lock already records and take no key of their own, and in-place re-anchoring to a different key is deliberately not offered. Plugins use the same install-side public-key model for project-scoped OCI installs; plugin push remains keyless-by-default or explicit `--no-sign` and has no `--key` flag.

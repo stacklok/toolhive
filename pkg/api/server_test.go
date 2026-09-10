@@ -51,6 +51,31 @@ func TestGenerateNonce(t *testing.T) {
 	})
 }
 
+func TestGenerateKeySigningCapability(t *testing.T) {
+	t.Parallel()
+
+	t.Run("returns valid 32-char hex string", func(t *testing.T) {
+		t.Parallel()
+
+		capability, err := GenerateKeySigningCapability()
+		require.NoError(t, err)
+
+		assert.Len(t, capability, 32)
+		assert.Regexp(t, regexp.MustCompile(`^[0-9a-f]{32}$`), capability)
+	})
+
+	t.Run("returns values independent from the discovery nonce", func(t *testing.T) {
+		t.Parallel()
+
+		nonce, err := GenerateNonce()
+		require.NoError(t, err)
+		capability, err := GenerateKeySigningCapability()
+		require.NoError(t, err)
+
+		assert.NotEqual(t, nonce, capability)
+	})
+}
+
 func TestListenURL(t *testing.T) {
 	t.Parallel()
 

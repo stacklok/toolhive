@@ -152,3 +152,62 @@ func TestPrintUpgradeResultTextEveryStatus(t *testing.T) {
 	}}, FormatText, true)
 	require.NoError(t, err)
 }
+
+// TestPrintUpgradeResultSignerRendering pins the three renderings the keyed
+// upgrade guard relies on. A blocked outcome with no identity is printed as
+// "unsigned", so a key-to-keyless move must arrive carrying the identity it
+// moved to, and an unsigned candidate under a pinned key must arrive as a
+// failure rather than a block — otherwise the text names --allow-signer-change
+// for a state it cannot resolve.
+//
+//nolint:paralleltest // Test captures os.Stdout which cannot be done in parallel
+func TestPrintUpgradeResultSignerRendering(t *testing.T) {
+	tests := []struct {
+		name       string
+		outcome    skills.UpgradeOutcome
+		wantOutput string
+	}{
+		{
+			name: "a key-to-keyless move names the identity it moved to",
+			outcome: skills.UpgradeOutcome{
+				Name:              "keyed-skill",
+				Status:            skills.UpgradeStatusSignerChangeBlocked,
+				NewSignerIdentity: "ci@example.com",
+			},
+			wantOutput: "keyed-skill: signer change blocked (candidate is ci@example.com;" +
+				" use --allow-signer-change)\n",
+		},
+		{
+			name: "only a candidate with no identity is called unsigned",
+			outcome: skills.UpgradeOutcome{
+				Name:   "keyless-skill",
+				Status: skills.UpgradeStatusSignerChangeBlocked,
+			},
+			wantOutput: "keyless-skill: signer change blocked (candidate is unsigned;" +
+				" use --allow-signer-change)\n",
+		},
+		{
+			// The keyed guard routes an unsigned candidate here instead, so
+			// the flag above is never suggested for one.
+			name: "an unsigned candidate under a pinned key reports the rejection",
+			outcome: skills.UpgradeOutcome{
+				Name:   "keyed-skill",
+				Status: skills.UpgradeStatusFailed,
+				Reason: skills.FailureReasonUnsignedRejected,
+				Error:  "candidate is unsigned, and this entry is pinned to a cosign public key",
+			},
+			wantOutput: "keyed-skill: failed [unsigned-rejected]: candidate is unsigned," +
+				" and this entry is pinned to a cosign public key\n",
+		},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			output := captureStdout(t, func() {
+				require.NoError(t, printUpgradeResult(
+					&skills.UpgradeResult{Outcomes: []skills.UpgradeOutcome{tc.outcome}},
+					FormatText, false))
+			})
+			assert.Equal(t, tc.wantOutput, output)
+		})
+	}
+}

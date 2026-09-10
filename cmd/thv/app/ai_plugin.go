@@ -10,6 +10,7 @@ import (
 var aiPluginCmd = &cobra.Command{
 	Use:   "ai-plugin",
 	Short: "Manage AI-tool plugins",
-	Long: `The ai-plugin command provides subcommands to manage plugins for AI tools
-(e.g. Claude Code, Codex) — not plugins for ToolHive itself.`,
+	Long: `Manage plugins for AI tools such as Claude Code and Codex, not plugins
+for ToolHive itself. A plugin is a manifest-based bundle that may contain
+commands, agents, skills, hooks, and server declarations.`,
 }

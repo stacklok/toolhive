@@ -17,6 +17,9 @@ Push a built AI-tool plugin to an OCI registry
 
 Push a previously built plugin artifact to a remote OCI registry.
 
+Push signs keylessly by default. Use --no-sign to publish unsigned; plugin push
+does not support key-pair signing and has no --key flag.
+
 ```
 thv ai-plugin push [reference] [flags]
 ```

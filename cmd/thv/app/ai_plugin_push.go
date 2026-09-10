@@ -18,16 +18,19 @@ var (
 var aiPluginPushCmd = &cobra.Command{
 	Use:   "push [reference]",
 	Short: "Push a built AI-tool plugin to an OCI registry",
-	Long:  `Push a previously built plugin artifact to a remote OCI registry.`,
-	Args:  cobra.ExactArgs(1),
-	RunE:  aiPluginPushCmdFunc,
+	Long: `Push a previously built plugin artifact to a remote OCI registry.
+
+Push signs keylessly by default. Use --no-sign to publish unsigned; plugin push
+does not support key-pair signing and has no --key flag.`,
+	Args: cobra.ExactArgs(1),
+	RunE: aiPluginPushCmdFunc,
 }
 
 func init() {
 	aiPluginCmd.AddCommand(aiPluginPushCmd)
-	// No --key flag: plugin signing is keyless-only until install-time key
-	// verification exists (#6442). Pushing a key-signed plugin would produce
-	// an artifact no project-scoped install can accept.
+	// No --key flag: plugin push supports keyless signing or explicit
+	// --no-sign. Project installs can verify externally key-pair-signed
+	// artifacts with ai-plugin install --public-key.
 	aiPluginPushCmd.Flags().StringVar(&aiPluginPushIdentityToken, "identity-token", "",
 		"OIDC identity token (or a path to a file containing one) for keyless signing. "+
 			"If omitted, one is acquired automatically: from the GitHub Actions OIDC token when "+
@@ -46,8 +49,8 @@ func aiPluginPushCmdFunc(cmd *cobra.Command, args []string) error {
 		FlagValue: aiPluginPushIdentityToken,
 		NoSign:    aiPluginPushNoSign,
 		Confirm:   confirmBrowserSignIn,
-		// No --key: plugin signing is keyless-only (#6442), so the
-		// remediation must not offer a flag this command does not define.
+		// Plugin push has no --key flag, so remediation must not offer
+		// a signing choice this command does not define.
 		Remediation: "Provide --identity-token, run in CI with id-token: write permission, " +
 			"or pass --no-sign to push unsigned",
 	})

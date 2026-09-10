@@ -54,7 +54,7 @@ func init() {
 	aiPluginUpgradeCmd.Flags().StringVar(&aiPluginUpgradeProjectRoot, "project-root", "",
 		"Project root path (default: auto-detected from the current directory)")
 	aiPluginUpgradeCmd.Flags().StringVar(&aiPluginUpgradeClientsRaw, "clients", "",
-		`Comma-separated target client apps (e.g. claude-code,opencode), or "all" for every available client`)
+		`Comma-separated target client apps (e.g. claude-code,codex), or "all" for every available client`)
 	aiPluginUpgradeCmd.Flags().BoolVar(&aiPluginUpgradePreview, "preview", false,
 		"Report what would change without persisting anything (OCI sources are still fetched to compare digests)")
 	aiPluginUpgradeCmd.Flags().BoolVar(&aiPluginUpgradeFailOnChanges, "fail-on-changes", false,

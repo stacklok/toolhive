@@ -50,7 +50,7 @@ func init() {
 	aiPluginSyncCmd.Flags().StringVar(&aiPluginSyncProjectRoot, "project-root", "",
 		"Project root path (default: auto-detected from the current directory)")
 	aiPluginSyncCmd.Flags().StringVar(&aiPluginSyncClientsRaw, "clients", "",
-		`Comma-separated target client apps (e.g. claude-code,opencode), or "all" for every available client`)
+		`Comma-separated target client apps (e.g. claude-code,codex), or "all" for every available client`)
 	aiPluginSyncCmd.Flags().BoolVar(&aiPluginSyncCheck, "check", false,
 		"Report drift without installing, writing, or removing anything")
 	aiPluginSyncCmd.Flags().BoolVar(&aiPluginSyncAdopt, "adopt", false,

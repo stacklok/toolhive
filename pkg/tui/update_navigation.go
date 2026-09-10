@@ -209,7 +209,7 @@ func (m *Model) toolsScrollToSelected() {
 }
 
 // toolsJumpToInspector switches to the Inspector panel with the currently
-// selected tool pre-selected and the form ready to fill.
+// selected tool preselected and the form ready to fill.
 func (m *Model) toolsJumpToInspector() tea.Cmd {
 	// Find the matching index in the inspector tool list (same m.tools slice).
 	m.insp.toolIdx = m.toolsSelectedIdx

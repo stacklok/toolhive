@@ -191,8 +191,8 @@ func (s *service) pushSigned(ctx context.Context, opts plugins.PushOptions, d di
 	// reads the artifact back to decide whether this identity already signed
 	// it, so a not-yet-created tag would fail the attach.
 	//
-	// No key is forwarded — plugin pushes are keyless-only until install-time
-	// key verification exists (#6442), and PushOptions carries no key field.
+	// Plugin push intentionally forwards only the identity token: key-pair
+	// signing is not part of the plugin push contract.
 	if _, err := s.artifactSigner().SignOCI(ctx, staged, d.String(), signer.Options{
 		IdentityToken: opts.IdentityToken,
 		FulcioURL:     os.Getenv(envFulcioURL),
@@ -321,13 +321,11 @@ func (s *service) DeleteBuild(ctx context.Context, tag string) error {
 // Ambiguous or absent input is rejected here, before the artifact is pushed,
 // rather than surfacing as a signing failure afterward.
 //
-// Diverges from skillsvc.validateSigningInputs on purpose: there is no key
-// branch to validate. Install-time verification is keyless-only, and a
-// key-signed artifact fails it as verifier.ErrKeySigned — a verdict distinct
-// from ErrUnsigned, so --allow-unsigned cannot override it and the plugin is
-// uninstallable project-scoped. Rather than accept a key and reject it here,
-// plugins.PushOptions omits the field entirely (#6442), so the unsupported
-// request cannot be constructed by any caller, in-process or over HTTP.
+// Diverges from skillsvc.validateSigningInputs on purpose: plugin push has no
+// key branch. Key-pair signing is not part of this push contract, so
+// plugins.PushOptions omits the field and the unsupported request cannot be
+// constructed by an in-process or HTTP caller. Project installs can still
+// verify an externally key-pair-signed OCI artifact with --public-key.
 func validateSigningInputs(opts plugins.PushOptions) error {
 	switch {
 	case opts.NoSign && opts.IdentityToken != "":

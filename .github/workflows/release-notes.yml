@@ -62,7 +62,7 @@ jobs:
       SLACK_WEBHOOK: ${{ secrets.SLACK_TOOLHIVE_RELEASE_WEBHOOK_URL }}
     steps:
       - name: Checkout repository
-        uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
         with:
           # Always check out the default branch, never the workflow_run head ref.
           # Checking out an event-supplied ref in a secrets-bearing workflow_run
@@ -106,7 +106,7 @@ jobs:
 
       - name: Generate release notes with Claude
         id: claude
-        uses: anthropics/claude-code-action@5ccc3a35a6367cdb8e6fbd0728287467540ecfe2 # v1.0.219
+        uses: anthropics/claude-code-action@19dda84776b3518d98b8798e591daee763049ed3 # v1.0.220
         env:
           # gh CLI used by the skill (read-only PR/issue lookups) authenticates
           # via GH_TOKEN. Read access is sufficient — publishing happens in a
@@ -182,7 +182,7 @@ jobs:
           echo "text=$SUMMARY" >> "$GITHUB_OUTPUT"
 
       - name: Upload release notes artifact
-        uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f # v6
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
         with:
           name: release-notes-${{ steps.tag.outputs.tag }}
           path: ${{ steps.verify.outputs.file }}

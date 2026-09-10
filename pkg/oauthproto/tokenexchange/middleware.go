@@ -352,7 +352,7 @@ func createTokenExchangeMiddleware(
 			// Token exchange succeeded
 			slog.Debug("Token exchange successful")
 
-			// Inject the exchanged token into the request using the pre-selected strategy
+			// Inject the exchanged token into the request using the preselected strategy
 			if err := injectToken(r, exchangedToken.AccessToken); err != nil {
 				slog.Warn("Failed to inject token", "error", err)
 				http.Error(w, "Token injection failed", http.StatusInternalServerError)

@@ -5307,7 +5307,7 @@ const docTemplate = `{
                 "type": "object"
             },
             "storage.ACLUserRunConfig": {
-                "description": "ACLUserConfig contains ACL user authentication configuration.",
+                "description": "ACLUserConfig contains ACL user authentication configuration.\nA nil value is a valid no-auth configuration: the store connects without\ncredentials. A populated block whose password resolves to empty is a\nmisconfiguration (mis-keyed or unsynced secret) and is rejected rather\nthan silently downgraded to an unauthenticated connection.",
                 "properties": {
                     "password_env_var": {
                         "description": "PasswordEnvVar is the environment variable containing the Redis password.",
@@ -5331,7 +5331,7 @@ const docTemplate = `{
                         "type": "string"
                     },
                     "auth_type": {
-                        "description": "AuthType must be \"aclUser\" - only ACL user authentication is supported.",
+                        "description": "AuthType selects the Redis authentication mode. \"aclUser\" is the only\nauthenticated mode. Leave it empty, with a nil ACLUserConfig, for a\nno-auth connection to a Redis/Valkey instance that has no authentication\nconfigured. Setting AuthType to \"aclUser\" declares authenticated intent:\nthe conversion rejects that pairing with a nil ACLUserConfig rather than\ndowngrading to no-auth. Otherwise presence of ACLUserConfig is what\nenables authentication.",
                         "type": "string"
                     },
                     "cluster_mode": {

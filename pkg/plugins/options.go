@@ -5,7 +5,10 @@ package plugins
 
 import (
 	"context"
+	"errors"
+	"net/http"
 
+	"github.com/stacklok/toolhive-core/httperr"
 	"github.com/stacklok/toolhive/pkg/skills"
 	"github.com/stacklok/toolhive/pkg/skills/lockfile"
 )
@@ -206,6 +209,46 @@ type BuildResult = skills.BuildResult
 // skills.PushOptions (identical shape: Reference, Key, IdentityToken,
 // NoSign).
 type PushOptions = skills.PushOptions
+
+// ValidatePushSigning enforces the push endpoint's signing contract: exactly
+// one of a cosign key, an OIDC identity token for keyless signing, or an
+// explicit opt-out. Ambiguous or absent input is rejected with HTTP 400 before
+// the artifact is pushed, rather than surfacing as a signing failure afterward.
+//
+// The HTTP handler runs this before dispatch and the service runs it again on
+// the options it receives. Both call it so the API contract holds regardless
+// of which PluginService implementation is wired in: a request naming only a
+// reference must be a 400 from the endpoint itself, not from whichever
+// service happens to answer. Mirrors skillsvc.validateSigningInputs; the
+// error text names both the JSON fields and the plugin command's flags.
+func ValidatePushSigning(opts PushOptions) error {
+	methods := 0
+	if opts.Key != "" {
+		methods++
+	}
+	if opts.IdentityToken != "" {
+		methods++
+	}
+	switch {
+	case opts.NoSign && methods > 0:
+		return httperr.WithCode(
+			errors.New("no_sign (--no-sign) cannot be combined with key (--key) or identity_token (--identity-token)"),
+			http.StatusBadRequest,
+		)
+	case !opts.NoSign && methods == 0:
+		return httperr.WithCode(
+			errors.New("signing credential required: set key (--key), identity_token (--identity-token) "+
+				"for CI/OIDC keyless signing, or no_sign (--no-sign) to push unsigned"),
+			http.StatusBadRequest,
+		)
+	case !opts.NoSign && methods > 1:
+		return httperr.WithCode(
+			errors.New("specify only one of key (--key) or identity_token (--identity-token)"),
+			http.StatusBadRequest,
+		)
+	}
+	return nil
+}
 
 // SyncOptions configures a lock-file sync. Alias for skills.SyncOptions
 // (identical shape: ProjectRoot, Clients, Prune, Check, AllowUnsigned, Adopt).

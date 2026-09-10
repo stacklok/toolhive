@@ -463,15 +463,26 @@ func TestPluginsRouter(t *testing.T) {
 		},
 		// pushPlugin
 		{
-			name:   "push plugin success",
-			method: "POST",
-			path:   "/push",
-			body:   `{"reference":"ghcr.io/test/plugin:v1"}`,
-			setupMock: func(svc *plugmocks.MockPluginService, _ string) {
-				svc.EXPECT().Push(gomock.Any(), plugins.PushOptions{Reference: "ghcr.io/test/plugin:v1"}).
-					Return(nil)
-			},
-			expectedStatus: http.StatusNoContent,
+			// The signing choice is validated at the route, before dispatch:
+			// a request naming only a reference is a 400 from the API itself,
+			// not from whichever service implementation is wired in. The
+			// service is never reached (the mock has no expectations).
+			name:           "push plugin rejects missing signing choice",
+			method:         "POST",
+			path:           "/push",
+			body:           `{"reference":"ghcr.io/test/plugin:v1"}`,
+			setupMock:      func(_ *plugmocks.MockPluginService, _ string) {},
+			expectedStatus: http.StatusBadRequest,
+			expectedBody:   "signing credential required",
+		},
+		{
+			name:           "push plugin rejects conflicting signing choice",
+			method:         "POST",
+			path:           "/push",
+			body:           `{"reference":"ghcr.io/test/plugin:v1","no_sign":true,"identity_token":"a.b.c"}`,
+			setupMock:      func(_ *plugmocks.MockPluginService, _ string) {},
+			expectedStatus: http.StatusBadRequest,
+			expectedBody:   "cannot be combined",
 		},
 		{
 			// Guards the DTO trap: the signing fields must reach PushOptions,
@@ -552,10 +563,12 @@ func TestPluginsRouter(t *testing.T) {
 			name:   "push plugin service error",
 			method: "POST",
 			path:   "/push",
-			body:   `{"reference":"ghcr.io/test/plugin:v1"}`,
+			body:   `{"reference":"ghcr.io/test/plugin:v1","no_sign":true}`,
 			setupMock: func(svc *plugmocks.MockPluginService, _ string) {
-				svc.EXPECT().Push(gomock.Any(), plugins.PushOptions{Reference: "ghcr.io/test/plugin:v1"}).
-					Return(fmt.Errorf("push failed"))
+				svc.EXPECT().Push(gomock.Any(), plugins.PushOptions{
+					Reference: "ghcr.io/test/plugin:v1",
+					NoSign:    true,
+				}).Return(fmt.Errorf("push failed"))
 			},
 			expectedStatus: http.StatusInternalServerError,
 			expectedBody:   "Internal Server Error",

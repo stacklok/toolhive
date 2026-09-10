@@ -339,6 +339,22 @@ func (s *PluginsRoutes) pushPlugin(w http.ResponseWriter, r *http.Request) error
 		)
 	}
 
+	opts := plugins.PushOptions{
+		Reference:     req.Reference,
+		Key:           req.Key,
+		IdentityToken: req.IdentityToken,
+		NoSign:        req.NoSign,
+	}
+
+	// The endpoint's contract — exactly one of key, identity_token, or
+	// no_sign — is enforced here at the trust boundary rather than left to
+	// whichever PluginService implementation is wired in, so a direct or
+	// generated client sending only a reference gets a 400 from the API
+	// itself. The service validates again for in-process callers.
+	if err := plugins.ValidatePushSigning(opts); err != nil {
+		return err
+	}
+
 	// Checked before dispatch: the service would otherwise open the key.
 	// Same guard as skills/push — a private-key path is resolved by THIS
 	// process, so an untrusted caller naming one would be asking the server to
@@ -347,12 +363,7 @@ func (s *PluginsRoutes) pushPlugin(w http.ResponseWriter, r *http.Request) error
 		return err
 	}
 
-	if err := s.pluginService.Push(r.Context(), plugins.PushOptions{
-		Reference:     req.Reference,
-		Key:           req.Key,
-		IdentityToken: req.IdentityToken,
-		NoSign:        req.NoSign,
-	}); err != nil {
+	if err := s.pluginService.Push(r.Context(), opts); err != nil {
 		return err
 	}
 

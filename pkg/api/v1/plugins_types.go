@@ -80,8 +80,9 @@ type buildPluginRequest struct {
 //
 // The signing choice is mutually exclusive and not optional: exactly one of
 // key, identity_token, or no_sign must be set. Swagger 2.0 cannot express
-// "exactly one of", so it is stated here and enforced at runtime
-// (pluginsvc.validateSigningInputs, HTTP 400). Unknown fields are still
+// "exactly one of", so it is stated here and enforced at runtime by the
+// handler before dispatch, and again by the service
+// (plugins.ValidatePushSigning, HTTP 400). Unknown fields are still
 // rejected: this is the only credential-bearing plugin request, so a
 // misspelled signing field must not decode to "sign however you like".
 //

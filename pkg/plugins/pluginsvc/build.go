@@ -131,7 +131,10 @@ func (s *service) Push(ctx context.Context, opts plugins.PushOptions) error {
 			http.StatusBadRequest,
 		)
 	}
-	if err := validateSigningInputs(opts); err != nil {
+	// Re-validated here even though the HTTP handler already did: the
+	// service is also called in-process, and the contract must not depend on
+	// which caller reached it.
+	if err := plugins.ValidatePushSigning(opts); err != nil {
 		return err
 	}
 	if !opts.NoSign {
@@ -312,41 +315,6 @@ func (s *service) DeleteBuild(ctx context.Context, tag string) error {
 		)
 	}
 	return s.ociStore.DeleteBuild(ctx, tag)
-}
-
-// validateSigningInputs enforces that a push declares exactly one signing
-// method: a cosign key, an OIDC identity token for keyless signing, or an
-// explicit opt-out. Ambiguous or absent input is rejected here, before the
-// artifact is pushed, rather than surfacing as a signing failure afterward.
-// Mirror skillsvc.validateSigningInputs — plugins.PushOptions aliases
-// skills.PushOptions, but the error text names the plugin command's flags.
-func validateSigningInputs(opts plugins.PushOptions) error {
-	methods := 0
-	if opts.Key != "" {
-		methods++
-	}
-	if opts.IdentityToken != "" {
-		methods++
-	}
-	switch {
-	case opts.NoSign && methods > 0:
-		return httperr.WithCode(
-			errors.New("no_sign (--no-sign) cannot be combined with key (--key) or identity_token (--identity-token)"),
-			http.StatusBadRequest,
-		)
-	case !opts.NoSign && methods == 0:
-		return httperr.WithCode(
-			errors.New("signing credential required: set key (--key), identity_token (--identity-token) "+
-				"for CI/OIDC keyless signing, or no_sign (--no-sign) to push unsigned"),
-			http.StatusBadRequest,
-		)
-	case !opts.NoSign && methods > 1:
-		return httperr.WithCode(
-			errors.New("specify only one of key (--key) or identity_token (--identity-token)"),
-			http.StatusBadRequest,
-		)
-	}
-	return nil
 }
 
 // validateSignedDestination rejects a digest-pinned destination for a signed

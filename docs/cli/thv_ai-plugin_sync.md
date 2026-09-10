@@ -36,7 +36,7 @@ thv ai-plugin sync [flags]
       --adopt                 Write lock entries for existing unmanaged project-scope installs
       --allow-unsigned        Record plugins as unsigned in the lock file: when adopting installs whose signature state cannot be established (--adopt), and when repairing an entry that records no trust decision and whose content is unsigned
       --check                 Report drift without installing, writing, or removing anything
-      --clients string        Comma-separated target client apps (e.g. claude-code,opencode), or "all" for every available client
+      --clients string        Comma-separated target client apps (e.g. claude-code,codex), or "all" for every available client
       --format string         Output format (json, text) (default "text")
   -h, --help                  help for sync
       --project-root string   Project root path (default: auto-detected from the current directory)

@@ -16,17 +16,15 @@ import (
 // backend in that order wins and lower-priority tools are dropped.
 //
 // When any conflicting backend is absent from the priority list, all candidates
-// in that conflict use the prefix strategy as a fallback to prevent a listed
-// backend from annexing the bare tool name.
+// in that conflict are dropped because the conflict cannot be safely ranked.
+// Dropping preserves the fail-closed policy invariant: a renamed loser would be
+// advertised under a name that existing name-scoped forbid policies do not cover.
 type PriorityConflictResolver struct {
 	// PriorityOrder defines the priority of backends (first has highest priority).
 	PriorityOrder []string
 
 	// priorityMap is a map from backend ID to its priority index.
 	priorityMap map[string]int
-
-	// prefixResolver is used as fallback for backends not in priority list.
-	prefixResolver *PrefixConflictResolver
 }
 
 // NewPriorityConflictResolver creates a new priority-based conflict resolver.
@@ -45,9 +43,8 @@ func NewPriorityConflictResolver(priorityOrder []string) (*PriorityConflictResol
 	}
 
 	return &PriorityConflictResolver{
-		PriorityOrder:  priorityOrder,
-		priorityMap:    priorityMap,
-		prefixResolver: NewPrefixConflictResolver(defaultPrefixFormat), // Fallback for unmapped backends
+		PriorityOrder: priorityOrder,
+		priorityMap:   priorityMap,
 	}, nil
 }
 
@@ -85,16 +82,17 @@ func (r *PriorityConflictResolver) ResolveToolConflicts(
 
 		if r.hasUnlistedCandidate(candidates) {
 			// A collision involving a backend outside priorityOrder cannot be safely
-			// rank-compared. Prefix every candidate instead of awarding the bare name
-			// to a listed backend, which could silently redirect name-only policies.
+			// rank-compared. Drop every candidate instead of awarding the bare name
+			// to a listed backend or re-advertising losers under names outside
+			// existing name-scoped policies.
 			backendIDs := make([]string, len(candidates))
 			for i, c := range candidates {
 				backendIDs[i] = c.BackendID
 			}
-			slog.Warn("tool conflict includes backend not in priority order, using prefix fallback",
+			slog.Error("dropped tool conflict involving backend not in priority order",
 				"tool", toolName, "backends", backendIDs)
 
-			r.addPrefixedCandidates(resolved, toolName, candidates)
+			droppedTools += len(candidates)
 			continue
 		}
 
@@ -138,26 +136,6 @@ func (r *PriorityConflictResolver) hasUnlistedCandidate(candidates []toolWithBac
 		}
 	}
 	return false
-}
-
-func (r *PriorityConflictResolver) addPrefixedCandidates(
-	resolved map[string]*ResolvedTool,
-	toolName string,
-	candidates []toolWithBackend,
-) {
-	for _, candidate := range candidates {
-		prefixedName := r.prefixResolver.applyPrefix(candidate.BackendID, toolName)
-		resolved[prefixedName] = &ResolvedTool{
-			ResolvedName:              prefixedName,
-			OriginalName:              toolName,
-			Description:               candidate.Tool.Description,
-			InputSchema:               candidate.Tool.InputSchema,
-			OutputSchema:              candidate.Tool.OutputSchema,
-			Annotations:               candidate.Tool.Annotations,
-			BackendID:                 candidate.BackendID,
-			ConflictResolutionApplied: vmcp.ConflictStrategyPrefix, // Fallback used prefix
-		}
-	}
 }
 
 // selectWinner chooses the tool from the highest-priority backend.

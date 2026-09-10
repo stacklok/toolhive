@@ -1051,6 +1051,44 @@ func (s *MemoryStorage) StoreUpstreamTokens(_ context.Context, sessionID, provid
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
+	s.storeUpstreamTokensLocked(upstreamKey{sessionID, providerName}, tokens)
+	return nil
+}
+
+// CompareAndSwapUpstreamTokens stores tokens for (sessionID, providerName)
+// only if the refresh token currently held there equals expectedRefreshToken.
+// See the interface doc (UpstreamTokenStorage.CompareAndSwapUpstreamTokens)
+// for the coordination contract. The compare-then-write happens under s.mu,
+// so it is atomic with respect to every other reader/writer of this backend.
+func (s *MemoryStorage) CompareAndSwapUpstreamTokens(
+	_ context.Context, sessionID, providerName, expectedRefreshToken string, tokens *UpstreamTokens,
+) error {
+	if sessionID == "" {
+		return fosite.ErrInvalidRequest.WithHint("session ID cannot be empty")
+	}
+	if providerName == "" {
+		return fosite.ErrInvalidRequest.WithHint("provider name cannot be empty")
+	}
+
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	key := upstreamKey{sessionID, providerName}
+	var currentRefreshToken string
+	if entry, ok := s.upstreamTokens[key]; ok && entry.value != nil {
+		currentRefreshToken = entry.value.RefreshToken
+	}
+	if currentRefreshToken != expectedRefreshToken {
+		return ErrConcurrentRefresh
+	}
+
+	s.storeUpstreamTokensLocked(key, tokens)
+	return nil
+}
+
+// storeUpstreamTokensLocked writes tokens for key, replacing any existing
+// entry. Callers must hold s.mu for writing.
+func (s *MemoryStorage) storeUpstreamTokensLocked(key upstreamKey, tokens *UpstreamTokens) {
 	now := time.Now()
 	// Add DefaultRefreshTokenTTL beyond access token expiry so the refresh token
 	// survives in storage for transparent token refresh by the middleware.
@@ -1068,28 +1106,11 @@ func (s *MemoryStorage) StoreUpstreamTokens(_ context.Context, sessionID, provid
 		return time.Time{} // non-expiring token with no known session bound
 	}()
 
-	// Make a defensive copy to prevent aliasing issues
-	var tokensCopy *UpstreamTokens
-	if tokens != nil {
-		tokensCopy = &UpstreamTokens{
-			ProviderID:       tokens.ProviderID,
-			AccessToken:      tokens.AccessToken,
-			RefreshToken:     tokens.RefreshToken,
-			IDToken:          tokens.IDToken,
-			ExpiresAt:        tokens.ExpiresAt,
-			SessionExpiresAt: tokens.SessionExpiresAt,
-			UserID:           tokens.UserID,
-			UpstreamSubject:  tokens.UpstreamSubject,
-			ClientID:         tokens.ClientID,
-		}
-	}
-
-	s.upstreamTokens[upstreamKey{sessionID, providerName}] = &timedEntry[*UpstreamTokens]{
-		value:     tokensCopy,
+	s.upstreamTokens[key] = &timedEntry[*UpstreamTokens]{
+		value:     cloneUpstreamTokens(tokens),
 		createdAt: now,
 		expiresAt: expiresAt,
 	}
-	return nil
 }
 
 // cloneUpstreamTokens returns a field-by-field copy of t, or nil if t is nil.

@@ -1797,6 +1797,11 @@ const docTemplate = `{
                         ],
                         "type": "string"
                     },
+                    "proxy_read_timeout": {
+                        "description": "ProxyReadTimeout bounds reading the entire request (headers + body) on the\nproxy HTTP server, expressed as a Go duration string (e.g. \"30s\", \"1m\").\nEmpty uses the proxy default (30s). Negative durations and values that fail\ntime.ParseDuration are rejected at runtime. Applies to all HTTP transports.\nString (not time.Duration) keeps the wire format unit-explicit.",
+                        "example": "30s",
+                        "type": "string"
+                    },
                     "publish": {
                         "description": "Publish lists ports to publish to the host in format \"hostPort:containerPort\"",
                         "items": {
@@ -3327,6 +3332,11 @@ const docTemplate = `{
                         "description": "Port for the HTTP proxy to listen on",
                         "type": "integer"
                     },
+                    "proxy_read_timeout": {
+                        "description": "Maximum time to read a complete MCP proxy request, expressed as a Go duration string.\nEmpty or zero uses the default timeout of 30 seconds.",
+                        "example": "30s",
+                        "type": "string"
+                    },
                     "registry": {
                         "description": "Registry is the optional registry name to resolve the server from (e.g. \"default\").",
                         "type": "string"
@@ -3853,7 +3863,7 @@ const docTemplate = `{
                         "type": "string"
                     },
                     "key": {
-                        "description": "Key is the path to a cosign private key used to sign the pushed\nartifact",
+                        "description": "Key is the path to a cosign private key, resolved on the server's\nfilesystem. Accepted only when the request carries the secret capability\nfrom the owner-protected local server discovery file; other requests are\nrefused with 403, since honoring one would let an untrusted caller have\nthe server sign with any key it can read. Use IdentityToken when calling\na remote or manually configured server.",
                         "type": "string"
                     },
                     "no_sign": {
@@ -4238,6 +4248,11 @@ const docTemplate = `{
                     "proxy_port": {
                         "description": "Port for the HTTP proxy to listen on",
                         "type": "integer"
+                    },
+                    "proxy_read_timeout": {
+                        "description": "Maximum time to read a complete MCP proxy request, expressed as a Go duration string.\nEmpty or zero uses the default timeout of 30 seconds.",
+                        "example": "30s",
+                        "type": "string"
                     },
                     "runtime_config": {
                         "$ref": "#/components/schemas/templates.RuntimeConfig"
@@ -5292,7 +5307,7 @@ const docTemplate = `{
                 "type": "object"
             },
             "storage.ACLUserRunConfig": {
-                "description": "ACLUserConfig contains ACL user authentication configuration.",
+                "description": "ACLUserConfig contains ACL user authentication configuration.\nA nil value is a valid no-auth configuration: the store connects without\ncredentials. A populated block whose password resolves to empty is a\nmisconfiguration (mis-keyed or unsynced secret) and is rejected rather\nthan silently downgraded to an unauthenticated connection.",
                 "properties": {
                     "password_env_var": {
                         "description": "PasswordEnvVar is the environment variable containing the Redis password.",
@@ -5316,7 +5331,7 @@ const docTemplate = `{
                         "type": "string"
                     },
                     "auth_type": {
-                        "description": "AuthType must be \"aclUser\" - only ACL user authentication is supported.",
+                        "description": "AuthType selects the Redis authentication mode. \"aclUser\" is the only\nauthenticated mode. Leave it empty, with a nil ACLUserConfig, for a\nno-auth connection to a Redis/Valkey instance that has no authentication\nconfigured. Setting AuthType to \"aclUser\" declares authenticated intent:\nthe conversion rejects that pairing with a nil ACLUserConfig rather than\ndowngrading to no-auth. Otherwise presence of ACLUserConfig is what\nenables authentication.",
                         "type": "string"
                     },
                     "cluster_mode": {
@@ -8564,6 +8579,16 @@ const docTemplate = `{
         "/api/v1beta/skills/push": {
             "post": {
                 "description": "Push a built skill artifact to a remote registry",
+                "parameters": [
+                    {
+                        "description": "Local discovery capability (required with request.key)",
+                        "in": "header",
+                        "name": "X-Toolhive-Key-Signing-Capability",
+                        "schema": {
+                            "type": "string"
+                        }
+                    }
+                ],
                 "requestBody": {
                     "content": {
                         "application/json": {
@@ -8604,6 +8629,16 @@ const docTemplate = `{
                             }
                         },
                         "description": "Bad Request"
+                    },
+                    "403": {
+                        "content": {
+                            "application/json": {
+                                "schema": {
+                                    "type": "string"
+                                }
+                            }
+                        },
+                        "description": "Forbidden (key signing requires the local discovery capability)"
                     },
                     "404": {
                         "content": {

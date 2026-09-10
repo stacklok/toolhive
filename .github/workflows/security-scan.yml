@@ -32,7 +32,7 @@ jobs:
       security-events: write
     steps:
       - name: Checkout repository
-        uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
         with:
           persist-credentials: false
 
@@ -45,7 +45,7 @@ jobs:
           fail-build: false
 
       - name: Upload Grype scan results to GitHub Security tab
-        uses: github/codeql-action/upload-sarif@cdf488f595d80d6e07e03d4674febd5ab45fa938 # v4.37.9
+        uses: github/codeql-action/upload-sarif@b96794f015dfd88f77b49b1c93e0fa7110f94c63 # v4.38.0
         if: always()
         with:
           sarif_file: ${{ steps.grype-scan.outputs.sarif }}
@@ -59,7 +59,7 @@ jobs:
       security-events: write
     steps:
       - name: Checkout repository
-        uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
         with:
           # This job only reads the workflow files; it never pushes.
           persist-credentials: false
@@ -70,9 +70,9 @@ jobs:
       # code when the output format is SARIF, which is what advanced-security
       # selects. The upload happens inside the action.
       - name: Report findings
-        uses: zizmorcore/zizmor-action@3dc1ecc9bcb9e94e9b2c709687979e1298497054 # v0.6.2
+        uses: zizmorcore/zizmor-action@cc914d7f3750a2d13d75c7f184a1060aa0e9d482 # v0.6.4
         with:
-          version: "1.29.0"
+          version: "1.30.1"
           inputs: .github/
           persona: regular
 
@@ -88,9 +88,9 @@ jobs:
       # expressions carrying values GitHub constrains to characters that cannot
       # reach a shell. Lowering this threshold means dealing with those first.
       - name: Fail on new findings
-        uses: zizmorcore/zizmor-action@3dc1ecc9bcb9e94e9b2c709687979e1298497054 # v0.6.2
+        uses: zizmorcore/zizmor-action@cc914d7f3750a2d13d75c7f184a1060aa0e9d482 # v0.6.4
         with:
-          version: "1.29.0"
+          version: "1.30.1"
           inputs: .github/
           persona: regular
           min-severity: medium
@@ -101,7 +101,7 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - name: Checkout repository
-        uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
         with:
           persist-credentials: false
 

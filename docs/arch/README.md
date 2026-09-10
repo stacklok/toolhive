@@ -26,7 +26,7 @@ Welcome to the ToolHive architecture documentation. This directory contains comp
 ### Detailed Component Documentation
 
 1. **[Core Concepts](02-core-concepts.md)**
-   - Nouns: Workloads, Transports, Proxy, Middleware, RunConfig, Permissions, Groups, Registry, Sessions
+   - Nouns: Workloads, Transports, Proxy, Middleware, RunConfig, Permissions, Groups, Registry, Sessions, Skills, AI-tool Plugins
    - Verbs: Deploy, Proxy, Attach, Parse, Filter, Authorize, Audit, Export, Import, Monitor
    - Terminology quick reference
 
@@ -114,11 +114,10 @@ Welcome to the ToolHive architecture documentation. This directory contains comp
     - Guidance for downstream embedders on pinning and upgrading
 
 14. **[Plugins System](14-plugins-system.md)**
-    - Plugin manifest format (`.claude-plugin/plugin.json`) and OCI artifact layout
-    - Install dispatch (git → OCI → registry name) and the per-plugin lock
-    - `MaterializationAdapter` seam: Claude Code (pure FS) vs Codex (FS + TOML)
-    - Component inventory and per-client dropped-component warnings
-    - Name/repo consistency check, extraction safety, TOML mutation under file lock
+    - AI-tool plugin lifecycle (discover, build, push, install, sync, upgrade)
+    - Client materialization: Claude Code settings and Codex marketplace files
+    - Project lock-file trust, including keyless and pinned public-key verification
+    - Complete component inventory and boundaries with MCP workloads
 
 15. **[Envoy Network Proxy](15-envoy-network-proxy.md)**
     - Experimental Envoy backend (`TOOLHIVE_NETWORK_PROXY=envoy`) replacing two Squid containers with one
@@ -192,9 +191,9 @@ graph TB
         AuthStorage[11: Auth Server Storage<br/>Memory & Redis backends]
     end
 
-    subgraph "Agent Skills"
-        Skills[12: Skills System<br/>Build, publish, install]
-        Plugins[14: Plugins System<br/>MaterializationAdapter]
+    subgraph "AI Extensions"
+        Skills[12: Skills System<br/>Single instruction components]
+        Plugins[14: Plugins System<br/>Multi-component AI-tool bundles]
     end
 
     %% Navigation paths
@@ -243,6 +242,7 @@ graph TB
     style vMCP fill:#e0f2f1,stroke:#004d40,stroke-width:2px
     style AuthStorage fill:#e0f2f1,stroke:#004d40,stroke-width:2px
     style Skills fill:#e8eaf6,stroke:#283593,stroke-width:2px
+    style Plugins fill:#e8eaf6,stroke:#283593,stroke-width:2px
 ```
 
 **Color Legend:**
@@ -252,7 +252,7 @@ graph TB
 - 🟠 **Orange (Configuration & Security)**: Security model and configuration management
 - 🔴 **Pink (Distribution & Organization)**: How servers are cataloged and organized
 - 🟦 **Teal (Runtime Management)**: Lifecycle and cluster management
-- 🔷 **Indigo (Agent Skills)**: Skills lifecycle and distribution system
+- 🔷 **Indigo (AI Extensions)**: Skill and AI-tool plugin lifecycle and distribution
 
 **Navigation Paths:**
 - **For first-time readers**: Follow the arrows from Overview → Concepts → your area of interest

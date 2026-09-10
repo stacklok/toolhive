@@ -15,8 +15,12 @@ Install an AI-tool plugin
 
 ### Synopsis
 
-Install a plugin by name or OCI reference.
-The plugin will be fetched from a remote registry and installed locally.
+Install a plugin from git, an OCI reference, or an exact registry name.
+
+Project-scoped installs verify signatures and record trust in toolhive.lock.yaml.
+Use --public-key for the first project install of a key-pair-signed OCI artifact;
+the key is then pinned for sync and upgrade. User-scoped installs do not use
+lock-file verification and reject --public-key.
 
 ```
 thv ai-plugin install [plugin-name] [flags]

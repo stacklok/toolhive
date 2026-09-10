@@ -44,7 +44,7 @@ jobs:
 
     steps:
     - name: Checkout code
-      uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+      uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
       with:
         persist-credentials: false
 
@@ -68,22 +68,22 @@ jobs:
       uses: ko-build/setup-ko@61b4d1d396f5b2e7d6bb6fefdce3dc38d1a13445 # v0.10
 
     - name: Set up Go
-      uses: actions/setup-go@924ae3a1cded613372ab5595356fb5720e22ba16 # v6
+      uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7
       with:
         go-version: 'stable'
         cache: true
 
     - name: Install Task
-      uses: arduino/setup-task@b91d5d2c96a56797b48ac1e0e89220bf64044611 # v2.0.0
+      uses: arduino/setup-task@c0bc642852239c2689f73f4ea6459c29405f3c52 # v3.0.0
       with:
         version: 3.44.1
         repo-token: ${{ secrets.GITHUB_TOKEN }}
 
     - name: Create KIND Cluster with port mappings
-      uses: helm/kind-action@ef37e7f390d99f746eb8b610417061a60e82a6cc # v1.14.0
+      uses: helm/kind-action@06c1ae10762d3b9c1644e7fe69596ae519e015a2 # v1.15.0
       with:
         cluster_name: toolhive
-        version: v0.31.0 # kind
+        version: v0.33.0 # kind
         config: test/e2e/thv-operator/kind-config.yaml
         node_image: ${{ matrix.version }}
 

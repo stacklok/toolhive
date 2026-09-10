@@ -22,12 +22,12 @@ jobs:
         os: [ubuntu-8cores-32gb]
       fail-fast: false
     steps:
-      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
         with:
           persist-credentials: false
 
       - name: Set up Go
-        uses: actions/setup-go@924ae3a1cded613372ab5595356fb5720e22ba16 # v6
+        uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7
         with:
           go-version: 'stable'
           cache: true  # This caches go modules based on go.sum
@@ -42,7 +42,7 @@ jobs:
       # Cache Go build cache for faster compilation
       # Note: ~/go/pkg/mod is already cached by actions/setup-go with cache: true
       - name: Cache Go build cache
-        uses: actions/cache@caa296126883cff596d87d8935842f9db880ef25 # v5
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6
         with:
           path: ~/.cache/go-build
           key: ${{ runner.os }}-go-build-${{ hashFiles('**/go.sum') }}
@@ -52,7 +52,7 @@ jobs:
       # Cache Go tools (gotestfmt only for tests)
       - name: Cache Go tools
         id: cache-go-tools
-        uses: actions/cache@caa296126883cff596d87d8935842f9db880ef25 # v5
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6
         with:
           path: ~/go/bin
           key: ${{ runner.os }}-go-tools-${{ hashFiles('go.mod') }}-gotestfmt-v2
@@ -65,7 +65,7 @@ jobs:
         run: go install github.com/gotesttools/gotestfmt/v2/cmd/gotestfmt@latest
 
       - name: Install Task
-        uses: arduino/setup-task@b91d5d2c96a56797b48ac1e0e89220bf64044611 # v2.0.0
+        uses: arduino/setup-task@c0bc642852239c2689f73f4ea6459c29405f3c52 # v3.0.0
         with:
           version: 3.44.1
           repo-token: ${{ secrets.GITHUB_TOKEN }}
@@ -76,7 +76,7 @@ jobs:
 
       - name: Upload coverage reports to Codecov with GitHub Action
         if: startsWith(matrix.os, 'ubuntu')
-        uses: codecov/codecov-action@fb8b3582c8e4def4969c97caa2f19720cb33a72f # v6.0.2
+        uses: codecov/codecov-action@fb8b3582c8e4def4969c97caa2f19720cb33a72f # v7.0.0
         with:
           token: ${{ secrets.CODECOV_TOKEN }}
           slug: stacklok/toolhive

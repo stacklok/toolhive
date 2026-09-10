@@ -34,13 +34,14 @@ func TestDiscover_Running(t *testing.T) {
 		w.Header().Set(NonceHeader, nonce)
 		w.WriteHeader(http.StatusNoContent)
 	}))
-	defer srv.Close()
+	t.Cleanup(srv.Close)
 
 	info := &ServerInfo{
-		URL:       srv.URL,
-		PID:       os.Getpid(),
-		Nonce:     nonce,
-		StartedAt: time.Now().UTC(),
+		URL:                  srv.URL,
+		PID:                  os.Getpid(),
+		Nonce:                nonce,
+		KeySigningCapability: "protected-discovery-capability",
+		StartedAt:            time.Now().UTC(),
 	}
 	require.NoError(t, writeServerInfoTo(dir, info))
 
@@ -48,6 +49,7 @@ func TestDiscover_Running(t *testing.T) {
 	require.NoError(t, err)
 	assert.Equal(t, StateRunning, result.State)
 	assert.Equal(t, nonce, result.Info.Nonce)
+	assert.Equal(t, info.KeySigningCapability, result.Info.KeySigningCapability)
 }
 
 func TestDiscover_Stale_DeadProcess(t *testing.T) {

@@ -193,7 +193,12 @@ mutually exclusive choices:
 
 - `--key <path>`: sign with a cosign private key (`COSIGN_PASSWORD`
   decrypts encrypted keys, read server-side by `thv serve`, which performs
-  the signing).
+  the signing). This is accepted only through automatic local server
+  discovery: the owner-protected discovery file supplies a separate random
+  capability that the CLI sends with the key-bearing request. Loopback or IPC
+  transport alone is not authorization, because a public reverse proxy can
+  make an untrusted caller appear local. Remote and manually configured API
+  URLs must use keyless signing instead.
 - `--identity-token <token-or-path>`: sign keylessly. The CLI acquires an
   OIDC identity token and forwards it in the push request; the server
   exchanges it with Fulcio for a short-lived certificate, signs, and records
@@ -441,10 +446,10 @@ Verifying a key-pair signature binds it to the artifact explicitly. The signatur
 Once an entry is pinned, the key does its job on the lock-driven operations too, because the anchor is read from the entry rather than supplied again:
 
 - **`sync`** re-verifies the stored bundle against the pinned key offline. This has to be a distinct path — the keyless verifier refuses a key-pinned entry, and sync reads a refusal as drift it can heal by reinstalling, so a key-pinned skill would report as modified on every run and `--check` would fail permanently on a project that is in fact intact.
-- **`upgrade`** applies the pinned key to the candidate. Verifying against it *is* the evidence the signer has not changed, since there is no certificate identity to compare. A candidate that moved to keyless signing or lost its signature is a signer change and blocks like one — `--allow-signer-change` genuinely resolves those, by dropping the recorded key and re-verifying keylessly. A candidate signed by a *different* key is reported as a failure instead: re-anchoring in place is not supported, so it needs an uninstall and a reinstall, and printing the `--allow-signer-change` remedy would send the caller into a refusal one step later.
+- **`upgrade`** applies the pinned key to the candidate. Verifying against it *is* the evidence the signer has not changed, since there is no certificate identity to compare. The candidate is measured against the pin whether or not `--allow-signer-change` was passed, and the two modes differ in exactly one case: a candidate that conclusively no longer verifies against the key *and* carries a keyless signature that does verify is a genuine key-to-keyless move — blocked as a signer change without the override, and permitted with it, which drops the recorded key and re-anchors to the observed identity. Everything else is the same in both modes. A candidate signed by a *different* key is a failure: re-anchoring in place is not supported, so it needs an uninstall and a reinstall, and the failure prints that command. An unsigned candidate is an `unsigned-rejected` failure rather than a signer change, because upgrade has no unsigned-consent flag and `--allow-signer-change` is not one — it re-verifies from scratch, which an unsigned artifact still fails. And an operational failure — registry, transport, or context — is never read as evidence about which key signed the artifact: it fails the plan and leaves the pin exactly where it was, in both modes, so a transient fault under a project-wide override cannot unpin an artifact that still carries a valid signature by the pinned key. The override is also narrowed per entry: a skill that needs it does not unpin every key-pinned skill beside it.
 - **`sync --adopt`** refuses a key-signed install. Adoption back-fills trust from what the stored bundle reveals, and a key-pair bundle reveals no identity and does not carry the key; recording the install as unsigned instead would file a false trust decision about an artifact that is signed.
 
-Scope for v1 (issue [#6442](https://github.com/stacklok/toolhive/issues/6442)): `--public-key` is accepted on `install` only — `upgrade` and `sync` use the anchor the lock already records and take no key of their own, and in-place re-anchoring to a different key is deliberately not offered. The plugins surface does not accept a key at all yet.
+`--public-key` is accepted on `install` only — `upgrade` and `sync` use the anchor the lock already records and take no key of their own, and in-place re-anchoring to a different key is deliberately not offered. Plugins use the same install-side public-key model for project-scoped OCI installs; plugin push remains keyless-by-default or explicit `--no-sign` and has no `--key` flag.
 
 Plugins carry the same trust model over the same lock file: project-scoped plugin installs are recorded under the file's `plugins:` key, verified on the same TOFU/`allow_unsigned`/`allow_signer_change` terms, and published signed-by-default through `thv ai-plugin push`. See [Trust Model](14-plugins-system.md#trust-model) in the plugins document for what differs.
 
@@ -469,7 +474,7 @@ Entries are sorted by name for stable diffs. `source` is never rewritten by `syn
 
 ### Install and Uninstall Hooks
 
-For project-scope installs (with the feature enabled), `skillsvc.Install`'s single existing choke point (`installAndRegister` — every dispatch path, OCI or git, direct or registry-resolved, converges there) additionally:
+For project-scope installs, `skillsvc.Install`'s single existing choke point (`installAndRegister` — every dispatch path, OCI or git, direct or registry-resolved, converges there) additionally:
 
 1. Computes `contentDigest` from the extracted files.
 2. Materializes `toolhive.requires` dependencies recursively — reading `SKILL.md` back from disk (not from the resolver's own parse, so this works uniformly across OCI and git sources), with a `Visited` set guarding cycles and `skills.MaxDependencies` bounding the whole tree.
@@ -505,7 +510,7 @@ Reinstalling *at the pinned reference* (never re-resolving `source`) uses `build
 
 ### CLI Confirmation and Exit Codes
 
-Because skill content is a set of AI-followed instructions, `sync` and `upgrade` gate real installs behind a confirmation prompt (skipped by `--check`/`--preview`/`--fail-on-changes`, which never write to the lock file or extracted skill directories — an OCI `--preview` still pulls the artifact to compare digests, but persists nothing). The prompt is printed to stderr together with a summary of the lock entries being acted on (name, source, short digest) so the human gate has something concrete to judge, and everything echoed into it is stripped of non-graphic characters so a hostile directory or entry name cannot repaint the prompt with terminal escapes. On a non-interactive terminal without `--yes`, the command refuses outright rather than silently proceeding. Until Sigstore verification lands, this prompt is a speed bump, not a security boundary — see the trust-model note above.
+Because skill content is a set of AI-followed instructions, `sync` and `upgrade` gate real installs behind a confirmation prompt (skipped by `--check`/`--preview`/`--fail-on-changes`, which never write to the lock file or extracted skill directories — an OCI `--preview` still pulls the artifact to compare digests, but persists nothing). The prompt is printed to stderr together with a summary of the lock entries being acted on (name, source, short digest) so the human gate has something concrete to judge, and everything echoed into it is stripped of non-graphic characters so a hostile directory or entry name cannot repaint the prompt with terminal escapes. On a non-interactive terminal without `--yes`, the command refuses outright rather than silently proceeding. This confirmation is an intentional review point in addition to the signature and lock-file trust controls above.
 
 Exit codes follow a CI-oriented contract distinct from the generic `1` used elsewhere in the CLI:
 
@@ -660,7 +665,6 @@ ToolHive owns the installation lifecycle, scoping model, CLI/API interfaces, and
 | CLI commands | `cmd/thv/app/skill*.go` |
 | Group integration | `pkg/groups/skills.go` |
 | Lock file schema | `pkg/skills/lockfile/` |
-| Lock file rollout gate | `pkg/skills/feature_gate.go` |
 | Install/uninstall lock hooks | `pkg/skills/skillsvc/lock.go` |
 | Sync | `pkg/skills/skillsvc/sync.go`, `pkg/skills/skillsvc/pin.go` |
 | Upgrade | `pkg/skills/skillsvc/upgrade.go` |

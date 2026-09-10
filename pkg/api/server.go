@@ -77,30 +77,31 @@ const (
 	readTimeout        = 30 * time.Second
 	idleTimeout        = 120 * time.Second
 	shutdownTimeout    = 30 * time.Second
-	nonceBytes         = 16
+	randomTokenBytes   = 16
 	socketPermissions  = 0660    // Socket file permissions (owner/group read-write)
 	maxRequestBodySize = 1 << 20 // 1MB - Maximum request body size
 )
 
 // ServerBuilder provides a fluent interface for building and configuring the API server
 type ServerBuilder struct {
-	address           string
-	isUnixSocket      bool
-	debugMode         bool
-	enableDocs        bool
-	nonce             string
-	oidcConfig        *auth.TokenValidatorConfig
-	otelEnabled       bool
-	middlewares       []func(http.Handler) http.Handler
-	customRoutes      map[string]http.Handler
-	containerRuntime  runtime.Runtime
-	clientManager     client.Manager
-	workloadManager   workloads.Manager
-	groupManager      groups.Manager
-	skillManager      skills.SkillService
-	skillStoreCloser  io.Closer
-	pluginManager     plugins.PluginService
-	pluginStoreCloser io.Closer
+	address              string
+	isUnixSocket         bool
+	debugMode            bool
+	enableDocs           bool
+	nonce                string
+	keySigningCapability string
+	oidcConfig           *auth.TokenValidatorConfig
+	otelEnabled          bool
+	middlewares          []func(http.Handler) http.Handler
+	customRoutes         map[string]http.Handler
+	containerRuntime     runtime.Runtime
+	clientManager        client.Manager
+	workloadManager      workloads.Manager
+	groupManager         groups.Manager
+	skillManager         skills.SkillService
+	skillStoreCloser     io.Closer
+	pluginManager        plugins.PluginService
+	pluginStoreCloser    io.Closer
 }
 
 // NewServerBuilder creates a new ServerBuilder with default configuration
@@ -140,6 +141,13 @@ func (b *ServerBuilder) WithDocs(enableDocs bool) *ServerBuilder {
 // the nonce in the X-Toolhive-Nonce health check header.
 func (b *ServerBuilder) WithNonce(nonce string) *ServerBuilder {
 	b.nonce = nonce
+	return b
+}
+
+// WithKeySigningCapability sets the bearer capability required by requests
+// that ask the server to open a private signing key.
+func (b *ServerBuilder) WithKeySigningCapability(capability string) *ServerBuilder {
+	b.keySigningCapability = capability
 	return b
 }
 
@@ -449,7 +457,8 @@ func (b *ServerBuilder) setupDefaultRoutes(r *chi.Mux) {
 
 	// Skills router does the same: install, sync, and upgrade pull OCI
 	// artifacts, so a flat 60s cap would sever them mid-transfer.
-	r.Mount("/api/v1beta/skills", v1.SkillsRouter(b.skillManager))
+	r.Mount("/api/v1beta/skills", v1.SkillsRouter(b.skillManager,
+		v1.WithKeySigningCapability(b.keySigningCapability)))
 
 	// Plugins router likewise: install, build, and push move OCI artifacts.
 	r.Mount("/api/v1beta/plugins", v1.PluginsRouter(b.pluginManager))
@@ -585,14 +594,15 @@ func getComponentAndVersionFromRequest(r *http.Request) (string, string, bool) {
 
 // Server represents a configured HTTP server
 type Server struct {
-	httpServer        *http.Server
-	listener          net.Listener
-	address           string
-	isUnixSocket      bool
-	addrType          string
-	nonce             string
-	skillStoreCloser  io.Closer
-	pluginStoreCloser io.Closer
+	httpServer           *http.Server
+	listener             net.Listener
+	address              string
+	isUnixSocket         bool
+	addrType             string
+	nonce                string
+	keySigningCapability string
+	skillStoreCloser     io.Closer
+	pluginStoreCloser    io.Closer
 }
 
 // NewServer creates a new Server instance from a pre-configured builder
@@ -624,14 +634,15 @@ func NewServer(ctx context.Context, builder *ServerBuilder) (*Server, error) {
 	}
 
 	return &Server{
-		httpServer:        httpServer,
-		listener:          listener,
-		address:           builder.address,
-		isUnixSocket:      builder.isUnixSocket,
-		addrType:          addrType,
-		nonce:             builder.nonce,
-		skillStoreCloser:  builder.skillStoreCloser,
-		pluginStoreCloser: builder.pluginStoreCloser,
+		httpServer:           httpServer,
+		listener:             listener,
+		address:              builder.address,
+		isUnixSocket:         builder.isUnixSocket,
+		addrType:             addrType,
+		nonce:                builder.nonce,
+		keySigningCapability: builder.keySigningCapability,
+		skillStoreCloser:     builder.skillStoreCloser,
+		pluginStoreCloser:    builder.pluginStoreCloser,
 	}, nil
 }
 
@@ -726,10 +737,11 @@ func (s *Server) writeDiscoveryFile(ctx context.Context) error {
 		}
 
 		info := &discovery.ServerInfo{
-			URL:       s.ListenURL(),
-			PID:       os.Getpid(),
-			Nonce:     s.nonce,
-			StartedAt: time.Now().UTC(),
+			URL:                  s.ListenURL(),
+			PID:                  os.Getpid(),
+			Nonce:                s.nonce,
+			KeySigningCapability: s.keySigningCapability,
+			StartedAt:            time.Now().UTC(),
 		}
 		if err := discovery.WriteServerInfo(info); err != nil {
 			return fmt.Errorf("failed to write discovery file: %w", err)
@@ -1032,9 +1044,19 @@ func chiRouteSpanNamer(next http.Handler) http.Handler {
 
 // GenerateNonce generates a random nonce for server instance identification.
 func GenerateNonce() (string, error) {
-	b := make([]byte, nonceBytes)
+	return generateRandomToken("server nonce")
+}
+
+// GenerateKeySigningCapability generates a bearer capability for authorizing
+// requests that ask the API server to open a private signing key.
+func GenerateKeySigningCapability() (string, error) {
+	return generateRandomToken("key-signing capability")
+}
+
+func generateRandomToken(name string) (string, error) {
+	b := make([]byte, randomTokenBytes)
 	if _, err := rand.Read(b); err != nil {
-		return "", fmt.Errorf("failed to generate server nonce: %w", err)
+		return "", fmt.Errorf("failed to generate %s: %w", name, err)
 	}
 	return hex.EncodeToString(b), nil
 }

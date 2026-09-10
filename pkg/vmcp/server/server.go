@@ -364,6 +364,14 @@ type Server struct {
 // using the address, DB, and key prefix from cfg.SessionStorage; the password
 // is read from the THV_SESSION_REDIS_PASSWORD environment variable.
 // Any other provider value is a misconfiguration and returns an error.
+//
+// Presence of THV_SESSION_REDIS_PASSWORD, not just its value, carries intent:
+// the operator injects it only when sessionStorage.passwordRef (or a global
+// default secret) is set. So an unset variable is an intended no-auth connection
+// (tolerated, with one startup WARN naming the store), whereas a variable that is
+// set but resolves to empty is a misconfiguration — a mis-keyed or emptied secret
+// — and is rejected rather than silently downgraded, mirroring the embedded auth
+// server's convertRedisACLConfig. An authenticated connection logs at INFO.
 func buildSessionDataStorage(ctx context.Context, cfg *Config) (transportsession.DataStorage, error) {
 	// Default to in-process storage when session storage is not configured,
 	// or when the provider is explicitly "memory" or left empty.
@@ -380,16 +388,42 @@ func buildSessionDataStorage(ctx context.Context, cfg *Config) (transportsession
 	if keyPrefix == "" {
 		keyPrefix = "thv:vmcp:session:"
 	}
+	password, passwordSet := os.LookupEnv(vmcpconfig.RedisPasswordEnvVar)
+	// A set-but-empty password is a misconfiguration (the operator injected the
+	// var from a passwordRef whose secret resolved empty), not a no-auth request.
+	// Fail loudly rather than silently downgrading a store that holds session data.
+	if passwordSet && password == "" {
+		return nil, fmt.Errorf(
+			"%s is set but empty; unset it for a no-auth connection or fix the referenced secret",
+			vmcpconfig.RedisPasswordEnvVar)
+	}
 	redisCfg := tcredis.Config{
 		Addr:     cfg.SessionStorage.Address,
-		Password: os.Getenv(vmcpconfig.RedisPasswordEnvVar),
+		Password: password,
 		DB:       int(cfg.SessionStorage.DB),
 	}
-	slog.Info("using Redis session storage",
-		"address", cfg.SessionStorage.Address,
-		"db", cfg.SessionStorage.DB,
-		"key_prefix", keyPrefix,
-	)
+	// Distinguish an authenticated connection (INFO) from a no-auth one (WARN):
+	// an unset password is an intended no-auth connection, but the downgrade
+	// should still be visible in logs rather than silent. The store holds session
+	// data, so name it either way. Both records carry a "store" attribute matching
+	// the embedded auth server's no-auth WARN (convertRedisRunConfig), so a single
+	// log-based alert can match one key across both Redis consumers.
+	if !passwordSet {
+		slog.Warn("vMCP Redis session storage connecting without authentication "+
+			"(THV_SESSION_REDIS_PASSWORD is not set)",
+			"store", cfg.SessionStorage.Address,
+			"address", cfg.SessionStorage.Address,
+			"db", cfg.SessionStorage.DB,
+			"key_prefix", keyPrefix,
+		)
+	} else {
+		slog.Info("using Redis session storage",
+			"store", cfg.SessionStorage.Address,
+			"address", cfg.SessionStorage.Address,
+			"db", cfg.SessionStorage.DB,
+			"key_prefix", keyPrefix,
+		)
+	}
 	return transportsession.NewRedisSessionDataStorage(ctx, redisCfg, keyPrefix, cfg.SessionTTL)
 }
 

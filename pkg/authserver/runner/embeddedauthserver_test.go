@@ -26,9 +26,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/alicebob/miniredis/v2"
 	"github.com/ory/fosite"
-	"github.com/redis/go-redis/v9"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 	"gopkg.in/yaml.v3"
@@ -36,6 +34,7 @@ import (
 	"github.com/stacklok/toolhive/pkg/authserver"
 	servercrypto "github.com/stacklok/toolhive/pkg/authserver/server/crypto"
 	"github.com/stacklok/toolhive/pkg/authserver/server/keys"
+	"github.com/stacklok/toolhive/pkg/authserver/server/registration"
 	"github.com/stacklok/toolhive/pkg/authserver/server/tokenexchange"
 	"github.com/stacklok/toolhive/pkg/authserver/storage"
 	"github.com/stacklok/toolhive/pkg/oauthproto"
@@ -1400,17 +1399,16 @@ func TestConvertRedisRunConfig(t *testing.T) {
 		assert.Contains(t, err.Error(), "redis config is required")
 	})
 
-	t.Run("missing ACL user config returns error", func(t *testing.T) {
+	t.Run("nil ACL user config resolves to no-auth", func(t *testing.T) {
 		t.Parallel()
-		_, err := convertRedisRunConfig(&storage.RedisRunConfig{
+		cfg, err := convertRedisRunConfig(&storage.RedisRunConfig{
+			Addr:      "redis.example.com:6379",
 			KeyPrefix: "test:",
-			SentinelConfig: &storage.SentinelRunConfig{
-				MasterName:    "mymaster",
-				SentinelAddrs: []string{"localhost:26379"},
-			},
+			// No ACLUserConfig: a no-auth connection to an unauthenticated Redis.
 		})
-		require.Error(t, err)
-		assert.Contains(t, err.Error(), "acl user config is required")
+		require.NoError(t, err)
+		assert.Empty(t, cfg.Username)
+		assert.Empty(t, cfg.Password)
 	})
 
 	t.Run("unset username env var returns error", func(t *testing.T) {
@@ -1428,6 +1426,37 @@ func TestConvertRedisRunConfig(t *testing.T) {
 		})
 		require.Error(t, err)
 		assert.Contains(t, err.Error(), "failed to resolve Redis username")
+	})
+
+	t.Run("aclUser auth type with nil ACL config returns error", func(t *testing.T) {
+		t.Parallel()
+		// AuthType declares authenticated intent; a nil ACLUserConfig alongside
+		// it is a misconfiguration, not a no-auth request, and must fail loudly
+		// rather than silently downgrade to unauthenticated.
+		_, err := convertRedisRunConfig(&storage.RedisRunConfig{
+			Addr:      "redis.example.com:6379",
+			KeyPrefix: "test:",
+			AuthType:  storage.AuthTypeACLUser,
+		})
+		require.Error(t, err)
+		assert.Contains(t, err.Error(), "requires acl_user_config")
+	})
+
+	t.Run("populated ACL config with unset password env var returns actionable error", func(t *testing.T) {
+		t.Parallel()
+		// A populated block with no password_env_var must return the same
+		// actionable guidance as the empty-resolved-password case, not
+		// resolveEnvVar's generic "environment variable name is empty".
+		_, err := convertRedisRunConfig(&storage.RedisRunConfig{
+			Addr:      "redis.example.com:6379",
+			KeyPrefix: "test:",
+			ACLUserConfig: &storage.ACLUserRunConfig{
+				PasswordEnvVar: "", // populated block, but no password source
+			},
+		})
+		require.Error(t, err)
+		assert.Contains(t, err.Error(), "no password_env_var")
+		assert.Contains(t, err.Error(), "omit acl_user_config for a no-auth connection")
 	})
 }
 
@@ -1540,6 +1569,24 @@ func TestConvertRedisRunConfig_WithEnvVars(t *testing.T) {
 		assert.Equal(t, "mypass", cfg.Password)
 	})
 
+	t.Run("populated ACL config with empty-resolved password returns error", func(t *testing.T) {
+		// Env var is set but empty: a populated ACL block that resolves to no
+		// password is a misconfiguration (mis-keyed / unsynced secret), not a
+		// request for no-auth, and must not silently downgrade to unauthenticated.
+		t.Setenv("TEST_REDIS_PASS_EMPTY", "")
+
+		_, err := convertRedisRunConfig(&storage.RedisRunConfig{
+			Addr:      "redis.example.com:6379",
+			KeyPrefix: "thv:auth:ns:name:",
+			ACLUserConfig: &storage.ACLUserRunConfig{
+				UsernameEnvVar: "", // no username; only the password path matters here
+				PasswordEnvVar: "TEST_REDIS_PASS_EMPTY",
+			},
+		})
+		require.Error(t, err)
+		assert.Contains(t, err.Error(), "password is empty for a populated ACL user config")
+	})
+
 	t.Run("cluster mode resolves correctly", func(t *testing.T) {
 		t.Setenv("TEST_REDIS_USER_CLUSTER", "clusteruser")
 		t.Setenv("TEST_REDIS_PASS_CLUSTER", "clusterpass")
@@ -1560,6 +1607,105 @@ func TestConvertRedisRunConfig_WithEnvVars(t *testing.T) {
 		assert.Equal(t, "clusteruser", cfg.Username)
 		assert.Equal(t, "clusterpass", cfg.Password)
 	})
+}
+
+// TestConvertRedisRunConfig_NoAuthWarns asserts a no-auth resolution (nil
+// ACLUserConfig) emits exactly one startup WARN naming the store, while an
+// authenticated resolution emits none. It swaps the process-global slog default,
+// so it is not parallel.
+//
+//nolint:paralleltest // mutates the package-global slog.Default()
+func TestConvertRedisRunConfig_NoAuthWarns(t *testing.T) {
+	t.Run("no-auth emits one WARN naming the store", func(t *testing.T) {
+		var buf syncBuffer
+		previous := slog.Default()
+		slog.SetDefault(slog.New(slog.NewTextHandler(&buf, &slog.HandlerOptions{Level: slog.LevelWarn})))
+		t.Cleanup(func() { slog.SetDefault(previous) })
+
+		_, err := convertRedisRunConfig(&storage.RedisRunConfig{
+			Addr:      "redis.example.com:6379",
+			KeyPrefix: "thv:auth:ns:name:",
+		})
+		require.NoError(t, err)
+
+		logged := buf.String()
+		// Count the distinctive message rather than the generic level=WARN
+		// token, so an unrelated WARN captured by the process-global default
+		// cannot skew the assertion.
+		assert.Equal(t, 1, strings.Count(logged, "without authentication"))
+		assert.Contains(t, logged, "redis.example.com:6379")
+	})
+
+	t.Run("no-auth WARN names the Sentinel master in Sentinel mode", func(t *testing.T) {
+		var buf syncBuffer
+		previous := slog.Default()
+		slog.SetDefault(slog.New(slog.NewTextHandler(&buf, &slog.HandlerOptions{Level: slog.LevelWarn})))
+		t.Cleanup(func() { slog.SetDefault(previous) })
+
+		// Sentinel mode leaves Addr empty, so redisStoreName must fall back to
+		// the master name for the store identifier in the WARN.
+		_, err := convertRedisRunConfig(&storage.RedisRunConfig{
+			KeyPrefix: "thv:auth:ns:name:",
+			SentinelConfig: &storage.SentinelRunConfig{
+				MasterName:    "mymaster",
+				SentinelAddrs: []string{"localhost:26379"},
+			},
+		})
+		require.NoError(t, err)
+
+		logged := buf.String()
+		assert.Equal(t, 1, strings.Count(logged, "without authentication"))
+		assert.Contains(t, logged, "sentinel:mymaster")
+	})
+
+	t.Run("authenticated resolution emits no WARN", func(t *testing.T) {
+		t.Setenv("TEST_REDIS_PASS_WARN", "mypass")
+
+		var buf syncBuffer
+		previous := slog.Default()
+		slog.SetDefault(slog.New(slog.NewTextHandler(&buf, &slog.HandlerOptions{Level: slog.LevelWarn})))
+		t.Cleanup(func() { slog.SetDefault(previous) })
+
+		_, err := convertRedisRunConfig(&storage.RedisRunConfig{
+			Addr:      "redis.example.com:6379",
+			KeyPrefix: "thv:auth:ns:name:",
+			ACLUserConfig: &storage.ACLUserRunConfig{
+				PasswordEnvVar: "TEST_REDIS_PASS_WARN",
+			},
+		})
+		require.NoError(t, err)
+		assert.Equal(t, 0, strings.Count(buf.String(), "without authentication"))
+	})
+}
+
+// TestCreateStorage_NoAuthRedisConnects covers the second half of issue #6550's
+// suggested test #1: a config with no ACLUserConfig must not only yield empty
+// credentials but actually connect to an unauthenticated Redis. It builds the
+// storage backend through createStorage/convertRedisRunConfig (the production
+// path) against a no-auth miniredis and proves a real round-trip succeeds.
+func TestCreateStorage_NoAuthRedisConnects(t *testing.T) {
+	t.Parallel()
+
+	mr := miniredis.RunT(t) // miniredis requires no auth unless RequireAuth is set
+
+	stor, err := createStorage(context.Background(), &storage.RunConfig{
+		Type: string(storage.TypeRedis),
+		RedisConfig: &storage.RedisRunConfig{
+			Addr:      mr.Addr(),
+			KeyPrefix: "test:noauth:",
+			// No ACLUserConfig and no AuthType: a no-auth connection.
+		},
+	})
+	require.NoError(t, err) // NewRedisStorage pings on construction, so this proves connectivity
+	t.Cleanup(func() { _ = stor.Close() })
+
+	// A real write/read round-trip proves the unauthenticated client is usable,
+	// not merely that construction's ping succeeded.
+	ctx := context.Background()
+	require.NoError(t, stor.RegisterClient(ctx, &fosite.DefaultClient{ID: "noauth-client"}))
+	got, err := stor.GetClient(ctx, "noauth-client")
+	require.NoError(t, err)
+	assert.Equal(t, "noauth-client", got.GetID())
 }
 
 // stubServer is a minimal authserver.Server implementation for testing
@@ -2122,12 +2268,22 @@ type sessionRecordingStorage struct {
 	refreshTokenSessions  atomic.Int32
 }
 
+// dcrStorageDecorator combines a client lookup decorator with the base DCR store.
+type dcrStorageDecorator struct {
+	storage.Storage
+	storage.DCRCredentialStore
+}
+
 func (s *sessionRecordingStorage) CreateAuthorizeCodeSession(ctx context.Context, code string, request fosite.Requester) error {
 	s.authorizeCodeSessions.Add(1)
 	return s.MemoryStorage.CreateAuthorizeCodeSession(ctx, code, request)
 }
 
-func (s *sessionRecordingStorage) CreateAccessTokenSession(ctx context.Context, signature string, request fosite.Requester) error {
+func (s *sessionRecordingStorage) CreateAccessTokenSession(
+	ctx context.Context,
+	signature string,
+	request fosite.Requester,
+) error {
 	s.accessTokenSessions.Add(1)
 	return s.MemoryStorage.CreateAccessTokenSession(ctx, signature, request)
 }
@@ -2144,206 +2300,132 @@ func (s *sessionRecordingStorage) CreateRefreshTokenSession(
 
 func TestEmbeddedAuthServer_SPIFFEAssociationDoesNotAuthenticateClient(t *testing.T) {
 	t.Parallel()
-	t.Skip("RunConfig.Validate() now hard-rejects any non-empty spiffe_trust_domains " +
-		"(config.go's validateSPIFFENotYetEnforced, per PR #6467 review) until a real " +
-		"SVID-verification consumer lands, so a live server can no longer be constructed " +
-		"with a SPIFFE association configured at all -- there is no path to this HTTP-level " +
-		"proof that does not route around cfg.Validate() in production code, which would " +
-		"reopen exactly the loophole that hard-reject exists to close. The underlying " +
-		"mechanism this test proved end-to-end (a SPIFFE client carries no secret and is " +
-		"never public, so fosite's own credential checks reject it, spoofed X-SPIFFE-ID " +
-		"header or not) is still covered at the unit level by " +
-		"registration.TestNewSPIFFEClient (GetHashedSecret is nil, IsPublic is false). " +
-		"Re-enable this test -- unmodified -- when the future PR that adds real SVID " +
-		"verification removes the hard-reject.")
 
-	newConfig := func(scope string, includeAssociation bool) authserver.RunConfig {
-		cfg := authserver.RunConfig{
-			SchemaVersion:    authserver.CurrentSchemaVersion,
-			Issuer:           "https://auth.example.com",
-			ScopesSupported:  []string{"openid", "profile"},
-			AllowedAudiences: []string{"https://mcp.example.com"},
-			Upstreams: []authserver.UpstreamRunConfig{{
-				Name: "static-upstream",
-				Type: authserver.UpstreamProviderTypeOAuth2,
-				OAuth2Config: &authserver.OAuth2UpstreamRunConfig{
-					AuthorizationEndpoint: "https://upstream.example.com/authorize",
-					TokenEndpoint:         "https://upstream.example.com/token",
-					ClientID:              "upstream-client",
-					RedirectURI:           "https://auth.example.com/oauth/callback",
-				},
-			}},
-		}
-		if !includeAssociation {
-			return cfg
-		}
-		cfg.SPIFFETrustDomains = []authserver.SPIFFETrustDomainRunConfig{{
-			Name:        "production",
-			TrustDomain: "example.org",
-			Methods: []authserver.SPIFFEAuthenticationMethod{
-				authserver.SPIFFEAuthenticationMethodX509,
-				authserver.SPIFFEAuthenticationMethodJWT,
+	trustDomains := []authserver.SPIFFETrustDomainRunConfig{{
+		Name:        "production",
+		TrustDomain: "example.org",
+		Methods: []authserver.SPIFFEAuthenticationMethod{
+			authserver.SPIFFEAuthenticationMethodX509,
+			authserver.SPIFFEAuthenticationMethodJWT,
+		},
+		BundleSource: authserver.SPIFFEBundleSourceRunConfig{
+			Type:        authserver.SPIFFEBundleSourceTypeWorkloadAPI,
+			WorkloadAPI: &authserver.SPIFFEWorkloadAPIBundleSourceRunConfig{},
+		},
+	}}
+	inboundGrants := &authserver.InboundGrantsRunConfig{SPIFFEClientAuth: []authserver.SPIFFEClientAuthRunConfig{{
+		TrustDomainRef:   "production",
+		PrincipalPattern: "spiffe://example.org/ns/default/agent",
+		ClientID:         "spiffe-client",
+		Methods: []authserver.SPIFFEAuthenticationMethod{
+			authserver.SPIFFEAuthenticationMethodX509,
+			authserver.SPIFFEAuthenticationMethodJWT,
+		},
+		GrantTypes: []string{authserver.SPIFFEGrantTypeTokenExchange},
+		Scopes:     []string{"openid"},
+		Resources:  []string{"https://mcp.example.com"},
+		Audiences:  []string{"https://mcp.example.com"},
+	}}}
+
+	cfg := authserver.RunConfig{
+		SchemaVersion:    authserver.CurrentSchemaVersion,
+		Issuer:           "https://auth.example.com",
+		ScopesSupported:  []string{"openid"},
+		AllowedAudiences: []string{"https://mcp.example.com"},
+		Upstreams: []authserver.UpstreamRunConfig{{
+			Name: "static-upstream",
+			Type: authserver.UpstreamProviderTypeOAuth2,
+			OAuth2Config: &authserver.OAuth2UpstreamRunConfig{
+				AuthorizationEndpoint: "https://upstream.example.com/authorize",
+				TokenEndpoint:         "https://upstream.example.com/token",
+				ClientID:              "upstream-client",
+				RedirectURI:           "https://auth.example.com/oauth/callback",
 			},
-			BundleSource: authserver.SPIFFEBundleSourceRunConfig{
-				Type:        authserver.SPIFFEBundleSourceTypeWorkloadAPI,
-				WorkloadAPI: &authserver.SPIFFEWorkloadAPIBundleSourceRunConfig{},
-			},
-		}}
-		cfg.InboundGrants = &authserver.InboundGrantsRunConfig{
-			SPIFFEClientAuth: []authserver.SPIFFEClientAuthRunConfig{{
-				TrustDomainRef:   "production",
-				PrincipalPattern: "spiffe://example.org/ns/default/agent",
-				ClientID:         "spiffe-client",
-				Methods: []authserver.SPIFFEAuthenticationMethod{
-					authserver.SPIFFEAuthenticationMethodX509,
-					authserver.SPIFFEAuthenticationMethodJWT,
-				},
-				Scopes:     []string{scope},
-				Audiences:  []string{"https://mcp.example.com"},
-				GrantTypes: []string{authserver.SPIFFEGrantTypeTokenExchange},
-			}},
-		}
-		return cfg
-	}
-	serialize := func(t *testing.T, cfg authserver.RunConfig) authserver.RunConfig {
-		t.Helper()
-		encoded, err := json.Marshal(cfg)
-		require.NoError(t, err)
-		var decoded authserver.RunConfig
-		require.NoError(t, json.Unmarshal(encoded, &decoded))
-		require.NoError(t, decoded.Validate())
-		return decoded
-	}
-	assertStaticAuthority := func(t *testing.T, cfg authserver.RunConfig, scope string) {
-		t.Helper()
-		trust, err := authserver.NewSPIFFETrustConfig(
-			cfg.SPIFFETrustDomains, cfg.InboundGrants, cfg.ScopesSupported, cfg.AllowedAudiences,
-		)
-		require.NoError(t, err)
-		associations := trust.Associations()
-		require.Len(t, associations, 1)
-		association := associations[0]
-		assert.Equal(t, "spiffe-client", association.ClientID())
-		policy := association.AuthorizationPolicy()
-		assert.Equal(t, []string{scope}, policy.Scopes())
-		assert.Equal(t, []string{"https://mcp.example.com"}, policy.Audiences())
+		}},
 	}
 
-	newServer := func(t *testing.T, cfg authserver.RunConfig) (*sessionRecordingStorage, *httptest.Server) {
-		t.Helper()
-		stor := &sessionRecordingStorage{MemoryStorage: storage.NewMemoryStorage()}
-		embedded, err := NewEmbeddedAuthServerWithStorage(context.Background(), &cfg, stor)
-		require.NoError(t, err)
-		httpServer := httptest.NewServer(embedded.Handler())
-		t.Cleanup(func() {
-			httpServer.Close()
-			require.NoError(t, embedded.Close())
-		})
-		return stor, httpServer
-	}
-	assertUnauthenticated := func(t *testing.T, serverURL string, stor *sessionRecordingStorage, spoofedHeader bool) {
-		t.Helper()
-		req, err := http.NewRequest(http.MethodPost, serverURL+"/oauth/token", strings.NewReader(url.Values{
-			"grant_type":         {authserver.SPIFFEGrantTypeTokenExchange},
-			"subject_token":      {"unvalidated-subject-token"},
-			"subject_token_type": {"urn:ietf:params:oauth:token-type:access_token"},
-			"client_id":          {"spiffe-client"},
-			"scope":              {"openid"},
-			"resource":           {"https://mcp.example.com"},
-		}.Encode()))
-		require.NoError(t, err)
-		req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
-		if spoofedHeader {
-			req.Header.Set("X-SPIFFE-ID", "spiffe://example.org/ns/default/agent")
-		}
-		resp, err := (&http.Client{Timeout: 10 * time.Second}).Do(req)
-		require.NoError(t, err)
-		defer resp.Body.Close()
-		var body map[string]any
-		require.NoError(t, json.NewDecoder(resp.Body).Decode(&body))
-		assert.Equal(t, http.StatusUnauthorized, resp.StatusCode)
-		assert.Equal(t, "invalid_client", body["error"])
-		assert.NotContains(t, body, "access_token")
-		assert.NotContains(t, body, "refresh_token")
-		assert.NotContains(t, body, "id_token")
-		assert.Zero(t, stor.authorizeCodeSessions.Load())
-		assert.Zero(t, stor.accessTokenSessions.Load())
-		assert.Zero(t, stor.refreshTokenSessions.Load())
-	}
-
-	initial := serialize(t, newConfig("openid", true))
-	assertStaticAuthority(t, initial, "openid")
-	stor, httpServer := newServer(t, initial)
-	assertUnauthenticated(t, httpServer.URL, stor, false)
-	assertUnauthenticated(t, httpServer.URL, stor, true)
-
-	// A fresh-memory restart reconstructs the static association from the same
-	// serialized operator-equivalent configuration and still does not authenticate it.
-	restarted := serialize(t, initial)
-	stor, httpServer = newServer(t, restarted)
-	assertStaticAuthority(t, restarted, "openid")
-	assertUnauthenticated(t, httpServer.URL, stor, true)
-
-	changed := serialize(t, newConfig("profile", true))
-	_, _ = newServer(t, changed)
-	assertStaticAuthority(t, changed, "profile")
-
-	removed := serialize(t, newConfig("", false))
-	_, _ = newServer(t, removed)
+	ctx := context.Background()
 	trust, err := authserver.NewSPIFFETrustConfig(
-		removed.SPIFFETrustDomains, nil, removed.ScopesSupported, removed.AllowedAudiences,
+		trustDomains, inboundGrants, cfg.ScopesSupported, cfg.AllowedAudiences,
 	)
 	require.NoError(t, err)
-	assert.Empty(t, trust.Associations())
 	registry, err := authserver.NewSPIFFEAssociationRegistry(trust)
 	require.NoError(t, err)
 	require.NotNil(t, registry)
+	require.Len(t, trust.Associations(), 1, "the association above must parse")
 
-	// Redis restarts retain dynamic registrations but reconstruct static authority
-	// exclusively from the current serialized configuration.
-	redisServer := miniredis.RunT(t)
-	newRedisStorage := func() storage.Storage {
-		client := redis.NewClient(&redis.Options{Addr: redisServer.Addr()})
-		return storage.NewRedisStorageWithClient(client, "test:spiffe:")
+	// registry.staticClients() is unexported (package authserver); this test
+	// lives in package runner, so the static client is built directly here
+	// with the same values the association above declares, rather than
+	// asserting it out of the registry. This is what routes around
+	// cfg.Validate()'s hard-reject of non-empty spiffe_trust_domains (see
+	// TestEmbeddedAuthServer_SPIFFEAssociationDoesNotAuthenticateClient's own
+	// history): NewEmbeddedAuthServerWithStorage below is never given a cfg
+	// with SPIFFETrustDomains/InboundGrants set, only a storage chain
+	// pre-decorated with the static client it would have produced.
+	spiffeClient, err := registration.NewSPIFFEClient(
+		"spiffe-client", []string{"openid"}, []string{"https://mcp.example.com"}, []string{"https://mcp.example.com"},
+	)
+	require.NoError(t, err)
+	stor := &sessionRecordingStorage{MemoryStorage: storage.NewMemoryStorage()}
+	decoratedStorage, err := storage.NewSPIFFEStorageDecorator(
+		ctx, stor, map[string]fosite.Client{"spiffe-client": spiffeClient},
+	)
+	require.NoError(t, err)
+	staticClient, err := decoratedStorage.GetClient(ctx, "spiffe-client")
+	require.NoError(t, err)
+	assert.Equal(t, "spiffe-client", staticClient.GetID())
+
+	serverStorage := &dcrStorageDecorator{
+		Storage:            decoratedStorage,
+		DCRCredentialStore: stor,
 	}
-	redisStorage := newRedisStorage()
-	require.NoError(t, redisStorage.RegisterClient(context.Background(), &fosite.DefaultClient{ID: "dynamic-client"}))
-	embedded, err := NewEmbeddedAuthServerWithStorage(context.Background(), &initial, redisStorage)
+	embedded, err := NewEmbeddedAuthServerWithStorage(ctx, &cfg, serverStorage)
 	require.NoError(t, err)
-	require.NoError(t, embedded.Close())
+	t.Cleanup(func() { require.NoError(t, embedded.Close()) })
 
-	redisStorage = newRedisStorage()
-	embedded, err = NewEmbeddedAuthServerWithStorage(context.Background(), &removed, redisStorage)
-	require.NoError(t, err)
-	_, err = redisStorage.GetClient(context.Background(), "dynamic-client")
-	require.NoError(t, err)
-	// The static association is gone from the current config, but the earlier
-	// SPIFFE-enabled boot durably claimed "spiffe-client" to close the
-	// cross-replica registration race; that durable claim is not retracted
-	// just because a later boot's config no longer configures the
-	// association. The claim must remain structurally unauthenticatable: no
-	// secret and not a public client, so it can never pass client
-	// authentication for any grant. (fosite.DefaultClient.GetGrantTypes
-	// applies its own single-grant default when the underlying field reads
-	// back empty from Redis — see clientFromStored in redis.go
-	// — so the "no grant types" property is asserted directly against
-	// MemoryStorage in storage/spiffe_decorator_test.go instead of here.)
-	claimed, err := redisStorage.GetClient(context.Background(), "spiffe-client")
-	require.NoError(t, err, "the earlier durable claim for spiffe-client must persist")
-	assert.Nil(t, claimed.GetHashedSecret())
-	assert.False(t, claimed.IsPublic())
-	require.NoError(t, embedded.Close())
+	httpServer := httptest.NewServer(embedded.Handler())
+	t.Cleanup(httpServer.Close)
 
-	// A durable row with a currently static ID is a startup collision, rather
-	// than authority that can be silently shadowed by configuration. Uses an
-	// isolated Redis keyspace so the collision seed isn't itself rejected by
-	// the durable claim left behind by the earlier steps above.
-	collisionRedis := miniredis.RunT(t)
-	collisionStorage := storage.NewRedisStorageWithClient(
-		redis.NewClient(&redis.Options{Addr: collisionRedis.Addr()}), "test:spiffe-collision:")
-	require.NoError(t, collisionStorage.RegisterClient(context.Background(), &fosite.DefaultClient{ID: "spiffe-client"}))
-	_, err = NewEmbeddedAuthServerWithStorage(context.Background(), &initial, collisionStorage)
-	require.ErrorIs(t, err, storage.ErrAlreadyExists)
+	for _, spoofedHeader := range []bool{false, true} {
+		spoofedHeader := spoofedHeader
+		t.Run(fmt.Sprintf("spoofed SPIFFE header: %t", spoofedHeader), func(t *testing.T) {
+			t.Parallel()
+
+			form := url.Values{
+				"grant_type":         {authserver.SPIFFEGrantTypeTokenExchange},
+				"subject_token":      {"unvalidated-subject-token"},
+				"subject_token_type": {"urn:ietf:params:oauth:token-type:access_token"},
+				"client_id":          {"spiffe-client"},
+				"scope":              {"openid"},
+				"resource":           {"https://mcp.example.com"},
+			}
+			req, err := http.NewRequest(http.MethodPost, httpServer.URL+"/oauth/token", strings.NewReader(form.Encode()))
+			require.NoError(t, err)
+			req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+			if spoofedHeader {
+				req.Header.Set("X-SPIFFE-ID", "spiffe://example.org/ns/default/agent")
+			}
+
+			resp, err := (&http.Client{Timeout: 10 * time.Second}).Do(req)
+			require.NoError(t, err)
+			t.Cleanup(func() {
+				_, _ = io.Copy(io.Discard, resp.Body)
+				resp.Body.Close()
+			})
+
+			var body map[string]any
+			require.NoError(t, json.NewDecoder(resp.Body).Decode(&body))
+			assert.Equal(t, http.StatusUnauthorized, resp.StatusCode)
+			assert.Equal(t, "invalid_client", body["error"])
+			assert.NotContains(t, body, "access_token")
+			assert.NotContains(t, body, "refresh_token")
+			assert.NotContains(t, body, "id_token")
+			assert.Zero(t, stor.authorizeCodeSessions.Load())
+			assert.Zero(t, stor.accessTokenSessions.Load())
+			assert.Zero(t, stor.refreshTokenSessions.Load())
+		})
+	}
 }
 
 // buildUpstreamConfigs: on first call it registers with the mock AS and

@@ -13,6 +13,7 @@ import (
 	"github.com/spiffe/go-spiffe/v2/spiffeid"
 
 	"github.com/stacklok/toolhive/pkg/authserver/server/registration"
+	spiffeauth "github.com/stacklok/toolhive/pkg/authserver/spiffe"
 	"github.com/stacklok/toolhive/pkg/authserver/storage"
 	"github.com/stacklok/toolhive/pkg/networking"
 	"github.com/stacklok/toolhive/pkg/oauthproto"
@@ -20,9 +21,9 @@ import (
 
 const (
 	// SPIFFEAuthenticationMethodX509 authenticates a workload with an X.509-SVID.
-	SPIFFEAuthenticationMethodX509 SPIFFEAuthenticationMethod = "spiffe_x509"
+	SPIFFEAuthenticationMethodX509 = spiffeauth.SPIFFEAuthenticationMethodX509
 	// SPIFFEAuthenticationMethodJWT authenticates a workload with a JWT-SVID.
-	SPIFFEAuthenticationMethodJWT SPIFFEAuthenticationMethod = "spiffe_jwt"
+	SPIFFEAuthenticationMethodJWT = spiffeauth.SPIFFEAuthenticationMethodJWT
 
 	// SPIFFEGrantTypeTokenExchange is the only SPIFFE client grant supported by
 	// this configuration surface.
@@ -44,9 +45,8 @@ const (
 )
 
 // SPIFFEAuthenticationMethod identifies the credential type permitted for a
-// SPIFFE workload. Methods are explicit so introducing another credential type
-// cannot silently broaden a policy.
-type SPIFFEAuthenticationMethod string
+// SPIFFE workload.
+type SPIFFEAuthenticationMethod = spiffeauth.SPIFFEAuthenticationMethod
 
 // SPIFFEBundleSourceType identifies the selected trust-bundle source.
 type SPIFFEBundleSourceType string

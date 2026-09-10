@@ -739,20 +739,21 @@ func TestUpdateWorkload(t *testing.T) {
 	}
 }
 
-// TestUpdateWorkload_MaxRequestBodySizeRoundTrip verifies that the Workloads
-// API includes the body limit in GET responses and preserves it when that
+// TestUpdateWorkload_ProxyLimitsRoundTrip verifies that the Workloads API
+// includes proxy request limits in GET responses and preserves them when that
 // response is submitted unchanged to the edit endpoint.
 //
 //nolint:paralleltest // SaveState/LoadState use process-wide XDG state settings; keep sequential.
-func TestUpdateWorkload_MaxRequestBodySizeRoundTrip(t *testing.T) {
+func TestUpdateWorkload_ProxyLimitsRoundTrip(t *testing.T) {
 	t.Cleanup(xdg.Reload)
 	t.Setenv("XDG_STATE_HOME", t.TempDir())
 	xdg.Reload()
 
 	ctx := context.Background()
 	const (
-		workloadName = "body-limit-workload"
-		maxBytes     = int64(16 << 20)
+		workloadName     = "proxy-limits-workload"
+		maxBytes         = int64(16 << 20)
+		proxyReadTimeout = "45s"
 	)
 
 	persisted := runner.NewRunConfig()
@@ -761,6 +762,7 @@ func TestUpdateWorkload_MaxRequestBodySizeRoundTrip(t *testing.T) {
 	persisted.ContainerName = workloadName
 	persisted.RemoteURL = "https://mcp.example.com/mcp"
 	persisted.MaxRequestBodySize = maxBytes
+	persisted.ProxyReadTimeout = proxyReadTimeout
 	require.NoError(t, persisted.SaveState(ctx))
 
 	ctrl := gomock.NewController(t)
@@ -791,6 +793,7 @@ func TestUpdateWorkload_MaxRequestBodySizeRoundTrip(t *testing.T) {
 	apierrors.ErrorHandler(routes.getWorkload).ServeHTTP(getRecorder, getReq)
 	require.Equal(t, http.StatusOK, getRecorder.Code, getRecorder.Body.String())
 	assert.Contains(t, getRecorder.Body.String(), `"max_request_body_size":16777216`)
+	assert.Contains(t, getRecorder.Body.String(), `"proxy_read_timeout":"45s"`)
 
 	mockWorkloadManager.EXPECT().GetWorkload(gomock.Any(), workloadName).
 		Return(core.Workload{Name: workloadName}, nil)
@@ -798,6 +801,7 @@ func TestUpdateWorkload_MaxRequestBodySizeRoundTrip(t *testing.T) {
 	mockWorkloadManager.EXPECT().UpdateWorkload(gomock.Any(), workloadName, gomock.Any()).
 		DoAndReturn(func(_ context.Context, _ string, runConfig *runner.RunConfig) (workloads.CompletionFunc, error) {
 			assert.Equal(t, maxBytes, runConfig.MaxRequestBodySize)
+			assert.Equal(t, proxyReadTimeout, runConfig.ProxyReadTimeout)
 			return nil, nil
 		})
 

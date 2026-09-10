@@ -1886,7 +1886,10 @@ func (r *VirtualMCPServerReconciler) containerNeedsUpdate(
 		return true
 	}
 
-	container := deployment.Spec.Template.Spec.Containers[0]
+	container, ok := findContainerByName(deployment.Spec.Template.Spec.Containers, vmcpMainContainerName)
+	if !ok {
+		return true
+	}
 
 	// Check if vmcp image has changed
 	expectedImage := getVmcpImage()
@@ -2094,6 +2097,9 @@ func normalizeEnvVarSource(src *corev1.EnvVarSource) {
 		ref.Optional = nil
 	}
 	if ref := src.ConfigMapKeyRef; ref != nil && ref.Optional != nil && !*ref.Optional {
+		ref.Optional = nil
+	}
+	if ref := src.FileKeyRef; ref != nil && ref.Optional != nil && !*ref.Optional {
 		ref.Optional = nil
 	}
 	if ref := src.FieldRef; ref != nil && ref.APIVersion == "v1" {

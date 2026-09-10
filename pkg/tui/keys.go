@@ -3,7 +3,7 @@
 
 package tui
 
-import "github.com/charmbracelet/bubbles/key"
+import "charm.land/bubbles/v2/key"
 
 // keyMap holds all key bindings for the TUI.
 type keyMap struct {
@@ -98,7 +98,7 @@ var keys = keyMap{
 		key.WithHelp("→", "scroll right"),
 	),
 	Space: key.NewBinding(
-		key.WithKeys(" "),
+		key.WithKeys("space"),
 		key.WithHelp("space", "toggle collapse"),
 	),
 	CopyNode: key.NewBinding(

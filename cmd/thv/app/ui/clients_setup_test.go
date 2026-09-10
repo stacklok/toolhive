@@ -6,7 +6,7 @@ package ui
 import (
 	"testing"
 
-	tea "github.com/charmbracelet/bubbletea"
+	tea "charm.land/bubbletea/v2"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
@@ -88,7 +88,7 @@ func TestSetupModelUpdate_GroupToClientTransition(t *testing.T) {
 			}
 
 			// Press enter to transition
-			updated, _ := m.Update(tea.KeyMsg{Type: tea.KeyEnter})
+			updated, _ := m.Update(tea.KeyPressMsg{Code: tea.KeyEnter})
 			result := updated.(*setupModel)
 
 			assert.Equal(t, tt.wantStep, result.CurrentStep)
@@ -117,19 +117,19 @@ func TestSetupModelUpdate_ClientSelection(t *testing.T) {
 	}
 
 	// Toggle first client with space
-	updated, _ := m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{' '}})
+	updated, _ := m.Update(tea.KeyPressMsg{Code: tea.KeySpace, Text: " "})
 	result := updated.(*setupModel)
 	_, selected := result.SelectedClients[0]
 	assert.True(t, selected, "first client should be selected after space")
 
 	// Toggle it off
-	updated, _ = result.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{' '}})
+	updated, _ = result.Update(tea.KeyPressMsg{Code: tea.KeySpace, Text: " "})
 	result = updated.(*setupModel)
 	_, selected = result.SelectedClients[0]
 	assert.False(t, selected, "first client should be deselected after second space")
 
 	// Confirm with enter
-	updated, cmd := result.Update(tea.KeyMsg{Type: tea.KeyEnter})
+	updated, cmd := result.Update(tea.KeyPressMsg{Code: tea.KeyEnter})
 	result = updated.(*setupModel)
 	assert.True(t, result.Confirmed)
 	assert.True(t, result.Quitting)

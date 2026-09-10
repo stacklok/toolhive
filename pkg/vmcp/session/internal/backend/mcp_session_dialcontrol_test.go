@@ -26,10 +26,10 @@ func denyAllDial(_, _ string, _ syscall.RawConn) error {
 }
 
 // TestHTTPConnector_DialControlGuardsSessionInit proves that a Control hook
-// supplied via WithDialControl fires on the session-init dial for every backend
-// transport: a deny-all hook makes the connect fail before any request reaches
-// the backend. The companion unguarded connector against the same server shows
-// the target IS dialed without the hook, so it is the guard — not an
+// resolved via WithDialControlResolver fires on the session-init dial for every
+// backend transport: a deny-all hook makes the connect fail before any request
+// reaches the backend. The companion unguarded connector against the same server
+// shows the target IS dialed without the hook, so it is the guard — not an
 // unreachable server — that blocks the request.
 func TestHTTPConnector_DialControlGuardsSessionInit(t *testing.T) {
 	t.Parallel()
@@ -65,7 +65,10 @@ func TestHTTPConnector_DialControlGuardsSessionInit(t *testing.T) {
 				fired.Store(true)
 				return errors.New("dial blocked by test policy")
 			}
-			guarded := NewHTTPConnector(newTestRegistry(t), WithDialControl(control))
+			guarded := NewHTTPConnector(newTestRegistry(t),
+				WithDialControlResolver(func(_ string) func(network, address string, c syscall.RawConn) error {
+					return control
+				}))
 			sess, _, err := guarded(ctx, target, nil, "", nil)
 			if sess != nil {
 				_ = sess.Close()
@@ -84,6 +87,73 @@ func TestHTTPConnector_DialControlGuardsSessionInit(t *testing.T) {
 			assert.Positive(t, hits.Load(), "unguarded session-init dial must reach the backend")
 		})
 	}
+}
+
+// TestHTTPConnector_DialControlResolvesPerWorkload proves the resolver is keyed
+// on the backend workload ID: a single connector resolves a deny-all hook for
+// one workload and nil for another, so dialing the denied workload fails before
+// reaching its server while the allowed workload connects and reaches its own.
+func TestHTTPConnector_DialControlResolvesPerWorkload(t *testing.T) {
+	t.Parallel()
+
+	var allowedHits, blockedHits atomic.Int32
+	allowedSrv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		allowedHits.Add(1)
+		w.WriteHeader(http.StatusOK)
+	}))
+	t.Cleanup(allowedSrv.Close)
+	blockedSrv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		blockedHits.Add(1)
+		w.WriteHeader(http.StatusOK)
+	}))
+	t.Cleanup(blockedSrv.Close)
+
+	const blockedWorkloadID = "blocked-backend"
+	var fired atomic.Bool
+	connector := NewHTTPConnector(newTestRegistry(t),
+		WithDialControlResolver(func(workloadID string) func(network, address string, c syscall.RawConn) error {
+			if workloadID != blockedWorkloadID {
+				return nil
+			}
+			return func(_, _ string, _ syscall.RawConn) error {
+				fired.Store(true)
+				return errors.New("dial blocked by test policy")
+			}
+		}))
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	t.Cleanup(cancel)
+
+	blocked := &vmcp.BackendTarget{
+		WorkloadID:    blockedWorkloadID,
+		WorkloadName:  blockedWorkloadID,
+		BaseURL:       blockedSrv.URL,
+		TransportType: "streamable-http",
+	}
+	sess, _, err := connector(ctx, blocked, nil, "", nil)
+	if sess != nil {
+		_ = sess.Close()
+	}
+	require.Error(t, err, "the deny-all hook resolved for the blocked workload must fail its dial")
+	assert.True(t, fired.Load(), "the resolved hook must have been invoked for the blocked workload")
+	assert.Zero(t, blockedHits.Load(), "the blocked workload's server must not be reached")
+
+	// The workload the resolver returns nil for is left on http.DefaultTransport,
+	// so its dial proceeds and reaches the server. (A bare httptest server is not
+	// a real MCP endpoint, so the handshake still fails afterwards — reaching the
+	// server, not completing init, is what proves the hook was NOT installed for
+	// this workload.)
+	allowed := &vmcp.BackendTarget{
+		WorkloadID:    "allowed-backend",
+		WorkloadName:  "allowed-backend",
+		BaseURL:       allowedSrv.URL,
+		TransportType: "streamable-http",
+	}
+	sess2, _, _ := connector(ctx, allowed, nil, "", nil)
+	if sess2 != nil {
+		_ = sess2.Close()
+	}
+	assert.Positive(t, allowedHits.Load(), "the allowed workload's server must be reached")
 }
 
 // TestBackendBaseTransport_NilHookReturnsDefault pins the no-op guarantee: with

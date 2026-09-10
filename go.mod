@@ -24,6 +24,7 @@ require (
 	github.com/evanphx/json-patch/v5 v5.9.11
 	github.com/getsentry/sentry-go v0.49.0
 	github.com/getsentry/sentry-go/otel v0.49.0
+	github.com/getsentry/sentry-go/otel/otlp v0.49.0
 	github.com/github/smimesign v0.2.0
 	github.com/go-chi/chi/v5 v5.3.2
 	github.com/go-git/go-billy/v5 v5.9.1

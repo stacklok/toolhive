@@ -5,6 +5,7 @@
 package sentry
 
 import (
+	"context"
 	"fmt"
 	"log/slog"
 	"net/http"
@@ -13,7 +14,10 @@ import (
 
 	"github.com/getsentry/sentry-go"
 	sentryotel "github.com/getsentry/sentry-go/otel"
+	sentryotlp "github.com/getsentry/sentry-go/otel/otlp"
+	sdktrace "go.opentelemetry.io/otel/sdk/trace"
 
+	"github.com/stacklok/toolhive/pkg/telemetry"
 	"github.com/stacklok/toolhive/pkg/updates"
 	"github.com/stacklok/toolhive/pkg/versions"
 )
@@ -63,8 +67,14 @@ func Init(cfg Config) error {
 		return fmt.Errorf("sentry init: %w", err)
 	}
 
+	exporter, err := sentryotlp.NewTraceExporter(context.Background(), cfg.DSN)
+	if err != nil {
+		return fmt.Errorf("create Sentry trace exporter: %w", err)
+	}
+	telemetry.RegisterSpanProcessor(sdktrace.NewBatchSpanProcessor(exporter))
 	initialized.Store(true)
 	slog.Debug("sentry initialized", "environment", cfg.Environment)
+	slog.Debug("sentry trace exporter registered with OTEL registry")
 
 	// Tag every event and transaction with the anonymous instance ID so that
 	// Sentry events from the API server can be correlated with those from
@@ -114,7 +124,15 @@ func CaptureException(r *http.Request, err error) {
 	if hub == nil {
 		hub = sentry.CurrentHub().Clone()
 	}
-	hub.CaptureException(err)
+	client := hub.Client()
+	if client == nil {
+		return
+	}
+	event := client.EventFromException(err, sentry.LevelError)
+	hub.CaptureEventWithHint(event, &sentry.EventHint{
+		OriginalException: err,
+		Context:           r.Context(),
+	})
 }
 
 // RecoverPanic reports a recovered panic value to Sentry.

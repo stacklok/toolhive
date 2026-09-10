@@ -58,9 +58,8 @@ var serveCmd = &cobra.Command{
 			env = os.Getenv("SENTRY_ENVIRONMENT")
 		}
 
-		// Initialize Sentry for error reporting and panic capture.
-		// Must happen before telemetry.NewServeProvider so the Sentry span
-		// processor is registered in time to be picked up by NewProvider.
+		// Initialize Sentry for error reporting and trace export. This must happen
+		// before telemetry.NewServeProvider so its trace exporter is registered.
 		sentryCfg := sentrypkg.Config{
 			DSN:              dsn,
 			Environment:      env,
@@ -72,18 +71,16 @@ var serveCmd = &cobra.Command{
 		}
 
 		// Initialize OTEL provider from global config (thv config otel set-endpoint).
-		// If Sentry is also initialized, the Sentry span processor is wired in so spans
-		// are exported to both the configured OTLP backend and Sentry simultaneously.
+		// When Sentry is initialized, its trace exporter is added as a span processor,
+		// so spans reach both the configured OTLP backend and Sentry.
 		otelProvider, otelEnabled, err := telemetry.NewServeProvider(ctx)
 		if err != nil {
 			return err
 		}
 
 		// Shutdown ordering is intentionally LIFO via defer:
-		//   1. OTEL provider shuts down first — flushes the Sentry span processor
-		//      (which calls hub.Flush internally) before the Sentry client is closed.
-		//   2. Sentry client closes second — safe because the span processor has
-		//      already flushed by the time sentrypkg.Close() runs.
+		//   1. OTEL provider shuts down first, flushing the Sentry trace exporter.
+		//   2. Sentry client closes second, after trace export has completed.
 		// Using defer instead of a goroutine makes the ordering deterministic.
 		if otelProvider != nil {
 			defer func() {

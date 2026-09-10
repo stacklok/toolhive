@@ -17,6 +17,7 @@ import (
 	sdktrace "go.opentelemetry.io/otel/sdk/trace"
 
 	"github.com/stacklok/toolhive/pkg/telemetry"
+	"github.com/stacklok/toolhive/pkg/versions"
 )
 
 // These tests are deliberately NOT parallel because they mutate the package-level
@@ -55,12 +56,7 @@ func TestInit(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			initialized.Store(false)
-			telemetry.ResetSpanProcessorsForTesting()
-			t.Cleanup(func() {
-				initialized.Store(false)
-				telemetry.ResetSpanProcessorsForTesting()
-			})
+			resetSentryForTest(t)
 
 			err := Init(tt.cfg)
 			if tt.wantErr {
@@ -76,6 +72,86 @@ func TestInit(t *testing.T) {
 }
 
 //nolint:paralleltest // mutates global initialized and telemetry registry state
+func TestInit_RegistersExactlyOneSpanProcessor(t *testing.T) {
+	// Regression test: sdktrace.NewBatchSpanProcessor allocates a fresh
+	// processor per call, so registering it directly defeated the registry's
+	// pointer-identity dedup and double-exported every span on a second Init.
+	resetSentryForTest(t)
+
+	cfg := Config{
+		DSN:              "https://examplePublicKey@o0.ingest.sentry.io/0",
+		Environment:      "test",
+		TracesSampleRate: 1.0,
+	}
+	require.NoError(t, Init(cfg))
+	require.NoError(t, Init(cfg))
+
+	assert.Equal(t, 1, telemetry.RegisteredSpanProcessorCount(),
+		"repeated Init must reuse the same span processor, not register a second one")
+}
+
+//nolint:paralleltest // mutates global initialized and telemetry registry state
+func TestInit_RegistersResourceAttributes(t *testing.T) {
+	// Regression test: spans are exported straight to Sentry's OTLP endpoint
+	// and never pass through the Sentry client, so without these resource
+	// attributes --sentry-environment no longer segregated Traces even though
+	// it still segregated Issues.
+	resetSentryForTest(t)
+
+	require.NoError(t, Init(Config{
+		DSN:              "https://examplePublicKey@o0.ingest.sentry.io/0",
+		Environment:      "staging",
+		TracesSampleRate: 1.0,
+	}))
+
+	attrs := telemetry.RegisteredResourceAttributes()
+	require.NotNil(t, attrs)
+	assert.Equal(t, "staging", attrs[environmentKey],
+		"exported spans need the environment as a resource attribute to be grouped in Sentry")
+	assert.Equal(t, "toolhive@"+versions.GetVersionInfo().Version, attrs[releaseKey],
+		"Traces must report the same release string as Issues")
+}
+
+//nolint:paralleltest // mutates global initialized and telemetry registry state
+func TestResourceAttributes(t *testing.T) {
+	tests := []struct {
+		name        string
+		environment string
+		release     string
+		instanceID  string
+		want        map[string]string
+	}{
+		{
+			name: "omits empty values so blank attributes are not exported",
+			want: map[string]string{},
+		},
+		{
+			name:        "carries environment, release and instance ID",
+			environment: "production",
+			release:     "toolhive@1.2.3",
+			instanceID:  "abc123",
+			want: map[string]string{
+				environmentKey: "production",
+				releaseKey:     "toolhive@1.2.3",
+				instanceIDKey:  "abc123",
+			},
+		},
+		{
+			name:        "omits the instance ID alone when it is unavailable",
+			environment: "production",
+			release:     "toolhive@1.2.3",
+			want:        map[string]string{environmentKey: "production", releaseKey: "toolhive@1.2.3"},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			assert.Equal(t, tt.want, resourceAttributes(tt.environment, tt.release, tt.instanceID))
+		})
+	}
+}
+
+//nolint:paralleltest // mutates global initialized and telemetry registry state
 func TestClose(t *testing.T) {
 	t.Run("no-op when not initialized", func(_ *testing.T) {
 		initialized.Store(false)
@@ -83,12 +159,7 @@ func TestClose(t *testing.T) {
 	})
 
 	t.Run("flushes when initialized", func(t *testing.T) {
-		initialized.Store(false)
-		telemetry.ResetSpanProcessorsForTesting()
-		t.Cleanup(func() {
-			initialized.Store(false)
-			telemetry.ResetSpanProcessorsForTesting()
-		})
+		resetSentryForTest(t)
 		err := Init(Config{
 			DSN:              "https://examplePublicKey@o0.ingest.sentry.io/0",
 			Environment:      "test",
@@ -201,4 +272,19 @@ func TestEnabled(t *testing.T) {
 	initialized.Store(true)
 	assert.True(t, Enabled())
 	initialized.Store(false)
+}
+
+// resetSentryForTest clears the package and registry state Init mutates, both
+// before the test runs and after it finishes.
+func resetSentryForTest(t *testing.T) {
+	t.Helper()
+	reset := func() {
+		initialized.Store(false)
+		telemetry.ResetSpanProcessorsForTesting()
+		spanProcessorMu.Lock()
+		defer spanProcessorMu.Unlock()
+		spanProcessor = nil
+	}
+	reset()
+	t.Cleanup(reset)
 }

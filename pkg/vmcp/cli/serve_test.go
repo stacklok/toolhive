@@ -74,10 +74,27 @@ func TestSessionFactoryOptions(t *testing.T) {
 			wantOptions:   2,
 		},
 		{
-			name:          "both branches taken",
+			name:          "both timeout branches taken",
 			cfg:           withBackendInit,
 			backendClient: &revisionReportingClient{},
 			wantOptions:   3,
+		},
+		{
+			name: "list_changed exclusion adds a filter",
+			cfg: &config.Config{Operational: &config.OperationalConfig{
+				ListChanged: &config.ListChangedConfig{DisabledWorkloads: []string{"grafana"}},
+			}},
+			backendClient: nil,
+			wantOptions:   2,
+		},
+		{
+			name: "every branch taken",
+			cfg: &config.Config{Operational: &config.OperationalConfig{
+				Timeouts:    &config.TimeoutConfig{BackendInit: config.Duration(5 * time.Second)},
+				ListChanged: &config.ListChangedConfig{DisabledWorkloads: []string{"grafana"}},
+			}},
+			backendClient: &revisionReportingClient{},
+			wantOptions:   4,
 		},
 	}
 
@@ -130,6 +147,74 @@ func TestBackendInitTimeout(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
 			assert.Equal(t, tt.want, backendInitTimeout(tt.cfg))
+		})
+	}
+}
+
+func TestListChangedFilter(t *testing.T) {
+	t.Parallel()
+
+	enabled, disabled := true, false
+
+	tests := []struct {
+		name      string
+		cfg       *config.Config
+		wantNil   bool
+		wantAllow map[string]bool
+	}{
+		{name: "nil config keeps the factory default", cfg: nil, wantNil: true},
+		{name: "no operational config keeps the default", cfg: &config.Config{}, wantNil: true},
+		{
+			name:    "no listChanged block keeps the default",
+			cfg:     &config.Config{Operational: &config.OperationalConfig{}},
+			wantNil: true,
+		},
+		{
+			name: "enabled true with no exclusions keeps the default",
+			cfg: &config.Config{Operational: &config.OperationalConfig{
+				ListChanged: &config.ListChangedConfig{Enabled: &enabled},
+			}},
+			wantNil: true,
+		},
+		{
+			name: "enabled false excludes every backend",
+			cfg: &config.Config{Operational: &config.OperationalConfig{
+				ListChanged: &config.ListChangedConfig{Enabled: &disabled},
+			}},
+			wantAllow: map[string]bool{"anything": false},
+		},
+		{
+			name: "disabledWorkloads excludes only those named",
+			cfg: &config.Config{Operational: &config.OperationalConfig{
+				ListChanged: &config.ListChangedConfig{DisabledWorkloads: []string{"grafana"}},
+			}},
+			wantAllow: map[string]bool{"grafana": false, "github": true},
+		},
+		{
+			name: "enabled false wins over an exclusion list",
+			cfg: &config.Config{Operational: &config.OperationalConfig{
+				ListChanged: &config.ListChangedConfig{
+					Enabled:           &disabled,
+					DisabledWorkloads: []string{"grafana"},
+				},
+			}},
+			wantAllow: map[string]bool{"grafana": false, "github": false},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			filter := listChangedFilter(tt.cfg)
+			if tt.wantNil {
+				assert.Nil(t, filter)
+				return
+			}
+			require.NotNil(t, filter)
+			for id, want := range tt.wantAllow {
+				assert.Equal(t, want, filter(id), "workload %q", id)
+			}
 		})
 	}
 }

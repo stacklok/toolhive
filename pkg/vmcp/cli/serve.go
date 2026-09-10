@@ -555,6 +555,9 @@ func sessionFactoryOptions(
 	if backendInit := backendInitTimeout(cfg); backendInit > 0 {
 		opts = append(opts, vmcpsession.WithBackendInitTimeout(backendInit))
 	}
+	if filter := listChangedFilter(cfg); filter != nil {
+		opts = append(opts, vmcpsession.WithListChangedFilter(filter))
+	}
 	return opts
 }
 
@@ -567,6 +570,30 @@ func backendInitTimeout(cfg *config.Config) time.Duration {
 		return 0
 	}
 	return time.Duration(cfg.Operational.Timeouts.BackendInit)
+}
+
+// listChangedFilter builds the per-backend list_changed predicate from cfg, or
+// returns nil when the config asks for the default (subscribe to everything) so
+// the factory keeps its own behaviour.
+func listChangedFilter(cfg *config.Config) func(workloadID string) bool {
+	if cfg == nil || cfg.Operational == nil || cfg.Operational.ListChanged == nil {
+		return nil
+	}
+	lc := cfg.Operational.ListChanged
+	if lc.Enabled != nil && !*lc.Enabled {
+		return func(string) bool { return false }
+	}
+	if len(lc.DisabledWorkloads) == 0 {
+		return nil
+	}
+	disabled := make(map[string]struct{}, len(lc.DisabledWorkloads))
+	for _, id := range lc.DisabledWorkloads {
+		disabled[id] = struct{}{}
+	}
+	return func(workloadID string) bool {
+		_, off := disabled[workloadID]
+		return !off
+	}
 }
 
 // loadAndValidateConfig loads and validates the vMCP configuration file.

@@ -272,4 +272,4 @@ operator:
 # -- All values for the registry API deployment and associated resources
 registryAPI:
   # -- Container image for the registry API
-  image: "ghcr.io/stacklok/thv-registry-api:v1.3.0"
+  image: "ghcr.io/stacklok/thv-registry-api:v1.5.2"

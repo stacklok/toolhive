@@ -344,9 +344,32 @@ jobs:
 #                                            "$fn"
 #          done <<<"$checksums"
 
+  extract-release-actor:
+    name: Extract Release Actor
+    runs-on: ubuntu-slim
+    permissions: {}
+    outputs:
+      triggered_by: ${{ steps.extract.outputs.triggered_by }}
+    steps:
+      - name: Extract actor from release body
+        id: extract
+        env:
+          RELEASE_BODY: ${{ github.event.release.body }}
+        run: |
+          # create-release-tag.yml embeds this HTML comment in the release notes; parse it back out here.
+          # head -n 1 keeps only the first match: a second Release-Triggered-By comment
+          # (for example from a merged PR title folded into --generate-notes) must not
+          # turn this into a multi-line GITHUB_OUTPUT write.
+          TRIGGERED_BY=$(echo "$RELEASE_BODY" | grep -oP '(?<=<!-- Release-Triggered-By: )[^[:space:]]+(?= -->)' | head -n 1 || true)
+          if [ -z "$TRIGGERED_BY" ]; then
+            echo "No Release-Triggered-By comment in the release notes; the notice will fall back to github.actor."
+          fi
+          echo "triggered_by=$TRIGGERED_BY" >> "$GITHUB_OUTPUT"
+
   notify-release-failure:
     name: Notify Release Failure
     needs:
+      - extract-release-actor
       - compute-build-flags
       - release-binaries
       - image-build-and-push

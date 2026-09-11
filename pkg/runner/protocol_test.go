@@ -396,7 +396,7 @@ func TestLoadRuntimeConfigMergesPerTransportDefaults(t *testing.T) {
 				BuilderImage:       "",
 				AdditionalPackages: []string{"make"},
 			},
-			wantImage:      "golang:1.26-alpine",
+			wantImage:      "golang:1.27-alpine",
 			wantPackages:   []string{"ca-certificates", "git", "make"},
 			wantRuntimeEnv: nil,
 		},

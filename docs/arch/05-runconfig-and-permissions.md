@@ -90,7 +90,7 @@ The complete `RunConfig` struct is defined in `pkg/runner/config.go`.
 
 **Fields:**
 - `builder_image`: Override the default base image for the builder stage
-  - Go: Default `golang:1.26-alpine`
+  - Go: Default `golang:1.27-alpine`
   - Node: Default `node:24-alpine`
   - Python: Default `python:3.14-slim`
 - `additional_packages`: Extra packages to install during the build and runtime stages (e.g., build tools, libraries)

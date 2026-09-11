@@ -56,7 +56,7 @@ var runtimeEnvDangerousValuePatterns = []string{
 type RuntimeConfig struct {
 	// BuilderImage is the full image reference for the builder stage.
 	// An empty string signals "use the default for this transport type" during config merging.
-	// Examples: "golang:1.26-alpine", "node:24-alpine", "python:3.14-slim"
+	// Examples: "golang:1.27-alpine", "node:24-alpine", "python:3.14-slim"
 	BuilderImage string `json:"builder_image" yaml:"builder_image"`
 
 	// AdditionalPackages lists extra packages to install in the builder and
@@ -254,7 +254,7 @@ func (rc *RuntimeConfig) IsEmpty() bool {
 // RuntimeDefaults provides default configurations for each runtime type
 var RuntimeDefaults = map[TransportType]RuntimeConfig{
 	TransportTypeGO: {
-		BuilderImage:       "golang:1.26-alpine",
+		BuilderImage:       "golang:1.27-alpine",
 		AdditionalPackages: []string{"ca-certificates", "git"},
 	},
 	TransportTypeNPX: {

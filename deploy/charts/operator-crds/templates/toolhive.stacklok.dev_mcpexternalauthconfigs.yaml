@@ -778,7 +778,8 @@ spec:
                                   size(self.allowedDelegateClients) == 1'
                               - message: allowMayAct must not be enabled when allowedDelegateClients
                                   contains the wildcard "*"
-                                rule: '!(self.allowMayAct && ''*'' in self.allowedDelegateClients)'
+                                rule: '!(has(self.allowMayAct) && self.allowMayAct
+                                  && ''*'' in self.allowedDelegateClients)'
                               - message: actorClaim must name a readable claim; use
                                   client_id or a non-reserved claim such as azp, appid,
                                   or cid
@@ -3579,7 +3580,8 @@ spec:
                                   size(self.allowedDelegateClients) == 1'
                               - message: allowMayAct must not be enabled when allowedDelegateClients
                                   contains the wildcard "*"
-                                rule: '!(self.allowMayAct && ''*'' in self.allowedDelegateClients)'
+                                rule: '!(has(self.allowMayAct) && self.allowMayAct
+                                  && ''*'' in self.allowedDelegateClients)'
                               - message: actorClaim must name a readable claim; use
                                   client_id or a non-reserved claim such as azp, appid,
                                   or cid

@@ -15313,6 +15313,7 @@ type RegistryPlugin struct {
 	Namespace OptString `json:"namespace"`
 	// Packages is the list of packages for the plugin.
 	Packages   []RegistrySkillPackage     `json:"packages"`
+	Provenance OptRegistryProvenance      `json:"provenance"`
 	Repository OptRegistrySkillRepository `json:"repository"`
 	// Status is the status of the plugin.
 	// Can be one of "active", "deprecated", or "archived".
@@ -15364,6 +15365,11 @@ func (s *RegistryPlugin) GetNamespace() OptString {
 // GetPackages returns the value of Packages.
 func (s *RegistryPlugin) GetPackages() []RegistrySkillPackage {
 	return s.Packages
+}
+
+// GetProvenance returns the value of Provenance.
+func (s *RegistryPlugin) GetProvenance() OptRegistryProvenance {
+	return s.Provenance
 }
 
 // GetRepository returns the value of Repository.
@@ -15424,6 +15430,11 @@ func (s *RegistryPlugin) SetNamespace(val OptString) {
 // SetPackages sets the value of Packages.
 func (s *RegistryPlugin) SetPackages(val []RegistrySkillPackage) {
 	s.Packages = val
+}
+
+// SetProvenance sets the value of Provenance.
+func (s *RegistryPlugin) SetProvenance(val OptRegistryProvenance) {
+	s.Provenance = val
 }
 
 // SetRepository sets the value of Repository.

@@ -4861,6 +4861,9 @@ const docTemplate = `{
                         "type": "array",
                         "uniqueItems": false
                     },
+                    "provenance": {
+                        "$ref": "#/components/schemas/registry.Provenance"
+                    },
                     "repository": {
                         "$ref": "#/components/schemas/registry.SkillRepository"
                     },

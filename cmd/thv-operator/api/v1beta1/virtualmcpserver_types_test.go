@@ -422,7 +422,7 @@ func TestValidateEmbeddingServer(t *testing.T) {
 			expectOptimizer: true,
 		},
 		{
-			name: "optimizer_without_ref_or_service_errors",
+			name: "optimizer_without_ref_or_service_succeeds_keyword_only",
 			server: &VirtualMCPServer{
 				Spec: VirtualMCPServerSpec{
 					GroupRef: &MCPGroupRef{Name: "test-group"},
@@ -431,8 +431,7 @@ func TestValidateEmbeddingServer(t *testing.T) {
 					},
 				},
 			},
-			expectError: true,
-			errContains: "spec.config.optimizer requires an embedding service",
+			expectOptimizer: true,
 		},
 		{
 			name: "empty_ref_name_errors",

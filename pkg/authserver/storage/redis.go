@@ -18,7 +18,7 @@ import (
 	"github.com/ory/fosite"
 	"github.com/redis/go-redis/v9"
 
-	tcredis "github.com/stacklok/toolhive-core/redis"
+	"github.com/stacklok/toolhive-core/redisconn"
 	"github.com/stacklok/toolhive/pkg/authserver/server"
 	"github.com/stacklok/toolhive/pkg/authserver/server/registration"
 	"github.com/stacklok/toolhive/pkg/authserver/server/session"
@@ -127,15 +127,15 @@ type storedSession struct {
 //
 // Connection-mode validation, timeout defaults, client construction (standalone,
 // cluster, or sentinel), TLS plumbing, and connectivity verification are
-// delegated to the shared toolhive-core redis package. cfg.Password may be
+// delegated to the shared toolhive-core redisconn package. cfg.Password may be
 // empty when the Redis server does not require authentication (the auth server
 // does not mandate ACL auth); the keyPrefix is storage-specific and required.
-func NewRedisStorage(ctx context.Context, cfg tcredis.Config, keyPrefix string) (*RedisStorage, error) {
+func NewRedisStorage(ctx context.Context, cfg redisconn.Config, keyPrefix string) (*RedisStorage, error) {
 	if keyPrefix == "" {
 		return nil, errors.New("invalid redis configuration: key prefix is required")
 	}
 
-	client, err := tcredis.NewClient(ctx, &cfg)
+	client, err := redisconn.NewClient(ctx, &cfg)
 	if err != nil {
 		return nil, err
 	}

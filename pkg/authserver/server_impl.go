@@ -190,6 +190,15 @@ func newServer(ctx context.Context, cfg Config, stor storage.Storage) (_ *server
 		return nil, fmt.Errorf("failed to get signing key: %w", err)
 	}
 
+	// Every key the provider reports (signing key plus any fallbacks
+	// configured for rotation) must reach the published JWKS, or promoting
+	// a fallback key to primary invalidates every outstanding token instead
+	// of opening the documented rotation overlap window (#6451).
+	additionalPublicKeys, err := cfg.KeyProvider.PublicKeys(ctx)
+	if err != nil {
+		return nil, fmt.Errorf("failed to get public keys: %w", err)
+	}
+
 	// Create OAuth2 config from authserver.Config
 	oauthParams := &oauthserver.AuthorizationServerParams{
 		Issuer:                              cfg.Issuer,
@@ -200,6 +209,7 @@ func newServer(ctx context.Context, cfg Config, stor storage.Storage) (_ *server
 		SigningKeyID:                        signingKey.KeyID,
 		SigningKeyAlgorithm:                 signingKey.Algorithm,
 		SigningKey:                          signingKey.Key,
+		AdditionalPublicKeys:                additionalPublicKeys,
 		ScopesSupported:                     cfg.ScopesSupported,
 		BaselineClientScopes:                cfg.BaselineClientScopes,
 		AllowedAudiences:                    cfg.AllowedAudiences,

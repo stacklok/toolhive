@@ -29,6 +29,7 @@ import (
 	"github.com/stretchr/testify/require"
 
 	servercrypto "github.com/stacklok/toolhive/pkg/authserver/server/crypto"
+	"github.com/stacklok/toolhive/pkg/authserver/server/keys"
 	spiffeauth "github.com/stacklok/toolhive/pkg/authserver/spiffe"
 )
 
@@ -615,6 +616,55 @@ func TestAuthorizationServerConfig_PublicJWKS(t *testing.T) {
 	// Verify it's a public key (not private)
 	_, ok := publicJWKS.Keys[0].Key.(*rsa.PublicKey)
 	assert.True(t, ok, "expected public key, got %T", publicJWKS.Keys[0].Key)
+}
+
+// TestNewAuthorizationServerConfig_PublishesFallbackKeys pins that fallback
+// keys configured for key rotation (see keys.Config.FallbackKeyFiles) are
+// published in the JWKS alongside the primary signing key, in public form
+// only, with the signing key first. Without this, the documented rotation
+// procedure's overlap window never opens: promoting a fallback key to
+// primary invalidates every token signed with the old key immediately.
+func TestNewAuthorizationServerConfig_PublishesFallbackKeys(t *testing.T) {
+	t.Parallel()
+
+	rsaKey, err := rsa.GenerateKey(rand.Reader, 2048)
+	require.NoError(t, err)
+
+	fallbackKey, err := rsa.GenerateKey(rand.Reader, 2048)
+	require.NoError(t, err)
+
+	params := &AuthorizationServerParams{
+		Issuer:               "https://auth.example.com",
+		AccessTokenLifespan:  time.Hour,
+		RefreshTokenLifespan: time.Hour * 24,
+		AuthCodeLifespan:     time.Minute * 10,
+		HMACSecrets:          servercrypto.NewHMACSecrets([]byte("test-secret-with-32-bytes-long!!")),
+		SigningKeyID:         "key-1",
+		SigningKeyAlgorithm:  "RS256",
+		SigningKey:           rsaKey,
+		AdditionalPublicKeys: []*keys.PublicKeyData{
+			{
+				KeyID:     "key-0-old",
+				Algorithm: "RS256",
+				PublicKey: fallbackKey.Public(),
+			},
+		},
+	}
+
+	authzServerConfig, err := NewAuthorizationServerConfig(params)
+	require.NoError(t, err)
+	require.NotNil(t, authzServerConfig)
+
+	require.Len(t, authzServerConfig.SigningJWKS.Keys, 2)
+	assert.Equal(t, "key-1", authzServerConfig.SigningJWKS.Keys[0].KeyID, "primary signing key must be first")
+	assert.Equal(t, "key-0-old", authzServerConfig.SigningJWKS.Keys[1].KeyID)
+
+	// The fallback key must be published in public form only.
+	_, ok := authzServerConfig.SigningJWKS.Keys[1].Key.(*rsa.PublicKey)
+	assert.True(t, ok, "expected fallback key to be public, got %T", authzServerConfig.SigningJWKS.Keys[1].Key)
+
+	publicJWKS := authzServerConfig.PublicJWKS()
+	require.Len(t, publicJWKS.Keys, 2)
 }
 
 // mockStorage is a minimal fosite.Storage implementation for testing.

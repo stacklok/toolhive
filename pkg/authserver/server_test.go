@@ -6,6 +6,7 @@ package authserver
 import (
 	"context"
 	"crypto/rand"
+	"crypto/rsa"
 	"encoding/json"
 	"fmt"
 	"log/slog"
@@ -209,6 +210,78 @@ func TestNewServer_Success(t *testing.T) {
 	} else {
 		t.Errorf("server.IDPTokenStorage() (%T) does not implement Unwrap()", srv.IDPTokenStorage())
 	}
+}
+
+// fakeRotatingKeyProvider is a minimal keys.KeyProvider that reports a
+// signing key plus additional fallback public keys, mimicking a
+// keys.FileProvider configured with FallbackKeyFiles for key rotation.
+type fakeRotatingKeyProvider struct {
+	signing *keys.SigningKeyData
+	public  []*keys.PublicKeyData
+}
+
+func (p *fakeRotatingKeyProvider) SigningKey(_ context.Context) (*keys.SigningKeyData, error) {
+	return p.signing, nil
+}
+
+func (p *fakeRotatingKeyProvider) PublicKeys(_ context.Context) ([]*keys.PublicKeyData, error) {
+	return p.public, nil
+}
+
+// TestNewServer_JWKSEndpointPublishesFallbackKeys pins that the JWKS endpoint
+// serves every key the configured KeyProvider reports (signing key plus
+// fallbacks), not just the primary signing key. Without this, promoting a
+// fallback key to primary during key rotation invalidates every outstanding
+// token instead of opening the documented overlap window (#6451).
+func TestNewServer_JWKSEndpointPublishesFallbackKeys(t *testing.T) {
+	t.Parallel()
+
+	ctrl := gomock.NewController(t)
+	defer ctrl.Finish()
+
+	mockUpstream := upstreammocks.NewMockOAuth2Provider(ctrl)
+
+	stor := storage.NewMemoryStorage()
+	t.Cleanup(func() { _ = stor.Close() })
+
+	signingRSAKey, err := rsa.GenerateKey(rand.Reader, 2048)
+	require.NoError(t, err)
+	fallbackRSAKey, err := rsa.GenerateKey(rand.Reader, 2048)
+	require.NoError(t, err)
+
+	signing := &keys.SigningKeyData{KeyID: "key-new", Algorithm: "RS256", Key: signingRSAKey}
+	primaryPublic := &keys.PublicKeyData{KeyID: signing.KeyID, Algorithm: signing.Algorithm, PublicKey: signingRSAKey.Public()}
+	fallback := &keys.PublicKeyData{KeyID: "key-old", Algorithm: "RS256", PublicKey: fallbackRSAKey.Public()}
+
+	cfg := Config{
+		Issuer:           "https://example.com",
+		KeyProvider:      &fakeRotatingKeyProvider{signing: signing, public: []*keys.PublicKeyData{primaryPublic, fallback}},
+		HMACSecrets:      &servercrypto.HMACSecrets{Current: validHMACSecret()},
+		Upstreams:        []UpstreamConfig{{Name: "default", Type: UpstreamProviderTypeOAuth2, OAuth2Config: validUpstreamConfig()}},
+		AllowedAudiences: []string{"https://mcp.example.com"},
+		UpstreamFactory: func(_ context.Context, _ *UpstreamConfig) (upstream.OAuth2Provider, error) {
+			return mockUpstream, nil
+		},
+	}
+
+	srv, err := newServer(context.Background(), cfg, stor)
+	require.NoError(t, err)
+
+	req := httptest.NewRequest(http.MethodGet, "/.well-known/jwks.json", nil)
+	rec := httptest.NewRecorder()
+	srv.Handler().ServeHTTP(rec, req)
+	require.Equal(t, http.StatusOK, rec.Code)
+
+	var jwks struct {
+		Keys []struct {
+			Kid string `json:"kid"`
+		} `json:"keys"`
+	}
+	require.NoError(t, json.Unmarshal(rec.Body.Bytes(), &jwks))
+
+	require.Len(t, jwks.Keys, 2)
+	assert.Equal(t, "key-new", jwks.Keys[0].Kid, "primary signing key must be published first")
+	assert.Equal(t, "key-old", jwks.Keys[1].Kid)
 }
 
 // TestNewServer_TrustedIssuerWithBothGrantsDisabled pins that buildProvider

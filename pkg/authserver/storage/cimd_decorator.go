@@ -251,8 +251,7 @@ func (d *CIMDStorageDecorator) fetch(ctx context.Context, id string) (fosite.Cli
 	if dcrErr != nil {
 		slog.WarnContext(ctx, "CIMD client rejected: invalid grant_types",
 			"client_id", id, "error", dcrErr.ErrorDescription)
-		return nil, fmt.Errorf("%w: CIMD document at %s: %s",
-			fosite.ErrInvalidClient.WithHint(dcrErr.ErrorDescription), id, dcrErr.ErrorDescription)
+		return nil, fosite.ErrInvalidClient.WithHintf("CIMD document at %s: %s", id, dcrErr.ErrorDescription)
 	}
 	if len(grantTypes) < len(doc.GrantTypes) {
 		slog.Debug("CIMD: ignoring grant_types this server does not support",
@@ -262,8 +261,7 @@ func (d *CIMDStorageDecorator) fetch(ctx context.Context, id string) (fosite.Cli
 	if dcrErr != nil {
 		slog.WarnContext(ctx, "CIMD client rejected: invalid response_types",
 			"client_id", id, "error", dcrErr.ErrorDescription)
-		return nil, fmt.Errorf("%w: CIMD document at %s: %s",
-			fosite.ErrInvalidClient.WithHint(dcrErr.ErrorDescription), id, dcrErr.ErrorDescription)
+		return nil, fosite.ErrInvalidClient.WithHintf("CIMD document at %s: %s", id, dcrErr.ErrorDescription)
 	}
 	if len(responseTypes) < len(doc.ResponseTypes) {
 		slog.Debug("CIMD: ignoring response_types this server does not support",
@@ -335,8 +333,7 @@ func (d *CIMDStorageDecorator) resolveScopes(
 			if dcrErr != nil {
 				slog.WarnContext(ctx, "CIMD client rejected: invalid scope",
 					"client_id", id, "error", dcrErr.ErrorDescription)
-				return nil, fmt.Errorf("%w: CIMD document at %s: %s",
-					fosite.ErrInvalidClient.WithHint(dcrErr.ErrorDescription), id, dcrErr.ErrorDescription)
+				return nil, fosite.ErrInvalidClient.WithHintf("CIMD document at %s: %s", id, dcrErr.ErrorDescription)
 			}
 			resolvedScopes = computed
 		} else {

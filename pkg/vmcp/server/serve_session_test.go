@@ -10,8 +10,10 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"log/slog"
 	"net/http"
 	"net/http/httptest"
+	"os"
 	"sort"
 	"strings"
 	"sync"
@@ -753,6 +755,128 @@ func TestBuildSessionDataStorageRedis(t *testing.T) {
 	// error can't satisfy this test. ("redis" alone is unsuitable — the unsupported-
 	// provider error text also lists "redis".)
 	assert.ErrorContains(t, err, "redis: failed to connect")
+}
+
+// logSyncBuffer is a concurrency-safe io.Writer over a bytes.Buffer. slog.SetDefault
+// is process-global, so while a capturing handler is installed any parallel test in
+// this package can write a record into it; a plain bytes.Buffer would be a data race.
+type logSyncBuffer struct {
+	mu  sync.Mutex
+	buf bytes.Buffer
+}
+
+func (b *logSyncBuffer) Write(p []byte) (int, error) {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	return b.buf.Write(p)
+}
+
+func (b *logSyncBuffer) String() string {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	return b.buf.String()
+}
+
+// unsetSessionRedisPassword ensures THV_SESSION_REDIS_PASSWORD is absent for the
+// duration of the test, restoring any ambient value afterward. t.Setenv cannot
+// express "unset", and the presence of the variable (not just its value) is what
+// buildSessionDataStorage now keys on, so tests of the unset path must remove it.
+func unsetSessionRedisPassword(t *testing.T) {
+	t.Helper()
+	if orig, ok := os.LookupEnv(vmcpconfig.RedisPasswordEnvVar); ok {
+		require.NoError(t, os.Unsetenv(vmcpconfig.RedisPasswordEnvVar))
+		t.Cleanup(func() { _ = os.Setenv(vmcpconfig.RedisPasswordEnvVar, orig) })
+	}
+}
+
+// TestBuildSessionDataStorageRedis_NoAuthWarns verifies the "redis" provider emits
+// exactly one startup WARN naming the store when THV_SESSION_REDIS_PASSWORD is unset
+// (an intended no-auth connection). The WARN is emitted before the connection Ping, so
+// it is captured even though the unreachable address makes the overall call fail.
+// Not parallel: it mutates env and swaps the process-global slog default.
+//
+//nolint:paralleltest // env mutation and slog.SetDefault mutate process-global state
+func TestBuildSessionDataStorageRedis_NoAuthWarns(t *testing.T) {
+	unsetSessionRedisPassword(t)
+
+	var buf logSyncBuffer
+	previous := slog.Default()
+	slog.SetDefault(slog.New(slog.NewTextHandler(&buf, &slog.HandlerOptions{Level: slog.LevelWarn})))
+	t.Cleanup(func() { slog.SetDefault(previous) })
+
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+	_, err := buildSessionDataStorage(ctx, &Config{
+		SessionTTL: time.Minute,
+		SessionStorage: &vmcpconfig.SessionStorageConfig{
+			Provider: "redis",
+			Address:  "127.0.0.1:1", // unreachable: Ping fails after the WARN is emitted
+		},
+	})
+	require.Error(t, err)
+
+	logged := buf.String()
+	// Count the distinctive message rather than the generic level=WARN token,
+	// so an unrelated WARN captured by the process-global default cannot skew
+	// the assertion.
+	assert.Equal(t, 1, strings.Count(logged, "without authentication"))
+	assert.Contains(t, logged, "127.0.0.1:1")
+}
+
+// TestBuildSessionDataStorageRedis_SetButEmptyPasswordErrors verifies a set-but-empty
+// THV_SESSION_REDIS_PASSWORD is a hard error (a mis-keyed/emptied secret), not a
+// silent downgrade to no-auth — mirroring the auth server's convertRedisACLConfig.
+// The error is returned before any connection attempt, so the unreachable address
+// is never dialed.
+//
+//nolint:paralleltest // t.Setenv mutates process-global state
+func TestBuildSessionDataStorageRedis_SetButEmptyPasswordErrors(t *testing.T) {
+	t.Setenv(vmcpconfig.RedisPasswordEnvVar, "")
+
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+	ds, err := buildSessionDataStorage(ctx, &Config{
+		SessionTTL: time.Minute,
+		SessionStorage: &vmcpconfig.SessionStorageConfig{
+			Provider: "redis",
+			Address:  "127.0.0.1:1",
+		},
+	})
+	require.Error(t, err)
+	assert.Nil(t, ds)
+	assert.ErrorContains(t, err, "is set but empty")
+}
+
+// TestBuildSessionDataStorageRedis_AuthenticatedLogsInfo is the counterpart to the
+// no-auth test: a non-empty THV_SESSION_REDIS_PASSWORD must take the INFO branch —
+// logging "using Redis session storage" and no "without authentication" WARN. The
+// capturing handler is set to LevelInfo so the positive INFO assertion actually
+// exercises that log line, rather than only proving the WARN string is absent.
+// Not parallel: it uses t.Setenv and swaps the process-global slog default.
+//
+//nolint:paralleltest // t.Setenv and slog.SetDefault mutate process-global state
+func TestBuildSessionDataStorageRedis_AuthenticatedLogsInfo(t *testing.T) {
+	t.Setenv(vmcpconfig.RedisPasswordEnvVar, "a-real-password")
+
+	var buf logSyncBuffer
+	previous := slog.Default()
+	slog.SetDefault(slog.New(slog.NewTextHandler(&buf, &slog.HandlerOptions{Level: slog.LevelInfo})))
+	t.Cleanup(func() { slog.SetDefault(previous) })
+
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+	_, err := buildSessionDataStorage(ctx, &Config{
+		SessionTTL: time.Minute,
+		SessionStorage: &vmcpconfig.SessionStorageConfig{
+			Provider: "redis",
+			Address:  "127.0.0.1:1", // unreachable: the INFO fires before the Ping fails
+		},
+	})
+	require.Error(t, err)
+
+	logged := buf.String()
+	assert.Equal(t, 1, strings.Count(logged, "using Redis session storage"))
+	assert.NotContains(t, logged, "without authentication")
 }
 
 // TestServeHandlerSkipsDiscoveryAndRoutesCallThroughCore drives the FULL shared

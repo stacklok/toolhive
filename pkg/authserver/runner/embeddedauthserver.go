@@ -975,9 +975,23 @@ func createStorage(ctx context.Context, cfg *storage.RunConfig) (storage.Storage
 // tcredis.Config. It resolves ACL credentials from environment variables and
 // parses duration strings. Connection-mode topology and defaulting are handled
 // by the shared toolhive-core redis package when the client is constructed.
+//
+// An ACL config is not required: a nil rc.ACLUserConfig produces a no-auth
+// connection (for a Redis/Valkey instance running without authentication) and
+// emits one startup WARN naming the store. A populated ACL config whose
+// password resolves to empty is still rejected — see convertRedisACLConfig.
 func convertRedisRunConfig(rc *storage.RedisRunConfig) (tcredis.Config, error) {
 	if rc == nil {
 		return tcredis.Config{}, fmt.Errorf("redis config is required when storage type is redis")
+	}
+
+	// AuthType declares authenticated intent. If it selects ACL-user auth, a
+	// nil ACLUserConfig is a misconfiguration, not a no-auth request: fail
+	// loudly rather than silently downgrading to an unauthenticated connection.
+	// An empty AuthType with a nil ACLUserConfig remains a valid no-auth config.
+	if rc.AuthType == storage.AuthTypeACLUser && rc.ACLUserConfig == nil {
+		return tcredis.Config{}, fmt.Errorf(
+			"auth_type %q requires acl_user_config; omit auth_type for a no-auth connection", rc.AuthType)
 	}
 
 	cfg := tcredis.Config{
@@ -1019,6 +1033,19 @@ func convertRedisRunConfig(rc *storage.RedisRunConfig) (tcredis.Config, error) {
 		cfg.SentinelTLS = sentinelTLSCfg
 	}
 
+	// A nil ACL config resolves to a no-auth connection. Emit exactly one
+	// startup WARN naming the store so an unintended downgrade (e.g. a caller
+	// that constructed a RedisRunConfig without an ACL config) is visible in
+	// logs rather than silent. Logged only after the fallible timeout/TLS steps
+	// succeed, so the message describes a config that will actually be used to
+	// connect. A populated-but-empty config already returned an error in
+	// convertRedisACLConfig, so reaching here without credentials means no
+	// credential was intended.
+	if rc.ACLUserConfig == nil {
+		slog.Warn("Redis storage connecting without authentication (no acl_user_config configured)",
+			"store", redisStoreName(rc), "key_prefix", rc.KeyPrefix)
+	}
+
 	return cfg, nil
 }
 
@@ -1031,6 +1058,16 @@ type redisACLCredentials struct {
 }
 
 // convertRedisACLConfig resolves ACL user credentials from environment variables.
+//
+// A nil rc is a valid no-auth configuration: it returns empty credentials with
+// no error, and go-redis then connects without AUTH. The split between no-auth
+// and misconfiguration is on presence of the config block, not on whether the
+// resolved password happens to be empty — a populated block whose PasswordEnvVar
+// resolves to empty is a misconfiguration (mis-keyed secret, wrong-namespace
+// secret, unsynced external-secrets store) and is rejected, because silently
+// booting unauthenticated against a store holding sensitive rows (OAuth clients,
+// DCR registrations, session data) would be a downgrade, not a choice.
+//
 // When UsernameEnvVar is empty, no username is resolved; go-redis then sends
 // HELLO with "default" as the username (or falls back to legacy AUTH <password>
 // for servers that do not support HELLO). This is required for managed Redis
@@ -1038,7 +1075,7 @@ type redisACLCredentials struct {
 // for Redis).
 func convertRedisACLConfig(rc *storage.ACLUserRunConfig) (redisACLCredentials, error) {
 	if rc == nil {
-		return redisACLCredentials{}, fmt.Errorf("acl user config is required")
+		return redisACLCredentials{}, nil
 	}
 	var username string
 	if rc.UsernameEnvVar != "" {
@@ -1048,11 +1085,39 @@ func convertRedisACLConfig(rc *storage.ACLUserRunConfig) (redisACLCredentials, e
 			return redisACLCredentials{}, fmt.Errorf("failed to resolve Redis username: %w", err)
 		}
 	}
+	// A populated ACL config with no password_env_var is a misconfiguration.
+	// Guard it explicitly so the message matches the empty-resolved-password
+	// case below, rather than resolveEnvVar's generic "name is empty" error.
+	if rc.PasswordEnvVar == "" {
+		return redisACLCredentials{}, fmt.Errorf(
+			"populated ACL user config has no password_env_var; " +
+				"omit acl_user_config for a no-auth connection")
+	}
 	password, err := resolveEnvVar(rc.PasswordEnvVar)
 	if err != nil {
 		return redisACLCredentials{}, fmt.Errorf("failed to resolve Redis password: %w", err)
 	}
+	// A populated ACL config that resolves to an empty password is a
+	// misconfiguration, not a request for no-auth. Fail loudly rather than
+	// downgrading silently; omit acl_user_config entirely for a no-auth
+	// connection.
+	if password == "" {
+		return redisACLCredentials{}, fmt.Errorf(
+			"resolved Redis password is empty for a populated ACL user config; " +
+				"omit acl_user_config for a no-auth connection")
+	}
 	return redisACLCredentials{username: username, password: password}, nil
+}
+
+// redisStoreName produces a human-readable identifier for the Redis store a
+// config points at, for use in startup logs. It prefers the Sentinel master
+// name when Sentinel mode is configured (Addr is empty in that mode) and
+// otherwise returns the standalone/cluster address.
+func redisStoreName(rc *storage.RedisRunConfig) string {
+	if rc.SentinelConfig != nil {
+		return "sentinel:" + rc.SentinelConfig.MasterName
+	}
+	return rc.Addr
 }
 
 // applyRedisTimeouts parses and applies optional timeout duration strings to cfg.

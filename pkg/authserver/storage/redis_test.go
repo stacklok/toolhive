@@ -2950,6 +2950,194 @@ func TestRedisStorage_TTLHandling(t *testing.T) {
 			requireRedisNotFoundError(t, err)
 		})
 	})
+
+	t.Run("device requests expire automatically", func(t *testing.T) {
+		withRedisStorage(t, func(ctx context.Context, s *RedisStorage, mr *miniredis.Miniredis) {
+			device := &DeviceRequest{
+				DeviceCode: "expire-device", UserCode: "EXPIRE-USER",
+				ClientID: "test", Status: DeviceRequestStatusPending, CreatedAt: time.Now(),
+			}
+			require.NoError(t, s.StoreDeviceRequest(ctx, device))
+
+			// Should exist initially, by both keys.
+			_, err := s.LoadDeviceRequestByDeviceCode(ctx, "expire-device")
+			require.NoError(t, err)
+			_, err = s.LoadDeviceRequestByUserCode(ctx, "EXPIRE-USER")
+			require.NoError(t, err)
+
+			// Fast-forward past default TTL (10 minutes)
+			mr.FastForward(15 * time.Minute)
+
+			// Should be gone after TTL
+			_, err = s.LoadDeviceRequestByDeviceCode(ctx, "expire-device")
+			require.ErrorIs(t, err, ErrNotFound)
+			_, err = s.LoadDeviceRequestByUserCode(ctx, "EXPIRE-USER")
+			require.ErrorIs(t, err, ErrNotFound)
+		})
+	})
+}
+
+func TestRedisStorage_DeviceCode(t *testing.T) {
+	t.Parallel()
+
+	makeDevice := func(deviceCode, userCode string) *DeviceRequest {
+		return &DeviceRequest{
+			DeviceCode: deviceCode,
+			UserCode:   userCode,
+			ClientID:   "test-client",
+			Scopes:     []string{"openid", "profile"},
+			Audience:   []string{"https://api.example.com"},
+			Status:     DeviceRequestStatusPending,
+			Interval:   5 * time.Second,
+			CreatedAt:  time.Now(),
+		}
+	}
+
+	t.Run("store then load by device_code and by user_code", func(t *testing.T) {
+		withRedisStorage(t, func(ctx context.Context, s *RedisStorage, _ *miniredis.Miniredis) {
+			device := makeDevice("device-1", "USER-1")
+			require.NoError(t, s.StoreDeviceRequest(ctx, device))
+
+			byDeviceCode, err := s.LoadDeviceRequestByDeviceCode(ctx, "device-1")
+			require.NoError(t, err)
+			byUserCode, err := s.LoadDeviceRequestByUserCode(ctx, "USER-1")
+			require.NoError(t, err)
+
+			assert.Equal(t, byDeviceCode, byUserCode)
+			assert.Equal(t, device.ClientID, byDeviceCode.ClientID)
+			assert.Equal(t, device.Scopes, byDeviceCode.Scopes)
+			assert.Equal(t, device.Audience, byDeviceCode.Audience)
+			assert.Equal(t, device.Interval, byDeviceCode.Interval)
+		})
+	})
+
+	t.Run("duplicate device code returns ErrAlreadyExists", func(t *testing.T) {
+		withRedisStorage(t, func(ctx context.Context, s *RedisStorage, _ *miniredis.Miniredis) {
+			require.NoError(t, s.StoreDeviceRequest(ctx, makeDevice("device-dup", "USER-A")))
+			err := s.StoreDeviceRequest(ctx, makeDevice("device-dup", "USER-B"))
+			require.ErrorIs(t, err, ErrAlreadyExists)
+		})
+	})
+
+	t.Run("duplicate user code returns ErrAlreadyExists", func(t *testing.T) {
+		withRedisStorage(t, func(ctx context.Context, s *RedisStorage, _ *miniredis.Miniredis) {
+			require.NoError(t, s.StoreDeviceRequest(ctx, makeDevice("device-a", "USER-DUP")))
+			err := s.StoreDeviceRequest(ctx, makeDevice("device-b", "USER-DUP"))
+			require.ErrorIs(t, err, ErrAlreadyExists)
+		})
+	})
+
+	t.Run("load unknown device code returns ErrNotFound", func(t *testing.T) {
+		withRedisStorage(t, func(ctx context.Context, s *RedisStorage, _ *miniredis.Miniredis) {
+			_, err := s.LoadDeviceRequestByDeviceCode(ctx, "non-existent")
+			require.ErrorIs(t, err, ErrNotFound)
+		})
+	})
+
+	t.Run("load unknown user code returns ErrNotFound", func(t *testing.T) {
+		withRedisStorage(t, func(ctx context.Context, s *RedisStorage, _ *miniredis.Miniredis) {
+			_, err := s.LoadDeviceRequestByUserCode(ctx, "NON-EXISTENT")
+			require.ErrorIs(t, err, ErrNotFound)
+		})
+	})
+
+	t.Run("mark authorized then denied fails with ErrInvalidState", func(t *testing.T) {
+		withRedisStorage(t, func(ctx context.Context, s *RedisStorage, _ *miniredis.Miniredis) {
+			require.NoError(t, s.StoreDeviceRequest(ctx, makeDevice("device-auth", "USER-AUTH")))
+
+			require.NoError(t, s.MarkDeviceRequestAuthorized(
+				ctx, "device-auth", "user-1", "Alice", "alice@example.com", "session-1"))
+
+			retrieved, err := s.LoadDeviceRequestByDeviceCode(ctx, "device-auth")
+			require.NoError(t, err)
+			assert.Equal(t, DeviceRequestStatusAuthorized, retrieved.Status)
+			assert.Equal(t, "user-1", retrieved.ResolvedUserID)
+			assert.Equal(t, "Alice", retrieved.ResolvedUserName)
+			assert.Equal(t, "alice@example.com", retrieved.ResolvedUserEmail)
+			assert.Equal(t, "session-1", retrieved.SessionID)
+
+			err = s.MarkDeviceRequestAuthorized(ctx, "device-auth", "user-2", "Bob", "bob@example.com", "session-2")
+			require.ErrorIs(t, err, ErrInvalidState)
+
+			err = s.MarkDeviceRequestDenied(ctx, "device-auth")
+			require.ErrorIs(t, err, ErrInvalidState)
+		})
+	})
+
+	t.Run("mark denied then authorized fails with ErrInvalidState", func(t *testing.T) {
+		withRedisStorage(t, func(ctx context.Context, s *RedisStorage, _ *miniredis.Miniredis) {
+			require.NoError(t, s.StoreDeviceRequest(ctx, makeDevice("device-deny", "USER-DENY")))
+
+			require.NoError(t, s.MarkDeviceRequestDenied(ctx, "device-deny"))
+
+			retrieved, err := s.LoadDeviceRequestByDeviceCode(ctx, "device-deny")
+			require.NoError(t, err)
+			assert.Equal(t, DeviceRequestStatusDenied, retrieved.Status)
+
+			err = s.MarkDeviceRequestAuthorized(ctx, "device-deny", "user-1", "Alice", "alice@example.com", "session-1")
+			require.ErrorIs(t, err, ErrInvalidState)
+		})
+	})
+
+	t.Run("update last polled at", func(t *testing.T) {
+		withRedisStorage(t, func(ctx context.Context, s *RedisStorage, _ *miniredis.Miniredis) {
+			require.NoError(t, s.StoreDeviceRequest(ctx, makeDevice("device-poll", "USER-POLL")))
+
+			polledAt := time.Now().Add(time.Second).Truncate(time.Second)
+			require.NoError(t, s.UpdateDeviceRequestLastPolledAt(ctx, "device-poll", polledAt))
+
+			retrieved, err := s.LoadDeviceRequestByDeviceCode(ctx, "device-poll")
+			require.NoError(t, err)
+			assert.True(t, polledAt.Equal(retrieved.LastPolledAt))
+		})
+	})
+
+	t.Run("delete removes both primary and secondary index", func(t *testing.T) {
+		withRedisStorage(t, func(ctx context.Context, s *RedisStorage, _ *miniredis.Miniredis) {
+			require.NoError(t, s.StoreDeviceRequest(ctx, makeDevice("device-del", "USER-DEL")))
+			require.NoError(t, s.DeleteDeviceRequest(ctx, "device-del"))
+
+			_, err := s.LoadDeviceRequestByDeviceCode(ctx, "device-del")
+			require.ErrorIs(t, err, ErrNotFound)
+
+			_, err = s.LoadDeviceRequestByUserCode(ctx, "USER-DEL")
+			require.ErrorIs(t, err, ErrNotFound, "must not dangle after the device_code row is gone")
+		})
+	})
+
+	t.Run("delete non-existent returns ErrNotFound", func(t *testing.T) {
+		withRedisStorage(t, func(ctx context.Context, s *RedisStorage, _ *miniredis.Miniredis) {
+			err := s.DeleteDeviceRequest(ctx, "non-existent")
+			require.ErrorIs(t, err, ErrNotFound)
+		})
+	})
+
+	t.Run("concurrent store with same user code: exactly one wins", func(t *testing.T) {
+		withRedisStorage(t, func(ctx context.Context, s *RedisStorage, _ *miniredis.Miniredis) {
+			var wg sync.WaitGroup
+			results := make([]error, 2)
+			for i := range results {
+				wg.Add(1)
+				go func(idx int) {
+					defer wg.Done()
+					results[idx] = s.StoreDeviceRequest(ctx, makeDevice(fmt.Sprintf("device-race-%d", idx), "USER-RACE"))
+				}(i)
+			}
+			wg.Wait()
+
+			successes, conflicts := 0, 0
+			for _, err := range results {
+				switch {
+				case err == nil:
+					successes++
+				case errors.Is(err, ErrAlreadyExists):
+					conflicts++
+				}
+			}
+			assert.Equal(t, 1, successes)
+			assert.Equal(t, 1, conflicts)
+		})
+	})
 }
 
 // --- Concurrent Access Tests ---

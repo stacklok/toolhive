@@ -136,6 +136,16 @@ type MemoryStorage struct {
 	// pendingAuthorizations tracks authorization requests awaiting upstream IDP callback
 	pendingAuthorizations map[string]*timedEntry[*PendingAuthorization]
 
+	// deviceRequests maps device_code -> timedEntry[*DeviceRequest]. The
+	// canonical store; TTL-bounded like pendingAuthorizations.
+	deviceRequests map[string]*timedEntry[*DeviceRequest]
+
+	// deviceRequestsByUserCode is a secondary index, user_code -> device_code,
+	// so the verification page can look up a request without scanning
+	// deviceRequests. Kept in lockstep with deviceRequests: every store/delete
+	// touches both maps under the same lock.
+	deviceRequestsByUserCode map[string]string
+
 	// invalidatedCodes tracks auth codes that have been used/invalidated.
 	// Kept separate from authCodes to return the Requester with ErrInvalidatedAuthorizeCode.
 	invalidatedCodes map[string]*timedEntry[bool]
@@ -234,24 +244,26 @@ func WithMinClientAge(d time.Duration) MemoryStorageOption {
 // and starts the background cleanup goroutine.
 func NewMemoryStorage(opts ...MemoryStorageOption) *MemoryStorage {
 	s := &MemoryStorage{
-		clients:               make(map[string]fosite.Client),
-		authCodes:             make(map[string]*timedEntry[fosite.Requester]),
-		accessTokens:          make(map[string]*timedEntry[fosite.Requester]),
-		refreshTokens:         make(map[string]*timedEntry[fosite.Requester]),
-		pkceRequests:          make(map[string]*timedEntry[fosite.Requester]),
-		upstreamTokens:        make(map[upstreamKey]*timedEntry[*UpstreamTokens]),
-		pendingAuthorizations: make(map[string]*timedEntry[*PendingAuthorization]),
-		invalidatedCodes:      make(map[string]*timedEntry[bool]),
-		clientAssertionJWTs:   make(map[string]time.Time),
-		assertionJWTs:         make(map[assertionJWTKey]time.Time),
-		users:                 make(map[string]*User),
-		providerIdentities:    make(map[string]*ProviderIdentity),
-		dcrCredentials:        make(map[DCRKey]*DCRCredentials),
-		cleanupInterval:       DefaultCleanupInterval,
-		maxClients:            DefaultMaxClients,
-		minClientAge:          DefaultMinClientAge,
-		stopCleanup:           make(chan struct{}),
-		cleanupDone:           make(chan struct{}),
+		clients:                  make(map[string]fosite.Client),
+		authCodes:                make(map[string]*timedEntry[fosite.Requester]),
+		accessTokens:             make(map[string]*timedEntry[fosite.Requester]),
+		refreshTokens:            make(map[string]*timedEntry[fosite.Requester]),
+		pkceRequests:             make(map[string]*timedEntry[fosite.Requester]),
+		upstreamTokens:           make(map[upstreamKey]*timedEntry[*UpstreamTokens]),
+		pendingAuthorizations:    make(map[string]*timedEntry[*PendingAuthorization]),
+		deviceRequests:           make(map[string]*timedEntry[*DeviceRequest]),
+		deviceRequestsByUserCode: make(map[string]string),
+		invalidatedCodes:         make(map[string]*timedEntry[bool]),
+		clientAssertionJWTs:      make(map[string]time.Time),
+		assertionJWTs:            make(map[assertionJWTKey]time.Time),
+		users:                    make(map[string]*User),
+		providerIdentities:       make(map[string]*ProviderIdentity),
+		dcrCredentials:           make(map[DCRKey]*DCRCredentials),
+		cleanupInterval:          DefaultCleanupInterval,
+		maxClients:               DefaultMaxClients,
+		minClientAge:             DefaultMinClientAge,
+		stopCleanup:              make(chan struct{}),
+		cleanupDone:              make(chan struct{}),
 	}
 
 	for _, opt := range opts {
@@ -358,6 +370,13 @@ func (s *MemoryStorage) cleanupExpired() {
 		}
 	}
 
+	var expiredDeviceRequests []string
+	for k, v := range s.deviceRequests {
+		if now.After(v.expiresAt) {
+			expiredDeviceRequests = append(expiredDeviceRequests, k)
+		}
+	}
+
 	var expiredJWTs []string
 	for k, v := range s.clientAssertionJWTs {
 		if now.After(v) {
@@ -382,6 +401,7 @@ func (s *MemoryStorage) cleanupExpired() {
 		len(expiredPKCERequests) == 0 &&
 		len(expiredUpstreamTokens) == 0 &&
 		len(expiredPendingAuthorizations) == 0 &&
+		len(expiredDeviceRequests) == 0 &&
 		len(expiredJWTs) == 0 &&
 		len(expiredAssertionJWTs) == 0 {
 		return
@@ -418,6 +438,13 @@ func (s *MemoryStorage) cleanupExpired() {
 
 	for _, k := range expiredPendingAuthorizations {
 		delete(s.pendingAuthorizations, k)
+	}
+
+	for _, k := range expiredDeviceRequests {
+		if entry, ok := s.deviceRequests[k]; ok {
+			delete(s.deviceRequestsByUserCode, entry.value.UserCode)
+		}
+		delete(s.deviceRequests, k)
 	}
 
 	for _, k := range expiredJWTs {
@@ -1379,6 +1406,179 @@ func (s *MemoryStorage) DeletePendingAuthorization(_ context.Context, state stri
 }
 
 // -----------------------
+// Device Code Storage
+// -----------------------
+
+// cloneDeviceRequest returns a defensive copy of device, cloning its slice
+// fields so neither the caller nor the store can mutate the other's data
+// through a shared backing array.
+func cloneDeviceRequest(device *DeviceRequest) *DeviceRequest {
+	return &DeviceRequest{
+		DeviceCode:        device.DeviceCode,
+		UserCode:          device.UserCode,
+		ClientID:          device.ClientID,
+		Scopes:            slices.Clone(device.Scopes),
+		Audience:          slices.Clone(device.Audience),
+		Status:            device.Status,
+		Interval:          device.Interval,
+		LastPolledAt:      device.LastPolledAt,
+		ResolvedUserID:    device.ResolvedUserID,
+		ResolvedUserName:  device.ResolvedUserName,
+		ResolvedUserEmail: device.ResolvedUserEmail,
+		SessionID:         device.SessionID,
+		CreatedAt:         device.CreatedAt,
+	}
+}
+
+// getUnexpiredDeviceRequestEntry looks up the device request entry keyed by
+// deviceCode, returning ErrNotFound if absent or ErrExpired if its TTL has
+// elapsed. Callers must hold s.mu (read or write lock).
+func (s *MemoryStorage) getUnexpiredDeviceRequestEntry(deviceCode string) (*timedEntry[*DeviceRequest], error) {
+	entry, ok := s.deviceRequests[deviceCode]
+	if !ok {
+		return nil, fmt.Errorf("%w: device request not found", ErrNotFound)
+	}
+	if time.Now().After(entry.expiresAt) {
+		return nil, ErrExpired
+	}
+	return entry, nil
+}
+
+// StoreDeviceRequest stores a new pending device request, indexed by both
+// DeviceCode and UserCode.
+func (s *MemoryStorage) StoreDeviceRequest(_ context.Context, device *DeviceRequest) error {
+	if device == nil {
+		return fosite.ErrInvalidRequest.WithHint("device request cannot be nil")
+	}
+	if device.DeviceCode == "" {
+		return fosite.ErrInvalidRequest.WithHint("device code cannot be empty")
+	}
+	if device.UserCode == "" {
+		return fosite.ErrInvalidRequest.WithHint("user code cannot be empty")
+	}
+	if device.Status != DeviceRequestStatusPending {
+		return fosite.ErrInvalidRequest.WithHint("device request must be created with pending status")
+	}
+
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	if _, ok := s.deviceRequests[device.DeviceCode]; ok {
+		return fmt.Errorf("%w: device code %q", ErrAlreadyExists, device.DeviceCode)
+	}
+	if _, ok := s.deviceRequestsByUserCode[device.UserCode]; ok {
+		return fmt.Errorf("%w: user code %q", ErrAlreadyExists, device.UserCode)
+	}
+
+	now := time.Now()
+	s.deviceRequests[device.DeviceCode] = &timedEntry[*DeviceRequest]{
+		value:     cloneDeviceRequest(device),
+		createdAt: now,
+		expiresAt: now.Add(DefaultDeviceRequestTTL),
+	}
+	s.deviceRequestsByUserCode[device.UserCode] = device.DeviceCode
+	return nil
+}
+
+// LoadDeviceRequestByDeviceCode retrieves a device request by its device_code.
+// Returns a defensive copy to prevent aliasing issues.
+func (s *MemoryStorage) LoadDeviceRequestByDeviceCode(_ context.Context, deviceCode string) (*DeviceRequest, error) {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+
+	entry, err := s.getUnexpiredDeviceRequestEntry(deviceCode)
+	if err != nil {
+		return nil, err
+	}
+	return cloneDeviceRequest(entry.value), nil
+}
+
+// LoadDeviceRequestByUserCode retrieves a device request by its user_code,
+// for the verification page. Returns a defensive copy to prevent aliasing issues.
+func (s *MemoryStorage) LoadDeviceRequestByUserCode(_ context.Context, userCode string) (*DeviceRequest, error) {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+
+	deviceCode, ok := s.deviceRequestsByUserCode[userCode]
+	if !ok {
+		return nil, fmt.Errorf("%w: device request not found", ErrNotFound)
+	}
+	entry, err := s.getUnexpiredDeviceRequestEntry(deviceCode)
+	if err != nil {
+		return nil, err
+	}
+	return cloneDeviceRequest(entry.value), nil
+}
+
+// MarkDeviceRequestAuthorized transitions a pending device request to
+// authorized, attaching the resolved identity.
+func (s *MemoryStorage) MarkDeviceRequestAuthorized(
+	_ context.Context, deviceCode string, resolvedUserID, resolvedUserName, resolvedUserEmail, sessionID string,
+) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	entry, err := s.getUnexpiredDeviceRequestEntry(deviceCode)
+	if err != nil {
+		return err
+	}
+	if entry.value.Status != DeviceRequestStatusPending {
+		return fmt.Errorf("%w: device request is %q, not pending", ErrInvalidState, entry.value.Status)
+	}
+
+	entry.value.Status = DeviceRequestStatusAuthorized
+	entry.value.ResolvedUserID = resolvedUserID
+	entry.value.ResolvedUserName = resolvedUserName
+	entry.value.ResolvedUserEmail = resolvedUserEmail
+	entry.value.SessionID = sessionID
+	return nil
+}
+
+// MarkDeviceRequestDenied transitions a pending device request to denied.
+func (s *MemoryStorage) MarkDeviceRequestDenied(_ context.Context, deviceCode string) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	entry, err := s.getUnexpiredDeviceRequestEntry(deviceCode)
+	if err != nil {
+		return err
+	}
+	if entry.value.Status != DeviceRequestStatusPending {
+		return fmt.Errorf("%w: device request is %q, not pending", ErrInvalidState, entry.value.Status)
+	}
+
+	entry.value.Status = DeviceRequestStatusDenied
+	return nil
+}
+
+// UpdateDeviceRequestLastPolledAt records the time of the most recent poll.
+func (s *MemoryStorage) UpdateDeviceRequestLastPolledAt(_ context.Context, deviceCode string, polledAt time.Time) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	entry, err := s.getUnexpiredDeviceRequestEntry(deviceCode)
+	if err != nil {
+		return err
+	}
+	entry.value.LastPolledAt = polledAt
+	return nil
+}
+
+// DeleteDeviceRequest removes a device request, e.g. once its token has been issued.
+func (s *MemoryStorage) DeleteDeviceRequest(_ context.Context, deviceCode string) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	entry, ok := s.deviceRequests[deviceCode]
+	if !ok {
+		return fmt.Errorf("%w: device request not found", ErrNotFound)
+	}
+	delete(s.deviceRequests, deviceCode)
+	delete(s.deviceRequestsByUserCode, entry.value.UserCode)
+	return nil
+}
+
+// -----------------------
 // User Storage
 // -----------------------
 
@@ -1698,6 +1898,7 @@ func (s *MemoryStorage) Stats() Stats {
 var (
 	_ Storage                     = (*MemoryStorage)(nil)
 	_ PendingAuthorizationStorage = (*MemoryStorage)(nil)
+	_ DeviceCodeStorage           = (*MemoryStorage)(nil)
 	_ ClientRegistry              = (*MemoryStorage)(nil)
 	_ UpstreamTokenStorage        = (*MemoryStorage)(nil)
 	_ UserStorage                 = (*MemoryStorage)(nil)

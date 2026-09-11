@@ -54,7 +54,7 @@ jobs:
     concurrency:
       group: main-sdk-go-${{ github.ref }}
       cancel-in-progress: true
-    uses: $/.github/workflows/sdk-go.yml
+    uses: ./.github/workflows/sdk-go.yml
   codegen:
     name: Codegen
     concurrency:

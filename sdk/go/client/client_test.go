@@ -165,6 +165,35 @@ func TestNewClientPolicy(t *testing.T) {
 			})
 		}
 	})
+
+	t.Run("enforces configured response limit", func(t *testing.T) {
+		t.Parallel()
+		const maxResponseBodyBytes int64 = 64
+		for name, size := range map[string]int64{"at limit": maxResponseBodyBytes, "over limit": maxResponseBodyBytes + 1} {
+			t.Run(name, func(t *testing.T) {
+				server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+					w.Header().Set("Content-Type", "application/json")
+					_, err := w.Write([]byte(`{"spec":"` + strings.Repeat("x", int(size)-11) + `"}`))
+					require.NoError(t, err)
+				}))
+				t.Cleanup(server.Close)
+				api, err := NewClient(server.URL, WithMaxResponseBodyBytes(maxResponseBodyBytes))
+				require.NoError(t, err)
+				_, err = api.GetOpenAPISpecification(context.Background())
+				if size == maxResponseBodyBytes {
+					require.NoError(t, err)
+				} else {
+					require.ErrorIs(t, err, ErrResponseBodyTooLarge)
+				}
+			})
+		}
+	})
+
+	t.Run("rejects non-positive configured response limit", func(t *testing.T) {
+		t.Parallel()
+		_, err := NewClient("https://example.invalid", WithMaxResponseBodyBytes(0))
+		require.ErrorIs(t, err, ErrInvalidMaxResponseBodyBytes)
+	})
 }
 
 func TestPublisherProvidedNaming(t *testing.T) {

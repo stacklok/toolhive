@@ -25,7 +25,23 @@ var (
 	ErrInvalidServerURL = errors.New("ToolHive SDK server URL must be an absolute HTTP(S) URL")
 	// ErrResponseBodyTooLarge reports that a bounded client received a response body larger than its limit.
 	ErrResponseBodyTooLarge = errors.New("ToolHive SDK response body exceeds configured limit")
+	// ErrInvalidMaxResponseBodyBytes reports a non-positive response-body limit.
+	ErrInvalidMaxResponseBodyBytes = errors.New("ToolHive SDK response body limit must be positive")
 )
+
+type maxResponseBodyBytesOption struct {
+	maxResponseBodyBytes int64
+}
+
+func (o maxResponseBodyBytesOption) applyClient(config *clientConfig) {
+	config.Client = boundedClient{client: config.Client, maxResponseBodyBytes: o.maxResponseBodyBytes}
+}
+
+// WithMaxResponseBodyBytes sets the response-body limit for NewClient. Values less than one cause NewClient to return
+// ErrInvalidMaxResponseBodyBytes. It may also be used with NewUnsafeClient when placed after WithClient.
+func WithMaxResponseBodyBytes(maxResponseBodyBytes int64) ClientOption {
+	return maxResponseBodyBytesOption{maxResponseBodyBytes: maxResponseBodyBytes}
+}
 
 type defaultClientConfig struct {
 	httpClient *http.Client
@@ -45,20 +61,41 @@ func WithHTTPClient(httpClient *http.Client) DefaultClientOption {
 }
 
 // NewClient creates a generated API client with a validated HTTP(S) URL, a 30-second request deadline, and a 10 MiB
-// response-body limit. Caller-provided clients passed through WithClient retain their transport, authentication, and
-// other settings; requests without an earlier caller deadline receive DefaultTimeout. Every response is size-bounded
-// and returns ErrResponseBodyTooLarge rather than silently truncating data.
+// response-body limit by default. WithMaxResponseBodyBytes configures a different positive limit. Caller-provided clients
+// passed through WithClient retain their transport, authentication, and other settings; requests without an earlier caller
+// deadline receive DefaultTimeout. Every response is size-bounded and returns ErrResponseBodyTooLarge rather than silently
+// truncating data.
 func NewClient(serverURL string, options ...ClientOption) (*Client, error) {
 	if err := validateServerURL(serverURL); err != nil {
 		return nil, err
 	}
 
-	client, err := NewUnsafeClient(serverURL, options...)
+	maxResponseBodyBytes, generatedOptions, err := safeClientOptions(options)
 	if err != nil {
 		return nil, err
 	}
-	client.cfg.Client = boundedClient{client: client.cfg.Client}
+	client, err := NewUnsafeClient(serverURL, generatedOptions...)
+	if err != nil {
+		return nil, err
+	}
+	client.cfg.Client = boundedClient{client: client.cfg.Client, maxResponseBodyBytes: maxResponseBodyBytes}
 	return client, nil
+}
+
+func safeClientOptions(options []ClientOption) (int64, []ClientOption, error) {
+	maxResponseBodyBytes := DefaultMaxResponseBodyBytes
+	generatedOptions := make([]ClientOption, 0, len(options))
+	for _, option := range options {
+		if maxResponseBodyBytesOption, ok := option.(maxResponseBodyBytesOption); ok {
+			if maxResponseBodyBytesOption.maxResponseBodyBytes < 1 {
+				return 0, nil, fmt.Errorf("%w: %d", ErrInvalidMaxResponseBodyBytes, maxResponseBodyBytesOption.maxResponseBodyBytes)
+			}
+			maxResponseBodyBytes = maxResponseBodyBytesOption.maxResponseBodyBytes
+			continue
+		}
+		generatedOptions = append(generatedOptions, option)
+	}
+	return maxResponseBodyBytes, generatedOptions, nil
 }
 
 // NewDefaultClient creates a client with NewClient's default policy. It is retained for compatibility; use NewClient
@@ -91,6 +128,7 @@ type boundedClient struct {
 	client interface {
 		Do(*http.Request) (*http.Response, error)
 	}
+	maxResponseBodyBytes int64
 }
 
 func (c boundedClient) Do(request *http.Request) (*http.Response, error) {
@@ -107,7 +145,7 @@ func (c boundedClient) Do(request *http.Request) (*http.Response, error) {
 	}
 	response.Body = &limitedReadCloser{
 		ReadCloser: response.Body,
-		remaining:  DefaultMaxResponseBodyBytes,
+		remaining:  c.maxResponseBodyBytes,
 		cancel:     cancel,
 	}
 	return response, nil
@@ -145,5 +183,6 @@ func (r *limitedReadCloser) Read(p []byte) (int, error) {
 
 func (r *limitedReadCloser) Close() error {
 	r.cancel()
+	// Intentionally do not drain here: after ErrResponseBodyTooLarge, draining would defeat the response-size cap.
 	return r.ReadCloser.Close()
 }

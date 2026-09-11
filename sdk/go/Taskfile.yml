@@ -14,4 +14,6 @@ tasks:
   lint:
     desc: Lint the generated SDK and its adapter
     cmds:
+      # The generated package is intentionally verified byte-for-byte; `go vet`
+      # catches correctness issues without lint findings that would churn with ogen output.
       - go vet ./...

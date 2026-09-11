@@ -40,8 +40,10 @@ func renameConstructor(path string) error {
 			continue
 		}
 		function.Name.Name = "NewUnsafeClient"
-		for _, comment := range function.Doc.List {
-			comment.Text = strings.Replace(comment.Text, "NewClient", "NewUnsafeClient", 1)
+		if function.Doc != nil {
+			for _, comment := range function.Doc.List {
+				comment.Text = strings.Replace(comment.Text, "NewClient", "NewUnsafeClient", 1)
+			}
 		}
 		constructors++
 	}

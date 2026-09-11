@@ -14101,6 +14101,10 @@ type PushPluginBadRequestApplicationJSON string
 
 func (*PushPluginBadRequestApplicationJSON) pushPluginRes() {}
 
+type PushPluginForbiddenApplicationJSON string
+
+func (*PushPluginForbiddenApplicationJSON) pushPluginRes() {}
+
 type PushPluginInternalServerErrorApplicationJSON string
 
 func (*PushPluginInternalServerErrorApplicationJSON) pushPluginRes() {}
@@ -14113,14 +14117,22 @@ type PushPluginNotFoundApplicationJSON string
 
 func (*PushPluginNotFoundApplicationJSON) pushPluginRes() {}
 
-// Request to push a built plugin artifact. Exactly one of identity_token or no_sign is required.
+// Request to push a built plugin artifact. Exactly one of key, identity_token, or no_sign is
+// required.
 // Ref: #/components/schemas/PushPluginRequest
 type PushPluginRequest struct {
 	// IdentityToken is a short-lived OIDC identity token used for keyless
-	// signing. Plugin signing is keyless-only: there is deliberately no key
-	// field, because ToolHive cannot verify key-signed artifacts at install
-	// time and would publish an uninstallable plugin (#6442).
+	// signing, mutually exclusive with Key.
 	IdentityToken OptString `json:"identity_token"`
+	// Key is the path to a cosign private key, resolved on the server's
+	// filesystem. Accepted only when the request carries the secret capability
+	// from the owner-protected local server discovery file; other requests are
+	// refused with 403, since honoring one would let an untrusted caller have
+	// the server sign with any key it can read. Use IdentityToken when calling
+	// a remote or manually configured server. Consumers installing the result
+	// project-scoped must supply the matching public key on first use
+	// (install's public_key).
+	Key OptString `json:"key"`
 	// NoSign pushes without signing.
 	NoSign OptBool `json:"no_sign"`
 	// OCI reference to push.
@@ -14130,6 +14142,11 @@ type PushPluginRequest struct {
 // GetIdentityToken returns the value of IdentityToken.
 func (s *PushPluginRequest) GetIdentityToken() OptString {
 	return s.IdentityToken
+}
+
+// GetKey returns the value of Key.
+func (s *PushPluginRequest) GetKey() OptString {
+	return s.Key
 }
 
 // GetNoSign returns the value of NoSign.
@@ -14145,6 +14162,11 @@ func (s *PushPluginRequest) GetReference() string {
 // SetIdentityToken sets the value of IdentityToken.
 func (s *PushPluginRequest) SetIdentityToken(val OptString) {
 	s.IdentityToken = val
+}
+
+// SetKey sets the value of Key.
+func (s *PushPluginRequest) SetKey(val OptString) {
+	s.Key = val
 }
 
 // SetNoSign sets the value of NoSign.

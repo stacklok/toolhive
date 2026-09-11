@@ -23813,6 +23813,46 @@ func (s *PushPluginBadRequestApplicationJSON) UnmarshalJSON(data []byte) error {
 	return s.Decode(d)
 }
 
+// Encode encodes PushPluginForbiddenApplicationJSON as json.
+func (s PushPluginForbiddenApplicationJSON) Encode(e *jx.Encoder) {
+	unwrapped := string(s)
+
+	e.Str(unwrapped)
+}
+
+// Decode decodes PushPluginForbiddenApplicationJSON from json.
+func (s *PushPluginForbiddenApplicationJSON) Decode(d *jx.Decoder) error {
+	if s == nil {
+		return errors.New("invalid: unable to decode PushPluginForbiddenApplicationJSON to nil")
+	}
+	var unwrapped string
+	if err := func() error {
+		v, err := d.Str()
+		unwrapped = string(v)
+		if err != nil {
+			return err
+		}
+		return nil
+	}(); err != nil {
+		return errors.Wrap(err, "alias")
+	}
+	*s = PushPluginForbiddenApplicationJSON(unwrapped)
+	return nil
+}
+
+// MarshalJSON implements stdjson.Marshaler.
+func (s PushPluginForbiddenApplicationJSON) MarshalJSON() ([]byte, error) {
+	e := jx.Encoder{}
+	s.Encode(&e)
+	return e.Bytes(), nil
+}
+
+// UnmarshalJSON implements stdjson.Unmarshaler.
+func (s *PushPluginForbiddenApplicationJSON) UnmarshalJSON(data []byte) error {
+	d := jx.DecodeBytes(data)
+	return s.Decode(d)
+}
+
 // Encode encodes PushPluginInternalServerErrorApplicationJSON as json.
 func (s PushPluginInternalServerErrorApplicationJSON) Encode(e *jx.Encoder) {
 	unwrapped := string(s)
@@ -23949,6 +23989,12 @@ func (s *PushPluginRequest) encodeFields(e *jx.Encoder) {
 		}
 	}
 	{
+		if s.Key.Set {
+			e.FieldStart("key")
+			s.Key.Encode(e)
+		}
+	}
+	{
 		if s.NoSign.Set {
 			e.FieldStart("no_sign")
 			s.NoSign.Encode(e)
@@ -23960,10 +24006,11 @@ func (s *PushPluginRequest) encodeFields(e *jx.Encoder) {
 	}
 }
 
-var jsonFieldsNameOfPushPluginRequest = [3]string{
+var jsonFieldsNameOfPushPluginRequest = [4]string{
 	0: "identity_token",
-	1: "no_sign",
-	2: "reference",
+	1: "key",
+	2: "no_sign",
+	3: "reference",
 }
 
 // Decode decodes PushPluginRequest from json.
@@ -23985,6 +24032,16 @@ func (s *PushPluginRequest) Decode(d *jx.Decoder) error {
 			}(); err != nil {
 				return errors.Wrap(err, "decode field \"identity_token\"")
 			}
+		case "key":
+			if err := func() error {
+				s.Key.Reset()
+				if err := s.Key.Decode(d); err != nil {
+					return err
+				}
+				return nil
+			}(); err != nil {
+				return errors.Wrap(err, "decode field \"key\"")
+			}
 		case "no_sign":
 			if err := func() error {
 				s.NoSign.Reset()
@@ -23996,7 +24053,7 @@ func (s *PushPluginRequest) Decode(d *jx.Decoder) error {
 				return errors.Wrap(err, "decode field \"no_sign\"")
 			}
 		case "reference":
-			requiredBitSet[0] |= 1 << 2
+			requiredBitSet[0] |= 1 << 3
 			if err := func() error {
 				v, err := d.Str()
 				s.Reference = string(v)
@@ -24017,7 +24074,7 @@ func (s *PushPluginRequest) Decode(d *jx.Decoder) error {
 	// Validate required fields.
 	var failures []validate.FieldError
 	for i, mask := range [1]uint8{
-		0b00000100,
+		0b00001000,
 	} {
 		if result := (requiredBitSet[i] & mask) ^ mask; result != 0 {
 			// Mask only required fields and check equality to mask using XOR.

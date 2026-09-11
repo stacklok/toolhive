@@ -381,7 +381,7 @@ type Invoker interface {
 	// Push a built plugin artifact to a remote registry.
 	//
 	// POST /api/v1beta/plugins/push
-	PushPlugin(ctx context.Context, request *PushPluginRequest) (PushPluginRes, error)
+	PushPlugin(ctx context.Context, request *PushPluginRequest, params PushPluginParams) (PushPluginRes, error)
 	// PushSkill invokes PushSkill operation.
 	//
 	// Push a built skill artifact to a remote registry.
@@ -5810,12 +5810,12 @@ func (c *Client) sendLogoutRegistry(ctx context.Context) (res LogoutRegistryRes,
 // Push a built plugin artifact to a remote registry.
 //
 // POST /api/v1beta/plugins/push
-func (c *Client) PushPlugin(ctx context.Context, request *PushPluginRequest) (PushPluginRes, error) {
-	res, err := c.sendPushPlugin(ctx, request)
+func (c *Client) PushPlugin(ctx context.Context, request *PushPluginRequest, params PushPluginParams) (PushPluginRes, error) {
+	res, err := c.sendPushPlugin(ctx, request, params)
 	return res, err
 }
 
-func (c *Client) sendPushPlugin(ctx context.Context, request *PushPluginRequest) (res PushPluginRes, err error) {
+func (c *Client) sendPushPlugin(ctx context.Context, request *PushPluginRequest, params PushPluginParams) (res PushPluginRes, err error) {
 	otelAttrs := []attribute.KeyValue{
 		otelogen.OperationID("PushPlugin"),
 		semconv.HTTPRequestMethodKey.String("POST"),
@@ -5863,6 +5863,23 @@ func (c *Client) sendPushPlugin(ctx context.Context, request *PushPluginRequest)
 	}
 	if err := encodePushPluginRequest(request, r); err != nil {
 		return res, errors.Wrap(err, "encode request")
+	}
+
+	stage = "EncodeHeaderParams"
+	h := uri.NewHeaderEncoder(r.Header)
+	{
+		cfg := uri.HeaderParameterEncodingConfig{
+			Name:    "X-Toolhive-Key-Signing-Capability",
+			Explode: false,
+		}
+		if err := h.EncodeParam(cfg, func(e uri.Encoder) error {
+			if val, ok := params.XToolhiveKeySigningCapability.Get(); ok {
+				return e.EncodeValue(conv.StringToString(val))
+			}
+			return nil
+		}); err != nil {
+			return res, errors.Wrap(err, "encode header")
+		}
 	}
 
 	stage = "SendRequest"

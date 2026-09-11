@@ -258,6 +258,12 @@ type ListWorkloadsParams struct {
 	Group OptString
 }
 
+// PushPluginParams is parameters of PushPlugin operation.
+type PushPluginParams struct {
+	// Local discovery capability (required with request.key).
+	XToolhiveKeySigningCapability OptString
+}
+
 // PushSkillParams is parameters of PushSkill operation.
 type PushSkillParams struct {
 	// Local discovery capability (required with request.key).

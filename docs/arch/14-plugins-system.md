@@ -186,6 +186,11 @@ installing (OCI candidates are still fetched to compare digests).
 `--allow-ref-change` permits a repository move, while
 `--allow-signer-change` permits supported trust transitions. Neither option
 silently replaces a pinned cosign public key with an arbitrary different key.
+An unsigned candidate under an entry that records a signer is not a trust
+transition but a failure (`unsigned-rejected`): upgrade has no unsigned-consent
+flag, and `--allow-signer-change` re-verifies from scratch, which an unsigned
+artifact still fails, so the failure names the project-scoped reinstall with
+`--allow-unsigned` that records the exception explicitly.
 
 ## Storage
 

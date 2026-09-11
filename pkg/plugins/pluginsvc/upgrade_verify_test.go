@@ -133,14 +133,30 @@ func TestUpgrade_SignerChangeBlocked(t *testing.T) {
 }
 
 //nolint:paralleltest // serial: real sqlite + on-disk client materialization per test
-func TestUpgrade_UnsignedCandidateBlockedAgainstSignedEntry(t *testing.T) {
+func TestUpgrade_UnsignedCandidateRejectedAgainstSignedEntry(t *testing.T) {
 	svc, projectRoot := signerChangeFixture(t, func() (*verifier.Result, error) {
 		return nil, verifier.ErrUnsigned
 	})
 
-	outcome := upgradePlugins(t, svc, plugins.UpgradeOptions{ProjectRoot: projectRoot})
-	assert.Equal(t, plugins.UpgradeStatusSignerChangeBlocked, outcome.Status)
-	assert.Empty(t, outcome.NewSignerIdentity, "an unsigned candidate has no identity to report")
+	// A signer change is resolved by --allow-signer-change, which re-verifies
+	// from scratch and fails on an unsigned artifact just the same, and
+	// upgrade has no unsigned-consent flag — so this is a failure in both
+	// modes, naming the reinstall that actually records the exception.
+	for _, override := range []bool{false, true} {
+		outcome := upgradePlugins(t, svc, plugins.UpgradeOptions{
+			ProjectRoot: projectRoot, AllowSignerChange: override,
+		})
+		assert.Equal(t, plugins.UpgradeStatusFailed, outcome.Status, "allow_signer_change=%v", override)
+		assert.Equal(t, plugins.FailureReasonUnsignedRejected, outcome.Reason, "allow_signer_change=%v", override)
+		assert.Contains(t, outcome.Error, "--scope project --allow-unsigned",
+			"the remedy must be the reinstall that records the exception")
+		assert.Empty(t, outcome.NewSignerIdentity, "an unsigned candidate has no identity to report")
+	}
+
+	entry, ok := loadPluginLockEntry(t, projectRoot)
+	require.True(t, ok)
+	require.NotNil(t, entry.Provenance)
+	assert.False(t, entry.Unsigned, "no unsigned exception may be recorded without --allow-unsigned")
 }
 
 // TestUpgrade_ProvenanceFieldDivergenceBlocked covers the fields beyond the
@@ -361,6 +377,41 @@ func TestUpgrade_UnaffectedEntrySkipsSignerProbe(t *testing.T) {
 		"the guard must not probe an entry that records no signer identity")
 }
 
+// TestUpgrade_UnsignedEntryUpgradesUnderSignerChangeOverride is the
+// override-mode twin of TestUpgrade_UnaffectedEntrySkipsSignerProbe: an entry
+// the lock records as unsigned has no signer to change, so a project-wide
+// --allow-signer-change must leave it exactly as a plain upgrade would rather
+// than clearing expectUnsigned and refusing the artifact the lock accepts.
+//
+//nolint:paralleltest // serial: real sqlite + on-disk client materialization per test
+func TestUpgrade_UnsignedEntryUpgradesUnderSignerChangeOverride(t *testing.T) {
+	repoDir := createPluginTestRepo(t, "")
+
+	calls := 0
+	mv := verifiermocks.NewMockVerifier(gomock.NewController(t))
+	mv.EXPECT().VerifyGit(gomock.Any(), gomock.Any(), gomock.Any(), gomock.Any()).
+		AnyTimes().
+		DoAndReturn(func(_ any, _, _ []byte, _ *verifier.ProvenanceExpectation) (*verifier.Result, error) {
+			calls++
+			return nil, verifier.ErrUnsigned
+		})
+	mv.EXPECT().VerifyBundleOffline(gomock.Any(), gomock.Any(), gomock.Any()).AnyTimes().Return(nil)
+
+	svc, projectRoot := newGitLockTestService(t, repoDir, WithVerifier(mv))
+	require.NoError(t, gitInstall(t, svc, projectRoot, func(o *plugins.InstallOptions) { o.AllowUnsigned = true }))
+	require.Equal(t, 1, calls, "only the install itself consulted the verifier")
+
+	addPluginRepoCommit(t, repoDir, "# hello unsigned")
+	outcome := upgradePlugins(t, svc, plugins.UpgradeOptions{ProjectRoot: projectRoot, AllowSignerChange: true})
+	assert.Equal(t, plugins.UpgradeStatusUpgraded, outcome.Status, "error: %s", outcome.Error)
+	assert.Equal(t, 1, calls, "an entry with no recorded signer is never probed, override or not")
+
+	after, ok := loadPluginLockEntry(t, projectRoot)
+	require.True(t, ok)
+	assert.True(t, after.Unsigned, "the recorded unsigned decision is preserved")
+	assert.Nil(t, after.Provenance)
+}
+
 func TestRepositoryRefChanged(t *testing.T) {
 	t.Parallel()
 
@@ -543,7 +594,7 @@ func TestUpgrade_OversizedCommitMaterialFailsRatherThanBlocks(t *testing.T) {
 			Provenance: &lockfile.Provenance{SignerIdentity: testSignerIdentity},
 		},
 		resolvedLatest{commitPayload: make([]byte, maxSignatureBlobSize+1), commitSignature: "sig"},
-		&outcome)
+		false, &outcome)
 
 	assert.True(t, blocked, "an unusable probe must stop the upgrade")
 	assert.Equal(t, plugins.UpgradeStatusFailed, outcome.Status)

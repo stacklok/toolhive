@@ -308,17 +308,39 @@ func TestUpgrade_SignerChangeBlocked(t *testing.T) {
 	assert.Equal(t, testSignerIdentity, entry.Provenance.SignerIdentity)
 }
 
+// TestUpgrade_UnsignedCandidateRejectedAgainstSignedEntry: an entry pinned to
+// a signer identity whose candidate lost its signature is a failure, not a
+// signer change. The signer-change remedy is --allow-signer-change, which
+// re-verifies from scratch and fails on an unsigned artifact just the same,
+// and upgrade has no unsigned-consent flag — so reporting it as a change
+// would send the caller into a second refusal. The failure names the
+// reinstall that actually records the exception.
+//
 //nolint:paralleltest // uses t.Setenv via newLockTestService, incompatible with t.Parallel
-func TestUpgrade_UnsignedCandidateBlockedAgainstSignedEntry(t *testing.T) {
+func TestUpgrade_UnsignedCandidateRejectedAgainstSignedEntry(t *testing.T) {
 	svc, projectRoot := signerChangeFixture(t, func() (*verifier.Result, error) {
 		return nil, verifier.ErrUnsigned
 	})
 
-	result, err := svc.(*service).Upgrade(t.Context(), skills.UpgradeOptions{ProjectRoot: projectRoot}) //nolint:forcetypeassert
-	require.NoError(t, err)
-	require.Len(t, result.Outcomes, 1)
-	assert.Equal(t, skills.UpgradeStatusSignerChangeBlocked, result.Outcomes[0].Status)
-	assert.Empty(t, result.Outcomes[0].NewSignerIdentity, "an unsigned candidate has no identity to report")
+	for _, override := range []bool{false, true} {
+		result, err := svc.(*service).Upgrade(t.Context(), //nolint:forcetypeassert
+			skills.UpgradeOptions{ProjectRoot: projectRoot, AllowSignerChange: override})
+		require.NoError(t, err)
+		require.Len(t, result.Outcomes, 1)
+		outcome := result.Outcomes[0]
+		assert.Equal(t, skills.UpgradeStatusFailed, outcome.Status, "allow_signer_change=%v", override)
+		assert.Equal(t, skills.FailureReasonUnsignedRejected, outcome.Reason, "allow_signer_change=%v", override)
+		assert.Contains(t, outcome.Error, "--scope project --allow-unsigned",
+			"the remedy must be the reinstall that records the exception")
+		assert.Empty(t, outcome.NewSignerIdentity, "an unsigned candidate has no identity to report")
+	}
+
+	// Nothing installed, lock unchanged in either mode.
+	entry, ok := loadLockEntry(t, projectRoot, "guarded-skill")
+	require.True(t, ok)
+	require.NotNil(t, entry.Provenance)
+	assert.Equal(t, testSignerIdentity, entry.Provenance.SignerIdentity)
+	assert.False(t, entry.Unsigned, "no unsigned exception may be recorded without --allow-unsigned")
 }
 
 //nolint:paralleltest // uses t.Setenv via newLockTestService, incompatible with t.Parallel
@@ -359,6 +381,57 @@ func TestUpgrade_SignerChangePreviewParity(t *testing.T) {
 	entry, ok := lf.Get("guarded-skill")
 	require.True(t, ok)
 	assert.Equal(t, testSignerIdentity, entry.Provenance.SignerIdentity)
+}
+
+// TestUpgrade_UnsignedEntryUpgradesUnderSignerChangeOverride: an entry the
+// lock records as unsigned has no signer to change, so a project-wide
+// --allow-signer-change must leave it exactly as a plain upgrade would.
+// Forwarding the override to its install would clear expectUnsigned and
+// re-verify from scratch, refusing the unsigned artifact the lock already
+// accepts — or, before isAllowedUnsigned stopped granting under the override,
+// silently re-recording it.
+//
+//nolint:paralleltest // uses t.Setenv via newLockTestService, incompatible with t.Parallel
+func TestUpgrade_UnsignedEntryUpgradesUnderSignerChangeOverride(t *testing.T) {
+	gr, fx := newGitResolverMock(t)
+	fx.register("unsigned-skill", gitSkill("unsigned-skill"))
+
+	calls := 0
+	mv := verifiermocks.NewMockVerifier(gomock.NewController(t))
+	mv.EXPECT().VerifyGit(gomock.Any(), gomock.Any(), gomock.Any(), gomock.Any()).
+		AnyTimes().
+		DoAndReturn(func(_ any, _, _ []byte, _ *verifier.ProvenanceExpectation) (*verifier.Result, error) {
+			calls++
+			return nil, verifier.ErrUnsigned
+		})
+
+	svc, projectRoot := newLockTestService(t, gr, WithVerifier(mv))
+	ref, _ := gitRef("unsigned-skill")
+	_, err := svc.Install(t.Context(), skills.InstallOptions{
+		Name: ref, Scope: skills.ScopeProject, ProjectRoot: projectRoot,
+		Clients: []string{"claude-code"}, AllowUnsigned: true,
+	})
+	require.NoError(t, err)
+	entry, ok := loadLockEntry(t, projectRoot, "unsigned-skill")
+	require.True(t, ok)
+	require.True(t, entry.Unsigned)
+	require.Nil(t, entry.Provenance)
+	require.Equal(t, 1, calls, "only the install itself consulted the verifier")
+
+	fx.register("unsigned-skill", gitSkillVersion("unsigned-skill"))
+	result, err := svc.(*service).Upgrade(t.Context(), //nolint:forcetypeassert
+		skills.UpgradeOptions{ProjectRoot: projectRoot, AllowSignerChange: true})
+	require.NoError(t, err)
+	require.Len(t, result.Outcomes, 1)
+	assert.Equal(t, skills.UpgradeStatusUpgraded, result.Outcomes[0].Status,
+		"error: %s", result.Outcomes[0].Error)
+	assert.Equal(t, 1, calls, "an entry with no recorded signer is never probed, override or not")
+
+	after, ok := loadLockEntry(t, projectRoot, "unsigned-skill")
+	require.True(t, ok)
+	assert.True(t, after.Unsigned, "the recorded unsigned decision is preserved")
+	assert.Nil(t, after.Provenance)
+	assert.Equal(t, result.Outcomes[0].NewDigest, after.Digest)
 }
 
 // TestJudgeKeyedCandidate covers the measurement of a candidate against a

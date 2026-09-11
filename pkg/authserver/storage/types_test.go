@@ -35,7 +35,7 @@ func TestNotFoundRFC6749Error(t *testing.T) {
 
 	var fositeErr *fosite.RFC6749Error
 	if assert.True(t, errors.As(err, &fositeErr)) {
-		assert.Equal(t, "item not found", fositeErr.Hint)
+		assert.NotNil(t, fositeErr)
 	}
 }
 

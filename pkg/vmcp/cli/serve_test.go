@@ -17,12 +17,207 @@ import (
 
 	authserverconfig "github.com/stacklok/toolhive/pkg/authserver"
 	"github.com/stacklok/toolhive/pkg/groups"
+	mcpparser "github.com/stacklok/toolhive/pkg/mcp"
 	"github.com/stacklok/toolhive/pkg/vmcp"
 	aggregatormocks "github.com/stacklok/toolhive/pkg/vmcp/aggregator/mocks"
 	clientmocks "github.com/stacklok/toolhive/pkg/vmcp/client/mocks"
 	"github.com/stacklok/toolhive/pkg/vmcp/config"
 	vmcpmocks "github.com/stacklok/toolhive/pkg/vmcp/mocks"
 )
+
+// revisionReportingClient is a BackendClient that also satisfies
+// vmcp.RevisionReporter, so sessionFactoryOptions takes the revision-lookup
+// branch. Only the two methods the branch touches need real behaviour.
+type revisionReportingClient struct {
+	vmcp.BackendClient
+}
+
+func (*revisionReportingClient) CachedRevision(string) (mcpparser.Revision, bool) {
+	return mcpparser.RevisionLegacy, false
+}
+
+func TestSessionFactoryOptions(t *testing.T) {
+	t.Parallel()
+
+	withBackendInit := &config.Config{Operational: &config.OperationalConfig{
+		Timeouts: &config.TimeoutConfig{
+			Default:     config.Duration(90 * time.Second),
+			BackendInit: config.Duration(5 * time.Second),
+		},
+	}}
+
+	tests := []struct {
+		name          string
+		cfg           *config.Config
+		backendClient vmcp.BackendClient
+		// The option set is opaque (a slice of funcs), so assert on its size:
+		// the request-timeout resolver is always present, and each of the other
+		// two branches adds exactly one more when taken.
+		wantOptions int
+	}{
+		{
+			name:          "resolver only",
+			cfg:           &config.Config{},
+			backendClient: nil,
+			wantOptions:   1,
+		},
+		{
+			name:          "revision reporter adds a lookup",
+			cfg:           &config.Config{},
+			backendClient: &revisionReportingClient{},
+			wantOptions:   2,
+		},
+		{
+			name:          "backendInit adds a cap",
+			cfg:           withBackendInit,
+			backendClient: nil,
+			wantOptions:   2,
+		},
+		{
+			name:          "both timeout branches taken",
+			cfg:           withBackendInit,
+			backendClient: &revisionReportingClient{},
+			wantOptions:   3,
+		},
+		{
+			name: "list_changed exclusion adds a filter",
+			cfg: &config.Config{Operational: &config.OperationalConfig{
+				ListChanged: &config.ListChangedConfig{DisabledWorkloads: []string{"grafana"}},
+			}},
+			backendClient: nil,
+			wantOptions:   2,
+		},
+		{
+			name: "every branch taken",
+			cfg: &config.Config{Operational: &config.OperationalConfig{
+				Timeouts:    &config.TimeoutConfig{BackendInit: config.Duration(5 * time.Second)},
+				ListChanged: &config.ListChangedConfig{DisabledWorkloads: []string{"grafana"}},
+			}},
+			backendClient: &revisionReportingClient{},
+			wantOptions:   4,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			assert.Len(t, sessionFactoryOptions(tt.cfg, tt.backendClient), tt.wantOptions)
+		})
+	}
+}
+
+func TestBackendInitTimeout(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name string
+		cfg  *config.Config
+		want time.Duration
+	}{
+		{
+			name: "nil config leaves the factory default",
+			cfg:  nil,
+			want: 0,
+		},
+		{
+			name: "missing operational config leaves the factory default",
+			cfg:  &config.Config{},
+			want: 0,
+		},
+		{
+			name: "unset backendInit leaves the factory default",
+			cfg: &config.Config{Operational: &config.OperationalConfig{
+				Timeouts: &config.TimeoutConfig{Default: config.Duration(90 * time.Second)},
+			}},
+			want: 0,
+		},
+		{
+			name: "configured backendInit is returned",
+			cfg: &config.Config{Operational: &config.OperationalConfig{
+				Timeouts: &config.TimeoutConfig{
+					Default:     config.Duration(90 * time.Second),
+					BackendInit: config.Duration(5 * time.Second),
+				},
+			}},
+			want: 5 * time.Second,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			assert.Equal(t, tt.want, backendInitTimeout(tt.cfg))
+		})
+	}
+}
+
+func TestListChangedFilter(t *testing.T) {
+	t.Parallel()
+
+	enabled, disabled := true, false
+
+	tests := []struct {
+		name      string
+		cfg       *config.Config
+		wantNil   bool
+		wantAllow map[string]bool
+	}{
+		{name: "nil config keeps the factory default", cfg: nil, wantNil: true},
+		{name: "no operational config keeps the default", cfg: &config.Config{}, wantNil: true},
+		{
+			name:    "no listChanged block keeps the default",
+			cfg:     &config.Config{Operational: &config.OperationalConfig{}},
+			wantNil: true,
+		},
+		{
+			name: "enabled true with no exclusions keeps the default",
+			cfg: &config.Config{Operational: &config.OperationalConfig{
+				ListChanged: &config.ListChangedConfig{Enabled: &enabled},
+			}},
+			wantNil: true,
+		},
+		{
+			name: "enabled false excludes every backend",
+			cfg: &config.Config{Operational: &config.OperationalConfig{
+				ListChanged: &config.ListChangedConfig{Enabled: &disabled},
+			}},
+			wantAllow: map[string]bool{"anything": false},
+		},
+		{
+			name: "disabledWorkloads excludes only those named",
+			cfg: &config.Config{Operational: &config.OperationalConfig{
+				ListChanged: &config.ListChangedConfig{DisabledWorkloads: []string{"grafana"}},
+			}},
+			wantAllow: map[string]bool{"grafana": false, "github": true},
+		},
+		{
+			name: "enabled false wins over an exclusion list",
+			cfg: &config.Config{Operational: &config.OperationalConfig{
+				ListChanged: &config.ListChangedConfig{
+					Enabled:           &disabled,
+					DisabledWorkloads: []string{"grafana"},
+				},
+			}},
+			wantAllow: map[string]bool{"grafana": false, "github": false},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			filter := listChangedFilter(tt.cfg)
+			if tt.wantNil {
+				assert.Nil(t, filter)
+				return
+			}
+			require.NotNil(t, filter)
+			for id, want := range tt.wantAllow {
+				assert.Equal(t, want, filter(id), "workload %q", id)
+			}
+		})
+	}
+}
 
 func TestBackendRequestTimeoutResolver(t *testing.T) {
 	t.Parallel()

@@ -350,15 +350,10 @@ func Serve(ctx context.Context, cfg ServeConfig) error {
 	}
 	// The factory never aggregates — the core is the single source of capability
 	// aggregation (agg feeds it via Config.Aggregator below).
-	var sessionFactoryOpts []vmcpsession.MultiSessionFactoryOption
-	if revisions, ok := backendClient.(vmcp.RevisionReporter); ok {
-		sessionFactoryOpts = append(sessionFactoryOpts, vmcpsession.WithRevisionLookup(revisions.CachedRevision))
-	}
-	sessionFactoryOpts = append(
-		sessionFactoryOpts,
-		vmcpsession.WithRequestTimeoutResolver(backendRequestTimeoutResolver(vmcpCfg)),
+	sessionFactory := vmcpsession.NewSessionFactory(
+		outgoingRegistry,
+		sessionFactoryOptions(vmcpCfg, backendClient)...,
 	)
-	sessionFactory := vmcpsession.NewSessionFactory(outgoingRegistry, sessionFactoryOpts...)
 
 	// When the optimizer is enabled, its meta-tools are pass-through tools.
 	// Authz uses this for optimizer-aware authorization/filtering.
@@ -542,6 +537,62 @@ func backendRequestTimeoutResolver(cfg *config.Config) func(workloadID string) t
 			return time.Duration(timeout)
 		}
 		return time.Duration(timeouts.Default)
+	}
+}
+
+// sessionFactoryOptions builds the session factory options implied by cfg and
+// the backend client. Split out of Serve so the config-driven choices are
+// unit-testable without standing up a whole server.
+func sessionFactoryOptions(
+	cfg *config.Config,
+	backendClient vmcp.BackendClient,
+) []vmcpsession.MultiSessionFactoryOption {
+	var opts []vmcpsession.MultiSessionFactoryOption
+	if revisions, ok := backendClient.(vmcp.RevisionReporter); ok {
+		opts = append(opts, vmcpsession.WithRevisionLookup(revisions.CachedRevision))
+	}
+	opts = append(opts, vmcpsession.WithRequestTimeoutResolver(backendRequestTimeoutResolver(cfg)))
+	if backendInit := backendInitTimeout(cfg); backendInit > 0 {
+		opts = append(opts, vmcpsession.WithBackendInitTimeout(backendInit))
+	}
+	if filter := listChangedFilter(cfg); filter != nil {
+		opts = append(opts, vmcpsession.WithListChangedFilter(filter))
+	}
+	return opts
+}
+
+// backendInitTimeout returns the configured session-init cap, or 0 when unset
+// so the factory keeps its own default. Mirrors backendRequestTimeoutResolver's
+// nil-safety; there is no per-workload form because the cap exists to bound the
+// whole session handshake, which is only as fast as its slowest backend.
+func backendInitTimeout(cfg *config.Config) time.Duration {
+	if cfg == nil || cfg.Operational == nil || cfg.Operational.Timeouts == nil {
+		return 0
+	}
+	return time.Duration(cfg.Operational.Timeouts.BackendInit)
+}
+
+// listChangedFilter builds the per-backend list_changed predicate from cfg, or
+// returns nil when the config asks for the default (subscribe to everything) so
+// the factory keeps its own behaviour.
+func listChangedFilter(cfg *config.Config) func(workloadID string) bool {
+	if cfg == nil || cfg.Operational == nil || cfg.Operational.ListChanged == nil {
+		return nil
+	}
+	lc := cfg.Operational.ListChanged
+	if lc.Enabled != nil && !*lc.Enabled {
+		return func(string) bool { return false }
+	}
+	if len(lc.DisabledWorkloads) == 0 {
+		return nil
+	}
+	disabled := make(map[string]struct{}, len(lc.DisabledWorkloads))
+	for _, id := range lc.DisabledWorkloads {
+		disabled[id] = struct{}{}
+	}
+	return func(workloadID string) bool {
+		_, off := disabled[workloadID]
+		return !off
 	}
 }
 

@@ -7,8 +7,8 @@ includes:
 
 tasks:
   docs:
-    desc: Regenerate the docs
-    deps: [swagger-install, helm-docs]
+    desc: Regenerate the docs and SDK contract
+    deps: [swagger-install, helm-docs, sdk-generator-install]
     cmds:
       - rm -rf docs/cli/*
       - go run cmd/help/main.go --dir docs/cli
@@ -16,7 +16,57 @@ tasks:
       # swag can non-deterministically double enum arrays for types from
       # external modules (see cmd/help/dedupe-enums); normalize the output.
       - go run ./cmd/help/dedupe-enums docs/server/docs.go docs/server/swagger.json docs/server/swagger.yaml
+      - task: sdk-generate
       - task: helm-docs
+
+  docs-verify:
+    desc: Verify generated documentation and SDK artifacts are fresh
+    deps: [swagger-install, sdk-generator-install]
+    cmds:
+      - bash ./cmd/help/verify.sh
+      - task: sdk-verify
+
+  sdk-generator-install:
+    desc: Install the OpenAPI 3.1 Go SDK generator
+    cmds:
+      - go install github.com/ogen-go/ogen/cmd/ogen@v1.15.0
+
+  sdk-generate:
+    desc: Generate the nested Go SDK from the canonical OpenAPI contract
+    deps: [sdk-generator-install]
+    cmds:
+      - mkdir -p sdk/go/client
+      - go run ./cmd/help/openapi-normalize docs/server/swagger.json sdk/go/openapi.json sdk/go/openapi.yaml
+      - ogen --config sdk/go/ogen.yml --target sdk/go/client --package client sdk/go/openapi.json
+      - go run ./cmd/help/ogen-client-wrapper sdk/go/client/oas_client_gen.go
+      - task: sdk-license
+
+  sdk-license:
+    desc: Apply repository license headers to generated SDK Go files
+    deps: [addlicense-install]
+    cmds:
+      - addlicense -f .github/license-header.txt $(find sdk/go/client -name '*.go' -type f)
+
+  sdk-test:
+    desc: Test the nested Go SDK module
+    cmds:
+      - task -d sdk/go test
+
+  sdk-lint:
+    desc: Lint the nested Go SDK module
+    cmds:
+      - task -d sdk/go lint
+
+  sdk-verify:
+    desc: Verify generated SDK artifacts are fresh
+    deps: [sdk-generator-install, addlicense-install]
+    cmds:
+      - bash ./sdk/go/verify.sh
+
+  test-openapi-normalize:
+    desc: Test the canonical OpenAPI normalization step
+    cmds:
+      - go test ./cmd/help/openapi-normalize
 
   swagger-install:
     desc: Install the swag tool for OpenAPI/Swagger generation
@@ -63,7 +113,7 @@ tasks:
     status:
       - which addlicense
     cmds:
-      - go install github.com/google/addlicense@latest
+      - go install github.com/google/addlicense@v1.1.1
 
   license-check:
     desc: Check that all Go files have proper SPDX license headers
@@ -98,7 +148,7 @@ tasks:
         platforms: [linux, darwin]
       # we have to use ldflags to avoid the LC_DYSYMTAB linker error.
       # https://github.com/stacklok/toolhive/issues/1687
-      - go test -ldflags=-extldflags=-Wl,-w -v -json -race $(go list ./... | grep -v '/test/e2e' | grep -v '/cmd/thv-operator/test-integration') | gotestfmt -hide "all"
+      - GODEBUG=gotestjsonbuildtext=1 go test -ldflags=-extldflags=-Wl,-w -v -json -race $(go list ./... | grep -v '/test/e2e' | grep -v '/cmd/thv-operator/test-integration') | gotestfmt -hide "all"
 
   test-windows:
     desc: Run unit tests (excluding e2e tests) on Windows with race detection
@@ -139,7 +189,7 @@ tasks:
         platforms: [linux, darwin]
       # we have to use ldflags to avoid the LC_DYSYMTAB linker error.
       # https://github.com/stacklok/toolhive/issues/1687
-      - go test -ldflags=-extldflags=-Wl,-w -json -race -coverpkg=./... -coverprofile=coverage/coverage.out $(go list ./... | grep -v '/test/e2e' | grep -v '/cmd/thv-operator/test-integration') | gotestfmt -hide "all"
+      - GODEBUG=gotestjsonbuildtext=1 go test -ldflags=-extldflags=-Wl,-w -json -race -coverpkg=./... -coverprofile=coverage/coverage.out $(go list ./... | grep -v '/test/e2e' | grep -v '/cmd/thv-operator/test-integration') | gotestfmt -hide "all"
       - go tool cover -func=coverage/coverage.out
       - echo "Generating HTML coverage report in coverage/coverage.html"
       - go tool cover -html=coverage/coverage.out -o coverage/coverage.html
@@ -204,7 +254,7 @@ tasks:
     internal: true
     cmds:
       - which gotestfmt > /dev/null 2>&1 || go install github.com/gotesttools/gotestfmt/v2/cmd/gotestfmt@latest
-      - go test -ldflags=-extldflags=-Wl,-w -v -json -race -tags integration ./... | gotestfmt -hide "all"
+      - GODEBUG=gotestjsonbuildtext=1 go test -ldflags=-extldflags=-Wl,-w -v -json -race -tags integration ./... | gotestfmt -hide "all"
 
   test-integration-windows:
     desc: Run integration tests on Windows (requires Docker)

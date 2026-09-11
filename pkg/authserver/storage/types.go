@@ -80,6 +80,11 @@ var (
 	ErrConcurrentRefresh = errors.New("storage: upstream token row changed concurrently")
 )
 
+// notFoundRFC6749Error preserves the storage and Fosite not-found identities.
+func notFoundRFC6749Error(hint string) *fosite.RFC6749Error {
+	return fosite.ErrNotFound.WithHint(hint).WithWrap(ErrNotFound)
+}
+
 // DefaultPendingAuthorizationTTL is the default TTL for pending authorization requests.
 const DefaultPendingAuthorizationTTL = 10 * time.Minute
 

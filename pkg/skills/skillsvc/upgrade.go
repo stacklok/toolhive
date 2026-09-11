@@ -227,7 +227,10 @@ func (s *service) resolveSignerPolicy(
 	outcome *skills.UpgradeOutcome,
 ) (allowSignerChange, blocked bool) {
 	if entry.Provenance == nil {
-		return opts.AllowSignerChange, false
+		// No recorded signer, so there is no signer change to authorize:
+		// forwarding the override would only clear the install's
+		// expectations for an entry that has none to clear.
+		return false, false
 	}
 	if entry.Provenance.PublicKey != "" {
 		// A keyed entry is measured against its pin whether or not the
@@ -240,7 +243,7 @@ func (s *service) resolveSignerPolicy(
 		}
 		return opts.AllowSignerChange && verdict.kind == keyedMovedToKeyless, false
 	}
-	if !opts.AllowSignerChange && s.guardSignerChange(ctx, entry, newRef, newDigest, outcome) {
+	if s.guardSignerChange(ctx, entry, newRef, newDigest, opts.AllowSignerChange, outcome) {
 		return false, true
 	}
 	return opts.AllowSignerChange, false
@@ -248,9 +251,16 @@ func (s *service) resolveSignerPolicy(
 
 // guardSignerChange probes the candidate artifact's signer identity and
 // fills outcome when the upgrade must not proceed: the candidate is signed
-// by a different identity (or unsigned) versus the recorded provenance, its
-// signature cannot be verified at all, or its certificate's repository ref
-// or runner class differs from what is recorded. Returns true when blocked.
+// by a different identity versus the recorded provenance, its signature
+// cannot be verified at all, it is unsigned, or its certificate's repository
+// ref or runner class differs from what is recorded. Returns true when
+// blocked. Only a differing identity or provenance field is reported as a
+// signer change, and only that arm is waived by allowSignerChange; the rest
+// are failures in both modes, because --allow-signer-change would not
+// resolve them — it re-verifies from scratch, which an unsigned or
+// unverifiable candidate fails just the same. Running the guard under the
+// override is what keeps a project-wide flag from waving those through to
+// an install that then either refuses them or, worse, records them.
 //
 // The repository ref has NO automatic allowance for a tag-shaped rotation.
 // An earlier version of this guard let a recorded tag ref rotate to any
@@ -269,12 +279,25 @@ func (s *service) guardSignerChange(
 	ctx context.Context,
 	entry lockfile.Entry,
 	newRef, newDigest string,
+	allowSignerChange bool,
 	outcome *skills.UpgradeOutcome,
 ) bool {
 	probe, probeErr := s.probeCandidateSigner(ctx, newRef, newDigest)
 	switch {
 	case probeErr != nil && errors.Is(probeErr, verifier.ErrUnsigned):
-		outcome.Status = skills.UpgradeStatusSignerChangeBlocked
+		// Not a signer change, because the remedy a signer change names
+		// cannot resolve it: --allow-signer-change re-verifies from scratch
+		// and re-records what it observes, and an unsigned artifact fails
+		// that verification exactly as it fails this one. Upgrade has no
+		// unsigned-consent flag, so the only way onto an unsigned artifact
+		// is the reinstall that records the exception explicitly.
+		outcome.Status = skills.UpgradeStatusFailed
+		outcome.Reason = skills.FailureReasonUnsignedRejected
+		outcome.Error = fmt.Errorf("candidate is unsigned, and this entry is pinned to a signer"+
+			" identity: %w. Upgrade has no unsigned-consent flag, and --allow-signer-change is not"+
+			" one — it re-verifies from scratch, which an unsigned artifact still fails. To move"+
+			" this skill to an unsigned artifact, reinstall it: %s",
+			probeErr, projectReinstallCommand(entry, "--allow-unsigned")).Error()
 		return true
 	case probeErr != nil:
 		outcome.Status = skills.UpgradeStatusFailed
@@ -288,6 +311,11 @@ func (s *service) guardSignerChange(
 		probe.CertIssuer != entry.Provenance.CertIssuer ||
 		runnerEnvironmentChanged(probe, entry.Provenance) ||
 		repositoryRefChanged(probe, entry.Provenance):
+		// The one arm the override resolves: it re-verifies from scratch
+		// and re-records the identity actually observed.
+		if allowSignerChange {
+			return false
+		}
 		outcome.Status = skills.UpgradeStatusSignerChangeBlocked
 		outcome.NewSignerIdentity = probe.SignerIdentity
 		return true

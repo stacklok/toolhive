@@ -1128,6 +1128,27 @@ func TestIsAllowedUnsignedRejectsKeySigned(t *testing.T) {
 		"the genuine unsigned case must still be allowed through")
 }
 
+// TestIsAllowedUnsignedNotGrantedUnderSignerChangeOverride: the lock-driven
+// grant exists for entries the lock already records as unsigned or as
+// predating verification. allow_signer_change clears the expectation to
+// re-verify from scratch, so a nil expectation under it is not evidence of
+// either — and honoring the grant there would turn the signer-change
+// override into unsigned consent.
+func TestIsAllowedUnsignedNotGrantedUnderSignerChangeOverride(t *testing.T) {
+	t.Parallel()
+	lockDriven := skills.InstallOptions{LockResolvedReference: "example.com/org/s:v2"}
+	assert.True(t, isAllowedUnsigned(verifier.ErrUnsigned, lockDriven, nil),
+		"precondition: a plain lock-driven install honors a recorded unsigned state")
+
+	lockDriven.AllowSignerChange = true
+	assert.False(t, isAllowedUnsigned(verifier.ErrUnsigned, lockDriven, nil),
+		"the override must not double as --allow-unsigned")
+
+	lockDriven.AllowUnsigned = true
+	assert.True(t, isAllowedUnsigned(verifier.ErrUnsigned, lockDriven, nil),
+		"an explicit --allow-unsigned still grants")
+}
+
 // TestCatalogInstallNamesKeySignedArtifact covers the second route to
 // classification. A first install resolved from a catalog entry that declares
 // provenance is classified by classifyCatalogVerifyError, not

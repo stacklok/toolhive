@@ -49,6 +49,12 @@ jobs:
     # holding the release signing keys.
     secrets:
       CODECOV_TOKEN: ${{ secrets.CODECOV_TOKEN }}
+  sdk-go:
+    name: Go SDK
+    concurrency:
+      group: main-sdk-go-${{ github.ref }}
+      cancel-in-progress: true
+    uses: ./.github/workflows/sdk-go.yml
   codegen:
     name: Codegen
     concurrency:
@@ -86,7 +92,7 @@ jobs:
   # would waste five multi-arch builds on an image nobody will deploy.
   publish-gate:
     name: Publish Gate
-    needs: [linting, security-scan, tests, e2e-tests, codegen, operator-ci]
+    needs: [linting, security-scan, tests, sdk-go, e2e-tests, codegen, operator-ci]
     runs-on: ubuntu-latest
     permissions:
       contents: read

@@ -18,24 +18,29 @@ import (
 const testCLIPublicKeyB64 = "MFkwEwYHKoZIzj0CAQYIKoZIzj0DAQcDQgAExlVDpbnOEv2fH3gS8n7UCHS9Gs0wKxIPR5EAcl8F1jSxlxAV/pll0NsSiuAK95Ws4Fpkn+5QkdVKNXy7LHgb2A=="
 
 // TestAIPluginPushSigningFlags pins the signed-by-default publish surface:
-// the keyless flags must exist, the opt-out must not be preset (a defaulted
-// --no-sign would publish unsigned artifacts silently), and --key must NOT be
-// offered — ToolHive cannot verify key-signed artifacts at install time, so
-// the flag would only produce uninstallable plugins (#6442). Install-time key
-// verification now exists; re-add the flag in the change that restores plugin
-// push signing, which is what closes #6442.
+// all three signing flags must exist, and neither signing method nor the
+// opt-out may be preset — a defaulted --no-sign would publish unsigned
+// artifacts silently. --key's help must name the --public-key step its
+// consumers need, since the signing key is recoverable from neither the
+// artifact nor its bundle, so a publisher who is not told to distribute it
+// ships an artifact nobody can install project-scoped.
 func TestAIPluginPushSigningFlags(t *testing.T) {
 	t.Parallel()
 
-	for _, name := range []string{"identity-token", "no-sign"} {
+	for _, name := range []string{"key", "identity-token", "no-sign"} {
 		flag := aiPluginPushCmd.Flags().Lookup(name)
 		require.NotNil(t, flag, "thv ai-plugin push must expose --%s", name)
 	}
-	assert.Nil(t, aiPluginPushCmd.Flags().Lookup("key"),
-		"plugin push is still keyless-only; --key returns with the push half of #6442")
 	assert.Equal(t, "false", aiPluginPushCmd.Flags().Lookup("no-sign").DefValue,
 		"pushing unsigned must always be an explicit choice")
+	assert.Empty(t, aiPluginPushCmd.Flags().Lookup("key").DefValue)
 	assert.Empty(t, aiPluginPushCmd.Flags().Lookup("identity-token").DefValue)
+	assert.Contains(t, aiPluginPushCmd.Flags().Lookup("key").Usage, "--public-key",
+		"--key must tell publishers consumers need --public-key on first install")
+	assert.Contains(t, aiPluginPushCmd.Flags().Lookup("key").Usage, "locally discovered ToolHive server",
+		"--key must explain that remote and manually configured API URLs cannot use server-side keys")
+	assert.Contains(t, aiPluginPushCmd.Flags().Lookup("identity-token").Usage, "Mutually exclusive with --key",
+		"the two signing methods are mutually exclusive and the help must say so")
 }
 
 // TestAIPluginInstallKeyFlag pins the consuming half of key signing: without

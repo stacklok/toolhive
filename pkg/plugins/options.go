@@ -5,7 +5,10 @@ package plugins
 
 import (
 	"context"
+	"errors"
+	"net/http"
 
+	"github.com/stacklok/toolhive-core/httperr"
 	"github.com/stacklok/toolhive/pkg/skills"
 	"github.com/stacklok/toolhive/pkg/skills/lockfile"
 )
@@ -202,28 +205,49 @@ type BuildOptions = skills.BuildOptions
 // skills.BuildResult (Reference).
 type BuildResult = skills.BuildResult
 
-// PushOptions configures the behavior of the Push operation.
+// PushOptions configures the behavior of the Push operation. Alias for
+// skills.PushOptions (identical shape: Reference, Key, IdentityToken,
+// NoSign).
+type PushOptions = skills.PushOptions
+
+// ValidatePushSigning enforces the push endpoint's signing contract: exactly
+// one of a cosign key, an OIDC identity token for keyless signing, or an
+// explicit opt-out. Ambiguous or absent input is rejected with HTTP 400 before
+// the artifact is pushed, rather than surfacing as a signing failure afterward.
 //
-// Deliberately NOT an alias of skills.PushOptions, unlike its Build/Sync
-// siblings: that type carries a Key for cosign key-pair signing, and plugin
-// signing is keyless-only until install-time key verification exists (#6442).
-// Aliasing left Key settable with no single answer for what it meant — the
-// in-process service rejected it with a 400 while the HTTP client dropped it
-// silently and published unsigned, so the same PluginService.Push call did
-// different things depending on which implementation was wired in. Omitting
-// the field makes the unsupported request unrepresentable instead of
-// rejected in one implementation and ignored in the other.
-type PushOptions struct {
-	// Reference is the OCI reference to push.
-	Reference string `json:"reference"`
-	// IdentityToken is a short-lived OIDC identity token (raw JWT) used for
-	// keyless signing: the server exchanges it with Fulcio for a short-lived
-	// signing certificate and records the signature in Rekor. Mutually
-	// exclusive with NoSign; exactly one of the two is required.
-	IdentityToken string `json:"identity_token,omitempty"`
-	// NoSign pushes without signing. Consumers installing the artifact
-	// project-scoped will need an explicit unsigned exception.
-	NoSign bool `json:"no_sign,omitempty"`
+// The HTTP handler runs this before dispatch and the service runs it again on
+// the options it receives. Both call it so the API contract holds regardless
+// of which PluginService implementation is wired in: a request naming only a
+// reference must be a 400 from the endpoint itself, not from whichever
+// service happens to answer. Mirrors skillsvc.validateSigningInputs; the
+// error text names both the JSON fields and the plugin command's flags.
+func ValidatePushSigning(opts PushOptions) error {
+	methods := 0
+	if opts.Key != "" {
+		methods++
+	}
+	if opts.IdentityToken != "" {
+		methods++
+	}
+	switch {
+	case opts.NoSign && methods > 0:
+		return httperr.WithCode(
+			errors.New("no_sign (--no-sign) cannot be combined with key (--key) or identity_token (--identity-token)"),
+			http.StatusBadRequest,
+		)
+	case !opts.NoSign && methods == 0:
+		return httperr.WithCode(
+			errors.New("signing credential required: set key (--key), identity_token (--identity-token) "+
+				"for CI/OIDC keyless signing, or no_sign (--no-sign) to push unsigned"),
+			http.StatusBadRequest,
+		)
+	case !opts.NoSign && methods > 1:
+		return httperr.WithCode(
+			errors.New("specify only one of key (--key) or identity_token (--identity-token)"),
+			http.StatusBadRequest,
+		)
+	}
+	return nil
 }
 
 // SyncOptions configures a lock-file sync. Alias for skills.SyncOptions

@@ -17,6 +17,8 @@ import (
 	"go.uber.org/mock/gomock"
 
 	"github.com/stacklok/toolhive-core/httperr"
+	"github.com/stacklok/toolhive/pkg/plugins"
+	plugmocks "github.com/stacklok/toolhive/pkg/plugins/mocks"
 	"github.com/stacklok/toolhive/pkg/server/discovery"
 	skillsmocks "github.com/stacklok/toolhive/pkg/skills/mocks"
 )
@@ -195,4 +197,61 @@ func TestSkillsRouter_ReverseProxyCannotForgeKeySigningAuthorization(t *testing.
 	ip := net.ParseIP(host)
 	require.NotNil(t, ip)
 	assert.True(t, ip.IsLoopback(), "backend peer %q should demonstrate the proxy appears local", backendRemoteAddr)
+}
+
+// TestPluginsRouter_KeySigningCapabilityCheckedBeforeDispatch is the skills
+// case for plugins: the same guard on the same shape, so the two push endpoints
+// cannot drift apart on who may name a key.
+func TestPluginsRouter_KeySigningCapabilityCheckedBeforeDispatch(t *testing.T) {
+	t.Parallel()
+
+	const capability = "protected-discovery-capability"
+	tests := []struct {
+		name               string
+		suppliedCapability string
+		remoteAddr         string
+		wantStatus         int
+	}{
+		{
+			name:       "loopback caller without capability",
+			remoteAddr: "127.0.0.1:53124",
+			wantStatus: http.StatusForbidden,
+		},
+		{
+			name:       "IPC-shaped caller without capability",
+			remoteAddr: "@",
+			wantStatus: http.StatusForbidden,
+		},
+		{
+			name:               "caller with matching capability",
+			suppliedCapability: capability,
+			remoteAddr:         "203.0.113.7:44321",
+			wantStatus:         http.StatusNoContent,
+		},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			ctrl := gomock.NewController(t)
+			svc := plugmocks.NewMockPluginService(ctrl)
+			if tc.wantStatus == http.StatusNoContent {
+				svc.EXPECT().Push(gomock.Any(), plugins.PushOptions{
+					Reference: "ghcr.io/test/plugin:v1",
+					Key:       "/home/dev/cosign.key",
+				}).Return(nil)
+			}
+
+			req := httptest.NewRequest(http.MethodPost, "/push",
+				strings.NewReader(`{"reference":"ghcr.io/test/plugin:v1","key":"/home/dev/cosign.key"}`))
+			req.Header.Set("Content-Type", "application/json")
+			if tc.suppliedCapability != "" {
+				req.Header.Set(discovery.KeySigningCapabilityHeader, tc.suppliedCapability)
+			}
+			req.RemoteAddr = tc.remoteAddr
+			rec := httptest.NewRecorder()
+			PluginsRouter(svc, WithKeySigningCapability(capability)).ServeHTTP(rec, req)
+
+			assert.Equal(t, tc.wantStatus, rec.Code, "body: %s", rec.Body.String())
+		})
+	}
 }

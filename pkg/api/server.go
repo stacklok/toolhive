@@ -461,7 +461,8 @@ func (b *ServerBuilder) setupDefaultRoutes(r *chi.Mux) {
 		v1.WithKeySigningCapability(b.keySigningCapability)))
 
 	// Plugins router likewise: install, build, and push move OCI artifacts.
-	r.Mount("/api/v1beta/plugins", v1.PluginsRouter(b.pluginManager))
+	r.Mount("/api/v1beta/plugins", v1.PluginsRouter(b.pluginManager,
+		v1.WithKeySigningCapability(b.keySigningCapability)))
 
 	// All other routes get standard timeout
 	standardRouters := map[string]http.Handler{

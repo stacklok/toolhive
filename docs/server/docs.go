@@ -3835,10 +3835,14 @@ const docTemplate = `{
                 "type": "object"
             },
             "pkg_api_v1.pushPluginRequest": {
-                "description": "Request to push a built plugin artifact. Exactly one of identity_token or no_sign is required.",
+                "description": "Request to push a built plugin artifact. Exactly one of key, identity_token, or no_sign is required.",
                 "properties": {
                     "identity_token": {
-                        "description": "IdentityToken is a short-lived OIDC identity token used for keyless\nsigning. Plugin signing is keyless-only: there is deliberately no key\nfield, because ToolHive cannot verify key-signed artifacts at install\ntime and would publish an uninstallable plugin (#6442)",
+                        "description": "IdentityToken is a short-lived OIDC identity token used for keyless\nsigning, mutually exclusive with Key",
+                        "type": "string"
+                    },
+                    "key": {
+                        "description": "Key is the path to a cosign private key, resolved on the server's\nfilesystem. Accepted only when the request carries the secret capability\nfrom the owner-protected local server discovery file; other requests are\nrefused with 403, since honoring one would let an untrusted caller have\nthe server sign with any key it can read. Use IdentityToken when calling\na remote or manually configured server. Consumers installing the result\nproject-scoped must supply the matching public key on first use\n(install's public_key).",
                         "type": "string"
                     },
                     "no_sign": {
@@ -5511,7 +5515,7 @@ const docTemplate = `{
                         "uniqueItems": false
                     },
                     "builder_image": {
-                        "description": "BuilderImage is the full image reference for the builder stage.\nAn empty string signals \"use the default for this transport type\" during config merging.\nExamples: \"golang:1.26-alpine\", \"node:24-alpine\", \"python:3.14-slim\"",
+                        "description": "BuilderImage is the full image reference for the builder stage.\nAn empty string signals \"use the default for this transport type\" during config merging.\nExamples: \"golang:1.27-alpine\", \"node:24-alpine\", \"python:3.14-slim\"",
                         "type": "string"
                     },
                     "runtime_env": {
@@ -6790,6 +6794,16 @@ const docTemplate = `{
         "/api/v1beta/plugins/push": {
             "post": {
                 "description": "Push a built plugin artifact to a remote registry",
+                "parameters": [
+                    {
+                        "description": "Local discovery capability (required with request.key)",
+                        "in": "header",
+                        "name": "X-Toolhive-Key-Signing-Capability",
+                        "schema": {
+                            "type": "string"
+                        }
+                    }
+                ],
                 "requestBody": {
                     "content": {
                         "application/json": {
@@ -6830,6 +6844,16 @@ const docTemplate = `{
                             }
                         },
                         "description": "Bad Request"
+                    },
+                    "403": {
+                        "content": {
+                            "application/json": {
+                                "schema": {
+                                    "type": "string"
+                                }
+                            }
+                        },
+                        "description": "Forbidden (key signing requires the local discovery capability)"
                     },
                     "404": {
                         "content": {
@@ -7274,20 +7298,11 @@ const docTemplate = `{
                 ]
             },
             "post": {
-                "description": "Add a new registry",
-                "requestBody": {
-                    "content": {
-                        "application/json": {
-                            "schema": {
-                                "type": "object"
-                            }
-                        }
-                    }
-                },
+                "description": "This endpoint is retained for API compatibility, accepts no request body, and always returns 501 Not Implemented.\nCustom registries are not currently supported.",
                 "responses": {
                     "501": {
                         "content": {
-                            "application/json": {
+                            "text/plain": {
                                 "schema": {
                                     "type": "string"
                                 }
@@ -7296,7 +7311,7 @@ const docTemplate = `{
                         "description": "Not Implemented"
                     }
                 },
-                "summary": "Add a registry",
+                "summary": "Add a registry (unavailable)",
                 "tags": [
                     "registry"
                 ]

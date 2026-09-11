@@ -12,9 +12,19 @@ import (
 	vmcpstatus "github.com/stacklok/toolhive/pkg/vmcp/status"
 )
 
-// versionPollInterval is how often to check the registry version for changes.
-// Exposed as a package-level var so tests can set a shorter interval.
-var versionPollInterval = 2 * time.Second
+// defaultVersionPollInterval is how often to check the registry version for
+// changes when a Server does not override it.
+const defaultVersionPollInterval = 2 * time.Second
+
+// pollInterval returns this Server's version-poll interval, falling back to the
+// package default. Reading it per-Server rather than from a mutable package var
+// is what lets a test shorten it while staying parallel-safe.
+func (s *Server) pollInterval() time.Duration {
+	if s.versionPollInterval > 0 {
+		return s.versionPollInterval
+	}
+	return defaultVersionPollInterval
+}
 
 // StatusReportingConfig configures periodic status reporting.
 type StatusReportingConfig struct {
@@ -75,7 +85,7 @@ func (s *Server) periodicStatusReporting(ctx context.Context, config StatusRepor
 	var versionTickerC <-chan time.Time
 	var lastRegistryVersion uint64
 	if isDynamic {
-		versionTicker := time.NewTicker(versionPollInterval)
+		versionTicker := time.NewTicker(s.pollInterval())
 		defer versionTicker.Stop()
 		versionTickerC = versionTicker.C
 	}

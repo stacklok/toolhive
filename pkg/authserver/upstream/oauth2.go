@@ -149,12 +149,12 @@ type OAuth2Config struct {
 
 	// TokenEndpointAuthMethod is the RFC 7591 client authentication method used
 	// at the token endpoint; see authStyleFromMethod for the mapping to
-	// oauth2.AuthStyle and the rationale. When empty, the historical default
-	// (POST body) is used.
+	// oauth2.AuthStyle and the rationale.
 	//
 	// When empty, the caller's provider-specific default applies. Static
-	// OAuth2UpstreamRunConfig clients with a secret default to client_secret_basic;
-	// DCR clients receive the negotiated method via applyResolutionToOAuth2Config.
+	// OAuth2UpstreamRunConfig clients default to the historical POST-body method
+	// regardless of whether a secret is configured; DCR clients receive the
+	// negotiated method via applyResolutionToOAuth2Config.
 	//nolint:lll // field tags require full JSON+YAML names
 	TokenEndpointAuthMethod string `json:"token_endpoint_auth_method,omitempty" yaml:"token_endpoint_auth_method,omitempty"`
 

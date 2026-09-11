@@ -825,9 +825,6 @@ func buildPureOAuth2Config(rc *authserver.UpstreamRunConfig, insecureAllowHTTP b
 	}
 
 	authMethod := oauth2.TokenEndpointAuthMethod
-	if authMethod == "" && clientSecret != "" {
-		authMethod = oauthproto.TokenEndpointAuthMethodClientSecretBasic
-	}
 	if isConfidentialAuthMethod(authMethod) && clientSecret == "" {
 		return nil, fmt.Errorf(
 			"oauth2 upstream: token_endpoint_auth_method %q requires a non-empty client secret, "+

@@ -4,7 +4,12 @@
 package mcp
 
 import (
+	"bytes"
 	"encoding/json"
+	"errors"
+	"fmt"
+	"io"
+	"math"
 )
 
 // ParsedMCPResponse contains the result of inspecting a JSON-RPC response
@@ -59,4 +64,83 @@ func ParseMCPResponse(body []byte) *ParsedMCPResponse {
 		ErrorCode:    envelope.Error.Code,
 		ErrorMessage: envelope.Error.Message,
 	}
+}
+
+// ValidateJSONRPCResponseBody strictly validates a JSON-RPC 2.0 response body.
+// Unlike ParseMCPResponse, this is an enforcement helper: malformed bodies return
+// an error instead of being treated as "no application error".
+func ValidateJSONRPCResponseBody(body []byte) error {
+	var payload any
+	dec := json.NewDecoder(bytes.NewReader(body))
+	if err := dec.Decode(&payload); err != nil {
+		return fmt.Errorf("invalid JSON body: %w", err)
+	}
+	if err := dec.Decode(&struct{}{}); !errors.Is(err, io.EOF) {
+		return fmt.Errorf("JSON-RPC response must contain a single JSON value")
+	}
+
+	switch value := payload.(type) {
+	case map[string]any:
+		return validateJSONRPCResponseObject(value)
+	case []any:
+		if len(value) == 0 {
+			return fmt.Errorf("JSON-RPC batch response must not be empty")
+		}
+		for i, item := range value {
+			obj, ok := item.(map[string]any)
+			if !ok {
+				return fmt.Errorf("JSON-RPC batch item %d must be an object", i)
+			}
+			if err := validateJSONRPCResponseObject(obj); err != nil {
+				return fmt.Errorf("JSON-RPC batch item %d is invalid: %w", i, err)
+			}
+		}
+		return nil
+	default:
+		return fmt.Errorf("JSON-RPC response must be an object or array")
+	}
+}
+
+func validateJSONRPCResponseObject(obj map[string]any) error {
+	if obj["jsonrpc"] != "2.0" {
+		return fmt.Errorf(`JSON-RPC response must include "jsonrpc":"2.0"`)
+	}
+
+	if _, ok := obj["id"]; !ok {
+		return fmt.Errorf("JSON-RPC response must include id")
+	}
+	if !isValidJSONRPCID(obj["id"]) {
+		return fmt.Errorf("JSON-RPC response id must be string, number, or null")
+	}
+
+	_, hasResult := obj["result"]
+	_, hasError := obj["error"]
+	if hasResult == hasError {
+		return fmt.Errorf("JSON-RPC response must include exactly one of result or error")
+	}
+	if hasError {
+		if errObj, ok := obj["error"].(map[string]any); !ok || !isValidJSONRPCError(errObj) {
+			return fmt.Errorf("JSON-RPC error response must include error.code and error.message")
+		}
+	}
+
+	return nil
+}
+
+func isValidJSONRPCID(id any) bool {
+	switch id.(type) {
+	case nil, string, float64:
+		return true
+	default:
+		return false
+	}
+}
+
+func isValidJSONRPCError(errObj map[string]any) bool {
+	code, codeOK := errObj["code"].(float64)
+	if !codeOK || math.Trunc(code) != code {
+		return false
+	}
+	_, messageOK := errObj["message"].(string)
+	return messageOK
 }

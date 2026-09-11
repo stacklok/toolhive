@@ -65,6 +65,13 @@ const (
 	MaxAssertionJTILength = 256
 )
 
+// DefaultDeviceCodeInterval is RFC 8628's suggested default minimum interval
+// between device-flow polls of the token endpoint, applied whenever
+// AuthorizationServerConfig.DeviceCodeInterval / AuthorizationServerParams.DeviceCodeInterval
+// is left at its zero value. A zero interval would defeat the interval's
+// purpose entirely, so it is never used as the enforced minimum.
+const DefaultDeviceCodeInterval = 5 * time.Second
+
 // AuthorizationServerConfig wraps fosite.Config with additional configuration
 // for JWT signing and other extensions.
 type AuthorizationServerConfig struct {
@@ -120,6 +127,17 @@ type AuthorizationServerConfig struct {
 	// only when this is true, mirroring how the grant itself is only
 	// registered with fosite when true (see buildProvider).
 	JWTBearerGrantEnabled bool
+	// DeviceFlowEnabled indicates that the RFC 8628 device authorization
+	// grant is registered and advertised. Discovery advertises
+	// urn:ietf:params:oauth:grant-type:device_code in grant_types_supported,
+	// and POST /oauth/device_authorization is mounted, only when this is true.
+	DeviceFlowEnabled bool
+	// DeviceCodeInterval is the minimum time a device-flow client must wait
+	// between polls of the token endpoint (RFC 8628 Section 3.5), and the
+	// value advertised in the device authorization response's "interval"
+	// field. Zero is replaced by DefaultDeviceCodeInterval wherever it would
+	// otherwise be used as the enforced minimum.
+	DeviceCodeInterval time.Duration
 	// SPIFFEClientResolver resolves a verified SPIFFE identity to its
 	// configured OAuth client for the SPIFFE client-authentication strategy.
 	// Nil when no SPIFFE trust is configured; package server cannot import
@@ -210,6 +228,14 @@ type AuthorizationServerParams struct {
 	// RFC 7523 JWT-bearer grant configured. See AuthorizationServerConfig's
 	// field of the same name.
 	JWTBearerGrantEnabled bool
+	// DeviceFlowEnabled indicates that the RFC 8628 device authorization
+	// grant should be registered and advertised. See AuthorizationServerConfig's
+	// field of the same name.
+	DeviceFlowEnabled bool
+	// DeviceCodeInterval is the minimum time a device-flow client must wait
+	// between polls of the token endpoint. See AuthorizationServerConfig's
+	// field of the same name.
+	DeviceCodeInterval time.Duration
 	// SPIFFEClientResolver resolves a verified SPIFFE identity to its
 	// configured OAuth client. Nil when no SPIFFE trust is configured.
 	// See the identically named field on AuthorizationServerConfig.
@@ -461,6 +487,8 @@ func NewAuthorizationServerConfig(cfg *AuthorizationServerParams) (*Authorizatio
 		ForceConfidentialRedirectURIs:             cfg.ForceConfidentialRedirectURIs,
 		TokenExchangeEnabled:                      !cfg.DisableTokenExchange,
 		JWTBearerGrantEnabled:                     cfg.JWTBearerGrantEnabled,
+		DeviceFlowEnabled:                         cfg.DeviceFlowEnabled,
+		DeviceCodeInterval:                        cfg.DeviceCodeInterval,
 		SPIFFEClientResolver:                      cfg.SPIFFEClientResolver,
 		SPIFFEX509BundleSource:                    cfg.SPIFFEX509BundleSource,
 		SPIFFEJWTBundleSource:                     cfg.SPIFFEJWTBundleSource,

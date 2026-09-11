@@ -118,6 +118,12 @@ type testServerOptions struct {
 	// allowPrivateKeyJWTRegistration, when true, enables DCR registration of
 	// clients authenticating with inline private_key_jwt credentials.
 	allowPrivateKeyJWTRegistration bool
+	// deviceFlowEnabled, when true, sets Config.DeviceFlowEnabled so
+	// /oauth/device_authorization is mounted and the device_code grant is
+	// registered at the token endpoint.
+	deviceFlowEnabled bool
+	// deviceCodeInterval, when non-zero, sets Config.DeviceCodeInterval.
+	deviceCodeInterval time.Duration
 }
 
 // testServerOption is a functional option for test server setup.
@@ -183,6 +189,23 @@ func withTrustedIssuers(issuers []tokenexchange.TrustedIssuer) testServerOption 
 func withForceConfidentialRedirectURIs(uris ...string) testServerOption {
 	return func(opts *testServerOptions) {
 		opts.forceConfidentialRedirectURIs = uris
+	}
+}
+
+// withDeviceFlowEnabled sets Config.DeviceFlowEnabled, enabling the RFC 8628
+// device authorization grant.
+func withDeviceFlowEnabled() testServerOption {
+	return func(opts *testServerOptions) {
+		opts.deviceFlowEnabled = true
+	}
+}
+
+// withDeviceCodeInterval sets Config.DeviceCodeInterval, overriding the
+// default minimum poll interval so tests can poll the token endpoint
+// repeatedly without tripping slow_down.
+func withDeviceCodeInterval(d time.Duration) testServerOption {
+	return func(opts *testServerOptions) {
+		opts.deviceCodeInterval = d
 	}
 }
 
@@ -327,6 +350,8 @@ func setupTestServer(t *testing.T, opts ...testServerOption) *testServer {
 		AllowConfidentialClientRegistration: options.allowConfidentialClientRegistration,
 		AllowPrivateKeyJWTRegistration:      options.allowPrivateKeyJWTRegistration,
 		ForceConfidentialRedirectURIs:       options.forceConfidentialRedirectURIs,
+		DeviceFlowEnabled:                   options.deviceFlowEnabled,
+		DeviceCodeInterval:                  options.deviceCodeInterval,
 		// The test server's issuer is a plain-HTTP loopback URL (genuinely
 		// local: an in-process httptest server), so opt in to the same
 		// combination withAllowConfidentialClientRegistration would otherwise
@@ -5456,4 +5481,119 @@ func TestNoUpstreamSessionClaimKeysMatch(t *testing.T) {
 
 	assert.Equal(t, session.NoUpstreamSessionClaimKey, upstreamtoken.NoUpstreamSessionClaimKey,
 		"the issuing and consuming spellings of the no-upstream-session claim must stay identical")
+}
+
+const testDeviceFlowClientID = "device-flow-client"
+
+// deviceFlowClient returns the public client this file's device-flow tests
+// register: device_code plus refresh_token, matching the CLI/native-app
+// shape RFC 8628 targets.
+func deviceFlowClient() *fosite.DefaultClient {
+	return &fosite.DefaultClient{
+		ID:         testDeviceFlowClientID,
+		GrantTypes: []string{oauthproto.GrantTypeDeviceCode, oauthproto.GrantTypeRefreshToken},
+		Scopes:     []string{"openid"},
+		Audience:   []string{testAudience},
+		Public:     true,
+	}
+}
+
+// postDeviceAuthorization POSTs form-encoded params to
+// /oauth/device_authorization and parses the JSON response.
+func postDeviceAuthorization(t *testing.T, serverURL string, params url.Values) (*http.Response, map[string]any) {
+	t.Helper()
+
+	req, err := http.NewRequest(http.MethodPost, serverURL+"/oauth/device_authorization", strings.NewReader(params.Encode()))
+	require.NoError(t, err)
+	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+
+	httpClient := &http.Client{Timeout: 10 * time.Second}
+	resp, err := httpClient.Do(req)
+	require.NoError(t, err)
+	t.Cleanup(func() { resp.Body.Close() })
+
+	var body map[string]any
+	if resp.StatusCode != http.StatusNotFound {
+		require.NoError(t, json.NewDecoder(resp.Body).Decode(&body))
+	}
+	return resp, body
+}
+
+// TestIntegration_DeviceAuthorizationEndpoint_Disabled asserts that
+// /oauth/device_authorization is not mounted at all when Config.DeviceFlowEnabled
+// is false — the enable/disable gate lives entirely in route registration.
+func TestIntegration_DeviceAuthorizationEndpoint_Disabled(t *testing.T) {
+	t.Parallel()
+
+	ts := setupTestServer(t, withExtraClient(deviceFlowClient()))
+
+	resp, _ := postDeviceAuthorization(t, ts.Server.URL, url.Values{"client_id": {testDeviceFlowClientID}})
+	assert.Equal(t, http.StatusNotFound, resp.StatusCode)
+}
+
+// TestIntegration_DeviceFlow_FullHappyPath drives RFC 8628 end to end: POST
+// /oauth/device_authorization, simulate the not-yet-built verification page
+// by calling storage.MarkDeviceRequestAuthorized directly, poll
+// /oauth/token before authorization (authorization_pending), poll it after
+// (200 with both access_token and refresh_token), and confirm the device_code
+// is single-use (a second redemption returns invalid_grant).
+func TestIntegration_DeviceFlow_FullHappyPath(t *testing.T) {
+	t.Parallel()
+
+	ts := setupTestServer(t, withExtraClient(deviceFlowClient()), withDeviceFlowEnabled(),
+		withDeviceCodeInterval(time.Millisecond))
+
+	resp, body := postDeviceAuthorization(t, ts.Server.URL, url.Values{
+		"client_id": {testDeviceFlowClientID},
+		"scope":     {"openid"},
+	})
+	require.Equal(t, http.StatusOK, resp.StatusCode, "body: %v", body)
+
+	deviceCode, ok := body["device_code"].(string)
+	require.True(t, ok, "device_code should be a string")
+	require.NotEmpty(t, deviceCode)
+	userCode, ok := body["user_code"].(string)
+	require.True(t, ok, "user_code should be a string")
+	require.NotEmpty(t, userCode)
+	require.NotEmpty(t, body["verification_uri"])
+	require.Contains(t, body["verification_uri_complete"], userCode)
+	require.Positive(t, body["expires_in"])
+
+	tokenParams := url.Values{
+		"grant_type":  {oauthproto.GrantTypeDeviceCode},
+		"device_code": {deviceCode},
+		"client_id":   {testDeviceFlowClientID},
+	}
+
+	// Polling before authorization: authorization_pending.
+	pendingResp := makeTokenRequest(t, ts.Server.URL, tokenParams)
+	pendingBody := parseTokenResponse(t, pendingResp)
+	pendingResp.Body.Close()
+	assert.Equal(t, http.StatusBadRequest, pendingResp.StatusCode)
+	assert.Equal(t, "authorization_pending", pendingBody["error"])
+
+	// Simulate the (not yet built) verification page approving the request.
+	// A short sleep guarantees the next poll clears the configured
+	// (deliberately tiny) MinInterval so the test exercises the "after
+	// authorization" success path rather than racing slow_down.
+	time.Sleep(20 * time.Millisecond)
+	deviceStorage, ok := ts.storage.(storage.DeviceCodeStorage)
+	require.True(t, ok, "test server storage must implement storage.DeviceCodeStorage")
+	require.NoError(t, deviceStorage.MarkDeviceRequestAuthorized(
+		context.Background(), deviceCode, "user-1", "Ada Lovelace", "ada@example.com", "session-1"))
+
+	// Polling after authorization: 200 with both tokens.
+	okResp := makeTokenRequest(t, ts.Server.URL, tokenParams)
+	okBody := parseTokenResponse(t, okResp)
+	okResp.Body.Close()
+	require.Equal(t, http.StatusOK, okResp.StatusCode, "body: %v", okBody)
+	assert.NotEmpty(t, okBody["access_token"])
+	assert.NotEmpty(t, okBody["refresh_token"])
+
+	// Single-use: redeeming the same device_code again fails.
+	replayResp := makeTokenRequest(t, ts.Server.URL, tokenParams)
+	replayBody := parseTokenResponse(t, replayResp)
+	replayResp.Body.Close()
+	assert.Equal(t, http.StatusBadRequest, replayResp.StatusCode)
+	assert.Equal(t, "invalid_grant", replayBody["error"])
 }

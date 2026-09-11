@@ -82,6 +82,20 @@ type Handler struct {
 	// Nil in tests that construct Handler directly; OAuthRoutes tolerates nil
 	// by skipping the gate.
 	cimdAuthorizeLimiter *rate.Limiter
+	// deviceAuthorizationLimiter bounds the unauthenticated
+	// /oauth/device_authorization endpoint, which mints persisted state
+	// (a device_code/user_code pair) on every call, exactly like
+	// /oauth/register. Same rate and same per-process (not per-IP)
+	// reasoning as registerLimiter. Nil when device flow is disabled — in
+	// that case OAuthRoutes never registers the route, so the nil limiter is
+	// never dereferenced. Also nil in tests that construct Handler directly.
+	deviceAuthorizationLimiter *rate.Limiter
+	// deviceCodeInterval is the minimum time a device-flow client must wait
+	// between polls of the token endpoint, and the value advertised in the
+	// device authorization response's "interval" field. Set from
+	// config.DeviceCodeInterval at construction, falling back to
+	// server.DefaultDeviceCodeInterval when that is zero.
+	deviceCodeInterval time.Duration
 }
 
 // UpstreamFilter narrows the authorization chain to a subset of the configured
@@ -203,11 +217,29 @@ func NewHandler(
 		// unauthenticated persisted-state minting, just reached through
 		// /oauth/authorize instead of /oauth/register.
 		cimdAuthorizeLimiter: rate.NewLimiter(rate.Limit(1), 5),
+		deviceCodeInterval:   deviceCodeInterval(config.DeviceCodeInterval),
+	}
+	if config.DeviceFlowEnabled {
+		// Same rate as registerLimiter: this gate protects the same kind of
+		// unauthenticated persisted-state minting, just reached through
+		// /oauth/device_authorization instead of /oauth/register.
+		h.deviceAuthorizationLimiter = rate.NewLimiter(rate.Limit(1), 5)
 	}
 	for _, o := range opts {
 		o(h)
 	}
 	return h, nil
+}
+
+// deviceCodeInterval returns configured, falling back to
+// server.DefaultDeviceCodeInterval when configured is zero. A zero interval
+// would defeat the interval's purpose of bounding poll frequency, so it is
+// never used as the enforced minimum.
+func deviceCodeInterval(configured time.Duration) time.Duration {
+	if configured <= 0 {
+		return server.DefaultDeviceCodeInterval
+	}
+	return configured
 }
 
 // Routes returns a router with all OAuth/OIDC endpoints registered.
@@ -224,6 +256,9 @@ func (h *Handler) OAuthRoutes(r chi.Router) {
 	r.Get("/oauth/callback", h.CallbackHandler)
 	r.Post("/oauth/token", h.TokenHandler)
 	r.Post("/oauth/register", h.rateLimitRegister(h.RegisterClientHandler))
+	if h.config.DeviceFlowEnabled {
+		r.Post("/oauth/device_authorization", h.rateLimitDeviceAuthorization(h.DeviceAuthorizationHandler))
+	}
 }
 
 // rateLimitRegister gates the unauthenticated registration endpoint: over the
@@ -263,6 +298,23 @@ func (h *Handler) rateLimitCIMDAuthorize(next http.HandlerFunc) http.HandlerFunc
 				http.Error(w, "rate limit exceeded, retry later", http.StatusTooManyRequests)
 				return
 			}
+		}
+		next(w, req)
+	}
+}
+
+// rateLimitDeviceAuthorization gates the unauthenticated
+// /oauth/device_authorization endpoint: over the limit it returns 429 with a
+// Retry-After hint rather than minting persisted state. Mirrors
+// rateLimitRegister exactly, including its nil-tolerant shape (nil when
+// device flow is disabled, in which case this wrapper is never installed by
+// OAuthRoutes anyway).
+func (h *Handler) rateLimitDeviceAuthorization(next http.HandlerFunc) http.HandlerFunc {
+	return func(w http.ResponseWriter, req *http.Request) {
+		if h.deviceAuthorizationLimiter != nil && !h.deviceAuthorizationLimiter.Allow() {
+			w.Header().Set("Retry-After", "1")
+			http.Error(w, "rate limit exceeded, retry later", http.StatusTooManyRequests)
+			return
 		}
 		next(w, req)
 	}

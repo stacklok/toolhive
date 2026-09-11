@@ -103,6 +103,10 @@ const (
 
 	// GrantTypeJWTBearer is the JWT Bearer grant type (RFC 7523).
 	GrantTypeJWTBearer = "urn:ietf:params:oauth:grant-type:jwt-bearer"
+
+	// GrantTypeDeviceCode is the OAuth 2.0 Device Authorization Grant's token
+	// grant type (RFC 8628 Section 3.4).
+	GrantTypeDeviceCode = "urn:ietf:params:oauth:grant-type:device_code"
 )
 
 // HTTP client constants.

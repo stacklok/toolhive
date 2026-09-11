@@ -11,7 +11,7 @@ import (
 
 	"github.com/redis/go-redis/v9"
 
-	tcredis "github.com/stacklok/toolhive-core/redis"
+	"github.com/stacklok/toolhive-core/redisconn"
 )
 
 // RedisStorage implements the Storage interface backed by Redis.
@@ -30,12 +30,12 @@ type RedisStorage struct {
 //
 // Connection-mode validation, timeout defaults, client construction (standalone,
 // cluster, or sentinel), TLS plumbing, and connectivity verification are
-// delegated to the shared toolhive-core redis package.
-func NewRedisStorage(ctx context.Context, cfg tcredis.Config, keyPrefix string, ttl time.Duration) (*RedisStorage, error) {
+// delegated to the shared toolhive-core redisconn package.
+func NewRedisStorage(ctx context.Context, cfg redisconn.Config, keyPrefix string, ttl time.Duration) (*RedisStorage, error) {
 	if err := validateSessionInvariants(keyPrefix, ttl); err != nil {
 		return nil, err
 	}
-	client, err := tcredis.NewClient(ctx, &cfg)
+	client, err := redisconn.NewClient(ctx, &cfg)
 	if err != nil {
 		return nil, err
 	}

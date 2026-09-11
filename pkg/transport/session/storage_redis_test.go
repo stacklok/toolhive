@@ -17,7 +17,7 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
-	tcredis "github.com/stacklok/toolhive-core/redis"
+	"github.com/stacklok/toolhive-core/redisconn"
 )
 
 // --- Test Helpers ---
@@ -94,7 +94,7 @@ func TestNewRedisStorageInvariants(t *testing.T) {
 			t.Parallel()
 			_, err := NewRedisStorage(
 				context.Background(),
-				tcredis.Config{Addr: "localhost:0"},
+				redisconn.Config{Addr: "localhost:0"},
 				tc.keyPrefix,
 				tc.ttl,
 			)
@@ -113,7 +113,7 @@ func TestNewRedisStorageACLAuth(t *testing.T) {
 		defer mr.Close()
 		mr.RequireUserAuth("alice", "secret")
 
-		storage, err := NewRedisStorage(context.Background(), tcredis.Config{
+		storage, err := NewRedisStorage(context.Background(), redisconn.Config{
 			Addr:     mr.Addr(),
 			Username: "alice",
 			Password: "secret",
@@ -135,7 +135,7 @@ func TestNewRedisStorageACLAuth(t *testing.T) {
 		defer mr.Close()
 		mr.RequireUserAuth("alice", "secret")
 
-		_, err := NewRedisStorage(context.Background(), tcredis.Config{
+		_, err := NewRedisStorage(context.Background(), redisconn.Config{
 			Addr:     mr.Addr(),
 			Username: "alice",
 			Password: "wrong",

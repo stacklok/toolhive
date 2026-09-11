@@ -963,10 +963,10 @@ type AuthenticationOAuth2UpstreamRunConfig struct {
 	// TokenEndpoint is the URL for the OAuth token endpoint.
 	TokenEndpoint OptString `json:"token_endpoint"`
 	// TokenEndpointAuthMethod selects how the client authenticates at the OAuth token
-	// endpoint. When empty and a client secret is configured, client_secret_basic is
-	// used, matching the RFC 7591 default for confidential clients. Set this to
-	// client_secret_post only for providers that require credentials in the request body.
-	// Public clients without a secret use the "none" method.
+	// endpoint. When empty, credentials are sent in the request body (the historical
+	// client_secret_post-shaped default). Set this to client_secret_basic explicitly
+	// for providers that require HTTP Basic auth. Public clients without a secret use
+	// the "none" method.
 	TokenEndpointAuthMethod OptString                                      `json:"token_endpoint_auth_method"`
 	TokenResponseMapping    OptAuthenticationTokenResponseMappingRunConfig `json:"token_response_mapping"`
 	Userinfo                OptAuthenticationUserInfoRunConfig             `json:"userinfo"`
@@ -15313,6 +15313,7 @@ type RegistryPlugin struct {
 	Namespace OptString `json:"namespace"`
 	// Packages is the list of packages for the plugin.
 	Packages   []RegistrySkillPackage     `json:"packages"`
+	Provenance OptRegistryProvenance      `json:"provenance"`
 	Repository OptRegistrySkillRepository `json:"repository"`
 	// Status is the status of the plugin.
 	// Can be one of "active", "deprecated", or "archived".
@@ -15364,6 +15365,11 @@ func (s *RegistryPlugin) GetNamespace() OptString {
 // GetPackages returns the value of Packages.
 func (s *RegistryPlugin) GetPackages() []RegistrySkillPackage {
 	return s.Packages
+}
+
+// GetProvenance returns the value of Provenance.
+func (s *RegistryPlugin) GetProvenance() OptRegistryProvenance {
+	return s.Provenance
 }
 
 // GetRepository returns the value of Repository.
@@ -15424,6 +15430,11 @@ func (s *RegistryPlugin) SetNamespace(val OptString) {
 // SetPackages sets the value of Packages.
 func (s *RegistryPlugin) SetPackages(val []RegistrySkillPackage) {
 	s.Packages = val
+}
+
+// SetProvenance sets the value of Provenance.
+func (s *RegistryPlugin) SetProvenance(val OptRegistryProvenance) {
+	s.Provenance = val
 }
 
 // SetRepository sets the value of Repository.

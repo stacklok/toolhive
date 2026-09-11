@@ -30,7 +30,7 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
-	tcredis "github.com/stacklok/toolhive-core/redis"
+	"github.com/stacklok/toolhive-core/redisconn"
 	"github.com/stacklok/toolhive/pkg/authserver/server/registration"
 	"github.com/stacklok/toolhive/pkg/authserver/server/session"
 	"github.com/stacklok/toolhive/pkg/oauthproto"
@@ -124,18 +124,18 @@ func newDCRClient(t *testing.T, id, method, secret string) fosite.Client {
 // TestNewRedisStorage_Validation covers the auth-server-specific invariants
 // enforced by NewRedisStorage. Connection-mode topology (Addr XOR Sentinel,
 // cluster requires Addr, sentinel master name and addresses) and credentials
-// are validated by the shared toolhive-core redis package and exercised in its
+// are validated by the shared toolhive-core redisconn package and exercised in its
 // own tests; NewRedisStorage does not mandate a password.
 func TestNewRedisStorage_Validation(t *testing.T) {
 	t.Parallel()
 
-	validCfg := func() tcredis.Config {
-		return tcredis.Config{Addr: "localhost:6379", Username: "user", Password: "pass"}
+	validCfg := func() redisconn.Config {
+		return redisconn.Config{Addr: "localhost:6379", Username: "user", Password: "pass"}
 	}
 
 	tests := []struct {
 		name      string
-		cfg       tcredis.Config
+		cfg       redisconn.Config
 		keyPrefix string
 		wantErr   string
 	}{
@@ -163,12 +163,12 @@ func TestNewRedisStorage_ConnectionFailure(t *testing.T) {
 
 	tests := []struct {
 		name string
-		cfg  tcredis.Config
+		cfg  redisconn.Config
 	}{
 		{
 			name: "sentinel mode",
-			cfg: tcredis.Config{
-				SentinelConfig: &tcredis.SentinelConfig{
+			cfg: redisconn.Config{
+				SentinelConfig: &redisconn.SentinelConfig{
 					MasterName:    "mymaster",
 					SentinelAddrs: []string{"localhost:99999"}, // Invalid port
 				},
@@ -179,7 +179,7 @@ func TestNewRedisStorage_ConnectionFailure(t *testing.T) {
 		},
 		{
 			name: "standalone mode",
-			cfg: tcredis.Config{
+			cfg: redisconn.Config{
 				Addr:        "localhost:19999",
 				Username:    "user",
 				Password:    "pass",
@@ -188,7 +188,7 @@ func TestNewRedisStorage_ConnectionFailure(t *testing.T) {
 		},
 		{
 			name: "cluster mode",
-			cfg: tcredis.Config{
+			cfg: redisconn.Config{
 				Addr:        "localhost:19998",
 				ClusterMode: true,
 				Username:    "user",
@@ -219,7 +219,7 @@ func TestNewRedisStorage_Standalone_WithMiniredis(t *testing.T) {
 	// supplied, so we use RequireUserAuth to match the configured username/password.
 	mr.RequireUserAuth("testuser", "testpass")
 
-	cfg := tcredis.Config{
+	cfg := redisconn.Config{
 		Addr:     mr.Addr(),
 		Username: "testuser",
 		Password: "testpass",
@@ -241,7 +241,7 @@ func TestNewRedisStorage_Standalone_Passwordless(t *testing.T) {
 
 	mr := miniredis.RunT(t) // no RequireUserAuth → auth disabled
 
-	cfg := tcredis.Config{Addr: mr.Addr()}
+	cfg := redisconn.Config{Addr: mr.Addr()}
 
 	ctx := context.Background()
 	s, err := NewRedisStorage(ctx, cfg, "test:")

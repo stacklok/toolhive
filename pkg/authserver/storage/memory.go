@@ -624,7 +624,7 @@ func (s *MemoryStorage) GetClient(_ context.Context, id string) (fosite.Client, 
 	client, ok := s.clients[id]
 	if !ok {
 		slog.Debug("client not found", "client_id", id)
-		return nil, fmt.Errorf("%w: %w", ErrNotFound, fosite.ErrNotFound.WithHint("Client not found"))
+		return nil, notFoundRFC6749Error("Client not found")
 	}
 	return client, nil
 }
@@ -751,7 +751,7 @@ func (s *MemoryStorage) GetAuthorizeCodeSession(_ context.Context, code string, 
 	entry, ok := s.authCodes[code]
 	if !ok {
 		slog.Debug("authorization code not found")
-		return nil, fmt.Errorf("%w: %w", ErrNotFound, fosite.ErrNotFound.WithHint("Authorization code not found"))
+		return nil, notFoundRFC6749Error("Authorization code not found")
 	}
 
 	// Check if the code has been invalidated
@@ -771,7 +771,7 @@ func (s *MemoryStorage) InvalidateAuthorizeCodeSession(_ context.Context, code s
 
 	if _, ok := s.authCodes[code]; !ok {
 		slog.Debug("authorization code not found for invalidation")
-		return fmt.Errorf("%w: %w", ErrNotFound, fosite.ErrNotFound.WithHint("Authorization code not found"))
+		return notFoundRFC6749Error("Authorization code not found")
 	}
 
 	now := time.Now()
@@ -822,7 +822,7 @@ func (s *MemoryStorage) GetAccessTokenSession(_ context.Context, signature strin
 	entry, ok := s.accessTokens[signature]
 	if !ok {
 		slog.Debug("access token not found")
-		return nil, fmt.Errorf("%w: %w", ErrNotFound, fosite.ErrNotFound.WithHint("Access token not found"))
+		return nil, notFoundRFC6749Error("Access token not found")
 	}
 	return entry.value, nil
 }
@@ -833,7 +833,7 @@ func (s *MemoryStorage) DeleteAccessTokenSession(_ context.Context, signature st
 	defer s.mu.Unlock()
 
 	if _, ok := s.accessTokens[signature]; !ok {
-		return fmt.Errorf("%w: %w", ErrNotFound, fosite.ErrNotFound.WithHint("Access token not found"))
+		return notFoundRFC6749Error("Access token not found")
 	}
 	delete(s.accessTokens, signature)
 	return nil
@@ -877,7 +877,7 @@ func (s *MemoryStorage) GetRefreshTokenSession(_ context.Context, signature stri
 	entry, ok := s.refreshTokens[signature]
 	if !ok {
 		slog.Debug("refresh token not found")
-		return nil, fmt.Errorf("%w: %w", ErrNotFound, fosite.ErrNotFound.WithHint("Refresh token not found"))
+		return nil, notFoundRFC6749Error("Refresh token not found")
 	}
 	return entry.value, nil
 }
@@ -888,7 +888,7 @@ func (s *MemoryStorage) DeleteRefreshTokenSession(_ context.Context, signature s
 	defer s.mu.Unlock()
 
 	if _, ok := s.refreshTokens[signature]; !ok {
-		return fmt.Errorf("%w: %w", ErrNotFound, fosite.ErrNotFound.WithHint("Refresh token not found"))
+		return notFoundRFC6749Error("Refresh token not found")
 	}
 	delete(s.refreshTokens, signature)
 	return nil
@@ -1005,7 +1005,7 @@ func (s *MemoryStorage) GetPKCERequestSession(_ context.Context, signature strin
 	entry, ok := s.pkceRequests[signature]
 	if !ok {
 		slog.Debug("pkce request not found")
-		return nil, fmt.Errorf("%w: %w", ErrNotFound, fosite.ErrNotFound.WithHint("PKCE request not found"))
+		return nil, notFoundRFC6749Error("PKCE request not found")
 	}
 	return entry.value, nil
 }
@@ -1016,7 +1016,7 @@ func (s *MemoryStorage) DeletePKCERequestSession(_ context.Context, signature st
 	defer s.mu.Unlock()
 
 	if _, ok := s.pkceRequests[signature]; !ok {
-		return fmt.Errorf("%w: %w", ErrNotFound, fosite.ErrNotFound.WithHint("PKCE request not found"))
+		return notFoundRFC6749Error("PKCE request not found")
 	}
 	delete(s.pkceRequests, signature)
 	return nil
@@ -1147,7 +1147,7 @@ func (s *MemoryStorage) GetUpstreamTokens(_ context.Context, sessionID, provider
 	entry, ok := s.upstreamTokens[upstreamKey{sessionID, providerName}]
 	if !ok {
 		slog.Debug("upstream tokens not found", "session_id", sessionID, "provider_name", providerName)
-		return nil, fmt.Errorf("%w: %w", ErrNotFound, fosite.ErrNotFound.WithHint("Upstream tokens not found"))
+		return nil, notFoundRFC6749Error("Upstream tokens not found")
 	}
 
 	// Return a defensive copy to prevent aliasing issues
@@ -1200,7 +1200,7 @@ func (s *MemoryStorage) DeleteUpstreamTokens(_ context.Context, sessionID string
 		}
 	}
 	if !found {
-		return fmt.Errorf("%w: %w", ErrNotFound, fosite.ErrNotFound.WithHint("Upstream tokens not found"))
+		return notFoundRFC6749Error("Upstream tokens not found")
 	}
 	return nil
 }
@@ -1266,7 +1266,7 @@ func (s *MemoryStorage) GetLatestUpstreamTokensForUser(_ context.Context, userID
 	}
 
 	if winner == nil {
-		return nil, fmt.Errorf("%w: %w", ErrNotFound, fosite.ErrNotFound.WithHint("Upstream tokens not found"))
+		return nil, notFoundRFC6749Error("Upstream tokens not found")
 	}
 
 	return cloneUpstreamTokens(winner), nil
@@ -1331,7 +1331,7 @@ func (s *MemoryStorage) LoadPendingAuthorization(_ context.Context, state string
 	entry, ok := s.pendingAuthorizations[state]
 	if !ok {
 		slog.Debug("pending authorization not found")
-		return nil, fmt.Errorf("%w: %w", ErrNotFound, fosite.ErrNotFound.WithHint("Pending authorization not found"))
+		return nil, notFoundRFC6749Error("Pending authorization not found")
 	}
 
 	// Check if expired
@@ -1372,7 +1372,7 @@ func (s *MemoryStorage) DeletePendingAuthorization(_ context.Context, state stri
 	defer s.mu.Unlock()
 
 	if _, ok := s.pendingAuthorizations[state]; !ok {
-		return fmt.Errorf("%w: %w", ErrNotFound, fosite.ErrNotFound.WithHint("Pending authorization not found"))
+		return notFoundRFC6749Error("Pending authorization not found")
 	}
 	delete(s.pendingAuthorizations, state)
 	return nil
@@ -1646,7 +1646,7 @@ func (s *MemoryStorage) GetDCRCredentials(_ context.Context, key DCRKey) (*DCRCr
 			"upstream_id", key.UpstreamID,
 			"redirect_uri", key.RedirectURI,
 		)
-		return nil, fmt.Errorf("%w: %w", ErrNotFound, fosite.ErrNotFound.WithHint("DCR credentials not found"))
+		return nil, notFoundRFC6749Error("DCR credentials not found")
 	}
 
 	return cloneDCRCredentials(entry), nil

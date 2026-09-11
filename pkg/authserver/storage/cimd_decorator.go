@@ -343,11 +343,7 @@ func (d *CIMDStorageDecorator) resolveScopes(
 			if dcrErr != nil {
 				slog.WarnContext(ctx, "CIMD client rejected: no usable default scopes",
 					"client_id", id, "error", dcrErr.ErrorDescription)
-				return nil, fmt.Errorf("%w: CIMD document at %s omits scope and "+
-					"none of the default scopes are supported by this server — "+
-					"the document must explicitly declare its required scopes",
-					fosite.ErrInvalidClient.WithHint("scope field required"),
-					id)
+				return nil, fosite.ErrInvalidClient.WithHint("scope field required")
 			}
 			resolvedScopes = computed
 			droppedDefaults = dropped

@@ -1,6 +1,6 @@
 module github.com/stacklok/toolhive
 
-go 1.27
+go 1.27.0
 
 require (
 	cel.dev/cel-go v0.32.0
@@ -59,14 +59,14 @@ require (
 	github.com/redis/go-redis/v9 v9.22.0
 	github.com/shirou/gopsutil/v4 v4.26.8
 	github.com/sigstore/protobuf-specs v0.5.2
-	github.com/sigstore/sigstore v1.10.9
+	github.com/sigstore/sigstore v1.10.10
 	github.com/sigstore/sigstore-go v1.3.0
 	github.com/spf13/cobra v1.10.2
 	github.com/spf13/pflag v1.0.10
 	github.com/spf13/viper v1.21.0
 	github.com/spiffe/go-spiffe/v2 v2.8.1
 	github.com/stacklok/toolhive-catalog v0.20260908.0
-	github.com/stacklok/toolhive-core v0.0.45
+	github.com/stacklok/toolhive-core v0.0.47
 	github.com/stretchr/testify v1.12.1
 	github.com/swaggo/swag/v2 v2.0.0-rc5
 	github.com/tailscale/hujson v0.0.0-20260727124030-b80ff77dac4f
@@ -292,7 +292,7 @@ require (
 	github.com/skeema/knownhosts v1.3.2 // indirect
 	github.com/spf13/afero v1.15.0 // indirect
 	github.com/spf13/cast v1.10.0 // indirect
-	github.com/stacklok/toolhive-core/redisconn v0.0.1 // indirect
+	github.com/stacklok/toolhive-core/redisconn v0.0.2 // indirect
 	github.com/stacklok/toolhive-core/redisconn/aws v0.0.1 // indirect
 	github.com/stacklok/toolhive-core/redisconn/azure v0.0.1 // indirect
 	github.com/stacklok/toolhive-core/redisconn/gcp v0.0.1 // indirect

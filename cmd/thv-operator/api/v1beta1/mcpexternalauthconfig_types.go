@@ -2786,20 +2786,8 @@ func (*MCPExternalAuthConfig) validateUpstreamProvider(index int, provider *Upst
 		return err
 	}
 
-	if provider.Type == UpstreamProviderTypeOIDC {
-		if err := ValidateOIDCDCRConfig(provider.OIDCConfig); err != nil {
-			return fmt.Errorf("%s: %w", prefix, err)
-		}
-	}
-
-	// The discriminator above guarantees OAuth2Config != nil when type is oauth2.
-	if provider.Type == UpstreamProviderTypeOAuth2 {
-		if err := ValidateOAuth2DCRConfig(provider.OAuth2Config); err != nil {
-			return fmt.Errorf("%s: %w", prefix, err)
-		}
-		if err := validateOAuth2UpstreamConfig(provider.OAuth2Config); err != nil {
-			return fmt.Errorf("%s: %w", prefix, err)
-		}
+	if err := validateUpstreamProviderTypeConfig(prefix, provider); err != nil {
+		return err
 	}
 
 	// Validate additionalAuthorizationParams does not contain reserved keys
@@ -2809,6 +2797,29 @@ func (*MCPExternalAuthConfig) validateUpstreamProvider(index int, provider *Upst
 
 	// Validate additionalTokenParams does not contain reserved keys
 	return ValidateAdditionalTokenParams(prefix, provider.AdditionalTokenParams())
+}
+
+// validateUpstreamProviderTypeConfig runs the checks that only apply to the
+// provider's declared type. Split out of validateUpstreamProvider to keep that
+// function under the cyclomatic limit, in the same shape as
+// validateUpstreamProviderCABundle below.
+func validateUpstreamProviderTypeConfig(prefix string, provider *UpstreamProviderConfig) error {
+	// The discriminator checked by the caller guarantees the type-matched
+	// config is non-nil here.
+	switch provider.Type {
+	case UpstreamProviderTypeOIDC:
+		if err := ValidateOIDCDCRConfig(provider.OIDCConfig); err != nil {
+			return fmt.Errorf("%s: %w", prefix, err)
+		}
+	case UpstreamProviderTypeOAuth2:
+		if err := ValidateOAuth2DCRConfig(provider.OAuth2Config); err != nil {
+			return fmt.Errorf("%s: %w", prefix, err)
+		}
+		if err := validateOAuth2UpstreamConfig(provider.OAuth2Config); err != nil {
+			return fmt.Errorf("%s: %w", prefix, err)
+		}
+	}
+	return nil
 }
 
 func validateUpstreamProviderCABundle(prefix string, provider *UpstreamProviderConfig) error {

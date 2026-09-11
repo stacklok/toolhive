@@ -19,17 +19,20 @@ import (
 
 // PluginsRoutes defines the routes for plugin management.
 type PluginsRoutes struct {
-	pluginService plugins.PluginService
-	lockService   plugins.PluginLockService
+	pluginService        plugins.PluginService
+	lockService          plugins.PluginLockService
+	keySigningCapability string
 }
 
 // PluginsRouter creates a new router for plugin management endpoints. If
 // pluginService's concrete implementation also satisfies plugins.PluginLockService
 // (as pluginsvc.New's does), /sync and /upgrade are served; otherwise both
 // return 501.
-func PluginsRouter(pluginService plugins.PluginService) http.Handler {
+func PluginsRouter(pluginService plugins.PluginService, opts ...RouterOption) http.Handler {
+	cfg := newRouterConfig(opts)
 	routes := PluginsRoutes{
-		pluginService: pluginService,
+		pluginService:        pluginService,
+		keySigningCapability: cfg.keySigningCapability,
 	}
 	if lockSvc, ok := pluginService.(plugins.PluginLockService); ok {
 		routes.lockService = lockSvc
@@ -306,18 +309,20 @@ func (s *PluginsRoutes) buildPlugin(w http.ResponseWriter, r *http.Request) erro
 //	@Tags			plugins
 //	@Accept			json
 //	@Param			request	body	pushPluginRequest	true	"Push request"
+//	@Param			X-Toolhive-Key-Signing-Capability	header	string	false	"Local discovery capability (required with request.key)"
 //	@Success		204		{string}	string	"No Content"
 //	@Failure		400		{string}	string	"Bad Request"
+//	@Failure		403		{string}	string	"Forbidden (key signing requires the local discovery capability)"
 //	@Failure		404		{string}	string	"Not Found"
 //	@Failure		500		{string}	string	"Internal Server Error"
 //	@Router			/api/v1beta/plugins/push [post]
 func (s *PluginsRoutes) pushPlugin(w http.ResponseWriter, r *http.Request) error {
 	var req pushPluginRequest
-	// Unknown fields are rejected on this endpoint specifically. Push is the
-	// only credential-bearing plugin request, and the field most likely to
-	// arrive unrecognized is "key": plugin signing is keyless-only (#6442),
-	// so silently discarding a key would answer "please sign this with my
-	// key" with an unsigned publish. A 400 naming the field says no.
+	// Unknown fields are rejected on this endpoint specifically: push is the
+	// only credential-bearing plugin request, so a misspelled signing field
+	// must fail loudly rather than decode to "sign however you like" — the
+	// worst outcome being an unsigned publish in answer to a request that
+	// asked to be signed.
 	dec := json.NewDecoder(r.Body)
 	dec.DisallowUnknownFields()
 	if err := dec.Decode(&req); err != nil {
@@ -334,11 +339,31 @@ func (s *PluginsRoutes) pushPlugin(w http.ResponseWriter, r *http.Request) error
 		)
 	}
 
-	if err := s.pluginService.Push(r.Context(), plugins.PushOptions{
+	opts := plugins.PushOptions{
 		Reference:     req.Reference,
+		Key:           req.Key,
 		IdentityToken: req.IdentityToken,
 		NoSign:        req.NoSign,
-	}); err != nil {
+	}
+
+	// The endpoint's contract — exactly one of key, identity_token, or
+	// no_sign — is enforced here at the trust boundary rather than left to
+	// whichever PluginService implementation is wired in, so a direct or
+	// generated client sending only a reference gets a 400 from the API
+	// itself. The service validates again for in-process callers.
+	if err := plugins.ValidatePushSigning(opts); err != nil {
+		return err
+	}
+
+	// Checked before dispatch: the service would otherwise open the key.
+	// Same guard as skills/push — a private-key path is resolved by THIS
+	// process, so an untrusted caller naming one would be asking the server to
+	// sign with a key it never supplied.
+	if err := requireKeySigningCapability(r, s.keySigningCapability, req.Key); err != nil {
+		return err
+	}
+
+	if err := s.pluginService.Push(r.Context(), opts); err != nil {
 		return err
 	}
 

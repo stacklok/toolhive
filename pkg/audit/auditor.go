@@ -60,10 +60,29 @@ type Auditor struct {
 	auditLogger   *slog.Logger
 	transportType string // e.g., "sse", "streamable-http"
 	logWriter     io.Writer
+
+	credentialPassthroughHeaders []string // canonicalized
+}
+
+// AuditorOption configures an Auditor at construction time.
+type AuditorOption func(*Auditor)
+
+// WithCredentialPassthroughHeaders tells the Auditor which credential headers the
+// surrounding proxy forwards verbatim to backends, so requests carrying one are
+// attributable after the fact. Records header names only, under
+// MetadataExtraKeyCredentialPassthrough — never their values. Unset by default.
+func WithCredentialPassthroughHeaders(names []string) AuditorOption {
+	return func(a *Auditor) {
+		canonical := make([]string, 0, len(names))
+		for _, name := range names {
+			canonical = append(canonical, http.CanonicalHeaderKey(name))
+		}
+		a.credentialPassthroughHeaders = canonical
+	}
 }
 
 // NewAuditorWithTransport creates a new Auditor with the given configuration and transport information.
-func NewAuditorWithTransport(config *Config, transportType string) (*Auditor, error) {
+func NewAuditorWithTransport(config *Config, transportType string, opts ...AuditorOption) (*Auditor, error) {
 	var logWriter io.Writer = os.Stdout // default to stdout
 
 	if config != nil {
@@ -77,12 +96,16 @@ func NewAuditorWithTransport(config *Config, transportType string) (*Auditor, er
 		logWriter = w
 	}
 
-	return &Auditor{
+	auditor := &Auditor{
 		config:        config,
 		auditLogger:   NewAuditLogger(logWriter),
 		transportType: transportType,
 		logWriter:     logWriter,
-	}, nil
+	}
+	for _, opt := range opts {
+		opt(auditor)
+	}
+	return auditor, nil
 }
 
 // Close closes the underlying log writer if it implements io.Closer.
@@ -700,6 +723,24 @@ func (a *Auditor) addMetadata(event *AuditEvent, r *http.Request, duration time.
 	if backendInfo, ok := BackendInfoFromContext(r.Context()); ok && backendInfo != nil && backendInfo.BackendName != "" {
 		event.Metadata.Extra["backend_name"] = backendInfo.BackendName
 	}
+
+	// Read off the inbound request, so this reflects what the caller actually sent
+	// rather than what the allowlist permits.
+	if forwarded := a.forwardedCredentialHeaders(r); len(forwarded) > 0 {
+		event.Metadata.Extra[MetadataExtraKeyCredentialPassthrough] = forwarded
+	}
+}
+
+// forwardedCredentialHeaders returns the configured credential passthrough header
+// names present on r. Values are never returned.
+func (a *Auditor) forwardedCredentialHeaders(r *http.Request) []string {
+	var present []string
+	for _, name := range a.credentialPassthroughHeaders {
+		if r.Header.Get(name) != "" {
+			present = append(present, name)
+		}
+	}
+	return present
 }
 
 // addEventData adds request/response data to the audit event if configured.

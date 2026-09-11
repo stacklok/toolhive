@@ -43,6 +43,10 @@ type headerForwardRoundTripper struct {
 // overlapping name those stages still win on the wire. Restricted names are
 // blocked at resolve time, so user-supplied config cannot reach this point
 // for Host, hop-by-hop, or X-Forwarded-* anyway.
+//
+// SECURITY: skipping rather than overwriting is load-bearing for
+// Config.AllowCredentialHeaderPassthrough — it is what keeps a caller's forwarded
+// Authorization off backends that mint their own token.
 func (h *headerForwardRoundTripper) RoundTrip(req *http.Request) (*http.Response, error) {
 	if len(h.headers) == 0 {
 		return h.base.RoundTrip(req)

@@ -132,7 +132,7 @@ type AuthorizationServerConfig struct {
 	// each independently extending this struct.
 	SPIFFEX509BundleSource x509bundle.Source
 	// SPIFFEJWTBundleSource provides JWT bundles for verifying SPIFFE
-	// JWT-SVID client assertions. See SPIFFEX509BundleSource.
+	// JWT-SVID client assertions, read by newSPIFFEClientAuthenticationStrategy.
 	SPIFFEJWTBundleSource jwtbundle.Source
 }
 
@@ -213,7 +213,7 @@ type AuthorizationServerParams struct {
 	// struct.
 	SPIFFEX509BundleSource x509bundle.Source
 	// SPIFFEJWTBundleSource provides JWT bundles for verifying SPIFFE
-	// JWT-SVID client assertions. See SPIFFEX509BundleSource.
+	// JWT-SVID client assertions, copied through to AuthorizationServerConfig.
 	SPIFFEJWTBundleSource jwtbundle.Source
 }
 
@@ -476,7 +476,8 @@ func NewAuthorizationServer(
 		return provider.DefaultClientAuthenticationStrategy
 	}()
 	fositeConfig.ClientAuthenticationStrategy = newSPIFFEClientAuthenticationStrategy(
-		defaultStrategy, providerConfig.SPIFFEClientResolver,
+		defaultStrategy, config.GetAccessTokenIssuer(),
+		config.SPIFFEJWTBundleSource, providerConfig.SPIFFEClientResolver,
 	)
 
 	for _, factory := range factories {

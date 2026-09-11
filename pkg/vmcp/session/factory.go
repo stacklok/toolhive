@@ -460,9 +460,6 @@ func (f *defaultMultiSessionFactory) initOneBackend(
 	return &initResult{target: target, conn: conn, caps: caps}, false
 }
 
-// isKnownModern reports whether workloadID's cached revision is confirmed
-// Modern. Returns false for an unprobed backend or when no lookup is
-// configured — indistinguishable from "attempt the connect" in either case.
 // listChangedEnabled reports whether workloadID should be subscribed to. No
 // filter means subscribe, preserving the historical behaviour.
 func (f *defaultMultiSessionFactory) listChangedEnabled(workloadID string) bool {
@@ -472,6 +469,9 @@ func (f *defaultMultiSessionFactory) listChangedEnabled(workloadID string) bool 
 	return f.listChangedAllowed(workloadID)
 }
 
+// isKnownModern reports whether workloadID's cached revision is confirmed
+// Modern. Returns false for an unprobed backend or when no lookup is
+// configured — indistinguishable from "attempt the connect" in either case.
 func (f *defaultMultiSessionFactory) isKnownModern(workloadID string) bool {
 	if f.revisionLookup == nil {
 		return false

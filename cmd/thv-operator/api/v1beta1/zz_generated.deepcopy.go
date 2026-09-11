@@ -2411,6 +2411,13 @@ func (in *OAuth2UpstreamConfig) DeepCopyInto(out *OAuth2UpstreamConfig) {
 			(*out)[key] = val
 		}
 	}
+	if in.AdditionalTokenParams != nil {
+		in, out := &in.AdditionalTokenParams, &out.AdditionalTokenParams
+		*out = make(map[string]string, len(*in))
+		for key, val := range *in {
+			(*out)[key] = val
+		}
+	}
 	if in.CABundleRef != nil {
 		in, out := &in.CABundleRef, &out.CABundleRef
 		*out = new(CABundleSource)
@@ -2488,6 +2495,13 @@ func (in *OIDCUpstreamConfig) DeepCopyInto(out *OIDCUpstreamConfig) {
 	}
 	if in.AdditionalAuthorizationParams != nil {
 		in, out := &in.AdditionalAuthorizationParams, &out.AdditionalAuthorizationParams
+		*out = make(map[string]string, len(*in))
+		for key, val := range *in {
+			(*out)[key] = val
+		}
+	}
+	if in.AdditionalTokenParams != nil {
+		in, out := &in.AdditionalTokenParams, &out.AdditionalTokenParams
 		*out = make(map[string]string, len(*in))
 		for key, val := range *in {
 			(*out)[key] = val

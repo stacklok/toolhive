@@ -5,6 +5,7 @@ package runner
 
 import (
 	"fmt"
+	"strings"
 
 	"github.com/stacklok/toolhive/pkg/auth/dcr"
 	"github.com/stacklok/toolhive/pkg/authserver"
@@ -13,76 +14,81 @@ import (
 
 // This file contains the embedded-authserver-specific adapter layer between
 // pkg/auth/dcr's profile-neutral API and the authserver's domain types
-// (authserver.OAuth2UpstreamRunConfig, upstream.OAuth2Config). Each helper
+// (authserver.UpstreamRunConfig, upstream.OAuth2Config, upstream.OIDCConfig). Each helper
 // here:
 //
-//   - needsDCR reports whether an OAuth2UpstreamRunConfig requires DCR.
-//   - newDCRRequest converts an OAuth2UpstreamRunConfig into the
-//     profile-neutral dcr.Request the resolver expects, including resolving
-//     the file-or-env InitialAccessToken into an inline string.
-//   - consumeResolution / applyResolutionToOAuth2Config fold the returned
-//     dcr.Resolution back into the run-config and built OAuth2Config.
-//     Both are value-in / value-out: the caller's original is never
-//     observably mutated, and the no-mutation contract is compile-time
-//     enforced by the signatures rather than a prose discipline.
+//   - newDCRRequest converts either typed upstream run-config into the
+//     profile-neutral dcr.Request, including resolving the file-or-env token.
+//   - consumeResolution / consumeOIDCResolution and the apply helpers fold the
+//     returned dcr.Resolution back into run-config and built provider configs.
+//     Both are value-in / value-out: the caller's original is never observably
+//     mutated.
 //
 // Keeping these helpers in the runner package (not pkg/auth/dcr) is the
 // architectural split the dcr package's profile-agnostic charter requires:
 // dcr cannot import authserver, but the embedded authserver freely depends
 // on dcr.
 
-// needsDCR reports whether rc requires runtime Dynamic Client Registration.
-// A run-config needs DCR exactly when ClientID is empty and DCRConfig is
-// non-nil (the mutually-exclusive constraint is enforced by
-// OAuth2UpstreamRunConfig.Validate; this helper is a convenience check).
-func needsDCR(rc *authserver.OAuth2UpstreamRunConfig) bool {
+// newDCRRequest builds the profile-neutral dcr.Request for an upstream that
+// requires runtime Dynamic Client Registration. It returns nil when the
+// upstream has a pre-provisioned client.
+func newDCRRequest(rc *authserver.UpstreamRunConfig, localIssuer string) (*dcr.Request, error) {
 	if rc == nil {
-		return false
-	}
-	return rc.ClientID == "" && rc.DCRConfig != nil
-}
-
-// newDCRRequest builds the profile-neutral dcr.Request from an
-// OAuth2UpstreamRunConfig and this auth server's local issuer. The caller
-// has already validated the run-config (Validate() enforces
-// ClientID xor DCRConfig and the DCRConfig-internal one-of constraint), so
-// this function does not re-check those invariants — it only resolves the
-// file-or-env InitialAccessToken reference into an inline string.
-//
-// localIssuer is *this* auth server's issuer identifier, used by the
-// resolver for cache keying and to default the redirect URI to
-// {localIssuer}/oauth/callback when rc.RedirectURI is empty. The upstream
-// issuer is recovered separately from rc.DCRConfig.DiscoveryURL inside the
-// resolver and is used solely for RFC 8414 §3.3 metadata verification.
-func newDCRRequest(rc *authserver.OAuth2UpstreamRunConfig, localIssuer string) (*dcr.Request, error) {
-	if rc == nil {
-		return nil, fmt.Errorf("oauth2 upstream run-config is required")
-	}
-	if rc.DCRConfig == nil {
-		return nil, fmt.Errorf("dcr: oauth2 upstream has no dcr_config")
+		return nil, fmt.Errorf("upstream run-config is required")
 	}
 
-	initialAccessToken, err := resolveSecret(
-		rc.DCRConfig.InitialAccessTokenFile,
-		rc.DCRConfig.InitialAccessTokenEnvVar,
+	var (
+		clientID              string
+		dcrConfig             *authserver.DCRUpstreamConfig
+		redirectURI           string
+		scopes                []string
+		caFilePath            string
+		allowPrivateIPs       bool
+		authorizationEndpoint string
+		tokenEndpoint         string
 	)
+	switch rc.Type {
+	case authserver.UpstreamProviderTypeOIDC:
+		if rc.OIDCConfig == nil {
+			return nil, fmt.Errorf("oidc upstream run-config is required")
+		}
+		clientID = rc.OIDCConfig.ClientID
+		dcrConfig = rc.OIDCConfig.DCRConfig
+		redirectURI = rc.OIDCConfig.RedirectURI
+		scopes = rc.OIDCConfig.Scopes
+		caFilePath = rc.OIDCConfig.CAFilePath
+		allowPrivateIPs = rc.OIDCConfig.AllowPrivateIPs
+	case authserver.UpstreamProviderTypeOAuth2:
+		if rc.OAuth2Config == nil {
+			return nil, fmt.Errorf("oauth2 upstream run-config is required")
+		}
+		clientID = rc.OAuth2Config.ClientID
+		dcrConfig = rc.OAuth2Config.DCRConfig
+		redirectURI = rc.OAuth2Config.RedirectURI
+		scopes = rc.OAuth2Config.Scopes
+		caFilePath = rc.OAuth2Config.CAFilePath
+		allowPrivateIPs = rc.OAuth2Config.AllowPrivateIPs
+		authorizationEndpoint, tokenEndpoint = rc.OAuth2Config.AuthorizationEndpoint, rc.OAuth2Config.TokenEndpoint
+	default:
+		return nil, fmt.Errorf("unsupported upstream type: %s", rc.Type)
+	}
+	if clientID != "" || dcrConfig == nil {
+		return nil, nil
+	}
+
+	discoveryURL := dcrConfig.DiscoveryURL
+	if rc.Type == authserver.UpstreamProviderTypeOIDC && discoveryURL == "" && dcrConfig.RegistrationEndpoint == "" {
+		discoveryURL = strings.TrimRight(rc.OIDCConfig.IssuerURL, "/") + "/.well-known/openid-configuration"
+	}
+	initialAccessToken, err := resolveSecret(dcrConfig.InitialAccessTokenFile, dcrConfig.InitialAccessTokenEnvVar)
 	if err != nil {
 		return nil, fmt.Errorf("dcr: resolve initial access token: %w", err)
 	}
-
 	return &dcr.Request{
-		Issuer:                localIssuer,
-		RedirectURI:           rc.RedirectURI,
-		Scopes:                rc.Scopes,
-		DiscoveryURL:          rc.DCRConfig.DiscoveryURL,
-		RegistrationEndpoint:  rc.DCRConfig.RegistrationEndpoint,
-		AuthorizationEndpoint: rc.AuthorizationEndpoint,
-		TokenEndpoint:         rc.TokenEndpoint,
-		InitialAccessToken:    initialAccessToken,
-		// Reuse the upstream's private-IP policy so the DCR discovery and
-		// registration calls share the same SSRF posture as its token and
-		// userinfo calls (see upstream.OAuth2Config.AllowPrivateIPs).
-		AllowPrivateIPs: rc.AllowPrivateIPs,
+		Issuer: localIssuer, RedirectURI: redirectURI, Scopes: scopes,
+		DiscoveryURL: discoveryURL, RegistrationEndpoint: dcrConfig.RegistrationEndpoint,
+		AuthorizationEndpoint: authorizationEndpoint, TokenEndpoint: tokenEndpoint,
+		InitialAccessToken: initialAccessToken, CAFilePath: caFilePath, AllowPrivateIPs: allowPrivateIPs,
 	}, nil
 }
 
@@ -146,7 +152,27 @@ func consumeResolution(rc authserver.OAuth2UpstreamRunConfig, res *dcr.Resolutio
 	return rc
 }
 
-// applyResolutionToOAuth2Config returns a copy of cfg with the DCR-
+func consumeOIDCResolution(cfg authserver.OIDCUpstreamRunConfig, res *dcr.Resolution) authserver.OIDCUpstreamRunConfig {
+	if res == nil {
+		return cfg
+	}
+	if cfg.ClientID == "" {
+		cfg.ClientID = res.ClientID
+	}
+	if cfg.RedirectURI == "" {
+		cfg.RedirectURI = res.RedirectURI
+	}
+	cfg.DCRConfig = nil
+	return cfg
+}
+
+func applyResolutionToOIDCConfig(cfg upstream.OIDCConfig, res *dcr.Resolution) upstream.OIDCConfig {
+	if res != nil {
+		cfg.ClientSecret = res.ClientSecret
+	}
+	return cfg
+}
+
 // resolved ClientSecret and TokenEndpointAuthMethod overlaid onto it. This
 // is the companion to consumeResolution: where that function writes fields
 // representable in the file-or-env run-config model, this one writes the

@@ -10,6 +10,7 @@ import (
 	"io"
 	"log/slog"
 	"net/http"
+	"syscall"
 	"time"
 
 	mcpclient "github.com/stacklok/toolhive-core/mcpcompat/client"
@@ -46,6 +47,24 @@ type HTTPConnectorOption func(*httpConnectorConfig)
 
 type httpConnectorConfig struct {
 	requestTimeoutResolver func(workloadID string) time.Duration
+	dialControlResolver    func(workloadID string) func(network, address string, c syscall.RawConn) error
+}
+
+// mcpClientParams carries the per-connection options NewHTTPConnector's closure
+// threads into createMCPClient. They are grouped into a struct — rather than
+// passed positionally — because sink and dialControl are both func-typed and
+// frequently nil, so as bare adjacent arguments a future reorder could
+// transpose them with no compiler error. Named fields remove that risk.
+type mcpClientParams struct {
+	// sink, when non-nil, enables persistent backend-notification consumption
+	// (see createMCPClient); nil leaves it disabled.
+	sink ListChangedSink
+	// dialControl is the hook resolved for this backend's workload ID (see
+	// WithDialControlResolver). When non-nil it installs a net.Dialer.Control hook
+	// on the backend transport; nil uses http.DefaultTransport.
+	dialControl func(network, address string, c syscall.RawConn) error
+	// requestTimeout bounds each backend operation and the transport dial.
+	requestTimeout time.Duration
 }
 
 // WithRequestTimeoutResolver configures the timeout used for each backend
@@ -62,6 +81,83 @@ func WithRequestTimeoutResolver(resolver func(workloadID string) time.Duration) 
 			cfg.requestTimeoutResolver = resolver
 		}
 	}
+}
+
+// WithDialControlResolver supplies a dial-control hook chosen per backend, so an
+// embedder can apply a per-backend dial policy to the connections opened at
+// session init (the MCP handshake and capability listing). The resolver receives
+// a backend workload ID and returns the net.Dialer.Control hook to install for
+// that backend, or nil to leave it on http.DefaultTransport.
+//
+// The returned hook fires after DNS resolution and before the TCP handshake,
+// receiving the resolved peer IP in address — which is why it defeats
+// DNS-rebinding attacks that a host-name–based check cannot: a hostname can
+// legitimately resolve to a blocked IP after the name-based check passes.
+//
+// The returned hook has the same net.Dialer.Control signature as
+// pkg/vmcp/client.WithDialControl (which guards the aggregation and tool-call
+// paths) and the same standard 30 s dial timeouts. The option shapes differ,
+// though: this one is a per-backend resolver, whereas client.WithDialControl is
+// not (yet) per-backend — it installs one hook for every backend. A nil resolver
+// (the default), or a resolver that returns nil for a given workload, leaves that
+// backend's dial path byte-for-byte identical to before this hook existed.
+//
+// The resolver is called once per backend from the per-backend init goroutines,
+// so it must be safe for concurrent use. The hook it returns matches
+// net.Dialer.Control exactly.
+//
+// Security limitations embedders must understand:
+//
+//   - The resolver only SELECTS a hook; it is not itself the guard. The SSRF /
+//     DNS-rebinding protection exists only if the RETURNED hook inspects the
+//     resolved address. A resolver that decides allow/deny purely from the
+//     workloadID — never looking at address inside the hook it returns — looks
+//     like a per-backend guard but gives zero protection against that workload's
+//     endpoint resolving into a blocked range. Return an address-checking hook.
+//   - Per-TCP-dial, not per-request: the hook fires once per TCP connection.
+//     A pooled connection is reused without re-invoking the hook until it is
+//     recycled. Because each backend gets its own isolated transport and
+//     connection pool, a reused connection is always one this hook already
+//     approved on its first dial — reuse cannot reach an unclassified peer.
+//     This connector does not offer per-request re-classification.
+//   - Proxy transparency: when http.ProxyFromEnvironment selects a proxy
+//     (HTTP_PROXY/HTTPS_PROXY set), the dial target is the proxy server, so the
+//     hook receives the proxy's IP, not the backend's. Embedders relying on this
+//     hook for SSRF or IP allow-listing must either unset the proxy env vars or
+//     additionally validate the backend URL's host before dialing.
+//   - Both IP families: the address argument may be an IPv4 or IPv6 literal
+//     (host:port form); embedders must handle both — including IPv4-mapped IPv6
+//     such as ::ffff:127.0.0.1 — in their check. See the OWASP SSRF Prevention
+//     Cheat Sheet for the full set of ranges to deny (loopback, RFC 1918,
+//     link-local 169.254/16, CGNAT 100.64/10, IPv6 ULA).
+func WithDialControlResolver(
+	resolver func(workloadID string) func(network, address string, c syscall.RawConn) error,
+) HTTPConnectorOption {
+	return func(cfg *httpConnectorConfig) {
+		cfg.dialControlResolver = resolver
+	}
+}
+
+// resolveDialControl invokes the per-workload dial-control resolver, isolating a
+// panicking embedder resolver to this one backend: a panic is recovered and
+// returned as an error, so the backend is excluded from the session like any
+// other init failure rather than crashing the per-backend init goroutine (and
+// with it the process). A nil resolver, or one that returns nil for this
+// workload, yields a nil hook — the transport stays on http.DefaultTransport.
+func resolveDialControl(
+	resolver func(workloadID string) func(network, address string, c syscall.RawConn) error,
+	workloadID string,
+) (hook func(network, address string, c syscall.RawConn) error, err error) {
+	if resolver == nil {
+		return nil, nil
+	}
+	defer func() {
+		if r := recover(); r != nil {
+			hook = nil
+			err = fmt.Errorf("dial-control resolver panicked for backend %s: %v", workloadID, r)
+		}
+	}()
+	return resolver(workloadID), nil
 }
 
 func (c *httpConnectorConfig) requestTimeout(workloadID string) time.Duration {
@@ -147,6 +243,21 @@ type httpRoundTripperFunc func(*http.Request) (*http.Response, error)
 
 func (f httpRoundTripperFunc) RoundTrip(req *http.Request) (*http.Response, error) { return f(req) }
 
+// backendBaseTransport returns the innermost RoundTripper for backend
+// connections. With a nil dialControl it returns http.DefaultTransport
+// unchanged, so the no-hook path is byte-for-byte identical to before
+// any dial-control hook existed. With a non-nil hook it delegates to
+// networking.CloneDefaultTransportWithDialControl — the single backend
+// transport construction point shared with pkg/vmcp/client — which clones
+// DefaultTransport and installs a net.Dialer whose Control hook fires on the
+// resolved peer IP before the TCP handshake.
+func backendBaseTransport(dialControl func(network, address string, c syscall.RawConn) error) http.RoundTripper {
+	if dialControl == nil {
+		return http.DefaultTransport
+	}
+	return networking.CloneDefaultTransportWithDialControl(dialControl)
+}
+
 // authRoundTripper adds pre-resolved authentication to outgoing backend requests.
 type authRoundTripper struct {
 	base         http.RoundTripper
@@ -161,6 +272,14 @@ func (a *authRoundTripper) RoundTrip(req *http.Request) (*http.Response, error) 
 		return nil, fmt.Errorf("authentication failed for backend %s: %w", a.target.WorkloadID, err)
 	}
 	return a.base.RoundTrip(reqClone)
+}
+
+// CloseIdleConnections forwards to the wrapped RoundTripper so
+// http.Client.CloseIdleConnections reaches the underlying pool instead of
+// stopping at this wrapper. Mirrors the canonical twin authRoundTripper in
+// pkg/vmcp/client/client.go.
+func (a *authRoundTripper) CloseIdleConnections() {
+	networking.ForwardCloseIdle(a.base)
 }
 
 // identityRoundTripper propagates a fallback identity to outgoing backend
@@ -198,6 +317,22 @@ func (i *identityRoundTripper) RoundTrip(req *http.Request) (*http.Response, err
 	}
 	return i.base.RoundTrip(req)
 }
+
+// CloseIdleConnections forwards to the wrapped RoundTripper so
+// http.Client.CloseIdleConnections reaches the underlying pool instead of
+// stopping at this wrapper. Mirrors the canonical twin
+// identityPropagatingRoundTripper in pkg/vmcp/client/client.go.
+func (i *identityRoundTripper) CloseIdleConnections() {
+	networking.ForwardCloseIdle(i.base)
+}
+
+// Compile-time assertions: a rename or typo of CloseIdleConnections on either
+// twin would silently re-hide the backend pool (see
+// networking.IdleConnectionCloser), the anti-pattern #6483 removes.
+var (
+	_ networking.IdleConnectionCloser = (*authRoundTripper)(nil)
+	_ networking.IdleConnectionCloser = (*identityRoundTripper)(nil)
+)
 
 // Compile-time assertion: mcpSession must implement Session.
 var _ Session = (*mcpSession)(nil)
@@ -389,8 +524,23 @@ func NewHTTPConnector(registry vmcpauth.OutgoingAuthRegistry, opts ...HTTPConnec
 			}
 		}
 
+		// Resolve the dial-control hook for this backend. A nil resolver, or a
+		// resolver that returns nil for this workload, leaves dialControl nil so
+		// the transport stays on http.DefaultTransport (see WithDialControlResolver).
+		// A panicking resolver is isolated to this backend rather than crashing the
+		// per-backend init goroutine (and the process).
+		dialControl, err := resolveDialControl(connectorConfig.dialControlResolver, target.WorkloadID)
+		if err != nil {
+			return nil, nil, err
+		}
+
 		c, err := createMCPClient(
-			ctx, target, identity, registry, sessionHint, provider, sink, transportTimeout,
+			ctx, target, identity, registry, sessionHint, provider,
+			mcpClientParams{
+				sink:           sink,
+				dialControl:    dialControl,
+				requestTimeout: transportTimeout,
+			},
 		)
 		if err != nil {
 			return nil, nil, fmt.Errorf("failed to create MCP client for backend %s: %w", target.WorkloadID, err)
@@ -447,9 +597,15 @@ func createMCPClient(
 	registry vmcpauth.OutgoingAuthRegistry,
 	sessionHint string,
 	provider secrets.Provider,
-	sink ListChangedSink,
-	requestTimeout time.Duration,
+	params mcpClientParams,
 ) (*mcpclient.Client, error) {
+	// Destructure once so the body below reads unchanged. The named fields on
+	// mcpClientParams are what protect the two adjacent nil-able func members
+	// (sink, dialControl) from being silently transposed at call sites.
+	sink := params.sink
+	dialControl := params.dialControl
+	requestTimeout := params.requestTimeout
+
 	// Resolve and validate the auth strategy once at client creation time.
 	strategyName := authtypes.StrategyTypeUnauthenticated
 	if target.AuthConfig != nil {
@@ -466,7 +622,10 @@ func createMCPClient(
 	slog.Debug("Applied authentication strategy", "strategy", strategy.Name(), "backendID", target.WorkloadID)
 
 	// Build shared transport chain (innermost first → outermost):
-	//   http.DefaultTransport → authRoundTripper → identityRoundTripper → headerForwardRoundTripper
+	//   backendBaseTransport → authRoundTripper → identityRoundTripper → headerForwardRoundTripper
+	// The innermost stage is http.DefaultTransport unless a dial-control hook was
+	// resolved for this backend (see WithDialControlResolver), in which case it is
+	// a cloned transport carrying that hook on its dialer.
 	// On an outbound request, the outermost stage runs first: header-forward
 	// injects its headers onto a request that does not yet carry auth/identity
 	// headers, then inner stages run and call Set() unconditionally so any
@@ -475,7 +634,7 @@ func createMCPClient(
 	// rejected at resolve time by resolveHeaderForward, so user-supplied
 	// HeaderForward cannot inject them in the first place.
 	// The per-transport sections below may add a size-limiting wrapper on top.
-	base := http.RoundTripper(http.DefaultTransport)
+	base := backendBaseTransport(dialControl)
 	base = &authRoundTripper{
 		base:         base,
 		authStrategy: strategy,

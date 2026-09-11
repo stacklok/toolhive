@@ -48,6 +48,16 @@ func (s *service) install(
 		opts.LockSource = opts.Name
 	}
 
+	// Checked here, before any resolve or fetch work: this is the only path a
+	// caller-supplied public key arrives through, and rejecting it now means a
+	// key that could never be used is reported as bad input rather than as a
+	// verification failure after the artifact has been pulled. Lock-driven
+	// callers (sync, upgrade) never set it — they verify against the key the
+	// lock records.
+	if err := validateInstallPublicKey(opts, scope); err != nil {
+		return nil, err
+	}
+
 	// Git references are dispatched first; the prefix is unambiguous and
 	// cannot collide with OCI references. installFromGit holds the per-plugin
 	// lock across extraction, DB, group, lock-file, and rollback unless the
@@ -130,6 +140,17 @@ func (s *service) installByName(
 		if !resolved {
 			return s.installFromRegistryLookup(ctx, opts, scope, lockHeld)
 		}
+	}
+
+	// Local-store artifacts and raw layer data carry no registry signature
+	// to verify — installing them project-scoped is an unsigned trust
+	// decision that must be explicit.
+	if shouldVerifyInstall(opts, scope) {
+		decision, verifyErr := verifyLocalInstall(opts, opts.Name)
+		if verifyErr != nil {
+			return nil, verifyErr
+		}
+		applyDecisionToOpts(&opts, decision)
 	}
 
 	result, err := s.installWithExtraction(ctx, opts, scope)
@@ -330,8 +351,7 @@ func resolvedGroupName(groupName string) string {
 }
 
 // installAndRegister registers the just-installed plugin in the target group
-// and, for project-scope installs with the lock file feature enabled (see
-// plugins.LockFileFeatureEnabled), records it in the project's
+// and, for project-scope installs, records it in the project's
 // toolhive.lock.yaml plugins: key. If group registration or the lock write
 // fails, the DB record, on-disk files, group membership (only when this call
 // added it), and lock entry are rolled back to their pre-install state:
@@ -346,7 +366,11 @@ func (s *service) installAndRegister(
 	scope plugins.Scope,
 ) (*plugins.InstallResult, error) {
 	pluginName := result.Plugin.Metadata.Name
-	lockScoped := scope == plugins.ScopeProject && plugins.LockFileFeatureEnabled()
+	lockScoped := scope == plugins.ScopeProject
+	// Surface the verification decision on the result so callers can show
+	// what trust state this install recorded.
+	result.Provenance = provenanceInfoFromLock(opts.Provenance)
+	result.Unsigned = opts.Unsigned
 
 	// Snapshot the prior plugins: lock entry before anything below can write
 	// one, so rollback can reinstate it rather than blindly deleting it.

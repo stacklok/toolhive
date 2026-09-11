@@ -2127,7 +2127,8 @@ func TestConvertIncomingAuth_PrimaryUpstreamProvider(t *testing.T) {
 			authzConfig: &mcpv1beta1.AuthzConfigRef{
 				Type: "inline",
 				Inline: &mcpv1beta1.InlineAuthzConfig{
-					Policies:                []string{`permit(principal, action, resource);`},
+					Policies: []string{`permit(principal, action, resource);`},
+					//nolint:staticcheck // Exercises conversion of the deprecated field.
 					PrimaryUpstreamProvider: "okta",
 				},
 			},
@@ -2162,7 +2163,8 @@ func TestConvertIncomingAuth_PrimaryUpstreamProvider(t *testing.T) {
 			authzConfig: &mcpv1beta1.AuthzConfigRef{
 				Type: "inline",
 				Inline: &mcpv1beta1.InlineAuthzConfig{
-					Policies:                []string{`permit(principal, action, resource);`},
+					Policies: []string{`permit(principal, action, resource);`},
+					//nolint:staticcheck // Exercises conversion of the deprecated field.
 					PrimaryUpstreamProvider: "github",
 				},
 			},
@@ -2182,7 +2184,8 @@ func TestConvertIncomingAuth_PrimaryUpstreamProvider(t *testing.T) {
 			authzConfig: &mcpv1beta1.AuthzConfigRef{
 				Type: "inline",
 				Inline: &mcpv1beta1.InlineAuthzConfig{
-					Policies:                []string{`permit(principal, action, resource);`},
+					Policies: []string{`permit(principal, action, resource);`},
+					//nolint:staticcheck // Exercises conversion of the deprecated field.
 					PrimaryUpstreamProvider: "okta",
 				},
 			},

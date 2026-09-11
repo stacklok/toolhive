@@ -13,6 +13,7 @@ import (
 	"sort"
 	"strings"
 	"sync"
+	"syscall"
 	"time"
 
 	"github.com/stacklok/toolhive/pkg/auth"
@@ -42,6 +43,23 @@ const (
 	// Used by RestoreSession to reconnect backends with the correct session hint.
 	MetadataKeyBackendSessionPrefix = "vmcp.backend.session."
 )
+
+// ParseBackendIDs decodes the MetadataKeyBackendIDs wire format — a
+// comma-separated list of backend workload IDs — into a slice of trimmed,
+// non-empty IDs, preserving order. It is the single decoder for that format
+// (populateBackendMetadata is the matching encoder); callers that need set
+// membership build a map from the result. An empty or whitespace-only input
+// yields an empty slice.
+func ParseBackendIDs(csv string) []string {
+	parts := strings.Split(csv, ",")
+	ids := make([]string, 0, len(parts))
+	for _, p := range parts {
+		if t := strings.TrimSpace(p); t != "" {
+			ids = append(ids, t)
+		}
+	}
+	return ids
+}
 
 // MultiSessionFactory creates new MultiSessions for connecting clients.
 type MultiSessionFactory interface {
@@ -136,6 +154,7 @@ type defaultMultiSessionFactory struct {
 	backendInitTimeout     time.Duration
 	revisionLookup         func(workloadID string) (mcpparser.Revision, bool)
 	requestTimeoutResolver func(workloadID string) time.Duration
+	dialControlResolver    func(workloadID string) func(network, address string, c syscall.RawConn) error
 }
 
 // MultiSessionFactoryOption configures a defaultMultiSessionFactory.
@@ -204,6 +223,42 @@ func WithRevisionLookup(lookup func(workloadID string) (mcpparser.Revision, bool
 	}
 }
 
+// WithDialControlResolver supplies a dial-control hook chosen per backend, so an
+// embedder can apply a per-backend dial policy to the connections opened at
+// session init (MakeSessionWithID and RestoreSession). Mirrors WithRevisionLookup
+// / WithRequestTimeoutResolver: the resolver receives a backend workload ID and
+// returns the net.Dialer.Control hook to install for that backend, or nil to
+// leave it on http.DefaultTransport.
+//
+// The returned hook fires after DNS resolution and before the TCP handshake,
+// receiving the resolved peer IP — so it can enforce a per-backend dial policy
+// (e.g. refuse dials into private ranges to blunt SSRF / DNS-rebinding) on
+// backend endpoints that may be operator- or attacker-influenceable. A nil
+// resolver (the default), or a resolver that returns nil for a given workload,
+// leaves that backend's transport on http.DefaultTransport — byte-for-byte
+// unchanged from the no-hook path.
+//
+// It is the session-factory counterpart to pkg/vmcp/client.WithDialControl,
+// which guards the aggregation and tool-call paths; without this option those
+// paths could be guarded while session-init dials were not. The returned hook
+// matches net.Dialer.Control exactly, but the option shapes differ: this one is
+// a per-backend resolver, whereas client.WithDialControl is not (yet) per-backend.
+// See backend.WithDialControlResolver for the full security caveats — including
+// that the resolver only SELECTS a hook, so the returned hook must itself inspect
+// the resolved address or it gives no SSRF/DNS-rebinding protection (per-TCP-dial
+// not per-request, proxy transparency, both IP families).
+//
+// Concurrency: the resolver is called from the per-backend init goroutines
+// started by makeBaseSession, up to maxConcurrency at once, so it must be safe
+// for concurrent use.
+func WithDialControlResolver(
+	resolver func(workloadID string) func(network, address string, c syscall.RawConn) error,
+) MultiSessionFactoryOption {
+	return func(f *defaultMultiSessionFactory) {
+		f.dialControlResolver = resolver
+	}
+}
+
 // NewSessionFactory creates a MultiSessionFactory that connects to backends
 // over HTTP using the given outgoing auth registry.
 func NewSessionFactory(registry vmcpauth.OutgoingAuthRegistry, opts ...MultiSessionFactoryOption) MultiSessionFactory {
@@ -211,6 +266,7 @@ func NewSessionFactory(registry vmcpauth.OutgoingAuthRegistry, opts ...MultiSess
 	f.connector = backend.NewHTTPConnector(
 		registry,
 		backend.WithRequestTimeoutResolver(f.requestTimeoutResolver),
+		backend.WithDialControlResolver(f.dialControlResolver),
 	)
 	return f
 }
@@ -660,15 +716,13 @@ func (f *defaultMultiSessionFactory) RestoreSession(
 // omit the key entirely (corrupted/absent metadata) must be handled by the caller before
 // invoking this function — relying on empty-string to mean "all backends" is a footgun.
 func filterBackendsByStoredIDs(allBackends []*vmcp.Backend, storedIDs string) []*vmcp.Backend {
-	if storedIDs == "" {
+	ids := ParseBackendIDs(storedIDs)
+	if len(ids) == 0 {
 		return nil
 	}
-	parts := strings.Split(storedIDs, ",")
-	idSet := make(map[string]struct{}, len(parts))
-	for _, p := range parts {
-		if t := strings.TrimSpace(p); t != "" {
-			idSet[t] = struct{}{}
-		}
+	idSet := make(map[string]struct{}, len(ids))
+	for _, id := range ids {
+		idSet[id] = struct{}{}
 	}
 	filtered := make([]*vmcp.Backend, 0, len(idSet))
 	for _, b := range allBackends {

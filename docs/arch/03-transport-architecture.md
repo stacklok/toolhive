@@ -297,6 +297,19 @@ Remote MCP servers can require OAuth 2.0 authentication. The architecture uses:
 - `pkg/transport/http.go` - `SetTokenSource` method
 - `pkg/auth/oauth/flow.go` - OAuth flow and TokenSource creation
 
+### TLS and CA trust
+
+Outgoing HTTPS clients can use either a **pinned** or an **additive** CA bundle:
+
+- `WithCABundle` replaces the system root pool. Only certificates chaining to the supplied bundle are trusted.
+- `WithSystemRootsPlusCABundle` starts with the system root pool and appends the supplied certificates. This supports an upstream that may use either a publicly trusted certificate or a private CA.
+
+The `caBundleRef` fields on embedded auth-server upstreams and trusted issuers use additive trust. A referenced ConfigMap augments, rather than replaces, the system roots for an upstream's OAuth/OIDC requests or a trusted issuer's discovery and JWKS requests. The reference is per provider or issuer, so a bundle is not implicitly trusted for other clients or unrelated ToolHive traffic. Existing callers that need strict CA pinning continue to use the pinned mode.
+
+In Kubernetes, the operator projects each selected ConfigMap key as a read-only `ca.crt` file in the proxyrunner pod and passes its path to the upstream client. The ConfigMap must contain PEM-encoded CA certificates.
+
+**Implementation:** `pkg/networking/http_client.go`, `pkg/authserver/upstream/`, and `pkg/auth/dcr/`
+
 ### Remote vs Container Workloads
 
 | Feature | Container Workload | Remote Workload |
@@ -353,7 +366,40 @@ export TOOLHIVE_PROXY_REQUEST_TIMEOUT=5m
 thv run my-slow-server
 ```
 
-**Note:** This timeout only affects the streamable HTTP proxy used with stdio transport. The transparent proxy used by SSE and streamable-http transports (where the container runs its own HTTP server) does not impose a request timeout.
+**Note:** This MCP response-correlation timeout only affects the streamable HTTP proxy used with stdio transport.
+The transparent proxy used by SSE and streamable-http transports (where the container runs its own HTTP server)
+does not impose an MCP response-correlation timeout, but it does enforce the HTTP request read timeout described below.
+
+### Proxy Request Body Size Limit (All Proxy Transports)
+
+ToolHive proxy listeners reject request bodies larger than 8 MiB by default,
+before authentication or MCP parsing can buffer them. This bounds the memory a
+single inbound request may consume. Operators can override the limit with
+`thv run --max-request-body-size`, `thv proxy --max-request-body-size`, or
+MCPServer `spec.maxRequestBodySize`. RunConfig stores the workload setting as
+`max_request_body_size`, expressed as a number of bytes.
+
+Omitting the setting or specifying zero retains the 8 MiB default; zero never
+disables the limit. Raising the limit supports unusually large `tools/call`
+payloads, such as inline images or documents, but also increases the memory
+available to each concurrent request. The setting applies only to inbound MCP
+proxy requests. Response bodies, the management API's 1 MiB cap, the embedded
+auth server's 64 KiB cap, and vMCP's 8 MiB cap are unaffected.
+
+**Implementation**: `pkg/bodylimit`, `pkg/runner/middleware.go`
+
+### Proxy Request Read Timeout (All Transports)
+
+Every proxy HTTP server limits reading a complete inbound request, including its body, to 30 seconds by default.
+This prevents a slow or stalled upload from holding a connection open indefinitely.
+Operators can override the limit per workload with `thv run --proxy-read-timeout` or the MCPServer `spec.proxyReadTimeout` field.
+RunConfig stores the same setting as `proxy_read_timeout`, using a Go duration string such as `45s` or `2m`.
+
+Omitting the setting or specifying zero retains the 30-second default; it never disables the timeout.
+The read timeout does not limit response streaming, so long-lived SSE responses remain unaffected.
+
+This setting is distinct from `TOOLHIVE_PROXY_REQUEST_TIMEOUT` above: the read timeout bounds the client-to-proxy HTTP upload,
+while the stdio proxy request timeout bounds how long an MCP request waits for its correlated server response.
 
 ### Health Check Tuning Parameters
 
@@ -770,9 +816,13 @@ when delivery lands it does not also require rewriting the fan-out primitives.
 
 **Architecture:**
 - **Remote MCP servers**: Full HTTPS support with certificate validation
-- **Custom CA bundles**: Configurable via RunConfig for self-signed certificates
+- **Custom CA bundles**: Configurable for clients that connect to private-CA or self-signed endpoints
 - **Local proxy**: HTTP only (localhost binding for security)
-- **Trust store**: System CA bundle or custom CA bundle from configuration
+- **Trust store**: Clients either use the system CA bundle, a pinned custom bundle, or (for embedded auth-server upstreams and trusted issuers) system roots plus a custom bundle
+
+A custom CA bundle does not disable the HTTPS and network protections applied to the client. In particular, the server-supplied endpoint paths retain redirect and private-IP safeguards unless the corresponding explicit development or in-cluster options are configured.
+
+See [TLS and CA trust](#tls-and-ca-trust) for the distinction between pinned and additive trust and the Kubernetes `caBundleRef` configuration.
 
 ### Trust Proxy Headers
 

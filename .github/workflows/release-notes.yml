@@ -62,7 +62,7 @@ jobs:
       SLACK_WEBHOOK: ${{ secrets.SLACK_TOOLHIVE_RELEASE_WEBHOOK_URL }}
     steps:
       - name: Checkout repository
-        uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
         with:
           # Always check out the default branch, never the workflow_run head ref.
           # Checking out an event-supplied ref in a secrets-bearing workflow_run
@@ -97,7 +97,7 @@ jobs:
           echo "tag=$TAG" >> "$GITHUB_OUTPUT"
           echo "Generating release notes for: $TAG"
 
-      - uses: actions/setup-go@924ae3a1cded613372ab5595356fb5720e22ba16 # v6
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7
         with:
           go-version: 'stable'
 
@@ -106,14 +106,15 @@ jobs:
 
       - name: Generate release notes with Claude
         id: claude
-        uses: anthropics/claude-code-action@16b3b310c3d7b5279df73130324d5205aeea8eac # v1.0.205
+        uses: anthropics/claude-code-action@19dda84776b3518d98b8798e591daee763049ed3 # v1.0.220
         env:
           # gh CLI used by the skill (read-only PR/issue lookups) authenticates
           # via GH_TOKEN. Read access is sufficient — publishing happens in a
           # later, deterministic step, not by the model.
           GH_TOKEN: ${{ github.token }}
+          ANTHROPIC_BASE_URL: https://llm-gateway.stacklok.dev/anthropic
         with:
-          anthropic_api_key: ${{ secrets.ANTHROPIC_API_KEY }}
+          anthropic_api_key: ${{ secrets.STACKLOK_GATEWAY_KEY_RELEASE_NOTES }}
           # Hand the action a token explicitly so it does not try to mint one via
           # OIDC (the Claude GitHub App flow), which would require `id-token: write`
           # and the app installed. We only need the API key for Anthropic auth and
@@ -138,9 +139,17 @@ jobs:
               `release-notes-${{ steps.tag.outputs.tag }}.md` in the repo root.
             - Do not post comments or run `gh release edit`. Stop after writing the file.
           # Tools: gh/git for read-only data gathering, Task for the expert
-          # subagents, and file tools for reading the skill and writing the output.
+          # subagents (kubernetes-expert, mcp-protocol-expert, oauth-expert,
+          # toolhive-expert, site-reliability-engineer), file tools for reading
+          # the skill and writing the output, WebFetch/context7 for the specs
+          # those experts consult. The extra Bash(...) entries cover the
+          # local code-exploration commands those experts actually run
+          # (grep/find/cat/ls/go doc) without opening up network or
+          # write-capable commands (curl, go get/install, etc.) — this job
+          # runs unattended over PR/issue content it doesn't control, so
+          # Bash stays scoped rather than fully unrestricted.
           claude_args: |
-            --allowedTools "Bash(gh *),Bash(git *),Task,Read,Write,Edit,Glob,Grep,TodoWrite"
+            --allowedTools "Bash(gh *),Bash(git *),Bash(grep *),Bash(rg *),Bash(find *),Bash(cat *),Bash(ls *),Bash(head *),Bash(tail *),Bash(go doc *),Task,Read,Write,Edit,Glob,Grep,TodoWrite,WebFetch,mcp__context7__resolve-library-id,mcp__context7__get-library-docs"
             --max-turns 60
 
       - name: Verify notes were generated
@@ -173,7 +182,7 @@ jobs:
           echo "text=$SUMMARY" >> "$GITHUB_OUTPUT"
 
       - name: Upload release notes artifact
-        uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f # v6
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
         with:
           name: release-notes-${{ steps.tag.outputs.tag }}
           path: ${{ steps.verify.outputs.file }}
@@ -243,7 +252,7 @@ jobs:
         # release-failure alert. If it does not target #toolhive, point this at a
         # #toolhive-specific incoming webhook secret instead.
         if: ${{ env.SLACK_WEBHOOK != '' }}
-        uses: slackapi/slack-github-action@45a88b9581bfab2566dc881e2cd66d334e621e2c # v3.0.3
+        uses: slackapi/slack-github-action@dcb1066f776dd043e64d0e8ba94ca15cc7e1875d # v4.0.0
         with:
           webhook: ${{ env.SLACK_WEBHOOK }}
           webhook-type: incoming-webhook

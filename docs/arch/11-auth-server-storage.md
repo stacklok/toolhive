@@ -61,7 +61,7 @@ The storage layer implements multiple interfaces from the [fosite](https://githu
 - `UpstreamTokenStorage` — Upstream IDP token caching with user binding
 - `PendingAuthorizationStorage` — In-flight authorization tracking
 - `UserStorage` — Internal user accounts and provider identity linking
-- `DCRCredentialStore` — DCR client secret persistence; intentionally NOT embedded in `Storage` (each backend implements it separately and call sites reach it via an explicit `stor.(DCRCredentialStore)` type assertion)
+- `DCRCredentialStore` — DCR client metadata and credential persistence; intentionally NOT embedded in `Storage` (each backend implements it separately and call sites reach it via an explicit `stor.(DCRCredentialStore)` type assertion). Secret-based clients store hashed secrets; `private_key_jwt` clients store their inline public JWKS and signing algorithm.
 - `AssertionJWTConsumer` — atomic single-use consumption for validated JWT assertions. It is deliberately separate from `Storage`, so only assertion-grant composition requires replay protection.
 
 **Implementation:**
@@ -202,10 +202,39 @@ distinct rows would cross credentials between sessions. This prevents
 duplicate redemption from stale concurrent callers served by the same
 process; the identity is not persisted, logged, or exposed.
 
-This is deliberately narrower than #4122: it does not provide distributed
-coordination across replicas, row-addressed mutation, compare-and-swap, or any
-other cross-process consistency guarantee. Redis remains the durable storage
-backend, while each replica coordinates only its own in-flight refreshes.
+This is deliberately narrower than #4122's original in-process-only scope: it
+does not by itself provide distributed coordination across replicas. That
+coordination now exists as a second, independent layer:
+`UpstreamTokenStorage.CompareAndSwapUpstreamTokens` conditions a refresh write
+on the refresh token currently stored still matching the value the caller
+redeemed with, failing the write (`ErrConcurrentRefresh`) instead of
+overwriting when another replica already rotated the row first. `refreshAndStore`
+writes through this method rather than an unconditional `StoreUpstreamTokens`.
+Redis implements the comparison and the write as one atomic Lua script;
+`MemoryStorage` implements it under its existing mutex. `singleflight` remains
+the process-local optimization described above — it avoids a redundant
+upstream call and Redis round-trip for concurrent requests inside one
+process — while the CAS write is what makes the *stored* row deterministic
+across processes: whichever replica's write lands first wins, and every
+losing replica's write fails instead of silently clobbering it.
+
+This is a storage-ordering guarantee, not a guarantee that concurrent
+redemption is safe at the upstream provider. Both replicas still call
+`provider.RefreshTokens` before either one's CAS write runs, so for a
+provider enforcing strict single-use rotation (RFC 9700 §4.14.2 replay
+detection), two concurrent redemptions of the same refresh token can still
+be indistinguishable from a replay at the IdP, which may revoke the grant
+regardless of which replica's write wins here. CAS is fully sufficient only
+where the provider tolerates a short grace/leeway window in which more than
+one redeemed child stays valid (e.g. Read.ai's stated behavior) — outside
+that window, closing the gap requires serializing the *redemption* itself
+(a distributed lock around the read-redeem-write sequence), not just the
+write. That lock is a deliberate follow-up, not implemented here: this layer
+only prevents storage corruption from a lost write race, and its own log
+distinguishes a genuine lost race (an unexpired row on re-read) from a row
+that is simply gone (deleted by logout or evicted by TTL, `ErrNotFound` on
+re-read) — the latter is expected behavior, not a race, and refuses to
+resurrect the deleted row.
 
 ### Serialization
 
@@ -222,7 +251,7 @@ Redis TTL is used for all time-bounded data. TTL values are derived from OAuth 2
 | Authorization codes | 10 minutes |
 | PKCE requests | 10 minutes |
 | Invalidated codes | 30 minutes |
-| DCR-issued clients (public and confidential) | 30 days |
+| DCR-issued clients (public, confidential, and private_key_jwt) | 30 days |
 | JWT-bearer replay markers | Assertion `exp` |
 | Users / Providers | No expiry |
 
@@ -315,6 +344,74 @@ But a loopback `http://` issuer combined with `AllowConfidentialClientRegistrati
 
 **Rate limiting on `/oauth/register`.** Because the endpoint is unauthenticated, `Handler` also rate-limits it: 1 request/second sustained with a burst of 5 (`pkg/authserver/server/handlers/handler.go`). The limiter is a field on `Handler`, so it is per-process — running N replicas behind a load balancer allows roughly N times the configured rate, not a shared global rate.
 
+**DCR client metadata.** Redis persists the complete DCR client shape, including the inline public JWKS and `token_endpoint_auth_signing_alg` for `private_key_jwt` clients. These registrations use the same 30-day inactivity TTL as public and secret-based confidential DCR clients. A successful token exchange or refresh renews the TTL; reading a client during authorization does not. The in-memory backend has no wall-clock TTL, but applies the same DCR-issued marker to its capacity-bounded eviction policy. Pre-provisioned clients are not subject to this DCR retention policy.
+
+### Enabling `private_key_jwt` Dynamic Client Registration
+
+`AllowPrivateKeyJWTRegistration` is **off by default** and is separate from
+`AllowConfidentialClientRegistration`. The former permits unauthenticated
+`/oauth/register` requests to create clients that authenticate at the token
+endpoint with their own signed JWT assertions; the latter permits the endpoint
+to mint `client_secret` credentials for `client_secret_basic` or
+`client_secret_post`. Enabling one does not enable the other. Because registration
+is unauthenticated, either flag should be enabled only when any caller able to
+reach the endpoint is trusted to create a client of that type.
+
+This implementation accepts **inline `jwks` only** for `private_key_jwt` DCR.
+`jwks_uri` is explicitly rejected; the client must include at least one valid
+public signing key with `use: "sig"`. `token_endpoint_auth_signing_alg` is
+mandatory and must match a key in the set. The accepted algorithms are `RS256`,
+`RS384`, `RS512`, `PS256`, `PS384`, `PS512`, `ES256`, `ES384`, and `ES512`
+(EdDSA is excluded because the pinned fosite version cannot verify it — see
+`crypto.SupportedClientKeyAlgorithms`). The registration response contains the
+client metadata and no `client_secret`.
+
+A `private_key_jwt` DCR registration is restricted to the RFC 8693 token-exchange
+grant (`urn:ietf:params:oauth:grant-type:token-exchange`) and cannot request the
+authorization-code or refresh-token grants. If `grant_types` is omitted, this
+exchange grant is supplied automatically. Discovery advertises
+`private_key_jwt` and the supported signing algorithms only when
+`allowPrivateKeyJWTRegistration` is enabled; token exchange itself is always
+advertised because the embedded server supports it for self-issued tokens.
+
+The registration and token endpoints must use HTTPS for confidential-client
+registration, exactly as described above. `private_key_jwt` registration has
+no equivalent restriction: a `private_key_jwt` DCR response never contains a
+`client_secret` or any other secret, so there is nothing for cleartext HTTP
+to expose. It is governed only by the issuer's general `insecureAllowHTTP`
+setting, the same as a public (`none`) client — no loopback-specific opt-in
+is needed or offered.
+
+A client proves possession of its private key by sending a signed
+`client_assertion` at `/oauth/token`; ToolHive stores only the registered public
+JWKS. Assertion replay markers are retained until the assertion `exp` in both
+storage backends. Redis also persists the registered client and its JWKS under
+the auth server's isolated key prefix, so replicas sharing Redis can use the
+same registration. The in-memory backend is process-local and loses registrations
+on restart.
+
+This client-authentication flow is distinct from the existing RFC 7523 §2.1
+JWT-bearer **grant**. The JWT-bearer grant accepts an external assertion as the
+bearer grant itself and issues a token without authenticating a registered OAuth
+client. `private_key_jwt` is RFC 7523 §2.2 client authentication: it authenticates
+an already registered client, which then uses its permitted token-exchange grant.
+The two flows have separate enablement and purposes; one does not configure or
+substitute for the other.
+
+### Delegation consent
+
+A private-key JWT client is subject to the same delegation consent checks as any
+other authenticated ToolHive client. For an externally issued subject token,
+the trusted issuer's `AllowedDelegateClients` list must contain the registered
+ToolHive `client_id`, or explicitly contain `"*"` where wildcard delegation is
+intended. The check is based on the authenticated client ID, not whether it used
+a secret or `private_key_jwt`; `allowedActors`/`actorMatcher` alone do not bind
+the exchange to a particular ToolHive client.
+
+The following capabilities are deliberately deferred and are not supported by
+this feature: remote `jwks_uri` key retrieval, SPIFFE/SVID client
+authentication, AWS STS `act` claim mapping, and ID-JAG chaining.
+
 ### Forcing Confidential Registration for a Known Redirect URI
 
 Some MCP clients declare themselves public in their RFC 7591 registration (`token_endpoint_auth_method: "none"`) and then refuse to proceed because the response carries no `client_secret` — a self-contradictory request no conformant server can satisfy as written (Perplexity is the known case). RFC 7591 §3.2.1 permits the server to substitute client metadata during registration, and `ForceConfidentialRedirectURIs` uses that permission: it lists redirect URIs that are always registered as confidential clients, overriding a requested (or omitted) `"none"`.
@@ -363,3 +460,19 @@ All call sites use `unwrapStorage(stor)` or the equivalent JWT-bearer constructi
 When the embedded authorization server is deployed in an environment that cannot reach `https://toolhive.dev/oauth/client-metadata.json` or any public CIMD metadata URL, set `authServer.cimd.enabled: false`. Clients will fall back to DCR (`/oauth/register`) which uses only the local storage backend and requires no outbound connectivity.
 
 **Implementation:** `pkg/authserver/storage/cimd_decorator.go`
+
+## SPIFFE Storage Decorator
+
+**Current status: not reachable in this build.** `RunConfig.Validate()` rejects any non-empty `spiffeTrustDomains`/`inboundGrants.spiffeClientAuth` before the authorization-server runner is created (`validateSPIFFENotYetEnforced` in `pkg/authserver/config.go`; `pkg/authserver/runner/embeddedauthserver.go`), so storage creation and decorator installation never happen. The decorator, overlay, and durable-reservation behavior below is the design this epic has implemented and tested in isolation, not current operational behavior — see [SPIFFE Association Declarations](18-spiffe-association-declarations.md) for the full status.
+
+When top-level `spiffeTrustDomains` and `inboundGrants.spiffeClientAuth` are configured, the embedded authorization server wraps its storage backend in a `SPIFFEStorageDecorator` — installed as the outermost decorator, after CIMD (`decorateStorageForSPIFFE` in `pkg/authserver/server_impl.go`). This decorator overlays a fixed set of statically configured OAuth clients ahead of the dynamic DCR/CIMD backend. These declarations register associations and clients; the current server does not yet verify live X.509-SVIDs or JWT-SVIDs.
+
+### What it does
+
+`SPIFFEStorageDecorator` embeds the full `storage.Storage` interface and overrides `GetClient`, `RegisterClient`, and `ReconcileConfiguredClient`. `GetClient` checks its static client map first and only falls through to the wrapped storage (CIMD, then DCR) when the requested client ID is not one of the configured associations. `RegisterClient` and `ReconcileConfiguredClient` reject any DCR, delegate-client, or configured-client attempt that targets a client ID reserved by a static SPIFFE association. CIMD never calls `RegisterClient`; it durably persists resolved clients via `UpsertDCRIssuedClient` instead (a best-effort write-through for token-endpoint session rehydration — see the CIMD section above), which explicitly refuses to clobber a configured/SPIFFE-reconciled client at the same ID, so it cannot collide with a static association.
+
+Its clients come entirely from the configured SPIFFE trust-domain and client-association declarations (see [SPIFFE Association Declarations](18-spiffe-association-declarations.md)). They are built once at startup, held in memory, and never written to the storage backend (memory or Redis); they are never eligible for dynamic registration or replacement.
+
+At startup, the decorator durably claims each configured static client ID in the storage backend (memory or Redis) via `ReconcileConfiguredClient` (`preflightDurableCollisions`), using an inert placeholder rather than the real client. This is create-only for anything except a matching restart: it succeeds when the ID is unclaimed or already holds a matching placeholder from a prior run with the same configuration, and fails — refusing to start the server — when the ID is DCR-issued or holds a placeholder for a *different* association. This closes a cross-replica race that a read-only `GetClient` check alone cannot: with Redis and multiple replicas, an older or still-rolling replica without this SPIFFE config could otherwise DCR-register the same client ID after a newer replica's read-only check passed. The reverse collision can't happen: the decorator's `GetClient` always checks its static map first, so a durable client can never shadow a static one.
+
+**Implementation:** `pkg/authserver/storage/spiffe_decorator.go`

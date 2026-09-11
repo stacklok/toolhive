@@ -41,6 +41,25 @@ const HttpScheme = "http"
 // before giving up. Matches the cap used by the transparent proxy data path.
 const MaxRedirects = 10
 
+// Connection-pool bounds applied by Build.
+const (
+	// idleConnTimeout bounds how long a pooled keep-alive connection is
+	// retained after its last use. This is the leak: http.Transport's zero
+	// value means "never expire", so a client that performs one request and is
+	// then dropped pins a socket and its readLoop/writeLoop goroutine pair for
+	// the lifetime of the process. 90s matches http.DefaultTransport.
+	idleConnTimeout = 90 * time.Second
+	// maxIdleConns caps pooled idle connections across all hosts. The zero
+	// value is unlimited. 100 matches http.DefaultTransport.
+	maxIdleConns = 100
+	// maxIdleConnsPerHost caps them per host. The zero value here is already
+	// bounded (http.DefaultMaxIdleConnsPerHost is 2), so this is a deliberate
+	// increase rather than a new bound: these clients are host-scoped, and a
+	// slightly larger pool serves concurrent requests without dialing now that
+	// the idle timeout is finite.
+	maxIdleConnsPerHost = 4
+)
+
 // ErrRedirectRefused is wrapped by SameHostRedirectPolicy when it declines to
 // follow a redirect, so callers can match it with errors.Is.
 var ErrRedirectRefused = errors.New("redirect refused")
@@ -106,11 +125,113 @@ func NewPrivateIPBlockingDialContext() func(ctx context.Context, network, addr s
 	return (&net.Dialer{Control: protectedDialerControl}).DialContext
 }
 
+// Dial timeouts applied to backend connections. Both match the Go standard
+// library's http.DefaultTransport dialer.
+const (
+	backendDialTimeout   = 30 * time.Second
+	backendDialKeepAlive = 30 * time.Second
+)
+
+// CloneDefaultTransportWithDialControl returns an *http.Transport equivalent to
+// http.DefaultTransport, optionally carrying a per-connection dial Control hook.
+//
+// When http.DefaultTransport is the standard *http.Transport it is cloned
+// (preserving proxy, HTTP/2, and idle-connection settings). If it has been
+// replaced (e.g. in tests) a transport with the Go standard-library defaults is
+// reconstructed instead, so proxy/timeout/HTTP2 settings are not silently
+// dropped.
+//
+// When control is non-nil, a net.Dialer carrying it — with the standard backend
+// dial timeout and keep-alive — is installed as DialContext. The hook fires on
+// the resolved peer IP before the TCP handshake, which is what lets callers
+// defeat DNS-rebinding: a name-based check cannot, because the name can resolve
+// to a blocked IP after the check passes. A nil control leaves the cloned
+// dialer untouched.
+//
+// This is the single construction point for the backend transport used by every
+// caller that needs a dial-control hook, so callers building similar transports
+// cannot drift apart. Currently used by pkg/vmcp/client and
+// pkg/vmcp/session/internal/backend.
+func CloneDefaultTransportWithDialControl(
+	control func(network, address string, c syscall.RawConn) error,
+) *http.Transport {
+	var t *http.Transport
+	if dt, ok := http.DefaultTransport.(*http.Transport); ok {
+		t = dt.Clone()
+	} else {
+		t = &http.Transport{
+			Proxy:                 http.ProxyFromEnvironment,
+			DialContext:           (&net.Dialer{Timeout: backendDialTimeout, KeepAlive: backendDialKeepAlive}).DialContext,
+			ForceAttemptHTTP2:     true,
+			MaxIdleConns:          maxIdleConns,
+			IdleConnTimeout:       idleConnTimeout,
+			TLSHandshakeTimeout:   10 * time.Second,
+			ExpectContinueTimeout: 1 * time.Second,
+		}
+	}
+	if control != nil {
+		t.DialContext = (&net.Dialer{
+			Timeout:   backendDialTimeout,
+			KeepAlive: backendDialKeepAlive,
+			Control:   control,
+		}).DialContext
+	}
+	return t
+}
+
+// IdleConnectionCloser is the capability http.Client discovers on its outermost
+// transport to drain pooled connections (it asserts an identical unexported
+// interface). Any RoundTripper in this repo that wraps another must implement it
+// and forward the call, or every CloseIdleConnections on the resulting client is
+// a silent no-op. Assert against this named type rather than redeclaring an
+// anonymous `interface{ CloseIdleConnections() }`.
+//
+// upstream.IdleConnectionCloser is the provider-level analogue one layer up.
+type IdleConnectionCloser interface {
+	CloseIdleConnections()
+}
+
+// SetIdleConnBounds applies Build's idle-connection-pool bounds to a
+// hand-constructed *http.Transport — the transports this package cannot build
+// through Build because they need their own DialContext, CheckRedirect, or TLS
+// config. A zero IdleConnTimeout never expires a pooled connection, so a client
+// that performs one request and is dropped pins a socket and its goroutine pair
+// for the process lifetime; this is the leak Build fixes for its own clients
+// (see the constant block above). Setting all three fields together keeps a
+// call site from bounding two of the three by mistake.
+//
+// pkg/networking imports pkg/oauthproto, so leaf packages that oauthproto's
+// import graph reaches cannot call this without a cycle; those mirror the
+// values with a local const block instead.
+func SetIdleConnBounds(t *http.Transport) {
+	t.IdleConnTimeout = idleConnTimeout
+	t.MaxIdleConns = maxIdleConns
+	t.MaxIdleConnsPerHost = maxIdleConnsPerHost
+}
+
+// ForwardCloseIdle drains the idle-connection pool reachable through rt when rt
+// implements IdleConnectionCloser — as *http.Transport, and every wrapping
+// RoundTripper in this repo that forwards the call, do. A wrapping RoundTripper
+// must call this from its own CloseIdleConnections; otherwise
+// http.Client.CloseIdleConnections stops at the wrapper and the pool underneath
+// is never drained (see IdleConnectionCloser). Using this helper keeps the
+// wrapper half from silently regressing into an anonymous
+// `interface{ CloseIdleConnections() }` assertion that drifts out of sync.
+func ForwardCloseIdle(rt http.RoundTripper) {
+	if closer, ok := rt.(IdleConnectionCloser); ok {
+		closer.CloseIdleConnections()
+	}
+}
+
 // ValidatingTransport is for validating URLs prior to request
 type ValidatingTransport struct {
 	Transport         http.RoundTripper
 	InsecureAllowHTTP bool
 }
+
+// Compile-time assertion: a rename or typo of CloseIdleConnections would
+// otherwise silently re-hide the pool it wraps (see IdleConnectionCloser).
+var _ IdleConnectionCloser = (*ValidatingTransport)(nil)
 
 // RoundTrip validates the request URL prior to forwarding
 func (t *ValidatingTransport) RoundTrip(req *http.Request) (*http.Response, error) {
@@ -131,6 +252,32 @@ func (t *ValidatingTransport) RoundTrip(req *http.Request) (*http.Response, erro
 	}
 
 	return t.Transport.RoundTrip(req)
+}
+
+// CloseIdleConnections forwards to the wrapped transport so that
+// http.Client.CloseIdleConnections reaches the real connection pool.
+//
+// Because Build always wraps the pool in a ValidatingTransport, omitting this
+// method would make every client's CloseIdleConnections a silent no-op — see
+// IdleConnectionCloser. The assertion is required because the field is an
+// http.RoundTripper; it holds an *http.Transport for every client Build produces.
+func (t *ValidatingTransport) CloseIdleConnections() {
+	ForwardCloseIdle(t.Transport)
+}
+
+// closeIdlerTransport wraps a RoundTripper that does not implement
+// CloseIdleConnections (oauth2.Transport) and forwards the call to the
+// *http.Transport owning the connection pool underneath it.
+type closeIdlerTransport struct {
+	http.RoundTripper
+	pool *http.Transport
+}
+
+var _ IdleConnectionCloser = (*closeIdlerTransport)(nil)
+
+// CloseIdleConnections closes the idle connections held by the underlying pool.
+func (t *closeIdlerTransport) CloseIdleConnections() {
+	t.pool.CloseIdleConnections()
 }
 
 // createTokenSourceFromFile creates an oauth2.TokenSource from a token file
@@ -161,6 +308,7 @@ type HttpClientBuilder struct {
 	tlsHandshakeTimeout   time.Duration
 	responseHeaderTimeout time.Duration
 	caCertPath            string
+	caCertUsesSystemRoots bool
 	authTokenFile         string
 	allowPrivate          bool
 	insecureAllowHTTP     bool
@@ -221,9 +369,21 @@ func NewServerSuppliedHostClientBuilder(host string, allowPrivateIPs, insecureAl
 		WithPrivateIPs(allowPrivateIPs)
 }
 
-// WithCABundle sets the CA certificate bundle path
+// WithCABundle sets a pinned CA certificate bundle path. When a bundle is
+// configured, only certificates from that bundle are trusted (system roots are
+// not included).
 func (b *HttpClientBuilder) WithCABundle(path string) *HttpClientBuilder {
 	b.caCertPath = path
+	b.caCertUsesSystemRoots = false
+	return b
+}
+
+// WithSystemRootsPlusCABundle sets a CA certificate bundle path and preserves
+// trust in the system root pool. Use this when an upstream may use either a
+// publicly trusted certificate or a private CA.
+func (b *HttpClientBuilder) WithSystemRootsPlusCABundle(path string) *HttpClientBuilder {
+	b.caCertPath = path
+	b.caCertUsesSystemRoots = true
 	return b
 }
 
@@ -266,6 +426,7 @@ func (b *HttpClientBuilder) Build() (*http.Client, error) {
 		TLSHandshakeTimeout:   b.tlsHandshakeTimeout,
 		ResponseHeaderTimeout: b.responseHeaderTimeout,
 	}
+	SetIdleConnBounds(transport)
 	transport.DisableKeepAlives = b.disableKeepAlives
 
 	if !b.allowPrivate {
@@ -281,6 +442,16 @@ func (b *HttpClientBuilder) Build() (*http.Client, error) {
 		}
 
 		caCertPool := x509.NewCertPool()
+		if b.caCertUsesSystemRoots {
+			caCertPool, err = x509.SystemCertPool()
+			if err != nil {
+				return nil, fmt.Errorf("failed to load system CA certificate pool: %w", err)
+			}
+			if caCertPool == nil {
+				return nil, fmt.Errorf("failed to load system CA certificate pool: pool is nil")
+			}
+		}
+
 		if !caCertPool.AppendCertsFromPEM(caCert) {
 			return nil, fmt.Errorf("failed to parse CA certificate bundle")
 		}
@@ -306,10 +477,15 @@ func (b *HttpClientBuilder) Build() (*http.Client, error) {
 			return nil, fmt.Errorf("failed to create token source: %w", err)
 		}
 
-		// oauth2.Transport wraps our existing transport and adds Bearer token authentication
-		clientTransport = &oauth2.Transport{
-			Source: tokenSource,
-			Base:   clientTransport, // Preserves our ValidatingTransport
+		// oauth2.Transport wraps our existing transport and adds Bearer token
+		// authentication. It exposes only RoundTrip/CancelRequest, so wrap it
+		// again to keep http.Client.CloseIdleConnections reaching the pool.
+		clientTransport = &closeIdlerTransport{
+			RoundTripper: &oauth2.Transport{
+				Source: tokenSource,
+				Base:   clientTransport, // Preserves our ValidatingTransport
+			},
+			pool: transport,
 		}
 	}
 

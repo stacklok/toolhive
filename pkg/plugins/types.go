@@ -100,9 +100,11 @@ type InstalledPlugin struct {
 	// installs. No omitempty: false is an observable state (unmanaged),
 	// not an absence.
 	Managed bool `json:"managed"`
-	// SigstoreBundle is the serialized Sigstore bundle captured at install
-	// time, used for offline re-verification during sync. Nil for unsigned
-	// installs. Never serialized to API responses.
+	// SigstoreBundle is the signature material captured at install time,
+	// used for offline re-verification during sync. It is core's durable
+	// form (see verifier.Result.Bundle), not necessarily bare Sigstore
+	// bundle JSON, and is re-verified against the ARTIFACT digest. Nil for
+	// unsigned installs. Never serialized to API responses.
 	SigstoreBundle []byte `json:"-"`
 }
 

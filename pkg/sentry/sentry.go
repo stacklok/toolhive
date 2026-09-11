@@ -55,7 +55,6 @@ func Init(cfg Config) error {
 		Debug:            cfg.Debug,
 		EnableTracing:    true,
 		AttachStacktrace: true,
-		SendDefaultPII:   false,
 	})
 	if err != nil {
 		return fmt.Errorf("sentry init: %w", err)

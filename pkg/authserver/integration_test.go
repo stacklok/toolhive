@@ -22,6 +22,7 @@ import (
 	"time"
 
 	"github.com/alicebob/miniredis/v2"
+	josev3 "github.com/go-jose/go-jose/v3"
 	"github.com/go-jose/go-jose/v4"
 	"github.com/go-jose/go-jose/v4/jwt"
 	"github.com/oauth2-proxy/mockoidc"
@@ -82,6 +83,7 @@ func (ts *testServer) Miniredis(t *testing.T) *miniredis.Miniredis {
 // testServerOptions configures the test server setup.
 type testServerOptions struct {
 	upstream            upstream.OAuth2Provider
+	withoutUpstreams    bool
 	scopes              []string
 	accessTokenLifespan time.Duration
 	// storageFactory, when non-nil, supplies the storage backend instead of
@@ -113,6 +115,9 @@ type testServerOptions struct {
 	// forceConfidentialRedirectURIs, when non-empty, sets
 	// Config.ForceConfidentialRedirectURIs.
 	forceConfidentialRedirectURIs []string
+	// allowPrivateKeyJWTRegistration, when true, enables DCR registration of
+	// clients authenticating with inline private_key_jwt credentials.
+	allowPrivateKeyJWTRegistration bool
 }
 
 // testServerOption is a functional option for test server setup.
@@ -122,6 +127,12 @@ type testServerOption func(*testServerOptions)
 func withUpstream(provider upstream.OAuth2Provider) testServerOption {
 	return func(opts *testServerOptions) {
 		opts.upstream = provider
+	}
+}
+
+func withoutUpstreams() testServerOption {
+	return func(opts *testServerOptions) {
+		opts.withoutUpstreams = true
 	}
 }
 
@@ -302,13 +313,19 @@ func setupTestServer(t *testing.T, opts ...testServerOption) *testServer {
 		AccessTokenLifespan:  accessTokenLifespan,
 		RefreshTokenLifespan: 24 * time.Hour,
 		AuthCodeLifespan:     10 * time.Minute,
-		Upstreams:            []UpstreamConfig{{Name: "default", Type: UpstreamProviderTypeOAuth2, OAuth2Config: upstreamCfg}},
-		UpstreamFilter:       options.upstreamFilter,
-		AllowedAudiences:     []string{"https://mcp.example.com"},
-		TrustedIssuers:       options.trustedIssuers,
+		Upstreams: func() []UpstreamConfig {
+			if options.withoutUpstreams {
+				return nil
+			}
+			return []UpstreamConfig{{Name: "default", Type: UpstreamProviderTypeOAuth2, OAuth2Config: upstreamCfg}}
+		}(),
+		UpstreamFilter:   options.upstreamFilter,
+		AllowedAudiences: []string{"https://mcp.example.com"},
+		TrustedIssuers:   options.trustedIssuers,
 		// Opt-in gate for confidential-client DCR; off by default in tests just
 		// as in production.
 		AllowConfidentialClientRegistration: options.allowConfidentialClientRegistration,
+		AllowPrivateKeyJWTRegistration:      options.allowPrivateKeyJWTRegistration,
 		ForceConfidentialRedirectURIs:       options.forceConfidentialRedirectURIs,
 		// The test server's issuer is a plain-HTTP loopback URL (genuinely
 		// local: an in-process httptest server), so opt in to the same
@@ -318,12 +335,18 @@ func setupTestServer(t *testing.T, opts ...testServerOption) *testServer {
 	}
 
 	// 7. Create server using newServer with test options
-	srv, err := newServer(ctx, cfg, stor,
-		withUpstreamFactory(func(_ context.Context, _ *UpstreamConfig) (upstream.OAuth2Provider, error) {
-			// Return the provided upstream or nil (which is valid for tests without upstream)
+	cfg.UpstreamFactory = func(_ context.Context, _ *UpstreamConfig) (upstream.OAuth2Provider, error) {
+		if options.upstream != nil {
 			return options.upstream, nil
-		}),
-	)
+		}
+		// A test that configures an upstream slot but no provider still needs a
+		// non-nil one: newServer rejects nil (it would panic on the first
+		// /oauth/authorize instead of failing at boot). This placeholder panics
+		// if a test actually exercises the upstream, which is what a nil
+		// provider did anyway.
+		return &plainProvider{}, nil
+	}
+	srv, err := newServer(ctx, cfg, stor)
 	require.NoError(t, err)
 
 	// 8. Create HTTP test server
@@ -391,10 +414,14 @@ func setupJWTBearerGrantTestServer(t *testing.T, opts ...testServerOption) (*tes
 
 	serverOpts := append([]testServerOption{}, opts...)
 	serverOpts = append(serverOpts, withTrustedIssuers([]tokenexchange.TrustedIssuer{{
-		IssuerURL:         externalIssuer,
-		JWKSURL:           jwksServer.URL,
-		InsecureAllowHTTP: true,
-		AllowPrivateIPs:   true,
+		IssuerURL:              externalIssuer,
+		ExpectedAudience:       testAudience,
+		JWKSURL:                jwksServer.URL,
+		InsecureAllowHTTP:      true,
+		AllowPrivateIPs:        true,
+		ActorClaim:             "azp",
+		AllowedActors:          []string{"external-subject"},
+		AllowedDelegateClients: []string{"*"},
 		JWTBearerGrant: &tokenexchange.JWTBearerGrantPolicy{
 			MaxAssertionAge: "10m",
 			SubjectBindings: []tokenexchange.JWTBearerSubjectBinding{{
@@ -407,20 +434,55 @@ func setupJWTBearerGrantTestServer(t *testing.T, opts ...testServerOption) (*tes
 	signer, err := jose.NewSigner(jose.SigningKey{Algorithm: jose.RS256, Key: externalKey}, (&jose.SignerOptions{}).WithHeader("kid", "external-key"))
 	require.NoError(t, err)
 
-	signAssertion := func(subject string, issuedAt, expiry time.Time, id string) string {
+	sign := func(subject, audience string, issuedAt, expiry time.Time, id string) string {
 		t.Helper()
-		assertion, err := jwt.Signed(signer).Claims(jwt.Claims{
+		builder := jwt.Signed(signer).Claims(jwt.Claims{
 			Issuer:   externalIssuer,
 			Subject:  subject,
-			Audience: jwt.Audience{testIssuer + "/oauth/token"},
+			Audience: jwt.Audience{audience},
 			IssuedAt: jwt.NewNumericDate(issuedAt),
 			Expiry:   jwt.NewNumericDate(expiry),
 			ID:       id,
-		}).Serialize()
+		}).Claims(map[string]any{"azp": subject})
+		assertion, err := builder.Serialize()
 		require.NoError(t, err)
 		return assertion
 	}
+	signAssertion := func(subject string, issuedAt, expiry time.Time, id string) string {
+		return sign(subject, testIssuer+"/oauth/token", issuedAt, expiry, id)
+	}
+	ts.signSubjectToken = func(subject string, issuedAt, expiry time.Time, id string) string {
+		return sign(subject, testAudience, issuedAt, expiry, id)
+	}
 	return ts, signAssertion
+}
+
+func TestIntegration_ZeroUpstreamJWTBearerGrant(t *testing.T) {
+	t.Parallel()
+
+	ts, signAssertion := setupJWTBearerGrantTestServer(t, withoutUpstreams())
+	now := time.Now()
+	assertion := signAssertion("external-subject", now, now.Add(2*time.Minute), "zero-upstream-assertion")
+
+	response := makeTokenRequest(t, ts.Server.URL, url.Values{
+		"grant_type": {oauthproto.GrantTypeJWTBearer},
+		"assertion":  {assertion},
+		"resource":   {testAudience},
+	})
+	t.Cleanup(func() { response.Body.Close() })
+	result := parseTokenResponse(t, response)
+	require.Equal(t, http.StatusOK, response.StatusCode, result)
+	require.NotEmpty(t, result["access_token"])
+
+	discoveryResponse, err := http.Get(ts.Server.URL + "/.well-known/oauth-authorization-server")
+	require.NoError(t, err)
+	t.Cleanup(func() { discoveryResponse.Body.Close() })
+	require.Equal(t, http.StatusOK, discoveryResponse.StatusCode)
+	var metadata map[string]any
+	require.NoError(t, json.NewDecoder(discoveryResponse.Body).Decode(&metadata))
+	assert.Contains(t, metadata["grant_types_supported"], oauthproto.GrantTypeJWTBearer)
+	assert.NotContains(t, metadata["grant_types_supported"], oauthproto.GrantTypeAuthorizationCode)
+	assert.NotContains(t, metadata, "authorization_endpoint")
 }
 
 func TestIntegration_JWTBearerGrantWithoutClientAuthentication(t *testing.T) {
@@ -1404,14 +1466,15 @@ func TestIntegration_TokenExchange_TrustedExternalIssuer(t *testing.T) {
 			"the outer act hop must carry ToolHive's own issuer alongside sub")
 
 		// may_act carries no ExternalActor (see ValidatedClaims.ExternalActor's
-		// doc comment), but the external issuer must still be recorded — this
-		// is the path that bypasses the allowlist entirely, so it needs the
-		// audit trail at least as much as the allowlist path does.
-		nested, ok := act["act"].(map[string]any)
-		require.True(t, ok, "external issuer must still be nested even without an allowlisted actor")
-		assert.Equal(t, idpServer.URL, nested["iss"])
-		_, hasSub := nested["sub"]
-		assert.False(t, hasSub, "no client-namespace actor claim exists to report on the may_act path")
+		// doc comment), so there is no client-namespace actor to nest under
+		// act.act -- an act entry identifies a party that acted, and an
+		// issuer alone identifies no party. The external issuer is still
+		// recorded, as its own top-level claim rather than a phantom hop:
+		// this is the path that bypasses the allowlist entirely, so it needs
+		// the audit trail at least as much as the allowlist path does.
+		assert.Nil(t, act["act"], "no actor was resolved, so act must not nest an issuer-only phantom hop")
+		assert.Equal(t, idpServer.URL, claims["external_issuer"],
+			"the external issuer must still be recorded, as its own top-level claim")
 	})
 
 	t.Run("may_act-bearing token rejected when issuer has not opted in", func(t *testing.T) {
@@ -1640,12 +1703,13 @@ func TestIntegration_TokenExchange_TrustedExternalIssuer(t *testing.T) {
 		require.True(t, ok, "delegated token must carry an 'act' claim")
 		assert.Equal(t, agentClientID, act["sub"], "outermost act.sub must be the ToolHive acting client")
 
-		nested, ok := act["act"].(map[string]any)
-		require.True(t, ok, "external issuer provenance must still be nested")
-		assert.Equal(t, idpServer.URL, nested["iss"], "nested act.iss is the external issuer")
-		_, hasSub := nested["sub"]
-		assert.False(t, hasSub,
-			"a matcher-only authorization resolves no actor claim, so there is no client-namespace value to report")
+		// A matcher-only authorization resolves no actor claim, so there is
+		// no client-namespace value to nest under act.act -- an issuer alone
+		// identifies no party. The external issuer is still recorded, as its
+		// own top-level claim.
+		assert.Nil(t, act["act"], "no actor was resolved, so act must not nest an issuer-only phantom hop")
+		assert.Equal(t, idpServer.URL, claims["external_issuer"],
+			"the external issuer must still be recorded, as its own top-level claim")
 	})
 
 	t.Run("actor matcher false with no allowlist match rejected", func(t *testing.T) {
@@ -2003,6 +2067,7 @@ type testServerWithUpstream struct {
 	*testServer
 	mockOIDC         *mockoidc.MockOIDC
 	upstreamProvider upstream.OAuth2Provider
+	signSubjectToken func(string, time.Time, time.Time, string) string
 }
 
 // startMockOIDC starts a mockoidc server with default test user.
@@ -2324,14 +2389,14 @@ func TestIntegration_FullPKCEFlow_DefaultAudience(t *testing.T) {
 }
 
 // ============================================================================
-// OIDC Provider Integration Tests (OIDCProviderImpl via defaultUpstreamFactory)
+// OIDC Provider Integration Tests (OIDCProviderImpl via DefaultUpstreamFactory)
 // ============================================================================
 
 // setupTestServerWithOIDCProvider creates a test server with a real OIDCProviderImpl
-// created through the defaultUpstreamFactory. Unlike setupTestServerWithMockOIDC which
+// created through the DefaultUpstreamFactory. Unlike setupTestServerWithMockOIDC which
 // manually creates a BaseOAuth2Provider, this test path exercises:
 //   - UpstreamConfig{Type: OIDC, OIDCConfig: ...}
-//   - defaultUpstreamFactory dispatching to NewOIDCProvider
+//   - DefaultUpstreamFactory dispatching to NewOIDCProvider
 //   - OIDCProviderImpl with OIDC discovery, ID token validation, and nonce support
 //
 // Variadic opts allow swapping the storage backend (e.g. withRedisBackedStorage)
@@ -2381,7 +2446,7 @@ func setupTestServerWithOIDCProvider(t *testing.T, m *mockoidc.MockOIDC, opts ..
 	require.NoError(t, err)
 
 	// 5. Build OIDC upstream config - this is the key difference from setupTestServerWithMockOIDC.
-	// We use UpstreamProviderTypeOIDC with OIDCConfig so that defaultUpstreamFactory
+	// We use UpstreamProviderTypeOIDC with OIDCConfig so that DefaultUpstreamFactory
 	// creates an OIDCProviderImpl (not BaseOAuth2Provider).
 	serverCfg := Config{
 		Issuer:               testIssuer,
@@ -2408,7 +2473,7 @@ func setupTestServerWithOIDCProvider(t *testing.T, m *mockoidc.MockOIDC, opts ..
 	}
 
 	// 6. Create server using newServer WITHOUT overriding the upstream factory.
-	// This exercises the real defaultUpstreamFactory -> NewOIDCProvider path.
+	// This exercises the real DefaultUpstreamFactory -> NewOIDCProvider path.
 	srv, err := newServer(ctx, serverCfg, stor)
 	require.NoError(t, err)
 
@@ -2432,7 +2497,7 @@ func setupTestServerWithOIDCProvider(t *testing.T, m *mockoidc.MockOIDC, opts ..
 }
 
 // TestIntegration_OIDCProvider_FullFlow tests the complete OAuth flow using the real
-// OIDCProviderImpl created through defaultUpstreamFactory. This verifies that:
+// OIDCProviderImpl created through DefaultUpstreamFactory. This verifies that:
 // - OIDC discovery is performed against the mock OIDC server
 // - The authorization flow redirects through the OIDC provider correctly
 // - Token exchange produces a valid JWT access token
@@ -3254,15 +3319,14 @@ func setupTestServerWithTwoUpstreams(t *testing.T, m1, m2 *mockoidc.MockOIDC, op
 	}
 
 	// 8. Create server using newServer with a factory that returns the correct provider per name
-	srv, err := newServer(ctx, serverCfg, stor,
-		withUpstreamFactory(func(_ context.Context, cfg *UpstreamConfig) (upstream.OAuth2Provider, error) {
-			p, ok := providers[cfg.Name]
-			if !ok {
-				return nil, fmt.Errorf("unknown upstream: %s", cfg.Name)
-			}
-			return p, nil
-		}),
-	)
+	serverCfg.UpstreamFactory = func(_ context.Context, cfg *UpstreamConfig) (upstream.OAuth2Provider, error) {
+		p, ok := providers[cfg.Name]
+		if !ok {
+			return nil, fmt.Errorf("unknown upstream: %s", cfg.Name)
+		}
+		return p, nil
+	}
+	srv, err := newServer(ctx, serverCfg, stor)
 	require.NoError(t, err)
 
 	// 9. Create HTTP test server
@@ -4351,7 +4415,12 @@ func withAllowConfidentialClientRegistration() testServerOption {
 	}
 }
 
-// makeTokenRequestWithBasicAuth is the makeTokenRequest variant for
+func withAllowPrivateKeyJWTRegistration() testServerOption {
+	return func(opts *testServerOptions) {
+		opts.allowPrivateKeyJWTRegistration = true
+	}
+}
+
 // client_secret_basic clients: identical form POST to /oauth/token, plus an
 // Authorization header carrying base64(client_id:client_secret). fosite
 // url.QueryUnescape's both Basic-auth components, so the wire form must be the
@@ -5244,4 +5313,147 @@ func TestIntegration_ConfidentialClientDCR_AudienceParity(t *testing.T) {
 	require.Len(t, aud, 1, "aud should have exactly one audience")
 	assert.Equal(t, testAudience, aud[0],
 		"aud from an explicit resource parameter must match the public-client result")
+}
+
+// TestIntegration_PrivateKeyJWTDCRTokenExchange exercises the complete inline
+// private_key_jwt path through DCR, client authentication, and RFC 8693. The
+// backend variants ensure the registered JWKS and assertion replay marker use
+// the same observable behavior with memory and Redis storage.
+func TestIntegration_PrivateKeyJWTDCRTokenExchange(t *testing.T) {
+	t.Parallel()
+
+	for _, tc := range []struct {
+		name string
+		opt  testServerOption
+	}{
+		{name: "memory", opt: func(_ *testServerOptions) {}},
+		{name: "redis", opt: withRedisBackedStorage()},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+
+			ts, _ := setupJWTBearerGrantTestServer(t,
+				withoutUpstreams(), withAllowPrivateKeyJWTRegistration(), tc.opt)
+			clientKey, err := rsa.GenerateKey(rand.Reader, 2048)
+			require.NoError(t, err)
+			const signingAlgorithm = "RS256"
+			jwks := &josev3.JSONWebKeySet{Keys: []josev3.JSONWebKey{{
+				Key:       clientKey.Public(),
+				KeyID:     "dcr-client-key",
+				Algorithm: signingAlgorithm,
+				Use:       "sig",
+			}}}
+
+			registrationBody, err := json.Marshal(oauthproto.DynamicClientRegistrationRequest{
+				RedirectURIs:                []string{testConfidentialRedirectURI},
+				TokenEndpointAuthMethod:     oauthproto.TokenEndpointAuthMethodPrivateKeyJWT,
+				TokenEndpointAuthSigningAlg: signingAlgorithm,
+				GrantTypes:                  []string{oauthproto.GrantTypeTokenExchange},
+				JWKS:                        jwks,
+			})
+			require.NoError(t, err)
+			registrationResponse, err := http.Post(ts.Server.URL+"/oauth/register", "application/json", bytes.NewReader(registrationBody))
+			require.NoError(t, err)
+			t.Cleanup(func() {
+				_, _ = io.Copy(io.Discard, registrationResponse.Body)
+				require.NoError(t, registrationResponse.Body.Close())
+			})
+			var registered oauthproto.DynamicClientRegistrationResponse
+			require.NoError(t, json.NewDecoder(registrationResponse.Body).Decode(&registered))
+			require.Equal(t, http.StatusCreated, registrationResponse.StatusCode)
+			require.NotEmpty(t, registered.ClientID)
+			assert.Equal(t, oauthproto.TokenEndpointAuthMethodPrivateKeyJWT, registered.TokenEndpointAuthMethod)
+			assert.Equal(t, signingAlgorithm, registered.TokenEndpointAuthSigningAlg)
+			assert.Empty(t, registered.ClientSecret)
+			assert.Empty(t, registered.ResponseTypes)
+			require.NotNil(t, registered.JWKS)
+			require.Len(t, registered.JWKS.Keys, 1)
+			assert.Equal(t, signingAlgorithm, registered.JWKS.Keys[0].Algorithm)
+
+			signer, err := jose.NewSigner(jose.SigningKey{Algorithm: jose.RS256, Key: clientKey},
+				(&jose.SignerOptions{}).WithType("JWT").WithHeader("kid", "dcr-client-key"))
+			require.NoError(t, err)
+			makeAssertion := func(issuer, audience string, expiry time.Time, jti string) string {
+				t.Helper()
+				assertion, err := jwt.Signed(signer).Claims(jwt.Claims{
+					Issuer:   issuer,
+					Subject:  issuer,
+					Audience: jwt.Audience{audience},
+					Expiry:   jwt.NewNumericDate(expiry),
+					IssuedAt: jwt.NewNumericDate(time.Now()),
+					ID:       jti,
+				}).Serialize()
+				require.NoError(t, err)
+				return assertion
+			}
+			request := func(assertion, subjectToken string) (*http.Response, map[string]interface{}) {
+				t.Helper()
+				response := makeTokenRequest(t, ts.Server.URL, url.Values{
+					"grant_type":            {oauthproto.GrantTypeTokenExchange},
+					"subject_token":         {subjectToken},
+					"subject_token_type":    {oauthproto.TokenTypeAccessToken},
+					"client_id":             {registered.ClientID},
+					"client_assertion_type": {"urn:ietf:params:oauth:client-assertion-type:jwt-bearer"},
+					"client_assertion":      {assertion},
+				})
+				body := parseTokenResponse(t, response)
+				return response, body
+			}
+
+			now := time.Now()
+			subjectToken := ts.signSubjectToken("external-subject", now, now.Add(10*time.Minute), "subject-1")
+			assertion := makeAssertion(registered.ClientID, testIssuer+"/oauth/token", now.Add(2*time.Minute), "client-assertion-1")
+			response, body := request(assertion, subjectToken)
+			t.Cleanup(func() { response.Body.Close() })
+			require.Equal(t, http.StatusOK, response.StatusCode, body)
+			delegated, ok := body["access_token"].(string)
+			require.True(t, ok)
+			parsed, err := jwt.ParseSigned(delegated, []jose.SignatureAlgorithm{jose.RS256})
+			require.NoError(t, err)
+			var claims map[string]interface{}
+			require.NoError(t, parsed.Claims(ts.PrivateKey.Public(), &claims))
+			act, ok := claims["act"].(map[string]interface{})
+			require.True(t, ok)
+			assert.Equal(t, registered.ClientID, act["sub"])
+
+			// The exact same assertion is single-use, even when replayed with a
+			// valid subject token on the real token endpoint.
+			replayResponse, replayBody := request(assertion, subjectToken)
+			t.Cleanup(func() { replayResponse.Body.Close() })
+			assert.Equal(t, http.StatusBadRequest, replayResponse.StatusCode, replayBody)
+			assert.Equal(t, "jti_known", replayBody["error"])
+
+			for _, negative := range []struct {
+				name      string
+				assertion string
+			}{
+				{name: "wrong_audience", assertion: makeAssertion(registered.ClientID, "https://wrong.example/token", now.Add(2*time.Minute), "client-assertion-wrong-aud")},
+				{name: "wrong_subject", assertion: makeAssertion("different-client", testIssuer+"/oauth/token", now.Add(2*time.Minute), "client-assertion-wrong-sub")},
+				{name: "expired", assertion: makeAssertion(registered.ClientID, testIssuer+"/oauth/token", now.Add(-time.Minute), "client-assertion-expired")},
+			} {
+				t.Run(negative.name, func(t *testing.T) {
+					response, body := request(negative.assertion, subjectToken)
+					t.Cleanup(func() { response.Body.Close() })
+					assert.NotEqual(t, http.StatusOK, response.StatusCode, body)
+				})
+			}
+		})
+	}
+}
+
+// TestNoUpstreamSessionClaimKeysMatch pins the two spellings of the
+// no-upstream-session marker together. The issuing side (session) and the
+// consuming side (upstreamtoken) deliberately do not import each other, so
+// nothing but this assertion stops one from being edited without the other.
+// A silent divergence is invisible: the auth server would keep stamping a
+// marker no resource server reads, and every RFC 7523 JWT-bearer request
+// would fail closed under a pinned Cedar primaryUpstreamProvider.
+//
+// This file is the seam — it already imports both packages — which is why the
+// test lives here rather than in either of them.
+func TestNoUpstreamSessionClaimKeysMatch(t *testing.T) {
+	t.Parallel()
+
+	assert.Equal(t, session.NoUpstreamSessionClaimKey, upstreamtoken.NoUpstreamSessionClaimKey,
+		"the issuing and consuming spellings of the no-upstream-session claim must stay identical")
 }

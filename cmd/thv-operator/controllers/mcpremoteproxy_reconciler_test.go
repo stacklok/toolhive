@@ -939,7 +939,8 @@ func TestMCPRemoteProxy_ValidateAuthzPrimaryUpstreamProviderIgnored(t *testing.T
 			authzConfig: &mcpv1beta1.AuthzConfigRef{
 				Type: mcpv1beta1.AuthzConfigTypeInline,
 				Inline: &mcpv1beta1.InlineAuthzConfig{
-					Policies:                []string{`permit(principal, action, resource);`},
+					Policies: []string{`permit(principal, action, resource);`},
+					//nolint:staticcheck // Exercises backward compatibility for the deprecated field.
 					PrimaryUpstreamProvider: "okta",
 				},
 			},

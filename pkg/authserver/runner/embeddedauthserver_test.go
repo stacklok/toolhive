@@ -17,19 +17,25 @@ import (
 	"log/slog"
 	"net/http"
 	"net/http/httptest"
+	"net/url"
 	"os"
 	"path/filepath"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
 
+	"github.com/alicebob/miniredis/v2"
+	"github.com/ory/fosite"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+	"gopkg.in/yaml.v3"
 
 	"github.com/stacklok/toolhive/pkg/authserver"
 	servercrypto "github.com/stacklok/toolhive/pkg/authserver/server/crypto"
 	"github.com/stacklok/toolhive/pkg/authserver/server/keys"
+	"github.com/stacklok/toolhive/pkg/authserver/server/registration"
 	"github.com/stacklok/toolhive/pkg/authserver/server/tokenexchange"
 	"github.com/stacklok/toolhive/pkg/authserver/storage"
 	"github.com/stacklok/toolhive/pkg/oauthproto"
@@ -590,10 +596,104 @@ func TestBuildPureOAuth2Config(t *testing.T) {
 		assert.Equal(t, "https://example.com/token", cfg.TokenEndpoint)
 		assert.Equal(t, "my-client-id", cfg.ClientID)
 		assert.Equal(t, "my-client-secret", cfg.ClientSecret)
+		assert.Empty(t, cfg.TokenEndpointAuthMethod)
 		assert.Equal(t, "https://my-app.com/callback", cfg.RedirectURI)
 		assert.Equal(t, []string{"read", "write"}, cfg.Scopes)
 		require.NotNil(t, cfg.UserInfo)
 		assert.Equal(t, "https://example.com/userinfo", cfg.UserInfo.EndpointURL)
+	})
+
+	t.Run("leaves TokenEndpointAuthMethod empty for public client without secret", func(t *testing.T) {
+		t.Parallel()
+
+		rc := &authserver.UpstreamRunConfig{
+			Type: authserver.UpstreamProviderTypeOAuth2,
+			OAuth2Config: &authserver.OAuth2UpstreamRunConfig{
+				AuthorizationEndpoint: "https://example.com/authorize",
+				TokenEndpoint:         "https://example.com/token",
+				ClientID:              "my-client-id",
+				RedirectURI:           "https://my-app.com/callback",
+			},
+		}
+
+		cfg, err := buildPureOAuth2Config(rc, false)
+		require.NoError(t, err)
+		require.NotNil(t, cfg)
+		assert.Empty(t, cfg.TokenEndpointAuthMethod)
+	})
+
+	t.Run("preserves explicit client_secret_post", func(t *testing.T) {
+		t.Parallel()
+
+		tmpDir := t.TempDir()
+		secretFile := filepath.Join(tmpDir, "client-secret")
+		require.NoError(t, os.WriteFile(secretFile, []byte("my-client-secret"), 0600))
+
+		rc := &authserver.UpstreamRunConfig{
+			Type: authserver.UpstreamProviderTypeOAuth2,
+			OAuth2Config: &authserver.OAuth2UpstreamRunConfig{
+				AuthorizationEndpoint:   "https://example.com/authorize",
+				TokenEndpoint:           "https://example.com/token",
+				ClientID:                "my-client-id",
+				ClientSecretFile:        secretFile,
+				RedirectURI:             "https://my-app.com/callback",
+				TokenEndpointAuthMethod: oauthproto.TokenEndpointAuthMethodClientSecretPost,
+			},
+		}
+
+		cfg, err := buildPureOAuth2Config(rc, false)
+		require.NoError(t, err)
+		require.NotNil(t, cfg)
+		assert.Equal(t, oauthproto.TokenEndpointAuthMethodClientSecretPost, cfg.TokenEndpointAuthMethod)
+	})
+
+	t.Run("preserves explicit client_secret_basic", func(t *testing.T) {
+		t.Parallel()
+
+		tmpDir := t.TempDir()
+		secretFile := filepath.Join(tmpDir, "client-secret")
+		require.NoError(t, os.WriteFile(secretFile, []byte("my-client-secret"), 0600))
+
+		rc := &authserver.UpstreamRunConfig{
+			Type: authserver.UpstreamProviderTypeOAuth2,
+			OAuth2Config: &authserver.OAuth2UpstreamRunConfig{
+				AuthorizationEndpoint:   "https://example.com/authorize",
+				TokenEndpoint:           "https://example.com/token",
+				ClientID:                "my-client-id",
+				ClientSecretFile:        secretFile,
+				RedirectURI:             "https://my-app.com/callback",
+				TokenEndpointAuthMethod: oauthproto.TokenEndpointAuthMethodClientSecretBasic,
+			},
+		}
+
+		cfg, err := buildPureOAuth2Config(rc, false)
+		require.NoError(t, err)
+		require.NotNil(t, cfg)
+		assert.Equal(t, oauthproto.TokenEndpointAuthMethodClientSecretBasic, cfg.TokenEndpointAuthMethod)
+	})
+
+	t.Run("rejects client_secret_basic when the secret file resolves to empty", func(t *testing.T) {
+		t.Parallel()
+
+		tmpDir := t.TempDir()
+		secretFile := filepath.Join(tmpDir, "empty-secret")
+		require.NoError(t, os.WriteFile(secretFile, []byte("   \n"), 0600))
+
+		rc := &authserver.UpstreamRunConfig{
+			Type: authserver.UpstreamProviderTypeOAuth2,
+			OAuth2Config: &authserver.OAuth2UpstreamRunConfig{
+				AuthorizationEndpoint:   "https://example.com/authorize",
+				TokenEndpoint:           "https://example.com/token",
+				ClientID:                "my-client-id",
+				ClientSecretFile:        secretFile,
+				RedirectURI:             "https://my-app.com/callback",
+				TokenEndpointAuthMethod: oauthproto.TokenEndpointAuthMethodClientSecretBasic,
+			},
+		}
+
+		_, err := buildPureOAuth2Config(rc, false)
+		require.Error(t, err)
+		assert.Contains(t, err.Error(), "requires a non-empty client secret")
 	})
 
 	t.Run("propagates AdditionalAuthorizationParams", func(t *testing.T) {
@@ -1325,17 +1425,16 @@ func TestConvertRedisRunConfig(t *testing.T) {
 		assert.Contains(t, err.Error(), "redis config is required")
 	})
 
-	t.Run("missing ACL user config returns error", func(t *testing.T) {
+	t.Run("nil ACL user config resolves to no-auth", func(t *testing.T) {
 		t.Parallel()
-		_, err := convertRedisRunConfig(&storage.RedisRunConfig{
+		cfg, err := convertRedisRunConfig(&storage.RedisRunConfig{
+			Addr:      "redis.example.com:6379",
 			KeyPrefix: "test:",
-			SentinelConfig: &storage.SentinelRunConfig{
-				MasterName:    "mymaster",
-				SentinelAddrs: []string{"localhost:26379"},
-			},
+			// No ACLUserConfig: a no-auth connection to an unauthenticated Redis.
 		})
-		require.Error(t, err)
-		assert.Contains(t, err.Error(), "acl user config is required")
+		require.NoError(t, err)
+		assert.Empty(t, cfg.Username)
+		assert.Empty(t, cfg.Password)
 	})
 
 	t.Run("unset username env var returns error", func(t *testing.T) {
@@ -1353,6 +1452,37 @@ func TestConvertRedisRunConfig(t *testing.T) {
 		})
 		require.Error(t, err)
 		assert.Contains(t, err.Error(), "failed to resolve Redis username")
+	})
+
+	t.Run("aclUser auth type with nil ACL config returns error", func(t *testing.T) {
+		t.Parallel()
+		// AuthType declares authenticated intent; a nil ACLUserConfig alongside
+		// it is a misconfiguration, not a no-auth request, and must fail loudly
+		// rather than silently downgrade to unauthenticated.
+		_, err := convertRedisRunConfig(&storage.RedisRunConfig{
+			Addr:      "redis.example.com:6379",
+			KeyPrefix: "test:",
+			AuthType:  storage.AuthTypeACLUser,
+		})
+		require.Error(t, err)
+		assert.Contains(t, err.Error(), "requires acl_user_config")
+	})
+
+	t.Run("populated ACL config with unset password env var returns actionable error", func(t *testing.T) {
+		t.Parallel()
+		// A populated block with no password_env_var must return the same
+		// actionable guidance as the empty-resolved-password case, not
+		// resolveEnvVar's generic "environment variable name is empty".
+		_, err := convertRedisRunConfig(&storage.RedisRunConfig{
+			Addr:      "redis.example.com:6379",
+			KeyPrefix: "test:",
+			ACLUserConfig: &storage.ACLUserRunConfig{
+				PasswordEnvVar: "", // populated block, but no password source
+			},
+		})
+		require.Error(t, err)
+		assert.Contains(t, err.Error(), "no password_env_var")
+		assert.Contains(t, err.Error(), "omit acl_user_config for a no-auth connection")
 	})
 }
 
@@ -1465,6 +1595,24 @@ func TestConvertRedisRunConfig_WithEnvVars(t *testing.T) {
 		assert.Equal(t, "mypass", cfg.Password)
 	})
 
+	t.Run("populated ACL config with empty-resolved password returns error", func(t *testing.T) {
+		// Env var is set but empty: a populated ACL block that resolves to no
+		// password is a misconfiguration (mis-keyed / unsynced secret), not a
+		// request for no-auth, and must not silently downgrade to unauthenticated.
+		t.Setenv("TEST_REDIS_PASS_EMPTY", "")
+
+		_, err := convertRedisRunConfig(&storage.RedisRunConfig{
+			Addr:      "redis.example.com:6379",
+			KeyPrefix: "thv:auth:ns:name:",
+			ACLUserConfig: &storage.ACLUserRunConfig{
+				UsernameEnvVar: "", // no username; only the password path matters here
+				PasswordEnvVar: "TEST_REDIS_PASS_EMPTY",
+			},
+		})
+		require.Error(t, err)
+		assert.Contains(t, err.Error(), "password is empty for a populated ACL user config")
+	})
+
 	t.Run("cluster mode resolves correctly", func(t *testing.T) {
 		t.Setenv("TEST_REDIS_USER_CLUSTER", "clusteruser")
 		t.Setenv("TEST_REDIS_PASS_CLUSTER", "clusterpass")
@@ -1487,18 +1635,145 @@ func TestConvertRedisRunConfig_WithEnvVars(t *testing.T) {
 	})
 }
 
-// stubServer is a minimal authserver.Server implementation for testing RegisterHandlers.
-// It returns a fixed http.Handler that writes a 200 response with a marker body,
-// and no-ops on all other interface methods.
+// TestConvertRedisRunConfig_NoAuthWarns asserts a no-auth resolution (nil
+// ACLUserConfig) emits exactly one startup WARN naming the store, while an
+// authenticated resolution emits none. It swaps the process-global slog default,
+// so it is not parallel.
+//
+//nolint:paralleltest // mutates the package-global slog.Default()
+func TestConvertRedisRunConfig_NoAuthWarns(t *testing.T) {
+	t.Run("no-auth emits one WARN naming the store", func(t *testing.T) {
+		var buf syncBuffer
+		previous := slog.Default()
+		slog.SetDefault(slog.New(slog.NewTextHandler(&buf, &slog.HandlerOptions{Level: slog.LevelWarn})))
+		t.Cleanup(func() { slog.SetDefault(previous) })
+
+		_, err := convertRedisRunConfig(&storage.RedisRunConfig{
+			Addr:      "redis.example.com:6379",
+			KeyPrefix: "thv:auth:ns:name:",
+		})
+		require.NoError(t, err)
+
+		logged := buf.String()
+		// Count the distinctive message rather than the generic level=WARN
+		// token, so an unrelated WARN captured by the process-global default
+		// cannot skew the assertion.
+		assert.Equal(t, 1, strings.Count(logged, "without authentication"))
+		assert.Contains(t, logged, "redis.example.com:6379")
+	})
+
+	t.Run("no-auth WARN names the Sentinel master in Sentinel mode", func(t *testing.T) {
+		var buf syncBuffer
+		previous := slog.Default()
+		slog.SetDefault(slog.New(slog.NewTextHandler(&buf, &slog.HandlerOptions{Level: slog.LevelWarn})))
+		t.Cleanup(func() { slog.SetDefault(previous) })
+
+		// Sentinel mode leaves Addr empty, so redisStoreName must fall back to
+		// the master name for the store identifier in the WARN.
+		_, err := convertRedisRunConfig(&storage.RedisRunConfig{
+			KeyPrefix: "thv:auth:ns:name:",
+			SentinelConfig: &storage.SentinelRunConfig{
+				MasterName:    "mymaster",
+				SentinelAddrs: []string{"localhost:26379"},
+			},
+		})
+		require.NoError(t, err)
+
+		logged := buf.String()
+		assert.Equal(t, 1, strings.Count(logged, "without authentication"))
+		assert.Contains(t, logged, "sentinel:mymaster")
+	})
+
+	t.Run("authenticated resolution emits no WARN", func(t *testing.T) {
+		t.Setenv("TEST_REDIS_PASS_WARN", "mypass")
+
+		var buf syncBuffer
+		previous := slog.Default()
+		slog.SetDefault(slog.New(slog.NewTextHandler(&buf, &slog.HandlerOptions{Level: slog.LevelWarn})))
+		t.Cleanup(func() { slog.SetDefault(previous) })
+
+		_, err := convertRedisRunConfig(&storage.RedisRunConfig{
+			Addr:      "redis.example.com:6379",
+			KeyPrefix: "thv:auth:ns:name:",
+			ACLUserConfig: &storage.ACLUserRunConfig{
+				PasswordEnvVar: "TEST_REDIS_PASS_WARN",
+			},
+		})
+		require.NoError(t, err)
+		assert.Equal(t, 0, strings.Count(buf.String(), "without authentication"))
+	})
+}
+
+// TestCreateStorage_NoAuthRedisConnects covers the second half of issue #6550's
+// suggested test #1: a config with no ACLUserConfig must not only yield empty
+// credentials but actually connect to an unauthenticated Redis. It builds the
+// storage backend through createStorage/convertRedisRunConfig (the production
+// path) against a no-auth miniredis and proves a real round-trip succeeds.
+func TestCreateStorage_NoAuthRedisConnects(t *testing.T) {
+	t.Parallel()
+
+	mr := miniredis.RunT(t) // miniredis requires no auth unless RequireAuth is set
+
+	stor, err := createStorage(context.Background(), &storage.RunConfig{
+		Type: string(storage.TypeRedis),
+		RedisConfig: &storage.RedisRunConfig{
+			Addr:      mr.Addr(),
+			KeyPrefix: "test:noauth:",
+			// No ACLUserConfig and no AuthType: a no-auth connection.
+		},
+	})
+	require.NoError(t, err) // NewRedisStorage pings on construction, so this proves connectivity
+	t.Cleanup(func() { _ = stor.Close() })
+
+	// A real write/read round-trip proves the unauthenticated client is usable,
+	// not merely that construction's ping succeeded.
+	ctx := context.Background()
+	require.NoError(t, stor.RegisterClient(ctx, &fosite.DefaultClient{ID: "noauth-client"}))
+	got, err := stor.GetClient(ctx, "noauth-client")
+	require.NoError(t, err)
+	assert.Equal(t, "noauth-client", got.GetID())
+}
+
+// stubServer is a minimal authserver.Server implementation for testing
+// RegisterHandlers. It returns a fixed http.Handler that writes a 200 response
+// with a marker body, and no-ops on all other interface methods.
+//
+// CloseIdleConnections is not part of authserver.Server — it is the optional
+// capability authserver.CloseIdleConnections detects — so this stub implements
+// it only to assert that the wrapper forwards. capabilityFreeStubServer covers a
+// server that does not. Note it must not be embedded to build that one: the
+// method would be promoted and the capability satisfied after all.
 type stubServer struct {
-	handler http.Handler
+	handler    http.Handler
+	idleCloses atomic.Int32
 }
 
 func (s *stubServer) Handler() http.Handler                                { return s.handler }
 func (*stubServer) IDPTokenStorage() storage.UpstreamTokenStorage          { return nil }
 func (*stubServer) UpstreamTokenRefresher() storage.UpstreamTokenRefresher { return nil }
 func (*stubServer) DCRStore() storage.DCRCredentialStore                   { return nil }
+func (s *stubServer) CloseIdleConnections()                                { s.idleCloses.Add(1) }
 func (*stubServer) Close() error                                           { return nil }
+
+// capabilityFreeStubServer omits CloseIdleConnections, as an out-of-tree
+// authserver.Server implementation written before the capability existed would.
+// It counts Close so a test can prove the wrapper does not fall back to it.
+type capabilityFreeStubServer struct {
+	closed atomic.Int32
+}
+
+func (*capabilityFreeStubServer) Handler() http.Handler                         { return nil }
+func (*capabilityFreeStubServer) IDPTokenStorage() storage.UpstreamTokenStorage { return nil }
+func (*capabilityFreeStubServer) DCRStore() storage.DCRCredentialStore          { return nil }
+
+func (*capabilityFreeStubServer) UpstreamTokenRefresher() storage.UpstreamTokenRefresher {
+	return nil
+}
+
+func (s *capabilityFreeStubServer) Close() error {
+	s.closed.Add(1)
+	return nil
+}
 
 func TestRoutes(t *testing.T) {
 	t.Parallel()
@@ -1674,7 +1949,511 @@ func newMockAuthorizationServer(t *testing.T) (*httptest.Server, *int32) {
 	return server, &total
 }
 
-// TestBuildUpstreamConfigs_DCR verifies the end-to-end DCR wiring inside
+func TestNewEmbeddedAuthServerWithStorage_RequiredInputs(t *testing.T) {
+	t.Parallel()
+
+	t.Run("nil config returns error without panic or cleanup", func(t *testing.T) {
+		t.Parallel()
+
+		tracker := &closeTrackingStorage{Storage: storage.NewMemoryStorage()}
+		t.Cleanup(func() { require.NoError(t, tracker.Storage.Close()) })
+
+		server, err := NewEmbeddedAuthServerWithStorage(context.Background(), nil, tracker)
+		require.Nil(t, server)
+		require.EqualError(t, err, "config is required")
+		assert.Zero(t, tracker.closeCount.Load())
+	})
+
+	t.Run("nil storage returns error", func(t *testing.T) {
+		t.Parallel()
+
+		server, err := NewEmbeddedAuthServerWithStorage(context.Background(), &authserver.RunConfig{}, nil)
+		require.Nil(t, server)
+		require.EqualError(t, err, "storage is required")
+	})
+}
+
+// TestNewEmbeddedAuthServer_SPIFFEAndJWTBearerGrant ensures the two independent
+// inbound token-exchange configurations construct together through RunConfig.
+func TestNewEmbeddedAuthServer_SPIFFEAndJWTBearerGrant(t *testing.T) {
+	t.Parallel()
+	t.Skip("RunConfig.Validate() now hard-rejects any non-empty spiffe_trust_domains " +
+		"(config.go's validateSPIFFENotYetEnforced, per PR #6467 review) until a real " +
+		"SVID-verification consumer lands, so a server can no longer be constructed with " +
+		"a SPIFFE association configured at all -- there is no way to exercise this " +
+		"combination through NewEmbeddedAuthServer without routing around cfg.Validate() " +
+		"in production code. Re-enable this test -- unmodified -- when the future PR that " +
+		"adds real SVID verification removes the hard-reject.")
+
+	cfg := &authserver.RunConfig{
+		SchemaVersion:    authserver.CurrentSchemaVersion,
+		Issuer:           "https://auth.example.com",
+		ScopesSupported:  []string{"openid", "profile"},
+		AllowedAudiences: []string{"https://mcp.example.com"},
+		Upstreams: []authserver.UpstreamRunConfig{{
+			Name: "static-upstream",
+			Type: authserver.UpstreamProviderTypeOAuth2,
+			OAuth2Config: &authserver.OAuth2UpstreamRunConfig{
+				AuthorizationEndpoint: "https://upstream.example.com/authorize",
+				TokenEndpoint:         "https://upstream.example.com/token",
+				ClientID:              "test-client-id",
+				RedirectURI:           "https://auth.example.com/oauth/callback",
+			},
+		}},
+		SPIFFETrustDomains: []authserver.SPIFFETrustDomainRunConfig{{
+			Name:        "production",
+			TrustDomain: "example.org",
+			Methods:     []authserver.SPIFFEAuthenticationMethod{authserver.SPIFFEAuthenticationMethodX509},
+			BundleSource: authserver.SPIFFEBundleSourceRunConfig{
+				Type:        authserver.SPIFFEBundleSourceTypeWorkloadAPI,
+				WorkloadAPI: &authserver.SPIFFEWorkloadAPIBundleSourceRunConfig{},
+			},
+		}},
+		InboundGrants: &authserver.InboundGrantsRunConfig{
+			SPIFFEClientAuth: []authserver.SPIFFEClientAuthRunConfig{{
+				TrustDomainRef:   "production",
+				PrincipalPattern: "spiffe://example.org/ns/default/agent",
+				ClientID:         "spiffe-client",
+				Methods:          []authserver.SPIFFEAuthenticationMethod{authserver.SPIFFEAuthenticationMethodX509},
+				Scopes:           []string{"openid"},
+				Audiences:        []string{"https://mcp.example.com"},
+				GrantTypes:       []string{authserver.SPIFFEGrantTypeTokenExchange},
+			}},
+		},
+		TrustedIssuers: []tokenexchange.TrustedIssuer{{
+			IssuerURL: "https://issuer.example.com",
+			JWTBearerGrant: &tokenexchange.JWTBearerGrantPolicy{
+				MaxAssertionAge: "5m",
+				SubjectBindings: []tokenexchange.JWTBearerSubjectBinding{{
+					Subject:          "workload",
+					AllowedResources: []string{"https://mcp.example.com"},
+				}},
+			},
+		}},
+	}
+
+	srv, err := NewEmbeddedAuthServer(context.Background(), cfg)
+	require.NoError(t, err)
+	t.Cleanup(func() { require.NoError(t, srv.Close()) })
+}
+
+// TestNewEmbeddedAuthServer_SPIFFEAndCIMD exercises the RunConfig conversion
+// and the production storage-decoration order with both features enabled.
+func TestNewEmbeddedAuthServer_SPIFFEAndCIMD(t *testing.T) {
+	t.Parallel()
+	t.Skip("RunConfig.Validate() now hard-rejects any non-empty spiffe_trust_domains " +
+		"(config.go's validateSPIFFENotYetEnforced, per PR #6467 review) until a real " +
+		"SVID-verification consumer lands, so a server can no longer be constructed with " +
+		"a SPIFFE association configured at all -- there is no way to exercise this " +
+		"combination through NewEmbeddedAuthServer without routing around cfg.Validate() " +
+		"in production code. Re-enable this test -- unmodified -- when the future PR that " +
+		"adds real SVID verification removes the hard-reject.")
+
+	cfg := &authserver.RunConfig{
+		SchemaVersion:    authserver.CurrentSchemaVersion,
+		Issuer:           "https://auth.example.com",
+		ScopesSupported:  []string{"openid", "profile"},
+		AllowedAudiences: []string{"https://mcp.example.com"},
+		CIMD: &authserver.CIMDRunConfig{
+			Enabled:          true,
+			CacheMaxSize:     16,
+			CacheFallbackTTL: "5m",
+		},
+		Upstreams: []authserver.UpstreamRunConfig{{
+			Name: "static-upstream",
+			Type: authserver.UpstreamProviderTypeOAuth2,
+			OAuth2Config: &authserver.OAuth2UpstreamRunConfig{
+				AuthorizationEndpoint: "https://upstream.example.com/authorize",
+				TokenEndpoint:         "https://upstream.example.com/token",
+				ClientID:              "test-client-id",
+				RedirectURI:           "https://auth.example.com/oauth/callback",
+			},
+		}},
+		SPIFFETrustDomains: []authserver.SPIFFETrustDomainRunConfig{{
+			Name:        "production",
+			TrustDomain: "example.org",
+			Methods:     []authserver.SPIFFEAuthenticationMethod{authserver.SPIFFEAuthenticationMethodX509},
+			BundleSource: authserver.SPIFFEBundleSourceRunConfig{
+				Type:        authserver.SPIFFEBundleSourceTypeWorkloadAPI,
+				WorkloadAPI: &authserver.SPIFFEWorkloadAPIBundleSourceRunConfig{},
+			},
+		}},
+		InboundGrants: &authserver.InboundGrantsRunConfig{
+			SPIFFEClientAuth: []authserver.SPIFFEClientAuthRunConfig{{
+				TrustDomainRef:   "production",
+				PrincipalPattern: "spiffe://example.org/ns/default/agent",
+				ClientID:         "spiffe-client",
+				Methods:          []authserver.SPIFFEAuthenticationMethod{authserver.SPIFFEAuthenticationMethodX509},
+				Scopes:           []string{"openid"},
+				Audiences:        []string{"https://mcp.example.com"},
+				GrantTypes:       []string{authserver.SPIFFEGrantTypeTokenExchange},
+			}},
+		},
+	}
+
+	srv, err := NewEmbeddedAuthServer(context.Background(), cfg)
+	require.NoError(t, err)
+	t.Cleanup(func() { require.NoError(t, srv.Close()) })
+}
+
+// TestNewEmbeddedAuthServerWithStorage_SPIFFECollisionPrecedesDCR verifies that
+// the deterministic static-ID collision gate runs before upstream DCR can issue
+// a registration request.
+func TestNewEmbeddedAuthServerWithStorage_SPIFFECollisionPrecedesDCR(t *testing.T) {
+	t.Parallel()
+	t.Skip("RunConfig.Validate() now hard-rejects any non-empty spiffe_trust_domains " +
+		"(config.go's validateSPIFFENotYetEnforced, per PR #6467 review) before " +
+		"construction ever reaches the SPIFFE storage decorator, so the collision-vs-DCR " +
+		"ordering this test proved is no longer observable through NewEmbeddedAuthServerWithStorage " +
+		"-- it now fails even earlier, for a different reason, without the ordering property " +
+		"itself being tested. Re-enable this test -- unmodified -- when the future PR that " +
+		"adds real SVID verification removes the hard-reject.")
+
+	upstreamServer, requestCount := newMockAuthorizationServer(t)
+	stor := storage.NewMemoryStorage()
+	require.NoError(t, stor.RegisterClient(context.Background(), &fosite.DefaultClient{ID: "spiffe-client"}))
+
+	cfg := &authserver.RunConfig{
+		SchemaVersion:     authserver.CurrentSchemaVersion,
+		Issuer:            upstreamServer.URL,
+		InsecureAllowHTTP: true,
+		ScopesSupported:   []string{"openid", "profile"},
+		AllowedAudiences:  []string{"https://mcp.example.com"},
+		SPIFFETrustDomains: []authserver.SPIFFETrustDomainRunConfig{{
+			Name:        "production",
+			TrustDomain: "example.org",
+			Methods:     []authserver.SPIFFEAuthenticationMethod{authserver.SPIFFEAuthenticationMethodX509},
+			BundleSource: authserver.SPIFFEBundleSourceRunConfig{
+				Type:        authserver.SPIFFEBundleSourceTypeWorkloadAPI,
+				WorkloadAPI: &authserver.SPIFFEWorkloadAPIBundleSourceRunConfig{},
+			},
+		}},
+		InboundGrants: &authserver.InboundGrantsRunConfig{
+			SPIFFEClientAuth: []authserver.SPIFFEClientAuthRunConfig{{
+				TrustDomainRef:   "production",
+				PrincipalPattern: "spiffe://example.org/ns/default/agent",
+				ClientID:         "spiffe-client",
+				Methods:          []authserver.SPIFFEAuthenticationMethod{authserver.SPIFFEAuthenticationMethodX509},
+				Scopes:           []string{"openid"},
+				Audiences:        []string{"https://mcp.example.com"},
+				GrantTypes:       []string{authserver.SPIFFEGrantTypeTokenExchange},
+			}},
+		},
+		Upstreams: []authserver.UpstreamRunConfig{{
+			Name: "dcr-upstream",
+			Type: authserver.UpstreamProviderTypeOAuth2,
+			OAuth2Config: &authserver.OAuth2UpstreamRunConfig{
+				AuthorizationEndpoint: upstreamServer.URL + "/authorize",
+				TokenEndpoint:         upstreamServer.URL + "/token",
+				Scopes:                []string{"openid", "profile"},
+				DCRConfig:             &authserver.DCRUpstreamConfig{DiscoveryURL: upstreamServer.URL + "/.well-known/oauth-authorization-server"},
+			},
+		}},
+	}
+
+	_, err := NewEmbeddedAuthServerWithStorage(context.Background(), cfg, stor)
+	require.ErrorIs(t, err, storage.ErrAlreadyExists)
+	assert.Zero(t, atomic.LoadInt32(requestCount), "static collision must precede DCR network I/O")
+}
+
+func TestEmbeddedAuthServer_SPIFFESerializedRestartPolicy(t *testing.T) {
+	t.Parallel()
+
+	newConfig := func(scope string, includeAssociation bool) authserver.RunConfig {
+		cfg := authserver.RunConfig{
+			SchemaVersion:    authserver.CurrentSchemaVersion,
+			Issuer:           "https://auth.example.com",
+			ScopesSupported:  []string{"openid", "profile"},
+			AllowedAudiences: []string{"https://mcp.example.com"},
+			// A static OAuth2 upstream satisfies runtime configuration validation
+			// without discovery or DCR network I/O during server construction.
+			Upstreams: []authserver.UpstreamRunConfig{{
+				Name: "static-upstream",
+				Type: authserver.UpstreamProviderTypeOAuth2,
+				OAuth2Config: &authserver.OAuth2UpstreamRunConfig{
+					AuthorizationEndpoint: "https://upstream.example.com/authorize",
+					TokenEndpoint:         "https://upstream.example.com/token",
+					ClientID:              "test-client-id",
+					RedirectURI:           "https://auth.example.com/oauth/callback",
+				},
+			}},
+		}
+		if !includeAssociation {
+			return cfg
+		}
+		cfg.SPIFFETrustDomains = []authserver.SPIFFETrustDomainRunConfig{{
+			Name:        "production",
+			TrustDomain: "example.org",
+			Methods:     []authserver.SPIFFEAuthenticationMethod{authserver.SPIFFEAuthenticationMethodX509},
+			BundleSource: authserver.SPIFFEBundleSourceRunConfig{
+				Type:        authserver.SPIFFEBundleSourceTypeWorkloadAPI,
+				WorkloadAPI: &authserver.SPIFFEWorkloadAPIBundleSourceRunConfig{},
+			},
+		}}
+		cfg.InboundGrants = &authserver.InboundGrantsRunConfig{
+			SPIFFEClientAuth: []authserver.SPIFFEClientAuthRunConfig{{
+				TrustDomainRef:   "production",
+				PrincipalPattern: "spiffe://example.org/ns/default/agent",
+				ClientID:         "spiffe-client",
+				Methods:          []authserver.SPIFFEAuthenticationMethod{authserver.SPIFFEAuthenticationMethodX509},
+				Scopes:           []string{scope},
+				Audiences:        []string{"https://mcp.example.com"},
+				GrantTypes:       []string{authserver.SPIFFEGrantTypeTokenExchange},
+			}},
+		}
+		return cfg
+	}
+	decode := func(t *testing.T, cfg authserver.RunConfig, yamlFormat bool) authserver.RunConfig {
+		t.Helper()
+		var encoded []byte
+		var err error
+		if yamlFormat {
+			encoded, err = yaml.Marshal(cfg)
+		} else {
+			encoded, err = json.Marshal(cfg)
+		}
+		require.NoError(t, err)
+
+		var decoded authserver.RunConfig
+		if yamlFormat {
+			err = yaml.Unmarshal(encoded, &decoded)
+		} else {
+			err = json.Unmarshal(encoded, &decoded)
+		}
+		require.NoError(t, err)
+		return decoded
+	}
+	assertAuthority := func(t *testing.T, cfg authserver.RunConfig, scope string) {
+		t.Helper()
+		trust, err := authserver.NewSPIFFETrustConfig(
+			cfg.SPIFFETrustDomains, cfg.InboundGrants, cfg.ScopesSupported, cfg.AllowedAudiences,
+		)
+		require.NoError(t, err)
+		associations := trust.Associations()
+		require.Len(t, associations, 1)
+		assert.Equal(t, []string{scope}, associations[0].AuthorizationPolicy().Scopes())
+	}
+
+	for _, yamlFormat := range []bool{false, true} {
+		yamlFormat := yamlFormat
+		format := "JSON"
+		if yamlFormat {
+			format = "YAML"
+		}
+		t.Run(format, func(t *testing.T) {
+			t.Parallel()
+
+			// A non-empty spiffe_trust_domains is hard-rejected by
+			// RunConfig.Validate() until a real SVID-verification consumer
+			// lands (see config.go's validateSPIFFENotYetEnforced), so the
+			// "initial"/"changed" cases below prove serialization fidelity
+			// and authority reconstruction directly against
+			// NewSPIFFETrustConfig -- unaffected by that policy-layer
+			// rejection -- and separately confirm the rejection itself
+			// survives a JSON/YAML round trip, rather than constructing a
+			// full server.
+			initial := decode(t, newConfig("openid", true), yamlFormat)
+			assertAuthority(t, initial, "openid")
+			require.ErrorContains(t, initial.Validate(), "not yet enforced",
+				"a decoded non-empty SPIFFE configuration must still be hard-rejected")
+
+			changed := decode(t, newConfig("profile", true), yamlFormat)
+			assertAuthority(t, changed, "profile")
+			require.ErrorContains(t, changed.Validate(), "not yet enforced",
+				"a decoded non-empty SPIFFE configuration must still be hard-rejected")
+
+			removed := decode(t, newConfig("", false), yamlFormat)
+			trust, err := authserver.NewSPIFFETrustConfig(
+				removed.SPIFFETrustDomains, nil, removed.ScopesSupported, removed.AllowedAudiences,
+			)
+			require.NoError(t, err)
+			assert.Empty(t, trust.Associations())
+			registry, err := authserver.NewSPIFFEAssociationRegistry(trust)
+			require.NoError(t, err)
+			require.NotNil(t, registry)
+			// Every restart uses fresh memory; an empty (SPIFFE-removed)
+			// configuration is the only shape in this test that can still
+			// build a full server, since it does not trip the hard-reject.
+			for range 2 {
+				stor := storage.NewMemoryStorage()
+				server, err := NewEmbeddedAuthServerWithStorage(context.Background(), &removed, stor)
+				require.NoError(t, err)
+				require.NoError(t, server.Close())
+			}
+		})
+	}
+}
+
+// sessionRecordingStorage observes token-session writes without adding a test
+// hook to production storage. It embeds the real memory backend so every
+// unoverridden storage operation retains its production behavior.
+type sessionRecordingStorage struct {
+	*storage.MemoryStorage
+	authorizeCodeSessions atomic.Int32
+	accessTokenSessions   atomic.Int32
+	refreshTokenSessions  atomic.Int32
+}
+
+// dcrStorageDecorator combines a client lookup decorator with the base DCR store.
+type dcrStorageDecorator struct {
+	storage.Storage
+	storage.DCRCredentialStore
+}
+
+func (s *sessionRecordingStorage) CreateAuthorizeCodeSession(ctx context.Context, code string, request fosite.Requester) error {
+	s.authorizeCodeSessions.Add(1)
+	return s.MemoryStorage.CreateAuthorizeCodeSession(ctx, code, request)
+}
+
+func (s *sessionRecordingStorage) CreateAccessTokenSession(
+	ctx context.Context,
+	signature string,
+	request fosite.Requester,
+) error {
+	s.accessTokenSessions.Add(1)
+	return s.MemoryStorage.CreateAccessTokenSession(ctx, signature, request)
+}
+
+func (s *sessionRecordingStorage) CreateRefreshTokenSession(
+	ctx context.Context,
+	signature string,
+	accessSignature string,
+	request fosite.Requester,
+) error {
+	s.refreshTokenSessions.Add(1)
+	return s.MemoryStorage.CreateRefreshTokenSession(ctx, signature, accessSignature, request)
+}
+
+func TestEmbeddedAuthServer_SPIFFEAssociationDoesNotAuthenticateClient(t *testing.T) {
+	t.Parallel()
+
+	trustDomains := []authserver.SPIFFETrustDomainRunConfig{{
+		Name:        "production",
+		TrustDomain: "example.org",
+		Methods: []authserver.SPIFFEAuthenticationMethod{
+			authserver.SPIFFEAuthenticationMethodX509,
+			authserver.SPIFFEAuthenticationMethodJWT,
+		},
+		BundleSource: authserver.SPIFFEBundleSourceRunConfig{
+			Type:        authserver.SPIFFEBundleSourceTypeWorkloadAPI,
+			WorkloadAPI: &authserver.SPIFFEWorkloadAPIBundleSourceRunConfig{},
+		},
+	}}
+	inboundGrants := &authserver.InboundGrantsRunConfig{SPIFFEClientAuth: []authserver.SPIFFEClientAuthRunConfig{{
+		TrustDomainRef:   "production",
+		PrincipalPattern: "spiffe://example.org/ns/default/agent",
+		ClientID:         "spiffe-client",
+		Methods: []authserver.SPIFFEAuthenticationMethod{
+			authserver.SPIFFEAuthenticationMethodX509,
+			authserver.SPIFFEAuthenticationMethodJWT,
+		},
+		GrantTypes: []string{authserver.SPIFFEGrantTypeTokenExchange},
+		Scopes:     []string{"openid"},
+		Resources:  []string{"https://mcp.example.com"},
+		Audiences:  []string{"https://mcp.example.com"},
+	}}}
+
+	cfg := authserver.RunConfig{
+		SchemaVersion:    authserver.CurrentSchemaVersion,
+		Issuer:           "https://auth.example.com",
+		ScopesSupported:  []string{"openid"},
+		AllowedAudiences: []string{"https://mcp.example.com"},
+		Upstreams: []authserver.UpstreamRunConfig{{
+			Name: "static-upstream",
+			Type: authserver.UpstreamProviderTypeOAuth2,
+			OAuth2Config: &authserver.OAuth2UpstreamRunConfig{
+				AuthorizationEndpoint: "https://upstream.example.com/authorize",
+				TokenEndpoint:         "https://upstream.example.com/token",
+				ClientID:              "upstream-client",
+				RedirectURI:           "https://auth.example.com/oauth/callback",
+			},
+		}},
+	}
+
+	ctx := context.Background()
+	trust, err := authserver.NewSPIFFETrustConfig(
+		trustDomains, inboundGrants, cfg.ScopesSupported, cfg.AllowedAudiences,
+	)
+	require.NoError(t, err)
+	registry, err := authserver.NewSPIFFEAssociationRegistry(trust)
+	require.NoError(t, err)
+	require.NotNil(t, registry)
+	require.Len(t, trust.Associations(), 1, "the association above must parse")
+
+	// registry.staticClients() is unexported (package authserver); this test
+	// lives in package runner, so the static client is built directly here
+	// with the same values the association above declares, rather than
+	// asserting it out of the registry. This is what routes around
+	// cfg.Validate()'s hard-reject of non-empty spiffe_trust_domains (see
+	// TestEmbeddedAuthServer_SPIFFEAssociationDoesNotAuthenticateClient's own
+	// history): NewEmbeddedAuthServerWithStorage below is never given a cfg
+	// with SPIFFETrustDomains/InboundGrants set, only a storage chain
+	// pre-decorated with the static client it would have produced.
+	spiffeClient, err := registration.NewSPIFFEClient(
+		"spiffe-client", []string{"openid"}, []string{"https://mcp.example.com"}, []string{"https://mcp.example.com"},
+	)
+	require.NoError(t, err)
+	stor := &sessionRecordingStorage{MemoryStorage: storage.NewMemoryStorage()}
+	decoratedStorage, err := storage.NewSPIFFEStorageDecorator(
+		ctx, stor, map[string]fosite.Client{"spiffe-client": spiffeClient},
+	)
+	require.NoError(t, err)
+	staticClient, err := decoratedStorage.GetClient(ctx, "spiffe-client")
+	require.NoError(t, err)
+	assert.Equal(t, "spiffe-client", staticClient.GetID())
+
+	serverStorage := &dcrStorageDecorator{
+		Storage:            decoratedStorage,
+		DCRCredentialStore: stor,
+	}
+	embedded, err := NewEmbeddedAuthServerWithStorage(ctx, &cfg, serverStorage)
+	require.NoError(t, err)
+	t.Cleanup(func() { require.NoError(t, embedded.Close()) })
+
+	httpServer := httptest.NewServer(embedded.Handler())
+	t.Cleanup(httpServer.Close)
+
+	for _, spoofedHeader := range []bool{false, true} {
+		spoofedHeader := spoofedHeader
+		t.Run(fmt.Sprintf("spoofed SPIFFE header: %t", spoofedHeader), func(t *testing.T) {
+			t.Parallel()
+
+			form := url.Values{
+				"grant_type":         {authserver.SPIFFEGrantTypeTokenExchange},
+				"subject_token":      {"unvalidated-subject-token"},
+				"subject_token_type": {"urn:ietf:params:oauth:token-type:access_token"},
+				"client_id":          {"spiffe-client"},
+				"scope":              {"openid"},
+				"resource":           {"https://mcp.example.com"},
+			}
+			req, err := http.NewRequest(http.MethodPost, httpServer.URL+"/oauth/token", strings.NewReader(form.Encode()))
+			require.NoError(t, err)
+			req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+			if spoofedHeader {
+				req.Header.Set("X-SPIFFE-ID", "spiffe://example.org/ns/default/agent")
+			}
+
+			resp, err := (&http.Client{Timeout: 10 * time.Second}).Do(req)
+			require.NoError(t, err)
+			t.Cleanup(func() {
+				_, _ = io.Copy(io.Discard, resp.Body)
+				resp.Body.Close()
+			})
+
+			var body map[string]any
+			require.NoError(t, json.NewDecoder(resp.Body).Decode(&body))
+			assert.Equal(t, http.StatusUnauthorized, resp.StatusCode)
+			assert.Equal(t, "invalid_client", body["error"])
+			assert.NotContains(t, body, "access_token")
+			assert.NotContains(t, body, "refresh_token")
+			assert.NotContains(t, body, "id_token")
+			assert.Zero(t, stor.authorizeCodeSessions.Load())
+			assert.Zero(t, stor.accessTokenSessions.Load())
+			assert.Zero(t, stor.refreshTokenSessions.Load())
+		})
+	}
+}
+
 // buildUpstreamConfigs: on first call it registers with the mock AS and
 // overlays the resolved client_id/client_secret; on second call it hits the
 // in-memory store and issues zero additional HTTP requests; and neither call
@@ -2119,6 +2898,29 @@ func (b *syncBuffer) String() string {
 	return b.buf.String()
 }
 
+//nolint:paralleltest // swaps the process-global slog default
+func TestWarnDeprecatedInboundGrantFields(t *testing.T) {
+	var buf syncBuffer
+	previous := slog.Default()
+	slog.SetDefault(slog.New(slog.NewTextHandler(&buf, &slog.HandlerOptions{Level: slog.LevelWarn})))
+	t.Cleanup(func() { slog.SetDefault(previous) })
+
+	warnDeprecatedInboundGrantFields(nil)
+	warnDeprecatedInboundGrantFields([]authserver.DeprecatedFieldPath{
+		{Path: "delegate_clients", Replacement: "inbound_grants.token_exchange.delegate_clients"},
+		{Path: "trusted_issuers[0].jwt_bearer_grant", Replacement: "inbound_grants.jwt_bearer.issuer_policies"},
+	})
+
+	logged := buf.String()
+	assert.Equal(t, 1, strings.Count(logged, "level=WARN"))
+	assert.Contains(t, logged, "delegate_clients -> inbound_grants.token_exchange.delegate_clients")
+	assert.Contains(t, logged,
+		"trusted_issuers[0].jwt_bearer_grant -> inbound_grants.jwt_bearer.issuer_policies")
+	assert.NotContains(t, logged, "subject-value")
+	assert.NotContains(t, logged, "spiffe://")
+	assert.NotContains(t, logged, "secret-value")
+}
+
 // TestNewEmbeddedAuthServer_DeferredCleanupSanitizesLog pins the post-#5196
 // invariant that the deferred-cleanup slog.Warn at the top of
 // NewEmbeddedAuthServerWithStorage routes both closeErr and retErr through
@@ -2316,6 +3118,175 @@ func TestNewEmbeddedAuthServer_TrustedIssuers(t *testing.T) {
 	})
 }
 
+// TestNewEmbeddedAuthServer_CanonicalInboundGrants pins the
+// RunConfig.InboundGrants -> Config wiring added by
+// authserver.NormalizeInboundGrants and prepareInboundGrantConfiguration: a
+// canonical delegate client and SPIFFE client resolve through the same
+// startup path as their legacy equivalents, canonical jwt_bearer policy
+// reaches discovery, and inbound_grants.token_exchange being explicitly
+// omitted (while another family is set) actually disables and stops
+// advertising RFC 8693 rather than merely being validated in isolation
+// (TestNormalizeInboundGrants, in pkg/authserver, already covers the pure
+// normalization; this proves it reaches a running server).
+func TestNewEmbeddedAuthServer_CanonicalInboundGrants(t *testing.T) {
+	t.Parallel()
+
+	base := func() *authserver.RunConfig {
+		return &authserver.RunConfig{
+			SchemaVersion: authserver.CurrentSchemaVersion,
+			Issuer:        "https://auth.example.com",
+			Upstreams: []authserver.UpstreamRunConfig{
+				{
+					Name: "test-upstream",
+					Type: authserver.UpstreamProviderTypeOAuth2,
+					OAuth2Config: &authserver.OAuth2UpstreamRunConfig{
+						AuthorizationEndpoint: "https://example.com/authorize",
+						TokenEndpoint:         "https://example.com/token",
+						ClientID:              "test-client-id",
+						RedirectURI:           "https://auth.example.com/oauth/callback",
+					},
+				},
+			},
+			ScopesSupported:  []string{"openid"},
+			AllowedAudiences: []string{"https://mcp.example.com"},
+		}
+	}
+
+	discoveryGrantTypes := func(t *testing.T, srv *EmbeddedAuthServer) []string {
+		t.Helper()
+		handler, ok := srv.Routes()["/.well-known/oauth-authorization-server"]
+		require.True(t, ok, "discovery route must be registered")
+
+		rec := httptest.NewRecorder()
+		req := httptest.NewRequest(http.MethodGet, "/.well-known/oauth-authorization-server", nil)
+		handler.ServeHTTP(rec, req)
+		require.Equal(t, http.StatusOK, rec.Code)
+
+		var metadata oauthproto.AuthorizationServerMetadata
+		require.NoError(t, json.NewDecoder(rec.Body).Decode(&metadata))
+		return metadata.GrantTypesSupported
+	}
+
+	t.Run("canonical delegate client alone builds a server with token exchange enabled", func(t *testing.T) {
+		t.Parallel()
+
+		secretFile := filepath.Join(t.TempDir(), "delegate-secret")
+		require.NoError(t, os.WriteFile(secretFile, []byte("s3cr3t-value-that-is-long-enough-for-32-chars"), 0o600))
+
+		cfg := base()
+		cfg.InboundGrants = &authserver.InboundGrantsRunConfig{
+			TokenExchange: &authserver.TokenExchangeInboundGrantRunConfig{
+				DelegateClients: []authserver.DelegateClientRunConfig{{
+					ClientID:         "coding-agent",
+					ClientSecretFile: secretFile,
+					Scopes:           []string{"openid"},
+					Audiences:        []string{"https://mcp.example.com"},
+				}},
+			},
+		}
+
+		srv, err := NewEmbeddedAuthServer(context.Background(), cfg)
+		require.NoError(t, err)
+		require.NotNil(t, srv)
+		t.Cleanup(func() { _ = srv.Close() })
+
+		assert.Contains(t, discoveryGrantTypes(t, srv), oauthproto.GrantTypeTokenExchange,
+			"canonical delegate client must not disable token exchange")
+	})
+
+	// A SPIFFE-only configuration cannot be exercised through
+	// NewEmbeddedAuthServer here: RunConfig.Validate() hard-rejects a
+	// non-empty spiffe_trust_domains until a real SVID-verification
+	// consumer lands (see config.go's validateSPIFFENotYetEnforced). This
+	// test instead calls prepareInboundGrantConfiguration directly -- the
+	// package-private function NewEmbeddedAuthServer would otherwise reach
+	// after cfg.Validate() -- to prove the underlying capability logic
+	// still holds: SPIFFE client-auth presence must force
+	// Capabilities.TokenExchange true independent of the legacy/canonical
+	// token-exchange projection, so a SPIFFE-only config does not silently
+	// disable the RFC 8693 grant handler once the hard-reject above is
+	// lifted.
+	t.Run("SPIFFE client auth alone sets the token exchange capability", func(t *testing.T) {
+		t.Parallel()
+
+		cfg := base()
+		cfg.SPIFFETrustDomains = []authserver.SPIFFETrustDomainRunConfig{{
+			Name:        "prod",
+			TrustDomain: "example.org",
+			Methods:     []authserver.SPIFFEAuthenticationMethod{authserver.SPIFFEAuthenticationMethodX509},
+			BundleSource: authserver.SPIFFEBundleSourceRunConfig{
+				Type:        authserver.SPIFFEBundleSourceTypeWorkloadAPI,
+				WorkloadAPI: &authserver.SPIFFEWorkloadAPIBundleSourceRunConfig{},
+			},
+		}}
+		cfg.InboundGrants = &authserver.InboundGrantsRunConfig{
+			SPIFFEClientAuth: []authserver.SPIFFEClientAuthRunConfig{{
+				TrustDomainRef:   "prod",
+				PrincipalPattern: "spiffe://example.org/ns/default/agent",
+				ClientID:         "spiffe-agent",
+				Methods:          []authserver.SPIFFEAuthenticationMethod{authserver.SPIFFEAuthenticationMethodX509},
+				Scopes:           []string{"openid"},
+				Audiences:        []string{"https://mcp.example.com"},
+				GrantTypes:       []string{authserver.SPIFFEGrantTypeTokenExchange},
+			}},
+		}
+
+		normalized, _, spiffeTrust, err := prepareInboundGrantConfiguration(cfg, nil)
+		require.NoError(t, err)
+		require.NotNil(t, spiffeTrust)
+		assert.True(t, normalized.Capabilities.TokenExchange,
+			"SPIFFE client auth alone must not leave the token exchange capability disabled")
+	})
+
+	t.Run("inbound_grants with token_exchange omitted disables and stops advertising RFC 8693", func(t *testing.T) {
+		t.Parallel()
+
+		cfg := base()
+		cfg.TrustedIssuers = []tokenexchange.TrustedIssuer{{Name: "idp", IssuerURL: "https://idp.example.com"}}
+		cfg.InboundGrants = &authserver.InboundGrantsRunConfig{
+			JWTBearer: &authserver.JWTBearerInboundGrantRunConfig{
+				IssuerPolicies: []authserver.JWTBearerIssuerPolicyRunConfig{{
+					IssuerRef:       "idp",
+					MaxAssertionAge: "5m",
+					SubjectBindings: []tokenexchange.JWTBearerSubjectBinding{{
+						Subject:          "workload",
+						AllowedResources: []string{"https://mcp.example.com"},
+					}},
+				}},
+			},
+		}
+
+		srv, err := NewEmbeddedAuthServer(context.Background(), cfg)
+		require.NoError(t, err)
+		require.NotNil(t, srv)
+		t.Cleanup(func() { _ = srv.Close() })
+
+		grantTypes := discoveryGrantTypes(t, srv)
+		assert.NotContains(t, grantTypes, oauthproto.GrantTypeTokenExchange,
+			"inbound_grants present with token_exchange omitted must disable RFC 8693")
+		assert.Contains(t, grantTypes, oauthproto.GrantTypeJWTBearer,
+			"canonical jwt_bearer policy must still be advertised")
+	})
+
+	t.Run("canonical token exchange conflicts with legacy delegate_clients", func(t *testing.T) {
+		t.Parallel()
+
+		cfg := base()
+		cfg.DelegateClients = []authserver.DelegateClientRunConfig{{
+			ClientID:  "legacy-delegate",
+			Scopes:    []string{"openid"},
+			Audiences: []string{"https://mcp.example.com"},
+		}}
+		cfg.InboundGrants = &authserver.InboundGrantsRunConfig{
+			TokenExchange: &authserver.TokenExchangeInboundGrantRunConfig{},
+		}
+
+		_, err := NewEmbeddedAuthServer(context.Background(), cfg)
+		require.Error(t, err)
+		assert.Contains(t, err.Error(), "conflicts with legacy delegate_clients")
+	})
+}
+
 func TestResolveCIMDConfig(t *testing.T) {
 	t.Parallel()
 
@@ -2427,4 +3398,39 @@ func TestResolveDelegateClients_ClonesPermissions(t *testing.T) {
 
 	assert.Equal(t, "openid", resolved[0].Scopes[0])
 	assert.Equal(t, "audience", resolved[0].Audiences[0])
+}
+
+// TestCloseIdleConnectionsDelegates pins that the wrapper forwards to the
+// underlying server rather than no-opping or calling Close. This is the method
+// runner-path embedders reach for when retiring a superseded server, and an
+// empty body here would pass every other test in the package.
+func TestCloseIdleConnectionsDelegates(t *testing.T) {
+	t.Parallel()
+
+	stub := &stubServer{}
+	eas := &EmbeddedAuthServer{server: stub}
+
+	eas.CloseIdleConnections()
+	assert.Equal(t, int32(1), stub.idleCloses.Load())
+
+	// Safe after Close: Close is sync.Once-guarded and draining an already
+	// closed client's pool is a no-op, so a retire-then-shutdown sequence
+	// cannot double-close anything.
+	require.NoError(t, eas.Close())
+	eas.CloseIdleConnections()
+	assert.Equal(t, int32(2), stub.idleCloses.Load())
+}
+
+// TestCloseIdleConnectionsWithoutCapability pins that the wrapper degrades
+// quietly when the underlying Server does not implement the optional capability,
+// and in particular that it does not fall back to Close — the two are separate
+// precisely because Close also tears down storage.
+func TestCloseIdleConnectionsWithoutCapability(t *testing.T) {
+	t.Parallel()
+
+	stub := &capabilityFreeStubServer{}
+	eas := &EmbeddedAuthServer{server: stub}
+
+	assert.NotPanics(t, eas.CloseIdleConnections)
+	assert.Zero(t, stub.closed.Load(), "must not fall back to Close")
 }

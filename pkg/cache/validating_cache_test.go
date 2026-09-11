@@ -7,6 +7,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"testing"
@@ -580,5 +581,212 @@ func TestValidatingCache_Singleflight_DeduplicatesConcurrentMisses(t *testing.T)
 	for i := range goroutines {
 		assert.True(t, oks[i], "all goroutines should get ok=true")
 		assert.Equal(t, "v", results[i])
+	}
+}
+
+// TestRemoveMatching verifies that RemoveMatching evicts exactly the entries the
+// predicate selects, fires onEvict for each, returns the count, and leaves
+// non-matching entries in place.
+func TestRemoveMatching(t *testing.T) {
+	t.Parallel()
+
+	var evicted []string
+	c := newStringCache(
+		func(_ context.Context, key string) (string, error) { return "loaded-" + key, nil },
+		alwaysAliveCheck,
+		func(key, _ string) { evicted = append(evicted, key) },
+	)
+
+	// "drop-*" entries should be removed; "keep-*" entries retained.
+	c.Set("drop-a", "va")
+	c.Set("keep-b", "vb")
+	c.Set("drop-c", "vc")
+	c.Set("keep-d", "vd")
+
+	removed := c.RemoveMatching(func(key, _ string) bool {
+		return strings.HasPrefix(key, "drop-")
+	})
+
+	assert.Equal(t, 2, removed, "two drop-* entries should be removed")
+	assert.ElementsMatch(t, []string{"drop-a", "drop-c"}, evicted,
+		"onEvict should fire once per removed entry")
+	assert.Equal(t, 2, c.Len(), "only keep-* entries should remain")
+
+	// Surviving entries are still cache hits (no reload).
+	for _, key := range []string{"keep-b", "keep-d"} {
+		v, ok := c.Get(context.Background(), key)
+		require.True(t, ok)
+		assert.NotEqual(t, "loaded-"+key, v, "%s should be served from cache, not reloaded", key)
+	}
+}
+
+// TestRemoveMatching_NoMatch verifies RemoveMatching is a no-op (and fires no
+// eviction) when the predicate matches nothing.
+func TestRemoveMatching_NoMatch(t *testing.T) {
+	t.Parallel()
+
+	evictCount := 0
+	c := newStringCache(
+		func(_ context.Context, key string) (string, error) { return key, nil },
+		alwaysAliveCheck,
+		func(string, string) { evictCount++ },
+	)
+	c.Set("a", "va")
+	c.Set("b", "vb")
+
+	removed := c.RemoveMatching(func(string, string) bool { return false })
+
+	assert.Zero(t, removed)
+	assert.Zero(t, evictCount)
+	assert.Equal(t, 2, c.Len())
+}
+
+// TestRemoveMatching_SkipsEntryNoLongerMatchingOnRecheck exercises the phase-2
+// re-check guard: a key selected during the snapshot whose predicate verdict
+// flips to false before removal (modeling a concurrent Set that replaced the
+// value with one pred no longer selects) must be left in place and not counted
+// or closed.
+func TestRemoveMatching_SkipsEntryNoLongerMatchingOnRecheck(t *testing.T) {
+	t.Parallel()
+
+	var evicted []string
+	c := newStringCache(
+		func(_ context.Context, key string) (string, error) { return "reloaded-" + key, nil },
+		alwaysAliveCheck,
+		func(key, _ string) { evicted = append(evicted, key) },
+	)
+	c.Set("flip", "v")
+	c.Set("drop", "v")
+
+	// pred selects each key on its first evaluation (the phase-1 snapshot) but
+	// rejects "flip" on its second (the phase-2 re-check), standing in for a
+	// value concurrently replaced with one pred no longer selects.
+	seen := map[string]int{}
+	pred := func(key, _ string) bool {
+		seen[key]++
+		return key != "flip" || seen[key] < 2
+	}
+
+	removed := c.RemoveMatching(pred)
+
+	assert.Equal(t, 1, removed, "only 'drop' should be removed; 'flip' is skipped on re-check")
+	assert.Equal(t, []string{"drop"}, evicted, "onEvict must fire only for 'drop'")
+
+	v, ok := c.Get(context.Background(), "flip")
+	require.True(t, ok)
+	assert.Equal(t, "v", v, "'flip' must remain the cached value, not evicted or reloaded")
+}
+
+// TestRemoveMatching_ConcurrentWithSetAndGet stresses RemoveMatching against
+// concurrent Set/Get on overlapping keys. Run under -race (task test), it locks
+// in the no-deadlock / no-panic / no-double-panic guarantees of the split-lock
+// rework; eviction counts are nondeterministic and deliberately not asserted.
+func TestRemoveMatching_ConcurrentWithSetAndGet(t *testing.T) {
+	t.Parallel()
+
+	var mu sync.Mutex
+	evictions := 0
+	c := New[int, int](
+		1000,
+		func(_ context.Context, k int) (int, error) { return k, nil },
+		func(context.Context, int, int) error { return nil },
+		func(int, int) { mu.Lock(); evictions++; mu.Unlock() },
+	)
+
+	const iterations = 300
+	const keyspace = 50
+
+	var wg sync.WaitGroup
+	wg.Add(3)
+	go func() {
+		defer wg.Done()
+		for i := range iterations {
+			c.Set(i%keyspace, i)
+		}
+	}()
+	go func() {
+		defer wg.Done()
+		for range iterations / 10 {
+			c.RemoveMatching(func(k, _ int) bool { return k%2 == 0 })
+		}
+	}()
+	go func() {
+		defer wg.Done()
+		for i := range iterations {
+			c.Get(context.Background(), i%keyspace)
+		}
+	}()
+
+	done := make(chan struct{})
+	go func() { wg.Wait(); close(done) }()
+	select {
+	case <-done:
+	case <-time.After(10 * time.Second):
+		t.Fatal("timeout: RemoveMatching concurrent with Set/Get appears deadlocked")
+	}
+
+	mu.Lock()
+	defer mu.Unlock()
+	assert.GreaterOrEqual(t, evictions, 0) // sanity: onEvict never went negative/panicked
+}
+
+// TestRemoveMatching_SlowOnEvictDoesNotBlockOtherKeys proves onEvict runs off
+// the cache lock: while RemoveMatching's onEvict for one key is deliberately
+// blocked mid-teardown, a Set on a different key must still complete promptly.
+// If onEvict ran under the cache lock, the Set would block until the slow
+// teardown finished and this test would time out.
+func TestRemoveMatching_SlowOnEvictDoesNotBlockOtherKeys(t *testing.T) {
+	t.Parallel()
+
+	const slowKey, otherKey = 1, 2
+	closing := make(chan struct{}) // closed when the slow onEvict starts
+	release := make(chan struct{}) // test releases the slow onEvict
+
+	c := New[int, int](
+		1000,
+		func(_ context.Context, k int) (int, error) { return k, nil },
+		func(context.Context, int, int) error { return nil },
+		func(k, _ int) {
+			if k == slowKey {
+				close(closing)
+				<-release
+			}
+		},
+	)
+	c.Set(slowKey, 1)
+	c.Set(otherKey, 1)
+
+	removeDone := make(chan struct{})
+	go func() {
+		defer close(removeDone)
+		c.RemoveMatching(func(k, _ int) bool { return k == slowKey })
+	}()
+
+	// Wait until the slow onEvict is in progress (RemoveMatching is past the
+	// cache lock and blocked inside onEvict).
+	select {
+	case <-closing:
+	case <-time.After(5 * time.Second):
+		t.Fatal("timeout waiting for slow onEvict to start")
+	}
+
+	// The cache lock must be free now: a Set on an unrelated key completes.
+	setDone := make(chan struct{})
+	go func() {
+		defer close(setDone)
+		c.Set(otherKey, 2)
+	}()
+	select {
+	case <-setDone:
+	case <-time.After(5 * time.Second):
+		close(release) // unblock so the test can exit cleanly before failing
+		t.Fatal("Set blocked while onEvict of another key was in progress: onEvict is holding the cache lock")
+	}
+
+	close(release) // let the slow onEvict finish
+	select {
+	case <-removeDone:
+	case <-time.After(5 * time.Second):
+		t.Fatal("timeout waiting for RemoveMatching to finish")
 	}
 }

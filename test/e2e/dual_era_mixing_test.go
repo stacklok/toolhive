@@ -49,15 +49,9 @@ import (
 // session id issued by initialize while Modern never sends one at all (see
 // runMixedRound's assertions).
 
-// Deliberately NOT setting "Accept: application/json, text/event-stream"
-// (mcp_raw_client.go's Send doc comment floats it for a live streamable-HTTP
-// endpoint): verified empirically that doing so makes THIS proxy switch to
-// its SSE response path (handleSingleRequestSSE in streamable_proxy.go,
-// triggered by any Accept header containing "text/event-stream"), and the
-// raw client's populateEnvelope only parses a plain JSON object body, not an
-// SSE-framed one -- so nonce extraction silently returns "". Without the
-// header the proxy returns a plain JSON response, which is what every other
-// spec in this suite (and this one) relies on.
+// Every request in this spec sends the streamable-HTTP Accept header both MCP
+// revisions require. The proxy may answer Legacy requests as SSE, and
+// e2e.RawMCPClient parses SSE-framed POST responses before nonce extraction.
 var _ = Describe("Dual-Era Concurrent Mixing", Label("proxy", "stateless", "dual-era", "e2e"), Serial, func() {
 	const (
 		legacySessions = 3
@@ -119,7 +113,7 @@ var _ = Describe("Dual-Era Concurrent Mixing", Label("proxy", "stateless", "dual
 		// mcp_raw_client_golden_test.go, which only covers Modern).
 		sessionIDs := make([]string, legacySessions)
 		for i := range sessionIDs {
-			initReq := e2e.NewLegacyInitializeRequest(fmt.Sprintf("legacy-client-%d", i), "1.0")
+			initReq := e2e.NewLegacyInitializeRequest(fmt.Sprintf("legacy-client-%d", i), "1.0").WithStreamableAccept()
 			resp, err := client.Send(context.Background(), proxyURL, initReq)
 			Expect(err).ToNot(HaveOccurred())
 			Expect(resp.StatusCode).To(Equal(200))
@@ -138,7 +132,7 @@ var _ = Describe("Dual-Era Concurrent Mixing", Label("proxy", "stateless", "dual
 			"arguments": map[string]any{"input": "shouldneverrun"},
 		})
 		Expect(err).ToNot(HaveOccurred())
-		bogusReq.WithSessionID("bogus-" + uuid.NewString())
+		bogusReq.WithSessionID("bogus-" + uuid.NewString()).WithStreamableAccept()
 		resp, err := client.Send(context.Background(), proxyURL, bogusReq)
 		Expect(err).ToNot(HaveOccurred())
 		Expect(resp.StatusCode).ToNot(Equal(200), "a bogus/unregistered Mcp-Session-Id must be rejected")
@@ -230,15 +224,19 @@ func runMixedRound(
 			if err != nil {
 				return nil, err
 			}
-			return req.WithSessionID(sid), nil
+			return req.WithSessionID(sid).WithStreamableAccept(), nil
 		})
 	}
 	for i := 0; i < modernPerRound; i++ {
 		fire(len(sessionIDs)+i, "modern", func() (*e2e.RawRequest, error) {
-			return e2e.NewModernRequest("tools/call", map[string]any{
+			req, err := e2e.NewModernRequest("tools/call", map[string]any{
 				"name":      "echo",
 				"arguments": map[string]any{"input": "mixcheck"},
 			})
+			if err != nil {
+				return nil, err
+			}
+			return req.WithStreamableAccept(), nil
 		})
 	}
 

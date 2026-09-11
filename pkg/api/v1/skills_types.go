@@ -35,6 +35,11 @@ type installSkillRequest struct {
 	// verified signature; the exception is recorded in the project's lock
 	// file.
 	AllowUnsigned bool `json:"allow_unsigned,omitempty"`
+	// PublicKey is the base64-encoded DER SPKI cosign public key the artifact
+	// must verify against, for artifacts signed with a cosign key pair rather
+	// than keylessly. Required the first time such an artifact is installed
+	// project-scoped, and pinned in the lock file from then on.
+	PublicKey string `json:"public_key,omitempty"`
 	// Group is the group name to add the skill to after installation
 	Group string `json:"group,omitempty"`
 }
@@ -77,8 +82,12 @@ type buildSkillRequest struct {
 type pushSkillRequest struct {
 	// OCI reference to push
 	Reference string `json:"reference"`
-	// Key is the path to a cosign private key used to sign the pushed
-	// artifact
+	// Key is the path to a cosign private key, resolved on the server's
+	// filesystem. Accepted only when the request carries the secret capability
+	// from the owner-protected local server discovery file; other requests are
+	// refused with 403, since honoring one would let an untrusted caller have
+	// the server sign with any key it can read. Use IdentityToken when calling
+	// a remote or manually configured server.
 	Key string `json:"key,omitempty"`
 	// IdentityToken is a short-lived OIDC identity token used for keyless
 	// signing, mutually exclusive with Key

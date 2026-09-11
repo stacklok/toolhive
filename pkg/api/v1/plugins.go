@@ -19,17 +19,20 @@ import (
 
 // PluginsRoutes defines the routes for plugin management.
 type PluginsRoutes struct {
-	pluginService plugins.PluginService
-	lockService   plugins.PluginLockService
+	pluginService        plugins.PluginService
+	lockService          plugins.PluginLockService
+	keySigningCapability string
 }
 
 // PluginsRouter creates a new router for plugin management endpoints. If
 // pluginService's concrete implementation also satisfies plugins.PluginLockService
 // (as pluginsvc.New's does), /sync and /upgrade are served; otherwise both
 // return 501.
-func PluginsRouter(pluginService plugins.PluginService) http.Handler {
+func PluginsRouter(pluginService plugins.PluginService, opts ...RouterOption) http.Handler {
+	cfg := newRouterConfig(opts)
 	routes := PluginsRoutes{
-		pluginService: pluginService,
+		pluginService:        pluginService,
+		keySigningCapability: cfg.keySigningCapability,
 	}
 	if lockSvc, ok := pluginService.(plugins.PluginLockService); ok {
 		routes.lockService = lockSvc
@@ -108,6 +111,7 @@ func (s *PluginsRoutes) listPlugins(w http.ResponseWriter, r *http.Request) erro
 //	@Header			201		{string}	Location	"URI of the installed plugin resource"
 //	@Failure		400		{string}	string		"Bad Request"
 //	@Failure		401		{string}	string		"Unauthorized (registry refused credentials)"
+//	@Failure		403		{string}	string		"Forbidden (signature verification or trust check failed)"
 //	@Failure		404		{string}	string		"Not Found (artifact not present in registry)"
 //	@Failure		409		{string}	string		"Conflict"
 //	@Failure		429		{string}	string		"Too Many Requests (registry rate limit)"
@@ -125,13 +129,15 @@ func (s *PluginsRoutes) installPlugin(w http.ResponseWriter, r *http.Request) er
 	}
 
 	result, err := s.pluginService.Install(r.Context(), plugins.InstallOptions{
-		Name:        req.Name,
-		Version:     req.Version,
-		Scope:       req.Scope,
-		ProjectRoot: req.ProjectRoot,
-		Clients:     req.Clients,
-		Force:       req.Force,
-		Group:       req.Group,
+		Name:          req.Name,
+		Version:       req.Version,
+		Scope:         req.Scope,
+		ProjectRoot:   req.ProjectRoot,
+		Clients:       req.Clients,
+		Force:         req.Force,
+		Group:         req.Group,
+		AllowUnsigned: req.AllowUnsigned,
+		PublicKey:     req.PublicKey,
 	})
 	if err != nil {
 		return err
@@ -140,7 +146,11 @@ func (s *PluginsRoutes) installPlugin(w http.ResponseWriter, r *http.Request) er
 	w.Header().Set("Content-Type", "application/json")
 	w.Header().Set("Location", fmt.Sprintf("/api/v1beta/plugins/%s", result.Plugin.Metadata.Name))
 	w.WriteHeader(http.StatusCreated)
-	return json.NewEncoder(w).Encode(installPluginResponse{Plugin: result.Plugin})
+	return json.NewEncoder(w).Encode(installPluginResponse{
+		Plugin:     result.Plugin,
+		Provenance: result.Provenance,
+		Unsigned:   result.Unsigned,
+	})
 }
 
 // uninstallPlugin removes an installed plugin.
@@ -299,14 +309,23 @@ func (s *PluginsRoutes) buildPlugin(w http.ResponseWriter, r *http.Request) erro
 //	@Tags			plugins
 //	@Accept			json
 //	@Param			request	body	pushPluginRequest	true	"Push request"
+//	@Param			X-Toolhive-Key-Signing-Capability	header	string	false	"Local discovery capability (required with request.key)"
 //	@Success		204		{string}	string	"No Content"
 //	@Failure		400		{string}	string	"Bad Request"
+//	@Failure		403		{string}	string	"Forbidden (key signing requires the local discovery capability)"
 //	@Failure		404		{string}	string	"Not Found"
 //	@Failure		500		{string}	string	"Internal Server Error"
 //	@Router			/api/v1beta/plugins/push [post]
 func (s *PluginsRoutes) pushPlugin(w http.ResponseWriter, r *http.Request) error {
 	var req pushPluginRequest
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+	// Unknown fields are rejected on this endpoint specifically: push is the
+	// only credential-bearing plugin request, so a misspelled signing field
+	// must fail loudly rather than decode to "sign however you like" — the
+	// worst outcome being an unsigned publish in answer to a request that
+	// asked to be signed.
+	dec := json.NewDecoder(r.Body)
+	dec.DisallowUnknownFields()
+	if err := dec.Decode(&req); err != nil {
 		return httperr.WithCode(
 			fmt.Errorf("invalid request body: %w", err),
 			http.StatusBadRequest,
@@ -320,9 +339,31 @@ func (s *PluginsRoutes) pushPlugin(w http.ResponseWriter, r *http.Request) error
 		)
 	}
 
-	if err := s.pluginService.Push(r.Context(), plugins.PushOptions{
-		Reference: req.Reference,
-	}); err != nil {
+	opts := plugins.PushOptions{
+		Reference:     req.Reference,
+		Key:           req.Key,
+		IdentityToken: req.IdentityToken,
+		NoSign:        req.NoSign,
+	}
+
+	// The endpoint's contract — exactly one of key, identity_token, or
+	// no_sign — is enforced here at the trust boundary rather than left to
+	// whichever PluginService implementation is wired in, so a direct or
+	// generated client sending only a reference gets a 400 from the API
+	// itself. The service validates again for in-process callers.
+	if err := plugins.ValidatePushSigning(opts); err != nil {
+		return err
+	}
+
+	// Checked before dispatch: the service would otherwise open the key.
+	// Same guard as skills/push — a private-key path is resolved by THIS
+	// process, so an untrusted caller naming one would be asking the server to
+	// sign with a key it never supplied.
+	if err := requireKeySigningCapability(r, s.keySigningCapability, req.Key); err != nil {
+		return err
+	}
+
+	if err := s.pluginService.Push(r.Context(), opts); err != nil {
 		return err
 	}
 
@@ -437,11 +478,12 @@ func (s *PluginsRoutes) syncPlugins(w http.ResponseWriter, r *http.Request) erro
 	}
 
 	result, err := s.lockService.Sync(r.Context(), plugins.SyncOptions{
-		ProjectRoot: req.ProjectRoot,
-		Clients:     req.Clients,
-		Prune:       req.Prune,
-		Check:       req.Check,
-		Adopt:       req.Adopt,
+		ProjectRoot:   req.ProjectRoot,
+		Clients:       req.Clients,
+		Prune:         req.Prune,
+		Check:         req.Check,
+		Adopt:         req.Adopt,
+		AllowUnsigned: req.AllowUnsigned,
 	})
 	if err != nil {
 		return err
@@ -483,12 +525,13 @@ func (s *PluginsRoutes) upgradePlugins(w http.ResponseWriter, r *http.Request) e
 	}
 
 	result, err := s.lockService.Upgrade(r.Context(), plugins.UpgradeOptions{
-		ProjectRoot:    req.ProjectRoot,
-		Names:          req.Names,
-		Preview:        req.Preview,
-		FailOnChanges:  req.FailOnChanges,
-		AllowRefChange: req.AllowRefChange,
-		Clients:        req.Clients,
+		ProjectRoot:       req.ProjectRoot,
+		Names:             req.Names,
+		Preview:           req.Preview,
+		FailOnChanges:     req.FailOnChanges,
+		AllowRefChange:    req.AllowRefChange,
+		AllowSignerChange: req.AllowSignerChange,
+		Clients:           req.Clients,
 	})
 	if err != nil {
 		return err

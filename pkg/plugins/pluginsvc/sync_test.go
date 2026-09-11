@@ -13,7 +13,6 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
-	"github.com/stacklok/toolhive-core/httperr"
 	ociplugins "github.com/stacklok/toolhive-core/oci/plugins"
 	"github.com/stacklok/toolhive/pkg/client"
 	"github.com/stacklok/toolhive/pkg/git"
@@ -52,9 +51,13 @@ func (c *redirectGitClient) Cleanup(ctx context.Context, repoInfo *git.Repositor
 	return c.inner.Cleanup(ctx, repoInfo)
 }
 
-func newGitLockTestService(t *testing.T, repoDir string) (plugins.PluginService, string) {
+// newGitLockTestService builds a lock-enabled service whose git installs
+// resolve to repoDir. Test repo commits are unsigned, so it defaults to a
+// verifier that reports every commit as signed by a fixed test identity —
+// tests about verification itself pass their own WithVerifier via extra
+// (later options win).
+func newGitLockTestService(t *testing.T, repoDir string, extra ...Option) (plugins.PluginService, string) {
 	t.Helper()
-	t.Setenv(plugins.LockFileEnvVar, "true")
 
 	dbPath := filepath.Join(t.TempDir(), "test.db")
 	db, err := sqlite.Open(t.Context(), dbPath)
@@ -69,13 +72,14 @@ func newGitLockTestService(t *testing.T, repoDir string) (plugins.PluginService,
 	home := t.TempDir()
 	// Claude Code RelPath is empty; IsClientInstalled checks ~/.claude.json.
 	require.NoError(t, os.WriteFile(filepath.Join(home, ".claude.json"), []byte("{}"), 0o644))
-	svc := New(
+	opts := append([]Option{
 		WithStore(sqlite.NewPluginStore(db)),
 		WithMaterializers(map[string]plugins.MaterializationAdapter{"claude-code": adapter}),
 		WithClientManager(client.NewTestClientManagerWithHome(home)),
 		WithGitClient(&redirectGitClient{dir: repoDir, inner: git.NewDefaultGitClient()}),
-	)
-	return svc, projectRoot
+		WithVerifier(alwaysSignedVerifier(t)),
+	}, extra...)
+	return New(opts...), projectRoot
 }
 
 func pluginOnDiskPath(projectRoot, name string) string {
@@ -89,9 +93,9 @@ func tamperPluginFile(t *testing.T, projectRoot, name string) string {
 	return path
 }
 
-//nolint:paralleltest // uses t.Setenv via newLockTestService
+//nolint:paralleltest // serial: real sqlite + on-disk client materialization per test
 func TestSync_ReportsUpToDateWhenNothingChanged(t *testing.T) {
-	svc, projectRoot := newLockTestService(t, true)
+	svc, projectRoot := newLockTestService(t)
 	installTestPlugin(t, svc, projectRoot, validLockDigest())
 
 	result, err := svc.(*service).Sync(t.Context(), plugins.SyncOptions{ProjectRoot: projectRoot}) //nolint:forcetypeassert
@@ -106,9 +110,9 @@ func TestSync_ReportsUpToDateWhenNothingChanged(t *testing.T) {
 // default: expand to every detected plugin-supporting client, not fail
 // validation.
 //
-//nolint:paralleltest // uses t.Setenv via newLockTestService
+//nolint:paralleltest // serial: real sqlite + on-disk client materialization per test
 func TestSync_ClientsAllSentinelMatchesDefault(t *testing.T) {
-	svc, projectRoot := newLockTestService(t, true)
+	svc, projectRoot := newLockTestService(t)
 	installTestPlugin(t, svc, projectRoot, validLockDigest())
 
 	result, err := svc.(*service).Sync(t.Context(), plugins.SyncOptions{ //nolint:forcetypeassert
@@ -119,9 +123,9 @@ func TestSync_ClientsAllSentinelMatchesDefault(t *testing.T) {
 	assert.Empty(t, result.Failed, "--clients all must not produce a validation failure")
 }
 
-//nolint:paralleltest // uses t.Setenv via newLockTestService
+//nolint:paralleltest // serial: real sqlite + on-disk client materialization per test
 func TestSync_ClientsAllSentinelRejectsCombination(t *testing.T) {
-	svc, projectRoot := newLockTestService(t, true)
+	svc, projectRoot := newLockTestService(t)
 	installTestPlugin(t, svc, projectRoot, validLockDigest())
 
 	result, err := svc.(*service).Sync(t.Context(), plugins.SyncOptions{ //nolint:forcetypeassert
@@ -132,9 +136,9 @@ func TestSync_ClientsAllSentinelRejectsCombination(t *testing.T) {
 	assert.Contains(t, result.Failed[0].Error, "cannot be combined")
 }
 
-//nolint:paralleltest // uses t.Setenv via newLockTestService
+//nolint:paralleltest // serial: real sqlite + on-disk client materialization per test
 func TestSync_CheckReportsDriftWithoutWriting(t *testing.T) {
-	svc, projectRoot := newLockTestService(t, true)
+	svc, projectRoot := newLockTestService(t)
 	installTestPlugin(t, svc, projectRoot, validLockDigest())
 
 	path := tamperPluginFile(t, projectRoot, "my-plugin")
@@ -149,7 +153,7 @@ func TestSync_CheckReportsDriftWithoutWriting(t *testing.T) {
 	assert.Equal(t, "tampered content", string(stillTampered))
 }
 
-//nolint:paralleltest // uses t.Setenv via newGitLockTestService
+//nolint:paralleltest // serial: real sqlite + on-disk client materialization per test
 func TestSync_ReinstallsDriftedContent(t *testing.T) {
 	repoDir := createPluginTestRepo(t, "")
 	svc, projectRoot := newGitLockTestService(t, repoDir)
@@ -171,7 +175,7 @@ func TestSync_ReinstallsDriftedContent(t *testing.T) {
 	assert.Contains(t, string(restored), "# hello")
 }
 
-//nolint:paralleltest // uses t.Setenv via newGitLockTestService
+//nolint:paralleltest // serial: real sqlite + on-disk client materialization per test
 func TestSync_ReinstallPreservesResolvedReference(t *testing.T) {
 	repoDir := createPluginTestRepo(t, "")
 	svc, projectRoot := newGitLockTestService(t, repoDir)
@@ -197,7 +201,7 @@ func TestSync_ReinstallPreservesResolvedReference(t *testing.T) {
 		"a drift-repair reinstall must preserve ResolvedReference, not overwrite it with the pinned restore form")
 }
 
-//nolint:paralleltest // uses t.Setenv via newGitLockTestService
+//nolint:paralleltest // serial: real sqlite + on-disk client materialization per test
 func TestSync_MissingInstallIsRestored(t *testing.T) {
 	repoDir := createPluginTestRepo(t, "")
 	svc, projectRoot := newGitLockTestService(t, repoDir)
@@ -220,7 +224,7 @@ func TestSync_MissingInstallIsRestored(t *testing.T) {
 	require.NoError(t, err)
 }
 
-//nolint:paralleltest // uses t.Setenv via newGitLockTestService
+//nolint:paralleltest // serial: real sqlite + on-disk client materialization per test
 func TestSync_CheckReportsMissingInstalls(t *testing.T) {
 	repoDir := createPluginTestRepo(t, "")
 	svc, projectRoot := newGitLockTestService(t, repoDir)
@@ -242,9 +246,9 @@ func TestSync_CheckReportsMissingInstalls(t *testing.T) {
 	require.Error(t, err, "check must not have installed anything")
 }
 
-//nolint:paralleltest // uses t.Setenv via newLockTestService
+//nolint:paralleltest // serial: real sqlite + on-disk client materialization per test
 func TestSync_AdoptsUnmanagedInstall(t *testing.T) {
-	svc, projectRoot := newLockTestService(t, true)
+	svc, projectRoot := newLockTestService(t)
 	installTestPlugin(t, svc, projectRoot, validLockDigest())
 
 	require.NoError(t, lockfile.RemovePluginEntry(mustOpenRoot(t, projectRoot), "my-plugin"))
@@ -259,7 +263,19 @@ func TestSync_AdoptsUnmanagedInstall(t *testing.T) {
 	require.NoError(t, err)
 	assert.Equal(t, []string{"my-plugin"}, result.NeverManaged)
 
+	// Adoption of an install with no stored bundle is an unsigned trust
+	// decision: without the explicit exception it fails...
 	result, err = syncSvc.Sync(t.Context(), plugins.SyncOptions{ProjectRoot: projectRoot, Adopt: true})
+	require.NoError(t, err)
+	require.Len(t, result.Failed, 1)
+	assert.Equal(t, plugins.FailureReasonUnsignedRejected, result.Failed[0].Reason)
+	_, ok := readLockfile(t, projectRoot).GetPlugin("my-plugin")
+	assert.False(t, ok, "adoption without the unsigned exception must not write a lock entry")
+
+	// ...and with it, the entry records the unsigned state.
+	result, err = syncSvc.Sync(t.Context(), plugins.SyncOptions{
+		ProjectRoot: projectRoot, Adopt: true, AllowUnsigned: true,
+	})
 	require.NoError(t, err)
 	assert.Equal(t, []string{"my-plugin"}, result.NeverManaged)
 	assert.Empty(t, result.Failed)
@@ -268,7 +284,7 @@ func TestSync_AdoptsUnmanagedInstall(t *testing.T) {
 	entry, ok := lf.GetPlugin("my-plugin")
 	require.True(t, ok, "adopt must write a lock entry for the unmanaged install")
 	assert.NotEmpty(t, entry.ContentDigest)
-	assert.False(t, entry.Unsigned)
+	assert.True(t, entry.Unsigned, "an adoption without verifiable trust must record unsigned")
 	assert.Nil(t, entry.Provenance)
 
 	info, err := svc.Info(t.Context(), plugins.InfoOptions{Name: "my-plugin", Scope: plugins.ScopeProject, ProjectRoot: projectRoot})
@@ -277,9 +293,9 @@ func TestSync_AdoptsUnmanagedInstall(t *testing.T) {
 	assert.True(t, info.InstalledPlugin.Managed)
 }
 
-//nolint:paralleltest // uses t.Setenv via newLockTestService
+//nolint:paralleltest // serial: real sqlite + on-disk client materialization per test
 func TestSync_PrunesRemovedFromLock(t *testing.T) {
-	svc, projectRoot := newLockTestService(t, true)
+	svc, projectRoot := newLockTestService(t)
 	installTestPlugin(t, svc, projectRoot, validLockDigest())
 
 	require.NoError(t, lockfile.RemovePluginEntry(mustOpenRoot(t, projectRoot), "my-plugin"))
@@ -297,18 +313,9 @@ func TestSync_PrunesRemovedFromLock(t *testing.T) {
 	require.Error(t, err, "prune must uninstall the plugin")
 }
 
-//nolint:paralleltest // uses t.Setenv via newLockTestService
-func TestSync_DisabledGateReturnsForbidden(t *testing.T) {
-	svc, projectRoot := newLockTestService(t, false)
-
-	_, err := svc.(*service).Sync(t.Context(), plugins.SyncOptions{ProjectRoot: projectRoot}) //nolint:forcetypeassert
-	require.Error(t, err)
-	assert.Equal(t, 403, httperr.Code(err))
-}
-
-//nolint:paralleltest // uses t.Setenv via newLockTestService
+//nolint:paralleltest // serial: real sqlite + on-disk client materialization per test
 func TestSync_AdoptUpdateFailureRemovesLockEntry(t *testing.T) {
-	svc, projectRoot := newLockTestService(t, true)
+	svc, projectRoot := newLockTestService(t)
 	installTestPlugin(t, svc, projectRoot, validLockDigest())
 
 	require.NoError(t, lockfile.RemovePluginEntry(mustOpenRoot(t, projectRoot), "my-plugin"))
@@ -329,7 +336,9 @@ func TestSync_AdoptUpdateFailureRemovesLockEntry(t *testing.T) {
 		},
 	}
 
-	result, err := syncSvc.Sync(t.Context(), plugins.SyncOptions{ProjectRoot: projectRoot, Adopt: true})
+	result, err := syncSvc.Sync(t.Context(), plugins.SyncOptions{
+		ProjectRoot: projectRoot, Adopt: true, AllowUnsigned: true,
+	})
 	require.NoError(t, err)
 	require.Len(t, result.Failed, 1)
 	assert.Equal(t, "my-plugin", result.Failed[0].Name)
@@ -350,9 +359,9 @@ func TestSync_AdoptUpdateFailureRemovesLockEntry(t *testing.T) {
 	assert.Empty(t, check.AlreadyCurrent, "a split adopt must not look up-to-date")
 }
 
-//nolint:paralleltest // uses t.Setenv via newLockTestService
+//nolint:paralleltest // serial: real sqlite + on-disk client materialization per test
 func TestSync_AdoptUpdateFailureRestoresExistingLockEntry(t *testing.T) {
-	svc, projectRoot := newLockTestService(t, true)
+	svc, projectRoot := newLockTestService(t)
 	installTestPlugin(t, svc, projectRoot, validLockDigest())
 
 	prev := lockfile.Entry{
@@ -382,7 +391,9 @@ func TestSync_AdoptUpdateFailureRestoresExistingLockEntry(t *testing.T) {
 		},
 	}
 
-	result, err := syncSvc.Sync(t.Context(), plugins.SyncOptions{ProjectRoot: projectRoot, Adopt: true})
+	result, err := syncSvc.Sync(t.Context(), plugins.SyncOptions{
+		ProjectRoot: projectRoot, Adopt: true, AllowUnsigned: true,
+	})
 	require.NoError(t, err)
 	require.Len(t, result.Failed, 1)
 
@@ -393,9 +404,9 @@ func TestSync_AdoptUpdateFailureRestoresExistingLockEntry(t *testing.T) {
 	assert.Equal(t, prev.ResolvedReference, got.ResolvedReference)
 }
 
-//nolint:paralleltest // uses t.Setenv via newLockTestService
+//nolint:paralleltest // serial: real sqlite + on-disk client materialization per test
 func TestSync_AdoptRejectsUnrestorableLocalPin(t *testing.T) {
-	svc, projectRoot := newLockTestService(t, true)
+	svc, projectRoot := newLockTestService(t)
 	installTestPlugin(t, svc, projectRoot, validLockDigest())
 
 	require.NoError(t, lockfile.RemovePluginEntry(mustOpenRoot(t, projectRoot), "my-plugin"))
@@ -416,9 +427,9 @@ func TestSync_AdoptRejectsUnrestorableLocalPin(t *testing.T) {
 	assert.False(t, ok, "adoption of a bare local tag must not write a lock entry")
 }
 
-//nolint:paralleltest // uses t.Setenv via newLockTestService
+//nolint:paralleltest // serial: real sqlite + on-disk client materialization per test
 func TestSync_RequestedClientIsNotAlreadyCurrent(t *testing.T) {
-	svc, projectRoot := newLockTestService(t, true)
+	svc, projectRoot := newLockTestService(t)
 	installTestPlugin(t, svc, projectRoot, validLockDigest())
 
 	inner := svc.(*service) //nolint:forcetypeassert
@@ -438,9 +449,9 @@ func TestSync_RequestedClientIsNotAlreadyCurrent(t *testing.T) {
 	assert.Empty(t, result.Failed)
 }
 
-//nolint:paralleltest // uses t.Setenv via newLockTestService
+//nolint:paralleltest // serial: real sqlite + on-disk client materialization per test
 func TestSync_DefaultExpandsToNewlyDetectedClients(t *testing.T) {
-	svc, projectRoot := newLockTestService(t, true)
+	svc, projectRoot := newLockTestService(t)
 	installTestPlugin(t, svc, projectRoot, validLockDigest())
 
 	inner := svc.(*service) //nolint:forcetypeassert
@@ -456,9 +467,9 @@ func TestSync_DefaultExpandsToNewlyDetectedClients(t *testing.T) {
 	assert.Empty(t, result.AlreadyCurrent, "default sync must not treat a missing detected client as current")
 }
 
-//nolint:paralleltest // uses t.Setenv via newLockTestService
+//nolint:paralleltest // serial: real sqlite + on-disk client materialization per test
 func TestSync_DefaultIgnoresSupportedButAbsentClients(t *testing.T) {
-	svc, projectRoot := newLockTestService(t, true)
+	svc, projectRoot := newLockTestService(t)
 	installTestPlugin(t, svc, projectRoot, validLockDigest())
 
 	inner := svc.(*service) //nolint:forcetypeassert
@@ -475,7 +486,7 @@ func TestSync_DefaultIgnoresSupportedButAbsentClients(t *testing.T) {
 	assert.Empty(t, result.Drifted)
 }
 
-//nolint:paralleltest // uses t.Setenv via newGitLockTestService
+//nolint:paralleltest // serial: real sqlite + on-disk client materialization per test
 func TestSync_CanonicalNameMismatchFailsBeforeMutate(t *testing.T) {
 	repoDir := createPluginTestRepo(t, "")
 	svc, projectRoot := newGitLockTestService(t, repoDir)
@@ -537,9 +548,9 @@ func (s *staleListStore) List(context.Context, storage.ListFilter) ([]plugins.In
 	return out, nil
 }
 
-//nolint:paralleltest // uses t.Setenv via newLockTestService
+//nolint:paralleltest // serial: real sqlite + on-disk client materialization per test
 func TestSync_StaleListDoesNotResurrectUninstalledPlugin(t *testing.T) {
-	svc, projectRoot := newLockTestService(t, true)
+	svc, projectRoot := newLockTestService(t)
 	installTestPlugin(t, svc, projectRoot, validLockDigest())
 
 	inner := svc.(*service) //nolint:forcetypeassert
@@ -574,9 +585,9 @@ func (*unhealthyAdapter) Health(context.Context, plugins.DematerializeRequest) e
 	return errors.New("marketplace entry missing")
 }
 
-//nolint:paralleltest // uses t.Setenv via newLockTestService
+//nolint:paralleltest // serial: real sqlite + on-disk client materialization per test
 func TestSync_UnhealthyRegistrationIsNotAlreadyCurrent(t *testing.T) {
-	svc, projectRoot := newLockTestService(t, true)
+	svc, projectRoot := newLockTestService(t)
 	installTestPlugin(t, svc, projectRoot, validLockDigest())
 
 	inner := svc.(*service) //nolint:forcetypeassert
@@ -593,9 +604,9 @@ func TestSync_UnhealthyRegistrationIsNotAlreadyCurrent(t *testing.T) {
 	assert.Empty(t, result.AlreadyCurrent, "missing marketplace/settings registration is drift, not current")
 }
 
-//nolint:paralleltest // uses t.Setenv via newLockTestService
+//nolint:paralleltest // serial: real sqlite + on-disk client materialization per test
 func TestSync_LocalUpgradeRoundTripRestoresExactDigest(t *testing.T) {
-	svc, projectRoot := newLockTestService(t, true)
+	svc, projectRoot := newLockTestService(t)
 	ociStore, err := ociplugins.NewStore(tempDir(t))
 	require.NoError(t, err)
 
@@ -603,12 +614,13 @@ func TestSync_LocalUpgradeRoundTripRestoresExactDigest(t *testing.T) {
 	inner.ociStore = ociStore
 
 	_, err = svc.Install(t.Context(), plugins.InstallOptions{
-		Name:        "my-plugin",
-		LayerData:   makePluginLayerData(t, "my-plugin"),
-		Digest:      validLockDigest(),
-		Scope:       plugins.ScopeProject,
-		ProjectRoot: projectRoot,
-		Clients:     []string{"claude-code"},
+		Name:          "my-plugin",
+		LayerData:     makePluginLayerData(t, "my-plugin"),
+		AllowUnsigned: true,
+		Digest:        validLockDigest(),
+		Scope:         plugins.ScopeProject,
+		ProjectRoot:   projectRoot,
+		Clients:       []string{"claude-code"},
 	})
 	require.NoError(t, err)
 
@@ -653,9 +665,9 @@ func TestSync_LocalUpgradeRoundTripRestoresExactDigest(t *testing.T) {
 	assert.Empty(t, afterLock.ResolvedReference)
 }
 
-//nolint:paralleltest // uses t.Setenv via newLockTestService
+//nolint:paralleltest // serial: real sqlite + on-disk client materialization per test
 func TestSync_LocalStorePinDigestMissing(t *testing.T) {
-	svc, projectRoot := newLockTestService(t, true)
+	svc, projectRoot := newLockTestService(t)
 	ociStore, err := ociplugins.NewStore(tempDir(t))
 	require.NoError(t, err)
 
@@ -663,12 +675,13 @@ func TestSync_LocalStorePinDigestMissing(t *testing.T) {
 	inner.ociStore = ociStore
 
 	_, err = svc.Install(t.Context(), plugins.InstallOptions{
-		Name:        "my-plugin",
-		LayerData:   makePluginLayerData(t, "my-plugin"),
-		Digest:      validLockDigest(),
-		Scope:       plugins.ScopeProject,
-		ProjectRoot: projectRoot,
-		Clients:     []string{"claude-code"},
+		Name:          "my-plugin",
+		LayerData:     makePluginLayerData(t, "my-plugin"),
+		AllowUnsigned: true,
+		Digest:        validLockDigest(),
+		Scope:         plugins.ScopeProject,
+		ProjectRoot:   projectRoot,
+		Clients:       []string{"claude-code"},
 	})
 	require.NoError(t, err)
 

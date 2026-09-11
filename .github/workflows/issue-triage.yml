@@ -14,13 +14,15 @@ jobs:
 
     steps:
       - name: Checkout repository
-        uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
         with:
           fetch-depth: 0
           persist-credentials: false
 
       - name: Run Claude Code for Issue Triage
-        uses: anthropics/claude-code-action@16b3b310c3d7b5279df73130324d5205aeea8eac # v1.0.205
+        uses: anthropics/claude-code-action@19dda84776b3518d98b8798e591daee763049ed3 # v1.0.220
+        env:
+          ANTHROPIC_BASE_URL: https://llm-gateway.stacklok.dev/anthropic
         with:
           prompt: |
             You are an issue triage assistant. Analyze issue #${{ github.event.issue.number }} in ${{ github.repository }} and apply appropriate labels.
@@ -41,7 +43,7 @@ jobs:
             - DO NOT add the "good-first-issue" label.
             - DO NOT post comments or otherwise communicate with the issue author.
             - If no labels are clearly applicable, do not apply any.
-          claude_args: --model claude-sonnet-4-6
-          anthropic_api_key: ${{ secrets.ANTHROPIC_API_KEY }}
+          claude_args: --model claude-sonnet-5
+          anthropic_api_key: ${{ secrets.STACKLOK_GATEWAY_KEY_ISSUE_TRIAGE }}
           allowed_non_write_users: "*"
           github_token: ${{ secrets.GITHUB_TOKEN }}

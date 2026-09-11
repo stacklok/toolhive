@@ -64,7 +64,7 @@ func TestNewOIDCAuthMiddleware_KeyProvider_LocalResolution(t *testing.T) {
 		}}, nil).
 		AnyTimes()
 
-	authMw, _, err := newOIDCAuthMiddleware(t.Context(), oidcCfg, nil, mockProvider)
+	authMw, _, err := newOIDCAuthMiddleware(t.Context(), oidcCfg, nil, mockProvider, "")
 	require.NoError(t, err, "middleware creation should succeed with key provider")
 	require.NotNil(t, authMw)
 
@@ -114,7 +114,7 @@ func TestNewOIDCAuthMiddleware_KeyProvider_HTTPFallback(t *testing.T) {
 		JwksAllowPrivateIP: true,
 	}
 
-	authMw, _, err := newOIDCAuthMiddleware(t.Context(), oidcCfg, nil, nil)
+	authMw, _, err := newOIDCAuthMiddleware(t.Context(), oidcCfg, nil, nil, "")
 	require.NoError(t, err)
 	require.NotNil(t, authMw)
 
@@ -182,7 +182,7 @@ func TestNewOIDCAuthMiddleware_KeyProvider_KidMissFallback(t *testing.T) {
 		}}, nil).
 		AnyTimes()
 
-	authMw, _, err := newOIDCAuthMiddleware(t.Context(), oidcCfg, nil, mockProvider)
+	authMw, _, err := newOIDCAuthMiddleware(t.Context(), oidcCfg, nil, mockProvider, "")
 	require.NoError(t, err)
 	require.NotNil(t, authMw)
 

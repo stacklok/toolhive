@@ -16,6 +16,7 @@ import (
 	"github.com/stretchr/testify/require"
 
 	"github.com/stacklok/toolhive-core/mcpcompat/mcp"
+	"github.com/stacklok/toolhive/pkg/diagnostics"
 	thvjson "github.com/stacklok/toolhive/pkg/json"
 	"github.com/stacklok/toolhive/pkg/telemetry"
 	"github.com/stacklok/toolhive/pkg/vmcp"
@@ -347,7 +348,8 @@ func TestVMCPServer_CompositeToolNonStringArguments(t *testing.T) {
 }
 
 // TestVMCPServer_Telemetry_CompositeToolMetrics verifies that vMCP exposes
-// Prometheus metrics for composite tool workflow executions and backend requests on /metrics.
+// Prometheus metrics for composite tool workflow executions and backend requests on
+// /metrics, which is served on the dedicated diagnostics listener (see pkg/diagnostics).
 // This test creates a composite tool, executes it, and verifies the metrics
 // for both the workflow and the backend subtool calls are correctly exposed.
 func TestVMCPServer_Telemetry_CompositeToolMetrics(t *testing.T) {
@@ -430,8 +432,12 @@ func TestVMCPServer_Telemetry_CompositeToolMetrics(t *testing.T) {
 	text := helpers.AssertToolCallSuccess(t, resp)
 	helpers.AssertTextContains(t, text, "echoed", "hello world")
 
-	// Fetch metrics from /metrics endpoint
-	metricsURL := "http://" + vmcpServer.Address() + "/metrics"
+	// Fetch metrics from the diagnostics listener. Metrics are deliberately not on
+	// the port serving MCP traffic, and the resolved port can differ from the
+	// configured one, so the address has to come from the server.
+	diagnosticsAddr := vmcpServer.DiagnosticsAddress()
+	require.NotEmpty(t, diagnosticsAddr, "diagnostics listener must be running for metrics to be scrapeable")
+	metricsURL := "http://" + diagnosticsAddr + diagnostics.MetricsPath
 	httpClient := &http.Client{Timeout: 5 * time.Second}
 	metricsResp, err := httpClient.Get(metricsURL)
 	require.NoError(t, err, "failed to fetch metrics")

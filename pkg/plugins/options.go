@@ -5,8 +5,12 @@ package plugins
 
 import (
 	"context"
+	"errors"
+	"net/http"
 
+	"github.com/stacklok/toolhive-core/httperr"
 	"github.com/stacklok/toolhive/pkg/skills"
+	"github.com/stacklok/toolhive/pkg/skills/lockfile"
 )
 
 // ListOptions configures the behavior of the List operation. Alias for
@@ -31,6 +35,22 @@ type InstallOptions struct {
 	ProjectRoot string `json:"project_root,omitempty"`
 	// Group is the group name to add the plugin to after installation.
 	Group string `json:"group,omitempty"`
+	// AllowUnsigned permits installing a project-scoped plugin whose
+	// artifact carries no Sigstore signature. Without it, unsigned
+	// artifacts are rejected; with it, the lock entry records the exception
+	// as "unsigned: true". A plugin contributes hooks, agents, and MCP
+	// servers to the client that loads it, so this is an explicit
+	// per-install trust decision, never a default.
+	AllowUnsigned bool `json:"allow_unsigned,omitempty"`
+	// PublicKey is the base64-encoded DER SPKI cosign public key a
+	// project-scoped install must verify the artifact against, for artifacts
+	// signed with a cosign key pair rather than keylessly. Required on true
+	// first use of such an artifact — the signing key is recoverable from
+	// neither the artifact nor its bundle, so nothing else can supply the
+	// trust anchor — and pinned into the lock entry, which supplies it on
+	// every install thereafter. A value that conflicts with what the lock
+	// already pins is rejected, never ignored.
+	PublicKey string `json:"public_key,omitempty"`
 	// LayerData is the tar.gz content from an OCI layer. Internal use only — NOT exposed via HTTP API.
 	LayerData []byte `json:"-"`
 	// Reference is the full OCI reference (e.g. ghcr.io/org/plugin:v1).
@@ -67,11 +87,41 @@ type InstallOptions struct {
 	// normal "same digest means content is already correct" fast path must
 	// not apply. Internal use only — NOT exposed via HTTP API.
 	SyncRestore bool `json:"-"`
+	// AllowSignerChange lets install-time verification re-record the
+	// observed identity instead of enforcing the lock file's recorded one.
+	// Internal use only — set by upgrade when its signer-change guard was
+	// explicitly overridden. NOT exposed via HTTP API.
+	AllowSignerChange bool `json:"-"`
 	// ExpectedCanonicalName, when set, requires the resolved plugin/manifest name
 	// to equal this value before any install mutation. Used by Sync/Upgrade so a
 	// lock entry cannot be repaired under a different canonical identity.
 	ExpectedCanonicalName string `json:"-"`
+	// Unsigned records the trust decision that this install proceeded
+	// without a verified signature (via AllowUnsigned). Set internally by
+	// install-time verification; recorded as `unsigned: true` in the lock
+	// entry. Internal use only — NOT exposed via HTTP API.
+	Unsigned bool `json:"-"`
+	// Provenance carries the verified signer identity established during
+	// install-time verification, for recording into the lock entry. Set by
+	// the verification step, nil when the artifact is unsigned or
+	// verification did not run. Unlike skills.InstallOptions, this is the
+	// lock file's own shape: plugins have no API-facing provenance type to
+	// convert through yet, and a conversion pair that exists only to be
+	// round-tripped is a place for recorded trust data to get dropped.
+	// Internal use only — NOT exposed via HTTP API.
+	Provenance *lockfile.Provenance `json:"-"`
+	// SigstoreBundle is the signature material backing Provenance, in core's
+	// durable form (see verifier.Result.Bundle), persisted alongside the
+	// install record so sync can re-verify offline against the artifact digest.
+	// Internal use only — NOT exposed via HTTP API.
+	SigstoreBundle []byte `json:"-"`
 }
+
+// ProvenanceInfo is the verified signer identity of an installed artifact,
+// the in-memory mirror of the lock file's provenance block. Alias for
+// skills.ProvenanceInfo: the RFC THV-0080 provenance contract is shared, and
+// a parallel struct would only be a place for the two to drift.
+type ProvenanceInfo = skills.ProvenanceInfo
 
 // InstallResult contains the outcome of an Install operation.
 type InstallResult struct {
@@ -92,6 +142,12 @@ type InstallResult struct {
 	// compensating; discarding it can hide a partial restore. Internal use
 	// only — NOT exposed via HTTP API.
 	RestoreFiles func(context.Context) error `json:"-"`
+	// Provenance is the verified signer identity this install recorded —
+	// surfaced so callers can display what trust-on-first-use pinned.
+	Provenance *ProvenanceInfo `json:"provenance,omitempty"`
+	// Unsigned reports that the install was recorded as an explicit
+	// unsigned exception.
+	Unsigned bool `json:"unsigned,omitempty"`
 }
 
 // UninstallOptions configures the behavior of the Uninstall operation. Alias
@@ -121,6 +177,20 @@ type PluginInfo struct {
 	// UnmaterializedComponents pattern (no persistence needed — the degradation
 	// is deterministic from scope + client type).
 	ProjectScopeDegradedClients []string `json:"project_scope_degraded_clients,omitempty"`
+	// Provenance is the signer identity the project's lock file records for
+	// this plugin, when project-scoped and lock-managed.
+	Provenance *ProvenanceInfo `json:"provenance,omitempty"`
+	// Unsigned reports that the lock file records an explicit unsigned
+	// exception for this plugin.
+	Unsigned bool `json:"unsigned,omitempty"`
+	// TrustUnrecorded reports that the project's lock file has an entry for
+	// this plugin which records neither a signer identity nor an unsigned
+	// exception — an entry written before verification existed, or
+	// hand-edited. It exists to keep that state distinguishable from having no
+	// lock entry at all, which leaves Provenance and Unsigned equally empty:
+	// sync reports this one as drift and can repair it, so Info must not
+	// render it as if nothing were pinning the plugin.
+	TrustUnrecorded bool `json:"trust_unrecorded,omitempty"`
 }
 
 // ContentOptions configures the behavior of the GetContent operation. Alias
@@ -136,8 +206,49 @@ type BuildOptions = skills.BuildOptions
 type BuildResult = skills.BuildResult
 
 // PushOptions configures the behavior of the Push operation. Alias for
-// skills.PushOptions (Reference).
+// skills.PushOptions (identical shape: Reference, Key, IdentityToken,
+// NoSign).
 type PushOptions = skills.PushOptions
+
+// ValidatePushSigning enforces the push endpoint's signing contract: exactly
+// one of a cosign key, an OIDC identity token for keyless signing, or an
+// explicit opt-out. Ambiguous or absent input is rejected with HTTP 400 before
+// the artifact is pushed, rather than surfacing as a signing failure afterward.
+//
+// The HTTP handler runs this before dispatch and the service runs it again on
+// the options it receives. Both call it so the API contract holds regardless
+// of which PluginService implementation is wired in: a request naming only a
+// reference must be a 400 from the endpoint itself, not from whichever
+// service happens to answer. Mirrors skillsvc.validateSigningInputs; the
+// error text names both the JSON fields and the plugin command's flags.
+func ValidatePushSigning(opts PushOptions) error {
+	methods := 0
+	if opts.Key != "" {
+		methods++
+	}
+	if opts.IdentityToken != "" {
+		methods++
+	}
+	switch {
+	case opts.NoSign && methods > 0:
+		return httperr.WithCode(
+			errors.New("no_sign (--no-sign) cannot be combined with key (--key) or identity_token (--identity-token)"),
+			http.StatusBadRequest,
+		)
+	case !opts.NoSign && methods == 0:
+		return httperr.WithCode(
+			errors.New("signing credential required: set key (--key), identity_token (--identity-token) "+
+				"for CI/OIDC keyless signing, or no_sign (--no-sign) to push unsigned"),
+			http.StatusBadRequest,
+		)
+	case !opts.NoSign && methods > 1:
+		return httperr.WithCode(
+			errors.New("specify only one of key (--key) or identity_token (--identity-token)"),
+			http.StatusBadRequest,
+		)
+	}
+	return nil
+}
 
 // SyncOptions configures a lock-file sync. Alias for skills.SyncOptions
 // (identical shape: ProjectRoot, Clients, Prune, Check, AllowUnsigned, Adopt).
@@ -163,8 +274,14 @@ const (
 	FailureReasonLockWriteFailed     = skills.FailureReasonLockWriteFailed
 	FailureReasonSignatureInvalid    = skills.FailureReasonSignatureInvalid
 	FailureReasonSignerMismatch      = skills.FailureReasonSignerMismatch
+	FailureReasonKeySigned           = skills.FailureReasonKeySigned
 	FailureReasonUnsignedRejected    = skills.FailureReasonUnsignedRejected
 	FailureReasonUnknown             = skills.FailureReasonUnknown
+
+	// FailureReasonProvenanceFieldMismatch means the artifact verifies
+	// against the recorded signer, but a pinned certificate field (the
+	// repository ref or runner environment) no longer matches.
+	FailureReasonProvenanceFieldMismatch = skills.FailureReasonProvenanceFieldMismatch
 )
 
 // UpgradeOptions configures a lock-file upgrade. Alias for

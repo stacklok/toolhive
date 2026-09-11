@@ -133,6 +133,7 @@ thv run [flags] SERVER_OR_IMAGE_OR_PROTOCOL [-- ARGS...]
       --jwks-allow-private-ip                       Allow JWKS/OIDC endpoints on private IP addresses (use with caution) (default false)
       --jwks-auth-token-file string                 Path to file containing bearer token for authenticating JWKS/OIDC requests
   -l, --label stringArray                           Set labels on the container (format: key=value)
+      --max-request-body-size int                   Maximum inbound request body size in bytes; zero uses the default (8 MiB)
       --name string                                 Name of the MCP server (default to auto-generated from image)
       --network string                              Connect the container to a network (e.g., 'host' for host networking). Note: 'host' and 'none' cannot enforce network isolation, so isolation is dropped for those modes.
       --oidc-audience string                        Expected audience for the token
@@ -150,6 +151,7 @@ thv run [flags] SERVER_OR_IMAGE_OR_PROTOCOL [-- ARGS...]
       --otel-headers stringArray                    OpenTelemetry OTLP headers in key=value format (e.g., x-honeycomb-team=your-api-key)
       --otel-insecure                               Connect to the OpenTelemetry endpoint using HTTP instead of HTTPS (default false)
       --otel-metrics-enabled                        Enable OTLP metrics export (when OTLP endpoint is configured) (default true)
+      --otel-metrics-on-transport-port              Also serve Prometheus /metrics on the transport port, alongside the diagnostics port. Deprecated: this is a migration aid and the default will become false; see https://github.com/stacklok/toolhive/issues/6384 for the timeline. Move scrapers to the diagnostics port and set this to false to verify. (default true)
       --otel-sampling-rate float                    OpenTelemetry trace sampling rate (0.0-1.0) (default 0.1)
       --otel-service-name string                    OpenTelemetry service name (defaults to thv-<workload-name>)
       --otel-tracing-enabled                        Enable distributed tracing (when OTLP endpoint is configured) (default true)
@@ -158,6 +160,7 @@ thv run [flags] SERVER_OR_IMAGE_OR_PROTOCOL [-- ARGS...]
       --print-resolved-overlays                     Debug: show resolved container paths for tmpfs overlays (default false)
       --proxy-mode string                           Proxy mode for stdio (streamable-http or sse (deprecated, will be removed)) (default "streamable-http")
       --proxy-port int                              Port for the HTTP proxy to listen on (host port)
+      --proxy-read-timeout duration                 Maximum time to read a full request on the proxy (e.g., 30s, 1m); zero uses the default (30s)
   -p, --publish stringArray                         Publish a container's port(s) to the host (format: hostPort:containerPort)
       --remote-auth                                 Enable OAuth/OIDC authentication to remote MCP server (default false)
       --remote-auth-authorize-url string            OAuth authorization endpoint URL (alternative to --remote-auth-issuer for non-OIDC OAuth)

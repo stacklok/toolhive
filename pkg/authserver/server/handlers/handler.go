@@ -29,6 +29,7 @@ import (
 	"github.com/stacklok/toolhive/pkg/authserver/server"
 	"github.com/stacklok/toolhive/pkg/authserver/storage"
 	"github.com/stacklok/toolhive/pkg/authserver/upstream"
+	"github.com/stacklok/toolhive/pkg/oauthproto"
 )
 
 // NamedUpstream pairs a logical provider name with its OAuth2Provider implementation.
@@ -40,10 +41,13 @@ type NamedUpstream struct {
 
 // Handler provides HTTP handlers for the OAuth authorization server endpoints.
 type Handler struct {
-	provider     fosite.OAuth2Provider
-	config       *server.AuthorizationServerConfig
-	storage      storage.Storage
-	upstreams    []NamedUpstream
+	provider  fosite.OAuth2Provider
+	config    *server.AuthorizationServerConfig
+	storage   storage.Storage
+	upstreams []NamedUpstream
+	// tokenOnly is derived at construction from the absence of upstreams and is
+	// the single source of truth for token-only capability behavior.
+	tokenOnly    bool
 	userResolver *UserResolver
 	// refresher, when set, lets nextMissingUpstream transparently refresh an
 	// expired upstream leg during chain evaluation instead of re-prompting. Nil
@@ -63,6 +67,21 @@ type Handler struct {
 	// configured rate with replica count in mind. Nil in tests that construct
 	// Handler directly; OAuthRoutes tolerates nil by skipping the gate.
 	registerLimiter *rate.Limiter
+	// cimdAuthorizeLimiter bounds unauthenticated /oauth/authorize requests
+	// whose client_id is a CIMD URL (see oauthproto.IsClientIDMetadataDocumentURL).
+	// Resolving such a client_id — via the CIMD storage decorator's GetClient,
+	// invoked from fosite's NewAuthorizeRequest — now write-through persists a
+	// row with a multi-day TTL (see CIMDStorageDecorator.fetch), so this
+	// endpoint mints persisted state exactly like /oauth/register and needs
+	// the same protection: without it, a flood of distinct CIMD client_id
+	// values (e.g. one host serving generated documents on a wildcard route)
+	// could mint rows as fast as the AS can complete the outbound document
+	// fetches. DCR (non-URL) client_id values are unaffected — they hit
+	// neither this limiter nor the write-through path. Same shape as
+	// registerLimiter: per-process, not per-IP, for the identical reasons.
+	// Nil in tests that construct Handler directly; OAuthRoutes tolerates nil
+	// by skipping the gate.
+	cimdAuthorizeLimiter *rate.Limiter
 }
 
 // UpstreamFilter narrows the authorization chain to a subset of the configured
@@ -138,8 +157,8 @@ func WithUpstreamFilter(f UpstreamFilter) Option {
 // during multi-upstream authorization flows (e.g., sequential token acquisition).
 //
 // Returns an error if config is nil, if config's embedded *fosite.Config is
-// nil, if upstreams is empty, or if any entry has an empty name, a nil provider,
-// or a duplicate name. Upstream names must be unique: upstreamByName returns the
+// nil, or if any entry has an empty name, a nil provider, or a duplicate name.
+// Upstream names must be unique: upstreamByName returns the
 // first match, tokens are keyed by name, and the authorization chain is keyed by
 // name — a duplicate would silently shadow a provider. Catching misconfiguration
 // here is far easier to diagnose than a nil-deref panic or a shadowed provider
@@ -154,9 +173,6 @@ func NewHandler(
 	if config == nil || config.Config == nil {
 		return nil, fmt.Errorf(
 			"handlers: AuthorizationServerConfig with embedded *fosite.Config must be non-nil")
-	}
-	if len(upstreams) == 0 {
-		return nil, fmt.Errorf("handlers: upstreams must not be empty")
 	}
 	seen := make(map[string]struct{}, len(upstreams))
 	for _, u := range upstreams {
@@ -176,12 +192,17 @@ func NewHandler(
 		config:       config,
 		storage:      stor,
 		upstreams:    upstreams,
+		tokenOnly:    len(upstreams) == 0,
 		userResolver: NewUserResolver(stor),
 		// 1 registration/sec sustained, burst of 5: generous for legitimate
 		// tooling (a client registers once, then reuses its client_id), tight
 		// enough that an unauthenticated caller cannot grow the client
 		// keyspace or the log stream faster than operators can react.
 		registerLimiter: rate.NewLimiter(rate.Limit(1), 5),
+		// Same rate as registerLimiter: this gate protects the same kind of
+		// unauthenticated persisted-state minting, just reached through
+		// /oauth/authorize instead of /oauth/register.
+		cimdAuthorizeLimiter: rate.NewLimiter(rate.Limit(1), 5),
 	}
 	for _, o := range opts {
 		o(h)
@@ -199,7 +220,7 @@ func (h *Handler) Routes() http.Handler {
 
 // OAuthRoutes registers OAuth endpoints (authorize, callback, token, register) on the provided router.
 func (h *Handler) OAuthRoutes(r chi.Router) {
-	r.Get("/oauth/authorize", h.AuthorizeHandler)
+	r.Get("/oauth/authorize", h.rateLimitCIMDAuthorize(h.AuthorizeHandler))
 	r.Get("/oauth/callback", h.CallbackHandler)
 	r.Post("/oauth/token", h.TokenHandler)
 	r.Post("/oauth/register", h.rateLimitRegister(h.RegisterClientHandler))
@@ -215,6 +236,33 @@ func (h *Handler) rateLimitRegister(next http.HandlerFunc) http.HandlerFunc {
 			w.Header().Set("Retry-After", "1")
 			http.Error(w, "rate limit exceeded, retry later", http.StatusTooManyRequests)
 			return
+		}
+		next(w, req)
+	}
+}
+
+// rateLimitCIMDAuthorize gates /oauth/authorize requests whose client_id is a
+// CIMD URL, before next (and therefore before fosite's NewAuthorizeRequest,
+// which is what triggers GetClient and the CIMD write-through) ever runs.
+// Over the limit it returns 429 with a Retry-After hint, mirroring
+// rateLimitRegister. A request whose client_id is empty, missing, or not
+// URL-shaped (an ordinary DCR client_id) is never gated here — it falls
+// straight through to next, unaffected by this limiter's state.
+//
+// req.Form is parsed (not req.URL.Query()) so this reads the same client_id
+// fosite itself will see, including a form-encoded body on this GET-only
+// route; ParseForm is idempotent, so a later parse inside next re-reads
+// exactly the same values.
+func (h *Handler) rateLimitCIMDAuthorize(next http.HandlerFunc) http.HandlerFunc {
+	return func(w http.ResponseWriter, req *http.Request) {
+		if h.cimdAuthorizeLimiter != nil {
+			_ = req.ParseForm()
+			clientID := req.Form.Get("client_id")
+			if oauthproto.IsClientIDMetadataDocumentURL(clientID) && !h.cimdAuthorizeLimiter.Allow() {
+				w.Header().Set("Retry-After", "1")
+				http.Error(w, "rate limit exceeded, retry later", http.StatusTooManyRequests)
+				return
+			}
 		}
 		next(w, req)
 	}

@@ -283,23 +283,13 @@ func (h *httpBackendClient) requestContext(
 	return context.WithTimeout(ctx, h.requestTimeout(target.WorkloadID))
 }
 
-// backendDialer returns a net.Dialer with the standard backend timeouts and an
-// optional Control hook. Centralising the timeout constants here ensures the
-// fallback-construction branch and the dial-control replacement branch always
-// stay in sync — no "kept in sync with the branch below" promise required.
-func backendDialer(control func(network, address string, c syscall.RawConn) error) *net.Dialer {
-	return &net.Dialer{
-		Timeout:   30 * time.Second,
-		KeepAlive: 30 * time.Second,
-		Control:   control,
-	}
-}
-
-// newBackendTransport creates a *http.Transport with the same defaults as http.DefaultTransport.
-// If http.DefaultTransport is a *http.Transport, it is cloned directly (preserving any
-// environment-specific settings like TLS config or proxy overrides). Otherwise a transport
-// with the standard Go defaults is constructed, preserving proxy, dial timeout, HTTP/2, and
-// idle-connection settings that a zero-value &http.Transport{} would drop.
+// newBackendTransport creates a *http.Transport with the same defaults as http.DefaultTransport,
+// optionally carrying a per-connection dial Control hook, then layers CA-bundle handling on top.
+//
+// The base transport (clone-or-reconstruct plus the optional dial-control dialer) is built by
+// networking.CloneDefaultTransportWithDialControl, the single construction point shared with the
+// persistent session connector (pkg/vmcp/session/internal/backend) so the two dial paths — and
+// their timeout constants — cannot drift. See that helper for the DNS-rebinding rationale.
 //
 // If caBundlePath is non-empty, a custom TLS configuration is applied that trusts both
 // the system root CAs and the certificate(s) in the specified file. This is used for
@@ -308,39 +298,12 @@ func backendDialer(control func(network, address string, c syscall.RawConn) erro
 // If caBundleData is non-empty, the raw PEM bytes are used directly instead of reading
 // from a file. This is used in dynamic mode where CA bundles are fetched from K8s
 // ConfigMaps at discovery time. caBundleData takes precedence over caBundlePath.
-//
-// If dialControl is non-nil, a fresh net.Dialer carrying the hook is installed on the
-// transport. The hook fires per-connection on the resolved peer IP, which is what
-// defeats DNS-rebinding attacks — a name-based check cannot, because the name can
-// resolve to a blocked IP after the check passes. A cloned *http.Transport exposes
-// DialContext only as an opaque func, so we cannot read back the original dialer's
-// settings; we reconstruct the dialer via backendDialer instead.
 func newBackendTransport(
 	caBundlePath string,
 	caBundleData []byte,
 	dialControl func(network, address string, c syscall.RawConn) error,
 ) (*http.Transport, error) {
-	var t *http.Transport
-	if dt, ok := http.DefaultTransport.(*http.Transport); ok {
-		t = dt.Clone()
-	} else {
-		// http.DefaultTransport has been replaced (e.g. in tests or by a third-party library).
-		// Construct a transport with the same defaults as the Go standard library uses for
-		// http.DefaultTransport so we don't silently drop proxy, timeout, or HTTP/2 settings.
-		t = &http.Transport{
-			Proxy:                 http.ProxyFromEnvironment,
-			DialContext:           backendDialer(nil).DialContext,
-			ForceAttemptHTTP2:     true,
-			MaxIdleConns:          100,
-			IdleConnTimeout:       90 * time.Second,
-			TLSHandshakeTimeout:   10 * time.Second,
-			ExpectContinueTimeout: 1 * time.Second,
-		}
-	}
-
-	if dialControl != nil {
-		t.DialContext = backendDialer(dialControl).DialContext
-	}
+	t := networking.CloneDefaultTransportWithDialControl(dialControl)
 
 	// Resolve CA certificate PEM data: caBundleData takes precedence over caBundlePath
 	var caPEM []byte
@@ -471,9 +434,7 @@ func (i *identityPropagatingRoundTripper) RoundTrip(req *http.Request) (*http.Re
 // CloseIdleConnections forwards to the wrapped RoundTripper so it reaches the
 // concrete *http.Transport at the bottom of the chain.
 func (i *identityPropagatingRoundTripper) CloseIdleConnections() {
-	if c, ok := i.base.(interface{ CloseIdleConnections() }); ok {
-		c.CloseIdleConnections()
-	}
+	networking.ForwardCloseIdle(i.base)
 }
 
 // tracePropagatingRoundTripper injects W3C Trace Context (traceparent/tracestate) and
@@ -495,9 +456,7 @@ func (t *tracePropagatingRoundTripper) RoundTrip(req *http.Request) (*http.Respo
 // CloseIdleConnections forwards to the wrapped RoundTripper so it reaches the
 // concrete *http.Transport at the bottom of the chain.
 func (t *tracePropagatingRoundTripper) CloseIdleConnections() {
-	if c, ok := t.base.(interface{ CloseIdleConnections() }); ok {
-		c.CloseIdleConnections()
-	}
+	networking.ForwardCloseIdle(t.base)
 }
 
 // authRoundTripper is an http.RoundTripper that adds authentication to backend requests.
@@ -528,10 +487,17 @@ func (a *authRoundTripper) RoundTrip(req *http.Request) (*http.Response, error) 
 // CloseIdleConnections forwards to the wrapped RoundTripper so it reaches the
 // concrete *http.Transport at the bottom of the chain.
 func (a *authRoundTripper) CloseIdleConnections() {
-	if c, ok := a.base.(interface{ CloseIdleConnections() }); ok {
-		c.CloseIdleConnections()
-	}
+	networking.ForwardCloseIdle(a.base)
 }
+
+// Compile-time assertions: a rename or typo of CloseIdleConnections on any of
+// these wrappers would silently re-hide the pool at the bottom of the chain
+// (see networking.IdleConnectionCloser).
+var (
+	_ networking.IdleConnectionCloser = (*identityPropagatingRoundTripper)(nil)
+	_ networking.IdleConnectionCloser = (*tracePropagatingRoundTripper)(nil)
+	_ networking.IdleConnectionCloser = (*authRoundTripper)(nil)
+)
 
 // resolveAuthStrategy resolves the authentication strategy for a backend target.
 // It handles defaulting to "unauthenticated" when no auth config is specified.
@@ -1285,7 +1251,9 @@ func (h *httpBackendClient) modernEnumerate(
 	var resources []mcp.Resource
 	var templates []mcp.ResourceTemplate
 	if caps != nil && caps.Resources != nil {
-		resources, err = modernListAll[mcp.Resource](ctx, hc, endpoint, "resources/list", "resources")
+		resources, err = modernListOptional[mcp.Resource](
+			ctx, hc, endpoint, "resources/list", "resources", target.WorkloadName, false,
+		)
 		if err != nil {
 			return nil, wrapBackendError(err, target.WorkloadID, "list resources")
 		}
@@ -1293,18 +1261,19 @@ func (h *httpBackendClient) modernEnumerate(
 		// Resource templates share the resources capability flag. A backend that
 		// does not implement resources/templates/list (-32601) degrades to an
 		// empty template list, mirroring the Legacy queryResourceTemplates path.
-		templates, err = modernListAll[mcp.ResourceTemplate](ctx, hc, endpoint, "resources/templates/list", "resourceTemplates")
-		switch {
-		case errors.Is(err, mcp.ErrMethodNotFound):
-			templates = nil
-		case err != nil:
+		templates, err = modernListOptional[mcp.ResourceTemplate](
+			ctx, hc, endpoint, "resources/templates/list", "resourceTemplates", target.WorkloadName, true,
+		)
+		if err != nil {
 			return nil, wrapBackendError(err, target.WorkloadID, "list resource templates")
 		}
 	}
 
 	var prompts []mcp.Prompt
 	if caps != nil && caps.Prompts != nil {
-		prompts, err = modernListAll[mcp.Prompt](ctx, hc, endpoint, "prompts/list", "prompts")
+		prompts, err = modernListOptional[mcp.Prompt](
+			ctx, hc, endpoint, "prompts/list", "prompts", target.WorkloadName, false,
+		)
 		if err != nil {
 			return nil, wrapBackendError(err, target.WorkloadID, "list prompts")
 		}
@@ -1315,6 +1284,35 @@ func (h *httpBackendClient) modernEnumerate(
 		"tools", len(tools), "resources", len(resources),
 		"resource_templates", len(templates), "prompts", len(prompts))
 	return newCapabilityListFromMCP(target.WorkloadID, tools, resources, templates, prompts), nil
+}
+
+// modernListOptional enumerates an optional capability list via modernListAll.
+// Unlike tools/list — where a failure means the backend is genuinely unusable —
+// an optional list degrades instead of failing the whole enumeration:
+//
+//   - a transient failure (errModernTransient: HTTP 408/429/5xx, a mid-stream
+//     read failure, or a transport/network error), after the mandatory
+//     tools/list has already succeeded, yields an empty list with a WARN;
+//   - a -32601 not-implemented (mcp.ErrMethodNotFound) yields an empty list
+//     when degradeNotFound is set, mirroring the Legacy resources/templates/list
+//     path; resources/list and prompts/list treat it as fatal.
+//
+// Any other error is returned to the caller, which fails the enumeration.
+func modernListOptional[T any](
+	ctx context.Context, hc *http.Client, endpoint, method, itemsField, backend string, degradeNotFound bool,
+) ([]T, error) {
+	items, err := modernListAll[T](ctx, hc, endpoint, method, itemsField)
+	switch {
+	case errors.Is(err, errModernTransient):
+		slog.Warn(method+" transiently unavailable; degrading to empty list",
+			"backend", backend, "error", err)
+		return nil, nil
+	case errors.Is(err, mcp.ErrMethodNotFound) && degradeNotFound:
+		return nil, nil
+	case err != nil:
+		return nil, err
+	}
+	return items, nil
 }
 
 // cursorParams builds the Modern list request params carrying a pagination

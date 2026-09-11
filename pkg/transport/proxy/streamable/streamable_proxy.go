@@ -723,18 +723,18 @@ func (p *HTTPProxy) handleSingleRequestSSE(
 			// deliverCh is nil when req carried no progressToken (see
 			// setupProgressRouting); a nil channel's case is never selected,
 			// so this arm only fires when progress routing is active.
-			data, err := jsonrpc2.EncodeMessage(progressMsg)
-			if err != nil {
-				slog.Error("failed to encode progress notification", "error", err)
-				continue
-			}
-			if err := writeSSEData(w, flusher, data); err != nil {
-				slog.Debug("failed to write progress notification to SSE stream", "error", err)
+			if !writeSSEProgressMessage(w, flusher, progressMsg) {
 				return
 			}
 			// Progress does not end the request; keep waiting for more
 			// progress or the final response.
 		case msg := <-waitCh:
+			// dispatchResponses preserves backend message order. Therefore, any
+			// progress sent before this final response is already buffered in
+			// deliverCh and must be emitted before returning from this stream.
+			if !drainPendingSSEProgress(w, flusher, deliverCh) {
+				return
+			}
 			p.writeSingleRequestSSEFinalResponse(w, flusher, msg, ck)
 			return
 		case <-ctx.Done():
@@ -746,6 +746,40 @@ func (p *HTTPProxy) handleSingleRequestSSE(
 			// Timeout error event, the same as context.Canceled.
 			writeSSEErrorEvent(w, flusher, req.ID, context.Canceled)
 			return
+		}
+	}
+}
+
+// writeSSEProgressMessage encodes progressMsg and writes it as one SSE data
+// frame. It reports whether the stream remains writable.
+func writeSSEProgressMessage(w io.Writer, flusher http.Flusher, progressMsg jsonrpc2.Message) bool {
+	data, err := jsonrpc2.EncodeMessage(progressMsg)
+	if err != nil {
+		slog.Error("failed to encode progress notification", "error", err)
+		return true
+	}
+	if err := writeSSEData(w, flusher, data); err != nil {
+		slog.Debug("failed to write progress notification to SSE stream", "error", err)
+		return false
+	}
+	return true
+}
+
+// drainPendingSSEProgress writes progress messages that were already routed to
+// deliverCh before a final response is emitted. It reports whether the stream
+// remains writable.
+func drainPendingSSEProgress(w io.Writer, flusher http.Flusher, deliverCh <-chan jsonrpc2.Message) bool {
+	for {
+		select {
+		case progressMsg, ok := <-deliverCh:
+			if !ok {
+				return true
+			}
+			if !writeSSEProgressMessage(w, flusher, progressMsg) {
+				return false
+			}
+		default:
+			return true
 		}
 	}
 }

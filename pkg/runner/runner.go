@@ -17,7 +17,7 @@ import (
 
 	"golang.org/x/oauth2"
 
-	tcredis "github.com/stacklok/toolhive-core/redis"
+	"github.com/stacklok/toolhive-core/redisconn"
 	"github.com/stacklok/toolhive/pkg/auth"
 	"github.com/stacklok/toolhive/pkg/auth/remote"
 	authsecrets "github.com/stacklok/toolhive/pkg/auth/secrets"
@@ -193,10 +193,33 @@ func (c *RunConfig) GetPort() int {
 	return c.Port
 }
 
+// parseProxyTimeout parses an optional Go duration string from RunConfig. An
+// empty string yields 0, which the proxy treats as "use the package default".
+// Negative durations and unparsable values are rejected.
+func parseProxyTimeout(name, value string) (time.Duration, error) {
+	if value == "" {
+		return 0, nil
+	}
+	d, err := time.ParseDuration(value)
+	if err != nil {
+		return 0, fmt.Errorf("invalid %s %q: %w", name, value, err)
+	}
+	if d < 0 {
+		return 0, fmt.Errorf("%s must be non-negative, got %s", name, d)
+	}
+	return d, nil
+}
+
 // Run runs the MCP server with the provided configuration
 //
 //nolint:gocyclo // This function is complex but manageable
 func (r *Runner) Run(ctx context.Context) error {
+	// Validate serialized RunConfig input before any provider or runtime work.
+	// The builder and middleware helper repeat this check at their own boundaries.
+	if r.Config.MaxRequestBodySize < 0 {
+		return fmt.Errorf("max_request_body_size must be non-negative, got %d", r.Config.MaxRequestBodySize)
+	}
+
 	// Resolve session TTL once so both the transport proxy and Redis storage use
 	// the same effective value, rather than each applying their own zero-fallback
 	// independently. SessionTTL is stored as a Go duration string so the
@@ -215,6 +238,13 @@ func (r *Runner) Run(ctx context.Context) error {
 		}
 	}
 
+	// Resolve the proxy HTTP server read timeout. Empty/zero means "use the proxy
+	// default"; the proxy option ignores non-positive values.
+	proxyReadTimeout, parseErr := parseProxyTimeout("proxy_read_timeout", r.Config.ProxyReadTimeout)
+	if parseErr != nil {
+		return parseErr
+	}
+
 	// Create transport with runtime
 	transportConfig := types.Config{
 		Type:                     r.Config.Transport,
@@ -228,6 +258,7 @@ func (r *Runner) Run(ctx context.Context) error {
 		StrictProtocolValidation: r.Config.StrictProtocolValidation,
 		EndpointPrefix:           r.Config.EndpointPrefix,
 		SessionTTL:               effectiveSessionTTL,
+		ReadTimeout:              proxyReadTimeout,
 	}
 
 	// Set proxy mode for stdio transport
@@ -296,6 +327,14 @@ func (r *Runner) Run(ctx context.Context) error {
 		}
 	}
 
+	if err := canonicalizeOIDCMiddlewareConfig(r.Config); err != nil {
+		return fmt.Errorf("invalid OIDC middleware configuration: %w", err)
+	}
+
+	if err := validateCredentialStrippingMiddleware(r.Config.MiddlewareConfigs, r.Config); err != nil {
+		return fmt.Errorf("invalid credential stripping middleware configuration: %w", err)
+	}
+
 	// Origin-header validation (DNS-rebinding protection per MCP 2025-11-25
 	// §"Security Warning") is wired here, after both middleware-population
 	// paths, because it is the single place where Host/Port/AllowedOrigins are
@@ -310,9 +349,12 @@ func (r *Runner) Run(ctx context.Context) error {
 
 	// Body-size limit is always the outermost middleware, regardless of how the
 	// chain was assembled (PopulateMiddlewareConfigs above, or WithMiddlewareFromFlags
-	// which pre-populates the slice and takes the else branch). Idempotent, so the
-	// operator/Populate path is a no-op here.
-	r.Config.MiddlewareConfigs, err = addBodyLimitMiddleware(r.Config.MiddlewareConfigs)
+	// which pre-populates the slice and takes the else branch). Existing body-limit
+	// entries are replaced so the typed RunConfig value is authoritative.
+	r.Config.MiddlewareConfigs, err = addBodyLimitMiddleware(
+		r.Config.MiddlewareConfigs,
+		r.Config.MaxRequestBodySize,
+	)
 	if err != nil {
 		return fmt.Errorf("failed to add body limit middleware: %w", err)
 	}
@@ -472,7 +514,7 @@ func (r *Runner) Run(ctx context.Context) error {
 		if keyPrefix == "" {
 			keyPrefix = "thv:proxy:session:"
 		}
-		storage, err := session.NewRedisStorage(ctx, tcredis.Config{
+		storage, err := session.NewRedisStorage(ctx, redisconn.Config{
 			Addr:     redisCfg.Address,
 			Password: os.Getenv(session.RedisPasswordEnvVar),
 			DB:       int(redisCfg.DB),
@@ -888,12 +930,19 @@ func (r *Runner) persistRefreshToken(
 		return fmt.Errorf("failed to store refresh token: %w", err)
 	}
 
-	r.Config.RemoteAuthConfig.CachedRefreshTokenRef = secretName
-	r.Config.RemoteAuthConfig.CachedTokenExpiry = expiry
+	updatedConfig := *r.Config
+	updatedRemoteAuthConfig := *r.Config.RemoteAuthConfig
+	updatedConfig.RemoteAuthConfig = &updatedRemoteAuthConfig
+	updatedRemoteAuthConfig.CachedRefreshTokenRef = secretName
+	updatedRemoteAuthConfig.CachedTokenExpiry = expiry
 
-	if err := r.Config.SaveState(ctx); err != nil {
+	if err := updatedConfig.SaveState(ctx); err != nil {
 		return fmt.Errorf("failed to save config with token reference: %w", err)
 	}
+
+	// Preserve pointer identity so the auth handler and runner observe the same
+	// complete config only after the durable write succeeds.
+	*r.Config.RemoteAuthConfig = updatedRemoteAuthConfig
 
 	slog.Debug("Stored OAuth refresh token in secret manager", "secret_name", secretName)
 	return nil

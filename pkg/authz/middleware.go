@@ -7,17 +7,17 @@
 package authz
 
 import (
+	"bytes"
 	"encoding/json"
 	"fmt"
+	"io"
 	"log/slog"
 	"net/http"
-	"strings"
 
 	"golang.org/x/exp/jsonrpc2"
 
 	"github.com/stacklok/toolhive/pkg/authz/authorizers"
 	"github.com/stacklok/toolhive/pkg/mcp"
-	"github.com/stacklok/toolhive/pkg/transport/ssecommon"
 	"github.com/stacklok/toolhive/pkg/transport/types"
 	"github.com/stacklok/toolhive/pkg/vmcp/optimizer"
 	"github.com/stacklok/toolhive/pkg/vmcp/schema"
@@ -52,6 +52,10 @@ var MCPMethodToFeatureOperation = map[string]featureOperation{
 	"resources/subscribe":      {Feature: authorizers.MCPFeatureResource, Operation: authorizers.MCPOperationRead},
 	"resources/unsubscribe":    {Feature: authorizers.MCPFeatureResource, Operation: authorizers.MCPOperationRead},
 
+	// Skill operations - list responses are filtered by get authorization.
+	"skills/get":  {Feature: authorizers.MCPFeatureSkill, Operation: authorizers.MCPOperationGet},
+	"skills/list": {Feature: authorizers.MCPFeatureSkill, Operation: authorizers.MCPOperationList},
+
 	// Discovery and capability methods - always allowed
 	"features/list": {Feature: "", Operation: authorizers.MCPOperationList}, // Capability discovery
 	"roots/list":    {Feature: "", Operation: ""},                           // Root directory discovery
@@ -68,10 +72,10 @@ var MCPMethodToFeatureOperation = map[string]featureOperation{
 	// and Instructions (free text) are already freeform fields a backend can populate on
 	// the always-allowed initialize response today, so "no descriptors" is a property of
 	// how vMCP's dispatcher happens to build the value, not a guarantee this wire shape
-	// makes on its own. Classifying it as MCPOperationList instead would be safe too --
-	// response_filter.go hardcodes an exact 4-method filter list (tools/list,
-	// prompts/list, resources/list, find_tool), so server/discover would just pass
-	// through unfiltered -- but always-allowed is simpler and equally safe here.
+	// makes on its own. Classifying it as MCPOperationList with an empty Feature
+	// would be safe too: response_filter.go's authoritative classifier does not
+	// assign server/discover a filter, so protocol-only list methods pass through
+	// unchanged. The always-allowed classification is simpler and equally safe here.
 	"server/discover": {Feature: "", Operation: ""},
 
 	// Subscriptions - always allowed for now. This method carries no single resource
@@ -116,17 +120,7 @@ var MCPMethodToFeatureOperation = map[string]featureOperation{
 // here: the middleware body refuses non-JSON POSTs with an explicit early
 // return before this function is reached.
 func shouldSkipInitialAuthorization(r *http.Request) bool {
-	// Skip authorization for non-POST requests
-	if r.Method != http.MethodPost {
-		return true
-	}
-
-	// Skip authorization for the SSE endpoint
-	if strings.HasSuffix(r.URL.Path, ssecommon.HTTPSSEEndpoint) {
-		return true
-	}
-
-	return false
+	return r.Method != http.MethodPost
 }
 
 // shouldSkipSubsequentAuthorization checks if the request should skip authorization
@@ -138,6 +132,59 @@ func shouldSkipSubsequentAuthorization(method string) bool {
 	}
 
 	return false
+}
+
+// invalidSkillGet reports whether a skills/get request lacks exactly one valid URI.
+func invalidSkillGet(featureOp featureOperation, resourceID string, params json.RawMessage) bool {
+	if featureOp.Feature != authorizers.MCPFeatureSkill || featureOp.Operation != authorizers.MCPOperationGet {
+		return false
+	}
+	return resourceID == "" || duplicateSkillURI(params)
+}
+
+// hasDuplicateURI reports whether an immediate JSON object has more than one uri member.
+// It uses a token decoder because unmarshalling into a map would silently retain only
+// the final duplicate member.
+func hasDuplicateURI(raw json.RawMessage) (bool, error) {
+	dec := json.NewDecoder(bytes.NewReader(raw))
+	token, err := dec.Token()
+	if err != nil {
+		return false, err
+	}
+	if delimiter, ok := token.(json.Delim); !ok || delimiter != '{' {
+		return false, nil
+	}
+
+	seen := false
+	for dec.More() {
+		key, err := dec.Token()
+		if err != nil {
+			return false, err
+		}
+		if key == "uri" {
+			if seen {
+				return true, nil
+			}
+			seen = true
+		}
+		var value json.RawMessage
+		if err := dec.Decode(&value); err != nil {
+			return false, err
+		}
+	}
+	if _, err := dec.Token(); err != nil {
+		return false, err
+	}
+	var trailing json.RawMessage
+	if err := dec.Decode(&trailing); err != io.EOF {
+		return false, err
+	}
+	return false, nil
+}
+
+func duplicateSkillURI(raw json.RawMessage) bool {
+	duplicate, err := hasDuplicateURI(raw)
+	return err != nil || duplicate
 }
 
 // handleUnauthorized handles unauthorized requests. The client always sees the fixed
@@ -179,9 +226,12 @@ func rejectInvalidMCPRequest(w http.ResponseWriter) {
 // This middleware extracts the MCP message from the request, determines the feature,
 // operation, and resource ID, and authorizes the request using the configured authorizer.
 //
-// For list operations (tools/list, prompts/list, resources/list), the middleware allows
-// the request to proceed but intercepts the response to filter out items that the user
-// is not authorized to access based on the corresponding call/get/read policies.
+// For protected list operations (tools/list, prompts/list, resources/list,
+// resources/templates/list, and skills/list), the middleware allows the request to
+// proceed only when a response filter is registered, then filters out items that
+// the user is not authorized to access based on the corresponding call/get/read
+// policies. In particular, skills/list entries are filtered individually by
+// get_skill authorization.
 //
 // An in-memory annotation cache is maintained per middleware instance. When a
 // tools/list response passes through, tool annotations are captured. When a
@@ -255,21 +305,18 @@ func Middleware(a authorizers.Authorizer, next http.Handler, passThroughTools ma
 			return
 		}
 
-		// Handle list operations differently - allow them through but filter the response
+		// skills/get identifies its target only by params.uri. An absent, empty,
+		// or non-string URI must never reach an authorizer, whose policy might
+		// otherwise accidentally permit an empty identifier.
+		if invalidSkillGet(featureOp, parsedRequest.ResourceID, parsedRequest.Params) {
+			handleUnauthorized(w, parsedRequest.ID, nil)
+			return
+		}
+
+		// Handle list operations differently: protected methods require a registered
+		// response filter, while protocol-only methods pass through unchanged.
 		if featureOp.Operation == authorizers.MCPOperationList {
-
-			// Create a response filtering writer to intercept and filter the response
-			filteringWriter := NewResponseFilteringWriter(w, a, r, parsedRequest.Method, annotationCache, passThroughTools)
-
-			// Call the next handler with the filtering writer
-			next.ServeHTTP(filteringWriter, r)
-
-			// Flush the filtered response
-			if err := filteringWriter.FlushAndFilter(); err != nil {
-				// If flushing fails, we've already started writing the response,
-				// so we can't return an error response. Just log it.
-				slog.Warn("error flushing filtered response", "error", err)
-			}
+			authorizeListAndServe(w, r, a, parsedRequest, featureOp, annotationCache, passThroughTools, next)
 			return
 		}
 
@@ -284,6 +331,40 @@ func Middleware(a authorizers.Authorizer, next http.Handler, passThroughTools ma
 			featureOp.Feature, featureOp.Operation,
 			parsedRequest.ID, parsedRequest.ResourceID, parsedRequest.Arguments, next)
 	})
+}
+
+// authorizeListAndServe intercepts a list response and applies its registered
+// per-item authorization filter. Protected methods without a filter fail closed
+// before backend dispatch; protocol-only list methods remain pass-through.
+func authorizeListAndServe(
+	w http.ResponseWriter,
+	r *http.Request,
+	a authorizers.Authorizer,
+	parsedRequest *mcp.ParsedMCPRequest,
+	featureOp featureOperation,
+	annotationCache *AnnotationCache,
+	passThroughTools map[string]struct{},
+	next http.Handler,
+) {
+	// A protected list operation without a response filter would expose every
+	// descriptor returned by the backend. Deny before dispatch so additions to
+	// MCPMethodToFeatureOperation cannot silently create another filter bypass.
+	if featureOp.Feature != "" && !requiresResponseFiltering(parsedRequest.Method) {
+		slog.Error("protected MCP list method has no response filter; denying request",
+			"method", parsedRequest.Method)
+		handleUnauthorized(w, parsedRequest.ID, nil)
+		return
+	}
+
+	filteringWriter := NewResponseFilteringWriter(
+		w, a, r, parsedRequest.Method, annotationCache, passThroughTools,
+	)
+	next.ServeHTTP(filteringWriter, r)
+
+	if err := filteringWriter.FlushAndFilter(); err != nil {
+		// The response may already be committed, so filtering errors can only be logged here.
+		slog.Warn("error flushing filtered response", "error", err)
+	}
 }
 
 // authorizeAndServe injects tool annotations from the cache, authorizes the request,

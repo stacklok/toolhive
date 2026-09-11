@@ -70,13 +70,8 @@ func (*extractingAdapter) ScopeSupport() plugins.ScopeSupport {
 	return plugins.ScopeSupport{}
 }
 
-func newLockTestService(t *testing.T, enableGate bool) (plugins.PluginService, string) {
+func newLockTestService(t *testing.T, extra ...Option) (plugins.PluginService, string) {
 	t.Helper()
-	if enableGate {
-		t.Setenv(plugins.LockFileEnvVar, "true")
-	} else {
-		t.Setenv(plugins.LockFileEnvVar, "")
-	}
 
 	dbPath := filepath.Join(t.TempDir(), "test.db")
 	db, err := sqlite.Open(t.Context(), dbPath)
@@ -91,12 +86,12 @@ func newLockTestService(t *testing.T, enableGate bool) (plugins.PluginService, s
 	home := t.TempDir()
 	// Claude Code RelPath is empty; IsClientInstalled checks ~/.claude.json.
 	require.NoError(t, os.WriteFile(filepath.Join(home, ".claude.json"), []byte("{}"), 0o644))
-	svc := New(
+	opts := append([]Option{
 		WithStore(sqlite.NewPluginStore(db)),
 		WithMaterializers(map[string]plugins.MaterializationAdapter{"claude-code": adapter}),
 		WithClientManager(client.NewTestClientManagerWithHome(home)),
-	)
-	return svc, projectRoot
+	}, extra...)
+	return New(opts...), projectRoot
 }
 
 func mustOpenRoot(t *testing.T, projectRoot string) lockfile.Root {
@@ -125,20 +120,21 @@ func installTestPlugin(t *testing.T, svc plugins.PluginService, projectRoot, dig
 	t.Helper()
 	const name = "my-plugin"
 	result, err := svc.Install(t.Context(), plugins.InstallOptions{
-		Name:        name,
-		LayerData:   makePluginLayerData(t, name),
-		Digest:      digest,
-		Scope:       plugins.ScopeProject,
-		ProjectRoot: projectRoot,
-		Clients:     []string{"claude-code"},
+		Name:          name,
+		LayerData:     makePluginLayerData(t, name),
+		AllowUnsigned: true,
+		Digest:        digest,
+		Scope:         plugins.ScopeProject,
+		ProjectRoot:   projectRoot,
+		Clients:       []string{"claude-code"},
 	})
 	require.NoError(t, err)
 	return result
 }
 
-//nolint:paralleltest // uses t.Setenv via newLockTestService
+//nolint:paralleltest // serial: real sqlite + on-disk client materialization per test
 func TestInstallProjectScope_RecordsExplicitEntry(t *testing.T) {
-	svc, projectRoot := newLockTestService(t, true)
+	svc, projectRoot := newLockTestService(t)
 
 	result := installTestPlugin(t, svc, projectRoot, validLockDigest())
 	assert.True(t, result.Plugin.Managed, "project-scope install must be marked lock-managed")
@@ -155,27 +151,17 @@ func TestInstallProjectScope_RecordsExplicitEntry(t *testing.T) {
 	assert.Empty(t, lf.Skills, "plugin install must not write a skills: entry")
 }
 
-//nolint:paralleltest // uses t.Setenv via newLockTestService
-func TestInstallProjectScope_DisabledGateDoesNotWriteLock(t *testing.T) {
-	svc, projectRoot := newLockTestService(t, false)
-
-	result := installTestPlugin(t, svc, projectRoot, validLockDigest())
-	assert.False(t, result.Plugin.Managed)
-
-	_, err := os.Stat(filepath.Join(projectRoot, lockfile.FileName))
-	assert.True(t, os.IsNotExist(err), "lock file must not be written when the feature is disabled")
-}
-
-//nolint:paralleltest // uses t.Setenv via newLockTestService
+//nolint:paralleltest // serial: real sqlite + on-disk client materialization per test
 func TestInstallUserScope_DoesNotWriteLock(t *testing.T) {
-	svc, projectRoot := newLockTestService(t, true)
+	svc, projectRoot := newLockTestService(t)
 
 	result, err := svc.Install(t.Context(), plugins.InstallOptions{
-		Name:      "my-plugin",
-		LayerData: makePluginLayerData(t, "my-plugin"),
-		Digest:    validLockDigest(),
-		Scope:     plugins.ScopeUser,
-		Clients:   []string{"claude-code"},
+		Name:          "my-plugin",
+		LayerData:     makePluginLayerData(t, "my-plugin"),
+		AllowUnsigned: true,
+		Digest:        validLockDigest(),
+		Scope:         plugins.ScopeUser,
+		Clients:       []string{"claude-code"},
 	})
 	require.NoError(t, err)
 	assert.False(t, result.Plugin.Managed)
@@ -184,9 +170,9 @@ func TestInstallUserScope_DoesNotWriteLock(t *testing.T) {
 	assert.True(t, os.IsNotExist(err), "user-scope install must not write a lock file")
 }
 
-//nolint:paralleltest // uses t.Setenv via newLockTestService
+//nolint:paralleltest // serial: real sqlite + on-disk client materialization per test
 func TestInstallProjectScope_PreservesExistingSkillsKey(t *testing.T) {
-	svc, projectRoot := newLockTestService(t, true)
+	svc, projectRoot := newLockTestService(t)
 
 	require.NoError(t, lockfile.UpsertEntry(mustOpenRoot(t, projectRoot), lockfile.Entry{
 		Name:   "code-review",
@@ -203,19 +189,20 @@ func TestInstallProjectScope_PreservesExistingSkillsKey(t *testing.T) {
 	assert.True(t, ok)
 }
 
-//nolint:paralleltest // uses t.Setenv via newLockTestService
+//nolint:paralleltest // serial: real sqlite + on-disk client materialization per test
 func TestInstallProjectScope_LockWriteFailureRollsBackInstall(t *testing.T) {
-	svc, projectRoot := newLockTestService(t, true)
+	svc, projectRoot := newLockTestService(t)
 
 	require.NoError(t, os.MkdirAll(filepath.Join(projectRoot, lockfile.FileName), 0o755))
 
 	_, err := svc.Install(t.Context(), plugins.InstallOptions{
-		Name:        "my-plugin",
-		LayerData:   makePluginLayerData(t, "my-plugin"),
-		Digest:      validLockDigest(),
-		Scope:       plugins.ScopeProject,
-		ProjectRoot: projectRoot,
-		Clients:     []string{"claude-code"},
+		Name:          "my-plugin",
+		LayerData:     makePluginLayerData(t, "my-plugin"),
+		AllowUnsigned: true,
+		Digest:        validLockDigest(),
+		Scope:         plugins.ScopeProject,
+		ProjectRoot:   projectRoot,
+		Clients:       []string{"claude-code"},
 	})
 	require.Error(t, err, "install must fail when the lock file cannot be written")
 	assert.Equal(t, http.StatusInternalServerError, httperr.Code(err))
@@ -235,9 +222,9 @@ func TestInstallProjectScope_LockWriteFailureRollsBackInstall(t *testing.T) {
 // reinstate the previous pin, DB record, and files — not merely observe that
 // nothing was written.
 //
-//nolint:paralleltest // uses t.Setenv via newLockTestService
+//nolint:paralleltest // serial: real sqlite + on-disk client materialization per test
 func TestInstallProjectScope_RollbackRestoresPreExistingState(t *testing.T) {
-	svc, projectRoot := newLockTestService(t, true)
+	svc, projectRoot := newLockTestService(t)
 
 	first := installTestPlugin(t, svc, projectRoot, validLockDigest())
 	before, ok := readLockfile(t, projectRoot).GetPlugin("my-plugin")
@@ -273,12 +260,13 @@ func TestInstallProjectScope_RollbackRestoresPreExistingState(t *testing.T) {
 	}
 
 	_, err = svc.Install(t.Context(), plugins.InstallOptions{
-		Name:        "my-plugin",
-		LayerData:   makePluginLayerDataWithBody(t, "my-plugin", "# hello v2"),
-		Digest:      validLockDigestAlt(),
-		Scope:       plugins.ScopeProject,
-		ProjectRoot: projectRoot,
-		Clients:     []string{"claude-code"},
+		Name:          "my-plugin",
+		LayerData:     makePluginLayerDataWithBody(t, "my-plugin", "# hello v2"),
+		AllowUnsigned: true,
+		Digest:        validLockDigestAlt(),
+		Scope:         plugins.ScopeProject,
+		ProjectRoot:   projectRoot,
+		Clients:       []string{"claude-code"},
 	})
 	require.Error(t, err, "reinstall must fail when marking the record managed fails")
 	assert.Contains(t, err.Error(), "db update unavailable")
@@ -303,9 +291,9 @@ func TestInstallProjectScope_RollbackRestoresPreExistingState(t *testing.T) {
 // A rollback whose own DB compensation fails must join that error with the
 // trigger instead of reporting only the original failure.
 //
-//nolint:paralleltest // uses t.Setenv via newLockTestService
+//nolint:paralleltest // serial: real sqlite + on-disk client materialization per test
 func TestInstallProjectScope_RollbackCompensationErrorIsJoined(t *testing.T) {
-	svc, projectRoot := newLockTestService(t, true)
+	svc, projectRoot := newLockTestService(t)
 	installTestPlugin(t, svc, projectRoot, validLockDigest())
 
 	inner := svc.(*service) //nolint:forcetypeassert
@@ -327,12 +315,13 @@ func TestInstallProjectScope_RollbackCompensationErrorIsJoined(t *testing.T) {
 	}
 
 	_, err = svc.Install(t.Context(), plugins.InstallOptions{
-		Name:        "my-plugin",
-		LayerData:   makePluginLayerDataWithBody(t, "my-plugin", "# hello v2"),
-		Digest:      validLockDigestAlt(),
-		Scope:       plugins.ScopeProject,
-		ProjectRoot: projectRoot,
-		Clients:     []string{"claude-code"},
+		Name:          "my-plugin",
+		LayerData:     makePluginLayerDataWithBody(t, "my-plugin", "# hello v2"),
+		AllowUnsigned: true,
+		Digest:        validLockDigestAlt(),
+		Scope:         plugins.ScopeProject,
+		ProjectRoot:   projectRoot,
+		Clients:       []string{"claude-code"},
 	})
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "recording plugin in project lock file",
@@ -343,9 +332,9 @@ func TestInstallProjectScope_RollbackCompensationErrorIsJoined(t *testing.T) {
 
 // A rollback must not remove a group membership this install did not add.
 //
-//nolint:paralleltest // uses t.Setenv via newLockTestService
+//nolint:paralleltest // serial: real sqlite + on-disk client materialization per test
 func TestInstallProjectScope_RollbackKeepsPreExistingGroupMembership(t *testing.T) {
-	svc, projectRoot := newLockTestService(t, true)
+	svc, projectRoot := newLockTestService(t)
 	ctrl := gomock.NewController(t)
 	gm := groupmocks.NewMockManager(ctrl)
 
@@ -366,21 +355,22 @@ func TestInstallProjectScope_RollbackKeepsPreExistingGroupMembership(t *testing.
 	t.Cleanup(func() { _ = os.Chmod(projectRoot, 0o755) })
 
 	_, err := svc.Install(t.Context(), plugins.InstallOptions{
-		Name:        "my-plugin",
-		LayerData:   makePluginLayerData(t, "my-plugin"),
-		Digest:      validLockDigest(),
-		Scope:       plugins.ScopeProject,
-		ProjectRoot: projectRoot,
-		Clients:     []string{"claude-code"},
+		Name:          "my-plugin",
+		LayerData:     makePluginLayerData(t, "my-plugin"),
+		AllowUnsigned: true,
+		Digest:        validLockDigest(),
+		Scope:         plugins.ScopeProject,
+		ProjectRoot:   projectRoot,
+		Clients:       []string{"claude-code"},
 	})
 	require.Error(t, err, "install must fail when the lock entry cannot be written")
 	// gomock verifies no gm.Update ran: rollback did not touch the
 	// pre-existing membership it did not create.
 }
 
-//nolint:paralleltest // uses t.Setenv via newLockTestService
+//nolint:paralleltest // serial: real sqlite + on-disk client materialization per test
 func TestUninstall_RemovesPluginLockEntry(t *testing.T) {
-	svc, projectRoot := newLockTestService(t, true)
+	svc, projectRoot := newLockTestService(t)
 	installTestPlugin(t, svc, projectRoot, validLockDigest())
 
 	err := svc.Uninstall(t.Context(), plugins.UninstallOptions{
@@ -397,9 +387,9 @@ func TestUninstall_RemovesPluginLockEntry(t *testing.T) {
 	require.Error(t, err)
 }
 
-//nolint:paralleltest // uses t.Setenv via newLockTestService
+//nolint:paralleltest // serial: real sqlite + on-disk client materialization per test
 func TestUninstall_LockWriteFailureAbortsBeforeDestruction(t *testing.T) {
-	svc, projectRoot := newLockTestService(t, true)
+	svc, projectRoot := newLockTestService(t)
 	installTestPlugin(t, svc, projectRoot, validLockDigest())
 
 	require.NoError(t, os.Chmod(projectRoot, 0o555))
@@ -420,9 +410,9 @@ func TestUninstall_LockWriteFailureAbortsBeforeDestruction(t *testing.T) {
 	assert.True(t, ok, "the lock entry must be untouched")
 }
 
-//nolint:paralleltest // uses t.Setenv via newLockTestService
+//nolint:paralleltest // serial: real sqlite + on-disk client materialization per test
 func TestUninstall_DoesNotTouchSkillsKey(t *testing.T) {
-	svc, projectRoot := newLockTestService(t, true)
+	svc, projectRoot := newLockTestService(t)
 	require.NoError(t, lockfile.UpsertEntry(mustOpenRoot(t, projectRoot), lockfile.Entry{
 		Name:   "code-review",
 		Source: "code-review",
@@ -482,9 +472,9 @@ func (a *failingDematerializeAdapter) Dematerialize(_ context.Context, _ plugins
 	return a.err
 }
 
-//nolint:paralleltest // uses t.Setenv via newLockTestService
+//nolint:paralleltest // serial: real sqlite + on-disk client materialization per test
 func TestUninstall_DematerializeFailureRestoresLockEntry(t *testing.T) {
-	svc, projectRoot := newLockTestService(t, true)
+	svc, projectRoot := newLockTestService(t)
 	installTestPlugin(t, svc, projectRoot, validLockDigest())
 
 	inner := svc.(*service) //nolint:forcetypeassert
@@ -509,9 +499,9 @@ func TestUninstall_DematerializeFailureRestoresLockEntry(t *testing.T) {
 	assert.NotNil(t, info.InstalledPlugin)
 }
 
-//nolint:paralleltest // uses t.Setenv via newLockTestService
+//nolint:paralleltest // serial: real sqlite + on-disk client materialization per test
 func TestUninstall_StoreDeleteFailureRestoresLockEntry(t *testing.T) {
-	svc, projectRoot := newLockTestService(t, true)
+	svc, projectRoot := newLockTestService(t)
 	installTestPlugin(t, svc, projectRoot, validLockDigest())
 
 	inner := svc.(*service) //nolint:forcetypeassert
@@ -536,9 +526,9 @@ func TestUninstall_StoreDeleteFailureRestoresLockEntry(t *testing.T) {
 	assert.NotNil(t, info.InstalledPlugin)
 }
 
-//nolint:paralleltest // uses t.Setenv via newLockTestService
+//nolint:paralleltest // serial: real sqlite + on-disk client materialization per test
 func TestUninstall_LockRestoreErrorIsJoined(t *testing.T) {
-	svc, projectRoot := newLockTestService(t, true)
+	svc, projectRoot := newLockTestService(t)
 	installTestPlugin(t, svc, projectRoot, validLockDigest())
 
 	inner := svc.(*service) //nolint:forcetypeassert
@@ -635,9 +625,9 @@ func (a *extractThenFailAdapter) Materialize(ctx context.Context, req plugins.Ma
 	return nil, a.err
 }
 
-//nolint:paralleltest // uses t.Setenv via newLockTestService
+//nolint:paralleltest // serial: real sqlite + on-disk client materialization per test
 func TestInstall_MaterializeFailureAfterExtractRemovesTree(t *testing.T) {
-	svc, projectRoot := newLockTestService(t, true)
+	svc, projectRoot := newLockTestService(t)
 	inner := svc.(*service) //nolint:forcetypeassert
 	base := filepath.Join(projectRoot, ".claude", "plugins")
 	inner.materializers["claude-code"] = &extractThenFailAdapter{
@@ -646,12 +636,13 @@ func TestInstall_MaterializeFailureAfterExtractRemovesTree(t *testing.T) {
 	}
 
 	_, err := svc.Install(t.Context(), plugins.InstallOptions{
-		Name:        "my-plugin",
-		LayerData:   makePluginLayerData(t, "my-plugin"),
-		Digest:      validLockDigest(),
-		Scope:       plugins.ScopeProject,
-		ProjectRoot: projectRoot,
-		Clients:     []string{"claude-code"},
+		Name:          "my-plugin",
+		LayerData:     makePluginLayerData(t, "my-plugin"),
+		AllowUnsigned: true,
+		Digest:        validLockDigest(),
+		Scope:         plugins.ScopeProject,
+		ProjectRoot:   projectRoot,
+		Clients:       []string{"claude-code"},
 	})
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "marketplace write failed")
@@ -660,9 +651,9 @@ func TestInstall_MaterializeFailureAfterExtractRemovesTree(t *testing.T) {
 	assert.ErrorIs(t, statErr, os.ErrNotExist, "the extracted tree must be dematerialized")
 }
 
-//nolint:paralleltest // uses t.Setenv via newLockTestService
+//nolint:paralleltest // serial: real sqlite + on-disk client materialization per test
 func TestInstallProjectScope_LockWriteFailureRemovesGroupMembership(t *testing.T) {
-	svc, projectRoot := newLockTestService(t, true)
+	svc, projectRoot := newLockTestService(t)
 	ctrl := gomock.NewController(t)
 	gm := groupmocks.NewMockManager(ctrl)
 
@@ -692,12 +683,13 @@ func TestInstallProjectScope_LockWriteFailureRemovesGroupMembership(t *testing.T
 	inner.groupManager = gm
 
 	_, err := svc.Install(t.Context(), plugins.InstallOptions{
-		Name:        "my-plugin",
-		LayerData:   makePluginLayerData(t, "my-plugin"),
-		Digest:      validLockDigest(),
-		Scope:       plugins.ScopeProject,
-		ProjectRoot: projectRoot,
-		Clients:     []string{"claude-code"},
+		Name:          "my-plugin",
+		LayerData:     makePluginLayerData(t, "my-plugin"),
+		AllowUnsigned: true,
+		Digest:        validLockDigest(),
+		Scope:         plugins.ScopeProject,
+		ProjectRoot:   projectRoot,
+		Clients:       []string{"claude-code"},
 	})
 	require.Error(t, err)
 	assert.Empty(t, members, "a failed fresh install must not leave the plugin in the group")
@@ -705,7 +697,6 @@ func TestInstallProjectScope_LockWriteFailureRemovesGroupMembership(t *testing.T
 
 //nolint:paralleltest // uses t.Setenv
 func TestInstallUpgrade_SecondClientFailureRestoresRegistration(t *testing.T) {
-	t.Setenv(plugins.LockFileEnvVar, "true")
 
 	dbPath := filepath.Join(t.TempDir(), "test.db")
 	db, err := sqlite.Open(t.Context(), dbPath)
@@ -724,12 +715,13 @@ func TestInstallUpgrade_SecondClientFailureRestoresRegistration(t *testing.T) {
 	)
 
 	_, err = svc.Install(t.Context(), plugins.InstallOptions{
-		Name:        "my-plugin",
-		LayerData:   makePluginLayerData(t, "my-plugin"),
-		Digest:      validLockDigest(),
-		Scope:       plugins.ScopeProject,
-		ProjectRoot: projectRoot,
-		Clients:     []string{"claude-code"},
+		Name:          "my-plugin",
+		LayerData:     makePluginLayerData(t, "my-plugin"),
+		AllowUnsigned: true,
+		Digest:        validLockDigest(),
+		Scope:         plugins.ScopeProject,
+		ProjectRoot:   projectRoot,
+		Clients:       []string{"claude-code"},
 	})
 	require.NoError(t, err)
 
@@ -739,12 +731,13 @@ func TestInstallUpgrade_SecondClientFailureRestoresRegistration(t *testing.T) {
 	assert.Contains(t, string(before), "my-plugin@toolhive")
 
 	_, err = svc.Install(t.Context(), plugins.InstallOptions{
-		Name:        "my-plugin",
-		LayerData:   makePluginLayerDataWithBody(t, "my-plugin", "# hello v2"),
-		Digest:      validLockDigestAlt(),
-		Scope:       plugins.ScopeProject,
-		ProjectRoot: projectRoot,
-		Clients:     []string{"codex"},
+		Name:          "my-plugin",
+		LayerData:     makePluginLayerDataWithBody(t, "my-plugin", "# hello v2"),
+		AllowUnsigned: true,
+		Digest:        validLockDigestAlt(),
+		Scope:         plugins.ScopeProject,
+		ProjectRoot:   projectRoot,
+		Clients:       []string{"codex"},
 	})
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "disk full")
@@ -761,7 +754,6 @@ func TestInstallUpgrade_SecondClientFailureRestoresRegistration(t *testing.T) {
 
 //nolint:paralleltest // uses t.Setenv
 func TestUninstall_PartialDematerializeRestoresAllClients(t *testing.T) {
-	t.Setenv(plugins.LockFileEnvVar, "true")
 
 	dbPath := filepath.Join(t.TempDir(), "test.db")
 	db, err := sqlite.Open(t.Context(), dbPath)
@@ -787,12 +779,13 @@ func TestUninstall_PartialDematerializeRestoresAllClients(t *testing.T) {
 	)
 
 	_, err = svc.Install(t.Context(), plugins.InstallOptions{
-		Name:        "my-plugin",
-		LayerData:   makePluginLayerData(t, "my-plugin"),
-		Digest:      validLockDigest(),
-		Scope:       plugins.ScopeProject,
-		ProjectRoot: projectRoot,
-		Clients:     []string{"claude-code", "codex"},
+		Name:          "my-plugin",
+		LayerData:     makePluginLayerData(t, "my-plugin"),
+		AllowUnsigned: true,
+		Digest:        validLockDigest(),
+		Scope:         plugins.ScopeProject,
+		ProjectRoot:   projectRoot,
+		Clients:       []string{"claude-code", "codex"},
 	})
 	require.NoError(t, err)
 
@@ -819,9 +812,9 @@ func TestUninstall_PartialDematerializeRestoresAllClients(t *testing.T) {
 	assert.True(t, ok, "the lock entry must be restored")
 }
 
-//nolint:paralleltest // uses t.Setenv via newLockTestService
+//nolint:paralleltest // serial: real sqlite + on-disk client materialization per test
 func TestInstallFresh_LockWriteFailureRestoresPreexistingTree(t *testing.T) {
-	svc, projectRoot := newLockTestService(t, true)
+	svc, projectRoot := newLockTestService(t)
 	cm := client.NewTestClientManagerWithHome(t.TempDir())
 	inner := svc.(*service) //nolint:forcetypeassert
 	inner.clientManager = cm
@@ -836,13 +829,14 @@ func TestInstallFresh_LockWriteFailureRestoresPreexistingTree(t *testing.T) {
 	require.NoError(t, os.MkdirAll(filepath.Join(projectRoot, lockfile.FileName), 0o755))
 
 	_, err = svc.Install(t.Context(), plugins.InstallOptions{
-		Name:        "my-plugin",
-		LayerData:   makePluginLayerDataWithBody(t, "my-plugin", "# installed"),
-		Digest:      validLockDigest(),
-		Scope:       plugins.ScopeProject,
-		ProjectRoot: projectRoot,
-		Clients:     []string{"claude-code"},
-		Force:       true,
+		Name:          "my-plugin",
+		LayerData:     makePluginLayerDataWithBody(t, "my-plugin", "# installed"),
+		AllowUnsigned: true,
+		Digest:        validLockDigest(),
+		Scope:         plugins.ScopeProject,
+		ProjectRoot:   projectRoot,
+		Clients:       []string{"claude-code"},
+		Force:         true,
 	})
 	require.Error(t, err)
 
@@ -897,9 +891,9 @@ func (a *registrationTrackingAdapter) Health(ctx context.Context, req plugins.De
 // must not leave the plugin registered after rollback: restore reproduces the
 // exact snapshot state (files present, registration absent).
 //
-//nolint:paralleltest // uses t.Setenv via newLockTestService
+//nolint:paralleltest // serial: real sqlite + on-disk client materialization per test
 func TestInstallFresh_RollbackDoesNotRegisterUnmanagedTree(t *testing.T) {
-	svc, projectRoot := newLockTestService(t, true)
+	svc, projectRoot := newLockTestService(t)
 	cm := client.NewTestClientManagerWithHome(t.TempDir())
 	inner := svc.(*service) //nolint:forcetypeassert
 	inner.clientManager = cm
@@ -922,13 +916,14 @@ func TestInstallFresh_RollbackDoesNotRegisterUnmanagedTree(t *testing.T) {
 	require.NoError(t, os.MkdirAll(filepath.Join(projectRoot, lockfile.FileName), 0o755))
 
 	_, err = svc.Install(t.Context(), plugins.InstallOptions{
-		Name:        "my-plugin",
-		LayerData:   makePluginLayerDataWithBody(t, "my-plugin", "# installed"),
-		Digest:      validLockDigest(),
-		Scope:       plugins.ScopeProject,
-		ProjectRoot: projectRoot,
-		Clients:     []string{"claude-code"},
-		Force:       true,
+		Name:          "my-plugin",
+		LayerData:     makePluginLayerDataWithBody(t, "my-plugin", "# installed"),
+		AllowUnsigned: true,
+		Digest:        validLockDigest(),
+		Scope:         plugins.ScopeProject,
+		ProjectRoot:   projectRoot,
+		Clients:       []string{"claude-code"},
+		Force:         true,
 	})
 	require.Error(t, err)
 
@@ -940,23 +935,34 @@ func TestInstallFresh_RollbackDoesNotRegisterUnmanagedTree(t *testing.T) {
 		"rollback must not register a tree that was unregistered at snapshot time")
 }
 
-//nolint:paralleltest // uses t.Setenv via newLockTestService
-func TestInstallAndRegister_LockSnapshotFailureRollsBackDB(t *testing.T) {
-	svc, projectRoot := newLockTestService(t, true)
+// TestInstall_UnreadableLockFileAbortsBeforeMutating covers an unreadable
+// lock file on a project-scope install. Install-time verification reads the
+// entry's trust state before anything is extracted, so an unloadable lock
+// file now fails there — earlier than installAndRegister's own snapshot,
+// which keeps its Load guard only against a rewrite racing that window.
+// Failing closed is the point: no DB record, no files, no lock entry.
+//
+//nolint:paralleltest // serial: real sqlite + on-disk client materialization per test
+func TestInstall_UnreadableLockFileAbortsBeforeMutating(t *testing.T) {
+	svc, projectRoot := newLockTestService(t)
 
-	// A lock path that is a directory makes Load fail after extraction.
+	// A lock path that is a directory makes Load fail.
 	require.NoError(t, os.MkdirAll(filepath.Join(projectRoot, lockfile.FileName), 0o755))
 
 	_, err := svc.Install(t.Context(), plugins.InstallOptions{
-		Name:        "my-plugin",
-		LayerData:   makePluginLayerData(t, "my-plugin"),
-		Digest:      validLockDigest(),
-		Scope:       plugins.ScopeProject,
-		ProjectRoot: projectRoot,
-		Clients:     []string{"claude-code"},
+		Name:          "my-plugin",
+		LayerData:     makePluginLayerData(t, "my-plugin"),
+		AllowUnsigned: true,
+		Digest:        validLockDigest(),
+		Scope:         plugins.ScopeProject,
+		ProjectRoot:   projectRoot,
+		Clients:       []string{"claude-code"},
 	})
 	require.Error(t, err)
-	assert.Contains(t, err.Error(), "loading lock file")
+	assert.Contains(t, err.Error(), "reading lock trust state")
+
+	_, statErr := os.Stat(filepath.Join(projectRoot, ".claude", "plugins", "my-plugin"))
+	assert.True(t, os.IsNotExist(statErr), "nothing may be extracted before the lock file can be read")
 
 	info, infoErr := svc.Info(t.Context(), plugins.InfoOptions{
 		Name: "my-plugin", Scope: plugins.ScopeProject, ProjectRoot: projectRoot,
@@ -965,9 +971,9 @@ func TestInstallAndRegister_LockSnapshotFailureRollsBackDB(t *testing.T) {
 	assert.Nil(t, info)
 }
 
-//nolint:paralleltest // uses t.Setenv via newLockTestService
+//nolint:paralleltest // serial: real sqlite + on-disk client materialization per test
 func TestUninstall_ManagedMissingMaterializerAborts(t *testing.T) {
-	svc, projectRoot := newLockTestService(t, true)
+	svc, projectRoot := newLockTestService(t)
 	installTestPlugin(t, svc, projectRoot, validLockDigest())
 
 	inner := svc.(*service) //nolint:forcetypeassert

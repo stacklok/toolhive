@@ -127,6 +127,11 @@ const (
 	// which is not supported for MCPServer (use VirtualMCPServer for multi-upstream).
 	ConditionReasonExternalAuthConfigMultiUpstream = "MultiUpstreamNotSupported"
 
+	// ConditionReasonExternalAuthConfigValid indicates the referenced
+	// MCPExternalAuthConfig passed every check the MCPServer controller applies
+	// to it. Mirrors ConditionReasonMCPRemoteProxyExternalAuthConfigValid.
+	ConditionReasonExternalAuthConfigValid = "ExternalAuthConfigValid"
+
 	// ConditionReasonWebhookConfigInvalid indicates the referenced webhook config is invalid or missing
 	ConditionReasonWebhookConfigInvalid = "WebhookConfigInvalid"
 
@@ -375,6 +380,12 @@ type MCPServerSpec struct {
 	// +optional
 	EndpointPrefix string `json:"endpointPrefix,omitempty"`
 
+	// MaxRequestBodySize is the maximum inbound MCP proxy request body size in bytes.
+	// Zero uses the default limit of 8 MiB.
+	// +kubebuilder:validation:Minimum=0
+	// +optional
+	MaxRequestBodySize int64 `json:"maxRequestBodySize,omitempty"`
+
 	// GroupRef references the MCPGroup this server belongs to.
 	// The referenced MCPGroup must be in the same namespace.
 	// +optional
@@ -415,6 +426,15 @@ type MCPServerSpec struct {
 	// Requires Redis session storage to be configured for distributed rate limiting.
 	// +optional
 	RateLimiting *ratelimittypes.RateLimitConfig `json:"rateLimiting,omitempty"`
+
+	// ProxyReadTimeout bounds how long the proxy spends reading a full request
+	// (headers + body), mitigating slow-upload connection exhaustion. Applies to
+	// all transports. Defaults to 30s if not specified. Example: "1m".
+	// +kubebuilder:validation:Type=string
+	// +kubebuilder:validation:Format=duration
+	// +kubebuilder:validation:XValidation:rule="duration(self) >= duration('0s')",message="proxyReadTimeout must be non-negative"
+	// +optional
+	ProxyReadTimeout *metav1.Duration `json:"proxyReadTimeout,omitempty"`
 }
 
 // ResourceOverrides defines overrides for annotations and labels on created resources
@@ -448,6 +468,29 @@ type ProxyDeploymentOverrides struct {
 	// +listType=atomic
 	// +optional
 	ImagePullSecrets []corev1.LocalObjectReference `json:"imagePullSecrets,omitempty"`
+
+	// NodeSelector constrains the proxy pod to nodes with matching labels.
+	// Mirrors the scheduling control podTemplateSpec gives the MCP server pod, so
+	// the proxy can be steered onto the same nodes (e.g. a pre-warmed pool).
+	// On MCPRemoteProxy, spec.podTemplateSpec also reaches the proxy pod: the two
+	// maps are merged, and podTemplateSpec wins on keys set in both.
+	// +optional
+	NodeSelector map[string]string `json:"nodeSelector,omitempty"`
+
+	// Tolerations allow the proxy pod to schedule onto tainted nodes, such as a
+	// dedicated pre-warmed pool.
+	// On MCPRemoteProxy, spec.podTemplateSpec also reaches the proxy pod, and this
+	// list is atomic: a podTemplateSpec that sets tolerations replaces this field
+	// rather than adding to it.
+	// +listType=atomic
+	// +optional
+	Tolerations []corev1.Toleration `json:"tolerations,omitempty"`
+
+	// Affinity sets node/pod affinity and anti-affinity for the proxy pod.
+	// On MCPRemoteProxy, spec.podTemplateSpec also reaches the proxy pod: the two
+	// are merged per sub-field, and podTemplateSpec wins on sub-fields set in both.
+	// +optional
+	Affinity *corev1.Affinity `json:"affinity,omitempty"`
 }
 
 // ResourceMetadataOverrides defines metadata overrides for a resource
@@ -664,9 +707,14 @@ type OutboundNetworkPermissions struct {
 }
 
 // CABundleSource defines a source for CA certificate bundles.
+//
+// +kubebuilder:validation:XValidation:rule="has(self.configMapRef) && size(self.configMapRef.name) > 0",message="configMapRef.name is required and must be non-empty"
+//
+//nolint:lll // CEL validation rule exceeds line length limit
 type CABundleSource struct {
 	// ConfigMapRef references a ConfigMap containing the CA certificate bundle.
-	// If Key is not specified, it defaults to "ca.crt".
+	// The ConfigMap key is required by the API. If omitted in a stored object, it
+	// defaults to "ca.crt" for backwards compatibility.
 	// +optional
 	ConfigMapRef *corev1.ConfigMapKeySelector `json:"configMapRef,omitempty"`
 }
@@ -861,6 +909,21 @@ type PrometheusConfig struct {
 	// +kubebuilder:default=false
 	// +optional
 	Enabled bool `json:"enabled,omitempty"`
+
+	// MetricsOnTransportPort controls whether /metrics is ALSO served on the main
+	// transport port, in addition to the dedicated diagnostics port. It exists to
+	// give deployments a migration window: while true, an existing scrape
+	// configuration aimed at the transport port keeps working, so a scraper can be
+	// moved to the diagnostics port and verified before the old location goes away.
+	//
+	// Leave unset to follow the current default, which is true during the migration
+	// window and becomes false when it closes. Setting it explicitly opts out of
+	// that change: an explicit value is honoured before and after the cutover.
+	//
+	// See https://github.com/stacklok/toolhive/issues/6384 for the removal timeline.
+	//
+	// +optional
+	MetricsOnTransportPort *bool `json:"metricsOnTransportPort,omitempty"`
 }
 
 // OpenTelemetryTracingConfig defines OpenTelemetry tracing configuration

@@ -312,14 +312,14 @@ func TestInjectSubjectProviderNames(t *testing.T) {
 			wantDefault: authserver.DefaultUpstreamName,
 		},
 		{
-			name: "empty_upstreams_falls_back_to_default",
+			name: "empty_upstreams_leave_subject_provider_unset",
 			cfg: &Config{
 				OutgoingAuth: &OutgoingAuthConfig{
 					Default: makeTokenExchangeStrategy(""),
 				},
 			},
-			rc:          makeRunConfig(), // no upstreams
-			wantDefault: authserver.DefaultUpstreamName,
+			rc:            makeRunConfig(), // no upstreams
+			wantUnchanged: true,
 		},
 		{
 			name: "first_upstream_used_when_multiple_configured",

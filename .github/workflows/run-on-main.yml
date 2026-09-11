@@ -9,45 +9,116 @@ on:
 permissions:
   contents: read
 
+# Concurrency is set per job, not per workflow, so that a newer push to main
+# cancels only the *validation* of an older push. A workflow-level group would
+# also cancel image publishing part-way through, leaving pushed-but-unsigned
+# tags in the registry. Each validation job has its own group keyed on the ref:
+# when several PRs merge close together, the newest commit contains them all,
+# so its checks validate the combined result and the older runs are redundant.
+#
+# Publishing is never cancelled once started. Instead, publish-gate checks
+# right before publishing whether this commit is still the tip of the branch
+# and skips publishing for commits that have already been superseded.
+#
+# Tagged releases are unaffected: they run from releaser.yml, not this file.
+
 jobs:
   linting:
     name: Linting
+    concurrency:
+      group: main-linting-${{ github.ref }}
+      cancel-in-progress: true
     uses: ./.github/workflows/lint.yml
   security-scan:
     name: Security Scan
+    concurrency:
+      group: main-security-scan-${{ github.ref }}
+      cancel-in-progress: true
     permissions:
       contents: read
       security-events: write
     uses: ./.github/workflows/security-scan.yml
   tests:
     name: Tests
+    concurrency:
+      group: main-tests-${{ github.ref }}
+      cancel-in-progress: true
     uses: ./.github/workflows/test.yml
     # Named rather than inherited: this job runs the Go test suite, and so
     # executes repository code and its dependency tree. It has no business
     # holding the release signing keys.
     secrets:
       CODECOV_TOKEN: ${{ secrets.CODECOV_TOKEN }}
+  sdk-go:
+    name: Go SDK
+    concurrency:
+      group: main-sdk-go-${{ github.ref }}
+      cancel-in-progress: true
+    uses: ./.github/workflows/sdk-go.yml
   codegen:
     name: Codegen
+    concurrency:
+      group: main-codegen-${{ github.ref }}
+      cancel-in-progress: true
     uses: ./.github/workflows/verify-gen.yml
   # Tier 2: Expensive integration tests - only run after all fast checks pass
   helm-charts:
     name: Helm Charts
+    concurrency:
+      group: main-helm-charts-${{ github.ref }}
+      cancel-in-progress: true
     uses: ./.github/workflows/helm-charts-test.yml
   e2e-tests:
     name: E2E Tests
     needs: [linting, tests, codegen]
+    concurrency:
+      group: main-e2e-tests-${{ github.ref }}
+      cancel-in-progress: true
     uses: ./.github/workflows/e2e-tests.yml
   operator-ci:
     name: Operator CI
     needs: [linting, tests, codegen]
+    concurrency:
+      group: main-operator-ci-${{ github.ref }}
+      cancel-in-progress: true
     permissions:
       contents: read
     uses: ./.github/workflows/operator-ci.yml
   # Tier 3: Build and publish images - only after all tests pass
+  #
+  # Cancelled validation above already skips publishing for the older run via
+  # `needs`. This gate covers the remaining window: an older run whose
+  # validation finished before the newer push arrived. Publishing that commit
+  # would waste five multi-arch builds on an image nobody will deploy.
+  publish-gate:
+    name: Publish Gate
+    needs: [linting, security-scan, tests, sdk-go, e2e-tests, codegen, operator-ci]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    outputs:
+      publish: ${{ steps.check.outputs.publish }}
+    steps:
+      - name: Check this commit is still the tip of the branch
+        id: check
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          REF_NAME: ${{ github.ref_name }}
+          SHA: ${{ github.sha }}
+        run: |
+          tip=$(gh api "repos/$GITHUB_REPOSITORY/git/ref/heads/$REF_NAME" --jq .object.sha)
+          if [[ "$tip" == "$SHA" ]]; then
+            echo "publish=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "::notice::Skipping publish: $SHA was superseded by $tip on $REF_NAME"
+            echo "publish=false" >> "$GITHUB_OUTPUT"
+          fi
   image-build-and-push:
     name: Build and Sign Image
-    needs: [linting, security-scan, tests, e2e-tests, codegen, operator-ci]
+    # No concurrency group here on purpose: once publishing starts it runs to
+    # completion, so every pushed tag is also signed.
+    needs: [publish-gate]
+    if: needs.publish-gate.outputs.publish == 'true'
     permissions:
       contents: write
       packages: write
@@ -58,12 +129,18 @@ jobs:
   skills-build:
     name: Build Skills
     needs: [linting, tests, codegen]
+    concurrency:
+      group: main-skills-build-${{ github.ref }}
+      cancel-in-progress: true
     permissions:
       contents: read
     uses: ./.github/workflows/skills-build.yml
   skills-keyless-e2e:
     name: Skills Keyless Signing E2E (staging)
     needs: [linting, tests, codegen]
+    concurrency:
+      group: main-skills-keyless-e2e-${{ github.ref }}
+      cancel-in-progress: true
     # Informational, not a merge gate: it signs against Sigstore's public
     # staging instance, whose outages this repository does not control. The
     # continue-on-error that makes it non-blocking lives on the called

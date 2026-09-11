@@ -33,21 +33,31 @@ import (
 
 // stubAuthorizer is a minimal Authorizer for unit tests, avoiding Cedar setup overhead.
 type stubAuthorizer struct {
-	allowed    bool
-	err        error
-	lastToolID string
-	lastCtx    context.Context
+	allowed       bool
+	err           error
+	lastID        string
+	lastFeature   authorizers.MCPFeature
+	lastOperation authorizers.MCPOperation
+	lastCtx       context.Context
+	calls         int
+	authorize     func(authorizers.MCPFeature, authorizers.MCPOperation, string) (bool, error)
 }
 
 func (s *stubAuthorizer) AuthorizeWithJWTClaims(
 	ctx context.Context,
-	_ authorizers.MCPFeature,
-	_ authorizers.MCPOperation,
+	feature authorizers.MCPFeature,
+	operation authorizers.MCPOperation,
 	resourceID string,
 	_ map[string]interface{},
 ) (bool, error) {
-	s.lastToolID = resourceID
+	s.lastID = resourceID
+	s.lastFeature = feature
+	s.lastOperation = operation
 	s.lastCtx = ctx
+	s.calls++
+	if s.authorize != nil {
+		return s.authorize(feature, operation, resourceID)
+	}
 	return s.allowed, s.err
 }
 
@@ -254,7 +264,7 @@ func TestMiddleware(t *testing.T) {
 			expectAuthorized: false,
 		},
 		{
-			name:   "Resources templates list is authorized and filtered",
+			name:   "Resources templates list proceeds to response filtering",
 			method: "resources/templates/list",
 			params: map[string]interface{}{},
 			claims: jwt.MapClaims{
@@ -1604,6 +1614,75 @@ func TestConvertToJSONRPC2ID(t *testing.T) {
 					assert.NotNil(t, result)
 				}
 			}
+		})
+	}
+}
+
+func TestAuthorizeListAndServe_UnregisteredMethodGuard(t *testing.T) {
+	t.Parallel()
+
+	testCases := []struct {
+		name             string
+		featureOp        featureOperation
+		expectHandlerHit bool
+		expectStatus     int
+		expectBody       string
+	}{
+		{
+			name: "protected list without a registered filter is denied",
+			featureOp: featureOperation{
+				Feature:   authorizers.MCPFeatureResource,
+				Operation: authorizers.MCPOperationList,
+			},
+			expectStatus: http.StatusForbidden,
+			expectBody:   `{"jsonrpc":"2.0","id":7,"error":{"code":403,"message":"Unauthorized"}}`,
+		},
+		{
+			name: "protocol-only list without a filter passes through",
+			featureOp: featureOperation{
+				Feature:   "",
+				Operation: authorizers.MCPOperationList,
+			},
+			expectHandlerHit: true,
+			expectStatus:     http.StatusOK,
+			expectBody:       `{"passthrough":true}`,
+		},
+	}
+
+	for _, tc := range testCases {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+
+			req, err := http.NewRequest(http.MethodPost, "/messages", nil)
+			require.NoError(t, err)
+			parsedRequest := &mcpparser.ParsedMCPRequest{
+				Method: "synthetic/unregistered-list",
+				ID:     float64(7),
+			}
+
+			var handlerCalled bool
+			next := http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+				handlerCalled = true
+				w.Header().Set("Content-Type", "application/json")
+				_, writeErr := w.Write([]byte(`{"passthrough":true}`))
+				require.NoError(t, writeErr)
+			})
+
+			rr := httptest.NewRecorder()
+			authorizeListAndServe(
+				rr,
+				req,
+				nil,
+				parsedRequest,
+				tc.featureOp,
+				NewAnnotationCache(),
+				nil,
+				next,
+			)
+
+			assert.Equal(t, tc.expectHandlerHit, handlerCalled)
+			assert.Equal(t, tc.expectStatus, rr.Code)
+			assert.JSONEq(t, tc.expectBody, rr.Body.String())
 		})
 	}
 }

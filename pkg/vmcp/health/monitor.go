@@ -8,6 +8,7 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"reflect"
 	"sync"
 	"time"
 
@@ -1040,7 +1041,14 @@ func buildConditions(summary Summary, phase vmcp.Phase, configuredBackendCount i
 
 // backendChanged returns true if the backend's health-check-relevant properties have changed.
 // This is used by UpdateBackends to detect when an existing backend needs its monitoring
-// goroutine restarted (e.g., URL updated after operator reconcile).
+// goroutine restarted (e.g., URL updated after operator reconcile, or outgoing auth
+// added, removed, or changed). AuthConfig matters because probe classification depends
+// on it: a 401 from an auth-configured backend is the expected answer to a
+// credential-less probe and counts as healthy, while the same 401 without an auth
+// config means misconfiguration — so a check loop probing with a stale copy inverts
+// the classification and the backend is dropped from aggregation (#6509).
 func backendChanged(old, updated vmcp.Backend) bool {
-	return old.BaseURL != updated.BaseURL || old.TransportType != updated.TransportType
+	return old.BaseURL != updated.BaseURL ||
+		old.TransportType != updated.TransportType ||
+		!reflect.DeepEqual(old.AuthConfig, updated.AuthConfig)
 }

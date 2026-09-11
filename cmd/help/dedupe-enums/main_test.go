@@ -8,7 +8,7 @@ import (
 	"testing"
 )
 
-func TestFirstHalfIfDoubled(t *testing.T) {
+func TestFirstPeriodIfRepeated(t *testing.T) {
 	t.Parallel()
 
 	tests := []struct {
@@ -24,8 +24,19 @@ func TestFirstHalfIfDoubled(t *testing.T) {
 			ok:    true,
 		},
 		{
-			name:  "tripled is not a doubled shape",
+			name:  "tripled collapses to one period",
 			lines: []string{"a", "b", "a", "b", "a", "b"},
+			want:  []string{"a", "b"},
+			ok:    true,
+		},
+		{
+			name:  "partial repeat is left alone",
+			lines: []string{"a", "b", "a", "b", "a"},
+			ok:    false,
+		},
+		{
+			name:  "non-repeating list is left alone",
+			lines: []string{"a", "b", "c", "d"},
 			ok:    false,
 		},
 		{
@@ -53,7 +64,7 @@ func TestFirstHalfIfDoubled(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
-			got, ok := firstHalfIfDoubled(tt.lines)
+			got, ok := firstPeriodIfRepeated(tt.lines)
 			if ok != tt.ok {
 				t.Fatalf("ok = %v, want %v", ok, tt.ok)
 			}

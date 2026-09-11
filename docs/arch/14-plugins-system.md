@@ -2,297 +2,312 @@
 
 ## Why This Exists
 
-Plugins are the Claude Plugin manifest format — an OCI artifact containing a
-`.claude-plugin/plugin.json` manifest plus component directories (`commands/`,
-`agents/`, `skills/`, `hooks/`). A plugin bundles multiple component types into
-a single installable unit, where a skill is a single component.
+An **AI-tool plugin** is a multi-component bundle described by
+`.claude-plugin/plugin.json`. It may contain commands, agents, skills, hooks,
+MCP server declarations, and LSP server declarations. A plugin is installed as
+one versioned unit; a [skill](12-skills-system.md) is one `SKILL.md`-based
+instruction component with its own lifecycle. Neither is a ToolHive plugin or
+an MCP server workload.
 
-The plugins system mirrors `pkg/skills` structurally — the scoping model
-(user vs. project), install-status lifecycle, storage shape, and OCI artifact
-layout are identical — but diverges at the materialization seam: a skill
-installs into a single directory, while a plugin must be materialized into
-each target client's directory layout (Claude Code's plugins dir + settings.json
-marketplace, Codex's `.agents/plugins` marketplace), and different clients load
-different component subsets.
+ToolHive discovers, packages, distributes, verifies, records, and materializes
+AI-tool plugins for supported clients. The plugin source tree is distributed as
+an OCI artifact, or resolved directly from git. Client adapters place that tree
+and the required marketplace metadata into each client's layout.
 
 ## Architecture
 
-```
-┌─────────────────────────────────────────────────────────────┐
-│                    pluginsvc.service                         │
-│  Install (dispatch: git → OCI → registry name)              │
-│  Uninstall · List · Info                                     │
-│  per-(scope,name,projectRoot) pluginLock                     │
-└───────────────┬─────────────────────────────────────────────┘
-                │  MaterializationAdapter interface
-                │  (Materialize / Dematerialize / EnsureRegistered /
-                │   Health / SupportedComponents / ScopeSupport)
-       ┌────────┴────────┐
-       ▼                 ▼
-┌─────────────┐   ┌──────────────┐
-│ ClaudeCode  │   │    Codex     │
-│ Adapter     │   │   Adapter    │
-│ FS + JSON   │   │ FS + JSON    │
-│ ~/.claude/  │   │ ~/.agents/   │
-│ plugins/    │   │ plugins/     │
-│ +settings   │   │ marketplace  │
-│ .json       │   │ .json        │
-└─────────────┘   └──────────────┘
+```mermaid
+flowchart LR
+    CLI[thv ai-plugin CLI] --> HTTP[Plugin HTTP client]
+    HTTP --> API[REST API /api/v1beta/plugins]
+    API --> Service[pkg/plugins/pluginsvc]
+    Service --> Git[Git resolver]
+    Service --> OCI[OCI store and registry]
+    Service --> Catalog[Registry plugin lookup]
+    Service --> Store[SQLite PluginStore]
+    Service --> Lock[toolhive.lock.yaml]
+    Service --> Groups[Group manager]
+    Service --> Adapters[MaterializationAdapter]
+    Adapters --> Claude[Claude Code files and settings]
+    Adapters --> Codex[Codex files and marketplace.json]
 ```
 
-### Phasing
+The CLI is an HTTP client even for local operation. `pkg/api/v1/plugins.go`
+translates REST requests to `PluginService` and `PluginLockService` calls;
+`pkg/plugins/pluginsvc` owns resolution, verification, locking, persistence,
+rollback, and lifecycle behavior. `MaterializationAdapter` isolates the
+client-specific filesystem and registration rules.
 
-- **Phase 2** (shipped): build/validate/push/list-builds/delete-build/get-content
-  + SQLite storage + migration 002.
-- **Phase 3** (this doc): install/list/info/uninstall + MaterializationAdapter
-  (Claude Code + Codex) + groups integration.
-- **Phase 4** (shipped, #5528): REST API + `thv ai-plugin` CLI + app wiring.
-- **Phase 5b** (shipped, #5529): registry-name install wired via `lazyPluginLookup`;
-  plain-name resolution through the registry lookup chain.
+The API exposes install, uninstall, list, info, validate, build, push, local
+build listing/removal, content inspection, sync, and upgrade. `/sync` and
+`/upgrade` return `501 Not Implemented` only when an injected service does not
+implement `PluginLockService`; the normal `pluginsvc.New` service does.
 
 ## Core Concepts
 
 ### Plugin Manifest
 
-`.claude-plugin/plugin.json` — kebab-case name, version, description, author,
-license, keywords. Parsed by `plugins.ParsePluginManifest` (`pkg/plugins/parser.go`).
+`.claude-plugin/plugin.json` supplies the plugin's name, version, description,
+author, license, and keywords. Names are validated as kebab-case. Build and git
+installation parse this manifest before packaging or materialization.
 
 ### Component Inventory
 
-A plugin declares component directories. The OCI config carries a
-`ComponentInventory` (map of component-type → count): `commands`, `agents`,
-`skills`, `hooks`, `mcpServers`, `lspServers`. Not all clients load all types.
+The OCI config records counts for `commands`, `agents`, `skills`, `hooks`,
+`mcpServers`, and `lspServers`. Adapters expose a client capability list so
+`info` can report plugin-declared components that the client does not load.
+
+That capability report is not a file filter: adapters extract the complete
+plugin tree, including component directories outside their capability list.
+ToolHive does not start, configure, or lifecycle-manage plugin-declared MCP or
+LSP servers as ToolHive workloads. Whether a client interprets any declared
+component is client behavior.
 
 ### Installation Scopes
 
-Identical to skills: `user` (user-wide) or `project` (project-local, must be a
-git repository). Storage keys on `(scope, project_root)`.
+- **User scope** is the default and installs for the current user.
+- **Project scope** requires a git project root, writes a `plugins:` entry to
+  the project's `toolhive.lock.yaml`, and applies signature verification.
+
+Installed records are keyed by plugin name, scope, and project root. An empty
+client selection, or `all`, targets every detected plugin-supporting client;
+explicit client names are validated against configured materializers.
 
 ### Multi-Client Materialization
 
-Unlike skills (single directory per client), plugins materialize differently
-per client:
+| Client | Materialized layout | Registration and loading |
+|---|---|---|
+| Claude Code | `~/.claude/plugins/<name>/` or `<project>/.claude/plugins/<name>/` | ToolHive maintains the shared `.claude-plugin/marketplace.json` and the `enabledPlugins` and `extraKnownMarketplaces.toolhive` entries in the scope's `settings.json`. |
+| Codex | `~/.agents/plugins/toolhive/<name>/` or `<project>/.agents/plugins/toolhive/<name>/` | ToolHive maintains the scope's `.agents/plugins/marketplace.json`. It does not edit `config.toml` or invoke Codex; the user must run `codex plugin install <name>@toolhive`. |
 
-| Client | Layout | Config mutation | Components loaded | Scope degradation |
-|---|---|---|---|---|
-| Claude Code | `~/.claude/plugins/<name>/` | `~/.claude/settings.json`: `enabledPlugins["<name>@toolhive"]` + `extraKnownMarketplaces.toolhive` (`directory` source pointing at the plugins root); shared `~/.claude/plugins/.claude-plugin/marketplace.json` (top-level `name`/`owner`/`plugins[]`, each `source: "./<name>"`) | commands, agents, skills, hooks | none |
-| Codex | `~/.agents/plugins/toolhive/<name>/` (user) or `<root>/.agents/plugins/toolhive/<name>/` (project) | shared `.agents/plugins/marketplace.json` (top-level `name` + `plugins[]`, each with a `local` `source.path` = `./toolhive/<name>` relative to the marketplace root, plus `policy`/`category`). No `config.toml` mutation — see "Codex load step" below. | skills, mcpServers, hooks | none |
-
-The `MaterializationAdapter` interface (`pkg/plugins/adapter.go`) owns this:
-each adapter extracts the plugin tree and (optionally) mutates client config,
-reporting which component types it deliberately dropped.
+`Materialize`, `Dematerialize`, `EnsureRegistered`, and `Health` make adapter
+changes reversible and check both the source tree and required registration.
+Shared JSON files are updated under a file lock and written atomically.
 
 ## Plugin Lifecycle
 
 ### 1. Discovery
 
-OCI reference (`ghcr.io/org/plugin:v1`), git reference
-(`git://host/owner/repo[@ref][#subdir]`), or plain name (registry lookup —
-wired via `lazyPluginLookup`; `thv ai-plugin install <plain-name>`
-resolves through the registry's `SearchPlugins` → first hit's OCI package).
+`thv ai-plugin install` resolves input in this order:
+
+1. a `git://...` reference;
+2. an OCI reference;
+3. a validated plain or namespace-qualified name.
+
+A name checks the local OCI store first, then searches the configured ToolHive
+registry. Search results are post-filtered for an exact, case-insensitive name
+(and namespace, when supplied), plus the requested version when present. One
+exact match is required: zero matches return not found and multiple matches are
+rejected as ambiguous. ToolHive does not install the first fuzzy search result.
+The resolved catalog entry must contain a usable OCI package.
+
+Git and OCI installs also require the manifest name to match the repository's
+last path component (or the git subdirectory name). This prevents accidental
+name clobbering; it is not proof of publisher identity.
 
 ### 2. Building
 
-`pluginsvc.Build` packages a local plugin directory into an OCI artifact via
-`ociplugins.PluginPackager`. The layer is a single tar.gz of the whole plugin
-tree.
+`thv ai-plugin validate <path>` validates a local plugin tree. `thv ai-plugin
+build <path>` parses the manifest, packages the complete tree as one tar.gz OCI
+layer, records the component inventory in the OCI config, and writes the
+artifact to the local plugin OCI store. Local-build metadata distinguishes
+builds from artifacts cached by pull or content inspection.
 
-### 3. Installation
+### 3. Publishing
 
-`pluginsvc.Install` dispatches by reference type:
+`thv ai-plugin push <reference>` publishes a local build. Push is signed by
+default, keylessly unless a key is given: an OIDC identity token can be supplied
+with `--identity-token`, acquired from GitHub Actions OIDC, or acquired through
+an interactive browser sign-in, and `--key` signs with a cosign private key
+instead. `--no-sign` is the explicit unsigned alternative.
 
-1. **Git** (`gitresolver.IsGitReference`): clone via `pkg/git.Client`, read
-   `.claude-plugin/plugin.json`, collect all files, build an in-memory tar.gz,
-   then materialize.
-2. **OCI**: pull via registry client, extract config + layer. **Name/repo
-   consistency check**: the declared plugin name must match the OCI reference's
-   last path component (422 on mismatch — prevents accidental clobbering; not
-   publisher authenticity).
-3. **Plain name**: local store → registry lookup → 404 with install hint.
+A signed push stages content at its immutable digest, attaches the signature,
+and only then promotes the requested tag. A signing failure therefore does not
+leave the requested tag resolving to unsigned content. Neither credential — the
+identity token or the key-signing capability — is sent over non-loopback HTTP,
+and credential-bearing requests do not follow redirects.
 
-After resolving the artifact, `installWithExtraction` resolves target clients,
-acquires the per-plugin lock, calls each client's `MaterializationAdapter`,
-builds the `InstalledPlugin` record, persists it (Create/Update with
-upgrade-digest/same-digest-new-clients branches), and registers the plugin in
-its group. When a `ClientManager` is configured, target trees are snapshotted
-(files plus registration state via `Health`) before materialization; any later
-failure — extraction, DB persist, group registration, or lock write — restores
-the snapshot exactly (files, and `EnsureRegistered` only when the tree was
-registered before) and joins every compensation error with the trigger.
-Without a `ClientManager` (embedded/test services), compensation degrades to
-dematerializing what this call wrote.
+### 4. Installation
 
-### 4. Uninstallation
+After resolution, the service verifies project-scoped content, acquires a
+per-plugin lock, materializes each target client, persists the installed record,
+updates group membership, and writes the project lock entry. Existing trees and
+registration state are snapshotted when the client manager is available. A
+later extraction, database, group, or lock-file failure restores prior files,
+registration, storage, and group state; compensation errors are returned with
+the original failure.
 
-`pluginsvc.Uninstall` is scope-dependent:
+A same-digest install can add newly requested clients without replacing the
+other clients. Upgrades and sync repairs force rematerialization when required
+to keep the recorded content digest and trust material aligned with the files
+on disk.
 
-- **Unmanaged / user scope**: `Dematerialize` per client (best-effort,
-  `errors.Join`), remove group memberships, then delete the store record.
-  Group removal snapshots memberships first and restores them if an update
-  midway or the DB delete fails, keeping the operation retryable. Idempotent.
-- **Lock-managed project scope**: fails closed. Every stored client must have
-  a materializer, the lock entry is removed after snapshotting client trees,
-  and a later dematerialize/group/DB failure restores the pin, the trees, and
-  adapter registration so the plugin is never left half-removed or
-  installed-but-untracked.
+### 5. Uninstallation
 
-### 5. Info
+User-scope and otherwise unmanaged installs are dematerialized from each client,
+removed from groups, and deleted from storage. Lock-managed project uninstall
+fails closed: it snapshots the lock and client trees, removes the lock entry,
+and restores the pin and materialization if a later step fails. Both paths make
+repeated removal safe and join partial-cleanup errors rather than hiding them.
 
-`pluginsvc.Info` returns metadata + the install record + two computed fields:
-- `UnmaterializedComponents` — per client, component types the plugin declares
-  that the adapter does NOT load (static diff of `Components` vs
-  `SupportedComponents`).
-- `ProjectScopeDegradedClients` — clients for which a project-scope install
-  degraded (recomputed from scope + `DegradesOnProjectScope`).
+### 6. Info
 
-## Git-Based Plugin Resolution
+`thv ai-plugin info` combines manifest metadata, the installed record, group
+membership, and project trust state. `UnmaterializedComponents` is the static
+difference between the plugin inventory and each adapter's capability list; it
+does not assert those files were omitted. `ProjectScopeDegradedClients` reports
+scope degradation declared by adapters (neither current adapter degrades).
 
-The git resolver reuses `pkg/skills/gitresolver`'s skill-agnostic helpers
-(`ParseGitReference`, `IsGitReference`, `ResolveAuth`, `WriteFiles`,
-`CloneConfigForRef`, `ClientForURL`) but does NOT call `Resolver.Resolve` —
-that method is skill-specific (reads `SKILL.md`). Instead,
-`pluginsvc.installFromGit` clones directly, reads the plugin manifest, and
-collects the whole subtree (a plugin is multi-component, not a single file).
+## Lock, Sync, and Upgrade
 
-A **name/repo consistency check** (mirroring the OCI check) enforces that the
-declared manifest name matches the name implied by the git reference — the
-subdir's last segment when `#subdir` is present, else the repo's last segment
-(422 on mismatch). When collecting files, the executable bit committed in the
-repo is **preserved** (rather than forcing 0644) so hook scripts keep `+x`.
+Project installs share `toolhive.lock.yaml` with skills but use the `plugins:`
+key. Each entry pins the original source, resolved reference, artifact digest,
+on-disk content digest, and trust decision. Target clients remain part of the
+installed-plugin record. The schema and common
+atomic lock-file mechanics are documented in [Project Lock File](12-skills-system.md#project-lock-file).
+
+`thv ai-plugin sync` restores the pinned state without re-resolving the source:
+
+- missing or drifted installs are reinstalled at the pinned digest;
+- `--check` reports drift without writing;
+- `--adopt` records eligible unmanaged project installs;
+- `--prune` removes managed installs absent from the lock file;
+- real changes require confirmation, or `--yes` in non-interactive use.
+
+Sync checks artifact and content digests, expected clients, adapter health, and
+stored OCI signature material. Git signatures live on commits, so unchanged git
+entries have no stored bundle to re-verify offline; the recorded identity is
+rechecked when git content is resolved again.
+
+`thv ai-plugin upgrade [name...]` re-resolves each mutable lock source and
+installs changed content. Immutable OCI digests and full git commit pins are
+reported as not upgradable. `--preview` and `--fail-on-changes` plan without
+installing (OCI candidates are still fetched to compare digests).
+`--allow-ref-change` permits a repository move, while
+`--allow-signer-change` permits supported trust transitions. Neither option
+silently replaces a pinned cosign public key with an arbitrary different key.
+An unsigned candidate under an entry that records a signer is not a trust
+transition but a failure (`unsigned-rejected`): upgrade has no unsigned-consent
+flag, and `--allow-signer-change` re-verifies from scratch, which an unsigned
+artifact still fails, so the failure names the project-scoped reinstall with
+`--allow-unsigned` that records the exception explicitly.
 
 ## Storage
 
-`pkg/storage/sqlite/plugin_store.go` — `installed_plugins` +
-`plugin_dependencies` tables (migration 002). Reuses the `entries` table's
-`UNIQUE(entry_type, name)` with `entry_type = "plugin"`. The
-`PluginStore` interface has Create/Get/List/Update/Delete + dependency methods.
+`pkg/storage/sqlite/plugin_store.go` persists installed plugins and dependency
+metadata in `installed_plugins` and `plugin_dependencies` (migration 002),
+sharing the `entries` namespace with other managed objects. The local OCI store
+holds builds and pulled artifacts separately from installation records.
+
+Plugin dependencies are parsed and stored, but ToolHive does not currently
+materialize plugin-declared dependencies. Every project plugin lock entry is
+therefore explicit; `requiredBy` is reserved for future use.
 
 ## Group Integration
 
-`groups.Group` carries a `Plugins []string` field (mirrors `Skills`).
-`groups.AddPluginToGroup` / `groups.RemovePluginFromAllGroups` are line-for-line
-ports of the skills analogues.
+`groups.Group.Plugins` stores plugin names alongside workload and skill
+membership. Installation can add a plugin with `--group`; listing can filter by
+group; uninstall removes the plugin from all groups. Group updates participate
+in install/uninstall rollback. Groups organize resources but do not merge the
+plugin lifecycle with MCP workload lifecycle.
 
 ## Security Model
 
+### Trust Model
+
+Project-scoped installs verify signatures and record a trust decision in the
+lock file. User-scoped installs deliberately bypass lock-backed verification;
+they also reject `--public-key` rather than accepting a key that would not be
+used.
+
+For keyless OCI signatures and gitsign commits, first project install records
+the observed certificate identity (TOFU) and displays it. Subsequent install,
+sync, and upgrade enforce the recorded signer and available certificate fields.
+Git trust is marked provisional because signing-time transparency proof is not
+yet validated. Plugins do not currently consume catalog-declared provenance,
+so registry-name installation does not replace first-use TOFU.
+
+For a key-pair-signed OCI artifact, the first project install requires
+`--public-key <cosign.pub>`. ToolHive verifies against that key and pins its DER
+SPKI representation in the lock entry. Sync and upgrade reuse the pinned key;
+they do not take another key flag. A different key cannot be auto-adopted or
+substituted with `--allow-signer-change`: changing to an arbitrary key requires
+removing the existing lock anchor and reinstalling explicitly.
+
+`--allow-unsigned` applies only when content has no signature and records
+`unsigned: true` as an explicit project policy exception. It does not permit an
+invalid, damaged, wrong-key, or otherwise unverifiable signature, and it does
+not turn a signed artifact into an unsigned one. Lock-driven restore honors an
+existing unsigned decision. A legacy entry with neither provenance nor
+`unsigned: true` is drift and fails closed until sync can verify it or the user
+explicitly runs `sync --allow-unsigned` for genuinely unsigned content.
+
+Plugin publishing carries the same two signing paths as skills. `thv ai-plugin
+push --key` signs with a cosign key pair; because the public key is recoverable
+from neither the artifact nor its bundle, consumers must receive it out of band
+and pass `--public-key` on their first project-scoped install. Keyless signing
+needs no such step, since the signer identity is verifiable from the artifact
+itself.
+
+Key signing is accepted only through automatic local server discovery. The
+owner-protected discovery file supplies a separate random capability that the
+CLI sends with the key-bearing request; loopback or IPC transport alone is not
+authorization, because a public reverse proxy can make an untrusted caller
+appear local. Remote and manually configured API URLs must use keyless signing
+instead.
+
+The lock file is repository-editable policy. Review changes to `provenance`,
+`publicKey`, `unsigned`, `digest`, and `resolvedReference` as carefully as the
+plugin content. In particular, changing a signed entry to `unsigned: true` is a
+trust downgrade that sync will honor.
+
 ### Archive Extraction Safety
 
-Both adapters delegate to `skills.Installer.Extract`, which enforces:
-decompression bomb limits, per-file size/count caps, symlink/hardlink rejection,
-pre-extraction `ValidatePathNoSymlinks`, post-extraction `CheckFilesystem`, and
-prefix-containment on every written file.
+Adapters use the shared skills installer, which bounds decompressed size and
+file count, rejects symlinks and hardlinks, validates containment and parent
+symlinks before writing, and checks the resulting filesystem. Git clone storage
+is bounded to 100 MB and 10,000 files. Plugin names are validated before path
+construction so they cannot escape the selected user or project root.
 
-### Path Construction
+### Codex Marketplace Registration
 
-`ClientManager.GetPluginPath` validates the plugin name (kebab-case, no `..`)
-before `filepath.Join` — neither `clientType` nor `pluginName` can escape the
-home/project dir.
-
-### Marketplace registration (Codex)
-
-The Codex adapter follows Codex's marketplace model. Codex discovers
-marketplaces at a fixed set of paths, including the personal
-`~/.agents/plugins/marketplace.json` and the per-repo
-`$REPO_ROOT/.agents/plugins/marketplace.json`. The adapter extracts each
-plugin's source under that marketplace root, namespaced by the marketplace name
-(`<root>/toolhive/<name>`), and maintains the `marketplace.json` so Codex can
-discover it. The manifest has a top-level `name` and a `plugins` array; each
-entry has a `local` `source.path` that is **relative to the marketplace root**
-and starts with `./` (`./toolhive/<name>`), plus the required `policy` and
-`category` fields. Writes use `fileutils.WithFileLock` + `AtomicWriteFile`, and
-the plugin name is validated (no traversal) by `GetPluginPath` before use.
-`Dematerialize` removes the plugin's source directory and its `plugins` array
-entry, deleting the manifest when no plugins remain.
-
-#### Codex load step (manual, by design)
-
-Unlike Claude Code, ToolHive does **not** fully automate Codex plugin loading,
-and this is deliberate:
-
-- **No `config.toml` mutation.** Codex's `[plugins."<name>@<marketplace>"]`
-  `enabled` key is only an on/off toggle for an *already-installed* plugin;
-  setting `enabled = true` for a plugin that was never installed does not load
-  it, and writing to the user's shared `config.toml` has blast radius for no
-  benefit. The adapter leaves `config.toml` untouched.
-- **No shelling out.** Loading a Codex plugin requires an explicit install
-  (`codex plugin install <name>@toolhive`), which is a CLI action. ToolHive
-  never invokes client binaries to mutate their state (every other client
-  integration is file-based config editing), so the adapter does not shell out
-  to `codex`.
-
-Instead, ToolHive lays down the plugin source and a discoverable
-`marketplace.json`, and the user completes loading with a one-time:
+ToolHive extracts the full source under the Codex marketplace root and maintains
+`marketplace.json` with a relative `./toolhive/<name>` local source plus required
+policy and category fields. It neither edits `~/.codex/config.toml` nor invokes
+the `codex` executable. Marketplace discovery alone does not install the plugin
+into Codex; complete the client-side step manually:
 
 ```bash
-# The personal marketplace at ~/.agents/plugins is auto-discovered; if needed:
-codex plugin marketplace add ~/.agents/plugins
 codex plugin install <name>@toolhive
 ```
 
-Automating this (e.g. a dedicated integration that drives the Codex install flow
-without shelling out) is tracked as a follow-up.
+### Claude Code Registration
 
-### settings.json Mutation (Claude Code)
-
-The Claude Code adapter mutates `~/.claude/settings.json` (or the project
-`<root>/.claude/settings.json`) under `fileutils.WithFileLock`. It adds
-`enabledPlugins["<name>@toolhive"]` and an `extraKnownMarketplaces.toolhive`
-entry whose `source` is a `directory` source pointing at the **plugins root**
-(the directory containing all installed plugins), not the per-plugin directory.
-A single shared `marketplace.json` lives at `<root>/.claude-plugin/marketplace.json`
-with the required top-level `name`/`owner` fields and a `plugins` array; each
-plugin is one entry with a `source: "./<name>"` path resolved against the
-marketplace root. `upsert`/`remove` keep that array in sync as plugins are
-installed and uninstalled, so a non-LIFO uninstall cannot invalidate the shared
-marketplace path. `Dematerialize` removes the plugin from the `plugins` array
-(deleting the manifest and its `.claude-plugin` dir when empty), reverts its own
-`enabledPlugins` additions, and drops `extraKnownMarketplaces.toolhive` only when
-no remaining `@toolhive` plugins are enabled.
-
-### Name/Repo Consistency
-
-The OCI install path rejects artifacts whose declared name doesn't match the
-reference's repository last segment. This is a consistency check, not publisher
-authenticity — `pluginConfig.Name` is self-declared. Signature verification is a
-separate concern.
-
-### Git Clone Bounds
-
-The git client wraps both worktree and storer in `LimitedFs` (100MB total,
-10k files), bounding the in-memory clone.
-
-## Dependency on toolhive-core
-
-The OCI plugin layer (`ociplugins.Store`, `PluginPackager`, `RegistryClient`,
-`PluginConfig`, `ComponentInventory`) comes from
-`github.com/stacklok/toolhive-core/oci/plugins`, mirroring how skills uses
-`toolhive-core/oci/skills`.
+ToolHive maintains one shared marketplace under the scope's plugins root and
+adds `<name>@toolhive` to `enabledPlugins`. It removes only its own entries on
+uninstall and removes the shared ToolHive marketplace registration only when no
+ToolHive plugins remain.
 
 ## Key Files
 
 | File | Purpose |
 |---|---|
-| `pkg/plugins/adapter.go` | `MaterializationAdapter` interface |
-| `pkg/plugins/types.go` | `InstalledPlugin`, `PluginMetadata`, `ComponentInventory` |
-| `pkg/plugins/options.go` | `InstallOptions`/`InstallResult`/`PluginInfo` etc. |
-| `pkg/plugins/service.go` | `PluginService` interface |
-| `pkg/plugins/pluginsvc/service.go` | concrete `service` + `With*` options + `pluginLock` |
-| `pkg/plugins/pluginsvc/install.go` | Install dispatch |
-| `pkg/plugins/pluginsvc/install_oci.go` | OCI pull + name/repo check |
-| `pkg/plugins/pluginsvc/install_git.go` | git clone + manifest read |
-| `pkg/plugins/pluginsvc/install_extraction.go` | shared materialize + persist core |
-| `pkg/plugins/pluginsvc/list.go` / `info.go` / `uninstall.go` | lifecycle methods |
-| `pkg/plugins/adapters/claudecode.go` | Claude Code adapter (FS + settings.json mutation) |
-| `pkg/plugins/adapters/codex.go` | Codex adapter (FS + TOML) |
-| `pkg/registry/api/plugins_client.go` | MCP v0.1 registry plugin search client |
-| `pkg/api/v1/registry_v01_plugins.go` | HTTP handler for plugin search endpoint |
-| `pkg/storage/sqlite/plugin_store.go` | SQLite store |
-| `pkg/groups/plugins.go` | group membership |
-| `pkg/client/plugins.go` | client metadata + path resolution |
+| `cmd/thv/app/ai_plugin*.go` | CLI commands and help |
+| `pkg/api/v1/plugins.go` | REST routes |
+| `pkg/plugins/service.go` | Service interfaces |
+| `pkg/plugins/pluginsvc/` | Resolution, lifecycle, trust, lock, sync, and upgrade |
+| `pkg/plugins/adapter.go` | Client materialization contract |
+| `pkg/plugins/adapters/claudecode.go` | Claude Code materializer |
+| `pkg/plugins/adapters/codex.go` | Codex filesystem and marketplace materializer |
+| `pkg/plugins/client/` | HTTP client |
+| `pkg/storage/sqlite/plugin_store.go` | Installed-plugin persistence |
+| `pkg/registry/api/plugins_client.go` | Registry plugin search client |
+| `pkg/groups/plugins.go` | Group membership integration |
+| `pkg/skills/lockfile/` | Shared lock schema and atomic updates |
 
 ## Related Documentation
 
-- [Skills System](12-skills-system.md) - Sibling distribution system (OCI artifacts, multi-client install, build/publish/install lifecycle)
-- [Registry System](06-registry-system.md) - Registry-name resolution in the install dispatch chain
-- [Groups](07-groups.md) - Plugin group membership (`pkg/groups/plugins.go`)
-- [Core Concepts](02-core-concepts.md) - Platform terminology
+- [Core Concepts](02-core-concepts.md) - Skill, plugin, workload, registry, and group terminology
+- [Skills System](12-skills-system.md) - Skill lifecycle and shared project lock mechanics
+- [Registry System](06-registry-system.md) - Plugin catalog discovery integration
+- [Groups](07-groups.md) - Shared organizational model

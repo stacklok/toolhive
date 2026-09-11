@@ -11,12 +11,29 @@ import (
 	"net/http/httptest"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
 	"github.com/stacklok/toolhive/pkg/oauthproto"
 )
+
+// TestNewDefaultDCRClient_BoundsIdleConnectionPool pins that the default DCR
+// client's transport bounds its idle-connection pool. A zero IdleConnTimeout
+// never expires a pooled connection, so a dropped client would pin a socket and
+// its goroutine pair for the process lifetime.
+func TestNewDefaultDCRClient_BoundsIdleConnectionPool(t *testing.T) {
+	t.Parallel()
+
+	client := oauthproto.NewDefaultDCRClient()
+	transport, ok := client.Transport.(*http.Transport)
+	require.True(t, ok, "default DCR client must use an *http.Transport")
+
+	assert.Equal(t, 90*time.Second, transport.IdleConnTimeout)
+	assert.Equal(t, 100, transport.MaxIdleConns)
+	assert.Equal(t, 4, transport.MaxIdleConnsPerHost)
+}
 
 func TestRegisterClientDynamically(t *testing.T) {
 	t.Parallel()

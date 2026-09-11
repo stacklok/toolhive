@@ -195,6 +195,9 @@ func TestValidateAlgorithmForKey(t *testing.T) {
 		{"RS256 with RSA", "RS256", rsaKey, ""},
 		{"RS384 with RSA", "RS384", rsaKey, ""},
 		{"RS512 with RSA", "RS512", rsaKey, ""},
+		{"PS256 with RSA", "PS256", rsaKey, "not compatible with RSA"},
+		{"PS384 with RSA", "PS384", rsaKey, "not compatible with RSA"},
+		{"PS512 with RSA", "PS512", rsaKey, "not compatible with RSA"},
 		{"ES256 with P-256", "ES256", ecP256, ""},
 		{"ES384 with P-384", "ES384", ecP384, ""},
 		{"EdDSA with Ed25519", "EdDSA", ed25519Key, ""},
@@ -220,6 +223,31 @@ func TestValidateAlgorithmForKey(t *testing.T) {
 	}
 }
 
+func TestValidateAlgorithmForPublicKey(t *testing.T) {
+	t.Parallel()
+
+	rsaKey, err := rsa.GenerateKey(rand.Reader, 2048)
+	require.NoError(t, err)
+	ecP256, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
+	require.NoError(t, err)
+	ecP384, err := ecdsa.GenerateKey(elliptic.P384(), rand.Reader)
+	require.NoError(t, err)
+
+	assert.NoError(t, ValidateAlgorithmForPublicKey("PS256", &rsaKey.PublicKey))
+	assert.NoError(t, ValidateAlgorithmForPublicKey("ES256", &ecP256.PublicKey))
+	assert.Error(t, ValidateAlgorithmForPublicKey("ES384", &ecP256.PublicKey))
+	assert.NoError(t, ValidateAlgorithmForPublicKey("ES384", &ecP384.PublicKey))
+}
+
+func TestSupportedClientKeyAlgorithmsExcludesEdDSA(t *testing.T) {
+	t.Parallel()
+
+	// fosite v0.49.0's client-assertion verification (client_authentication.go)
+	// only handles the RS*/ES*/PS*/HS* families. Advertising/accepting EdDSA
+	// here would let a client register successfully and then never be able
+	// to authenticate. Revisit once fosite supports it.
+	assert.NotContains(t, SupportedClientKeyAlgorithms(), "EdDSA")
+}
 func TestDeriveSigningKeyParams(t *testing.T) {
 	t.Parallel()
 

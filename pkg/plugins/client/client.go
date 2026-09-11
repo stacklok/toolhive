@@ -22,6 +22,7 @@ import (
 	"github.com/stacklok/toolhive-core/httperr"
 	"github.com/stacklok/toolhive/pkg/plugins"
 	"github.com/stacklok/toolhive/pkg/server/discovery"
+	"github.com/stacklok/toolhive/pkg/skills/identitytoken"
 )
 
 const (
@@ -58,8 +59,9 @@ var _ plugins.PluginService = (*Client)(nil)
 
 // Client is an HTTP client for the ToolHive Plugins API.
 type Client struct {
-	baseURL    string
-	httpClient *http.Client
+	baseURL              string
+	httpClient           *http.Client
+	keySigningCapability string
 }
 
 // Option configures a Client.
@@ -77,6 +79,14 @@ func WithTimeout(d time.Duration) Option {
 func WithHTTPClient(hc *http.Client) Option {
 	return func(c *Client) {
 		c.httpClient = hc
+	}
+}
+
+// WithKeySigningCapability sets the bearer capability required for pushes
+// that name a private key on the API server's filesystem.
+func WithKeySigningCapability(capability string) Option {
+	return func(c *Client) {
+		c.keySigningCapability = capability
 	}
 }
 
@@ -175,7 +185,10 @@ func resolveViaDiscovery(ctx context.Context) (string, []Option) {
 	}
 	client.Timeout = defaultTimeout
 
-	return baseURL, []Option{WithHTTPClient(client)}
+	return baseURL, []Option{
+		WithHTTPClient(client),
+		WithKeySigningCapability(result.Info.KeySigningCapability),
+	}
 }
 
 // --- PluginService implementation ---
@@ -206,20 +219,26 @@ func (c *Client) List(ctx context.Context, opts plugins.ListOptions) ([]plugins.
 // Install installs a plugin from a remote source.
 func (c *Client) Install(ctx context.Context, opts plugins.InstallOptions) (*plugins.InstallResult, error) {
 	body := installRequest{
-		Name:        opts.Name,
-		Version:     opts.Version,
-		Scope:       opts.Scope,
-		ProjectRoot: opts.ProjectRoot,
-		Clients:     opts.Clients,
-		Force:       opts.Force,
-		Group:       opts.Group,
+		Name:          opts.Name,
+		Version:       opts.Version,
+		Scope:         opts.Scope,
+		ProjectRoot:   opts.ProjectRoot,
+		Clients:       opts.Clients,
+		Force:         opts.Force,
+		Group:         opts.Group,
+		AllowUnsigned: opts.AllowUnsigned,
+		PublicKey:     opts.PublicKey,
 	}
 
 	var resp installResponse
 	if err := c.doJSONRequest(ctx, http.MethodPost, "", nil, body, &resp); err != nil {
 		return nil, err
 	}
-	return &plugins.InstallResult{Plugin: resp.Plugin}, nil
+	return &plugins.InstallResult{
+		Plugin:     resp.Plugin,
+		Provenance: resp.Provenance,
+		Unsigned:   resp.Unsigned,
+	}, nil
 }
 
 // Uninstall removes an installed plugin.
@@ -281,8 +300,28 @@ func (c *Client) Build(ctx context.Context, opts plugins.BuildOptions) (*plugins
 
 // Push pushes a built plugin artifact to a remote registry.
 func (c *Client) Push(ctx context.Context, opts plugins.PushOptions) error {
-	body := pushRequest{Reference: opts.Reference}
-	return c.doJSONRequest(ctx, http.MethodPost, "/push", nil, body, nil)
+	// Identity tokens and key-signing capabilities are bearer credentials, so
+	// neither may cross a plaintext link to a remote API server or a redirect.
+	client := c
+	headers := make(http.Header)
+	if opts.Key != "" && c.keySigningCapability != "" {
+		headers.Set(discovery.KeySigningCapabilityHeader, c.keySigningCapability)
+	}
+	if opts.IdentityToken != "" || len(headers) != 0 {
+		if err := identitytoken.CheckTransport(c.baseURL); err != nil {
+			return err
+		}
+		guarded := *c
+		guarded.httpClient = identitytoken.NoRedirectClient(c.httpClient)
+		client = &guarded
+	}
+	body := pushRequest{
+		Reference:     opts.Reference,
+		Key:           opts.Key,
+		IdentityToken: opts.IdentityToken,
+		NoSign:        opts.NoSign,
+	}
+	return client.doJSONRequestWithHeaders(ctx, http.MethodPost, "/push", nil, body, nil, headers)
 }
 
 // ListBuilds returns all locally-built OCI plugin artifacts in the local store.
@@ -313,11 +352,12 @@ func (c *Client) GetContent(ctx context.Context, opts plugins.ContentOptions) (*
 // Sync restores a project's installed plugins to match its lock file.
 func (c *Client) Sync(ctx context.Context, opts plugins.SyncOptions) (*plugins.SyncResult, error) {
 	body := syncRequest{
-		ProjectRoot: opts.ProjectRoot,
-		Clients:     opts.Clients,
-		Prune:       opts.Prune,
-		Check:       opts.Check,
-		Adopt:       opts.Adopt,
+		ProjectRoot:   opts.ProjectRoot,
+		Clients:       opts.Clients,
+		Prune:         opts.Prune,
+		Check:         opts.Check,
+		Adopt:         opts.Adopt,
+		AllowUnsigned: opts.AllowUnsigned,
 	}
 
 	var result plugins.SyncResult
@@ -331,12 +371,13 @@ func (c *Client) Sync(ctx context.Context, opts plugins.SyncOptions) (*plugins.S
 // where available.
 func (c *Client) Upgrade(ctx context.Context, opts plugins.UpgradeOptions) (*plugins.UpgradeResult, error) {
 	body := upgradeRequest{
-		ProjectRoot:    opts.ProjectRoot,
-		Names:          opts.Names,
-		Preview:        opts.Preview,
-		FailOnChanges:  opts.FailOnChanges,
-		AllowRefChange: opts.AllowRefChange,
-		Clients:        opts.Clients,
+		ProjectRoot:       opts.ProjectRoot,
+		Names:             opts.Names,
+		Preview:           opts.Preview,
+		FailOnChanges:     opts.FailOnChanges,
+		AllowRefChange:    opts.AllowRefChange,
+		AllowSignerChange: opts.AllowSignerChange,
+		Clients:           opts.Clients,
 	}
 
 	var result plugins.UpgradeResult
@@ -366,6 +407,17 @@ func (c *Client) doJSONRequest(
 	reqBody any,
 	result any,
 ) error {
+	return c.doJSONRequestWithHeaders(ctx, method, path, query, reqBody, result, nil)
+}
+
+func (c *Client) doJSONRequestWithHeaders(
+	ctx context.Context,
+	method, path string,
+	query url.Values,
+	reqBody any,
+	result any,
+	headers http.Header,
+) error {
 	var bodyReader io.Reader
 	if reqBody != nil {
 		data, err := json.Marshal(reqBody)
@@ -386,6 +438,11 @@ func (c *Client) doJSONRequest(
 		req.Header.Set("Content-Type", "application/json")
 	}
 	req.Header.Set("Accept", "application/json")
+	for name, values := range headers {
+		for _, value := range values {
+			req.Header.Add(name, value)
+		}
+	}
 
 	resp, err := c.httpClient.Do(req) // #nosec G704 -- baseURL is a trusted local API server URL
 	if err != nil {

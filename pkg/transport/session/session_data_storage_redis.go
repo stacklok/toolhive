@@ -12,7 +12,7 @@ import (
 
 	"github.com/redis/go-redis/v9"
 
-	tcredis "github.com/stacklok/toolhive-core/redis"
+	"github.com/stacklok/toolhive-core/redisconn"
 )
 
 // RedisSessionDataStorage implements DataStorage backed by Redis/Valkey.
@@ -40,14 +40,14 @@ type RedisSessionDataStorage struct {
 // delegated to the shared toolhive-core redis package.
 func NewRedisSessionDataStorage(
 	ctx context.Context,
-	cfg tcredis.Config,
+	cfg redisconn.Config,
 	keyPrefix string,
 	ttl time.Duration,
 ) (*RedisSessionDataStorage, error) {
 	if err := validateSessionInvariants(keyPrefix, ttl); err != nil {
 		return nil, err
 	}
-	client, err := tcredis.NewClient(ctx, &cfg)
+	client, err := redisconn.NewClient(ctx, &cfg)
 	if err != nil {
 		return nil, err
 	}

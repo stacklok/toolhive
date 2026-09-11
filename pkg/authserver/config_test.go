@@ -18,6 +18,7 @@ import (
 	"github.com/stacklok/toolhive/pkg/authserver/server/registration"
 	"github.com/stacklok/toolhive/pkg/authserver/server/tokenexchange"
 	"github.com/stacklok/toolhive/pkg/authserver/upstream"
+	"github.com/stacklok/toolhive/pkg/oauthproto"
 )
 
 func TestValidateIssuerURL(t *testing.T) {
@@ -82,6 +83,32 @@ func TestValidateIssuerURL(t *testing.T) {
 			assertError(t, err, tt.wantErr, tt.errMsg)
 		})
 	}
+}
+
+// mustNewSPIFFETrustConfig builds a well-formed, non-empty *SPIFFETrustConfig
+// for tests asserting that Config.Validate() rejects it as not-yet-enforced.
+func mustNewSPIFFETrustConfig(t *testing.T) *SPIFFETrustConfig {
+	t.Helper()
+	trust, err := NewSPIFFETrustConfig(
+		[]SPIFFETrustDomainRunConfig{{
+			Name:         "production",
+			TrustDomain:  "example.org",
+			Methods:      []SPIFFEAuthenticationMethod{SPIFFEAuthenticationMethodX509},
+			BundleSource: validWorkloadAPIBundleSource(),
+		}},
+		&InboundGrantsRunConfig{SPIFFEClientAuth: []SPIFFEClientAuthRunConfig{{
+			TrustDomainRef:   "production",
+			PrincipalPattern: "spiffe://example.org/ns/default/*",
+			ClientID:         "agent-client",
+			Methods:          []SPIFFEAuthenticationMethod{SPIFFEAuthenticationMethodX509},
+			Audiences:        []string{"https://mcp.example.com"},
+			Scopes:           []string{"openid"},
+			GrantTypes:       []string{SPIFFEGrantTypeTokenExchange},
+		}}},
+		[]string{"openid"}, []string{"https://mcp.example.com"},
+	)
+	require.NoError(t, err)
+	return trust
 }
 
 func TestConfigValidate(t *testing.T) {
@@ -157,12 +184,30 @@ func TestConfigValidate(t *testing.T) {
 
 		// Confidential-client transport gate (same predicate RunConfig.Validate uses)
 		{name: "confidential clients combined with insecure HTTP rejects", config: Config{Issuer: "http://example.com", KeyProvider: validKeyProvider, HMACSecrets: validHMAC, Upstreams: validUpstreams, AllowedAudiences: []string{"https://mcp.example.com"}, AllowConfidentialClientRegistration: true, InsecureAllowHTTP: true}, wantErr: true, errMsg: "allow_confidential_client_registration cannot be combined with insecure_allow_http"},
+		{name: "private-key JWT registration combined with insecure HTTP passes (no secret to protect)", config: Config{Issuer: "http://example.com", KeyProvider: validKeyProvider, HMACSecrets: validHMAC, Upstreams: validUpstreams, AllowedAudiences: []string{"https://mcp.example.com"}, AllowPrivateKeyJWTRegistration: true, InsecureAllowHTTP: true}},
+		{name: "private-key JWT registration combined with token exchange disabled rejects", config: Config{Issuer: "https://example.com", KeyProvider: validKeyProvider, HMACSecrets: validHMAC, Upstreams: validUpstreams, AllowedAudiences: []string{"https://mcp.example.com"}, AllowPrivateKeyJWTRegistration: true, DisableTokenExchange: true}, wantErr: true, errMsg: "token-exchange-only"},
 
 		// Valid configs
 		{name: "valid minimal", config: Config{Issuer: "https://example.com", KeyProvider: validKeyProvider, HMACSecrets: validHMAC, Upstreams: validUpstreams, AllowedAudiences: []string{"https://mcp.example.com"}}},
 		{name: "valid nil key provider", config: Config{Issuer: "https://example.com", HMACSecrets: validHMAC, Upstreams: validUpstreams, AllowedAudiences: []string{"https://mcp.example.com"}}},
 		{name: "valid empty upstream name defaults", config: Config{Issuer: "https://example.com", KeyProvider: validKeyProvider, HMACSecrets: validHMAC, Upstreams: []UpstreamConfig{{Type: UpstreamProviderTypeOAuth2, OAuth2Config: validUpstream}}, AllowedAudiences: []string{"https://mcp.example.com"}}},
 		{name: "valid OIDC upstream", config: Config{Issuer: "https://example.com", KeyProvider: validKeyProvider, HMACSecrets: validHMAC, Upstreams: validOIDCUpstreams, AllowedAudiences: []string{"https://mcp.example.com"}}},
+
+		// SPIFFETrust is accepted by NewSPIFFETrustConfig as well-formed, but
+		// hard-rejected here too -- mirroring RunConfig.Validate's
+		// validateSPIFFENotYetEnforced -- since a caller that constructs
+		// Config directly (e.g. authserver.New) bypasses RunConfig entirely.
+		{name: "nil SPIFFETrust passes", config: Config{Issuer: "https://example.com", KeyProvider: validKeyProvider, HMACSecrets: validHMAC, Upstreams: validUpstreams, AllowedAudiences: []string{"https://mcp.example.com"}}},
+		{
+			name: "well-formed Config.SPIFFETrust is rejected as not yet enforced",
+			config: Config{
+				Issuer: "https://example.com", KeyProvider: validKeyProvider, HMACSecrets: validHMAC,
+				Upstreams: validUpstreams, AllowedAudiences: []string{"https://mcp.example.com"},
+				SPIFFETrust: mustNewSPIFFETrustConfig(t),
+			},
+			wantErr: true,
+			errMsg:  "SPIFFE client authentication is not yet enforced",
+		},
 	}
 
 	for _, tt := range tests {
@@ -170,6 +215,57 @@ func TestConfigValidate(t *testing.T) {
 			t.Parallel()
 			err := tt.config.Validate()
 			assertError(t, err, tt.wantErr, tt.errMsg)
+		})
+	}
+}
+
+func TestConfigValidate_ZeroUpstreamAlternatives(t *testing.T) {
+	t.Parallel()
+
+	secret := []byte("0123456789abcdef0123456789abcdef")
+	configs := []struct {
+		name string
+		cfg  Config
+	}{
+		{
+			name: "delegate client",
+			cfg: Config{
+				Issuer:           "https://example.com",
+				HMACSecrets:      servercrypto.NewHMACSecrets(secret),
+				AllowedAudiences: []string{"https://mcp.example.com"},
+				DelegateClients: []DelegateClient{{
+					ClientID:     "delegate",
+					ClientSecret: strings.Repeat("a", minDelegateClientSecretLength),
+					Scopes:       []string{"openid"},
+					Audiences:    []string{"https://mcp.example.com"},
+				}},
+			},
+		},
+		{
+			name: "JWT bearer trusted issuer",
+			cfg: Config{
+				Issuer:           "https://example.com",
+				HMACSecrets:      servercrypto.NewHMACSecrets(secret),
+				AllowedAudiences: []string{"https://mcp.example.com"},
+				TrustedIssuers: []tokenexchange.TrustedIssuer{{
+					IssuerURL: "https://idp.example.com",
+					JWTBearerGrant: &tokenexchange.JWTBearerGrantPolicy{
+						MaxAssertionAge: "1m",
+						SubjectBindings: []tokenexchange.JWTBearerSubjectBinding{{
+							Subject:          "workload",
+							AllowedResources: []string{"https://mcp.example.com"},
+						}},
+						AcceptedAudiences: []string{"https://example.com/oauth/token"},
+					},
+				}},
+			},
+		},
+	}
+
+	for _, tt := range configs {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			require.NoError(t, tt.cfg.Validate())
 		})
 	}
 }
@@ -420,6 +516,53 @@ func TestOAuth2UpstreamRunConfigValidate(t *testing.T) {
 				ClientID: "c",
 			},
 		},
+
+		// TokenEndpointAuthMethod / client secret source consistency.
+		{
+			name: "unrecognized TokenEndpointAuthMethod rejects",
+			config: OAuth2UpstreamRunConfig{
+				ClientID:                "c",
+				TokenEndpointAuthMethod: "not_a_real_method",
+			},
+			wantErr: true,
+			errMsg:  "unsupported token_endpoint_auth_method",
+		},
+		{
+			name: "none with a configured client secret file rejects",
+			config: OAuth2UpstreamRunConfig{
+				ClientID:                "c",
+				ClientSecretFile:        "/tmp/secret",
+				TokenEndpointAuthMethod: oauthproto.TokenEndpointAuthMethodNone,
+			},
+			wantErr: true,
+			errMsg:  "token_endpoint_auth_method none cannot be used with a client secret",
+		},
+		{
+			name: "client_secret_basic without a secret source rejects",
+			config: OAuth2UpstreamRunConfig{
+				ClientID:                "c",
+				TokenEndpointAuthMethod: oauthproto.TokenEndpointAuthMethodClientSecretBasic,
+			},
+			wantErr: true,
+			errMsg:  `token_endpoint_auth_method "client_secret_basic" requires client_secret_file or client_secret_env_var`,
+		},
+		{
+			name: "client_secret_post without a secret source rejects",
+			config: OAuth2UpstreamRunConfig{
+				ClientID:                "c",
+				TokenEndpointAuthMethod: oauthproto.TokenEndpointAuthMethodClientSecretPost,
+			},
+			wantErr: true,
+			errMsg:  `token_endpoint_auth_method "client_secret_post" requires client_secret_file or client_secret_env_var`,
+		},
+		{
+			name: "client_secret_basic with a client secret env var configured is valid",
+			config: OAuth2UpstreamRunConfig{
+				ClientID:                "c",
+				ClientSecretEnvVar:      "MY_CLIENT_SECRET",
+				TokenEndpointAuthMethod: oauthproto.TokenEndpointAuthMethodClientSecretBasic,
+			},
+		},
 	}
 
 	for _, tt := range tests {
@@ -488,6 +631,8 @@ func TestRunConfigValidate(t *testing.T) {
 		{name: "CIMD enabled omitted optional fields pass", config: RunConfig{CIMD: &CIMDRunConfig{Enabled: true}}},
 		// Confidential-client transport gate
 		{name: "confidential clients without insecure HTTP passes", config: RunConfig{AllowConfidentialClientRegistration: true}},
+		{name: "private-key JWT registration defaults to false", config: RunConfig{}},
+		{name: "private-key JWT registration without insecure HTTP passes", config: RunConfig{AllowPrivateKeyJWTRegistration: true}},
 		{name: "insecure HTTP without confidential clients passes", config: RunConfig{InsecureAllowHTTP: true}},
 		{
 			name:    "confidential clients with malformed issuer reject before startup",
@@ -504,6 +649,10 @@ func TestRunConfigValidate(t *testing.T) {
 			},
 			wantErr: true,
 			errMsg:  "confidential clients require a valid issuer URL",
+		},
+		{
+			name:   "private-key JWT registration combined with insecure HTTP passes (no secret to protect)",
+			config: RunConfig{AllowPrivateKeyJWTRegistration: true, InsecureAllowHTTP: true},
 		},
 		{
 			name: "confidential clients with plain-HTTP loopback issuer rejects without the opt-in",
@@ -534,6 +683,41 @@ func TestRunConfigValidate(t *testing.T) {
 			config: RunConfig{
 				Issuer: "http://localhost:8080",
 			},
+		},
+		{
+			name: "private-key JWT registration with plain-HTTP loopback issuer is unaffected (no secret to protect)",
+			config: RunConfig{
+				Issuer:                         "http://localhost:8080",
+				AllowPrivateKeyJWTRegistration: true,
+			},
+		},
+		// SPIFFE trust is accepted by ValidateSPIFFETrust as well-formed, but
+		// hard-rejected here until a real SVID verification consumer lands.
+		{
+			name:   "no SPIFFE trust domains passes",
+			config: RunConfig{},
+		},
+		{
+			name: "well-formed SPIFFE trust configuration is rejected as not yet enforced",
+			config: RunConfig{
+				SPIFFETrustDomains: []SPIFFETrustDomainRunConfig{{
+					Name:         "production",
+					TrustDomain:  "example.org",
+					Methods:      []SPIFFEAuthenticationMethod{SPIFFEAuthenticationMethodX509},
+					BundleSource: validWorkloadAPIBundleSource(),
+				}},
+				InboundGrants: &InboundGrantsRunConfig{SPIFFEClientAuth: []SPIFFEClientAuthRunConfig{{
+					TrustDomainRef:   "production",
+					PrincipalPattern: "spiffe://example.org/ns/default/*",
+					ClientID:         "agent-client",
+					Methods:          []SPIFFEAuthenticationMethod{SPIFFEAuthenticationMethodX509},
+					Audiences:        []string{"https://mcp.example.org/resource"},
+					Scopes:           []string{"openid"},
+					GrantTypes:       []string{SPIFFEGrantTypeTokenExchange},
+				}}},
+			},
+			wantErr: true,
+			errMsg:  "SPIFFE client authentication is not yet enforced",
 		},
 	}
 
@@ -568,6 +752,28 @@ func TestDelegateClientRunConfigValidate(t *testing.T) {
 		{name: "scope outside supported", clients: []DelegateClientRunConfig{{ClientID: "delegate", ClientSecretEnvVar: "SECRET", Scopes: []string{"admin"}, Audiences: validClient.Audiences}}, wantErr: `"admin" which is not in scopes_supported`},
 		{name: "missing audiences", clients: []DelegateClientRunConfig{{ClientID: "delegate", ClientSecretEnvVar: "SECRET", Scopes: validClient.Scopes}}, wantErr: "audiences is required"},
 		{name: "audience outside allowed", clients: []DelegateClientRunConfig{{ClientID: "delegate", ClientSecretEnvVar: "SECRET", Scopes: validClient.Scopes, Audiences: []string{"https://other.example.com"}}}, wantErr: "is not in allowed_audiences"},
+		// P4 (PR #6284 review): a URL-shaped client_id collides with CIMD
+		// client resolution (oauthproto.IsClientIDMetadataDocumentURL) — the
+		// CIMD decorator would shadow this pre-provisioned client on reads,
+		// and with write-through persistence (CIMDStorageDecorator.fetch) an
+		// unauthenticated request resolving that same URL would overwrite
+		// this confidential delegate client in place.
+		{
+			name: "https client_id collides with CIMD and is rejected",
+			clients: []DelegateClientRunConfig{{
+				ClientID: "https://example.com/client-metadata.json", ClientSecretEnvVar: "SECRET",
+				Scopes: validClient.Scopes, Audiences: validClient.Audiences,
+			}},
+			wantErr: "looks like a CIMD client metadata URL",
+		},
+		{
+			name: "loopback http client_id also collides with CIMD and is rejected",
+			clients: []DelegateClientRunConfig{{
+				ClientID: "http://localhost:8080/client-metadata.json", ClientSecretEnvVar: "SECRET",
+				Scopes: validClient.Scopes, Audiences: validClient.Audiences,
+			}},
+			wantErr: "looks like a CIMD client metadata URL",
+		},
 	}
 
 	for _, tt := range tests {
@@ -657,6 +863,9 @@ func TestConfigValidateDelegateClients(t *testing.T) {
 // validateEmbeddedAuthServer reuses: confidential clients are rejected when
 // combined with insecureAllowHTTP (unconditionally), or with a plain-HTTP
 // loopback issuer unless insecureAllowConfidentialOverLoopbackHTTP opts in.
+// private_key_jwt registration has no equivalent transport gate: it never
+// returns a secret in the DCR response, so it is unaffected by any of this
+// (see TestConfigValidate's "private-key JWT registration ... passes" cases).
 func TestValidateConfidentialClientTransport(t *testing.T) {
 	t.Parallel()
 
@@ -709,6 +918,15 @@ func TestValidateConfidentialClientTransport(t *testing.T) {
 			name:              "confidential with plain-HTTP non-loopback issuer rejects without opt-in",
 			allowConfidential: true, issuer: "http://auth.example.com",
 			wantErr: true, errContains: "plain-HTTP non-loopback",
+		},
+		{
+			name:                  "confidential credential-bearing non-loopback HTTP issuer rejects with loopback opt-in without leaking credentials",
+			allowConfidential:     true,
+			issuer:                "http://sentinel-user:sentinel-password@auth.example.com",
+			allowLoopbackOverride: true,
+			wantErr:               true,
+			errContains:           "require a valid issuer URL",
+			redacted:              []string{"sentinel-user", "sentinel-password", "http://sentinel-user:sentinel-password@auth.example.com"},
 		},
 		{
 			name:              "confidential with plain-HTTP non-loopback issuer rejects with loopback opt-in",
@@ -1088,9 +1306,9 @@ func TestConfigApplyDefaults_DelegationTokenLifespan(t *testing.T) {
 }
 
 // TestConfigValidate_TrustedIssuers covers validateTrustedIssuers as reached
-// from Config.Validate: the URL-shape checks (validateTrustedIssuerURL on
-// issuer_url, validateJWKSEndpointURL on jwks_url) and the structural checks
-// delegated to tokenexchange.ValidateTrustedIssuers.
+// from Config.Validate: the URL-shape checks (tokenexchange.ValidateTrustedIssuerURL
+// on issuer_url, tokenexchange.ValidateJWKSURL on jwks_url) and the structural
+// checks, all delegated to tokenexchange.ValidateTrustedIssuers.
 func TestConfigValidate_TrustedIssuers(t *testing.T) {
 	t.Parallel()
 
@@ -1131,7 +1349,7 @@ func TestConfigValidate_TrustedIssuers(t *testing.T) {
 				{IssuerURL: "htps://idp.example.com", ExpectedAudience: "https://mcp.example.com", AllowedDelegateClients: []string{"*"}},
 			},
 			wantErr: true,
-			errMsg:  "issuer_url",
+			errMsg:  "scheme must be https",
 		},
 		{
 			name: "issuer_url empty rejected",
@@ -1139,7 +1357,15 @@ func TestConfigValidate_TrustedIssuers(t *testing.T) {
 				{IssuerURL: "", ExpectedAudience: "https://mcp.example.com", AllowedDelegateClients: []string{"*"}},
 			},
 			wantErr: true,
-			errMsg:  "issuer is required",
+			errMsg:  "issuer_url is required",
+		},
+		{
+			name: "issuer_url empty hostname with port rejected",
+			issuers: []tokenexchange.TrustedIssuer{
+				{IssuerURL: "https://:443", ExpectedAudience: "https://mcp.example.com", AllowedDelegateClients: []string{"*"}},
+			},
+			wantErr: true,
+			errMsg:  "host is required",
 		},
 		{
 			name: "issuer_url http without per-issuer insecure_allow_http rejected",
@@ -1147,7 +1373,7 @@ func TestConfigValidate_TrustedIssuers(t *testing.T) {
 				{IssuerURL: "http://idp.example.com", ExpectedAudience: "https://mcp.example.com", AllowedDelegateClients: []string{"*"}},
 			},
 			wantErr: true,
-			errMsg:  "http scheme is only allowed for localhost",
+			errMsg:  "scheme must be https",
 		},
 		{
 			name: "issuer_url http with per-issuer insecure_allow_http accepted",
@@ -1159,7 +1385,7 @@ func TestConfigValidate_TrustedIssuers(t *testing.T) {
 			// Unlike Config.Issuer, a trusted issuer gets no localhost
 			// exemption: it isn't this server's own issuer, so the same
 			// same-host development convenience doesn't apply — see
-			// validateTrustedIssuerURL's doc comment. Without
+			// tokenexchange.ValidateTrustedIssuerURL's doc comment. Without
 			// insecure_allow_http, http://localhost must be rejected here
 			// the same as any other http issuer_url.
 			name: "issuer_url http localhost rejected without per-issuer insecure_allow_http",
@@ -1167,7 +1393,7 @@ func TestConfigValidate_TrustedIssuers(t *testing.T) {
 				{IssuerURL: "http://localhost:8080", ExpectedAudience: "https://mcp.example.com", AllowedDelegateClients: []string{"*"}},
 			},
 			wantErr: true,
-			errMsg:  "http scheme is only allowed for localhost",
+			errMsg:  "scheme must be https",
 		},
 		{
 			name: "issuer_url http localhost accepted with per-issuer insecure_allow_http",
@@ -1428,7 +1654,15 @@ func TestRunConfigValidate_TrustedIssuers(t *testing.T) {
 				{IssuerURL: "htps://idp.example.com", ExpectedAudience: "https://mcp.example.com", AllowedDelegateClients: []string{"*"}},
 			},
 			wantErr: true,
-			errMsg:  "issuer_url",
+			errMsg:  "scheme must be https",
+		},
+		{
+			name: "issuer_url empty hostname with port rejected",
+			issuers: []tokenexchange.TrustedIssuer{
+				{IssuerURL: "https://:443", ExpectedAudience: "https://mcp.example.com", AllowedDelegateClients: []string{"*"}},
+			},
+			wantErr: true,
+			errMsg:  "host is required",
 		},
 		{
 			name: "missing expected_audience rejected",

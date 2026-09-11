@@ -963,6 +963,21 @@ re-sync, modify `configYAML` (or restart the registry API pod).
 
 **Implementation**: `cmd/thv-operator/controllers/mcpregistry_controller.go`
 
+## Skill and Plugin Catalog Integration
+
+The configured registry can expose Agent Skills and AI-tool plugins alongside
+MCP servers. These entries provide discovery metadata and OCI package
+references; their installation and trust lifecycles remain owned by the skills
+and plugins services.
+
+For plugin name resolution, ToolHive searches the registry and then requires an
+exact, case-insensitive name match (and namespace match when one was supplied).
+Zero matches are not found and multiple exact matches are rejected as
+ambiguous; a fuzzy search result is never selected merely because it appeared
+first. The selected entry must provide an OCI package. See
+[Plugins System](14-plugins-system.md#1-discovery) for the complete resolution
+chain and [Skills System](12-skills-system.md) for skill discovery.
+
 ## Related Documentation
 
 ### Internal Documentation

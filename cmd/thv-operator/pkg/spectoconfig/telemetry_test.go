@@ -307,6 +307,44 @@ func TestNormalizeMCPTelemetryConfig(t *testing.T) {
 				ServiceName: "test-server",
 			},
 		},
+		{
+			name: "prometheus config with unset MetricsOnTransportPort stays unset",
+			spec: &v1beta1.MCPTelemetryConfigSpec{
+				Prometheus: &v1beta1.PrometheusConfig{Enabled: true},
+			},
+			serviceNameOverride: "",
+			defaultServiceName:  "test-server",
+			expected: &telemetry.Config{
+				ServiceName:                 "test-server",
+				EnablePrometheusMetricsPath: true,
+			},
+		},
+		{
+			name: "prometheus config with MetricsOnTransportPort true",
+			spec: &v1beta1.MCPTelemetryConfigSpec{
+				Prometheus: &v1beta1.PrometheusConfig{Enabled: true, MetricsOnTransportPort: boolPtr(true)},
+			},
+			serviceNameOverride: "",
+			defaultServiceName:  "test-server",
+			expected: &telemetry.Config{
+				ServiceName:                 "test-server",
+				EnablePrometheusMetricsPath: true,
+				MetricsOnTransportPort:      boolPtr(true),
+			},
+		},
+		{
+			name: "prometheus config with MetricsOnTransportPort false",
+			spec: &v1beta1.MCPTelemetryConfigSpec{
+				Prometheus: &v1beta1.PrometheusConfig{Enabled: true, MetricsOnTransportPort: boolPtr(false)},
+			},
+			serviceNameOverride: "",
+			defaultServiceName:  "test-server",
+			expected: &telemetry.Config{
+				ServiceName:                 "test-server",
+				EnablePrometheusMetricsPath: true,
+				MetricsOnTransportPort:      boolPtr(false),
+			},
+		},
 	}
 
 	for _, tt := range tests {
@@ -322,6 +360,31 @@ func TestNormalizeMCPTelemetryConfig(t *testing.T) {
 			}
 		})
 	}
+}
+
+// TestNormalizeMCPTelemetryConfig_ClonesMetricsOnTransportPort guards against the
+// pointer aliasing NormalizeTelemetryConfig's shallow copy ("Create a copy to avoid
+// modifying the input") cannot catch on its own: MetricsOnTransportPort is a *bool
+// copied from the CRD spec, so if the converter ever assigns the spec's pointer
+// directly instead of cloning the value, a write through the result would reach
+// back into the caller's spec object.
+func TestNormalizeMCPTelemetryConfig_ClonesMetricsOnTransportPort(t *testing.T) {
+	t.Parallel()
+
+	original := boolPtr(true)
+	spec := &v1beta1.MCPTelemetryConfigSpec{
+		Prometheus: &v1beta1.PrometheusConfig{Enabled: true, MetricsOnTransportPort: original},
+	}
+
+	result := NormalizeMCPTelemetryConfig(spec, "", "test-server")
+	require.NotNil(t, result)
+	require.NotNil(t, result.MetricsOnTransportPort)
+
+	assert.NotSame(t, original, result.MetricsOnTransportPort,
+		"the result must not alias the spec's pointer")
+
+	*result.MetricsOnTransportPort = false
+	assert.True(t, *original, "mutating the result must not affect the input spec")
 }
 
 func TestNormalizeMCPTelemetryConfig_DoesNotModifyInput(t *testing.T) {
@@ -392,3 +455,5 @@ func TestNormalizeMCPTelemetryConfig_ClampsSamplingRate(t *testing.T) {
 		})
 	}
 }
+
+func boolPtr(b bool) *bool { return &b }

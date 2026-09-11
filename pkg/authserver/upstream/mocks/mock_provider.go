@@ -104,3 +104,39 @@ func (mr *MockOAuth2ProviderMockRecorder) Type() *gomock.Call {
 	mr.mock.ctrl.T.Helper()
 	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "Type", reflect.TypeOf((*MockOAuth2Provider)(nil).Type))
 }
+
+// MockIdleConnectionCloser is a mock of IdleConnectionCloser interface.
+type MockIdleConnectionCloser struct {
+	ctrl     *gomock.Controller
+	recorder *MockIdleConnectionCloserMockRecorder
+	isgomock struct{}
+}
+
+// MockIdleConnectionCloserMockRecorder is the mock recorder for MockIdleConnectionCloser.
+type MockIdleConnectionCloserMockRecorder struct {
+	mock *MockIdleConnectionCloser
+}
+
+// NewMockIdleConnectionCloser creates a new mock instance.
+func NewMockIdleConnectionCloser(ctrl *gomock.Controller) *MockIdleConnectionCloser {
+	mock := &MockIdleConnectionCloser{ctrl: ctrl}
+	mock.recorder = &MockIdleConnectionCloserMockRecorder{mock}
+	return mock
+}
+
+// EXPECT returns an object that allows the caller to indicate expected use.
+func (m *MockIdleConnectionCloser) EXPECT() *MockIdleConnectionCloserMockRecorder {
+	return m.recorder
+}
+
+// CloseIdleConnections mocks base method.
+func (m *MockIdleConnectionCloser) CloseIdleConnections() {
+	m.ctrl.T.Helper()
+	m.ctrl.Call(m, "CloseIdleConnections")
+}
+
+// CloseIdleConnections indicates an expected call of CloseIdleConnections.
+func (mr *MockIdleConnectionCloserMockRecorder) CloseIdleConnections() *gomock.Call {
+	mr.mock.ctrl.T.Helper()
+	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "CloseIdleConnections", reflect.TypeOf((*MockIdleConnectionCloser)(nil).CloseIdleConnections))
+}

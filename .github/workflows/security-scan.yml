@@ -13,6 +13,11 @@ on:
     # Run daily at 2 AM UTC
     - cron: '0 2 * * *'
 
+# Cancel superseded PR runs; keep other events independent.
+concurrency:
+  group: security-scan-${{ github.event.pull_request.number || github.run_id }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
 # security-events: write is granted per job rather than here, so only the two
 # jobs that upload SARIF can write security events.
 permissions:
@@ -27,20 +32,20 @@ jobs:
       security-events: write
     steps:
       - name: Checkout repository
-        uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
         with:
           persist-credentials: false
 
       - name: Run Grype vulnerability scanner
         id: grype-scan
-        uses: anchore/scan-action@e1165082ffb1fe366ebaf02d8526e7c4989ea9d2 # v7.4.0
+        uses: anchore/scan-action@27805bf3b4e84b4a5c980df22ed233c00390a439 # v7.4.2
         with:
           path: "."
           output-format: "sarif"
           fail-build: false
 
       - name: Upload Grype scan results to GitHub Security tab
-        uses: github/codeql-action/upload-sarif@5595ccaf912efad79be6eef63a5619ff05969be3 # v4.37.6
+        uses: github/codeql-action/upload-sarif@b96794f015dfd88f77b49b1c93e0fa7110f94c63 # v4.38.0
         if: always()
         with:
           sarif_file: ${{ steps.grype-scan.outputs.sarif }}
@@ -54,7 +59,7 @@ jobs:
       security-events: write
     steps:
       - name: Checkout repository
-        uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
         with:
           # This job only reads the workflow files; it never pushes.
           persist-credentials: false
@@ -65,9 +70,9 @@ jobs:
       # code when the output format is SARIF, which is what advanced-security
       # selects. The upload happens inside the action.
       - name: Report findings
-        uses: zizmorcore/zizmor-action@3dc1ecc9bcb9e94e9b2c709687979e1298497054 # v0.6.2
+        uses: zizmorcore/zizmor-action@cc914d7f3750a2d13d75c7f184a1060aa0e9d482 # v0.6.4
         with:
-          version: "1.29.0"
+          version: "1.30.1"
           inputs: .github/
           persona: regular
 
@@ -83,9 +88,9 @@ jobs:
       # expressions carrying values GitHub constrains to characters that cannot
       # reach a shell. Lowering this threshold means dealing with those first.
       - name: Fail on new findings
-        uses: zizmorcore/zizmor-action@3dc1ecc9bcb9e94e9b2c709687979e1298497054 # v0.6.2
+        uses: zizmorcore/zizmor-action@cc914d7f3750a2d13d75c7f184a1060aa0e9d482 # v0.6.4
         with:
-          version: "1.29.0"
+          version: "1.30.1"
           inputs: .github/
           persona: regular
           min-severity: medium
@@ -96,7 +101,7 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - name: Checkout repository
-        uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
         with:
           persist-credentials: false
 
@@ -113,16 +118,6 @@ jobs:
         run: |
           set -euo pipefail
 
-          # Ignored vulnerabilities with justification:
-          # Go stdlib advisories published 2026-06-02, all fixed in go1.26.4 /
-          # go1.25.11 (DoS / log-injection class, no RCE):
-          #   GO-2026-5037 (CVE-2026-27145, crypto/x509 VerifyHostname)
-          #   GO-2026-5038 (CVE-2026-42504, mime WordDecoder.DecodeHeader)
-          #   GO-2026-5039 (CVE-2026-42507, net/textproto error messages)
-          # CI's `setup-go: stable` still resolves to go1.26.3 because the
-          # actions/go-versions manifest lags the Go release. Temporary
-          # exclusion; remove once CI builds on go1.26.4 or later.
-          #
           # GO-2026-5932: golang.org/x/crypto/openpgp is deprecated-by-design
           # ("unsafe, not maintained, should not be used"). No fixed version
           # exists and none is planned.
@@ -139,7 +134,33 @@ jobs:
           # in sigstore/rekor#2883 (merged 2026-07-15), which landed after
           # v1.5.3 (2026-07-02) and so is not in any release yet. Bump rekor
           # past v1.5.3 once a release contains it, then drop this entry.
-          IGNORED_VULNS="GO-2026-5037 GO-2026-5038 GO-2026-5039 GO-2026-5932"
+          #
+          # GO-2026-6354 (CVE-2026-78662) and GO-2026-6355 (CVE-2026-56855):
+          # both are DoS in golang.org/x/crypto/ssh, where a malicious SSH
+          # peer deadlocks a connection. Both are fixed in x/crypto v0.56.0.
+          #
+          # We cannot take that fix yet. x/crypto v0.56.0 declares `go
+          # 1.26.0`, and Go orders the bare language version `1.26` below
+          # the release `1.26.0`, so the toolchain refuses to build until
+          # go.mod says `1.26.0`. The lint workflow's "Check go.mod version
+          # format" step forbids a patch version in the go directive, so
+          # that bump cannot land.
+          #
+          # ToolHive never opens an SSH connection. x/crypto/ssh is linked
+          # only because go-git registers every transport at package init:
+          #   pkg/git.Clone -> go-git CloneContext
+          #     -> transport registry -> plumbing/transport/ssh
+          # Every caller of pkg/git.Clone routes through
+          # gitresolver.CloneConfigForRef, and ParseGitReference
+          # (pkg/skills/gitresolver/reference.go) hardcodes the clone scheme
+          # to https (http under TOOLHIVE_DEV). No user-supplied ssh:// or
+          # git@host: URL can reach the SSH transport, so neither DoS is
+          # reachable on any ToolHive path.
+          #
+          # REMOVAL TRIGGER: `go 1.27` sorts above `1.26.0`, so moving the
+          # go directive to 1.27 satisfies x/crypto v0.56.0 without a patch
+          # version. Bump x/crypto and drop both entries then.
+          IGNORED_VULNS="GO-2026-5932 GO-2026-6354 GO-2026-6355"
 
           # Show the raw output for debugging
           # A scan that produced nothing is a failed scan, not a clean one.

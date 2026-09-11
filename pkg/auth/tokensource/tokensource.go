@@ -50,11 +50,12 @@ const preemptiveRefreshWindow = 30 * time.Second
 
 // OIDCParams holds the OIDC connection parameters for a token source.
 type OIDCParams struct {
-	Issuer       string
-	ClientID     string
-	Scopes       []string // "offline_access" is appended automatically if absent
-	Audience     string
-	CallbackPort int
+	Issuer                   string
+	ClientID                 string
+	Scopes                   []string // "offline_access" is appended automatically if absent
+	Audience                 string
+	CallbackPort             int
+	RequireExactCallbackPort bool
 }
 
 // ConfigPersister is called when the refresh token key or expiry changes —
@@ -401,11 +402,13 @@ func (t *OAuthTokenSource) buildFlowConfig(ctx context.Context) (*oauth.Config, 
 		true, // always use PKCE
 		t.opts.OIDC.CallbackPort,
 		t.opts.OIDC.Audience,
+		false, // issuer is operator-configured
 	)
 	if err != nil {
 		return nil, err
 	}
 	config.TokenEndpointTrusted = true
+	config.RequireExactCallbackPort = t.opts.OIDC.RequireExactCallbackPort
 	return config, nil
 }
 

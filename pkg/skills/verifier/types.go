@@ -46,7 +46,12 @@ type Result struct {
 	// Provisional marks a verification with a documented assurance gap
 	// (git signatures until Rekor proof validation lands).
 	Provisional bool
-	// Bundle is the serialized Sigstore bundle for offline re-verification.
+	// Bundle is the signature material for offline re-verification, in
+	// core's durable form: bare Sigstore bundle JSON when the signature
+	// binds to the artifact structurally, and the
+	// coreverifier.StoredBundleMediaType envelope (bundle plus the
+	// simple-signing payload) when the payload is what names the artifact.
+	// Opaque to callers — pass it back whole, with the ARTIFACT digest.
 	Bundle []byte
 }
 
@@ -90,6 +95,18 @@ func (r *Result) ToLockProvenance() *lockfile.Provenance {
 		SigstoreURL:       r.SigstoreURL,
 		Provisional:       r.Provisional,
 	}
+}
+
+// keyPinnedExpectation reports whether expected pins a cosign public key
+// rather than a certificate identity. Such an entry cannot be checked by the
+// keyless policy at all, and its certificate fields are empty by construction
+// — which sigstore rejects ("there must be subject alternative name
+// criteria") rather than treating as match-anything, so the failure is closed
+// either way. Detecting it up front replaces that opaque message with one
+// naming the actual mismatch: the entry is key-pinned, and the caller reached
+// for the keyless path.
+func keyPinnedExpectation(expected *ProvenanceExpectation) bool {
+	return expected != nil && expected.locked != nil && expected.locked.PublicKey != ""
 }
 
 // expectedIdentity converts a lock expectation into the core Identity bound

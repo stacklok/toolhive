@@ -53,11 +53,12 @@ func NewTokenSource(
 ) *TokenSource {
 	return tokensource.New(tokensource.Options{
 		OIDC: tokensource.OIDCParams{
-			Issuer:       cfg.OIDC.Issuer,
-			ClientID:     cfg.OIDC.ClientID,
-			Scopes:       cfg.OIDC.EffectiveScopes(),
-			Audience:     cfg.OIDC.Audience,
-			CallbackPort: cfg.OIDC.CallbackPort,
+			Issuer:                   cfg.OIDC.Issuer,
+			ClientID:                 cfg.OIDC.ClientID,
+			Scopes:                   cfg.OIDC.EffectiveScopes(),
+			Audience:                 cfg.OIDC.Audience,
+			CallbackPort:             cfg.OIDC.CallbackPort,
+			RequireExactCallbackPort: true,
 		},
 		SecretsProvider: secretsProvider,
 		Interactive:     interactive,

@@ -47,6 +47,14 @@ func (s *service) Install(ctx context.Context, opts skills.InstallOptions) (*ski
 	// the same lock key and DB record.
 	opts.ProjectRoot = projectRoot
 
+	// Checked here, before any resolve or fetch work: this is the only entry
+	// point a caller-supplied public key arrives through, and rejecting it now
+	// means a key that could never be used is reported as bad input rather
+	// than as a verification failure after the artifact has been pulled.
+	if err := validateInstallPublicKey(opts, scope); err != nil {
+		return nil, err
+	}
+
 	// When the caller supplies `version` separately and the name is a tag-less
 	// OCI-like reference (contains '/' but no ':' or '@'), splice the version
 	// in as the tag. Without this, parseOCIReference + qualifiedOCIRef would

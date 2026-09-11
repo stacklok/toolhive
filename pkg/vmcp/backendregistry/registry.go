@@ -28,13 +28,15 @@ import (
 	"k8s.io/client-go/rest"
 
 	"github.com/stacklok/toolhive/pkg/vmcp"
+	"github.com/stacklok/toolhive/pkg/vmcp/config"
 	"github.com/stacklok/toolhive/pkg/vmcp/k8s"
 	"github.com/stacklok/toolhive/pkg/vmcp/server"
 )
 
 // options holds the optional settings for NewKubernetesBackendRegistry.
 type options struct {
-	restConfig *rest.Config
+	restConfig   *rest.Config
+	outgoingAuth *config.OutgoingAuthConfig
 }
 
 // Option configures NewKubernetesBackendRegistry.
@@ -48,6 +50,17 @@ type Option func(*options)
 func WithRESTConfig(cfg *rest.Config) Option {
 	return func(o *options) {
 		o.restConfig = cfg
+	}
+}
+
+// WithOutgoingAuth supplies the vMCP config-level outgoing auth configuration.
+// The watcher applies it to every reconciled backend with the same precedence
+// startup discovery uses (discovered CR-side auth first, then backends[<name>],
+// then Default). The default (no option) is nil: reconciled backends keep only
+// the auth discovered from their own resource references.
+func WithOutgoingAuth(authConfig *config.OutgoingAuthConfig) Option {
+	return func(o *options) {
+		o.outgoingAuth = authConfig
 	}
 }
 
@@ -127,7 +140,7 @@ func NewKubernetesBackendRegistry(
 	// Start empty; the watcher's initial informer sync populates the registry.
 	dynamicRegistry := vmcp.NewDynamicRegistry(nil)
 
-	watcher, err := k8s.NewBackendWatcher(restConfig, namespace, group, dynamicRegistry)
+	watcher, err := k8s.NewBackendWatcher(restConfig, namespace, group, dynamicRegistry, o.outgoingAuth)
 	if err != nil {
 		return nil, nil, fmt.Errorf("failed to create backend watcher: %w", err)
 	}

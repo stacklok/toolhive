@@ -26912,6 +26912,12 @@ func (s *RegistryPlugin) encodeFields(e *jx.Encoder) {
 		}
 	}
 	{
+		if s.Provenance.Set {
+			e.FieldStart("provenance")
+			s.Provenance.Encode(e)
+		}
+	}
+	{
 		if s.Repository.Set {
 			e.FieldStart("repository")
 			s.Repository.Encode(e)
@@ -26937,7 +26943,7 @@ func (s *RegistryPlugin) encodeFields(e *jx.Encoder) {
 	}
 }
 
-var jsonFieldsNameOfRegistryPlugin = [12]string{
+var jsonFieldsNameOfRegistryPlugin = [13]string{
 	0:  "_meta",
 	1:  "description",
 	2:  "icons",
@@ -26946,10 +26952,11 @@ var jsonFieldsNameOfRegistryPlugin = [12]string{
 	5:  "name",
 	6:  "namespace",
 	7:  "packages",
-	8:  "repository",
-	9:  "status",
-	10: "title",
-	11: "version",
+	8:  "provenance",
+	9:  "repository",
+	10: "status",
+	11: "title",
+	12: "version",
 }
 
 // Decode decodes RegistryPlugin from json.
@@ -27053,6 +27060,16 @@ func (s *RegistryPlugin) Decode(d *jx.Decoder) error {
 				return nil
 			}(); err != nil {
 				return errors.Wrap(err, "decode field \"packages\"")
+			}
+		case "provenance":
+			if err := func() error {
+				s.Provenance.Reset()
+				if err := s.Provenance.Decode(d); err != nil {
+					return err
+				}
+				return nil
+			}(); err != nil {
+				return errors.Wrap(err, "decode field \"provenance\"")
 			}
 		case "repository":
 			if err := func() error {

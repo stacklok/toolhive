@@ -16,7 +16,7 @@ import (
 	"sync"
 	"time"
 
-	tcredis "github.com/stacklok/toolhive-core/redis"
+	"github.com/stacklok/toolhive-core/redisconn"
 	"github.com/stacklok/toolhive/pkg/auth/dcr"
 	"github.com/stacklok/toolhive/pkg/authserver"
 	servercrypto "github.com/stacklok/toolhive/pkg/authserver/server/crypto"
@@ -969,17 +969,17 @@ func createStorage(ctx context.Context, cfg *storage.RunConfig) (storage.Storage
 }
 
 // convertRedisRunConfig converts a serializable RedisRunConfig to a runtime
-// tcredis.Config. It resolves ACL credentials from environment variables and
+// redisconn.Config. It resolves ACL credentials from environment variables and
 // parses duration strings. Connection-mode topology and defaulting are handled
-// by the shared toolhive-core redis package when the client is constructed.
+// by the shared toolhive-core redisconn package when the client is constructed.
 //
 // An ACL config is not required: a nil rc.ACLUserConfig produces a no-auth
 // connection (for a Redis/Valkey instance running without authentication) and
 // emits one startup WARN naming the store. A populated ACL config whose
 // password resolves to empty is still rejected — see convertRedisACLConfig.
-func convertRedisRunConfig(rc *storage.RedisRunConfig) (tcredis.Config, error) {
+func convertRedisRunConfig(rc *storage.RedisRunConfig) (redisconn.Config, error) {
 	if rc == nil {
-		return tcredis.Config{}, fmt.Errorf("redis config is required when storage type is redis")
+		return redisconn.Config{}, fmt.Errorf("redis config is required when storage type is redis")
 	}
 
 	// AuthType declares authenticated intent. If it selects ACL-user auth, a
@@ -987,17 +987,17 @@ func convertRedisRunConfig(rc *storage.RedisRunConfig) (tcredis.Config, error) {
 	// loudly rather than silently downgrading to an unauthenticated connection.
 	// An empty AuthType with a nil ACLUserConfig remains a valid no-auth config.
 	if rc.AuthType == storage.AuthTypeACLUser && rc.ACLUserConfig == nil {
-		return tcredis.Config{}, fmt.Errorf(
+		return redisconn.Config{}, fmt.Errorf(
 			"auth_type %q requires acl_user_config; omit auth_type for a no-auth connection", rc.AuthType)
 	}
 
-	cfg := tcredis.Config{
+	cfg := redisconn.Config{
 		Addr:        rc.Addr,
 		ClusterMode: rc.ClusterMode,
 	}
 
 	if rc.SentinelConfig != nil {
-		cfg.SentinelConfig = &tcredis.SentinelConfig{
+		cfg.SentinelConfig = &redisconn.SentinelConfig{
 			MasterName:    rc.SentinelConfig.MasterName,
 			SentinelAddrs: rc.SentinelConfig.SentinelAddrs,
 		}
@@ -1006,18 +1006,18 @@ func convertRedisRunConfig(rc *storage.RedisRunConfig) (tcredis.Config, error) {
 
 	acl, err := convertRedisACLConfig(rc.ACLUserConfig)
 	if err != nil {
-		return tcredis.Config{}, fmt.Errorf("failed to convert ACL config: %w", err)
+		return redisconn.Config{}, fmt.Errorf("failed to convert ACL config: %w", err)
 	}
 	cfg.Username = acl.username
 	cfg.Password = acl.password
 
 	if err := applyRedisTimeouts(rc, &cfg); err != nil {
-		return tcredis.Config{}, fmt.Errorf("failed to apply redis timeouts: %w", err)
+		return redisconn.Config{}, fmt.Errorf("failed to apply redis timeouts: %w", err)
 	}
 
 	tlsCfg, err := convertRedisTLSRunConfig(rc.TLS)
 	if err != nil {
-		return tcredis.Config{}, fmt.Errorf("master TLS config: %w", err)
+		return redisconn.Config{}, fmt.Errorf("master TLS config: %w", err)
 	}
 	cfg.TLS = tlsCfg
 
@@ -1025,7 +1025,7 @@ func convertRedisRunConfig(rc *storage.RedisRunConfig) (tcredis.Config, error) {
 	if rc.SentinelConfig != nil {
 		sentinelTLSCfg, err := convertRedisTLSRunConfig(rc.SentinelTLS)
 		if err != nil {
-			return tcredis.Config{}, fmt.Errorf("sentinel TLS config: %w", err)
+			return redisconn.Config{}, fmt.Errorf("sentinel TLS config: %w", err)
 		}
 		cfg.SentinelTLS = sentinelTLSCfg
 	}
@@ -1118,7 +1118,7 @@ func redisStoreName(rc *storage.RedisRunConfig) string {
 }
 
 // applyRedisTimeouts parses and applies optional timeout duration strings to cfg.
-func applyRedisTimeouts(rc *storage.RedisRunConfig, cfg *tcredis.Config) error {
+func applyRedisTimeouts(rc *storage.RedisRunConfig, cfg *redisconn.Config) error {
 	if rc.DialTimeout != "" {
 		d, err := time.ParseDuration(rc.DialTimeout)
 		if err != nil {
@@ -1144,15 +1144,15 @@ func applyRedisTimeouts(rc *storage.RedisRunConfig, cfg *tcredis.Config) error {
 }
 
 // convertRedisTLSRunConfig converts a RedisTLSRunConfig to a runtime
-// tcredis.TLSConfig. Returns an error if a CA cert file is configured but
+// redisconn.TLSConfig. Returns an error if a CA cert file is configured but
 // cannot be read — this is treated as a hard error because silently falling
 // back to system CAs could mask a misconfiguration and cause confusing TLS
 // failures downstream.
-func convertRedisTLSRunConfig(rc *storage.RedisTLSRunConfig) (*tcredis.TLSConfig, error) {
+func convertRedisTLSRunConfig(rc *storage.RedisTLSRunConfig) (*redisconn.TLSConfig, error) {
 	if rc == nil {
 		return nil, nil
 	}
-	cfg := &tcredis.TLSConfig{
+	cfg := &redisconn.TLSConfig{
 		InsecureSkipVerify: rc.InsecureSkipVerify,
 	}
 	if rc.CACertFile != "" {

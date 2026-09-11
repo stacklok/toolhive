@@ -3233,6 +3233,9 @@
             "type": "array",
             "uniqueItems": false
           },
+          "provenance": {
+            "$ref": "#/components/schemas/RegistryProvenance"
+          },
           "repository": {
             "$ref": "#/components/schemas/RegistrySkillRepository"
           },

@@ -2271,6 +2271,296 @@ func (s *RedisStorage) DeletePendingAuthorization(ctx context.Context, state str
 }
 
 // -----------------------
+// Device Code Storage
+// -----------------------
+
+// storedDeviceRequest is a serializable wrapper for DeviceRequest. LastPolledAt
+// mirrors CreatedAt's epoch-seconds convention, using 0 to mean the zero
+// time.Time (never polled) — see deviceTimeToUnix / deviceUnixToTime.
+type storedDeviceRequest struct {
+	DeviceCode        string              `json:"device_code"`
+	UserCode          string              `json:"user_code"`
+	ClientID          string              `json:"client_id"`
+	Scopes            []string            `json:"scopes"`
+	Audience          []string            `json:"audience,omitempty"`
+	Status            DeviceRequestStatus `json:"status"`
+	IntervalSeconds   int64               `json:"interval_seconds,omitempty"`
+	LastPolledAt      int64               `json:"last_polled_at,omitempty"`
+	ResolvedUserID    string              `json:"resolved_user_id,omitempty"`
+	ResolvedUserName  string              `json:"resolved_user_name,omitempty"`
+	ResolvedUserEmail string              `json:"resolved_user_email,omitempty"`
+	SessionID         string              `json:"session_id,omitempty"`
+	CreatedAt         int64               `json:"created_at"`
+}
+
+// deviceTimeToUnix converts t to epoch seconds for JSON storage, using 0 to
+// mean the zero time.Time so a never-polled request round-trips through
+// LastPolledAt's IsZero() check rather than colliding with the Unix epoch.
+func deviceTimeToUnix(t time.Time) int64 {
+	if t.IsZero() {
+		return 0
+	}
+	return t.Unix()
+}
+
+// deviceUnixToTime is the inverse of deviceTimeToUnix.
+func deviceUnixToTime(unix int64) time.Time {
+	if unix == 0 {
+		return time.Time{}
+	}
+	return time.Unix(unix, 0)
+}
+
+// toDeviceRequest converts the wire representation back to a DeviceRequest,
+// cloning slice fields so the caller cannot mutate this storage's JSON-decoded
+// backing arrays.
+func (stored *storedDeviceRequest) toDeviceRequest() *DeviceRequest {
+	return &DeviceRequest{
+		DeviceCode:        stored.DeviceCode,
+		UserCode:          stored.UserCode,
+		ClientID:          stored.ClientID,
+		Scopes:            slices.Clone(stored.Scopes),
+		Audience:          slices.Clone(stored.Audience),
+		Status:            stored.Status,
+		Interval:          time.Duration(stored.IntervalSeconds) * time.Second,
+		LastPolledAt:      deviceUnixToTime(stored.LastPolledAt),
+		ResolvedUserID:    stored.ResolvedUserID,
+		ResolvedUserName:  stored.ResolvedUserName,
+		ResolvedUserEmail: stored.ResolvedUserEmail,
+		SessionID:         stored.SessionID,
+		CreatedAt:         time.Unix(stored.CreatedAt, 0),
+	}
+}
+
+// StoreDeviceRequest stores a new pending device request, indexed by both
+// DeviceCode and UserCode.
+//
+// Both keys are created with SETNX inside a single Redis transaction, so a
+// concurrent double-store cannot silently overwrite either index. Because
+// MULTI/EXEC applies each queued command unconditionally (there is no
+// short-circuit between them), the two SETNX calls can succeed and fail
+// independently; when exactly one did, the successful key is deleted so no
+// half-written pair is ever left behind.
+func (s *RedisStorage) StoreDeviceRequest(ctx context.Context, device *DeviceRequest) error {
+	if device == nil {
+		return fosite.ErrInvalidRequest.WithHint("device request cannot be nil")
+	}
+	if device.DeviceCode == "" {
+		return fosite.ErrInvalidRequest.WithHint("device code cannot be empty")
+	}
+	if device.UserCode == "" {
+		return fosite.ErrInvalidRequest.WithHint("user code cannot be empty")
+	}
+	if device.Status != DeviceRequestStatusPending {
+		return fosite.ErrInvalidRequest.WithHint("device request must be created with pending status")
+	}
+
+	deviceKey := redisKey(s.keyPrefix, KeyTypeDeviceCode, device.DeviceCode)
+	userCodeKey := redisKey(s.keyPrefix, KeyTypeDeviceUserCode, device.UserCode)
+
+	stored := storedDeviceRequest{
+		DeviceCode:        device.DeviceCode,
+		UserCode:          device.UserCode,
+		ClientID:          device.ClientID,
+		Scopes:            slices.Clone(device.Scopes),
+		Audience:          slices.Clone(device.Audience),
+		Status:            device.Status,
+		IntervalSeconds:   int64(device.Interval / time.Second),
+		LastPolledAt:      deviceTimeToUnix(device.LastPolledAt),
+		ResolvedUserID:    device.ResolvedUserID,
+		ResolvedUserName:  device.ResolvedUserName,
+		ResolvedUserEmail: device.ResolvedUserEmail,
+		SessionID:         device.SessionID,
+		CreatedAt:         device.CreatedAt.Unix(),
+	}
+
+	data, err := json.Marshal(stored) //nolint:gosec // G117 - internal Redis storage serialization, not exposed to users
+	if err != nil {
+		return fmt.Errorf("failed to marshal device request: %w", err)
+	}
+
+	pipe := s.client.TxPipeline()
+	deviceCmd := pipe.SetNX(ctx, deviceKey, data, DefaultDeviceRequestTTL)
+	userCodeCmd := pipe.SetNX(ctx, userCodeKey, device.DeviceCode, DefaultDeviceRequestTTL)
+	if _, err := pipe.Exec(ctx); err != nil {
+		return fmt.Errorf("failed to store device request: %w", err)
+	}
+
+	deviceCreated, userCodeCreated := deviceCmd.Val(), userCodeCmd.Val()
+	if deviceCreated && userCodeCreated {
+		return nil
+	}
+	if deviceCreated {
+		warnOnCleanupErr(s.client.Del(ctx, deviceKey).Err(), "StoreDeviceRequest cleanup", deviceKey)
+		return fmt.Errorf("%w: user code %q", ErrAlreadyExists, device.UserCode)
+	}
+	if userCodeCreated {
+		warnOnCleanupErr(s.client.Del(ctx, userCodeKey).Err(), "StoreDeviceRequest cleanup", userCodeKey)
+	}
+	return fmt.Errorf("%w: device code %q", ErrAlreadyExists, device.DeviceCode)
+}
+
+// getDeviceRequestByDeviceCode is the shared get+unmarshal+expiry-check logic
+// used by both LoadDeviceRequestByDeviceCode and LoadDeviceRequestByUserCode
+// (once the latter has resolved its device_code via the secondary index).
+func (s *RedisStorage) getDeviceRequestByDeviceCode(ctx context.Context, deviceCode string) (*DeviceRequest, error) {
+	key := redisKey(s.keyPrefix, KeyTypeDeviceCode, deviceCode)
+
+	data, err := s.client.Get(ctx, key).Bytes()
+	if err != nil {
+		if errors.Is(err, redis.Nil) {
+			return nil, fmt.Errorf("%w: device request not found", ErrNotFound)
+		}
+		return nil, fmt.Errorf("failed to get device request: %w", err)
+	}
+
+	var stored storedDeviceRequest
+	if err := json.Unmarshal(data, &stored); err != nil {
+		return nil, fmt.Errorf("failed to unmarshal device request: %w", err)
+	}
+
+	// Check if expired (TTL should handle this, but double-check).
+	if time.Since(time.Unix(stored.CreatedAt, 0)) > DefaultDeviceRequestTTL {
+		return nil, ErrExpired
+	}
+
+	return stored.toDeviceRequest(), nil
+}
+
+// LoadDeviceRequestByDeviceCode retrieves a device request by its device_code.
+func (s *RedisStorage) LoadDeviceRequestByDeviceCode(ctx context.Context, deviceCode string) (*DeviceRequest, error) {
+	return s.getDeviceRequestByDeviceCode(ctx, deviceCode)
+}
+
+// LoadDeviceRequestByUserCode retrieves a device request by its user_code,
+// for the verification page.
+func (s *RedisStorage) LoadDeviceRequestByUserCode(ctx context.Context, userCode string) (*DeviceRequest, error) {
+	userCodeKey := redisKey(s.keyPrefix, KeyTypeDeviceUserCode, userCode)
+
+	deviceCode, err := s.client.Get(ctx, userCodeKey).Result()
+	if err != nil {
+		if errors.Is(err, redis.Nil) {
+			return nil, fmt.Errorf("%w: device request not found", ErrNotFound)
+		}
+		return nil, fmt.Errorf("failed to get device request user_code index: %w", err)
+	}
+
+	return s.getDeviceRequestByDeviceCode(ctx, deviceCode)
+}
+
+// updateDeviceRequest performs a read-modify-write on the device_code record
+// identified by deviceCode: it loads the current record, applies mutate, and
+// writes it back with redis.KeepTTL so the record's remaining TTL is
+// preserved. mutate returns an error (e.g. ErrInvalidState) to abort the
+// write without touching the stored record.
+//
+// No CAS is needed here: a single device_code is polled by one client and
+// updated by one verification-page submission, so a plain read-then-write is
+// sufficient, unlike CompareAndSwapUpstreamTokens which coordinates across
+// concurrent replicas racing the same row.
+func (s *RedisStorage) updateDeviceRequest(
+	ctx context.Context, deviceCode string, mutate func(*storedDeviceRequest) error,
+) error {
+	key := redisKey(s.keyPrefix, KeyTypeDeviceCode, deviceCode)
+
+	data, err := s.client.Get(ctx, key).Bytes()
+	if err != nil {
+		if errors.Is(err, redis.Nil) {
+			return fmt.Errorf("%w: device request not found", ErrNotFound)
+		}
+		return fmt.Errorf("failed to get device request: %w", err)
+	}
+
+	var stored storedDeviceRequest
+	if err := json.Unmarshal(data, &stored); err != nil {
+		return fmt.Errorf("failed to unmarshal device request: %w", err)
+	}
+
+	if time.Since(time.Unix(stored.CreatedAt, 0)) > DefaultDeviceRequestTTL {
+		return ErrExpired
+	}
+
+	if err := mutate(&stored); err != nil {
+		return err
+	}
+
+	updated, err := json.Marshal(stored) //nolint:gosec // G117 - internal Redis storage serialization, not exposed to users
+	if err != nil {
+		return fmt.Errorf("failed to marshal device request: %w", err)
+	}
+
+	return s.client.Set(ctx, key, updated, redis.KeepTTL).Err()
+}
+
+// MarkDeviceRequestAuthorized transitions a pending device request to
+// authorized, attaching the resolved identity.
+func (s *RedisStorage) MarkDeviceRequestAuthorized(
+	ctx context.Context, deviceCode string, resolvedUserID, resolvedUserName, resolvedUserEmail, sessionID string,
+) error {
+	return s.updateDeviceRequest(ctx, deviceCode, func(stored *storedDeviceRequest) error {
+		if stored.Status != DeviceRequestStatusPending {
+			return fmt.Errorf("%w: device request is %q, not pending", ErrInvalidState, stored.Status)
+		}
+		stored.Status = DeviceRequestStatusAuthorized
+		stored.ResolvedUserID = resolvedUserID
+		stored.ResolvedUserName = resolvedUserName
+		stored.ResolvedUserEmail = resolvedUserEmail
+		stored.SessionID = sessionID
+		return nil
+	})
+}
+
+// MarkDeviceRequestDenied transitions a pending device request to denied.
+func (s *RedisStorage) MarkDeviceRequestDenied(ctx context.Context, deviceCode string) error {
+	return s.updateDeviceRequest(ctx, deviceCode, func(stored *storedDeviceRequest) error {
+		if stored.Status != DeviceRequestStatusPending {
+			return fmt.Errorf("%w: device request is %q, not pending", ErrInvalidState, stored.Status)
+		}
+		stored.Status = DeviceRequestStatusDenied
+		return nil
+	})
+}
+
+// UpdateDeviceRequestLastPolledAt records the time of the most recent poll.
+func (s *RedisStorage) UpdateDeviceRequestLastPolledAt(ctx context.Context, deviceCode string, polledAt time.Time) error {
+	return s.updateDeviceRequest(ctx, deviceCode, func(stored *storedDeviceRequest) error {
+		stored.LastPolledAt = deviceTimeToUnix(polledAt)
+		return nil
+	})
+}
+
+// DeleteDeviceRequest removes a device request, e.g. once its token has been
+// issued so the device_code cannot be redeemed twice. Both the canonical
+// record and the user_code secondary index are deleted in one pipeline.
+func (s *RedisStorage) DeleteDeviceRequest(ctx context.Context, deviceCode string) error {
+	key := redisKey(s.keyPrefix, KeyTypeDeviceCode, deviceCode)
+
+	data, err := s.client.Get(ctx, key).Bytes()
+	if err != nil {
+		if errors.Is(err, redis.Nil) {
+			return fmt.Errorf("%w: device request not found", ErrNotFound)
+		}
+		return fmt.Errorf("failed to get device request: %w", err)
+	}
+
+	var stored storedDeviceRequest
+	if err := json.Unmarshal(data, &stored); err != nil {
+		return fmt.Errorf("failed to unmarshal device request: %w", err)
+	}
+
+	userCodeKey := redisKey(s.keyPrefix, KeyTypeDeviceUserCode, stored.UserCode)
+
+	pipe := s.client.TxPipeline()
+	pipe.Del(ctx, key)
+	pipe.Del(ctx, userCodeKey)
+	_, err = pipe.Exec(ctx)
+	if err != nil {
+		return fmt.Errorf("failed to delete device request: %w", err)
+	}
+	return nil
+}
+
+// -----------------------
 // User Storage
 // -----------------------
 
@@ -2686,6 +2976,7 @@ func getTTLFromRequester(request fosite.Requester, tokenType fosite.TokenType, d
 var (
 	_ Storage                     = (*RedisStorage)(nil)
 	_ PendingAuthorizationStorage = (*RedisStorage)(nil)
+	_ DeviceCodeStorage           = (*RedisStorage)(nil)
 	_ ClientRegistry              = (*RedisStorage)(nil)
 	_ UpstreamTokenStorage        = (*RedisStorage)(nil)
 	_ UserStorage                 = (*RedisStorage)(nil)

@@ -131,6 +131,9 @@ func (h *Handler) buildOAuthMetadata() sharedobauth.AuthorizationServerMetadata 
 	if !h.tokenOnly || h.config.AllowPrivateKeyJWTRegistration {
 		metadata.RegistrationEndpoint = issuer + "/oauth/register"
 	}
+	if h.config.DeviceFlowEnabled {
+		metadata.DeviceAuthorizationEndpoint = issuer + "/oauth/device_authorization"
+	}
 	return metadata
 }
 
@@ -178,6 +181,9 @@ func (h *Handler) grantTypesSupported() []string {
 	}
 	if h.config.JWTBearerGrantEnabled {
 		grantTypes = append(grantTypes, sharedobauth.GrantTypeJWTBearer)
+	}
+	if h.config.DeviceFlowEnabled {
+		grantTypes = append(grantTypes, sharedobauth.GrantTypeDeviceCode)
 	}
 	return grantTypes
 }

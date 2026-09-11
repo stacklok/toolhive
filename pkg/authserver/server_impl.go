@@ -17,6 +17,7 @@ import (
 	"github.com/ory/fosite/compose"
 
 	oauthserver "github.com/stacklok/toolhive/pkg/authserver/server"
+	"github.com/stacklok/toolhive/pkg/authserver/server/deviceflow"
 	"github.com/stacklok/toolhive/pkg/authserver/server/handlers"
 	"github.com/stacklok/toolhive/pkg/authserver/server/registration"
 	"github.com/stacklok/toolhive/pkg/authserver/server/tokenexchange"
@@ -223,6 +224,8 @@ func newServer(ctx context.Context, cfg Config, stor storage.Storage) (_ *server
 		ForceConfidentialRedirectURIs:             cfg.ForceConfidentialRedirectURIs,
 		DisableTokenExchange:                      cfg.DisableTokenExchange,
 		JWTBearerGrantEnabled:                     JWTBearerGrantEnabled(cfg.TrustedIssuers),
+		DeviceFlowEnabled:                         cfg.DeviceFlowEnabled,
+		DeviceCodeInterval:                        cfg.DeviceCodeInterval,
 		SPIFFEClientResolver:                      newSPIFFEClientResolver(spiffeRegistry, stor),
 	}
 	authServerConfig, err := oauthserver.NewAuthorizationServerConfig(oauthParams)
@@ -498,6 +501,17 @@ func buildProvider(
 			return nil, nil, fmt.Errorf("failed to create JWT-bearer factory: %w", err)
 		}
 		factories = append(factories, jwtBearerFactory)
+	}
+	if cfg.DeviceFlowEnabled {
+		deviceStore, ok := stor.(storage.DeviceCodeStorage)
+		if !ok {
+			return nil, nil, fmt.Errorf("device flow enabled but storage backend %T does not implement storage.DeviceCodeStorage", stor)
+		}
+		interval := cfg.DeviceCodeInterval
+		if interval <= 0 {
+			interval = oauthserver.DefaultDeviceCodeInterval
+		}
+		factories = append(factories, deviceflow.Factory(deviceStore, interval))
 	}
 	provider, err := createProvider(authServerConfig, stor, factories...)
 	if err != nil {

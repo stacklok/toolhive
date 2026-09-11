@@ -38,6 +38,14 @@ const (
 	// KeyTypePending is the key type for pending authorizations.
 	KeyTypePending = "pending"
 
+	// KeyTypeDeviceCode is the key type for RFC 8628 device authorization
+	// requests, keyed by device_code.
+	KeyTypeDeviceCode = "device"
+
+	// KeyTypeDeviceUserCode is the key type for the user_code -> device_code
+	// secondary index used by the verification page.
+	KeyTypeDeviceUserCode = "device:usercode"
+
 	// KeyTypeInvalidated is the key type for invalidated authorization codes.
 	KeyTypeInvalidated = "invalidated"
 

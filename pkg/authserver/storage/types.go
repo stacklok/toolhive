@@ -16,7 +16,7 @@
 // OAuth authorization server.
 package storage
 
-//go:generate mockgen -destination=mocks/mock_storage.go -package=mocks -source=types.go Storage,PendingAuthorizationStorage,AssertionJWTConsumer,ClientRegistry,UpstreamTokenStorage,UpstreamTokenRefresher,UserStorage,DCRCredentialStore
+//go:generate mockgen -destination=mocks/mock_storage.go -package=mocks -source=types.go Storage,PendingAuthorizationStorage,DeviceCodeStorage,AssertionJWTConsumer,ClientRegistry,UpstreamTokenStorage,UpstreamTokenRefresher,UserStorage,DCRCredentialStore
 
 import (
 	"context"
@@ -78,6 +78,10 @@ var (
 	// (ErrNotFound means there was no race to lose — see
 	// CompareAndSwapUpstreamTokens for the full coordination contract).
 	ErrConcurrentRefresh = errors.New("storage: upstream token row changed concurrently")
+
+	// ErrInvalidState is returned when an operation requires an item to be in a
+	// particular lifecycle state (e.g. a pending device request) but it is not.
+	ErrInvalidState = errors.New("storage: item is not in the required state")
 )
 
 // notFoundRFC6749Error preserves the storage and Fosite not-found identities.
@@ -87,6 +91,11 @@ func notFoundRFC6749Error(hint string) *fosite.RFC6749Error {
 
 // DefaultPendingAuthorizationTTL is the default TTL for pending authorization requests.
 const DefaultPendingAuthorizationTTL = 10 * time.Minute
+
+// DefaultDeviceRequestTTL bounds how long a device authorization request
+// stays valid before the client must restart the flow, matching RFC 8628's
+// recommended default expiry.
+const DefaultDeviceRequestTTL = 10 * time.Minute
 
 // UpstreamTokens represents tokens obtained from an upstream Identity Provider.
 // These tokens are stored with binding fields for security validation and
@@ -563,6 +572,109 @@ type PendingAuthorizationStorage interface {
 	DeletePendingAuthorization(ctx context.Context, state string) error
 }
 
+// DeviceRequestStatus is the lifecycle state of an RFC 8628 device authorization request.
+type DeviceRequestStatus string
+
+const (
+	// DeviceRequestStatusPending is the initial state: the user has not yet
+	// completed (or denied) verification at the verification URI.
+	DeviceRequestStatusPending DeviceRequestStatus = "pending"
+
+	// DeviceRequestStatusAuthorized means the user approved the request at
+	// the verification page; the resolved identity fields are populated.
+	DeviceRequestStatusAuthorized DeviceRequestStatus = "authorized"
+
+	// DeviceRequestStatusDenied means the user explicitly denied the request
+	// at the verification page.
+	DeviceRequestStatusDenied DeviceRequestStatus = "denied"
+)
+
+// DeviceRequest represents one in-flight RFC 8628 device authorization grant.
+type DeviceRequest struct {
+	// DeviceCode is the opaque, high-entropy value the polling client holds.
+	// Never logged (secret-shaped, like an authorization code).
+	DeviceCode string
+
+	// UserCode is the short, human-typeable code the user enters at the
+	// verification URI. Also secret-shaped: it is the only thing binding a
+	// human's browser session to this device_code, so treat it like a code.
+	UserCode string
+
+	ClientID string
+	Scopes   []string
+	Audience []string
+	Status   DeviceRequestStatus
+
+	// Interval is the minimum seconds between polls the client must honor
+	// (RFC 8628 §3.2/§3.5). Storage does not enforce it directly; callers
+	// use LastPolledAt + Interval to decide slow_down.
+	Interval time.Duration
+
+	// LastPolledAt is zero until the first poll.
+	LastPolledAt time.Time
+
+	// Populated only once Status == DeviceRequestStatusAuthorized, mirroring
+	// the Resolved* fields on PendingAuthorization:
+	ResolvedUserID    string
+	ResolvedUserName  string
+	ResolvedUserEmail string
+	SessionID         string
+
+	CreatedAt time.Time
+}
+
+// DeviceCodeStorage provides storage operations for RFC 8628 device
+// authorization requests. A request is created pending at the device
+// authorization endpoint, looked up by user_code at the verification page
+// and transitioned to authorized/denied there, and polled/consumed by
+// device_code at the token endpoint.
+type DeviceCodeStorage interface {
+	// StoreDeviceRequest stores a new pending device request, indexed by both
+	// DeviceCode and UserCode. Returns fosite.ErrInvalidRequest if DeviceCode
+	// or UserCode is empty, or Status is not DeviceRequestStatusPending.
+	// Returns ErrAlreadyExists if a request already exists under the same
+	// UserCode (the caller must regenerate the user_code and retry) or the
+	// same DeviceCode.
+	StoreDeviceRequest(ctx context.Context, device *DeviceRequest) error
+
+	// LoadDeviceRequestByDeviceCode retrieves a device request by its
+	// device_code. Returns ErrNotFound if it does not exist, ErrExpired if
+	// its TTL has elapsed.
+	LoadDeviceRequestByDeviceCode(ctx context.Context, deviceCode string) (*DeviceRequest, error)
+
+	// LoadDeviceRequestByUserCode retrieves a device request by its
+	// user_code, for the verification page. Same not-found/expired semantics.
+	LoadDeviceRequestByUserCode(ctx context.Context, userCode string) (*DeviceRequest, error)
+
+	// MarkDeviceRequestAuthorized transitions a pending device request to
+	// authorized, attaching the resolved identity. Returns ErrNotFound if
+	// deviceCode does not exist, ErrExpired if its TTL has elapsed, and
+	// ErrInvalidState if the request's Status is not currently
+	// DeviceRequestStatusPending (already authorized or denied) — this call
+	// is not idempotent, so a stale verification-page resubmission can never
+	// clobber a request the token endpoint already consumed.
+	MarkDeviceRequestAuthorized(
+		ctx context.Context, deviceCode string, resolvedUserID, resolvedUserName, resolvedUserEmail, sessionID string,
+	) error
+
+	// MarkDeviceRequestDenied transitions a pending device request to
+	// denied. Same ErrNotFound/ErrExpired/ErrInvalidState semantics as
+	// MarkDeviceRequestAuthorized.
+	MarkDeviceRequestDenied(ctx context.Context, deviceCode string) error
+
+	// UpdateDeviceRequestLastPolledAt records the time of the most recent
+	// poll, so the (future) token-endpoint grant handler can enforce the
+	// minimum polling Interval (RFC 8628 §3.5 slow_down). Same
+	// ErrNotFound/ErrExpired semantics; does not require Status ==
+	// pending (a client may poll after authorization races the response).
+	UpdateDeviceRequestLastPolledAt(ctx context.Context, deviceCode string, polledAt time.Time) error
+
+	// DeleteDeviceRequest removes a device request, e.g. once its token has
+	// been issued so the device_code cannot be redeemed twice. Returns
+	// ErrNotFound if it does not already exist.
+	DeleteDeviceRequest(ctx context.Context, deviceCode string) error
+}
+
 // AssertionJWTConsumer atomically records a validated assertion JWT as consumed.
 //
 // Implementations must treat (purpose, issuer, jti) as the replay key, retain it
@@ -1029,6 +1141,7 @@ type Storage interface {
 	// safe at the boundary while keeping the wider Storage surface narrow.
 	UpstreamTokenStorage
 	PendingAuthorizationStorage
+	DeviceCodeStorage
 	ClientRegistry
 	UserStorage
 

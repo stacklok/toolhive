@@ -116,10 +116,10 @@ func NewDefaultClient(serverURL string, options ...DefaultClientOption) (*Client
 func validateServerURL(serverURL string) error {
 	parsed, err := url.Parse(serverURL)
 	if err != nil {
-		return fmt.Errorf("%w: %v", ErrInvalidServerURL, err)
+		return fmt.Errorf("%w: malformed URL", ErrInvalidServerURL)
 	}
 	if (parsed.Scheme != "http" && parsed.Scheme != "https") || parsed.Host == "" || parsed.User != nil || parsed.Fragment != "" {
-		return fmt.Errorf("%w: %q", ErrInvalidServerURL, serverURL)
+		return fmt.Errorf("%w: URL must be an absolute HTTP(S) URL without user information or a fragment", ErrInvalidServerURL)
 	}
 	return nil
 }

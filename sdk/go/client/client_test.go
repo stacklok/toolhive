@@ -115,6 +115,10 @@ func TestNewClientPolicy(t *testing.T) {
 			_, err := NewClient(serverURL)
 			require.ErrorIs(t, err, ErrInvalidServerURL, serverURL)
 		}
+
+		_, err := NewClient("https://user:super-secret@example.com/%zz")
+		require.ErrorIs(t, err, ErrInvalidServerURL)
+		require.NotContains(t, err.Error(), "super-secret")
 	})
 
 	t.Run("preserves caller transport and applies default deadline", func(t *testing.T) {

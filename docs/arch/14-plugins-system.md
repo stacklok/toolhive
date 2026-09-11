@@ -115,16 +115,17 @@ builds from artifacts cached by pull or content inspection.
 
 ### 3. Publishing
 
-`thv ai-plugin push <reference>` publishes a local build. Push is signed
-keylessly by default: an OIDC identity token can be supplied with
-`--identity-token`, acquired from GitHub Actions OIDC, or acquired through an
-interactive browser sign-in. `--no-sign` is the explicit unsigned alternative.
-There is no plugin push `--key` option.
+`thv ai-plugin push <reference>` publishes a local build. Push is signed by
+default, keylessly unless a key is given: an OIDC identity token can be supplied
+with `--identity-token`, acquired from GitHub Actions OIDC, or acquired through
+an interactive browser sign-in, and `--key` signs with a cosign private key
+instead. `--no-sign` is the explicit unsigned alternative.
 
 A signed push stages content at its immutable digest, attaches the signature,
 and only then promotes the requested tag. A signing failure therefore does not
-leave the requested tag resolving to unsigned content. Identity tokens are not
-sent over non-loopback HTTP and token-bearing requests do not follow redirects.
+leave the requested tag resolving to unsigned content. Neither credential — the
+identity token or the key-signing capability — is sent over non-loopback HTTP,
+and credential-bearing requests do not follow redirects.
 
 ### 4. Installation
 
@@ -185,6 +186,11 @@ installing (OCI candidates are still fetched to compare digests).
 `--allow-ref-change` permits a repository move, while
 `--allow-signer-change` permits supported trust transitions. Neither option
 silently replaces a pinned cosign public key with an arbitrary different key.
+An unsigned candidate under an entry that records a signer is not a trust
+transition but a failure (`unsigned-rejected`): upgrade has no unsigned-consent
+flag, and `--allow-signer-change` re-verifies from scratch, which an unsigned
+artifact still fails, so the failure names the project-scoped reinstall with
+`--allow-unsigned` that records the exception explicitly.
 
 ## Storage
 
@@ -236,9 +242,19 @@ existing unsigned decision. A legacy entry with neither provenance nor
 `unsigned: true` is drift and fails closed until sync can verify it or the user
 explicitly runs `sync --allow-unsigned` for genuinely unsigned content.
 
-Plugin publishing remains keyless-by-default or explicit `--no-sign`; plugin
-push has no `--key`, even though project installation can verify externally
-key-pair-signed artifacts with `--public-key`.
+Plugin publishing carries the same two signing paths as skills. `thv ai-plugin
+push --key` signs with a cosign key pair; because the public key is recoverable
+from neither the artifact nor its bundle, consumers must receive it out of band
+and pass `--public-key` on their first project-scoped install. Keyless signing
+needs no such step, since the signer identity is verifiable from the artifact
+itself.
+
+Key signing is accepted only through automatic local server discovery. The
+owner-protected discovery file supplies a separate random capability that the
+CLI sends with the key-bearing request; loopback or IPC transport alone is not
+authorization, because a public reverse proxy can make an untrusted caller
+appear local. Remote and manually configured API URLs must use keyless signing
+instead.
 
 The lock file is repository-editable policy. Review changes to `provenance`,
 `publicKey`, `unsigned`, `digest`, and `resolvedReference` as carefully as the

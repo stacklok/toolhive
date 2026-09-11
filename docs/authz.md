@@ -118,7 +118,8 @@ Create a configuration file (JSON or YAML) with the following structure:
     "policies": [
       "permit(principal, action == Action::\"call_tool\", resource == Tool::\"weather\");",
       "permit(principal, action == Action::\"get_prompt\", resource == Prompt::\"greeting\");",
-      "permit(principal, action == Action::\"read_resource\", resource == Resource::\"data\");"
+      "permit(principal, action == Action::\"read_resource\", resource == Resource::\"data\");",
+      "permit(principal, action == Action::\"get_skill\", resource == Skill::\"mcp://example/skill\");"
     ],
     "entities_json": "[]"
   }
@@ -135,6 +136,7 @@ cedar:
     - 'permit(principal, action == Action::"call_tool", resource == Tool::"weather");'
     - 'permit(principal, action == Action::"get_prompt", resource == Prompt::"greeting");'
     - 'permit(principal, action == Action::"read_resource", resource == Resource::"data");'
+    - 'permit(principal, action == Action::"get_skill", resource == Skill::"mcp://example/skill");'
   entities_json: "[]"
 ```
 
@@ -181,10 +183,11 @@ In the context of MCP servers, the following entities are used:
     - `Action::"call_tool"`: Call a tool
     - `Action::"get_prompt"`: Get a prompt
     - `Action::"read_resource"`: Read a resource
+    - `Action::"get_skill"`: Get a skill
 
-  Note: List operations (`tools/list`, `prompts/list`, `resources/list`) are always
+  Note: List operations (`tools/list`, `prompts/list`, `resources/list`, `skills/list`) are always
   allowed but the response is filtered based on the corresponding call/get/read policies.
-  Define policies for the specific operations (call_tool, get_prompt, read_resource)
+  Define policies for the specific operations (call_tool, get_prompt, read_resource, get_skill)
   and the list responses will automatically show only the items the user is authorized to access.
 
 - **Resource**: The object being accessed.
@@ -194,14 +197,35 @@ In the context of MCP servers, the following entities are used:
     - `Prompt::"greeting"`: The greeting prompt
     - `Resource::"data"`: A short resource name
     - `Resource::"file:///etc/passwd"`: An MCP resource URI (exact URI is the Cedar entity ID)
+    - `Skill::"mcp://example/skill"`: An MCP skill URI (exact URI is the Cedar entity ID)
     - `FeatureType::"tool"`: The tool feature type (used for list operations)
 
   For `read_resource`, the Cedar entity ID is the **exact resource URI** (for example
   `Resource::"file:///ok"` or `Resource::"mcp://srv/config:admin"`). Do not rewrite
   characters such as `/`, `:`, or `?` into underscores; policies must name the URI as
-  the client and server see it. In Cedar source the ID is a double-quoted string
-  literal, so almost every URI character is ordinary, but `"` and `\` must be escaped
-  (for example `Resource::"file://C:\\share\\data"`).
+  the client and server see it. Skill URI values follow these same Cedar string-literal
+  escaping rules. In Cedar source the ID is a double-quoted string literal, so almost
+  every URI character is ordinary, but `"` and `\` must be escaped (for example
+  `Resource::"file://C:\\share\\data"`).
+
+#### Skills (SEP-2640 direct proxy)
+
+Direct proxies authorize `skills/get` with `Action::"get_skill"` on an exact
+`Skill::"<params.uri>"` entity. The URI is passed through verbatim: it is not
+canonicalized and no scheme or suffix is validated. A missing, empty, or non-string
+`params.uri` is denied before the authorizer or backend is called. Requests with duplicate
+immediate `params.uri` members are likewise denied so the proxy and backend cannot
+interpret an ambiguous URI differently.
+
+`skills/list` itself has no separate list policy. It is forwarded and each entry is
+shown only when its exact string `uri` is permitted by `get_skill`; all other entries,
+including their manifests, are removed. Skill permission is independent of
+`read_resource` permission.
+
+This support is only for the direct proxy. Skill capability negotiation, including
+initialize extension maps, is passed through unchanged; the proxy neither fabricates
+nor rewrites capabilities. Directory reads and all other SEP-2640 operations are not
+supported by this authorization layer.
 
 #### Example policies
 
@@ -243,13 +267,15 @@ permit(
 
 ##### List operations
 
-List operations (`tools/list`, `prompts/list`, `resources/list`) do not require explicit policies.
+List operations (`tools/list`, `prompts/list`, `resources/list`, `skills/list`) do not require explicit policies.
 They are always allowed but the response is automatically filtered based on the user's permissions
 for the corresponding operations:
 
 - `tools/list` shows only tools the user can call (based on `call_tool` policies)
 - `prompts/list` shows only prompts the user can get (based on `get_prompt` policies)
 - `resources/list` shows only resources the user can read (based on `read_resource` policies)
+- `skills/list` shows only skill entries the user can get (based on `get_skill` policies); entries
+  without exactly one non-empty string `uri` fail closed with a generic internal JSON-RPC error.
 
 For example, if you have this policy:
 ```plain

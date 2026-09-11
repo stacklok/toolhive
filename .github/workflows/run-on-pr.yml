@@ -36,6 +36,9 @@ jobs:
   docs:
     name: Docs
     uses: ./.github/workflows/verify-docgen.yml
+  sdk-go:
+    name: Go SDK
+    uses: ./.github/workflows/sdk-go.yml
   codegen:
     name: Codegen
     uses: ./.github/workflows/verify-gen.yml

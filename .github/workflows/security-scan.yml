@@ -118,16 +118,6 @@ jobs:
         run: |
           set -euo pipefail
 
-          # Ignored vulnerabilities with justification:
-          # Go stdlib advisories published 2026-06-02, all fixed in go1.26.4 /
-          # go1.25.11 (DoS / log-injection class, no RCE):
-          #   GO-2026-5037 (CVE-2026-27145, crypto/x509 VerifyHostname)
-          #   GO-2026-5038 (CVE-2026-42504, mime WordDecoder.DecodeHeader)
-          #   GO-2026-5039 (CVE-2026-42507, net/textproto error messages)
-          # CI's `setup-go: stable` still resolves to go1.26.3 because the
-          # actions/go-versions manifest lags the Go release. Temporary
-          # exclusion; remove once CI builds on go1.26.4 or later.
-          #
           # GO-2026-5932: golang.org/x/crypto/openpgp is deprecated-by-design
           # ("unsafe, not maintained, should not be used"). No fixed version
           # exists and none is planned.
@@ -170,7 +160,7 @@ jobs:
           # REMOVAL TRIGGER: `go 1.27` sorts above `1.26.0`, so moving the
           # go directive to 1.27 satisfies x/crypto v0.56.0 without a patch
           # version. Bump x/crypto and drop both entries then.
-          IGNORED_VULNS="GO-2026-5037 GO-2026-5038 GO-2026-5039 GO-2026-5932 GO-2026-6354 GO-2026-6355"
+          IGNORED_VULNS="GO-2026-5932 GO-2026-6354 GO-2026-6355"
 
           # Show the raw output for debugging
           # A scan that produced nothing is a failed scan, not a clean one.

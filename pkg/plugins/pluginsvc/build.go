@@ -131,7 +131,10 @@ func (s *service) Push(ctx context.Context, opts plugins.PushOptions) error {
 			http.StatusBadRequest,
 		)
 	}
-	if err := validateSigningInputs(opts); err != nil {
+	// Re-validated here even though the HTTP handler already did: the
+	// service is also called in-process, and the contract must not depend on
+	// which caller reached it.
+	if err := plugins.ValidatePushSigning(opts); err != nil {
 		return err
 	}
 	if !opts.NoSign {
@@ -190,10 +193,8 @@ func (s *service) pushSigned(ctx context.Context, opts plugins.PushOptions, d di
 	// tag, which does not exist on the remote yet: attaching the signature
 	// reads the artifact back to decide whether this identity already signed
 	// it, so a not-yet-created tag would fail the attach.
-	//
-	// Plugin push intentionally forwards only the identity token: key-pair
-	// signing is not part of the plugin push contract.
 	if _, err := s.artifactSigner().SignOCI(ctx, staged, d.String(), signer.Options{
+		Key:           opts.Key,
 		IdentityToken: opts.IdentityToken,
 		FulcioURL:     os.Getenv(envFulcioURL),
 		RekorURL:      os.Getenv(envRekorURL),
@@ -314,33 +315,6 @@ func (s *service) DeleteBuild(ctx context.Context, tag string) error {
 		)
 	}
 	return s.ociStore.DeleteBuild(ctx, tag)
-}
-
-// validateSigningInputs enforces that a push declares exactly one signing
-// method: an OIDC identity token for keyless signing, or an explicit opt-out.
-// Ambiguous or absent input is rejected here, before the artifact is pushed,
-// rather than surfacing as a signing failure afterward.
-//
-// Diverges from skillsvc.validateSigningInputs on purpose: plugin push has no
-// key branch. Key-pair signing is not part of this push contract, so
-// plugins.PushOptions omits the field and the unsupported request cannot be
-// constructed by an in-process or HTTP caller. Project installs can still
-// verify an externally key-pair-signed OCI artifact with --public-key.
-func validateSigningInputs(opts plugins.PushOptions) error {
-	switch {
-	case opts.NoSign && opts.IdentityToken != "":
-		return httperr.WithCode(
-			errors.New("no_sign (--no-sign) cannot be combined with identity_token (--identity-token)"),
-			http.StatusBadRequest,
-		)
-	case !opts.NoSign && opts.IdentityToken == "":
-		return httperr.WithCode(
-			errors.New("signing credential required: set identity_token (--identity-token) for "+
-				"CI/OIDC keyless signing, or no_sign (--no-sign) to push unsigned"),
-			http.StatusBadRequest,
-		)
-	}
-	return nil
 }
 
 // validateSignedDestination rejects a digest-pinned destination for a signed

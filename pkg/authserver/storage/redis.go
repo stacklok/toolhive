@@ -658,7 +658,7 @@ func (s *RedisStorage) GetClient(ctx context.Context, id string) (fosite.Client,
 	data, err := getCmd.Bytes()
 	if err != nil {
 		if errors.Is(err, redis.Nil) {
-			return nil, fmt.Errorf("%w: %w", ErrNotFound, fosite.ErrNotFound.WithHint("Client not found"))
+			return nil, notFoundRFC6749Error("Client not found")
 		}
 		return nil, fmt.Errorf("failed to get client: %w", err)
 	}
@@ -811,7 +811,7 @@ func (s *RedisStorage) GetAuthorizeCodeSession(ctx context.Context, code string,
 	data, err := s.client.Get(ctx, key).Bytes()
 	if err != nil {
 		if errors.Is(err, redis.Nil) {
-			return nil, fmt.Errorf("%w: %w", ErrNotFound, fosite.ErrNotFound.WithHint("Authorization code not found"))
+			return nil, notFoundRFC6749Error("Authorization code not found")
 		}
 		return nil, fmt.Errorf("failed to get authorization code: %w", err)
 	}
@@ -850,7 +850,7 @@ func (s *RedisStorage) InvalidateAuthorizeCodeSession(ctx context.Context, code 
 		return fmt.Errorf("failed to check authorization code: %w", err)
 	}
 	if exists == 0 {
-		return fmt.Errorf("%w: %w", ErrNotFound, fosite.ErrNotFound.WithHint("Authorization code not found"))
+		return notFoundRFC6749Error("Authorization code not found")
 	}
 
 	// Atomically: create invalidation marker and extend auth code TTL to match.
@@ -902,7 +902,7 @@ func (s *RedisStorage) GetAccessTokenSession(ctx context.Context, signature stri
 	data, err := s.client.Get(ctx, key).Bytes()
 	if err != nil {
 		if errors.Is(err, redis.Nil) {
-			return nil, fmt.Errorf("%w: %w", ErrNotFound, fosite.ErrNotFound.WithHint("Access token not found"))
+			return nil, notFoundRFC6749Error("Access token not found")
 		}
 		return nil, fmt.Errorf("failed to get access token: %w", err)
 	}
@@ -918,7 +918,7 @@ func (s *RedisStorage) DeleteAccessTokenSession(ctx context.Context, signature s
 	data, err := s.client.Get(ctx, key).Bytes()
 	if err != nil {
 		if errors.Is(err, redis.Nil) {
-			return fmt.Errorf("%w: %w", ErrNotFound, fosite.ErrNotFound.WithHint("Access token not found"))
+			return notFoundRFC6749Error("Access token not found")
 		}
 		return fmt.Errorf("failed to get access token: %w", err)
 	}
@@ -978,7 +978,7 @@ func (s *RedisStorage) GetRefreshTokenSession(ctx context.Context, signature str
 	data, err := s.client.Get(ctx, key).Bytes()
 	if err != nil {
 		if errors.Is(err, redis.Nil) {
-			return nil, fmt.Errorf("%w: %w", ErrNotFound, fosite.ErrNotFound.WithHint("Refresh token not found"))
+			return nil, notFoundRFC6749Error("Refresh token not found")
 		}
 		return nil, fmt.Errorf("failed to get refresh token: %w", err)
 	}
@@ -994,7 +994,7 @@ func (s *RedisStorage) DeleteRefreshTokenSession(ctx context.Context, signature 
 	data, err := s.client.Get(ctx, key).Bytes()
 	if err != nil {
 		if errors.Is(err, redis.Nil) {
-			return fmt.Errorf("%w: %w", ErrNotFound, fosite.ErrNotFound.WithHint("Refresh token not found"))
+			return notFoundRFC6749Error("Refresh token not found")
 		}
 		return fmt.Errorf("failed to get refresh token: %w", err)
 	}
@@ -1129,7 +1129,7 @@ func (s *RedisStorage) GetPKCERequestSession(ctx context.Context, signature stri
 	data, err := s.client.Get(ctx, key).Bytes()
 	if err != nil {
 		if errors.Is(err, redis.Nil) {
-			return nil, fmt.Errorf("%w: %w", ErrNotFound, fosite.ErrNotFound.WithHint("PKCE request not found"))
+			return nil, notFoundRFC6749Error("PKCE request not found")
 		}
 		return nil, fmt.Errorf("failed to get PKCE request: %w", err)
 	}
@@ -1146,7 +1146,7 @@ func (s *RedisStorage) DeletePKCERequestSession(ctx context.Context, signature s
 		return fmt.Errorf("failed to delete PKCE request: %w", err)
 	}
 	if result == 0 {
-		return fmt.Errorf("%w: %w", ErrNotFound, fosite.ErrNotFound.WithHint("PKCE request not found"))
+		return notFoundRFC6749Error("PKCE request not found")
 	}
 
 	return nil
@@ -1602,7 +1602,7 @@ func (s *RedisStorage) DeleteUpstreamTokens(ctx context.Context, sessionID strin
 	providerKeys, err := s.client.SMembers(ctx, idxKey).Result()
 	if err != nil {
 		if errors.Is(err, redis.Nil) {
-			return fmt.Errorf("%w: %w", ErrNotFound, fosite.ErrNotFound.WithHint("Upstream tokens not found"))
+			return notFoundRFC6749Error("Upstream tokens not found")
 		}
 		return fmt.Errorf("failed to get upstream token index: %w", err)
 	}
@@ -1611,7 +1611,7 @@ func (s *RedisStorage) DeleteUpstreamTokens(ctx context.Context, sessionID strin
 	warnDroppedIndexMembers("DeleteUpstreamTokens", idxKey, s.keyPrefix, dropped)
 
 	if len(providerKeys) == 0 {
-		return fmt.Errorf("%w: %w", ErrNotFound, fosite.ErrNotFound.WithHint("Upstream tokens not found"))
+		return notFoundRFC6749Error("Upstream tokens not found")
 	}
 
 	// Collect UserIDs for reverse-index cleanup before deleting
@@ -1713,7 +1713,7 @@ func (s *RedisStorage) GetLatestUpstreamTokensForUser(ctx context.Context, userI
 	warnDroppedIndexMembers("GetLatestUpstreamTokensForUser", setKey, s.keyPrefix, dropped)
 
 	if len(members) == 0 {
-		return nil, fmt.Errorf("%w: %w", ErrNotFound, fosite.ErrNotFound.WithHint("Upstream tokens not found"))
+		return nil, notFoundRFC6749Error("Upstream tokens not found")
 	}
 
 	values, err := s.client.MGet(ctx, members...).Result()
@@ -1738,7 +1738,7 @@ func (s *RedisStorage) GetLatestUpstreamTokensForUser(ctx context.Context, userI
 	}
 
 	if winner == nil {
-		return nil, fmt.Errorf("%w: %w", ErrNotFound, fosite.ErrNotFound.WithHint("Upstream tokens not found"))
+		return nil, notFoundRFC6749Error("Upstream tokens not found")
 	}
 
 	return winner.toUpstreamTokens(), nil
@@ -1804,7 +1804,7 @@ func (s *RedisStorage) getUpstreamTokensFromKey(ctx context.Context, key string)
 	data, err := s.client.Get(ctx, key).Bytes()
 	if err != nil {
 		if errors.Is(err, redis.Nil) {
-			return nil, fmt.Errorf("%w: %w", ErrNotFound, fosite.ErrNotFound.WithHint("Upstream tokens not found"))
+			return nil, notFoundRFC6749Error("Upstream tokens not found")
 		}
 		return nil, fmt.Errorf("failed to get upstream tokens: %w", err)
 	}
@@ -2133,7 +2133,7 @@ func (s *RedisStorage) GetDCRCredentials(ctx context.Context, key DCRKey) (*DCRC
 	data, err := s.client.Get(ctx, redisKey).Bytes()
 	if err != nil {
 		if errors.Is(err, redis.Nil) {
-			return nil, fmt.Errorf("%w: %w", ErrNotFound, fosite.ErrNotFound.WithHint("DCR credentials not found"))
+			return nil, notFoundRFC6749Error("DCR credentials not found")
 		}
 		return nil, fmt.Errorf("failed to get dcr credentials: %w", err)
 	}
@@ -2217,7 +2217,7 @@ func (s *RedisStorage) LoadPendingAuthorization(ctx context.Context, state strin
 	data, err := s.client.Get(ctx, key).Bytes()
 	if err != nil {
 		if errors.Is(err, redis.Nil) {
-			return nil, fmt.Errorf("%w: %w", ErrNotFound, fosite.ErrNotFound.WithHint("Pending authorization not found"))
+			return nil, notFoundRFC6749Error("Pending authorization not found")
 		}
 		return nil, fmt.Errorf("failed to get pending authorization: %w", err)
 	}
@@ -2264,7 +2264,7 @@ func (s *RedisStorage) DeletePendingAuthorization(ctx context.Context, state str
 		return fmt.Errorf("failed to delete pending authorization: %w", err)
 	}
 	if result == 0 {
-		return fmt.Errorf("%w: %w", ErrNotFound, fosite.ErrNotFound.WithHint("Pending authorization not found"))
+		return notFoundRFC6749Error("Pending authorization not found")
 	}
 
 	return nil

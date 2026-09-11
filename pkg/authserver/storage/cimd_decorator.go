@@ -216,7 +216,7 @@ func (d *CIMDStorageDecorator) fetch(ctx context.Context, id string) (fosite.Cli
 		// (see issue #6186).
 		slog.WarnContext(ctx, "CIMD document fetch failed",
 			"client_id", id, "error", err)
-		return nil, fmt.Errorf("%w: %w", fosite.ErrNotFound.WithHint("CIMD fetch failed"), err)
+		return nil, fosite.ErrNotFound.WithHint("CIMD fetch failed").WithWrap(err)
 	}
 
 	// Negotiate the effective token_endpoint_auth_method rather than rejecting
@@ -228,9 +228,8 @@ func (d *CIMDStorageDecorator) fetch(ctx context.Context, id string) (fosite.Cli
 	if !ok {
 		slog.WarnContext(ctx, "CIMD client rejected: unsupported token_endpoint_auth_method",
 			"client_id", id, "token_endpoint_auth_method", doc.TokenEndpointAuthMethod)
-		return nil, fmt.Errorf("%w: CIMD document at %s claims token_endpoint_auth_method %q "+
+		return nil, fosite.ErrInvalidClient.WithHintf("CIMD document at %s claims token_endpoint_auth_method %q "+
 			"but this server only supports %q (token_endpoint_auth_methods_supported: %v)",
-			fosite.ErrInvalidClient.WithHint("unsupported token_endpoint_auth_method"),
 			id, doc.TokenEndpointAuthMethod, defaultCIMDTokenEndpointAuthMethod,
 			doc.TokenEndpointAuthMethodsSupported)
 	}

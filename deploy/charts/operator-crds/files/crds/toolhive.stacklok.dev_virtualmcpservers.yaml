@@ -3096,6 +3096,8 @@ spec:
                             description: |-
                               HealthCheckTimeout is the maximum duration for a single health check operation.
                               Should be less than HealthCheckInterval to prevent checks from queuing up.
+                              The same value also bounds a new client session's initialize handshake
+                              across backends, so set it below your gateway/client timeout.
                             pattern: ^([0-9]+(\.[0-9]+)?(ns|us|µs|ms|s|m|h))+$
                             type: string
                           partialFailureMode:
@@ -8059,6 +8061,8 @@ spec:
                             description: |-
                               HealthCheckTimeout is the maximum duration for a single health check operation.
                               Should be less than HealthCheckInterval to prevent checks from queuing up.
+                              The same value also bounds a new client session's initialize handshake
+                              across backends, so set it below your gateway/client timeout.
                             pattern: ^([0-9]+(\.[0-9]+)?(ns|us|µs|ms|s|m|h))+$
                             type: string
                           partialFailureMode:

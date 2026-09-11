@@ -711,10 +711,10 @@ type OAuth2UpstreamRunConfig struct {
 	ClientSecretEnvVar string `json:"client_secret_env_var,omitempty" yaml:"client_secret_env_var,omitempty"`
 
 	// TokenEndpointAuthMethod selects how the client authenticates at the OAuth token
-	// endpoint. When empty and a client secret is configured, client_secret_basic is
-	// used, matching the RFC 7591 default for confidential clients. Set this to
-	// client_secret_post only for providers that require credentials in the request body.
-	// Public clients without a secret use the "none" method.
+	// endpoint. When empty, credentials are sent in the request body (the historical
+	// client_secret_post-shaped default). Set this to client_secret_basic explicitly
+	// for providers that require HTTP Basic auth. Public clients without a secret use
+	// the "none" method.
 	TokenEndpointAuthMethod string `json:"token_endpoint_auth_method,omitempty" yaml:"token_endpoint_auth_method,omitempty"`
 
 	// RedirectURI is the callback URL where the upstream IDP will redirect after authentication.
@@ -1479,7 +1479,8 @@ func (c *OAuth2UpstreamRunConfig) validateTokenEndpointAuthMethod() error {
 
 	switch c.TokenEndpointAuthMethod {
 	case "":
-		// Resolved from the presence of a secret in buildPureOAuth2Config.
+		// Empty means the historical POST-body default; buildPureOAuth2Config
+		// passes it through unchanged, it does not resolve to a confidential method.
 	case oauthproto.TokenEndpointAuthMethodNone:
 		if hasSecretSource {
 			return fmt.Errorf("oauth2 upstream: token_endpoint_auth_method none cannot be used with a client secret")

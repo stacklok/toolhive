@@ -412,7 +412,7 @@
             "type": "string"
           },
           "token_endpoint_auth_method": {
-            "description": "TokenEndpointAuthMethod selects how the client authenticates at the OAuth token\nendpoint. When empty and a client secret is configured, client_secret_basic is\nused, matching the RFC 7591 default for confidential clients. Set this to\nclient_secret_post only for providers that require credentials in the request body.\nPublic clients without a secret use the \"none\" method.",
+            "description": "TokenEndpointAuthMethod selects how the client authenticates at the OAuth token\nendpoint. When empty, credentials are sent in the request body (the historical\nclient_secret_post-shaped default). Set this to client_secret_basic explicitly\nfor providers that require HTTP Basic auth. Public clients without a secret use\nthe \"none\" method.",
             "type": "string"
           },
           "token_response_mapping": {

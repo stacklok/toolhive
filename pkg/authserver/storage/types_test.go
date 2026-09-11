@@ -26,6 +26,19 @@ import (
 	"github.com/stretchr/testify/assert"
 )
 
+func TestNotFoundRFC6749Error(t *testing.T) {
+	t.Parallel()
+
+	err := notFoundRFC6749Error("item not found")
+	assert.ErrorIs(t, err, ErrNotFound)
+	assert.ErrorIs(t, err, fosite.ErrNotFound)
+
+	var fositeErr *fosite.RFC6749Error
+	if assert.True(t, errors.As(err, &fositeErr)) {
+		assert.NotNil(t, fositeErr)
+	}
+}
+
 func TestUpstreamTokens_IsExpired(t *testing.T) {
 	t.Parallel()
 

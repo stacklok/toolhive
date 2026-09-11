@@ -468,10 +468,10 @@ components:
                 token_endpoint_auth_method:
                     description: |-
                         TokenEndpointAuthMethod selects how the client authenticates at the OAuth token
-                        endpoint. When empty and a client secret is configured, client_secret_basic is
-                        used, matching the RFC 7591 default for confidential clients. Set this to
-                        client_secret_post only for providers that require credentials in the request body.
-                        Public clients without a secret use the "none" method.
+                        endpoint. When empty, credentials are sent in the request body (the historical
+                        client_secret_post-shaped default). Set this to client_secret_basic explicitly
+                        for providers that require HTTP Basic auth. Public clients without a secret use
+                        the "none" method.
                     type: string
                 token_response_mapping:
                     $ref: '#/components/schemas/AuthenticationTokenResponseMappingRunConfig'
@@ -2980,6 +2980,8 @@ components:
                         $ref: '#/components/schemas/RegistrySkillPackage'
                     type: array
                     uniqueItems: false
+                provenance:
+                    $ref: '#/components/schemas/RegistryProvenance'
                 repository:
                     $ref: '#/components/schemas/RegistrySkillRepository'
                 status:
@@ -4585,7 +4587,7 @@ components:
                     description: |-
                         BuilderImage is the full image reference for the builder stage.
                         An empty string signals "use the default for this transport type" during config merging.
-                        Examples: "golang:1.26-alpine", "node:24-alpine", "python:3.14-slim"
+                        Examples: "golang:1.27-alpine", "node:24-alpine", "python:3.14-slim"
                     type: string
                 runtime_env:
                     additionalProperties:

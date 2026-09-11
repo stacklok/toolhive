@@ -12,7 +12,7 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
-	tcredis "github.com/stacklok/toolhive-core/redis"
+	"github.com/stacklok/toolhive-core/redisconn"
 )
 
 func proxyFactory(id string) Session { return NewProxySession(id) }
@@ -29,7 +29,7 @@ func TestNewManagerWithRedis(t *testing.T) {
 			context.Background(),
 			time.Hour,
 			proxyFactory,
-			tcredis.Config{Addr: mr.Addr()},
+			redisconn.Config{Addr: mr.Addr()},
 			"test:mgr:",
 		)
 		require.NoError(t, err)
@@ -47,7 +47,7 @@ func TestNewManagerWithRedis(t *testing.T) {
 			context.Background(),
 			time.Hour,
 			proxyFactory,
-			tcredis.Config{Addr: "localhost:6379"},
+			redisconn.Config{Addr: "localhost:6379"},
 			"",
 		)
 		require.Error(t, err)
@@ -63,7 +63,7 @@ func TestNewManagerWithRedis(t *testing.T) {
 			context.Background(),
 			time.Hour,
 			proxyFactory,
-			tcredis.Config{Addr: mr.Addr()},
+			redisconn.Config{Addr: mr.Addr()},
 			"test:mgr:",
 		)
 		require.NoError(t, err)
@@ -86,7 +86,7 @@ func TestNewManagerWithRedis(t *testing.T) {
 			context.Background(),
 			time.Hour,
 			proxyFactory,
-			tcredis.Config{Addr: mr.Addr()},
+			redisconn.Config{Addr: mr.Addr()},
 			"test:mgr:",
 		)
 		require.NoError(t, err)

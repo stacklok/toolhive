@@ -15,7 +15,12 @@ jobs:
           persist-credentials: false
       - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7
         with:
-          go-version-file: sdk/go/go.mod
+          # Root go.mod, not sdk/go/go.mod: sdk-verify runs generator tooling
+          # from the root module (cmd/help/openapi-normalize, ogen-client-wrapper),
+          # so the toolchain has to satisfy the root's Go version. setup-go pins
+          # GOTOOLCHAIN=local, so a lower version here fails outright rather than
+          # upgrading. The SDK module keeps its own lower floor for consumers.
+          go-version-file: go.mod
       - name: Install Task
         uses: arduino/setup-task@c0bc642852239c2689f73f4ea6459c29405f3c52 # v3.0.0
         with:

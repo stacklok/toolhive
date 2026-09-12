@@ -24,6 +24,11 @@ type contextKey string
 const (
 	// MCPRequestContextKey is the context key for storing parsed MCP request data.
 	MCPRequestContextKey contextKey = "mcp_request"
+
+	// ClientResponseContextKey marks a POST body that decoded as a JSON-RPC
+	// response or error rather than a request, so downstream middleware can
+	// tell one apart from a body that failed to parse at all.
+	ClientResponseContextKey contextKey = "mcp_client_response"
 )
 
 // ParsedMCPRequest contains the parsed MCP request information.
@@ -123,6 +128,12 @@ func ParsingMiddleware(next http.Handler) http.Handler {
 
 		// Parse the MCP request and store in context
 		parsedRequest := parseMCPRequest(bodyBytes)
+		if parsedRequest == nil && isClientResponseBody(bodyBytes) {
+			// Not a request, but well-formed: it answers a request the server
+			// initiated. Record that so downstream middleware does not confuse
+			// it with an unparsable body.
+			r = r.WithContext(context.WithValue(r.Context(), ClientResponseContextKey, true))
+		}
 		if parsedRequest != nil {
 			parsedRequest.MCPMethodHeader = r.Header.Get("Mcp-Method")
 			parsedRequest.MCPNameHeader = r.Header.Get("Mcp-Name")
@@ -254,6 +265,30 @@ func RequestHasJSONContentType(r *http.Request) bool {
 		return false
 	}
 	return strings.EqualFold(mediaType, "application/json")
+}
+
+// isClientResponseBody reports whether bodyBytes is a well-formed JSON-RPC
+// response or error, i.e. a client's answer to a server-initiated request
+// (ping, elicitation, sampling) rather than a call the client is making.
+func isClientResponseBody(bodyBytes []byte) bool {
+	if len(bodyBytes) == 0 {
+		return false
+	}
+	msg, err := jsonrpc2.DecodeMessage(bodyBytes)
+	if err != nil {
+		return false
+	}
+	_, ok := msg.(*jsonrpc2.Response)
+	return ok
+}
+
+// IsClientResponse reports whether the request body decoded as a JSON-RPC
+// response or error rather than a request. A nil result from
+// [GetParsedMCPRequest] means either this or an unparsable body; callers that
+// must distinguish the two use this.
+func IsClientResponse(ctx context.Context) bool {
+	v, _ := ctx.Value(ClientResponseContextKey).(bool)
+	return v
 }
 
 // GetParsedMCPRequest retrieves the parsed MCP request from the request context.

@@ -114,6 +114,8 @@ type ApplyConfig struct {
 	// discovery request. It is used only by integrations that require an explicit
 	// model catalogue, such as VS Code's customendpoint provider.
 	DiscoveredModels []string
+	// ExtendedTTLCache requests one-hour caching from supported clients.
+	ExtendedTTLCache bool
 	// BedrockCompat and the per-tier Bedrock model IDs configure Claude Code for a
 	// gateway that forwards to AWS Bedrock. When BedrockCompat is true, Claude Code
 	// is configured with CLAUDE_CODE_DISABLE_EXPERIMENTAL_BETAS=1 (Bedrock rejects

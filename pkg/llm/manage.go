@@ -38,6 +38,9 @@ func (c *Config) SetFields(opts SetOptions) error {
 	if opts.TLSSkipVerify != nil {
 		c.TLSSkipVerify = *opts.TLSSkipVerify
 	}
+	if opts.ExtendedTTLCache != nil {
+		c.ExtendedTTLCache = *opts.ExtendedTTLCache
+	}
 	if opts.BedrockCompat != nil {
 		c.Bedrock.Compat = *opts.BedrockCompat
 	}
@@ -59,13 +62,14 @@ func (c *Config) SetFields(opts SetOptions) error {
 // field unchanged. TLSSkipVerify uses a pointer so that false can be
 // distinguished from "not provided" (enabling explicit clear via config set).
 type SetOptions struct {
-	GatewayURL    string
-	Issuer        string
-	ClientID      string
-	Audience      string
-	ProxyPort     int
-	CallbackPort  int
-	TLSSkipVerify *bool // nil = not provided; &false = explicitly disable
+	GatewayURL       string
+	Issuer           string
+	ClientID         string
+	Audience         string
+	ProxyPort        int
+	CallbackPort     int
+	TLSSkipVerify    *bool // nil = not provided; &false = explicitly disable
+	ExtendedTTLCache *bool // nil = not provided; &false = explicitly disable
 	// BedrockCompat and Enable1M use pointers so false can be distinguished from
 	// "not provided" (enabling explicit clear via config set). See BedrockConfig.
 	BedrockCompat *bool
@@ -122,6 +126,7 @@ func (c *Config) Show(w io.Writer) error {
 	}
 	writef("Proxy Port:      %d\n", c.EffectiveProxyPort())
 	writef("Scopes:          %v\n", c.OIDC.EffectiveScopes())
+	writef("Extended TTL cache: %t\n", c.ExtendedTTLCache)
 	if c.TLSSkipVerify {
 		writef("TLS Skip Verify: true (WARNING: certificate verification disabled)\n")
 	}

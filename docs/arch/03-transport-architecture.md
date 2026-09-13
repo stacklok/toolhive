@@ -806,7 +806,7 @@ when delivery lands it does not also require rewriting the fan-out primitives.
 
 ### Network Isolation
 
-**Implementation**: `pkg/permissions/profile.go`
+**Implementation**: [`toolhive-core/permissions`](https://github.com/stacklok/toolhive-core/tree/main/permissions)
 
 - MCP servers can run in isolated networks
 - Egress proxy for allowed destinations

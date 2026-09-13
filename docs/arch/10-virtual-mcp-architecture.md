@@ -77,7 +77,7 @@ graph TB
 | **Composition** | Execute multi-step workflows across multiple backends |
 | **Caching** | Reduce auth overhead by caching exchanged tokens |
 
-**Implementation**: `pkg/vmcp/` (discovery: `pkg/vmcp/discovery/`, routing: `pkg/vmcp/router/`)
+**Implementation**: `pkg/vmcp/` (discovery: `pkg/vmcp/aggregator/`, routing: `pkg/vmcp/router/`)
 
 ## Backend Discovery
 
@@ -1005,7 +1005,7 @@ Middleware is applied by wrapping handlers, so execution order is outer-to-inner
 
 ### Discovery Middleware
 
-The Discovery middleware (`pkg/vmcp/discovery/middleware.go`) is central to vMCP's multi-tenant design:
+Discovery (`pkg/vmcp/aggregator/discoverer.go`) is central to vMCP's multi-tenant design:
 
 - **Initialize requests** (no session ID): Discovers capabilities from all backends in the MCPGroup, stores routing table in session
 - **Subsequent requests** (with session ID): Retrieves cached capabilities from session
@@ -1042,7 +1042,7 @@ The server wires them around discovery/annotation-enrichment so the effective ex
 Audit → Authentication → MCP Parsing → Discovery → Annotation Enrichment → Authorization → Next Handler
 ```
 
-**Implementation**: `pkg/vmcp/server/server.go`, `pkg/vmcp/discovery/middleware.go`, `pkg/vmcp/auth/factory/`
+**Implementation**: `pkg/vmcp/server/server.go`, `pkg/vmcp/aggregator/discoverer.go`, `pkg/vmcp/auth/factory/`
 
 ### Authorization Enforcement (core admission seam + pre-dispatch gate)
 

@@ -15,12 +15,10 @@ permissions:
 
 jobs:
   test-go-code:
-    name: Test Go Code (${{ matrix.os }})
-    runs-on: ${{ matrix.os }}
-    strategy:
-      matrix:
-        os: [ubuntu-8cores-32gb]
-      fail-fast: false
+    name: Test Go Code (Linux)
+    # The org-level pool is for trusted code only. Fork pull requests run on a
+    # GitHub-hosted runner so untrusted code cannot reach self-hosted infrastructure.
+    runs-on: ${{ (github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository) && 'stacklok-self-hosted-runners' || 'ubuntu-latest' }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
         with:
@@ -45,9 +43,9 @@ jobs:
         uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6
         with:
           path: ~/.cache/go-build
-          key: ${{ runner.os }}-go-build-${{ hashFiles('**/go.sum') }}
+          key: ${{ runner.os }}-${{ runner.arch }}-go-build-${{ hashFiles('**/go.sum') }}
           restore-keys: |
-            ${{ runner.os }}-go-build-
+            ${{ runner.os }}-${{ runner.arch }}-go-build-
 
       # Cache Go tools (gotestfmt only for tests)
       - name: Cache Go tools
@@ -55,9 +53,9 @@ jobs:
         uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6
         with:
           path: ~/go/bin
-          key: ${{ runner.os }}-go-tools-${{ hashFiles('go.mod') }}-gotestfmt-v2
+          key: ${{ runner.os }}-${{ runner.arch }}-go-tools-${{ hashFiles('go.mod') }}-gotestfmt-v2
           restore-keys: |
-            ${{ runner.os }}-go-tools-
+            ${{ runner.os }}-${{ runner.arch }}-go-tools-
 
       # Only install gotestfmt if not cached
       - name: Install gotestfmt (if not cached)
@@ -75,14 +73,12 @@ jobs:
         run: task test-coverage
 
       - name: Upload coverage reports to Codecov with GitHub Action
-        if: startsWith(matrix.os, 'ubuntu')
         uses: codecov/codecov-action@fb8b3582c8e4def4969c97caa2f19720cb33a72f # v7.0.0
         with:
           token: ${{ secrets.CODECOV_TOKEN }}
           slug: stacklok/toolhive
 
       - name: Upload coverage to Coveralls
-        if: startsWith(matrix.os, 'ubuntu')
         uses: coverallsapp/github-action@8d6379e14d29928660c4ba802d8e85393440b329 # v2
         with:
           file: coverage/coverage.out

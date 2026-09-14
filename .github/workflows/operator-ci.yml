@@ -11,7 +11,7 @@ jobs:
   operator-tests:
     name: Operator Tests
     # Short, setup-dominated job; the standard runner is free for this
-    # public repo. Integration and E2E jobs below keep the large runner.
+    # public repo. The integration job below uses the self-hosted pool.
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
@@ -35,7 +35,9 @@ jobs:
 
   operator-tests-integration:
     name: Operator Tests Integration
-    runs-on: ubuntu-8cores-32gb
+    # The org-level pool is for trusted code only. Fork pull requests run on a
+    # GitHub-hosted runner so untrusted code cannot reach self-hosted infrastructure.
+    runs-on: ${{ (github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository) && 'stacklok-self-hosted-runners' || 'ubuntu-latest' }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
         with:
@@ -152,7 +154,9 @@ jobs:
 
   e2e-tests-operator:
     name: E2E Tests Operator
-    runs-on: ubuntu-8cores-32gb
+    # This suite runs amd64-only text-embeddings-inference images, so it
+    # cannot use the org's arm64 self-hosted pool.
+    runs-on: ubuntu-latest
     timeout-minutes: 30
     defaults:
       run:

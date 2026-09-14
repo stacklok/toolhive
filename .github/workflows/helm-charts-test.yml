@@ -9,7 +9,9 @@ permissions:
 jobs:
   lint-and-test:
     name: Lint and Test Helm Charts
-    runs-on: ubuntu-8cores-32gb
+    # The org-level pool is for trusted code only. Fork pull requests run on a
+    # GitHub-hosted runner so untrusted code cannot reach self-hosted infrastructure.
+    runs-on: ${{ (github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository) && 'stacklok-self-hosted-runners' || 'ubuntu-latest' }}
     steps:
       - name: Checkout
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
@@ -25,6 +27,14 @@ jobs:
 
       - name: Set up ko
         uses: ko-build/setup-ko@61b4d1d396f5b2e7d6bb6fefdce3dc38d1a13445 # v0.10
+        with:
+          # The self-hosted runner user cannot write to /usr/local/bin directly.
+          use-sudo: true
+
+      - name: Set up kubectl
+        uses: azure/setup-kubectl@829323503d1be3d00ca8346e5391ca0b07a9ab0d # v5.1.0
+        with:
+          version: v1.35.0
 
       - name: Set up Helm
         uses: azure/setup-helm@9bc31f4ebc9c6b171d7bfbaa5d006ae7abdb4310 # v5.0.1
@@ -70,18 +80,15 @@ jobs:
           # Build to local Docker daemon, then load into KIND
           KO_DOCKER_REPO=ko.local ko build ./cmd/thv-operator \
             --base-import-paths \
-            --tags=ci-test \
-            --platform=linux/amd64
+            --tags=ci-test
 
           KO_DOCKER_REPO=ko.local ko build ./cmd/thv-proxyrunner \
             --base-import-paths \
-            --tags=ci-test \
-            --platform=linux/amd64
+            --tags=ci-test
 
           KO_DOCKER_REPO=ko.local ko build ./cmd/vmcp \
             --base-import-paths \
-            --tags=ci-test \
-            --platform=linux/amd64
+            --tags=ci-test
 
           # Load the image into the KIND cluster
           kind load docker-image ko.local/thv-operator:ci-test --name chart-testing

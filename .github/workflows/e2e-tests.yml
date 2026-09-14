@@ -9,7 +9,9 @@ permissions:
 jobs:
   build-binary:
     name: Build ToolHive Binary
-    runs-on: ubuntu-8cores-32gb
+    # The org-level pool is for trusted code only. Fork pull requests run on a
+    # GitHub-hosted runner so untrusted code cannot reach self-hosted infrastructure.
+    runs-on: ${{ (github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository) && 'stacklok-self-hosted-runners' || 'ubuntu-latest' }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
         with:
@@ -43,11 +45,9 @@ jobs:
 
   e2e-tests-core:
     name: E2E Tests Core (${{ matrix.title }})
-    # Shards default to the large runner. Shards whose test phase runs for
-    # only a couple of minutes are container- and network-bound rather than
-    # CPU-bound, and set `runner` to the standard runner, which is free for
-    # this public repo. Long shards keep the large runner for wall time.
-    runs-on: ${{ matrix.runner || 'ubuntu-8cores-32gb' }}
+    # Trusted branches use the arm64 self-hosted pool. Fork pull requests use
+    # GitHub-hosted runners so untrusted code cannot reach internal infrastructure.
+    runs-on: ${{ (github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository) && 'stacklok-self-hosted-runners' || 'ubuntu-latest' }}
     needs: build-binary
     strategy:
       fail-fast: false
@@ -57,7 +57,6 @@ jobs:
             label_filter: core
             artifact: e2e-test-results-core
             procs: 4
-            runner: ubuntu-latest
           - title: mcp-run
             label_filter: mcp-run
             artifact: e2e-test-results-mcp-run
@@ -77,12 +76,10 @@ jobs:
           - title: api-registry
             label_filter: api-registry
             artifact: e2e-test-results-api-registry
-            runner: ubuntu-latest
           - title: api-workloads
             label_filter: "api-workloads && !lifecycle"
             artifact: e2e-test-results-api-workloads
             test_timeout: 25m
-            runner: ubuntu-latest
           - title: api-workloads-lifecycle
             label_filter: "api-workloads && lifecycle"
             artifact: e2e-test-results-api-workloads-lifecycle
@@ -90,18 +87,15 @@ jobs:
           - title: api-clients
             label_filter: api-clients
             artifact: e2e-test-results-api-clients
-            runner: ubuntu-latest
           - title: api-misc
             label_filter: api-misc
             artifact: e2e-test-results-api-misc
-            runner: ubuntu-latest
           - title: vmcp
             label_filter: vmcp
             artifact: e2e-test-results-vmcp
           - title: llm
             label_filter: llm
             artifact: e2e-test-results-llm
-            runner: ubuntu-latest
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
         with:
@@ -131,12 +125,8 @@ jobs:
           chmod +x ./bin/thv
           ls -la ./bin/
 
-      - name: Set up container runtime (Docker)
-        run: |
-          # Docker is preinstalled on both runner sizes used by this matrix
-          docker --version
-          # Start Docker daemon if not running
-          sudo systemctl start docker
+      - name: Verify container runtime (Docker)
+        run: docker version
 
       - name: Pre-pull container images
         run: |
@@ -207,8 +197,9 @@ jobs:
 
   conformance:
     name: MCP Conformance
-    # Runs for about a minute; the standard runner is free for this public repo.
-    runs-on: ubuntu-latest
+    # Keep this on the same architecture as build-binary: its artifact is a
+    # native executable. Fork pull requests remain on GitHub-hosted runners.
+    runs-on: ${{ (github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository) && 'stacklok-self-hosted-runners' || 'ubuntu-latest' }}
     needs: build-binary
     timeout-minutes: 20
     strategy:
@@ -234,10 +225,8 @@ jobs:
       - name: Set binary permissions
         run: chmod +x ./bin/thv
 
-      - name: Set up container runtime (Docker)
-        run: |
-          docker --version
-          sudo systemctl start docker
+      - name: Verify container runtime (Docker)
+        run: docker version
 
       - name: Run MCP conformance suite
         env:

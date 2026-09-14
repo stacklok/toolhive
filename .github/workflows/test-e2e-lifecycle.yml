@@ -26,7 +26,9 @@ permissions:
 jobs:
   e2e-test-lifecycle:
     name: E2E Test Lifecycle
-    runs-on: ubuntu-8cores-32gb
+    # This suite runs an amd64-only text-embeddings-inference image, so it
+    # cannot use the org's arm64 self-hosted pool.
+    runs-on: ubuntu-latest
     timeout-minutes: 30
     env:
       YARDSTICK_IMAGE: ghcr.io/stackloklabs/yardstick/yardstick-server:1.2.0

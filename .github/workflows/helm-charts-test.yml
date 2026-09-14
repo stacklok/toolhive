@@ -80,15 +80,18 @@ jobs:
           # Build to local Docker daemon, then load into KIND
           KO_DOCKER_REPO=ko.local ko build ./cmd/thv-operator \
             --base-import-paths \
-            --tags=ci-test
+            --tags=ci-test \
+            --platform=${{ runner.arch == 'ARM64' && 'linux/arm64' || 'linux/amd64' }}
 
           KO_DOCKER_REPO=ko.local ko build ./cmd/thv-proxyrunner \
             --base-import-paths \
-            --tags=ci-test
+            --tags=ci-test \
+            --platform=${{ runner.arch == 'ARM64' && 'linux/arm64' || 'linux/amd64' }}
 
           KO_DOCKER_REPO=ko.local ko build ./cmd/vmcp \
             --base-import-paths \
-            --tags=ci-test
+            --tags=ci-test \
+            --platform=${{ runner.arch == 'ARM64' && 'linux/arm64' || 'linux/amd64' }}
 
           # Load the image into the KIND cluster
           kind load docker-image ko.local/thv-operator:ci-test --name chart-testing

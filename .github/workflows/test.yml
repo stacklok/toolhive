@@ -70,6 +70,10 @@ jobs:
 
       # Run tests with all dependencies already cached
       - name: Run tests with coverage
+        env:
+          # The self-hosted runner image disables CGO by default, but the race
+          # detector used by this task requires it.
+          CGO_ENABLED: '1'
         run: task test-coverage
 
       - name: Upload coverage reports to Codecov with GitHub Action

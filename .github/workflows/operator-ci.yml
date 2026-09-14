@@ -38,6 +38,11 @@ jobs:
     # The org-level pool is for trusted code only. Fork pull requests run on a
     # GitHub-hosted runner so untrusted code cannot reach self-hosted infrastructure.
     runs-on: ${{ (github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository) && 'stacklok-self-hosted-runners' || 'ubuntu-latest' }}
+    env:
+      # ARC runner pods expose the host cluster through service variables but
+      # intentionally have no credentials for it; envtest supplies its own API.
+      KUBERNETES_SERVICE_HOST: ''
+      KUBERNETES_SERVICE_PORT: ''
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
         with:

@@ -6,6 +6,12 @@ on:
 permissions:
   contents: read
 
+# ARC runner pods receive Kubernetes service variables despite having no host
+# cluster credentials. Clear them so ToolHive selects its local Docker runtime.
+env:
+  KUBERNETES_SERVICE_HOST: ''
+  KUBERNETES_SERVICE_PORT: ''
+
 jobs:
   build-binary:
     name: Build ToolHive Binary

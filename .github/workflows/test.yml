@@ -80,6 +80,11 @@ jobs:
           # The self-hosted runner image disables CGO by default, but the race
           # detector used by this task requires it.
           CGO_ENABLED: '1'
+          # Runner pods receive Kubernetes service environment variables even
+          # without a service-account token. Clear them so unit tests detect the
+          # same local-container runtime as GitHub-hosted runners.
+          KUBERNETES_SERVICE_HOST: ''
+          KUBERNETES_SERVICE_PORT: ''
         run: task test-coverage
 
       - name: Upload coverage reports to Codecov with GitHub Action

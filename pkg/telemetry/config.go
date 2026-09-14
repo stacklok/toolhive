@@ -7,6 +7,7 @@ package telemetry
 import (
 	"context"
 	"fmt"
+	"maps"
 	"net/http"
 	"strconv"
 	"strings"
@@ -324,7 +325,7 @@ func NewProvider(ctx context.Context, config Config, extraProcessors ...sdktrace
 		providers.WithMetricsEnabled(config.MetricsEnabled),
 		providers.WithSamplingRate(config.GetSamplingRateFloat()),
 		providers.WithEnablePrometheusMetricsPath(config.EnablePrometheusMetricsPath),
-		providers.WithCustomAttributes(config.CustomAttributes),
+		providers.WithCustomAttributes(mergeRegisteredResourceAttributes(config.CustomAttributes)),
 	}
 
 	// Merge globally registered processors (self-registered by integrations such
@@ -340,6 +341,21 @@ func NewProvider(ctx context.Context, config Config, extraProcessors ...sdktrace
 	}
 
 	return setGlobalProvidersAndReturn(telemetryProviders, config)
+}
+
+// mergeRegisteredResourceAttributes overlays the caller's custom attributes on
+// top of any registered via RegisterResourceAttributes, so an explicitly
+// configured attribute always wins over one a self-registered integration
+// supplied as a default. The caller's map is never mutated.
+func mergeRegisteredResourceAttributes(configured map[string]string) map[string]string {
+	registered := RegisteredResourceAttributes()
+	if len(registered) == 0 {
+		return configured
+	}
+	merged := make(map[string]string, len(registered)+len(configured))
+	maps.Copy(merged, registered)
+	maps.Copy(merged, configured)
+	return merged
 }
 
 // setGlobalProvidersAndReturn sets the global providers for OTEL and returns the providers

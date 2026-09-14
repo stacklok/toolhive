@@ -57,8 +57,7 @@ func ErrorHandler(fn HandlerWithError) http.HandlerFunc {
 			// runtimes that may include connection strings) to external backends.
 			span.RecordError(fmt.Errorf("internal server error"))
 			span.SetStatus(codes.Error, "internal server error")
-			// Sentry span processor only creates transactions; call CaptureException
-			// explicitly so 5xx errors also appear as Issues in the Sentry Issues tab.
+			// Capture the exception explicitly so 5xx errors also appear as Sentry Issues.
 			sentrypkg.CaptureException(r, err)
 
 			if isUpstreamStatus(code) {

@@ -6,7 +6,6 @@ package secrets
 import (
 	"context"
 	"crypto/rand"
-	"crypto/sha256"
 	"encoding/base64"
 	"errors"
 	"fmt"
@@ -230,13 +229,13 @@ func CreateSecretProviderWithPassword(managerType ProviderType, password string)
 		if err != nil {
 			return nil, fmt.Errorf("failed to get secrets password: %w", err)
 		}
-		// Convert to 256-bit hash for use with AES-GCM.
-		key := sha256.Sum256(secretsPassword)
 		secretsPath, err := xdg.DataFile("toolhive/secrets_encrypted")
 		if err != nil {
 			return nil, fmt.Errorf("unable to access secrets file path %w", err)
 		}
-		primary, err = NewEncryptedManager(secretsPath, key[:])
+		// The AES-256-GCM key is derived from the password inside the
+		// manager, using Argon2id and a salt stored in the secrets file.
+		primary, err = NewEncryptedManager(secretsPath, secretsPassword)
 		if err != nil {
 			// Decryption failed - don't store the password in keyring
 			// This allows the user to retry with the correct password

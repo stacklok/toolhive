@@ -128,7 +128,9 @@ thv run my-server --secret "api-key,target=API_KEY"
 - Password in OS keyring (platform-specific secure storage)
 - Secrets encrypted at rest (AES-256-GCM)
 - File permissions: 0600
-- Key derivation: SHA-256 of password
+- Key derivation: Argon2id over the password with a per-file random salt (16 bytes).
+  Cost parameters are the OWASP minimum for Argon2id (19 MiB, 2 iterations, 1 lane)
+  and are fixed in code per format version, not stored in the file.
 
 **Threat protection:**
 - Plaintext on disk: ✅
@@ -136,7 +138,29 @@ thv run my-server --secret "api-key,target=API_KEY"
 - Log exposure: ✅
 - Malicious container: ❌ (has env access)
 
-**Implementation**: `pkg/secrets/aes/aes.go` (AES-256-GCM), `pkg/secrets/keyring/` (OS keyring storage), `pkg/secrets/factory.go` (SHA-256 key derivation via `sha256.Sum256(secretsPassword)`)
+**Implementation**: `pkg/secrets/aes/aes.go` (AES-256-GCM), `pkg/secrets/keyring/` (OS keyring storage), `pkg/secrets/kdf.go` (Argon2id key derivation), `pkg/secrets/encrypted.go` (file framing and key caching)
+
+**Secrets file format**: a header describing the key derivation, followed by the AES-GCM output.
+
+```
+magic    "THVSEC"  6 bytes
+version  0x01      1 byte
+salt               16 bytes
+body               nonce|ciphertext|tag
+```
+
+The version selects the Argon2id cost parameters, which live in code. Keeping them
+out of the file means no attacker-controllable value reaches Argon2id's memory
+allocation, and raising the cost becomes an explicit new format version rather
+than a silent per-file property.
+
+Files written before this framing existed have no header and were keyed with an
+unsalted SHA-256 of the password. They are detected by the absent magic prefix,
+read with the legacy key, and rewritten in the framed format when the file is
+opened — migration is transparent and requires no user action. It is best effort:
+if the rewrite fails (read-only filesystem, full disk) the file stays readable in
+the legacy format. A `thv` binary predating the framed format cannot read a
+migrated file.
 
 ## Integration Points
 

@@ -69,6 +69,7 @@ var serveCmd = &cobra.Command{
 		if err := sentrypkg.Init(sentryCfg); err != nil {
 			return fmt.Errorf("failed to initialize sentry: %w", err)
 		}
+		defer sentrypkg.Close()
 
 		// Initialize OTEL provider from global config (thv config otel set-endpoint).
 		// When Sentry is initialized, its trace exporter is added as a span processor,
@@ -91,8 +92,6 @@ var serveCmd = &cobra.Command{
 				}
 			}()
 		}
-		defer sentrypkg.Close()
-
 		// If socket path is provided, use it; otherwise use host:port
 		address := fmt.Sprintf("%s:%d", host, port)
 		isUnixSocket := false

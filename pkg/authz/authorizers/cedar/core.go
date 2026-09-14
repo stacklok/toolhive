@@ -266,7 +266,14 @@ type ConfigOptions struct {
 	// group/role/scope claims, comes from the upstream access token or not at all.
 	// The sole nil-map exception uses only request-token claims because no upstream
 	// provider credential exists, never as a substitute for another provider's
-	// credentials. See resolveClaims for the full contract.
+	// credentials.
+	//
+	// Separately from that exception: when the provider's access token is present
+	// but opaque rather than JWT-shaped (Google's ya29.*, GitHub's gho_*), its
+	// claims cannot be read at all and evaluation degrades to the request token's
+	// claims, labelled claimSourceUpstreamOpaque. That is a fallback, not an
+	// exception to the fail-closed rule above — the credential is there, it just
+	// cannot be parsed. See resolveClaims for the full contract.
 	PrimaryUpstreamProvider string `json:"primary_upstream_provider,omitempty" yaml:"primary_upstream_provider,omitempty"`
 
 	// GroupClaimName is the JWT claim key that contains group membership for the

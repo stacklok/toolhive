@@ -356,6 +356,9 @@ principal and the context, naming the trust root behind the claims:
 | `request:no-upstream-session` | The validated embedded-auth-server token was proven to have been minted with no upstream login, so no upstream credential can exist for it. |
 | `request:upstream-opaque` | An upstream credential exists but is an opaque OAuth 2.0 access token whose claims cannot be read, so evaluation degraded to the request token's claims. |
 
+Where a fallback value comes from is covered under [What the fallback claims
+actually are](#what-the-fallback-claims-actually-are) below.
+
 A policy that must only act on what an upstream actually asserted can say so:
 
 ```plain
@@ -369,6 +372,36 @@ permit(principal, action == Action::"call_tool", resource == Tool::"deploy") whe
 The attribute is written after claim prefixing and its name does not start with
 `claim_`, so a token carrying a claim named `thv_claim_source` becomes
 `claim_thv_claim_source` and cannot spoof its own provenance.
+
+##### What the fallback claims actually are
+
+Both labels mean evaluation fell back to the claims in the ToolHive-issued token
+the client presented, but the two paths put different things in that token.
+
+On `request:upstream-opaque` the token is an ordinary login-issued access token.
+Its `name` and `email` are mirrored from the identity resolved at the **first**
+upstream in the authorization chain, which need not be the provider you pinned.
+
+On `request:no-upstream-session` the values depend on the grant. An RFC 8693
+delegated token copies `name` and `email` from its subject token — which is the
+first upstream's mirror when the subject token was ToolHive-issued, but is the
+external IdP's own assertion when it came from a trusted external issuer. An RFC
+7523 JWT-bearer token carries neither claim; see [What these tokens can and
+cannot express](#what-these-tokens-can-and-cannot-express).
+
+Where the mirror does apply, it matters only when the pinned provider is not the
+first upstream. With a single upstream — or when `primaryUpstreamProvider`
+resolves to the first one, which is the default — the mirror and the pinned
+provider's own assertion are the same value, and only the provenance label
+differs. They diverge in a multi-upstream chain pinned to a later upstream: a
+policy keyed on `claim_email` alone may then match on an email the pinned
+provider never asserted. Gate on `thv_claim_source` wherever that distinction
+matters.
+
+Pinning to a later upstream is only reachable through the operator, via
+`spec.authServerConfig.primaryUpstreamProvider`. On the CLI path the provider is
+always resolved to the first upstream, so the mirror and the pinned provider's
+assertion cannot diverge there.
 
 #### Tokens with no upstream login
 
@@ -427,8 +460,10 @@ Two consequences worth planning around:
 - **With more than one upstream provider, `claim_email` and `claim_name` on a
   delegated token may come from a provider other than the pinned one.** They are
   copied from the subject token, whose profile claims mirror the first configured
-  upstream. Check `thv_claim_source` before treating them as an assertion by the
-  pinned provider.
+  upstream. This is not specific to delegation — it applies to every fallback
+  path; see [What the fallback claims actually
+  are](#what-the-fallback-claims-actually-are). Check `thv_claim_source` before
+  treating them as an assertion by the pinned provider.
 
 Everything else stays closed. A token that simply arrives without upstream
 credentials and says nothing about why — an anonymous or local identity, or a

@@ -16,9 +16,9 @@ permissions:
 jobs:
   test-go-code:
     name: Test Go Code (Linux)
-    # The org-level pool is for trusted code only. Fork pull requests run on a
-    # GitHub-hosted runner so untrusted code cannot reach self-hosted infrastructure.
-    runs-on: ${{ (github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository) && 'stacklok-self-hosted-runners' || 'ubuntu-latest' }}
+    # The race-enabled suite is timing-sensitive on the arm64 ARC pool; use the
+    # free standard runner rather than the paid 8-core SKU.
+    runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
         with:
@@ -43,9 +43,9 @@ jobs:
         uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6
         with:
           path: ~/.cache/go-build
-          key: ${{ runner.os }}-${{ runner.arch }}-go-build-${{ hashFiles('**/go.sum') }}
+          key: ${{ runner.os }}-go-build-${{ hashFiles('**/go.sum') }}
           restore-keys: |
-            ${{ runner.os }}-${{ runner.arch }}-go-build-
+            ${{ runner.os }}-go-build-
 
       # Cache Go tools (gotestfmt only for tests)
       - name: Cache Go tools
@@ -53,9 +53,9 @@ jobs:
         uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6
         with:
           path: ~/go/bin
-          key: ${{ runner.os }}-${{ runner.arch }}-go-tools-${{ hashFiles('go.mod') }}-gotestfmt-v2
+          key: ${{ runner.os }}-go-tools-${{ hashFiles('go.mod') }}-gotestfmt-v2
           restore-keys: |
-            ${{ runner.os }}-${{ runner.arch }}-go-tools-
+            ${{ runner.os }}-go-tools-
 
       # Only install gotestfmt if not cached
       - name: Install gotestfmt (if not cached)
@@ -68,23 +68,8 @@ jobs:
           version: 3.44.1
           repo-token: ${{ secrets.GITHUB_TOKEN }}
 
-      - name: Install C toolchain for the race detector
-        if: runner.environment == 'self-hosted'
-        run: |
-          sudo apt-get update
-          sudo apt-get install --yes --no-install-recommends gcc libc6-dev
-
       # Run tests with all dependencies already cached
       - name: Run tests with coverage
-        env:
-          # The self-hosted runner image disables CGO by default, but the race
-          # detector used by this task requires it.
-          CGO_ENABLED: '1'
-          # Runner pods receive Kubernetes service environment variables even
-          # without a service-account token. Clear them so unit tests detect the
-          # same local-container runtime as GitHub-hosted runners.
-          KUBERNETES_SERVICE_HOST: ''
-          KUBERNETES_SERVICE_PORT: ''
         run: task test-coverage
 
       - name: Upload coverage reports to Codecov with GitHub Action

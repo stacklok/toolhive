@@ -162,6 +162,31 @@ if the rewrite fails (read-only filesystem, full disk) the file stays readable i
 the legacy format. A `thv` binary predating the framed format cannot read a
 migrated file.
 
+**Upgrading**: migration happens when the store is opened, including by read-only
+operations, so the first command run by a newly installed binary converts the file.
+Other local processes still running an older binary — an older `thv serve`, or a
+detached proxy that persists OAuth refresh tokens — will fail subsequent secret
+access against the converted file. Stop older local ToolHive processes before the
+first access with the new version, then restart them on the new binary. Secrets
+already injected into running containers are unaffected. This does not apply to
+the Kubernetes path, which uses Kubernetes Secrets rather than this file.
+
+**Recovering from a rollback**: an older binary opening a migrated file reports
+that the password is incorrect. That message predates this format and does not
+indicate corruption — resetting the keyring or deleting the store is the wrong
+first step and will lose secrets. The fix is to return to a binary that
+understands the framed format. Rolling back to an older binary for real requires
+a pre-migration copy of the file, kept as securely as the file itself, plus the
+password that goes with it.
+
+**What migration does and does not protect**: only the live file is upgraded.
+Backups taken before migration keep the unsalted SHA-256 derivation and stay
+cheaply crackable offline. Because the password itself is unchanged, recovering
+it from an old backup also decrypts the migrated file — so retiring old backups
+matters as much as the upgrade. Conversely, a backup of the migrated file is not
+a substitute for retaining the password or keyring entry; without them it cannot
+be decrypted.
+
 ## Integration Points
 
 ### RunConfig

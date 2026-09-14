@@ -177,8 +177,19 @@ func (*EncryptedManager) Capabilities() ProviderCapabilities {
 
 // NewEncryptedManager creates an instance of EncryptedManager.
 //
+// password is the user's password, not a derived key. Callers that previously
+// passed sha256(password) still compile against this signature but will fail to
+// decrypt, because that value is now hashed again as if it were a password.
+//
 // The manager takes the password rather than a key because the key derivation
 // salt lives in the secrets file itself and is only known once the file is read.
+//
+// Opening an existing store can rewrite it: a file in the pre-framing format is
+// migrated to Argon2id here, not on its next write, so that a store which is
+// only ever read does not keep the weaker derivation. The rewrite is atomic and
+// best effort — if it fails, the file is left in the legacy format, which this
+// version still reads. Once migrated, the file cannot be read by a thv binary
+// predating the framed format.
 func NewEncryptedManager(filePath string, password []byte) (Provider, error) {
 	if len(password) == 0 {
 		return nil, errors.New("password cannot be empty")

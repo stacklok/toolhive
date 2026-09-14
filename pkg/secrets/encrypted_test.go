@@ -657,3 +657,36 @@ func TestEncryptedManager_SaltIsStableAcrossWrites(t *testing.T) {
 	assert.Equal(t, firstSalt, secondSalt, "The salt should be reused between writes to the same file")
 	assert.NotEqual(t, firstBody, secondBody, "Each write should produce a fresh nonce and therefore a different body")
 }
+
+func TestEncryptedManager_FailedMigrationPreservesLegacyFile(t *testing.T) {
+	t.Parallel()
+	ctx := t.Context()
+
+	if os.Geteuid() == 0 {
+		t.Skip("running as root bypasses directory permissions")
+	}
+
+	dir := t.TempDir()
+	filePath := filepath.Join(dir, "secrets_encrypted")
+	password := generateRandomPassword(t)
+	writeLegacySecretsFile(t, filePath, password, map[string]string{"legacy-key": "legacy-value"})
+
+	original, err := os.ReadFile(filePath) // #nosec G304: test-controlled path
+	require.NoError(t, err, "Reading the legacy file should not return an error")
+
+	// Make the directory unwritable so the atomic rewrite cannot create its
+	// temporary file. Migration is best effort and must not take the secrets
+	// with it when it fails.
+	require.NoError(t, os.Chmod(dir, 0o500), "Making the directory read-only should not return an error")
+	t.Cleanup(func() { _ = os.Chmod(dir, 0o700) })
+
+	manager := createEncryptedManager(t, filePath, password)
+
+	value, err := manager.GetSecret(ctx, "legacy-key")
+	require.NoError(t, err, "A failed migration should leave the secrets readable")
+	assert.Equal(t, "legacy-value", value, "The legacy secret should be unchanged")
+
+	current, err := os.ReadFile(filePath) // #nosec G304: test-controlled path
+	require.NoError(t, err, "Re-reading the legacy file should not return an error")
+	assert.Equal(t, original, current, "A failed migration should leave the legacy ciphertext untouched")
+}

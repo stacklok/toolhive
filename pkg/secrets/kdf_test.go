@@ -5,7 +5,9 @@ package secrets
 
 import (
 	"crypto/sha256"
+	"sync"
 	"testing"
+	"time"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -59,4 +61,37 @@ func TestDeriveKeyCached(t *testing.T) {
 	// the second, and the correct password would then fail to decrypt.
 	assert.Equal(t, deriveKey(otherPassword, salt), deriveKeyCached(path, otherPassword, salt),
 		"A different password for the same file must derive its own key")
+}
+
+func TestDeriveKeyCached_Concurrent(t *testing.T) {
+	t.Parallel()
+
+	password := []byte("a-password")
+	salt := []byte("0123456789abcdef")
+	path := t.Name()
+	want := deriveKey(password, salt)
+
+	const goroutines = 8
+	keys := make([][]byte, goroutines)
+
+	var wg sync.WaitGroup
+	for i := range goroutines {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			keys[i] = deriveKeyCached(path, password, salt)
+		}()
+	}
+
+	done := make(chan struct{})
+	go func() { wg.Wait(); close(done) }()
+	select {
+	case <-done:
+	case <-time.After(30 * time.Second):
+		t.Fatal("timeout waiting for concurrent derivations")
+	}
+
+	for i, got := range keys {
+		assert.Equal(t, want, got, "Goroutine %d should derive the same key", i)
+	}
 }

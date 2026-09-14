@@ -10,6 +10,7 @@ import (
 	"net/http"
 
 	"github.com/stacklok/toolhive-core/httperr"
+	regtypes "github.com/stacklok/toolhive-core/registry/types"
 	"github.com/stacklok/toolhive/pkg/container/images"
 	"github.com/stacklok/toolhive/pkg/plugins"
 	"github.com/stacklok/toolhive/pkg/skills/lockfile"
@@ -119,8 +120,11 @@ func signedDecision(result *verifier.Result, pluginName string) (*provenanceDeci
 
 // verifyOCIInstall verifies the signature of the OCI artifact at ref/digest
 // before anything is extracted or recorded. The identity expected by the
-// lock file (if any) is enforced inside the verifier's Sigstore policy;
-// trust on first use records whatever identity verification observes.
+// lock file (if any) is enforced inside the verifier's Sigstore policy. On
+// true first use (no lock entry at all), a catalog-declared expectation takes
+// its place if the install resolved from a registry entry that declared one;
+// otherwise trust on first use records whatever identity verification
+// observes.
 //
 // An entry pinned to a cosign public key, or a first install that supplies
 // one, takes the key path instead. Which path runs is decided by the lock
@@ -132,11 +136,20 @@ func (s *service) verifyOCIInstall(
 	opts plugins.InstallOptions,
 	pluginName, ref, digest string,
 ) (*provenanceDecision, error) {
-	expected, expectUnsigned, err := expectedLockTrust(opts.ProjectRoot, pluginName)
+	expected, expectUnsigned, lockEntryExists, err := expectedLockTrust(opts.ProjectRoot, pluginName)
 	if err != nil {
 		return nil, err
 	}
-	keyAnchor, err := resolveKeyAnchor(opts, pluginName, expected, expectUnsigned)
+	var catalogExpected *regtypes.Provenance
+	verifierExpected := verifier.NewLockExpectation(expected)
+	if !lockEntryExists {
+		if err := validateCatalogProvenance(opts.CatalogProvenance); err != nil {
+			return nil, err
+		}
+		catalogExpected = normalizeCatalogProvenance(opts.CatalogProvenance)
+		verifierExpected = verifier.NewCatalogExpectation(catalogExpected)
+	}
+	keyAnchor, err := resolveKeyAnchor(opts, pluginName, expected, expectUnsigned, catalogExpected)
 	if err != nil {
 		return nil, err
 	}
@@ -147,17 +160,18 @@ func (s *service) verifyOCIInstall(
 		// The signer-change guard was explicitly overridden: verify the
 		// chain of trust only and re-record whatever identity is observed.
 		expected, expectUnsigned = nil, false
+		catalogExpected = nil
+		verifierExpected = nil
 	}
 	if expectUnsigned {
 		return unsignedLockedDecision(opts, pluginName)
 	}
 
-	// The verifier takes a ProvenanceExpectation so it can distinguish a
-	// strict lock pin from the independently-optional catalog constraints
-	// added in #6420. Plugins only ever present a lock expectation today;
-	// NewLockExpectation(nil) is nil, preserving the TOFU case.
-	result, verifyErr := s.artifactVerifier().VerifyOCI(ctx, ref, digest, verifier.NewLockExpectation(expected))
+	result, verifyErr := s.artifactVerifier().VerifyOCI(ctx, ref, digest, verifierExpected)
 	if verifyErr != nil {
+		if catalogExpected != nil {
+			return nil, classifyCatalogVerifyError(verifyErr, pluginName)
+		}
 		if isAllowedUnsigned(verifyErr, opts, expected) {
 			return &provenanceDecision{unsigned: true}, nil
 		}
@@ -180,15 +194,12 @@ func (s *service) verifyOCIInstall(
 // conflicting anchors is how a mistyped --public-key installs as though it had
 // been honored — and a caller who names a trust anchor has said they want it
 // enforced, so the honest answer to "that is not the anchor here" is to stop.
-//
-// Unlike skills there is no catalog arm: a plugin install presents no
-// catalog-declared provenance expectation, so first use has nothing but the
-// supplied key to weigh.
 func resolveKeyAnchor(
 	opts plugins.InstallOptions,
 	pluginName string,
 	expected *lockfile.Provenance,
 	expectUnsigned bool,
+	catalogExpected *regtypes.Provenance,
 ) (string, error) {
 	supplied := opts.PublicKey
 	locked := ""
@@ -232,6 +243,13 @@ func resolveKeyAnchor(
 	case expectUnsigned:
 		return "", keyAnchorConflict(pluginName,
 			"is recorded as an explicit unsigned exception, which a public key cannot upgrade in place")
+	case catalogExpected != nil:
+		return "", httperr.WithCode(
+			fmt.Errorf("plugin %q: its catalog entry declares a certificate identity, which a"+
+				" cosign key-pair signature carries none of; refusing to install under a public key"+
+				" and silently drop that constraint", pluginName),
+			http.StatusForbidden,
+		)
 	default:
 		return supplied, nil
 	}
@@ -328,7 +346,8 @@ func classifyKeyVerifyError(verifyErr error, pluginName string) error {
 }
 
 // verifyGitInstall verifies the gitsign signature on the resolved commit
-// before anything is written or recorded.
+// before anything is written or recorded. See verifyOCIInstall for the
+// catalog-provenance fallback on true first use.
 func (s *service) verifyGitInstall(
 	ctx context.Context,
 	opts plugins.InstallOptions,
@@ -336,7 +355,7 @@ func (s *service) verifyGitInstall(
 	payload []byte,
 	signature string,
 ) (*provenanceDecision, error) {
-	expected, expectUnsigned, err := expectedLockTrust(opts.ProjectRoot, pluginName)
+	expected, expectUnsigned, lockEntryExists, err := expectedLockTrust(opts.ProjectRoot, pluginName)
 	if err != nil {
 		return nil, err
 	}
@@ -351,8 +370,19 @@ func (s *service) verifyGitInstall(
 			http.StatusBadRequest,
 		)
 	}
+	var catalogExpected *regtypes.Provenance
+	verifierExpected := verifier.NewLockExpectation(expected)
+	if !lockEntryExists {
+		if err := validateCatalogProvenance(opts.CatalogProvenance); err != nil {
+			return nil, err
+		}
+		catalogExpected = normalizeCatalogProvenance(opts.CatalogProvenance)
+		verifierExpected = verifier.NewCatalogExpectation(catalogExpected)
+	}
 	if opts.AllowSignerChange {
 		expected, expectUnsigned = nil, false
+		catalogExpected = nil
+		verifierExpected = nil
 	}
 	if expectUnsigned {
 		return unsignedLockedDecision(opts, pluginName)
@@ -366,9 +396,11 @@ func (s *service) verifyGitInstall(
 		return nil, err
 	}
 
-	result, verifyErr := s.artifactVerifier().VerifyGit(
-		ctx, payload, []byte(signature), verifier.NewLockExpectation(expected))
+	result, verifyErr := s.artifactVerifier().VerifyGit(ctx, payload, []byte(signature), verifierExpected)
 	if verifyErr != nil {
+		if catalogExpected != nil {
+			return nil, classifyCatalogVerifyError(verifyErr, pluginName)
+		}
 		if isAllowedUnsigned(verifyErr, opts, expected) {
 			return &provenanceDecision{unsigned: true}, nil
 		}
@@ -384,7 +416,7 @@ func (s *service) verifyGitInstall(
 // artifact for a local build is exactly the substitution the lock exists to
 // catch.
 func verifyLocalInstall(opts plugins.InstallOptions, pluginName string) (*provenanceDecision, error) {
-	expected, expectUnsigned, err := expectedLockTrust(opts.ProjectRoot, pluginName)
+	expected, expectUnsigned, _, err := expectedLockTrust(opts.ProjectRoot, pluginName)
 	if err != nil {
 		return nil, err
 	}
@@ -440,20 +472,18 @@ func unsignedLockedDecision(opts plugins.InstallOptions, pluginName string) (*pr
 	)
 }
 
-// expectedLockTrust reads the trust state recorded in projectRoot's lock
-// file for pluginName: the expected signer identity (nil on first use — the
-// TOFU case), or that the entry was recorded unsigned.
-func expectedLockTrust(projectRoot, pluginName string) (*lockfile.Provenance, bool, error) {
-	provenance, unsigned, _, err := lockTrustState(projectRoot, pluginName)
-	return provenance, unsigned, err
+// expectedLockTrust reads the trust state recorded in projectRoot's lock file
+// for pluginName: the expected signer identity, whether the entry was recorded
+// unsigned, and whether any entry exists. The third result distinguishes true
+// first use from legacy entries that predate trust state.
+func expectedLockTrust(projectRoot, pluginName string) (*lockfile.Provenance, bool, bool, error) {
+	return lockTrustState(projectRoot, pluginName)
 }
 
-// lockTrustState is expectedLockTrust plus whether the lock file has an entry
-// for pluginName at all. The verify paths do not need that distinction — an
-// absent entry and one recording no decision both mean "no trust to enforce" —
-// but Info does: an entry recording nothing is drift sync can repair, while no
-// entry means nothing is pinning the plugin, and the two must not render
-// alike. Kept as one read so both callers share a single lock file load.
+// lockTrustState is the shared lock-file read used by verification and Info.
+// Verification needs the found bit so a legacy entry without trust state wins
+// over catalog policy, while Info uses it to distinguish repairable drift from
+// a plugin with no lock entry at all.
 func lockTrustState(
 	projectRoot, pluginName string,
 ) (provenance *lockfile.Provenance, unsigned, found bool, err error) {
@@ -589,9 +619,32 @@ func classifyInstallVerifyError(
 	}
 }
 
+// classifyCatalogVerifyError reports a first-install artifact that does not
+// satisfy the provenance constraints declared by its catalog entry.
+func classifyCatalogVerifyError(verifyErr error, pluginName string) error {
+	if errors.Is(verifyErr, verifier.ErrUnsigned) {
+		return httperr.WithCode(
+			fmt.Errorf("plugin %q is unsigned but its catalog entry requires verified provenance", pluginName),
+			http.StatusForbidden,
+		)
+	}
+	// A key-signed artifact is not a provenance mismatch — nothing was
+	// compared, because the keyless policy cannot check a key-pair signature
+	// at all. The catalog constraint is beside the point, so this reports the
+	// same diagnosis and remedy the non-catalog route does.
+	if errors.Is(verifyErr, verifier.ErrKeySigned) {
+		return keySignedInstallError(pluginName, verifyErr, nil)
+	}
+	return httperr.WithCode(
+		fmt.Errorf("plugin %q does not match its catalog-declared provenance: %w", pluginName, verifyErr),
+		http.StatusForbidden,
+	)
+}
+
 // keySignedInstallError reports a key-signed artifact that the keyless path
-// could not verify. The remedy depends on what the entry already pins, so it
-// is chosen from that rather than stated generically.
+// could not verify. A lock-constrained install and a catalog-constrained first
+// install both land here, but the remedy is not the same, so it is chosen from
+// what the entry already pins rather than stated generically.
 //
 // With no anchor recorded, this is a first install of a key-signed artifact
 // and --public-key is exactly the missing input. With a keyless identity
@@ -669,4 +722,43 @@ func unrecordedTrustError(opts plugins.InstallOptions, pluginName, what string) 
 	}
 	return fmt.Errorf("%s (%w); set allow_unsigned (--allow-unsigned) to record an exception",
 		what, verifier.ErrUnsigned)
+}
+
+// validateCatalogProvenance rejects catalog constraints the plugin verifier
+// cannot currently enforce. It runs only for project-scope true first use,
+// after lock precedence has been established.
+func validateCatalogProvenance(p *regtypes.Provenance) error {
+	if p == nil {
+		return nil
+	}
+	if p.SigstoreURL != "" {
+		return httperr.WithCode(
+			errors.New("catalog declares a sigstore_url constraint for this plugin,"+
+				" which toolhive cannot yet enforce; refusing to silently ignore it"),
+			http.StatusUnprocessableEntity,
+		)
+	}
+	if p.Attestation != nil {
+		return httperr.WithCode(
+			errors.New("catalog declares an attestation constraint for this plugin,"+
+				" which toolhive cannot yet enforce; refusing to silently ignore it"),
+			http.StatusUnprocessableEntity,
+		)
+	}
+	return nil
+}
+
+// normalizeCatalogProvenance treats an empty supported constraint as absent.
+// Catalog fields constrain independently, so an object containing no
+// supported values must preserve the ordinary unconstrained TOFU behavior,
+// including the explicit allow-unsigned path.
+func normalizeCatalogProvenance(p *regtypes.Provenance) *regtypes.Provenance {
+	if p == nil || (p.SignerIdentity == "" &&
+		p.CertIssuer == "" &&
+		p.RepositoryURI == "" &&
+		p.RepositoryRef == "" &&
+		p.RunnerEnvironment == "") {
+		return nil
+	}
+	return p
 }

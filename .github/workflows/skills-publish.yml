@@ -57,7 +57,7 @@ jobs:
 
       - name: Compute version number
         id: version-string
-        uses: ./.github/actions/compute-version
+        uses: $/.github/actions/compute-version
 
       - name: Build thv binary
         run: go build -o ./thv ./cmd/thv

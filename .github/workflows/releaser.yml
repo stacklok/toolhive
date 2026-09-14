@@ -271,7 +271,7 @@ jobs:
       contents: write
       packages: write
       id-token: write
-    uses: ./.github/workflows/image-build-and-publish.yml
+    uses: $/.github/workflows/image-build-and-publish.yml
 
   skills-publish:
     name: Publish Skills
@@ -280,7 +280,7 @@ jobs:
       contents: read
       packages: write
       id-token: write # To do keyless signing of the pushed skill artifacts
-    uses: ./.github/workflows/skills-publish.yml
+    uses: $/.github/workflows/skills-publish.yml
 
   publish-helm:
     name: Publish Helm Chart
@@ -289,7 +289,7 @@ jobs:
       contents: read
       packages: write
       id-token: write
-    uses: ./.github/workflows/helm-publish.yml
+    uses: $/.github/workflows/helm-publish.yml
 
 #  provenance:
 #    name: Generate provenance (SLSA3)

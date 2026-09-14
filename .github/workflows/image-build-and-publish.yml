@@ -28,7 +28,7 @@ jobs:
 
       - name: Compute version number
         id: version-string
-        uses: ./.github/actions/compute-version
+        uses: $/.github/actions/compute-version
 
       - name: Login to GitHub Container Registry
         uses: docker/login-action@dbcb813823bdd20940b903addbd779551569679f # v4.6.0
@@ -95,7 +95,7 @@ jobs:
 
       - name: Compute version number
         id: version-string
-        uses: ./.github/actions/compute-version
+        uses: $/.github/actions/compute-version
 
       - name: Login to GitHub Container Registry
         uses: docker/login-action@dbcb813823bdd20940b903addbd779551569679f # v4.6.0
@@ -175,7 +175,7 @@ jobs:
 
       - name: Compute version number
         id: version-string
-        uses: ./.github/actions/compute-version
+        uses: $/.github/actions/compute-version
 
       - name: Login to GitHub Container Registry
         uses: docker/login-action@dbcb813823bdd20940b903addbd779551569679f # v4.6.0
@@ -250,7 +250,7 @@ jobs:
 
       - name: Compute version number
         id: version-string
-        uses: ./.github/actions/compute-version
+        uses: $/.github/actions/compute-version
 
       - name: Login to GitHub Container Registry
         uses: docker/login-action@dbcb813823bdd20940b903addbd779551569679f # v4.6.0

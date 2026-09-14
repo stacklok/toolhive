@@ -28,7 +28,7 @@ jobs:
     concurrency:
       group: main-linting-${{ github.ref }}
       cancel-in-progress: true
-    uses: ./.github/workflows/lint.yml
+    uses: $/.github/workflows/lint.yml
   security-scan:
     name: Security Scan
     concurrency:
@@ -37,13 +37,13 @@ jobs:
     permissions:
       contents: read
       security-events: write
-    uses: ./.github/workflows/security-scan.yml
+    uses: $/.github/workflows/security-scan.yml
   tests:
     name: Tests
     concurrency:
       group: main-tests-${{ github.ref }}
       cancel-in-progress: true
-    uses: ./.github/workflows/test.yml
+    uses: $/.github/workflows/test.yml
     # Named rather than inherited: this job runs the Go test suite, and so
     # executes repository code and its dependency tree. It has no business
     # holding the release signing keys.
@@ -54,27 +54,27 @@ jobs:
     concurrency:
       group: main-sdk-go-${{ github.ref }}
       cancel-in-progress: true
-    uses: ./.github/workflows/sdk-go.yml
+    uses: $/.github/workflows/sdk-go.yml
   codegen:
     name: Codegen
     concurrency:
       group: main-codegen-${{ github.ref }}
       cancel-in-progress: true
-    uses: ./.github/workflows/verify-gen.yml
+    uses: $/.github/workflows/verify-gen.yml
   # Tier 2: Expensive integration tests - only run after all fast checks pass
   helm-charts:
     name: Helm Charts
     concurrency:
       group: main-helm-charts-${{ github.ref }}
       cancel-in-progress: true
-    uses: ./.github/workflows/helm-charts-test.yml
+    uses: $/.github/workflows/helm-charts-test.yml
   e2e-tests:
     name: E2E Tests
     needs: [linting, tests, codegen]
     concurrency:
       group: main-e2e-tests-${{ github.ref }}
       cancel-in-progress: true
-    uses: ./.github/workflows/e2e-tests.yml
+    uses: $/.github/workflows/e2e-tests.yml
   operator-ci:
     name: Operator CI
     needs: [linting, tests, codegen]
@@ -83,7 +83,7 @@ jobs:
       cancel-in-progress: true
     permissions:
       contents: read
-    uses: ./.github/workflows/operator-ci.yml
+    uses: $/.github/workflows/operator-ci.yml
   # Tier 3: Build and publish images - only after all tests pass
   #
   # Cancelled validation above already skips publishing for the older run via
@@ -123,7 +123,7 @@ jobs:
       contents: write
       packages: write
       id-token: write
-    uses: ./.github/workflows/image-build-and-publish.yml
+    uses: $/.github/workflows/image-build-and-publish.yml
   # Named for what it does: this verifies skills still build. Publishing
   # happens only from releaser.yml, via skills-publish.yml.
   skills-build:
@@ -134,7 +134,7 @@ jobs:
       cancel-in-progress: true
     permissions:
       contents: read
-    uses: ./.github/workflows/skills-build.yml
+    uses: $/.github/workflows/skills-build.yml
   skills-keyless-e2e:
     name: Skills Keyless Signing E2E (staging)
     needs: [linting, tests, codegen]
@@ -148,4 +148,4 @@ jobs:
     permissions:
       contents: read
       id-token: write
-    uses: ./.github/workflows/skills-keyless-signing-e2e.yml
+    uses: $/.github/workflows/skills-keyless-signing-e2e.yml

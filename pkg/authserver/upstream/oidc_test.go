@@ -1557,7 +1557,7 @@ func TestOIDCProvider_RefreshTokens(t *testing.T) {
 			mock.writeJWKS(w)
 		}
 
-		provider := mustNewOIDCProvider(t, ctx, mock.issuer)
+		provider := mustNewOIDCProvider(ctx, t, mock.issuer)
 		tokens, err := provider.RefreshTokens(ctx, "old-refresh-token", "user-123")
 		require.NoError(t, err)
 		assert.Equal(t, "refreshed-access-token", tokens.AccessToken)
@@ -1583,7 +1583,7 @@ func TestOIDCProvider_RefreshTokens(t *testing.T) {
 			http.Error(w, "temporarily unavailable", http.StatusInternalServerError)
 		}
 
-		provider := mustNewOIDCProvider(t, ctx, mock.issuer)
+		provider := mustNewOIDCProvider(ctx, t, mock.issuer)
 		tokens, err := provider.RefreshTokens(ctx, "old-refresh-token", "user-123")
 		require.NoError(t, err)
 		assert.Equal(t, "refreshed-access-token", tokens.AccessToken)
@@ -1612,7 +1612,7 @@ func TestOIDCProvider_RefreshTokens(t *testing.T) {
 			writeRefreshIDTokenResponse(w, idToken)
 		}
 
-		provider := mustNewOIDCProvider(t, ctx, mock.issuer)
+		provider := mustNewOIDCProvider(ctx, t, mock.issuer)
 		_, err = provider.RefreshTokens(ctx, "old-refresh-token", "user-123")
 		require.Error(t, err)
 		assert.Contains(t, err.Error(), "ID token validation failed")
@@ -1632,7 +1632,7 @@ func writeRefreshIDTokenResponse(w http.ResponseWriter, idToken string) {
 	})
 }
 
-func mustNewOIDCProvider(t *testing.T, ctx context.Context, issuer string) *OIDCProviderImpl {
+func mustNewOIDCProvider(ctx context.Context, t *testing.T, issuer string) *OIDCProviderImpl {
 	t.Helper()
 	provider, err := NewOIDCProvider(ctx, &OIDCConfig{
 		CommonOAuthConfig: CommonOAuthConfig{

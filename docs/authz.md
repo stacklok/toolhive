@@ -356,6 +356,9 @@ principal and the context, naming the trust root behind the claims:
 | `request:no-upstream-session` | The validated embedded-auth-server token was proven to have been minted with no upstream login, so no upstream credential can exist for it. |
 | `request:upstream-opaque` | An upstream credential exists but is an opaque OAuth 2.0 access token whose claims cannot be read, so evaluation degraded to the request token's claims. |
 
+Where a fallback value comes from is covered under [What the fallback claims
+actually are](#what-the-fallback-claims-actually-are) below.
+
 A policy that must only act on what an upstream actually asserted can say so:
 
 ```plain
@@ -369,6 +372,27 @@ permit(principal, action == Action::"call_tool", resource == Tool::"deploy") whe
 The attribute is written after claim prefixing and its name does not start with
 `claim_`, so a token carrying a claim named `thv_claim_source` becomes
 `claim_thv_claim_source` and cannot spoof its own provenance.
+
+##### What the fallback claims actually are
+
+Both `request:no-upstream-session` and `request:upstream-opaque` mean the same
+thing for profile claims: evaluation fell back to the ToolHive-issued token the
+client presented. That token's `name` and `email` are mirrored from the identity
+established by the **first** upstream in the authorization chain, which need not
+be the provider you pinned.
+
+With a single upstream — or when `primaryUpstreamProvider` resolves to the first
+one, which is the default — the mirror and the pinned provider's own assertion
+are the same value, and the only difference is the provenance label. They can
+diverge in a multi-upstream chain pinned to a later upstream: a policy keyed on
+`claim_email` alone may then match on an email the pinned provider never
+asserted. Gate on `thv_claim_source` wherever that distinction matters.
+
+Note that "primary upstream" means two different things depending on where you
+read it. In the authorization server's chain state it means *first in the chain*
+— the leg that establishes the session identity. In
+`primaryUpstreamProvider` it means *the upstream Cedar trusts for claims*. They
+are the same by default and only come apart when you pin explicitly.
 
 #### Tokens with no upstream login
 
@@ -427,8 +451,10 @@ Two consequences worth planning around:
 - **With more than one upstream provider, `claim_email` and `claim_name` on a
   delegated token may come from a provider other than the pinned one.** They are
   copied from the subject token, whose profile claims mirror the first configured
-  upstream. Check `thv_claim_source` before treating them as an assertion by the
-  pinned provider.
+  upstream. This is not specific to delegation — it applies to every fallback
+  path; see [What the fallback claims actually
+  are](#what-the-fallback-claims-actually-are). Check `thv_claim_source` before
+  treating them as an assertion by the pinned provider.
 
 Everything else stays closed. A token that simply arrives without upstream
 credentials and says nothing about why — an anonymous or local identity, or a

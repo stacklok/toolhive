@@ -398,6 +398,11 @@ policy keyed on `claim_email` alone may then match on an email the pinned
 provider never asserted. Gate on `thv_claim_source` wherever that distinction
 matters.
 
+Pinning to a later upstream is only reachable through the operator, via
+`spec.authServerConfig.primaryUpstreamProvider`. On the CLI path the provider is
+always resolved to the first upstream, so the mirror and the pinned provider's
+assertion cannot diverge there.
+
 #### Tokens with no upstream login
 
 Two grants mint a token that is not tied to any upstream IdP login, so no

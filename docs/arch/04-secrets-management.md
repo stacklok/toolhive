@@ -128,7 +128,9 @@ thv run my-server --secret "api-key,target=API_KEY"
 - Password in OS keyring (platform-specific secure storage)
 - Secrets encrypted at rest (AES-256-GCM)
 - File permissions: 0600
-- Key derivation: SHA-256 of password
+- Key derivation: Argon2id over the password with a per-file random salt (16 bytes).
+  Cost parameters are the OWASP minimum for Argon2id (19 MiB, 2 iterations, 1 lane)
+  and are fixed in code per format version, not stored in the file.
 
 **Threat protection:**
 - Plaintext on disk: ✅
@@ -136,7 +138,54 @@ thv run my-server --secret "api-key,target=API_KEY"
 - Log exposure: ✅
 - Malicious container: ❌ (has env access)
 
-**Implementation**: `pkg/secrets/aes/aes.go` (AES-256-GCM), `pkg/secrets/keyring/` (OS keyring storage), `pkg/secrets/factory.go` (SHA-256 key derivation via `sha256.Sum256(secretsPassword)`)
+**Implementation**: `pkg/secrets/aes/aes.go` (AES-256-GCM), `pkg/secrets/keyring/` (OS keyring storage), `pkg/secrets/kdf.go` (Argon2id key derivation), `pkg/secrets/encrypted.go` (file framing and key caching)
+
+**Secrets file format**: a header describing the key derivation, followed by the AES-GCM output.
+
+```
+magic    "THVSEC"  6 bytes
+version  0x01      1 byte
+salt               16 bytes
+body               nonce|ciphertext|tag
+```
+
+The version selects the Argon2id cost parameters, which live in code. Keeping them
+out of the file means no attacker-controllable value reaches Argon2id's memory
+allocation, and raising the cost becomes an explicit new format version rather
+than a silent per-file property.
+
+Files written before this framing existed have no header and were keyed with an
+unsalted SHA-256 of the password. They are detected by the absent magic prefix,
+read with the legacy key, and rewritten in the framed format when the file is
+opened — migration is transparent and requires no user action. It is best effort:
+if the rewrite fails (read-only filesystem, full disk) the file stays readable in
+the legacy format. A `thv` binary predating the framed format cannot read a
+migrated file.
+
+**Upgrading**: migration happens when the store is opened, including by read-only
+operations, so the first command run by a newly installed binary converts the file.
+Other local processes still running an older binary — an older `thv serve`, or a
+detached proxy that persists OAuth refresh tokens — will fail subsequent secret
+access against the converted file. Stop older local ToolHive processes before the
+first access with the new version, then restart them on the new binary. Secrets
+already injected into running containers are unaffected. This does not apply to
+the Kubernetes path, which uses Kubernetes Secrets rather than this file.
+
+**Recovering from a rollback**: an older binary opening a migrated file reports
+that the password is incorrect. That message predates this format and does not
+indicate corruption — resetting the keyring or deleting the store is the wrong
+first step and will lose secrets. The fix is to return to a binary that
+understands the framed format. Rolling back to an older binary for real requires
+a pre-migration copy of the file, kept as securely as the file itself, plus the
+password that goes with it.
+
+**What migration does and does not protect**: only the live file is upgraded.
+Backups taken before migration keep the unsalted SHA-256 derivation and stay
+cheaply crackable offline. Because the password itself is unchanged, recovering
+it from an old backup also decrypts the migrated file — so retiring old backups
+matters as much as the upgrade. Conversely, a backup of the migrated file is not
+a substitute for retaining the password or keyring entry; without them it cannot
+be decrypted.
 
 ## Integration Points
 

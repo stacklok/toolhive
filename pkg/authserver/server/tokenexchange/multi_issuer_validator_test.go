@@ -9,7 +9,6 @@ import (
 	"encoding/json"
 	"encoding/pem"
 	"fmt"
-	"io"
 	"log/slog"
 	"net/http"
 	"net/http/httptest"
@@ -1672,7 +1671,7 @@ func TestNewMultiIssuerTokenValidator_GrantOnlyIssuerAccepted(t *testing.T) {
 }
 
 // TestMultiIssuerTokenValidator_Close verifies Close releases each issuer's
-// JWKS refresh worker pool (issue #6482). jwk.Cache.Shutdown returns nil only
+// JWKS refresh worker pool (issue #6482). jwkfetch.Cache.Shutdown returns nil only
 // once its controller's goroutines have drained — it waits on the controller's
 // shutdown channel, and returns its context's error if they do not finish in
 // time — so Close returning nil well within its per-cache timeout is proof the
@@ -1730,7 +1729,7 @@ func TestMultiIssuerTokenValidator_CloseReleasesGoroutines(t *testing.T) {
 	}}, nil)
 	require.NoError(t, err)
 
-	// The per-issuer jwk.Cache starts its worker pool at construction (no fetch
+	// The per-issuer jwkfetch.Cache starts its worker pool at construction (no fetch
 	// needed), so the goroutines are already running.
 	require.Greater(t, runtime.NumGoroutine(), before, "the JWKS worker pool should be running before Close")
 
@@ -2453,7 +2452,7 @@ func TestValidateJWKSURL(t *testing.T) {
 // TestMultiIssuerTokenValidator_FetchJWKS exercises ensureRegistered's and
 // lookupJWKS's error paths through the full Validate path, bypassing OIDC
 // discovery via a preconfigured JWKSURL. Registration and the JWKS's own
-// zero-keys/too-many-keys checks now go through the issuer's own jwk.Cache and
+// zero-keys/too-many-keys checks now go through the issuer's own jwkfetch.Cache and
 // lookupJWKS respectively rather than a private HTTP fetch.
 //
 // For "non-200 response" and "malformed JSON body", verified empirically:
@@ -2531,19 +2530,12 @@ func TestMultiIssuerTokenValidator_FetchJWKS(t *testing.T) {
 			wantErr: "too many keys",
 		},
 		{
-			// Pins limitedBodyTransport's cap on the JWKS fetch path (jwx's
-			// own httprc.MaxBufferSize ceiling is ~1000 MiB, far too high to
-			// bound anything here on its own). Deliberately WELL-FORMED and
-			// complete, unlike the other failure cases above: the padding
-			// field is oversized but the document would parse successfully
-			// if read in full, so only limitedBodyTransport cutting the read
-			// short makes this fail — the same technique
-			// TestMultiIssuerTokenValidator_DiscoverJWKSURL's oversized-body
-			// case uses for the discovery path. The 4 MiB padding size is a
-			// fixed literal independent of maxResponseBodySize (1 MiB): sizing
-			// it as a multiple of that constant would make a broken cap and a
-			// shrunken constant fail identically, hiding a regression in the
-			// cap itself.
+			// Pins jwkfetch's body-size cap on the JWKS fetch path.
+			// Deliberately WELL-FORMED and complete, unlike the other failure
+			// cases above: the padding field is oversized but the document would
+			// parse successfully if read in full. The 4 MiB padding size is a
+			// fixed literal independent of maxResponseBodySize (1 MiB), so a
+			// broken cap cannot be hidden by changing the production limit.
 			name: "oversized JWKS response is rejected rather than parsed",
 			handler: func(w http.ResponseWriter, _ *http.Request) {
 				w.Header().Set("Content-Type", "application/json")
@@ -2769,7 +2761,7 @@ func TestMultiIssuerTokenValidator_NeverFetchedRetryIsRateLimited(t *testing.T) 
 // TestMultiIssuerTokenValidator_SharedJWKSURL_SamePolicy proves that two
 // issuers resolving to the identical jwksURL under the identical HTTP
 // transport policy both validate successfully — each through its own
-// jwk.Cache and *http.Client (see externalIssuerConfig.jwksCache). This is
+// jwkfetch.Cache and *http.Client (see externalIssuerConfig.jwksCache). This is
 // the common real-world case: Microsoft Entra v1 tenants share one
 // tenant-independent JWKS endpoint, so two Entra tenants configured as
 // separate trusted issuers collide on the same jwks_url by construction.
@@ -2939,35 +2931,4 @@ func TestMultiIssuerTokenValidator_RetryAfterFetchFailureRefreshes(t *testing.T)
 	result, err := validator.Validate(context.Background(), tokenWithID("jti-2"))
 	require.NoError(t, err, "retry after a registered-but-failed fetch must refresh, not re-register")
 	require.NotNil(t, result)
-}
-
-// TestLimitedBodyTransport asserts directly on the body cap that protects the
-// JWKS fetch path. A direct test is necessary rather than sufficient coverage
-// via Validate: jwx surfaces every fetch failure as its own WaitReady timeout,
-// so the cap's error never reaches a caller and cannot be distinguished there
-// from a 500, a parse failure, or a kid mismatch. Asserting on the cap itself
-// is the only way to pin it — the oversized case in
-// TestMultiIssuerTokenValidator_FetchJWKS proves the fetch fails, not why.
-func TestLimitedBodyTransport(t *testing.T) {
-	t.Parallel()
-
-	const bodyCap = 1024
-
-	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
-		_, _ = w.Write([]byte(strings.Repeat("a", 8*1024)))
-	}))
-	t.Cleanup(srv.Close)
-
-	client := srv.Client()
-	client.Transport = &limitedBodyTransport{base: client.Transport, max: bodyCap}
-
-	resp, err := client.Get(srv.URL)
-	require.NoError(t, err, "the cap applies to reading the body, not to the round trip")
-	t.Cleanup(func() { _ = resp.Body.Close() })
-
-	body, err := io.ReadAll(resp.Body)
-	require.Error(t, err, "reading past the cap must fail rather than truncate silently: "+
-		"a truncated JWKS would be parsed as though it were the whole document")
-	assert.LessOrEqual(t, int64(len(body)), int64(bodyCap),
-		"no more than the cap may be delivered before the error")
 }

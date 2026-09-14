@@ -12,7 +12,7 @@ import (
 
 	"github.com/google/uuid"
 
-	tcredis "github.com/stacklok/toolhive-core/redis"
+	"github.com/stacklok/toolhive-core/redisconn"
 )
 
 const (
@@ -130,7 +130,7 @@ func NewManagerWithRedis(
 	ctx context.Context,
 	ttl time.Duration,
 	factory Factory,
-	cfg tcredis.Config,
+	cfg redisconn.Config,
 	keyPrefix string,
 ) (*Manager, error) {
 	storage, err := NewRedisStorage(ctx, cfg, keyPrefix, ttl)

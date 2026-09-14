@@ -1666,10 +1666,10 @@ type OAuth2UpstreamConfig struct {
 	ClientSecretRef *SecretKeyRef `json:"clientSecretRef,omitempty"`
 
 	// TokenEndpointAuthMethod selects how the client authenticates at the OAuth token
-	// endpoint. When empty and a client secret is configured, client_secret_basic is
-	// used, matching the RFC 7591 default for confidential clients. Set this to
-	// client_secret_post only for providers that require credentials in the request body.
-	// Public clients without a secret use the "none" method.
+	// endpoint. When empty, credentials are sent in the request body (the historical
+	// client_secret_post-shaped default). Set this to client_secret_basic explicitly
+	// for providers that require HTTP Basic auth. Public clients without a secret use
+	// the "none" method.
 	// +kubebuilder:validation:Enum=none;client_secret_basic;client_secret_post
 	// +optional
 	TokenEndpointAuthMethod string `json:"tokenEndpointAuthMethod,omitempty"`

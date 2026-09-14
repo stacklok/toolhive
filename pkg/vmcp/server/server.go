@@ -22,7 +22,7 @@ import (
 	"time"
 
 	"github.com/stacklok/toolhive-core/mcpcompat/server"
-	tcredis "github.com/stacklok/toolhive-core/redis"
+	"github.com/stacklok/toolhive-core/redisconn"
 	"github.com/stacklok/toolhive/pkg/audit"
 	"github.com/stacklok/toolhive/pkg/auth"
 	asrunner "github.com/stacklok/toolhive/pkg/authserver/runner"
@@ -397,7 +397,7 @@ func buildSessionDataStorage(ctx context.Context, cfg *Config) (transportsession
 			"%s is set but empty; unset it for a no-auth connection or fix the referenced secret",
 			vmcpconfig.RedisPasswordEnvVar)
 	}
-	redisCfg := tcredis.Config{
+	redisCfg := redisconn.Config{
 		Addr:     cfg.SessionStorage.Address,
 		Password: password,
 		DB:       int(cfg.SessionStorage.DB),

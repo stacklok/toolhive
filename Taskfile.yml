@@ -85,13 +85,19 @@ tasks:
   helm-unittest:
     desc: Run helm-unittest suites against the Helm charts
     vars:
-      # Pinned version — bump deliberately alongside the matching pin in
-      # .github/workflows/helm-charts-test.yml.
-      HELM_UNITTEST_VERSION: v1.0.3
+      # Pinned version — bump deliberately. CI has no separate pin; the
+      # helm-charts-test workflow just runs this task.
+      HELM_UNITTEST_VERSION: v1.1.2
     cmds:
+      # Helm 4 verifies plugin signatures by default and a git checkout carries
+      # no provenance, so the install fails without --verify=false. Helm 3 has
+      # no --verify flag at all and rejects it as unknown, so probe for the flag
+      # instead of making Helm 4 a hard requirement for chart contributors.
       - >-
         helm plugin list | grep -q unittest ||
-        helm plugin install https://github.com/helm-unittest/helm-unittest --version {{.HELM_UNITTEST_VERSION}}
+        helm plugin install https://github.com/helm-unittest/helm-unittest
+        --version {{.HELM_UNITTEST_VERSION}}
+        $(helm plugin install --help | grep -qE '^\s+--verify\b' && echo --verify=false)
       - helm unittest deploy/charts/operator-crds
       - helm unittest deploy/charts/operator
 

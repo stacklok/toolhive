@@ -68,6 +68,12 @@ jobs:
           version: 3.44.1
           repo-token: ${{ secrets.GITHUB_TOKEN }}
 
+      - name: Install C toolchain for the race detector
+        if: runner.environment == 'self-hosted'
+        run: |
+          sudo apt-get update
+          sudo apt-get install --yes --no-install-recommends gcc libc6-dev
+
       # Run tests with all dependencies already cached
       - name: Run tests with coverage
         env:

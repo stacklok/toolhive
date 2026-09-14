@@ -453,12 +453,48 @@ func TestVerifyInstall_UnsupportedCatalogConstraintsOnlyFailOnFirstUse(t *testin
 					if state.wantErr {
 						require.Error(t, err)
 						assert.Equal(t, http.StatusUnprocessableEntity, httperr.Code(err))
+						assert.Contains(t, err.Error(), `plugin "catalog-plugin"`,
+							"catalog validation errors must identify the plugin that was rejected")
 						return
 					}
 					require.NoError(t, err)
 				})
 			}
 		}
+	}
+}
+
+func TestVerifyInstall_AllowSignerChangeRejectedOnFirstUse(t *testing.T) {
+	t.Parallel()
+
+	for _, backend := range []string{"git", "oci"} {
+		t.Run(backend, func(t *testing.T) {
+			t.Parallel()
+			// No verifier expectations: an invalid first-use signer-change
+			// override must be rejected before artifact verification begins.
+			mv := verifiermocks.NewMockVerifier(gomock.NewController(t))
+			svc := &service{sigVerifier: mv}
+			opts := plugins.InstallOptions{
+				ProjectRoot:       makeProjectRoot(t),
+				AllowSignerChange: true,
+				CatalogProvenance: &regtypes.Provenance{SignerIdentity: testSignerIdentity},
+			}
+
+			var err error
+			if backend == "git" {
+				_, err = svc.verifyGitInstall(
+					t.Context(), opts, "catalog-plugin", []byte("payload"), "signature")
+			} else {
+				_, err = svc.verifyOCIInstall(
+					t.Context(), opts, "catalog-plugin", "ghcr.io/test/catalog-plugin:v1", validLockDigest())
+			}
+
+			require.Error(t, err)
+			assert.Equal(t, http.StatusBadRequest, httperr.Code(err))
+			assert.Contains(t, err.Error(), `plugin "catalog-plugin"`)
+			assert.Contains(t, err.Error(), "allow_signer_change")
+			assert.Contains(t, err.Error(), "lock entry")
+		})
 	}
 }
 
@@ -524,26 +560,33 @@ func TestClassifyCatalogVerifyError(t *testing.T) {
 	t.Parallel()
 
 	tests := []struct {
-		name        string
-		verifyErr   error
-		wantMsg     string
-		dontWantMsg string
+		name         string
+		verifyErr    error
+		wantMsgs     []string
+		dontWantMsgs []string
 	}{
 		{
 			name:      "unsigned artifact",
 			verifyErr: verifier.ErrUnsigned,
-			wantMsg:   "requires verified provenance",
+			wantMsgs:  []string{"requires verified provenance"},
 		},
 		{
-			name:        "key-signed artifact",
-			verifyErr:   verifier.ErrKeySigned,
-			wantMsg:     "--public-key",
-			dontWantMsg: "does not match its catalog-declared provenance",
+			name:      "key-signed artifact",
+			verifyErr: verifier.ErrKeySigned,
+			wantMsgs: []string{
+				"carries no certificate identity",
+				"cannot satisfy",
+				"catalog provenance constraint",
+			},
+			dontWantMsgs: []string{
+				"--public-key",
+				"does not match its catalog-declared provenance",
+			},
 		},
 		{
 			name:      "provenance mismatch",
 			verifyErr: verifier.ErrSignerMismatch,
-			wantMsg:   "does not match its catalog-declared provenance",
+			wantMsgs:  []string{"does not match its catalog-declared provenance"},
 		},
 	}
 	for _, tc := range tests {
@@ -552,10 +595,12 @@ func TestClassifyCatalogVerifyError(t *testing.T) {
 			err := classifyCatalogVerifyError(tc.verifyErr, "catalog-plugin")
 			require.Error(t, err)
 			assert.Equal(t, http.StatusForbidden, httperr.Code(err))
-			assert.Contains(t, err.Error(), tc.wantMsg)
 			assert.Contains(t, err.Error(), "plugin")
-			if tc.dontWantMsg != "" {
-				assert.NotContains(t, err.Error(), tc.dontWantMsg)
+			for _, wantMsg := range tc.wantMsgs {
+				assert.Contains(t, err.Error(), wantMsg)
+			}
+			for _, dontWantMsg := range tc.dontWantMsgs {
+				assert.NotContains(t, err.Error(), dontWantMsg)
 			}
 		})
 	}
@@ -1595,7 +1640,7 @@ func TestResolveKeyAnchor(t *testing.T) {
 			opts:     plugins.InstallOptions{PublicKey: testPublicKeyB64},
 			catalog:  &regtypes.Provenance{SignerIdentity: testSignerIdentity},
 			wantCode: http.StatusForbidden,
-			wantMsg:  "catalog entry declares a certificate identity",
+			wantMsg:  "refusing to install under a public key, which would silently drop that constraint",
 		},
 		{
 			name: "first use adopts the supplied key",

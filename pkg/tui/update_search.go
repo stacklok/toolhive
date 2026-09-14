@@ -4,12 +4,13 @@
 package tui
 
 import (
+	"image/color"
 	"strings"
 
-	"github.com/charmbracelet/bubbles/key"
-	"github.com/charmbracelet/bubbles/viewport"
-	tea "github.com/charmbracelet/bubbletea"
-	"github.com/charmbracelet/lipgloss"
+	"charm.land/bubbles/v2/key"
+	"charm.land/bubbles/v2/viewport"
+	tea "charm.land/bubbletea/v2"
+	"charm.land/lipgloss/v2"
 
 	"github.com/stacklok/toolhive/cmd/thv/app/ui"
 )
@@ -28,7 +29,7 @@ type searchParams struct {
 }
 
 // handleSearchKey is the shared key handler for both log and proxy-log search.
-func handleSearchKey(msg tea.KeyMsg, p searchParams) tea.Cmd {
+func handleSearchKey(msg tea.KeyPressMsg, p searchParams) tea.Cmd {
 	switch {
 	case key.Matches(msg, keys.Escape):
 		// Esc clears the search entirely and restores normal log content.
@@ -36,11 +37,11 @@ func handleSearchKey(msg tea.KeyMsg, p searchParams) tea.Cmd {
 		*p.query = ""
 		*p.matches = nil
 		*p.idx = 0
-		p.vp.SetContent(buildHScrollContent(p.lines, p.vp.Width, p.hOff))
+		p.vp.SetContent(buildHScrollContent(p.lines, p.vp.Width(), p.hOff))
 	case key.Matches(msg, keys.Enter):
 		// Enter closes the prompt but keeps highlights and the current match.
 		*p.active = false
-	case msg.Type == tea.KeyBackspace:
+	case msg.Code == tea.KeyBackspace:
 		if len(*p.query) > 0 {
 			// Remove last rune (not last byte) to handle multi-byte UTF-8.
 			r := []rune(*p.query)
@@ -48,8 +49,8 @@ func handleSearchKey(msg tea.KeyMsg, p searchParams) tea.Cmd {
 			rebuildSearch(p)
 		}
 	default:
-		if msg.Type == tea.KeyRunes {
-			*p.query += msg.String()
+		if msg.Text != "" {
+			*p.query += msg.Text
 			rebuildSearch(p)
 		}
 	}
@@ -62,7 +63,7 @@ func rebuildSearch(p searchParams) {
 	*p.matches = nil
 	*p.idx = 0
 	if *p.query == "" {
-		p.vp.SetContent(buildHScrollContent(p.lines, p.vp.Width, p.hOff))
+		p.vp.SetContent(buildHScrollContent(p.lines, p.vp.Width(), p.hOff))
 		return
 	}
 	lq := strings.ToLower(*p.query)
@@ -84,11 +85,11 @@ func scrollToSearchMatch(p searchParams) {
 	if len(*p.matches) == 0 {
 		// Re-render without highlights when there are no matches.
 		if *p.query != "" {
-			p.vp.SetContent(buildHighlightedLogContent(p.lines, *p.query, nil, 0, p.vp.Width, p.hOff))
+			p.vp.SetContent(buildHighlightedLogContent(p.lines, *p.query, nil, 0, p.vp.Width(), p.hOff))
 		}
 		return
 	}
-	p.vp.SetContent(buildHighlightedLogContent(p.lines, *p.query, *p.matches, *p.idx, p.vp.Width, p.hOff))
+	p.vp.SetContent(buildHighlightedLogContent(p.lines, *p.query, *p.matches, *p.idx, p.vp.Width(), p.hOff))
 	// Scroll the viewport so the current match line is visible.
 	matchLine := (*p.matches)[*p.idx]
 	p.vp.SetYOffset(matchLine)
@@ -121,7 +122,7 @@ func (m *Model) proxyLogSearchParams() searchParams {
 }
 
 // handleLogSearchKey handles key input while the log search prompt is open.
-func (m *Model) handleLogSearchKey(msg tea.KeyMsg) tea.Cmd {
+func (m *Model) handleLogSearchKey(msg tea.KeyPressMsg) tea.Cmd {
 	return handleSearchKey(msg, m.logSearchParams())
 }
 
@@ -131,7 +132,7 @@ func (m *Model) scrollToMatch() {
 }
 
 // handleProxyLogSearchKey processes key events when proxy log search is active.
-func (m *Model) handleProxyLogSearchKey(msg tea.KeyMsg) tea.Cmd {
+func (m *Model) handleProxyLogSearchKey(msg tea.KeyPressMsg) tea.Cmd {
 	return handleSearchKey(msg, m.proxyLogSearchParams())
 }
 
@@ -199,7 +200,7 @@ func buildHighlightedLogContent(lines []string, query string, matches []int, cur
 // highlightSubstring wraps all case-insensitive occurrences of query within line
 // with a lipgloss background color. It operates on rune indices so that
 // multi-byte UTF-8 characters and Unicode case mappings are handled correctly.
-func highlightSubstring(line, query, lowerQuery string, bg lipgloss.Color) string {
+func highlightSubstring(line, query, lowerQuery string, bg color.Color) string {
 	if query == "" {
 		return line
 	}

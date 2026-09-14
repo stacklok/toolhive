@@ -520,15 +520,25 @@ type PendingAuthorization struct {
 	// providers across successive authorization legs.
 	SessionID string
 
-	// ResolvedUserID is the internal user ID resolved from the primary (first) upstream.
+	// ResolvedUserID is the internal user ID resolved from the FIRST upstream in
+	// the chain (upstreams[0]), which establishes the session identity.
 	// Empty on the first leg; populated after the first callback for subsequent legs.
+	//
+	// "First" here is deliberately not called "primary": Cedar's
+	// ConfigOptions.PrimaryUpstreamProvider names the upstream whose claims drive
+	// authorization, which defaults to this one but can be pinned to a later leg.
+	// The two only coincide by default. ResolvedUserName and ResolvedUserEmail
+	// below are mirrored into the issued access token, so a pinned deployment that
+	// falls back to request-token claims evaluates THIS upstream's profile claims,
+	// not the pinned provider's. See docs/authz.md, "What the fallback claims
+	// actually are".
 	ResolvedUserID string
 
-	// ResolvedUserName is the user display name from the primary upstream.
+	// ResolvedUserName is the user display name from the first upstream in the chain.
 	// Empty on the first leg; populated after the first callback for subsequent legs.
 	ResolvedUserName string
 
-	// ResolvedUserEmail is the user email from the primary upstream.
+	// ResolvedUserEmail is the user email from the first upstream in the chain.
 	// Empty on the first leg; populated after the first callback for subsequent legs.
 	ResolvedUserEmail string
 

@@ -702,10 +702,11 @@ permit(principal, action == Action::"call_tool", resource == Tool::"deploy") whe
 ```
 
 On both fallback paths the token carries no upstream attributes, so policies
-keyed on `groups`, `roles` or similar will not match. Its `email` and `name` are
-mirrored from the **first** upstream in the chain, which is not necessarily the
-one you pinned — with a single upstream they are the same value, but a
-multi-upstream chain pinned to a later leg can see another provider's email. See
+keyed on `groups`, `roles` or similar will not match. What `email` and `name`
+hold depends on the path: on the opaque path they are mirrored from the
+**first** upstream in the chain, which is not necessarily the one you pinned, so
+a multi-upstream chain pinned to a later leg can see another provider's email.
+Session-less tokens differ by grant, and JWT-bearer tokens carry neither. See
 [What the fallback claims actually
 are](../authz.md#what-the-fallback-claims-actually-are) and [tokens with no
 upstream login](../authz.md#tokens-with-no-upstream-login) for the full contract,

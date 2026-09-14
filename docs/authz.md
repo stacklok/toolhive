@@ -375,24 +375,28 @@ The attribute is written after claim prefixing and its name does not start with
 
 ##### What the fallback claims actually are
 
-Both `request:no-upstream-session` and `request:upstream-opaque` mean the same
-thing for profile claims: evaluation fell back to the ToolHive-issued token the
-client presented. That token's `name` and `email` are mirrored from the identity
-established by the **first** upstream in the authorization chain, which need not
-be the provider you pinned.
+Both labels mean evaluation fell back to the claims in the ToolHive-issued token
+the client presented, but the two paths put different things in that token.
 
-With a single upstream — or when `primaryUpstreamProvider` resolves to the first
-one, which is the default — the mirror and the pinned provider's own assertion
-are the same value, and the only difference is the provenance label. They can
-diverge in a multi-upstream chain pinned to a later upstream: a policy keyed on
-`claim_email` alone may then match on an email the pinned provider never
-asserted. Gate on `thv_claim_source` wherever that distinction matters.
+On `request:upstream-opaque` the token is an ordinary login-issued access token.
+Its `name` and `email` are mirrored from the identity resolved at the **first**
+upstream in the authorization chain, which need not be the provider you pinned.
 
-Note that "primary upstream" means two different things depending on where you
-read it. In the authorization server's chain state it means *first in the chain*
-— the leg that establishes the session identity. In
-`primaryUpstreamProvider` it means *the upstream Cedar trusts for claims*. They
-are the same by default and only come apart when you pin explicitly.
+On `request:no-upstream-session` the values depend on the grant. An RFC 8693
+delegated token copies `name` and `email` from its subject token — which is the
+first upstream's mirror when the subject token was ToolHive-issued, but is the
+external IdP's own assertion when it came from a trusted external issuer. An RFC
+7523 JWT-bearer token carries neither claim; see [What these tokens can and
+cannot express](#what-these-tokens-can-and-cannot-express).
+
+Where the mirror does apply, it matters only when the pinned provider is not the
+first upstream. With a single upstream — or when `primaryUpstreamProvider`
+resolves to the first one, which is the default — the mirror and the pinned
+provider's own assertion are the same value, and only the provenance label
+differs. They diverge in a multi-upstream chain pinned to a later upstream: a
+policy keyed on `claim_email` alone may then match on an email the pinned
+provider never asserted. Gate on `thv_claim_source` wherever that distinction
+matters.
 
 #### Tokens with no upstream login
 

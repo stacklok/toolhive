@@ -78,21 +78,44 @@ The durably-claimed record is always an inert placeholder — a client with no g
 
 On every startup, the server reconstructs the static registry and its overlay from serialized configuration. A restart with the same configuration produces the same associations and reconciles cleanly against the previous run's placeholders. A **changed** association (a different fingerprint — scopes, audiences, resources, grant types, response types, or SPIFFE identity — at the same client ID) does not take effect: `ReconcileConfiguredClient` fails and the server refuses to start, exactly as described under "Startup collision handling" above. A **removed** association's active policy does take effect on a successful restart — the in-memory overlay is rebuilt from the current configuration, so a client with no matching association is no longer served as a static client. What does *not* clean up is its durable reservation: nothing currently deletes the inert placeholder `ReconcileConfiguredClient` claimed for that client ID, so it persists in storage indefinitely, preventing the ID from being reused by DCR or a delegate client (tracked as [#6477](https://github.com/stacklok/toolhive/issues/6477)). Dynamic clients remain subject to the storage backend's own persistence, but no stale static client is restored from storage — the in-memory overlay's clients always come from the current configuration, never from a prior run's storage state.
 
+## JWT-SVID client authentication
+
+The dispatch and validation logic for JWT-SVID client authentication is implemented for configured associations, though it is not yet reachable end to end (see "Security and delivery scope" below). The immutable dispatcher selects the SPIFFE JWT arm whenever any `client_assertion_type` form value is the SPIFFE JWT type — the shared dispatcher itself is otherwise untouched, so an entirely non-SPIFFE request (including RFC 7523 private-key JWT) still reaches Fosite's default strategy unchanged. Within the SPIFFE JWT arm, a duplicate or otherwise ambiguous `client_assertion_type` is rejected. Absent any SPIFFE-selecting value, the request falls through to Fosite's default strategy unless an ambient SPIFFE X.509 identity is present; that identity selects the fail-closed, not-yet-implemented X.509 arm instead.
+
+The authorization server accepts a serialized JWT-SVID client assertion, limited to 16 KiB, and validates it with go-spiffe `jwtsvid.ParseAndValidate` against the configured JWT bundle source (`AuthorizationServerParams.SPIFFEJWTBundleSource`). Validation requires the assertion's sole audience to be the configured authorization-server issuer. It does not require an `iss` claim: RFC 7519 makes `iss` OPTIONAL, and the SPIFFE JWT-SVID specification does not mandate it either, so a conformant SVID signed by a bundle-trusted key is accepted whether or not it carries one. This path reaches go-jose/v4's default one-minute claim leeway through go-spiffe v2.7.0; the leeway is inherited and not configurable in this code path. The server also rejects an assertion whose remaining validity exceeds six minutes, representing the recommended five-minute JWT-SVID issuer lifetime plus that one-minute clock-skew allowance.
+
+`client_id` is optional for this authentication method. When it is omitted, the registry derives the configured OAuth client from the verified SPIFFE ID association. When it is supplied, it is treated as an exact selector and must match that association's configured client ID; the server does not normalize the value. For example:
+
+```console
+curl -X POST https://auth.example.com/oauth/token \
+  --data-urlencode 'grant_type=urn:ietf:params:oauth:grant-type:token-exchange' \
+  --data-urlencode "subject_token=$SUBJECT_TOKEN" \
+  --data-urlencode 'subject_token_type=urn:ietf:params:oauth:token-type:access_token' \
+  --data-urlencode 'client_assertion_type=urn:ietf:params:oauth:client-assertion-type:jwt-spiffe' \
+  --data-urlencode "client_assertion=$JWT_SVID"
+```
+
+After validation, the authentication strategy calls the shared `SPIFFEAssociationRegistry.Resolve` path synchronously through its JWT resolver. The registry verifies the enabled JWT method and either derives the association's configured client ID or checks the supplied selector's ownership, then returns the configured immutable static OAuth client. The derived identity context is not propagated to downstream request handling.
+
+After the SPIFFE JWT arm is selected, malformed request fields use generic OAuth `invalid_request` errors; validation, association, and mixed-credential failures use generic `invalid_client` errors. In that arm, an HTTP Basic authorization header or any `client_secret` form field causes client authentication to fail. Credential material is not logged or included in errors.
+
+JWT-SVID assertions currently have no application-level replay protection, `jti` persistence, nonce, or proof-of-possession binding. A captured valid assertion can therefore be reused until its expiry, subject to the six-minute maximum remaining-validity policy and any acceptance allowed by the inherited claim leeway.
+
 ## Security and delivery scope
 
-Configuration is not authentication. In particular, a client ID, a declared association, a request header, an unverified SPIFFE-looking URI, or a client-supplied trust domain is never workload identity. Until credential validation is implemented, configured SPIFFE clients remain non-public OAuth clients without a secret and token requests cannot authenticate through these declarations.
+Configuration and loaded bundles are not authentication by themselves. A client ID, a declared association, a request header, an unverified SPIFFE-looking URI, a client-supplied trust domain, or a loaded bundle is never workload identity. JWT-SVID validation establishes identity only after the assertion validates against configured trust material and the association registry authorizes the resulting SPIFFE ID and configured client ID.
 
-Configured SPIFFE associations establish configuration, policy, and static-client ownership only. They do **not**:
+The JWT-SVID client-authentication path described above is implemented by [#6203](https://github.com/stacklok/toolhive/issues/6203), but `newServer` (`pkg/authserver/server_impl.go`) does not yet construct and wire in the JWT bundle source that path validates assertions against, so `jwtsvid.ParseAndValidate` is unreachable with real trust material today and every JWT-SVID authentication attempt fails closed. Issue [#6201](https://github.com/stacklok/toolhive/issues/6201) loads and rotates trust bundles and will supply that source. The following remain separate and pending:
 
-- fetch, load, or rotate a trust bundle, even though a `bundle_source` is declared;
-- authenticate workloads with X.509-SVIDs or JWT-SVIDs;
-- authenticate token requests or issue tokens through SPIFFE;
-- pair users with applications;
-- advertise discovery metadata for SPIFFE methods;
-- deploy SPIRE or mount Workload API sockets; or
-- claim full SPIFFE interoperability or end-to-end coverage.
+- validate X.509-SVIDs ([#6202](https://github.com/stacklok/toolhive/issues/6202));
+- integrate SPIFFE methods with grants or discovery metadata ([#6204](https://github.com/stacklok/toolhive/issues/6204)); and
+- deploy SPIRE or mount Workload API sockets ([#6205](https://github.com/stacklok/toolhive/issues/6205)).
 
-Future credential-validation code must establish identity from validated SVIDs and then resolve that verified identity through this registry. It must fail closed for missing associations, client-ID ownership mismatches, unknown trust domains, and methods not enabled by policy.
+For [#6205](https://github.com/stacklok/toolhive/issues/6205), `workloadapi.X509Source` implements both `x509svid.Source` and `x509bundle.Source`, so one Workload API connection can also provide the authorization server's own certificate when deployment wiring is added. The v1alpha1 `ClientCASecretRef` plus `subPath` shape cannot support a rotating bundle and must not be reused for this purpose.
+
+Configured SPIFFE associations remain non-deployable independent of the above: `RunConfig.Validate()` still hard-rejects any non-empty `spiffeTrustDomains` (see "Current status" above), so none of this runs against a real deployment yet.
+
+Future X.509-SVID credential-validation code must establish identity from validated SVIDs and then resolve that verified identity through this registry. It must fail closed for missing associations, client-ID ownership mismatches, unknown trust domains, and methods not enabled by policy.
 
 ## Related documentation
 

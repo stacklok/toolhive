@@ -6,18 +6,12 @@ on:
 permissions:
   contents: read
 
-# ARC runner pods receive Kubernetes service variables despite having no host
-# cluster credentials. Clear them so ToolHive selects its local Docker runtime.
-env:
-  KUBERNETES_SERVICE_HOST: ''
-  KUBERNETES_SERVICE_PORT: ''
-
 jobs:
   build-binary:
     name: Build ToolHive Binary
-    # The org-level pool is for trusted code only. Fork pull requests run on a
-    # GitHub-hosted runner so untrusted code cannot reach self-hosted infrastructure.
-    runs-on: ${{ (github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository) && 'stacklok-self-hosted-runners' || 'ubuntu-latest' }}
+    # Direct-container E2E requires VM-style Docker networking; ARC's DinD
+    # runner pods cannot expose ToolHive-managed workloads to runner processes.
+    runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
         with:
@@ -51,9 +45,9 @@ jobs:
 
   e2e-tests-core:
     name: E2E Tests Core (${{ matrix.title }})
-    # Trusted branches use the arm64 self-hosted pool. Fork pull requests use
-    # GitHub-hosted runners so untrusted code cannot reach internal infrastructure.
-    runs-on: ${{ (github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository) && 'stacklok-self-hosted-runners' || 'ubuntu-latest' }}
+    # Keep all jobs on the build artifact's amd64 architecture and VM-style
+    # Docker network so ToolHive-managed workloads remain reachable.
+    runs-on: ubuntu-latest
     needs: build-binary
     strategy:
       fail-fast: false
@@ -203,9 +197,8 @@ jobs:
 
   conformance:
     name: MCP Conformance
-    # Keep this on the same architecture as build-binary: its artifact is a
-    # native executable. Fork pull requests remain on GitHub-hosted runners.
-    runs-on: ${{ (github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository) && 'stacklok-self-hosted-runners' || 'ubuntu-latest' }}
+    # Keep this on the same architecture and Docker environment as build-binary.
+    runs-on: ubuntu-latest
     needs: build-binary
     timeout-minutes: 20
     strategy:

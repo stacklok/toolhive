@@ -242,6 +242,10 @@ key flag. A different key cannot be auto-adopted or substituted with
 `--allow-signer-change`: changing to an arbitrary key requires removing the
 existing lock anchor and reinstalling explicitly.
 
+The [skills trust tiers](12-skills-system.md#trust-tiers) explain why key-pair
+signing provides lower assurance than keyless signing; the same limits apply to
+plugins.
+
 `--allow-unsigned` applies only when content has no signature and records
 `unsigned: true` as an explicit project policy exception. It does not permit an
 invalid, damaged, wrong-key, or otherwise unverifiable signature, and it does

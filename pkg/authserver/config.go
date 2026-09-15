@@ -169,6 +169,16 @@ type RunConfig struct {
 	//nolint:lll // field tags require full JSON+YAML names
 	AllowPrivateKeyJWTRegistration bool `json:"allow_private_key_jwt_registration,omitempty" yaml:"allow_private_key_jwt_registration,omitempty"`
 
+	// DeviceFlowEnabled enables the RFC 8628 OAuth 2.0 Device Authorization
+	// Grant: POST /oauth/device_authorization is mounted and
+	// urn:ietf:params:oauth:grant-type:device_code is registered at the
+	// token endpoint and advertised in discovery. The minimum polling
+	// interval (RFC 8628 Section 3.5) is fixed at
+	// oauthserver.DefaultDeviceCodeInterval; this is a deliberate
+	// simplification to keep this config surface minimal — a future
+	// increment may add an override.
+	DeviceFlowEnabled bool `json:"device_flow_enabled,omitempty" yaml:"device_flow_enabled,omitempty"`
+
 	// ForceConfidentialRedirectURIs lists redirect URIs that must be registered
 	// as confidential clients regardless of the token_endpoint_auth_method the
 	// DCR request declares. A registration whose redirect_uris contains an
@@ -1114,6 +1124,15 @@ type Config struct {
 	// AllowPrivateKeyJWTRegistration permits DCR of clients using
 	// private_key_jwt authentication. See RunConfig for the full semantics.
 	AllowPrivateKeyJWTRegistration bool
+
+	// DeviceFlowEnabled enables the RFC 8628 device authorization grant. See
+	// RunConfig.DeviceFlowEnabled for the full semantics.
+	DeviceFlowEnabled bool
+
+	// DeviceCodeInterval is the minimum time a device-flow client must wait
+	// between polls of the token endpoint. If zero, defaults to
+	// oauthserver.DefaultDeviceCodeInterval.
+	DeviceCodeInterval time.Duration
 
 	// ForceConfidentialRedirectURIs lists redirect URIs that are always
 	// registered as confidential clients, even when the DCR request declares

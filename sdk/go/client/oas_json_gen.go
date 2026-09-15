@@ -2533,6 +2533,12 @@ func (s *AuthenticationRunConfig) encodeFields(e *jx.Encoder) {
 		}
 	}
 	{
+		if s.DeviceFlowEnabled.Set {
+			e.FieldStart("device_flow_enabled")
+			s.DeviceFlowEnabled.Encode(e)
+		}
+	}
+	{
 		if s.DisableUpstreamTokenInjection.Set {
 			e.FieldStart("disable_upstream_token_injection")
 			s.DisableUpstreamTokenInjection.Encode(e)
@@ -2648,7 +2654,7 @@ func (s *AuthenticationRunConfig) encodeFields(e *jx.Encoder) {
 	}
 }
 
-var jsonFieldsNameOfAuthenticationRunConfig = [23]string{
+var jsonFieldsNameOfAuthenticationRunConfig = [24]string{
 	0:  "allow_confidential_client_registration",
 	1:  "allow_private_key_jwt_registration",
 	2:  "allowed_audiences",
@@ -2657,21 +2663,22 @@ var jsonFieldsNameOfAuthenticationRunConfig = [23]string{
 	5:  "cimd",
 	6:  "delegate_clients",
 	7:  "delegation_token_lifespan",
-	8:  "disable_upstream_token_injection",
-	9:  "force_confidential_redirect_uris",
-	10: "hmac_secret_files",
-	11: "inbound_grants",
-	12: "insecure_allow_confidential_over_loopback_http",
-	13: "insecure_allow_http",
-	14: "issuer",
-	15: "schema_version",
-	16: "scopes_supported",
-	17: "signing_key_config",
-	18: "spiffe_trust_domains",
-	19: "storage",
-	20: "token_lifespans",
-	21: "trusted_issuers",
-	22: "upstreams",
+	8:  "device_flow_enabled",
+	9:  "disable_upstream_token_injection",
+	10: "force_confidential_redirect_uris",
+	11: "hmac_secret_files",
+	12: "inbound_grants",
+	13: "insecure_allow_confidential_over_loopback_http",
+	14: "insecure_allow_http",
+	15: "issuer",
+	16: "schema_version",
+	17: "scopes_supported",
+	18: "signing_key_config",
+	19: "spiffe_trust_domains",
+	20: "storage",
+	21: "token_lifespans",
+	22: "trusted_issuers",
+	23: "upstreams",
 }
 
 // Decode decodes AuthenticationRunConfig from json.
@@ -2786,6 +2793,16 @@ func (s *AuthenticationRunConfig) Decode(d *jx.Decoder) error {
 				return nil
 			}(); err != nil {
 				return errors.Wrap(err, "decode field \"delegation_token_lifespan\"")
+			}
+		case "device_flow_enabled":
+			if err := func() error {
+				s.DeviceFlowEnabled.Reset()
+				if err := s.DeviceFlowEnabled.Decode(d); err != nil {
+					return err
+				}
+				return nil
+			}(); err != nil {
+				return errors.Wrap(err, "decode field \"device_flow_enabled\"")
 			}
 		case "disable_upstream_token_injection":
 			if err := func() error {

@@ -334,6 +334,7 @@ func newEmbeddedAuthServerWithStorage(
 		// the token-exchange grant, independent of legacy/canonical enablement.
 		DisableTokenExchange: !normalized.Capabilities.TokenExchange,
 		SPIFFETrust:          spiffeTrust,
+		DeviceFlowEnabled:    cfg.DeviceFlowEnabled,
 	}
 
 	// 8. Create the auth server. authserver.New also asserts the DCR

@@ -924,6 +924,10 @@ type AuthenticationOAuth2UpstreamRunConfig struct {
 	// authorization requests. Useful for provider-specific parameters like
 	// Google's access_type=offline.
 	AdditionalAuthorizationParams OptAuthenticationOAuth2UpstreamRunConfigAdditionalAuthorizationParams `json:"additional_authorization_params"`
+	// AdditionalTokenParams are extra form-body parameters to include in
+	// token requests (authorization code exchange and refresh). Useful for
+	// providers that enforce RFC 8707 resource indicators on token requests.
+	AdditionalTokenParams OptAuthenticationOAuth2UpstreamRunConfigAdditionalTokenParams `json:"additional_token_params"`
 	// AllowPrivateIPs permits the upstream provider's HTTP client to connect to
 	// private IP ranges (RFC-1918, link-local). When DCRConfig is set, this
 	// also gates the DCR discovery and registration calls made on this
@@ -975,6 +979,11 @@ type AuthenticationOAuth2UpstreamRunConfig struct {
 // GetAdditionalAuthorizationParams returns the value of AdditionalAuthorizationParams.
 func (s *AuthenticationOAuth2UpstreamRunConfig) GetAdditionalAuthorizationParams() OptAuthenticationOAuth2UpstreamRunConfigAdditionalAuthorizationParams {
 	return s.AdditionalAuthorizationParams
+}
+
+// GetAdditionalTokenParams returns the value of AdditionalTokenParams.
+func (s *AuthenticationOAuth2UpstreamRunConfig) GetAdditionalTokenParams() OptAuthenticationOAuth2UpstreamRunConfigAdditionalTokenParams {
+	return s.AdditionalTokenParams
 }
 
 // GetAllowPrivateIps returns the value of AllowPrivateIps.
@@ -1055,6 +1064,11 @@ func (s *AuthenticationOAuth2UpstreamRunConfig) GetUserinfo() OptAuthenticationU
 // SetAdditionalAuthorizationParams sets the value of AdditionalAuthorizationParams.
 func (s *AuthenticationOAuth2UpstreamRunConfig) SetAdditionalAuthorizationParams(val OptAuthenticationOAuth2UpstreamRunConfigAdditionalAuthorizationParams) {
 	s.AdditionalAuthorizationParams = val
+}
+
+// SetAdditionalTokenParams sets the value of AdditionalTokenParams.
+func (s *AuthenticationOAuth2UpstreamRunConfig) SetAdditionalTokenParams(val OptAuthenticationOAuth2UpstreamRunConfigAdditionalTokenParams) {
+	s.AdditionalTokenParams = val
 }
 
 // SetAllowPrivateIps sets the value of AllowPrivateIps.
@@ -1146,6 +1160,20 @@ func (s *AuthenticationOAuth2UpstreamRunConfigAdditionalAuthorizationParams) ini
 	return m
 }
 
+// AdditionalTokenParams are extra form-body parameters to include in
+// token requests (authorization code exchange and refresh). Useful for
+// providers that enforce RFC 8707 resource indicators on token requests.
+type AuthenticationOAuth2UpstreamRunConfigAdditionalTokenParams map[string]string
+
+func (s *AuthenticationOAuth2UpstreamRunConfigAdditionalTokenParams) init() AuthenticationOAuth2UpstreamRunConfigAdditionalTokenParams {
+	m := *s
+	if m == nil {
+		m = map[string]string{}
+		*s = m
+	}
+	return m
+}
+
 // OIDCConfig contains OIDC-specific configuration.
 // Required when Type is "oidc", must be nil when Type is "oauth2".
 // Ref: #/components/schemas/AuthenticationOIDCUpstreamRunConfig
@@ -1154,6 +1182,10 @@ type AuthenticationOIDCUpstreamRunConfig struct {
 	// authorization requests. Useful for provider-specific parameters like
 	// Google's access_type=offline.
 	AdditionalAuthorizationParams OptAuthenticationOIDCUpstreamRunConfigAdditionalAuthorizationParams `json:"additional_authorization_params"`
+	// AdditionalTokenParams are extra form-body parameters to include in
+	// token requests (authorization code exchange and refresh). Useful for
+	// providers that enforce RFC 8707 resource indicators on token requests.
+	AdditionalTokenParams OptAuthenticationOIDCUpstreamRunConfigAdditionalTokenParams `json:"additional_token_params"`
 	// AllowPrivateIPs permits the OIDC discovery and token HTTP clients to
 	// connect to private IP ranges (RFC-1918, link-local). Use only when the
 	// upstream is hosted inside the same cluster and has no public endpoint.
@@ -1198,6 +1230,11 @@ type AuthenticationOIDCUpstreamRunConfig struct {
 // GetAdditionalAuthorizationParams returns the value of AdditionalAuthorizationParams.
 func (s *AuthenticationOIDCUpstreamRunConfig) GetAdditionalAuthorizationParams() OptAuthenticationOIDCUpstreamRunConfigAdditionalAuthorizationParams {
 	return s.AdditionalAuthorizationParams
+}
+
+// GetAdditionalTokenParams returns the value of AdditionalTokenParams.
+func (s *AuthenticationOIDCUpstreamRunConfig) GetAdditionalTokenParams() OptAuthenticationOIDCUpstreamRunConfigAdditionalTokenParams {
+	return s.AdditionalTokenParams
 }
 
 // GetAllowPrivateIps returns the value of AllowPrivateIps.
@@ -1263,6 +1300,11 @@ func (s *AuthenticationOIDCUpstreamRunConfig) GetUserinfoOverride() OptAuthentic
 // SetAdditionalAuthorizationParams sets the value of AdditionalAuthorizationParams.
 func (s *AuthenticationOIDCUpstreamRunConfig) SetAdditionalAuthorizationParams(val OptAuthenticationOIDCUpstreamRunConfigAdditionalAuthorizationParams) {
 	s.AdditionalAuthorizationParams = val
+}
+
+// SetAdditionalTokenParams sets the value of AdditionalTokenParams.
+func (s *AuthenticationOIDCUpstreamRunConfig) SetAdditionalTokenParams(val OptAuthenticationOIDCUpstreamRunConfigAdditionalTokenParams) {
+	s.AdditionalTokenParams = val
 }
 
 // SetAllowPrivateIps sets the value of AllowPrivateIps.
@@ -1331,6 +1373,20 @@ func (s *AuthenticationOIDCUpstreamRunConfig) SetUserinfoOverride(val OptAuthent
 type AuthenticationOIDCUpstreamRunConfigAdditionalAuthorizationParams map[string]string
 
 func (s *AuthenticationOIDCUpstreamRunConfigAdditionalAuthorizationParams) init() AuthenticationOIDCUpstreamRunConfigAdditionalAuthorizationParams {
+	m := *s
+	if m == nil {
+		m = map[string]string{}
+		*s = m
+	}
+	return m
+}
+
+// AdditionalTokenParams are extra form-body parameters to include in
+// token requests (authorization code exchange and refresh). Useful for
+// providers that enforce RFC 8707 resource indicators on token requests.
+type AuthenticationOIDCUpstreamRunConfigAdditionalTokenParams map[string]string
+
+func (s *AuthenticationOIDCUpstreamRunConfigAdditionalTokenParams) init() AuthenticationOIDCUpstreamRunConfigAdditionalTokenParams {
 	m := *s
 	if m == nil {
 		m = map[string]string{}
@@ -6860,6 +6916,52 @@ func (o OptAuthenticationOAuth2UpstreamRunConfigAdditionalAuthorizationParams) O
 	return d
 }
 
+// NewOptAuthenticationOAuth2UpstreamRunConfigAdditionalTokenParams returns new OptAuthenticationOAuth2UpstreamRunConfigAdditionalTokenParams with value set to v.
+func NewOptAuthenticationOAuth2UpstreamRunConfigAdditionalTokenParams(v AuthenticationOAuth2UpstreamRunConfigAdditionalTokenParams) OptAuthenticationOAuth2UpstreamRunConfigAdditionalTokenParams {
+	return OptAuthenticationOAuth2UpstreamRunConfigAdditionalTokenParams{
+		Value: v,
+		Set:   true,
+	}
+}
+
+// OptAuthenticationOAuth2UpstreamRunConfigAdditionalTokenParams is optional AuthenticationOAuth2UpstreamRunConfigAdditionalTokenParams.
+type OptAuthenticationOAuth2UpstreamRunConfigAdditionalTokenParams struct {
+	Value AuthenticationOAuth2UpstreamRunConfigAdditionalTokenParams
+	Set   bool
+}
+
+// IsSet returns true if OptAuthenticationOAuth2UpstreamRunConfigAdditionalTokenParams was set.
+func (o OptAuthenticationOAuth2UpstreamRunConfigAdditionalTokenParams) IsSet() bool { return o.Set }
+
+// Reset unsets value.
+func (o *OptAuthenticationOAuth2UpstreamRunConfigAdditionalTokenParams) Reset() {
+	var v AuthenticationOAuth2UpstreamRunConfigAdditionalTokenParams
+	o.Value = v
+	o.Set = false
+}
+
+// SetTo sets value to v.
+func (o *OptAuthenticationOAuth2UpstreamRunConfigAdditionalTokenParams) SetTo(v AuthenticationOAuth2UpstreamRunConfigAdditionalTokenParams) {
+	o.Set = true
+	o.Value = v
+}
+
+// Get returns value and boolean that denotes whether value was set.
+func (o OptAuthenticationOAuth2UpstreamRunConfigAdditionalTokenParams) Get() (v AuthenticationOAuth2UpstreamRunConfigAdditionalTokenParams, ok bool) {
+	if !o.Set {
+		return v, false
+	}
+	return o.Value, true
+}
+
+// Or returns value if set, or given parameter if does not.
+func (o OptAuthenticationOAuth2UpstreamRunConfigAdditionalTokenParams) Or(d AuthenticationOAuth2UpstreamRunConfigAdditionalTokenParams) AuthenticationOAuth2UpstreamRunConfigAdditionalTokenParams {
+	if v, ok := o.Get(); ok {
+		return v
+	}
+	return d
+}
+
 // NewOptAuthenticationOIDCUpstreamRunConfig returns new OptAuthenticationOIDCUpstreamRunConfig with value set to v.
 func NewOptAuthenticationOIDCUpstreamRunConfig(v AuthenticationOIDCUpstreamRunConfig) OptAuthenticationOIDCUpstreamRunConfig {
 	return OptAuthenticationOIDCUpstreamRunConfig{
@@ -6948,6 +7050,52 @@ func (o OptAuthenticationOIDCUpstreamRunConfigAdditionalAuthorizationParams) Get
 
 // Or returns value if set, or given parameter if does not.
 func (o OptAuthenticationOIDCUpstreamRunConfigAdditionalAuthorizationParams) Or(d AuthenticationOIDCUpstreamRunConfigAdditionalAuthorizationParams) AuthenticationOIDCUpstreamRunConfigAdditionalAuthorizationParams {
+	if v, ok := o.Get(); ok {
+		return v
+	}
+	return d
+}
+
+// NewOptAuthenticationOIDCUpstreamRunConfigAdditionalTokenParams returns new OptAuthenticationOIDCUpstreamRunConfigAdditionalTokenParams with value set to v.
+func NewOptAuthenticationOIDCUpstreamRunConfigAdditionalTokenParams(v AuthenticationOIDCUpstreamRunConfigAdditionalTokenParams) OptAuthenticationOIDCUpstreamRunConfigAdditionalTokenParams {
+	return OptAuthenticationOIDCUpstreamRunConfigAdditionalTokenParams{
+		Value: v,
+		Set:   true,
+	}
+}
+
+// OptAuthenticationOIDCUpstreamRunConfigAdditionalTokenParams is optional AuthenticationOIDCUpstreamRunConfigAdditionalTokenParams.
+type OptAuthenticationOIDCUpstreamRunConfigAdditionalTokenParams struct {
+	Value AuthenticationOIDCUpstreamRunConfigAdditionalTokenParams
+	Set   bool
+}
+
+// IsSet returns true if OptAuthenticationOIDCUpstreamRunConfigAdditionalTokenParams was set.
+func (o OptAuthenticationOIDCUpstreamRunConfigAdditionalTokenParams) IsSet() bool { return o.Set }
+
+// Reset unsets value.
+func (o *OptAuthenticationOIDCUpstreamRunConfigAdditionalTokenParams) Reset() {
+	var v AuthenticationOIDCUpstreamRunConfigAdditionalTokenParams
+	o.Value = v
+	o.Set = false
+}
+
+// SetTo sets value to v.
+func (o *OptAuthenticationOIDCUpstreamRunConfigAdditionalTokenParams) SetTo(v AuthenticationOIDCUpstreamRunConfigAdditionalTokenParams) {
+	o.Set = true
+	o.Value = v
+}
+
+// Get returns value and boolean that denotes whether value was set.
+func (o OptAuthenticationOIDCUpstreamRunConfigAdditionalTokenParams) Get() (v AuthenticationOIDCUpstreamRunConfigAdditionalTokenParams, ok bool) {
+	if !o.Set {
+		return v, false
+	}
+	return o.Value, true
+}
+
+// Or returns value if set, or given parameter if does not.
+func (o OptAuthenticationOIDCUpstreamRunConfigAdditionalTokenParams) Or(d AuthenticationOIDCUpstreamRunConfigAdditionalTokenParams) AuthenticationOIDCUpstreamRunConfigAdditionalTokenParams {
 	if v, ok := o.Get(); ok {
 		return v
 	}

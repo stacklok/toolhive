@@ -20,7 +20,7 @@ import (
 	"time"
 
 	"github.com/golang-jwt/jwt/v5"
-	"github.com/lestrrat-go/jwx/v3/jwk"
+	"github.com/lestrrat-go/jwx/v4/jwk"
 	"github.com/stretchr/testify/require"
 	"go.uber.org/mock/gomock"
 
@@ -51,7 +51,7 @@ func TestTokenValidator(t *testing.T) {
 	publicKey := &privateKey.PublicKey
 
 	// Create a key set with the public key
-	key, err := jwk.Import(publicKey)
+	key, err := jwk.Import[jwk.Key](publicKey)
 	if err != nil {
 		t.Fatalf("Failed to create JWK from public key: %v", err)
 	}
@@ -199,7 +199,7 @@ func TestTokenValidatorMiddleware(t *testing.T) {
 	publicKey := &privateKey.PublicKey
 
 	// Create a key set with the public key
-	key, err := jwk.Import(publicKey)
+	key, err := jwk.Import[jwk.Key](publicKey)
 	if err != nil {
 		t.Fatalf("Failed to create JWK from public key: %v", err)
 	}
@@ -560,7 +560,7 @@ func TestNewTokenValidatorWithOIDCDiscovery(t *testing.T) {
 	publicKey := &privateKey.PublicKey
 
 	// Create a key set with the public key
-	key, err := jwk.Import(publicKey)
+	key, err := jwk.Import[jwk.Key](publicKey)
 	if err != nil {
 		t.Fatalf("Failed to create JWK from public key: %v", err)
 	}
@@ -933,7 +933,7 @@ func TestValidateToken_TriggersLazyDiscovery(t *testing.T) {
 		t.Fatalf("Failed to generate RSA key pair: %v", err)
 	}
 
-	key, err := jwk.Import(&privateKey.PublicKey)
+	key, err := jwk.Import[jwk.Key](&privateKey.PublicKey)
 	if err != nil {
 		t.Fatalf("Failed to create JWK: %v", err)
 	}
@@ -2372,7 +2372,7 @@ func TestMiddleware_UpstreamTokenEnrichment(t *testing.T) {
 	privateKey, err := rsa.GenerateKey(rand.Reader, 2048)
 	require.NoError(t, err)
 
-	key, err := jwk.Import(&privateKey.PublicKey)
+	key, err := jwk.Import[jwk.Key](&privateKey.PublicKey)
 	require.NoError(t, err)
 	require.NoError(t, key.Set(jwk.KeyIDKey, testKeyID))
 	require.NoError(t, key.Set(jwk.AlgorithmKey, "RS256"))
@@ -3074,7 +3074,7 @@ func TestValidateToken_DiscoveryFailsWithKeyProvider(t *testing.T) {
 		}, nil).AnyTimes()
 
 		// Build JWK key set for the JWKS server with the CORRECT kid
-		jwkKey, err := jwk.Import(&privateKey.PublicKey)
+		jwkKey, err := jwk.Import[jwk.Key](&privateKey.PublicKey)
 		require.NoError(t, err)
 		require.NoError(t, jwkKey.Set(jwk.KeyIDKey, testKeyID))
 		require.NoError(t, jwkKey.Set(jwk.AlgorithmKey, "RS256"))

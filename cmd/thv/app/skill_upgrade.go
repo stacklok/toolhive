@@ -30,8 +30,8 @@ var skillUpgradeCmd = &cobra.Command{
 	Long: `Re-resolve a project's lock entries and install newer content where available.
 
 Skills pinned to a full git commit hash are not upgradable. OCI digest content
-is also immutable, but --allow-signer-change can evaluate its separately
-attached signatures for a trust-only update.
+is also immutable, but --allow-signer-change --public-key can evaluate its
+separately attached signatures for a trust-only update.
 Use --preview to see what would change without persisting anything (OCI
 sources are still fetched into the local artifact store to compare digests),
 and --allow-ref-change to permit the artifact moving to a different

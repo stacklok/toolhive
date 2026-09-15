@@ -553,7 +553,8 @@ through the same git, OCI, and registry dispatch order that `Install` uses. It
 installs newer content when the resolved digest changes. A Git source pinned to
 a full commit hash is not upgradable. An OCI digest reference has immutable
 content, but upgrade can still evaluate its separately attached signatures and
-apply a trust-only re-anchor when you pass `--allow-signer-change`.
+apply a trust-only re-anchor when you pass
+`--allow-signer-change --public-key <PUBLIC_KEY_PATH>`.
 `--preview` reports content and trust changes without persisting them. An OCI
 content preview still pulls the artifact into the local store because there is
 no lighter digest-only operation.

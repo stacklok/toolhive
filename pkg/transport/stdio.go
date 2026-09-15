@@ -21,7 +21,7 @@ import (
 	"time"
 	"unicode"
 
-	"github.com/cenkalti/backoff/v5"
+	"github.com/cenkalti/backoff/v7"
 	"golang.org/x/exp/jsonrpc2"
 	"golang.org/x/oauth2"
 

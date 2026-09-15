@@ -7,6 +7,7 @@ import (
 	"context"
 	"fmt"
 	"net/http"
+	"path/filepath"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
@@ -16,8 +17,11 @@ import (
 	"github.com/stacklok/toolhive-core/httperr"
 	ociplugins "github.com/stacklok/toolhive-core/oci/plugins"
 	ocimocks "github.com/stacklok/toolhive-core/oci/plugins/mocks"
+	regtypes "github.com/stacklok/toolhive-core/registry/types"
 	"github.com/stacklok/toolhive/pkg/plugins"
 	plugmocks "github.com/stacklok/toolhive/pkg/plugins/mocks"
+	"github.com/stacklok/toolhive/pkg/skills/verifier"
+	verifiermocks "github.com/stacklok/toolhive/pkg/skills/verifier/mocks"
 	"github.com/stacklok/toolhive/pkg/storage"
 	storemocks "github.com/stacklok/toolhive/pkg/storage/mocks"
 )
@@ -34,6 +38,64 @@ func (s *stubLookup) SearchPlugins(_ context.Context, _ string) ([]PluginSearchH
 
 func TestInstallRegistryResolution(t *testing.T) {
 	t.Parallel()
+
+	t.Run("hydrates catalog provenance into first-use verification", func(t *testing.T) {
+		t.Parallel()
+		ctrl := gomock.NewController(t)
+		projectRoot := makeProjectRoot(t)
+		catalogProvenance := &regtypes.Provenance{
+			SignerIdentity: testSignerIdentity,
+			CertIssuer:     testCertIssuer,
+		}
+
+		ociStore, err := ociplugins.NewStore(tempDir(t))
+		require.NoError(t, err)
+		indexDigest := buildTestPlugin(t, ociStore, "my-plugin", "1.0.0")
+
+		reg := ocimocks.NewMockRegistryClient(ctrl)
+		reg.EXPECT().Pull(gomock.Any(), ociStore, "ghcr.io/org/my-plugin:v1").
+			Return(indexDigest, nil)
+		mv := verifiermocks.NewMockVerifier(ctrl)
+		mv.EXPECT().VerifyOCI(
+			gomock.Any(), "ghcr.io/org/my-plugin:v1", indexDigest.String(),
+			gomock.Eq(verifier.NewCatalogExpectation(catalogProvenance))).
+			Return(signedResult(), nil)
+
+		store := storemocks.NewMockPluginStore(ctrl)
+		adapter := plugmocks.NewMockMaterializationAdapter(ctrl)
+		store.EXPECT().Get(gomock.Any(), "my-plugin", plugins.ScopeProject, projectRoot).
+			Return(plugins.InstalledPlugin{}, storage.ErrNotFound)
+		adapter.EXPECT().Materialize(gomock.Any(), gomock.Any()).Return(&plugins.MaterializeResult{}, nil)
+		store.EXPECT().Create(gomock.Any(), gomock.Any()).Return(nil)
+		store.EXPECT().Update(gomock.Any(), gomock.Any()).Return(nil)
+
+		lookup := &stubLookup{hits: []PluginSearchHit{
+			{
+				Name:       "my-plugin",
+				Provenance: catalogProvenance,
+				Packages:   []PluginPackage{{Reference: "ghcr.io/org/my-plugin:v1", Type: "oci"}},
+			},
+		}}
+		svc := newTestService(
+			WithStore(store),
+			WithOCIStore(ociStore),
+			WithRegistryClient(reg),
+			WithMaterializers(map[string]plugins.MaterializationAdapter{"claude-code": adapter}),
+			WithPluginLookup(lookup),
+			WithVerifier(mv),
+		)
+
+		result, err := svc.Install(t.Context(), plugins.InstallOptions{
+			Name:        "my-plugin",
+			Scope:       plugins.ScopeProject,
+			ProjectRoot: projectRoot,
+			Clients:     []string{"claude-code"},
+		})
+		require.NoError(t, err)
+		require.NotNil(t, result.Provenance)
+		assert.Equal(t, testSignerIdentity, result.Provenance.SignerIdentity)
+		assert.True(t, result.Plugin.Managed)
+	})
 
 	t.Run("resolves plain name via lookup and installs from OCI", func(t *testing.T) {
 		t.Parallel()
@@ -373,4 +435,132 @@ func TestInstallRegistryResolution(t *testing.T) {
 		assert.Contains(t, err.Error(), "thv ai-plugin install")
 		assert.NotContains(t, err.Error(), "thv plugin install")
 	})
+}
+
+//nolint:paralleltest // uses t.Setenv via newLockTestService, incompatible with t.Parallel
+func TestInstallRegistryCatalogRejectionHasNoSideEffects(t *testing.T) {
+	tests := []struct {
+		name       string
+		provenance *regtypes.Provenance
+		verifyErr  error
+		wantCode   int
+	}{
+		{
+			name:       "provenance mismatch",
+			provenance: &regtypes.Provenance{SignerIdentity: "attacker@example.com"},
+			verifyErr:  verifier.ErrSignerMismatch,
+			wantCode:   http.StatusForbidden,
+		},
+		{
+			name:       "unsupported sigstore URL",
+			provenance: &regtypes.Provenance{SigstoreURL: "https://sigstore.example.com/root.json"},
+			wantCode:   http.StatusUnprocessableEntity,
+		},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			ctrl := gomock.NewController(t)
+			ociStore, err := ociplugins.NewStore(tempDir(t))
+			require.NoError(t, err)
+			indexDigest := buildTestPlugin(t, ociStore, "my-plugin", "1.0.0")
+
+			reg := ocimocks.NewMockRegistryClient(ctrl)
+			reg.EXPECT().Pull(gomock.Any(), ociStore, "ghcr.io/org/my-plugin:v1").
+				Return(indexDigest, nil)
+			mv := verifiermocks.NewMockVerifier(ctrl)
+			if tc.verifyErr != nil {
+				mv.EXPECT().VerifyOCI(
+					gomock.Any(), "ghcr.io/org/my-plugin:v1", indexDigest.String(),
+					gomock.Eq(verifier.NewCatalogExpectation(tc.provenance))).
+					Return(nil, tc.verifyErr)
+			}
+			lookup := &stubLookup{hits: []PluginSearchHit{
+				{
+					Name:       "my-plugin",
+					Provenance: tc.provenance,
+					Packages:   []PluginPackage{{Reference: "ghcr.io/org/my-plugin:v1", Type: "oci"}},
+				},
+			}}
+			svc, projectRoot := newLockTestService(t,
+				WithOCIStore(ociStore),
+				WithRegistryClient(reg),
+				WithPluginLookup(lookup),
+				WithVerifier(mv),
+			)
+
+			_, err = svc.Install(t.Context(), plugins.InstallOptions{
+				Name:        "my-plugin",
+				Scope:       plugins.ScopeProject,
+				ProjectRoot: projectRoot,
+				Clients:     []string{"claude-code"},
+			})
+			require.Error(t, err)
+			assert.Equal(t, tc.wantCode, httperr.Code(err))
+
+			_, ok := loadPluginLockEntry(t, projectRoot)
+			assert.False(t, ok, "a rejected catalog policy must not write a lock entry")
+			_, err = svc.Info(t.Context(), plugins.InfoOptions{
+				Name: "my-plugin", Scope: plugins.ScopeProject, ProjectRoot: projectRoot,
+			})
+			require.Error(t, err, "a rejected catalog policy must not create a database record")
+			assert.NoDirExists(t, filepath.Join(projectRoot, ".claude", "plugins", "my-plugin"),
+				"verification must fail before plugin files are materialized")
+		})
+	}
+}
+
+//nolint:paralleltest // uses t.Setenv via newLockTestService, incompatible with t.Parallel
+func TestInstallRegistryUserScopeIgnoresUnsupportedCatalogConstraints(t *testing.T) {
+	tests := []struct {
+		name       string
+		provenance *regtypes.Provenance
+	}{
+		{
+			name: "attestation",
+			provenance: &regtypes.Provenance{
+				Attestation: &regtypes.VerifiedAttestation{PredicateType: "https://slsa.dev/provenance/v1"},
+			},
+		},
+		{
+			name:       "sigstore URL",
+			provenance: &regtypes.Provenance{SigstoreURL: "https://sigstore.example.com/root.json"},
+		},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			ctrl := gomock.NewController(t)
+			ociStore, err := ociplugins.NewStore(tempDir(t))
+			require.NoError(t, err)
+			indexDigest := buildTestPlugin(t, ociStore, "my-plugin", "1.0.0")
+
+			reg := ocimocks.NewMockRegistryClient(ctrl)
+			reg.EXPECT().Pull(gomock.Any(), ociStore, "ghcr.io/org/my-plugin:v1").
+				Return(indexDigest, nil)
+			lookup := &stubLookup{hits: []PluginSearchHit{
+				{
+					Name:       "my-plugin",
+					Provenance: tc.provenance,
+					Packages:   []PluginPackage{{Reference: "ghcr.io/org/my-plugin:v1", Type: "oci"}},
+				},
+			}}
+			// The verifier has no expectations: catalog policy does not apply
+			// to user-scoped installs because they record no lock-backed trust.
+			mv := verifiermocks.NewMockVerifier(ctrl)
+			svc, _ := newLockTestService(t,
+				WithOCIStore(ociStore),
+				WithRegistryClient(reg),
+				WithPluginLookup(lookup),
+				WithVerifier(mv),
+			)
+
+			result, err := svc.Install(t.Context(), plugins.InstallOptions{
+				Name:    "my-plugin",
+				Scope:   plugins.ScopeUser,
+				Clients: []string{"claude-code"},
+			})
+			require.NoError(t, err)
+			assert.Equal(t, "my-plugin", result.Plugin.Metadata.Name)
+			assert.False(t, result.Plugin.Managed)
+		})
+	}
 }

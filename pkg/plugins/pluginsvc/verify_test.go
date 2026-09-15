@@ -16,6 +16,7 @@ import (
 	"go.uber.org/mock/gomock"
 
 	"github.com/stacklok/toolhive-core/httperr"
+	regtypes "github.com/stacklok/toolhive-core/registry/types"
 	"github.com/stacklok/toolhive/pkg/plugins"
 	"github.com/stacklok/toolhive/pkg/skills/lockfile"
 	"github.com/stacklok/toolhive/pkg/skills/verifier"
@@ -23,8 +24,9 @@ import (
 )
 
 const (
-	testSignerIdentity = "/.github/workflows/release.yml"
-	testCertIssuer     = "https://token.actions.githubusercontent.com"
+	testSignerIdentity           = "/.github/workflows/release.yml"
+	testCertIssuer               = "https://token.actions.githubusercontent.com"
+	testCatalogRunnerEnvironment = "github-hosted"
 )
 
 // testPublicKeyB64 is a real P-256 public key in the base64 DER SPKI form the
@@ -41,6 +43,13 @@ func signedResult() *verifier.Result {
 		SigstoreURL:    "https://rekor.sigstore.dev",
 		Bundle:         []byte(`{"bundle":true}`),
 	}
+}
+
+func refSignedResult(ref string) *verifier.Result {
+	result := signedResult()
+	result.RepositoryRef = ref
+	result.RunnerEnvironment = testCatalogRunnerEnvironment
+	return result
 }
 
 // alwaysSignedVerifier reports every artifact as signed by the fixed test
@@ -64,6 +73,11 @@ func alwaysSignedVerifier(t *testing.T) verifier.Verifier {
 func loadPluginLockEntry(t *testing.T, projectRoot string) (lockfile.Entry, bool) {
 	t.Helper()
 	return readLockfile(t, projectRoot).GetPlugin("my-plugin")
+}
+
+func writePluginLockEntry(t *testing.T, projectRoot string, entry lockfile.Entry) {
+	t.Helper()
+	require.NoError(t, lockfile.UpsertPluginEntry(mustOpenRoot(t, projectRoot), entry))
 }
 
 // gitInstall installs the fixture git plugin project-scoped.
@@ -116,6 +130,480 @@ func TestInstallVerification_TOFURecordsProvenance(t *testing.T) {
 			return signedResult(), nil
 		})
 	require.NoError(t, gitInstall(t, svc, projectRoot, func(o *plugins.InstallOptions) { o.Force = true }))
+}
+
+func TestVerifyInstall_CatalogProvenanceUsedOnFirstUse(t *testing.T) {
+	t.Parallel()
+
+	catalogProvenance := &regtypes.Provenance{
+		SignerIdentity: testSignerIdentity,
+		CertIssuer:     testCertIssuer,
+	}
+	for _, backend := range []string{"git", "oci"} {
+		t.Run(backend, func(t *testing.T) {
+			t.Parallel()
+			projectRoot := makeProjectRoot(t)
+			mv := verifiermocks.NewMockVerifier(gomock.NewController(t))
+			svc := &service{sigVerifier: mv}
+			opts := plugins.InstallOptions{
+				ProjectRoot:       projectRoot,
+				CatalogProvenance: catalogProvenance,
+			}
+			wantExpected := verifier.NewCatalogExpectation(catalogProvenance)
+
+			var (
+				decision *provenanceDecision
+				err      error
+			)
+			if backend == "git" {
+				mv.EXPECT().VerifyGit(gomock.Any(), gomock.Any(), gomock.Any(), gomock.Eq(wantExpected)).
+					Return(signedResult(), nil)
+				decision, err = svc.verifyGitInstall(
+					t.Context(), opts, "catalog-plugin", []byte("payload"), "signature")
+			} else {
+				mv.EXPECT().VerifyOCI(gomock.Any(), gomock.Any(), gomock.Any(), gomock.Eq(wantExpected)).
+					Return(signedResult(), nil)
+				decision, err = svc.verifyOCIInstall(
+					t.Context(), opts, "catalog-plugin", "ghcr.io/test/catalog-plugin:v1", validLockDigest())
+			}
+
+			require.NoError(t, err)
+			require.NotNil(t, decision.provenance)
+			assert.Equal(t, testSignerIdentity, decision.provenance.SignerIdentity)
+			assert.Equal(t, testCertIssuer, decision.provenance.CertIssuer)
+		})
+	}
+}
+
+func TestVerifyInstall_CatalogPartialConstraints(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name       string
+		provenance *regtypes.Provenance
+		observed   *verifier.Result
+	}{
+		{name: "signer only", provenance: &regtypes.Provenance{SignerIdentity: testSignerIdentity}, observed: signedResult()},
+		{name: "issuer only", provenance: &regtypes.Provenance{CertIssuer: testCertIssuer}, observed: signedResult()},
+		{name: "repository only", provenance: &regtypes.Provenance{RepositoryURI: "https://github.com/org/repo"}, observed: signedResult()},
+		{name: "ref only", provenance: &regtypes.Provenance{RepositoryRef: "refs/tags/v1.0.0"}, observed: refSignedResult("refs/tags/v1.0.0")},
+		{name: "runner only", provenance: &regtypes.Provenance{RunnerEnvironment: testCatalogRunnerEnvironment}, observed: refSignedResult("refs/tags/v1.0.0")},
+	}
+	for _, backend := range []string{"git", "oci"} {
+		for _, tc := range tests {
+			t.Run(backend+"/"+tc.name, func(t *testing.T) {
+				t.Parallel()
+				projectRoot := makeProjectRoot(t)
+				mv := verifiermocks.NewMockVerifier(gomock.NewController(t))
+				svc := &service{sigVerifier: mv}
+				opts := plugins.InstallOptions{
+					ProjectRoot:       projectRoot,
+					CatalogProvenance: tc.provenance,
+				}
+				wantExpected := verifier.NewCatalogExpectation(tc.provenance)
+
+				var err error
+				if backend == "git" {
+					mv.EXPECT().VerifyGit(gomock.Any(), gomock.Any(), gomock.Any(), gomock.Eq(wantExpected)).
+						Return(tc.observed, nil)
+					_, err = svc.verifyGitInstall(
+						t.Context(), opts, "catalog-plugin", []byte("payload"), "signature")
+				} else {
+					mv.EXPECT().VerifyOCI(gomock.Any(), gomock.Any(), gomock.Any(), gomock.Eq(wantExpected)).
+						Return(tc.observed, nil)
+					_, err = svc.verifyOCIInstall(
+						t.Context(), opts, "catalog-plugin", "ghcr.io/test/catalog-plugin:v1", validLockDigest())
+				}
+				require.NoError(t, err)
+			})
+		}
+	}
+}
+
+func TestVerifyInstall_CatalogPartialConstraintMismatchRejected(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name       string
+		provenance *regtypes.Provenance
+	}{
+		{name: "signer", provenance: &regtypes.Provenance{SignerIdentity: "attacker@example.com"}},
+		{name: "issuer", provenance: &regtypes.Provenance{CertIssuer: "https://issuer.example.com"}},
+		{name: "repository", provenance: &regtypes.Provenance{RepositoryURI: "https://github.com/attacker/repo"}},
+		{name: "ref", provenance: &regtypes.Provenance{RepositoryRef: "refs/heads/attacker"}},
+		{name: "runner", provenance: &regtypes.Provenance{RunnerEnvironment: "self-hosted"}},
+	}
+	for _, backend := range []string{"git", "oci"} {
+		for _, tc := range tests {
+			t.Run(backend+"/"+tc.name, func(t *testing.T) {
+				t.Parallel()
+				projectRoot := makeProjectRoot(t)
+				mv := verifiermocks.NewMockVerifier(gomock.NewController(t))
+				svc := &service{sigVerifier: mv}
+				opts := plugins.InstallOptions{
+					ProjectRoot:       projectRoot,
+					CatalogProvenance: tc.provenance,
+				}
+				wantExpected := verifier.NewCatalogExpectation(tc.provenance)
+
+				var err error
+				if backend == "git" {
+					mv.EXPECT().VerifyGit(gomock.Any(), gomock.Any(), gomock.Any(), gomock.Eq(wantExpected)).
+						Return(nil, verifier.ErrSignerMismatch)
+					_, err = svc.verifyGitInstall(
+						t.Context(), opts, "catalog-plugin", []byte("payload"), "signature")
+				} else {
+					mv.EXPECT().VerifyOCI(gomock.Any(), gomock.Any(), gomock.Any(), gomock.Eq(wantExpected)).
+						Return(nil, verifier.ErrSignerMismatch)
+					_, err = svc.verifyOCIInstall(
+						t.Context(), opts, "catalog-plugin", "ghcr.io/test/catalog-plugin:v1", validLockDigest())
+				}
+				require.Error(t, err)
+				assert.Equal(t, http.StatusForbidden, httperr.Code(err))
+				assert.Contains(t, err.Error(), "catalog-declared provenance")
+			})
+		}
+	}
+}
+
+func TestVerifyInstall_CatalogConstraintCannotAllowUnsigned(t *testing.T) {
+	t.Parallel()
+
+	for _, backend := range []string{"git", "oci"} {
+		t.Run(backend, func(t *testing.T) {
+			t.Parallel()
+			projectRoot := makeProjectRoot(t)
+			mv := verifiermocks.NewMockVerifier(gomock.NewController(t))
+			svc := &service{sigVerifier: mv}
+			opts := plugins.InstallOptions{
+				ProjectRoot:       projectRoot,
+				AllowUnsigned:     true,
+				CatalogProvenance: &regtypes.Provenance{SignerIdentity: testSignerIdentity},
+			}
+			wantExpected := verifier.NewCatalogExpectation(opts.CatalogProvenance)
+
+			var err error
+			if backend == "git" {
+				mv.EXPECT().VerifyGit(gomock.Any(), gomock.Any(), gomock.Any(), gomock.Eq(wantExpected)).
+					Return(nil, verifier.ErrUnsigned)
+				_, err = svc.verifyGitInstall(
+					t.Context(), opts, "catalog-plugin", []byte("payload"), "")
+			} else {
+				mv.EXPECT().VerifyOCI(gomock.Any(), gomock.Any(), gomock.Any(), gomock.Eq(wantExpected)).
+					Return(nil, verifier.ErrUnsigned)
+				_, err = svc.verifyOCIInstall(
+					t.Context(), opts, "catalog-plugin", "ghcr.io/test/catalog-plugin:v1", validLockDigest())
+			}
+			require.Error(t, err)
+			assert.Equal(t, http.StatusForbidden, httperr.Code(err))
+			assert.Contains(t, err.Error(), "requires verified provenance")
+		})
+	}
+}
+
+func TestVerifyInstall_LockEntryTakesPrecedenceOverCatalog(t *testing.T) {
+	t.Parallel()
+
+	states := []struct {
+		name         string
+		provenance   *lockfile.Provenance
+		wantExpected *verifier.ProvenanceExpectation
+	}{
+		{
+			name: "signed lock",
+			provenance: &lockfile.Provenance{
+				SignerIdentity: testSignerIdentity,
+				CertIssuer:     testCertIssuer,
+			},
+			wantExpected: verifier.NewLockExpectation(&lockfile.Provenance{
+				SignerIdentity: testSignerIdentity,
+				CertIssuer:     testCertIssuer,
+			}),
+		},
+		{name: "legacy lock without trust state"},
+	}
+	for _, backend := range []string{"git", "oci"} {
+		for _, state := range states {
+			t.Run(backend+"/"+state.name, func(t *testing.T) {
+				t.Parallel()
+				projectRoot := makeProjectRoot(t)
+				writePluginLockEntry(t, projectRoot, lockfile.Entry{
+					Name:              "catalog-plugin",
+					Source:            "catalog-plugin",
+					ResolvedReference: "ghcr.io/test/catalog-plugin:v1",
+					Digest:            validLockDigest(),
+					Provenance:        state.provenance,
+				})
+				mv := verifiermocks.NewMockVerifier(gomock.NewController(t))
+				svc := &service{sigVerifier: mv}
+				opts := plugins.InstallOptions{
+					ProjectRoot: projectRoot,
+					CatalogProvenance: &regtypes.Provenance{
+						SignerIdentity: "/.github/workflows/other.yml",
+						CertIssuer:     testCertIssuer,
+					},
+				}
+
+				var err error
+				if backend == "git" {
+					mv.EXPECT().VerifyGit(gomock.Any(), gomock.Any(), gomock.Any(), gomock.Eq(state.wantExpected)).
+						Return(signedResult(), nil)
+					_, err = svc.verifyGitInstall(
+						t.Context(), opts, "catalog-plugin", []byte("payload"), "signature")
+				} else {
+					mv.EXPECT().VerifyOCI(gomock.Any(), gomock.Any(), gomock.Any(), gomock.Eq(state.wantExpected)).
+						Return(signedResult(), nil)
+					_, err = svc.verifyOCIInstall(
+						t.Context(), opts, "catalog-plugin", "ghcr.io/test/catalog-plugin:v1", validLockDigest())
+				}
+				require.NoError(t, err)
+			})
+		}
+	}
+}
+
+func TestVerifyInstall_UnsupportedCatalogConstraintsOnlyFailOnFirstUse(t *testing.T) {
+	t.Parallel()
+
+	constraints := []struct {
+		name       string
+		provenance *regtypes.Provenance
+	}{
+		{
+			name: "attestation",
+			provenance: &regtypes.Provenance{
+				Attestation: &regtypes.VerifiedAttestation{PredicateType: "https://slsa.dev/provenance/v1"},
+			},
+		},
+		{
+			name:       "sigstore URL",
+			provenance: &regtypes.Provenance{SigstoreURL: "https://sigstore.example.com/root.json"},
+		},
+	}
+	states := []struct {
+		name         string
+		entry        *lockfile.Entry
+		wantErr      bool
+		wantExpected *verifier.ProvenanceExpectation
+	}{
+		{name: "first use", wantErr: true},
+		{
+			name: "signed lock",
+			entry: &lockfile.Entry{
+				Name:              "catalog-plugin",
+				Source:            "catalog-plugin",
+				ResolvedReference: "ghcr.io/test/catalog-plugin:v1",
+				Digest:            validLockDigest(),
+				Provenance: &lockfile.Provenance{
+					SignerIdentity: testSignerIdentity,
+					CertIssuer:     testCertIssuer,
+				},
+			},
+			wantExpected: verifier.NewLockExpectation(&lockfile.Provenance{
+				SignerIdentity: testSignerIdentity,
+				CertIssuer:     testCertIssuer,
+			}),
+		},
+		{
+			name: "legacy lock without trust state",
+			entry: &lockfile.Entry{
+				Name:              "catalog-plugin",
+				Source:            "catalog-plugin",
+				ResolvedReference: "ghcr.io/test/catalog-plugin:v1",
+				Digest:            validLockDigest(),
+			},
+		},
+	}
+	for _, backend := range []string{"git", "oci"} {
+		for _, constraint := range constraints {
+			for _, state := range states {
+				t.Run(backend+"/"+constraint.name+"/"+state.name, func(t *testing.T) {
+					t.Parallel()
+					projectRoot := makeProjectRoot(t)
+					if state.entry != nil {
+						writePluginLockEntry(t, projectRoot, *state.entry)
+					}
+					mv := verifiermocks.NewMockVerifier(gomock.NewController(t))
+					svc := &service{sigVerifier: mv}
+					opts := plugins.InstallOptions{
+						ProjectRoot:       projectRoot,
+						CatalogProvenance: constraint.provenance,
+					}
+
+					if !state.wantErr {
+						if backend == "git" {
+							mv.EXPECT().VerifyGit(
+								gomock.Any(), gomock.Any(), gomock.Any(), gomock.Eq(state.wantExpected)).
+								Return(signedResult(), nil)
+						} else {
+							mv.EXPECT().VerifyOCI(
+								gomock.Any(), gomock.Any(), gomock.Any(), gomock.Eq(state.wantExpected)).
+								Return(signedResult(), nil)
+						}
+					}
+
+					var err error
+					if backend == "git" {
+						_, err = svc.verifyGitInstall(
+							t.Context(), opts, "catalog-plugin", []byte("payload"), "signature")
+					} else {
+						_, err = svc.verifyOCIInstall(
+							t.Context(), opts, "catalog-plugin", "ghcr.io/test/catalog-plugin:v1", validLockDigest())
+					}
+					if state.wantErr {
+						require.Error(t, err)
+						assert.Equal(t, http.StatusUnprocessableEntity, httperr.Code(err))
+						assert.Contains(t, err.Error(), `plugin "catalog-plugin"`,
+							"catalog validation errors must identify the plugin that was rejected")
+						return
+					}
+					require.NoError(t, err)
+				})
+			}
+		}
+	}
+}
+
+func TestVerifyInstall_AllowSignerChangeRejectedOnFirstUse(t *testing.T) {
+	t.Parallel()
+
+	for _, backend := range []string{"git", "oci"} {
+		t.Run(backend, func(t *testing.T) {
+			t.Parallel()
+			// No verifier expectations: an invalid first-use signer-change
+			// override must be rejected before artifact verification begins.
+			mv := verifiermocks.NewMockVerifier(gomock.NewController(t))
+			svc := &service{sigVerifier: mv}
+			opts := plugins.InstallOptions{
+				ProjectRoot:       makeProjectRoot(t),
+				AllowSignerChange: true,
+				CatalogProvenance: &regtypes.Provenance{SignerIdentity: testSignerIdentity},
+			}
+
+			var err error
+			if backend == "git" {
+				_, err = svc.verifyGitInstall(
+					t.Context(), opts, "catalog-plugin", []byte("payload"), "signature")
+			} else {
+				_, err = svc.verifyOCIInstall(
+					t.Context(), opts, "catalog-plugin", "ghcr.io/test/catalog-plugin:v1", validLockDigest())
+			}
+
+			require.Error(t, err)
+			assert.Equal(t, http.StatusBadRequest, httperr.Code(err))
+			assert.Contains(t, err.Error(), `plugin "catalog-plugin"`)
+			assert.Contains(t, err.Error(), "allow_signer_change")
+			assert.Contains(t, err.Error(), "lock entry")
+		})
+	}
+}
+
+func TestVerifyInstall_EmptyCatalogProvenancePreservesTOFU(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name          string
+		allowUnsigned bool
+		verifyErr     error
+		wantUnsigned  bool
+	}{
+		{name: "signed artifact records observed provenance"},
+		{
+			name:          "allow unsigned remains available",
+			allowUnsigned: true,
+			verifyErr:     verifier.ErrUnsigned,
+			wantUnsigned:  true,
+		},
+	}
+	for _, backend := range []string{"git", "oci"} {
+		for _, tc := range tests {
+			t.Run(backend+"/"+tc.name, func(t *testing.T) {
+				t.Parallel()
+				mv := verifiermocks.NewMockVerifier(gomock.NewController(t))
+				svc := &service{sigVerifier: mv}
+				opts := plugins.InstallOptions{
+					ProjectRoot:       makeProjectRoot(t),
+					AllowUnsigned:     tc.allowUnsigned,
+					CatalogProvenance: &regtypes.Provenance{},
+				}
+				result := signedResult()
+
+				var (
+					decision *provenanceDecision
+					err      error
+				)
+				if backend == "git" {
+					mv.EXPECT().VerifyGit(gomock.Any(), gomock.Any(), gomock.Any(), gomock.Nil()).
+						Return(result, tc.verifyErr)
+					decision, err = svc.verifyGitInstall(
+						t.Context(), opts, "catalog-plugin", []byte("payload"), "signature")
+				} else {
+					mv.EXPECT().VerifyOCI(gomock.Any(), gomock.Any(), gomock.Any(), gomock.Nil()).
+						Return(result, tc.verifyErr)
+					decision, err = svc.verifyOCIInstall(
+						t.Context(), opts, "catalog-plugin", "ghcr.io/test/catalog-plugin:v1", validLockDigest())
+				}
+				require.NoError(t, err)
+				assert.Equal(t, tc.wantUnsigned, decision.unsigned)
+				if tc.wantUnsigned {
+					assert.Nil(t, decision.provenance)
+				} else {
+					require.NotNil(t, decision.provenance)
+					assert.Equal(t, testSignerIdentity, decision.provenance.SignerIdentity)
+				}
+			})
+		}
+	}
+}
+
+func TestClassifyCatalogVerifyError(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name         string
+		verifyErr    error
+		wantMsgs     []string
+		dontWantMsgs []string
+	}{
+		{
+			name:      "unsigned artifact",
+			verifyErr: verifier.ErrUnsigned,
+			wantMsgs:  []string{"requires verified provenance"},
+		},
+		{
+			name:      "key-signed artifact",
+			verifyErr: verifier.ErrKeySigned,
+			wantMsgs: []string{
+				"carries no certificate identity",
+				"cannot satisfy",
+				"catalog provenance constraint",
+			},
+			dontWantMsgs: []string{
+				"--public-key",
+				"does not match its catalog-declared provenance",
+			},
+		},
+		{
+			name:      "provenance mismatch",
+			verifyErr: verifier.ErrSignerMismatch,
+			wantMsgs:  []string{"does not match its catalog-declared provenance"},
+		},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			err := classifyCatalogVerifyError(tc.verifyErr, "catalog-plugin")
+			require.Error(t, err)
+			assert.Equal(t, http.StatusForbidden, httperr.Code(err))
+			assert.Contains(t, err.Error(), "plugin")
+			for _, wantMsg := range tc.wantMsgs {
+				assert.Contains(t, err.Error(), wantMsg)
+			}
+			for _, dontWantMsg := range tc.dontWantMsgs {
+				assert.NotContains(t, err.Error(), dontWantMsg)
+			}
+		})
+	}
 }
 
 //nolint:paralleltest // serial: real sqlite + on-disk client materialization per test
@@ -529,7 +1017,7 @@ func TestClassifyInstallVerifyErrorKeySignedAgainstKeylessPin(t *testing.T) {
 	// message is not merely cautious wording.
 	_, anchorErr := resolveKeyAnchor(
 		plugins.InstallOptions{PublicKey: testPublicKeyB64}, "some-plugin",
-		&lockfile.Provenance{SignerIdentity: testSignerIdentity}, false)
+		&lockfile.Provenance{SignerIdentity: testSignerIdentity}, false, nil)
 	require.Error(t, anchorErr)
 }
 
@@ -1112,6 +1600,7 @@ func TestResolveKeyAnchor(t *testing.T) {
 		opts           plugins.InstallOptions
 		expected       *lockfile.Provenance
 		expectUnsigned bool
+		catalog        *regtypes.Provenance
 		want           string
 		wantCode       int
 		wantMsg        string
@@ -1147,6 +1636,13 @@ func TestResolveKeyAnchor(t *testing.T) {
 			wantMsg:        "unsigned exception",
 		},
 		{
+			name:     "supplied key against a catalog identity constraint is refused",
+			opts:     plugins.InstallOptions{PublicKey: testPublicKeyB64},
+			catalog:  &regtypes.Provenance{SignerIdentity: testSignerIdentity},
+			wantCode: http.StatusForbidden,
+			wantMsg:  "refusing to install under a public key, which would silently drop that constraint",
+		},
+		{
 			name: "first use adopts the supplied key",
 			opts: plugins.InstallOptions{PublicKey: testPublicKeyB64},
 			want: testPublicKeyB64,
@@ -1174,7 +1670,7 @@ func TestResolveKeyAnchor(t *testing.T) {
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
 			t.Parallel()
-			got, err := resolveKeyAnchor(tc.opts, "some-plugin", tc.expected, tc.expectUnsigned)
+			got, err := resolveKeyAnchor(tc.opts, "some-plugin", tc.expected, tc.expectUnsigned, tc.catalog)
 			if tc.wantCode != 0 {
 				require.Error(t, err)
 				assert.Equal(t, tc.wantCode, httperr.Code(err))

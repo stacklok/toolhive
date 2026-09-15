@@ -959,6 +959,11 @@ func queryResources(ctx context.Context, c *client.Client, supported bool, backe
 			}
 			return result.Resources, result.NextCursor, nil
 		})
+		if errors.Is(err, mcp.ErrMethodNotFound) {
+			slog.Warn("backend advertised resources capability but does not implement resources/list",
+				"backendID", backendID, "method", "resources/list")
+			return &mcp.ListResourcesResult{Resources: []mcp.Resource{}}, nil
+		}
 		if err != nil {
 			return nil, fmt.Errorf("failed to list resources from backend %s: %w", backendID, err)
 		}
@@ -1017,6 +1022,11 @@ func queryPrompts(ctx context.Context, c *client.Client, supported bool, backend
 			}
 			return result.Prompts, result.NextCursor, nil
 		})
+		if errors.Is(err, mcp.ErrMethodNotFound) {
+			slog.Warn("backend advertised prompts capability but does not implement prompts/list",
+				"backendID", backendID, "method", "prompts/list")
+			return &mcp.ListPromptsResult{Prompts: []mcp.Prompt{}}, nil
+		}
 		if err != nil {
 			return nil, fmt.Errorf("failed to list prompts from backend %s: %w", backendID, err)
 		}
@@ -1252,7 +1262,7 @@ func (h *httpBackendClient) modernEnumerate(
 	var templates []mcp.ResourceTemplate
 	if caps != nil && caps.Resources != nil {
 		resources, err = modernListOptional[mcp.Resource](
-			ctx, hc, endpoint, "resources/list", "resources", target.WorkloadName, false,
+			ctx, hc, endpoint, "resources/list", "resources", target.WorkloadName, true,
 		)
 		if err != nil {
 			return nil, wrapBackendError(err, target.WorkloadID, "list resources")
@@ -1272,7 +1282,7 @@ func (h *httpBackendClient) modernEnumerate(
 	var prompts []mcp.Prompt
 	if caps != nil && caps.Prompts != nil {
 		prompts, err = modernListOptional[mcp.Prompt](
-			ctx, hc, endpoint, "prompts/list", "prompts", target.WorkloadName, false,
+			ctx, hc, endpoint, "prompts/list", "prompts", target.WorkloadName, true,
 		)
 		if err != nil {
 			return nil, wrapBackendError(err, target.WorkloadID, "list prompts")
@@ -1294,8 +1304,8 @@ func (h *httpBackendClient) modernEnumerate(
 //     read failure, or a transport/network error), after the mandatory
 //     tools/list has already succeeded, yields an empty list with a WARN;
 //   - a -32601 not-implemented (mcp.ErrMethodNotFound) yields an empty list
-//     when degradeNotFound is set, mirroring the Legacy resources/templates/list
-//     path; resources/list and prompts/list treat it as fatal.
+//     when degradeNotFound is set. This is used for optional resource and
+//     prompt surfaces so a backend's remaining capabilities can still aggregate.
 //
 // Any other error is returned to the caller, which fails the enumeration.
 func modernListOptional[T any](

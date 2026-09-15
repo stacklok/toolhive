@@ -54,7 +54,14 @@ func (s *service) dispatchExtraction(
 	clientDirs map[string]string,
 ) (*skills.InstallResult, error) {
 	if !opts.SyncRestore && isExtractionNoOp(existing, storeErr, opts, clientTypes) {
-		return &skills.InstallResult{Skill: existing}, nil
+		if !opts.RefreshMetadata {
+			return &skills.InstallResult{Skill: existing}, nil
+		}
+		updated := buildInstalledSkill(opts, scope, clientTypes, existing.Clients)
+		if err := s.store.Update(ctx, updated); err != nil {
+			return nil, err
+		}
+		return &skills.InstallResult{Skill: updated}, nil
 	}
 
 	digestMatches := storeErr == nil && existing.Digest == opts.Digest

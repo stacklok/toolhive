@@ -339,6 +339,11 @@ type Server struct {
 	// Nil if status reporting is disabled.
 	statusReporter vmcpstatus.Reporter
 
+	// versionPollInterval overrides how often the registry version is polled.
+	// Zero means the package default. Set per-Server so a test can shorten it
+	// without mutating shared state a parallel test also reads.
+	versionPollInterval time.Duration
+
 	// shutdownFuncs contains cleanup functions to run during Stop().
 	// Populated during Start() initialization before blocking; no mutex needed
 	// since Stop() is only called after Start()'s select returns.
@@ -880,7 +885,7 @@ func (s *Server) Start(ctx context.Context) error {
 	// (#6546). Runs independently of status reporting; a no-op for static registries.
 	if _, isDynamic := s.backendRegistry.(vmcp.DynamicRegistry); isDynamic && s.vmcpSessionMgr != nil {
 		reconcileCtx, reconcileCancel := context.WithCancel(ctx)
-		go s.reconcileSessionsOnRegistryChange(reconcileCtx, versionPollInterval)
+		go s.reconcileSessionsOnRegistryChange(reconcileCtx, s.pollInterval())
 		s.shutdownFuncs = append(s.shutdownFuncs, func(context.Context) error {
 			reconcileCancel()
 			return nil

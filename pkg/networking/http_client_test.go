@@ -43,6 +43,21 @@ func TestNewHttpClientBuilder(t *testing.T) {
 	assert.False(t, builder.allowPrivate)
 }
 
+func TestHttpClientBuilder_BuildSetsProxyFromEnvironment(t *testing.T) {
+	t.Parallel()
+
+	// Build's transport must set Proxy so HTTP(S)_PROXY is honored, like
+	// http.DefaultTransport. Before this, Proxy was nil and clients built here
+	// (e.g. the auth server's upstream OAuth/DCR client) bypassed an explicit
+	// forward proxy. (Env resolution itself is stdlib behavior and is not
+	// re-tested here to avoid http.ProxyFromEnvironment's process-wide cache.)
+	client, err := NewHttpClientBuilder().Build()
+	require.NoError(t, err)
+
+	transport := client.Transport.(*ValidatingTransport).Transport.(*http.Transport)
+	assert.NotNil(t, transport.Proxy, "Build must set Transport.Proxy")
+}
+
 func TestNewHostScopedClientBuilder(t *testing.T) {
 	t.Parallel()
 

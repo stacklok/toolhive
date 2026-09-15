@@ -747,6 +747,9 @@ func (s *Server) Handler(_ context.Context) (http.Handler, error) {
 		auditor, err := audit.NewAuditorWithTransport(
 			s.config.AuditConfig,
 			"streamable-http", // vMCP uses streamable HTTP transport
+			audit.WithCredentialPassthroughHeaders(
+				vmcpconfig.CredentialPassthroughHeaders(s.config.PassthroughHeaders),
+			),
 		)
 		if err != nil {
 			return nil, fmt.Errorf("failed to create auditor: %w", err)
@@ -793,6 +796,11 @@ func (s *Server) applyForwardedHeaderCapture(next http.Handler) http.Handler {
 		return next
 	}
 	slog.Info("forwarded-header capture enabled for MCP endpoints", "headers", s.config.PassthroughHeaders)
+	if creds := vmcpconfig.CredentialPassthroughHeaders(s.config.PassthroughHeaders); len(creds) > 0 {
+		slog.Warn("credential header passthrough is enabled: caller-supplied credentials are "+
+			"forwarded verbatim to every backend whose outgoing auth strategy sets no competing header",
+			"headers", creds)
+	}
 	return headerforward.CaptureMiddleware(s.config.PassthroughHeaders)(next)
 }
 

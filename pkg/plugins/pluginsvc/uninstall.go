@@ -13,6 +13,7 @@ import (
 	"github.com/stacklok/toolhive-core/httperr"
 	"github.com/stacklok/toolhive/pkg/groups"
 	"github.com/stacklok/toolhive/pkg/plugins"
+	"github.com/stacklok/toolhive/pkg/projecttxn"
 	"github.com/stacklok/toolhive/pkg/skills/lockfile"
 	"github.com/stacklok/toolhive/pkg/storage"
 )
@@ -41,14 +42,18 @@ func (s *service) Uninstall(ctx context.Context, opts plugins.UninstallOptions) 
 	scope = defaultScope(scope)
 	opts.ProjectRoot = projectRoot
 
+	if scope == plugins.ScopeProject {
+		return projecttxn.Run(ctx, opts.ProjectRoot, func() error {
+			return s.uninstallLocked(ctx, opts, scope)
+		})
+	}
 	_, unlock := s.lockPlugin(ctx, opts.Name, scope, opts.ProjectRoot)
 	defer unlock()
-
 	return s.uninstallLocked(ctx, opts, scope)
 }
 
-// uninstallLocked performs Uninstall assuming the per-plugin lock is already
-// held (e.g. by Sync prune). opts must already be normalized.
+// uninstallLocked performs Uninstall assuming the project transaction or
+// user-scope per-plugin lock is already held. opts must already be normalized.
 func (s *service) uninstallLocked(
 	ctx context.Context, opts plugins.UninstallOptions, scope plugins.Scope,
 ) error {
@@ -64,7 +69,7 @@ func (s *service) uninstallLocked(
 }
 
 // uninstallExisting performs uninstall for a looked-up store record under the
-// per-plugin lock.
+// applicable user-plugin or project transaction lock.
 func (s *service) uninstallExisting(
 	ctx context.Context,
 	opts plugins.UninstallOptions,

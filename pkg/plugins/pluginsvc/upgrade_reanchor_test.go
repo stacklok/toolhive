@@ -115,16 +115,17 @@ func TestResolveOCITrustPolicy_ReanchorMatrixUsesOneSnapshot(t *testing.T) {
 			wantKey: reanchorPublicKeyB64,
 		},
 		{
-			name:  "keyless succeeds after both keys mismatch",
+			name:  "replacement key mismatch fails without keyless fallback",
 			entry: keyedLockEntry("my-plugin"),
 			configure: func(snapshot *verifiermocks.MockOCISnapshot) {
 				gomock.InOrder(
-					snapshot.EXPECT().VerifyWithKey(oldKeyPEM).Return(nil, verifier.ErrSignatureInvalid),
-					snapshot.EXPECT().VerifyWithKey(newKeyPEM).Return(nil, verifier.ErrSignatureInvalid),
-					snapshot.EXPECT().VerifyKeyless(nil).Return(signedResult(), nil),
+					snapshot.EXPECT().VerifyWithKey(oldKeyPEM).Return(nil, verifier.ErrKeylessSigned),
+					snapshot.EXPECT().VerifyWithKey(newKeyPEM).Return(nil, verifier.ErrKeylessSigned),
 				)
+				snapshot.EXPECT().VerifyKeyless(gomock.Any()).Times(0)
 			},
-			wantIdentity: testSignerIdentity,
+			wantBlocked: true,
+			wantReason:  plugins.FailureReasonSignatureInvalid,
 		},
 		{
 			name:        "retrieval error leaves trust undecided",

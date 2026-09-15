@@ -20,8 +20,9 @@ import (
 
 // installFromGit clones a git repository, reads the plugin manifest, collects
 // the plugin file tree, builds an in-memory tar.gz layer, then materializes
-// and registers the plugin while holding the per-plugin lock. The digest is
-// the git commit hash, enabling same-commit no-op and upgrade detection.
+// and registers the plugin while holding the applicable user-plugin or project
+// transaction lock. The digest is the git commit hash, enabling same-commit
+// no-op and upgrade detection.
 //
 // Unlike skillsvc.installFromGit, this does NOT call gitResolver.Resolve
 // (which is skill-specific: it reads SKILL.md). Instead it replicates the
@@ -32,6 +33,7 @@ func (s *service) installFromGit(
 	opts plugins.InstallOptions,
 	scope plugins.Scope,
 	alreadyLocked bool,
+	constraints *installConstraints,
 ) (*plugins.InstallResult, error) {
 	if len(s.materializers) == 0 {
 		return nil, httperr.WithCode(
@@ -106,8 +108,9 @@ func (s *service) installFromGit(
 	}
 
 	// Verify the commit signature before anything is written or recorded.
-	// This runs under the per-plugin lock so concurrent first installs
-	// cannot both read an absent lock entry and race their TOFU anchors.
+	// This runs under the applicable user-plugin or project transaction lock
+	// so concurrent first installs cannot both read an absent lock entry and
+	// race their TOFU anchors.
 	if shouldVerifyInstall(opts, scope) {
 		decision, verifyErr := s.verifyGitInstall(ctx, opts, manifest.Name, head.Payload, head.Signature)
 		if verifyErr != nil {
@@ -120,7 +123,7 @@ func (s *service) installFromGit(
 	if err != nil {
 		return nil, err
 	}
-	return s.installAndRegister(ctx, opts, result, scope)
+	return s.installAndRegister(ctx, opts, result, scope, constraints)
 }
 
 // cloneAndCollectPlugin clones the repo referenced by gitRef, reads the plugin

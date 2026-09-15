@@ -35947,15 +35947,22 @@ func (s *SyncPluginsRequest) encodeFields(e *jx.Encoder) {
 			s.Prune.Encode(e)
 		}
 	}
+	{
+		if s.PublicKey.Set {
+			e.FieldStart("public_key")
+			s.PublicKey.Encode(e)
+		}
+	}
 }
 
-var jsonFieldsNameOfSyncPluginsRequest = [6]string{
+var jsonFieldsNameOfSyncPluginsRequest = [7]string{
 	0: "adopt",
 	1: "allow_unsigned",
 	2: "check",
 	3: "clients",
 	4: "project_root",
 	5: "prune",
+	6: "public_key",
 }
 
 // Decode decodes SyncPluginsRequest from json.
@@ -36034,6 +36041,16 @@ func (s *SyncPluginsRequest) Decode(d *jx.Decoder) error {
 				return nil
 			}(); err != nil {
 				return errors.Wrap(err, "decode field \"prune\"")
+			}
+		case "public_key":
+			if err := func() error {
+				s.PublicKey.Reset()
+				if err := s.PublicKey.Decode(d); err != nil {
+					return err
+				}
+				return nil
+			}(); err != nil {
+				return errors.Wrap(err, "decode field \"public_key\"")
 			}
 		default:
 			return d.Skip()
@@ -39970,9 +39987,15 @@ func (s *UpgradePluginsRequest) encodeFields(e *jx.Encoder) {
 			s.ProjectRoot.Encode(e)
 		}
 	}
+	{
+		if s.PublicKey.Set {
+			e.FieldStart("public_key")
+			s.PublicKey.Encode(e)
+		}
+	}
 }
 
-var jsonFieldsNameOfUpgradePluginsRequest = [7]string{
+var jsonFieldsNameOfUpgradePluginsRequest = [8]string{
 	0: "allow_ref_change",
 	1: "allow_signer_change",
 	2: "clients",
@@ -39980,6 +40003,7 @@ var jsonFieldsNameOfUpgradePluginsRequest = [7]string{
 	4: "names",
 	5: "preview",
 	6: "project_root",
+	7: "public_key",
 }
 
 // Decode decodes UpgradePluginsRequest from json.
@@ -40077,6 +40101,16 @@ func (s *UpgradePluginsRequest) Decode(d *jx.Decoder) error {
 				return nil
 			}(); err != nil {
 				return errors.Wrap(err, "decode field \"project_root\"")
+			}
+		case "public_key":
+			if err := func() error {
+				s.PublicKey.Reset()
+				if err := s.PublicKey.Decode(d); err != nil {
+					return err
+				}
+				return nil
+			}(); err != nil {
+				return errors.Wrap(err, "decode field \"public_key\"")
 			}
 		default:
 			return d.Skip()

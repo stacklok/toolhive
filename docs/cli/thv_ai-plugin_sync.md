@@ -41,6 +41,7 @@ thv ai-plugin sync [flags]
   -h, --help                  help for sync
       --project-root string   Project root path (default: auto-detected from the current directory)
       --prune                 Remove installs no longer present in the lock file
+      --public-key string     Path to the cosign public key used to verify key-pair-signed plugins during --adopt
       --yes                   Skip the confirmation prompt (required when not running interactively)
 ```
 

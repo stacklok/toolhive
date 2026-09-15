@@ -20,6 +20,8 @@ import (
 	"github.com/stretchr/testify/require"
 	"go.uber.org/mock/gomock"
 
+	"github.com/stacklok/toolhive/pkg/plugins"
+	"github.com/stacklok/toolhive/pkg/plugins/pluginsvc"
 	"github.com/stacklok/toolhive/pkg/skills"
 	"github.com/stacklok/toolhive/pkg/skills/gitresolver"
 	gitmocks "github.com/stacklok/toolhive/pkg/skills/gitresolver/mocks"
@@ -296,6 +298,91 @@ func TestInstallGit_HoldsProjectTxThroughRegister(t *testing.T) {
 		Name: "locked-skill", Scope: skills.ScopeProject, ProjectRoot: projectRoot,
 	})
 	require.Error(t, err, "uninstall that ran after install must have removed the skill")
+}
+
+// TestSkillsInstallAndPluginSyncShareProjectTx proves the shared package is
+// wired through both public service call sites. The plugin sync is canceled
+// while a skills install is paused inside its transaction; it must return from
+// lock acquisition without reaching its intentionally unconfigured store.
+//
+//nolint:paralleltest // uses t.Setenv via newLockTestService, incompatible with t.Parallel
+func TestSkillsInstallAndPluginSyncShareProjectTx(t *testing.T) {
+	ctrl := gomock.NewController(t)
+	gr := gitmocks.NewMockResolver(ctrl)
+	resolveStarted := make(chan struct{})
+	allowResolve := make(chan struct{})
+	var releaseOnce sync.Once
+	releaseResolve := func() { releaseOnce.Do(func() { close(allowResolve) }) }
+	t.Cleanup(releaseResolve)
+
+	ref, url := gitRef("shared-project-skill")
+	content := gitSkill("shared-project-skill")
+	gr.EXPECT().Resolve(gomock.Any(), gomock.Any()).DoAndReturn(
+		func(_ context.Context, _ *gitresolver.GitReference) (*gitresolver.ResolveResult, error) {
+			close(resolveStarted)
+			select {
+			case <-allowResolve:
+				return &gitresolver.ResolveResult{
+					SkillConfig: &skills.ParseResult{Name: "shared-project-skill"},
+					Files:       []gitresolver.FileEntry{{Path: "SKILL.md", Content: content, Mode: 0644}},
+					CommitHash:  fixtureCommitHash(url, content),
+				}, nil
+			case <-time.After(5 * time.Second):
+				return nil, fmt.Errorf("timed out waiting to release skill resolver")
+			}
+		},
+	)
+
+	skillService, projectRoot := newLockTestService(t, gr)
+	skillDone := make(chan error, 1)
+	go func() {
+		_, err := skillService.Install(t.Context(), skills.InstallOptions{
+			Name: ref, Scope: skills.ScopeProject, ProjectRoot: projectRoot, Clients: []string{"claude-code"},
+		})
+		skillDone <- err
+	}()
+	select {
+	case <-resolveStarted:
+	case <-time.After(5 * time.Second):
+		t.Fatal("skills install did not enter its project transaction")
+	}
+
+	pluginService := pluginsvc.New().(plugins.PluginLockService) //nolint:forcetypeassert
+	pluginCtx, cancelPlugin := context.WithCancel(t.Context())
+	t.Cleanup(cancelPlugin)
+	pluginStarted := make(chan struct{})
+	pluginDone := make(chan error, 1)
+	go func() {
+		close(pluginStarted)
+		_, err := pluginService.Sync(pluginCtx, plugins.SyncOptions{ProjectRoot: projectRoot})
+		pluginDone <- err
+	}()
+	select {
+	case <-pluginStarted:
+	case <-time.After(5 * time.Second):
+		t.Fatal("plugin sync goroutine did not start")
+	}
+	select {
+	case err := <-pluginDone:
+		t.Fatalf("plugin sync completed while skills install held the shared project transaction: %v", err)
+	case <-time.After(100 * time.Millisecond):
+	}
+
+	cancelPlugin()
+	select {
+	case err := <-pluginDone:
+		require.ErrorIs(t, err, context.Canceled)
+	case <-time.After(5 * time.Second):
+		t.Fatal("canceled plugin sync did not stop waiting for the shared project transaction")
+	}
+
+	releaseResolve()
+	select {
+	case err := <-skillDone:
+		require.NoError(t, err)
+	case <-time.After(10 * time.Second):
+		t.Fatal("skills install did not finish after its resolver was released")
+	}
 }
 
 // TestSyncVsUninstall_SerializedOnProjectTx ensures sync and uninstall on the

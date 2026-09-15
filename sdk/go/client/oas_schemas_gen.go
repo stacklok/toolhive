@@ -19727,6 +19727,8 @@ type SyncPluginsRequest struct {
 	ProjectRoot OptString `json:"project_root"`
 	// Prune removes project-scoped plugins installed but not present in the lock file.
 	Prune OptBool `json:"prune"`
+	// PublicKey supplies the cosign public key for key-signed adoption.
+	PublicKey OptString `json:"public_key"`
 }
 
 // GetAdopt returns the value of Adopt.
@@ -19759,6 +19761,11 @@ func (s *SyncPluginsRequest) GetPrune() OptBool {
 	return s.Prune
 }
 
+// GetPublicKey returns the value of PublicKey.
+func (s *SyncPluginsRequest) GetPublicKey() OptString {
+	return s.PublicKey
+}
+
 // SetAdopt sets the value of Adopt.
 func (s *SyncPluginsRequest) SetAdopt(val OptBool) {
 	s.Adopt = val
@@ -19787,6 +19794,11 @@ func (s *SyncPluginsRequest) SetProjectRoot(val OptString) {
 // SetPrune sets the value of Prune.
 func (s *SyncPluginsRequest) SetPrune(val OptBool) {
 	s.Prune = val
+}
+
+// SetPublicKey sets the value of PublicKey.
+func (s *SyncPluginsRequest) SetPublicKey(val OptString) {
+	s.PublicKey = val
 }
 
 type SyncSkillBadRequestApplicationJSON string
@@ -21388,6 +21400,8 @@ type UpgradePluginsRequest struct {
 	Preview OptBool `json:"preview"`
 	// ProjectRoot is the project root path whose lock file should be upgraded.
 	ProjectRoot OptString `json:"project_root"`
+	// PublicKey proposes a cosign public key as the replacement trust anchor.
+	PublicKey OptString `json:"public_key"`
 }
 
 // GetAllowRefChange returns the value of AllowRefChange.
@@ -21425,6 +21439,11 @@ func (s *UpgradePluginsRequest) GetProjectRoot() OptString {
 	return s.ProjectRoot
 }
 
+// GetPublicKey returns the value of PublicKey.
+func (s *UpgradePluginsRequest) GetPublicKey() OptString {
+	return s.PublicKey
+}
+
 // SetAllowRefChange sets the value of AllowRefChange.
 func (s *UpgradePluginsRequest) SetAllowRefChange(val OptBool) {
 	s.AllowRefChange = val
@@ -21458,6 +21477,11 @@ func (s *UpgradePluginsRequest) SetPreview(val OptBool) {
 // SetProjectRoot sets the value of ProjectRoot.
 func (s *UpgradePluginsRequest) SetProjectRoot(val OptString) {
 	s.ProjectRoot = val
+}
+
+// SetPublicKey sets the value of PublicKey.
+func (s *UpgradePluginsRequest) SetPublicKey(val OptString) {
+	s.PublicKey = val
 }
 
 // Request to apply an available upgrade to a workload. All fields are optional; an empty body

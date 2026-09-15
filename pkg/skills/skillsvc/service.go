@@ -8,18 +8,16 @@ package skillsvc
 
 import (
 	"context"
-	"errors"
 	"fmt"
 	"net/http"
 	"sync"
-
-	"github.com/gofrs/flock"
 
 	"github.com/stacklok/toolhive-core/container/signer"
 	"github.com/stacklok/toolhive-core/httperr"
 	ociskills "github.com/stacklok/toolhive-core/oci/skills"
 	regtypes "github.com/stacklok/toolhive-core/registry/types"
 	"github.com/stacklok/toolhive/pkg/groups"
+	"github.com/stacklok/toolhive/pkg/projecttxn"
 	"github.com/stacklok/toolhive/pkg/skills"
 	"github.com/stacklok/toolhive/pkg/skills/gitresolver"
 	"github.com/stacklok/toolhive/pkg/skills/verifier"
@@ -120,13 +118,6 @@ func (sl *skillLock) lock(name string, scope skills.Scope, projectRoot string) f
 	return m.Unlock
 }
 
-// projectTxStripes bounds the project transaction lock set. Project roots
-// are request-derived in the long-running API service, so a grow-forever
-// map or one persistent lock file per root would grow without bound; a fixed
-// stripe set caps both. Two projects hashing to the same stripe merely
-// serialize against each other — never a correctness issue.
-const projectTxStripes = 64
-
 // projectTx serializes all project-scoped skill mutations for a given
 // canonical ProjectRoot. Different projects remain concurrent (up to stripe
 // collisions); Install, Uninstall, Sync, and Upgrade for the same project
@@ -134,21 +125,10 @@ const projectTxStripes = 64
 // dependency materialization, cascades, and compensation.
 type projectTx struct{}
 
-// projectTxLocks is shared by every service instance in this process. A
-// fixed stripe set provides bounded in-process coordination for the
-// request-derived project roots; the file lock in run coordinates processes.
-var projectTxLocks = newProjectTxLocks()
-
 // lock acquires the project transaction mutex for projectRoot's stripe and
 // returns a release function.
 func (*projectTx) lock(ctx context.Context, projectRoot string) (func(), error) {
-	token := projectTxLocks[projectTxStripeIndex(projectRoot)]
-	select {
-	case <-ctx.Done():
-		return nil, ctx.Err()
-	case <-token:
-		return func() { token <- struct{}{} }, nil
-	}
+	return projecttxn.Lock(ctx, projectRoot)
 }
 
 // run executes fn while holding both the process-wide project transaction
@@ -156,35 +136,8 @@ func (*projectTx) lock(ctx context.Context, projectRoot string) (func(), error) 
 // same state directory. The lock file is intentionally retained after
 // release: deleting it can split concurrent waiters across different inodes.
 // It is separate from the project's lock file and Git metadata.
-func (p *projectTx) run(ctx context.Context, projectRoot string, fn func() error) (err error) {
-	unlock, lockErr := p.lock(ctx, projectRoot)
-	if lockErr != nil {
-		return fmt.Errorf("acquiring in-process project transaction lock: %w", lockErr)
-	}
-	defer unlock()
-
-	lockPath, pathErr := projectTxLockPath(projectRoot)
-	if pathErr != nil {
-		return fmt.Errorf("resolving project transaction lock path: %w", pathErr)
-	}
-	fileLock := flock.New(lockPath)
-	defer func() {
-		if closeErr := fileLock.Close(); closeErr != nil {
-			err = errors.Join(err, fmt.Errorf("releasing project transaction lock: %w", closeErr))
-		}
-	}()
-
-	locked, fileLockErr := fileLock.TryLockContext(ctx, projectTxLockRetryInterval)
-	if fileLockErr != nil {
-		return fmt.Errorf("acquiring project transaction file lock: %w", fileLockErr)
-	}
-	if !locked {
-		return errors.New("acquiring project transaction file lock: lock was not acquired")
-	}
-	if ctxErr := ctx.Err(); ctxErr != nil {
-		return fmt.Errorf("starting project transaction: %w", ctxErr)
-	}
-	return fn()
+func (*projectTx) run(ctx context.Context, projectRoot string, fn func() error) error {
+	return projecttxn.Run(ctx, projectRoot, fn)
 }
 
 // depState tracks dependency traversal under a held project transaction.

@@ -4,6 +4,7 @@
 package pluginsvc
 
 import (
+	"bytes"
 	"context"
 	"errors"
 	"fmt"
@@ -82,6 +83,13 @@ type provenanceDecision struct {
 	bundle     []byte
 }
 
+// preverifiedOCITrust binds the strict upgrade-time snapshot decision to the
+// digest the subsequent install must actually pull.
+type preverifiedOCITrust struct {
+	decision *provenanceDecision
+	digest   string
+}
+
 // applyDecisionToOpts records the verification outcome on the install
 // options, from where it flows into the installed-plugin record and the lock
 // entry.
@@ -92,6 +100,44 @@ func applyDecisionToOpts(opts *plugins.InstallOptions, decision *provenanceDecis
 	opts.Provenance = decision.provenance
 	opts.Unsigned = decision.unsigned
 	opts.SigstoreBundle = decision.bundle
+}
+
+func consumePreverifiedTrust(
+	preverified *preverifiedOCITrust, digest string,
+) (*provenanceDecision, error) {
+	if preverified == nil || preverified.digest == "" || preverified.digest != digest {
+		verifiedDigest := ""
+		if preverified != nil {
+			verifiedDigest = preverified.digest
+		}
+		return nil, fmt.Errorf("preverified trust decision covers digest %q, but install pulled %q",
+			verifiedDigest, digest)
+	}
+	decision := preverified.decision
+	if decision == nil {
+		return nil, errors.New("preverified trust decision is missing")
+	}
+	signed := decision.provenance != nil && !decision.unsigned && len(decision.bundle) > 0
+	unsigned := decision.provenance == nil && decision.unsigned && len(decision.bundle) == 0
+	if !signed && !unsigned {
+		return nil, errors.New("preverified trust decision has an invalid signed/unsigned shape")
+	}
+	if err := rejectOversizedBlob("sigstore bundle", "upgrade candidate", len(decision.bundle)); err != nil {
+		return nil, err
+	}
+	return &provenanceDecision{
+		provenance: cloneLockProvenance(decision.provenance),
+		unsigned:   decision.unsigned,
+		bundle:     bytes.Clone(decision.bundle),
+	}, nil
+}
+
+func cloneLockProvenance(provenance *lockfile.Provenance) *lockfile.Provenance {
+	if provenance == nil {
+		return nil
+	}
+	clone := *provenance
+	return &clone
 }
 
 // rejectOversizedBlob rejects signature material over maxSignatureBlobSize.
@@ -227,17 +273,13 @@ func (s *service) verifyOCIInstall(
 // resolveKeyAnchor decides which cosign public key, if any, this install
 // verifies against, returning "" for the ordinary keyless path.
 //
-// Dispatch is lock-first: a key-pinned entry selects the key path using the
-// key the LOCK records, so a supplied key can confirm that pin but never
-// replace it. A supplied key is itself the anchor only on true first use,
-// where nothing is recorded yet and the key is the only thing that can supply
-// one.
+// Dispatch is lock-first unless AllowSignerChange explicitly authorizes a
+// replacement. Ordinarily a key-pinned entry selects the key path using the
+// key the lock records; under the override, a supplied key selects that path
+// and becomes the anchor only after successful verification.
 //
-// Every disagreement between the supplied key and the recorded trust state is
-// an error rather than a precedence rule. Silently preferring one of two
-// conflicting anchors is how a mistyped --public-key installs as though it had
-// been honored — and a caller who names a trust anchor has said they want it
-// enforced, so the honest answer to "that is not the anchor here" is to stop.
+// Outside that explicit re-anchor operation, every disagreement between the
+// supplied key and recorded trust is an error rather than a precedence rule.
 // catalogExpected is non-nil only on true first use: any existing lock entry's
 // identity or unsigned decision takes precedence. A supplied key cannot replace
 // the catalog's certificate-backed constraint any more than it can replace a
@@ -256,22 +298,11 @@ func resolveKeyAnchor(
 	}
 
 	if opts.AllowSignerChange {
-		// The override re-verifies from scratch and re-records what it
-		// observes. For a key there is nothing to observe — a key-pair bundle
-		// carries no identity — so honoring a key here would mean re-anchoring
-		// to whatever key the caller named, on the strength of the caller
-		// having named it. That is the in-place re-anchor v1 deliberately does
-		// not offer. Without a key the override drops the recorded one and
-		// takes the keyless path, which is the supported key-to-keyless move.
-		if supplied != "" {
-			return "", httperr.WithCode(
-				fmt.Errorf("plugin %q: a public key cannot be combined with allow_signer_change;"+
-					" re-anchoring an entry to a different key is not supported —"+
-					" uninstall the plugin and reinstall it with the new key", pluginName),
-				http.StatusBadRequest,
-			)
-		}
-		return "", nil
+		// A supplied key is a proposed replacement anchor, but it is recorded
+		// only after verifyOCIInstallWithKey verifies the artifact against it.
+		// Without one, the override retains the key-to-keyless behavior: clear
+		// the recorded anchor and verify the candidate keylessly from scratch.
+		return supplied, nil
 	}
 
 	switch {
@@ -304,8 +335,8 @@ func resolveKeyAnchor(
 }
 
 // keyAnchorConflict reports a supplied public key that contradicts the trust
-// state the lock file already records. The remedy is the same for all of them
-// — v1 has no in-place re-anchor path — so it is stated once here.
+// state the lock file already records outside the explicit
+// AllowSignerChange re-anchor path.
 func keyAnchorConflict(pluginName, problem string) error {
 	return httperr.WithCode(
 		fmt.Errorf("plugin %q %s; to install it under a different trust anchor,"+

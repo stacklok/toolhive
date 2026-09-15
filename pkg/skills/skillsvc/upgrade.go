@@ -320,9 +320,10 @@ func (s *service) finishUnchangedUpgrade(
 // resolveOCITrustPolicy retrieves a complete snapshot once for an explicit
 // public-key re-anchor, then chooses one verified trust decision from it. A
 // key-pinned entry always tries its old key first; only a conclusive miss
-// permits trying the caller's replacement key, followed by the existing
-// keyless transition. Non-key-pinned entries treat a supplied key
-// opportunistically and otherwise retain their recorded policy.
+// permits trying the caller's replacement key. An explicit replacement must
+// verify; only an upgrade without one may use the existing keyless transition.
+// Non-key-pinned entries treat a supplied key opportunistically and otherwise
+// retain their recorded policy.
 func (s *service) resolveOCITrustPolicy(
 	ctx context.Context,
 	opts skills.UpgradeOptions,
@@ -418,6 +419,11 @@ func resolveKeyPinnedSnapshot(
 			setUpgradeTrustFailure(outcome, fmt.Errorf("verifying candidate against the supplied cosign public key: %w", newErr))
 			return nil, true
 		}
+		outcome.Status = skills.UpgradeStatusFailed
+		outcome.Reason = skills.FailureReasonSignatureInvalid
+		outcome.Error = fmt.Errorf("candidate verifies against neither the recorded cosign key"+
+			" nor the supplied cosign public key: %w", newErr).Error()
+		return nil, true
 	}
 
 	keylessResult, keylessErr := snapshot.VerifyKeyless(nil)

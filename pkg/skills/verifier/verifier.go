@@ -29,7 +29,7 @@ import (
 	"github.com/stacklok/toolhive/pkg/skills/lockfile"
 )
 
-//go:generate mockgen -destination=mocks/mock_verifier.go -package=mocks -source=verifier.go Verifier
+//go:generate mockgen -destination=mocks/mock_verifier.go -package=mocks -source=verifier.go Verifier,OCISnapshotVerifier,OCISnapshot
 
 // Verifier verifies Sigstore signatures for skill artifacts.
 type Verifier interface {
@@ -72,12 +72,40 @@ type Verifier interface {
 	ResultFromBundle(bundle []byte, digest string) (*Result, error)
 }
 
-// Default implements Verifier on toolhive-core's Sigstore exports.
+// OCISnapshotRetriever discovers the complete bounded set of Sigstore
+// signature material attached to a digest-pinned OCI artifact. The returned
+// snapshot can evaluate multiple candidate trust anchors without another
+// registry request.
+type OCISnapshotRetriever interface {
+	RetrieveOCISnapshot(ctx context.Context, imageRef, digest string) (OCISnapshot, error)
+}
+
+// OCISnapshotVerifier combines the legacy verification surface with strict
+// OCI snapshot retrieval for callers that need to evaluate multiple trust
+// anchors against one immutable bundle set.
+type OCISnapshotVerifier interface {
+	Verifier
+	OCISnapshotRetriever
+}
+
+// OCISnapshot is a completely retrieved set of signature material for one
+// digest-pinned OCI artifact. Its verification methods are offline and reuse
+// the exact bundle set retrieved by OCISnapshotRetriever.RetrieveOCISnapshot.
+type OCISnapshot interface {
+	// VerifyKeyless verifies a certificate-bearing bundle against expected.
+	// nil expected verifies the chain of trust only and returns the observed
+	// identity.
+	VerifyKeyless(expected *ProvenanceExpectation) (*Result, error)
+	// VerifyWithKey verifies a key-pair-signed bundle against pubKeyPEM.
+	VerifyWithKey(pubKeyPEM []byte) (*Result, error)
+}
+
+// Default implements OCISnapshotVerifier on toolhive-core's Sigstore exports.
 type Default struct {
 	keychain authn.Keychain
 }
 
-var _ Verifier = (*Default)(nil)
+var _ OCISnapshotVerifier = (*Default)(nil)
 
 // NewDefault creates a verifier using the given registry auth keychain for
 // bundle retrieval. A nil keychain falls back to the default keychain.

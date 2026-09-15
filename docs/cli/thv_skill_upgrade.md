@@ -17,8 +17,9 @@ Upgrade project skills to newer pinned content
 
 Re-resolve a project's lock entries and install newer content where available.
 
-Skills pinned to an immutable reference (an OCI digest or a full git commit
-hash) are reported not-upgradable — there is nothing newer to resolve to.
+Skills pinned to a full git commit hash are not upgradable. OCI digest content
+is also immutable, but --allow-signer-change can evaluate its separately
+attached signatures for a trust-only update.
 Use --preview to see what would change without persisting anything (OCI
 sources are still fetched into the local artifact store to compare digests),
 and --allow-ref-change to permit the artifact moving to a different
@@ -27,9 +28,9 @@ this guard blocks).
 --fail-on-changes evaluates the same plan and never installs: it is a CI
 freshness gate.
 
-Unless --preview is set, upgrade prompts for confirmation before installing —
-skill content is a set of AI-followed instructions. Pass --yes to skip the
-prompt (required in non-interactive contexts such as CI).
+Unless --preview or --fail-on-changes is set, upgrade prompts for confirmation
+before installing. Skill content is a set of AI-followed instructions. Pass
+--yes to skip the prompt (required in non-interactive contexts such as CI).
 
 ```
 thv skill upgrade [skill-name...] [flags]
@@ -46,6 +47,7 @@ thv skill upgrade [skill-name...] [flags]
   -h, --help                  help for upgrade
       --preview               Report what would change without persisting anything (OCI sources are still fetched to compare digests)
       --project-root string   Project root path (default: auto-detected from the current directory)
+      --public-key string     Path to a cosign public key proposed as the replacement trust anchor (requires --allow-signer-change)
       --yes                   Skip the confirmation prompt (required when not running interactively)
 ```
 

@@ -10,6 +10,7 @@ import (
 	"github.com/spf13/cobra"
 
 	"github.com/stacklok/toolhive/pkg/plugins"
+	"github.com/stacklok/toolhive/pkg/skills"
 )
 
 var (
@@ -159,6 +160,10 @@ func printPluginUpgradeResult(result *plugins.UpgradeResult, format string, plan
 		switch o.Status {
 		case plugins.UpgradeStatusUpgraded:
 			fmt.Printf("%s: %s %s -> %s\n", o.Name, upgradedVerb, o.OldDigest, o.NewDigest)
+		case skills.UpgradeStatusTrustUpdated:
+			// Plugin upgrade does not produce this status yet. Handle it because
+			// plugins aliases the shared skills outcome type.
+			printTrustUpdateOutcome(o, planOnly)
 		case plugins.UpgradeStatusUpToDate:
 			fmt.Printf("%s: up to date\n", o.Name)
 		case plugins.UpgradeStatusNotUpgradable:

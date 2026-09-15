@@ -326,7 +326,13 @@ flowchart TD
    - Contains `/`, `:`, or `@` -> OCI reference
    - Otherwise -> plain name (registry lookup)
 
-2. **Per-skill locking**: A mutex map keyed by (scope, name, projectRoot) prevents concurrent installs of the same skill.
+2. **Mutation locking**: User-scoped operations use a per-skill mutex.
+   Project-scoped `install`, `uninstall`, `sync`, and `upgrade` operations share
+   a transaction keyed by the canonical project root. Bounded mutex stripes
+   coordinate service instances within a process, and a stable advisory lock
+   file in the ToolHive state directory coordinates processes that share that
+   state. The transaction covers resolution, extraction, persistence,
+   dependency changes, and compensation.
 
 3. **Supply chain validation**: For OCI installs, the skill name in the artifact must match the repository name in the reference.
 
@@ -450,24 +456,44 @@ signer or signing time, distinguish a wrong key from a damaged signature,
 enforce catalog-declared provenance or identity-based signer changes, or
 consult a revocation signal. A key-pinned entry has no signing timestamp, so a
 future transparency-log policy cannot narrow its replay window. If the private
-key is compromised, every project must uninstall and reinstall the skill with
-a new trusted public key.
+key is compromised, each project must explicitly re-anchor the skill to a new
+trusted public key.
 
 Both paths produce an installable artifact, but they differ in what the consumer must supply. A cosign key pair carries no certificate to chain to the keyless (Fulcio) trust root, and the signing public key is recoverable neither from the artifact nor from the attached bundle — the cosign manifest defines no annotation for it. So the key has to arrive from outside the artifact: a project-scoped install of a `--key`-signed skill requires `--public-key` on first use, which verifies the signature and pins that key in the lock entry as `publicKey:`. Later installs read it back from the lock and need no flag.
 
-`--allow-unsigned` does **not** substitute for the key, in either direction: the artifact *is* signed, so it never produces the unsigned verdict that exception applies to. Nor does `--allow-signer-change` re-anchor an entry to a new key — a key-pair bundle carries no identity to observe, so honoring one would re-anchor on the strength of the caller having named it. Re-anchoring means removing the lock entry and reinstalling.
+`--allow-unsigned` does **not** substitute for the key in either direction. The
+artifact is signed, so it never produces the unsigned verdict that exception
+applies to. To re-anchor an installed skill, pass the new key to `upgrade` with
+`--allow-signer-change --public-key <PUBLIC_KEY_PATH>`. ToolHive verifies the
+candidate against that key before it replaces the recorded anchor. A public
+key without `--allow-signer-change` is rejected, and
+`--allow-signer-change` alone never records a key.
 
-Dispatch between the two paths is decided by the **lock entry, never the artifact**: a `publicKey:` pin selects the key path, a certificate pin the keyless one. Letting the artifact choose would let a republished key-signed artifact walk out of the identity its entry is pinned to. A supplied key that disagrees with what the entry pins is refused up front rather than silently ignored.
+Dispatch between the two paths is decided by the **lock entry, never the artifact**: a `publicKey:` pin selects the key path, a certificate pin the keyless one. Letting the artifact choose would let a republished key-signed artifact walk out of the identity its entry is pinned to. Outside an upgrade with explicit signer-change consent, a supplied key that disagrees with what the entry pins is refused rather than silently ignored.
 
 Verifying a key-pair signature binds it to the artifact explicitly. The signature covers cosign's simple-signing payload, and signature manifests are discovered by a tag derived from the digest being verified — so attachment proves nothing about which artifact a signature describes. The payload digest is reconstructed from the requested reference and each candidate must sign exactly those bytes, which is what stops one artifact's signature from being replayed onto another by copying its signature layer into that artifact's `.sig` manifest (`bundleSignsPayload`).
 
 Once an entry is pinned, the key does its job on the lock-driven operations too, because the anchor is read from the entry rather than supplied again:
 
 - **`sync`** re-verifies the stored bundle against the pinned key offline. This has to be a distinct path — the keyless verifier refuses a key-pinned entry, and sync reads a refusal as drift it can heal by reinstalling, so a key-pinned skill would report as modified on every run and `--check` would fail permanently on a project that is in fact intact.
-- **`upgrade`** applies the pinned key to the candidate. Verifying against it *is* the evidence the signer has not changed, since there is no certificate identity to compare. The candidate is measured against the pin whether or not `--allow-signer-change` was passed, and the two modes differ in exactly one case: a candidate that conclusively no longer verifies against the key *and* carries a keyless signature that does verify is a genuine key-to-keyless move — blocked as a signer change without the override, and permitted with it, which drops the recorded key and re-anchors to the observed identity. Everything else is the same in both modes. A candidate signed by a *different* key is a failure: re-anchoring in place is not supported, so it needs an uninstall and a reinstall, and the failure prints that command. An unsigned candidate is an `unsigned-rejected` failure rather than a signer change, because upgrade has no unsigned-consent flag and `--allow-signer-change` is not one — it re-verifies from scratch, which an unsigned artifact still fails. And an operational failure — registry, transport, or context — is never read as evidence about which key signed the artifact: it fails the plan and leaves the pin exactly where it was, in both modes, so a transient fault under a project-wide override cannot unpin an artifact that still carries a valid signature by the pinned key. The override is also narrowed per entry: a skill that needs it does not unpin every key-pinned skill beside it.
-- **`sync --adopt`** refuses a key-signed install. Adoption back-fills trust from what the stored bundle reveals, and a key-pair bundle reveals no identity and does not carry the key; recording the install as unsigned instead would file a false trust decision about an artifact that is signed.
-
-Scope for v1 (issue [#6442](https://github.com/stacklok/toolhive/issues/6442)): `--public-key` is accepted on `install` only — `upgrade` and `sync` use the anchor the lock already records and take no key of their own, and in-place re-anchoring to a different key is deliberately not offered. The plugins surface carries the same contract, flag for flag: `thv ai-plugin push --key`, `thv ai-plugin install --public-key`, the same lock-first dispatch, and the same install-only scope.
+- **`upgrade`** evaluates a candidate against one complete signature snapshot.
+  A key-pinned entry tries its recorded key first, and that key remains the
+  anchor whenever it verifies. After a conclusive mismatch,
+  `--allow-signer-change --public-key <PUBLIC_KEY_PATH>` can verify and record a
+  replacement key. If the replacement key does not apply, the existing
+  keyless signer-change policy still decides the entry. Registry, transport,
+  and context errors leave the decision unresolved and preserve the old
+  anchor. The permission is narrowed per entry, so one replacement key does
+  not unpin other skills in a project. Upgrade also evaluates signatures when
+  the content digest is unchanged, because OCI signature attachments can
+  change independently. A successful trust-only update refreshes the stored
+  signature bundle and, when the selected anchor differs, the lock trust state
+  without reinstalling content.
+- **`sync --adopt`** accepts `--public-key <PUBLIC_KEY_PATH>` for key-pair-signed
+  installs. ToolHive verifies the stored bundle against that key and the
+  installed digest before recording the key as the anchor. Keyless installs
+  continue to adopt their certificate identity, and unsigned installs still
+  require `--allow-unsigned`.
 
 Plugins carry the same trust model over the same lock file: project-scoped plugin installs are recorded under the file's `plugins:` key, verified on the same TOFU/`allow_unsigned`/`allow_signer_change` terms, and published signed-by-default through `thv ai-plugin push`. See [Trust Model](14-plugins-system.md#trust-model) in the plugins document for what differs.
 
@@ -522,7 +548,19 @@ Reinstalling *at the pinned reference* (never re-resolving `source`) uses `build
 
 ### Upgrade
 
-`thv skill upgrade [name...]` re-resolves each targeted entry's `source` (via the same git/OCI/registry dispatch order `Install` uses, stopping short of extraction — `resolveLatestState`) and installs newer content when the resolved digest changed. Entries pinned to an immutable reference (an OCI digest, or a git reference already pinned to a full commit hash — `isImmutableSource`) are reported not-upgradable. `--preview` reports what would change without persisting it (an OCI preview still pulls the artifact into the local store — there's no lighter "digest only" primitive — so it is not fully side-effect-free, matching the RFC's own caveat). `--allow-ref-change` permits the resolved reference itself changing; `--fail-on-changes` gives CI a freshness gate — it evaluates the same plan, never installs, and returns the full outcome set (exit codes are derived client-side from the outcomes, so a genuine resolution failure still surfaces as a partial failure rather than "lock is stale").
+`thv skill upgrade [name...]` re-resolves each targeted mutable entry's `source`
+through the same git, OCI, and registry dispatch order that `Install` uses. It
+installs newer content when the resolved digest changes. A Git source pinned to
+a full commit hash is not upgradable. An OCI digest reference has immutable
+content, but upgrade can still evaluate its separately attached signatures and
+apply a trust-only re-anchor when you pass `--allow-signer-change`.
+`--preview` reports content and trust changes without persisting them. An OCI
+content preview still pulls the artifact into the local store because there is
+no lighter digest-only operation.
+`--allow-ref-change` permits the resolved repository to change.
+`--allow-signer-change --public-key <PUBLIC_KEY_PATH>` proposes a replacement key,
+and `--fail-on-changes` treats content and trust-only updates as changes while
+leaving the installation untouched.
 
 **Implementation:** `pkg/skills/skillsvc/upgrade.go`
 

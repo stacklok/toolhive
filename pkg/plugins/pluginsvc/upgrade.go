@@ -463,16 +463,10 @@ func resolveKeyPinnedSnapshot(
 			"verifying candidate against the supplied cosign public key: %w", newErr))
 		return nil, true
 	}
-
-	keylessResult, keylessErr := snapshot.VerifyKeyless(nil)
-	if keylessErr == nil {
-		decision, decisionErr := keylessTrustDecision(entry.Name, keylessResult)
-		return checkedTrustDecision(decision, decisionErr, outcome)
-	}
 	outcome.Status = plugins.UpgradeStatusFailed
-	outcome.Reason = keyedFailureReason(oldErr, keylessErr)
+	outcome.Reason = plugins.FailureReasonSignatureInvalid
 	outcome.Error = fmt.Errorf("candidate verifies against neither the recorded cosign key"+
-		" nor a permitted replacement trust anchor: %w", keylessErr).Error()
+		" nor the supplied cosign public key: %w", newErr).Error()
 	return nil, true
 }
 

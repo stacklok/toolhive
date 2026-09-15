@@ -4,6 +4,7 @@
 package server
 
 import (
+	"context"
 	"log/slog"
 	"sync"
 
@@ -38,16 +39,15 @@ import (
 // enabled only — optimizer-mode sessions are never registered because the
 // fan-out is a no-op for them in PR1, and with health monitoring disabled
 // there is no OnChange subscriber, so nothing would ever trigger the fan-out
-// or run the lazy prune below) and removed eagerly on every termination
-// path the server observes — registration failure, binding-failure
-// termination, and SDK-initiated termination (HTTP DELETE), the last via
+// or run the prune) and removed eagerly on every termination path the server
+// observes — registration failure, binding-failure termination, and
+// SDK-initiated termination (HTTP DELETE), the last via
 // pruneOnTerminateSessionIDManager. Sessions that end without any Terminate
-// call (TTL expiry) are pruned lazily by runListChangedResync when a
-// triggered resync finds them gone. Between fan-out events the registry can
-// therefore still hold entries for expired sessions; each such entry retains
-// the worker closure (the SDK ClientSession and the registration-time
-// identity + forwarded headers), is skipped harmlessly by the worker's
-// liveness guard, and is pruned on the next trigger.
+// call (TTL expiry) are pruned eagerly at fan-out by
+// resyncSessionsOnBackendHealthChange (which filters dead sessions before
+// triggering) and lazily by runListChangedResync when a triggered resync
+// finds them gone. The fan-out filter ensures |workers| == |liveSessions|
+// and bounds the registry between health-change events.
 type healthResyncRegistry struct {
 	mu      sync.Mutex
 	workers map[string]*listChangedResyncWorker
@@ -91,15 +91,15 @@ func (r *healthResyncRegistry) remove(sessionID string) {
 	delete(r.workers, sessionID)
 }
 
-// snapshot returns the currently registered workers. The copy lets callers
-// trigger workers without holding the registry lock (trigger may start a
-// goroutine that re-enters remove via the liveness prune).
-func (r *healthResyncRegistry) snapshot() []*listChangedResyncWorker {
+// snapshot returns the currently registered workers keyed by session ID.
+// The copy lets callers trigger workers without holding the registry lock
+// (trigger may start a goroutine that re-enters remove via the liveness prune).
+func (r *healthResyncRegistry) snapshot() map[string]*listChangedResyncWorker {
 	r.mu.Lock()
 	defer r.mu.Unlock()
-	out := make([]*listChangedResyncWorker, 0, len(r.workers))
-	for _, w := range r.workers {
-		out = append(out, w)
+	out := make(map[string]*listChangedResyncWorker, len(r.workers))
+	for id, w := range r.workers {
+		out[id] = w
 	}
 	return out
 }
@@ -146,7 +146,19 @@ func (s *Server) resyncSessionsOnBackendHealthChange(generation uint64) {
 	workers := s.healthResync.snapshot()
 	slog.Debug("backend health change: triggering tools resync for live sessions",
 		"generation", generation, "sessions", len(workers))
-	for _, w := range workers {
+	// Filter dead sessions synchronously before triggering to keep the
+	// registry bounded (|workers| == |liveSessions|) and avoid unnecessary
+	// work. The snapshot is already a copy, so GetMultiSession I/O does not
+	// hold the registry lock. Removal is done via the registry's mutex.
+	ctx := s.resyncBaseCtx
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	for sessionID, w := range workers {
+		if _, ok := s.vmcpSessionMgr.GetMultiSession(ctx, sessionID); !ok {
+			s.healthResync.remove(sessionID)
+			continue
+		}
 		w.trigger(false)
 	}
 }

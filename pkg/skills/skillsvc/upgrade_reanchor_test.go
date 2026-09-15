@@ -35,6 +35,9 @@ func TestResolveOCITrustPolicy_ReanchorMatrixUsesOneSnapshot(t *testing.T) {
 	unsignedEntry := keyedLockEntry()
 	unsignedEntry.Provenance = nil
 	unsignedEntry.Unsigned = true
+	unrecordedEntry := keyedLockEntry()
+	unrecordedEntry.Provenance = nil
+	unrecordedEntry.Unsigned = false
 
 	tests := []struct {
 		name         string
@@ -90,6 +93,13 @@ func TestResolveOCITrustPolicy_ReanchorMatrixUsesOneSnapshot(t *testing.T) {
 			retrieveErr: context.DeadlineExceeded,
 			wantBlocked: true,
 			wantReason:  skills.FailureReasonUnknown,
+		},
+		{
+			name:        "unsigned candidate cannot manufacture an exception for unrecorded trust",
+			entry:       unrecordedEntry,
+			retrieveErr: verifier.ErrUnsigned,
+			wantBlocked: true,
+			wantReason:  skills.FailureReasonUnsignedRejected,
 		},
 		{
 			name:  "keyless entry moves to supplied key",

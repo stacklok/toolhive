@@ -362,13 +362,17 @@ func (s *service) resolveOCITrustPolicy(
 func resolveUnsignedCandidate(
 	entry lockfile.Entry, outcome *skills.UpgradeOutcome,
 ) (*provenanceDecision, bool) {
-	if entry.Provenance == nil {
+	if entry.Unsigned {
 		return &provenanceDecision{unsigned: true}, false
 	}
 
 	outcome.Status = skills.UpgradeStatusFailed
 	outcome.Reason = skills.FailureReasonUnsignedRejected
-	if entry.Provenance.PublicKey != "" {
+	if entry.Provenance == nil {
+		outcome.Error = fmt.Sprintf("skill %q has no recorded trust anchor, and the candidate is unsigned;"+
+			" upgrade cannot create an unsigned exception without explicit unsigned consent",
+			entry.Name)
+	} else if entry.Provenance.PublicKey != "" {
 		outcome.Error = fmt.Sprintf("candidate is unsigned, and this entry is pinned to a cosign public key;"+
 			" upgrade has no unsigned-consent flag. To move it to an unsigned artifact, reinstall it: %s",
 			projectUnsignedReinstallCommand(entry))

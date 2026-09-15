@@ -54,7 +54,10 @@ func TestHttpClientBuilder_BuildSetsProxyFromEnvironment(t *testing.T) {
 	client, err := NewHttpClientBuilder().Build()
 	require.NoError(t, err)
 
-	transport := client.Transport.(*ValidatingTransport).Transport.(*http.Transport)
+	vt, ok := client.Transport.(*ValidatingTransport)
+	require.True(t, ok, "expected *ValidatingTransport")
+	transport, ok := vt.Transport.(*http.Transport)
+	require.True(t, ok, "expected *http.Transport")
 	assert.NotNil(t, transport.Proxy, "Build must set Transport.Proxy")
 }
 

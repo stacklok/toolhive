@@ -9,6 +9,7 @@ import (
 	"fmt"
 	"strings"
 
+	"github.com/google/go-containerregistry/pkg/authn"
 	"github.com/sigstore/sigstore-go/pkg/root"
 	"github.com/sigstore/sigstore-go/pkg/verify"
 
@@ -47,6 +48,56 @@ func (d *Default) VerifyOCI(
 	return nil, classifyVerifyFailure(bundles, tm, opts, expected, lastErr)
 }
 
+// RetrieveOCISnapshot retrieves the artifact's complete bounded bundle set
+// once. Incompleteness is propagated as an operational error: callers must
+// not infer that a signer is absent when retrieval could not assess every
+// potentially relevant bundle.
+func (d *Default) RetrieveOCISnapshot(
+	ctx context.Context,
+	imageRef, digest string,
+) (OCISnapshot, error) {
+	bundles, err := d.retrieveBundlesStrict(ctx, imageRef, digest)
+	if err != nil {
+		return nil, err
+	}
+	return &ociSnapshot{bundles: bundles}, nil
+}
+
+type ociSnapshot struct {
+	bundles []coreverifier.Bundle
+}
+
+var _ OCISnapshot = (*ociSnapshot)(nil)
+
+// VerifyKeyless verifies the snapshot through the Fulcio flow without
+// retrieving signature material again.
+func (s *ociSnapshot) VerifyKeyless(expected *ProvenanceExpectation) (*Result, error) {
+	if keyPinnedExpectation(expected) {
+		return nil, errKeyPinnedEntry
+	}
+
+	tm, err := coreverifier.OfflineTrustedMaterial()
+	if err != nil {
+		return nil, fmt.Errorf("loading trusted material: %w", err)
+	}
+	opts, err := coreverifier.DefaultVerifierOptions()
+	if err != nil {
+		return nil, fmt.Errorf("loading verifier options: %w", err)
+	}
+
+	result, lastErr := verifyKeylessBundles(s.bundles, tm, opts, expected)
+	if result != nil {
+		return result, nil
+	}
+	return nil, classifyVerifyFailure(s.bundles, tm, opts, expected, lastErr)
+}
+
+// VerifyWithKey verifies the snapshot through the cosign key-pair flow
+// without retrieving signature material again.
+func (s *ociSnapshot) VerifyWithKey(pubKeyPEM []byte) (*Result, error) {
+	return verifyBundlesWithKey(s.bundles, pubKeyPEM)
+}
+
 // VerifyOCIWithKey discovers and verifies the Sigstore signature for an OCI
 // artifact against a PEM public key (the cosign key-pair flow).
 func (d *Default) VerifyOCIWithKey(
@@ -64,6 +115,10 @@ func (d *Default) VerifyOCIWithKey(
 		return nil, err
 	}
 
+	return verifyBundlesWithKey(bundles, pubKeyPEM)
+}
+
+func verifyBundlesWithKey(bundles []coreverifier.Bundle, pubKeyPEM []byte) (*Result, error) {
 	var lastErr error
 	for _, b := range bundles {
 		if _, verifyErr := coreverifier.VerifyBundleWithKey(b, pubKeyPEM); verifyErr != nil {
@@ -175,6 +230,23 @@ func mostUsefulVerifyError(errs []error) error {
 // must agree: verifying the ref's digest while the caller believes the
 // parameter's was verified would hide lock corruption.
 func (d *Default) retrieveBundles(ctx context.Context, imageRef, digest string) ([]coreverifier.Bundle, error) {
+	return d.retrieveBundlesWith(ctx, imageRef, digest, coreverifier.RetrieveBundles)
+}
+
+// retrieveBundlesStrict is the strict counterpart used by upgrade planning,
+// where trying more than one trust anchor against separately retrieved
+// prefixes could produce an unsafe decision.
+func (d *Default) retrieveBundlesStrict(
+	ctx context.Context, imageRef, digest string,
+) ([]coreverifier.Bundle, error) {
+	return d.retrieveBundlesWith(ctx, imageRef, digest, coreverifier.RetrieveBundlesStrict)
+}
+
+func (d *Default) retrieveBundlesWith(
+	ctx context.Context,
+	imageRef, digest string,
+	retrieve func(context.Context, string, authn.Keychain) ([]coreverifier.Bundle, error),
+) ([]coreverifier.Bundle, error) {
 	if digest == "" {
 		return nil, errors.New("artifact digest is required for verification")
 	}
@@ -187,7 +259,7 @@ func (d *Default) retrieveBundles(ctx context.Context, imageRef, digest string) 
 	} else {
 		ref = imageRef + "@" + digest
 	}
-	bundles, err := coreverifier.RetrieveBundles(ctx, ref, d.keychain)
+	bundles, err := retrieve(ctx, ref, d.keychain)
 	if errors.Is(err, coreverifier.ErrNoBundles) {
 		return nil, fmt.Errorf("%w: no signature material found for %s", ErrUnsigned, ref)
 	}

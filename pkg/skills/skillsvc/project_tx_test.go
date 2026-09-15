@@ -4,15 +4,18 @@
 package skillsvc
 
 import (
+	"bytes"
 	"context"
 	"fmt"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
 
+	"github.com/adrg/xdg"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 	"go.uber.org/mock/gomock"
@@ -21,6 +24,195 @@ import (
 	"github.com/stacklok/toolhive/pkg/skills/gitresolver"
 	gitmocks "github.com/stacklok/toolhive/pkg/skills/gitresolver/mocks"
 )
+
+const (
+	projectTxHelperEnv       = "TOOLHIVE_PROJECT_TX_HELPER"
+	projectTxHelperRootEnv   = "TOOLHIVE_PROJECT_TX_ROOT"
+	projectTxHelperReadyEnv  = "TOOLHIVE_PROJECT_TX_READY"
+	projectTxHelperMarkerEnv = "TOOLHIVE_PROJECT_TX_MARKER"
+)
+
+//nolint:paralleltest // t.Setenv and xdg.Reload mutate process-wide state
+func TestProjectTxRun_SerializesAcrossProcesses(t *testing.T) {
+	t.Cleanup(xdg.Reload)
+	stateHome := t.TempDir()
+	t.Setenv("XDG_STATE_HOME", stateHome)
+	xdg.Reload()
+
+	projectRoot := t.TempDir()
+	readyPath := filepath.Join(t.TempDir(), "child-ready")
+	markerPath := filepath.Join(t.TempDir(), "child-entered")
+	lockPath, err := projectTxLockPath(projectRoot)
+	require.NoError(t, err)
+	require.Contains(t, lockPath, filepath.Join(stateHome, "toolhive", projectTxLockDir))
+
+	firstEntered := make(chan struct{})
+	releaseFirst := make(chan struct{})
+	var releaseOnce sync.Once
+	release := func() { releaseOnce.Do(func() { close(releaseFirst) }) }
+	t.Cleanup(release)
+	firstDone := make(chan error, 1)
+	go func() {
+		firstDone <- (&projectTx{}).run(t.Context(), projectRoot, func() error {
+			close(firstEntered)
+			select {
+			case <-releaseFirst:
+				return nil
+			case <-time.After(5 * time.Second):
+				return fmt.Errorf("timed out waiting to release first transaction")
+			}
+		})
+	}()
+
+	select {
+	case <-firstEntered:
+	case <-time.After(5 * time.Second):
+		t.Fatal("first transaction did not start")
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	t.Cleanup(cancel)
+	cmd := exec.CommandContext(ctx, os.Args[0], "-test.run=^TestProjectTxRunHelper$") //nolint:gosec // test binary and fixed args
+	cmd.Env = append(os.Environ(),
+		projectTxHelperEnv+"=1",
+		projectTxHelperRootEnv+"="+projectRoot,
+		projectTxHelperReadyEnv+"="+readyPath,
+		projectTxHelperMarkerEnv+"="+markerPath,
+	)
+	var childOutput bytes.Buffer
+	cmd.Stdout = &childOutput
+	cmd.Stderr = &childOutput
+	require.NoError(t, cmd.Start())
+	childDone := make(chan error, 1)
+	go func() {
+		childDone <- cmd.Wait()
+	}()
+
+	require.Eventually(t, func() bool {
+		_, err := os.Stat(readyPath)
+		return err == nil
+	}, 5*time.Second, 10*time.Millisecond, "child process did not reach the project transaction")
+
+	select {
+	case err := <-childDone:
+		t.Fatalf("child transaction completed while the parent held the project lock: %v\n%s", err, childOutput.String())
+	case <-time.After(100 * time.Millisecond):
+		// Expected: the child process is blocked by the OS-backed lock.
+	}
+	_, err = os.Stat(markerPath)
+	require.ErrorIs(t, err, os.ErrNotExist, "child callback must not run while the parent holds the project lock")
+
+	release()
+
+	select {
+	case err := <-firstDone:
+		require.NoError(t, err)
+	case <-time.After(5 * time.Second):
+		t.Fatal("first transaction did not finish after release")
+	}
+
+	select {
+	case err := <-childDone:
+		require.NoError(t, err, childOutput.String())
+	case <-time.After(5 * time.Second):
+		t.Fatal("child transaction did not finish after the parent released the project lock")
+	}
+
+	_, err = os.Stat(markerPath)
+	require.NoError(t, err, "child callback must run after the parent releases the project lock")
+	_, err = os.Stat(lockPath)
+	require.NoError(t, err, "stable transaction lock must remain in ToolHive state after release")
+	rootEntries, err := os.ReadDir(projectRoot)
+	require.NoError(t, err)
+	require.Empty(t, rootEntries, "transaction lock must not pollute the worktree root")
+}
+
+func TestProjectTxRunHelper(t *testing.T) {
+	t.Parallel()
+
+	if os.Getenv(projectTxHelperEnv) != "1" {
+		return
+	}
+
+	projectRoot := os.Getenv(projectTxHelperRootEnv)
+	readyPath := os.Getenv(projectTxHelperReadyEnv)
+	markerPath := os.Getenv(projectTxHelperMarkerEnv)
+	require.NotEmpty(t, projectRoot)
+	require.NotEmpty(t, readyPath)
+	require.NotEmpty(t, markerPath)
+	require.NoError(t, os.WriteFile(readyPath, []byte("ready"), 0o600))
+	require.NoError(t, (&projectTx{}).run(t.Context(), projectRoot, func() error {
+		return os.WriteFile(markerPath, []byte("entered"), 0o600)
+	}))
+}
+
+func TestProjectTxRun_CanceledWaiterDoesNotEnter(t *testing.T) {
+	t.Parallel()
+
+	projectRoot := t.TempDir()
+	tx := &projectTx{}
+	unlock, err := tx.lock(t.Context(), projectRoot)
+	require.NoError(t, err)
+	var unlockOnce sync.Once
+	release := func() { unlockOnce.Do(unlock) }
+	t.Cleanup(release)
+
+	waitCtx, cancel := context.WithCancel(t.Context())
+	entered := atomic.Bool{}
+	done := make(chan error, 1)
+	go func() {
+		done <- tx.run(waitCtx, projectRoot, func() error {
+			entered.Store(true)
+			return nil
+		})
+	}()
+	cancel()
+
+	select {
+	case runErr := <-done:
+		require.ErrorIs(t, runErr, context.Canceled)
+	case <-time.After(5 * time.Second):
+		t.Fatal("canceled transaction did not stop waiting for the in-process lock")
+	}
+	release()
+	assert.False(t, entered.Load(), "a canceled transaction must never run its callback")
+}
+
+//nolint:paralleltest // holds a process-global lock beyond the former timeout
+func TestProjectTxRun_WaitsBeyondInternalTimeoutWhileCallerIsActive(t *testing.T) {
+	const formerInternalTimeout = 5 * time.Second
+
+	projectRoot := t.TempDir()
+	tx := &projectTx{}
+	unlock, err := tx.lock(t.Context(), projectRoot)
+	require.NoError(t, err)
+	var unlockOnce sync.Once
+	release := func() { unlockOnce.Do(unlock) }
+	t.Cleanup(release)
+
+	callerCtx, cancel := context.WithTimeout(t.Context(), 2*formerInternalTimeout)
+	t.Cleanup(cancel)
+	done := make(chan error, 1)
+	go func() {
+		done <- tx.run(callerCtx, projectRoot, func() error { return nil })
+	}()
+
+	timer := time.NewTimer(formerInternalTimeout + 250*time.Millisecond)
+	t.Cleanup(func() { timer.Stop() })
+	select {
+	case runErr := <-done:
+		t.Fatalf("project transaction stopped before the active caller released it: %v", runErr)
+	case <-timer.C:
+	}
+
+	release()
+	select {
+	case runErr := <-done:
+		require.NoError(t, runErr)
+	case <-time.After(5 * time.Second):
+		t.Fatal("project transaction did not enter after the lock was released")
+	}
+}
 
 // TestInstallGit_HoldsProjectTxThroughRegister proves a concurrent uninstall
 // cannot observe mid-install state: the project transaction spans git
@@ -129,7 +321,10 @@ func TestSyncVsUninstall_SerializedOnProjectTx(t *testing.T) {
 	// can attempt to enter while sync is "in progress".
 	syncDone := make(chan struct{})
 	go func() {
-		unlock := syncer.projectTx.lock(projectRoot)
+		unlock, lockErr := syncer.projectTx.lock(context.Background(), projectRoot)
+		if lockErr != nil {
+			panic(lockErr)
+		}
 		inSync.Store(true)
 		time.Sleep(150 * time.Millisecond)
 		inSync.Store(false)
@@ -182,7 +377,10 @@ func TestUpgradeVsUninstall_SerializedOnProjectTx(t *testing.T) {
 
 	upgradeDone := make(chan struct{})
 	go func() {
-		unlock := upgrader.projectTx.lock(projectRoot)
+		unlock, lockErr := upgrader.projectTx.lock(context.Background(), projectRoot)
+		if lockErr != nil {
+			panic(lockErr)
+		}
 		inUpgrade.Store(true)
 		time.Sleep(150 * time.Millisecond)
 		inUpgrade.Store(false)

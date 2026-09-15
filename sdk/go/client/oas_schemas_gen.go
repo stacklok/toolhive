@@ -19123,8 +19123,8 @@ type SkillsUpgradeOutcome struct {
 	Error OptString `json:"error"`
 	// Name is the skill name.
 	Name OptString `json:"name"`
-	// NewDigest is the digest the source currently resolves to. Equal to
-	// OldDigest when Status is UpgradeStatusUpToDate.
+	// NewDigest is the digest the source currently resolves to. It may equal
+	// OldDigest when only the resolved reference or trust material changed.
 	NewDigest OptString `json:"new_digest"`
 	// NewResolvedReference is the new resolvedReference when it changed.
 	NewResolvedReference OptString `json:"new_resolved_reference"`
@@ -19135,6 +19135,9 @@ type SkillsUpgradeOutcome struct {
 	OldDigest OptString              `json:"old_digest"`
 	Reason    OptSkillsFailureReason `json:"reason"`
 	Status    OptSkillsUpgradeStatus `json:"status"`
+	// TrustAnchorChanged reports that the operation selected a different
+	// verified provenance or unsigned trust state than the lock recorded.
+	TrustAnchorChanged OptBool `json:"trust_anchor_changed"`
 }
 
 // GetError returns the value of Error.
@@ -19177,6 +19180,11 @@ func (s *SkillsUpgradeOutcome) GetStatus() OptSkillsUpgradeStatus {
 	return s.Status
 }
 
+// GetTrustAnchorChanged returns the value of TrustAnchorChanged.
+func (s *SkillsUpgradeOutcome) GetTrustAnchorChanged() OptBool {
+	return s.TrustAnchorChanged
+}
+
 // SetError sets the value of Error.
 func (s *SkillsUpgradeOutcome) SetError(val OptString) {
 	s.Error = val
@@ -19217,6 +19225,11 @@ func (s *SkillsUpgradeOutcome) SetStatus(val OptSkillsUpgradeStatus) {
 	s.Status = val
 }
 
+// SetTrustAnchorChanged sets the value of TrustAnchorChanged.
+func (s *SkillsUpgradeOutcome) SetTrustAnchorChanged(val OptBool) {
+	s.TrustAnchorChanged = val
+}
+
 // Ref: #/components/schemas/SkillsUpgradeResult
 type SkillsUpgradeResult struct {
 	// Outcomes contains one entry per skill considered for upgrade.
@@ -19242,6 +19255,7 @@ type SkillsUpgradeStatus string
 const (
 	SkillsUpgradeStatusUpgraded            SkillsUpgradeStatus = "upgraded"
 	SkillsUpgradeStatusUpToDate            SkillsUpgradeStatus = "up-to-date"
+	SkillsUpgradeStatusTrustUpdated        SkillsUpgradeStatus = "trust-updated"
 	SkillsUpgradeStatusNotUpgradable       SkillsUpgradeStatus = "not-upgradable"
 	SkillsUpgradeStatusRefChangeBlocked    SkillsUpgradeStatus = "ref-change-blocked"
 	SkillsUpgradeStatusSignerChangeBlocked SkillsUpgradeStatus = "signer-change-blocked"
@@ -19253,6 +19267,7 @@ func (SkillsUpgradeStatus) AllValues() []SkillsUpgradeStatus {
 	return []SkillsUpgradeStatus{
 		SkillsUpgradeStatusUpgraded,
 		SkillsUpgradeStatusUpToDate,
+		SkillsUpgradeStatusTrustUpdated,
 		SkillsUpgradeStatusNotUpgradable,
 		SkillsUpgradeStatusRefChangeBlocked,
 		SkillsUpgradeStatusSignerChangeBlocked,
@@ -19266,6 +19281,8 @@ func (s SkillsUpgradeStatus) MarshalText() ([]byte, error) {
 	case SkillsUpgradeStatusUpgraded:
 		return []byte(s), nil
 	case SkillsUpgradeStatusUpToDate:
+		return []byte(s), nil
+	case SkillsUpgradeStatusTrustUpdated:
 		return []byte(s), nil
 	case SkillsUpgradeStatusNotUpgradable:
 		return []byte(s), nil
@@ -19288,6 +19305,9 @@ func (s *SkillsUpgradeStatus) UnmarshalText(data []byte) error {
 		return nil
 	case SkillsUpgradeStatusUpToDate:
 		*s = SkillsUpgradeStatusUpToDate
+		return nil
+	case SkillsUpgradeStatusTrustUpdated:
+		*s = SkillsUpgradeStatusTrustUpdated
 		return nil
 	case SkillsUpgradeStatusNotUpgradable:
 		*s = SkillsUpgradeStatusNotUpgradable
@@ -19802,6 +19822,8 @@ type SyncSkillsRequest struct {
 	ProjectRoot OptString `json:"project_root"`
 	// Prune removes project-scoped skills installed but not present in the lock file.
 	Prune OptBool `json:"prune"`
+	// PublicKey supplies the cosign public key for key-signed adoption.
+	PublicKey OptString `json:"public_key"`
 }
 
 // GetAdopt returns the value of Adopt.
@@ -19834,6 +19856,11 @@ func (s *SyncSkillsRequest) GetPrune() OptBool {
 	return s.Prune
 }
 
+// GetPublicKey returns the value of PublicKey.
+func (s *SyncSkillsRequest) GetPublicKey() OptString {
+	return s.PublicKey
+}
+
 // SetAdopt sets the value of Adopt.
 func (s *SyncSkillsRequest) SetAdopt(val OptBool) {
 	s.Adopt = val
@@ -19862,6 +19889,11 @@ func (s *SyncSkillsRequest) SetProjectRoot(val OptString) {
 // SetPrune sets the value of Prune.
 func (s *SyncSkillsRequest) SetPrune(val OptBool) {
 	s.Prune = val
+}
+
+// SetPublicKey sets the value of PublicKey.
+func (s *SyncSkillsRequest) SetPublicKey(val OptString) {
+	s.PublicKey = val
 }
 
 // DEPRECATED: Middleware configuration.
@@ -21505,7 +21537,7 @@ type UpgradeSkillsRequest struct {
 	// Clients lists target client identifiers. Empty means every
 	// skill-supporting client detected on this host.
 	Clients []string `json:"clients"`
-	// FailOnChanges exits with an error when any mutable source would upgrade.
+	// FailOnChanges reports content and trust changes without applying them.
 	FailOnChanges OptBool `json:"fail_on_changes"`
 	// Names restricts the upgrade to specific skill names. Empty means every entry.
 	Names []string `json:"names"`
@@ -21513,6 +21545,8 @@ type UpgradeSkillsRequest struct {
 	Preview OptBool `json:"preview"`
 	// ProjectRoot is the project root path whose lock file should be upgraded.
 	ProjectRoot OptString `json:"project_root"`
+	// PublicKey proposes a cosign public key as the replacement trust anchor.
+	PublicKey OptString `json:"public_key"`
 }
 
 // GetAllowRefChange returns the value of AllowRefChange.
@@ -21550,6 +21584,11 @@ func (s *UpgradeSkillsRequest) GetProjectRoot() OptString {
 	return s.ProjectRoot
 }
 
+// GetPublicKey returns the value of PublicKey.
+func (s *UpgradeSkillsRequest) GetPublicKey() OptString {
+	return s.PublicKey
+}
+
 // SetAllowRefChange sets the value of AllowRefChange.
 func (s *UpgradeSkillsRequest) SetAllowRefChange(val OptBool) {
 	s.AllowRefChange = val
@@ -21583,6 +21622,11 @@ func (s *UpgradeSkillsRequest) SetPreview(val OptBool) {
 // SetProjectRoot sets the value of ProjectRoot.
 func (s *UpgradeSkillsRequest) SetProjectRoot(val OptString) {
 	s.ProjectRoot = val
+}
+
+// SetPublicKey sets the value of PublicKey.
+func (s *UpgradeSkillsRequest) SetPublicKey(val OptString) {
+	s.PublicKey = val
 }
 
 type UpgradeWorkloadBadRequestApplicationJSON string

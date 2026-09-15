@@ -549,6 +549,31 @@ _Appears in:_
 | `authz` _[vmcp.config.AuthzConfig](#vmcpconfigauthzconfig)_ | Authz contains authorization configuration (optional). |  |  |
 
 
+#### vmcp.config.ListChangedConfig
+
+
+
+ListChangedConfig configures which backends vMCP subscribes to for
+list_changed notifications.
+
+Subscribing opens a standalone notification stream to the backend during
+session initialization. A backend that accepts that subscribe and then never
+services it stalls the handshake until the init deadline, and clients with
+their own connect timeout give up first. Excluding such a backend costs it
+live propagation only: its tools are still aggregated and callable, and they
+refresh on the next session.
+
+
+
+_Appears in:_
+- [vmcp.config.OperationalConfig](#vmcpconfigoperationalconfig)
+
+| Field | Description | Default | Validation |
+| --- | --- | --- | --- |
+| `enabled` _boolean_ | Enabled turns propagation on or off for every backend. Defaults to true. |  | Optional: \{\} <br /> |
+| `disabledWorkloads` _string array_ | DisabledWorkloads names backends to exclude while leaving the rest<br />subscribed. Prefer this over Enabled when a single backend misbehaves. |  | Optional: \{\} <br /> |
+
+
 
 
 #### vmcp.config.OIDCConfig
@@ -595,6 +620,7 @@ _Appears in:_
 | `logLevel` _string_ | LogLevel sets the logging level for the Virtual MCP server.<br />The only valid value is "debug" to enable debug logging.<br />When omitted or empty, the server uses info level logging. |  | Enum: [debug] <br />Optional: \{\} <br /> |
 | `timeouts` _[vmcp.config.TimeoutConfig](#vmcpconfigtimeoutconfig)_ | Timeouts configures timeout settings. |  | Optional: \{\} <br /> |
 | `failureHandling` _[vmcp.config.FailureHandlingConfig](#vmcpconfigfailurehandlingconfig)_ | FailureHandling configures failure handling behavior. |  | Optional: \{\} <br /> |
+| `listChanged` _[vmcp.config.ListChangedConfig](#vmcpconfiglistchangedconfig)_ | ListChanged configures live list_changed propagation from backends. |  | Optional: \{\} <br /> |
 
 
 #### vmcp.config.OptimizerConfig
@@ -768,6 +794,7 @@ _Appears in:_
 | --- | --- | --- | --- |
 | `default` _[vmcp.config.Duration](#vmcpconfigduration)_ | Default is the default timeout for backend requests. | 30s | Pattern: `^([0-9]+(\.[0-9]+)?(ns\|us\|µs\|ms\|s\|m\|h))+$` <br />Type: string <br />Optional: \{\} <br /> |
 | `perWorkload` _object (keys:string, values:[vmcp.config.Duration](#vmcpconfigduration))_ | PerWorkload defines per-workload timeout overrides. |  | Optional: \{\} <br /> |
+| `backendInit` _[vmcp.config.Duration](#vmcpconfigduration)_ | BackendInit caps how long session initialization waits for a single<br />backend to connect and hand back its capabilities. Unlike Default, which<br />only ever extends that deadline, an explicit BackendInit is authoritative:<br />it bounds session init even when a workload's request timeout is longer.<br />Leave it unset unless a backend can stall the handshake. It exists for<br />backends that neither answer nor fail promptly: a stateless MCP server<br />that requires per-user auth cannot be classified by the unauthenticated<br />health probe, so vMCP opens the persistent connection its Modern skip<br />path would otherwise avoid, and that connection can hang until the<br />deadline. Clients with their own connect timeout give up first, and<br />because they never complete a call, the revision cache never warms and<br />the next session repeats it. A few seconds here lets session init fail<br />fast, which partialFailureMode: best_effort turns into a usable session. |  | Pattern: `^([0-9]+(\.[0-9]+)?(ns\|us\|µs\|ms\|s\|m\|h))+$` <br />Type: string <br />Optional: \{\} <br /> |
 
 
 #### vmcp.config.ToolAnnotationsOverride

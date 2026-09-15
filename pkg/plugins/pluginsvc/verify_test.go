@@ -1583,10 +1583,9 @@ func TestVerifyOCIInstall_SuppliedKeyConflictsAreRefused(t *testing.T) {
 	}
 }
 
-// TestResolveKeyAnchor pins the conflict rules. Every disagreement between a
-// supplied key and the recorded trust state is an error rather than a
-// precedence rule, because silently preferring either one is how a mistyped
-// --public-key installs as though it had been honored.
+// TestResolveKeyAnchor pins the conflict rules. A disagreement is rejected
+// unless allow_signer_change explicitly authorizes the supplied key to replace
+// the recorded anchor after upgrade planning has pre-verified it.
 func TestResolveKeyAnchor(t *testing.T) {
 	t.Parallel()
 
@@ -1648,14 +1647,12 @@ func TestResolveKeyAnchor(t *testing.T) {
 			want: testPublicKeyB64,
 		},
 		{
-			// The override re-records whatever it observes, and a key-pair
-			// bundle offers nothing to observe — so honoring a key here would
-			// re-anchor on the caller's say-so alone. v1 has no such path.
-			name:     "allow_signer_change with a key is refused",
+			// Strict upgrade planning pre-verifies the replacement key against
+			// one immutable snapshot before forwarding it to install.
+			name:     "allow_signer_change with a key selects the supplied key",
 			opts:     plugins.InstallOptions{PublicKey: testPublicKeyB64, AllowSignerChange: true},
 			expected: keyPin,
-			wantCode: http.StatusBadRequest,
-			wantMsg:  "cannot be combined with allow_signer_change",
+			want:     testPublicKeyB64,
 		},
 		{
 			// key -> keyless is the one supported transition: the candidate is

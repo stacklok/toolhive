@@ -83,16 +83,18 @@ func TestSyncPluginsEndpoint(t *testing.T) {
 			wantStatus: http.StatusBadRequest,
 		},
 		{
-			name: "allow_unsigned reaches the service",
+			name: "adoption trust flags reach the service",
 			service: &pluginServiceWithSync{
 				PluginService: plugmocks.NewMockPluginService(gomock.NewController(t)),
 				syncFn: func(_ context.Context, opts plugins.SyncOptions) (*plugins.SyncResult, error) {
 					assert.True(t, opts.Adopt)
 					assert.True(t, opts.AllowUnsigned, "allow_unsigned must survive the DTO boundary")
+					assert.Equal(t, "encoded-public-key", opts.PublicKey)
 					return &plugins.SyncResult{}, nil
 				},
 			},
-			body:       `{"project_root":"/tmp/proj","adopt":true,"allow_unsigned":true}`,
+			body: `{"project_root":"/tmp/proj","adopt":true,"allow_unsigned":true,` +
+				`"public_key":"encoded-public-key"}`,
 			wantStatus: http.StatusOK,
 		},
 		{
@@ -167,13 +169,14 @@ func TestUpgradePluginsEndpoint(t *testing.T) {
 					assert.True(t, opts.AllowSignerChange, "allow_signer_change must reach the service")
 					assert.True(t, opts.AllowRefChange)
 					assert.Equal(t, []string{"my-plugin"}, opts.Names)
+					assert.Equal(t, "encoded-public-key", opts.PublicKey)
 					return &plugins.UpgradeResult{Outcomes: []plugins.UpgradeOutcome{
 						{Name: "my-plugin", Status: plugins.UpgradeStatusUpgraded},
 					}}, nil
 				},
 			},
 			body: `{"project_root":"/tmp/proj","names":["my-plugin"],` +
-				`"allow_ref_change":true,"allow_signer_change":true}`,
+				`"allow_ref_change":true,"allow_signer_change":true,"public_key":"encoded-public-key"}`,
 			wantStatus:   http.StatusOK,
 			wantContains: `"upgraded"`,
 		},

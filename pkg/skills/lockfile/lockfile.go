@@ -390,6 +390,23 @@ func CompareAndSwapEntry(root Root, expected, replacement Entry) error {
 	})
 }
 
+// CompareAndSwapPluginEntry is the plugins: counterpart to
+// CompareAndSwapEntry. It performs the complete-entry comparison and
+// replacement under the same advisory file lock.
+func CompareAndSwapPluginEntry(root Root, expected, replacement Entry) error {
+	if expected.Name == "" || replacement.Name != expected.Name {
+		return errors.New("lockfile: conditional plugin replacement requires matching non-empty names")
+	}
+	return Update(root, func(lf *Lockfile) error {
+		current, ok := lf.GetPlugin(expected.Name)
+		if !ok || !reflect.DeepEqual(current, expected) {
+			return fmt.Errorf("%w: plugin %q no longer matches the expected entry", ErrEntryChanged, expected.Name)
+		}
+		lf.UpsertPlugin(replacement)
+		return nil
+	})
+}
+
 // UpsertPluginEntry loads the lock file, upserts a plugins: entry, and
 // saves it back, all under a single file lock so concurrent installs cannot
 // race on read-modify-write.

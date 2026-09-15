@@ -4152,6 +4152,10 @@ const docTemplate = `{
                     "prune": {
                         "description": "Prune removes project-scoped plugins installed but not present in the lock file",
                         "type": "boolean"
+                    },
+                    "public_key": {
+                        "description": "PublicKey supplies the cosign public key for key-signed adoption.",
+                        "type": "string"
                     }
                 },
                 "type": "object"
@@ -4423,6 +4427,10 @@ const docTemplate = `{
                     },
                     "project_root": {
                         "description": "ProjectRoot is the project root path whose lock file should be upgraded",
+                        "type": "string"
+                    },
+                    "public_key": {
+                        "description": "PublicKey proposes a cosign public key as the replacement trust anchor.",
                         "type": "string"
                     }
                 },

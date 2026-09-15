@@ -435,6 +435,24 @@ What is still trusted on faith, deliberately and visibly:
 
 Publishing is signed by default: `thv skill push` requires `--key` (a cosign private key), an OIDC identity token for keyless signing (supplied with `--identity-token` or acquired automatically), or an explicit `--no-sign`. Either signing path attaches the signature manifest next to the artifact, and the bundle is retrievable at install. See [Publishing](#3-publishing) for the full ladder.
 
+### Trust tiers
+
+Prefer keyless signing when an OIDC identity is available. A keyless signature
+contains a Fulcio certificate and a Rekor transparency-log entry, so ToolHive
+can determine who signed the artifact and when. That evidence supports
+catalog-declared provenance, identity-based signer-change detection, and
+signing-time or revocation policies.
+
+Key-pair signing is a lower-assurance trust tier. `--key` creates a detached
+signature with no certificate or Rekor entry. ToolHive can determine only
+whether the pinned public key verifies the artifact; it cannot identify the
+signer or signing time, distinguish a wrong key from a damaged signature,
+enforce catalog-declared provenance or identity-based signer changes, or
+consult a revocation signal. A key-pinned entry has no signing timestamp, so a
+future transparency-log policy cannot narrow its replay window. If the private
+key is compromised, every project must uninstall and reinstall the skill with
+a new trusted public key.
+
 Both paths produce an installable artifact, but they differ in what the consumer must supply. A cosign key pair carries no certificate to chain to the keyless (Fulcio) trust root, and the signing public key is recoverable neither from the artifact nor from the attached bundle — the cosign manifest defines no annotation for it. So the key has to arrive from outside the artifact: a project-scoped install of a `--key`-signed skill requires `--public-key` on first use, which verifies the signature and pins that key in the lock entry as `publicKey:`. Later installs read it back from the lock and need no flag.
 
 `--allow-unsigned` does **not** substitute for the key, in either direction: the artifact *is* signed, so it never produces the unsigned verdict that exception applies to. Nor does `--allow-signer-change` re-anchor an entry to a new key — a key-pair bundle carries no identity to observe, so honoring one would re-anchor on the strength of the caller having named it. Re-anchoring means removing the lock entry and reinstalling.

@@ -39,15 +39,23 @@ const nullMarker = "null"
 // confuse this row with a healthy long-lived registration.
 const pastExpiryDCRTTL = time.Second
 
-// maxDCRClaimRetries bounds StoreDCRCredentialsIfAbsent's WATCH/MULTI retry
-// loop. go-redis does not retry Watch internally: a concurrent write to the
-// watched key (another replica claiming, refreshing, or evicting the same
-// row) aborts the pipelined EXEC with redis.TxFailedErr, which Watch returns
-// to the caller unwrapped. Retrying a small, fixed number of times lets a
-// real concurrent write during the exact race this method exists to close
-// resolve on its own rather than failing the caller with a spurious error.
-// Mirrors maxConfiguredClientReconcileRetries above for the same reason.
+// maxDCRClaimRetries bounds the WATCH/MULTI retry loop of both
+// StoreDCRCredentialsIfAbsent and UpdateDCRCredentialsIfPresent. go-redis does
+// not retry Watch internally: a concurrent write to the watched key (another
+// replica claiming, refreshing, updating, or evicting the same row) aborts the
+// pipelined EXEC with redis.TxFailedErr, which Watch returns to the caller
+// unwrapped. Retrying a small, fixed number of times lets a real concurrent
+// write during the race these methods guard resolve on its own rather than
+// failing the caller with a spurious error. Mirrors
+// maxConfiguredClientReconcileRetries above for the same reason. See
+// UpdateDCRCredentialsIfPresent's "Retry contention profile" for why its
+// write-heavy path additionally backs off with jitter between attempts.
 const maxDCRClaimRetries = 3
+
+// dcrUpdateRetryBaseBackoff is the base (attempt-zero) cap of the jittered
+// backoff between UpdateDCRCredentialsIfPresent's WATCH/MULTI retries; the cap
+// doubles each attempt. See dcrUpdateRetryBackoff.
+const dcrUpdateRetryBaseBackoff = 5 * time.Millisecond
 
 // warnOnCleanupErr logs a warning when a best-effort cleanup operation fails.
 //
@@ -2146,8 +2154,23 @@ func dcrClaimOrReturnWinner(
 // initial store would.
 //
 // WATCH guards the read-check-write: if another writer changes the key between
-// our GET and our SET, EXEC aborts with redis.TxFailedErr and the loop retries,
-// bounded by maxDCRClaimRetries.
+// the presence check and our SET, EXEC aborts with redis.TxFailedErr and the
+// loop retries, bounded by maxDCRClaimRetries.
+//
+// # Retry contention profile
+//
+// The retry bound is shared with StoreDCRCredentialsIfAbsent, but the two paths
+// have materially different collision profiles: a Store loser mostly takes the
+// read-only "return winner" branch and never reaches MULTI, whereas EVERY
+// Update caller writes inside MULTI, so N concurrent updaters race the watched
+// key on every attempt. To keep the shared, small bound adequate on this
+// write-heavy path, retries back off with jitter (dcrUpdateRetryBackoff) so
+// collided updaters do not re-collide in lockstep ("thundering herd"). WATCH
+// still guarantees correctness regardless of the bound — a losing EXEC writes
+// nothing — so exhausting the retries returns a transient, retryable error
+// (wrapping redis.TxFailedErr), never a torn or partial write; the intended
+// consumer (a storage decorator rewriting one record) rarely has concurrent
+// writers for the same key in the first place.
 //
 // Validation is delegated to validateDCRCredentialsForStore so the rejection
 // set stays in sync with MemoryStorage and any future backend.
@@ -2167,9 +2190,10 @@ func (s *RedisStorage) UpdateDCRCredentialsIfPresent(ctx context.Context, creds 
 		return dcrUpdateIfPresent(ctx, tx, key, data, ttl)
 	}
 
-	// Retry bound mirrors StoreDCRCredentialsIfAbsent: go-redis does not retry
-	// Watch internally, so a concurrent writer to the watched key aborts EXEC
-	// with redis.TxFailedErr, which must be retried here.
+	// go-redis does not retry Watch internally, so a concurrent writer to the
+	// watched key aborts EXEC with redis.TxFailedErr, which must be retried
+	// here. See the "Retry contention profile" doc section above for why the
+	// retries back off with jitter on this write-heavy path.
 	var watchErr error
 	for attempt := 0; attempt < maxDCRClaimRetries; attempt++ {
 		watchErr = s.client.Watch(ctx, txFn, key)
@@ -2183,8 +2207,31 @@ func (s *RedisStorage) UpdateDCRCredentialsIfPresent(ctx context.Context, creds 
 			}
 			return nil, fmt.Errorf("failed to update dcr credentials: %w", watchErr)
 		}
+		// TxFailedErr: a concurrent writer changed the watched key. Back off
+		// with jitter before the next attempt so collided updaters spread out
+		// rather than racing again in lockstep. Skip the wait after the final
+		// attempt, and abort promptly if the caller's context is cancelled.
+		if attempt < maxDCRClaimRetries-1 {
+			select {
+			case <-ctx.Done():
+				return nil, fmt.Errorf("failed to update dcr credentials: %w", ctx.Err())
+			case <-time.After(dcrUpdateRetryBackoff(attempt)):
+			}
+		}
 	}
 	return nil, fmt.Errorf("failed to update dcr credentials after %d attempts: %w", maxDCRClaimRetries, watchErr)
+}
+
+// dcrUpdateRetryBackoff returns the delay before the given zero-based retry
+// attempt of UpdateDCRCredentialsIfPresent: full jitter in [0, cap], where cap
+// grows exponentially per attempt from dcrUpdateRetryBaseBackoff. The jitter is
+// derived from the nanosecond wall clock rather than math/rand — this is
+// backoff timing, not a security decision, and concurrent updaters evaluate it
+// at distinct instants, which is enough to decorrelate their retries and avoid
+// re-collision.
+func dcrUpdateRetryBackoff(attempt int) time.Duration {
+	maxDelay := dcrUpdateRetryBaseBackoff << attempt
+	return time.Duration(time.Now().UnixNano() % (int64(maxDelay) + 1))
 }
 
 // dcrUpdateIfPresent runs the read-check-write body of
@@ -2192,15 +2239,22 @@ func (s *RedisStorage) UpdateDCRCredentialsIfPresent(ctx context.Context, creds 
 // key with (data, ttl) inside MULTI only when the key physically exists,
 // returning a wrapped ErrNotFound without writing when it does not. Split out
 // to keep UpdateDCRCredentialsIfPresent's cyclomatic complexity down.
+//
+// Presence is checked with EXISTS, not GET: only the key's existence gates the
+// write, so there is no reason to transfer the stored blob (client secret,
+// registration token, endpoints) over the wire just to discard it. WATCH still
+// guards the window between this check and the MULTI/EXEC against a concurrent
+// delete.
 func dcrUpdateIfPresent(ctx context.Context, tx *redis.Tx, key string, data []byte, ttl time.Duration) error {
-	if err := tx.Get(ctx, key).Err(); err != nil {
-		if errors.Is(err, redis.Nil) {
-			return notFoundRFC6749Error("DCR credentials not found")
-		}
-		return fmt.Errorf("failed to get existing dcr credentials: %w", err)
+	exists, err := tx.Exists(ctx, key).Result()
+	if err != nil {
+		return fmt.Errorf("failed to check existing dcr credentials: %w", err)
+	}
+	if exists == 0 {
+		return notFoundRFC6749Error("DCR credentials not found")
 	}
 
-	_, err := tx.TxPipelined(ctx, func(pipe redis.Pipeliner) error {
+	_, err = tx.TxPipelined(ctx, func(pipe redis.Pipeliner) error {
 		pipe.Set(ctx, key, data, ttl)
 		return nil
 	})

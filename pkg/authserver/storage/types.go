@@ -384,7 +384,7 @@ type DCRCredentials struct {
 //
 // # Defensive copy
 //
-// Implementations MUST defensively copy on both Store and Get so caller
+// Implementations MUST defensively copy on Store, Update, and Get so caller
 // mutations cannot reach persisted state and vice versa, mirroring the
 // UpstreamTokens contract.
 //
@@ -402,16 +402,17 @@ type DCRCredentials struct {
 //
 // # Why the key is embedded in DCRCredentials
 //
-// StoreDCRCredentialsIfAbsent takes a single (ctx, creds) argument rather
-// than the (ctx, key, value) shape used by sibling Store* methods on Storage. The
-// DCRKey is embedded as DCRCredentials.Key so the persisted blob is
+// Both StoreDCRCredentialsIfAbsent and UpdateDCRCredentialsIfPresent take a
+// single (ctx, creds) argument rather than the (ctx, key, value) shape used by
+// sibling Store* methods on Storage. The DCRKey is embedded as
+// DCRCredentials.Key so the persisted blob is
 // self-describing: a Redis SCAN, an admin-tool dump, or a cross-replica
 // reconciliation path can identify a record's logical cache slot
 // (Issuer, UpstreamID, RedirectURI, ScopesHash) from the value alone, without
 // reconstructing it from a separately-passed key. This is a deliberate
 // asymmetry with the rest of the package — callers must populate creds.Key
-// before Store, and implementations validate it (see MemoryStorage docs
-// for the rejected-input list).
+// before Store or Update, and implementations validate it (see MemoryStorage
+// docs for the rejected-input list).
 type DCRCredentialStore interface {
 	// GetDCRCredentials returns the credentials for the given key.
 	// Returns ErrNotFound (wrapped) if no entry exists for the key.

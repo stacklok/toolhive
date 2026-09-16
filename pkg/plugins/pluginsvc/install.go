@@ -10,6 +10,7 @@ import (
 	"log/slog"
 	"net/http"
 	"strings"
+	"time"
 
 	"github.com/stacklok/toolhive-core/httperr"
 	"github.com/stacklok/toolhive/pkg/groups"
@@ -19,14 +20,16 @@ import (
 	"github.com/stacklok/toolhive/pkg/skills/lockfile"
 )
 
+// installRollbackTimeout bounds context-aware compensation after an install fails.
+const installRollbackTimeout = 5 * time.Second
+
 // Install installs a plugin. When the Name field contains a git reference
 // (git://...), the repo is cloned and the plugin tree is built in memory. When
 // it contains an OCI reference, the artifact is pulled and extracted. A plain
 // name is resolved against the local OCI store, then the registry lookup.
 // Structural mirror of skillsvc.Install, substituting the plugin install
-// backends — but the failure semantics deliberately diverge: skills discards
-// rollback errors and fails forward, while plugins joins every compensation
-// error with the trigger and can abort (see rollbackInstall).
+// backends. Rollback errors are joined with the trigger so partial
+// compensation is never reported as a clean failure (see rollbackInstall).
 func (s *service) Install(ctx context.Context, opts plugins.InstallOptions) (*plugins.InstallResult, error) {
 	return s.install(ctx, opts, false, nil)
 }
@@ -487,24 +490,26 @@ func (s *service) rollbackInstall(
 	pluginName := result.Plugin.Metadata.Name
 	scope := result.Plugin.Scope
 	projectRoot := result.Plugin.ProjectRoot
+	rollbackCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), installRollbackTimeout)
+	defer cancel()
 
 	var errs []error
 	if result.PreExisting != nil {
-		if err := s.store.Update(ctx, *result.PreExisting); err != nil {
+		if err := s.store.Update(rollbackCtx, *result.PreExisting); err != nil {
 			errs = append(errs, fmt.Errorf("restoring pre-existing DB record: %w", err))
 		}
-	} else if err := s.store.Delete(ctx, pluginName, scope, projectRoot); err != nil {
+	} else if err := s.store.Delete(rollbackCtx, pluginName, scope, projectRoot); err != nil {
 		errs = append(errs, fmt.Errorf("deleting rolled-back DB record: %w", err))
 	}
 
 	if result.RestoreFiles != nil {
-		if err := result.RestoreFiles(ctx); err != nil {
+		if err := result.RestoreFiles(rollbackCtx); err != nil {
 			errs = append(errs, err)
 		}
 	}
 
 	if params.addedToGroup && s.groupManager != nil {
-		if err := groups.RemovePluginFromGroup(ctx, s.groupManager, params.groupName, pluginName); err != nil {
+		if err := groups.RemovePluginFromGroup(rollbackCtx, s.groupManager, params.groupName, pluginName); err != nil {
 			errs = append(errs, fmt.Errorf("removing plugin from group: %w", err))
 		}
 	}

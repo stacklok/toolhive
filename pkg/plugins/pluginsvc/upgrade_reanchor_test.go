@@ -751,6 +751,74 @@ func TestUpgrade_SameDigestCrossRepositoryMovePersistsAuthorizedReference(t *tes
 	assert.Equal(t, []byte("preserve me"), sentinelContents)
 }
 
+//nolint:paralleltest // serial: real sqlite + on-disk client materialization per test
+func TestUpgrade_SameDigestMetadataRollbackSurvivesCancellationAndConflict(t *testing.T) {
+	inner, projectRoot, _, _ := newPluginKeyReanchorFixture(t)
+	newRef := "ghcr.io/new-org/my-plugin:v2"
+	require.NoError(t, lockfile.Update(mustOpenRoot(t, projectRoot), func(lf *lockfile.Lockfile) error {
+		entry, ok := lf.GetPlugin("my-plugin")
+		require.True(t, ok)
+		entry.Source = newRef
+		lf.UpsertPlugin(entry)
+		return nil
+	}))
+
+	beforeInstalled, err := inner.store.Get(t.Context(), "my-plugin", plugins.ScopeProject, projectRoot)
+	require.NoError(t, err)
+	callerCtx, cancel := context.WithCancel(t.Context())
+	t.Cleanup(cancel)
+	var updateContextErrors []error
+	var hookErr error
+	var competingEntry lockfile.Entry
+	hookedStore := &hookPluginStore{
+		PluginStore: inner.store,
+		afterUpdate: func(updateCtx context.Context, call int) {
+			updateContextErrors = append(updateContextErrors, updateCtx.Err())
+			if call != 1 {
+				return
+			}
+			hookErr = lockfile.Update(mustOpenRoot(t, projectRoot), func(lf *lockfile.Lockfile) error {
+				entry, exists := lf.GetPlugin("my-plugin")
+				if !exists {
+					return fmt.Errorf("planned lock entry disappeared")
+				}
+				entry.Digest = validLockDigestAlt()
+				lf.UpsertPlugin(entry)
+				competingEntry = entry
+				return nil
+			})
+			cancel()
+		},
+	}
+	inner.store = hookedStore
+
+	result, err := inner.Upgrade(callerCtx, plugins.UpgradeOptions{
+		ProjectRoot:       projectRoot,
+		AllowRefChange:    true,
+		AllowSignerChange: true,
+		PublicKey:         reanchorPublicKeyB64,
+	})
+	require.NoError(t, err)
+	require.NoError(t, hookErr)
+	require.Len(t, result.Outcomes, 1)
+	assert.Equal(t, plugins.UpgradeStatusFailed, result.Outcomes[0].Status)
+	assert.Contains(t, result.Outcomes[0].Error, lockfile.ErrEntryChanged.Error())
+	assert.ErrorIs(t, callerCtx.Err(), context.Canceled)
+	require.Len(t, updateContextErrors, 2,
+		"the metadata update must be followed by a compensating database update")
+	assert.NoError(t, updateContextErrors[0])
+	assert.NoError(t, updateContextErrors[1],
+		"compensation must detach from the canceled request context")
+
+	afterInstalled, getErr := inner.store.Get(t.Context(), "my-plugin", plugins.ScopeProject, projectRoot)
+	require.NoError(t, getErr)
+	assert.Equal(t, beforeInstalled, afterInstalled)
+	afterEntry, ok := loadPluginLockEntry(t, projectRoot)
+	require.True(t, ok)
+	assert.Equal(t, competingEntry, afterEntry,
+		"rollback must not overwrite the competing lock update")
+}
+
 func trustOnlyReanchorPlan(entry lockfile.Entry) upgradePlan {
 	return upgradePlan{
 		entry: entry,

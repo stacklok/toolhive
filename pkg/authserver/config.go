@@ -1132,6 +1132,11 @@ type Config struct {
 	// DeviceCodeInterval is the minimum time a device-flow client must wait
 	// between polls of the token endpoint. If zero, defaults to
 	// oauthserver.DefaultDeviceCodeInterval.
+	//
+	// Not yet exposed via RunConfig or set by embeddedauthserver.go's Config
+	// construction -- only DeviceFlowEnabled is wired through today, so this
+	// field is currently reachable only from tests that construct Config
+	// directly. A future increment may add a RunConfig override.
 	DeviceCodeInterval time.Duration
 
 	// ForceConfidentialRedirectURIs lists redirect URIs that are always

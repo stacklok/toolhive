@@ -559,6 +559,95 @@ func TestUpgrade_SameDigestCrossRepositoryMovePersistsAuthorizedReference(t *tes
 }
 
 //nolint:paralleltest // uses t.Setenv via newLockTestService, incompatible with t.Parallel
+func TestUpgrade_SameDigestMetadataRollbackSurvivesCancellationAndConflict(t *testing.T) {
+	svc, projectRoot, _, _ := newKeyReanchorFixture(t)
+	newRef := "ghcr.io/new-org/my-skill:v2"
+	root := mustOpenRoot(t, projectRoot)
+	require.NoError(t, lockfile.Update(root, func(lf *lockfile.Lockfile) error {
+		entry, ok := lf.Get("my-skill")
+		require.True(t, ok)
+		entry.Source = newRef
+		lf.Upsert(entry)
+		return nil
+	}))
+
+	beforeInstalled, err := svc.store.Get(t.Context(), "my-skill", skills.ScopeProject, projectRoot)
+	require.NoError(t, err)
+	require.True(t, beforeInstalled.Managed)
+	beforeEntry, ok := readLockfile(t, projectRoot).Get("my-skill")
+	require.True(t, ok)
+
+	callerCtx, cancel := context.WithCancel(t.Context())
+	t.Cleanup(cancel)
+	baseStore := svc.store
+	var updateContextErrors []error
+	var hookErr error
+	var refreshedManaged bool
+	var competingEntry lockfile.Entry
+	svc.store = &hookSkillStore{
+		SkillStore: baseStore,
+		afterUpdateContext: func(updateCtx context.Context) {
+			updateContextErrors = append(updateContextErrors, updateCtx.Err())
+			if len(updateContextErrors) != 1 {
+				return
+			}
+			refreshed, getErr := baseStore.Get(t.Context(), "my-skill", skills.ScopeProject, projectRoot)
+			if getErr != nil {
+				hookErr = getErr
+				cancel()
+				return
+			}
+			refreshedManaged = refreshed.Managed
+			hookErr = lockfile.Update(root, func(lf *lockfile.Lockfile) error {
+				entry, exists := lf.Get("my-skill")
+				if !exists {
+					return fmt.Errorf("planned lock entry disappeared")
+				}
+				entry.Digest = ociTestDigest(9)
+				lf.Upsert(entry)
+				competingEntry = entry
+				return nil
+			})
+			cancel()
+		},
+	}
+
+	result, err := svc.Upgrade(callerCtx, skills.UpgradeOptions{
+		ProjectRoot:       projectRoot,
+		AllowRefChange:    true,
+		AllowSignerChange: true,
+		PublicKey:         otherKeyB64,
+	})
+	require.NoError(t, err)
+	require.NoError(t, hookErr)
+	require.Len(t, result.Outcomes, 1)
+	assert.Equal(t, skills.UpgradeStatusFailed, result.Outcomes[0].Status)
+	assert.Contains(t, result.Outcomes[0].Error, lockfile.ErrEntryChanged.Error())
+	assert.ErrorIs(t, callerCtx.Err(), context.Canceled)
+	assert.True(t, refreshedManaged, "metadata refresh must retain lock ownership")
+	require.Len(t, updateContextErrors, 2,
+		"the metadata update must be followed by a compensating database update")
+	assert.NoError(t, updateContextErrors[0])
+	assert.NoError(t, updateContextErrors[1],
+		"compensation must detach from the canceled request context")
+
+	afterInstalled, getErr := svc.store.Get(t.Context(), "my-skill", skills.ScopeProject, projectRoot)
+	require.NoError(t, getErr)
+	assert.Equal(t, beforeInstalled, afterInstalled)
+	afterEntry, ok := readLockfile(t, projectRoot).Get("my-skill")
+	require.True(t, ok)
+	assert.NotEqual(t, beforeEntry, afterEntry)
+	assert.Equal(t, competingEntry, afterEntry,
+		"rollback must not overwrite the competing lock update")
+
+	require.NoError(t, svc.Uninstall(t.Context(), skills.UninstallOptions{
+		Name: "my-skill", Scope: skills.ScopeProject, ProjectRoot: projectRoot,
+	}))
+	_, ok = readLockfile(t, projectRoot).Get("my-skill")
+	assert.False(t, ok, "uninstall must remove the restored managed lock entry")
+}
+
+//nolint:paralleltest // uses t.Setenv via newLockTestService, incompatible with t.Parallel
 func TestUpgrade_TrustOnlyRollbackRestoresDatabase(t *testing.T) {
 	svc, projectRoot, _, _ := newKeyReanchorFixture(t)
 	beforeInstalled, err := svc.store.Get(t.Context(), "my-skill", skills.ScopeProject, projectRoot)

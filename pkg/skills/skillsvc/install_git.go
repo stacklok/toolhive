@@ -192,6 +192,7 @@ func (s *service) applyGitInstallExisting(
 		(len(existing.Clients) == 0 && len(clientTypes) <= 1 && !clientsExplicit) {
 		if opts.RefreshMetadata {
 			updated := buildInstalledSkill(opts, scope, clientTypes, existing.Clients)
+			updated.Managed = existing.Managed
 			if err := s.store.Update(ctx, updated); err != nil {
 				return nil, err
 			}

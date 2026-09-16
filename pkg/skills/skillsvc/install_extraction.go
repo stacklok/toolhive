@@ -58,6 +58,7 @@ func (s *service) dispatchExtraction(
 			return &skills.InstallResult{Skill: existing}, nil
 		}
 		updated := buildInstalledSkill(opts, scope, clientTypes, existing.Clients)
+		updated.Managed = existing.Managed
 		if err := s.store.Update(ctx, updated); err != nil {
 			return nil, err
 		}

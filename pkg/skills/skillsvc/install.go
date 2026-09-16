@@ -10,6 +10,7 @@ import (
 	"log/slog"
 	"net/http"
 	"strings"
+	"time"
 
 	nameref "github.com/google/go-containerregistry/pkg/name"
 
@@ -19,6 +20,9 @@ import (
 	"github.com/stacklok/toolhive/pkg/skills/gitresolver"
 	"github.com/stacklok/toolhive/pkg/skills/lockfile"
 )
+
+// installRollbackTimeout bounds context-aware compensation after an install fails.
+const installRollbackTimeout = 5 * time.Second
 
 // Install installs a skill. When the Name field contains an OCI reference
 // (detected by the presence of '/', ':', or '@'), the artifact is pulled from
@@ -461,13 +465,16 @@ func (s *service) rollbackInstall(
 	addedToGroup bool,
 	groupName string,
 ) error {
+	rollbackCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), installRollbackTimeout)
+	defer cancel()
+
 	var errs []error
 	if result.PreExisting != nil {
-		if err := s.store.Update(ctx, *result.PreExisting); err != nil {
+		if err := s.store.Update(rollbackCtx, *result.PreExisting); err != nil {
 			errs = append(errs, fmt.Errorf("restoring pre-existing DB record: %w", err))
 		}
 	} else {
-		if err := s.store.Delete(ctx, skillName, scope, opts.ProjectRoot); err != nil {
+		if err := s.store.Delete(rollbackCtx, skillName, scope, opts.ProjectRoot); err != nil {
 			errs = append(errs, fmt.Errorf("deleting rolled-back DB record: %w", err))
 		}
 	}
@@ -479,7 +486,7 @@ func (s *service) rollbackInstall(
 	}
 
 	if addedToGroup && s.groupManager != nil {
-		if err := groups.RemoveSkillFromGroup(ctx, s.groupManager, groupName, skillName); err != nil {
+		if err := groups.RemoveSkillFromGroup(rollbackCtx, s.groupManager, groupName, skillName); err != nil {
 			errs = append(errs, fmt.Errorf("removing skill from group: %w", err))
 		}
 	}
@@ -504,7 +511,7 @@ func (s *service) rollbackInstall(
 		return errors.Join(errs...)
 	}
 	visited := map[string]struct{}{skillName: {}}
-	if err := s.cascadeUninstall(ctx, candidates, visited, opts.ProjectRoot, scope); err != nil {
+	if err := s.cascadeUninstall(rollbackCtx, candidates, visited, opts.ProjectRoot, scope); err != nil {
 		errs = append(errs, err)
 	}
 	return errors.Join(errs...)

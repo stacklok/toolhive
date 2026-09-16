@@ -846,7 +846,7 @@ spec:
   passes it to `tokenexchange.FactoryWithSharedTrustedIssuerValidator` (and, when
   the JWT-bearer grant is enabled, `tokenexchange.JWTBearerIssuanceFactory`),
   which require it rather than each building its own. A `MultiIssuerTokenValidator`
-  registers a `jwk.Cache` and background refresh goroutines per issuer, so one
+  registers a `jwkfetch.Cache` and background refresh goroutines per issuer, so one
   shared instance both avoids doubling that cost and gives the server a single
   handle to shut those workers down on `Close`. (Previously the shared validator
   was built only when the JWT-bearer grant was also enabled, and a token-exchange-only

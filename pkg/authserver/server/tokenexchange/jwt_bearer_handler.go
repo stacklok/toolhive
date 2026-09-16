@@ -388,7 +388,7 @@ func audienceIntersects(audience jwt.Audience, accepted []string) bool {
 // trustedIssuers is non-empty (an error is returned otherwise). The RFC 8693
 // token-exchange Factory and this one are usually enabled for the same trusted
 // issuers, and each MultiIssuerTokenValidator registers its own per-issuer
-// jwk.Cache and background refresh goroutines; sharing one instance avoids
+// jwkfetch.Cache and background refresh goroutines; sharing one instance avoids
 // doubling that cost, and — since the validator's JWKS workers are released
 // only by its Close — keeps them owned by the caller rather than built and
 // abandoned inside this compose-time closure. Build it once with

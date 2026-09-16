@@ -111,6 +111,55 @@ func TestNoSessionIDInNonSSE(t *testing.T) {
 	assert.False(t, ok, "no session should be added")
 }
 
+// TestStreamableHTTPTransparentProxyForwardsClientResponse verifies that the
+// transparent proxy used by thv proxy and remote streamable-http runs forwards
+// client-response POSTs and preserves the upstream 202 response.
+func TestStreamableHTTPTransparentProxyForwardsClientResponse(t *testing.T) {
+	t.Parallel()
+
+	const message = `{"jsonrpc":"2.0","id":"server-1","result":{}}`
+	type capturedRequest struct {
+		method string
+		path   string
+		body   []byte
+	}
+	received := make(chan capturedRequest, 1)
+	target := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		body, err := io.ReadAll(r.Body)
+		if err != nil {
+			t.Errorf("read client response: %v", err)
+			return
+		}
+		received <- capturedRequest{method: r.Method, path: r.URL.Path, body: body}
+		w.WriteHeader(http.StatusAccepted)
+	}))
+	t.Cleanup(target.Close)
+
+	targetURL, err := url.Parse(target.URL)
+	require.NoError(t, err)
+	p := NewTransparentProxy("127.0.0.1", 0, targetURL.String(), nil, nil, nil,
+		false, false, "streamable-http", nil, nil, "", false)
+	t.Cleanup(func() { _ = p.Stop(context.Background()) })
+	reverseProxy := createBasicProxy(p, targetURL)
+
+	req := httptest.NewRequest(http.MethodPost, "http://proxy.local/mcp", strings.NewReader(message))
+	req.Header.Set("Content-Type", "application/json")
+	rec := httptest.NewRecorder()
+	reverseProxy.ServeHTTP(rec, req)
+
+	assert.Equal(t, http.StatusAccepted, rec.Code)
+	assert.Empty(t, rec.Body.Bytes(), "client response 202 should have no body")
+
+	select {
+	case request := <-received:
+		assert.Equal(t, http.MethodPost, request.method)
+		assert.Equal(t, "/mcp", request.path)
+		assert.JSONEq(t, message, string(request.body))
+	case <-time.After(time.Second):
+		t.Fatal("upstream did not receive client response")
+	}
+}
+
 func TestHeaderBasedSessionInitialization(t *testing.T) {
 	t.Parallel()
 

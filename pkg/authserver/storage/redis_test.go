@@ -3079,16 +3079,63 @@ func TestRedisStorage_DeviceCode(t *testing.T) {
 		})
 	})
 
-	t.Run("update last polled at", func(t *testing.T) {
+	t.Run("concurrent authorize and deny of the same device code: exactly one wins", func(t *testing.T) {
+		withRedisStorage(t, func(ctx context.Context, s *RedisStorage, _ *miniredis.Miniredis) {
+			require.NoError(t, s.StoreDeviceRequest(ctx, makeDevice("device-auth-race", "USER-AUTH-RACE")))
+
+			const attempts = 5
+			var wg sync.WaitGroup
+			results := make([]error, attempts)
+			for i := range results {
+				wg.Add(1)
+				go func(idx int) {
+					defer wg.Done()
+					if idx%2 == 0 {
+						results[idx] = s.MarkDeviceRequestAuthorized(
+							ctx, "device-auth-race", "user-1", "Alice", "alice@example.com", "session-1")
+					} else {
+						results[idx] = s.MarkDeviceRequestDenied(ctx, "device-auth-race")
+					}
+				}(i)
+			}
+
+			done := make(chan struct{})
+			go func() { wg.Wait(); close(done) }()
+			select {
+			case <-done:
+			case <-time.After(5 * time.Second):
+				t.Fatal("timeout waiting for concurrent authorize/deny to finish")
+			}
+
+			successes, conflicts := 0, 0
+			for _, err := range results {
+				switch {
+				case err == nil:
+					successes++
+				case errors.Is(err, ErrInvalidState):
+					conflicts++
+				}
+			}
+			assert.Equal(t, 1, successes, "exactly one of the concurrent transitions must win")
+			assert.Equal(t, attempts-1, conflicts)
+
+			retrieved, err := s.LoadDeviceRequestByDeviceCode(ctx, "device-auth-race")
+			require.NoError(t, err)
+			assert.Contains(t, []DeviceRequestStatus{DeviceRequestStatusAuthorized, DeviceRequestStatusDenied}, retrieved.Status)
+		})
+	})
+
+	t.Run("update last polled at preserves sub-second precision", func(t *testing.T) {
 		withRedisStorage(t, func(ctx context.Context, s *RedisStorage, _ *miniredis.Miniredis) {
 			require.NoError(t, s.StoreDeviceRequest(ctx, makeDevice("device-poll", "USER-POLL")))
 
-			polledAt := time.Now().Add(time.Second).Truncate(time.Second)
+			polledAt := time.Now().Add(time.Second)
 			require.NoError(t, s.UpdateDeviceRequestLastPolledAt(ctx, "device-poll", polledAt))
 
 			retrieved, err := s.LoadDeviceRequestByDeviceCode(ctx, "device-poll")
 			require.NoError(t, err)
-			assert.True(t, polledAt.Equal(retrieved.LastPolledAt))
+			assert.True(t, polledAt.Equal(retrieved.LastPolledAt),
+				"want %v, got %v -- Redis backend must not round LastPolledAt to whole seconds", polledAt, retrieved.LastPolledAt)
 		})
 	})
 
@@ -3136,6 +3183,48 @@ func TestRedisStorage_DeviceCode(t *testing.T) {
 			}
 			assert.Equal(t, 1, successes)
 			assert.Equal(t, 1, conflicts)
+		})
+	})
+
+	t.Run("concurrent delete of the same device code: exactly one succeeds", func(t *testing.T) {
+		withRedisStorage(t, func(ctx context.Context, s *RedisStorage, _ *miniredis.Miniredis) {
+			require.NoError(t, s.StoreDeviceRequest(ctx, makeDevice("device-del-race", "USER-DEL-RACE")))
+
+			const attempts = 5
+			var wg sync.WaitGroup
+			results := make([]error, attempts)
+			for i := range results {
+				wg.Add(1)
+				go func(idx int) {
+					defer wg.Done()
+					results[idx] = s.DeleteDeviceRequest(ctx, "device-del-race")
+				}(i)
+			}
+
+			done := make(chan struct{})
+			go func() { wg.Wait(); close(done) }()
+			select {
+			case <-done:
+			case <-time.After(5 * time.Second):
+				t.Fatal("timeout waiting for concurrent deletes to finish")
+			}
+
+			successes, notFound := 0, 0
+			for _, err := range results {
+				switch {
+				case err == nil:
+					successes++
+				case errors.Is(err, ErrNotFound):
+					notFound++
+				}
+			}
+			assert.Equal(t, 1, successes, "device_code must be redeemable exactly once")
+			assert.Equal(t, attempts-1, notFound)
+
+			_, err := s.LoadDeviceRequestByDeviceCode(ctx, "device-del-race")
+			require.ErrorIs(t, err, ErrNotFound)
+			_, err = s.LoadDeviceRequestByUserCode(ctx, "USER-DEL-RACE")
+			require.ErrorIs(t, err, ErrNotFound)
 		})
 	})
 }

@@ -2274,9 +2274,12 @@ func (s *RedisStorage) DeletePendingAuthorization(ctx context.Context, state str
 // Device Code Storage
 // -----------------------
 
-// storedDeviceRequest is a serializable wrapper for DeviceRequest. LastPolledAt
-// mirrors CreatedAt's epoch-seconds convention, using 0 to mean the zero
-// time.Time (never polled) — see deviceTimeToUnix / deviceUnixToTime.
+// storedDeviceRequest is a serializable wrapper for DeviceRequest.
+// LastPolledAtNano is stored at nanosecond precision (unlike CreatedAt's
+// epoch-seconds), because enforcePollInterval in deviceflow/handler.go
+// compares it against MinInterval and a poll landing fractionally under the
+// required interval must not appear to have waited long enough merely due to
+// storage rounding -- see deviceTimeToUnixNano / deviceUnixNanoToTime.
 type storedDeviceRequest struct {
 	DeviceCode        string              `json:"device_code"`
 	UserCode          string              `json:"user_code"`
@@ -2285,7 +2288,7 @@ type storedDeviceRequest struct {
 	Audience          []string            `json:"audience,omitempty"`
 	Status            DeviceRequestStatus `json:"status"`
 	IntervalSeconds   int64               `json:"interval_seconds,omitempty"`
-	LastPolledAt      int64               `json:"last_polled_at,omitempty"`
+	LastPolledAtNano  int64               `json:"last_polled_at_nano,omitempty"`
 	ResolvedUserID    string              `json:"resolved_user_id,omitempty"`
 	ResolvedUserName  string              `json:"resolved_user_name,omitempty"`
 	ResolvedUserEmail string              `json:"resolved_user_email,omitempty"`
@@ -2293,22 +2296,22 @@ type storedDeviceRequest struct {
 	CreatedAt         int64               `json:"created_at"`
 }
 
-// deviceTimeToUnix converts t to epoch seconds for JSON storage, using 0 to
+// deviceTimeToUnixNano converts t to epoch nanoseconds for JSON storage, using 0 to
 // mean the zero time.Time so a never-polled request round-trips through
 // LastPolledAt's IsZero() check rather than colliding with the Unix epoch.
-func deviceTimeToUnix(t time.Time) int64 {
+func deviceTimeToUnixNano(t time.Time) int64 {
 	if t.IsZero() {
 		return 0
 	}
-	return t.Unix()
+	return t.UnixNano()
 }
 
-// deviceUnixToTime is the inverse of deviceTimeToUnix.
-func deviceUnixToTime(unix int64) time.Time {
-	if unix == 0 {
+// deviceUnixNanoToTime is the inverse of deviceTimeToUnixNano.
+func deviceUnixNanoToTime(unixNano int64) time.Time {
+	if unixNano == 0 {
 		return time.Time{}
 	}
-	return time.Unix(unix, 0)
+	return time.Unix(0, unixNano)
 }
 
 // toDeviceRequest converts the wire representation back to a DeviceRequest,
@@ -2323,7 +2326,7 @@ func (stored *storedDeviceRequest) toDeviceRequest() *DeviceRequest {
 		Audience:          slices.Clone(stored.Audience),
 		Status:            stored.Status,
 		Interval:          time.Duration(stored.IntervalSeconds) * time.Second,
-		LastPolledAt:      deviceUnixToTime(stored.LastPolledAt),
+		LastPolledAt:      deviceUnixNanoToTime(stored.LastPolledAtNano),
 		ResolvedUserID:    stored.ResolvedUserID,
 		ResolvedUserName:  stored.ResolvedUserName,
 		ResolvedUserEmail: stored.ResolvedUserEmail,
@@ -2366,7 +2369,7 @@ func (s *RedisStorage) StoreDeviceRequest(ctx context.Context, device *DeviceReq
 		Audience:          slices.Clone(device.Audience),
 		Status:            device.Status,
 		IntervalSeconds:   int64(device.Interval / time.Second),
-		LastPolledAt:      deviceTimeToUnix(device.LastPolledAt),
+		LastPolledAtNano:  deviceTimeToUnixNano(device.LastPolledAt),
 		ResolvedUserID:    device.ResolvedUserID,
 		ResolvedUserName:  device.ResolvedUserName,
 		ResolvedUserEmail: device.ResolvedUserEmail,
@@ -2454,42 +2457,67 @@ func (s *RedisStorage) LoadDeviceRequestByUserCode(ctx context.Context, userCode
 // preserved. mutate returns an error (e.g. ErrInvalidState) to abort the
 // write without touching the stored record.
 //
-// No CAS is needed here: a single device_code is polled by one client and
-// updated by one verification-page submission, so a plain read-then-write is
-// sufficient, unlike CompareAndSwapUpstreamTokens which coordinates across
-// concurrent replicas racing the same row.
+// The read-modify-write runs inside a Redis WATCH/MULTI transaction,
+// mirroring DeleteDeviceRequest: two concurrent callers racing the same
+// device_code (e.g. a double-click authorize+deny, or two verification-page
+// tabs) cannot both observe the pre-mutation status and both commit --
+// whichever EXECs second aborts with redis.TxFailedErr and retries against
+// the now-updated record, so mutate's pending-status check (or any other
+// invariant it enforces) actually holds across the transition rather than
+// being a TOCTOU check on a plain read-then-write. See
+// maxConfiguredClientReconcileRetries for why the retry count is bounded.
 func (s *RedisStorage) updateDeviceRequest(
 	ctx context.Context, deviceCode string, mutate func(*storedDeviceRequest) error,
 ) error {
 	key := redisKey(s.keyPrefix, KeyTypeDeviceCode, deviceCode)
 
-	data, err := s.client.Get(ctx, key).Bytes()
-	if err != nil {
-		if errors.Is(err, redis.Nil) {
-			return fmt.Errorf("%w: device request not found", ErrNotFound)
+	txFn := func(tx *redis.Tx) error {
+		data, err := tx.Get(ctx, key).Bytes()
+		if err != nil {
+			if errors.Is(err, redis.Nil) {
+				return fmt.Errorf("%w: device request not found", ErrNotFound)
+			}
+			return fmt.Errorf("failed to get device request: %w", err)
 		}
-		return fmt.Errorf("failed to get device request: %w", err)
-	}
 
-	var stored storedDeviceRequest
-	if err := json.Unmarshal(data, &stored); err != nil {
-		return fmt.Errorf("failed to unmarshal device request: %w", err)
-	}
+		var stored storedDeviceRequest
+		if err := json.Unmarshal(data, &stored); err != nil {
+			return fmt.Errorf("failed to unmarshal device request: %w", err)
+		}
 
-	if time.Since(time.Unix(stored.CreatedAt, 0)) > DefaultDeviceRequestTTL {
-		return ErrExpired
-	}
+		if time.Since(time.Unix(stored.CreatedAt, 0)) > DefaultDeviceRequestTTL {
+			return ErrExpired
+		}
 
-	if err := mutate(&stored); err != nil {
+		if err := mutate(&stored); err != nil {
+			return err
+		}
+
+		updated, err := json.Marshal(stored) //nolint:gosec // G117 - internal Redis storage serialization, not exposed to users
+		if err != nil {
+			return fmt.Errorf("failed to marshal device request: %w", err)
+		}
+
+		_, err = tx.TxPipelined(ctx, func(pipe redis.Pipeliner) error {
+			pipe.Set(ctx, key, updated, redis.KeepTTL)
+			return nil
+		})
 		return err
 	}
 
-	updated, err := json.Marshal(stored) //nolint:gosec // G117 - internal Redis storage serialization, not exposed to users
-	if err != nil {
-		return fmt.Errorf("failed to marshal device request: %w", err)
+	// Watch returns any non-TxFailedErr error from txFn (not-found, expired,
+	// mutate's own validation error, marshal/get failures) immediately without
+	// retrying, since a fresh GET would only reproduce it. Only a genuine
+	// transaction conflict (another writer changed the watched key between our
+	// GET and EXEC) is retried, up to maxConfiguredClientReconcileRetries.
+	var watchErr error
+	for attempt := 0; attempt < maxConfiguredClientReconcileRetries; attempt++ {
+		watchErr = s.client.Watch(ctx, txFn, key)
+		if !errors.Is(watchErr, redis.TxFailedErr) {
+			return watchErr
+		}
 	}
-
-	return s.client.Set(ctx, key, updated, redis.KeepTTL).Err()
+	return fmt.Errorf("failed to update device request: %w", watchErr)
 }
 
 // MarkDeviceRequestAuthorized transitions a pending device request to
@@ -2524,7 +2552,7 @@ func (s *RedisStorage) MarkDeviceRequestDenied(ctx context.Context, deviceCode s
 // UpdateDeviceRequestLastPolledAt records the time of the most recent poll.
 func (s *RedisStorage) UpdateDeviceRequestLastPolledAt(ctx context.Context, deviceCode string, polledAt time.Time) error {
 	return s.updateDeviceRequest(ctx, deviceCode, func(stored *storedDeviceRequest) error {
-		stored.LastPolledAt = deviceTimeToUnix(polledAt)
+		stored.LastPolledAtNano = deviceTimeToUnixNano(polledAt)
 		return nil
 	})
 }
@@ -2532,32 +2560,58 @@ func (s *RedisStorage) UpdateDeviceRequestLastPolledAt(ctx context.Context, devi
 // DeleteDeviceRequest removes a device request, e.g. once its token has been
 // issued so the device_code cannot be redeemed twice. Both the canonical
 // record and the user_code secondary index are deleted in one pipeline.
+//
+// The get-then-delete sequence runs inside a Redis WATCH/MULTI transaction,
+// mirroring UpsertDCRIssuedClient: if another caller deletes (or otherwise
+// modifies) the key between our GET and EXEC, EXEC aborts with
+// redis.TxFailedErr. Retrying then re-runs the GET, which now observes
+// redis.Nil and reports ErrNotFound to the loser -- so a second concurrent or
+// replayed DeleteDeviceRequest for the same device_code can never also
+// observe success, which is what made this method single-use. See
+// maxConfiguredClientReconcileRetries for why the retry count is bounded.
 func (s *RedisStorage) DeleteDeviceRequest(ctx context.Context, deviceCode string) error {
 	key := redisKey(s.keyPrefix, KeyTypeDeviceCode, deviceCode)
 
-	data, err := s.client.Get(ctx, key).Bytes()
-	if err != nil {
-		if errors.Is(err, redis.Nil) {
-			return fmt.Errorf("%w: device request not found", ErrNotFound)
+	txFn := func(tx *redis.Tx) error {
+		data, err := tx.Get(ctx, key).Bytes()
+		if err != nil {
+			if errors.Is(err, redis.Nil) {
+				return fmt.Errorf("%w: device request not found", ErrNotFound)
+			}
+			return fmt.Errorf("failed to get device request: %w", err)
 		}
-		return fmt.Errorf("failed to get device request: %w", err)
+
+		var stored storedDeviceRequest
+		if err := json.Unmarshal(data, &stored); err != nil {
+			return fmt.Errorf("failed to unmarshal device request: %w", err)
+		}
+
+		userCodeKey := redisKey(s.keyPrefix, KeyTypeDeviceUserCode, stored.UserCode)
+
+		_, err = tx.TxPipelined(ctx, func(pipe redis.Pipeliner) error {
+			pipe.Del(ctx, key)
+			pipe.Del(ctx, userCodeKey)
+			return nil
+		})
+		return err
 	}
 
-	var stored storedDeviceRequest
-	if err := json.Unmarshal(data, &stored); err != nil {
-		return fmt.Errorf("failed to unmarshal device request: %w", err)
+	// Watch returns any non-TxFailedErr error from txFn (not-found, get/unmarshal
+	// failures) immediately without retrying, since a fresh GET would only
+	// reproduce it. Only a genuine transaction conflict (another caller deleted
+	// or modified the watched key between our GET and EXEC) is retried, up to
+	// maxConfiguredClientReconcileRetries -- at which point the retry re-runs
+	// the GET, which now observes redis.Nil and reports ErrNotFound to the
+	// loser, so a second concurrent or replayed delete can never also observe
+	// success.
+	var watchErr error
+	for attempt := 0; attempt < maxConfiguredClientReconcileRetries; attempt++ {
+		watchErr = s.client.Watch(ctx, txFn, key)
+		if !errors.Is(watchErr, redis.TxFailedErr) {
+			return watchErr
+		}
 	}
-
-	userCodeKey := redisKey(s.keyPrefix, KeyTypeDeviceUserCode, stored.UserCode)
-
-	pipe := s.client.TxPipeline()
-	pipe.Del(ctx, key)
-	pipe.Del(ctx, userCodeKey)
-	_, err = pipe.Exec(ctx)
-	if err != nil {
-		return fmt.Errorf("failed to delete device request: %w", err)
-	}
-	return nil
+	return fmt.Errorf("failed to delete device request: %w", watchErr)
 }
 
 // -----------------------

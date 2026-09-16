@@ -3640,11 +3640,11 @@ func TestRedisStorage_DCRCredentials_UpdateAbsentReturnsNotFound(t *testing.T) {
 			AuthorizationEndpoint: "https://idp.example.com/auth",
 			TokenEndpoint:         "https://idp.example.com/token",
 		})
-		requireNotFoundError(t, err)
+		requireRedisNotFoundError(t, err)
 
 		// Nothing was created.
 		_, getErr := s.GetDCRCredentials(ctx, key)
-		requireNotFoundError(t, getErr)
+		requireRedisNotFoundError(t, getErr)
 	})
 }
 
@@ -3760,6 +3760,130 @@ func TestRedisStorage_DCRCredentials_UpdateInvalidInputRejected(t *testing.T) {
 		_, err := s.UpdateDCRCredentialsIfPresent(ctx, nil)
 		require.Error(t, err)
 		assert.ErrorIs(t, err, fosite.ErrInvalidRequest)
+	})
+}
+
+// TestRedisStorage_DCRCredentials_UpdateCopyIsolatesCaller pins the
+// defensive-copy-on-input contract for the Redis backend, mirroring the memory
+// backend's equivalent: mutating the creds after a successful update must not
+// reach the persisted row (the input is serialised before any write).
+func TestRedisStorage_DCRCredentials_UpdateCopyIsolatesCaller(t *testing.T) {
+	withRedisStorage(t, func(ctx context.Context, s *RedisStorage, _ *miniredis.Miniredis) {
+		key := dcrFixtureKey()
+		_, err := s.StoreDCRCredentialsIfAbsent(ctx, &DCRCredentials{
+			Key:                   key,
+			ClientID:              "client-abc",
+			ClientSecret:          "secret-original",
+			AuthorizationEndpoint: "https://idp.example.com/auth",
+			TokenEndpoint:         "https://idp.example.com/token",
+		})
+		require.NoError(t, err)
+
+		input := &DCRCredentials{
+			Key:                   key,
+			ClientID:              "client-abc",
+			ClientSecret:          "secret-rotated",
+			AuthorizationEndpoint: "https://idp.example.com/auth",
+			TokenEndpoint:         "https://idp.example.com/token",
+		}
+		_, err = s.UpdateDCRCredentialsIfPresent(ctx, input)
+		require.NoError(t, err)
+
+		input.ClientSecret = "mutated-after-update"
+		got, err := s.GetDCRCredentials(ctx, key)
+		require.NoError(t, err)
+		assert.Equal(t, "secret-rotated", got.ClientSecret,
+			"caller mutation after Update must not reach persisted state")
+	})
+}
+
+// TestRedisStorage_DCRCredentials_UpdateConcurrent exercises the WATCH/MULTI
+// retry loop that is unique to the Update path. Unlike
+// StoreDCRCredentialsIfAbsent — where the losers of a concurrent claim take the
+// read-only "return existing winner" branch and never enter MULTI —
+// UpdateDCRCredentialsIfPresent has every caller SET the key inside MULTI, so
+// concurrent updaters genuinely race the watched key and drive
+// redis.TxFailedErr → retry.
+//
+// The contract the loop must honour under contention:
+//   - A present row is NEVER spuriously reported ErrNotFound (the GET inside
+//     the transaction always finds it); a non-nil error may only be the bounded
+//     "after N attempts" terminal error, which wraps redis.TxFailedErr.
+//   - At least one update commits, and the store converges on exactly one of the
+//     racing candidates — never a torn or absent row.
+//
+// Both outcomes per goroutine (success, or retry-exhaustion wrapping
+// TxFailedErr) are accepted so the test stays deterministic: it asserts the
+// loop classifies the retry error correctly and never mis-reports a present
+// row as absent, without depending on a particular scheduler interleaving.
+func TestRedisStorage_DCRCredentials_UpdateConcurrent(t *testing.T) {
+	withRedisStorage(t, func(ctx context.Context, s *RedisStorage, _ *miniredis.Miniredis) {
+		const goroutines = 6
+		key := dcrFixtureKey()
+
+		_, err := s.StoreDCRCredentialsIfAbsent(ctx, &DCRCredentials{
+			Key:                   key,
+			ClientID:              "client-abc",
+			ClientSecret:          "secret-seed",
+			AuthorizationEndpoint: "https://idp.example.com/auth",
+			TokenEndpoint:         "https://idp.example.com/token",
+		})
+		require.NoError(t, err)
+
+		candidates := make(map[string]struct{}, goroutines)
+		for g := 0; g < goroutines; g++ {
+			candidates[fmt.Sprintf("secret-%d", g)] = struct{}{}
+		}
+
+		start := make(chan struct{})
+		errs := make([]error, goroutines)
+		var wg sync.WaitGroup
+		wg.Add(goroutines)
+		for g := 0; g < goroutines; g++ {
+			gid := g
+			go func() {
+				defer wg.Done()
+				<-start
+				_, errs[gid] = s.UpdateDCRCredentialsIfPresent(ctx, &DCRCredentials{
+					Key:                   key,
+					ClientID:              "client-abc",
+					ClientSecret:          fmt.Sprintf("secret-%d", gid),
+					AuthorizationEndpoint: "https://idp.example.com/auth",
+					TokenEndpoint:         "https://idp.example.com/token",
+				})
+			}()
+		}
+		close(start)
+
+		done := make(chan struct{})
+		go func() { wg.Wait(); close(done) }()
+		select {
+		case <-done:
+		case <-time.After(10 * time.Second):
+			t.Fatal("timeout waiting for concurrent update goroutines")
+		}
+
+		successes := 0
+		for _, e := range errs {
+			if e == nil {
+				successes++
+				continue
+			}
+			// The only tolerated failure is bounded retry exhaustion, which
+			// wraps redis.TxFailedErr. A present row must never surface as
+			// ErrNotFound under contention.
+			assert.ErrorIs(t, e, redis.TxFailedErr,
+				"a present row's only permitted update failure is retry exhaustion")
+			assert.NotErrorIs(t, e, ErrNotFound,
+				"an update against a present row must never report ErrNotFound")
+		}
+		assert.Positive(t, successes, "at least one concurrent update must commit")
+
+		got, err := s.GetDCRCredentials(ctx, key)
+		require.NoError(t, err, "the row must remain present after concurrent updates")
+		_, isCandidate := candidates[got.ClientSecret]
+		assert.True(t, isCandidate,
+			"the stored row must converge on one racing candidate, got %q", got.ClientSecret)
 	})
 }
 

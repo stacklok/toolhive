@@ -1756,6 +1756,12 @@ func (s *AuthenticationOAuth2UpstreamRunConfig) encodeFields(e *jx.Encoder) {
 		}
 	}
 	{
+		if s.AdditionalTokenParams.Set {
+			e.FieldStart("additional_token_params")
+			s.AdditionalTokenParams.Encode(e)
+		}
+	}
+	{
 		if s.AllowPrivateIps.Set {
 			e.FieldStart("allow_private_ips")
 			s.AllowPrivateIps.Encode(e)
@@ -1851,23 +1857,24 @@ func (s *AuthenticationOAuth2UpstreamRunConfig) encodeFields(e *jx.Encoder) {
 	}
 }
 
-var jsonFieldsNameOfAuthenticationOAuth2UpstreamRunConfig = [16]string{
+var jsonFieldsNameOfAuthenticationOAuth2UpstreamRunConfig = [17]string{
 	0:  "additional_authorization_params",
-	1:  "allow_private_ips",
-	2:  "authorization_endpoint",
-	3:  "ca_file_path",
-	4:  "client_id",
-	5:  "client_secret_env_var",
-	6:  "client_secret_file",
-	7:  "dcr_config",
-	8:  "identity_from_token",
-	9:  "insecure_allow_http",
-	10: "redirect_uri",
-	11: "scopes",
-	12: "token_endpoint",
-	13: "token_endpoint_auth_method",
-	14: "token_response_mapping",
-	15: "userinfo",
+	1:  "additional_token_params",
+	2:  "allow_private_ips",
+	3:  "authorization_endpoint",
+	4:  "ca_file_path",
+	5:  "client_id",
+	6:  "client_secret_env_var",
+	7:  "client_secret_file",
+	8:  "dcr_config",
+	9:  "identity_from_token",
+	10: "insecure_allow_http",
+	11: "redirect_uri",
+	12: "scopes",
+	13: "token_endpoint",
+	14: "token_endpoint_auth_method",
+	15: "token_response_mapping",
+	16: "userinfo",
 }
 
 // Decode decodes AuthenticationOAuth2UpstreamRunConfig from json.
@@ -1887,6 +1894,16 @@ func (s *AuthenticationOAuth2UpstreamRunConfig) Decode(d *jx.Decoder) error {
 				return nil
 			}(); err != nil {
 				return errors.Wrap(err, "decode field \"additional_authorization_params\"")
+			}
+		case "additional_token_params":
+			if err := func() error {
+				s.AdditionalTokenParams.Reset()
+				if err := s.AdditionalTokenParams.Decode(d); err != nil {
+					return err
+				}
+				return nil
+			}(); err != nil {
+				return errors.Wrap(err, "decode field \"additional_token_params\"")
 			}
 		case "allow_private_ips":
 			if err := func() error {
@@ -2128,6 +2145,62 @@ func (s *AuthenticationOAuth2UpstreamRunConfigAdditionalAuthorizationParams) Unm
 }
 
 // Encode implements json.Marshaler.
+func (s AuthenticationOAuth2UpstreamRunConfigAdditionalTokenParams) Encode(e *jx.Encoder) {
+	e.ObjStart()
+	s.encodeFields(e)
+	e.ObjEnd()
+}
+
+// encodeFields implements json.Marshaler.
+func (s AuthenticationOAuth2UpstreamRunConfigAdditionalTokenParams) encodeFields(e *jx.Encoder) {
+	for k, elem := range s {
+		e.FieldStart(k)
+
+		e.Str(elem)
+	}
+}
+
+// Decode decodes AuthenticationOAuth2UpstreamRunConfigAdditionalTokenParams from json.
+func (s *AuthenticationOAuth2UpstreamRunConfigAdditionalTokenParams) Decode(d *jx.Decoder) error {
+	if s == nil {
+		return errors.New("invalid: unable to decode AuthenticationOAuth2UpstreamRunConfigAdditionalTokenParams to nil")
+	}
+	m := s.init()
+	if err := d.ObjBytes(func(d *jx.Decoder, k []byte) error {
+		var elem string
+		if err := func() error {
+			v, err := d.Str()
+			elem = string(v)
+			if err != nil {
+				return err
+			}
+			return nil
+		}(); err != nil {
+			return errors.Wrapf(err, "decode field %q", k)
+		}
+		m[string(k)] = elem
+		return nil
+	}); err != nil {
+		return errors.Wrap(err, "decode AuthenticationOAuth2UpstreamRunConfigAdditionalTokenParams")
+	}
+
+	return nil
+}
+
+// MarshalJSON implements stdjson.Marshaler.
+func (s AuthenticationOAuth2UpstreamRunConfigAdditionalTokenParams) MarshalJSON() ([]byte, error) {
+	e := jx.Encoder{}
+	s.Encode(&e)
+	return e.Bytes(), nil
+}
+
+// UnmarshalJSON implements stdjson.Unmarshaler.
+func (s *AuthenticationOAuth2UpstreamRunConfigAdditionalTokenParams) UnmarshalJSON(data []byte) error {
+	d := jx.DecodeBytes(data)
+	return s.Decode(d)
+}
+
+// Encode implements json.Marshaler.
 func (s *AuthenticationOIDCUpstreamRunConfig) Encode(e *jx.Encoder) {
 	e.ObjStart()
 	s.encodeFields(e)
@@ -2140,6 +2213,12 @@ func (s *AuthenticationOIDCUpstreamRunConfig) encodeFields(e *jx.Encoder) {
 		if s.AdditionalAuthorizationParams.Set {
 			e.FieldStart("additional_authorization_params")
 			s.AdditionalAuthorizationParams.Encode(e)
+		}
+	}
+	{
+		if s.AdditionalTokenParams.Set {
+			e.FieldStart("additional_token_params")
+			s.AdditionalTokenParams.Encode(e)
 		}
 	}
 	{
@@ -2220,20 +2299,21 @@ func (s *AuthenticationOIDCUpstreamRunConfig) encodeFields(e *jx.Encoder) {
 	}
 }
 
-var jsonFieldsNameOfAuthenticationOIDCUpstreamRunConfig = [13]string{
+var jsonFieldsNameOfAuthenticationOIDCUpstreamRunConfig = [14]string{
 	0:  "additional_authorization_params",
-	1:  "allow_private_ips",
-	2:  "ca_file_path",
-	3:  "client_id",
-	4:  "client_secret_env_var",
-	5:  "client_secret_file",
-	6:  "dcr_config",
-	7:  "insecure_allow_http",
-	8:  "issuer_url",
-	9:  "redirect_uri",
-	10: "scopes",
-	11: "subject_claim",
-	12: "userinfo_override",
+	1:  "additional_token_params",
+	2:  "allow_private_ips",
+	3:  "ca_file_path",
+	4:  "client_id",
+	5:  "client_secret_env_var",
+	6:  "client_secret_file",
+	7:  "dcr_config",
+	8:  "insecure_allow_http",
+	9:  "issuer_url",
+	10: "redirect_uri",
+	11: "scopes",
+	12: "subject_claim",
+	13: "userinfo_override",
 }
 
 // Decode decodes AuthenticationOIDCUpstreamRunConfig from json.
@@ -2253,6 +2333,16 @@ func (s *AuthenticationOIDCUpstreamRunConfig) Decode(d *jx.Decoder) error {
 				return nil
 			}(); err != nil {
 				return errors.Wrap(err, "decode field \"additional_authorization_params\"")
+			}
+		case "additional_token_params":
+			if err := func() error {
+				s.AdditionalTokenParams.Reset()
+				if err := s.AdditionalTokenParams.Decode(d); err != nil {
+					return err
+				}
+				return nil
+			}(); err != nil {
+				return errors.Wrap(err, "decode field \"additional_token_params\"")
 			}
 		case "allow_private_ips":
 			if err := func() error {
@@ -2459,6 +2549,62 @@ func (s AuthenticationOIDCUpstreamRunConfigAdditionalAuthorizationParams) Marsha
 
 // UnmarshalJSON implements stdjson.Unmarshaler.
 func (s *AuthenticationOIDCUpstreamRunConfigAdditionalAuthorizationParams) UnmarshalJSON(data []byte) error {
+	d := jx.DecodeBytes(data)
+	return s.Decode(d)
+}
+
+// Encode implements json.Marshaler.
+func (s AuthenticationOIDCUpstreamRunConfigAdditionalTokenParams) Encode(e *jx.Encoder) {
+	e.ObjStart()
+	s.encodeFields(e)
+	e.ObjEnd()
+}
+
+// encodeFields implements json.Marshaler.
+func (s AuthenticationOIDCUpstreamRunConfigAdditionalTokenParams) encodeFields(e *jx.Encoder) {
+	for k, elem := range s {
+		e.FieldStart(k)
+
+		e.Str(elem)
+	}
+}
+
+// Decode decodes AuthenticationOIDCUpstreamRunConfigAdditionalTokenParams from json.
+func (s *AuthenticationOIDCUpstreamRunConfigAdditionalTokenParams) Decode(d *jx.Decoder) error {
+	if s == nil {
+		return errors.New("invalid: unable to decode AuthenticationOIDCUpstreamRunConfigAdditionalTokenParams to nil")
+	}
+	m := s.init()
+	if err := d.ObjBytes(func(d *jx.Decoder, k []byte) error {
+		var elem string
+		if err := func() error {
+			v, err := d.Str()
+			elem = string(v)
+			if err != nil {
+				return err
+			}
+			return nil
+		}(); err != nil {
+			return errors.Wrapf(err, "decode field %q", k)
+		}
+		m[string(k)] = elem
+		return nil
+	}); err != nil {
+		return errors.Wrap(err, "decode AuthenticationOIDCUpstreamRunConfigAdditionalTokenParams")
+	}
+
+	return nil
+}
+
+// MarshalJSON implements stdjson.Marshaler.
+func (s AuthenticationOIDCUpstreamRunConfigAdditionalTokenParams) MarshalJSON() ([]byte, error) {
+	e := jx.Encoder{}
+	s.Encode(&e)
+	return e.Bytes(), nil
+}
+
+// UnmarshalJSON implements stdjson.Unmarshaler.
+func (s *AuthenticationOIDCUpstreamRunConfigAdditionalTokenParams) UnmarshalJSON(data []byte) error {
 	d := jx.DecodeBytes(data)
 	return s.Decode(d)
 }
@@ -16682,6 +16828,40 @@ func (s *OptAuthenticationOAuth2UpstreamRunConfigAdditionalAuthorizationParams) 
 	return s.Decode(d)
 }
 
+// Encode encodes AuthenticationOAuth2UpstreamRunConfigAdditionalTokenParams as json.
+func (o OptAuthenticationOAuth2UpstreamRunConfigAdditionalTokenParams) Encode(e *jx.Encoder) {
+	if !o.Set {
+		return
+	}
+	o.Value.Encode(e)
+}
+
+// Decode decodes AuthenticationOAuth2UpstreamRunConfigAdditionalTokenParams from json.
+func (o *OptAuthenticationOAuth2UpstreamRunConfigAdditionalTokenParams) Decode(d *jx.Decoder) error {
+	if o == nil {
+		return errors.New("invalid: unable to decode OptAuthenticationOAuth2UpstreamRunConfigAdditionalTokenParams to nil")
+	}
+	o.Set = true
+	o.Value = make(AuthenticationOAuth2UpstreamRunConfigAdditionalTokenParams)
+	if err := o.Value.Decode(d); err != nil {
+		return err
+	}
+	return nil
+}
+
+// MarshalJSON implements stdjson.Marshaler.
+func (s OptAuthenticationOAuth2UpstreamRunConfigAdditionalTokenParams) MarshalJSON() ([]byte, error) {
+	e := jx.Encoder{}
+	s.Encode(&e)
+	return e.Bytes(), nil
+}
+
+// UnmarshalJSON implements stdjson.Unmarshaler.
+func (s *OptAuthenticationOAuth2UpstreamRunConfigAdditionalTokenParams) UnmarshalJSON(data []byte) error {
+	d := jx.DecodeBytes(data)
+	return s.Decode(d)
+}
+
 // Encode encodes AuthenticationOIDCUpstreamRunConfig as json.
 func (o OptAuthenticationOIDCUpstreamRunConfig) Encode(e *jx.Encoder) {
 	if !o.Set {
@@ -16745,6 +16925,40 @@ func (s OptAuthenticationOIDCUpstreamRunConfigAdditionalAuthorizationParams) Mar
 
 // UnmarshalJSON implements stdjson.Unmarshaler.
 func (s *OptAuthenticationOIDCUpstreamRunConfigAdditionalAuthorizationParams) UnmarshalJSON(data []byte) error {
+	d := jx.DecodeBytes(data)
+	return s.Decode(d)
+}
+
+// Encode encodes AuthenticationOIDCUpstreamRunConfigAdditionalTokenParams as json.
+func (o OptAuthenticationOIDCUpstreamRunConfigAdditionalTokenParams) Encode(e *jx.Encoder) {
+	if !o.Set {
+		return
+	}
+	o.Value.Encode(e)
+}
+
+// Decode decodes AuthenticationOIDCUpstreamRunConfigAdditionalTokenParams from json.
+func (o *OptAuthenticationOIDCUpstreamRunConfigAdditionalTokenParams) Decode(d *jx.Decoder) error {
+	if o == nil {
+		return errors.New("invalid: unable to decode OptAuthenticationOIDCUpstreamRunConfigAdditionalTokenParams to nil")
+	}
+	o.Set = true
+	o.Value = make(AuthenticationOIDCUpstreamRunConfigAdditionalTokenParams)
+	if err := o.Value.Decode(d); err != nil {
+		return err
+	}
+	return nil
+}
+
+// MarshalJSON implements stdjson.Marshaler.
+func (s OptAuthenticationOIDCUpstreamRunConfigAdditionalTokenParams) MarshalJSON() ([]byte, error) {
+	e := jx.Encoder{}
+	s.Encode(&e)
+	return e.Bytes(), nil
+}
+
+// UnmarshalJSON implements stdjson.Unmarshaler.
+func (s *OptAuthenticationOIDCUpstreamRunConfigAdditionalTokenParams) UnmarshalJSON(data []byte) error {
 	d := jx.DecodeBytes(data)
 	return s.Decode(d)
 }

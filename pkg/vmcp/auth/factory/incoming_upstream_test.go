@@ -13,7 +13,7 @@ import (
 	"time"
 
 	"github.com/golang-jwt/jwt/v5"
-	"github.com/lestrrat-go/jwx/v3/jwk"
+	"github.com/lestrrat-go/jwx/v4/jwk"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 	"go.uber.org/mock/gomock"
@@ -35,7 +35,7 @@ func newTestOIDCServer(t *testing.T) (*httptest.Server, *rsa.PrivateKey) {
 	privateKey, err := rsa.GenerateKey(rand.Reader, 2048)
 	require.NoError(t, err)
 
-	key, err := jwk.Import(&privateKey.PublicKey)
+	key, err := jwk.Import[jwk.Key](&privateKey.PublicKey)
 	require.NoError(t, err)
 	require.NoError(t, key.Set(jwk.KeyIDKey, testKeyID))
 	require.NoError(t, key.Set(jwk.AlgorithmKey, "RS256"))

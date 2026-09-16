@@ -13,7 +13,7 @@ import (
 	"time"
 
 	"github.com/golang-jwt/jwt/v5"
-	"github.com/lestrrat-go/jwx/v3/jwk"
+	"github.com/lestrrat-go/jwx/v4/jwk"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
@@ -68,7 +68,7 @@ func TestDelegatedTokenEndToEnd(t *testing.T) {
 	privateKey, err := rsa.GenerateKey(rand.Reader, 2048)
 	require.NoError(t, err)
 
-	pubKey, err := jwk.Import(&privateKey.PublicKey)
+	pubKey, err := jwk.Import[jwk.Key](&privateKey.PublicKey)
 	require.NoError(t, err)
 	require.NoError(t, pubKey.Set(jwk.KeyIDKey, keyID))
 	require.NoError(t, pubKey.Set(jwk.AlgorithmKey, "RS256"))

@@ -1569,6 +1569,16 @@ func TestIntegration_DCRCredentials_UpdateIfPresent(t *testing.T) {
 			assert.Equal(t, "secret-rotated", reread.ClientSecret)
 			assert.Equal(t, future.Unix(), reread.ClientSecretExpiresAt.Unix(),
 				"update must refresh the row's expiry from the incoming creds")
+
+			// Wire-level TTL check against the real cluster: the row was stored
+			// persistent (no TTL), so this proves the update actually applied a
+			// positive Redis TTL derived from the incoming future expiry —
+			// something miniredis-based unit tests only approximate.
+			ttl, err := s.client.TTL(ctx, redisDCRKey(s.keyPrefix, key)).Result()
+			require.NoError(t, err)
+			assert.Greater(t, ttl, time.Duration(0),
+				"update with a future expiry must set a positive TTL on the real cluster")
+			assert.LessOrEqual(t, ttl, 24*time.Hour)
 		})
 	})
 

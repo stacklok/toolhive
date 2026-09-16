@@ -3748,6 +3748,65 @@ func TestRedisStorage_DCRCredentials_UpdateTTL(t *testing.T) {
 			assert.LessOrEqual(t, ttl, 12*time.Hour)
 		})
 	})
+
+	t.Run("update sets bounded pastExpiryDCRTTL when new expiry is in the past", func(t *testing.T) {
+		withRedisStorage(t, func(ctx context.Context, s *RedisStorage, mr *miniredis.Miniredis) {
+			key := dcrFixtureKey()
+			_, err := s.StoreDCRCredentialsIfAbsent(ctx, &DCRCredentials{
+				Key:                   key,
+				ClientID:              "client-abc",
+				AuthorizationEndpoint: "https://idp.example.com/auth",
+				TokenEndpoint:         "https://idp.example.com/token",
+				// Stored persistent (no expiry).
+			})
+			require.NoError(t, err)
+
+			// Updating with an already-past expiry must derive the bounded
+			// pastExpiryDCRTTL (not TTL=0, which would persist forever, and not
+			// a negative time.Until value), mirroring the Store-side contract.
+			past := time.Now().Add(-time.Hour).Truncate(time.Second)
+			got, err := s.UpdateDCRCredentialsIfPresent(ctx, &DCRCredentials{
+				Key:                   key,
+				ClientID:              "client-abc",
+				AuthorizationEndpoint: "https://idp.example.com/auth",
+				TokenEndpoint:         "https://idp.example.com/token",
+				ClientSecretExpiresAt: past,
+			})
+			require.NoError(t, err)
+			assert.Equal(t, past.Unix(), got.ClientSecretExpiresAt.Unix())
+			assert.Equal(t, pastExpiryDCRTTL, mr.TTL(redisDCRKey(s.keyPrefix, key)),
+				"past-expiry update must use the bounded pastExpiryDCRTTL, not TTL=0")
+		})
+	})
+}
+
+// TestRedisStorage_DCRCredentials_UpdateConnectionFailure exercises the generic
+// (non-Nil, non-TxFailedErr) error branch of UpdateDCRCredentialsIfPresent's
+// retry loop: a connection failure mid-call must surface as a wrapped error,
+// never as a spurious ErrNotFound or a silent success. Mirrors
+// TestRedisStorage_Health_ConnectionFailure by closing miniredis before the
+// call. (This branch is likewise untested for the sibling Store path; this
+// closes the caller-visible gap for the update path.)
+func TestRedisStorage_DCRCredentials_UpdateConnectionFailure(t *testing.T) {
+	t.Parallel()
+
+	mr := miniredis.RunT(t)
+	client := redis.NewClient(&redis.Options{Addr: mr.Addr()})
+	s := NewRedisStorageWithClient(client, "test:auth:")
+
+	// Close the server so the WATCH/EXISTS round-trip fails with a connection
+	// error rather than redis.Nil or redis.TxFailedErr.
+	mr.Close()
+
+	_, err := s.UpdateDCRCredentialsIfPresent(context.Background(), &DCRCredentials{
+		Key:                   dcrFixtureKey(),
+		ClientID:              "client-abc",
+		AuthorizationEndpoint: "https://idp.example.com/auth",
+		TokenEndpoint:         "https://idp.example.com/token",
+	})
+	require.Error(t, err)
+	assert.NotErrorIs(t, err, ErrNotFound,
+		"a connection failure must surface as a generic error, not a spurious not-found")
 }
 
 // TestRedisStorage_DCRCredentials_UpdateInvalidInputRejected pins that Update

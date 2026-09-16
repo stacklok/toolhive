@@ -506,8 +506,8 @@ github.com/moby/sys/userns v0.1.0 h1:tVLXkFOxVu9A64/yh59slHVv9ahO9UIev4JZusOLG/g
 github.com/moby/sys/userns v0.1.0/go.mod h1:IHUYgu/kao6N8YZlp9Cf444ySSvCmDlmzUcYfDHOl28=
 github.com/moby/term v0.5.2 h1:6qk3FJAFDs6i/q3W/pQ97SX192qKfZgGjCQqfCJkgzQ=
 github.com/moby/term v0.5.2/go.mod h1:d3djjFCrjnB+fl8NJux+EJzu0msscUP+f8it8hPkFLc=
-github.com/modelcontextprotocol/go-sdk v1.7.0 h1:yqjY2dsbKAC0LSuWZVBMrHgiG8ukXv6NRo0JiALay44=
-github.com/modelcontextprotocol/go-sdk v1.7.0/go.mod h1:dL7u98E/zjJTGzEq+j30jQ8K2k1mb6LeAH4inEcSGts=
+github.com/modelcontextprotocol/go-sdk v1.8.0 h1:KIvahhYqwtbeniWVPs3TcXEA7b8jEtwfBpOTAI+Urx4=
+github.com/modelcontextprotocol/go-sdk v1.8.0/go.mod h1:dL7u98E/zjJTGzEq+j30jQ8K2k1mb6LeAH4inEcSGts=
 github.com/modelcontextprotocol/registry v1.8.1 h1:baHVpbY9xc/lyCi/Wemcy7idVBNKROJZbSgzosCEuEo=
 github.com/modelcontextprotocol/registry v1.8.1/go.mod h1:W26bRO/fiGMqCfDFNFz8DWZbFSpGj87JsqwrTbvLIWU=
 github.com/modern-go/concurrent v0.0.0-20180228061459-e0a39a4cb421/go.mod h1:6dJC0mAP4ikYIbvyc7fijjWJddQyLn8Ig3JB5CqoB9Q=
@@ -668,10 +668,8 @@ github.com/spiffe/go-spiffe/v2 v2.8.1 h1:eXZMLsu+3MLEPJyGJkolqtVrteZfQdUpOWj6LTi
 github.com/spiffe/go-spiffe/v2 v2.8.1/go.mod h1:47Q0Q9/AqGha8QLHp+kxpH4Wca7X7EnOtlIJy3mxZ3U=
 github.com/stacklok/toolhive-catalog v0.20260908.0 h1:WRC+cV63KCEaMu8qTiTeCAPNCd1138TWERYZ3Zwgcd4=
 github.com/stacklok/toolhive-catalog v0.20260908.0/go.mod h1:4n/zNE768KzRjQA0jhkj5b+b4b1TXjHBhRptk87qRS8=
-github.com/stacklok/toolhive-core v0.0.48-0.20260915104928-a73010415b18 h1:kSdRDAlcPOVz9/IzMBigQiirLWJkz7XNB5BMJ6qdnEg=
-github.com/stacklok/toolhive-core v0.0.48-0.20260915104928-a73010415b18/go.mod h1:XNOv+RiDcJIxT+lZWKdw7ruu7TfF23Y2JEx6lNRaX8c=
-github.com/stacklok/toolhive-core v0.0.48-0.20260916083006-e5c9df091fd4 h1:Vgyo2pnl9eSebOcuTArCL17gJOLd2mEoK+zo/ZuJq+o=
-github.com/stacklok/toolhive-core v0.0.48-0.20260916083006-e5c9df091fd4/go.mod h1:XNOv+RiDcJIxT+lZWKdw7ruu7TfF23Y2JEx6lNRaX8c=
+github.com/stacklok/toolhive-core v0.0.49 h1:EksE6DCHxp2zHp1PAE8yRmaLR8pJLZ7RUgxvfpZFXfI=
+github.com/stacklok/toolhive-core v0.0.49/go.mod h1:tcpEEEZBDMW0vM2JbswA66nGsD4Zr/cUj/b9jA7K7Cg=
 github.com/stacklok/toolhive-core/redisconn v0.0.2 h1:Ju7+LrajHdpCpBe5xmGdle1z0F/F2qByUdzZi6YSgJ4=
 github.com/stacklok/toolhive-core/redisconn v0.0.2/go.mod h1:YaR5xDqbFc+eoP7sDPi6rHyh6Vh90HQciGpCQtD5VeY=
 github.com/stretchr/objx v0.1.0/go.mod h1:HFkY916IF+rwdDfMAkV7OtwuqBVzrE8GR6GFx+wExME=

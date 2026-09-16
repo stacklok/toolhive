@@ -13,10 +13,10 @@ import (
 )
 
 // SPIFFEClient is the immutable OAuth client representation of a configured
-// SPIFFE principal association. It is neither public nor secret-bearing. A
-// future credential-validation implementation will authenticate its SPIFFE
-// credentials; this configuration-only implementation does not authenticate
-// any credentials.
+// SPIFFE principal association. It is neither public nor secret-bearing.
+// JWT-SVID authentication of configured associations is implemented but not
+// yet wired to a trust bundle source (see docs/arch/18-spiffe-association-declarations.md);
+// X.509-SVID credential validation remains pending.
 type SPIFFEClient struct {
 	BackChannelOnlyMarker
 	id         string
@@ -50,8 +50,9 @@ func NewSPIFFEClient(id string, scopes, audiences, resources []string) (*SPIFFEC
 // GetID returns the configured association client ID.
 func (c *SPIFFEClient) GetID() string { return c.id }
 
-// GetHashedSecret returns nil because no OAuth client secret is assigned. Future
-// SPIFFE credential validation is outside this configuration-only implementation.
+// GetHashedSecret returns nil because no OAuth client secret is assigned.
+// JWT-SVID authentication does not use a client secret, and X.509-SVID
+// credential validation remains pending.
 func (*SPIFFEClient) GetHashedSecret() []byte { return nil }
 
 // GetRedirectURIs returns nil because SPIFFE clients do not use authorization redirects.
@@ -79,7 +80,8 @@ func (c *SPIFFEClient) Resources() []string { return slices.Clone(c.resources) }
 func (c *SPIFFEClient) GetAudience() fosite.Arguments { return slices.Clone(c.audiences) }
 
 // IsPublic returns false so Fosite does not treat unauthenticated requests as
-// public-client requests. Future SPIFFE credential validation remains separate.
+// public-client requests. JWT-SVID authentication remains separate from the
+// still-pending X.509-SVID credential validation.
 func (*SPIFFEClient) IsPublic() bool { return false }
 
 var _ fosite.Client = (*SPIFFEClient)(nil)

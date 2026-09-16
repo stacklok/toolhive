@@ -88,13 +88,26 @@ func TestSessionFactoryOptions(t *testing.T) {
 			wantOptions:   2,
 		},
 		{
+			name: "healthCheckTimeout bounds session initialize",
+			cfg: &config.Config{Operational: &config.OperationalConfig{
+				FailureHandling: &config.FailureHandlingConfig{
+					HealthCheckTimeout: config.Duration(8 * time.Second),
+				},
+			}},
+			backendClient: nil,
+			wantOptions:   2,
+		},
+		{
 			name: "every branch taken",
 			cfg: &config.Config{Operational: &config.OperationalConfig{
-				Timeouts:    &config.TimeoutConfig{BackendInit: config.Duration(5 * time.Second)},
+				Timeouts: &config.TimeoutConfig{BackendInit: config.Duration(5 * time.Second)},
+				FailureHandling: &config.FailureHandlingConfig{
+					HealthCheckTimeout: config.Duration(8 * time.Second),
+				},
 				ListChanged: &config.ListChangedConfig{DisabledWorkloads: []string{"grafana"}},
 			}},
 			backendClient: &revisionReportingClient{},
-			wantOptions:   4,
+			wantOptions:   5,
 		},
 	}
 

@@ -1633,6 +1633,36 @@ func (s *MemoryStorage) StoreDCRCredentialsIfAbsent(_ context.Context, creds *DC
 	return cloneDCRCredentials(creds), nil
 }
 
+// UpdateDCRCredentialsIfPresent replaces the entry at creds.Key with creds
+// when one physically exists, and returns ErrNotFound (wrapped) otherwise. A
+// defensive copy is stored so subsequent caller mutations do not affect
+// persisted state, mirroring StoreDCRCredentialsIfAbsent.
+//
+// Presence is a plain map lookup, deliberately NOT the TTL-aware "absent"
+// check StoreDCRCredentialsIfAbsent uses: an expired-but-present entry is
+// still updatable here. See the DCRCredentialStore interface docs for why
+// Update gates on physical presence rather than liveness. The in-memory
+// backend has no native TTL, so ClientSecretExpiresAt is retained verbatim on
+// the rewritten entry exactly as StoreDCRCredentialsIfAbsent retains it.
+//
+// Validation is delegated to validateDCRCredentialsForStore so the rejection
+// set stays in sync with sibling backends.
+func (s *MemoryStorage) UpdateDCRCredentialsIfPresent(_ context.Context, creds *DCRCredentials) (*DCRCredentials, error) {
+	if err := validateDCRCredentialsForStore(creds); err != nil {
+		return nil, err
+	}
+
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	if _, ok := s.dcrCredentials[creds.Key]; !ok {
+		return nil, notFoundRFC6749Error("DCR credentials not found")
+	}
+
+	s.dcrCredentials[creds.Key] = cloneDCRCredentials(creds)
+	return cloneDCRCredentials(creds), nil
+}
+
 // GetDCRCredentials retrieves DCR credentials by key.
 // Returns a defensive copy; returns ErrNotFound (wrapped) on miss.
 func (s *MemoryStorage) GetDCRCredentials(_ context.Context, key DCRKey) (*DCRCredentials, error) {

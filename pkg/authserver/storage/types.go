@@ -428,6 +428,41 @@ type DCRCredentialStore interface {
 	// handling" section for the contract on ClientSecretExpiresAt. The
 	// returned *DCRCredentials is always non-nil when err is nil.
 	StoreDCRCredentialsIfAbsent(ctx context.Context, creds *DCRCredentials) (*DCRCredentials, error)
+
+	// UpdateDCRCredentialsIfPresent replaces the record at creds.Key with
+	// creds, iff a record currently exists at that key. Returns ErrNotFound
+	// (wrapped) if no entry exists — it never creates, so an update racing a
+	// delete or a not-yet-created record fails loudly rather than silently
+	// creating, keeping the create/update split explicit (the mirror of why
+	// StoreDCRCredentialsIfAbsent never silently updates). On success it
+	// returns the stored value (a defensive copy) and the returned
+	// *DCRCredentials is non-nil.
+	//
+	// This is the write path a storage decorator needs to rewrite a record's
+	// persisted representation in place — re-encoding, compression, a
+	// checksum, or similar — without changing its RFC 7591 identity or values:
+	// StoreDCRCredentialsIfAbsent is create-only and would silently discard
+	// such a rewrite on an existing key.
+	//
+	// # Presence is physical, not liveness
+	//
+	// "Present" means a row physically exists at creds.Key, regardless of
+	// whether its ClientSecretExpiresAt has passed. This deliberately does NOT
+	// mirror StoreDCRCredentialsIfAbsent's "an expired row counts as absent"
+	// treatment: that check exists to let a fresh registration reclaim a dead
+	// slot in the concurrent-registration race, whereas Update exists to let a
+	// decorator rewrite a row it just read. GetDCRCredentials returns
+	// physically-present rows without filtering on expiry, so gating Update on
+	// liveness would break the Get→transform→Update round-trip the method is
+	// for. An expired-but-present row is therefore updatable.
+	//
+	// Implementations MUST defensively copy on input (mirroring the Store/Get
+	// contract) and MUST apply the same ClientSecretExpiresAt TTL handling
+	// documented in the interface-level "TTL handling" section and on
+	// StoreDCRCredentialsIfAbsent — the rewritten row's backend TTL is derived
+	// from the incoming creds, so an update can extend, shorten, or clear the
+	// row's TTL exactly as an initial store would.
+	UpdateDCRCredentialsIfPresent(ctx context.Context, creds *DCRCredentials) (*DCRCredentials, error)
 }
 
 // User represents a user account in the authorization server.

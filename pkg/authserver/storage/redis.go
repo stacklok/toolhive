@@ -2120,6 +2120,93 @@ func dcrClaimOrReturnWinner(
 	return creds, nil
 }
 
+// UpdateDCRCredentialsIfPresent replaces the row at creds.Key with creds via a
+// Redis WATCH/MULTI compare-and-set (the same pattern StoreDCRCredentialsIfAbsent
+// uses), returning ErrNotFound (wrapped) when no row physically exists at the
+// key. It never creates: presence is decided by a GET inside the watched
+// transaction, so an update racing a concurrent delete or TTL eviction fails
+// with ErrNotFound rather than silently re-creating the row.
+//
+// # Presence is physical, not liveness
+//
+// Unlike StoreDCRCredentialsIfAbsent, this does not treat an expired existing
+// row as absent — any row that GET returns is updatable, including one whose
+// ClientSecretExpiresAt has passed but whose Redis key has not yet self-evicted.
+// See the DCRCredentialStore interface docs for why Update gates on physical
+// presence: it exists so a decorator can rewrite a row it just read via
+// GetDCRCredentials, which itself does not filter on expiry.
+//
+// # TTL
+//
+// The rewritten row's TTL is derived from the incoming creds by
+// marshalDCRCredentialsForStore, identically to StoreDCRCredentialsIfAbsent: a
+// future ClientSecretExpiresAt sets that TTL, a zero value clears it (the row
+// becomes long-lived), and a past value uses the bounded pastExpiryDCRTTL. An
+// update can therefore extend, shorten, or clear the row's TTL exactly as an
+// initial store would.
+//
+// WATCH guards the read-check-write: if another writer changes the key between
+// our GET and our SET, EXEC aborts with redis.TxFailedErr and the loop retries,
+// bounded by maxDCRClaimRetries.
+//
+// Validation is delegated to validateDCRCredentialsForStore so the rejection
+// set stays in sync with MemoryStorage and any future backend.
+func (s *RedisStorage) UpdateDCRCredentialsIfPresent(ctx context.Context, creds *DCRCredentials) (*DCRCredentials, error) {
+	if err := validateDCRCredentialsForStore(creds); err != nil {
+		return nil, err
+	}
+
+	key := redisDCRKey(s.keyPrefix, creds.Key)
+
+	data, ttl, err := marshalDCRCredentialsForStore(creds)
+	if err != nil {
+		return nil, err
+	}
+
+	txFn := func(tx *redis.Tx) error {
+		return dcrUpdateIfPresent(ctx, tx, key, data, ttl)
+	}
+
+	// Retry bound mirrors StoreDCRCredentialsIfAbsent: go-redis does not retry
+	// Watch internally, so a concurrent writer to the watched key aborts EXEC
+	// with redis.TxFailedErr, which must be retried here.
+	var watchErr error
+	for attempt := 0; attempt < maxDCRClaimRetries; attempt++ {
+		watchErr = s.client.Watch(ctx, txFn, key)
+		if watchErr == nil {
+			return cloneDCRCredentials(creds), nil
+		}
+		if !errors.Is(watchErr, redis.TxFailedErr) {
+			// Preserve the wrapped ErrNotFound so callers can errors.Is it.
+			if errors.Is(watchErr, ErrNotFound) {
+				return nil, watchErr
+			}
+			return nil, fmt.Errorf("failed to update dcr credentials: %w", watchErr)
+		}
+	}
+	return nil, fmt.Errorf("failed to update dcr credentials after %d attempts: %w", maxDCRClaimRetries, watchErr)
+}
+
+// dcrUpdateIfPresent runs the read-check-write body of
+// UpdateDCRCredentialsIfPresent's WATCH transaction: it overwrites the watched
+// key with (data, ttl) inside MULTI only when the key physically exists,
+// returning a wrapped ErrNotFound without writing when it does not. Split out
+// to keep UpdateDCRCredentialsIfPresent's cyclomatic complexity down.
+func dcrUpdateIfPresent(ctx context.Context, tx *redis.Tx, key string, data []byte, ttl time.Duration) error {
+	if err := tx.Get(ctx, key).Err(); err != nil {
+		if errors.Is(err, redis.Nil) {
+			return notFoundRFC6749Error("DCR credentials not found")
+		}
+		return fmt.Errorf("failed to get existing dcr credentials: %w", err)
+	}
+
+	_, err := tx.TxPipelined(ctx, func(pipe redis.Pipeliner) error {
+		pipe.Set(ctx, key, data, ttl)
+		return nil
+	})
+	return err
+}
+
 // GetDCRCredentials retrieves the credentials previously persisted under key.
 // Returns ErrNotFound (wrapped) when no entry exists. The returned value is a
 // fresh struct decoded from JSON, which acts as a defensive copy.

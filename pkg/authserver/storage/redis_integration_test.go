@@ -1529,6 +1529,66 @@ func TestIntegration_DCRCredentials_FirstClaimWins(t *testing.T) {
 	})
 }
 
+// TestIntegration_DCRCredentials_UpdateIfPresent pins the
+// UpdateDCRCredentialsIfPresent WATCH/MULTI path against a real Redis Sentinel
+// cluster (miniredis's transaction and TTL semantics only approximate it): an
+// existing row is rewritten in place with a refreshed TTL, and an update to an
+// absent key returns a wrapped not-found without creating the row.
+func TestIntegration_DCRCredentials_UpdateIfPresent(t *testing.T) {
+	t.Parallel()
+
+	t.Run("replaces existing row and refreshes TTL", func(t *testing.T) {
+		withIntegrationStorage(t, func(ctx context.Context, s *RedisStorage) {
+			key := dcrFixtureKey()
+			_, err := s.StoreDCRCredentialsIfAbsent(ctx, &DCRCredentials{
+				Key:                   key,
+				ClientID:              "client-int-abc",
+				ClientSecret:          "secret-original",
+				AuthorizationEndpoint: "https://idp.example.com/auth",
+				TokenEndpoint:         "https://idp.example.com/token",
+				// Stored persistent (no expiry).
+			})
+			require.NoError(t, err)
+
+			future := time.Now().Add(24 * time.Hour).Truncate(time.Second)
+			updated := &DCRCredentials{
+				Key:                     key,
+				ClientID:                "client-int-abc",
+				ClientSecret:            "secret-rotated",
+				TokenEndpointAuthMethod: "client_secret_basic",
+				AuthorizationEndpoint:   "https://idp.example.com/auth",
+				TokenEndpoint:           "https://idp.example.com/token",
+				ClientSecretExpiresAt:   future,
+			}
+			got, err := s.UpdateDCRCredentialsIfPresent(ctx, updated)
+			require.NoError(t, err)
+			assert.Equal(t, *updated, *got)
+
+			reread, err := s.GetDCRCredentials(ctx, key)
+			require.NoError(t, err)
+			assert.Equal(t, "secret-rotated", reread.ClientSecret)
+			assert.Equal(t, future.Unix(), reread.ClientSecretExpiresAt.Unix(),
+				"update must refresh the row's expiry from the incoming creds")
+		})
+	})
+
+	t.Run("absent key returns not-found and does not create", func(t *testing.T) {
+		withIntegrationStorage(t, func(ctx context.Context, s *RedisStorage) {
+			key := dcrFixtureKey()
+			_, err := s.UpdateDCRCredentialsIfPresent(ctx, &DCRCredentials{
+				Key:                   key,
+				ClientID:              "client-int-abc",
+				AuthorizationEndpoint: "https://idp.example.com/auth",
+				TokenEndpoint:         "https://idp.example.com/token",
+			})
+			requireRedisNotFoundError(t, err)
+
+			_, getErr := s.GetDCRCredentials(ctx, key)
+			requireRedisNotFoundError(t, getErr)
+		})
+	})
+}
+
 // TestIntegration_DCRCredentials_TTL pins the RFC 7591 §3.2.1 TTL contract
 // against a real Redis Sentinel cluster: TTL command observes the expected
 // state for both the expiring and the never-expires cases. The unit-level

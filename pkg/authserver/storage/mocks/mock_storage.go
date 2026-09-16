@@ -893,20 +893,6 @@ func (mr *MockStorageMockRecorder) DeleteAccessTokenSession(ctx, signature any) 
 	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "DeleteAccessTokenSession", reflect.TypeOf((*MockStorage)(nil).DeleteAccessTokenSession), ctx, signature)
 }
 
-// DeleteDeviceRequest mocks base method.
-func (m *MockStorage) DeleteDeviceRequest(ctx context.Context, deviceCode string) error {
-	m.ctrl.T.Helper()
-	ret := m.ctrl.Call(m, "DeleteDeviceRequest", ctx, deviceCode)
-	ret0, _ := ret[0].(error)
-	return ret0
-}
-
-// DeleteDeviceRequest indicates an expected call of DeleteDeviceRequest.
-func (mr *MockStorageMockRecorder) DeleteDeviceRequest(ctx, deviceCode any) *gomock.Call {
-	mr.mock.ctrl.T.Helper()
-	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "DeleteDeviceRequest", reflect.TypeOf((*MockStorage)(nil).DeleteDeviceRequest), ctx, deviceCode)
-}
-
 // DeletePKCERequestSession mocks base method.
 func (m *MockStorage) DeletePKCERequestSession(ctx context.Context, signature string) error {
 	m.ctrl.T.Helper()
@@ -1184,36 +1170,6 @@ func (mr *MockStorageMockRecorder) InvalidateAuthorizeCodeSession(ctx, code any)
 	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "InvalidateAuthorizeCodeSession", reflect.TypeOf((*MockStorage)(nil).InvalidateAuthorizeCodeSession), ctx, code)
 }
 
-// LoadDeviceRequestByDeviceCode mocks base method.
-func (m *MockStorage) LoadDeviceRequestByDeviceCode(ctx context.Context, deviceCode string) (*storage.DeviceRequest, error) {
-	m.ctrl.T.Helper()
-	ret := m.ctrl.Call(m, "LoadDeviceRequestByDeviceCode", ctx, deviceCode)
-	ret0, _ := ret[0].(*storage.DeviceRequest)
-	ret1, _ := ret[1].(error)
-	return ret0, ret1
-}
-
-// LoadDeviceRequestByDeviceCode indicates an expected call of LoadDeviceRequestByDeviceCode.
-func (mr *MockStorageMockRecorder) LoadDeviceRequestByDeviceCode(ctx, deviceCode any) *gomock.Call {
-	mr.mock.ctrl.T.Helper()
-	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "LoadDeviceRequestByDeviceCode", reflect.TypeOf((*MockStorage)(nil).LoadDeviceRequestByDeviceCode), ctx, deviceCode)
-}
-
-// LoadDeviceRequestByUserCode mocks base method.
-func (m *MockStorage) LoadDeviceRequestByUserCode(ctx context.Context, userCode string) (*storage.DeviceRequest, error) {
-	m.ctrl.T.Helper()
-	ret := m.ctrl.Call(m, "LoadDeviceRequestByUserCode", ctx, userCode)
-	ret0, _ := ret[0].(*storage.DeviceRequest)
-	ret1, _ := ret[1].(error)
-	return ret0, ret1
-}
-
-// LoadDeviceRequestByUserCode indicates an expected call of LoadDeviceRequestByUserCode.
-func (mr *MockStorageMockRecorder) LoadDeviceRequestByUserCode(ctx, userCode any) *gomock.Call {
-	mr.mock.ctrl.T.Helper()
-	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "LoadDeviceRequestByUserCode", reflect.TypeOf((*MockStorage)(nil).LoadDeviceRequestByUserCode), ctx, userCode)
-}
-
 // LoadPendingAuthorization mocks base method.
 func (m *MockStorage) LoadPendingAuthorization(ctx context.Context, state string) (*storage.PendingAuthorization, error) {
 	m.ctrl.T.Helper()
@@ -1227,34 +1183,6 @@ func (m *MockStorage) LoadPendingAuthorization(ctx context.Context, state string
 func (mr *MockStorageMockRecorder) LoadPendingAuthorization(ctx, state any) *gomock.Call {
 	mr.mock.ctrl.T.Helper()
 	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "LoadPendingAuthorization", reflect.TypeOf((*MockStorage)(nil).LoadPendingAuthorization), ctx, state)
-}
-
-// MarkDeviceRequestAuthorized mocks base method.
-func (m *MockStorage) MarkDeviceRequestAuthorized(ctx context.Context, deviceCode, resolvedUserID, resolvedUserName, resolvedUserEmail, sessionID string) error {
-	m.ctrl.T.Helper()
-	ret := m.ctrl.Call(m, "MarkDeviceRequestAuthorized", ctx, deviceCode, resolvedUserID, resolvedUserName, resolvedUserEmail, sessionID)
-	ret0, _ := ret[0].(error)
-	return ret0
-}
-
-// MarkDeviceRequestAuthorized indicates an expected call of MarkDeviceRequestAuthorized.
-func (mr *MockStorageMockRecorder) MarkDeviceRequestAuthorized(ctx, deviceCode, resolvedUserID, resolvedUserName, resolvedUserEmail, sessionID any) *gomock.Call {
-	mr.mock.ctrl.T.Helper()
-	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "MarkDeviceRequestAuthorized", reflect.TypeOf((*MockStorage)(nil).MarkDeviceRequestAuthorized), ctx, deviceCode, resolvedUserID, resolvedUserName, resolvedUserEmail, sessionID)
-}
-
-// MarkDeviceRequestDenied mocks base method.
-func (m *MockStorage) MarkDeviceRequestDenied(ctx context.Context, deviceCode string) error {
-	m.ctrl.T.Helper()
-	ret := m.ctrl.Call(m, "MarkDeviceRequestDenied", ctx, deviceCode)
-	ret0, _ := ret[0].(error)
-	return ret0
-}
-
-// MarkDeviceRequestDenied indicates an expected call of MarkDeviceRequestDenied.
-func (mr *MockStorageMockRecorder) MarkDeviceRequestDenied(ctx, deviceCode any) *gomock.Call {
-	mr.mock.ctrl.T.Helper()
-	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "MarkDeviceRequestDenied", reflect.TypeOf((*MockStorage)(nil).MarkDeviceRequestDenied), ctx, deviceCode)
 }
 
 // ReconcileConfiguredClient mocks base method.
@@ -1370,20 +1298,6 @@ func (mr *MockStorageMockRecorder) SetClientAssertionJWT(ctx, jti, exp any) *gom
 	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "SetClientAssertionJWT", reflect.TypeOf((*MockStorage)(nil).SetClientAssertionJWT), ctx, jti, exp)
 }
 
-// StoreDeviceRequest mocks base method.
-func (m *MockStorage) StoreDeviceRequest(ctx context.Context, device *storage.DeviceRequest) error {
-	m.ctrl.T.Helper()
-	ret := m.ctrl.Call(m, "StoreDeviceRequest", ctx, device)
-	ret0, _ := ret[0].(error)
-	return ret0
-}
-
-// StoreDeviceRequest indicates an expected call of StoreDeviceRequest.
-func (mr *MockStorageMockRecorder) StoreDeviceRequest(ctx, device any) *gomock.Call {
-	mr.mock.ctrl.T.Helper()
-	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "StoreDeviceRequest", reflect.TypeOf((*MockStorage)(nil).StoreDeviceRequest), ctx, device)
-}
-
 // StorePendingAuthorization mocks base method.
 func (m *MockStorage) StorePendingAuthorization(ctx context.Context, state string, pending *storage.PendingAuthorization) error {
 	m.ctrl.T.Helper()
@@ -1410,20 +1324,6 @@ func (m *MockStorage) StoreUpstreamTokens(ctx context.Context, sessionID, provid
 func (mr *MockStorageMockRecorder) StoreUpstreamTokens(ctx, sessionID, providerName, tokens any) *gomock.Call {
 	mr.mock.ctrl.T.Helper()
 	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "StoreUpstreamTokens", reflect.TypeOf((*MockStorage)(nil).StoreUpstreamTokens), ctx, sessionID, providerName, tokens)
-}
-
-// UpdateDeviceRequestLastPolledAt mocks base method.
-func (m *MockStorage) UpdateDeviceRequestLastPolledAt(ctx context.Context, deviceCode string, polledAt time.Time) error {
-	m.ctrl.T.Helper()
-	ret := m.ctrl.Call(m, "UpdateDeviceRequestLastPolledAt", ctx, deviceCode, polledAt)
-	ret0, _ := ret[0].(error)
-	return ret0
-}
-
-// UpdateDeviceRequestLastPolledAt indicates an expected call of UpdateDeviceRequestLastPolledAt.
-func (mr *MockStorageMockRecorder) UpdateDeviceRequestLastPolledAt(ctx, deviceCode, polledAt any) *gomock.Call {
-	mr.mock.ctrl.T.Helper()
-	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "UpdateDeviceRequestLastPolledAt", reflect.TypeOf((*MockStorage)(nil).UpdateDeviceRequestLastPolledAt), ctx, deviceCode, polledAt)
 }
 
 // UpdateProviderIdentityLastUsed mocks base method.

@@ -67,8 +67,8 @@ type clientAuthenticator interface {
 // The request body is application/x-www-form-urlencoded, per RFC 8628
 // Section 3.1; the response body is JSON, per Section 3.2.
 //
-// RFC 8628 Section 3.1 requires that "[c]lient authentication is done using
-// the same method that the [token endpoint] supports" -- so this handler
+// RFC 8628 Section 3.1 requires client authentication "using the same
+// method that the [token endpoint] supports" -- so this handler
 // authenticates through h.provider's own AuthenticateClient, the exact
 // mechanism NewAccessRequest invokes at the token endpoint (client_secret_basic
 // / client_secret_post / private_key_jwt / SPIFFE, per how this server's

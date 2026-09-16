@@ -107,6 +107,12 @@ func TestDeviceAuthorizationHandler_ClientAuthentication(t *testing.T) {
 
 	fositeConfig := &fosite.Config{}
 	provider := fosite.NewOAuth2Provider(stor, fositeConfig)
+	// fosite.Config.GetSecretsHasher lazily initializes ClientSecretsHasher on
+	// first call, with no synchronization -- calling it once here, before any
+	// parallel subtest below can race on that lazy init, forces the
+	// initialization to happen single-threaded so every subsequent read (from
+	// any goroutine) sees an already-populated field.
+	fositeConfig.GetSecretsHasher(ctx)
 
 	config := &server.AuthorizationServerConfig{
 		Config:            fositeConfig,

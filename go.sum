@@ -670,6 +670,8 @@ github.com/stacklok/toolhive-catalog v0.20260908.0 h1:WRC+cV63KCEaMu8qTiTeCAPNCd
 github.com/stacklok/toolhive-catalog v0.20260908.0/go.mod h1:4n/zNE768KzRjQA0jhkj5b+b4b1TXjHBhRptk87qRS8=
 github.com/stacklok/toolhive-core v0.0.48-0.20260915104928-a73010415b18 h1:kSdRDAlcPOVz9/IzMBigQiirLWJkz7XNB5BMJ6qdnEg=
 github.com/stacklok/toolhive-core v0.0.48-0.20260915104928-a73010415b18/go.mod h1:XNOv+RiDcJIxT+lZWKdw7ruu7TfF23Y2JEx6lNRaX8c=
+github.com/stacklok/toolhive-core v0.0.48-0.20260916083006-e5c9df091fd4 h1:Vgyo2pnl9eSebOcuTArCL17gJOLd2mEoK+zo/ZuJq+o=
+github.com/stacklok/toolhive-core v0.0.48-0.20260916083006-e5c9df091fd4/go.mod h1:XNOv+RiDcJIxT+lZWKdw7ruu7TfF23Y2JEx6lNRaX8c=
 github.com/stacklok/toolhive-core/redisconn v0.0.2 h1:Ju7+LrajHdpCpBe5xmGdle1z0F/F2qByUdzZi6YSgJ4=
 github.com/stacklok/toolhive-core/redisconn v0.0.2/go.mod h1:YaR5xDqbFc+eoP7sDPi6rHyh6Vh90HQciGpCQtD5VeY=
 github.com/stretchr/objx v0.1.0/go.mod h1:HFkY916IF+rwdDfMAkV7OtwuqBVzrE8GR6GFx+wExME=

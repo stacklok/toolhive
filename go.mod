@@ -67,7 +67,7 @@ require (
 	github.com/spf13/viper v1.21.0
 	github.com/spiffe/go-spiffe/v2 v2.8.1
 	github.com/stacklok/toolhive-catalog v0.20260908.0
-	github.com/stacklok/toolhive-core v0.0.48-0.20260915104928-a73010415b18
+	github.com/stacklok/toolhive-core v0.0.48-0.20260916083006-e5c9df091fd4
 	github.com/stacklok/toolhive-core/redisconn v0.0.2
 	github.com/stretchr/testify v1.12.1
 	github.com/swaggo/swag/v2 v2.0.0-rc5

@@ -59,7 +59,7 @@ code := httperr.Code(err)  // Returns 500 if no code is found
 ### Error Definitions
 
 Error types with HTTP status codes are defined in:
-- `pkg/errors/errors.go` - Core error utilities (`WithCode`, `Code`, `CodedError`)
+- [`toolhive-core/httperr`](https://github.com/stacklok/toolhive-core/tree/main/httperr) - Core error utilities (`WithCode`, `Code`, `CodedError`)
 - `pkg/groups/errors.go` - Group-related errors
 - `pkg/container/runtime/types.go` - Runtime errors (`ErrWorkloadNotFound`)
 - `pkg/workloads/types/validate.go` - Workload validation errors

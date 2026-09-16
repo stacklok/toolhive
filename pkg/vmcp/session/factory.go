@@ -152,8 +152,10 @@ type defaultMultiSessionFactory struct {
 	connector              backendConnector
 	maxConcurrency         int
 	backendInitTimeout     time.Duration
+	backendInitTimeoutSet  bool
 	revisionLookup         func(workloadID string) (mcpparser.Revision, bool)
 	requestTimeoutResolver func(workloadID string) time.Duration
+	listChangedAllowed     func(workloadID string) bool
 	dialControlResolver    func(workloadID string) func(network, address string, c syscall.RawConn) error
 }
 
@@ -172,10 +174,16 @@ func WithMaxBackendInitConcurrency(n int) MultiSessionFactoryOption {
 
 // WithBackendInitTimeout sets the per-backend timeout during MakeSession.
 // Defaults to 30 s.
+//
+// An explicit value is authoritative: unlike the default, it is not extended by
+// a longer WithRequestTimeoutResolver result. Lower it when a backend can stall
+// the handshake rather than answering or failing promptly, so session init
+// fails fast instead of outliving the client's own connect timeout.
 func WithBackendInitTimeout(d time.Duration) MultiSessionFactoryOption {
 	return func(f *defaultMultiSessionFactory) {
 		if d > 0 {
 			f.backendInitTimeout = d
+			f.backendInitTimeoutSet = true
 		}
 	}
 }
@@ -186,13 +194,38 @@ func WithBackendInitTimeout(d time.Duration) MultiSessionFactoryOption {
 // result, preserves the historical 30-second default.
 //
 // The resolver may be called concurrently and must therefore be safe for
-// concurrent use. A workload timeout longer than WithBackendInitTimeout also
-// extends that workload's initialization deadline; the shorter configured
-// value never reduces an explicit initialization allowance.
+// concurrent use. A workload timeout longer than the DEFAULT initialization
+// timeout also extends that workload's initialization deadline; the shorter
+// configured value never reduces the default allowance. It does not extend an
+// explicit WithBackendInitTimeout, which is a deliberate cap.
 func WithRequestTimeoutResolver(resolver func(workloadID string) time.Duration) MultiSessionFactoryOption {
 	return func(f *defaultMultiSessionFactory) {
 		if resolver != nil {
 			f.requestTimeoutResolver = resolver
+		}
+	}
+}
+
+// WithListChangedFilter decides, per backend, whether this factory subscribes
+// to that backend's list_changed notifications. Returning false drops the sink
+// for that backend only, which is what stops the connector opening a standalone
+// notification stream against it.
+//
+// The point is to make session init independent of a stream some backends never
+// service. The connector already treats a nil sink as "do not subscribe", but
+// the server supplies a sink for every session, so that path was unreachable in
+// production: a backend that accepts the subscribe and then never answers it
+// stalls the handshake for the whole init allowance, and clients with their own
+// connect timeout give up first. Excluding such a backend costs it live
+// list_changed propagation and nothing else; its tools are still aggregated and
+// callable, and they refresh on the next session.
+//
+// A nil filter, the default, subscribes to every backend exactly as before.
+// The filter may be called concurrently and must be safe for concurrent use.
+func WithListChangedFilter(allowed func(workloadID string) bool) MultiSessionFactoryOption {
+	return func(f *defaultMultiSessionFactory) {
+		if allowed != nil {
+			f.listChangedAllowed = allowed
 		}
 	}
 }
@@ -365,14 +398,29 @@ func (f *defaultMultiSessionFactory) initOneBackend(
 		return nil, true
 	}
 
+	// A longer per-workload request timeout extends the DEFAULT init allowance
+	// so a slow backend still gets to finish. An explicit backend-init timeout
+	// is a deliberate cap and is never raised: the operator set it precisely
+	// because this backend can stall the handshake past the client's patience.
 	initTimeout := f.backendInitTimeout
-	if f.requestTimeoutResolver != nil {
+	if !f.backendInitTimeoutSet && f.requestTimeoutResolver != nil {
 		if requestTimeout := f.requestTimeoutResolver(target.WorkloadID); requestTimeout > initTimeout {
 			initTimeout = requestTimeout
 		}
 	}
 	bCtx, cancel := context.WithTimeout(ctx, initTimeout)
 	defer cancel()
+
+	// Dropping the sink here is what keeps a backend that never services the
+	// subscribe from stalling this handshake: the connector only opens the
+	// standalone notification stream when it has a sink to feed.
+	if sink != nil && !f.listChangedEnabled(target.WorkloadID) {
+		slog.Debug("Backend excluded from list_changed propagation; not subscribing",
+			"backendID", b.ID,
+			"backendName", b.Name,
+		)
+		sink = nil
+	}
 
 	conn, caps, err := f.connector(bCtx, target, identity, sessionHint, sink)
 	if err != nil {
@@ -410,6 +458,15 @@ func (f *defaultMultiSessionFactory) initOneBackend(
 		return nil, false
 	}
 	return &initResult{target: target, conn: conn, caps: caps}, false
+}
+
+// listChangedEnabled reports whether workloadID should be subscribed to. No
+// filter means subscribe, preserving the historical behaviour.
+func (f *defaultMultiSessionFactory) listChangedEnabled(workloadID string) bool {
+	if f.listChangedAllowed == nil {
+		return true
+	}
+	return f.listChangedAllowed(workloadID)
 }
 
 // isKnownModern reports whether workloadID's cached revision is confirmed

@@ -406,6 +406,14 @@ components:
                         authorization requests. Useful for provider-specific parameters like
                         Google's access_type=offline.
                     type: object
+                additional_token_params:
+                    additionalProperties:
+                        type: string
+                    description: |-
+                        AdditionalTokenParams are extra form-body parameters to include in
+                        token requests (authorization code exchange and refresh). Useful for
+                        providers that enforce RFC 8707 resource indicators on token requests.
+                    type: object
                 allow_private_ips:
                     description: |-
                         AllowPrivateIPs permits the upstream provider's HTTP client to connect to
@@ -490,6 +498,14 @@ components:
                         AdditionalAuthorizationParams are extra query parameters to include in
                         authorization requests. Useful for provider-specific parameters like
                         Google's access_type=offline.
+                    type: object
+                additional_token_params:
+                    additionalProperties:
+                        type: string
+                    description: |-
+                        AdditionalTokenParams are extra form-body parameters to include in
+                        token requests (authorization code exchange and refresh). Useful for
+                        providers that enforce RFC 8707 resource indicators on token requests.
                     type: object
                 allow_private_ips:
                     description: |-

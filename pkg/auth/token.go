@@ -20,8 +20,9 @@ import (
 
 	"github.com/cenkalti/backoff/v7"
 	"github.com/golang-jwt/jwt/v5"
+	"github.com/jwx-go/jwkfetch/v4"
 	"github.com/lestrrat-go/httprc/v3"
-	"github.com/lestrrat-go/jwx/v3/jwk"
+	"github.com/lestrrat-go/jwx/v4/jwk"
 
 	"github.com/stacklok/toolhive-core/env"
 	"github.com/stacklok/toolhive/pkg/auth/upstreamtoken"
@@ -360,7 +361,7 @@ type TokenValidator struct {
 	jwksURL           string
 	clientID          string
 	clientSecret      string // Optional client secret for introspection
-	jwksClient        *jwk.Cache
+	jwksClient        *jwkfetch.Cache
 	introspectURL     string       // Optional introspection endpoint
 	client            *http.Client // HTTP client for making requests
 	resourceURL       string       // (RFC 9728)
@@ -678,10 +679,9 @@ func NewTokenValidator(ctx context.Context, config TokenValidatorConfig, opts ..
 	}
 	config.httpClient = httpClient
 
-	// Create a new JWKS client with auto-refresh
-	// In jwx v3, NewCache requires an httprc.Client
-	httprcClient := httprc.NewClient(httprc.WithHTTPClient(httpClient))
-	cache, err := jwk.NewCache(ctx, httprcClient)
+	// Create a new JWKS client with auto-refresh.
+	httprcClient := httprc.NewClient()
+	cache, err := jwkfetch.NewCache(ctx, httprcClient, jwkfetch.WithHTTPClient(httpClient))
 	if err != nil {
 		return nil, fmt.Errorf("failed to create JWKS cache: %w", err)
 	}
@@ -752,11 +752,9 @@ func (v *TokenValidator) ensureJWKSRegistered(ctx context.Context) error {
 	registrationCtx, cancel := context.WithTimeout(ctx, 5*time.Second)
 	defer cancel()
 
-	// Attempt registration. The CA-aware client must be passed per-resource:
-	// jwx >= 3.1.0 injects its own default client at the resource level when
-	// none is given here, which takes precedence over the client-level one
-	// configured in NewTokenValidator and silently drops custom CA support.
-	err := v.jwksClient.Register(registrationCtx, v.jwksURL, jwk.WithHTTPClient(v.client))
+	// The CA-aware client is configured on the cache so every fetch,
+	// including background refreshes, uses the same transport policy.
+	err := v.jwksClient.Register(registrationCtx, v.jwksURL)
 	switch {
 	case err == nil:
 		// Registered and the first fetch succeeded.
@@ -970,8 +968,7 @@ func (v *TokenValidator) getKeyFromJWKS(ctx context.Context, token *jwt.Token) (
 		return nil, err
 	}
 
-	// Get the key set from the JWKS
-	// In jwx v3, Get is replaced with Lookup
+	// Get the key set from the JWKS.
 	keySet, err := v.jwksClient.Lookup(ctx, v.jwksURL)
 	if err != nil {
 		return nil, fmt.Errorf("failed to lookup JWKS: %w", err)
@@ -983,10 +980,9 @@ func (v *TokenValidator) getKeyFromJWKS(ctx context.Context, token *jwt.Token) (
 		return nil, fmt.Errorf("key ID %s not found in JWKS", kid)
 	}
 
-	// Get the raw key
-	// In jwx v3, Raw method is replaced with Export function
-	var rawKey interface{}
-	if err := jwk.Export(key, &rawKey); err != nil {
+	// Export the raw key.
+	rawKey, err := jwk.Export[any](key)
+	if err != nil {
 		return nil, fmt.Errorf("failed to export raw key: %w", err)
 	}
 

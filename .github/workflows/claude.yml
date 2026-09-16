@@ -75,7 +75,7 @@ jobs:
         id: claude
         uses: anthropics/claude-code-action@19dda84776b3518d98b8798e591daee763049ed3 # v1.0.220
         env:
-          ANTHROPIC_BASE_URL: https://llm-gateway.stacklok.dev/anthropic
+          ANTHROPIC_BASE_URL: ${{ vars.ANTHROPIC_BASE_URL }}
         with:
           anthropic_api_key: ${{ secrets.STACKLOK_GATEWAY_KEY_CLAUDE_TAG }}
           # Security: Restrict tools to prevent arbitrary code execution.

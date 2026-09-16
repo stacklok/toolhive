@@ -5577,7 +5577,9 @@ func TestIntegration_DeviceFlow_FullHappyPath(t *testing.T) {
 	// (deliberately tiny) MinInterval so the test exercises the "after
 	// authorization" success path rather than racing slow_down.
 	time.Sleep(20 * time.Millisecond)
-	deviceStorage, ok := ts.storage.(storage.DeviceCodeStorage)
+	fullStorage, ok := ts.storage.(storage.Storage)
+	require.True(t, ok, "test server storage must implement storage.Storage")
+	deviceStorage, ok := storage.Unwrap(fullStorage).(storage.DeviceCodeStorage)
 	require.True(t, ok, "test server storage must implement storage.DeviceCodeStorage")
 	require.NoError(t, deviceStorage.MarkDeviceRequestAuthorized(
 		context.Background(), deviceCode, "user-1", "Ada Lovelace", "ada@example.com", "session-1"))

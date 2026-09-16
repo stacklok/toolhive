@@ -1149,9 +1149,18 @@ type Storage interface {
 	// memory.go / redis.go provide the compile-time guarantee that production
 	// backends satisfy the interface, so the runtime assertion is provably
 	// safe at the boundary while keeping the wider Storage surface narrow.
+	//
+	// DeviceCodeStorage follows the same segregated pattern for the same
+	// reason: it is an optional capability (RFC 8628 device flow is off by
+	// default), not every Storage implementation needs to support it, and
+	// embedding it here would force every future implementation to add all 6
+	// methods even when it never enables device flow. Callers that need it
+	// (handlers.NewHandler, the deviceflow factory in server_impl.go) obtain
+	// it via `stor.(DeviceCodeStorage)` at construction time; the same
+	// per-backend `var _ DeviceCodeStorage = (*MemoryStorage)(nil)` /
+	// `(*RedisStorage)(nil)` checks provide the compile-time guarantee.
 	UpstreamTokenStorage
 	PendingAuthorizationStorage
-	DeviceCodeStorage
 	ClientRegistry
 	UserStorage
 

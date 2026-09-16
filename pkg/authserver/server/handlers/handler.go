@@ -96,6 +96,17 @@ type Handler struct {
 	// config.DeviceCodeInterval at construction, falling back to
 	// server.DefaultDeviceCodeInterval when that is zero.
 	deviceCodeInterval time.Duration
+	// deviceStorage is storage's storage.DeviceCodeStorage capability,
+	// resolved once via storage.Unwrap(stor).(storage.DeviceCodeStorage) at
+	// construction time -- storage.Storage deliberately does NOT embed
+	// DeviceCodeStorage (see that interface's contract there), and CIMD/SPIFFE
+	// decorators only implement the narrower Storage interface they wrap, so
+	// the unwrap is needed to reach a decorated backend's underlying
+	// MemoryStorage/RedisStorage. DeviceAuthorizationHandler goes through this
+	// field instead of storage directly. Nil when device flow is disabled;
+	// OAuthRoutes never registers DeviceAuthorizationHandler in that case, so
+	// it is never dereferenced.
+	deviceStorage storage.DeviceCodeStorage
 }
 
 // UpstreamFilter narrows the authorization chain to a subset of the configured
@@ -224,6 +235,12 @@ func NewHandler(
 		// unauthenticated persisted-state minting, just reached through
 		// /oauth/device_authorization instead of /oauth/register.
 		h.deviceAuthorizationLimiter = rate.NewLimiter(rate.Limit(1), 5)
+		deviceStorage, ok := storage.Unwrap(stor).(storage.DeviceCodeStorage)
+		if !ok {
+			return nil, fmt.Errorf(
+				"handlers: device flow enabled but storage backend %T does not implement storage.DeviceCodeStorage", stor)
+		}
+		h.deviceStorage = deviceStorage
 	}
 	for _, o := range opts {
 		o(h)

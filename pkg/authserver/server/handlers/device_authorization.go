@@ -142,7 +142,7 @@ func (h *Handler) storeNewDeviceRequest(
 			Interval:   h.deviceCodeInterval,
 			CreatedAt:  time.Now(),
 		}
-		err = h.storage.StoreDeviceRequest(ctx, device)
+		err = h.deviceStorage.StoreDeviceRequest(ctx, device)
 		if err == nil {
 			return device, nil
 		}

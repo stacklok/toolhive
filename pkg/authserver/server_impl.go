@@ -503,7 +503,7 @@ func buildProvider(
 		factories = append(factories, jwtBearerFactory)
 	}
 	if cfg.DeviceFlowEnabled {
-		deviceStore, ok := stor.(storage.DeviceCodeStorage)
+		deviceStore, ok := storage.Unwrap(stor).(storage.DeviceCodeStorage)
 		if !ok {
 			return nil, nil, fmt.Errorf("device flow enabled but storage backend %T does not implement storage.DeviceCodeStorage", stor)
 		}

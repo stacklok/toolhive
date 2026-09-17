@@ -41,7 +41,9 @@ type Aggregator interface {
 	QueryCapabilities(ctx context.Context, backend vmcp.Backend) (*BackendCapabilities, error)
 
 	// QueryAllCapabilities queries all backends for their capabilities in parallel.
-	// Handles backend failures gracefully (logs and continues with remaining backends).
+	// How backend failures are treated follows the configured partial failure mode:
+	// "best_effort" (or unset) logs and continues with remaining backends, while
+	// "fail" makes the first failing backend fail the whole query.
 	QueryAllCapabilities(ctx context.Context, backends []vmcp.Backend) (map[string]*BackendCapabilities, error)
 
 	// ResolveConflicts applies conflict resolution strategy to handle

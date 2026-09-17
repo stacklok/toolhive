@@ -291,6 +291,13 @@ func baseTestSetup(t *testing.T, opts ...baseTestSetupOption) (fosite.OAuth2Prov
 			return nil, storage.ErrNotFound
 		}).AnyTimes()
 
+	// CallbackHandler falls back to LoadPendingDeviceLogin when a state
+	// doesn't match a pending OAuth-client authorization (see that
+	// function's doc comment) -- no test using this mock exercises the
+	// device flow's login callback, so this always misses.
+	stor.EXPECT().LoadPendingDeviceLogin(gomock.Any(), gomock.Any()).Return(
+		nil, storage.ErrNotFound).AnyTimes()
+
 	stor.EXPECT().DeletePendingAuthorization(gomock.Any(), gomock.Any()).DoAndReturn(
 		func(_ context.Context, state string) error {
 			if _, ok := storState.pendingAuths[state]; !ok {

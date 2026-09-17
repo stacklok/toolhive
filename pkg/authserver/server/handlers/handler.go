@@ -267,14 +267,25 @@ func (h *Handler) Routes() http.Handler {
 	return r
 }
 
-// OAuthRoutes registers OAuth endpoints (authorize, callback, token, register) on the provided router.
+// OAuthRoutes registers OAuth endpoints (authorize, callback, token, register,
+// and the device flow's device_authorization/verification routes when enabled)
+// on the provided router.
 func (h *Handler) OAuthRoutes(r chi.Router) {
 	r.Get("/oauth/authorize", h.rateLimitCIMDAuthorize(h.AuthorizeHandler))
+	// /oauth/callback is shared by the OAuth-client authorization_code flow
+	// and (when device flow is enabled) the verification page's upstream
+	// login -- an upstream's redirect_uri is fixed per upstream at
+	// construction, so there is no way to register a second callback path
+	// for the device flow. CallbackHandler dispatches between the two based
+	// on which pending record the state parameter matches.
 	r.Get("/oauth/callback", h.CallbackHandler)
 	r.Post("/oauth/token", h.TokenHandler)
 	r.Post("/oauth/register", h.rateLimitRegister(h.RegisterClientHandler))
 	if h.config.DeviceFlowEnabled {
 		r.Post("/oauth/device_authorization", h.rateLimitDeviceAuthorization(h.DeviceAuthorizationHandler))
+		r.Get("/oauth/device", h.DeviceVerificationHandler)
+		r.Post("/oauth/device", h.DeviceVerificationSubmitHandler)
+		r.Post("/oauth/device/confirm", h.DeviceVerificationConfirmHandler)
 	}
 }
 

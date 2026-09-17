@@ -20,6 +20,47 @@ import (
 	"github.com/stacklok/toolhive/pkg/authserver/upstream"
 )
 
+// loadPendingOrCompleteDeviceLogin loads the pending OAuth-client
+// authorization for internalState (deleting it, single-use) and builds its
+// AuthorizeRequester. The upstream IDP's redirect_uri is fixed per upstream
+// at construction (see upstream.OAuth2Config.RedirectURI / AuthCodeURL), so
+// the device flow's verification-page login (DeviceVerificationSubmitHandler)
+// reuses this same /oauth/callback endpoint rather than a distinct one --
+// there is no way to register a second redirect_uri per call. Accordingly,
+// when internalState does not match a pending OAuth-client authorization,
+// this falls back to completing a pending device-flow login instead of
+// failing outright.
+//
+// The bool return is false whenever a response has already been written
+// (either the device-login completion, or a not-found/corrupted error) and
+// the caller must return immediately without doing anything further.
+func (h *Handler) loadPendingOrCompleteDeviceLogin(
+	ctx context.Context, w http.ResponseWriter, internalState, code string,
+) (*storage.PendingAuthorization, fosite.AuthorizeRequester, bool) {
+	pending, err := h.storage.LoadPendingAuthorization(ctx, internalState)
+	if err != nil {
+		if h.tryCompleteDeviceLogin(ctx, w, internalState, code) {
+			return nil, nil, false
+		}
+		slog.Warn("pending authorization not found", "error", err)
+		http.Error(w, "authorization request not found or expired", http.StatusBadRequest)
+		return nil, nil, false
+	}
+
+	// Delete pending authorization immediately (single-use)
+	if err := h.storage.DeletePendingAuthorization(ctx, internalState); err != nil {
+		slog.Warn("failed to delete pending authorization", "error", err)
+	}
+
+	ar := h.buildAuthorizeRequesterFromPending(ctx, pending)
+	if ar == nil {
+		// Stored redirect URI was corrupt - cannot redirect, show error page
+		http.Error(w, "authorization request data corrupted", http.StatusInternalServerError)
+		return nil, nil, false
+	}
+	return pending, ar, true
+}
+
 // CallbackHandler handles GET /oauth/callback requests.
 // It exchanges the upstream authorization code and issues our own authorization code.
 func (h *Handler) CallbackHandler(w http.ResponseWriter, req *http.Request) {
@@ -54,28 +95,10 @@ func (h *Handler) CallbackHandler(w http.ResponseWriter, req *http.Request) {
 		return
 	}
 
-	// Load and delete pending authorization (single-use)
-	pending, err := h.storage.LoadPendingAuthorization(ctx, internalState)
-	if err != nil {
-		slog.Warn("pending authorization not found",
-			"error", err,
-		)
-		http.Error(w, "authorization request not found or expired", http.StatusBadRequest)
-		return
-	}
-
-	// Delete pending authorization immediately (single-use)
-	if err := h.storage.DeletePendingAuthorization(ctx, internalState); err != nil {
-		slog.Warn("failed to delete pending authorization",
-			"error", err,
-		)
-	}
-
-	// Build authorize requester for error responses now that we have pending
-	ar := h.buildAuthorizeRequesterFromPending(ctx, pending)
-	if ar == nil {
-		// Stored redirect URI was corrupt - cannot redirect, show error page
-		http.Error(w, "authorization request data corrupted", http.StatusInternalServerError)
+	// Load and delete pending authorization (single-use), falling back to
+	// completing a device-flow login when internalState doesn't match one.
+	pending, ar, ok := h.loadPendingOrCompleteDeviceLogin(ctx, w, internalState, code)
+	if !ok {
 		return
 	}
 

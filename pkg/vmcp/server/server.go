@@ -1016,7 +1016,8 @@ func (s *Server) Address() string {
 // This is a liveness signal only. It does not mean a new client session can
 // initialize within the configured timeout. Kubernetes Ready on the
 // VirtualMCPServer CR reflects the last backend ListCapabilities probe.
-// Session open is bounded separately by HealthCheckTimeout (#6345).
+// Session open is bounded separately by sessionInitTimeout, which
+// defaults to HealthCheckTimeout when unset (#6345).
 //
 // Security Note: This endpoint is unauthenticated and intentionally minimal.
 // It only confirms the HTTP server is responding. No version information,

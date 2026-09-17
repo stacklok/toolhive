@@ -555,20 +555,28 @@ func sessionFactoryOptions(
 	if backendInit := backendInitTimeout(cfg); backendInit > 0 {
 		opts = append(opts, vmcpsession.WithBackendInitTimeout(backendInit))
 	}
-	// Bound client-facing initialize to the same budget as a health probe
-	// so Ready + /health cannot stay green while initialize hangs past
-	// typical gateway timeouts (#6345). Unset keeps the factory default (10s).
-	if cfg != nil &&
-		cfg.Operational != nil &&
-		cfg.Operational.FailureHandling != nil &&
-		cfg.Operational.FailureHandling.HealthCheckTimeout > 0 {
-		opts = append(opts, vmcpsession.WithSessionInitTimeout(
-			time.Duration(cfg.Operational.FailureHandling.HealthCheckTimeout)))
+	// Bound client-facing initialize independently of health probes
+	// (#6345). SessionInitTimeout wins when set; otherwise
+	// HealthCheckTimeout is reused so existing configs keep current
+	// behavior. Unset keeps the factory default (10s).
+	if timeout := sessionInitTimeout(cfg); timeout > 0 {
+		opts = append(opts, vmcpsession.WithSessionInitTimeout(timeout))
 	}
 	if filter := listChangedFilter(cfg); filter != nil {
 		opts = append(opts, vmcpsession.WithListChangedFilter(filter))
 	}
 	return opts
+}
+
+// sessionInitTimeout returns the overall initialize budget, or 0 when unset
+// so the factory keeps its own default. SessionInitTimeout is independent of
+// health-check cadence; HealthCheckTimeout is only the fallback when the
+// dedicated field is empty so existing configs behave the same.
+func sessionInitTimeout(cfg *config.Config) time.Duration {
+	if cfg == nil || cfg.Operational == nil {
+		return 0
+	}
+	return cfg.Operational.FailureHandling.ResolvedSessionInitTimeout()
 }
 
 // backendInitTimeout returns the configured session-init cap, or 0 when unset

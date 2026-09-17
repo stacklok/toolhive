@@ -35,7 +35,8 @@ const (
 	// finish contacting backends. Per-backend init can take up to
 	// defaultBackendInitTimeout, which used to let initialize hang past
 	// typical client/gateway timeouts while Ready and /health stayed OK
-	// (#6345). 10s matches the HealthCheckTimeout CRD default.
+	// (#6345). 10s matches the HealthCheckTimeout CRD default, which
+	// sessionInitTimeout inherits when unset.
 	defaultSessionInitTimeout = 10 * time.Second
 
 	// MetadataKeyBackendIDs is the transport-session metadata key that holds

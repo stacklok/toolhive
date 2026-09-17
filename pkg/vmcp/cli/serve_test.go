@@ -88,10 +88,20 @@ func TestSessionFactoryOptions(t *testing.T) {
 			wantOptions:   2,
 		},
 		{
-			name: "healthCheckTimeout bounds session initialize",
+			name: "healthCheckTimeout bounds session initialize when sessionInitTimeout is unset",
 			cfg: &config.Config{Operational: &config.OperationalConfig{
 				FailureHandling: &config.FailureHandlingConfig{
 					HealthCheckTimeout: config.Duration(8 * time.Second),
+				},
+			}},
+			backendClient: nil,
+			wantOptions:   2,
+		},
+		{
+			name: "sessionInitTimeout bounds session initialize independently",
+			cfg: &config.Config{Operational: &config.OperationalConfig{
+				FailureHandling: &config.FailureHandlingConfig{
+					SessionInitTimeout: config.Duration(20 * time.Second),
 				},
 			}},
 			backendClient: nil,
@@ -103,6 +113,7 @@ func TestSessionFactoryOptions(t *testing.T) {
 				Timeouts: &config.TimeoutConfig{BackendInit: config.Duration(5 * time.Second)},
 				FailureHandling: &config.FailureHandlingConfig{
 					HealthCheckTimeout: config.Duration(8 * time.Second),
+					SessionInitTimeout: config.Duration(20 * time.Second),
 				},
 				ListChanged: &config.ListChangedConfig{DisabledWorkloads: []string{"grafana"}},
 			}},
@@ -115,6 +126,69 @@ func TestSessionFactoryOptions(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
 			assert.Len(t, sessionFactoryOptions(tt.cfg, tt.backendClient), tt.wantOptions)
+		})
+	}
+}
+
+func TestSessionInitTimeout(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name string
+		cfg  *config.Config
+		want time.Duration
+	}{
+		{
+			name: "nil config leaves the factory default",
+			cfg:  nil,
+			want: 0,
+		},
+		{
+			name: "missing operational config leaves the factory default",
+			cfg:  &config.Config{},
+			want: 0,
+		},
+		{
+			name: "unset sessionInitTimeout inherits healthCheckTimeout",
+			cfg: &config.Config{Operational: &config.OperationalConfig{
+				FailureHandling: &config.FailureHandlingConfig{
+					HealthCheckTimeout: config.Duration(8 * time.Second),
+				},
+			}},
+			want: 8 * time.Second,
+		},
+		{
+			name: "sessionInitTimeout wins over healthCheckTimeout",
+			cfg: &config.Config{Operational: &config.OperationalConfig{
+				FailureHandling: &config.FailureHandlingConfig{
+					HealthCheckTimeout: config.Duration(8 * time.Second),
+					SessionInitTimeout: config.Duration(20 * time.Second),
+				},
+			}},
+			want: 20 * time.Second,
+		},
+		{
+			name: "sessionInitTimeout alone is used",
+			cfg: &config.Config{Operational: &config.OperationalConfig{
+				FailureHandling: &config.FailureHandlingConfig{
+					SessionInitTimeout: config.Duration(15 * time.Second),
+				},
+			}},
+			want: 15 * time.Second,
+		},
+		{
+			name: "both unset leave the factory default",
+			cfg: &config.Config{Operational: &config.OperationalConfig{
+				FailureHandling: &config.FailureHandlingConfig{},
+			}},
+			want: 0,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			assert.Equal(t, tt.want, sessionInitTimeout(tt.cfg))
 		})
 	}
 }

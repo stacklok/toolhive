@@ -493,19 +493,35 @@ func buildProvider(
 		factories = append(factories, tokenExchangeFactory)
 	}
 	if jwtBearerEnabled {
-		jwtBearerFactory, err := tokenexchange.JWTBearerIssuanceFactory(cfg.TrustedIssuers, shared)
-		if err != nil {
-			return nil, nil, fmt.Errorf("failed to create JWT-bearer factory: %w", err)
+		// The two handlers ride the same per-issuer JWT-bearer policy but are
+		// no longer both implied by JWTBearerGrant being configured: an issuer
+		// may accept only JWTBearerAssertionTypeIDJAG (an IdP used purely to
+		// mint cross-app-access grants, not plain assertions), or only
+		// JWTBearerAssertionTypeJWTBearer (the default). Each factory must
+		// therefore be gated on its own per-type filter rather than on
+		// jwtBearerEnabled alone: registering either factory with none of its
+		// issuers opted in would fail (newJWTBearerIssuanceHandler, which both
+		// call internally, errors on an empty policy map after filtering), so
+		// skip a factory entirely rather than let that surface as an AS
+		// startup failure.
+		if len(tokenexchange.IssuersAcceptingAssertionType(cfg.TrustedIssuers, tokenexchange.JWTBearerAssertionTypeJWTBearer)) > 0 {
+			jwtBearerFactory, err := tokenexchange.JWTBearerIssuanceFactory(cfg.TrustedIssuers, shared)
+			if err != nil {
+				return nil, nil, fmt.Errorf("failed to create JWT-bearer factory: %w", err)
+			}
+			factories = append(factories, jwtBearerFactory)
+		} else {
+			slog.Debug("JWT-bearer issuance not registered: no trusted issuer accepts jwt_bearer assertions")
 		}
-		factories = append(factories, jwtBearerFactory)
-		// The bound ID-JAG handler rides the same per-issuer JWT-bearer policy:
-		// enabling the grant enables both assertion forms, split by JOSE typ
-		// (plain assertions to JWTBearerHandler, oauth-id-jag+jwt to IDJAGHandler).
-		idJAGFactory, err := tokenexchange.IDJAGIssuanceFactory(cfg.TrustedIssuers, shared)
-		if err != nil {
-			return nil, nil, fmt.Errorf("failed to create ID-JAG factory: %w", err)
+		if len(tokenexchange.IssuersAcceptingAssertionType(cfg.TrustedIssuers, tokenexchange.JWTBearerAssertionTypeIDJAG)) > 0 {
+			idJAGFactory, err := tokenexchange.IDJAGIssuanceFactory(cfg.TrustedIssuers, shared)
+			if err != nil {
+				return nil, nil, fmt.Errorf("failed to create ID-JAG factory: %w", err)
+			}
+			factories = append(factories, idJAGFactory)
+		} else {
+			slog.Debug("ID-JAG issuance not registered: no trusted issuer accepts id_jag assertions")
 		}
-		factories = append(factories, idJAGFactory)
 	}
 	provider, err := createProvider(authServerConfig, stor, factories...)
 	if err != nil {

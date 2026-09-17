@@ -2422,6 +2422,8 @@ _Appears in:_
 | `insecureAllowHTTP` _boolean_ | InsecureAllowHTTP allows HTTP (non-HTTPS) OIDC issuer and JWKS URLs for development/testing.<br />WARNING: This is insecure and should NEVER be used in production. | false | Optional: \{\} <br /> |
 
 
+
+
 #### api.v1beta1.JWTBearerGrantConfig
 
 
@@ -2441,6 +2443,7 @@ _Appears in:_
 | `maxAssertionAge` _[Duration](https://kubernetes.io/docs/reference/generated/kubernetes-api/v1.27/#duration-v1-meta)_ | MaxAssertionAge caps the exp-iat interval independently of exp. |  | Required: \{\} <br /> |
 | `subjectBindings` _[api.v1beta1.JWTBearerSubjectBinding](#apiv1beta1jwtbearersubjectbinding) array_ | SubjectBindings maps an exact external subject to allowed RFC 8707<br />resources. |  | MaxItems: 50 <br />MinItems: 1 <br />Required: \{\} <br /> |
 | `acceptedAudiences` _string array_ | AcceptedAudiences identifies this authorization server's accepted<br />assertion audiences. When omitted, runtime validation defaults to the<br />token endpoint. |  | MaxItems: 50 <br />items:MaxLength: 2048 <br />items:MinLength: 1 <br />items:Pattern: `^https?://[^[:space:]]+$` <br />Optional: \{\} <br /> |
+| `acceptedAssertionTypes` _[api.v1beta1.JWTBearerAssertionType](#apiv1beta1jwtbearerassertiontype) array_ | AcceptedAssertionTypes selects which assertion form(s) this issuer's<br />jwt-bearer grant accepts. Defaults to ["jwt_bearer"] — plain assertions<br />only — preserving behavior for every config written before this field<br />existed. Include "id_jag" to additionally (or instead) accept<br />cross-app-access grants minted by this issuer acting as IdP for a<br />different resource owner — a materially wider trust decision that must<br />be opted into explicitly, not implied by configuring this grant at all.<br />When configuring "id_jag", acceptedAudiences must include this AS's own<br />issuer identifier (the ID-JAG's "aud" per<br />draft-ietf-oauth-identity-assertion-authz-grant §4.4.1), not just the<br />token endpoint URL that a plain-assertion-only deployment typically uses.<br />When both assertion types are selected, each subject binding also<br />authorizes a credential-free plain JWT-bearer assertion. Add an ID-JAG<br />subject only when this issuer is also intended to mint plain assertions<br />for that subject. | [jwt_bearer] | MaxItems: 2 <br />MinItems: 1 <br />items:Enum: [jwt_bearer id_jag] <br /> |
 
 
 #### api.v1beta1.JWTBearerInboundGrantConfig
@@ -2476,6 +2479,7 @@ _Appears in:_
 | `maxAssertionAge` _[Duration](https://kubernetes.io/docs/reference/generated/kubernetes-api/v1.27/#duration-v1-meta)_ | MaxAssertionAge caps the exp-iat interval independently of exp. |  | Required: \{\} <br /> |
 | `subjectBindings` _[api.v1beta1.JWTBearerSubjectBinding](#apiv1beta1jwtbearersubjectbinding) array_ | SubjectBindings maps an exact external subject to allowed RFC 8707<br />resources. |  | MaxItems: 50 <br />MinItems: 1 <br />Required: \{\} <br /> |
 | `acceptedAudiences` _string array_ | AcceptedAudiences identifies this authorization server's accepted<br />assertion audiences. When omitted, runtime validation defaults to the<br />token endpoint. |  | MaxItems: 50 <br />items:MaxLength: 2048 <br />items:MinLength: 1 <br />items:Pattern: `^https?://[^[:space:]]+$` <br />Optional: \{\} <br /> |
+| `acceptedAssertionTypes` _[api.v1beta1.JWTBearerAssertionType](#apiv1beta1jwtbearerassertiontype) array_ | AcceptedAssertionTypes selects which assertion form(s) this issuer's<br />jwt-bearer grant accepts. Defaults to ["jwt_bearer"] — plain assertions<br />only — preserving behavior for every config written before this field<br />existed. Include "id_jag" to additionally (or instead) accept<br />cross-app-access grants minted by this issuer acting as IdP for a<br />different resource owner — a materially wider trust decision that must<br />be opted into explicitly, not implied by configuring this grant at all.<br />When configuring "id_jag", acceptedAudiences must include this AS's own<br />issuer identifier (the ID-JAG's "aud" per<br />draft-ietf-oauth-identity-assertion-authz-grant §4.4.1), not just the<br />token endpoint URL that a plain-assertion-only deployment typically uses.<br />When both assertion types are selected, each subject binding also<br />authorizes a credential-free plain JWT-bearer assertion. Add an ID-JAG<br />subject only when this issuer is also intended to mint plain assertions<br />for that subject. | [jwt_bearer] | MaxItems: 2 <br />MinItems: 1 <br />items:Enum: [jwt_bearer id_jag] <br /> |
 
 
 

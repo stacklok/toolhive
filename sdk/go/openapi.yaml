@@ -378,6 +378,14 @@ components:
             type: object
         AuthenticationJWTBearerIssuerPolicyRunConfig:
             properties:
+                accepted_assertion_types:
+                    description: |-
+                        AcceptedAssertionTypes mirrors JWTBearerGrantConfig.AcceptedAssertionTypes
+                        for the canonical config path.
+                    items:
+                        $ref: '#/components/schemas/AuthenticationServerTokenExchangeJWTBearerAssertionType'
+                    type: array
+                    uniqueItems: false
                 accepted_audiences:
                     items:
                         type: string
@@ -915,6 +923,14 @@ components:
             type: object
         AuthenticationSPIFFEWorkloadAPIBundleSourceRunConfig:
             type: object
+        AuthenticationServerTokenExchangeJWTBearerAssertionType:
+            enum:
+                - jwt_bearer
+                - id_jag
+            type: string
+            x-enum-varnames:
+                - JWTBearerAssertionTypeJWTBearer
+                - JWTBearerAssertionTypeIDJAG
         AuthenticationServerTokenExchangeJWTBearerSubjectBinding:
             properties:
                 allowed_resources:
@@ -4665,6 +4681,37 @@ components:
                 This legacy field is deprecated; configure RFC 7523 policy under
                 inbound_grants.jwt_bearer.issuer_policies.
             properties:
+                accepted_assertion_types:
+                    description: |-
+                        AcceptedAssertionTypes selects which assertion form(s) this issuer's
+                        jwt-bearer grant accepts. A nil/empty slice is treated as
+                        {JWTBearerAssertionTypeJWTBearer} by every call site that reads this
+                        field (see effectiveAssertionTypes) — the Go-level equivalent of the
+                        CRD's `+kubebuilder:default={jwt_bearer}`, which only applies at
+                        Kubernetes admission and does not reach standalone deployments,
+                        hand-authored RunConfig, or Go-constructed TrustedIssuer values in
+                        tests. Include JWTBearerAssertionTypeIDJAG to additionally (or
+                        instead) accept cross-app-access grants minted by this issuer acting
+                        as IdP for a different resource owner — a materially wider trust
+                        decision that must be opted into explicitly, not implied by
+                        configuring this grant at all.
+
+                        Two things to configure alongside JWTBearerAssertionTypeIDJAG, or
+                        ID-JAG acceptance will silently fail or over-grant:
+                          - AcceptedAudiences must include this AS's own issuer identifier (the
+                            ID-JAG's "aud" per draft-ietf-oauth-identity-assertion-authz-grant
+                            §4.4.1), not just the token endpoint URL that a plain-assertion-only
+                            deployment typically configures here — an issuer accepting id_jag
+                            but only the token-endpoint URL in AcceptedAudiences will reject
+                            every ID-JAG with invalid_grant.
+                          - Adding a SubjectBindings entry to permit an ID-JAG's (human) subject
+                            also, as a side effect, permits that same subject on the PLAIN
+                            jwt-bearer grant for this issuer (client-auth-skippable there) — the
+                            binding is shared between both assertion forms, this opt-in is not.
+                    items:
+                        type: string
+                    type: array
+                    uniqueItems: false
                 accepted_audiences:
                     description: |-
                         AcceptedAudiences is the set of "this AS" identity strings an

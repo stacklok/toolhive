@@ -345,6 +345,72 @@ func TestNewServer_TrustedIssuerWithBothGrantsDisabled(t *testing.T) {
 	})
 }
 
+// TestNewServer_JWTBearerGrantAssertionTypeGating pins that buildProvider
+// gates each of the two jwt-bearer handler factories on its own per-type
+// filter (tokenexchange.IssuersAcceptingAssertionType), not on
+// JWTBearerGrantEnabled alone: a trusted issuer can now configure
+// JWTBearerGrant while accepting only one assertion form, so each factory
+// must be skipped rather than registered with zero opted-in issuers (which
+// would hit newJWTBearerIssuanceHandler's "requires at least one enabled
+// trusted issuer" error). AS startup must never fail for either case.
+func TestNewServer_JWTBearerGrantAssertionTypeGating(t *testing.T) {
+	t.Parallel()
+
+	jwksServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		_, _ = w.Write([]byte(`{"keys":[]}`))
+	}))
+	t.Cleanup(jwksServer.Close)
+
+	newTrustedIssuer := func(acceptedAssertionTypes []tokenexchange.JWTBearerAssertionType) tokenexchange.TrustedIssuer {
+		return tokenexchange.TrustedIssuer{
+			IssuerURL:         "https://issuer.example.com",
+			JWKSURL:           jwksServer.URL,
+			InsecureAllowHTTP: true,
+			AllowPrivateIPs:   true,
+			JWTBearerGrant: &tokenexchange.JWTBearerGrantPolicy{
+				MaxAssertionAge: "10m",
+				SubjectBindings: []tokenexchange.JWTBearerSubjectBinding{{
+					Subject:          "external-subject",
+					AllowedResources: []string{"https://mcp.example.com"},
+				}},
+				AcceptedAssertionTypes: acceptedAssertionTypes,
+				AcceptedAudiences:      []string{"https://example.com"},
+			},
+		}
+	}
+	newConfig := func(issuer tokenexchange.TrustedIssuer) Config {
+		return Config{
+			Issuer:           "https://example.com",
+			KeyProvider:      keys.NewGeneratingProvider(keys.DefaultAlgorithm),
+			HMACSecrets:      &servercrypto.HMACSecrets{Current: validHMACSecret()},
+			Upstreams:        []UpstreamConfig{{Name: "default", Type: UpstreamProviderTypeOAuth2, OAuth2Config: validUpstreamConfig()}},
+			AllowedAudiences: []string{"https://mcp.example.com"},
+			TrustedIssuers:   []tokenexchange.TrustedIssuer{issuer},
+		}
+	}
+
+	t.Run("nil AcceptedAssertionTypes registers only the plain factory", func(t *testing.T) {
+		t.Parallel()
+		stor := storage.NewMemoryStorage()
+		srv, err := newServer(context.Background(), newConfig(newTrustedIssuer(nil)), stor)
+		require.NoError(t, err, "AS startup must not fail when no trusted issuer accepts id_jag assertions")
+		t.Cleanup(func() { _ = srv.Close() })
+		assert.NotNil(t, srv.trustedIssuerValidator,
+			"the plain JWT-bearer grant still consumes the shared trusted-issuer validator")
+	})
+
+	t.Run("id_jag-only AcceptedAssertionTypes registers only the ID-JAG factory", func(t *testing.T) {
+		t.Parallel()
+		stor := storage.NewMemoryStorage()
+		issuer := newTrustedIssuer([]tokenexchange.JWTBearerAssertionType{tokenexchange.JWTBearerAssertionTypeIDJAG})
+		srv, err := newServer(context.Background(), newConfig(issuer), stor)
+		require.NoError(t, err, "AS startup must not fail when no trusted issuer accepts jwt_bearer assertions")
+		t.Cleanup(func() { _ = srv.Close() })
+		assert.NotNil(t, srv.trustedIssuerValidator,
+			"the ID-JAG grant still consumes the shared trusted-issuer validator")
+	})
+}
+
 // capturingSlogHandler records log records for assertions. slog's default
 // handler is process-global, so tests using it must not run in parallel with
 // other slog-capturing tests.

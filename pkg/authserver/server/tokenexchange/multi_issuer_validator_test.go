@@ -1625,6 +1625,66 @@ func TestValidateJWTBearerAcceptedAudiences_RejectsResourceAudienceOverlap(t *te
 	assert.Contains(t, err.Error(), "must not also be a configured resource audience")
 }
 
+func TestValidateJWTBearerGrantPolicy_IDJAGRequirements(t *testing.T) {
+	t.Parallel()
+
+	policy := func(assertionTypes []JWTBearerAssertionType, audiences []string) TrustedIssuer {
+		return TrustedIssuer{
+			IssuerURL: testExternalIssuer,
+			JWTBearerGrant: &JWTBearerGrantPolicy{
+				MaxAssertionAge: "1h",
+				SubjectBindings: []JWTBearerSubjectBinding{{
+					Subject: "user", AllowedResources: []string{"https://api.example.com/resource"},
+				}},
+				AcceptedAssertionTypes: assertionTypes,
+				AcceptedAudiences:      audiences,
+			},
+		}
+	}
+
+	tests := []struct {
+		name            string
+		issuer          TrustedIssuer
+		wantErrContains string
+	}{
+		{
+			name:            "ID-JAG without an audience for this authorization server is rejected",
+			issuer:          policy([]JWTBearerAssertionType{JWTBearerAssertionTypeIDJAG}, nil),
+			wantErrContains: "accepted_audiences must include the authorization server issuer",
+		},
+		{
+			name:            "ID-JAG with another audience is rejected",
+			issuer:          policy([]JWTBearerAssertionType{JWTBearerAssertionTypeIDJAG}, []string{"https://other-auth.example.com"}),
+			wantErrContains: "accepted_audiences must include the authorization server issuer",
+		},
+		{
+			name:   "ID-JAG with this authorization server audience is accepted",
+			issuer: policy([]JWTBearerAssertionType{JWTBearerAssertionTypeIDJAG}, []string{testIssuer}),
+		},
+		{
+			name:            "unknown assertion type is rejected",
+			issuer:          policy([]JWTBearerAssertionType{"id-jag"}, nil),
+			wantErrContains: "contains unsupported value",
+		},
+		{
+			name:   "plain and ID-JAG assertions together are accepted",
+			issuer: policy([]JWTBearerAssertionType{JWTBearerAssertionTypeJWTBearer, JWTBearerAssertionTypeIDJAG}, []string{testIssuer}),
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			err := validateJWTBearerGrantPolicy(tt.issuer, testIssuer, nil)
+			if tt.wantErrContains == "" {
+				require.NoError(t, err)
+				return
+			}
+			require.ErrorContains(t, err, tt.wantErrContains)
+		})
+	}
+}
+
 func TestNewMultiIssuerTokenValidator_EmptyAllowedActorsAccepted(t *testing.T) {
 	t.Parallel()
 

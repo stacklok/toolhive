@@ -168,6 +168,28 @@ func TestNormalizeInboundGrants(t *testing.T) {
 				}},
 			},
 		},
+		{
+			name: "canonical JWT bearer threads AcceptedAssertionTypes into the trusted issuer's grant policy",
+			cfg: &RunConfig{
+				TrustedIssuers: []tokenexchange.TrustedIssuer{issuer},
+				InboundGrants: &InboundGrantsRunConfig{JWTBearer: &JWTBearerInboundGrantRunConfig{
+					IssuerPolicies: []JWTBearerIssuerPolicyRunConfig{{
+						IssuerRef: "idp", MaxAssertionAge: "5m",
+						AcceptedAssertionTypes: []tokenexchange.JWTBearerAssertionType{tokenexchange.JWTBearerAssertionTypeIDJAG},
+					}},
+				}},
+			},
+			want: &NormalizedInboundGrants{
+				TrustedIssuers: []tokenexchange.TrustedIssuer{{
+					Name: "idp", IssuerURL: "https://idp.example.com",
+					JWTBearerGrant: &tokenexchange.JWTBearerGrantPolicy{
+						MaxAssertionAge:        "5m",
+						AcceptedAssertionTypes: []tokenexchange.JWTBearerAssertionType{tokenexchange.JWTBearerAssertionTypeIDJAG},
+					},
+				}},
+				Capabilities: InboundGrantCapabilities{JWTBearer: true},
+			},
+		},
 	}
 
 	for _, tt := range tests {

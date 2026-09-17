@@ -413,6 +413,14 @@
       },
       "AuthenticationJWTBearerIssuerPolicyRunConfig": {
         "properties": {
+          "accepted_assertion_types": {
+            "description": "AcceptedAssertionTypes mirrors JWTBearerGrantPolicy.AcceptedAssertionTypes\nfor the canonical config path; unset accepts both jwt_bearer and id_jag.",
+            "items": {
+              "$ref": "#/components/schemas/AuthenticationServerTokenExchangeJWTBearerAssertionType"
+            },
+            "type": "array",
+            "uniqueItems": false
+          },
           "accepted_audiences": {
             "items": {
               "type": "string"
@@ -870,6 +878,17 @@
       },
       "AuthenticationSPIFFEWorkloadAPIBundleSourceRunConfig": {
         "type": "object"
+      },
+      "AuthenticationServerTokenExchangeJWTBearerAssertionType": {
+        "enum": [
+          "jwt_bearer",
+          "id_jag"
+        ],
+        "type": "string",
+        "x-enum-varnames": [
+          "JWTBearerAssertionTypeJWTBearer",
+          "JWTBearerAssertionTypeIDJAG"
+        ]
       },
       "AuthenticationServerTokenExchangeJWTBearerSubjectBinding": {
         "properties": {
@@ -5216,6 +5235,18 @@
       "TokenExchangeJWTBearerGrantPolicy": {
         "description": "JWTBearerGrant optionally enables the plain RFC 7523 JWT-bearer grant.\nIt accepts assertions from this issuer without client authentication and\nlimits their maximum age, subjects, and RFC 8707 resources. It is\nindependent from RFC 8693 delegation policy.\n\nThis legacy field is deprecated; configure RFC 7523 policy under\ninbound_grants.jwt_bearer.issuer_policies.",
         "properties": {
+          "accepted_assertion_types": {
+            "description": "AcceptedAssertionTypes selects which assertion form(s) this issuer's\njwt-bearer grant accepts. nil/empty accepts both jwt_bearer and id_jag\n(the behavior before this field existed). Set {id_jag} to restrict an IdP\nissuer to Cross-App-Access grants so its other signed JWTs cannot be\nredeemed on the credential-free plain path; set {jwt_bearer} to refuse\nID-JAG. Listing id_jag explicitly requires AcceptedAudiences to include\nthis AS's issuer. SubjectBindings are shared by both forms. See\ndocs/arch/17-token-exchange-delegation.md.",
+            "items": {
+              "enum": [
+                "jwt_bearer",
+                "id_jag"
+              ],
+              "type": "string"
+            },
+            "type": "array",
+            "uniqueItems": false
+          },
           "accepted_audiences": {
             "description": "AcceptedAudiences is the set of \"this AS\" identity strings an\nassertion's \"aud\" claim must intersect — e.g. to support migrating\nthis server's issuer/token-endpoint URL, or exposing it under more\nthan one valid name. Each value uniquely identifies this\nauthorization server for this grant; it is NOT a resource/API\nidentifier — a bare resource audience is deliberately not accepted\nhere, that would let any RFC 8707 resource-scoped token satisfy the\ngrant instead of only tokens minted for this AS. Defaults to\n[tokenEndpoint] when empty, preserving prior exact-match behavior.",
             "items": {

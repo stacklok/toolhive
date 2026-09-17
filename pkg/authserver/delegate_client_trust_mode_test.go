@@ -106,7 +106,7 @@ func TestRestrictedClientPolicies(t *testing.T) {
 // TestWarnBlanketSelfIssuedExchange checks that every delegate
 // left with blanket trust logs one WARN, with explicit_any for a client that
 // declared any alongside grant_types and redeems_id_jag for a client without
-// grant_types while jwt-bearer is enabled.
+// grant_types while an issuer accepts id_jag.
 //
 //nolint:paralleltest // captures the package-global slog.Default()
 func TestWarnBlanketSelfIssuedExchange(t *testing.T) {
@@ -121,16 +121,16 @@ func TestWarnBlanketSelfIssuedExchange(t *testing.T) {
 	}
 
 	tests := []struct {
-		name             string
-		jwtBearerEnabled bool
-		want             map[string]map[string]bool
+		name            string
+		idJAGRedeemable bool
+		want            map[string]map[string]bool
 	}{
-		{name: "jwt-bearer disabled", want: map[string]map[string]bool{
+		{name: "id_jag not redeemable", want: map[string]map[string]bool{
 			"legacy":        {},
 			"no-grants-any": {},
 			"explicit-any":  {"explicit_any": true},
 		}},
-		{name: "jwt-bearer enabled", jwtBearerEnabled: true, want: map[string]map[string]bool{
+		{name: "id_jag redeemable", idJAGRedeemable: true, want: map[string]map[string]bool{
 			"legacy":        {"redeems_id_jag": true},
 			"no-grants-any": {"redeems_id_jag": true},
 			"explicit-any":  {"explicit_any": true},
@@ -144,7 +144,7 @@ func TestWarnBlanketSelfIssuedExchange(t *testing.T) {
 			slog.SetDefault(slog.New(slog.NewJSONHandler(&buf, &slog.HandlerOptions{Level: slog.LevelWarn})))
 			t.Cleanup(func() { slog.SetDefault(prev) })
 
-			warnBlanketSelfIssuedExchange(clients, tt.jwtBearerEnabled)
+			warnBlanketSelfIssuedExchange(clients, tt.idJAGRedeemable)
 
 			got := map[string]map[string]bool{}
 			scanner := bufio.NewScanner(&buf)
@@ -167,6 +167,35 @@ func TestWarnBlanketSelfIssuedExchange(t *testing.T) {
 			}
 			require.NoError(t, scanner.Err())
 			assert.Equal(t, tt.want, got)
+		})
+	}
+}
+
+func TestIDJAGRedeemable(t *testing.T) {
+	t.Parallel()
+
+	issuer := func(types ...tokenexchange.JWTBearerAssertionType) tokenexchange.TrustedIssuer {
+		return tokenexchange.TrustedIssuer{JWTBearerGrant: &tokenexchange.JWTBearerGrantPolicy{AcceptedAssertionTypes: types}}
+	}
+	jwtBearer := tokenexchange.JWTBearerAssertionTypeJWTBearer
+	idJAG := tokenexchange.JWTBearerAssertionTypeIDJAG
+
+	tests := []struct {
+		name    string
+		issuers []tokenexchange.TrustedIssuer
+		want    bool
+	}{
+		{name: "no issuers", want: false},
+		{name: "issuer without jwt-bearer grant", issuers: []tokenexchange.TrustedIssuer{{}}, want: false},
+		{name: "unset types accept both", issuers: []tokenexchange.TrustedIssuer{issuer()}, want: true},
+		{name: "jwt_bearer only", issuers: []tokenexchange.TrustedIssuer{issuer(jwtBearer)}, want: false},
+		{name: "id_jag", issuers: []tokenexchange.TrustedIssuer{issuer(idJAG)}, want: true},
+		{name: "mixed issuers", issuers: []tokenexchange.TrustedIssuer{issuer(jwtBearer), issuer(idJAG)}, want: true},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			assert.Equal(t, tt.want, idJAGRedeemable(tt.issuers))
 		})
 	}
 }

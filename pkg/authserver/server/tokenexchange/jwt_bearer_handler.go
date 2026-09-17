@@ -96,9 +96,6 @@ func newJWTBearerIssuanceHandler(
 			policies[issuer.IssuerURL] = issuer.JWTBearerGrant
 		}
 	}
-	if len(policies) == 0 {
-		return nil, errors.New("JWT-bearer issuance requires at least one enabled trusted issuer")
-	}
 	handler.HandleHelper = &oauth2.HandleHelper{
 		AccessTokenStrategy: strategy,
 		AccessTokenStorage:  tokenStorage,
@@ -446,8 +443,12 @@ func audienceIntersects(audience jwt.Audience, accepted []string) bool {
 	return false
 }
 
-// JWTBearerIssuanceFactory builds the production RFC 7523 handler. It is only
-// registered by composition when a trusted issuer opts into the grant.
+// JWTBearerIssuanceFactory builds the production RFC 7523 handler. Like the
+// ID-JAG handler it is registered whenever the grant is enabled, even when no
+// trusted issuer accepts the jwt_bearer assertion type (every issuer does
+// unless acceptedAssertionTypes excludes it): a plain assertion from an
+// excluded issuer then gets the precise "issuer is not enabled for this grant"
+// rejection instead of fosite's generic invalid_request.
 //
 // shared is used as the JWTBearerAssertionValidator and is REQUIRED whenever
 // trustedIssuers is non-empty (an error is returned otherwise). The RFC 8693
@@ -465,8 +466,12 @@ func JWTBearerIssuanceFactory(trustedIssuers []TrustedIssuer, shared *MultiIssue
 			config *fosite.Config, strategy oauth2.AccessTokenStrategy, tokenStorage oauth2.AccessTokenStorage,
 			resolvedIssuers []TrustedIssuer,
 		) (any, error) {
+			// AcceptedAssertionTypes may name only id_jag; filter here,
+			// symmetrically with newIDJAGIssuanceHandler. An empty result is
+			// valid: every plain assertion is then rejected as not enabled.
 			return newJWTBearerIssuanceHandler(
-				validator, tokenEndpoint, consumer, config, strategy, tokenStorage, resolvedIssuers)
+				validator, tokenEndpoint, consumer, config, strategy, tokenStorage,
+				IssuersAcceptingAssertionType(resolvedIssuers, JWTBearerAssertionTypeJWTBearer))
 		})
 }
 

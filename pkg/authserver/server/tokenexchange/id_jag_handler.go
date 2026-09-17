@@ -68,6 +68,25 @@ type IDJAGHandler struct {
 	explicitGrantClients map[string]struct{}
 }
 
+// IssuersAcceptingAssertionType returns the subset of trustedIssuers whose
+// JWTBearerGrant policy accepts assertionType. An issuer with no
+// AcceptedAssertionTypes configured (nil/empty) accepts both types.
+//
+// This is the single source of truth for "which issuers accept this
+// assertion type": it builds each handler's policy map.
+func IssuersAcceptingAssertionType(trustedIssuers []TrustedIssuer, assertionType JWTBearerAssertionType) []TrustedIssuer {
+	accepted := make([]TrustedIssuer, 0, len(trustedIssuers))
+	for _, issuer := range trustedIssuers {
+		if issuer.JWTBearerGrant == nil {
+			continue
+		}
+		if slices.Contains(effectiveAssertionTypes(issuer.JWTBearerGrant), assertionType) {
+			accepted = append(accepted, issuer)
+		}
+	}
+	return accepted
+}
+
 // newIDJAGIssuanceHandler constructs the production bound handler over the
 // same issuance core as newJWTBearerIssuanceHandler; see that constructor
 // for the dependency requirements.
@@ -76,8 +95,14 @@ func newIDJAGIssuanceHandler(
 	config *fosite.Config, strategy oauth2.AccessTokenStrategy, tokenStorage oauth2.AccessTokenStorage,
 	trustedIssuers []TrustedIssuer, explicitGrantClientIDs []string,
 ) (*IDJAGHandler, error) {
+	// Filtering here, rather than in HandleTokenEndpointRequest, is the entire
+	// enforcement mechanism: an issuer left out of core.policies is
+	// indistinguishable from an issuer never configured at all, so the
+	// existing "issuer not enabled for this grant" rejection already covers
+	// issuers that exclude id_jag.
 	core, err := newJWTBearerIssuanceHandler(
-		validator, tokenEndpoint, consumer, config, strategy, tokenStorage, trustedIssuers)
+		validator, tokenEndpoint, consumer, config, strategy, tokenStorage,
+		IssuersAcceptingAssertionType(trustedIssuers, JWTBearerAssertionTypeIDJAG))
 	if err != nil {
 		return nil, err
 	}
@@ -232,13 +257,16 @@ func (*IDJAGHandler) checkClientBinding(requester fosite.AccessRequester, claims
 	return nil
 }
 
-// IDJAGIssuanceFactory builds the production bound ID-JAG handler. It is
-// registered alongside JWTBearerIssuanceFactory whenever any trusted issuer
-// enables the JWT-bearer grant: the two handlers share the per-issuer policy
-// and split one grant type by assertion typ, so enabling the grant enables
-// both assertion forms. explicitGrantClientIDs names the clients that must list
-// the jwt-bearer grant in their registered grant types. See
-// JWTBearerIssuanceFactory for the shared validator's ownership contract.
+// IDJAGIssuanceFactory builds the production bound ID-JAG handler. Like the
+// plain handler, it is registered whenever the jwt-bearer grant type is
+// enabled at all, even if no trusted issuer currently accepts ID-JAG
+// assertions, so a recognized ID-JAG
+// gets IDJAGHandler's precise "issuer is not enabled for this grant" rejection
+// instead of falling through to fosite's generic invalid_request. The two
+// handlers share the per-issuer policy and split one grant type by assertion
+// typ. explicitGrantClientIDs names the clients that must list the jwt-bearer
+// grant in their registered grant types. See JWTBearerIssuanceFactory for the
+// shared validator's ownership contract.
 func IDJAGIssuanceFactory(
 	trustedIssuers []TrustedIssuer, shared *MultiIssuerTokenValidator, explicitGrantClientIDs []string,
 ) (server.Factory, error) {

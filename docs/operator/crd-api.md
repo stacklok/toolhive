@@ -2475,6 +2475,8 @@ _Appears in:_
 | `insecureAllowHTTP` _boolean_ | InsecureAllowHTTP allows HTTP (non-HTTPS) OIDC issuer and JWKS URLs for development/testing.<br />WARNING: This is insecure and should NEVER be used in production. | false | Optional: \{\} <br /> |
 
 
+
+
 #### api.v1beta1.JWTBearerGrantConfig
 
 
@@ -2494,6 +2496,7 @@ _Appears in:_
 | `maxAssertionAge` _[Duration](https://kubernetes.io/docs/reference/generated/kubernetes-api/v1.27/#duration-v1-meta)_ | MaxAssertionAge caps the exp-iat interval independently of exp. |  | Required: \{\} <br /> |
 | `subjectBindings` _[api.v1beta1.JWTBearerSubjectBinding](#apiv1beta1jwtbearersubjectbinding) array_ | SubjectBindings maps an exact external subject to allowed RFC 8707<br />resources. |  | MaxItems: 50 <br />MinItems: 1 <br />Required: \{\} <br /> |
 | `acceptedAudiences` _string array_ | AcceptedAudiences identifies this authorization server's accepted<br />assertion audiences. When omitted, runtime validation defaults to the<br />token endpoint. |  | MaxItems: 50 <br />items:MaxLength: 2048 <br />items:MinLength: 1 <br />items:Pattern: `^https?://[^[:space:]]+$` <br />Optional: \{\} <br /> |
+| `acceptedAssertionTypes` _[api.v1beta1.JWTBearerAssertionType](#apiv1beta1jwtbearerassertiontype) array_ | AcceptedAssertionTypes selects which assertion form(s) this issuer's<br />jwt-bearer grant accepts. When omitted, both "jwt_bearer" and "id_jag"<br />are accepted, which is the behavior before this field existed. Set<br />["id_jag"] to restrict an IdP issuer (e.g. Okta acting as a<br />Cross-App-Access IdP) to ID-JAG grants, so its other signed JWTs cannot<br />be redeemed on the credential-free plain jwt-bearer path. Set<br />["jwt_bearer"] to refuse ID-JAG.<br />When "id_jag" is listed explicitly, acceptedAudiences must include this<br />AS's own issuer identifier (the ID-JAG's "aud" per<br />draft-ietf-oauth-identity-assertion-authz-grant §4.4.1), not just the<br />token endpoint URL. Subject bindings are shared between both forms, so<br />each binding also authorizes a plain jwt-bearer assertion from that<br />subject whenever "jwt_bearer" is accepted. |  | MaxItems: 2 <br />MinItems: 1 <br />items:Enum: [jwt_bearer id_jag] <br />Optional: \{\} <br /> |
 
 
 #### api.v1beta1.JWTBearerInboundGrantConfig
@@ -2529,6 +2532,7 @@ _Appears in:_
 | `maxAssertionAge` _[Duration](https://kubernetes.io/docs/reference/generated/kubernetes-api/v1.27/#duration-v1-meta)_ | MaxAssertionAge caps the exp-iat interval independently of exp. |  | Required: \{\} <br /> |
 | `subjectBindings` _[api.v1beta1.JWTBearerSubjectBinding](#apiv1beta1jwtbearersubjectbinding) array_ | SubjectBindings maps an exact external subject to allowed RFC 8707<br />resources. |  | MaxItems: 50 <br />MinItems: 1 <br />Required: \{\} <br /> |
 | `acceptedAudiences` _string array_ | AcceptedAudiences identifies this authorization server's accepted<br />assertion audiences. When omitted, runtime validation defaults to the<br />token endpoint. |  | MaxItems: 50 <br />items:MaxLength: 2048 <br />items:MinLength: 1 <br />items:Pattern: `^https?://[^[:space:]]+$` <br />Optional: \{\} <br /> |
+| `acceptedAssertionTypes` _[api.v1beta1.JWTBearerAssertionType](#apiv1beta1jwtbearerassertiontype) array_ | AcceptedAssertionTypes selects which assertion form(s) this issuer's<br />jwt-bearer grant accepts. When omitted, both "jwt_bearer" and "id_jag"<br />are accepted, which is the behavior before this field existed. Set<br />["id_jag"] to restrict an IdP issuer (e.g. Okta acting as a<br />Cross-App-Access IdP) to ID-JAG grants, so its other signed JWTs cannot<br />be redeemed on the credential-free plain jwt-bearer path. Set<br />["jwt_bearer"] to refuse ID-JAG.<br />When "id_jag" is listed explicitly, acceptedAudiences must include this<br />AS's own issuer identifier (the ID-JAG's "aud" per<br />draft-ietf-oauth-identity-assertion-authz-grant §4.4.1), not just the<br />token endpoint URL. Subject bindings are shared between both forms, so<br />each binding also authorizes a plain jwt-bearer assertion from that<br />subject whenever "jwt_bearer" is accepted. |  | MaxItems: 2 <br />MinItems: 1 <br />items:Enum: [jwt_bearer id_jag] <br />Optional: \{\} <br /> |
 
 
 

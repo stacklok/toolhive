@@ -402,7 +402,7 @@ func prepareServerStorageAndRegisterClients(
 	if retErr = registerDelegateClients(ctx, prepared, delegates); retErr != nil {
 		return nil, nil, nil, nil, retErr
 	}
-	warnBlanketSelfIssuedExchange(cfg.DelegateClients, JWTBearerGrantEnabled(cfg.TrustedIssuers))
+	warnBlanketSelfIssuedExchange(cfg.DelegateClients, idJAGRedeemable(cfg.TrustedIssuers))
 	return prepared, dcrStore, bundleSource, spiffeRegistry, nil
 }
 
@@ -520,8 +520,9 @@ func registerDelegateClients(ctx context.Context, stor storage.Storage, clients 
 
 // warnBlanketSelfIssuedExchange logs a startup WARN for every delegate client
 // that may exchange any user's self-issued token, i.e. one whose token_exchange
-// block does not restrict self_issued_subject_tokens.
-func warnBlanketSelfIssuedExchange(delegateClients []DelegateClient, jwtBearerEnabled bool) {
+// block does not restrict self_issued_subject_tokens. idJAGRedeemable reports
+// whether a trusted issuer accepts id_jag assertions.
+func warnBlanketSelfIssuedExchange(delegateClients []DelegateClient, idJAGRedeemable bool) {
 	for _, delegateClient := range delegateClients {
 		if delegateClient.TokenExchange.Restricted() {
 			continue
@@ -531,11 +532,11 @@ func warnBlanketSelfIssuedExchange(delegateClients []DelegateClient, jwtBearerEn
 		}
 		// A client with grant_types must declare its mode, so reaching here
 		// means it chose any explicitly. A client without grant_types can
-		// also redeem an ID-JAG when jwt-bearer is enabled, minting its own
-		// self-issued tokens to exchange.
+		// also redeem an ID-JAG when a trusted issuer accepts id_jag
+		// assertions, minting its own self-issued tokens to exchange.
 		if len(delegateClient.GrantTypes) > 0 {
 			attrs = append(attrs, "explicit_any", true)
-		} else if jwtBearerEnabled {
+		} else if idJAGRedeemable {
 			attrs = append(attrs, "redeems_id_jag", true)
 		}
 		slog.Warn("delegate client has blanket self-issued token exchange rights: "+
@@ -653,6 +654,12 @@ func JWTBearerGrantEnabled(trustedIssuers []tokenexchange.TrustedIssuer) bool {
 		}
 	}
 	return false
+}
+
+// idJAGRedeemable reports whether any trusted issuer accepts id_jag assertions.
+func idJAGRedeemable(trustedIssuers []tokenexchange.TrustedIssuer) bool {
+	return len(tokenexchange.IssuersAcceptingAssertionType(
+		trustedIssuers, tokenexchange.JWTBearerAssertionTypeIDJAG)) > 0
 }
 
 // exchangeRefreshTokenCaps converts a delegate client's exchange_refresh_tokens
@@ -830,11 +837,14 @@ func refreshGrantValidatorChain(
 }
 
 // buildJWTBearerFactories builds the RFC 7523 JWT-bearer factory together
-// with the bound ID-JAG factory. The bound ID-JAG handler rides the same
-// per-issuer JWT-bearer policy: enabling the grant enables both assertion
-// forms, split by JOSE typ (plain assertions to JWTBearerHandler,
-// oauth-id-jag+jwt to IDJAGHandler). explicitGrantClientIDs names the clients
-// whose registered grant_types the ID-JAG handler enforces.
+// with the bound ID-JAG factory. Both handlers are always registered with
+// JWT-bearer enabled, each tolerating an empty per-issuer policy map: an
+// assertion from an issuer that excludes its form gets the precise "issuer is
+// not enabled for this grant" rejection instead of falling through to fosite's
+// generic invalid_request. Both ride the same per-issuer JWT-bearer policy,
+// split by JOSE typ (plain assertions to JWTBearerHandler, oauth-id-jag+jwt to
+// IDJAGHandler). explicitGrantClientIDs names the clients whose registered
+// grant_types the ID-JAG handler enforces.
 func buildJWTBearerFactories(
 	trustedIssuers []tokenexchange.TrustedIssuer, shared *tokenexchange.MultiIssuerTokenValidator,
 	explicitGrantClientIDs []string,

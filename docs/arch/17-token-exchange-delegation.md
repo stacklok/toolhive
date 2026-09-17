@@ -685,7 +685,8 @@ including an empty `token_exchange: {}`, fails validation. It has two values:
 
 The block may be omitted only when the client's `grant_types` is omitted or
 empty. Such a client behaves as `any` and logs the startup WARN; when a
-trusted issuer has the JWT-bearer grant enabled, the WARN carries
+trusted issuer accepts `id_jag` assertions (an unset
+`acceptedAssertionTypes` accepts both types), the WARN carries
 `redeems_id_jag=true`, because the client can also redeem an ID-JAG and so
 mint its own self-issued tokens. A client that sets `grant_types` must
 declare the block and the mode, so a client written for the newer metadata
@@ -1111,10 +1112,52 @@ it at this token endpoint.
 One grant type, two handlers, split by the assertion's JOSE `typ` header:
 `JWTBearerHandler` claims plain assertions (`typ` absent, empty, or `JWT`) and
 `IDJAGHandler` claims exactly `typ: oauth-id-jag+jwt`. For any given request at
-most one is responsible; both are registered whenever any trusted issuer
-enables the grant, and both enforce the same per-issuer policy
-(`maxAssertionAge`, `acceptedAudiences`, `subjectBindings` — no separate
-configuration surface).
+most one is responsible. Both handlers are registered whenever the grant
+is enabled (see below). Both enforce the same
+per-issuer policy (`maxAssertionAge`, `acceptedAudiences`, `subjectBindings` —
+no separate configuration surface).
+
+`acceptedAssertionTypes` (a list of `jwt_bearer` and/or `id_jag`) narrows which
+form(s) a `jwtBearerGrant` issuer accepts. When it is omitted, the issuer
+accepts both, which is exactly the behavior before the field existed, so
+upgrading changes nothing for existing deployments (ID-JAG shipped in v0.50.0).
+The default is applied at the Go level
+(`tokenexchange.IssuersAcceptingAssertionType`), not as a CRD default: a CRD
+default would be written into every stored object and make "explicitly listed"
+true for all of them, and non-Kubernetes deployments never see CRD defaults
+anyway.
+
+- `[id_jag]` restricts an IdP issuer (e.g. Okta acting as a Cross-App-Access
+  IdP) to ID-JAG grants, so its other signed JWTs cannot be redeemed on the
+  credential-free plain jwt-bearer path.
+- `[jwt_bearer]` refuses ID-JAG from that issuer.
+
+Enforcement works by construction, not by a separate check: an issuer whose
+`acceptedAssertionTypes` excludes a form is left out of that form's handler's
+per-issuer policy map, so it hits the same "issuer not enabled for this grant"
+rejection as an issuer that was never configured. Both
+handlers are registered whenever the jwt-bearer grant type is enabled, even
+with an empty policy map, so either assertion form from an excluded issuer
+gets that precise rejection instead of falling through every registered
+handler to fosite's generic `invalid_request`.
+
+Two things to know about the ID-JAG form:
+
+- When `id_jag` is listed explicitly, `acceptedAudiences` must include this
+  AS's own issuer identifier (the ID-JAG's `aud` per draft §4.4.1), not just
+  the token endpoint URL a plain-only configuration typically uses; startup
+  fails otherwise. This is not required when the field is unset, so existing
+  configs keep starting. This is a startup check on the configuration only.
+  At request time an ID-JAG's `aud` is matched against the same
+  `acceptedAudiences` set as a plain assertion (the token endpoint URL when
+  the list is empty); the handler does not require `aud` to be the issuer.
+  So an issuer whose `acceptedAudiences` lacks the AS issuer rejects a
+  conforming ID-JAG (`aud` = issuer) with `invalid_grant`, but accepts one
+  whose `aud` is the token endpoint or another listed audience.
+- `subjectBindings` are shared between both forms: a binding added for an
+  ID-JAG's (human) subject also permits that subject on the plain jwt-bearer
+  grant for that issuer (client-auth-skippable there) whenever `jwt_bearer` is
+  accepted. To avoid that, list only `[id_jag]`.
 
 Where the two differ is the trust model — the ID-JAG handler is **bound**:
 

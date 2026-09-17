@@ -25,6 +25,7 @@ import (
 	"github.com/stretchr/testify/require"
 	"go.uber.org/mock/gomock"
 
+	oauthserver "github.com/stacklok/toolhive/pkg/authserver/server"
 	servercrypto "github.com/stacklok/toolhive/pkg/authserver/server/crypto"
 	"github.com/stacklok/toolhive/pkg/authserver/server/keys"
 	"github.com/stacklok/toolhive/pkg/authserver/server/registration"
@@ -410,6 +411,149 @@ func TestNewServer_TrustedIssuerWithBothGrantsDisabled(t *testing.T) {
 		assert.NotNil(t, srv.trustedIssuerValidator,
 			"a trusted issuer consumed by an enabled grant must build the shared validator")
 	})
+}
+
+// TestNewServer_JWTBearerGrantAssertionTypeGating pins that AS startup
+// succeeds for every accepted-assertion-types shape except an explicit id_jag
+// without this AS's issuer audience. Both factories are always registered when
+// the grant is enabled.
+func TestNewServer_JWTBearerGrantAssertionTypeGating(t *testing.T) {
+	t.Parallel()
+
+	jwksServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		_, _ = w.Write([]byte(`{"keys":[]}`))
+	}))
+	t.Cleanup(jwksServer.Close)
+
+	newTrustedIssuer := func(acceptedAssertionTypes []tokenexchange.JWTBearerAssertionType) tokenexchange.TrustedIssuer {
+		return tokenexchange.TrustedIssuer{
+			IssuerURL:         "https://issuer.example.com",
+			JWKSURL:           jwksServer.URL,
+			InsecureAllowHTTP: true,
+			AllowPrivateIPs:   true,
+			JWTBearerGrant: &tokenexchange.JWTBearerGrantPolicy{
+				MaxAssertionAge: "10m",
+				SubjectBindings: []tokenexchange.JWTBearerSubjectBinding{{
+					Subject:          "external-subject",
+					AllowedResources: []string{"https://mcp.example.com"},
+				}},
+				AcceptedAssertionTypes: acceptedAssertionTypes,
+				AcceptedAudiences:      []string{"https://example.com"},
+			},
+		}
+	}
+	newConfig := func(issuer tokenexchange.TrustedIssuer) Config {
+		return Config{
+			Issuer:           "https://example.com",
+			KeyProvider:      keys.NewGeneratingProvider(keys.DefaultAlgorithm),
+			HMACSecrets:      &servercrypto.HMACSecrets{Current: validHMACSecret()},
+			Upstreams:        []UpstreamConfig{{Name: "default", Type: UpstreamProviderTypeOAuth2, OAuth2Config: validUpstreamConfig()}},
+			AllowedAudiences: []string{"https://mcp.example.com"},
+			TrustedIssuers:   []tokenexchange.TrustedIssuer{issuer},
+		}
+	}
+
+	withAudiences := func(issuer tokenexchange.TrustedIssuer, audiences ...string) tokenexchange.TrustedIssuer {
+		issuer.JWTBearerGrant.AcceptedAudiences = audiences
+		return issuer
+	}
+	idJAG := []tokenexchange.JWTBearerAssertionType{tokenexchange.JWTBearerAssertionTypeIDJAG}
+	plain := []tokenexchange.JWTBearerAssertionType{tokenexchange.JWTBearerAssertionTypeJWTBearer}
+	const tokenEndpointOnly = "https://example.com/oauth/token"
+
+	tests := []struct {
+		name    string
+		issuer  tokenexchange.TrustedIssuer
+		wantErr string
+	}{
+		{name: "nil AcceptedAssertionTypes starts", issuer: newTrustedIssuer(nil)},
+		{
+			name:   "nil AcceptedAssertionTypes with only the token endpoint audience starts",
+			issuer: withAudiences(newTrustedIssuer(nil), tokenEndpointOnly),
+		},
+		{name: "id_jag-only AcceptedAssertionTypes starts", issuer: newTrustedIssuer(idJAG)},
+		{name: "jwt_bearer-only AcceptedAssertionTypes starts", issuer: newTrustedIssuer(plain)},
+		{
+			name:    "explicit id_jag without this AS's issuer audience fails",
+			issuer:  withAudiences(newTrustedIssuer(idJAG), tokenEndpointOnly),
+			wantErr: "accepted_audiences must include the authorization server issuer",
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			srv, err := newServer(context.Background(), newConfig(tt.issuer), storage.NewMemoryStorage())
+			if tt.wantErr != "" {
+				require.ErrorContains(t, err, tt.wantErr)
+				return
+			}
+			require.NoError(t, err)
+			t.Cleanup(func() { _ = srv.Close() })
+			assert.NotNil(t, srv.trustedIssuerValidator,
+				"the JWT-bearer grant consumes the shared trusted-issuer validator")
+		})
+	}
+}
+
+// TestBuildJWTBearerFactories_RegistersBothHandlers pins that the plain and
+// ID-JAG factories are both registered however acceptedAssertionTypes
+// restricts the issuers, so an excluded form is rejected precisely rather than
+// falling through to fosite's generic invalid_request.
+func TestBuildJWTBearerFactories_RegistersBothHandlers(t *testing.T) {
+	t.Parallel()
+
+	jwksServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		_, _ = w.Write([]byte(`{"keys":[]}`))
+	}))
+	t.Cleanup(jwksServer.Close)
+
+	tests := []struct {
+		name     string
+		accepted []tokenexchange.JWTBearerAssertionType
+	}{
+		{name: "unset accepted types", accepted: nil},
+		{name: "id_jag-only", accepted: []tokenexchange.JWTBearerAssertionType{tokenexchange.JWTBearerAssertionTypeIDJAG}},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			issuers := []tokenexchange.TrustedIssuer{{
+				IssuerURL:         "https://issuer.example.com",
+				JWKSURL:           jwksServer.URL,
+				InsecureAllowHTTP: true,
+				AllowPrivateIPs:   true,
+				JWTBearerGrant: &tokenexchange.JWTBearerGrantPolicy{
+					MaxAssertionAge: "10m",
+					SubjectBindings: []tokenexchange.JWTBearerSubjectBinding{
+						{Subject: "s", AllowedResources: []string{"https://mcp.example.com"}},
+					},
+					AcceptedAssertionTypes: tt.accepted,
+					AcceptedAudiences:      []string{"https://example.com"},
+				},
+			}}
+			rsaKey, err := rsa.GenerateKey(rand.Reader, 2048)
+			require.NoError(t, err)
+			asConfig, err := oauthserver.NewAuthorizationServerConfig(&oauthserver.AuthorizationServerParams{
+				Issuer:               "https://example.com",
+				AccessTokenLifespan:  time.Hour,
+				RefreshTokenLifespan: 24 * time.Hour,
+				AuthCodeLifespan:     10 * time.Minute,
+				HMACSecrets:          servercrypto.NewHMACSecrets([]byte("test-secret-with-32-bytes-long!!")),
+				SigningKeyID:         "key-1",
+				SigningKeyAlgorithm:  "RS256",
+				SigningKey:           rsaKey,
+				AllowedAudiences:     []string{"https://mcp.example.com"},
+			})
+			require.NoError(t, err)
+			shared, err := tokenexchange.NewSharedTrustedIssuerValidator(asConfig, issuers)
+			require.NoError(t, err)
+			t.Cleanup(func() { _ = shared.Close() })
+
+			factories, err := buildJWTBearerFactories(issuers, shared, nil)
+			require.NoError(t, err)
+			assert.Len(t, factories, 2)
+		})
+	}
 }
 
 // capturingSlogHandler records log records for assertions. slog's default

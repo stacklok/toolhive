@@ -618,6 +618,14 @@ components:
             type: object
         AuthenticationJWTBearerIssuerPolicyRunConfig:
             properties:
+                accepted_assertion_types:
+                    description: |-
+                        AcceptedAssertionTypes mirrors JWTBearerGrantPolicy.AcceptedAssertionTypes
+                        for the canonical config path; unset accepts both jwt_bearer and id_jag.
+                    items:
+                        $ref: '#/components/schemas/AuthenticationServerTokenExchangeJWTBearerAssertionType'
+                    type: array
+                    uniqueItems: false
                 accepted_audiences:
                     items:
                         type: string
@@ -1233,6 +1241,14 @@ components:
             type: object
         AuthenticationSPIFFEWorkloadAPIBundleSourceRunConfig:
             type: object
+        AuthenticationServerTokenExchangeJWTBearerAssertionType:
+            enum:
+                - jwt_bearer
+                - id_jag
+            type: string
+            x-enum-varnames:
+                - JWTBearerAssertionTypeJWTBearer
+                - JWTBearerAssertionTypeIDJAG
         AuthenticationServerTokenExchangeJWTBearerSubjectBinding:
             properties:
                 allowed_resources:
@@ -5109,6 +5125,24 @@ components:
                 This legacy field is deprecated; configure RFC 7523 policy under
                 inbound_grants.jwt_bearer.issuer_policies.
             properties:
+                accepted_assertion_types:
+                    description: |-
+                        AcceptedAssertionTypes selects which assertion form(s) this issuer's
+                        jwt-bearer grant accepts. nil/empty accepts both jwt_bearer and id_jag
+                        (the behavior before this field existed). Set {id_jag} to restrict an IdP
+                        issuer to Cross-App-Access grants so its other signed JWTs cannot be
+                        redeemed on the credential-free plain path; set {jwt_bearer} to refuse
+                        ID-JAG. Listing id_jag explicitly requires this AS's issuer to be
+                        accepted: AcceptedAudiences, when set, must include it, and when empty
+                        the issuer must not also be an allowed audience. SubjectBindings are shared by both forms. See
+                        docs/arch/17-token-exchange-delegation.md.
+                    items:
+                        enum:
+                            - jwt_bearer
+                            - id_jag
+                        type: string
+                    type: array
+                    uniqueItems: false
                 accepted_audiences:
                     description: |-
                         AcceptedAudiences is the set of "this AS" identity strings an

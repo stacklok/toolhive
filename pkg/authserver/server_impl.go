@@ -483,7 +483,7 @@ func buildProvider(
 		}
 	}()
 
-	factories := make([]oauthserver.Factory, 0, 2)
+	factories := make([]oauthserver.Factory, 0, 3)
 	if !cfg.DisableTokenExchange {
 		tokenExchangeFactory, err := tokenexchange.FactoryWithSharedTrustedIssuerValidator(
 			cfg.DelegationTokenLifespan, cfg.TrustedIssuers, delegateClientIDs, shared)
@@ -498,6 +498,14 @@ func buildProvider(
 			return nil, nil, fmt.Errorf("failed to create JWT-bearer factory: %w", err)
 		}
 		factories = append(factories, jwtBearerFactory)
+		// The bound ID-JAG handler rides the same per-issuer JWT-bearer policy:
+		// enabling the grant enables both assertion forms, split by JOSE typ
+		// (plain assertions to JWTBearerHandler, oauth-id-jag+jwt to IDJAGHandler).
+		idJAGFactory, err := tokenexchange.IDJAGIssuanceFactory(cfg.TrustedIssuers, shared)
+		if err != nil {
+			return nil, nil, fmt.Errorf("failed to create ID-JAG factory: %w", err)
+		}
+		factories = append(factories, idJAGFactory)
 	}
 	provider, err := createProvider(authServerConfig, stor, factories...)
 	if err != nil {

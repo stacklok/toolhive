@@ -361,6 +361,13 @@
             "description": "AdditionalAuthorizationParams are extra query parameters to include in\nauthorization requests. Useful for provider-specific parameters like\nGoogle's access_type=offline.",
             "type": "object"
           },
+          "additional_token_params": {
+            "additionalProperties": {
+              "type": "string"
+            },
+            "description": "AdditionalTokenParams are extra form-body parameters to include in\ntoken requests (authorization code exchange and refresh). Useful for\nproviders that enforce RFC 8707 resource indicators on token requests.",
+            "type": "object"
+          },
           "allow_private_ips": {
             "description": "AllowPrivateIPs permits the upstream provider's HTTP client to connect to\nprivate IP ranges (RFC-1918, link-local). When DCRConfig is set, this\nalso gates the DCR discovery and registration calls made on this\nupstream's behalf (see pkg/authserver/runner/dcr_adapter.go), so a\nsingle flag covers the whole upstream rather than needing a separate\nDCR-specific setting. Use only when the upstream is hosted inside the\nsame cluster and has no public endpoint. HTTP-scheme restrictions are\nunchanged — HTTPS is still required for non-localhost hosts. Defaults\nto false.",
             "type": "boolean"
@@ -432,6 +439,13 @@
               "type": "string"
             },
             "description": "AdditionalAuthorizationParams are extra query parameters to include in\nauthorization requests. Useful for provider-specific parameters like\nGoogle's access_type=offline.",
+            "type": "object"
+          },
+          "additional_token_params": {
+            "additionalProperties": {
+              "type": "string"
+            },
+            "description": "AdditionalTokenParams are extra form-body parameters to include in\ntoken requests (authorization code exchange and refresh). Useful for\nproviders that enforce RFC 8707 resource indicators on token requests.",
             "type": "object"
           },
           "allow_private_ips": {
@@ -532,6 +546,10 @@
           "delegation_token_lifespan": {
             "description": "DelegationTokenLifespan is the maximum lifetime for delegated tokens issued\nvia RFC 8693 token exchange. Specified as a Go duration string (e.g., \"15m\").\nIf empty, defaults to 15 minutes.",
             "type": "string"
+          },
+          "device_flow_enabled": {
+            "description": "DeviceFlowEnabled enables the RFC 8628 OAuth 2.0 Device Authorization\nGrant: POST /oauth/device_authorization is mounted and\nurn:ietf:params:oauth:grant-type:device_code is registered at the\ntoken endpoint and advertised in discovery. The minimum polling\ninterval (RFC 8628 Section 3.5) is fixed at\noauthserver.DefaultDeviceCodeInterval; this is a deliberate\nsimplification to keep this config surface minimal — a future\nincrement may add an override.",
+            "type": "boolean"
           },
           "disable_upstream_token_injection": {
             "description": "DisableUpstreamTokenInjection prevents the upstream swap middleware from being added.\nWhen true, the embedded auth server handles OAuth flows for clients, but instead of\ninjecting upstream IdP tokens the proxy strips the client's credential headers\n(Authorization, Cookie, Proxy-Authorization) after the JWT is validated — the\nbackend receives an unauthenticated request. Incompatible with token exchange\nand AWS STS, which would re-add credentials after the strip.",

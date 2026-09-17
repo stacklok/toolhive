@@ -406,6 +406,14 @@ components:
                         authorization requests. Useful for provider-specific parameters like
                         Google's access_type=offline.
                     type: object
+                additional_token_params:
+                    additionalProperties:
+                        type: string
+                    description: |-
+                        AdditionalTokenParams are extra form-body parameters to include in
+                        token requests (authorization code exchange and refresh). Useful for
+                        providers that enforce RFC 8707 resource indicators on token requests.
+                    type: object
                 allow_private_ips:
                     description: |-
                         AllowPrivateIPs permits the upstream provider's HTTP client to connect to
@@ -490,6 +498,14 @@ components:
                         AdditionalAuthorizationParams are extra query parameters to include in
                         authorization requests. Useful for provider-specific parameters like
                         Google's access_type=offline.
+                    type: object
+                additional_token_params:
+                    additionalProperties:
+                        type: string
+                    description: |-
+                        AdditionalTokenParams are extra form-body parameters to include in
+                        token requests (authorization code exchange and refresh). Useful for
+                        providers that enforce RFC 8707 resource indicators on token requests.
                     type: object
                 allow_private_ips:
                     description: |-
@@ -650,6 +666,17 @@ components:
                         via RFC 8693 token exchange. Specified as a Go duration string (e.g., "15m").
                         If empty, defaults to 15 minutes.
                     type: string
+                device_flow_enabled:
+                    description: |-
+                        DeviceFlowEnabled enables the RFC 8628 OAuth 2.0 Device Authorization
+                        Grant: POST /oauth/device_authorization is mounted and
+                        urn:ietf:params:oauth:grant-type:device_code is registered at the
+                        token endpoint and advertised in discovery. The minimum polling
+                        interval (RFC 8628 Section 3.5) is fixed at
+                        oauthserver.DefaultDeviceCodeInterval; this is a deliberate
+                        simplification to keep this config surface minimal — a future
+                        increment may add an override.
+                    type: boolean
                 disable_upstream_token_injection:
                     description: |-
                         DisableUpstreamTokenInjection prevents the upstream swap middleware from being added.

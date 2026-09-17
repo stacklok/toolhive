@@ -1468,6 +1468,80 @@ func TestBuildAuthServerRunConfig(t *testing.T) {
 			},
 		},
 		{
+			name: "OIDC upstream propagates AdditionalTokenParams",
+			authConfig: &mcpv1beta1.EmbeddedAuthServerConfig{
+				Issuer: "https://auth.example.com",
+				SigningKeySecretRefs: []mcpv1beta1.SecretKeyRef{
+					{Name: "signing-key", Key: "private.pem"},
+				},
+				HMACSecretRefs: []mcpv1beta1.SecretKeyRef{
+					{Name: "hmac-secret", Key: "hmac"},
+				},
+				UpstreamProviders: []mcpv1beta1.UpstreamProviderConfig{
+					{
+						Name: "okta",
+						Type: mcpv1beta1.UpstreamProviderTypeOIDC,
+						OIDCConfig: &mcpv1beta1.OIDCUpstreamConfig{
+							IssuerURL:   "https://okta.example.com",
+							ClientID:    "okta-client-id",
+							RedirectURI: "https://auth.example.com/callback",
+							Scopes:      []string{"openid", "profile"},
+							AdditionalTokenParams: map[string]string{
+								"resource": "https://api.example.com",
+							},
+						},
+					},
+				},
+			},
+			allowedAudiences: defaultAudiences,
+			scopesSupported:  defaultScopes,
+			checkFunc: func(t *testing.T, config *authserver.RunConfig) {
+				t.Helper()
+				require.Len(t, config.Upstreams, 1)
+				upstream := config.Upstreams[0]
+				require.NotNil(t, upstream.OIDCConfig)
+				assert.Equal(t, map[string]string{"resource": "https://api.example.com"},
+					upstream.OIDCConfig.AdditionalTokenParams)
+			},
+		},
+		{
+			name: "OAuth2 upstream propagates AdditionalTokenParams",
+			authConfig: &mcpv1beta1.EmbeddedAuthServerConfig{
+				Issuer: "https://auth.example.com",
+				SigningKeySecretRefs: []mcpv1beta1.SecretKeyRef{
+					{Name: "signing-key", Key: "private.pem"},
+				},
+				HMACSecretRefs: []mcpv1beta1.SecretKeyRef{
+					{Name: "hmac-secret", Key: "hmac"},
+				},
+				UpstreamProviders: []mcpv1beta1.UpstreamProviderConfig{
+					{
+						Name: "github",
+						Type: mcpv1beta1.UpstreamProviderTypeOAuth2,
+						OAuth2Config: &mcpv1beta1.OAuth2UpstreamConfig{
+							AuthorizationEndpoint: "https://github.com/login/oauth/authorize",
+							TokenEndpoint:         "https://github.com/login/oauth/access_token",
+							ClientID:              "github-client-id",
+							RedirectURI:           "https://auth.example.com/callback",
+							AdditionalTokenParams: map[string]string{
+								"resource": "https://api.example.com",
+							},
+						},
+					},
+				},
+			},
+			allowedAudiences: defaultAudiences,
+			scopesSupported:  defaultScopes,
+			checkFunc: func(t *testing.T, config *authserver.RunConfig) {
+				t.Helper()
+				require.Len(t, config.Upstreams, 1)
+				upstream := config.Upstreams[0]
+				require.NotNil(t, upstream.OAuth2Config)
+				assert.Equal(t, map[string]string{"resource": "https://api.example.com"},
+					upstream.OAuth2Config.AdditionalTokenParams)
+			},
+		},
+		{
 			name:        "OIDC upstream with empty redirectUri defaults to resourceURL/oauth/callback",
 			resourceURL: "https://mcp.example.com",
 			authConfig: &mcpv1beta1.EmbeddedAuthServerConfig{

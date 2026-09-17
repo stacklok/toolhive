@@ -221,18 +221,30 @@ they also reject `--public-key` rather than accepting a key that would not be
 used.
 
 For keyless OCI signatures and gitsign commits, first project install records
-the observed certificate identity (TOFU) and displays it. Subsequent install,
-sync, and upgrade enforce the recorded signer and available certificate fields.
-Git trust is marked provisional because signing-time transparency proof is not
-yet validated. Plugins do not currently consume catalog-declared provenance,
-so registry-name installation does not replace first-use TOFU.
+the observed certificate identity (TOFU) and displays it. When a plugin is
+resolved by registry name and its catalog entry declares provenance, each
+non-empty `signer_identity`, `cert_issuer`, `repository_uri`, `repository_ref`,
+and `runner_environment` constraint is enforced on true first use instead of
+unconstrained TOFU. A non-empty `sigstore_url` or an attestation constraint
+fails closed because plugin verification cannot enforce those fields. Any
+existing lock entry, including a legacy entry with no trust state, takes
+precedence over the catalog. Subsequent install, sync, and upgrade enforce the
+recorded signer and available certificate fields. Git trust is marked
+provisional because signing-time transparency proof is not yet validated.
 
 For a key-pair-signed OCI artifact, the first project install requires
 `--public-key <cosign.pub>`. ToolHive verifies against that key and pins its DER
-SPKI representation in the lock entry. Sync and upgrade reuse the pinned key;
-they do not take another key flag. A different key cannot be auto-adopted or
-substituted with `--allow-signer-change`: changing to an arbitrary key requires
-removing the existing lock anchor and reinstalling explicitly.
+SPKI representation in the lock entry. A registry entry with any supported
+catalog provenance constraint cannot be installed with `--public-key` because
+a key-pair signature carries no certificate identity that can satisfy the
+catalog policy. Sync and upgrade reuse the pinned key; they do not take another
+key flag. A different key cannot be auto-adopted or substituted with
+`--allow-signer-change`: changing to an arbitrary key requires removing the
+existing lock anchor and reinstalling explicitly.
+
+The [skills trust tiers](12-skills-system.md#trust-tiers) explain why key-pair
+signing provides lower assurance than keyless signing; the same limits apply to
+plugins.
 
 `--allow-unsigned` applies only when content has no signature and records
 `unsigned: true` as an explicit project policy exception. It does not permit an

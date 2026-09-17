@@ -549,6 +549,31 @@ _Appears in:_
 | `authz` _[vmcp.config.AuthzConfig](#vmcpconfigauthzconfig)_ | Authz contains authorization configuration (optional). |  |  |
 
 
+#### vmcp.config.ListChangedConfig
+
+
+
+ListChangedConfig configures which backends vMCP subscribes to for
+list_changed notifications.
+
+Subscribing opens a standalone notification stream to the backend during
+session initialization. A backend that accepts that subscribe and then never
+services it stalls the handshake until the init deadline, and clients with
+their own connect timeout give up first. Excluding such a backend costs it
+live propagation only: its tools are still aggregated and callable, and they
+refresh on the next session.
+
+
+
+_Appears in:_
+- [vmcp.config.OperationalConfig](#vmcpconfigoperationalconfig)
+
+| Field | Description | Default | Validation |
+| --- | --- | --- | --- |
+| `enabled` _boolean_ | Enabled turns propagation on or off for every backend. Defaults to true. |  | Optional: \{\} <br /> |
+| `disabledWorkloads` _string array_ | DisabledWorkloads names backends to exclude while leaving the rest<br />subscribed. Prefer this over Enabled when a single backend misbehaves. |  | Optional: \{\} <br /> |
+
+
 
 
 #### vmcp.config.OIDCConfig
@@ -595,6 +620,7 @@ _Appears in:_
 | `logLevel` _string_ | LogLevel sets the logging level for the Virtual MCP server.<br />The only valid value is "debug" to enable debug logging.<br />When omitted or empty, the server uses info level logging. |  | Enum: [debug] <br />Optional: \{\} <br /> |
 | `timeouts` _[vmcp.config.TimeoutConfig](#vmcpconfigtimeoutconfig)_ | Timeouts configures timeout settings. |  | Optional: \{\} <br /> |
 | `failureHandling` _[vmcp.config.FailureHandlingConfig](#vmcpconfigfailurehandlingconfig)_ | FailureHandling configures failure handling behavior. |  | Optional: \{\} <br /> |
+| `listChanged` _[vmcp.config.ListChangedConfig](#vmcpconfiglistchangedconfig)_ | ListChanged configures live list_changed propagation from backends. |  | Optional: \{\} <br /> |
 
 
 #### vmcp.config.OptimizerConfig
@@ -768,6 +794,7 @@ _Appears in:_
 | --- | --- | --- | --- |
 | `default` _[vmcp.config.Duration](#vmcpconfigduration)_ | Default is the default timeout for backend requests. | 30s | Pattern: `^([0-9]+(\.[0-9]+)?(ns\|us\|µs\|ms\|s\|m\|h))+$` <br />Type: string <br />Optional: \{\} <br /> |
 | `perWorkload` _object (keys:string, values:[vmcp.config.Duration](#vmcpconfigduration))_ | PerWorkload defines per-workload timeout overrides. |  | Optional: \{\} <br /> |
+| `backendInit` _[vmcp.config.Duration](#vmcpconfigduration)_ | BackendInit caps how long session initialization waits for a single<br />backend to connect and hand back its capabilities. Unlike Default, which<br />only ever extends that deadline, an explicit BackendInit is authoritative:<br />it bounds session init even when a workload's request timeout is longer.<br />Leave it unset unless a backend can stall the handshake. It exists for<br />backends that neither answer nor fail promptly: a stateless MCP server<br />that requires per-user auth cannot be classified by the unauthenticated<br />health probe, so vMCP opens the persistent connection its Modern skip<br />path would otherwise avoid, and that connection can hang until the<br />deadline. Clients with their own connect timeout give up first, and<br />because they never complete a call, the revision cache never warms and<br />the next session repeats it. A few seconds here lets session init fail<br />fast, which partialFailureMode: best_effort turns into a usable session. |  | Pattern: `^([0-9]+(\.[0-9]+)?(ns\|us\|µs\|ms\|s\|m\|h))+$` <br />Type: string <br />Optional: \{\} <br /> |
 
 
 #### vmcp.config.ToolAnnotationsOverride
@@ -3719,6 +3746,7 @@ _Appears in:_
 | `tokenResponseMapping` _[api.v1beta1.TokenResponseMapping](#apiv1beta1tokenresponsemapping)_ | TokenResponseMapping configures custom field extraction from non-standard token responses.<br />Some OAuth providers (e.g., GovSlack) nest token fields under non-standard paths<br />instead of returning them at the top level. When set, ToolHive performs the token<br />exchange HTTP call directly and extracts fields using the configured dot-notation paths.<br />If nil, standard OAuth 2.0 token response parsing is used.<br />For extracting user identity from the token response, see IdentityFromToken. |  | Optional: \{\} <br /> |
 | `identityFromToken` _[api.v1beta1.IdentityFromTokenConfig](#apiv1beta1identityfromtokenconfig)_ | IdentityFromToken extracts user identity (subject, name, email) directly<br />from the OAuth2 token-endpoint response body using gjson dot-notation paths.<br />When set, the embedded auth server skips the userinfo HTTP call entirely<br />and resolves identity from the token response. See IdentityFromTokenConfig<br />for trust-model and uniqueness considerations. |  | Optional: \{\} <br /> |
 | `additionalAuthorizationParams` _object (keys:string, values:string)_ | AdditionalAuthorizationParams are extra query parameters to include in<br />authorization requests sent to the upstream provider.<br />This is useful for providers that require custom parameters, such as<br />Google's access_type=offline for obtaining refresh tokens.<br />Framework-managed parameters (response_type, client_id, redirect_uri,<br />scope, state, code_challenge, code_challenge_method, nonce) are not allowed. |  | MaxProperties: 16 <br />Optional: \{\} <br /> |
+| `additionalTokenParams` _object (keys:string, values:string)_ | AdditionalTokenParams are extra form-body parameters to include in<br />token requests (authorization code exchange and refresh) sent to the<br />upstream provider's token endpoint.<br />This is useful for providers that enforce RFC 8707 resource indicators<br />on token requests, where the resource parameter must accompany the code<br />exchange and refresh, not only the authorization request.<br />Framework-managed parameters (grant_type, code, redirect_uri, client_id,<br />client_secret, code_verifier, refresh_token, scope) are not allowed. |  | MaxProperties: 16 <br />Optional: \{\} <br /> |
 | `caBundleRef` _[api.v1beta1.CABundleSource](#apiv1beta1cabundlesource)_ | CABundleRef references a ConfigMap containing a CA bundle added to the<br />system roots when connecting to this upstream; it does not restrict trust<br />to this bundle or disable public-root trust. The selected key is projected<br />as ca.crt. |  | Optional: \{\} <br /> |
 | `insecureAllowHTTP` _boolean_ | InsecureAllowHTTP permits plain-HTTP authorization and token endpoint URLs<br />for this upstream. Only for in-cluster development environments (e.g. an<br />OAuth2 provider served over HTTP in a kind cluster) where TLS is not<br />available. Never set this in production. |  | Optional: \{\} <br /> |
 | `allowPrivateIPs` _boolean_ | AllowPrivateIPs permits the upstream provider's HTTP client to connect to<br />private IP ranges (RFC-1918, link-local). Use only when the upstream is<br />hosted inside the same cluster and has no public endpoint. HTTP-scheme<br />restrictions are unchanged — HTTPS is still required for non-localhost<br />hosts unless InsecureAllowHTTP is set. Defaults to false. |  | Optional: \{\} <br /> |
@@ -3803,6 +3831,7 @@ _Appears in:_
 | `scopes` _string array_ | Scopes are the OAuth scopes to request from the upstream IdP.<br />If not specified, defaults to ["openid", "offline_access"].<br />When using additionalAuthorizationParams with provider-specific refresh token<br />mechanisms (e.g., Google's access_type=offline), set explicit scopes to avoid<br />sending both offline_access and the provider-specific parameter. |  | Optional: \{\} <br /> |
 | `userInfoOverride` _[api.v1beta1.UserInfoConfig](#apiv1beta1userinfoconfig)_ | UserInfoOverride allows customizing UserInfo fetching behavior for OIDC providers.<br />By default, the UserInfo endpoint is discovered automatically via OIDC discovery.<br />Use this to override the endpoint URL, HTTP method, or field mappings for providers<br />that return non-standard claim names in their UserInfo response. |  | Optional: \{\} <br /> |
 | `additionalAuthorizationParams` _object (keys:string, values:string)_ | AdditionalAuthorizationParams are extra query parameters to include in<br />authorization requests sent to the upstream provider.<br />This is useful for providers that require custom parameters, such as<br />Google's access_type=offline for obtaining refresh tokens.<br />Note: when using access_type=offline, also set explicit scopes to avoid<br />the default offline_access scope being sent alongside it.<br />Framework-managed parameters (response_type, client_id, redirect_uri,<br />scope, state, code_challenge, code_challenge_method, nonce) are not allowed. |  | MaxProperties: 16 <br />Optional: \{\} <br /> |
+| `additionalTokenParams` _object (keys:string, values:string)_ | AdditionalTokenParams are extra form-body parameters to include in<br />token requests (authorization code exchange and refresh) sent to the<br />upstream provider's token endpoint.<br />This is useful for providers that enforce RFC 8707 resource indicators<br />on token requests, where the resource parameter must accompany the code<br />exchange and refresh, not only the authorization request.<br />Framework-managed parameters (grant_type, code, redirect_uri, client_id,<br />client_secret, code_verifier, refresh_token, scope) are not allowed. |  | MaxProperties: 16 <br />Optional: \{\} <br /> |
 | `subjectClaim` _string_ | SubjectClaim names the validated ID-token claim to use as the upstream<br />subject. Defaults to "sub" when empty. Set it for IdPs where "sub" isn't<br />stable per user — e.g. Entra/Azure AD, whose "sub" rotates per application<br />and whose stable identifier is "oid".<br />The value is looked up verbatim as a top-level claim name, so it is<br />constrained to a claim-name shape: it must start with a letter or<br />underscore and contain only letters, digits, and underscores. This rejects<br />dotted, colon-namespaced, or whitespace-containing values at admission<br />rather than letting a typo silently miss the claim at login, and keeps the<br />field aligned with the directory service's per-issuer bindingClaim.<br />Changing this on a live deployment re-keys existing users (the value<br />resolves to the internal user ID), so treat it as immutable once users<br />exist.<br />Per-IdP notes:<br />  - Entra/Azure AD: use "oid"; it is only emitted when the upstream scopes<br />    include "profile". "oid" is unique within a single tenant — multi-tenant<br />    apps need oid+tid, which this single-claim field cannot express.<br />  - Okta: the org auth server already puts the stable id in "sub" (default<br />    works). A custom auth server's "sub" is the mutable login/email and the<br />    stable "uid" lives only in the access token, not the ID token — map a<br />    custom ID-token claim and point subjectClaim at it.<br />The pattern matches the claim-name shape and allows empty (defaults to<br />"sub"). Using Pattern rather than a CEL XValidation rule keeps this off the<br />CRD's CEL cost budget — a single-field format check via CEL is rejected by<br />the apiserver as too expensive once multiplied across the upstreams list. |  | MaxLength: 128 <br />Pattern: `^([a-zA-Z_][a-zA-Z0-9_]*)?$` <br />Optional: \{\} <br /> |
 | `caBundleRef` _[api.v1beta1.CABundleSource](#apiv1beta1cabundlesource)_ | CABundleRef references a ConfigMap containing a CA bundle added to the<br />system roots when connecting to this upstream; it does not restrict trust<br />to this bundle or disable public-root trust. The selected key is projected<br />as ca.crt. |  | Optional: \{\} <br /> |
 | `allowPrivateIPs` _boolean_ | AllowPrivateIPs permits the upstream provider's HTTP client to connect to<br />private IP ranges (RFC-1918, link-local). Use only when the upstream is<br />hosted inside the same cluster and has no public endpoint. |  | Optional: \{\} <br /> |

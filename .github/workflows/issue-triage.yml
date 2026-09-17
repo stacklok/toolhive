@@ -22,7 +22,7 @@ jobs:
       - name: Run Claude Code for Issue Triage
         uses: anthropics/claude-code-action@19dda84776b3518d98b8798e591daee763049ed3 # v1.0.220
         env:
-          ANTHROPIC_BASE_URL: https://llm-gateway.stacklok.dev/anthropic
+          ANTHROPIC_BASE_URL: ${{ vars.ANTHROPIC_BASE_URL }}
         with:
           prompt: |
             You are an issue triage assistant. Analyze issue #${{ github.event.issue.number }} in ${{ github.repository }} and apply appropriate labels.

@@ -701,6 +701,33 @@ type OperationalConfig struct {
 	// FailureHandling configures failure handling behavior.
 	// +optional
 	FailureHandling *FailureHandlingConfig `json:"failureHandling,omitempty" yaml:"failureHandling,omitempty"`
+
+	// ListChanged configures live list_changed propagation from backends.
+	// +optional
+	ListChanged *ListChangedConfig `json:"listChanged,omitempty" yaml:"listChanged,omitempty"`
+}
+
+// ListChangedConfig configures which backends vMCP subscribes to for
+// list_changed notifications.
+//
+// Subscribing opens a standalone notification stream to the backend during
+// session initialization. A backend that accepts that subscribe and then never
+// services it stalls the handshake until the init deadline, and clients with
+// their own connect timeout give up first. Excluding such a backend costs it
+// live propagation only: its tools are still aggregated and callable, and they
+// refresh on the next session.
+// +kubebuilder:object:generate=true
+// +gendoc
+type ListChangedConfig struct {
+	// Enabled turns propagation on or off for every backend. Defaults to true.
+	// +optional
+	Enabled *bool `json:"enabled,omitempty" yaml:"enabled,omitempty"`
+
+	// DisabledWorkloads names backends to exclude while leaving the rest
+	// subscribed. Prefer this over Enabled when a single backend misbehaves.
+	// +optional
+	// +listType=set
+	DisabledWorkloads []string `json:"disabledWorkloads,omitempty" yaml:"disabledWorkloads,omitempty"`
 }
 
 // TimeoutConfig configures timeout settings.
@@ -715,6 +742,23 @@ type TimeoutConfig struct {
 	// PerWorkload defines per-workload timeout overrides.
 	// +optional
 	PerWorkload map[string]Duration `json:"perWorkload,omitempty" yaml:"perWorkload,omitempty"`
+
+	// BackendInit caps how long session initialization waits for a single
+	// backend to connect and hand back its capabilities. Unlike Default, which
+	// only ever extends that deadline, an explicit BackendInit is authoritative:
+	// it bounds session init even when a workload's request timeout is longer.
+	//
+	// Leave it unset unless a backend can stall the handshake. It exists for
+	// backends that neither answer nor fail promptly: a stateless MCP server
+	// that requires per-user auth cannot be classified by the unauthenticated
+	// health probe, so vMCP opens the persistent connection its Modern skip
+	// path would otherwise avoid, and that connection can hang until the
+	// deadline. Clients with their own connect timeout give up first, and
+	// because they never complete a call, the revision cache never warms and
+	// the next session repeats it. A few seconds here lets session init fail
+	// fast, which partialFailureMode: best_effort turns into a usable session.
+	// +optional
+	BackendInit Duration `json:"backendInit,omitempty" yaml:"backendInit,omitempty"`
 }
 
 // FailureHandlingConfig configures failure handling behavior.

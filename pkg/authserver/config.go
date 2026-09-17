@@ -169,6 +169,16 @@ type RunConfig struct {
 	//nolint:lll // field tags require full JSON+YAML names
 	AllowPrivateKeyJWTRegistration bool `json:"allow_private_key_jwt_registration,omitempty" yaml:"allow_private_key_jwt_registration,omitempty"`
 
+	// DeviceFlowEnabled enables the RFC 8628 OAuth 2.0 Device Authorization
+	// Grant: POST /oauth/device_authorization is mounted and
+	// urn:ietf:params:oauth:grant-type:device_code is registered at the
+	// token endpoint and advertised in discovery. The minimum polling
+	// interval (RFC 8628 Section 3.5) is fixed at
+	// oauthserver.DefaultDeviceCodeInterval; this is a deliberate
+	// simplification to keep this config surface minimal — a future
+	// increment may add an override.
+	DeviceFlowEnabled bool `json:"device_flow_enabled,omitempty" yaml:"device_flow_enabled,omitempty"`
+
 	// ForceConfidentialRedirectURIs lists redirect URIs that must be registered
 	// as confidential clients regardless of the token_endpoint_auth_method the
 	// DCR request declares. A registration whose redirect_uris contains an
@@ -658,6 +668,12 @@ type OIDCUpstreamRunConfig struct {
 	//nolint:lll // field tags require full JSON+YAML names
 	AdditionalAuthorizationParams map[string]string `json:"additional_authorization_params,omitempty" yaml:"additional_authorization_params,omitempty"`
 
+	// AdditionalTokenParams are extra form-body parameters to include in
+	// token requests (authorization code exchange and refresh). Useful for
+	// providers that enforce RFC 8707 resource indicators on token requests.
+	//nolint:lll // field tags require full JSON+YAML names
+	AdditionalTokenParams map[string]string `json:"additional_token_params,omitempty" yaml:"additional_token_params,omitempty"`
+
 	// SubjectClaim names the validated ID-token claim to use as the upstream
 	// subject. Defaults to "sub" when empty. Set for IdPs where "sub" isn't
 	// stable per user (e.g. Entra/Azure AD's "oid"). See upstream.OIDCConfig.
@@ -750,6 +766,12 @@ type OAuth2UpstreamRunConfig struct {
 	// Google's access_type=offline.
 	//nolint:lll // field tags require full JSON+YAML names
 	AdditionalAuthorizationParams map[string]string `json:"additional_authorization_params,omitempty" yaml:"additional_authorization_params,omitempty"`
+
+	// AdditionalTokenParams are extra form-body parameters to include in
+	// token requests (authorization code exchange and refresh). Useful for
+	// providers that enforce RFC 8707 resource indicators on token requests.
+	//nolint:lll // field tags require full JSON+YAML names
+	AdditionalTokenParams map[string]string `json:"additional_token_params,omitempty" yaml:"additional_token_params,omitempty"`
 
 	// DCRConfig enables RFC 7591 Dynamic Client Registration against the
 	// upstream authorization server. When set, the client credentials are
@@ -1114,6 +1136,20 @@ type Config struct {
 	// AllowPrivateKeyJWTRegistration permits DCR of clients using
 	// private_key_jwt authentication. See RunConfig for the full semantics.
 	AllowPrivateKeyJWTRegistration bool
+
+	// DeviceFlowEnabled enables the RFC 8628 device authorization grant. See
+	// RunConfig.DeviceFlowEnabled for the full semantics.
+	DeviceFlowEnabled bool
+
+	// DeviceCodeInterval is the minimum time a device-flow client must wait
+	// between polls of the token endpoint. If zero, defaults to
+	// oauthserver.DefaultDeviceCodeInterval.
+	//
+	// Not yet exposed via RunConfig or set by embeddedauthserver.go's Config
+	// construction -- only DeviceFlowEnabled is wired through today, so this
+	// field is currently reachable only from tests that construct Config
+	// directly. A future increment may add a RunConfig override.
+	DeviceCodeInterval time.Duration
 
 	// ForceConfidentialRedirectURIs lists redirect URIs that are always
 	// registered as confidential clients, even when the DCR request declares

@@ -263,6 +263,11 @@ func (s *service) installFromRegistryHit(
 	if pkgErr != nil {
 		return nil, pkgErr
 	}
+	// Carry catalog constraints to the verification boundary unchanged.
+	// Validation is deliberately deferred until the resolved canonical plugin
+	// name can be checked against the lock: existing lock entries take
+	// precedence, and user-scope installs do not apply project trust policy.
+	opts.CatalogProvenance = hit.Provenance
 	slog.Info("resolved plugin from registry", "name", opts.Name, "reference", pkg.Reference)
 	opts.Name = pkg.Reference
 	ref, isOCIRef, parseErr := parseOCIReference(pkg.Reference)

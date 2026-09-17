@@ -334,6 +334,7 @@ func newEmbeddedAuthServerWithStorage(
 		// the token-exchange grant, independent of legacy/canonical enablement.
 		DisableTokenExchange: !normalized.Capabilities.TokenExchange,
 		SPIFFETrust:          spiffeTrust,
+		DeviceFlowEnabled:    cfg.DeviceFlowEnabled,
 	}
 
 	// 8. Create the auth server. authserver.New also asserts the DCR
@@ -795,6 +796,7 @@ func buildOIDCConfig(rc *authserver.UpstreamRunConfig, insecureAllowHTTP bool) (
 			RedirectURI:                   oidc.RedirectURI,
 			Scopes:                        scopes,
 			AdditionalAuthorizationParams: oidc.AdditionalAuthorizationParams,
+			AdditionalTokenParams:         oidc.AdditionalTokenParams,
 		},
 		Issuer:            oidc.IssuerURL,
 		SubjectClaim:      oidc.SubjectClaim,
@@ -838,6 +840,7 @@ func buildPureOAuth2Config(rc *authserver.UpstreamRunConfig, insecureAllowHTTP b
 			RedirectURI:                   oauth2.RedirectURI,
 			Scopes:                        oauth2.Scopes,
 			AdditionalAuthorizationParams: oauth2.AdditionalAuthorizationParams,
+			AdditionalTokenParams:         oauth2.AdditionalTokenParams,
 		},
 		AuthorizationEndpoint:   oauth2.AuthorizationEndpoint,
 		TokenEndpoint:           oauth2.TokenEndpoint,

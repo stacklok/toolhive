@@ -1530,8 +1530,8 @@ func TestIntegration_DCRCredentials_FirstClaimWins(t *testing.T) {
 }
 
 // TestIntegration_DCRCredentials_UpdateIfPresent pins the
-// UpdateDCRCredentialsIfPresent WATCH/MULTI path against a real Redis Sentinel
-// cluster (miniredis's transaction and TTL semantics only approximate it): an
+// UpdateDCRCredentialsIfPresent SET XX path against a real Redis Sentinel
+// cluster (miniredis's SET flag and TTL semantics only approximate it): an
 // existing row is rewritten in place with a refreshed TTL, and an update to an
 // absent key returns a wrapped not-found without creating the row.
 func TestIntegration_DCRCredentials_UpdateIfPresent(t *testing.T) {

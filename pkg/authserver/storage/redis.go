@@ -39,23 +39,15 @@ const nullMarker = "null"
 // confuse this row with a healthy long-lived registration.
 const pastExpiryDCRTTL = time.Second
 
-// maxDCRClaimRetries bounds the WATCH/MULTI retry loop of both
-// StoreDCRCredentialsIfAbsent and UpdateDCRCredentialsIfPresent. go-redis does
-// not retry Watch internally: a concurrent write to the watched key (another
-// replica claiming, refreshing, updating, or evicting the same row) aborts the
-// pipelined EXEC with redis.TxFailedErr, which Watch returns to the caller
-// unwrapped. Retrying a small, fixed number of times lets a real concurrent
-// write during the race these methods guard resolve on its own rather than
-// failing the caller with a spurious error. Mirrors
-// maxConfiguredClientReconcileRetries above for the same reason. See
-// UpdateDCRCredentialsIfPresent's "Retry contention profile" for why its
-// write-heavy path additionally backs off with jitter between attempts.
+// maxDCRClaimRetries bounds StoreDCRCredentialsIfAbsent's WATCH/MULTI retry
+// loop. go-redis does not retry Watch internally: a concurrent write to the
+// watched key (another replica claiming, refreshing, or evicting the same
+// row) aborts the pipelined EXEC with redis.TxFailedErr, which Watch returns
+// to the caller unwrapped. Retrying a small, fixed number of times lets a
+// real concurrent write during the exact race this method exists to close
+// resolve on its own rather than failing the caller with a spurious error.
+// Mirrors maxConfiguredClientReconcileRetries above for the same reason.
 const maxDCRClaimRetries = 3
-
-// dcrUpdateRetryBaseBackoff is the base (attempt-zero) cap of the jittered
-// backoff between UpdateDCRCredentialsIfPresent's WATCH/MULTI retries; the cap
-// doubles each attempt. See dcrUpdateRetryBackoff.
-const dcrUpdateRetryBaseBackoff = 5 * time.Millisecond
 
 // warnOnCleanupErr logs a warning when a best-effort cleanup operation fails.
 //
@@ -2128,49 +2120,37 @@ func dcrClaimOrReturnWinner(
 	return creds, nil
 }
 
-// UpdateDCRCredentialsIfPresent replaces the row at creds.Key with creds via a
-// Redis WATCH/MULTI compare-and-set (the same pattern StoreDCRCredentialsIfAbsent
-// uses), returning ErrNotFound (wrapped) when no row physically exists at the
-// key. It never creates: presence is decided by a GET inside the watched
-// transaction, so an update racing a concurrent delete or TTL eviction fails
-// with ErrNotFound rather than silently re-creating the row.
+// UpdateDCRCredentialsIfPresent replaces the row at creds.Key with creds using
+// a single Redis SET with the XX flag, returning ErrNotFound (wrapped) when no
+// row physically exists at the key. It never creates: XX makes Redis itself
+// refuse the write when the key is absent, so an update racing a concurrent
+// delete or TTL eviction fails with ErrNotFound rather than silently
+// re-creating the row.
+//
+// The write needs no WATCH/MULTI (unlike StoreDCRCredentialsIfAbsent, which
+// must read the existing row to decide whether it may claim the slot). Nothing
+// here depends on the old value: only the key's bare existence gates the
+// write, and SET XX evaluates that existence and performs the write in one
+// atomic server-side step. There is therefore no read-check-write window to
+// guard, no lost-update race, and no possibility of redis.TxFailedErr.
 //
 // # Presence is physical, not liveness
 //
 // Unlike StoreDCRCredentialsIfAbsent, this does not treat an expired existing
-// row as absent — any row that GET returns is updatable, including one whose
-// ClientSecretExpiresAt has passed but whose Redis key has not yet self-evicted.
-// See the DCRCredentialStore interface docs for why Update gates on physical
-// presence: it exists so a decorator can rewrite a row it just read via
-// GetDCRCredentials, which itself does not filter on expiry.
+// row as absent — any row whose key still exists is updatable, including one
+// whose ClientSecretExpiresAt has passed but whose Redis key has not yet
+// self-evicted. See the DCRCredentialStore interface docs for why Update gates
+// on physical presence: it exists so a decorator can rewrite a row it just read
+// via GetDCRCredentials, which itself does not filter on expiry.
 //
 // # TTL
 //
 // The rewritten row's TTL is derived from the incoming creds by
 // marshalDCRCredentialsForStore, identically to StoreDCRCredentialsIfAbsent: a
 // future ClientSecretExpiresAt sets that TTL, a zero value clears it (the row
-// becomes long-lived), and a past value uses the bounded pastExpiryDCRTTL. An
-// update can therefore extend, shorten, or clear the row's TTL exactly as an
-// initial store would.
-//
-// WATCH guards the read-check-write: if another writer changes the key between
-// the presence check and our SET, EXEC aborts with redis.TxFailedErr and the
-// loop retries, bounded by maxDCRClaimRetries.
-//
-// # Retry contention profile
-//
-// The retry bound is shared with StoreDCRCredentialsIfAbsent, but the two paths
-// have materially different collision profiles: a Store loser mostly takes the
-// read-only "return winner" branch and never reaches MULTI, whereas EVERY
-// Update caller writes inside MULTI, so N concurrent updaters race the watched
-// key on every attempt. To keep the shared, small bound adequate on this
-// write-heavy path, retries back off with jitter (dcrUpdateRetryBackoff) so
-// collided updaters do not re-collide in lockstep ("thundering herd"). WATCH
-// still guarantees correctness regardless of the bound — a losing EXEC writes
-// nothing — so exhausting the retries returns a transient, retryable error
-// (wrapping redis.TxFailedErr), never a torn or partial write; the intended
-// consumer (a storage decorator rewriting one record) rarely has concurrent
-// writers for the same key in the first place.
+// becomes long-lived, since a SET without KEEPTTL discards any existing TTL),
+// and a past value uses the bounded pastExpiryDCRTTL. An update can therefore
+// extend, shorten, or clear the row's TTL exactly as an initial store would.
 //
 // Validation is delegated to validateDCRCredentialsForStore so the rejection
 // set stays in sync with MemoryStorage and any future backend.
@@ -2186,79 +2166,17 @@ func (s *RedisStorage) UpdateDCRCredentialsIfPresent(ctx context.Context, creds 
 		return nil, err
 	}
 
-	txFn := func(tx *redis.Tx) error {
-		return dcrUpdateIfPresent(ctx, tx, key, data, ttl)
+	// Mode XX: write only if the key already exists. Redis replies nil when it
+	// does not, which go-redis surfaces as redis.Nil.
+	err = s.client.SetArgs(ctx, key, data, redis.SetArgs{Mode: "XX", TTL: ttl}).Err()
+	if errors.Is(err, redis.Nil) {
+		return nil, notFoundRFC6749Error("DCR credentials not found")
 	}
-
-	// go-redis does not retry Watch internally, so a concurrent writer to the
-	// watched key aborts EXEC with redis.TxFailedErr, which must be retried
-	// here. See the "Retry contention profile" doc section above for why the
-	// retries back off with jitter on this write-heavy path.
-	var watchErr error
-	for attempt := 0; attempt < maxDCRClaimRetries; attempt++ {
-		watchErr = s.client.Watch(ctx, txFn, key)
-		if watchErr == nil {
-			return cloneDCRCredentials(creds), nil
-		}
-		if !errors.Is(watchErr, redis.TxFailedErr) {
-			// Preserve the wrapped ErrNotFound so callers can errors.Is it.
-			if errors.Is(watchErr, ErrNotFound) {
-				return nil, watchErr
-			}
-			return nil, fmt.Errorf("failed to update dcr credentials: %w", watchErr)
-		}
-		// TxFailedErr: a concurrent writer changed the watched key. Back off
-		// with jitter before the next attempt so collided updaters spread out
-		// rather than racing again in lockstep. Skip the wait after the final
-		// attempt, and abort promptly if the caller's context is cancelled.
-		if attempt < maxDCRClaimRetries-1 {
-			select {
-			case <-ctx.Done():
-				return nil, fmt.Errorf("failed to update dcr credentials: %w", ctx.Err())
-			case <-time.After(dcrUpdateRetryBackoff(attempt)):
-			}
-		}
-	}
-	return nil, fmt.Errorf("failed to update dcr credentials after %d attempts: %w", maxDCRClaimRetries, watchErr)
-}
-
-// dcrUpdateRetryBackoff returns the delay before the given zero-based retry
-// attempt of UpdateDCRCredentialsIfPresent: full jitter in [0, cap], where cap
-// grows exponentially per attempt from dcrUpdateRetryBaseBackoff. The jitter is
-// derived from the nanosecond wall clock rather than math/rand — this is
-// backoff timing, not a security decision, and concurrent updaters evaluate it
-// at distinct instants, which is enough to decorrelate their retries and avoid
-// re-collision.
-func dcrUpdateRetryBackoff(attempt int) time.Duration {
-	maxDelay := dcrUpdateRetryBaseBackoff << attempt
-	return time.Duration(time.Now().UnixNano() % (int64(maxDelay) + 1))
-}
-
-// dcrUpdateIfPresent runs the read-check-write body of
-// UpdateDCRCredentialsIfPresent's WATCH transaction: it overwrites the watched
-// key with (data, ttl) inside MULTI only when the key physically exists,
-// returning a wrapped ErrNotFound without writing when it does not. Split out
-// to keep UpdateDCRCredentialsIfPresent's cyclomatic complexity down.
-//
-// Presence is checked with EXISTS, not GET: only the key's existence gates the
-// write, so there is no reason to transfer the stored blob (client secret,
-// registration token, endpoints) over the wire just to discard it. WATCH still
-// guards the window between this check and the MULTI/EXEC against a concurrent
-// delete.
-func dcrUpdateIfPresent(ctx context.Context, tx *redis.Tx, key string, data []byte, ttl time.Duration) error {
-	exists, err := tx.Exists(ctx, key).Result()
 	if err != nil {
-		return fmt.Errorf("failed to check existing dcr credentials: %w", err)
-	}
-	if exists == 0 {
-		return notFoundRFC6749Error("DCR credentials not found")
+		return nil, fmt.Errorf("failed to update dcr credentials: %w", err)
 	}
 
-	_, err = tx.TxPipelined(ctx, func(pipe redis.Pipeliner) error {
-		pipe.Set(ctx, key, data, ttl)
-		return nil
-	})
-	return err
+	return cloneDCRCredentials(creds), nil
 }
 
 // GetDCRCredentials retrieves the credentials previously persisted under key.

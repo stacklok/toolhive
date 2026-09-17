@@ -3628,9 +3628,9 @@ func TestRedisStorage_DCRCredentials_UpdateReplacesExisting(t *testing.T) {
 
 // TestRedisStorage_DCRCredentials_UpdateAbsentReturnsNotFound pins the
 // never-create contract: updating a key with no existing row returns a wrapped
-// ErrNotFound and writes nothing. The GET inside the WATCH transaction hitting
-// redis.Nil is what fails the update, so an update racing a delete or TTL
-// eviction fails loudly rather than silently re-creating the row.
+// ErrNotFound and writes nothing. Redis refuses the SET XX on a missing key and
+// replies nil, which go-redis surfaces as redis.Nil, so an update racing a
+// delete or TTL eviction fails loudly rather than silently re-creating the row.
 func TestRedisStorage_DCRCredentials_UpdateAbsentReturnsNotFound(t *testing.T) {
 	withRedisStorage(t, func(ctx context.Context, s *RedisStorage, _ *miniredis.Miniredis) {
 		key := dcrFixtureKey()
@@ -3781,12 +3781,11 @@ func TestRedisStorage_DCRCredentials_UpdateTTL(t *testing.T) {
 }
 
 // TestRedisStorage_DCRCredentials_UpdateConnectionFailure exercises the generic
-// (non-Nil, non-TxFailedErr) error branch of UpdateDCRCredentialsIfPresent's
-// retry loop: a connection failure mid-call must surface as a wrapped error,
-// never as a spurious ErrNotFound or a silent success. Mirrors
-// TestRedisStorage_Health_ConnectionFailure by closing miniredis before the
-// call. (This branch is likewise untested for the sibling Store path; this
-// closes the caller-visible gap for the update path.)
+// (non-Nil) error branch of UpdateDCRCredentialsIfPresent: a connection failure
+// mid-call must surface as a wrapped error, never as a spurious ErrNotFound or a
+// silent success. Mirrors TestRedisStorage_Health_ConnectionFailure by closing
+// miniredis before the call. (This branch is likewise untested for the sibling
+// Store path; this closes the caller-visible gap for the update path.)
 func TestRedisStorage_DCRCredentials_UpdateConnectionFailure(t *testing.T) {
 	t.Parallel()
 
@@ -3794,8 +3793,8 @@ func TestRedisStorage_DCRCredentials_UpdateConnectionFailure(t *testing.T) {
 	client := redis.NewClient(&redis.Options{Addr: mr.Addr()})
 	s := NewRedisStorageWithClient(client, "test:auth:")
 
-	// Close the server so the WATCH/EXISTS round-trip fails with a connection
-	// error rather than redis.Nil or redis.TxFailedErr.
+	// Close the server so the SET round-trip fails with a connection error
+	// rather than redis.Nil.
 	mr.Close()
 
 	_, err := s.UpdateDCRCredentialsIfPresent(context.Background(), &DCRCredentials{
@@ -3856,25 +3855,17 @@ func TestRedisStorage_DCRCredentials_UpdateCopyIsolatesCaller(t *testing.T) {
 	})
 }
 
-// TestRedisStorage_DCRCredentials_UpdateConcurrent exercises the WATCH/MULTI
-// retry loop that is unique to the Update path. Unlike
-// StoreDCRCredentialsIfAbsent — where the losers of a concurrent claim take the
-// read-only "return existing winner" branch and never enter MULTI —
-// UpdateDCRCredentialsIfPresent has every caller SET the key inside MULTI, so
-// concurrent updaters genuinely race the watched key and drive
-// redis.TxFailedErr → retry.
+// TestRedisStorage_DCRCredentials_UpdateConcurrent pins the atomicity of the
+// Update path under genuine concurrency. Unlike StoreDCRCredentialsIfAbsent —
+// where only the first claimant writes and the losers take the read-only
+// "return existing winner" branch — every UpdateDCRCredentialsIfPresent caller
+// writes, so N concurrent updaters all target the same key.
 //
-// The contract the loop must honour under contention:
-//   - A present row is NEVER spuriously reported ErrNotFound (the GET inside
-//     the transaction always finds it); a non-nil error may only be the bounded
-//     "after N attempts" terminal error, which wraps redis.TxFailedErr.
-//   - At least one update commits, and the store converges on exactly one of the
-//     racing candidates — never a torn or absent row.
-//
-// Both outcomes per goroutine (success, or retry-exhaustion wrapping
-// TxFailedErr) are accepted so the test stays deterministic: it asserts the
-// loop classifies the retry error correctly and never mis-reports a present
-// row as absent, without depending on a particular scheduler interleaving.
+// Because that write is a single SET XX evaluated atomically server-side, there
+// is no read-check-write window to lose and no retry to exhaust. The contract
+// under contention is correspondingly strict: every update against a present
+// row succeeds, and the store converges on exactly one of the racing
+// candidates — never a torn row, an absent row, or a spurious ErrNotFound.
 func TestRedisStorage_DCRCredentials_UpdateConcurrent(t *testing.T) {
 	withRedisStorage(t, func(ctx context.Context, s *RedisStorage, _ *miniredis.Miniredis) {
 		const goroutines = 6
@@ -3922,21 +3913,10 @@ func TestRedisStorage_DCRCredentials_UpdateConcurrent(t *testing.T) {
 			t.Fatal("timeout waiting for concurrent update goroutines")
 		}
 
-		successes := 0
-		for _, e := range errs {
-			if e == nil {
-				successes++
-				continue
-			}
-			// The only tolerated failure is bounded retry exhaustion, which
-			// wraps redis.TxFailedErr. A present row must never surface as
-			// ErrNotFound under contention.
-			assert.ErrorIs(t, e, redis.TxFailedErr,
-				"a present row's only permitted update failure is retry exhaustion")
-			assert.NotErrorIs(t, e, ErrNotFound,
-				"an update against a present row must never report ErrNotFound")
+		for gid, e := range errs {
+			require.NoErrorf(t, e,
+				"every concurrent update against a present row must succeed (goroutine %d)", gid)
 		}
-		assert.Positive(t, successes, "at least one concurrent update must commit")
 
 		got, err := s.GetDCRCredentials(ctx, key)
 		require.NoError(t, err, "the row must remain present after concurrent updates")

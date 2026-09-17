@@ -92,13 +92,13 @@ type DCRError struct {
 }
 
 // defaultGrantTypes are the default grant types for registered clients.
-var defaultGrantTypes = []string{"authorization_code", "refresh_token"}
+var defaultGrantTypes = []string{oauthproto.GrantTypeAuthorizationCode, oauthproto.GrantTypeRefreshToken}
 
 // allowedGrantTypes defines the grant types permitted for public clients.
 var allowedGrantTypes = map[string]bool{
-	"authorization_code":           true,
-	"refresh_token":                true,
-	oauthproto.GrantTypeDeviceCode: true,
+	oauthproto.GrantTypeAuthorizationCode: true,
+	oauthproto.GrantTypeRefreshToken:      true,
+	oauthproto.GrantTypeDeviceCode:        true,
 }
 
 // defaultResponseTypes are the default response types for registered clients.
@@ -431,7 +431,7 @@ func isDeviceCodeOnlyRequest(grantTypes []string) bool {
 		return false
 	}
 	for _, gt := range grantTypes {
-		if gt != oauthproto.GrantTypeDeviceCode && gt != "refresh_token" {
+		if gt != oauthproto.GrantTypeDeviceCode && gt != oauthproto.GrantTypeRefreshToken {
 			return false
 		}
 	}
@@ -467,7 +467,7 @@ func validateGrantTypes(grantTypes []string, authMethod string) ([]string, *DCRE
 	}
 	// Require authorization_code explicitly - provides a clearer error for the
 	// "refresh_token only" case that would otherwise pass the allowlist.
-	if !slices.Contains(grantTypes, "authorization_code") {
+	if !slices.Contains(grantTypes, oauthproto.GrantTypeAuthorizationCode) {
 		return nil, &DCRError{
 			Error:            DCRErrorInvalidClientMetadata,
 			ErrorDescription: "grant_types must include 'authorization_code'",
@@ -690,7 +690,7 @@ func FilterPublicGrantTypes(grantTypes []string) ([]string, *DCRError) {
 			filtered = append(filtered, gt)
 		}
 	}
-	if !slices.Contains(filtered, "authorization_code") {
+	if !slices.Contains(filtered, oauthproto.GrantTypeAuthorizationCode) {
 		return nil, &DCRError{
 			Error:            DCRErrorInvalidClientMetadata,
 			ErrorDescription: "grant_types must include 'authorization_code'",

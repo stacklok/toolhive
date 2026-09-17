@@ -297,9 +297,14 @@ func buildJWTBearerGrantPolicy(config *mcpv1beta1.JWTBearerGrantConfig) *tokenex
 	if config == nil {
 		return nil
 	}
+	acceptedAssertionTypes := make([]tokenexchange.JWTBearerAssertionType, len(config.AcceptedAssertionTypes))
+	for i, assertionType := range config.AcceptedAssertionTypes {
+		acceptedAssertionTypes[i] = tokenexchange.JWTBearerAssertionType(assertionType)
+	}
 	policy := &tokenexchange.JWTBearerGrantPolicy{
-		SubjectBindings:   make([]tokenexchange.JWTBearerSubjectBinding, len(config.SubjectBindings)),
-		AcceptedAudiences: append([]string(nil), config.AcceptedAudiences...),
+		SubjectBindings:        make([]tokenexchange.JWTBearerSubjectBinding, len(config.SubjectBindings)),
+		AcceptedAudiences:      append([]string(nil), config.AcceptedAudiences...),
+		AcceptedAssertionTypes: acceptedAssertionTypes,
 	}
 	if config.MaxAssertionAge != nil {
 		policy.MaxAssertionAge = config.MaxAssertionAge.Duration.String()
@@ -928,11 +933,16 @@ func buildInboundGrantsRunConfig(
 			if policy.MaxAssertionAge == nil {
 				return nil, fmt.Errorf("jwtBearer.issuerPolicies[%d].maxAssertionAge is required", i)
 			}
+			acceptedAssertionTypes := make([]tokenexchange.JWTBearerAssertionType, len(policy.AcceptedAssertionTypes))
+			for j, assertionType := range policy.AcceptedAssertionTypes {
+				acceptedAssertionTypes[j] = tokenexchange.JWTBearerAssertionType(assertionType)
+			}
 			policies[i] = authserver.JWTBearerIssuerPolicyRunConfig{
-				IssuerRef:         policy.IssuerRef,
-				MaxAssertionAge:   policy.MaxAssertionAge.Duration.String(),
-				SubjectBindings:   buildJWTBearerSubjectBindings(policy.SubjectBindings),
-				AcceptedAudiences: append([]string(nil), policy.AcceptedAudiences...),
+				IssuerRef:              policy.IssuerRef,
+				MaxAssertionAge:        policy.MaxAssertionAge.Duration.String(),
+				SubjectBindings:        buildJWTBearerSubjectBindings(policy.SubjectBindings),
+				AcceptedAudiences:      append([]string(nil), policy.AcceptedAudiences...),
+				AcceptedAssertionTypes: acceptedAssertionTypes,
 			}
 		}
 		grants.JWTBearer = &authserver.JWTBearerInboundGrantRunConfig{IssuerPolicies: policies}

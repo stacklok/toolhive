@@ -531,6 +531,20 @@ type TrustedIssuerConfig struct {
 	JWTBearerGrant *JWTBearerGrantConfig `json:"jwtBearerGrant,omitempty"`
 }
 
+// JWTBearerAssertionType identifies one assertion form the RFC 7523
+// jwt-bearer grant may accept for a trusted issuer.
+type JWTBearerAssertionType string
+
+const (
+	// JWTBearerAssertionTypeJWTBearer accepts plain RFC 7523 assertions
+	// (typ absent, empty, or "JWT") — e.g. service-account/machine credentials.
+	JWTBearerAssertionTypeJWTBearer JWTBearerAssertionType = "jwt_bearer"
+	// JWTBearerAssertionTypeIDJAG accepts Identity Assertion Authorization
+	// Grant assertions (typ: oauth-id-jag+jwt) — cross-app-access grants
+	// minted by this issuer acting as IdP for a different resource owner.
+	JWTBearerAssertionTypeIDJAG JWTBearerAssertionType = "id_jag"
+)
+
 // JWTBearerGrantConfig limits RFC 7523 JWT-bearer assertions for one trusted
 // issuer. Each assertion subject must have an exact binding and request exactly
 // one of that binding's allowed resources.
@@ -562,6 +576,29 @@ type JWTBearerGrantConfig struct {
 	// +listType=atomic
 	// +optional
 	AcceptedAudiences []string `json:"acceptedAudiences,omitempty"`
+
+	// AcceptedAssertionTypes selects which assertion form(s) this issuer's
+	// jwt-bearer grant accepts. Defaults to ["jwt_bearer"] — plain assertions
+	// only — preserving behavior for every config written before this field
+	// existed. Include "id_jag" to additionally (or instead) accept
+	// cross-app-access grants minted by this issuer acting as IdP for a
+	// different resource owner — a materially wider trust decision that must
+	// be opted into explicitly, not implied by configuring this grant at all.
+	//
+	// When configuring "id_jag", acceptedAudiences must include this AS's own
+	// issuer identifier (the ID-JAG's "aud" per
+	// draft-ietf-oauth-identity-assertion-authz-grant §4.4.1), not just the
+	// token endpoint URL that a plain-assertion-only deployment typically uses.
+	// When both assertion types are selected, each subject binding also
+	// authorizes a credential-free plain JWT-bearer assertion. Add an ID-JAG
+	// subject only when this issuer is also intended to mint plain assertions
+	// for that subject.
+	// +kubebuilder:validation:MinItems=1
+	// +kubebuilder:validation:MaxItems=2
+	// +kubebuilder:validation:items:Enum=jwt_bearer;id_jag
+	// +listType=set
+	// +kubebuilder:default={jwt_bearer}
+	AcceptedAssertionTypes []JWTBearerAssertionType `json:"acceptedAssertionTypes,omitempty"`
 }
 
 // JWTBearerSubjectBinding configures the exact subject and allowed resources

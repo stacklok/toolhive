@@ -3537,7 +3537,8 @@ func TestBuildTrustedIssuerRunConfigs_JWTBearerGrant(t *testing.T) {
 				Subject:          "workload-123",
 				AllowedResources: []string{"https://mcp.example.com"},
 			}},
-			AcceptedAudiences: acceptedAudiences,
+			AcceptedAudiences:      acceptedAudiences,
+			AcceptedAssertionTypes: []mcpv1beta1.JWTBearerAssertionType{mcpv1beta1.JWTBearerAssertionTypeIDJAG},
 		},
 	}})
 
@@ -3549,6 +3550,9 @@ func TestBuildTrustedIssuerRunConfigs_JWTBearerGrant(t *testing.T) {
 		AllowedResources: []string{"https://mcp.example.com"},
 	}}, configs[0].JWTBearerGrant.SubjectBindings)
 	assert.Equal(t, []string{"https://auth.example.com/legacy-token"}, configs[0].JWTBearerGrant.AcceptedAudiences)
+	assert.Equal(t, []tokenexchange.JWTBearerAssertionType{tokenexchange.JWTBearerAssertionTypeIDJAG},
+		configs[0].JWTBearerGrant.AcceptedAssertionTypes,
+		"legacy trustedIssuers[*].jwtBearerGrant.acceptedAssertionTypes must thread through to the runtime policy")
 
 	// The runtime policy must not retain the CRD object's backing slice: the
 	// reconciler may reuse or mutate the source object after conversion.

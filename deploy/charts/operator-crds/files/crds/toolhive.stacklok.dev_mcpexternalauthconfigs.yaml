@@ -460,6 +460,38 @@ spec:
                               description: JWTBearerIssuerPolicyConfig binds RFC 7523
                                 policy to a named trusted issuer.
                               properties:
+                                acceptedAssertionTypes:
+                                  default:
+                                  - jwt_bearer
+                                  description: |-
+                                    AcceptedAssertionTypes selects which assertion form(s) this issuer's
+                                    jwt-bearer grant accepts. Defaults to ["jwt_bearer"] — plain assertions
+                                    only — preserving behavior for every config written before this field
+                                    existed. Include "id_jag" to additionally (or instead) accept
+                                    cross-app-access grants minted by this issuer acting as IdP for a
+                                    different resource owner — a materially wider trust decision that must
+                                    be opted into explicitly, not implied by configuring this grant at all.
+
+                                    When configuring "id_jag", acceptedAudiences must include this AS's own
+                                    issuer identifier (the ID-JAG's "aud" per
+                                    draft-ietf-oauth-identity-assertion-authz-grant §4.4.1), not just the
+                                    token endpoint URL that a plain-assertion-only deployment typically uses.
+                                    When both assertion types are selected, each subject binding also
+                                    authorizes a credential-free plain JWT-bearer assertion. Add an ID-JAG
+                                    subject only when this issuer is also intended to mint plain assertions
+                                    for that subject.
+                                  items:
+                                    description: |-
+                                      JWTBearerAssertionType identifies one assertion form the RFC 7523
+                                      jwt-bearer grant may accept for a trusted issuer.
+                                    enum:
+                                    - jwt_bearer
+                                    - id_jag
+                                    type: string
+                                  maxItems: 2
+                                  minItems: 1
+                                  type: array
+                                  x-kubernetes-list-type: set
                                 acceptedAudiences:
                                   description: |-
                                     AcceptedAudiences identifies this authorization server's accepted
@@ -1390,6 +1422,38 @@ spec:
                             This legacy field is deprecated; configure RFC 7523 policy under
                             inboundGrants.jwtBearer.issuerPolicies.
                           properties:
+                            acceptedAssertionTypes:
+                              default:
+                              - jwt_bearer
+                              description: |-
+                                AcceptedAssertionTypes selects which assertion form(s) this issuer's
+                                jwt-bearer grant accepts. Defaults to ["jwt_bearer"] — plain assertions
+                                only — preserving behavior for every config written before this field
+                                existed. Include "id_jag" to additionally (or instead) accept
+                                cross-app-access grants minted by this issuer acting as IdP for a
+                                different resource owner — a materially wider trust decision that must
+                                be opted into explicitly, not implied by configuring this grant at all.
+
+                                When configuring "id_jag", acceptedAudiences must include this AS's own
+                                issuer identifier (the ID-JAG's "aud" per
+                                draft-ietf-oauth-identity-assertion-authz-grant §4.4.1), not just the
+                                token endpoint URL that a plain-assertion-only deployment typically uses.
+                                When both assertion types are selected, each subject binding also
+                                authorizes a credential-free plain JWT-bearer assertion. Add an ID-JAG
+                                subject only when this issuer is also intended to mint plain assertions
+                                for that subject.
+                              items:
+                                description: |-
+                                  JWTBearerAssertionType identifies one assertion form the RFC 7523
+                                  jwt-bearer grant may accept for a trusted issuer.
+                                enum:
+                                - jwt_bearer
+                                - id_jag
+                                type: string
+                              maxItems: 2
+                              minItems: 1
+                              type: array
+                              x-kubernetes-list-type: set
                             acceptedAudiences:
                               description: |-
                                 AcceptedAudiences identifies this authorization server's accepted
@@ -3295,6 +3359,38 @@ spec:
                               description: JWTBearerIssuerPolicyConfig binds RFC 7523
                                 policy to a named trusted issuer.
                               properties:
+                                acceptedAssertionTypes:
+                                  default:
+                                  - jwt_bearer
+                                  description: |-
+                                    AcceptedAssertionTypes selects which assertion form(s) this issuer's
+                                    jwt-bearer grant accepts. Defaults to ["jwt_bearer"] — plain assertions
+                                    only — preserving behavior for every config written before this field
+                                    existed. Include "id_jag" to additionally (or instead) accept
+                                    cross-app-access grants minted by this issuer acting as IdP for a
+                                    different resource owner — a materially wider trust decision that must
+                                    be opted into explicitly, not implied by configuring this grant at all.
+
+                                    When configuring "id_jag", acceptedAudiences must include this AS's own
+                                    issuer identifier (the ID-JAG's "aud" per
+                                    draft-ietf-oauth-identity-assertion-authz-grant §4.4.1), not just the
+                                    token endpoint URL that a plain-assertion-only deployment typically uses.
+                                    When both assertion types are selected, each subject binding also
+                                    authorizes a credential-free plain JWT-bearer assertion. Add an ID-JAG
+                                    subject only when this issuer is also intended to mint plain assertions
+                                    for that subject.
+                                  items:
+                                    description: |-
+                                      JWTBearerAssertionType identifies one assertion form the RFC 7523
+                                      jwt-bearer grant may accept for a trusted issuer.
+                                    enum:
+                                    - jwt_bearer
+                                    - id_jag
+                                    type: string
+                                  maxItems: 2
+                                  minItems: 1
+                                  type: array
+                                  x-kubernetes-list-type: set
                                 acceptedAudiences:
                                   description: |-
                                     AcceptedAudiences identifies this authorization server's accepted
@@ -4225,6 +4321,38 @@ spec:
                             This legacy field is deprecated; configure RFC 7523 policy under
                             inboundGrants.jwtBearer.issuerPolicies.
                           properties:
+                            acceptedAssertionTypes:
+                              default:
+                              - jwt_bearer
+                              description: |-
+                                AcceptedAssertionTypes selects which assertion form(s) this issuer's
+                                jwt-bearer grant accepts. Defaults to ["jwt_bearer"] — plain assertions
+                                only — preserving behavior for every config written before this field
+                                existed. Include "id_jag" to additionally (or instead) accept
+                                cross-app-access grants minted by this issuer acting as IdP for a
+                                different resource owner — a materially wider trust decision that must
+                                be opted into explicitly, not implied by configuring this grant at all.
+
+                                When configuring "id_jag", acceptedAudiences must include this AS's own
+                                issuer identifier (the ID-JAG's "aud" per
+                                draft-ietf-oauth-identity-assertion-authz-grant §4.4.1), not just the
+                                token endpoint URL that a plain-assertion-only deployment typically uses.
+                                When both assertion types are selected, each subject binding also
+                                authorizes a credential-free plain JWT-bearer assertion. Add an ID-JAG
+                                subject only when this issuer is also intended to mint plain assertions
+                                for that subject.
+                              items:
+                                description: |-
+                                  JWTBearerAssertionType identifies one assertion form the RFC 7523
+                                  jwt-bearer grant may accept for a trusted issuer.
+                                enum:
+                                - jwt_bearer
+                                - id_jag
+                                type: string
+                              maxItems: 2
+                              minItems: 1
+                              type: array
+                              x-kubernetes-list-type: set
                             acceptedAudiences:
                               description: |-
                                 AcceptedAudiences identifies this authorization server's accepted

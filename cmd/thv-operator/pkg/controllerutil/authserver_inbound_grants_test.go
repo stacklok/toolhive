@@ -12,6 +12,7 @@ import (
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 
 	mcpv1beta1 "github.com/stacklok/toolhive/cmd/thv-operator/api/v1beta1"
+	"github.com/stacklok/toolhive/pkg/authserver/server/tokenexchange"
 )
 
 func TestBuildAuthServerRunConfigConvertsCanonicalInboundGrants(t *testing.T) {
@@ -42,6 +43,8 @@ func TestBuildAuthServerRunConfigConvertsCanonicalInboundGrants(t *testing.T) {
 						SubjectBindings: []mcpv1beta1.JWTBearerSubjectBinding{{
 							Subject: "workload", AllowedResources: []string{"https://resource.example.com"},
 						}},
+						AcceptedAssertionTypes: []mcpv1beta1.JWTBearerAssertionType{mcpv1beta1.JWTBearerAssertionTypeIDJAG},
+						AcceptedAudiences:      []string{"https://auth.example.com"},
 					},
 				}},
 			},
@@ -65,6 +68,9 @@ func TestBuildAuthServerRunConfigConvertsCanonicalInboundGrants(t *testing.T) {
 	require.Len(t, config.InboundGrants.JWTBearer.IssuerPolicies, 1)
 	assert.Equal(t, "5m0s", config.InboundGrants.JWTBearer.IssuerPolicies[0].MaxAssertionAge)
 	assert.Equal(t, "workload", config.InboundGrants.JWTBearer.IssuerPolicies[0].SubjectBindings[0].Subject)
+	assert.Equal(t, []tokenexchange.JWTBearerAssertionType{tokenexchange.JWTBearerAssertionTypeIDJAG},
+		config.InboundGrants.JWTBearer.IssuerPolicies[0].AcceptedAssertionTypes,
+		"canonical inboundGrants.jwtBearer.issuerPolicies[*].acceptedAssertionTypes must thread through to the RunConfig")
 }
 
 func TestGenerateAuthServerEnvVarsUsesCanonicalDelegateClients(t *testing.T) {

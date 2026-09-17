@@ -873,10 +873,46 @@ it at this token endpoint.
 One grant type, two handlers, split by the assertion's JOSE `typ` header:
 `JWTBearerHandler` claims plain assertions (`typ` absent, empty, or `JWT`) and
 `IDJAGHandler` claims exactly `typ: oauth-id-jag+jwt`. For any given request at
-most one is responsible; both are registered whenever any trusted issuer
-enables the grant, and both enforce the same per-issuer policy
-(`maxAssertionAge`, `acceptedAudiences`, `subjectBindings` — no separate
-configuration surface).
+most one is responsible; each is registered only when at least one trusted
+issuer accepts that assertion form (see below), and both enforce the same
+per-issuer policy (`maxAssertionAge`, `acceptedAudiences`, `subjectBindings` —
+no separate configuration surface).
+
+Trust for the two assertion forms is not the same decision, though: a
+`jwtBearerGrant` names which form(s) it accepts via `acceptedAssertionTypes`,
+a list of `jwt_bearer` and/or `id_jag`. Configuring `jwtBearerGrant` at all no
+longer implies plain-assertion trust — an issuer can accept `id_jag` only,
+which is exactly the case a plain deployment needs for an IdP used purely to
+mint Cross App Access grants (e.g. Okta acting only as a cross-app-access
+issuer) and never as a source of plain jwt-bearer assertions. Being trusted
+for one form does not, by itself, trust an issuer for the other — that's a
+materially wider or narrower trust decision either way, and must be named
+explicitly. `acceptedAssertionTypes` defaults to `[jwt_bearer]` when omitted,
+preserving the behavior of every config written before this field existed;
+this default is enforced at the Go level (`tokenexchange.IssuersAcceptingAssertionType`),
+not only via the CRD's `+kubebuilder:default={jwt_bearer}` — a
+non-Kubernetes `thv run` deployment reading a hand-authored RunConfig, or a
+Go-constructed `TrustedIssuer` value in a test, never goes through Kubernetes
+admission and would otherwise see accepted-types default to nothing.
+Enforcement works by construction, not by a separate check: an issuer whose
+`acceptedAssertionTypes` does not name a given form is simply left out of
+that form's handler's per-issuer policy map, so it hits the same "issuer not
+enabled for this grant" rejection as an issuer that was never configured at
+all. When no trusted issuer accepts a given form, that form's handler is not
+registered at all.
+
+Two things to also configure when including `id_jag` in
+`acceptedAssertionTypes`, or ID-JAG acceptance fails or over-grants silently:
+
+- `acceptedAudiences` must include this AS's own issuer identifier (the
+  ID-JAG's `aud` per draft §4.4.1), not just the token endpoint URL a
+  plain-assertion-only deployment typically configures here. An issuer
+  accepting `id_jag` but with only the token-endpoint URL in
+  `acceptedAudiences` rejects every ID-JAG with `invalid_grant`.
+- A `subjectBindings` entry added to permit an ID-JAG's (human) subject also,
+  as a side effect, permits that same subject on the *plain* jwt-bearer grant
+  for that issuer (client-auth-skippable there) — the binding is shared
+  between both assertion forms, this opt-in is not.
 
 Where the two differ is the trust model — the ID-JAG handler is **bound**:
 

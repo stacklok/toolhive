@@ -1612,6 +1612,16 @@ func (s *AuthenticationJWTBearerIssuerPolicyRunConfig) Encode(e *jx.Encoder) {
 // encodeFields encodes fields.
 func (s *AuthenticationJWTBearerIssuerPolicyRunConfig) encodeFields(e *jx.Encoder) {
 	{
+		if s.AcceptedAssertionTypes != nil {
+			e.FieldStart("accepted_assertion_types")
+			e.ArrStart()
+			for _, elem := range s.AcceptedAssertionTypes {
+				elem.Encode(e)
+			}
+			e.ArrEnd()
+		}
+	}
+	{
 		if s.AcceptedAudiences != nil {
 			e.FieldStart("accepted_audiences")
 			e.ArrStart()
@@ -1645,11 +1655,12 @@ func (s *AuthenticationJWTBearerIssuerPolicyRunConfig) encodeFields(e *jx.Encode
 	}
 }
 
-var jsonFieldsNameOfAuthenticationJWTBearerIssuerPolicyRunConfig = [4]string{
-	0: "accepted_audiences",
-	1: "issuer_ref",
-	2: "max_assertion_age",
-	3: "subject_bindings",
+var jsonFieldsNameOfAuthenticationJWTBearerIssuerPolicyRunConfig = [5]string{
+	0: "accepted_assertion_types",
+	1: "accepted_audiences",
+	2: "issuer_ref",
+	3: "max_assertion_age",
+	4: "subject_bindings",
 }
 
 // Decode decodes AuthenticationJWTBearerIssuerPolicyRunConfig from json.
@@ -1660,6 +1671,23 @@ func (s *AuthenticationJWTBearerIssuerPolicyRunConfig) Decode(d *jx.Decoder) err
 
 	if err := d.ObjBytes(func(d *jx.Decoder, k []byte) error {
 		switch string(k) {
+		case "accepted_assertion_types":
+			if err := func() error {
+				s.AcceptedAssertionTypes = make([]AuthenticationServerTokenExchangeJWTBearerAssertionType, 0)
+				if err := d.Arr(func(d *jx.Decoder) error {
+					var elem AuthenticationServerTokenExchangeJWTBearerAssertionType
+					if err := elem.Decode(d); err != nil {
+						return err
+					}
+					s.AcceptedAssertionTypes = append(s.AcceptedAssertionTypes, elem)
+					return nil
+				}); err != nil {
+					return err
+				}
+				return nil
+			}(); err != nil {
+				return errors.Wrap(err, "decode field \"accepted_assertion_types\"")
+			}
 		case "accepted_audiences":
 			if err := func() error {
 				s.AcceptedAudiences = make([]string, 0)
@@ -3748,6 +3776,46 @@ func (s *AuthenticationSPIFFEWorkloadAPIBundleSourceRunConfig) MarshalJSON() ([]
 
 // UnmarshalJSON implements stdjson.Unmarshaler.
 func (s *AuthenticationSPIFFEWorkloadAPIBundleSourceRunConfig) UnmarshalJSON(data []byte) error {
+	d := jx.DecodeBytes(data)
+	return s.Decode(d)
+}
+
+// Encode encodes AuthenticationServerTokenExchangeJWTBearerAssertionType as json.
+func (s AuthenticationServerTokenExchangeJWTBearerAssertionType) Encode(e *jx.Encoder) {
+	e.Str(string(s))
+}
+
+// Decode decodes AuthenticationServerTokenExchangeJWTBearerAssertionType from json.
+func (s *AuthenticationServerTokenExchangeJWTBearerAssertionType) Decode(d *jx.Decoder) error {
+	if s == nil {
+		return errors.New("invalid: unable to decode AuthenticationServerTokenExchangeJWTBearerAssertionType to nil")
+	}
+	v, err := d.StrBytes()
+	if err != nil {
+		return err
+	}
+	// Try to use constant string.
+	switch AuthenticationServerTokenExchangeJWTBearerAssertionType(v) {
+	case AuthenticationServerTokenExchangeJWTBearerAssertionTypeJwtBearer:
+		*s = AuthenticationServerTokenExchangeJWTBearerAssertionTypeJwtBearer
+	case AuthenticationServerTokenExchangeJWTBearerAssertionTypeIDJag:
+		*s = AuthenticationServerTokenExchangeJWTBearerAssertionTypeIDJag
+	default:
+		*s = AuthenticationServerTokenExchangeJWTBearerAssertionType(v)
+	}
+
+	return nil
+}
+
+// MarshalJSON implements stdjson.Marshaler.
+func (s AuthenticationServerTokenExchangeJWTBearerAssertionType) MarshalJSON() ([]byte, error) {
+	e := jx.Encoder{}
+	s.Encode(&e)
+	return e.Bytes(), nil
+}
+
+// UnmarshalJSON implements stdjson.Unmarshaler.
+func (s *AuthenticationServerTokenExchangeJWTBearerAssertionType) UnmarshalJSON(data []byte) error {
 	d := jx.DecodeBytes(data)
 	return s.Decode(d)
 }
@@ -37402,6 +37470,16 @@ func (s *TokenExchangeJWTBearerGrantPolicy) Encode(e *jx.Encoder) {
 // encodeFields encodes fields.
 func (s *TokenExchangeJWTBearerGrantPolicy) encodeFields(e *jx.Encoder) {
 	{
+		if s.AcceptedAssertionTypes != nil {
+			e.FieldStart("accepted_assertion_types")
+			e.ArrStart()
+			for _, elem := range s.AcceptedAssertionTypes {
+				e.Str(elem)
+			}
+			e.ArrEnd()
+		}
+	}
+	{
 		if s.AcceptedAudiences != nil {
 			e.FieldStart("accepted_audiences")
 			e.ArrStart()
@@ -37429,10 +37507,11 @@ func (s *TokenExchangeJWTBearerGrantPolicy) encodeFields(e *jx.Encoder) {
 	}
 }
 
-var jsonFieldsNameOfTokenExchangeJWTBearerGrantPolicy = [3]string{
-	0: "accepted_audiences",
-	1: "max_assertion_age",
-	2: "subject_bindings",
+var jsonFieldsNameOfTokenExchangeJWTBearerGrantPolicy = [4]string{
+	0: "accepted_assertion_types",
+	1: "accepted_audiences",
+	2: "max_assertion_age",
+	3: "subject_bindings",
 }
 
 // Decode decodes TokenExchangeJWTBearerGrantPolicy from json.
@@ -37443,6 +37522,25 @@ func (s *TokenExchangeJWTBearerGrantPolicy) Decode(d *jx.Decoder) error {
 
 	if err := d.ObjBytes(func(d *jx.Decoder, k []byte) error {
 		switch string(k) {
+		case "accepted_assertion_types":
+			if err := func() error {
+				s.AcceptedAssertionTypes = make([]string, 0)
+				if err := d.Arr(func(d *jx.Decoder) error {
+					var elem string
+					v, err := d.Str()
+					elem = string(v)
+					if err != nil {
+						return err
+					}
+					s.AcceptedAssertionTypes = append(s.AcceptedAssertionTypes, elem)
+					return nil
+				}); err != nil {
+					return err
+				}
+				return nil
+			}(); err != nil {
+				return errors.Wrap(err, "decode field \"accepted_assertion_types\"")
+			}
 		case "accepted_audiences":
 			if err := func() error {
 				s.AcceptedAudiences = make([]string, 0)

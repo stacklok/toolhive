@@ -133,7 +133,59 @@ type JWTBearerGrantPolicy struct {
 	// [tokenEndpoint] when empty, preserving prior exact-match behavior.
 	AcceptedAudiences []string `json:"accepted_audiences,omitempty" yaml:"accepted_audiences,omitempty"`
 
+	// AcceptedAssertionTypes selects which assertion form(s) this issuer's
+	// jwt-bearer grant accepts. A nil/empty slice is treated as
+	// {JWTBearerAssertionTypeJWTBearer} by every call site that reads this
+	// field (see effectiveAssertionTypes) — the Go-level equivalent of the
+	// CRD's `+kubebuilder:default={jwt_bearer}`, which only applies at
+	// Kubernetes admission and does not reach standalone deployments,
+	// hand-authored RunConfig, or Go-constructed TrustedIssuer values in
+	// tests. Include JWTBearerAssertionTypeIDJAG to additionally (or instead)
+	// accept cross-app-access grants minted by this issuer acting as IdP for a
+	// different resource owner — a materially wider trust decision that must be
+	// opted into explicitly, not implied by configuring this grant at all.
+	//
+	// Configure the following alongside JWTBearerAssertionTypeIDJAG, or
+	// ID-JAG acceptance will fail:
+	//   - AcceptedAudiences must include this AS's own issuer identifier (the
+	//     ID-JAG's "aud" per draft-ietf-oauth-identity-assertion-authz-grant
+	//     §4.4.1), not just the token endpoint URL that a plain-assertion-only
+	//     deployment typically configures here — an issuer accepting id_jag
+	//     but only the token-endpoint URL in AcceptedAudiences will reject
+	//     every ID-JAG with invalid_grant.
+	// When both assertion types are selected, every SubjectBindings entry also
+	// authorizes a credential-free plain JWT-bearer assertion. Add an ID-JAG
+	// subject only when this issuer is also intended to mint plain assertions
+	// for that subject.
+	AcceptedAssertionTypes []JWTBearerAssertionType `json:"accepted_assertion_types,omitempty" yaml:"accepted_assertion_types,omitempty"`
+
 	maxAssertionAge time.Duration
+}
+
+// JWTBearerAssertionType identifies one assertion form the RFC 7523
+// jwt-bearer grant may accept for a trusted issuer. Mirrors
+// v1beta1.JWTBearerAssertionType field-for-field.
+type JWTBearerAssertionType string
+
+const (
+	// JWTBearerAssertionTypeJWTBearer accepts plain RFC 7523 assertions
+	// (typ absent, empty, or "JWT") — e.g. service-account/machine credentials.
+	JWTBearerAssertionTypeJWTBearer JWTBearerAssertionType = "jwt_bearer"
+	// JWTBearerAssertionTypeIDJAG accepts Identity Assertion Authorization
+	// Grant assertions (typ: oauth-id-jag+jwt) — cross-app-access grants
+	// minted by this issuer acting as IdP for a different resource owner.
+	JWTBearerAssertionTypeIDJAG JWTBearerAssertionType = "id_jag"
+)
+
+// effectiveAssertionTypes returns policy's AcceptedAssertionTypes, defaulting
+// a nil/empty slice to {JWTBearerAssertionTypeJWTBearer}. See
+// JWTBearerGrantPolicy.AcceptedAssertionTypes for why this default must live
+// at the Go level rather than only as a CRD admission default.
+func effectiveAssertionTypes(policy *JWTBearerGrantPolicy) []JWTBearerAssertionType {
+	if policy == nil || len(policy.AcceptedAssertionTypes) == 0 {
+		return []JWTBearerAssertionType{JWTBearerAssertionTypeJWTBearer}
+	}
+	return policy.AcceptedAssertionTypes
 }
 
 // TrustedIssuer configures an external OIDC issuer whose tokens are accepted
@@ -501,6 +553,7 @@ func cloneJWTBearerGrantPolicy(policy *JWTBearerGrantPolicy) *JWTBearerGrantPoli
 	}
 	clone := *policy
 	clone.AcceptedAudiences = slices.Clone(policy.AcceptedAudiences)
+	clone.AcceptedAssertionTypes = slices.Clone(policy.AcceptedAssertionTypes)
 	clone.SubjectBindings = make([]JWTBearerSubjectBinding, len(policy.SubjectBindings))
 	for i, binding := range policy.SubjectBindings {
 		clone.SubjectBindings[i] = JWTBearerSubjectBinding{
@@ -1276,7 +1329,7 @@ func validateTrustedIssuer(
 	if err := validateDelegationPolicy(ti); err != nil {
 		return err
 	}
-	if err := validateJWTBearerGrantPolicy(ti, allowedAudiences); err != nil {
+	if err := validateJWTBearerGrantPolicy(ti, selfIssuer, allowedAudiences); err != nil {
 		return err
 	}
 	if ti.AllowMayAct && slices.Contains(ti.AllowedDelegateClients, anyDelegateClient) {
@@ -1301,7 +1354,7 @@ func validateDelegationPolicy(ti TrustedIssuer) error {
 	return validateAllowedDelegateClients(ti)
 }
 
-func validateJWTBearerGrantPolicy(ti TrustedIssuer, allowedAudiences []string) error {
+func validateJWTBearerGrantPolicy(ti TrustedIssuer, selfIssuer string, allowedAudiences []string) error {
 	if ti.JWTBearerGrant == nil {
 		return nil
 	}
@@ -1312,6 +1365,21 @@ func validateJWTBearerGrantPolicy(ti TrustedIssuer, allowedAudiences []string) e
 	}
 	if err := validateJWTBearerSubjectBindings(ti, policy.SubjectBindings); err != nil {
 		return err
+	}
+	assertionTypes := effectiveAssertionTypes(policy)
+	for _, assertionType := range assertionTypes {
+		if assertionType != JWTBearerAssertionTypeJWTBearer && assertionType != JWTBearerAssertionTypeIDJAG {
+			return fmt.Errorf(
+				"issuer_url %q: jwt_bearer_grant.accepted_assertion_types contains unsupported value %q",
+				ti.IssuerURL, assertionType)
+		}
+	}
+	if slices.Contains(assertionTypes, JWTBearerAssertionTypeIDJAG) {
+		if !slices.Contains(policy.AcceptedAudiences, selfIssuer) {
+			return fmt.Errorf(
+				"issuer_url %q: jwt_bearer_grant.accepted_audiences must include the authorization server issuer %q when id_jag is enabled",
+				ti.IssuerURL, selfIssuer)
+		}
 	}
 	return validateJWTBearerAcceptedAudiences(ti, policy.AcceptedAudiences, allowedAudiences)
 }

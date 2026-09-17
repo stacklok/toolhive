@@ -247,6 +247,14 @@
             },
             "authserver.JWTBearerIssuerPolicyRunConfig": {
                 "properties": {
+                    "accepted_assertion_types": {
+                        "description": "AcceptedAssertionTypes mirrors JWTBearerGrantConfig.AcceptedAssertionTypes\nfor the canonical config path.",
+                        "items": {
+                            "$ref": "#/components/schemas/github_com_stacklok_toolhive_pkg_authserver_server_tokenexchange.JWTBearerAssertionType"
+                        },
+                        "type": "array",
+                        "uniqueItems": false
+                    },
                     "accepted_audiences": {
                         "items": {
                             "type": "string"
@@ -1015,6 +1023,17 @@
                     }
                 },
                 "type": "object"
+            },
+            "github_com_stacklok_toolhive_pkg_authserver_server_tokenexchange.JWTBearerAssertionType": {
+                "enum": [
+                    "jwt_bearer",
+                    "id_jag"
+                ],
+                "type": "string",
+                "x-enum-varnames": [
+                    "JWTBearerAssertionTypeJWTBearer",
+                    "JWTBearerAssertionTypeIDJAG"
+                ]
             },
             "github_com_stacklok_toolhive_pkg_authserver_server_tokenexchange.JWTBearerSubjectBinding": {
                 "properties": {
@@ -5583,6 +5602,14 @@
             "tokenexchange.JWTBearerGrantPolicy": {
                 "description": "JWTBearerGrant optionally enables the plain RFC 7523 JWT-bearer grant.\nIt accepts assertions from this issuer without client authentication and\nlimits their maximum age, subjects, and RFC 8707 resources. It is\nindependent from RFC 8693 delegation policy.\n\nThis legacy field is deprecated; configure RFC 7523 policy under\ninbound_grants.jwt_bearer.issuer_policies.",
                 "properties": {
+                    "accepted_assertion_types": {
+                        "description": "AcceptedAssertionTypes selects which assertion form(s) this issuer's\njwt-bearer grant accepts. A nil/empty slice is treated as\n{JWTBearerAssertionTypeJWTBearer} by every call site that reads this\nfield (see effectiveAssertionTypes) — the Go-level equivalent of the\nCRD's `+kubebuilder:default={jwt_bearer}`, which only applies at\nKubernetes admission and does not reach standalone deployments,\nhand-authored RunConfig, or Go-constructed TrustedIssuer values in\ntests. Include JWTBearerAssertionTypeIDJAG to additionally (or\ninstead) accept cross-app-access grants minted by this issuer acting\nas IdP for a different resource owner — a materially wider trust\ndecision that must be opted into explicitly, not implied by\nconfiguring this grant at all.\n\nTwo things to configure alongside JWTBearerAssertionTypeIDJAG, or\nID-JAG acceptance will silently fail or over-grant:\n  - AcceptedAudiences must include this AS's own issuer identifier (the\n    ID-JAG's \"aud\" per draft-ietf-oauth-identity-assertion-authz-grant\n    §4.4.1), not just the token endpoint URL that a plain-assertion-only\n    deployment typically configures here — an issuer accepting id_jag\n    but only the token-endpoint URL in AcceptedAudiences will reject\n    every ID-JAG with invalid_grant.\n  - Adding a SubjectBindings entry to permit an ID-JAG's (human) subject\n    also, as a side effect, permits that same subject on the PLAIN\n    jwt-bearer grant for this issuer (client-auth-skippable there) — the\n    binding is shared between both assertion forms, this opt-in is not.",
+                        "items": {
+                            "type": "string"
+                        },
+                        "type": "array",
+                        "uniqueItems": false
+                    },
                     "accepted_audiences": {
                         "description": "AcceptedAudiences is the set of \"this AS\" identity strings an\nassertion's \"aud\" claim must intersect — e.g. to support migrating\nthis server's issuer/token-endpoint URL, or exposing it under more\nthan one valid name. Each value uniquely identifies this\nauthorization server for this grant; it is NOT a resource/API\nidentifier — a bare resource audience is deliberately not accepted\nhere, that would let any RFC 8707 resource-scoped token satisfy the\ngrant instead of only tokens minted for this AS. Defaults to\n[tokenEndpoint] when empty, preserving prior exact-match behavior.",
                         "items": {

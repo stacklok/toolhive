@@ -433,8 +433,13 @@ func JWTBearerIssuanceFactory(trustedIssuers []TrustedIssuer, shared *MultiIssue
 			config *fosite.Config, strategy oauth2.AccessTokenStrategy, tokenStorage oauth2.AccessTokenStorage,
 			resolvedIssuers []TrustedIssuer,
 		) (any, error) {
+			// An issuer with JWTBearerGrant configured no longer implies it
+			// accepts the plain assertion form: AcceptedAssertionTypes may name
+			// only JWTBearerAssertionTypeIDJAG. Filter here, symmetrically with
+			// newIDJAGIssuanceHandler's filter for the ID-JAG side.
 			return newJWTBearerIssuanceHandler(
-				validator, tokenEndpoint, consumer, config, strategy, tokenStorage, resolvedIssuers)
+				validator, tokenEndpoint, consumer, config, strategy, tokenStorage,
+				IssuersAcceptingAssertionType(resolvedIssuers, JWTBearerAssertionTypeJWTBearer))
 		})
 }
 

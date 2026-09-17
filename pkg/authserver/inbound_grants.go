@@ -38,6 +38,9 @@ type JWTBearerIssuerPolicyRunConfig struct {
 	MaxAssertionAge   string                       `json:"max_assertion_age" yaml:"max_assertion_age"`
 	SubjectBindings   []tx.JWTBearerSubjectBinding `json:"subject_bindings" yaml:"subject_bindings"`
 	AcceptedAudiences []string                     `json:"accepted_audiences,omitempty" yaml:"accepted_audiences,omitempty"`
+	// AcceptedAssertionTypes mirrors JWTBearerGrantConfig.AcceptedAssertionTypes
+	// for the canonical config path.
+	AcceptedAssertionTypes []tx.JWTBearerAssertionType `json:"accepted_assertion_types,omitempty" yaml:"accepted_assertion_types,omitempty"`
 }
 
 // InboundGrantCapabilities reports the effective grant families after normalization.
@@ -201,9 +204,10 @@ func applyJWTBearerPolicies(
 		}
 		seen[policy.IssuerRef] = i
 		issuers[issuerIndex].JWTBearerGrant = &tx.JWTBearerGrantPolicy{
-			MaxAssertionAge:   policy.MaxAssertionAge,
-			SubjectBindings:   cloneSubjectBindings(policy.SubjectBindings),
-			AcceptedAudiences: slices.Clone(policy.AcceptedAudiences),
+			MaxAssertionAge:        policy.MaxAssertionAge,
+			SubjectBindings:        cloneSubjectBindings(policy.SubjectBindings),
+			AcceptedAudiences:      slices.Clone(policy.AcceptedAudiences),
+			AcceptedAssertionTypes: slices.Clone(policy.AcceptedAssertionTypes),
 		}
 	}
 	return nil
@@ -246,6 +250,7 @@ func cloneTrustedIssuers(issuers []tx.TrustedIssuer) []tx.TrustedIssuer {
 			policy := *cloned[i].JWTBearerGrant
 			policy.SubjectBindings = cloneSubjectBindings(policy.SubjectBindings)
 			policy.AcceptedAudiences = slices.Clone(policy.AcceptedAudiences)
+			policy.AcceptedAssertionTypes = slices.Clone(policy.AcceptedAssertionTypes)
 			cloned[i].JWTBearerGrant = &policy
 		}
 	}

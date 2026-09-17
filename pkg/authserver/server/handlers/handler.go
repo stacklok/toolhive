@@ -107,6 +107,15 @@ type Handler struct {
 	// OAuthRoutes never registers DeviceAuthorizationHandler in that case, so
 	// it is never dereferenced.
 	deviceStorage storage.DeviceCodeStorage
+	// deviceVerificationLimiter bounds the unauthenticated POST /oauth/device
+	// endpoint (DeviceVerificationSubmitHandler), which looks up a
+	// DeviceRequest by the human-entered user_code. RFC 8628 §5.4 requires
+	// throttling this lookup: user_code is drawn from a bounded charset over a
+	// fixed-length code with a 10-minute TTL, so an unthrottled endpoint is a
+	// brute-force guessing oracle. Same per-process (not per-IP) reasoning as
+	// registerLimiter. Nil when device flow is disabled; OAuthRoutes never
+	// registers the route in that case, so it is never dereferenced.
+	deviceVerificationLimiter *rate.Limiter
 }
 
 // UpstreamFilter narrows the authorization chain to a subset of the configured
@@ -235,6 +244,10 @@ func NewHandler(
 		// unauthenticated persisted-state minting, just reached through
 		// /oauth/device_authorization instead of /oauth/register.
 		h.deviceAuthorizationLimiter = rate.NewLimiter(rate.Limit(1), 5)
+		// Same rate as deviceAuthorizationLimiter: this gate protects the
+		// user_code-guessing surface at /oauth/device instead of the
+		// device_code/user_code-minting surface at /oauth/device_authorization.
+		h.deviceVerificationLimiter = rate.NewLimiter(rate.Limit(1), 5)
 		deviceStorage, ok := storage.Unwrap(stor).(storage.DeviceCodeStorage)
 		if !ok {
 			return nil, fmt.Errorf(
@@ -284,7 +297,7 @@ func (h *Handler) OAuthRoutes(r chi.Router) {
 	if h.config.DeviceFlowEnabled {
 		r.Post("/oauth/device_authorization", h.rateLimitDeviceAuthorization(h.DeviceAuthorizationHandler))
 		r.Get("/oauth/device", h.DeviceVerificationHandler)
-		r.Post("/oauth/device", h.DeviceVerificationSubmitHandler)
+		r.Post("/oauth/device", h.rateLimitDeviceVerification(h.DeviceVerificationSubmitHandler))
 		r.Post("/oauth/device/confirm", h.DeviceVerificationConfirmHandler)
 	}
 }
@@ -340,6 +353,21 @@ func (h *Handler) rateLimitCIMDAuthorize(next http.HandlerFunc) http.HandlerFunc
 func (h *Handler) rateLimitDeviceAuthorization(next http.HandlerFunc) http.HandlerFunc {
 	return func(w http.ResponseWriter, req *http.Request) {
 		if h.deviceAuthorizationLimiter != nil && !h.deviceAuthorizationLimiter.Allow() {
+			w.Header().Set("Retry-After", "1")
+			http.Error(w, "rate limit exceeded, retry later", http.StatusTooManyRequests)
+			return
+		}
+		next(w, req)
+	}
+}
+
+// rateLimitDeviceVerification gates the unauthenticated POST /oauth/device
+// endpoint: over the limit it returns 429 with a Retry-After hint rather than
+// running another user_code lookup. Mirrors rateLimitDeviceAuthorization
+// exactly, including its nil-tolerant shape.
+func (h *Handler) rateLimitDeviceVerification(next http.HandlerFunc) http.HandlerFunc {
+	return func(w http.ResponseWriter, req *http.Request) {
+		if h.deviceVerificationLimiter != nil && !h.deviceVerificationLimiter.Allow() {
 			w.Header().Set("Retry-After", "1")
 			http.Error(w, "rate limit exceeded, retry later", http.StatusTooManyRequests)
 			return

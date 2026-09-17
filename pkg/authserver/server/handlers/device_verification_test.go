@@ -11,6 +11,7 @@ import (
 	"net/url"
 	"regexp"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -187,6 +188,16 @@ func TestDeviceVerificationFlow_Deny(t *testing.T) {
 	device, err := h.deviceStorage.LoadDeviceRequestByDeviceCode(context.Background(), deviceCode)
 	require.NoError(t, err)
 	assert.Equal(t, storage.DeviceRequestStatusDenied, device.Status)
+
+	// The confirm_token is single-use: replaying it (even with a different
+	// action) must not flip the already-recorded decision.
+	replayRec := httptest.NewRecorder()
+	h.DeviceVerificationConfirmHandler(replayRec, confirmReq)
+	assert.Equal(t, http.StatusBadRequest, replayRec.Code)
+
+	device, err = h.deviceStorage.LoadDeviceRequestByDeviceCode(context.Background(), deviceCode)
+	require.NoError(t, err)
+	assert.Equal(t, storage.DeviceRequestStatusDenied, device.Status)
 }
 
 func TestDeviceVerificationSubmitHandler_InvalidUserCode(t *testing.T) {
@@ -228,6 +239,74 @@ func TestDeviceVerificationConfirmHandler_UnknownToken(t *testing.T) {
 	h.DeviceVerificationConfirmHandler(rec, req)
 
 	assert.Equal(t, http.StatusBadRequest, rec.Code)
+}
+
+// TestDeviceVerificationConfirmHandler_ConcurrentReplay drives two goroutines
+// that submit the same confirm_token simultaneously. LoadPendingDeviceConfirmation
+// and DeletePendingDeviceConfirmation are two independent storage operations
+// (not an atomic get-and-delete), so this proves the confirm_token is
+// single-use even under a race, backstopped by MarkDeviceRequestAuthorized/
+// MarkDeviceRequestDenied's ErrInvalidState guard on the underlying device
+// request's state machine.
+func TestDeviceVerificationConfirmHandler_ConcurrentReplay(t *testing.T) {
+	t.Parallel()
+	h, mockUpstream := setupDeviceVerificationHandler(t)
+	deviceCode, userCode := issueDeviceCode(t, h, "device-client")
+
+	submitForm := url.Values{"user_code": {userCode}}
+	submitReq := httptest.NewRequest(http.MethodPost, "/oauth/device", strings.NewReader(submitForm.Encode()))
+	submitReq.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	submitRec := httptest.NewRecorder()
+	h.DeviceVerificationSubmitHandler(submitRec, submitReq)
+	require.Equal(t, http.StatusFound, submitRec.Code)
+
+	callbackReq := httptest.NewRequest(http.MethodGet,
+		"/oauth/callback?code=upstream-code&state="+mockUpstream.capturedState, nil)
+	callbackRec := httptest.NewRecorder()
+	h.CallbackHandler(callbackRec, callbackReq)
+	require.Equal(t, http.StatusOK, callbackRec.Code)
+	confirmToken := extractConfirmToken(t, callbackRec.Body.String())
+
+	const attempts = 10
+	codes := make([]int, attempts)
+	var wg sync.WaitGroup
+	for i := range attempts {
+		wg.Add(1)
+		go func(i int) {
+			defer wg.Done()
+			form := url.Values{"confirm_token": {confirmToken}, "action": {"approve"}}
+			req := httptest.NewRequest(http.MethodPost, "/oauth/device/confirm", strings.NewReader(form.Encode()))
+			req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+			rec := httptest.NewRecorder()
+			h.DeviceVerificationConfirmHandler(rec, req)
+			codes[i] = rec.Code
+		}(i)
+	}
+
+	done := make(chan struct{})
+	go func() { wg.Wait(); close(done) }()
+	select {
+	case <-done:
+	case <-time.After(5 * time.Second):
+		t.Fatal("timeout waiting for concurrent confirm requests")
+	}
+
+	successes := 0
+	for _, code := range codes {
+		switch code {
+		case http.StatusOK:
+			successes++
+		case http.StatusBadRequest:
+			// Expected: token already consumed by the winning request.
+		default:
+			t.Errorf("unexpected status code %d", code)
+		}
+	}
+	assert.Equal(t, 1, successes, "exactly one concurrent confirm attempt must succeed")
+
+	device, err := h.deviceStorage.LoadDeviceRequestByDeviceCode(context.Background(), deviceCode)
+	require.NoError(t, err)
+	assert.Equal(t, storage.DeviceRequestStatusAuthorized, device.Status)
 }
 
 func TestNormalizeUserCode(t *testing.T) {

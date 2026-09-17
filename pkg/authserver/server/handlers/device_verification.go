@@ -72,6 +72,11 @@ func (h *Handler) DeviceVerificationSubmitHandler(w http.ResponseWriter, req *ht
 	}
 
 	device, err := h.deviceStorage.LoadDeviceRequestByUserCode(ctx, userCode)
+	if err != nil && !isNotFoundOrExpired(err) {
+		slog.Error("device verification: failed to look up user_code", "error", err)
+		renderError(w, http.StatusInternalServerError, "Something went wrong. Please try again.")
+		return
+	}
 	if err != nil || device.Status != storage.DeviceRequestStatusPending {
 		slog.Debug("device verification: invalid or expired user_code", "error", err)
 		renderVerifyForm(w, http.StatusBadRequest, userCode,
@@ -120,19 +125,32 @@ func (h *Handler) DeviceVerificationSubmitHandler(w http.ResponseWriter, req *ht
 // fallback when internalState does not match a PendingAuthorization, kept as
 // a separate function so CallbackHandler's own branching stays simple. See
 // completeDeviceLogin's doc comment for why /oauth/callback is shared between
-// the two flows. Returns false (no state changed) when internalState does
-// not match a pending device login either, so the caller falls through to
-// its own not-found handling.
-func (h *Handler) tryCompleteDeviceLogin(ctx context.Context, w http.ResponseWriter, internalState, code string) bool {
+// the two flows.
+//
+// Returns deviceLoginNotFound (no response written) when internalState
+// genuinely does not match a pending device login either, so the caller
+// falls through to its own not-found handling. Returns deviceLoginStorageError
+// (response already written) when the lookup failed for a reason other than
+// not-found/expired -- a real backend error must not be silently
+// reinterpreted as "not a device login" and reported to the client as an
+// ordinary 400.
+func (h *Handler) tryCompleteDeviceLogin(
+	ctx context.Context, w http.ResponseWriter, internalState, code string,
+) deviceLoginOutcome {
 	devicePending, err := h.storage.LoadPendingDeviceLogin(ctx, internalState)
 	if err != nil {
-		return false
+		if isNotFoundOrExpired(err) {
+			return deviceLoginNotFound
+		}
+		slog.Error("failed to load pending device login", "error", err)
+		http.Error(w, "internal server error", http.StatusInternalServerError)
+		return deviceLoginStorageError
 	}
 	if delErr := h.storage.DeletePendingDeviceLogin(ctx, internalState); delErr != nil {
 		slog.Warn("failed to delete pending device login", "error", delErr)
 	}
 	h.completeDeviceLogin(ctx, w, devicePending, code)
-	return true
+	return deviceLoginCompleted
 }
 
 // completeDeviceLogin finishes a device-flow verification-page login once
@@ -165,6 +183,11 @@ func (h *Handler) completeDeviceLogin(
 	// Time has passed during login: re-check the device request is still
 	// pending/unexpired before proceeding.
 	device, err := h.deviceStorage.LoadDeviceRequestByUserCode(ctx, pending.UserCode)
+	if err != nil && !isNotFoundOrExpired(err) {
+		slog.Error("device verification: failed to re-check device request", "error", err)
+		renderError(w, http.StatusInternalServerError, "Something went wrong. Please try again.")
+		return
+	}
 	if err != nil || device.Status != storage.DeviceRequestStatusPending {
 		slog.Debug("device verification: device request no longer pending", "error", err)
 		renderError(w, http.StatusBadRequest,
@@ -248,7 +271,10 @@ func (h *Handler) DeviceVerificationConfirmHandler(w http.ResponseWriter, req *h
 
 	if action == "deny" {
 		if err := h.deviceStorage.MarkDeviceRequestDenied(ctx, confirmation.DeviceCode); err != nil {
-			slog.Debug("device verification: failed to mark device request denied", "error", err)
+			slog.Warn("device verification: failed to mark device request denied", "error", err)
+			renderError(w, http.StatusBadRequest,
+				"This device request is no longer valid. Please try again from your device.")
+			return
 		}
 		renderResult(w, "Access denied", "You have denied this device's request. You may close this window.")
 		return
@@ -353,9 +379,23 @@ var resultPageTemplate = template.Must(template.New("device-result").Parse(`<!DO
 </body>
 </html>`))
 
-func renderVerifyForm(w http.ResponseWriter, status int, userCode, errMsg string) {
+// setHTMLSecurityHeaders sets the headers common to every rendered device-flow
+// page: HTML content type, no caching (these pages carry a confirm_token or
+// resolved-identity content that must not be cached), and anti-framing
+// headers. This is the first interactive human UI surface in pkg/authserver
+// -- every other handler writes JSON with no framing risk -- so the
+// Approve/Deny confirmation page is the first place a clickjacking defense is
+// needed here.
+func setHTMLSecurityHeaders(w http.ResponseWriter) {
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")
 	w.Header().Set("Cache-Control", "no-store")
+	w.Header().Set("X-Frame-Options", "DENY")
+	w.Header().Set("Content-Security-Policy", "frame-ancestors 'none'")
+	w.Header().Set("X-Content-Type-Options", "nosniff")
+}
+
+func renderVerifyForm(w http.ResponseWriter, status int, userCode, errMsg string) {
+	setHTMLSecurityHeaders(w)
 	w.WriteHeader(status)
 	if err := verifyPageTemplate.Execute(w, verifyPageData{UserCode: userCode, Error: errMsg}); err != nil {
 		slog.Error("device verification: failed to render verify form", "error", err)
@@ -363,24 +403,21 @@ func renderVerifyForm(w http.ResponseWriter, status int, userCode, errMsg string
 }
 
 func renderConfirm(w http.ResponseWriter, data confirmPageData) {
-	w.Header().Set("Content-Type", "text/html; charset=utf-8")
-	w.Header().Set("Cache-Control", "no-store")
+	setHTMLSecurityHeaders(w)
 	if err := confirmPageTemplate.Execute(w, data); err != nil {
 		slog.Error("device verification: failed to render confirm page", "error", err)
 	}
 }
 
 func renderResult(w http.ResponseWriter, title, message string) {
-	w.Header().Set("Content-Type", "text/html; charset=utf-8")
-	w.Header().Set("Cache-Control", "no-store")
+	setHTMLSecurityHeaders(w)
 	if err := resultPageTemplate.Execute(w, resultPageData{Title: title, Message: message}); err != nil {
 		slog.Error("device verification: failed to render result page", "error", err)
 	}
 }
 
 func renderError(w http.ResponseWriter, status int, message string) {
-	w.Header().Set("Content-Type", "text/html; charset=utf-8")
-	w.Header().Set("Cache-Control", "no-store")
+	setHTMLSecurityHeaders(w)
 	w.WriteHeader(status)
 	if err := resultPageTemplate.Execute(w, resultPageData{Title: "Error", Message: message}); err != nil {
 		slog.Error("device verification: failed to render error page", "error", err)

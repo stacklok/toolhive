@@ -1579,6 +1579,138 @@ func TestMemoryStorage_PendingAuthorization(t *testing.T) {
 	})
 }
 
+func TestMemoryStorage_PendingDeviceLogin(t *testing.T) {
+	t.Parallel()
+	makePending := func() *PendingDeviceLogin {
+		return &PendingDeviceLogin{
+			DeviceCode: "device-code", UserCode: "USER-CODE",
+			UpstreamPKCEVerifier: "verifier", UpstreamNonce: "nonce",
+			UpstreamProviderName: "provider-1", CreatedAt: time.Now(),
+		}
+	}
+
+	t.Run("store and load", func(t *testing.T) {
+		withStorage(t, func(ctx context.Context, s *MemoryStorage) {
+			pending := makePending()
+			require.NoError(t, s.StorePendingDeviceLogin(ctx, "state-1", pending))
+
+			retrieved, err := s.LoadPendingDeviceLogin(ctx, "state-1")
+			require.NoError(t, err)
+			assert.Equal(t, pending.DeviceCode, retrieved.DeviceCode)
+			assert.Equal(t, pending.UserCode, retrieved.UserCode)
+			assert.Equal(t, pending.UpstreamPKCEVerifier, retrieved.UpstreamPKCEVerifier)
+			assert.Equal(t, pending.UpstreamNonce, retrieved.UpstreamNonce)
+			assert.Equal(t, pending.UpstreamProviderName, retrieved.UpstreamProviderName)
+		})
+	})
+
+	t.Run("load non-existent", func(t *testing.T) {
+		withStorage(t, func(ctx context.Context, s *MemoryStorage) {
+			_, err := s.LoadPendingDeviceLogin(ctx, "non-existent")
+			requireNotFoundError(t, err)
+		})
+	})
+
+	t.Run("load expired returns ErrExpired", func(t *testing.T) {
+		withStorage(t, func(ctx context.Context, s *MemoryStorage) {
+			require.NoError(t, s.StorePendingDeviceLogin(ctx, "expired-state", makePending()))
+
+			s.mu.Lock()
+			if entry, ok := s.pendingDeviceLogins["expired-state"]; ok {
+				entry.expiresAt = time.Now().Add(-time.Hour)
+			}
+			s.mu.Unlock()
+
+			retrieved, err := s.LoadPendingDeviceLogin(ctx, "expired-state")
+			require.Error(t, err)
+			assert.ErrorIs(t, err, ErrExpired)
+			assert.Nil(t, retrieved)
+		})
+	})
+
+	t.Run("delete", func(t *testing.T) {
+		withStorage(t, func(ctx context.Context, s *MemoryStorage) {
+			require.NoError(t, s.StorePendingDeviceLogin(ctx, "to-delete", makePending()))
+			require.NoError(t, s.DeletePendingDeviceLogin(ctx, "to-delete"))
+			_, err := s.LoadPendingDeviceLogin(ctx, "to-delete")
+			requireNotFoundError(t, err)
+		})
+	})
+
+	t.Run("delete non-existent returns error", func(t *testing.T) {
+		withStorage(t, func(ctx context.Context, s *MemoryStorage) {
+			err := s.DeletePendingDeviceLogin(ctx, "non-existent")
+			requireNotFoundError(t, err)
+		})
+	})
+}
+
+func TestMemoryStorage_PendingDeviceConfirmation(t *testing.T) {
+	t.Parallel()
+	makePending := func() *PendingDeviceConfirmation {
+		return &PendingDeviceConfirmation{
+			DeviceCode: "device-code", UserCode: "USER-CODE",
+			ResolvedUserID: "user-1", ResolvedUserName: "Ada Lovelace",
+			ResolvedUserEmail: "ada@example.com", CreatedAt: time.Now(),
+		}
+	}
+
+	t.Run("store and load", func(t *testing.T) {
+		withStorage(t, func(ctx context.Context, s *MemoryStorage) {
+			pending := makePending()
+			require.NoError(t, s.StorePendingDeviceConfirmation(ctx, "token-1", pending))
+
+			retrieved, err := s.LoadPendingDeviceConfirmation(ctx, "token-1")
+			require.NoError(t, err)
+			assert.Equal(t, pending.DeviceCode, retrieved.DeviceCode)
+			assert.Equal(t, pending.UserCode, retrieved.UserCode)
+			assert.Equal(t, pending.ResolvedUserID, retrieved.ResolvedUserID)
+			assert.Equal(t, pending.ResolvedUserName, retrieved.ResolvedUserName)
+			assert.Equal(t, pending.ResolvedUserEmail, retrieved.ResolvedUserEmail)
+		})
+	})
+
+	t.Run("load non-existent", func(t *testing.T) {
+		withStorage(t, func(ctx context.Context, s *MemoryStorage) {
+			_, err := s.LoadPendingDeviceConfirmation(ctx, "non-existent")
+			requireNotFoundError(t, err)
+		})
+	})
+
+	t.Run("load expired returns ErrExpired", func(t *testing.T) {
+		withStorage(t, func(ctx context.Context, s *MemoryStorage) {
+			require.NoError(t, s.StorePendingDeviceConfirmation(ctx, "expired-token", makePending()))
+
+			s.mu.Lock()
+			if entry, ok := s.pendingDeviceConfirmations["expired-token"]; ok {
+				entry.expiresAt = time.Now().Add(-time.Hour)
+			}
+			s.mu.Unlock()
+
+			retrieved, err := s.LoadPendingDeviceConfirmation(ctx, "expired-token")
+			require.Error(t, err)
+			assert.ErrorIs(t, err, ErrExpired)
+			assert.Nil(t, retrieved)
+		})
+	})
+
+	t.Run("delete", func(t *testing.T) {
+		withStorage(t, func(ctx context.Context, s *MemoryStorage) {
+			require.NoError(t, s.StorePendingDeviceConfirmation(ctx, "to-delete", makePending()))
+			require.NoError(t, s.DeletePendingDeviceConfirmation(ctx, "to-delete"))
+			_, err := s.LoadPendingDeviceConfirmation(ctx, "to-delete")
+			requireNotFoundError(t, err)
+		})
+	})
+
+	t.Run("delete non-existent returns error", func(t *testing.T) {
+		withStorage(t, func(ctx context.Context, s *MemoryStorage) {
+			err := s.DeletePendingDeviceConfirmation(ctx, "non-existent")
+			requireNotFoundError(t, err)
+		})
+	})
+}
+
 func TestMemoryStorage_DeviceCode(t *testing.T) {
 	t.Parallel()
 

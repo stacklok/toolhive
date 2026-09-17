@@ -2300,3 +2300,40 @@ func TestConverter_PassthroughHeaders(t *testing.T) {
 		})
 	}
 }
+
+func TestConverter_AllowCredentialHeaderPassthrough(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name     string
+		topLevel bool // spec.allowCredentialHeaderPassthrough
+		config   bool // spec.config.allowCredentialHeaderPassthrough
+		want     bool
+	}{
+		{name: "neither set defaults to false"},
+		{name: "top-level enables", topLevel: true, want: true},
+		{name: "auto-passthrough: config-level enables, top-level false does not disable", config: true, want: true},
+		{name: "both set stays enabled", topLevel: true, config: true, want: true},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			vmcp := v1beta1test.NewVirtualMCPServer("test-vmcp", "default",
+				v1beta1test.WithVMCPGroupRef("test-group"),
+				v1beta1test.WithVMCPIncomingAuth(&mcpv1beta1.IncomingAuthConfig{Type: "anonymous"}),
+				v1beta1test.WithVMCPConfig(vmcpconfig.Config{AllowCredentialHeaderPassthrough: tt.config}),
+				v1beta1test.MutateVMCP(func(v *mcpv1beta1.VirtualMCPServer) {
+					v.Spec.AllowCredentialHeaderPassthrough = tt.topLevel
+				}),
+			)
+
+			converter := newTestConverter(t, newNoOpMockResolver(t))
+			ctx := log.IntoContext(context.Background(), logr.Discard())
+			config, _, err := converter.Convert(ctx, vmcp, nil)
+			require.NoError(t, err)
+			require.NotNil(t, config)
+			assert.Equal(t, tt.want, config.AllowCredentialHeaderPassthrough)
+		})
+	}
+}

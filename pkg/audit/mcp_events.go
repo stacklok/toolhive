@@ -142,4 +142,9 @@ const (
 	MetadataExtraKeyStepCount = coreaudit.MetadataExtraKeyStepCount
 	// MetadataExtraKeyTimeout is the key for the workflow timeout in milliseconds
 	MetadataExtraKeyTimeout = coreaudit.MetadataExtraKeyTimeout
+	// MetadataExtraKeyCredentialPassthrough is the key for the credential header
+	// names the request carried and the proxy forwards verbatim to backends.
+	// Names only, never values.
+	//nolint:gosec // G101: this is an audit metadata key name, not a credential value
+	MetadataExtraKeyCredentialPassthrough = "credential_header_passthrough"
 )

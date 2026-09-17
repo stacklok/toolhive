@@ -198,9 +198,11 @@ spec:
 Allowlist of incoming client request headers forwarded verbatim to every
 backend. The value is captured at the auth boundary and injected into the
 session's outgoing backend requests. **Type**: `[]string`. Names are matched
-case-insensitively; restricted headers (`Host`, `Authorization`,
-`X-Forwarded-*`, hop-by-hop) are rejected at startup. Takes precedence over
-`spec.config.passthroughHeaders`.
+case-insensitively; restricted headers (`Host`, `X-Forwarded-*`,
+`Transfer-Encoding`, `Content-Length`, hop-by-hop) are rejected at startup.
+`Authorization` and `Cookie` are also rejected unless
+[`spec.allowCredentialHeaderPassthrough`](#specallowcredentialheaderpassthrough-optional)
+is `true`. Takes precedence over `spec.config.passthroughHeaders`.
 
 ```yaml
 spec:
@@ -216,6 +218,43 @@ spec:
 > (only the `(issuer, subject)` identity tuple is). A session restored on
 > another replica re-captures them from the next request — keep clients pinned
 > with `sessionAffinity: ClientIP`.
+
+### `.spec.allowCredentialHeaderPassthrough` (optional)
+
+Opts in to listing `Authorization` and `Cookie` in `passthroughHeaders`.
+**Type**: `bool`. **Default**: `false`, which rejects both at startup.
+
+The opt-in is scoped to those two names. `Host`, `X-Forwarded-*`,
+`Transfer-Encoding`, `Content-Length` and hop-by-hop headers stay rejected
+regardless — those are request-smuggling and identity-spoofing vectors, not a
+credential policy question. Setting this field also enables
+`spec.config.allowCredentialHeaderPassthrough`; it never disables it.
+
+```yaml
+spec:
+  allowCredentialHeaderPassthrough: true
+  passthroughHeaders:
+    - Authorization
+```
+
+When enabled, vMCP logs a warning at startup naming the credential headers it
+will forward, and marks every audit event whose request carried one with
+`metadata.extra.credential_header_passthrough` (header names only, never
+values).
+
+Per-backend behaviour is decided by each backend's outgoing auth strategy. A
+backend on `token_exchange`, `upstream_inject`, `aws_sts`, `obo` or `xaa`
+receives the token that strategy mints — never the caller's. Only backends
+resolving to `unauthenticated` receive the forwarded value.
+
+> **Security:** enabling this forwards the caller's credential verbatim to every
+> backend that sets no competing header of its own. vMCP cannot verify the token
+> was ever intended for those backends. Enable it only when a trusted upstream
+> mints per-backend, audience-scoped credentials (for example a gateway
+> implementing [LiteLLM's MCP zero-trust
+> pattern](https://docs.litellm.ai/docs/mcp_zero_trust)). A vMCP running its own
+> OIDC incoming auth would forward a token minted for *vMCP* to backends that
+> are not its audience.
 
 ### `.spec.config.aggregation` (optional)
 

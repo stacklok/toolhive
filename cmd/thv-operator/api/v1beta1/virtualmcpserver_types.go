@@ -41,11 +41,31 @@ type VirtualMCPServerSpec struct {
 	// PassthroughHeaders is an allowlist of incoming client request header names
 	// forwarded verbatim to all backends (e.g. an API key the backend resolves to
 	// a user). Takes precedence over config.PassthroughHeaders. Names must not be
-	// restricted headers (Host, hop-by-hop, X-Forwarded-*). Forwarded headers are
-	// attacker-influenceable unless a trusted upstream sets them.
+	// restricted headers (Host, hop-by-hop, X-Forwarded-*). Authorization and
+	// Cookie additionally require allowCredentialHeaderPassthrough. Forwarded
+	// headers are attacker-influenceable unless a trusted upstream sets them.
 	// +optional
 	// +listType=atomic
 	PassthroughHeaders []string `json:"passthroughHeaders,omitempty"`
+
+	// AllowCredentialHeaderPassthrough opts in to listing Authorization and Cookie
+	// in passthroughHeaders. Defaults to false, which rejects them at startup.
+	// Host, hop-by-hop, Transfer-Encoding, Content-Length and X-Forwarded-* stay
+	// rejected regardless. Enabling it here also enables
+	// config.allowCredentialHeaderPassthrough, and never disables it.
+	//
+	// Only enable it when a trusted upstream mints per-backend, audience-scoped
+	// credentials: Virtual MCP cannot check that the caller's token was ever
+	// intended for the backends it reaches.
+	//
+	// SECURITY: this is safe only because of the backend transport chain's nesting
+	// order — header-forward is outermost and skips headers already present, auth
+	// is innermost and sets unconditionally, so backends on a real auth strategy
+	// get their own token, not the caller's. Reordering those stages, or making
+	// header-forward overwrite instead of skip, leaks the caller's credential to
+	// every backend. See pkg/vmcp/session/internal/backend/mcp_session.go.
+	// +optional
+	AllowCredentialHeaderPassthrough bool `json:"allowCredentialHeaderPassthrough,omitempty"`
 
 	// ServiceType specifies the Kubernetes service type for the Virtual MCP server
 	// +kubebuilder:validation:Enum=ClusterIP;NodePort;LoadBalancer

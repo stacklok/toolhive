@@ -31,6 +31,12 @@ type jsonContainer struct {
 	expectingKey bool
 }
 
+type jsonAmbiguityScanner struct {
+	containers   []jsonContainer
+	ambiguous    bool
+	rootComplete bool
+}
+
 // hasAmbiguousJSONMembers reports whether a syntactically valid JSON value has
 // duplicate or case-fold-equivalent member names in any object. JSON permits
 // case-distinct names, but ToolHive rejects them deliberately because downstream
@@ -40,76 +46,100 @@ func hasAmbiguousJSONMembers(body []byte) bool {
 	body = bytes.TrimPrefix(body, UTF8BOM)
 	decoder := json.NewDecoder(bytes.NewReader(body))
 	decoder.UseNumber()
-	containers := make([]jsonContainer, 0, 8)
-	ambiguous := false
-	rootComplete := false
+	scanner := jsonAmbiguityScanner{
+		containers: make([]jsonContainer, 0, 8),
+	}
 
 	for {
 		token, err := decoder.Token()
 		if err == io.EOF {
-			return rootComplete && len(containers) == 0 && ambiguous
+			return scanner.isAmbiguous()
 		}
-		if err != nil || rootComplete {
+		if err != nil || scanner.rootComplete {
 			return false
 		}
-
-		if len(containers) == 0 {
-			delim, ok := token.(json.Delim)
-			if !ok {
-				rootComplete = true
-				continue
-			}
-			if delim != '{' && delim != '[' {
-				return false
-			}
-			containers = append(containers, newJSONContainer(delim))
-			continue
+		if !scanner.consumeToken(token) {
+			return false
 		}
+	}
+}
 
-		current := &containers[len(containers)-1]
-		if current.delim == '{' && current.expectingKey {
-			if delim, ok := token.(json.Delim); ok && delim == '}' {
-				containers = containers[:len(containers)-1]
-				if len(containers) == 0 {
-					rootComplete = true
-				}
-				continue
-			}
+func (s *jsonAmbiguityScanner) isAmbiguous() bool {
+	return s.rootComplete && len(s.containers) == 0 && s.ambiguous
+}
 
-			key, ok := token.(string)
-			if !ok {
-				return false
-			}
-			folded := foldJSONMemberName(key)
-			if _, exists := current.seen[folded]; exists {
-				ambiguous = true
-			} else {
-				current.seen[folded] = struct{}{}
-			}
-			current.expectingKey = false
-			continue
+func (s *jsonAmbiguityScanner) consumeToken(token json.Token) bool {
+	if len(s.containers) == 0 {
+		return s.consumeRootToken(token)
+	}
+
+	current := &s.containers[len(s.containers)-1]
+	if current.delim == '{' && current.expectingKey {
+		return s.consumeObjectKey(current, token)
+	}
+	if current.delim == '{' {
+		current.expectingKey = true
+	}
+
+	delim, ok := token.(json.Delim)
+	if !ok {
+		return true
+	}
+	return s.consumeValueDelimiter(current, delim)
+}
+
+func (s *jsonAmbiguityScanner) consumeRootToken(token json.Token) bool {
+	delim, ok := token.(json.Delim)
+	if !ok {
+		s.rootComplete = true
+		return true
+	}
+	if delim != '{' && delim != '[' {
+		return false
+	}
+	s.containers = append(s.containers, newJSONContainer(delim))
+	return true
+}
+
+func (s *jsonAmbiguityScanner) consumeObjectKey(current *jsonContainer, token json.Token) bool {
+	if delim, ok := token.(json.Delim); ok && delim == '}' {
+		s.closeContainer()
+		return true
+	}
+
+	key, ok := token.(string)
+	if !ok {
+		return false
+	}
+	folded := foldJSONMemberName(key)
+	if _, exists := current.seen[folded]; exists {
+		s.ambiguous = true
+	} else {
+		current.seen[folded] = struct{}{}
+	}
+	current.expectingKey = false
+	return true
+}
+
+func (s *jsonAmbiguityScanner) consumeValueDelimiter(current *jsonContainer, delim json.Delim) bool {
+	switch delim {
+	case '{', '[':
+		s.containers = append(s.containers, newJSONContainer(delim))
+	case ']':
+		if current.delim != '[' {
+			return false
 		}
+		s.closeContainer()
+	default:
+		return false
+	}
+	return true
+}
 
-		if current.delim == '{' {
-			current.expectingKey = true
-		}
-
-		if delim, ok := token.(json.Delim); ok {
-			switch delim {
-			case '{', '[':
-				containers = append(containers, newJSONContainer(delim))
-			case ']':
-				if current.delim != '[' {
-					return false
-				}
-				containers = containers[:len(containers)-1]
-				if len(containers) == 0 {
-					rootComplete = true
-				}
-			default:
-				return false
-			}
-		}
+func (s *jsonAmbiguityScanner) closeContainer() {
+	s.containers = s.containers[:len(s.containers)-1]
+	if len(s.containers) == 0 {
+		s.rootComplete = true
 	}
 }
 

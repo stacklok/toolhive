@@ -238,6 +238,13 @@ jobs:
           args: release --clean
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          # Unlike the homebrew tap above, winget cannot use a GitHub App token.
+          # The winget pipe in .goreleaser.yaml opens a cross-account PR from the
+          # stacklok/winget-pkgs fork into microsoft/winget-pkgs, which only a
+          # classic PAT (full `repo` scope) can do — App and fine-grained tokens
+          # are scoped to a single account and get 403'd creating that PR. A 401
+          # "Bad credentials" here means this PAT expired/was revoked: rotate the
+          # secret (ideally a bot account's classic PAT) and re-run this job.
           WINGET_GITHUB_TOKEN: ${{ secrets.WINGET_GITHUB_TOKEN }}
           HOMEBREW_TAP_GITHUB_TOKEN: ${{ steps.homebrew-tap-token.outputs.token }}
           VERSION: ${{ needs.compute-build-flags.outputs.version }}

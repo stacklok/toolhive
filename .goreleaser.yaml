@@ -80,6 +80,17 @@ winget:
      owner: stacklok
      name: winget-pkgs
      branch: "thv-{{.Version}}"
+     # WINGET_GITHUB_TOKEN must be a *classic* PAT with full `repo` scope, NOT a
+     # GitHub App installation token or a fine-grained PAT. This publisher pushes
+     # the branch above to the stacklok/winget-pkgs fork and then opens the
+     # pull_request below into microsoft/winget-pkgs — a cross-account,
+     # fork-to-upstream PR. Only a classic PAT can create that PR: App tokens and
+     # fine-grained PATs are scoped to a single account and cannot open a PR on a
+     # repo they aren't installed on (403 "Resource not accessible by
+     # integration"). This is why winget can't reuse the App-token pattern that
+     # the homebrew/tap uses in .github/workflows/releaser.yml. A 401 "Bad
+     # credentials" at release time means the PAT expired or was revoked — rotate
+     # the secret and re-run the job. See the env comment in releaser.yml.
      token: "{{ .Env.WINGET_GITHUB_TOKEN }}"
      pull_request:
        enabled: true

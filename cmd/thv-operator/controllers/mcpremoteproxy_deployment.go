@@ -328,12 +328,33 @@ func (r *MCPRemoteProxyReconciler) buildEnvVarsForProxy(
 
 // buildRedisPasswordEnvVarForRemoteProxy returns the THV_SESSION_REDIS_PASSWORD
 // env var sourced from spec.sessionStorage.passwordRef when sessionStorage uses
-// the redis provider; returns nil otherwise. Mirrors VirtualMCPServer's
-// buildRedisPasswordEnvVar in virtualmcpserver_deployment.go.
+// the redis provider, or from the global default Redis secret when
+// spec.sessionStorage is unset and TOOLHIVE_DEFAULT_REDIS_SECRET_NAME is set;
+// returns nil otherwise. Mirrors VirtualMCPServer's buildRedisPasswordEnvVar
+// in virtualmcpserver_deployment.go.
 func buildRedisPasswordEnvVarForRemoteProxy(proxy *mcpv1beta1.MCPRemoteProxy) []corev1.EnvVar {
-	if proxy.Spec.SessionStorage == nil ||
-		proxy.Spec.SessionStorage.Provider != mcpv1beta1.SessionStorageProviderRedis ||
-		proxy.Spec.SessionStorage.PasswordRef == nil {
+	if proxy.Spec.SessionStorage != nil {
+		if proxy.Spec.SessionStorage.Provider == mcpv1beta1.SessionStorageProviderRedis &&
+			proxy.Spec.SessionStorage.PasswordRef != nil {
+			return []corev1.EnvVar{{
+				Name: session.RedisPasswordEnvVar,
+				ValueFrom: &corev1.EnvVarSource{
+					SecretKeyRef: &corev1.SecretKeySelector{
+						LocalObjectReference: corev1.LocalObjectReference{
+							Name: proxy.Spec.SessionStorage.PasswordRef.Name,
+						},
+						Key: proxy.Spec.SessionStorage.PasswordRef.Key,
+					},
+				},
+			}}
+		}
+		// spec.sessionStorage was set explicitly — never fall through to the
+		// global default regardless of provider.
+		return nil
+	}
+
+	def := ctrlutil.ReadDefaultRedisConfig()
+	if def == nil || def.SecretName == "" {
 		return nil
 	}
 	return []corev1.EnvVar{{
@@ -341,9 +362,9 @@ func buildRedisPasswordEnvVarForRemoteProxy(proxy *mcpv1beta1.MCPRemoteProxy) []
 		ValueFrom: &corev1.EnvVarSource{
 			SecretKeyRef: &corev1.SecretKeySelector{
 				LocalObjectReference: corev1.LocalObjectReference{
-					Name: proxy.Spec.SessionStorage.PasswordRef.Name,
+					Name: def.SecretName,
 				},
-				Key: proxy.Spec.SessionStorage.PasswordRef.Key,
+				Key: def.SecretKey,
 			},
 		},
 	}}

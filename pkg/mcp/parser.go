@@ -120,6 +120,10 @@ func ParsingMiddleware(next http.Handler) http.Handler {
 			WriteBatchUnsupportedError(w)
 			return
 		}
+		if hasAmbiguousJSONMembers(bodyBytes) {
+			WriteClassificationError(w, nil, ambiguousRequest)
+			return
+		}
 
 		// Parse the MCP request and store in context
 		parsedRequest := parseMCPRequest(bodyBytes)
@@ -146,7 +150,8 @@ func ParsingMiddleware(next http.Handler) http.Handler {
 // ParsingMiddleware deliberately parses only once, so any middleware that
 // replaces r.Body MUST call this or downstream consumers (authorization,
 // audit, telemetry) will decide on the bytes that arrived rather than the
-// bytes the backend executes.
+// bytes the backend executes. Replacement bodies must satisfy the same batch
+// and unambiguous-member requirements enforced by ParsingMiddleware.
 //
 // On error, the returned request is nil and must not be passed downstream:
 // the caller is responsible for terminating the request (e.g. writing an
@@ -165,6 +170,9 @@ func RepublishParsedMCPRequest(r *http.Request, body []byte) (*http.Request, err
 	// single request into an array (see IsBatchRequest's doc comment).
 	if IsBatchRequest(body) {
 		return nil, &BatchUnsupportedError{}
+	}
+	if hasAmbiguousJSONMembers(body) {
+		return nil, ambiguousRequest
 	}
 
 	parsed := parseMCPRequest(body)

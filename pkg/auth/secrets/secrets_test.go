@@ -234,39 +234,59 @@ func TestStoreSecretInManagerWithProvider(t *testing.T) {
 	}
 }
 
-// TestProcessSecret tests the public ProcessSecret function for each token type
-// These tests verify that ProcessSecret works correctly without requiring secrets setup
+// TestProcessSecret verifies early returns that do not require secrets setup.
 func TestProcessSecret(t *testing.T) {
 	t.Parallel()
 
-	t.Run("OAuth client secret - empty returns early", func(t *testing.T) {
-		t.Parallel()
-		// This test verifies that when secretValue is empty, ProcessSecret
-		// returns early without attempting to access the secrets manager.
-		// If it tried to access the secrets manager, it would fail because
-		// no secrets provider is configured in the test environment.
-		result, err := ProcessSecret("test-workload", "", TokenTypeOAuthClientSecret)
-		assert.NoError(t, err, "Should not error when secret is empty")
-		assert.Equal(t, "", result, "Should return empty string when input is empty")
-	})
+	tests := []struct {
+		name        string
+		secretValue string
+		tokenType   TokenType
+		want        string
+		wantErr     string
+	}{
+		{
+			name:      "empty OAuth client secret",
+			tokenType: TokenTypeOAuthClientSecret,
+		},
+		{
+			name:      "empty bearer token",
+			tokenType: TokenTypeBearerToken,
+		},
+		{
+			name:        "existing OAuth client secret reference",
+			secretValue: "EXISTING_SECRET,target=oauth_secret",
+			tokenType:   TokenTypeOAuthClientSecret,
+			want:        "EXISTING_SECRET,target=oauth_secret",
+		},
+		{
+			name:        "existing bearer token reference",
+			secretValue: "EXISTING_TOKEN,target=bearer_token",
+			tokenType:   TokenTypeBearerToken,
+			want:        "EXISTING_TOKEN,target=bearer_token",
+		},
+		{
+			name:        "unknown token type rejects an existing reference",
+			secretValue: "EXISTING_TOKEN,target=bearer_token",
+			tokenType:   TokenType("unknown"),
+			wantErr:     "unknown token type",
+		},
+	}
 
-	t.Run("Bearer token - empty returns early", func(t *testing.T) {
-		t.Parallel()
-		// This test verifies that when secretValue is empty, ProcessSecret
-		// returns early without attempting to access the secrets manager.
-		result, err := ProcessSecret("test-workload", "", TokenTypeBearerToken)
-		assert.NoError(t, err, "Should not error when token is empty")
-		assert.Equal(t, "", result, "Should return empty string when input is empty")
-	})
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
 
-	t.Run("unknown token type returns error", func(t *testing.T) {
-		t.Parallel()
-		result, err := ProcessSecret("test-workload", "some-secret", TokenType("unknown"))
-		assert.Error(t, err)
-		assert.Contains(t, err.Error(), "unknown token type")
-		assert.Equal(t, "", result)
-	})
-
+			result, err := ProcessSecret("test-workload", tt.secretValue, tt.tokenType)
+			if tt.wantErr != "" {
+				assert.ErrorContains(t, err, tt.wantErr)
+				assert.Empty(t, result)
+				return
+			}
+			assert.NoError(t, err)
+			assert.Equal(t, tt.want, result)
+		})
+	}
 }
 
 func TestProcessSecretWithProvider(t *testing.T) {

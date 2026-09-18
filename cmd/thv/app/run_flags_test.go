@@ -11,6 +11,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/adrg/xdg"
 	"github.com/spf13/cobra"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -19,6 +20,7 @@ import (
 	regtypes "github.com/stacklok/toolhive-core/registry/types"
 	"github.com/stacklok/toolhive/pkg/config"
 	"github.com/stacklok/toolhive/pkg/runner"
+	"github.com/stacklok/toolhive/pkg/secrets"
 	"github.com/stacklok/toolhive/pkg/webhook"
 )
 
@@ -50,6 +52,65 @@ func createTestConfigProvider(t *testing.T, cfg *config.Config) (config.Provider
 
 	return provider, func() {
 		// Cleanup is handled by t.TempDir()
+	}
+}
+
+func TestGetRemoteAuthFromRemoteServerMetadataBearerTokenWithoutSecretSetup(t *testing.T) {
+	t.Cleanup(xdg.Reload)
+	t.Setenv("XDG_CONFIG_HOME", t.TempDir())
+	t.Setenv(secrets.ProviderEnvVar, string(secrets.EnvironmentType))
+	t.Setenv("TOOLHIVE_SECRET_TOKEN", "environment-bearer-token")
+	xdg.Reload()
+
+	metadata := &regtypes.RemoteServerMetadata{
+		OAuthConfig: &regtypes.OAuthConfig{},
+	}
+	tests := []struct {
+		name            string
+		bearerToken     string
+		want            string
+		wantErr         error
+		wantErrContains []string
+	}{
+		{
+			name:        "existing reference does not require setup",
+			bearerToken: "TOKEN,target=bearer_token",
+			want:        "TOKEN,target=bearer_token",
+		},
+		{
+			name:        "plaintext still requires setup",
+			bearerToken: "plaintext-bearer-token",
+			wantErr:     secrets.ErrSecretsNotSetup,
+			wantErrContains: []string{
+				"thv secret setup",
+				"TOOLHIVE_SECRETS_PROVIDER=environment",
+				"TOOLHIVE_SECRET_<NAME>",
+			},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			runFlags := &RunFlags{
+				Name: "registry-remote",
+				RemoteAuthFlags: RemoteAuthFlags{
+					RemoteAuthBearerToken: tt.bearerToken,
+				},
+			}
+
+			remoteConfig, err := getRemoteAuthFromRemoteServerMetadata(metadata, runFlags)
+			if tt.wantErr != nil {
+				require.ErrorIs(t, err, tt.wantErr)
+				for _, expected := range tt.wantErrContains {
+					assert.ErrorContains(t, err, expected)
+				}
+				assert.Nil(t, remoteConfig)
+				return
+			}
+			require.NoError(t, err)
+			require.NotNil(t, remoteConfig)
+			assert.Equal(t, tt.want, remoteConfig.BearerToken)
+		})
 	}
 }
 

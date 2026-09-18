@@ -90,6 +90,47 @@ type Config struct {
 	// during DCR. It may differ from CallbackPort when the requested port was
 	// unavailable and a fallback port was selected.
 	CachedDCRCallbackPort int `json:"cached_dcr_callback_port,omitempty" yaml:"cached_dcr_callback_port,omitempty"`
+
+	// Resolved credentials are runtime-only. The exported fields retain their
+	// persistable values so copying Config cannot leak plaintext into state.
+	resolvedClientSecret string
+	clientSecretResolved bool
+	resolvedBearerToken  string
+	bearerTokenResolved  bool
+}
+
+// ClearResolvedSecrets removes runtime-only credential values.
+func (c *Config) ClearResolvedSecrets() {
+	c.resolvedClientSecret = ""
+	c.clientSecretResolved = false
+	c.resolvedBearerToken = ""
+	c.bearerTokenResolved = false
+}
+
+// SetResolvedClientSecret records a client secret resolved at runtime.
+func (c *Config) SetResolvedClientSecret(value string) {
+	c.resolvedClientSecret = value
+	c.clientSecretResolved = true
+}
+
+// SetResolvedBearerToken records a bearer token resolved at runtime.
+func (c *Config) SetResolvedBearerToken(value string) {
+	c.resolvedBearerToken = value
+	c.bearerTokenResolved = true
+}
+
+func (c *Config) clientSecret() string {
+	if c.clientSecretResolved {
+		return c.resolvedClientSecret
+	}
+	return c.ClientSecret
+}
+
+func (c *Config) bearerToken() string {
+	if c.bearerTokenResolved {
+		return c.resolvedBearerToken
+	}
+	return c.BearerToken
 }
 
 // BearerTokenEnvVarName is the environment variable name used for bearer token authentication.
@@ -150,13 +191,18 @@ func (r *Config) UnmarshalJSON(data []byte) error {
 		r.OAuthParams = oldFormat.OAuthParams
 		r.BearerToken = oldFormat.BearerToken
 		r.BearerTokenFile = oldFormat.BearerTokenFile
+		r.ClearResolvedSecrets()
 		return nil
 	}
 
 	// Use the new snake_case format
 	type Alias Config
 	alias := (*Alias)(r)
-	return json.Unmarshal(data, alias)
+	if err := json.Unmarshal(data, alias); err != nil {
+		return err
+	}
+	r.ClearResolvedSecrets()
+	return nil
 }
 
 // DefaultCallbackPort is the default port for the OAuth callback server

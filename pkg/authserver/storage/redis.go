@@ -1196,6 +1196,35 @@ func (s *storedUpstreamTokens) toUpstreamTokens() *UpstreamTokens {
 	}
 }
 
+// newStoredUpstreamTokens converts tokens to its serializable form, encoding
+// zero time.Time fields as epoch 0 -- the "no expiry" sentinel toUpstreamTokens
+// decodes back to a zero time.Time (time.Time{}.Unix() itself returns
+// -62135596800, not a useful sentinel). Returns nil for nil input.
+func newStoredUpstreamTokens(tokens *UpstreamTokens) *storedUpstreamTokens {
+	if tokens == nil {
+		return nil
+	}
+	var expiresAtUnix int64
+	if !tokens.ExpiresAt.IsZero() {
+		expiresAtUnix = tokens.ExpiresAt.Unix()
+	}
+	var sessionExpiresAtUnix int64
+	if !tokens.SessionExpiresAt.IsZero() {
+		sessionExpiresAtUnix = tokens.SessionExpiresAt.Unix()
+	}
+	return &storedUpstreamTokens{
+		ProviderID:       tokens.ProviderID,
+		AccessToken:      tokens.AccessToken,
+		RefreshToken:     tokens.RefreshToken,
+		IDToken:          tokens.IDToken,
+		ExpiresAt:        expiresAtUnix,
+		SessionExpiresAt: sessionExpiresAtUnix,
+		UserID:           tokens.UserID,
+		UpstreamSubject:  tokens.UpstreamSubject,
+		ClientID:         tokens.ClientID,
+	}
+}
+
 // storeUpstreamTokensScript atomically reads the existing UserID, writes new token
 // data, updates the session index set, and updates user reverse-index sets.
 // This prevents a race condition where concurrent writes for the same session
@@ -1359,29 +1388,7 @@ func marshalUpstreamTokensWithTTL(tokens *UpstreamTokens) ([]byte, time.Duration
 		return []byte(nullMarker), DefaultAccessTokenTTL, nil
 	}
 
-	// Store 0 for zero time to use as a sentinel meaning "no expiry".
-	// time.Time{}.Unix() returns -62135596800 which is not a useful sentinel.
-	var expiresAtUnix int64
-	if !tokens.ExpiresAt.IsZero() {
-		expiresAtUnix = tokens.ExpiresAt.Unix()
-	}
-
-	var sessionExpiresAtUnix int64
-	if !tokens.SessionExpiresAt.IsZero() {
-		sessionExpiresAtUnix = tokens.SessionExpiresAt.Unix()
-	}
-
-	stored := storedUpstreamTokens{
-		ProviderID:       tokens.ProviderID,
-		AccessToken:      tokens.AccessToken,
-		RefreshToken:     tokens.RefreshToken,
-		IDToken:          tokens.IDToken,
-		ExpiresAt:        expiresAtUnix,
-		SessionExpiresAt: sessionExpiresAtUnix,
-		UserID:           tokens.UserID,
-		UpstreamSubject:  tokens.UpstreamSubject,
-		ClientID:         tokens.ClientID,
-	}
+	stored := newStoredUpstreamTokens(tokens)
 
 	data, err := json.Marshal(stored) //nolint:gosec // G117 - internal Redis storage serialization, not exposed to users
 	if err != nil {
@@ -2365,12 +2372,14 @@ func (s *RedisStorage) DeletePendingDeviceLogin(ctx context.Context, state strin
 // storedPendingDeviceConfirmation is a serializable wrapper for
 // PendingDeviceConfirmation.
 type storedPendingDeviceConfirmation struct {
-	DeviceCode        string `json:"device_code"`
-	UserCode          string `json:"user_code"`
-	ResolvedUserID    string `json:"resolved_user_id,omitempty"`
-	ResolvedUserName  string `json:"resolved_user_name,omitempty"`
-	ResolvedUserEmail string `json:"resolved_user_email,omitempty"`
-	CreatedAt         int64  `json:"created_at"`
+	DeviceCode        string                `json:"device_code"`
+	UserCode          string                `json:"user_code"`
+	ResolvedUserID    string                `json:"resolved_user_id,omitempty"`
+	ResolvedUserName  string                `json:"resolved_user_name,omitempty"`
+	ResolvedUserEmail string                `json:"resolved_user_email,omitempty"`
+	UpstreamTokens    *storedUpstreamTokens `json:"upstream_tokens,omitempty"`
+	Synthetic         bool                  `json:"synthetic,omitempty"`
+	CreatedAt         int64                 `json:"created_at"`
 }
 
 // StorePendingDeviceConfirmation stores a pending device-flow confirmation,
@@ -2395,6 +2404,8 @@ func (s *RedisStorage) StorePendingDeviceConfirmation(
 		ResolvedUserID:    pending.ResolvedUserID,
 		ResolvedUserName:  pending.ResolvedUserName,
 		ResolvedUserEmail: pending.ResolvedUserEmail,
+		UpstreamTokens:    newStoredUpstreamTokens(pending.UpstreamTokens),
+		Synthetic:         pending.Synthetic,
 		CreatedAt:         pending.CreatedAt.Unix(),
 	}
 
@@ -2430,12 +2441,19 @@ func (s *RedisStorage) LoadPendingDeviceConfirmation(
 		return nil, ErrExpired
 	}
 
+	var upstreamTokens *UpstreamTokens
+	if stored.UpstreamTokens != nil {
+		upstreamTokens = stored.UpstreamTokens.toUpstreamTokens()
+	}
+
 	return &PendingDeviceConfirmation{
 		DeviceCode:        stored.DeviceCode,
 		UserCode:          stored.UserCode,
 		ResolvedUserID:    stored.ResolvedUserID,
 		ResolvedUserName:  stored.ResolvedUserName,
 		ResolvedUserEmail: stored.ResolvedUserEmail,
+		UpstreamTokens:    upstreamTokens,
+		Synthetic:         stored.Synthetic,
 		CreatedAt:         createdAt,
 	}, nil
 }

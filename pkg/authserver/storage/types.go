@@ -763,6 +763,26 @@ type PendingDeviceConfirmation struct {
 	ResolvedUserName  string
 	ResolvedUserEmail string
 
+	// UpstreamTokens carries the tokens already exchanged with the upstream
+	// IDP, ready to persist under the final session id once one exists.
+	// Device-flow sessions have no session id until
+	// MarkDeviceRequestAuthorized mints one at confirm time -- unlike the
+	// OAuth-client authorization_code flow, where the session id is minted
+	// up front and CallbackHandler can call StoreUpstreamTokens directly --
+	// so the tokens must be carried here and written by
+	// DeviceVerificationConfirmHandler once that id exists. ProviderID,
+	// AccessToken, RefreshToken, IDToken, ExpiresAt, UpstreamSubject, and
+	// ClientID are populated at exchange time; UserID and SessionExpiresAt
+	// are left zero and filled in at confirm time.
+	UpstreamTokens *UpstreamTokens
+
+	// Synthetic mirrors the upstream identity's Synthetic flag: true when
+	// the upstream has no userinfo/identity config and its subject was
+	// synthesized rather than resolved from a real claim. Confirm-time
+	// refresh-token carry-forward uses this to skip its account-linking
+	// guard, which can never match a rotating synthetic subject.
+	Synthetic bool
+
 	// CreatedAt is when the pending confirmation was created.
 	CreatedAt time.Time
 }

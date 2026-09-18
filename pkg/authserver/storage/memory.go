@@ -1542,6 +1542,8 @@ func (s *MemoryStorage) StorePendingDeviceConfirmation(
 		ResolvedUserID:    pending.ResolvedUserID,
 		ResolvedUserName:  pending.ResolvedUserName,
 		ResolvedUserEmail: pending.ResolvedUserEmail,
+		UpstreamTokens:    cloneUpstreamTokens(pending.UpstreamTokens),
+		Synthetic:         pending.Synthetic,
 		CreatedAt:         pending.CreatedAt,
 	}
 
@@ -1576,6 +1578,8 @@ func (s *MemoryStorage) LoadPendingDeviceConfirmation(
 		ResolvedUserID:    pending.ResolvedUserID,
 		ResolvedUserName:  pending.ResolvedUserName,
 		ResolvedUserEmail: pending.ResolvedUserEmail,
+		UpstreamTokens:    cloneUpstreamTokens(pending.UpstreamTokens),
+		Synthetic:         pending.Synthetic,
 		CreatedAt:         pending.CreatedAt,
 	}, nil
 }

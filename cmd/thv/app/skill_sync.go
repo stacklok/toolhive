@@ -20,6 +20,7 @@ var (
 	skillSyncPrune         bool
 	skillSyncYes           bool
 	skillSyncAllowUnsigned bool
+	skillSyncPublicKey     string
 	skillSyncFormat        string
 )
 
@@ -59,11 +60,17 @@ func init() {
 		"Skip the confirmation prompt (required when not running interactively)")
 	skillSyncCmd.Flags().BoolVar(&skillSyncAllowUnsigned, "allow-unsigned", false,
 		"Allow adopting skills whose signature state cannot be established (recorded as unsigned)")
+	skillSyncCmd.Flags().StringVar(&skillSyncPublicKey, "public-key", "",
+		"Path to the cosign public key used to verify key-pair-signed skills during --adopt")
 	AddFormatFlag(skillSyncCmd, &skillSyncFormat)
 }
 
 func skillSyncCmdFunc(cmd *cobra.Command, _ []string) error {
 	projectRoot, err := resolveProjectRoot(skillSyncProjectRoot)
+	if err != nil {
+		return err
+	}
+	publicKey, err := readInstallPublicKey(skillSyncPublicKey)
 	if err != nil {
 		return err
 	}
@@ -90,6 +97,7 @@ func skillSyncCmdFunc(cmd *cobra.Command, _ []string) error {
 		Adopt:         skillSyncAdopt,
 		Prune:         skillSyncPrune,
 		AllowUnsigned: skillSyncAllowUnsigned,
+		PublicKey:     publicKey,
 	})
 	if err != nil {
 		return formatSkillError("sync skills", err)

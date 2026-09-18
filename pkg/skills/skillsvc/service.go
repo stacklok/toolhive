@@ -7,10 +7,13 @@ package skillsvc
 //go:generate mockgen -destination=mocks/mock_signer.go -package=mocks github.com/stacklok/toolhive-core/container/signer Signer
 
 import (
+	"context"
+	"errors"
 	"fmt"
-	"hash/fnv"
 	"net/http"
 	"sync"
+
+	"github.com/gofrs/flock"
 
 	"github.com/stacklok/toolhive-core/container/signer"
 	"github.com/stacklok/toolhive-core/httperr"
@@ -119,9 +122,9 @@ func (sl *skillLock) lock(name string, scope skills.Scope, projectRoot string) f
 
 // projectTxStripes bounds the project transaction lock set. Project roots
 // are request-derived in the long-running API service, so a grow-forever
-// map keyed by root would leak; a fixed stripe set caps memory at a
-// constant. Two projects hashing to the same stripe merely serialize
-// against each other — never a correctness issue.
+// map or one persistent lock file per root would grow without bound; a fixed
+// stripe set caps both. Two projects hashing to the same stripe merely
+// serialize against each other — never a correctness issue.
 const projectTxStripes = 64
 
 // projectTx serializes all project-scoped skill mutations for a given
@@ -129,18 +132,59 @@ const projectTxStripes = 64
 // collisions); Install, Uninstall, Sync, and Upgrade for the same project
 // share one transaction that spans extraction through bookkeeping,
 // dependency materialization, cascades, and compensation.
-type projectTx struct {
-	stripes [projectTxStripes]sync.Mutex
-}
+type projectTx struct{}
+
+// projectTxLocks is shared by every service instance in this process. A
+// fixed stripe set provides bounded in-process coordination for the
+// request-derived project roots; the file lock in run coordinates processes.
+var projectTxLocks = newProjectTxLocks()
 
 // lock acquires the project transaction mutex for projectRoot's stripe and
 // returns a release function.
-func (p *projectTx) lock(projectRoot string) func() {
-	h := fnv.New32a()
-	_, _ = h.Write([]byte(projectRoot))
-	m := &p.stripes[h.Sum32()%projectTxStripes]
-	m.Lock()
-	return m.Unlock
+func (*projectTx) lock(ctx context.Context, projectRoot string) (func(), error) {
+	token := projectTxLocks[projectTxStripeIndex(projectRoot)]
+	select {
+	case <-ctx.Done():
+		return nil, ctx.Err()
+	case <-token:
+		return func() { token <- struct{}{} }, nil
+	}
+}
+
+// run executes fn while holding both the process-wide project transaction
+// mutex and an OS-backed file lock shared by ToolHive processes that use the
+// same state directory. The lock file is intentionally retained after
+// release: deleting it can split concurrent waiters across different inodes.
+// It is separate from the project's lock file and Git metadata.
+func (p *projectTx) run(ctx context.Context, projectRoot string, fn func() error) (err error) {
+	unlock, lockErr := p.lock(ctx, projectRoot)
+	if lockErr != nil {
+		return fmt.Errorf("acquiring in-process project transaction lock: %w", lockErr)
+	}
+	defer unlock()
+
+	lockPath, pathErr := projectTxLockPath(projectRoot)
+	if pathErr != nil {
+		return fmt.Errorf("resolving project transaction lock path: %w", pathErr)
+	}
+	fileLock := flock.New(lockPath)
+	defer func() {
+		if closeErr := fileLock.Close(); closeErr != nil {
+			err = errors.Join(err, fmt.Errorf("releasing project transaction lock: %w", closeErr))
+		}
+	}()
+
+	locked, fileLockErr := fileLock.TryLockContext(ctx, projectTxLockRetryInterval)
+	if fileLockErr != nil {
+		return fmt.Errorf("acquiring project transaction file lock: %w", fileLockErr)
+	}
+	if !locked {
+		return errors.New("acquiring project transaction file lock: lock was not acquired")
+	}
+	if ctxErr := ctx.Err(); ctxErr != nil {
+		return fmt.Errorf("starting project transaction: %w", ctxErr)
+	}
+	return fn()
 }
 
 // depState tracks dependency traversal under a held project transaction.
@@ -219,9 +263,10 @@ func WithSigner(sg signer.Signer) Option {
 	}
 }
 
-// WithVerifier sets the signature verifier used for install-time
-// verification. Defaults to the Sigstore verifier with the composite
-// registry keychain.
+// WithVerifier sets the signature verifier used by install, sync, and
+// upgrade. Strict OCI re-anchor upgrades additionally require v to implement
+// verifier.OCISnapshotRetriever and fail explicitly when it does not.
+// Defaults to the Sigstore verifier with the composite registry keychain.
 func WithVerifier(v verifier.Verifier) Option {
 	return func(s *service) {
 		s.sigVerifier = v

@@ -58,13 +58,13 @@ func TestTransparentProxyRejectsAmbiguousJSONAndPreservesValidRequests(t *testin
 			proxyURL := fmt.Sprintf("http://%s/", proxy.listener.Addr().String())
 
 			ambiguous := `{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"allowed","Name":"denied"}}`
-			response := postJSON(t, ctx, proxyURL, ambiguous)
+			response := postJSON(ctx, t, proxyURL, ambiguous)
 			assert.Equal(t, http.StatusBadRequest, response.StatusCode)
 			drainAndClose(t, response)
 			assert.Zero(t, backendCalls.Load())
 
 			valid := `{"jsonrpc":"2.0", "id":2, "method":"tools/call", "params":{"name":"allowed","arguments":{"count":1e1000},"extension":{"keep":true}}}`
-			response = postJSON(t, ctx, proxyURL, valid)
+			response = postJSON(ctx, t, proxyURL, valid)
 			assert.Equal(t, http.StatusOK, response.StatusCode)
 			drainAndClose(t, response)
 			assert.Equal(t, int32(1), backendCalls.Load())
@@ -73,7 +73,7 @@ func TestTransparentProxyRejectsAmbiguousJSONAndPreservesValidRequests(t *testin
 	}
 }
 
-func postJSON(t *testing.T, ctx context.Context, target, body string) *http.Response {
+func postJSON(ctx context.Context, t *testing.T, target, body string) *http.Response {
 	t.Helper()
 	req, err := http.NewRequestWithContext(ctx, http.MethodPost, target, bytes.NewBufferString(body))
 	require.NoError(t, err)

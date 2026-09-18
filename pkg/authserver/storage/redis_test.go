@@ -3968,6 +3968,341 @@ func TestRedisStorage_DCRCredentials_LiveWinnerNotOverwritten(t *testing.T) {
 	})
 }
 
+// TestRedisStorage_DCRCredentials_UpdateReplacesExisting pins the core
+// UpdateDCRCredentialsIfPresent contract on the Redis backend: an existing row
+// is rewritten in place inside the WATCH/MULTI transaction, the returned value
+// reflects the rewrite, and a subsequent Get observes the new fields.
+func TestRedisStorage_DCRCredentials_UpdateReplacesExisting(t *testing.T) {
+	withRedisStorage(t, func(ctx context.Context, s *RedisStorage, _ *miniredis.Miniredis) {
+		key := dcrFixtureKey()
+		_, err := s.StoreDCRCredentialsIfAbsent(ctx, &DCRCredentials{
+			Key:                   key,
+			ClientID:              "client-original",
+			ClientSecret:          "secret-original",
+			AuthorizationEndpoint: "https://idp.example.com/auth",
+			TokenEndpoint:         "https://idp.example.com/token",
+		})
+		require.NoError(t, err)
+
+		updated := &DCRCredentials{
+			Key:                     key,
+			ClientID:                "client-original",
+			ClientSecret:            "secret-rotated",
+			TokenEndpointAuthMethod: "client_secret_basic",
+			AuthorizationEndpoint:   "https://idp.example.com/auth",
+			TokenEndpoint:           "https://idp.example.com/token",
+		}
+		got, err := s.UpdateDCRCredentialsIfPresent(ctx, updated)
+		require.NoError(t, err)
+		assert.Equal(t, *updated, *got, "the returned value must reflect the rewrite")
+
+		reread, err := s.GetDCRCredentials(ctx, key)
+		require.NoError(t, err)
+		assert.Equal(t, "secret-rotated", reread.ClientSecret, "the stored row must reflect the rewrite")
+		assert.Equal(t, "client_secret_basic", reread.TokenEndpointAuthMethod)
+	})
+}
+
+// TestRedisStorage_DCRCredentials_UpdateAbsentReturnsNotFound pins the
+// never-create contract: updating a key with no existing row returns a wrapped
+// ErrNotFound and writes nothing. Redis refuses the SET XX on a missing key and
+// replies nil, which go-redis surfaces as redis.Nil, so an update racing a
+// delete or TTL eviction fails loudly rather than silently re-creating the row.
+func TestRedisStorage_DCRCredentials_UpdateAbsentReturnsNotFound(t *testing.T) {
+	withRedisStorage(t, func(ctx context.Context, s *RedisStorage, _ *miniredis.Miniredis) {
+		key := dcrFixtureKey()
+		_, err := s.UpdateDCRCredentialsIfPresent(ctx, &DCRCredentials{
+			Key:                   key,
+			ClientID:              "client-abc",
+			AuthorizationEndpoint: "https://idp.example.com/auth",
+			TokenEndpoint:         "https://idp.example.com/token",
+		})
+		requireRedisNotFoundError(t, err)
+
+		// Nothing was created.
+		_, getErr := s.GetDCRCredentials(ctx, key)
+		requireRedisNotFoundError(t, getErr)
+	})
+}
+
+// TestRedisStorage_DCRCredentials_UpdateExpiredPresentRow pins the deliberate
+// asymmetry with StoreDCRCredentialsIfAbsent: presence is physical, not
+// liveness. A row whose ClientSecretExpiresAt has passed but whose Redis key
+// still exists is updatable. The seeded row's bounded pastExpiryDCRTTL would
+// self-evict almost immediately, so the TTL is forced long to keep the key
+// PRESENT while its ClientSecretExpiresAt is in the past — exercising the
+// expired-but-present branch rather than the absent one.
+func TestRedisStorage_DCRCredentials_UpdateExpiredPresentRow(t *testing.T) {
+	withRedisStorage(t, func(ctx context.Context, s *RedisStorage, mr *miniredis.Miniredis) {
+		key := dcrFixtureKey()
+		past := time.Now().Add(-time.Hour).Truncate(time.Second)
+
+		_, err := s.StoreDCRCredentialsIfAbsent(ctx, &DCRCredentials{
+			Key:                   key,
+			ClientID:              "client-abc",
+			ClientSecret:          "secret-original",
+			AuthorizationEndpoint: "https://idp.example.com/auth",
+			TokenEndpoint:         "https://idp.example.com/token",
+			ClientSecretExpiresAt: past,
+		})
+		require.NoError(t, err)
+		mr.SetTTL(redisDCRKey(s.keyPrefix, key), time.Hour)
+
+		got, err := s.UpdateDCRCredentialsIfPresent(ctx, &DCRCredentials{
+			Key:                   key,
+			ClientID:              "client-abc",
+			ClientSecret:          "secret-rotated",
+			AuthorizationEndpoint: "https://idp.example.com/auth",
+			TokenEndpoint:         "https://idp.example.com/token",
+			ClientSecretExpiresAt: past,
+		})
+		require.NoError(t, err, "an expired-but-present row must be updatable")
+		assert.Equal(t, "secret-rotated", got.ClientSecret)
+
+		reread, err := s.GetDCRCredentials(ctx, key)
+		require.NoError(t, err)
+		assert.Equal(t, "secret-rotated", reread.ClientSecret)
+	})
+}
+
+// TestRedisStorage_DCRCredentials_UpdateTTL pins that a successful update
+// re-derives the row's Redis TTL from the incoming creds, identically to
+// StoreDCRCredentialsIfAbsent: an update can extend, clear, or shorten the TTL.
+func TestRedisStorage_DCRCredentials_UpdateTTL(t *testing.T) {
+	t.Parallel()
+
+	t.Run("update clears TTL when new expiry is zero", func(t *testing.T) {
+		withRedisStorage(t, func(ctx context.Context, s *RedisStorage, mr *miniredis.Miniredis) {
+			key := dcrFixtureKey()
+			future := time.Now().Add(24 * time.Hour).Truncate(time.Second)
+			_, err := s.StoreDCRCredentialsIfAbsent(ctx, &DCRCredentials{
+				Key:                   key,
+				ClientID:              "client-abc",
+				AuthorizationEndpoint: "https://idp.example.com/auth",
+				TokenEndpoint:         "https://idp.example.com/token",
+				ClientSecretExpiresAt: future,
+			})
+			require.NoError(t, err)
+			require.Greater(t, mr.TTL(redisDCRKey(s.keyPrefix, key)), time.Duration(0))
+
+			_, err = s.UpdateDCRCredentialsIfPresent(ctx, &DCRCredentials{
+				Key:                   key,
+				ClientID:              "client-abc",
+				AuthorizationEndpoint: "https://idp.example.com/auth",
+				TokenEndpoint:         "https://idp.example.com/token",
+				// ClientSecretExpiresAt deliberately zero: the row becomes persistent.
+			})
+			require.NoError(t, err)
+			assert.Equal(t, time.Duration(0), mr.TTL(redisDCRKey(s.keyPrefix, key)),
+				"update with zero expiry must clear the row's TTL")
+		})
+	})
+
+	t.Run("update sets TTL when new expiry is in the future", func(t *testing.T) {
+		withRedisStorage(t, func(ctx context.Context, s *RedisStorage, mr *miniredis.Miniredis) {
+			key := dcrFixtureKey()
+			_, err := s.StoreDCRCredentialsIfAbsent(ctx, &DCRCredentials{
+				Key:                   key,
+				ClientID:              "client-abc",
+				AuthorizationEndpoint: "https://idp.example.com/auth",
+				TokenEndpoint:         "https://idp.example.com/token",
+				// Stored persistent (no expiry).
+			})
+			require.NoError(t, err)
+			require.Equal(t, time.Duration(0), mr.TTL(redisDCRKey(s.keyPrefix, key)))
+
+			future := time.Now().Add(12 * time.Hour).Truncate(time.Second)
+			_, err = s.UpdateDCRCredentialsIfPresent(ctx, &DCRCredentials{
+				Key:                   key,
+				ClientID:              "client-abc",
+				AuthorizationEndpoint: "https://idp.example.com/auth",
+				TokenEndpoint:         "https://idp.example.com/token",
+				ClientSecretExpiresAt: future,
+			})
+			require.NoError(t, err)
+			ttl := mr.TTL(redisDCRKey(s.keyPrefix, key))
+			assert.Greater(t, ttl, time.Duration(0), "update with future expiry must set a positive TTL")
+			assert.LessOrEqual(t, ttl, 12*time.Hour)
+		})
+	})
+
+	t.Run("update sets bounded pastExpiryDCRTTL when new expiry is in the past", func(t *testing.T) {
+		withRedisStorage(t, func(ctx context.Context, s *RedisStorage, mr *miniredis.Miniredis) {
+			key := dcrFixtureKey()
+			_, err := s.StoreDCRCredentialsIfAbsent(ctx, &DCRCredentials{
+				Key:                   key,
+				ClientID:              "client-abc",
+				AuthorizationEndpoint: "https://idp.example.com/auth",
+				TokenEndpoint:         "https://idp.example.com/token",
+				// Stored persistent (no expiry).
+			})
+			require.NoError(t, err)
+
+			// Updating with an already-past expiry must derive the bounded
+			// pastExpiryDCRTTL (not TTL=0, which would persist forever, and not
+			// a negative time.Until value), mirroring the Store-side contract.
+			past := time.Now().Add(-time.Hour).Truncate(time.Second)
+			got, err := s.UpdateDCRCredentialsIfPresent(ctx, &DCRCredentials{
+				Key:                   key,
+				ClientID:              "client-abc",
+				AuthorizationEndpoint: "https://idp.example.com/auth",
+				TokenEndpoint:         "https://idp.example.com/token",
+				ClientSecretExpiresAt: past,
+			})
+			require.NoError(t, err)
+			assert.Equal(t, past.Unix(), got.ClientSecretExpiresAt.Unix())
+			assert.Equal(t, pastExpiryDCRTTL, mr.TTL(redisDCRKey(s.keyPrefix, key)),
+				"past-expiry update must use the bounded pastExpiryDCRTTL, not TTL=0")
+		})
+	})
+}
+
+// TestRedisStorage_DCRCredentials_UpdateConnectionFailure exercises the generic
+// (non-Nil) error branch of UpdateDCRCredentialsIfPresent: a connection failure
+// mid-call must surface as a wrapped error, never as a spurious ErrNotFound or a
+// silent success. Mirrors TestRedisStorage_Health_ConnectionFailure by closing
+// miniredis before the call. (This branch is likewise untested for the sibling
+// Store path; this closes the caller-visible gap for the update path.)
+func TestRedisStorage_DCRCredentials_UpdateConnectionFailure(t *testing.T) {
+	t.Parallel()
+
+	mr := miniredis.RunT(t)
+	client := redis.NewClient(&redis.Options{Addr: mr.Addr()})
+	s := NewRedisStorageWithClient(client, "test:auth:")
+
+	// Close the server so the SET round-trip fails with a connection error
+	// rather than redis.Nil.
+	mr.Close()
+
+	_, err := s.UpdateDCRCredentialsIfPresent(context.Background(), &DCRCredentials{
+		Key:                   dcrFixtureKey(),
+		ClientID:              "client-abc",
+		AuthorizationEndpoint: "https://idp.example.com/auth",
+		TokenEndpoint:         "https://idp.example.com/token",
+	})
+	require.Error(t, err)
+	assert.NotErrorIs(t, err, ErrNotFound,
+		"a connection failure must surface as a generic error, not a spurious not-found")
+}
+
+// TestRedisStorage_DCRCredentials_UpdateInvalidInputRejected pins that Update
+// runs the same validateDCRCredentialsForStore gate as Store. The full
+// per-field matrix is covered by
+// TestRedisStorage_DCRCredentials_StoreInvalidInputRejected against the shared
+// function; this only confirms Update is wired to it.
+func TestRedisStorage_DCRCredentials_UpdateInvalidInputRejected(t *testing.T) {
+	withRedisStorage(t, func(ctx context.Context, s *RedisStorage, _ *miniredis.Miniredis) {
+		_, err := s.UpdateDCRCredentialsIfPresent(ctx, nil)
+		require.Error(t, err)
+		assert.ErrorIs(t, err, fosite.ErrInvalidRequest)
+	})
+}
+
+// TestRedisStorage_DCRCredentials_UpdateCopyIsolatesCaller pins the
+// defensive-copy-on-input contract for the Redis backend, mirroring the memory
+// backend's equivalent: mutating the creds after a successful update must not
+// reach the persisted row (the input is serialised before any write).
+func TestRedisStorage_DCRCredentials_UpdateCopyIsolatesCaller(t *testing.T) {
+	withRedisStorage(t, func(ctx context.Context, s *RedisStorage, _ *miniredis.Miniredis) {
+		key := dcrFixtureKey()
+		_, err := s.StoreDCRCredentialsIfAbsent(ctx, &DCRCredentials{
+			Key:                   key,
+			ClientID:              "client-abc",
+			ClientSecret:          "secret-original",
+			AuthorizationEndpoint: "https://idp.example.com/auth",
+			TokenEndpoint:         "https://idp.example.com/token",
+		})
+		require.NoError(t, err)
+
+		input := &DCRCredentials{
+			Key:                   key,
+			ClientID:              "client-abc",
+			ClientSecret:          "secret-rotated",
+			AuthorizationEndpoint: "https://idp.example.com/auth",
+			TokenEndpoint:         "https://idp.example.com/token",
+		}
+		_, err = s.UpdateDCRCredentialsIfPresent(ctx, input)
+		require.NoError(t, err)
+
+		input.ClientSecret = "mutated-after-update"
+		got, err := s.GetDCRCredentials(ctx, key)
+		require.NoError(t, err)
+		assert.Equal(t, "secret-rotated", got.ClientSecret,
+			"caller mutation after Update must not reach persisted state")
+	})
+}
+
+// TestRedisStorage_DCRCredentials_UpdateConcurrent pins the atomicity of the
+// Update path under genuine concurrency. Unlike StoreDCRCredentialsIfAbsent —
+// where only the first claimant writes and the losers take the read-only
+// "return existing winner" branch — every UpdateDCRCredentialsIfPresent caller
+// writes, so N concurrent updaters all target the same key.
+//
+// Because that write is a single SET XX evaluated atomically server-side, there
+// is no read-check-write window to lose and no retry to exhaust. The contract
+// under contention is correspondingly strict: every update against a present
+// row succeeds, and the store converges on exactly one of the racing
+// candidates — never a torn row, an absent row, or a spurious ErrNotFound.
+func TestRedisStorage_DCRCredentials_UpdateConcurrent(t *testing.T) {
+	withRedisStorage(t, func(ctx context.Context, s *RedisStorage, _ *miniredis.Miniredis) {
+		const goroutines = 6
+		key := dcrFixtureKey()
+
+		_, err := s.StoreDCRCredentialsIfAbsent(ctx, &DCRCredentials{
+			Key:                   key,
+			ClientID:              "client-abc",
+			ClientSecret:          "secret-seed",
+			AuthorizationEndpoint: "https://idp.example.com/auth",
+			TokenEndpoint:         "https://idp.example.com/token",
+		})
+		require.NoError(t, err)
+
+		candidates := make(map[string]struct{}, goroutines)
+		for g := 0; g < goroutines; g++ {
+			candidates[fmt.Sprintf("secret-%d", g)] = struct{}{}
+		}
+
+		start := make(chan struct{})
+		errs := make([]error, goroutines)
+		var wg sync.WaitGroup
+		wg.Add(goroutines)
+		for g := 0; g < goroutines; g++ {
+			gid := g
+			go func() {
+				defer wg.Done()
+				<-start
+				_, errs[gid] = s.UpdateDCRCredentialsIfPresent(ctx, &DCRCredentials{
+					Key:                   key,
+					ClientID:              "client-abc",
+					ClientSecret:          fmt.Sprintf("secret-%d", gid),
+					AuthorizationEndpoint: "https://idp.example.com/auth",
+					TokenEndpoint:         "https://idp.example.com/token",
+				})
+			}()
+		}
+		close(start)
+
+		done := make(chan struct{})
+		go func() { wg.Wait(); close(done) }()
+		select {
+		case <-done:
+		case <-time.After(10 * time.Second):
+			t.Fatal("timeout waiting for concurrent update goroutines")
+		}
+
+		for gid, e := range errs {
+			require.NoErrorf(t, e,
+				"every concurrent update against a present row must succeed (goroutine %d)", gid)
+		}
+
+		got, err := s.GetDCRCredentials(ctx, key)
+		require.NoError(t, err, "the row must remain present after concurrent updates")
+		_, isCandidate := candidates[got.ClientSecret]
+		assert.True(t, isCandidate,
+			"the stored row must converge on one racing candidate, got %q", got.ClientSecret)
+	})
+}
+
 // TestRedisStorage_DCRCredentials_FirstClaimWins_Concurrent proves the
 // create-if-absent race-safety property holds under genuine concurrency, not
 // just the sequential shape of TestRedisStorage_DCRCredentials_FirstClaimWins:

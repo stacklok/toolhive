@@ -2127,6 +2127,65 @@ func dcrClaimOrReturnWinner(
 	return creds, nil
 }
 
+// UpdateDCRCredentialsIfPresent replaces the row at creds.Key with creds using
+// a single Redis SET with the XX flag, returning ErrNotFound (wrapped) when no
+// row physically exists at the key. It never creates: XX makes Redis itself
+// refuse the write when the key is absent, so an update racing a concurrent
+// delete or TTL eviction fails with ErrNotFound rather than silently
+// re-creating the row.
+//
+// The write needs no WATCH/MULTI (unlike StoreDCRCredentialsIfAbsent, which
+// must read the existing row to decide whether it may claim the slot). Nothing
+// here depends on the old value: only the key's bare existence gates the
+// write, and SET XX evaluates that existence and performs the write in one
+// atomic server-side step. There is therefore no read-check-write window to
+// guard, no lost-update race, and no possibility of redis.TxFailedErr.
+//
+// # Presence is physical, not liveness
+//
+// Unlike StoreDCRCredentialsIfAbsent, this does not treat an expired existing
+// row as absent — any row whose key still exists is updatable, including one
+// whose ClientSecretExpiresAt has passed but whose Redis key has not yet
+// self-evicted. See the DCRCredentialStore interface docs for why Update gates
+// on physical presence: it exists so a decorator can rewrite a row it just read
+// via GetDCRCredentials, which itself does not filter on expiry.
+//
+// # TTL
+//
+// The rewritten row's TTL is derived from the incoming creds by
+// marshalDCRCredentialsForStore, identically to StoreDCRCredentialsIfAbsent: a
+// future ClientSecretExpiresAt sets that TTL, a zero value clears it (the row
+// becomes long-lived, since a SET without KEEPTTL discards any existing TTL),
+// and a past value uses the bounded pastExpiryDCRTTL. An update can therefore
+// extend, shorten, or clear the row's TTL exactly as an initial store would.
+//
+// Validation is delegated to validateDCRCredentialsForStore so the rejection
+// set stays in sync with MemoryStorage and any future backend.
+func (s *RedisStorage) UpdateDCRCredentialsIfPresent(ctx context.Context, creds *DCRCredentials) (*DCRCredentials, error) {
+	if err := validateDCRCredentialsForStore(creds); err != nil {
+		return nil, err
+	}
+
+	key := redisDCRKey(s.keyPrefix, creds.Key)
+
+	data, ttl, err := marshalDCRCredentialsForStore(creds)
+	if err != nil {
+		return nil, err
+	}
+
+	// Mode XX: write only if the key already exists. Redis replies nil when it
+	// does not, which go-redis surfaces as redis.Nil.
+	err = s.client.SetArgs(ctx, key, data, redis.SetArgs{Mode: "XX", TTL: ttl}).Err()
+	if errors.Is(err, redis.Nil) {
+		return nil, notFoundRFC6749Error("DCR credentials not found")
+	}
+	if err != nil {
+		return nil, fmt.Errorf("failed to update dcr credentials: %w", err)
+	}
+
+	return cloneDCRCredentials(creds), nil
+}
+
 // GetDCRCredentials retrieves the credentials previously persisted under key.
 // Returns ErrNotFound (wrapped) when no entry exists. The returned value is a
 // fresh struct decoded from JSON, which acts as a defensive copy.

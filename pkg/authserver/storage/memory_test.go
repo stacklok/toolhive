@@ -2882,6 +2882,146 @@ func TestMemoryStorage_DCRCredentials_NotFound(t *testing.T) {
 	})
 }
 
+// TestMemoryStorage_DCRCredentials_UpdateReplacesExisting pins the core
+// UpdateDCRCredentialsIfPresent contract: an existing row is rewritten in
+// place with the incoming creds, the returned value reflects the rewrite, and
+// a subsequent Get observes the new fields. This is the write path
+// StoreDCRCredentialsIfAbsent cannot provide (it silently no-ops on an
+// existing key).
+func TestMemoryStorage_DCRCredentials_UpdateReplacesExisting(t *testing.T) {
+	withStorage(t, func(ctx context.Context, s *MemoryStorage) {
+		key := dcrFixtureKey()
+		_, err := s.StoreDCRCredentialsIfAbsent(ctx, &DCRCredentials{
+			Key:                   key,
+			ClientID:              "client-original",
+			ClientSecret:          "secret-original",
+			AuthorizationEndpoint: "https://idp.example.com/auth",
+			TokenEndpoint:         "https://idp.example.com/token",
+		})
+		require.NoError(t, err)
+
+		updated := &DCRCredentials{
+			Key:                     key,
+			ClientID:                "client-original",
+			ClientSecret:            "secret-rotated",
+			TokenEndpointAuthMethod: "client_secret_basic",
+			AuthorizationEndpoint:   "https://idp.example.com/auth",
+			TokenEndpoint:           "https://idp.example.com/token",
+		}
+		got, err := s.UpdateDCRCredentialsIfPresent(ctx, updated)
+		require.NoError(t, err)
+		assert.Equal(t, *updated, *got, "the returned value must reflect the rewrite")
+
+		reread, err := s.GetDCRCredentials(ctx, key)
+		require.NoError(t, err)
+		assert.Equal(t, "secret-rotated", reread.ClientSecret, "the stored row must reflect the rewrite")
+		assert.Equal(t, "client_secret_basic", reread.TokenEndpointAuthMethod)
+	})
+}
+
+// TestMemoryStorage_DCRCredentials_UpdateAbsentReturnsNotFound pins the
+// never-create contract: updating a key with no existing row returns a wrapped
+// ErrNotFound and writes nothing, so an update racing a delete or a
+// not-yet-created record fails loudly rather than silently creating.
+func TestMemoryStorage_DCRCredentials_UpdateAbsentReturnsNotFound(t *testing.T) {
+	withStorage(t, func(ctx context.Context, s *MemoryStorage) {
+		key := dcrFixtureKey()
+		_, err := s.UpdateDCRCredentialsIfPresent(ctx, &DCRCredentials{
+			Key:                   key,
+			ClientID:              "client-abc",
+			AuthorizationEndpoint: "https://idp.example.com/auth",
+			TokenEndpoint:         "https://idp.example.com/token",
+		})
+		requireNotFoundError(t, err)
+
+		// Nothing was created.
+		_, getErr := s.GetDCRCredentials(ctx, key)
+		requireNotFoundError(t, getErr)
+	})
+}
+
+// TestMemoryStorage_DCRCredentials_UpdateExpiredPresentRow pins the deliberate
+// asymmetry with StoreDCRCredentialsIfAbsent: presence is physical, not
+// liveness. An expired-but-present row is updatable (unlike Store, which
+// treats an expired row as absent), so the Get→transform→Update round-trip a
+// storage decorator performs works even on a row whose ClientSecretExpiresAt
+// has already passed.
+func TestMemoryStorage_DCRCredentials_UpdateExpiredPresentRow(t *testing.T) {
+	withStorage(t, func(ctx context.Context, s *MemoryStorage) {
+		key := dcrFixtureKey()
+		_, err := s.StoreDCRCredentialsIfAbsent(ctx, &DCRCredentials{
+			Key:                   key,
+			ClientID:              "client-abc",
+			ClientSecret:          "secret-original",
+			AuthorizationEndpoint: "https://idp.example.com/auth",
+			TokenEndpoint:         "https://idp.example.com/token",
+			ClientSecretExpiresAt: time.Now().Add(-time.Hour),
+		})
+		require.NoError(t, err)
+
+		got, err := s.UpdateDCRCredentialsIfPresent(ctx, &DCRCredentials{
+			Key:                   key,
+			ClientID:              "client-abc",
+			ClientSecret:          "secret-rotated",
+			AuthorizationEndpoint: "https://idp.example.com/auth",
+			TokenEndpoint:         "https://idp.example.com/token",
+			ClientSecretExpiresAt: time.Now().Add(-time.Hour),
+		})
+		require.NoError(t, err, "an expired-but-present row must be updatable")
+		assert.Equal(t, "secret-rotated", got.ClientSecret)
+
+		reread, err := s.GetDCRCredentials(ctx, key)
+		require.NoError(t, err)
+		assert.Equal(t, "secret-rotated", reread.ClientSecret)
+	})
+}
+
+// TestMemoryStorage_DCRCredentials_UpdateInvalidInputRejected pins that Update
+// runs the same validateDCRCredentialsForStore gate as Store. The full
+// per-field matrix is covered by
+// TestMemoryStorage_DCRCredentials_StoreInvalidInputRejected against the shared
+// function; this only confirms Update is wired to it.
+func TestMemoryStorage_DCRCredentials_UpdateInvalidInputRejected(t *testing.T) {
+	withStorage(t, func(ctx context.Context, s *MemoryStorage) {
+		_, err := s.UpdateDCRCredentialsIfPresent(ctx, nil)
+		require.Error(t, err)
+		assert.ErrorIs(t, err, fosite.ErrInvalidRequest)
+	})
+}
+
+// TestMemoryStorage_DCRCredentials_UpdateCopyIsolatesCaller pins the
+// defensive-copy-on-input contract: mutating the creds after a successful
+// Update must not reach the persisted row.
+func TestMemoryStorage_DCRCredentials_UpdateCopyIsolatesCaller(t *testing.T) {
+	withStorage(t, func(ctx context.Context, s *MemoryStorage) {
+		key := dcrFixtureKey()
+		_, err := s.StoreDCRCredentialsIfAbsent(ctx, &DCRCredentials{
+			Key:                   key,
+			ClientID:              "client-abc",
+			ClientSecret:          "secret-original",
+			AuthorizationEndpoint: "https://idp.example.com/auth",
+			TokenEndpoint:         "https://idp.example.com/token",
+		})
+		require.NoError(t, err)
+
+		input := &DCRCredentials{
+			Key:                   key,
+			ClientID:              "client-abc",
+			ClientSecret:          "secret-rotated",
+			AuthorizationEndpoint: "https://idp.example.com/auth",
+			TokenEndpoint:         "https://idp.example.com/token",
+		}
+		_, err = s.UpdateDCRCredentialsIfPresent(ctx, input)
+		require.NoError(t, err)
+
+		input.ClientSecret = "mutated-after-update"
+		got, err := s.GetDCRCredentials(ctx, key)
+		require.NoError(t, err)
+		assert.Equal(t, "secret-rotated", got.ClientSecret,
+			"caller mutation after Update must not reach persisted state")
+	})
+}
+
 // TestMemoryStorage_DCRCredentials_StoreInvalidInputRejected pins the
 // fail-loud-on-invalid-input contract: nil creds, an unpopulated Key
 // (empty Issuer, UpstreamID, RedirectURI, or ScopesHash), and missing RFC 7591

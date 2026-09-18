@@ -71,7 +71,7 @@ func TestMiddlewareSkillsGet(t *testing.T) {
 	}
 }
 
-func TestMiddlewareDeniesSkillsGetWithDuplicateURI(t *testing.T) {
+func TestParsingMiddlewareRejectsSkillsGetWithDuplicateURI(t *testing.T) {
 	t.Parallel()
 
 	for _, params := range []string{
@@ -85,9 +85,15 @@ func TestMiddlewareDeniesSkillsGetWithDuplicateURI(t *testing.T) {
 			handlerCalled = true
 		}), nil)).ServeHTTP(rr, skillRequest(t, "skills/get", params))
 
-		assert.Equal(t, http.StatusForbidden, rr.Code)
+		assert.Equal(t, http.StatusBadRequest, rr.Code)
 		assert.False(t, handlerCalled)
 		assert.Zero(t, authorizer.calls)
+
+		var response map[string]any
+		require.NoError(t, json.Unmarshal(rr.Body.Bytes(), &response))
+		errorBody, ok := response["error"].(map[string]any)
+		require.True(t, ok)
+		assert.Equal(t, float64(mcpparser.CodeInvalidRequest), errorBody["code"])
 	}
 }
 

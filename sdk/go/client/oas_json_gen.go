@@ -34706,9 +34706,15 @@ func (s *SkillsUpgradeOutcome) encodeFields(e *jx.Encoder) {
 			s.Status.Encode(e)
 		}
 	}
+	{
+		if s.TrustAnchorChanged.Set {
+			e.FieldStart("trust_anchor_changed")
+			s.TrustAnchorChanged.Encode(e)
+		}
+	}
 }
 
-var jsonFieldsNameOfSkillsUpgradeOutcome = [8]string{
+var jsonFieldsNameOfSkillsUpgradeOutcome = [9]string{
 	0: "error",
 	1: "name",
 	2: "new_digest",
@@ -34717,6 +34723,7 @@ var jsonFieldsNameOfSkillsUpgradeOutcome = [8]string{
 	5: "old_digest",
 	6: "reason",
 	7: "status",
+	8: "trust_anchor_changed",
 }
 
 // Decode decodes SkillsUpgradeOutcome from json.
@@ -34806,6 +34813,16 @@ func (s *SkillsUpgradeOutcome) Decode(d *jx.Decoder) error {
 				return nil
 			}(); err != nil {
 				return errors.Wrap(err, "decode field \"status\"")
+			}
+		case "trust_anchor_changed":
+			if err := func() error {
+				s.TrustAnchorChanged.Reset()
+				if err := s.TrustAnchorChanged.Decode(d); err != nil {
+					return err
+				}
+				return nil
+			}(); err != nil {
+				return errors.Wrap(err, "decode field \"trust_anchor_changed\"")
 			}
 		default:
 			return d.Skip()
@@ -34925,6 +34942,8 @@ func (s *SkillsUpgradeStatus) Decode(d *jx.Decoder) error {
 		*s = SkillsUpgradeStatusUpgraded
 	case SkillsUpgradeStatusUpToDate:
 		*s = SkillsUpgradeStatusUpToDate
+	case SkillsUpgradeStatusTrustUpdated:
+		*s = SkillsUpgradeStatusTrustUpdated
 	case SkillsUpgradeStatusNotUpgradable:
 		*s = SkillsUpgradeStatusNotUpgradable
 	case SkillsUpgradeStatusRefChangeBlocked:
@@ -36480,15 +36499,22 @@ func (s *SyncSkillsRequest) encodeFields(e *jx.Encoder) {
 			s.Prune.Encode(e)
 		}
 	}
+	{
+		if s.PublicKey.Set {
+			e.FieldStart("public_key")
+			s.PublicKey.Encode(e)
+		}
+	}
 }
 
-var jsonFieldsNameOfSyncSkillsRequest = [6]string{
+var jsonFieldsNameOfSyncSkillsRequest = [7]string{
 	0: "adopt",
 	1: "allow_unsigned",
 	2: "check",
 	3: "clients",
 	4: "project_root",
 	5: "prune",
+	6: "public_key",
 }
 
 // Decode decodes SyncSkillsRequest from json.
@@ -36567,6 +36593,16 @@ func (s *SyncSkillsRequest) Decode(d *jx.Decoder) error {
 				return nil
 			}(); err != nil {
 				return errors.Wrap(err, "decode field \"prune\"")
+			}
+		case "public_key":
+			if err := func() error {
+				s.PublicKey.Reset()
+				if err := s.PublicKey.Decode(d); err != nil {
+					return err
+				}
+				return nil
+			}(); err != nil {
+				return errors.Wrap(err, "decode field \"public_key\"")
 			}
 		default:
 			return d.Skip()
@@ -40705,9 +40741,15 @@ func (s *UpgradeSkillsRequest) encodeFields(e *jx.Encoder) {
 			s.ProjectRoot.Encode(e)
 		}
 	}
+	{
+		if s.PublicKey.Set {
+			e.FieldStart("public_key")
+			s.PublicKey.Encode(e)
+		}
+	}
 }
 
-var jsonFieldsNameOfUpgradeSkillsRequest = [7]string{
+var jsonFieldsNameOfUpgradeSkillsRequest = [8]string{
 	0: "allow_ref_change",
 	1: "allow_signer_change",
 	2: "clients",
@@ -40715,6 +40757,7 @@ var jsonFieldsNameOfUpgradeSkillsRequest = [7]string{
 	4: "names",
 	5: "preview",
 	6: "project_root",
+	7: "public_key",
 }
 
 // Decode decodes UpgradeSkillsRequest from json.
@@ -40812,6 +40855,16 @@ func (s *UpgradeSkillsRequest) Decode(d *jx.Decoder) error {
 				return nil
 			}(); err != nil {
 				return errors.Wrap(err, "decode field \"project_root\"")
+			}
+		case "public_key":
+			if err := func() error {
+				s.PublicKey.Reset()
+				if err := s.PublicKey.Decode(d); err != nil {
+					return err
+				}
+				return nil
+			}(); err != nil {
+				return errors.Wrap(err, "decode field \"public_key\"")
 			}
 		default:
 			return d.Skip()

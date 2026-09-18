@@ -437,6 +437,7 @@ func (s *SkillsRoutes) syncSkills(w http.ResponseWriter, r *http.Request) error 
 		Check:         req.Check,
 		Adopt:         req.Adopt,
 		AllowUnsigned: req.AllowUnsigned,
+		PublicKey:     req.PublicKey,
 	})
 	if err != nil {
 		return err
@@ -484,6 +485,7 @@ func (s *SkillsRoutes) upgradeSkills(w http.ResponseWriter, r *http.Request) err
 		FailOnChanges:     req.FailOnChanges,
 		AllowRefChange:    req.AllowRefChange,
 		AllowSignerChange: req.AllowSignerChange,
+		PublicKey:         req.PublicKey,
 		Clients:           req.Clients,
 	})
 	if err != nil {

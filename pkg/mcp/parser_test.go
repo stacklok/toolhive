@@ -249,6 +249,73 @@ func TestParsingMiddleware(t *testing.T) {
 	}
 }
 
+func TestParsingMiddlewareRejectsAmbiguousJSON(t *testing.T) {
+	t.Parallel()
+
+	body := `{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"allowed","Name":"denied"}}`
+	nextCalled := false
+	next := http.HandlerFunc(func(http.ResponseWriter, *http.Request) {
+		nextCalled = true
+	})
+	req := httptest.NewRequest(http.MethodPost, "/messages", bytes.NewBufferString(body))
+	req.Header.Set("Content-Type", "application/json")
+	recorder := httptest.NewRecorder()
+
+	ParsingMiddleware(next).ServeHTTP(recorder, req)
+
+	assert.False(t, nextCalled)
+	assert.Equal(t, http.StatusBadRequest, recorder.Code)
+	assert.Equal(t, "application/json", recorder.Header().Get("Content-Type"))
+	assert.NotContains(t, recorder.Body.String(), "allowed")
+	assert.NotContains(t, recorder.Body.String(), "denied")
+
+	var response map[string]any
+	require.NoError(t, json.Unmarshal(recorder.Body.Bytes(), &response))
+	assert.Equal(t, "2.0", response["jsonrpc"])
+	_, hasID := response["id"]
+	assert.False(t, hasID)
+	errorBody, ok := response["error"].(map[string]any)
+	require.True(t, ok)
+	assert.Equal(t, float64(CodeInvalidRequest), errorBody["code"])
+	assert.Equal(t, "Invalid Request", errorBody["message"])
+}
+
+func TestParsingMiddlewareRejectsBOMPrefixedAmbiguousJSON(t *testing.T) {
+	t.Parallel()
+
+	body := "\xEF\xBB\xBF" + `{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"allowed","Name":"denied"}}`
+	nextCalled := false
+	next := http.HandlerFunc(func(http.ResponseWriter, *http.Request) {
+		nextCalled = true
+	})
+	req := httptest.NewRequest(http.MethodPost, "/messages", bytes.NewBufferString(body))
+	req.Header.Set("Content-Type", "application/json")
+	recorder := httptest.NewRecorder()
+
+	ParsingMiddleware(next).ServeHTTP(recorder, req)
+
+	assert.Equal(t, http.StatusBadRequest, recorder.Code)
+	assert.False(t, nextCalled)
+}
+
+func TestParsingMiddlewarePreservesValidBody(t *testing.T) {
+	t.Parallel()
+
+	body := `{"jsonrpc":"2.0", "id":9007199254740993, "method":"tools/call", "params":{"name":"weather","extension":{"keep":true}}}`
+	var forwarded []byte
+	next := http.HandlerFunc(func(_ http.ResponseWriter, r *http.Request) {
+		var err error
+		forwarded, err = io.ReadAll(r.Body)
+		require.NoError(t, err)
+	})
+	req := httptest.NewRequest(http.MethodPost, "/messages", bytes.NewBufferString(body))
+	req.Header.Set("Content-Type", "application/json")
+
+	ParsingMiddleware(next).ServeHTTP(httptest.NewRecorder(), req)
+
+	assert.Equal(t, []byte(body), forwarded)
+}
+
 func TestParseMCPRequest_LeadingBOM(t *testing.T) {
 	t.Parallel()
 
@@ -2018,6 +2085,28 @@ func TestRepublishParsedMCPRequest(t *testing.T) {
 			require.NotNil(t, oldParsed)
 			assert.Equal(t, "old-tool", oldParsed.ResourceID)
 		})
+	}
+}
+
+func TestRepublishParsedMCPRequestRejectsAmbiguousBody(t *testing.T) {
+	t.Parallel()
+
+	req := httptest.NewRequest(http.MethodPost, "/messages", nil)
+	for _, body := range [][]byte{
+		[]byte(`{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"allowed","Name":"denied"}}`),
+		[]byte("\xEF\xBB\xBF" + `{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"allowed","Name":"denied"}}`),
+		[]byte(`{"padding":1e1000,"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"allowed","Name":"denied"}}`),
+		[]byte(`{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"allowed","Name":"denied"},"padding":1e1000}`),
+	} {
+		republished, err := RepublishParsedMCPRequest(req, body)
+
+		require.Error(t, err)
+		assert.Nil(t, republished)
+		var coded CodedError
+		require.ErrorAs(t, err, &coded)
+		assert.Equal(t, CodeInvalidRequest, coded.Code())
+		assert.Equal(t, "Invalid Request", err.Error())
+		assert.Empty(t, coded.Data())
 	}
 }
 

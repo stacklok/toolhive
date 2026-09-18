@@ -89,7 +89,7 @@ const (
 //+kubebuilder:storageversion
 //+kubebuilder:subresource:status
 //+kubebuilder:metadata:labels=toolhive.stacklok.dev/auto-migrate-storage-version=true
-//+kubebuilder:resource:shortName=mcpg;mcpgroup,categories=toolhive
+//+kubebuilder:resource:shortName=mcpg,categories=toolhive
 //+kubebuilder:printcolumn:name="Servers",type="integer",JSONPath=".status.serverCount"
 //+kubebuilder:printcolumn:name="Proxies",type="integer",JSONPath=".status.remoteProxyCount"
 //+kubebuilder:printcolumn:name="Phase",type="string",JSONPath=".status.phase"

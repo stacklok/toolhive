@@ -452,7 +452,9 @@ func (h *Handler) buildAuthorizeRequesterFromPending(
 }
 
 // handleUpstreamError handles error responses from the upstream IDP.
-// It attempts to redirect the error to the client if possible, otherwise shows an error page.
+// It attempts to redirect the error to the client if possible, otherwise
+// falls back to completing a pending device-flow login as denied (see
+// tryDenyDeviceLoginOnUpstreamError), otherwise shows an error page.
 func (h *Handler) handleUpstreamError(
 	ctx context.Context,
 	w http.ResponseWriter,
@@ -468,7 +470,8 @@ func (h *Handler) handleUpstreamError(
 	// Try to load pending authorization to redirect error to client
 	if internalState != "" {
 		pending, err := h.storage.LoadPendingAuthorization(ctx, internalState)
-		if err == nil {
+		switch {
+		case err == nil:
 			// Delete only the single-use pending authorization. Deliberately do NOT touch
 			// upstream tokens: the upstream IdP errored before this attempt exchanged a
 			// code, so this attempt stored nothing. Under a (gateway, user)-keyed storage
@@ -485,6 +488,18 @@ func (h *Handler) handleUpstreamError(
 				return
 			}
 			// ar is nil means stored redirect URI was corrupt - fall through to error page
+		case isNotFoundOrExpired(err):
+			// internalState doesn't match a pending OAuth-client authorization --
+			// it may belong to a device-flow login instead (e.g. the human clicked
+			// "Deny" at the upstream IDP). See tryDenyDeviceLoginOnUpstreamError's
+			// doc comment for why this fallback matters.
+			if h.tryDenyDeviceLoginOnUpstreamError(ctx, w, internalState) {
+				return
+			}
+		default:
+			// A genuine backend failure must not be silently swallowed, even though
+			// the response below is the same generic error either way.
+			slog.Error("failed to load pending authorization on upstream error", "error", err)
 		}
 	}
 

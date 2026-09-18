@@ -37,12 +37,12 @@ func normalizeUserCode(raw string) string {
 
 // DeviceVerificationHandler handles GET /oauth/device requests: it renders
 // the form the human uses to enter/confirm a device flow user_code. See
-// DeviceVerificationSubmitHandler for what happens next.
+// DeviceVerificationSubmitHandler for what happens next. This must stay a
+// *Handler method rather than a plain function: OAuthRoutes registers it as
+// a bound method value alongside every other route, even though this
+// particular handler needs no Handler state.
 //
-// a bound method value (h.DeviceVerificationHandler) alongside every other
-// route on this type, even though this particular handler needs no Handler state.
-//
-//nolint:revive // must stay a *Handler method: OAuthRoutes registers it as
+//nolint:revive // unused-receiver: see doc comment above
 func (h *Handler) DeviceVerificationHandler(w http.ResponseWriter, req *http.Request) {
 	userCode := normalizeUserCode(req.URL.Query().Get("user_code"))
 	renderVerifyForm(w, http.StatusOK, userCode, "")
@@ -83,9 +83,19 @@ func (h *Handler) DeviceVerificationSubmitHandler(w http.ResponseWriter, req *ht
 		return
 	}
 
-	if len(h.upstreams) == 0 {
-		slog.Error("device verification: no upstream configured")
-		renderError(w, http.StatusInternalServerError, "This server has no identity provider configured.")
+	// Device flow has no client_id/redirect_uri of its own to route on (see
+	// this function's doc comment), so it cannot pick the upstream
+	// appropriate for device.ClientID the way AuthorizeHandler's per-client
+	// IDP routing does. Rather than silently defaulting to h.upstreams[0] --
+	// which would authenticate against whichever upstream happens to be
+	// configured first in a multi-upstream deployment, exactly the kind of
+	// IDP mix-up these servers otherwise defend against -- require exactly
+	// one configured upstream so that limitation is a loud startup-time-visible
+	// error, not a silent routing decision made per request.
+	if len(h.upstreams) != 1 {
+		slog.Error("device verification: device flow requires exactly one configured upstream",
+			"upstream_count", len(h.upstreams))
+		renderError(w, http.StatusInternalServerError, "This server is not configured for device-flow sign-in.")
 		return
 	}
 
@@ -150,6 +160,34 @@ func (h *Handler) tryCompleteDeviceLogin(
 	}
 	h.completeDeviceLogin(ctx, w, devicePending, code)
 	return deviceLoginCompleted
+}
+
+// tryDenyDeviceLoginOnUpstreamError handles an upstream IDP error (the
+// "error" query parameter on /oauth/callback, e.g. the human clicked "Deny"
+// at the upstream login screen, or the IDP itself failed) for a device-flow
+// login: handleUpstreamError's fallback when internalState does not match a
+// PendingAuthorization either. Without this, an upstream error for a
+// device-flow login left the DeviceRequest Pending forever (until the
+// device_code itself expired) instead of surfacing the denial immediately,
+// since nothing else ever calls MarkDeviceRequestDenied for this path.
+//
+// Returns false (no response written) when internalState does not match a
+// pending device login either, so the caller falls through to its own
+// generic error page.
+func (h *Handler) tryDenyDeviceLoginOnUpstreamError(ctx context.Context, w http.ResponseWriter, internalState string) bool {
+	devicePending, err := h.storage.LoadPendingDeviceLogin(ctx, internalState)
+	if err != nil {
+		return false
+	}
+	if delErr := h.storage.DeletePendingDeviceLogin(ctx, internalState); delErr != nil {
+		slog.Warn("failed to delete pending device login", "error", delErr)
+	}
+	if err := h.deviceStorage.MarkDeviceRequestDenied(ctx, devicePending.DeviceCode); err != nil {
+		slog.Warn("device verification: failed to mark device request denied after upstream error", "error", err)
+	}
+	renderDenied(w, "Sign-in failed",
+		"The identity provider reported an error, so this device's request was denied. You may close this window.")
+	return true
 }
 
 // completeDeviceLogin finishes a device-flow verification-page login once
@@ -217,7 +255,20 @@ func (h *Handler) completeDeviceLogin(
 		ResolvedUserID:    userID,
 		ResolvedUserName:  userName,
 		ResolvedUserEmail: userEmail,
-		CreatedAt:         time.Now(),
+		// UserID/SessionExpiresAt are left zero here and filled in by
+		// DeviceVerificationConfirmHandler once a session id exists -- see
+		// PendingDeviceConfirmation.UpstreamTokens's doc comment.
+		UpstreamTokens: &storage.UpstreamTokens{
+			ProviderID:      pending.UpstreamProviderName,
+			AccessToken:     result.Tokens.AccessToken,
+			RefreshToken:    result.Tokens.RefreshToken,
+			IDToken:         result.Tokens.IDToken,
+			ExpiresAt:       result.Tokens.ExpiresAt,
+			UpstreamSubject: result.Subject,
+			ClientID:        device.ClientID,
+		},
+		Synthetic: result.Synthetic,
+		CreatedAt: time.Now(),
 	}
 	if err := h.storage.StorePendingDeviceConfirmation(ctx, token, confirmation); err != nil {
 		slog.Error("device verification: failed to store pending confirmation", "error", err)
@@ -280,6 +331,11 @@ func (h *Handler) DeviceVerificationConfirmHandler(w http.ResponseWriter, req *h
 	}
 
 	sessionID := rand.Text()
+	if err := h.persistDeviceSessionTokens(ctx, confirmation, sessionID); err != nil {
+		slog.Error("device verification: failed to store upstream tokens", "error", err)
+		renderError(w, http.StatusInternalServerError, "Something went wrong. Please try again.")
+		return
+	}
 	if err := h.deviceStorage.MarkDeviceRequestAuthorized(
 		ctx, confirmation.DeviceCode,
 		confirmation.ResolvedUserID, confirmation.ResolvedUserName, confirmation.ResolvedUserEmail, sessionID,
@@ -291,4 +347,30 @@ func (h *Handler) DeviceVerificationConfirmHandler(w http.ResponseWriter, req *h
 	}
 
 	renderResult(w, "Device authorized", "You may now close this window and return to your device.")
+}
+
+// persistDeviceSessionTokens stores the upstream tokens captured at login
+// time (completeDeviceLogin) under the device grant's final session id.
+// Device-flow sessions have no session id until this point -- unlike the
+// OAuth-client authorization_code flow, where CallbackHandler stores tokens
+// under a session id minted up front -- so completeDeviceLogin could only
+// stash the tokens in the PendingDeviceConfirmation for this handler to
+// persist once sessionID exists. Mirrors CallbackHandler's
+// UserID/SessionExpiresAt population and refresh-token carry-forward.
+func (h *Handler) persistDeviceSessionTokens(
+	ctx context.Context, confirmation *storage.PendingDeviceConfirmation, sessionID string,
+) error {
+	if confirmation.UpstreamTokens == nil {
+		return errors.New("pending device confirmation has no upstream tokens")
+	}
+	storageTokens := *confirmation.UpstreamTokens
+	storageTokens.UserID = confirmation.ResolvedUserID
+	storageTokens.SessionExpiresAt = time.Now().Add(h.config.RefreshTokenLifespan)
+
+	h.maybeCarryForwardRefreshToken(
+		ctx, &storageTokens, confirmation.ResolvedUserID, storageTokens.UpstreamSubject,
+		storageTokens.ProviderID, confirmation.Synthetic,
+	)
+
+	return h.storage.StoreUpstreamTokens(ctx, sessionID, storageTokens.ProviderID, &storageTokens)
 }

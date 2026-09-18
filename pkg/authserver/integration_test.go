@@ -16,6 +16,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"net/url"
+	"regexp"
 	"strings"
 	"sync/atomic"
 	"testing"
@@ -5531,16 +5532,81 @@ func TestIntegration_DeviceAuthorizationEndpoint_Disabled(t *testing.T) {
 	assert.Equal(t, http.StatusNotFound, resp.StatusCode)
 }
 
+// deviceConfirmTokenPattern extracts the hidden confirm_token field from the
+// verification page's HTML confirmation page (see
+// pkg/authserver/server/handlers/device_verification.go's confirmPageTemplate).
+var deviceConfirmTokenPattern = regexp.MustCompile(`name="confirm_token" value="([^"]+)"`)
+
+// completeDeviceVerification drives the device flow's human-facing
+// verification page end to end through a real mock upstream IDP: submit
+// user_code, follow the upstream login redirect, land back on the shared
+// /oauth/callback endpoint (see CallbackHandler's dispatch between the
+// OAuth-client and device-flow pending records), and approve the resulting
+// confirmation page. Mirrors completeAuthorizationFlow's redirect-stepping
+// approach for the same reason: mockoidc redirects to a literal "localhost"
+// host that must be rewritten to the actual (random-port) test server.
+func completeDeviceVerification(t *testing.T, serverURL, userCode string) {
+	t.Helper()
+	client := noRedirectClient()
+
+	// Step 1: submit the user_code to the verification page.
+	submitResp, err := client.PostForm(serverURL+"/oauth/device", url.Values{"user_code": {userCode}})
+	require.NoError(t, err)
+	require.Equal(t, http.StatusFound, submitResp.StatusCode, "expected redirect to mockoidc")
+	mockOIDCLocation, err := submitResp.Location()
+	require.NoError(t, err)
+	submitResp.Body.Close()
+
+	// Step 2: follow the redirect to mockoidc's authorization endpoint.
+	resp, err := client.Get(mockOIDCLocation.String())
+	require.NoError(t, err)
+	require.Equal(t, http.StatusFound, resp.StatusCode, "expected redirect from mockoidc to callback")
+	callbackLocation, err := resp.Location()
+	require.NoError(t, err)
+	resp.Body.Close()
+
+	// Step 3: rewrite the callback URL to use the actual test server (mockoidc
+	// redirects to http://localhost/oauth/callback per its static config).
+	parsedServerURL, err := url.Parse(serverURL)
+	require.NoError(t, err)
+	callbackLocation.Scheme = parsedServerURL.Scheme
+	callbackLocation.Host = parsedServerURL.Host
+
+	// Step 4: hit /oauth/callback. Unlike the OAuth-client flow, this renders
+	// the confirmation page directly (200), not a further redirect.
+	resp, err = client.Get(callbackLocation.String())
+	require.NoError(t, err)
+	require.Equal(t, http.StatusOK, resp.StatusCode, "expected the device confirmation page")
+	confirmBody, err := io.ReadAll(resp.Body)
+	require.NoError(t, err)
+	resp.Body.Close()
+
+	matches := deviceConfirmTokenPattern.FindSubmatch(confirmBody)
+	require.Len(t, matches, 2, "confirm_token not found in body: %s", confirmBody)
+	confirmToken := string(matches[1])
+
+	// Step 5: approve.
+	confirmResp, err := client.PostForm(serverURL+"/oauth/device/confirm",
+		url.Values{"confirm_token": {confirmToken}, "action": {"approve"}})
+	require.NoError(t, err)
+	require.Equal(t, http.StatusOK, confirmResp.StatusCode)
+	confirmRespBody, err := io.ReadAll(confirmResp.Body)
+	require.NoError(t, err)
+	confirmResp.Body.Close()
+	require.Contains(t, string(confirmRespBody), "Device authorized")
+}
+
 // TestIntegration_DeviceFlow_FullHappyPath drives RFC 8628 end to end: POST
-// /oauth/device_authorization, simulate the not-yet-built verification page
-// by calling storage.MarkDeviceRequestAuthorized directly, poll
+// /oauth/device_authorization, complete the human-facing verification page
+// through a real mock upstream IDP (completeDeviceVerification), poll
 // /oauth/token before authorization (authorization_pending), poll it after
 // (200 with both access_token and refresh_token), and confirm the device_code
 // is single-use (a second redemption returns invalid_grant).
 func TestIntegration_DeviceFlow_FullHappyPath(t *testing.T) {
 	t.Parallel()
 
-	ts := setupTestServer(t, withExtraClient(deviceFlowClient()), withDeviceFlowEnabled(),
+	m := startMockOIDC(t)
+	ts := setupTestServerWithMockOIDC(t, m, withExtraClient(deviceFlowClient()), withDeviceFlowEnabled(),
 		withDeviceCodeInterval(time.Millisecond))
 
 	resp, body := postDeviceAuthorization(t, ts.Server.URL, url.Values{
@@ -5572,17 +5638,12 @@ func TestIntegration_DeviceFlow_FullHappyPath(t *testing.T) {
 	assert.Equal(t, http.StatusBadRequest, pendingResp.StatusCode)
 	assert.Equal(t, "authorization_pending", pendingBody["error"])
 
-	// Simulate the (not yet built) verification page approving the request.
+	// Complete the real verification page flow through the mock upstream IDP.
 	// A short sleep guarantees the next poll clears the configured
 	// (deliberately tiny) MinInterval so the test exercises the "after
 	// authorization" success path rather than racing slow_down.
+	completeDeviceVerification(t, ts.Server.URL, userCode)
 	time.Sleep(20 * time.Millisecond)
-	fullStorage, ok := ts.storage.(storage.Storage)
-	require.True(t, ok, "test server storage must implement storage.Storage")
-	deviceStorage, ok := storage.Unwrap(fullStorage).(storage.DeviceCodeStorage)
-	require.True(t, ok, "test server storage must implement storage.DeviceCodeStorage")
-	require.NoError(t, deviceStorage.MarkDeviceRequestAuthorized(
-		context.Background(), deviceCode, "user-1", "Ada Lovelace", "ada@example.com", "session-1"))
 
 	// Polling after authorization: 200 with both tokens.
 	okResp := makeTokenRequest(t, ts.Server.URL, tokenParams)

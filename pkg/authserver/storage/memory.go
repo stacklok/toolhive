@@ -146,6 +146,16 @@ type MemoryStorage struct {
 	// touches both maps under the same lock.
 	deviceRequestsByUserCode map[string]string
 
+	// pendingDeviceLogins tracks device-flow verification-page logins
+	// awaiting the upstream IDP callback, keyed by state -- the same role
+	// pendingAuthorizations plays for the client authorization_code flow.
+	pendingDeviceLogins map[string]*timedEntry[*PendingDeviceLogin]
+
+	// pendingDeviceConfirmations tracks resolved device-flow logins awaiting
+	// an explicit Approve/Deny decision at the verification page, keyed by
+	// an opaque confirmation token.
+	pendingDeviceConfirmations map[string]*timedEntry[*PendingDeviceConfirmation]
+
 	// invalidatedCodes tracks auth codes that have been used/invalidated.
 	// Kept separate from authCodes to return the Requester with ErrInvalidatedAuthorizeCode.
 	invalidatedCodes map[string]*timedEntry[bool]
@@ -244,26 +254,28 @@ func WithMinClientAge(d time.Duration) MemoryStorageOption {
 // and starts the background cleanup goroutine.
 func NewMemoryStorage(opts ...MemoryStorageOption) *MemoryStorage {
 	s := &MemoryStorage{
-		clients:                  make(map[string]fosite.Client),
-		authCodes:                make(map[string]*timedEntry[fosite.Requester]),
-		accessTokens:             make(map[string]*timedEntry[fosite.Requester]),
-		refreshTokens:            make(map[string]*timedEntry[fosite.Requester]),
-		pkceRequests:             make(map[string]*timedEntry[fosite.Requester]),
-		upstreamTokens:           make(map[upstreamKey]*timedEntry[*UpstreamTokens]),
-		pendingAuthorizations:    make(map[string]*timedEntry[*PendingAuthorization]),
-		deviceRequests:           make(map[string]*timedEntry[*DeviceRequest]),
-		deviceRequestsByUserCode: make(map[string]string),
-		invalidatedCodes:         make(map[string]*timedEntry[bool]),
-		clientAssertionJWTs:      make(map[string]time.Time),
-		assertionJWTs:            make(map[assertionJWTKey]time.Time),
-		users:                    make(map[string]*User),
-		providerIdentities:       make(map[string]*ProviderIdentity),
-		dcrCredentials:           make(map[DCRKey]*DCRCredentials),
-		cleanupInterval:          DefaultCleanupInterval,
-		maxClients:               DefaultMaxClients,
-		minClientAge:             DefaultMinClientAge,
-		stopCleanup:              make(chan struct{}),
-		cleanupDone:              make(chan struct{}),
+		clients:                    make(map[string]fosite.Client),
+		authCodes:                  make(map[string]*timedEntry[fosite.Requester]),
+		accessTokens:               make(map[string]*timedEntry[fosite.Requester]),
+		refreshTokens:              make(map[string]*timedEntry[fosite.Requester]),
+		pkceRequests:               make(map[string]*timedEntry[fosite.Requester]),
+		upstreamTokens:             make(map[upstreamKey]*timedEntry[*UpstreamTokens]),
+		pendingAuthorizations:      make(map[string]*timedEntry[*PendingAuthorization]),
+		deviceRequests:             make(map[string]*timedEntry[*DeviceRequest]),
+		deviceRequestsByUserCode:   make(map[string]string),
+		pendingDeviceLogins:        make(map[string]*timedEntry[*PendingDeviceLogin]),
+		pendingDeviceConfirmations: make(map[string]*timedEntry[*PendingDeviceConfirmation]),
+		invalidatedCodes:           make(map[string]*timedEntry[bool]),
+		clientAssertionJWTs:        make(map[string]time.Time),
+		assertionJWTs:              make(map[assertionJWTKey]time.Time),
+		users:                      make(map[string]*User),
+		providerIdentities:         make(map[string]*ProviderIdentity),
+		dcrCredentials:             make(map[DCRKey]*DCRCredentials),
+		cleanupInterval:            DefaultCleanupInterval,
+		maxClients:                 DefaultMaxClients,
+		minClientAge:               DefaultMinClientAge,
+		stopCleanup:                make(chan struct{}),
+		cleanupDone:                make(chan struct{}),
 	}
 
 	for _, opt := range opts {
@@ -377,6 +389,20 @@ func (s *MemoryStorage) cleanupExpired() {
 		}
 	}
 
+	var expiredPendingDeviceLogins []string
+	for k, v := range s.pendingDeviceLogins {
+		if now.After(v.expiresAt) {
+			expiredPendingDeviceLogins = append(expiredPendingDeviceLogins, k)
+		}
+	}
+
+	var expiredPendingDeviceConfirmations []string
+	for k, v := range s.pendingDeviceConfirmations {
+		if now.After(v.expiresAt) {
+			expiredPendingDeviceConfirmations = append(expiredPendingDeviceConfirmations, k)
+		}
+	}
+
 	var expiredJWTs []string
 	for k, v := range s.clientAssertionJWTs {
 		if now.After(v) {
@@ -402,6 +428,8 @@ func (s *MemoryStorage) cleanupExpired() {
 		len(expiredUpstreamTokens) == 0 &&
 		len(expiredPendingAuthorizations) == 0 &&
 		len(expiredDeviceRequests) == 0 &&
+		len(expiredPendingDeviceLogins) == 0 &&
+		len(expiredPendingDeviceConfirmations) == 0 &&
 		len(expiredJWTs) == 0 &&
 		len(expiredAssertionJWTs) == 0 {
 		return
@@ -445,6 +473,14 @@ func (s *MemoryStorage) cleanupExpired() {
 			delete(s.deviceRequestsByUserCode, entry.value.UserCode)
 		}
 		delete(s.deviceRequests, k)
+	}
+
+	for _, k := range expiredPendingDeviceLogins {
+		delete(s.pendingDeviceLogins, k)
+	}
+
+	for _, k := range expiredPendingDeviceConfirmations {
+		delete(s.pendingDeviceConfirmations, k)
 	}
 
 	for _, k := range expiredJWTs {
@@ -1406,6 +1442,161 @@ func (s *MemoryStorage) DeletePendingAuthorization(_ context.Context, state stri
 }
 
 // -----------------------
+// Pending Device Login Storage
+// -----------------------
+
+// StorePendingDeviceLogin stores a pending device-flow verification-page
+// login, keyed by the internal state used to correlate the upstream IDP
+// callback.
+func (s *MemoryStorage) StorePendingDeviceLogin(_ context.Context, state string, pending *PendingDeviceLogin) error {
+	if state == "" {
+		return fosite.ErrInvalidRequest.WithHint("state cannot be empty")
+	}
+	if pending == nil {
+		return fosite.ErrInvalidRequest.WithHint("pending device login cannot be nil")
+	}
+
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	now := time.Now()
+	pendingCopy := &PendingDeviceLogin{
+		DeviceCode:           pending.DeviceCode,
+		UserCode:             pending.UserCode,
+		UpstreamPKCEVerifier: pending.UpstreamPKCEVerifier,
+		UpstreamNonce:        pending.UpstreamNonce,
+		UpstreamProviderName: pending.UpstreamProviderName,
+		CreatedAt:            pending.CreatedAt,
+	}
+
+	s.pendingDeviceLogins[state] = &timedEntry[*PendingDeviceLogin]{
+		value:     pendingCopy,
+		createdAt: now,
+		expiresAt: now.Add(DefaultDeviceLoginTTL),
+	}
+	return nil
+}
+
+// LoadPendingDeviceLogin retrieves a pending device login by state. Returns a
+// defensive copy to prevent aliasing issues.
+func (s *MemoryStorage) LoadPendingDeviceLogin(_ context.Context, state string) (*PendingDeviceLogin, error) {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+
+	entry, ok := s.pendingDeviceLogins[state]
+	if !ok {
+		return nil, notFoundRFC6749Error("Pending device login not found")
+	}
+	if time.Now().After(entry.expiresAt) {
+		return nil, ErrExpired
+	}
+
+	pending := entry.value
+	return &PendingDeviceLogin{
+		DeviceCode:           pending.DeviceCode,
+		UserCode:             pending.UserCode,
+		UpstreamPKCEVerifier: pending.UpstreamPKCEVerifier,
+		UpstreamNonce:        pending.UpstreamNonce,
+		UpstreamProviderName: pending.UpstreamProviderName,
+		CreatedAt:            pending.CreatedAt,
+	}, nil
+}
+
+// DeletePendingDeviceLogin removes a pending device login.
+func (s *MemoryStorage) DeletePendingDeviceLogin(_ context.Context, state string) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	if _, ok := s.pendingDeviceLogins[state]; !ok {
+		return notFoundRFC6749Error("Pending device login not found")
+	}
+	delete(s.pendingDeviceLogins, state)
+	return nil
+}
+
+// -----------------------
+// Pending Device Confirmation Storage
+// -----------------------
+
+// StorePendingDeviceConfirmation stores a pending device-flow confirmation,
+// keyed by an opaque token minted by the caller. See
+// PendingDeviceConfirmation's doc comment for why the resolved identity is
+// addressed by token rather than round-tripped through the browser.
+func (s *MemoryStorage) StorePendingDeviceConfirmation(
+	_ context.Context, token string, pending *PendingDeviceConfirmation,
+) error {
+	if token == "" {
+		return fosite.ErrInvalidRequest.WithHint("token cannot be empty")
+	}
+	if pending == nil {
+		return fosite.ErrInvalidRequest.WithHint("pending device confirmation cannot be nil")
+	}
+
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	now := time.Now()
+	pendingCopy := &PendingDeviceConfirmation{
+		DeviceCode:        pending.DeviceCode,
+		UserCode:          pending.UserCode,
+		ResolvedUserID:    pending.ResolvedUserID,
+		ResolvedUserName:  pending.ResolvedUserName,
+		ResolvedUserEmail: pending.ResolvedUserEmail,
+		UpstreamTokens:    cloneUpstreamTokens(pending.UpstreamTokens),
+		Synthetic:         pending.Synthetic,
+		CreatedAt:         pending.CreatedAt,
+	}
+
+	s.pendingDeviceConfirmations[token] = &timedEntry[*PendingDeviceConfirmation]{
+		value:     pendingCopy,
+		createdAt: now,
+		expiresAt: now.Add(DefaultDeviceLoginTTL),
+	}
+	return nil
+}
+
+// LoadPendingDeviceConfirmation retrieves a pending device confirmation by
+// token. Returns a defensive copy to prevent aliasing issues.
+func (s *MemoryStorage) LoadPendingDeviceConfirmation(
+	_ context.Context, token string,
+) (*PendingDeviceConfirmation, error) {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+
+	entry, ok := s.pendingDeviceConfirmations[token]
+	if !ok {
+		return nil, notFoundRFC6749Error("Pending device confirmation not found")
+	}
+	if time.Now().After(entry.expiresAt) {
+		return nil, ErrExpired
+	}
+
+	pending := entry.value
+	return &PendingDeviceConfirmation{
+		DeviceCode:        pending.DeviceCode,
+		UserCode:          pending.UserCode,
+		ResolvedUserID:    pending.ResolvedUserID,
+		ResolvedUserName:  pending.ResolvedUserName,
+		ResolvedUserEmail: pending.ResolvedUserEmail,
+		UpstreamTokens:    cloneUpstreamTokens(pending.UpstreamTokens),
+		Synthetic:         pending.Synthetic,
+		CreatedAt:         pending.CreatedAt,
+	}, nil
+}
+
+// DeletePendingDeviceConfirmation removes a pending device confirmation.
+func (s *MemoryStorage) DeletePendingDeviceConfirmation(_ context.Context, token string) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	if _, ok := s.pendingDeviceConfirmations[token]; !ok {
+		return notFoundRFC6749Error("Pending device confirmation not found")
+	}
+	delete(s.pendingDeviceConfirmations, token)
+	return nil
+}
+
+// -----------------------
 // Device Code Storage
 // -----------------------
 
@@ -1896,12 +2087,14 @@ func (s *MemoryStorage) Stats() Stats {
 
 // Compile-time interface compliance checks
 var (
-	_ Storage                     = (*MemoryStorage)(nil)
-	_ PendingAuthorizationStorage = (*MemoryStorage)(nil)
-	_ DeviceCodeStorage           = (*MemoryStorage)(nil)
-	_ ClientRegistry              = (*MemoryStorage)(nil)
-	_ UpstreamTokenStorage        = (*MemoryStorage)(nil)
-	_ UserStorage                 = (*MemoryStorage)(nil)
-	_ DCRCredentialStore          = (*MemoryStorage)(nil)
-	_ AssertionJWTConsumer        = (*MemoryStorage)(nil)
+	_ Storage                          = (*MemoryStorage)(nil)
+	_ PendingAuthorizationStorage      = (*MemoryStorage)(nil)
+	_ DeviceCodeStorage                = (*MemoryStorage)(nil)
+	_ PendingDeviceLoginStorage        = (*MemoryStorage)(nil)
+	_ PendingDeviceConfirmationStorage = (*MemoryStorage)(nil)
+	_ ClientRegistry                   = (*MemoryStorage)(nil)
+	_ UpstreamTokenStorage             = (*MemoryStorage)(nil)
+	_ UserStorage                      = (*MemoryStorage)(nil)
+	_ DCRCredentialStore               = (*MemoryStorage)(nil)
+	_ AssertionJWTConsumer             = (*MemoryStorage)(nil)
 )

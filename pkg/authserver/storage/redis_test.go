@@ -2529,6 +2529,106 @@ func TestRedisStorage_PendingAuthorization(t *testing.T) {
 	})
 }
 
+func TestRedisStorage_PendingDeviceLogin(t *testing.T) {
+	t.Parallel()
+
+	makePending := func() *PendingDeviceLogin {
+		return &PendingDeviceLogin{
+			DeviceCode: "device-code", UserCode: "USER-CODE",
+			UpstreamPKCEVerifier: "verifier", UpstreamNonce: "nonce",
+			UpstreamProviderName: "provider-1", CreatedAt: time.Now(),
+		}
+	}
+
+	t.Run("store and load", func(t *testing.T) {
+		withRedisStorage(t, func(ctx context.Context, s *RedisStorage, _ *miniredis.Miniredis) {
+			pending := makePending()
+			require.NoError(t, s.StorePendingDeviceLogin(ctx, "state-1", pending))
+
+			retrieved, err := s.LoadPendingDeviceLogin(ctx, "state-1")
+			require.NoError(t, err)
+			assert.Equal(t, pending.DeviceCode, retrieved.DeviceCode)
+			assert.Equal(t, pending.UserCode, retrieved.UserCode)
+			assert.Equal(t, pending.UpstreamPKCEVerifier, retrieved.UpstreamPKCEVerifier)
+			assert.Equal(t, pending.UpstreamNonce, retrieved.UpstreamNonce)
+			assert.Equal(t, pending.UpstreamProviderName, retrieved.UpstreamProviderName)
+		})
+	})
+
+	t.Run("load non-existent", func(t *testing.T) {
+		withRedisStorage(t, func(ctx context.Context, s *RedisStorage, _ *miniredis.Miniredis) {
+			_, err := s.LoadPendingDeviceLogin(ctx, "non-existent")
+			requireRedisNotFoundError(t, err)
+		})
+	})
+
+	t.Run("delete", func(t *testing.T) {
+		withRedisStorage(t, func(ctx context.Context, s *RedisStorage, _ *miniredis.Miniredis) {
+			require.NoError(t, s.StorePendingDeviceLogin(ctx, "to-delete", makePending()))
+			require.NoError(t, s.DeletePendingDeviceLogin(ctx, "to-delete"))
+			_, err := s.LoadPendingDeviceLogin(ctx, "to-delete")
+			requireRedisNotFoundError(t, err)
+		})
+	})
+
+	t.Run("delete non-existent returns error", func(t *testing.T) {
+		withRedisStorage(t, func(ctx context.Context, s *RedisStorage, _ *miniredis.Miniredis) {
+			err := s.DeletePendingDeviceLogin(ctx, "non-existent")
+			requireRedisNotFoundError(t, err)
+		})
+	})
+}
+
+func TestRedisStorage_PendingDeviceConfirmation(t *testing.T) {
+	t.Parallel()
+
+	makePending := func() *PendingDeviceConfirmation {
+		return &PendingDeviceConfirmation{
+			DeviceCode: "device-code", UserCode: "USER-CODE",
+			ResolvedUserID: "user-1", ResolvedUserName: "Ada Lovelace",
+			ResolvedUserEmail: "ada@example.com", CreatedAt: time.Now(),
+		}
+	}
+
+	t.Run("store and load", func(t *testing.T) {
+		withRedisStorage(t, func(ctx context.Context, s *RedisStorage, _ *miniredis.Miniredis) {
+			pending := makePending()
+			require.NoError(t, s.StorePendingDeviceConfirmation(ctx, "token-1", pending))
+
+			retrieved, err := s.LoadPendingDeviceConfirmation(ctx, "token-1")
+			require.NoError(t, err)
+			assert.Equal(t, pending.DeviceCode, retrieved.DeviceCode)
+			assert.Equal(t, pending.UserCode, retrieved.UserCode)
+			assert.Equal(t, pending.ResolvedUserID, retrieved.ResolvedUserID)
+			assert.Equal(t, pending.ResolvedUserName, retrieved.ResolvedUserName)
+			assert.Equal(t, pending.ResolvedUserEmail, retrieved.ResolvedUserEmail)
+		})
+	})
+
+	t.Run("load non-existent", func(t *testing.T) {
+		withRedisStorage(t, func(ctx context.Context, s *RedisStorage, _ *miniredis.Miniredis) {
+			_, err := s.LoadPendingDeviceConfirmation(ctx, "non-existent")
+			requireRedisNotFoundError(t, err)
+		})
+	})
+
+	t.Run("delete", func(t *testing.T) {
+		withRedisStorage(t, func(ctx context.Context, s *RedisStorage, _ *miniredis.Miniredis) {
+			require.NoError(t, s.StorePendingDeviceConfirmation(ctx, "to-delete", makePending()))
+			require.NoError(t, s.DeletePendingDeviceConfirmation(ctx, "to-delete"))
+			_, err := s.LoadPendingDeviceConfirmation(ctx, "to-delete")
+			requireRedisNotFoundError(t, err)
+		})
+	})
+
+	t.Run("delete non-existent returns error", func(t *testing.T) {
+		withRedisStorage(t, func(ctx context.Context, s *RedisStorage, _ *miniredis.Miniredis) {
+			err := s.DeletePendingDeviceConfirmation(ctx, "non-existent")
+			requireRedisNotFoundError(t, err)
+		})
+	})
+}
+
 // --- User Storage Tests ---
 
 func TestRedisStorage_User(t *testing.T) {

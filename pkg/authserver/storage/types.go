@@ -16,7 +16,7 @@
 // OAuth authorization server.
 package storage
 
-//go:generate mockgen -destination=mocks/mock_storage.go -package=mocks -source=types.go Storage,PendingAuthorizationStorage,DeviceCodeStorage,AssertionJWTConsumer,ClientRegistry,UpstreamTokenStorage,UpstreamTokenRefresher,UserStorage,DCRCredentialStore
+//go:generate mockgen -destination=mocks/mock_storage.go -package=mocks -source=types.go Storage,PendingAuthorizationStorage,DeviceCodeStorage,PendingDeviceLoginStorage,PendingDeviceConfirmationStorage,AssertionJWTConsumer,ClientRegistry,UpstreamTokenStorage,UpstreamTokenRefresher,UserStorage,DCRCredentialStore
 
 import (
 	"context"
@@ -685,6 +685,128 @@ type DeviceCodeStorage interface {
 	DeleteDeviceRequest(ctx context.Context, deviceCode string) error
 }
 
+// DefaultDeviceLoginTTL bounds how long a device-flow verification-page login
+// attempt (PendingDeviceLogin) or post-login confirmation (
+// PendingDeviceConfirmation) may remain unresolved before it is treated as
+// expired. A human completing an upstream login and then confirming/denying
+// a device should take at most a few minutes; this mirrors
+// DefaultDeviceRequestTTL's window.
+const DefaultDeviceLoginTTL = 10 * time.Minute
+
+// PendingDeviceLogin correlates a device-flow verification-page login
+// attempt with its upstream IDP callback, the same role PendingAuthorization
+// plays for the OAuth client authorization_code flow -- but scoped to the
+// verification page, which has no client_id/redirect_uri of its own.
+type PendingDeviceLogin struct {
+	// DeviceCode identifies the DeviceRequest this login attempt is for.
+	DeviceCode string
+
+	// UserCode is carried alongside DeviceCode so the callback handler can
+	// re-look-up (and re-validate the pending/unexpired state of) the
+	// DeviceRequest without a second index lookup by DeviceCode.
+	UserCode string
+
+	// UpstreamPKCEVerifier is the PKCE code_verifier for the upstream IDP
+	// authorization. See RFC 7636.
+	UpstreamPKCEVerifier string
+
+	// UpstreamNonce is the OIDC nonce for ID token replay protection.
+	UpstreamNonce string
+
+	// UpstreamProviderName is the configured upstream this login was sent
+	// to; the callback re-validates against it (IDP mix-up defense), mirroring
+	// PendingAuthorization.UpstreamProviderName.
+	UpstreamProviderName string
+
+	// CreatedAt is when the pending login was created.
+	CreatedAt time.Time
+}
+
+// PendingDeviceLoginStorage provides storage operations for in-flight
+// device-flow verification-page logins: created when a user submits a
+// user_code and is redirected to the upstream IDP, and consumed exactly once
+// when that IDP redirects back to the device callback endpoint.
+type PendingDeviceLoginStorage interface {
+	// StorePendingDeviceLogin stores a pending device login. state is used to
+	// correlate the upstream IDP callback, exactly as
+	// PendingAuthorizationStorage.StorePendingAuthorization uses it for the
+	// client authorization_code flow.
+	StorePendingDeviceLogin(ctx context.Context, state string, pending *PendingDeviceLogin) error
+
+	// LoadPendingDeviceLogin retrieves a pending device login by state.
+	// Returns ErrNotFound if the state does not exist, ErrExpired if
+	// DefaultDeviceLoginTTL has elapsed.
+	LoadPendingDeviceLogin(ctx context.Context, state string) (*PendingDeviceLogin, error)
+
+	// DeletePendingDeviceLogin removes a pending device login. Returns
+	// ErrNotFound if the state does not exist.
+	DeletePendingDeviceLogin(ctx context.Context, state string) error
+}
+
+// PendingDeviceConfirmation holds a resolved upstream identity awaiting the
+// user's explicit Approve/Deny decision at the device verification page.
+//
+// The resolved identity is deliberately kept server-side, addressed only by
+// an opaque, unguessable token handed to the browser as a hidden form field --
+// never as editable request data. A confirm-page design that instead echoed
+// ResolvedUserID/Name/Email back as editable hidden fields would let a user
+// tamper with them client-side and have a device authorized under a spoofed
+// identity; keying the server-side record by an opaque token closes that.
+type PendingDeviceConfirmation struct {
+	// DeviceCode and UserCode identify the DeviceRequest awaiting decision.
+	DeviceCode string
+	UserCode   string
+
+	// Resolved* mirror the fields MarkDeviceRequestAuthorized ultimately
+	// persists onto the DeviceRequest -- see DeviceCodeStorage's doc comment.
+	ResolvedUserID    string
+	ResolvedUserName  string
+	ResolvedUserEmail string
+
+	// UpstreamTokens carries the tokens already exchanged with the upstream
+	// IDP, ready to persist under the final session id once one exists.
+	// Device-flow sessions have no session id until
+	// MarkDeviceRequestAuthorized mints one at confirm time -- unlike the
+	// OAuth-client authorization_code flow, where the session id is minted
+	// up front and CallbackHandler can call StoreUpstreamTokens directly --
+	// so the tokens must be carried here and written by
+	// DeviceVerificationConfirmHandler once that id exists. ProviderID,
+	// AccessToken, RefreshToken, IDToken, ExpiresAt, UpstreamSubject, and
+	// ClientID are populated at exchange time; UserID and SessionExpiresAt
+	// are left zero and filled in at confirm time.
+	UpstreamTokens *UpstreamTokens
+
+	// Synthetic mirrors the upstream identity's Synthetic flag: true when
+	// the upstream has no userinfo/identity config and its subject was
+	// synthesized rather than resolved from a real claim. Confirm-time
+	// refresh-token carry-forward uses this to skip its account-linking
+	// guard, which can never match a rotating synthetic subject.
+	Synthetic bool
+
+	// CreatedAt is when the pending confirmation was created.
+	CreatedAt time.Time
+}
+
+// PendingDeviceConfirmationStorage provides storage operations for resolved
+// device-flow logins awaiting an explicit Approve/Deny decision at the
+// verification page. See PendingDeviceConfirmation's doc comment for why the
+// resolved identity is addressed by an opaque token rather than round-tripped
+// through the browser as editable form data.
+type PendingDeviceConfirmationStorage interface {
+	// StorePendingDeviceConfirmation stores a pending confirmation, keyed by
+	// a fresh, unguessable token minted by the caller (e.g. rand.Text()).
+	StorePendingDeviceConfirmation(ctx context.Context, token string, pending *PendingDeviceConfirmation) error
+
+	// LoadPendingDeviceConfirmation retrieves a pending confirmation by
+	// token. Returns ErrNotFound if the token does not exist, ErrExpired if
+	// DefaultDeviceLoginTTL has elapsed.
+	LoadPendingDeviceConfirmation(ctx context.Context, token string) (*PendingDeviceConfirmation, error)
+
+	// DeletePendingDeviceConfirmation removes a pending confirmation.
+	// Returns ErrNotFound if the token does not exist.
+	DeletePendingDeviceConfirmation(ctx context.Context, token string) error
+}
+
 // AssertionJWTConsumer atomically records a validated assertion JWT as consumed.
 //
 // Implementations must treat (purpose, issuer, jti) as the replay key, retain it
@@ -1161,6 +1283,8 @@ type Storage interface {
 	// `(*RedisStorage)(nil)` checks provide the compile-time guarantee.
 	UpstreamTokenStorage
 	PendingAuthorizationStorage
+	PendingDeviceLoginStorage
+	PendingDeviceConfirmationStorage
 	ClientRegistry
 	UserStorage
 

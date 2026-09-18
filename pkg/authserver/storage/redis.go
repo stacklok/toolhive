@@ -1196,6 +1196,35 @@ func (s *storedUpstreamTokens) toUpstreamTokens() *UpstreamTokens {
 	}
 }
 
+// newStoredUpstreamTokens converts tokens to its serializable form, encoding
+// zero time.Time fields as epoch 0 -- the "no expiry" sentinel toUpstreamTokens
+// decodes back to a zero time.Time (time.Time{}.Unix() itself returns
+// -62135596800, not a useful sentinel). Returns nil for nil input.
+func newStoredUpstreamTokens(tokens *UpstreamTokens) *storedUpstreamTokens {
+	if tokens == nil {
+		return nil
+	}
+	var expiresAtUnix int64
+	if !tokens.ExpiresAt.IsZero() {
+		expiresAtUnix = tokens.ExpiresAt.Unix()
+	}
+	var sessionExpiresAtUnix int64
+	if !tokens.SessionExpiresAt.IsZero() {
+		sessionExpiresAtUnix = tokens.SessionExpiresAt.Unix()
+	}
+	return &storedUpstreamTokens{
+		ProviderID:       tokens.ProviderID,
+		AccessToken:      tokens.AccessToken,
+		RefreshToken:     tokens.RefreshToken,
+		IDToken:          tokens.IDToken,
+		ExpiresAt:        expiresAtUnix,
+		SessionExpiresAt: sessionExpiresAtUnix,
+		UserID:           tokens.UserID,
+		UpstreamSubject:  tokens.UpstreamSubject,
+		ClientID:         tokens.ClientID,
+	}
+}
+
 // storeUpstreamTokensScript atomically reads the existing UserID, writes new token
 // data, updates the session index set, and updates user reverse-index sets.
 // This prevents a race condition where concurrent writes for the same session
@@ -1359,29 +1388,7 @@ func marshalUpstreamTokensWithTTL(tokens *UpstreamTokens) ([]byte, time.Duration
 		return []byte(nullMarker), DefaultAccessTokenTTL, nil
 	}
 
-	// Store 0 for zero time to use as a sentinel meaning "no expiry".
-	// time.Time{}.Unix() returns -62135596800 which is not a useful sentinel.
-	var expiresAtUnix int64
-	if !tokens.ExpiresAt.IsZero() {
-		expiresAtUnix = tokens.ExpiresAt.Unix()
-	}
-
-	var sessionExpiresAtUnix int64
-	if !tokens.SessionExpiresAt.IsZero() {
-		sessionExpiresAtUnix = tokens.SessionExpiresAt.Unix()
-	}
-
-	stored := storedUpstreamTokens{
-		ProviderID:       tokens.ProviderID,
-		AccessToken:      tokens.AccessToken,
-		RefreshToken:     tokens.RefreshToken,
-		IDToken:          tokens.IDToken,
-		ExpiresAt:        expiresAtUnix,
-		SessionExpiresAt: sessionExpiresAtUnix,
-		UserID:           tokens.UserID,
-		UpstreamSubject:  tokens.UpstreamSubject,
-		ClientID:         tokens.ClientID,
-	}
+	stored := newStoredUpstreamTokens(tokens)
 
 	data, err := json.Marshal(stored) //nolint:gosec // G117 - internal Redis storage serialization, not exposed to users
 	if err != nil {
@@ -2271,6 +2278,201 @@ func (s *RedisStorage) DeletePendingAuthorization(ctx context.Context, state str
 }
 
 // -----------------------
+// Pending Device Login Storage
+// -----------------------
+
+// storedPendingDeviceLogin is a serializable wrapper for PendingDeviceLogin.
+type storedPendingDeviceLogin struct {
+	DeviceCode           string `json:"device_code"`
+	UserCode             string `json:"user_code"`
+	UpstreamPKCEVerifier string `json:"upstream_pkce_verifier"`
+	UpstreamNonce        string `json:"upstream_nonce"`
+	UpstreamProviderName string `json:"upstream_provider_name,omitempty"`
+	CreatedAt            int64  `json:"created_at"`
+}
+
+// StorePendingDeviceLogin stores a pending device-flow verification-page login.
+func (s *RedisStorage) StorePendingDeviceLogin(ctx context.Context, state string, pending *PendingDeviceLogin) error {
+	if state == "" {
+		return fosite.ErrInvalidRequest.WithHint("state cannot be empty")
+	}
+	if pending == nil {
+		return fosite.ErrInvalidRequest.WithHint("pending device login cannot be nil")
+	}
+
+	key := redisKey(s.keyPrefix, KeyTypePendingDeviceLogin, state)
+
+	stored := storedPendingDeviceLogin{
+		DeviceCode:           pending.DeviceCode,
+		UserCode:             pending.UserCode,
+		UpstreamPKCEVerifier: pending.UpstreamPKCEVerifier,
+		UpstreamNonce:        pending.UpstreamNonce,
+		UpstreamProviderName: pending.UpstreamProviderName,
+		CreatedAt:            pending.CreatedAt.Unix(),
+	}
+
+	data, err := json.Marshal(stored) //nolint:gosec // G117 - internal Redis storage serialization, not exposed to users
+	if err != nil {
+		return fmt.Errorf("failed to marshal pending device login: %w", err)
+	}
+
+	return s.client.Set(ctx, key, data, DefaultDeviceLoginTTL).Err()
+}
+
+// LoadPendingDeviceLogin retrieves a pending device login by state.
+func (s *RedisStorage) LoadPendingDeviceLogin(ctx context.Context, state string) (*PendingDeviceLogin, error) {
+	key := redisKey(s.keyPrefix, KeyTypePendingDeviceLogin, state)
+
+	data, err := s.client.Get(ctx, key).Bytes()
+	if err != nil {
+		if errors.Is(err, redis.Nil) {
+			return nil, notFoundRFC6749Error("Pending device login not found")
+		}
+		return nil, fmt.Errorf("failed to get pending device login: %w", err)
+	}
+
+	var stored storedPendingDeviceLogin
+	if err := json.Unmarshal(data, &stored); err != nil {
+		return nil, fmt.Errorf("failed to unmarshal pending device login: %w", err)
+	}
+
+	createdAt := time.Unix(stored.CreatedAt, 0)
+	if time.Since(createdAt) > DefaultDeviceLoginTTL {
+		return nil, ErrExpired
+	}
+
+	return &PendingDeviceLogin{
+		DeviceCode:           stored.DeviceCode,
+		UserCode:             stored.UserCode,
+		UpstreamPKCEVerifier: stored.UpstreamPKCEVerifier,
+		UpstreamNonce:        stored.UpstreamNonce,
+		UpstreamProviderName: stored.UpstreamProviderName,
+		CreatedAt:            createdAt,
+	}, nil
+}
+
+// DeletePendingDeviceLogin removes a pending device login.
+func (s *RedisStorage) DeletePendingDeviceLogin(ctx context.Context, state string) error {
+	key := redisKey(s.keyPrefix, KeyTypePendingDeviceLogin, state)
+
+	result, err := s.client.Del(ctx, key).Result()
+	if err != nil {
+		return fmt.Errorf("failed to delete pending device login: %w", err)
+	}
+	if result == 0 {
+		return notFoundRFC6749Error("Pending device login not found")
+	}
+	return nil
+}
+
+// -----------------------
+// Pending Device Confirmation Storage
+// -----------------------
+
+// storedPendingDeviceConfirmation is a serializable wrapper for
+// PendingDeviceConfirmation.
+type storedPendingDeviceConfirmation struct {
+	DeviceCode        string                `json:"device_code"`
+	UserCode          string                `json:"user_code"`
+	ResolvedUserID    string                `json:"resolved_user_id,omitempty"`
+	ResolvedUserName  string                `json:"resolved_user_name,omitempty"`
+	ResolvedUserEmail string                `json:"resolved_user_email,omitempty"`
+	UpstreamTokens    *storedUpstreamTokens `json:"upstream_tokens,omitempty"`
+	Synthetic         bool                  `json:"synthetic,omitempty"`
+	CreatedAt         int64                 `json:"created_at"`
+}
+
+// StorePendingDeviceConfirmation stores a pending device-flow confirmation,
+// keyed by an opaque token. See PendingDeviceConfirmation's doc comment for
+// why the resolved identity is addressed by token rather than round-tripped
+// through the browser.
+func (s *RedisStorage) StorePendingDeviceConfirmation(
+	ctx context.Context, token string, pending *PendingDeviceConfirmation,
+) error {
+	if token == "" {
+		return fosite.ErrInvalidRequest.WithHint("token cannot be empty")
+	}
+	if pending == nil {
+		return fosite.ErrInvalidRequest.WithHint("pending device confirmation cannot be nil")
+	}
+
+	key := redisKey(s.keyPrefix, KeyTypePendingDeviceConfirmation, token)
+
+	stored := storedPendingDeviceConfirmation{
+		DeviceCode:        pending.DeviceCode,
+		UserCode:          pending.UserCode,
+		ResolvedUserID:    pending.ResolvedUserID,
+		ResolvedUserName:  pending.ResolvedUserName,
+		ResolvedUserEmail: pending.ResolvedUserEmail,
+		UpstreamTokens:    newStoredUpstreamTokens(pending.UpstreamTokens),
+		Synthetic:         pending.Synthetic,
+		CreatedAt:         pending.CreatedAt.Unix(),
+	}
+
+	data, err := json.Marshal(stored) //nolint:gosec // G117 - internal Redis storage serialization, not exposed to users
+	if err != nil {
+		return fmt.Errorf("failed to marshal pending device confirmation: %w", err)
+	}
+
+	return s.client.Set(ctx, key, data, DefaultDeviceLoginTTL).Err()
+}
+
+// LoadPendingDeviceConfirmation retrieves a pending device confirmation by token.
+func (s *RedisStorage) LoadPendingDeviceConfirmation(
+	ctx context.Context, token string,
+) (*PendingDeviceConfirmation, error) {
+	key := redisKey(s.keyPrefix, KeyTypePendingDeviceConfirmation, token)
+
+	data, err := s.client.Get(ctx, key).Bytes()
+	if err != nil {
+		if errors.Is(err, redis.Nil) {
+			return nil, notFoundRFC6749Error("Pending device confirmation not found")
+		}
+		return nil, fmt.Errorf("failed to get pending device confirmation: %w", err)
+	}
+
+	var stored storedPendingDeviceConfirmation
+	if err := json.Unmarshal(data, &stored); err != nil {
+		return nil, fmt.Errorf("failed to unmarshal pending device confirmation: %w", err)
+	}
+
+	createdAt := time.Unix(stored.CreatedAt, 0)
+	if time.Since(createdAt) > DefaultDeviceLoginTTL {
+		return nil, ErrExpired
+	}
+
+	var upstreamTokens *UpstreamTokens
+	if stored.UpstreamTokens != nil {
+		upstreamTokens = stored.UpstreamTokens.toUpstreamTokens()
+	}
+
+	return &PendingDeviceConfirmation{
+		DeviceCode:        stored.DeviceCode,
+		UserCode:          stored.UserCode,
+		ResolvedUserID:    stored.ResolvedUserID,
+		ResolvedUserName:  stored.ResolvedUserName,
+		ResolvedUserEmail: stored.ResolvedUserEmail,
+		UpstreamTokens:    upstreamTokens,
+		Synthetic:         stored.Synthetic,
+		CreatedAt:         createdAt,
+	}, nil
+}
+
+// DeletePendingDeviceConfirmation removes a pending device confirmation.
+func (s *RedisStorage) DeletePendingDeviceConfirmation(ctx context.Context, token string) error {
+	key := redisKey(s.keyPrefix, KeyTypePendingDeviceConfirmation, token)
+
+	result, err := s.client.Del(ctx, key).Result()
+	if err != nil {
+		return fmt.Errorf("failed to delete pending device confirmation: %w", err)
+	}
+	if result == 0 {
+		return notFoundRFC6749Error("Pending device confirmation not found")
+	}
+	return nil
+}
+
+// -----------------------
 // Device Code Storage
 // -----------------------
 
@@ -3028,12 +3230,14 @@ func getTTLFromRequester(request fosite.Requester, tokenType fosite.TokenType, d
 
 // Compile-time interface compliance checks
 var (
-	_ Storage                     = (*RedisStorage)(nil)
-	_ PendingAuthorizationStorage = (*RedisStorage)(nil)
-	_ DeviceCodeStorage           = (*RedisStorage)(nil)
-	_ ClientRegistry              = (*RedisStorage)(nil)
-	_ UpstreamTokenStorage        = (*RedisStorage)(nil)
-	_ UserStorage                 = (*RedisStorage)(nil)
-	_ DCRCredentialStore          = (*RedisStorage)(nil)
-	_ AssertionJWTConsumer        = (*RedisStorage)(nil)
+	_ Storage                          = (*RedisStorage)(nil)
+	_ PendingAuthorizationStorage      = (*RedisStorage)(nil)
+	_ DeviceCodeStorage                = (*RedisStorage)(nil)
+	_ PendingDeviceLoginStorage        = (*RedisStorage)(nil)
+	_ PendingDeviceConfirmationStorage = (*RedisStorage)(nil)
+	_ ClientRegistry                   = (*RedisStorage)(nil)
+	_ UpstreamTokenStorage             = (*RedisStorage)(nil)
+	_ UserStorage                      = (*RedisStorage)(nil)
+	_ DCRCredentialStore               = (*RedisStorage)(nil)
+	_ AssertionJWTConsumer             = (*RedisStorage)(nil)
 )

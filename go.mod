@@ -67,7 +67,7 @@ require (
 	github.com/spf13/viper v1.21.0
 	github.com/spiffe/go-spiffe/v2 v2.8.1
 	github.com/stacklok/toolhive-catalog v0.20260908.0
-	github.com/stacklok/toolhive-core v0.0.47
+	github.com/stacklok/toolhive-core v0.0.49
 	github.com/stacklok/toolhive-core/redisconn v0.0.2
 	github.com/stretchr/testify v1.12.1
 	github.com/swaggo/swag/v2 v2.0.0-rc5
@@ -241,7 +241,7 @@ require (
 	github.com/moby/sys/user v0.4.1 // indirect
 	github.com/moby/sys/userns v0.1.0 // indirect
 	github.com/moby/term v0.5.2 // indirect
-	github.com/modelcontextprotocol/go-sdk v1.7.0 // indirect
+	github.com/modelcontextprotocol/go-sdk v1.8.0 // indirect
 	github.com/modern-go/concurrent v0.0.0-20180306012644-bacd9c7ef1dd // indirect
 	github.com/modern-go/reflect2 v1.0.3-0.20250322232337-35a7c28c31ee // indirect
 	github.com/mohae/deepcopy v0.0.0-20170929034955-c48cc78d4826 // indirect
@@ -312,9 +312,12 @@ require (
 	go.opentelemetry.io/contrib/propagators/jaeger v1.40.0 // indirect
 	go.opentelemetry.io/contrib/samplers/jaegerremote v0.29.0 // indirect
 	go.opentelemetry.io/otel/exporters/jaeger v1.17.0 // indirect
+	go.opentelemetry.io/otel/exporters/otlp/otlplog/otlploggrpc v0.22.0 // indirect
 	go.opentelemetry.io/otel/exporters/otlp/otlplog/otlploghttp v0.22.0 // indirect
+	go.opentelemetry.io/otel/exporters/otlp/otlpmetric/otlpmetricgrpc v1.46.0 // indirect
 	go.opentelemetry.io/otel/exporters/otlp/otlpmetric/otlpmetrichttp v1.46.0 // indirect
 	go.opentelemetry.io/otel/exporters/otlp/otlptrace v1.46.0 // indirect
+	go.opentelemetry.io/otel/exporters/otlp/otlptrace/otlptracegrpc v1.46.0 // indirect
 	go.opentelemetry.io/otel/exporters/otlp/otlptrace/otlptracehttp v1.46.0 // indirect
 	go.opentelemetry.io/otel/exporters/prometheus v0.68.0 // indirect
 	go.opentelemetry.io/otel/exporters/zipkin v1.45.0 // indirect

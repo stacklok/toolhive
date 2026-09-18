@@ -129,8 +129,17 @@ and credential-bearing requests do not follow redirects.
 
 ### 4. Installation
 
-After resolution, the service verifies project-scoped content, acquires a
-per-plugin lock, materializes each target client, persists the installed record,
+User-scoped operations acquire a per-plugin lock. Project-scoped install,
+uninstall, sync, and upgrade share the skills project transaction keyed by the
+canonical project root. Its in-process mutex and advisory state lock cover the
+whole mutation, including resolution, materialization, persistence, group and
+dependency changes, lock-file writes, and compensation. The advisory lock
+retains the historical `skills-project-locks` state-directory name so plugin
+mutations coordinate with older ToolHive processes that only know the skills
+implementation.
+
+After acquiring the applicable lock, installation verifies project-scoped
+content, materializes each target client, persists the installed record,
 updates group membership, and writes the project lock entry. Existing trees and
 registration state are snapshotted when the client manager is available. A
 later extraction, database, group, or lock-file failure restores prior files,
@@ -170,7 +179,9 @@ atomic lock-file mechanics are documented in [Project Lock File](12-skills-syste
 
 - missing or drifted installs are reinstalled at the pinned digest;
 - `--check` reports drift without writing;
-- `--adopt` records eligible unmanaged project installs;
+- `--adopt` records eligible unmanaged project installs, and
+  `--public-key <PUBLIC_KEY_PATH>` verifies and anchors a key-pair-signed OCI
+  install during adoption;
 - `--prune` removes managed installs absent from the lock file;
 - real changes require confirmation, or `--yes` in non-interactive use.
 
@@ -180,12 +191,32 @@ entries have no stored bundle to re-verify offline; the recorded identity is
 rechecked when git content is resolved again.
 
 `thv ai-plugin upgrade [name...]` re-resolves each mutable lock source and
-installs changed content. Immutable OCI digests and full git commit pins are
-reported as not upgradable. `--preview` and `--fail-on-changes` plan without
-installing (OCI candidates are still fetched to compare digests).
-`--allow-ref-change` permits a repository move, while
-`--allow-signer-change` permits supported trust transitions. Neither option
-silently replaces a pinned cosign public key with an arbitrary different key.
+installs changed content. Full git commit pins are not upgradable. An immutable
+OCI digest has no content update, but its separately attached signatures can
+still produce a trust-only update when you pass
+`--allow-signer-change --public-key <PUBLIC_KEY_PATH>`. `--preview` and
+`--fail-on-changes` plan content and trust changes without installing. OCI
+candidates are still fetched because there is no digest-only planning
+primitive.
+
+`--allow-ref-change` permits a repository move. Even when the digest is
+unchanged, an allowed move follows the complete pinned install path so that the
+installed record, resolved reference, signature bundle, and trust decision
+remain aligned. `--allow-signer-change` permits supported trust transitions.
+For a key-pair re-anchor, it must be combined with
+`--public-key <PUBLIC_KEY_PATH>`; a replacement key without signer-change
+consent is rejected. Public-key re-anchoring applies only to OCI registry
+artifacts, so Git and local-store entries selected by the same request report a
+validation failure; target OCI plugins by name when a project mixes source
+types. Upgrade tries the recorded key first and retains it when it verifies.
+Only a conclusive mismatch allows the replacement key or the existing keyless
+transition policy to be considered. Registry, transport, and context failures
+do not count as signer evidence and leave the old anchor unchanged.
+
+A successful signature-only refresh records `trust-updated`; changing the
+anchor records `trust_anchor_changed`. Both update the stored bundle and lock
+trust state without reinstalling unchanged content. The lock update is
+compare-and-swap protected against a concurrently changed plan.
 An unsigned candidate under an entry that records a signer is not a trust
 transition but a failure (`unsigned-rejected`): upgrade has no unsigned-consent
 flag, and `--allow-signer-change` re-verifies from scratch, which an unsigned
@@ -237,10 +268,19 @@ For a key-pair-signed OCI artifact, the first project install requires
 SPKI representation in the lock entry. A registry entry with any supported
 catalog provenance constraint cannot be installed with `--public-key` because
 a key-pair signature carries no certificate identity that can satisfy the
-catalog policy. Sync and upgrade reuse the pinned key; they do not take another
-key flag. A different key cannot be auto-adopted or substituted with
-`--allow-signer-change`: changing to an arbitrary key requires removing the
-existing lock anchor and reinstalling explicitly.
+catalog policy. Sync normally reuses the pinned key. An unmanaged OCI install
+can be adopted with `sync --adopt --public-key <PUBLIC_KEY_PATH>` after its
+stored bundle and installed digest verify against that key. Upgrade can replace
+an existing anchor only when the caller explicitly combines
+`--allow-signer-change` with the new public key and the candidate verifies
+against it.
+
+Re-anchor decisions use one complete OCI signature snapshot. ToolHive first
+tests the recorded key against that snapshot, then considers a replacement
+anchor only after a conclusive mismatch. Discovery or retrieval failures abort
+the decision instead of presenting a partial bundle set as proof of a signer
+change. Because OCI signature attachments can change independently of content,
+the same rule applies to digest-pinned and same-digest upgrades.
 
 The [skills trust tiers](12-skills-system.md#trust-tiers) explain why key-pair
 signing provides lower assurance than keyless signing; the same limits apply to

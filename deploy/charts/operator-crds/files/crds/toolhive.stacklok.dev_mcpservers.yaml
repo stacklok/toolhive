@@ -1675,6 +1675,7 @@ spec:
                 type: array
                 x-kubernetes-list-map-keys:
                 - name
+                - key
                 x-kubernetes-list-type: map
               serviceAccount:
                 description: |-
@@ -3619,6 +3620,7 @@ spec:
                 type: array
                 x-kubernetes-list-map-keys:
                 - name
+                - key
                 x-kubernetes-list-type: map
               serviceAccount:
                 description: |-

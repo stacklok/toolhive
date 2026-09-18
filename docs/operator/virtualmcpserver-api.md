@@ -388,7 +388,7 @@ Defines operational settings like timeouts and health checks.
 **Fields**:
 - `logLevel` (string, optional): Log level for the Virtual MCP server. Set to "debug" to enable debug logging.
 - `timeouts` (TimeoutConfig, optional): Timeout configuration
-- `failureHandling` (FailureHandlingConfig, optional): Failure handling configuration
+- `failureHandling` (FailureHandlingConfig, optional): Failure handling configuration (`sessionInitTimeout` bounds client `initialize`; unset inherits `healthCheckTimeout`)
 
 **Example**:
 ```yaml
@@ -684,6 +684,18 @@ status:
     promptCount: 2
     compositeToolCount: 1
 ```
+
+## Health, Ready, and initialize
+
+These three signals mean different things:
+
+| Signal | What it means | What it does not mean |
+| --- | --- | --- |
+| `GET /health` | Process is up (liveness). Always 200 if the HTTP server answers. | A new MCP session can `initialize` before your gateway times out. |
+| CR `Ready` / backend `Healthy` | Last `ListCapabilities` probe succeeded within `healthCheckTimeout`. | The next client `initialize` will finish in that same budget. |
+| Client `initialize` | A new session connected to backends (best-effort). Bounded by `sessionInitTimeout` (defaults to `healthCheckTimeout`, then 10s). | Every backend completed the full handshake. Slow ones are skipped when the budget expires. |
+
+Set `spec.config.operational.failureHandling.sessionInitTimeout` (or, if unset, `healthCheckTimeout`) below the client or gateway timeout so initialize cannot hang with a 0-byte response. Tune `healthCheckTimeout` for probe cadence independently of how long a new session waits for backends.
 
 ## Validation
 

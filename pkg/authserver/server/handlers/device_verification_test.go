@@ -69,12 +69,14 @@ func setupDeviceVerificationHandler(t *testing.T) (*Handler, *mockIDPProvider) {
 	return h, mockUpstream
 }
 
-// issueDeviceCode drives POST /oauth/device_authorization for the given
-// client and returns the device_code/user_code pair.
-func issueDeviceCode(t *testing.T, h *Handler, clientID string) (deviceCode, userCode string) {
+// issueDeviceCode drives POST /oauth/device_authorization for the
+// "device-client" client registered by setupDeviceVerificationHandler (and
+// the equivalent client every test in this file registers directly) and
+// returns the device_code/user_code pair.
+func issueDeviceCode(t *testing.T, h *Handler) (deviceCode, userCode string) {
 	t.Helper()
 
-	form := url.Values{"client_id": {clientID}, "scope": {"openid"}}
+	form := url.Values{"client_id": {"device-client"}, "scope": {"openid"}}
 	req := httptest.NewRequest(http.MethodPost, "/oauth/device_authorization", strings.NewReader(form.Encode()))
 	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
 	rec := httptest.NewRecorder()
@@ -112,7 +114,7 @@ func TestDeviceVerificationHandler_RendersForm(t *testing.T) {
 func TestDeviceVerificationFlow_ApproveHappyPath(t *testing.T) {
 	t.Parallel()
 	h, mockUpstream := setupDeviceVerificationHandler(t)
-	deviceCode, userCode := issueDeviceCode(t, h, "device-client")
+	deviceCode, userCode := issueDeviceCode(t, h)
 
 	// Step 1: submit the user_code.
 	submitForm := url.Values{"user_code": {userCode}}
@@ -150,6 +152,17 @@ func TestDeviceVerificationFlow_ApproveHappyPath(t *testing.T) {
 	assert.NotEmpty(t, device.ResolvedUserID)
 	assert.Equal(t, "Ada Lovelace", device.ResolvedUserName)
 	assert.Equal(t, "ada@example.com", device.ResolvedUserEmail)
+	require.NotEmpty(t, device.SessionID)
+
+	// The upstream tokens exchanged during login must be retrievable under
+	// the device grant's final session id -- otherwise any downstream
+	// consumer that looks up upstream tokens by session id (token
+	// injection, refresh) finds nothing for this session.
+	tokens, err := h.storage.GetUpstreamTokens(context.Background(), device.SessionID, "test-upstream")
+	require.NoError(t, err)
+	assert.Equal(t, "upstream-access-token", tokens.AccessToken)
+	assert.Equal(t, device.ResolvedUserID, tokens.UserID)
+	assert.Equal(t, "device-client", tokens.ClientID)
 
 	// The confirm_token is single-use.
 	replayRec := httptest.NewRecorder()
@@ -160,7 +173,7 @@ func TestDeviceVerificationFlow_ApproveHappyPath(t *testing.T) {
 func TestDeviceVerificationFlow_Deny(t *testing.T) {
 	t.Parallel()
 	h, mockUpstream := setupDeviceVerificationHandler(t)
-	deviceCode, userCode := issueDeviceCode(t, h, "device-client")
+	deviceCode, userCode := issueDeviceCode(t, h)
 
 	submitForm := url.Values{"user_code": {userCode}}
 	submitReq := httptest.NewRequest(http.MethodPost, "/oauth/device", strings.NewReader(submitForm.Encode()))
@@ -215,6 +228,51 @@ func TestDeviceVerificationSubmitHandler_InvalidUserCode(t *testing.T) {
 	assert.Contains(t, rec.Body.String(), "invalid or has expired")
 }
 
+// TestDeviceVerificationSubmitHandler_RequiresExactlyOneUpstream asserts that
+// a multi-upstream deployment fails loudly at submit time rather than
+// silently authenticating against whichever upstream happens to be
+// configured first -- device flow has no client_id/redirect_uri of its own
+// to route per-client the way AuthorizeHandler does.
+func TestDeviceVerificationSubmitHandler_RequiresExactlyOneUpstream(t *testing.T) {
+	t.Parallel()
+
+	stor := storage.NewMemoryStorage()
+	ctx := context.Background()
+	client := &fosite.DefaultClient{
+		ID:         "device-client",
+		GrantTypes: []string{oauthproto.GrantTypeDeviceCode},
+		Scopes:     []string{"openid"},
+		Public:     true,
+	}
+	require.NoError(t, stor.RegisterClient(ctx, client))
+
+	fositeConfig := &fosite.Config{}
+	provider := fosite.NewOAuth2Provider(stor, fositeConfig)
+	config := &server.AuthorizationServerConfig{
+		Config:            fositeConfig,
+		ScopesSupported:   []string{"openid"},
+		DeviceFlowEnabled: true,
+	}
+	upstreams := []NamedUpstream{
+		{Name: "upstream-a", Provider: &mockIDPProvider{authorizationURL: "https://a.example.com/authorize"}},
+		{Name: "upstream-b", Provider: &mockIDPProvider{authorizationURL: "https://b.example.com/authorize"}},
+	}
+	h, err := NewHandler(provider, config, stor, upstreams)
+	require.NoError(t, err)
+
+	_, userCode := issueDeviceCode(t, h)
+
+	form := url.Values{"user_code": {userCode}}
+	req := httptest.NewRequest(http.MethodPost, "/oauth/device", strings.NewReader(form.Encode()))
+	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	rec := httptest.NewRecorder()
+
+	h.DeviceVerificationSubmitHandler(rec, req)
+
+	assert.Equal(t, http.StatusInternalServerError, rec.Code)
+	assert.Contains(t, rec.Body.String(), "not configured for device-flow sign-in")
+}
+
 func TestCallbackHandler_UnknownStateForDeviceLogin(t *testing.T) {
 	t.Parallel()
 	h, _ := setupDeviceVerificationHandler(t)
@@ -225,6 +283,47 @@ func TestCallbackHandler_UnknownStateForDeviceLogin(t *testing.T) {
 	h.CallbackHandler(rec, req)
 
 	assert.Equal(t, http.StatusBadRequest, rec.Code)
+}
+
+// TestCallbackHandler_UpstreamErrorForDeviceLogin covers the upstream IDP
+// itself erroring (e.g. the human clicked "Deny" at the upstream login
+// screen) mid device-flow login, before /oauth/callback ever receives a
+// code. Without a device-flow branch in handleUpstreamError, this fell
+// through to a generic 502 with the DeviceRequest left Pending -- the
+// polling client would see authorization_pending until the device_code
+// itself expired, instead of the denial surfacing immediately.
+func TestCallbackHandler_UpstreamErrorForDeviceLogin(t *testing.T) {
+	t.Parallel()
+	h, mockUpstream := setupDeviceVerificationHandler(t)
+	deviceCode, userCode := issueDeviceCode(t, h)
+
+	submitForm := url.Values{"user_code": {userCode}}
+	submitReq := httptest.NewRequest(http.MethodPost, "/oauth/device", strings.NewReader(submitForm.Encode()))
+	submitReq.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	submitRec := httptest.NewRecorder()
+	h.DeviceVerificationSubmitHandler(submitRec, submitReq)
+	require.Equal(t, http.StatusFound, submitRec.Code)
+	state := mockUpstream.capturedState
+	require.NotEmpty(t, state)
+
+	req := httptest.NewRequest(http.MethodGet,
+		"/oauth/callback?error=access_denied&error_description=user+denied&state="+state, nil)
+	rec := httptest.NewRecorder()
+	h.CallbackHandler(rec, req)
+
+	assert.Equal(t, http.StatusOK, rec.Code, "body: %s", rec.Body.String())
+	assert.Contains(t, rec.Body.String(), "Sign-in failed")
+
+	device, err := h.deviceStorage.LoadDeviceRequestByDeviceCode(context.Background(), deviceCode)
+	require.NoError(t, err)
+	assert.Equal(t, storage.DeviceRequestStatusDenied, device.Status)
+
+	// The pending device login is single-use: it must not still satisfy a
+	// legitimate callback after being consumed by the error path above.
+	replayReq := httptest.NewRequest(http.MethodGet, "/oauth/callback?code=upstream-code&state="+state, nil)
+	replayRec := httptest.NewRecorder()
+	h.CallbackHandler(replayRec, replayReq)
+	assert.Equal(t, http.StatusBadRequest, replayRec.Code)
 }
 
 func TestDeviceVerificationConfirmHandler_UnknownToken(t *testing.T) {
@@ -251,7 +350,7 @@ func TestDeviceVerificationConfirmHandler_UnknownToken(t *testing.T) {
 func TestDeviceVerificationConfirmHandler_ConcurrentReplay(t *testing.T) {
 	t.Parallel()
 	h, mockUpstream := setupDeviceVerificationHandler(t)
-	deviceCode, userCode := issueDeviceCode(t, h, "device-client")
+	deviceCode, userCode := issueDeviceCode(t, h)
 
 	submitForm := url.Values{"user_code": {userCode}}
 	submitReq := httptest.NewRequest(http.MethodPost, "/oauth/device", strings.NewReader(submitForm.Encode()))

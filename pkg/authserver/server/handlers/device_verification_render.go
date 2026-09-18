@@ -245,11 +245,19 @@ func initials(name, email string) string {
 	if len(fields) == 0 {
 		return "?"
 	}
-	out := strings.ToUpper(fields[0][:1])
+	out := firstRuneUpper(fields[0])
 	if len(fields) > 1 && fields[1] != "" {
-		out += strings.ToUpper(fields[1][:1])
+		out += firstRuneUpper(fields[1])
 	}
 	return out
+}
+
+// firstRuneUpper returns the uppercased first Unicode rune of s. Slicing the
+// first byte instead (s[:1]) would split a multi-byte rune and render
+// invalid UTF-8/replacement characters for non-ASCII names.
+func firstRuneUpper(s string) string {
+	r := []rune(s)
+	return strings.ToUpper(string(r[:1]))
 }
 
 func renderVerifyForm(w http.ResponseWriter, status int, userCode, errMsg string) {

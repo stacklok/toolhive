@@ -112,10 +112,14 @@ type Handler struct {
 	// DeviceRequest by the human-entered user_code. RFC 8628 §5.4 requires
 	// throttling this lookup: user_code is drawn from a bounded charset over a
 	// fixed-length code with a 10-minute TTL, so an unthrottled endpoint is a
-	// brute-force guessing oracle. Same per-process (not per-IP) reasoning as
-	// registerLimiter. Nil when device flow is disabled; OAuthRoutes never
-	// registers the route in that case, so it is never dereferenced.
-	deviceVerificationLimiter *rate.Limiter
+	// brute-force guessing oracle. Unlike registerLimiter, this IS per-IP
+	// (see perIPLimiter's doc comment for why): this endpoint is a
+	// human-facing login page, not a machine-driven one-shot call, so a
+	// shared process-wide bucket would let one caller starve every other
+	// concurrent device-flow login. Nil when device flow is disabled;
+	// OAuthRoutes never registers the route in that case, so it is never
+	// dereferenced.
+	deviceVerificationLimiter *perIPLimiter
 }
 
 // UpstreamFilter narrows the authorization chain to a subset of the configured
@@ -244,10 +248,10 @@ func NewHandler(
 		// unauthenticated persisted-state minting, just reached through
 		// /oauth/device_authorization instead of /oauth/register.
 		h.deviceAuthorizationLimiter = rate.NewLimiter(rate.Limit(1), 5)
-		// Same rate as deviceAuthorizationLimiter: this gate protects the
-		// user_code-guessing surface at /oauth/device instead of the
-		// device_code/user_code-minting surface at /oauth/device_authorization.
-		h.deviceVerificationLimiter = rate.NewLimiter(rate.Limit(1), 5)
+		// Same rate as deviceAuthorizationLimiter, but per-IP rather than
+		// per-process -- see deviceVerificationLimiter's field doc comment
+		// and perIPLimiter's doc comment for why.
+		h.deviceVerificationLimiter = newPerIPLimiter(rate.Limit(1), 5)
 		deviceStorage, ok := storage.Unwrap(stor).(storage.DeviceCodeStorage)
 		if !ok {
 			return nil, fmt.Errorf(
@@ -363,11 +367,13 @@ func (h *Handler) rateLimitDeviceAuthorization(next http.HandlerFunc) http.Handl
 
 // rateLimitDeviceVerification gates the unauthenticated POST /oauth/device
 // endpoint: over the limit it returns 429 with a Retry-After hint rather than
-// running another user_code lookup. Mirrors rateLimitDeviceAuthorization
-// exactly, including its nil-tolerant shape.
+// running another user_code lookup. Per-IP (see perIPLimiter's doc comment
+// for why this endpoint differs from rateLimitDeviceAuthorization's
+// per-process gate), otherwise the same shape, including tolerating a nil
+// limiter when device flow is disabled.
 func (h *Handler) rateLimitDeviceVerification(next http.HandlerFunc) http.HandlerFunc {
 	return func(w http.ResponseWriter, req *http.Request) {
-		if h.deviceVerificationLimiter != nil && !h.deviceVerificationLimiter.Allow() {
+		if h.deviceVerificationLimiter != nil && !h.deviceVerificationLimiter.allow(clientIP(req)) {
 			w.Header().Set("Retry-After", "1")
 			http.Error(w, "rate limit exceeded, retry later", http.StatusTooManyRequests)
 			return

@@ -17,6 +17,7 @@ import (
 	"github.com/ory/fosite/compose"
 
 	oauthserver "github.com/stacklok/toolhive/pkg/authserver/server"
+	"github.com/stacklok/toolhive/pkg/authserver/server/deviceflow"
 	"github.com/stacklok/toolhive/pkg/authserver/server/handlers"
 	"github.com/stacklok/toolhive/pkg/authserver/server/registration"
 	"github.com/stacklok/toolhive/pkg/authserver/server/tokenexchange"
@@ -223,6 +224,8 @@ func newServer(ctx context.Context, cfg Config, stor storage.Storage) (_ *server
 		ForceConfidentialRedirectURIs:             cfg.ForceConfidentialRedirectURIs,
 		DisableTokenExchange:                      cfg.DisableTokenExchange,
 		JWTBearerGrantEnabled:                     JWTBearerGrantEnabled(cfg.TrustedIssuers),
+		DeviceFlowEnabled:                         cfg.DeviceFlowEnabled,
+		DeviceCodeInterval:                        cfg.DeviceCodeInterval,
 		SPIFFEClientResolver:                      newSPIFFEClientResolver(spiffeRegistry, stor),
 	}
 	authServerConfig, err := oauthserver.NewAuthorizationServerConfig(oauthParams)
@@ -493,25 +496,58 @@ func buildProvider(
 		factories = append(factories, tokenExchangeFactory)
 	}
 	if jwtBearerEnabled {
-		jwtBearerFactory, err := tokenexchange.JWTBearerIssuanceFactory(cfg.TrustedIssuers, shared)
+		jwtBearerFactories, err := buildJWTBearerFactories(cfg.TrustedIssuers, shared)
 		if err != nil {
-			return nil, nil, fmt.Errorf("failed to create JWT-bearer factory: %w", err)
+			return nil, nil, err
 		}
-		factories = append(factories, jwtBearerFactory)
-		// The bound ID-JAG handler rides the same per-issuer JWT-bearer policy:
-		// enabling the grant enables both assertion forms, split by JOSE typ
-		// (plain assertions to JWTBearerHandler, oauth-id-jag+jwt to IDJAGHandler).
-		idJAGFactory, err := tokenexchange.IDJAGIssuanceFactory(cfg.TrustedIssuers, shared)
+		factories = append(factories, jwtBearerFactories...)
+	}
+	if cfg.DeviceFlowEnabled {
+		deviceFlowFactory, err := buildDeviceFlowFactory(cfg, stor)
 		if err != nil {
-			return nil, nil, fmt.Errorf("failed to create ID-JAG factory: %w", err)
+			return nil, nil, err
 		}
-		factories = append(factories, idJAGFactory)
+		factories = append(factories, deviceFlowFactory)
 	}
 	provider, err := createProvider(authServerConfig, stor, factories...)
 	if err != nil {
 		return nil, nil, err
 	}
 	return provider, shared, nil
+}
+
+// buildJWTBearerFactories builds the RFC 7523 JWT-bearer factory together
+// with the bound ID-JAG factory. The bound ID-JAG handler rides the same
+// per-issuer JWT-bearer policy: enabling the grant enables both assertion
+// forms, split by JOSE typ (plain assertions to JWTBearerHandler,
+// oauth-id-jag+jwt to IDJAGHandler).
+func buildJWTBearerFactories(
+	trustedIssuers []tokenexchange.TrustedIssuer, shared *tokenexchange.MultiIssuerTokenValidator,
+) ([]oauthserver.Factory, error) {
+	jwtBearerFactory, err := tokenexchange.JWTBearerIssuanceFactory(trustedIssuers, shared)
+	if err != nil {
+		return nil, fmt.Errorf("failed to create JWT-bearer factory: %w", err)
+	}
+	idJAGFactory, err := tokenexchange.IDJAGIssuanceFactory(trustedIssuers, shared)
+	if err != nil {
+		return nil, fmt.Errorf("failed to create ID-JAG factory: %w", err)
+	}
+	return []oauthserver.Factory{jwtBearerFactory, idJAGFactory}, nil
+}
+
+// buildDeviceFlowFactory builds the RFC 8628 device authorization grant
+// factory, validating that stor supports the device-code storage the grant
+// requires.
+func buildDeviceFlowFactory(cfg Config, stor storage.Storage) (oauthserver.Factory, error) {
+	deviceStore, ok := storage.Unwrap(stor).(storage.DeviceCodeStorage)
+	if !ok {
+		return nil, fmt.Errorf("device flow enabled but storage backend %T does not implement storage.DeviceCodeStorage", stor)
+	}
+	interval := cfg.DeviceCodeInterval
+	if interval <= 0 {
+		interval = oauthserver.DefaultDeviceCodeInterval
+	}
+	return deviceflow.Factory(deviceStore, interval), nil
 }
 
 // buildHandlerOptions assembles the handlers.Option list for NewHandler: the

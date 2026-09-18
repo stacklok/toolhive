@@ -1461,6 +1461,15 @@ type AuthenticationRunConfig struct {
 	// via RFC 8693 token exchange. Specified as a Go duration string (e.g., "15m").
 	// If empty, defaults to 15 minutes.
 	DelegationTokenLifespan OptString `json:"delegation_token_lifespan"`
+	// DeviceFlowEnabled enables the RFC 8628 OAuth 2.0 Device Authorization
+	// Grant: POST /oauth/device_authorization is mounted and
+	// urn:ietf:params:oauth:grant-type:device_code is registered at the
+	// token endpoint and advertised in discovery. The minimum polling
+	// interval (RFC 8628 Section 3.5) is fixed at
+	// oauthserver.DefaultDeviceCodeInterval; this is a deliberate
+	// simplification to keep this config surface minimal — a future
+	// increment may add an override.
+	DeviceFlowEnabled OptBool `json:"device_flow_enabled"`
 	// DisableUpstreamTokenInjection prevents the upstream swap middleware from being added.
 	// When true, the embedded auth server handles OAuth flows for clients, but instead of
 	// injecting upstream IdP tokens the proxy strips the client's credential headers
@@ -1592,6 +1601,11 @@ func (s *AuthenticationRunConfig) GetDelegationTokenLifespan() OptString {
 	return s.DelegationTokenLifespan
 }
 
+// GetDeviceFlowEnabled returns the value of DeviceFlowEnabled.
+func (s *AuthenticationRunConfig) GetDeviceFlowEnabled() OptBool {
+	return s.DeviceFlowEnabled
+}
+
 // GetDisableUpstreamTokenInjection returns the value of DisableUpstreamTokenInjection.
 func (s *AuthenticationRunConfig) GetDisableUpstreamTokenInjection() OptBool {
 	return s.DisableUpstreamTokenInjection
@@ -1705,6 +1719,11 @@ func (s *AuthenticationRunConfig) SetDelegateClients(val []AuthenticationDelegat
 // SetDelegationTokenLifespan sets the value of DelegationTokenLifespan.
 func (s *AuthenticationRunConfig) SetDelegationTokenLifespan(val OptString) {
 	s.DelegationTokenLifespan = val
+}
+
+// SetDeviceFlowEnabled sets the value of DeviceFlowEnabled.
+func (s *AuthenticationRunConfig) SetDeviceFlowEnabled(val OptBool) {
+	s.DeviceFlowEnabled = val
 }
 
 // SetDisableUpstreamTokenInjection sets the value of DisableUpstreamTokenInjection.

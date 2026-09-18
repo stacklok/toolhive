@@ -530,6 +530,7 @@ func TestJWTBearerHandler_ConsumeAssertionJWTErrors(t *testing.T) {
 				&mockAccessTokenStrategy{},
 				&mockAccessTokenStorage{},
 				resolvedIssuers,
+				true,
 			)
 			require.NoError(t, err)
 
@@ -562,7 +563,7 @@ func TestNewJWTBearerIssuanceHandler_RejectsMissingDependencies(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
-			h, err := newJWTBearerIssuanceHandler(validator, testTokenEndpoint, tt.consumer, nil, nil, nil, nil)
+			h, err := newJWTBearerIssuanceHandler(validator, testTokenEndpoint, tt.consumer, nil, nil, nil, nil, true)
 			require.Error(t, err)
 			assert.Contains(t, err.Error(), tt.wantErr)
 			assert.Nil(t, h)
@@ -610,6 +611,7 @@ func TestJWTBearerHandler_StampsNoUpstreamSessionClaim(t *testing.T) {
 		&mockAccessTokenStrategy{},
 		&mockAccessTokenStorage{},
 		resolvedIssuers,
+		true,
 	)
 	require.NoError(t, err)
 

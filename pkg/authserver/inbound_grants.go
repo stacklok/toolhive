@@ -40,7 +40,7 @@ type JWTBearerIssuerPolicyRunConfig struct {
 	AcceptedAudiences []string                     `json:"accepted_audiences,omitempty" yaml:"accepted_audiences,omitempty"`
 	// AcceptedAssertionTypes mirrors JWTBearerGrantConfig.AcceptedAssertionTypes
 	// for the canonical config path.
-	AcceptedAssertionTypes []tx.JWTBearerAssertionType `json:"accepted_assertion_types,omitempty" yaml:"accepted_assertion_types,omitempty"`
+	AcceptedAssertionTypes []tx.JWTBearerAssertionType `json:"accepted_assertion_types,omitempty" yaml:"accepted_assertion_types,omitempty"` //nolint:lll // struct tag cannot be wrapped
 }
 
 // InboundGrantCapabilities reports the effective grant families after normalization.

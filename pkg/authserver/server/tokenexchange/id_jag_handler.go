@@ -101,9 +101,15 @@ func newIDJAGIssuanceHandler(
 	// existing "issuer not enabled for this grant" rejection in
 	// HandleTokenEndpointRequest already covers the non-opted-in case with no
 	// new error branch.
+	//
+	// requireAtLeastOneIssuer is false: this handler must still register with
+	// fosite even when zero issuers currently accept id_jag, so a recognized
+	// ID-JAG assertion is claimed and rejected with a precise hint rather than
+	// falling through every registered handler to fosite's generic
+	// invalid_request.
 	core, err := newJWTBearerIssuanceHandler(
 		validator, tokenEndpoint, consumer, config, strategy, tokenStorage,
-		IssuersAcceptingAssertionType(trustedIssuers, JWTBearerAssertionTypeIDJAG))
+		IssuersAcceptingAssertionType(trustedIssuers, JWTBearerAssertionTypeIDJAG), false)
 	if err != nil {
 		return nil, err
 	}
@@ -234,9 +240,13 @@ func (*IDJAGHandler) checkClientBinding(requester fosite.AccessRequester, claims
 	return nil
 }
 
-// IDJAGIssuanceFactory builds the production bound ID-JAG handler. It is
-// registered only when a trusted issuer explicitly accepts ID-JAG assertions.
-// See JWTBearerIssuanceFactory for the shared validator's ownership contract.
+// IDJAGIssuanceFactory builds the production bound ID-JAG handler. Unlike
+// JWTBearerIssuanceFactory, it is registered whenever the jwt-bearer grant
+// type is enabled at all, even if no trusted issuer currently accepts
+// ID-JAG assertions — so a recognized ID-JAG gets IDJAGHandler's precise
+// "issuer is not enabled for this grant" rejection instead of falling
+// through to fosite's generic invalid_request. See JWTBearerIssuanceFactory
+// for the shared validator's ownership contract.
 func IDJAGIssuanceFactory(trustedIssuers []TrustedIssuer, shared *MultiIssuerTokenValidator) (server.Factory, error) {
 	return jwtBearerGrantFactory(trustedIssuers, shared,
 		func(

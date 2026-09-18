@@ -898,8 +898,12 @@ Enforcement works by construction, not by a separate check: an issuer whose
 `acceptedAssertionTypes` does not name a given form is simply left out of
 that form's handler's per-issuer policy map, so it hits the same "issuer not
 enabled for this grant" rejection as an issuer that was never configured at
-all. When no trusted issuer accepts a given form, that form's handler is not
-registered at all.
+all. When no trusted issuer accepts the plain `jwt_bearer` form, that
+handler is not registered at all. The bound ID-JAG handler is the exception:
+it stays registered whenever the jwt-bearer grant type is enabled, even with
+an empty policy map, so a well-formed `oauth-id-jag+jwt` assertion still
+gets that precise rejection instead of falling through every registered
+handler to fosite's generic `invalid_request`.
 
 Two things to also configure when including `id_jag` in
 `acceptedAssertionTypes`, or ID-JAG acceptance fails or over-grants silently:

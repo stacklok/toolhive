@@ -314,6 +314,50 @@ func TestIDJAGIssuanceFactory_RequiresSharedValidator(t *testing.T) {
 	assert.Contains(t, err.Error(), "shared validator")
 }
 
+// TestIDJAGIssuanceHandler_RegistersWithNoOptedInIssuers proves the
+// diagnostics fix: unlike the plain JWTBearerHandler (which
+// newJWTBearerIssuanceHandler refuses to build with an empty policy map),
+// newIDJAGIssuanceHandler must still construct successfully when zero
+// trusted issuers accept id_jag assertions, so a well-formed
+// "oauth-id-jag+jwt" assertion is claimed and rejected with the precise
+// "issuer is not enabled for this grant" hint rather than falling through
+// every registered fosite handler to the generic invalid_request.
+func TestIDJAGIssuanceHandler_RegistersWithNoOptedInIssuers(t *testing.T) {
+	t.Parallel()
+
+	resolved, err := ResolveJWTBearerGrantPolicies([]TrustedIssuer{{
+		IssuerURL:              idJAGTestIssuer,
+		AllowedDelegateClients: []string{anyDelegateClient},
+		JWTBearerGrant: &JWTBearerGrantPolicy{
+			MaxAssertionAge: time.Hour.String(),
+			SubjectBindings: []JWTBearerSubjectBinding{
+				{Subject: idJAGTestSubject, AllowedResources: []string{idJAGTestResource}},
+			},
+			// AcceptedAssertionTypes deliberately left unset: defaults to
+			// jwt_bearer only, so no issuer accepts id_jag and the resolved
+			// policy map handed to newIDJAGIssuanceHandler is empty.
+		},
+	}})
+	require.NoError(t, err)
+
+	handler, err := newIDJAGIssuanceHandler(
+		&testJWTBearerAssertionValidator{claims: validIDJAGClaims()},
+		testTokenEndpoint,
+		&recordingAssertionConsumer{},
+		&fosite.Config{AccessTokenLifespan: time.Hour},
+		&mockAccessTokenStrategy{},
+		&mockAccessTokenStorage{},
+		IssuersAcceptingAssertionType(resolved, JWTBearerAssertionTypeIDJAG),
+	)
+	require.NoError(t, err, "the bound handler must register even with no opted-in issuers")
+
+	tj := newTestJWKS(t)
+	req := newIDJAGRequest(t, tj, idJAGTestClientID)
+	assert.True(t, handler.CanHandleTokenEndpointRequest(context.Background(), req),
+		"a recognized ID-JAG assertion must still be claimed by the registered handler")
+	assertIssuerNotEnabled(t, handler.HandleTokenEndpointRequest(context.Background(), req))
+}
+
 // assertIssuerNotEnabled asserts err is the "issuer not enabled for this
 // grant" invalid_grant rejection both handlers return for an issuer left out
 // of their policy map.
@@ -439,6 +483,7 @@ func TestJWTBearerAssertionTypeGating(t *testing.T) {
 			&fosite.Config{AccessTokenLifespan: time.Hour},
 			&mockAccessTokenStrategy{}, &mockAccessTokenStorage{},
 			IssuersAcceptingAssertionType(resolved, JWTBearerAssertionTypeJWTBearer),
+			true,
 		)
 		require.NoError(t, err)
 		return handler

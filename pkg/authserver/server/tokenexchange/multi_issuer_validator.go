@@ -157,7 +157,7 @@ type JWTBearerGrantPolicy struct {
 	// authorizes a credential-free plain JWT-bearer assertion. Add an ID-JAG
 	// subject only when this issuer is also intended to mint plain assertions
 	// for that subject.
-	AcceptedAssertionTypes []JWTBearerAssertionType `json:"accepted_assertion_types,omitempty" yaml:"accepted_assertion_types,omitempty"`
+	AcceptedAssertionTypes []JWTBearerAssertionType `json:"accepted_assertion_types,omitempty" yaml:"accepted_assertion_types,omitempty"` //nolint:lll // struct tag cannot be wrapped
 
 	maxAssertionAge time.Duration
 }

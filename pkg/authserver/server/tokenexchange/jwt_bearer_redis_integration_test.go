@@ -63,6 +63,7 @@ func TestJWTBearerHandler_RedisBacked(t *testing.T) {
 		&mockAccessTokenStrategy{},
 		stor,
 		resolvedIssuers,
+		true,
 	)
 	require.NoError(t, err)
 

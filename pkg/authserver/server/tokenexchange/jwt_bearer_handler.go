@@ -75,7 +75,7 @@ func newJWTBearerHandler(validator JWTBearerAssertionValidator, tokenEndpoint st
 func newJWTBearerIssuanceHandler(
 	validator JWTBearerAssertionValidator, tokenEndpoint string, consumer storage.AssertionJWTConsumer,
 	config *fosite.Config, strategy oauth2.AccessTokenStrategy, tokenStorage oauth2.AccessTokenStorage,
-	trustedIssuers []TrustedIssuer,
+	trustedIssuers []TrustedIssuer, requireAtLeastOneIssuer bool,
 ) (*JWTBearerHandler, error) {
 	handler, err := newJWTBearerHandler(validator, tokenEndpoint)
 	if err != nil {
@@ -93,7 +93,14 @@ func newJWTBearerIssuanceHandler(
 			policies[issuer.IssuerURL] = issuer.JWTBearerGrant
 		}
 	}
-	if len(policies) == 0 {
+	// The bound ID-JAG handler passes false: it must still be registered with
+	// fosite (so CanHandleTokenEndpointRequest can claim a recognized
+	// "oauth-id-jag+jwt" assertion) even when no issuer currently accepts
+	// id_jag, so HandleTokenEndpointRequest's policy-map lookup can reject it
+	// with a precise "issuer is not enabled for this grant" hint instead of
+	// the request falling through every registered handler to fosite's
+	// generic invalid_request.
+	if requireAtLeastOneIssuer && len(policies) == 0 {
 		return nil, errors.New("JWT-bearer issuance requires at least one enabled trusted issuer")
 	}
 	handler.HandleHelper = &oauth2.HandleHelper{
@@ -439,7 +446,7 @@ func JWTBearerIssuanceFactory(trustedIssuers []TrustedIssuer, shared *MultiIssue
 			// newIDJAGIssuanceHandler's filter for the ID-JAG side.
 			return newJWTBearerIssuanceHandler(
 				validator, tokenEndpoint, consumer, config, strategy, tokenStorage,
-				IssuersAcceptingAssertionType(resolvedIssuers, JWTBearerAssertionTypeJWTBearer))
+				IssuersAcceptingAssertionType(resolvedIssuers, JWTBearerAssertionTypeJWTBearer), true)
 		})
 }
 

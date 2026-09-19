@@ -1026,7 +1026,7 @@ func (v *MultiIssuerTokenValidator) lookupJWKS(
 // require hand-mapping every key type's fields (RSA, EC, OKP, ...) between
 // jwk.Key and jose.JSONWebKey.
 //
-// UnsupportedKey placeholders are dropped first. jwx v4 retains unparseable
+// UnsupportedKey placeholders are dropped first. jwx v4 retains unparsable
 // JWKS entries (unknown kty, RSA below the 2048-bit floor, malformed
 // parameters) as placeholders whose original JSON round-trips losslessly.
 // Feeding those to go-jose either fails the whole set or rehydrates a key

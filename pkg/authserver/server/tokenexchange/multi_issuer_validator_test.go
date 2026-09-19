@@ -2970,7 +2970,7 @@ func mustRSAJWKJSON(t *testing.T, bits int, kid string) string {
 }
 
 // TestBridgeJWKSet_DropsUnsupportedKeys pins the conversion that lookupJWKS
-// uses to hand a jwx set to go-jose. v4 retains unparseable JWKS entries as
+// uses to hand a jwx set to go-jose. v4 retains unparsable JWKS entries as
 // UnsupportedKey placeholders whose original JSON round-trips losslessly;
 // go-jose then either rejects the whole set (unknown kty) or accepts a key
 // jwx already refused (RSA below the 2048-bit floor). Dropping placeholders

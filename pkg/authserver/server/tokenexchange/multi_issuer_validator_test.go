@@ -6,10 +6,16 @@ package tokenexchange
 import (
 	"bytes"
 	"context"
+	"crypto/ecdsa"
+	"crypto/elliptic"
+	"crypto/rand"
+	"crypto/rsa"
+	"encoding/base64"
 	"encoding/json"
 	"encoding/pem"
 	"fmt"
 	"log/slog"
+	"math/big"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -23,6 +29,7 @@ import (
 
 	"github.com/go-jose/go-jose/v4"
 	"github.com/go-jose/go-jose/v4/jwt"
+	"github.com/lestrrat-go/jwx/v4/jwk"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
@@ -2931,4 +2938,97 @@ func TestMultiIssuerTokenValidator_RetryAfterFetchFailureRefreshes(t *testing.T)
 	result, err := validator.Validate(context.Background(), tokenWithID("jti-2"))
 	require.NoError(t, err, "retry after a registered-but-failed fetch must refresh, not re-register")
 	require.NotNil(t, result)
+}
+
+func parseJWKS(t *testing.T, keys ...string) jwk.Set {
+	t.Helper()
+	raw := fmt.Sprintf(`{"keys":[%s]}`, strings.Join(keys, ","))
+	set, err := jwk.Parse([]byte(raw))
+	require.NoError(t, err)
+	return set
+}
+
+func mustECJWKJSON(t *testing.T, kid string) string {
+	t.Helper()
+	priv, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
+	require.NoError(t, err)
+	key, err := jwk.Import[jwk.Key](&priv.PublicKey)
+	require.NoError(t, err)
+	require.NoError(t, key.Set(jwk.KeyIDKey, kid))
+	b, err := json.Marshal(key)
+	require.NoError(t, err)
+	return string(b)
+}
+
+func mustRSAJWKJSON(t *testing.T, bits int, kid string) string {
+	t.Helper()
+	priv, err := rsa.GenerateKey(rand.Reader, bits)
+	require.NoError(t, err)
+	n := base64.RawURLEncoding.EncodeToString(priv.N.Bytes())
+	e := base64.RawURLEncoding.EncodeToString(big.NewInt(int64(priv.PublicKey.E)).Bytes())
+	return fmt.Sprintf(`{"kty":"RSA","kid":%q,"n":%q,"e":%q}`, kid, n, e)
+}
+
+// TestBridgeJWKSet_DropsUnsupportedKeys pins the conversion that lookupJWKS
+// uses to hand a jwx set to go-jose. v4 retains unparseable JWKS entries as
+// UnsupportedKey placeholders whose original JSON round-trips losslessly;
+// go-jose then either rejects the whole set (unknown kty) or accepts a key
+// jwx already refused (RSA below the 2048-bit floor). Dropping placeholders
+// keeps usable keys and applies the same floor on the token-exchange path.
+func TestBridgeJWKSet_DropsUnsupportedKeys(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name       string
+		keys       []string
+		wantKids   []string
+		wantEmpty  bool
+		wantUnsupp int
+	}{
+		{
+			name:       "unknown kty next to a usable EC key is dropped, not fatal",
+			keys:       []string{mustECJWKJSON(t, "good"), `{"kty":"UNKNOWN","kid":"pq"}`},
+			wantKids:   []string{"good"},
+			wantUnsupp: 1,
+		},
+		{
+			name:       "RSA below 2048 bits is dropped rather than rehydrated for go-jose",
+			keys:       []string{mustRSAJWKJSON(t, 1024, "weak")},
+			wantEmpty:  true,
+			wantUnsupp: 1,
+		},
+		{
+			name:     "usable RSA is kept",
+			keys:     []string{mustRSAJWKJSON(t, 2048, "ok")},
+			wantKids: []string{"ok"},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			set := parseJWKS(t, tt.keys...)
+			gotUnsupp := 0
+			for _, key := range set.All() {
+				if jwk.IsUnsupportedKey(key) {
+					gotUnsupp++
+				}
+			}
+			require.Equal(t, tt.wantUnsupp, gotUnsupp)
+
+			jwks, err := bridgeJWKSet(set)
+			require.NoError(t, err)
+			if tt.wantEmpty {
+				assert.Empty(t, jwks.Keys)
+				return
+			}
+			require.Len(t, jwks.Keys, len(tt.wantKids))
+			gotKids := make([]string, 0, len(jwks.Keys))
+			for _, k := range jwks.Keys {
+				gotKids = append(gotKids, k.KeyID)
+			}
+			assert.Equal(t, tt.wantKids, gotKids)
+		})
+	}
 }

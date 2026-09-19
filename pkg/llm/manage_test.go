@@ -6,13 +6,16 @@ package llm
 import (
 	"bytes"
 	"context"
+	"encoding/json"
 	"errors"
+	"fmt"
 	"strings"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 	"go.uber.org/mock/gomock"
+	"gopkg.in/yaml.v3"
 
 	"github.com/stacklok/toolhive/pkg/secrets"
 	secretsmocks "github.com/stacklok/toolhive/pkg/secrets/mocks"
@@ -121,6 +124,23 @@ func TestConfig_SetFields(t *testing.T) {
 			opts: SetOptions{},
 			want: Config{GatewayURL: "https://gw.example.com", TLSSkipVerify: true},
 		},
+		{
+			name: "ExtendedTTLCache pointer true sets field",
+			opts: SetOptions{ExtendedTTLCache: boolPtr(true)},
+			want: Config{ExtendedTTLCache: true},
+		},
+		{
+			name: "ExtendedTTLCache pointer false clears field",
+			base: Config{ExtendedTTLCache: true},
+			opts: SetOptions{ExtendedTTLCache: boolPtr(false)},
+			want: Config{},
+		},
+		{
+			name: "nil ExtendedTTLCache pointer leaves existing value unchanged",
+			base: Config{ExtendedTTLCache: true},
+			opts: SetOptions{},
+			want: Config{ExtendedTTLCache: true},
+		},
 	}
 
 	for _, tt := range tests {
@@ -155,6 +175,9 @@ func TestConfig_SetFields(t *testing.T) {
 			}
 			if cfg.TLSSkipVerify != tt.want.TLSSkipVerify {
 				t.Errorf("TLSSkipVerify = %v, want %v", cfg.TLSSkipVerify, tt.want.TLSSkipVerify)
+			}
+			if cfg.ExtendedTTLCache != tt.want.ExtendedTTLCache {
+				t.Errorf("ExtendedTTLCache = %v, want %v", cfg.ExtendedTTLCache, tt.want.ExtendedTTLCache)
 			}
 		})
 	}
@@ -365,6 +388,23 @@ func TestConfig_Show(t *testing.T) {
 			},
 			absent: []string{"TLS Skip Verify"},
 		},
+		{
+			name: "extended TTL cache true state is visible",
+			cfg: Config{
+				GatewayURL:       "https://gw.example.com",
+				OIDC:             OIDCConfig{Issuer: "https://auth.example.com", ClientID: "client1"},
+				ExtendedTTLCache: true,
+			},
+			contains: []string{"Extended TTL cache: true"},
+		},
+		{
+			name: "extended TTL cache false state is visible",
+			cfg: Config{
+				GatewayURL: "https://gw.example.com",
+				OIDC:       OIDCConfig{Issuer: "https://auth.example.com", ClientID: "client1"},
+			},
+			contains: []string{"Extended TTL cache: false"},
+		},
 	}
 
 	for _, tt := range tests {
@@ -387,4 +427,32 @@ func TestConfig_Show(t *testing.T) {
 			}
 		})
 	}
+}
+
+func TestConfig_JSONShowsExtendedTTLCacheState(t *testing.T) {
+	t.Parallel()
+
+	for _, enabled := range []bool{false, true} {
+		t.Run(fmt.Sprintf("enabled=%t", enabled), func(t *testing.T) {
+			t.Parallel()
+			data, err := json.Marshal(Config{ExtendedTTLCache: enabled})
+			require.NoError(t, err)
+
+			var got map[string]any
+			require.NoError(t, json.Unmarshal(data, &got))
+			assert.Equal(t, enabled, got["extended_ttl_cache"])
+		})
+	}
+}
+
+func TestConfig_ExtendedTTLCacheYAMLRoundTrip(t *testing.T) {
+	t.Parallel()
+
+	data, err := yaml.Marshal(Config{ExtendedTTLCache: true})
+	require.NoError(t, err)
+	assert.Contains(t, string(data), "extended_ttl_cache: true")
+
+	var got Config
+	require.NoError(t, yaml.Unmarshal(data, &got))
+	assert.True(t, got.ExtendedTTLCache)
 }

@@ -35,6 +35,11 @@ type GatewayManager interface {
 	ConfigureLLMGateway(clientType string, cfg llmgateway.ApplyConfig) (string, error)
 	// LLMGatewayModeFor returns "direct", "proxy", or "" for the given client.
 	LLMGatewayModeFor(clientType string) string
+	// SupportsExtendedTTLCache reports client prompt-cache control support.
+	SupportsExtendedTTLCache(clientType string) bool
+	// ExtendedTTLCacheConflict names an overriding five-minute setting.
+	ExtendedTTLCacheConflict(clientType string) (string, error)
+	ClearExtendedTTLCache(clientType, configPath string) error
 	// IsManaged reports whether a managed-preferences profile overrides the
 	// client's local config (so the config setup writes would be ignored).
 	IsManaged(clientType string) bool
@@ -81,6 +86,10 @@ func Setup(
 	inlineOpts SetOptions, anthropicPathPrefix string, anthropicPathPrefixSet bool, targetClient string,
 	lazy bool,
 ) error {
+	if err := clearExplicitlyDisabledExtendedTTLCache(gm, provider, inlineOpts); err != nil {
+		return err
+	}
+
 	llmCfg, err := prepareSetupConfig(provider, inlineOpts)
 	if err != nil {
 		return err
@@ -145,7 +154,8 @@ func Setup(
 
 	configured, err := configureDetectedToolsWithDiscovery(
 		out, errOut, gm, detected, llmCfg.GatewayURL, proxyBaseURL,
-		tokenHelperPath, tokenHelperArgs, llmCfg.TLSSkipVerify, anthropicPrefix, llmCfg.Models, discoveredModels, llmCfg.Bedrock,
+		tokenHelperPath, tokenHelperArgs, llmCfg.TLSSkipVerify, anthropicPrefix,
+		llmCfg.Models, discoveredModels, llmCfg.ExtendedTTLCache, llmCfg.Bedrock,
 	)
 	if err != nil {
 		return err
@@ -183,6 +193,31 @@ func Setup(
 		_, _ = fmt.Fprintln(out, "One or more tools use proxy mode. Start the proxy with: thv llm proxy start")
 	}
 
+	return nil
+}
+
+func clearExplicitlyDisabledExtendedTTLCache(
+	gm GatewayManager, provider ConfigUpdater, inlineOpts SetOptions,
+) error {
+	if inlineOpts.ExtendedTTLCache == nil || *inlineOpts.ExtendedTTLCache {
+		return nil
+	}
+
+	for _, tool := range provider.GetLLMConfig().ConfiguredTools {
+		if !gm.SupportsExtendedTTLCache(tool.Tool) {
+			continue
+		}
+		if err := gm.ClearExtendedTTLCache(tool.Tool, tool.ConfigPath); err != nil {
+			return fmt.Errorf("clearing extended prompt-cache TTL from %s: %w", tool.Tool, err)
+		}
+	}
+
+	if err := provider.UpdateLLMConfig(func(c *Config) error {
+		c.ExtendedTTLCache = false
+		return nil
+	}); err != nil {
+		return fmt.Errorf("persisting disabled extended prompt-cache TTL: %w", err)
+	}
 	return nil
 }
 
@@ -458,6 +493,13 @@ func setupClients(
 const (
 	vsCodeClient        = "vscode"
 	vsCodeInsiderClient = "vscode-insider"
+	// claudeCodeClient is the canonical client identifier for Claude Code.
+	// Declared here as a string literal because pkg/llm does not import
+	// pkg/client (which owns the ClientApp constant) to avoid an import cycle.
+	claudeCodeClient = "claude-code"
+	// promptCacheVerificationCommand reports which TTL Claude Code used under
+	// usage.cache_creation in the command's JSON output.
+	promptCacheVerificationCommand = `claude -p "hello" --output-format json`
 )
 
 func isVSCodeClient(clientType string) bool {
@@ -580,11 +622,6 @@ func discoverGatewayModels(ctx context.Context, cfg Config) ([]string, error) {
 	return models, nil
 }
 
-// claudeCodeClient is the canonical client identifier for Claude Code. Declared
-// here as a string literal because pkg/llm does not import pkg/client (which
-// owns the ClientApp constant) to avoid an import cycle.
-const claudeCodeClient = "claude-code"
-
 // Default Bedrock inference-profile model IDs written for Claude Code in
 // bedrock-compat mode when --models does not override a tier. These track the
 // current generation and are expected to be bumped periodically; users override
@@ -682,7 +719,8 @@ func warnBedrockNoEffect(errOut io.Writer, opts SetOptions, effectiveCompat bool
 func configureDetectedToolsWithDiscovery(
 	out, errOut io.Writer, gm GatewayManager, detected []string,
 	gatewayURL, proxyBaseURL, tokenHelperPath string, tokenHelperArgs []string,
-	tlsSkipVerify bool, anthropicPathPrefix string, models, discoveredModels []string, bedrock BedrockConfig,
+	tlsSkipVerify bool, anthropicPathPrefix string,
+	models, discoveredModels []string, extendedTTLCache bool, bedrock BedrockConfig,
 ) ([]ToolConfig, error) {
 	var configured []ToolConfig
 	for _, clientType := range detected {
@@ -712,6 +750,9 @@ func configureDetectedToolsWithDiscovery(
 			Models:             models,
 			DiscoveredModels:   discoveredModels,
 		}
+
+		extendedTTLResult := resolveExtendedTTLCache(errOut, gm, clientType, extendedTTLCache)
+		applyCfg.ExtendedTTLCache = extendedTTLResult.applied
 
 		// Bedrock-compat applies only to Claude Code: it disables the experimental
 		// anthropic-beta headers Bedrock rejects and pins per-tier Bedrock model
@@ -749,11 +790,72 @@ func configureDetectedToolsWithDiscovery(
 			EnvFilePath: envFilePath,
 		})
 		_, _ = fmt.Fprintf(out, "Configured %s (%s mode)  →  %s\n", clientType, mode, configPath)
+		reportExtendedTTLCache(out, errOut, clientType, extendedTTLCache, bedrock.Compat, extendedTTLResult)
 	}
 	if len(configured) == 0 {
 		return nil, fmt.Errorf("failed to configure any detected tools")
 	}
 	return configured, nil
+}
+
+type extendedTTLCacheResult struct {
+	supported bool
+	applied   bool
+}
+
+// resolveExtendedTTLCache decides whether the one-hour lifetime can be
+// requested for a client. Conflict inspection failures and higher-precedence
+// five-minute settings are warnings rather than setup failures.
+func resolveExtendedTTLCache(
+	errOut io.Writer, gm GatewayManager, clientType string, requested bool,
+) extendedTTLCacheResult {
+	if !requested {
+		return extendedTTLCacheResult{}
+	}
+	if !gm.SupportsExtendedTTLCache(clientType) {
+		return extendedTTLCacheResult{}
+	}
+
+	conflict, err := gm.ExtendedTTLCacheConflict(clientType)
+	if err != nil {
+		_, _ = fmt.Fprintf(errOut,
+			"Warning: could not inspect %s for prompt-cache TTL conflicts: %v; "+
+				"the one-hour lifetime was not applied.\n", clientType, err)
+		return extendedTTLCacheResult{supported: true}
+	}
+	if conflict != "" {
+		_, _ = fmt.Fprintf(errOut,
+			"Warning: extended prompt-cache TTL was not applied to %s because %s forces the five-minute lifetime. "+
+				"Remove that setting and re-run setup. Verify the effective lifetime with: %s\n",
+			clientType, conflict, promptCacheVerificationCommand)
+		return extendedTTLCacheResult{supported: true}
+	}
+	return extendedTTLCacheResult{supported: true, applied: true}
+}
+
+func reportExtendedTTLCache(
+	out, errOut io.Writer, clientType string, requested, bedrockCompat bool, result extendedTTLCacheResult,
+) {
+	if !requested {
+		return
+	}
+	if !result.supported {
+		_, _ = fmt.Fprintf(out,
+			"Extended prompt-cache TTL not applied to %s: this client does not expose a prompt-cache lifetime control.\n",
+			clientType)
+		return
+	}
+	if !result.applied {
+		return
+	}
+
+	_, _ = fmt.Fprintf(out, "Enabled one-hour prompt-cache lifetime for %s.\n", clientType)
+	if bedrockCompat && clientType == claudeCodeClient {
+		_, _ = fmt.Fprintf(errOut,
+			"Warning: Claude Code's one-hour prompt-cache lifetime may not take effect with Bedrock compatibility: "+
+				"the gateway may reject or strip the required beta header, and Bedrock support varies by model. "+
+				"Verify the effective lifetime with: %s\n", promptCacheVerificationCommand)
+	}
 }
 
 // resolveAnthropicPrefix returns the effective Anthropic path prefix. When the

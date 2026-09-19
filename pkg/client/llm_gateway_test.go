@@ -395,6 +395,395 @@ func TestConfigureLLMGateway_ClaudeCodeBedrock(t *testing.T) {
 	})
 }
 
+func TestConfigureLLMGateway_ClaudeCodeExtendedTTLCache(t *testing.T) {
+	t.Parallel()
+
+	cachePointers := map[string]string{
+		"/promptCacheTtl":               "1h",
+		"/subagentPromptCacheTtl":       "1h",
+		"/env/ENABLE_PROMPT_CACHING_1H": "1",
+	}
+	baseCfg := llmgateway.ApplyConfig{
+		GatewayURL:         "https://gw.example.com",
+		TokenHelperCommand: `thv llm token`,
+	}
+
+	t.Run("enabled writes both request buckets and legacy fallback", func(t *testing.T) {
+		t.Parallel()
+		home := t.TempDir()
+		cm := NewTestClientManager(home, nil, supportedClientIntegrations, nil)
+		require.NoError(t, os.MkdirAll(filepath.Join(home, ".claude"), 0o700))
+
+		cfg := baseCfg
+		cfg.ExtendedTTLCache = true
+		path, err := cm.ConfigureLLMGateway(ClaudeCode, cfg)
+		require.NoError(t, err)
+
+		data, err := os.ReadFile(path)
+		require.NoError(t, err)
+		for ptr, want := range cachePointers {
+			got, ok := jsonPointerGet(data, ptr)
+			assert.True(t, ok, "pointer %q missing", ptr)
+			assert.Equal(t, want, got, "wrong value at %q", ptr)
+		}
+	})
+
+	t.Run("explicit false removes previously written keys", func(t *testing.T) {
+		t.Parallel()
+		home := t.TempDir()
+		cm := NewTestClientManager(home, nil, supportedClientIntegrations, nil)
+		require.NoError(t, os.MkdirAll(filepath.Join(home, ".claude"), 0o700))
+
+		enabledCfg := baseCfg
+		enabledCfg.ExtendedTTLCache = true
+		path, err := cm.ConfigureLLMGateway(ClaudeCode, enabledCfg)
+		require.NoError(t, err)
+		_, err = cm.ConfigureLLMGateway(ClaudeCode, baseCfg)
+		require.NoError(t, err)
+
+		data, err := os.ReadFile(path)
+		require.NoError(t, err)
+		for ptr := range cachePointers {
+			_, ok := jsonPointerGet(data, ptr)
+			assert.False(t, ok, "pointer %q should be absent after disabling extended TTL", ptr)
+		}
+	})
+
+	t.Run("teardown removes all extended TTL keys", func(t *testing.T) {
+		t.Parallel()
+		home := t.TempDir()
+		cm := NewTestClientManager(home, nil, supportedClientIntegrations, nil)
+		require.NoError(t, os.MkdirAll(filepath.Join(home, ".claude"), 0o700))
+
+		cfg := baseCfg
+		cfg.ExtendedTTLCache = true
+		path, err := cm.ConfigureLLMGateway(ClaudeCode, cfg)
+		require.NoError(t, err)
+		require.NoError(t, cm.RevertLLMGateway(ClaudeCode, path))
+
+		data, err := os.ReadFile(path)
+		require.NoError(t, err)
+		for ptr := range cachePointers {
+			_, ok := jsonPointerGet(data, ptr)
+			assert.False(t, ok, "pointer %q should be absent after teardown", ptr)
+		}
+	})
+}
+
+func TestClearExtendedTTLCache_PreservesOtherClaudeCodeSettings(t *testing.T) {
+	t.Parallel()
+
+	home := t.TempDir()
+	cm := NewTestClientManager(home, nil, supportedClientIntegrations, nil)
+	require.NoError(t, os.MkdirAll(filepath.Join(home, ".claude"), 0o700))
+	path, err := cm.ConfigureLLMGateway(ClaudeCode, llmgateway.ApplyConfig{
+		GatewayURL:         "https://gw.example.com",
+		TokenHelperCommand: "thv llm token",
+		ExtendedTTLCache:   true,
+	})
+	require.NoError(t, err)
+
+	require.NoError(t, cm.ClearExtendedTTLCache(ClaudeCode, path))
+	data, err := os.ReadFile(path)
+	require.NoError(t, err)
+	for _, ptr := range []string{
+		"/promptCacheTtl",
+		"/subagentPromptCacheTtl",
+		"/env/ENABLE_PROMPT_CACHING_1H",
+	} {
+		_, ok := jsonPointerGet(data, ptr)
+		assert.False(t, ok, "pointer %q should be removed", ptr)
+	}
+	got, ok := jsonPointerGet(data, "/apiKeyHelper")
+	assert.True(t, ok)
+	assert.Equal(t, "thv llm token", got)
+	got, ok = jsonPointerGet(data, "/env/ANTHROPIC_BASE_URL")
+	assert.True(t, ok)
+	assert.Equal(t, "https://gw.example.com", got)
+}
+
+func TestClientManager_ExtendedTTLCacheSupport(t *testing.T) {
+	t.Parallel()
+
+	cm := NewTestClientManager(t.TempDir(), nil, supportedClientIntegrations, nil)
+	assert.True(t, cm.SupportsExtendedTTLCache(ClaudeCode))
+	for _, unsupported := range []ClientApp{
+		ClientApp(ClaudeDesktop), Codex, GeminiCli, Cursor, VSCode, VSCodeInsider, ClientApp(Xcode),
+	} {
+		assert.False(t, cm.SupportsExtendedTTLCache(unsupported), "%s unexpectedly supports extended TTL", unsupported)
+	}
+}
+
+func TestClientManager_ExtendedTTLCacheConflict(t *testing.T) {
+	conflicts := []struct {
+		name     string
+		variable string
+		value    string
+		fromEnv  bool
+	}{
+		{name: "global five-minute override in process environment", variable: "FORCE_PROMPT_CACHING_5M", value: "1", fromEnv: true},
+		{name: "main bucket five-minute override in settings", variable: "CLAUDE_CODE_PROMPT_CACHE_TTL", value: "5m"},
+		{name: "auxiliary bucket five-minute override in settings", variable: "CLAUDE_CODE_SUBAGENT_PROMPT_CACHE_TTL", value: "5m"},
+	}
+
+	for _, tt := range conflicts {
+		t.Run(tt.name, func(t *testing.T) {
+			home := t.TempDir()
+			cm := NewTestClientManager(home, nil, supportedClientIntegrations, nil)
+			for _, variable := range []string{
+				"FORCE_PROMPT_CACHING_5M",
+				"CLAUDE_CODE_PROMPT_CACHE_TTL",
+				"CLAUDE_CODE_SUBAGENT_PROMPT_CACHE_TTL",
+			} {
+				if !tt.fromEnv && variable == tt.variable {
+					original, existed := os.LookupEnv(variable)
+					require.NoError(t, os.Unsetenv(variable))
+					t.Cleanup(func() {
+						if existed {
+							_ = os.Setenv(variable, original)
+						}
+					})
+					continue
+				}
+				t.Setenv(variable, "non-conflicting")
+			}
+
+			if tt.fromEnv {
+				t.Setenv(tt.variable, tt.value)
+			} else {
+				settingsDir := filepath.Join(home, ".claude")
+				require.NoError(t, os.MkdirAll(settingsDir, 0o700))
+				settings := []byte(`{"env":{"` + tt.variable + `":"` + tt.value + `"}}`)
+				require.NoError(t, os.WriteFile(filepath.Join(settingsDir, "settings.json"), settings, 0o600))
+			}
+
+			conflict, err := cm.ExtendedTTLCacheConflict(ClaudeCode)
+			require.NoError(t, err)
+			assert.Contains(t, conflict, tt.variable)
+		})
+	}
+
+	t.Run("non-conflicting values are ignored", func(t *testing.T) {
+		home := t.TempDir()
+		cm := NewTestClientManager(home, nil, supportedClientIntegrations, nil)
+		for _, variable := range []string{
+			"FORCE_PROMPT_CACHING_5M",
+			"CLAUDE_CODE_PROMPT_CACHE_TTL",
+			"CLAUDE_CODE_SUBAGENT_PROMPT_CACHE_TTL",
+		} {
+			t.Setenv(variable, "1h")
+		}
+
+		conflict, err := cm.ExtendedTTLCacheConflict(ClaudeCode)
+		require.NoError(t, err)
+		assert.Empty(t, conflict)
+	})
+}
+
+func TestExtendedTTLCacheConflictSettingsScopes(t *testing.T) {
+	t.Parallel()
+
+	conflicts := []struct {
+		name         string
+		relativePath []string
+		settings     string
+		wantControl  string
+	}{
+		{
+			name:         "project shared top-level setting",
+			relativePath: []string{"project", ".claude", "settings.json"},
+			settings:     `{"promptCacheTtl":"5m"}`,
+			wantControl:  "promptCacheTtl=5m",
+		},
+		{
+			name:         "project local top-level setting",
+			relativePath: []string{"project", ".claude", "settings.local.json"},
+			settings:     `{"subagentPromptCacheTtl":"5m"}`,
+			wantControl:  "subagentPromptCacheTtl=5m",
+		},
+		{
+			name:         "managed base setting",
+			relativePath: []string{"managed", "managed-settings.json"},
+			settings:     `{"promptCacheTtl":"5m"}`,
+			wantControl:  "promptCacheTtl=5m",
+		},
+		{
+			name:         "managed drop-in environment override",
+			relativePath: []string{"managed", "managed-settings.d", "10-cache-policy.json"},
+			settings:     `{"env":{"CLAUDE_CODE_SUBAGENT_PROMPT_CACHE_TTL":"5m"}}`,
+			wantControl:  "CLAUDE_CODE_SUBAGENT_PROMPT_CACHE_TTL=5m",
+		},
+	}
+
+	for _, tt := range conflicts {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			root := t.TempDir()
+			home := filepath.Join(root, "home")
+			project := filepath.Join(root, "project")
+			managed := filepath.Join(root, "managed")
+
+			path := filepath.Join(append([]string{root}, tt.relativePath...)...)
+			writePromptCacheSettings(t, path, tt.settings)
+
+			conflict := promptCacheConflictFromSettings(t, home, project, managed)
+			assert.Contains(t, conflict, tt.wantControl)
+			assert.Contains(t, conflict, path)
+		})
+	}
+}
+
+func TestPromptCacheConflictPrecedence(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name     string
+		controls map[string]promptCacheControl
+		want     string
+	}{
+		{
+			name: "bucket environment one hour overrides top-level five minutes",
+			controls: map[string]promptCacheControl{
+				"CLAUDE_CODE_PROMPT_CACHE_TTL": {value: "1h", source: "environment"},
+				"promptCacheTtl":               {value: "5m", source: "settings"},
+			},
+		},
+		{
+			name: "bucket environment five minutes overrides top-level one hour",
+			controls: map[string]promptCacheControl{
+				"CLAUDE_CODE_PROMPT_CACHE_TTL": {value: "5m", source: "environment"},
+				"promptCacheTtl":               {value: "1h", source: "settings"},
+			},
+			want: "CLAUDE_CODE_PROMPT_CACHE_TTL=5m in environment",
+		},
+		{
+			name: "global five-minute override wins over bucket one-hour controls",
+			controls: map[string]promptCacheControl{
+				"FORCE_PROMPT_CACHING_5M":               {value: "1", source: "managed settings"},
+				"CLAUDE_CODE_PROMPT_CACHE_TTL":          {value: "1h", source: "environment"},
+				"CLAUDE_CODE_SUBAGENT_PROMPT_CACHE_TTL": {value: "1h", source: "environment"},
+			},
+			want: "FORCE_PROMPT_CACHING_5M=1 in managed settings",
+		},
+		{
+			name: "one-hour settings are non-conflicting",
+			controls: map[string]promptCacheControl{
+				"promptCacheTtl":         {value: "1h", source: "settings"},
+				"subagentPromptCacheTtl": {value: "1h", source: "settings"},
+			},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			assert.Equal(t, tt.want, promptCacheConflictDescription(tt.controls))
+		})
+	}
+}
+
+func TestPromptCacheSettingsFilePrecedence(t *testing.T) {
+	t.Parallel()
+
+	root := t.TempDir()
+	home := filepath.Join(root, "home")
+	project := filepath.Join(root, "project")
+	managed := filepath.Join(root, "managed")
+
+	writePromptCacheSettings(t, filepath.Join(home, ".claude", "settings.json"), `{"promptCacheTtl":"5m"}`)
+	writePromptCacheSettings(t, filepath.Join(project, ".claude", "settings.json"), `{"promptCacheTtl":"5m"}`)
+	writePromptCacheSettings(t, filepath.Join(project, ".claude", "settings.local.json"), `{"promptCacheTtl":"5m"}`)
+	writePromptCacheSettings(t, filepath.Join(managed, "managed-settings.json"), `{"promptCacheTtl":"5m"}`)
+	writePromptCacheSettings(t, filepath.Join(managed, "managed-settings.d", "10-five-minutes.json"), `{"promptCacheTtl":"5m"}`)
+	writePromptCacheSettings(t, filepath.Join(managed, "managed-settings.d", "20-one-hour.json"), `{"promptCacheTtl":"1h"}`)
+	writePromptCacheSettings(t, filepath.Join(managed, "managed-settings.d", ".hidden.json"), `{"promptCacheTtl":"5m"}`)
+	writePromptCacheSettings(t, filepath.Join(managed, "managed-settings.d", "README.txt"), `{"promptCacheTtl":"5m"}`)
+
+	conflict := promptCacheConflictFromSettings(t, home, project, managed)
+	assert.Empty(t, conflict,
+		"the lexically last managed JSON drop-in must override lower-precedence five-minute settings")
+}
+
+func TestPromptCacheSettingsScopePrecedence(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name       string
+		lowerPath  []string
+		higherPath []string
+	}{
+		{
+			name:       "project shared overrides user",
+			lowerPath:  []string{"home", ".claude", "settings.json"},
+			higherPath: []string{"project", ".claude", "settings.json"},
+		},
+		{
+			name:       "project local overrides project shared",
+			lowerPath:  []string{"project", ".claude", "settings.json"},
+			higherPath: []string{"project", ".claude", "settings.local.json"},
+		},
+		{
+			name:       "managed base overrides project local",
+			lowerPath:  []string{"project", ".claude", "settings.local.json"},
+			higherPath: []string{"managed", "managed-settings.json"},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			root := t.TempDir()
+			home := filepath.Join(root, "home")
+			project := filepath.Join(root, "project")
+			managed := filepath.Join(root, "managed")
+			writePromptCacheSettings(t, filepath.Join(append([]string{root}, tt.lowerPath...)...),
+				`{"promptCacheTtl":"5m"}`)
+			writePromptCacheSettings(t, filepath.Join(append([]string{root}, tt.higherPath...)...),
+				`{"promptCacheTtl":"1h"}`)
+
+			conflict := promptCacheConflictFromSettings(t, home, project, managed)
+			assert.Empty(t, conflict)
+		})
+	}
+}
+
+func TestExtendedTTLCacheSettingsPathsUsesGitRoot(t *testing.T) {
+	t.Parallel()
+
+	root := t.TempDir()
+	require.NoError(t, os.Mkdir(filepath.Join(root, ".git"), 0o700))
+	workingDir := filepath.Join(root, "cmd", "thv")
+	require.NoError(t, os.MkdirAll(workingDir, 0o700))
+
+	paths, err := extendedTTLCacheSettingsPaths("user.json", workingDir, "")
+	require.NoError(t, err)
+	assert.Equal(t, []string{
+		"user.json",
+		filepath.Join(root, ".claude", "settings.json"),
+		filepath.Join(root, ".claude", "settings.local.json"),
+	}, paths)
+}
+
+func promptCacheConflictFromSettings(t *testing.T, home, workingDir, managedDir string) string {
+	t.Helper()
+	cm := NewTestClientManager(home, nil, supportedClientIntegrations, nil)
+	cfg := cm.lookupClientAppConfig(ClaudeCode)
+	require.NotNil(t, cfg)
+	paths, err := extendedTTLCacheSettingsPaths(cm.buildLLMSettingsPath(cfg), workingDir, managedDir)
+	require.NoError(t, err)
+	controls := make(map[string]promptCacheControl)
+	for _, path := range paths {
+		require.NoError(t, mergePromptCacheControls(path, controls))
+	}
+	return promptCacheConflictDescription(controls)
+}
+
+func writePromptCacheSettings(t *testing.T, path, settings string) {
+	t.Helper()
+	require.NoError(t, os.MkdirAll(filepath.Dir(path), 0o700))
+	require.NoError(t, os.WriteFile(path, []byte(settings), 0o600))
+}
+
 // newLLMManager builds a ClientManager with a single direct-mode LLM entry
 // whose settings dir is homeDir/<dir>.
 func newLLMManager(t *testing.T, clientType ClientApp, mode, dir string, ptrs, vals []string) (*ClientManager, string) {

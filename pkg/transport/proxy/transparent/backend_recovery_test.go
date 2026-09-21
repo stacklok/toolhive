@@ -11,35 +11,26 @@ import (
 	"strings"
 	"sync"
 	"testing"
+	"time"
 
 	"github.com/google/uuid"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
+	"github.com/stacklok/toolhive/pkg/auth/sessionbinding"
 	"github.com/stacklok/toolhive/pkg/transport/session"
 )
 
-// stubSessionStore is a minimal in-memory recoverySessionStore for unit tests.
-type stubSessionStore struct {
-	sessions map[string]session.Session
-}
-
-func newStubStore(sessions ...session.Session) *stubSessionStore {
-	m := make(map[string]session.Session)
-	for _, s := range sessions {
-		m[s.ID()] = s
+// newRecoveryStore seeds auth-disabled sessions in the real memory store.
+func newRecoveryStore(t *testing.T, sessions ...session.Session) *session.Manager {
+	t.Helper()
+	manager := session.NewManager(time.Hour, nil)
+	t.Cleanup(func() { require.NoError(t, manager.Stop()) })
+	for _, sess := range sessions {
+		sess.SetMetadata(session.MetadataKeyIdentityBinding, "unauthenticated")
+		require.NoError(t, manager.AddSession(sess))
 	}
-	return &stubSessionStore{sessions: m}
-}
-
-func (s *stubSessionStore) Get(id string) (session.Session, bool) {
-	sess, ok := s.sessions[id]
-	return sess, ok
-}
-
-func (s *stubSessionStore) UpsertSession(sess session.Session) error {
-	s.sessions[sess.ID()] = sess
-	return nil
+	return manager
 }
 
 // newRecovery builds a backendRecovery backed by the given store and forward func.
@@ -56,7 +47,7 @@ func newRecovery(targetURL string, store recoverySessionStore, fwd func(*http.Re
 func TestBackendRecoveryNoSession(t *testing.T) {
 	t.Parallel()
 
-	r := newRecovery("http://cluster-ip:8080", newStubStore(), nil)
+	r := newRecovery("http://cluster-ip:8080", newRecoveryStore(t), nil)
 	req, err := http.NewRequest(http.MethodPost, "http://cluster-ip:8080/mcp",
 		strings.NewReader(`{"method":"tools/list"}`))
 	require.NoError(t, err)
@@ -66,20 +57,22 @@ func TestBackendRecoveryNoSession(t *testing.T) {
 	assert.NoError(t, err)
 }
 
-// TestBackendRecoveryUnknownSession verifies that reinitializeAndReplay returns
-// (nil, nil) when the session ID is not in the store.
+// TestBackendRecoveryUnknownSession verifies that unknown sessions fail closed
+// before backend recovery performs any work.
 func TestBackendRecoveryUnknownSession(t *testing.T) {
 	t.Parallel()
 
-	r := newRecovery("http://cluster-ip:8080", newStubStore(), nil)
+	r := newRecovery("http://cluster-ip:8080", newRecoveryStore(t), nil)
 	req, err := http.NewRequest(http.MethodPost, "http://cluster-ip:8080/mcp",
 		strings.NewReader(`{"method":"tools/list"}`))
 	require.NoError(t, err)
 	req.Header.Set("Mcp-Session-Id", uuid.New().String())
 
 	resp, err := r.reinitializeAndReplay(req, nil)
-	assert.Nil(t, resp)
-	assert.NoError(t, err)
+	require.NoError(t, err)
+	require.NotNil(t, resp)
+	require.Equal(t, http.StatusNotFound, resp.StatusCode)
+	require.NoError(t, resp.Body.Close())
 }
 
 // TestBackendRecoveryNoInitBody verifies that when the session has no stored
@@ -92,7 +85,7 @@ func TestBackendRecoveryNoInitBody(t *testing.T) {
 	clientSID := uuid.New().String()
 	sess := session.NewProxySession(clientSID)
 	sess.SetMetadata(sessionMetadataBackendURL, "http://10.0.0.5:8080") // stale pod IP
-	store := newStubStore(sess)
+	store := newRecoveryStore(t, sess)
 
 	r := newRecovery(clusterIP, store, nil)
 	req, err := http.NewRequest(http.MethodPost, clusterIP+"/mcp",
@@ -110,6 +103,192 @@ func TestBackendRecoveryNoInitBody(t *testing.T) {
 	backendURL, exists := updated.GetMetadataValue(sessionMetadataBackendURL)
 	require.True(t, exists)
 	assert.Equal(t, clusterIP, backendURL, "backend_url should be reset to ClusterIP when no init body")
+}
+
+func TestBackendRecoveryConditionalUpsertPreservesReplacement(t *testing.T) {
+	t.Parallel()
+
+	const clusterIP = "http://cluster-ip:8080"
+	id := uuid.NewString()
+	replacement := session.NewProxySession(id)
+	replacement.SetMetadata(session.MetadataKeyIdentityBinding, "issuer\x00replacement")
+	replacement.SetMetadata("version", "replacement")
+	storage := &replacingStorage{
+		Storage:          session.NewLocalStorage(),
+		replacement:      replacement,
+		replaceAfterLoad: true,
+	}
+	store := session.NewManagerWithStorage(time.Hour, func(id string) session.Session {
+		return session.NewProxySession(id)
+	}, storage)
+	t.Cleanup(func() { require.NoError(t, store.Stop()) })
+	original := session.NewProxySession(id)
+	original.SetMetadata(session.MetadataKeyIdentityBinding, sessionbinding.UnauthenticatedSentinel)
+	original.SetMetadata(sessionMetadataBackendURL, "http://10.0.0.5:8080")
+	require.NoError(t, store.AddSession(original))
+	r := newRecovery(clusterIP, store, nil)
+	req, err := http.NewRequest(http.MethodPost, clusterIP+"/mcp", strings.NewReader(`{"method":"tools/list"}`))
+	require.NoError(t, err)
+	req.Header.Set("Mcp-Session-Id", id)
+
+	resp, err := r.reinitializeAndReplay(req, nil)
+
+	require.NoError(t, err)
+	require.NotNil(t, resp)
+	t.Cleanup(func() { require.NoError(t, resp.Body.Close()) })
+	require.Equal(t, http.StatusNotFound, resp.StatusCode)
+	require.False(t, storage.replaceAfterLoad)
+	metadata, err := storage.Storage.LoadMetadata(t.Context(), id)
+	require.NoError(t, err)
+	require.Equal(t, "issuer\x00replacement", metadata[session.MetadataKeyIdentityBinding])
+	require.Equal(t, "replacement", metadata["version"])
+}
+
+func TestBackendRecoveryFailedParentUpsertCleansReservation(t *testing.T) {
+	t.Parallel()
+
+	const clusterIP = "http://cluster-ip:8080"
+	clientSID := uuid.NewString()
+	backendSID := uuid.NewString()
+	replacement := session.NewProxySession(clientSID)
+	replacement.SetMetadata(session.MetadataKeyIdentityBinding, "issuer\x00replacement")
+	replacement.SetMetadata("version", "replacement")
+	storage := &replacingStorage{
+		Storage:          session.NewLocalStorage(),
+		replacement:      replacement,
+		replaceAfterLoad: true,
+	}
+	store := session.NewManagerWithStorage(time.Hour, func(id string) session.Session {
+		return session.NewProxySession(id)
+	}, storage)
+	t.Cleanup(func() { require.NoError(t, store.Stop()) })
+	original := session.NewProxySession(clientSID)
+	original.SetMetadata(session.MetadataKeyIdentityBinding, sessionbinding.UnauthenticatedSentinel)
+	original.SetMetadata(sessionMetadataInitBody, `{"jsonrpc":"2.0","id":1,"method":"initialize"}`)
+	require.NoError(t, store.AddSession(original))
+	var deleteCalled bool
+	r := newRecovery(clusterIP, store, func(req *http.Request) (*http.Response, error) {
+		deleteCalled = deleteCalled || req.Method == http.MethodDelete
+		return &http.Response{
+			StatusCode: http.StatusOK,
+			Body:       http.NoBody,
+			Header:     http.Header{"Mcp-Session-Id": []string{backendSID}},
+		}, nil
+	})
+	req := httptest.NewRequest(http.MethodPost, clusterIP+"/mcp", strings.NewReader(`{"method":"tools/list"}`))
+	req.Header.Set("Mcp-Session-Id", clientSID)
+
+	resp, err := r.reinitializeAndReplay(req, []byte(`{"method":"tools/list"}`))
+
+	require.NoError(t, err)
+	require.NotNil(t, resp)
+	t.Cleanup(func() { require.NoError(t, resp.Body.Close()) })
+	require.Equal(t, http.StatusNotFound, resp.StatusCode)
+	require.False(t, deleteCalled, "failed recovery must leave the backend session for expiry")
+	_, err = storage.Storage.LoadMetadata(t.Context(), backendSID)
+	require.ErrorIs(t, err, session.ErrSessionNotFound)
+	metadata, err := storage.Storage.LoadMetadata(t.Context(), clientSID)
+	require.NoError(t, err)
+	require.Equal(t, "issuer\x00replacement", metadata[session.MetadataKeyIdentityBinding])
+	require.Equal(t, "replacement", metadata["version"])
+}
+
+func TestBackendRecoveryCleanupPreservesRacedReservation(t *testing.T) {
+	t.Parallel()
+
+	const clusterIP = "http://cluster-ip:8080"
+	clientSID := uuid.NewString()
+	backendSID := uuid.NewString()
+	parentReplacement := session.NewProxySession(clientSID)
+	parentReplacement.SetMetadata(session.MetadataKeyIdentityBinding, "issuer\x00replacement")
+	reservationReplacement := session.NewProxySession(backendSID)
+	reservationReplacement.SetMetadata(session.MetadataKeyIdentityBinding, "issuer\x00foreign")
+	reservationReplacement.SetMetadata("version", "replacement")
+	storage := &replacingStorage{
+		Storage:               session.NewLocalStorage(),
+		replacement:           parentReplacement,
+		replaceAfterLoad:      true,
+		replaceBeforeDeleteID: backendSID,
+		deleteReplacement:     reservationReplacement,
+	}
+	store := session.NewManagerWithStorage(time.Hour, func(id string) session.Session {
+		return session.NewProxySession(id)
+	}, storage)
+	t.Cleanup(func() { require.NoError(t, store.Stop()) })
+	original := session.NewProxySession(clientSID)
+	original.SetMetadata(session.MetadataKeyIdentityBinding, sessionbinding.UnauthenticatedSentinel)
+	original.SetMetadata(sessionMetadataInitBody, `{"jsonrpc":"2.0","id":1,"method":"initialize"}`)
+	require.NoError(t, store.AddSession(original))
+	var deleteCalled bool
+	r := newRecovery(clusterIP, store, func(req *http.Request) (*http.Response, error) {
+		deleteCalled = deleteCalled || req.Method == http.MethodDelete
+		return &http.Response{
+			StatusCode: http.StatusOK,
+			Body:       http.NoBody,
+			Header:     http.Header{"Mcp-Session-Id": []string{backendSID}},
+		}, nil
+	})
+	req := httptest.NewRequest(http.MethodPost, clusterIP+"/mcp", strings.NewReader(`{"method":"tools/list"}`))
+	req.Header.Set("Mcp-Session-Id", clientSID)
+
+	resp, err := r.reinitializeAndReplay(req, []byte(`{"method":"tools/list"}`))
+
+	require.NoError(t, err)
+	require.NotNil(t, resp)
+	t.Cleanup(func() { require.NoError(t, resp.Body.Close()) })
+	require.Equal(t, http.StatusNotFound, resp.StatusCode)
+	require.False(t, deleteCalled, "foreign reservation replacement must not be contacted")
+	metadata, err := storage.Storage.LoadMetadata(t.Context(), backendSID)
+	require.NoError(t, err)
+	require.Equal(t, "issuer\x00foreign", metadata[session.MetadataKeyIdentityBinding])
+	require.Equal(t, "replacement", metadata["version"])
+	metadata, err = storage.Storage.LoadMetadata(t.Context(), clientSID)
+	require.NoError(t, err)
+	require.Equal(t, "issuer\x00replacement", metadata[session.MetadataKeyIdentityBinding])
+}
+
+func TestBackendRecoveryAliasDoesNotDeleteParentOnFailedUpsert(t *testing.T) {
+	t.Parallel()
+
+	const clusterIP = "http://cluster-ip:8080"
+	clientSID := uuid.NewString()
+	replacement := session.NewProxySession(clientSID)
+	replacement.SetMetadata(session.MetadataKeyIdentityBinding, "issuer\x00replacement")
+	storage := &replacingStorage{
+		Storage:          session.NewLocalStorage(),
+		replacement:      replacement,
+		replaceAfterLoad: true,
+	}
+	store := session.NewManagerWithStorage(time.Hour, func(id string) session.Session {
+		return session.NewProxySession(id)
+	}, storage)
+	t.Cleanup(func() { require.NoError(t, store.Stop()) })
+	original := session.NewProxySession(clientSID)
+	original.SetMetadata(session.MetadataKeyIdentityBinding, sessionbinding.UnauthenticatedSentinel)
+	original.SetMetadata(sessionMetadataInitBody, `{"jsonrpc":"2.0","id":1,"method":"initialize"}`)
+	require.NoError(t, store.AddSession(original))
+	var deleteCalled bool
+	r := newRecovery(clusterIP, store, func(req *http.Request) (*http.Response, error) {
+		deleteCalled = deleteCalled || req.Method == http.MethodDelete
+		return &http.Response{
+			StatusCode: http.StatusOK,
+			Body:       http.NoBody,
+			Header:     http.Header{"Mcp-Session-Id": []string{clientSID}},
+		}, nil
+	})
+	req := httptest.NewRequest(http.MethodPost, clusterIP+"/mcp", strings.NewReader(`{"method":"tools/list"}`))
+	req.Header.Set("Mcp-Session-Id", clientSID)
+
+	resp, err := r.reinitializeAndReplay(req, []byte(`{"method":"tools/list"}`))
+
+	require.NoError(t, err)
+	require.NotNil(t, resp)
+	t.Cleanup(func() { require.NoError(t, resp.Body.Close()) })
+	require.Equal(t, http.StatusNotFound, resp.StatusCode)
+	require.False(t, deleteCalled)
+	metadata, err := storage.Storage.LoadMetadata(t.Context(), clientSID)
+	require.NoError(t, err)
+	require.Equal(t, "issuer\x00replacement", metadata[session.MetadataKeyIdentityBinding])
 }
 
 // TestBackendRecoveryHappyPath verifies the full re-init flow: the stored
@@ -142,7 +321,7 @@ func TestBackendRecoveryHappyPath(t *testing.T) {
 	clientSID := uuid.New().String()
 	sess := session.NewProxySession(clientSID)
 	sess.SetMetadata(sessionMetadataInitBody, initBody)
-	store := newStubStore(sess)
+	store := newRecoveryStore(t, sess)
 
 	r := newRecovery(backend.URL, store, http.DefaultTransport.RoundTrip)
 
@@ -192,7 +371,7 @@ func TestBackendRecoveryReinitForwardError(t *testing.T) {
 	clientSID := uuid.New().String()
 	sess := session.NewProxySession(clientSID)
 	sess.SetMetadata(sessionMetadataInitBody, `{"jsonrpc":"2.0","id":1,"method":"initialize"}`)
-	store := newStubStore(sess)
+	store := newRecoveryStore(t, sess)
 
 	r := newRecovery(deadURL, store, http.DefaultTransport.RoundTrip)
 
@@ -222,7 +401,7 @@ func TestBackendRecoveryNoNewSessionID(t *testing.T) {
 	sess := session.NewProxySession(clientSID)
 	sess.SetMetadata(sessionMetadataInitBody, `{"jsonrpc":"2.0","id":1,"method":"initialize"}`)
 	sess.SetMetadata(sessionMetadataBackendURL, "http://10.0.0.5:8080")
-	store := newStubStore(sess)
+	store := newRecoveryStore(t, sess)
 
 	// targetURI points to backend (so the init request succeeds), but we verify
 	// that backend_url is reset to targetURI when no session ID comes back.

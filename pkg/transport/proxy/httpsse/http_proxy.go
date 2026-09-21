@@ -24,6 +24,7 @@ import (
 	"golang.org/x/exp/jsonrpc2"
 
 	"github.com/stacklok/toolhive/pkg/auth"
+	"github.com/stacklok/toolhive/pkg/auth/sessionbinding"
 	"github.com/stacklok/toolhive/pkg/bodylimit"
 	"github.com/stacklok/toolhive/pkg/diagnostics"
 	"github.com/stacklok/toolhive/pkg/healthcheck"
@@ -118,7 +119,8 @@ type HTTPSSEProxy struct {
 	pendingMutex    sync.Mutex
 
 	// Message channel
-	messageCh chan jsonrpc2.Message
+	messageCh      chan jsonrpc2.Message
+	messageHandler http.Handler
 
 	// Health checker
 	healthChecker *healthcheck.HealthChecker
@@ -229,6 +231,18 @@ func NewHTTPSSEProxy(
 	} else {
 		proxy.sessionManager = session.NewManager(proxy.sessionTTL, sseFactory)
 	}
+
+	ownership, err := sessionbinding.NewMiddleware(
+		func(r *http.Request) (string, error) { return sessionbinding.RequestID(r, "session_id") },
+		proxy.sessionManager.LookupOwner,
+		func(w http.ResponseWriter, _ *http.Request, err error) {
+			sessionbinding.WriteOwnershipError(w, nil, err)
+		},
+	)
+	if err != nil {
+		panic(err) // All required callbacks above are constructor invariants.
+	}
+	proxy.messageHandler = ownership(http.HandlerFunc(proxy.handleOwnedPostRequest))
 
 	// Create MCP pinger and health checker
 	mcpPinger := NewMCPPinger(proxy)
@@ -470,9 +484,13 @@ func (p *HTTPSSEProxy) handleSSEConnection(w http.ResponseWriter, r *http.Reques
 
 	// Create and register the SSE session
 	sseSession := session.NewSSESessionWithClient(clientID, clientInfo)
+	if err := sessionbinding.BindOwner(r.Context(), sseSession); err != nil {
+		http.Error(w, "Invalid identity", http.StatusUnauthorized)
+		return
+	}
 	if err := p.sessionManager.AddSession(sseSession); err != nil {
 		slog.Error("failed to add SSE session", "error", err)
-		http.Error(w, "Failed to create session", http.StatusInternalServerError)
+		http.Error(w, "Failed to create session", http.StatusServiceUnavailable)
 		return
 	}
 	p.liveSSESessions.Store(clientID, sseSession)
@@ -556,12 +574,12 @@ func (p *HTTPSSEProxy) handlePostRequest(w http.ResponseWriter, r *http.Request)
 		return
 	}
 
-	// Check if the session exists in the distributed store.
-	_, exists := p.sessionManager.Get(sessionID)
-	if !exists {
-		session.WriteNotFound(w, nil)
-		return
-	}
+	p.messageHandler.ServeHTTP(w, r)
+}
+
+// handleOwnedPostRequest runs only after authentication and ownership middleware.
+func (p *HTTPSSEProxy) handleOwnedPostRequest(w http.ResponseWriter, r *http.Request) {
+	sessionID := r.URL.Query().Get("session_id")
 
 	// Verify the live SSE connection for this session is held by this instance.
 	// With a distributed storage backend (e.g. Redis), sessionManager.Get succeeds

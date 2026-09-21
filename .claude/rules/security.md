@@ -7,6 +7,10 @@ paths:
 
 Applies to all Go files in the project.
 
+## Session Ownership
+
+Reuse the common issuer+subject session binding and ownership middleware across proxy families. Bind at creation before atomic publication; validate every session-bearing request after authentication and before routing, restoration, or other side effects. Reject foreign or unowned sessions without disclosing metadata or destroying the owner's session; malformed identities must never downgrade to unauthenticated access.
+
 ## Don't Store Internal Addressing in Shared State
 
 Never persist internal infrastructure addresses (hostnames, IPs, service URLs, pod names) into shared or external state stores (databases, caches, config passed to clients).

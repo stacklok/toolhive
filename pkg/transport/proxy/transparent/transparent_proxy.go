@@ -30,6 +30,7 @@ import (
 	"golang.org/x/exp/jsonrpc2"
 
 	"github.com/stacklok/toolhive/pkg/auth"
+	"github.com/stacklok/toolhive/pkg/auth/sessionbinding"
 	"github.com/stacklok/toolhive/pkg/bodylimit"
 	"github.com/stacklok/toolhive/pkg/diagnostics"
 	"github.com/stacklok/toolhive/pkg/healthcheck"
@@ -515,8 +516,10 @@ func NewTransparentProxyWithOptions(
 
 // recoverySessionStore is the subset of session.Manager that backendRecovery needs.
 type recoverySessionStore interface {
-	Get(id string) (session.Session, bool)
-	UpsertSession(sess session.Session) error
+	sessionbinding.Store
+	LoadIfOwner(id, expectedOwner string) (session.Session, error)
+	UpsertSessionIfOwner(sess session.Session, expectedOwner string) error
+	DeleteIfOwner(id, expectedOwner string) error
 }
 
 // backendRecovery handles transparent re-initialization of backend sessions when the
@@ -628,26 +631,31 @@ func (t *tracingTransport) RoundTrip(req *http.Request) (*http.Response, error) 
 	//nolint:gosec // G706: logging target URI from config
 	slog.Debug("classified request revision", "modern", revision == mcp.RevisionModern, "target", t.p.targetURI)
 
-	// Guard: reject non-initialize requests with unknown session IDs.
-	// When multiple proxyrunner replicas share a Redis session store,
-	// a valid session will always be found. If it isn't, the session
-	// has expired or the request carries a stale/forged session ID.
-	if sid := req.Header.Get("Mcp-Session-Id"); sid != "" && !sawInitialize {
-		if _, err := t.p.sessionManager.GetWithError(normalizeSessionID(sid)); err != nil {
-			if !errors.Is(err, session.ErrSessionNotFound) {
-				// Storage error (e.g. Redis timeout) — client should retry.
-				slog.Error("session store lookup failed", "error", err)
-				return plainResponse(req, http.StatusServiceUnavailable, "session store unavailable"), nil
-			}
+	// Transparent requests forward backend session authority even for Modern MCP.
+	// Initialize strips all supplied carriers rather than touching their sessions.
+	clientSID, carrierErr := sessionbinding.RequestID(req, "sessionId")
+	if carrierErr != nil {
+		return session.NotFoundResponse(req, requestID), nil
+	}
+	var (
+		routedSession session.Session
+		expectedOwner string
+	)
+	if sawInitialize {
+		clientSID = ""
+		req.Header.Del("Mcp-Session-Id")
+		rewriteSessionQuery(req.URL, "")
+	} else if clientSID != "" {
+		identity, _ := auth.IdentityFromContext(req.Context())
+		expectedOwner, err = sessionbinding.FromIdentity(identity)
+		if err != nil {
 			return session.NotFoundResponse(req, requestID), nil
 		}
+		routedSession, err = t.p.sessionManager.LoadIfOwner(normalizeSessionID(clientSID), expectedOwner)
+		if err != nil {
+			return ownershipErrorResponse(req, requestID, err), nil
+		}
 	}
-
-	// Capture the client-facing session ID before the header is rewritten or
-	// stripped below. Recovery and session cleanup paths must look up sessions by
-	// the client SID (the store key), not the backend SID that is written into the
-	// header.
-	clientSID := req.Header.Get("Mcp-Session-Id")
 
 	switch {
 	case sawInitialize:
@@ -663,15 +671,15 @@ func (t *tracingTransport) RoundTrip(req *http.Request) (*http.Response, error) 
 		// the same on the recovery path.
 		req.Header.Del("Mcp-Session-Id")
 	case clientSID != "":
-		// Rewrite the outbound Mcp-Session-Id to the backend's assigned session ID
-		// when the proxy transparently re-initialized the backend session. This is
-		// done here (after the guard check above) so the guard always sees the
-		// original client session ID and can look it up correctly in the session
-		// store.
-		if sess, ok := t.p.sessionManager.Get(normalizeSessionID(clientSID)); ok {
-			if backendSID, exists := sess.GetMetadataValue(sessionMetadataBackendSID); exists && backendSID != "" {
-				req.Header.Set("Mcp-Session-Id", backendSID)
+		// Route only from the same snapshot whose ownership was atomically validated.
+		if backendURL, exists := routedSession.GetMetadataValue(sessionMetadataBackendURL); exists {
+			if parsed, err := url.Parse(backendURL); err == nil && parsed.Scheme != "" && parsed.Host != "" {
+				req.URL.Scheme, req.URL.Host, req.Host = parsed.Scheme, parsed.Host, parsed.Host
 			}
+		}
+		if backendSID, exists := routedSession.GetMetadataValue(sessionMetadataBackendSID); exists && backendSID != "" {
+			req.Header.Set("Mcp-Session-Id", backendSID)
+			rewriteSessionQuery(req.URL, backendSID)
 		}
 	}
 
@@ -695,24 +703,12 @@ func (t *tracingTransport) RoundTrip(req *http.Request) (*http.Response, error) 
 			// Expected during shutdown or client disconnect—silently ignore
 			return nil, err
 		}
-		// Dial error against a stored pod IP means the pod has been replaced.
-		// Attempt transparent re-initialization so the client sees no error.
-		//
-		// An initialize request is excluded, as it already is on the 404 path
-		// below: reinitializeAndReplay sends its own initialize and then replays
-		// the original request, which for an initialize would hand the freshly
-		// created backend session a second handshake -- the very failure this
-		// function strips the session ID to avoid. The client is already starting
-		// a new session, so instead unpin it from the dead pod and let the error
-		// surface; the client's retry is then routed via the target service.
-		if isDialError(err) {
-			if sawInitialize {
-				t.recovery.unpinSession(clientSID)
-			} else {
-				req.Header.Set("Mcp-Session-Id", clientSID)
-				if reInitResp, reInitErr := t.recovery.reinitializeAndReplay(req, reqBody); reInitResp != nil || reInitErr != nil {
-					return reInitResp, reInitErr
-				}
+		// Initialize has already discarded the supplied SID and must never
+		// recover or mutate that session, even on a dial error.
+		if isDialError(err) && !sawInitialize {
+			req.Header.Set("Mcp-Session-Id", clientSID)
+			if reInitResp, reInitErr := t.recovery.reinitializeAndReplay(req, reqBody); reInitResp != nil || reInitErr != nil {
+				return reInitResp, reInitErr
 			}
 		}
 		slog.Error("failed to forward request", "error", err)
@@ -744,9 +740,10 @@ func (t *tracingTransport) RoundTrip(req *http.Request) (*http.Response, error) 
 	if req.Method == http.MethodDelete &&
 		(resp.StatusCode >= 200 && resp.StatusCode < 300 || resp.StatusCode == http.StatusNotFound) {
 		if clientSID != "" {
-			if err := t.p.sessionManager.Delete(normalizeSessionID(clientSID)); err != nil {
-				slog.Debug("failed to delete session from transparent proxy",
-					"session_id", clientSID, "error", err)
+			if err := t.p.sessionManager.DeleteIfOwner(normalizeSessionID(clientSID), expectedOwner); err != nil {
+				_, _ = io.Copy(io.Discard, resp.Body)
+				_ = resp.Body.Close()
+				return ownershipErrorResponse(req, requestID, err), nil
 			}
 		}
 	}
@@ -774,22 +771,15 @@ func (t *tracingTransport) RoundTrip(req *http.Request) (*http.Response, error) 
 			//nolint:gosec // G706: logging session ID from HTTP response header
 			slog.Debug("detected Mcp-Session-Id header", "session_id", ct)
 			internalID := normalizeSessionID(ct)
-			if _, ok := t.p.sessionManager.Get(internalID); !ok {
-				sess := session.NewProxySession(internalID)
-				// Store the actual pod IP (captured via GotConn) as backend_url so that
-				// after a proxy runner restart the session is routed to the same backend
-				// pod that handled initialize, not a random pod via ClusterIP.
-				sess.SetMetadata(sessionMetadataBackendURL, t.recovery.podBackendURL(capturedPodAddr))
-				// Store the initialize body so we can transparently re-initialize the
-				// backend session if the pod is later replaced or loses session state.
-				if len(reqBody) > 0 {
-					sess.SetMetadata(sessionMetadataInitBody, string(reqBody))
-				}
-				if err := t.p.sessionManager.AddSession(sess); err != nil {
-					//nolint:gosec // G706: session ID from HTTP response header
-					slog.Error("failed to create session from header",
-						"session_id", ct, "error", err)
-				}
+			sess := session.NewProxySession(internalID)
+			sess.SetMetadata(sessionMetadataBackendURL, t.recovery.podBackendURL(capturedPodAddr))
+			if sawInitialize && len(reqBody) > 0 {
+				sess.SetMetadata(sessionMetadataInitBody, string(reqBody))
+			}
+			if err := sessionbinding.AddOwnedSession(req.Context(), t.p.sessionManager, sess); err != nil {
+				_, _ = io.Copy(io.Discard, resp.Body)
+				_ = resp.Body.Close()
+				return ownershipErrorResponse(req, requestID, err), nil
 			}
 			t.p.setServerInitialized()
 			return resp, nil
@@ -810,6 +800,13 @@ func (t *tracingTransport) RoundTrip(req *http.Request) (*http.Response, error) 
 	}
 
 	return resp, nil
+}
+
+func ownershipErrorResponse(req *http.Request, requestID any, err error) *http.Response {
+	if errors.Is(err, sessionbinding.ErrNotFound) {
+		return session.NotFoundResponse(req, requestID)
+	}
+	return plainResponse(req, http.StatusServiceUnavailable, "Session store unavailable")
 }
 
 // plainResponse builds a minimal text/plain *http.Response for the given status,
@@ -1020,27 +1017,17 @@ func isRedirectStatus(code int) bool {
 	}
 }
 
-// unpinSession clears the backend_url pin on the session identified by
-// clientSID so the next request carrying it is routed to the target service
-// rather than to a pod address that is no longer reachable. It is a no-op for
-// an empty or unknown session ID.
-//
-// This is the same fallback reinitializeAndReplay applies when it has no stored
-// initialize body to replay, reused for the initialize case where issuing the
-// new handshake is the client's job, not the proxy's.
-func (r *backendRecovery) unpinSession(clientSID string) {
-	if clientSID == "" {
-		return
+func (r *backendRecovery) loadOwnedSession(req *http.Request, id string) (session.Session, string, error) {
+	identity, _ := auth.IdentityFromContext(req.Context())
+	expectedOwner, err := sessionbinding.FromIdentity(identity)
+	if err != nil {
+		return nil, "", sessionbinding.ErrNotFound
 	}
-	sess, ok := r.sessions.Get(normalizeSessionID(clientSID))
-	if !ok {
-		return
+	stored, err := r.sessions.LoadIfOwner(id, expectedOwner)
+	if err != nil {
+		return nil, "", err
 	}
-	sess.SetMetadata(sessionMetadataBackendURL, r.targetURI)
-	if err := r.sessions.UpsertSession(sess); err != nil {
-		slog.Debug("failed to unpin session after dial error on initialize",
-			"session_id", clientSID, "error", err)
-	}
+	return stored, expectedOwner, nil
 }
 
 // reinitializeAndReplay is called when the proxy detects that the backend pod
@@ -1052,17 +1039,23 @@ func (r *backendRecovery) unpinSession(clientSID string) {
 //  3. Maps the client's original session ID to the new backend session ID.
 //  4. Replays the original client request so the client sees no error.
 //
-// Returns (nil, nil) when re-initialization is not applicable (session unknown
-// to the proxy, or no stored init body for the session).
+// Returns (nil, nil) when there is no SID or no stored initialize body. Missing,
+// unowned, or foreign sessions fail closed before any backend work.
 func (r *backendRecovery) reinitializeAndReplay(req *http.Request, origBody []byte) (*http.Response, error) {
 	sid := req.Header.Get("Mcp-Session-Id")
 	if sid == "" {
 		return nil, nil
 	}
 	internalSID := normalizeSessionID(sid)
-	sess, ok := r.sessions.Get(internalSID)
-	if !ok {
-		return nil, nil
+	stored, expectedOwner, err := r.loadOwnedSession(req, internalSID)
+	if err != nil {
+		return ownershipErrorResponse(req, nil, err), nil
+	}
+	// Do not mutate a value returned by the authoritative store before the
+	// replacement has been persisted successfully.
+	sess := session.NewProxySession(internalSID)
+	for key, value := range stored.GetMetadata() {
+		sess.SetMetadata(key, value)
 	}
 
 	initBody, hasInit := sess.GetMetadataValue(sessionMetadataInitBody)
@@ -1071,7 +1064,9 @@ func (r *backendRecovery) reinitializeAndReplay(req *http.Request, origBody []by
 		// Reset backend_url to ClusterIP so the next request goes through
 		// kube-proxy and lets the client receive a clean 404 to re-initialize.
 		sess.SetMetadata(sessionMetadataBackendURL, r.targetURI)
-		_ = r.sessions.UpsertSession(sess)
+		if err := r.sessions.UpsertSessionIfOwner(sess, expectedOwner); err != nil {
+			return ownershipErrorResponse(req, nil, err), nil
+		}
 		return nil, nil
 	}
 
@@ -1096,6 +1091,7 @@ func (r *backendRecovery) reinitializeAndReplay(req *http.Request, origBody []by
 	initURL := *req.URL
 	initURL.Scheme = parsedTarget.Scheme
 	initURL.Host = parsedTarget.Host
+	rewriteSessionQuery(&initURL, "")
 
 	initReq, err := http.NewRequestWithContext(initCtx, http.MethodPost, initURL.String(), bytes.NewReader([]byte(initBody)))
 	if err != nil {
@@ -1125,8 +1121,21 @@ func (r *backendRecovery) reinitializeAndReplay(req *http.Request, origBody []by
 	if newBackendSID == "" {
 		slog.Debug("re-initialize response contained no Mcp-Session-Id; falling back to ClusterIP")
 		sess.SetMetadata(sessionMetadataBackendURL, r.targetURI)
-		_ = r.sessions.UpsertSession(sess)
+		if err := r.sessions.UpsertSessionIfOwner(sess, expectedOwner); err != nil {
+			return ownershipErrorResponse(req, nil, err), nil
+		}
 		return nil, nil
+	}
+
+	// Reserve the backend ID before routing to it, so recovery cannot adopt an
+	// ID already owned by another principal. Preserve the original owner record.
+	backendInternalSID := normalizeSessionID(newBackendSID)
+	reservedBackend := backendInternalSID != internalSID
+	if reservedBackend {
+		backendSession := session.NewProxySession(backendInternalSID)
+		if err := sessionbinding.AddOwnedSession(req.Context(), r.sessions, backendSession); err != nil {
+			return ownershipErrorResponse(req, nil, err), nil
+		}
 	}
 
 	// Update session: point backend_url at the newly-discovered pod and record
@@ -1137,24 +1146,42 @@ func (r *backendRecovery) reinitializeAndReplay(req *http.Request, origBody []by
 	// uses this value verbatim as the outbound Mcp-Session-Id header. Normalizing
 	// would change non-UUID IDs to a UUID v5 hash the backend never issued.
 	sess.SetMetadata(sessionMetadataBackendSID, newBackendSID)
-	if upsertErr := r.sessions.UpsertSession(sess); upsertErr != nil {
-		slog.Debug("failed to update session after re-initialize", "error", upsertErr)
+	if upsertErr := r.sessions.UpsertSessionIfOwner(sess, expectedOwner); upsertErr != nil {
+		return r.failedRecoveryResponse(req, upsertErr, reservedBackend, backendInternalSID, expectedOwner)
 	}
 
-	// Replay the original client request to the new pod with the new backend SID.
-	// Use the captured pod address directly so we bypass the Rewrite closure
-	// (which still holds the old backend_url until the next session load).
-	// For HTTPS targets, keep the original hostname: IP-literal HTTPS requests
-	// fail TLS verification because server certs are issued for hostnames, not pod IPs.
-	replayHost := capturedPodAddr
-	if replayHost == "" || parsedTarget.Scheme == "https" {
-		replayHost = parsedTarget.Host
+	return r.replay(req, origBody, newBackendSID, newPodURL)
+}
+
+func (r *backendRecovery) failedRecoveryResponse(
+	req *http.Request,
+	upsertErr error,
+	reservedBackend bool,
+	backendInternalSID, expectedOwner string,
+) (*http.Response, error) {
+	if reservedBackend {
+		if cleanupErr := r.sessions.DeleteIfOwner(backendInternalSID, expectedOwner); cleanupErr != nil {
+			slog.Warn("failed to remove backend session reservation after recovery failure", "error", cleanupErr)
+		}
+		// The backend-created session is left for backend expiry. Terminating it
+		// cannot be made atomic with releasing and potentially reusing its ID.
+	}
+	return ownershipErrorResponse(req, nil, upsertErr), nil
+}
+
+// replay uses only the newly reserved backend SID. podBackendURL preserves the
+// original hostname for HTTPS, where an IP literal would fail TLS verification.
+func (r *backendRecovery) replay(req *http.Request, origBody []byte, backendSID, backendURL string) (*http.Response, error) {
+	target, err := url.Parse(backendURL)
+	if err != nil {
+		return nil, err
 	}
 	replayReq := req.Clone(req.Context())
-	replayReq.URL.Scheme = parsedTarget.Scheme
-	replayReq.URL.Host = replayHost
-	replayReq.Host = replayHost // keep Host header consistent with URL to avoid backend validation errors
-	replayReq.Header.Set("Mcp-Session-Id", newBackendSID)
+	replayReq.URL.Scheme = target.Scheme
+	replayReq.URL.Host = target.Host
+	replayReq.Host = target.Host
+	replayReq.Header.Set("Mcp-Session-Id", backendSID)
+	rewriteSessionQuery(replayReq.URL, backendSID)
 	replayReq.Body = io.NopCloser(bytes.NewReader(origBody))
 	replayReq.ContentLength = int64(len(origBody))
 	// origBody is fully buffered, so chunked encoding is unnecessary and would
@@ -1162,9 +1189,20 @@ func (r *backendRecovery) reinitializeAndReplay(req *http.Request, origBody []by
 	// the original request so net/http sends Content-Length instead.
 	replayReq.TransferEncoding = nil
 
-	slog.Debug("replaying original request after transparent re-initialization",
-		"new_pod_url", newPodURL, "new_backend_sid", newBackendSID)
-	return r.forward(replayReq)
+	slog.Debug("replaying original request after transparent re-initialization")
+	resp, err := r.forward(replayReq)
+	if err != nil {
+		return nil, err
+	}
+	if returnedSID := resp.Header.Get("Mcp-Session-Id"); returnedSID != "" {
+		returnedSession := session.NewProxySession(normalizeSessionID(returnedSID))
+		if err := sessionbinding.AddOwnedSession(req.Context(), r.sessions, returnedSession); err != nil {
+			_, _ = io.Copy(io.Discard, resp.Body)
+			_ = resp.Body.Close()
+			return ownershipErrorResponse(req, nil, err), nil
+		}
+	}
+	return resp, nil
 }
 
 // modifyResponse modifies HTTP responses based on transport-specific requirements.
@@ -1223,27 +1261,6 @@ func (p *TransparentProxy) Start(ctx context.Context) error {
 		Rewrite: func(pr *httputil.ProxyRequest) {
 			pr.SetURL(targetURL)
 			p.setXForwardedHeaders(pr, targetURL.Scheme)
-
-			// Route to the originating backend pod when session metadata contains backend_url.
-			// Falls back to static targetURL when the session doesn't exist or has no backend_url.
-			if sid := pr.In.Header.Get("Mcp-Session-Id"); sid != "" {
-				if sess, ok := p.sessionManager.Get(normalizeSessionID(sid)); ok {
-					if backendURLStr, exists := sess.GetMetadataValue(sessionMetadataBackendURL); exists && backendURLStr != "" {
-						parsed, parseErr := url.Parse(backendURLStr)
-						switch {
-						case parseErr != nil:
-							slog.Debug("failed to parse backend_url from session metadata; using static target",
-								sessionMetadataBackendURL, backendURLStr, "error", parseErr)
-						case parsed.Scheme == "" || parsed.Host == "":
-							slog.Debug("backend_url from session metadata is not an absolute URL; using static target",
-								sessionMetadataBackendURL, backendURLStr)
-						default:
-							pr.Out.URL.Scheme = parsed.Scheme
-							pr.Out.URL.Host = parsed.Host
-						}
-					}
-				}
-			}
 
 			// Stash the original inbound request in the outbound request's
 			// context so that ModifyResponse (SSE response processor) can

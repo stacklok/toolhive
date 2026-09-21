@@ -36,7 +36,7 @@ permissions:
 jobs:
   retest:
     name: Retest
-    runs-on: ubuntu-24.04
+    runs-on: ubuntu-26.04
     # Only run for PR comments containing "/retest", in this repo, from a
     # trusted author, and not bots.
     if: >-

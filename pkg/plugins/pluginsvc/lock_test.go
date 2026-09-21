@@ -11,7 +11,9 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
+	"sync"
 	"testing"
+	"time"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -23,6 +25,7 @@ import (
 	groupmocks "github.com/stacklok/toolhive/pkg/groups/mocks"
 	"github.com/stacklok/toolhive/pkg/plugins"
 	"github.com/stacklok/toolhive/pkg/plugins/adapters"
+	"github.com/stacklok/toolhive/pkg/projecttxn"
 	"github.com/stacklok/toolhive/pkg/skills"
 	"github.com/stacklok/toolhive/pkg/skills/lockfile"
 	"github.com/stacklok/toolhive/pkg/storage"
@@ -106,6 +109,46 @@ func readLockfile(t *testing.T, projectRoot string) *lockfile.Lockfile {
 	lf, err := lockfile.Load(mustOpenRoot(t, projectRoot))
 	require.NoError(t, err)
 	return lf
+}
+
+//nolint:paralleltest // serial: real sqlite + on-disk client materialization per test
+func TestInstallProjectScope_ContendsOnSharedProjectTransaction(t *testing.T) {
+	svc, projectRoot := newLockTestService(t)
+	layerData := makePluginLayerData(t, "my-plugin")
+
+	unlock, err := projecttxn.Lock(t.Context(), projectRoot)
+	require.NoError(t, err)
+	var unlockOnce sync.Once
+	release := func() { unlockOnce.Do(unlock) }
+	t.Cleanup(release)
+
+	done := make(chan error, 1)
+	go func() {
+		_, installErr := svc.Install(t.Context(), plugins.InstallOptions{
+			Name:          "my-plugin",
+			LayerData:     layerData,
+			AllowUnsigned: true,
+			Digest:        validLockDigest(),
+			Scope:         plugins.ScopeProject,
+			ProjectRoot:   projectRoot,
+			Clients:       []string{"claude-code"},
+		})
+		done <- installErr
+	}()
+
+	select {
+	case installErr := <-done:
+		t.Fatalf("plugin install completed while the shared project transaction was held: %v", installErr)
+	case <-time.After(100 * time.Millisecond):
+	}
+
+	release()
+	select {
+	case installErr := <-done:
+		require.NoError(t, installErr)
+	case <-time.After(10 * time.Second):
+		t.Fatal("plugin install did not finish after the shared project transaction was released")
+	}
 }
 
 func validLockDigest() string {
@@ -437,7 +480,10 @@ type hookPluginStore struct {
 	// beforeUpdate runs before each Update with the 1-based call count and
 	// the record being written; returning an error fails that Update.
 	beforeUpdate func(call int, pl plugins.InstalledPlugin) error
-	updateCalls  int
+	// afterUpdate runs after a successful underlying Update and receives the
+	// context used for the durable write.
+	afterUpdate func(ctx context.Context, call int)
+	updateCalls int
 }
 
 func (s *hookPluginStore) Delete(ctx context.Context, name string, scope plugins.Scope, projectRoot string) error {
@@ -456,7 +502,13 @@ func (s *hookPluginStore) Update(ctx context.Context, pl plugins.InstalledPlugin
 			return err
 		}
 	}
-	return s.PluginStore.Update(ctx, pl)
+	if err := s.PluginStore.Update(ctx, pl); err != nil {
+		return err
+	}
+	if s.afterUpdate != nil {
+		s.afterUpdate(ctx, s.updateCalls)
+	}
+	return nil
 }
 
 type failingDematerializeAdapter struct {

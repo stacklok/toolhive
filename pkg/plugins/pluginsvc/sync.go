@@ -16,6 +16,7 @@ import (
 	"github.com/stacklok/toolhive-core/httperr"
 	"github.com/stacklok/toolhive/pkg/client"
 	"github.com/stacklok/toolhive/pkg/plugins"
+	"github.com/stacklok/toolhive/pkg/projecttxn"
 	"github.com/stacklok/toolhive/pkg/skills/gitresolver"
 	"github.com/stacklok/toolhive/pkg/skills/lockfile"
 	"github.com/stacklok/toolhive/pkg/skills/verifier"
@@ -29,6 +30,48 @@ import (
 // the lock file are reported (or removed with Prune). Check performs the
 // same reconciliation read-only: nothing is installed, written, or removed.
 func (s *service) Sync(ctx context.Context, opts plugins.SyncOptions) (*plugins.SyncResult, error) {
+	if err := validateSyncPublicKey(opts); err != nil {
+		return nil, err
+	}
+
+	_, projectRoot, err := normalizeProjectRoot(plugins.ScopeProject, opts.ProjectRoot)
+	if err != nil {
+		return nil, err
+	}
+	opts.ProjectRoot = projectRoot
+
+	var result *plugins.SyncResult
+	err = projecttxn.Run(ctx, projectRoot, func() error {
+		var syncErr error
+		result, syncErr = s.syncProjectLocked(ctx, opts)
+		return syncErr
+	})
+	return result, err
+}
+
+func validateSyncPublicKey(opts plugins.SyncOptions) error {
+	if opts.PublicKey == "" {
+		return nil
+	}
+	if !opts.Adopt {
+		return httperr.WithCode(
+			errors.New("public_key (--public-key) is accepted only with adopt (--adopt)"),
+			http.StatusBadRequest,
+		)
+	}
+	if opts.Check {
+		return httperr.WithCode(
+			errors.New("public_key (--public-key) cannot be used when adopt runs in check mode"),
+			http.StatusBadRequest,
+		)
+	}
+	if _, err := verifier.DecodePublicKey(opts.PublicKey); err != nil {
+		return httperr.WithCode(fmt.Errorf("public_key: %w", err), http.StatusBadRequest)
+	}
+	return nil
+}
+
+func (s *service) syncProjectLocked(ctx context.Context, opts plugins.SyncOptions) (*plugins.SyncResult, error) {
 	_, projectRoot, err := normalizeProjectRoot(plugins.ScopeProject, opts.ProjectRoot)
 	if err != nil {
 		return nil, err
@@ -70,16 +113,11 @@ func (s *service) Sync(ctx context.Context, opts plugins.SyncOptions) (*plugins.
 	return result, nil
 }
 
-// syncOne re-reads the lock entry and DB row under the per-plugin lock, then
-// reconciles that fresh state. The initial Sync snapshot is only used to
-// discover names; mutation from a stale view would resurrect an uninstall or
-// prune a concurrent install.
+// syncOne re-reads the lock entry and DB row under the project transaction,
+// then reconciles that fresh state.
 func (s *service) syncOne(
 	ctx context.Context, opts plugins.SyncOptions, name string, result *plugins.SyncResult,
 ) {
-	_, unlock := s.lockPlugin(ctx, name, plugins.ScopeProject, opts.ProjectRoot)
-	defer unlock()
-
 	targetClients, err := s.resolveSyncTargetClients(opts.Clients)
 	if err != nil {
 		result.Failed = append(result.Failed, plugins.SyncFailure{
@@ -266,7 +304,7 @@ func (s *service) entryMatchesInstalled(
 // reinstallPinned reinstalls entry at its pinned reference, preserving its
 // recorded Source (never re-resolving). targetClients is the resolved sync
 // client set (empty opts.Clients → detected clients). Callers must hold the
-// per-plugin lock.
+// project transaction.
 func (s *service) reinstallPinned(
 	ctx context.Context, opts plugins.SyncOptions, entry lockfile.Entry, targetClients []string,
 ) error {
@@ -293,7 +331,7 @@ func (s *service) reinstallPinned(
 		// Without this the documented migration would have no way to record
 		// the exception the user explicitly asked for.
 		AllowUnsigned: opts.AllowUnsigned,
-	})
+	}, nil)
 	return err
 }
 
@@ -367,7 +405,7 @@ func (s *service) reinstallLocalStorePin(
 		AllowUnsigned:         opts.AllowUnsigned, // see reinstallPinned
 	}
 	hydrateOptsFromLocalBuild(&installOpts, layerData, d, pluginConfig, entry.Source)
-	_, err = s.installAlreadyLocked(ctx, installOpts)
+	_, err = s.installAlreadyLocked(ctx, installOpts, nil)
 	return err
 }
 
@@ -475,9 +513,9 @@ func (s *service) verifyStoredKeySignature(entry lockfile.Entry, pl plugins.Inst
 }
 
 // adoptLocked writes a lock entry for an existing, unmanaged project-scope
-// install, pinning its current on-disk state and assuming the per-plugin lock
-// is already held. The install's own Reference is used as Source: an adopted
-// install predates (or never went through) lock tracking, so the original
+// install, pinning its current on-disk state and assuming the project
+// transaction is already held. The install's own Reference is used as Source:
+// an adopted install predates (or never went through) lock tracking, so the original
 // user-typed request is not recoverable — the concrete resolved reference is
 // the closest available fact to pin against. Adoption is rejected when that
 // reference is not a restorable git:// or OCI pin (a bare local-store tag
@@ -559,32 +597,18 @@ func (s *service) adoptLocked(ctx context.Context, opts plugins.SyncOptions, pl 
 // adopting is the same trust decision as an unsigned install — it records an
 // explicit unsigned exception, which the caller must have opted into.
 //
-// A key-signed bundle is the one case with no landing place: it reveals no
-// identity to back-fill and does not carry the key that would anchor it, so it
-// is refused rather than recorded as unsigned.
+// A key-signed bundle reveals no identity or key to back-fill. Adoption can
+// anchor it only when the caller supplies --public-key and the stored bundle
+// verifies against that key; otherwise it is refused rather than misrecorded
+// as unsigned.
 func (s *service) adoptionTrust(
 	opts plugins.SyncOptions, pl plugins.InstalledPlugin,
 ) (*lockfile.Provenance, bool, error) {
 	if len(pl.SigstoreBundle) > 0 {
 		result, err := s.artifactVerifier().ResultFromBundle(pl.SigstoreBundle, pl.Digest)
 		if errors.Is(err, verifier.ErrKeySigned) {
-			// Adoption back-fills trust from what the bundle itself reveals,
-			// and a key-signed bundle reveals nothing: the key is not in it,
-			// and sync takes no --public-key to supply one. Recording the
-			// install as unsigned instead would be a lie about a signed
-			// artifact, so the honest move is to send it through the one
-			// path that can anchor it.
-			return nil, false, httperr.WithCode(
-				fmt.Errorf("%w: plugin %q is signed with a cosign key pair, so adopting it cannot"+
-					" record a trust anchor — the key is carried neither by the artifact nor by its"+
-					" bundle. Install it project-scoped against the key instead, which verifies the"+
-					" signature and pins it: `thv ai-plugin install %s --scope project --public-key"+
-					" <path-or-base64>` (add --project-root if you are not in the project directory;"+
-					" --public-key applies only project-scoped, and --allow-unsigned is not a"+
-					" substitute because the artifact is signed)",
-					err, pl.Metadata.Name, pl.Metadata.Name),
-				http.StatusForbidden,
-			)
+			provenance, keyErr := s.resolveKeySignedAdoption(opts, pl, err)
+			return provenance, false, keyErr
 		}
 		if err != nil {
 			return nil, false, fmt.Errorf("verifying stored bundle for adoption: %w", err)
@@ -601,6 +625,34 @@ func (s *service) adoptionTrust(
 		)
 	}
 	return nil, true, nil
+}
+
+func (s *service) resolveKeySignedAdoption(
+	opts plugins.SyncOptions, pl plugins.InstalledPlugin, keySignedErr error,
+) (*lockfile.Provenance, error) {
+	if opts.PublicKey == "" {
+		return nil, httperr.WithCode(
+			fmt.Errorf("%w: %q is signed with a cosign key pair, so adoption requires"+
+				" --public-key to verify and record its trust anchor"+
+				" (--allow-unsigned is not a substitute: the artifact is signed)",
+				keySignedErr, pl.Metadata.Name),
+			http.StatusForbidden,
+		)
+	}
+	pubKeyPEM, err := verifier.DecodePublicKey(opts.PublicKey)
+	if err != nil {
+		return nil, httperr.WithCode(fmt.Errorf("public_key: %w", err), http.StatusBadRequest)
+	}
+	if err := s.artifactVerifier().VerifyBundleOfflineWithKey(
+		pl.SigstoreBundle, pl.Digest, pubKeyPEM,
+	); err != nil {
+		return nil, httperr.WithCode(
+			fmt.Errorf("%q does not verify against the supplied cosign public key: %w",
+				pl.Metadata.Name, err),
+			http.StatusForbidden,
+		)
+	}
+	return &lockfile.Provenance{PublicKey: opts.PublicKey}, nil
 }
 
 // restoreAdoptedLockEntry undoes adoptLocked's lock write: reinstates the

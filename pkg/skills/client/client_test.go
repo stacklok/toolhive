@@ -848,9 +848,10 @@ func TestInstallCarriesAllowUnsigned(t *testing.T) {
 	assert.True(t, got.AllowUnsigned, "allow_unsigned must reach the server")
 }
 
-// TestSyncCarriesAllowUnsigned mirrors TestInstallCarriesAllowUnsigned for
-// the sync/adopt path.
-func TestSyncCarriesAllowUnsigned(t *testing.T) {
+// TestSyncCarriesAdoptionTrustOptions mirrors the install trust options for
+// sync/adopt. A key is encoded material, not a client-local file path, and
+// both it and the unsigned exception must survive the HTTP boundary.
+func TestSyncCarriesAdoptionTrustOptions(t *testing.T) {
 	t.Parallel()
 
 	var got syncRequest
@@ -865,9 +866,32 @@ func TestSyncCarriesAllowUnsigned(t *testing.T) {
 		ProjectRoot:   "/tmp/project",
 		Adopt:         true,
 		AllowUnsigned: true,
+		PublicKey:     "encoded-public-key",
 	})
 	require.NoError(t, err)
 	assert.True(t, got.AllowUnsigned, "allow_unsigned must reach the server")
+	assert.Equal(t, "encoded-public-key", got.PublicKey, "public_key must reach the server")
+}
+
+func TestUpgradeCarriesPublicKey(t *testing.T) {
+	t.Parallel()
+
+	var got upgradeRequest
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		require.NoError(t, json.NewDecoder(r.Body).Decode(&got))
+		w.Header().Set("Content-Type", "application/json")
+		require.NoError(t, json.NewEncoder(w).Encode(skills.UpgradeResult{}))
+	}))
+	t.Cleanup(srv.Close)
+
+	_, err := newTestClient(t, srv).Upgrade(t.Context(), skills.UpgradeOptions{
+		ProjectRoot:       "/tmp/project",
+		AllowSignerChange: true,
+		PublicKey:         "encoded-public-key",
+	})
+	require.NoError(t, err)
+	assert.True(t, got.AllowSignerChange)
+	assert.Equal(t, "encoded-public-key", got.PublicKey, "public_key must reach the server")
 }
 
 func TestTimeoutFromEnv(t *testing.T) {

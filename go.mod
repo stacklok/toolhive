@@ -14,8 +14,8 @@ require (
 	github.com/alicebob/miniredis/v2 v2.39.0
 	github.com/atotto/clipboard v0.1.4
 	github.com/aws/aws-sdk-go-v2 v1.47.0
-	github.com/aws/aws-sdk-go-v2/config v1.33.4
-	github.com/aws/aws-sdk-go-v2/service/sts v1.50.0
+	github.com/aws/aws-sdk-go-v2/config v1.33.5
+	github.com/aws/aws-sdk-go-v2/service/sts v1.51.0
 	github.com/cedar-policy/cedar-go v1.8.0
 	github.com/cenkalti/backoff/v7 v7.0.0
 	github.com/charmbracelet/x/ansi v0.11.8
@@ -45,9 +45,9 @@ require (
 	github.com/moby/moby/client v0.6.0
 	github.com/modelcontextprotocol/registry v1.8.1
 	github.com/oauth2-proxy/mockoidc v0.0.0-20240214162133-caebfff84d25
-	github.com/olekukonko/tablewriter v1.1.4
-	github.com/onsi/ginkgo/v2 v2.32.2
-	github.com/onsi/gomega v1.43.0
+	github.com/olekukonko/tablewriter v1.1.5
+	github.com/onsi/ginkgo/v2 v2.33.0
+	github.com/onsi/gomega v1.43.1
 	github.com/opencontainers/go-digest v1.0.0
 	github.com/opencontainers/image-spec v1.1.1
 	github.com/ory/fosite v0.49.0
@@ -65,12 +65,12 @@ require (
 	github.com/spf13/cobra v1.10.2
 	github.com/spf13/pflag v1.0.10
 	github.com/spf13/viper v1.21.0
-	github.com/spiffe/go-spiffe/v2 v2.8.1
-	github.com/stacklok/toolhive-catalog v0.20260908.0
-	github.com/stacklok/toolhive-core v0.0.47
+	github.com/spiffe/go-spiffe/v2 v2.8.2
+	github.com/stacklok/toolhive-catalog v0.20260916.0
+	github.com/stacklok/toolhive-core v0.0.49
 	github.com/stacklok/toolhive-core/redisconn v0.0.2
 	github.com/stretchr/testify v1.12.1
-	github.com/swaggo/swag/v2 v2.0.0-rc5
+	github.com/swaggo/swag/v2 v2.0.0-rc6
 	github.com/tailscale/hujson v0.0.0-20260727124030-b80ff77dac4f
 	github.com/testcontainers/testcontainers-go v0.44.0
 	github.com/tidwall/gjson v1.19.0
@@ -103,9 +103,9 @@ require (
 	k8s.io/apimachinery v0.37.0
 	k8s.io/client-go v0.37.0
 	k8s.io/utils v0.0.0-20260707023825-cf1189d6abe3
-	modernc.org/sqlite v1.58.0
+	modernc.org/sqlite v1.59.0
 	oras.land/oras-go/v2 v2.6.2
-	sigs.k8s.io/controller-runtime v0.25.0
+	sigs.k8s.io/controller-runtime v0.25.1
 	sigs.k8s.io/yaml v1.6.0
 )
 
@@ -117,7 +117,7 @@ require (
 	github.com/ProtonMail/go-crypto v1.4.1 // indirect
 	github.com/antlr4-go/antlr/v4 v4.13.1 // indirect
 	github.com/asaskevich/govalidator v0.0.0-20230301143203-a9d515a09cc2 // indirect
-	github.com/aws/aws-sdk-go-v2/credentials v1.20.4 // indirect
+	github.com/aws/aws-sdk-go-v2/credentials v1.20.5 // indirect
 	github.com/aws/aws-sdk-go-v2/feature/ec2/imds v1.20.0 // indirect
 	github.com/aws/aws-sdk-go-v2/internal/configsources v1.5.3 // indirect
 	github.com/aws/aws-sdk-go-v2/internal/endpoints/v2 v2.8.3 // indirect
@@ -241,7 +241,7 @@ require (
 	github.com/moby/sys/user v0.4.1 // indirect
 	github.com/moby/sys/userns v0.1.0 // indirect
 	github.com/moby/term v0.5.2 // indirect
-	github.com/modelcontextprotocol/go-sdk v1.7.0 // indirect
+	github.com/modelcontextprotocol/go-sdk v1.8.0 // indirect
 	github.com/modern-go/concurrent v0.0.0-20180306012644-bacd9c7ef1dd // indirect
 	github.com/modern-go/reflect2 v1.0.3-0.20250322232337-35a7c28c31ee // indirect
 	github.com/mohae/deepcopy v0.0.0-20170929034955-c48cc78d4826 // indirect
@@ -312,12 +312,15 @@ require (
 	go.opentelemetry.io/contrib/propagators/jaeger v1.40.0 // indirect
 	go.opentelemetry.io/contrib/samplers/jaegerremote v0.29.0 // indirect
 	go.opentelemetry.io/otel/exporters/jaeger v1.17.0 // indirect
+	go.opentelemetry.io/otel/exporters/otlp/otlplog/otlploggrpc v0.22.0 // indirect
 	go.opentelemetry.io/otel/exporters/otlp/otlplog/otlploghttp v0.22.0 // indirect
+	go.opentelemetry.io/otel/exporters/otlp/otlpmetric/otlpmetricgrpc v1.46.0 // indirect
 	go.opentelemetry.io/otel/exporters/otlp/otlpmetric/otlpmetrichttp v1.46.0 // indirect
 	go.opentelemetry.io/otel/exporters/otlp/otlptrace v1.46.0 // indirect
+	go.opentelemetry.io/otel/exporters/otlp/otlptrace/otlptracegrpc v1.46.0 // indirect
 	go.opentelemetry.io/otel/exporters/otlp/otlptrace/otlptracehttp v1.46.0 // indirect
 	go.opentelemetry.io/otel/exporters/prometheus v0.68.0 // indirect
-	go.opentelemetry.io/otel/exporters/zipkin v1.35.0 // indirect
+	go.opentelemetry.io/otel/exporters/zipkin v1.45.0 // indirect
 	go.opentelemetry.io/otel/log v0.22.0 // indirect
 	go.opentelemetry.io/otel/sdk/log v0.22.0 // indirect
 	go.uber.org/atomic v1.11.0 // indirect
@@ -341,7 +344,7 @@ require (
 	k8s.io/klog/v2 v2.140.0 // indirect
 	k8s.io/kube-openapi v0.0.0-20260721132016-d427ff9ee9ad // indirect
 	k8s.io/streaming v0.37.0 // indirect
-	modernc.org/libc v1.75.6 // indirect
+	modernc.org/libc v1.75.7 // indirect
 	modernc.org/mathutil v1.7.1 // indirect
 	modernc.org/memory v1.12.1 // indirect
 	sigs.k8s.io/json v0.0.0-20250730193827-2d320260d730 // indirect

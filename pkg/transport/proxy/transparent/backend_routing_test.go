@@ -71,6 +71,7 @@ func TestRewriteRoutesViaBackendURL(t *testing.T) {
 	sessionID := uuid.New().String()
 	sess := session.NewProxySession(sessionID)
 	sess.SetMetadata(sessionMetadataBackendURL, specificBackend.URL)
+	sess.SetMetadata(session.MetadataKeyIdentityBinding, "unauthenticated") // Auth-disabled fixture.
 	require.NoError(t, proxy.sessionManager.AddSession(sess))
 
 	ctx := context.Background()
@@ -107,6 +108,7 @@ func TestRewriteFallsBackToStaticTargetWhenNoBackendURL(t *testing.T) {
 	// Session with no backend_url — should fall back to static target
 	sessionID := uuid.New().String()
 	sess := session.NewProxySession(sessionID)
+	sess.SetMetadata(session.MetadataKeyIdentityBinding, "unauthenticated") // Auth-disabled fixture.
 	require.NoError(t, proxy.sessionManager.AddSession(sess))
 
 	ctx := context.Background()
@@ -145,6 +147,7 @@ func TestRewriteFallsBackToStaticTargetForNonAbsoluteBackendURL(t *testing.T) {
 	sessionID := uuid.New().String()
 	sess := session.NewProxySession(sessionID)
 	sess.SetMetadata(sessionMetadataBackendURL, "mcp-server-0:8080")
+	sess.SetMetadata(session.MetadataKeyIdentityBinding, "unauthenticated") // Auth-disabled fixture.
 	require.NoError(t, proxy.sessionManager.AddSession(sess))
 
 	ctx := context.Background()
@@ -498,6 +501,7 @@ func TestRoundTripReinitializesOnBackend404(t *testing.T) {
 	sess := session.NewProxySession(clientSessionID)
 	sess.SetMetadata(sessionMetadataBackendURL, staleBackend.URL)
 	sess.SetMetadata(sessionMetadataInitBody, `{"jsonrpc":"2.0","id":1,"method":"initialize"}`)
+	sess.SetMetadata(session.MetadataKeyIdentityBinding, "unauthenticated") // Auth-disabled fixture.
 	require.NoError(t, proxy.sessionManager.AddSession(sess))
 
 	ctx := context.Background()
@@ -571,6 +575,7 @@ func TestRoundTripReinitializesPreservesNonUUIDBackendSessionID(t *testing.T) {
 	sess := session.NewProxySession(clientSessionID)
 	sess.SetMetadata(sessionMetadataBackendURL, staleBackend.URL)
 	sess.SetMetadata(sessionMetadataInitBody, `{"jsonrpc":"2.0","id":1,"method":"initialize"}`)
+	sess.SetMetadata(session.MetadataKeyIdentityBinding, "unauthenticated") // Auth-disabled fixture.
 	require.NoError(t, proxy.sessionManager.AddSession(sess))
 
 	doRequest := func() *http.Response {
@@ -645,6 +650,7 @@ func TestRoundTripReinitializesAfterPriorReinit(t *testing.T) {
 	sess.SetMetadata(sessionMetadataBackendURL, staleBackend.URL)
 	sess.SetMetadata(sessionMetadataInitBody, `{"jsonrpc":"2.0","id":1,"method":"initialize"}`)
 	sess.SetMetadata(sessionMetadataBackendSID, firstBackendSID)
+	sess.SetMetadata(session.MetadataKeyIdentityBinding, "unauthenticated") // Auth-disabled fixture.
 	require.NoError(t, proxy.sessionManager.AddSession(sess))
 
 	ctx := context.Background()
@@ -695,6 +701,7 @@ func TestRoundTripReinitializesOnDialError(t *testing.T) {
 	sess := session.NewProxySession(clientSessionID)
 	sess.SetMetadata(sessionMetadataBackendURL, deadURL)
 	sess.SetMetadata(sessionMetadataInitBody, `{"jsonrpc":"2.0","id":1,"method":"initialize"}`)
+	sess.SetMetadata(session.MetadataKeyIdentityBinding, "unauthenticated") // Auth-disabled fixture.
 	require.NoError(t, proxy.sessionManager.AddSession(sess))
 
 	ctx := context.Background()
@@ -757,6 +764,7 @@ func TestRoundTripStripsSessionIDFromInitialize(t *testing.T) {
 			if tt.priorBackend {
 				sess.SetMetadata(sessionMetadataBackendSID, uuid.New().String())
 			}
+			sess.SetMetadata(session.MetadataKeyIdentityBinding, "unauthenticated") // Auth-disabled fixture.
 			require.NoError(t, proxy.sessionManager.AddSession(sess))
 
 			ctx := context.Background()
@@ -779,16 +787,9 @@ func TestRoundTripStripsSessionIDFromInitialize(t *testing.T) {
 	}
 }
 
-// TestRoundTripDoesNotReplayInitializeOnDialError verifies that a dial error on
-// an initialize does not trigger transparent re-initialization.
-//
-// reinitializeAndReplay sends its own initialize and then replays the original
-// request; for an initialize that would give the freshly created backend session
-// a second handshake — the exact failure the session-ID strip exists to avoid.
-// The client is already starting a new session, so the proxy instead unpins the
-// session from the unreachable pod and lets the error surface, leaving the
-// client's retry to route via the target service.
-func TestRoundTripDoesNotReplayInitializeOnDialError(t *testing.T) {
+// TestInitializeDoesNotConsultSuppliedSession verifies that initialize ignores a
+// stale supplied SID, routes to the service, and never unpins the owner's session.
+func TestInitializeDoesNotConsultSuppliedSession(t *testing.T) {
 	t.Parallel()
 
 	// A server closed immediately after creation: its URL refuses connections.
@@ -810,6 +811,7 @@ func TestRoundTripDoesNotReplayInitializeOnDialError(t *testing.T) {
 	sess := session.NewProxySession(clientSessionID)
 	sess.SetMetadata(sessionMetadataBackendURL, deadURL)
 	sess.SetMetadata(sessionMetadataInitBody, `{"jsonrpc":"2.0","id":1,"method":"initialize"}`)
+	sess.SetMetadata(session.MetadataKeyIdentityBinding, "unauthenticated") // Auth-disabled fixture.
 	require.NoError(t, proxy.sessionManager.AddSession(sess))
 
 	ctx := context.Background()
@@ -825,20 +827,16 @@ func TestRoundTripDoesNotReplayInitializeOnDialError(t *testing.T) {
 	// one whose proxy has since been closed surfaces here as a transport error.
 	client := &http.Client{Transport: &http.Transport{DisableKeepAlives: true}}
 	resp, err := client.Do(req)
-	// Either outcome is legitimate for a dial failure -- the reverse proxy may
-	// synthesize a 502, or the connection may fail outright. Neither is what
-	// this test is about; the assertions below are.
-	if err == nil {
-		_ = resp.Body.Close()
-	}
-
-	assert.Zero(t, targetHits.Load(),
-		"the proxy must not send its own initialize to the target service for an initialize dial error")
+	require.NoError(t, err)
+	require.Equal(t, http.StatusOK, resp.StatusCode)
+	require.NoError(t, resp.Body.Close())
+	assert.Equal(t, int32(1), targetHits.Load(),
+		"initialize must route directly to the service without consulting the supplied session")
 
 	updated, ok := proxy.sessionManager.Get(normalizeSessionID(clientSessionID))
-	require.True(t, ok, "session should survive the dial error")
+	require.True(t, ok, "supplied session must remain untouched")
 	backendURL, exists := updated.GetMetadataValue(sessionMetadataBackendURL)
 	require.True(t, exists, "backend_url should still be set")
-	assert.Equal(t, target.URL, backendURL,
-		"session must be unpinned from the unreachable pod so the client's retry routes via the target service")
+	assert.Equal(t, deadURL, backendURL,
+		"initialize must not mutate the owner session even when its pin is stale")
 }

@@ -3,7 +3,31 @@
 
 package transparent
 
-import "github.com/google/uuid"
+import (
+	"net/url"
+	"strings"
+
+	"github.com/google/uuid"
+)
+
+// rewriteSessionQuery modifies only existing sessionId fields, preserving the
+// byte representation and order of other query parameters. An empty ID strips it.
+func rewriteSessionQuery(u *url.URL, id string) {
+	parts := strings.Split(u.RawQuery, "&")
+	kept := parts[:0]
+	for _, part := range parts {
+		key, _, _ := strings.Cut(part, "=")
+		key, err := url.QueryUnescape(key)
+		if err == nil && key == "sessionId" {
+			if id != "" {
+				kept = append(kept, "sessionId="+url.QueryEscape(id))
+			}
+			continue
+		}
+		kept = append(kept, part)
+	}
+	u.RawQuery = strings.Join(kept, "&")
+}
 
 // mcpSessionNamespace is the UUID v5 namespace used when normalizing non-UUID
 // Mcp-Session-Id values received from upstream MCP servers.

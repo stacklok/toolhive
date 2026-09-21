@@ -455,8 +455,9 @@ func TestHandlePostRequest(t *testing.T) {
 		CreatedAt: time.Now(),
 	}
 
-	// Add session to manager and to the live registry (mirrors what handleSSEConnection does)
+	// Auth is disabled for this fixture, matching handleSSEConnection's binding.
 	sseSession := session.NewSSESessionWithClient(sessionID, clientInfo)
+	sseSession.SetMetadata(session.MetadataKeyIdentityBinding, "unauthenticated")
 	err := proxy.sessionManager.AddSession(sseSession)
 	require.NoError(t, err)
 	proxy.liveSSESessions.Store(sessionID, sseSession)

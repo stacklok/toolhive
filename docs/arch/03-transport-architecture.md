@@ -205,6 +205,31 @@ When stdio transport is selected, the proxy mode determines which HTTP protocol 
 | **sse** | HTTP (SSE) | Transparent | `transparent_proxy.go` |
 | **streamable-http** | HTTP (Streamable) | Transparent | `transparent_proxy.go` |
 
+### Session Ownership
+
+Ordinary proxies use `pkg/auth/sessionbinding` to bind each session to the
+validated request identity's issuer and subject under `vmcp.identity.binding`.
+The complete bound record is inserted conditionally (memory/Redis SET NX) before
+publishing an ID or SSE endpoint. Refreshed tokens for the same principal work;
+changing either issuer or subject does not.
+
+Ownership is checked after authentication, before forwarding, stream replacement,
+delete, or backend recovery. SSE-to-stdio uses the `session_id` query parameter;
+direct Streamable HTTP uses `Mcp-Session-Id`; transparent proxies validate both
+that header and the backend SSE `sessionId` query parameter, rejecting ambiguous
+carriers. Transparent requests that forward a backend SID are checked even for
+Modern MCP. Direct Modern POST requests intentionally ignore the SID and retain
+fresh per-request routing tokens; truly sessionless requests remain unaffected.
+
+Missing, foreign, and legacy unowned sessions all return a non-disclosing 404;
+legacy clients must reinitialize. Storage failures return 503 before streaming;
+a binding failure discovered inside an upstream SSE stream terminates it without
+publishing the conflicting endpoint. Rejection does not delete or close the owner's session. With authentication disabled, only an
+actually absent identity uses the unauthenticated sentinel. Non-nil identities
+(including synthetic anonymous/local identities) require valid nonempty string
+`iss` and `sub` claims without NUL bytes. Ownership never comes from outbound
+Authorization headers. Shared metadata does not replace live-stream affinity.
+
 ### Middleware Integration
 
 All proxy types integrate with the middleware chain:

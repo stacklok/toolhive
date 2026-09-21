@@ -6,6 +6,7 @@ package pluginsvc
 import (
 	"context"
 	"errors"
+	"net/http"
 	"os"
 	"path/filepath"
 	"testing"
@@ -13,6 +14,7 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
+	"github.com/stacklok/toolhive-core/httperr"
 	ociplugins "github.com/stacklok/toolhive-core/oci/plugins"
 	"github.com/stacklok/toolhive/pkg/client"
 	"github.com/stacklok/toolhive/pkg/git"
@@ -24,6 +26,38 @@ import (
 )
 
 const gitPluginRef = "git://github.com/org/my-plugin"
+
+func TestValidateSyncPublicKey(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name    string
+		opts    plugins.SyncOptions
+		wantErr bool
+	}{
+		{name: "no key"},
+		{name: "valid adoption key", opts: plugins.SyncOptions{Adopt: true, PublicKey: testPublicKeyB64}},
+		{name: "key without adopt", opts: plugins.SyncOptions{PublicKey: testPublicKeyB64}, wantErr: true},
+		{
+			name:    "adopt check with key",
+			opts:    plugins.SyncOptions{Adopt: true, Check: true, PublicKey: testPublicKeyB64},
+			wantErr: true,
+		},
+		{name: "malformed key", opts: plugins.SyncOptions{Adopt: true, PublicKey: "not-a-key"}, wantErr: true},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			err := validateSyncPublicKey(tc.opts)
+			if !tc.wantErr {
+				require.NoError(t, err)
+				return
+			}
+			require.Error(t, err)
+			assert.Equal(t, http.StatusBadRequest, httperr.Code(err))
+		})
+	}
+}
 
 // redirectGitClient clones a local fixture repo regardless of the requested
 // URL, so Install can use a github.com git:// reference (ParseGitReference

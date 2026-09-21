@@ -37,6 +37,35 @@ Storing routing decisions:
 
 If the same input always maps to the same destination (consistent hashing, modular arithmetic, content addressing), there is no need to store the mapping. Remove the stored state and eliminate the recovery problem entirely.
 
+## Own the Fix for a Reported Security Advisory
+
+Verify the reported bug yourself, then derive the fix from this codebase's existing
+answer for the same shape. Read the advisory's "Recommended remediation" section
+only afterwards, as a cross-check — never as the design input.
+
+Reporters do not know our invariants, and two ToolHive advisories have shipped
+unsafe remediation advice:
+
+- **GHSA-8rgq-f53x-rcp6** advised preserving the full `completion/complete` params
+  as authorization context. Doing so introduced a *new* bypass: Cedar namespaces
+  arguments as `arg_*`, and the parser hands that method its entire params map, so
+  a caller could forge `arg_env` and satisfy a policy condition the real
+  `prompts/get` could never satisfy.
+- **GHSA-5jfr-jf2r-pcfj** advised installing a private-IP deny on vmcp backends,
+  which resolve to RFC 1918 pod IPs — it would have broken every in-cluster
+  deployment on the first request.
+
+When fixing one:
+
+1. Reproduce the bug independently; do not rely on the reporter's PoC.
+2. Find the codebase's precedent for the same shape and let that drive the design.
+3. Check `git log` for a deliberate PR behind the claimed defect — intended,
+   documented behavior is not a vulnerability.
+4. Name the behavior the fix changes for existing deployments (requests that
+   previously succeeded, forward-compatibility breaks, new amplification) and treat
+   each as an explicit decision. Prefer fail-closed *with* an operator-visible
+   signal — log request-shape rejections at WARN — over silent breakage.
+
 ## All Requests Must Pass Through the Proxy Runner
 
 Every request to a managed container (MCP server or tool) must flow through the proxy runner (`pkg/runner/proxy`). Bypassing it is a vulnerability, not an optimization.

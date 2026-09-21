@@ -284,6 +284,91 @@ permit(principal, action == Action::"call_tool", resource == Tool::"weather");
 
 Then `tools/list` will only show the "weather" tool for that user.
 
+##### Methods covered by a prompt or resource policy
+
+Some MCP methods do not name a capability directly but still act on one. They are
+authorized as the capability their request body references:
+
+| Method | Authorized as |
+| --- | --- |
+| `prompts/get` | `get_prompt` on the prompt name |
+| `completion/complete` with a `ref/prompt` | `get_prompt` on the referenced prompt name |
+| `resources/read` | `read_resource` on the URI |
+| `resources/subscribe`, `resources/unsubscribe` | `read_resource` on the URI |
+| `completion/complete` with a `ref/resource` | `read_resource` on the referenced URI or URI template |
+| `subscriptions/listen` | `read_resource` on **every** URI in `notifications.resourceSubscriptions` |
+
+For prompts the name is the same string in both methods, so one rule covers both.
+This policy:
+
+```plain
+permit(principal, action == Action::"get_prompt", resource == Prompt::"greeting");
+```
+
+lets a client both retrieve the `greeting` prompt and request argument
+completions for it, and nothing else. A client denied `greeting` cannot use
+completion to enumerate its argument values.
+
+###### Resource templates need their own rule
+
+A `ref/resource` completion references a **URI template** such as
+`secrets://tenant/{name}`, not a concrete URI. That template string is its own
+Cedar entity ID, exactly as it is for `resources/templates/list`. A policy naming
+only concrete URIs does not cover it:
+
+```plain
+# Allows reading the resource, but NOT completions on the template.
+permit(principal, action == Action::"read_resource", resource == Resource::"secrets://tenant/admin");
+
+# Required as well, to allow completing the template's {name} variable.
+permit(principal, action == Action::"read_resource", resource == Resource::"secrets://tenant/{name}");
+```
+
+Two consequences to weigh when writing these rules:
+
+- If you grant nothing for the template string, template completions are denied
+  for everyone. That is fail-closed, but it is a change from earlier releases
+  where `completion/complete` was allowed unconditionally.
+- A wildcard rule such as `when { resource.uri like "secrets://tenant/*" }`
+  matches the template **and** every concrete URI under it. Granting the template
+  that way lets a client enumerate candidate values for the whole namespace, even
+  where a narrower `forbid` covers an individual resource. Name the template
+  explicitly rather than relying on a wildcard.
+
+###### Other behaviors worth knowing
+
+- **Subscriptions are all-or-nothing.** If a `subscriptions/listen` request names
+  any URI the policy denies, the whole request is rejected with 403 rather than
+  being silently narrowed to the permitted subset. At most 50 URIs may be named in
+  one request; beyond that the request is rejected. Repeated URIs are evaluated
+  once, but still count individually toward that limit. All of a request's
+  decisions share a 30-second budget, so a slow or unresponsive external
+  authorizer cannot hold a request open for one timeout per URI; a request that
+  exhausts the budget is denied.
+- **Unresolvable references are denied.** A `completion/complete` whose `ref` is
+  missing, malformed, of an unknown type, or carrying both a `name` and a `uri`
+  is rejected, because no single capability can be established for it. It is
+  never authorized against an empty resource ID. This includes the legacy
+  bare-string form `"ref": "prompt-name"`, which does not say whether it names a
+  prompt or a resource; clients must send the `{"type": ..., "name"|"uri": ...}`
+  object form.
+- **Unknown subscription fields are rejected.** A `subscriptions/listen` whose
+  `notifications` object carries a member outside `toolsListChanged`,
+  `promptsListChanged`, `resourcesListChanged` and `resourceSubscriptions` is
+  refused, so a field this version does not understand cannot carry an
+  unauthorized resource reference past the policy.
+- **A JSON `null` where the schema expects an object or array is rejected.**
+  `"notifications": null` and `"resourceSubscriptions": null` are both refused,
+  because this proxy and the backend would each have to guess the same meaning
+  for them. An omitted member and an empty array are not rejected — both
+  unambiguously name no resource, and both are allowed through with no policy
+  check.
+- **Policies conditioned on `arg_*` do not match these methods.** Argument
+  conditions describe the arguments the authorized operation runs with, and a
+  completion or subscription request does not supply them. A rule like
+  `when { context.arg_env == "dev" }` therefore denies these methods rather than
+  matching them — grant them with a rule that does not test arguments.
+
 ##### Allow a specific client to call any tool
 
 ```plain

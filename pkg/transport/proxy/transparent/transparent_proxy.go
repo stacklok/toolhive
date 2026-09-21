@@ -633,7 +633,7 @@ func (t *tracingTransport) RoundTrip(req *http.Request) (*http.Response, error) 
 
 	// Transparent requests forward backend session authority even for Modern MCP.
 	// Initialize strips all supplied carriers rather than touching their sessions.
-	clientSID, carrierErr := sessionbinding.RequestID(req, "sessionId")
+	clientSID, carrierErr := requestSessionID(req)
 	if carrierErr != nil {
 		return session.NotFoundResponse(req, requestID), nil
 	}

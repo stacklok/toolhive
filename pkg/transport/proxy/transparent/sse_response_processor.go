@@ -275,7 +275,7 @@ func (s *sseLineProcessor) extractSessionID(endpoint string) error {
 	if err != nil {
 		return sessionbinding.ErrNotFound
 	}
-	sid, err := sessionbinding.RequestID(&http.Request{URL: parsed}, "sessionId")
+	sid, err := requestSessionID(&http.Request{URL: parsed})
 	if err != nil || sid == "" {
 		return sessionbinding.ErrNotFound
 	}

@@ -58,8 +58,8 @@ func requestSessionID(r *http.Request) (string, error) {
 	return found, nil
 }
 
-// rewriteSessionQuery modifies only existing sessionId fields, preserving the
-// byte representation and order of other query parameters. An empty ID strips it.
+// rewriteSessionQuery modifies only existing session query fields, preserving the
+// byte representation and order of other query parameters. An empty ID strips them.
 func rewriteSessionQuery(u *url.URL, id string) {
 	parts := strings.Split(u.RawQuery, "&")
 	kept := parts[:0]

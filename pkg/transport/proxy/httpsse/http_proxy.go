@@ -59,7 +59,9 @@ type Proxy interface {
 	// SendMessageToDestination sends a message to the destination.
 	SendMessageToDestination(msg jsonrpc2.Message) error
 
-	// ForwardResponseToClients forwards a response from the destination to clients.
+	// ForwardResponseToClients delivers a message from the destination to the
+	// client session(s) it belongs to. Implementations must never deliver a
+	// message to a session that did not originate it.
 	ForwardResponseToClients(ctx context.Context, msg jsonrpc2.Message) error
 
 	// SendResponseMessage sends a message to the response channel.
@@ -110,13 +112,15 @@ type HTTPSSEProxy struct {
 	// liveSSESessions tracks active SSE connections local to this instance.
 	// Keys are clientID strings; values are *session.SSESession.
 	// This is separate from sessionManager so that distributed storage backends
-	// (e.g. Redis) can be used for session metadata without breaking SSE fan-out,
-	// which must iterate live in-memory connections regardless of storage backend.
+	// (e.g. Redis) can be used for session metadata without breaking response
+	// routing and notification broadcast, which must reach the live in-memory
+	// connection regardless of storage backend.
 	liveSSESessions sync.Map
 
-	// Pending messages for SSE clients
-	pendingMessages []*ssecommon.PendingSSEMessage
-	pendingMutex    sync.Mutex
+	// warnedKeys records which fail-closed drop or rejection events have
+	// already been logged at Warn (see warnOnce). Guarded by warnedMutex.
+	warnedKeys  map[string]struct{}
+	warnedMutex sync.Mutex
 
 	// Message channel
 	messageCh      chan jsonrpc2.Message
@@ -138,7 +142,7 @@ type Option func(*HTTPSSEProxy)
 // share the same session store.
 //
 // Architectural note: HTTPSSEProxy is used by StdioTransport for stdio-backed MCP
-// servers. SSE fan-out (ForwardResponseToClients) and POST handling are both local
+// servers. Response routing (ForwardResponseToClients) and POST handling are both local
 // to the instance holding the live SSE connection, so Redis storage enables
 // cross-replica session metadata sharing but does NOT solve cross-replica message
 // delivery — a POST accepted on replica B won't reach a client whose SSE connection
@@ -148,7 +152,7 @@ type Option func(*HTTPSSEProxy)
 // Prefer Streamable HTTP (ProxyModeStreamableHTTP), also supported on StdioTransport,
 // which does not have this affinity constraint.
 //
-// Note: SSE fan-out and graceful disconnect use a separate in-memory liveSSESessions
+// Note: response routing and graceful disconnect use a separate in-memory liveSSESessions
 // registry, not the session manager, so any Storage implementation is safe to inject here.
 func WithSessionStorage(storage session.Storage) Option {
 	return func(p *HTTPSSEProxy) {
@@ -216,7 +220,7 @@ func NewHTTPSSEProxy(
 		messageCh:         make(chan jsonrpc2.Message, 100),
 		sessionTTL:        session.DefaultSessionTTL,
 		readTimeout:       defaultReadTimeout,
-		pendingMessages:   []*ssecommon.PendingSSEMessage{},
+		warnedKeys:        make(map[string]struct{}),
 		prometheusHandler: prometheusHandler,
 	}
 
@@ -428,35 +432,34 @@ func (p *HTTPSSEProxy) SendMessageToDestination(msg jsonrpc2.Message) error {
 	}
 }
 
-// ForwardResponseToClients forwards a response from the destination to all connected SSE clients.
+// ForwardResponseToClients routes one message from the shared backend to the
+// SSE session(s) it belongs to. Every message the backend emits arrives here
+// untagged, so delivery is decided by JSON-RPC shape (see routing.go):
+//   - a *jsonrpc2.Response goes only to the session encoded in its routed ID,
+//     with the client's original ID restored (routeResponse);
+//   - a notification is broadcast if it is global, otherwise dropped
+//     (routeNotification);
+//   - a server-initiated ping is answered (answerBackendPing); any other
+//     server-initiated request is rejected back to the backend
+//     (rejectServerRequest).
+//
+// It never delivers a message to a session that did not originate it.
 func (p *HTTPSSEProxy) ForwardResponseToClients(_ context.Context, msg jsonrpc2.Message) error {
-	// Serialize the message to JSON
-	data, err := jsonrpc2.EncodeMessage(msg)
-	if err != nil {
-		return fmt.Errorf("failed to encode JSON-RPC message: %w", err)
+	switch m := msg.(type) {
+	case *jsonrpc2.Response:
+		return p.routeResponse(m)
+	case *jsonrpc2.Request:
+		if !m.ID.IsValid() {
+			return p.routeNotification(m)
+		}
+		if m.Method == methodPing {
+			return p.answerBackendPing(m)
+		}
+		return p.rejectServerRequest(m)
+	default:
+		slog.Warn("dropping backend message of unknown JSON-RPC type", "type", fmt.Sprintf("%T", msg))
+		return nil
 	}
-
-	// Create an SSE message
-	sseMsg := ssecommon.NewSSEMessage("message", string(data))
-
-	// Check if there are any connected clients
-	hasClients := false
-	p.liveSSESessions.Range(func(_, _ interface{}) bool {
-		hasClients = true
-		return false // Stop iteration after finding first session
-	})
-
-	if hasClients {
-		// Send the message to all connected clients
-		return p.sendSSEEvent(sseMsg)
-	}
-
-	// Queue the message for later delivery
-	p.pendingMutex.Lock()
-	p.pendingMessages = append(p.pendingMessages, ssecommon.NewPendingSSEMessage(sseMsg))
-	p.pendingMutex.Unlock()
-
-	return nil
 }
 
 // handleSSEConnection handles an SSE connection.
@@ -494,9 +497,6 @@ func (p *HTTPSSEProxy) handleSSEConnection(w http.ResponseWriter, r *http.Reques
 		return
 	}
 	p.liveSSESessions.Store(clientID, sseSession)
-
-	// Process any pending messages for this client
-	p.processPendingMessages(clientID, messageCh)
 
 	// Create a flusher for SSE
 	flusher, ok := w.(http.Flusher)
@@ -583,7 +583,8 @@ func (p *HTTPSSEProxy) handleOwnedPostRequest(w http.ResponseWriter, r *http.Req
 
 	// Verify the live SSE connection for this session is held by this instance.
 	// With a distributed storage backend (e.g. Redis), sessionManager.Get succeeds
-	// on any replica, but fan-out only reaches clients connected locally. Rejecting
+	// on any replica, but response delivery only reaches the live connection held
+	// by this instance. Rejecting
 	// here with 503 surfaces the affinity failure explicitly instead of silently
 	// dropping the response after forwarding to the backend.
 	if _, local := p.liveSSESessions.Load(sessionID); !local {
@@ -614,6 +615,45 @@ func (p *HTTPSSEProxy) handleOwnedPostRequest(w http.ResponseWriter, r *http.Req
 
 	slog.Debug("received JSON-RPC message", "type", fmt.Sprintf("%T", msg))
 
+	// Tag each call's wire ID with the session that issued it, so the shared
+	// backend's echoed response can be routed back to this session alone (see
+	// routing.go). sessionID is the same value the ownership middleware just
+	// validated for this request. The id is read exactly from the raw body
+	// (exactRequestID) because the decoder rounds large integers. A
+	// notifications/cancelled names its target request by id in params, so
+	// that id is rewritten the same way; other notifications pass through
+	// unchanged. A *jsonrpc2.Response from a client is refused: the proxy
+	// answers or rejects every server-initiated request itself before any
+	// client sees it, so a client response can only be an attempt to answer
+	// backend work on behalf of some other session.
+	switch m := msg.(type) {
+	case *jsonrpc2.Response:
+		http.Error(w, "JSON-RPC responses from clients are not accepted by the SSE proxy", http.StatusBadRequest)
+		return
+	case *jsonrpc2.Request:
+		switch {
+		case m.ID.IsValid():
+			exact, err := exactRequestID(body, m.ID)
+			if err != nil {
+				http.Error(w, fmt.Sprintf("Unsupported JSON-RPC id: %v", err), http.StatusBadRequest)
+				return
+			}
+			routed, err := encodeRoutedID(sessionID, exact)
+			if err != nil {
+				http.Error(w, fmt.Sprintf("Unsupported JSON-RPC id: %v", err), http.StatusBadRequest)
+				return
+			}
+			msg = &jsonrpc2.Request{ID: jsonrpc2.StringID(routed), Method: m.Method, Params: m.Params}
+		case m.Method == methodCancelled:
+			rewritten, err := rewriteCancelledRequestID(sessionID, m)
+			if err != nil {
+				http.Error(w, fmt.Sprintf("Unsupported JSON-RPC id: %v", err), http.StatusBadRequest)
+				return
+			}
+			msg = rewritten
+		}
+	}
+
 	// Send the message to the destination
 	if err := p.SendMessageToDestination(msg); err != nil {
 		http.Error(w, "Failed to send message to destination", http.StatusInternalServerError)
@@ -627,7 +667,10 @@ func (p *HTTPSSEProxy) handleOwnedPostRequest(w http.ResponseWriter, r *http.Req
 	}
 }
 
-// sendSSEEvent sends an SSE event to all connected clients.
+// sendSSEEvent broadcasts one SSE event to every live client. It is reserved
+// for global notifications with no session-specific payload (see
+// routeNotification); responses are delivered to a single session by
+// routeResponse and must never pass through here.
 func (p *HTTPSSEProxy) sendSSEEvent(msg *ssecommon.SSEMessage) error {
 	// Convert the message to an SSE-formatted string
 	sseString := msg.ToSSEString()
@@ -680,38 +723,6 @@ func (p *HTTPSSEProxy) removeClient(clientID string) {
 	if err := p.sessionManager.Delete(clientID); err != nil {
 		slog.Debug("failed to delete session", "client_id", clientID, "error", err)
 	}
-}
-
-// processPendingMessages processes any pending messages for a new client.
-func (p *HTTPSSEProxy) processPendingMessages(clientID string, messageCh chan<- string) {
-	p.pendingMutex.Lock()
-	defer p.pendingMutex.Unlock()
-
-	if len(p.pendingMessages) == 0 {
-		return
-	}
-
-	// Find messages for this client (all messages for now)
-	for i, pendingMsg := range p.pendingMessages {
-		// Convert to SSE string
-		sseString := pendingMsg.Message.ToSSEString()
-
-		// Send to the client
-		select {
-		case messageCh <- sseString:
-			// Message sent successfully
-		default:
-			// Channel is full, stop sending
-			slog.Error("client channel full after sending pending messages",
-				"client_id", clientID, "sent", i, "total", len(p.pendingMessages))
-			// Remove successfully sent messages and keep the rest
-			p.pendingMessages = p.pendingMessages[i:]
-			return
-		}
-	}
-
-	// Clear the pending messages
-	p.pendingMessages = nil
 }
 
 // buildEndpointURL constructs the endpoint URL from request headers and proxy configuration.

@@ -570,12 +570,60 @@ stdin, stdout, err := t.deployer.AttachToWorkload(ctx, t.containerName)
 
 ### Stdio Transport - SSE Mode
 
-**Implementation**: `pkg/transport/session/sse_session.go`
+**Implementation**: `pkg/transport/session/sse_session.go`,
+`pkg/transport/proxy/httpsse/routing.go`
 
-- Unique client ID per connection
+- Unique client ID per connection, used as the `session_id` in the POST endpoint
 - Message channel per client
-- Pending messages queued for reconnection
+- No replay buffer: a message the backend emits while no client is connected
+  reaches nobody, then or later (same as the streamable proxy)
 - Automatic cleanup after TTL
+
+#### Server->Client Routing (Legacy SSE)
+
+The legacy SSE proxy sits in front of the same single shared stdio backend as
+the streamable proxy (see the next section) and faces the same problem: every
+message the backend emits arrives untagged, and a message delivered to the
+wrong session is a cross-user disclosure (GHSA-wm2j-ch74-276r).
+
+Responses are routed statelessly. `handleOwnedPostRequest` rewrites each
+call's wire ID to `<session_id>|n:<int64>` or `<session_id>|s:<string>`
+(`encodeRoutedID`), where `session_id` is the value the ownership middleware
+just validated for that request. The backend echoes it, `routeResponse` parses
+it back (`decodeRoutedID`), restores the client's original ID with its
+original type, and delivers only to that session's live stream. Because the
+destination is derivable from the echoed ID alone, there is no pending-request
+table to evict on response, disconnect, or timeout. A response whose ID the
+proxy did not mint, or whose session has disconnected, is dropped at Debug and
+is never queued or broadcast. The id is read exactly from the raw request
+body (`exactRequestID`), because `jsonrpc2.DecodeMessage` parses numbers
+through `float64`; fractional ids are rejected with 400. A client's
+`notifications/cancelled` names its target request in `params.requestId`; the
+proxy rewrites that value the same way (`rewriteCancelledRequestID`) so the
+backend can match it. A JSON-RPC response sent by a client is refused with
+400: the proxy answers or rejects every server-initiated request itself, so a
+client response could only be an attempt to answer backend work belonging to
+another session.
+
+| Backend message | Destination |
+|---|---|
+| Response with a routed ID for a live session | that session only, original ID restored |
+| Response otherwise (unrouted ID, session gone, health-check ping echo) | dropped |
+| `notifications/tools\|resources\|prompts/list_changed` | every live session, rebuilt from the method with no params (the spec allows `_meta`, which could carry one session's data) |
+| Server-initiated `ping` | answered by the proxy with an empty result, written back to the backend |
+| `notifications/message`, `notifications/progress`, `notifications/resources/updated`, anything else | dropped; same SECURE-DROP rationale as the streamable table |
+| Any other server-initiated request (`sampling/createMessage`, `elicitation/create`, ...) | JSON-RPC `-32601` written back to the backend |
+
+The first drop or rejection of each method is logged at Warn so the missing
+capability is diagnosable; later ones at Debug so a chatty backend cannot
+flood the log.
+
+Progress routing by a proxy-minted token and subscription-scoped
+`resources/updated` delivery exist in the streamable proxy and are not yet
+ported to the legacy SSE proxy; SSE clients receive neither until then.
+Server-initiated requests are rejected even when a single client is connected:
+a request emitted on behalf of a session that has since disconnected would
+otherwise be delivered to whichever session remains.
 
 ### Stdio Transport - Streamable Mode
 
@@ -734,8 +782,7 @@ path for server->client messages.
   progress delivery channel) whose buffer is full has its message dropped
   (logged) rather than blocking delivery to anything else.
 - A notification dispatched while no GET stream is connected for its target
-  session is dropped. There is no replay buffer or pending-message queue
-  (unlike `httpsse`'s SSE proxy, which queues for reconnecting clients) -- a
+  session is dropped. There is no replay buffer or pending-message queue -- a
   client that wants server->client notifications must keep a GET stream open.
 - Per MCP 2025-11-25, a server MUST NOT deliver the same notification to a
   session more than once, so `serverStreamRegistry` allows **at most one

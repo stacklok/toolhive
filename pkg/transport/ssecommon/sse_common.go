@@ -63,22 +63,6 @@ func (m *SSEMessage) ToSSEString() string {
 	return sb.String()
 }
 
-// PendingSSEMessage represents an SSE message that is pending delivery
-type PendingSSEMessage struct {
-	// Message is the SSE message
-	Message *SSEMessage
-	// CreatedAt is the time the message was created
-	CreatedAt time.Time
-}
-
-// NewPendingSSEMessage creates a new pending SSE message
-func NewPendingSSEMessage(message *SSEMessage) *PendingSSEMessage {
-	return &PendingSSEMessage{
-		Message:   message,
-		CreatedAt: time.Now(),
-	}
-}
-
 // SSEClient represents a connected SSE client
 type SSEClient struct {
 	// MessageCh is the channel for sending messages to the client

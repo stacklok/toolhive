@@ -66,7 +66,7 @@ require (
 	github.com/spf13/pflag v1.0.10
 	github.com/spf13/viper v1.21.0
 	github.com/spiffe/go-spiffe/v2 v2.8.2
-	github.com/stacklok/toolhive-catalog v0.20260916.0
+	github.com/stacklok/toolhive-catalog v0.20260922.0
 	github.com/stacklok/toolhive-core v0.0.50
 	github.com/stacklok/toolhive-core/redisconn v0.0.2
 	github.com/stretchr/testify v1.12.1

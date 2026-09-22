@@ -439,7 +439,8 @@ func (p *HTTPSSEProxy) SendMessageToDestination(msg jsonrpc2.Message) error {
 //     with the client's original ID restored (routeResponse);
 //   - a notification is broadcast if it is global, otherwise dropped
 //     (routeNotification);
-//   - a server-initiated request is rejected back to the backend
+//   - a server-initiated ping is answered (answerBackendPing); any other
+//     server-initiated request is rejected back to the backend
 //     (rejectServerRequest).
 //
 // It never delivers a message to a session that did not originate it.
@@ -450,6 +451,9 @@ func (p *HTTPSSEProxy) ForwardResponseToClients(_ context.Context, msg jsonrpc2.
 	case *jsonrpc2.Request:
 		if !m.ID.IsValid() {
 			return p.routeNotification(m)
+		}
+		if m.Method == methodPing {
+			return p.answerBackendPing(m)
 		}
 		return p.rejectServerRequest(m)
 	default:
@@ -614,22 +618,34 @@ func (p *HTTPSSEProxy) handleOwnedPostRequest(w http.ResponseWriter, r *http.Req
 	// Tag each call's wire ID with the session that issued it, so the shared
 	// backend's echoed response can be routed back to this session alone (see
 	// routing.go). sessionID is the same value the ownership middleware just
-	// validated for this request. A notifications/cancelled names its target
-	// request by id in params, so that id is rewritten the same way. Other
-	// notifications pass through unchanged, as does a *jsonrpc2.Response from
-	// a client (nothing elicits one now that server-initiated requests are
-	// rejected before reaching any client).
-	if req, ok := msg.(*jsonrpc2.Request); ok {
+	// validated for this request. The id is read exactly from the raw body
+	// (exactRequestID) because the decoder rounds large integers. A
+	// notifications/cancelled names its target request by id in params, so
+	// that id is rewritten the same way; other notifications pass through
+	// unchanged. A *jsonrpc2.Response from a client is refused: the proxy
+	// answers or rejects every server-initiated request itself before any
+	// client sees it, so a client response can only be an attempt to answer
+	// backend work on behalf of some other session.
+	switch m := msg.(type) {
+	case *jsonrpc2.Response:
+		http.Error(w, "JSON-RPC responses from clients are not accepted by the SSE proxy", http.StatusBadRequest)
+		return
+	case *jsonrpc2.Request:
 		switch {
-		case req.ID.IsValid():
-			routed, err := encodeRoutedID(sessionID, req.ID)
+		case m.ID.IsValid():
+			exact, err := exactRequestID(body, m.ID)
 			if err != nil {
 				http.Error(w, fmt.Sprintf("Unsupported JSON-RPC id: %v", err), http.StatusBadRequest)
 				return
 			}
-			msg = &jsonrpc2.Request{ID: jsonrpc2.StringID(routed), Method: req.Method, Params: req.Params}
-		case req.Method == methodCancelled:
-			rewritten, err := rewriteCancelledRequestID(sessionID, req)
+			routed, err := encodeRoutedID(sessionID, exact)
+			if err != nil {
+				http.Error(w, fmt.Sprintf("Unsupported JSON-RPC id: %v", err), http.StatusBadRequest)
+				return
+			}
+			msg = &jsonrpc2.Request{ID: jsonrpc2.StringID(routed), Method: m.Method, Params: m.Params}
+		case m.Method == methodCancelled:
+			rewritten, err := rewriteCancelledRequestID(sessionID, m)
 			if err != nil {
 				http.Error(w, fmt.Sprintf("Unsupported JSON-RPC id: %v", err), http.StatusBadRequest)
 				return

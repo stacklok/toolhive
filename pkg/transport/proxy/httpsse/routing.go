@@ -39,6 +39,11 @@ const (
 	// (see rewriteCancelledRequestID).
 	methodCancelled = "notifications/cancelled"
 
+	// methodPing is the liveness check either MCP party may issue. A backend
+	// ping needs no session attribution, so the proxy answers it itself (see
+	// answerBackendPing) instead of rejecting it like other server requests.
+	methodPing = "ping"
+
 	// maxWarnOnceKeys bounds the set of distinct events warnOnce remembers.
 	// Real backends emit a handful of notification methods; the cap only
 	// matters for a backend inventing method names.
@@ -98,6 +103,32 @@ func decodeRoutedID(id jsonrpc2.ID) (sessionID string, original jsonrpc2.ID, ok 
 	default:
 		return "", jsonrpc2.ID{}, false
 	}
+}
+
+// exactRequestID returns the id of the call in body exactly as the client
+// sent it. jsonrpc2.DecodeMessage parses numeric ids through float64, which
+// rounds integers above 2^53 and truncates fractions, so the restored
+// response id could differ from the request's and the client would never
+// match it. String ids are already exact and are returned as decoded. A
+// fractional or out-of-range number is rejected: JSON-RPC ids are integers or
+// strings, and a truncated id could not be matched by the client either.
+func exactRequestID(body []byte, decoded jsonrpc2.ID) (jsonrpc2.ID, error) {
+	if _, isString := decoded.Raw().(string); isString {
+		return decoded, nil
+	}
+	var envelope struct {
+		ID json.Number `json:"id"`
+	}
+	dec := json.NewDecoder(bytes.NewReader(body))
+	dec.UseNumber()
+	if err := dec.Decode(&envelope); err != nil {
+		return jsonrpc2.ID{}, fmt.Errorf("failed to read request id: %w", err)
+	}
+	n, err := envelope.ID.Int64()
+	if err != nil {
+		return jsonrpc2.ID{}, fmt.Errorf("request id must be an integer or a string: %w", err)
+	}
+	return jsonrpc2.Int64ID(n), nil
 }
 
 // rewriteCancelledRequestID returns a copy of the notifications/cancelled
@@ -183,9 +214,11 @@ func (p *HTTPSSEProxy) routeResponse(resp *jsonrpc2.Response) error {
 
 // routeNotification handles a server->client notification (a request with no
 // ID). list_changed notifications (listChangedNotificationMethods) are
-// broadcast to every live session; with none connected they reach nobody, as
-// there is no replay buffer. Every other notification is dropped: the shared
-// backend cannot say which session caused a notifications/progress,
+// broadcast to every live session as a payload-free notification rebuilt from
+// the method alone: the spec allows params._meta on them, and anything the
+// backend put there could belong to one session. With no session connected
+// they reach nobody, as there is no replay buffer. Every other notification
+// is dropped: the shared backend cannot say which session caused a notifications/progress,
 // notifications/message, or notifications/resources/updated, and forwarding
 // it to all sessions, or a guessed one, would leak one session's activity to
 // another. Routing progress by a proxy-minted token, as the streamable proxy
@@ -199,15 +232,31 @@ func (p *HTTPSSEProxy) routeNotification(n *jsonrpc2.Request) error {
 		return nil
 	}
 
-	data, err := jsonrpc2.EncodeMessage(n)
+	stripped, err := jsonrpc2.NewNotification(n.Method, nil)
+	if err != nil {
+		return fmt.Errorf("failed to build JSON-RPC notification: %w", err)
+	}
+	data, err := jsonrpc2.EncodeMessage(stripped)
 	if err != nil {
 		return fmt.Errorf("failed to encode JSON-RPC notification: %w", err)
 	}
 	return p.sendSSEEvent(ssecommon.NewSSEMessage("message", string(data)))
 }
 
-// rejectServerRequest answers a server-initiated request (a request with a
-// valid ID, e.g. sampling/createMessage or elicitation/create) with a JSON-RPC
+// answerBackendPing replies to a backend's ping with an empty result, written
+// back to the backend. A ping is a liveness check with no session-specific
+// content, and MCP requires the receiver to answer promptly; rejecting it
+// like other server-initiated requests would read as a failed check.
+func (p *HTTPSSEProxy) answerBackendPing(req *jsonrpc2.Request) error {
+	resp := &jsonrpc2.Response{ID: req.ID, Result: json.RawMessage("{}")}
+	if err := p.SendMessageToDestination(resp); err != nil {
+		return fmt.Errorf("failed to answer backend ping: %w", err)
+	}
+	return nil
+}
+
+// rejectServerRequest answers a server-initiated request other than ping (a
+// request with a valid ID, e.g. sampling/createMessage or elicitation/create) with a JSON-RPC
 // error written back to the backend, so its blocking call fails fast instead
 // of hanging. The shared proxy has no way to pick which session should answer
 // without guessing or broadcasting, and a request emitted by a session that

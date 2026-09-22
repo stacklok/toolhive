@@ -595,17 +595,24 @@ original type, and delivers only to that session's live stream. Because the
 destination is derivable from the echoed ID alone, there is no pending-request
 table to evict on response, disconnect, or timeout. A response whose ID the
 proxy did not mint, or whose session has disconnected, is dropped at Debug and
-is never queued or broadcast. A client's `notifications/cancelled` names its
-target request in `params.requestId`; the proxy rewrites that value the same
-way (`rewriteCancelledRequestID`) so the backend can match it.
+is never queued or broadcast. The id is read exactly from the raw request
+body (`exactRequestID`), because `jsonrpc2.DecodeMessage` parses numbers
+through `float64`; fractional ids are rejected with 400. A client's
+`notifications/cancelled` names its target request in `params.requestId`; the
+proxy rewrites that value the same way (`rewriteCancelledRequestID`) so the
+backend can match it. A JSON-RPC response sent by a client is refused with
+400: the proxy answers or rejects every server-initiated request itself, so a
+client response could only be an attempt to answer backend work belonging to
+another session.
 
 | Backend message | Destination |
 |---|---|
 | Response with a routed ID for a live session | that session only, original ID restored |
 | Response otherwise (unrouted ID, session gone, health-check ping echo) | dropped |
-| `notifications/tools\|resources\|prompts/list_changed` | every live session |
+| `notifications/tools\|resources\|prompts/list_changed` | every live session, rebuilt from the method with no params (the spec allows `_meta`, which could carry one session's data) |
+| Server-initiated `ping` | answered by the proxy with an empty result, written back to the backend |
 | `notifications/message`, `notifications/progress`, `notifications/resources/updated`, anything else | dropped; same SECURE-DROP rationale as the streamable table |
-| Server-initiated request (`sampling/createMessage`, `elicitation/create`, ...) | JSON-RPC `-32601` written back to the backend |
+| Any other server-initiated request (`sampling/createMessage`, `elicitation/create`, ...) | JSON-RPC `-32601` written back to the backend |
 
 The first drop or rejection of each method is logged at Warn so the missing
 capability is diagnosable; later ones at Debug so a chatty backend cannot

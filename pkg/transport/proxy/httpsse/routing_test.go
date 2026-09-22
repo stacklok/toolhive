@@ -139,6 +139,13 @@ func (h *harness) connect(token string) sseClient {
 // principal and requires the proxy to accept it.
 func (h *harness) post(c sseClient, body string) {
 	h.t.Helper()
+	require.Equal(h.t, http.StatusAccepted, h.postStatus(c, body))
+}
+
+// postStatus sends a raw JSON-RPC body to the client's own endpoint as its
+// principal and returns the HTTP status the proxy answered with.
+func (h *harness) postStatus(c sseClient, body string) int {
+	h.t.Helper()
 	req, err := http.NewRequestWithContext(h.t.Context(), http.MethodPost, c.endpoint, strings.NewReader(body))
 	require.NoError(h.t, err)
 	req.Header.Set("Authorization", c.token)
@@ -146,7 +153,7 @@ func (h *harness) post(c sseClient, body string) {
 	require.NoError(h.t, err)
 	_, _ = io.Copy(io.Discard, resp.Body)
 	require.NoError(h.t, resp.Body.Close())
-	require.Equal(h.t, http.StatusAccepted, resp.StatusCode)
+	return resp.StatusCode
 }
 
 // backendMessage returns the next message the proxy forwarded to the backend.
@@ -320,6 +327,8 @@ func TestCancelledNotificationCarriesRoutedRequestID(t *testing.T) {
 			`{"jsonrpc":"2.0","method":"notifications/cancelled","params":{"requestId":8426,"reason":"user"}}`},
 		{"string request id", `"req-7"`,
 			`{"jsonrpc":"2.0","method":"notifications/cancelled","params":{"requestId":"req-7","reason":"user"}}`},
+		{"request id above 2^53", `9007199254740993`,
+			`{"jsonrpc":"2.0","method":"notifications/cancelled","params":{"requestId":9007199254740993,"reason":"user"}}`},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			t.Parallel()
@@ -355,6 +364,57 @@ func TestCancelledNotificationWithoutRequestIDPassesThrough(t *testing.T) {
 	h.post(victim, `{"jsonrpc":"2.0","method":"notifications/cancelled","params":{"reason":"no id"}}`)
 	cancel := h.backendRequest()
 	require.JSONEq(t, `{"reason":"no id"}`, string(cancel.Params))
+}
+
+// TestClientResponseIsRejected: the proxy answers or rejects every
+// server-initiated request itself, so no client ever legitimately sends a
+// JSON-RPC response. One that does must not reach the shared backend, where
+// a guessed id could answer work belonging to another session.
+func TestClientResponseIsRejected(t *testing.T) {
+	t.Parallel()
+	h := newHarness(t)
+	victim := h.connect("victim")
+
+	require.Equal(t, http.StatusBadRequest,
+		h.postStatus(victim, `{"jsonrpc":"2.0","id":1,"result":{"forged":true}}`))
+	require.Empty(t, h.proxy.messageCh, "a client response must never reach the backend")
+}
+
+// TestNumericIDsRoundTripExactly: integer ids beyond 2^53 must come back as
+// the client sent them. jsonrpc2 decodes numbers through float64, so the
+// proxy must read the id from the raw envelope instead.
+func TestNumericIDsRoundTripExactly(t *testing.T) {
+	t.Parallel()
+	for _, id := range []string{"9007199254740993", "9223372036854775807", "-9223372036854775808"} {
+		t.Run(id, func(t *testing.T) {
+			t.Parallel()
+			h := newHarness(t)
+			victim := h.connect("victim")
+
+			h.post(victim, `{"jsonrpc":"2.0","id":`+id+`,"method":"tools/call","params":{}}`)
+			req := h.backendRequest()
+			_, original, ok := decodeRoutedID(req.ID)
+			require.True(t, ok)
+			require.Equal(t, victim.sessionID+"|n:"+id, req.ID.Raw())
+			require.Equal(t, id, strconv.FormatInt(original.Raw().(int64), 10))
+
+			h.respond(req, "ok")
+			h.expectNext(victim, `"id":`+id+`,`)
+		})
+	}
+}
+
+// TestFractionalNumericIDIsRejected: JSON-RPC ids are integers or strings.
+// A fractional id would be silently truncated by the decoder, so the client
+// could never match the response; reject it up front instead.
+func TestFractionalNumericIDIsRejected(t *testing.T) {
+	t.Parallel()
+	h := newHarness(t)
+	victim := h.connect("victim")
+
+	require.Equal(t, http.StatusBadRequest,
+		h.postStatus(victim, `{"jsonrpc":"2.0","id":1.5,"method":"tools/call","params":{}}`))
+	require.Empty(t, h.proxy.messageCh)
 }
 
 // TestRewriteCancelledRequestIDLeavesUnroutableParamsAlone pins the
@@ -450,11 +510,12 @@ func TestFirstOccurrence(t *testing.T) {
 func TestBackendMessageDispatch(t *testing.T) {
 	t.Parallel()
 	for _, tc := range []struct {
-		name         string
-		build        func(t *testing.T, victimSess string) jsonrpc2.Message
-		victimGets   string   // substring the victim must receive; "" means nothing
-		attackerGets string   // substring the attacker must receive; "" means nothing
-		backendGets  []string // substrings the backend must be sent; nil means nothing
+		name           string
+		build          func(t *testing.T, victimSess string) jsonrpc2.Message
+		victimGets     string   // substring the victim must receive; "" means nothing
+		attackerGets   string   // substring the attacker must receive; "" means nothing
+		neverDelivered string   // substring that must not reach any client stream
+		backendGets    []string // substrings the backend must be sent; nil means nothing
 	}{
 		{
 			name: "response for a disconnected session is dropped, not delivered to anyone",
@@ -498,6 +559,29 @@ func TestBackendMessageDispatch(t *testing.T) {
 			attackerGets: "notifications/tools/list_changed",
 		},
 		{
+			name: "list_changed notification is broadcast without its params",
+			build: func(t *testing.T, _ string) jsonrpc2.Message {
+				t.Helper()
+				n, err := jsonrpc2.NewNotification("notifications/resources/list_changed",
+					map[string]any{"_meta": map[string]any{"session": "VICTIM_META"}})
+				require.NoError(t, err)
+				return n
+			},
+			victimGets:     "notifications/resources/list_changed",
+			attackerGets:   "notifications/resources/list_changed",
+			neverDelivered: "VICTIM_META",
+		},
+		{
+			name: "backend ping is answered by the proxy",
+			build: func(t *testing.T, _ string) jsonrpc2.Message {
+				t.Helper()
+				req, err := jsonrpc2.NewCall(jsonrpc2.Int64ID(7), "ping", nil)
+				require.NoError(t, err)
+				return req
+			},
+			backendGets: []string{`"id":7`, `"result":{}`},
+		},
+		{
 			name: "logging notification is dropped",
 			build: func(t *testing.T, _ string) jsonrpc2.Message {
 				t.Helper()
@@ -536,15 +620,18 @@ func TestBackendMessageDispatch(t *testing.T) {
 
 			require.NoError(t, h.proxy.ForwardResponseToClients(t.Context(), tc.build(t, victim.sessionID)))
 
-			if tc.victimGets == "" {
-				h.expectOnlySentinel(victim)
-			} else {
-				h.expectNext(victim, tc.victimGets)
-			}
-			if tc.attackerGets == "" {
-				h.expectOnlySentinel(attacker)
-			} else {
-				h.expectNext(attacker, tc.attackerGets)
+			for _, c := range []struct {
+				client sseClient
+				wants  string
+			}{{victim, tc.victimGets}, {attacker, tc.attackerGets}} {
+				if c.wants == "" {
+					h.expectOnlySentinel(c.client)
+					continue
+				}
+				got := h.expectNext(c.client, c.wants)
+				if tc.neverDelivered != "" {
+					require.NotContains(t, got, tc.neverDelivered)
+				}
 			}
 			if tc.backendGets == nil {
 				require.Empty(t, h.proxy.messageCh, "backend must not be sent anything")

@@ -231,22 +231,26 @@ func (p *HTTPSSEProxy) rejectServerRequest(req *jsonrpc2.Request) error {
 
 // warnOnce logs the first occurrence of key at Warn, so an operator can see
 // that a fail-closed drop or rejection is happening, and every later
-// occurrence at Debug, so a chatty backend cannot flood the log. Once
-// maxWarnOnceKeys distinct keys have been seen, new keys log at Debug only.
+// occurrence at Debug, so a chatty backend cannot flood the log.
 func (p *HTTPSSEProxy) warnOnce(key, msg string, args ...any) {
-	p.warnedMutex.Lock()
-	_, seen := p.warnedKeys[key]
-	full := len(p.warnedKeys) >= maxWarnOnceKeys
-	if !seen && !full {
-		p.warnedKeys[key] = struct{}{}
-	}
-	p.warnedMutex.Unlock()
-
-	if seen || full {
-		slog.Debug(msg, args...)
+	if p.firstOccurrence(key) {
+		slog.Warn(msg, args...)
 		return
 	}
-	slog.Warn(msg, args...)
+	slog.Debug(msg, args...)
+}
+
+// firstOccurrence reports whether key has not been seen before and records
+// it. Once maxWarnOnceKeys distinct keys are recorded, every new key reports
+// false, so a backend inventing method names cannot grow the set.
+func (p *HTTPSSEProxy) firstOccurrence(key string) bool {
+	p.warnedMutex.Lock()
+	defer p.warnedMutex.Unlock()
+	if _, seen := p.warnedKeys[key]; seen || len(p.warnedKeys) >= maxWarnOnceKeys {
+		return false
+	}
+	p.warnedKeys[key] = struct{}{}
+	return true
 }
 
 // liveSession returns the live SSE session for sessionID on this instance.

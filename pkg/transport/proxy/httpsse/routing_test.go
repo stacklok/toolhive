@@ -11,6 +11,7 @@ import (
 	"math"
 	"net/http"
 	"net/url"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -19,6 +20,8 @@ import (
 	"golang.org/x/exp/jsonrpc2"
 
 	"github.com/stacklok/toolhive/pkg/auth"
+	"github.com/stacklok/toolhive/pkg/transport/session"
+	"github.com/stacklok/toolhive/pkg/transport/ssecommon"
 	"github.com/stacklok/toolhive/pkg/transport/types"
 )
 
@@ -352,6 +355,93 @@ func TestCancelledNotificationWithoutRequestIDPassesThrough(t *testing.T) {
 	h.post(victim, `{"jsonrpc":"2.0","method":"notifications/cancelled","params":{"reason":"no id"}}`)
 	cancel := h.backendRequest()
 	require.JSONEq(t, `{"reason":"no id"}`, string(cancel.Params))
+}
+
+// TestRewriteCancelledRequestIDLeavesUnroutableParamsAlone pins the
+// pass-through cases: a cancellation the proxy cannot rewrite is forwarded
+// exactly as received, as the same object, for the backend to ignore.
+func TestRewriteCancelledRequestIDLeavesUnroutableParamsAlone(t *testing.T) {
+	t.Parallel()
+	for _, tc := range []struct {
+		name   string
+		params string
+	}{
+		{"no params", ""},
+		{"positional params", `[1, 2]`},
+		{"no requestId", `{"reason":"x"}`},
+		{"non-integer requestId", `{"requestId":1.5}`},
+		{"object requestId", `{"requestId":{"x":1}}`},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			n := &jsonrpc2.Request{Method: methodCancelled, Params: json.RawMessage(tc.params)}
+			got, err := rewriteCancelledRequestID("3f2a", n)
+			require.NoError(t, err)
+			require.Same(t, n, got)
+		})
+	}
+}
+
+// TestRouteResponseToUnwritableSession: a live session whose stream is full
+// or already disconnected drops the response without error or panic; the
+// session's own disconnect path owns cleanup.
+func TestRouteResponseToUnwritableSession(t *testing.T) {
+	t.Parallel()
+	for _, tc := range []struct {
+		name  string
+		setup func(*session.SSESession)
+	}{
+		{"channel full", func(s *session.SSESession) { s.MessageCh <- "occupied" }},
+		{"disconnected", func(s *session.SSESession) { s.Disconnect() }},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			proxy := NewHTTPSSEProxy("localhost", 0, false, nil, nil)
+			const sessionID = "eeeeeeee-0009-0009-0009-000000000009"
+			sess := session.NewSSESessionWithClient(sessionID, &ssecommon.SSEClient{MessageCh: make(chan string, 1)})
+			proxy.liveSSESessions.Store(sessionID, sess)
+			tc.setup(sess)
+
+			routed, err := encodeRoutedID(sessionID, jsonrpc2.Int64ID(1))
+			require.NoError(t, err)
+			resp, err := jsonrpc2.NewResponse(jsonrpc2.StringID(routed), "late", nil)
+			require.NoError(t, err)
+			require.NoError(t, proxy.ForwardResponseToClients(t.Context(), resp))
+		})
+	}
+}
+
+// TestRejectServerRequestFailsWhenBackendChannelFull: the -32601 rejection
+// is written to the same channel clients use; when it is full the failure is
+// returned so the stdio transport logs it instead of losing it silently.
+func TestRejectServerRequestFailsWhenBackendChannelFull(t *testing.T) {
+	t.Parallel()
+	proxy := NewHTTPSSEProxy("localhost", 0, false, nil, nil)
+	filler, err := jsonrpc2.NewNotification("notifications/initialized", nil)
+	require.NoError(t, err)
+	for i := 0; i < cap(proxy.messageCh); i++ {
+		proxy.messageCh <- filler
+	}
+
+	req, err := jsonrpc2.NewCall(jsonrpc2.Int64ID(1), "sampling/createMessage", nil)
+	require.NoError(t, err)
+	require.Error(t, proxy.ForwardResponseToClients(t.Context(), req))
+}
+
+// TestFirstOccurrence pins the warn-once bookkeeping: a key is first exactly
+// once, and the set stops admitting new keys at maxWarnOnceKeys.
+func TestFirstOccurrence(t *testing.T) {
+	t.Parallel()
+	proxy := NewHTTPSSEProxy("localhost", 0, false, nil, nil)
+
+	require.True(t, proxy.firstOccurrence("drop:a"))
+	require.False(t, proxy.firstOccurrence("drop:a"), "a repeat is never first")
+
+	for i := 1; i < maxWarnOnceKeys; i++ {
+		require.True(t, proxy.firstOccurrence("drop:"+strconv.Itoa(i)))
+	}
+	require.False(t, proxy.firstOccurrence("drop:overflow"), "new keys beyond the cap are not admitted")
+	require.False(t, proxy.firstOccurrence("drop:a"), "known keys still report seen")
 }
 
 // TestBackendMessageDispatch covers every row of the dispatch table for a

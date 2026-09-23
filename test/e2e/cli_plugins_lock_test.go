@@ -329,7 +329,8 @@ type installPluginE2ERequest struct {
 	// AllowUnsigned records the unsigned-install exception. The plugins
 	// published by these tests are unsigned, so project-scoped installs
 	// need it — the rejection path itself is covered below.
-	AllowUnsigned bool `json:"allow_unsigned,omitempty"`
+	AllowUnsigned bool   `json:"allow_unsigned,omitempty"`
+	PublicKey     string `json:"public_key,omitempty"`
 }
 
 func installPlugin(server *e2e.Server, req installPluginE2ERequest) *http.Response {

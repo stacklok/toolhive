@@ -10,33 +10,44 @@ import (
 	"log/slog"
 	"net/http"
 	"strings"
+	"time"
 
 	"github.com/stacklok/toolhive-core/httperr"
 	"github.com/stacklok/toolhive/pkg/groups"
 	"github.com/stacklok/toolhive/pkg/plugins"
+	"github.com/stacklok/toolhive/pkg/projecttxn"
 	"github.com/stacklok/toolhive/pkg/skills/gitresolver"
 	"github.com/stacklok/toolhive/pkg/skills/lockfile"
 )
+
+// installRollbackTimeout bounds context-aware compensation after an install fails.
+const installRollbackTimeout = 5 * time.Second
 
 // Install installs a plugin. When the Name field contains a git reference
 // (git://...), the repo is cloned and the plugin tree is built in memory. When
 // it contains an OCI reference, the artifact is pulled and extracted. A plain
 // name is resolved against the local OCI store, then the registry lookup.
 // Structural mirror of skillsvc.Install, substituting the plugin install
-// backends — but the failure semantics deliberately diverge: skills discards
-// rollback errors and fails forward, while plugins joins every compensation
-// error with the trigger and can abort (see rollbackInstall).
+// backends. Rollback errors are joined with the trigger so partial
+// compensation is never reported as a clean failure (see rollbackInstall).
 func (s *service) Install(ctx context.Context, opts plugins.InstallOptions) (*plugins.InstallResult, error) {
-	return s.install(ctx, opts, false)
+	return s.install(ctx, opts, false, nil)
 }
 
-// installAlreadyLocked is for sync/upgrade while the per-plugin lock is held.
-func (s *service) installAlreadyLocked(ctx context.Context, opts plugins.InstallOptions) (*plugins.InstallResult, error) {
-	return s.install(ctx, opts, true)
+// installAlreadyLocked is for sync/upgrade while the project transaction is held.
+func (s *service) installAlreadyLocked(
+	ctx context.Context, opts plugins.InstallOptions, constraints *installConstraints,
+) (*plugins.InstallResult, error) {
+	return s.install(ctx, opts, true, constraints)
+}
+
+type installConstraints struct {
+	preverifiedOCI    *preverifiedOCITrust
+	expectedLockEntry *lockfile.Entry
 }
 
 func (s *service) install(
-	ctx context.Context, opts plugins.InstallOptions, alreadyLocked bool,
+	ctx context.Context, opts plugins.InstallOptions, alreadyLocked bool, constraints *installConstraints,
 ) (*plugins.InstallResult, error) {
 	scope, projectRoot, err := normalizeProjectRoot(opts.Scope, opts.ProjectRoot)
 	if err != nil {
@@ -57,13 +68,22 @@ func (s *service) install(
 	if err := validateInstallPublicKey(opts, scope); err != nil {
 		return nil, err
 	}
+	if scope == plugins.ScopeProject && !alreadyLocked {
+		var result *plugins.InstallResult
+		err := projecttxn.Run(ctx, opts.ProjectRoot, func() error {
+			var installErr error
+			result, installErr = s.install(ctx, opts, true, constraints)
+			return installErr
+		})
+		return result, err
+	}
 
 	// Git references are dispatched first; the prefix is unambiguous and
-	// cannot collide with OCI references. installFromGit holds the per-plugin
-	// lock across extraction, DB, group, lock-file, and rollback unless the
-	// caller already holds it (alreadyLocked).
+	// cannot collide with OCI references. installFromGit holds the applicable
+	// user-plugin or project transaction lock across extraction, DB, group,
+	// lock-file, and rollback unless the caller already holds it.
 	if gitresolver.IsGitReference(opts.Name) {
-		return s.installFromGit(ctx, opts, scope, alreadyLocked)
+		return s.installFromGit(ctx, opts, scope, alreadyLocked, constraints)
 	}
 
 	// Splice opts.Version as the tag for tag-less OCI-like references.
@@ -81,9 +101,10 @@ func (s *service) install(
 		)
 	}
 	if isOCI {
-		// installFromOCI holds the per-plugin lock across extraction, DB,
-		// group, lock-file, and rollback unless the caller already holds it.
-		return s.installFromOCI(ctx, opts, scope, ref, alreadyLocked)
+		// installFromOCI holds the applicable user-plugin or project
+		// transaction lock across extraction, DB, group, lock-file, and
+		// rollback unless the caller already holds it.
+		return s.installFromOCI(ctx, opts, scope, ref, alreadyLocked, constraints)
 	}
 
 	// Plain plugin name.
@@ -91,7 +112,7 @@ func (s *service) install(
 		return nil, httperr.WithCode(err, http.StatusBadRequest)
 	}
 
-	return s.installByName(ctx, opts, scope, alreadyLocked)
+	return s.installByName(ctx, opts, scope, alreadyLocked, constraints)
 }
 
 // validateExpectedCanonicalName rejects an install whose resolved plugin name
@@ -118,6 +139,7 @@ func (s *service) installByName(
 	opts plugins.InstallOptions,
 	scope plugins.Scope,
 	alreadyLocked bool,
+	constraints *installConstraints,
 ) (*plugins.InstallResult, error) {
 	if !alreadyLocked {
 		var unlock func()
@@ -138,7 +160,7 @@ func (s *service) installByName(
 			}
 		}
 		if !resolved {
-			return s.installFromRegistryLookup(ctx, opts, scope, lockHeld)
+			return s.installFromRegistryLookup(ctx, opts, scope, lockHeld, constraints)
 		}
 	}
 
@@ -157,7 +179,7 @@ func (s *service) installByName(
 	if err != nil {
 		return nil, err
 	}
-	return s.installAndRegister(ctx, opts, result, scope)
+	return s.installAndRegister(ctx, opts, result, scope, constraints)
 }
 
 // installFromRegistryLookup resolves a plain plugin name via the registry
@@ -182,6 +204,7 @@ func (s *service) installFromRegistryLookup(
 	opts plugins.InstallOptions,
 	scope plugins.Scope,
 	alreadyLocked bool,
+	constraints *installConstraints,
 ) (*plugins.InstallResult, error) {
 	if s.pluginLookup != nil {
 		// Use the last path segment as the search query (matching
@@ -223,7 +246,7 @@ func (s *service) installFromRegistryLookup(
 		}
 
 		if len(matches) == 1 {
-			return s.installFromRegistryHit(ctx, opts, scope, matches[0], alreadyLocked)
+			return s.installFromRegistryHit(ctx, opts, scope, matches[0], alreadyLocked, constraints)
 		}
 
 		if len(matches) > 1 {
@@ -258,6 +281,7 @@ func (s *service) installFromRegistryHit(
 	scope plugins.Scope,
 	hit PluginSearchHit,
 	alreadyLocked bool,
+	constraints *installConstraints,
 ) (*plugins.InstallResult, error) {
 	pkg, pkgErr := selectOCIPluginPackage(opts.Name, hit.Packages)
 	if pkgErr != nil {
@@ -283,7 +307,7 @@ func (s *service) installFromRegistryHit(
 			http.StatusUnprocessableEntity,
 		)
 	}
-	return s.installFromOCI(ctx, opts, scope, ref, alreadyLocked)
+	return s.installFromOCI(ctx, opts, scope, ref, alreadyLocked, constraints)
 }
 
 // selectOCIPluginPackage selects the first OCI package from a registry entry's
@@ -362,13 +386,14 @@ func resolvedGroupName(groupName string) string {
 // added it), and lock entry are rolled back to their pre-install state:
 // restored when this call updated a pre-existing record (a --force reinstall
 // must not be destroyed by a transient failure), deleted/dematerialized when
-// this call created them. Callers must hold the per-plugin lock for the
-// duration of this call.
+// this call created them. Callers must hold the applicable user-plugin or
+// project transaction lock for the duration of this call.
 func (s *service) installAndRegister(
 	ctx context.Context,
 	opts plugins.InstallOptions,
 	result *plugins.InstallResult,
 	scope plugins.Scope,
+	constraints *installConstraints,
 ) (*plugins.InstallResult, error) {
 	pluginName := result.Plugin.Metadata.Name
 	lockScoped := scope == plugins.ScopeProject
@@ -406,9 +431,9 @@ func (s *service) installAndRegister(
 
 	var addedToGroup bool
 	groupName := resolvedGroupName(opts.Group)
-	rollback := func() error {
+	rollback := func(restoreLock bool) error {
 		return s.rollbackInstall(ctx, result, rollbackParams{
-			lockScoped:   lockScoped,
+			lockScoped:   restoreLock,
 			prevEntry:    prevEntry,
 			addedToGroup: addedToGroup,
 			groupName:    groupName,
@@ -417,17 +442,25 @@ func (s *service) installAndRegister(
 
 	added, err := s.registerPluginInGroup(ctx, opts.Group, pluginName)
 	if err != nil {
-		return nil, errors.Join(fmt.Errorf("registering plugin in group: %w", err), rollback())
+		return nil, errors.Join(fmt.Errorf("registering plugin in group: %w", err), rollback(false))
 	}
 	addedToGroup = added
 
 	if lockScoped {
-		updated, err := s.recordLockState(ctx, opts, result.Plugin, result.ContentDigest)
+		var expected *lockfile.Entry
+		if constraints != nil {
+			expected = constraints.expectedLockEntry
+		}
+		updated, err := s.recordLockState(ctx, opts, result.Plugin, result.ContentDigest, expected)
 		if err != nil {
-			return nil, httperr.WithCode(
-				errors.Join(fmt.Errorf("recording plugin in project lock file: %w", err), rollback()),
-				http.StatusInternalServerError,
-			)
+			code := http.StatusInternalServerError
+			if errors.Is(err, lockfile.ErrEntryChanged) {
+				code = http.StatusConflict
+			}
+			return nil, httperr.WithCode(errors.Join(
+				fmt.Errorf("recording plugin in project lock file: %w", err),
+				rollback(!errors.Is(err, lockfile.ErrEntryChanged)),
+			), code)
 		}
 		result.Plugin = updated
 	}
@@ -457,24 +490,26 @@ func (s *service) rollbackInstall(
 	pluginName := result.Plugin.Metadata.Name
 	scope := result.Plugin.Scope
 	projectRoot := result.Plugin.ProjectRoot
+	rollbackCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), installRollbackTimeout)
+	defer cancel()
 
 	var errs []error
 	if result.PreExisting != nil {
-		if err := s.store.Update(ctx, *result.PreExisting); err != nil {
+		if err := s.store.Update(rollbackCtx, *result.PreExisting); err != nil {
 			errs = append(errs, fmt.Errorf("restoring pre-existing DB record: %w", err))
 		}
-	} else if err := s.store.Delete(ctx, pluginName, scope, projectRoot); err != nil {
+	} else if err := s.store.Delete(rollbackCtx, pluginName, scope, projectRoot); err != nil {
 		errs = append(errs, fmt.Errorf("deleting rolled-back DB record: %w", err))
 	}
 
 	if result.RestoreFiles != nil {
-		if err := result.RestoreFiles(ctx); err != nil {
+		if err := result.RestoreFiles(rollbackCtx); err != nil {
 			errs = append(errs, err)
 		}
 	}
 
 	if params.addedToGroup && s.groupManager != nil {
-		if err := groups.RemovePluginFromGroup(ctx, s.groupManager, params.groupName, pluginName); err != nil {
+		if err := groups.RemovePluginFromGroup(rollbackCtx, s.groupManager, params.groupName, pluginName); err != nil {
 			errs = append(errs, fmt.Errorf("removing plugin from group: %w", err))
 		}
 	}

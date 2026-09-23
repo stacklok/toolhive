@@ -46,6 +46,7 @@ func (s *service) installFromOCI(
 	deps *depState,
 	alreadyLocked bool,
 	ref nameref.Reference,
+	constraints *installConstraints,
 ) (*skills.InstallResult, error) {
 	if s.registry == nil || s.ociStore == nil {
 		return nil, httperr.WithCode(
@@ -146,7 +147,12 @@ func (s *service) installFromOCI(
 	// runs under the held lock so concurrent first installs cannot both
 	// read an absent lock entry and race their TOFU anchors.
 	if shouldVerifyInstall(*opts, scope) {
-		decision, verifyErr := s.verifyOCIInstall(ctx, *opts, skillConfig.Name, ociRef, opts.Digest)
+		decision, verifyErr := func() (*provenanceDecision, error) {
+			if constraints != nil && constraints.preverifiedOCI != nil {
+				return consumePreverifiedTrust(constraints.preverifiedOCI, opts.Digest)
+			}
+			return s.verifyOCIInstall(ctx, *opts, skillConfig.Name, ociRef, opts.Digest)
+		}()
 		if verifyErr != nil {
 			return nil, verifyErr
 		}
@@ -157,7 +163,9 @@ func (s *service) installFromOCI(
 	if err != nil {
 		return nil, err
 	}
-	return s.installAndRegister(ctx, *opts, originalName, result, opts.Group, result.Skill.Metadata.Name, scope, deps)
+	return s.installAndRegister(
+		ctx, *opts, originalName, result, opts.Group, result.Skill.Metadata.Name, scope, deps, constraints,
+	)
 }
 
 // resolveFromLocalStore attempts to resolve a skill name against the local

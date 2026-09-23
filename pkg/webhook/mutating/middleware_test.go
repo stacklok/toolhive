@@ -579,6 +579,33 @@ func TestMutatingMiddleware_PatchRemovesMethod_ReturnsConformantError(t *testing
 	assert.False(t, hasResult, "error response must not contain a result key")
 }
 
+// TestMutatingMiddleware_PatchAddsAmbiguousMember_ReturnsServerError pins the
+// chosen contract for invalid webhook output: the client sent a valid request,
+// but a server-configured webhook made it ambiguous, so the request fails closed
+// as an internal server error rather than blaming the client with HTTP 400.
+func TestMutatingMiddleware_PatchAddsAmbiguousMember_ReturnsServerError(t *testing.T) {
+	t.Parallel()
+
+	patch := []JSONPatchOp{
+		{Op: "add", Path: "/mcp_request/params/Name", Value: json.RawMessage(`"delete_file"`)},
+	}
+	server := newMutatingWebhookServer(t, patch)
+	mw := createMutatingHandler(makeExecutors(t, []webhook.Config{makeConfig(server.URL, webhook.FailurePolicyFail)}), "srv", "stdio")
+
+	var nextCalled bool
+	handler := mcp.ParsingMiddleware(mw(http.HandlerFunc(func(http.ResponseWriter, *http.Request) {
+		nextCalled = true
+	})))
+
+	recorder := httptest.NewRecorder()
+	handler.ServeHTTP(recorder, newUnparsedMCPRequest(t, []byte(renameToolReqBody)))
+
+	assert.False(t, nextCalled)
+	assert.Equal(t, http.StatusInternalServerError, recorder.Code)
+	assert.NotContains(t, recorder.Body.String(), "Name")
+	assert.NotContains(t, recorder.Body.String(), "delete_file")
+}
+
 // TestMutatingMiddleware_NoMutation_ParseUnchangedAndNextCalled pins the
 // bytes.Equal guard: when a webhook allows the request without a patch, the
 // body handed to RepublishParsedMCPRequest would be byte-identical to what

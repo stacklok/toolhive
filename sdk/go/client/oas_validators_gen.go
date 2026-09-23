@@ -1991,6 +1991,8 @@ func (s SkillsUpgradeStatus) Validate() error {
 		return nil
 	case "up-to-date":
 		return nil
+	case "trust-updated":
+		return nil
 	case "not-upgradable":
 		return nil
 	case "ref-change-blocked":

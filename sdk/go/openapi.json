@@ -4606,7 +4606,7 @@
             "type": "string"
           },
           "new_digest": {
-            "description": "NewDigest is the digest the source currently resolves to. Equal to\nOldDigest when Status is UpgradeStatusUpToDate.",
+            "description": "NewDigest is the digest the source currently resolves to. It may equal\nOldDigest when only the resolved reference or trust material changed.",
             "type": "string"
           },
           "new_resolved_reference": {
@@ -4626,6 +4626,10 @@
           },
           "status": {
             "$ref": "#/components/schemas/SkillsUpgradeStatus"
+          },
+          "trust_anchor_changed": {
+            "description": "TrustAnchorChanged reports that the operation selected a different\nverified provenance or unsigned trust state than the lock recorded.",
+            "type": "boolean"
           }
         },
         "type": "object"
@@ -4648,6 +4652,7 @@
         "enum": [
           "upgraded",
           "up-to-date",
+          "trust-updated",
           "not-upgradable",
           "ref-change-blocked",
           "signer-change-blocked",
@@ -4657,6 +4662,7 @@
         "x-enum-varnames": [
           "UpgradeStatusUpgraded",
           "UpgradeStatusUpToDate",
+          "UpgradeStatusTrustUpdated",
           "UpgradeStatusNotUpgradable",
           "UpgradeStatusRefChangeBlocked",
           "UpgradeStatusSignerChangeBlocked",
@@ -4844,6 +4850,10 @@
           "prune": {
             "description": "Prune removes project-scoped plugins installed but not present in the lock file",
             "type": "boolean"
+          },
+          "public_key": {
+            "description": "PublicKey supplies the cosign public key for key-signed adoption.",
+            "type": "string"
           }
         },
         "type": "object"
@@ -4878,6 +4888,10 @@
           "prune": {
             "description": "Prune removes project-scoped skills installed but not present in the lock file",
             "type": "boolean"
+          },
+          "public_key": {
+            "description": "PublicKey supplies the cosign public key for key-signed adoption.",
+            "type": "string"
           }
         },
         "type": "object"
@@ -5445,6 +5459,10 @@
           "project_root": {
             "description": "ProjectRoot is the project root path whose lock file should be upgraded",
             "type": "string"
+          },
+          "public_key": {
+            "description": "PublicKey proposes a cosign public key as the replacement trust anchor.",
+            "type": "string"
           }
         },
         "type": "object"
@@ -5490,7 +5508,7 @@
             "uniqueItems": false
           },
           "fail_on_changes": {
-            "description": "FailOnChanges exits with an error when any mutable source would upgrade",
+            "description": "FailOnChanges reports content and trust changes without applying them",
             "type": "boolean"
           },
           "names": {
@@ -5507,6 +5525,10 @@
           },
           "project_root": {
             "description": "ProjectRoot is the project root path whose lock file should be upgraded",
+            "type": "string"
+          },
+          "public_key": {
+            "description": "PublicKey proposes a cosign public key as the replacement trust anchor.",
             "type": "string"
           }
         },

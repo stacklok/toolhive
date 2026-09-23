@@ -132,6 +132,7 @@ func TestGuardBackendSIDRewriteStillHappensWithForgedModernRevision(t *testing.T
 	clientSID := uuid.New().String()
 	sess := session.NewProxySession(clientSID)
 	sess.SetMetadata(sessionMetadataBackendSID, backendSID)
+	sess.SetMetadata(session.MetadataKeyIdentityBinding, "unauthenticated") // Auth-disabled fixture.
 	require.NoError(t, p.sessionManager.AddSession(sess))
 
 	req := httptest.NewRequest(http.MethodPost, "/mcp", strings.NewReader(modernToolsCallBody))
@@ -185,6 +186,7 @@ func TestGuardReinitRecoveryStillTriggersWithForgedModernRevision(t *testing.T) 
 	clientSID := uuid.New().String()
 	sess := session.NewProxySession(clientSID)
 	sess.SetMetadata(sessionMetadataInitBody, `{"jsonrpc":"2.0","id":1,"method":"initialize"}`)
+	sess.SetMetadata(session.MetadataKeyIdentityBinding, "unauthenticated") // Auth-disabled fixture.
 	require.NoError(t, p.sessionManager.AddSession(sess))
 
 	req := httptest.NewRequest(http.MethodPost, "/mcp", strings.NewReader(modernToolsCallBody))
@@ -230,6 +232,7 @@ func TestGuardDeleteCleanupStillWorksWithBodyMetaButNoHeader(t *testing.T) {
 
 	clientSID := uuid.New().String()
 	sess := session.NewProxySession(clientSID)
+	sess.SetMetadata(session.MetadataKeyIdentityBinding, "unauthenticated") // Auth-disabled fixture.
 	require.NoError(t, p.sessionManager.AddSession(sess))
 
 	req := httptest.NewRequest(http.MethodDelete, "/mcp", strings.NewReader(modernToolsCallBody))

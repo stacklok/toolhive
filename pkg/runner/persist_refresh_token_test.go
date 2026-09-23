@@ -5,6 +5,7 @@ package runner
 
 import (
 	"context"
+	"io"
 	"testing"
 	"time"
 
@@ -16,7 +17,69 @@ import (
 	"github.com/stacklok/toolhive/pkg/auth/remote"
 	"github.com/stacklok/toolhive/pkg/secrets"
 	secretsmocks "github.com/stacklok/toolhive/pkg/secrets/mocks"
+	"github.com/stacklok/toolhive/pkg/state"
 )
+
+//nolint:paralleltest // SaveState uses process-wide runtime and XDG state settings.
+func TestRunner_PersistRefreshTokenKeepsResolvedSecretsOutOfState(t *testing.T) {
+	t.Cleanup(xdg.Reload)
+	t.Setenv("TOOLHIVE_RUNTIME", "")
+	t.Setenv("KUBERNETES_SERVICE_HOST", "")
+	t.Setenv("XDG_STATE_HOME", t.TempDir())
+	xdg.Reload()
+
+	const (
+		clientSecretReference = "client-secret-ref,target=oauth_secret"
+		clientSecretValue     = "plaintext-client-secret"
+		bearerTokenReference  = "bearer-token-ref,target=bearer_token"
+		bearerTokenValue      = "plaintext-bearer-token"
+		refreshTokenName      = "OAUTH_REFRESH_TOKEN_refresh-persistence"
+	)
+
+	ctx := context.Background()
+	ctrl := gomock.NewController(t)
+	secretManager := secretsmocks.NewMockProvider(ctrl)
+	gomock.InOrder(
+		secretManager.EXPECT().GetSecret(ctx, "client-secret-ref").Return(clientSecretValue, nil),
+		secretManager.EXPECT().GetSecret(ctx, "bearer-token-ref").Return(bearerTokenValue, nil),
+		secretManager.EXPECT().GetSecret(gomock.Any(), refreshTokenName).Return("", assert.AnError),
+		secretManager.EXPECT().Capabilities().Return(secrets.ProviderCapabilities{CanWrite: true}),
+		secretManager.EXPECT().SetSecret(ctx, refreshTokenName, "refresh-token-envelope").Return(nil),
+	)
+
+	remoteAuthConfig := &remote.Config{
+		ClientSecret: clientSecretReference,
+		BearerToken:  bearerTokenReference,
+	}
+	runConfig := NewRunConfig()
+	runConfig.Name = "refresh-persistence"
+	runConfig.BaseName = "refresh-persistence"
+	runConfig.RemoteAuthConfig = remoteAuthConfig
+	_, err := runConfig.WithSecrets(ctx, secretManager, secretManager)
+	require.NoError(t, err)
+
+	runner := &Runner{Config: runConfig}
+	err = runner.persistRefreshToken(ctx, secretManager, "refresh-token-envelope", time.Now().Add(time.Hour))
+	require.NoError(t, err)
+
+	reader, err := state.LoadRunConfigJSON(ctx, runConfig.BaseName)
+	require.NoError(t, err)
+	rawState, err := io.ReadAll(reader)
+	require.NoError(t, err)
+	require.NoError(t, reader.Close())
+	assert.Contains(t, string(rawState), clientSecretReference)
+	assert.Contains(t, string(rawState), bearerTokenReference)
+	assert.NotContains(t, string(rawState), clientSecretValue)
+	assert.NotContains(t, string(rawState), bearerTokenValue)
+
+	tokenSource, err := remote.NewHandler(runConfig.RemoteAuthConfig).Authenticate(ctx, "https://example.com/mcp")
+	require.NoError(t, err)
+	require.NotNil(t, tokenSource)
+	token, err := tokenSource.Token()
+	require.NoError(t, err)
+	assert.Equal(t, bearerTokenValue, token.AccessToken,
+		"callback copy-back must preserve runtime-only credentials")
+}
 
 //nolint:paralleltest // SaveState uses process-wide runtime and XDG state settings.
 func TestRunner_PersistRefreshToken_SaveStateFailurePreservesLiveConfig(t *testing.T) {

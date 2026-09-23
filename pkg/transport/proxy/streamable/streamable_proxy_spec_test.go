@@ -15,6 +15,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/google/uuid"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 	"golang.org/x/exp/jsonrpc2"
@@ -168,6 +169,10 @@ func TestPOSTNotificationOnlyAccepted(t *testing.T) {
 
 	req, _ := http.NewRequest(http.MethodPost, url, bytes.NewReader([]byte(notif)))
 	req.Header.Set("Content-Type", "application/json")
+	sid := uuid.NewString()
+	seedReq := httptest.NewRequest(http.MethodPost, StreamableHTTPEndpoint, nil)
+	require.NoError(t, proxy.ensureSession(seedReq, sid))
+	req.Header.Set("Mcp-Session-Id", sid)
 	resp, err := http.DefaultClient.Do(req)
 	require.NoError(t, err)
 	defer resp.Body.Close()

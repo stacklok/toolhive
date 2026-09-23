@@ -50,11 +50,12 @@ func TestIntegrationSSEProxyStressTest(t *testing.T) {
 		totalErrors         int32
 	)
 
-	// Create a worker that processes messages from the proxy
+	// Fake backend: answer each call with a response echoing its wire ID
 	go func() {
 		for msg := range proxy.GetMessageChannel() {
-			// Echo the message back to clients
-			_ = proxy.ForwardResponseToClients(ctx, msg)
+			if resp := echoResponse(msg); resp != nil {
+				_ = proxy.ForwardResponseToClients(ctx, resp)
+			}
 			atomic.AddInt32(&totalMessages, 1)
 		}
 	}()
@@ -185,11 +186,12 @@ func TestIntegrationConcurrentClientsWithLongRunning(t *testing.T) {
 
 	proxyURL := fmt.Sprintf("http://%s", proxy.server.Addr)
 
-	// Message processor
+	// Fake backend: answer each call with a response echoing its wire ID
 	go func() {
 		for msg := range proxy.GetMessageChannel() {
-			// Echo messages back
-			_ = proxy.ForwardResponseToClients(ctx, msg)
+			if resp := echoResponse(msg); resp != nil {
+				_ = proxy.ForwardResponseToClients(ctx, resp)
+			}
 		}
 	}()
 
@@ -419,4 +421,18 @@ func TestHTTPSSEProxy_StartMountsAuthDiscoveryEndpoint(t *testing.T) {
 	var body map[string]string
 	require.NoError(t, json.NewDecoder(resp.Body).Decode(&body))
 	assert.Equal(t, "https://example.com", body["resource"])
+}
+
+// echoResponse builds the response a backend would return for a call: same
+// wire ID, trivial result. Notifications and responses yield nil.
+func echoResponse(msg jsonrpc2.Message) jsonrpc2.Message {
+	req, ok := msg.(*jsonrpc2.Request)
+	if !ok || !req.ID.IsValid() {
+		return nil
+	}
+	resp, err := jsonrpc2.NewResponse(req.ID, "echo", nil)
+	if err != nil {
+		return nil
+	}
+	return resp
 }

@@ -88,6 +88,10 @@ type InstallOptions struct {
 	// normal "same digest means content is already correct" fast path must
 	// not apply. Internal use only — NOT exposed via HTTP API.
 	SyncRestore bool `json:"-"`
+	// RefreshMetadata updates the installed record when content is already at
+	// the requested digest and no client needs materialization. Upgrade sets it
+	// for an explicitly allowed resolved-reference change. Internal use only.
+	RefreshMetadata bool `json:"-"`
 	// AllowSignerChange lets install-time verification re-record the
 	// observed identity instead of enforcing the lock file's recorded one.
 	// Internal use only — set by upgrade when its signer-change guard was
@@ -259,7 +263,7 @@ func ValidatePushSigning(opts PushOptions) error {
 }
 
 // SyncOptions configures a lock-file sync. Alias for skills.SyncOptions
-// (identical shape: ProjectRoot, Clients, Prune, Check, AllowUnsigned, Adopt).
+// (identical shape including adoption's AllowUnsigned and PublicKey inputs).
 type SyncOptions = skills.SyncOptions
 
 // SyncResult is the outcome of a lock-file sync. Alias for skills.SyncResult.
@@ -293,8 +297,8 @@ const (
 )
 
 // UpgradeOptions configures a lock-file upgrade. Alias for
-// skills.UpgradeOptions (identical shape including AllowRefChange /
-// AllowSignerChange).
+// skills.UpgradeOptions (identical shape including AllowRefChange,
+// AllowSignerChange, and PublicKey).
 type UpgradeOptions = skills.UpgradeOptions
 
 // UpgradeResult is the outcome of a lock-file upgrade. Alias for
@@ -314,6 +318,7 @@ type UpgradeStatus = skills.UpgradeStatus
 const (
 	UpgradeStatusUpgraded            = skills.UpgradeStatusUpgraded
 	UpgradeStatusUpToDate            = skills.UpgradeStatusUpToDate
+	UpgradeStatusTrustUpdated        = skills.UpgradeStatusTrustUpdated
 	UpgradeStatusNotUpgradable       = skills.UpgradeStatusNotUpgradable
 	UpgradeStatusRefChangeBlocked    = skills.UpgradeStatusRefChangeBlocked
 	UpgradeStatusSignerChangeBlocked = skills.UpgradeStatusSignerChangeBlocked

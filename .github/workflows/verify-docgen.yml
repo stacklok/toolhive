@@ -6,7 +6,7 @@ on:
 jobs:
   verify-swagger-docs:
     name: Verify Swagger Documentation
-    runs-on: ubuntu-24.04
+    runs-on: ubuntu-26.04
     permissions:
       contents: read
 

@@ -24,6 +24,7 @@ import (
 	"io/fs"
 	"os"
 	"path/filepath"
+	"reflect"
 	"slices"
 	"strings"
 
@@ -41,6 +42,10 @@ const FileName = "toolhive.lock.yaml"
 // lock file with a different version is a hard error, never a silent partial
 // parse.
 const CurrentVersion = 1
+
+// ErrEntryChanged reports that a conditional lock-entry update no longer
+// matches the entry it was planned against.
+var ErrEntryChanged = errors.New("lockfile: entry changed")
 
 // Entry represents a single pinned skill or plugin installation in the lock file.
 type Entry struct {
@@ -362,6 +367,42 @@ func (l *Lockfile) Save(root Root) error {
 func UpsertEntry(root Root, entry Entry) error {
 	return Update(root, func(lf *Lockfile) error {
 		lf.Upsert(entry)
+		return nil
+	})
+}
+
+// CompareAndSwapEntry replaces expected with replacement only when the
+// complete current skills: entry still equals expected. The comparison and
+// replacement run under Update's advisory file lock, so a mutation made by a
+// non-participating process between planning and persistence cannot be
+// overwritten by a stale plan.
+func CompareAndSwapEntry(root Root, expected, replacement Entry) error {
+	if expected.Name == "" || replacement.Name != expected.Name {
+		return errors.New("lockfile: conditional replacement requires matching non-empty names")
+	}
+	return Update(root, func(lf *Lockfile) error {
+		current, ok := lf.Get(expected.Name)
+		if !ok || !reflect.DeepEqual(current, expected) {
+			return fmt.Errorf("%w: skill %q no longer matches the expected entry", ErrEntryChanged, expected.Name)
+		}
+		lf.Upsert(replacement)
+		return nil
+	})
+}
+
+// CompareAndSwapPluginEntry is the plugins: counterpart to
+// CompareAndSwapEntry. It performs the complete-entry comparison and
+// replacement under the same advisory file lock.
+func CompareAndSwapPluginEntry(root Root, expected, replacement Entry) error {
+	if expected.Name == "" || replacement.Name != expected.Name {
+		return errors.New("lockfile: conditional plugin replacement requires matching non-empty names")
+	}
+	return Update(root, func(lf *Lockfile) error {
+		current, ok := lf.GetPlugin(expected.Name)
+		if !ok || !reflect.DeepEqual(current, expected) {
+			return fmt.Errorf("%w: plugin %q no longer matches the expected entry", ErrEntryChanged, expected.Name)
+		}
+		lf.UpsertPlugin(replacement)
 		return nil
 	})
 }

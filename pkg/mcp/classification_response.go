@@ -15,8 +15,8 @@ import (
 )
 
 // WriteClassificationError writes an HTTP 400 response with a JSON-RPC error
-// body for an mcp.ClassifyRevision failure. Use this with http.ResponseWriter
-// in the streamable HTTP proxy.
+// body for a coded request-classification or structural-validation failure.
+// Use this where an http.ResponseWriter is available.
 func WriteClassificationError(w http.ResponseWriter, requestID any, err error) {
 	body := classificationErrorBody(requestID, err)
 	w.Header().Set("Content-Type", "application/json")

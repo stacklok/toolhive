@@ -2993,11 +2993,32 @@ func (r *MCPServerReconciler) validateSessionStorageForReplicas(ctx context.Cont
 }
 
 // buildRedisPasswordEnvVar returns the THV_SESSION_REDIS_PASSWORD env var when
-// sessionStorage.provider == "redis" and passwordRef is set; returns nil otherwise.
+// sessionStorage.provider == "redis" and passwordRef is set, or when
+// spec.sessionStorage is unset and TOOLHIVE_DEFAULT_REDIS_SECRET_NAME is set
+// via the global default; returns nil otherwise.
 func (*MCPServerReconciler) buildRedisPasswordEnvVar(m *mcpv1beta1.MCPServer) []corev1.EnvVar {
-	if m.Spec.SessionStorage == nil ||
-		m.Spec.SessionStorage.Provider != mcpv1beta1.SessionStorageProviderRedis ||
-		m.Spec.SessionStorage.PasswordRef == nil {
+	if m.Spec.SessionStorage != nil {
+		if m.Spec.SessionStorage.Provider == mcpv1beta1.SessionStorageProviderRedis &&
+			m.Spec.SessionStorage.PasswordRef != nil {
+			return []corev1.EnvVar{{
+				Name: session.RedisPasswordEnvVar,
+				ValueFrom: &corev1.EnvVarSource{
+					SecretKeyRef: &corev1.SecretKeySelector{
+						LocalObjectReference: corev1.LocalObjectReference{
+							Name: m.Spec.SessionStorage.PasswordRef.Name,
+						},
+						Key: m.Spec.SessionStorage.PasswordRef.Key,
+					},
+				},
+			}}
+		}
+		// spec.sessionStorage was set explicitly — never fall through to the
+		// global default regardless of provider.
+		return nil
+	}
+
+	def := ctrlutil.ReadDefaultRedisConfig()
+	if def == nil || def.SecretName == "" {
 		return nil
 	}
 	return []corev1.EnvVar{{
@@ -3005,9 +3026,9 @@ func (*MCPServerReconciler) buildRedisPasswordEnvVar(m *mcpv1beta1.MCPServer) []
 		ValueFrom: &corev1.EnvVarSource{
 			SecretKeyRef: &corev1.SecretKeySelector{
 				LocalObjectReference: corev1.LocalObjectReference{
-					Name: m.Spec.SessionStorage.PasswordRef.Name,
+					Name: def.SecretName,
 				},
-				Key: m.Spec.SessionStorage.PasswordRef.Key,
+				Key: def.SecretKey,
 			},
 		},
 	}}

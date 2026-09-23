@@ -13,6 +13,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/google/uuid"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 	"golang.org/x/exp/jsonrpc2"
@@ -266,8 +267,14 @@ func TestDuplicateInitializedNotificationIsNotForwarded(t *testing.T) {
 	backend := startFakeStdioBackend(t.Context(), proxy, strictInitializeResponder())
 
 	for range 3 {
-		resp, err := http.Post(url, "application/json", //nolint:gosec // test-local URL
+		req, err := http.NewRequest(http.MethodPost, url,
 			bytes.NewReader([]byte(`{"jsonrpc":"2.0","method":"notifications/initialized"}`)))
+		require.NoError(t, err)
+		sid := uuid.NewString()
+		require.NoError(t, proxy.ensureSession(req, sid))
+		req.Header.Set("Content-Type", "application/json")
+		req.Header.Set("Mcp-Session-Id", sid)
+		resp, err := http.DefaultClient.Do(req) //nolint:gosec // test-local URL
 		require.NoError(t, err)
 		require.Equal(t, http.StatusAccepted, resp.StatusCode,
 			"every client's initialized notification must still be acknowledged")

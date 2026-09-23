@@ -5,6 +5,7 @@ package app
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"log/slog"
 	"strings"
@@ -28,6 +29,7 @@ import (
 	"github.com/stacklok/toolhive/pkg/process"
 	"github.com/stacklok/toolhive/pkg/runner"
 	"github.com/stacklok/toolhive/pkg/runner/retriever"
+	"github.com/stacklok/toolhive/pkg/secrets"
 	"github.com/stacklok/toolhive/pkg/telemetry"
 	"github.com/stacklok/toolhive/pkg/transport"
 	"github.com/stacklok/toolhive/pkg/transport/types"
@@ -1058,7 +1060,19 @@ func getRemoteAuthFromRemoteServerMetadata(
 	if err != nil {
 		return nil, fmt.Errorf("failed to resolve bearer token: %w", err)
 	}
-	authCfg.BearerToken = resolvedBearerToken
+
+	bearerToken, err := authsecrets.ProcessSecret(runFlags.Name, resolvedBearerToken, authsecrets.TokenTypeBearerToken)
+	if err != nil {
+		if errors.Is(err, secrets.ErrSecretsNotSetup) {
+			return nil, fmt.Errorf(
+				"failed to process bearer token: run 'thv secret setup', or pass a NAME,target=bearer_token reference "+
+					"with TOOLHIVE_SECRETS_PROVIDER=environment and TOOLHIVE_SECRET_<NAME> set: %w",
+				err,
+			)
+		}
+		return nil, fmt.Errorf("failed to process bearer token: %w", err)
+	}
+	authCfg.BearerToken = bearerToken
 	authCfg.BearerTokenFile = f.RemoteAuthBearerTokenFile
 
 	return authCfg, nil

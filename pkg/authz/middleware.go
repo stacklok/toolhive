@@ -7,12 +7,12 @@
 package authz
 
 import (
-	"bytes"
+	"context"
 	"encoding/json"
 	"fmt"
-	"io"
 	"log/slog"
 	"net/http"
+	"time"
 
 	"golang.org/x/exp/jsonrpc2"
 
@@ -78,21 +78,17 @@ var MCPMethodToFeatureOperation = map[string]featureOperation{
 	// unchanged. The always-allowed classification is simpler and equally safe here.
 	"server/discover": {Feature: "", Operation: ""},
 
-	// Subscriptions - always allowed for now. This method carries no single resource
-	// identifier the parser extracts (params are a notification-type filter with an
-	// optional resourceSubscriptions array), so routing it through Cedar with an empty
-	// ResourceID would risk matching a broad allow rule. Notification delivery and
-	// per-resource authorization of resourceSubscriptions URIs are future work.
-	//
-	// TODO(#5755): when subscription notification delivery is implemented, replace this
-	// always-allowed entry with real per-resource authorization of resourceSubscriptions URIs.
-	"subscriptions/listen": {Feature: "", Operation: ""},
-
 	// Logging and client preferences - always allowed
 	"logging/setLevel": {Feature: "", Operation: ""}, // Client preference for server logging
 
-	// Argument completion - always allowed (UX feature)
-	"completion/complete": {Feature: "", Operation: ""}, // Argument completion for prompts/resources
+	// NOTE: completion/complete and subscriptions/listen are deliberately absent.
+	// Both name a capability policy can already decide on, but not as one static
+	// feature/operation pair, so they are classified by derivedAuthorizers
+	// (derived_authz.go) instead. Middleware consults that map first, so a
+	// duplicate static entry here would not shadow derived checks. The
+	// regression to avoid is removing those classifiers and restoring an empty
+	// feature/operation pair in this map — that is the original always-allow
+	// bypass.
 
 	// Notifications (server-to-client, informational) - always allowed
 	"notifications/message":                {Feature: "", Operation: ""}, // General notifications
@@ -134,57 +130,12 @@ func shouldSkipSubsequentAuthorization(method string) bool {
 	return false
 }
 
-// invalidSkillGet reports whether a skills/get request lacks exactly one valid URI.
-func invalidSkillGet(featureOp featureOperation, resourceID string, params json.RawMessage) bool {
+// invalidSkillGet reports whether a skills/get request lacks a valid URI.
+func invalidSkillGet(featureOp featureOperation, resourceID string) bool {
 	if featureOp.Feature != authorizers.MCPFeatureSkill || featureOp.Operation != authorizers.MCPOperationGet {
 		return false
 	}
-	return resourceID == "" || duplicateSkillURI(params)
-}
-
-// hasDuplicateURI reports whether an immediate JSON object has more than one uri member.
-// It uses a token decoder because unmarshalling into a map would silently retain only
-// the final duplicate member.
-func hasDuplicateURI(raw json.RawMessage) (bool, error) {
-	dec := json.NewDecoder(bytes.NewReader(raw))
-	token, err := dec.Token()
-	if err != nil {
-		return false, err
-	}
-	if delimiter, ok := token.(json.Delim); !ok || delimiter != '{' {
-		return false, nil
-	}
-
-	seen := false
-	for dec.More() {
-		key, err := dec.Token()
-		if err != nil {
-			return false, err
-		}
-		if key == "uri" {
-			if seen {
-				return true, nil
-			}
-			seen = true
-		}
-		var value json.RawMessage
-		if err := dec.Decode(&value); err != nil {
-			return false, err
-		}
-	}
-	if _, err := dec.Token(); err != nil {
-		return false, err
-	}
-	var trailing json.RawMessage
-	if err := dec.Decode(&trailing); err != io.EOF {
-		return false, err
-	}
-	return false, nil
-}
-
-func duplicateSkillURI(raw json.RawMessage) bool {
-	duplicate, err := hasDuplicateURI(raw)
-	return err != nil || duplicate
+	return resourceID == ""
 }
 
 // handleUnauthorized handles unauthorized requests. The client always sees the fixed
@@ -286,6 +237,14 @@ func Middleware(a authorizers.Authorizer, next http.Handler, passThroughTools ma
 			return
 		}
 
+		// Methods whose authorization target is derived from the request body are
+		// resolved first, ahead of the static map, so no always-allowed entry can
+		// ever shadow their per-capability checks.
+		if derive, ok := derivedAuthorizers[parsedRequest.Method]; ok {
+			authorizeDerivedAndServe(w, r, a, parsedRequest, derive, next)
+			return
+		}
+
 		// Get the feature and operation from the method
 		featureOp, ok := MCPMethodToFeatureOperation[parsedRequest.Method]
 		if !ok {
@@ -308,7 +267,7 @@ func Middleware(a authorizers.Authorizer, next http.Handler, passThroughTools ma
 		// skills/get identifies its target only by params.uri. An absent, empty,
 		// or non-string URI must never reach an authorizer, whose policy might
 		// otherwise accidentally permit an empty identifier.
-		if invalidSkillGet(featureOp, parsedRequest.ResourceID, parsedRequest.Params) {
+		if invalidSkillGet(featureOp, parsedRequest.ResourceID) {
 			handleUnauthorized(w, parsedRequest.ID, nil)
 			return
 		}
@@ -365,6 +324,124 @@ func authorizeListAndServe(
 		// The response may already be committed, so filtering errors can only be logged here.
 		slog.Warn("error flushing filtered response", "error", err)
 	}
+}
+
+// maxDerivedAuthzBudget bounds the total wall-clock time one request may spend
+// making authorization decisions, across all of its derived checks.
+//
+// The count limit alone does not bound this. authorizers/http issues one
+// outbound POST per decision with its own per-call timeout (30s by default), so
+// a PDP that hangs turns N decisions into N times that timeout -- at the
+// subscription limit, over twenty minutes of a request held open. The budget
+// makes the worst case independent of N.
+//
+// It is set to the HTTP authorizer's own default per-call timeout on purpose:
+// one request may spend no longer authorizing than a single decision was
+// already allowed to take. That makes this a ceiling on fan-out rather than a
+// new constraint on how slow an individual decision may be.
+const maxDerivedAuthzBudget = 30 * time.Second
+
+// authorizeChecks runs every check in order under one shared deadline, stopping
+// at the first that does not pass. It reports whether all of them passed.
+//
+// The budget is applied only when there is more than one decision to make. A
+// single decision has no fan-out to bound and is already limited by the
+// authorizer's own per-call timeout, which an operator may have configured
+// deliberately; wrapping it here would silently override that and make, say, a
+// completion's get_prompt decision stricter than the identical decision for
+// prompts/get.
+//
+// A budget overrun surfaces as an error from the authorizer call, which the
+// caller maps to the same fail-closed denial any other authorizer error
+// produces.
+func authorizeChecks(
+	ctx context.Context,
+	a authorizers.Authorizer,
+	checks []resourceCheck,
+	budget time.Duration,
+) (bool, error) {
+	if len(checks) > 1 {
+		var cancel context.CancelFunc
+		ctx, cancel = context.WithTimeout(ctx, budget)
+		defer cancel()
+	}
+
+	for i, check := range checks {
+		// Arguments are deliberately nil, NOT the request's parsed arguments.
+		//
+		// Cedar prefixes every argument key with "arg_" and merges the result into
+		// both the resource entity's attributes and the evaluation context
+		// (authorizers/cedar/core.go preprocessArguments). The "arg_" namespace
+		// therefore means "the arguments the authorized operation will run with".
+		//
+		// A derived method's params are NOT those arguments. pkg/mcp hands
+		// completion/complete its ENTIRE params map as Arguments, so forwarding it
+		// would let a caller put any key at the top level of a completion request
+		// and have it evaluated as a prompt argument: a policy reading
+		// context.arg_env would be satisfied by an attacker-chosen "env" that the
+		// real prompts/get (which passes only params.arguments) could never forge.
+		// For resources it is worse -- resources/read passes nil, so an
+		// arg_-conditioned permit is unreachable there but would become reachable
+		// through completion.
+		//
+		// nil is the fail-closed choice: an arg_-conditioned permit simply does not
+		// match, so the request is denied rather than wrongly allowed. Passing real
+		// completion context would need its own namespace, not this one.
+		authorized, err := a.AuthorizeWithJWTClaims(ctx, check.Feature, check.Operation, check.resourceID, nil)
+		if err != nil {
+			// Counts, never identifiers: how far the request got is the useful
+			// diagnostic for a budget overrun, and the URIs are caller-chosen.
+			return false, fmt.Errorf("authorizing decision %d of %d: %w", i+1, len(checks), err)
+		}
+		if !authorized {
+			return false, nil
+		}
+	}
+	return true, nil
+}
+
+// authorizeDerivedAndServe authorizes a method whose targets are derived from the
+// request body, dispatching only once every derived check passes.
+//
+// Checks are evaluated in order and the first denial ends the request, so a
+// request naming several resources is admitted as a unit or not at all. A derive
+// error is a denial too: it means no authorization target could be established,
+// which must never be treated as "nothing to authorize".
+func authorizeDerivedAndServe(
+	w http.ResponseWriter,
+	r *http.Request,
+	a authorizers.Authorizer,
+	parsedRequest *mcp.ParsedMCPRequest,
+	derive deriveChecks,
+	next http.Handler,
+) {
+	checks, err := derive(parsedRequest.Params)
+	if err != nil {
+		// WARN, not Debug: every derive failure is a request-SHAPE rejection (a
+		// legacy bare-string ref, an unrecognised notifications member, a list over
+		// the cap, undecodable params), not a policy decision. Each one means a
+		// client or a policy needs updating, which is the repo's stated use for WARN
+		// -- and it is the only signal an operator gets that an upgrade started
+		// refusing traffic that previously passed. Policy denials stay silent, so
+		// this does not log ordinary authorization outcomes.
+		//
+		// The reason is logged but never returned: the response body stays the fixed
+		// "Unauthorized" so a prober cannot learn how its probe was malformed. Values
+		// interpolated into these errors are truncated at the source, bounding what a
+		// caller can write per line.
+		slog.Warn("MCP request denied: no resolvable authorization target",
+			"method", parsedRequest.Method, "error", err)
+		handleUnauthorized(w, parsedRequest.ID, nil)
+		return
+	}
+
+	authorized, err := authorizeChecks(r.Context(), a, checks, maxDerivedAuthzBudget)
+	if err != nil || !authorized {
+		handleUnauthorized(w, parsedRequest.ID, err)
+		return
+	}
+
+	next.ServeHTTP(w, r)
 }
 
 // authorizeAndServe injects tool annotations from the cache, authorizes the request,

@@ -1579,6 +1579,138 @@ func TestMemoryStorage_PendingAuthorization(t *testing.T) {
 	})
 }
 
+func TestMemoryStorage_PendingDeviceLogin(t *testing.T) {
+	t.Parallel()
+	makePending := func() *PendingDeviceLogin {
+		return &PendingDeviceLogin{
+			DeviceCode: "device-code", UserCode: "USER-CODE",
+			UpstreamPKCEVerifier: "verifier", UpstreamNonce: "nonce",
+			UpstreamProviderName: "provider-1", CreatedAt: time.Now(),
+		}
+	}
+
+	t.Run("store and load", func(t *testing.T) {
+		withStorage(t, func(ctx context.Context, s *MemoryStorage) {
+			pending := makePending()
+			require.NoError(t, s.StorePendingDeviceLogin(ctx, "state-1", pending))
+
+			retrieved, err := s.LoadPendingDeviceLogin(ctx, "state-1")
+			require.NoError(t, err)
+			assert.Equal(t, pending.DeviceCode, retrieved.DeviceCode)
+			assert.Equal(t, pending.UserCode, retrieved.UserCode)
+			assert.Equal(t, pending.UpstreamPKCEVerifier, retrieved.UpstreamPKCEVerifier)
+			assert.Equal(t, pending.UpstreamNonce, retrieved.UpstreamNonce)
+			assert.Equal(t, pending.UpstreamProviderName, retrieved.UpstreamProviderName)
+		})
+	})
+
+	t.Run("load non-existent", func(t *testing.T) {
+		withStorage(t, func(ctx context.Context, s *MemoryStorage) {
+			_, err := s.LoadPendingDeviceLogin(ctx, "non-existent")
+			requireNotFoundError(t, err)
+		})
+	})
+
+	t.Run("load expired returns ErrExpired", func(t *testing.T) {
+		withStorage(t, func(ctx context.Context, s *MemoryStorage) {
+			require.NoError(t, s.StorePendingDeviceLogin(ctx, "expired-state", makePending()))
+
+			s.mu.Lock()
+			if entry, ok := s.pendingDeviceLogins["expired-state"]; ok {
+				entry.expiresAt = time.Now().Add(-time.Hour)
+			}
+			s.mu.Unlock()
+
+			retrieved, err := s.LoadPendingDeviceLogin(ctx, "expired-state")
+			require.Error(t, err)
+			assert.ErrorIs(t, err, ErrExpired)
+			assert.Nil(t, retrieved)
+		})
+	})
+
+	t.Run("delete", func(t *testing.T) {
+		withStorage(t, func(ctx context.Context, s *MemoryStorage) {
+			require.NoError(t, s.StorePendingDeviceLogin(ctx, "to-delete", makePending()))
+			require.NoError(t, s.DeletePendingDeviceLogin(ctx, "to-delete"))
+			_, err := s.LoadPendingDeviceLogin(ctx, "to-delete")
+			requireNotFoundError(t, err)
+		})
+	})
+
+	t.Run("delete non-existent returns error", func(t *testing.T) {
+		withStorage(t, func(ctx context.Context, s *MemoryStorage) {
+			err := s.DeletePendingDeviceLogin(ctx, "non-existent")
+			requireNotFoundError(t, err)
+		})
+	})
+}
+
+func TestMemoryStorage_PendingDeviceConfirmation(t *testing.T) {
+	t.Parallel()
+	makePending := func() *PendingDeviceConfirmation {
+		return &PendingDeviceConfirmation{
+			DeviceCode: "device-code", UserCode: "USER-CODE",
+			ResolvedUserID: "user-1", ResolvedUserName: "Ada Lovelace",
+			ResolvedUserEmail: "ada@example.com", CreatedAt: time.Now(),
+		}
+	}
+
+	t.Run("store and load", func(t *testing.T) {
+		withStorage(t, func(ctx context.Context, s *MemoryStorage) {
+			pending := makePending()
+			require.NoError(t, s.StorePendingDeviceConfirmation(ctx, "token-1", pending))
+
+			retrieved, err := s.LoadPendingDeviceConfirmation(ctx, "token-1")
+			require.NoError(t, err)
+			assert.Equal(t, pending.DeviceCode, retrieved.DeviceCode)
+			assert.Equal(t, pending.UserCode, retrieved.UserCode)
+			assert.Equal(t, pending.ResolvedUserID, retrieved.ResolvedUserID)
+			assert.Equal(t, pending.ResolvedUserName, retrieved.ResolvedUserName)
+			assert.Equal(t, pending.ResolvedUserEmail, retrieved.ResolvedUserEmail)
+		})
+	})
+
+	t.Run("load non-existent", func(t *testing.T) {
+		withStorage(t, func(ctx context.Context, s *MemoryStorage) {
+			_, err := s.LoadPendingDeviceConfirmation(ctx, "non-existent")
+			requireNotFoundError(t, err)
+		})
+	})
+
+	t.Run("load expired returns ErrExpired", func(t *testing.T) {
+		withStorage(t, func(ctx context.Context, s *MemoryStorage) {
+			require.NoError(t, s.StorePendingDeviceConfirmation(ctx, "expired-token", makePending()))
+
+			s.mu.Lock()
+			if entry, ok := s.pendingDeviceConfirmations["expired-token"]; ok {
+				entry.expiresAt = time.Now().Add(-time.Hour)
+			}
+			s.mu.Unlock()
+
+			retrieved, err := s.LoadPendingDeviceConfirmation(ctx, "expired-token")
+			require.Error(t, err)
+			assert.ErrorIs(t, err, ErrExpired)
+			assert.Nil(t, retrieved)
+		})
+	})
+
+	t.Run("delete", func(t *testing.T) {
+		withStorage(t, func(ctx context.Context, s *MemoryStorage) {
+			require.NoError(t, s.StorePendingDeviceConfirmation(ctx, "to-delete", makePending()))
+			require.NoError(t, s.DeletePendingDeviceConfirmation(ctx, "to-delete"))
+			_, err := s.LoadPendingDeviceConfirmation(ctx, "to-delete")
+			requireNotFoundError(t, err)
+		})
+	})
+
+	t.Run("delete non-existent returns error", func(t *testing.T) {
+		withStorage(t, func(ctx context.Context, s *MemoryStorage) {
+			err := s.DeletePendingDeviceConfirmation(ctx, "non-existent")
+			requireNotFoundError(t, err)
+		})
+	})
+}
+
 func TestMemoryStorage_DeviceCode(t *testing.T) {
 	t.Parallel()
 
@@ -2747,6 +2879,146 @@ func TestMemoryStorage_DCRCredentials_NotFound(t *testing.T) {
 	withStorage(t, func(ctx context.Context, s *MemoryStorage) {
 		_, err := s.GetDCRCredentials(ctx, DCRKey{Issuer: "https://unknown.example.com"})
 		requireNotFoundError(t, err)
+	})
+}
+
+// TestMemoryStorage_DCRCredentials_UpdateReplacesExisting pins the core
+// UpdateDCRCredentialsIfPresent contract: an existing row is rewritten in
+// place with the incoming creds, the returned value reflects the rewrite, and
+// a subsequent Get observes the new fields. This is the write path
+// StoreDCRCredentialsIfAbsent cannot provide (it silently no-ops on an
+// existing key).
+func TestMemoryStorage_DCRCredentials_UpdateReplacesExisting(t *testing.T) {
+	withStorage(t, func(ctx context.Context, s *MemoryStorage) {
+		key := dcrFixtureKey()
+		_, err := s.StoreDCRCredentialsIfAbsent(ctx, &DCRCredentials{
+			Key:                   key,
+			ClientID:              "client-original",
+			ClientSecret:          "secret-original",
+			AuthorizationEndpoint: "https://idp.example.com/auth",
+			TokenEndpoint:         "https://idp.example.com/token",
+		})
+		require.NoError(t, err)
+
+		updated := &DCRCredentials{
+			Key:                     key,
+			ClientID:                "client-original",
+			ClientSecret:            "secret-rotated",
+			TokenEndpointAuthMethod: "client_secret_basic",
+			AuthorizationEndpoint:   "https://idp.example.com/auth",
+			TokenEndpoint:           "https://idp.example.com/token",
+		}
+		got, err := s.UpdateDCRCredentialsIfPresent(ctx, updated)
+		require.NoError(t, err)
+		assert.Equal(t, *updated, *got, "the returned value must reflect the rewrite")
+
+		reread, err := s.GetDCRCredentials(ctx, key)
+		require.NoError(t, err)
+		assert.Equal(t, "secret-rotated", reread.ClientSecret, "the stored row must reflect the rewrite")
+		assert.Equal(t, "client_secret_basic", reread.TokenEndpointAuthMethod)
+	})
+}
+
+// TestMemoryStorage_DCRCredentials_UpdateAbsentReturnsNotFound pins the
+// never-create contract: updating a key with no existing row returns a wrapped
+// ErrNotFound and writes nothing, so an update racing a delete or a
+// not-yet-created record fails loudly rather than silently creating.
+func TestMemoryStorage_DCRCredentials_UpdateAbsentReturnsNotFound(t *testing.T) {
+	withStorage(t, func(ctx context.Context, s *MemoryStorage) {
+		key := dcrFixtureKey()
+		_, err := s.UpdateDCRCredentialsIfPresent(ctx, &DCRCredentials{
+			Key:                   key,
+			ClientID:              "client-abc",
+			AuthorizationEndpoint: "https://idp.example.com/auth",
+			TokenEndpoint:         "https://idp.example.com/token",
+		})
+		requireNotFoundError(t, err)
+
+		// Nothing was created.
+		_, getErr := s.GetDCRCredentials(ctx, key)
+		requireNotFoundError(t, getErr)
+	})
+}
+
+// TestMemoryStorage_DCRCredentials_UpdateExpiredPresentRow pins the deliberate
+// asymmetry with StoreDCRCredentialsIfAbsent: presence is physical, not
+// liveness. An expired-but-present row is updatable (unlike Store, which
+// treats an expired row as absent), so the Get→transform→Update round-trip a
+// storage decorator performs works even on a row whose ClientSecretExpiresAt
+// has already passed.
+func TestMemoryStorage_DCRCredentials_UpdateExpiredPresentRow(t *testing.T) {
+	withStorage(t, func(ctx context.Context, s *MemoryStorage) {
+		key := dcrFixtureKey()
+		_, err := s.StoreDCRCredentialsIfAbsent(ctx, &DCRCredentials{
+			Key:                   key,
+			ClientID:              "client-abc",
+			ClientSecret:          "secret-original",
+			AuthorizationEndpoint: "https://idp.example.com/auth",
+			TokenEndpoint:         "https://idp.example.com/token",
+			ClientSecretExpiresAt: time.Now().Add(-time.Hour),
+		})
+		require.NoError(t, err)
+
+		got, err := s.UpdateDCRCredentialsIfPresent(ctx, &DCRCredentials{
+			Key:                   key,
+			ClientID:              "client-abc",
+			ClientSecret:          "secret-rotated",
+			AuthorizationEndpoint: "https://idp.example.com/auth",
+			TokenEndpoint:         "https://idp.example.com/token",
+			ClientSecretExpiresAt: time.Now().Add(-time.Hour),
+		})
+		require.NoError(t, err, "an expired-but-present row must be updatable")
+		assert.Equal(t, "secret-rotated", got.ClientSecret)
+
+		reread, err := s.GetDCRCredentials(ctx, key)
+		require.NoError(t, err)
+		assert.Equal(t, "secret-rotated", reread.ClientSecret)
+	})
+}
+
+// TestMemoryStorage_DCRCredentials_UpdateInvalidInputRejected pins that Update
+// runs the same validateDCRCredentialsForStore gate as Store. The full
+// per-field matrix is covered by
+// TestMemoryStorage_DCRCredentials_StoreInvalidInputRejected against the shared
+// function; this only confirms Update is wired to it.
+func TestMemoryStorage_DCRCredentials_UpdateInvalidInputRejected(t *testing.T) {
+	withStorage(t, func(ctx context.Context, s *MemoryStorage) {
+		_, err := s.UpdateDCRCredentialsIfPresent(ctx, nil)
+		require.Error(t, err)
+		assert.ErrorIs(t, err, fosite.ErrInvalidRequest)
+	})
+}
+
+// TestMemoryStorage_DCRCredentials_UpdateCopyIsolatesCaller pins the
+// defensive-copy-on-input contract: mutating the creds after a successful
+// Update must not reach the persisted row.
+func TestMemoryStorage_DCRCredentials_UpdateCopyIsolatesCaller(t *testing.T) {
+	withStorage(t, func(ctx context.Context, s *MemoryStorage) {
+		key := dcrFixtureKey()
+		_, err := s.StoreDCRCredentialsIfAbsent(ctx, &DCRCredentials{
+			Key:                   key,
+			ClientID:              "client-abc",
+			ClientSecret:          "secret-original",
+			AuthorizationEndpoint: "https://idp.example.com/auth",
+			TokenEndpoint:         "https://idp.example.com/token",
+		})
+		require.NoError(t, err)
+
+		input := &DCRCredentials{
+			Key:                   key,
+			ClientID:              "client-abc",
+			ClientSecret:          "secret-rotated",
+			AuthorizationEndpoint: "https://idp.example.com/auth",
+			TokenEndpoint:         "https://idp.example.com/token",
+		}
+		_, err = s.UpdateDCRCredentialsIfPresent(ctx, input)
+		require.NoError(t, err)
+
+		input.ClientSecret = "mutated-after-update"
+		got, err := s.GetDCRCredentials(ctx, key)
+		require.NoError(t, err)
+		assert.Equal(t, "secret-rotated", got.ClientSecret,
+			"caller mutation after Update must not reach persisted state")
 	})
 }
 

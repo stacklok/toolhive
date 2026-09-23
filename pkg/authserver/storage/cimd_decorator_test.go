@@ -701,14 +701,17 @@ func TestFetch_GrantTypeValidation(t *testing.T) {
 			[]string{"authorization_code", "refresh_token"}},
 		{"explicit [authorization_code] accepted", []string{"authorization_code"}, false,
 			[]string{"authorization_code"}},
-		{"device_code alongside authorization_code is ignored, not fatal",
-			[]string{"authorization_code", "refresh_token", "urn:ietf:params:oauth:grant-type:device_code"}, false,
+		{"client_credentials alongside authorization_code is ignored, not fatal",
+			[]string{"authorization_code", "refresh_token", "client_credentials"}, false,
 			[]string{"authorization_code", "refresh_token"}},
 		{"refresh_token only missing authorization_code rejected", []string{"refresh_token"}, true, nil},
 		{"client_credentials only rejected (no supported grant type)", []string{"client_credentials"}, true, nil},
 		{"implicit only rejected (no supported grant type)", []string{"implicit"}, true, nil},
-		{"device_code only rejected (no supported grant type)",
+		{"device_code only rejected (missing authorization_code)",
 			[]string{"urn:ietf:params:oauth:grant-type:device_code"}, true, nil},
+		{"device_code alongside authorization_code is accepted (now a supported grant type)",
+			[]string{"authorization_code", "urn:ietf:params:oauth:grant-type:device_code"}, false,
+			[]string{"authorization_code", "urn:ietf:params:oauth:grant-type:device_code"}},
 	}
 
 	for _, tt := range tests {
@@ -736,8 +739,8 @@ func TestFetch_GrantTypeValidation(t *testing.T) {
 // TestFetch_VSCodeDocumentResolves is the regression test for #6290: VS
 // Code's real-world client-metadata document declares the device_code grant
 // alongside authorization_code and refresh_token, and its resolution must
-// succeed with device_code filtered out rather than failing the whole
-// document with invalid_client.
+// succeed. device_code is now itself a supported grant type (RFC 8628), so
+// resolution keeps it rather than filtering it out.
 func TestFetch_VSCodeDocumentResolves(t *testing.T) {
 	t.Parallel()
 
@@ -755,8 +758,9 @@ func TestFetch_VSCodeDocumentResolves(t *testing.T) {
 	client, err := dec.fetchOrCached(context.Background(), srv.URL+"/meta.json")
 	require.NoError(t, err, "VS Code's document must resolve (#6290)")
 	assert.True(t, client.IsPublic())
-	assert.ElementsMatch(t, []string{"authorization_code", "refresh_token"}, []string(client.GetGrantTypes()),
-		"device_code must be filtered out, not stored")
+	assert.ElementsMatch(t,
+		[]string{"authorization_code", "refresh_token", "urn:ietf:params:oauth:grant-type:device_code"},
+		[]string(client.GetGrantTypes()))
 	assert.ElementsMatch(t, []string{"code"}, []string(client.GetResponseTypes()))
 }
 

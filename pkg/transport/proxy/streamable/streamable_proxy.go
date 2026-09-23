@@ -23,6 +23,7 @@ import (
 
 	sdkmcp "github.com/stacklok/toolhive-core/mcpcompat/mcp"
 	"github.com/stacklok/toolhive/pkg/auth"
+	"github.com/stacklok/toolhive/pkg/auth/sessionbinding"
 	"github.com/stacklok/toolhive/pkg/bodylimit"
 	"github.com/stacklok/toolhive/pkg/diagnostics"
 	"github.com/stacklok/toolhive/pkg/healthcheck"
@@ -437,13 +438,17 @@ func (p *HTTPProxy) handleGet(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	sessID := r.Header.Get("Mcp-Session-Id")
+	sessID, carrierErr := sessionbinding.RequestID(r, "")
+	if carrierErr != nil {
+		sessionbinding.WriteOwnershipError(w, nil, carrierErr)
+		return
+	}
 	if sessID == "" {
 		writeHTTPError(w, http.StatusBadRequest, "Mcp-Session-Id header required for standalone SSE")
 		return
 	}
-	if _, ok := p.sessionManager.Get(sessID); !ok {
-		session.WriteNotFound(w, nil)
+	if err := sessionbinding.Check(r, sessID, p.sessionManager.LookupOwner); err != nil {
+		sessionbinding.WriteOwnershipError(w, nil, err)
 		return
 	}
 
@@ -488,18 +493,28 @@ func (p *HTTPProxy) handleGet(w http.ResponseWriter, r *http.Request) {
 }
 
 func (p *HTTPProxy) handleDelete(w http.ResponseWriter, r *http.Request) {
-	sessID := r.Header.Get("Mcp-Session-Id")
+	sessID, carrierErr := sessionbinding.RequestID(r, "")
+	if carrierErr != nil {
+		sessionbinding.WriteOwnershipError(w, nil, carrierErr)
+		return
+	}
 	if sessID == "" {
 		writeHTTPError(w, http.StatusBadRequest, "Mcp-Session-Id header required for DELETE")
 		return
 	}
-	if _, ok := p.sessionManager.Get(sessID); !ok {
-		session.WriteNotFound(w, nil)
+	if err := sessionbinding.Check(r, sessID, p.sessionManager.LookupOwner); err != nil {
+		sessionbinding.WriteOwnershipError(w, nil, err)
 		return
 	}
-	if err := p.sessionManager.Delete(sessID); err != nil {
-		//nolint:gosec // G706: session ID is from validated request header
-		slog.Debug("failed to delete session", "session_id", sessID, "error", err)
+	identity, _ := auth.IdentityFromContext(r.Context())
+	expectedOwner, err := sessionbinding.FromIdentity(identity)
+	if err != nil {
+		sessionbinding.WriteOwnershipError(w, nil, sessionbinding.ErrNotFound)
+		return
+	}
+	if err := p.sessionManager.DeleteIfOwner(sessID, expectedOwner); err != nil {
+		sessionbinding.WriteOwnershipError(w, nil, err)
+		return
 	}
 
 	// Purge routing state (subscriptions, log level) for the deleted session so
@@ -525,7 +540,6 @@ func (p *HTTPProxy) handleDelete(w http.ResponseWriter, r *http.Request) {
 }
 
 func (p *HTTPProxy) handlePost(w http.ResponseWriter, r *http.Request) {
-	ctx := r.Context()
 
 	// MCP-Protocol-Version validation is opt-in via strictProtocolValidation
 	// (WithStrictProtocolValidation). Default (false) is version-agnostic:
@@ -569,8 +583,32 @@ func (p *HTTPProxy) handlePost(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	p.handlePostMessage(w, r, msg)
+}
+
+func (p *HTTPProxy) handlePostMessage(w http.ResponseWriter, r *http.Request, msg jsonrpc2.Message) {
+	ctx := r.Context()
+	var legacySID string
+	// Notifications and client responses are Legacy session-bearing traffic.
+	// Id-bearing Modern requests are classified below and intentionally ignore SID.
+	if req, ok := msg.(*jsonrpc2.Request); !ok || !req.ID.IsValid() {
+		sid, err := sessionbinding.RequestID(r, "")
+		if err != nil {
+			sessionbinding.WriteOwnershipError(w, nil, err)
+			return
+		}
+		if sid == "" {
+			writeHTTPError(w, http.StatusBadRequest, "Mcp-Session-Id header required")
+			return
+		}
+		if err := sessionbinding.Check(r, sid, p.sessionManager.LookupOwner); err != nil {
+			sessionbinding.WriteOwnershipError(w, nil, err)
+			return
+		}
+		legacySID = sid
+	}
 	// Notifications or client responses are accepted and forwarded (202)
-	if p.handleNotificationOrClientResponse(w, r.Header.Get("Mcp-Session-Id"), msg) {
+	if p.handleNotificationOrClientResponse(w, legacySID, msg) {
 		return
 	}
 
@@ -1046,11 +1084,11 @@ func (p *HTTPProxy) applyMiddlewares(handler http.Handler) http.Handler {
 	return handler
 }
 
-func (p *HTTPProxy) ensureSession(id string) error {
-	if _, ok := p.sessionManager.Get(id); ok {
-		return nil
+func (p *HTTPProxy) ensureSession(r *http.Request, id string) error {
+	if _, err := uuid.Parse(id); err != nil {
+		return sessionbinding.ErrNotFound
 	}
-	return p.sessionManager.AddWithID(id)
+	return sessionbinding.AddOwnedSession(r.Context(), p.sessionManager, session.NewProxySession(id))
 }
 
 // resolveSessionForRequest resolves session rules for a single JSON-RPC request.
@@ -1115,7 +1153,11 @@ func (p *HTTPProxy) resolveSessionForRequest(
 	}
 
 	var setSessionHeader bool
-	sessID := r.Header.Get("Mcp-Session-Id")
+	sessID, carrierErr := sessionbinding.RequestID(r, "")
+	if carrierErr != nil {
+		sessionbinding.WriteOwnershipError(w, req.ID.Raw(), carrierErr)
+		return "", false, carrierErr
+	}
 
 	if req.Method == "initialize" {
 		if sessID == "" {
@@ -1127,8 +1169,8 @@ func (p *HTTPProxy) resolveSessionForRequest(
 			sessID = newID.String()
 			setSessionHeader = true
 		}
-		if err := p.ensureSession(sessID); err != nil {
-			writeHTTPError(w, http.StatusInternalServerError, fmt.Sprintf("Failed to create session: %v", err))
+		if err := p.ensureSession(r, sessID); err != nil {
+			sessionbinding.WriteOwnershipError(w, req.ID.Raw(), err)
 			return "", false, err
 		}
 		return sessID, setSessionHeader, nil
@@ -1146,10 +1188,9 @@ func (p *HTTPProxy) resolveSessionForRequest(
 		return token.String(), false, nil
 	}
 
-	// Session ID provided but not found: reject with 404.
-	if _, ok := p.sessionManager.Get(sessID); !ok {
-		session.WriteNotFound(w, req.ID.Raw())
-		return "", false, fmt.Errorf("session not found")
+	if err := sessionbinding.Check(r, sessID, p.sessionManager.LookupOwner); err != nil {
+		sessionbinding.WriteOwnershipError(w, req.ID.Raw(), err)
+		return "", false, err
 	}
 	return sessID, false, nil
 }
@@ -1514,27 +1555,16 @@ func (p *HTTPProxy) reconcileUpstreamLogLevel(level string) {
 // manager's own cleanup routine (sessionTTL/2, see manager.go's
 // cleanupRoutine), and exits when shutdownCh is closed.
 //
-// isActive is p.sessionManager.Get: the only session liveness check the
-// session.Manager/Storage interfaces currently expose. Every Storage
-// implementation intentionally refreshes its backend's TTL on every read
-// (LocalStorage's Load, RedisStorage's GETEX) to keep genuinely active
-// sessions alive -- there is no "peek without refreshing" method today (see
-// manager.go and storage.go). Using Get here as isActive means: a session
-// that still owns routing state (e.g. an open subscription) has its TTL
-// refreshed by this reaper's own liveness check, which can delay that
-// session's expiry by up to one reap tick (sessionTTL/2) beyond actual client
-// inactivity. This is an accepted, documented tradeoff, not a security gap:
-// Get on an ALREADY-deleted session correctly returns false without
-// refreshing anything, so reap can never retain routing state past a
-// session's true deletion -- it can only delay reaping state for a session
-// that reap's own check just observed to still be nominally alive.
+// isActive uses LookupOwner's authoritative, non-touching metadata read. Reaping
+// therefore observes liveness without extending the session TTL; only normal
+// session activity through Manager.Get refreshes the sliding expiration window.
 func (p *HTTPProxy) reapRoutingState() {
 	ticker := time.NewTicker(p.sessionTTL / 2)
 	defer ticker.Stop()
 
 	isActive := func(sess string) bool {
-		_, ok := p.sessionManager.Get(sess)
-		return ok
+		_, err := p.sessionManager.LookupOwner(context.Background(), sess)
+		return err == nil
 	}
 
 	for {

@@ -43,6 +43,17 @@ func NewLocalStorage() *LocalStorage {
 	return &LocalStorage{}
 }
 
+// Create inserts a session without replacing an existing owner.
+func (s *LocalStorage) Create(_ context.Context, session Session) error {
+	if session == nil || session.ID() == "" {
+		return fmt.Errorf("cannot create nil session or empty ID")
+	}
+	if _, loaded := s.sessions.LoadOrStore(session.ID(), newLocalEntry(session)); loaded {
+		return ErrSessionAlreadyExists
+	}
+	return nil
+}
+
 // Store saves a session to the local storage.
 // For local storage, we store the session object directly without serialization.
 func (s *LocalStorage) Store(_ context.Context, session Session) error {
@@ -90,6 +101,72 @@ func (s *LocalStorage) Load(_ context.Context, id string) (Session, error) {
 	return entry.session, nil
 }
 
+// LoadIfOwner atomically validates ownership and refreshes last access for the validated entry.
+func (s *LocalStorage) LoadIfOwner(_ context.Context, id, expectedOwner string) (Session, error) {
+	if id == "" {
+		return nil, fmt.Errorf("cannot load session with empty ID")
+	}
+	for {
+		val, ok := s.sessions.Load(id)
+		if !ok {
+			return nil, ErrSessionNotFound
+		}
+		entry, ok := val.(*localEntry)
+		if !ok {
+			return nil, fmt.Errorf("invalid session type in storage")
+		}
+		owner, _ := entry.session.GetMetadataValue(MetadataKeyIdentityBinding)
+		if owner != expectedOwner {
+			return nil, ErrSessionNotFound
+		}
+		if s.sessions.CompareAndSwap(id, entry, newLocalEntry(entry.session)) {
+			return entry.session, nil
+		}
+	}
+}
+
+// LoadMetadata returns a copy of authoritative metadata without refreshing last access.
+func (s *LocalStorage) LoadMetadata(_ context.Context, id string) (map[string]string, error) {
+	if id == "" {
+		return nil, fmt.Errorf("cannot load session metadata with empty ID")
+	}
+	val, ok := s.sessions.Load(id)
+	if !ok {
+		return nil, ErrSessionNotFound
+	}
+	entry, ok := val.(*localEntry)
+	if !ok {
+		return nil, fmt.Errorf("invalid session type in storage")
+	}
+	return entry.session.GetMetadata(), nil
+}
+
+// StoreIfOwner atomically replaces a session only while its ownership binding matches.
+func (s *LocalStorage) StoreIfOwner(_ context.Context, session Session, expectedOwner string) (bool, error) {
+	if session == nil || session.ID() == "" {
+		return false, fmt.Errorf("cannot store nil session or empty ID")
+	}
+	if owner, _ := session.GetMetadataValue(MetadataKeyIdentityBinding); owner != expectedOwner {
+		return false, nil
+	}
+	for {
+		val, ok := s.sessions.Load(session.ID())
+		if !ok {
+			return false, nil
+		}
+		entry, ok := val.(*localEntry)
+		if !ok {
+			return false, fmt.Errorf("invalid session type in storage")
+		}
+		if owner, _ := entry.session.GetMetadataValue(MetadataKeyIdentityBinding); owner != expectedOwner {
+			return false, nil
+		}
+		if s.sessions.CompareAndSwap(session.ID(), entry, newLocalEntry(session)) {
+			return true, nil
+		}
+	}
+}
+
 // Delete removes a session from local storage.
 func (s *LocalStorage) Delete(_ context.Context, id string) error {
 	if id == "" {
@@ -98,6 +175,29 @@ func (s *LocalStorage) Delete(_ context.Context, id string) error {
 
 	s.sessions.Delete(id)
 	return nil
+}
+
+// DeleteIfOwner atomically removes a session only while its ownership binding matches.
+func (s *LocalStorage) DeleteIfOwner(_ context.Context, id, expectedOwner string) (bool, error) {
+	if id == "" {
+		return false, fmt.Errorf("cannot delete session with empty ID")
+	}
+	for {
+		val, ok := s.sessions.Load(id)
+		if !ok {
+			return false, nil
+		}
+		entry, ok := val.(*localEntry)
+		if !ok {
+			return false, fmt.Errorf("invalid session type in storage")
+		}
+		if owner, _ := entry.session.GetMetadataValue(MetadataKeyIdentityBinding); owner != expectedOwner {
+			return false, nil
+		}
+		if s.sessions.CompareAndDelete(id, entry) {
+			return true, nil
+		}
+	}
 }
 
 // DeleteExpired removes all sessions whose last-access time is before the given cutoff.

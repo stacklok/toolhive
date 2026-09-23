@@ -57,6 +57,7 @@ type installSkillRequest struct {
 	Force         bool   `json:"force,omitempty"`
 	Group         string `json:"group,omitempty"`
 	AllowUnsigned bool   `json:"allow_unsigned,omitempty"`
+	PublicKey     string `json:"public_key,omitempty"`
 }
 
 type installSkillResponse struct {
@@ -221,6 +222,7 @@ func pushSkill(server *e2e.Server, reference string) *http.Response {
 
 type pushSkillRequest struct {
 	Reference string `json:"reference"`
+	Key       string `json:"key,omitempty"`
 	NoSign    bool   `json:"no_sign,omitempty"`
 }
 
@@ -1318,12 +1320,14 @@ var _ = Describe("Project-scope skills lock file (RFC THV-0080)", Label("api", "
 })
 
 type upgradeSkillsRequest struct {
-	ProjectRoot    string   `json:"project_root"`
-	Names          []string `json:"names,omitempty"`
-	Preview        bool     `json:"preview,omitempty"`
-	FailOnChanges  bool     `json:"fail_on_changes,omitempty"`
-	AllowRefChange bool     `json:"allow_ref_change,omitempty"`
-	Clients        []string `json:"clients,omitempty"`
+	ProjectRoot       string   `json:"project_root"`
+	Names             []string `json:"names,omitempty"`
+	Preview           bool     `json:"preview,omitempty"`
+	FailOnChanges     bool     `json:"fail_on_changes,omitempty"`
+	AllowRefChange    bool     `json:"allow_ref_change,omitempty"`
+	AllowSignerChange bool     `json:"allow_signer_change,omitempty"`
+	PublicKey         string   `json:"public_key,omitempty"`
+	Clients           []string `json:"clients,omitempty"`
 }
 
 type upgradeOutcomeResponse struct {
@@ -1332,6 +1336,7 @@ type upgradeOutcomeResponse struct {
 	OldDigest            string `json:"old_digest,omitempty"`
 	NewDigest            string `json:"new_digest,omitempty"`
 	NewResolvedReference string `json:"new_resolved_reference,omitempty"`
+	TrustAnchorChanged   bool   `json:"trust_anchor_changed,omitempty"`
 	Reason               string `json:"reason,omitempty"`
 	Error                string `json:"error,omitempty"`
 }

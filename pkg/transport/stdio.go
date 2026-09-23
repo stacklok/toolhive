@@ -711,7 +711,7 @@ func (t *StdioTransport) parseAndForwardJSONRPC(ctx context.Context, line string
 		if t.proxyMode == types.ProxyModeStreamableHTTP {
 			slog.Error("error forwarding to streamable-http client", "error", err)
 		} else {
-			slog.Error("error forwarding to SSE clients", "error", err)
+			slog.Error("error dispatching backend message to SSE proxy", "error", err)
 		}
 	}
 }

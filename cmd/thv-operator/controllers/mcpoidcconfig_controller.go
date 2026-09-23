@@ -13,11 +13,15 @@ import (
 	"k8s.io/apimachinery/pkg/api/meta"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
+	"k8s.io/apimachinery/pkg/types"
 	"k8s.io/client-go/tools/events"
 	ctrl "sigs.k8s.io/controller-runtime"
+	"sigs.k8s.io/controller-runtime/pkg/builder"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/controller/controllerutil"
+	"sigs.k8s.io/controller-runtime/pkg/handler"
 	"sigs.k8s.io/controller-runtime/pkg/log"
+	"sigs.k8s.io/controller-runtime/pkg/predicate"
 
 	mcpv1beta1 "github.com/stacklok/toolhive/cmd/thv-operator/api/v1beta1"
 	ctrlutil "github.com/stacklok/toolhive/cmd/thv-operator/pkg/controllerutil"
@@ -47,6 +51,7 @@ type MCPOIDCConfigReconciler struct {
 // +kubebuilder:rbac:groups=toolhive.stacklok.dev,resources=mcpoidcconfigs,verbs=get;list;watch;create;update;patch;delete
 // +kubebuilder:rbac:groups=toolhive.stacklok.dev,resources=mcpoidcconfigs/status,verbs=get;update;patch
 // +kubebuilder:rbac:groups=toolhive.stacklok.dev,resources=mcpoidcconfigs/finalizers,verbs=update
+// +kubebuilder:rbac:groups=toolhive.stacklok.dev,resources=mcpservers,verbs=get;list;watch
 // +kubebuilder:rbac:groups=toolhive.stacklok.dev,resources=virtualmcpservers,verbs=get;list;watch
 // +kubebuilder:rbac:groups=toolhive.stacklok.dev,resources=mcpremoteproxies,verbs=get;list;watch
 // +kubebuilder:rbac:groups=events.k8s.io,resources=events,verbs=create;patch
@@ -357,6 +362,51 @@ func (r *MCPOIDCConfigReconciler) findReferencingWorkloads(
 	return refs, nil
 }
 
+// findMCPOIDCConfigForMCPServer maps a watched MCPServer to a reconcile request
+// for the MCPOIDCConfig it references. Removing the reference — by deleting the
+// server or clearing its OIDCConfigRef — enqueues the config so its deletion
+// recheck runs at once, instead of waiting out the 30s requeue in handleDeletion.
+// Returns nothing when the server references no config.
+func (*MCPOIDCConfigReconciler) findMCPOIDCConfigForMCPServer(_ context.Context, obj client.Object) []ctrl.Request {
+	server, ok := obj.(*mcpv1beta1.MCPServer)
+	if !ok || server.Spec.OIDCConfigRef == nil || server.Spec.OIDCConfigRef.Name == "" {
+		return nil
+	}
+	return []ctrl.Request{{NamespacedName: types.NamespacedName{
+		Namespace: server.Namespace,
+		Name:      server.Spec.OIDCConfigRef.Name,
+	}}}
+}
+
+// findMCPOIDCConfigForVirtualMCPServer maps a watched VirtualMCPServer to a
+// reconcile request for the MCPOIDCConfig it references via spec.incomingAuth.
+// See findMCPOIDCConfigForMCPServer for why.
+func (*MCPOIDCConfigReconciler) findMCPOIDCConfigForVirtualMCPServer(_ context.Context, obj client.Object) []ctrl.Request {
+	vmcp, ok := obj.(*mcpv1beta1.VirtualMCPServer)
+	if !ok || vmcp.Spec.IncomingAuth == nil ||
+		vmcp.Spec.IncomingAuth.OIDCConfigRef == nil || vmcp.Spec.IncomingAuth.OIDCConfigRef.Name == "" {
+		return nil
+	}
+	return []ctrl.Request{{NamespacedName: types.NamespacedName{
+		Namespace: vmcp.Namespace,
+		Name:      vmcp.Spec.IncomingAuth.OIDCConfigRef.Name,
+	}}}
+}
+
+// findMCPOIDCConfigForMCPRemoteProxy maps a watched MCPRemoteProxy to a reconcile
+// request for the MCPOIDCConfig it references. See findMCPOIDCConfigForMCPServer
+// for why.
+func (*MCPOIDCConfigReconciler) findMCPOIDCConfigForMCPRemoteProxy(_ context.Context, obj client.Object) []ctrl.Request {
+	proxy, ok := obj.(*mcpv1beta1.MCPRemoteProxy)
+	if !ok || proxy.Spec.OIDCConfigRef == nil || proxy.Spec.OIDCConfigRef.Name == "" {
+		return nil
+	}
+	return []ctrl.Request{{NamespacedName: types.NamespacedName{
+		Namespace: proxy.Namespace,
+		Name:      proxy.Spec.OIDCConfigRef.Name,
+	}}}
+}
+
 // SetupWithManager sets up the controller with the Manager.
 func (r *MCPOIDCConfigReconciler) SetupWithManager(mgr ctrl.Manager) error {
 	// Field indexes backing findReferencingWorkloads: each lets the controller
@@ -378,7 +428,29 @@ func (r *MCPOIDCConfigReconciler) SetupWithManager(mgr ctrl.Manager) error {
 		return fmt.Errorf("failed to set up MCPRemoteProxy oidcConfigRef index: %w", err)
 	}
 
+	// Watch the workloads that reference this config so removing a reference
+	// (deleting the workload or clearing its OIDCConfigRef) wakes the blocked
+	// deletion immediately, instead of waiting for the 30s requeue in
+	// handleDeletion — the delay the deletion integration tests were racing.
+	// GenerationChangedPredicate drops status-only churn while still passing
+	// create and delete events, so a referencing workload's frequent status
+	// writes do not trigger no-op config reconciles.
 	return ctrl.NewControllerManagedBy(mgr).
 		For(&mcpv1beta1.MCPOIDCConfig{}).
+		Watches(
+			&mcpv1beta1.MCPServer{},
+			handler.EnqueueRequestsFromMapFunc(r.findMCPOIDCConfigForMCPServer),
+			builder.WithPredicates(predicate.GenerationChangedPredicate{}),
+		).
+		Watches(
+			&mcpv1beta1.VirtualMCPServer{},
+			handler.EnqueueRequestsFromMapFunc(r.findMCPOIDCConfigForVirtualMCPServer),
+			builder.WithPredicates(predicate.GenerationChangedPredicate{}),
+		).
+		Watches(
+			&mcpv1beta1.MCPRemoteProxy{},
+			handler.EnqueueRequestsFromMapFunc(r.findMCPOIDCConfigForMCPRemoteProxy),
+			builder.WithPredicates(predicate.GenerationChangedPredicate{}),
+		).
 		Complete(r)
 }

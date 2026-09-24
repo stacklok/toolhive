@@ -19,6 +19,7 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/builder"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/controller/controllerutil"
+	"sigs.k8s.io/controller-runtime/pkg/event"
 	"sigs.k8s.io/controller-runtime/pkg/handler"
 	"sigs.k8s.io/controller-runtime/pkg/log"
 	"sigs.k8s.io/controller-runtime/pkg/predicate"
@@ -407,6 +408,31 @@ func (*MCPOIDCConfigReconciler) findMCPOIDCConfigForMCPRemoteProxy(_ context.Con
 	}}}
 }
 
+// oidcConfigRefChangedPredicate builds the watch predicate for a workload type
+// that references an MCPOIDCConfig. Create and Delete events pass through so a
+// new or removed referrer wakes the config; Update events are admitted only when
+// the referenced config name changes, so unrelated spec churn (image, routing,
+// authentication, status) does not enqueue no-op config reconciles. extractRef
+// is the same field-index extractor used to build the reverse-reference index,
+// which keeps the predicate and the index in agreement on what counts as a
+// reference.
+func oidcConfigRefChangedPredicate(extractRef func(client.Object) []string) predicate.Predicate {
+	refName := func(obj client.Object) string {
+		if names := extractRef(obj); len(names) > 0 {
+			return names[0]
+		}
+		return ""
+	}
+	return predicate.Funcs{
+		UpdateFunc: func(e event.UpdateEvent) bool {
+			return refName(e.ObjectOld) != refName(e.ObjectNew)
+		},
+		CreateFunc:  func(_ event.CreateEvent) bool { return true },
+		DeleteFunc:  func(_ event.DeleteEvent) bool { return true },
+		GenericFunc: func(_ event.GenericEvent) bool { return false },
+	}
+}
+
 // SetupWithManager sets up the controller with the Manager.
 func (r *MCPOIDCConfigReconciler) SetupWithManager(mgr ctrl.Manager) error {
 	// Field indexes backing findReferencingWorkloads: each lets the controller
@@ -432,25 +458,28 @@ func (r *MCPOIDCConfigReconciler) SetupWithManager(mgr ctrl.Manager) error {
 	// (deleting the workload or clearing its OIDCConfigRef) wakes the blocked
 	// deletion immediately, instead of waiting for the 30s requeue in
 	// handleDeletion — the delay the deletion integration tests were racing.
-	// GenerationChangedPredicate drops status-only churn while still passing
-	// create and delete events, so a referencing workload's frequent status
-	// writes do not trigger no-op config reconciles.
+	// oidcConfigRefChangedPredicate keeps create and delete events but drops
+	// updates that do not change the referenced config name, so a referencing
+	// workload's unrelated spec and status churn does not trigger no-op config
+	// reconciles. EnqueueRequestsFromMapFunc maps both the old and new object on
+	// update, so clearing or repointing a reference still enqueues the config
+	// that lost the referrer.
 	return ctrl.NewControllerManagedBy(mgr).
 		For(&mcpv1beta1.MCPOIDCConfig{}).
 		Watches(
 			&mcpv1beta1.MCPServer{},
 			handler.EnqueueRequestsFromMapFunc(r.findMCPOIDCConfigForMCPServer),
-			builder.WithPredicates(predicate.GenerationChangedPredicate{}),
+			builder.WithPredicates(oidcConfigRefChangedPredicate(indexMCPServerByOIDCConfigRef)),
 		).
 		Watches(
 			&mcpv1beta1.VirtualMCPServer{},
 			handler.EnqueueRequestsFromMapFunc(r.findMCPOIDCConfigForVirtualMCPServer),
-			builder.WithPredicates(predicate.GenerationChangedPredicate{}),
+			builder.WithPredicates(oidcConfigRefChangedPredicate(indexVirtualMCPServerByOIDCConfigRef)),
 		).
 		Watches(
 			&mcpv1beta1.MCPRemoteProxy{},
 			handler.EnqueueRequestsFromMapFunc(r.findMCPOIDCConfigForMCPRemoteProxy),
-			builder.WithPredicates(predicate.GenerationChangedPredicate{}),
+			builder.WithPredicates(oidcConfigRefChangedPredicate(indexMCPRemoteProxyByOIDCConfigRef)),
 		).
 		Complete(r)
 }

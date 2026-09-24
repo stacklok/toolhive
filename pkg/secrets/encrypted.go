@@ -11,9 +11,9 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"maps"
 	"os"
 	"path"
-	"sync"
 
 	"github.com/stacklok/toolhive/pkg/fileutils"
 	"github.com/stacklok/toolhive/pkg/secrets/aes"
@@ -30,8 +30,8 @@ import (
 // (see kdf.go) rather than stored here.
 //
 // Files without the magic prefix predate this framing: they are the bare output
-// of aes.Encrypt under an unsalted SHA-256 of the password. They are read with
-// that key and rewritten in the framed format.
+// of aes.Encrypt under an unsalted SHA-256 of the password. Ordinary operations
+// preserve that format for compatibility; UpgradeProtection explicitly upgrades it.
 const (
 	secretsFileMagic   = "THVSEC"
 	secretsFileVersion = 0x01
@@ -42,9 +42,28 @@ const (
 // ErrMalformedSecretsFile is returned when the secrets file header cannot be parsed.
 var ErrMalformedSecretsFile = errors.New("malformed secrets file")
 
+// ErrUnsupportedSecretsFileVersion is returned when the secrets file uses a
+// framed format version this binary does not understand.
+var ErrUnsupportedSecretsFileVersion = errors.New("unsupported secrets file format version")
+
 // ErrDecryptionFailed is returned when the secrets file cannot be decrypted,
 // which almost always means the password is wrong.
 var ErrDecryptionFailed = errors.New("unable to decrypt secrets file")
+
+type fileFormatVersion uint8
+
+const (
+	fileFormatEmpty fileFormatVersion = iota
+	fileFormatLegacy
+	fileFormatV1
+)
+
+// fileFormat describes the on-disk format returned by a read. Its salt is set
+// only for framed version 1 files.
+type fileFormat struct {
+	version fileFormatVersion
+	salt    []byte
+}
 
 // EncryptedManager stores secrets in an encrypted file.
 // AES-256-GCM is used for encryption, with the key derived from the password
@@ -53,15 +72,6 @@ type EncryptedManager struct {
 	filePath string
 	// Password the encryption key is derived from.
 	password []byte
-
-	// mu guards the fields below.
-	mu sync.Mutex
-	// salt of the file as last read or written. Nil until the file's salt is
-	// known, which is the case for a new file and for a legacy file that has
-	// not been rewritten yet.
-	salt []byte
-	// legacy records that the data last read was in the pre-framing format.
-	legacy bool
 }
 
 // fileStructure is the structure of the secrets file.
@@ -78,7 +88,7 @@ func (e *EncryptedManager) GetSecret(_ context.Context, name string) (string, er
 		return "", errors.New("secret name cannot be empty")
 	}
 
-	secrets, err := e.readFileSecrets()
+	secrets, _, err := e.readFileSecrets()
 	if err != nil {
 		return "", fmt.Errorf("reading secrets: %w", err)
 	}
@@ -98,12 +108,12 @@ func (e *EncryptedManager) SetSecret(_ context.Context, name, value string) erro
 	return fileutils.WithFileLock(e.filePath, func() error {
 		// Re-read the file inside the lock to avoid overwriting changes
 		// made by other processes since this manager was created.
-		secrets, err := e.readFileSecrets()
+		secrets, format, err := e.readFileSecrets()
 		if err != nil {
 			return err
 		}
 		secrets[name] = value
-		return e.writeFileSecrets(secrets)
+		return e.writeFileSecrets(secrets, format)
 	})
 }
 
@@ -116,7 +126,7 @@ func (e *EncryptedManager) DeleteSecret(_ context.Context, name string) error {
 	return fileutils.WithFileLock(e.filePath, func() error {
 		// Re-read the file inside the lock so the existence check
 		// reflects the current on-disk state.
-		secrets, err := e.readFileSecrets()
+		secrets, format, err := e.readFileSecrets()
 		if err != nil {
 			return err
 		}
@@ -124,13 +134,13 @@ func (e *EncryptedManager) DeleteSecret(_ context.Context, name string) error {
 			return fmt.Errorf("%w: %s", ErrSecretNotFound, name)
 		}
 		delete(secrets, name)
-		return e.writeFileSecrets(secrets)
+		return e.writeFileSecrets(secrets, format)
 	})
 }
 
 // ListSecrets returns a list of all secret names stored in the manager.
 func (e *EncryptedManager) ListSecrets(_ context.Context) ([]SecretDescription, error) {
-	secrets, err := e.readFileSecrets()
+	secrets, _, err := e.readFileSecrets()
 	if err != nil {
 		return nil, fmt.Errorf("reading secrets: %w", err)
 	}
@@ -146,21 +156,26 @@ func (e *EncryptedManager) DeleteSecrets(_ context.Context, keys []string) error
 	return fileutils.WithFileLock(e.filePath, func() error {
 		// Re-read the file inside the lock to avoid losing changes made
 		// by other processes since this manager was created.
-		current, err := e.readFileSecrets()
+		current, format, err := e.readFileSecrets()
 		if err != nil {
 			return err
 		}
 		for _, key := range keys {
 			delete(current, key)
 		}
-		return e.writeFileSecrets(current)
+		return e.writeFileSecrets(current, format)
 	})
 }
 
 // Cleanup removes all secrets managed by this manager.
 func (e *EncryptedManager) Cleanup() error {
 	return fileutils.WithFileLock(e.filePath, func() error {
-		return e.writeFileSecrets(make(map[string]string))
+		// Re-read under the lock so the replacement retains the current format.
+		_, format, err := e.readFileSecrets()
+		if err != nil {
+			return err
+		}
+		return e.writeFileSecrets(make(map[string]string), format)
 	})
 }
 
@@ -175,6 +190,63 @@ func (*EncryptedManager) Capabilities() ProviderCapabilities {
 	}
 }
 
+// UpgradeProtection explicitly upgrades a legacy store to the current framed
+// format. It authenticates the original bytes, installs the upgraded file
+// atomically, and verifies the installed file before returning success.
+func (e *EncryptedManager) UpgradeProtection() error {
+	return fileutils.WithFileLock(e.filePath, func() error {
+		original, err := os.ReadFile(e.filePath) // #nosec G304: File path is not configurable at this time.
+		if err != nil {
+			return fmt.Errorf("reading secrets file for upgrade: %w", err)
+		}
+		secrets, format, err := e.decodeSecretsFile(original)
+		if err != nil {
+			return fmt.Errorf("authenticating secrets file for upgrade: %w", err)
+		}
+		if format.version != fileFormatLegacy {
+			return nil
+		}
+		newSalt, err := generateSalt()
+		if err != nil {
+			return err
+		}
+		if err := e.installUpgrade(secrets, fileFormat{version: fileFormatV1, salt: newSalt}); err != nil {
+			return err
+		}
+		return e.verifyUpgradeOrRollback(original, secrets)
+	})
+}
+
+// installUpgrade writes secrets in the given (already-migrated) format. Split
+// out from UpgradeProtection so tests can install a real upgrade and then
+// corrupt the result on disk before exercising verifyUpgradeOrRollback,
+// which is the only way to deterministically reach the rollback branch
+// without a production-only test seam.
+func (e *EncryptedManager) installUpgrade(secrets map[string]string, newFormat fileFormat) error {
+	return e.writeFileSecrets(secrets, newFormat)
+}
+
+// verifyUpgradeOrRollback re-reads what installUpgrade just wrote and confirms
+// it decrypts back to want under the new format. On any mismatch — a failed
+// read, a version that isn't fileFormatV1, or decrypted secrets that differ —
+// it restores original, the pre-upgrade encrypted bytes, so a verification
+// failure never leaves the store in a state only the failed write can read.
+func (e *EncryptedManager) verifyUpgradeOrRollback(original []byte, want map[string]string) error {
+	verified, verifiedFormat, err := e.readFileSecrets()
+	if err == nil && verifiedFormat.version == fileFormatV1 && maps.Equal(want, verified) {
+		return nil
+	}
+	verifyErr := err
+	if verifyErr == nil {
+		verifyErr = errors.New("decrypted secrets do not match")
+	}
+	rollbackErr := fileutils.AtomicWriteFile(e.filePath, original, 0600)
+	if rollbackErr != nil {
+		return fmt.Errorf("verifying upgraded secrets file: %w; restoring original encrypted bytes: %v", verifyErr, rollbackErr)
+	}
+	return fmt.Errorf("verifying upgraded secrets file: %w; restored original encrypted bytes", verifyErr)
+}
+
 // NewEncryptedManager creates an instance of EncryptedManager.
 //
 // password is the user's password, not a derived key. Callers that previously
@@ -184,13 +256,13 @@ func (*EncryptedManager) Capabilities() ProviderCapabilities {
 // The manager takes the password rather than a key because the key derivation
 // salt lives in the secrets file itself and is only known once the file is read.
 //
-// Opening an existing store can rewrite it: a file in the pre-framing format is
-// migrated to Argon2id here, not on its next write, so that a store which is
-// only ever read does not keep the weaker derivation. The rewrite is atomic and
-// best effort — if it fails, the file is left in the legacy format, which this
-// version still reads. Once migrated, the file cannot be read by a thv binary
-// predating the framed format.
+// Opening an existing store authenticates that it is readable, but does not
+// change its format. Use UpgradeProtection to explicitly upgrade legacy files.
 func NewEncryptedManager(filePath string, password []byte) (Provider, error) {
+	return newEncryptedManager(filePath, password)
+}
+
+func newEncryptedManager(filePath string, password []byte) (*EncryptedManager, error) {
 	if len(password) == 0 {
 		return nil, errors.New("password cannot be empty")
 	}
@@ -218,11 +290,10 @@ func NewEncryptedManager(filePath string, password []byte) (Provider, error) {
 		return nil, fmt.Errorf("failed to stat secrets file: %w", err)
 	}
 	if stat.Size() > 0 {
-		if _, err := manager.readFileSecrets(); err != nil {
+		if _, _, err := manager.readFileSecrets(); err != nil {
 			printSecretsFileHint(filePath, err)
 			return nil, err
 		}
-		manager.migrateLegacyFile()
 	}
 
 	return manager, nil
@@ -239,6 +310,9 @@ func printSecretsFileHint(filePath string, err error) {
 			"If your keyring was recently reset, try again with your original password.\n"+
 			"If the secrets file is corrupted, delete it at %s and run 'thv secret setup' to start fresh.\n\n",
 			filePath)
+	case errors.Is(err, ErrUnsupportedSecretsFileVersion):
+		fmt.Fprintf(os.Stderr, "\nThe secrets file at %s was written by a newer version of thv. "+
+			"Upgrade thv to access it.\n\n", filePath)
 	case errors.Is(err, ErrMalformedSecretsFile):
 		fmt.Fprintf(os.Stderr, "\nThe secrets file at %s is not in a format this version of thv understands.\n"+
 			"If it was written by a newer version of thv, upgrade. Otherwise the file has been corrupted; "+
@@ -246,147 +320,89 @@ func printSecretsFileHint(filePath string, err error) {
 	}
 }
 
-// migrateLegacyFile rewrites a pre-framing secrets file in the framed format, so
-// that it is protected by Argon2id rather than by an unsalted SHA-256.
-//
-// This happens when the file is opened rather than on its next write: a file
-// that is only ever read would otherwise keep the weaker derivation forever,
-// which is the common case for workload credential injection.
-//
-// It is best effort. A read-only filesystem or a full disk leaves the file in
-// the legacy format, which this version still reads, so a failure is logged
-// rather than returned.
-func (e *EncryptedManager) migrateLegacyFile() {
-	if !e.isLegacy() {
-		return
-	}
-
-	err := fileutils.WithFileLock(e.filePath, func() error {
-		// Re-read inside the lock: another process may have migrated already.
-		secrets, err := e.readFileSecrets()
-		if err != nil || !e.isLegacy() {
-			return err
-		}
-		return e.writeFileSecrets(secrets)
-	})
-	if err != nil {
-		slog.Debug("Could not migrate secrets file to salted key derivation",
-			"path", e.filePath, "error", err)
-		return
-	}
-	slog.Debug("Migrated secrets file to salted key derivation", "path", e.filePath)
-}
-
-// isLegacy reports whether the data last read was in the pre-framing format.
-func (e *EncryptedManager) isLegacy() bool {
-	e.mu.Lock()
-	defer e.mu.Unlock()
-	return e.legacy
-}
-
-// readFileSecrets reads and decrypts the secrets file, returning the current
-// on-disk secrets. Returns an empty map for an empty or non-existent file.
-func (e *EncryptedManager) readFileSecrets() (map[string]string, error) {
+// readFileSecrets reads and decrypts the on-disk secrets, returning the format
+// required to preserve it on an ordinary write.
+func (e *EncryptedManager) readFileSecrets() (map[string]string, fileFormat, error) {
 	// #nosec G304: File path is not configurable at this time.
 	data, err := os.ReadFile(e.filePath)
 	if err != nil {
 		if errors.Is(err, os.ErrNotExist) {
-			return make(map[string]string), nil
+			return make(map[string]string), fileFormat{version: fileFormatEmpty}, nil
 		}
-		return nil, fmt.Errorf("failed to read secrets file: %w", err)
+		return nil, fileFormat{}, fmt.Errorf("failed to read secrets file: %w", err)
 	}
+	return e.decodeSecretsFile(data)
+}
+
+// decodeSecretsFile authenticates and decodes encrypted file bytes.
+func (e *EncryptedManager) decodeSecretsFile(data []byte) (map[string]string, fileFormat, error) {
 	if len(data) == 0 {
-		return make(map[string]string), nil
+		return make(map[string]string), fileFormat{version: fileFormatEmpty}, nil
 	}
-
-	key, body, err := e.decryptionKey(data)
+	key, body, format, err := e.decryptionKey(data)
 	if err != nil {
-		return nil, err
+		return nil, fileFormat{}, err
 	}
-
 	decrypted, err := aes.Decrypt(body, key)
 	if err != nil {
-		return nil, fmt.Errorf("%w: %w", ErrDecryptionFailed, err)
+		return nil, fileFormat{}, fmt.Errorf("%w: %w", ErrDecryptionFailed, err)
 	}
-
 	var contents fileStructure
 	if err := json.Unmarshal(decrypted, &contents); err != nil {
-		return nil, fmt.Errorf("failed to decode secrets file: %w", err)
+		return nil, fileFormat{}, fmt.Errorf("failed to decode secrets file: %w", err)
 	}
 	if contents.Secrets == nil {
-		return make(map[string]string), nil
+		return make(map[string]string), format, nil
 	}
-	return contents.Secrets, nil
+	return contents.Secrets, format, nil
 }
 
-// decryptionKey returns the key that decrypts the given file contents, along
-// with the body that key applies to.
-//
-// Framed files carry their salt in the header. Files without the magic prefix
-// are in the legacy format and use an unsalted SHA-256 of the password.
-func (e *EncryptedManager) decryptionKey(data []byte) ([]byte, []byte, error) {
+func (e *EncryptedManager) decryptionKey(data []byte) ([]byte, []byte, fileFormat, error) {
 	if !bytes.HasPrefix(data, []byte(secretsFileMagic)) {
-		// Legacy files were encrypted with an unsalted SHA-256 of the password.
-		// Retained only so that they can be read and then migrated.
 		sum := sha256.Sum256(e.password)
-		e.setFileState(nil, true)
-		return sum[:], data, nil
+		return sum[:], data, fileFormat{version: fileFormatLegacy}, nil
 	}
-
 	salt, body, err := parseSecretsHeader(data)
 	if err != nil {
-		return nil, nil, err
+		return nil, nil, fileFormat{}, err
 	}
-	e.setFileState(salt, false)
-
-	return deriveKeyCached(e.filePath, e.password, salt), body, nil
+	format := fileFormat{version: fileFormatV1, salt: salt}
+	return deriveKeyCached(e.filePath, e.password, salt), body, format, nil
 }
 
-// writeFileSecrets encrypts and atomically writes the secrets map to disk in
-// the framed format. Must be called while holding the file lock.
-func (e *EncryptedManager) writeFileSecrets(secrets map[string]string) error {
+// writeFileSecrets encrypts and atomically writes the secrets map using format.
+// It must be called while holding the file lock.
+func (e *EncryptedManager) writeFileSecrets(secrets map[string]string, format fileFormat) error {
 	contents, err := json.Marshal(fileStructure{Secrets: secrets})
 	if err != nil {
 		return fmt.Errorf("failed to marshal secrets: %w", err)
 	}
-
-	salt, err := e.saltForWrite()
-	if err != nil {
-		return err
+	if format.version == fileFormatLegacy {
+		sum := sha256.Sum256(e.password)
+		body, err := aes.Encrypt(contents, sum[:])
+		if err != nil {
+			return fmt.Errorf("failed to encrypt secrets: %w", err)
+		}
+		if err := fileutils.AtomicWriteFile(e.filePath, body, 0600); err != nil {
+			return fmt.Errorf("failed to write secrets to file: %w", err)
+		}
+		return nil
 	}
-
+	salt := format.salt
+	if format.version == fileFormatEmpty {
+		salt, err = generateSalt()
+		if err != nil {
+			return err
+		}
+	}
 	body, err := aes.Encrypt(contents, deriveKeyCached(e.filePath, e.password, salt))
 	if err != nil {
 		return fmt.Errorf("failed to encrypt secrets: %w", err)
 	}
-
 	if err := fileutils.AtomicWriteFile(e.filePath, append(encodeSecretsHeader(salt), body...), 0600); err != nil {
 		return fmt.Errorf("failed to write secrets to file: %w", err)
 	}
-
-	// Only now that the write is durable does the manager's view of the file change.
-	e.setFileState(salt, false)
 	return nil
-}
-
-// saltForWrite returns the salt to write with: the file's existing salt when one
-// is known, or a fresh one for a new file or a legacy file being migrated.
-func (e *EncryptedManager) saltForWrite() ([]byte, error) {
-	e.mu.Lock()
-	salt := e.salt
-	e.mu.Unlock()
-
-	if len(salt) > 0 {
-		return salt, nil
-	}
-	return generateSalt()
-}
-
-// setFileState records what the manager last saw on disk.
-func (e *EncryptedManager) setFileState(salt []byte, legacy bool) {
-	e.mu.Lock()
-	defer e.mu.Unlock()
-	e.salt, e.legacy = salt, legacy
 }
 
 // encodeSecretsHeader builds the fixed-size header that precedes the body.
@@ -404,7 +420,7 @@ func parseSecretsHeader(data []byte) ([]byte, []byte, error) {
 		return nil, nil, fmt.Errorf("%w: header is truncated (%d bytes)", ErrMalformedSecretsFile, len(data))
 	}
 	if version := data[len(secretsFileMagic)]; version != secretsFileVersion {
-		return nil, nil, fmt.Errorf("%w: unsupported format version %d", ErrMalformedSecretsFile, version)
+		return nil, nil, fmt.Errorf("%w: %d", ErrUnsupportedSecretsFileVersion, version)
 	}
 	// Clone the salt so that the retained copy does not pin the whole file buffer.
 	return bytes.Clone(data[len(secretsFileMagic)+1 : headerLength]), data[headerLength:], nil

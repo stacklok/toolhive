@@ -155,35 +155,57 @@ allocation, and raising the cost becomes an explicit new format version rather
 than a silent per-file property.
 
 Files written before this framing existed have no header and were keyed with an
-unsalted SHA-256 of the password. They are detected by the absent magic prefix,
-read with the legacy key, and rewritten in the framed format when the file is
-opened — migration is transparent and requires no user action. It is best effort:
-if the rewrite fails (read-only filesystem, full disk) the file stays readable in
-the legacy format. A `thv` binary predating the framed format cannot read a
-migrated file.
+unsalted SHA-256 of the password. They are detected by the absent magic prefix
+and remain readable by current ToolHive releases. Ordinary reads, writes, and
+cleanup preserve the legacy format so that older ToolHive binaries can continue
+to access the same store. This applies only to existing legacy files: a new
+store, including one recreated after the file is deleted, is always written in
+the framed format and cannot be read by binaries that predate it.
 
-**Upgrading**: migration happens when the store is opened, including by read-only
-operations, so the first command run by a newly installed binary converts the file.
-Other local processes still running an older binary — an older `thv serve`, or a
-detached proxy that persists OAuth refresh tokens — will fail subsequent secret
-access against the converted file. Stop older local ToolHive processes before the
-first access with the new version, then restart them on the new binary. Secrets
-already injected into running containers are unaffected. This does not apply to
-the Kubernetes path, which uses Kubernetes Secrets rather than this file.
+**Upgrading protection**: run `thv secret upgrade-protection` to explicitly
+upgrade a legacy file to the framed Argon2id format. The command requires a
+confirmation (or `--yes` for automation), authenticates the legacy ciphertext
+before making changes, atomically installs the upgraded file, and verifies it
+before reporting success. If post-install verification fails, ToolHive makes a
+best-effort atomic restoration of the original encrypted bytes and reports the
+failure. An already framed file is left unchanged, and the command refuses to
+run when there is no store (or an empty one) to upgrade.
 
-**Recovering from a rollback**: an older binary opening a migrated file reports
+After an upgrade, ToolHive binaries predating the framed format cannot read the
+store. Stop or upgrade older local ToolHive processes — including `thv serve`
+and detached proxies that persist OAuth refresh tokens — before upgrading.
+Secrets already injected into running containers are unaffected. This does not
+apply to the Kubernetes path, which uses Kubernetes Secrets rather than this
+file.
+
+**Recovering from a rollback**: an older binary opening an upgraded file reports
 that the password is incorrect. That message predates this format and does not
 indicate corruption — resetting the keyring or deleting the store is the wrong
 first step and will lose secrets. The fix is to return to a binary that
 understands the framed format. Rolling back to an older binary for real requires
-a pre-migration copy of the file, kept as securely as the file itself, plus the
+a pre-upgrade copy of the file, kept as securely as the file itself, plus the
 password that goes with it.
 
-**What migration does and does not protect**: only the live file is upgraded.
-Backups taken before migration keep the unsalted SHA-256 derivation and stay
+**Recovering from the pre-fix silent conversion (#6710)**: ToolHive releases
+between the introduction of Argon2id (#6657) and this fix (#6710) upgraded a
+legacy file to the framed format as a side effect of merely opening it — not
+only via an explicit `upgrade-protection` run. If a store was already converted
+this way before installing the fix, there is nothing to reverse and no data was
+lost: keep the current secrets file and its OS keyring password exactly as they
+are. What breaks is any *other* installation or already-running process still on
+a binary that predates #6657 — a plain binary swap does not fix a process
+already running, since it keeps the old binary loaded in memory. Recovery is:
+upgrade every ToolHive installation that accesses this store to a version at or
+after this fix, then restart (not just replace) every already-running process —
+`thv serve`, detached proxies, and anything else holding the secrets file open —
+so each one picks up the new binary. Do not delete the store or reset the
+keyring for this; that only discards secrets the file already has.
+
+**What upgrading does and does not protect**: only the live file is upgraded.
+Backups taken before upgrade keep the unsalted SHA-256 derivation and stay
 cheaply crackable offline. Because the password itself is unchanged, recovering
-it from an old backup also decrypts the migrated file — so retiring old backups
-matters as much as the upgrade. Conversely, a backup of the migrated file is not
+it from an old backup also decrypts the upgraded file — so retiring old backups
+matters as much as the upgrade. Conversely, a backup of the upgraded file is not
 a substitute for retaining the password or keyring entry; without them it cannot
 be decrypted.
 

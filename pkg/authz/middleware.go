@@ -222,20 +222,7 @@ func Middleware(a authorizers.Authorizer, next http.Handler, passThroughTools ma
 		// Get parsed MCP request from context (set by parsing middleware)
 		parsedRequest := mcp.GetParsedMCPRequest(r.Context())
 		if parsedRequest == nil {
-			// A JSON-RPC response or error answers a request the SERVER
-			// initiated (ping, elicitation, sampling). It names no method and
-			// reaches no tool, so there is nothing to authorize, and the
-			// streamable-HTTP spec requires the transport to accept it with
-			// 202. Rejecting it tears the client's session down (#5009).
-			if mcp.IsClientResponse(r.Context()) {
-				next.ServeHTTP(w, r)
-				return
-			}
-			// Non-JSON POSTs are already rejected by the early return above,
-			// so a nil parsed request here means a malformed JSON body or a
-			// missing parsing middleware. This branch is now only a
-			// belt-and-braces fallback behind the content-type refusal.
-			rejectInvalidMCPRequest(w)
+			handleUnparsedMCPRequest(w, r, next)
 			return
 		}
 
@@ -293,6 +280,25 @@ func Middleware(a authorizers.Authorizer, next http.Handler, passThroughTools ma
 			featureOp.Feature, featureOp.Operation,
 			parsedRequest.ID, parsedRequest.ResourceID, parsedRequest.Arguments, next)
 	})
+}
+
+// handleUnparsedMCPRequest forwards valid client responses to server-initiated
+// requests and rejects requests that could not be parsed as MCP messages.
+func handleUnparsedMCPRequest(w http.ResponseWriter, r *http.Request, next http.Handler) {
+	// A JSON-RPC response or error answers a request the SERVER initiated
+	// (ping, elicitation, sampling). It names no method and reaches no tool,
+	// so there is nothing to authorize, and streamable HTTP requires the
+	// transport to accept it with 202. Rejecting it tears the client's
+	// session down (#5009).
+	if mcp.IsClientResponse(r.Context()) {
+		next.ServeHTTP(w, r)
+		return
+	}
+
+	// Non-JSON POSTs are already rejected by the early return above, so a nil
+	// parsed request here means a malformed JSON body or missing parsing
+	// middleware. This is only a fallback behind the content-type refusal.
+	rejectInvalidMCPRequest(w)
 }
 
 // authorizeAndServe injects tool annotations from the cache, authorizes the request,

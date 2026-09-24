@@ -13,6 +13,7 @@ import (
 	"log/slog"
 	"net/http"
 	"reflect"
+	"slices"
 	"strings"
 
 	"golang.org/x/exp/jsonrpc2"
@@ -176,12 +177,17 @@ func (rfw *ResponseFilteringWriter) Flush() {
 	}
 }
 
-// applyResponseCachePolicy prevents a caller-specific resource-template view
-// from being reused across authorization contexts. Flush calls this before an
-// SSE response commits its headers; FlushAndFilter covers buffered JSON.
+// applyResponseCachePolicy prevents a caller-specific tools, prompts,
+// resources, or resource-template view from being reused across authorization
+// contexts by an HTTP cache, matching the private caching hints the filters
+// set in the result. Flush calls this before an SSE response commits its
+// headers; FlushAndFilter covers buffered JSON.
 func (rfw *ResponseFilteringWriter) applyResponseCachePolicy() {
-	if responseFilterForMethod(rfw.method) == responseFilterResourceTemplates {
+	switch responseFilterForMethod(rfw.method) {
+	case responseFilterTools, responseFilterPrompts, responseFilterResources, responseFilterResourceTemplates:
 		rfw.ResponseWriter.Header().Set("Cache-Control", "private, no-store")
+	case responseFilterNone, responseFilterSkills, responseFilterFindTool:
+		// These filters set no private caching hints in the result.
 	}
 }
 
@@ -703,14 +709,19 @@ func (rfw *ResponseFilteringWriter) filterListResponse(response *jsonrpc2.Respon
 
 // filterToolsResponse filters tools based on call_tool authorization
 func (rfw *ResponseFilteringWriter) filterToolsResponse(response *jsonrpc2.Response) (*jsonrpc2.Response, error) {
-	if err := validateListResult(response.Result, "tools", "name"); err != nil {
+	members, rawTools, err := decodeFilterableListResult(response.Result, "tools", "name")
+	if err != nil {
 		return nil, fmt.Errorf("validating tools list response: %w", err)
 	}
 
-	// Parse the result as a ListToolsResult
+	// The typed descriptors feed policy evaluation and the annotation cache;
+	// the filtered result carries the backend's raw descriptors.
 	var listResult mcp.ListToolsResult
 	if err := json.Unmarshal(response.Result, &listResult); err != nil {
 		return nil, fmt.Errorf("decoding tools list response: %w", err)
+	}
+	if len(listResult.Tools) != len(rawTools) {
+		return nil, errors.New("decoded tools do not match the raw tools list")
 	}
 
 	// Populate annotation cache from tools/list response so that
@@ -725,61 +736,47 @@ func (rfw *ResponseFilteringWriter) filterToolsResponse(response *jsonrpc2.Respo
 	// middleware: call_tool requests are intercepted and the inner tool_name
 	// argument is authorized against Cedar policy before the request is served.
 	// See: https://github.com/stacklok/toolhive/issues/4373
-	passThrough := []mcp.Tool{}
+	permitted := make([]json.RawMessage, 0, len(rawTools))
 	regular := []mcp.Tool{}
-	for _, t := range listResult.Tools {
+	regularIndexes := []int{}
+	for i, t := range listResult.Tools {
 		if _, ok := rfw.passThroughTools[t.Name]; ok {
-			passThrough = append(passThrough, t)
+			permitted = append(permitted, rawTools[i])
 		} else {
 			regular = append(regular, t)
+			regularIndexes = append(regularIndexes, i)
 		}
 	}
 
-	// filterToolsByPolicy checks each tool against the caller's Cedar policies
+	// authorizedToolIndexes checks each tool against the caller's Cedar policies
 	// (injecting annotations into context for when-clause evaluation) and returns
-	// only tools the caller is authorized to call.
-	policyFiltered := filterToolsByPolicy(rfw.request.Context(), rfw.authorizer, regular)
-	filteredTools := make([]mcp.Tool, 0, len(passThrough)+len(policyFiltered))
-	filteredTools = append(filteredTools, passThrough...)
-	filteredTools = append(filteredTools, policyFiltered...)
-
-	// Create a new result with filtered tools
-	filteredResult := mcp.ListToolsResult{
-		PaginatedResult: listResult.PaginatedResult,
-		Tools:           filteredTools,
+	// the positions of the tools the caller is authorized to call.
+	for _, index := range authorizedToolIndexes(rfw.request.Context(), rfw.authorizer, regular) {
+		permitted = append(permitted, rawTools[regularIndexes[index]])
 	}
 
-	// Marshal the filtered result back
-	filteredResultData, err := json.Marshal(filteredResult)
-	if err != nil {
-		return nil, err
-	}
-
-	// Create a new response with the filtered result
-	filteredResponse := &jsonrpc2.Response{
-		ID:     response.ID,
-		Result: json.RawMessage(filteredResultData),
-	}
-
-	return filteredResponse, nil
+	return filteredListResponse(response.ID, members, "tools", permitted)
 }
 
 // filterPromptsResponse filters prompts based on get_prompt authorization
 func (rfw *ResponseFilteringWriter) filterPromptsResponse(response *jsonrpc2.Response) (*jsonrpc2.Response, error) {
-	if err := validateListResult(response.Result, "prompts", "name"); err != nil {
+	members, rawPrompts, err := decodeFilterableListResult(response.Result, "prompts", "name")
+	if err != nil {
 		return nil, fmt.Errorf("validating prompts list response: %w", err)
 	}
 
-	// Parse the result as a ListPromptsResult
+	// The typed descriptors are validated and authorized; the filtered result
+	// carries the backend's raw descriptors.
 	var listResult mcp.ListPromptsResult
 	if err := json.Unmarshal(response.Result, &listResult); err != nil {
 		return nil, fmt.Errorf("decoding prompts list response: %w", err)
 	}
+	if len(listResult.Prompts) != len(rawPrompts) {
+		return nil, errors.New("decoded prompts do not match the raw prompts list")
+	}
 
-	// Note: instantiating the list ensures that no null value is sent over the wire.
-	// This is basically defensive programming, but for clients.
-	filteredPrompts := []mcp.Prompt{}
-	for _, prompt := range listResult.Prompts {
+	permitted := make([]json.RawMessage, 0, len(rawPrompts))
+	for i, prompt := range listResult.Prompts {
 		// Check if the user is authorized to get this prompt
 		authorized, err := rfw.authorizer.AuthorizeWithJWTClaims(
 			rfw.request.Context(),
@@ -795,55 +792,40 @@ func (rfw *ResponseFilteringWriter) filterPromptsResponse(response *jsonrpc2.Res
 		}
 
 		if authorized {
-			filteredPrompts = append(filteredPrompts, prompt)
+			permitted = append(permitted, rawPrompts[i])
 		} else {
 			slog.Debug("Prompt denied by authorization policy",
 				"prompt", prompt.Name)
 		}
 	}
 
-	if denied := len(listResult.Prompts) - len(filteredPrompts); denied > 0 {
+	if denied := len(listResult.Prompts) - len(permitted); denied > 0 {
 		slog.Debug("Authorization policy filtered prompts",
-			"total", len(listResult.Prompts), "allowed", len(filteredPrompts), "denied", denied)
+			"total", len(listResult.Prompts), "allowed", len(permitted), "denied", denied)
 	}
 
-	// Create a new result with filtered prompts
-	filteredResult := mcp.ListPromptsResult{
-		PaginatedResult: listResult.PaginatedResult,
-		Prompts:         filteredPrompts,
-	}
-
-	// Marshal the filtered result back
-	filteredResultData, err := json.Marshal(filteredResult)
-	if err != nil {
-		return nil, err
-	}
-
-	// Create a new response with the filtered result
-	filteredResponse := &jsonrpc2.Response{
-		ID:     response.ID,
-		Result: json.RawMessage(filteredResultData),
-	}
-
-	return filteredResponse, nil
+	return filteredListResponse(response.ID, members, "prompts", permitted)
 }
 
 // filterResourcesResponse filters resources based on read_resource authorization
 func (rfw *ResponseFilteringWriter) filterResourcesResponse(response *jsonrpc2.Response) (*jsonrpc2.Response, error) {
-	if err := validateListResult(response.Result, "resources", "uri"); err != nil {
+	members, rawResources, err := decodeFilterableListResult(response.Result, "resources", "uri")
+	if err != nil {
 		return nil, fmt.Errorf("validating resources list response: %w", err)
 	}
 
-	// Parse the result as a ListResourcesResult
+	// The typed descriptors are validated and authorized; the filtered result
+	// carries the backend's raw descriptors.
 	var listResult mcp.ListResourcesResult
 	if err := json.Unmarshal(response.Result, &listResult); err != nil {
 		return nil, fmt.Errorf("decoding resources list response: %w", err)
 	}
+	if len(listResult.Resources) != len(rawResources) {
+		return nil, errors.New("decoded resources do not match the raw resources list")
+	}
 
-	// Note: instantiating the list ensures that no null value is sent over the wire.
-	// This is basically defensive programming, but for clients.
-	filteredResources := []mcp.Resource{}
-	for _, resource := range listResult.Resources {
+	permitted := make([]json.RawMessage, 0, len(rawResources))
+	for i, resource := range listResult.Resources {
 		// Check if the user is authorized to read this resource
 		authorized, err := rfw.authorizer.AuthorizeWithJWTClaims(
 			rfw.request.Context(),
@@ -859,37 +841,79 @@ func (rfw *ResponseFilteringWriter) filterResourcesResponse(response *jsonrpc2.R
 		}
 
 		if authorized {
-			filteredResources = append(filteredResources, resource)
+			permitted = append(permitted, rawResources[i])
 		} else {
 			slog.Debug("Resource denied by authorization policy",
 				"resource", resource.URI)
 		}
 	}
 
-	if denied := len(listResult.Resources) - len(filteredResources); denied > 0 {
+	if denied := len(listResult.Resources) - len(permitted); denied > 0 {
 		slog.Debug("Authorization policy filtered resources",
-			"total", len(listResult.Resources), "allowed", len(filteredResources), "denied", denied)
+			"total", len(listResult.Resources), "allowed", len(permitted), "denied", denied)
 	}
 
-	// Create a new result with filtered resources
-	filteredResult := mcp.ListResourcesResult{
-		PaginatedResult: listResult.PaginatedResult,
-		Resources:       filteredResources,
+	return filteredListResponse(response.ID, members, "resources", permitted)
+}
+
+// cachingHintMembers are the MCP result members that tell a client or a shared
+// cache whether, and for how long, a list result may be reused.
+var cachingHintMembers = []string{"cacheScope", "ttlMs"}
+
+// decodeFilterableListResult decodes a tools, prompts, or resources list
+// result for filtering. On top of decodeListResult's checks it rejects
+// ambiguous spellings of the caching hints, because filteredListResponse
+// overrides them and a client must not be able to read the backend's value
+// under an alias instead.
+func decodeFilterableListResult(
+	data json.RawMessage,
+	listField, identifierField string,
+) ([]jsonObjectMember, []json.RawMessage, error) {
+	members, items, err := decodeListResult(data, listField, identifierField)
+	if err != nil {
+		return nil, nil, err
+	}
+	for _, hint := range cachingHintMembers {
+		if _, _, err := uniqueCanonicalMember(members, hint); err != nil {
+			return nil, nil, err
+		}
+	}
+	return members, items, nil
+}
+
+// filteredListResponse builds the response for a filtered tools, prompts, or
+// resources list. Only the list member is rewritten, to the permitted raw
+// descriptors; every other result member (resultType, _meta, nextCursor, and
+// any extension) is kept exactly as the backend sent it. The permitted list
+// depends on the caller's authorization, so, as for resource templates, the
+// result is marked private and immediately stale in place of the backend's
+// caching hints for its unfiltered list.
+func filteredListResponse(
+	id jsonrpc2.ID,
+	members []jsonObjectMember,
+	listField string,
+	permitted []json.RawMessage,
+) (*jsonrpc2.Response, error) {
+	replacements := map[string]json.RawMessage{
+		listField:    encodeJSONArrayValues(permitted),
+		"cacheScope": json.RawMessage(`"private"`),
+		"ttlMs":      json.RawMessage(`0`),
+	}
+	resultMembers := slices.Clone(members)
+	for _, hint := range cachingHintMembers {
+		if !slices.ContainsFunc(members, func(member jsonObjectMember) bool { return member.name == hint }) {
+			resultMembers = append(resultMembers, jsonObjectMember{name: hint})
+		}
 	}
 
-	// Marshal the filtered result back
-	filteredResultData, err := json.Marshal(filteredResult)
+	filteredResult, err := encodeJSONObjectMembers(resultMembers, replacements)
 	if err != nil {
 		return nil, err
 	}
-
-	// Create a new response with the filtered result
-	filteredResponse := &jsonrpc2.Response{
-		ID:     response.ID,
-		Result: json.RawMessage(filteredResultData),
-	}
-
-	return filteredResponse, nil
+	return &jsonrpc2.Response{
+		ID:     id,
+		Result: json.RawMessage(filteredResult),
+	}, nil
 }
 
 // filterResourceTemplatesResponse filters resource templates based on
@@ -999,46 +1023,57 @@ func decodeResourceTemplatesListResult(
 // which could make authorization inspect a different list or identifier than
 // a client consuming the response.
 func validateListResult(data json.RawMessage, listField, identifierField string) error {
+	_, _, err := decodeListResult(data, listField, identifierField)
+	return err
+}
+
+// decodeListResult applies validateListResult's checks and returns the
+// result's members in their original order along with the raw list items, so
+// a filter can drop items without re-encoding anything else in the result.
+func decodeListResult(
+	data json.RawMessage,
+	listField, identifierField string,
+) ([]jsonObjectMember, []json.RawMessage, error) {
 	members, err := decodeJSONObjectMembers(data)
 	if err != nil {
-		return err
+		return nil, nil, err
 	}
 	rawItems, ok, err := uniqueCanonicalMember(members, listField)
 	if err != nil {
-		return err
+		return nil, nil, err
 	}
 	if !ok {
-		return fmt.Errorf("result is missing %q", listField)
+		return nil, nil, fmt.Errorf("result is missing %q", listField)
 	}
 
 	var items []json.RawMessage
 	if err := json.Unmarshal(rawItems, &items); err != nil {
-		return fmt.Errorf("decoding %s: %w", listField, err)
+		return nil, nil, fmt.Errorf("decoding %s: %w", listField, err)
 	}
 	if items == nil {
-		return fmt.Errorf("field %q must be an array", listField)
+		return nil, nil, fmt.Errorf("field %q must be an array", listField)
 	}
 	for i, item := range items {
 		itemMembers, err := decodeJSONObjectMembers(item)
 		if err != nil {
-			return fmt.Errorf("decoding %s item at index %d: %w", listField, i, err)
+			return nil, nil, fmt.Errorf("decoding %s item at index %d: %w", listField, i, err)
 		}
 		rawIdentifier, ok, err := uniqueCanonicalMember(itemMembers, identifierField)
 		if err != nil {
-			return fmt.Errorf("%s item at index %d: %w", listField, i, err)
+			return nil, nil, fmt.Errorf("%s item at index %d: %w", listField, i, err)
 		}
 		if !ok {
-			return fmt.Errorf("%s item at index %d is missing %q", listField, i, identifierField)
+			return nil, nil, fmt.Errorf("%s item at index %d is missing %q", listField, i, identifierField)
 		}
 		var identifier *string
 		if err := json.Unmarshal(rawIdentifier, &identifier); err != nil {
-			return fmt.Errorf("%s item at index %d has an invalid %s: %w", listField, i, identifierField, err)
+			return nil, nil, fmt.Errorf("%s item at index %d has an invalid %s: %w", listField, i, identifierField, err)
 		}
 		if identifier == nil {
-			return fmt.Errorf("%s item at index %d is missing a string %s", listField, i, identifierField)
+			return nil, nil, fmt.Errorf("%s item at index %d is missing a string %s", listField, i, identifierField)
 		}
 	}
-	return nil
+	return members, items, nil
 }
 
 // decodeResourceTemplateURIs validates every descriptor before any

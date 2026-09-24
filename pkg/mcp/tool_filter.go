@@ -555,11 +555,53 @@ func (rw *toolFilterWriter) writeBuffer(data []byte) {
 }
 
 type toolsListResponse struct {
-	JSONRPC string `json:"jsonrpc"`
-	ID      any    `json:"id"`
-	Result  struct {
+	JSONRPC string          `json:"jsonrpc"`
+	ID      any             `json:"id"`
+	Result  toolsListResult `json:"result"`
+}
+
+// toolsListResult is the result of a tools/list response. The filter only
+// rewrites Tools; members keeps every member of the result as received, so the
+// rest of it (resultType, cacheScope, ttlMs, _meta, nextCursor, ...) is written
+// back unchanged.
+type toolsListResult struct {
+	Tools   *[]map[string]any
+	members map[string]json.RawMessage
+}
+
+// UnmarshalJSON resolves Tools exactly as encoding/json resolves a struct
+// field tagged "tools", including when the result member occurs more than
+// once, and records every member of the result for MarshalJSON.
+func (r *toolsListResult) UnmarshalJSON(data []byte) error {
+	if bytes.Equal(bytes.TrimSpace(data), []byte("null")) {
+		return nil
+	}
+
+	list := struct {
 		Tools *[]map[string]any `json:"tools"`
-	} `json:"result"`
+	}{Tools: r.Tools}
+	if err := json.Unmarshal(data, &list); err != nil {
+		return err
+	}
+	if err := json.Unmarshal(data, &r.members); err != nil {
+		return err
+	}
+	r.Tools = list.Tools
+	return nil
+}
+
+// MarshalJSON writes the result back with Tools as its only tools list. Every
+// member name encoding/json would have matched to Tools is dropped, so a
+// client cannot read a list other than the filtered one.
+func (r toolsListResult) MarshalJSON() ([]byte, error) {
+	result := make(map[string]any, len(r.members)+1)
+	for name, value := range r.members {
+		if !strings.EqualFold(name, "tools") {
+			result[name] = value
+		}
+	}
+	result["tools"] = r.Tools
+	return json.Marshal(result)
 }
 
 type toolCallRequest struct {

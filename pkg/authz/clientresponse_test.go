@@ -54,3 +54,30 @@ func TestMiddlewareAcceptsClientResponse(t *testing.T) {
 		})
 	}
 }
+
+func TestMiddlewareRejectsMalformedJSON(t *testing.T) {
+	t.Parallel()
+
+	authorizer, err := cedar.NewCedarAuthorizer(cedar.ConfigOptions{
+		Policies:     []string{`permit(principal, action, resource);`},
+		EntitiesJSON: `[]`,
+	}, "")
+	require.NoError(t, err)
+
+	var handlerCalled bool
+	handler := http.HandlerFunc(func(http.ResponseWriter, *http.Request) {
+		handlerCalled = true
+	})
+	middleware := mcpparser.ParsingMiddleware(Middleware(authorizer, handler, nil))
+
+	req, err := http.NewRequest(http.MethodPost, "/mcp", strings.NewReader(`{"jsonrpc":"2.0","id":1,"method":`))
+	require.NoError(t, err)
+	req.Header.Set("Content-Type", "application/json")
+
+	rr := httptest.NewRecorder()
+	middleware.ServeHTTP(rr, req)
+
+	assert.False(t, handlerCalled, "malformed JSON must not reach the transport")
+	assert.Equal(t, http.StatusBadRequest, rr.Code)
+	assert.Contains(t, rr.Body.String(), "Invalid or malformed MCP request")
+}

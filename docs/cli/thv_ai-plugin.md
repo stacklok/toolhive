@@ -15,8 +15,9 @@ Manage AI-tool plugins
 
 ### Synopsis
 
-The ai-plugin command provides subcommands to manage plugins for AI tools
-(e.g. Claude Code, Codex) — not plugins for ToolHive itself.
+Manage plugins for AI tools such as Claude Code and Codex, not plugins
+for ToolHive itself. A plugin is a manifest-based bundle that may contain
+commands, agents, skills, hooks, and server declarations.
 
 ### Options
 

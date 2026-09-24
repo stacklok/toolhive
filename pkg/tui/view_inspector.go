@@ -8,7 +8,7 @@ import (
 	"fmt"
 	"strings"
 
-	"github.com/charmbracelet/lipgloss"
+	"charm.land/lipgloss/v2"
 
 	"github.com/stacklok/toolhive-core/mcpcompat/mcp"
 	"github.com/stacklok/toolhive/cmd/thv/app/ui"
@@ -86,7 +86,7 @@ func (m Model) renderToolInfoModal(base string, w, h int) string {
 	return lipgloss.Place(w, h, lipgloss.Center, lipgloss.Center,
 		modal,
 		lipgloss.WithWhitespaceChars(" "),
-		lipgloss.WithWhitespaceForeground(ui.ColorDim),
+		lipgloss.WithWhitespaceStyle(lipgloss.NewStyle().Foreground(ui.ColorDim)),
 	)
 }
 

@@ -196,6 +196,7 @@ func TestCallbackHandler_Success(t *testing.T) {
 	storState.pendingAuths[internalState] = pending
 
 	req := httptest.NewRequest(http.MethodGet, "/oauth/callback?code=upstream-code&state="+internalState, nil)
+	req.Header.Set("Referer", "https://accounts.google.com/")
 	rec := httptest.NewRecorder()
 
 	handler.CallbackHandler(rec, req)
@@ -203,6 +204,7 @@ func TestCallbackHandler_Success(t *testing.T) {
 	// Should redirect to client with our authorization code
 	// fosite uses 303 See Other for redirects per RFC 6749
 	assert.Equal(t, http.StatusSeeOther, rec.Code)
+	assert.Equal(t, "no-referrer", rec.Header().Get("Referrer-Policy"))
 	location := rec.Header().Get("Location")
 	assert.Contains(t, location, testAuthRedirectURI)
 	assert.Contains(t, location, "code=")

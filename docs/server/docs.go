@@ -287,6 +287,13 @@ const docTemplate = `{
                         "description": "AdditionalAuthorizationParams are extra query parameters to include in\nauthorization requests. Useful for provider-specific parameters like\nGoogle's access_type=offline.",
                         "type": "object"
                     },
+                    "additional_token_params": {
+                        "additionalProperties": {
+                            "type": "string"
+                        },
+                        "description": "AdditionalTokenParams are extra form-body parameters to include in\ntoken requests (authorization code exchange and refresh). Useful for\nproviders that enforce RFC 8707 resource indicators on token requests.",
+                        "type": "object"
+                    },
                     "allow_private_ips": {
                         "description": "AllowPrivateIPs permits the upstream provider's HTTP client to connect to\nprivate IP ranges (RFC-1918, link-local). When DCRConfig is set, this\nalso gates the DCR discovery and registration calls made on this\nupstream's behalf (see pkg/authserver/runner/dcr_adapter.go), so a\nsingle flag covers the whole upstream rather than needing a separate\nDCR-specific setting. Use only when the upstream is hosted inside the\nsame cluster and has no public endpoint. HTTP-scheme restrictions are\nunchanged — HTTPS is still required for non-localhost hosts. Defaults\nto false.",
                         "type": "boolean"
@@ -337,6 +344,10 @@ const docTemplate = `{
                         "description": "TokenEndpoint is the URL for the OAuth token endpoint.",
                         "type": "string"
                     },
+                    "token_endpoint_auth_method": {
+                        "description": "TokenEndpointAuthMethod selects how the client authenticates at the OAuth token\nendpoint. When empty, credentials are sent in the request body (the historical\nclient_secret_post-shaped default). Set this to client_secret_basic explicitly\nfor providers that require HTTP Basic auth. Public clients without a secret use\nthe \"none\" method.",
+                        "type": "string"
+                    },
                     "token_response_mapping": {
                         "$ref": "#/components/schemas/authserver.TokenResponseMappingRunConfig"
                     },
@@ -354,6 +365,13 @@ const docTemplate = `{
                             "type": "string"
                         },
                         "description": "AdditionalAuthorizationParams are extra query parameters to include in\nauthorization requests. Useful for provider-specific parameters like\nGoogle's access_type=offline.",
+                        "type": "object"
+                    },
+                    "additional_token_params": {
+                        "additionalProperties": {
+                            "type": "string"
+                        },
+                        "description": "AdditionalTokenParams are extra form-body parameters to include in\ntoken requests (authorization code exchange and refresh). Useful for\nproviders that enforce RFC 8707 resource indicators on token requests.",
                         "type": "object"
                     },
                     "allow_private_ips": {
@@ -375,6 +393,9 @@ const docTemplate = `{
                     "client_secret_file": {
                         "description": "ClientSecretFile is the path to a file containing the OAuth 2.0 client secret.\nMutually exclusive with ClientSecretEnvVar. Optional for public clients using PKCE.",
                         "type": "string"
+                    },
+                    "dcr_config": {
+                        "$ref": "#/components/schemas/authserver.DCRUpstreamConfig"
                     },
                     "insecure_allow_http": {
                         "description": "InsecureAllowHTTP permits a plain-HTTP issuer URL and HTTP discovery\nendpoints for this upstream. Only for in-cluster development environments\n(e.g. Dex served over HTTP in a kind cluster) where TLS is not available.\nNever set this in production.",
@@ -451,6 +472,10 @@ const docTemplate = `{
                     "delegation_token_lifespan": {
                         "description": "DelegationTokenLifespan is the maximum lifetime for delegated tokens issued\nvia RFC 8693 token exchange. Specified as a Go duration string (e.g., \"15m\").\nIf empty, defaults to 15 minutes.",
                         "type": "string"
+                    },
+                    "device_flow_enabled": {
+                        "description": "DeviceFlowEnabled enables the RFC 8628 OAuth 2.0 Device Authorization\nGrant: POST /oauth/device_authorization is mounted and\nurn:ietf:params:oauth:grant-type:device_code is registered at the\ntoken endpoint and advertised in discovery. The minimum polling\ninterval (RFC 8628 Section 3.5) is fixed at\noauthserver.DefaultDeviceCodeInterval; this is a deliberate\nsimplification to keep this config surface minimal — a future\nincrement may add an override.",
+                        "type": "boolean"
                     },
                     "disable_upstream_token_injection": {
                         "description": "DisableUpstreamTokenInjection prevents the upstream swap middleware from being added.\nWhen true, the embedded auth server handles OAuth flows for clients, but instead of\ninjecting upstream IdP tokens the proxy strips the client's credential headers\n(Authorization, Cookie, Proxy-Authorization) after the JWT is validated — the\nbackend receives an unauthenticated request. Incompatible with token exchange\nand AWS STS, which would re-add credentials after the strip.",
@@ -1743,6 +1768,10 @@ const docTemplate = `{
                         "description": "K8sPodTemplatePatch is a JSON string to patch the Kubernetes pod template\nOnly applicable when using Kubernetes runtime",
                         "type": "string"
                     },
+                    "max_request_body_size": {
+                        "description": "MaxRequestBodySize is the maximum inbound MCP proxy request body size in bytes.\nZero uses the default limit of 8 MiB. Negative values are rejected\nwhen the RunConfig is built or used at runtime.",
+                        "type": "integer"
+                    },
                     "mcpserver_generation": {
                         "description": "MCPServerGeneration is the K8s .metadata.generation of the MCPServer CR that rendered\nthis RunConfig. The Kubernetes runtime uses it as a monotonic version to prevent stale\nrolling-update pods from overwriting a newer RunConfig's StatefulSet apply. Zero value\nmeans unversioned (backward-compat with older operators, or non-operator callers).",
                         "type": "integer"
@@ -1784,6 +1813,11 @@ const docTemplate = `{
                             "sse",
                             "streamable-http"
                         ],
+                        "type": "string"
+                    },
+                    "proxy_read_timeout": {
+                        "description": "ProxyReadTimeout bounds reading the entire request (headers + body) on the\nproxy HTTP server, expressed as a Go duration string (e.g. \"30s\", \"1m\").\nEmpty uses the proxy default (30s). Negative durations and values that fail\ntime.ParseDuration are rejected at runtime. Applies to all HTTP transports.\nString (not time.Duration) keeps the wire format unit-explicit.",
+                        "example": "30s",
                         "type": "string"
                     },
                     "publish": {
@@ -2352,7 +2386,7 @@ const docTemplate = `{
                         "type": "string"
                     },
                     "new_digest": {
-                        "description": "NewDigest is the digest the source currently resolves to. Equal to\nOldDigest when Status is UpgradeStatusUpToDate.",
+                        "description": "NewDigest is the digest the source currently resolves to. It may equal\nOldDigest when only the resolved reference or trust material changed.",
                         "type": "string"
                     },
                     "new_resolved_reference": {
@@ -2372,6 +2406,10 @@ const docTemplate = `{
                     },
                     "status": {
                         "$ref": "#/components/schemas/github_com_stacklok_toolhive_pkg_skills.UpgradeStatus"
+                    },
+                    "trust_anchor_changed": {
+                        "description": "TrustAnchorChanged reports that the operation selected a different\nverified provenance or unsigned trust state than the lock recorded.",
+                        "type": "boolean"
                     }
                 },
                 "type": "object"
@@ -2394,6 +2432,7 @@ const docTemplate = `{
                 "enum": [
                     "upgraded",
                     "up-to-date",
+                    "trust-updated",
                     "not-upgradable",
                     "ref-change-blocked",
                     "signer-change-blocked",
@@ -2403,6 +2442,7 @@ const docTemplate = `{
                 "x-enum-varnames": [
                     "UpgradeStatusUpgraded",
                     "UpgradeStatusUpToDate",
+                    "UpgradeStatusTrustUpdated",
                     "UpgradeStatusNotUpgradable",
                     "UpgradeStatusRefChangeBlocked",
                     "UpgradeStatusSignerChangeBlocked",
@@ -3287,6 +3327,10 @@ const docTemplate = `{
                         "description": "Docker image to use",
                         "type": "string"
                     },
+                    "max_request_body_size": {
+                        "description": "Maximum inbound MCP proxy request body size in bytes. Zero uses the default limit of 8 MiB.",
+                        "type": "integer"
+                    },
                     "name": {
                         "description": "Name of the workload",
                         "type": "string"
@@ -3311,6 +3355,11 @@ const docTemplate = `{
                     "proxy_port": {
                         "description": "Port for the HTTP proxy to listen on",
                         "type": "integer"
+                    },
+                    "proxy_read_timeout": {
+                        "description": "Maximum time to read a complete MCP proxy request, expressed as a Go duration string.\nEmpty or zero uses the default timeout of 30 seconds.",
+                        "example": "30s",
+                        "type": "string"
                     },
                     "registry": {
                         "description": "Registry is the optional registry name to resolve the server from (e.g. \"default\").",
@@ -3553,6 +3602,10 @@ const docTemplate = `{
                     },
                     "project_root": {
                         "description": "ProjectRoot is the project root path for project-scoped installs",
+                        "type": "string"
+                    },
+                    "public_key": {
+                        "description": "PublicKey is the base64-encoded DER SPKI cosign public key the artifact\nmust verify against, for artifacts signed with a cosign key pair rather\nthan keylessly. Required the first time such an artifact is installed\nproject-scoped, and pinned in the lock file from then on.",
                         "type": "string"
                     },
                     "scope": {
@@ -3806,10 +3859,14 @@ const docTemplate = `{
                 "type": "object"
             },
             "pkg_api_v1.pushPluginRequest": {
-                "description": "Request to push a built plugin artifact. Exactly one of identity_token or no_sign is required.",
+                "description": "Request to push a built plugin artifact. Exactly one of key, identity_token, or no_sign is required.",
                 "properties": {
                     "identity_token": {
-                        "description": "IdentityToken is a short-lived OIDC identity token used for keyless\nsigning. Plugin signing is keyless-only: there is deliberately no key\nfield, because ToolHive cannot verify key-signed artifacts at install\ntime and would publish an uninstallable plugin (#6442)",
+                        "description": "IdentityToken is a short-lived OIDC identity token used for keyless\nsigning, mutually exclusive with Key",
+                        "type": "string"
+                    },
+                    "key": {
+                        "description": "Key is the path to a cosign private key, resolved on the server's\nfilesystem. Accepted only when the request carries the secret capability\nfrom the owner-protected local server discovery file; other requests are\nrefused with 403, since honoring one would let an untrusted caller have\nthe server sign with any key it can read. Use IdentityToken when calling\na remote or manually configured server. Consumers installing the result\nproject-scoped must supply the matching public key on first use\n(install's public_key).",
                         "type": "string"
                     },
                     "no_sign": {
@@ -3834,7 +3891,7 @@ const docTemplate = `{
                         "type": "string"
                     },
                     "key": {
-                        "description": "Key is the path to a cosign private key used to sign the pushed\nartifact",
+                        "description": "Key is the path to a cosign private key, resolved on the server's\nfilesystem. Accepted only when the request carries the secret capability\nfrom the owner-protected local server discovery file; other requests are\nrefused with 403, since honoring one would let an untrusted caller have\nthe server sign with any key it can read. Use IdentityToken when calling\na remote or manually configured server.",
                         "type": "string"
                     },
                     "no_sign": {
@@ -4095,6 +4152,10 @@ const docTemplate = `{
                     "prune": {
                         "description": "Prune removes project-scoped plugins installed but not present in the lock file",
                         "type": "boolean"
+                    },
+                    "public_key": {
+                        "description": "PublicKey supplies the cosign public key for key-signed adoption.",
+                        "type": "string"
                     }
                 },
                 "type": "object"
@@ -4129,6 +4190,10 @@ const docTemplate = `{
                     "prune": {
                         "description": "Prune removes project-scoped skills installed but not present in the lock file",
                         "type": "boolean"
+                    },
+                    "public_key": {
+                        "description": "PublicKey supplies the cosign public key for key-signed adoption.",
+                        "type": "string"
                     }
                 },
                 "type": "object"
@@ -4195,6 +4260,10 @@ const docTemplate = `{
                         "description": "Docker image to use",
                         "type": "string"
                     },
+                    "max_request_body_size": {
+                        "description": "Maximum inbound MCP proxy request body size in bytes. Zero uses the default limit of 8 MiB.",
+                        "type": "integer"
+                    },
                     "network_isolation": {
                         "description": "Whether network isolation is turned on. This applies the rules in the permission profile.\nPointer so that omitting the field defaults to network isolation ENABLED (matching the\n` + "`" + `thv run` + "`" + ` CLI default); set it explicitly to false to disable network isolation.\nThis also applies on update: a request that omits this field enables isolation, so\nclients that build update requests from scratch should send it explicitly to avoid\nunintentionally turning isolation on for a workload that had it off.",
                         "type": "boolean"
@@ -4215,6 +4284,11 @@ const docTemplate = `{
                     "proxy_port": {
                         "description": "Port for the HTTP proxy to listen on",
                         "type": "integer"
+                    },
+                    "proxy_read_timeout": {
+                        "description": "Maximum time to read a complete MCP proxy request, expressed as a Go duration string.\nEmpty or zero uses the default timeout of 30 seconds.",
+                        "example": "30s",
+                        "type": "string"
                     },
                     "runtime_config": {
                         "$ref": "#/components/schemas/templates.RuntimeConfig"
@@ -4354,6 +4428,10 @@ const docTemplate = `{
                     "project_root": {
                         "description": "ProjectRoot is the project root path whose lock file should be upgraded",
                         "type": "string"
+                    },
+                    "public_key": {
+                        "description": "PublicKey proposes a cosign public key as the replacement trust anchor.",
+                        "type": "string"
                     }
                 },
                 "type": "object"
@@ -4399,7 +4477,7 @@ const docTemplate = `{
                         "uniqueItems": false
                     },
                     "fail_on_changes": {
-                        "description": "FailOnChanges exits with an error when any mutable source would upgrade",
+                        "description": "FailOnChanges reports content and trust changes without applying them",
                         "type": "boolean"
                     },
                     "names": {
@@ -4416,6 +4494,10 @@ const docTemplate = `{
                     },
                     "project_root": {
                         "description": "ProjectRoot is the project root path whose lock file should be upgraded",
+                        "type": "string"
+                    },
+                    "public_key": {
+                        "description": "PublicKey proposes a cosign public key as the replacement trust anchor.",
                         "type": "string"
                     }
                 },
@@ -4818,6 +4900,9 @@ const docTemplate = `{
                         },
                         "type": "array",
                         "uniqueItems": false
+                    },
+                    "provenance": {
+                        "$ref": "#/components/schemas/registry.Provenance"
                     },
                     "repository": {
                         "$ref": "#/components/schemas/registry.SkillRepository"
@@ -5269,7 +5354,7 @@ const docTemplate = `{
                 "type": "object"
             },
             "storage.ACLUserRunConfig": {
-                "description": "ACLUserConfig contains ACL user authentication configuration.",
+                "description": "ACLUserConfig contains ACL user authentication configuration.\nA nil value is a valid no-auth configuration: the store connects without\ncredentials. A populated block whose password resolves to empty is a\nmisconfiguration (mis-keyed or unsynced secret) and is rejected rather\nthan silently downgraded to an unauthenticated connection.",
                 "properties": {
                     "password_env_var": {
                         "description": "PasswordEnvVar is the environment variable containing the Redis password.",
@@ -5293,7 +5378,7 @@ const docTemplate = `{
                         "type": "string"
                     },
                     "auth_type": {
-                        "description": "AuthType must be \"aclUser\" - only ACL user authentication is supported.",
+                        "description": "AuthType selects the Redis authentication mode. \"aclUser\" is the only\nauthenticated mode. Leave it empty, with a nil ACLUserConfig, for a\nno-auth connection to a Redis/Valkey instance that has no authentication\nconfigured. Setting AuthType to \"aclUser\" declares authenticated intent:\nthe conversion rejects that pairing with a nil ACLUserConfig rather than\ndowngrading to no-auth. Otherwise presence of ACLUserConfig is what\nenables authentication.",
                         "type": "string"
                     },
                     "cluster_mode": {
@@ -5473,7 +5558,7 @@ const docTemplate = `{
                         "uniqueItems": false
                     },
                     "builder_image": {
-                        "description": "BuilderImage is the full image reference for the builder stage.\nAn empty string signals \"use the default for this transport type\" during config merging.\nExamples: \"golang:1.26-alpine\", \"node:24-alpine\", \"python:3.14-slim\"",
+                        "description": "BuilderImage is the full image reference for the builder stage.\nAn empty string signals \"use the default for this transport type\" during config merging.\nExamples: \"golang:1.27-alpine\", \"node:24-alpine\", \"python:3.14-slim\"",
                         "type": "string"
                     },
                     "runtime_env": {
@@ -6752,6 +6837,16 @@ const docTemplate = `{
         "/api/v1beta/plugins/push": {
             "post": {
                 "description": "Push a built plugin artifact to a remote registry",
+                "parameters": [
+                    {
+                        "description": "Local discovery capability (required with request.key)",
+                        "in": "header",
+                        "name": "X-Toolhive-Key-Signing-Capability",
+                        "schema": {
+                            "type": "string"
+                        }
+                    }
+                ],
                 "requestBody": {
                     "content": {
                         "application/json": {
@@ -6792,6 +6887,16 @@ const docTemplate = `{
                             }
                         },
                         "description": "Bad Request"
+                    },
+                    "403": {
+                        "content": {
+                            "application/json": {
+                                "schema": {
+                                    "type": "string"
+                                }
+                            }
+                        },
+                        "description": "Forbidden (key signing requires the local discovery capability)"
                     },
                     "404": {
                         "content": {
@@ -7236,20 +7341,11 @@ const docTemplate = `{
                 ]
             },
             "post": {
-                "description": "Add a new registry",
-                "requestBody": {
-                    "content": {
-                        "application/json": {
-                            "schema": {
-                                "type": "object"
-                            }
-                        }
-                    }
-                },
+                "description": "This endpoint is retained for API compatibility, accepts no request body, and always returns 501 Not Implemented.\nCustom registries are not currently supported.",
                 "responses": {
                     "501": {
                         "content": {
-                            "application/json": {
+                            "text/plain": {
                                 "schema": {
                                     "type": "string"
                                 }
@@ -7258,7 +7354,7 @@ const docTemplate = `{
                         "description": "Not Implemented"
                     }
                 },
-                "summary": "Add a registry",
+                "summary": "Add a registry (unavailable)",
                 "tags": [
                     "registry"
                 ]
@@ -8541,6 +8637,16 @@ const docTemplate = `{
         "/api/v1beta/skills/push": {
             "post": {
                 "description": "Push a built skill artifact to a remote registry",
+                "parameters": [
+                    {
+                        "description": "Local discovery capability (required with request.key)",
+                        "in": "header",
+                        "name": "X-Toolhive-Key-Signing-Capability",
+                        "schema": {
+                            "type": "string"
+                        }
+                    }
+                ],
                 "requestBody": {
                     "content": {
                         "application/json": {
@@ -8581,6 +8687,16 @@ const docTemplate = `{
                             }
                         },
                         "description": "Bad Request"
+                    },
+                    "403": {
+                        "content": {
+                            "application/json": {
+                                "schema": {
+                                    "type": "string"
+                                }
+                            }
+                        },
+                        "description": "Forbidden (key signing requires the local discovery capability)"
                     },
                     "404": {
                         "content": {

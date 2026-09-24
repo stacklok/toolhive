@@ -17,9 +17,9 @@ import (
 // The remediation the user reads is supplied by the calling command through
 // Options.Remediation and wrapped around this sentinel rather than baked in
 // here. The ladder is shared by `thv skill push` and `thv ai-plugin push`,
-// but their flag sets are not: plugin signing is keyless-only, so plugin push
-// defines no --key (#6442). A single hard-coded message naming every option
-// would send half its readers to a flag their command does not have.
+// and a caller-supplied message keeps each command naming only the flags it
+// actually defines, rather than a hard-coded list that drifts as either
+// surface changes.
 var ErrNoCredential = errors.New("signing required: no signing credential available")
 
 // Options configures Acquire.
@@ -47,12 +47,11 @@ type Options struct {
 //
 //  1. An explicit --identity-token is always resolved and forwarded, even
 //     alongside --key — the ambiguity is a conflict for the server to
-//     reject (skillsvc.validateSigningInputs), never something to silently
-//     arbitrate client-side.
+//     reject (skillsvc/pluginsvc validateSigningInputs), never something to
+//     silently arbitrate client-side.
 //  2. --key or --no-sign with no --identity-token means the user made an
 //     explicit signing choice; Acquire returns "" without attempting
-//     ambient or interactive acquisition. Only skill pushes can set Key;
-//     plugin pushes reach this rung through --no-sign alone.
+//     ambient or interactive acquisition.
 //  3. A GitHub Actions ambient OIDC token, when present.
 //  4. An interactive browser sign-in, gated by opts.Confirm.
 //  5. ErrNoCredential.

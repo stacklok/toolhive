@@ -13,6 +13,11 @@ on:
     # Run daily at 2 AM UTC
     - cron: '0 2 * * *'
 
+# Cancel superseded PR runs; keep other events independent.
+concurrency:
+  group: security-scan-${{ github.event.pull_request.number || github.run_id }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
 # security-events: write is granted per job rather than here, so only the two
 # jobs that upload SARIF can write security events.
 permissions:
@@ -27,20 +32,20 @@ jobs:
       security-events: write
     steps:
       - name: Checkout repository
-        uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
         with:
           persist-credentials: false
 
       - name: Run Grype vulnerability scanner
         id: grype-scan
-        uses: anchore/scan-action@e1165082ffb1fe366ebaf02d8526e7c4989ea9d2 # v7.4.0
+        uses: anchore/scan-action@27805bf3b4e84b4a5c980df22ed233c00390a439 # v7.4.2
         with:
           path: "."
           output-format: "sarif"
           fail-build: false
 
       - name: Upload Grype scan results to GitHub Security tab
-        uses: github/codeql-action/upload-sarif@5595ccaf912efad79be6eef63a5619ff05969be3 # v4.37.6
+        uses: github/codeql-action/upload-sarif@1c5b675653bb5c22dbe9b12b556ec555138e09fd # v4.38.1
         if: always()
         with:
           sarif_file: ${{ steps.grype-scan.outputs.sarif }}
@@ -54,7 +59,7 @@ jobs:
       security-events: write
     steps:
       - name: Checkout repository
-        uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
         with:
           # This job only reads the workflow files; it never pushes.
           persist-credentials: false
@@ -65,9 +70,9 @@ jobs:
       # code when the output format is SARIF, which is what advanced-security
       # selects. The upload happens inside the action.
       - name: Report findings
-        uses: zizmorcore/zizmor-action@3dc1ecc9bcb9e94e9b2c709687979e1298497054 # v0.6.2
+        uses: zizmorcore/zizmor-action@cc914d7f3750a2d13d75c7f184a1060aa0e9d482 # v0.6.4
         with:
-          version: "1.29.0"
+          version: "1.30.1"
           inputs: .github/
           persona: regular
 
@@ -83,9 +88,9 @@ jobs:
       # expressions carrying values GitHub constrains to characters that cannot
       # reach a shell. Lowering this threshold means dealing with those first.
       - name: Fail on new findings
-        uses: zizmorcore/zizmor-action@3dc1ecc9bcb9e94e9b2c709687979e1298497054 # v0.6.2
+        uses: zizmorcore/zizmor-action@cc914d7f3750a2d13d75c7f184a1060aa0e9d482 # v0.6.4
         with:
-          version: "1.29.0"
+          version: "1.30.1"
           inputs: .github/
           persona: regular
           min-severity: medium
@@ -96,7 +101,7 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - name: Checkout repository
-        uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
         with:
           persist-credentials: false
 
@@ -113,16 +118,6 @@ jobs:
         run: |
           set -euo pipefail
 
-          # Ignored vulnerabilities with justification:
-          # Go stdlib advisories published 2026-06-02, all fixed in go1.26.4 /
-          # go1.25.11 (DoS / log-injection class, no RCE):
-          #   GO-2026-5037 (CVE-2026-27145, crypto/x509 VerifyHostname)
-          #   GO-2026-5038 (CVE-2026-42504, mime WordDecoder.DecodeHeader)
-          #   GO-2026-5039 (CVE-2026-42507, net/textproto error messages)
-          # CI's `setup-go: stable` still resolves to go1.26.3 because the
-          # actions/go-versions manifest lags the Go release. Temporary
-          # exclusion; remove once CI builds on go1.26.4 or later.
-          #
           # GO-2026-5932: golang.org/x/crypto/openpgp is deprecated-by-design
           # ("unsafe, not maintained, should not be used"). No fixed version
           # exists and none is planned.
@@ -165,7 +160,7 @@ jobs:
           # REMOVAL TRIGGER: `go 1.27` sorts above `1.26.0`, so moving the
           # go directive to 1.27 satisfies x/crypto v0.56.0 without a patch
           # version. Bump x/crypto and drop both entries then.
-          IGNORED_VULNS="GO-2026-5037 GO-2026-5038 GO-2026-5039 GO-2026-5932 GO-2026-6354 GO-2026-6355"
+          IGNORED_VULNS="GO-2026-5932 GO-2026-6354 GO-2026-6355"
 
           # Show the raw output for debugging
           # A scan that produced nothing is a failed scan, not a clean one.

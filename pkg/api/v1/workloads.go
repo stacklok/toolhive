@@ -16,10 +16,12 @@ import (
 	"github.com/stacklok/toolhive-core/httperr"
 	groupval "github.com/stacklok/toolhive-core/validation/group"
 	apierrors "github.com/stacklok/toolhive/pkg/api/errors"
+	"github.com/stacklok/toolhive/pkg/auth"
 	"github.com/stacklok/toolhive/pkg/container/runtime"
 	"github.com/stacklok/toolhive/pkg/groups"
 	"github.com/stacklok/toolhive/pkg/registry"
 	"github.com/stacklok/toolhive/pkg/runner"
+	transporttypes "github.com/stacklok/toolhive/pkg/transport/types"
 	"github.com/stacklok/toolhive/pkg/workloads"
 	wt "github.com/stacklok/toolhive/pkg/workloads/types"
 	"github.com/stacklok/toolhive/pkg/workloads/upgrade"
@@ -706,10 +708,68 @@ func (*WorkloadRoutes) exportWorkload(w http.ResponseWriter, r *http.Request) er
 		return err // ErrRunConfigNotFound (404) already has status code
 	}
 
-	// Return the configuration as JSON
+	redactedRunConfig, err := redactRunConfigOIDCClientSecrets(runConfig)
+	if err != nil {
+		return fmt.Errorf("failed to redact workload configuration: %w", err)
+	}
+
+	// Return the configuration as JSON.
 	w.Header().Set("Content-Type", "application/json")
-	if err := json.NewEncoder(w).Encode(runConfig); err != nil {
+	if err := json.NewEncoder(w).Encode(redactedRunConfig); err != nil {
 		return fmt.Errorf("failed to encode workload configuration: %w", err)
 	}
 	return nil
+}
+
+// redactRunConfigOIDCClientSecrets returns a copy suitable for export without
+// OIDC client secrets. It leaves the loaded configuration untouched.
+func redactRunConfigOIDCClientSecrets(runConfig *runner.RunConfig) (*runner.RunConfig, error) {
+	redacted := *runConfig
+	if runConfig.OIDCConfig != nil {
+		oidcConfig := *runConfig.OIDCConfig
+		oidcConfig.ClientSecret = ""
+		redacted.OIDCConfig = &oidcConfig
+	}
+
+	middlewareConfigs, err := redactAuthMiddlewareConfigs(runConfig.MiddlewareConfigs)
+	if err != nil {
+		return nil, err
+	}
+	additionalMiddlewareConfigs, err := redactAuthMiddlewareConfigs(runConfig.AdditionalMiddlewareConfigs)
+	if err != nil {
+		return nil, err
+	}
+	redacted.MiddlewareConfigs = middlewareConfigs
+	redacted.AdditionalMiddlewareConfigs = additionalMiddlewareConfigs
+
+	return &redacted, nil
+}
+
+func redactAuthMiddlewareConfigs(configs []transporttypes.MiddlewareConfig) ([]transporttypes.MiddlewareConfig, error) {
+	redacted := make([]transporttypes.MiddlewareConfig, len(configs))
+	copy(redacted, configs)
+
+	for i := range redacted {
+		if redacted[i].Type != auth.MiddlewareType {
+			continue
+		}
+
+		var params auth.MiddlewareParams
+		if err := json.Unmarshal(configs[i].Parameters, &params); err != nil {
+			return nil, fmt.Errorf("failed to decode auth middleware configuration: %w", err)
+		}
+		if params.OIDCConfig != nil {
+			oidcConfig := *params.OIDCConfig
+			oidcConfig.ClientSecret = ""
+			params.OIDCConfig = &oidcConfig
+		}
+
+		parameters, err := json.Marshal(params)
+		if err != nil {
+			return nil, fmt.Errorf("failed to encode auth middleware configuration: %w", err)
+		}
+		redacted[i].Parameters = parameters
+	}
+
+	return redacted, nil
 }

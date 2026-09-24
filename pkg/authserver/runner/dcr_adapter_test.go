@@ -23,33 +23,15 @@ import (
 // so the dcr package no longer imports authserver types, and the tests
 // follow.
 
-func TestNeedsDCR(t *testing.T) {
+func TestNewDCRRequest_NoDCR(t *testing.T) {
 	t.Parallel()
 
-	tests := []struct {
-		name     string
-		rc       *authserver.OAuth2UpstreamRunConfig
-		expected bool
-	}{
-		{name: "nil", rc: nil, expected: false},
-		{name: "empty client_id and dcr_config", rc: &authserver.OAuth2UpstreamRunConfig{
-			DCRConfig: &authserver.DCRUpstreamConfig{},
-		}, expected: true},
-		{name: "client_id without dcr", rc: &authserver.OAuth2UpstreamRunConfig{
-			ClientID: "x",
-		}, expected: false},
-		{name: "client_id wins over dcr_config (defensive AND semantic)", rc: &authserver.OAuth2UpstreamRunConfig{
-			ClientID:  "x",
-			DCRConfig: &authserver.DCRUpstreamConfig{},
-		}, expected: false},
-		{name: "both empty", rc: &authserver.OAuth2UpstreamRunConfig{}, expected: false},
-	}
-	for _, tc := range tests {
-		t.Run(tc.name, func(t *testing.T) {
-			t.Parallel()
-			assert.Equal(t, tc.expected, needsDCR(tc.rc))
-		})
-	}
+	request, err := newDCRRequest(&authserver.UpstreamRunConfig{
+		Type:         authserver.UpstreamProviderTypeOAuth2,
+		OAuth2Config: &authserver.OAuth2UpstreamRunConfig{ClientID: "pre-provisioned"},
+	}, "https://thv.example.com")
+	require.NoError(t, err)
+	assert.Nil(t, request)
 }
 
 func TestConsumeResolution_RespectsExplicitEndpoints(t *testing.T) {
@@ -234,7 +216,13 @@ func TestConsumeResolution_AloneLeavesClientSecretEmpty(t *testing.T) {
 			"applyResolutionToOAuth2Config's responsibility (see dcr_adapter.go)")
 }
 
-// TestNewDCRRequest covers the OAuth2UpstreamRunConfig → dcr.Request
+func oauth2RunConfig(rc *authserver.OAuth2UpstreamRunConfig) *authserver.UpstreamRunConfig {
+	if rc == nil {
+		return nil
+	}
+	return &authserver.UpstreamRunConfig{Type: authserver.UpstreamProviderTypeOAuth2, OAuth2Config: rc}
+}
+
 // translation, including the file-based InitialAccessToken resolution that
 // previously lived inside the resolver.
 func TestNewDCRRequest(t *testing.T) {
@@ -307,17 +295,11 @@ func TestNewDCRRequest(t *testing.T) {
 			localIssuer: "https://thv.example.com",
 			wantErrSub:  "run-config is required",
 		},
-		{
-			name:        "missing dcr_config rejected",
-			rc:          &authserver.OAuth2UpstreamRunConfig{},
-			localIssuer: "https://thv.example.com",
-			wantErrSub:  "no dcr_config",
-		},
 	}
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
 			t.Parallel()
-			req, err := newDCRRequest(tc.rc, tc.localIssuer)
+			req, err := newDCRRequest(oauth2RunConfig(tc.rc), tc.localIssuer)
 			if tc.wantErrSub != "" {
 				require.Error(t, err)
 				assert.Contains(t, err.Error(), tc.wantErrSub)
@@ -355,9 +337,45 @@ func TestNewDCRRequest_EnvVarInitialAccessToken(t *testing.T) {
 		},
 	}
 
-	req, err := newDCRRequest(rc, "https://thv.example.com")
+	req, err := newDCRRequest(oauth2RunConfig(rc), "https://thv.example.com")
 	require.NoError(t, err)
 	require.NotNil(t, req)
 	assert.Equal(t, "iat-from-env", req.InitialAccessToken,
 		"env-var InitialAccessToken must flow through newDCRRequest → resolveSecret")
+}
+
+func TestNewDCRRequest_OIDCUsesIssuerDiscovery(t *testing.T) {
+	t.Parallel()
+
+	rc := &authserver.UpstreamRunConfig{
+		Type: authserver.UpstreamProviderTypeOIDC,
+		OIDCConfig: &authserver.OIDCUpstreamRunConfig{
+			IssuerURL: "https://idp.example.com/",
+			DCRConfig: &authserver.DCRUpstreamConfig{},
+		},
+	}
+	request, err := newDCRRequest(rc, "https://thv.example.com")
+	require.NoError(t, err)
+	require.NotNil(t, request)
+	assert.Equal(t, "https://idp.example.com/.well-known/openid-configuration", request.DiscoveryURL)
+	assert.Empty(t, request.AuthorizationEndpoint)
+	assert.Empty(t, request.TokenEndpoint)
+}
+
+func TestConsumeOIDCResolution(t *testing.T) {
+	t.Parallel()
+
+	cfg := consumeOIDCResolution(authserver.OIDCUpstreamRunConfig{
+		DCRConfig: &authserver.DCRUpstreamConfig{},
+	}, &dcr.Resolution{
+		ClientID:     "client",
+		ClientSecret: "secret",
+		RedirectURI:  "https://thv.example.com/oauth/callback",
+	})
+	assert.Equal(t, "client", cfg.ClientID)
+	assert.Equal(t, "https://thv.example.com/oauth/callback", cfg.RedirectURI)
+	assert.Nil(t, cfg.DCRConfig)
+
+	applied := applyResolutionToOIDCConfig(upstream.OIDCConfig{}, &dcr.Resolution{ClientSecret: "secret"})
+	assert.Equal(t, "secret", applied.ClientSecret)
 }

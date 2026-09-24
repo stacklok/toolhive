@@ -6,6 +6,8 @@
 package transport
 
 import (
+	"fmt"
+
 	"github.com/stacklok/toolhive/pkg/transport/errors"
 	"github.com/stacklok/toolhive/pkg/transport/types"
 )
@@ -43,6 +45,10 @@ func WithTargetURI(targetURI string) Option {
 
 // Create creates a transport based on the provided configuration
 func (*Factory) Create(config types.Config, opts ...Option) (types.Transport, error) {
+	if config.ReadTimeout < 0 {
+		return nil, fmt.Errorf("read timeout must be non-negative, got %s", config.ReadTimeout)
+	}
+
 	var tr types.Transport
 
 	switch config.Type {
@@ -57,6 +63,7 @@ func (*Factory) Create(config types.Config, opts ...Option) (types.Transport, er
 			stdio.SetSessionStorage(config.SessionStorage)
 		}
 		stdio.SetSessionTTL(config.SessionTTL)
+		stdio.SetReadTimeout(config.ReadTimeout)
 		if config.AuthInfoHandler != nil {
 			stdio.SetAuthInfoHandler(config.AuthInfoHandler)
 		}
@@ -82,6 +89,7 @@ func (*Factory) Create(config types.Config, opts ...Option) (types.Transport, er
 		)
 		httpTransport.sessionStorage = config.SessionStorage
 		httpTransport.sessionTTL = config.SessionTTL
+		httpTransport.readTimeout = config.ReadTimeout
 		tr = httpTransport
 	case types.TransportTypeStreamableHTTP:
 		httpTransport := NewHTTPTransport(
@@ -101,6 +109,7 @@ func (*Factory) Create(config types.Config, opts ...Option) (types.Transport, er
 		)
 		httpTransport.sessionStorage = config.SessionStorage
 		httpTransport.sessionTTL = config.SessionTTL
+		httpTransport.readTimeout = config.ReadTimeout
 		tr = httpTransport
 	case types.TransportTypeInspector:
 		// HTTP transport is not implemented yet

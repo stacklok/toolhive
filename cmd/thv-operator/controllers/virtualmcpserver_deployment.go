@@ -443,8 +443,9 @@ func (r *VirtualMCPServerReconciler) buildEnvVarsForVmcp(
 	}
 
 	// Mount embedded auth server upstream client secrets (and Redis ACL creds).
-	// This must live here, not only in deploymentForVirtualMCPServer, so that the
-	// env-var drift check in containerNeedsUpdate compares against the same set.
+	// This must live here, not only in deploymentForVirtualMCPServer, so that
+	// desiredMainContainerEnv (used by containerNeedsUpdate) starts from the
+	// same controller-owned set before PodTemplateSpec env is merged.
 	// Otherwise the live container carries these env vars but the expected set
 	// does not, reflect.DeepEqual never matches, and the operator updates the
 	// Deployment on every reconcile (see #5616).
@@ -683,7 +684,7 @@ func (r *VirtualMCPServerReconciler) buildHeaderForwardEnvVarsForEntries(
 	// Sort the resulting env vars by Name. The Kubernetes informer cache
 	// returns items in non-deterministic order (Go map iteration), so
 	// without sorting the env vars appear in a different sequence on each
-	// reconcile. reflect.DeepEqual in containerNeedsUpdate is order-
+	// reconcile. The env comparison in containerNeedsUpdate is order-
 	// sensitive, so non-deterministic ordering causes a continuous
 	// deployment update loop. Mirrors the pattern in
 	// discoverExternalAuthConfigSecrets / discoverInlineExternalAuthConfigSecrets.
@@ -797,9 +798,9 @@ func (r *VirtualMCPServerReconciler) discoverExternalAuthConfigSecrets(
 
 	// Sort by name for deterministic ordering. The Kubernetes informer cache returns
 	// items in non-deterministic order (Go map iteration), so without sorting the env
-	// vars appear in a different sequence on each reconcile. reflect.DeepEqual in
-	// containerNeedsUpdate is order-sensitive, so non-deterministic ordering causes a
-	// continuous deployment update loop with 4+ configs.
+	// vars appear in a different sequence on each reconcile. The env comparison
+	// in containerNeedsUpdate is order-sensitive, so non-deterministic ordering
+	// causes a continuous deployment update loop with 4+ configs.
 	sort.Slice(envVars, func(i, j int) bool {
 		return envVars[i].Name < envVars[j].Name
 	})
@@ -843,7 +844,7 @@ func (r *VirtualMCPServerReconciler) discoverInlineExternalAuthConfigSecrets(
 
 	// Sort by name for the same reason as discoverExternalAuthConfigSecrets: Go map
 	// iteration over Spec.OutgoingAuth.Backends is non-deterministic, which would
-	// cause a continuous deployment update loop via reflect.DeepEqual in containerNeedsUpdate.
+	// cause a continuous deployment update loop via the env comparison in containerNeedsUpdate.
 	sort.Slice(envVars, func(i, j int) bool {
 		return envVars[i].Name < envVars[j].Name
 	})

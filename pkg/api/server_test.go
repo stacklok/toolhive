@@ -51,6 +51,31 @@ func TestGenerateNonce(t *testing.T) {
 	})
 }
 
+func TestGenerateKeySigningCapability(t *testing.T) {
+	t.Parallel()
+
+	t.Run("returns valid 32-char hex string", func(t *testing.T) {
+		t.Parallel()
+
+		capability, err := GenerateKeySigningCapability()
+		require.NoError(t, err)
+
+		assert.Len(t, capability, 32)
+		assert.Regexp(t, regexp.MustCompile(`^[0-9a-f]{32}$`), capability)
+	})
+
+	t.Run("returns values independent from the discovery nonce", func(t *testing.T) {
+		t.Parallel()
+
+		nonce, err := GenerateNonce()
+		require.NoError(t, err)
+		capability, err := GenerateKeySigningCapability()
+		require.NoError(t, err)
+
+		assert.NotEqual(t, nonce, capability)
+	})
+}
+
 func TestListenURL(t *testing.T) {
 	t.Parallel()
 
@@ -183,6 +208,10 @@ func TestPluginHitsFromRegistry(t *testing.T) {
 	skillPkg := func(identifier, registryType, digest string) regtypes.SkillPackage {
 		return regtypes.SkillPackage{Identifier: identifier, RegistryType: registryType, Digest: digest}
 	}
+	catalogProvenance := &regtypes.Provenance{
+		SignerIdentity: "/.github/workflows/release.yml",
+		CertIssuer:     "https://token.actions.githubusercontent.com",
+	}
 
 	tests := []struct {
 		name   string
@@ -197,6 +226,7 @@ func TestPluginHitsFromRegistry(t *testing.T) {
 					Namespace:   "io.github.user",
 					Version:     "1.0.0",
 					Description: "Reviews code for bugs",
+					Provenance:  catalogProvenance,
 					Packages: []regtypes.SkillPackage{
 						skillPkg("ghcr.io/org/code-reviewer:v1", "oci", "sha256:abc"),
 					},
@@ -209,6 +239,7 @@ func TestPluginHitsFromRegistry(t *testing.T) {
 				assert.Equal(t, "io.github.user", hits[0].Namespace)
 				assert.Equal(t, "1.0.0", hits[0].Version)
 				assert.Equal(t, "Reviews code for bugs", hits[0].Description)
+				assert.Same(t, catalogProvenance, hits[0].Provenance)
 				require.Len(t, hits[0].Packages, 1)
 				assert.Equal(t, "ghcr.io/org/code-reviewer:v1", hits[0].Packages[0].Reference)
 				assert.Equal(t, "oci", hits[0].Packages[0].Type)

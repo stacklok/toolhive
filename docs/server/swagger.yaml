@@ -331,6 +331,14 @@ components:
             authorization requests. Useful for provider-specific parameters like
             Google's access_type=offline.
           type: object
+        additional_token_params:
+          additionalProperties:
+            type: string
+          description: |-
+            AdditionalTokenParams are extra form-body parameters to include in
+            token requests (authorization code exchange and refresh). Useful for
+            providers that enforce RFC 8707 resource indicators on token requests.
+          type: object
         allow_private_ips:
           description: |-
             AllowPrivateIPs permits the upstream provider's HTTP client to connect to
@@ -392,6 +400,14 @@ components:
         token_endpoint:
           description: TokenEndpoint is the URL for the OAuth token endpoint.
           type: string
+        token_endpoint_auth_method:
+          description: |-
+            TokenEndpointAuthMethod selects how the client authenticates at the OAuth token
+            endpoint. When empty, credentials are sent in the request body (the historical
+            client_secret_post-shaped default). Set this to client_secret_basic explicitly
+            for providers that require HTTP Basic auth. Public clients without a secret use
+            the "none" method.
+          type: string
         token_response_mapping:
           $ref: '#/components/schemas/authserver.TokenResponseMappingRunConfig'
         userinfo:
@@ -409,6 +425,14 @@ components:
             AdditionalAuthorizationParams are extra query parameters to include in
             authorization requests. Useful for provider-specific parameters like
             Google's access_type=offline.
+          type: object
+        additional_token_params:
+          additionalProperties:
+            type: string
+          description: |-
+            AdditionalTokenParams are extra form-body parameters to include in
+            token requests (authorization code exchange and refresh). Useful for
+            providers that enforce RFC 8707 resource indicators on token requests.
           type: object
         allow_private_ips:
           description: |-
@@ -436,6 +460,8 @@ components:
             ClientSecretFile is the path to a file containing the OAuth 2.0 client secret.
             Mutually exclusive with ClientSecretEnvVar. Optional for public clients using PKCE.
           type: string
+        dcr_config:
+          $ref: '#/components/schemas/authserver.DCRUpstreamConfig'
         insecure_allow_http:
           description: |-
             InsecureAllowHTTP permits a plain-HTTP issuer URL and HTTP discovery
@@ -569,6 +595,17 @@ components:
             via RFC 8693 token exchange. Specified as a Go duration string (e.g., "15m").
             If empty, defaults to 15 minutes.
           type: string
+        device_flow_enabled:
+          description: |-
+            DeviceFlowEnabled enables the RFC 8628 OAuth 2.0 Device Authorization
+            Grant: POST /oauth/device_authorization is mounted and
+            urn:ietf:params:oauth:grant-type:device_code is registered at the
+            token endpoint and advertised in discovery. The minimum polling
+            interval (RFC 8628 Section 3.5) is fixed at
+            oauthserver.DefaultDeviceCodeInterval; this is a deliberate
+            simplification to keep this config surface minimal — a future
+            increment may add an override.
+          type: boolean
         disable_upstream_token_injection:
           description: |-
             DisableUpstreamTokenInjection prevents the upstream swap middleware from being added.
@@ -1838,6 +1875,12 @@ components:
             K8sPodTemplatePatch is a JSON string to patch the Kubernetes pod template
             Only applicable when using Kubernetes runtime
           type: string
+        max_request_body_size:
+          description: |-
+            MaxRequestBodySize is the maximum inbound MCP proxy request body size in bytes.
+            Zero uses the default limit of 8 MiB. Negative values are rejected
+            when the RunConfig is built or used at runtime.
+          type: integer
         mcpserver_generation:
           description: |-
             MCPServerGeneration is the K8s .metadata.generation of the MCPServer CR that rendered
@@ -1882,6 +1925,15 @@ components:
           enum:
           - sse
           - streamable-http
+          type: string
+        proxy_read_timeout:
+          description: |-
+            ProxyReadTimeout bounds reading the entire request (headers + body) on the
+            proxy HTTP server, expressed as a Go duration string (e.g. "30s", "1m").
+            Empty uses the proxy default (30s). Negative durations and values that fail
+            time.ParseDuration are rejected at runtime. Applies to all HTTP transports.
+            String (not time.Duration) keeps the wire format unit-explicit.
+          example: 30s
           type: string
         publish:
           description: Publish lists ports to publish to the host in format "hostPort:containerPort"
@@ -2389,8 +2441,8 @@ components:
           type: string
         new_digest:
           description: |-
-            NewDigest is the digest the source currently resolves to. Equal to
-            OldDigest when Status is UpgradeStatusUpToDate.
+            NewDigest is the digest the source currently resolves to. It may equal
+            OldDigest when only the resolved reference or trust material changed.
           type: string
         new_resolved_reference:
           description: NewResolvedReference is the new resolvedReference when it changed.
@@ -2408,6 +2460,11 @@ components:
           $ref: '#/components/schemas/github_com_stacklok_toolhive_pkg_skills.FailureReason'
         status:
           $ref: '#/components/schemas/github_com_stacklok_toolhive_pkg_skills.UpgradeStatus'
+        trust_anchor_changed:
+          description: |-
+            TrustAnchorChanged reports that the operation selected a different
+            verified provenance or unsigned trust state than the lock recorded.
+          type: boolean
       type: object
     github_com_stacklok_toolhive_pkg_skills.UpgradeResult:
       properties:
@@ -2423,6 +2480,7 @@ components:
       enum:
       - upgraded
       - up-to-date
+      - trust-updated
       - not-upgradable
       - ref-change-blocked
       - signer-change-blocked
@@ -2431,6 +2489,7 @@ components:
       x-enum-varnames:
       - UpgradeStatusUpgraded
       - UpgradeStatusUpToDate
+      - UpgradeStatusTrustUpdated
       - UpgradeStatusNotUpgradable
       - UpgradeStatusRefChangeBlocked
       - UpgradeStatusSignerChangeBlocked
@@ -3120,6 +3179,10 @@ components:
         image:
           description: Docker image to use
           type: string
+        max_request_body_size:
+          description: Maximum inbound MCP proxy request body size in bytes. Zero
+            uses the default limit of 8 MiB.
+          type: integer
         name:
           description: Name of the workload
           type: string
@@ -3144,6 +3207,12 @@ components:
         proxy_port:
           description: Port for the HTTP proxy to listen on
           type: integer
+        proxy_read_timeout:
+          description: |-
+            Maximum time to read a complete MCP proxy request, expressed as a Go duration string.
+            Empty or zero uses the default timeout of 30 seconds.
+          example: 30s
+          type: string
         registry:
           description: Registry is the optional registry name to resolve the server
             from (e.g. "default").
@@ -3342,6 +3411,13 @@ components:
         project_root:
           description: ProjectRoot is the project root path for project-scoped installs
           type: string
+        public_key:
+          description: |-
+            PublicKey is the base64-encoded DER SPKI cosign public key the artifact
+            must verify against, for artifacts signed with a cosign key pair rather
+            than keylessly. Required the first time such an artifact is installed
+            project-scoped, and pinned in the lock file from then on.
+          type: string
         scope:
           $ref: '#/components/schemas/github_com_stacklok_toolhive_pkg_plugins.Scope'
         version:
@@ -3532,15 +3608,24 @@ components:
           type: boolean
       type: object
     pkg_api_v1.pushPluginRequest:
-      description: Request to push a built plugin artifact. Exactly one of identity_token
+      description: Request to push a built plugin artifact. Exactly one of key, identity_token,
         or no_sign is required.
       properties:
         identity_token:
           description: |-
             IdentityToken is a short-lived OIDC identity token used for keyless
-            signing. Plugin signing is keyless-only: there is deliberately no key
-            field, because ToolHive cannot verify key-signed artifacts at install
-            time and would publish an uninstallable plugin (#6442)
+            signing, mutually exclusive with Key
+          type: string
+        key:
+          description: |-
+            Key is the path to a cosign private key, resolved on the server's
+            filesystem. Accepted only when the request carries the secret capability
+            from the owner-protected local server discovery file; other requests are
+            refused with 403, since honoring one would let an untrusted caller have
+            the server sign with any key it can read. Use IdentityToken when calling
+            a remote or manually configured server. Consumers installing the result
+            project-scoped must supply the matching public key on first use
+            (install's public_key).
           type: string
         no_sign:
           description: NoSign pushes without signing
@@ -3561,8 +3646,12 @@ components:
           type: string
         key:
           description: |-
-            Key is the path to a cosign private key used to sign the pushed
-            artifact
+            Key is the path to a cosign private key, resolved on the server's
+            filesystem. Accepted only when the request carries the secret capability
+            from the owner-protected local server discovery file; other requests are
+            refused with 403, since honoring one would let an untrusted caller have
+            the server sign with any key it can read. Use IdentityToken when calling
+            a remote or manually configured server.
           type: string
         no_sign:
           description: NoSign pushes without signing
@@ -3775,6 +3864,9 @@ components:
           description: Prune removes project-scoped plugins installed but not present
             in the lock file
           type: boolean
+        public_key:
+          description: PublicKey supplies the cosign public key for key-signed adoption.
+          type: string
       type: object
     pkg_api_v1.syncSkillsRequest:
       description: Request to restore a project's installed skills to match its lock
@@ -3809,6 +3901,9 @@ components:
           description: Prune removes project-scoped skills installed but not present
             in the lock file
           type: boolean
+        public_key:
+          description: PublicKey supplies the cosign public key for key-signed adoption.
+          type: string
       type: object
     pkg_api_v1.toolOverride:
       description: Tool override
@@ -3860,6 +3955,10 @@ components:
         image:
           description: Docker image to use
           type: string
+        max_request_body_size:
+          description: Maximum inbound MCP proxy request body size in bytes. Zero
+            uses the default limit of 8 MiB.
+          type: integer
         network_isolation:
           description: |-
             Whether network isolation is turned on. This applies the rules in the permission profile.
@@ -3881,6 +3980,12 @@ components:
         proxy_port:
           description: Port for the HTTP proxy to listen on
           type: integer
+        proxy_read_timeout:
+          description: |-
+            Maximum time to read a complete MCP proxy request, expressed as a Go duration string.
+            Empty or zero uses the default timeout of 30 seconds.
+          example: 30s
+          type: string
         runtime_config:
           $ref: '#/components/schemas/templates.RuntimeConfig'
         secrets:
@@ -3994,6 +4099,10 @@ components:
           description: ProjectRoot is the project root path whose lock file should
             be upgraded
           type: string
+        public_key:
+          description: PublicKey proposes a cosign public key as the replacement trust
+            anchor.
+          type: string
       type: object
     pkg_api_v1.upgradeRequest:
       description: Request to apply an available upgrade to a workload. All fields
@@ -4038,8 +4147,8 @@ components:
           type: array
           uniqueItems: false
         fail_on_changes:
-          description: FailOnChanges exits with an error when any mutable source would
-            upgrade
+          description: FailOnChanges reports content and trust changes without applying
+            them
           type: boolean
         names:
           description: Names restricts the upgrade to specific skill names. Empty
@@ -4055,6 +4164,10 @@ components:
         project_root:
           description: ProjectRoot is the project root path whose lock file should
             be upgraded
+          type: string
+        public_key:
+          description: PublicKey proposes a cosign public key as the replacement trust
+            anchor.
           type: string
       type: object
     pkg_api_v1.validatePluginRequest:
@@ -4426,6 +4539,8 @@ components:
             $ref: '#/components/schemas/registry.SkillPackage'
           type: array
           uniqueItems: false
+        provenance:
+          $ref: '#/components/schemas/registry.Provenance'
         repository:
           $ref: '#/components/schemas/registry.SkillRepository'
         status:
@@ -4842,7 +4957,12 @@ components:
           type: string
       type: object
     storage.ACLUserRunConfig:
-      description: ACLUserConfig contains ACL user authentication configuration.
+      description: |-
+        ACLUserConfig contains ACL user authentication configuration.
+        A nil value is a valid no-auth configuration: the store connects without
+        credentials. A populated block whose password resolves to empty is a
+        misconfiguration (mis-keyed or unsynced secret) and is rejected rather
+        than silently downgraded to an unauthenticated connection.
       properties:
         password_env_var:
           description: PasswordEnvVar is the environment variable containing the Redis
@@ -4864,8 +4984,14 @@ components:
             Mutually exclusive with SentinelConfig.
           type: string
         auth_type:
-          description: AuthType must be "aclUser" - only ACL user authentication is
-            supported.
+          description: |-
+            AuthType selects the Redis authentication mode. "aclUser" is the only
+            authenticated mode. Leave it empty, with a nil ACLUserConfig, for a
+            no-auth connection to a Redis/Valkey instance that has no authentication
+            configured. Setting AuthType to "aclUser" declares authenticated intent:
+            the conversion rejects that pairing with a nil ACLUserConfig rather than
+            downgrading to no-auth. Otherwise presence of ACLUserConfig is what
+            enables authentication.
           type: string
         cluster_mode:
           description: ClusterMode enables the Redis Cluster protocol. Requires Addr
@@ -5094,7 +5220,7 @@ components:
           description: |-
             BuilderImage is the full image reference for the builder stage.
             An empty string signals "use the default for this transport type" during config merging.
-            Examples: "golang:1.26-alpine", "node:24-alpine", "python:3.14-slim"
+            Examples: "golang:1.27-alpine", "node:24-alpine", "python:3.14-slim"
           type: string
         runtime_env:
           additionalProperties:
@@ -6135,6 +6261,12 @@ paths:
   /api/v1beta/plugins/push:
     post:
       description: Push a built plugin artifact to a remote registry
+      parameters:
+      - description: Local discovery capability (required with request.key)
+        in: header
+        name: X-Toolhive-Key-Signing-Capability
+        schema:
+          type: string
       requestBody:
         content:
           application/json:
@@ -6159,6 +6291,12 @@ paths:
               schema:
                 type: string
           description: Bad Request
+        "403":
+          content:
+            application/json:
+              schema:
+                type: string
+          description: Forbidden (key signing requires the local discovery capability)
         "404":
           content:
             application/json:
@@ -6327,20 +6465,17 @@ paths:
       tags:
       - registry
     post:
-      description: Add a new registry
-      requestBody:
-        content:
-          application/json:
-            schema:
-              type: object
+      description: |-
+        This endpoint is retained for API compatibility, accepts no request body, and always returns 501 Not Implemented.
+        Custom registries are not currently supported.
       responses:
         "501":
           content:
-            application/json:
+            text/plain:
               schema:
                 type: string
           description: Not Implemented
-      summary: Add a registry
+      summary: Add a registry (unavailable)
       tags:
       - registry
   /api/v1beta/registry/{name}:
@@ -7230,6 +7365,12 @@ paths:
   /api/v1beta/skills/push:
     post:
       description: Push a built skill artifact to a remote registry
+      parameters:
+      - description: Local discovery capability (required with request.key)
+        in: header
+        name: X-Toolhive-Key-Signing-Capability
+        schema:
+          type: string
       requestBody:
         content:
           application/json:
@@ -7254,6 +7395,12 @@ paths:
               schema:
                 type: string
           description: Bad Request
+        "403":
+          content:
+            application/json:
+              schema:
+                type: string
+          description: Forbidden (key signing requires the local discovery capability)
         "404":
           content:
             application/json:

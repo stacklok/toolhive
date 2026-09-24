@@ -364,6 +364,43 @@ func TestValidateDCRRequest(t *testing.T) {
 			errorCode:   DCRErrorInvalidClientMetadata,
 		},
 
+		// device_code registrations (RFC 8628)
+		{
+			name: "device_code-only registration succeeds without redirect_uris or response_types",
+			request: &oauthproto.DynamicClientRegistrationRequest{
+				GrantTypes: []string{oauthproto.GrantTypeDeviceCode},
+			},
+			expectError:       false,
+			expectedGrants:    []string{oauthproto.GrantTypeDeviceCode},
+			expectedResponses: nil,
+		},
+		{
+			name: "device_code plus refresh_token registration succeeds",
+			request: &oauthproto.DynamicClientRegistrationRequest{
+				GrantTypes: []string{oauthproto.GrantTypeDeviceCode, "refresh_token"},
+			},
+			expectError:       false,
+			expectedGrants:    []string{oauthproto.GrantTypeDeviceCode, "refresh_token"},
+			expectedResponses: nil,
+		},
+		{
+			name: "device_code registration with response_types rejected",
+			request: &oauthproto.DynamicClientRegistrationRequest{
+				GrantTypes:    []string{oauthproto.GrantTypeDeviceCode},
+				ResponseTypes: []string{"code"},
+			},
+			expectError: true,
+			errorCode:   DCRErrorInvalidClientMetadata,
+		},
+		{
+			name: "device_code mixed with authorization_code still requires redirect_uris",
+			request: &oauthproto.DynamicClientRegistrationRequest{
+				GrantTypes: []string{oauthproto.GrantTypeDeviceCode, "authorization_code"},
+			},
+			expectError: true,
+			errorCode:   DCRErrorInvalidRedirectURI,
+		},
+
 		// response_types validation
 		{
 			name: "response_types defaults when empty",
@@ -813,7 +850,7 @@ func TestFilterPublicGrantTypes(t *testing.T) {
 		{"supported set passes through", []string{"authorization_code", "refresh_token"},
 			[]string{"authorization_code", "refresh_token"}, false},
 		{"unsupported entries are dropped, not fatal",
-			[]string{"authorization_code", "refresh_token", "urn:ietf:params:oauth:grant-type:device_code"},
+			[]string{"authorization_code", "refresh_token", "client_credentials"},
 			[]string{"authorization_code", "refresh_token"}, false},
 		{"unsupported-only list rejected (authorization_code missing)",
 			[]string{"urn:ietf:params:oauth:grant-type:device_code", "client_credentials"}, nil, true},

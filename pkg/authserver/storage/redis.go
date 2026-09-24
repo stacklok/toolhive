@@ -18,7 +18,7 @@ import (
 	"github.com/ory/fosite"
 	"github.com/redis/go-redis/v9"
 
-	tcredis "github.com/stacklok/toolhive-core/redis"
+	"github.com/stacklok/toolhive-core/redisconn"
 	"github.com/stacklok/toolhive/pkg/authserver/server"
 	"github.com/stacklok/toolhive/pkg/authserver/server/registration"
 	"github.com/stacklok/toolhive/pkg/authserver/server/session"
@@ -127,15 +127,15 @@ type storedSession struct {
 //
 // Connection-mode validation, timeout defaults, client construction (standalone,
 // cluster, or sentinel), TLS plumbing, and connectivity verification are
-// delegated to the shared toolhive-core redis package. cfg.Password may be
+// delegated to the shared toolhive-core redisconn package. cfg.Password may be
 // empty when the Redis server does not require authentication (the auth server
 // does not mandate ACL auth); the keyPrefix is storage-specific and required.
-func NewRedisStorage(ctx context.Context, cfg tcredis.Config, keyPrefix string) (*RedisStorage, error) {
+func NewRedisStorage(ctx context.Context, cfg redisconn.Config, keyPrefix string) (*RedisStorage, error) {
 	if keyPrefix == "" {
 		return nil, errors.New("invalid redis configuration: key prefix is required")
 	}
 
-	client, err := tcredis.NewClient(ctx, &cfg)
+	client, err := redisconn.NewClient(ctx, &cfg)
 	if err != nil {
 		return nil, err
 	}
@@ -658,7 +658,7 @@ func (s *RedisStorage) GetClient(ctx context.Context, id string) (fosite.Client,
 	data, err := getCmd.Bytes()
 	if err != nil {
 		if errors.Is(err, redis.Nil) {
-			return nil, fmt.Errorf("%w: %w", ErrNotFound, fosite.ErrNotFound.WithHint("Client not found"))
+			return nil, notFoundRFC6749Error("Client not found")
 		}
 		return nil, fmt.Errorf("failed to get client: %w", err)
 	}
@@ -811,7 +811,7 @@ func (s *RedisStorage) GetAuthorizeCodeSession(ctx context.Context, code string,
 	data, err := s.client.Get(ctx, key).Bytes()
 	if err != nil {
 		if errors.Is(err, redis.Nil) {
-			return nil, fmt.Errorf("%w: %w", ErrNotFound, fosite.ErrNotFound.WithHint("Authorization code not found"))
+			return nil, notFoundRFC6749Error("Authorization code not found")
 		}
 		return nil, fmt.Errorf("failed to get authorization code: %w", err)
 	}
@@ -850,7 +850,7 @@ func (s *RedisStorage) InvalidateAuthorizeCodeSession(ctx context.Context, code 
 		return fmt.Errorf("failed to check authorization code: %w", err)
 	}
 	if exists == 0 {
-		return fmt.Errorf("%w: %w", ErrNotFound, fosite.ErrNotFound.WithHint("Authorization code not found"))
+		return notFoundRFC6749Error("Authorization code not found")
 	}
 
 	// Atomically: create invalidation marker and extend auth code TTL to match.
@@ -902,7 +902,7 @@ func (s *RedisStorage) GetAccessTokenSession(ctx context.Context, signature stri
 	data, err := s.client.Get(ctx, key).Bytes()
 	if err != nil {
 		if errors.Is(err, redis.Nil) {
-			return nil, fmt.Errorf("%w: %w", ErrNotFound, fosite.ErrNotFound.WithHint("Access token not found"))
+			return nil, notFoundRFC6749Error("Access token not found")
 		}
 		return nil, fmt.Errorf("failed to get access token: %w", err)
 	}
@@ -918,7 +918,7 @@ func (s *RedisStorage) DeleteAccessTokenSession(ctx context.Context, signature s
 	data, err := s.client.Get(ctx, key).Bytes()
 	if err != nil {
 		if errors.Is(err, redis.Nil) {
-			return fmt.Errorf("%w: %w", ErrNotFound, fosite.ErrNotFound.WithHint("Access token not found"))
+			return notFoundRFC6749Error("Access token not found")
 		}
 		return fmt.Errorf("failed to get access token: %w", err)
 	}
@@ -978,7 +978,7 @@ func (s *RedisStorage) GetRefreshTokenSession(ctx context.Context, signature str
 	data, err := s.client.Get(ctx, key).Bytes()
 	if err != nil {
 		if errors.Is(err, redis.Nil) {
-			return nil, fmt.Errorf("%w: %w", ErrNotFound, fosite.ErrNotFound.WithHint("Refresh token not found"))
+			return nil, notFoundRFC6749Error("Refresh token not found")
 		}
 		return nil, fmt.Errorf("failed to get refresh token: %w", err)
 	}
@@ -994,7 +994,7 @@ func (s *RedisStorage) DeleteRefreshTokenSession(ctx context.Context, signature 
 	data, err := s.client.Get(ctx, key).Bytes()
 	if err != nil {
 		if errors.Is(err, redis.Nil) {
-			return fmt.Errorf("%w: %w", ErrNotFound, fosite.ErrNotFound.WithHint("Refresh token not found"))
+			return notFoundRFC6749Error("Refresh token not found")
 		}
 		return fmt.Errorf("failed to get refresh token: %w", err)
 	}
@@ -1129,7 +1129,7 @@ func (s *RedisStorage) GetPKCERequestSession(ctx context.Context, signature stri
 	data, err := s.client.Get(ctx, key).Bytes()
 	if err != nil {
 		if errors.Is(err, redis.Nil) {
-			return nil, fmt.Errorf("%w: %w", ErrNotFound, fosite.ErrNotFound.WithHint("PKCE request not found"))
+			return nil, notFoundRFC6749Error("PKCE request not found")
 		}
 		return nil, fmt.Errorf("failed to get PKCE request: %w", err)
 	}
@@ -1146,7 +1146,7 @@ func (s *RedisStorage) DeletePKCERequestSession(ctx context.Context, signature s
 		return fmt.Errorf("failed to delete PKCE request: %w", err)
 	}
 	if result == 0 {
-		return fmt.Errorf("%w: %w", ErrNotFound, fosite.ErrNotFound.WithHint("PKCE request not found"))
+		return notFoundRFC6749Error("PKCE request not found")
 	}
 
 	return nil
@@ -1196,6 +1196,35 @@ func (s *storedUpstreamTokens) toUpstreamTokens() *UpstreamTokens {
 	}
 }
 
+// newStoredUpstreamTokens converts tokens to its serializable form, encoding
+// zero time.Time fields as epoch 0 -- the "no expiry" sentinel toUpstreamTokens
+// decodes back to a zero time.Time (time.Time{}.Unix() itself returns
+// -62135596800, not a useful sentinel). Returns nil for nil input.
+func newStoredUpstreamTokens(tokens *UpstreamTokens) *storedUpstreamTokens {
+	if tokens == nil {
+		return nil
+	}
+	var expiresAtUnix int64
+	if !tokens.ExpiresAt.IsZero() {
+		expiresAtUnix = tokens.ExpiresAt.Unix()
+	}
+	var sessionExpiresAtUnix int64
+	if !tokens.SessionExpiresAt.IsZero() {
+		sessionExpiresAtUnix = tokens.SessionExpiresAt.Unix()
+	}
+	return &storedUpstreamTokens{
+		ProviderID:       tokens.ProviderID,
+		AccessToken:      tokens.AccessToken,
+		RefreshToken:     tokens.RefreshToken,
+		IDToken:          tokens.IDToken,
+		ExpiresAt:        expiresAtUnix,
+		SessionExpiresAt: sessionExpiresAtUnix,
+		UserID:           tokens.UserID,
+		UpstreamSubject:  tokens.UpstreamSubject,
+		ClientID:         tokens.ClientID,
+	}
+}
+
 // storeUpstreamTokensScript atomically reads the existing UserID, writes new token
 // data, updates the session index set, and updates user reverse-index sets.
 // This prevents a race condition where concurrent writes for the same session
@@ -1227,7 +1256,18 @@ if existing and existing ~= "null" then
         oldUserID = decoded.user_id
     end
 end
+` + upstreamRowWriteAndIndexScriptBody)
 
+// upstreamRowWriteAndIndexScriptBody is the write-and-index Lua fragment
+// shared verbatim by storeUpstreamTokensScript (unconditional overwrite) and
+// casUpstreamTokensScript (compare-and-swap): it SETs the new value, then
+// maintains the session index set's TTL/PERSIST invariants (see the comment
+// above), then updates the user reverse-index sets. Both scripts read the
+// existing row into oldUserID (and, for the CAS script, existingRefreshToken)
+// before this fragment runs, so it is textually identical between the two —
+// concatenated in Go rather than duplicated, so a future change to one script's
+// write/index behavior cannot silently drift from the other's.
+const upstreamRowWriteAndIndexScriptBody = `
 local ttlMs = tonumber(ARGV[2])
 if ttlMs > 0 then
     redis.call('SET', KEYS[1], ARGV[1], 'PX', ttlMs)
@@ -1295,7 +1335,52 @@ if newUserID ~= "" then
 end
 
 return 1
-`)
+`
+
+// casUpstreamTokensScript is the compare-and-swap sibling of
+// storeUpstreamTokensScript: it additionally gates the write on the existing
+// row's refresh_token matching ARGV[5] before doing anything else, returning
+// 0 (no write performed) on a mismatch instead of 1. This is what makes
+// CompareAndSwapUpstreamTokens's stored row deterministic when redeeming a
+// single-use, rotating upstream refresh token across multiple replicas of an
+// application sharing this Redis: a replica whose read is stale by the time
+// it tries to write loses the CAS instead of clobbering a winning replica's
+// rotated token. (This orders writes to storage; it is not by itself a
+// guarantee that the redemption is safe at the upstream provider — see the
+// CompareAndSwapUpstreamTokens interface doc.)
+//
+// KEYS[1] = per-provider token key
+// KEYS[2] = session index set key
+// ARGV[1] = new token data (JSON or "null" marker)
+// ARGV[2] = TTL in milliseconds
+// ARGV[3] = new UserID ("" if no user)
+// ARGV[4] = user upstream set key prefix
+// ARGV[5] = expected refresh token ("" means "no row exists yet, or the
+//
+//	existing row carries no refresh token")
+//
+// The write-and-index body is shared verbatim with storeUpstreamTokensScript
+// via upstreamRowWriteAndIndexScriptBody — see that constant's doc comment.
+var casUpstreamTokensScript = redis.NewScript(`
+local oldUserID = ""
+local existingRefreshToken = ""
+local existing = redis.call('GET', KEYS[1])
+if existing and existing ~= "null" then
+    local ok, decoded = pcall(cjson.decode, existing)
+    if ok and type(decoded) == "table" then
+        if decoded.user_id and decoded.user_id ~= "" then
+            oldUserID = decoded.user_id
+        end
+        if decoded.refresh_token then
+            existingRefreshToken = decoded.refresh_token
+        end
+    end
+end
+
+if existingRefreshToken ~= ARGV[5] then
+    return 0
+end
+` + upstreamRowWriteAndIndexScriptBody)
 
 // marshalUpstreamTokensWithTTL marshals tokens and calculates TTL.
 func marshalUpstreamTokensWithTTL(tokens *UpstreamTokens) ([]byte, time.Duration, error) {
@@ -1303,29 +1388,7 @@ func marshalUpstreamTokensWithTTL(tokens *UpstreamTokens) ([]byte, time.Duration
 		return []byte(nullMarker), DefaultAccessTokenTTL, nil
 	}
 
-	// Store 0 for zero time to use as a sentinel meaning "no expiry".
-	// time.Time{}.Unix() returns -62135596800 which is not a useful sentinel.
-	var expiresAtUnix int64
-	if !tokens.ExpiresAt.IsZero() {
-		expiresAtUnix = tokens.ExpiresAt.Unix()
-	}
-
-	var sessionExpiresAtUnix int64
-	if !tokens.SessionExpiresAt.IsZero() {
-		sessionExpiresAtUnix = tokens.SessionExpiresAt.Unix()
-	}
-
-	stored := storedUpstreamTokens{
-		ProviderID:       tokens.ProviderID,
-		AccessToken:      tokens.AccessToken,
-		RefreshToken:     tokens.RefreshToken,
-		IDToken:          tokens.IDToken,
-		ExpiresAt:        expiresAtUnix,
-		SessionExpiresAt: sessionExpiresAtUnix,
-		UserID:           tokens.UserID,
-		UpstreamSubject:  tokens.UpstreamSubject,
-		ClientID:         tokens.ClientID,
-	}
+	stored := newStoredUpstreamTokens(tokens)
 
 	data, err := json.Marshal(stored) //nolint:gosec // G117 - internal Redis storage serialization, not exposed to users
 	if err != nil {
@@ -1389,6 +1452,55 @@ func (s *RedisStorage) StoreUpstreamTokens(ctx context.Context, sessionID, provi
 	).Result()
 	if err != nil {
 		return fmt.Errorf("failed to store upstream tokens: %w", err)
+	}
+
+	return nil
+}
+
+// CompareAndSwapUpstreamTokens stores tokens for (sessionID, providerName)
+// only if the refresh token currently stored there equals
+// expectedRefreshToken; see the interface doc
+// (UpstreamTokenStorage.CompareAndSwapUpstreamTokens) for the coordination
+// contract. Uses casUpstreamTokensScript so the comparison and the write (and
+// its index maintenance) happen as one atomic Redis operation.
+func (s *RedisStorage) CompareAndSwapUpstreamTokens(
+	ctx context.Context, sessionID, providerName, expectedRefreshToken string, tokens *UpstreamTokens,
+) error {
+	if sessionID == "" {
+		return fosite.ErrInvalidRequest.WithHint("session ID cannot be empty")
+	}
+	if providerName == "" {
+		return fosite.ErrInvalidRequest.WithHint("provider name cannot be empty")
+	}
+
+	key := redisUpstreamKey(s.keyPrefix, sessionID, providerName)
+	idxKey := redisSetKey(s.keyPrefix, KeyTypeUpstreamIdx, sessionID)
+
+	data, ttl, err := marshalUpstreamTokensWithTTL(tokens)
+	if err != nil {
+		return err
+	}
+
+	newUserID := ""
+	if tokens != nil {
+		newUserID = tokens.UserID
+	}
+
+	userSetKeyPrefix := s.keyPrefix + KeyTypeUserUpstream + ":"
+
+	wrote, err := casUpstreamTokensScript.Run(ctx, s.client,
+		[]string{key, idxKey},
+		string(data),
+		ttl.Milliseconds(),
+		newUserID,
+		userSetKeyPrefix,
+		expectedRefreshToken,
+	).Int64()
+	if err != nil {
+		return fmt.Errorf("failed to compare-and-swap upstream tokens: %w", err)
+	}
+	if wrote == 0 {
+		return ErrConcurrentRefresh
 	}
 
 	return nil
@@ -1497,7 +1609,7 @@ func (s *RedisStorage) DeleteUpstreamTokens(ctx context.Context, sessionID strin
 	providerKeys, err := s.client.SMembers(ctx, idxKey).Result()
 	if err != nil {
 		if errors.Is(err, redis.Nil) {
-			return fmt.Errorf("%w: %w", ErrNotFound, fosite.ErrNotFound.WithHint("Upstream tokens not found"))
+			return notFoundRFC6749Error("Upstream tokens not found")
 		}
 		return fmt.Errorf("failed to get upstream token index: %w", err)
 	}
@@ -1506,7 +1618,7 @@ func (s *RedisStorage) DeleteUpstreamTokens(ctx context.Context, sessionID strin
 	warnDroppedIndexMembers("DeleteUpstreamTokens", idxKey, s.keyPrefix, dropped)
 
 	if len(providerKeys) == 0 {
-		return fmt.Errorf("%w: %w", ErrNotFound, fosite.ErrNotFound.WithHint("Upstream tokens not found"))
+		return notFoundRFC6749Error("Upstream tokens not found")
 	}
 
 	// Collect UserIDs for reverse-index cleanup before deleting
@@ -1608,7 +1720,7 @@ func (s *RedisStorage) GetLatestUpstreamTokensForUser(ctx context.Context, userI
 	warnDroppedIndexMembers("GetLatestUpstreamTokensForUser", setKey, s.keyPrefix, dropped)
 
 	if len(members) == 0 {
-		return nil, fmt.Errorf("%w: %w", ErrNotFound, fosite.ErrNotFound.WithHint("Upstream tokens not found"))
+		return nil, notFoundRFC6749Error("Upstream tokens not found")
 	}
 
 	values, err := s.client.MGet(ctx, members...).Result()
@@ -1633,7 +1745,7 @@ func (s *RedisStorage) GetLatestUpstreamTokensForUser(ctx context.Context, userI
 	}
 
 	if winner == nil {
-		return nil, fmt.Errorf("%w: %w", ErrNotFound, fosite.ErrNotFound.WithHint("Upstream tokens not found"))
+		return nil, notFoundRFC6749Error("Upstream tokens not found")
 	}
 
 	return winner.toUpstreamTokens(), nil
@@ -1699,7 +1811,7 @@ func (s *RedisStorage) getUpstreamTokensFromKey(ctx context.Context, key string)
 	data, err := s.client.Get(ctx, key).Bytes()
 	if err != nil {
 		if errors.Is(err, redis.Nil) {
-			return nil, fmt.Errorf("%w: %w", ErrNotFound, fosite.ErrNotFound.WithHint("Upstream tokens not found"))
+			return nil, notFoundRFC6749Error("Upstream tokens not found")
 		}
 		return nil, fmt.Errorf("failed to get upstream tokens: %w", err)
 	}
@@ -2015,6 +2127,65 @@ func dcrClaimOrReturnWinner(
 	return creds, nil
 }
 
+// UpdateDCRCredentialsIfPresent replaces the row at creds.Key with creds using
+// a single Redis SET with the XX flag, returning ErrNotFound (wrapped) when no
+// row physically exists at the key. It never creates: XX makes Redis itself
+// refuse the write when the key is absent, so an update racing a concurrent
+// delete or TTL eviction fails with ErrNotFound rather than silently
+// re-creating the row.
+//
+// The write needs no WATCH/MULTI (unlike StoreDCRCredentialsIfAbsent, which
+// must read the existing row to decide whether it may claim the slot). Nothing
+// here depends on the old value: only the key's bare existence gates the
+// write, and SET XX evaluates that existence and performs the write in one
+// atomic server-side step. There is therefore no read-check-write window to
+// guard, no lost-update race, and no possibility of redis.TxFailedErr.
+//
+// # Presence is physical, not liveness
+//
+// Unlike StoreDCRCredentialsIfAbsent, this does not treat an expired existing
+// row as absent — any row whose key still exists is updatable, including one
+// whose ClientSecretExpiresAt has passed but whose Redis key has not yet
+// self-evicted. See the DCRCredentialStore interface docs for why Update gates
+// on physical presence: it exists so a decorator can rewrite a row it just read
+// via GetDCRCredentials, which itself does not filter on expiry.
+//
+// # TTL
+//
+// The rewritten row's TTL is derived from the incoming creds by
+// marshalDCRCredentialsForStore, identically to StoreDCRCredentialsIfAbsent: a
+// future ClientSecretExpiresAt sets that TTL, a zero value clears it (the row
+// becomes long-lived, since a SET without KEEPTTL discards any existing TTL),
+// and a past value uses the bounded pastExpiryDCRTTL. An update can therefore
+// extend, shorten, or clear the row's TTL exactly as an initial store would.
+//
+// Validation is delegated to validateDCRCredentialsForStore so the rejection
+// set stays in sync with MemoryStorage and any future backend.
+func (s *RedisStorage) UpdateDCRCredentialsIfPresent(ctx context.Context, creds *DCRCredentials) (*DCRCredentials, error) {
+	if err := validateDCRCredentialsForStore(creds); err != nil {
+		return nil, err
+	}
+
+	key := redisDCRKey(s.keyPrefix, creds.Key)
+
+	data, ttl, err := marshalDCRCredentialsForStore(creds)
+	if err != nil {
+		return nil, err
+	}
+
+	// Mode XX: write only if the key already exists. Redis replies nil when it
+	// does not, which go-redis surfaces as redis.Nil.
+	err = s.client.SetArgs(ctx, key, data, redis.SetArgs{Mode: "XX", TTL: ttl}).Err()
+	if errors.Is(err, redis.Nil) {
+		return nil, notFoundRFC6749Error("DCR credentials not found")
+	}
+	if err != nil {
+		return nil, fmt.Errorf("failed to update dcr credentials: %w", err)
+	}
+
+	return cloneDCRCredentials(creds), nil
+}
+
 // GetDCRCredentials retrieves the credentials previously persisted under key.
 // Returns ErrNotFound (wrapped) when no entry exists. The returned value is a
 // fresh struct decoded from JSON, which acts as a defensive copy.
@@ -2028,7 +2199,7 @@ func (s *RedisStorage) GetDCRCredentials(ctx context.Context, key DCRKey) (*DCRC
 	data, err := s.client.Get(ctx, redisKey).Bytes()
 	if err != nil {
 		if errors.Is(err, redis.Nil) {
-			return nil, fmt.Errorf("%w: %w", ErrNotFound, fosite.ErrNotFound.WithHint("DCR credentials not found"))
+			return nil, notFoundRFC6749Error("DCR credentials not found")
 		}
 		return nil, fmt.Errorf("failed to get dcr credentials: %w", err)
 	}
@@ -2112,7 +2283,7 @@ func (s *RedisStorage) LoadPendingAuthorization(ctx context.Context, state strin
 	data, err := s.client.Get(ctx, key).Bytes()
 	if err != nil {
 		if errors.Is(err, redis.Nil) {
-			return nil, fmt.Errorf("%w: %w", ErrNotFound, fosite.ErrNotFound.WithHint("Pending authorization not found"))
+			return nil, notFoundRFC6749Error("Pending authorization not found")
 		}
 		return nil, fmt.Errorf("failed to get pending authorization: %w", err)
 	}
@@ -2159,10 +2330,549 @@ func (s *RedisStorage) DeletePendingAuthorization(ctx context.Context, state str
 		return fmt.Errorf("failed to delete pending authorization: %w", err)
 	}
 	if result == 0 {
-		return fmt.Errorf("%w: %w", ErrNotFound, fosite.ErrNotFound.WithHint("Pending authorization not found"))
+		return notFoundRFC6749Error("Pending authorization not found")
 	}
 
 	return nil
+}
+
+// -----------------------
+// Pending Device Login Storage
+// -----------------------
+
+// storedPendingDeviceLogin is a serializable wrapper for PendingDeviceLogin.
+type storedPendingDeviceLogin struct {
+	DeviceCode           string `json:"device_code"`
+	UserCode             string `json:"user_code"`
+	UpstreamPKCEVerifier string `json:"upstream_pkce_verifier"`
+	UpstreamNonce        string `json:"upstream_nonce"`
+	UpstreamProviderName string `json:"upstream_provider_name,omitempty"`
+	CreatedAt            int64  `json:"created_at"`
+}
+
+// StorePendingDeviceLogin stores a pending device-flow verification-page login.
+func (s *RedisStorage) StorePendingDeviceLogin(ctx context.Context, state string, pending *PendingDeviceLogin) error {
+	if state == "" {
+		return fosite.ErrInvalidRequest.WithHint("state cannot be empty")
+	}
+	if pending == nil {
+		return fosite.ErrInvalidRequest.WithHint("pending device login cannot be nil")
+	}
+
+	key := redisKey(s.keyPrefix, KeyTypePendingDeviceLogin, state)
+
+	stored := storedPendingDeviceLogin{
+		DeviceCode:           pending.DeviceCode,
+		UserCode:             pending.UserCode,
+		UpstreamPKCEVerifier: pending.UpstreamPKCEVerifier,
+		UpstreamNonce:        pending.UpstreamNonce,
+		UpstreamProviderName: pending.UpstreamProviderName,
+		CreatedAt:            pending.CreatedAt.Unix(),
+	}
+
+	data, err := json.Marshal(stored) //nolint:gosec // G117 - internal Redis storage serialization, not exposed to users
+	if err != nil {
+		return fmt.Errorf("failed to marshal pending device login: %w", err)
+	}
+
+	return s.client.Set(ctx, key, data, DefaultDeviceLoginTTL).Err()
+}
+
+// LoadPendingDeviceLogin retrieves a pending device login by state.
+func (s *RedisStorage) LoadPendingDeviceLogin(ctx context.Context, state string) (*PendingDeviceLogin, error) {
+	key := redisKey(s.keyPrefix, KeyTypePendingDeviceLogin, state)
+
+	data, err := s.client.Get(ctx, key).Bytes()
+	if err != nil {
+		if errors.Is(err, redis.Nil) {
+			return nil, notFoundRFC6749Error("Pending device login not found")
+		}
+		return nil, fmt.Errorf("failed to get pending device login: %w", err)
+	}
+
+	var stored storedPendingDeviceLogin
+	if err := json.Unmarshal(data, &stored); err != nil {
+		return nil, fmt.Errorf("failed to unmarshal pending device login: %w", err)
+	}
+
+	createdAt := time.Unix(stored.CreatedAt, 0)
+	if time.Since(createdAt) > DefaultDeviceLoginTTL {
+		return nil, ErrExpired
+	}
+
+	return &PendingDeviceLogin{
+		DeviceCode:           stored.DeviceCode,
+		UserCode:             stored.UserCode,
+		UpstreamPKCEVerifier: stored.UpstreamPKCEVerifier,
+		UpstreamNonce:        stored.UpstreamNonce,
+		UpstreamProviderName: stored.UpstreamProviderName,
+		CreatedAt:            createdAt,
+	}, nil
+}
+
+// DeletePendingDeviceLogin removes a pending device login.
+func (s *RedisStorage) DeletePendingDeviceLogin(ctx context.Context, state string) error {
+	key := redisKey(s.keyPrefix, KeyTypePendingDeviceLogin, state)
+
+	result, err := s.client.Del(ctx, key).Result()
+	if err != nil {
+		return fmt.Errorf("failed to delete pending device login: %w", err)
+	}
+	if result == 0 {
+		return notFoundRFC6749Error("Pending device login not found")
+	}
+	return nil
+}
+
+// -----------------------
+// Pending Device Confirmation Storage
+// -----------------------
+
+// storedPendingDeviceConfirmation is a serializable wrapper for
+// PendingDeviceConfirmation.
+type storedPendingDeviceConfirmation struct {
+	DeviceCode        string                `json:"device_code"`
+	UserCode          string                `json:"user_code"`
+	ResolvedUserID    string                `json:"resolved_user_id,omitempty"`
+	ResolvedUserName  string                `json:"resolved_user_name,omitempty"`
+	ResolvedUserEmail string                `json:"resolved_user_email,omitempty"`
+	UpstreamTokens    *storedUpstreamTokens `json:"upstream_tokens,omitempty"`
+	Synthetic         bool                  `json:"synthetic,omitempty"`
+	CreatedAt         int64                 `json:"created_at"`
+}
+
+// StorePendingDeviceConfirmation stores a pending device-flow confirmation,
+// keyed by an opaque token. See PendingDeviceConfirmation's doc comment for
+// why the resolved identity is addressed by token rather than round-tripped
+// through the browser.
+func (s *RedisStorage) StorePendingDeviceConfirmation(
+	ctx context.Context, token string, pending *PendingDeviceConfirmation,
+) error {
+	if token == "" {
+		return fosite.ErrInvalidRequest.WithHint("token cannot be empty")
+	}
+	if pending == nil {
+		return fosite.ErrInvalidRequest.WithHint("pending device confirmation cannot be nil")
+	}
+
+	key := redisKey(s.keyPrefix, KeyTypePendingDeviceConfirmation, token)
+
+	stored := storedPendingDeviceConfirmation{
+		DeviceCode:        pending.DeviceCode,
+		UserCode:          pending.UserCode,
+		ResolvedUserID:    pending.ResolvedUserID,
+		ResolvedUserName:  pending.ResolvedUserName,
+		ResolvedUserEmail: pending.ResolvedUserEmail,
+		UpstreamTokens:    newStoredUpstreamTokens(pending.UpstreamTokens),
+		Synthetic:         pending.Synthetic,
+		CreatedAt:         pending.CreatedAt.Unix(),
+	}
+
+	data, err := json.Marshal(stored) //nolint:gosec // G117 - internal Redis storage serialization, not exposed to users
+	if err != nil {
+		return fmt.Errorf("failed to marshal pending device confirmation: %w", err)
+	}
+
+	return s.client.Set(ctx, key, data, DefaultDeviceLoginTTL).Err()
+}
+
+// LoadPendingDeviceConfirmation retrieves a pending device confirmation by token.
+func (s *RedisStorage) LoadPendingDeviceConfirmation(
+	ctx context.Context, token string,
+) (*PendingDeviceConfirmation, error) {
+	key := redisKey(s.keyPrefix, KeyTypePendingDeviceConfirmation, token)
+
+	data, err := s.client.Get(ctx, key).Bytes()
+	if err != nil {
+		if errors.Is(err, redis.Nil) {
+			return nil, notFoundRFC6749Error("Pending device confirmation not found")
+		}
+		return nil, fmt.Errorf("failed to get pending device confirmation: %w", err)
+	}
+
+	var stored storedPendingDeviceConfirmation
+	if err := json.Unmarshal(data, &stored); err != nil {
+		return nil, fmt.Errorf("failed to unmarshal pending device confirmation: %w", err)
+	}
+
+	createdAt := time.Unix(stored.CreatedAt, 0)
+	if time.Since(createdAt) > DefaultDeviceLoginTTL {
+		return nil, ErrExpired
+	}
+
+	var upstreamTokens *UpstreamTokens
+	if stored.UpstreamTokens != nil {
+		upstreamTokens = stored.UpstreamTokens.toUpstreamTokens()
+	}
+
+	return &PendingDeviceConfirmation{
+		DeviceCode:        stored.DeviceCode,
+		UserCode:          stored.UserCode,
+		ResolvedUserID:    stored.ResolvedUserID,
+		ResolvedUserName:  stored.ResolvedUserName,
+		ResolvedUserEmail: stored.ResolvedUserEmail,
+		UpstreamTokens:    upstreamTokens,
+		Synthetic:         stored.Synthetic,
+		CreatedAt:         createdAt,
+	}, nil
+}
+
+// DeletePendingDeviceConfirmation removes a pending device confirmation.
+func (s *RedisStorage) DeletePendingDeviceConfirmation(ctx context.Context, token string) error {
+	key := redisKey(s.keyPrefix, KeyTypePendingDeviceConfirmation, token)
+
+	result, err := s.client.Del(ctx, key).Result()
+	if err != nil {
+		return fmt.Errorf("failed to delete pending device confirmation: %w", err)
+	}
+	if result == 0 {
+		return notFoundRFC6749Error("Pending device confirmation not found")
+	}
+	return nil
+}
+
+// -----------------------
+// Device Code Storage
+// -----------------------
+
+// storedDeviceRequest is a serializable wrapper for DeviceRequest.
+// LastPolledAtNano is stored at nanosecond precision (unlike CreatedAt's
+// epoch-seconds), because enforcePollInterval in deviceflow/handler.go
+// compares it against MinInterval and a poll landing fractionally under the
+// required interval must not appear to have waited long enough merely due to
+// storage rounding -- see deviceTimeToUnixNano / deviceUnixNanoToTime.
+type storedDeviceRequest struct {
+	DeviceCode        string              `json:"device_code"`
+	UserCode          string              `json:"user_code"`
+	ClientID          string              `json:"client_id"`
+	Scopes            []string            `json:"scopes"`
+	Audience          []string            `json:"audience,omitempty"`
+	Status            DeviceRequestStatus `json:"status"`
+	IntervalSeconds   int64               `json:"interval_seconds,omitempty"`
+	LastPolledAtNano  int64               `json:"last_polled_at_nano,omitempty"`
+	ResolvedUserID    string              `json:"resolved_user_id,omitempty"`
+	ResolvedUserName  string              `json:"resolved_user_name,omitempty"`
+	ResolvedUserEmail string              `json:"resolved_user_email,omitempty"`
+	SessionID         string              `json:"session_id,omitempty"`
+	CreatedAt         int64               `json:"created_at"`
+}
+
+// deviceTimeToUnixNano converts t to epoch nanoseconds for JSON storage, using 0 to
+// mean the zero time.Time so a never-polled request round-trips through
+// LastPolledAt's IsZero() check rather than colliding with the Unix epoch.
+func deviceTimeToUnixNano(t time.Time) int64 {
+	if t.IsZero() {
+		return 0
+	}
+	return t.UnixNano()
+}
+
+// deviceUnixNanoToTime is the inverse of deviceTimeToUnixNano.
+func deviceUnixNanoToTime(unixNano int64) time.Time {
+	if unixNano == 0 {
+		return time.Time{}
+	}
+	return time.Unix(0, unixNano)
+}
+
+// toDeviceRequest converts the wire representation back to a DeviceRequest,
+// cloning slice fields so the caller cannot mutate this storage's JSON-decoded
+// backing arrays.
+func (stored *storedDeviceRequest) toDeviceRequest() *DeviceRequest {
+	return &DeviceRequest{
+		DeviceCode:        stored.DeviceCode,
+		UserCode:          stored.UserCode,
+		ClientID:          stored.ClientID,
+		Scopes:            slices.Clone(stored.Scopes),
+		Audience:          slices.Clone(stored.Audience),
+		Status:            stored.Status,
+		Interval:          time.Duration(stored.IntervalSeconds) * time.Second,
+		LastPolledAt:      deviceUnixNanoToTime(stored.LastPolledAtNano),
+		ResolvedUserID:    stored.ResolvedUserID,
+		ResolvedUserName:  stored.ResolvedUserName,
+		ResolvedUserEmail: stored.ResolvedUserEmail,
+		SessionID:         stored.SessionID,
+		CreatedAt:         time.Unix(stored.CreatedAt, 0),
+	}
+}
+
+// StoreDeviceRequest stores a new pending device request, indexed by both
+// DeviceCode and UserCode.
+//
+// Both keys are created with SETNX inside a single Redis transaction, so a
+// concurrent double-store cannot silently overwrite either index. Because
+// MULTI/EXEC applies each queued command unconditionally (there is no
+// short-circuit between them), the two SETNX calls can succeed and fail
+// independently; when exactly one did, the successful key is deleted so no
+// half-written pair is ever left behind.
+func (s *RedisStorage) StoreDeviceRequest(ctx context.Context, device *DeviceRequest) error {
+	if device == nil {
+		return fosite.ErrInvalidRequest.WithHint("device request cannot be nil")
+	}
+	if device.DeviceCode == "" {
+		return fosite.ErrInvalidRequest.WithHint("device code cannot be empty")
+	}
+	if device.UserCode == "" {
+		return fosite.ErrInvalidRequest.WithHint("user code cannot be empty")
+	}
+	if device.Status != DeviceRequestStatusPending {
+		return fosite.ErrInvalidRequest.WithHint("device request must be created with pending status")
+	}
+
+	deviceKey := redisKey(s.keyPrefix, KeyTypeDeviceCode, device.DeviceCode)
+	userCodeKey := redisKey(s.keyPrefix, KeyTypeDeviceUserCode, device.UserCode)
+
+	stored := storedDeviceRequest{
+		DeviceCode:        device.DeviceCode,
+		UserCode:          device.UserCode,
+		ClientID:          device.ClientID,
+		Scopes:            slices.Clone(device.Scopes),
+		Audience:          slices.Clone(device.Audience),
+		Status:            device.Status,
+		IntervalSeconds:   int64(device.Interval / time.Second),
+		LastPolledAtNano:  deviceTimeToUnixNano(device.LastPolledAt),
+		ResolvedUserID:    device.ResolvedUserID,
+		ResolvedUserName:  device.ResolvedUserName,
+		ResolvedUserEmail: device.ResolvedUserEmail,
+		SessionID:         device.SessionID,
+		CreatedAt:         device.CreatedAt.Unix(),
+	}
+
+	data, err := json.Marshal(stored) //nolint:gosec // G117 - internal Redis storage serialization, not exposed to users
+	if err != nil {
+		return fmt.Errorf("failed to marshal device request: %w", err)
+	}
+
+	pipe := s.client.TxPipeline()
+	deviceCmd := pipe.SetNX(ctx, deviceKey, data, DefaultDeviceRequestTTL)
+	userCodeCmd := pipe.SetNX(ctx, userCodeKey, device.DeviceCode, DefaultDeviceRequestTTL)
+	if _, err := pipe.Exec(ctx); err != nil {
+		return fmt.Errorf("failed to store device request: %w", err)
+	}
+
+	deviceCreated, userCodeCreated := deviceCmd.Val(), userCodeCmd.Val()
+	if deviceCreated && userCodeCreated {
+		return nil
+	}
+	if deviceCreated {
+		warnOnCleanupErr(s.client.Del(ctx, deviceKey).Err(), "StoreDeviceRequest cleanup", deviceKey)
+		return fmt.Errorf("%w: user code %q", ErrAlreadyExists, device.UserCode)
+	}
+	if userCodeCreated {
+		warnOnCleanupErr(s.client.Del(ctx, userCodeKey).Err(), "StoreDeviceRequest cleanup", userCodeKey)
+	}
+	return fmt.Errorf("%w: device code %q", ErrAlreadyExists, device.DeviceCode)
+}
+
+// getDeviceRequestByDeviceCode is the shared get+unmarshal+expiry-check logic
+// used by both LoadDeviceRequestByDeviceCode and LoadDeviceRequestByUserCode
+// (once the latter has resolved its device_code via the secondary index).
+func (s *RedisStorage) getDeviceRequestByDeviceCode(ctx context.Context, deviceCode string) (*DeviceRequest, error) {
+	key := redisKey(s.keyPrefix, KeyTypeDeviceCode, deviceCode)
+
+	data, err := s.client.Get(ctx, key).Bytes()
+	if err != nil {
+		if errors.Is(err, redis.Nil) {
+			return nil, fmt.Errorf("%w: device request not found", ErrNotFound)
+		}
+		return nil, fmt.Errorf("failed to get device request: %w", err)
+	}
+
+	var stored storedDeviceRequest
+	if err := json.Unmarshal(data, &stored); err != nil {
+		return nil, fmt.Errorf("failed to unmarshal device request: %w", err)
+	}
+
+	// Check if expired (TTL should handle this, but double-check).
+	if time.Since(time.Unix(stored.CreatedAt, 0)) > DefaultDeviceRequestTTL {
+		return nil, ErrExpired
+	}
+
+	return stored.toDeviceRequest(), nil
+}
+
+// LoadDeviceRequestByDeviceCode retrieves a device request by its device_code.
+func (s *RedisStorage) LoadDeviceRequestByDeviceCode(ctx context.Context, deviceCode string) (*DeviceRequest, error) {
+	return s.getDeviceRequestByDeviceCode(ctx, deviceCode)
+}
+
+// LoadDeviceRequestByUserCode retrieves a device request by its user_code,
+// for the verification page.
+func (s *RedisStorage) LoadDeviceRequestByUserCode(ctx context.Context, userCode string) (*DeviceRequest, error) {
+	userCodeKey := redisKey(s.keyPrefix, KeyTypeDeviceUserCode, userCode)
+
+	deviceCode, err := s.client.Get(ctx, userCodeKey).Result()
+	if err != nil {
+		if errors.Is(err, redis.Nil) {
+			return nil, fmt.Errorf("%w: device request not found", ErrNotFound)
+		}
+		return nil, fmt.Errorf("failed to get device request user_code index: %w", err)
+	}
+
+	return s.getDeviceRequestByDeviceCode(ctx, deviceCode)
+}
+
+// updateDeviceRequest performs a read-modify-write on the device_code record
+// identified by deviceCode: it loads the current record, applies mutate, and
+// writes it back with redis.KeepTTL so the record's remaining TTL is
+// preserved. mutate returns an error (e.g. ErrInvalidState) to abort the
+// write without touching the stored record.
+//
+// The read-modify-write runs inside a Redis WATCH/MULTI transaction,
+// mirroring DeleteDeviceRequest: two concurrent callers racing the same
+// device_code (e.g. a double-click authorize+deny, or two verification-page
+// tabs) cannot both observe the pre-mutation status and both commit --
+// whichever EXECs second aborts with redis.TxFailedErr and retries against
+// the now-updated record, so mutate's pending-status check (or any other
+// invariant it enforces) actually holds across the transition rather than
+// being a TOCTOU check on a plain read-then-write. See
+// maxConfiguredClientReconcileRetries for why the retry count is bounded.
+func (s *RedisStorage) updateDeviceRequest(
+	ctx context.Context, deviceCode string, mutate func(*storedDeviceRequest) error,
+) error {
+	key := redisKey(s.keyPrefix, KeyTypeDeviceCode, deviceCode)
+
+	txFn := func(tx *redis.Tx) error {
+		data, err := tx.Get(ctx, key).Bytes()
+		if err != nil {
+			if errors.Is(err, redis.Nil) {
+				return fmt.Errorf("%w: device request not found", ErrNotFound)
+			}
+			return fmt.Errorf("failed to get device request: %w", err)
+		}
+
+		var stored storedDeviceRequest
+		if err := json.Unmarshal(data, &stored); err != nil {
+			return fmt.Errorf("failed to unmarshal device request: %w", err)
+		}
+
+		if time.Since(time.Unix(stored.CreatedAt, 0)) > DefaultDeviceRequestTTL {
+			return ErrExpired
+		}
+
+		if err := mutate(&stored); err != nil {
+			return err
+		}
+
+		updated, err := json.Marshal(stored) //nolint:gosec // G117 - internal Redis storage serialization, not exposed to users
+		if err != nil {
+			return fmt.Errorf("failed to marshal device request: %w", err)
+		}
+
+		_, err = tx.TxPipelined(ctx, func(pipe redis.Pipeliner) error {
+			pipe.Set(ctx, key, updated, redis.KeepTTL)
+			return nil
+		})
+		return err
+	}
+
+	// Watch returns any non-TxFailedErr error from txFn (not-found, expired,
+	// mutate's own validation error, marshal/get failures) immediately without
+	// retrying, since a fresh GET would only reproduce it. Only a genuine
+	// transaction conflict (another writer changed the watched key between our
+	// GET and EXEC) is retried, up to maxConfiguredClientReconcileRetries.
+	var watchErr error
+	for attempt := 0; attempt < maxConfiguredClientReconcileRetries; attempt++ {
+		watchErr = s.client.Watch(ctx, txFn, key)
+		if !errors.Is(watchErr, redis.TxFailedErr) {
+			return watchErr
+		}
+	}
+	return fmt.Errorf("failed to update device request: %w", watchErr)
+}
+
+// MarkDeviceRequestAuthorized transitions a pending device request to
+// authorized, attaching the resolved identity.
+func (s *RedisStorage) MarkDeviceRequestAuthorized(
+	ctx context.Context, deviceCode string, resolvedUserID, resolvedUserName, resolvedUserEmail, sessionID string,
+) error {
+	return s.updateDeviceRequest(ctx, deviceCode, func(stored *storedDeviceRequest) error {
+		if stored.Status != DeviceRequestStatusPending {
+			return fmt.Errorf("%w: device request is %q, not pending", ErrInvalidState, stored.Status)
+		}
+		stored.Status = DeviceRequestStatusAuthorized
+		stored.ResolvedUserID = resolvedUserID
+		stored.ResolvedUserName = resolvedUserName
+		stored.ResolvedUserEmail = resolvedUserEmail
+		stored.SessionID = sessionID
+		return nil
+	})
+}
+
+// MarkDeviceRequestDenied transitions a pending device request to denied.
+func (s *RedisStorage) MarkDeviceRequestDenied(ctx context.Context, deviceCode string) error {
+	return s.updateDeviceRequest(ctx, deviceCode, func(stored *storedDeviceRequest) error {
+		if stored.Status != DeviceRequestStatusPending {
+			return fmt.Errorf("%w: device request is %q, not pending", ErrInvalidState, stored.Status)
+		}
+		stored.Status = DeviceRequestStatusDenied
+		return nil
+	})
+}
+
+// UpdateDeviceRequestLastPolledAt records the time of the most recent poll.
+func (s *RedisStorage) UpdateDeviceRequestLastPolledAt(ctx context.Context, deviceCode string, polledAt time.Time) error {
+	return s.updateDeviceRequest(ctx, deviceCode, func(stored *storedDeviceRequest) error {
+		stored.LastPolledAtNano = deviceTimeToUnixNano(polledAt)
+		return nil
+	})
+}
+
+// DeleteDeviceRequest removes a device request, e.g. once its token has been
+// issued so the device_code cannot be redeemed twice. Both the canonical
+// record and the user_code secondary index are deleted in one pipeline.
+//
+// The get-then-delete sequence runs inside a Redis WATCH/MULTI transaction,
+// mirroring UpsertDCRIssuedClient: if another caller deletes (or otherwise
+// modifies) the key between our GET and EXEC, EXEC aborts with
+// redis.TxFailedErr. Retrying then re-runs the GET, which now observes
+// redis.Nil and reports ErrNotFound to the loser -- so a second concurrent or
+// replayed DeleteDeviceRequest for the same device_code can never also
+// observe success, which is what made this method single-use. See
+// maxConfiguredClientReconcileRetries for why the retry count is bounded.
+func (s *RedisStorage) DeleteDeviceRequest(ctx context.Context, deviceCode string) error {
+	key := redisKey(s.keyPrefix, KeyTypeDeviceCode, deviceCode)
+
+	txFn := func(tx *redis.Tx) error {
+		data, err := tx.Get(ctx, key).Bytes()
+		if err != nil {
+			if errors.Is(err, redis.Nil) {
+				return fmt.Errorf("%w: device request not found", ErrNotFound)
+			}
+			return fmt.Errorf("failed to get device request: %w", err)
+		}
+
+		var stored storedDeviceRequest
+		if err := json.Unmarshal(data, &stored); err != nil {
+			return fmt.Errorf("failed to unmarshal device request: %w", err)
+		}
+
+		userCodeKey := redisKey(s.keyPrefix, KeyTypeDeviceUserCode, stored.UserCode)
+
+		_, err = tx.TxPipelined(ctx, func(pipe redis.Pipeliner) error {
+			pipe.Del(ctx, key)
+			pipe.Del(ctx, userCodeKey)
+			return nil
+		})
+		return err
+	}
+
+	// Watch returns any non-TxFailedErr error from txFn (not-found, get/unmarshal
+	// failures) immediately without retrying, since a fresh GET would only
+	// reproduce it. Only a genuine transaction conflict (another caller deleted
+	// or modified the watched key between our GET and EXEC) is retried, up to
+	// maxConfiguredClientReconcileRetries -- at which point the retry re-runs
+	// the GET, which now observes redis.Nil and reports ErrNotFound to the
+	// loser, so a second concurrent or replayed delete can never also observe
+	// success.
+	var watchErr error
+	for attempt := 0; attempt < maxConfiguredClientReconcileRetries; attempt++ {
+		watchErr = s.client.Watch(ctx, txFn, key)
+		if !errors.Is(watchErr, redis.TxFailedErr) {
+			return watchErr
+		}
+	}
+	return fmt.Errorf("failed to delete device request: %w", watchErr)
 }
 
 // -----------------------
@@ -2579,11 +3289,14 @@ func getTTLFromRequester(request fosite.Requester, tokenType fosite.TokenType, d
 
 // Compile-time interface compliance checks
 var (
-	_ Storage                     = (*RedisStorage)(nil)
-	_ PendingAuthorizationStorage = (*RedisStorage)(nil)
-	_ ClientRegistry              = (*RedisStorage)(nil)
-	_ UpstreamTokenStorage        = (*RedisStorage)(nil)
-	_ UserStorage                 = (*RedisStorage)(nil)
-	_ DCRCredentialStore          = (*RedisStorage)(nil)
-	_ AssertionJWTConsumer        = (*RedisStorage)(nil)
+	_ Storage                          = (*RedisStorage)(nil)
+	_ PendingAuthorizationStorage      = (*RedisStorage)(nil)
+	_ DeviceCodeStorage                = (*RedisStorage)(nil)
+	_ PendingDeviceLoginStorage        = (*RedisStorage)(nil)
+	_ PendingDeviceConfirmationStorage = (*RedisStorage)(nil)
+	_ ClientRegistry                   = (*RedisStorage)(nil)
+	_ UpstreamTokenStorage             = (*RedisStorage)(nil)
+	_ UserStorage                      = (*RedisStorage)(nil)
+	_ DCRCredentialStore               = (*RedisStorage)(nil)
+	_ AssertionJWTConsumer             = (*RedisStorage)(nil)
 )

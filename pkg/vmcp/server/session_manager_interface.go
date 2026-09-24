@@ -59,4 +59,11 @@ type SessionManager interface {
 	// or health-monitoring components when they detect that a backend session has
 	// expired or been lost. Storage errors are logged but not returned.
 	NotifyBackendExpired(sessionID, workloadID string, metadata map[string]string)
+
+	// EvictStaleSessions evicts every live session that still holds a connection to
+	// a backend no longer present in the registry, closing those connections
+	// (including lingering server-push streams). Each evicted session is rebuilt
+	// without the dropped backend on its next access. It is idempotent and a no-op
+	// when no session is stale. Returns the number of sessions evicted.
+	EvictStaleSessions(ctx context.Context) int
 }

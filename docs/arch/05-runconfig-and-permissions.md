@@ -90,7 +90,7 @@ The complete `RunConfig` struct is defined in `pkg/runner/config.go`.
 
 **Fields:**
 - `builder_image`: Override the default base image for the builder stage
-  - Go: Default `golang:1.26-alpine`
+  - Go: Default `golang:1.27-alpine`
   - Node: Default `node:24-alpine`
   - Python: Default `python:3.14-slim`
 - `additional_packages`: Extra packages to install during the build and runtime stages (e.g., build tools, libraries)
@@ -124,7 +124,9 @@ thv run uvx://mcp-server \
   "transport": "stdio",
   "host": "127.0.0.1",
   "port": 8080,
-  "proxy_mode": "streamable-http"
+  "proxy_mode": "streamable-http",
+  "max_request_body_size": 8388608,
+  "proxy_read_timeout": "45s"
 }
 ```
 
@@ -146,6 +148,8 @@ thv run uvx://mcp-server \
 - `target_port`: Container port (SSE/Streamable only)
 - `target_host`: Container host (default: `127.0.0.1`)
 - `proxy_mode`: For stdio: `sse` or `streamable-http`
+- `max_request_body_size`: Maximum inbound MCP request body size in bytes; omitted or zero uses the 8 MiB default
+- `proxy_read_timeout`: Maximum time to read a complete client request, as a Go duration string; omitted or zero uses the secure 30-second default
 
 **Implementation**: `pkg/runner/config.go`
 

@@ -17,9 +17,11 @@ import (
 	"github.com/ory/fosite/compose"
 
 	oauthserver "github.com/stacklok/toolhive/pkg/authserver/server"
+	"github.com/stacklok/toolhive/pkg/authserver/server/deviceflow"
 	"github.com/stacklok/toolhive/pkg/authserver/server/handlers"
 	"github.com/stacklok/toolhive/pkg/authserver/server/registration"
 	"github.com/stacklok/toolhive/pkg/authserver/server/tokenexchange"
+	spiffeauth "github.com/stacklok/toolhive/pkg/authserver/spiffe"
 	"github.com/stacklok/toolhive/pkg/authserver/storage"
 	"github.com/stacklok/toolhive/pkg/authserver/upstream"
 	"github.com/stacklok/toolhive/pkg/oauthproto"
@@ -172,7 +174,7 @@ func newServer(ctx context.Context, cfg Config, stor storage.Storage) (_ *server
 		return nil, fmt.Errorf("storage backend %T does not implement storage.DCRCredentialStore", baseStore)
 	}
 
-	stor, err := decorateStorageForSPIFFE(ctx, cfg, stor)
+	stor, spiffeRegistry, err := decorateStorageForSPIFFE(ctx, cfg, stor)
 	if err != nil {
 		return nil, err
 	}
@@ -189,6 +191,15 @@ func newServer(ctx context.Context, cfg Config, stor storage.Storage) (_ *server
 		return nil, fmt.Errorf("failed to get signing key: %w", err)
 	}
 
+	// Every key the provider reports (signing key plus any fallbacks
+	// configured for rotation) must reach the published JWKS, or promoting
+	// a fallback key to primary invalidates every outstanding token instead
+	// of opening the documented rotation overlap window (#6451).
+	additionalPublicKeys, err := cfg.KeyProvider.PublicKeys(ctx)
+	if err != nil {
+		return nil, fmt.Errorf("failed to get public keys: %w", err)
+	}
+
 	// Create OAuth2 config from authserver.Config
 	oauthParams := &oauthserver.AuthorizationServerParams{
 		Issuer:                              cfg.Issuer,
@@ -199,6 +210,7 @@ func newServer(ctx context.Context, cfg Config, stor storage.Storage) (_ *server
 		SigningKeyID:                        signingKey.KeyID,
 		SigningKeyAlgorithm:                 signingKey.Algorithm,
 		SigningKey:                          signingKey.Key,
+		AdditionalPublicKeys:                additionalPublicKeys,
 		ScopesSupported:                     cfg.ScopesSupported,
 		BaselineClientScopes:                cfg.BaselineClientScopes,
 		AllowedAudiences:                    cfg.AllowedAudiences,
@@ -207,9 +219,14 @@ func newServer(ctx context.Context, cfg Config, stor storage.Storage) (_ *server
 		AllowConfidentialClientRegistration: cfg.AllowConfidentialClientRegistration,
 		AllowPrivateKeyJWTRegistration:      cfg.AllowPrivateKeyJWTRegistration,
 		HasStaticDelegateClients:            len(cfg.DelegateClients) > 0,
-		ForceConfidentialRedirectURIs:       cfg.ForceConfidentialRedirectURIs,
-		DisableTokenExchange:                cfg.DisableTokenExchange,
-		JWTBearerGrantEnabled:               JWTBearerGrantEnabled(cfg.TrustedIssuers),
+		InsecureAllowHTTP:                   cfg.InsecureAllowHTTP,
+		InsecureAllowConfidentialOverLoopbackHTTP: cfg.InsecureAllowConfidentialOverLoopbackHTTP,
+		ForceConfidentialRedirectURIs:             cfg.ForceConfidentialRedirectURIs,
+		DisableTokenExchange:                      cfg.DisableTokenExchange,
+		JWTBearerGrantEnabled:                     JWTBearerGrantEnabled(cfg.TrustedIssuers),
+		DeviceFlowEnabled:                         cfg.DeviceFlowEnabled,
+		DeviceCodeInterval:                        cfg.DeviceCodeInterval,
+		SPIFFEClientResolver:                      newSPIFFEClientResolver(spiffeRegistry, stor),
 	}
 	authServerConfig, err := oauthserver.NewAuthorizationServerConfig(oauthParams)
 	if err != nil {
@@ -313,28 +330,63 @@ func registerDelegateClients(ctx context.Context, stor storage.Storage, delegate
 // decorateStorageForSPIFFE resolves the immutable association registry from the
 // validated SPIFFE trust model and installs the static overlay outside CIMD.
 // A nil cfg.SPIFFETrust means no SPIFFE associations are configured, which
-// yields a nil registry and leaves the storage chain unchanged.
-func decorateStorageForSPIFFE(ctx context.Context, cfg Config, stor storage.Storage) (storage.Storage, error) {
+// yields a nil registry and leaves the storage chain unchanged. The returned
+// registry is also wired onto the fosite client-authentication strategy by the
+// caller (see newSPIFFEClientResolver); it is nil when no SPIFFE trust is
+// configured.
+func decorateStorageForSPIFFE(
+	ctx context.Context, cfg Config, stor storage.Storage,
+) (storage.Storage, *SPIFFEAssociationRegistry, error) {
 	registry, err := NewSPIFFEAssociationRegistry(cfg.SPIFFETrust)
 	if err != nil {
-		return nil, fmt.Errorf("create SPIFFE association registry: %w", err)
+		return nil, nil, fmt.Errorf("create SPIFFE association registry: %w", err)
 	}
 
 	// Install dynamic CIMD lookup before the static SPIFFE overlay so configured
 	// clients always take precedence over remotely resolved HTTPS client IDs.
 	stor, err = decorateStorageForCIMD(cfg, stor)
 	if err != nil {
-		return nil, err
+		return nil, nil, err
 	}
 	clients, err := registry.staticClients()
 	if err != nil {
-		return nil, fmt.Errorf("build SPIFFE static clients: %w", err)
+		return nil, nil, fmt.Errorf("build SPIFFE static clients: %w", err)
 	}
 	stor, err = storage.NewSPIFFEStorageDecorator(ctx, stor, clients)
 	if err != nil {
-		return nil, fmt.Errorf("initialize SPIFFE client overlay: %w", err)
+		return nil, nil, fmt.Errorf("initialize SPIFFE client overlay: %w", err)
 	}
-	return stor, nil
+	return stor, registry, nil
+}
+
+// newSPIFFEClientResolver returns the resolver the SPIFFE client-authentication
+// strategy uses to turn a verified SPIFFE identity into its configured OAuth
+// client. Both credential types resolve through this one function so that an
+// X.509-SVID and a JWT-SVID for the same association cannot reach different
+// authorization outcomes.
+//
+// It returns a nil resolver when no SPIFFE trust is configured. Returning a
+// non-nil func closing over a nil registry would make the strategy's
+// resolver != nil check pass when nothing is actually configured.
+//
+// Method uses the shared leaf-package type because package server cannot
+// import authserver (authserver imports server). Package authserver aliases
+// that type, so both sides share one set of method values.
+func newSPIFFEClientResolver(
+	registry *SPIFFEAssociationRegistry, stor storage.Storage,
+) oauthserver.SPIFFEClientResolver {
+	if registry == nil {
+		return nil
+	}
+	return func(
+		ctx context.Context, spiffeID, clientID string, method spiffeauth.SPIFFEAuthenticationMethod,
+	) (fosite.Client, error) {
+		principal, err := registry.Resolve(spiffeID, clientID, method)
+		if err != nil {
+			return nil, err
+		}
+		return stor.GetClient(ctx, principal.ClientID())
+	}
 }
 
 // decorateStorageForCIMD wraps stor with the CIMD decorator when CIMD is
@@ -434,7 +486,7 @@ func buildProvider(
 		}
 	}()
 
-	factories := make([]oauthserver.Factory, 0, 2)
+	factories := make([]oauthserver.Factory, 0, 3)
 	if !cfg.DisableTokenExchange {
 		tokenExchangeFactory, err := tokenexchange.FactoryWithSharedTrustedIssuerValidator(
 			cfg.DelegationTokenLifespan, cfg.TrustedIssuers, delegateClientIDs, shared)
@@ -444,17 +496,58 @@ func buildProvider(
 		factories = append(factories, tokenExchangeFactory)
 	}
 	if jwtBearerEnabled {
-		jwtBearerFactory, err := tokenexchange.JWTBearerIssuanceFactory(cfg.TrustedIssuers, shared)
+		jwtBearerFactories, err := buildJWTBearerFactories(cfg.TrustedIssuers, shared)
 		if err != nil {
-			return nil, nil, fmt.Errorf("failed to create JWT-bearer factory: %w", err)
+			return nil, nil, err
 		}
-		factories = append(factories, jwtBearerFactory)
+		factories = append(factories, jwtBearerFactories...)
+	}
+	if cfg.DeviceFlowEnabled {
+		deviceFlowFactory, err := buildDeviceFlowFactory(cfg, stor)
+		if err != nil {
+			return nil, nil, err
+		}
+		factories = append(factories, deviceFlowFactory)
 	}
 	provider, err := createProvider(authServerConfig, stor, factories...)
 	if err != nil {
 		return nil, nil, err
 	}
 	return provider, shared, nil
+}
+
+// buildJWTBearerFactories builds the RFC 7523 JWT-bearer factory together
+// with the bound ID-JAG factory. The bound ID-JAG handler rides the same
+// per-issuer JWT-bearer policy: enabling the grant enables both assertion
+// forms, split by JOSE typ (plain assertions to JWTBearerHandler,
+// oauth-id-jag+jwt to IDJAGHandler).
+func buildJWTBearerFactories(
+	trustedIssuers []tokenexchange.TrustedIssuer, shared *tokenexchange.MultiIssuerTokenValidator,
+) ([]oauthserver.Factory, error) {
+	jwtBearerFactory, err := tokenexchange.JWTBearerIssuanceFactory(trustedIssuers, shared)
+	if err != nil {
+		return nil, fmt.Errorf("failed to create JWT-bearer factory: %w", err)
+	}
+	idJAGFactory, err := tokenexchange.IDJAGIssuanceFactory(trustedIssuers, shared)
+	if err != nil {
+		return nil, fmt.Errorf("failed to create ID-JAG factory: %w", err)
+	}
+	return []oauthserver.Factory{jwtBearerFactory, idJAGFactory}, nil
+}
+
+// buildDeviceFlowFactory builds the RFC 8628 device authorization grant
+// factory, validating that stor supports the device-code storage the grant
+// requires.
+func buildDeviceFlowFactory(cfg Config, stor storage.Storage) (oauthserver.Factory, error) {
+	deviceStore, ok := storage.Unwrap(stor).(storage.DeviceCodeStorage)
+	if !ok {
+		return nil, fmt.Errorf("device flow enabled but storage backend %T does not implement storage.DeviceCodeStorage", stor)
+	}
+	interval := cfg.DeviceCodeInterval
+	if interval <= 0 {
+		interval = oauthserver.DefaultDeviceCodeInterval
+	}
+	return deviceflow.Factory(deviceStore, interval), nil
 }
 
 // buildHandlerOptions assembles the handlers.Option list for NewHandler: the

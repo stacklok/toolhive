@@ -18,6 +18,7 @@ import (
 	"github.com/stacklok/toolhive/pkg/authserver/server/registration"
 	"github.com/stacklok/toolhive/pkg/authserver/server/tokenexchange"
 	"github.com/stacklok/toolhive/pkg/authserver/upstream"
+	"github.com/stacklok/toolhive/pkg/oauthproto"
 )
 
 func TestValidateIssuerURL(t *testing.T) {
@@ -515,6 +516,53 @@ func TestOAuth2UpstreamRunConfigValidate(t *testing.T) {
 				ClientID: "c",
 			},
 		},
+
+		// TokenEndpointAuthMethod / client secret source consistency.
+		{
+			name: "unrecognized TokenEndpointAuthMethod rejects",
+			config: OAuth2UpstreamRunConfig{
+				ClientID:                "c",
+				TokenEndpointAuthMethod: "not_a_real_method",
+			},
+			wantErr: true,
+			errMsg:  "unsupported token_endpoint_auth_method",
+		},
+		{
+			name: "none with a configured client secret file rejects",
+			config: OAuth2UpstreamRunConfig{
+				ClientID:                "c",
+				ClientSecretFile:        "/tmp/secret",
+				TokenEndpointAuthMethod: oauthproto.TokenEndpointAuthMethodNone,
+			},
+			wantErr: true,
+			errMsg:  "token_endpoint_auth_method none cannot be used with a client secret",
+		},
+		{
+			name: "client_secret_basic without a secret source rejects",
+			config: OAuth2UpstreamRunConfig{
+				ClientID:                "c",
+				TokenEndpointAuthMethod: oauthproto.TokenEndpointAuthMethodClientSecretBasic,
+			},
+			wantErr: true,
+			errMsg:  `token_endpoint_auth_method "client_secret_basic" requires client_secret_file or client_secret_env_var`,
+		},
+		{
+			name: "client_secret_post without a secret source rejects",
+			config: OAuth2UpstreamRunConfig{
+				ClientID:                "c",
+				TokenEndpointAuthMethod: oauthproto.TokenEndpointAuthMethodClientSecretPost,
+			},
+			wantErr: true,
+			errMsg:  `token_endpoint_auth_method "client_secret_post" requires client_secret_file or client_secret_env_var`,
+		},
+		{
+			name: "client_secret_basic with a client secret env var configured is valid",
+			config: OAuth2UpstreamRunConfig{
+				ClientID:                "c",
+				ClientSecretEnvVar:      "MY_CLIENT_SECRET",
+				TokenEndpointAuthMethod: oauthproto.TokenEndpointAuthMethodClientSecretBasic,
+			},
+		},
 	}
 
 	for _, tt := range tests {
@@ -870,6 +918,15 @@ func TestValidateConfidentialClientTransport(t *testing.T) {
 			name:              "confidential with plain-HTTP non-loopback issuer rejects without opt-in",
 			allowConfidential: true, issuer: "http://auth.example.com",
 			wantErr: true, errContains: "plain-HTTP non-loopback",
+		},
+		{
+			name:                  "confidential credential-bearing non-loopback HTTP issuer rejects with loopback opt-in without leaking credentials",
+			allowConfidential:     true,
+			issuer:                "http://sentinel-user:sentinel-password@auth.example.com",
+			allowLoopbackOverride: true,
+			wantErr:               true,
+			errContains:           "require a valid issuer URL",
+			redacted:              []string{"sentinel-user", "sentinel-password", "http://sentinel-user:sentinel-password@auth.example.com"},
 		},
 		{
 			name:              "confidential with plain-HTTP non-loopback issuer rejects with loopback opt-in",
@@ -1249,9 +1306,9 @@ func TestConfigApplyDefaults_DelegationTokenLifespan(t *testing.T) {
 }
 
 // TestConfigValidate_TrustedIssuers covers validateTrustedIssuers as reached
-// from Config.Validate: the URL-shape checks (validateTrustedIssuerURL on
-// issuer_url, validateJWKSEndpointURL on jwks_url) and the structural checks
-// delegated to tokenexchange.ValidateTrustedIssuers.
+// from Config.Validate: the URL-shape checks (tokenexchange.ValidateTrustedIssuerURL
+// on issuer_url, tokenexchange.ValidateJWKSURL on jwks_url) and the structural
+// checks, all delegated to tokenexchange.ValidateTrustedIssuers.
 func TestConfigValidate_TrustedIssuers(t *testing.T) {
 	t.Parallel()
 
@@ -1292,7 +1349,7 @@ func TestConfigValidate_TrustedIssuers(t *testing.T) {
 				{IssuerURL: "htps://idp.example.com", ExpectedAudience: "https://mcp.example.com", AllowedDelegateClients: []string{"*"}},
 			},
 			wantErr: true,
-			errMsg:  "issuer_url",
+			errMsg:  "scheme must be https",
 		},
 		{
 			name: "issuer_url empty rejected",
@@ -1300,7 +1357,15 @@ func TestConfigValidate_TrustedIssuers(t *testing.T) {
 				{IssuerURL: "", ExpectedAudience: "https://mcp.example.com", AllowedDelegateClients: []string{"*"}},
 			},
 			wantErr: true,
-			errMsg:  "issuer is required",
+			errMsg:  "issuer_url is required",
+		},
+		{
+			name: "issuer_url empty hostname with port rejected",
+			issuers: []tokenexchange.TrustedIssuer{
+				{IssuerURL: "https://:443", ExpectedAudience: "https://mcp.example.com", AllowedDelegateClients: []string{"*"}},
+			},
+			wantErr: true,
+			errMsg:  "host is required",
 		},
 		{
 			name: "issuer_url http without per-issuer insecure_allow_http rejected",
@@ -1308,7 +1373,7 @@ func TestConfigValidate_TrustedIssuers(t *testing.T) {
 				{IssuerURL: "http://idp.example.com", ExpectedAudience: "https://mcp.example.com", AllowedDelegateClients: []string{"*"}},
 			},
 			wantErr: true,
-			errMsg:  "http scheme is only allowed for localhost",
+			errMsg:  "scheme must be https",
 		},
 		{
 			name: "issuer_url http with per-issuer insecure_allow_http accepted",
@@ -1320,7 +1385,7 @@ func TestConfigValidate_TrustedIssuers(t *testing.T) {
 			// Unlike Config.Issuer, a trusted issuer gets no localhost
 			// exemption: it isn't this server's own issuer, so the same
 			// same-host development convenience doesn't apply — see
-			// validateTrustedIssuerURL's doc comment. Without
+			// tokenexchange.ValidateTrustedIssuerURL's doc comment. Without
 			// insecure_allow_http, http://localhost must be rejected here
 			// the same as any other http issuer_url.
 			name: "issuer_url http localhost rejected without per-issuer insecure_allow_http",
@@ -1328,7 +1393,7 @@ func TestConfigValidate_TrustedIssuers(t *testing.T) {
 				{IssuerURL: "http://localhost:8080", ExpectedAudience: "https://mcp.example.com", AllowedDelegateClients: []string{"*"}},
 			},
 			wantErr: true,
-			errMsg:  "http scheme is only allowed for localhost",
+			errMsg:  "scheme must be https",
 		},
 		{
 			name: "issuer_url http localhost accepted with per-issuer insecure_allow_http",
@@ -1589,7 +1654,15 @@ func TestRunConfigValidate_TrustedIssuers(t *testing.T) {
 				{IssuerURL: "htps://idp.example.com", ExpectedAudience: "https://mcp.example.com", AllowedDelegateClients: []string{"*"}},
 			},
 			wantErr: true,
-			errMsg:  "issuer_url",
+			errMsg:  "scheme must be https",
+		},
+		{
+			name: "issuer_url empty hostname with port rejected",
+			issuers: []tokenexchange.TrustedIssuer{
+				{IssuerURL: "https://:443", ExpectedAudience: "https://mcp.example.com", AllowedDelegateClients: []string{"*"}},
+			},
+			wantErr: true,
+			errMsg:  "host is required",
 		},
 		{
 			name: "missing expected_audience rejected",

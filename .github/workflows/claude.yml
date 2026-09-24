@@ -60,11 +60,11 @@ jobs:
       # credential actions/checkout leaves in .git/config. Setting
       # persist-credentials: false here would break the action.
       - name: Checkout repository
-        uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6   # zizmor: ignore[artipacked]
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7   # zizmor: ignore[artipacked]
         with:
           fetch-depth: 1
 
-      - uses: actions/setup-go@924ae3a1cded613372ab5595356fb5720e22ba16 # v6
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7
         with:
           go-version: 'stable'
 
@@ -73,9 +73,9 @@ jobs:
 
       - name: Run Claude Code
         id: claude
-        uses: anthropics/claude-code-action@16b3b310c3d7b5279df73130324d5205aeea8eac # v1.0.205
+        uses: anthropics/claude-code-action@cfc3eb22bfed5c26ef66e3223c982af27e4524de # v1.0.231
         env:
-          ANTHROPIC_BASE_URL: https://llm-gateway.stacklok.dev/anthropic
+          ANTHROPIC_BASE_URL: ${{ vars.ANTHROPIC_BASE_URL }}
         with:
           anthropic_api_key: ${{ secrets.STACKLOK_GATEWAY_KEY_CLAUDE_TAG }}
           # Security: Restrict tools to prevent arbitrary code execution.

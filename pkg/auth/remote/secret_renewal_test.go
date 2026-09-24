@@ -450,8 +450,12 @@ func TestHandler_Restore_RenewSuccess(t *testing.T) {
 
 	// Initial setup: secret expiring in 1 hour
 	expiry := time.Now().Add(1 * time.Hour)
-	svc := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+	svc := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
+		if r.Method == http.MethodPost {
+			_, _ = w.Write([]byte(`{"access_token":"access-token","token_type":"Bearer","expires_in":3600}`))
+			return
+		}
 		w.WriteHeader(http.StatusOK)
 		_, _ = w.Write([]byte(`{"client_id": "test-client", "client_secret": "new-secret", "client_secret_expires_at": 4102444800}`))
 	}))
@@ -459,6 +463,8 @@ func TestHandler_Restore_RenewSuccess(t *testing.T) {
 
 	var persistedID, persistedSecret string
 	renewalRequests := 0
+	cachedRefreshToken, err := encodeCachedRefreshToken("some-refresh-token", svc.URL, svc.URL)
+	require.NoError(t, err)
 	h := &Handler{
 		config: &Config{
 			CachedClientID:        "test-client",
@@ -466,10 +472,11 @@ func TestHandler_Restore_RenewSuccess(t *testing.T) {
 			CachedRegClientURI:    svc.URL + "/register/test-client",
 			CachedRegTokenRef:     "rat-ref",
 			CachedRefreshTokenRef: "refresh-token-ref",
+			TokenURL:              svc.URL,
 		},
 		secretProvider: newTestSecretProvider(t, map[string]string{
 			"rat-ref":           "rat-token",
-			"refresh-token-ref": "some-refresh-token",
+			"refresh-token-ref": cachedRefreshToken,
 		}),
 		clientCredentialsPersister: func(id, secret string, _ time.Time, _, _, _ string, _ int) error {
 			persistedID = id
@@ -479,12 +486,10 @@ func TestHandler_Restore_RenewSuccess(t *testing.T) {
 		},
 	}
 
-	// Calling tryRestoreFromCachedTokens should trigger renewal because of the 1h expiry.
-	// We expect an error because no token endpoint is configured, so the guarded
-	// token-endpoint client cannot be built and no refresh is attempted.
-	_, err := h.tryRestoreFromCachedTokens(context.Background(), svc.URL, nil, nil)
-	require.Error(t, err)
-	assert.Contains(t, err.Error(), "build token endpoint HTTP client")
+	// Calling tryRestoreFromCachedTokens renews the expiring secret before restoring
+	// the refresh-token session.
+	_, err = h.tryRestoreFromCachedTokens(context.Background(), svc.URL, nil, nil)
+	require.NoError(t, err)
 
 	// But renewal DID happen
 	assert.Equal(t, "test-client", persistedID)
@@ -507,6 +512,8 @@ func TestHandler_Restore_RenewFail_Soft(t *testing.T) {
 	}))
 	t.Cleanup(svc.Close)
 
+	cachedRefreshToken, err := encodeCachedRefreshToken("some-refresh-token", svc.URL, svc.URL)
+	require.NoError(t, err)
 	h := &Handler{
 		config: &Config{
 			CachedClientID:        "test-client",
@@ -514,21 +521,20 @@ func TestHandler_Restore_RenewFail_Soft(t *testing.T) {
 			CachedRegClientURI:    svc.URL + "/register/test-client",
 			CachedRegTokenRef:     "rat-ref",
 			CachedRefreshTokenRef: "refresh-token-ref",
+			TokenURL:              svc.URL,
 		},
 		secretProvider: newTestSecretProvider(t, map[string]string{
 			"rat-ref":           "rat-token",
-			"refresh-token-ref": "some-refresh-token",
+			"refresh-token-ref": cachedRefreshToken,
 		}),
-		clientCredentialsPersister: func(_, _ string, _ time.Time, _, _, _ string, _ int) error { return nil },
 	}
 
 	// Renewal fails, but since it's only "expiring soon", each restore should
-	// continue past renewal after making exactly one renewal request. It then
-	// stops at the token endpoint, which is not configured here.
+	// continue past renewal and fail only when the token endpoint rejects refresh.
 	for attempt := int32(1); attempt <= 2; attempt++ {
 		_, err := h.tryRestoreFromCachedTokens(context.Background(), svc.URL, nil, nil)
 		require.Error(t, err)
-		assert.Contains(t, err.Error(), "build token endpoint HTTP client")
+		assert.Contains(t, err.Error(), "cached tokens are invalid or expired")
 		assert.Equal(t, attempt, renewalPUTs.Load())
 	}
 }
@@ -543,6 +549,8 @@ func TestHandler_Restore_RenewFail_Hard(t *testing.T) {
 	}))
 	t.Cleanup(svc.Close)
 
+	cachedRefreshToken, err := encodeCachedRefreshToken("some-refresh-token", svc.URL, svc.URL)
+	require.NoError(t, err)
 	h := &Handler{
 		config: &Config{
 			CachedClientID:        "test-client",
@@ -550,16 +558,17 @@ func TestHandler_Restore_RenewFail_Hard(t *testing.T) {
 			CachedRegClientURI:    svc.URL + "/register/test-client",
 			CachedRegTokenRef:     "rat-ref",
 			CachedRefreshTokenRef: "refresh-token-ref",
+			TokenURL:              svc.URL,
 		},
 		secretProvider: newTestSecretProvider(t, map[string]string{
 			"rat-ref":           "rat-token",
-			"refresh-token-ref": "some-refresh-token",
+			"refresh-token-ref": cachedRefreshToken,
 		}),
 		clientCredentialsPersister: func(string, string, time.Time, string, string, string, int) error { return nil },
 	}
 
 	// Renewal fails and it's fully expired -> fatal error
-	_, err := h.tryRestoreFromCachedTokens(context.Background(), svc.URL, nil, nil)
+	_, err = h.tryRestoreFromCachedTokens(context.Background(), svc.URL, nil, nil)
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "client secret expired at")
 	assert.Contains(t, err.Error(), "and renewal failed")

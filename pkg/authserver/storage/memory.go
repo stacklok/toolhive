@@ -136,6 +136,26 @@ type MemoryStorage struct {
 	// pendingAuthorizations tracks authorization requests awaiting upstream IDP callback
 	pendingAuthorizations map[string]*timedEntry[*PendingAuthorization]
 
+	// deviceRequests maps device_code -> timedEntry[*DeviceRequest]. The
+	// canonical store; TTL-bounded like pendingAuthorizations.
+	deviceRequests map[string]*timedEntry[*DeviceRequest]
+
+	// deviceRequestsByUserCode is a secondary index, user_code -> device_code,
+	// so the verification page can look up a request without scanning
+	// deviceRequests. Kept in lockstep with deviceRequests: every store/delete
+	// touches both maps under the same lock.
+	deviceRequestsByUserCode map[string]string
+
+	// pendingDeviceLogins tracks device-flow verification-page logins
+	// awaiting the upstream IDP callback, keyed by state -- the same role
+	// pendingAuthorizations plays for the client authorization_code flow.
+	pendingDeviceLogins map[string]*timedEntry[*PendingDeviceLogin]
+
+	// pendingDeviceConfirmations tracks resolved device-flow logins awaiting
+	// an explicit Approve/Deny decision at the verification page, keyed by
+	// an opaque confirmation token.
+	pendingDeviceConfirmations map[string]*timedEntry[*PendingDeviceConfirmation]
+
 	// invalidatedCodes tracks auth codes that have been used/invalidated.
 	// Kept separate from authCodes to return the Requester with ErrInvalidatedAuthorizeCode.
 	invalidatedCodes map[string]*timedEntry[bool]
@@ -234,24 +254,28 @@ func WithMinClientAge(d time.Duration) MemoryStorageOption {
 // and starts the background cleanup goroutine.
 func NewMemoryStorage(opts ...MemoryStorageOption) *MemoryStorage {
 	s := &MemoryStorage{
-		clients:               make(map[string]fosite.Client),
-		authCodes:             make(map[string]*timedEntry[fosite.Requester]),
-		accessTokens:          make(map[string]*timedEntry[fosite.Requester]),
-		refreshTokens:         make(map[string]*timedEntry[fosite.Requester]),
-		pkceRequests:          make(map[string]*timedEntry[fosite.Requester]),
-		upstreamTokens:        make(map[upstreamKey]*timedEntry[*UpstreamTokens]),
-		pendingAuthorizations: make(map[string]*timedEntry[*PendingAuthorization]),
-		invalidatedCodes:      make(map[string]*timedEntry[bool]),
-		clientAssertionJWTs:   make(map[string]time.Time),
-		assertionJWTs:         make(map[assertionJWTKey]time.Time),
-		users:                 make(map[string]*User),
-		providerIdentities:    make(map[string]*ProviderIdentity),
-		dcrCredentials:        make(map[DCRKey]*DCRCredentials),
-		cleanupInterval:       DefaultCleanupInterval,
-		maxClients:            DefaultMaxClients,
-		minClientAge:          DefaultMinClientAge,
-		stopCleanup:           make(chan struct{}),
-		cleanupDone:           make(chan struct{}),
+		clients:                    make(map[string]fosite.Client),
+		authCodes:                  make(map[string]*timedEntry[fosite.Requester]),
+		accessTokens:               make(map[string]*timedEntry[fosite.Requester]),
+		refreshTokens:              make(map[string]*timedEntry[fosite.Requester]),
+		pkceRequests:               make(map[string]*timedEntry[fosite.Requester]),
+		upstreamTokens:             make(map[upstreamKey]*timedEntry[*UpstreamTokens]),
+		pendingAuthorizations:      make(map[string]*timedEntry[*PendingAuthorization]),
+		deviceRequests:             make(map[string]*timedEntry[*DeviceRequest]),
+		deviceRequestsByUserCode:   make(map[string]string),
+		pendingDeviceLogins:        make(map[string]*timedEntry[*PendingDeviceLogin]),
+		pendingDeviceConfirmations: make(map[string]*timedEntry[*PendingDeviceConfirmation]),
+		invalidatedCodes:           make(map[string]*timedEntry[bool]),
+		clientAssertionJWTs:        make(map[string]time.Time),
+		assertionJWTs:              make(map[assertionJWTKey]time.Time),
+		users:                      make(map[string]*User),
+		providerIdentities:         make(map[string]*ProviderIdentity),
+		dcrCredentials:             make(map[DCRKey]*DCRCredentials),
+		cleanupInterval:            DefaultCleanupInterval,
+		maxClients:                 DefaultMaxClients,
+		minClientAge:               DefaultMinClientAge,
+		stopCleanup:                make(chan struct{}),
+		cleanupDone:                make(chan struct{}),
 	}
 
 	for _, opt := range opts {
@@ -358,6 +382,27 @@ func (s *MemoryStorage) cleanupExpired() {
 		}
 	}
 
+	var expiredDeviceRequests []string
+	for k, v := range s.deviceRequests {
+		if now.After(v.expiresAt) {
+			expiredDeviceRequests = append(expiredDeviceRequests, k)
+		}
+	}
+
+	var expiredPendingDeviceLogins []string
+	for k, v := range s.pendingDeviceLogins {
+		if now.After(v.expiresAt) {
+			expiredPendingDeviceLogins = append(expiredPendingDeviceLogins, k)
+		}
+	}
+
+	var expiredPendingDeviceConfirmations []string
+	for k, v := range s.pendingDeviceConfirmations {
+		if now.After(v.expiresAt) {
+			expiredPendingDeviceConfirmations = append(expiredPendingDeviceConfirmations, k)
+		}
+	}
+
 	var expiredJWTs []string
 	for k, v := range s.clientAssertionJWTs {
 		if now.After(v) {
@@ -382,6 +427,9 @@ func (s *MemoryStorage) cleanupExpired() {
 		len(expiredPKCERequests) == 0 &&
 		len(expiredUpstreamTokens) == 0 &&
 		len(expiredPendingAuthorizations) == 0 &&
+		len(expiredDeviceRequests) == 0 &&
+		len(expiredPendingDeviceLogins) == 0 &&
+		len(expiredPendingDeviceConfirmations) == 0 &&
 		len(expiredJWTs) == 0 &&
 		len(expiredAssertionJWTs) == 0 {
 		return
@@ -418,6 +466,21 @@ func (s *MemoryStorage) cleanupExpired() {
 
 	for _, k := range expiredPendingAuthorizations {
 		delete(s.pendingAuthorizations, k)
+	}
+
+	for _, k := range expiredDeviceRequests {
+		if entry, ok := s.deviceRequests[k]; ok {
+			delete(s.deviceRequestsByUserCode, entry.value.UserCode)
+		}
+		delete(s.deviceRequests, k)
+	}
+
+	for _, k := range expiredPendingDeviceLogins {
+		delete(s.pendingDeviceLogins, k)
+	}
+
+	for _, k := range expiredPendingDeviceConfirmations {
+		delete(s.pendingDeviceConfirmations, k)
 	}
 
 	for _, k := range expiredJWTs {
@@ -624,7 +687,7 @@ func (s *MemoryStorage) GetClient(_ context.Context, id string) (fosite.Client, 
 	client, ok := s.clients[id]
 	if !ok {
 		slog.Debug("client not found", "client_id", id)
-		return nil, fmt.Errorf("%w: %w", ErrNotFound, fosite.ErrNotFound.WithHint("Client not found"))
+		return nil, notFoundRFC6749Error("Client not found")
 	}
 	return client, nil
 }
@@ -751,7 +814,7 @@ func (s *MemoryStorage) GetAuthorizeCodeSession(_ context.Context, code string, 
 	entry, ok := s.authCodes[code]
 	if !ok {
 		slog.Debug("authorization code not found")
-		return nil, fmt.Errorf("%w: %w", ErrNotFound, fosite.ErrNotFound.WithHint("Authorization code not found"))
+		return nil, notFoundRFC6749Error("Authorization code not found")
 	}
 
 	// Check if the code has been invalidated
@@ -771,7 +834,7 @@ func (s *MemoryStorage) InvalidateAuthorizeCodeSession(_ context.Context, code s
 
 	if _, ok := s.authCodes[code]; !ok {
 		slog.Debug("authorization code not found for invalidation")
-		return fmt.Errorf("%w: %w", ErrNotFound, fosite.ErrNotFound.WithHint("Authorization code not found"))
+		return notFoundRFC6749Error("Authorization code not found")
 	}
 
 	now := time.Now()
@@ -822,7 +885,7 @@ func (s *MemoryStorage) GetAccessTokenSession(_ context.Context, signature strin
 	entry, ok := s.accessTokens[signature]
 	if !ok {
 		slog.Debug("access token not found")
-		return nil, fmt.Errorf("%w: %w", ErrNotFound, fosite.ErrNotFound.WithHint("Access token not found"))
+		return nil, notFoundRFC6749Error("Access token not found")
 	}
 	return entry.value, nil
 }
@@ -833,7 +896,7 @@ func (s *MemoryStorage) DeleteAccessTokenSession(_ context.Context, signature st
 	defer s.mu.Unlock()
 
 	if _, ok := s.accessTokens[signature]; !ok {
-		return fmt.Errorf("%w: %w", ErrNotFound, fosite.ErrNotFound.WithHint("Access token not found"))
+		return notFoundRFC6749Error("Access token not found")
 	}
 	delete(s.accessTokens, signature)
 	return nil
@@ -877,7 +940,7 @@ func (s *MemoryStorage) GetRefreshTokenSession(_ context.Context, signature stri
 	entry, ok := s.refreshTokens[signature]
 	if !ok {
 		slog.Debug("refresh token not found")
-		return nil, fmt.Errorf("%w: %w", ErrNotFound, fosite.ErrNotFound.WithHint("Refresh token not found"))
+		return nil, notFoundRFC6749Error("Refresh token not found")
 	}
 	return entry.value, nil
 }
@@ -888,7 +951,7 @@ func (s *MemoryStorage) DeleteRefreshTokenSession(_ context.Context, signature s
 	defer s.mu.Unlock()
 
 	if _, ok := s.refreshTokens[signature]; !ok {
-		return fmt.Errorf("%w: %w", ErrNotFound, fosite.ErrNotFound.WithHint("Refresh token not found"))
+		return notFoundRFC6749Error("Refresh token not found")
 	}
 	delete(s.refreshTokens, signature)
 	return nil
@@ -1005,7 +1068,7 @@ func (s *MemoryStorage) GetPKCERequestSession(_ context.Context, signature strin
 	entry, ok := s.pkceRequests[signature]
 	if !ok {
 		slog.Debug("pkce request not found")
-		return nil, fmt.Errorf("%w: %w", ErrNotFound, fosite.ErrNotFound.WithHint("PKCE request not found"))
+		return nil, notFoundRFC6749Error("PKCE request not found")
 	}
 	return entry.value, nil
 }
@@ -1016,7 +1079,7 @@ func (s *MemoryStorage) DeletePKCERequestSession(_ context.Context, signature st
 	defer s.mu.Unlock()
 
 	if _, ok := s.pkceRequests[signature]; !ok {
-		return fmt.Errorf("%w: %w", ErrNotFound, fosite.ErrNotFound.WithHint("PKCE request not found"))
+		return notFoundRFC6749Error("PKCE request not found")
 	}
 	delete(s.pkceRequests, signature)
 	return nil
@@ -1051,6 +1114,44 @@ func (s *MemoryStorage) StoreUpstreamTokens(_ context.Context, sessionID, provid
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
+	s.storeUpstreamTokensLocked(upstreamKey{sessionID, providerName}, tokens)
+	return nil
+}
+
+// CompareAndSwapUpstreamTokens stores tokens for (sessionID, providerName)
+// only if the refresh token currently held there equals expectedRefreshToken.
+// See the interface doc (UpstreamTokenStorage.CompareAndSwapUpstreamTokens)
+// for the coordination contract. The compare-then-write happens under s.mu,
+// so it is atomic with respect to every other reader/writer of this backend.
+func (s *MemoryStorage) CompareAndSwapUpstreamTokens(
+	_ context.Context, sessionID, providerName, expectedRefreshToken string, tokens *UpstreamTokens,
+) error {
+	if sessionID == "" {
+		return fosite.ErrInvalidRequest.WithHint("session ID cannot be empty")
+	}
+	if providerName == "" {
+		return fosite.ErrInvalidRequest.WithHint("provider name cannot be empty")
+	}
+
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	key := upstreamKey{sessionID, providerName}
+	var currentRefreshToken string
+	if entry, ok := s.upstreamTokens[key]; ok && entry.value != nil {
+		currentRefreshToken = entry.value.RefreshToken
+	}
+	if currentRefreshToken != expectedRefreshToken {
+		return ErrConcurrentRefresh
+	}
+
+	s.storeUpstreamTokensLocked(key, tokens)
+	return nil
+}
+
+// storeUpstreamTokensLocked writes tokens for key, replacing any existing
+// entry. Callers must hold s.mu for writing.
+func (s *MemoryStorage) storeUpstreamTokensLocked(key upstreamKey, tokens *UpstreamTokens) {
 	now := time.Now()
 	// Add DefaultRefreshTokenTTL beyond access token expiry so the refresh token
 	// survives in storage for transparent token refresh by the middleware.
@@ -1068,28 +1169,11 @@ func (s *MemoryStorage) StoreUpstreamTokens(_ context.Context, sessionID, provid
 		return time.Time{} // non-expiring token with no known session bound
 	}()
 
-	// Make a defensive copy to prevent aliasing issues
-	var tokensCopy *UpstreamTokens
-	if tokens != nil {
-		tokensCopy = &UpstreamTokens{
-			ProviderID:       tokens.ProviderID,
-			AccessToken:      tokens.AccessToken,
-			RefreshToken:     tokens.RefreshToken,
-			IDToken:          tokens.IDToken,
-			ExpiresAt:        tokens.ExpiresAt,
-			SessionExpiresAt: tokens.SessionExpiresAt,
-			UserID:           tokens.UserID,
-			UpstreamSubject:  tokens.UpstreamSubject,
-			ClientID:         tokens.ClientID,
-		}
-	}
-
-	s.upstreamTokens[upstreamKey{sessionID, providerName}] = &timedEntry[*UpstreamTokens]{
-		value:     tokensCopy,
+	s.upstreamTokens[key] = &timedEntry[*UpstreamTokens]{
+		value:     cloneUpstreamTokens(tokens),
 		createdAt: now,
 		expiresAt: expiresAt,
 	}
-	return nil
 }
 
 // cloneUpstreamTokens returns a field-by-field copy of t, or nil if t is nil.
@@ -1126,7 +1210,7 @@ func (s *MemoryStorage) GetUpstreamTokens(_ context.Context, sessionID, provider
 	entry, ok := s.upstreamTokens[upstreamKey{sessionID, providerName}]
 	if !ok {
 		slog.Debug("upstream tokens not found", "session_id", sessionID, "provider_name", providerName)
-		return nil, fmt.Errorf("%w: %w", ErrNotFound, fosite.ErrNotFound.WithHint("Upstream tokens not found"))
+		return nil, notFoundRFC6749Error("Upstream tokens not found")
 	}
 
 	// Return a defensive copy to prevent aliasing issues
@@ -1179,7 +1263,7 @@ func (s *MemoryStorage) DeleteUpstreamTokens(_ context.Context, sessionID string
 		}
 	}
 	if !found {
-		return fmt.Errorf("%w: %w", ErrNotFound, fosite.ErrNotFound.WithHint("Upstream tokens not found"))
+		return notFoundRFC6749Error("Upstream tokens not found")
 	}
 	return nil
 }
@@ -1245,7 +1329,7 @@ func (s *MemoryStorage) GetLatestUpstreamTokensForUser(_ context.Context, userID
 	}
 
 	if winner == nil {
-		return nil, fmt.Errorf("%w: %w", ErrNotFound, fosite.ErrNotFound.WithHint("Upstream tokens not found"))
+		return nil, notFoundRFC6749Error("Upstream tokens not found")
 	}
 
 	return cloneUpstreamTokens(winner), nil
@@ -1310,7 +1394,7 @@ func (s *MemoryStorage) LoadPendingAuthorization(_ context.Context, state string
 	entry, ok := s.pendingAuthorizations[state]
 	if !ok {
 		slog.Debug("pending authorization not found")
-		return nil, fmt.Errorf("%w: %w", ErrNotFound, fosite.ErrNotFound.WithHint("Pending authorization not found"))
+		return nil, notFoundRFC6749Error("Pending authorization not found")
 	}
 
 	// Check if expired
@@ -1351,9 +1435,337 @@ func (s *MemoryStorage) DeletePendingAuthorization(_ context.Context, state stri
 	defer s.mu.Unlock()
 
 	if _, ok := s.pendingAuthorizations[state]; !ok {
-		return fmt.Errorf("%w: %w", ErrNotFound, fosite.ErrNotFound.WithHint("Pending authorization not found"))
+		return notFoundRFC6749Error("Pending authorization not found")
 	}
 	delete(s.pendingAuthorizations, state)
+	return nil
+}
+
+// -----------------------
+// Pending Device Login Storage
+// -----------------------
+
+// StorePendingDeviceLogin stores a pending device-flow verification-page
+// login, keyed by the internal state used to correlate the upstream IDP
+// callback.
+func (s *MemoryStorage) StorePendingDeviceLogin(_ context.Context, state string, pending *PendingDeviceLogin) error {
+	if state == "" {
+		return fosite.ErrInvalidRequest.WithHint("state cannot be empty")
+	}
+	if pending == nil {
+		return fosite.ErrInvalidRequest.WithHint("pending device login cannot be nil")
+	}
+
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	now := time.Now()
+	pendingCopy := &PendingDeviceLogin{
+		DeviceCode:           pending.DeviceCode,
+		UserCode:             pending.UserCode,
+		UpstreamPKCEVerifier: pending.UpstreamPKCEVerifier,
+		UpstreamNonce:        pending.UpstreamNonce,
+		UpstreamProviderName: pending.UpstreamProviderName,
+		CreatedAt:            pending.CreatedAt,
+	}
+
+	s.pendingDeviceLogins[state] = &timedEntry[*PendingDeviceLogin]{
+		value:     pendingCopy,
+		createdAt: now,
+		expiresAt: now.Add(DefaultDeviceLoginTTL),
+	}
+	return nil
+}
+
+// LoadPendingDeviceLogin retrieves a pending device login by state. Returns a
+// defensive copy to prevent aliasing issues.
+func (s *MemoryStorage) LoadPendingDeviceLogin(_ context.Context, state string) (*PendingDeviceLogin, error) {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+
+	entry, ok := s.pendingDeviceLogins[state]
+	if !ok {
+		return nil, notFoundRFC6749Error("Pending device login not found")
+	}
+	if time.Now().After(entry.expiresAt) {
+		return nil, ErrExpired
+	}
+
+	pending := entry.value
+	return &PendingDeviceLogin{
+		DeviceCode:           pending.DeviceCode,
+		UserCode:             pending.UserCode,
+		UpstreamPKCEVerifier: pending.UpstreamPKCEVerifier,
+		UpstreamNonce:        pending.UpstreamNonce,
+		UpstreamProviderName: pending.UpstreamProviderName,
+		CreatedAt:            pending.CreatedAt,
+	}, nil
+}
+
+// DeletePendingDeviceLogin removes a pending device login.
+func (s *MemoryStorage) DeletePendingDeviceLogin(_ context.Context, state string) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	if _, ok := s.pendingDeviceLogins[state]; !ok {
+		return notFoundRFC6749Error("Pending device login not found")
+	}
+	delete(s.pendingDeviceLogins, state)
+	return nil
+}
+
+// -----------------------
+// Pending Device Confirmation Storage
+// -----------------------
+
+// StorePendingDeviceConfirmation stores a pending device-flow confirmation,
+// keyed by an opaque token minted by the caller. See
+// PendingDeviceConfirmation's doc comment for why the resolved identity is
+// addressed by token rather than round-tripped through the browser.
+func (s *MemoryStorage) StorePendingDeviceConfirmation(
+	_ context.Context, token string, pending *PendingDeviceConfirmation,
+) error {
+	if token == "" {
+		return fosite.ErrInvalidRequest.WithHint("token cannot be empty")
+	}
+	if pending == nil {
+		return fosite.ErrInvalidRequest.WithHint("pending device confirmation cannot be nil")
+	}
+
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	now := time.Now()
+	pendingCopy := &PendingDeviceConfirmation{
+		DeviceCode:        pending.DeviceCode,
+		UserCode:          pending.UserCode,
+		ResolvedUserID:    pending.ResolvedUserID,
+		ResolvedUserName:  pending.ResolvedUserName,
+		ResolvedUserEmail: pending.ResolvedUserEmail,
+		UpstreamTokens:    cloneUpstreamTokens(pending.UpstreamTokens),
+		Synthetic:         pending.Synthetic,
+		CreatedAt:         pending.CreatedAt,
+	}
+
+	s.pendingDeviceConfirmations[token] = &timedEntry[*PendingDeviceConfirmation]{
+		value:     pendingCopy,
+		createdAt: now,
+		expiresAt: now.Add(DefaultDeviceLoginTTL),
+	}
+	return nil
+}
+
+// LoadPendingDeviceConfirmation retrieves a pending device confirmation by
+// token. Returns a defensive copy to prevent aliasing issues.
+func (s *MemoryStorage) LoadPendingDeviceConfirmation(
+	_ context.Context, token string,
+) (*PendingDeviceConfirmation, error) {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+
+	entry, ok := s.pendingDeviceConfirmations[token]
+	if !ok {
+		return nil, notFoundRFC6749Error("Pending device confirmation not found")
+	}
+	if time.Now().After(entry.expiresAt) {
+		return nil, ErrExpired
+	}
+
+	pending := entry.value
+	return &PendingDeviceConfirmation{
+		DeviceCode:        pending.DeviceCode,
+		UserCode:          pending.UserCode,
+		ResolvedUserID:    pending.ResolvedUserID,
+		ResolvedUserName:  pending.ResolvedUserName,
+		ResolvedUserEmail: pending.ResolvedUserEmail,
+		UpstreamTokens:    cloneUpstreamTokens(pending.UpstreamTokens),
+		Synthetic:         pending.Synthetic,
+		CreatedAt:         pending.CreatedAt,
+	}, nil
+}
+
+// DeletePendingDeviceConfirmation removes a pending device confirmation.
+func (s *MemoryStorage) DeletePendingDeviceConfirmation(_ context.Context, token string) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	if _, ok := s.pendingDeviceConfirmations[token]; !ok {
+		return notFoundRFC6749Error("Pending device confirmation not found")
+	}
+	delete(s.pendingDeviceConfirmations, token)
+	return nil
+}
+
+// -----------------------
+// Device Code Storage
+// -----------------------
+
+// cloneDeviceRequest returns a defensive copy of device, cloning its slice
+// fields so neither the caller nor the store can mutate the other's data
+// through a shared backing array.
+func cloneDeviceRequest(device *DeviceRequest) *DeviceRequest {
+	return &DeviceRequest{
+		DeviceCode:        device.DeviceCode,
+		UserCode:          device.UserCode,
+		ClientID:          device.ClientID,
+		Scopes:            slices.Clone(device.Scopes),
+		Audience:          slices.Clone(device.Audience),
+		Status:            device.Status,
+		Interval:          device.Interval,
+		LastPolledAt:      device.LastPolledAt,
+		ResolvedUserID:    device.ResolvedUserID,
+		ResolvedUserName:  device.ResolvedUserName,
+		ResolvedUserEmail: device.ResolvedUserEmail,
+		SessionID:         device.SessionID,
+		CreatedAt:         device.CreatedAt,
+	}
+}
+
+// getUnexpiredDeviceRequestEntry looks up the device request entry keyed by
+// deviceCode, returning ErrNotFound if absent or ErrExpired if its TTL has
+// elapsed. Callers must hold s.mu (read or write lock).
+func (s *MemoryStorage) getUnexpiredDeviceRequestEntry(deviceCode string) (*timedEntry[*DeviceRequest], error) {
+	entry, ok := s.deviceRequests[deviceCode]
+	if !ok {
+		return nil, fmt.Errorf("%w: device request not found", ErrNotFound)
+	}
+	if time.Now().After(entry.expiresAt) {
+		return nil, ErrExpired
+	}
+	return entry, nil
+}
+
+// StoreDeviceRequest stores a new pending device request, indexed by both
+// DeviceCode and UserCode.
+func (s *MemoryStorage) StoreDeviceRequest(_ context.Context, device *DeviceRequest) error {
+	if device == nil {
+		return fosite.ErrInvalidRequest.WithHint("device request cannot be nil")
+	}
+	if device.DeviceCode == "" {
+		return fosite.ErrInvalidRequest.WithHint("device code cannot be empty")
+	}
+	if device.UserCode == "" {
+		return fosite.ErrInvalidRequest.WithHint("user code cannot be empty")
+	}
+	if device.Status != DeviceRequestStatusPending {
+		return fosite.ErrInvalidRequest.WithHint("device request must be created with pending status")
+	}
+
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	if _, ok := s.deviceRequests[device.DeviceCode]; ok {
+		return fmt.Errorf("%w: device code %q", ErrAlreadyExists, device.DeviceCode)
+	}
+	if _, ok := s.deviceRequestsByUserCode[device.UserCode]; ok {
+		return fmt.Errorf("%w: user code %q", ErrAlreadyExists, device.UserCode)
+	}
+
+	now := time.Now()
+	s.deviceRequests[device.DeviceCode] = &timedEntry[*DeviceRequest]{
+		value:     cloneDeviceRequest(device),
+		createdAt: now,
+		expiresAt: now.Add(DefaultDeviceRequestTTL),
+	}
+	s.deviceRequestsByUserCode[device.UserCode] = device.DeviceCode
+	return nil
+}
+
+// LoadDeviceRequestByDeviceCode retrieves a device request by its device_code.
+// Returns a defensive copy to prevent aliasing issues.
+func (s *MemoryStorage) LoadDeviceRequestByDeviceCode(_ context.Context, deviceCode string) (*DeviceRequest, error) {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+
+	entry, err := s.getUnexpiredDeviceRequestEntry(deviceCode)
+	if err != nil {
+		return nil, err
+	}
+	return cloneDeviceRequest(entry.value), nil
+}
+
+// LoadDeviceRequestByUserCode retrieves a device request by its user_code,
+// for the verification page. Returns a defensive copy to prevent aliasing issues.
+func (s *MemoryStorage) LoadDeviceRequestByUserCode(_ context.Context, userCode string) (*DeviceRequest, error) {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+
+	deviceCode, ok := s.deviceRequestsByUserCode[userCode]
+	if !ok {
+		return nil, fmt.Errorf("%w: device request not found", ErrNotFound)
+	}
+	entry, err := s.getUnexpiredDeviceRequestEntry(deviceCode)
+	if err != nil {
+		return nil, err
+	}
+	return cloneDeviceRequest(entry.value), nil
+}
+
+// MarkDeviceRequestAuthorized transitions a pending device request to
+// authorized, attaching the resolved identity.
+func (s *MemoryStorage) MarkDeviceRequestAuthorized(
+	_ context.Context, deviceCode string, resolvedUserID, resolvedUserName, resolvedUserEmail, sessionID string,
+) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	entry, err := s.getUnexpiredDeviceRequestEntry(deviceCode)
+	if err != nil {
+		return err
+	}
+	if entry.value.Status != DeviceRequestStatusPending {
+		return fmt.Errorf("%w: device request is %q, not pending", ErrInvalidState, entry.value.Status)
+	}
+
+	entry.value.Status = DeviceRequestStatusAuthorized
+	entry.value.ResolvedUserID = resolvedUserID
+	entry.value.ResolvedUserName = resolvedUserName
+	entry.value.ResolvedUserEmail = resolvedUserEmail
+	entry.value.SessionID = sessionID
+	return nil
+}
+
+// MarkDeviceRequestDenied transitions a pending device request to denied.
+func (s *MemoryStorage) MarkDeviceRequestDenied(_ context.Context, deviceCode string) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	entry, err := s.getUnexpiredDeviceRequestEntry(deviceCode)
+	if err != nil {
+		return err
+	}
+	if entry.value.Status != DeviceRequestStatusPending {
+		return fmt.Errorf("%w: device request is %q, not pending", ErrInvalidState, entry.value.Status)
+	}
+
+	entry.value.Status = DeviceRequestStatusDenied
+	return nil
+}
+
+// UpdateDeviceRequestLastPolledAt records the time of the most recent poll.
+func (s *MemoryStorage) UpdateDeviceRequestLastPolledAt(_ context.Context, deviceCode string, polledAt time.Time) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	entry, err := s.getUnexpiredDeviceRequestEntry(deviceCode)
+	if err != nil {
+		return err
+	}
+	entry.value.LastPolledAt = polledAt
+	return nil
+}
+
+// DeleteDeviceRequest removes a device request, e.g. once its token has been issued.
+func (s *MemoryStorage) DeleteDeviceRequest(_ context.Context, deviceCode string) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	entry, ok := s.deviceRequests[deviceCode]
+	if !ok {
+		return fmt.Errorf("%w: device request not found", ErrNotFound)
+	}
+	delete(s.deviceRequests, deviceCode)
+	delete(s.deviceRequestsByUserCode, entry.value.UserCode)
 	return nil
 }
 
@@ -1612,6 +2024,36 @@ func (s *MemoryStorage) StoreDCRCredentialsIfAbsent(_ context.Context, creds *DC
 	return cloneDCRCredentials(creds), nil
 }
 
+// UpdateDCRCredentialsIfPresent replaces the entry at creds.Key with creds
+// when one physically exists, and returns ErrNotFound (wrapped) otherwise. A
+// defensive copy is stored so subsequent caller mutations do not affect
+// persisted state, mirroring StoreDCRCredentialsIfAbsent.
+//
+// Presence is a plain map lookup, deliberately NOT the TTL-aware "absent"
+// check StoreDCRCredentialsIfAbsent uses: an expired-but-present entry is
+// still updatable here. See the DCRCredentialStore interface docs for why
+// Update gates on physical presence rather than liveness. The in-memory
+// backend has no native TTL, so ClientSecretExpiresAt is retained verbatim on
+// the rewritten entry exactly as StoreDCRCredentialsIfAbsent retains it.
+//
+// Validation is delegated to validateDCRCredentialsForStore so the rejection
+// set stays in sync with sibling backends.
+func (s *MemoryStorage) UpdateDCRCredentialsIfPresent(_ context.Context, creds *DCRCredentials) (*DCRCredentials, error) {
+	if err := validateDCRCredentialsForStore(creds); err != nil {
+		return nil, err
+	}
+
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	if _, ok := s.dcrCredentials[creds.Key]; !ok {
+		return nil, notFoundRFC6749Error("DCR credentials not found")
+	}
+
+	s.dcrCredentials[creds.Key] = cloneDCRCredentials(creds)
+	return cloneDCRCredentials(creds), nil
+}
+
 // GetDCRCredentials retrieves DCR credentials by key.
 // Returns a defensive copy; returns ErrNotFound (wrapped) on miss.
 func (s *MemoryStorage) GetDCRCredentials(_ context.Context, key DCRKey) (*DCRCredentials, error) {
@@ -1625,7 +2067,7 @@ func (s *MemoryStorage) GetDCRCredentials(_ context.Context, key DCRKey) (*DCRCr
 			"upstream_id", key.UpstreamID,
 			"redirect_uri", key.RedirectURI,
 		)
-		return nil, fmt.Errorf("%w: %w", ErrNotFound, fosite.ErrNotFound.WithHint("DCR credentials not found"))
+		return nil, notFoundRFC6749Error("DCR credentials not found")
 	}
 
 	return cloneDCRCredentials(entry), nil
@@ -1675,11 +2117,14 @@ func (s *MemoryStorage) Stats() Stats {
 
 // Compile-time interface compliance checks
 var (
-	_ Storage                     = (*MemoryStorage)(nil)
-	_ PendingAuthorizationStorage = (*MemoryStorage)(nil)
-	_ ClientRegistry              = (*MemoryStorage)(nil)
-	_ UpstreamTokenStorage        = (*MemoryStorage)(nil)
-	_ UserStorage                 = (*MemoryStorage)(nil)
-	_ DCRCredentialStore          = (*MemoryStorage)(nil)
-	_ AssertionJWTConsumer        = (*MemoryStorage)(nil)
+	_ Storage                          = (*MemoryStorage)(nil)
+	_ PendingAuthorizationStorage      = (*MemoryStorage)(nil)
+	_ DeviceCodeStorage                = (*MemoryStorage)(nil)
+	_ PendingDeviceLoginStorage        = (*MemoryStorage)(nil)
+	_ PendingDeviceConfirmationStorage = (*MemoryStorage)(nil)
+	_ ClientRegistry                   = (*MemoryStorage)(nil)
+	_ UpstreamTokenStorage             = (*MemoryStorage)(nil)
+	_ UserStorage                      = (*MemoryStorage)(nil)
+	_ DCRCredentialStore               = (*MemoryStorage)(nil)
+	_ AssertionJWTConsumer             = (*MemoryStorage)(nil)
 )

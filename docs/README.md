@@ -58,7 +58,7 @@ install Go and set up your development environment.
 
 ### Prerequisites
 
-- **Go**: ToolHive requires Go 1.25. You can download and install Go from the
+- **Go**: ToolHive requires Go 1.27. You can download and install Go from the
   [official Go website](https://go.dev/doc/install).
 
 - **Task** (Recommended): Install the [Task](https://taskfile.dev/) tool to run

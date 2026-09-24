@@ -6,7 +6,7 @@ package ui
 import (
 	"testing"
 
-	tea "github.com/charmbracelet/bubbletea"
+	tea "charm.land/bubbletea/v2"
 	"github.com/stretchr/testify/assert"
 
 	"github.com/stacklok/toolhive/pkg/client"
@@ -87,7 +87,7 @@ func TestFilterClientsBySelectedGroups_OutOfBoundsIndices(t *testing.T) {
 	}
 
 	// Press enter to trigger transition which calls filterClientsBySelectedGroups
-	updated, _ := m.Update(tea.KeyMsg{Type: tea.KeyEnter})
+	updated, _ := m.Update(tea.KeyPressMsg{Code: tea.KeyEnter})
 	result := updated.(*setupModel)
 
 	assert.Equal(t, stepClientSelection, result.CurrentStep)

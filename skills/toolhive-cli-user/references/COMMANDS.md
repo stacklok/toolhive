@@ -526,6 +526,122 @@ thv skill validate [flags] PATH
 
 Shell completion available for directory paths.
 
+## AI Plugin Commands
+
+All AI plugin commands use the ToolHive API; ensure `thv serve` is running. Plugins are AI-client bundles, not ToolHive workloads. Do not infer that a declared or materialized component is activated by the client.
+
+### thv ai-plugin validate
+
+Validate a local plugin directory before building. Invalid results exit non-zero; `--format json` prints the validation result.
+
+```
+thv ai-plugin validate [flags] PATH
+```
+
+| Flag | Description |
+|------|-------------|
+| `--format` | Output format: `text` or `json` |
+
+### thv ai-plugin build and builds
+
+Build a local directory into the local OCI store; successful `build` prints its reference. List local artifacts with `builds` (`--format text` or `json`). `builds remove` deletes the named local artifact and its blobs; it is separate from uninstalling an installed plugin and has no confirmation flag.
+
+```
+thv ai-plugin build [flags] PATH
+thv ai-plugin builds [--format text|json]
+thv ai-plugin builds remove TAG
+```
+
+| Command | Flag | Description |
+|---------|------|-------------|
+| `build` | `-t, --tag` | OCI tag for the built artifact |
+
+### thv ai-plugin push
+
+Push a previously built local artifact. Signing is keyless by default: use `--identity-token TOKEN_OR_PATH`, GitHub Actions OIDC with `id-token: write`, or interactive browser sign-in. Use `--no-sign` only when intentionally publishing unsigned content; project consumers must explicitly consent to an unsigned install. Use `--key PATH` to sign with a cosign private key instead; consumers then need the matching public key (`thv ai-plugin install --public-key`) on their first project-scoped install.
+
+```
+thv ai-plugin push [flags] REFERENCE
+```
+
+| Flag | Description |
+|------|-------------|
+| `--key` | Path to a cosign private key; requires the locally discovered ToolHive server |
+| `--identity-token` | OIDC identity token or path to a token file |
+| `--no-sign` | Publish unsigned instead of signing |
+
+### thv ai-plugin install
+
+Install one exact registry name, OCI reference, or Git source (`git://host/org/repo[@ref][#subdir]`). The supported plugin clients are `claude-code` and `codex`; `--clients all` selects available clients. `--scope` defaults to `user`; verification and lock-file trust are project-only, so project scope requires `--project-root` and records trust in `toolhive.lock.yaml`. For the first project install of an externally key-pair-signed OCI artifact, use `--public-key PATH`; ToolHive pins and reuses that key for sync and upgrade. User scope rejects `--public-key`.
+
+```
+thv ai-plugin install [flags] PLUGIN_NAME
+```
+
+| Flag | Description |
+|------|-------------|
+| `--clients` | Comma-separated client IDs, or `all` |
+| `--scope` | `user` (default) or `project` |
+| `--project-root` | Required for project scope |
+| `--group` | Add the plugin to a group after installation |
+| `--public-key` | First-project-install cosign public key for an externally key-signed OCI artifact |
+| `--allow-unsigned` | Explicitly record a project-scope unsigned exception; never use to work around invalid verification |
+| `--force` | Overwrite an existing plugin directory; use only after confirmation |
+
+### thv ai-plugin list, info, and uninstall
+
+`list` has alias `ls`. `info` includes trust and component information; declared MCP/LSP servers are not ToolHive-managed workloads. `uninstall` removes an installed plugin at the selected scope; it does not remove a local build.
+
+```
+thv ai-plugin list|ls [flags]
+thv ai-plugin info [flags] PLUGIN_NAME
+thv ai-plugin uninstall [flags] PLUGIN_NAME
+```
+
+| Command | Flags |
+|---------|-------|
+| `list` / `ls` | `--scope`, `--client`, `--group`, `--project-root`, `--format text|json` |
+| `info` | `--scope`, `--project-root`, `--format text|json` |
+| `uninstall` | `--scope` (default `user`), `--project-root` (required for project scope) |
+
+### thv ai-plugin sync
+
+Compare project installs with `toolhive.lock.yaml`. `--check` makes no changes and exits non-zero for missing/drifted plugins, making it suitable for CI. Without `--check`, sync prompts before it installs; `--yes` skips that prompt and must be chosen explicitly for non-interactive use.
+
+```
+thv ai-plugin sync [flags]
+```
+
+| Flag | Description |
+|------|-------------|
+| `--project-root` | Project root; auto-detected by default |
+| `--clients` | Comma-separated client IDs, or `all` |
+| `--check` | Report only; no install, write, or removal |
+| `--adopt` | Write lock entries for existing unmanaged project installs |
+| `--prune` | Remove installed plugins absent from the lock; confirm explicitly |
+| `--yes` | Skip the normal confirmation prompt |
+| `--allow-unsigned` | Explicitly record unsigned state while adopting/repairing; not a verification bypass |
+| `--format` | Output format: `text` or `json` |
+
+### thv ai-plugin upgrade
+
+Re-resolve mutable project lock entries. Immutable OCI-digest and full Git-commit sources are not upgradable. `--preview` and `--fail-on-changes` make no persistent change; the latter exits non-zero when upgrades are available. A normal upgrade prompts before installing; use `--yes` only with explicit approval. Do not add `--allow-ref-change` or `--allow-signer-change` without reviewing the candidate repository or signer.
+
+```
+thv ai-plugin upgrade [flags] [PLUGIN_NAME...]
+```
+
+| Flag | Description |
+|------|-------------|
+| `--project-root` | Project root; auto-detected by default |
+| `--clients` | Comma-separated client IDs, or `all` |
+| `--preview` | Report planned changes without persisting (OCI content may still be fetched) |
+| `--fail-on-changes` | CI freshness check; report only and exit non-zero if changes exist |
+| `--allow-ref-change` | Permit a move to a different repository after explicit review |
+| `--allow-signer-change` | Permit replacing the recorded signer after explicit review |
+| `--yes` | Skip the normal confirmation prompt |
+| `--format` | Output format: `text` or `json` |
+
 ## Utility Commands
 
 ### thv inspector

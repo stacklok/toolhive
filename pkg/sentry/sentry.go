@@ -5,14 +5,18 @@
 package sentry
 
 import (
+	"context"
 	"fmt"
 	"log/slog"
 	"net/http"
+	"sync"
 	"sync/atomic"
 	"time"
 
 	"github.com/getsentry/sentry-go"
 	sentryotel "github.com/getsentry/sentry-go/otel"
+	sentryotlp "github.com/getsentry/sentry-go/otel/otlp"
+	sdktrace "go.opentelemetry.io/otel/sdk/trace"
 
 	"github.com/stacklok/toolhive/pkg/telemetry"
 	"github.com/stacklok/toolhive/pkg/updates"
@@ -21,8 +25,29 @@ import (
 
 const flushTimeout = 2 * time.Second
 
+const (
+	// environmentKey and releaseKey are the attribute names Sentry itself uses
+	// to carry Environment and Release on OTLP payloads (see sentry-go's
+	// log.go/metrics.go), so exported spans must use the same names to be
+	// grouped alongside Issues.
+	environmentKey = "sentry.environment"
+	releaseKey     = "sentry.release"
+	// instanceIDKey carries the anonymous instance ID on both Sentry events
+	// (as a scope tag) and exported spans (as a resource attribute), so Issues
+	// and Traces can be correlated with toolhive-studio by the same value.
+	instanceIDKey = "custom.instance_id"
+)
+
 // initialized tracks whether Sentry was successfully initialized.
 var initialized atomic.Bool
+
+// spanProcessor is the single Sentry OTLP span processor for this process,
+// created on the first Init and reused by every subsequent one. Guarded by
+// spanProcessorMu.
+var (
+	spanProcessorMu sync.Mutex
+	spanProcessor   sdktrace.SpanProcessor
+)
 
 // Config holds the configuration for Sentry integration.
 type Config struct {
@@ -46,21 +71,30 @@ func Init(cfg Config) error {
 	}
 
 	vi := versions.GetVersionInfo()
+	// Reused verbatim as a span resource attribute below so Issues and Traces
+	// report the same release string.
+	release := fmt.Sprintf("toolhive@%s", vi.Version)
 
 	err := sentry.Init(sentry.ClientOptions{
 		Dsn:              cfg.DSN,
 		Environment:      cfg.Environment,
-		Release:          fmt.Sprintf("toolhive@%s", vi.Version),
+		Release:          release,
 		TracesSampleRate: cfg.TracesSampleRate,
 		Debug:            cfg.Debug,
 		EnableTracing:    true,
 		AttachStacktrace: true,
-		SendDefaultPII:   false,
+		DataCollection:   noPIIDataCollection(),
+		Integrations: func(integrations []sentry.Integration) []sentry.Integration {
+			return append(integrations, sentryotel.NewOtelIntegration())
+		},
 	})
 	if err != nil {
 		return fmt.Errorf("sentry init: %w", err)
 	}
 
+	if err := registerTraceExporter(cfg); err != nil {
+		return err
+	}
 	initialized.Store(true)
 	slog.Debug("sentry initialized", "environment", cfg.Environment)
 
@@ -69,20 +103,119 @@ func Init(cfg Config) error {
 	// toolhive-studio. Note: toolhive-studio currently uses "custom.user_id"
 	// for the same value; these should be aligned to "custom.instance_id" in
 	// both repos in a follow-up to avoid misleading PII detection heuristics.
+	instanceID := ""
 	if id, err := updates.TryGetAnonymousID(); err == nil && id != "" {
+		instanceID = id
 		sentry.ConfigureScope(func(scope *sentry.Scope) {
-			scope.SetTag("custom.instance_id", id)
+			scope.SetTag(instanceIDKey, id)
 		})
 		slog.Debug("sentry anonymous instance ID tagged", "id", id)
 	}
 
-	// Self-register the Sentry span processor with the global OTEL registry so
-	// that any telemetry.NewProvider call automatically includes it. This decouples
-	// the OTEL provider setup from Sentry-specific code.
-	telemetry.RegisterSpanProcessor(sentryotel.NewSentrySpanProcessor())
-	slog.Debug("sentry span processor registered with OTEL registry")
+	// Spans are exported straight to Sentry's OTLP endpoint and never pass
+	// through the Sentry client, so neither ClientOptions nor the scope
+	// configured above reach them. Environment, release and instance ID have to
+	// travel as OTEL resource attributes instead, or Traces would lose the
+	// grouping that Issues keep and the two would disagree.
+	telemetry.RegisterResourceAttributes(resourceAttributes(cfg.Environment, release, instanceID))
 
 	return nil
+}
+
+// registerTraceExporter registers the Sentry OTLP span processor with the global
+// OTEL registry, creating it on first use.
+//
+// The processor is cached because the registry deduplicates by pointer identity:
+// sdktrace.NewBatchSpanProcessor allocates a fresh processor on every call, so
+// without this a second Init (config reload, or a test that does not reset the
+// registry) would register a second processor and double-export every span while
+// leaking the first exporter's goroutine.
+//
+// Caching means a second Init keeps the first call's DSN. thv serve calls Init
+// exactly once per process, and the registry already only feeds processors to
+// providers created after registration, so re-initialising is not supported
+// either way.
+func registerTraceExporter(cfg Config) error {
+	spanProcessorMu.Lock()
+	defer spanProcessorMu.Unlock()
+
+	if spanProcessor == nil {
+		exporter, err := sentryotlp.NewTraceExporter(context.Background(), cfg.DSN)
+		if err != nil {
+			return fmt.Errorf("create Sentry trace exporter: %w", err)
+		}
+		spanProcessor = sdktrace.NewBatchSpanProcessor(exporter)
+	}
+
+	telemetry.RegisterSpanProcessor(spanProcessor)
+	// Spans no longer pass through the Sentry client, so TracesSampleRate has to
+	// reach the OTEL sampler or --sentry-traces-sample-rate would be ignored and
+	// every span would be exported.
+	telemetry.RegisterSamplingRate(cfg.TracesSampleRate)
+	slog.Debug("sentry trace exporter registered with OTEL registry",
+		"traces_sample_rate", cfg.TracesSampleRate)
+	return nil
+}
+
+// piiSensitiveTerms mirrors the deny-list that sentry-go applies internally for
+// SendDefaultPII=false (its unexported extendedSensitiveTerms). These cover
+// client-identifying data that an API server behind a proxy routinely sees:
+// forwarding headers, remote addresses and user identifiers.
+//
+// The list has to be repeated here because sentry-go reaches it only through
+// the deprecated SendDefaultPII path; the DataCollection API exposes no way to
+// set it. In CollectionDenyList mode a behaviour's Terms are OR-ed with the
+// SDK's built-in terms, so passing them per behaviour is equivalent.
+//
+// Re-check this against sentry-go's extendedSensitiveTerms on SDK upgrades — a
+// term added upstream will not reach us automatically.
+var piiSensitiveTerms = []string{
+	"forwarded",
+	"-ip",
+	"remote-",
+	"via",
+	"-user",
+}
+
+// noPIIDataCollection returns the DataCollection that replaces the deprecated
+// SendDefaultPII=false. It is deliberately equivalent to what sentry-go's
+// legacyDataCollection built for that flag: no auto-populated user info, no
+// HTTP bodies, no cookies, and headers and query params scrubbed against both
+// the built-in and the extended deny-lists.
+func noPIIDataCollection() *sentry.DataCollection {
+	denyList := func() *sentry.KeyValueCollectionBehavior {
+		return &sentry.KeyValueCollectionBehavior{
+			Mode:  sentry.CollectionDenyList,
+			Terms: piiSensitiveTerms,
+		}
+	}
+	return &sentry.DataCollection{
+		UserInfo:   sentry.Set(false),
+		HTTPBodies: []sentry.BodyType{},
+		Cookies:    &sentry.KeyValueCollectionBehavior{Mode: sentry.CollectionOff},
+		HTTPHeaders: &sentry.HeaderCollectionConfig{
+			Request:  denyList(),
+			Response: denyList(),
+		},
+		QueryParams: denyList(),
+	}
+}
+
+// resourceAttributes returns the OTEL resource attributes Sentry needs to group
+// OTLP-ingested traces the same way it groups Issues. Empty values are omitted
+// so they do not show up as blank attributes on other OTLP backends.
+func resourceAttributes(environment, release, instanceID string) map[string]string {
+	attrs := make(map[string]string, 3)
+	for key, value := range map[string]string{
+		environmentKey: environment,
+		releaseKey:     release,
+		instanceIDKey:  instanceID,
+	} {
+		if value != "" {
+			attrs[key] = value
+		}
+	}
+	return attrs
 }
 
 // Close flushes buffered Sentry events and shuts down the SDK.
@@ -107,8 +240,9 @@ func Enabled() bool {
 //
 // The API server's error handler calls this alongside span.RecordError so that
 // 5xx errors appear as both OTEL span errors (distributed tracing) and
-// standalone Sentry Issues (error tracking). The Sentry span processor only
-// creates transactions; explicit hub calls are required for Issues.
+// standalone Sentry Issues (error tracking). The Sentry OTEL integration links
+// those issues to the active OTEL trace; explicit hub calls are required to
+// create Issues.
 func CaptureException(r *http.Request, err error) {
 	if !initialized.Load() || err == nil {
 		return
@@ -117,7 +251,15 @@ func CaptureException(r *http.Request, err error) {
 	if hub == nil {
 		hub = sentry.CurrentHub().Clone()
 	}
-	hub.CaptureException(err)
+	client := hub.Client()
+	if client == nil {
+		return
+	}
+	event := client.EventFromException(err, sentry.LevelError)
+	hub.CaptureEventWithHint(event, &sentry.EventHint{
+		OriginalException: err,
+		Context:           r.Context(),
+	})
 }
 
 // RecoverPanic reports a recovered panic value to Sentry.

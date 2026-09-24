@@ -27,11 +27,8 @@ import (
 
 // TestResponseFilteringWriter_Non2xxStatusPreservedOnWire reproduces the
 // production transparent-proxy wiring (real HTTP server + httputil.ReverseProxy
-// with FlushInterval:-1 + ResponseFilteringWriter) and asserts that a non-2xx
-// backend status survives on the wire. Regression for the bypass where Flush()
-// committed an implicit 200 before FlushAndFilter() ran, so the non-2xx
-// passthrough branch (safe only when the client actually observes a non-2xx
-// status) delivered an unfiltered list body under a fabricated 200.
+// with FlushInterval:-1 + ResponseFilteringWriter) and asserts that non-2xx
+// result bodies are filtered without losing the backend status on the wire.
 func TestResponseFilteringWriter_Non2xxStatusPreservedOnWire(t *testing.T) {
 	t.Parallel()
 
@@ -62,7 +59,7 @@ func TestResponseFilteringWriter_Non2xxStatusPreservedOnWire(t *testing.T) {
 		w.WriteHeader(code)
 		_, _ = w.Write(backendBody)
 	}))
-	defer backend.Close()
+	t.Cleanup(backend.Close)
 	backendURL, _ := url.Parse(backend.URL)
 
 	// Frontend mirrors the authz-middleware + transparent-proxy wiring.
@@ -82,7 +79,7 @@ func TestResponseFilteringWriter_Non2xxStatusPreservedOnWire(t *testing.T) {
 		proxy.ServeHTTP(filteringWriter, r)
 		require.NoError(t, filteringWriter.FlushAndFilter())
 	}))
-	defer frontend.Close()
+	t.Cleanup(frontend.Close)
 
 	do := func(query string) (*http.Response, []byte) {
 		resp, err := http.Get(frontend.URL + "/mcp" + query)
@@ -98,16 +95,13 @@ func TestResponseFilteringWriter_Non2xxStatusPreservedOnWire(t *testing.T) {
 	assert.Contains(t, string(body200), "weather")
 	assert.NotContains(t, string(body200), "admin_tool")
 
-	// Non-2xx list responses must reach the client with the non-2xx status, so
-	// the passthrough precondition (client gates list delivery on response.ok)
-	// holds.
+	// HTTP status is not a confidentiality boundary: callers can inspect a
+	// non-2xx response body, so those result bodies must be filtered too.
 	for _, code := range []int{http.StatusInternalServerError, http.StatusNotFound} {
 		resp, body := do(fmt.Sprintf("?code=%d", code))
 		assert.Equalf(t, code, resp.StatusCode,
-			"non-2xx backend status %d was rewritten on the wire; the unfiltered list body would be delivered as 200", code)
-		// The passthrough branch is intentionally body-preserving for error
-		// responses; the security property is that the client sees the non-2xx
-		// status and does not deliver the body.
-		assert.Equal(t, string(backendBody), string(body))
+			"non-2xx backend status %d was rewritten on the wire", code)
+		assert.Contains(t, string(body), "weather")
+		assert.NotContains(t, string(body), "admin_tool")
 	}
 }

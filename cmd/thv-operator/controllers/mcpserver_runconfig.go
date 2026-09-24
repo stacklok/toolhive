@@ -151,6 +151,7 @@ func (r *MCPServerReconciler) createRunConfigFromMCPServer(m *mcpv1beta1.MCPServ
 		runner.WithHost(proxyHost),
 		runner.WithTrustProxyHeaders(m.Spec.TrustProxyHeaders),
 		runner.WithEndpointPrefix(m.Spec.EndpointPrefix),
+		runner.WithMaxRequestBodySize(m.Spec.MaxRequestBodySize),
 		runner.WithToolsFilter(toolsFilter),
 		runner.WithEnvVars(envVars),
 		runner.WithVolumes(volumes),
@@ -275,6 +276,11 @@ func (r *MCPServerReconciler) createRunConfigFromMCPServer(m *mcpv1beta1.MCPServ
 	// Add rate limit configuration if specified
 	if m.Spec.RateLimiting != nil {
 		options = append(options, runner.WithRateLimitConfig(m.Namespace, m.Spec.RateLimiting))
+	}
+
+	// Add proxy HTTP server read timeout if specified
+	if m.Spec.ProxyReadTimeout != nil {
+		options = append(options, runner.WithProxyReadTimeout(m.Spec.ProxyReadTimeout.Duration))
 	}
 
 	// Use the RunConfigBuilder for operator context with full builder pattern

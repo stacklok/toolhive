@@ -6,8 +6,11 @@ package runner
 import (
 	"bytes"
 	"context"
+	"encoding/json"
 	"fmt"
 	"net"
+	"net/http"
+	"net/http/httptest"
 	"os"
 	"strings"
 	"testing"
@@ -19,6 +22,7 @@ import (
 
 	"github.com/stacklok/toolhive-core/permissions"
 	regtypes "github.com/stacklok/toolhive-core/registry/types"
+	"github.com/stacklok/toolhive/pkg/auth"
 	"github.com/stacklok/toolhive/pkg/auth/remote"
 	"github.com/stacklok/toolhive/pkg/authserver"
 	"github.com/stacklok/toolhive/pkg/authz"
@@ -633,6 +637,12 @@ func TestRunConfig_WithSecrets(t *testing.T) {
 
 			// Set the secrets in the config
 			tc.config.Secrets = tc.secrets
+			originalClientSecret := ""
+			originalBearerToken := ""
+			if tc.config.RemoteAuthConfig != nil {
+				originalClientSecret = tc.config.RemoteAuthConfig.ClientSecret
+				originalBearerToken = tc.config.RemoteAuthConfig.BearerToken
+			}
 
 			// Call the function
 			result, err := tc.config.WithSecrets(context.Background(), secretManager, secretManager)
@@ -648,37 +658,84 @@ func TestRunConfig_WithSecrets(t *testing.T) {
 					assert.Equal(t, value, tc.config.EnvVars[key], "Environment variable %s should be set correctly", key)
 				}
 
-				// Check bearer token resolution if RemoteAuthConfig is present
-				if tc.config.RemoteAuthConfig != nil && tc.config.RemoteAuthConfig.BearerToken != "" {
-					// Check if bearer token was in CLI format
-					if secretParam, err := secrets.ParseSecretParameter(tc.config.RemoteAuthConfig.BearerToken); err == nil {
-						// It was in CLI format, should be resolved to the actual value
-						if expectedToken, exists := tc.mockSecrets[secretParam.Name]; exists {
-							assert.Equal(t, expectedToken, tc.config.RemoteAuthConfig.BearerToken, "Bearer token should be resolved from CLI format")
-						}
-					} else {
-						// It was plain text, should remain unchanged
-						// We need to check against the original value from the test case
-						originalToken := "plain-text-bearer-token" // Default for the plain text test case
-						if tc.name == "Bearer token in plain text remains unchanged" {
-							assert.Equal(t, originalToken, tc.config.RemoteAuthConfig.BearerToken, "Plain text bearer token should remain unchanged")
-						}
-					}
-				}
+				if tc.config.RemoteAuthConfig != nil {
+					assert.Equal(t, originalBearerToken, tc.config.RemoteAuthConfig.BearerToken,
+						"bearer token persistence value should remain unchanged")
+					assert.Equal(t, originalClientSecret, tc.config.RemoteAuthConfig.ClientSecret,
+						"client secret persistence value should remain unchanged")
 
-				// Check OAuth client secret resolution if RemoteAuthConfig is present
-				if tc.config.RemoteAuthConfig != nil && tc.config.RemoteAuthConfig.ClientSecret != "" {
-					// Check if client secret was in CLI format
-					if secretParam, err := secrets.ParseSecretParameter(tc.config.RemoteAuthConfig.ClientSecret); err == nil {
-						// It was in CLI format, should be resolved to the actual value
-						if expectedSecret, exists := tc.mockSecrets[secretParam.Name]; exists {
-							assert.Equal(t, expectedSecret, tc.config.RemoteAuthConfig.ClientSecret, "OAuth client secret should be resolved from CLI format")
+					if secretParam, parseErr := secrets.ParseSecretParameter(originalBearerToken); parseErr == nil {
+						if expectedToken, exists := tc.mockSecrets[secretParam.Name]; exists {
+							tokenSource, authErr := remote.NewHandler(tc.config.RemoteAuthConfig).
+								Authenticate(context.Background(), "https://example.com/mcp")
+							require.NoError(t, authErr)
+							require.NotNil(t, tokenSource)
+							token, tokenErr := tokenSource.Token()
+							require.NoError(t, tokenErr)
+							assert.Equal(t, expectedToken, token.AccessToken)
 						}
 					}
 				}
 			}
 		})
 	}
+}
+
+func TestRunConfig_WithEnvironmentBackedRemoteSecret(t *testing.T) {
+	const (
+		secretReference = "operator-token,target=bearer_token"
+		resolvedToken   = "operator-token-value"
+	)
+	t.Setenv("TOOLHIVE_SECRET_operator-token", resolvedToken)
+
+	config := &RunConfig{RemoteAuthConfig: &remote.Config{BearerToken: secretReference}}
+	_, err := config.WithSecrets(context.Background(), secrets.NewEnvironmentProvider(), secrets.NewEnvironmentProvider())
+	require.NoError(t, err)
+	assert.Equal(t, secretReference, config.RemoteAuthConfig.BearerToken)
+
+	tokenSource, err := remote.NewHandler(config.RemoteAuthConfig).Authenticate(context.Background(), "https://example.com/mcp")
+	require.NoError(t, err)
+	require.NotNil(t, tokenSource)
+	token, err := tokenSource.Token()
+	require.NoError(t, err)
+	assert.Equal(t, resolvedToken, token.AccessToken)
+
+	var encoded bytes.Buffer
+	require.NoError(t, config.WriteJSON(&encoded))
+	assert.Contains(t, encoded.String(), secretReference)
+	assert.NotContains(t, encoded.String(), resolvedToken)
+}
+
+func TestRunConfig_WithSecretsReplacesResolvedBearerToken(t *testing.T) {
+	t.Parallel()
+
+	ctrl := gomock.NewController(t)
+	secretManager := secretsmocks.NewMockProvider(ctrl)
+	secretManager.EXPECT().GetSecret(gomock.Any(), "BEARER_TOKEN_SECRET").Return("first-token", nil)
+	secretManager.EXPECT().GetSecret(gomock.Any(), "BEARER_TOKEN_SECRET").Return("", nil)
+
+	config := &RunConfig{RemoteAuthConfig: &remote.Config{
+		BearerToken: "BEARER_TOKEN_SECRET,target=bearer_token",
+	}}
+	_, err := config.WithSecrets(context.Background(), secretManager, secretManager)
+	require.NoError(t, err)
+
+	tokenSource, err := remote.NewHandler(config.RemoteAuthConfig).Authenticate(context.Background(), "https://example.com/mcp")
+	require.NoError(t, err)
+	require.NotNil(t, tokenSource)
+	token, err := tokenSource.Token()
+	require.NoError(t, err)
+	assert.Equal(t, "first-token", token.AccessToken)
+
+	_, err = config.WithSecrets(context.Background(), secretManager, secretManager)
+	require.NoError(t, err)
+
+	server := httptest.NewServer(http.HandlerFunc(func(http.ResponseWriter, *http.Request) {}))
+	t.Cleanup(server.Close)
+	tokenSource, err = remote.NewHandler(config.RemoteAuthConfig).Authenticate(context.Background(), server.URL)
+	require.NoError(t, err)
+	assert.Nil(t, tokenSource, "an empty resolved token must not fall back to its persisted reference")
+	assert.Equal(t, "BEARER_TOKEN_SECRET,target=bearer_token", config.RemoteAuthConfig.BearerToken)
 }
 
 func TestRunConfig_WithContainerName(t *testing.T) {
@@ -1096,6 +1153,78 @@ func TestRunConfig_WriteJSON_ReadJSON(t *testing.T) {
 	require.NotNil(t, readConfig.HeaderForward, "HeaderForward should not be nil")
 	assert.Equal(t, originalConfig.HeaderForward.AddPlaintextHeaders, readConfig.HeaderForward.AddPlaintextHeaders, "AddPlaintextHeaders should match")
 	assert.Equal(t, originalConfig.HeaderForward.AddHeadersFromSecret, readConfig.HeaderForward.AddHeadersFromSecret, "AddHeadersFromSecret should match")
+}
+
+func TestReadJSON_OIDCMiddlewareConfiguration(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name      string
+		fixture   string
+		populate  bool
+		wantErr   string
+		assertion func(*testing.T, *RunConfig)
+	}{
+		{
+			name:    "repairs legacy middleware",
+			fixture: "testdata/legacy_oidc_middleware.json",
+			assertion: func(t *testing.T, config *RunConfig) {
+				t.Helper()
+				require.NotNil(t, config.OIDCConfig)
+
+				var params auth.MiddlewareParams
+				require.NoError(t, json.Unmarshal(config.MiddlewareConfigs[0].Parameters, &params))
+				assert.Equal(t, config.OIDCConfig, params.OIDCConfig)
+				assert.Equal(t, "https://embedded.example.com", params.EmbeddedAuthServerIssuer)
+			},
+		},
+		{
+			name:    "rejects null authentication parameters",
+			fixture: "testdata/oidc_null_middleware_parameters.json",
+			wantErr: "invalid OIDC middleware configuration: authentication middleware parameters cannot be null",
+		},
+		{
+			name:     "populates empty middleware chain",
+			fixture:  "testdata/oidc_empty_middleware.json",
+			populate: true,
+			assertion: func(t *testing.T, config *RunConfig) {
+				t.Helper()
+				for _, middlewareConfig := range config.MiddlewareConfigs {
+					if middlewareConfig.Type != auth.MiddlewareType {
+						continue
+					}
+
+					var params auth.MiddlewareParams
+					require.NoError(t, json.Unmarshal(middlewareConfig.Parameters, &params))
+					assert.Equal(t, config.OIDCConfig, params.OIDCConfig)
+					return
+				}
+				t.Fatal("authentication middleware configuration not found")
+			},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			file, err := os.Open(tt.fixture) // #nosec G304 -- fixed test fixture
+			require.NoError(t, err)
+			t.Cleanup(func() { require.NoError(t, file.Close()) })
+
+			config, err := ReadJSON(file)
+			if tt.wantErr != "" {
+				require.ErrorContains(t, err, tt.wantErr)
+				return
+			}
+			require.NoError(t, err)
+
+			if tt.populate {
+				require.NoError(t, PopulateMiddlewareConfigs(config))
+			}
+			tt.assertion(t, config)
+		})
+	}
 }
 
 func TestCommaSeparatedEnvVars(t *testing.T) {

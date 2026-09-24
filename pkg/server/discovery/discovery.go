@@ -42,6 +42,11 @@ type ServerInfo struct {
 	// the discovery file refers to the expected server instance.
 	Nonce string `json:"nonce"`
 
+	// KeySigningCapability is a bearer secret authorizing requests that name a
+	// private key on the server's filesystem. It is distributed only through
+	// this owner-protected discovery file and is never returned by /health.
+	KeySigningCapability string `json:"key_signing_capability,omitempty"`
+
 	// StartedAt is the UTC timestamp when the server started.
 	StartedAt time.Time `json:"started_at"`
 }

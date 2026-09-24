@@ -16,8 +16,6 @@ import (
 	"strings"
 
 	"golang.org/x/exp/jsonrpc2"
-
-	"github.com/stacklok/toolhive/pkg/transport/ssecommon"
 )
 
 // contextKey is a type for context keys to avoid collisions.
@@ -77,7 +75,7 @@ type ParsedMCPRequest struct {
 // middleware (authorization, audit, etc.).
 //
 // The middleware:
-// 1. Checks if the request should be parsed (POST with JSON content to MCP endpoints)
+// 1. Checks if the request should be parsed (POST with JSON content, on any path)
 // 2. Reads and parses the JSON-RPC message
 // 3. Extracts method, parameters, and resource information
 // 4. Stores the parsed data in request context
@@ -127,6 +125,10 @@ func ParsingMiddleware(next http.Handler) http.Handler {
 			WriteBatchUnsupportedError(w)
 			return
 		}
+		if hasAmbiguousJSONMembers(bodyBytes) {
+			WriteClassificationError(w, nil, ambiguousRequest)
+			return
+		}
 
 		// Parse the MCP request and store in context
 		parsedRequest := parseMCPRequest(bodyBytes)
@@ -159,7 +161,8 @@ func ParsingMiddleware(next http.Handler) http.Handler {
 // ParsingMiddleware deliberately parses only once, so any middleware that
 // replaces r.Body MUST call this or downstream consumers (authorization,
 // audit, telemetry) will decide on the bytes that arrived rather than the
-// bytes the backend executes.
+// bytes the backend executes. Replacement bodies must satisfy the same batch
+// and unambiguous-member requirements enforced by ParsingMiddleware.
 //
 // On error, the returned request is nil and must not be passed downstream:
 // the caller is responsible for terminating the request (e.g. writing an
@@ -178,6 +181,9 @@ func RepublishParsedMCPRequest(r *http.Request, body []byte) (*http.Request, err
 	// single request into an array (see IsBatchRequest's doc comment).
 	if IsBatchRequest(body) {
 		return nil, &BatchUnsupportedError{}
+	}
+	if hasAmbiguousJSONMembers(body) {
+		return nil, ambiguousRequest
 	}
 
 	parsed := parseMCPRequest(body)
@@ -303,30 +309,22 @@ func GetParsedMCPRequest(ctx context.Context) *ParsedMCPRequest {
 }
 
 // shouldParseMCPRequest determines if the request should be parsed as an MCP request.
+//
+// Deliberately path-agnostic. There is no fixed MCP endpoint path: the
+// streamable transport's path is server-chosen, and in 2024-11-05 HTTP+SSE the
+// server names its own message endpoint in the `endpoint` event, which
+// ToolHive's proxies forward as given. So any JSON POST on any path may carry an
+// MCP message. A path test here is a parsing gap that becomes an authorization
+// gap downstream, because pkg/authz decides what to authorize from what this
+// function chose to parse — see GHSA-h4mf-84xq-q2fc.
 func shouldParseMCPRequest(r *http.Request) bool {
-	// Only parse POST requests with JSON content type
-	if r.Method != http.MethodPost {
-		return false
-	}
-
-	if !RequestHasJSONContentType(r) {
-		return false
-	}
-
-	// Skip SSE endpoint establishment requests
-	if strings.HasSuffix(r.URL.Path, ssecommon.HTTPSSEEndpoint) {
-		return false
-	}
-
-	// Parse all other JSON POST requests
-	// The MCP spec allows for various endpoints:
-	// - Streamable HTTP transport: single endpoint
-	// - SSE transport: two distinct endpoints (one for SSE stream, one for messages)
-	return true
+	// Only parse POST requests with JSON content type.
+	return r.Method == http.MethodPost && RequestHasJSONContentType(r)
 }
 
 // parseMCPRequest parses the JSON-RPC message and extracts MCP-specific information.
 func parseMCPRequest(bodyBytes []byte) *ParsedMCPRequest {
+	bodyBytes = bytes.TrimPrefix(bodyBytes, UTF8BOM)
 	if len(bodyBytes) == 0 {
 		return nil
 	}
@@ -381,7 +379,9 @@ var methodHandlers = map[string]methodHandler{
 	"tools/call":                         handleNamedResourceMethod,
 	"prompts/get":                        handleNamedResourceMethod,
 	"resources/read":                     handleResourceReadMethod,
+	"skills/get":                         handleResourceReadMethod,
 	"resources/list":                     handleListMethod,
+	"skills/list":                        handleListMethod,
 	"tools/list":                         handleListMethod,
 	"prompts/list":                       handleListMethod,
 	"notifications/message":              handleNotificationMethod,

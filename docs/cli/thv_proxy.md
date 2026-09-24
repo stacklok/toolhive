@@ -100,6 +100,7 @@ thv proxy [flags] SERVER_NAME
       --allowed-origins stringArray                 Exact-match allowlist for the HTTP Origin header (repeatable). Recommended when binding publicly; loopback binds derive a default allowlist automatically, non-loopback binds log a warning when no value is supplied. Example: https://my-mcp.example.com
   -h, --help                                        help for proxy
       --host string                                 Host for the HTTP proxy to listen on (IP or hostname) (default "127.0.0.1")
+      --max-request-body-size int                   Maximum inbound request body size in bytes; zero uses the default (8 MiB)
       --oidc-audience string                        Expected audience for the token
       --oidc-client-id string                       OIDC client ID
       --oidc-client-secret string                   OIDC client secret (optional, for introspection)

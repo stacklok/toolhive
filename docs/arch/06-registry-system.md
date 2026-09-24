@@ -860,8 +860,8 @@ thv run weather-server --image-verification enabled
 ```
 
 **Implementation**:
-- `pkg/registry/types.go` - Provenance type definitions
-- `pkg/container/verifier/` - Sigstore/cosign verification using sigstore-go library
+- [`toolhive-core/registry/types`](https://github.com/stacklok/toolhive-core/tree/main/registry/types) - Provenance type definitions
+- [`toolhive-core/container/verifier`](https://github.com/stacklok/toolhive-core/tree/main/container/verifier) - Sigstore/cosign verification using sigstore-go library
 - `pkg/runner/retriever/retriever.go` - Image verification orchestration
 
 ### Supply Chain Security
@@ -919,7 +919,7 @@ ToolHive uses the `io.modelcontextprotocol.registry/publisher-provided` extensio
 For the complete schema definition, see:
 - **Schemas**: published in [`stacklok/toolhive-core`](https://github.com/stacklok/toolhive-core) under `registry/types/data/`
 - **Documentation**: `docs/registry/schema.md`
-- **Validation**: `pkg/registry/schema_validation.go`
+- **Validation**: [`toolhive-core/registry/types`](https://github.com/stacklok/toolhive-core/tree/main/registry/types)
 
 **Implementation**: `pkg/registry/`
 
@@ -962,6 +962,21 @@ corresponding constant or handler exists in
 re-sync, modify `configYAML` (or restart the registry API pod).
 
 **Implementation**: `cmd/thv-operator/controllers/mcpregistry_controller.go`
+
+## Skill and Plugin Catalog Integration
+
+The configured registry can expose Agent Skills and AI-tool plugins alongside
+MCP servers. These entries provide discovery metadata and OCI package
+references; their installation and trust lifecycles remain owned by the skills
+and plugins services.
+
+For plugin name resolution, ToolHive searches the registry and then requires an
+exact, case-insensitive name match (and namespace match when one was supplied).
+Zero matches are not found and multiple exact matches are rejected as
+ambiguous; a fuzzy search result is never selected merely because it appeared
+first. The selected entry must provide an OCI package. See
+[Plugins System](14-plugins-system.md#1-discovery) for the complete resolution
+chain and [Skills System](12-skills-system.md) for skill discovery.
 
 ## Related Documentation
 

@@ -454,7 +454,9 @@ delegate exemption).
 `actor_token_type` only accepts `access_token` or `jwt`; `id_token` is
 rejected outright. Similarly, `subject_token_type` accepts `access_token` or
 `jwt`, but not `id_token`: this embedded authorization-server endpoint does
-not implement the XAA/ID-JAG profile and applies exactly one validation profile
+not implement the XAA/ID-JAG profile in the token-exchange slot (an ID-JAG is
+accepted as a JWT-bearer *grant* assertion instead — see [Bound ID-JAG
+assertions](#bound-id-jag-assertions)) and applies exactly one validation profile
 to a subject or actor token (the self-issued/access-token one — see
 `rejectIDTokenClaims`'s doc comment in `validator.go`), so accepting a
 declared `subject_token_type`/`actor_token_type` of `id_token` without a
@@ -846,7 +848,7 @@ spec:
   passes it to `tokenexchange.FactoryWithSharedTrustedIssuerValidator` (and, when
   the JWT-bearer grant is enabled, `tokenexchange.JWTBearerIssuanceFactory`),
   which require it rather than each building its own. A `MultiIssuerTokenValidator`
-  registers a `jwk.Cache` and background refresh goroutines per issuer, so one
+  registers a `jwkfetch.Cache` and background refresh goroutines per issuer, so one
   shared instance both avoids doubling that cost and gives the server a single
   handle to shut those workers down on `Close`. (Previously the shared validator
   was built only when the JWT-bearer grant was also enabled, and a token-exchange-only
@@ -857,6 +859,56 @@ spec:
   concepts. An issuer's JWT-bearer subjects are authorized entirely by
   `SubjectBindings`, independent of whatever `allowedActors`/`allowMayAct` that
   same issuer may also have configured for delegation.
+
+### Bound ID-JAG assertions
+
+The grant type has a second assertion form: Identity Assertion Authorization
+Grant JWTs (draft-ietf-oauth-identity-assertion-authz-grant, "ID-JAG" — the
+inbound half of Cross App Access; the vMCP's *outgoing* XAA strategy in
+`pkg/vmcp/auth/strategies/xaa.go` is the requesting half). An IdP such as Okta
+mints an ID-JAG when an agent exchanges a user's ID token for access to a
+resource the IdP administrator connected to that agent; the agent then redeems
+it at this token endpoint.
+
+One grant type, two handlers, split by the assertion's JOSE `typ` header:
+`JWTBearerHandler` claims plain assertions (`typ` absent, empty, or `JWT`) and
+`IDJAGHandler` claims exactly `typ: oauth-id-jag+jwt`. For any given request at
+most one is responsible; both are registered whenever any trusted issuer
+enables the grant, and both enforce the same per-issuer policy
+(`maxAssertionAge`, `acceptedAudiences`, `subjectBindings` — no separate
+configuration surface).
+
+Where the two differ is the trust model — the ID-JAG handler is **bound**:
+
+- **Client authentication is never skipped.** An ID-JAG carries a `client_id`
+  claim naming the OAuth client that may redeem it (draft §4.4.1; the IdP
+  mints it from its administrator-configured resource connection). The
+  handler's `CanSkipClientAuth` is unconditionally false, so fosite resolves
+  the caller before the handler runs — full authentication for a confidential
+  client, `client_id` identification for a public one — and the handler
+  rejects the grant unless the resolved client is the one the assertion names.
+  A public client suffices here because the assertion itself is the primary
+  credential: single-use, short-lived, and audience-pinned to this AS. The
+  client's registered `grant_types` metadata is deliberately not consulted —
+  with open DCR, self-asserted metadata authorizes nothing.
+- **`jti` is required.** The draft requires it, and it is what makes the
+  assertion single-use; there is no assertion-hash fallback like the plain
+  handler's. Replay consumption uses its own purpose (`"id-jag"`,
+  `idJAGReplayPurpose`), keeping the two handlers' replay namespaces separate.
+- **Real client, no synthetic identity.** The issued token's subject is still
+  `<assertion issuer>#<assertion subject>` — one consistent subject form for
+  every assertion-derived token — but its `client_id` is the real redeeming
+  client's, and the request keeps that client for storage marshaling.
+- **The actor chain survives redemption.** The assertion's `act` claim (for an
+  Okta-minted ID-JAG, the agent's identity at the IdP) is copied verbatim into
+  the issued token, so a resource server or auditor can still tell which agent
+  acted for the subject. Other ID-JAG-specific claims (`aud_tenant`,
+  `sub_profile`) are validated as opaque extras and not propagated.
+- Everything else is shared with the plain handler: JWKS verification through
+  the shared `MultiIssuerTokenValidator`, `NoUpstreamSessionClaimKey` stamping
+  (an ID-JAG conveys no upstream vendor session at this server), the
+  exactly-one-`resource` requirement, consume-before-issue, and the issued
+  token's lifetime being capped by the assertion's remaining validity.
 
 ## Operational notes
 

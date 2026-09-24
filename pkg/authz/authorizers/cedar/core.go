@@ -266,7 +266,14 @@ type ConfigOptions struct {
 	// group/role/scope claims, comes from the upstream access token or not at all.
 	// The sole nil-map exception uses only request-token claims because no upstream
 	// provider credential exists, never as a substitute for another provider's
-	// credentials. See resolveClaims for the full contract.
+	// credentials.
+	//
+	// Separately from that exception: when the provider's access token is present
+	// but opaque rather than JWT-shaped (Google's ya29.*, GitHub's gho_*), its
+	// claims cannot be read at all and evaluation degrades to the request token's
+	// claims, labelled claimSourceUpstreamOpaque. That is a fallback, not an
+	// exception to the fail-closed rule above — the credential is there, it just
+	// cannot be parsed. See resolveClaims for the full contract.
 	PrimaryUpstreamProvider string `json:"primary_upstream_provider,omitempty" yaml:"primary_upstream_provider,omitempty"`
 
 	// GroupClaimName is the JWT claim key that contains group membership for the
@@ -1187,6 +1194,31 @@ func (a *Authorizer) authorizeResourceRead(
 	return a.IsAuthorized(principal, action, resource, contextMap, entities)
 }
 
+// authorizeSkillGet authorizes a skills/get operation using its exact URI.
+func (a *Authorizer) authorizeSkillGet(
+	clientID, skillURI string,
+	claimsMap map[string]interface{},
+	attrsMap map[string]interface{},
+	groups []string,
+) (bool, error) {
+	principal := fmt.Sprintf("Client::%s", clientID)
+	attributes := mergeContexts(map[string]interface{}{
+		"name":      skillURI,
+		"uri":       skillURI,
+		"operation": "get",
+		"feature":   "skill",
+	}, attrsMap)
+	entities, err := a.entityFactory.CreateEntitiesForRequest(
+		principal, "Action::get_skill", fmt.Sprintf("Skill::%s", skillURI),
+		claimsMap, attributes, groups, a.serverName,
+	)
+	if err != nil {
+		return false, fmt.Errorf("failed to create Cedar entities: %w", err)
+	}
+	return a.IsAuthorized(principal, "Action::get_skill", fmt.Sprintf("Skill::%s", skillURI),
+		mergeContexts(claimsMap, attrsMap), entities)
+}
+
 // authorizeFeatureList authorizes a list operation for a feature.
 // This method is used when a client tries to list available tools, prompts, or resources.
 // It checks if the client is authorized to list the specified feature type.
@@ -1307,22 +1339,42 @@ func (a *Authorizer) AuthorizeWithJWTClaims(
 	processedClaims[claimSourceAttr] = claimSource
 	processedArgs := preprocessArguments(arguments)
 
-	// Authorize based on the feature and operation
-	switch {
-	case feature == authorizers.MCPFeatureTool && operation == authorizers.MCPOperationCall:
-		return a.authorizeToolCall(ctx, clientID, resourceID, processedClaims, processedArgs, groups)
-
-	case feature == authorizers.MCPFeaturePrompt && operation == authorizers.MCPOperationGet:
-		return a.authorizePromptGet(clientID, resourceID, processedClaims, processedArgs, groups)
-
-	case feature == authorizers.MCPFeatureResource && operation == authorizers.MCPOperationRead:
-		return a.authorizeResourceRead(clientID, resourceID, processedClaims, processedArgs, groups)
-
-	case operation == authorizers.MCPOperationList:
+	// Authorize based on the feature and operation.
+	switch operation {
+	case authorizers.MCPOperationCall:
+		if feature == authorizers.MCPFeatureTool {
+			return a.authorizeToolCall(ctx, clientID, resourceID, processedClaims, processedArgs, groups)
+		}
+	case authorizers.MCPOperationGet:
+		return a.authorizeGet(clientID, feature, resourceID, processedClaims, processedArgs, groups)
+	case authorizers.MCPOperationRead:
+		if feature == authorizers.MCPFeatureResource {
+			return a.authorizeResourceRead(clientID, resourceID, processedClaims, processedArgs, groups)
+		}
+	case authorizers.MCPOperationList:
 		return a.authorizeFeatureList(clientID, feature, processedClaims, processedArgs, groups)
+	}
+	return false, fmt.Errorf("unsupported feature/operation combination: %s/%s", feature, operation)
+}
 
+// authorizeGet dispatches get operations to their feature-specific Cedar mappings.
+func (a *Authorizer) authorizeGet(
+	clientID string,
+	feature authorizers.MCPFeature,
+	resourceID string,
+	claimsMap map[string]interface{},
+	attrsMap map[string]interface{},
+	groups []string,
+) (bool, error) {
+	switch feature {
+	case authorizers.MCPFeaturePrompt:
+		return a.authorizePromptGet(clientID, resourceID, claimsMap, attrsMap, groups)
+	case authorizers.MCPFeatureSkill:
+		return a.authorizeSkillGet(clientID, resourceID, claimsMap, attrsMap, groups)
+	case authorizers.MCPFeatureTool, authorizers.MCPFeatureResource:
+		fallthrough
 	default:
-		return false, fmt.Errorf("unsupported feature/operation combination: %s/%s", feature, operation)
+		return false, fmt.Errorf("unsupported get feature: %s", feature)
 	}
 }
 

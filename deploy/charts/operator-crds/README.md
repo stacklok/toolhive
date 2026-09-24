@@ -1,6 +1,6 @@
 # ToolHive Operator CRDs Helm Chart
 
-![Version: 0.46.0](https://img.shields.io/badge/Version-0.46.0-informational?style=flat-square)
+![Version: 0.51.1](https://img.shields.io/badge/Version-0.51.1-informational?style=flat-square)
 ![Type: application](https://img.shields.io/badge/Type-application-informational?style=flat-square)
 
 A Helm chart for installing the ToolHive Operator CRDs into Kubernetes.
@@ -18,7 +18,7 @@ helm upgrade -i toolhive-operator-crds oci://ghcr.io/stacklok/toolhive/toolhive-
 ## Prerequisites
 
 - Kubernetes 1.25+
-- Helm 3.10+ minimum, 3.14+ recommended
+- Helm 3.10+ (3.14+ recommended) or Helm 4
 
 ## Usage
 

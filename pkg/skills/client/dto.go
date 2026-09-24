@@ -68,6 +68,8 @@ type syncRequest struct {
 	Adopt       bool     `json:"adopt,omitempty"`
 	// AllowUnsigned mirrors skills.SyncOptions.AllowUnsigned for adoption.
 	AllowUnsigned bool `json:"allow_unsigned,omitempty"`
+	// PublicKey mirrors skills.SyncOptions.PublicKey for key-signed adoption.
+	PublicKey string `json:"public_key,omitempty"`
 }
 
 type upgradeRequest struct {
@@ -75,6 +77,7 @@ type upgradeRequest struct {
 	Names       []string `json:"names,omitempty"`
 	// AllowSignerChange mirrors skills.UpgradeOptions.AllowSignerChange.
 	AllowSignerChange bool     `json:"allow_signer_change,omitempty"`
+	PublicKey         string   `json:"public_key,omitempty"`
 	Preview           bool     `json:"preview,omitempty"`
 	FailOnChanges     bool     `json:"fail_on_changes,omitempty"`
 	AllowRefChange    bool     `json:"allow_ref_change,omitempty"`

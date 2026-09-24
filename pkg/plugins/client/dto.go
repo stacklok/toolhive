@@ -18,6 +18,10 @@ type installRequest struct {
 	// AllowUnsigned mirrors plugins.InstallOptions.AllowUnsigned; without
 	// it here the CLI flag would silently never reach the server.
 	AllowUnsigned bool `json:"allow_unsigned,omitempty"`
+	// PublicKey mirrors plugins.InstallOptions.PublicKey: the base64 DER SPKI
+	// the CLI encoded from the --public-key file, since a path would not
+	// resolve on a server in another process or on another host.
+	PublicKey string `json:"public_key,omitempty"`
 }
 
 type validateRequest struct {
@@ -31,10 +35,10 @@ type buildRequest struct {
 
 type pushRequest struct {
 	Reference string `json:"reference"`
-	// IdentityToken and NoSign mirror pushPluginRequest. Without them here the
-	// CLI's signing flags would be dropped at the HTTP boundary and every push
-	// would be rejected as missing a signing credential. There is no key field:
-	// plugin signing is keyless-only (#6442).
+	// Key, IdentityToken, and NoSign mirror pushPluginRequest. Without them
+	// here the CLI's signing flags would be dropped at the HTTP boundary and
+	// every push would be rejected as missing a signing credential.
+	Key           string `json:"key,omitempty"`
 	IdentityToken string `json:"identity_token,omitempty"`
 	NoSign        bool   `json:"no_sign,omitempty"`
 }
@@ -65,6 +69,8 @@ type syncRequest struct {
 	Adopt       bool     `json:"adopt,omitempty"`
 	// AllowUnsigned mirrors plugins.SyncOptions.AllowUnsigned for adoption.
 	AllowUnsigned bool `json:"allow_unsigned,omitempty"`
+	// PublicKey mirrors plugins.SyncOptions.PublicKey for key-signed adoption.
+	PublicKey string `json:"public_key,omitempty"`
 }
 
 type upgradeRequest struct {
@@ -72,6 +78,7 @@ type upgradeRequest struct {
 	Names       []string `json:"names,omitempty"`
 	// AllowSignerChange mirrors plugins.UpgradeOptions.AllowSignerChange.
 	AllowSignerChange bool     `json:"allow_signer_change,omitempty"`
+	PublicKey         string   `json:"public_key,omitempty"`
 	Preview           bool     `json:"preview,omitempty"`
 	FailOnChanges     bool     `json:"fail_on_changes,omitempty"`
 	AllowRefChange    bool     `json:"allow_ref_change,omitempty"`

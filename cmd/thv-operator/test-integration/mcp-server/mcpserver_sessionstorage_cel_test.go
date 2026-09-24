@@ -4,6 +4,8 @@
 package controllers
 
 import (
+	"time"
+
 	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
@@ -115,6 +117,27 @@ var _ = Describe("CEL Validation for SessionStorageConfig on MCPServer",
 				server.Spec.BackendReplicas = &backendReplicas
 				err := k8sClient.Create(ctx, server)
 				Expect(err).To(HaveOccurred())
+			})
+		})
+
+		Context("proxyReadTimeout field", func() {
+			DescribeTable("should accept non-negative values",
+				func(name string, timeout *metav1.Duration) {
+					server := newMinimalMCPServer(name, nil)
+					server.Spec.ProxyReadTimeout = timeout
+					err := k8sClient.Create(ctx, server)
+					Expect(err).NotTo(HaveOccurred())
+				},
+				Entry("when omitted", "mcp-proxy-read-timeout-omitted", nil),
+				Entry("when zero", "mcp-proxy-read-timeout-zero", &metav1.Duration{}),
+				Entry("when positive", "mcp-proxy-read-timeout-positive", &metav1.Duration{Duration: 45 * time.Second}),
+			)
+
+			It("should reject a negative value", func() {
+				server := newMinimalMCPServer("mcp-proxy-read-timeout-negative", nil)
+				server.Spec.ProxyReadTimeout = &metav1.Duration{Duration: -time.Second}
+				err := k8sClient.Create(ctx, server)
+				Expect(err).To(MatchError(ContainSubstring("proxyReadTimeout must be non-negative")))
 			})
 		})
 	})

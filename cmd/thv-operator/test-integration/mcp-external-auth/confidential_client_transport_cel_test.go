@@ -16,23 +16,22 @@ import (
 )
 
 // These tests exercise the CEL XValidation rules on EmbeddedAuthServerConfig
-// These tests exercise the CEL XValidation rules on EmbeddedAuthServerConfig
-// through the real apiserver (envtest). Confidential registration rejects
-// insecureAllowHTTP because it mints a client_secret in the DCR response;
-// private_key_jwt registration has no equivalent rule because it never
-// returns a secret, so combining it with insecureAllowHTTP is admitted.
-// URL-specific delegate-client transport policy is handled by the shared Go
-// validator because CEL cannot safely parse URLs. EmbeddedAuthServerConfig
-// is shared by MCPExternalAuthConfig and VirtualMCPServer, so exercising
-// the rule through one CRD's generated schema covers both.
+// through the real apiserver (envtest). insecureAllowHTTP rejects every
+// configuration that issues or uses a client secret: confidential registration
+// and legacy or canonical delegate clients. private_key_jwt registration has no
+// equivalent rule because it never returns a secret. URL-specific delegate-client
+// transport policy is handled by the shared Go validator because CEL cannot
+// safely parse URLs. EmbeddedAuthServerConfig is shared by MCPExternalAuthConfig
+// and VirtualMCPServer, so exercising the rule through one CRD's generated
+// schema covers both.
 var _ = Describe("EmbeddedAuthServerConfig confidential-client-transport CEL validation", func() {
 	const namespace = "default"
 
 	makeAuthConfig := func(
-		name string, allowConfidential, allowPrivateKeyJWT, insecureHTTP, delegateClient, loopbackHTTP, loopbackOptIn bool,
+		name string, allowConfidential, allowPrivateKeyJWT, insecureHTTP, httpsIssuer, delegateClient, canonicalDelegateClient, loopbackHTTP, loopbackOptIn bool,
 	) *mcpv1beta1.MCPExternalAuthConfig {
 		issuer := "https://auth.example.com"
-		if insecureHTTP {
+		if insecureHTTP && !httpsIssuer {
 			issuer = "http://auth.internal.svc.cluster.local"
 		}
 		if loopbackHTTP {
@@ -61,12 +60,19 @@ var _ = Describe("EmbeddedAuthServerConfig confidential-client-transport CEL val
 			},
 		}
 		if delegateClient {
-			config.Spec.EmbeddedAuthServer.DelegateClients = []mcpv1beta1.DelegateClientConfig{{
+			delegate := mcpv1beta1.DelegateClientConfig{
 				ClientID:        "delegate-client",
 				ClientSecretRef: &mcpv1beta1.SecretKeyRef{Name: "delegate-secret", Key: "credential"},
 				Scopes:          []string{"openid"},
 				Audiences:       []string{"https://api.example.com"},
-			}}
+			}
+			if canonicalDelegateClient {
+				config.Spec.EmbeddedAuthServer.InboundGrants = &mcpv1beta1.InboundGrantsConfig{
+					TokenExchange: &mcpv1beta1.TokenExchangeInboundGrantConfig{DelegateClients: []mcpv1beta1.DelegateClientConfig{delegate}},
+				}
+			} else {
+				config.Spec.EmbeddedAuthServer.DelegateClients = []mcpv1beta1.DelegateClientConfig{delegate}
+			}
 		}
 		return config
 	}
@@ -76,15 +82,17 @@ var _ = Describe("EmbeddedAuthServerConfig confidential-client-transport CEL val
 	})
 
 	type validationCase struct {
-		name               string
-		allowConfidential  bool
-		allowPrivateKeyJWT bool
-		insecureHTTP       bool
-		delegateClient     bool
-		loopbackHTTP       bool
-		loopbackOptIn      bool
-		shouldAdmit        bool
-		expectedMessage    string
+		name                    string
+		allowConfidential       bool
+		allowPrivateKeyJWT      bool
+		insecureHTTP            bool
+		httpsIssuer             bool
+		delegateClient          bool
+		canonicalDelegateClient bool
+		loopbackHTTP            bool
+		loopbackOptIn           bool
+		shouldAdmit             bool
+		expectedMessage         string
 	}
 
 	cases := []validationCase{
@@ -93,7 +101,7 @@ var _ = Describe("EmbeddedAuthServerConfig confidential-client-transport CEL val
 			allowConfidential: true,
 			insecureHTTP:      true,
 			shouldAdmit:       false,
-			expectedMessage:   "allowConfidentialClientRegistration cannot be combined with insecureAllowHTTP",
+			expectedMessage:   "insecureAllowHTTP cannot be combined with confidential client registration or delegateClients",
 		},
 		{
 			name:               "allowPrivateKeyJWTRegistration with insecureAllowHTTP is admitted (no secret to protect)",
@@ -108,11 +116,65 @@ var _ = Describe("EmbeddedAuthServerConfig confidential-client-transport CEL val
 			shouldAdmit:       true,
 		},
 		{
+			name:            "legacy delegate clients with insecureAllowHTTP set",
+			delegateClient:  true,
+			insecureHTTP:    true,
+			shouldAdmit:     false,
+			expectedMessage: "insecureAllowHTTP cannot be combined with confidential client registration or delegateClients",
+		},
+		{
+			name:                    "canonical delegate clients with insecureAllowHTTP set",
+			delegateClient:          true,
+			canonicalDelegateClient: true,
+			insecureHTTP:            true,
+			shouldAdmit:             false,
+			expectedMessage:         "insecureAllowHTTP cannot be combined with confidential client registration or delegateClients",
+		},
+		{
+			name:            "legacy delegate clients with insecureAllowHTTP and HTTPS issuer",
+			delegateClient:  true,
+			insecureHTTP:    true,
+			httpsIssuer:     true,
+			shouldAdmit:     false,
+			expectedMessage: "insecureAllowHTTP cannot be combined with confidential client registration or delegateClients",
+		},
+		{
+			name:                    "canonical delegate clients with insecureAllowHTTP and HTTPS issuer",
+			delegateClient:          true,
+			canonicalDelegateClient: true,
+			insecureHTTP:            true,
+			httpsIssuer:             true,
+			shouldAdmit:             false,
+			expectedMessage:         "insecureAllowHTTP cannot be combined with confidential client registration or delegateClients",
+		},
+		{
 			name:            "delegate clients with loopback HTTP issuer without opt-in",
 			delegateClient:  true,
 			loopbackHTTP:    true,
 			shouldAdmit:     false,
-			expectedMessage: "delegateClients with an HTTP issuer require insecureAllowConfidentialOverLoopbackHTTP",
+			expectedMessage: "confidential client registration or delegateClients with an HTTP issuer require insecureAllowConfidentialOverLoopbackHTTP",
+		},
+		{
+			name:                    "canonical delegate clients with loopback HTTP issuer without opt-in",
+			delegateClient:          true,
+			canonicalDelegateClient: true,
+			loopbackHTTP:            true,
+			shouldAdmit:             false,
+			expectedMessage:         "confidential client registration or delegateClients with an HTTP issuer require insecureAllowConfidentialOverLoopbackHTTP",
+		},
+		{
+			name:              "confidential registration with loopback HTTP issuer without opt-in",
+			allowConfidential: true,
+			loopbackHTTP:      true,
+			shouldAdmit:       false,
+			expectedMessage:   "confidential client registration or delegateClients with an HTTP issuer require insecureAllowConfidentialOverLoopbackHTTP",
+		},
+		{
+			name:              "confidential registration with opted-in loopback HTTP issuer",
+			allowConfidential: true,
+			loopbackHTTP:      true,
+			loopbackOptIn:     true,
+			shouldAdmit:       true,
 		},
 		{
 			name:           "delegate clients with opted-in loopback HTTP issuer",
@@ -121,13 +183,21 @@ var _ = Describe("EmbeddedAuthServerConfig confidential-client-transport CEL val
 			loopbackOptIn:  true,
 			shouldAdmit:    true,
 		},
+		{
+			name:                    "canonical delegate clients with opted-in loopback HTTP issuer",
+			delegateClient:          true,
+			canonicalDelegateClient: true,
+			loopbackHTTP:            true,
+			loopbackOptIn:           true,
+			shouldAdmit:             true,
+		},
 	}
 
 	for i, c := range cases {
 		name := fmt.Sprintf("confidential-client-transport-%d", i)
 		It(c.name, func() {
 			cfg := makeAuthConfig(
-				name, c.allowConfidential, c.allowPrivateKeyJWT, c.insecureHTTP, c.delegateClient, c.loopbackHTTP, c.loopbackOptIn)
+				name, c.allowConfidential, c.allowPrivateKeyJWT, c.insecureHTTP, c.httpsIssuer, c.delegateClient, c.canonicalDelegateClient, c.loopbackHTTP, c.loopbackOptIn)
 			err := k8sClient.Create(ctx, cfg)
 			if c.shouldAdmit {
 				Expect(err).NotTo(HaveOccurred(),
@@ -190,6 +260,6 @@ var _ = Describe("EmbeddedAuthServerConfig confidential-client-transport CEL val
 		err := k8sClient.Create(ctx, vmcp)
 		Expect(err).To(HaveOccurred())
 		Expect(err.Error()).To(ContainSubstring(
-			"delegateClients with an HTTP issuer require insecureAllowConfidentialOverLoopbackHTTP"))
+			"confidential client registration or delegateClients with an HTTP issuer require insecureAllowConfidentialOverLoopbackHTTP"))
 	})
 })

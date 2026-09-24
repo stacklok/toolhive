@@ -34,6 +34,7 @@ func init() {
 	skillCmd.AddCommand(skillPushCmd)
 	skillPushCmd.Flags().StringVar(&skillPushKey, "key", "",
 		"Path to a cosign private key to sign the pushed artifact. "+
+			"Requires the locally discovered ToolHive server; for a remote or manually configured API URL, use keyless signing. "+
 			"Encrypted keys are decrypted with COSIGN_PASSWORD read from the 'thv serve' process, "+
 			"which performs the signing. Consumers installing the result project-scoped must pass "+
 			"--public-key with the matching cosign public key the first time; distribute it "+

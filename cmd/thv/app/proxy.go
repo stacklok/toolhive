@@ -108,14 +108,18 @@ Dynamic client registration (automatic OAuth client setup):
 	thv proxy my-server --target-uri https://protected-api.com \
 	  --remote-auth --remote-auth-issuer https://auth.example.com`,
 	Args: cobra.ExactArgs(1),
+	PreRunE: func(_ *cobra.Command, _ []string) error {
+		return validateProxyMaxRequestBodySize(proxyMaxRequestBodySize)
+	},
 	RunE: proxyCmdFunc,
 }
 
 var (
-	proxyHost           string
-	proxyPort           int
-	proxyTargetURI      string
-	proxyAllowedOrigins []string
+	proxyHost               string
+	proxyPort               int
+	proxyTargetURI          string
+	proxyAllowedOrigins     []string
+	proxyMaxRequestBodySize int64
 
 	resourceURL string // Explicit resource URL for OAuth discovery endpoint (RFC 9728)
 
@@ -140,6 +144,8 @@ func init() {
 		"Exact-match allowlist for the HTTP Origin header (repeatable). Recommended when binding publicly; "+
 			"loopback binds derive a default allowlist automatically, non-loopback binds log a warning when "+
 			"no value is supplied. Example: https://my-mcp.example.com")
+	proxyCmd.Flags().Int64Var(&proxyMaxRequestBodySize, "max-request-body-size", 0,
+		"Maximum inbound request body size in bytes; zero uses the default (8 MiB)")
 	proxyCmd.Flags().StringVar(
 		&proxyTargetURI,
 		"target-uri",
@@ -238,7 +244,7 @@ func proxyCmdFunc(cmd *cobra.Command, args []string) error {
 	// runner's addBodyLimitMiddleware. See pkg/bodylimit.
 	middlewares = append(middlewares, types.NamedMiddleware{
 		Name:     bodylimit.MiddlewareType,
-		Function: bodylimit.Middleware(bodylimit.DefaultMaxRequestBodySize),
+		Function: bodylimit.Middleware(proxyMaxRequestBodySize),
 	})
 
 	// Origin-header validation (DNS-rebinding protection per MCP 2025-11-25
@@ -321,6 +327,13 @@ func proxyCmdFunc(cmd *cobra.Command, args []string) error {
 	shutdownCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 	return proxy.Stop(shutdownCtx)
+}
+
+func validateProxyMaxRequestBodySize(maxBytes int64) error {
+	if maxBytes < 0 {
+		return fmt.Errorf("max-request-body-size must be non-negative, got %d", maxBytes)
+	}
+	return nil
 }
 
 // getProxyOIDCConfig returns the OIDC token validator config from CLI flags, or nil if OIDC is not enabled.

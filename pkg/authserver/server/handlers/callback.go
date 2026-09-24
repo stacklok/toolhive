@@ -20,10 +20,96 @@ import (
 	"github.com/stacklok/toolhive/pkg/authserver/upstream"
 )
 
+// isNotFoundOrExpired reports whether err is a genuine "no such record"
+// result -- storage.ErrNotFound or storage.ErrExpired (or an error wrapping
+// either, e.g. via fosite's notFoundRFC6749Error) -- as opposed to a
+// transient backend failure (a Redis timeout, a marshal error, etc.). Callers
+// use this to avoid conflating the two: a real storage error must be reported
+// as a server error and logged loudly, never silently reinterpreted as "not
+// found" or used to trigger a fallback lookup.
+func isNotFoundOrExpired(err error) bool {
+	return errors.Is(err, storage.ErrNotFound) || errors.Is(err, storage.ErrExpired)
+}
+
+// deviceLoginOutcome is tryCompleteDeviceLogin's result: whether internalState
+// matched a pending device login, was genuinely not found, or the lookup hit
+// a real storage error (in which case a response has already been written).
+type deviceLoginOutcome int
+
+const (
+	// deviceLoginNotFound means internalState does not match a pending device
+	// login either; no response has been written and the caller should fall
+	// through to its own not-found handling.
+	deviceLoginNotFound deviceLoginOutcome = iota
+	// deviceLoginCompleted means the device login was found and completeDeviceLogin
+	// has already written a response.
+	deviceLoginCompleted
+	// deviceLoginStorageError means the lookup failed for a reason other than
+	// not-found/expired; a response has already been written.
+	deviceLoginStorageError
+)
+
+// loadPendingOrCompleteDeviceLogin loads the pending OAuth-client
+// authorization for internalState (deleting it, single-use) and builds its
+// AuthorizeRequester. The upstream IDP's redirect_uri is fixed per upstream
+// at construction (see upstream.OAuth2Config.RedirectURI / AuthCodeURL), so
+// the device flow's verification-page login (DeviceVerificationSubmitHandler)
+// reuses this same /oauth/callback endpoint rather than a distinct one --
+// there is no way to register a second redirect_uri per call. Accordingly,
+// when internalState genuinely does not match a pending OAuth-client
+// authorization (not found/expired -- never a backend error, see
+// isNotFoundOrExpired), this falls back to completing a pending device-flow
+// login instead of failing outright.
+//
+// The bool return is false whenever a response has already been written
+// (either the device-login completion, a storage error, or a not-found/
+// corrupted error) and the caller must return immediately without doing
+// anything further.
+func (h *Handler) loadPendingOrCompleteDeviceLogin(
+	ctx context.Context, w http.ResponseWriter, internalState, code string,
+) (*storage.PendingAuthorization, fosite.AuthorizeRequester, bool) {
+	pending, err := h.storage.LoadPendingAuthorization(ctx, internalState)
+	if err != nil {
+		if !isNotFoundOrExpired(err) {
+			// A genuine backend failure must not be silently reinterpreted as
+			// "maybe this is a device login" and reported to the client as an
+			// ordinary 400 -- that would mask an infra outage as client error.
+			slog.Error("failed to load pending authorization", "error", err)
+			http.Error(w, "internal server error", http.StatusInternalServerError)
+			return nil, nil, false
+		}
+		switch h.tryCompleteDeviceLogin(ctx, w, internalState, code) {
+		case deviceLoginCompleted, deviceLoginStorageError:
+			return nil, nil, false
+		case deviceLoginNotFound:
+			slog.Warn("pending authorization not found", "error", err)
+			http.Error(w, "authorization request not found or expired", http.StatusBadRequest)
+			return nil, nil, false
+		}
+	}
+
+	// Delete pending authorization immediately (single-use)
+	if err := h.storage.DeletePendingAuthorization(ctx, internalState); err != nil {
+		slog.Warn("failed to delete pending authorization", "error", err)
+	}
+
+	ar := h.buildAuthorizeRequesterFromPending(ctx, pending)
+	if ar == nil {
+		// Stored redirect URI was corrupt - cannot redirect, show error page
+		http.Error(w, "authorization request data corrupted", http.StatusInternalServerError)
+		return nil, nil, false
+	}
+	return pending, ar, true
+}
+
 // CallbackHandler handles GET /oauth/callback requests.
 // It exchanges the upstream authorization code and issues our own authorization code.
 func (h *Handler) CallbackHandler(w http.ResponseWriter, req *http.Request) {
 	ctx := req.Context()
+
+	// Do not forward the upstream identity provider as the Referer when the
+	// browser follows the final redirect to a native client's loopback listener.
+	w.Header().Set("Referrer-Policy", "no-referrer")
 
 	// Parse query parameters
 	code := req.URL.Query().Get("code")
@@ -50,28 +136,10 @@ func (h *Handler) CallbackHandler(w http.ResponseWriter, req *http.Request) {
 		return
 	}
 
-	// Load and delete pending authorization (single-use)
-	pending, err := h.storage.LoadPendingAuthorization(ctx, internalState)
-	if err != nil {
-		slog.Warn("pending authorization not found",
-			"error", err,
-		)
-		http.Error(w, "authorization request not found or expired", http.StatusBadRequest)
-		return
-	}
-
-	// Delete pending authorization immediately (single-use)
-	if err := h.storage.DeletePendingAuthorization(ctx, internalState); err != nil {
-		slog.Warn("failed to delete pending authorization",
-			"error", err,
-		)
-	}
-
-	// Build authorize requester for error responses now that we have pending
-	ar := h.buildAuthorizeRequesterFromPending(ctx, pending)
-	if ar == nil {
-		// Stored redirect URI was corrupt - cannot redirect, show error page
-		http.Error(w, "authorization request data corrupted", http.StatusInternalServerError)
+	// Load and delete pending authorization (single-use), falling back to
+	// completing a device-flow login when internalState doesn't match one.
+	pending, ar, ok := h.loadPendingOrCompleteDeviceLogin(ctx, w, internalState, code)
+	if !ok {
 		return
 	}
 
@@ -384,7 +452,9 @@ func (h *Handler) buildAuthorizeRequesterFromPending(
 }
 
 // handleUpstreamError handles error responses from the upstream IDP.
-// It attempts to redirect the error to the client if possible, otherwise shows an error page.
+// It attempts to redirect the error to the client if possible, otherwise
+// falls back to completing a pending device-flow login as denied (see
+// tryDenyDeviceLoginOnUpstreamError), otherwise shows an error page.
 func (h *Handler) handleUpstreamError(
 	ctx context.Context,
 	w http.ResponseWriter,
@@ -400,7 +470,8 @@ func (h *Handler) handleUpstreamError(
 	// Try to load pending authorization to redirect error to client
 	if internalState != "" {
 		pending, err := h.storage.LoadPendingAuthorization(ctx, internalState)
-		if err == nil {
+		switch {
+		case err == nil:
 			// Delete only the single-use pending authorization. Deliberately do NOT touch
 			// upstream tokens: the upstream IdP errored before this attempt exchanged a
 			// code, so this attempt stored nothing. Under a (gateway, user)-keyed storage
@@ -417,6 +488,18 @@ func (h *Handler) handleUpstreamError(
 				return
 			}
 			// ar is nil means stored redirect URI was corrupt - fall through to error page
+		case isNotFoundOrExpired(err):
+			// internalState doesn't match a pending OAuth-client authorization --
+			// it may belong to a device-flow login instead (e.g. the human clicked
+			// "Deny" at the upstream IDP). See tryDenyDeviceLoginOnUpstreamError's
+			// doc comment for why this fallback matters.
+			if h.tryDenyDeviceLoginOnUpstreamError(ctx, w, internalState) {
+				return
+			}
+		default:
+			// A genuine backend failure must not be silently swallowed, even though
+			// the response below is the same generic error either way.
+			slog.Error("failed to load pending authorization on upstream error", "error", err)
 		}
 	}
 

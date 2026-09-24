@@ -36,9 +36,8 @@ func TestStreamingSessionIDDetection(t *testing.T) {
 		w.Header().Set("Content-Type", "text/event-stream; charset=utf-8")
 		w.WriteHeader(200)
 
-		// Simulate SSE lines
-		w.Write([]byte("data: hello\n"))
-		w.Write([]byte("data: sessionId=ABC123\n"))
+		// Session authority comes from an endpoint event, not arbitrary message data.
+		w.Write([]byte("event: endpoint\ndata: /messages?sessionId=ABC123\n\n"))
 		w.(http.Flusher).Flush()
 
 		time.Sleep(10 * time.Millisecond)
@@ -64,12 +63,38 @@ func TestStreamingSessionIDDetection(t *testing.T) {
 	for sc.Scan() {
 		bodyLines = append(bodyLines, sc.Text())
 	}
-	assert.Contains(t, bodyLines, "data: sessionId=ABC123")
+	assert.Contains(t, bodyLines, "data: /messages?sessionId=ABC123")
 
-	// side-effect: proxy should have seen session
 	assert.True(t, proxy.serverInitialized(), "server should have been initialized")
-	_, ok := proxy.sessionManager.Get(normalizeSessionID("ABC123"))
-	assert.True(t, ok, "sessionManager should have stored ABC123")
+	stored, ok := proxy.sessionManager.Get(normalizeSessionID("ABC123"))
+	require.True(t, ok, "sessionManager should have stored ABC123")
+	owner, exists := stored.GetMetadataValue(session.MetadataKeyIdentityBinding)
+	require.True(t, exists, "endpoint must be bound before publication")
+	assert.Equal(t, "unauthenticated", owner)
+}
+
+func TestSSEEndpointWithoutSessionIDIsNotExposed(t *testing.T) {
+	t.Parallel()
+
+	for _, endpoint := range []string{"/messages", "/messages?sessionId="} {
+		t.Run(endpoint, func(t *testing.T) {
+			t.Parallel()
+			proxy := NewTransparentProxy("127.0.0.1", 0, "", nil, nil, nil, true, false, "sse", nil, nil, "", false)
+			t.Cleanup(func() { require.NoError(t, proxy.sessionManager.Stop()) })
+			processor := NewSSEResponseProcessor(proxy, "", false)
+			resp := &http.Response{
+				Header:  http.Header{"Content-Type": []string{"text/event-stream"}},
+				Body:    io.NopCloser(strings.NewReader("event: endpoint\ndata: " + endpoint + "\n\n")),
+				Request: httptest.NewRequest(http.MethodGet, "/sse", nil),
+			}
+
+			require.NoError(t, processor.ProcessResponse(resp))
+			body, err := io.ReadAll(resp.Body)
+			require.ErrorIs(t, err, session.ErrSessionNotFound)
+			require.NotContains(t, string(body), "data: "+endpoint)
+			require.Equal(t, 0, proxy.sessionManager.Count())
+		})
+	}
 }
 
 func createBasicProxy(p *TransparentProxy, targetURL *url.URL) *httputil.ReverseProxy {

@@ -111,7 +111,7 @@ func TestLogClientLookupFailure(t *testing.T) {
 		},
 		{
 			name:      "unresolvable CIMD client_id logs at Debug",
-			err:       fmt.Errorf("%w: CIMD fetch failed: %w", fosite.ErrNotFound, errors.New("connection refused")),
+			err:       fosite.ErrNotFound.WithHint("CIMD fetch failed").WithWrap(errors.New("connection refused")),
 			wantLevel: slog.LevelDebug,
 		},
 		{

@@ -31,6 +31,7 @@ func (s *service) recordLockState(
 	originalName string,
 	sk skills.InstalledSkill,
 	deps *depState,
+	expected *lockfile.Entry,
 ) (skills.InstalledSkill, error) {
 	contentDigest, err := computeContentDigest(s.pathResolver, sk)
 	if err != nil {
@@ -56,6 +57,7 @@ func (s *service) recordLockState(
 		Unsigned:          opts.Unsigned,
 		RequiredByParent:  opts.RequiredByParent,
 		PreserveExplicit:  opts.SyncRestore,
+		Expected:          expected,
 	}); err != nil {
 		return sk, fmt.Errorf("writing lock entry: %w", errors.Join(errLockWrite, err))
 	}
@@ -122,7 +124,7 @@ func (s *service) materializeDependencies(
 			Group:            opts.Group, // deps join the parent's group, not the default one
 			RequiredByParent: sk.Metadata.Name,
 		}
-		if _, err := s.installLocked(ctx, depOpts, dep.Reference, sk.Scope, deps); err != nil {
+		if _, err := s.installLocked(ctx, depOpts, dep.Reference, sk.Scope, deps, nil); err != nil {
 			return fmt.Errorf("installing dependency %q (required by %q): %w", dep.Reference, sk.Metadata.Name, err)
 		}
 	}
@@ -153,6 +155,10 @@ type lockEntryInput struct {
 	// dependency to explicit — that would permanently exempt it from
 	// cascade removal.
 	PreserveExplicit bool
+	// Expected makes the upsert conditional on the complete current entry.
+	// Upgrade supplies the snapshot it planned against so an external edit
+	// cannot be overwritten between verification and persistence.
+	Expected *lockfile.Entry
 }
 
 // recordLockEntry upserts a single entry into projectRoot's lock file. When
@@ -164,32 +170,41 @@ func recordLockEntry(projectRoot string, in lockEntryInput) error {
 	if err != nil {
 		return err
 	}
+	if in.Expected != nil {
+		replacement := newLockEntry(in, *in.Expected, true)
+		return lockfile.CompareAndSwapEntry(root, *in.Expected, replacement)
+	}
 	return lockfile.Update(root, func(lf *lockfile.Lockfile) error {
-		entry := lockfile.Entry{
-			Name:              in.Name,
-			Version:           in.Version,
-			Source:            in.Source,
-			ResolvedReference: in.ResolvedReference,
-			Digest:            in.Digest,
-			ContentDigest:     in.ContentDigest,
-			Provenance:        in.Provenance,
-			Unsigned:          in.Unsigned,
-			Explicit:          in.RequiredByParent == "",
-		}
 		existing, exists := lf.Get(in.Name)
-		if exists {
-			entry.RequiredBy = existing.RequiredBy
-			entry.Explicit = entry.Explicit || existing.Explicit
-		}
-		if in.PreserveExplicit {
-			entry.Explicit = exists && existing.Explicit
-		}
-		if in.RequiredByParent != "" {
-			entry.RequiredBy = appendUnique(entry.RequiredBy, in.RequiredByParent)
-		}
+		entry := newLockEntry(in, existing, exists)
 		lf.Upsert(entry)
 		return nil
 	})
+}
+
+func newLockEntry(in lockEntryInput, existing lockfile.Entry, exists bool) lockfile.Entry {
+	entry := lockfile.Entry{
+		Name:              in.Name,
+		Version:           in.Version,
+		Source:            in.Source,
+		ResolvedReference: in.ResolvedReference,
+		Digest:            in.Digest,
+		ContentDigest:     in.ContentDigest,
+		Provenance:        in.Provenance,
+		Unsigned:          in.Unsigned,
+		Explicit:          in.RequiredByParent == "",
+	}
+	if exists {
+		entry.RequiredBy = existing.RequiredBy
+		entry.Explicit = entry.Explicit || existing.Explicit
+	}
+	if in.PreserveExplicit {
+		entry.Explicit = exists && existing.Explicit
+	}
+	if in.RequiredByParent != "" {
+		entry.RequiredBy = appendUnique(entry.RequiredBy, in.RequiredByParent)
+	}
+	return entry
 }
 
 func appendUnique(list []string, value string) []string {

@@ -16,7 +16,7 @@
 // OAuth authorization server.
 package storage
 
-//go:generate mockgen -destination=mocks/mock_storage.go -package=mocks -source=types.go Storage,PendingAuthorizationStorage,AssertionJWTConsumer,ClientRegistry,UpstreamTokenStorage,UpstreamTokenRefresher,UserStorage,DCRCredentialStore
+//go:generate mockgen -destination=mocks/mock_storage.go -package=mocks -source=types.go Storage,PendingAuthorizationStorage,DeviceCodeStorage,PendingDeviceLoginStorage,PendingDeviceConfirmationStorage,AssertionJWTConsumer,ClientRegistry,UpstreamTokenStorage,UpstreamTokenRefresher,UserStorage,DCRCredentialStore
 
 import (
 	"context"
@@ -65,10 +65,37 @@ var (
 	// fosite.ErrAccessDenied instead of treating the refusal as an internal
 	// server error.
 	ErrUserNotProvisioned = errors.New("storage: user not provisioned")
+
+	// ErrConcurrentRefresh is returned by
+	// UpstreamTokenStorage.CompareAndSwapUpstreamTokens when the currently
+	// stored refresh token no longer equals the caller's expected value.
+	// This covers two distinct situations: another writer (a concurrent
+	// refresh in this process or another replica sharing the same storage)
+	// already moved the row past it, or the row no longer exists at all
+	// (deleted by logout, evicted by TTL, or never created). The caller's own
+	// redemption is stale either way and must not be written; callers that
+	// need to tell the two situations apart must re-read the row afterward
+	// (ErrNotFound means there was no race to lose — see
+	// CompareAndSwapUpstreamTokens for the full coordination contract).
+	ErrConcurrentRefresh = errors.New("storage: upstream token row changed concurrently")
+
+	// ErrInvalidState is returned when an operation requires an item to be in a
+	// particular lifecycle state (e.g. a pending device request) but it is not.
+	ErrInvalidState = errors.New("storage: item is not in the required state")
 )
+
+// notFoundRFC6749Error preserves the storage and Fosite not-found identities.
+func notFoundRFC6749Error(hint string) *fosite.RFC6749Error {
+	return fosite.ErrNotFound.WithHint(hint).WithWrap(ErrNotFound)
+}
 
 // DefaultPendingAuthorizationTTL is the default TTL for pending authorization requests.
 const DefaultPendingAuthorizationTTL = 10 * time.Minute
+
+// DefaultDeviceRequestTTL bounds how long a device authorization request
+// stays valid before the client must restart the flow, matching RFC 8628's
+// recommended default expiry.
+const DefaultDeviceRequestTTL = 10 * time.Minute
 
 // UpstreamTokens represents tokens obtained from an upstream Identity Provider.
 // These tokens are stored with binding fields for security validation and
@@ -366,7 +393,7 @@ type DCRCredentials struct {
 //
 // # Defensive copy
 //
-// Implementations MUST defensively copy on both Store and Get so caller
+// Implementations MUST defensively copy on Store, Update, and Get so caller
 // mutations cannot reach persisted state and vice versa, mirroring the
 // UpstreamTokens contract.
 //
@@ -384,16 +411,17 @@ type DCRCredentials struct {
 //
 // # Why the key is embedded in DCRCredentials
 //
-// StoreDCRCredentialsIfAbsent takes a single (ctx, creds) argument rather
-// than the (ctx, key, value) shape used by sibling Store* methods on Storage. The
-// DCRKey is embedded as DCRCredentials.Key so the persisted blob is
+// Both StoreDCRCredentialsIfAbsent and UpdateDCRCredentialsIfPresent take a
+// single (ctx, creds) argument rather than the (ctx, key, value) shape used by
+// sibling Store* methods on Storage. The DCRKey is embedded as
+// DCRCredentials.Key so the persisted blob is
 // self-describing: a Redis SCAN, an admin-tool dump, or a cross-replica
 // reconciliation path can identify a record's logical cache slot
 // (Issuer, UpstreamID, RedirectURI, ScopesHash) from the value alone, without
 // reconstructing it from a separately-passed key. This is a deliberate
 // asymmetry with the rest of the package — callers must populate creds.Key
-// before Store, and implementations validate it (see MemoryStorage docs
-// for the rejected-input list).
+// before Store or Update, and implementations validate it (see MemoryStorage
+// docs for the rejected-input list).
 type DCRCredentialStore interface {
 	// GetDCRCredentials returns the credentials for the given key.
 	// Returns ErrNotFound (wrapped) if no entry exists for the key.
@@ -410,6 +438,41 @@ type DCRCredentialStore interface {
 	// handling" section for the contract on ClientSecretExpiresAt. The
 	// returned *DCRCredentials is always non-nil when err is nil.
 	StoreDCRCredentialsIfAbsent(ctx context.Context, creds *DCRCredentials) (*DCRCredentials, error)
+
+	// UpdateDCRCredentialsIfPresent replaces the record at creds.Key with
+	// creds, iff a record currently exists at that key. Returns ErrNotFound
+	// (wrapped) if no entry exists — it never creates, so an update racing a
+	// delete or a not-yet-created record fails loudly rather than silently
+	// creating, keeping the create/update split explicit (the mirror of why
+	// StoreDCRCredentialsIfAbsent never silently updates). On success it
+	// returns the stored value (a defensive copy) and the returned
+	// *DCRCredentials is non-nil.
+	//
+	// This is the write path a storage decorator needs to rewrite a record's
+	// persisted representation in place — re-encoding, compression, a
+	// checksum, or similar — without changing its RFC 7591 identity or values:
+	// StoreDCRCredentialsIfAbsent is create-only and would silently discard
+	// such a rewrite on an existing key.
+	//
+	// # Presence is physical, not liveness
+	//
+	// "Present" means a row physically exists at creds.Key, regardless of
+	// whether its ClientSecretExpiresAt has passed. This deliberately does NOT
+	// mirror StoreDCRCredentialsIfAbsent's "an expired row counts as absent"
+	// treatment: that check exists to let a fresh registration reclaim a dead
+	// slot in the concurrent-registration race, whereas Update exists to let a
+	// decorator rewrite a row it just read. GetDCRCredentials returns
+	// physically-present rows without filtering on expiry, so gating Update on
+	// liveness would break the Get→transform→Update round-trip the method is
+	// for. An expired-but-present row is therefore updatable.
+	//
+	// Implementations MUST defensively copy on input (mirroring the Store/Get
+	// contract) and MUST apply the same ClientSecretExpiresAt TTL handling
+	// documented in the interface-level "TTL handling" section and on
+	// StoreDCRCredentialsIfAbsent — the rewritten row's backend TTL is derived
+	// from the incoming creds, so an update can extend, shorten, or clear the
+	// row's TTL exactly as an initial store would.
+	UpdateDCRCredentialsIfPresent(ctx context.Context, creds *DCRCredentials) (*DCRCredentials, error)
 }
 
 // User represents a user account in the authorization server.
@@ -493,15 +556,25 @@ type PendingAuthorization struct {
 	// providers across successive authorization legs.
 	SessionID string
 
-	// ResolvedUserID is the internal user ID resolved from the primary (first) upstream.
+	// ResolvedUserID is the internal user ID resolved from the FIRST upstream in
+	// the chain (upstreams[0]), which establishes the session identity.
 	// Empty on the first leg; populated after the first callback for subsequent legs.
+	//
+	// "First" here is deliberately not called "primary": Cedar's
+	// ConfigOptions.PrimaryUpstreamProvider names the upstream whose claims drive
+	// authorization, which defaults to this one but can be pinned to a later leg.
+	// The two only coincide by default. ResolvedUserName and ResolvedUserEmail
+	// below are mirrored into the issued access token, so a pinned deployment that
+	// falls back to request-token claims evaluates THIS upstream's profile claims,
+	// not the pinned provider's. See docs/authz.md, "What the fallback claims
+	// actually are".
 	ResolvedUserID string
 
-	// ResolvedUserName is the user display name from the primary upstream.
+	// ResolvedUserName is the user display name from the first upstream in the chain.
 	// Empty on the first leg; populated after the first callback for subsequent legs.
 	ResolvedUserName string
 
-	// ResolvedUserEmail is the user email from the primary upstream.
+	// ResolvedUserEmail is the user email from the first upstream in the chain.
 	// Empty on the first leg; populated after the first callback for subsequent legs.
 	ResolvedUserEmail string
 
@@ -543,6 +616,231 @@ type PendingAuthorizationStorage interface {
 	// DeletePendingAuthorization removes a pending authorization.
 	// Returns ErrNotFound if the state does not exist.
 	DeletePendingAuthorization(ctx context.Context, state string) error
+}
+
+// DeviceRequestStatus is the lifecycle state of an RFC 8628 device authorization request.
+type DeviceRequestStatus string
+
+const (
+	// DeviceRequestStatusPending is the initial state: the user has not yet
+	// completed (or denied) verification at the verification URI.
+	DeviceRequestStatusPending DeviceRequestStatus = "pending"
+
+	// DeviceRequestStatusAuthorized means the user approved the request at
+	// the verification page; the resolved identity fields are populated.
+	DeviceRequestStatusAuthorized DeviceRequestStatus = "authorized"
+
+	// DeviceRequestStatusDenied means the user explicitly denied the request
+	// at the verification page.
+	DeviceRequestStatusDenied DeviceRequestStatus = "denied"
+)
+
+// DeviceRequest represents one in-flight RFC 8628 device authorization grant.
+type DeviceRequest struct {
+	// DeviceCode is the opaque, high-entropy value the polling client holds.
+	// Never logged (secret-shaped, like an authorization code).
+	DeviceCode string
+
+	// UserCode is the short, human-typeable code the user enters at the
+	// verification URI. Also secret-shaped: it is the only thing binding a
+	// human's browser session to this device_code, so treat it like a code.
+	UserCode string
+
+	ClientID string
+	Scopes   []string
+	Audience []string
+	Status   DeviceRequestStatus
+
+	// Interval is the minimum seconds between polls the client must honor
+	// (RFC 8628 §3.2/§3.5). Storage does not enforce it directly; callers
+	// use LastPolledAt + Interval to decide slow_down.
+	Interval time.Duration
+
+	// LastPolledAt is zero until the first poll.
+	LastPolledAt time.Time
+
+	// Populated only once Status == DeviceRequestStatusAuthorized, mirroring
+	// the Resolved* fields on PendingAuthorization:
+	ResolvedUserID    string
+	ResolvedUserName  string
+	ResolvedUserEmail string
+	SessionID         string
+
+	CreatedAt time.Time
+}
+
+// DeviceCodeStorage provides storage operations for RFC 8628 device
+// authorization requests. A request is created pending at the device
+// authorization endpoint, looked up by user_code at the verification page
+// and transitioned to authorized/denied there, and polled/consumed by
+// device_code at the token endpoint.
+type DeviceCodeStorage interface {
+	// StoreDeviceRequest stores a new pending device request, indexed by both
+	// DeviceCode and UserCode. Returns fosite.ErrInvalidRequest if DeviceCode
+	// or UserCode is empty, or Status is not DeviceRequestStatusPending.
+	// Returns ErrAlreadyExists if a request already exists under the same
+	// UserCode (the caller must regenerate the user_code and retry) or the
+	// same DeviceCode.
+	StoreDeviceRequest(ctx context.Context, device *DeviceRequest) error
+
+	// LoadDeviceRequestByDeviceCode retrieves a device request by its
+	// device_code. Returns ErrNotFound if it does not exist, ErrExpired if
+	// its TTL has elapsed.
+	LoadDeviceRequestByDeviceCode(ctx context.Context, deviceCode string) (*DeviceRequest, error)
+
+	// LoadDeviceRequestByUserCode retrieves a device request by its
+	// user_code, for the verification page. Same not-found/expired semantics.
+	LoadDeviceRequestByUserCode(ctx context.Context, userCode string) (*DeviceRequest, error)
+
+	// MarkDeviceRequestAuthorized transitions a pending device request to
+	// authorized, attaching the resolved identity. Returns ErrNotFound if
+	// deviceCode does not exist, ErrExpired if its TTL has elapsed, and
+	// ErrInvalidState if the request's Status is not currently
+	// DeviceRequestStatusPending (already authorized or denied) — this call
+	// is not idempotent, so a stale verification-page resubmission can never
+	// clobber a request the token endpoint already consumed.
+	MarkDeviceRequestAuthorized(
+		ctx context.Context, deviceCode string, resolvedUserID, resolvedUserName, resolvedUserEmail, sessionID string,
+	) error
+
+	// MarkDeviceRequestDenied transitions a pending device request to
+	// denied. Same ErrNotFound/ErrExpired/ErrInvalidState semantics as
+	// MarkDeviceRequestAuthorized.
+	MarkDeviceRequestDenied(ctx context.Context, deviceCode string) error
+
+	// UpdateDeviceRequestLastPolledAt records the time of the most recent
+	// poll, so the (future) token-endpoint grant handler can enforce the
+	// minimum polling Interval (RFC 8628 §3.5 slow_down). Same
+	// ErrNotFound/ErrExpired semantics; does not require Status ==
+	// pending (a client may poll after authorization races the response).
+	UpdateDeviceRequestLastPolledAt(ctx context.Context, deviceCode string, polledAt time.Time) error
+
+	// DeleteDeviceRequest removes a device request, e.g. once its token has
+	// been issued so the device_code cannot be redeemed twice. Returns
+	// ErrNotFound if it does not already exist.
+	DeleteDeviceRequest(ctx context.Context, deviceCode string) error
+}
+
+// DefaultDeviceLoginTTL bounds how long a device-flow verification-page login
+// attempt (PendingDeviceLogin) or post-login confirmation (
+// PendingDeviceConfirmation) may remain unresolved before it is treated as
+// expired. A human completing an upstream login and then confirming/denying
+// a device should take at most a few minutes; this mirrors
+// DefaultDeviceRequestTTL's window.
+const DefaultDeviceLoginTTL = 10 * time.Minute
+
+// PendingDeviceLogin correlates a device-flow verification-page login
+// attempt with its upstream IDP callback, the same role PendingAuthorization
+// plays for the OAuth client authorization_code flow -- but scoped to the
+// verification page, which has no client_id/redirect_uri of its own.
+type PendingDeviceLogin struct {
+	// DeviceCode identifies the DeviceRequest this login attempt is for.
+	DeviceCode string
+
+	// UserCode is carried alongside DeviceCode so the callback handler can
+	// re-look-up (and re-validate the pending/unexpired state of) the
+	// DeviceRequest without a second index lookup by DeviceCode.
+	UserCode string
+
+	// UpstreamPKCEVerifier is the PKCE code_verifier for the upstream IDP
+	// authorization. See RFC 7636.
+	UpstreamPKCEVerifier string
+
+	// UpstreamNonce is the OIDC nonce for ID token replay protection.
+	UpstreamNonce string
+
+	// UpstreamProviderName is the configured upstream this login was sent
+	// to; the callback re-validates against it (IDP mix-up defense), mirroring
+	// PendingAuthorization.UpstreamProviderName.
+	UpstreamProviderName string
+
+	// CreatedAt is when the pending login was created.
+	CreatedAt time.Time
+}
+
+// PendingDeviceLoginStorage provides storage operations for in-flight
+// device-flow verification-page logins: created when a user submits a
+// user_code and is redirected to the upstream IDP, and consumed exactly once
+// when that IDP redirects back to the device callback endpoint.
+type PendingDeviceLoginStorage interface {
+	// StorePendingDeviceLogin stores a pending device login. state is used to
+	// correlate the upstream IDP callback, exactly as
+	// PendingAuthorizationStorage.StorePendingAuthorization uses it for the
+	// client authorization_code flow.
+	StorePendingDeviceLogin(ctx context.Context, state string, pending *PendingDeviceLogin) error
+
+	// LoadPendingDeviceLogin retrieves a pending device login by state.
+	// Returns ErrNotFound if the state does not exist, ErrExpired if
+	// DefaultDeviceLoginTTL has elapsed.
+	LoadPendingDeviceLogin(ctx context.Context, state string) (*PendingDeviceLogin, error)
+
+	// DeletePendingDeviceLogin removes a pending device login. Returns
+	// ErrNotFound if the state does not exist.
+	DeletePendingDeviceLogin(ctx context.Context, state string) error
+}
+
+// PendingDeviceConfirmation holds a resolved upstream identity awaiting the
+// user's explicit Approve/Deny decision at the device verification page.
+//
+// The resolved identity is deliberately kept server-side, addressed only by
+// an opaque, unguessable token handed to the browser as a hidden form field --
+// never as editable request data. A confirm-page design that instead echoed
+// ResolvedUserID/Name/Email back as editable hidden fields would let a user
+// tamper with them client-side and have a device authorized under a spoofed
+// identity; keying the server-side record by an opaque token closes that.
+type PendingDeviceConfirmation struct {
+	// DeviceCode and UserCode identify the DeviceRequest awaiting decision.
+	DeviceCode string
+	UserCode   string
+
+	// Resolved* mirror the fields MarkDeviceRequestAuthorized ultimately
+	// persists onto the DeviceRequest -- see DeviceCodeStorage's doc comment.
+	ResolvedUserID    string
+	ResolvedUserName  string
+	ResolvedUserEmail string
+
+	// UpstreamTokens carries the tokens already exchanged with the upstream
+	// IDP, ready to persist under the final session id once one exists.
+	// Device-flow sessions have no session id until
+	// MarkDeviceRequestAuthorized mints one at confirm time -- unlike the
+	// OAuth-client authorization_code flow, where the session id is minted
+	// up front and CallbackHandler can call StoreUpstreamTokens directly --
+	// so the tokens must be carried here and written by
+	// DeviceVerificationConfirmHandler once that id exists. ProviderID,
+	// AccessToken, RefreshToken, IDToken, ExpiresAt, UpstreamSubject, and
+	// ClientID are populated at exchange time; UserID and SessionExpiresAt
+	// are left zero and filled in at confirm time.
+	UpstreamTokens *UpstreamTokens
+
+	// Synthetic mirrors the upstream identity's Synthetic flag: true when
+	// the upstream has no userinfo/identity config and its subject was
+	// synthesized rather than resolved from a real claim. Confirm-time
+	// refresh-token carry-forward uses this to skip its account-linking
+	// guard, which can never match a rotating synthetic subject.
+	Synthetic bool
+
+	// CreatedAt is when the pending confirmation was created.
+	CreatedAt time.Time
+}
+
+// PendingDeviceConfirmationStorage provides storage operations for resolved
+// device-flow logins awaiting an explicit Approve/Deny decision at the
+// verification page. See PendingDeviceConfirmation's doc comment for why the
+// resolved identity is addressed by an opaque token rather than round-tripped
+// through the browser as editable form data.
+type PendingDeviceConfirmationStorage interface {
+	// StorePendingDeviceConfirmation stores a pending confirmation, keyed by
+	// a fresh, unguessable token minted by the caller (e.g. rand.Text()).
+	StorePendingDeviceConfirmation(ctx context.Context, token string, pending *PendingDeviceConfirmation) error
+
+	// LoadPendingDeviceConfirmation retrieves a pending confirmation by
+	// token. Returns ErrNotFound if the token does not exist, ErrExpired if
+	// DefaultDeviceLoginTTL has elapsed.
+	LoadPendingDeviceConfirmation(ctx context.Context, token string) (*PendingDeviceConfirmation, error)
+
+	// DeletePendingDeviceConfirmation removes a pending confirmation.
+	// Returns ErrNotFound if the token does not exist.
+	DeletePendingDeviceConfirmation(ctx context.Context, token string) error
 }
 
 // AssertionJWTConsumer atomically records a validated assertion JWT as consumed.
@@ -780,7 +1078,63 @@ type UpstreamTokenStorage interface {
 
 	// StoreUpstreamTokens stores the upstream IDP tokens for a session and provider.
 	// The providerName identifies which upstream provider these tokens belong to.
+	//
+	// This is an unconditional overwrite: it does not check what is currently
+	// stored. A refresher redeeming a single-use, rotating refresh token MUST
+	// use CompareAndSwapUpstreamTokens instead, so that a redemption raced by
+	// another process cannot silently clobber a winning write with a stale
+	// one. StoreUpstreamTokens remains correct for every other writer (initial
+	// login, the OAuth callback), which has no prior row to race against.
 	StoreUpstreamTokens(ctx context.Context, sessionID, providerName string, tokens *UpstreamTokens) error
+
+	// CompareAndSwapUpstreamTokens stores tokens for (sessionID, providerName)
+	// only if the refresh token currently stored there equals
+	// expectedRefreshToken. Pass "" to match a row with no refresh token: no
+	// row exists yet, an existing row's RefreshToken field is itself empty, or
+	// an existing row was stored as an explicit no-token placeholder (a nil
+	// UpstreamTokens, persisted as the backend's null marker). Returns
+	// ErrConcurrentRefresh, and leaves the stored row untouched, when the
+	// comparison fails — whether because another writer moved the row past
+	// expectedRefreshToken, or because the row no longer exists at all (e.g.
+	// deleted by logout or evicted by TTL between the caller's read and this
+	// write). Callers that need to distinguish those two cases must re-read
+	// the row afterward: an unexpired row means a genuine race was lost to
+	// another writer; ErrNotFound on that re-read means there was no race to
+	// lose — the row was simply gone.
+	//
+	// # Purpose
+	//
+	// This is the coordination primitive that makes the STORED row
+	// deterministic under concurrent writers across MULTIPLE PROCESSES
+	// sharing the same storage backend (e.g. several horizontally-scaled
+	// replicas of an application embedding this auth server, behind the same
+	// Redis): whichever writer's expected value still matches when its write
+	// lands wins, and every losing writer fails instead of silently
+	// clobbering the winner. ResolveUpstreamTokenRowID's singleflight dedup is
+	// process-local only; it prevents redundant redemptions within one
+	// process but cannot stop two different processes from redeeming the same
+	// refresh token at the same time. Read the row, redeem it with the
+	// upstream provider, then write with expectedRefreshToken set to the
+	// RefreshToken value that was actually redeemed.
+	//
+	// This orders writes to storage; it is NOT by itself a guarantee that
+	// concurrent redemption is safe at the upstream provider. Both processes
+	// still call the provider before either one's write lands here, so for a
+	// provider enforcing strict single-use rotation the provider may see two
+	// redemptions of the same refresh token regardless of which process wins
+	// the write below, and may revoke the grant. This primitive is fully
+	// sufficient only where the provider tolerates a grace/leeway window in
+	// which more than one redeemed child stays valid; otherwise closing the
+	// gap requires serializing the redemption itself (a lock around the whole
+	// read-redeem-write sequence), which is a separate mechanism this method
+	// does not provide.
+	//
+	// Implementations must perform the comparison and the write atomically
+	// with respect to any other writer of the same row (e.g. a Lua script on
+	// Redis, or a mutex-guarded read-modify-write in memory).
+	CompareAndSwapUpstreamTokens(
+		ctx context.Context, sessionID, providerName, expectedRefreshToken string, tokens *UpstreamTokens,
+	) error
 
 	// GetUpstreamTokens retrieves the upstream IDP tokens for a session and provider.
 	// Returns ErrNotFound if the session/provider combination does not exist.
@@ -953,8 +1307,20 @@ type Storage interface {
 	// memory.go / redis.go provide the compile-time guarantee that production
 	// backends satisfy the interface, so the runtime assertion is provably
 	// safe at the boundary while keeping the wider Storage surface narrow.
+	//
+	// DeviceCodeStorage follows the same segregated pattern for the same
+	// reason: it is an optional capability (RFC 8628 device flow is off by
+	// default), not every Storage implementation needs to support it, and
+	// embedding it here would force every future implementation to add all 6
+	// methods even when it never enables device flow. Callers that need it
+	// (handlers.NewHandler, the deviceflow factory in server_impl.go) obtain
+	// it via `stor.(DeviceCodeStorage)` at construction time; the same
+	// per-backend `var _ DeviceCodeStorage = (*MemoryStorage)(nil)` /
+	// `(*RedisStorage)(nil)` checks provide the compile-time guarantee.
 	UpstreamTokenStorage
 	PendingAuthorizationStorage
+	PendingDeviceLoginStorage
+	PendingDeviceConfirmationStorage
 	ClientRegistry
 	UserStorage
 

@@ -19,6 +19,7 @@ var (
 	aiPluginUpgradeFailOnChanges     bool
 	aiPluginUpgradeAllowRefChange    bool
 	aiPluginUpgradeAllowSignerChange bool
+	aiPluginUpgradePublicKey         string
 	aiPluginUpgradeYes               bool
 	aiPluginUpgradeFormat            string
 )
@@ -28,8 +29,9 @@ var aiPluginUpgradeCmd = &cobra.Command{
 	Short: "Upgrade project plugins to newer pinned content",
 	Long: `Re-resolve a project's lock entries and install newer content where available.
 
-Plugins pinned to an immutable reference (an OCI digest or a full git commit
-hash) are reported not-upgradable — there is nothing newer to resolve to.
+Plugins pinned to a full git commit hash are not upgradable. OCI digest content
+is also immutable, but --allow-signer-change --public-key can evaluate its
+separately attached signatures for a trust-only update.
 Use --preview to see what would change without persisting anything (OCI
 sources are still fetched into the local artifact store to compare digests),
 and --allow-ref-change to permit the artifact moving to a different
@@ -54,13 +56,15 @@ func init() {
 	aiPluginUpgradeCmd.Flags().StringVar(&aiPluginUpgradeProjectRoot, "project-root", "",
 		"Project root path (default: auto-detected from the current directory)")
 	aiPluginUpgradeCmd.Flags().StringVar(&aiPluginUpgradeClientsRaw, "clients", "",
-		`Comma-separated target client apps (e.g. claude-code,opencode), or "all" for every available client`)
+		`Comma-separated target client apps (e.g. claude-code,codex), or "all" for every available client`)
 	aiPluginUpgradeCmd.Flags().BoolVar(&aiPluginUpgradePreview, "preview", false,
 		"Report what would change without persisting anything (OCI sources are still fetched to compare digests)")
 	aiPluginUpgradeCmd.Flags().BoolVar(&aiPluginUpgradeFailOnChanges, "fail-on-changes", false,
 		"Report what would change without installing anything; a CI freshness gate")
 	aiPluginUpgradeCmd.Flags().BoolVar(&aiPluginUpgradeAllowSignerChange, "allow-signer-change", false,
 		"Permit upgrading to an artifact signed by a different identity; the new identity replaces the recorded one")
+	aiPluginUpgradeCmd.Flags().StringVar(&aiPluginUpgradePublicKey, "public-key", "",
+		"Path to a cosign public key proposed as the replacement trust anchor (requires --allow-signer-change)")
 	aiPluginUpgradeCmd.Flags().BoolVar(&aiPluginUpgradeAllowRefChange, "allow-ref-change", false,
 		"Permit the artifact to move to a different repository during upgrade")
 	aiPluginUpgradeCmd.Flags().BoolVar(&aiPluginUpgradeYes, "yes", false,
@@ -70,6 +74,10 @@ func init() {
 
 func aiPluginUpgradeCmdFunc(cmd *cobra.Command, args []string) error {
 	projectRoot, err := resolveProjectRoot(aiPluginUpgradeProjectRoot)
+	if err != nil {
+		return err
+	}
+	publicKey, err := readInstallPublicKey(aiPluginUpgradePublicKey)
 	if err != nil {
 		return err
 	}
@@ -97,6 +105,7 @@ func aiPluginUpgradeCmdFunc(cmd *cobra.Command, args []string) error {
 		FailOnChanges:     aiPluginUpgradeFailOnChanges,
 		AllowRefChange:    aiPluginUpgradeAllowRefChange,
 		AllowSignerChange: aiPluginUpgradeAllowSignerChange,
+		PublicKey:         publicKey,
 	})
 	if err != nil {
 		return formatAIPluginError("upgrade plugins", err)
@@ -158,7 +167,14 @@ func printPluginUpgradeResult(result *plugins.UpgradeResult, format string, plan
 	for _, o := range result.Outcomes {
 		switch o.Status {
 		case plugins.UpgradeStatusUpgraded:
-			fmt.Printf("%s: %s %s -> %s\n", o.Name, upgradedVerb, o.OldDigest, o.NewDigest)
+			if o.TrustAnchorChanged {
+				fmt.Printf("%s: %s %s -> %s (trust anchor changed)\n",
+					o.Name, upgradedVerb, o.OldDigest, o.NewDigest)
+			} else {
+				fmt.Printf("%s: %s %s -> %s\n", o.Name, upgradedVerb, o.OldDigest, o.NewDigest)
+			}
+		case plugins.UpgradeStatusTrustUpdated:
+			printTrustUpdateOutcome(o, planOnly)
 		case plugins.UpgradeStatusUpToDate:
 			fmt.Printf("%s: up to date\n", o.Name)
 		case plugins.UpgradeStatusNotUpgradable:

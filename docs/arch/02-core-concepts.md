@@ -472,7 +472,28 @@ A **skill** is an Agent Skill -- a markdown-based instruction set (SKILL.md) tha
 
 **For architecture details**, see [Skills System](12-skills-system.md).
 
-**Related concepts:** Registry, Group, Client
+**Related concepts:** Registry, Group, Client, AI-tool Plugin
+
+### AI-tool Plugin
+
+An **AI-tool plugin** is a versioned bundle for AI clients, described by
+`.claude-plugin/plugin.json`. It can contain commands, agents, skills, hooks,
+and MCP or LSP server declarations. A plugin can therefore contain skills, but
+a skill remains an independently installable single instruction component.
+Neither is a ToolHive extension or an MCP server workload.
+
+ToolHive resolves plugins from git, OCI, or a registry name; materializes the
+complete source tree into supported clients; and manages user- or project-scope
+installations. Client capability lists describe which components a client
+loads, not which files ToolHive extracts. Plugin-declared MCP and LSP servers
+are not managed by ToolHive's workload lifecycle.
+
+**Implementation:** `pkg/plugins/`, with client adapters in
+`pkg/plugins/adapters/` and CLI commands under `cmd/thv/app/ai_plugin*.go`.
+
+**For architecture details**, see [Plugins System](14-plugins-system.md).
+
+**Related concepts:** Skill, Registry, Group, Client, Workload
 
 ## Verbs (Actions)
 
@@ -811,11 +832,12 @@ Registry
 | **Permission Profile** | Security policy (filesystem, network, privileges) |
 | **Group** | Logical collection of related MCP servers |
 | **Virtual MCP Server** | Aggregates multiple MCP servers into unified interface |
-| **Registry** | Catalog of MCP server definitions |
+| **Registry** | Catalog of MCP server, Agent Skill, and AI-tool plugin definitions |
 | **Session** | State tracking for MCP connections |
 | **Runtime** | Abstraction over container systems |
 | **Client** | Application that uses MCP servers |
-| **Skill** | Agent Skill (SKILL.md) extending AI assistant capabilities |
+| **Skill** | One Agent Skill (`SKILL.md`) extending AI assistant capabilities |
+| **AI-tool Plugin** | Manifest-based bundle of multiple AI-client components |
 | **Deploy** | Create and start a workload |
 | **Proxy** (verb) | Forward traffic with middleware |
 | **Attach** | Connect to container stdin/stdout |
@@ -835,3 +857,5 @@ Registry
 - [RunConfig and Permissions](05-runconfig-and-permissions.md) - Configuration schema
 - [Middleware](../middleware.md) - Middleware system
 - [Virtual MCP Server Architecture](10-virtual-mcp-architecture.md) - vMCP aggregation details
+- [Skills System](12-skills-system.md) - Agent Skill architecture
+- [Plugins System](14-plugins-system.md) - AI-tool plugin architecture

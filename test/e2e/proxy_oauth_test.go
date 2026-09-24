@@ -56,7 +56,7 @@ var _ = Describe("Proxy OAuth Authentication E2E", Label("proxy", "oauth", "e2e"
 
 		// proxyPort is discovered per-It from the `thv proxy` subprocess's own
 		// stdout once it binds -- see discoverProxyPort. It's started with
-		// port 0 rather than a pre-selected port to close the find-then-bind
+		// port 0 rather than a preselected port to close the find-then-bind
 		// TOCTOU window.
 
 		// Start mock OIDC server using Ory Fosite
@@ -528,13 +528,13 @@ var proxyBoundPortPattern = regexp.MustCompile(`on port (\d+)`)
 // it has actually bound its listener, and returns the port it chose.
 //
 // Passing port 0 and reading the real port back afterwards -- rather than
-// pre-selecting a port and handing it to the subprocess -- narrows the
+// preselecting a port and handing it to the subprocess -- narrows the
 // find-then-bind TOCTOU window but does not close it: FindOrUsePort(0)
 // (cmd/thv/app/proxy.go) still does the classic probe-then-release, and the
 // real bind happens later, inside transparent.NewTransparentProxy(...).Start(),
 // after the OAuth exchange (handleOutgoingAuthentication) completes. Another
 // process can still steal the port during that window; the window is just
-// usually much shorter than the original pre-selected-port bug. See
+// usually much shorter than the original preselected-port bug. See
 // startProxyAndDiscoverPort for the retry that closes it at call sites that
 // use it.
 //

@@ -26,7 +26,7 @@ jobs:
     if: github.event.workflow_run.conclusion == 'success'
     steps:
       - name: Download artifact
-        uses: actions/download-artifact@37930b1c2abaa49bbe596cd826c3c89aef350131 # v7
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8
         with:
           name: pr-size-label
           path: pr-size/
@@ -41,7 +41,7 @@ jobs:
       # trigger event rather than read from the artifact.
       - name: Resolve pull request and validate label
         id: resolve
-        uses: actions/github-script@ed597411d8f924073f98dfc5c65a23a2325f34cd # v8
+        uses: actions/github-script@3a2844b7e9c422d3c10d287c895573f7108da1b3 # v9
         with:
           script: |
             const fs = require('fs');
@@ -80,7 +80,7 @@ jobs:
             core.setOutput('size_label', label);
 
       - name: Remove old size labels
-        uses: actions/github-script@ed597411d8f924073f98dfc5c65a23a2325f34cd # v8
+        uses: actions/github-script@3a2844b7e9c422d3c10d287c895573f7108da1b3 # v9
         env:
           PR_NUMBER: ${{ steps.resolve.outputs.pr_number }}
         with:
@@ -107,7 +107,7 @@ jobs:
             }
 
       - name: Add new size label
-        uses: actions/github-script@ed597411d8f924073f98dfc5c65a23a2325f34cd # v8
+        uses: actions/github-script@3a2844b7e9c422d3c10d287c895573f7108da1b3 # v9
         env:
           PR_NUMBER: ${{ steps.resolve.outputs.pr_number }}
           SIZE_LABEL: ${{ steps.resolve.outputs.size_label }}

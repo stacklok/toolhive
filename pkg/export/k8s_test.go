@@ -84,6 +84,19 @@ func TestWriteK8sManifest(t *testing.T) {
 			},
 		},
 		{
+			name: "max request body size survives manifest round trip",
+			config: &runner.RunConfig{
+				Image:              "ghcr.io/stacklok/mcp-server:latest",
+				Name:               "body-limit",
+				Transport:          types.TransportTypeStdio,
+				MaxRequestBodySize: 16 << 20,
+			},
+			validateFn: func(t *testing.T, mcpServer *v1beta1.MCPServer) {
+				t.Helper()
+				assert.Equal(t, int64(16<<20), mcpServer.Spec.MaxRequestBodySize)
+			},
+		},
+		{
 			name: "config with environment variables",
 			config: &runner.RunConfig{
 				Image:     "ghcr.io/stacklok/mcp-server-github:latest",

@@ -77,7 +77,7 @@ graph TB
 | **Composition** | Execute multi-step workflows across multiple backends |
 | **Caching** | Reduce auth overhead by caching exchanged tokens |
 
-**Implementation**: `pkg/vmcp/` (discovery: `pkg/vmcp/discovery/`, routing: `pkg/vmcp/router/`)
+**Implementation**: `pkg/vmcp/` (discovery: `pkg/vmcp/aggregator/`, routing: `pkg/vmcp/router/`)
 
 ## Backend Discovery
 
@@ -1005,7 +1005,7 @@ Middleware is applied by wrapping handlers, so execution order is outer-to-inner
 
 ### Discovery Middleware
 
-The Discovery middleware (`pkg/vmcp/discovery/middleware.go`) is central to vMCP's multi-tenant design:
+Discovery (`pkg/vmcp/aggregator/discoverer.go`) is central to vMCP's multi-tenant design:
 
 - **Initialize requests** (no session ID): Discovers capabilities from all backends in the MCPGroup, stores routing table in session
 - **Subsequent requests** (with session ID): Retrieves cached capabilities from session
@@ -1042,7 +1042,7 @@ The server wires them around discovery/annotation-enrichment so the effective ex
 Audit → Authentication → MCP Parsing → Discovery → Annotation Enrichment → Authorization → Next Handler
 ```
 
-**Implementation**: `pkg/vmcp/server/server.go`, `pkg/vmcp/discovery/middleware.go`, `pkg/vmcp/auth/factory/`
+**Implementation**: `pkg/vmcp/server/server.go`, `pkg/vmcp/aggregator/discoverer.go`, `pkg/vmcp/auth/factory/`
 
 ### Authorization Enforcement (core admission seam + pre-dispatch gate)
 
@@ -1147,6 +1147,7 @@ Status reporting enables vMCP runtime to report operational status directly inst
   - Phase: Pending, Ready, Degraded, Failed
   - Conditions: `metav1.Condition` (ready, backends discovered, auth configured) using shared constants
   - DiscoveredBackends: backend URL/auth type/health with timestamps
+- Kubernetes reporter: writes the runtime-owned `status.runtime` snapshot. The operator is the sole writer of top-level status fields and projects runtime phase, message, backend observations, and runtime conditions into their existing top-level compatibility fields during reconciliation. This ownership boundary prevents the runtime and operator from replacing the same conditions array concurrently.
 - CLI reporter: Logging-only reporter (no persistence) logs status updates at Debug level (visible when `--debug` is set).
 - Lifecycle hook: server starts the reporter, collects shutdown funcs, and stops them during graceful shutdown.
 
@@ -1159,7 +1160,7 @@ Status reporting enables vMCP runtime to report operational status directly inst
 ### Extensibility
 
 - Additional reporters can be added under `pkg/vmcp/status/` implementing `Reporter` and using shared `vmcp.Status` types.
-- Future sinks: Kubernetes status writer, file-based reporter for CLI (`thv status`), metrics exporter.
+- Future sinks: file-based reporter for CLI (`thv status`), metrics exporter.
 
 **Implementation**: `pkg/vmcp/status/`
 

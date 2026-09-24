@@ -21,6 +21,7 @@ import (
 	appsv1 "k8s.io/api/apps/v1"
 	corev1 "k8s.io/api/core/v1"
 	rbacv1 "k8s.io/api/rbac/v1"
+	"k8s.io/apimachinery/pkg/api/equality"
 	"k8s.io/apimachinery/pkg/api/errors"
 	"k8s.io/apimachinery/pkg/api/meta"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
@@ -248,6 +249,7 @@ func (r *VirtualMCPServerReconciler) Reconcile(ctx context.Context, req ctrl.Req
 
 	// Create status manager for batched updates
 	statusManager := virtualmcpserverstatus.NewStatusManager(vmcp)
+	r.applyInlineInboundGrantDeprecationCondition(vmcp, statusManager)
 
 	// Run all pre-reconciliation validations.
 	// Returns (true, nil) to continue, (false, nil) when validation failed but
@@ -325,6 +327,33 @@ func (r *VirtualMCPServerReconciler) Reconcile(ctx context.Context, req ctrl.Req
 	return ctrl.Result{}, nil
 }
 
+func (*VirtualMCPServerReconciler) applyInlineInboundGrantDeprecationCondition(
+	vmcp *mcpv1beta1.VirtualMCPServer,
+	statusManager virtualmcpserverstatus.StatusManager,
+) {
+	if vmcp.Spec.AuthServerConfig == nil {
+		statusManager.RemoveConditionsWithPrefix(
+			mcpv1beta1.ConditionTypeVirtualMCPServerDeprecatedInboundGrantConfiguration, nil)
+		return
+	}
+	fields := deprecatedInboundGrantFields(vmcp.Spec.AuthServerConfig, "spec.authServerConfig")
+	if len(fields) == 0 {
+		statusManager.SetCondition(
+			mcpv1beta1.ConditionTypeVirtualMCPServerDeprecatedInboundGrantConfiguration,
+			mcpv1beta1.ConditionReasonVirtualMCPServerCanonicalInboundGrantConfiguration,
+			"Only canonical inbound grant configuration is populated",
+			metav1.ConditionFalse,
+		)
+		return
+	}
+	statusManager.SetCondition(
+		mcpv1beta1.ConditionTypeVirtualMCPServerDeprecatedInboundGrantConfiguration,
+		mcpv1beta1.ConditionReasonVirtualMCPServerLegacyInboundGrantFields,
+		deprecatedInboundGrantMessage(fields),
+		metav1.ConditionTrue,
+	)
+}
+
 // validateSpec validates the VirtualMCPServer spec and updates status on error.
 // Returns an error if validation fails, which signals the caller to stop reconciliation.
 func (r *VirtualMCPServerReconciler) validateSpec(
@@ -369,20 +398,24 @@ func (r *VirtualMCPServerReconciler) applyStatusUpdates(
 		return fmt.Errorf("failed to get latest VirtualMCPServer: %w", err)
 	}
 
-	// Apply collected changes to the latest status
-	hasUpdates := statusManager.UpdateStatus(ctx, &latest.Status)
-
-	// Only update if there are changes
-	if hasUpdates {
-		if err := r.Status().Update(ctx, latest); err != nil {
-			// Handle conflicts by returning error to trigger requeue
-			if errors.IsConflict(err) {
-				ctxLogger.V(1).Info("Conflict updating status, will requeue")
-				return err
-			}
-			return fmt.Errorf("failed to update VirtualMCPServer status: %w", err)
+	wasDeprecated := conditionStatusIs(latest.Status.Conditions,
+		mcpv1beta1.ConditionTypeVirtualMCPServerDeprecatedInboundGrantConfiguration, metav1.ConditionTrue)
+	becameDeprecated := false
+	if err := ctrlutil.MutateAndPatchStatus(ctx, r.Client, latest,
+		func(c *mcpv1beta1.VirtualMCPServer) {
+			statusManager.UpdateStatus(ctx, &c.Status)
+			becameDeprecated = conditionStatusIs(c.Status.Conditions,
+				mcpv1beta1.ConditionTypeVirtualMCPServerDeprecatedInboundGrantConfiguration, metav1.ConditionTrue)
+		}); err != nil {
+		if errors.IsConflict(err) {
+			ctxLogger.V(1).Info("Conflict updating status, will requeue")
 		}
-		ctxLogger.V(1).Info("Successfully applied batched status updates")
+		return fmt.Errorf("failed to update VirtualMCPServer status: %w", err)
+	}
+	if !wasDeprecated && becameDeprecated && r.Recorder != nil {
+		r.Recorder.Eventf(latest, nil, corev1.EventTypeWarning,
+			inboundGrantDeprecationEventReason, "MigrateInboundGrants",
+			"Released legacy inbound grant fields are deprecated; see status condition for canonical replacement paths")
 	}
 
 	return nil
@@ -596,7 +629,7 @@ func (*VirtualMCPServerReconciler) validateAuthServerConfig(
 		return stderrors.New(message)
 	}
 
-	if err := cfg.ValidateConfidentialClientTransport(); err != nil {
+	if err := cfg.ValidateInboundGrants(); err != nil {
 		message := fmt.Sprintf("spec.authServerConfig: %v", err)
 		statusManager.SetPhase(mcpv1beta1.VirtualMCPServerPhaseFailed)
 		statusManager.SetMessage(message)
@@ -635,12 +668,12 @@ func (*VirtualMCPServerReconciler) validateAuthServerConfig(
 		}
 	}
 
-	if len(cfg.UpstreamProviders) == 0 && len(cfg.DelegateClients) == 0 &&
+	if len(cfg.UpstreamProviders) == 0 && len(cfg.DelegateClients) == 0 && cfg.InboundGrants == nil &&
 		!slices.ContainsFunc(cfg.TrustedIssuers, func(issuer mcpv1beta1.TrustedIssuerConfig) bool {
 			return issuer.JWTBearerGrant != nil
 		}) {
 		message := "spec.authServerConfig requires at least one upstream provider unless " +
-			"delegateClients or a trustedIssuer with jwtBearerGrant is configured"
+			"delegateClients, inboundGrants, or a trustedIssuer with jwtBearerGrant is configured"
 		statusManager.SetPhase(mcpv1beta1.VirtualMCPServerPhaseFailed)
 		statusManager.SetMessage(message)
 		statusManager.SetAuthServerConfigValidatedCondition(
@@ -652,11 +685,16 @@ func (*VirtualMCPServerReconciler) validateAuthServerConfig(
 		return stderrors.New(message)
 	}
 
-	// Validate additionalAuthorizationParams on each upstream provider
+	// Validate additionalAuthorizationParams / additionalTokenParams on each
+	// upstream provider
 	for i := range cfg.UpstreamProviders {
 		prefix := fmt.Sprintf("spec.authServerConfig.upstreamProviders[%d]", i)
 		params := cfg.UpstreamProviders[i].AdditionalAuthorizationParams()
-		if err := mcpv1beta1.ValidateAdditionalAuthorizationParams(prefix, params); err != nil {
+		err := mcpv1beta1.ValidateAdditionalAuthorizationParams(prefix, params)
+		if err == nil {
+			err = mcpv1beta1.ValidateAdditionalTokenParams(prefix, cfg.UpstreamProviders[i].AdditionalTokenParams())
+		}
+		if err != nil {
 			message := err.Error()
 			statusManager.SetPhase(mcpv1beta1.VirtualMCPServerPhaseFailed)
 			statusManager.SetMessage(message)
@@ -1853,7 +1891,10 @@ func (r *VirtualMCPServerReconciler) containerNeedsUpdate(
 		return true
 	}
 
-	container := deployment.Spec.Template.Spec.Containers[0]
+	container, ok := findContainerByName(deployment.Spec.Template.Spec.Containers, vmcpMainContainerName)
+	if !ok {
+		return true
+	}
 
 	// Check if vmcp image has changed
 	expectedImage := getVmcpImage()
@@ -1872,12 +1913,15 @@ func (r *VirtualMCPServerReconciler) containerNeedsUpdate(
 		return true
 	}
 
-	// Check if environment variables have changed
-	expectedEnv, err := r.buildEnvVarsForVmcp(ctx, vmcp, telemetryCfg, typedWorkloads)
+	// Compare against the fully rendered desired vmcp env (controller env plus
+	// spec.podTemplateSpec merges). Semantic equality still treats nil vs
+	// pointer-to-zero as different for some API fields, so normalize known
+	// defaults before comparing (#6340, #6377).
+	expectedEnv, err := r.desiredMainContainerEnv(ctx, vmcp, telemetryCfg, typedWorkloads)
 	if err != nil {
 		return true // Trigger update to surface the error
 	}
-	if !reflect.DeepEqual(container.Env, expectedEnv) {
+	if !envVarsEqual(container.Env, expectedEnv) {
 		return true
 	}
 
@@ -1931,11 +1975,18 @@ func (r *VirtualMCPServerReconciler) podTemplateMetadataNeedsUpdate(
 		return true
 	}
 
-	expectedPodTemplateLabels, expectedPodTemplateAnnotations := r.buildPodTemplateMetadata(
-		labelsForVirtualMCPServer(vmcp.Name), vmcp, vmcpConfigChecksum, caBundleChecksum,
+	expectedPodTemplateLabels, expectedPodTemplateAnnotations, err := r.desiredPodTemplateMetadata(
+		vmcp, vmcpConfigChecksum, caBundleChecksum,
 	)
+	if err != nil {
+		return true
+	}
 
-	if !maps.Equal(deployment.Spec.Template.Labels, expectedPodTemplateLabels) {
+	// Subset check, not maps.Equal: desired is the fully rendered set
+	// (controller labels plus spec.podTemplateSpec merges). Extra live keys
+	// such as pod-template-hash or kubectl restartedAt are not drift
+	// (statusReportingInterval must not Update, #6340).
+	if !ctrlutil.MapIsSubset(expectedPodTemplateLabels, deployment.Spec.Template.Labels) {
 		return true
 	}
 
@@ -1949,6 +2000,116 @@ func (r *VirtualMCPServerReconciler) podTemplateMetadataNeedsUpdate(
 	}
 
 	return false
+}
+
+const vmcpMainContainerName = "vmcp"
+
+// desiredPodTemplateMetadata returns the fully rendered desired pod-template
+// labels and annotations: controller-generated metadata plus any keys merged
+// from spec.podTemplateSpec. Callers compare this set as a subset of live
+// metadata so externally owned extras (pod-template-hash, restartedAt) are
+// not treated as drift.
+func (r *VirtualMCPServerReconciler) desiredPodTemplateMetadata(
+	vmcp *mcpv1beta1.VirtualMCPServer,
+	vmcpConfigChecksum string,
+	caBundleChecksum string,
+) (map[string]string, map[string]string, error) {
+	labels, annotations := r.buildPodTemplateMetadata(
+		labelsForVirtualMCPServer(vmcp.Name), vmcp, vmcpConfigChecksum, caBundleChecksum,
+	)
+	// Clone: buildPodTemplateMetadata aliases the caller-owned base label map,
+	// and ApplyPodTemplateSpecPatch must not mutate it.
+	labels = maps.Clone(labels)
+	annotations = maps.Clone(annotations)
+
+	if vmcp.Spec.PodTemplateSpec == nil || len(vmcp.Spec.PodTemplateSpec.Raw) == 0 {
+		return labels, annotations, nil
+	}
+
+	merged, err := ctrlutil.ApplyPodTemplateSpecPatch(corev1.PodTemplateSpec{
+		ObjectMeta: metav1.ObjectMeta{
+			Labels:      labels,
+			Annotations: annotations,
+		},
+	}, vmcp.Spec.PodTemplateSpec.Raw)
+	if err != nil {
+		return nil, nil, err
+	}
+	return merged.Labels, merged.Annotations, nil
+}
+
+// desiredMainContainerEnv returns the fully rendered desired env for the vmcp
+// container: buildEnvVarsForVmcp plus any env merged from spec.podTemplateSpec.
+func (r *VirtualMCPServerReconciler) desiredMainContainerEnv(
+	ctx context.Context,
+	vmcp *mcpv1beta1.VirtualMCPServer,
+	telemetryCfg *mcpv1beta1.MCPTelemetryConfig,
+	typedWorkloads []workloads.TypedWorkload,
+) ([]corev1.EnvVar, error) {
+	expectedEnv, err := r.buildEnvVarsForVmcp(ctx, vmcp, telemetryCfg, typedWorkloads)
+	if err != nil {
+		return nil, err
+	}
+
+	if vmcp.Spec.PodTemplateSpec == nil || len(vmcp.Spec.PodTemplateSpec.Raw) == 0 {
+		return expectedEnv, nil
+	}
+
+	merged, err := ctrlutil.ApplyPodTemplateSpecPatch(corev1.PodTemplateSpec{
+		Spec: corev1.PodSpec{
+			Containers: []corev1.Container{{
+				Name: vmcpMainContainerName,
+				Env:  expectedEnv,
+			}},
+		},
+	}, vmcp.Spec.PodTemplateSpec.Raw)
+	if err != nil {
+		return nil, err
+	}
+
+	if container, ok := findContainerByName(merged.Spec.Containers, vmcpMainContainerName); ok {
+		return container.Env, nil
+	}
+	return expectedEnv, nil
+}
+
+// envVarsEqual compares container env after normalizing known Kubernetes API
+// defaults. equality.Semantic.DeepEqual still treats nil vs pointer-to-zero
+// (and "" vs "v1" on ObjectFieldSelector.APIVersion) as different.
+func envVarsEqual(live, desired []corev1.EnvVar) bool {
+	return equality.Semantic.DeepEqual(normalizeEnvVarsForCompare(live), normalizeEnvVarsForCompare(desired))
+}
+
+// normalizeEnvVarsForCompare copies env and collapses known API-server
+// defaults so persisted and freshly built representations compare equal.
+func normalizeEnvVarsForCompare(env []corev1.EnvVar) []corev1.EnvVar {
+	if env == nil {
+		return nil
+	}
+	out := make([]corev1.EnvVar, len(env))
+	for i := range env {
+		out[i] = *env[i].DeepCopy()
+		normalizeEnvVarSource(out[i].ValueFrom)
+	}
+	return out
+}
+
+func normalizeEnvVarSource(src *corev1.EnvVarSource) {
+	if src == nil {
+		return
+	}
+	if ref := src.SecretKeyRef; ref != nil && ref.Optional != nil && !*ref.Optional {
+		ref.Optional = nil
+	}
+	if ref := src.ConfigMapKeyRef; ref != nil && ref.Optional != nil && !*ref.Optional {
+		ref.Optional = nil
+	}
+	if ref := src.FileKeyRef; ref != nil && ref.Optional != nil && !*ref.Optional {
+		ref.Optional = nil
+	}
+	if ref := src.FieldRef; ref != nil && ref.APIVersion == "v1" {
+		ref.APIVersion = ""
+	}
 }
 
 // podTemplateSpecNeedsUpdate checks if the user-provided PodTemplateSpec has changed, by
@@ -2161,6 +2322,19 @@ func countBackendHealth(ctx context.Context, backends []mcpv1beta1.DiscoveredBac
 	return routable, unhealthy
 }
 
+// runtimeDiscoveredBackends returns the freshest backend observations available on vmcp.
+// Status.Runtime is the vMCP process's own snapshot; the top-level DiscoveredBackends is
+// only a projection of it that the operator writes once per reconcile, so a vmcp fetched
+// mid-reconcile can have a current Runtime snapshot alongside a top-level field still
+// reflecting the previous reconcile's patch. Preferring Runtime keeps phase decisions
+// from acting on that stale projection.
+func runtimeDiscoveredBackends(vmcp *mcpv1beta1.VirtualMCPServer) []mcpv1beta1.DiscoveredBackend {
+	if vmcp.Status.Runtime != nil {
+		return vmcp.Status.Runtime.DiscoveredBackends
+	}
+	return vmcp.Status.DiscoveredBackends
+}
+
 // determineStatusFromBackends evaluates backend health to determine status
 func (*VirtualMCPServerReconciler) determineStatusFromBackends(
 	ctx context.Context,
@@ -2168,7 +2342,8 @@ func (*VirtualMCPServerReconciler) determineStatusFromBackends(
 ) statusDecision {
 	ctxLogger := log.FromContext(ctx)
 
-	routable, unhealthy := countBackendHealth(ctx, vmcp.Status.DiscoveredBackends)
+	backends := runtimeDiscoveredBackends(vmcp)
+	routable, unhealthy := countBackendHealth(ctx, backends)
 	total := routable + unhealthy
 
 	// All backends unhealthy
@@ -2206,7 +2381,7 @@ func (*VirtualMCPServerReconciler) determineStatusFromBackends(
 
 	// Edge case: backends exist but none counted
 	ctxLogger.V(1).Info("No backends were counted, treating as degraded",
-		"discoveredBackendsCount", len(vmcp.Status.DiscoveredBackends))
+		"discoveredBackendsCount", len(backends))
 	return statusDecision{
 		phase:          mcpv1beta1.VirtualMCPServerPhaseDegraded,
 		message:        "Virtual MCP server is running but backend status cannot be determined",
@@ -2251,7 +2426,7 @@ func (r *VirtualMCPServerReconciler) determineStatusFromPods(
 	}
 
 	// Pods are ready (passed readiness probes) - check backend health if backends exist
-	if len(vmcp.Status.DiscoveredBackends) == 0 {
+	if len(runtimeDiscoveredBackends(vmcp)) == 0 {
 		// No backends discovered yet - pods ready is sufficient for Ready
 		return statusDecision{
 			phase:          mcpv1beta1.VirtualMCPServerPhaseReady,
@@ -2313,7 +2488,13 @@ func (r *VirtualMCPServerReconciler) updateVirtualMCPServerStatus(
 	// Determine status in one place (no branching/repetition)
 	decision := r.determineStatusFromPods(ctx, vmcp, ready, pending, failed)
 
-	// Apply all status updates at once
+	// Apply all status updates at once.
+	//
+	// SetReadyCondition here deliberately overwrites the runtime's own Ready condition
+	// (reason AllBackendsRoutable, projected from Status.Runtime). The operator's
+	// decision already folds in the runtime's backend health via
+	// determineStatusFromBackends, plus pod/deployment readiness the runtime cannot
+	// observe, so it is the more complete verdict and stays authoritative for Ready.
 	statusManager.SetPhase(decision.phase)
 	statusManager.SetMessage(decision.message)
 	statusManager.SetReadyCondition(decision.reason, decision.conditionMsg, decision.conditionState)

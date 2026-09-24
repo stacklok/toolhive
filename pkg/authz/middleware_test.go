@@ -33,21 +33,41 @@ import (
 
 // stubAuthorizer is a minimal Authorizer for unit tests, avoiding Cedar setup overhead.
 type stubAuthorizer struct {
-	allowed    bool
-	err        error
-	lastToolID string
-	lastCtx    context.Context
+	allowed       bool
+	err           error
+	lastID        string
+	lastFeature   authorizers.MCPFeature
+	lastOperation authorizers.MCPOperation
+	lastCtx       context.Context
+	calls         int
+	authorize     func(authorizers.MCPFeature, authorizers.MCPOperation, string) (bool, error)
+	// recordArguments, when set, receives the arguments map passed to the
+	// authorizer, so tests can assert on what policy would actually see.
+	recordArguments func(map[string]interface{})
 }
 
 func (s *stubAuthorizer) AuthorizeWithJWTClaims(
 	ctx context.Context,
-	_ authorizers.MCPFeature,
-	_ authorizers.MCPOperation,
+	feature authorizers.MCPFeature,
+	operation authorizers.MCPOperation,
 	resourceID string,
-	_ map[string]interface{},
+	arguments map[string]interface{},
 ) (bool, error) {
-	s.lastToolID = resourceID
+	s.lastID = resourceID
+	s.lastFeature = feature
+	s.lastOperation = operation
 	s.lastCtx = ctx
+	s.calls++
+	if s.authorize != nil {
+		allowed, err := s.authorize(feature, operation, resourceID)
+		if s.recordArguments != nil {
+			s.recordArguments(arguments)
+		}
+		return allowed, err
+	}
+	if s.recordArguments != nil {
+		s.recordArguments(arguments)
+	}
 	return s.allowed, s.err
 }
 
@@ -254,7 +274,7 @@ func TestMiddleware(t *testing.T) {
 			expectAuthorized: false,
 		},
 		{
-			name:   "Resources templates list is authorized and filtered",
+			name:   "Resources templates list proceeds to response filtering",
 			method: "resources/templates/list",
 			params: map[string]interface{}{},
 			claims: jwt.MapClaims{
@@ -288,11 +308,17 @@ func TestMiddleware(t *testing.T) {
 			expectStatus:     http.StatusOK,
 			expectAuthorized: true,
 		},
+		// completion/complete and subscriptions/listen are classified by
+		// derivedAuthorizers, not the static map. These cases run them against the
+		// real Cedar authorizer above to pin that the derived checks land on the
+		// same get_prompt/read_resource actions the direct methods use; the
+		// exhaustive shape coverage lives in derived_authz_test.go.
 		{
-			name:   "Completion complete is always allowed",
+			name:   "Completion for a permitted prompt is authorized",
 			method: "completion/complete",
 			params: map[string]interface{}{
 				"ref": map[string]interface{}{
+					"type": "ref/prompt",
 					"name": "greeting",
 				},
 				"argument": map[string]interface{}{
@@ -306,6 +332,56 @@ func TestMiddleware(t *testing.T) {
 			},
 			expectStatus:     http.StatusOK,
 			expectAuthorized: true,
+		},
+		{
+			name:   "Completion for a permitted resource ref is authorized",
+			method: "completion/complete",
+			params: map[string]interface{}{
+				"ref": map[string]interface{}{
+					"type": "ref/resource",
+					"uri":  "data",
+				},
+				"argument": map[string]interface{}{
+					"name":  "name",
+					"value": "a",
+				},
+			},
+			claims: jwt.MapClaims{
+				"sub":  "user123",
+				"name": "John Doe",
+			},
+			expectStatus:     http.StatusOK,
+			expectAuthorized: true,
+		},
+		{
+			name:   "Subscriptions listen to a permitted resource is authorized",
+			method: "subscriptions/listen",
+			params: map[string]interface{}{
+				"notifications": map[string]interface{}{
+					"resourceSubscriptions": []interface{}{"data"},
+				},
+			},
+			claims: jwt.MapClaims{
+				"sub":  "user123",
+				"name": "John Doe",
+			},
+			expectStatus:     http.StatusOK,
+			expectAuthorized: true,
+		},
+		{
+			name:   "Subscriptions listen to a denied resource is rejected",
+			method: "subscriptions/listen",
+			params: map[string]interface{}{
+				"notifications": map[string]interface{}{
+					"resourceSubscriptions": []interface{}{"data", "secret"},
+				},
+			},
+			claims: jwt.MapClaims{
+				"sub":  "user123",
+				"name": "John Doe",
+			},
+			expectStatus:     http.StatusForbidden,
+			expectAuthorized: false,
 		},
 		{
 			name:   "Notifications are always allowed",
@@ -343,7 +419,9 @@ func TestMiddleware(t *testing.T) {
 			expectAuthorized: true,
 		},
 		{
-			name:   "Subscriptions listen is always allowed",
+			// Not "always allowed": empty params means no notifications member, so
+			// the request names no resource and there is nothing to authorize.
+			name:   "Subscriptions listen naming no resource has nothing to authorize",
 			method: "subscriptions/listen",
 			params: map[string]interface{}{},
 			claims: jwt.MapClaims{
@@ -457,24 +535,18 @@ func TestMiddleware(t *testing.T) {
 	}
 }
 
-// TestSubscriptionsListenIsAllowlistedPendingDelivery guards a deliberate, temporary
-// exception: subscriptions/listen is always-allowed only because notification delivery
-// for it is not yet implemented, so it exposes no data. When delivery lands, this entry
-// must become a real Feature/Operation with per-resource authorization of
-// resourceSubscriptions URIs (see TODO(#5755) in MCPMethodToFeatureOperation) — this test
-// should fail at that point as a reminder to update it deliberately.
-func TestSubscriptionsListenIsAllowlistedPendingDelivery(t *testing.T) {
-	t.Parallel()
-	require.Equal(t, featureOperation{}, MCPMethodToFeatureOperation["subscriptions/listen"])
-}
-
 // TestServerDiscoverIsAllowlisted guards the now-safe allow-listing of server/discover:
 // its Modern envelope is post-admission capability flags (booleans), never per-resource
 // descriptors, so unlike tools/list or prompts/list there is nothing here for
 // ResponseFilteringWriter to filter -- always-allowed is correct, not a bypass.
 func TestServerDiscoverIsAllowlisted(t *testing.T) {
 	t.Parallel()
-	require.Equal(t, featureOperation{}, MCPMethodToFeatureOperation["server/discover"])
+	// Assert presence separately: a bare map index returns the zero value for an
+	// absent key, so comparing to featureOperation{} alone would also pass if the
+	// entry were deleted.
+	featureOp, ok := MCPMethodToFeatureOperation["server/discover"]
+	require.True(t, ok, "server/discover must be classified in the method map")
+	require.Equal(t, featureOperation{}, featureOp)
 }
 
 // TestMiddlewareWithGETRequest tests that the middleware doesn't panic with GET requests.
@@ -1604,6 +1676,75 @@ func TestConvertToJSONRPC2ID(t *testing.T) {
 					assert.NotNil(t, result)
 				}
 			}
+		})
+	}
+}
+
+func TestAuthorizeListAndServe_UnregisteredMethodGuard(t *testing.T) {
+	t.Parallel()
+
+	testCases := []struct {
+		name             string
+		featureOp        featureOperation
+		expectHandlerHit bool
+		expectStatus     int
+		expectBody       string
+	}{
+		{
+			name: "protected list without a registered filter is denied",
+			featureOp: featureOperation{
+				Feature:   authorizers.MCPFeatureResource,
+				Operation: authorizers.MCPOperationList,
+			},
+			expectStatus: http.StatusForbidden,
+			expectBody:   `{"jsonrpc":"2.0","id":7,"error":{"code":403,"message":"Unauthorized"}}`,
+		},
+		{
+			name: "protocol-only list without a filter passes through",
+			featureOp: featureOperation{
+				Feature:   "",
+				Operation: authorizers.MCPOperationList,
+			},
+			expectHandlerHit: true,
+			expectStatus:     http.StatusOK,
+			expectBody:       `{"passthrough":true}`,
+		},
+	}
+
+	for _, tc := range testCases {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+
+			req, err := http.NewRequest(http.MethodPost, "/messages", nil)
+			require.NoError(t, err)
+			parsedRequest := &mcpparser.ParsedMCPRequest{
+				Method: "synthetic/unregistered-list",
+				ID:     float64(7),
+			}
+
+			var handlerCalled bool
+			next := http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+				handlerCalled = true
+				w.Header().Set("Content-Type", "application/json")
+				_, writeErr := w.Write([]byte(`{"passthrough":true}`))
+				require.NoError(t, writeErr)
+			})
+
+			rr := httptest.NewRecorder()
+			authorizeListAndServe(
+				rr,
+				req,
+				nil,
+				parsedRequest,
+				tc.featureOp,
+				NewAnnotationCache(),
+				nil,
+				next,
+			)
+
+			assert.Equal(t, tc.expectHandlerHit, handlerCalled)
+			assert.Equal(t, tc.expectStatus, rr.Code)
+			assert.JSONEq(t, tc.expectBody, rr.Body.String())
 		})
 	}
 }

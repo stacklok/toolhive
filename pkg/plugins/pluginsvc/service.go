@@ -16,6 +16,7 @@ import (
 
 	"github.com/stacklok/toolhive-core/container/signer"
 	ociplugins "github.com/stacklok/toolhive-core/oci/plugins"
+	regtypes "github.com/stacklok/toolhive-core/registry/types"
 	"github.com/stacklok/toolhive/pkg/client"
 	"github.com/stacklok/toolhive/pkg/git"
 	"github.com/stacklok/toolhive/pkg/groups"
@@ -105,6 +106,9 @@ type PluginSearchHit struct {
 	Description string `json:"description,omitempty"`
 	// Packages lists the OCI packages that publish this plugin.
 	Packages []PluginPackage `json:"packages,omitempty"`
+	// Provenance is the independently optional signer identity declared by
+	// the registry entry and enforced on a project-scoped true first use.
+	Provenance *regtypes.Provenance `json:"provenance,omitempty"`
 }
 
 // PluginPackage describes a single OCI package backing a plugin search hit.
@@ -141,9 +145,11 @@ func WithSigner(sg signer.Signer) Option {
 	}
 }
 
-// WithVerifier sets the signature verifier used for install-time
-// verification. Defaults to the Sigstore verifier with the composite
-// registry keychain.
+// WithVerifier sets the signature verifier used by install, sync, and
+// upgrade. Defaults to the Sigstore verifier with the composite registry
+// keychain. Explicit public-key re-anchoring during upgrade additionally
+// requires the verifier to implement verifier.OCISnapshotRetriever; ordinary
+// verification remains compatible with verifier.Verifier implementations.
 func WithVerifier(v verifier.Verifier) Option {
 	return func(s *service) {
 		s.sigVerifier = v

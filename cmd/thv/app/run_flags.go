@@ -5,6 +5,7 @@ package app
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"log/slog"
 	"strings"
@@ -28,6 +29,7 @@ import (
 	"github.com/stacklok/toolhive/pkg/process"
 	"github.com/stacklok/toolhive/pkg/runner"
 	"github.com/stacklok/toolhive/pkg/runner/retriever"
+	"github.com/stacklok/toolhive/pkg/secrets"
 	"github.com/stacklok/toolhive/pkg/telemetry"
 	"github.com/stacklok/toolhive/pkg/transport"
 	"github.com/stacklok/toolhive/pkg/transport/types"
@@ -120,6 +122,12 @@ type RunFlags struct {
 
 	// SessionTTL is the session inactivity timeout. Zero uses the transport default.
 	SessionTTL time.Duration
+
+	// MaxRequestBodySize is the maximum inbound request body size in bytes. Zero uses the default.
+	MaxRequestBodySize int64
+
+	// ProxyReadTimeout bounds reading a full request on the proxy. Zero uses the default.
+	ProxyReadTimeout time.Duration
 
 	// Network mode
 	Network string
@@ -310,6 +318,10 @@ func AddRunFlags(cmd *cobra.Command, config *RunFlags) {
 			"Use for MCP servers implementing streamable-HTTP stateless mode.")
 	cmd.Flags().DurationVar(&config.SessionTTL, "session-ttl", 0,
 		"Session inactivity timeout (e.g., 30m, 2h); zero uses the default (2h)")
+	cmd.Flags().Int64Var(&config.MaxRequestBodySize, "max-request-body-size", 0,
+		"Maximum inbound request body size in bytes; zero uses the default (8 MiB)")
+	cmd.Flags().DurationVar(&config.ProxyReadTimeout, "proxy-read-timeout", 0,
+		"Maximum time to read a full request on the proxy (e.g., 30s, 1m); zero uses the default (30s)")
 	cmd.Flags().StringVar(&config.EndpointPrefix, "endpoint-prefix", "",
 		"Path prefix to prepend to SSE endpoint URLs (e.g., /playwright)")
 	cmd.Flags().StringVar(&config.Network, "network", "",
@@ -735,6 +747,8 @@ func buildRunnerConfig(
 		runner.WithStrictProtocolValidation(runFlags.StrictProtocolValidation),
 		runner.WithStateless(runFlags.Stateless),
 		runner.WithSessionTTL(runFlags.SessionTTL),
+		runner.WithMaxRequestBodySize(runFlags.MaxRequestBodySize),
+		runner.WithProxyReadTimeout(runFlags.ProxyReadTimeout),
 		runner.WithEndpointPrefix(runFlags.EndpointPrefix),
 		runner.WithNetworkMode(runFlags.Network),
 		runner.WithK8sPodPatch(runFlags.K8sPodPatch),
@@ -1046,7 +1060,19 @@ func getRemoteAuthFromRemoteServerMetadata(
 	if err != nil {
 		return nil, fmt.Errorf("failed to resolve bearer token: %w", err)
 	}
-	authCfg.BearerToken = resolvedBearerToken
+
+	bearerToken, err := authsecrets.ProcessSecret(runFlags.Name, resolvedBearerToken, authsecrets.TokenTypeBearerToken)
+	if err != nil {
+		if errors.Is(err, secrets.ErrSecretsNotSetup) {
+			return nil, fmt.Errorf(
+				"failed to process bearer token: run 'thv secret setup', or pass a NAME,target=bearer_token reference "+
+					"with TOOLHIVE_SECRETS_PROVIDER=environment and TOOLHIVE_SECRET_<NAME> set: %w",
+				err,
+			)
+		}
+		return nil, fmt.Errorf("failed to process bearer token: %w", err)
+	}
+	authCfg.BearerToken = bearerToken
 	authCfg.BearerTokenFile = f.RemoteAuthBearerTokenFile
 
 	return authCfg, nil

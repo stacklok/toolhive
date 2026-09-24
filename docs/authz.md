@@ -118,7 +118,8 @@ Create a configuration file (JSON or YAML) with the following structure:
     "policies": [
       "permit(principal, action == Action::\"call_tool\", resource == Tool::\"weather\");",
       "permit(principal, action == Action::\"get_prompt\", resource == Prompt::\"greeting\");",
-      "permit(principal, action == Action::\"read_resource\", resource == Resource::\"data\");"
+      "permit(principal, action == Action::\"read_resource\", resource == Resource::\"data\");",
+      "permit(principal, action == Action::\"get_skill\", resource == Skill::\"mcp://example/skill\");"
     ],
     "entities_json": "[]"
   }
@@ -135,6 +136,7 @@ cedar:
     - 'permit(principal, action == Action::"call_tool", resource == Tool::"weather");'
     - 'permit(principal, action == Action::"get_prompt", resource == Prompt::"greeting");'
     - 'permit(principal, action == Action::"read_resource", resource == Resource::"data");'
+    - 'permit(principal, action == Action::"get_skill", resource == Skill::"mcp://example/skill");'
   entities_json: "[]"
 ```
 
@@ -181,10 +183,11 @@ In the context of MCP servers, the following entities are used:
     - `Action::"call_tool"`: Call a tool
     - `Action::"get_prompt"`: Get a prompt
     - `Action::"read_resource"`: Read a resource
+    - `Action::"get_skill"`: Get a skill
 
-  Note: List operations (`tools/list`, `prompts/list`, `resources/list`) are always
+  Note: List operations (`tools/list`, `prompts/list`, `resources/list`, `skills/list`) are always
   allowed but the response is filtered based on the corresponding call/get/read policies.
-  Define policies for the specific operations (call_tool, get_prompt, read_resource)
+  Define policies for the specific operations (call_tool, get_prompt, read_resource, get_skill)
   and the list responses will automatically show only the items the user is authorized to access.
 
 - **Resource**: The object being accessed.
@@ -194,14 +197,35 @@ In the context of MCP servers, the following entities are used:
     - `Prompt::"greeting"`: The greeting prompt
     - `Resource::"data"`: A short resource name
     - `Resource::"file:///etc/passwd"`: An MCP resource URI (exact URI is the Cedar entity ID)
+    - `Skill::"mcp://example/skill"`: An MCP skill URI (exact URI is the Cedar entity ID)
     - `FeatureType::"tool"`: The tool feature type (used for list operations)
 
   For `read_resource`, the Cedar entity ID is the **exact resource URI** (for example
   `Resource::"file:///ok"` or `Resource::"mcp://srv/config:admin"`). Do not rewrite
   characters such as `/`, `:`, or `?` into underscores; policies must name the URI as
-  the client and server see it. In Cedar source the ID is a double-quoted string
-  literal, so almost every URI character is ordinary, but `"` and `\` must be escaped
-  (for example `Resource::"file://C:\\share\\data"`).
+  the client and server see it. Skill URI values follow these same Cedar string-literal
+  escaping rules. In Cedar source the ID is a double-quoted string literal, so almost
+  every URI character is ordinary, but `"` and `\` must be escaped (for example
+  `Resource::"file://C:\\share\\data"`).
+
+#### Skills (SEP-2640 direct proxy)
+
+Direct proxies authorize `skills/get` with `Action::"get_skill"` on an exact
+`Skill::"<params.uri>"` entity. The URI is passed through verbatim: it is not
+canonicalized and no scheme or suffix is validated. A missing, empty, or non-string
+`params.uri` is denied before the authorizer or backend is called. Requests with duplicate
+immediate `params.uri` members are likewise denied so the proxy and backend cannot
+interpret an ambiguous URI differently.
+
+`skills/list` itself has no separate list policy. It is forwarded and each entry is
+shown only when its exact string `uri` is permitted by `get_skill`; all other entries,
+including their manifests, are removed. Skill permission is independent of
+`read_resource` permission.
+
+This support is only for the direct proxy. Skill capability negotiation, including
+initialize extension maps, is passed through unchanged; the proxy neither fabricates
+nor rewrites capabilities. Directory reads and all other SEP-2640 operations are not
+supported by this authorization layer.
 
 #### Example policies
 
@@ -243,13 +267,15 @@ permit(
 
 ##### List operations
 
-List operations (`tools/list`, `prompts/list`, `resources/list`) do not require explicit policies.
+List operations (`tools/list`, `prompts/list`, `resources/list`, `skills/list`) do not require explicit policies.
 They are always allowed but the response is automatically filtered based on the user's permissions
 for the corresponding operations:
 
 - `tools/list` shows only tools the user can call (based on `call_tool` policies)
 - `prompts/list` shows only prompts the user can get (based on `get_prompt` policies)
 - `resources/list` shows only resources the user can read (based on `read_resource` policies)
+- `skills/list` shows only skill entries the user can get (based on `get_skill` policies); entries
+  without exactly one non-empty string `uri` fail closed with a generic internal JSON-RPC error.
 
 For example, if you have this policy:
 ```plain
@@ -257,6 +283,91 @@ permit(principal, action == Action::"call_tool", resource == Tool::"weather");
 ```
 
 Then `tools/list` will only show the "weather" tool for that user.
+
+##### Methods covered by a prompt or resource policy
+
+Some MCP methods do not name a capability directly but still act on one. They are
+authorized as the capability their request body references:
+
+| Method | Authorized as |
+| --- | --- |
+| `prompts/get` | `get_prompt` on the prompt name |
+| `completion/complete` with a `ref/prompt` | `get_prompt` on the referenced prompt name |
+| `resources/read` | `read_resource` on the URI |
+| `resources/subscribe`, `resources/unsubscribe` | `read_resource` on the URI |
+| `completion/complete` with a `ref/resource` | `read_resource` on the referenced URI or URI template |
+| `subscriptions/listen` | `read_resource` on **every** URI in `notifications.resourceSubscriptions` |
+
+For prompts the name is the same string in both methods, so one rule covers both.
+This policy:
+
+```plain
+permit(principal, action == Action::"get_prompt", resource == Prompt::"greeting");
+```
+
+lets a client both retrieve the `greeting` prompt and request argument
+completions for it, and nothing else. A client denied `greeting` cannot use
+completion to enumerate its argument values.
+
+###### Resource templates need their own rule
+
+A `ref/resource` completion references a **URI template** such as
+`secrets://tenant/{name}`, not a concrete URI. That template string is its own
+Cedar entity ID, exactly as it is for `resources/templates/list`. A policy naming
+only concrete URIs does not cover it:
+
+```plain
+# Allows reading the resource, but NOT completions on the template.
+permit(principal, action == Action::"read_resource", resource == Resource::"secrets://tenant/admin");
+
+# Required as well, to allow completing the template's {name} variable.
+permit(principal, action == Action::"read_resource", resource == Resource::"secrets://tenant/{name}");
+```
+
+Two consequences to weigh when writing these rules:
+
+- If you grant nothing for the template string, template completions are denied
+  for everyone. That is fail-closed, but it is a change from earlier releases
+  where `completion/complete` was allowed unconditionally.
+- A wildcard rule such as `when { resource.uri like "secrets://tenant/*" }`
+  matches the template **and** every concrete URI under it. Granting the template
+  that way lets a client enumerate candidate values for the whole namespace, even
+  where a narrower `forbid` covers an individual resource. Name the template
+  explicitly rather than relying on a wildcard.
+
+###### Other behaviors worth knowing
+
+- **Subscriptions are all-or-nothing.** If a `subscriptions/listen` request names
+  any URI the policy denies, the whole request is rejected with 403 rather than
+  being silently narrowed to the permitted subset. At most 50 URIs may be named in
+  one request; beyond that the request is rejected. Repeated URIs are evaluated
+  once, but still count individually toward that limit. All of a request's
+  decisions share a 30-second budget, so a slow or unresponsive external
+  authorizer cannot hold a request open for one timeout per URI; a request that
+  exhausts the budget is denied.
+- **Unresolvable references are denied.** A `completion/complete` whose `ref` is
+  missing, malformed, of an unknown type, or carrying both a `name` and a `uri`
+  is rejected, because no single capability can be established for it. It is
+  never authorized against an empty resource ID. This includes the legacy
+  bare-string form `"ref": "prompt-name"`, which does not say whether it names a
+  prompt or a resource; clients must send the `{"type": ..., "name"|"uri": ...}`
+  object form.
+- **Unknown subscription fields are rejected.** A `subscriptions/listen` whose
+  `notifications` object carries a member outside `toolsListChanged`,
+  `promptsListChanged`, `resourcesListChanged` and `resourceSubscriptions` is
+  refused, so a field this version does not understand cannot carry an
+  unauthorized resource reference past the policy.
+- **A JSON `null` where the schema expects an object or array is rejected.**
+  `"notifications": null` and `"resourceSubscriptions": null` are both refused,
+  because this proxy and the backend would each have to guess the same meaning
+  for them. An omitted member and an empty array are not rejected — both
+  unambiguously name no resource, and both are allowed through with no policy
+  check.
+- **Policies conditioned on `arg_*` do not match these methods.** Argument
+  conditions describe the arguments the authorized operation runs with, and a
+  completion or subscription request does not supply them. A rule like
+  `when { context.arg_env == "dev" }` therefore denies these methods rather than
+  matching them — grant them with a rule that does not test arguments.
 
 ##### Allow a specific client to call any tool
 
@@ -330,6 +441,9 @@ principal and the context, naming the trust root behind the claims:
 | `request:no-upstream-session` | The validated embedded-auth-server token was proven to have been minted with no upstream login, so no upstream credential can exist for it. |
 | `request:upstream-opaque` | An upstream credential exists but is an opaque OAuth 2.0 access token whose claims cannot be read, so evaluation degraded to the request token's claims. |
 
+Where a fallback value comes from is covered under [What the fallback claims
+actually are](#what-the-fallback-claims-actually-are) below.
+
 A policy that must only act on what an upstream actually asserted can say so:
 
 ```plain
@@ -343,6 +457,36 @@ permit(principal, action == Action::"call_tool", resource == Tool::"deploy") whe
 The attribute is written after claim prefixing and its name does not start with
 `claim_`, so a token carrying a claim named `thv_claim_source` becomes
 `claim_thv_claim_source` and cannot spoof its own provenance.
+
+##### What the fallback claims actually are
+
+Both labels mean evaluation fell back to the claims in the ToolHive-issued token
+the client presented, but the two paths put different things in that token.
+
+On `request:upstream-opaque` the token is an ordinary login-issued access token.
+Its `name` and `email` are mirrored from the identity resolved at the **first**
+upstream in the authorization chain, which need not be the provider you pinned.
+
+On `request:no-upstream-session` the values depend on the grant. An RFC 8693
+delegated token copies `name` and `email` from its subject token — which is the
+first upstream's mirror when the subject token was ToolHive-issued, but is the
+external IdP's own assertion when it came from a trusted external issuer. An RFC
+7523 JWT-bearer token carries neither claim; see [What these tokens can and
+cannot express](#what-these-tokens-can-and-cannot-express).
+
+Where the mirror does apply, it matters only when the pinned provider is not the
+first upstream. With a single upstream — or when `primaryUpstreamProvider`
+resolves to the first one, which is the default — the mirror and the pinned
+provider's own assertion are the same value, and only the provenance label
+differs. They diverge in a multi-upstream chain pinned to a later upstream: a
+policy keyed on `claim_email` alone may then match on an email the pinned
+provider never asserted. Gate on `thv_claim_source` wherever that distinction
+matters.
+
+Pinning to a later upstream is only reachable through the operator, via
+`spec.authServerConfig.primaryUpstreamProvider`. On the CLI path the provider is
+always resolved to the first upstream, so the mirror and the pinned provider's
+assertion cannot diverge there.
 
 #### Tokens with no upstream login
 
@@ -401,8 +545,10 @@ Two consequences worth planning around:
 - **With more than one upstream provider, `claim_email` and `claim_name` on a
   delegated token may come from a provider other than the pinned one.** They are
   copied from the subject token, whose profile claims mirror the first configured
-  upstream. Check `thv_claim_source` before treating them as an assertion by the
-  pinned provider.
+  upstream. This is not specific to delegation — it applies to every fallback
+  path; see [What the fallback claims actually
+  are](#what-the-fallback-claims-actually-are). Check `thv_claim_source` before
+  treating them as an assertion by the pinned provider.
 
 Everything else stays closed. A token that simply arrives without upstream
 credentials and says nothing about why — an anonymous or local identity, or a

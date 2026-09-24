@@ -17,8 +17,9 @@ Upgrade project plugins to newer pinned content
 
 Re-resolve a project's lock entries and install newer content where available.
 
-Plugins pinned to an immutable reference (an OCI digest or a full git commit
-hash) are reported not-upgradable — there is nothing newer to resolve to.
+Plugins pinned to a full git commit hash are not upgradable. OCI digest content
+is also immutable, but --allow-signer-change --public-key can evaluate its
+separately attached signatures for a trust-only update.
 Use --preview to see what would change without persisting anything (OCI
 sources are still fetched into the local artifact store to compare digests),
 and --allow-ref-change to permit the artifact moving to a different
@@ -40,12 +41,13 @@ thv ai-plugin upgrade [plugin-name...] [flags]
 ```
       --allow-ref-change      Permit the artifact to move to a different repository during upgrade
       --allow-signer-change   Permit upgrading to an artifact signed by a different identity; the new identity replaces the recorded one
-      --clients string        Comma-separated target client apps (e.g. claude-code,opencode), or "all" for every available client
+      --clients string        Comma-separated target client apps (e.g. claude-code,codex), or "all" for every available client
       --fail-on-changes       Report what would change without installing anything; a CI freshness gate
       --format string         Output format (json, text) (default "text")
   -h, --help                  help for upgrade
       --preview               Report what would change without persisting anything (OCI sources are still fetched to compare digests)
       --project-root string   Project root path (default: auto-detected from the current directory)
+      --public-key string     Path to a cosign public key proposed as the replacement trust anchor (requires --allow-signer-change)
       --yes                   Skip the confirmation prompt (required when not running interactively)
 ```
 

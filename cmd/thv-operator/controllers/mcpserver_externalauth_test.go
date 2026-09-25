@@ -947,3 +947,49 @@ func TestMCPServerDeployment_OBOSecretEnvVars_GenuineErrorDivergence(t *testing.
 	assert.True(t, reconciler.deploymentNeedsUpdate(t.Context(), deployment, mcpServer, "test-checksum"),
 		"deploymentNeedsUpdate reports drift while the OBO handler errors")
 }
+
+// TestMCPServerDeployment_TLSListenerKeepsHTTPProbes verifies that enabling the
+// auth server TLS listener leaves the proxy's health probes on plain HTTP: the
+// listener serves the auth server on its own port, not the MCP port.
+func TestMCPServerDeployment_TLSListenerKeepsHTTPProbes(t *testing.T) {
+	t.Parallel()
+
+	scheme := testutil.NewScheme(t)
+	authConfig := &mcpv1beta1.MCPExternalAuthConfig{
+		ObjectMeta: metav1.ObjectMeta{Name: "auth", Namespace: "default"},
+		Spec: mcpv1beta1.MCPExternalAuthConfigSpec{
+			Type: mcpv1beta1.ExternalAuthTypeEmbeddedAuthServer,
+			EmbeddedAuthServer: &mcpv1beta1.EmbeddedAuthServerConfig{
+				UpstreamProviders: []mcpv1beta1.UpstreamProviderConfig{{
+					Name: "issuer", Type: mcpv1beta1.UpstreamProviderTypeOIDC,
+					OIDCConfig: &mcpv1beta1.OIDCUpstreamConfig{},
+				}},
+				TLSListener: &mcpv1beta1.TLSListenerConfig{
+					CertificateSecretRef: &mcpv1beta1.SecretKeyRef{Name: "listener-tls", Key: "tls.crt"},
+					PrivateKeySecretRef:  &mcpv1beta1.SecretKeyRef{Name: "listener-tls", Key: "tls.key"},
+				},
+			},
+		},
+	}
+	mcpServer := v1beta1test.NewMCPServer("server", "default", v1beta1test.WithExternalAuthConfigRef(authConfig.Name))
+	fakeClient := fake.NewClientBuilder().WithScheme(scheme).WithObjects(authConfig).Build()
+	reconciler := newTestMCPServerReconciler(fakeClient, scheme, kubernetes.PlatformKubernetes)
+
+	deployment, err := reconciler.deploymentForMCPServer(t.Context(), mcpServer, "test-checksum")
+	require.NoError(t, err)
+	container := deployment.Spec.Template.Spec.Containers[0]
+	require.Contains(t, container.Ports, corev1.ContainerPort{
+		Name:          ctrlutil.AuthServerTLSListenerPortName,
+		ContainerPort: 8443,
+		Protocol:      corev1.ProtocolTCP,
+	})
+
+	for name, probe := range map[string]*corev1.Probe{
+		"startup": container.StartupProbe, "liveness": container.LivenessProbe, "readiness": container.ReadinessProbe,
+	} {
+		require.NotNil(t, probe, name)
+		require.NotNil(t, probe.HTTPGet, name)
+		assert.Empty(t, probe.HTTPGet.Scheme, "%s probe must use the default HTTP scheme", name)
+		assert.Equal(t, "http", probe.HTTPGet.Port.StrVal, name)
+	}
+}

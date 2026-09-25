@@ -1969,8 +1969,12 @@ func (r *VirtualMCPServerReconciler) containerNeedsUpdate(
 		return true
 	}
 
-	// Check if port has changed
-	if len(container.Ports) > 0 && container.Ports[0].ContainerPort != vmcpDefaultPort {
+	// Check if the operator-owned ports have changed
+	if ctrlutil.ContainerPortsDrifted(
+		container.Ports,
+		ctrlutil.ProxyContainerPorts(vmcpDefaultPort, ctrlutil.TLSListenerEnabled(vmcp.Spec.AuthServerConfig)),
+		ctrlutil.ProxyOwnedPortNames(),
+	) {
 		return true
 	}
 
@@ -2273,8 +2277,12 @@ func (*VirtualMCPServerReconciler) serviceNeedsUpdate(
 		return true
 	}
 
-	// Check if port has changed
-	if len(service.Spec.Ports) > 0 && service.Spec.Ports[0].Port != vmcpDefaultPort {
+	// Check if the operator-owned ports have changed
+	if ctrlutil.ServicePortsDrifted(
+		service.Spec.Ports,
+		ctrlutil.ProxyServicePorts(vmcpDefaultPort, ctrlutil.TLSListenerEnabled(vmcp.Spec.AuthServerConfig)),
+		ctrlutil.ProxyOwnedPortNames(),
+	) {
 		return true
 	}
 

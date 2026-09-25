@@ -477,6 +477,42 @@ func ValidateEmbeddedAuthServerTLSListenerPort(
 		proxyPort))
 }
 
+// TLSListenerEnabled reports whether the embedded auth server config enables
+// the TLS listener.
+func TLSListenerEnabled(cfg *mcpv1beta1.EmbeddedAuthServerConfig) bool {
+	return cfg != nil && cfg.TLSListener != nil
+}
+
+// ResolveTLSListenerEnabled looks up the embedded auth server config referenced
+// by extAuthRef/authServerRef and reports whether it enables the TLS listener.
+// It returns false with no error when nothing is referenced, the referenced
+// config is not of type embeddedAuthServer, or it does not exist. It does not
+// validate CA bundles, so an unrelated CA error cannot block the Service.
+func ResolveTLSListenerEnabled(
+	ctx context.Context,
+	c client.Client,
+	namespace string,
+	extAuthRef *mcpv1beta1.ExternalAuthConfigRef,
+	authServerRef *mcpv1beta1.AuthServerRef,
+) (bool, error) {
+	configName := EmbeddedAuthServerConfigName(extAuthRef, authServerRef)
+	if configName == "" {
+		return false, nil
+	}
+
+	externalAuthConfig, err := GetExternalAuthConfigByName(ctx, c, namespace, configName)
+	if apierrors.IsNotFound(err) {
+		return false, nil
+	}
+	if err != nil {
+		return false, err
+	}
+	if externalAuthConfig.Spec.Type != mcpv1beta1.ExternalAuthTypeEmbeddedAuthServer {
+		return false, nil
+	}
+	return TLSListenerEnabled(externalAuthConfig.Spec.EmbeddedAuthServer), nil
+}
+
 // GenerateAuthServerConfigByName fetches an MCPExternalAuthConfig by name and, if its type
 // is embeddedAuthServer, returns the corresponding volumes, volume mounts, and env vars.
 // Returns empty slices (no error) if the config type is not embeddedAuthServer, because

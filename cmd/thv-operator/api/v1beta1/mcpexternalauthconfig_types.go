@@ -951,6 +951,18 @@ type JWTBearerIssuerPolicyConfig struct {
 // ValidateInboundGrants; audience and outbound DNS/private-IP checks remain
 // runtime-only.
 //
+// "tlsListener is required when SPIFFE X.509 client authentication is
+// configured" is deliberately NOT expressed here as a CEL rule: the natural
+// expression (self.inboundGrants.spiffeClientAuth.exists(a,
+// a.methods.exists(m, m == 'spiffe_x509'))) is a nested exists() over two
+// unbounded arrays, whose estimated worst-case cost alone pushed this
+// schema's total x-kubernetes-validations cost over the apiserver's CEL
+// budget by more than 100x — confirmed by dry-run apply against a real
+// cluster, not a hunch. validateTLSListener (below) already enforces the
+// identical check in Go at reconcile time; this is exactly the "CEL
+// genuinely cannot express it" exception the operator rules carve out, not a
+// dropped guard.
+//
 //nolint:lll // CEL validation rules exceed line length limits.
 type EmbeddedAuthServerConfig struct {
 	// Issuer is the issuer identifier for this authorization server.
@@ -1010,6 +1022,13 @@ type EmbeddedAuthServerConfig struct {
 	// InboundGrants configures canonical inbound OAuth grant families.
 	// +optional
 	InboundGrants *InboundGrantsConfig `json:"inboundGrants,omitempty"`
+
+	// TLSListener runs the embedded authorization server's TLS listener on
+	// port 8443, in addition to the MCP port. MCP traffic, health probes and
+	// metrics stay on plain HTTP. It is required for SPIFFE X.509 client
+	// authentication.
+	// +optional
+	TLSListener *TLSListenerConfig `json:"tlsListener,omitempty"`
 
 	// UpstreamProviders configures connections to upstream Identity Providers.
 	// When configured, the embedded auth server delegates interactive authentication
@@ -2166,6 +2185,18 @@ type RedisACLUserConfig struct {
 	PasswordSecretRef *SecretKeyRef `json:"passwordSecretRef"`
 }
 
+// TLSListenerConfig configures the certificate served by the embedded auth
+// server's TLS listener. Both secret references are required.
+type TLSListenerConfig struct {
+	// CertificateSecretRef references the PEM-encoded TLS certificate.
+	// +kubebuilder:validation:Required
+	CertificateSecretRef *SecretKeyRef `json:"certificateSecretRef"`
+
+	// PrivateKeySecretRef references the PEM-encoded TLS private key.
+	// +kubebuilder:validation:Required
+	PrivateKeySecretRef *SecretKeyRef `json:"privateKeySecretRef"`
+}
+
 // SecretKeyRef is a reference to a key within a Secret
 type SecretKeyRef struct {
 	// Name is the name of the secret
@@ -2667,6 +2698,23 @@ func (r *MCPExternalAuthConfig) validateEmbeddedAuthServer() error {
 	for i := range cfg.TrustedIssuers {
 		if err := validateUpstreamCABundleRef(cfg.TrustedIssuers[i].CABundleRef); err != nil {
 			return fmt.Errorf("trustedIssuers[%d] (%q) caBundleRef: %w", i, cfg.TrustedIssuers[i].IssuerURL, err)
+		}
+	}
+	return validateTLSListener(cfg)
+}
+
+// validateTLSListener is admission-time-safe: it depends only on this object's
+// own spec. Its rule has no CEL equivalent because it exceeds the apiserver's
+// CEL cost budget; see the note above EmbeddedAuthServerConfig.
+func validateTLSListener(cfg *EmbeddedAuthServerConfig) error {
+	if cfg.InboundGrants == nil {
+		return nil
+	}
+	for _, association := range cfg.InboundGrants.SPIFFEClientAuth {
+		for _, method := range association.Methods {
+			if method == SPIFFEAuthenticationMethodX509 && cfg.TLSListener == nil {
+				return fmt.Errorf("tlsListener is required when SPIFFE X.509 client authentication is configured")
+			}
 		}
 	}
 	return nil

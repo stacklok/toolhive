@@ -84,6 +84,18 @@ const (
 	// AuthServerSPIFFEBundleFileName is the controlled filename for a projected trust bundle.
 	AuthServerSPIFFEBundleFileName = "bundle.json"
 
+	// AuthServerTLSVolumeName is the projected volume holding the auth server TLS listener certificate and key.
+	AuthServerTLSVolumeName = "authserver-tls-listener"
+
+	// AuthServerTLSMountPath is the directory where listener TLS credentials are mounted.
+	AuthServerTLSMountPath = "/etc/toolhive/authserver/tls"
+
+	// AuthServerTLSCertFileName is the listener TLS certificate filename.
+	AuthServerTLSCertFileName = "tls.crt"
+
+	// AuthServerTLSKeyFileName is the listener TLS private key filename.
+	AuthServerTLSKeyFileName = "tls.key"
+
 	// UpstreamClientSecretEnvVar is the prefix for upstream client secret environment variables.
 	// Actual names are TOOLHIVE_UPSTREAM_CLIENT_SECRET_<PROVIDER> where PROVIDER is the
 	// upstream name uppercased with hyphens replaced by underscores (e.g.,
@@ -518,6 +530,50 @@ func EmbeddedAuthServerCABundleChecksumForConfig(
 	return hex.EncodeToString(hash.Sum(nil)), nil
 }
 
+// generateTLSListenerVolumes projects the listener TLS credentials as a directory
+// because kubelet updates projected volumes when Secrets change, but never updates
+// files mounted with subPath; the listener re-reads the files when their contents change.
+func generateTLSListenerVolumes(
+	tlsListener *mcpv1beta1.TLSListenerConfig,
+) ([]corev1.Volume, []corev1.VolumeMount) {
+	if tlsListener == nil || tlsListener.CertificateSecretRef == nil || tlsListener.PrivateKeySecretRef == nil {
+		return nil, nil
+	}
+
+	cert := tlsListener.CertificateSecretRef
+	key := tlsListener.PrivateKeySecretRef
+	sources := []corev1.VolumeProjection{{
+		Secret: &corev1.SecretProjection{
+			Name:  cert.Name,
+			Items: []corev1.KeyToPath{{Key: cert.Key, Path: AuthServerTLSCertFileName}},
+		},
+	}}
+	if cert.Name == key.Name {
+		sources[0].Secret.Items = append(sources[0].Secret.Items, corev1.KeyToPath{
+			Key: key.Key, Path: AuthServerTLSKeyFileName,
+		})
+	} else {
+		sources = append(sources, corev1.VolumeProjection{
+			Secret: &corev1.SecretProjection{
+				Name:  key.Name,
+				Items: []corev1.KeyToPath{{Key: key.Key, Path: AuthServerTLSKeyFileName}},
+			},
+		})
+	}
+
+	return []corev1.Volume{{
+			Name: AuthServerTLSVolumeName,
+			VolumeSource: corev1.VolumeSource{Projected: &corev1.ProjectedVolumeSource{
+				Sources:     sources,
+				DefaultMode: k8sptr.To(int32(0400)),
+			}},
+		}}, []corev1.VolumeMount{{
+			Name:      AuthServerTLSVolumeName,
+			MountPath: AuthServerTLSMountPath,
+			ReadOnly:  true,
+		}}
+}
+
 // GenerateAuthServerVolumes generates volumes and mounts for auth server
 // signing keys, HMAC secrets, Redis CA certificates, and CA bundles.
 // Returns an error when a CA bundle reference is malformed.
@@ -536,6 +592,10 @@ func GenerateAuthServerVolumes(
 
 	var volumes []corev1.Volume
 	var volumeMounts []corev1.VolumeMount
+
+	tlsListenerVolumes, tlsListenerMounts := generateTLSListenerVolumes(authConfig.TLSListener)
+	volumes = append(volumes, tlsListenerVolumes...)
+	volumeMounts = append(volumeMounts, tlsListenerMounts...)
 
 	// Generate volumes for signing keys
 	for idx, keyRef := range authConfig.SigningKeySecretRefs {
@@ -993,6 +1053,20 @@ func buildJWTBearerSubjectBindings(
 	return converted
 }
 
+func validateTLSListenerConfig(authConfig *mcpv1beta1.EmbeddedAuthServerConfig) error {
+	if authConfig.InboundGrants == nil {
+		return nil
+	}
+	for _, association := range authConfig.InboundGrants.SPIFFEClientAuth {
+		for _, method := range association.Methods {
+			if method == mcpv1beta1.SPIFFEAuthenticationMethodX509 && authConfig.TLSListener == nil {
+				return fmt.Errorf("tlsListener is required when SPIFFE X.509 client authentication is configured")
+			}
+		}
+	}
+	return nil
+}
+
 // BuildAuthServerRunConfig converts CRD EmbeddedAuthServerConfig to authserver.RunConfig.
 // The RunConfig is serializable and contains file paths for secrets (not the secrets themselves).
 //
@@ -1016,6 +1090,9 @@ func BuildAuthServerRunConfig(
 		}
 	}()
 
+	if err := validateTLSListenerConfig(authConfig); err != nil {
+		return nil, err
+	}
 	if err := authConfig.ValidateInboundGrants(); err != nil {
 		return nil, err
 	}
@@ -1032,6 +1109,12 @@ func BuildAuthServerRunConfig(
 		BaselineClientScopes:         authConfig.BaselineClientScopes,
 		InboundGrants:                inboundGrants,
 		SPIFFETrustDomains:           buildSPIFFETrustDomainRunConfigs(authConfig.SPIFFETrustDomains),
+	}
+	if authConfig.TLSListener != nil {
+		config.TLSListener = &authserver.TLSListenerRunConfig{
+			CertFile: fmt.Sprintf("%s/%s", AuthServerTLSMountPath, AuthServerTLSCertFileName),
+			KeyFile:  fmt.Sprintf("%s/%s", AuthServerTLSMountPath, AuthServerTLSKeyFileName),
+		}
 	}
 
 	if len(authConfig.DelegateClients) > 0 {

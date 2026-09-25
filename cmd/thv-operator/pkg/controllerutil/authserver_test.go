@@ -3663,6 +3663,10 @@ func TestBuildAuthServerRunConfigInvalidSPIFFEIsTypedAndNotYetEnforced(t *testin
 	t.Parallel()
 
 	_, err := BuildAuthServerRunConfig("default", "test-server", &mcpv1beta1.EmbeddedAuthServerConfig{
+		TLSListener: &mcpv1beta1.TLSListenerConfig{
+			CertificateSecretRef: &mcpv1beta1.SecretKeyRef{Name: "listener-tls", Key: "certificate"},
+			PrivateKeySecretRef:  &mcpv1beta1.SecretKeyRef{Name: "listener-tls", Key: "private-key"},
+		},
 		SPIFFETrustDomains: []mcpv1beta1.SPIFFETrustDomainConfig{{
 			Name: "example", TrustDomain: "example.org",
 			Methods: []mcpv1beta1.SPIFFEAuthenticationMethod{mcpv1beta1.SPIFFEAuthenticationMethodX509},
@@ -3704,6 +3708,10 @@ func TestBuildAuthServerRunConfigSPIFFEResourcesAndScopesValidateOnceDerivedValu
 
 	authConfig := func(resource string) *mcpv1beta1.EmbeddedAuthServerConfig {
 		return &mcpv1beta1.EmbeddedAuthServerConfig{
+			TLSListener: &mcpv1beta1.TLSListenerConfig{
+				CertificateSecretRef: &mcpv1beta1.SecretKeyRef{Name: "listener-tls", Key: "certificate"},
+				PrivateKeySecretRef:  &mcpv1beta1.SecretKeyRef{Name: "listener-tls", Key: "private-key"},
+			},
 			SPIFFETrustDomains: []mcpv1beta1.SPIFFETrustDomainConfig{{
 				Name: "example", TrustDomain: "example.org",
 				Methods: []mcpv1beta1.SPIFFEAuthenticationMethod{mcpv1beta1.SPIFFEAuthenticationMethodX509},

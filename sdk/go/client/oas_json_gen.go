@@ -2773,6 +2773,12 @@ func (s *AuthenticationRunConfig) encodeFields(e *jx.Encoder) {
 		}
 	}
 	{
+		if s.TLSListener.Set {
+			e.FieldStart("tls_listener")
+			s.TLSListener.Encode(e)
+		}
+	}
+	{
 		if s.TokenLifespans.Set {
 			e.FieldStart("token_lifespans")
 			s.TokenLifespans.Encode(e)
@@ -2800,7 +2806,7 @@ func (s *AuthenticationRunConfig) encodeFields(e *jx.Encoder) {
 	}
 }
 
-var jsonFieldsNameOfAuthenticationRunConfig = [24]string{
+var jsonFieldsNameOfAuthenticationRunConfig = [25]string{
 	0:  "allow_confidential_client_registration",
 	1:  "allow_private_key_jwt_registration",
 	2:  "allowed_audiences",
@@ -2822,9 +2828,10 @@ var jsonFieldsNameOfAuthenticationRunConfig = [24]string{
 	18: "signing_key_config",
 	19: "spiffe_trust_domains",
 	20: "storage",
-	21: "token_lifespans",
-	22: "trusted_issuers",
-	23: "upstreams",
+	21: "tls_listener",
+	22: "token_lifespans",
+	23: "trusted_issuers",
+	24: "upstreams",
 }
 
 // Decode decodes AuthenticationRunConfig from json.
@@ -3103,6 +3110,16 @@ func (s *AuthenticationRunConfig) Decode(d *jx.Decoder) error {
 				return nil
 			}(); err != nil {
 				return errors.Wrap(err, "decode field \"storage\"")
+			}
+		case "tls_listener":
+			if err := func() error {
+				s.TLSListener.Reset()
+				if err := s.TLSListener.Decode(d); err != nil {
+					return err
+				}
+				return nil
+			}(); err != nil {
+				return errors.Wrap(err, "decode field \"tls_listener\"")
 			}
 		case "token_lifespans":
 			if err := func() error {
@@ -4048,6 +4065,86 @@ func (s *AuthenticationSigningKeyRunConfig) MarshalJSON() ([]byte, error) {
 
 // UnmarshalJSON implements stdjson.Unmarshaler.
 func (s *AuthenticationSigningKeyRunConfig) UnmarshalJSON(data []byte) error {
+	d := jx.DecodeBytes(data)
+	return s.Decode(d)
+}
+
+// Encode implements json.Marshaler.
+func (s *AuthenticationTLSListenerRunConfig) Encode(e *jx.Encoder) {
+	e.ObjStart()
+	s.encodeFields(e)
+	e.ObjEnd()
+}
+
+// encodeFields encodes fields.
+func (s *AuthenticationTLSListenerRunConfig) encodeFields(e *jx.Encoder) {
+	{
+		if s.CertFile.Set {
+			e.FieldStart("cert_file")
+			s.CertFile.Encode(e)
+		}
+	}
+	{
+		if s.KeyFile.Set {
+			e.FieldStart("key_file")
+			s.KeyFile.Encode(e)
+		}
+	}
+}
+
+var jsonFieldsNameOfAuthenticationTLSListenerRunConfig = [2]string{
+	0: "cert_file",
+	1: "key_file",
+}
+
+// Decode decodes AuthenticationTLSListenerRunConfig from json.
+func (s *AuthenticationTLSListenerRunConfig) Decode(d *jx.Decoder) error {
+	if s == nil {
+		return errors.New("invalid: unable to decode AuthenticationTLSListenerRunConfig to nil")
+	}
+
+	if err := d.ObjBytes(func(d *jx.Decoder, k []byte) error {
+		switch string(k) {
+		case "cert_file":
+			if err := func() error {
+				s.CertFile.Reset()
+				if err := s.CertFile.Decode(d); err != nil {
+					return err
+				}
+				return nil
+			}(); err != nil {
+				return errors.Wrap(err, "decode field \"cert_file\"")
+			}
+		case "key_file":
+			if err := func() error {
+				s.KeyFile.Reset()
+				if err := s.KeyFile.Decode(d); err != nil {
+					return err
+				}
+				return nil
+			}(); err != nil {
+				return errors.Wrap(err, "decode field \"key_file\"")
+			}
+		default:
+			return d.Skip()
+		}
+		return nil
+	}); err != nil {
+		return errors.Wrap(err, "decode AuthenticationTLSListenerRunConfig")
+	}
+
+	return nil
+}
+
+// MarshalJSON implements stdjson.Marshaler.
+func (s *AuthenticationTLSListenerRunConfig) MarshalJSON() ([]byte, error) {
+	e := jx.Encoder{}
+	s.Encode(&e)
+	return e.Bytes(), nil
+}
+
+// UnmarshalJSON implements stdjson.Unmarshaler.
+func (s *AuthenticationTLSListenerRunConfig) UnmarshalJSON(data []byte) error {
 	d := jx.DecodeBytes(data)
 	return s.Decode(d)
 }
@@ -17221,6 +17318,39 @@ func (s OptAuthenticationSigningKeyRunConfig) MarshalJSON() ([]byte, error) {
 
 // UnmarshalJSON implements stdjson.Unmarshaler.
 func (s *OptAuthenticationSigningKeyRunConfig) UnmarshalJSON(data []byte) error {
+	d := jx.DecodeBytes(data)
+	return s.Decode(d)
+}
+
+// Encode encodes AuthenticationTLSListenerRunConfig as json.
+func (o OptAuthenticationTLSListenerRunConfig) Encode(e *jx.Encoder) {
+	if !o.Set {
+		return
+	}
+	o.Value.Encode(e)
+}
+
+// Decode decodes AuthenticationTLSListenerRunConfig from json.
+func (o *OptAuthenticationTLSListenerRunConfig) Decode(d *jx.Decoder) error {
+	if o == nil {
+		return errors.New("invalid: unable to decode OptAuthenticationTLSListenerRunConfig to nil")
+	}
+	o.Set = true
+	if err := o.Value.Decode(d); err != nil {
+		return err
+	}
+	return nil
+}
+
+// MarshalJSON implements stdjson.Marshaler.
+func (s OptAuthenticationTLSListenerRunConfig) MarshalJSON() ([]byte, error) {
+	e := jx.Encoder{}
+	s.Encode(&e)
+	return e.Bytes(), nil
+}
+
+// UnmarshalJSON implements stdjson.Unmarshaler.
+func (s *OptAuthenticationTLSListenerRunConfig) UnmarshalJSON(data []byte) error {
 	d := jx.DecodeBytes(data)
 	return s.Decode(d)
 }

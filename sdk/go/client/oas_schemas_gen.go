@@ -1543,6 +1543,7 @@ type AuthenticationRunConfig struct {
 	// referenced by an InboundGrants.SPIFFEClientAuth entry.
 	SpiffeTrustDomains []AuthenticationSPIFFETrustDomainRunConfig `json:"spiffe_trust_domains"`
 	Storage            OptStorageRunConfig                        `json:"storage"`
+	TLSListener        OptAuthenticationTLSListenerRunConfig      `json:"tls_listener"`
 	TokenLifespans     OptAuthenticationTokenLifespanRunConfig    `json:"token_lifespans"`
 	// TrustedIssuers lists external OIDC trust declarations.
 	// This legacy field is deprecated; RFC 8693 and JWT-bearer policies embedded in these entries
@@ -1666,6 +1667,11 @@ func (s *AuthenticationRunConfig) GetStorage() OptStorageRunConfig {
 	return s.Storage
 }
 
+// GetTLSListener returns the value of TLSListener.
+func (s *AuthenticationRunConfig) GetTLSListener() OptAuthenticationTLSListenerRunConfig {
+	return s.TLSListener
+}
+
 // GetTokenLifespans returns the value of TokenLifespans.
 func (s *AuthenticationRunConfig) GetTokenLifespans() OptAuthenticationTokenLifespanRunConfig {
 	return s.TokenLifespans
@@ -1784,6 +1790,11 @@ func (s *AuthenticationRunConfig) SetSpiffeTrustDomains(val []AuthenticationSPIF
 // SetStorage sets the value of Storage.
 func (s *AuthenticationRunConfig) SetStorage(val OptStorageRunConfig) {
 	s.Storage = val
+}
+
+// SetTLSListener sets the value of TLSListener.
+func (s *AuthenticationRunConfig) SetTLSListener(val OptAuthenticationTLSListenerRunConfig) {
+	s.TLSListener = val
 }
 
 // SetTokenLifespans sets the value of TokenLifespans.
@@ -2137,6 +2148,34 @@ func (s *AuthenticationSigningKeyRunConfig) SetKeyDir(val OptString) {
 // SetSigningKeyFile sets the value of SigningKeyFile.
 func (s *AuthenticationSigningKeyRunConfig) SetSigningKeyFile(val OptString) {
 	s.SigningKeyFile = val
+}
+
+// TLSListener serves the auth server routes over TLS on port 8443, in
+// addition to the MCP port. Required for spiffe_x509 client authentication.
+// Ref: #/components/schemas/AuthenticationTLSListenerRunConfig
+type AuthenticationTLSListenerRunConfig struct {
+	CertFile OptString `json:"cert_file"`
+	KeyFile  OptString `json:"key_file"`
+}
+
+// GetCertFile returns the value of CertFile.
+func (s *AuthenticationTLSListenerRunConfig) GetCertFile() OptString {
+	return s.CertFile
+}
+
+// GetKeyFile returns the value of KeyFile.
+func (s *AuthenticationTLSListenerRunConfig) GetKeyFile() OptString {
+	return s.KeyFile
+}
+
+// SetCertFile sets the value of CertFile.
+func (s *AuthenticationTLSListenerRunConfig) SetCertFile(val OptString) {
+	s.CertFile = val
+}
+
+// SetKeyFile sets the value of KeyFile.
+func (s *AuthenticationTLSListenerRunConfig) SetKeyFile(val OptString) {
+	s.KeyFile = val
 }
 
 // TokenExchange configures RFC 8693 inbound clients and issuer policies.
@@ -7371,6 +7410,52 @@ func (o OptAuthenticationSigningKeyRunConfig) Get() (v AuthenticationSigningKeyR
 
 // Or returns value if set, or given parameter if does not.
 func (o OptAuthenticationSigningKeyRunConfig) Or(d AuthenticationSigningKeyRunConfig) AuthenticationSigningKeyRunConfig {
+	if v, ok := o.Get(); ok {
+		return v
+	}
+	return d
+}
+
+// NewOptAuthenticationTLSListenerRunConfig returns new OptAuthenticationTLSListenerRunConfig with value set to v.
+func NewOptAuthenticationTLSListenerRunConfig(v AuthenticationTLSListenerRunConfig) OptAuthenticationTLSListenerRunConfig {
+	return OptAuthenticationTLSListenerRunConfig{
+		Value: v,
+		Set:   true,
+	}
+}
+
+// OptAuthenticationTLSListenerRunConfig is optional AuthenticationTLSListenerRunConfig.
+type OptAuthenticationTLSListenerRunConfig struct {
+	Value AuthenticationTLSListenerRunConfig
+	Set   bool
+}
+
+// IsSet returns true if OptAuthenticationTLSListenerRunConfig was set.
+func (o OptAuthenticationTLSListenerRunConfig) IsSet() bool { return o.Set }
+
+// Reset unsets value.
+func (o *OptAuthenticationTLSListenerRunConfig) Reset() {
+	var v AuthenticationTLSListenerRunConfig
+	o.Value = v
+	o.Set = false
+}
+
+// SetTo sets value to v.
+func (o *OptAuthenticationTLSListenerRunConfig) SetTo(v AuthenticationTLSListenerRunConfig) {
+	o.Set = true
+	o.Value = v
+}
+
+// Get returns value and boolean that denotes whether value was set.
+func (o OptAuthenticationTLSListenerRunConfig) Get() (v AuthenticationTLSListenerRunConfig, ok bool) {
+	if !o.Set {
+		return v, false
+	}
+	return o.Value, true
+}
+
+// Or returns value if set, or given parameter if does not.
+func (o OptAuthenticationTLSListenerRunConfig) Or(d AuthenticationTLSListenerRunConfig) AuthenticationTLSListenerRunConfig {
 	if v, ok := o.Get(); ok {
 		return v
 	}

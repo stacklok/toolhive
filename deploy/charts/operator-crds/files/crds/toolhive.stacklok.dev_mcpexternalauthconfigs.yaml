@@ -1215,6 +1215,45 @@ spec:
                         - redis
                         type: string
                     type: object
+                  tlsListener:
+                    description: |-
+                      TLSListener runs the embedded authorization server's TLS listener on
+                      port 8443, in addition to the MCP port. MCP traffic, health probes and
+                      metrics stay on plain HTTP. It is required for SPIFFE X.509 client
+                      authentication.
+                    properties:
+                      certificateSecretRef:
+                        description: CertificateSecretRef references the PEM-encoded
+                          TLS certificate.
+                        properties:
+                          key:
+                            description: Key is the key within the secret
+                            type: string
+                          name:
+                            description: Name is the name of the secret
+                            type: string
+                        required:
+                        - key
+                        - name
+                        type: object
+                      privateKeySecretRef:
+                        description: PrivateKeySecretRef references the PEM-encoded
+                          TLS private key.
+                        properties:
+                          key:
+                            description: Key is the key within the secret
+                            type: string
+                          name:
+                            description: Name is the name of the secret
+                            type: string
+                        required:
+                        - key
+                        - name
+                        type: object
+                    required:
+                    - certificateSecretRef
+                    - privateKeySecretRef
+                    type: object
                   tokenLifespans:
                     description: |-
                       TokenLifespans configures the duration that various tokens are valid.
@@ -4073,6 +4112,45 @@ spec:
                         - memory
                         - redis
                         type: string
+                    type: object
+                  tlsListener:
+                    description: |-
+                      TLSListener runs the embedded authorization server's TLS listener on
+                      port 8443, in addition to the MCP port. MCP traffic, health probes and
+                      metrics stay on plain HTTP. It is required for SPIFFE X.509 client
+                      authentication.
+                    properties:
+                      certificateSecretRef:
+                        description: CertificateSecretRef references the PEM-encoded
+                          TLS certificate.
+                        properties:
+                          key:
+                            description: Key is the key within the secret
+                            type: string
+                          name:
+                            description: Name is the name of the secret
+                            type: string
+                        required:
+                        - key
+                        - name
+                        type: object
+                      privateKeySecretRef:
+                        description: PrivateKeySecretRef references the PEM-encoded
+                          TLS private key.
+                        properties:
+                          key:
+                            description: Key is the key within the secret
+                            type: string
+                          name:
+                            description: Name is the name of the secret
+                            type: string
+                        required:
+                        - key
+                        - name
+                        type: object
+                    required:
+                    - certificateSecretRef
+                    - privateKeySecretRef
                     type: object
                   tokenLifespans:
                     description: |-

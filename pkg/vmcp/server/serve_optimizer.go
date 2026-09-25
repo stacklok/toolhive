@@ -73,10 +73,16 @@ func (s *Server) optimizerSessionTools(
 	// repeated work, not a leak. Acceptable while the Serve path is test-only;
 	// skipping the re-upsert on rehydration is a deferred optimization (tracked for
 	// #5445), not done now to avoid premature optimization without measured evidence.
-	opt, err := s.optimizerFactory(ctx, coreTools)
+	built, err := s.optimizerFactory(ctx, coreTools)
 	if err != nil {
 		return nil, fmt.Errorf("build session optimizer: %w", err)
 	}
+	// Bind the meta-tool handlers to the session's stable handle rather than to
+	// the instance just built, so a later health-driven re-index can swap the
+	// index underneath them without rewriting the session's advertised tool
+	// store (#5786 PR2). Re-entering this function for an existing session
+	// swaps into the SAME handle, so handlers installed earlier stay current.
+	opt := s.installSessionOptimizer(sessionID, built)
 
 	defs := optimizerdec.OptimizerTools()
 	sdkTools := make([]server.ServerTool, 0, len(defs))

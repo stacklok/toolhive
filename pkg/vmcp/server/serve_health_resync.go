@@ -8,10 +8,12 @@ import (
 	"sync"
 
 	"github.com/stacklok/toolhive-core/mcpcompat/server"
+	"github.com/stacklok/toolhive/pkg/vmcp/optimizer"
 )
 
 // This file holds the backend-health-driven tools resync added by #5786 (PR1,
-// passthrough mode). The backend-notification path (#5748, serve_list_changed.go)
+// passthrough mode) and extended to optimizer mode by PR2. The
+// backend-notification path (#5748, serve_list_changed.go)
 // only reacts when a connected backend itself emits notifications/tools/
 // list_changed; a backend that flips unhealthy⇄healthy, or is added to /
 // removed from the group, emits nothing — so already-connected sessions kept
@@ -23,22 +25,29 @@ import (
 // guard, cache invalidation, replace semantics, and the SDK's automatic
 // notifications/tools/list_changed emission are all shared.
 //
-// Scope (#5786 PR1): passthrough mode only. When the optimizer is enabled the
-// advertised set is the find_tool/call_tool meta-tools, which do not change on
-// a health flip; rebuilding the optimizer's backing index for live sessions is
-// deferred to the optimizer-mode follow-up (PR2), so the fan-out is a no-op.
+// What a triggered worker does depends on the mode, and the split lives in
+// runListChangedResync's KindTools branch:
+//
+//   - Passthrough: re-derive the advertised tool set and REPLACE the session's
+//     tool store, so the SDK emits notifications/tools/list_changed downstream.
+//   - Optimizer (PR2): the advertised set is only the find_tool/call_tool
+//     meta-tools, whose names a health flip never changes, so the session's
+//     tool store is deliberately left alone (rewriting it would emit a
+//     notification carrying no news). Instead the session's optimizer index is
+//     rebuilt behind a stable handle — see serve_optimizer_reindex.go.
+//
 // Tools only: resources/resource-templates/prompts re-derivation on health
-// change is likewise out of scope here.
+// change is out of scope here.
 
-// healthResyncRegistry tracks the per-session tools resync workers eligible
-// for backend-health-driven fan-out. The zero value is usable.
+// healthResyncRegistry tracks the per-session state the backend-health fan-out
+// needs: each session's tools resync worker, and (optimizer mode) its
+// swappable optimizer handle. The zero value is usable.
 //
 // Lifecycle: a session is added after registration succeeds
-// (handleSessionRegistrationImpl; passthrough mode with health monitoring
-// enabled only — optimizer-mode sessions are never registered because the
-// fan-out is a no-op for them in PR1, and with health monitoring disabled
-// there is no OnChange subscriber, so nothing would ever trigger the fan-out
-// or run the lazy prune below) and removed eagerly on every termination
+// (handleSessionRegistrationImpl, in both modes, but only when health
+// monitoring is enabled — with no monitor there is no OnChange subscriber, so
+// nothing would ever trigger the fan-out or run the lazy prune below) and
+// removed eagerly on every termination
 // path the server observes — registration failure, binding-failure
 // termination, and SDK-initiated termination (HTTP DELETE), the last via
 // pruneOnTerminateSessionIDManager. Sessions that end without any Terminate
@@ -51,6 +60,11 @@ import (
 type healthResyncRegistry struct {
 	mu      sync.Mutex
 	workers map[string]*listChangedResyncWorker
+	// optimizers holds each session's swappable optimizer handle (optimizer
+	// mode only, #5786 PR2). It shares the workers map's lifecycle — every
+	// remove drops both — so optimizer-mode re-indexing adds no second set of
+	// prune sites. See sessionOptimizer and installOptimizer.
+	optimizers map[string]*sessionOptimizer
 }
 
 // pruneOnTerminateSessionIDManager wraps the vMCP session manager in its role
@@ -84,11 +98,42 @@ func (r *healthResyncRegistry) add(sessionID string, w *listChangedResyncWorker)
 	r.workers[sessionID] = w
 }
 
-// remove deregisters sessionID. A no-op for unknown IDs.
+// remove deregisters sessionID, dropping both its resync worker and its
+// optimizer handle. A no-op for unknown IDs.
 func (r *healthResyncRegistry) remove(sessionID string) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	delete(r.workers, sessionID)
+	delete(r.optimizers, sessionID)
+}
+
+// installOptimizer publishes opt as sessionID's current optimizer and returns
+// the session's handle: the existing one (with opt swapped in, so handlers
+// built earlier resolve against the new index) or a newly created one.
+func (r *healthResyncRegistry) installOptimizer(
+	sessionID string, opt optimizer.Optimizer,
+) *sessionOptimizer {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if existing, ok := r.optimizers[sessionID]; ok {
+		existing.swap(opt)
+		return existing
+	}
+	if r.optimizers == nil {
+		r.optimizers = make(map[string]*sessionOptimizer)
+	}
+	holder := newSessionOptimizer(opt)
+	r.optimizers[sessionID] = holder
+	return holder
+}
+
+// optimizerFor returns sessionID's optimizer handle, or nil when the session has
+// none (passthrough mode, or health monitoring disabled so nothing would ever
+// re-index).
+func (r *healthResyncRegistry) optimizerFor(sessionID string) *sessionOptimizer {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	return r.optimizers[sessionID]
 }
 
 // snapshot returns the currently registered workers. The copy lets callers
@@ -106,7 +151,8 @@ func (r *healthResyncRegistry) snapshot() []*listChangedResyncWorker {
 
 // resyncSessionsOnBackendHealthChange is the Monitor.OnChange listener Serve
 // registers: it purges the shared capability cache once, then triggers a tools
-// resync for every registered session. The monitor already debounces delivery
+// resync (passthrough) or an optimizer re-index (optimizer mode) for every
+// registered session. The monitor already debounces delivery
 // and each per-session worker coalesces concurrent triggers, so a burst of
 // health transitions costs each session at most one in-flight re-derivation
 // (plus one queued follow-up). That is a PER-SESSION bound, not a bound on
@@ -121,17 +167,6 @@ func (r *healthResyncRegistry) snapshot() []*listChangedResyncWorker {
 // only — the resync always re-derives from the current health view, so a
 // later generation subsumes an earlier one.
 func (s *Server) resyncSessionsOnBackendHealthChange(generation uint64) {
-	// #5786 PR1 is passthrough-only: in optimizer mode the advertised
-	// meta-tools are unchanged by a health flip and rebuilding the per-session
-	// optimizer index is deferred to the optimizer-mode follow-up. Optimizer-
-	// mode sessions are never registered (handleSessionRegistrationImpl skips
-	// the add), so this gate is defense in depth keeping the no-op explicit.
-	if s.optimizerFactory != nil {
-		slog.Debug("skipping session resync on backend health change (optimizer mode)",
-			"generation", generation)
-		return
-	}
-
 	// Purge the shared capability cache ONCE per delivery, before the fan-out,
 	// instead of once per session run. For the plain health flip this is
 	// belt-and-braces — the cache key hashes the health-filtered backend-ID

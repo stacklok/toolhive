@@ -49,6 +49,7 @@ task -d cmd/thv-operator thv-operator-e2e-test
 **Iterative manual workflow** (keep the cluster alive between test runs):
 ```
 task -d cmd/thv-operator kind-setup-e2e       # Kind cluster with NodePort mappings
+task -d cmd/thv-operator build-load-spiffe-e2e-client-image # SPIFFE test client image (pods use ImagePullPolicy: Never)
 task -d cmd/thv-operator operator-install-crds
 task -d cmd/thv-operator operator-deploy-local # builds & loads local images via ko
 task -d cmd/thv-operator thv-operator-e2e-test-run  # re-run as many times as needed

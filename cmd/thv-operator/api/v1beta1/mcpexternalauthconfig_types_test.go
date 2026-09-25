@@ -941,7 +941,7 @@ func TestMCPExternalAuthConfig_validateEmbeddedAuthServer(t *testing.T) {
 			// entry and a non-default scope must therefore pass here even
 			// though they'd need revalidating once those derived values are
 			// known (see
-			// TestBuildAuthServerRunConfigInvalidSPIFFEIsTypedAndNotYetEnforced
+			// TestBuildAuthServerRunConfigSPIFFEResourcesAndScopesValidateOnceDerivedValuesExist
 			// in controllerutil for the reconcile-time revalidation this
 			// relies on). CEL (spiffe_cel_test.go) covers structural
 			// correctness (trust-domain refs, method subsets, etc.) at

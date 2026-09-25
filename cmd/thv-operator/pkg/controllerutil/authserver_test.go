@@ -3659,10 +3659,10 @@ func TestBuildSPIFFEClientAuthRunConfigs(t *testing.T) {
 // via RunConfig.Validate(), as a terminal InvalidEmbeddedAuthServerConfigError
 // rather than a pod crash loop. This is expected until real SVID verification
 // lands.
-func TestBuildAuthServerRunConfigInvalidSPIFFEIsTypedAndNotYetEnforced(t *testing.T) {
+func TestBuildAuthServerRunConfigAcceptsValidSPIFFE(t *testing.T) {
 	t.Parallel()
 
-	_, err := BuildAuthServerRunConfig("default", "test-server", &mcpv1beta1.EmbeddedAuthServerConfig{
+	config, err := BuildAuthServerRunConfig("default", "test-server", &mcpv1beta1.EmbeddedAuthServerConfig{
 		TLSListener: &mcpv1beta1.TLSListenerConfig{
 			CertificateSecretRef: &mcpv1beta1.SecretKeyRef{Name: "listener-tls", Key: "certificate"},
 			PrivateKeySecretRef:  &mcpv1beta1.SecretKeyRef{Name: "listener-tls", Key: "private-key"},
@@ -3687,10 +3687,8 @@ func TestBuildAuthServerRunConfigInvalidSPIFFEIsTypedAndNotYetEnforced(t *testin
 		},
 	}, []string{"https://mcp.example.com"}, []string{"openid"}, "https://mcp.example.com")
 
-	require.Error(t, err)
-	assert.Contains(t, err.Error(), "SPIFFE client authentication is not yet enforced")
-	var invalidConfigErr *InvalidEmbeddedAuthServerConfigError
-	assert.True(t, stderrors.As(err, &invalidConfigErr))
+	require.NoError(t, err)
+	assert.NotNil(t, config)
 }
 
 // TestBuildAuthServerRunConfigSPIFFEResourcesAndScopesValidateOnceDerivedValuesExist
@@ -3737,15 +3735,11 @@ func TestBuildAuthServerRunConfigSPIFFEResourcesAndScopesValidateOnceDerivedValu
 		}
 	}
 
-	// Resource is in AllowedAudiences and scope is in ScopesSupported: the
-	// only remaining rejection is the unrelated "not yet enforced" gate,
-	// proving resources/scopes passed on real derived values.
+	// Resource is in AllowedAudiences and scope is in ScopesSupported:
+	// resources/scopes pass on real derived values.
 	_, err := BuildAuthServerRunConfig("default", "test-server", authConfig("https://backend.example.com"),
 		[]string{"https://backend.example.com"}, []string{"custom:scope"}, "https://mcp.example.com")
-	require.Error(t, err)
-	assert.Contains(t, err.Error(), "SPIFFE client authentication is not yet enforced")
-	assert.NotContains(t, err.Error(), "resource")
-	assert.NotContains(t, err.Error(), "scopes")
+	require.NoError(t, err)
 
 	// Resource is NOT in AllowedAudiences: still rejected, but for the
 	// correct reason, proving the check still runs with real derived values.

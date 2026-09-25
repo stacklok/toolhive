@@ -690,12 +690,8 @@ type SPIFFEBundleEndpointSourceConfig struct {
 type SPIFFEWorkloadAPIBundleSourceConfig struct{}
 
 // SPIFFETrustDomainConfig declares one SPIFFE trust domain accepted by the
-// embedded authorization server. Configuration is not authentication: no
-// live X.509-SVID or JWT-SVID validation exists yet, so a declared trust
-// domain does not by itself let any workload authenticate — RunConfig.Validate
-// (pkg/authserver/config.go) currently hard-rejects any non-empty
-// spiffeTrustDomains at authserver startup via validateSPIFFENotYetEnforced,
-// a deliberate placeholder until real SVID verification lands.
+// embedded authorization server. A declared domain becomes usable only after
+// the configured source supplies trust material during auth-server startup.
 type SPIFFETrustDomainConfig struct {
 	// Name uniquely identifies this declaration and is referenced by
 	// inboundGrants.spiffeClientAuth[].trustDomainRef.

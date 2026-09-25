@@ -22,15 +22,6 @@ import (
 )
 
 func TestIntegration_EmbeddedAuthServer_SPIFFERedisRestartAndCollision(t *testing.T) {
-	t.Skip("RunConfig.Validate() now hard-rejects any non-empty spiffe_trust_domains " +
-		"(config.go's validateSPIFFENotYetEnforced, per PR #6467 review) until a real " +
-		"SVID-verification consumer lands, so a server can no longer be constructed with " +
-		"a SPIFFE association configured at all -- there is no way to exercise the " +
-		"Redis-backed restart/collision behavior this test proved through " +
-		"NewEmbeddedAuthServerWithStorage without routing around cfg.Validate() in " +
-		"production code. Re-enable this test -- unmodified -- when the future PR that " +
-		"adds real SVID verification removes the hard-reject.")
-
 	ctx, cancel := context.WithTimeout(context.Background(), time.Minute)
 	t.Cleanup(cancel)
 
@@ -85,8 +76,8 @@ func TestIntegration_EmbeddedAuthServer_SPIFFERedisRestartAndCollision(t *testin
 			Name: "production", TrustDomain: "example.org",
 			Methods: []authserver.SPIFFEAuthenticationMethod{authserver.SPIFFEAuthenticationMethodX509},
 			BundleSource: authserver.SPIFFEBundleSourceRunConfig{
-				Type:        authserver.SPIFFEBundleSourceTypeWorkloadAPI,
-				WorkloadAPI: &authserver.SPIFFEWorkloadAPIBundleSourceRunConfig{},
+				Type: authserver.SPIFFEBundleSourceTypeFile,
+				File: &authserver.SPIFFEFileBundleSourceRunConfig{Path: writeTestSPIFFEBundleFile(t, "example.org")},
 			},
 		}}
 		cfg.InboundGrants = &authserver.InboundGrantsRunConfig{

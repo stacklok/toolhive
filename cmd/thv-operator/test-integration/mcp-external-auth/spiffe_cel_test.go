@@ -5,6 +5,7 @@ package controllers
 
 import (
 	"fmt"
+	"strings"
 
 	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
@@ -28,6 +29,15 @@ var _ = Describe("MCPExternalAuthConfig SPIFFE CEL validation", func() {
 		return mcpv1beta1.SPIFFEBundleSourceConfig{
 			Type:        mcpv1beta1.SPIFFEBundleSourceTypeWorkloadAPI,
 			WorkloadAPI: &mcpv1beta1.SPIFFEWorkloadAPIBundleSourceConfig{},
+		}
+	}
+
+	fileBundleSource := func(name, key string) func(*mcpv1beta1.EmbeddedAuthServerConfig) {
+		return func(config *mcpv1beta1.EmbeddedAuthServerConfig) {
+			config.SPIFFETrustDomains[0].BundleSource = mcpv1beta1.SPIFFEBundleSourceConfig{
+				Type: mcpv1beta1.SPIFFEBundleSourceTypeFile,
+				File: &mcpv1beta1.SPIFFEFileBundleSourceConfig{ConfigMapName: name, ConfigMapKey: key},
+			}
 		}
 	}
 
@@ -364,6 +374,31 @@ var _ = Describe("MCPExternalAuthConfig SPIFFE CEL validation", func() {
 					},
 				}
 			},
+		},
+		{
+			name: "ConfigMap name and key accept Kubernetes-valid syntax", trustDomains: true, clients: true,
+			principal: "spiffe://example.org/ns/default/agent", shouldAdmit: true,
+			mutate: fileBundleSource("spire-bundle.prod-1", "trust_bundle.v2-1.json"),
+		},
+		{
+			name: "ConfigMap name rejects uppercase", trustDomains: true, clients: true,
+			principal: "spiffe://example.org/ns/default/agent", errMatch: "configMapName",
+			mutate: fileBundleSource("Spire-bundle", "bundle.json"),
+		},
+		{
+			name: "ConfigMap name enforces Kubernetes length limit", trustDomains: true, clients: true,
+			principal: "spiffe://example.org/ns/default/agent", errMatch: "configMapName",
+			mutate: fileBundleSource(strings.Repeat("a", 254), "bundle.json"),
+		},
+		{
+			name: "ConfigMap key rejects slash", trustDomains: true, clients: true,
+			principal: "spiffe://example.org/ns/default/agent", errMatch: "configMapKey",
+			mutate: fileBundleSource("spire-bundle", "path/bundle.json"),
+		},
+		{
+			name: "ConfigMap key enforces Kubernetes length limit", trustDomains: true, clients: true,
+			principal: "spiffe://example.org/ns/default/agent", errMatch: "configMapKey",
+			mutate: fileBundleSource("spire-bundle", strings.Repeat("a", 254)),
 		},
 	}
 

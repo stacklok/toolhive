@@ -1,14 +1,14 @@
 # SPIFFE Association Declarations
 
-**Current status: rejected at startup, not deployable yet.** `RunConfig.Validate()` hard-fails on any non-empty `spiffeTrustDomains`/`inboundGrants.spiffeClientAuth` before the runner is even created (`validateSPIFFENotYetEnforced` in `pkg/authserver/config.go`) — nothing in this build ever verifies an X.509-SVID or JWT-SVID against a configured trust bundle, so accepting the configuration silently would let an operator believe SPIFFE client authentication is active when no credential is ever checked. The model, registry, and storage decorator described below exist in code and are covered by tests, but none of it runs against a real deployment today; this document describes the design a future PR will enable once real SVID verification lands, not current operational behavior.
+**Current status: rejected at startup, not deployable yet.** `RunConfig.Validate()` hard-fails on any non-empty `spiffeTrustDomains`/`inboundGrants.spiffeClientAuth` before the runner is even created (`validateSPIFFENotYetEnforced` in `pkg/authserver/config.go`). The standalone file-bundle loader in `pkg/authserver/spiffe_bundle_source.go` can load and poll a local trust-bundle file, but it is not wired into the authorization server and no configured SPIFFE credential is verified. The model, registry, storage decorator, and isolated file loader are covered by tests, but none of this runs against a real deployment; this document describes the design and implementation pieces, not current operational behavior.
 
-The embedded authorization server can carry a **configuration-only** SPIFFE association model across the `RunConfig` boundary. This model registers associations and static OAuth clients for workloads that may later authenticate with SPIFFE. It does not currently verify live X.509-SVIDs or JWT-SVIDs, and it does not fetch or load a trust bundle.
+The embedded authorization server can carry a **configuration-only** SPIFFE association model across the `RunConfig` boundary. The standalone file-bundle source reads and polls a local trust-bundle file, but is not connected to authentication; the model does not currently verify live X.509-SVIDs or JWT-SVIDs.
 
 ## Model and boundaries
 
 Configuration separates top-level trust declarations from canonical client associations:
 
-- `spiffe_trust_domains` in `RunConfig` (`spiffeTrustDomains` in the CRD) names a canonical SPIFFE trust domain, explicitly lists permitted future methods (`spiffe_x509` and/or `spiffe_jwt`), and declares a future trust-bundle source.
+- `spiffe_trust_domains` in `RunConfig` (`spiffeTrustDomains` in the CRD) names a canonical SPIFFE trust domain, declares the methods intended for authentication, and selects a trust-bundle source.
 - `inbound_grants.spiffe_client_auth` in `RunConfig` (`inboundGrants.spiffeClientAuth` in the CRD) associates an exact SPIFFE ID or a terminal `/*` descendant `principalPattern` with one explicit OAuth `client_id`, methods, resources, audiences, and scopes. This is a sibling of `inbound_grants.token_exchange` and `inbound_grants.jwt_bearer`, not nested under either — client authentication does not by itself confer a grant.
 
 The OAuth client ID is configured explicitly; it is never derived from the SPIFFE ID or pattern. Every SPIFFE client implicitly receives only the RFC 8693 token-exchange grant. The standalone `RunConfig` schema (`SPIFFEClientAuthRunConfig.GrantTypes`) does expose a `grant_types` field, but validation restricts it to that single value; the CRD omits it entirely and the operator's conversion always synthesizes it (`cmd/thv-operator/pkg/controllerutil/authserver.go`).
@@ -24,14 +24,13 @@ Permission in one dimension never implies permission in the other: a value allow
 
 `resources` is validated for shape and allowlist membership at startup, and the runtime OAuth client built for a SPIFFE association (`registration.NewSPIFFEClient`) is constructed from `scopes`, `audiences`, and `resources` — `Resources()` and `GetAudience()` are checked independently during a token-exchange request, matching the `audiences`/`resources` dimension split above.
 
-### Trust-bundle source (declared, not yet used)
+### Trust-bundle source (file loader implemented in isolation)
 
-Every trust domain must declare exactly one `bundle_source`, a discriminated union naming where a future bundle loader would get the trust bundle from. It is validated for shape only — nothing fetches or loads a bundle from it yet:
+Every trust domain must declare exactly one `bundle_source`, a discriminated union naming the trust-bundle source. The standalone file loader reads an initial bundle and polls for changes, but no source is wired into SPIFFE authentication and the overall configuration remains rejected at startup:
 
-- `type: bundle_endpoint` requires an `endpoint` block with:
-  - `url`: an absolute HTTPS URL with no userinfo, query string, or fragment; the host must not be an IP literal and must not be a loopback address.
-  - `profile`: either `https_web` (the endpoint's TLS connection is authenticated with a Web PKI certificate) or `https_spiffe` (authenticated with an X.509-SVID trusted by a separately distributed root), per the SPIFFE Bundle Endpoint profiles.
-- `type: workload_api` selects the local SPIFFE Workload API and carries no payload.
+- `type: bundle_endpoint` requires an `endpoint` block with an absolute HTTPS URL (no userinfo, query, fragment, IP-literal, or loopback host) and a `https_web` or `https_spiffe` profile. The declaration is validated, but no endpoint loader is implemented.
+- `type: file` requires a `file` block naming a locally mounted SPIFFE JWKS trust-bundle document. The standalone loader reads regular files (including symlinks to regular files) and polls for rotations. On `RunConfig` this is an absolute filesystem path; the CRD instead names a `configMapName`/`configMapKey` pair, since the operator projects that ConfigMap key into a per-domain directory under `/etc/toolhive/authserver/spiffe-bundles/<index>/bundle.json` rather than accepting a raw path. This loader is not wired into SPIFFE authentication.
+- `type: workload_api` selects the local SPIFFE Workload API and carries no payload; no Workload API loader is implemented.
 
 The following canonical operator excerpt shows the supported shape. It illustrates the configuration schema only — as noted above, `RunConfig.Validate()` currently rejects any non-empty `spiffeTrustDomains`, so this is not yet deployable as-is. `allowedAudiences` is intentionally absent here: it is not a configurable field on `embeddedAuthServer` — it is derived at reconcile time from the resolved incoming OIDC configuration.
 
@@ -105,11 +104,7 @@ JWT-SVID assertions currently have no application-level replay protection, `jti`
 
 Configuration and loaded bundles are not authentication by themselves. A client ID, a declared association, a request header, an unverified SPIFFE-looking URI, a client-supplied trust domain, or a loaded bundle is never workload identity. JWT-SVID validation establishes identity only after the assertion validates against configured trust material and the association registry authorizes the resulting SPIFFE ID and configured client ID.
 
-The JWT-SVID client-authentication path described above is implemented by [#6203](https://github.com/stacklok/toolhive/issues/6203), but `newServer` (`pkg/authserver/server_impl.go`) does not yet construct and wire in the JWT bundle source that path validates assertions against, so `jwtsvid.ParseAndValidate` is unreachable with real trust material today and every JWT-SVID authentication attempt fails closed. Issue [#6201](https://github.com/stacklok/toolhive/issues/6201) loads and rotates trust bundles and will supply that source. The following remain separate and pending:
-
-- validate X.509-SVIDs ([#6202](https://github.com/stacklok/toolhive/issues/6202));
-- integrate SPIFFE methods with grants or discovery metadata ([#6204](https://github.com/stacklok/toolhive/issues/6204)); and
-- deploy SPIRE or mount Workload API sockets ([#6205](https://github.com/stacklok/toolhive/issues/6205)).
+The JWT-SVID client-authentication path described above is implemented by [#6203](https://github.com/stacklok/toolhive/issues/6203), but `newServer` (`pkg/authserver/server_impl.go`) does not construct and wire in the JWT bundle source that path validates assertions against, so `jwtsvid.ParseAndValidate` is unreachable with real trust material today and every JWT-SVID authentication attempt fails closed. The file-bundle loader and rotation logic now exist in isolation but remain unconnected to that server path. Endpoint and Workload API loaders, X.509-SVID validation ([#6202](https://github.com/stacklok/toolhive/issues/6202)), SPIFFE method integration with grants or discovery metadata ([#6204](https://github.com/stacklok/toolhive/issues/6204)), and deploying SPIRE or mounting Workload API sockets ([#6205](https://github.com/stacklok/toolhive/issues/6205)) remain pending.
 
 For [#6205](https://github.com/stacklok/toolhive/issues/6205), `workloadapi.X509Source` implements both `x509svid.Source` and `x509bundle.Source`, so one Workload API connection can also provide the authorization server's own certificate when deployment wiring is added. The v1alpha1 `ClientCASecretRef` plus `subPath` shape cannot support a rotating bundle and must not be reused for this purpose.
 

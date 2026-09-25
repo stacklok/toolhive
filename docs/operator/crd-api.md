@@ -4243,9 +4243,9 @@ _Appears in:_
 
 
 SPIFFEBundleSourceConfig is a discriminated bundle-source declaration. Type
-determines which, and only which, source payload may be set. It is
-validated for shape only; fetching or loading a bundle from the declared
-source is not implemented yet.
+determines which, and only which, source payload may be set. The file-bundle
+loader is implemented in isolation, but SPIFFE authentication is not wired
+to any bundle source; endpoint and Workload API loading are not implemented.
 
 
 
@@ -4254,8 +4254,9 @@ _Appears in:_
 
 | Field | Description | Default | Validation |
 | --- | --- | --- | --- |
-| `type` _[api.v1beta1.SPIFFEBundleSourceType](#apiv1beta1spiffebundlesourcetype)_ | Type selects the trust-bundle source. |  | Enum: [bundle_endpoint workload_api] <br />Required: \{\} <br /> |
+| `type` _[api.v1beta1.SPIFFEBundleSourceType](#apiv1beta1spiffebundlesourcetype)_ | Type selects the trust-bundle source. |  | Enum: [bundle_endpoint file workload_api] <br />Required: \{\} <br /> |
 | `endpoint` _[api.v1beta1.SPIFFEBundleEndpointSourceConfig](#apiv1beta1spiffebundleendpointsourceconfig)_ | Endpoint declares a HTTPS SPIFFE Bundle Endpoint. Required when Type is<br />"bundle_endpoint". |  | Optional: \{\} <br /> |
+| `file` _[api.v1beta1.SPIFFEFileBundleSourceConfig](#apiv1beta1spiffefilebundlesourceconfig)_ | File declares a SPIFFE trust bundle projected from a ConfigMap.<br />Required when Type is "file". |  | Optional: \{\} <br /> |
 | `workloadAPI` _[api.v1beta1.SPIFFEWorkloadAPIBundleSourceConfig](#apiv1beta1spiffeworkloadapibundlesourceconfig)_ | WorkloadAPI selects the local SPIFFE Workload API. Required when Type<br />is "workload_api". |  | Optional: \{\} <br /> |
 
 
@@ -4274,6 +4275,7 @@ _Appears in:_
 | Field | Description |
 | --- | --- |
 | `bundle_endpoint` | SPIFFEBundleSourceTypeEndpoint selects a HTTPS SPIFFE Bundle Endpoint.<br /> |
+| `file` | SPIFFEBundleSourceTypeFile selects a ConfigMap-mounted SPIFFE trust bundle.<br /> |
 | `workload_api` | SPIFFEBundleSourceTypeWorkloadAPI selects the local SPIFFE Workload API.<br /> |
 
 
@@ -4308,6 +4310,25 @@ _Appears in:_
 | `scopes` _string array_ | Scopes are OAuth scopes granted to this association. Must be a subset<br />of the server's effective supported scopes. |  | MaxItems: 50 <br />MinItems: 1 <br />Required: \{\} <br />items:MaxLength: 256 <br />items:MinLength: 1 <br /> |
 
 
+#### api.v1beta1.SPIFFEFileBundleSourceConfig
+
+
+
+SPIFFEFileBundleSourceConfig selects one ConfigMap key containing a SPIFFE
+trust-bundle JWKS document, typically projected as a mounted file. The
+ConfigMap name and key follow Kubernetes ConfigMap naming constraints.
+
+
+
+_Appears in:_
+- [api.v1beta1.SPIFFEBundleSourceConfig](#apiv1beta1spiffebundlesourceconfig)
+
+| Field | Description | Default | Validation |
+| --- | --- | --- | --- |
+| `configMapName` _string_ | ConfigMapName is the name of the ConfigMap containing the trust bundle. |  | MaxLength: 253 <br />MinLength: 1 <br />Pattern: `^[a-z0-9]([-a-z0-9]*[a-z0-9])?(\.[a-z0-9]([-a-z0-9]*[a-z0-9])?)*$` <br />Required: \{\} <br /> |
+| `configMapKey` _string_ | ConfigMapKey is the key within the ConfigMap holding the SPIFFE JWKS<br />trust-bundle document. |  | MaxLength: 253 <br />MinLength: 1 <br />Pattern: `^[A-Za-z0-9._-]+$` <br />Required: \{\} <br /> |
+
+
 #### api.v1beta1.SPIFFETrustDomainConfig
 
 
@@ -4330,7 +4351,7 @@ _Appears in:_
 | `name` _string_ | Name uniquely identifies this declaration and is referenced by<br />inboundGrants.spiffeClientAuth[].trustDomainRef. |  | MaxLength: 253 <br />MinLength: 1 <br />Required: \{\} <br /> |
 | `trustDomain` _string_ | TrustDomain is the SPIFFE trust domain accepted by this declaration.<br />This pattern is a best-effort CRD-level approximation of the SPIFFE<br />trust-domain grammar; runtime parsing via<br />spiffeid.TrustDomainFromString remains authoritative. |  | MaxLength: 255 <br />MinLength: 1 <br />Pattern: `^([a-z0-9_]\|[a-z0-9_]([a-z0-9_-]\|\.[a-z0-9_-])*[a-z0-9_])$` <br />Required: \{\} <br /> |
 | `methods` _[api.v1beta1.SPIFFEAuthenticationMethod](#apiv1beta1spiffeauthenticationmethod) array_ | Methods explicitly enables the supported credential types for this<br />trust domain. |  | MaxItems: 2 <br />MinItems: 1 <br />Required: \{\} <br />items:Enum: [spiffe_x509 spiffe_jwt] <br /> |
-| `bundleSource` _[api.v1beta1.SPIFFEBundleSourceConfig](#apiv1beta1spiffebundlesourceconfig)_ | BundleSource declares exactly one future trust-bundle source. It is<br />validated for shape only; fetching or loading a bundle from it is a<br />later step. |  | Required: \{\} <br /> |
+| `bundleSource` _[api.v1beta1.SPIFFEBundleSourceConfig](#apiv1beta1spiffebundlesourceconfig)_ | BundleSource declares exactly one trust-bundle source and is validated for<br />shape here. The standalone file loader exists, but is not wired into SPIFFE<br />authentication. |  | Required: \{\} <br /> |
 
 
 #### api.v1beta1.SPIFFEWorkloadAPIBundleSourceConfig

@@ -6,6 +6,7 @@ package migration
 
 import (
 	"context"
+	"errors"
 	"log/slog"
 
 	"github.com/stacklok/toolhive/pkg/container/runtime"
@@ -18,6 +19,8 @@ import (
 // In Kubernetes environments this is always a no-op: MCPGroup CRDs are
 // operator/user-managed resources and the caller's service account may not
 // have create permission on them.
+// When multiple processes race to create the group, the loser's conflict
+// error is treated as success because the desired end state (group exists) holds.
 func EnsureDefaultGroupExists() error {
 	if runtime.IsKubernetesRuntime() {
 		return nil
@@ -40,5 +43,13 @@ func ensureDefaultGroupExists(ctx context.Context) error {
 	}
 
 	slog.Debug("creating default group", "name", groups.DefaultGroupName)
-	return groupManager.Create(ctx, groups.DefaultGroupName)
+	if err := groupManager.Create(ctx, groups.DefaultGroupName); err != nil {
+		// Another process may have won the creation race; the group now
+		// exists, which is the desired end state.
+		if errors.Is(err, groups.ErrGroupAlreadyExists) {
+			return nil
+		}
+		return err
+	}
+	return nil
 }

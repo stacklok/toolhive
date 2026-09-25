@@ -16,8 +16,10 @@ import (
 	"gopkg.in/yaml.v3"
 
 	authserverconfig "github.com/stacklok/toolhive/pkg/authserver"
+	authserverrunner "github.com/stacklok/toolhive/pkg/authserver/runner"
 	"github.com/stacklok/toolhive/pkg/groups"
 	mcpparser "github.com/stacklok/toolhive/pkg/mcp"
+	"github.com/stacklok/toolhive/pkg/telemetry"
 	"github.com/stacklok/toolhive/pkg/vmcp"
 	aggregatormocks "github.com/stacklok/toolhive/pkg/vmcp/aggregator/mocks"
 	clientmocks "github.com/stacklok/toolhive/pkg/vmcp/client/mocks"
@@ -528,6 +530,92 @@ func TestValidateQuickModeHost(t *testing.T) {
 			} else {
 				require.NoError(t, err)
 			}
+		})
+	}
+}
+
+func TestAuthServerListenerHost(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name string
+		host string
+		want string
+	}{
+		{name: "empty host defaults to loopback", host: "", want: "127.0.0.1"},
+		{name: "configured host is preserved", host: "0.0.0.0", want: "0.0.0.0"},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			assert.Equal(t, tc.want, authServerListenerHost(tc.host))
+		})
+	}
+}
+
+func TestValidateAuthServerListenerPorts(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name         string
+		port         int
+		telemetryCfg *telemetry.Config
+		authServerRC *authserverconfig.RunConfig
+		wantErr      bool
+		errContains  string
+	}{
+		{name: "nil auth config", port: authserverrunner.TLSListenerPort},
+		{
+			name:         "TLS listener not configured",
+			port:         authserverrunner.TLSListenerPort,
+			authServerRC: &authserverconfig.RunConfig{},
+		},
+		{
+			name:         "vMCP port conflicts",
+			port:         authserverrunner.TLSListenerPort,
+			authServerRC: &authserverconfig.RunConfig{TLSListener: &authserverconfig.TLSListenerRunConfig{}},
+			wantErr:      true,
+			errContains:  "8443",
+		},
+		{
+			name: "diagnostics port conflicts",
+			port: 4483,
+			telemetryCfg: &telemetry.Config{
+				EnablePrometheusMetricsPath: true,
+				PrometheusPort:              authserverrunner.TLSListenerPort,
+			},
+			authServerRC: &authserverconfig.RunConfig{TLSListener: &authserverconfig.TLSListenerRunConfig{}},
+			wantErr:      true,
+			errContains:  "diagnostics",
+		},
+		{
+			name: "disabled diagnostics do not conflict",
+			port: 4483,
+			telemetryCfg: &telemetry.Config{
+				PrometheusPort: authserverrunner.TLSListenerPort,
+			},
+			authServerRC: &authserverconfig.RunConfig{TLSListener: &authserverconfig.TLSListenerRunConfig{}},
+		},
+		{
+			name: "default diagnostics port does not conflict",
+			port: 4483,
+			telemetryCfg: &telemetry.Config{
+				EnablePrometheusMetricsPath: true,
+			},
+			authServerRC: &authserverconfig.RunConfig{TLSListener: &authserverconfig.TLSListenerRunConfig{}},
+		},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			err := validateAuthServerListenerPorts(tc.port, tc.telemetryCfg, tc.authServerRC)
+			if tc.wantErr {
+				require.ErrorContains(t, err, tc.errContains)
+				return
+			}
+			require.NoError(t, err)
 		})
 	}
 }

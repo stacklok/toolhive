@@ -29,6 +29,7 @@ import (
 	"github.com/stacklok/toolhive/pkg/authserver/server/keys"
 	"github.com/stacklok/toolhive/pkg/container"
 	"github.com/stacklok/toolhive/pkg/container/runtime"
+	"github.com/stacklok/toolhive/pkg/diagnostics"
 	"github.com/stacklok/toolhive/pkg/groups"
 	"github.com/stacklok/toolhive/pkg/migration"
 	"github.com/stacklok/toolhive/pkg/telemetry"
@@ -160,10 +161,16 @@ func Serve(ctx context.Context, cfg ServeConfig) error {
 		return fmt.Errorf("failed to default outgoing auth subject provider names: %w", err)
 	}
 
-	// Construct embedded authorization server if configured.
+	// Construct the embedded authorization server if configured, and start its
+	// TLS listener when the auth server config enables one.
 	var embeddedAuthServer *authserverrunner.EmbeddedAuthServer
 	if authServerRC != nil {
-		embeddedAuthServer, err = authserverrunner.NewEmbeddedAuthServer(ctx, authServerRC)
+		if err := validateAuthServerListenerPorts(cfg.Port, vmcpCfg.Telemetry, authServerRC); err != nil {
+			return err
+		}
+		embeddedAuthServer, err = authserverrunner.NewEmbeddedAuthServer(
+			ctx, authServerRC, authserverrunner.WithListenerHost(authServerListenerHost(cfg.Host)),
+		)
 		if err != nil {
 			return fmt.Errorf("failed to create embedded auth server: %w", err)
 		}
@@ -172,6 +179,9 @@ func Serve(ctx context.Context, cfg ServeConfig) error {
 				slog.Error(fmt.Sprintf("failed to close embedded auth server: %v", closeErr))
 			}
 		}()
+		if err := embeddedAuthServer.Start(); err != nil {
+			return fmt.Errorf("failed to start auth server TLS listener: %w", err)
+		}
 		slog.Info("embedded authorization server initialized")
 	}
 
@@ -662,6 +672,34 @@ func vmcpNamespace() string {
 		return "local"
 	}
 	return namespace
+}
+
+// authServerListenerHost returns the host the embedded auth server's TLS
+// listener binds: the same host as the MCP listener, resolved through
+// vmcpserver.WithDefaults so the two cannot drift apart.
+func authServerListenerHost(host string) string {
+	return vmcpserver.WithDefaults(&vmcpserver.Config{Host: host}).Host
+}
+
+// validateAuthServerListenerPorts rejects a vMCP or diagnostics port that
+// collides with the embedded auth server's fixed TLS listener port. The port
+// is part of the issuer URL, so a clash is an error rather than a reason to
+// pick another port.
+// Keep in sync with Runner.startEmbeddedAuthServerListener in pkg/runner.
+func validateAuthServerListenerPorts(
+	port int, telemetryCfg *telemetry.Config, authServerRC *authserverconfig.RunConfig,
+) error {
+	if authServerRC == nil || authServerRC.TLSListener == nil {
+		return nil
+	}
+	if port == authserverrunner.TLSListenerPort {
+		return fmt.Errorf("vMCP port %d conflicts with the auth server TLS listener port", port)
+	}
+	if telemetryCfg != nil && telemetryCfg.EnablePrometheusMetricsPath &&
+		diagnostics.ResolvePort(telemetryCfg.PrometheusPort) == authserverrunner.TLSListenerPort {
+		return fmt.Errorf("diagnostics port %d conflicts with the auth server TLS listener port", authserverrunner.TLSListenerPort)
+	}
+	return nil
 }
 
 // loadAuthServerConfig loads the auth server RunConfig from a sibling file

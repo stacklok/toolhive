@@ -25,6 +25,8 @@ import (
 	"time"
 
 	"github.com/ory/fosite"
+	"github.com/spiffe/go-spiffe/v2/bundle/jwtbundle"
+	"github.com/spiffe/go-spiffe/v2/bundle/x509bundle"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
@@ -71,6 +73,49 @@ func TestNewAuthorizationServerConfig(t *testing.T) {
 	assert.Len(t, authzServerConfig.SigningJWKS.Keys, 1)
 }
 
+func TestNewAuthorizationServerConfigRequiresConsistentSPIFFEComponents(t *testing.T) {
+	t.Parallel()
+
+	rsaKey, err := rsa.GenerateKey(rand.Reader, 2048)
+	require.NoError(t, err)
+	resolver := SPIFFEClientResolver(func(context.Context, string, string, spiffeauth.SPIFFEAuthenticationMethod) (fosite.Client, error) {
+		return nil, nil
+	})
+	tests := []struct {
+		name       string
+		resolver   SPIFFEClientResolver
+		x509Source x509bundle.Source
+		jwtSource  jwtbundle.Source
+		wantErr    bool
+	}{
+		{name: "all absent"},
+		{name: "resolver only", resolver: resolver, wantErr: true},
+		{name: "X.509 source only", x509Source: x509bundle.NewSet(), wantErr: true},
+		{name: "resolver and X.509 source", resolver: resolver, x509Source: x509bundle.NewSet(), wantErr: true},
+		{name: "all configured", resolver: resolver, x509Source: x509bundle.NewSet(), jwtSource: jwtbundle.NewSet()},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			params := &AuthorizationServerParams{
+				Issuer: "https://auth.example.com", AccessTokenLifespan: time.Hour,
+				RefreshTokenLifespan: 24 * time.Hour, AuthCodeLifespan: 10 * time.Minute,
+				HMACSecrets:  servercrypto.NewHMACSecrets([]byte("test-secret-with-32-bytes-long!!")),
+				SigningKeyID: "key-1", SigningKeyAlgorithm: "RS256", SigningKey: rsaKey,
+				SPIFFEClientResolver: tt.resolver, SPIFFEX509BundleSource: tt.x509Source, SPIFFEJWTBundleSource: tt.jwtSource,
+			}
+			config, err := NewAuthorizationServerConfig(params)
+			if tt.wantErr {
+				require.ErrorContains(t, err, "SPIFFE client resolver and both SPIFFE bundle sources must be configured together")
+				assert.Nil(t, config)
+				return
+			}
+			require.NoError(t, err)
+			assert.NotNil(t, config)
+		})
+	}
+}
+
 // TestNewAuthorizationServerConfig_ConfidentialClientCapabilities pins the
 // confidential-client capability flags' passage through NewAuthorizationServerConfig.
 func TestNewAuthorizationServerConfig_ConfidentialClientCapabilities(t *testing.T) {
@@ -80,36 +125,45 @@ func TestNewAuthorizationServerConfig_ConfidentialClientCapabilities(t *testing.
 	require.NoError(t, err)
 
 	tests := []struct {
-		name                    string
-		allowConfidential       bool
-		allowPrivateKeyJWT      bool
-		hasStaticDelegateClient bool
-		disableTokenExchange    bool
-		jwtBearerGrantEnabled   bool
+		name                      string
+		allowConfidential         bool
+		allowPrivateKeyJWT        bool
+		hasStaticDelegateClient   bool
+		disableTokenExchange      bool
+		jwtBearerGrantEnabled     bool
+		supportsSPIFFEX509        bool
+		supportsSPIFFEJWT         bool
+		supportsClientCredentials bool
 	}{
 		{name: "public only", allowConfidential: false, hasStaticDelegateClient: false},
 		{name: "confidential DCR", allowConfidential: true, hasStaticDelegateClient: false},
 		{name: "private-key JWT registration", allowPrivateKeyJWT: true, hasStaticDelegateClient: false},
 		{name: "static delegate client", allowConfidential: false, hasStaticDelegateClient: true},
 		{name: "JWT bearer without token exchange", disableTokenExchange: true, jwtBearerGrantEnabled: true},
+		{name: "X509 SPIFFE", supportsSPIFFEX509: true},
+		{name: "JWT SPIFFE", supportsSPIFFEJWT: true},
+		{name: "SPIFFE client credentials", supportsClientCredentials: true},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
 			config, err := NewAuthorizationServerConfig(&AuthorizationServerParams{
-				Issuer:                              "https://auth.example.com",
-				AccessTokenLifespan:                 time.Hour,
-				RefreshTokenLifespan:                time.Hour * 24,
-				AuthCodeLifespan:                    time.Minute * 10,
-				HMACSecrets:                         servercrypto.NewHMACSecrets([]byte("test-secret-with-32-bytes-long!!")),
-				SigningKeyID:                        "key-1",
-				SigningKeyAlgorithm:                 "RS256",
-				SigningKey:                          rsaKey,
-				AllowConfidentialClientRegistration: tt.allowConfidential,
-				AllowPrivateKeyJWTRegistration:      tt.allowPrivateKeyJWT,
-				HasStaticDelegateClients:            tt.hasStaticDelegateClient,
-				DisableTokenExchange:                tt.disableTokenExchange,
-				JWTBearerGrantEnabled:               tt.jwtBearerGrantEnabled,
+				Issuer:                                 "https://auth.example.com",
+				AccessTokenLifespan:                    time.Hour,
+				RefreshTokenLifespan:                   time.Hour * 24,
+				AuthCodeLifespan:                       time.Minute * 10,
+				HMACSecrets:                            servercrypto.NewHMACSecrets([]byte("test-secret-with-32-bytes-long!!")),
+				SigningKeyID:                           "key-1",
+				SigningKeyAlgorithm:                    "RS256",
+				SigningKey:                             rsaKey,
+				AllowConfidentialClientRegistration:    tt.allowConfidential,
+				AllowPrivateKeyJWTRegistration:         tt.allowPrivateKeyJWT,
+				HasStaticDelegateClients:               tt.hasStaticDelegateClient,
+				DisableTokenExchange:                   tt.disableTokenExchange,
+				JWTBearerGrantEnabled:                  tt.jwtBearerGrantEnabled,
+				SupportsSPIFFEX509ClientAuthentication: tt.supportsSPIFFEX509,
+				SupportsSPIFFEJWTClientAuthentication:  tt.supportsSPIFFEJWT,
+				SupportsSPIFFEClientCredentialsGrant:   tt.supportsClientCredentials,
 			})
 			require.NoError(t, err)
 			assert.Equal(t, tt.allowConfidential, config.AllowConfidentialClientRegistration)
@@ -117,6 +171,9 @@ func TestNewAuthorizationServerConfig_ConfidentialClientCapabilities(t *testing.
 			assert.Equal(t, tt.hasStaticDelegateClient, config.HasStaticDelegateClients)
 			assert.Equal(t, !tt.disableTokenExchange, config.TokenExchangeEnabled)
 			assert.Equal(t, tt.jwtBearerGrantEnabled, config.JWTBearerGrantEnabled)
+			assert.Equal(t, tt.supportsSPIFFEX509, config.SupportsSPIFFEX509ClientAuthentication)
+			assert.Equal(t, tt.supportsSPIFFEJWT, config.SupportsSPIFFEJWTClientAuthentication)
+			assert.Equal(t, tt.supportsClientCredentials, config.SupportsSPIFFEClientCredentialsGrant)
 		})
 	}
 }

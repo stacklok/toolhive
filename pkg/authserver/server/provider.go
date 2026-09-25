@@ -114,6 +114,15 @@ type AuthorizationServerConfig struct {
 	// InsecureAllowConfidentialOverLoopbackHTTP explicitly permits confidential
 	// clients with a loopback HTTP issuer.
 	InsecureAllowConfidentialOverLoopbackHTTP bool
+	// SupportsSPIFFEX509ClientAuthentication reports whether the validated SPIFFE
+	// association snapshot supports X.509-SVID client authentication.
+	SupportsSPIFFEX509ClientAuthentication bool
+	// SupportsSPIFFEJWTClientAuthentication reports whether the validated SPIFFE
+	// association snapshot supports JWT-SVID client authentication.
+	SupportsSPIFFEJWTClientAuthentication bool
+	// SupportsSPIFFEClientCredentialsGrant reports whether the validated SPIFFE
+	// association snapshot supports the client_credentials grant.
+	SupportsSPIFFEClientCredentialsGrant bool
 	// ForceConfidentialRedirectURIs lists redirect URIs that the DCR handler
 	// always registers as confidential clients, overriding a requested "none"
 	// auth method. See authserver.Config.ForceConfidentialRedirectURIs for the
@@ -216,6 +225,15 @@ type AuthorizationServerParams struct {
 	// InsecureAllowConfidentialOverLoopbackHTTP explicitly permits confidential
 	// clients with a loopback HTTP issuer.
 	InsecureAllowConfidentialOverLoopbackHTTP bool
+	// SupportsSPIFFEX509ClientAuthentication reports whether the validated SPIFFE
+	// association snapshot supports X.509-SVID client authentication.
+	SupportsSPIFFEX509ClientAuthentication bool
+	// SupportsSPIFFEJWTClientAuthentication reports whether the validated SPIFFE
+	// association snapshot supports JWT-SVID client authentication.
+	SupportsSPIFFEJWTClientAuthentication bool
+	// SupportsSPIFFEClientCredentialsGrant reports whether the validated SPIFFE
+	// association snapshot supports the client_credentials grant.
+	SupportsSPIFFEClientCredentialsGrant bool
 	// ForceConfidentialRedirectURIs lists redirect URIs that the DCR handler
 	// always registers as confidential clients, overriding a requested "none"
 	// auth method. See authserver.Config.ForceConfidentialRedirectURIs for the
@@ -399,11 +417,25 @@ func validateParams(cfg *AuthorizationServerParams) error {
 	); err != nil {
 		return err
 	}
+	if err := validateSPIFFEComponents(cfg); err != nil {
+		return err
+	}
 	// Defense-in-depth: re-check the baseline-⊆-scopes_supported invariant.
 	// RunConfig.Validate performs the same check at the operator-supplied
 	// wire-format boundary; this gate covers callers that construct
 	// AuthorizationServerParams programmatically and bypass that path.
 	return registration.ValidateScopeSubset(cfg.BaselineClientScopes, cfg.ScopesSupported, "baseline_client_scopes")
+}
+
+// validateSPIFFEComponents ensures all SPIFFE client-authentication dependencies
+// are configured as a complete set.
+func validateSPIFFEComponents(cfg *AuthorizationServerParams) error {
+	hasBundleSource := cfg.SPIFFEX509BundleSource != nil || cfg.SPIFFEJWTBundleSource != nil
+	if (cfg.SPIFFEClientResolver == nil && hasBundleSource) ||
+		(cfg.SPIFFEClientResolver != nil && (cfg.SPIFFEX509BundleSource == nil || cfg.SPIFFEJWTBundleSource == nil)) {
+		return fmt.Errorf("SPIFFE client resolver and both SPIFFE bundle sources must be configured together")
+	}
+	return nil
 }
 
 // NewAuthorizationServerConfig creates an AuthorizationServerConfig from the provided configuration.
@@ -484,6 +516,9 @@ func NewAuthorizationServerConfig(cfg *AuthorizationServerParams) (*Authorizatio
 		HasStaticDelegateClients:            cfg.HasStaticDelegateClients,
 		InsecureAllowHTTP:                   cfg.InsecureAllowHTTP,
 		InsecureAllowConfidentialOverLoopbackHTTP: cfg.InsecureAllowConfidentialOverLoopbackHTTP,
+		SupportsSPIFFEX509ClientAuthentication:    cfg.SupportsSPIFFEX509ClientAuthentication,
+		SupportsSPIFFEJWTClientAuthentication:     cfg.SupportsSPIFFEJWTClientAuthentication,
+		SupportsSPIFFEClientCredentialsGrant:      cfg.SupportsSPIFFEClientCredentialsGrant,
 		ForceConfidentialRedirectURIs:             cfg.ForceConfidentialRedirectURIs,
 		TokenExchangeEnabled:                      !cfg.DisableTokenExchange,
 		JWTBearerGrantEnabled:                     cfg.JWTBearerGrantEnabled,

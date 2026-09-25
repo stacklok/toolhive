@@ -355,6 +355,40 @@ func TestNewSPIFFEAssociationRegistryRejectsOverlappingPatterns(t *testing.T) {
 	}
 }
 
+func TestSPIFFEAssociationRegistryPermitsMethod(t *testing.T) {
+	t.Parallel()
+
+	x509Association := testSPIFFEAssociation("x509-client", "openid")
+	jwtAssociation := testSPIFFEAssociation("jwt-client", "openid")
+	jwtAssociation.PrincipalPattern = "spiffe://example.org/ns/default/jwt-agent"
+	jwtAssociation.Methods = []SPIFFEAuthenticationMethod{SPIFFEAuthenticationMethodJWT}
+	bothAssociation := testSPIFFEAssociation("both-client", "openid")
+	bothAssociation.Methods = []SPIFFEAuthenticationMethod{SPIFFEAuthenticationMethodX509, SPIFFEAuthenticationMethodJWT}
+
+	tests := []struct {
+		name          string
+		registry      *SPIFFEAssociationRegistry
+		method        SPIFFEAuthenticationMethod
+		wantPermitted bool
+	}{
+		{name: "nil registry", method: SPIFFEAuthenticationMethodX509},
+		{name: "X509 only permits X509", registry: newTestSPIFFEAssociationRegistry(t, []SPIFFEClientAuthRunConfig{x509Association}), method: SPIFFEAuthenticationMethodX509, wantPermitted: true},
+		{name: "X509 only rejects JWT", registry: newTestSPIFFEAssociationRegistry(t, []SPIFFEClientAuthRunConfig{x509Association}), method: SPIFFEAuthenticationMethodJWT},
+		{name: "JWT only permits JWT", registry: newTestSPIFFEAssociationRegistry(t, []SPIFFEClientAuthRunConfig{jwtAssociation}), method: SPIFFEAuthenticationMethodJWT, wantPermitted: true},
+		{name: "JWT only rejects X509", registry: newTestSPIFFEAssociationRegistry(t, []SPIFFEClientAuthRunConfig{jwtAssociation}), method: SPIFFEAuthenticationMethodX509},
+		{name: "one association permits both", registry: newTestSPIFFEAssociationRegistry(t, []SPIFFEClientAuthRunConfig{bothAssociation}), method: SPIFFEAuthenticationMethodX509, wantPermitted: true},
+		{name: "one association permits both JWT", registry: newTestSPIFFEAssociationRegistry(t, []SPIFFEClientAuthRunConfig{bothAssociation}), method: SPIFFEAuthenticationMethodJWT, wantPermitted: true},
+		{name: "split associations permit X509", registry: newTestSPIFFEAssociationRegistry(t, []SPIFFEClientAuthRunConfig{x509Association, jwtAssociation}), method: SPIFFEAuthenticationMethodX509, wantPermitted: true},
+		{name: "split associations permit JWT", registry: newTestSPIFFEAssociationRegistry(t, []SPIFFEClientAuthRunConfig{x509Association, jwtAssociation}), method: SPIFFEAuthenticationMethodJWT, wantPermitted: true},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			assert.Equal(t, tt.wantPermitted, tt.registry.permitsMethod(tt.method))
+		})
+	}
+}
+
 func testNormalizedSPIFFEAssociation(clientID, principal string) SPIFFEClientAuthConfig {
 	return SPIFFEClientAuthConfig{
 		trustDomainRef: "production",

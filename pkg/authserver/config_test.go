@@ -198,6 +198,14 @@ func TestConfigValidate(t *testing.T) {
 		// (e.g. authserver.New) bypasses RunConfig entirely.
 		{name: "nil SPIFFETrust passes", config: Config{Issuer: "https://example.com", KeyProvider: validKeyProvider, HMACSecrets: validHMAC, Upstreams: validUpstreams, AllowedAudiences: []string{"https://mcp.example.com"}}},
 		{
+			name: "zero upstreams with SPIFFE clients passes",
+			config: Config{
+				Issuer: "https://example.com", KeyProvider: validKeyProvider, HMACSecrets: validHMAC,
+				AllowedAudiences: []string{"https://mcp.example.com"},
+				SPIFFETrust:      mustNewSPIFFETrustConfig(t),
+			},
+		},
+		{
 			name: "well-formed Config.SPIFFETrust passes",
 			config: Config{
 				Issuer: "https://example.com", KeyProvider: validKeyProvider, HMACSecrets: validHMAC,

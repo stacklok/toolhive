@@ -1598,12 +1598,18 @@ func (c *DCRUpstreamConfig) Validate() error {
 	return nil
 }
 
-func validateZeroUpstreamMode(upstreamCount, delegateClientCount int, issuers []tokenexchange.TrustedIssuer) error {
-	if upstreamCount > 0 || delegateClientCount > 0 || JWTBearerGrantEnabled(issuers) {
+// validateZeroUpstreamMode requires an upstream identity provider unless the
+// server has another way to issue tokens: delegate clients, SPIFFE workload
+// clients (which authenticate with their SVIDs via client_credentials), or a
+// trusted issuer with the JWT bearer grant.
+func validateZeroUpstreamMode(
+	upstreamCount, delegateClientCount, spiffeClientCount int, issuers []tokenexchange.TrustedIssuer,
+) error {
+	if upstreamCount > 0 || delegateClientCount > 0 || spiffeClientCount > 0 || JWTBearerGrantEnabled(issuers) {
 		return nil
 	}
-	return fmt.Errorf("at least one upstream is required unless delegate clients or a " +
-		"trusted issuer with JWT bearer grant is configured")
+	return fmt.Errorf("at least one upstream is required unless delegate clients, SPIFFE client " +
+		"authentication or a trusted issuer with JWT bearer grant is configured")
 }
 
 // validateUpstreams validates the upstream configurations.
@@ -1629,7 +1635,11 @@ func (c *Config) validateUpstreams() error {
 		}
 	}
 
-	return validateZeroUpstreamMode(len(c.Upstreams), len(c.DelegateClients), c.TrustedIssuers)
+	spiffeClientCount := 0
+	if c.SPIFFETrust != nil {
+		spiffeClientCount = len(c.SPIFFETrust.Associations())
+	}
+	return validateZeroUpstreamMode(len(c.Upstreams), len(c.DelegateClients), spiffeClientCount, c.TrustedIssuers)
 }
 
 // validateUpstreamFilter rejects an UpstreamFilter configured with fewer than

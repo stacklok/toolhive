@@ -670,15 +670,22 @@ func validateAuthServerRunConfig(rc *authserver.RunConfig) error {
 		return fmt.Errorf("auth server issuer is required")
 	}
 	if len(rc.Upstreams) == 0 && len(rc.DelegateClients) == 0 &&
-		!authserver.JWTBearerGrantEnabled(rc.TrustedIssuers) {
-		return fmt.Errorf("auth server requires at least one upstream unless delegate clients or a " +
-			"trusted issuer with JWT bearer grant is configured")
+		!authserver.JWTBearerGrantEnabled(rc.TrustedIssuers) && !hasSPIFFEClientAuth(rc) {
+		return fmt.Errorf("auth server requires at least one upstream unless delegate clients, SPIFFE " +
+			"client authentication or a trusted issuer with JWT bearer grant is configured")
 	}
 	// AllowedAudiences is required for MCP compliance (RFC 8707).
 	if len(rc.AllowedAudiences) == 0 {
 		return fmt.Errorf("auth server requires at least one allowed audience (MCP clients must send RFC 8707 resource parameter)")
 	}
 	return nil
+}
+
+// hasSPIFFEClientAuth reports whether rc registers SPIFFE workload clients.
+// Those clients authenticate with their SVIDs and obtain tokens through
+// client_credentials, so they need no upstream identity provider.
+func hasSPIFFEClientAuth(rc *authserver.RunConfig) bool {
+	return rc.InboundGrants != nil && len(rc.InboundGrants.SPIFFEClientAuth) > 0
 }
 
 // validateUpstreamInjectProviders checks that every upstream_inject strategy

@@ -1269,6 +1269,23 @@ func TestValidateAuthServerIntegration(t *testing.T) {
 			wantErr: false,
 		},
 		{
+			name: "zero upstreams with SPIFFE client authentication",
+			cfg: &Config{
+				IncomingAuth: &IncomingAuthConfig{Type: IncomingAuthTypeOIDC, OIDC: &OIDCConfig{
+					Issuer: "http://localhost:9090", Audience: "https://my-vmcp",
+				}},
+				OutgoingAuth: &OutgoingAuthConfig{Source: "inline"},
+			},
+			rc: &authserver.RunConfig{
+				Issuer:           "http://localhost:9090",
+				AllowedAudiences: []string{"https://my-vmcp"},
+				InboundGrants: &authserver.InboundGrantsRunConfig{
+					SPIFFEClientAuth: []authserver.SPIFFEClientAuthRunConfig{{ClientID: "spiffe-client"}},
+				},
+			},
+			wantErr: false,
+		},
+		{
 			name: "zero upstreams with JWT bearer trusted issuer",
 			cfg: &Config{
 				IncomingAuth: &IncomingAuthConfig{Type: IncomingAuthTypeOIDC, OIDC: &OIDCConfig{

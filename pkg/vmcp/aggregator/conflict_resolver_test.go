@@ -123,6 +123,7 @@ func TestPriorityConflictResolver(t *testing.T) {
 		wantCount      int
 		wantWinners    map[string]string                          // tool name -> expected backend ID
 		wantStrategies map[string]vmcp.ConflictResolutionStrategy // tool name -> expected strategy (optional)
+		wantMissing    []string                                   // tool names that must not be advertised
 		wantErr        bool
 	}{
 		{
@@ -182,7 +183,7 @@ func TestPriorityConflictResolver(t *testing.T) {
 			},
 		},
 		{
-			name:          "backends not in priority with conflict use prefix fallback",
+			name:          "unlisted backends with conflict are dropped",
 			priorityOrder: []string{"github"},
 			toolsByBackend: map[string][]vmcp.Tool{
 				"github": {
@@ -195,17 +196,58 @@ func TestPriorityConflictResolver(t *testing.T) {
 					{Name: "send_message", Description: "Teams message"},
 				},
 			},
-			wantCount: 3, // All tools included, conflicting ones prefixed
+			wantCount: 1, // Conflicting unrankable tools are dropped
 			wantWinners: map[string]string{
-				"create_issue":       "github", // In priority list
-				"slack_send_message": "slack",  // Not in priority, prefixed
-				"teams_send_message": "teams",  // Not in priority, prefixed
+				"create_issue": "github", // In priority list, no conflict
 			},
-			wantStrategies: map[string]vmcp.ConflictResolutionStrategy{
-				"create_issue":       vmcp.ConflictStrategyPriority, // Priority strategy used
-				"slack_send_message": vmcp.ConflictStrategyPrefix,   // Prefix fallback used
-				"teams_send_message": vmcp.ConflictStrategyPrefix,   // Prefix fallback used
+		},
+		{
+			name:          "mixed listed and unlisted conflict drops all candidates",
+			priorityOrder: []string{"github"},
+			toolsByBackend: map[string][]vmcp.Tool{
+				"github": {
+					{Name: "deploy", Description: "GitHub deploy"},
+				},
+				"prod": {
+					{Name: "deploy", Description: "Production deploy"},
+				},
 			},
+			wantCount:   0,
+			wantWinners: map[string]string{},
+			wantMissing: []string{"deploy", "github_deploy", "prod_deploy"},
+		},
+		{
+			name:          "three-way mixed conflict drops all candidates",
+			priorityOrder: []string{"github", "staging"},
+			toolsByBackend: map[string][]vmcp.Tool{
+				"github": {
+					{Name: "deploy", Description: "GitHub deploy"},
+				},
+				"staging": {
+					{Name: "deploy", Description: "Staging deploy"},
+				},
+				"prod": {
+					{Name: "deploy", Description: "Production deploy"},
+				},
+			},
+			wantCount:   0,
+			wantWinners: map[string]string{},
+			wantMissing: []string{"deploy", "github_deploy", "staging_deploy", "prod_deploy"},
+		},
+		{
+			name:          "drop prevents forbid bypass via prefixed names",
+			priorityOrder: []string{"github"},
+			toolsByBackend: map[string][]vmcp.Tool{
+				"github": {
+					{Name: "deploy", Description: "GitHub deploy"},
+				},
+				"prod": {
+					{Name: "deploy", Description: "Production deploy"},
+				},
+			},
+			wantCount:   0,
+			wantWinners: map[string]string{},
+			wantMissing: []string{"deploy", "github_deploy", "prod_deploy"},
 		},
 		{
 			name:          "empty priority order",
@@ -265,6 +307,12 @@ func TestPriorityConflictResolver(t *testing.T) {
 					if tool.ConflictResolutionApplied != vmcp.ConflictStrategyPriority {
 						t.Errorf("tool %q has wrong strategy %q, want %q", toolName, tool.ConflictResolutionApplied, vmcp.ConflictStrategyPriority)
 					}
+				}
+			}
+
+			for _, toolName := range tt.wantMissing {
+				if _, exists := resolved[toolName]; exists {
+					t.Errorf("tool %q should have been dropped", toolName)
 				}
 			}
 		})

@@ -477,6 +477,27 @@ func writeLegacySecretsFile(t *testing.T, filePath string, password []byte, secr
 	require.NoError(t, os.WriteFile(filePath, body, 0600), "Writing the legacy secrets file should not return an error")
 }
 
+// readLegacySecretsFile decrypts a file using the legacy algorithm only, so
+// tests can prove ordinary operations did not silently upgrade it.
+func readLegacySecretsFile(t *testing.T, filePath string, password []byte) map[string]string {
+	t.Helper()
+
+	body, err := os.ReadFile(filePath) // #nosec G304: test-controlled path
+	require.NoError(t, err, "Reading the legacy secrets file should not return an error")
+	require.NotEqual(t, secretsFileMagic, string(body[:len(secretsFileMagic)]), "The file should remain legacy")
+
+	legacyKey := sha256.Sum256(password)
+	decrypted, err := aes.Decrypt(body, legacyKey[:])
+	require.NoError(t, err, "Decrypting the legacy secrets file should not return an error")
+
+	var contents fileStructure
+	require.NoError(t, json.Unmarshal(decrypted, &contents), "Decoding the legacy secrets file should not return an error")
+	if contents.Secrets == nil {
+		return make(map[string]string)
+	}
+	return contents.Secrets
+}
+
 // readFramedFile reads a secrets file and parses its header, requiring that the
 // file is in the framed format.
 func readFramedFile(t *testing.T, filePath string) ([]byte, []byte) {
@@ -492,48 +513,215 @@ func readFramedFile(t *testing.T, filePath string) ([]byte, []byte) {
 	return salt, body
 }
 
-func TestEncryptedManager_ReadsLegacyUnframedFile(t *testing.T) {
+func TestEncryptedManager_OpeningLegacyFileDoesNotChangeBytes(t *testing.T) {
 	t.Parallel()
 	ctx := t.Context()
 
 	tempFile := createTempFile(t)
 	password := generateRandomPassword(t)
 	writeLegacySecretsFile(t, tempFile, password, map[string]string{"legacy-key": "legacy-value"})
+	original, err := os.ReadFile(tempFile)
+	require.NoError(t, err)
 
-	// The manager must open a legacy file with the password alone and decrypt
-	// it with the old unsalted SHA-256 key.
 	manager := createEncryptedManager(t, tempFile, password)
-
 	value, err := manager.GetSecret(ctx, "legacy-key")
-	require.NoError(t, err, "Reading a secret from a legacy file should not return an error")
-	assert.Equal(t, "legacy-value", value, "The legacy secret should be readable")
+	require.NoError(t, err)
+	assert.Equal(t, "legacy-value", value)
+	current, err := os.ReadFile(tempFile)
+	require.NoError(t, err)
+	assert.Equal(t, original, current)
 }
 
-func TestEncryptedManager_MigratesLegacyFileOnOpen(t *testing.T) {
+func TestEncryptedManager_OrdinaryOperationsPreserveLegacyFormat(t *testing.T) {
+	t.Parallel()
+	ctx := t.Context()
+
+	tests := []struct {
+		name      string
+		secrets   map[string]string
+		operation func(*EncryptedManager) error
+		expected  map[string]string
+	}{
+		{
+			name:    "set",
+			secrets: map[string]string{"existing": "value"},
+			operation: func(manager *EncryptedManager) error {
+				return manager.SetSecret(ctx, "new", "value")
+			},
+			expected: map[string]string{"existing": "value", "new": "value"},
+		},
+		{
+			name:    "update",
+			secrets: map[string]string{"existing": "value"},
+			operation: func(manager *EncryptedManager) error {
+				return manager.SetSecret(ctx, "existing", "updated")
+			},
+			expected: map[string]string{"existing": "updated"},
+		},
+		{
+			name:    "delete",
+			secrets: map[string]string{"remove": "value", "keep": "value"},
+			operation: func(manager *EncryptedManager) error {
+				return manager.DeleteSecret(ctx, "remove")
+			},
+			expected: map[string]string{"keep": "value"},
+		},
+		{
+			name:    "delete multiple",
+			secrets: map[string]string{"one": "value", "two": "value", "keep": "value"},
+			operation: func(manager *EncryptedManager) error {
+				return manager.DeleteSecrets(ctx, []string{"one", "two"})
+			},
+			expected: map[string]string{"keep": "value"},
+		},
+		{
+			name:    "cleanup",
+			secrets: map[string]string{"one": "value"},
+			operation: func(manager *EncryptedManager) error {
+				return manager.Cleanup()
+			},
+			expected: map[string]string{},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			tempFile := createTempFile(t)
+			password := generateRandomPassword(t)
+			writeLegacySecretsFile(t, tempFile, password, tt.secrets)
+			manager := createEncryptedManager(t, tempFile, password)
+
+			require.NoError(t, tt.operation(manager))
+			assert.Equal(t, tt.expected, readLegacySecretsFile(t, tempFile, password))
+		})
+	}
+}
+
+func TestEncryptedManager_UpgradeProtection(t *testing.T) {
 	t.Parallel()
 	ctx := t.Context()
 
 	tempFile := createTempFile(t)
 	password := generateRandomPassword(t)
 	writeLegacySecretsFile(t, tempFile, password, map[string]string{"legacy-key": "legacy-value"})
+	manager := createEncryptedManager(t, tempFile, password)
 
-	// Opening alone must migrate: a file that is only ever read would otherwise
-	// keep the unsalted SHA-256 derivation forever.
-	createEncryptedManager(t, tempFile, password)
+	require.NoError(t, manager.UpgradeProtection())
+	readFramedFile(t, tempFile)
+	value, err := manager.GetSecret(ctx, "legacy-key")
+	require.NoError(t, err)
+	assert.Equal(t, "legacy-value", value)
 
-	salt, _ := readFramedFile(t, tempFile)
-	assert.Len(t, salt, saltLength, "The migrated file should carry a full-length salt")
+	legacyKey := sha256.Sum256(password)
+	upgraded, err := os.ReadFile(tempFile)
+	require.NoError(t, err)
+	_, err = aes.Decrypt(upgraded, legacyKey[:])
+	assert.Error(t, err, "The legacy reader must not decrypt an upgraded store")
+	require.NoError(t, manager.UpgradeProtection())
+}
 
-	// The pre-existing secret must survive the migration and stay readable.
-	migrated := createEncryptedManager(t, tempFile, password)
-	legacyValue, err := migrated.GetSecret(ctx, "legacy-key")
-	require.NoError(t, err, "The pre-existing secret should survive migration")
-	assert.Equal(t, "legacy-value", legacyValue, "The pre-existing secret should be unchanged")
+func TestEncryptedManager_UpgradeProtectionFailurePreservesLegacyFile(t *testing.T) {
+	if os.Geteuid() == 0 {
+		t.Skip("root can bypass directory permissions")
+	}
+	t.Parallel()
 
-	require.NoError(t, migrated.SetSecret(ctx, "new-key", "new-value"), "Setting a secret should not return an error")
-	newValue, err := migrated.GetSecret(ctx, "new-key")
-	require.NoError(t, err, "A secret written after migration should be readable")
-	assert.Equal(t, "new-value", newValue, "The newly written secret should be unchanged")
+	tempFile := createTempFile(t)
+	password := generateRandomPassword(t)
+	want := map[string]string{"legacy-key": "legacy-value"}
+	writeLegacySecretsFile(t, tempFile, password, want)
+	original, err := os.ReadFile(tempFile)
+	require.NoError(t, err)
+	manager := createEncryptedManager(t, tempFile, password)
+
+	// Pre-create the lock file so WithFileLock's own lock acquisition
+	// doesn't need directory write permission. The failure this test wants
+	// to force is inside UpgradeProtection's install step (an install that
+	// can't create its temp file, e.g. a full disk or a read-only mount),
+	// not in acquiring the lock — the fix in pkg/lockfile means acquisition
+	// needs to create the lock file, which read-only-directory would also
+	// block if it didn't already exist.
+	require.NoError(t, os.WriteFile(tempFile+".lock", nil, 0600))
+
+	directory := filepath.Dir(tempFile)
+	require.NoError(t, os.Chmod(directory, 0500))
+	t.Cleanup(func() { require.NoError(t, os.Chmod(directory, 0700)) })
+
+	require.Error(t, manager.UpgradeProtection())
+	require.NoError(t, os.Chmod(directory, 0700))
+
+	current, err := os.ReadFile(tempFile)
+	require.NoError(t, err)
+	assert.Equal(t, original, current)
+	assert.Equal(t, want, readLegacySecretsFile(t, tempFile, password))
+}
+
+// TestEncryptedManager_VerifyUpgradeOrRollback_RestoresOnMismatch exercises the
+// verify/rollback half of UpgradeProtection directly. A real verification
+// failure only happens if the file is corrupted between the install write and
+// the verify read; since UpgradeProtection holds the file lock across both,
+// nothing else can do that to it in practice. Calling installUpgrade and
+// verifyUpgradeOrRollback as separate steps — exactly what UpgradeProtection
+// does internally — lets the test corrupt the installed file in between,
+// deterministically reaching the rollback branch without adding a
+// production-only test hook.
+func TestEncryptedManager_VerifyUpgradeOrRollback_RestoresOnMismatch(t *testing.T) {
+	t.Parallel()
+	ctx := t.Context()
+
+	tempFile := createTempFile(t)
+	password := generateRandomPassword(t)
+	want := map[string]string{"legacy-key": "legacy-value"}
+	writeLegacySecretsFile(t, tempFile, password, want)
+	original, err := os.ReadFile(tempFile)
+	require.NoError(t, err)
+	manager := createEncryptedManager(t, tempFile, password)
+
+	newSalt := make([]byte, saltLength)
+	_, err = rand.Read(newSalt)
+	require.NoError(t, err)
+	require.NoError(t, manager.installUpgrade(want, fileFormat{version: fileFormatV1, salt: newSalt}))
+	readFramedFile(t, tempFile) // sanity: install really produced a framed v1 file
+
+	// Simulate the file being corrupted or interrupted between install and
+	// verify (e.g. a crash mid-write on a future run, or bit rot).
+	require.NoError(t, os.WriteFile(tempFile, []byte("corrupted"), 0600))
+
+	err = manager.verifyUpgradeOrRollback(original, want)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "restored original encrypted bytes")
+
+	current, err := os.ReadFile(tempFile)
+	require.NoError(t, err)
+	assert.Equal(t, original, current, "rollback must restore the original encrypted bytes")
+
+	// The restored file must still be usable as the legacy format it was.
+	assert.Equal(t, want, readLegacySecretsFile(t, tempFile, password))
+	value, err := manager.GetSecret(ctx, "legacy-key")
+	require.NoError(t, err)
+	assert.Equal(t, "legacy-value", value)
+}
+
+func TestEncryptedManager_StaleManagerPreservesUpgradedFormat(t *testing.T) {
+	t.Parallel()
+	ctx := t.Context()
+
+	tempFile := createTempFile(t)
+	password := generateRandomPassword(t)
+	writeLegacySecretsFile(t, tempFile, password, map[string]string{"legacy": "value"})
+
+	staleManager := createEncryptedManager(t, tempFile, password)
+	upgradingManager := createEncryptedManager(t, tempFile, password)
+	require.NoError(t, upgradingManager.UpgradeProtection())
+
+	require.NoError(t, staleManager.SetSecret(ctx, "new", "value"))
+	readFramedFile(t, tempFile)
+
+	value, err := staleManager.GetSecret(ctx, "new")
+	require.NoError(t, err)
+	assert.Equal(t, "value", value)
 }
 
 func TestEncryptedManager_NewFileIsFramed(t *testing.T) {
@@ -606,16 +794,19 @@ func TestEncryptedManager_MalformedHeader(t *testing.T) {
 		name    string
 		data    []byte
 		wantMsg string
+		wantErr error
 	}{
 		{
 			name:    "truncated below the header",
 			data:    append([]byte(secretsFileMagic), 0x01, 0x00),
 			wantMsg: "header is truncated",
+			wantErr: ErrMalformedSecretsFile,
 		},
 		{
 			name:    "unsupported format version",
 			data:    badVersion,
-			wantMsg: "unsupported format version",
+			wantMsg: "unsupported secrets file format version",
+			wantErr: ErrUnsupportedSecretsFileVersion,
 		},
 	}
 
@@ -632,7 +823,7 @@ func TestEncryptedManager_MalformedHeader(t *testing.T) {
 			}, "A malformed header must not panic")
 
 			require.Error(t, err, "A malformed header should return an error")
-			assert.ErrorIs(t, err, ErrMalformedSecretsFile, "The error should wrap ErrMalformedSecretsFile")
+			assert.ErrorIs(t, err, tt.wantErr, "The error should have the expected classification")
 			assert.Contains(t, err.Error(), tt.wantMsg, "Error message should describe the defect")
 		})
 	}
@@ -656,37 +847,4 @@ func TestEncryptedManager_SaltIsStableAcrossWrites(t *testing.T) {
 
 	assert.Equal(t, firstSalt, secondSalt, "The salt should be reused between writes to the same file")
 	assert.NotEqual(t, firstBody, secondBody, "Each write should produce a fresh nonce and therefore a different body")
-}
-
-func TestEncryptedManager_FailedMigrationPreservesLegacyFile(t *testing.T) {
-	t.Parallel()
-	ctx := t.Context()
-
-	if os.Geteuid() == 0 {
-		t.Skip("running as root bypasses directory permissions")
-	}
-
-	dir := t.TempDir()
-	filePath := filepath.Join(dir, "secrets_encrypted")
-	password := generateRandomPassword(t)
-	writeLegacySecretsFile(t, filePath, password, map[string]string{"legacy-key": "legacy-value"})
-
-	original, err := os.ReadFile(filePath) // #nosec G304: test-controlled path
-	require.NoError(t, err, "Reading the legacy file should not return an error")
-
-	// Make the directory unwritable so the atomic rewrite cannot create its
-	// temporary file. Migration is best effort and must not take the secrets
-	// with it when it fails.
-	require.NoError(t, os.Chmod(dir, 0o500), "Making the directory read-only should not return an error")
-	t.Cleanup(func() { _ = os.Chmod(dir, 0o700) })
-
-	manager := createEncryptedManager(t, filePath, password)
-
-	value, err := manager.GetSecret(ctx, "legacy-key")
-	require.NoError(t, err, "A failed migration should leave the secrets readable")
-	assert.Equal(t, "legacy-value", value, "The legacy secret should be unchanged")
-
-	current, err := os.ReadFile(filePath) // #nosec G304: test-controlled path
-	require.NoError(t, err, "Re-reading the legacy file should not return an error")
-	assert.Equal(t, original, current, "A failed migration should leave the legacy ciphertext untouched")
 }

@@ -53,12 +53,11 @@ func WithFileLock(path string, fn func() error) error {
 	defer mu.Unlock()
 
 	lockPath := path + ".lock"
-	fileLock := lockfile.NewTrackedLock(lockPath)
 
 	ctx, cancel := context.WithTimeout(context.Background(), DefaultLockTimeout)
 	defer cancel()
 
-	locked, err := fileLock.TryLockContext(ctx, defaultLockRetryInterval)
+	fileLock, locked, err := lockfile.AcquireTrackedLock(ctx, lockPath, defaultLockRetryInterval)
 	if err != nil {
 		return fmt.Errorf("failed to acquire lock: %w", err)
 	}

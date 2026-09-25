@@ -857,6 +857,14 @@ func (capabilityFreeServer) UpstreamTokenRefresher() storage.UpstreamTokenRefres
 func (capabilityFreeServer) DCRStore() storage.DCRCredentialStore                   { return nil }
 func (capabilityFreeServer) Close() error                                           { return nil }
 
+func TestSPIFFEX509AuthoritiesUnsupported(t *testing.T) {
+	t.Parallel()
+
+	authorities, supported := SPIFFEX509Authorities(capabilityFreeServer{})
+	assert.False(t, supported)
+	assert.Nil(t, authorities)
+}
+
 // eventRecordingStorage records when the server closes storage, so the ordering
 // between upstream draining and storage teardown can be asserted. Close does not
 // delegate: MemoryStorage.Close panics when called twice and the test cleanup

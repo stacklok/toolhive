@@ -1784,6 +1784,59 @@ func TestConfig_WarnTrustedIssuerAudiences(t *testing.T) {
 			} else {
 				require.Empty(t, buf.String())
 			}
+
+		})
+	}
+}
+
+func TestTLSListenerRunConfigValidation(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name    string
+		config  *TLSListenerRunConfig
+		wantErr string
+	}{
+		{name: "nil", config: nil},
+		{name: "both files", config: &TLSListenerRunConfig{CertFile: "cert", KeyFile: "key"}},
+		{name: "missing cert", config: &TLSListenerRunConfig{KeyFile: "key"}, wantErr: "tls_listener.cert_file"},
+		{name: "missing key", config: &TLSListenerRunConfig{CertFile: "cert"}, wantErr: "tls_listener.key_file"},
+		{name: "missing both", config: &TLSListenerRunConfig{}, wantErr: "tls_listener.cert_file and tls_listener.key_file"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			cfg := RunConfig{TLSListener: tt.config}
+			err := cfg.Validate()
+			if tt.wantErr == "" {
+				require.NoError(t, err)
+				return
+			}
+			require.Error(t, err)
+			assert.Contains(t, err.Error(), tt.wantErr)
+		})
+	}
+}
+
+func TestHasSPIFFEX509ClientAuth(t *testing.T) {
+	t.Parallel()
+
+	x509Association := SPIFFEClientAuthRunConfig{Methods: []SPIFFEAuthenticationMethod{SPIFFEAuthenticationMethodX509}}
+	jwtAssociation := SPIFFEClientAuthRunConfig{Methods: []SPIFFEAuthenticationMethod{SPIFFEAuthenticationMethodJWT}}
+	tests := []struct {
+		name string
+		cfg  *RunConfig
+		want bool
+	}{
+		{name: "nil receiver", cfg: nil},
+		{name: "nil grants", cfg: &RunConfig{}},
+		{name: "JWT only", cfg: &RunConfig{InboundGrants: &InboundGrantsRunConfig{SPIFFEClientAuth: []SPIFFEClientAuthRunConfig{jwtAssociation}}}},
+		{name: "X.509 present", cfg: &RunConfig{InboundGrants: &InboundGrantsRunConfig{SPIFFEClientAuth: []SPIFFEClientAuthRunConfig{x509Association}}}, want: true},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			assert.Equal(t, tt.want, tt.cfg.HasSPIFFEX509ClientAuth())
 		})
 	}
 }

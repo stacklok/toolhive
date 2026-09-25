@@ -110,6 +110,8 @@ func (c *Converter) Convert(
 		config.PassthroughHeaders = vmcp.Spec.PassthroughHeaders
 	}
 
+	config.AllowCredentialHeaderPassthrough = allowCredentialHeaderPassthrough(vmcp)
+
 	// Override name with the CR name (authoritative source)
 	config.Name = vmcp.Name
 
@@ -183,6 +185,13 @@ func (c *Converter) Convert(
 	}
 
 	return config, authServerRC, nil
+}
+
+// allowCredentialHeaderPassthrough resolves the credential-passthrough opt-in.
+// The promoted top-level field only ever enables; neither level can switch the
+// other off.
+func allowCredentialHeaderPassthrough(vmcp *mcpv1beta1.VirtualMCPServer) bool {
+	return vmcp.Spec.AllowCredentialHeaderPassthrough || vmcp.Spec.Config.AllowCredentialHeaderPassthrough
 }
 
 // convertIncomingAuth converts IncomingAuthConfig from CRD to vmcp config.

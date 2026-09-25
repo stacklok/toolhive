@@ -1,0 +1,159 @@
+// SPDX-FileCopyrightText: Copyright 2026 Stacklok, Inc.
+// SPDX-License-Identifier: Apache-2.0
+
+package spiffeauth
+
+import (
+	"crypto/tls"
+	"crypto/x509"
+	"net/http"
+	"net/http/httptest"
+	"net/url"
+	"testing"
+
+	"github.com/spiffe/go-spiffe/v2/spiffeid"
+	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
+)
+
+func TestSPIFFEIDFromCertificate(t *testing.T) {
+	t.Parallel()
+
+	validURI := mustParseURI(t, "spiffe://example.org/workload/service")
+	tests := []struct {
+		name    string
+		uris    []*url.URL
+		wantID  spiffeid.ID
+		wantErr string
+	}{
+		{
+			name:    "rejects additional non-SPIFFE URI SAN",
+			uris:    []*url.URL{mustParseURI(t, "https://example.org/workload"), validURI},
+			wantErr: "more than one URI SAN",
+		},
+		{
+			name:    "rejects no SPIFFE URI SAN",
+			uris:    []*url.URL{mustParseURI(t, "https://example.org/workload")},
+			wantErr: "scheme is missing or invalid",
+		},
+		{
+			name:    "rejects multiple SPIFFE URI SANs",
+			uris:    []*url.URL{validURI, mustParseURI(t, "spiffe://example.org/workload/other")},
+			wantErr: "more than one URI SAN",
+		},
+		{
+			name:    "rejects traversal in SPIFFE URI SAN",
+			uris:    []*url.URL{mustParseURI(t, "spiffe://example.org/workload/../other")},
+			wantErr: "dot segments",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			id, err := SPIFFEIDFromCertificate(&x509.Certificate{URIs: tt.uris})
+			if tt.wantErr != "" {
+				require.Error(t, err)
+				assert.Contains(t, err.Error(), tt.wantErr)
+				return
+			}
+			require.NoError(t, err)
+			assert.Equal(t, tt.wantID, id)
+		})
+	}
+}
+
+func TestMiddleware(t *testing.T) {
+	t.Parallel()
+
+	validCert := &x509.Certificate{URIs: []*url.URL{mustParseURI(t, "spiffe://example.org/workload/service")}}
+	nonSPIFFECert := &x509.Certificate{URIs: []*url.URL{mustParseURI(t, "https://example.org/workload")}}
+	mixedCert := &x509.Certificate{URIs: []*url.URL{
+		mustParseURI(t, "https://example.org/workload"),
+		mustParseURI(t, "spiffe://example.org/workload/service"),
+	}}
+	rootCert := &x509.Certificate{URIs: []*url.URL{mustParseURI(t, "spiffe://example.org")}}
+	tests := []struct {
+		name             string
+		path             string
+		peerCertificates []*x509.Certificate
+		wantStatus       int
+		wantID           spiffeid.ID
+		wantNextCalls    int
+	}{
+		{
+			name:             "only examines token endpoint",
+			path:             "/other",
+			peerCertificates: []*x509.Certificate{nonSPIFFECert},
+			wantStatus:       http.StatusNoContent,
+			wantNextCalls:    1,
+		},
+		{
+			name:          "passes request without peer certificate",
+			path:          "/oauth/token",
+			wantStatus:    http.StatusNoContent,
+			wantNextCalls: 1,
+		},
+		{
+			name:             "attaches valid identity",
+			path:             "/oauth/token",
+			peerCertificates: []*x509.Certificate{validCert},
+			wantStatus:       http.StatusNoContent,
+			wantID:           spiffeid.RequireFromString("spiffe://example.org/workload/service"),
+			wantNextCalls:    1,
+		},
+		{
+			name:             "passes non SPIFFE certificate without identity",
+			path:             "/oauth/token",
+			peerCertificates: []*x509.Certificate{nonSPIFFECert},
+			wantStatus:       http.StatusNoContent,
+			wantNextCalls:    1,
+		},
+		{
+			name:             "rejects mixed URI SANs without calling next",
+			path:             "/oauth/token",
+			peerCertificates: []*x509.Certificate{mixedCert},
+			wantStatus:       http.StatusUnauthorized,
+		},
+		{
+			name:             "rejects root SPIFFE URI SAN",
+			path:             "/oauth/token",
+			peerCertificates: []*x509.Certificate{rootCert},
+			wantStatus:       http.StatusUnauthorized,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			nextCalls := 0
+			var gotID spiffeid.ID
+			handler := Middleware(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				nextCalls++
+				gotID, _ = SPIFFEIDFromContext(r.Context())
+				w.WriteHeader(http.StatusNoContent)
+			}))
+			req := httptest.NewRequest(http.MethodPost, tt.path, nil)
+			if tt.peerCertificates != nil {
+				req.TLS = &tls.ConnectionState{PeerCertificates: tt.peerCertificates}
+			}
+			response := httptest.NewRecorder()
+
+			handler.ServeHTTP(response, req)
+
+			assert.Equal(t, tt.wantStatus, response.Code)
+			assert.Equal(t, tt.wantNextCalls, nextCalls)
+			assert.Equal(t, tt.wantID, gotID)
+		})
+	}
+}
+
+func mustParseURI(t *testing.T, rawURI string) *url.URL {
+	t.Helper()
+
+	uri, err := url.Parse(rawURI)
+	require.NoError(t, err)
+	return uri
+}

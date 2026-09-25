@@ -2751,6 +2751,51 @@ func TestNewEmbeddedAuthServer_ClosesStorageOnError(t *testing.T) {
 			"a count of 0 indicates the deferred Close did not run, leaking the backend on the error path")
 }
 
+// TestNewEmbeddedAuthServer_TLSListenerClosesStorageOnError verifies that a
+// TLS listener key-pair load failure also goes through the same
+// deferred-cleanup gate as every other constructor error path.
+//
+// A real spiffe_x509 association would additionally exercise
+// validateTLSListenerIssuer's https-issuer check, but that association can
+// only be built against a live SPIFFE Workload API bundle source (see
+// TestNewEmbeddedAuthServerWithStorage_SPIFFECollisionPrecedesDCR, which
+// skips for the same reason). A missing TLS certificate file fails earlier,
+// in newTLSKeyPairCache, and still proves the storage is closed exactly
+// once on this error path.
+func TestNewEmbeddedAuthServer_TLSListenerClosesStorageOnError(t *testing.T) {
+	t.Parallel()
+
+	tracker := &closeTrackingStorage{Storage: storage.NewMemoryStorage()}
+
+	cfg := &authserver.RunConfig{
+		SchemaVersion: authserver.CurrentSchemaVersion,
+		Issuer:        "http://localhost:8080",
+		Upstreams: []authserver.UpstreamRunConfig{
+			{
+				Name: "test-upstream",
+				Type: authserver.UpstreamProviderTypeOAuth2,
+				OAuth2Config: &authserver.OAuth2UpstreamRunConfig{
+					AuthorizationEndpoint: "https://example.com/authorize",
+					TokenEndpoint:         "https://example.com/token",
+					ClientID:              "test-client-id",
+					RedirectURI:           "http://localhost:8080/oauth/callback",
+				},
+			},
+		},
+		AllowedAudiences: []string{"https://mcp.example.com"},
+		TLSListener: &authserver.TLSListenerRunConfig{
+			CertFile: filepath.Join(t.TempDir(), "missing-cert.pem"),
+			KeyFile:  filepath.Join(t.TempDir(), "missing-key.pem"),
+		},
+	}
+
+	embed, err := NewEmbeddedAuthServerWithStorage(context.Background(), cfg, tracker)
+	require.Error(t, err)
+	assert.Nil(t, embed)
+	assert.Equal(t, int32(1), tracker.closeCount.Load(),
+		"a TLS listener certificate load failure must Close the storage exactly once via the deferred-cleanup gate")
+}
+
 // TestEmbeddedAuthServer_DCRStorePersistsAcrossClose verifies that the DCR
 // store reachable through EmbeddedAuthServer.DCRStore() holds the resolved
 // RFC 7591 client registration after the constructor's full DCR resolver

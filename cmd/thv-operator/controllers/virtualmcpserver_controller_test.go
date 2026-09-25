@@ -4799,6 +4799,81 @@ func TestVirtualMCPServerValidateAuthServerConfig_InsecureAllowHTTP(t *testing.T
 	}
 }
 
+// TestVirtualMCPServerValidateAuthServerConfig_TLSListener exercises the
+// tlsListener rules enforced through EmbeddedAuthServerConfig.ValidateTLSListener.
+func TestVirtualMCPServerValidateAuthServerConfig_TLSListener(t *testing.T) {
+	t.Parallel()
+
+	listener := &mcpv1beta1.TLSListenerConfig{
+		CertificateSecretRef: &mcpv1beta1.SecretKeyRef{Name: "listener-tls", Key: "certificate"},
+		PrivateKeySecretRef:  &mcpv1beta1.SecretKeyRef{Name: "listener-tls", Key: "private-key"},
+	}
+	x509Grants := &mcpv1beta1.InboundGrantsConfig{SPIFFEClientAuth: []mcpv1beta1.SPIFFEClientConfig{{
+		TrustDomainRef:   "example",
+		PrincipalPattern: "spiffe://example.org/ns/default/agent",
+		ClientID:         "spiffe-client",
+		Methods:          []mcpv1beta1.SPIFFEAuthenticationMethod{mcpv1beta1.SPIFFEAuthenticationMethodX509},
+		Audiences:        []string{"https://mcp.example.com"},
+		Scopes:           []string{"openid"},
+	}}}
+
+	tests := []struct {
+		name        string
+		listener    *mcpv1beta1.TLSListenerConfig
+		wantMessage string
+	}{
+		{
+			name:        "x509 association without listener",
+			wantMessage: "spec.authServerConfig: tlsListener is required when SPIFFE X.509 client authentication is configured",
+		},
+		{name: "x509 association with listener", listener: listener},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			vmcp := v1beta1test.NewVirtualMCPServer(testVmcpName, "default",
+				v1beta1test.WithVMCPGroupRef("test-group"),
+				v1beta1test.WithVMCPAuthServerConfig(&mcpv1beta1.EmbeddedAuthServerConfig{
+					Issuer: "https://authserver.example.com",
+					SPIFFETrustDomains: []mcpv1beta1.SPIFFETrustDomainConfig{{
+						Name: "example", TrustDomain: "example.org",
+						Methods: []mcpv1beta1.SPIFFEAuthenticationMethod{mcpv1beta1.SPIFFEAuthenticationMethodX509},
+						BundleSource: mcpv1beta1.SPIFFEBundleSourceConfig{
+							Type:        mcpv1beta1.SPIFFEBundleSourceTypeWorkloadAPI,
+							WorkloadAPI: &mcpv1beta1.SPIFFEWorkloadAPIBundleSourceConfig{},
+						},
+					}},
+					InboundGrants: x509Grants,
+					TLSListener:   tt.listener,
+				}),
+				v1beta1test.MutateVMCP(func(v *mcpv1beta1.VirtualMCPServer) {
+					v.Generation = 1
+				}),
+			)
+
+			r := &VirtualMCPServerReconciler{}
+			statusManager := virtualmcpserverstatus.NewStatusManager(vmcp)
+			err := r.validateAuthServerConfig(vmcp, statusManager)
+			statusManager.UpdateStatus(t.Context(), &vmcp.Status)
+
+			cond := findCondition(vmcp.Status.Conditions, mcpv1beta1.ConditionTypeAuthServerConfigValidated)
+			require.NotNil(t, cond, "AuthServerConfigValidated condition must be set")
+			if tt.wantMessage == "" {
+				require.NoError(t, err)
+				assert.Equal(t, metav1.ConditionTrue, cond.Status)
+				assert.NotEqual(t, mcpv1beta1.VirtualMCPServerPhaseFailed, vmcp.Status.Phase)
+				return
+			}
+			require.EqualError(t, err, tt.wantMessage)
+			assert.Equal(t, mcpv1beta1.VirtualMCPServerPhaseFailed, vmcp.Status.Phase)
+			assert.Equal(t, metav1.ConditionFalse, cond.Status)
+			assert.Equal(t, mcpv1beta1.ConditionReasonAuthServerConfigInvalid, cond.Reason)
+			assert.Equal(t, tt.wantMessage, cond.Message)
+		})
+	}
+}
+
 func TestVirtualMCPServerValidateAuthServerConfig_ZeroUpstreamAlternatives(t *testing.T) {
 	t.Parallel()
 

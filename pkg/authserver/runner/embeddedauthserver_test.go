@@ -2647,6 +2647,7 @@ func TestEmbeddedAuthServer_SPIFFESerializedRestartPolicy(t *testing.T) {
 		if !includeAssociation {
 			return cfg
 		}
+		cfg.TLSListener = &authserver.TLSListenerRunConfig{CertFile: "/tls/tls.crt", KeyFile: "/tls/tls.key"}
 		cfg.SPIFFETrustDomains = []authserver.SPIFFETrustDomainRunConfig{{
 			Name:        "production",
 			TrustDomain: "example.org",

@@ -1181,6 +1181,51 @@ spec:
                         - redis
                         type: string
                     type: object
+                  tlsListener:
+                    description: |-
+                      TLSListener configures an additional TLS listener on port 8443 that
+                      serves the embedded authorization server's routes. MCP traffic, health
+                      probes and metrics stay on plain HTTP. Both certificateSecretRef and
+                      privateKeySecretRef are required. It is required when
+                      inboundGrants.spiffeClientAuth enables spiffe_x509. That requirement is
+                      checked when the resource is reconciled and reported in status
+                      conditions; the API server does not reject it. The listener is
+                      reachable on the pod only: the operator does not yet add port 8443 to
+                      the Service or container ports. Updates to the referenced Secret
+                      contents are picked up without a pod restart.
+                    properties:
+                      certificateSecretRef:
+                        description: CertificateSecretRef references the PEM-encoded
+                          TLS certificate.
+                        properties:
+                          key:
+                            description: Key is the key within the secret
+                            type: string
+                          name:
+                            description: Name is the name of the secret
+                            type: string
+                        required:
+                        - key
+                        - name
+                        type: object
+                      privateKeySecretRef:
+                        description: PrivateKeySecretRef references the PEM-encoded
+                          TLS private key.
+                        properties:
+                          key:
+                            description: Key is the key within the secret
+                            type: string
+                          name:
+                            description: Name is the name of the secret
+                            type: string
+                        required:
+                        - key
+                        - name
+                        type: object
+                    required:
+                    - certificateSecretRef
+                    - privateKeySecretRef
+                    type: object
                   tokenLifespans:
                     description: |-
                       TokenLifespans configures the duration that various tokens are valid.
@@ -6665,6 +6710,51 @@ spec:
                         - memory
                         - redis
                         type: string
+                    type: object
+                  tlsListener:
+                    description: |-
+                      TLSListener configures an additional TLS listener on port 8443 that
+                      serves the embedded authorization server's routes. MCP traffic, health
+                      probes and metrics stay on plain HTTP. Both certificateSecretRef and
+                      privateKeySecretRef are required. It is required when
+                      inboundGrants.spiffeClientAuth enables spiffe_x509. That requirement is
+                      checked when the resource is reconciled and reported in status
+                      conditions; the API server does not reject it. The listener is
+                      reachable on the pod only: the operator does not yet add port 8443 to
+                      the Service or container ports. Updates to the referenced Secret
+                      contents are picked up without a pod restart.
+                    properties:
+                      certificateSecretRef:
+                        description: CertificateSecretRef references the PEM-encoded
+                          TLS certificate.
+                        properties:
+                          key:
+                            description: Key is the key within the secret
+                            type: string
+                          name:
+                            description: Name is the name of the secret
+                            type: string
+                        required:
+                        - key
+                        - name
+                        type: object
+                      privateKeySecretRef:
+                        description: PrivateKeySecretRef references the PEM-encoded
+                          TLS private key.
+                        properties:
+                          key:
+                            description: Key is the key within the secret
+                            type: string
+                          name:
+                            description: Name is the name of the secret
+                            type: string
+                        required:
+                        - key
+                        - name
+                        type: object
+                    required:
+                    - certificateSecretRef
+                    - privateKeySecretRef
                     type: object
                   tokenLifespans:
                     description: |-

@@ -494,6 +494,9 @@ func (c *RunConfig) Validate() error {
 	if err := c.TLSListener.validate(); err != nil {
 		return err
 	}
+	if c.HasSPIFFEX509ClientAuth() && c.TLSListener == nil {
+		return fmt.Errorf("tls_listener is required when a SPIFFE client association enables spiffe_x509")
+	}
 	if err := c.validateClientAdmission(); err != nil {
 		return err
 	}

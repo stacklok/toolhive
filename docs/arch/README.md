@@ -141,11 +141,16 @@ Welcome to the ToolHive architecture documentation. This directory contains comp
     - Operational gotchas: audience/scope binding, discovery redirects, JWKS caching, diagnostics
 
 18. **[SPIFFE Association Declarations](18-spiffe-association-declarations.md)**
-    - Not yet deployable: rejected at startup pending real SVID verification
-    - Configuration-only SPIFFE trust, association, and static-client model
-    - JWT-SVID client-authentication dispatch and validation logic implemented but not yet wired to a trust bundle source
+    - X.509-SVID and JWT-SVID client authentication for configured associations
+    - Trust-bundle loading (file, with workload_api/bundle_endpoint declared but not yet loaded), `client_credentials` and RFC 8693 delegation grants, and discovery integration
     - Fail-closed policy validation and durable, restart-safe static-client reservation
-    - X.509-SVID validation, trust-bundle loading, and SPIFFE grant/discovery integration remain pending
+
+19. **[Auth Server TLS Listener](19-auth-server-tls-listener.md)**
+    - Dedicated TLS listener on fixed port 8443 for the embedded authorization server
+    - Enables SPIFFE X.509-SVID client authentication without moving MCP traffic, `/health`, or metrics to HTTPS
+    - Additive: the plain MCP port keeps serving all auth server routes
+    - Owned by `EmbeddedAuthServer`, used by the proxy runner and `vmcp serve`; operator ports, drift detection, and certificate rotation via projected volume
+    - Alternatives considered, exposure options, and known limitations
 
 ### Existing Documentation
 

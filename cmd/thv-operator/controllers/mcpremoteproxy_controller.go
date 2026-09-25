@@ -570,12 +570,19 @@ func (r *MCPRemoteProxyReconciler) ensureService(
 ) (ctrl.Result, error) {
 	ctxLogger := log.FromContext(ctx)
 
+	tlsListener, err := ctrlutil.ResolveTLSListenerEnabled(
+		ctx, r.Client, proxy.Namespace, proxy.Spec.ExternalAuthConfigRef, proxy.Spec.AuthServerRef,
+	)
+	if err != nil {
+		return ctrl.Result{}, err
+	}
+
 	serviceName := createProxyServiceName(proxy.Name)
 	service := &corev1.Service{}
-	err := r.Get(ctx, types.NamespacedName{Name: serviceName, Namespace: proxy.Namespace}, service)
+	err = r.Get(ctx, types.NamespacedName{Name: serviceName, Namespace: proxy.Namespace}, service)
 
 	if errors.IsNotFound(err) {
-		svc := r.serviceForMCPRemoteProxy(ctx, proxy)
+		svc := r.serviceForMCPRemoteProxy(ctx, proxy, tlsListener)
 		if svc == nil {
 			return ctrl.Result{}, fmt.Errorf("failed to create Service object")
 		}
@@ -591,8 +598,8 @@ func (r *MCPRemoteProxyReconciler) ensureService(
 	}
 
 	// Service exists - check if it needs to be updated
-	if r.serviceNeedsUpdate(service, proxy) {
-		newService := r.serviceForMCPRemoteProxy(ctx, proxy)
+	if r.serviceNeedsUpdate(service, proxy, tlsListener) {
+		newService := r.serviceForMCPRemoteProxy(ctx, proxy, tlsListener)
 		if newService == nil {
 			return ctrl.Result{}, fmt.Errorf("failed to create updated Service object")
 		}
@@ -1826,13 +1833,20 @@ func (r *MCPRemoteProxyReconciler) generatedContainerNeedsUpdate(
 ) bool {
 	container := deployment.Spec.Template.Spec.Containers[0]
 
+	tlsListener, err := ctrlutil.ResolveTLSListenerEnabled(
+		ctx, r.Client, proxy.Namespace, proxy.Spec.ExternalAuthConfigRef, proxy.Spec.AuthServerRef,
+	)
+	if err != nil {
+		return true
+	}
+
 	// Check if runner image has changed
 	if container.Image != getToolhiveRunnerImage() {
 		return true
 	}
 
 	// Check if port has changed
-	if len(container.Ports) > 0 && container.Ports[0].ContainerPort != int32(proxy.GetProxyPort()) {
+	if ctrlutil.ContainerPortsDiffer(container.Ports, r.buildContainerPorts(proxy, tlsListener)) {
 		return true
 	}
 
@@ -2063,9 +2077,11 @@ func (r *MCPRemoteProxyReconciler) podSpecNeedsUpdate(
 }
 
 // serviceNeedsUpdate checks if the service needs to be updated
-func (*MCPRemoteProxyReconciler) serviceNeedsUpdate(service *corev1.Service, proxy *mcpv1beta1.MCPRemoteProxy) bool {
+func (*MCPRemoteProxyReconciler) serviceNeedsUpdate(
+	service *corev1.Service, proxy *mcpv1beta1.MCPRemoteProxy, tlsListener bool,
+) bool {
 	// Check if port has changed
-	if len(service.Spec.Ports) > 0 && service.Spec.Ports[0].Port != int32(proxy.GetProxyPort()) {
+	if ctrlutil.ServicePortsDiffer(service.Spec.Ports, remoteProxyServicePorts(proxy, tlsListener)) {
 		return true
 	}
 

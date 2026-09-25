@@ -12,6 +12,7 @@ import (
 
 	corev1 "k8s.io/api/core/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
+	"k8s.io/apimachinery/pkg/util/intstr"
 	k8sptr "k8s.io/utils/ptr"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 
@@ -423,6 +424,102 @@ func EmbeddedAuthServerConfigName(
 		return extAuthRef.Name
 	}
 	return ""
+}
+
+// AuthServerTLSListenerPortName is the container and Service port name of the
+// embedded auth server's TLS listener.
+const AuthServerTLSListenerPortName = "https-auth"
+
+// TLSListenerEnabled reports whether the embedded auth server config enables
+// the TLS listener.
+func TLSListenerEnabled(cfg *mcpv1beta1.EmbeddedAuthServerConfig) bool {
+	return cfg != nil && cfg.TLSListener != nil
+}
+
+// ResolveTLSListenerEnabled looks up the embedded auth server config referenced
+// by extAuthRef/authServerRef and reports whether it enables the TLS listener.
+// It returns false with no error when nothing is referenced, the referenced
+// config is not of type embeddedAuthServer, or it does not exist. It does not
+// validate CA bundles, so an unrelated CA error cannot block the Service.
+func ResolveTLSListenerEnabled(
+	ctx context.Context,
+	c client.Client,
+	namespace string,
+	extAuthRef *mcpv1beta1.ExternalAuthConfigRef,
+	authServerRef *mcpv1beta1.AuthServerRef,
+) (bool, error) {
+	configName := EmbeddedAuthServerConfigName(extAuthRef, authServerRef)
+	if configName == "" {
+		return false, nil
+	}
+
+	externalAuthConfig, err := GetExternalAuthConfigByName(ctx, c, namespace, configName)
+	if apierrors.IsNotFound(err) {
+		return false, nil
+	}
+	if err != nil {
+		return false, err
+	}
+	if externalAuthConfig.Spec.Type != mcpv1beta1.ExternalAuthTypeEmbeddedAuthServer {
+		return false, nil
+	}
+	return TLSListenerEnabled(externalAuthConfig.Spec.EmbeddedAuthServer), nil
+}
+
+// TLSListenerContainerPort returns the container port of the auth server TLS listener.
+func TLSListenerContainerPort() corev1.ContainerPort {
+	return corev1.ContainerPort{
+		Name:          AuthServerTLSListenerPortName,
+		ContainerPort: authrunner.TLSListenerPort,
+		Protocol:      corev1.ProtocolTCP,
+	}
+}
+
+// TLSListenerServicePort returns the Service port of the auth server TLS listener.
+func TLSListenerServicePort() corev1.ServicePort {
+	return corev1.ServicePort{
+		Name:        AuthServerTLSListenerPortName,
+		Port:        authrunner.TLSListenerPort,
+		TargetPort:  intstr.FromInt32(authrunner.TLSListenerPort),
+		Protocol:    corev1.ProtocolTCP,
+		AppProtocol: k8sptr.To("https"),
+	}
+}
+
+// ContainerPortsDiffer reports whether two container port lists differ in the
+// fields the operator manages: Name, ContainerPort and Protocol, in order.
+func ContainerPortsDiffer(current, desired []corev1.ContainerPort) bool {
+	if len(current) != len(desired) {
+		return true
+	}
+	for i := range current {
+		if current[i].Name != desired[i].Name ||
+			current[i].ContainerPort != desired[i].ContainerPort ||
+			current[i].Protocol != desired[i].Protocol {
+			return true
+		}
+	}
+	return false
+}
+
+// ServicePortsDiffer reports whether two Service port lists differ in the
+// fields the operator manages: Name, Port, TargetPort, Protocol and
+// AppProtocol, in order. Fields the API server fills in, such as NodePort,
+// are ignored.
+func ServicePortsDiffer(current, desired []corev1.ServicePort) bool {
+	if len(current) != len(desired) {
+		return true
+	}
+	for i := range current {
+		if current[i].Name != desired[i].Name ||
+			current[i].Port != desired[i].Port ||
+			current[i].TargetPort != desired[i].TargetPort ||
+			current[i].Protocol != desired[i].Protocol ||
+			!k8sptr.Equal(current[i].AppProtocol, desired[i].AppProtocol) {
+			return true
+		}
+	}
+	return false
 }
 
 // GenerateAuthServerConfigByName fetches an MCPExternalAuthConfig by name and, if its type

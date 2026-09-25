@@ -1081,13 +1081,30 @@ func (r *VirtualMCPServerReconciler) buildSecurityContextsForVmcp(
 
 // buildContainerPortsForVmcp builds container port configuration
 func (*VirtualMCPServerReconciler) buildContainerPortsForVmcp(
-	_ *mcpv1beta1.VirtualMCPServer,
+	vmcp *mcpv1beta1.VirtualMCPServer,
 ) []corev1.ContainerPort {
-	return []corev1.ContainerPort{{
+	ports := []corev1.ContainerPort{{
 		ContainerPort: vmcpDefaultPort,
 		Name:          "http",
 		Protocol:      corev1.ProtocolTCP,
 	}}
+	if ctrlutil.TLSListenerEnabled(vmcp.Spec.AuthServerConfig) {
+		ports = append(ports, ctrlutil.TLSListenerContainerPort())
+	}
+	return ports
+}
+
+func vmcpServicePorts(vmcp *mcpv1beta1.VirtualMCPServer) []corev1.ServicePort {
+	ports := []corev1.ServicePort{{
+		Port:       vmcpDefaultPort,
+		TargetPort: intstr.FromInt(int(vmcpDefaultPort)),
+		Protocol:   corev1.ProtocolTCP,
+		Name:       "http",
+	}}
+	if ctrlutil.TLSListenerEnabled(vmcp.Spec.AuthServerConfig) {
+		ports = append(ports, ctrlutil.TLSListenerServicePort())
+	}
+	return ports
 }
 
 // serviceForVirtualMCPServer returns a VirtualMCPServer Service object
@@ -1125,12 +1142,7 @@ func (r *VirtualMCPServerReconciler) serviceForVirtualMCPServer(
 			Type:            serviceType,
 			Selector:        ls,
 			SessionAffinity: sessionAffinity,
-			Ports: []corev1.ServicePort{{
-				Port:       vmcpDefaultPort,
-				TargetPort: intstr.FromInt(int(vmcpDefaultPort)),
-				Protocol:   corev1.ProtocolTCP,
-				Name:       "http",
-			}},
+			Ports:           vmcpServicePorts(vmcp),
 		},
 	}
 

@@ -1903,7 +1903,7 @@ func (r *VirtualMCPServerReconciler) containerNeedsUpdate(
 	}
 
 	// Check if port has changed
-	if len(container.Ports) > 0 && container.Ports[0].ContainerPort != vmcpDefaultPort {
+	if ctrlutil.ContainerPortsDiffer(container.Ports, r.buildContainerPortsForVmcp(vmcp)) {
 		return true
 	}
 
@@ -2207,7 +2207,7 @@ func (*VirtualMCPServerReconciler) serviceNeedsUpdate(
 	}
 
 	// Check if port has changed
-	if len(service.Spec.Ports) > 0 && service.Spec.Ports[0].Port != vmcpDefaultPort {
+	if ctrlutil.ServicePortsDiffer(service.Spec.Ports, vmcpServicePorts(vmcp)) {
 		return true
 	}
 

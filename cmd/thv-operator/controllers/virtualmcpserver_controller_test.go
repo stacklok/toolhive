@@ -712,7 +712,10 @@ func TestVirtualMCPServerServiceNeedsUpdate(t *testing.T) {
 			Type:            corev1.ServiceTypeClusterIP,
 			SessionAffinity: corev1.ServiceAffinityClientIP,
 			Ports: []corev1.ServicePort{{
-				Port: vmcpDefaultPort,
+				Name:       "http",
+				Port:       vmcpDefaultPort,
+				TargetPort: intstr.FromInt(int(vmcpDefaultPort)),
+				Protocol:   corev1.ProtocolTCP,
 			}},
 		},
 	}
@@ -1563,7 +1566,7 @@ func TestVirtualMCPServerContainerNeedsUpdate(t *testing.T) {
 									Name:  "vmcp",
 									Image: "old-image:v1",
 									Ports: []corev1.ContainerPort{
-										{ContainerPort: 4483},
+										{Name: "http", ContainerPort: 4483, Protocol: corev1.ProtocolTCP},
 									},
 									Env: mustBuildEnvVarsForVmcp(reconciler, vmcp),
 								},
@@ -1611,7 +1614,7 @@ func TestVirtualMCPServerContainerNeedsUpdate(t *testing.T) {
 									Name:  "vmcp",
 									Image: getVmcpImage(),
 									Ports: []corev1.ContainerPort{
-										{ContainerPort: 4483},
+										{Name: "http", ContainerPort: 4483, Protocol: corev1.ProtocolTCP},
 									},
 									Env: []corev1.EnvVar{
 										{Name: "OLD_VAR", Value: "old-value"},
@@ -1637,7 +1640,7 @@ func TestVirtualMCPServerContainerNeedsUpdate(t *testing.T) {
 									Name:  "vmcp",
 									Image: getVmcpImage(),
 									Ports: []corev1.ContainerPort{
-										{ContainerPort: 4483},
+										{Name: "http", ContainerPort: 4483, Protocol: corev1.ProtocolTCP},
 									},
 									Args: reconciler.buildContainerArgsForVmcp(vmcp),
 									Env:  mustBuildEnvVarsForVmcp(reconciler, vmcp),
@@ -1662,7 +1665,7 @@ func TestVirtualMCPServerContainerNeedsUpdate(t *testing.T) {
 									Name:  "vmcp",
 									Image: getVmcpImage(),
 									Ports: []corev1.ContainerPort{
-										{ContainerPort: 4483},
+										{Name: "http", ContainerPort: 4483, Protocol: corev1.ProtocolTCP},
 									},
 									Args: []string{"serve", "--config=/etc/vmcp-config/config.yaml", "--host=0.0.0.0", "--port=4483"},
 									Env:  mustBuildEnvVarsForVmcp(reconciler, vmcp),
@@ -1695,7 +1698,7 @@ func TestVirtualMCPServerContainerNeedsUpdate(t *testing.T) {
 									Name:  "vmcp",
 									Image: getVmcpImage(),
 									Ports: []corev1.ContainerPort{
-										{ContainerPort: 4483},
+										{Name: "http", ContainerPort: 4483, Protocol: corev1.ProtocolTCP},
 									},
 									Args: []string{"serve", "--config=/etc/vmcp-config/config.yaml", "--host=0.0.0.0", "--port=4483", "--debug"},
 									Env:  mustBuildEnvVarsForVmcp(reconciler, vmcp),
@@ -1720,7 +1723,7 @@ func TestVirtualMCPServerContainerNeedsUpdate(t *testing.T) {
 									Name:  "vmcp",
 									Image: getVmcpImage(),
 									Ports: []corev1.ContainerPort{
-										{ContainerPort: 4483},
+										{Name: "http", ContainerPort: 4483, Protocol: corev1.ProtocolTCP},
 									},
 									Args: reconciler.buildContainerArgsForVmcp(vmcp),
 									Env:  mustBuildEnvVarsForVmcp(reconciler, vmcp),
@@ -2156,7 +2159,7 @@ func TestVirtualMCPServerDeploymentNeedsUpdate(t *testing.T) {
 									Name:  "vmcp",
 									Image: getVmcpImage(),
 									Ports: []corev1.ContainerPort{
-										{ContainerPort: 4483},
+										{Name: "http", ContainerPort: 4483, Protocol: corev1.ProtocolTCP},
 									},
 									Env: mustBuildEnvVarsForVmcp(reconciler, vmcp),
 								},
@@ -2189,7 +2192,7 @@ func TestVirtualMCPServerDeploymentNeedsUpdate(t *testing.T) {
 									Name:  "vmcp",
 									Image: getVmcpImage(),
 									Ports: []corev1.ContainerPort{
-										{ContainerPort: 4483},
+										{Name: "http", ContainerPort: 4483, Protocol: corev1.ProtocolTCP},
 									},
 									Env: mustBuildEnvVarsForVmcp(reconciler, vmcp),
 								},
@@ -2220,7 +2223,7 @@ func TestVirtualMCPServerDeploymentNeedsUpdate(t *testing.T) {
 									Name:  "vmcp",
 									Image: "old-image:v1",
 									Ports: []corev1.ContainerPort{
-										{ContainerPort: 4483},
+										{Name: "http", ContainerPort: 4483, Protocol: corev1.ProtocolTCP},
 									},
 									Args: reconciler.buildContainerArgsForVmcp(vmcp),
 									Env:  mustBuildEnvVarsForVmcp(reconciler, vmcp),
@@ -2252,7 +2255,7 @@ func TestVirtualMCPServerDeploymentNeedsUpdate(t *testing.T) {
 									Name:  "vmcp",
 									Image: getVmcpImage(),
 									Ports: []corev1.ContainerPort{
-										{ContainerPort: 4483},
+										{Name: "http", ContainerPort: 4483, Protocol: corev1.ProtocolTCP},
 									},
 									Args: reconciler.buildContainerArgsForVmcp(vmcp),
 									Env:  mustBuildEnvVarsForVmcp(reconciler, vmcp),
@@ -2284,7 +2287,7 @@ func TestVirtualMCPServerDeploymentNeedsUpdate(t *testing.T) {
 									Name:  "vmcp",
 									Image: getVmcpImage(),
 									Ports: []corev1.ContainerPort{
-										{ContainerPort: 4483},
+										{Name: "http", ContainerPort: 4483, Protocol: corev1.ProtocolTCP},
 									},
 									Args: reconciler.buildContainerArgsForVmcp(vmcp),
 									Env:  mustBuildEnvVarsForVmcp(reconciler, vmcp),
@@ -2316,7 +2319,7 @@ func TestVirtualMCPServerDeploymentNeedsUpdate(t *testing.T) {
 									Name:  "vmcp",
 									Image: getVmcpImage(),
 									Ports: []corev1.ContainerPort{
-										{ContainerPort: 4483},
+										{Name: "http", ContainerPort: 4483, Protocol: corev1.ProtocolTCP},
 									},
 									Args:         reconciler.buildContainerArgsForVmcp(vmcp),
 									Env:          mustBuildEnvVarsForVmcp(reconciler, vmcp),
@@ -2842,7 +2845,7 @@ func TestVirtualMCPServerEnsureDeployment_NoUpdateNeeded(t *testing.T) {
 							Name:  "vmcp",
 							Image: getVmcpImage(),
 							Ports: []corev1.ContainerPort{
-								{ContainerPort: 4483},
+								{Name: "http", ContainerPort: 4483, Protocol: corev1.ProtocolTCP},
 							},
 							Env: mustBuildEnvVarsForVmcp(reconciler, vmcp),
 						},
@@ -3100,7 +3103,7 @@ func TestVirtualMCPServerEnsureDeployment_RemovesStaleHashAnnotation(t *testing.
 									Name:  "vmcp",
 									Image: getVmcpImage(),
 									Ports: []corev1.ContainerPort{
-										{ContainerPort: 4483},
+										{Name: "http", ContainerPort: 4483, Protocol: corev1.ProtocolTCP},
 									},
 									Env: mustBuildEnvVarsForVmcp(reconciler, vmcp),
 								},
@@ -3592,7 +3595,7 @@ func vmcpContainerDeployment(args []string, env []corev1.EnvVar, serviceAccount 
 							Name:  "vmcp",
 							Image: getVmcpImage(),
 							Ports: []corev1.ContainerPort{
-								{ContainerPort: 4483},
+								{Name: "http", ContainerPort: 4483, Protocol: corev1.ProtocolTCP},
 							},
 							Args: args,
 							Env:  env,

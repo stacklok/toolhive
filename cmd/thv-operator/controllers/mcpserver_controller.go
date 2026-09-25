@@ -541,11 +541,18 @@ func (r *MCPServerReconciler) Reconcile(ctx context.Context, req ctrl.Request) (
 
 	// Check if the Service already exists, if not create a new one
 	serviceName := ctrlutil.CreateProxyServiceName(mcpServer.Name)
+	tlsListener, err := ctrlutil.ResolveTLSListenerEnabled(
+		ctx, r.Client, mcpServer.Namespace, mcpServer.Spec.ExternalAuthConfigRef, mcpServer.Spec.AuthServerRef,
+	)
+	if err != nil {
+		return ctrl.Result{}, err
+	}
+
 	service := &corev1.Service{}
 	err = r.Get(ctx, types.NamespacedName{Name: serviceName, Namespace: mcpServer.Namespace}, service)
 	if err != nil && errors.IsNotFound(err) {
 		// Define a new service
-		svc := r.serviceForMCPServer(ctx, mcpServer)
+		svc := r.serviceForMCPServer(ctx, mcpServer, tlsListener)
 		if svc == nil {
 			ctxLogger.Error(nil, "Failed to create Service object")
 			return ctrl.Result{}, fmt.Errorf("failed to create Service object")
@@ -621,9 +628,9 @@ func (r *MCPServerReconciler) Reconcile(ctx context.Context, req ctrl.Request) (
 	}
 
 	// Check if the service spec changed
-	if serviceNeedsUpdate(service, mcpServer) {
+	if serviceNeedsUpdate(service, mcpServer, tlsListener) {
 		// Update the service
-		newService := r.serviceForMCPServer(ctx, mcpServer)
+		newService := r.serviceForMCPServer(ctx, mcpServer, tlsListener)
 		service.Spec.Ports = newService.Spec.Ports
 		service.Spec.SessionAffinity = newService.Spec.SessionAffinity
 		// Merge (not replace) Labels/Annotations so keys written by external controllers
@@ -1185,6 +1192,12 @@ func (r *MCPServerReconciler) deploymentForMCPServer(
 	ctx context.Context, m *mcpv1beta1.MCPServer, runConfigChecksum string,
 ) (*appsv1.Deployment, error) {
 	ls := labelsForMCPServer(m.Name)
+	tlsListener, err := ctrlutil.ResolveTLSListenerEnabled(
+		ctx, r.Client, m.Namespace, m.Spec.ExternalAuthConfigRef, m.Spec.AuthServerRef,
+	)
+	if err != nil {
+		return nil, fmt.Errorf("failed to resolve auth server TLS listener: %w", err)
+	}
 
 	// Prepare container args
 	args := []string{"run"}
@@ -1562,11 +1575,7 @@ func (r *MCPServerReconciler) deploymentForMCPServer(
 						Env:          env,
 						VolumeMounts: volumeMounts,
 						Resources:    resources,
-						Ports: []corev1.ContainerPort{{
-							ContainerPort: m.GetProxyPort(),
-							Name:          "http",
-							Protocol:      corev1.ProtocolTCP,
-						}},
+						Ports:        mcpServerContainerPorts(m, tlsListener),
 						StartupProbe: &corev1.Probe{
 							ProbeHandler: corev1.ProbeHandler{
 								HTTPGet: &corev1.HTTPGetAction{
@@ -1618,8 +1627,35 @@ func (r *MCPServerReconciler) deploymentForMCPServer(
 	return dep, nil
 }
 
+func mcpServerContainerPorts(m *mcpv1beta1.MCPServer, tlsListener bool) []corev1.ContainerPort {
+	ports := []corev1.ContainerPort{{
+		ContainerPort: m.GetProxyPort(),
+		Name:          "http",
+		Protocol:      corev1.ProtocolTCP,
+	}}
+	if tlsListener {
+		ports = append(ports, ctrlutil.TLSListenerContainerPort())
+	}
+	return ports
+}
+
+func mcpServerServicePorts(m *mcpv1beta1.MCPServer, tlsListener bool) []corev1.ServicePort {
+	ports := []corev1.ServicePort{{
+		Port:       m.GetProxyPort(),
+		TargetPort: intstr.FromInt(int(m.GetProxyPort())),
+		Protocol:   corev1.ProtocolTCP,
+		Name:       "http",
+	}}
+	if tlsListener {
+		ports = append(ports, ctrlutil.TLSListenerServicePort())
+	}
+	return ports
+}
+
 // serviceForMCPServer returns a MCPServer Service object
-func (r *MCPServerReconciler) serviceForMCPServer(ctx context.Context, m *mcpv1beta1.MCPServer) *corev1.Service {
+func (r *MCPServerReconciler) serviceForMCPServer(
+	ctx context.Context, m *mcpv1beta1.MCPServer, tlsListener bool,
+) *corev1.Service {
 	ls := labelsForMCPServer(m.Name)
 
 	// we want to generate a service name that is unique for the proxy service
@@ -1656,12 +1692,7 @@ func (r *MCPServerReconciler) serviceForMCPServer(ctx context.Context, m *mcpv1b
 		Spec: corev1.ServiceSpec{
 			Selector:        ls, // Keep original labels for selector
 			SessionAffinity: sessionAffinity,
-			Ports: []corev1.ServicePort{{
-				Port:       m.GetProxyPort(),
-				TargetPort: intstr.FromInt(int(m.GetProxyPort())),
-				Protocol:   corev1.ProtocolTCP,
-				Name:       "http",
-			}},
+			Ports:           mcpServerServicePorts(m, tlsListener),
 		},
 	}
 
@@ -1917,6 +1948,12 @@ func (r *MCPServerReconciler) deploymentNeedsUpdate(
 	if deployment == nil || mcpServer == nil {
 		return true
 	}
+	tlsListener, err := ctrlutil.ResolveTLSListenerEnabled(
+		ctx, r.Client, mcpServer.Namespace, mcpServer.Spec.ExternalAuthConfigRef, mcpServer.Spec.AuthServerRef,
+	)
+	if err != nil {
+		return true
+	}
 	// Check if the container args have changed
 	if len(deployment.Spec.Template.Spec.Containers) > 0 {
 		container := deployment.Spec.Template.Spec.Containers[0]
@@ -1940,7 +1977,7 @@ func (r *MCPServerReconciler) deploymentNeedsUpdate(
 		}
 
 		// Check if the container port has changed
-		if len(container.Ports) > 0 && container.Ports[0].ContainerPort != mcpServer.GetProxyPort() {
+		if ctrlutil.ContainerPortsDiffer(container.Ports, mcpServerContainerPorts(mcpServer, tlsListener)) {
 			return true
 		}
 
@@ -2240,9 +2277,11 @@ func (r *MCPServerReconciler) deploymentNeedsUpdate(
 }
 
 // serviceNeedsUpdate checks if the service needs to be updated
-func serviceNeedsUpdate(service *corev1.Service, mcpServer *mcpv1beta1.MCPServer) bool {
+func serviceNeedsUpdate(
+	service *corev1.Service, mcpServer *mcpv1beta1.MCPServer, tlsListener bool,
+) bool {
 	// Check if the service port has changed
-	if len(service.Spec.Ports) > 0 && service.Spec.Ports[0].Port != mcpServer.GetProxyPort() {
+	if ctrlutil.ServicePortsDiffer(service.Spec.Ports, mcpServerServicePorts(mcpServer, tlsListener)) {
 		return true
 	}
 

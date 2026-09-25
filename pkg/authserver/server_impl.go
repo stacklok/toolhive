@@ -5,6 +5,7 @@ package authserver
 
 import (
 	"context"
+	"crypto/x509"
 	"errors"
 	"fmt"
 	"log/slog"
@@ -15,6 +16,8 @@ import (
 	josev3 "github.com/go-jose/go-jose/v3"
 	"github.com/ory/fosite"
 	"github.com/ory/fosite/compose"
+	"github.com/spiffe/go-spiffe/v2/bundle/jwtbundle"
+	"github.com/spiffe/go-spiffe/v2/bundle/x509bundle"
 
 	oauthserver "github.com/stacklok/toolhive/pkg/authserver/server"
 	"github.com/stacklok/toolhive/pkg/authserver/server/deviceflow"
@@ -51,6 +54,9 @@ type server struct {
 	// TrustedIssuers are configured (nil otherwise). Held here so Close can shut
 	// down its per-issuer JWKS refresh worker pools; nothing else releases them.
 	trustedIssuerValidator *tokenexchange.MultiIssuerTokenValidator
+	// spiffeBundleSource supplies both X.509 and JWT bundles and owns the
+	// refresh workers for the server lifetime.
+	spiffeBundleSource *spiffeMultiDomainBundleSource
 }
 
 // DefaultUpstreamFactory creates the production upstream provider based on type.
@@ -138,6 +144,29 @@ func closeUpstreamIdleConnections(upstreams []handlers.NamedUpstream) {
 	}
 }
 
+func closeSPIFFEBundleSourceOnConstructionError(source *spiffeMultiDomainBundleSource, retErr *error) {
+	if *retErr == nil || source == nil {
+		return
+	}
+	if err := source.Close(); err != nil {
+		slog.Warn("failed to shut down SPIFFE bundle source during server construction cleanup", "error", err)
+	}
+}
+
+func spiffeX509BundleSource(source *spiffeMultiDomainBundleSource) x509bundle.Source {
+	if source == nil {
+		return nil
+	}
+	return source
+}
+
+func spiffeJWTBundleSource(source *spiffeMultiDomainBundleSource) jwtbundle.Source {
+	if source == nil {
+		return nil
+	}
+	return source
+}
+
 // newServer creates a new OAuth authorization server.
 // The opts parameter allows injecting dependencies for testing.
 func newServer(ctx context.Context, cfg Config, stor storage.Storage) (_ *server, retErr error) {
@@ -174,6 +203,12 @@ func newServer(ctx context.Context, cfg Config, stor storage.Storage) (_ *server
 		return nil, fmt.Errorf("storage backend %T does not implement storage.DCRCredentialStore", baseStore)
 	}
 
+	bundleSource, err := newSPIFFEMultiDomainBundleSource(ctx, cfg.SPIFFETrust)
+	if err != nil {
+		return nil, fmt.Errorf("create SPIFFE bundle source: %w", err)
+	}
+	defer closeSPIFFEBundleSourceOnConstructionError(bundleSource, &retErr)
+
 	stor, spiffeRegistry, err := decorateStorageForSPIFFE(ctx, cfg, stor)
 	if err != nil {
 		return nil, err
@@ -202,24 +237,24 @@ func newServer(ctx context.Context, cfg Config, stor storage.Storage) (_ *server
 
 	// Create OAuth2 config from authserver.Config
 	oauthParams := &oauthserver.AuthorizationServerParams{
-		Issuer:                              cfg.Issuer,
-		AccessTokenLifespan:                 cfg.AccessTokenLifespan,
-		RefreshTokenLifespan:                cfg.RefreshTokenLifespan,
-		AuthCodeLifespan:                    cfg.AuthCodeLifespan,
-		HMACSecrets:                         cfg.HMACSecrets,
-		SigningKeyID:                        signingKey.KeyID,
-		SigningKeyAlgorithm:                 signingKey.Algorithm,
-		SigningKey:                          signingKey.Key,
-		AdditionalPublicKeys:                additionalPublicKeys,
-		ScopesSupported:                     cfg.ScopesSupported,
-		BaselineClientScopes:                cfg.BaselineClientScopes,
-		AllowedAudiences:                    cfg.AllowedAudiences,
-		AuthorizationEndpointBaseURL:        cfg.AuthorizationEndpointBaseURL,
-		CIMDEnabled:                         cfg.CIMDEnabled,
-		AllowConfidentialClientRegistration: cfg.AllowConfidentialClientRegistration,
-		AllowPrivateKeyJWTRegistration:      cfg.AllowPrivateKeyJWTRegistration,
-		HasStaticDelegateClients:            len(cfg.DelegateClients) > 0,
-		InsecureAllowHTTP:                   cfg.InsecureAllowHTTP,
+		Issuer:                                    cfg.Issuer,
+		AccessTokenLifespan:                       cfg.AccessTokenLifespan,
+		RefreshTokenLifespan:                      cfg.RefreshTokenLifespan,
+		AuthCodeLifespan:                          cfg.AuthCodeLifespan,
+		HMACSecrets:                               cfg.HMACSecrets,
+		SigningKeyID:                              signingKey.KeyID,
+		SigningKeyAlgorithm:                       signingKey.Algorithm,
+		SigningKey:                                signingKey.Key,
+		AdditionalPublicKeys:                      additionalPublicKeys,
+		ScopesSupported:                           cfg.ScopesSupported,
+		BaselineClientScopes:                      cfg.BaselineClientScopes,
+		AllowedAudiences:                          cfg.AllowedAudiences,
+		AuthorizationEndpointBaseURL:              cfg.AuthorizationEndpointBaseURL,
+		CIMDEnabled:                               cfg.CIMDEnabled,
+		AllowConfidentialClientRegistration:       cfg.AllowConfidentialClientRegistration,
+		AllowPrivateKeyJWTRegistration:            cfg.AllowPrivateKeyJWTRegistration,
+		HasStaticDelegateClients:                  len(cfg.DelegateClients) > 0,
+		InsecureAllowHTTP:                         cfg.InsecureAllowHTTP,
 		InsecureAllowConfidentialOverLoopbackHTTP: cfg.InsecureAllowConfidentialOverLoopbackHTTP,
 		ForceConfidentialRedirectURIs:             cfg.ForceConfidentialRedirectURIs,
 		DisableTokenExchange:                      cfg.DisableTokenExchange,
@@ -227,6 +262,8 @@ func newServer(ctx context.Context, cfg Config, stor storage.Storage) (_ *server
 		DeviceFlowEnabled:                         cfg.DeviceFlowEnabled,
 		DeviceCodeInterval:                        cfg.DeviceCodeInterval,
 		SPIFFEClientResolver:                      newSPIFFEClientResolver(spiffeRegistry, stor),
+		SPIFFEX509BundleSource:                    spiffeX509BundleSource(bundleSource),
+		SPIFFEJWTBundleSource:                     spiffeJWTBundleSource(bundleSource),
 	}
 	authServerConfig, err := oauthserver.NewAuthorizationServerConfig(oauthParams)
 	if err != nil {
@@ -301,6 +338,7 @@ func newServer(ctx context.Context, cfg Config, stor storage.Storage) (_ *server
 		upstreams:              upstreams,
 		upstreamRefresher:      refresher,
 		trustedIssuerValidator: trustedIssuerValidator,
+		spiffeBundleSource:     bundleSource,
 	}, nil
 }
 
@@ -612,6 +650,16 @@ func newUpstreamTokenRefresher(
 // CloseIdleConnections function detects, so that call can never degrade to a
 // no-op for a server built by New.
 var _ idleConnectionCloser = (*server)(nil)
+var _ spiffeX509AuthorityLister = (*server)(nil)
+
+// SPIFFEX509Authorities returns the current X.509 authorities configured for
+// SPIFFE client authentication.
+func (s *server) SPIFFEX509Authorities() []*x509.Certificate {
+	if s.spiffeBundleSource == nil {
+		return nil
+	}
+	return s.spiffeBundleSource.SPIFFEX509Authorities()
+}
 
 // CloseIdleConnections drains the upstream providers' pooled connections; see
 // the package-level CloseIdleConnections function for the contract.
@@ -620,14 +668,18 @@ func (s *server) CloseIdleConnections() {
 }
 
 // Close releases resources held by the server: it drains upstream idle
-// connections, shuts down the trusted-issuer validator's per-issuer JWKS
-// refresh worker pools (see MultiIssuerTokenValidator.Close), and closes
-// storage. Errors from the validator shutdown and the storage close are
-// joined so neither hides the other.
+// connections, shuts down its SPIFFE bundle and trusted-issuer refresh
+// workers, and closes storage. Shutdown errors are joined so neither hides
+// the other.
 func (s *server) Close() error {
 	slog.Debug("closing OAuth authorization server")
 	s.CloseIdleConnections()
 	var errs []error
+	if s.spiffeBundleSource != nil {
+		if err := s.spiffeBundleSource.Close(); err != nil {
+			errs = append(errs, fmt.Errorf("failed to shut down SPIFFE bundle source: %w", err))
+		}
+	}
 	if s.trustedIssuerValidator != nil {
 		if err := s.trustedIssuerValidator.Close(); err != nil {
 			errs = append(errs, fmt.Errorf("failed to shut down trusted-issuer validator: %w", err))

@@ -781,6 +781,15 @@ type FailureHandlingConfig struct {
 	// +optional
 	HealthCheckTimeout Duration `json:"healthCheckTimeout,omitempty" yaml:"healthCheckTimeout,omitempty"`
 
+	// SessionInitTimeout is the overall budget for a new client session's
+	// initialize handshake across backends. When the budget expires, backends
+	// that have not completed are skipped and the session is returned
+	// best-effort. When unset, HealthCheckTimeout is used so existing configs
+	// keep current behavior. Set this independently when health-check cadence
+	// should not affect how long a new session waits for backends.
+	// +optional
+	SessionInitTimeout Duration `json:"sessionInitTimeout,omitempty" yaml:"sessionInitTimeout,omitempty"`
+
 	// StatusReportingInterval is the interval for reporting status updates to Kubernetes.
 	// This controls how often the vMCP runtime reports backend health and phase changes.
 	// Lower values provide faster status updates but increase API server load.
@@ -799,6 +808,23 @@ type FailureHandlingConfig struct {
 	// CircuitBreaker configures circuit breaker behavior.
 	// +optional
 	CircuitBreaker *CircuitBreakerConfig `json:"circuitBreaker,omitempty" yaml:"circuitBreaker,omitempty"`
+}
+
+// ResolvedSessionInitTimeout returns the initialize handshake budget.
+// SessionInitTimeout wins when set; otherwise HealthCheckTimeout is used so
+// existing configs keep current behavior. Zero means the caller should keep
+// the session factory default.
+func (fh *FailureHandlingConfig) ResolvedSessionInitTimeout() time.Duration {
+	if fh == nil {
+		return 0
+	}
+	if fh.SessionInitTimeout > 0 {
+		return time.Duration(fh.SessionInitTimeout)
+	}
+	if fh.HealthCheckTimeout > 0 {
+		return time.Duration(fh.HealthCheckTimeout)
+	}
+	return 0
 }
 
 // CircuitBreakerConfig configures circuit breaker behavior.

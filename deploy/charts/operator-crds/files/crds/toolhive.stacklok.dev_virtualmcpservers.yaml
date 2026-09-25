@@ -3142,6 +3142,16 @@ spec:
                             - fail
                             - best_effort
                             type: string
+                          sessionInitTimeout:
+                            description: |-
+                              SessionInitTimeout is the overall budget for a new client session's
+                              initialize handshake across backends. When the budget expires, backends
+                              that have not completed are skipped and the session is returned
+                              best-effort. When unset, HealthCheckTimeout is used so existing configs
+                              keep current behavior. Set this independently when health-check cadence
+                              should not affect how long a new session waits for backends.
+                            pattern: ^([0-9]+(\.[0-9]+)?(ns|us|µs|ms|s|m|h))+$
+                            type: string
                           statusReportingInterval:
                             default: 30s
                             description: |-
@@ -8173,6 +8183,16 @@ spec:
                             enum:
                             - fail
                             - best_effort
+                            type: string
+                          sessionInitTimeout:
+                            description: |-
+                              SessionInitTimeout is the overall budget for a new client session's
+                              initialize handshake across backends. When the budget expires, backends
+                              that have not completed are skipped and the session is returned
+                              best-effort. When unset, HealthCheckTimeout is used so existing configs
+                              keep current behavior. Set this independently when health-check cadence
+                              should not affect how long a new session waits for backends.
+                            pattern: ^([0-9]+(\.[0-9]+)?(ns|us|µs|ms|s|m|h))+$
                             type: string
                           statusReportingInterval:
                             default: 30s

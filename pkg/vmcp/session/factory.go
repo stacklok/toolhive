@@ -7,6 +7,7 @@ package session
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"log/slog"
 	"slices"
@@ -30,6 +31,13 @@ import (
 const (
 	defaultMaxBackendInitConcurrency = 10
 	defaultBackendInitTimeout        = 30 * time.Second
+	// defaultSessionInitTimeout is the overall budget for MakeSession to
+	// finish contacting backends. Per-backend init can take up to
+	// defaultBackendInitTimeout, which used to let initialize hang past
+	// typical client/gateway timeouts while Ready and /health stayed OK
+	// (#6345). 10s matches the HealthCheckTimeout CRD default, which
+	// sessionInitTimeout inherits when unset.
+	defaultSessionInitTimeout = 10 * time.Second
 
 	// MetadataKeyBackendIDs is the transport-session metadata key that holds
 	// a comma-separated, sorted list of successfully-connected backend IDs.
@@ -153,6 +161,7 @@ type defaultMultiSessionFactory struct {
 	maxConcurrency         int
 	backendInitTimeout     time.Duration
 	backendInitTimeoutSet  bool
+	sessionInitTimeout     time.Duration
 	revisionLookup         func(workloadID string) (mcpparser.Revision, bool)
 	requestTimeoutResolver func(workloadID string) time.Duration
 	listChangedAllowed     func(workloadID string) bool
@@ -184,6 +193,19 @@ func WithBackendInitTimeout(d time.Duration) MultiSessionFactoryOption {
 		if d > 0 {
 			f.backendInitTimeout = d
 			f.backendInitTimeoutSet = true
+		}
+	}
+}
+
+// WithSessionInitTimeout sets the overall budget for MakeSession to finish
+// contacting backends. When the budget expires, backends that have not
+// completed are skipped and the session is returned with whatever connected
+// (best-effort). Defaults to 10s. Zero keeps the default; a negative value
+// is ignored.
+func WithSessionInitTimeout(d time.Duration) MultiSessionFactoryOption {
+	return func(f *defaultMultiSessionFactory) {
+		if d > 0 {
+			f.sessionInitTimeout = d
 		}
 	}
 }
@@ -312,6 +334,7 @@ func newSessionFactoryWithConnector(connector backendConnector, opts ...MultiSes
 		connector:          connector,
 		maxConcurrency:     defaultMaxBackendInitConcurrency,
 		backendInitTimeout: defaultBackendInitTimeout,
+		sessionInitTimeout: defaultSessionInitTimeout,
 	}
 	for _, opt := range opts {
 		opt(f)
@@ -588,6 +611,12 @@ func (f *defaultMultiSessionFactory) makeBaseSession(
 	}
 	backends = filtered
 
+	if f.sessionInitTimeout > 0 {
+		var cancel context.CancelFunc
+		ctx, cancel = context.WithTimeout(ctx, f.sessionInitTimeout)
+		defer cancel()
+	}
+
 	rawResults := make([]*initResult, len(backends))
 	modernSkipped := make([]bool, len(backends))
 	sem := make(chan struct{}, f.maxConcurrency)
@@ -596,12 +625,31 @@ func (f *defaultMultiSessionFactory) makeBaseSession(
 	for i, b := range backends {
 		go func(i int, b *vmcp.Backend) {
 			defer wg.Done()
-			sem <- struct{}{}
-			defer func() { <-sem }()
+			// Acquire is context-aware so queued backends do not block on
+			// the semaphore after sessionInitTimeout (or cancel) has fired.
+			select {
+			case sem <- struct{}{}:
+				defer func() { <-sem }()
+			case <-ctx.Done():
+				return
+			}
 			rawResults[i], modernSkipped[i] = f.initOneBackend(ctx, b, identity, sessionHints[b.ID], sink)
 		}(i, b)
 	}
 	wg.Wait()
+
+	if err := ctx.Err(); err != nil {
+		if errors.Is(err, context.DeadlineExceeded) {
+			slog.Warn("session initialize budget expired; returning with backends that connected in time",
+				"error", err,
+				"backendCount", len(backends),
+				"timeout", f.sessionInitTimeout)
+		} else {
+			slog.Debug("session initialize cancelled; returning with backends that connected in time",
+				"error", err,
+				"backendCount", len(backends))
+		}
+	}
 
 	connections := make(map[string]backend.Session, len(backends))
 	backendSessions := make(map[string]string, len(backends))

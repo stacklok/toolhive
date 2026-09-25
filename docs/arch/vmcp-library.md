@@ -34,6 +34,31 @@ The `pkg/vmcp/` root package (`github.com/stacklok/toolhive/pkg/vmcp`) contains 
 
 This is the same path used by `pkg/vmcp/cli/serve.go` in the `thv vmcp serve` command; the library has no CLI-specific coupling.
 
+### Shutdown ownership and incomplete drains
+
+When serving the handler returned by `Server.Handler` in another HTTP server or
+framework, embedders **must stop accepting requests and fully drain that hosting
+server before calling `Server.Stop`**. `Stop` cannot drain an externally hosted
+handler. If the hosting server's drain is incomplete, leave vMCP cleanup pending
+and retry that drain with a fresh context before calling `Stop`.
+
+For the HTTP server owned by `Server.Start`, `Stop` allows up to 10 seconds (or the
+caller's earlier context deadline) for HTTP draining. This is **not a bound on total
+cleanup time**. If HTTP shutdown fails, `Stop` returns the error without
+force-closing active connections or closing request-used resources, including the
+core, workflow audit writer, and session storage. The listener is closed, but
+cleanup remains pending. The caller may retry `Stop` serially with a fresh context
+to finish draining and then release resources. This retry contract applies only to
+incomplete HTTP drains: `Stop` does not support arbitrary repeated or concurrent
+calls; the session manager's `Stop` is not idempotent.
+
+Direct core callers must prevent new calls and wait for in-flight calls to finish
+before `core.VMCP.Close`; `Close` does not drain calls itself.
+
+The CLI retains its existing error-and-exit policy rather than retrying an
+incomplete drain. Pending cleanup does not guarantee terminal workflow audit
+records will be written if the process terminates before requests finish.
+
 ## `pkg/vmcp/` Stability Table
 
 The table below maps every sub-package to its stability level per RFC THV-0059. Verify against the merged RFC if there is a discrepancy.

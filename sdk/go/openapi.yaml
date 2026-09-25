@@ -809,6 +809,8 @@ components:
                     uniqueItems: false
                 storage:
                     $ref: '#/components/schemas/StorageRunConfig'
+                tls_listener:
+                    $ref: '#/components/schemas/AuthenticationTLSListenerRunConfig'
                 token_lifespans:
                     $ref: '#/components/schemas/AuthenticationTokenLifespanRunConfig'
                 trusted_issuers:
@@ -992,6 +994,16 @@ components:
                     description: |-
                         SigningKeyFile is the filename of the primary signing key (relative to KeyDir).
                         This key is used for signing new tokens.
+                    type: string
+            type: object
+        AuthenticationTLSListenerRunConfig:
+            description: |-
+                TLSListener configures auth server routes to be served over TLS on port 8443.
+                It is currently rejected because the runner does not start this listener.
+            properties:
+                cert_file:
+                    type: string
+                key_file:
                     type: string
             type: object
         AuthenticationTokenExchangeInboundGrantRunConfig:

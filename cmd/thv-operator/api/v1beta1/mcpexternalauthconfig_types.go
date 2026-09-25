@@ -827,7 +827,7 @@ type TokenExchangeInboundGrantConfig struct {
 // TokenExchangeIssuerPolicyConfig binds RFC 8693 policy to a named trusted issuer.
 //
 // +kubebuilder:validation:XValidation:rule="!('*' in self.allowedDelegateClients) || size(self.allowedDelegateClients) == 1",message="allowedDelegateClients must not combine the wildcard \"*\" with specific client IDs"
-// +kubebuilder:validation:XValidation:rule="!(self.allowMayAct && '*' in self.allowedDelegateClients)",message="allowMayAct must not be enabled when allowedDelegateClients contains the wildcard \"*\""
+// +kubebuilder:validation:XValidation:rule="!(has(self.allowMayAct) && self.allowMayAct && '*' in self.allowedDelegateClients)",message="allowMayAct must not be enabled when allowedDelegateClients contains the wildcard \"*\""
 // +kubebuilder:validation:XValidation:rule="!has(self.actorClaim) || !(self.actorClaim in ['sub', 'iss', 'aud', 'exp', 'iat', 'nbf', 'jti', 'name', 'email', 'scope', 'scp', 'may_act'])",message="actorClaim must name a readable claim; use client_id or a non-reserved claim such as azp, appid, or cid"
 //
 //nolint:lll // CEL validation rules exceed line length limits.

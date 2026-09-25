@@ -103,6 +103,12 @@ tasks:
     cmds:
       - ko build --local -B ./cmd/thv-operator
 
+  build-load-spiffe-e2e-client-image:
+    desc: Build and load the SPIFFE E2E client image into Kind
+    cmds:
+      - KO_DOCKER_REPO=kind.local/toolhive-spiffe-e2e-client ko build --local -B --bare --tags latest ./test/e2e/cmd/spiffe-client
+      - kind load docker-image --name toolhive kind.local/toolhive-spiffe-e2e-client/spiffe-client:latest
+
   operator-install-crds:
     desc: Install CRDs into the K8s cluster
     cmds:
@@ -237,14 +243,16 @@ tasks:
       Full E2E test workflow: setup cluster, deploy operator, run tests, and cleanup.
       For manual testing:
         1. task kind-setup-e2e
-        2. task operator-install-crds
-        3. task operator-deploy-local
-        4. task thv-operator-e2e-test-run (can run multiple times)
-        5. task kind-destroy
+        2. task build-load-spiffe-e2e-client-image
+        3. task operator-install-crds
+        4. task operator-deploy-local
+        5. task thv-operator-e2e-test-run (can run multiple times)
+        6. task kind-destroy
     platforms: [linux, darwin]
     cmds:
       - defer: task kind-destroy
       - task: kind-setup-e2e
+      - task: build-load-spiffe-e2e-client-image
       - task: operator-install-crds
       - task: operator-deploy-local
       - task: thv-operator-e2e-test-run

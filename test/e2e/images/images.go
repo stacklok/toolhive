@@ -154,4 +154,14 @@ const (
 	// DexImage is used as an in-cluster OIDC provider for E2E tests requiring
 	// the embedded auth server OAuth2 flow (upstreamInject authentication).
 	DexImage = dexImageURL + ":" + dexImageTag
+
+	spireServerImageURL = "ghcr.io/spiffe/spire-server"
+	spireServerImageTag = "1.15.0"
+	// SPIREServerImage is used by the SPIRE E2E harness to issue SPIFFE identities.
+	SPIREServerImage = spireServerImageURL + ":" + spireServerImageTag
+
+	spireAgentImageURL = "ghcr.io/spiffe/spire-agent"
+	spireAgentImageTag = "1.15.0"
+	// SPIREAgentImage is used by the SPIRE E2E harness to attest workloads.
+	SPIREAgentImage = spireAgentImageURL + ":" + spireAgentImageTag
 )

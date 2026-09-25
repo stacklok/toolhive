@@ -174,6 +174,7 @@ func dumpPods(namespace string) {
 			!strings.Contains(pod.Name, "backend") &&
 			!strings.Contains(pod.Name, "mock") &&
 			!strings.Contains(pod.Name, "jwt-bearer") &&
+			!strings.Contains(pod.Name, "spiffe") &&
 			!strings.Contains(pod.Name, "yardstick") {
 			continue
 		}

@@ -20,6 +20,7 @@ func testSPIFFEClients(t *testing.T) map[string]fosite.Client {
 	t.Helper()
 	client, err := registration.NewSPIFFEClient(
 		"spiffe-client",
+		[]string{"urn:ietf:params:oauth:grant-type:token-exchange"},
 		[]string{"openid"},
 		[]string{"https://api.example.com"},
 		nil,
@@ -43,7 +44,7 @@ func (c testIdentityClient) IdentityFingerprint() string { return c.identityFing
 func testSPIFFEClientWithIdentity(t *testing.T, identityFingerprint string) fosite.Client {
 	t.Helper()
 	client, err := registration.NewSPIFFEClient(
-		"spiffe-client", []string{"openid"}, []string{"https://api.example.com"}, nil,
+		"spiffe-client", []string{"urn:ietf:params:oauth:grant-type:token-exchange"}, []string{"openid"}, []string{"https://api.example.com"}, nil,
 	)
 	require.NoError(t, err)
 	return testIdentityClient{SPIFFEClient: client, identityFingerprint: identityFingerprint}
@@ -254,13 +255,13 @@ func TestSPIFFEStorageDecoratorResourcesOnlyDifferenceIsACollision(t *testing.T)
 	t.Cleanup(func() { _ = base.Close() })
 
 	first, err := registration.NewSPIFFEClient(
-		"spiffe-client", []string{"openid"}, []string{"https://api.example.com"}, []string{"https://mcp-a.example.com"})
+		"spiffe-client", []string{"urn:ietf:params:oauth:grant-type:token-exchange"}, []string{"openid"}, []string{"https://api.example.com"}, []string{"https://mcp-a.example.com"})
 	require.NoError(t, err)
 	_, err = NewSPIFFEStorageDecorator(ctx, base, map[string]fosite.Client{first.GetID(): first})
 	require.NoError(t, err)
 
 	second, err := registration.NewSPIFFEClient(
-		"spiffe-client", []string{"openid"}, []string{"https://api.example.com"}, []string{"https://mcp-b.example.com"})
+		"spiffe-client", []string{"urn:ietf:params:oauth:grant-type:token-exchange"}, []string{"openid"}, []string{"https://api.example.com"}, []string{"https://mcp-b.example.com"})
 	require.NoError(t, err)
 	_, err = NewSPIFFEStorageDecorator(ctx, base, map[string]fosite.Client{second.GetID(): second})
 	require.ErrorIs(t, err, ErrAlreadyExists,
@@ -281,12 +282,12 @@ func TestSPIFFEStorageDecoratorResourcesOnlyDifferenceIsACollisionRedis(t *testi
 	t.Cleanup(func() { _ = base.Close(); mr.Close() })
 
 	first, err := registration.NewSPIFFEClient(
-		"spiffe-client", []string{"openid"}, []string{"https://api.example.com"}, []string{"https://mcp-a.example.com"})
+		"spiffe-client", []string{"urn:ietf:params:oauth:grant-type:token-exchange"}, []string{"openid"}, []string{"https://api.example.com"}, []string{"https://mcp-a.example.com"})
 	require.NoError(t, err)
 	require.NoError(t, PreflightSPIFFEStaticClientCollisions(ctx, base, map[string]fosite.Client{first.GetID(): first}))
 
 	second, err := registration.NewSPIFFEClient(
-		"spiffe-client", []string{"openid"}, []string{"https://api.example.com"}, []string{"https://mcp-b.example.com"})
+		"spiffe-client", []string{"urn:ietf:params:oauth:grant-type:token-exchange"}, []string{"openid"}, []string{"https://api.example.com"}, []string{"https://mcp-b.example.com"})
 	require.NoError(t, err)
 	err = PreflightSPIFFEStaticClientCollisions(ctx, base, map[string]fosite.Client{second.GetID(): second})
 	require.ErrorIs(t, err, ErrAlreadyExists,
@@ -305,7 +306,7 @@ func TestSPIFFEStorageDecoratorPlaceholderResourcesRoundTripThroughRedis(t *test
 	t.Cleanup(func() { _ = raw.Close(); mr.Close() })
 
 	client, err := registration.NewSPIFFEClient(
-		"spiffe-client", []string{"openid"}, []string{"https://api.example.com"}, []string{"https://mcp.example.com"})
+		"spiffe-client", []string{"urn:ietf:params:oauth:grant-type:token-exchange"}, []string{"openid"}, []string{"https://api.example.com"}, []string{"https://mcp.example.com"})
 	require.NoError(t, err)
 
 	require.NoError(t, PreflightSPIFFEStaticClientCollisions(ctx, raw, map[string]fosite.Client{client.GetID(): client}))
@@ -470,7 +471,7 @@ func TestSPIFFEStorageDecoratorDurableClaimRedisBacked(t *testing.T) {
 	// Reconstructing with a different/conflicting association at the same ID
 	// fails loudly.
 	conflicting, err := registration.NewSPIFFEClient(
-		"spiffe-client", []string{"a-different-scope"}, []string{"https://api.example.com"}, nil)
+		"spiffe-client", []string{"urn:ietf:params:oauth:grant-type:token-exchange"}, []string{"a-different-scope"}, []string{"https://api.example.com"}, nil)
 	require.NoError(t, err)
 	_, err = NewSPIFFEStorageDecorator(ctx, base, map[string]fosite.Client{"spiffe-client": conflicting})
 	require.ErrorIs(t, err, ErrAlreadyExists)

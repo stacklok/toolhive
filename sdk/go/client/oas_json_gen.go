@@ -3457,6 +3457,12 @@ func (s *AuthenticationSPIFFEClientAuthRunConfig) encodeFields(e *jx.Encoder) {
 		}
 	}
 	{
+		if s.TokenExchange.Set {
+			e.FieldStart("token_exchange")
+			s.TokenExchange.Encode(e)
+		}
+	}
+	{
 		if s.TrustDomainRef.Set {
 			e.FieldStart("trust_domain_ref")
 			s.TrustDomainRef.Encode(e)
@@ -3464,7 +3470,7 @@ func (s *AuthenticationSPIFFEClientAuthRunConfig) encodeFields(e *jx.Encoder) {
 	}
 }
 
-var jsonFieldsNameOfAuthenticationSPIFFEClientAuthRunConfig = [8]string{
+var jsonFieldsNameOfAuthenticationSPIFFEClientAuthRunConfig = [9]string{
 	0: "audiences",
 	1: "client_id",
 	2: "grant_types",
@@ -3472,7 +3478,8 @@ var jsonFieldsNameOfAuthenticationSPIFFEClientAuthRunConfig = [8]string{
 	4: "principal_pattern",
 	5: "resources",
 	6: "scopes",
-	7: "trust_domain_ref",
+	7: "token_exchange",
+	8: "trust_domain_ref",
 }
 
 // Decode decodes AuthenticationSPIFFEClientAuthRunConfig from json.
@@ -3598,6 +3605,16 @@ func (s *AuthenticationSPIFFEClientAuthRunConfig) Decode(d *jx.Decoder) error {
 			}(); err != nil {
 				return errors.Wrap(err, "decode field \"scopes\"")
 			}
+		case "token_exchange":
+			if err := func() error {
+				s.TokenExchange.Reset()
+				if err := s.TokenExchange.Decode(d); err != nil {
+					return err
+				}
+				return nil
+			}(); err != nil {
+				return errors.Wrap(err, "decode field \"token_exchange\"")
+			}
 		case "trust_domain_ref":
 			if err := func() error {
 				s.TrustDomainRef.Reset()
@@ -3691,6 +3708,69 @@ func (s *AuthenticationSPIFFEFileBundleSourceRunConfig) MarshalJSON() ([]byte, e
 
 // UnmarshalJSON implements stdjson.Unmarshaler.
 func (s *AuthenticationSPIFFEFileBundleSourceRunConfig) UnmarshalJSON(data []byte) error {
+	d := jx.DecodeBytes(data)
+	return s.Decode(d)
+}
+
+// Encode implements json.Marshaler.
+func (s *AuthenticationSPIFFETokenExchangeRunConfig) Encode(e *jx.Encoder) {
+	e.ObjStart()
+	s.encodeFields(e)
+	e.ObjEnd()
+}
+
+// encodeFields encodes fields.
+func (s *AuthenticationSPIFFETokenExchangeRunConfig) encodeFields(e *jx.Encoder) {
+	{
+		if s.Enabled.Set {
+			e.FieldStart("enabled")
+			s.Enabled.Encode(e)
+		}
+	}
+}
+
+var jsonFieldsNameOfAuthenticationSPIFFETokenExchangeRunConfig = [1]string{
+	0: "enabled",
+}
+
+// Decode decodes AuthenticationSPIFFETokenExchangeRunConfig from json.
+func (s *AuthenticationSPIFFETokenExchangeRunConfig) Decode(d *jx.Decoder) error {
+	if s == nil {
+		return errors.New("invalid: unable to decode AuthenticationSPIFFETokenExchangeRunConfig to nil")
+	}
+
+	if err := d.ObjBytes(func(d *jx.Decoder, k []byte) error {
+		switch string(k) {
+		case "enabled":
+			if err := func() error {
+				s.Enabled.Reset()
+				if err := s.Enabled.Decode(d); err != nil {
+					return err
+				}
+				return nil
+			}(); err != nil {
+				return errors.Wrap(err, "decode field \"enabled\"")
+			}
+		default:
+			return d.Skip()
+		}
+		return nil
+	}); err != nil {
+		return errors.Wrap(err, "decode AuthenticationSPIFFETokenExchangeRunConfig")
+	}
+
+	return nil
+}
+
+// MarshalJSON implements stdjson.Marshaler.
+func (s *AuthenticationSPIFFETokenExchangeRunConfig) MarshalJSON() ([]byte, error) {
+	e := jx.Encoder{}
+	s.Encode(&e)
+	return e.Bytes(), nil
+}
+
+// UnmarshalJSON implements stdjson.Unmarshaler.
+func (s *AuthenticationSPIFFETokenExchangeRunConfig) UnmarshalJSON(data []byte) error {
 	d := jx.DecodeBytes(data)
 	return s.Decode(d)
 }
@@ -17285,6 +17365,39 @@ func (s OptAuthenticationSPIFFEFileBundleSourceRunConfig) MarshalJSON() ([]byte,
 
 // UnmarshalJSON implements stdjson.Unmarshaler.
 func (s *OptAuthenticationSPIFFEFileBundleSourceRunConfig) UnmarshalJSON(data []byte) error {
+	d := jx.DecodeBytes(data)
+	return s.Decode(d)
+}
+
+// Encode encodes AuthenticationSPIFFETokenExchangeRunConfig as json.
+func (o OptAuthenticationSPIFFETokenExchangeRunConfig) Encode(e *jx.Encoder) {
+	if !o.Set {
+		return
+	}
+	o.Value.Encode(e)
+}
+
+// Decode decodes AuthenticationSPIFFETokenExchangeRunConfig from json.
+func (o *OptAuthenticationSPIFFETokenExchangeRunConfig) Decode(d *jx.Decoder) error {
+	if o == nil {
+		return errors.New("invalid: unable to decode OptAuthenticationSPIFFETokenExchangeRunConfig to nil")
+	}
+	o.Set = true
+	if err := o.Value.Decode(d); err != nil {
+		return err
+	}
+	return nil
+}
+
+// MarshalJSON implements stdjson.Marshaler.
+func (s OptAuthenticationSPIFFETokenExchangeRunConfig) MarshalJSON() ([]byte, error) {
+	e := jx.Encoder{}
+	s.Encode(&e)
+	return e.Bytes(), nil
+}
+
+// UnmarshalJSON implements stdjson.Unmarshaler.
+func (s *OptAuthenticationSPIFFETokenExchangeRunConfig) UnmarshalJSON(data []byte) error {
 	d := jx.DecodeBytes(data)
 	return s.Decode(d)
 }

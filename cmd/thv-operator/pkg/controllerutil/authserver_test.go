@@ -3631,6 +3631,8 @@ func TestBuildSPIFFEClientAuthRunConfigs(t *testing.T) {
 		Resources:        resources,
 		Audiences:        audiences,
 		Scopes:           scopes,
+		GrantTypes:       []string{"urn:ietf:params:oauth:grant-type:token-exchange"},
+		TokenExchange:    &mcpv1beta1.SPIFFETokenExchangeConfig{Enabled: true},
 	}})
 
 	require.Len(t, configs, 1)
@@ -3641,9 +3643,10 @@ func TestBuildSPIFFEClientAuthRunConfigs(t *testing.T) {
 	assert.Equal(t, []string{"https://backend.example.com"}, configs[0].Resources)
 	assert.Equal(t, []string{"https://mcp.example.com"}, configs[0].Audiences)
 	assert.Equal(t, []string{"openid"}, configs[0].Scopes)
-	// GrantTypes is not a CRD field; the converter always supplies exactly
-	// the RFC 8693 token-exchange grant.
+	// GrantTypes and TokenExchange pass through from the CRD entry unchanged.
 	assert.Equal(t, []string{authserver.SPIFFEGrantTypeTokenExchange}, configs[0].GrantTypes)
+	require.NotNil(t, configs[0].TokenExchange)
+	assert.True(t, configs[0].TokenExchange.Enabled)
 
 	// The runtime type must not retain the CRD object's backing slices.
 	audiences[0] = "https://mutated.example.com"
@@ -3683,6 +3686,8 @@ func TestBuildAuthServerRunConfigAcceptsValidSPIFFE(t *testing.T) {
 				Methods:          []mcpv1beta1.SPIFFEAuthenticationMethod{mcpv1beta1.SPIFFEAuthenticationMethodX509},
 				Audiences:        []string{"https://mcp.example.com"},
 				Scopes:           []string{"openid"},
+				GrantTypes:       []string{"urn:ietf:params:oauth:grant-type:token-exchange"},
+				TokenExchange:    &mcpv1beta1.SPIFFETokenExchangeConfig{Enabled: true},
 			}},
 		},
 	}, []string{"https://mcp.example.com"}, []string{"openid"}, "https://mcp.example.com")
@@ -3729,7 +3734,9 @@ func TestBuildAuthServerRunConfigSPIFFEResourcesAndScopesValidateOnceDerivedValu
 					// A custom, non-default scope: rejected by
 					// registration.DefaultScopes but valid once the real
 					// ScopesSupported below is consulted.
-					Scopes: []string{"custom:scope"},
+					Scopes:        []string{"custom:scope"},
+					GrantTypes:    []string{"urn:ietf:params:oauth:grant-type:token-exchange"},
+					TokenExchange: &mcpv1beta1.SPIFFETokenExchangeConfig{Enabled: true},
 				}},
 			},
 		}

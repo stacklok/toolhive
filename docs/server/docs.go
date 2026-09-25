@@ -642,6 +642,9 @@ const docTemplate = `{
                         "type": "array",
                         "uniqueItems": false
                     },
+                    "token_exchange": {
+                        "$ref": "#/components/schemas/authserver.SPIFFETokenExchangeRunConfig"
+                    },
                     "trust_domain_ref": {
                         "description": "TrustDomainRef identifies the SPIFFE trust-domain declaration governing\nthis association policy.",
                         "type": "string"
@@ -653,6 +656,15 @@ const docTemplate = `{
                 "properties": {
                     "path": {
                         "type": "string"
+                    }
+                },
+                "type": "object"
+            },
+            "authserver.SPIFFETokenExchangeRunConfig": {
+                "description": "TokenExchange enables the RFC 8693 token-exchange grant for this\nassociation. Its presence must agree with GrantTypes; it does not\nperform an exchange.",
+                "properties": {
+                    "enabled": {
+                        "type": "boolean"
                     }
                 },
                 "type": "object"

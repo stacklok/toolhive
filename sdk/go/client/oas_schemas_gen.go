@@ -1920,7 +1920,8 @@ type AuthenticationSPIFFEClientAuthRunConfig struct {
 	Resources []string `json:"resources"`
 	// Scopes are OAuth scopes granted to this association. They must be a
 	// subset of the server's effective supported scopes.
-	Scopes []string `json:"scopes"`
+	Scopes        []string                                      `json:"scopes"`
+	TokenExchange OptAuthenticationSPIFFETokenExchangeRunConfig `json:"token_exchange"`
 	// TrustDomainRef identifies the SPIFFE trust-domain declaration governing
 	// this association policy.
 	TrustDomainRef OptString `json:"trust_domain_ref"`
@@ -1959,6 +1960,11 @@ func (s *AuthenticationSPIFFEClientAuthRunConfig) GetResources() []string {
 // GetScopes returns the value of Scopes.
 func (s *AuthenticationSPIFFEClientAuthRunConfig) GetScopes() []string {
 	return s.Scopes
+}
+
+// GetTokenExchange returns the value of TokenExchange.
+func (s *AuthenticationSPIFFEClientAuthRunConfig) GetTokenExchange() OptAuthenticationSPIFFETokenExchangeRunConfig {
+	return s.TokenExchange
 }
 
 // GetTrustDomainRef returns the value of TrustDomainRef.
@@ -2001,6 +2007,11 @@ func (s *AuthenticationSPIFFEClientAuthRunConfig) SetScopes(val []string) {
 	s.Scopes = val
 }
 
+// SetTokenExchange sets the value of TokenExchange.
+func (s *AuthenticationSPIFFEClientAuthRunConfig) SetTokenExchange(val OptAuthenticationSPIFFETokenExchangeRunConfig) {
+	s.TokenExchange = val
+}
+
 // SetTrustDomainRef sets the value of TrustDomainRef.
 func (s *AuthenticationSPIFFEClientAuthRunConfig) SetTrustDomainRef(val OptString) {
 	s.TrustDomainRef = val
@@ -2019,6 +2030,24 @@ func (s *AuthenticationSPIFFEFileBundleSourceRunConfig) GetPath() OptString {
 // SetPath sets the value of Path.
 func (s *AuthenticationSPIFFEFileBundleSourceRunConfig) SetPath(val OptString) {
 	s.Path = val
+}
+
+// TokenExchange enables the RFC 8693 token-exchange grant for this
+// association. Its presence must agree with GrantTypes; it does not
+// perform an exchange.
+// Ref: #/components/schemas/AuthenticationSPIFFETokenExchangeRunConfig
+type AuthenticationSPIFFETokenExchangeRunConfig struct {
+	Enabled OptBool `json:"enabled"`
+}
+
+// GetEnabled returns the value of Enabled.
+func (s *AuthenticationSPIFFETokenExchangeRunConfig) GetEnabled() OptBool {
+	return s.Enabled
+}
+
+// SetEnabled sets the value of Enabled.
+func (s *AuthenticationSPIFFETokenExchangeRunConfig) SetEnabled(val OptBool) {
+	s.Enabled = val
 }
 
 // Ref: #/components/schemas/AuthenticationSPIFFETrustDomainRunConfig
@@ -7364,6 +7393,52 @@ func (o OptAuthenticationSPIFFEFileBundleSourceRunConfig) Get() (v Authenticatio
 
 // Or returns value if set, or given parameter if does not.
 func (o OptAuthenticationSPIFFEFileBundleSourceRunConfig) Or(d AuthenticationSPIFFEFileBundleSourceRunConfig) AuthenticationSPIFFEFileBundleSourceRunConfig {
+	if v, ok := o.Get(); ok {
+		return v
+	}
+	return d
+}
+
+// NewOptAuthenticationSPIFFETokenExchangeRunConfig returns new OptAuthenticationSPIFFETokenExchangeRunConfig with value set to v.
+func NewOptAuthenticationSPIFFETokenExchangeRunConfig(v AuthenticationSPIFFETokenExchangeRunConfig) OptAuthenticationSPIFFETokenExchangeRunConfig {
+	return OptAuthenticationSPIFFETokenExchangeRunConfig{
+		Value: v,
+		Set:   true,
+	}
+}
+
+// OptAuthenticationSPIFFETokenExchangeRunConfig is optional AuthenticationSPIFFETokenExchangeRunConfig.
+type OptAuthenticationSPIFFETokenExchangeRunConfig struct {
+	Value AuthenticationSPIFFETokenExchangeRunConfig
+	Set   bool
+}
+
+// IsSet returns true if OptAuthenticationSPIFFETokenExchangeRunConfig was set.
+func (o OptAuthenticationSPIFFETokenExchangeRunConfig) IsSet() bool { return o.Set }
+
+// Reset unsets value.
+func (o *OptAuthenticationSPIFFETokenExchangeRunConfig) Reset() {
+	var v AuthenticationSPIFFETokenExchangeRunConfig
+	o.Value = v
+	o.Set = false
+}
+
+// SetTo sets value to v.
+func (o *OptAuthenticationSPIFFETokenExchangeRunConfig) SetTo(v AuthenticationSPIFFETokenExchangeRunConfig) {
+	o.Set = true
+	o.Value = v
+}
+
+// Get returns value and boolean that denotes whether value was set.
+func (o OptAuthenticationSPIFFETokenExchangeRunConfig) Get() (v AuthenticationSPIFFETokenExchangeRunConfig, ok bool) {
+	if !o.Set {
+		return v, false
+	}
+	return o.Value, true
+}
+
+// Or returns value if set, or given parameter if does not.
+func (o OptAuthenticationSPIFFETokenExchangeRunConfig) Or(d AuthenticationSPIFFETokenExchangeRunConfig) AuthenticationSPIFFETokenExchangeRunConfig {
 	if v, ok := o.Get(); ok {
 		return v
 	}

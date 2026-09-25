@@ -901,6 +901,8 @@ components:
                         type: string
                     type: array
                     uniqueItems: false
+                token_exchange:
+                    $ref: '#/components/schemas/AuthenticationSPIFFETokenExchangeRunConfig'
                 trust_domain_ref:
                     description: |-
                         TrustDomainRef identifies the SPIFFE trust-domain declaration governing
@@ -911,6 +913,15 @@ components:
             properties:
                 path:
                     type: string
+            type: object
+        AuthenticationSPIFFETokenExchangeRunConfig:
+            description: |-
+                TokenExchange enables the RFC 8693 token-exchange grant for this
+                association. Its presence must agree with GrantTypes; it does not
+                perform an exchange.
+            properties:
+                enabled:
+                    type: boolean
             type: object
         AuthenticationSPIFFETrustDomainRunConfig:
             properties:

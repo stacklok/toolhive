@@ -6,6 +6,7 @@ package spiffeauth
 import (
 	"crypto/x509"
 	"fmt"
+	"log/slog"
 	"net/http"
 	"path"
 
@@ -18,22 +19,35 @@ import (
 // the client-authentication strategy.
 func Middleware(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if r.URL.Path != "/oauth/token" || r.TLS == nil || len(r.TLS.PeerCertificates) == 0 {
+		if r.URL.Path != "/oauth/token" {
+			next.ServeHTTP(w, r)
+			return
+		}
+		if r.TLS == nil {
+			slog.Debug("SPIFFE X.509: token request is not over TLS, no client certificate to read")
+			next.ServeHTTP(w, r)
+			return
+		}
+		if len(r.TLS.PeerCertificates) == 0 {
+			slog.Debug("SPIFFE X.509: token request over TLS presented no client certificate")
 			next.ServeHTTP(w, r)
 			return
 		}
 
 		cert := r.TLS.PeerCertificates[0]
 		if !hasSPIFFEURI(cert) {
+			slog.Debug("SPIFFE X.509: client certificate has no SPIFFE URI SAN, passing through")
 			next.ServeHTTP(w, r)
 			return
 		}
 
 		id, err := SPIFFEIDFromCertificate(cert)
 		if err != nil {
+			slog.Debug("SPIFFE X.509: rejecting client certificate with an invalid SPIFFE URI SAN", "error", err)
 			http.Error(w, "invalid client", http.StatusUnauthorized)
 			return
 		}
+		slog.Debug("SPIFFE X.509: claimed identity from client certificate", "spiffe_id", id.String())
 		next.ServeHTTP(w, r.WithContext(ContextWithSPIFFEID(r.Context(), id)))
 	})
 }

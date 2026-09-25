@@ -79,14 +79,21 @@ func newTLSListenerWithCache(host string, cache *tlsKeyPairCache, routes map[str
 		clientAuth = tls.RequestClientCert
 	}
 	tlsConfig := &tls.Config{
-		MinVersion:     tls.VersionTLS12,
-		ClientAuth:     clientAuth,
-		GetCertificate: cache.getCertificate,
+		MinVersion:       tls.VersionTLS12,
+		ClientAuth:       clientAuth,
+		GetCertificate:   cache.getCertificate,
+		VerifyConnection: logClientCertificate,
 	}
 	if requestClientCert {
 		tlsConfig.GetConfigForClient = func(*tls.ClientHelloInfo) (*tls.Config, error) {
 			clone := tlsConfig.Clone()
 			clone.ClientCAs = base.caPool()
+			if clone.ClientCAs == nil {
+				slog.Debug("auth server TLS listener requesting a client certificate without a CA hint")
+			} else {
+				slog.Debug("auth server TLS listener requesting a client certificate",
+					"acceptable_ca_count", len(clone.ClientCAs.Subjects())) //nolint:staticcheck // Subjects is only used for the hint count.
+			}
 			return clone, nil
 		}
 	}
@@ -115,6 +122,8 @@ func (l *tlsListener) start() error {
 	}
 	l.listener = tls.NewListener(listener, l.server.TLSConfig)
 	l.server.Addr = address
+	slog.Debug("auth server TLS listener started",
+		"address", address, "request_client_certificate", l.requestClientCert)
 	go func() {
 		if err := l.server.Serve(l.listener); err != nil && !errors.Is(err, http.ErrServerClosed) {
 			slog.Error("auth server TLS listener stopped unexpectedly", "error", err)
@@ -136,6 +145,28 @@ func (l *tlsListener) shutdown(ctx context.Context) error {
 		}
 	}
 	return err
+}
+
+// logClientCertificate records, at debug level, which client certificate (if
+// any) a connection presented. It never rejects a connection: verification
+// happens in the OAuth client-authentication strategy. The certificate itself
+// is not logged, only its identity fields.
+func logClientCertificate(state tls.ConnectionState) error {
+	if len(state.PeerCertificates) == 0 {
+		slog.Debug("auth server TLS listener connection without a client certificate")
+		return nil
+	}
+	leaf := state.PeerCertificates[0]
+	uris := make([]string, 0, len(leaf.URIs))
+	for _, uri := range leaf.URIs {
+		uris = append(uris, uri.String())
+	}
+	slog.Debug("auth server TLS listener connection with a client certificate",
+		"uri_sans", uris,
+		"issuer", leaf.Issuer.String(),
+		"chain_length", len(state.PeerCertificates),
+		"not_after", leaf.NotAfter)
+	return nil
 }
 
 func (l *tlsListener) caPool() *x509.CertPool {

@@ -9,6 +9,7 @@ import (
 	"crypto/x509/pkix"
 	"encoding/asn1"
 	"errors"
+	"log/slog"
 	"net/http"
 	"net/url"
 	"slices"
@@ -66,6 +67,7 @@ func newSPIFFEClientAuthenticationStrategy(
 		// can run, including when no SPIFFE resolver is configured.
 		if _, ok := spiffeauth.SPIFFEIDFromContext(ctx); ok &&
 			slices.Contains(form["client_assertion_type"], spiffeauth.SPIFFEJWTAssertionType) {
+			slog.Debug("SPIFFE client auth: rejecting request that combines an X.509-SVID with a JWT-SVID assertion")
 			return nil, fosite.ErrInvalidClient
 		}
 		// Without a SPIFFE resolver, requests that do not combine an ambient
@@ -82,11 +84,15 @@ func newSPIFFEClientAuthenticationStrategy(
 		// A duplicated client_assertion_type is rejected as ambiguous by
 		// authenticateSPIFFEJWTClient itself, once SPIFFE is actually selected.
 		if slices.Contains(form["client_assertion_type"], spiffeauth.SPIFFEJWTAssertionType) {
+			slog.Debug("SPIFFE client auth: authenticating with a JWT-SVID assertion")
 			return authenticateSPIFFEJWTClient(ctx, r, form, issuer, jwtBundleSource, resolver)
 		}
 		if claimedID, ok := spiffeauth.SPIFFEIDFromContext(ctx); ok {
+			slog.Debug("SPIFFE client auth: authenticating with an X.509-SVID", "spiffe_id", claimedID.String())
 			return authenticateSPIFFEX509Client(ctx, r, form, claimedID, x509BundleSource, resolver)
 		}
+		slog.Debug("SPIFFE client auth: no SPIFFE credential on the request, using default client authentication",
+			"tls", r.TLS != nil)
 		return defaultStrategy(ctx, r, form)
 	}
 }
@@ -109,17 +115,29 @@ func authenticateSPIFFEX509Client(
 ) (fosite.Client, error) {
 	clientID, ok := exactNonEmptyFormValue(form, "client_id")
 	if !ok {
+		slog.Debug("SPIFFE X.509: missing or repeated client_id", "spiffe_id", claimedID.String())
 		return nil, fosite.ErrInvalidRequest
 	}
 	if rejectedSPIFFEX509Request(r, form) {
+		slog.Debug("SPIFFE X.509: rejecting request that carries another client credential",
+			"spiffe_id", claimedID.String(), "client_id", clientID)
 		return nil, fosite.ErrInvalidClient
 	}
 	verifiedID, err := verifySPIFFEX509(r, source)
-	if err != nil || verifiedID != claimedID {
+	if err != nil {
+		slog.Debug("SPIFFE X.509: client certificate failed verification against the trust bundle",
+			"spiffe_id", claimedID.String(), "client_id", clientID, "error", err)
+		return nil, fosite.ErrInvalidClient.WithHint("SPIFFE X.509 client authentication failed")
+	}
+	if verifiedID != claimedID {
+		slog.Debug("SPIFFE X.509: verified identity does not match the claimed identity",
+			"claimed", claimedID.String(), "verified", verifiedID.String())
 		return nil, fosite.ErrInvalidClient.WithHint("SPIFFE X.509 client authentication failed")
 	}
 	client, err := resolver(ctx, verifiedID.String(), clientID, spiffeauth.SPIFFEAuthenticationMethodX509)
 	if err != nil || client == nil || client.GetID() != clientID {
+		slog.Debug("SPIFFE X.509: no configured client matches the verified identity",
+			"spiffe_id", verifiedID.String(), "client_id", clientID, "error", err)
 		return nil, fosite.ErrInvalidClient.WithHint("SPIFFE X.509 client authentication failed")
 	}
 	return client, nil
@@ -225,32 +243,47 @@ func authenticateSPIFFEJWTClient(
 ) (fosite.Client, error) {
 	assertionType, ok := exactNonEmptyFormValue(form, "client_assertion_type")
 	if !ok || assertionType != spiffeauth.SPIFFEJWTAssertionType {
+		slog.Debug("SPIFFE JWT: missing, repeated or unexpected client_assertion_type")
 		return nil, fosite.ErrInvalidRequest
 	}
 	assertion, ok := exactNonEmptyFormValue(form, "client_assertion")
 	if !ok {
+		slog.Debug("SPIFFE JWT: missing or repeated client_assertion")
 		return nil, fosite.ErrInvalidRequest
 	}
 	clientID, ok := optionalExactNonEmptyFormValue(form, "client_id")
 	if !ok {
+		slog.Debug("SPIFFE JWT: repeated or empty client_id")
 		return nil, fosite.ErrInvalidRequest
 	}
 	if rejectedSPIFFEJWTRequest(r, form, assertion) {
+		slog.Debug("SPIFFE JWT: rejecting request that carries another client credential", "client_id", clientID)
 		return nil, fosite.ErrInvalidClient
 	}
 	if jwtBundleSource == nil {
+		slog.Debug("SPIFFE JWT: no JWT bundle source is configured")
 		return nil, fosite.ErrInvalidClient
 	}
 
 	svid, err := jwtsvid.ParseAndValidate(assertion, jwtBundleSource, []string{issuer})
-	if err != nil || !validSPIFFEJWTIdentityClaims(svid, issuer) {
+	if err != nil {
+		slog.Debug("SPIFFE JWT: assertion failed validation", "expected_audience", issuer, "error", err)
+		return nil, fosite.ErrInvalidClient
+	}
+	if !validSPIFFEJWTIdentityClaims(svid, issuer) {
+		slog.Debug("SPIFFE JWT: assertion audience must be exactly the issuer",
+			"spiffe_id", svid.ID.String(), "audience", svid.Audience, "expected_audience", issuer)
 		return nil, fosite.ErrInvalidClient
 	}
 	if svid.Expiry.After(time.Now().Add(maxSPIFFEJWTAssertionRemainingValidity)) {
+		slog.Debug("SPIFFE JWT: assertion lifetime is too long",
+			"spiffe_id", svid.ID.String(), "expiry", svid.Expiry, "max_remaining", maxSPIFFEJWTAssertionRemainingValidity)
 		return nil, fosite.ErrInvalidClient
 	}
 	client, err := resolver(ctx, svid.ID.String(), clientID, spiffeauth.SPIFFEAuthenticationMethodJWT)
 	if !validResolvedSPIFFEClient(client, err, clientID) {
+		slog.Debug("SPIFFE JWT: no configured client matches the verified identity",
+			"spiffe_id", svid.ID.String(), "client_id", clientID, "error", err)
 		return nil, fosite.ErrInvalidClient
 	}
 	return client, nil

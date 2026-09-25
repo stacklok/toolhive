@@ -70,6 +70,19 @@ When fixing one:
    each as an explicit decision. Prefer fail-closed *with* an operator-visible
    signal — log request-shape rejections at WARN — over silent breakage.
 
+## Preserve Access Across Security Migrations
+
+Security migrations may be automatic, but must preserve access for supported
+consumers, including already-running older processes and independently installed
+binaries sharing persisted state. Replacing an executable does not upgrade a
+running process. A confirmation prompt does not establish compatibility.
+
+Reading the old format is not enough: verify that existing consumers can still
+read and write the state produced by the new version, including after migration
+and on failure paths. If they cannot, classify the change as breaking rather than
+claiming backward compatibility. Preserve access without silently downgrading
+existing protection, and document recovery that retains users' data and credentials.
+
 ## All Requests Must Pass Through the Proxy Runner
 
 Every request to a managed container (MCP server or tool) must flow through the proxy runner (`pkg/runner/proxy`). Bypassing it is a vulnerability, not an optimization.

@@ -2225,8 +2225,8 @@ func (s *AuthenticationSigningKeyRunConfig) SetSigningKeyFile(val OptString) {
 	s.SigningKeyFile = val
 }
 
-// TLSListener configures auth server routes to be served over TLS on port 8443.
-// It is currently rejected because the runner does not start this listener.
+// TLSListener serves the auth server routes over TLS on port 8443, in
+// addition to the MCP port. Required for spiffe_x509 client authentication.
 // Ref: #/components/schemas/AuthenticationTLSListenerRunConfig
 type AuthenticationTLSListenerRunConfig struct {
 	CertFile OptString `json:"cert_file"`

@@ -375,10 +375,17 @@ func (r *Runner) Run(ctx context.Context) error {
 		}
 
 		var err error
-		r.embeddedAuthServer, err = authserverrunner.NewEmbeddedAuthServer(ctx, r.Config.EmbeddedAuthServerConfig)
+		r.embeddedAuthServer, err = authserverrunner.NewEmbeddedAuthServer(
+			ctx, r.Config.EmbeddedAuthServerConfig, authserverrunner.WithListenerHost(r.bindHost()),
+		)
 		if err != nil {
 			return fmt.Errorf("failed to create embedded auth server: %w", err)
 		}
+		defer func() {
+			if err := r.embeddedAuthServer.Close(); err != nil {
+				slog.Warn("failed to close embedded auth server", "error", err)
+			}
+		}()
 		slog.Debug("embedded authorization server initialized")
 
 		// Create the upstream token service eagerly now that the auth server exists.
@@ -415,6 +422,10 @@ func (r *Runner) Run(ctx context.Context) error {
 	// Set all named middleware and handlers on transport config
 	transportConfig.Middlewares = r.namedMiddlewares
 	transportConfig.AuthInfoHandler = r.authInfoHandler
+
+	if err := r.startEmbeddedAuthServerListener(); err != nil {
+		return err
+	}
 
 	// Metrics are served on a dedicated diagnostics listener so access can be
 	// restricted by port; see pkg/diagnostics.
@@ -1249,4 +1260,25 @@ func waitForInitializeSuccess(
 			delay = maxDelay
 		}
 	}
+}
+
+// startEmbeddedAuthServerListener starts the embedded auth server's TLS
+// listener when one is configured, and is a no-op otherwise. The listener port
+// is fixed and part of the issuer URL, so a clash with the proxy or diagnostics
+// port is reported instead of being resolved by picking another port.
+func (r *Runner) startEmbeddedAuthServerListener() error {
+	if r.embeddedAuthServer == nil || r.Config.EmbeddedAuthServerConfig == nil ||
+		r.Config.EmbeddedAuthServerConfig.TLSListener == nil {
+		return nil
+	}
+	if r.Config.Port == authserverrunner.TLSListenerPort {
+		return fmt.Errorf("proxy port %d conflicts with the auth server TLS listener port", r.Config.Port)
+	}
+	if r.prometheusHandler != nil && diagnosticsPort(r.Config.TelemetryConfig) == authserverrunner.TLSListenerPort {
+		return fmt.Errorf("diagnostics port %d conflicts with the auth server TLS listener port", authserverrunner.TLSListenerPort)
+	}
+	if err := r.embeddedAuthServer.Start(); err != nil {
+		return fmt.Errorf("failed to start auth server TLS listener: %w", err)
+	}
+	return nil
 }

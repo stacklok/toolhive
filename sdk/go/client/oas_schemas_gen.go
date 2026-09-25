@@ -1838,6 +1838,7 @@ func (s *AuthenticationSPIFFEBundleEndpointSourceRunConfig) SetURL(val OptString
 // Ref: #/components/schemas/AuthenticationSPIFFEBundleSourceRunConfig
 type AuthenticationSPIFFEBundleSourceRunConfig struct {
 	Endpoint    OptAuthenticationSPIFFEBundleEndpointSourceRunConfig  `json:"endpoint"`
+	File        OptAuthenticationSPIFFEFileBundleSourceRunConfig      `json:"file"`
 	Type        OptString                                             `json:"type"`
 	WorkloadAPI *AuthenticationSPIFFEWorkloadAPIBundleSourceRunConfig `json:"workload_api"`
 }
@@ -1845,6 +1846,11 @@ type AuthenticationSPIFFEBundleSourceRunConfig struct {
 // GetEndpoint returns the value of Endpoint.
 func (s *AuthenticationSPIFFEBundleSourceRunConfig) GetEndpoint() OptAuthenticationSPIFFEBundleEndpointSourceRunConfig {
 	return s.Endpoint
+}
+
+// GetFile returns the value of File.
+func (s *AuthenticationSPIFFEBundleSourceRunConfig) GetFile() OptAuthenticationSPIFFEFileBundleSourceRunConfig {
+	return s.File
 }
 
 // GetType returns the value of Type.
@@ -1860,6 +1866,11 @@ func (s *AuthenticationSPIFFEBundleSourceRunConfig) GetWorkloadAPI() *Authentica
 // SetEndpoint sets the value of Endpoint.
 func (s *AuthenticationSPIFFEBundleSourceRunConfig) SetEndpoint(val OptAuthenticationSPIFFEBundleEndpointSourceRunConfig) {
 	s.Endpoint = val
+}
+
+// SetFile sets the value of File.
+func (s *AuthenticationSPIFFEBundleSourceRunConfig) SetFile(val OptAuthenticationSPIFFEFileBundleSourceRunConfig) {
+	s.File = val
 }
 
 // SetType sets the value of Type.
@@ -1982,6 +1993,21 @@ func (s *AuthenticationSPIFFEClientAuthRunConfig) SetScopes(val []string) {
 // SetTrustDomainRef sets the value of TrustDomainRef.
 func (s *AuthenticationSPIFFEClientAuthRunConfig) SetTrustDomainRef(val OptString) {
 	s.TrustDomainRef = val
+}
+
+// Ref: #/components/schemas/AuthenticationSPIFFEFileBundleSourceRunConfig
+type AuthenticationSPIFFEFileBundleSourceRunConfig struct {
+	Path OptString `json:"path"`
+}
+
+// GetPath returns the value of Path.
+func (s *AuthenticationSPIFFEFileBundleSourceRunConfig) GetPath() OptString {
+	return s.Path
+}
+
+// SetPath sets the value of Path.
+func (s *AuthenticationSPIFFEFileBundleSourceRunConfig) SetPath(val OptString) {
+	s.Path = val
 }
 
 // Ref: #/components/schemas/AuthenticationSPIFFETrustDomainRunConfig
@@ -7253,6 +7279,52 @@ func (o OptAuthenticationSPIFFEBundleSourceRunConfig) Get() (v AuthenticationSPI
 
 // Or returns value if set, or given parameter if does not.
 func (o OptAuthenticationSPIFFEBundleSourceRunConfig) Or(d AuthenticationSPIFFEBundleSourceRunConfig) AuthenticationSPIFFEBundleSourceRunConfig {
+	if v, ok := o.Get(); ok {
+		return v
+	}
+	return d
+}
+
+// NewOptAuthenticationSPIFFEFileBundleSourceRunConfig returns new OptAuthenticationSPIFFEFileBundleSourceRunConfig with value set to v.
+func NewOptAuthenticationSPIFFEFileBundleSourceRunConfig(v AuthenticationSPIFFEFileBundleSourceRunConfig) OptAuthenticationSPIFFEFileBundleSourceRunConfig {
+	return OptAuthenticationSPIFFEFileBundleSourceRunConfig{
+		Value: v,
+		Set:   true,
+	}
+}
+
+// OptAuthenticationSPIFFEFileBundleSourceRunConfig is optional AuthenticationSPIFFEFileBundleSourceRunConfig.
+type OptAuthenticationSPIFFEFileBundleSourceRunConfig struct {
+	Value AuthenticationSPIFFEFileBundleSourceRunConfig
+	Set   bool
+}
+
+// IsSet returns true if OptAuthenticationSPIFFEFileBundleSourceRunConfig was set.
+func (o OptAuthenticationSPIFFEFileBundleSourceRunConfig) IsSet() bool { return o.Set }
+
+// Reset unsets value.
+func (o *OptAuthenticationSPIFFEFileBundleSourceRunConfig) Reset() {
+	var v AuthenticationSPIFFEFileBundleSourceRunConfig
+	o.Value = v
+	o.Set = false
+}
+
+// SetTo sets value to v.
+func (o *OptAuthenticationSPIFFEFileBundleSourceRunConfig) SetTo(v AuthenticationSPIFFEFileBundleSourceRunConfig) {
+	o.Set = true
+	o.Value = v
+}
+
+// Get returns value and boolean that denotes whether value was set.
+func (o OptAuthenticationSPIFFEFileBundleSourceRunConfig) Get() (v AuthenticationSPIFFEFileBundleSourceRunConfig, ok bool) {
+	if !o.Set {
+		return v, false
+	}
+	return o.Value, true
+}
+
+// Or returns value if set, or given parameter if does not.
+func (o OptAuthenticationSPIFFEFileBundleSourceRunConfig) Or(d AuthenticationSPIFFEFileBundleSourceRunConfig) AuthenticationSPIFFEFileBundleSourceRunConfig {
 	if v, ok := o.Get(); ok {
 		return v
 	}

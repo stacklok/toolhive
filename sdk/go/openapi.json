@@ -652,6 +652,9 @@
           "endpoint": {
             "$ref": "#/components/schemas/AuthenticationSPIFFEBundleEndpointSourceRunConfig"
           },
+          "file": {
+            "$ref": "#/components/schemas/AuthenticationSPIFFEFileBundleSourceRunConfig"
+          },
           "type": {
             "type": "string"
           },
@@ -712,6 +715,14 @@
           },
           "trust_domain_ref": {
             "description": "TrustDomainRef identifies the SPIFFE trust-domain declaration governing\nthis association policy.",
+            "type": "string"
+          }
+        },
+        "type": "object"
+      },
+      "AuthenticationSPIFFEFileBundleSourceRunConfig": {
+        "properties": {
+          "path": {
             "type": "string"
           }
         },

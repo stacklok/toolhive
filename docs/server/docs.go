@@ -578,6 +578,9 @@ const docTemplate = `{
                     "endpoint": {
                         "$ref": "#/components/schemas/authserver.SPIFFEBundleEndpointSourceRunConfig"
                     },
+                    "file": {
+                        "$ref": "#/components/schemas/authserver.SPIFFEFileBundleSourceRunConfig"
+                    },
                     "type": {
                         "type": "string"
                     },
@@ -638,6 +641,14 @@ const docTemplate = `{
                     },
                     "trust_domain_ref": {
                         "description": "TrustDomainRef identifies the SPIFFE trust-domain declaration governing\nthis association policy.",
+                        "type": "string"
+                    }
+                },
+                "type": "object"
+            },
+            "authserver.SPIFFEFileBundleSourceRunConfig": {
+                "properties": {
+                    "path": {
                         "type": "string"
                     }
                 },

@@ -766,6 +766,8 @@ components:
       properties:
         endpoint:
           $ref: '#/components/schemas/authserver.SPIFFEBundleEndpointSourceRunConfig'
+        file:
+          $ref: '#/components/schemas/authserver.SPIFFEFileBundleSourceRunConfig'
         type:
           type: string
         workload_api:
@@ -830,6 +832,11 @@ components:
           description: |-
             TrustDomainRef identifies the SPIFFE trust-domain declaration governing
             this association policy.
+          type: string
+      type: object
+    authserver.SPIFFEFileBundleSourceRunConfig:
+      properties:
+        path:
           type: string
       type: object
     authserver.SPIFFETrustDomainRunConfig:

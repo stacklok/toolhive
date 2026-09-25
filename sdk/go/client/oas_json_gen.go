@@ -3268,6 +3268,12 @@ func (s *AuthenticationSPIFFEBundleSourceRunConfig) encodeFields(e *jx.Encoder) 
 		}
 	}
 	{
+		if s.File.Set {
+			e.FieldStart("file")
+			s.File.Encode(e)
+		}
+	}
+	{
 		if s.Type.Set {
 			e.FieldStart("type")
 			s.Type.Encode(e)
@@ -3281,10 +3287,11 @@ func (s *AuthenticationSPIFFEBundleSourceRunConfig) encodeFields(e *jx.Encoder) 
 	}
 }
 
-var jsonFieldsNameOfAuthenticationSPIFFEBundleSourceRunConfig = [3]string{
+var jsonFieldsNameOfAuthenticationSPIFFEBundleSourceRunConfig = [4]string{
 	0: "endpoint",
-	1: "type",
-	2: "workload_api",
+	1: "file",
+	2: "type",
+	3: "workload_api",
 }
 
 // Decode decodes AuthenticationSPIFFEBundleSourceRunConfig from json.
@@ -3304,6 +3311,16 @@ func (s *AuthenticationSPIFFEBundleSourceRunConfig) Decode(d *jx.Decoder) error 
 				return nil
 			}(); err != nil {
 				return errors.Wrap(err, "decode field \"endpoint\"")
+			}
+		case "file":
+			if err := func() error {
+				s.File.Reset()
+				if err := s.File.Decode(d); err != nil {
+					return err
+				}
+				return nil
+			}(); err != nil {
+				return errors.Wrap(err, "decode field \"file\"")
 			}
 		case "type":
 			if err := func() error {
@@ -3594,6 +3611,69 @@ func (s *AuthenticationSPIFFEClientAuthRunConfig) MarshalJSON() ([]byte, error) 
 
 // UnmarshalJSON implements stdjson.Unmarshaler.
 func (s *AuthenticationSPIFFEClientAuthRunConfig) UnmarshalJSON(data []byte) error {
+	d := jx.DecodeBytes(data)
+	return s.Decode(d)
+}
+
+// Encode implements json.Marshaler.
+func (s *AuthenticationSPIFFEFileBundleSourceRunConfig) Encode(e *jx.Encoder) {
+	e.ObjStart()
+	s.encodeFields(e)
+	e.ObjEnd()
+}
+
+// encodeFields encodes fields.
+func (s *AuthenticationSPIFFEFileBundleSourceRunConfig) encodeFields(e *jx.Encoder) {
+	{
+		if s.Path.Set {
+			e.FieldStart("path")
+			s.Path.Encode(e)
+		}
+	}
+}
+
+var jsonFieldsNameOfAuthenticationSPIFFEFileBundleSourceRunConfig = [1]string{
+	0: "path",
+}
+
+// Decode decodes AuthenticationSPIFFEFileBundleSourceRunConfig from json.
+func (s *AuthenticationSPIFFEFileBundleSourceRunConfig) Decode(d *jx.Decoder) error {
+	if s == nil {
+		return errors.New("invalid: unable to decode AuthenticationSPIFFEFileBundleSourceRunConfig to nil")
+	}
+
+	if err := d.ObjBytes(func(d *jx.Decoder, k []byte) error {
+		switch string(k) {
+		case "path":
+			if err := func() error {
+				s.Path.Reset()
+				if err := s.Path.Decode(d); err != nil {
+					return err
+				}
+				return nil
+			}(); err != nil {
+				return errors.Wrap(err, "decode field \"path\"")
+			}
+		default:
+			return d.Skip()
+		}
+		return nil
+	}); err != nil {
+		return errors.Wrap(err, "decode AuthenticationSPIFFEFileBundleSourceRunConfig")
+	}
+
+	return nil
+}
+
+// MarshalJSON implements stdjson.Marshaler.
+func (s *AuthenticationSPIFFEFileBundleSourceRunConfig) MarshalJSON() ([]byte, error) {
+	e := jx.Encoder{}
+	s.Encode(&e)
+	return e.Bytes(), nil
+}
+
+// UnmarshalJSON implements stdjson.Unmarshaler.
+func (s *AuthenticationSPIFFEFileBundleSourceRunConfig) UnmarshalJSON(data []byte) error {
 	d := jx.DecodeBytes(data)
 	return s.Decode(d)
 }
@@ -17075,6 +17155,39 @@ func (s OptAuthenticationSPIFFEBundleSourceRunConfig) MarshalJSON() ([]byte, err
 
 // UnmarshalJSON implements stdjson.Unmarshaler.
 func (s *OptAuthenticationSPIFFEBundleSourceRunConfig) UnmarshalJSON(data []byte) error {
+	d := jx.DecodeBytes(data)
+	return s.Decode(d)
+}
+
+// Encode encodes AuthenticationSPIFFEFileBundleSourceRunConfig as json.
+func (o OptAuthenticationSPIFFEFileBundleSourceRunConfig) Encode(e *jx.Encoder) {
+	if !o.Set {
+		return
+	}
+	o.Value.Encode(e)
+}
+
+// Decode decodes AuthenticationSPIFFEFileBundleSourceRunConfig from json.
+func (o *OptAuthenticationSPIFFEFileBundleSourceRunConfig) Decode(d *jx.Decoder) error {
+	if o == nil {
+		return errors.New("invalid: unable to decode OptAuthenticationSPIFFEFileBundleSourceRunConfig to nil")
+	}
+	o.Set = true
+	if err := o.Value.Decode(d); err != nil {
+		return err
+	}
+	return nil
+}
+
+// MarshalJSON implements stdjson.Marshaler.
+func (s OptAuthenticationSPIFFEFileBundleSourceRunConfig) MarshalJSON() ([]byte, error) {
+	e := jx.Encoder{}
+	s.Encode(&e)
+	return e.Bytes(), nil
+}
+
+// UnmarshalJSON implements stdjson.Unmarshaler.
+func (s *OptAuthenticationSPIFFEFileBundleSourceRunConfig) UnmarshalJSON(data []byte) error {
 	d := jx.DecodeBytes(data)
 	return s.Decode(d)
 }

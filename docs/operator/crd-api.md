@@ -4254,8 +4254,9 @@ _Appears in:_
 
 | Field | Description | Default | Validation |
 | --- | --- | --- | --- |
-| `type` _[api.v1beta1.SPIFFEBundleSourceType](#apiv1beta1spiffebundlesourcetype)_ | Type selects the trust-bundle source. |  | Enum: [bundle_endpoint workload_api] <br />Required: \{\} <br /> |
+| `type` _[api.v1beta1.SPIFFEBundleSourceType](#apiv1beta1spiffebundlesourcetype)_ | Type selects the trust-bundle source. |  | Enum: [bundle_endpoint file workload_api] <br />Required: \{\} <br /> |
 | `endpoint` _[api.v1beta1.SPIFFEBundleEndpointSourceConfig](#apiv1beta1spiffebundleendpointsourceconfig)_ | Endpoint declares a HTTPS SPIFFE Bundle Endpoint. Required when Type is<br />"bundle_endpoint". |  | Optional: \{\} <br /> |
+| `file` _[api.v1beta1.SPIFFEFileBundleSourceConfig](#apiv1beta1spiffefilebundlesourceconfig)_ | File declares a SPIFFE trust bundle projected from a ConfigMap.<br />Required when Type is "file". |  | Optional: \{\} <br /> |
 | `workloadAPI` _[api.v1beta1.SPIFFEWorkloadAPIBundleSourceConfig](#apiv1beta1spiffeworkloadapibundlesourceconfig)_ | WorkloadAPI selects the local SPIFFE Workload API. Required when Type<br />is "workload_api". |  | Optional: \{\} <br /> |
 
 
@@ -4274,6 +4275,7 @@ _Appears in:_
 | Field | Description |
 | --- | --- |
 | `bundle_endpoint` | SPIFFEBundleSourceTypeEndpoint selects a HTTPS SPIFFE Bundle Endpoint.<br /> |
+| `file` | SPIFFEBundleSourceTypeFile selects a ConfigMap-mounted SPIFFE trust bundle.<br /> |
 | `workload_api` | SPIFFEBundleSourceTypeWorkloadAPI selects the local SPIFFE Workload API.<br /> |
 
 
@@ -4306,6 +4308,24 @@ _Appears in:_
 | `resources` _string array_ | Resources are RFC 8707 resource indicators this association may<br />request. Must be a subset of the server's allowed_audiences allowlist,<br />which is derived at reconcile time and not available on this CRD, so<br />allowlist membership is validated at reconcile time, not admission.<br />Shape (a well-formed absolute HTTP(S) URI) is independent of that<br />derived allowlist and is validated here. Distinct from Audiences: a<br />resource permission does not imply the same value is also a permitted<br />token audience, or vice versa. |  | MaxItems: 50 <br />items:MaxLength: 2048 <br />items:MinLength: 1 <br />items:Pattern: `^https?://[^@#[:space:]]+$` <br />Optional: \{\} <br /> |
 | `audiences` _string array_ | Audiences are RFC 8693 token audiences this association may request. |  | MaxItems: 50 <br />MinItems: 1 <br />Required: \{\} <br />items:MaxLength: 2048 <br />items:MinLength: 1 <br /> |
 | `scopes` _string array_ | Scopes are OAuth scopes granted to this association. Must be a subset<br />of the server's effective supported scopes. |  | MaxItems: 50 <br />MinItems: 1 <br />Required: \{\} <br />items:MaxLength: 256 <br />items:MinLength: 1 <br /> |
+
+
+#### api.v1beta1.SPIFFEFileBundleSourceConfig
+
+
+
+SPIFFEFileBundleSourceConfig selects one ConfigMap key containing a SPIFFE
+trust-bundle JWKS document, typically projected as a mounted file.
+
+
+
+_Appears in:_
+- [api.v1beta1.SPIFFEBundleSourceConfig](#apiv1beta1spiffebundlesourceconfig)
+
+| Field | Description | Default | Validation |
+| --- | --- | --- | --- |
+| `configMapName` _string_ | ConfigMapName is the name of the ConfigMap containing the trust bundle. |  | MinLength: 1 <br />Required: \{\} <br /> |
+| `configMapKey` _string_ | ConfigMapKey is the key within the ConfigMap holding the SPIFFE JWKS<br />trust-bundle document. |  | MinLength: 1 <br />Required: \{\} <br /> |
 
 
 #### api.v1beta1.SPIFFETrustDomainConfig

@@ -142,8 +142,9 @@ Welcome to the ToolHive architecture documentation. This directory contains comp
 
 18. **[SPIFFE Association Declarations](18-spiffe-association-declarations.md)**
     - SPIFFE configuration remains rejected at startup; the feature is not yet deployable
-    - File-bundle source and `newServer` X.509/JWT bundle wiring are present but unreachable through normal startup
-    - JWT-SVID validation logic exists; X.509-SVID verification and TLS listener startup remain unimplemented
+    - Auth-server TLS listener runs on the proxy runner at fixed port 8443; vMCP and operator configuration/exposure are unsupported
+    - File-bundle source and `newServer` X.509/JWT bundle wiring are present but unreachable through normal SPIFFE startup
+    - JWT-SVID validation logic exists; X.509-SVID verification remains unimplemented
     - Fail-closed policy validation and durable, restart-safe static-client reservation
     - Endpoint/Workload API loading and SPIFFE method integration with grants or discovery remain pending
 

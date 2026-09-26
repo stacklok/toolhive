@@ -126,7 +126,7 @@ func hashBrowserBindingSecret(value string) string {
 // browserBindingSecure reports whether the browser-facing authorize URL is
 // served over https, which decides both the Secure attribute and the "__Host-"
 // prefix. Config validation guarantees the URL parses with an http or https
-// scheme; an unparseable value falls back to the plain-http shape, which every
+// scheme; an unparsable value falls back to the plain-http shape, which every
 // browser accepts.
 func (h *Handler) browserBindingSecure() bool {
 	u, err := url.Parse(h.config.GetAuthorizationEndpointBaseURL())

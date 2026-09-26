@@ -272,8 +272,8 @@ func TestHandler_AcceptsClientResponsePost(t *testing.T) {
 	var outcome callOutcome
 	select {
 	case outcome = <-callDone:
-	case <-time.After(2 * time.Second):
-		t.Fatal("timed out waiting for tool call after client response POST")
+	case <-ctx.Done():
+		t.Fatalf("timed out waiting for tool call after client response POST: %v", ctx.Err())
 	}
 	require.NoError(t, outcome.err)
 	require.NotNil(t, outcome.result)

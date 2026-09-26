@@ -162,18 +162,31 @@ func TestStreamableHTTPTransparentProxyForwardsClientResponse(t *testing.T) {
 
 	targetURL, err := url.Parse(target.URL)
 	require.NoError(t, err)
+	ctx, cancel := context.WithCancel(context.Background())
+	t.Cleanup(cancel)
 	p := NewTransparentProxy("127.0.0.1", 0, targetURL.String(), nil, nil, nil,
-		false, false, "streamable-http", nil, nil, "", false)
+		false, false, "", nil, nil, "", false)
 	t.Cleanup(func() { _ = p.Stop(context.Background()) })
-	reverseProxy := createBasicProxy(p, targetURL)
+	require.NoError(t, p.Start(ctx))
 
-	req := httptest.NewRequest(http.MethodPost, "http://proxy.local/mcp", strings.NewReader(message))
+	requestCtx, requestCancel := context.WithTimeout(ctx, 3*time.Second)
+	defer requestCancel()
+	req, err := http.NewRequestWithContext(
+		requestCtx,
+		http.MethodPost,
+		fmt.Sprintf("http://%s/mcp", p.ListenerAddr()),
+		strings.NewReader(message),
+	)
+	require.NoError(t, err)
 	req.Header.Set("Content-Type", "application/json")
-	rec := httptest.NewRecorder()
-	reverseProxy.ServeHTTP(rec, req)
+	resp, err := http.DefaultClient.Do(req)
+	require.NoError(t, err)
+	defer resp.Body.Close()
+	responseBody, err := io.ReadAll(resp.Body)
+	require.NoError(t, err)
 
-	assert.Equal(t, http.StatusAccepted, rec.Code)
-	assert.Empty(t, rec.Body.Bytes(), "client response 202 should have no body")
+	assert.Equal(t, http.StatusAccepted, resp.StatusCode)
+	assert.Empty(t, responseBody, "client response 202 should have no body")
 
 	select {
 	case request := <-received:

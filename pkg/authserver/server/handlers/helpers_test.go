@@ -7,6 +7,9 @@ import (
 	"context"
 	"crypto/rand"
 	"crypto/rsa"
+	"net/http"
+	"net/http/httptest"
+	"strings"
 	"testing"
 	"time"
 
@@ -623,4 +626,46 @@ func multiUpstreamTestSetupWithStorage(t *testing.T, storageOpts ...baseTestSetu
 	require.NoError(t, err)
 
 	return handler, storState, mockProvider1, mockProvider2
+}
+
+// testBindingSecure reports the cookie shape the shared test handler emits:
+// testAuthIssuer is plain http and no test overrides the authorize base URL,
+// so the unprefixed, non-Secure shape.
+func testBindingSecure() bool {
+	return strings.HasPrefix(testAuthIssuer, "https://")
+}
+
+// bindPending seeds pending under state in storState with a fresh browser
+// binding, mirroring what AuthorizeHandler (or the previous chain leg) does,
+// and returns the cookie a callback for that state must carry. Callback tests
+// seed storage directly, so they need this to pass verifyBrowserBinding.
+func bindPending(t *testing.T, storState *testStorageState, state string, pending *storage.PendingAuthorization) *http.Cookie {
+	t.Helper()
+	binding := newBrowserBinding()
+	pending.BrowserBindingHash = binding.hash
+	storState.pendingAuths[state] = pending
+	return &http.Cookie{Name: browserBindingCookieName(state, testBindingSecure()), Value: binding.value}
+}
+
+// newCallbackRequest builds GET /oauth/callback?<query> carrying cookies.
+func newCallbackRequest(query string, cookies ...*http.Cookie) *http.Request {
+	req := httptest.NewRequest(http.MethodGet, "/oauth/callback?"+query, nil)
+	for _, c := range cookies {
+		req.AddCookie(c)
+	}
+	return req
+}
+
+// bindingCookieFrom returns the browser-binding cookie that a redirect to an
+// upstream set for state, or fails the test when the response carries none.
+func bindingCookieFrom(t *testing.T, rec *httptest.ResponseRecorder, state string) *http.Cookie {
+	t.Helper()
+	name := browserBindingCookieName(state, testBindingSecure())
+	for _, c := range rec.Result().Cookies() {
+		if c.Name == name {
+			return c
+		}
+	}
+	require.Failf(t, "browser binding cookie not set", "no cookie named %s in response", name)
+	return nil
 }

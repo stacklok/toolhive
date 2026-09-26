@@ -126,7 +126,12 @@ func (h *Handler) DeviceAuthorizationHandler(w http.ResponseWriter, req *http.Re
 		return
 	}
 
-	verificationURI := h.issuer() + "/oauth/device"
+	// The verification page is a browser-facing endpoint like /oauth/authorize,
+	// so it is advertised from the same base URL. The browser-binding cookie the
+	// page sets is host-only and must reach /oauth/callback, which lives on the
+	// browser-facing host; advertising the page from the issuer would strand the
+	// cookie whenever the two hosts differ.
+	verificationURI := h.config.GetAuthorizationEndpointBaseURL() + "/oauth/device"
 	response := deviceAuthorizationResponse{
 		DeviceCode:              device.DeviceCode,
 		UserCode:                device.UserCode,

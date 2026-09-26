@@ -1742,6 +1742,12 @@ func getEmbeddedASToken(vmcpLocalURL, dexLocalURL, dexInClusterHost, vmcpInClust
 		return "", fmt.Errorf("expected 302 from /oauth/authorize, got %d", resp.StatusCode)
 	}
 	dexRedirectURL := resp.Header.Get("Location")
+	// The embedded AS binds the callback to the browser that started the flow
+	// with a cookie on this redirect; this helper plays that browser. Cookies
+	// are carried by hand rather than through a cookie jar because the issuer
+	// is https while the port-forward is plain http, and a jar would drop the
+	// Secure cookie.
+	asBindingCookies := resp.Cookies()
 	if dexRedirectURL == "" {
 		return "", fmt.Errorf("no Location header from /oauth/authorize")
 	}
@@ -1831,8 +1837,16 @@ func getEmbeddedASToken(vmcpLocalURL, dexLocalURL, dexInClusterHost, vmcpInClust
 		return "", fmt.Errorf("rewriting callback URL: %w", err)
 	}
 
-	// Step 7: Call the embedded AS callback to complete the Dex code exchange
-	resp, err = noRedirectClient.Get(localCallbackURL)
+	// Step 7: Call the embedded AS callback to complete the Dex code exchange,
+	// as the browser that started the flow in step 3.
+	callbackReq, err := http.NewRequest(http.MethodGet, localCallbackURL, nil)
+	if err != nil {
+		return "", fmt.Errorf("building AS callback request: %w", err)
+	}
+	for _, c := range asBindingCookies {
+		callbackReq.AddCookie(c)
+	}
+	resp, err = noRedirectClient.Do(callbackReq)
 	if err != nil {
 		return "", fmt.Errorf("AS callback request failed: %w", err)
 	}

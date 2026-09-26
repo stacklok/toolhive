@@ -47,6 +47,10 @@ const (
 	// deviceLoginStorageError means the lookup failed for a reason other than
 	// not-found/expired; a response has already been written.
 	deviceLoginStorageError
+	// deviceLoginRejected means the device login was found but the calling
+	// browser did not present its binding cookie; the login has been consumed
+	// and a 400 response has already been written.
+	deviceLoginRejected
 )
 
 // loadPendingOrCompleteDeviceLogin loads the pending OAuth-client
@@ -61,12 +65,18 @@ const (
 // isNotFoundOrExpired), this falls back to completing a pending device-flow
 // login instead of failing outright.
 //
+// A pending OAuth-client authorization is only released to the browser that
+// started it: req must carry the browser-binding cookie /oauth/authorize (or
+// the previous chain leg) set for internalState, see browser_binding.go. The
+// check runs only after the record loads, so the device-flow fallback, whose
+// browser never visited /oauth/authorize, is unaffected.
+//
 // The bool return is false whenever a response has already been written
-// (either the device-login completion, a storage error, or a not-found/
-// corrupted error) and the caller must return immediately without doing
-// anything further.
+// (either the device-login completion, a storage error, a browser-binding
+// failure, or a not-found/corrupted error) and the caller must return
+// immediately without doing anything further.
 func (h *Handler) loadPendingOrCompleteDeviceLogin(
-	ctx context.Context, w http.ResponseWriter, internalState, code string,
+	ctx context.Context, w http.ResponseWriter, req *http.Request, internalState, code string,
 ) (*storage.PendingAuthorization, fosite.AuthorizeRequester, bool) {
 	pending, err := h.storage.LoadPendingAuthorization(ctx, internalState)
 	if err != nil {
@@ -78,8 +88,8 @@ func (h *Handler) loadPendingOrCompleteDeviceLogin(
 			http.Error(w, "internal server error", http.StatusInternalServerError)
 			return nil, nil, false
 		}
-		switch h.tryCompleteDeviceLogin(ctx, w, internalState, code) {
-		case deviceLoginCompleted, deviceLoginStorageError:
+		switch h.tryCompleteDeviceLogin(ctx, w, req, internalState, code) {
+		case deviceLoginCompleted, deviceLoginStorageError, deviceLoginRejected:
 			return nil, nil, false
 		case deviceLoginNotFound:
 			slog.Warn("pending authorization not found", "error", err)
@@ -88,9 +98,20 @@ func (h *Handler) loadPendingOrCompleteDeviceLogin(
 		}
 	}
 
-	// Delete pending authorization immediately (single-use)
+	// Delete pending authorization immediately (single-use), whether or not
+	// the browser-binding check below passes: a state that reached the
+	// callback is consumed either way.
 	if err := h.storage.DeletePendingAuthorization(ctx, internalState); err != nil {
 		slog.Warn("failed to delete pending authorization", "error", err)
+	}
+
+	if bindErr := h.verifyBrowserBinding(req, internalState, pending.BrowserBindingHash); bindErr != nil {
+		writeUnboundCallbackRejection(w, bindErr,
+			"flow", "authorization_code",
+			"client_id", pending.ClientID,
+			"upstream_provider", pending.UpstreamProviderName,
+		)
+		return nil, nil, false
 	}
 
 	ar := h.buildAuthorizeRequesterFromPending(ctx, pending)
@@ -102,8 +123,27 @@ func (h *Handler) loadPendingOrCompleteDeviceLogin(
 	return pending, ar, true
 }
 
+// writeUnboundCallbackRejection logs and answers a browser-binding failure for
+// either flow that shares /oauth/callback. Callers have already consumed the
+// pending record, so the state cannot be retried. The response is a plain 400
+// rather than a redirect: the browser making this request is by definition not
+// the one that started the flow, so sending it to the client's redirect URI
+// would hand a victim to whoever registered that client. attrs are extra slog
+// key/value pairs identifying the flow; callers must not pass the cookie
+// value, the stored hash, or device or user codes.
+func writeUnboundCallbackRejection(w http.ResponseWriter, bindErr error, attrs ...any) {
+	logAttrs := append([]any{"reason", bindErr.Error()}, attrs...)
+	slog.Warn("rejected upstream callback: browser binding check failed", //nolint:gosec // G706 - server-side identifiers
+		logAttrs...)
+	http.Error(w,
+		"sign-in must be completed in the browser that started it; cookies for this host must be enabled",
+		http.StatusBadRequest)
+}
+
 // CallbackHandler handles GET /oauth/callback requests.
-// It exchanges the upstream authorization code and issues our own authorization code.
+// It exchanges the upstream authorization code and issues our own authorization
+// code. The request must carry the browser-binding cookie set when the flow
+// started; see loadPendingOrCompleteDeviceLogin and browser_binding.go.
 func (h *Handler) CallbackHandler(w http.ResponseWriter, req *http.Request) {
 	ctx := req.Context()
 
@@ -119,7 +159,7 @@ func (h *Handler) CallbackHandler(w http.ResponseWriter, req *http.Request) {
 
 	// Handle upstream errors
 	if errorParam != "" {
-		h.handleUpstreamError(ctx, w, internalState, errorParam, errorDescription)
+		h.handleUpstreamError(ctx, w, req, internalState, errorParam, errorDescription)
 		return
 	}
 
@@ -138,7 +178,7 @@ func (h *Handler) CallbackHandler(w http.ResponseWriter, req *http.Request) {
 
 	// Load and delete pending authorization (single-use), falling back to
 	// completing a device-flow login when internalState doesn't match one.
-	pending, ar, ok := h.loadPendingOrCompleteDeviceLogin(ctx, w, internalState, code)
+	pending, ar, ok := h.loadPendingOrCompleteDeviceLogin(ctx, w, req, internalState, code)
 	if !ok {
 		return
 	}
@@ -458,6 +498,7 @@ func (h *Handler) buildAuthorizeRequesterFromPending(
 func (h *Handler) handleUpstreamError(
 	ctx context.Context,
 	w http.ResponseWriter,
+	req *http.Request,
 	internalState string,
 	errorParam string,
 	errorDescription string,
@@ -480,6 +521,16 @@ func (h *Handler) handleUpstreamError(
 			// would otherwise disconnect the already-connected account — and earlier legs
 			// are likewise the user's own valid tokens. Leave them all intact.
 			_ = h.storage.DeletePendingAuthorization(ctx, internalState)
+			// Same browser-binding rule as the success path: only the browser that
+			// started the flow may steer its outcome, even an error redirect.
+			if bindErr := h.verifyBrowserBinding(req, internalState, pending.BrowserBindingHash); bindErr != nil {
+				writeUnboundCallbackRejection(w, bindErr,
+					"flow", "authorization_code",
+					"client_id", pending.ClientID,
+					"upstream_provider", pending.UpstreamProviderName,
+				)
+				return
+			}
 			ar := h.buildAuthorizeRequesterFromPending(ctx, pending)
 			if ar != nil {
 				// Use generic error hint to avoid exposing upstream IDP details to clients.
@@ -493,7 +544,7 @@ func (h *Handler) handleUpstreamError(
 			// it may belong to a device-flow login instead (e.g. the human clicked
 			// "Deny" at the upstream IDP). See tryDenyDeviceLoginOnUpstreamError's
 			// doc comment for why this fallback matters.
-			if h.tryDenyDeviceLoginOnUpstreamError(ctx, w, internalState) {
+			if h.tryDenyDeviceLoginOnUpstreamError(ctx, w, req, internalState) {
 				return
 			}
 		default:
@@ -651,6 +702,7 @@ func (h *Handler) continueChainOrComplete(
 	// completed legs remain in storage until their TTL expires. Add cascading cleanup
 	// when pending authorizations expire to also delete associated upstream tokens.
 	secrets := newUpstreamAuthSecrets()
+	binding := newBrowserBinding()
 	nextPending := &storage.PendingAuthorization{
 		// Carry client request fields
 		ClientID:      pending.ClientID,
@@ -663,6 +715,7 @@ func (h *Handler) continueChainOrComplete(
 		InternalState:        secrets.State,
 		UpstreamPKCEVerifier: secrets.PKCEVerifier,
 		UpstreamNonce:        secrets.Nonce,
+		BrowserBindingHash:   binding.hash,
 		// Chain state
 		UpstreamProviderName: nextProvider,
 		SessionID:            sessionID,
@@ -708,6 +761,11 @@ func (h *Handler) continueChainOrComplete(
 		return
 	}
 
+	// Fresh binding for the fresh state: the same browser must also complete
+	// the next leg's callback. Set only once every failure path above is past,
+	// so a failed leg leaves no cookie behind. The consumed leg's cookie is
+	// left to expire.
+	h.setBrowserBindingCookie(w, secrets.State, binding.value)
 	http.Redirect(w, req, nextURL, http.StatusFound)
 }
 

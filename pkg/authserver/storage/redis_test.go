@@ -2449,7 +2449,8 @@ func TestRedisStorage_PendingAuthorization(t *testing.T) {
 			State: "client-state", PKCEChallenge: "challenge", PKCEMethod: "S256",
 			Scopes: []string{"openid", "profile"}, InternalState: state,
 			UpstreamPKCEVerifier: "verifier", UpstreamNonce: "nonce",
-			SingleLeg: true, ChainUpstreams: []string{"provider-1", "provider-2"},
+			BrowserBindingHash: "binding-hash",
+			SingleLeg:          true, ChainUpstreams: []string{"provider-1", "provider-2"},
 			CreatedAt: time.Now(),
 		}
 	}
@@ -2464,6 +2465,7 @@ func TestRedisStorage_PendingAuthorization(t *testing.T) {
 			assert.Equal(t, pending.ClientID, retrieved.ClientID)
 			assert.Equal(t, pending.PKCEChallenge, retrieved.PKCEChallenge)
 			assert.Equal(t, pending.Scopes, retrieved.Scopes)
+			assert.Equal(t, pending.BrowserBindingHash, retrieved.BrowserBindingHash)
 			assert.Equal(t, pending.SingleLeg, retrieved.SingleLeg)
 			assert.Equal(t, pending.ChainUpstreams, retrieved.ChainUpstreams)
 		})
@@ -2474,6 +2476,8 @@ func TestRedisStorage_PendingAuthorization(t *testing.T) {
 		// "chain_upstreams" key must deserialise to an empty ChainUpstreams, which
 		// the callback treats as "no chain computed yet". A JSON tag rename or a
 		// DisallowUnknownFields flip would break this without failing another test.
+		// The same row has no "browser_binding_hash" key and must decode with an
+		// empty BrowserBindingHash, which the callback rejects as unbound.
 		withRedisStorage(t, func(ctx context.Context, s *RedisStorage, mr *miniredis.Miniredis) {
 			legacyJSON := fmt.Sprintf(`{
 				"client_id": "legacy-client",
@@ -2499,6 +2503,7 @@ func TestRedisStorage_PendingAuthorization(t *testing.T) {
 			require.NotNil(t, retrieved)
 
 			assert.Empty(t, retrieved.ChainUpstreams, "legacy record must decode with empty ChainUpstreams")
+			assert.Empty(t, retrieved.BrowserBindingHash, "legacy record must decode with empty BrowserBindingHash")
 			// Sanity-check that unrelated fields still populate from the legacy blob.
 			assert.Equal(t, "legacy-client", retrieved.ClientID)
 			assert.Equal(t, "legacy-session", retrieved.SessionID)
@@ -2536,6 +2541,7 @@ func TestRedisStorage_PendingDeviceLogin(t *testing.T) {
 		return &PendingDeviceLogin{
 			DeviceCode: "device-code", UserCode: "USER-CODE",
 			UpstreamPKCEVerifier: "verifier", UpstreamNonce: "nonce",
+			BrowserBindingHash:   "binding-hash",
 			UpstreamProviderName: "provider-1", CreatedAt: time.Now(),
 		}
 	}
@@ -2551,6 +2557,7 @@ func TestRedisStorage_PendingDeviceLogin(t *testing.T) {
 			assert.Equal(t, pending.UserCode, retrieved.UserCode)
 			assert.Equal(t, pending.UpstreamPKCEVerifier, retrieved.UpstreamPKCEVerifier)
 			assert.Equal(t, pending.UpstreamNonce, retrieved.UpstreamNonce)
+			assert.Equal(t, pending.BrowserBindingHash, retrieved.BrowserBindingHash)
 			assert.Equal(t, pending.UpstreamProviderName, retrieved.UpstreamProviderName)
 		})
 	})
@@ -3034,7 +3041,7 @@ func TestRedisStorage_TTLHandling(t *testing.T) {
 	t.Run("pending authorizations expire automatically", func(t *testing.T) {
 		withRedisStorage(t, func(ctx context.Context, s *RedisStorage, mr *miniredis.Miniredis) {
 			pending := &PendingAuthorization{
-				ClientID: "test", State: "state", CreatedAt: time.Now(),
+				ClientID: "test", State: "state", BrowserBindingHash: "binding-hash", CreatedAt: time.Now(),
 			}
 			require.NoError(t, s.StorePendingAuthorization(ctx, "expire-me", pending))
 

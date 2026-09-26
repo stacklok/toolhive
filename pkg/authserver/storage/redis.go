@@ -2227,6 +2227,7 @@ type storedPendingAuthorization struct {
 	InternalState        string   `json:"internal_state"`
 	UpstreamPKCEVerifier string   `json:"upstream_pkce_verifier"`
 	UpstreamNonce        string   `json:"upstream_nonce"`
+	BrowserBindingHash   string   `json:"browser_binding_hash,omitempty"`
 	UpstreamProviderName string   `json:"upstream_provider_name,omitempty"`
 	SessionID            string   `json:"session_id,omitempty"`
 	ResolvedUserID       string   `json:"resolved_user_id,omitempty"`
@@ -2258,6 +2259,7 @@ func (s *RedisStorage) StorePendingAuthorization(ctx context.Context, state stri
 		InternalState:        pending.InternalState,
 		UpstreamPKCEVerifier: pending.UpstreamPKCEVerifier,
 		UpstreamNonce:        pending.UpstreamNonce,
+		BrowserBindingHash:   pending.BrowserBindingHash,
 		UpstreamProviderName: pending.UpstreamProviderName,
 		SessionID:            pending.SessionID,
 		ResolvedUserID:       pending.ResolvedUserID,
@@ -2310,6 +2312,7 @@ func (s *RedisStorage) LoadPendingAuthorization(ctx context.Context, state strin
 		InternalState:        stored.InternalState,
 		UpstreamPKCEVerifier: stored.UpstreamPKCEVerifier,
 		UpstreamNonce:        stored.UpstreamNonce,
+		BrowserBindingHash:   stored.BrowserBindingHash,
 		UpstreamProviderName: stored.UpstreamProviderName,
 		SessionID:            stored.SessionID,
 		ResolvedUserID:       stored.ResolvedUserID,
@@ -2346,6 +2349,7 @@ type storedPendingDeviceLogin struct {
 	UserCode             string `json:"user_code"`
 	UpstreamPKCEVerifier string `json:"upstream_pkce_verifier"`
 	UpstreamNonce        string `json:"upstream_nonce"`
+	BrowserBindingHash   string `json:"browser_binding_hash,omitempty"`
 	UpstreamProviderName string `json:"upstream_provider_name,omitempty"`
 	CreatedAt            int64  `json:"created_at"`
 }
@@ -2366,6 +2370,7 @@ func (s *RedisStorage) StorePendingDeviceLogin(ctx context.Context, state string
 		UserCode:             pending.UserCode,
 		UpstreamPKCEVerifier: pending.UpstreamPKCEVerifier,
 		UpstreamNonce:        pending.UpstreamNonce,
+		BrowserBindingHash:   pending.BrowserBindingHash,
 		UpstreamProviderName: pending.UpstreamProviderName,
 		CreatedAt:            pending.CreatedAt.Unix(),
 	}
@@ -2405,6 +2410,7 @@ func (s *RedisStorage) LoadPendingDeviceLogin(ctx context.Context, state string)
 		UserCode:             stored.UserCode,
 		UpstreamPKCEVerifier: stored.UpstreamPKCEVerifier,
 		UpstreamNonce:        stored.UpstreamNonce,
+		BrowserBindingHash:   stored.BrowserBindingHash,
 		UpstreamProviderName: stored.UpstreamProviderName,
 		CreatedAt:            createdAt,
 	}, nil

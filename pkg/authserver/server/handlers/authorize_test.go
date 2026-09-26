@@ -367,6 +367,17 @@ func TestAuthorizeHandler_RedirectsToUpstream(t *testing.T) {
 
 	// Verify the challenge matches the stored verifier
 	assert.Equal(t, servercrypto.ComputePKCEChallenge(pending.UpstreamPKCEVerifier), mockUpstream.capturedCodeChallenge)
+
+	// Should have bound the pending authorization to this browser: the cookie
+	// on the redirect hashes to the stored binding.
+	cookie := bindingCookieFrom(t, rec, mockUpstream.capturedState)
+	assert.Equal(t, hashBrowserBindingSecret(cookie.Value), pending.BrowserBindingHash)
+	assert.Equal(t, "/", cookie.Path)
+	assert.True(t, cookie.HttpOnly)
+	assert.Equal(t, http.SameSiteLaxMode, cookie.SameSite)
+	assert.Equal(t, int(storage.DefaultPendingAuthorizationTTL.Seconds()), cookie.MaxAge)
+	assert.False(t, cookie.Secure, "plain-http test issuer must not set Secure")
+	assert.False(t, strings.HasPrefix(cookie.Name, hostCookiePrefix), "plain-http test issuer must not use __Host-")
 }
 
 // registerLoopbackClient creates a public client with loopback redirect URIs (as

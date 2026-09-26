@@ -16,6 +16,13 @@ import (
 type OAuthClient struct {
 	httpClient *http.Client
 	baseURL    string
+	// bindingCookies holds the cookies the auth server set on its redirects to
+	// an upstream. /oauth/callback only completes a leg for the browser that
+	// started it, so this client plays that browser: it remembers every cookie
+	// from StartAuthorization and Callback and sends them on the next Callback.
+	// Cookies are kept by name rather than in a cookie jar so an https-issuer
+	// Secure cookie still travels to a plain http test server.
+	bindingCookies map[string]*http.Cookie
 }
 
 // NewOAuthClient creates an HTTP client configured for OAuth testing.
@@ -31,6 +38,7 @@ func NewOAuthClient(baseURL string) *OAuthClient {
 				return http.ErrUseLastResponse
 			},
 		},
+		bindingCookies: make(map[string]*http.Cookie),
 	}
 }
 
@@ -113,16 +121,41 @@ func (c *OAuthClient) GetOIDCDiscovery() (map[string]interface{}, int, error) {
 // Returns the HTTP response including the redirect location.
 func (c *OAuthClient) StartAuthorization(params url.Values) (*http.Response, error) {
 	authURL := c.baseURL + "/oauth/authorize?" + params.Encode()
-	return c.httpClient.Get(authURL)
+	resp, err := c.httpClient.Get(authURL)
+	if err != nil {
+		return nil, err
+	}
+	c.rememberCookies(resp)
+	return resp, nil
 }
 
 // Callback drives the upstream callback leg: GET /oauth/callback with the given
-// code and internal state. The client does not follow redirects, so the returned
+// code and internal state, carrying the browser-binding cookies remembered from
+// the earlier legs. The client does not follow redirects, so the returned
 // response exposes what the server issues — an onward redirect to the next
 // upstream, or a redirect back to the client with an authorization code.
 func (c *OAuthClient) Callback(code, state string) (*http.Response, error) {
 	params := url.Values{"code": {code}, "state": {state}}
-	return c.httpClient.Get(c.baseURL + "/oauth/callback?" + params.Encode())
+	req, err := http.NewRequest(http.MethodGet, c.baseURL+"/oauth/callback?"+params.Encode(), nil)
+	if err != nil {
+		return nil, err
+	}
+	for _, cookie := range c.bindingCookies {
+		req.AddCookie(cookie)
+	}
+	resp, err := c.httpClient.Do(req)
+	if err != nil {
+		return nil, err
+	}
+	c.rememberCookies(resp)
+	return resp, nil
+}
+
+// rememberCookies records the cookies set on resp by name.
+func (c *OAuthClient) rememberCookies(resp *http.Response) {
+	for _, cookie := range resp.Cookies() {
+		c.bindingCookies[cookie.Name] = cookie
+	}
 }
 
 // ExchangeToken performs a token exchange at the token endpoint.

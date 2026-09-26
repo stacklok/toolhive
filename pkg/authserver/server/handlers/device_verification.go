@@ -36,16 +36,12 @@ func normalizeUserCode(raw string) string {
 }
 
 // DeviceVerificationHandler handles GET /oauth/device requests: it renders
-// the form the human uses to enter/confirm a device flow user_code. See
-// DeviceVerificationSubmitHandler for what happens next. This must stay a
-// *Handler method rather than a plain function: OAuthRoutes registers it as
-// a bound method value alongside every other route, even though this
-// particular handler needs no Handler state.
-//
-//nolint:revive // unused-receiver: see doc comment above
+// the form the human uses to enter/confirm a device flow user_code, issuing
+// the anti-forgery token the POST requires (see browser_binding.go). See
+// DeviceVerificationSubmitHandler for what happens next.
 func (h *Handler) DeviceVerificationHandler(w http.ResponseWriter, req *http.Request) {
 	userCode := normalizeUserCode(req.URL.Query().Get("user_code"))
-	renderVerifyForm(w, http.StatusOK, userCode, "")
+	h.renderVerifyForm(w, req, http.StatusOK, userCode, "")
 }
 
 // DeviceVerificationSubmitHandler handles POST /oauth/device: it validates
@@ -60,13 +56,24 @@ func (h *Handler) DeviceVerificationSubmitHandler(w http.ResponseWriter, req *ht
 
 	req.Body = http.MaxBytesReader(w, req.Body, MaxDCRBodySize)
 	if err := req.ParseForm(); err != nil {
-		renderVerifyForm(w, http.StatusBadRequest, "", "Could not read the submitted form.")
+		h.renderVerifyForm(w, req, http.StatusBadRequest, "", "Could not read the submitted form.")
 		return
 	}
 
 	userCode := normalizeUserCode(req.PostForm.Get("user_code"))
+
+	// A submission must come from a form this server rendered to this browser:
+	// otherwise a cross-site page could submit an attacker's user_code from the
+	// victim's browser and have that browser bound to the attacker's login.
+	if err := h.verifyDeviceFormToken(req); err != nil {
+		slog.Warn("device verification: rejected form submission", "reason", err.Error())
+		h.renderVerifyForm(w, req, http.StatusBadRequest, userCode,
+			"This form has expired. Please enter the code again.")
+		return
+	}
+
 	if userCode == "" {
-		renderVerifyForm(w, http.StatusBadRequest, "", "Please enter the code shown on your device.")
+		h.renderVerifyForm(w, req, http.StatusBadRequest, "", "Please enter the code shown on your device.")
 		return
 	}
 
@@ -78,7 +85,7 @@ func (h *Handler) DeviceVerificationSubmitHandler(w http.ResponseWriter, req *ht
 	}
 	if err != nil || device.Status != storage.DeviceRequestStatusPending {
 		slog.Debug("device verification: invalid or expired user_code", "error", err)
-		renderVerifyForm(w, http.StatusBadRequest, userCode,
+		h.renderVerifyForm(w, req, http.StatusBadRequest, userCode,
 			"That code is invalid or has expired. Please check your device and try again.")
 		return
 	}
@@ -100,11 +107,13 @@ func (h *Handler) DeviceVerificationSubmitHandler(w http.ResponseWriter, req *ht
 	}
 
 	secrets := newUpstreamAuthSecrets()
+	binding := newBrowserBinding()
 	pending := &storage.PendingDeviceLogin{
 		DeviceCode:           device.DeviceCode,
 		UserCode:             device.UserCode,
 		UpstreamPKCEVerifier: secrets.PKCEVerifier,
 		UpstreamNonce:        secrets.Nonce,
+		BrowserBindingHash:   binding.hash,
 		UpstreamProviderName: h.upstreams[0].Name,
 		CreatedAt:            time.Now(),
 	}
@@ -126,6 +135,11 @@ func (h *Handler) DeviceVerificationSubmitHandler(w http.ResponseWriter, req *ht
 		return
 	}
 
+	// Bind the login to this browser exactly as AuthorizeHandler does: only the
+	// browser that submitted the user_code may complete the upstream callback,
+	// so a user_code holder cannot hand the upstream URL to someone else and
+	// have that person's identity land on the device. See browser_binding.go.
+	h.setBrowserBindingCookie(w, secrets.State, binding.value)
 	http.Redirect(w, req, upstreamURL, http.StatusFound)
 }
 
@@ -142,9 +156,11 @@ func (h *Handler) DeviceVerificationSubmitHandler(w http.ResponseWriter, req *ht
 // (response already written) when the lookup failed for a reason other than
 // not-found/expired -- a real backend error must not be silently
 // reinterpreted as "not a device login" and reported to the client as an
-// ordinary 400.
+// ordinary 400. Returns deviceLoginRejected (response already written) when
+// req does not carry the browser-binding cookie the verification page set
+// for internalState; the login is consumed so the state cannot be retried.
 func (h *Handler) tryCompleteDeviceLogin(
-	ctx context.Context, w http.ResponseWriter, internalState, code string,
+	ctx context.Context, w http.ResponseWriter, req *http.Request, internalState, code string,
 ) deviceLoginOutcome {
 	devicePending, err := h.storage.LoadPendingDeviceLogin(ctx, internalState)
 	if err != nil {
@@ -157,6 +173,10 @@ func (h *Handler) tryCompleteDeviceLogin(
 	}
 	if delErr := h.storage.DeletePendingDeviceLogin(ctx, internalState); delErr != nil {
 		slog.Warn("failed to delete pending device login", "error", delErr)
+	}
+	if bindErr := h.verifyBrowserBinding(req, internalState, devicePending.BrowserBindingHash); bindErr != nil {
+		writeUnboundCallbackRejection(w, bindErr, "flow", "device", "upstream_provider", devicePending.UpstreamProviderName)
+		return deviceLoginRejected
 	}
 	h.completeDeviceLogin(ctx, w, devicePending, code)
 	return deviceLoginCompleted
@@ -173,14 +193,22 @@ func (h *Handler) tryCompleteDeviceLogin(
 //
 // Returns false (no response written) when internalState does not match a
 // pending device login either, so the caller falls through to its own
-// generic error page.
-func (h *Handler) tryDenyDeviceLoginOnUpstreamError(ctx context.Context, w http.ResponseWriter, internalState string) bool {
+// generic error page. A browser that does not present the login's binding
+// cookie gets a 400 and the login is consumed, but the DeviceRequest is left
+// pending: that browser did not start the login and may not decide it.
+func (h *Handler) tryDenyDeviceLoginOnUpstreamError(
+	ctx context.Context, w http.ResponseWriter, req *http.Request, internalState string,
+) bool {
 	devicePending, err := h.storage.LoadPendingDeviceLogin(ctx, internalState)
 	if err != nil {
 		return false
 	}
 	if delErr := h.storage.DeletePendingDeviceLogin(ctx, internalState); delErr != nil {
 		slog.Warn("failed to delete pending device login", "error", delErr)
+	}
+	if bindErr := h.verifyBrowserBinding(req, internalState, devicePending.BrowserBindingHash); bindErr != nil {
+		writeUnboundCallbackRejection(w, bindErr, "flow", "device", "upstream_provider", devicePending.UpstreamProviderName)
+		return true
 	}
 	if err := h.deviceStorage.MarkDeviceRequestDenied(ctx, devicePending.DeviceCode); err != nil {
 		slog.Warn("device verification: failed to mark device request denied after upstream error", "error", err)

@@ -944,6 +944,10 @@ type EmbeddedAuthServerConfig struct {
 	// All other endpoints (token, registration, JWKS) remain derived from the issuer.
 	// This is useful when the browser-facing authorization endpoint needs to be on a
 	// different host than the issuer used for backend-to-backend calls.
+	// The upstream callback (`redirectUri` on each upstream provider, defaulting to
+	// `{resourceUrl}/oauth/callback`) must share this hostname: the callback only
+	// completes a login for the browser that started it, bound by a host-only cookie
+	// set on this endpoint, so a different callback host rejects every browser login.
 	// Must be a valid HTTPS URL (or HTTP for localhost, or HTTP for trusted in-cluster hosts
 	// when insecureAllowHTTP is true) without query, fragment, or trailing slash.
 	// +kubebuilder:validation:Pattern=`^https?://[^\s?#]+[^/\s?#]$`
@@ -1525,6 +1529,9 @@ type OIDCUpstreamConfig struct {
 	// RedirectURI is the callback URL where the upstream IdP will redirect after authentication.
 	// When not specified, defaults to `{resourceUrl}/oauth/callback` where `resourceUrl` is the
 	// URL associated with the resource (e.g., MCPServer or vMCP) using this config.
+	// Its hostname must match the browser-facing authorization endpoint (`issuer`, or
+	// `authorizationEndpointBaseUrl` when set): the callback is bound to the browser that
+	// started the login by a host-only cookie, so a different host rejects every browser login.
 	// +optional
 	RedirectURI string `json:"redirectUri,omitempty"`
 
@@ -1689,6 +1696,9 @@ type OAuth2UpstreamConfig struct {
 	// RedirectURI is the callback URL where the upstream IdP will redirect after authentication.
 	// When not specified, defaults to `{resourceUrl}/oauth/callback` where `resourceUrl` is the
 	// URL associated with the resource (e.g., MCPServer or vMCP) using this config.
+	// Its hostname must match the browser-facing authorization endpoint (`issuer`, or
+	// `authorizationEndpointBaseUrl` when set): the callback is bound to the browser that
+	// started the login by a host-only cookie, so a different host rejects every browser login.
 	// +optional
 	RedirectURI string `json:"redirectUri,omitempty"`
 

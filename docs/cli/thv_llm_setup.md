@@ -71,6 +71,7 @@ thv llm setup [flags]
       --client string                  Configure only this AI tool by name (e.g. claude-code, cursor, codex). Omit to configure all detected tools.
       --client-id string               OIDC client ID
       --enable-1m                      With --bedrock-compat, append the [1m] suffix to the opus and sonnet model IDs to opt into the 1M-token context window on Bedrock (never haiku, which is 200K). Off by default.
+      --extended-ttl-cache             Request the one-hour prompt-cache lifetime from each client that supports it. Persisted, so a later plain "thv llm setup" re-applies it; clear with --extended-ttl-cache=false.
       --gateway-url string             LLM gateway base URL (must use HTTPS)
   -h, --help                           help for setup
       --issuer string                  OIDC issuer URL

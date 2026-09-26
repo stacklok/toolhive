@@ -472,4 +472,71 @@ var _ = Describe("thv llm setup / teardown", Label("cli", "llm", "setup", "e2e")
 				"a fresh token should be printed to stdout after deferred login")
 		})
 	})
+
+	Describe("thv llm setup --extended-ttl-cache", func() {
+		It("persists, reapplies, clears, and tears down Claude Code cache settings", func() {
+			claudeDir := filepath.Join(tempDir, ".claude")
+			Expect(os.MkdirAll(claudeDir, 0750)).To(Succeed())
+			Expect(createFakeBinary(binDir, "claude")).To(Succeed())
+
+			issuerURL := fmt.Sprintf("http://localhost:%d", oidcPort)
+			setupArgs := []string{
+				"llm", "setup", "--lazy", "--client", "claude-code",
+				"--anthropic-path-prefix", "",
+			}
+
+			By("Enabling the extended cache lifetime")
+			stdout, stderr, err := thvCmd(append(setupArgs,
+				"--gateway-url", gatewayURL,
+				"--issuer", issuerURL,
+				"--client-id", clientID,
+				"--extended-ttl-cache",
+			)...).RunWithTimeout(30 * time.Second)
+			Expect(err).ToNot(HaveOccurred(),
+				"setup should succeed; stdout=%q stderr=%q", stdout, stderr)
+			Expect(stdout).To(ContainSubstring("Enabled one-hour prompt-cache lifetime for claude-code"))
+
+			settingsPath := filepath.Join(claudeDir, "settings.json")
+			expectExtendedTTLSettings := func(present bool) {
+				By("Reading Claude Code settings")
+				data, readErr := os.ReadFile(settingsPath)
+				Expect(readErr).ToNot(HaveOccurred())
+				var settings map[string]any
+				Expect(json.Unmarshal(data, &settings)).To(Succeed())
+
+				for pointer, expected := range map[string]string{
+					"/promptCacheTtl":               "1h",
+					"/subagentPromptCacheTtl":       "1h",
+					"/env/ENABLE_PROMPT_CACHING_1H": "1",
+				} {
+					actual, found := jsonPointerGet(settings, pointer)
+					Expect(found).To(Equal(present), "unexpected presence for %s", pointer)
+					if present {
+						Expect(actual).To(Equal(expected), "unexpected value for %s", pointer)
+					}
+				}
+			}
+			expectExtendedTTLSettings(true)
+
+			By("Verifying the preference is persisted")
+			showOut, _ := thvCmd("llm", "config", "show", "--format", "json").ExpectSuccess()
+			var cfg llm.Config
+			Expect(json.Unmarshal([]byte(showOut), &cfg)).To(Succeed())
+			Expect(cfg.ExtendedTTLCache).To(BeTrue())
+
+			By("Reapplying the persisted preference with a plain setup")
+			thvCmd(setupArgs...).ExpectSuccess()
+			expectExtendedTTLSettings(true)
+
+			By("Explicitly returning Claude Code to its default cache lifetime")
+			thvCmd(append(setupArgs, "--extended-ttl-cache=false")...).ExpectSuccess()
+			expectExtendedTTLSettings(false)
+
+			By("Re-enabling the preference and verifying teardown removes it")
+			thvCmd(append(setupArgs, "--extended-ttl-cache")...).ExpectSuccess()
+			expectExtendedTTLSettings(true)
+			thvCmd("llm", "teardown", "claude-code").ExpectSuccess()
+			expectExtendedTTLSettings(false)
+		})
+	})
 })

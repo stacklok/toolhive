@@ -286,6 +286,7 @@ type MCPServerSpec struct {
 	// Secrets are references to secrets to mount in the MCP server container
 	// +listType=map
 	// +listMapKey=name
+	// +listMapKey=key
 	// +optional
 	Secrets []SecretRef `json:"secrets,omitempty"`
 

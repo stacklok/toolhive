@@ -960,7 +960,12 @@ type AuthenticationOAuth2UpstreamRunConfig struct {
 	// available. Never set this in production.
 	InsecureAllowHTTP OptBool `json:"insecure_allow_http"`
 	// RedirectURI is the callback URL where the upstream IDP will redirect after authentication.
-	// When not specified, defaults to `{issuer}/oauth/callback`.
+	// For a DCR upstream (dcr_config set) an empty value is resolved to
+	// `{issuer}/oauth/callback`; a pre-provisioned client (client_id set) must
+	// specify it. Its hostname must match the browser-facing authorize URL
+	// (issuer, or authorization_endpoint_base_url when set): /oauth/callback is
+	// bound to the browser that started the login by a host-only cookie, so a
+	// different host rejects every browser login (Config.Validate warns).
 	RedirectURI OptString `json:"redirect_uri"`
 	// Scopes are the OAuth scopes to request from the upstream IDP.
 	Scopes []string `json:"scopes"`
@@ -1212,7 +1217,12 @@ type AuthenticationOIDCUpstreamRunConfig struct {
 	// Must be a valid HTTPS URL.
 	IssuerURL OptString `json:"issuer_url"`
 	// RedirectURI is the callback URL where the upstream IDP will redirect after authentication.
-	// When not specified, defaults to `{issuer}/oauth/callback`.
+	// For a DCR upstream (dcr_config set) an empty value is resolved to
+	// `{issuer}/oauth/callback`; a pre-provisioned client (client_id set) must
+	// specify it. Its hostname must match the browser-facing authorize URL
+	// (issuer, or authorization_endpoint_base_url when set): /oauth/callback is
+	// bound to the browser that started the login by a host-only cookie, so a
+	// different host rejects every browser login (Config.Validate warns).
 	RedirectURI OptString `json:"redirect_uri"`
 	// Scopes are the OAuth scopes to request from the upstream IDP.
 	// If not specified, defaults to ["openid", "offline_access"].

@@ -2167,6 +2167,24 @@ func noRedirectClient() *http.Client {
 	}
 }
 
+// getWithCookies issues a GET carrying cookies. The auth server binds each
+// /oauth/callback to the browser that started the flow with a cookie set on
+// the redirect to the upstream, so a test that walks the flow by hand must
+// carry that cookie itself. Cookies are attached verbatim rather than through
+// a cookie jar so an https-issuer Secure cookie still travels over the plain
+// http test server.
+func getWithCookies(t *testing.T, client *http.Client, rawURL string, cookies []*http.Cookie) *http.Response {
+	t.Helper()
+	req, err := http.NewRequest(http.MethodGet, rawURL, nil)
+	require.NoError(t, err)
+	for _, c := range cookies {
+		req.AddCookie(c)
+	}
+	resp, err := client.Do(req)
+	require.NoError(t, err)
+	return resp
+}
+
 // authorizationParams contains parameters for initiating an authorization request.
 type authorizationParams struct {
 	ClientID     string
@@ -2208,6 +2226,7 @@ func completeAuthorizationFlow(
 	require.Equal(t, http.StatusFound, resp.StatusCode, "expected redirect to mockoidc")
 	mockOIDCLocation, err := resp.Location()
 	require.NoError(t, err)
+	bindingCookies := resp.Cookies()
 	resp.Body.Close()
 
 	// Step 2: Follow redirect to mockoidc authorization endpoint
@@ -2225,9 +2244,9 @@ func completeAuthorizationFlow(
 	callbackLocation.Scheme = parsedServerURL.Scheme
 	callbackLocation.Host = parsedServerURL.Host
 
-	// Step 4: Call our callback endpoint with the rewritten URL
-	resp, err = client.Get(callbackLocation.String())
-	require.NoError(t, err)
+	// Step 4: Call our callback endpoint with the rewritten URL, as the browser
+	// that started the flow (carrying the binding cookie from step 1).
+	resp = getWithCookies(t, client, callbackLocation.String(), bindingCookies)
 	require.Equal(t, http.StatusSeeOther, resp.StatusCode, "expected redirect to client")
 	clientLocation, err := resp.Location()
 	require.NoError(t, err)
@@ -3766,6 +3785,7 @@ func runFirstLeg(t *testing.T, serverURL, challenge, clientState string) *http.R
 	require.Equal(t, http.StatusFound, resp.StatusCode)
 	firstUpstreamLocation, err := resp.Location()
 	require.NoError(t, err)
+	bindingCookies := resp.Cookies()
 	resp.Body.Close()
 
 	resp, err = client.Get(firstUpstreamLocation.String())
@@ -3777,9 +3797,7 @@ func runFirstLeg(t *testing.T, serverURL, challenge, clientState string) *http.R
 	firstCallback.Scheme = parsedServerURL.Scheme
 	firstCallback.Host = parsedServerURL.Host
 
-	resp, err = client.Get(firstCallback.String())
-	require.NoError(t, err)
-	return resp
+	return getWithCookies(t, client, firstCallback.String(), bindingCookies)
 }
 
 func runChainFlow(
@@ -3799,6 +3817,8 @@ func runChainFlow(
 		"expected redirect to second upstream, not 303 to client")
 	secondUpstreamLocation, err := resp.Location()
 	require.NoError(t, err)
+	// The leg-1 callback mints a fresh binding cookie for the leg-2 state.
+	legTwoCookies := resp.Cookies()
 	resp.Body.Close()
 
 	// Leg 2: second upstream -> callback -> client
@@ -3812,8 +3832,7 @@ func runChainFlow(
 	secondCallback.Scheme = parsedServerURL.Scheme
 	secondCallback.Host = parsedServerURL.Host
 
-	resp, err = client.Get(secondCallback.String())
-	require.NoError(t, err)
+	resp = getWithCookies(t, client, secondCallback.String(), legTwoCookies)
 	require.Equal(t, http.StatusSeeOther, resp.StatusCode,
 		"expected 303 to client after both upstreams satisfied")
 	clientLocation, err := resp.Location()
@@ -5103,6 +5122,7 @@ func TestIntegration_ConfidentialClientDCR_PKCEEnforced(t *testing.T) {
 	require.NoError(t, err)
 	_, _ = io.Copy(io.Discard, resp.Body)
 	resp.Body.Close()
+	bindingCookies := resp.Cookies()
 
 	// The authorize endpoint accepts the request and redirects to the upstream
 	// IDP: fosite deliberately validates code_verifier at the token endpoint,
@@ -5127,8 +5147,7 @@ func TestIntegration_ConfidentialClientDCR_PKCEEnforced(t *testing.T) {
 	callbackLocation.Scheme = parsedServerURL.Scheme
 	callbackLocation.Host = parsedServerURL.Host
 
-	resp, err = client.Get(callbackLocation.String())
-	require.NoError(t, err)
+	resp = getWithCookies(t, client, callbackLocation.String(), bindingCookies)
 	defer resp.Body.Close()
 
 	// The PKCE failure IS enforced at code issuance — the error log above shows
@@ -5537,6 +5556,10 @@ func TestIntegration_DeviceAuthorizationEndpoint_Disabled(t *testing.T) {
 // pkg/authserver/server/handlers/device_verification.go's confirmPageTemplate).
 var deviceConfirmTokenPattern = regexp.MustCompile(`name="confirm_token" value="([^"]+)"`)
 
+// deviceFormTokenPattern extracts the verification form's hidden anti-forgery
+// token (see device_verification_render.go's verifyPageTemplate).
+var deviceFormTokenPattern = regexp.MustCompile(`name="form_token" value="([^"]+)"`)
+
 // completeDeviceVerification drives the device flow's human-facing
 // verification page end to end through a real mock upstream IDP: submit
 // user_code, follow the upstream login redirect, land back on the shared
@@ -5549,12 +5572,32 @@ func completeDeviceVerification(t *testing.T, serverURL, userCode string) {
 	t.Helper()
 	client := noRedirectClient()
 
+	// Step 0: load the verification form to obtain its anti-forgery cookie and
+	// token, as a browser would before submitting.
+	formResp, err := client.Get(serverURL + "/oauth/device")
+	require.NoError(t, err)
+	require.Equal(t, http.StatusOK, formResp.StatusCode)
+	formBody, err := io.ReadAll(formResp.Body)
+	require.NoError(t, err)
+	formCookies := formResp.Cookies()
+	formResp.Body.Close()
+	tokenMatch := deviceFormTokenPattern.FindSubmatch(formBody)
+	require.Len(t, tokenMatch, 2, "form_token not found in body: %s", formBody)
+
 	// Step 1: submit the user_code to the verification page.
-	submitResp, err := client.PostForm(serverURL+"/oauth/device", url.Values{"user_code": {userCode}})
+	submitReq, err := http.NewRequest(http.MethodPost, serverURL+"/oauth/device",
+		strings.NewReader(url.Values{"user_code": {userCode}, "form_token": {string(tokenMatch[1])}}.Encode()))
+	require.NoError(t, err)
+	submitReq.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	for _, c := range formCookies {
+		submitReq.AddCookie(c)
+	}
+	submitResp, err := client.Do(submitReq)
 	require.NoError(t, err)
 	require.Equal(t, http.StatusFound, submitResp.StatusCode, "expected redirect to mockoidc")
 	mockOIDCLocation, err := submitResp.Location()
 	require.NoError(t, err)
+	bindingCookies := submitResp.Cookies()
 	submitResp.Body.Close()
 
 	// Step 2: follow the redirect to mockoidc's authorization endpoint.
@@ -5572,10 +5615,10 @@ func completeDeviceVerification(t *testing.T, serverURL, userCode string) {
 	callbackLocation.Scheme = parsedServerURL.Scheme
 	callbackLocation.Host = parsedServerURL.Host
 
-	// Step 4: hit /oauth/callback. Unlike the OAuth-client flow, this renders
-	// the confirmation page directly (200), not a further redirect.
-	resp, err = client.Get(callbackLocation.String())
-	require.NoError(t, err)
+	// Step 4: hit /oauth/callback as the browser that submitted the user_code
+	// (carrying the binding cookie from step 1). Unlike the OAuth-client flow,
+	// this renders the confirmation page directly (200), not a further redirect.
+	resp = getWithCookies(t, client, callbackLocation.String(), bindingCookies)
 	require.Equal(t, http.StatusOK, resp.StatusCode, "expected the device confirmation page")
 	confirmBody, err := io.ReadAll(resp.Body)
 	require.NoError(t, err)

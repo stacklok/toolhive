@@ -17,6 +17,7 @@ import (
 
 	"github.com/stretchr/testify/require"
 
+	"github.com/stacklok/toolhive/pkg/auth"
 	"github.com/stacklok/toolhive/pkg/transport/session"
 	"github.com/stacklok/toolhive/pkg/transport/types"
 )
@@ -97,6 +98,120 @@ func TestSSEEndpointEventSurvivesEverySessionSpelling(t *testing.T) {
 			require.Equal(t, endpoint, got, "endpoint event must reach the client unchanged")
 			require.Equal(t, http.StatusAccepted, status, "the follow-up POST must reach the backend")
 			require.Equal(t, int32(1), posts)
+		})
+	}
+}
+
+func TestSSEInitializePreservesOwnedEndpointSession(t *testing.T) {
+	t.Parallel()
+	for _, key := range sessionQueryKeys {
+		t.Run(key, func(t *testing.T) {
+			t.Parallel()
+			const sid = "owned-sse-session"
+			const body = `{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2025-03-26","capabilities":{},"clientInfo":{"name":"test","version":"1"}}}`
+			endpoint := "/custom-message-endpoint?" + key + "=" + sid
+			var posts atomic.Int32
+			backend := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				if r.Method == http.MethodGet {
+					w.Header().Set("Content-Type", "text/event-stream")
+					_, _ = fmt.Fprint(w, "event: endpoint\ndata: "+endpoint+"\n\n")
+					w.(http.Flusher).Flush()
+					<-r.Context().Done()
+					return
+				}
+				posts.Add(1)
+				data, err := io.ReadAll(r.Body)
+				if err != nil || string(data) != body || r.URL.Query().Get(key) != sid {
+					http.Error(w, "wrong initialize or session", http.StatusBadRequest)
+					return
+				}
+				w.WriteHeader(http.StatusAccepted)
+			}))
+			t.Cleanup(backend.Close)
+			authenticate := types.NamedMiddleware{Name: "test-auth", Function: func(next http.Handler) http.Handler {
+				return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+					identity := &auth.Identity{PrincipalInfo: auth.PrincipalInfo{
+						Claims: map[string]any{"iss": "issuer", "sub": r.Header.Get("Authorization")},
+					}}
+					next.ServeHTTP(w, r.WithContext(auth.WithIdentity(r.Context(), identity)))
+				})
+			}}
+			proxy := NewTransparentProxy("127.0.0.1", 0, backend.URL, nil, nil, nil, false, false, "sse", nil, nil, "", false, authenticate)
+			require.NoError(t, proxy.Start(t.Context()))
+			t.Cleanup(func() {
+				ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+				defer cancel()
+				require.NoError(t, proxy.Stop(ctx))
+			})
+			base := "http://" + proxy.listener.Addr().String()
+			client := &http.Client{Timeout: 5 * time.Second}
+			get, err := http.NewRequestWithContext(t.Context(), http.MethodGet, base+"/custom-stream", nil)
+			require.NoError(t, err)
+			get.Header.Set("Authorization", "owner")
+			stream, err := client.Do(get)
+			require.NoError(t, err)
+			t.Cleanup(func() { _ = stream.Body.Close() })
+			scanner := bufio.NewScanner(stream.Body)
+			require.True(t, scanner.Scan())
+			require.Equal(t, "event: endpoint", scanner.Text())
+			require.True(t, scanner.Scan())
+			require.Equal(t, "data: "+endpoint, scanner.Text())
+			for _, contentType := range []string{"application/json", "text/plain", ""} {
+				for _, principal := range []string{"foreign", "owner"} {
+					before := posts.Load()
+					req, err := http.NewRequestWithContext(t.Context(), http.MethodPost, base+endpoint, strings.NewReader(body))
+					require.NoError(t, err)
+					req.Header.Set("Authorization", principal)
+					if contentType != "" {
+						req.Header.Set("Content-Type", contentType)
+					}
+					resp, err := client.Do(req)
+					require.NoError(t, err)
+					drainAndClose(t, resp)
+					if principal == "owner" {
+						require.Equal(t, http.StatusAccepted, resp.StatusCode)
+						require.Equal(t, before+1, posts.Load())
+					} else {
+						require.Equal(t, http.StatusNotFound, resp.StatusCode)
+						require.Equal(t, before, posts.Load())
+					}
+				}
+			}
+			// Initialization must also use routing metadata from the owned session,
+			// rather than sending a new-session request to the default backend.
+			var routedPosts atomic.Int32
+			routed := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				routedPosts.Add(1)
+				if r.URL.Query().Get(key) != "mapped-sid" || r.Header.Get("Mcp-Session-Id") != "mapped-sid" {
+					http.Error(w, "wrong mapped session", http.StatusBadRequest)
+					return
+				}
+				w.WriteHeader(http.StatusAccepted)
+			}))
+			t.Cleanup(routed.Close)
+			binding, err := proxy.sessionManager.LookupOwner(t.Context(), normalizeSessionID(sid))
+			require.NoError(t, err)
+			mapped := session.NewProxySession(normalizeSessionID(sid))
+			mapped.SetMetadata(session.MetadataKeyIdentityBinding, binding)
+			mapped.SetMetadata(sessionMetadataBackendURL, routed.URL)
+			mapped.SetMetadata(sessionMetadataBackendSID, "mapped-sid")
+			require.NoError(t, proxy.sessionManager.UpsertSessionIfOwner(mapped, binding))
+			for _, principal := range []string{"foreign", "owner"} {
+				req, err := http.NewRequestWithContext(t.Context(), http.MethodPost, base+endpoint, strings.NewReader(body))
+				require.NoError(t, err)
+				req.Header.Set("Authorization", principal)
+				resp, err := client.Do(req)
+				require.NoError(t, err)
+				drainAndClose(t, resp)
+				if principal == "foreign" {
+					require.Equal(t, http.StatusNotFound, resp.StatusCode)
+					require.Zero(t, routedPosts.Load())
+				} else {
+					require.Equal(t, http.StatusAccepted, resp.StatusCode)
+					require.EqualValues(t, 1, routedPosts.Load())
+				}
+				require.EqualValues(t, 3, posts.Load(), "initialize must not reach the default backend")
+			}
 		})
 	}
 }

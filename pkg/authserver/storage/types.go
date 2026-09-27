@@ -546,6 +546,16 @@ type PendingAuthorization struct {
 	// ID Token. See OIDC Core Section 3.1.2.1.
 	UpstreamNonce string
 
+	// BrowserBindingHash is the base64url SHA-256 of the browser-binding cookie
+	// value that /oauth/authorize set on the user agent when it created this
+	// record (or that the previous chain leg set when it created the next one).
+	// /oauth/callback only completes the leg when the calling browser presents a
+	// cookie whose hash matches, which binds the upstream callback to the browser
+	// that started the flow (RFC 6749 Section 10.12). Only the hash is stored so
+	// that storage never holds the raw secret. The callback rejects a loaded
+	// record with an empty hash (a row written before this field existed).
+	BrowserBindingHash string
+
 	// UpstreamProviderName identifies the upstream provider being authenticated in this
 	// authorization chain leg. Used in multi-upstream scenarios to route the callback
 	// to the correct provider.
@@ -748,6 +758,13 @@ type PendingDeviceLogin struct {
 
 	// UpstreamNonce is the OIDC nonce for ID token replay protection.
 	UpstreamNonce string
+
+	// BrowserBindingHash binds this login to the browser that submitted the
+	// user_code, exactly as PendingAuthorization.BrowserBindingHash binds an
+	// OAuth-client authorization: the verification page's redirect to the
+	// upstream sets a cookie whose hash is stored here, and the callback
+	// completes the login only for a browser presenting a matching cookie.
+	BrowserBindingHash string
 
 	// UpstreamProviderName is the configured upstream this login was sent
 	// to; the callback re-validates against it (IDP mix-up defense), mirroring

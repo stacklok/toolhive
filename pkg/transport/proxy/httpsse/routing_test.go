@@ -65,7 +65,12 @@ func newHarness(t *testing.T) *harness {
 			next.ServeHTTP(w, r.WithContext(auth.WithIdentity(r.Context(), caller)))
 		})
 	}}
-	proxy := NewHTTPSSEProxy("127.0.0.1", 0, false, nil, []types.NamedMiddleware{authenticate})
+	return newHarnessWithMiddleware(t, []types.NamedMiddleware{authenticate})
+}
+
+func newHarnessWithMiddleware(t *testing.T, middlewares []types.NamedMiddleware) *harness {
+	t.Helper()
+	proxy := NewHTTPSSEProxy("127.0.0.1", 0, false, nil, middlewares)
 	require.NoError(t, proxy.Start(t.Context()))
 	t.Cleanup(func() {
 		ctx, cancel := context.WithTimeout(context.Background(), waitTimeout)

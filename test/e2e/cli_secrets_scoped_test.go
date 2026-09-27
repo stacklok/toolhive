@@ -86,6 +86,15 @@ var _ = Describe("thv secret system key protection", Label("cli", "secrets", "e2
 			"deleting a __thv_-prefixed key should be rejected; stdout=%q stderr=%q", stdout, stderr)
 	})
 
+	It("requires the encrypted provider for protection upgrades", func() {
+		By("Attempting an upgrade with the environment provider")
+		stdout, stderr, err := thvCmd("secret", "upgrade-protection", "--yes").Run()
+
+		By("Verifying the command fails before accessing any encrypted store")
+		Expect(err).To(HaveOccurred(), "stdout=%q stderr=%q", stdout, stderr)
+		Expect(stderr).To(ContainSubstring("requires the encrypted secrets provider"))
+	})
+
 	It("confirms __thv_ keys cannot be created via the user CLI", func() {
 		// Belt-and-suspenders check: attempt to set two different __thv_ keys
 		// to confirm the block is consistent across key names, not tied to a

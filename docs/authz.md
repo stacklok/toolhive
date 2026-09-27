@@ -51,6 +51,14 @@ occurs:
 4. If the request is authorized, it is passed to the next handler. Otherwise, a
    403 Forbidden response is returned.
 
+MCP parsing validates every POST in an MCP middleware chain, on any path and
+regardless of Content-Type. Missing or non-JSON media types do not bypass
+request-level controls. Malformed, trailing, batched, ambiguous, or mixed
+JSON-RPC envelopes are rejected before dispatch (HTTP 400; body-size failures
+remain 413). Valid client responses do not populate `ParsedMCPRequest`; their
+handling remains transport-specific. Authorization middleware still refuses
+POSTs without a parsed request, including client responses.
+
 ### Virtual MCP parity
 
 Virtual MCP (`vmcp`) enforces the same Cedar policies through its core admission

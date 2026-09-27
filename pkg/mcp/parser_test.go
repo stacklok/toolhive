@@ -104,12 +104,15 @@ func TestParsingMiddleware(t *testing.T) {
 			expectParsed: false,
 		},
 		{
-			name:         "non-JSON content type - not parsed",
-			method:       "POST",
-			path:         "/messages",
-			contentType:  "text/plain",
-			body:         "not json",
-			expectParsed: false,
+			name:           "non-JSON content type - parsed",
+			method:         "POST",
+			path:           "/messages",
+			contentType:    "text/plain",
+			body:           `{"jsonrpc":"2.0","id":1,"method":"ping"}`,
+			expectParsed:   true,
+			expectedMethod: "ping",
+			expectedID:     int64(1),
+			expectedResID:  "ping",
 		},
 		{
 			name:           "SSE endpoint - parsed",
@@ -346,10 +349,6 @@ func TestParsingMiddlewareRejectsBatch(t *testing.T) {
 		{
 			name: "empty batch",
 			body: `[]`,
-		},
-		{
-			name: "malformed batch (unterminated array)",
-			body: `[{"jsonrpc":"2.0","id":1,"method":"tools/call"`,
 		},
 	}
 
@@ -1542,7 +1541,7 @@ func TestShouldParseMCPRequest(t *testing.T) {
 			method:      "POST",
 			path:        "/messages",
 			contentType: "text/plain",
-			expected:    false,
+			expected:    true,
 		},
 		{
 			name:        "POST to SSE endpoint",
@@ -1728,13 +1727,8 @@ func TestParsingMiddlewareErrorHandling(t *testing.T) {
 			// Execute the middleware
 			middleware.ServeHTTP(w, req)
 
-			// Check if parsing occurred as expected
-			parsed := GetParsedMCPRequest(capturedCtx)
-			if tt.expectParsed {
-				assert.NotNil(t, parsed)
-			} else {
-				assert.Nil(t, parsed)
-			}
+			assert.Nil(t, capturedCtx, "invalid bodies must not reach the handler")
+			assert.Equal(t, http.StatusBadRequest, w.Code)
 		})
 	}
 }

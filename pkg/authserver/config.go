@@ -648,7 +648,12 @@ type OIDCUpstreamRunConfig struct {
 	ClientSecretEnvVar string `json:"client_secret_env_var,omitempty" yaml:"client_secret_env_var,omitempty"`
 
 	// RedirectURI is the callback URL where the upstream IDP will redirect after authentication.
-	// When not specified, defaults to `{issuer}/oauth/callback`.
+	// For a DCR upstream (dcr_config set) an empty value is resolved to
+	// `{issuer}/oauth/callback`; a pre-provisioned client (client_id set) must
+	// specify it. Its hostname must match the browser-facing authorize URL
+	// (issuer, or authorization_endpoint_base_url when set): /oauth/callback is
+	// bound to the browser that started the login by a host-only cookie, so a
+	// different host rejects every browser login (Config.Validate warns).
 	RedirectURI string `json:"redirect_uri,omitempty" yaml:"redirect_uri,omitempty"`
 
 	// Scopes are the OAuth scopes to request from the upstream IDP.
@@ -734,7 +739,12 @@ type OAuth2UpstreamRunConfig struct {
 	TokenEndpointAuthMethod string `json:"token_endpoint_auth_method,omitempty" yaml:"token_endpoint_auth_method,omitempty"`
 
 	// RedirectURI is the callback URL where the upstream IDP will redirect after authentication.
-	// When not specified, defaults to `{issuer}/oauth/callback`.
+	// For a DCR upstream (dcr_config set) an empty value is resolved to
+	// `{issuer}/oauth/callback`; a pre-provisioned client (client_id set) must
+	// specify it. Its hostname must match the browser-facing authorize URL
+	// (issuer, or authorization_endpoint_base_url when set): /oauth/callback is
+	// bound to the browser that started the login by a host-only cookie, so a
+	// different host rejects every browser login (Config.Validate warns).
 	RedirectURI string `json:"redirect_uri,omitempty" yaml:"redirect_uri,omitempty"`
 
 	// Scopes are the OAuth scopes to request from the upstream IDP.
@@ -1230,6 +1240,7 @@ func (c *Config) Validate() error {
 	if err := c.validateUpstreams(); err != nil {
 		return err
 	}
+	c.warnOnAuthorizeCallbackHostMismatch()
 
 	if err := c.validateUpstreamFilter(); err != nil {
 		return err
@@ -1614,6 +1625,74 @@ func (c *Config) validateUpstreams() error {
 	}
 
 	return validateZeroUpstreamMode(len(c.Upstreams), len(c.DelegateClients), c.TrustedIssuers)
+}
+
+// warnOnAuthorizeCallbackHostMismatch logs a WARN for every upstream whose
+// redirect_uri the browser-binding cookie cannot reach from the browser-facing
+// authorize URL (AuthorizationEndpointBaseURL, else Issuer). /oauth/callback
+// only completes a login for the browser that started it at /oauth/authorize
+// or /oauth/device, and that binding is a host-only cookie that is Secure when
+// the authorize URL is https (see handlers/browser_binding.go). It therefore
+// never reaches a callback on another hostname, nor a plain-http callback on a
+// non-loopback host when the cookie is Secure, and every browser login through
+// that upstream is rejected at the callback. Ports are ignored, as cookies
+// ignore them, and browsers do send Secure cookies to http://localhost.
+//
+// This is a WARN rather than a validation error: the auth server shares a
+// process with the MCP proxy, and refusing to start would also take down token
+// refresh and token exchange over a misconfiguration that only affects
+// interactive login.
+func (c *Config) warnOnAuthorizeCallbackHostMismatch() {
+	authorizeBase := c.AuthorizationEndpointBaseURL
+	if authorizeBase == "" {
+		authorizeBase = c.Issuer
+	}
+	authorizeURL, err := url.Parse(authorizeBase)
+	if err != nil {
+		// Already rejected by validateIssuerURL above.
+		return
+	}
+	for i := range c.Upstreams {
+		up := &c.Upstreams[i]
+		callbackURL, err := url.Parse(up.redirectURI())
+		if err != nil || callbackURL.Hostname() == "" {
+			// validateUpstreamType has already rejected an unusable redirect_uri.
+			continue
+		}
+		authorizeHost, callbackHost := authorizeURL.Hostname(), callbackURL.Hostname()
+		switch {
+		case !strings.EqualFold(authorizeHost, callbackHost):
+			slog.Warn("upstream redirect_uri host differs from the browser-facing authorize host; "+
+				"/oauth/callback binds each login to the browser that started it with a host-only cookie, "+
+				"so browser logins through this upstream will be rejected until the two hosts match",
+				"upstream", up.Name,
+				"authorize_host", authorizeHost,
+				"callback_host", callbackHost,
+			)
+		case strings.EqualFold(authorizeURL.Scheme, "https") &&
+			strings.EqualFold(callbackURL.Scheme, "http") &&
+			!networking.IsLocalhost(callbackHost):
+			slog.Warn("upstream redirect_uri is plain http while the browser-facing authorize URL is https; "+
+				"the browser-binding cookie is Secure and browsers will not send it to the callback, "+
+				"so browser logins through this upstream will be rejected until the callback uses https",
+				"upstream", up.Name,
+				"authorize_url", authorizeBase,
+				"callback_url", up.redirectURI(),
+			)
+		}
+	}
+}
+
+// redirectURI returns the upstream's configured callback URL for either
+// provider type, or "" when no provider config is set.
+func (u *UpstreamConfig) redirectURI() string {
+	switch {
+	case u.OAuth2Config != nil:
+		return u.OAuth2Config.RedirectURI
+	case u.OIDCConfig != nil:
+		return u.OIDCConfig.RedirectURI
+	}
+	return ""
 }
 
 // validateUpstreamFilter rejects an UpstreamFilter configured with fewer than

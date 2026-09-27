@@ -105,32 +105,6 @@ func decodeRoutedID(id jsonrpc2.ID) (sessionID string, original jsonrpc2.ID, ok 
 	}
 }
 
-// exactRequestID returns the id of the call in body exactly as the client
-// sent it. jsonrpc2.DecodeMessage parses numeric ids through float64, which
-// rounds integers above 2^53 and truncates fractions, so the restored
-// response id could differ from the request's and the client would never
-// match it. String ids are already exact and are returned as decoded. A
-// fractional or out-of-range number is rejected: JSON-RPC ids are integers or
-// strings, and a truncated id could not be matched by the client either.
-func exactRequestID(body []byte, decoded jsonrpc2.ID) (jsonrpc2.ID, error) {
-	if _, isString := decoded.Raw().(string); isString {
-		return decoded, nil
-	}
-	var envelope struct {
-		ID json.Number `json:"id"`
-	}
-	dec := json.NewDecoder(bytes.NewReader(body))
-	dec.UseNumber()
-	if err := dec.Decode(&envelope); err != nil {
-		return jsonrpc2.ID{}, fmt.Errorf("failed to read request id: %w", err)
-	}
-	n, err := envelope.ID.Int64()
-	if err != nil {
-		return jsonrpc2.ID{}, fmt.Errorf("request id must be an integer or a string: %w", err)
-	}
-	return jsonrpc2.Int64ID(n), nil
-}
-
 // rewriteCancelledRequestID returns a copy of the notifications/cancelled
 // notification n whose params.requestId is the routed id the backend was sent
 // for that request on sessionID. It never mutates n: params are freshly

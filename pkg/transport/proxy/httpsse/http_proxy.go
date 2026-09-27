@@ -28,6 +28,7 @@ import (
 	"github.com/stacklok/toolhive/pkg/bodylimit"
 	"github.com/stacklok/toolhive/pkg/diagnostics"
 	"github.com/stacklok/toolhive/pkg/healthcheck"
+	"github.com/stacklok/toolhive/pkg/mcp"
 	"github.com/stacklok/toolhive/pkg/transport/proxy/socket"
 	"github.com/stacklok/toolhive/pkg/transport/session"
 	"github.com/stacklok/toolhive/pkg/transport/ssecommon"
@@ -595,6 +596,7 @@ func (p *HTTPSSEProxy) handleOwnedPostRequest(w http.ResponseWriter, r *http.Req
 	// Read the request body
 	body, err := io.ReadAll(r.Body)
 	if err != nil {
+		slog.Warn("rejected unreadable MCP request body")
 		// A body that exceeds the configured limit without a Content-Length
 		// (e.g. chunked) trips http.MaxBytesReader here rather than at the
 		// early Content-Length check. Surface it as 413, not 500.
@@ -602,14 +604,14 @@ func (p *HTTPSSEProxy) handleOwnedPostRequest(w http.ResponseWriter, r *http.Req
 			http.Error(w, "Request Entity Too Large", http.StatusRequestEntityTooLarge)
 			return
 		}
-		http.Error(w, fmt.Sprintf("Error reading request body: %v", err), http.StatusInternalServerError)
+		http.Error(w, "Invalid request body", http.StatusBadRequest)
 		return
 	}
 
 	// Parse the JSON-RPC message
-	msg, err := jsonrpc2.DecodeMessage(body)
+	msg, err := mcp.DecodeMessage(body)
 	if err != nil {
-		http.Error(w, fmt.Sprintf("Error parsing JSON-RPC message: %v", err), http.StatusBadRequest)
+		mcp.WriteClassificationError(w, nil, err)
 		return
 	}
 
@@ -618,9 +620,8 @@ func (p *HTTPSSEProxy) handleOwnedPostRequest(w http.ResponseWriter, r *http.Req
 	// Tag each call's wire ID with the session that issued it, so the shared
 	// backend's echoed response can be routed back to this session alone (see
 	// routing.go). sessionID is the same value the ownership middleware just
-	// validated for this request. The id is read exactly from the raw body
-	// (exactRequestID) because the decoder rounds large integers. A
-	// notifications/cancelled names its target request by id in params, so
+	// validated for this request. Shared admission preserves exact numeric IDs.
+	// A notifications/cancelled names its target request by id in params, so
 	// that id is rewritten the same way; other notifications pass through
 	// unchanged. A *jsonrpc2.Response from a client is refused: the proxy
 	// answers or rejects every server-initiated request itself before any
@@ -633,12 +634,7 @@ func (p *HTTPSSEProxy) handleOwnedPostRequest(w http.ResponseWriter, r *http.Req
 	case *jsonrpc2.Request:
 		switch {
 		case m.ID.IsValid():
-			exact, err := exactRequestID(body, m.ID)
-			if err != nil {
-				http.Error(w, fmt.Sprintf("Unsupported JSON-RPC id: %v", err), http.StatusBadRequest)
-				return
-			}
-			routed, err := encodeRoutedID(sessionID, exact)
+			routed, err := encodeRoutedID(sessionID, m.ID)
 			if err != nil {
 				http.Error(w, fmt.Sprintf("Unsupported JSON-RPC id: %v", err), http.StatusBadRequest)
 				return

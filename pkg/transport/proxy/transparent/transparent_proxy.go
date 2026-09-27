@@ -581,25 +581,20 @@ func (t *tracingTransport) RoundTrip(req *http.Request) (*http.Response, error) 
 
 	reqBody, err := readRequestBody(req)
 	if err != nil {
-		// Oversized request body (chunked / no Content-Length) tripped the
-		// body-size limit; reject with 413 rather than forwarding a truncated body.
-		return plainResponse(req, http.StatusRequestEntityTooLarge, "Request Entity Too Large"), nil
+		// Never forward a partial body, even on non-size read errors.
+		slog.Warn("rejected unreadable MCP request body")
+		if bodylimit.IsRequestTooLarge(err) {
+			return plainResponse(req, http.StatusRequestEntityTooLarge, "Request Entity Too Large"), nil
+		}
+		return plainResponse(req, http.StatusBadRequest, "Invalid request body"), nil
 	}
 
-	// Reject JSON-RPC batches before forwarding to the backend. This runs
-	// independently of Content-Type (unlike ParsingMiddleware), so a batch
-	// smuggled under a non-JSON content type cannot reach the backend where its
-	// nested calls would bypass authz/audit/tool-filtering. Batching was removed
-	// in MCP revision 2025-06-18; ToolHive serves only 2025-11-25 and 2026-07-28
-	// (see #5745).
-	if mcp.IsBatchRequest(reqBody) {
-		return mcp.BatchUnsupportedResponse(req), nil
+	if req.Method == http.MethodPost {
+		if _, err := mcp.DecodeMessage(reqBody); err != nil {
+			return mcp.ClassificationErrorResponse(req, nil, err), nil
+		}
 	}
 
-	// thv proxy does not provide the transport type, so we need to detect it from the request
-	path := req.URL.Path
-	isMCP := strings.HasPrefix(path, "/mcp")
-	isJSON := strings.Contains(req.Header.Get("Content-Type"), "application/json")
 	sawInitialize := false
 	revision := mcp.RevisionLegacy
 	// requestID carries the incoming JSON-RPC id so an error response built below
@@ -612,10 +607,8 @@ func (t *tracingTransport) RoundTrip(req *http.Request) (*http.Response, error) 
 	// of "no id" (see session.HasJSONRPCID).
 	var requestID any
 
-	if len(reqBody) > 0 &&
-		((isMCP && isJSON) ||
-			t.p.transportType == types.TransportTypeStreamableHTTP.String()) {
-		method, params, id, singleRequest, isInit := t.parseRPCRequest(reqBody)
+	if req.Method == http.MethodPost {
+		method, params, id, singleRequest, isInit := t.parseRPCRequest(bytes.TrimPrefix(reqBody, mcp.UTF8BOM))
 		sawInitialize = isInit
 		if singleRequest {
 			requestID = id
@@ -632,16 +625,25 @@ func (t *tracingTransport) RoundTrip(req *http.Request) (*http.Response, error) 
 	slog.Debug("classified request revision", "modern", revision == mcp.RevisionModern, "target", t.p.targetURI)
 
 	// Transparent requests forward backend session authority even for Modern MCP.
-	// Initialize strips all supplied carriers rather than touching their sessions.
 	clientSID, carrierErr := requestSessionID(req)
 	if carrierErr != nil {
 		return session.NotFoundResponse(req, requestID), nil
 	}
+	// Legacy SSE establishes its session through an endpoint event before initialize.
+	// An unspecified transport (thv proxy) uses the endpoint's query carrier; it
+	// must pass the same ownership check below, not start a streamable session.
+	legacySSE := t.p.transportType == types.TransportTypeSSE.String()
+	if t.p.transportType == "" {
+		for _, key := range sessionQueryKeys {
+			legacySSE = legacySSE || req.URL.Query().Has(key)
+		}
+	}
+	startsSession := sawInitialize && !legacySSE
 	var (
 		routedSession session.Session
 		expectedOwner string
 	)
-	if sawInitialize {
+	if startsSession {
 		clientSID = ""
 		req.Header.Del("Mcp-Session-Id")
 		rewriteSessionQuery(req.URL, "")
@@ -657,20 +659,7 @@ func (t *tracingTransport) RoundTrip(req *http.Request) (*http.Response, error) 
 		}
 	}
 
-	switch {
-	case sawInitialize:
-		// An initialize request must never carry a session ID. MCP requires a
-		// client that is re-initializing to "start a new session by sending a new
-		// InitializeRequest without a session ID attached", and a backend session
-		// that has already completed its handshake rejects a second initialize on
-		// it -- go-sdk v1.7+ answers `duplicate "initialize" received`. Forwarding
-		// the client's stale SID -- or, worse, the backend SID mapped from it --
-		// turns a client-side handshake retry into a hard failure. Strip it so the
-		// backend mints a fresh session instead; the response's Mcp-Session-Id is
-		// then adopted as a new session below. reinitializeAndReplay already does
-		// the same on the recovery path.
-		req.Header.Del("Mcp-Session-Id")
-	case clientSID != "":
+	if clientSID != "" {
 		// Route only from the same snapshot whose ownership was atomically validated.
 		if backendURL, exists := routedSession.GetMetadataValue(sessionMetadataBackendURL); exists {
 			if parsed, err := url.Parse(backendURL); err == nil && parsed.Scheme != "" && parsed.Host != "" {
@@ -703,8 +692,8 @@ func (t *tracingTransport) RoundTrip(req *http.Request) (*http.Response, error) 
 			// Expected during shutdown or client disconnect—silently ignore
 			return nil, err
 		}
-		// Initialize has already discarded the supplied SID and must never
-		// recover or mutate that session, even on a dial error.
+		// Never recover during initialize: streamable HTTP has discarded the
+		// supplied SID, and legacy SSE is still completing its first handshake.
 		if isDialError(err) && !sawInitialize {
 			req.Header.Set("Mcp-Session-Id", clientSID)
 			if reInitResp, reInitErr := t.recovery.reinitializeAndReplay(req, reqBody); reInitResp != nil || reInitErr != nil {
@@ -831,16 +820,9 @@ func readRequestBody(req *http.Request) ([]byte, error) {
 	if req.Body != nil {
 		buf, err := io.ReadAll(req.Body)
 		if err != nil {
-			// An oversized body (without Content-Length, e.g. chunked) trips
-			// http.MaxBytesReader here. Surface it so the caller can return 413
-			// instead of silently forwarding a truncated/empty body.
-			if bodylimit.IsRequestTooLarge(err) {
-				return nil, err
-			}
-			slog.Warn("failed to read request body", "error", err)
-		} else {
-			reqBody = buf
+			return nil, err
 		}
+		reqBody = buf
 		req.Body = io.NopCloser(bytes.NewReader(reqBody))
 	}
 	return reqBody, nil

@@ -33,7 +33,7 @@ func startRealMCPBackend(t *testing.T) string {
 // startRealMCPBackendWithToolDelay is startRealMCPBackend with a configurable
 // delay before the echo tool responds. It is used to exercise vMCP request
 // deadlines over a real streamable-HTTP backend connection.
-func startRealMCPBackendWithToolDelay(t *testing.T, toolDelay time.Duration) string {
+func startRealMCPBackendWithToolDelay(t *testing.T, toolDelay time.Duration, observers ...func()) string {
 	t.Helper()
 
 	mcpSrv := mcpserver.NewMCPServer("real-backend", "1.0.0")
@@ -43,6 +43,9 @@ func startRealMCPBackendWithToolDelay(t *testing.T, toolDelay time.Duration) str
 			mcpmcp.WithString("input", mcpmcp.Required()),
 		),
 		func(_ context.Context, req mcpmcp.CallToolRequest) (*mcpmcp.CallToolResult, error) {
+			for _, observe := range observers {
+				observe()
+			}
 			time.Sleep(toolDelay)
 			args, _ := req.Params.Arguments.(map[string]any)
 			input, _ := args["input"].(string)

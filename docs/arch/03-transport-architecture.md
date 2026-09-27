@@ -139,7 +139,7 @@ sequenceDiagram
 **Key features:**
 - Transparent HTTP proxying
 - Session management via `Mcp-Session-Id` header
-- Batch request support
+- Batch requests rejected
 - Notification and client response handling
 
 ## Proxy Architecture
@@ -156,10 +156,11 @@ ToolHive uses two different proxy implementations:
 
 **How it works:**
 - Uses Go's `httputil.ReverseProxy`
-- Forwards HTTP requests/responses without protocol-specific logic
+- Validates every POST with shared MCP message admission, independent of path and Content-Type
+- Forwards admitted body bytes and headers without reserializing the envelope
 - Applies middleware to all traffic
 - Detects session IDs from headers/body for tracking
-- No JSON-RPC parsing needed
+- Rejects malformed, trailing, batched, ambiguous, or mixed JSON-RPC envelopes before forwarding
 
 **Why transparent:**
 - Container already speaks HTTP
@@ -595,9 +596,9 @@ original type, and delivers only to that session's live stream. Because the
 destination is derivable from the echoed ID alone, there is no pending-request
 table to evict on response, disconnect, or timeout. A response whose ID the
 proxy did not mint, or whose session has disconnected, is dropped at Debug and
-is never queued or broadcast. The id is read exactly from the raw request
-body (`exactRequestID`), because `jsonrpc2.DecodeMessage` parses numbers
-through `float64`; fractional ids are rejected with 400. A client's
+is never queued or broadcast. Shared admission (`mcp.DecodeMessage`) preserves
+exact integer IDs rather than rounding through `float64`; fractional and
+out-of-range IDs are rejected with 400. A client's
 `notifications/cancelled` names its target request in `params.requestId`; the
 proxy rewrites that value the same way (`rewriteCancelledRequestID`) so the
 backend can match it. A JSON-RPC response sent by a client is refused with

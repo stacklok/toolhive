@@ -59,7 +59,7 @@ The storage layer implements multiple interfaces from the [fosite](https://githu
 **ToolHive extensions:**
 - `ClientRegistry` — Dynamic client registration (RFC 7591)
 - `UpstreamTokenStorage` — Upstream IDP token caching with user binding
-- `PendingAuthorizationStorage` — In-flight authorization tracking
+- `PendingAuthorizationStorage` — In-flight authorization tracking. Each `PendingAuthorization` carries a `BrowserBindingHash`, the SHA-256 of a random cookie value that `/oauth/authorize` (or the previous multi-upstream chain leg) set on the user agent. `/oauth/callback` completes the leg only for a browser presenting a cookie whose hash matches, which binds the upstream callback to the browser that started the flow (RFC 6749 §10.12). Only the hash is stored so the backend never holds the secret, and the callback rejects a loaded record whose hash is empty (a row written before the field existed, e.g. during a rolling upgrade), so such an in-flight login must be restarted. `PendingDeviceLogin` carries the same field with the same rules for the device flow's verification-page login, which shares `/oauth/callback`.
 - `UserStorage` — Internal user accounts and provider identity linking
 - `DCRCredentialStore` — DCR client metadata and credential persistence; intentionally NOT embedded in `Storage` (each backend implements it separately and call sites reach it via an explicit `stor.(DCRCredentialStore)` type assertion). Secret-based clients store hashed secrets; `private_key_jwt` clients store their inline public JWKS and signing algorithm.
 - `AssertionJWTConsumer` — atomic single-use consumption for validated JWT assertions. It is deliberately separate from `Storage`, so only assertion-grant composition requires replay protection.

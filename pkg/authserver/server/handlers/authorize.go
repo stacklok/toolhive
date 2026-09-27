@@ -102,8 +102,10 @@ func (h *Handler) AuthorizeHandler(w http.ResponseWriter, req *http.Request) {
 		"scope_count", len(scopes),
 	)
 
-	// Generate secrets for upstream authorization
+	// Generate secrets for upstream authorization, plus the browser-binding
+	// secret whose hash ties this pending record to the calling browser.
 	secrets := newUpstreamAuthSecrets()
+	binding := newBrowserBinding()
 
 	// Create and store pending authorization.
 	// SessionID is generated here at the start of the chain so it can be
@@ -119,6 +121,7 @@ func (h *Handler) AuthorizeHandler(w http.ResponseWriter, req *http.Request) {
 		InternalState:        secrets.State,
 		UpstreamPKCEVerifier: secrets.PKCEVerifier,
 		UpstreamNonce:        secrets.Nonce,
+		BrowserBindingHash:   binding.hash,
 		UpstreamProviderName: h.upstreams[0].Name,
 		SessionID:            rand.Text(),
 		CreatedAt:            time.Now(),
@@ -150,6 +153,9 @@ func (h *Handler) AuthorizeHandler(w http.ResponseWriter, req *http.Request) {
 	}
 
 	// Redirect user to upstream IDP
+	// The cookie rides the redirect to the upstream so that only this browser
+	// can complete the callback for secrets.State. See browser_binding.go.
+	h.setBrowserBindingCookie(w, secrets.State, binding.value)
 	http.Redirect(w, req, upstreamURL, http.StatusFound)
 }
 

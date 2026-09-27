@@ -220,34 +220,15 @@ func CreateSecretProviderWithPassword(managerType ProviderType, password string)
 
 	switch managerType {
 	case EncryptedType:
-		// Enforce keyring availability for encrypted provider
-		if !IsKeyringAvailable() {
-			return nil, ErrKeyringNotAvailable
+		secretsPath, pathErr := xdg.DataFile("toolhive/secrets_encrypted")
+		if pathErr != nil {
+			return nil, fmt.Errorf("unable to access secrets file path %w", pathErr)
 		}
-
-		secretsPassword, isNew, err := GetSecretsPassword(password)
-		if err != nil {
-			return nil, fmt.Errorf("failed to get secrets password: %w", err)
+		manager, openErr := openEncryptedManager(secretsPath, password)
+		if openErr != nil {
+			return nil, openErr
 		}
-		secretsPath, err := xdg.DataFile("toolhive/secrets_encrypted")
-		if err != nil {
-			return nil, fmt.Errorf("unable to access secrets file path %w", err)
-		}
-		// The AES-256-GCM key is derived from the password inside the
-		// manager, using Argon2id and a salt stored in the secrets file.
-		primary, err = NewEncryptedManager(secretsPath, secretsPassword)
-		if err != nil {
-			// Decryption failed - don't store the password in keyring
-			// This allows the user to retry with the correct password
-			return nil, fmt.Errorf("failed to create provider: %w", err)
-		}
-
-		// Only store password in keyring after successful validation (decryption)
-		if isNew {
-			if storeErr := StoreSecretsPassword(secretsPassword); storeErr != nil {
-				return nil, fmt.Errorf("failed to store password in keyring: %w", storeErr)
-			}
-		}
+		primary = manager
 	case OnePasswordType:
 		primary, err = NewOnePasswordManager()
 	case EnvironmentType:
@@ -267,6 +248,64 @@ func CreateSecretProviderWithPassword(managerType ProviderType, password string)
 	}
 
 	return primary, nil
+}
+
+// UpgradeEncryptedProtection upgrades the encrypted secrets store to the current
+// password-protection format. It bypasses provider wrappers because upgrading is
+// a store-specific operation, not a Provider capability.
+func UpgradeEncryptedProtection() error {
+	secretsPath, err := xdg.DataFile("toolhive/secrets_encrypted")
+	if err != nil {
+		return fmt.Errorf("unable to access secrets file path %w", err)
+	}
+	// Check before prompting: with no store and no keyring password, opening one
+	// would silently run first-time setup instead of an upgrade.
+	stat, err := os.Stat(secretsPath)
+	if errors.Is(err, os.ErrNotExist) || (err == nil && stat.Size() == 0) {
+		return errors.New("no encrypted secrets to upgrade; run 'thv secret setup' to configure the store")
+	}
+	if err != nil {
+		return fmt.Errorf("failed to stat secrets file: %w", err)
+	}
+	manager, err := openEncryptedManager(secretsPath, "")
+	if err != nil {
+		return err
+	}
+	if err := manager.UpgradeProtection(); err != nil {
+		return fmt.Errorf("upgrading encrypted protection: %w", err)
+	}
+	return nil
+}
+
+// openEncryptedManager opens the encrypted store at secretsPath. If password is
+// empty it is read from the keyring or prompted for; a newly entered password is
+// stored in the keyring only after it has successfully decrypted the store.
+func openEncryptedManager(secretsPath, password string) (*EncryptedManager, error) {
+	// Enforce keyring availability for encrypted provider
+	if !IsKeyringAvailable() {
+		return nil, ErrKeyringNotAvailable
+	}
+
+	secretsPassword, isNew, err := GetSecretsPassword(password)
+	if err != nil {
+		return nil, fmt.Errorf("failed to get secrets password: %w", err)
+	}
+	// The AES-256-GCM key is derived from the password inside the
+	// manager, using Argon2id and a salt stored in the secrets file.
+	manager, err := newEncryptedManager(secretsPath, secretsPassword)
+	if err != nil {
+		// Decryption failed - don't store the password in keyring
+		// This allows the user to retry with the correct password
+		return nil, fmt.Errorf("failed to create provider: %w", err)
+	}
+
+	// Only store password in keyring after successful validation (decryption)
+	if isNew {
+		if err := StoreSecretsPassword(secretsPassword); err != nil {
+			return nil, fmt.Errorf("failed to store password in keyring: %w", err)
+		}
+	}
+	return manager, nil
 }
 
 // ProviderOption configures how CreateProvider wraps the underlying provider.

@@ -28,10 +28,11 @@ import (
 // rejection fires at the edge -- exact error.code, error.data, and echoed
 // id -- without the backend ever being contacted.
 //
-// Known gaps, deliberately not asserted here (see the design plan and
-// pkg/mcp/revision.go's ClassifyRevision doc comment): Mcp-Method/Mcp-Name
-// header validation (unimplemented), batch/client-response smuggling
-// (handled as Legacy today, deferred), and header-driven GET/DELETE 405
+// Batches are rejected at admission. Known gaps, deliberately not asserted
+// here (see the design plan and pkg/mcp/revision.go's ClassifyRevision doc
+// comment): Mcp-Method/Mcp-Name header validation (unimplemented), client-response
+// classification (transport-specific; Legacy in the transparent proxy), and
+// header-driven GET/DELETE 405
 // (that gate is stateless-mode-driven, not classifier-driven). Also a known
 // spec divergence: ClassifyRevision is transport-agnostic and cannot tell
 // "stdio, no header concept" (-32602 is correct) apart from "HTTP, header
@@ -149,22 +150,20 @@ var _ = Describe("Hostile Input Proxy", Label("proxy", "stateless", "hostile-inp
 		Expect(mockServer.GetCount()).To(Equal(countBefore),
 			"oversized body must be rejected by bodylimit before the backend is contacted")
 
-		// Unlike the classification cases above, an unparsable body is NOT
-		// rejected at the edge: parseRPCRequest fails to decode it as either a
-		// single request or a batch, so RoundTrip never calls ClassifyRevision
-		// and forwards the body unclassified (Legacy passthrough) -- the proxy
-		// does not validate JSON syntax before forwarding. The 400 below comes
-		// from the *backend's* own json.Unmarshal failure, after it has
-		// already been contacted.
-		By("a truncated body is forwarded as Legacy passthrough; the backend rejects it")
+		// Admission rejects malformed JSON before classification or forwarding.
+		// The incomplete envelope cannot supply an ID for the parse error.
+		By("a truncated body is rejected locally with a parse error, not forwarded")
 		countBefore = mockServer.GetCount()
 		truncated := []byte(`{"jsonrpc":"2.0","id":3002,"method":"tools/list","para`) // deliberately cut mid-object
 		resp, err = client.SendRaw(context.Background(), proxyURL,
 			map[string]string{"Content-Type": "application/json"}, truncated)
 		Expect(err).ToNot(HaveOccurred(), "must not hang or crash the proxy")
 		Expect(resp.StatusCode).To(Equal(http.StatusBadRequest))
-		Expect(mockServer.GetCount()).To(Equal(countBefore+1),
-			"an unparsable body skips classification and IS forwarded to the backend")
+		Expect(resp.Error).ToNot(BeNil())
+		Expect(resp.Error.Code).To(Equal(int64(-32700)))
+		Expect(resp.ID).To(BeNil())
+		Expect(mockServer.GetCount()).To(Equal(countBefore),
+			"a truncated body must be rejected before the backend is contacted")
 
 		By("the proxy still serves a well-formed request after the hostile inputs above")
 		req, err := e2e.NewModernRequest("tools/list", nil)

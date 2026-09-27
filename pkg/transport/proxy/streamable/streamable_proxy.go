@@ -557,6 +557,7 @@ func (p *HTTPProxy) handlePost(w http.ResponseWriter, r *http.Request) {
 	// Read request body
 	body, err := io.ReadAll(r.Body)
 	if err != nil {
+		slog.Warn("rejected unreadable MCP request body")
 		// A body that exceeds the configured limit without a Content-Length
 		// (e.g. chunked) trips http.MaxBytesReader here rather than at the
 		// early Content-Length check. Surface it as 413, not 500.
@@ -564,17 +565,7 @@ func (p *HTTPProxy) handlePost(w http.ResponseWriter, r *http.Request) {
 			writeHTTPError(w, http.StatusRequestEntityTooLarge, "Request Entity Too Large")
 			return
 		}
-		writeHTTPError(w, http.StatusInternalServerError, fmt.Sprintf("Error reading request body: %v", err))
-		return
-	}
-
-	// Reject JSON-RPC batches outright. Batching was removed in MCP revision
-	// 2025-06-18 and ToolHive serves only 2025-11-25 and 2026-07-28. Rejecting
-	// at the executor (not only in ParsingMiddleware) makes this independent of
-	// middleware presence, ordering, and Content-Type, so a batch can never
-	// reach the backend uninspected by authz/audit/tool-filtering (see #5745).
-	if mcp.IsBatchRequest(body) {
-		mcp.WriteBatchUnsupportedError(w)
+		writeHTTPError(w, http.StatusBadRequest, "Invalid request body")
 		return
 	}
 
@@ -1609,11 +1600,9 @@ func (p *HTTPProxy) reapServerStreams(isActive func(sess string) bool) {
 
 // decodeJSONRPCMessage decodes a JSON-RPC message from the request body.
 func decodeJSONRPCMessage(w http.ResponseWriter, body []byte) (jsonrpc2.Message, bool) {
-	msg, err := jsonrpc2.DecodeMessage(body)
+	msg, err := mcp.DecodeMessage(body)
 	if err != nil {
-		//nolint:gosec // G706: logging raw JSON-RPC data from HTTP request body
-		slog.Warn("skipping message that failed to decode", "body", string(body))
-		writeHTTPError(w, http.StatusBadRequest, "Invalid JSON-RPC 2.0 message")
+		mcp.WriteClassificationError(w, nil, err)
 		return nil, false
 	}
 	return msg, true

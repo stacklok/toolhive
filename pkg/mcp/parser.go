@@ -70,7 +70,7 @@ type ParsedMCPRequest struct {
 // middleware (authorization, audit, etc.).
 //
 // The middleware:
-// 1. Checks if the request should be parsed (POST with JSON content, on any path)
+// 1. Checks if the request should be parsed (every POST in an MCP chain, on any path)
 // 2. Reads and parses the JSON-RPC message
 // 3. Extracts method, parameters, and resource information
 // 4. Stores the parsed data in request context
@@ -102,31 +102,29 @@ func ParsingMiddleware(next http.Handler) http.Handler {
 		// Read the request body
 		bodyBytes, err := io.ReadAll(r.Body)
 		if err != nil {
-			// If we can't read the body, let the next handler deal with it
-			next.ServeHTTP(w, r)
+			writeBodyReadError(w, err)
 			return
 		}
 
-		// Restore the request body for downstream handlers
-		r.Body = io.NopCloser(bytes.NewBuffer(bodyBytes))
-
-		// Reject JSON-RPC batches before any downstream middleware or the
-		// transport proxy's batch executor can act on them. Batching was
-		// removed in MCP revision 2025-06-18; ToolHive serves only 2025-11-25
-		// and 2026-07-28. Authz, audit, and tool filtering each inspect a
-		// single parsed request per call, so a batch reaching the backend would
-		// smuggle every nested call past those controls (see #5745).
-		if IsBatchRequest(bodyBytes) {
-			WriteBatchUnsupportedError(w)
-			return
-		}
-		if hasAmbiguousJSONMembers(bodyBytes) {
-			WriteClassificationError(w, nil, ambiguousRequest)
+		msg, err := DecodeMessage(bodyBytes)
+		if err != nil {
+			WriteClassificationError(w, nil, err)
 			return
 		}
 
-		// Parse the MCP request and store in context
-		parsedRequest := parseMCPRequest(bodyBytes)
+		// Consumers must see the same JSON accepted by DecodeMessage. In
+		// particular, a BOM cannot be embedded in a webhook's json.RawMessage.
+		bodyBytes = bytes.TrimPrefix(bodyBytes, UTF8BOM)
+		r.Body = io.NopCloser(bytes.NewReader(bodyBytes))
+		r.ContentLength = int64(len(bodyBytes))
+		if r.GetBody != nil {
+			r.GetBody = func() (io.ReadCloser, error) {
+				return io.NopCloser(bytes.NewReader(bodyBytes)), nil
+			}
+		}
+
+		// Responses remain transport-owned and do not populate request context.
+		parsedRequest := parsedMCPMessage(msg)
 		if parsedRequest != nil {
 			parsedRequest.MCPMethodHeader = r.Header.Get("Mcp-Method")
 			parsedRequest.MCPNameHeader = r.Header.Get("Mcp-Name")
@@ -150,8 +148,8 @@ func ParsingMiddleware(next http.Handler) http.Handler {
 // ParsingMiddleware deliberately parses only once, so any middleware that
 // replaces r.Body MUST call this or downstream consumers (authorization,
 // audit, telemetry) will decide on the bytes that arrived rather than the
-// bytes the backend executes. Replacement bodies must satisfy the same batch
-// and unambiguous-member requirements enforced by ParsingMiddleware.
+// bytes the backend executes. Replacement bodies must satisfy the same message
+// admission checks enforced by ParsingMiddleware and must be requests.
 //
 // On error, the returned request is nil and must not be passed downstream:
 // the caller is responsible for terminating the request (e.g. writing an
@@ -165,17 +163,11 @@ func ParsingMiddleware(next http.Handler) http.Handler {
 // The caller must also refresh r.ContentLength when it replaces r.Body, or the
 // reverse proxy will reject the forwarded request.
 func RepublishParsedMCPRequest(r *http.Request, body []byte) (*http.Request, error) {
-	// Batch-reject before parsing, using the same guard ParsingMiddleware uses,
-	// so a mutation can never smuggle a batch past authz/audit by rewriting a
-	// single request into an array (see IsBatchRequest's doc comment).
-	if IsBatchRequest(body) {
-		return nil, &BatchUnsupportedError{}
+	msg, err := DecodeMessage(body)
+	if err != nil {
+		return nil, err
 	}
-	if hasAmbiguousJSONMembers(body) {
-		return nil, ambiguousRequest
-	}
-
-	parsed := parseMCPRequest(body)
+	parsed := parsedMCPMessage(msg)
 	if parsed == nil {
 		return nil, errors.New("republished body is not a valid JSON-RPC request")
 	}
@@ -225,7 +217,7 @@ type authzDenialMarkerContextKey struct{}
 // AuthzDenialMarker is a mutable carrier that lets the authorization
 // middleware (pkg/authz), which runs INSIDE the audit middleware, flag a
 // request it refused before message-level authorization could run, such as a
-// non-JSON POST carrying a smuggled JSON-RPC body. It follows the same
+// client response or a POST reaching authz without parsing middleware. It follows the same
 // propagation pattern as ParsedRequestHolder: the audit wrapper injects an
 // empty marker via WithAuthzDenialMarker, the inner middleware fills it, and
 // the wrapper reads it back after the inner chain returns so the refusal is
@@ -278,28 +270,23 @@ func GetParsedMCPRequest(ctx context.Context) *ParsedMCPRequest {
 // Deliberately path-agnostic. There is no fixed MCP endpoint path: the
 // streamable transport's path is server-chosen, and in 2024-11-05 HTTP+SSE the
 // server names its own message endpoint in the `endpoint` event, which
-// ToolHive's proxies forward as given. So any JSON POST on any path may carry an
-// MCP message. A path test here is a parsing gap that becomes an authorization
-// gap downstream, because pkg/authz decides what to authorize from what this
-// function chose to parse — see GHSA-h4mf-84xq-q2fc.
+// ToolHive's proxies forward as given. Any POST may carry an MCP message,
+// regardless of Content-Type (not mandated by all supported MCP revisions).
+// Path or media-type gates would bypass downstream request-level controls.
 func shouldParseMCPRequest(r *http.Request) bool {
-	// Only parse POST requests with JSON content type.
-	return r.Method == http.MethodPost && RequestHasJSONContentType(r)
+	return r.Method == http.MethodPost
 }
 
 // parseMCPRequest parses the JSON-RPC message and extracts MCP-specific information.
 func parseMCPRequest(bodyBytes []byte) *ParsedMCPRequest {
-	bodyBytes = bytes.TrimPrefix(bodyBytes, UTF8BOM)
-	if len(bodyBytes) == 0 {
-		return nil
-	}
-
-	// Try to parse as JSON-RPC message
-	msg, err := jsonrpc2.DecodeMessage(bodyBytes)
+	msg, err := DecodeMessage(bodyBytes)
 	if err != nil {
 		return nil
 	}
+	return parsedMCPMessage(msg)
+}
 
+func parsedMCPMessage(msg jsonrpc2.Message) *ParsedMCPRequest {
 	// Handle only request messages (both calls with ID and notifications without ID)
 	req, ok := msg.(*jsonrpc2.Request)
 	if !ok {

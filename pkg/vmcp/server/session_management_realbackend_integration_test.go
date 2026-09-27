@@ -41,7 +41,7 @@ import (
 // classifyingHandler -> dispatchModern; a Legacy request falls through to the
 // SDK path. It is the low-level helper used by newRealTestServer and any test
 // that needs control over the httptest.Server configuration (e.g. WriteTimeout).
-func newRealTestHandler(t *testing.T, backendURL string) http.Handler {
+func newRealTestHandler(t *testing.T, backendURL string, configure ...func(*server.Config)) http.Handler {
 	t.Helper()
 
 	ctrl := gomock.NewController(t)
@@ -81,15 +81,16 @@ func newRealTestHandler(t *testing.T, backendURL string) http.Handler {
 	agg := aggregator.NewDefaultAggregator(backendClient, resolver, nil, nil)
 
 	rt := router.NewSessionRouter(&vmcp.RoutingTable{})
+	cfg := &server.Config{
+		Host: "127.0.0.1", Port: 0,
+		SessionTTL: 5 * time.Minute, SessionFactory: factory, Aggregator: agg,
+	}
+	for _, configure := range configure {
+		configure(cfg)
+	}
 	srv, err := server.New(
 		context.Background(),
-		&server.Config{
-			Host:           "127.0.0.1",
-			Port:           0,
-			SessionTTL:     5 * time.Minute,
-			SessionFactory: factory,
-			Aggregator:     agg,
-		},
+		cfg,
 		rt,
 		backendClient,
 		mockBackendRegistry,

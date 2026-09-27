@@ -156,13 +156,25 @@ ToolHive uses two different proxy implementations:
 
 **How it works:**
 - Uses Go's `httputil.ReverseProxy`
-- Validates every POST with shared MCP message admission, independent of path and Content-Type
+- Validates every POST routed to the backend-forwarding MCP handler with shared MCP message admission, regardless of path or Content-Type
 - Forwards admitted body bytes and headers without reserializing the envelope
-- Applies middleware to all traffic
+- Applies the MCP middleware chain only to traffic routed to the backend-forwarding handler
 - Detects session IDs from headers/body for tracking
 - Rejects malformed, trailing, batched, ambiguous, or mixed JSON-RPC envelopes before forwarding
 
-**POST compatibility:** Every transparent proxy POST path requires a single MCP envelope, including `thv proxy` with an unspecified transport type. It is not generic non-MCP HTTP forwarding. Current admission is stricter than base JSON-RPC:
+##### POST compatibility
+
+Every POST routed to the backend-forwarding MCP handler requires a single MCP envelope, regardless of path or Content-Type, including `thv proxy` with an unspecified transport type. This handler is not generic non-MCP HTTP forwarding.
+
+Local mux routes sit outside this handler and its MCP admission and middleware chain:
+- Configured prefix handlers, including embedded auth routes such as `/oauth/token`, `/oauth/register`, and auth server well-known endpoints.
+- `/health`, which always stays local: a health handler when enabled, otherwise `404`.
+- `/metrics`, which uses a metrics handler when provided, otherwise a local response.
+- `/.well-known/` discovery, which is always registered, even when auth is disabled.
+
+These local routes retain their own method, body, and authentication behavior; being outside MCP admission does not mean they accept every POST or require no authentication.
+
+Current admission is stricter than base JSON-RPC:
 - Request and notification `params` must be omitted or an object; `null` and arrays are rejected.
 - IDs, when present, must be strings or signed-int64 values written as lexical JSON integers. `null`, fractional spellings such as `1.0`, and exponent spellings such as `1e0` are rejected.
 - Valid client error responses may omit the ID, as MCP permits; successful responses require an ID. Client responses remain subject to transport and authorization handling.

@@ -94,7 +94,7 @@ sequenceDiagram
 - `pkg/transport/proxy/transparent/transparent_proxy.go` - Transparent HTTP proxy
 
 **Key features:**
-- Transparent HTTP proxying (no protocol awareness needed)
+- Transparent HTTP proxying with MCP envelope admission
 - Middleware applied to all requests
 - Session tracking from headers
 - Keep-alive support
@@ -162,10 +162,16 @@ ToolHive uses two different proxy implementations:
 - Detects session IDs from headers/body for tracking
 - Rejects malformed, trailing, batched, ambiguous, or mixed JSON-RPC envelopes before forwarding
 
+**POST compatibility:** Every transparent proxy POST path requires a single MCP envelope, including `thv proxy` with an unspecified transport type. It is not generic non-MCP HTTP forwarding. Current admission is stricter than base JSON-RPC:
+- Request and notification `params` must be omitted or an object; `null` and arrays are rejected.
+- IDs, when present, must be strings or signed-int64 values written as lexical JSON integers. `null`, fractional spellings such as `1.0`, and exponent spellings such as `1e0` are rejected.
+- Valid client error responses may omit the ID, as MCP permits; successful responses require an ID. Client responses remain subject to transport and authorization handling.
+- Invalid envelopes and unreadable bodies return `400`; bodies exceeding the configured limit return `413`.
+
 **Why transparent:**
 - Container already speaks HTTP
-- MCP protocol handled by container
-- Proxy just routes traffic + applies middleware
+- MCP operations are handled by the container
+- Proxy validates envelopes, routes traffic, and applies middleware
 
 #### 2. Protocol-Specific Proxies (for Stdio)
 

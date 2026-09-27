@@ -8,7 +8,6 @@ package transparent
 import (
 	"bytes"
 	"context"
-	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
@@ -582,43 +581,37 @@ func (t *tracingTransport) RoundTrip(req *http.Request) (*http.Response, error) 
 	reqBody, err := readRequestBody(req)
 	if err != nil {
 		// Never forward a partial body, even on non-size read errors.
-		slog.Warn("rejected unreadable MCP request body")
 		if bodylimit.IsRequestTooLarge(err) {
+			slog.Warn("rejected unreadable MCP request body", "reason", "body_too_large")
 			return plainResponse(req, http.StatusRequestEntityTooLarge, "Request Entity Too Large"), nil
 		}
+		slog.Warn("rejected unreadable MCP request body", "reason", "read_error")
 		return plainResponse(req, http.StatusBadRequest, "Invalid request body"), nil
-	}
-
-	if req.Method == http.MethodPost {
-		if _, err := mcp.DecodeMessage(reqBody); err != nil {
-			return mcp.ClassificationErrorResponse(req, nil, err), nil
-		}
 	}
 
 	sawInitialize := false
 	revision := mcp.RevisionLegacy
-	// requestID carries the incoming JSON-RPC id so an error response built below
-	// can echo it, letting a client correlate the error with its request. It is set
-	// only when parseRPCRequest reports a single request, which by construction
-	// means the id is present and non-null; it stays nil for a notification, a
-	// batch, or a bodiless GET/DELETE. session.NotFoundResponse (via NotFoundBody)
-	// omits the "id" key entirely for a nil requestID rather than emitting a null
-	// id — MCP narrows base JSON-RPC to make that omission the correct encoding
-	// of "no id" (see session.HasJSONRPCID).
+	// Only ID-bearing requests are classified and supply an ID for local errors.
+	// Notifications, client responses and bodiless GET/DELETE leave it absent.
 	var requestID any
 
 	if req.Method == http.MethodPost {
-		method, params, id, singleRequest, isInit := t.parseRPCRequest(bytes.TrimPrefix(reqBody, mcp.UTF8BOM))
-		sawInitialize = isInit
-		if singleRequest {
-			requestID = id
-			meta := mcp.ExtractMeta(params)
-			rev, cerr := mcp.ClassifyRevision(method, meta, req.Header.Get("MCP-Protocol-Version"))
-			if cerr != nil {
-				// Malformed Modern request: reject before the backend is ever contacted.
-				return mcp.ClassificationErrorResponse(req, id, cerr), nil
+		msg, err := mcp.DecodeMessage(reqBody)
+		if err != nil {
+			return mcp.ClassificationErrorResponse(req, nil, err), nil
+		}
+		if rpcRequest, ok := msg.(*jsonrpc2.Request); ok {
+			sawInitialize = rpcRequest.Method == "initialize"
+			if rpcRequest.ID.IsValid() {
+				requestID = rpcRequest.ID.Raw()
+				meta := mcp.ExtractMeta(rpcRequest.Params)
+				rev, cerr := mcp.ClassifyRevision(rpcRequest.Method, meta, req.Header.Get("MCP-Protocol-Version"))
+				if cerr != nil {
+					// Malformed Modern request: reject before the backend is ever contacted.
+					return mcp.ClassificationErrorResponse(req, requestID, cerr), nil
+				}
+				revision = rev
 			}
-			revision = rev
 		}
 	}
 	//nolint:gosec // G706: logging target URI from config
@@ -826,58 +819,6 @@ func readRequestBody(req *http.Request) ([]byte, error) {
 		req.Body = io.NopCloser(bytes.NewReader(reqBody))
 	}
 	return reqBody, nil
-}
-
-// parseRPCRequest parses a POST body as a JSON-RPC request in a single pass.
-//
-// If the body is a single JSON-RPC object, method/params/id are populated
-// from it and singleRequest reports whether it is a real request (has both a
-// method and a valid, non-null id) as opposed to a notification (no id) or a
-// response-shaped body (no method) — either of which is not eligible for
-// mcp.ClassifyRevision. sawInitialize reports whether method == "initialize".
-//
-// If the body is not a single JSON object (e.g. a JSON-RPC batch), method,
-// params and id are zero and singleRequest is false: batches are never
-// classified. sawInitialize is still computed by scanning the batch for any
-// member whose method is "initialize", preserving prior behavior.
-func (t *tracingTransport) parseRPCRequest(
-	body []byte,
-) (method string, params, id json.RawMessage, singleRequest, sawInitialize bool) {
-	type rpcRequest struct {
-		Method string          `json:"method"`
-		Params json.RawMessage `json:"params"`
-		ID     json.RawMessage `json:"id"`
-	}
-
-	var single rpcRequest
-	if err := json.Unmarshal(body, &single); err == nil {
-		sawInitialize = single.Method == "initialize"
-		if sawInitialize {
-			//nolint:gosec // G706: logging target URI from config
-			slog.Debug("detected initialize method call", "target", t.p.targetURI)
-		}
-		singleRequest = single.Method != "" && len(single.ID) > 0 && string(single.ID) != "null"
-		return single.Method, single.Params, single.ID, singleRequest, sawInitialize
-	}
-
-	// JSON-RPC batch: array of objects. Only sawInitialize is computed; a
-	// batch is never eligible for revision classification.
-	type rpcMethod struct {
-		Method string `json:"method"`
-	}
-	var batch []rpcMethod
-	if err := json.Unmarshal(body, &batch); err != nil {
-		slog.Debug("failed to parse JSON-RPC body", "error", err)
-		return "", nil, nil, false, false
-	}
-	for _, rpc := range batch {
-		if rpc.Method == "initialize" {
-			//nolint:gosec // G706: logging target URI from config
-			slog.Debug("detected initialize method call in batch", "target", t.p.targetURI)
-			return "", nil, nil, false, true
-		}
-	}
-	return "", nil, nil, false, false
 }
 
 // podBackendURL constructs a backend URL that targets the specific pod IP captured

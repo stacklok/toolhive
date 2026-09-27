@@ -251,6 +251,13 @@ This order is critical because:
 - Extract resource IDs and arguments based on method type
 - Store parsed data in request context
 
+**POST compatibility**: ToolHive's current MCP admission is stricter than base JSON-RPC:
+- Request and notification `params` must be omitted or an object; `null` and arrays are rejected.
+- IDs, when present, must be strings or signed-int64 values written as lexical JSON integers. `null`, fractional spellings such as `1.0`, and exponent spellings such as `1e0` are rejected.
+- Valid client error responses may omit the ID, as MCP permits; successful responses require an ID. Admission does not imply that every transport or authorization policy accepts client responses.
+
+Every transparent proxy POST path, including `thv proxy` with an unspecified transport type, requires an MCP envelope. This is not generic non-MCP HTTP forwarding. Invalid envelopes and unreadable bodies return `400`; bodies exceeding the configured limit return `413`.
+
 **Context Data Added**:
 - `ParsedMCPRequest` containing:
   - Method name

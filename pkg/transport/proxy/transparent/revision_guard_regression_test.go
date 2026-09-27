@@ -59,14 +59,18 @@ func newGuardTransport(spy http.RoundTripper) (*tracingTransport, *TransparentPr
 // itself: it confirms the given body/header combination really does
 // classify as Modern with a nil error. If this fails, the test below it is
 // not exercising a forged-Modern scenario at all.
-func assertClassifiesModernNil(t *testing.T, tt *tracingTransport, body []byte, protoHeader string) {
+func assertClassifiesModernNil(t *testing.T, body []byte, protoHeader string) {
 	t.Helper()
-	method, params, _, singleRequest, _ := tt.parseRPCRequest(body)
-	require.True(t, singleRequest, "precondition: body must parse as a single JSON-RPC request")
-	meta := mcp.ExtractMeta(params)
-	rev, err := mcp.ClassifyRevision(method, meta, protoHeader)
-	require.NoError(t, err, "precondition: body must classify Modern with a nil error")
-	require.Equal(t, mcp.RevisionModern, rev, "precondition: body must classify as Modern")
+	tt, p := newGuardTransport(roundTripFunc(func(*http.Request) (*http.Response, error) {
+		return &http.Response{StatusCode: http.StatusOK, Header: make(http.Header), Body: http.NoBody}, nil
+	}))
+	req := httptest.NewRequest(http.MethodPost, "/mcp", strings.NewReader(string(body)))
+	req.Header.Set("MCP-Protocol-Version", protoHeader)
+	resp, err := tt.RoundTrip(req)
+	require.NoError(t, err)
+	drainAndClose(t, resp)
+	require.Equal(t, http.StatusOK, resp.StatusCode)
+	require.True(t, p.serverInitialized(), "precondition: a Modern request must set readiness without initialize")
 }
 
 // TestGuardUnknownSessionFiresDespiteForgedModernRevision is the core
@@ -89,7 +93,7 @@ func TestGuardUnknownSessionFiresDespiteForgedModernRevision(t *testing.T) {
 	})
 	tt, _ := newGuardTransport(spy)
 
-	assertClassifiesModernNil(t, tt, []byte(modernToolsCallBody), mcp.MCPVersionModern)
+	assertClassifiesModernNil(t, []byte(modernToolsCallBody), mcp.MCPVersionModern)
 
 	req := httptest.NewRequest(http.MethodPost, "/mcp", strings.NewReader(modernToolsCallBody))
 	req.Header.Set("Content-Type", "application/json")
@@ -127,7 +131,7 @@ func TestGuardBackendSIDRewriteStillHappensWithForgedModernRevision(t *testing.T
 	})
 	tt, p := newGuardTransport(spy)
 
-	assertClassifiesModernNil(t, tt, []byte(modernToolsCallBody), mcp.MCPVersionModern)
+	assertClassifiesModernNil(t, []byte(modernToolsCallBody), mcp.MCPVersionModern)
 
 	clientSID := uuid.New().String()
 	sess := session.NewProxySession(clientSID)
@@ -181,7 +185,7 @@ func TestGuardReinitRecoveryStillTriggersWithForgedModernRevision(t *testing.T) 
 	})
 	tt, p := newGuardTransport(spy)
 
-	assertClassifiesModernNil(t, tt, []byte(modernToolsCallBody), mcp.MCPVersionModern)
+	assertClassifiesModernNil(t, []byte(modernToolsCallBody), mcp.MCPVersionModern)
 
 	clientSID := uuid.New().String()
 	sess := session.NewProxySession(clientSID)
@@ -228,7 +232,7 @@ func TestGuardDeleteCleanupStillWorksWithBodyMetaButNoHeader(t *testing.T) {
 
 	// No MCP-Protocol-Version header: classification relies solely on the
 	// reserved _meta keys, per mcp.ClassifyRevision's documented signal rules.
-	assertClassifiesModernNil(t, tt, []byte(modernToolsCallBody), "")
+	assertClassifiesModernNil(t, []byte(modernToolsCallBody), "")
 
 	clientSID := uuid.New().String()
 	sess := session.NewProxySession(clientSID)

@@ -9,7 +9,6 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"io"
 	"log/slog"
 	"net/http"
 	"reflect"
@@ -871,13 +870,13 @@ var cachingHintMembers = []string{"cacheScope", "ttlMs"}
 func decodeFilterableListResult(
 	data json.RawMessage,
 	listField, identifierField string,
-) ([]jsonObjectMember, []json.RawMessage, error) {
+) ([]mcpparser.JSONObjectMember, []json.RawMessage, error) {
 	members, items, err := decodeListResult(data, listField, identifierField)
 	if err != nil {
 		return nil, nil, err
 	}
 	for _, hint := range cachingHintMembers {
-		if _, _, err := uniqueCanonicalMember(members, hint); err != nil {
+		if _, _, err := mcpparser.UniqueCanonicalMember(members, hint); err != nil {
 			return nil, nil, err
 		}
 	}
@@ -896,23 +895,23 @@ var toolAnnotationMembers = jsonMemberNames(reflect.TypeFor[mcp.ToolAnnotation](
 // from those in the raw descriptor a filter forwards to the client.
 func validateToolAnnotations(rawTools []json.RawMessage) error {
 	for i, rawTool := range rawTools {
-		toolMembers, err := decodeJSONObjectMembers(rawTool)
+		toolMembers, err := mcpparser.DecodeJSONObjectMembers(rawTool)
 		if err != nil {
 			return fmt.Errorf("decoding tools item at index %d: %w", i, err)
 		}
-		rawAnnotations, ok, err := uniqueCanonicalMember(toolMembers, "annotations")
+		rawAnnotations, ok, err := mcpparser.UniqueCanonicalMember(toolMembers, "annotations")
 		if err != nil {
 			return fmt.Errorf("tools item at index %d: %w", i, err)
 		}
 		if !ok || isJSONNull(rawAnnotations) {
 			continue
 		}
-		annotationMembers, err := decodeJSONObjectMembers(rawAnnotations)
+		annotationMembers, err := mcpparser.DecodeJSONObjectMembers(rawAnnotations)
 		if err != nil {
 			return fmt.Errorf("decoding annotations of tools item at index %d: %w", i, err)
 		}
 		for _, name := range toolAnnotationMembers {
-			if _, _, err := uniqueCanonicalMember(annotationMembers, name); err != nil {
+			if _, _, err := mcpparser.UniqueCanonicalMember(annotationMembers, name); err != nil {
 				return fmt.Errorf("annotations of tools item at index %d: %w", i, err)
 			}
 		}
@@ -931,17 +930,17 @@ func validateToolAnnotations(rawTools []json.RawMessage) error {
 // extension) is kept exactly as the backend sent it.
 func filteredListResponse(
 	id jsonrpc2.ID,
-	members []jsonObjectMember,
+	members []mcpparser.JSONObjectMember,
 	listField string,
 	permitted []json.RawMessage,
 ) (*jsonrpc2.Response, error) {
 	replacements := map[string]json.RawMessage{
-		listField:    encodeJSONArrayValues(permitted),
+		listField:    mcpparser.EncodeJSONArrayValues(nil, permitted),
 		"cacheScope": json.RawMessage(`"private"`),
 		"ttlMs":      json.RawMessage(`0`),
 	}
 
-	filteredResult, err := encodeJSONObjectMembers(members, replacements)
+	filteredResult, err := mcpparser.EncodeJSONObjectMembers(nil, members, replacements)
 	if err != nil {
 		return nil, err
 	}
@@ -1015,26 +1014,26 @@ func (rfw *ResponseFilteringWriter) filterResourceTemplatesResponse(
 func decodeResourceTemplatesListResult(
 	data json.RawMessage,
 ) (map[string]json.RawMessage, []json.RawMessage, []string, error) {
-	members, err := decodeJSONObjectMembers(data)
+	members, err := mcpparser.DecodeJSONObjectMembers(data)
 	if err != nil {
 		return nil, nil, nil, fmt.Errorf("decoding resource templates list response: %w", err)
 	}
 	result := make(map[string]json.RawMessage, len(members)+2)
 	for _, member := range members {
-		result[member.name] = member.value
+		result[member.Name] = member.Value
 	}
 
-	rawTemplates, ok, err := uniqueCanonicalMember(members, "resourceTemplates")
+	rawTemplates, ok, err := mcpparser.UniqueCanonicalMember(members, "resourceTemplates")
 	if err != nil {
 		return nil, nil, nil, err
 	}
 	if !ok {
 		return nil, nil, nil, errors.New("resource templates list result is missing resourceTemplates")
 	}
-	if _, _, err := uniqueCanonicalMember(members, "cacheScope"); err != nil {
+	if _, _, err := mcpparser.UniqueCanonicalMember(members, "cacheScope"); err != nil {
 		return nil, nil, nil, err
 	}
-	if _, _, err := uniqueCanonicalMember(members, "ttlMs"); err != nil {
+	if _, _, err := mcpparser.UniqueCanonicalMember(members, "ttlMs"); err != nil {
 		return nil, nil, nil, err
 	}
 
@@ -1068,12 +1067,12 @@ func validateListResult(data json.RawMessage, listField, identifierField string)
 func decodeListResult(
 	data json.RawMessage,
 	listField, identifierField string,
-) ([]jsonObjectMember, []json.RawMessage, error) {
-	members, err := decodeJSONObjectMembers(data)
+) ([]mcpparser.JSONObjectMember, []json.RawMessage, error) {
+	members, err := mcpparser.DecodeJSONObjectMembers(data)
 	if err != nil {
 		return nil, nil, err
 	}
-	rawItems, ok, err := uniqueCanonicalMember(members, listField)
+	rawItems, ok, err := mcpparser.UniqueCanonicalMember(members, listField)
 	if err != nil {
 		return nil, nil, err
 	}
@@ -1089,11 +1088,11 @@ func decodeListResult(
 		return nil, nil, fmt.Errorf("field %q must be an array", listField)
 	}
 	for i, item := range items {
-		itemMembers, err := decodeJSONObjectMembers(item)
+		itemMembers, err := mcpparser.DecodeJSONObjectMembers(item)
 		if err != nil {
 			return nil, nil, fmt.Errorf("decoding %s item at index %d: %w", listField, i, err)
 		}
-		rawIdentifier, ok, err := uniqueCanonicalMember(itemMembers, identifierField)
+		rawIdentifier, ok, err := mcpparser.UniqueCanonicalMember(itemMembers, identifierField)
 		if err != nil {
 			return nil, nil, fmt.Errorf("%s item at index %d: %w", listField, i, err)
 		}
@@ -1117,11 +1116,11 @@ func decodeListResult(
 func decodeResourceTemplateURIs(resourceTemplates []json.RawMessage) ([]string, error) {
 	uriTemplates := make([]string, len(resourceTemplates))
 	for i, rawTemplate := range resourceTemplates {
-		descriptorMembers, err := decodeJSONObjectMembers(rawTemplate)
+		descriptorMembers, err := mcpparser.DecodeJSONObjectMembers(rawTemplate)
 		if err != nil {
 			return nil, fmt.Errorf("decoding resource template at index %d: %w", i, err)
 		}
-		rawURITemplate, ok, err := uniqueCanonicalMember(descriptorMembers, "uriTemplate")
+		rawURITemplate, ok, err := mcpparser.UniqueCanonicalMember(descriptorMembers, "uriTemplate")
 		if err != nil {
 			return nil, fmt.Errorf("resource template at index %d: %w", i, err)
 		}
@@ -1138,84 +1137,6 @@ func decodeResourceTemplateURIs(resourceTemplates []json.RawMessage) ([]string, 
 		uriTemplates[i] = *uriTemplate
 	}
 	return uriTemplates, nil
-}
-
-type jsonObjectMember struct {
-	name  string
-	value json.RawMessage
-}
-
-// decodeJSONObjectMembers retains object member order and duplicates so
-// security-sensitive keys can be validated before encoding/json's usual
-// case-insensitive matching or last-value-wins behavior can hide them.
-func decodeJSONObjectMembers(data []byte) ([]jsonObjectMember, error) {
-	decoder := json.NewDecoder(bytes.NewReader(data))
-	opening, err := decoder.Token()
-	if err != nil {
-		return nil, err
-	}
-	if delimiter, ok := opening.(json.Delim); !ok || delimiter != '{' {
-		return nil, errors.New("value must be an object")
-	}
-
-	members := make([]jsonObjectMember, 0)
-	for decoder.More() {
-		nameToken, err := decoder.Token()
-		if err != nil {
-			return nil, err
-		}
-		name, ok := nameToken.(string)
-		if !ok {
-			return nil, errors.New("object member name must be a string")
-		}
-		var value json.RawMessage
-		if err := decoder.Decode(&value); err != nil {
-			return nil, err
-		}
-		members = append(members, jsonObjectMember{name: name, value: value})
-	}
-
-	closing, err := decoder.Token()
-	if err != nil {
-		return nil, err
-	}
-	if delimiter, ok := closing.(json.Delim); !ok || delimiter != '}' {
-		return nil, errors.New("unterminated object")
-	}
-	var trailing json.RawMessage
-	if err := decoder.Decode(&trailing); !errors.Is(err, io.EOF) {
-		if err == nil {
-			return nil, errors.New("unexpected data after object")
-		}
-		return nil, err
-	}
-	return members, nil
-}
-
-// uniqueCanonicalMember returns the value of canonical when it occurs exactly
-// once. Case-folded aliases are rejected because common Go JSON decoders may
-// treat them as the canonical field and select a different value than the one
-// used for authorization or filtering.
-func uniqueCanonicalMember(
-	members []jsonObjectMember,
-	canonical string,
-) (json.RawMessage, bool, error) {
-	var value json.RawMessage
-	found := false
-	for _, member := range members {
-		if !strings.EqualFold(member.name, canonical) {
-			continue
-		}
-		if member.name != canonical {
-			return nil, false, fmt.Errorf("field %q has non-canonical alias %q", canonical, member.name)
-		}
-		if found {
-			return nil, false, fmt.Errorf("field %q occurs more than once", canonical)
-		}
-		value = member.value
-		found = true
-	}
-	return value, found, nil
 }
 
 // jsonMemberNames returns the object member names that encoding/json matches
@@ -1414,15 +1335,15 @@ func (rfw *ResponseFilteringWriter) filterFindToolResponse(response *jsonrpc2.Re
 
 type findToolOutputCarrier struct {
 	contentIndex   int
-	contentMembers []jsonObjectMember
+	contentMembers []mcpparser.JSONObjectMember
 	rawOutput      json.RawMessage
-	outputMembers  []jsonObjectMember
+	outputMembers  []mcpparser.JSONObjectMember
 	rawTools       []json.RawMessage
 	output         optimizer.FindToolOutput
 }
 
 type decodedFindToolCallResult struct {
-	members           []jsonObjectMember
+	members           []mcpparser.JSONObjectMember
 	content           []json.RawMessage
 	isError           bool
 	outputs           []findToolOutputCarrier
@@ -1430,7 +1351,7 @@ type decodedFindToolCallResult struct {
 }
 
 type findToolCallResultEnvelope struct {
-	members       []jsonObjectMember
+	members       []mcpparser.JSONObjectMember
 	content       []json.RawMessage
 	isError       bool
 	rawStructured json.RawMessage
@@ -1479,23 +1400,23 @@ func decodeFindToolCallResult(data json.RawMessage) (*decodedFindToolCallResult,
 }
 
 func decodeFindToolCallResultEnvelope(data json.RawMessage) (*findToolCallResultEnvelope, error) {
-	members, err := decodeJSONObjectMembers(data)
+	members, err := mcpparser.DecodeJSONObjectMembers(data)
 	if err != nil {
 		return nil, err
 	}
 
-	rawContent, ok, err := uniqueCanonicalMember(members, "content")
+	rawContent, ok, err := mcpparser.UniqueCanonicalMember(members, "content")
 	if err != nil {
 		return nil, err
 	}
 	if !ok {
 		return nil, errors.New("find_tool result is missing content")
 	}
-	rawIsError, hasIsError, err := uniqueCanonicalMember(members, "isError")
+	rawIsError, hasIsError, err := mcpparser.UniqueCanonicalMember(members, "isError")
 	if err != nil {
 		return nil, err
 	}
-	rawStructured, hasStructured, err := uniqueCanonicalMember(members, "structuredContent")
+	rawStructured, hasStructured, err := mcpparser.UniqueCanonicalMember(members, "structuredContent")
 	if err != nil {
 		return nil, err
 	}
@@ -1530,11 +1451,11 @@ func decodeFindToolCallResultEnvelope(data json.RawMessage) (*findToolCallResult
 }
 
 func decodeFindToolTextContent(index int, data json.RawMessage) (*findToolOutputCarrier, bool, error) {
-	members, err := decodeJSONObjectMembers(data)
+	members, err := mcpparser.DecodeJSONObjectMembers(data)
 	if err != nil {
 		return nil, false, fmt.Errorf("decoding find_tool content at index %d: %w", index, err)
 	}
-	rawType, ok, err := uniqueCanonicalMember(members, "type")
+	rawType, ok, err := mcpparser.UniqueCanonicalMember(members, "type")
 	if err != nil {
 		return nil, false, fmt.Errorf("find_tool content at index %d: %w", index, err)
 	}
@@ -1549,7 +1470,7 @@ func decodeFindToolTextContent(index int, data json.RawMessage) (*findToolOutput
 		return nil, false, nil
 	}
 
-	rawText, ok, err := uniqueCanonicalMember(members, "text")
+	rawText, ok, err := mcpparser.UniqueCanonicalMember(members, "text")
 	if err != nil {
 		return nil, false, fmt.Errorf("find_tool text content at index %d: %w", index, err)
 	}
@@ -1577,14 +1498,14 @@ func decodeFindToolTextContent(index int, data json.RawMessage) (*findToolOutput
 // object or does not contain a tools member. A tools-bearing object is always
 // validated strictly and decoded into the concrete output type.
 func decodeFindToolOutput(data json.RawMessage) (*findToolOutputCarrier, bool, error) {
-	members, err := decodeJSONObjectMembers(data)
+	members, err := mcpparser.DecodeJSONObjectMembers(data)
 	if err != nil {
 		if trimmed := bytes.TrimSpace(data); len(trimmed) != 0 && trimmed[0] == '{' {
 			return nil, false, fmt.Errorf("decoding tools-bearing object: %w", err)
 		}
 		return nil, false, nil
 	}
-	rawToolsValue, ok, err := uniqueCanonicalMember(members, "tools")
+	rawToolsValue, ok, err := mcpparser.UniqueCanonicalMember(members, "tools")
 	if err != nil {
 		return nil, false, err
 	}
@@ -1640,7 +1561,8 @@ func (result *decodedFindToolCallResult) withFilteredToolIndexes(indexes []int) 
 	if err != nil {
 		return nil, err
 	}
-	filteredTextContent, err := encodeJSONObjectMembers(
+	filteredTextContent, err := mcpparser.EncodeJSONObjectMembers(
+		nil,
 		textCarrier.contentMembers,
 		map[string]json.RawMessage{"text": textValue},
 	)
@@ -1661,7 +1583,7 @@ func (result *decodedFindToolCallResult) withFilteredToolIndexes(indexes []int) 
 		}
 		replacements["structuredContent"] = filteredStructuredOutput
 	}
-	return encodeJSONObjectMembers(result.members, replacements)
+	return mcpparser.EncodeJSONObjectMembers(nil, result.members, replacements)
 }
 
 func (carrier *findToolOutputCarrier) withFilteredToolIndexes(indexes []int) ([]byte, error) {
@@ -1672,48 +1594,9 @@ func (carrier *findToolOutputCarrier) withFilteredToolIndexes(indexes []int) ([]
 		}
 		filteredTools = append(filteredTools, carrier.rawTools[index])
 	}
-	return encodeJSONObjectMembers(
+	return mcpparser.EncodeJSONObjectMembers(
+		nil,
 		carrier.outputMembers,
-		map[string]json.RawMessage{"tools": encodeJSONArrayValues(filteredTools)},
+		map[string]json.RawMessage{"tools": mcpparser.EncodeJSONArrayValues(nil, filteredTools)},
 	)
-}
-
-func encodeJSONArrayValues(values []json.RawMessage) json.RawMessage {
-	var encoded bytes.Buffer
-	encoded.WriteByte('[')
-	for i, value := range values {
-		if i != 0 {
-			encoded.WriteByte(',')
-		}
-		encoded.Write(value)
-	}
-	encoded.WriteByte(']')
-	return encoded.Bytes()
-}
-
-// encodeJSONObjectMembers replaces canonical values while retaining raw extensions.
-func encodeJSONObjectMembers(
-	members []jsonObjectMember,
-	replacements map[string]json.RawMessage,
-) ([]byte, error) {
-	var encoded bytes.Buffer
-	encoded.WriteByte('{')
-	for i, member := range members {
-		if i != 0 {
-			encoded.WriteByte(',')
-		}
-		name, err := json.Marshal(member.name)
-		if err != nil {
-			return nil, err
-		}
-		encoded.Write(name)
-		encoded.WriteByte(':')
-		value := member.value
-		if replacement, ok := replacements[member.name]; ok {
-			value = replacement
-		}
-		encoded.Write(value)
-	}
-	encoded.WriteByte('}')
-	return encoded.Bytes(), nil
 }

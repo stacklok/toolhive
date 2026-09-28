@@ -84,6 +84,8 @@ func twoKeysOfOneSecret() []mcpv1beta1.SecretRef {
 // these tests provably run against the chart-shipped files and not some other
 // schema source.
 func TestMCPServerCRDSecretsListMapKeys(t *testing.T) {
+	t.Parallel()
+
 	crd := &apiextensionsv1.CustomResourceDefinition{}
 	require.NoError(t, k8sClient.Get(context.Background(),
 		client.ObjectKey{Name: "mcpservers.toolhive.stacklok.dev"}, crd))
@@ -99,6 +101,8 @@ func TestMCPServerCRDSecretsListMapKeys(t *testing.T) {
 }
 
 func TestMCPServerV1Beta1CreateAdmitsTwoKeysOfOneSecret(t *testing.T) {
+	t.Parallel()
+
 	ctx := context.Background()
 	srv := &mcpv1beta1.MCPServer{
 		ObjectMeta: metav1.ObjectMeta{Name: "secrets-two-keys-create", Namespace: "default"},
@@ -116,6 +120,8 @@ func TestMCPServerV1Beta1CreateAdmitsTwoKeysOfOneSecret(t *testing.T) {
 }
 
 func TestMCPServerV1Beta1ApplyAdmitsTwoKeysOfOneSecret(t *testing.T) {
+	t.Parallel()
+
 	// The exact failing path from #6686: kubectl apply --server-side.
 	ctx := context.Background()
 	srv := &mcpv1beta1.MCPServer{
@@ -128,10 +134,15 @@ func TestMCPServerV1Beta1ApplyAdmitsTwoKeysOfOneSecret(t *testing.T) {
 		},
 	}
 	require.NoError(t, k8sClient.Patch(ctx, srv,
+		//nolint:staticcheck // SA1019: typed server-side apply needs the patch
+		// constant; this repo generates no ApplyConfigurations for the new
+		// Client.Apply API.
 		client.Apply, client.ForceOwnership, client.FieldOwner("secrets-admission-test")))
 }
 
 func TestMCPServerV1Alpha1ApplyAdmitsTwoKeysOfOneSecret(t *testing.T) {
+	t.Parallel()
+
 	// v1alpha1.MCPServerSpec is v1beta1.MCPServerSpec (api/v1alpha1/types.go),
 	// so both served versions carry the (name, key) merge keys.
 	ctx := context.Background()
@@ -145,10 +156,15 @@ func TestMCPServerV1Alpha1ApplyAdmitsTwoKeysOfOneSecret(t *testing.T) {
 		},
 	}
 	require.NoError(t, k8sClient.Patch(ctx, srv,
+		//nolint:staticcheck // SA1019: typed server-side apply needs the patch
+		// constant; this repo generates no ApplyConfigurations for the new
+		// Client.Apply API.
 		client.Apply, client.ForceOwnership, client.FieldOwner("secrets-admission-test")))
 }
 
 func TestMCPServerStillRejectsDuplicateNameAndKey(t *testing.T) {
+	t.Parallel()
+
 	// Negative control: an exact (name, key) duplicate must stay invalid —
 	// this is what proves the merge keys are (name, key) rather than the
 	// list having lost map semantics entirely.
@@ -158,6 +174,8 @@ func TestMCPServerStillRejectsDuplicateNameAndKey(t *testing.T) {
 	}
 
 	t.Run("create", func(t *testing.T) {
+		t.Parallel()
+
 		srv := &mcpv1beta1.MCPServer{
 			ObjectMeta: metav1.ObjectMeta{Name: "secrets-duplicate-create", Namespace: "default"},
 			Spec: mcpv1beta1.MCPServerSpec{
@@ -171,6 +189,8 @@ func TestMCPServerStillRejectsDuplicateNameAndKey(t *testing.T) {
 	})
 
 	t.Run("server-side apply", func(t *testing.T) {
+		t.Parallel()
+
 		srv := &mcpv1beta1.MCPServer{
 			TypeMeta:   metav1.TypeMeta{APIVersion: "toolhive.stacklok.dev/v1beta1", Kind: "MCPServer"},
 			ObjectMeta: metav1.ObjectMeta{Name: "secrets-duplicate-apply", Namespace: "default"},
@@ -179,6 +199,9 @@ func TestMCPServerStillRejectsDuplicateNameAndKey(t *testing.T) {
 			},
 		}
 		err := k8sClient.Patch(context.Background(), srv,
+			//nolint:staticcheck // SA1019: typed server-side apply needs the patch
+			// constant; this repo generates no ApplyConfigurations for the new
+			// Client.Apply API.
 			client.Apply, client.ForceOwnership, client.FieldOwner("secrets-admission-test"))
 		require.Error(t, err)
 		t.Logf("apply rejection: %v", err)

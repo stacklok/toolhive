@@ -1787,3 +1787,61 @@ func TestConfig_WarnTrustedIssuerAudiences(t *testing.T) {
 		})
 	}
 }
+
+// TestConfig_WarnAuthorizeCallbackHostMismatch pins the startup signal for a
+// deployment whose upstream redirect_uri lives on a different host than the
+// browser-facing authorize URL: /oauth/callback binds each login to the
+// starting browser with a host-only cookie, so such a deployment rejects every
+// browser login. Validation must warn, not fail, and must stay silent when only
+// the port differs (cookies ignore ports).
+//
+//nolint:paralleltest // captures the package-global slog.Default()
+func TestConfig_WarnAuthorizeCallbackHostMismatch(t *testing.T) {
+	const (
+		hostWarn   = "redirect_uri host differs from the browser-facing authorize host"
+		schemeWarn = "redirect_uri is plain http while the browser-facing authorize URL is https"
+	)
+	tests := []struct {
+		name          string
+		issuer        string
+		authorizeBase string
+		redirectURI   string
+		wantWarn      string // substring of the expected WARN; empty means silent
+	}{
+		{name: "callback on the issuer host is silent", issuer: "https://auth.example.com", redirectURI: "https://auth.example.com/oauth/callback"},
+		{name: "port-only difference is silent", issuer: "http://localhost:18080", redirectURI: "http://localhost:8080/oauth/callback"},
+		{name: "hostname case difference is silent", issuer: "https://Auth.Example.com", redirectURI: "https://auth.example.com/oauth/callback"},
+		{name: "callback on another host warns", issuer: "https://auth.example.com", redirectURI: "https://mcp.example.com/oauth/callback", wantWarn: hostWarn},
+		{name: "authorize base override on the callback host is silent", issuer: "http://vmcp.ns.svc.cluster.local:4483", authorizeBase: "https://mcp.example.com", redirectURI: "https://mcp.example.com/oauth/callback"},
+		{name: "authorize base override on another host warns", issuer: "https://auth.example.com", authorizeBase: "https://login.example.com", redirectURI: "https://auth.example.com/oauth/callback", wantWarn: hostWarn},
+		{name: "https authorize with plain-http callback on the same non-loopback host warns", issuer: "https://gateway.corp.example", redirectURI: "http://gateway.corp.example:4483/oauth/callback", wantWarn: schemeWarn},
+		{name: "https authorize with plain-http loopback callback is silent", issuer: "https://localhost:8443", redirectURI: "http://localhost:8080/oauth/callback"},
+		{name: "http authorize with https callback is silent", issuer: "http://localhost:8080", redirectURI: "https://localhost:8443/oauth/callback"},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			var buf bytes.Buffer
+			prev := slog.Default()
+			slog.SetDefault(slog.New(slog.NewTextHandler(&buf, &slog.HandlerOptions{Level: slog.LevelWarn})))
+			t.Cleanup(func() { slog.SetDefault(prev) })
+
+			cfg := Config{
+				Issuer:                       tt.issuer,
+				AuthorizationEndpointBaseURL: tt.authorizeBase,
+				Upstreams: []UpstreamConfig{{Name: "default", Type: UpstreamProviderTypeOIDC, OIDCConfig: &upstream.OIDCConfig{
+					CommonOAuthConfig: upstream.CommonOAuthConfig{ClientID: "c", RedirectURI: tt.redirectURI},
+					Issuer:            "https://accounts.google.com",
+				}}},
+			}
+			cfg.warnOnAuthorizeCallbackHostMismatch()
+
+			if tt.wantWarn != "" {
+				require.Contains(t, buf.String(), tt.wantWarn)
+				require.Contains(t, buf.String(), "upstream=default")
+			} else {
+				require.Empty(t, buf.String())
+			}
+		})
+	}
+}

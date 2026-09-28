@@ -109,6 +109,12 @@ func TestDeviceVerificationHandler_RendersForm(t *testing.T) {
 
 	assert.Equal(t, http.StatusOK, rec.Code)
 	assert.Contains(t, rec.Body.String(), `value="ABCD-1234"`)
+
+	// The form carries the anti-forgery token that its cookie must echo.
+	cookie, token := deviceFormCredentials(t, rec)
+	assert.Equal(t, cookie.Value, token)
+	assert.True(t, cookie.HttpOnly)
+	assert.Equal(t, http.SameSiteLaxMode, cookie.SameSite)
 }
 
 func TestDeviceVerificationFlow_ApproveHappyPath(t *testing.T) {
@@ -117,18 +123,14 @@ func TestDeviceVerificationFlow_ApproveHappyPath(t *testing.T) {
 	deviceCode, userCode := issueDeviceCode(t, h)
 
 	// Step 1: submit the user_code.
-	submitForm := url.Values{"user_code": {userCode}}
-	submitReq := httptest.NewRequest(http.MethodPost, "/oauth/device", strings.NewReader(submitForm.Encode()))
-	submitReq.Header.Set("Content-Type", "application/x-www-form-urlencoded")
-	submitRec := httptest.NewRecorder()
-	h.DeviceVerificationSubmitHandler(submitRec, submitReq)
+	submitRec := postDeviceUserCode(t, h, userCode)
 
 	require.Equal(t, http.StatusFound, submitRec.Code, "body: %s", submitRec.Body.String())
 	state := mockUpstream.capturedState
 	require.NotEmpty(t, state)
 
 	// Step 2: upstream redirects back to the shared /oauth/callback endpoint.
-	callbackReq := httptest.NewRequest(http.MethodGet, "/oauth/callback?code=upstream-code&state="+state, nil)
+	callbackReq := newCallbackRequest("code=upstream-code&state="+state, bindingCookieFrom(t, submitRec, state))
 	callbackRec := httptest.NewRecorder()
 	h.CallbackHandler(callbackRec, callbackReq)
 
@@ -175,15 +177,11 @@ func TestDeviceVerificationFlow_Deny(t *testing.T) {
 	h, mockUpstream := setupDeviceVerificationHandler(t)
 	deviceCode, userCode := issueDeviceCode(t, h)
 
-	submitForm := url.Values{"user_code": {userCode}}
-	submitReq := httptest.NewRequest(http.MethodPost, "/oauth/device", strings.NewReader(submitForm.Encode()))
-	submitReq.Header.Set("Content-Type", "application/x-www-form-urlencoded")
-	submitRec := httptest.NewRecorder()
-	h.DeviceVerificationSubmitHandler(submitRec, submitReq)
+	submitRec := postDeviceUserCode(t, h, userCode)
 	require.Equal(t, http.StatusFound, submitRec.Code)
 
-	callbackReq := httptest.NewRequest(http.MethodGet,
-		"/oauth/callback?code=upstream-code&state="+mockUpstream.capturedState, nil)
+	callbackReq := newCallbackRequest("code=upstream-code&state="+mockUpstream.capturedState,
+		bindingCookieFrom(t, submitRec, mockUpstream.capturedState))
 	callbackRec := httptest.NewRecorder()
 	h.CallbackHandler(callbackRec, callbackReq)
 	require.Equal(t, http.StatusOK, callbackRec.Code)
@@ -217,12 +215,7 @@ func TestDeviceVerificationSubmitHandler_InvalidUserCode(t *testing.T) {
 	t.Parallel()
 	h, _ := setupDeviceVerificationHandler(t)
 
-	form := url.Values{"user_code": {"ZZZZ-9999"}}
-	req := httptest.NewRequest(http.MethodPost, "/oauth/device", strings.NewReader(form.Encode()))
-	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
-	rec := httptest.NewRecorder()
-
-	h.DeviceVerificationSubmitHandler(rec, req)
+	rec := postDeviceUserCode(t, h, "ZZZZ-9999")
 
 	assert.Equal(t, http.StatusBadRequest, rec.Code)
 	assert.Contains(t, rec.Body.String(), "invalid or has expired")
@@ -262,12 +255,7 @@ func TestDeviceVerificationSubmitHandler_RequiresExactlyOneUpstream(t *testing.T
 
 	_, userCode := issueDeviceCode(t, h)
 
-	form := url.Values{"user_code": {userCode}}
-	req := httptest.NewRequest(http.MethodPost, "/oauth/device", strings.NewReader(form.Encode()))
-	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
-	rec := httptest.NewRecorder()
-
-	h.DeviceVerificationSubmitHandler(rec, req)
+	rec := postDeviceUserCode(t, h, userCode)
 
 	assert.Equal(t, http.StatusInternalServerError, rec.Code)
 	assert.Contains(t, rec.Body.String(), "not configured for device-flow sign-in")
@@ -297,17 +285,13 @@ func TestCallbackHandler_UpstreamErrorForDeviceLogin(t *testing.T) {
 	h, mockUpstream := setupDeviceVerificationHandler(t)
 	deviceCode, userCode := issueDeviceCode(t, h)
 
-	submitForm := url.Values{"user_code": {userCode}}
-	submitReq := httptest.NewRequest(http.MethodPost, "/oauth/device", strings.NewReader(submitForm.Encode()))
-	submitReq.Header.Set("Content-Type", "application/x-www-form-urlencoded")
-	submitRec := httptest.NewRecorder()
-	h.DeviceVerificationSubmitHandler(submitRec, submitReq)
+	submitRec := postDeviceUserCode(t, h, userCode)
 	require.Equal(t, http.StatusFound, submitRec.Code)
 	state := mockUpstream.capturedState
 	require.NotEmpty(t, state)
 
-	req := httptest.NewRequest(http.MethodGet,
-		"/oauth/callback?error=access_denied&error_description=user+denied&state="+state, nil)
+	req := newCallbackRequest("error=access_denied&error_description=user+denied&state="+state,
+		bindingCookieFrom(t, submitRec, state))
 	rec := httptest.NewRecorder()
 	h.CallbackHandler(rec, req)
 
@@ -352,15 +336,11 @@ func TestDeviceVerificationConfirmHandler_ConcurrentReplay(t *testing.T) {
 	h, mockUpstream := setupDeviceVerificationHandler(t)
 	deviceCode, userCode := issueDeviceCode(t, h)
 
-	submitForm := url.Values{"user_code": {userCode}}
-	submitReq := httptest.NewRequest(http.MethodPost, "/oauth/device", strings.NewReader(submitForm.Encode()))
-	submitReq.Header.Set("Content-Type", "application/x-www-form-urlencoded")
-	submitRec := httptest.NewRecorder()
-	h.DeviceVerificationSubmitHandler(submitRec, submitReq)
+	submitRec := postDeviceUserCode(t, h, userCode)
 	require.Equal(t, http.StatusFound, submitRec.Code)
 
-	callbackReq := httptest.NewRequest(http.MethodGet,
-		"/oauth/callback?code=upstream-code&state="+mockUpstream.capturedState, nil)
+	callbackReq := newCallbackRequest("code=upstream-code&state="+mockUpstream.capturedState,
+		bindingCookieFrom(t, submitRec, mockUpstream.capturedState))
 	callbackRec := httptest.NewRecorder()
 	h.CallbackHandler(callbackRec, callbackReq)
 	require.Equal(t, http.StatusOK, callbackRec.Code)
@@ -428,4 +408,202 @@ func TestNormalizeUserCode(t *testing.T) {
 			assert.Equal(t, tt.want, normalizeUserCode(tt.in))
 		})
 	}
+}
+
+// submitDeviceUserCode drives POST /oauth/device for userCode and returns the
+// recorder (whose redirect carries the browser-binding cookie) and the state
+// threaded to the upstream.
+func submitDeviceUserCode(t *testing.T, h *Handler, mockUpstream *mockIDPProvider, userCode string) (*httptest.ResponseRecorder, string) {
+	t.Helper()
+	rec := postDeviceUserCode(t, h, userCode)
+	require.Equal(t, http.StatusFound, rec.Code, "body: %s", rec.Body.String())
+	require.NotEmpty(t, mockUpstream.capturedState)
+	return rec, mockUpstream.capturedState
+}
+
+var formTokenPattern = regexp.MustCompile(`name="form_token" value="([^"]+)"`)
+
+// deviceFormCredentials returns the anti-forgery cookie and hidden token that
+// a rendered verification form carries.
+func deviceFormCredentials(t *testing.T, rec *httptest.ResponseRecorder) (*http.Cookie, string) {
+	t.Helper()
+	matches := formTokenPattern.FindStringSubmatch(rec.Body.String())
+	require.Len(t, matches, 2, "form_token not found in body: %s", rec.Body.String())
+	name := deviceFormCookieName(testBindingSecure())
+	for _, c := range rec.Result().Cookies() {
+		if c.Name == name {
+			return c, matches[1]
+		}
+	}
+	require.Failf(t, "device form cookie not set", "no cookie named %s in response", name)
+	return nil, ""
+}
+
+// loadDeviceForm drives GET /oauth/device and returns the form's anti-forgery
+// cookie and token.
+func loadDeviceForm(t *testing.T, h *Handler) (*http.Cookie, string) {
+	t.Helper()
+	rec := httptest.NewRecorder()
+	h.DeviceVerificationHandler(rec, httptest.NewRequest(http.MethodGet, "/oauth/device", nil))
+	require.Equal(t, http.StatusOK, rec.Code)
+	return deviceFormCredentials(t, rec)
+}
+
+// postDeviceForm submits the verification form with the given fields and
+// cookies and returns the recorder.
+func postDeviceForm(t *testing.T, h *Handler, form url.Values, cookies ...*http.Cookie) *httptest.ResponseRecorder {
+	t.Helper()
+	req := httptest.NewRequest(http.MethodPost, "/oauth/device", strings.NewReader(form.Encode()))
+	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	for _, c := range cookies {
+		req.AddCookie(c)
+	}
+	rec := httptest.NewRecorder()
+	h.DeviceVerificationSubmitHandler(rec, req)
+	return rec
+}
+
+// postDeviceUserCode loads the verification form and submits userCode through
+// it, as a browser would, so the anti-forgery check passes.
+func postDeviceUserCode(t *testing.T, h *Handler, userCode string) *httptest.ResponseRecorder {
+	t.Helper()
+	cookie, token := loadDeviceForm(t, h)
+	return postDeviceForm(t, h, url.Values{"user_code": {userCode}, deviceFormTokenField: {token}}, cookie)
+}
+
+// TestDeviceVerificationSubmitHandler_RequiresFormToken proves the
+// verification form cannot be submitted cross-site: a POST that does not echo
+// the cookie this server set when it rendered the form is re-rendered with an
+// error, no upstream redirect is issued, and no pending login is minted.
+func TestDeviceVerificationSubmitHandler_RequiresFormToken(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name string
+		// submit builds the forged request from a freshly loaded form.
+		submit func(t *testing.T, h *Handler, userCode string, cookie *http.Cookie, token string) *httptest.ResponseRecorder
+	}{
+		{
+			name: "no token and no cookie",
+			submit: func(t *testing.T, h *Handler, userCode string, _ *http.Cookie, _ string) *httptest.ResponseRecorder {
+				t.Helper()
+				return postDeviceForm(t, h, url.Values{"user_code": {userCode}})
+			},
+		},
+		{
+			name: "token without the cookie (cross-site POST)",
+			submit: func(t *testing.T, h *Handler, userCode string, _ *http.Cookie, token string) *httptest.ResponseRecorder {
+				t.Helper()
+				return postDeviceForm(t, h, url.Values{"user_code": {userCode}, deviceFormTokenField: {token}})
+			},
+		},
+		{
+			name: "cookie without the token",
+			submit: func(t *testing.T, h *Handler, userCode string, cookie *http.Cookie, _ string) *httptest.ResponseRecorder {
+				t.Helper()
+				return postDeviceForm(t, h, url.Values{"user_code": {userCode}}, cookie)
+			},
+		},
+		{
+			name: "token from another form render",
+			submit: func(t *testing.T, h *Handler, userCode string, cookie *http.Cookie, _ string) *httptest.ResponseRecorder {
+				t.Helper()
+				_, otherToken := loadDeviceForm(t, h)
+				return postDeviceForm(t, h, url.Values{"user_code": {userCode}, deviceFormTokenField: {otherToken}}, cookie)
+			},
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			h, mockUpstream := setupDeviceVerificationHandler(t)
+			_, userCode := issueDeviceCode(t, h)
+			cookie, token := loadDeviceForm(t, h)
+
+			rec := tt.submit(t, h, userCode, cookie, token)
+
+			assert.Equal(t, http.StatusBadRequest, rec.Code, "body: %s", rec.Body.String())
+			assert.Contains(t, rec.Body.String(), "form has expired")
+			assert.Empty(t, rec.Header().Get("Location"), "no redirect to the upstream")
+			assert.Empty(t, mockUpstream.capturedState, "no pending device login minted")
+			// The re-rendered form is submittable again.
+			_, retryToken := deviceFormCredentials(t, rec)
+			assert.NotEmpty(t, retryToken)
+		})
+	}
+}
+
+// TestDeviceVerificationFlow_CallbackRequiresBrowserBinding proves the
+// device-flow login is bound to the browser that submitted the user_code:
+// a callback from another browser gets 400, the device request is left
+// pending rather than authorized or denied, and the consumed login cannot be
+// completed afterwards even with the right cookie.
+func TestDeviceVerificationFlow_CallbackRequiresBrowserBinding(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name  string
+		query string
+	}{
+		{name: "upstream code without the cookie", query: "code=upstream-code&state="},
+		{name: "upstream error without the cookie", query: "error=access_denied&state="},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			h, mockUpstream := setupDeviceVerificationHandler(t)
+			deviceCode, userCode := issueDeviceCode(t, h)
+			submitRec, state := submitDeviceUserCode(t, h, mockUpstream, userCode)
+			cookie := bindingCookieFrom(t, submitRec, state)
+
+			rec := httptest.NewRecorder()
+			h.CallbackHandler(rec, newCallbackRequest(tt.query+state))
+
+			assert.Equal(t, http.StatusBadRequest, rec.Code, "body: %s", rec.Body.String())
+			assert.Contains(t, rec.Body.String(), "browser that started it")
+			assert.Empty(t, mockUpstream.capturedCode, "the upstream code must not be exchanged")
+
+			device, err := h.deviceStorage.LoadDeviceRequestByDeviceCode(context.Background(), deviceCode)
+			require.NoError(t, err)
+			assert.Equal(t, storage.DeviceRequestStatusPending, device.Status,
+				"a foreign browser may neither authorize nor deny the device")
+
+			// The login was consumed: the real browser cannot finish it either and
+			// must resubmit the user_code.
+			retryRec := httptest.NewRecorder()
+			h.CallbackHandler(retryRec, newCallbackRequest("code=upstream-code&state="+state, cookie))
+			assert.Equal(t, http.StatusBadRequest, retryRec.Code)
+		})
+	}
+}
+
+// TestDeviceVerificationForm_OutstandingFormsCoexist proves that opening the
+// verification form twice (two tabs, or two servers sharing a cookie jar) does
+// not invalidate the first form: the anti-forgery cookie is reused rather than
+// rotated, and an error re-render keeps it as well.
+func TestDeviceVerificationForm_OutstandingFormsCoexist(t *testing.T) {
+	t.Parallel()
+	h, _ := setupDeviceVerificationHandler(t)
+	_, userCode := issueDeviceCode(t, h)
+
+	cookieA, tokenA := loadDeviceForm(t, h)
+
+	// Tab B loads the form while holding tab A's cookie: same token, no rotation.
+	recB := httptest.NewRecorder()
+	reqB := httptest.NewRequest(http.MethodGet, "/oauth/device", nil)
+	reqB.AddCookie(cookieA)
+	h.DeviceVerificationHandler(recB, reqB)
+	cookieB, tokenB := deviceFormCredentials(t, recB)
+	assert.Equal(t, tokenA, tokenB, "an outstanding form's token is reused")
+	assert.Equal(t, cookieA.Value, cookieB.Value)
+
+	// An error re-render (bad code) keeps the token too, so the other tab still works.
+	recErr := postDeviceForm(t, h, url.Values{"user_code": {"ZZZZ-9999"}, deviceFormTokenField: {tokenA}}, cookieA)
+	require.Equal(t, http.StatusBadRequest, recErr.Code)
+	_, tokenAfterErr := deviceFormCredentials(t, recErr)
+	assert.Equal(t, tokenA, tokenAfterErr)
+
+	// Tab A submits with its original token and the (unchanged) cookie.
+	rec := postDeviceForm(t, h, url.Values{"user_code": {userCode}, deviceFormTokenField: {tokenA}}, cookieA)
+	assert.Equal(t, http.StatusFound, rec.Code, "body: %s", rec.Body.String())
 }

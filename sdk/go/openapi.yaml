@@ -462,7 +462,12 @@ components:
                 redirect_uri:
                     description: |-
                         RedirectURI is the callback URL where the upstream IDP will redirect after authentication.
-                        When not specified, defaults to `{issuer}/oauth/callback`.
+                        For a DCR upstream (dcr_config set) an empty value is resolved to
+                        `{issuer}/oauth/callback`; a pre-provisioned client (client_id set) must
+                        specify it. Its hostname must match the browser-facing authorize URL
+                        (issuer, or authorization_endpoint_base_url when set): /oauth/callback is
+                        bound to the browser that started the login by a host-only cookie, so a
+                        different host rejects every browser login (Config.Validate warns).
                     type: string
                 scopes:
                     description: Scopes are the OAuth scopes to request from the upstream IDP.
@@ -548,7 +553,12 @@ components:
                 redirect_uri:
                     description: |-
                         RedirectURI is the callback URL where the upstream IDP will redirect after authentication.
-                        When not specified, defaults to `{issuer}/oauth/callback`.
+                        For a DCR upstream (dcr_config set) an empty value is resolved to
+                        `{issuer}/oauth/callback`; a pre-provisioned client (client_id set) must
+                        specify it. Its hostname must match the browser-facing authorize URL
+                        (issuer, or authorization_endpoint_base_url when set): /oauth/callback is
+                        bound to the browser that started the login by a host-only cookie, so a
+                        different host rejects every browser login (Config.Validate warns).
                     type: string
                 scopes:
                     description: |-

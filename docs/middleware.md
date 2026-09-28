@@ -243,10 +243,15 @@ This order is critical because:
 **Location**: `pkg/mcp/parser.go`
 
 **Responsibilities**:
-- Parse JSON-RPC 2.0 messages
+- Validate every POST on any path in the MCP chain, regardless of Content-Type
+- Reject malformed, trailing, batched, ambiguous, or mixed JSON-RPC envelopes
+- Strip a leading UTF-8 BOM from the forwarded body and refresh its length/replay body, without relabeling Content-Type
+- Leave valid client responses to transport handling without populating request context
 - Extract MCP method names (e.g., `tools/call`, `resources/read`)
 - Extract resource IDs and arguments based on method type
 - Store parsed data in request context
+
+**POST compatibility**: Every transparent proxy POST routed to the backend-forwarding MCP handler requires an MCP envelope, regardless of path or Content-Type. Locally handled routes sit outside that handler's MCP admission and middleware chain and retain their own method, body, and authentication behavior. See [POST compatibility in the transport architecture](arch/03-transport-architecture.md#post-compatibility) for the full contract and local route scope.
 
 **Context Data Added**:
 - `ParsedMCPRequest` containing:
@@ -727,8 +732,8 @@ Each middleware component handles errors gracefully:
 graph TD
     A[Request] --> B{Auth Valid?}
     B -->|No| C[401 Unauthorized]
-    B -->|Yes| D{MCP Parseable?}
-    D -->|No| E[Continue without parsing]
+    B -->|Yes| D{Valid MCP POST envelope?}
+    D -->|No| E[400 Bad Request]
     D -->|Yes| F{Authorized?}
     F -->|No| G[403 Forbidden]
     F -->|Yes| H[Process Request]
@@ -741,7 +746,8 @@ graph TD
 **Error Responses**:
 - `401 Unauthorized` - Invalid or missing JWT token
 - `403 Forbidden` - Valid token but insufficient permissions
-- `400 Bad Request` - Malformed MCP request (when parsing is required)
+- `400 Bad Request` - Malformed MCP POST envelope or unreadable body
+- `413 Request Entity Too Large` - Request body exceeds the configured limit
 
 ## Performance Considerations
 
@@ -750,8 +756,8 @@ graph TD
 The MCP parsing middleware uses efficient strategies:
 
 - **Map-based method handlers** instead of large switch statements
-- **Single-pass parsing** of JSON-RPC messages
-- **Lazy evaluation** - only parses MCP-specific endpoints
+- **Shared envelope admission** using the standard JSON decoder and ambiguity checks
+- **POST-only parsing** independent of endpoint path and media type
 - **Context reuse** - parsed data shared across middleware
 
 ### Authorization Caching

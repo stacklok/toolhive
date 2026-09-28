@@ -94,7 +94,7 @@ sequenceDiagram
 - `pkg/transport/proxy/transparent/transparent_proxy.go` - Transparent HTTP proxy
 
 **Key features:**
-- Transparent HTTP proxying (no protocol awareness needed)
+- Transparent HTTP proxying with MCP envelope admission
 - Middleware applied to all requests
 - Session tracking from headers
 - Keep-alive support
@@ -139,7 +139,7 @@ sequenceDiagram
 **Key features:**
 - Transparent HTTP proxying
 - Session management via `Mcp-Session-Id` header
-- Batch request support
+- Batch requests rejected
 - Notification and client response handling
 
 ## Proxy Architecture
@@ -156,15 +156,34 @@ ToolHive uses two different proxy implementations:
 
 **How it works:**
 - Uses Go's `httputil.ReverseProxy`
-- Forwards HTTP requests/responses without protocol-specific logic
-- Applies middleware to all traffic
+- Validates every POST routed to the backend-forwarding MCP handler with shared MCP message admission, regardless of path or Content-Type
+- Forwards admitted body bytes and headers without reserializing the envelope
+- Applies the MCP middleware chain only to traffic routed to the backend-forwarding handler
 - Detects session IDs from headers/body for tracking
-- No JSON-RPC parsing needed
+- Rejects malformed, trailing, batched, ambiguous, or mixed JSON-RPC envelopes before forwarding
+
+##### POST compatibility
+
+Every POST routed to the backend-forwarding MCP handler requires a single MCP envelope, regardless of path or Content-Type, including `thv proxy` with an unspecified transport type. This handler is not generic non-MCP HTTP forwarding.
+
+Local mux routes sit outside this handler and its MCP admission and middleware chain:
+- Configured prefix handlers, including embedded auth routes such as `/oauth/token`, `/oauth/register`, and auth server well-known endpoints.
+- `/health`, which always stays local: a health handler when enabled, otherwise `404`.
+- `/metrics`, which uses a metrics handler when provided, otherwise a local response.
+- `/.well-known/` discovery, which is always registered, even when auth is disabled.
+
+These local routes retain their own method, body, and authentication behavior; being outside MCP admission does not mean they accept every POST or require no authentication.
+
+Current admission is stricter than base JSON-RPC:
+- Request and notification `params` must be omitted or an object; `null` and arrays are rejected.
+- IDs, when present, must be strings or signed-int64 values written as lexical JSON integers. `null`, fractional spellings such as `1.0`, and exponent spellings such as `1e0` are rejected.
+- Valid client error responses may omit the ID, as MCP permits; successful responses require an ID. Client responses remain subject to transport and authorization handling.
+- Invalid envelopes and unreadable bodies return `400`; bodies exceeding the configured limit return `413`.
 
 **Why transparent:**
 - Container already speaks HTTP
-- MCP protocol handled by container
-- Proxy just routes traffic + applies middleware
+- MCP operations are handled by the container
+- Proxy validates envelopes, routes traffic, and applies middleware
 
 #### 2. Protocol-Specific Proxies (for Stdio)
 
@@ -595,9 +614,9 @@ original type, and delivers only to that session's live stream. Because the
 destination is derivable from the echoed ID alone, there is no pending-request
 table to evict on response, disconnect, or timeout. A response whose ID the
 proxy did not mint, or whose session has disconnected, is dropped at Debug and
-is never queued or broadcast. The id is read exactly from the raw request
-body (`exactRequestID`), because `jsonrpc2.DecodeMessage` parses numbers
-through `float64`; fractional ids are rejected with 400. A client's
+is never queued or broadcast. Shared admission (`mcp.DecodeMessage`) preserves
+exact integer IDs rather than rounding through `float64`; fractional and
+out-of-range IDs are rejected with 400. A client's
 `notifications/cancelled` names its target request in `params.requestId`; the
 proxy rewrites that value the same way (`rewriteCancelledRequestID`) so the
 backend can match it. A JSON-RPC response sent by a client is refused with

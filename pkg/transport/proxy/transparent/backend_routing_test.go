@@ -22,13 +22,13 @@ import (
 	"github.com/stacklok/toolhive/pkg/transport/session"
 )
 
-// startProxy starts a TransparentProxy for testing and returns its listen address.
+// startProxy starts a streamable-HTTP TransparentProxy for routing and recovery tests.
 func startProxy(t *testing.T, targetURL string) (proxy *TransparentProxy, addr string) {
 	t.Helper()
 	proxy = NewTransparentProxyWithOptions(
 		"127.0.0.1", 0, targetURL,
 		nil, nil, nil,
-		false, false, "sse",
+		false, false, "streamable-http",
 		nil, nil, "", false,
 		nil,
 	)
@@ -77,7 +77,7 @@ func TestRewriteRoutesViaBackendURL(t *testing.T) {
 	ctx := context.Background()
 	req, err := http.NewRequestWithContext(ctx, http.MethodPost,
 		"http://"+addr+"/mcp",
-		strings.NewReader(`{"method":"tools/list"}`))
+		strings.NewReader(`{"jsonrpc":"2.0","method":"tools/list"}`))
 	require.NoError(t, err)
 	req.Header.Set("Content-Type", "application/json")
 	req.Header.Set("Mcp-Session-Id", sessionID)
@@ -114,7 +114,7 @@ func TestRewriteFallsBackToStaticTargetWhenNoBackendURL(t *testing.T) {
 	ctx := context.Background()
 	req, err := http.NewRequestWithContext(ctx, http.MethodPost,
 		"http://"+addr+"/mcp",
-		strings.NewReader(`{"method":"tools/list"}`))
+		strings.NewReader(`{"jsonrpc":"2.0","method":"tools/list"}`))
 	require.NoError(t, err)
 	req.Header.Set("Content-Type", "application/json")
 	req.Header.Set("Mcp-Session-Id", sessionID)
@@ -153,7 +153,7 @@ func TestRewriteFallsBackToStaticTargetForNonAbsoluteBackendURL(t *testing.T) {
 	ctx := context.Background()
 	req, err := http.NewRequestWithContext(ctx, http.MethodPost,
 		"http://"+addr+"/mcp",
-		strings.NewReader(`{"method":"tools/list"}`))
+		strings.NewReader(`{"jsonrpc":"2.0","method":"tools/list"}`))
 	require.NoError(t, err)
 	req.Header.Set("Content-Type", "application/json")
 	req.Header.Set("Mcp-Session-Id", sessionID)
@@ -185,7 +185,7 @@ func TestRoundTripReturns404ForUnknownSession(t *testing.T) {
 	))
 
 	req, err := http.NewRequest(http.MethodPost, backend.URL+"/mcp",
-		strings.NewReader(`{"method":"tools/list"}`))
+		strings.NewReader(`{"jsonrpc":"2.0","method":"tools/list"}`))
 	require.NoError(t, err)
 	req.Header.Set("Content-Type", "application/json")
 	req.Header.Set("Mcp-Session-Id", uuid.New().String()) // unknown
@@ -238,9 +238,8 @@ func TestRoundTrip404EchoesRequestID(t *testing.T) {
 			wantIDKey: false,
 		},
 		{
-			// An explicit null id is not a correlatable id either, so it is
-			// also encoded by omitting the key.
-			name:      "explicit null id omits the id key",
+			// An explicit null ID is rejected before session routing.
+			name:      "explicit null id is rejected without echoing it",
 			body:      `{"jsonrpc":"2.0","id":null,"method":"tools/list"}`,
 			wantIDKey: false,
 		},
@@ -272,12 +271,17 @@ func TestRoundTrip404EchoesRequestID(t *testing.T) {
 
 			resp, err := tt2.RoundTrip(req)
 			require.NoError(t, err)
-			require.Equal(t, http.StatusNotFound, resp.StatusCode)
 			body, err := io.ReadAll(resp.Body)
 			require.NoError(t, err)
 			_ = resp.Body.Close()
 
-			assert.Contains(t, string(body), `"code":-32001`)
+			if strings.Contains(tt.body, `"id":null`) {
+				require.Equal(t, http.StatusBadRequest, resp.StatusCode)
+				assert.Contains(t, string(body), `"code":-32600`)
+			} else {
+				require.Equal(t, http.StatusNotFound, resp.StatusCode)
+				assert.Contains(t, string(body), `"code":-32001`)
+			}
 
 			// The body must remain a single valid JSON-RPC error object -- echoing
 			// a raw id must not corrupt the envelope.
@@ -308,13 +312,13 @@ func TestRoundTripAllowsInitializeWithUnknownSession(t *testing.T) {
 	tt := newTracingTransport(http.DefaultTransport, NewTransparentProxyWithOptions(
 		"localhost", 0, backend.URL,
 		nil, nil, nil,
-		false, false, "sse",
+		false, false, "streamable-http",
 		nil, nil, "", false,
 		nil,
 	))
 
 	req, err := http.NewRequest(http.MethodPost, backend.URL+"/mcp",
-		strings.NewReader(`{"method":"initialize"}`))
+		strings.NewReader(`{"jsonrpc":"2.0","id":1,"method":"initialize"}`))
 	require.NoError(t, err)
 	req.Header.Set("Content-Type", "application/json")
 	req.Header.Set("Mcp-Session-Id", uuid.New().String()) // unknown but initialize
@@ -330,7 +334,7 @@ func TestRoundTripAllowsInitializeWithUnknownSession(t *testing.T) {
 // to the backend. Batching was removed in MCP 2025-06-18; forwarding a batch
 // would let its nested calls bypass authz/audit/tool-filtering (see #5745).
 // Rejection is Content-Type-independent: a batch under a non-JSON content type
-// must be rejected too (it skips the content-type-gated ParsingMiddleware). The
+// must be rejected too, even without ParsingMiddleware. The
 // backend fails the test if it is ever reached.
 func TestRoundTripRejectsBatch(t *testing.T) {
 	t.Parallel()
@@ -417,7 +421,7 @@ func TestRoundTripStoresBackendURLOnInitialize(t *testing.T) {
 	ctx := context.Background()
 	req, err := http.NewRequestWithContext(ctx, http.MethodPost,
 		"http://"+addr+"/mcp",
-		strings.NewReader(`{"method":"initialize"}`))
+		strings.NewReader(`{"jsonrpc":"2.0","id":1,"method":"initialize"}`))
 	require.NoError(t, err)
 	req.Header.Set("Content-Type", "application/json")
 
@@ -507,7 +511,7 @@ func TestRoundTripReinitializesOnBackend404(t *testing.T) {
 	ctx := context.Background()
 	req, err := http.NewRequestWithContext(ctx, http.MethodPost,
 		"http://"+addr+"/mcp",
-		strings.NewReader(`{"method":"tools/list"}`))
+		strings.NewReader(`{"jsonrpc":"2.0","method":"tools/list"}`))
 	require.NoError(t, err)
 	req.Header.Set("Content-Type", "application/json")
 	req.Header.Set("Mcp-Session-Id", clientSessionID)
@@ -582,7 +586,7 @@ func TestRoundTripReinitializesPreservesNonUUIDBackendSessionID(t *testing.T) {
 		ctx := context.Background()
 		req, err := http.NewRequestWithContext(ctx, http.MethodPost,
 			"http://"+addr+"/mcp",
-			strings.NewReader(`{"method":"tools/list"}`))
+			strings.NewReader(`{"jsonrpc":"2.0","method":"tools/list"}`))
 		require.NoError(t, err)
 		req.Header.Set("Content-Type", "application/json")
 		req.Header.Set("Mcp-Session-Id", clientSessionID)
@@ -656,7 +660,7 @@ func TestRoundTripReinitializesAfterPriorReinit(t *testing.T) {
 	ctx := context.Background()
 	req, err := http.NewRequestWithContext(ctx, http.MethodPost,
 		"http://"+addr+"/mcp",
-		strings.NewReader(`{"method":"tools/list"}`))
+		strings.NewReader(`{"jsonrpc":"2.0","method":"tools/list"}`))
 	require.NoError(t, err)
 	req.Header.Set("Content-Type", "application/json")
 	req.Header.Set("Mcp-Session-Id", clientSessionID)
@@ -707,7 +711,7 @@ func TestRoundTripReinitializesOnDialError(t *testing.T) {
 	ctx := context.Background()
 	req, err := http.NewRequestWithContext(ctx, http.MethodPost,
 		"http://"+addr+"/mcp",
-		strings.NewReader(`{"method":"tools/list"}`))
+		strings.NewReader(`{"jsonrpc":"2.0","method":"tools/list"}`))
 	require.NoError(t, err)
 	req.Header.Set("Content-Type", "application/json")
 	req.Header.Set("Mcp-Session-Id", clientSessionID)

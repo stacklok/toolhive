@@ -290,7 +290,7 @@ func (a *Auditor) logAuditEvent(r *http.Request, rw *responseWriter, requestData
 	outcome := a.determineOutcome(rw.statusCode)
 
 	// A refusal by the authz middleware before message-level authorization
-	// could run (e.g. a non-JSON POST carrying a smuggled JSON-RPC body)
+	// could run (e.g. a client response or missing parsing middleware)
 	// writes a 400, which determineOutcome maps to a generic failure. The
 	// marker reclassifies it as a denial so blocked sweeps are alertable.
 	if marker, ok := mcp.AuthzDenialMarkerFromContext(r.Context()); ok && marker.Denied {

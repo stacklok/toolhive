@@ -294,7 +294,10 @@ func (h *Handler) OAuthRoutes(r chi.Router) {
 	// login -- an upstream's redirect_uri is fixed per upstream at
 	// construction, so there is no way to register a second callback path
 	// for the device flow. CallbackHandler dispatches between the two based
-	// on which pending record the state parameter matches.
+	// on which pending record the state parameter matches. An OAuth-client
+	// authorization additionally requires the browser-binding cookie that
+	// /oauth/authorize set, so it must be served on the same host (see
+	// browser_binding.go).
 	r.Get("/oauth/callback", h.CallbackHandler)
 	r.Post("/oauth/token", h.TokenHandler)
 	r.Post("/oauth/register", h.rateLimitRegister(h.RegisterClientHandler))

@@ -8,7 +8,6 @@ package transparent
 import (
 	"bytes"
 	"context"
-	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
@@ -581,67 +580,63 @@ func (t *tracingTransport) RoundTrip(req *http.Request) (*http.Response, error) 
 
 	reqBody, err := readRequestBody(req)
 	if err != nil {
-		// Oversized request body (chunked / no Content-Length) tripped the
-		// body-size limit; reject with 413 rather than forwarding a truncated body.
-		return plainResponse(req, http.StatusRequestEntityTooLarge, "Request Entity Too Large"), nil
+		// Never forward a partial body, even on non-size read errors.
+		if bodylimit.IsRequestTooLarge(err) {
+			slog.Warn("rejected unreadable MCP request body", "reason", "body_too_large")
+			return plainResponse(req, http.StatusRequestEntityTooLarge, "Request Entity Too Large"), nil
+		}
+		slog.Warn("rejected unreadable MCP request body", "reason", "read_error")
+		return plainResponse(req, http.StatusBadRequest, "Invalid request body"), nil
 	}
 
-	// Reject JSON-RPC batches before forwarding to the backend. This runs
-	// independently of Content-Type (unlike ParsingMiddleware), so a batch
-	// smuggled under a non-JSON content type cannot reach the backend where its
-	// nested calls would bypass authz/audit/tool-filtering. Batching was removed
-	// in MCP revision 2025-06-18; ToolHive serves only 2025-11-25 and 2026-07-28
-	// (see #5745).
-	if mcp.IsBatchRequest(reqBody) {
-		return mcp.BatchUnsupportedResponse(req), nil
-	}
-
-	// thv proxy does not provide the transport type, so we need to detect it from the request
-	path := req.URL.Path
-	isMCP := strings.HasPrefix(path, "/mcp")
-	isJSON := strings.Contains(req.Header.Get("Content-Type"), "application/json")
 	sawInitialize := false
 	revision := mcp.RevisionLegacy
-	// requestID carries the incoming JSON-RPC id so an error response built below
-	// can echo it, letting a client correlate the error with its request. It is set
-	// only when parseRPCRequest reports a single request, which by construction
-	// means the id is present and non-null; it stays nil for a notification, a
-	// batch, or a bodiless GET/DELETE. session.NotFoundResponse (via NotFoundBody)
-	// omits the "id" key entirely for a nil requestID rather than emitting a null
-	// id — MCP narrows base JSON-RPC to make that omission the correct encoding
-	// of "no id" (see session.HasJSONRPCID).
+	// Only ID-bearing requests are classified and supply an ID for local errors.
+	// Notifications, client responses and bodiless GET/DELETE leave it absent.
 	var requestID any
 
-	if len(reqBody) > 0 &&
-		((isMCP && isJSON) ||
-			t.p.transportType == types.TransportTypeStreamableHTTP.String()) {
-		method, params, id, singleRequest, isInit := t.parseRPCRequest(reqBody)
-		sawInitialize = isInit
-		if singleRequest {
-			requestID = id
-			meta := mcp.ExtractMeta(params)
-			rev, cerr := mcp.ClassifyRevision(method, meta, req.Header.Get("MCP-Protocol-Version"))
-			if cerr != nil {
-				// Malformed Modern request: reject before the backend is ever contacted.
-				return mcp.ClassificationErrorResponse(req, id, cerr), nil
+	if req.Method == http.MethodPost {
+		msg, err := mcp.DecodeMessage(reqBody)
+		if err != nil {
+			return mcp.ClassificationErrorResponse(req, nil, err), nil
+		}
+		if rpcRequest, ok := msg.(*jsonrpc2.Request); ok {
+			sawInitialize = rpcRequest.Method == "initialize"
+			if rpcRequest.ID.IsValid() {
+				requestID = rpcRequest.ID.Raw()
+				meta := mcp.ExtractMeta(rpcRequest.Params)
+				rev, cerr := mcp.ClassifyRevision(rpcRequest.Method, meta, req.Header.Get("MCP-Protocol-Version"))
+				if cerr != nil {
+					// Malformed Modern request: reject before the backend is ever contacted.
+					return mcp.ClassificationErrorResponse(req, requestID, cerr), nil
+				}
+				revision = rev
 			}
-			revision = rev
 		}
 	}
 	//nolint:gosec // G706: logging target URI from config
 	slog.Debug("classified request revision", "modern", revision == mcp.RevisionModern, "target", t.p.targetURI)
 
 	// Transparent requests forward backend session authority even for Modern MCP.
-	// Initialize strips all supplied carriers rather than touching their sessions.
 	clientSID, carrierErr := requestSessionID(req)
 	if carrierErr != nil {
 		return session.NotFoundResponse(req, requestID), nil
 	}
+	// Legacy SSE establishes its session through an endpoint event before initialize.
+	// An unspecified transport (thv proxy) uses the endpoint's query carrier; it
+	// must pass the same ownership check below, not start a streamable session.
+	legacySSE := t.p.transportType == types.TransportTypeSSE.String()
+	if t.p.transportType == "" {
+		for _, key := range sessionQueryKeys {
+			legacySSE = legacySSE || req.URL.Query().Has(key)
+		}
+	}
+	startsSession := sawInitialize && !legacySSE
 	var (
 		routedSession session.Session
 		expectedOwner string
 	)
-	if sawInitialize {
+	if startsSession {
 		clientSID = ""
 		req.Header.Del("Mcp-Session-Id")
 		rewriteSessionQuery(req.URL, "")
@@ -657,20 +652,7 @@ func (t *tracingTransport) RoundTrip(req *http.Request) (*http.Response, error) 
 		}
 	}
 
-	switch {
-	case sawInitialize:
-		// An initialize request must never carry a session ID. MCP requires a
-		// client that is re-initializing to "start a new session by sending a new
-		// InitializeRequest without a session ID attached", and a backend session
-		// that has already completed its handshake rejects a second initialize on
-		// it -- go-sdk v1.7+ answers `duplicate "initialize" received`. Forwarding
-		// the client's stale SID -- or, worse, the backend SID mapped from it --
-		// turns a client-side handshake retry into a hard failure. Strip it so the
-		// backend mints a fresh session instead; the response's Mcp-Session-Id is
-		// then adopted as a new session below. reinitializeAndReplay already does
-		// the same on the recovery path.
-		req.Header.Del("Mcp-Session-Id")
-	case clientSID != "":
+	if clientSID != "" {
 		// Route only from the same snapshot whose ownership was atomically validated.
 		if backendURL, exists := routedSession.GetMetadataValue(sessionMetadataBackendURL); exists {
 			if parsed, err := url.Parse(backendURL); err == nil && parsed.Scheme != "" && parsed.Host != "" {
@@ -703,8 +685,8 @@ func (t *tracingTransport) RoundTrip(req *http.Request) (*http.Response, error) 
 			// Expected during shutdown or client disconnect—silently ignore
 			return nil, err
 		}
-		// Initialize has already discarded the supplied SID and must never
-		// recover or mutate that session, even on a dial error.
+		// Never recover during initialize: streamable HTTP has discarded the
+		// supplied SID, and legacy SSE is still completing its first handshake.
 		if isDialError(err) && !sawInitialize {
 			req.Header.Set("Mcp-Session-Id", clientSID)
 			if reInitResp, reInitErr := t.recovery.reinitializeAndReplay(req, reqBody); reInitResp != nil || reInitErr != nil {
@@ -831,71 +813,12 @@ func readRequestBody(req *http.Request) ([]byte, error) {
 	if req.Body != nil {
 		buf, err := io.ReadAll(req.Body)
 		if err != nil {
-			// An oversized body (without Content-Length, e.g. chunked) trips
-			// http.MaxBytesReader here. Surface it so the caller can return 413
-			// instead of silently forwarding a truncated/empty body.
-			if bodylimit.IsRequestTooLarge(err) {
-				return nil, err
-			}
-			slog.Warn("failed to read request body", "error", err)
-		} else {
-			reqBody = buf
+			return nil, err
 		}
+		reqBody = buf
 		req.Body = io.NopCloser(bytes.NewReader(reqBody))
 	}
 	return reqBody, nil
-}
-
-// parseRPCRequest parses a POST body as a JSON-RPC request in a single pass.
-//
-// If the body is a single JSON-RPC object, method/params/id are populated
-// from it and singleRequest reports whether it is a real request (has both a
-// method and a valid, non-null id) as opposed to a notification (no id) or a
-// response-shaped body (no method) — either of which is not eligible for
-// mcp.ClassifyRevision. sawInitialize reports whether method == "initialize".
-//
-// If the body is not a single JSON object (e.g. a JSON-RPC batch), method,
-// params and id are zero and singleRequest is false: batches are never
-// classified. sawInitialize is still computed by scanning the batch for any
-// member whose method is "initialize", preserving prior behavior.
-func (t *tracingTransport) parseRPCRequest(
-	body []byte,
-) (method string, params, id json.RawMessage, singleRequest, sawInitialize bool) {
-	type rpcRequest struct {
-		Method string          `json:"method"`
-		Params json.RawMessage `json:"params"`
-		ID     json.RawMessage `json:"id"`
-	}
-
-	var single rpcRequest
-	if err := json.Unmarshal(body, &single); err == nil {
-		sawInitialize = single.Method == "initialize"
-		if sawInitialize {
-			//nolint:gosec // G706: logging target URI from config
-			slog.Debug("detected initialize method call", "target", t.p.targetURI)
-		}
-		singleRequest = single.Method != "" && len(single.ID) > 0 && string(single.ID) != "null"
-		return single.Method, single.Params, single.ID, singleRequest, sawInitialize
-	}
-
-	// JSON-RPC batch: array of objects. Only sawInitialize is computed; a
-	// batch is never eligible for revision classification.
-	type rpcMethod struct {
-		Method string `json:"method"`
-	}
-	var batch []rpcMethod
-	if err := json.Unmarshal(body, &batch); err != nil {
-		slog.Debug("failed to parse JSON-RPC body", "error", err)
-		return "", nil, nil, false, false
-	}
-	for _, rpc := range batch {
-		if rpc.Method == "initialize" {
-			//nolint:gosec // G706: logging target URI from config
-			slog.Debug("detected initialize method call in batch", "target", t.p.targetURI)
-			return "", nil, nil, false, true
-		}
-	}
-	return "", nil, nil, false, false
 }
 
 // podBackendURL constructs a backend URL that targets the specific pod IP captured

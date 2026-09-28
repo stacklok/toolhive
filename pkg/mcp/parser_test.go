@@ -14,6 +14,7 @@ import (
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+	"golang.org/x/exp/jsonrpc2"
 )
 
 func TestParsingMiddleware(t *testing.T) {
@@ -104,12 +105,15 @@ func TestParsingMiddleware(t *testing.T) {
 			expectParsed: false,
 		},
 		{
-			name:         "non-JSON content type - not parsed",
-			method:       "POST",
-			path:         "/messages",
-			contentType:  "text/plain",
-			body:         "not json",
-			expectParsed: false,
+			name:           "non-JSON content type - parsed",
+			method:         "POST",
+			path:           "/messages",
+			contentType:    "text/plain",
+			body:           `{"jsonrpc":"2.0","id":1,"method":"ping"}`,
+			expectParsed:   true,
+			expectedMethod: "ping",
+			expectedID:     int64(1),
+			expectedResID:  "ping",
 		},
 		{
 			name:           "SSE endpoint - parsed",
@@ -316,11 +320,13 @@ func TestParsingMiddlewarePreservesValidBody(t *testing.T) {
 	assert.Equal(t, []byte(body), forwarded)
 }
 
-func TestParseMCPRequest_LeadingBOM(t *testing.T) {
+func TestParsedMCPMessage_LeadingBOM(t *testing.T) {
 	t.Parallel()
 
-	parsed := parseMCPRequest([]byte("\xEF\xBB\xBF" +
+	msg, err := DecodeMessage([]byte("\xEF\xBB\xBF" +
 		`{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"weather"}}`))
+	require.NoError(t, err)
+	parsed := parsedMCPMessage(msg)
 
 	require.NotNil(t, parsed)
 	assert.Equal(t, "tools/call", parsed.Method)
@@ -346,10 +352,6 @@ func TestParsingMiddlewareRejectsBatch(t *testing.T) {
 		{
 			name: "empty batch",
 			body: `[]`,
-		},
-		{
-			name: "malformed batch (unterminated array)",
-			body: `[{"jsonrpc":"2.0","id":1,"method":"tools/call"`,
 		},
 	}
 
@@ -1542,7 +1544,7 @@ func TestShouldParseMCPRequest(t *testing.T) {
 			method:      "POST",
 			path:        "/messages",
 			contentType: "text/plain",
-			expected:    false,
+			expected:    true,
 		},
 		{
 			name:        "POST to SSE endpoint",
@@ -1607,19 +1609,22 @@ func TestShouldParseMCPRequest(t *testing.T) {
 	}
 }
 
-func TestParseMCPRequestWithInvalidJSON(t *testing.T) {
+func TestParsedMCPMessageWithoutRequest(t *testing.T) {
 	t.Parallel()
 	tests := []struct {
-		name string
-		body string
+		name         string
+		body         string
+		wantParseErr bool
 	}{
 		{
-			name: "empty body",
-			body: "",
+			name:         "empty body",
+			body:         "",
+			wantParseErr: true,
 		},
 		{
-			name: "invalid JSON",
-			body: "not json",
+			name:         "invalid JSON",
+			body:         "not json",
+			wantParseErr: true,
 		},
 		{
 			name: "JSON-RPC response instead of request",
@@ -1634,8 +1639,14 @@ func TestParseMCPRequestWithInvalidJSON(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
-			result := parseMCPRequest([]byte(tt.body))
-			assert.Nil(t, result)
+			msg, err := DecodeMessage([]byte(tt.body))
+			if tt.wantParseErr {
+				require.ErrorIs(t, err, jsonrpc2.ErrParse)
+				require.Nil(t, msg)
+				return
+			}
+			require.NoError(t, err)
+			assert.Nil(t, parsedMCPMessage(msg))
 		})
 	}
 }
@@ -1728,13 +1739,8 @@ func TestParsingMiddlewareErrorHandling(t *testing.T) {
 			// Execute the middleware
 			middleware.ServeHTTP(w, req)
 
-			// Check if parsing occurred as expected
-			parsed := GetParsedMCPRequest(capturedCtx)
-			if tt.expectParsed {
-				assert.NotNil(t, parsed)
-			} else {
-				assert.Nil(t, parsed)
-			}
+			assert.Nil(t, capturedCtx, "invalid bodies must not reach the handler")
+			assert.Equal(t, http.StatusBadRequest, w.Code)
 		})
 	}
 }

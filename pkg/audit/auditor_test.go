@@ -1452,7 +1452,7 @@ func TestMiddlewareAuditsInnerChainOutcomes(t *testing.T) {
 			"no identity exists when authentication fails")
 	})
 
-	t.Run("authz non-JSON refusal is audited as denied", func(t *testing.T) {
+	t.Run("authz refusal without a parsed request is audited as denied", func(t *testing.T) {
 		t.Parallel()
 		auditor, logBuf := newBufferAuditor(t)
 

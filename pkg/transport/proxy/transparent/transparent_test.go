@@ -110,6 +110,29 @@ func createBasicProxy(p *TransparentProxy, targetURL *url.URL) *httputil.Reverse
 	return proxy
 }
 
+func TestUnspecifiedTransportPreservesLargeSSEResponse(t *testing.T) {
+	t.Parallel()
+
+	proxy := NewTransparentProxy("127.0.0.1", 0, "", nil, nil, nil, false, false, "", nil, nil, "", false)
+	t.Cleanup(func() { require.NoError(t, proxy.sessionManager.Stop()) })
+	// A single data line exceeds the legacy SSE processor's 1 MiB scanner limit.
+	want := "event: message\ndata: {\"jsonrpc\":\"2.0\",\"id\":1,\"result\":{\"content\":[{\"type\":\"text\",\"text\":\"" +
+		strings.Repeat("x", (1<<20)+1) + "\"}]}}\n\n"
+	resp := &http.Response{
+		StatusCode: http.StatusOK,
+		Header:     http.Header{"Content-Type": []string{"text/event-stream"}},
+		Body:       io.NopCloser(strings.NewReader(want)),
+		Request:    httptest.NewRequest(http.MethodPost, "/mcp", nil),
+	}
+
+	require.NoError(t, proxy.modifyResponse(resp))
+	t.Cleanup(func() { require.NoError(t, resp.Body.Close()) })
+	got, err := io.ReadAll(resp.Body)
+	require.NoError(t, err)
+	require.Len(t, got, len(want))
+	require.Equal(t, want, string(got), "unspecified transport must forward SSE bytes unchanged")
+}
+
 func TestNoSessionIDInNonSSE(t *testing.T) {
 	t.Parallel()
 
@@ -205,7 +228,7 @@ func TestTracePropagationHeaders(t *testing.T) {
 	ctx, span := otel.Tracer("test").Start(context.Background(), "test-operation")
 	defer span.End()
 
-	req := httptest.NewRequest("POST", "/test", strings.NewReader(`{"method": "test"}`))
+	req := httptest.NewRequest("POST", "/test", strings.NewReader(`{"jsonrpc":"2.0","method":"test"}`))
 	req = req.WithContext(ctx)
 	req.Header.Set("Content-Type", "application/json")
 

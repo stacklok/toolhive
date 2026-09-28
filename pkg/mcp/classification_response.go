@@ -11,6 +11,8 @@ import (
 	"io"
 	"net/http"
 
+	"golang.org/x/exp/jsonrpc2"
+
 	"github.com/stacklok/toolhive/pkg/transport/session"
 )
 
@@ -58,15 +60,13 @@ func jsonRPCErrorResponse(req *http.Request, requestID any, err error) *http.Res
 	}
 }
 
-// classificationErrorBody renders an mcp.ClassifyRevision error as a JSON-RPC
+// classificationErrorBody renders an MCP admission error as a JSON-RPC
 // error body, modeled on session.NotFoundBody: the body is marshaled first
 // (with a hand-crafted fallback on marshal failure) so callers only write
 // headers/status once a valid body is ready.
 //
-// It uses the error's Code(), Error() message, and Data() (when non-empty) if
-// the error implements CodedError, falling back to the standard JSON-RPC
-// Invalid Params code otherwise -- a fallback that is currently unreachable,
-// since every error ClassifyRevision returns implements CodedError.
+// Parse errors retain the standard -32700 code. CodedError supplies Code(),
+// Error(), and optional Data(); other errors fall back to Invalid Params.
 //
 // MCP narrows base JSON-RPC 2.0 here: schema/2025-11-25 types the error
 // response as `id?: RequestId` where RequestId = string | number, so an
@@ -76,7 +76,9 @@ func classificationErrorBody(requestID any, err error) []byte {
 	code := CodeInvalidParams
 	var coded CodedError
 	var data map[string]any
-	if errors.As(err, &coded) {
+	if errors.Is(err, jsonrpc2.ErrParse) {
+		code = -32700
+	} else if errors.As(err, &coded) {
 		code = coded.Code()
 		data = coded.Data()
 	}

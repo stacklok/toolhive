@@ -187,7 +187,11 @@ func TestCompletionRejectsUnauthorizableRefs(t *testing.T) {
 			body := `{"jsonrpc":"2.0","id":1,"method":"completion/complete","params":` + tt.params + `}`
 			got := runDerived(t, body, allowAll)
 
-			assert.Equal(t, http.StatusForbidden, got.status, "unauthorizable ref must be denied")
+			if tt.params == "null" {
+				assert.Equal(t, http.StatusBadRequest, got.status, "invalid envelope must be rejected by the parser")
+			} else {
+				assert.Equal(t, http.StatusForbidden, got.status, "unauthorizable ref must be denied")
+			}
 			assert.False(t, got.backendCalled, "unauthorizable ref must not reach the backend")
 			assert.Empty(t, got.checks, "no authorizer call should be made for an unauthorizable ref")
 		})

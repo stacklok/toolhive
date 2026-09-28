@@ -117,6 +117,9 @@ dd{margin:0.2rem 0 0; font-weight:500}
 type verifyPageData struct {
 	UserCode string
 	Error    string
+	// FormToken is the double-submit anti-forgery token that must echo the
+	// cookie issueDeviceFormToken set on this response.
+	FormToken string
 }
 
 var verifyPageTemplate = template.Must(template.New("device-verify").Parse(`<!DOCTYPE html>
@@ -134,6 +137,7 @@ var verifyPageTemplate = template.Must(template.New("device-verify").Parse(`<!DO
     <p class="subtitle">Enter the code shown on your device to continue signing in.</p>
     {{if .Error}}<div class="error">{{.Error}}</div>{{end}}
     <form method="POST" action="/oauth/device">
+      <input type="hidden" name="form_token" value="{{.FormToken}}">
       <input type="text" name="user_code" value="{{.UserCode}}" placeholder="XXXX-XXXX"
         autocomplete="off" autofocus required>
       <button type="submit" class="btn-primary">Continue</button>
@@ -260,10 +264,12 @@ func firstRuneUpper(s string) string {
 	return strings.ToUpper(string(r[:1]))
 }
 
-func renderVerifyForm(w http.ResponseWriter, status int, userCode, errMsg string) {
+// renderVerifyForm renders the device verification form with its anti-forgery
+// token, so a re-rendered form (after an error) is submittable.
+func (h *Handler) renderVerifyForm(w http.ResponseWriter, req *http.Request, status int, userCode, errMsg string) {
+	data := verifyPageData{UserCode: userCode, Error: errMsg, FormToken: h.issueDeviceFormToken(w, req)}
 	setHTMLSecurityHeaders(w)
 	w.WriteHeader(status)
-	data := verifyPageData{UserCode: userCode, Error: errMsg}
 	if err := verifyPageTemplate.Execute(w, data); err != nil {
 		slog.Error("device verification: failed to render verify form", "error", err)
 	}

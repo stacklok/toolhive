@@ -71,7 +71,7 @@ const (
 	// defaultMaxHeaderBytes is the maximum size of request headers in bytes (1 MB).
 	defaultMaxHeaderBytes = 1 << 20
 
-	// defaultShutdownTimeout is the maximum time to wait for graceful shutdown.
+	// defaultShutdownTimeout bounds HTTP draining, not the subsequent resource cleanup.
 	defaultShutdownTimeout = 10 * time.Second
 
 	// defaultHeartbeatInterval sends SSE heartbeat pings on GET connections.
@@ -529,21 +529,10 @@ func New(
 	// ListTools now advertises execute_tool_script alongside the backend tools, so the
 	// Serve-layer optimizer (if enabled) indexes it like any other tool, and the script's
 	// inner calls route back through core.CallTool for admission. The decorator delegates
-	// Close to the inner core, so the closeCoreOnErr guard below still releases it.
+	// Close to the inner core, so New can release it if Serve fails and srv.Stop owns it on success.
 	if cfg.CodeModeConfig != nil {
 		coreVMCP = codemode.NewDecorator(coreVMCP, cfg.CodeModeConfig)
 	}
-
-	// core.New started the workflow state store's cleanup goroutine and the backend health
-	// monitor (both owned by the core now). If Serve fails after this point, close the core so
-	// neither leaks (mirrors Serve's closeStorageOnErr guard); on success the core's lifecycle
-	// is owned by srv.Stop, so the guard is disarmed before returning.
-	closeCoreOnErr := true
-	defer func() {
-		if closeCoreOnErr {
-			_ = coreVMCP.Close()
-		}
-	}()
 
 	// On the New/Serve path the core is the single aggregator and the source of the
 	// advertised set; the session factory only opens per-session backend connections and
@@ -574,9 +563,10 @@ func New(
 		BackendHealth: coreVMCP.BackendHealth(),
 	}
 
+	// On success srv.Stop owns the core; on failure New must release it.
 	srv, err := Serve(ctx, coreVMCP, deriveServerConfig(resolved, backendRegistry, sessMgrCfg))
 	if err != nil {
-		return nil, err
+		return nil, errors.Join(err, coreVMCP.Close())
 	}
 
 	// Enable the pre-dispatch authorization gate when Cedar policies are configured.
@@ -603,12 +593,14 @@ func New(
 		)
 	}
 
-	closeCoreOnErr = false // Serve succeeded; srv.Stop now owns the core's lifecycle.
 	return srv, nil
 }
 
 // Handler builds and returns the MCP HTTP handler without starting a listener.
 // This enables embedding the vmcp server inside another HTTP server or framework.
+// Embedders must stop accepting requests and fully drain their hosting HTTP server
+// before calling Stop; Stop cannot drain an externally hosted handler.
+// If the hosting server's drain is incomplete, retry it with a fresh context before Stop.
 //
 // The returned handler includes all routes (health, metrics, well-known, MCP)
 // and the full HTTP middleware chain (recovery, body limit, header validation,
@@ -930,15 +922,18 @@ func (s *Server) Start(ctx context.Context) error {
 	case err := <-errCh:
 		// HTTP server error - log and tear down cleanly
 		slog.Error("hTTP server error", "error", err)
-		if stopErr := s.Stop(context.Background()); stopErr != nil {
-			// Combine errors if Stop() also fails
-			return fmt.Errorf("server error: %w; stop error: %v", err, stopErr)
-		}
-		return err
+		return errors.Join(err, s.Stop(context.Background()))
 	}
 }
 
 // Stop gracefully stops the Virtual MCP Server.
+// It allows up to 10 seconds (or ctx's earlier deadline) for the owned HTTP server
+// to drain, then releases resources. This bounds HTTP draining, not total cleanup.
+// If draining fails, Stop returns without force-closing active connections or
+// releasing request-used resources. Cleanup remains pending; callers may retry
+// Stop serially with a fresh context after an incomplete drain. Stop does not
+// support arbitrary repeated or concurrent calls.
+// Embedders using Handler must fully drain their hosting HTTP server before Stop.
 func (s *Server) Stop(ctx context.Context) error {
 	slog.Info("stopping Virtual MCP Server")
 
@@ -950,15 +945,17 @@ func (s *Server) Stop(ctx context.Context) error {
 		shutdownCtx, cancel := context.WithTimeout(ctx, defaultShutdownTimeout)
 		defer cancel()
 
-		if err := s.httpServer.Shutdown(shutdownCtx); err != nil {
-			errs = append(errs, fmt.Errorf("failed to shutdown HTTP server: %w", err))
+		err := s.httpServer.Shutdown(shutdownCtx)
+
+		// Shutdown closes the listener even if draining active requests fails.
+		s.listenerMu.Lock()
+		s.listener = nil
+		s.listenerMu.Unlock()
+
+		if err != nil {
+			return fmt.Errorf("failed to shutdown HTTP server: %w", err)
 		}
 	}
-
-	// Clear listener reference (already closed by httpServer.Shutdown)
-	s.listenerMu.Lock()
-	s.listener = nil
-	s.listenerMu.Unlock()
 
 	if err := s.stopDiagnostics(ctx); err != nil {
 		errs = append(errs, err)

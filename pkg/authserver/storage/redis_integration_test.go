@@ -697,7 +697,8 @@ func TestIntegration_PendingAuthorization(t *testing.T) {
 			ClientID: "pa-client", RedirectURI: "https://example.com/callback",
 			State: "client-state", PKCEChallenge: "challenge", PKCEMethod: "S256",
 			Scopes: []string{"openid"}, InternalState: state,
-			UpstreamPKCEVerifier: "verifier", UpstreamNonce: "nonce", CreatedAt: time.Now(),
+			UpstreamPKCEVerifier: "verifier", UpstreamNonce: "nonce",
+			BrowserBindingHash: "binding-hash", CreatedAt: time.Now(),
 		}
 	}
 

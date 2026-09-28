@@ -437,10 +437,10 @@ func simulateAuthorizeFlow(t *testing.T, handler *Handler, storState *testStorag
 		UpstreamProviderName: "test-upstream",
 		CreatedAt:            time.Now(),
 	}
-	storState.pendingAuths[internalState] = pending
+	cookie := bindPending(t, storState, internalState, pending)
 
 	// Step 2: Call the callback handler to exchange upstream code and issue our code
-	callbackReq := httptest.NewRequest(http.MethodGet, "/oauth/callback?code=upstream-code&state="+internalState, nil)
+	callbackReq := newCallbackRequest("code=upstream-code&state="+internalState, cookie)
 	callbackRec := httptest.NewRecorder()
 
 	handler.CallbackHandler(callbackRec, callbackReq)

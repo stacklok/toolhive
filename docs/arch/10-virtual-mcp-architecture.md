@@ -997,11 +997,18 @@ Middleware is applied by wrapping handlers, so execution order is outer-to-inner
 | 7 | Annotation Enrichment | Optional | Injects tool annotations into context for annotation-aware authz (only when Authorization is configured) |
 | 8 | Authorization | Optional | Evaluates Cedar policies after discovery and annotation enrichment |
 | 9 | Backend Enrichment | Optional | Adds backend name to audit context (only when Audit is configured) |
-| 10 | MCP Parsing | Always | Second application is a no-op when auth already parsed; ensures telemetry can label metrics with `mcp_method` when auth is nil |
+| 10 | MCP Parsing | Always | Validates every MCP POST regardless of `Content-Type`, including when auth is nil; publishes calls and notifications for downstream controls. A second application skips already-parsed requests. |
 | 11 | Telemetry | Optional | OpenTelemetry instrumentation |
 | 12 | Pre-dispatch authorization gate | Optional | Innermost: runs inside the Streamable HTTP transport before session validation and SDK dispatch. Rejects a Cedar-denied `tools/call` / `resources/read` / `prompts/get` with HTTP 403 + JSON-RPC code 403, reusing the core admission decision. Installed only when Authorization is configured. See "Authorization Enforcement" below. |
 
 > On the New/Serve path, authorization is enforced by the **core admission seam**, not by rows 6–8 as standalone HTTP middleware; row 12 is the transport-level projection of that decision. See [Authorization Enforcement](#authorization-enforcement-core-admission-seam--pre-dispatch-gate).
+
+Every MCP POST passes shared envelope validation before Modern dispatch or the
+Legacy SDK, with or without authentication. Malformed, ambiguous, mixed
+request/response, and batch bodies are rejected rather than forwarded without a
+policy input. A leading UTF-8 BOM is removed from the forwarded body so webhook
+consumers see the same JSON as the parser; `Content-Type` is not relabeled. The
+Legacy SDK may still reject otherwise valid non-JSON media types with HTTP 415.
 
 ### Discovery Middleware
 

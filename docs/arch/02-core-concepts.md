@@ -534,7 +534,7 @@ are not managed by ToolHive's workload lifecycle.
 **Proxy** forwards MCP traffic between clients and servers while applying middleware.
 
 **Proxy types:**
-- **Transparent**: Forwards HTTP without parsing
+- **Transparent**: Validates MCP POST envelopes destined for the backend and forwards HTTP without reserializing the envelope
 - **Protocol-specific**: Parses and translates messages
 
 **Proxy operations:**

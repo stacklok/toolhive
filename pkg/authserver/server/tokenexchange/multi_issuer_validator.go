@@ -987,9 +987,10 @@ func (v *MultiIssuerTokenValidator) registerOrRefresh(ctx context.Context, issue
 // failing (httprc only stores a value after a successful fetch), so a
 // transient outage at an issuer that has already been reached once no longer
 // surfaces as a validation failure.
-// Each call converts the cached Set into a fresh *jose.JSONWebKeySet — the
-// two libraries' key representations aren't shared, so nothing here is
-// visible to, or mutable by, any other concurrent caller.
+// Each call converts the cached Set into a fresh *jose.JSONWebKeySet —
+// dropping UnsupportedKey placeholders first (see bridgeJWKSet) — the two
+// libraries' key representations aren't shared, so nothing here is visible
+// to, or mutable by, any other concurrent caller.
 func (v *MultiIssuerTokenValidator) lookupJWKS(
 	ctx context.Context,
 	issuerConfig *externalIssuerConfig,
@@ -1024,8 +1025,25 @@ func (v *MultiIssuerTokenValidator) lookupJWKS(
 // conversion between the two libraries' key representations — it doesn't
 // require hand-mapping every key type's fields (RSA, EC, OKP, ...) between
 // jwk.Key and jose.JSONWebKey.
+//
+// UnsupportedKey placeholders are dropped first. jwx v4 retains unparsable
+// JWKS entries (unknown kty, RSA below the 2048-bit floor, malformed
+// parameters) as placeholders whose original JSON round-trips losslessly.
+// Feeding those to go-jose either fails the whole set or rehydrates a key
+// jwx already refused; skipping them keeps the usable keys and applies the
+// same parse-time floor on this path as TokenValidator's jwk.Export.
 func bridgeJWKSet(set jwk.Set) (*jose.JSONWebKeySet, error) {
-	raw, err := json.Marshal(set)
+	usable := jwk.NewSet()
+	for _, key := range set.All() {
+		if jwk.IsUnsupportedKey(key) {
+			continue
+		}
+		if err := usable.AddKey(key); err != nil {
+			return nil, fmt.Errorf("failed to collect JWKS key: %w", err)
+		}
+	}
+
+	raw, err := json.Marshal(usable)
 	if err != nil {
 		return nil, fmt.Errorf("failed to marshal JWKS: %w", err)
 	}

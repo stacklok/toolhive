@@ -90,6 +90,14 @@ func buildCedarAuthzServer(
 	authMw func(http.Handler) http.Handler, policies ...string,
 ) *httptest.Server {
 	t.Helper()
+	return buildCedarAuthzServerWithConfig(t, backendURL, codeModeCfg, auditCfg, authMw, nil, policies...)
+}
+
+func buildCedarAuthzServerWithConfig(
+	t *testing.T, backendURL string, codeModeCfg *codemode.Config, auditCfg *audit.Config,
+	authMw func(http.Handler) http.Handler, configure func(*server.Config), policies ...string,
+) *httptest.Server {
+	t.Helper()
 
 	ctrl := gomock.NewController(t)
 	t.Cleanup(ctrl.Finish)
@@ -162,23 +170,19 @@ func buildCedarAuthzServer(
 		require.NoError(t, err)
 	}
 
+	// Cedar admission scopes resource entities to the raw server name.
+	cfg := &server.Config{
+		Name: "test-vmcp", Host: "127.0.0.1", Port: 0,
+		SessionTTL: 5 * time.Minute, SessionFactory: factory, Aggregator: agg,
+		AuthMiddleware: identityMiddleware, Authz: authzCfg,
+		AuditConfig: auditCfg, CodeModeConfig: codeModeCfg,
+	}
+	if configure != nil {
+		configure(cfg)
+	}
 	srv, err := server.New(
 		t.Context(),
-		&server.Config{
-			// Name is non-empty: deriveCoreConfig forwards the raw server name to the core,
-			// and the Cedar admission seam requires it (resource entities are scoped to
-			// MCP::"<name>"). This is the raw-name-for-authz parity the reroute preserves.
-			Name:           "test-vmcp",
-			Host:           "127.0.0.1",
-			Port:           0,
-			SessionTTL:     5 * time.Minute,
-			SessionFactory: factory,
-			Aggregator:     agg,
-			AuthMiddleware: identityMiddleware,
-			Authz:          authzCfg,
-			AuditConfig:    auditCfg,
-			CodeModeConfig: codeModeCfg,
-		},
+		cfg,
 		router.NewSessionRouter(&vmcp.RoutingTable{}),
 		backendClient,
 		mockBackendRegistry,

@@ -61,10 +61,11 @@ func (p *MCPPinger) Ping(ctx context.Context) (time.Duration, error) {
 		return 0, fmt.Errorf("message channel is full or closed")
 	}
 
-	// For HTTP SSE proxy, we don't have a direct response channel
-	// The response will be forwarded to SSE clients
-	// We'll measure the time it took to send the request
-	// In a real implementation, you might want to set up a response listener
+	// The HTTP SSE proxy has no direct response channel. The backend's pong
+	// carries this ping's own id, which no session route was minted for, so
+	// the proxy drops it by design (see routeResponse) rather than pushing an
+	// unsolicited response onto every client's stream. Only the time taken to
+	// hand the request to the backend is measured.
 	duration := time.Since(start)
 
 	slog.Debug("mcp ping request sent", "duration", duration)

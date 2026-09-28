@@ -32,7 +32,7 @@ jobs:
           version: v4.3.0
 
       - name: Set up chart-testing
-        uses: helm/chart-testing-action@6ec842c01de15ebb84c8627d2744a0c2f2755c9f # v2.8.0
+        uses: helm/chart-testing-action@4ea74f62c9503ceaffb14a189bf252e7c68e87a3 # ct v3.14.0, cosign v2 compatibility
 
       - name: Install Task
         uses: arduino/setup-task@c0bc642852239c2689f73f4ea6459c29405f3c52 # v3.0.0

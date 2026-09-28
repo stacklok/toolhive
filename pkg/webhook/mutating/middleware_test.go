@@ -10,6 +10,7 @@ import (
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"sync/atomic"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
@@ -1251,6 +1252,44 @@ func TestMutatingMiddleware_ExtractFailure_IgnorePolicy(t *testing.T) {
 	assert.True(t, nextCalled)
 	assert.Equal(t, http.StatusOK, rr.Code)
 	assert.JSONEq(t, reqBody, string(capturedBody))
+}
+
+func TestMutatingMiddlewareRejectsInvalidEnvelopeEvenIgnore(t *testing.T) {
+	t.Parallel()
+	for _, contentType := range []string{"text/plain", ""} {
+		t.Run(contentType, func(t *testing.T) {
+			t.Parallel()
+			var mutations atomic.Int32
+			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				var request webhook.Request
+				if !assert.NoError(t, json.NewDecoder(r.Body).Decode(&request)) {
+					w.WriteHeader(http.StatusBadRequest)
+					return
+				}
+				mutations.Add(1)
+				_ = json.NewEncoder(w).Encode(webhook.MutatingResponse{
+					Response:  webhook.Response{Version: webhook.APIVersion, UID: request.UID, Allowed: true},
+					PatchType: patchTypeJSONPatch,
+					Patch:     json.RawMessage(`[{"op":"add","path":"/mcp_request/result","value":{}}]`),
+				})
+			}))
+			t.Cleanup(server.Close)
+			cfg := makeConfig(server.URL, webhook.FailurePolicyIgnore)
+			mw := createMutatingHandler(makeExecutors(t, []webhook.Config{cfg}), "srv", "stdio")
+			called := false
+			next := http.HandlerFunc(func(http.ResponseWriter, *http.Request) { called = true })
+			req := newUnparsedMCPRequest(t, []byte(`{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"echo"}}`))
+			req.Header.Del("Content-Type")
+			if contentType != "" {
+				req.Header.Set("Content-Type", contentType)
+			}
+			rec := httptest.NewRecorder()
+			mcp.ParsingMiddleware(mw(next)).ServeHTTP(rec, req)
+			assert.EqualValues(t, 1, mutations.Load())
+			assert.Equal(t, http.StatusInternalServerError, rec.Code)
+			assert.False(t, called, "invalid mutation must not reach the backend even with Ignore")
+		})
+	}
 }
 
 func TestValidatePatchErrors(t *testing.T) {

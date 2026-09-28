@@ -713,6 +713,9 @@ func (rfw *ResponseFilteringWriter) filterToolsResponse(response *jsonrpc2.Respo
 	if err != nil {
 		return nil, fmt.Errorf("validating tools list response: %w", err)
 	}
+	if err := validateToolAnnotations(rawTools); err != nil {
+		return nil, fmt.Errorf("validating tools list response: %w", err)
+	}
 
 	// The typed descriptors feed policy evaluation and the annotation cache;
 	// the filtered result carries the backend's raw descriptors.
@@ -879,6 +882,42 @@ func decodeFilterableListResult(
 		}
 	}
 	return members, items, nil
+}
+
+// toolAnnotationMembers are the annotation members that encoding/json binds
+// to the typed tool annotations used for policy evaluation and the annotation
+// cache.
+var toolAnnotationMembers = jsonMemberNames(reflect.TypeFor[mcp.ToolAnnotation]())
+
+// validateToolAnnotations rejects ambiguous spellings of a tool's annotations
+// member and of every member the typed annotations decode. encoding/json
+// resolves case-folded aliases and duplicate members, and merges a repeated
+// annotations object, so policies could otherwise evaluate hints that differ
+// from those in the raw descriptor a filter forwards to the client.
+func validateToolAnnotations(rawTools []json.RawMessage) error {
+	for i, rawTool := range rawTools {
+		toolMembers, err := decodeJSONObjectMembers(rawTool)
+		if err != nil {
+			return fmt.Errorf("decoding tools item at index %d: %w", i, err)
+		}
+		rawAnnotations, ok, err := uniqueCanonicalMember(toolMembers, "annotations")
+		if err != nil {
+			return fmt.Errorf("tools item at index %d: %w", i, err)
+		}
+		if !ok || isJSONNull(rawAnnotations) {
+			continue
+		}
+		annotationMembers, err := decodeJSONObjectMembers(rawAnnotations)
+		if err != nil {
+			return fmt.Errorf("decoding annotations of tools item at index %d: %w", i, err)
+		}
+		for _, name := range toolAnnotationMembers {
+			if _, _, err := uniqueCanonicalMember(annotationMembers, name); err != nil {
+				return fmt.Errorf("annotations of tools item at index %d: %w", i, err)
+			}
+		}
+	}
+	return nil
 }
 
 // filteredListResponse builds the response for a filtered tools, prompts, or
@@ -1181,6 +1220,41 @@ func uniqueCanonicalMember(
 		found = true
 	}
 	return value, found, nil
+}
+
+// jsonMemberNames returns the object member names that encoding/json matches
+// to the fields of the struct type t: each field's json tag name, else its Go
+// field name, skipping unexported fields and fields tagged "-", with the fields
+// of untagged embedded structs promoted. It does not apply encoding/json's
+// fallback for invalid tag names or its precedence rules for conflicting
+// names, so it suits only struct types that use neither, such as
+// mcp.ToolAnnotation.
+func jsonMemberNames(t reflect.Type) []string {
+	var names []string
+	for i := range t.NumField() {
+		field := t.Field(i)
+		tag := field.Tag.Get("json")
+		if tag == "-" {
+			continue
+		}
+		name, _, _ := strings.Cut(tag, ",")
+		fieldType := field.Type
+		if fieldType.Kind() == reflect.Pointer {
+			fieldType = fieldType.Elem()
+		}
+		if field.Anonymous && name == "" && fieldType.Kind() == reflect.Struct {
+			names = append(names, jsonMemberNames(fieldType)...)
+			continue
+		}
+		if !field.IsExported() {
+			continue
+		}
+		if name == "" {
+			name = field.Name
+		}
+		names = append(names, name)
+	}
+	return names
 }
 
 // filterSkillsResponse filters skills/list entries by get_skill authorization.
@@ -1527,6 +1601,9 @@ func decodeFindToolOutput(data json.RawMessage) (*findToolOutputCarrier, bool, e
 	var rawTools []json.RawMessage
 	if err := json.Unmarshal(rawToolsValue, &rawTools); err != nil {
 		return nil, false, fmt.Errorf("decoding raw find_tool tools: %w", err)
+	}
+	if err := validateToolAnnotations(rawTools); err != nil {
+		return nil, false, err
 	}
 
 	var output optimizer.FindToolOutput

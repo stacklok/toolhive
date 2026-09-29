@@ -91,6 +91,14 @@ var _ = Describe("MCPExternalAuthConfig inbound grants CEL validation", func() {
 				}},
 			}}
 		}},
+		{name: "canonical token exchange wildcard delegate with omitted may_act", shouldAdmit: true, mutate: func(c *mcpv1beta1.EmbeddedAuthServerConfig) {
+			c.TrustedIssuers = []mcpv1beta1.TrustedIssuerConfig{{Name: "issuer", IssuerURL: "https://issuer.example.com"}}
+			c.InboundGrants = &mcpv1beta1.InboundGrantsConfig{TokenExchange: &mcpv1beta1.TokenExchangeInboundGrantConfig{
+				IssuerPolicies: []mcpv1beta1.TokenExchangeIssuerPolicyConfig{{
+					IssuerRef: "issuer", ExpectedAudience: "https://mcp.example.com", AllowedDelegateClients: []string{"*"},
+				}},
+			}}
+		}},
 		{name: "canonical JWT bearer", shouldAdmit: true, mutate: func(c *mcpv1beta1.EmbeddedAuthServerConfig) {
 			c.TrustedIssuers = []mcpv1beta1.TrustedIssuerConfig{{Name: "issuer", IssuerURL: "https://issuer.example.com"}}
 			c.InboundGrants = &mcpv1beta1.InboundGrantsConfig{JWTBearer: &mcpv1beta1.JWTBearerInboundGrantConfig{

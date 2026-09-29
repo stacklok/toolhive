@@ -93,10 +93,14 @@ func addLLMConnectionFlags(cmd *cobra.Command, opts *llm.SetOptions) {
 // field unchanged (nil pointer = "not provided"). Shared by "config set" and
 // "setup" so both commands treat these flags identically.
 func applyChangedLLMFlags(
-	cmd *cobra.Command, opts *llm.SetOptions, tlsSkipVerify, bedrockCompat, enable1M bool, models []string,
+	cmd *cobra.Command, opts *llm.SetOptions,
+	tlsSkipVerify, extendedTTLCache, bedrockCompat, enable1M bool, models []string,
 ) {
 	if cmd.Flags().Changed("tls-skip-verify") {
 		opts.TLSSkipVerify = &tlsSkipVerify
+	}
+	if cmd.Flags().Changed("extended-ttl-cache") {
+		opts.ExtendedTTLCache = &extendedTTLCache
 	}
 	if cmd.Flags().Changed("bedrock-compat") {
 		opts.BedrockCompat = &bedrockCompat
@@ -111,11 +115,12 @@ func applyChangedLLMFlags(
 
 func newConfigSetCommand() *cobra.Command {
 	var (
-		opts          llm.SetOptions
-		tlsSkipVerify bool
-		bedrockCompat bool
-		enable1M      bool
-		models        []string
+		opts             llm.SetOptions
+		tlsSkipVerify    bool
+		extendedTTLCache bool
+		bedrockCompat    bool
+		enable1M         bool
+		models           []string
 	)
 
 	cmd := &cobra.Command{
@@ -130,7 +135,7 @@ Example:
     --client-id my-client-id`,
 		Args: cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, _ []string) error {
-			applyChangedLLMFlags(cmd, &opts, tlsSkipVerify, bedrockCompat, enable1M, models)
+			applyChangedLLMFlags(cmd, &opts, tlsSkipVerify, extendedTTLCache, bedrockCompat, enable1M, models)
 			return config.UpdateConfig(func(c *config.Config) error {
 				return c.LLM.SetFields(opts)
 			})
@@ -140,6 +145,9 @@ Example:
 	addLLMConnectionFlags(cmd, &opts)
 	cmd.Flags().BoolVar(&tlsSkipVerify, "tls-skip-verify", false,
 		"Skip TLS certificate verification for the upstream gateway (local dev only; use --tls-skip-verify=false to clear)")
+	cmd.Flags().BoolVar(&extendedTTLCache, "extended-ttl-cache", false,
+		"Persist the one-hour prompt-cache lifetime for clients that support it. Applied by \"thv llm setup\". "+
+			"Use --extended-ttl-cache=false to clear.")
 	cmd.Flags().BoolVar(&bedrockCompat, "bedrock-compat", false,
 		"Persist Bedrock compatibility for Claude Code (CLAUDE_CODE_DISABLE_EXPERIMENTAL_BETAS=1 + per-tier "+
 			"Bedrock model IDs). Applied by \"thv llm setup\". Use --bedrock-compat=false to clear.")
@@ -263,6 +271,7 @@ func newLLMSetupCommand() *cobra.Command {
 	var (
 		opts                llm.SetOptions
 		tlsSkipVerify       bool
+		extendedTTLCache    bool
 		bedrockCompat       bool
 		enable1M            bool
 		targetClient        string
@@ -318,7 +327,7 @@ Re-running is idempotent and uses the cached token (no browser prompt).
 Run "thv llm teardown" to revert all changes.`,
 		Args: cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, _ []string) error {
-			applyChangedLLMFlags(cmd, &opts, tlsSkipVerify, bedrockCompat, enable1M, models)
+			applyChangedLLMFlags(cmd, &opts, tlsSkipVerify, extendedTTLCache, bedrockCompat, enable1M, models)
 			cm, err := client.NewClientManager()
 			if err != nil {
 				return fmt.Errorf("initializing client manager: %w", err)
@@ -340,6 +349,9 @@ Run "thv llm teardown" to revert all changes.`,
 			"For direct-mode tools (Claude Code, Gemini CLI) this sets NODE_TLS_REJECT_UNAUTHORIZED=0, "+
 			"disabling TLS for ALL of that tool's outbound connections. "+
 			"For proxy-mode tools only the proxy-to-gateway connection is affected.")
+	cmd.Flags().BoolVar(&extendedTTLCache, "extended-ttl-cache", false,
+		"Request the one-hour prompt-cache lifetime from each client that supports it. Persisted, so a later plain "+
+			"\"thv llm setup\" re-applies it; clear with --extended-ttl-cache=false.")
 	cmd.Flags().StringVar(&anthropicPathPrefix, "anthropic-path-prefix", "",
 		"Path prefix appended to the gateway URL when writing ANTHROPIC_BASE_URL for direct-mode tools "+
 			"(e.g. /anthropic). When omitted, the gateway is probed automatically.")
@@ -478,6 +490,18 @@ func (a *clientManagerAdapter) ConfigureLLMGateway(clientType string, cfg llmgat
 
 func (a *clientManagerAdapter) LLMGatewayModeFor(clientType string) string {
 	return a.cm.LLMGatewayModeFor(client.ClientApp(clientType))
+}
+
+func (a *clientManagerAdapter) SupportsExtendedTTLCache(clientType string) bool {
+	return a.cm.SupportsExtendedTTLCache(client.ClientApp(clientType))
+}
+
+func (a *clientManagerAdapter) ExtendedTTLCacheConflict(clientType string) (string, error) {
+	return a.cm.ExtendedTTLCacheConflict(client.ClientApp(clientType))
+}
+
+func (a *clientManagerAdapter) ClearExtendedTTLCache(clientType, configPath string) error {
+	return a.cm.ClearExtendedTTLCache(client.ClientApp(clientType), configPath)
 }
 
 func (a *clientManagerAdapter) IsManaged(clientType string) bool {

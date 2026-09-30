@@ -1041,6 +1041,7 @@ func TestTokenValidator_OpaqueToken(t *testing.T) {
 				"aud":    "opaque-audience",
 				"scope":  "read:stuff",
 				"exp":    time.Now().Add(1 * time.Hour).Unix(),
+				"roles":  []string{"admin"},
 			})
 		} else {
 			w.WriteHeader(http.StatusOK)
@@ -1088,6 +1089,7 @@ func TestTokenValidator_OpaqueToken(t *testing.T) {
 		if claims["aud"] != "opaque-audience" {
 			t.Errorf("Expected aud=opaque-audience, got %v", claims["aud"])
 		}
+		require.Equal(t, []interface{}{"admin"}, claims["roles"])
 	})
 
 	t.Run("inactive opaque token", func(t *testing.T) {
@@ -1100,6 +1102,47 @@ func TestTokenValidator_OpaqueToken(t *testing.T) {
 			t.Errorf("Expected ErrInvalidToken, got %v", err)
 		}
 	})
+}
+
+func TestParseIntrospectionClaimsPreservesExtensionClaims(t *testing.T) {
+	t.Parallel()
+
+	claims, err := parseIntrospectionClaims(strings.NewReader(`{
+		"active": true,
+		"sub": " user-123 ",
+		"roles": ["admin"],
+		"tenant": "acme",
+		"metadata": {"region": "us-east-1"}
+	}`))
+	require.NoError(t, err)
+	require.Equal(t, "user-123", claims["sub"])
+	require.Equal(t, []interface{}{"admin"}, claims["roles"])
+	require.Equal(t, "acme", claims["tenant"])
+	require.Equal(t, map[string]interface{}{"region": "us-east-1"}, claims["metadata"])
+	require.NotContains(t, claims, "active")
+
+	claims, err = parseIntrospectionClaims(strings.NewReader(`{
+		"active": true,
+		"exp": null,
+		"sub": "",
+		"aud": null,
+		"scope": null,
+		"iss": null,
+		"roles": ["admin"]
+	}`))
+	require.NoError(t, err)
+	require.NotContains(t, claims, "exp")
+	require.NotContains(t, claims, "sub")
+	require.NotContains(t, claims, "aud")
+	require.NotContains(t, claims, "scope")
+	require.NotContains(t, claims, "iss")
+
+	claims, err = parseIntrospectionClaims(strings.NewReader(`{
+		"active": false,
+		"roles": ["admin"]
+	}`))
+	require.ErrorIs(t, err, ErrInvalidToken)
+	require.Nil(t, claims)
 }
 
 func TestNewAuthInfoHandler(t *testing.T) {

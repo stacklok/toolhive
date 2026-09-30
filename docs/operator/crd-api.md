@@ -276,7 +276,7 @@ _Appears in:_
 
 | Field | Description | Default | Validation |
 | --- | --- | --- | --- |
-| `conflictResolution` _[pkg.vmcp.ConflictResolutionStrategy](#pkgvmcpconflictresolutionstrategy)_ | ConflictResolution defines the strategy for resolving tool name conflicts.<br />- prefix: Automatically prefix tool names with workload identifier<br />- priority: First workload in priority order wins<br />- manual: Explicitly define overrides for all conflicts | prefix | Enum: [prefix priority manual] <br />Optional: \{\} <br /> |
+| `conflictResolution` _[pkg.vmcp.ConflictResolutionStrategy](#pkgvmcpconflictresolutionstrategy)_ | ConflictResolution defines the strategy for resolving tool name conflicts.<br />- prefix: Automatically prefix tool names with workload identifier<br />- priority: Highest-priority workload wins only if all conflicting workloads<br />  are listed; otherwise all candidates are dropped (see PriorityOrder)<br />- manual: Explicitly define overrides for all conflicts | prefix | Enum: [prefix priority manual] <br />Optional: \{\} <br /> |
 | `conflictResolutionConfig` _[vmcp.config.ConflictResolutionConfig](#vmcpconfigconflictresolutionconfig)_ | ConflictResolutionConfig provides configuration for the chosen strategy. |  | Optional: \{\} <br /> |
 | `tools` _[vmcp.config.WorkloadToolConfig](#vmcpconfigworkloadtoolconfig) array_ | Tools defines per-workload tool filtering and overrides. |  | Optional: \{\} <br /> |
 | `excludeAllTools` _boolean_ | ExcludeAllTools hides all backend tools from MCP clients when true.<br />Hidden tools are NOT advertised in tools/list responses, but they ARE<br />available in the routing table for composite tools to use.<br />This enables the use case where you want to hide raw backend tools from<br />direct client access while exposing curated composite tool workflows. |  | Optional: \{\} <br /> |
@@ -437,7 +437,7 @@ _Appears in:_
 | Field | Description | Default | Validation |
 | --- | --- | --- | --- |
 | `prefixFormat` _string_ | PrefixFormat defines the prefix format for the "prefix" tool strategy<br />and for backend-prefixed prompt names (the default for every prompt;<br />under the "priority" strategy, backends listed in priorityOrder keep<br />their own prompt names).<br />Supports placeholders: \{workload\}, \{workload\}_, \{workload\}. | \{workload\}_ | Optional: \{\} <br /> |
-| `priorityOrder` _string array_ | PriorityOrder defines the workload priority order for the "priority" strategy.<br />Listed workloads also keep their own prompt names (unlisted workloads'<br />prompts stay backend-prefixed). |  | Optional: \{\} <br /> |
+| `priorityOrder` _string array_ | PriorityOrder defines the workload priority order for the "priority" strategy<br />(first has highest priority). It is not an allowlist: unique tools remain<br />unchanged, including those from unlisted workloads. If all workloads in a<br />tool-name collision are listed, the highest-priority one wins and losers<br />are dropped. If any conflicting workload is unlisted, all candidates in that<br />collision are dropped from advertising and routing, with no prefix fallback,<br />and the collision is logged at ERROR.<br />Separately, listed workloads keep their own prompt names (unlisted workloads'<br />prompts stay backend-prefixed). |  | Optional: \{\} <br /> |
 
 
 #### vmcp.config.DefaultToolVisibility

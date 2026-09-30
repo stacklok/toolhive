@@ -12,6 +12,7 @@ import (
 	"github.com/stretchr/testify/require"
 
 	"github.com/stacklok/toolhive/pkg/authserver/storage"
+	"github.com/stacklok/toolhive/test/helpers/redistls"
 )
 
 func TestConvertRedisTLSRunConfig(t *testing.T) {
@@ -50,7 +51,7 @@ func TestConvertRedisTLSRunConfig(t *testing.T) {
 
 		dir := t.TempDir()
 		certPath := filepath.Join(dir, "ca.crt")
-		certData := []byte("-----BEGIN CERTIFICATE-----\ntest\n-----END CERTIFICATE-----\n")
+		_, certData := redistls.Certificate(t)
 		require.NoError(t, os.WriteFile(certPath, certData, 0600))
 
 		rc := &storage.RedisTLSRunConfig{

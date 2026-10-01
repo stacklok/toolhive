@@ -25,6 +25,7 @@ import (
 	"github.com/stacklok/toolhive/pkg/authserver/server/tokenexchange"
 	"github.com/stacklok/toolhive/pkg/authserver/storage"
 	"github.com/stacklok/toolhive/pkg/authserver/upstream"
+	"github.com/stacklok/toolhive/pkg/authserver/upstreamfilter"
 	"github.com/stacklok/toolhive/pkg/bodylimit"
 	"github.com/stacklok/toolhive/pkg/oauthproto"
 )
@@ -189,6 +190,44 @@ func hasSPIFFEClientAuth(cfg *authserver.RunConfig) bool {
 	return cfg.InboundGrants != nil && len(cfg.InboundGrants.SPIFFEClientAuth) > 0
 }
 
+// buildUpstreamFilter constructs a handlers.UpstreamFilter from the RunConfig,
+// if one is configured. It returns an untyped nil (not a typed-nil interface
+// value) when cfg.UpstreamFilter is unset so authserver.Config.UpstreamFilter
+// remains truly nil and the handler walks all configured upstreams —
+// preserving behavior from before the filter hook existed.
+//
+// RunConfig.Validate has already applied the same static-invariant checks the
+// filter constructor runs here (unknown provider references, mandatory-first
+// references, fewer-than-two upstreams, etc.), so a Validate-passing cfg will
+// not fail here in practice. The second construction is cheap and acts as a
+// belt-and-suspenders guard for consumers that bypassed Validate.
+func buildUpstreamFilter(cfg *authserver.RunConfig) (handlers.UpstreamFilter, error) {
+	if cfg.UpstreamFilter == nil {
+		return nil, nil
+	}
+	configured := make([]string, len(cfg.Upstreams))
+	for i := range cfg.Upstreams {
+		configured[i] = cfg.Upstreams[i].Name
+	}
+	f, err := upstreamfilter.NewGroupBasedFilter(*cfg.UpstreamFilter, configured)
+	if err != nil {
+		return nil, err
+	}
+	return f, nil
+}
+
+// newEmbeddedAuthServerWithStorage assembles the auth server from a RunConfig
+// in a strict ordered sequence: validate inputs, derive crypto bits, resolve
+// upstream providers and inbound grants, build the handler Config, construct
+// the server. Each step is a required stage with its own error-return and
+// cannot be reordered, so the function's cyclomatic complexity sits above the
+// package lint ceiling by design rather than from avoidable branching. The
+// shape mirrors the "sequential boot" exceptions elsewhere in the repository
+// (CLI command handlers, reconcile loops) and is preferred over splitting the
+// chain into helpers whose only purpose would be to spread the error checks
+// across functions without clarifying the boot order.
+//
+//nolint:gocyclo // Sequential auth-server bootstrap; see function docstring.
 func newEmbeddedAuthServerWithStorage(
 	ctx context.Context,
 	cfg *authserver.RunConfig,
@@ -302,6 +341,11 @@ func newEmbeddedAuthServerWithStorage(
 		return nil, fmt.Errorf("failed to resolve JWT-bearer grant policies: %w", err)
 	}
 
+	upstreamFilter, err := buildUpstreamFilter(cfg)
+	if err != nil {
+		return nil, fmt.Errorf("failed to build upstream filter: %w", err)
+	}
+
 	resolvedCfg := authserver.Config{
 		Issuer:                                    cfg.Issuer,
 		AuthorizationEndpointBaseURL:              cfg.AuthorizationEndpointBaseURL,
@@ -335,6 +379,7 @@ func newEmbeddedAuthServerWithStorage(
 		DisableTokenExchange: !normalized.Capabilities.TokenExchange,
 		SPIFFETrust:          spiffeTrust,
 		DeviceFlowEnabled:    cfg.DeviceFlowEnabled,
+		UpstreamFilter:       upstreamFilter,
 	}
 
 	// 8. Create the auth server. authserver.New also asserts the DCR

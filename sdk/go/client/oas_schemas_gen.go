@@ -1563,7 +1563,8 @@ type AuthenticationRunConfig struct {
 	// signals, and operator-facing constraints (audience/scope bounding,
 	// subject namespace qualification, required client binding) that aren't
 	// visible from the config shape alone.
-	TrustedIssuers []TokenExchangeTrustedIssuer `json:"trusted_issuers"`
+	TrustedIssuers []TokenExchangeTrustedIssuer            `json:"trusted_issuers"`
+	UpstreamFilter OptUpstreamfilterGroupBasedFilterConfig `json:"upstream_filter"`
 	// Upstreams configures connections to upstream Identity Providers for
 	// interactive authorization. It may be empty only when DelegateClients or a
 	// TrustedIssuer with JWTBearerGrant enables token-only operation.
@@ -1686,6 +1687,11 @@ func (s *AuthenticationRunConfig) GetTrustedIssuers() []TokenExchangeTrustedIssu
 	return s.TrustedIssuers
 }
 
+// GetUpstreamFilter returns the value of UpstreamFilter.
+func (s *AuthenticationRunConfig) GetUpstreamFilter() OptUpstreamfilterGroupBasedFilterConfig {
+	return s.UpstreamFilter
+}
+
 // GetUpstreams returns the value of Upstreams.
 func (s *AuthenticationRunConfig) GetUpstreams() []AuthenticationUpstreamRunConfig {
 	return s.Upstreams
@@ -1804,6 +1810,11 @@ func (s *AuthenticationRunConfig) SetTokenLifespans(val OptAuthenticationTokenLi
 // SetTrustedIssuers sets the value of TrustedIssuers.
 func (s *AuthenticationRunConfig) SetTrustedIssuers(val []TokenExchangeTrustedIssuer) {
 	s.TrustedIssuers = val
+}
+
+// SetUpstreamFilter sets the value of UpstreamFilter.
+func (s *AuthenticationRunConfig) SetUpstreamFilter(val OptUpstreamfilterGroupBasedFilterConfig) {
+	s.UpstreamFilter = val
 }
 
 // SetUpstreams sets the value of Upstreams.
@@ -12421,6 +12432,52 @@ func (o OptUpgradeRequestEnv) Or(d UpgradeRequestEnv) UpgradeRequestEnv {
 	return d
 }
 
+// NewOptUpstreamfilterGroupBasedFilterConfig returns new OptUpstreamfilterGroupBasedFilterConfig with value set to v.
+func NewOptUpstreamfilterGroupBasedFilterConfig(v UpstreamfilterGroupBasedFilterConfig) OptUpstreamfilterGroupBasedFilterConfig {
+	return OptUpstreamfilterGroupBasedFilterConfig{
+		Value: v,
+		Set:   true,
+	}
+}
+
+// OptUpstreamfilterGroupBasedFilterConfig is optional UpstreamfilterGroupBasedFilterConfig.
+type OptUpstreamfilterGroupBasedFilterConfig struct {
+	Value UpstreamfilterGroupBasedFilterConfig
+	Set   bool
+}
+
+// IsSet returns true if OptUpstreamfilterGroupBasedFilterConfig was set.
+func (o OptUpstreamfilterGroupBasedFilterConfig) IsSet() bool { return o.Set }
+
+// Reset unsets value.
+func (o *OptUpstreamfilterGroupBasedFilterConfig) Reset() {
+	var v UpstreamfilterGroupBasedFilterConfig
+	o.Value = v
+	o.Set = false
+}
+
+// SetTo sets value to v.
+func (o *OptUpstreamfilterGroupBasedFilterConfig) SetTo(v UpstreamfilterGroupBasedFilterConfig) {
+	o.Set = true
+	o.Value = v
+}
+
+// Get returns value and boolean that denotes whether value was set.
+func (o OptUpstreamfilterGroupBasedFilterConfig) Get() (v UpstreamfilterGroupBasedFilterConfig, ok bool) {
+	if !o.Set {
+		return v, false
+	}
+	return o.Value, true
+}
+
+// Or returns value if set, or given parameter if does not.
+func (o OptUpstreamfilterGroupBasedFilterConfig) Or(d UpstreamfilterGroupBasedFilterConfig) UpstreamfilterGroupBasedFilterConfig {
+	if v, ok := o.Get(); ok {
+		return v
+	}
+	return d
+}
+
 // NewOptV0ServerMeta returns new OptV0ServerMeta with value set to v.
 func NewOptV0ServerMeta(v V0ServerMeta) OptV0ServerMeta {
 	return OptV0ServerMeta{
@@ -21845,6 +21902,101 @@ func (*UpgradeWorkloadNotFoundApplicationJSON) upgradeWorkloadRes() {}
 type UpgradeWorkloadUnprocessableEntityApplicationJSON string
 
 func (*UpgradeWorkloadUnprocessableEntityApplicationJSON) upgradeWorkloadRes() {}
+
+// UpstreamFilter configures an optional group-based filter that narrows the
+// multi-upstream authorization chain per-request based on the first
+// upstream's resolved identity. When nil, every request walks the full
+// upstream chain in configured order (preserving behavior from before the
+// filter hook existed).
+// The filter is applied exactly once per authorization, on the first leg's
+// callback. The mandatory first upstream (Upstreams[0]) is never filtered
+// out. See pkg/authserver/upstreamfilter for the configuration schema and
+// pkg/authserver/server/handlers for the runtime contract.
+// Ref: #/components/schemas/UpstreamfilterGroupBasedFilterConfig
+type UpstreamfilterGroupBasedFilterConfig struct {
+	// Claim is the exact, top-level JWT/OIDC claim name to read group
+	// membership from. Defaults to "groups" when empty. The claim value MUST be
+	// a JSON array of strings; other shapes (missing, non-array, mixed types)
+	// fail the authorization. Nested claims (e.g. Keycloak's realm_access.roles)
+	// must be flattened by the identity provider — nested paths are not
+	// supported in this implementation.
+	Claim OptString `json:"claim"`
+	// DefaultUpstreams is used when the claim is a valid empty array or when no
+	// rule matches. When empty or omitted, no optional upstreams are added —
+	// the mandatory first upstream remains but the authorization walks no
+	// further.
+	DefaultUpstreams []string `json:"defaultUpstreams"`
+	// Rules assigns groups to upstream provider subsets. A principal matches a
+	// rule if any of the principal's group values appears in the rule's Groups
+	// list (any-of / OR semantics). Multiple matching rules are combined by
+	// union: the effective upstream chain contains every UpstreamProviders
+	// value from every matching rule, deduplicated.
+	Rules []UpstreamfilterGroupRule `json:"rules"`
+}
+
+// GetClaim returns the value of Claim.
+func (s *UpstreamfilterGroupBasedFilterConfig) GetClaim() OptString {
+	return s.Claim
+}
+
+// GetDefaultUpstreams returns the value of DefaultUpstreams.
+func (s *UpstreamfilterGroupBasedFilterConfig) GetDefaultUpstreams() []string {
+	return s.DefaultUpstreams
+}
+
+// GetRules returns the value of Rules.
+func (s *UpstreamfilterGroupBasedFilterConfig) GetRules() []UpstreamfilterGroupRule {
+	return s.Rules
+}
+
+// SetClaim sets the value of Claim.
+func (s *UpstreamfilterGroupBasedFilterConfig) SetClaim(val OptString) {
+	s.Claim = val
+}
+
+// SetDefaultUpstreams sets the value of DefaultUpstreams.
+func (s *UpstreamfilterGroupBasedFilterConfig) SetDefaultUpstreams(val []string) {
+	s.DefaultUpstreams = val
+}
+
+// SetRules sets the value of Rules.
+func (s *UpstreamfilterGroupBasedFilterConfig) SetRules(val []UpstreamfilterGroupRule) {
+	s.Rules = val
+}
+
+// Ref: #/components/schemas/UpstreamfilterGroupRule
+type UpstreamfilterGroupRule struct {
+	// Groups is the set of principal group names this rule matches. Matching
+	// is case-sensitive and exact. Empty and duplicate values are rejected at
+	// configuration validation time.
+	Groups []string `json:"groups"`
+	// UpstreamProviders lists the non-first upstream provider names to include
+	// in the chain when this rule matches. All names must reference a
+	// configured non-first upstream. Empty and duplicate values, references to
+	// the mandatory first upstream, and references to undeclared upstreams are
+	// rejected at configuration validation time.
+	UpstreamProviders []string `json:"upstreamProviders"`
+}
+
+// GetGroups returns the value of Groups.
+func (s *UpstreamfilterGroupRule) GetGroups() []string {
+	return s.Groups
+}
+
+// GetUpstreamProviders returns the value of UpstreamProviders.
+func (s *UpstreamfilterGroupRule) GetUpstreamProviders() []string {
+	return s.UpstreamProviders
+}
+
+// SetGroups sets the value of Groups.
+func (s *UpstreamfilterGroupRule) SetGroups(val []string) {
+	s.Groups = val
+}
+
+// SetUpstreamProviders sets the value of UpstreamProviders.
+func (s *UpstreamfilterGroupRule) SetUpstreamProviders(val []string) {
+	s.UpstreamProviders = val
+}
 
 // Ref: #/components/schemas/V0ServerJSON
 type V0ServerJSON struct {

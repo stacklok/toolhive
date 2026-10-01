@@ -60,6 +60,11 @@ type ConfigUpdater interface {
 	UpdateLLMConfig(fn func(*Config) error) error
 }
 
+// SecretsProviderFunc returns the secrets provider used to delete cached LLM
+// credentials. Teardown calls it only when the requested operation must purge
+// tokens.
+type SecretsProviderFunc func() (pkgsecrets.Provider, error)
+
 // Setup configures detected AI tools to use the LLM gateway.
 //
 // When targetClient is non-empty only that client is configured; an error is
@@ -228,63 +233,58 @@ func setupCallbackPortError(err error) error {
 // A targeted teardown that leaves other tools configured keeps the config, which
 // those tools still need to reach the gateway.
 //
-// If secretsProvider is non-nil and purgeTokens is true, cached OIDC tokens
-// are deleted after the config update succeeds.
+// Cached OIDC tokens are deleted by default when no configured tool remains.
+// keepTokens opts out of that full-teardown default. A partial targeted
+// teardown retains the shared session unless purgeTokens is true.
 func Teardown(
 	ctx context.Context,
 	out, errOut io.Writer,
 	gm GatewayManager,
 	targetTool string,
+	keepTokens bool,
 	purgeTokens bool,
 	provider ConfigUpdater,
-	secretsProvider pkgsecrets.Provider,
+	getSecretsProvider SecretsProviderFunc,
 ) error {
-	llmCfg := provider.GetLLMConfig()
+	if keepTokens && purgeTokens {
+		return fmt.Errorf("keepTokens and purgeTokens cannot both be set")
+	}
 
-	var targets []ToolConfig
-	if targetTool != "" {
-		for _, tc := range llmCfg.ConfiguredTools {
-			if tc.Tool == targetTool {
-				targets = append(targets, tc)
-				break
-			}
+	llmCfg := provider.GetLLMConfig()
+	targets, err := selectTeardownTargets(llmCfg.ConfiguredTools, targetTool)
+	if err != nil {
+		return err
+	}
+
+	// Separate tools into those to revert and those to keep without touching
+	// any files yet.
+	toRevert, remaining := partitionTeardownTools(llmCfg.ConfiguredTools, targets)
+	fullTeardown := len(remaining) == 0
+	shouldPurge := purgeTokens || (fullTeardown && !keepTokens)
+
+	// Delete credentials before changing the configured-tool record. If cleanup
+	// fails, the same targeted teardown remains fully retryable.
+	if err := purgeTokensBeforeTeardown(ctx, shouldPurge, getSecretsProvider); err != nil {
+		return err
+	}
+
+	// Persist the updated tool list (and clear token metadata if purging) in a
+	// single write before mutating any tool config files. Token cleanup may have
+	// completed already, but a config-write failure leaves every tool record and
+	// settings file intact so the caller can retry teardown safely.
+	if err := provider.UpdateLLMConfig(func(c *Config) error {
+		applyTeardownToConfig(c, remaining, shouldPurge)
+		return nil
+	}); err != nil {
+		if shouldPurge {
+			return fmt.Errorf("cached LLM tokens were deleted, but persisting tool configuration: %w", err)
 		}
-		if len(targets) == 0 {
-			return fmt.Errorf("tool %q is not configured", targetTool)
-		}
-	} else {
-		targets = llmCfg.ConfiguredTools
+		return fmt.Errorf("persisting tool configuration: %w", err)
 	}
 
 	if len(targets) == 0 {
 		_, _ = fmt.Fprintln(out, "No tools are currently configured.")
-		return nil
-	}
-
-	// Separate tools into those to revert and those to keep, without touching
-	// any files yet. We persist the new config first so that if UpdateLLMConfig
-	// fails, the tool files are left intact and the state stays consistent.
-	var toRevert, remaining []ToolConfig
-	for _, tc := range llmCfg.ConfiguredTools {
-		if isTarget(targets, tc.Tool) {
-			toRevert = append(toRevert, tc)
-		} else {
-			remaining = append(remaining, tc)
-		}
-	}
-
-	// Persist the updated tool list (and clear token metadata if purging) in a
-	// single write before mutating any tool config files. If this fails,
-	// nothing on disk has changed and the caller can retry.
-	lastTool := len(remaining) == 0
-	if err := provider.UpdateLLMConfig(func(c *Config) error {
-		applyTeardownToConfig(c, remaining, purgeTokens)
-		return nil
-	}); err != nil {
-		return fmt.Errorf("persisting tool configuration: %w", err)
-	}
-
-	if lastTool {
+	} else if fullTeardown {
 		_, _ = fmt.Fprintln(out,
 			"Cleared the LLM gateway configuration: no tools are configured anymore.")
 	}
@@ -295,18 +295,23 @@ func Teardown(
 		revertToolConfig(out, errOut, gm, tc)
 	}
 
-	if purgeTokens && secretsProvider != nil {
-		// Delete secrets after config refs are cleared so there is no window
-		// where secrets are gone but the config still points at them.
-		PurgeTokens(ctx, errOut, secretsProvider)
+	if shouldPurge {
+		_, _ = fmt.Fprintln(out,
+			"Deleted locally cached LLM tokens. This does not revoke tokens at the identity provider or sign out the browser session.")
+		_, _ = fmt.Fprintln(out,
+			"Stop any running LLM proxy or token helper before relying on cleanup; an active process may recreate cached credentials.")
+		if purgeTokens && !fullTeardown {
+			_, _ = fmt.Fprintln(out,
+				"Remaining configured tools share this session and will need to authenticate again.")
+		}
 	}
 
 	return nil
 }
 
 // applyTeardownToConfig updates the persisted LLM config for a teardown that
-// leaves remaining configured. purgeTokens reports whether the caller also asked
-// to drop cached OIDC token state.
+// leaves remaining configured. purgeTokens reports whether the teardown drops
+// cached OIDC token state.
 //
 // When no tool remains, the config is reset wholesale rather than pruned field by
 // field. Settings such as Bedrock compat are deliberately sticky across "thv llm
@@ -315,11 +320,11 @@ func Teardown(
 // they have since repointed elsewhere. While any tool remains the config is left
 // intact, since those tools still need it to reach the gateway.
 //
-// Cached token state survives a reset unless purgeTokens is set: the secret lives
-// in the keyring, and dropping the only reference to it without deleting it would
-// strand it there once the user points at a different gateway (the fallback key is
-// derived from the gateway URL and issuer). Token lifetime stays the exclusive
-// business of --purge-tokens.
+// Cached token state survives a reset only when token retention was explicitly
+// requested. The secret lives in the encrypted secrets store, and dropping the
+// only reference without deleting it would strand it once the user points at a
+// different gateway (the fallback key is derived from the gateway URL and
+// issuer).
 func applyTeardownToConfig(c *Config, remaining []ToolConfig, purgeTokens bool) {
 	if len(remaining) > 0 {
 		c.ConfiguredTools = remaining
@@ -338,12 +343,58 @@ func applyTeardownToConfig(c *Config, remaining []ToolConfig, purgeTokens bool) 
 	}
 }
 
-// PurgeTokens deletes all cached OIDC tokens from the provided secrets
-// provider. Errors are logged as warnings rather than returned.
-func PurgeTokens(ctx context.Context, errOut io.Writer, provider pkgsecrets.Provider) {
+// PurgeTokens deletes all cached OIDC tokens from the provided secrets provider.
+func PurgeTokens(ctx context.Context, provider pkgsecrets.Provider) error {
 	if err := DeleteCachedTokens(ctx, provider); err != nil {
-		_, _ = fmt.Fprintf(errOut, "Warning: could not remove cached LLM tokens: %v\n", err)
+		return fmt.Errorf("removing cached LLM tokens: %w", err)
 	}
+	return nil
+}
+
+func selectTeardownTargets(configured []ToolConfig, targetTool string) ([]ToolConfig, error) {
+	if targetTool == "" {
+		return configured, nil
+	}
+	for _, tool := range configured {
+		if tool.Tool == targetTool {
+			return []ToolConfig{tool}, nil
+		}
+	}
+	return nil, fmt.Errorf("tool %q is not configured", targetTool)
+}
+
+func partitionTeardownTools(configured, targets []ToolConfig) ([]ToolConfig, []ToolConfig) {
+	var toRevert, remaining []ToolConfig
+	for _, tool := range configured {
+		if isTarget(targets, tool.Tool) {
+			toRevert = append(toRevert, tool)
+		} else {
+			remaining = append(remaining, tool)
+		}
+	}
+	return toRevert, remaining
+}
+
+func purgeTokensBeforeTeardown(
+	ctx context.Context, shouldPurge bool, getSecretsProvider SecretsProviderFunc,
+) error {
+	if !shouldPurge {
+		return nil
+	}
+	if getSecretsProvider == nil {
+		return fmt.Errorf("cannot remove cached LLM tokens: secrets provider is unavailable")
+	}
+	provider, err := getSecretsProvider()
+	if err != nil {
+		return fmt.Errorf("getting secrets provider to remove cached LLM tokens: %w", err)
+	}
+	if provider == nil {
+		return fmt.Errorf("cannot remove cached LLM tokens: secrets provider is unavailable")
+	}
+	if err := PurgeTokens(ctx, provider); err != nil {
+		return fmt.Errorf("cached token cleanup failed; no configuration changes were made: %w", err)
+	}
+	return nil
 }
 
 // isTarget reports whether toolName appears in the targets slice.

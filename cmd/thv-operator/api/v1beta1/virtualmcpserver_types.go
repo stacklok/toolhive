@@ -21,6 +21,18 @@ import (
 // +kubebuilder:validation:XValidation:rule="!has(self.config) || !has(self.config.rateLimiting) || !has(self.config.rateLimiting.tools) || self.config.rateLimiting.tools.all(t, !has(t.perUser)) || (has(self.incomingAuth) && self.incomingAuth.type == 'oidc')",message="per-tool perUser rate limiting requires incomingAuth.type oidc"
 // +kubebuilder:validation:XValidation:rule="!(has(self.embeddingServerRef) && has(self.config) && has(self.config.optimizer) && has(self.config.optimizer.embeddingProvider) && self.config.optimizer.embeddingProvider == 'openai')",message="embeddingServerRef provisions a managed TEI server and cannot be combined with optimizer.embeddingProvider 'openai'; openai mode uses embeddingService directly"
 //
+// +kubebuilder:validation:XValidation:rule="!has(self.authServerUpstreamFilter) || has(self.authServerConfig)",message="authServerUpstreamFilter requires authServerConfig to be set"
+// +kubebuilder:validation:XValidation:rule="!has(self.authServerUpstreamFilter) || (has(self.authServerConfig) && has(self.authServerConfig.upstreamProviders) && size(self.authServerConfig.upstreamProviders) >= 2)",message="authServerUpstreamFilter requires at least two configured upstream providers"
+// Deeper cross-reference checks (every referenced upstream provider must
+// exist, and no reference to the mandatory first provider) were previously
+// expressed as CEL on this struct but were removed because they pushed the
+// cluster's x-kubernetes-validations cost budget over the per-schema limit
+// in realistic deployments where upstreamProviders is unbounded. The same
+// invariants are re-checked at reconciliation time by
+// validateAuthServerUpstreamFilter in the VirtualMCPServer controller, which
+// surfaces a terminal AuthServerConfigValidated=False condition — only the
+// kubectl-apply-time feedback is lost, not the safety.
+//
 //nolint:lll // CEL validation rules exceed line length limit
 type VirtualMCPServerSpec struct {
 	// IncomingAuth configures authentication for clients connecting to the Virtual MCP server.
@@ -107,6 +119,20 @@ type VirtualMCPServerSpec struct {
 	// When nil, IncomingAuth uses an external IDP and behavior is unchanged.
 	// +optional
 	AuthServerConfig *EmbeddedAuthServerConfig `json:"authServerConfig,omitempty"`
+
+	// AuthServerUpstreamFilter optionally narrows the multi-upstream
+	// authorization chain per-request based on the first upstream's resolved
+	// identity, so principals only walk the upstream providers they are
+	// entitled to. Lives beside AuthServerConfig (rather than nested in it)
+	// because the shared EmbeddedAuthServerConfig type is also used by
+	// MCPExternalAuthConfig, where multi-upstream filtering has no meaning.
+	//
+	// When nil, every request walks the full upstream chain in configured
+	// order — the behavior from before the filter hook existed. The filter
+	// only controls which OAuth credentials are collected during login;
+	// backend and tool authorization remain Cedar's responsibility.
+	// +optional
+	AuthServerUpstreamFilter *AuthServerUpstreamFilterConfig `json:"authServerUpstreamFilter,omitempty"`
 
 	// Replicas is the desired number of vMCP pod replicas.
 	// VirtualMCPServer creates a single Deployment for the vMCP aggregator process,
@@ -254,6 +280,78 @@ const (
 // This provides a local name for use in the CRD status.
 // +gendoc
 type DiscoveredBackend = vmcptypes.DiscoveredBackend
+
+// AuthServerUpstreamFilterConfig configures the group-based filter that
+// narrows which of authServerConfig.upstreamProviders a given principal must
+// walk during multi-upstream authorization. The filter runs exactly once per
+// authorization, on the first upstream's callback leg, and may only narrow
+// the chain — it cannot reorder it, add unknown providers, or remove the
+// mandatory first provider. See the pkg/authserver/upstreamfilter package
+// for the full semantic contract.
+type AuthServerUpstreamFilterConfig struct {
+	// Claim is the exact top-level JWT/OIDC claim name to read group
+	// membership from on the first upstream's resolved principal. Defaults
+	// to "groups" when empty. Nested claims (e.g. Keycloak's
+	// realm_access.roles) are not supported and must be flattened to a
+	// top-level string array by the identity provider.
+	// +optional
+	// +kubebuilder:validation:MinLength=1
+	// +kubebuilder:validation:MaxLength=253
+	Claim string `json:"claim,omitempty"`
+
+	// Rules assigns groups to upstream provider subsets. A principal matches
+	// a rule if any of its groups appears in the rule's groups list
+	// (any-of / OR semantics). Multiple matching rules are combined by
+	// union — the effective chain contains every upstream from every
+	// matching rule, deduplicated and in configured order.
+	// +kubebuilder:validation:Required
+	// +kubebuilder:validation:MinItems=1
+	// +kubebuilder:validation:MaxItems=100
+	// +listType=atomic
+	Rules []UpstreamFilterGroupRule `json:"rules"`
+
+	// DefaultUpstreams is used when the claim is a valid empty array or
+	// when no rule matches. When omitted, no optional upstreams are added —
+	// the mandatory first upstream remains but the authorization walks no
+	// further. Every entry must name a configured
+	// authServerConfig.upstreamProviders provider other than the mandatory
+	// first provider; those cross-reference checks are enforced at
+	// reconciliation time rather than by CEL (CEL cost-budget constraints
+	// moved the check into the Go filter constructor; see the top-level CEL
+	// rules on VirtualMCPServerSpec for the shape invariants that remain at
+	// admission time).
+	// +optional
+	// +kubebuilder:validation:MaxItems=100
+	// +listType=set
+	DefaultUpstreams []string `json:"defaultUpstreams,omitempty"`
+}
+
+// UpstreamFilterGroupRule pairs a set of principal group names with the set
+// of non-first upstream provider names those principals are entitled to walk.
+type UpstreamFilterGroupRule struct {
+	// Groups is the set of principal group names this rule matches. Matching
+	// is case-sensitive and exact. Per-element emptiness and duplicate
+	// detection are enforced at reconciliation time by the Go filter
+	// constructor, which runs again before the auth server starts.
+	// +kubebuilder:validation:Required
+	// +kubebuilder:validation:MinItems=1
+	// +kubebuilder:validation:MaxItems=100
+	// +listType=set
+	Groups []string `json:"groups"`
+
+	// UpstreamProviders lists the non-first upstream provider names to
+	// include in the chain when this rule matches. Every entry must name a
+	// configured authServerConfig.upstreamProviders provider other than the
+	// mandatory first provider; these cross-reference checks are enforced at
+	// reconciliation time rather than by CEL (CEL cost-budget constraints
+	// moved the check into the Go filter constructor). Per-element emptiness
+	// and duplicates are also enforced at reconciliation time.
+	// +kubebuilder:validation:Required
+	// +kubebuilder:validation:MinItems=1
+	// +kubebuilder:validation:MaxItems=100
+	// +listType=set
+	UpstreamProviders []string `json:"upstreamProviders"`
+}
 
 // VirtualMCPServerRuntimeStatus is the runtime-owned status snapshot. The
 // operator projects this snapshot into the top-level compatibility fields and

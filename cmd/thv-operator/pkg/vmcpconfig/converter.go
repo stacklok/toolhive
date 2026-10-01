@@ -19,6 +19,7 @@ import (
 	"github.com/stacklok/toolhive/cmd/thv-operator/pkg/oidc"
 	"github.com/stacklok/toolhive/cmd/thv-operator/pkg/spectoconfig"
 	"github.com/stacklok/toolhive/pkg/authserver"
+	"github.com/stacklok/toolhive/pkg/authserver/upstreamfilter"
 	"github.com/stacklok/toolhive/pkg/telemetry"
 	"github.com/stacklok/toolhive/pkg/vmcp/auth/converters"
 	authtypes "github.com/stacklok/toolhive/pkg/vmcp/auth/types"
@@ -542,7 +543,13 @@ func convertSessionStorage(vmcp *mcpv1beta1.VirtualMCPServer) *vmcpconfig.Sessio
 
 // convertAuthServerConfig converts the inline EmbeddedAuthServerConfig from the
 // VirtualMCPServer spec into an authserver.RunConfig using the shared builder in
-// controllerutil. AllowedAudiences is derived from the resolved incoming OIDC config.
+// controllerutil, then layers vMCP-only auth-server concerns (currently just the
+// upstream filter) on top. AllowedAudiences is derived from the resolved
+// incoming OIDC config.
+//
+// Keeping the vMCP-only extensions here — rather than in BuildAuthServerRunConfig
+// — preserves the shared builder's property that it only knows about fields
+// present on EmbeddedAuthServerConfig, which is also used by MCPExternalAuthConfig.
 func (*Converter) convertAuthServerConfig(
 	vmcp *mcpv1beta1.VirtualMCPServer,
 	config *vmcpconfig.Config,
@@ -550,13 +557,45 @@ func (*Converter) convertAuthServerConfig(
 	if vmcp.Spec.AuthServerConfig == nil {
 		return nil, nil
 	}
-	return controllerutil.BuildAuthServerRunConfig(
+	rc, err := controllerutil.BuildAuthServerRunConfig(
 		vmcp.Namespace, vmcp.Name,
 		vmcp.Spec.AuthServerConfig,
 		deriveAllowedAudiences(config),
 		deriveScopesSupported(config),
 		deriveResourceURL(config),
 	)
+	if err != nil {
+		return nil, err
+	}
+	rc.UpstreamFilter = ConvertUpstreamFilter(vmcp.Spec.AuthServerUpstreamFilter)
+	return rc, nil
+}
+
+// ConvertUpstreamFilter converts the vMCP-only AuthServerUpstreamFilterConfig
+// CRD field into the serializable upstreamfilter.GroupBasedFilterConfig that
+// the auth-server runtime consumes. Returns nil when the CRD field is unset so
+// the auth server preserves full-chain behavior.
+//
+// Slice elements are cloned defensively so the resulting RunConfig does not
+// alias the caller's CRD object; this prevents a later mutation of the live
+// CR (e.g. a status-only patch that reuses pointers) from racing with the
+// serialized ConfigMap payload.
+func ConvertUpstreamFilter(cfg *mcpv1beta1.AuthServerUpstreamFilterConfig) *upstreamfilter.GroupBasedFilterConfig {
+	if cfg == nil {
+		return nil
+	}
+	rules := make([]upstreamfilter.GroupRule, len(cfg.Rules))
+	for i, r := range cfg.Rules {
+		rules[i] = upstreamfilter.GroupRule{
+			Groups:            append([]string(nil), r.Groups...),
+			UpstreamProviders: append([]string(nil), r.UpstreamProviders...),
+		}
+	}
+	return &upstreamfilter.GroupBasedFilterConfig{
+		Claim:            cfg.Claim,
+		Rules:            rules,
+		DefaultUpstreams: append([]string(nil), cfg.DefaultUpstreams...),
+	}
 }
 
 // deriveAllowedAudiences derives the AllowedAudiences list from the already-resolved

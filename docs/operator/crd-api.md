@@ -1788,6 +1788,30 @@ _Appears in:_
 | `redis` | AuthServerStorageTypeRedis is the Redis storage backend<br /> |
 
 
+#### api.v1beta1.AuthServerUpstreamFilterConfig
+
+
+
+AuthServerUpstreamFilterConfig configures the group-based filter that
+narrows which of authServerConfig.upstreamProviders a given principal must
+walk during multi-upstream authorization. The filter runs exactly once per
+authorization, on the first upstream's callback leg, and may only narrow
+the chain — it cannot reorder it, add unknown providers, or remove the
+mandatory first provider. See the pkg/authserver/upstreamfilter package
+for the full semantic contract.
+
+
+
+_Appears in:_
+- [api.v1beta1.VirtualMCPServerSpec](#apiv1beta1virtualmcpserverspec)
+
+| Field | Description | Default | Validation |
+| --- | --- | --- | --- |
+| `claim` _string_ | Claim is the exact top-level JWT/OIDC claim name to read group<br />membership from on the first upstream's resolved principal. Defaults<br />to "groups" when empty. Nested claims (e.g. Keycloak's<br />realm_access.roles) are not supported and must be flattened to a<br />top-level string array by the identity provider. |  | MaxLength: 253 <br />MinLength: 1 <br />Optional: \{\} <br /> |
+| `rules` _[api.v1beta1.UpstreamFilterGroupRule](#apiv1beta1upstreamfiltergrouprule) array_ | Rules assigns groups to upstream provider subsets. A principal matches<br />a rule if any of its groups appears in the rule's groups list<br />(any-of / OR semantics). Multiple matching rules are combined by<br />union — the effective chain contains every upstream from every<br />matching rule, deduplicated and in configured order. |  | MaxItems: 100 <br />MinItems: 1 <br />Required: \{\} <br /> |
+| `defaultUpstreams` _string array_ | DefaultUpstreams is used when the claim is a valid empty array or<br />when no rule matches. When omitted, no optional upstreams are added —<br />the mandatory first upstream remains but the authorization walks no<br />further. Every entry must name a configured<br />authServerConfig.upstreamProviders provider other than the mandatory<br />first provider; those cross-reference checks are enforced at<br />reconciliation time rather than by CEL (CEL cost-budget constraints<br />moved the check into the Go filter constructor; see the top-level CEL<br />rules on VirtualMCPServerSpec for the shape invariants that remain at<br />admission time). |  | MaxItems: 100 <br />Optional: \{\} <br /> |
+
+
 #### api.v1beta1.AuthzConfigRef
 
 
@@ -4670,6 +4694,24 @@ _Appears in:_
 | `jwtBearerGrant` _[api.v1beta1.JWTBearerGrantConfig](#apiv1beta1jwtbearergrantconfig)_ | JWTBearerGrant enables the plain RFC 7523 JWT-bearer grant for this<br />issuer. It is independent of RFC 8693 delegation policy.<br />This legacy field is deprecated; configure RFC 7523 policy under<br />inboundGrants.jwtBearer.issuerPolicies. |  | Optional: \{\} <br /> |
 
 
+#### api.v1beta1.UpstreamFilterGroupRule
+
+
+
+UpstreamFilterGroupRule pairs a set of principal group names with the set
+of non-first upstream provider names those principals are entitled to walk.
+
+
+
+_Appears in:_
+- [api.v1beta1.AuthServerUpstreamFilterConfig](#apiv1beta1authserverupstreamfilterconfig)
+
+| Field | Description | Default | Validation |
+| --- | --- | --- | --- |
+| `groups` _string array_ | Groups is the set of principal group names this rule matches. Matching<br />is case-sensitive and exact. Per-element emptiness and duplicate<br />detection are enforced at reconciliation time by the Go filter<br />constructor, which runs again before the auth server starts. |  | MaxItems: 100 <br />MinItems: 1 <br />Required: \{\} <br /> |
+| `upstreamProviders` _string array_ | UpstreamProviders lists the non-first upstream provider names to<br />include in the chain when this rule matches. Every entry must name a<br />configured authServerConfig.upstreamProviders provider other than the<br />mandatory first provider; these cross-reference checks are enforced at<br />reconciliation time rather than by CEL (CEL cost-budget constraints<br />moved the check into the Go filter constructor). Per-element emptiness<br />and duplicates are also enforced at reconciliation time. |  | MaxItems: 100 <br />MinItems: 1 <br />Required: \{\} <br /> |
+
+
 #### api.v1beta1.UpstreamInjectSpec
 
 
@@ -4981,6 +5023,16 @@ _Appears in:_
 
 VirtualMCPServerSpec defines the desired state of VirtualMCPServer
 
+Deeper cross-reference checks (every referenced upstream provider must
+exist, and no reference to the mandatory first provider) were previously
+expressed as CEL on this struct but were removed because they pushed the
+cluster's x-kubernetes-validations cost budget over the per-schema limit
+in realistic deployments where upstreamProviders is unbounded. The same
+invariants are re-checked at reconciliation time by
+validateAuthServerUpstreamFilter in the VirtualMCPServer controller, which
+surfaces a terminal AuthServerConfigValidated=False condition — only the
+kubectl-apply-time feedback is lost, not the safety.
+
 
 
 _Appears in:_
@@ -5000,6 +5052,7 @@ _Appears in:_
 | `telemetryConfigRef` _[api.v1beta1.MCPTelemetryConfigReference](#apiv1beta1mcptelemetryconfigreference)_ | TelemetryConfigRef references an MCPTelemetryConfig resource for shared telemetry configuration.<br />The referenced MCPTelemetryConfig must exist in the same namespace as this VirtualMCPServer.<br />Cross-namespace references are not supported for security and isolation reasons. |  | Optional: \{\} <br /> |
 | `embeddingServerRef` _[api.v1beta1.EmbeddingServerRef](#apiv1beta1embeddingserverref)_ | EmbeddingServerRef references an existing EmbeddingServer resource by name.<br />When the optimizer is enabled, this field is required to point to a ready EmbeddingServer<br />that provides embedding capabilities.<br />The referenced EmbeddingServer must exist in the same namespace and be ready. |  | Optional: \{\} <br /> |
 | `authServerConfig` _[api.v1beta1.EmbeddedAuthServerConfig](#apiv1beta1embeddedauthserverconfig)_ | AuthServerConfig configures an embedded OAuth authorization server.<br />When set, the vMCP server acts as an OIDC issuer, drives users through<br />upstream IDPs, and issues ToolHive JWTs. The embedded AS becomes the<br />IncomingAuth OIDC provider — its issuer must match IncomingAuth.OIDCConfigRef<br />so that tokens it issues are accepted by the vMCP's incoming auth middleware.<br />When nil, IncomingAuth uses an external IDP and behavior is unchanged. |  | Optional: \{\} <br /> |
+| `authServerUpstreamFilter` _[api.v1beta1.AuthServerUpstreamFilterConfig](#apiv1beta1authserverupstreamfilterconfig)_ | AuthServerUpstreamFilter optionally narrows the multi-upstream<br />authorization chain per-request based on the first upstream's resolved<br />identity, so principals only walk the upstream providers they are<br />entitled to. Lives beside AuthServerConfig (rather than nested in it)<br />because the shared EmbeddedAuthServerConfig type is also used by<br />MCPExternalAuthConfig, where multi-upstream filtering has no meaning.<br />When nil, every request walks the full upstream chain in configured<br />order — the behavior from before the filter hook existed. The filter<br />only controls which OAuth credentials are collected during login;<br />backend and tool authorization remain Cedar's responsibility. |  | Optional: \{\} <br /> |
 | `replicas` _integer_ | Replicas is the desired number of vMCP pod replicas.<br />VirtualMCPServer creates a single Deployment for the vMCP aggregator process,<br />so there is only one replicas field (unlike MCPServer which has separate<br />Replicas and BackendReplicas for its two Deployments).<br />When nil, the operator does not set Deployment.Spec.Replicas, leaving replica<br />management to an HPA or other external controller. |  | Minimum: 0 <br />Optional: \{\} <br /> |
 | `sessionStorage` _[api.v1beta1.SessionStorageConfig](#apiv1beta1sessionstorageconfig)_ | SessionStorage configures session storage for stateful horizontal scaling.<br />When nil, no session storage is configured. |  | Optional: \{\} <br /> |
 | `imagePullSecrets` _[LocalObjectReference](https://kubernetes.io/docs/reference/generated/kubernetes-api/v1.27/#localobjectreference-v1-core) array_ | ImagePullSecrets allows specifying image pull secrets for the vMCP workload.<br />These are applied to both the vMCP Deployment's PodSpec.ImagePullSecrets<br />and to the operator-managed ServiceAccount the vMCP server runs as, so private<br />images are pullable through either path.<br />Merge semantics with PodTemplateSpec:<br />The deployed PodSpec.ImagePullSecrets is the Kubernetes-native strategic-merge<br />union of this field and spec.podTemplateSpec.spec.imagePullSecrets, merged by<br />the patchStrategy:"merge" / patchMergeKey:"name" tags on corev1.PodSpec.<br />  - This field is rendered first as the controller-generated default.<br />  - spec.podTemplateSpec.spec.imagePullSecrets is then strategic-merge-patched<br />    on top, keyed by Name. Distinct names from the two sources are unioned in<br />    the resulting list; entries with the same Name are deduplicated and the<br />    PodTemplateSpec entry wins on overlap (user override).<br />  - Order in the resulting list is not guaranteed and should not be relied on:<br />    strategic merge by name is order-insensitive.<br />  - The operator-managed ServiceAccount's imagePullSecrets list is populated<br />    ONLY from this field. spec.podTemplateSpec.spec.imagePullSecrets does not<br />    reach the ServiceAccount because PodTemplateSpec has no notion of a<br />    ServiceAccount. To make a secret usable via the ServiceAccount path<br />    (e.g. for sidecars or init containers that pull images independently),<br />    list it here rather than under spec.podTemplateSpec.<br />Note on cross-CRD consistency:<br />MCPRegistry currently uses an atomic-replace strategy for its imagePullSecrets<br />(the user-provided value replaces the controller-generated list rather than<br />being merged on top). VirtualMCPServer follows the Kubernetes-native<br />strategic-merge-by-name behavior described above. Aligning the two is tracked<br />as a separate follow-up; until then, manifests that set imagePullSecrets on<br />both CRDs will see different override behavior between them. |  | Optional: \{\} <br /> |

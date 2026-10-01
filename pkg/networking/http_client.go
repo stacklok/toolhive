@@ -423,6 +423,11 @@ func (b *HttpClientBuilder) WithTimeout(timeout time.Duration) *HttpClientBuilde
 // Build creates the configured HTTP client
 func (b *HttpClientBuilder) Build() (*http.Client, error) {
 	transport := &http.Transport{
+		// Honor HTTP_PROXY/HTTPS_PROXY/NO_PROXY, matching http.DefaultTransport
+		// and CloneDefaultTransportWithDialControl. Without this, clients built
+		// here (e.g. the auth server's upstream OAuth/DCR client) ignore an
+		// explicit forward proxy.
+		Proxy:                 http.ProxyFromEnvironment,
 		TLSHandshakeTimeout:   b.tlsHandshakeTimeout,
 		ResponseHeaderTimeout: b.responseHeaderTimeout,
 	}

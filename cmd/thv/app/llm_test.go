@@ -297,7 +297,7 @@ func TestRunLLMTeardown_NoConfiguredTools(t *testing.T) {
 	provider := llmProvider(t, llm.Config{}) // no configured tools
 
 	var stdout, stderr bytes.Buffer
-	err := runLLMTeardown(context.Background(), &stdout, &stderr, cm, nil, false, provider)
+	err := runLLMTeardown(context.Background(), &stdout, &stderr, cm, nil, true, false, provider, nil)
 	require.NoError(t, err)
 	assert.Contains(t, stdout.String(), "No tools are currently configured")
 }
@@ -311,7 +311,7 @@ func TestRunLLMTeardown_UnknownTool(t *testing.T) {
 	})
 
 	var stdout, stderr bytes.Buffer
-	err := runLLMTeardown(context.Background(), &stdout, &stderr, cm, []string{"unknown-tool"}, false, provider)
+	err := runLLMTeardown(context.Background(), &stdout, &stderr, cm, []string{"unknown-tool"}, false, false, provider, nil)
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), `"unknown-tool" is not configured`)
 }
@@ -344,7 +344,7 @@ func TestRunLLMTeardown_AllTools(t *testing.T) {
 	})
 
 	var stdout, stderr bytes.Buffer
-	err := runLLMTeardown(context.Background(), &stdout, &stderr, cm, nil, false, provider)
+	err := runLLMTeardown(context.Background(), &stdout, &stderr, cm, nil, true, false, provider, nil)
 	require.NoError(t, err)
 	assert.Contains(t, stdout.String(), "Reverted gemini-cli")
 
@@ -386,7 +386,7 @@ func TestRunLLMTeardown_ConfigUpdateFailureLeavesFilesUntouched(t *testing.T) {
 	provider := &errOnUpdateProvider{cfg: c, updateErr: errors.New("disk full")}
 
 	var stdout, stderr bytes.Buffer
-	err := runLLMTeardown(context.Background(), &stdout, &stderr, cm, nil, false, provider)
+	err := runLLMTeardown(context.Background(), &stdout, &stderr, cm, nil, true, false, provider, nil)
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "persisting tool configuration")
 
@@ -427,7 +427,7 @@ func TestRunLLMTeardown_SingleTool(t *testing.T) {
 	})
 
 	var stdout, stderr bytes.Buffer
-	err := runLLMTeardown(context.Background(), &stdout, &stderr, cm, []string{"claude-code"}, false, provider)
+	err := runLLMTeardown(context.Background(), &stdout, &stderr, cm, []string{"claude-code"}, false, false, provider, nil)
 	require.NoError(t, err)
 	assert.Contains(t, stdout.String(), "Reverted claude-code")
 
@@ -627,7 +627,7 @@ func TestRunLLMTeardown_ClientFlag_RevertsNamedTool(t *testing.T) {
 
 	var stdout, stderr bytes.Buffer
 	// Simulate --client claude-code by passing it as a single-element slice.
-	err := runLLMTeardown(context.Background(), &stdout, &stderr, cm, []string{"claude-code"}, false, provider)
+	err := runLLMTeardown(context.Background(), &stdout, &stderr, cm, []string{"claude-code"}, false, false, provider, nil)
 	require.NoError(t, err)
 	assert.Contains(t, stdout.String(), "Reverted claude-code")
 
@@ -646,6 +646,36 @@ func TestLLMTeardownCommand_ClientFlagAndPositionalArgMutuallyExclusive(t *testi
 	err := cmd.Execute()
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "cannot use --client and a positional tool-name argument at the same time")
+}
+
+func TestLLMTeardownCommand_TokenFlagsMutuallyExclusive(t *testing.T) {
+	t.Parallel()
+
+	cmd := newLLMTeardownCommand()
+	cmd.SetArgs([]string{"--keep-tokens", "--purge-tokens"})
+	err := cmd.Execute()
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "if any flags in the group [keep-tokens purge-tokens] are set none of the others can be")
+}
+
+func TestLLMTeardownCommand_TokenCleanupHelp(t *testing.T) {
+	t.Parallel()
+
+	cmd := newLLMTeardownCommand()
+	assert.Contains(t, cmd.Long, "tokens left from an earlier or incomplete")
+	assert.Contains(t, cmd.Long, "does not revoke them at the identity provider")
+	assert.Contains(t, cmd.Long, "they can recreate")
+	assert.Contains(t, cmd.Long, "cached credentials")
+
+	keepFlag := cmd.Flags().Lookup("keep-tokens")
+	require.NotNil(t, keepFlag)
+	assert.Equal(t, "false", keepFlag.DefValue)
+	assert.Contains(t, keepFlag.Usage, "when no configured tools remain")
+
+	purgeFlag := cmd.Flags().Lookup("purge-tokens")
+	require.NotNil(t, purgeFlag)
+	assert.Equal(t, "false", purgeFlag.DefValue)
+	assert.Contains(t, purgeFlag.Usage, "even when other tools remain configured")
 }
 
 // TestLLMCommands_SkipBrowserFlag verifies that the login-capable llm subcommands

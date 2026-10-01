@@ -623,6 +623,9 @@
             "type": "array",
             "uniqueItems": false
           },
+          "upstream_filter": {
+            "$ref": "#/components/schemas/UpstreamfilterGroupBasedFilterConfig"
+          },
           "upstreams": {
             "description": "Upstreams configures connections to upstream Identity Providers for\ninteractive authorization. It may be empty only when DelegateClients or a\nTrustedIssuer with JWTBearerGrant enables token-only operation.\nMultiple upstreams are supported for sequential authorization chains.",
             "items": {
@@ -5530,6 +5533,53 @@
           "public_key": {
             "description": "PublicKey proposes a cosign public key as the replacement trust anchor.",
             "type": "string"
+          }
+        },
+        "type": "object"
+      },
+      "UpstreamfilterGroupBasedFilterConfig": {
+        "description": "UpstreamFilter configures an optional group-based filter that narrows the\nmulti-upstream authorization chain per-request based on the first\nupstream's resolved identity. When nil, every request walks the full\nupstream chain in configured order (preserving behavior from before the\nfilter hook existed).\n\nThe filter is applied exactly once per authorization, on the first leg's\ncallback. The mandatory first upstream (Upstreams[0]) is never filtered\nout. See pkg/authserver/upstreamfilter for the configuration schema and\npkg/authserver/server/handlers for the runtime contract.",
+        "properties": {
+          "claim": {
+            "description": "Claim is the exact, top-level JWT/OIDC claim name to read group\nmembership from. Defaults to \"groups\" when empty. The claim value MUST be\na JSON array of strings; other shapes (missing, non-array, mixed types)\nfail the authorization. Nested claims (e.g. Keycloak's realm_access.roles)\nmust be flattened by the identity provider — nested paths are not\nsupported in this implementation.",
+            "type": "string"
+          },
+          "defaultUpstreams": {
+            "description": "DefaultUpstreams is used when the claim is a valid empty array or when no\nrule matches. When empty or omitted, no optional upstreams are added —\nthe mandatory first upstream remains but the authorization walks no\nfurther.",
+            "items": {
+              "type": "string"
+            },
+            "type": "array",
+            "uniqueItems": false
+          },
+          "rules": {
+            "description": "Rules assigns groups to upstream provider subsets. A principal matches a\nrule if any of the principal's group values appears in the rule's Groups\nlist (any-of / OR semantics). Multiple matching rules are combined by\nunion: the effective upstream chain contains every UpstreamProviders\nvalue from every matching rule, deduplicated.",
+            "items": {
+              "$ref": "#/components/schemas/UpstreamfilterGroupRule"
+            },
+            "type": "array",
+            "uniqueItems": false
+          }
+        },
+        "type": "object"
+      },
+      "UpstreamfilterGroupRule": {
+        "properties": {
+          "groups": {
+            "description": "Groups is the set of principal group names this rule matches. Matching\nis case-sensitive and exact. Empty and duplicate values are rejected at\nconfiguration validation time.",
+            "items": {
+              "type": "string"
+            },
+            "type": "array",
+            "uniqueItems": false
+          },
+          "upstreamProviders": {
+            "description": "UpstreamProviders lists the non-first upstream provider names to include\nin the chain when this rule matches. All names must reference a\nconfigured non-first upstream. Empty and duplicate values, references to\nthe mandatory first upstream, and references to undeclared upstreams are\nrejected at configuration validation time.",
+            "items": {
+              "type": "string"
+            },
+            "type": "array",
+            "uniqueItems": false
           }
         },
         "type": "object"

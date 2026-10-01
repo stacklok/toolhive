@@ -2789,6 +2789,12 @@ func (s *AuthenticationRunConfig) encodeFields(e *jx.Encoder) {
 		}
 	}
 	{
+		if s.UpstreamFilter.Set {
+			e.FieldStart("upstream_filter")
+			s.UpstreamFilter.Encode(e)
+		}
+	}
+	{
 		if s.Upstreams != nil {
 			e.FieldStart("upstreams")
 			e.ArrStart()
@@ -2800,7 +2806,7 @@ func (s *AuthenticationRunConfig) encodeFields(e *jx.Encoder) {
 	}
 }
 
-var jsonFieldsNameOfAuthenticationRunConfig = [24]string{
+var jsonFieldsNameOfAuthenticationRunConfig = [25]string{
 	0:  "allow_confidential_client_registration",
 	1:  "allow_private_key_jwt_registration",
 	2:  "allowed_audiences",
@@ -2824,7 +2830,8 @@ var jsonFieldsNameOfAuthenticationRunConfig = [24]string{
 	20: "storage",
 	21: "token_lifespans",
 	22: "trusted_issuers",
-	23: "upstreams",
+	23: "upstream_filter",
+	24: "upstreams",
 }
 
 // Decode decodes AuthenticationRunConfig from json.
@@ -3130,6 +3137,16 @@ func (s *AuthenticationRunConfig) Decode(d *jx.Decoder) error {
 				return nil
 			}(); err != nil {
 				return errors.Wrap(err, "decode field \"trusted_issuers\"")
+			}
+		case "upstream_filter":
+			if err := func() error {
+				s.UpstreamFilter.Reset()
+				if err := s.UpstreamFilter.Decode(d); err != nil {
+					return err
+				}
+				return nil
+			}(); err != nil {
+				return errors.Wrap(err, "decode field \"upstream_filter\"")
 			}
 		case "upstreams":
 			if err := func() error {
@@ -20617,6 +20634,39 @@ func (s OptUpgradeRequestEnv) MarshalJSON() ([]byte, error) {
 
 // UnmarshalJSON implements stdjson.Unmarshaler.
 func (s *OptUpgradeRequestEnv) UnmarshalJSON(data []byte) error {
+	d := jx.DecodeBytes(data)
+	return s.Decode(d)
+}
+
+// Encode encodes UpstreamfilterGroupBasedFilterConfig as json.
+func (o OptUpstreamfilterGroupBasedFilterConfig) Encode(e *jx.Encoder) {
+	if !o.Set {
+		return
+	}
+	o.Value.Encode(e)
+}
+
+// Decode decodes UpstreamfilterGroupBasedFilterConfig from json.
+func (o *OptUpstreamfilterGroupBasedFilterConfig) Decode(d *jx.Decoder) error {
+	if o == nil {
+		return errors.New("invalid: unable to decode OptUpstreamfilterGroupBasedFilterConfig to nil")
+	}
+	o.Set = true
+	if err := o.Value.Decode(d); err != nil {
+		return err
+	}
+	return nil
+}
+
+// MarshalJSON implements stdjson.Marshaler.
+func (s OptUpstreamfilterGroupBasedFilterConfig) MarshalJSON() ([]byte, error) {
+	e := jx.Encoder{}
+	s.Encode(&e)
+	return e.Bytes(), nil
+}
+
+// UnmarshalJSON implements stdjson.Unmarshaler.
+func (s *OptUpstreamfilterGroupBasedFilterConfig) UnmarshalJSON(data []byte) error {
 	d := jx.DecodeBytes(data)
 	return s.Decode(d)
 }
@@ -41080,6 +41130,233 @@ func (s UpgradeWorkloadUnprocessableEntityApplicationJSON) MarshalJSON() ([]byte
 
 // UnmarshalJSON implements stdjson.Unmarshaler.
 func (s *UpgradeWorkloadUnprocessableEntityApplicationJSON) UnmarshalJSON(data []byte) error {
+	d := jx.DecodeBytes(data)
+	return s.Decode(d)
+}
+
+// Encode implements json.Marshaler.
+func (s *UpstreamfilterGroupBasedFilterConfig) Encode(e *jx.Encoder) {
+	e.ObjStart()
+	s.encodeFields(e)
+	e.ObjEnd()
+}
+
+// encodeFields encodes fields.
+func (s *UpstreamfilterGroupBasedFilterConfig) encodeFields(e *jx.Encoder) {
+	{
+		if s.Claim.Set {
+			e.FieldStart("claim")
+			s.Claim.Encode(e)
+		}
+	}
+	{
+		if s.DefaultUpstreams != nil {
+			e.FieldStart("defaultUpstreams")
+			e.ArrStart()
+			for _, elem := range s.DefaultUpstreams {
+				e.Str(elem)
+			}
+			e.ArrEnd()
+		}
+	}
+	{
+		if s.Rules != nil {
+			e.FieldStart("rules")
+			e.ArrStart()
+			for _, elem := range s.Rules {
+				elem.Encode(e)
+			}
+			e.ArrEnd()
+		}
+	}
+}
+
+var jsonFieldsNameOfUpstreamfilterGroupBasedFilterConfig = [3]string{
+	0: "claim",
+	1: "defaultUpstreams",
+	2: "rules",
+}
+
+// Decode decodes UpstreamfilterGroupBasedFilterConfig from json.
+func (s *UpstreamfilterGroupBasedFilterConfig) Decode(d *jx.Decoder) error {
+	if s == nil {
+		return errors.New("invalid: unable to decode UpstreamfilterGroupBasedFilterConfig to nil")
+	}
+
+	if err := d.ObjBytes(func(d *jx.Decoder, k []byte) error {
+		switch string(k) {
+		case "claim":
+			if err := func() error {
+				s.Claim.Reset()
+				if err := s.Claim.Decode(d); err != nil {
+					return err
+				}
+				return nil
+			}(); err != nil {
+				return errors.Wrap(err, "decode field \"claim\"")
+			}
+		case "defaultUpstreams":
+			if err := func() error {
+				s.DefaultUpstreams = make([]string, 0)
+				if err := d.Arr(func(d *jx.Decoder) error {
+					var elem string
+					v, err := d.Str()
+					elem = string(v)
+					if err != nil {
+						return err
+					}
+					s.DefaultUpstreams = append(s.DefaultUpstreams, elem)
+					return nil
+				}); err != nil {
+					return err
+				}
+				return nil
+			}(); err != nil {
+				return errors.Wrap(err, "decode field \"defaultUpstreams\"")
+			}
+		case "rules":
+			if err := func() error {
+				s.Rules = make([]UpstreamfilterGroupRule, 0)
+				if err := d.Arr(func(d *jx.Decoder) error {
+					var elem UpstreamfilterGroupRule
+					if err := elem.Decode(d); err != nil {
+						return err
+					}
+					s.Rules = append(s.Rules, elem)
+					return nil
+				}); err != nil {
+					return err
+				}
+				return nil
+			}(); err != nil {
+				return errors.Wrap(err, "decode field \"rules\"")
+			}
+		default:
+			return d.Skip()
+		}
+		return nil
+	}); err != nil {
+		return errors.Wrap(err, "decode UpstreamfilterGroupBasedFilterConfig")
+	}
+
+	return nil
+}
+
+// MarshalJSON implements stdjson.Marshaler.
+func (s *UpstreamfilterGroupBasedFilterConfig) MarshalJSON() ([]byte, error) {
+	e := jx.Encoder{}
+	s.Encode(&e)
+	return e.Bytes(), nil
+}
+
+// UnmarshalJSON implements stdjson.Unmarshaler.
+func (s *UpstreamfilterGroupBasedFilterConfig) UnmarshalJSON(data []byte) error {
+	d := jx.DecodeBytes(data)
+	return s.Decode(d)
+}
+
+// Encode implements json.Marshaler.
+func (s *UpstreamfilterGroupRule) Encode(e *jx.Encoder) {
+	e.ObjStart()
+	s.encodeFields(e)
+	e.ObjEnd()
+}
+
+// encodeFields encodes fields.
+func (s *UpstreamfilterGroupRule) encodeFields(e *jx.Encoder) {
+	{
+		if s.Groups != nil {
+			e.FieldStart("groups")
+			e.ArrStart()
+			for _, elem := range s.Groups {
+				e.Str(elem)
+			}
+			e.ArrEnd()
+		}
+	}
+	{
+		if s.UpstreamProviders != nil {
+			e.FieldStart("upstreamProviders")
+			e.ArrStart()
+			for _, elem := range s.UpstreamProviders {
+				e.Str(elem)
+			}
+			e.ArrEnd()
+		}
+	}
+}
+
+var jsonFieldsNameOfUpstreamfilterGroupRule = [2]string{
+	0: "groups",
+	1: "upstreamProviders",
+}
+
+// Decode decodes UpstreamfilterGroupRule from json.
+func (s *UpstreamfilterGroupRule) Decode(d *jx.Decoder) error {
+	if s == nil {
+		return errors.New("invalid: unable to decode UpstreamfilterGroupRule to nil")
+	}
+
+	if err := d.ObjBytes(func(d *jx.Decoder, k []byte) error {
+		switch string(k) {
+		case "groups":
+			if err := func() error {
+				s.Groups = make([]string, 0)
+				if err := d.Arr(func(d *jx.Decoder) error {
+					var elem string
+					v, err := d.Str()
+					elem = string(v)
+					if err != nil {
+						return err
+					}
+					s.Groups = append(s.Groups, elem)
+					return nil
+				}); err != nil {
+					return err
+				}
+				return nil
+			}(); err != nil {
+				return errors.Wrap(err, "decode field \"groups\"")
+			}
+		case "upstreamProviders":
+			if err := func() error {
+				s.UpstreamProviders = make([]string, 0)
+				if err := d.Arr(func(d *jx.Decoder) error {
+					var elem string
+					v, err := d.Str()
+					elem = string(v)
+					if err != nil {
+						return err
+					}
+					s.UpstreamProviders = append(s.UpstreamProviders, elem)
+					return nil
+				}); err != nil {
+					return err
+				}
+				return nil
+			}(); err != nil {
+				return errors.Wrap(err, "decode field \"upstreamProviders\"")
+			}
+		default:
+			return d.Skip()
+		}
+		return nil
+	}); err != nil {
+		return errors.Wrap(err, "decode UpstreamfilterGroupRule")
+	}
+
+	return nil
+}
+
+// MarshalJSON implements stdjson.Marshaler.
+func (s *UpstreamfilterGroupRule) MarshalJSON() ([]byte, error) {
+	e := jx.Encoder{}
+	s.Encode(&e)
+	return e.Bytes(), nil
+}
+
+// UnmarshalJSON implements stdjson.Unmarshaler.
+func (s *UpstreamfilterGroupRule) UnmarshalJSON(data []byte) error {
 	d := jx.DecodeBytes(data)
 	return s.Decode(d)
 }

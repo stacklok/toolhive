@@ -5,6 +5,7 @@ package authserver
 
 import (
 	"bytes"
+	"encoding/json"
 	"log/slog"
 	"strings"
 	"testing"
@@ -18,6 +19,7 @@ import (
 	"github.com/stacklok/toolhive/pkg/authserver/server/registration"
 	"github.com/stacklok/toolhive/pkg/authserver/server/tokenexchange"
 	"github.com/stacklok/toolhive/pkg/authserver/upstream"
+	"github.com/stacklok/toolhive/pkg/authserver/upstreamfilter"
 	"github.com/stacklok/toolhive/pkg/oauthproto"
 )
 
@@ -728,6 +730,146 @@ func TestRunConfigValidate(t *testing.T) {
 			assertError(t, err, tt.wantErr, tt.errMsg)
 		})
 	}
+}
+
+// TestRunConfigValidate_UpstreamFilter covers RunConfig.Validate()'s
+// enforcement of UpstreamFilter static invariants against the configured
+// upstream list. Thorough matching/union/claim behavior is covered in
+// pkg/authserver/upstreamfilter — these cases only verify that invalid filter
+// configurations are rejected at startup rather than deferred to a runtime
+// surprise.
+func TestRunConfigValidate_UpstreamFilter(t *testing.T) {
+	t.Parallel()
+
+	okta := UpstreamRunConfig{Name: "okta"}
+	jira := UpstreamRunConfig{Name: "jira"}
+	slack := UpstreamRunConfig{Name: "slack"}
+
+	validRule := upstreamfilter.GroupRule{
+		Groups:            []string{"engineering"},
+		UpstreamProviders: []string{"jira"},
+	}
+
+	tests := []struct {
+		name    string
+		cfg     RunConfig
+		wantErr bool
+		errMsg  string
+	}{
+		{
+			name: "nil UpstreamFilter passes",
+			cfg: RunConfig{
+				Upstreams: []UpstreamRunConfig{okta, jira, slack},
+			},
+		},
+		{
+			name: "valid UpstreamFilter passes",
+			cfg: RunConfig{
+				Upstreams: []UpstreamRunConfig{okta, jira, slack},
+				UpstreamFilter: &upstreamfilter.GroupBasedFilterConfig{
+					Rules:            []upstreamfilter.GroupRule{validRule},
+					DefaultUpstreams: []string{"slack"},
+				},
+			},
+		},
+		{
+			name: "fewer than two upstreams is rejected",
+			cfg: RunConfig{
+				Upstreams: []UpstreamRunConfig{okta},
+				UpstreamFilter: &upstreamfilter.GroupBasedFilterConfig{
+					Rules: []upstreamfilter.GroupRule{validRule},
+				},
+			},
+			wantErr: true,
+			errMsg:  "at least two configured upstreams",
+		},
+		{
+			name: "unknown upstream reference is rejected",
+			cfg: RunConfig{
+				Upstreams: []UpstreamRunConfig{okta, jira, slack},
+				UpstreamFilter: &upstreamfilter.GroupBasedFilterConfig{
+					Rules: []upstreamfilter.GroupRule{{
+						Groups:            []string{"engineering"},
+						UpstreamProviders: []string{"salesforce"},
+					}},
+				},
+			},
+			wantErr: true,
+			errMsg:  `"salesforce" is not a configured upstream`,
+		},
+		{
+			name: "reference to mandatory first upstream is rejected",
+			cfg: RunConfig{
+				Upstreams: []UpstreamRunConfig{okta, jira, slack},
+				UpstreamFilter: &upstreamfilter.GroupBasedFilterConfig{
+					Rules: []upstreamfilter.GroupRule{{
+						Groups:            []string{"engineering"},
+						UpstreamProviders: []string{"okta"},
+					}},
+				},
+			},
+			wantErr: true,
+			errMsg:  `must not reference the mandatory first upstream "okta"`,
+		},
+		{
+			name: "no rules is rejected",
+			cfg: RunConfig{
+				Upstreams: []UpstreamRunConfig{okta, jira, slack},
+				UpstreamFilter: &upstreamfilter.GroupBasedFilterConfig{
+					Rules: nil,
+				},
+			},
+			wantErr: true,
+			errMsg:  "at least one rule",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			err := tt.cfg.Validate()
+			assertError(t, err, tt.wantErr, tt.errMsg)
+		})
+	}
+}
+
+// TestRunConfig_UpstreamFilterRoundTrip verifies that UpstreamFilter survives
+// JSON encode/decode without data loss — this is the path by which the
+// operator ConfigMap delivers the field to the vMCP pod.
+func TestRunConfig_UpstreamFilterRoundTrip(t *testing.T) {
+	t.Parallel()
+
+	original := RunConfig{
+		SchemaVersion: CurrentSchemaVersion,
+		Issuer:        "https://example.com",
+		Upstreams: []UpstreamRunConfig{
+			{Name: "okta"},
+			{Name: "jira"},
+			{Name: "slack"},
+		},
+		UpstreamFilter: &upstreamfilter.GroupBasedFilterConfig{
+			Claim: "groups",
+			Rules: []upstreamfilter.GroupRule{
+				{Groups: []string{"engineering"}, UpstreamProviders: []string{"jira", "slack"}},
+				{Groups: []string{"sales"}, UpstreamProviders: []string{"slack"}},
+			},
+			DefaultUpstreams: []string{"jira"},
+		},
+	}
+
+	encoded, err := json.Marshal(&original)
+	require.NoError(t, err)
+
+	var decoded RunConfig
+	require.NoError(t, json.Unmarshal(encoded, &decoded))
+
+	assert.Equal(t, original.UpstreamFilter, decoded.UpstreamFilter)
+	// Also confirm omitempty behavior: a nil filter must not appear in the
+	// encoded payload at all.
+	noFilter := RunConfig{SchemaVersion: CurrentSchemaVersion, Issuer: "https://example.com"}
+	noFilterJSON, err := json.Marshal(&noFilter)
+	require.NoError(t, err)
+	assert.NotContains(t, string(noFilterJSON), "upstream_filter")
 }
 
 func TestDelegateClientRunConfigValidate(t *testing.T) {

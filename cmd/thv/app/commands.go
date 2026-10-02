@@ -122,6 +122,12 @@ func IsInformationalCommand(args []string) bool {
 		"ai-plugin":  true,
 		"vmcp":       true,
 		"llm":        true,
+
+		// Help flags: running "thv --help" (flag-first) or "thv help" must not
+		// trigger container runtime startup or migrations.
+		"--help": true,
+		"-h":     true,
+		"help":   true,
 	}
 
 	return informationalCommands[command]

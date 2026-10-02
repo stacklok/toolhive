@@ -172,6 +172,47 @@ func TestOriginMiddleware_MultipleOriginHeadersRejected(t *testing.T) {
 	assertForbiddenJSONRPC(t, rec, nextCalled)
 }
 
+func TestOriginMiddleware_CORSPreflight(t *testing.T) {
+	t.Parallel()
+
+	var nextCalled bool
+	handler := NewHandler([]string{"http://localhost:6274"})(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		nextCalled = true
+		w.WriteHeader(http.StatusOK)
+	}))
+	req := httptest.NewRequest(http.MethodOptions, "/mcp", nil)
+	req.Header.Set("Origin", "http://localhost:6274")
+	req.Header.Set("Access-Control-Request-Method", http.MethodPost)
+	req.Header.Set("Access-Control-Request-Headers", "Content-Type, MCP-Protocol-Version")
+	rec := httptest.NewRecorder()
+
+	handler.ServeHTTP(rec, req)
+
+	assert.False(t, nextCalled, "preflight must be handled by the middleware")
+	assert.Equal(t, http.StatusNoContent, rec.Code)
+	assert.Equal(t, "http://localhost:6274", rec.Header().Get("Access-Control-Allow-Origin"))
+	assert.Equal(t, "Origin", rec.Header().Get("Vary"))
+	assert.Contains(t, rec.Header().Get("Access-Control-Allow-Methods"), http.MethodPost)
+	assert.Contains(t, rec.Header().Get("Access-Control-Allow-Headers"), "MCP-Protocol-Version")
+}
+
+func TestOriginMiddleware_CORSResponseHeaders(t *testing.T) {
+	t.Parallel()
+
+	handler := NewHandler([]string{"http://localhost:6274"})(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusAccepted)
+	}))
+	req := httptest.NewRequest(http.MethodPost, "/mcp", nil)
+	req.Header.Set("Origin", "http://localhost:6274")
+	rec := httptest.NewRecorder()
+
+	handler.ServeHTTP(rec, req)
+
+	assert.Equal(t, http.StatusAccepted, rec.Code)
+	assert.Equal(t, "http://localhost:6274", rec.Header().Get("Access-Control-Allow-Origin"))
+	assert.Equal(t, "Origin", rec.Header().Get("Vary"))
+}
+
 // assertForbiddenJSONRPC validates that rec carries a 403 with a canonical
 // JSON-RPC error body and that the inner handler was never invoked.
 //

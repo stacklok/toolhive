@@ -792,6 +792,7 @@ func addRateLimitMiddleware(middlewares []types.MiddlewareConfig, config *RunCon
 		Config:     config.RateLimitConfig,
 		RedisAddr:  redisAddr,
 		RedisDB:    redisDB,
+		RedisTLS:   config.ScalingConfig.SessionRedis.TLS,
 	}
 	mwConfig, err := types.NewMiddlewareConfig(ratelimit.MiddlewareType, params)
 	if err != nil {

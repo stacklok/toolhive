@@ -6,6 +6,7 @@
 - [toolhive.stacklok.dev/config](#toolhivestacklokdevconfig)
 - [toolhive.stacklok.dev/json](#toolhivestacklokdevjson)
 - [toolhive.stacklok.dev/ratelimit](#toolhivestacklokdevratelimit)
+- [toolhive.stacklok.dev/redisconfig](#toolhivestacklokdevredisconfig)
 - [toolhive.stacklok.dev/telemetry](#toolhivestacklokdevtelemetry)
 - [toolhive.stacklok.dev/v1alpha1](#toolhivestacklokdevv1alpha1)
 - [toolhive.stacklok.dev/v1beta1](#toolhivestacklokdevv1beta1)
@@ -736,6 +737,7 @@ _Appears in:_
 | `address` _string_ | Address is the Redis server address (required when provider is redis). |  | Optional: \{\} <br /> |
 | `db` _integer_ | DB is the Redis database number. | 0 | Minimum: 0 <br />Optional: \{\} <br /> |
 | `keyPrefix` _string_ | KeyPrefix is an optional prefix for all Redis keys used by ToolHive. |  | Optional: \{\} <br /> |
+| `tls` _[pkg.redisconfig.TLSConfig](#pkgredisconfigtlsconfig)_ | TLS enables TLS for session storage and rate limiting. An empty<br />configuration verifies the Redis server using system roots. |  | Optional: \{\} <br /> |
 
 
 #### vmcp.config.StaticBackendConfig
@@ -1003,6 +1005,28 @@ _Appears in:_
 | `name` _string_ | Name is the MCP tool name this limit applies to. |  | MinLength: 1 <br />Required: \{\} <br /> |
 | `shared` _[ratelimit.types.RateLimitBucket](#ratelimittypesratelimitbucket)_ | Shared token bucket for this specific tool. |  | Optional: \{\} <br /> |
 | `perUser` _[ratelimit.types.RateLimitBucket](#ratelimittypesratelimitbucket)_ | PerUser token bucket configuration for this tool. |  | Optional: \{\} <br /> |
+
+
+
+## toolhive.stacklok.dev/redisconfig
+
+
+#### pkg.redisconfig.TLSConfig
+
+
+
+TLSConfig configures TLS for a Redis connection. Presence enables TLS;
+an empty configuration verifies the server certificate using system roots.
+
+
+
+_Appears in:_
+- [vmcp.config.SessionStorageConfig](#vmcpconfigsessionstorageconfig)
+
+| Field | Description | Default | Validation |
+| --- | --- | --- | --- |
+| `insecureSkipVerify` _boolean_ | InsecureSkipVerify skips server certificate and hostname verification. |  | Optional: \{\} <br /> |
+| `caCertFile` _string_ | CACertFile is the path to a PEM-encoded CA bundle. When configured, this<br />bundle replaces the system roots used to verify the Redis server. |  | Optional: \{\} <br /> |
 
 
 

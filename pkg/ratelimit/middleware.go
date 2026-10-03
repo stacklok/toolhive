@@ -125,9 +125,10 @@ func CreateMiddleware(config *types.MiddlewareConfig, runner types.MiddlewareRun
 func rateLimitHandler(limiter Limiter) types.MiddlewareFunction {
 	return func(next http.Handler) http.Handler {
 		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-			// Rate limits only apply to parsed tools/call requests.
-			// Non-JSON-RPC requests (health checks, SSE streams) have no
-			// parsed context and pass through unconditionally.
+			// The configured chain MUST place MCP parsing before this middleware.
+			// A nil POST context may be an admitted response or a missing-parser
+			// misconfiguration. These controls do not apply to non-POST traffic;
+			// rate limits only apply to parsed tools/call requests.
 			parsed := mcp.GetParsedMCPRequest(r.Context())
 			if parsed == nil || parsed.Method != "tools/call" {
 				next.ServeHTTP(w, r)

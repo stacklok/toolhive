@@ -28,7 +28,7 @@ import (
 func DecodeMessage(body []byte) (msg jsonrpc2.Message, err error) {
 	defer func() {
 		if err != nil {
-			slog.Warn("rejected invalid MCP JSON-RPC message")
+			slog.Warn("rejected invalid MCP JSON-RPC message", "reason", messageRejectionReason(err))
 		}
 	}()
 	body = bytes.Trim(bytes.TrimPrefix(body, UTF8BOM), " \t\r\n")
@@ -69,14 +69,27 @@ func DecodeMessage(body []byte) (msg jsonrpc2.Message, err error) {
 	return msg, nil
 }
 
+func messageRejectionReason(err error) string {
+	var batch *BatchUnsupportedError
+	switch {
+	case errors.Is(err, jsonrpc2.ErrParse):
+		return "parse"
+	case errors.As(err, &batch):
+		return "batch"
+	default:
+		return "invalid_request"
+	}
+}
+
 // writeBodyReadError never exposes reader-provided errors to clients or logs.
 func writeBodyReadError(w http.ResponseWriter, err error) {
-	slog.Warn("rejected unreadable MCP request body")
 	var tooLarge *http.MaxBytesError
 	if errors.As(err, &tooLarge) {
+		slog.Warn("rejected unreadable MCP request body", "reason", "body_too_large")
 		http.Error(w, "Request Entity Too Large", http.StatusRequestEntityTooLarge)
 		return
 	}
+	slog.Warn("rejected unreadable MCP request body", "reason", "read_error")
 	WriteClassificationError(w, nil, ambiguousRequest)
 }
 

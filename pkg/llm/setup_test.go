@@ -321,15 +321,19 @@ func (s *stubGatewayManager) RevertLLMGateway(clientType, _ string) error {
 type stubConfigUpdater struct {
 	cfg         Config
 	updateCalls int
+	updateErr   error
 }
 
 func (s *stubConfigUpdater) GetLLMConfig() Config { return s.cfg }
 func (s *stubConfigUpdater) UpdateLLMConfig(fn func(*Config) error) error {
 	s.updateCalls++
+	if s.updateErr != nil {
+		return s.updateErr
+	}
 	return fn(&s.cfg)
 }
 
-func TestTeardown_PurgeTokens_ClearsConfigRefsAndDeletesSecrets(t *testing.T) {
+func TestTeardown_PurgeTokens_ClearsConfigRefsAndDeletesSecretsDuringPartialTeardown(t *testing.T) {
 	t.Parallel()
 
 	ctrl := gomock.NewController(t)
@@ -337,9 +341,16 @@ func TestTeardown_PurgeTokens_ClearsConfigRefsAndDeletesSecrets(t *testing.T) {
 	sp.EXPECT().Capabilities().Return(secrets.ProviderCapabilities{
 		CanRead: true, CanWrite: true, CanDelete: true, CanList: true,
 	}).AnyTimes()
-	// DeleteCachedTokens lists then deletes; for simplicity return empty list so
-	// the delete call is skipped — we only need to verify the config refs are cleared.
-	sp.EXPECT().ListSecrets(gomock.Any()).Return(nil, nil)
+	refreshKey := secrets.SystemKeyPrefix + string(secrets.ScopeLLM) + "_refresh_token"
+	accessKey := secrets.SystemKeyPrefix + string(secrets.ScopeLLM) + "_access_token"
+	sp.EXPECT().ListSecrets(gomock.Any()).Return([]secrets.SecretDescription{
+		{Key: refreshKey},
+		{Key: accessKey},
+	}, nil)
+	sp.EXPECT().DeleteSecrets(gomock.Any(), gomock.InAnyOrder([]string{
+		refreshKey,
+		accessKey,
+	})).Return(nil)
 
 	expiry := time.Now()
 	provider := &stubConfigUpdater{cfg: Config{
@@ -347,19 +358,27 @@ func TestTeardown_PurgeTokens_ClearsConfigRefsAndDeletesSecrets(t *testing.T) {
 			CachedRefreshTokenRef: "some-ref",
 			CachedTokenExpiry:     expiry,
 		},
-		ConfiguredTools: []ToolConfig{{Tool: "cursor", ConfigPath: "/tmp/cursor.json"}},
+		ConfiguredTools: []ToolConfig{
+			{Tool: "cursor", ConfigPath: "/tmp/cursor.json"},
+			{Tool: "claude-code", ConfigPath: "/tmp/claude.json"},
+		},
 	}}
 	gm := &stubGatewayManager{}
 
 	var stdout, stderr bytes.Buffer
-	err := Teardown(context.Background(), &stdout, &stderr, gm, "", true, provider, sp)
+	err := Teardown(context.Background(), &stdout, &stderr, gm, "cursor", false, true, provider,
+		func() (secrets.Provider, error) { return sp, nil })
 	require.NoError(t, err)
 
 	// Config refs must be cleared.
 	assert.Empty(t, provider.cfg.OIDC.CachedRefreshTokenRef)
 	assert.True(t, provider.cfg.OIDC.CachedTokenExpiry.IsZero())
-	// Tool must have been reverted.
+	require.Len(t, provider.cfg.ConfiguredTools, 1)
+	assert.Equal(t, "claude-code", provider.cfg.ConfiguredTools[0].Tool)
+	// Only the targeted tool must have been reverted.
 	assert.Equal(t, []string{"cursor"}, gm.reverted)
+	assert.Contains(t, stdout.String(), "Remaining configured tools share this session")
+	assert.Contains(t, stdout.String(), "active process may recreate cached credentials")
 }
 
 // fullSetupConfig returns a config as "thv llm setup" would leave it, with the
@@ -389,9 +408,8 @@ func fullSetupConfig(tools ...string) Config {
 // deliberately sticky across "thv llm setup" re-runs, so leaving them behind
 // would let a later setup silently re-apply settings the user just tore down.
 //
-// Cached token state is the one exception: it is carried over so the keyring
-// secret it points at is not stranded, and stays the business of --purge-tokens.
-func TestTeardown_ResetsConfigWhenLastToolReverted(t *testing.T) {
+// Cached token state is retained only when the user explicitly requests it.
+func TestTeardown_KeepTokensResetsConfigWhenLastToolReverted(t *testing.T) {
 	t.Parallel()
 
 	tests := []struct {
@@ -419,7 +437,7 @@ func TestTeardown_ResetsConfigWhenLastToolReverted(t *testing.T) {
 
 			var stdout, stderr bytes.Buffer
 			err := Teardown(context.Background(), &stdout, &stderr,
-				&stubGatewayManager{}, tt.targetTool, false, provider, nil)
+				&stubGatewayManager{}, tt.targetTool, true, false, provider, nil)
 			require.NoError(t, err)
 
 			want := Config{OIDC: OIDCConfig{CachedRefreshTokenRef: "secret-ref"}}
@@ -430,20 +448,80 @@ func TestTeardown_ResetsConfigWhenLastToolReverted(t *testing.T) {
 	}
 }
 
-// TestTeardown_ResetsCachedTokenStateWhenPurging verifies that --purge-tokens
-// still clears the cached token refs on a full teardown, so the config keeps no
-// pointer to secrets that PurgeTokens deletes.
-func TestTeardown_ResetsCachedTokenStateWhenPurging(t *testing.T) {
+// TestTeardown_DefaultPurgeWhenNoToolsRemain verifies that both forms of full
+// teardown delete cached tokens without requiring --purge-tokens.
+func TestTeardown_DefaultPurgeWhenNoToolsRemain(t *testing.T) {
 	t.Parallel()
 
-	provider := &stubConfigUpdater{cfg: fullSetupConfig("claude-code")}
+	tests := []struct {
+		name       string
+		configured []string
+		targetTool string
+	}{
+		{
+			name:       "targeted teardown removes final tool",
+			configured: []string{"claude-code"},
+			targetTool: "claude-code",
+		},
+		{
+			name:       "untargeted teardown removes all tools",
+			configured: []string{"claude-code", "cursor"},
+		},
+	}
 
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			ctrl := gomock.NewController(t)
+			sp := secretsmocks.NewMockProvider(ctrl)
+			sp.EXPECT().Capabilities().Return(secrets.ProviderCapabilities{
+				CanRead: true, CanWrite: true, CanDelete: true, CanList: true,
+			}).AnyTimes()
+			sp.EXPECT().ListSecrets(gomock.Any()).Return(nil, nil)
+
+			factoryCalls := 0
+			provider := &stubConfigUpdater{cfg: fullSetupConfig(tt.configured...)}
+			var stdout, stderr bytes.Buffer
+			err := Teardown(context.Background(), &stdout, &stderr,
+				&stubGatewayManager{}, tt.targetTool, false, false, provider,
+				func() (secrets.Provider, error) {
+					factoryCalls++
+					return sp, nil
+				})
+			require.NoError(t, err)
+
+			assert.Equal(t, 1, factoryCalls)
+			assert.Equal(t, Config{}, provider.cfg)
+		})
+	}
+}
+
+func TestTeardown_ZeroToolsStillPurgesCachedTokens(t *testing.T) {
+	t.Parallel()
+
+	ctrl := gomock.NewController(t)
+	sp := secretsmocks.NewMockProvider(ctrl)
+	sp.EXPECT().Capabilities().Return(secrets.ProviderCapabilities{
+		CanRead: true, CanWrite: true, CanDelete: true, CanList: true,
+	}).AnyTimes()
+	sp.EXPECT().ListSecrets(gomock.Any()).Return(nil, nil)
+
+	factoryCalls := 0
+	provider := &stubConfigUpdater{cfg: fullSetupConfig()}
 	var stdout, stderr bytes.Buffer
 	err := Teardown(context.Background(), &stdout, &stderr,
-		&stubGatewayManager{}, "", true, provider, nil)
+		&stubGatewayManager{}, "", false, false, provider,
+		func() (secrets.Provider, error) {
+			factoryCalls++
+			return sp, nil
+		})
 	require.NoError(t, err)
 
+	assert.Equal(t, 1, factoryCalls)
+	assert.Equal(t, 1, provider.updateCalls)
 	assert.Equal(t, Config{}, provider.cfg)
+	assert.Contains(t, stdout.String(), "No tools are currently configured")
 }
 
 // TestTeardown_KeepsConfigWhileToolsRemain verifies that a targeted teardown
@@ -454,12 +532,18 @@ func TestTeardown_KeepsConfigWhileToolsRemain(t *testing.T) {
 	t.Parallel()
 
 	provider := &stubConfigUpdater{cfg: fullSetupConfig("claude-code", "cursor")}
+	factoryCalls := 0
 
 	var stdout, stderr bytes.Buffer
 	err := Teardown(context.Background(), &stdout, &stderr,
-		&stubGatewayManager{}, "claude-code", false, provider, nil)
+		&stubGatewayManager{}, "claude-code", false, false, provider,
+		func() (secrets.Provider, error) {
+			factoryCalls++
+			return nil, errors.New("must not acquire secrets provider")
+		})
 	require.NoError(t, err)
 
+	assert.Zero(t, factoryCalls)
 	assert.True(t, provider.cfg.IsConfigured(),
 		"cursor still routes through the gateway, so its config must survive")
 	assert.Equal(t, "secret-ref", provider.cfg.OIDC.CachedRefreshTokenRef,
@@ -474,7 +558,7 @@ func TestTeardown_KeepsConfigWhileToolsRemain(t *testing.T) {
 	assert.Equal(t, []string{"cursor"}, remaining)
 }
 
-func TestTeardown_NoPurge_LeavesTokenRefsIntact(t *testing.T) {
+func TestTeardown_KeepTokens_LeavesTokenRefsIntact(t *testing.T) {
 	t.Parallel()
 
 	expiry := time.Now()
@@ -486,14 +570,161 @@ func TestTeardown_NoPurge_LeavesTokenRefsIntact(t *testing.T) {
 		ConfiguredTools: []ToolConfig{{Tool: "cursor", ConfigPath: "/tmp/cursor.json"}},
 	}}
 	gm := &stubGatewayManager{}
+	factoryCalls := 0
 
 	var stdout, stderr bytes.Buffer
-	err := Teardown(context.Background(), &stdout, &stderr, gm, "", false, provider, nil)
+	err := Teardown(context.Background(), &stdout, &stderr, gm, "", true, false, provider,
+		func() (secrets.Provider, error) {
+			factoryCalls++
+			return nil, errors.New("must not acquire secrets provider")
+		})
 	require.NoError(t, err)
 
-	// Token refs must be untouched when purgeTokens=false.
+	assert.Zero(t, factoryCalls)
+	// Token refs must be untouched when keepTokens=true.
 	assert.Equal(t, "some-ref", provider.cfg.OIDC.CachedRefreshTokenRef)
 	assert.Equal(t, expiry, provider.cfg.OIDC.CachedTokenExpiry)
+}
+
+func TestTeardown_SecretsProviderAcquisitionErrorStopsBeforeConfigUpdate(t *testing.T) {
+	t.Parallel()
+
+	original := fullSetupConfig("cursor")
+	provider := &stubConfigUpdater{cfg: original}
+	gm := &stubGatewayManager{}
+
+	var stdout, stderr bytes.Buffer
+	err := Teardown(context.Background(), &stdout, &stderr, gm, "", false, false, provider,
+		func() (secrets.Provider, error) { return nil, errors.New("keychain unavailable") })
+	require.Error(t, err)
+
+	assert.ErrorContains(t, err, "getting secrets provider to remove cached LLM tokens")
+	assert.ErrorContains(t, err, "keychain unavailable")
+	assert.Zero(t, provider.updateCalls)
+	assert.Equal(t, original, provider.cfg)
+	assert.Empty(t, gm.reverted)
+}
+
+func TestTeardown_ConfigUpdateFailureLeavesToolStateAfterSecretCleanup(t *testing.T) {
+	t.Parallel()
+
+	ctrl := gomock.NewController(t)
+	sp := secretsmocks.NewMockProvider(ctrl)
+	sp.EXPECT().Capabilities().Return(secrets.ProviderCapabilities{
+		CanRead: true, CanWrite: true, CanDelete: true, CanList: true,
+	}).AnyTimes()
+	sp.EXPECT().ListSecrets(gomock.Any()).Return(nil, nil)
+	original := fullSetupConfig("cursor")
+	provider := &stubConfigUpdater{cfg: original, updateErr: errors.New("disk full")}
+	gm := &stubGatewayManager{}
+	factoryCalls := 0
+
+	var stdout, stderr bytes.Buffer
+	err := Teardown(context.Background(), &stdout, &stderr, gm, "", false, false, provider,
+		func() (secrets.Provider, error) {
+			factoryCalls++
+			return sp, nil
+		})
+	require.Error(t, err)
+
+	assert.ErrorContains(t, err, "cached LLM tokens were deleted, but persisting tool configuration")
+	assert.Equal(t, 1, factoryCalls)
+	assert.Equal(t, 1, provider.updateCalls)
+	assert.Equal(t, original, provider.cfg)
+	assert.Empty(t, gm.reverted)
+}
+
+func TestTeardown_PurgeErrorsAreFatal(t *testing.T) {
+	t.Parallel()
+
+	llmRefreshKey := secrets.SystemKeyPrefix + string(secrets.ScopeLLM) + "_refresh_token"
+	tests := []struct {
+		name      string
+		setupMock func(*secretsmocks.MockProvider)
+		wantError string
+	}{
+		{
+			name: "list error",
+			setupMock: func(sp *secretsmocks.MockProvider) {
+				sp.EXPECT().ListSecrets(gomock.Any()).Return(nil, errors.New("list failed"))
+			},
+			wantError: "list failed",
+		},
+		{
+			name: "delete error",
+			setupMock: func(sp *secretsmocks.MockProvider) {
+				sp.EXPECT().ListSecrets(gomock.Any()).Return([]secrets.SecretDescription{
+					{Key: llmRefreshKey},
+				}, nil)
+				sp.EXPECT().DeleteSecrets(gomock.Any(), []string{llmRefreshKey}).Return(errors.New("delete failed"))
+			},
+			wantError: "delete failed",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			ctrl := gomock.NewController(t)
+			sp := secretsmocks.NewMockProvider(ctrl)
+			sp.EXPECT().Capabilities().Return(secrets.ProviderCapabilities{
+				CanRead: true, CanWrite: true, CanDelete: true, CanList: true,
+			}).AnyTimes()
+			tt.setupMock(sp)
+
+			provider := &stubConfigUpdater{cfg: fullSetupConfig("cursor")}
+			gm := &stubGatewayManager{}
+			var stdout, stderr bytes.Buffer
+			err := Teardown(context.Background(), &stdout, &stderr, gm, "", false, false, provider,
+				func() (secrets.Provider, error) { return sp, nil })
+			require.Error(t, err)
+
+			assert.ErrorContains(t, err, "cached token cleanup failed; no configuration changes were made")
+			assert.ErrorContains(t, err, tt.wantError)
+			assert.Equal(t, fullSetupConfig("cursor"), provider.cfg)
+			assert.Zero(t, provider.updateCalls)
+			assert.Empty(t, gm.reverted)
+		})
+	}
+}
+
+func TestTeardown_PurgeFailureCanRetrySameTargetedCommand(t *testing.T) {
+	t.Parallel()
+
+	ctrl := gomock.NewController(t)
+	sp := secretsmocks.NewMockProvider(ctrl)
+	sp.EXPECT().Capabilities().Return(secrets.ProviderCapabilities{
+		CanRead: true, CanWrite: true, CanDelete: true, CanList: true,
+	}).AnyTimes()
+	gomock.InOrder(
+		sp.EXPECT().ListSecrets(gomock.Any()).Return(nil, errors.New("temporary keychain failure")),
+		sp.EXPECT().ListSecrets(gomock.Any()).Return(nil, nil),
+	)
+
+	provider := &stubConfigUpdater{cfg: fullSetupConfig("cursor", "claude-code")}
+	factoryCalls := 0
+	getSecretsProvider := func() (secrets.Provider, error) {
+		factoryCalls++
+		return sp, nil
+	}
+
+	var firstStdout, firstStderr bytes.Buffer
+	err := Teardown(context.Background(), &firstStdout, &firstStderr,
+		&stubGatewayManager{}, "cursor", false, true, provider, getSecretsProvider)
+	require.ErrorContains(t, err, "temporary keychain failure")
+	assert.Equal(t, fullSetupConfig("cursor", "claude-code"), provider.cfg)
+	assert.Zero(t, provider.updateCalls)
+
+	var retryStdout, retryStderr bytes.Buffer
+	err = Teardown(context.Background(), &retryStdout, &retryStderr,
+		&stubGatewayManager{}, "cursor", false, true, provider, getSecretsProvider)
+	require.NoError(t, err)
+
+	assert.Equal(t, 2, factoryCalls)
+	assert.Equal(t, 1, provider.updateCalls)
+	require.Len(t, provider.cfg.ConfiguredTools, 1)
+	assert.Equal(t, "claude-code", provider.cfg.ConfiguredTools[0].Tool)
 }
 
 // ── Setup --lazy path ─────────────────────────────────────────────────────────

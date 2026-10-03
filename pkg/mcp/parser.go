@@ -248,6 +248,9 @@ func AuthzDenialMarkerFromContext(ctx context.Context) (*AuthzDenialMarker, bool
 // header is parsed with mime.ParseMediaType and compared with EqualFold; the
 // case-sensitive prefix match this replaces also wrongly accepted longer
 // types such as "application/jsonx".
+//
+// Deprecated: Content-Type must not gate MCP admission. Use DecodeMessage or
+// ParsingMiddleware to validate every POST in an MCP chain instead.
 func RequestHasJSONContentType(r *http.Request) bool {
 	mediaType, _, err := mime.ParseMediaType(r.Header.Get("Content-Type"))
 	if err != nil {
@@ -275,15 +278,6 @@ func GetParsedMCPRequest(ctx context.Context) *ParsedMCPRequest {
 // Path or media-type gates would bypass downstream request-level controls.
 func shouldParseMCPRequest(r *http.Request) bool {
 	return r.Method == http.MethodPost
-}
-
-// parseMCPRequest parses the JSON-RPC message and extracts MCP-specific information.
-func parseMCPRequest(bodyBytes []byte) *ParsedMCPRequest {
-	msg, err := DecodeMessage(bodyBytes)
-	if err != nil {
-		return nil
-	}
-	return parsedMCPMessage(msg)
 }
 
 func parsedMCPMessage(msg jsonrpc2.Message) *ParsedMCPRequest {

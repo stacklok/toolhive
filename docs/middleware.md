@@ -251,6 +251,8 @@ This order is critical because:
 - Extract resource IDs and arguments based on method type
 - Store parsed data in request context
 
+**POST compatibility**: Every transparent proxy POST routed to the backend-forwarding MCP handler requires an MCP envelope, regardless of path or Content-Type. Locally handled routes sit outside that handler's MCP admission and middleware chain and retain their own method, body, and authentication behavior. See [POST compatibility in the transport architecture](arch/03-transport-architecture.md#post-compatibility) for the full contract and local route scope.
+
 **Context Data Added**:
 - `ParsedMCPRequest` containing:
   - Method name

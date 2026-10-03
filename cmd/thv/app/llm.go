@@ -192,15 +192,20 @@ func newConfigResetCommand() *cobra.Command {
 tokens from the secrets provider.`,
 		Args: cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, _ []string) error {
-			if sp, err := secrets.GetSystemSecretsProvider(); err == nil {
-				llm.PurgeTokens(cmd.Context(), cmd.ErrOrStderr(), sp)
-			} else {
-				_, _ = fmt.Fprintf(cmd.ErrOrStderr(), "Warning: could not get secrets provider: %v\n", err)
+			sp, err := secrets.GetSystemSecretsProvider()
+			if err != nil {
+				return fmt.Errorf("getting secrets provider to remove cached LLM tokens: %w", err)
 			}
-			return config.UpdateConfig(func(c *config.Config) error {
+			if err := llm.PurgeTokens(cmd.Context(), sp); err != nil {
+				return err
+			}
+			if err := config.UpdateConfig(func(c *config.Config) error {
 				c.LLM = llm.Config{}
 				return nil
-			})
+			}); err != nil {
+				return fmt.Errorf("cached LLM tokens were deleted, but resetting LLM config: %w", err)
+			}
+			return nil
 		},
 	}
 }
@@ -399,6 +404,7 @@ func runLLMSetup(
 func newLLMTeardownCommand() *cobra.Command {
 	var (
 		purgeTokens  bool
+		keepTokens   bool
 		targetClient string
 	)
 
@@ -409,7 +415,15 @@ func newLLMTeardownCommand() *cobra.Command {
 tools, or for a single tool when tool-name is provided as a positional argument
 or via --client.
 
-Use --purge-tokens to also remove cached OIDC tokens from the secrets provider.`,
+When no configured tools remain after teardown, ToolHive deletes locally cached
+OIDC tokens by default, including tokens left from an earlier or incomplete
+setup. Use --keep-tokens to retain them for a later setup. A targeted teardown
+that leaves other tools configured retains their shared tokens by default. Use
+--purge-tokens to delete the tokens and require those tools to authenticate
+again. Deleting local tokens does not revoke them at the identity provider or
+sign out the browser session. Stop any running LLM proxy and wait for active
+token-helper commands to finish before teardown because they can recreate
+cached credentials.`,
 		Args: cobra.MaximumNArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			if targetClient != "" && len(args) > 0 {
@@ -422,11 +436,18 @@ Use --purge-tokens to also remove cached OIDC tokens from the secrets provider.`
 			if err != nil {
 				return fmt.Errorf("initializing client manager: %w", err)
 			}
-			return runLLMTeardown(cmd.Context(), cmd.OutOrStdout(), cmd.ErrOrStderr(), cm, args, purgeTokens, config.NewDefaultProvider())
+			return runLLMTeardown(
+				cmd.Context(), cmd.OutOrStdout(), cmd.ErrOrStderr(), cm, args,
+				keepTokens, purgeTokens, config.NewDefaultProvider(), secrets.GetSystemSecretsProvider,
+			)
 		},
 	}
 
-	cmd.Flags().BoolVar(&purgeTokens, "purge-tokens", false, "Also delete cached OIDC tokens from the secrets provider")
+	cmd.Flags().BoolVar(&purgeTokens, "purge-tokens", false,
+		"Delete cached OIDC tokens even when other tools remain configured")
+	cmd.Flags().BoolVar(&keepTokens, "keep-tokens", false,
+		"Retain cached OIDC tokens when no configured tools remain")
+	cmd.MarkFlagsMutuallyExclusive("keep-tokens", "purge-tokens")
 	cmd.Flags().StringVar(&targetClient, "client", "",
 		"Remove configuration for only this AI tool by name (e.g. claude-code, cursor). Omit to revert all configured tools.")
 
@@ -440,22 +461,19 @@ func runLLMTeardown(
 	out, errOut io.Writer,
 	cm *client.ClientManager,
 	args []string,
+	keepTokens bool,
 	purgeTokens bool,
 	provider config.Provider,
+	getSecretsProvider llm.SecretsProviderFunc,
 ) error {
-	var sp pkgsecrets.Provider
-	if purgeTokens {
-		var err error
-		sp, err = secrets.GetSystemSecretsProvider()
-		if err != nil {
-			_, _ = fmt.Fprintf(errOut, "Warning: could not get secrets provider: %v\n", err)
-		}
-	}
 	var targetTool string
 	if len(args) == 1 {
 		targetTool = args[0]
 	}
-	return llm.Teardown(ctx, out, errOut, &clientManagerAdapter{cm}, targetTool, purgeTokens, &configUpdaterAdapter{provider}, sp)
+	return llm.Teardown(
+		ctx, out, errOut, &clientManagerAdapter{cm}, targetTool,
+		keepTokens, purgeTokens, &configUpdaterAdapter{provider}, getSecretsProvider,
+	)
 }
 
 // ── CLI adapters ──────────────────────────────────────────────────────────────

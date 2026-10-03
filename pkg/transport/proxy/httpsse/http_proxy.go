@@ -596,14 +596,15 @@ func (p *HTTPSSEProxy) handleOwnedPostRequest(w http.ResponseWriter, r *http.Req
 	// Read the request body
 	body, err := io.ReadAll(r.Body)
 	if err != nil {
-		slog.Warn("rejected unreadable MCP request body")
 		// A body that exceeds the configured limit without a Content-Length
 		// (e.g. chunked) trips http.MaxBytesReader here rather than at the
 		// early Content-Length check. Surface it as 413, not 500.
 		if bodylimit.IsRequestTooLarge(err) {
+			slog.Warn("rejected unreadable MCP request body", "reason", "body_too_large")
 			http.Error(w, "Request Entity Too Large", http.StatusRequestEntityTooLarge)
 			return
 		}
+		slog.Warn("rejected unreadable MCP request body", "reason", "read_error")
 		http.Error(w, "Invalid request body", http.StatusBadRequest)
 		return
 	}

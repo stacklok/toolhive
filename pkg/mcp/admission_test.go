@@ -5,8 +5,11 @@ package mcp
 
 import (
 	"bytes"
+	"encoding/json"
 	"errors"
+	"fmt"
 	"io"
+	"log/slog"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -23,9 +26,26 @@ func TestAdmissionParserEnvelopes(t *testing.T) {
 	for _, tc := range []struct {
 		name, body, contentType string
 		method                  string
+		id                      any
 		code                    int
 	}{
-		{name: "call_plain", body: `{"jsonrpc":"2.0","id":9007199254740993,"method":"tools/call","params":{"name":"echo"}}`, contentType: "text/plain", method: "tools/call"},
+		{name: "call_plain", body: `{"jsonrpc":"2.0","id":9007199254740993,"method":"tools/call","params":{"name":"echo"}}`, contentType: "text/plain", method: "tools/call", id: int64(9007199254740993)},
+		{name: "params_omitted", body: `{"jsonrpc":"2.0","id":"request-1","method":"ping"}`, method: "ping", id: "request-1"},
+		{name: "params_object", body: `{"jsonrpc":"2.0","id":0,"method":"ping","params":{}}`, method: "ping", id: int64(0)},
+		{name: "params_null", body: `{"jsonrpc":"2.0","id":1,"method":"ping","params":null}`, code: -32600},
+		{name: "params_array", body: `{"jsonrpc":"2.0","id":1,"method":"ping","params":[]}`, code: -32600},
+		{name: "id_null", body: `{"jsonrpc":"2.0","id":null,"method":"ping"}`, code: -32600},
+		{name: "id_fractional", body: `{"jsonrpc":"2.0","id":1.5,"method":"ping"}`, code: -32600},
+		{name: "id_decimal_integer", body: `{"jsonrpc":"2.0","id":1.0,"method":"ping"}`, code: -32600},
+		{name: "id_exponent", body: `{"jsonrpc":"2.0","id":1e0,"method":"ping"}`, code: -32600},
+		{name: "response_params_null", body: `{"jsonrpc":"2.0","id":1,"result":{},"params":null}`, code: -32600},
+		{name: "response_params_array", body: `{"jsonrpc":"2.0","id":1,"result":{},"params":[]}`, code: -32600},
+		{name: "response_id_null", body: `{"jsonrpc":"2.0","id":null,"result":{}}`, code: -32600},
+		{name: "response_id_fractional", body: `{"jsonrpc":"2.0","id":1.5,"result":{}}`, code: -32600},
+		{name: "response_id_exponent", body: `{"jsonrpc":"2.0","id":1e0,"result":{}}`, code: -32600},
+		{name: "error_id_null", body: `{"jsonrpc":"2.0","id":null,"error":{"code":-32603,"message":"client error"}}`, code: -32600},
+		{name: "error_id_fractional", body: `{"jsonrpc":"2.0","id":1.5,"error":{"code":-32603,"message":"client error"}}`, code: -32600},
+		{name: "error_id_exponent", body: `{"jsonrpc":"2.0","id":1e0,"error":{"code":-32603,"message":"client error"}}`, code: -32600},
 		{name: "notification_missing", body: `{"jsonrpc":"2.0","method":"notifications/initialized"}`, method: "notifications/initialized"},
 		{name: "response_plain", body: `{"jsonrpc":"2.0","id":1,"result":{}}`, contentType: "text/plain"},
 		{name: "error_response_missing", body: `{"jsonrpc":"2.0","error":{"code":-32603,"message":"backend error"}}`},
@@ -49,11 +69,7 @@ func TestAdmissionParserEnvelopes(t *testing.T) {
 				} else {
 					require.NotNil(t, parsed)
 					assert.Equal(t, tc.method, parsed.Method)
-					if tc.method == "tools/call" {
-						assert.Equal(t, int64(9007199254740993), parsed.ID)
-					} else {
-						assert.Nil(t, parsed.ID)
-					}
+					assert.Equal(t, tc.id, parsed.ID)
 				}
 				body, err := io.ReadAll(r.Body)
 				require.NoError(t, err)
@@ -80,29 +96,89 @@ func TestAdmissionParserEnvelopes(t *testing.T) {
 	}
 }
 
+//nolint:paralleltest // captures the process-global slog logger
 func TestAdmissionParserBodyFailures(t *testing.T) {
-	t.Parallel()
 	for _, tc := range []struct {
-		name    string
-		limited bool
-		status  int
+		name   string
+		err    error
+		reason string
+		status int
 	}{
-		{"reader_error", false, http.StatusBadRequest}, {"read_limit", true, http.StatusRequestEntityTooLarge},
+		{"reader_error", errors.New("reader-detail-marker"), "read_error", http.StatusBadRequest},
+		{"read_limit", nil, "body_too_large", http.StatusRequestEntityTooLarge},
+		{"wrapped_read_limit", fmt.Errorf("reader-detail-marker: %w", &http.MaxBytesError{Limit: 8}),
+			"body_too_large", http.StatusRequestEntityTooLarge},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			t.Parallel()
+			var logs bytes.Buffer
+			previous := slog.Default()
+			slog.SetDefault(slog.New(slog.NewJSONHandler(&logs, &slog.HandlerOptions{Level: slog.LevelDebug})))
+			t.Cleanup(func() { slog.SetDefault(previous) })
+
 			rec := httptest.NewRecorder()
 			req := httptest.NewRequest(http.MethodPost, "/mcp", nil)
-			if tc.limited {
-				req.Body = http.MaxBytesReader(rec, io.NopCloser(strings.NewReader(`{"jsonrpc":"2.0","method":"ping"}`)), 8)
+			const body = `{"jsonrpc":"2.0","id":"id-marker","method":"body-marker"}`
+			if tc.err == nil {
+				req.Body = http.MaxBytesReader(rec, io.NopCloser(strings.NewReader(body)), 8)
 			} else {
-				req.Body = io.NopCloser(iotest.ErrReader(errors.New("private-reader-detail")))
+				req.Body = io.NopCloser(io.MultiReader(strings.NewReader(body), iotest.ErrReader(tc.err)))
 			}
 			calls := 0
 			ParsingMiddleware(http.HandlerFunc(func(http.ResponseWriter, *http.Request) { calls++ })).ServeHTTP(rec, req)
 			assert.Equal(t, tc.status, rec.Code)
 			assert.Zero(t, calls)
-			assert.NotContains(t, rec.Body.String(), "private-reader-detail")
+			for _, marker := range []string{"reader-detail-marker", "body-marker", "id-marker"} {
+				assert.NotContains(t, rec.Body.String(), marker)
+				assert.NotContains(t, logs.String(), marker)
+			}
+			var entry map[string]any
+			require.NoError(t, json.Unmarshal(logs.Bytes(), &entry))
+			assert.NotEmpty(t, entry["time"])
+			delete(entry, "time")
+			assert.Equal(t, map[string]any{
+				"level": "WARN", "msg": "rejected unreadable MCP request body", "reason": tc.reason,
+			}, entry)
+		})
+	}
+}
+
+//nolint:paralleltest // captures the process-global slog logger
+func TestAdmissionDecodeMessageLogs(t *testing.T) {
+	for _, tc := range []struct {
+		name, body, reason string
+	}{
+		{"parse", `{"id":"id-marker","method":"body-marker",`, "parse"},
+		{"batch", `[{"jsonrpc":"2.0","id":"id-marker","method":"body-marker"}]`, "batch"},
+		{"invalid_request", `{"jsonrpc":"2.0","id":"id-marker","method":"body-marker","result":{}}`, "invalid_request"},
+		{"invalid_error", `{"jsonrpc":"2.0","id":"id-marker","error":{"code":null,"message":"error-marker"}}`, "invalid_request"},
+		{"valid_request", `{"jsonrpc":"2.0","id":"id-marker","method":"body-marker"}`, ""},
+		{"valid_error_without_id", `{"jsonrpc":"2.0","error":{"code":-32603,"message":"error-marker"}}`, ""},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			var logs bytes.Buffer
+			previous := slog.Default()
+			slog.SetDefault(slog.New(slog.NewJSONHandler(&logs, &slog.HandlerOptions{Level: slog.LevelDebug})))
+			t.Cleanup(func() { slog.SetDefault(previous) })
+
+			msg, err := DecodeMessage([]byte(tc.body))
+			if tc.reason == "" {
+				require.NoError(t, err)
+				require.NotNil(t, msg)
+				assert.Empty(t, logs.String())
+				return
+			}
+			require.Error(t, err)
+			assert.Nil(t, msg)
+			for _, marker := range []string{tc.body, err.Error(), "id-marker", "body-marker", "error-marker"} {
+				assert.NotContains(t, logs.String(), marker)
+			}
+			var entry map[string]any
+			require.NoError(t, json.Unmarshal(logs.Bytes(), &entry))
+			assert.NotEmpty(t, entry["time"])
+			delete(entry, "time")
+			assert.Equal(t, map[string]any{
+				"level": "WARN", "msg": "rejected invalid MCP JSON-RPC message", "reason": tc.reason,
+			}, entry)
 		})
 	}
 }
@@ -188,14 +264,33 @@ func TestAdmissionDecodeMessageExactIDs(t *testing.T) {
 		{`9223372036854775807`, int64(9223372036854775807)},
 		{`-9223372036854775808`, int64(-9223372036854775808)},
 		{`"request-1"`, "request-1"},
+		{`0`, int64(0)},
+		{`""`, ""},
 	} {
 		t.Run(tc.raw, func(t *testing.T) {
 			t.Parallel()
-			msg, err := DecodeMessage([]byte(`{"jsonrpc":"2.0","id":` + tc.raw + `,"result":{}}`))
-			require.NoError(t, err)
-			response, ok := msg.(*jsonrpc2.Response)
-			require.True(t, ok)
-			assert.Equal(t, tc.want, response.ID.Raw())
+			for _, envelope := range []struct {
+				name, fields string
+			}{
+				{"request", `"method":"ping"`},
+				{"result", `"result":{}`},
+				{"error", `"error":{"code":-32603,"message":"client error"}`},
+			} {
+				t.Run(envelope.name, func(t *testing.T) {
+					t.Parallel()
+					msg, err := DecodeMessage([]byte(`{"jsonrpc":"2.0","id":` + tc.raw + `,` + envelope.fields + `}`))
+					require.NoError(t, err)
+					if envelope.name == "request" {
+						request, ok := msg.(*jsonrpc2.Request)
+						require.True(t, ok)
+						assert.Equal(t, tc.want, request.ID.Raw())
+					} else {
+						response, ok := msg.(*jsonrpc2.Response)
+						require.True(t, ok)
+						assert.Equal(t, tc.want, response.ID.Raw())
+					}
+				})
+			}
 		})
 	}
 }

@@ -557,14 +557,15 @@ func (p *HTTPProxy) handlePost(w http.ResponseWriter, r *http.Request) {
 	// Read request body
 	body, err := io.ReadAll(r.Body)
 	if err != nil {
-		slog.Warn("rejected unreadable MCP request body")
 		// A body that exceeds the configured limit without a Content-Length
 		// (e.g. chunked) trips http.MaxBytesReader here rather than at the
 		// early Content-Length check. Surface it as 413, not 500.
 		if bodylimit.IsRequestTooLarge(err) {
+			slog.Warn("rejected unreadable MCP request body", "reason", "body_too_large")
 			writeHTTPError(w, http.StatusRequestEntityTooLarge, "Request Entity Too Large")
 			return
 		}
+		slog.Warn("rejected unreadable MCP request body", "reason", "read_error")
 		writeHTTPError(w, http.StatusBadRequest, "Invalid request body")
 		return
 	}

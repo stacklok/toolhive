@@ -964,6 +964,70 @@ Exchanged tokens are cached to avoid repeated exchange calls.
 
 **Implementation**: `pkg/vmcp/auth/`, `pkg/vmcp/cache/`
 
+### Per-User Upstream Filtering
+
+When vMCP runs its embedded authorization server with multiple upstream providers
+(e.g. a corporate IdP followed by Jira, Slack, and Salesforce OAuth), every user
+would otherwise be forced through every upstream — a user without a Salesforce
+account cannot complete that leg, and the whole authorization fails even though
+the preceding identity chain was valid.
+
+`AuthServerUpstreamFilter` on `VirtualMCPServerSpec` narrows the chain per
+request based on a group claim resolved from the first upstream. The filter
+runs exactly once per authorization, on the first upstream's callback, and may
+only narrow the chain — it cannot reorder it, add unknown providers, or remove
+the mandatory first provider.
+
+```yaml
+apiVersion: toolhive.stacklok.dev/v1beta1
+kind: VirtualMCPServer
+metadata:
+  name: mcphub
+spec:
+  authServerConfig:
+    issuer: https://mcphub.example.com
+    upstreamProviders:
+      - name: okta        # mandatory first upstream — always walked
+        type: oidc
+        # ...
+      - name: jira
+        type: oauth2
+      - name: slack
+        type: oauth2
+      - name: salesforce
+        type: oauth2
+
+  authServerUpstreamFilter:
+    claim: groups          # top-level claim on the first upstream's token
+    rules:
+      - groups: [engineering]
+        upstreamProviders: [jira, slack]
+      - groups: [sales]
+        upstreamProviders: [salesforce, slack]
+    defaultUpstreams: []   # principals matching no rule walk okta only
+```
+
+Semantics:
+
+- A principal matches a rule when any of its group values appears in the
+  rule's `groups` list (OR within a rule).
+- Multiple matching rules combine by union: a principal in both `engineering`
+  and `sales` walks `jira`, `slack`, and `salesforce` (dedup, configured
+  order preserved).
+- A valid empty claim or an unmatched claim falls back to `defaultUpstreams`
+  (just the first upstream when empty).
+- A missing, nil, non-array, or mixed-type claim fails the authorization —
+  the filter is security-relevant and fail-closed.
+- Nested claim paths (e.g. Keycloak's `realm_access.roles`) are not
+  supported; the identity provider must flatten them into a top-level string
+  array.
+
+This controls which OAuth credentials vMCP acquires during login. It does not
+authorise backends or tools — Cedar remains the authorization boundary.
+
+**Implementation**: `pkg/authserver/upstreamfilter/`,
+`pkg/authserver/server/handlers.UpstreamFilter`.
+
 ## Request Flow
 
 ```mermaid

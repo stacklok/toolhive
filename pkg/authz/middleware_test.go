@@ -690,8 +690,8 @@ func TestMiddlewareNonJSONPostCedarDecisions(t *testing.T) {
 			{"allowed", `"method":"tools/call","params":{"name":"weather","arguments":{"location":"London"}}`, http.StatusOK},
 			{"denied_tool", `"method":"tools/call","params":{"name":"secrets","arguments":{"location":"London"}}`, http.StatusForbidden},
 			{"denied_arguments", `"method":"tools/call","params":{"name":"weather","arguments":{"location":"Paris"}}`, http.StatusForbidden},
-			{"client_response", `"result":{}`, http.StatusBadRequest},
-			{"client_error", `"error":{"code":-32603,"message":"client error"}`, http.StatusBadRequest},
+			{"client_response", `"result":{}`, http.StatusOK},
+			{"client_error", `"error":{"code":-32603,"message":"client error"}`, http.StatusOK},
 		} {
 			t.Run(contentType+"/"+tc.name, func(t *testing.T) {
 				t.Parallel()

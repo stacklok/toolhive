@@ -166,8 +166,8 @@ func handleUnauthorized(w http.ResponseWriter, msgID interface{}, err error) {
 }
 
 // rejectInvalidMCPRequest writes the 400 response for requests that arrive
-// without a parsed MCP request, including client responses and POSTs that
-// reached authorization without parsing middleware.
+// without a parsed MCP request, including POSTs that reached authorization
+// without parsing middleware.
 func rejectInvalidMCPRequest(w http.ResponseWriter) {
 	http.Error(w, "Invalid or malformed MCP request", http.StatusBadRequest)
 }
@@ -206,12 +206,7 @@ func Middleware(a authorizers.Authorizer, next http.Handler, passThroughTools ma
 		// Get parsed MCP request from context (set by parsing middleware)
 		parsedRequest := mcp.GetParsedMCPRequest(r.Context())
 		if parsedRequest == nil {
-			// Responses are not authorized here; missing parsing middleware also
-			// fails closed, regardless of Content-Type.
-			if marker, ok := mcp.AuthzDenialMarkerFromContext(r.Context()); ok {
-				marker.Denied = true
-			}
-			rejectInvalidMCPRequest(w)
+			handleUnparsedMCPRequest(w, r, next)
 			return
 		}
 
@@ -274,6 +269,24 @@ func Middleware(a authorizers.Authorizer, next http.Handler, passThroughTools ma
 			featureOp.Feature, featureOp.Operation,
 			parsedRequest.ID, parsedRequest.ResourceID, parsedRequest.Arguments, next)
 	})
+}
+
+// handleUnparsedMCPRequest forwards validated JSON-RPC responses to the
+// transport/session layer and rejects requests that could not be parsed as MCP
+// messages.
+func handleUnparsedMCPRequest(w http.ResponseWriter, r *http.Request, next http.Handler) {
+	// A valid response has no method or resource for this middleware to
+	// authorize. The transport/session layer decides whether it can be accepted
+	// or correlated with an outstanding server-initiated request.
+	if mcp.IsClientResponse(r.Context()) {
+		next.ServeHTTP(w, r)
+		return
+	}
+
+	if marker, ok := mcp.AuthzDenialMarkerFromContext(r.Context()); ok {
+		marker.Denied = true
+	}
+	rejectInvalidMCPRequest(w)
 }
 
 // authorizeListAndServe intercepts a list response and applies its registered

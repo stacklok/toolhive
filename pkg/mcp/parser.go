@@ -24,6 +24,8 @@ type contextKey string
 const (
 	// MCPRequestContextKey is the context key for storing parsed MCP request data.
 	MCPRequestContextKey contextKey = "mcp_request"
+
+	clientResponseContextKey contextKey = "mcp_client_response"
 )
 
 // ParsedMCPRequest contains the parsed MCP request information.
@@ -123,7 +125,13 @@ func ParsingMiddleware(next http.Handler) http.Handler {
 			}
 		}
 
-		// Responses remain transport-owned and do not populate request context.
+		// Responses remain transport-owned and do not populate ParsedMCPRequest.
+		// Preserve the validated message type so authorization middleware can
+		// pass the response to the transport/session layer without decoding the
+		// body again or treating it as an unparsable request.
+		if _, ok := msg.(*jsonrpc2.Response); ok {
+			r = r.WithContext(context.WithValue(r.Context(), clientResponseContextKey, true))
+		}
 		parsedRequest := parsedMCPMessage(msg)
 		if parsedRequest != nil {
 			parsedRequest.MCPMethodHeader = r.Header.Get("Mcp-Method")
@@ -217,7 +225,7 @@ type authzDenialMarkerContextKey struct{}
 // AuthzDenialMarker is a mutable carrier that lets the authorization
 // middleware (pkg/authz), which runs INSIDE the audit middleware, flag a
 // request it refused before message-level authorization could run, such as a
-// client response or a POST reaching authz without parsing middleware. It follows the same
+// POST reaching authz without parsing middleware. It follows the same
 // propagation pattern as ParsedRequestHolder: the audit wrapper injects an
 // empty marker via WithAuthzDenialMarker, the inner middleware fills it, and
 // the wrapper reads it back after the inner chain returns so the refusal is
@@ -266,6 +274,14 @@ func GetParsedMCPRequest(ctx context.Context) *ParsedMCPRequest {
 		return parsed
 	}
 	return nil
+}
+
+// IsClientResponse reports whether ParsingMiddleware decoded the request as a
+// valid JSON-RPC response. Responses have no method or resource to authorize;
+// downstream transport/session logic decides whether to accept or correlate them.
+func IsClientResponse(ctx context.Context) bool {
+	response, _ := ctx.Value(clientResponseContextKey).(bool)
+	return response
 }
 
 // shouldParseMCPRequest determines if the request should be parsed as an MCP request.

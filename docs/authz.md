@@ -279,7 +279,7 @@ List operations (`tools/list`, `prompts/list`, `resources/list`, `skills/list`) 
 They are always allowed but the response is automatically filtered based on the user's permissions
 for the corresponding operations:
 
-- `tools/list` shows only tools the user can call (based on `call_tool` policies)
+- `tools/list` shows only tools the user can call (based on `call_tool` policies); a result in which a tool repeats `name`, `annotations`, or the annotation `title` or a hint such as `readOnlyHint`, or spells one with a case-insensitive alias, fails closed with a generic internal JSON-RPC error, so policies evaluate exactly the hints the client receives.
 - `prompts/list` shows only prompts the user can get (based on `get_prompt` policies)
 - `resources/list` shows only resources the user can read (based on `read_resource` policies)
 - `skills/list` shows only skill entries the user can get (based on `get_skill` policies); entries

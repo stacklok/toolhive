@@ -279,9 +279,7 @@ func TestProcessToolsListResponse(t *testing.T) {
 			inputResponse: toolsListResponse{
 				JSONRPC: "2.0",
 				ID:      1,
-				Result: struct {
-					Tools *[]map[string]any `json:"tools"`
-				}{
+				Result: toolsListResult{
 					Tools: &[]map[string]any{
 						{"name": "allowed_tool1", "description": "First tool"},
 						{"name": "blocked_tool", "description": "Blocked tool"},
@@ -308,9 +306,7 @@ func TestProcessToolsListResponse(t *testing.T) {
 			inputResponse: toolsListResponse{
 				JSONRPC: "2.0",
 				ID:      1,
-				Result: struct {
-					Tools *[]map[string]any `json:"tools"`
-				}{
+				Result: toolsListResult{
 					Tools: &[]map[string]any{
 						{"name": "tool1", "description": "First tool"},
 						{"name": "tool2", "description": "Second tool"},
@@ -336,9 +332,7 @@ func TestProcessToolsListResponse(t *testing.T) {
 			inputResponse: toolsListResponse{
 				JSONRPC: "2.0",
 				ID:      1,
-				Result: struct {
-					Tools *[]map[string]any `json:"tools"`
-				}{
+				Result: toolsListResult{
 					Tools: &[]map[string]any{
 						{"description": "Tool without name"},
 					},
@@ -357,9 +351,7 @@ func TestProcessToolsListResponse(t *testing.T) {
 			inputResponse: toolsListResponse{
 				JSONRPC: "2.0",
 				ID:      1,
-				Result: struct {
-					Tools *[]map[string]any `json:"tools"`
-				}{
+				Result: toolsListResult{
 					Tools: &[]map[string]any{
 						{"name": 123, "description": "Tool with numeric name"},
 					},
@@ -378,9 +370,7 @@ func TestProcessToolsListResponse(t *testing.T) {
 			inputResponse: toolsListResponse{
 				JSONRPC: "2.0",
 				ID:      1,
-				Result: struct {
-					Tools *[]map[string]any `json:"tools"`
-				}{
+				Result: toolsListResult{
 					Tools: &[]map[string]any{
 						{"name": "", "description": "Tool with empty name"},
 					},
@@ -413,9 +403,7 @@ func TestProcessToolsListResponse(t *testing.T) {
 			inputResponse: toolsListResponse{
 				JSONRPC: "2.0",
 				ID:      1,
-				Result: struct {
-					Tools *[]map[string]any `json:"tools"`
-				}{
+				Result: toolsListResult{
 					Tools: &[]map[string]any{
 						{"name": "actual_tool", "description": "Original description"},
 					},
@@ -451,9 +439,7 @@ func TestProcessToolsListResponse(t *testing.T) {
 			inputResponse: toolsListResponse{
 				JSONRPC: "2.0",
 				ID:      1,
-				Result: struct {
-					Tools *[]map[string]any `json:"tools"`
-				}{
+				Result: toolsListResult{
 					Tools: &[]map[string]any{
 						{"name": "actual_tool", "description": "Original description"},
 						{"name": "allowed_tool", "description": "Allowed tool"},
@@ -476,9 +462,7 @@ func TestProcessToolsListResponse(t *testing.T) {
 			inputResponse: toolsListResponse{
 				JSONRPC: "2.0",
 				ID:      1,
-				Result: struct {
-					Tools *[]map[string]any `json:"tools"`
-				}{
+				Result: toolsListResult{
 					Tools: &[]map[string]any{},
 				},
 			},
@@ -521,9 +505,7 @@ func TestProcessToolsListResponse(t *testing.T) {
 			inputResponse: toolsListResponse{
 				JSONRPC: "2.0",
 				ID:      1,
-				Result: struct {
-					Tools *[]map[string]any `json:"tools"`
-				}{
+				Result: toolsListResult{
 					Tools: &[]map[string]any{
 						{"name": "actual_tool1", "description": "Original description 1"},
 						{"name": "actual_tool2", "description": "Original description 2"},
@@ -562,9 +544,7 @@ func TestProcessToolsListResponse(t *testing.T) {
 			inputResponse: toolsListResponse{
 				JSONRPC: "2.0",
 				ID:      1,
-				Result: struct {
-					Tools *[]map[string]any `json:"tools"`
-				}{
+				Result: toolsListResult{
 					Tools: &[]map[string]any{
 						{"name": "actual_tool", "description": "Original description", "inputSchema": map[string]any{"type": "object"}},
 					},
@@ -600,9 +580,7 @@ func TestProcessToolsListResponse(t *testing.T) {
 			inputResponse: toolsListResponse{
 				JSONRPC: "2.0",
 				ID:      1,
-				Result: struct {
-					Tools *[]map[string]any `json:"tools"`
-				}{
+				Result: toolsListResult{
 					Tools: &[]map[string]any{
 						{"name": "actual_tool", "description": "Original description", "inputSchema": map[string]any{"type": "object"}},
 					},
@@ -1161,9 +1139,7 @@ func createToolsListResponse(tools []map[string]any) toolsListResponse {
 	return toolsListResponse{
 		JSONRPC: "2.0",
 		ID:      1,
-		Result: struct {
-			Tools *[]map[string]any `json:"tools"`
-		}{
+		Result: toolsListResult{
 			Tools: &tools,
 		},
 	}
@@ -1210,6 +1186,162 @@ func TestProcessToolsListResponse_JSONEncoding(t *testing.T) {
 		}
 	}
 	assert.ElementsMatch(t, []string{"tool1", "tool3"}, toolNames)
+}
+
+// TestProcessToolsListResponse_PreservesResultMembers verifies that filtering
+// and overriding rewrite only result.tools: every other result member, such as
+// resultType, cacheScope, ttlMs, _meta, and nextCursor, reaches the client as
+// the backend sent it.
+func TestProcessToolsListResponse_PreservesResultMembers(t *testing.T) {
+	t.Parallel()
+
+	filterConfig := &toolMiddlewareConfig{
+		filterTools: map[string]struct{}{"allowed_tool": {}},
+	}
+	override := toolOverrideEntry{
+		ActualName:          "actual_tool",
+		OverrideName:        "user_tool",
+		OverrideDescription: "User description",
+	}
+	overrideConfig := &toolMiddlewareConfig{
+		filterTools:          map[string]struct{}{"user_tool": {}},
+		actualToUserOverride: map[string]toolOverrideEntry{"actual_tool": override},
+		userToActualOverride: map[string]toolOverrideEntry{"user_tool": override},
+	}
+
+	tests := []struct {
+		name           string
+		config         *toolMiddlewareConfig
+		result         string
+		expectedResult string
+	}{
+		{
+			name:   "result members survive filtering",
+			config: filterConfig,
+			result: `{"_meta":{"page":"one"},"nextCursor":"cursor-2","resultType":"complete",` +
+				`"cacheScope":"public","ttlMs":60000,"resultExtension":{"preserve":true},` +
+				`"tools":[{"name":"allowed_tool","description":"Allowed","toolExtension":{"preserve":true}},` +
+				`{"name":"blocked_tool","description":"Blocked"}]}`,
+			expectedResult: `{"_meta":{"page":"one"},"nextCursor":"cursor-2","resultType":"complete",` +
+				`"cacheScope":"public","ttlMs":60000,"resultExtension":{"preserve":true},` +
+				`"tools":[{"name":"allowed_tool","description":"Allowed","toolExtension":{"preserve":true}}]}`,
+		},
+		{
+			name:   "result members survive overrides",
+			config: overrideConfig,
+			result: `{"resultType":"complete","cacheScope":"private","ttlMs":0,` +
+				`"tools":[{"name":"actual_tool","description":"Original"},{"name":"other_tool"}]}`,
+			expectedResult: `{"resultType":"complete","cacheScope":"private","ttlMs":0,` +
+				`"tools":[{"name":"user_tool","description":"User description"}]}`,
+		},
+		{
+			name:           "result with only tools gains no members",
+			config:         filterConfig,
+			result:         `{"tools":[{"name":"allowed_tool"},{"name":"blocked_tool"}]}`,
+			expectedResult: `{"tools":[{"name":"allowed_tool"}]}`,
+		},
+		{
+			name:   "case-folded tools alias is filtered and not written back",
+			config: filterConfig,
+			result: `{"resultType":"complete","tools":[{"name":"allowed_tool"}],` +
+				`"TOOLS":[{"name":"blocked_tool"},{"name":"allowed_tool"}]}`,
+			expectedResult: `{"resultType":"complete","tools":[{"name":"allowed_tool"}]}`,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			var inputResponse toolsListResponse
+			require.NoError(t, json.Unmarshal([]byte(`{"jsonrpc":"2.0","id":1,"result":`+tt.result+`}`), &inputResponse))
+			require.NotNil(t, inputResponse.Result.Tools)
+
+			var buf bytes.Buffer
+			require.NoError(t, processToolsListResponse(tt.config, inputResponse, &buf))
+
+			var output struct {
+				JSONRPC string          `json:"jsonrpc"`
+				ID      json.RawMessage `json:"id"`
+				Result  json.RawMessage `json:"result"`
+			}
+			require.NoError(t, json.Unmarshal(buf.Bytes(), &output))
+			assert.Equal(t, "2.0", output.JSONRPC)
+			assert.JSONEq(t, `1`, string(output.ID))
+			assert.JSONEq(t, tt.expectedResult, string(output.Result))
+		})
+	}
+}
+
+// TestNewListToolsMappingMiddleware_PreservesResultMembers verifies the
+// middleware end to end over both wire formats: a filtered tools/list response
+// keeps the result members a client needs, such as resultType.
+func TestNewListToolsMappingMiddleware_PreservesResultMembers(t *testing.T) {
+	t.Parallel()
+
+	const result = `{"_meta":{"io.modelcontextprotocol/serverInfo":{"name":"backend","version":"1.0.0"}},` +
+		`"resultType":"complete","cacheScope":"private","ttlMs":0,` +
+		`"tools":[{"name":"tool1","description":"desc1"},{"name":"tool2","description":"desc2"}]}`
+	const expectedResult = `{"_meta":{"io.modelcontextprotocol/serverInfo":{"name":"backend","version":"1.0.0"}},` +
+		`"resultType":"complete","cacheScope":"private","ttlMs":0,` +
+		`"tools":[{"name":"tool1","description":"desc1"}]}`
+	message := `{"jsonrpc":"2.0","id":1,"result":` + result + `}`
+
+	tests := []struct {
+		name        string
+		contentType string
+		body        string
+		messageOf   func(body string) string
+	}{
+		{
+			name:        "application/json",
+			contentType: "application/json",
+			body:        message,
+			messageOf: func(body string) string {
+				return body
+			},
+		},
+		{
+			name:        "text/event-stream",
+			contentType: "text/event-stream",
+			body:        "event: message\ndata: " + message + "\n\n",
+			messageOf: func(body string) string {
+				for _, line := range strings.Split(body, "\n") {
+					if data, ok := strings.CutPrefix(line, "data:"); ok {
+						return strings.TrimSpace(data)
+					}
+				}
+				return ""
+			},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			middleware, err := NewListToolsMappingMiddleware(WithToolsFilter("tool1"))
+			require.NoError(t, err)
+
+			inner := http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+				w.Header().Set("Content-Type", tt.contentType)
+				w.WriteHeader(http.StatusOK)
+				_, writeErr := w.Write([]byte(tt.body))
+				require.NoError(t, writeErr)
+			})
+
+			recorder := httptest.NewRecorder()
+			middleware(inner).ServeHTTP(recorder, httptest.NewRequest(http.MethodPost, "/", nil))
+
+			filtered := tt.messageOf(recorder.Body.String())
+			require.NotEmpty(t, filtered, "no JSON-RPC message in the filtered body %q", recorder.Body.String())
+			var output struct {
+				Result json.RawMessage `json:"result"`
+			}
+			require.NoError(t, json.Unmarshal([]byte(filtered), &output))
+			assert.JSONEq(t, expectedResult, string(output.Result))
+		})
+	}
 }
 
 func TestToolFilterWriter_Flush(t *testing.T) {

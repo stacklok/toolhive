@@ -65,7 +65,7 @@ func makeTool(name string, ann *mcp.ToolAnnotation) mcp.Tool {
 	return t
 }
 
-func TestFilterToolsByPolicy(t *testing.T) {
+func TestAuthorizedToolIndexes(t *testing.T) {
 	t.Parallel()
 
 	errAuth := errors.New("authorization failure")
@@ -77,7 +77,7 @@ func TestFilterToolsByPolicy(t *testing.T) {
 		wantNames  []string
 	}{
 		{
-			name:       "nil authorizer returns all tools unchanged",
+			name:       "nil authorizer keeps every tool",
 			authorizer: nil,
 			tools: []mcp.Tool{
 				makeTool("alpha", nil),
@@ -86,7 +86,7 @@ func TestFilterToolsByPolicy(t *testing.T) {
 			wantNames: []string{"alpha", "beta"},
 		},
 		{
-			name:       "empty tool list returns empty",
+			name:       "empty tool list keeps nothing",
 			authorizer: &mockAuthorizer{results: map[string]mockResult{}},
 			tools:      []mcp.Tool{},
 			wantNames:  []string{},
@@ -135,18 +135,18 @@ func TestFilterToolsByPolicy(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			t.Parallel()
 
-			got := filterToolsByPolicy(context.Background(), tc.authorizer, tc.tools)
+			indexes := authorizedToolIndexes(context.Background(), tc.authorizer, tc.tools)
 
-			gotNames := make([]string, len(got))
-			for i, tool := range got {
-				gotNames[i] = tool.Name
+			gotNames := make([]string, len(indexes))
+			for i, index := range indexes {
+				gotNames[i] = tc.tools[index].Name
 			}
 			assert.Equal(t, tc.wantNames, gotNames)
 		})
 	}
 }
 
-func TestFilterToolsByPolicy_CallsAuthorizerCorrectly(t *testing.T) {
+func TestAuthorizedToolIndexes_CallsAuthorizerCorrectly(t *testing.T) {
 	t.Parallel()
 
 	mock := &mockAuthorizer{results: map[string]mockResult{
@@ -154,7 +154,7 @@ func TestFilterToolsByPolicy_CallsAuthorizerCorrectly(t *testing.T) {
 	}}
 
 	tools := []mcp.Tool{makeTool("tool1", nil)}
-	filterToolsByPolicy(context.Background(), mock, tools)
+	authorizedToolIndexes(context.Background(), mock, tools)
 
 	require.Len(t, mock.calls, 1)
 	assert.Equal(t, authorizers.MCPFeatureTool, mock.calls[0].feature)
@@ -173,7 +173,7 @@ func cedarCtx(t *testing.T) context.Context {
 	return auth.WithIdentity(context.Background(), identity)
 }
 
-func TestFilterToolsByPolicy_WithCedarAuthorizer(t *testing.T) {
+func TestAuthorizedToolIndexes_WithCedarAuthorizer(t *testing.T) {
 	t.Parallel()
 
 	cedarAuth, err := cedar.NewCedarAuthorizer(cedar.ConfigOptions{
@@ -193,11 +193,7 @@ func TestFilterToolsByPolicy_WithCedarAuthorizer(t *testing.T) {
 			{Name: "translator", Description: "Translate text"},
 		}
 
-		got := filterToolsByPolicy(cedarCtx(t), cedarAuth, tools)
-
-		require.Len(t, got, 1)
-		assert.Equal(t, "weather", got[0].Name)
-		assert.Equal(t, "Get weather information", got[0].Description)
+		assert.Equal(t, []int{0}, authorizedToolIndexes(cedarCtx(t), cedarAuth, tools))
 	})
 
 	t.Run("returns empty list when no tools are permitted", func(t *testing.T) {
@@ -208,9 +204,7 @@ func TestFilterToolsByPolicy_WithCedarAuthorizer(t *testing.T) {
 			{Name: "translator", Description: "Translate text"},
 		}
 
-		got := filterToolsByPolicy(cedarCtx(t), cedarAuth, tools)
-
-		assert.Empty(t, got)
+		assert.Empty(t, authorizedToolIndexes(cedarCtx(t), cedarAuth, tools))
 	})
 }
 

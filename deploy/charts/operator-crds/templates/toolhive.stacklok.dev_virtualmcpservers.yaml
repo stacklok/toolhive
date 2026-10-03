@@ -2976,6 +2976,12 @@ spec:
                               constructed with an empty entity store and `in` checks against absent
                               entities silently evaluate to false. Defaults to "[]" when empty.
                             type: string
+                          multiValuedClaims:
+                            description: MultiValuedClaims lists JWT claim names that Cedar should
+                              also expose as sets.
+                            items:
+                              type: string
+                            type: array
                           groupClaimName:
                             description: |-
                               GroupClaimName is the JWT claim key that contains group membership for

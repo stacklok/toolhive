@@ -269,12 +269,13 @@ func (c *Converter) resolveAuthzConfigRef(
 	}
 
 	authz := &vmcpconfig.AuthzConfig{
-		Type:            "cedar",
-		Policies:        opts.Policies,
-		EntitiesJSON:    opts.EntitiesJSON,
-		GroupClaimName:  opts.GroupClaimName,
-		RoleClaimName:   opts.RoleClaimName,
-		GroupEntityType: opts.GroupEntityType,
+		Type:              "cedar",
+		Policies:          opts.Policies,
+		EntitiesJSON:      opts.EntitiesJSON,
+		MultiValuedClaims: opts.MultiValuedClaims,
+		GroupClaimName:    opts.GroupClaimName,
+		RoleClaimName:     opts.RoleClaimName,
+		GroupEntityType:   opts.GroupEntityType,
 	}
 
 	// PrimaryUpstreamProvider is an auth-server (control-plane) property resolved
@@ -328,6 +329,7 @@ func (c *Converter) convertAuthzConfig(
 		}
 		authz.Policies = opts.Policies
 		authz.EntitiesJSON = opts.EntitiesJSON
+		authz.MultiValuedClaims = opts.MultiValuedClaims
 		// ConfigMap-supplied JWT-claim mapping values are the default; spec-level
 		// overrides apply below. PrimaryUpstreamProvider is an auth-server property
 		// (spec.authServerConfig.primaryUpstreamProvider) so it is not read from

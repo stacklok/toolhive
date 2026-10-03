@@ -299,6 +299,7 @@ _Appears in:_
 | `type` _string_ | Type is the authz type: "cedar", "none" |  |  |
 | `policies` _string array_ | Policies contains Cedar policy definitions (when Type = "cedar"). |  |  |
 | `entitiesJson` _string_ | EntitiesJSON is a JSON string representing Cedar entities. Required for<br />enterprise policies that rely on transitive relationships (e.g.<br />`ClaimGroup → PlatformRole`) — without it the Cedar authorizer is<br />constructed with an empty entity store and `in` checks against absent<br />entities silently evaluate to false. Defaults to "[]" when empty. |  | Optional: \{\} <br /> |
+| `multiValuedClaims` _string array_ | MultiValuedClaims lists JWT claim names that Cedar should also expose as sets. |  | Optional: \{\} <br /> |
 | `primaryUpstreamProvider` _string_ | PrimaryUpstreamProvider names the upstream IDP provider whose access<br />token should be used as the source of JWT claims for Cedar evaluation.<br />When empty, claims from the ToolHive-issued token are used.<br />Must match an upstream provider name configured in the embedded auth server<br />(e.g. "default", "github"). Only relevant when the embedded auth server is active. |  | Optional: \{\} <br /> |
 | `groupClaimName` _string_ | GroupClaimName is the JWT claim key that contains group membership for<br />the principal. When set, takes priority over the well-known defaults<br />("groups", "roles", "cognito:groups"). Use this for IDPs that place<br />groups under a URI-style claim (e.g. "https://example.com/groups").<br />When empty, only the well-known claim names are checked. |  | Optional: \{\} <br /> |
 | `roleClaimName` _string_ | RoleClaimName is the JWT claim key that contains role membership for the<br />principal. When set, the claim is extracted separately from GroupClaimName<br />and both are mapped to the configured group entity type. When empty, no<br />role extraction is performed. |  | Optional: \{\} <br /> |
@@ -5234,7 +5235,6 @@ This type is shared with the Kubernetes operator CRD (VirtualMCPServer.Status.Di
 | `circuitLastChanged` _[Time](https://kubernetes.io/docs/reference/generated/kubernetes-api/v1.27/#time-v1-meta)_ | CircuitLastChanged is the timestamp when the circuit breaker state last changed.<br />Empty when circuit breaker is disabled or has never changed state. |  | Optional: \{\} <br /> |
 | `consecutiveFailures` _integer_ | ConsecutiveFailures is the current count of consecutive health check failures.<br />Resets to 0 when the backend becomes healthy again. |  | Optional: \{\} <br /> |
 | `mcpRevision` _string_ | MCPRevision is the backend's negotiated MCP protocol revision<br />("2026-07-28" or "2025-11-25"). Empty when the backend has not been probed. |  | Optional: \{\} <br /> |
-
 
 
 

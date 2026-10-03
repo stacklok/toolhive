@@ -17,11 +17,16 @@ import (
 // maxSchemaDepth in pkg/vmcp/composer/elicitation_handler.go for consistency.
 const maxClaimNestingDepth = 10
 
-// EntityTypeTHVGroup is the default Cedar entity type representing group membership.
-// It is used when ConfigOptions.GroupEntityType is empty. Principals are added as
-// children of group entities so that Cedar's `in` operator can evaluate
-// group-based policies (e.g. `principal in THVGroup::"engineering"`).
-const EntityTypeTHVGroup cedar.EntityType = "THVGroup"
+const (
+	// EntityTypeTHVGroup is the default Cedar entity type representing group membership.
+	// It is used when ConfigOptions.GroupEntityType is empty. Principals are added as
+	// children of group entities so that Cedar's `in` operator can evaluate
+	// group-based policies (e.g. `principal in THVGroup::"engineering"`).
+	EntityTypeTHVGroup cedar.EntityType = "THVGroup"
+	// EntityTypeBackend represents a logical vMCP backend. Tools are added as
+	// children of their originating backend for backend-scoped policies.
+	EntityTypeBackend cedar.EntityType = "Backend"
+)
 
 // EntityFactory creates Cedar entities for authorization.
 type EntityFactory struct {
@@ -130,13 +135,17 @@ func (*EntityFactory) CreateResourceEntity(
 // When serverName is non-empty, resource entities include an MCP parent UID so
 // that server-scoped Cedar policies (e.g. `resource in MCP::"github"`) evaluate
 // correctly via Cedar's `in` operator. When serverName is empty, resource
-// entities have no parents, preserving backward compatibility.
+// entities have no MCP parent, preserving backward compatibility. Additional
+// resource parent UIDs may be supplied for narrower scopes such as vMCP
+// backends; their corresponding entities, if needed for hierarchy traversal,
+// must come from entities_json.
 func (f *EntityFactory) CreateEntitiesForRequest(
 	principal, action, resource string,
 	claimsMap map[string]interface{},
 	attributes map[string]interface{},
 	groups []string,
 	serverName string,
+	extraResourceParents ...cedar.EntityUID,
 ) (cedar.EntityMap, error) {
 	// Parse principal, action, and resource
 	principalType, principalID, err := parseCedarEntityID(principal)
@@ -178,10 +187,11 @@ func (f *EntityFactory) CreateEntitiesForRequest(
 
 	// Build MCP parent for resource entity when serverName is set so that
 	// server-scoped policies (e.g. resource in MCP::"github") can match.
-	var resourceParents []cedar.EntityUID
+	resourceParents := make([]cedar.EntityUID, 0, 1+len(extraResourceParents))
 	if serverName != "" {
 		resourceParents = append(resourceParents, cedar.NewEntityUID("MCP", cedar.String(serverName)))
 	}
+	resourceParents = append(resourceParents, extraResourceParents...)
 
 	// Create resource entity
 	resourceUID, resourceEntity := f.CreateResourceEntity(resourceType, resourceID, attributes, resourceParents...)

@@ -4,6 +4,7 @@
 package factory
 
 import (
+	"encoding/json"
 	"net/http"
 	"net/http/httptest"
 	"testing"
@@ -231,4 +232,22 @@ func TestNewCedarAuthzMiddleware_PropagatesPrimaryUpstreamProvider(t *testing.T)
 	require.NoError(t, err)
 	assert.Equal(t, providerName, extracted.Options.PrimaryUpstreamProvider,
 		"PrimaryUpstreamProvider must be preserved through authorizers.NewConfig round-trip")
+}
+
+func TestBuildCedarAuthzConfig_PropagatesMultiValuedClaims(t *testing.T) {
+	t.Parallel()
+
+	var authzCfg config.AuthzConfig
+	input := []byte(
+		`{"type":"cedar","policies":["permit(principal, action, resource);"],` +
+			`"multiValuedClaims":["scope"]}`,
+	)
+	err := json.Unmarshal(input, &authzCfg)
+	require.NoError(t, err)
+
+	got, err := buildCedarAuthzConfig(&authzCfg)
+	require.NoError(t, err)
+	extracted, err := cedar.ExtractConfig(got)
+	require.NoError(t, err)
+	assert.Equal(t, []string{"scope"}, extracted.Options.MultiValuedClaims)
 }

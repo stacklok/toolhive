@@ -4,6 +4,7 @@
 package controllers
 
 import (
+	"context"
 	"testing"
 	"time"
 
@@ -14,6 +15,7 @@ import (
 	"k8s.io/apimachinery/pkg/types"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/client/fake"
+	"sigs.k8s.io/controller-runtime/pkg/event"
 	"sigs.k8s.io/controller-runtime/pkg/reconcile"
 
 	mcpv1beta1 "github.com/stacklok/toolhive/cmd/thv-operator/api/v1beta1"
@@ -782,4 +784,205 @@ func TestMCPOIDCConfigReconciler_ReconcileKeepsExistingForeignCondition(t *testi
 	own := meta.FindStatusCondition(after.Status.Conditions, mcpv1beta1.ConditionTypeOIDCConfigValid)
 	require.NotNil(t, own, "controller-owned Valid condition must land")
 	assert.Equal(t, metav1.ConditionTrue, own.Status)
+}
+
+func TestMCPOIDCConfigReconciler_findMCPOIDCConfigForMCPServer(t *testing.T) {
+	t.Parallel()
+
+	r := &MCPOIDCConfigReconciler{}
+	tests := []struct {
+		name string
+		obj  client.Object
+		want []reconcile.Request
+	}{
+		{
+			name: "referencing server enqueues its config",
+			obj: &mcpv1beta1.MCPServer{
+				ObjectMeta: metav1.ObjectMeta{Namespace: "ns", Name: "srv"},
+				Spec:       mcpv1beta1.MCPServerSpec{OIDCConfigRef: &mcpv1beta1.MCPOIDCConfigReference{Name: "cfg"}},
+			},
+			want: []reconcile.Request{{NamespacedName: types.NamespacedName{Namespace: "ns", Name: "cfg"}}},
+		},
+		{
+			name: "server without a reference enqueues nothing",
+			obj:  &mcpv1beta1.MCPServer{ObjectMeta: metav1.ObjectMeta{Namespace: "ns", Name: "srv"}},
+			want: nil,
+		},
+		{
+			name: "server with an empty reference name enqueues nothing",
+			obj: &mcpv1beta1.MCPServer{
+				Spec: mcpv1beta1.MCPServerSpec{OIDCConfigRef: &mcpv1beta1.MCPOIDCConfigReference{Name: ""}},
+			},
+			want: nil,
+		},
+		{
+			name: "unexpected type enqueues nothing",
+			obj:  &mcpv1beta1.MCPOIDCConfig{},
+			want: nil,
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			assert.Equal(t, tt.want, r.findMCPOIDCConfigForMCPServer(context.Background(), tt.obj))
+		})
+	}
+}
+
+func TestMCPOIDCConfigReconciler_findMCPOIDCConfigForVirtualMCPServer(t *testing.T) {
+	t.Parallel()
+
+	r := &MCPOIDCConfigReconciler{}
+	tests := []struct {
+		name string
+		obj  client.Object
+		want []reconcile.Request
+	}{
+		{
+			name: "referencing vmcp enqueues its config",
+			obj: &mcpv1beta1.VirtualMCPServer{
+				ObjectMeta: metav1.ObjectMeta{Namespace: "ns", Name: "vmcp"},
+				Spec: mcpv1beta1.VirtualMCPServerSpec{
+					IncomingAuth: &mcpv1beta1.IncomingAuthConfig{
+						OIDCConfigRef: &mcpv1beta1.MCPOIDCConfigReference{Name: "cfg"},
+					},
+				},
+			},
+			want: []reconcile.Request{{NamespacedName: types.NamespacedName{Namespace: "ns", Name: "cfg"}}},
+		},
+		{
+			name: "vmcp without incomingAuth enqueues nothing",
+			obj:  &mcpv1beta1.VirtualMCPServer{ObjectMeta: metav1.ObjectMeta{Namespace: "ns", Name: "vmcp"}},
+			want: nil,
+		},
+		{
+			name: "vmcp with incomingAuth but no reference enqueues nothing",
+			obj: &mcpv1beta1.VirtualMCPServer{
+				Spec: mcpv1beta1.VirtualMCPServerSpec{IncomingAuth: &mcpv1beta1.IncomingAuthConfig{}},
+			},
+			want: nil,
+		},
+		{
+			name: "unexpected type enqueues nothing",
+			obj:  &mcpv1beta1.MCPOIDCConfig{},
+			want: nil,
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			assert.Equal(t, tt.want, r.findMCPOIDCConfigForVirtualMCPServer(context.Background(), tt.obj))
+		})
+	}
+}
+
+func TestMCPOIDCConfigReconciler_findMCPOIDCConfigForMCPRemoteProxy(t *testing.T) {
+	t.Parallel()
+
+	r := &MCPOIDCConfigReconciler{}
+	tests := []struct {
+		name string
+		obj  client.Object
+		want []reconcile.Request
+	}{
+		{
+			name: "referencing proxy enqueues its config",
+			obj: &mcpv1beta1.MCPRemoteProxy{
+				ObjectMeta: metav1.ObjectMeta{Namespace: "ns", Name: "proxy"},
+				Spec:       mcpv1beta1.MCPRemoteProxySpec{OIDCConfigRef: &mcpv1beta1.MCPOIDCConfigReference{Name: "cfg"}},
+			},
+			want: []reconcile.Request{{NamespacedName: types.NamespacedName{Namespace: "ns", Name: "cfg"}}},
+		},
+		{
+			name: "proxy without a reference enqueues nothing",
+			obj:  &mcpv1beta1.MCPRemoteProxy{ObjectMeta: metav1.ObjectMeta{Namespace: "ns", Name: "proxy"}},
+			want: nil,
+		},
+		{
+			name: "unexpected type enqueues nothing",
+			obj:  &mcpv1beta1.MCPOIDCConfig{},
+			want: nil,
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			assert.Equal(t, tt.want, r.findMCPOIDCConfigForMCPRemoteProxy(context.Background(), tt.obj))
+		})
+	}
+}
+
+// TestOIDCConfigRefChangedPredicate covers the watch predicate that keeps the
+// blocked-deletion wake-up cheap: create and delete events always pass, generic
+// events never do, and updates pass only when the referenced config name
+// changes (including clearing or adding a reference). This is the sub-30s event
+// path the deletion integration tests rely on.
+func TestOIDCConfigRefChangedPredicate(t *testing.T) {
+	t.Parallel()
+
+	newMCPServer := func(ref string) client.Object {
+		s := &mcpv1beta1.MCPServer{}
+		if ref != "" {
+			s.Spec.OIDCConfigRef = &mcpv1beta1.MCPOIDCConfigReference{Name: ref}
+		}
+		return s
+	}
+	newVMCP := func(ref string) client.Object {
+		v := &mcpv1beta1.VirtualMCPServer{}
+		if ref != "" {
+			v.Spec.IncomingAuth = &mcpv1beta1.IncomingAuthConfig{
+				OIDCConfigRef: &mcpv1beta1.MCPOIDCConfigReference{Name: ref},
+			}
+		}
+		return v
+	}
+	newProxy := func(ref string) client.Object {
+		p := &mcpv1beta1.MCPRemoteProxy{}
+		if ref != "" {
+			p.Spec.OIDCConfigRef = &mcpv1beta1.MCPOIDCConfigReference{Name: ref}
+		}
+		return p
+	}
+
+	workloadTypes := []struct {
+		name    string
+		extract func(client.Object) []string
+		build   func(string) client.Object
+	}{
+		{"MCPServer", indexMCPServerByOIDCConfigRef, newMCPServer},
+		{"VirtualMCPServer", indexVirtualMCPServerByOIDCConfigRef, newVMCP},
+		{"MCPRemoteProxy", indexMCPRemoteProxyByOIDCConfigRef, newProxy},
+	}
+
+	updateCases := []struct {
+		name       string
+		oldRef     string
+		newRef     string
+		wantUpdate bool
+	}{
+		{"unchanged reference is dropped", "cfg", "cfg", false},
+		{"no reference on either side is dropped", "", "", false},
+		{"changed reference is admitted", "cfg-a", "cfg-b", true},
+		{"cleared reference is admitted", "cfg", "", true},
+		{"added reference is admitted", "", "cfg", true},
+	}
+
+	for _, wt := range workloadTypes {
+		t.Run(wt.name, func(t *testing.T) {
+			t.Parallel()
+			pred := oidcConfigRefChangedPredicate(wt.extract)
+
+			assert.True(t, pred.Create(event.CreateEvent{Object: wt.build("cfg")}), "create events must pass")
+			assert.True(t, pred.Delete(event.DeleteEvent{Object: wt.build("cfg")}), "delete events must pass")
+			assert.False(t, pred.Generic(event.GenericEvent{Object: wt.build("cfg")}), "generic events must be dropped")
+
+			for _, uc := range updateCases {
+				got := pred.Update(event.UpdateEvent{
+					ObjectOld: wt.build(uc.oldRef),
+					ObjectNew: wt.build(uc.newRef),
+				})
+				assert.Equalf(t, uc.wantUpdate, got, "update: %s", uc.name)
+			}
+		})
+	}
 }

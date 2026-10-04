@@ -19,12 +19,12 @@ import (
 	vmcpconfig "github.com/stacklok/toolhive/pkg/vmcp/config"
 )
 
-// wakeupTimeout is deliberately well below the 30s fallback requeue in
-// handleDeletion. A blocked deletion that clears within this window could only
-// have been woken by the referrer's ref-change watch event, so the assertion
-// fails if that event wiring regresses even though the fallback would still
-// eventually reclaim the object.
-const wakeupTimeout = 10 * time.Second
+// wakeupBudget bounds the whole delete -> blocked -> repoint -> deleted sequence,
+// measured from just before the Delete call. Every 30s fallback requeue in
+// handleDeletion is scheduled by a reconcile that runs after that Delete, so
+// none can fire inside the budget: a deletion observed before the deadline
+// could only have been woken by the referrer's ref-change watch event.
+const wakeupBudget = 20 * time.Second
 
 var _ = Describe("MCPOIDCConfig deletion wakeup on referrer ref changes", func() {
 	// Each referrer type references an MCPOIDCConfig through a different spec
@@ -49,6 +49,10 @@ var _ = Describe("MCPOIDCConfig deletion wakeup on referrer ref changes", func()
 			primary := &mcpv1beta1.MCPOIDCConfig{
 				ObjectMeta: metav1.ObjectMeta{Name: primaryCfg, Namespace: ns},
 			}
+			deadline := time.Now().Add(wakeupBudget)
+			// Clamp at zero: Eventually treats a negative timeout as "use the
+			// default", which would quietly extend an already-spent budget.
+			remaining := func() time.Duration { return max(time.Until(deadline), 0) }
 			Expect(k8sClient.Delete(ctx, primary)).To(Succeed())
 			Eventually(func() bool {
 				got := &mcpv1beta1.MCPOIDCConfig{}
@@ -60,20 +64,25 @@ var _ = Describe("MCPOIDCConfig deletion wakeup on referrer ref changes", func()
 				}
 				cond := meta.FindStatusCondition(got.Status.Conditions, mcpv1beta1.ConditionTypeDeletionBlocked)
 				return cond != nil && cond.Status == metav1.ConditionTrue
-			}, timeout, interval).Should(BeTrue(),
+			}, remaining(), interval).Should(BeTrue(),
 				"deletion should stay blocked while the referrer still points at the config")
 
 			// Repoint the referrer at otherCfg. The resulting ref-change event is
-			// the only wakeup available inside wakeupTimeout — the handleDeletion
-			// requeue is 30s out — so a deletion this fast proves the event drove it.
+			// the only wakeup available before the deadline, so a deletion observed
+			// in time proves the event drove it.
 			repoint(ns, name, otherCfg)
 
 			Eventually(func() bool {
 				got := &mcpv1beta1.MCPOIDCConfig{}
 				err := k8sClient.Get(ctx, types.NamespacedName{Name: primaryCfg, Namespace: ns}, got)
 				return errors.IsNotFound(err)
-			}, wakeupTimeout, interval).Should(BeTrue(),
-				"the ref-change event should remove the finalizer well before the 30s fallback requeue")
+			}, remaining(), interval).Should(BeTrue(),
+				"the ref-change event should remove the finalizer before the deadline")
+			// Eventually polls at least once even when the budget is already spent,
+			// so a deletion first seen after the deadline (possibly by the fallback)
+			// must still fail.
+			Expect(time.Now()).To(BeTemporally("<", deadline),
+				"deletion was observed after the deadline, so the 30s fallback may have freed it")
 		},
 		Entry("MCPServer referrer", createMCPServerReferrer, repointMCPServer),
 		Entry("VirtualMCPServer referrer", createVMCPReferrer, repointVMCP),

@@ -409,7 +409,7 @@ func BuildRunnerConfig(
 
 	if runFlags.RemoteURL != "" {
 		slog.Debug(fmt.Sprintf("Attempting to run remote MCP server: %s", runFlags.RemoteURL))
-		return buildRunnerConfig(ctx, runFlags, cmdArgs, debugMode, validatedHost, rt, runFlags.RemoteURL, nil,
+		return buildRunnerConfig(ctx, runFlags, cmdArgs, debugMode, validatedHost, rt, runFlags.RemoteURL, serverOrImage, nil,
 			nil, envVarValidator, oidcConfig, telemetryConfig, appConfig,
 			runner.WithNetworkIsolationExplicit(isolateExplicit))
 	}
@@ -436,7 +436,7 @@ func BuildRunnerConfig(
 	regServerName := runner.ResolveRegistryServerName(serverMetadata)
 
 	// Build the runner config
-	runConfig, err := buildRunnerConfig(ctx, runFlags, cmdArgs, debugMode, validatedHost, rt, imageURL, serverMetadata,
+	runConfig, err := buildRunnerConfig(ctx, runFlags, cmdArgs, debugMode, validatedHost, rt, imageURL, serverOrImage, serverMetadata,
 		envVars, envVarValidator, oidcConfig, telemetryConfig, appConfig,
 		runner.WithRegistrySourceURLs(regAPIURL, regURL),
 		runner.WithRegistryServerName(regServerName),
@@ -586,10 +586,10 @@ func validateAndSetupProxyMode(runFlags *RunFlags) error {
 	return nil
 }
 
-// resolveTransportType selects the appropriate transport type based on flags and metadata.
+// resolveTransportType selects the appropriate transport type based on flags, scheme, and metadata.
 // Uses a type assertion with nil check to guard against typed nil pointers wrapped
 // in a non-nil interface (e.g., nil *ImageMetadata returned as ServerMetadata).
-func resolveTransportType(runFlags *RunFlags, serverMetadata regtypes.ServerMetadata) string {
+func resolveTransportType(runFlags *RunFlags, serverMetadata regtypes.ServerMetadata, serverOrImage string) string {
 	if runFlags.Transport != "" {
 		return runFlags.Transport
 	}
@@ -597,6 +597,9 @@ func resolveTransportType(runFlags *RunFlags, serverMetadata regtypes.ServerMeta
 		if t := imageMetadata.GetTransport(); t != "" {
 			return t
 		}
+	}
+	if strings.HasPrefix(serverOrImage, runner.UVXScheme) {
+		return types.TransportTypeStdio.String()
 	}
 	return defaultTransportType
 }
@@ -700,6 +703,7 @@ func buildRunnerConfig(
 	validatedHost string,
 	rt runtime.Deployer,
 	imageURL string,
+	serverOrImage string,
 	serverMetadata regtypes.ServerMetadata,
 	envVars map[string]string,
 	envVarValidator runner.EnvVarValidator,
@@ -708,7 +712,7 @@ func buildRunnerConfig(
 	appConfig *cfg.Config,
 	extraOpts ...runner.RunConfigBuilderOption,
 ) (*runner.RunConfig, error) {
-	transportType := resolveTransportType(runFlags, serverMetadata)
+	transportType := resolveTransportType(runFlags, serverMetadata, serverOrImage)
 	serverName := resolveServerName(runFlags, serverMetadata)
 
 	// Use type assertion with nil check to guard against typed nil pointers

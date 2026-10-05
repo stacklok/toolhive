@@ -416,6 +416,16 @@ func (p *CachedAPIRegistryProvider) GetRemoteServer(name string) (*types.RemoteS
 
 // ListAvailableSkills returns skills from the registry API, with caching.
 // Creates a SkillsClient on demand and fetches all skills with auto-pagination.
+//
+// Error semantics mirror ListAvailablePlugins' contract for the plugins cache:
+//   - authentication failures (401/403, surfaced as api.RegistryHTTPError that
+//     unwraps to api.ErrRegistryUnauthorized) are always propagated — stale
+//     cache must never mask a changed authentication state, or a revoked token
+//     would silently serve stale skills and hide the need to re-auth;
+//   - other failures (network blip, 5xx) degrade gracefully to stale cache
+//     when one is present;
+//   - with no stale cache, the error is returned (never nil,nil), so the v0.1
+//     registry route surfaces a real failure instead of an empty 200.
 func (p *CachedAPIRegistryProvider) ListAvailableSkills() ([]types.Skill, error) {
 	// Check cache
 	p.skillsMu.RLock()
@@ -444,13 +454,20 @@ func (p *CachedAPIRegistryProvider) ListAvailableSkills() ([]types.Skill, error)
 	// ListSkills auto-paginates internally, returning all skills in one call
 	result, err := skillsClient.ListSkills(ctx, nil)
 	if err != nil {
-		// Return cached data if available, otherwise nil (skills are optional)
+		// Auth failures must propagate — never mask with stale cache.
+		var httpErr *api.RegistryHTTPError
+		if errors.As(err, &httpErr) && (httpErr.StatusCode == http.StatusUnauthorized || httpErr.StatusCode == http.StatusForbidden) {
+			return nil, err
+		}
+		// Transient failures: degrade to stale cache if available.
 		p.skillsMu.RLock()
 		defer p.skillsMu.RUnlock()
 		if p.skillsCacheSet {
 			return p.cachedSkills, nil
 		}
-		return nil, nil
+		// No stale cache: surface the error rather than nil,nil so the
+		// v0.1 registry route does not answer 200 [] on a real failure.
+		return nil, err
 	}
 
 	allSkills := make([]types.Skill, 0, len(result.Skills))

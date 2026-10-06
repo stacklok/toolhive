@@ -292,6 +292,8 @@ permit(principal, action == Action::"call_tool", resource == Tool::"weather");
 
 Then `tools/list` will only show the "weather" tool for that user.
 
+A filtered list depends on the caller's permissions, so `tools/list`, `prompts/list`, and `resources/list` responses carry the HTTP header `Cache-Control: private, no-store`, and a `cacheScope` or `ttlMs` member the backend sent in the result is replaced with `"private"` or `0`. The proxy does not add either member when the backend omitted it, so a list from a backend on an MCP revision that predates these members reaches the client without them. A result that repeats `cacheScope` or `ttlMs`, or spells one with a case-insensitive alias, fails closed with a generic internal JSON-RPC error. `resources/templates/list` responses carry the same header, and their result always includes `cacheScope: "private"` and `ttlMs: 0`.
+
 ##### Methods covered by a prompt or resource policy
 
 Some MCP methods do not name a capability directly but still act on one. They are

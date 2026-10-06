@@ -594,10 +594,12 @@ func TestResponseFilteringWriter(t *testing.T) {
 }
 
 // TestResponseFilteringWriter_ListsPreserveResultMembers verifies that the
-// tools, prompts, and resources list filters rewrite only the list member:
-// every other result member and every permitted descriptor reach the client
-// as the backend sent them, and the caller-specific result is marked private
-// in the result and in the committed Cache-Control header.
+// tools, prompts, and resources list filters rewrite only the list member and
+// the caching hints the backend sent: every other result member and every
+// permitted descriptor reach the client as the backend sent them, a caching
+// hint the backend sent is marked private and immediately stale, a caching
+// hint the backend omitted stays absent, and the committed Cache-Control
+// header marks the caller-specific result private in every case.
 func TestResponseFilteringWriter_ListsPreserveResultMembers(t *testing.T) {
 	t.Parallel()
 
@@ -654,12 +656,21 @@ func TestResponseFilteringWriter_ListsPreserveResultMembers(t *testing.T) {
 			},
 		},
 		{
+			name: "result with only cacheScope",
+			result: func(m listMethod) string {
+				return `{"cacheScope":"public","` + m.listField + `":[` + m.allowed + `,` + m.denied + `]}`
+			},
+			expected: func(m listMethod) string {
+				return `{"cacheScope":"private","` + m.listField + `":[` + m.allowed + `]}`
+			},
+		},
+		{
 			name: "result without caching hints",
 			result: func(m listMethod) string {
 				return `{"` + m.listField + `":[` + m.allowed + `,` + m.denied + `]}`
 			},
 			expected: func(m listMethod) string {
-				return `{"cacheScope":"private","ttlMs":0,"` + m.listField + `":[` + m.allowed + `]}`
+				return `{"` + m.listField + `":[` + m.allowed + `]}`
 			},
 		},
 	}

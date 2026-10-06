@@ -17,6 +17,7 @@ import (
 	"fmt"
 	"log/slog"
 	"net/url"
+	"reflect"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -3837,6 +3838,81 @@ func dcrCASFixture(key DCRKey, secret string) *DCRCredentials {
 	}
 }
 
+// dcrCASFieldMutations mutates exactly one persisted field of a
+// DCRCredentials each, keyed by field name. Key is excluded: a mismatched key
+// is rejected as invalid input before any compare. Time fields move by a full
+// second so the change survives the Redis backend's one-second precision.
+var dcrCASFieldMutations = map[string]func(*DCRCredentials){
+	"ProviderName":            func(c *DCRCredentials) { c.ProviderName += "-changed" },
+	"ClientID":                func(c *DCRCredentials) { c.ClientID += "-changed" },
+	"ClientSecret":            func(c *DCRCredentials) { c.ClientSecret += "-changed" },
+	"TokenEndpointAuthMethod": func(c *DCRCredentials) { c.TokenEndpointAuthMethod += "-changed" },
+	"RegistrationAccessToken": func(c *DCRCredentials) { c.RegistrationAccessToken += "-changed" },
+	"RegistrationClientURI":   func(c *DCRCredentials) { c.RegistrationClientURI += "-changed" },
+	"AuthorizationEndpoint":   func(c *DCRCredentials) { c.AuthorizationEndpoint += "-changed" },
+	"TokenEndpoint":           func(c *DCRCredentials) { c.TokenEndpoint += "-changed" },
+	"CreatedAt":               func(c *DCRCredentials) { c.CreatedAt = c.CreatedAt.Add(time.Second) },
+	"ClientSecretExpiresAt":   func(c *DCRCredentials) { c.ClientSecretExpiresAt = c.ClientSecretExpiresAt.Add(time.Second) },
+}
+
+// fullDCRCASFixture returns a DCRCredentials at key with every field
+// populated, so each mutation in dcrCASFieldMutations changes a non-zero value.
+func fullDCRCASFixture(key DCRKey) *DCRCredentials {
+	c := dcrCASFixture(key, "original")
+	c.ProviderName = "provider"
+	c.TokenEndpointAuthMethod = "client_secret_basic"
+	c.RegistrationAccessToken = "rat"
+	c.RegistrationClientURI = "https://idp.example.com/register/client-original"
+	c.CreatedAt = time.Unix(1_700_000_000, 0)
+	c.ClientSecretExpiresAt = time.Now().Add(24 * time.Hour).Truncate(time.Second)
+	return c
+}
+
+// runDCRCASPerFieldTest pins that every persisted field takes part in the
+// UpdateDCRCredentialsIfUnchanged comparison: for each field, an expected that
+// differs from the stored row in only that field is refused with
+// ErrDCRCredentialsChanged and the row is left intact. newStore returns a
+// fresh, empty store per subtest.
+func runDCRCASPerFieldTest(t *testing.T, newStore func(t *testing.T) DCRCredentialStore) {
+	t.Helper()
+
+	// Every DCRCredentials field except Key must have a mutation, so a field
+	// added later cannot silently escape the comparison.
+	typ := reflect.TypeFor[DCRCredentials]()
+	for i := range typ.NumField() {
+		name := typ.Field(i).Name
+		if name == "Key" {
+			continue
+		}
+		require.Containsf(t, dcrCASFieldMutations, name,
+			"DCRCredentials.%s has no entry in dcrCASFieldMutations", name)
+	}
+
+	for name, mutate := range dcrCASFieldMutations {
+		t.Run(name, func(t *testing.T) {
+			t.Parallel()
+			ctx := context.Background()
+			s := newStore(t)
+			key := dcrFixtureKey()
+			stored := fullDCRCASFixture(key)
+			_, err := s.StoreDCRCredentialsIfAbsent(ctx, stored)
+			require.NoError(t, err)
+
+			before, err := s.GetDCRCredentials(ctx, key)
+			require.NoError(t, err)
+			expected := cloneDCRCredentials(before)
+			mutate(expected)
+
+			_, err = s.UpdateDCRCredentialsIfUnchanged(ctx, dcrCASFixture(key, "replacement"), expected)
+			require.ErrorIs(t, err, ErrDCRCredentialsChanged)
+
+			after, err := s.GetDCRCredentials(ctx, key)
+			require.NoError(t, err)
+			assert.Equal(t, *before, *after, "a refused compare-and-set must not write")
+		})
+	}
+}
+
 // requireSingleDCRCASWinner asserts that of a set of racing
 // UpdateDCRCredentialsIfUnchanged calls made against the same expected value,
 // exactly one succeeded and every other one was refused with
@@ -4522,6 +4598,165 @@ func TestRedisStorage_DCRCredentials_UpdateIfUnchangedConcurrent(t *testing.T) {
 				assert.Equal(t, *results[g], *got, "the stored row must be the winner's")
 			}
 		}
+	})
+}
+
+// TestRedisStorage_DCRCredentials_UpdateIfUnchangedPerField runs the shared
+// per-field comparison test against the Redis backend.
+func TestRedisStorage_DCRCredentials_UpdateIfUnchangedPerField(t *testing.T) {
+	t.Parallel()
+	runDCRCASPerFieldTest(t, func(t *testing.T) DCRCredentialStore {
+		t.Helper()
+		s, _ := newTestRedisStorage(t)
+		t.Cleanup(func() { _ = s.Close() })
+		return s
+	})
+}
+
+// dcrCASInterferenceHook is a go-redis hook that, before each MULTI/EXEC
+// pipeline, rewrites key with its current value through a separate client.
+// The rewrite leaves the row's contents unchanged but invalidates the WATCH,
+// so EXEC aborts with redis.TxFailedErr. It interferes with the first limit
+// transactions only (limit < 0 means every one).
+type dcrCASInterferenceHook struct {
+	other *redis.Client
+	key   string
+	limit int64
+	count atomic.Int64
+}
+
+func (*dcrCASInterferenceHook) DialHook(next redis.DialHook) redis.DialHook { return next }
+
+func (*dcrCASInterferenceHook) ProcessHook(next redis.ProcessHook) redis.ProcessHook { return next }
+
+func (h *dcrCASInterferenceHook) ProcessPipelineHook(next redis.ProcessPipelineHook) redis.ProcessPipelineHook {
+	return func(ctx context.Context, cmds []redis.Cmder) error {
+		if h.limit < 0 || h.count.Load() < h.limit {
+			h.count.Add(1)
+			val, err := h.other.Get(ctx, h.key).Result()
+			if err != nil {
+				return err
+			}
+			if err := h.other.SetArgs(ctx, h.key, val, redis.SetArgs{KeepTTL: true}).Err(); err != nil {
+				return err
+			}
+		}
+		return next(ctx, cmds)
+	}
+}
+
+// newInterferedDCRCASStorage returns a Redis-backed store seeded with an
+// "original" row at dcrFixtureKey, the value read back from it, and the
+// interference hook installed on the store's client.
+func newInterferedDCRCASStorage(t *testing.T, limit int64) (*RedisStorage, *DCRCredentials, *dcrCASInterferenceHook) {
+	t.Helper()
+	mr := miniredis.RunT(t)
+	client := redis.NewClient(&redis.Options{Addr: mr.Addr()})
+	other := redis.NewClient(&redis.Options{Addr: mr.Addr()})
+	s := NewRedisStorageWithClient(client, "test:auth:")
+	t.Cleanup(func() {
+		_ = s.Close()
+		_ = other.Close()
+	})
+
+	ctx := context.Background()
+	key := dcrFixtureKey()
+	_, err := s.StoreDCRCredentialsIfAbsent(ctx, dcrCASFixture(key, "original"))
+	require.NoError(t, err)
+	expected, err := s.GetDCRCredentials(ctx, key)
+	require.NoError(t, err)
+
+	hook := &dcrCASInterferenceHook{other: other, key: redisDCRKey(s.keyPrefix, key), limit: limit}
+	client.AddHook(hook)
+	return s, expected, hook
+}
+
+// TestRedisStorage_DCRCredentials_UpdateIfUnchangedRetry pins the
+// WATCH/MULTI retry loop: an aborted EXEC is retried and the retry succeeds
+// when the row still matches, while an EXEC aborted on every attempt returns a
+// generic error after maxDCRClaimRetries attempts and writes nothing.
+func TestRedisStorage_DCRCredentials_UpdateIfUnchangedRetry(t *testing.T) {
+	t.Parallel()
+
+	t.Run("aborted EXEC is retried and succeeds", func(t *testing.T) {
+		t.Parallel()
+		s, expected, hook := newInterferedDCRCASStorage(t, 1)
+		ctx := context.Background()
+
+		replacement := dcrCASFixture(expected.Key, "replacement")
+		_, err := s.UpdateDCRCredentialsIfUnchanged(ctx, replacement, expected)
+		require.NoError(t, err)
+		assert.Equal(t, int64(1), hook.count.Load(), "exactly one attempt must have been interfered with")
+
+		got, err := s.GetDCRCredentials(ctx, expected.Key)
+		require.NoError(t, err)
+		assert.Equal(t, *replacement, *got)
+	})
+
+	t.Run("retry exhaustion returns a generic error and writes nothing", func(t *testing.T) {
+		t.Parallel()
+		s, expected, hook := newInterferedDCRCASStorage(t, -1)
+		ctx := context.Background()
+
+		_, err := s.UpdateDCRCredentialsIfUnchanged(ctx, dcrCASFixture(expected.Key, "replacement"), expected)
+		require.Error(t, err)
+		assert.ErrorIs(t, err, redis.TxFailedErr)
+		assert.NotErrorIs(t, err, ErrDCRCredentialsChanged)
+		assert.NotErrorIs(t, err, ErrNotFound)
+		assert.Equal(t, int64(maxDCRClaimRetries), hook.count.Load())
+
+		got, err := s.GetDCRCredentials(ctx, expected.Key)
+		require.NoError(t, err)
+		assert.Equal(t, *expected, *got, "an exhausted compare-and-set must not write")
+	})
+}
+
+// TestRedisStorage_DCRCredentials_UpdateIfUnchangedStoredRowStates pins the
+// two remaining stored-row branches: a corrupt row surfaces as a generic error
+// and is left untouched, and a row whose ClientSecretExpiresAt has passed but
+// whose key still exists is updatable (presence is physical, as for
+// UpdateDCRCredentialsIfPresent).
+func TestRedisStorage_DCRCredentials_UpdateIfUnchangedStoredRowStates(t *testing.T) {
+	t.Parallel()
+
+	t.Run("corrupt row returns a generic error", func(t *testing.T) {
+		withRedisStorage(t, func(ctx context.Context, s *RedisStorage, mr *miniredis.Miniredis) {
+			key := dcrFixtureKey()
+			redisKey := redisDCRKey(s.keyPrefix, key)
+			require.NoError(t, mr.Set(redisKey, "not-json"))
+
+			_, err := s.UpdateDCRCredentialsIfUnchanged(ctx,
+				dcrCASFixture(key, "replacement"), dcrCASFixture(key, "original"))
+			require.Error(t, err)
+			assert.NotErrorIs(t, err, ErrDCRCredentialsChanged)
+			assert.NotErrorIs(t, err, ErrNotFound)
+
+			raw, getErr := mr.Get(redisKey)
+			require.NoError(t, getErr)
+			assert.Equal(t, "not-json", raw, "a corrupt row must not be overwritten")
+		})
+	})
+
+	t.Run("expired but present row is updatable", func(t *testing.T) {
+		withRedisStorage(t, func(ctx context.Context, s *RedisStorage, mr *miniredis.Miniredis) {
+			key := dcrFixtureKey()
+			stored := dcrCASFixture(key, "original")
+			stored.ClientSecretExpiresAt = time.Now().Add(-time.Hour).Truncate(time.Second)
+			_, err := s.StoreDCRCredentialsIfAbsent(ctx, stored)
+			require.NoError(t, err)
+			// Keep the key present past its bounded pastExpiryDCRTTL.
+			mr.SetTTL(redisDCRKey(s.keyPrefix, key), time.Hour)
+
+			expected, err := s.GetDCRCredentials(ctx, key)
+			require.NoError(t, err)
+			replacement := dcrCASFixture(key, "replacement")
+			_, err = s.UpdateDCRCredentialsIfUnchanged(ctx, replacement, expected)
+			require.NoError(t, err, "an expired-but-present row must be updatable")
+
+			got, err := s.GetDCRCredentials(ctx, key)
+			require.NoError(t, err)
+			assert.Equal(t, *replacement, *got)
+		})
 	})
 }
 

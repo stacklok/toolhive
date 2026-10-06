@@ -23,6 +23,7 @@ import (
 	"errors"
 	"fmt"
 	"net/url"
+	"reflect"
 	"sync"
 	"sync/atomic"
 	"testing"
@@ -3101,6 +3102,52 @@ func TestMemoryStorage_DCRCredentials_UpdateIfUnchanged(t *testing.T) {
 			require.NoError(t, err)
 		})
 	})
+}
+
+// TestMemoryStorage_DCRCredentials_UpdateIfUnchangedPerField runs the shared
+// per-field comparison test against the memory backend.
+func TestMemoryStorage_DCRCredentials_UpdateIfUnchangedPerField(t *testing.T) {
+	t.Parallel()
+	runDCRCASPerFieldTest(t, func(t *testing.T) DCRCredentialStore {
+		t.Helper()
+		s := NewMemoryStorage()
+		t.Cleanup(func() { _ = s.Close() })
+		return s
+	})
+}
+
+// TestDCRCredentialsEqual_TimeFieldsCompareByInstant pins that
+// dcrCredentialsEqual compares every time.Time field of DCRCredentials by
+// instant, not with ==. It discovers the fields by reflection, so a time
+// field added to DCRCredentials without a matching Equal in the helper fails
+// here instead of silently reintroducing monotonic-clock/location mismatches.
+func TestDCRCredentialsEqual_TimeFieldsCompareByInstant(t *testing.T) {
+	t.Parallel()
+
+	timeType := reflect.TypeFor[time.Time]()
+	typ := reflect.TypeFor[DCRCredentials]()
+	elsewhere := time.FixedZone("elsewhere", 3600)
+
+	for i := range typ.NumField() {
+		field := typ.Field(i)
+		if field.Type != timeType {
+			continue
+		}
+		t.Run(field.Name, func(t *testing.T) {
+			t.Parallel()
+			now := time.Now() // carries a monotonic reading
+			a := dcrCASFixture(dcrFixtureKey(), "original")
+			b := cloneDCRCredentials(a)
+			reflect.ValueOf(a).Elem().Field(i).Set(reflect.ValueOf(now))
+			reflect.ValueOf(b).Elem().Field(i).Set(reflect.ValueOf(now.Round(0).In(elsewhere)))
+
+			assert.True(t, dcrCredentialsEqual(a, b),
+				"equal instants in %s must compare equal regardless of monotonic reading or location", field.Name)
+
+			reflect.ValueOf(b).Elem().Field(i).Set(reflect.ValueOf(now.Add(time.Nanosecond)))
+			assert.False(t, dcrCredentialsEqual(a, b), "different instants in %s must not compare equal", field.Name)
+		})
+	}
 }
 
 // TestMemoryStorage_DCRCredentials_UpdateIfUnchangedInvalidInput pins the

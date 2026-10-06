@@ -35,6 +35,9 @@ type GatewayManager interface {
 	ConfigureLLMGateway(clientType string, cfg llmgateway.ApplyConfig) (string, error)
 	// LLMGatewayModeFor returns "direct", "proxy", or "" for the given client.
 	LLMGatewayModeFor(clientType string) string
+	// PromptCacheConflict names a setting that may override ToolHive's
+	// one-hour Claude Code prompt-cache configuration.
+	PromptCacheConflict(clientType string) (string, error)
 	// IsManaged reports whether a managed-preferences profile overrides the
 	// client's local config (so the config setup writes would be ignored).
 	IsManaged(clientType string) bool
@@ -150,7 +153,8 @@ func Setup(
 
 	configured, err := configureDetectedToolsWithDiscovery(
 		out, errOut, gm, detected, llmCfg.GatewayURL, proxyBaseURL,
-		tokenHelperPath, tokenHelperArgs, llmCfg.TLSSkipVerify, anthropicPrefix, llmCfg.Models, discoveredModels, llmCfg.Bedrock,
+		tokenHelperPath, tokenHelperArgs, llmCfg.TLSSkipVerify, anthropicPrefix,
+		llmCfg.Models, discoveredModels, llmCfg.ShortPromptCache, llmCfg.Bedrock,
 	)
 	if err != nil {
 		return err
@@ -163,6 +167,8 @@ func Setup(
 	// later setup that omits claude-code. llmCfg.Bedrock.Compat is the effective
 	// (persisted + inline) compat state used for the --enable-1m check.
 	warnBedrockNoEffect(errOut, inlineOpts, llmCfg.Bedrock.Compat, configured)
+	warnShortPromptCacheNoEffect(errOut, inlineOpts, configured)
+	warnPromptCacheBedrockCompatibility(errOut, inlineOpts, llmCfg.ShortPromptCache, configured)
 
 	warnTLSSkipVerify(errOut, llmCfg.TLSSkipVerify, configured)
 	warnCredentialHelperTools(out, errOut, gm, configured)
@@ -509,6 +515,13 @@ func setupClients(
 const (
 	vsCodeClient        = "vscode"
 	vsCodeInsiderClient = "vscode-insider"
+	// claudeCodeClient is the canonical client identifier for Claude Code.
+	// Declared here as a string literal because pkg/llm does not import
+	// pkg/client (which owns the ClientApp constant) to avoid an import cycle.
+	claudeCodeClient = "claude-code"
+	// promptCacheVerificationCommand reports which TTL Claude Code used under
+	// usage.cache_creation in the command's JSON output.
+	promptCacheVerificationCommand = `claude -p "hello" --output-format json`
 )
 
 func isVSCodeClient(clientType string) bool {
@@ -631,11 +644,6 @@ func discoverGatewayModels(ctx context.Context, cfg Config) ([]string, error) {
 	return models, nil
 }
 
-// claudeCodeClient is the canonical client identifier for Claude Code. Declared
-// here as a string literal because pkg/llm does not import pkg/client (which
-// owns the ClientApp constant) to avoid an import cycle.
-const claudeCodeClient = "claude-code"
-
 // Default Bedrock inference-profile model IDs written for Claude Code in
 // bedrock-compat mode when --models does not override a tier. These track the
 // current generation and are expected to be bumped periodically; users override
@@ -727,13 +735,34 @@ func warnBedrockNoEffect(errOut io.Writer, opts SetOptions, effectiveCompat bool
 	}
 }
 
+func warnShortPromptCacheNoEffect(errOut io.Writer, opts SetOptions, configured []ToolConfig) {
+	if opts.ShortPromptCache != nil && *opts.ShortPromptCache && !isTarget(configured, claudeCodeClient) {
+		_, _ = fmt.Fprintln(errOut,
+			"Warning: --short-prompt-cache was set but Claude Code was not configured; the flag had no effect on client settings.")
+	}
+}
+
+func warnPromptCacheBedrockCompatibility(
+	errOut io.Writer, opts SetOptions, shortPromptCache bool, configured []ToolConfig,
+) {
+	if shortPromptCache || opts.BedrockCompat == nil || !*opts.BedrockCompat ||
+		!isTarget(configured, claudeCodeClient) {
+		return
+	}
+	_, _ = fmt.Fprintf(errOut,
+		"Warning: Claude Code's one-hour prompt-cache lifetime may not take effect with Bedrock compatibility: "+
+			"the gateway may reject or strip the required beta header, and Bedrock support varies by model. "+
+			"Verify the effective lifetime with: %s\n", promptCacheVerificationCommand)
+}
+
 // configureDetectedTools patches each detected tool's config file and returns
 // the list of successfully configured tools. An error is returned only when no
 // tool was configured successfully.
 func configureDetectedToolsWithDiscovery(
 	out, errOut io.Writer, gm GatewayManager, detected []string,
 	gatewayURL, proxyBaseURL, tokenHelperPath string, tokenHelperArgs []string,
-	tlsSkipVerify bool, anthropicPathPrefix string, models, discoveredModels []string, bedrock BedrockConfig,
+	tlsSkipVerify bool, anthropicPathPrefix string,
+	models, discoveredModels []string, shortPromptCache bool, bedrock BedrockConfig,
 ) ([]ToolConfig, error) {
 	var configured []ToolConfig
 	for _, clientType := range detected {
@@ -762,6 +791,10 @@ func configureDetectedToolsWithDiscovery(
 			TLSSkipVerify:      tlsSkipVerify,
 			Models:             models,
 			DiscoveredModels:   discoveredModels,
+		}
+
+		if clientType == claudeCodeClient {
+			applyCfg.ShortPromptCache = shortPromptCache
 		}
 
 		// Bedrock-compat applies only to Claude Code: it disables the experimental
@@ -800,11 +833,30 @@ func configureDetectedToolsWithDiscovery(
 			EnvFilePath: envFilePath,
 		})
 		_, _ = fmt.Fprintf(out, "Configured %s (%s mode)  →  %s\n", clientType, mode, configPath)
+		if clientType == claudeCodeClient && !shortPromptCache {
+			warnPromptCacheConflict(errOut, gm, clientType)
+		}
 	}
 	if len(configured) == 0 {
 		return nil, fmt.Errorf("failed to configure any detected tools")
 	}
 	return configured, nil
+}
+
+func warnPromptCacheConflict(errOut io.Writer, gm GatewayManager, clientType string) {
+	conflict, err := gm.PromptCacheConflict(clientType)
+	if err != nil {
+		_, _ = fmt.Fprintf(errOut,
+			"Warning: could not inspect %s for prompt-cache TTL conflicts: %v; "+
+				"ToolHive wrote the one-hour settings anyway.\n", clientType, err)
+		return
+	}
+	if conflict != "" {
+		_, _ = fmt.Fprintf(errOut,
+			"Warning: ToolHive wrote the one-hour prompt-cache settings for %s, but %s may override them. "+
+				"Remove that setting to use the one-hour lifetime. Verify the effective lifetime with: %s\n",
+			clientType, conflict, promptCacheVerificationCommand)
+	}
 }
 
 // resolveAnthropicPrefix returns the effective Anthropic path prefix. When the

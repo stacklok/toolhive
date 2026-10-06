@@ -5,6 +5,7 @@ package authz
 
 import (
 	"bytes"
+	"cmp"
 	"context"
 	"encoding/json"
 	"errors"
@@ -13,6 +14,7 @@ import (
 	"net/http/httptest"
 	"net/http/httputil"
 	"net/url"
+	"reflect"
 	"strconv"
 	"strings"
 	"testing"
@@ -218,6 +220,12 @@ func TestFindToolResponseFilter_RejectsMalformedOrAmbiguousSuccessfulOutput(t *t
 			`"text":"{\"tools\":[{\"name\":\"weather\",\"name\":\"` + protectedDescriptor + `\"}]}"}]}`},
 		{name: "case-folded embedded name alias", result: `{"content":[{"type":"text",` +
 			`"text":"{\"tools\":[{\"name\":\"weather\",\"NAME\":\"` + protectedDescriptor + `\"}]}"}]}`},
+		{name: "case-folded embedded annotation hint alias", result: `{"content":[{"type":"text",` +
+			`"text":"{\"tools\":[{\"name\":\"weather\",` +
+			`\"annotations\":{\"readOnlyHint\":false,\"READONLYHINT\":true}}]}"}]}`},
+		{name: "duplicate embedded annotations member", result: `{"content":[{"type":"text",` +
+			`"text":"{\"tools\":[{\"name\":\"weather\",` +
+			`\"annotations\":{\"readOnlyHint\":true},\"annotations\":{\"destructiveHint\":true}}]}"}]}`},
 		{name: "no find tool output", result: `{"content":[{"type":"text","text":"no matching tools"}]}`},
 		{name: "multiple tools-bearing text carriers", result: `{"content":[` +
 			`{"type":"text","text":"{\"tools\":[{\"name\":\"weather\"}]}"},` +
@@ -252,10 +260,11 @@ func TestFindToolResponseFilter_RejectsMalformedOrDivergentStructuredContent(t *
 	t.Parallel()
 
 	const protectedDescriptor = "protected-find-tool-sentinel"
-	const textOutput = `"{\"tools\":[{\"name\":\"weather\"}],` +
+	const defaultTextOutput = `"{\"tools\":[{\"name\":\"weather\"}],` +
 		`\"token_metrics\":{\"baseline_tokens\":10,\"returned_tokens\":5,\"savings_percent\":50}}"`
 	testCases := []struct {
 		name              string
+		textOutput        string
 		structuredContent string
 	}{
 		{name: "empty object", structuredContent: `{}`},
@@ -268,12 +277,18 @@ func TestFindToolResponseFilter_RejectsMalformedOrDivergentStructuredContent(t *
 		{name: "diverges from text output", structuredContent: `{"tools":[` +
 			`{"name":"` + protectedDescriptor + `"}],` +
 			`"token_metrics":{"baseline_tokens":10,"returned_tokens":5,"savings_percent":50}}`},
+		{
+			name:       "duplicate annotation hint that decodes like the text output",
+			textOutput: `"{\"tools\":[{\"name\":\"weather\",\"annotations\":{\"readOnlyHint\":true}}]}"`,
+			structuredContent: `{"tools":[{"name":"weather",` +
+				`"annotations":{"readOnlyHint":false,"readOnlyHint":true}}]}`,
+		},
 	}
 
 	for _, tc := range testCases {
 		t.Run(tc.name, func(t *testing.T) {
 			t.Parallel()
-			result := `{"content":[{"type":"text","text":` + textOutput + `}],` +
+			result := `{"content":[{"type":"text","text":` + cmp.Or(tc.textOutput, defaultTextOutput) + `}],` +
 				`"structuredContent":` + tc.structuredContent + `}`
 			authorizer := &mockAuthorizer{results: map[string]mockResult{
 				"weather":           {authorized: true},
@@ -887,6 +902,199 @@ func TestResponseFilteringWriter_LegacyListsRejectMalformedOrAmbiguousResults(t 
 			})
 		}
 	}
+}
+
+// TestResponseFilteringWriter_ToolsListRejectsAmbiguousAnnotations verifies
+// that a tools/list response fails closed when a descriptor spells its
+// annotations, or any member of them, in a way encoding/json would resolve to
+// a value other than the one a client reads from the forwarded descriptor.
+func TestResponseFilteringWriter_ToolsListRejectsAmbiguousAnnotations(t *testing.T) {
+	t.Parallel()
+
+	const protectedDescriptor = "protected-annotations-sentinel"
+	testCases := []struct {
+		name        string
+		annotations string
+	}{
+		{
+			name:        "duplicate hint",
+			annotations: `"annotations":{"readOnlyHint":false,"readOnlyHint":true}`,
+		},
+		{
+			name:        "case-folded hint alias",
+			annotations: `"annotations":{"readOnlyHint":false,"READONLYHINT":true}`,
+		},
+		{
+			name:        "case-folded hint alias without the canonical hint",
+			annotations: `"annotations":{"READONLYHINT":true}`,
+		},
+		{
+			name:        "non-ASCII case-folded hint alias",
+			annotations: "\"annotations\":{\"destructiveHint\":true,\"de\u017ftructiveHint\":false}",
+		},
+		{
+			name:        "escaped duplicate hint",
+			annotations: `"annotations":{"openWorldHint":true,"open\u0057orldHint":false}`,
+		},
+		{
+			name:        "case-folded title alias",
+			annotations: `"annotations":{"title":"Weather","TITLE":"Delete files"}`,
+		},
+		{
+			name:        "duplicate annotations member",
+			annotations: `"annotations":{"readOnlyHint":true},"annotations":{"destructiveHint":true}`,
+		},
+		{
+			name:        "case-folded annotations alias",
+			annotations: `"annotations":{"readOnlyHint":false},"ANNOTATIONS":{"readOnlyHint":true}`,
+		},
+		{
+			name:        "non-ASCII case-folded annotations alias",
+			annotations: "\"annotations\":{\"readOnlyHint\":false},\"annotation\u017f\":{\"readOnlyHint\":true}",
+		},
+	}
+
+	for _, tc := range testCases {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+
+			responseBytes, err := jsonrpc2.EncodeMessage(&jsonrpc2.Response{
+				ID: jsonrpc2.Int64ID(104),
+				Result: json.RawMessage(`{"tools":[{"name":"` + protectedDescriptor +
+					`","inputSchema":{"type":"object"},` + tc.annotations + `}]}`),
+			})
+			require.NoError(t, err)
+
+			authorizer := &mockAuthorizer{results: map[string]mockResult{
+				protectedDescriptor: {authorized: true},
+			}}
+			annotationCache := NewAnnotationCache()
+			cachedAnnotations := &authorizers.ToolAnnotations{}
+			annotationCache.Set("previously-cached-tool", cachedAnnotations)
+			rr := httptest.NewRecorder()
+			rfw := NewResponseFilteringWriter(
+				rr, authorizer, newUser1Request(t), string(mcp.MethodToolsList), annotationCache, nil,
+			)
+			rfw.ResponseWriter.Header().Set("Content-Type", "application/json")
+			_, err = rfw.Write(responseBytes)
+			require.NoError(t, err)
+			require.NoError(t, rfw.FlushAndFilter())
+
+			assert.Equal(t, http.StatusInternalServerError, rr.Code)
+			assert.NotContains(t, rr.Body.String(), protectedDescriptor,
+				"a descriptor with ambiguous annotations must not be forwarded")
+			assert.Empty(t, authorizer.calls,
+				"ambiguous annotations must be rejected before any authorization decision")
+			assert.Same(t, cachedAnnotations, annotationCache.Get("previously-cached-tool"),
+				"ambiguous annotations must not replace the existing annotation cache")
+			assert.Nil(t, annotationCache.Get(protectedDescriptor),
+				"ambiguous annotations must not be added to the annotation cache")
+
+			var envelope struct {
+				Error struct {
+					Code    int64  `json:"code"`
+					Message string `json:"message"`
+				} `json:"error"`
+			}
+			require.NoError(t, json.Unmarshal(rr.Body.Bytes(), &envelope))
+			assert.Equal(t, mcpparser.CodeInternalError, envelope.Error.Code)
+			assert.Equal(t, "internal error", envelope.Error.Message)
+		})
+	}
+}
+
+// TestResponseFilteringWriter_ToolsListAuthorizesAnnotationsAndForwardsRawDescriptors
+// verifies that well-formed annotations still drive policy decisions and the
+// annotation cache, and that permitted descriptors reach the client exactly
+// as the backend sent them.
+func TestResponseFilteringWriter_ToolsListAuthorizesAnnotationsAndForwardsRawDescriptors(t *testing.T) {
+	t.Parallel()
+
+	authorizer, err := cedar.NewCedarAuthorizer(cedar.ConfigOptions{
+		Policies: []string{
+			`permit(principal, action == Action::"call_tool", resource == Tool::"reader") when { resource.readOnlyHint == true };`,
+			`permit(principal, action == Action::"call_tool", resource == Tool::"deleter");`,
+			`forbid(principal, action == Action::"call_tool", resource == Tool::"deleter") when { resource.destructiveHint == true };`,
+			`permit(principal, action == Action::"call_tool", resource == Tool::"plain");`,
+		},
+		EntitiesJSON: `[]`,
+	}, "")
+	require.NoError(t, err)
+
+	const (
+		reader = `{"name":"reader","annotations":{"title":"Reader","readOnlyHint":true,"openWorldHint":false,` +
+			`"vendorHint":"kept"},"inputSchema":{"type":"object"}}`
+		deleter = `{"name":"deleter","annotations":{"destructiveHint":true},"inputSchema":{"type":"object"}}`
+		plain   = `{"name":"plain","annotations":null,"inputSchema":{"type":"object"}}`
+	)
+	responseBytes := []byte(`{"jsonrpc":"2.0","id":105,"result":{"tools":[` + reader + `,` + deleter + `,` + plain + `]}}`)
+
+	annotationCache := NewAnnotationCache()
+	rr := httptest.NewRecorder()
+	rfw := NewResponseFilteringWriter(
+		rr, authorizer, newUser1Request(t), string(mcp.MethodToolsList), annotationCache, nil,
+	)
+	rfw.ResponseWriter.Header().Set("Content-Type", "application/json")
+	_, err = rfw.Write(responseBytes)
+	require.NoError(t, err)
+	require.NoError(t, rfw.FlushAndFilter())
+
+	require.Equal(t, http.StatusOK, rr.Code)
+	message, err := jsonrpc2.DecodeMessage(rr.Body.Bytes())
+	require.NoError(t, err)
+	response, ok := message.(*jsonrpc2.Response)
+	require.True(t, ok)
+	require.Nil(t, response.Error)
+	var result struct {
+		Tools []json.RawMessage `json:"tools"`
+	}
+	require.NoError(t, json.Unmarshal(response.Result, &result))
+	require.Len(t, result.Tools, 2)
+	assert.Equal(t, reader, string(result.Tools[0]))
+	assert.Equal(t, plain, string(result.Tools[1]))
+
+	cachedReader := annotationCache.Get("reader")
+	require.NotNil(t, cachedReader)
+	require.NotNil(t, cachedReader.ReadOnlyHint)
+	assert.True(t, *cachedReader.ReadOnlyHint)
+	cachedDeleter := annotationCache.Get("deleter")
+	require.NotNil(t, cachedDeleter)
+	require.NotNil(t, cachedDeleter.DestructiveHint)
+	assert.True(t, *cachedDeleter.DestructiveHint)
+	assert.Nil(t, annotationCache.Get("plain"))
+}
+
+// TestJSONMemberNames verifies that the member names validated for a typed
+// struct are the names encoding/json binds to its fields.
+func TestJSONMemberNames(t *testing.T) {
+	t.Parallel()
+
+	type embedded struct {
+		Promoted string `json:"promoted"`
+	}
+	type Pointed struct {
+		Untagged string
+	}
+	type tagged struct {
+		Hidden string `json:"hidden"`
+	}
+	type sample struct {
+		embedded
+		*Pointed
+		Tagged   tagged `json:"tagged"`
+		Renamed  string `json:"renamed,omitempty"`
+		Default  string
+		Skipped  string `json:"-"`
+		internal string
+	}
+
+	assert.Equal(t,
+		[]string{"promoted", "Untagged", "tagged", "renamed", "Default"},
+		jsonMemberNames(reflect.TypeOf(sample{internal: "not a member"})))
+	assert.ElementsMatch(t,
+		[]string{"title", "readOnlyHint", "destructiveHint", "idempotentHint", "openWorldHint"},
+		toolAnnotationMembers,
+		"every member the typed tool annotations decode must be validated")
 }
 
 // TestResponseFilteringWriter_ResourceTemplatesList verifies that resource-

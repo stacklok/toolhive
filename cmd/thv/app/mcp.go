@@ -36,6 +36,7 @@ func newMCPCommand() *cobra.Command {
 
 	// Add call subcommand
 	cmd.AddCommand(newMCPCallCommand())
+	cmd.AddCommand(newMCPCheckCommand())
 
 	// Create list command
 	listCmd := &cobra.Command{

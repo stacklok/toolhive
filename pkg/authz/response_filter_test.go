@@ -578,6 +578,137 @@ func TestResponseFilteringWriter(t *testing.T) {
 	}
 }
 
+// TestResponseFilteringWriter_ListsPreserveResultMembers verifies that the
+// tools, prompts, and resources list filters rewrite only the list member:
+// every other result member and every permitted descriptor reach the client
+// as the backend sent them, and the caller-specific result is marked private
+// in the result and in the committed Cache-Control header.
+func TestResponseFilteringWriter_ListsPreserveResultMembers(t *testing.T) {
+	t.Parallel()
+
+	type listMethod struct {
+		name      string
+		method    string
+		listField string
+		allowed   string
+		denied    string
+		allowedID string
+		deniedID  string
+	}
+	methods := []listMethod{
+		{
+			name: "tools", method: string(mcp.MethodToolsList), listField: "tools",
+			allowed: `{"name":"weather","title":"Weather","description":"Get weather",` +
+				`"inputSchema":{"type":"object","properties":{"city":{"type":"string"}},"required":["city"]},` +
+				`"annotations":{"readOnlyHint":true},"_meta":{"source":"backend"},"toolExtension":{"preserve":true}}`,
+			denied:    `{"name":"calculator","inputSchema":{"type":"object"}}`,
+			allowedID: "weather", deniedID: "calculator",
+		},
+		{
+			name: "prompts", method: string(mcp.MethodPromptsList), listField: "prompts",
+			allowed: `{"name":"greeting","description":"Greet someone",` +
+				`"arguments":[{"name":"who","required":true}],"promptExtension":{"preserve":true}}`,
+			denied:    `{"name":"farewell"}`,
+			allowedID: "greeting", deniedID: "farewell",
+		},
+		{
+			name: "resources", method: string(mcp.MethodResourcesList), listField: "resources",
+			allowed: `{"uri":"file:///public/data","name":"data","mimeType":"text/plain",` +
+				`"resourceExtension":{"preserve":true}}`,
+			denied:    `{"uri":"file:///private/data","name":"secret"}`,
+			allowedID: "file:///public/data", deniedID: "file:///private/data",
+		},
+	}
+
+	results := []struct {
+		name     string
+		result   func(listMethod) string
+		expected func(listMethod) string
+	}{
+		{
+			name: "result with caching hints",
+			result: func(m listMethod) string {
+				return `{"_meta":{"page":"one"},"nextCursor":"cursor-2","resultType":"complete",` +
+					`"cacheScope":"public","ttlMs":60000,"resultExtension":{"preserve":true},` +
+					`"` + m.listField + `":[` + m.allowed + `,` + m.denied + `]}`
+			},
+			expected: func(m listMethod) string {
+				return `{"_meta":{"page":"one"},"nextCursor":"cursor-2","resultType":"complete",` +
+					`"cacheScope":"private","ttlMs":0,"resultExtension":{"preserve":true},` +
+					`"` + m.listField + `":[` + m.allowed + `]}`
+			},
+		},
+		{
+			name: "result without caching hints",
+			result: func(m listMethod) string {
+				return `{"` + m.listField + `":[` + m.allowed + `,` + m.denied + `]}`
+			},
+			expected: func(m listMethod) string {
+				return `{"cacheScope":"private","ttlMs":0,"` + m.listField + `":[` + m.allowed + `]}`
+			},
+		},
+	}
+
+	for _, m := range methods {
+		for _, r := range results {
+			for _, contentType := range []string{"application/json", "text/event-stream"} {
+				t.Run(m.name+"/"+r.name+"/"+contentType, func(t *testing.T) {
+					t.Parallel()
+
+					body := []byte(`{"jsonrpc":"2.0","id":7,"result":` + r.result(m) + `}`)
+					require.True(t, json.Valid(body), "test fixture must be valid JSON: %s", body)
+					if contentType == "text/event-stream" {
+						body = []byte("data: " + string(body) + "\n\n")
+					}
+
+					authorizer := &mockAuthorizer{results: map[string]mockResult{
+						m.allowedID: {authorized: true},
+						m.deniedID:  {authorized: false},
+					}}
+					annotationCache := NewAnnotationCache()
+					rr := httptest.NewRecorder()
+					rfw := NewResponseFilteringWriter(rr, authorizer, newUser1Request(t), m.method, annotationCache, nil)
+					rfw.ResponseWriter.Header().Set("Content-Type", contentType)
+					rfw.ResponseWriter.Header().Set("Cache-Control", "public, max-age=60")
+					if contentType == "text/event-stream" {
+						// The reverse proxy flushes an SSE response before the body arrives.
+						rfw.Flush()
+					}
+					_, err := rfw.Write(body)
+					require.NoError(t, err)
+					require.NoError(t, rfw.FlushAndFilter())
+
+					committed := rr.Result()
+					t.Cleanup(func() { _ = committed.Body.Close() })
+					assert.Equal(t, "private, no-store", committed.Header.Get("Cache-Control"),
+						"caller-specific list results must not be stored by shared HTTP caches")
+
+					filtered := rr.Body.Bytes()
+					if contentType == "text/event-stream" {
+						events := parseSSEStream(t, filtered)
+						require.Len(t, events, 1)
+						filtered = []byte(events[0].data)
+					}
+					message, err := jsonrpc2.DecodeMessage(filtered)
+					require.NoError(t, err)
+					response, ok := message.(*jsonrpc2.Response)
+					require.True(t, ok)
+					require.Nil(t, response.Error)
+					assert.Equal(t, jsonrpc2.Int64ID(7), response.ID)
+					assert.JSONEq(t, r.expected(m), string(response.Result))
+
+					if m.listField == "tools" {
+						cached := annotationCache.Get(m.allowedID)
+						require.NotNil(t, cached, "tools/list must still populate the annotation cache")
+						require.NotNil(t, cached.ReadOnlyHint)
+						assert.True(t, *cached.ReadOnlyHint)
+					}
+				})
+			}
+		}
+	}
+}
+
 func TestResponseFilteringWriter_LegacyListsRejectMalformedOrAmbiguousResults(t *testing.T) {
 	t.Parallel()
 
@@ -668,6 +799,34 @@ func TestResponseFilteringWriter_LegacyListsRejectMalformedOrAmbiguousResults(t 
 			result: func(method listMethod) json.RawMessage {
 				return json.RawMessage(`{"` + method.listField + `":[{"` + method.identifier + `":"` +
 					protectedDescriptor + `",` + method.typedInvalidMember + `}]}`)
+			},
+		},
+		{
+			name: "case-folded cacheScope alias",
+			result: func(method listMethod) json.RawMessage {
+				return json.RawMessage(`{"` + method.listField + `":[{"` + method.identifier + `":"` +
+					protectedDescriptor + `"}],"cacheScope":"private","CACHESCOPE":"public"}`)
+			},
+		},
+		{
+			name: "duplicate canonical cacheScope member",
+			result: func(method listMethod) json.RawMessage {
+				return json.RawMessage(`{"` + method.listField + `":[{"` + method.identifier + `":"` +
+					protectedDescriptor + `"}],"cacheScope":"private","cacheScope":"public"}`)
+			},
+		},
+		{
+			name: "case-folded ttlMs alias",
+			result: func(method listMethod) json.RawMessage {
+				return json.RawMessage(`{"` + method.listField + `":[{"` + method.identifier + `":"` +
+					protectedDescriptor + `"}],"ttlMs":0,"TTLMS":60000}`)
+			},
+		},
+		{
+			name: "duplicate canonical ttlMs member",
+			result: func(method listMethod) json.RawMessage {
+				return json.RawMessage(`{"` + method.listField + `":[{"` + method.identifier + `":"` +
+					protectedDescriptor + `"}],"ttlMs":0,"ttlMs":60000}`)
 			},
 		},
 	}

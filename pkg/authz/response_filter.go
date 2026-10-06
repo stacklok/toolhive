@@ -13,7 +13,6 @@ import (
 	"log/slog"
 	"net/http"
 	"reflect"
-	"slices"
 	"strings"
 
 	"golang.org/x/exp/jsonrpc2"
@@ -179,9 +178,10 @@ func (rfw *ResponseFilteringWriter) Flush() {
 
 // applyResponseCachePolicy prevents a caller-specific tools, prompts,
 // resources, or resource-template view from being reused across authorization
-// contexts by an HTTP cache, matching the private caching hints the filters
-// set in the result. Flush calls this before an SSE response commits its
-// headers; FlushAndFilter covers buffered JSON.
+// contexts by an HTTP cache. It applies to every filtered list, including a
+// list result that carries no caching hints of its own. Flush calls this
+// before an SSE response commits its headers; FlushAndFilter covers buffered
+// JSON.
 func (rfw *ResponseFilteringWriter) applyResponseCachePolicy() {
 	switch responseFilterForMethod(rfw.method) {
 	case responseFilterTools, responseFilterPrompts, responseFilterResources, responseFilterResourceTemplates:
@@ -921,12 +921,14 @@ func validateToolAnnotations(rawTools []json.RawMessage) error {
 }
 
 // filteredListResponse builds the response for a filtered tools, prompts, or
-// resources list. Only the list member is rewritten, to the permitted raw
-// descriptors; every other result member (resultType, _meta, nextCursor, and
-// any extension) is kept exactly as the backend sent it. The permitted list
-// depends on the caller's authorization, so, as for resource templates, the
-// result is marked private and immediately stale in place of the backend's
-// caching hints for its unfiltered list.
+// resources list. The list member is rewritten to the permitted raw
+// descriptors. The permitted list depends on the caller's authorization, so a
+// cacheScope or ttlMs member the backend sent is replaced with "private" or 0,
+// marking the result private and immediately stale in place of the backend's
+// caching hints for its unfiltered list. A caching hint the backend omitted
+// stays absent, so a result from a backend that predates these members keeps
+// its shape. Every other result member (resultType, _meta, nextCursor, and any
+// extension) is kept exactly as the backend sent it.
 func filteredListResponse(
 	id jsonrpc2.ID,
 	members []jsonObjectMember,
@@ -938,14 +940,8 @@ func filteredListResponse(
 		"cacheScope": json.RawMessage(`"private"`),
 		"ttlMs":      json.RawMessage(`0`),
 	}
-	resultMembers := slices.Clone(members)
-	for _, hint := range cachingHintMembers {
-		if !slices.ContainsFunc(members, func(member jsonObjectMember) bool { return member.name == hint }) {
-			resultMembers = append(resultMembers, jsonObjectMember{name: hint})
-		}
-	}
 
-	filteredResult, err := encodeJSONObjectMembers(resultMembers, replacements)
+	filteredResult, err := encodeJSONObjectMembers(members, replacements)
 	if err != nil {
 		return nil, err
 	}

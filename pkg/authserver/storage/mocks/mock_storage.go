@@ -88,6 +88,21 @@ func (mr *MockDCRCredentialStoreMockRecorder) UpdateDCRCredentialsIfPresent(ctx,
 	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "UpdateDCRCredentialsIfPresent", reflect.TypeOf((*MockDCRCredentialStore)(nil).UpdateDCRCredentialsIfPresent), ctx, creds)
 }
 
+// UpdateDCRCredentialsIfUnchanged mocks base method.
+func (m *MockDCRCredentialStore) UpdateDCRCredentialsIfUnchanged(ctx context.Context, creds, expected *storage.DCRCredentials) (*storage.DCRCredentials, error) {
+	m.ctrl.T.Helper()
+	ret := m.ctrl.Call(m, "UpdateDCRCredentialsIfUnchanged", ctx, creds, expected)
+	ret0, _ := ret[0].(*storage.DCRCredentials)
+	ret1, _ := ret[1].(error)
+	return ret0, ret1
+}
+
+// UpdateDCRCredentialsIfUnchanged indicates an expected call of UpdateDCRCredentialsIfUnchanged.
+func (mr *MockDCRCredentialStoreMockRecorder) UpdateDCRCredentialsIfUnchanged(ctx, creds, expected any) *gomock.Call {
+	mr.mock.ctrl.T.Helper()
+	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "UpdateDCRCredentialsIfUnchanged", reflect.TypeOf((*MockDCRCredentialStore)(nil).UpdateDCRCredentialsIfUnchanged), ctx, creds, expected)
+}
+
 // MockPendingAuthorizationStorage is a mock of PendingAuthorizationStorage interface.
 type MockPendingAuthorizationStorage struct {
 	ctrl     *gomock.Controller

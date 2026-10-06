@@ -1600,6 +1600,59 @@ func TestIntegration_DCRCredentials_UpdateIfPresent(t *testing.T) {
 	})
 }
 
+// TestIntegration_DCRCredentials_UpdateIfUnchanged pins the
+// UpdateDCRCredentialsIfUnchanged WATCH/MULTI path against a real Redis
+// Sentinel cluster: an unchanged row is overwritten with a TTL derived from the
+// incoming creds, and a row replaced after the caller's read is refused and
+// left intact.
+func TestIntegration_DCRCredentials_UpdateIfUnchanged(t *testing.T) {
+	t.Parallel()
+
+	t.Run("unchanged row is overwritten and TTL applied", func(t *testing.T) {
+		withIntegrationStorage(t, func(ctx context.Context, s *RedisStorage) {
+			key := dcrFixtureKey()
+			_, err := s.StoreDCRCredentialsIfAbsent(ctx, dcrCASFixture(key, "original"))
+			require.NoError(t, err)
+			expected, err := s.GetDCRCredentials(ctx, key)
+			require.NoError(t, err)
+
+			replacement := dcrCASFixture(key, "replacement")
+			replacement.ClientSecretExpiresAt = time.Now().Add(24 * time.Hour).Truncate(time.Second)
+			_, err = s.UpdateDCRCredentialsIfUnchanged(ctx, replacement, expected)
+			require.NoError(t, err)
+
+			reread, err := s.GetDCRCredentials(ctx, key)
+			require.NoError(t, err)
+			assert.Equal(t, "replacement", reread.ClientSecret)
+
+			ttl, err := s.client.TTL(ctx, redisDCRKey(s.keyPrefix, key)).Result()
+			require.NoError(t, err)
+			assert.Greater(t, ttl, time.Duration(0))
+			assert.LessOrEqual(t, ttl, 24*time.Hour)
+		})
+	})
+
+	t.Run("changed row is refused and left intact", func(t *testing.T) {
+		withIntegrationStorage(t, func(ctx context.Context, s *RedisStorage) {
+			key := dcrFixtureKey()
+			_, err := s.StoreDCRCredentialsIfAbsent(ctx, dcrCASFixture(key, "original"))
+			require.NoError(t, err)
+			stale, err := s.GetDCRCredentials(ctx, key)
+			require.NoError(t, err)
+
+			_, err = s.UpdateDCRCredentialsIfPresent(ctx, dcrCASFixture(key, "newer"))
+			require.NoError(t, err)
+
+			_, err = s.UpdateDCRCredentialsIfUnchanged(ctx, dcrCASFixture(key, "stale-writer"), stale)
+			require.ErrorIs(t, err, ErrDCRCredentialsChanged)
+
+			reread, err := s.GetDCRCredentials(ctx, key)
+			require.NoError(t, err)
+			assert.Equal(t, "newer", reread.ClientSecret)
+		})
+	})
+}
+
 // TestIntegration_DCRCredentials_TTL pins the RFC 7591 §3.2.1 TTL contract
 // against a real Redis Sentinel cluster: TTL command observes the expected
 // state for both the expiring and the never-expires cases. The unit-level

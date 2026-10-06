@@ -149,10 +149,12 @@ rules:
   - mcpgroups/finalizers
   - mcpoidcconfigs/finalizers
   - mcpregistries/finalizers
+  - mcpremoteproxies/finalizers
   - mcpservers/finalizers
   - mcptelemetryconfigs/finalizers
   - mcptoolconfigs/finalizers
   - mcpwebhookconfigs/finalizers
+  - virtualmcpservers/finalizers
   verbs:
   - update
 - apiGroups:

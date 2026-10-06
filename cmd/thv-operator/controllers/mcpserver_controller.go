@@ -72,6 +72,11 @@ var defaultRBACRules = []rbacv1.PolicyRule{
 		Verbs:     []string{"get", "list", "watch", "create", "update", "patch", "delete"},
 	},
 	{
+		APIGroups: []string{"apps"},
+		Resources: []string{"statefulsets/finalizers"},
+		Verbs:     []string{"update"},
+	},
+	{
 		APIGroups: []string{""},
 		Resources: []string{"services"},
 		Verbs:     []string{"get", "list", "watch", "create", "update", "patch", "delete"},

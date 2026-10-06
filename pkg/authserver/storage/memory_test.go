@@ -3145,16 +3145,19 @@ func TestMemoryStorage_DCRCredentials_UpdateIfUnchangedConcurrent(t *testing.T) 
 		expected, err := s.GetDCRCredentials(ctx, key)
 		require.NoError(t, err)
 
+		start := make(chan struct{})
 		errs := make([]error, goroutines)
 		var wg sync.WaitGroup
 		for g := range goroutines {
 			wg.Add(1)
 			go func() {
 				defer wg.Done()
+				<-start
 				_, errs[g] = s.UpdateDCRCredentialsIfUnchanged(ctx,
 					dcrCASFixture(key, fmt.Sprintf("secret-%d", g)), expected)
 			}()
 		}
+		close(start)
 		wg.Wait()
 
 		requireSingleDCRCASWinner(t, errs)

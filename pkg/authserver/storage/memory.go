@@ -2058,6 +2058,48 @@ func (s *MemoryStorage) UpdateDCRCredentialsIfPresent(_ context.Context, creds *
 	return cloneDCRCredentials(creds), nil
 }
 
+// UpdateDCRCredentialsIfUnchanged replaces the entry at creds.Key with creds
+// only when the stored entry still equals expected, returning ErrNotFound
+// (wrapped) when no entry exists and ErrDCRCredentialsChanged when it differs.
+// The compare and the write happen under s.mu, so no other writer can slip in
+// between them. Presence and ClientSecretExpiresAt handling are identical to
+// UpdateDCRCredentialsIfPresent.
+func (s *MemoryStorage) UpdateDCRCredentialsIfUnchanged(
+	_ context.Context, creds, expected *DCRCredentials,
+) (*DCRCredentials, error) {
+	if err := validateDCRCompareAndSet(creds, expected); err != nil {
+		return nil, err
+	}
+
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	existing, ok := s.dcrCredentials[creds.Key]
+	if !ok {
+		return nil, notFoundRFC6749Error("DCR credentials not found")
+	}
+	if !dcrCredentialsEqual(existing, expected) {
+		return nil, ErrDCRCredentialsChanged
+	}
+
+	s.dcrCredentials[creds.Key] = cloneDCRCredentials(creds)
+	return cloneDCRCredentials(creds), nil
+}
+
+// dcrCredentialsEqual reports whether a and b hold the same persisted values.
+// Time fields are compared with time.Time.Equal rather than ==, so two values
+// for the same instant compare equal regardless of monotonic-clock reading or
+// location.
+func dcrCredentialsEqual(a, b *DCRCredentials) bool {
+	ac, bc := *a, *b
+	if !ac.CreatedAt.Equal(bc.CreatedAt) || !ac.ClientSecretExpiresAt.Equal(bc.ClientSecretExpiresAt) {
+		return false
+	}
+	ac.CreatedAt, bc.CreatedAt = time.Time{}, time.Time{}
+	ac.ClientSecretExpiresAt, bc.ClientSecretExpiresAt = time.Time{}, time.Time{}
+	return ac == bc
+}
+
 // GetDCRCredentials retrieves DCR credentials by key.
 // Returns a defensive copy; returns ErrNotFound (wrapped) on miss.
 func (s *MemoryStorage) GetDCRCredentials(_ context.Context, key DCRKey) (*DCRCredentials, error) {

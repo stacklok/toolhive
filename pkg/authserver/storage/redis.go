@@ -1879,6 +1879,33 @@ type storedDCRCredentials struct {
 	ClientSecretExpiresAt int64 `json:"client_secret_expires_at"`
 }
 
+// newStoredDCRCredentials converts creds to its stored form, mirroring
+// newStoredUpstreamTokens. Time fields are truncated to Unix seconds; a zero
+// time.Time becomes the 0 "not set" sentinel.
+func newStoredDCRCredentials(creds *DCRCredentials) storedDCRCredentials {
+	stored := storedDCRCredentials{
+		KeyIssuer:               creds.Key.Issuer,
+		KeyUpstreamID:           creds.Key.UpstreamID,
+		KeyRedirectURI:          creds.Key.RedirectURI,
+		KeyScopesHash:           creds.Key.ScopesHash,
+		ProviderName:            creds.ProviderName,
+		ClientID:                creds.ClientID,
+		ClientSecret:            creds.ClientSecret,
+		TokenEndpointAuthMethod: creds.TokenEndpointAuthMethod,
+		RegistrationAccessToken: creds.RegistrationAccessToken,
+		RegistrationClientURI:   creds.RegistrationClientURI,
+		AuthorizationEndpoint:   creds.AuthorizationEndpoint,
+		TokenEndpoint:           creds.TokenEndpoint,
+	}
+	if !creds.CreatedAt.IsZero() {
+		stored.CreatedAt = creds.CreatedAt.Unix()
+	}
+	if !creds.ClientSecretExpiresAt.IsZero() {
+		stored.ClientSecretExpiresAt = creds.ClientSecretExpiresAt.Unix()
+	}
+	return stored
+}
+
 // toDCRCredentials decodes the stored form back into the public type, mirroring
 // storedUpstreamTokens.toUpstreamTokens. Zero epoch values become the zero
 // time.Time, preserving the "not set" sentinel.
@@ -2024,26 +2051,7 @@ func (s *RedisStorage) StoreDCRCredentialsIfAbsent(ctx context.Context, creds *D
 //
 // See StoreDCRCredentialsIfAbsent's docstring for the past-expiry rationale.
 func marshalDCRCredentialsForStore(creds *DCRCredentials) ([]byte, time.Duration, error) {
-	stored := storedDCRCredentials{
-		KeyIssuer:               creds.Key.Issuer,
-		KeyUpstreamID:           creds.Key.UpstreamID,
-		KeyRedirectURI:          creds.Key.RedirectURI,
-		KeyScopesHash:           creds.Key.ScopesHash,
-		ProviderName:            creds.ProviderName,
-		ClientID:                creds.ClientID,
-		ClientSecret:            creds.ClientSecret,
-		TokenEndpointAuthMethod: creds.TokenEndpointAuthMethod,
-		RegistrationAccessToken: creds.RegistrationAccessToken,
-		RegistrationClientURI:   creds.RegistrationClientURI,
-		AuthorizationEndpoint:   creds.AuthorizationEndpoint,
-		TokenEndpoint:           creds.TokenEndpoint,
-	}
-	if !creds.CreatedAt.IsZero() {
-		stored.CreatedAt = creds.CreatedAt.Unix()
-	}
-	if !creds.ClientSecretExpiresAt.IsZero() {
-		stored.ClientSecretExpiresAt = creds.ClientSecretExpiresAt.Unix()
-	}
+	stored := newStoredDCRCredentials(creds)
 
 	data, err := json.Marshal(stored) //nolint:gosec // G117 - internal Redis storage serialization, not exposed to users
 	if err != nil {
@@ -2184,6 +2192,85 @@ func (s *RedisStorage) UpdateDCRCredentialsIfPresent(ctx context.Context, creds 
 	}
 
 	return cloneDCRCredentials(creds), nil
+}
+
+// UpdateDCRCredentialsIfUnchanged replaces the row at creds.Key with creds
+// only when the stored row still equals expected, returning ErrNotFound
+// (wrapped) when no row exists and ErrDCRCredentialsChanged when it differs.
+//
+// The compare and the write run in a WATCH/MULTI transaction on the single
+// row key — the same pattern StoreDCRCredentialsIfAbsent uses — so the
+// operation is atomic against concurrent writers and valid in standalone,
+// Sentinel and Cluster modes alike (one key means one hash slot). If another
+// writer touches the key between the GET and EXEC, EXEC aborts with
+// redis.TxFailedErr and the read-compare-write is retried, up to
+// maxDCRClaimRetries; the retry re-reads the row and so normally resolves to
+// ErrDCRCredentialsChanged.
+//
+// The comparison is between decoded stored forms (expected is normalised via
+// newStoredDCRCredentials), not raw JSON bytes, so it is unaffected by field
+// ordering or by a row written by an older encoder, and a value obtained from
+// GetDCRCredentials always matches the row it was read from despite the
+// one-second time precision of the stored form.
+//
+// Presence and TTL handling are identical to UpdateDCRCredentialsIfPresent:
+// an expired-but-present row is updatable, and the rewritten row's TTL is
+// derived from creds by marshalDCRCredentialsForStore. The write uses SET XX
+// for parity with that method, although WATCH already guarantees the key
+// still exists at EXEC.
+func (s *RedisStorage) UpdateDCRCredentialsIfUnchanged(
+	ctx context.Context, creds, expected *DCRCredentials,
+) (*DCRCredentials, error) {
+	if err := validateDCRCompareAndSet(creds, expected); err != nil {
+		return nil, err
+	}
+
+	key := redisDCRKey(s.keyPrefix, creds.Key)
+
+	data, ttl, err := marshalDCRCredentialsForStore(creds)
+	if err != nil {
+		return nil, err
+	}
+	want := newStoredDCRCredentials(expected)
+
+	txFn := func(tx *redis.Tx) error {
+		existingData, getErr := tx.Get(ctx, key).Bytes()
+		if errors.Is(getErr, redis.Nil) {
+			return notFoundRFC6749Error("DCR credentials not found")
+		}
+		if getErr != nil {
+			return fmt.Errorf("failed to get existing dcr credentials: %w", getErr)
+		}
+
+		var existing storedDCRCredentials
+		if unmarshalErr := json.Unmarshal(existingData, &existing); unmarshalErr != nil {
+			return fmt.Errorf("failed to unmarshal existing dcr credentials: %w", unmarshalErr)
+		}
+		if existing != want {
+			return ErrDCRCredentialsChanged
+		}
+
+		_, pipeErr := tx.TxPipelined(ctx, func(pipe redis.Pipeliner) error {
+			pipe.SetArgs(ctx, key, data, redis.SetArgs{Mode: "XX", TTL: ttl})
+			return nil
+		})
+		return pipeErr
+	}
+
+	var watchErr error
+	for attempt := 0; attempt < maxDCRClaimRetries; attempt++ {
+		watchErr = s.client.Watch(ctx, txFn, key)
+		if watchErr == nil {
+			return cloneDCRCredentials(creds), nil
+		}
+		if errors.Is(watchErr, ErrNotFound) || errors.Is(watchErr, ErrDCRCredentialsChanged) {
+			return nil, watchErr
+		}
+		if !errors.Is(watchErr, redis.TxFailedErr) {
+			return nil, fmt.Errorf("failed to compare-and-set dcr credentials: %w", watchErr)
+		}
+	}
+	return nil, fmt.Errorf("failed to compare-and-set dcr credentials after %d attempts: %w", maxDCRClaimRetries, watchErr)
 }
 
 // GetDCRCredentials retrieves the credentials previously persisted under key.

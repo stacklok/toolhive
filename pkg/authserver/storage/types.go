@@ -79,6 +79,13 @@ var (
 	// CompareAndSwapUpstreamTokens for the full coordination contract).
 	ErrConcurrentRefresh = errors.New("storage: upstream token row changed concurrently")
 
+	// ErrDCRCredentialsChanged is returned by
+	// DCRCredentialStore.UpdateDCRCredentialsIfUnchanged when the stored row
+	// no longer equals the caller's expected value: another writer replaced it
+	// after the caller read it. Nothing is written. A row that is absent
+	// altogether is reported as ErrNotFound instead.
+	ErrDCRCredentialsChanged = errors.New("storage: dcr credentials row changed concurrently")
+
 	// ErrInvalidState is returned when an operation requires an item to be in a
 	// particular lifecycle state (e.g. a pending device request) but it is not.
 	ErrInvalidState = errors.New("storage: item is not in the required state")
@@ -306,6 +313,24 @@ func validateDCRCredentialsForStore(creds *DCRCredentials) error {
 	return nil
 }
 
+// validateDCRCompareAndSet enforces the input contract of
+// DCRCredentialStore.UpdateDCRCredentialsIfUnchanged on top of
+// validateDCRCredentialsForStore: expected must be present and must address
+// the same row as creds, so a caller cannot gate a write to one key on the
+// contents of another.
+func validateDCRCompareAndSet(creds, expected *DCRCredentials) error {
+	if err := validateDCRCredentialsForStore(creds); err != nil {
+		return err
+	}
+	if expected == nil {
+		return fosite.ErrInvalidRequest.WithHint("expected dcr credentials cannot be nil")
+	}
+	if expected.Key != creds.Key {
+		return fosite.ErrInvalidRequest.WithHint("expected dcr credentials key must match creds key")
+	}
+	return nil
+}
+
 // DCRCredentials is the persisted form of an RFC 7591 Dynamic Client
 // Registration result. All fields are populated from the upstream's DCR
 // response. The RFC 7592 management fields (RegistrationAccessToken,
@@ -473,6 +498,37 @@ type DCRCredentialStore interface {
 	// from the incoming creds, so an update can extend, shorten, or clear the
 	// row's TTL exactly as an initial store would.
 	UpdateDCRCredentialsIfPresent(ctx context.Context, creds *DCRCredentials) (*DCRCredentials, error)
+
+	// UpdateDCRCredentialsIfUnchanged replaces the record at creds.Key with
+	// creds, iff the record currently stored there still equals expected —
+	// the value the caller previously read via GetDCRCredentials. It is the
+	// compare-and-set sibling of UpdateDCRCredentialsIfPresent, for callers
+	// that coordinate re-registration across replicas and must not clobber a
+	// newer row written by a concurrent writer after their read (e.g. a lock
+	// holder that stalled past its lease before writing).
+	//
+	// Returns ErrNotFound (wrapped) if no record exists at the key, and
+	// ErrDCRCredentialsChanged if the stored record no longer equals
+	// expected. In both cases nothing is written. On success it returns the
+	// stored value (a defensive copy) and the returned *DCRCredentials is
+	// non-nil.
+	//
+	// expected must be non-nil and its Key must equal creds.Key. Equality is
+	// over every persisted field, compared at the backend's storage precision
+	// (the Redis backend persists times at one-second resolution), so a value
+	// returned by GetDCRCredentials always compares equal to the row it was
+	// read from. A decorator that transforms fields on the way in and out
+	// (encryption, compression, …) must pass the inner store the stored form
+	// of expected — what the inner GetDCRCredentials returned — not the
+	// decoded form it handed to its own caller.
+	//
+	// Presence is physical, exactly as for UpdateDCRCredentialsIfPresent, and
+	// the rewritten row's backend TTL follows the same ClientSecretExpiresAt
+	// rules. Implementations MUST perform the compare and the write
+	// atomically with respect to other writers of the same key, and MUST
+	// touch only that one key so the operation stays valid under Redis
+	// Cluster.
+	UpdateDCRCredentialsIfUnchanged(ctx context.Context, creds, expected *DCRCredentials) (*DCRCredentials, error)
 }
 
 // User represents a user account in the authorization server.

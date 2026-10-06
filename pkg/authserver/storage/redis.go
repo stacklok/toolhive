@@ -39,12 +39,13 @@ const nullMarker = "null"
 // confuse this row with a healthy long-lived registration.
 const pastExpiryDCRTTL = time.Second
 
-// maxDCRClaimRetries bounds StoreDCRCredentialsIfAbsent's WATCH/MULTI retry
-// loop. go-redis does not retry Watch internally: a concurrent write to the
-// watched key (another replica claiming, refreshing, or evicting the same
-// row) aborts the pipelined EXEC with redis.TxFailedErr, which Watch returns
-// to the caller unwrapped. Retrying a small, fixed number of times lets a
-// real concurrent write during the exact race this method exists to close
+// maxDCRClaimRetries bounds the WATCH/MULTI retry loops of
+// StoreDCRCredentialsIfAbsent and UpdateDCRCredentialsIfUnchanged. go-redis
+// does not retry Watch internally: a concurrent write to the watched key
+// (another replica claiming, refreshing, updating, or evicting the same row)
+// aborts the pipelined EXEC with redis.TxFailedErr, which Watch returns to
+// the caller unwrapped. Retrying a small, fixed number of times lets a real
+// concurrent write during the exact race these methods exist to close
 // resolve on its own rather than failing the caller with a spurious error.
 // Mirrors maxConfiguredClientReconcileRetries above for the same reason.
 const maxDCRClaimRetries = 3
@@ -2205,10 +2206,12 @@ func (s *RedisStorage) UpdateDCRCredentialsIfPresent(ctx context.Context, creds 
 // writer touches the key between the GET and EXEC, EXEC aborts with
 // redis.TxFailedErr and the read-compare-write is retried, up to
 // maxDCRClaimRetries; the retry re-reads the row and so normally resolves to
-// ErrDCRCredentialsChanged.
+// ErrDCRCredentialsChanged. If every attempt aborts, a generic error is
+// returned and nothing was written by this call.
 //
 // The comparison is between decoded stored forms (expected is normalised via
-// newStoredDCRCredentials), not raw JSON bytes, so it is unaffected by field
+// newStoredDCRCredentials, and storedDCRCredentials holds only strings and
+// int64s, so == compares every field by value), not raw JSON bytes, so it is unaffected by field
 // ordering or by a row written by an older encoder, and a value obtained from
 // GetDCRCredentials always matches the row it was read from despite the
 // one-second time precision of the stored form.

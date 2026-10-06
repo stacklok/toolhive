@@ -2090,6 +2090,13 @@ func (s *MemoryStorage) UpdateDCRCredentialsIfUnchanged(
 // Time fields are compared with time.Time.Equal rather than ==, so two values
 // for the same instant compare equal regardless of monotonic-clock reading or
 // location.
+//
+// The final == covers every other field and only compiles while
+// DCRCredentials stays comparable. A new time.Time field added to
+// DCRCredentials MUST be compared with Equal and zeroed here alongside the
+// existing two; == on it would reintroduce the monotonic-clock/location
+// mismatch. TestDCRCredentialsEqual_TimeFieldsCompareByInstant fails if one
+// is missed.
 func dcrCredentialsEqual(a, b *DCRCredentials) bool {
 	ac, bc := *a, *b
 	if !ac.CreatedAt.Equal(bc.CreatedAt) || !ac.ClientSecretExpiresAt.Equal(bc.ClientSecretExpiresAt) {

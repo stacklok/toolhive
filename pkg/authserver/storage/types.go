@@ -513,14 +513,34 @@ type DCRCredentialStore interface {
 	// stored value (a defensive copy) and the returned *DCRCredentials is
 	// non-nil.
 	//
+	// Any other error leaves the row's state to be determined by re-reading
+	// it. This includes transport failures, where the write may or may not
+	// have been applied. It also includes a backend that bounds its internal
+	// retries (the Redis backend) giving up because other writers kept
+	// touching the key between its compare and its write; in that case this
+	// call wrote nothing, and the caller may re-read and try again.
+	//
 	// expected must be non-nil and its Key must equal creds.Key. Equality is
 	// over every persisted field, compared at the backend's storage precision
 	// (the Redis backend persists times at one-second resolution), so a value
 	// returned by GetDCRCredentials always compares equal to the row it was
-	// read from. A decorator that transforms fields on the way in and out
-	// (encryption, compression, …) must pass the inner store the stored form
-	// of expected — what the inner GetDCRCredentials returned — not the
-	// decoded form it handed to its own caller.
+	// read from.
+	//
+	// A decorator that transforms fields on the way in and out (encryption,
+	// compression, …) must pass the inner store the stored form of expected —
+	// what the inner GetDCRCredentials returned — not the decoded form it
+	// handed to its own caller. When the transform is not reproducible (e.g.
+	// encryption with a fresh nonce per seal), the decorator cannot derive
+	// that stored form from the caller's decoded expected. Instead it should
+	// re-read the inner row, decode it, return ErrDCRCredentialsChanged if
+	// the decoded value differs from the caller's expected, and otherwise
+	// call the inner UpdateDCRCredentialsIfUnchanged with the raw inner row
+	// it just read as expected. That stays atomic: if the row changes between
+	// the decorator's re-read and the inner write, the inner compare refuses
+	// it. A decorator that recovers a row it cannot decode at all already
+	// holds the raw inner row and passes it directly. A consumer outside the
+	// decorator that needs to compare-and-set a row it cannot decode would
+	// need an opaque version or etag instead; that is not provided today.
 	//
 	// Presence is physical, exactly as for UpdateDCRCredentialsIfPresent, and
 	// the rewritten row's backend TTL follows the same ClientSecretExpiresAt

@@ -667,14 +667,22 @@ func TestResolveTransportType(t *testing.T) {
 	tests := []struct {
 		name           string
 		runFlags       *RunFlags
+		serverOrImage  string
 		serverMetadata regtypes.ServerMetadata
 		expected       string
 	}{
 		{
 			name:           "explicit transport flag takes precedence",
 			runFlags:       &RunFlags{Transport: "stdio"},
+			serverOrImage:  "uvx://example-package",
 			serverMetadata: &regtypes.ImageMetadata{BaseServerMetadata: regtypes.BaseServerMetadata{Transport: "sse"}},
 			expected:       "stdio",
+		},
+		{
+			name:          "uvx protocol defaults to stdio",
+			runFlags:      &RunFlags{},
+			serverOrImage: "uvx://example-package",
+			expected:      "stdio",
 		},
 		{
 			name:           "transport from metadata when flag is empty",
@@ -691,6 +699,7 @@ func TestResolveTransportType(t *testing.T) {
 		{
 			name:           "typed nil pointer in interface returns default (protocol scheme case)",
 			runFlags:       &RunFlags{},
+			serverOrImage:  "npx://example-package",
 			serverMetadata: regtypes.ServerMetadata((*regtypes.ImageMetadata)(nil)),
 			expected:       defaultTransportType,
 		},
@@ -711,7 +720,7 @@ func TestResolveTransportType(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
-			result := resolveTransportType(tt.runFlags, tt.serverMetadata)
+			result := resolveTransportType(tt.runFlags, tt.serverMetadata, tt.serverOrImage)
 			assert.Equal(t, tt.expected, result)
 		})
 	}

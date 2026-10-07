@@ -472,4 +472,74 @@ var _ = Describe("thv llm setup / teardown", Label("cli", "llm", "setup", "e2e")
 				"a fresh token should be printed to stdout after deferred login")
 		})
 	})
+
+	Describe("thv llm setup prompt cache", func() {
+		It("defaults to one hour and persists the short-cache opt-out", func() {
+			claudeDir := filepath.Join(tempDir, ".claude")
+			Expect(os.MkdirAll(claudeDir, 0750)).To(Succeed())
+			Expect(createFakeBinary(binDir, "claude")).To(Succeed())
+
+			issuerURL := fmt.Sprintf("http://localhost:%d", oidcPort)
+			setupArgs := []string{
+				"llm", "setup", "--lazy", "--client", "claude-code",
+				"--anthropic-path-prefix", "",
+			}
+
+			By("Applying the default one-hour cache lifetime")
+			stdout, stderr, err := thvCmd(append(setupArgs,
+				"--gateway-url", gatewayURL,
+				"--issuer", issuerURL,
+				"--client-id", clientID,
+			)...).RunWithTimeout(30 * time.Second)
+			Expect(err).ToNot(HaveOccurred(),
+				"setup should succeed; stdout=%q stderr=%q", stdout, stderr)
+
+			settingsPath := filepath.Join(claudeDir, "settings.json")
+			expectOneHourSettings := func(present bool) {
+				By("Reading Claude Code settings")
+				data, readErr := os.ReadFile(settingsPath)
+				Expect(readErr).ToNot(HaveOccurred())
+				var settings map[string]any
+				Expect(json.Unmarshal(data, &settings)).To(Succeed())
+
+				for pointer, expected := range map[string]string{
+					"/promptCacheTtl":               "1h",
+					"/subagentPromptCacheTtl":       "1h",
+					"/env/ENABLE_PROMPT_CACHING_1H": "1",
+				} {
+					actual, found := jsonPointerGet(settings, pointer)
+					Expect(found).To(Equal(present), "unexpected presence for %s", pointer)
+					if present {
+						Expect(actual).To(Equal(expected), "unexpected value for %s", pointer)
+					}
+				}
+			}
+			expectOneHourSettings(true)
+
+			By("Verifying the default does not persist an opt-out")
+			showOut, _ := thvCmd("llm", "config", "show", "--format", "json").ExpectSuccess()
+			var cfg llm.Config
+			Expect(json.Unmarshal([]byte(showOut), &cfg)).To(Succeed())
+			Expect(cfg.ShortPromptCache).To(BeFalse())
+
+			By("Persisting the short-cache opt-out")
+			thvCmd(append(setupArgs, "--short-prompt-cache")...).ExpectSuccess()
+			expectOneHourSettings(false)
+			showOut, _ = thvCmd("llm", "config", "show", "--format", "json").ExpectSuccess()
+			Expect(json.Unmarshal([]byte(showOut), &cfg)).To(Succeed())
+			Expect(cfg.ShortPromptCache).To(BeTrue())
+
+			By("Reapplying the persisted opt-out with a plain setup")
+			thvCmd(setupArgs...).ExpectSuccess()
+			expectOneHourSettings(false)
+
+			By("Explicitly restoring the one-hour default")
+			thvCmd(append(setupArgs, "--short-prompt-cache=false")...).ExpectSuccess()
+			expectOneHourSettings(true)
+
+			By("Verifying teardown removes the cache settings")
+			thvCmd("llm", "teardown", "claude-code").ExpectSuccess()
+			expectOneHourSettings(false)
+		})
+	})
 })

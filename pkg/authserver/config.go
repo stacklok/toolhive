@@ -30,6 +30,12 @@ import (
 // CurrentSchemaVersion is the current version of the authserver RunConfig schema.
 const CurrentSchemaVersion = "v0.1.0"
 
+// TLSListenerRunConfig enables the auth server TLS listener on port 8443.
+type TLSListenerRunConfig struct {
+	CertFile string `json:"cert_file" yaml:"cert_file"`
+	KeyFile  string `json:"key_file" yaml:"key_file"`
+}
+
 // RunConfig is the serializable configuration for the embedded auth server.
 // It contains no secrets - only file paths and environment variable names
 // that will be resolved at runtime.
@@ -252,6 +258,10 @@ type RunConfig struct {
 	// SPIFFE client authentication, delegate clients, and issuer policy. A
 	// non-nil value explicitly controls grant-family enablement.
 	InboundGrants *InboundGrantsRunConfig `json:"inbound_grants,omitempty" yaml:"inbound_grants,omitempty"`
+
+	// TLSListener serves the auth server routes over TLS on port 8443, in
+	// addition to the MCP port. Required for spiffe_x509 client authentication.
+	TLSListener *TLSListenerRunConfig `json:"tls_listener,omitempty" yaml:"tls_listener,omitempty"`
 }
 
 // DelegateClientRunConfig declares a pre-provisioned confidential OAuth
@@ -290,6 +300,9 @@ type DelegateClientRunConfig struct {
 // catches operator-supplied misconfiguration early so server startup fails
 // loudly instead of degrading silently at runtime.
 func (c *RunConfig) Validate() error {
+	if err := c.TLSListener.validate(); err != nil {
+		return err
+	}
 	if c.CIMD != nil {
 		if err := c.CIMD.Validate(); err != nil {
 			return fmt.Errorf("cimd: %w", err)
@@ -333,6 +346,41 @@ func (c *RunConfig) Validate() error {
 		return err
 	}
 	return c.validateBaselineClientScopes()
+}
+
+// validate requires both certificate paths when a TLS listener is configured.
+// A nil receiver means no listener and is valid.
+func (l *TLSListenerRunConfig) validate() error {
+	if l == nil {
+		return nil
+	}
+	missing := make([]string, 0, 2)
+	if l.CertFile == "" {
+		missing = append(missing, "tls_listener.cert_file")
+	}
+	if l.KeyFile == "" {
+		missing = append(missing, "tls_listener.key_file")
+	}
+	if len(missing) > 0 {
+		return fmt.Errorf("%s must be set", strings.Join(missing, " and "))
+	}
+	return nil
+}
+
+// HasSPIFFEX509ClientAuth reports whether any SPIFFE client association
+// enables spiffe_x509. A nil *RunConfig returns false.
+func (c *RunConfig) HasSPIFFEX509ClientAuth() bool {
+	if c == nil || c.InboundGrants == nil {
+		return false
+	}
+	for _, association := range c.InboundGrants.SPIFFEClientAuth {
+		for _, method := range association.Methods {
+			if method == SPIFFEAuthenticationMethodX509 {
+				return true
+			}
+		}
+	}
+	return false
 }
 
 // validateSPIFFENotYetEnforced hard-rejects a non-empty SPIFFE trust

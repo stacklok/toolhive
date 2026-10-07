@@ -538,6 +538,9 @@ const docTemplate = `{
                     "storage": {
                         "$ref": "#/components/schemas/storage.RunConfig"
                     },
+                    "tls_listener": {
+                        "$ref": "#/components/schemas/authserver.TLSListenerRunConfig"
+                    },
                     "token_lifespans": {
                         "$ref": "#/components/schemas/authserver.TokenLifespanRunConfig"
                     },
@@ -698,6 +701,18 @@ const docTemplate = `{
                     },
                     "signing_key_file": {
                         "description": "SigningKeyFile is the filename of the primary signing key (relative to KeyDir).\nThis key is used for signing new tokens.",
+                        "type": "string"
+                    }
+                },
+                "type": "object"
+            },
+            "authserver.TLSListenerRunConfig": {
+                "description": "TLSListener serves the auth server routes over TLS on port 8443, in\naddition to the MCP port. Required for spiffe_x509 client authentication.",
+                "properties": {
+                    "cert_file": {
+                        "type": "string"
+                    },
+                    "key_file": {
                         "type": "string"
                     }
                 },

@@ -135,6 +135,8 @@ type MemoryStorage struct {
 
 	// pendingAuthorizations tracks authorization requests awaiting upstream IDP callback
 	pendingAuthorizations map[string]*timedEntry[*PendingAuthorization]
+	consentSessions       map[string]*timedEntry[*ConsentSession]
+	clientApprovals       map[[2]string]*timedEntry[*ClientApproval]
 
 	// deviceRequests maps device_code -> timedEntry[*DeviceRequest]. The
 	// canonical store; TTL-bounded like pendingAuthorizations.
@@ -261,6 +263,8 @@ func NewMemoryStorage(opts ...MemoryStorageOption) *MemoryStorage {
 		pkceRequests:               make(map[string]*timedEntry[fosite.Requester]),
 		upstreamTokens:             make(map[upstreamKey]*timedEntry[*UpstreamTokens]),
 		pendingAuthorizations:      make(map[string]*timedEntry[*PendingAuthorization]),
+		consentSessions:            make(map[string]*timedEntry[*ConsentSession]),
+		clientApprovals:            make(map[[2]string]*timedEntry[*ClientApproval]),
 		deviceRequests:             make(map[string]*timedEntry[*DeviceRequest]),
 		deviceRequestsByUserCode:   make(map[string]string),
 		pendingDeviceLogins:        make(map[string]*timedEntry[*PendingDeviceLogin]),
@@ -382,6 +386,19 @@ func (s *MemoryStorage) cleanupExpired() {
 		}
 	}
 
+	var expiredConsentSessions []string
+	var expiredClientApprovals [][2]string
+	for k, v := range s.consentSessions {
+		if !now.Before(v.expiresAt) {
+			expiredConsentSessions = append(expiredConsentSessions, k)
+		}
+	}
+	for k, v := range s.clientApprovals {
+		if !now.Before(v.expiresAt) {
+			expiredClientApprovals = append(expiredClientApprovals, k)
+		}
+	}
+
 	var expiredDeviceRequests []string
 	for k, v := range s.deviceRequests {
 		if now.After(v.expiresAt) {
@@ -427,6 +444,8 @@ func (s *MemoryStorage) cleanupExpired() {
 		len(expiredPKCERequests) == 0 &&
 		len(expiredUpstreamTokens) == 0 &&
 		len(expiredPendingAuthorizations) == 0 &&
+		len(expiredConsentSessions) == 0 &&
+		len(expiredClientApprovals) == 0 &&
 		len(expiredDeviceRequests) == 0 &&
 		len(expiredPendingDeviceLogins) == 0 &&
 		len(expiredPendingDeviceConfirmations) == 0 &&
@@ -466,6 +485,17 @@ func (s *MemoryStorage) cleanupExpired() {
 
 	for _, k := range expiredPendingAuthorizations {
 		delete(s.pendingAuthorizations, k)
+	}
+
+	for _, k := range expiredConsentSessions {
+		if v, ok := s.consentSessions[k]; ok && !now.Before(v.expiresAt) {
+			delete(s.consentSessions, k)
+		}
+	}
+	for _, k := range expiredClientApprovals {
+		if v, ok := s.clientApprovals[k]; ok && !now.Before(v.expiresAt) {
+			delete(s.clientApprovals, k)
+		}
 	}
 
 	for _, k := range expiredDeviceRequests {
@@ -1354,28 +1384,38 @@ func (s *MemoryStorage) StorePendingAuthorization(_ context.Context, state strin
 	defer s.mu.Unlock()
 
 	now := time.Now()
-	expiresAt := now.Add(DefaultPendingAuthorizationTTL)
+	expiresAt := pending.CreatedAt.Add(DefaultPendingAuthorizationTTL)
+	if !expiresAt.After(now) {
+		return ErrExpired
+	}
 
 	// Make a defensive copy to prevent aliasing issues
 	pendingCopy := &PendingAuthorization{
-		ClientID:             pending.ClientID,
-		RedirectURI:          pending.RedirectURI,
-		State:                pending.State,
-		PKCEChallenge:        pending.PKCEChallenge,
-		PKCEMethod:           pending.PKCEMethod,
-		Scopes:               slices.Clone(pending.Scopes),
-		InternalState:        pending.InternalState,
-		UpstreamPKCEVerifier: pending.UpstreamPKCEVerifier,
-		UpstreamNonce:        pending.UpstreamNonce,
-		BrowserBindingHash:   pending.BrowserBindingHash,
-		UpstreamProviderName: pending.UpstreamProviderName,
-		SessionID:            pending.SessionID,
-		ResolvedUserID:       pending.ResolvedUserID,
-		ResolvedUserName:     pending.ResolvedUserName,
-		ResolvedUserEmail:    pending.ResolvedUserEmail,
-		SingleLeg:            pending.SingleLeg,
-		ChainUpstreams:       slices.Clone(pending.ChainUpstreams),
-		CreatedAt:            pending.CreatedAt,
+		ClientID:                pending.ClientID,
+		RedirectURI:             pending.RedirectURI,
+		State:                   pending.State,
+		PKCEChallenge:           pending.PKCEChallenge,
+		PKCEMethod:              pending.PKCEMethod,
+		Scopes:                  slices.Clone(pending.Scopes),
+		Resource:                pending.Resource,
+		ConsentStage:            pending.ConsentStage,
+		RememberConsent:         pending.RememberConsent,
+		FirstProviderSubject:    pending.FirstProviderSubject,
+		ExpectedUserID:          pending.ExpectedUserID,
+		ExpectedProviderSubject: pending.ExpectedProviderSubject,
+		ConsentSessionDigest:    pending.ConsentSessionDigest,
+		InternalState:           pending.InternalState,
+		UpstreamPKCEVerifier:    pending.UpstreamPKCEVerifier,
+		UpstreamNonce:           pending.UpstreamNonce,
+		BrowserBindingHash:      pending.BrowserBindingHash,
+		UpstreamProviderName:    pending.UpstreamProviderName,
+		SessionID:               pending.SessionID,
+		ResolvedUserID:          pending.ResolvedUserID,
+		ResolvedUserName:        pending.ResolvedUserName,
+		ResolvedUserEmail:       pending.ResolvedUserEmail,
+		SingleLeg:               pending.SingleLeg,
+		ChainUpstreams:          slices.Clone(pending.ChainUpstreams),
+		CreatedAt:               pending.CreatedAt,
 	}
 
 	s.pendingAuthorizations[state] = &timedEntry[*PendingAuthorization]{
@@ -1399,7 +1439,7 @@ func (s *MemoryStorage) LoadPendingAuthorization(_ context.Context, state string
 	}
 
 	// Check if expired
-	if time.Now().After(entry.expiresAt) {
+	if !entry.expiresAt.After(time.Now()) {
 		slog.Debug("pending authorization expired")
 		return nil, ErrExpired
 	}
@@ -1410,24 +1450,31 @@ func (s *MemoryStorage) LoadPendingAuthorization(_ context.Context, state string
 		return nil, nil
 	}
 	return &PendingAuthorization{
-		ClientID:             pending.ClientID,
-		RedirectURI:          pending.RedirectURI,
-		State:                pending.State,
-		PKCEChallenge:        pending.PKCEChallenge,
-		PKCEMethod:           pending.PKCEMethod,
-		Scopes:               slices.Clone(pending.Scopes),
-		InternalState:        pending.InternalState,
-		UpstreamPKCEVerifier: pending.UpstreamPKCEVerifier,
-		UpstreamNonce:        pending.UpstreamNonce,
-		BrowserBindingHash:   pending.BrowserBindingHash,
-		UpstreamProviderName: pending.UpstreamProviderName,
-		SessionID:            pending.SessionID,
-		ResolvedUserID:       pending.ResolvedUserID,
-		ResolvedUserName:     pending.ResolvedUserName,
-		ResolvedUserEmail:    pending.ResolvedUserEmail,
-		SingleLeg:            pending.SingleLeg,
-		ChainUpstreams:       slices.Clone(pending.ChainUpstreams),
-		CreatedAt:            pending.CreatedAt,
+		ClientID:                pending.ClientID,
+		RedirectURI:             pending.RedirectURI,
+		State:                   pending.State,
+		PKCEChallenge:           pending.PKCEChallenge,
+		PKCEMethod:              pending.PKCEMethod,
+		Scopes:                  slices.Clone(pending.Scopes),
+		Resource:                pending.Resource,
+		ConsentStage:            pending.ConsentStage,
+		RememberConsent:         pending.RememberConsent,
+		FirstProviderSubject:    pending.FirstProviderSubject,
+		ExpectedUserID:          pending.ExpectedUserID,
+		ExpectedProviderSubject: pending.ExpectedProviderSubject,
+		ConsentSessionDigest:    pending.ConsentSessionDigest,
+		InternalState:           pending.InternalState,
+		UpstreamPKCEVerifier:    pending.UpstreamPKCEVerifier,
+		UpstreamNonce:           pending.UpstreamNonce,
+		BrowserBindingHash:      pending.BrowserBindingHash,
+		UpstreamProviderName:    pending.UpstreamProviderName,
+		SessionID:               pending.SessionID,
+		ResolvedUserID:          pending.ResolvedUserID,
+		ResolvedUserName:        pending.ResolvedUserName,
+		ResolvedUserEmail:       pending.ResolvedUserEmail,
+		SingleLeg:               pending.SingleLeg,
+		ChainUpstreams:          slices.Clone(pending.ChainUpstreams),
+		CreatedAt:               pending.CreatedAt,
 	}, nil
 }
 

@@ -183,6 +183,7 @@ func (s *RedisStorage) Close() error {
 // storedClient is a serializable wrapper for OAuth clients.
 type storedClient struct {
 	ID            string   `json:"id"`
+	ClientName    string   `json:"client_name,omitempty"`
 	Secret        []byte   `json:"secret,omitempty"` //nolint:gosec // G117: field legitimately holds sensitive data
 	RedirectURIs  []string `json:"redirect_uris"`
 	GrantTypes    []string `json:"grant_types"`
@@ -337,7 +338,7 @@ func clientFromStored(stored storedClient, hasTTL bool) fosite.Client {
 			Public:        stored.Public,
 		}
 		if stored.DCRIssued || (stored.Public && hasTTL) {
-			return registration.MarkDCRIssued(client)
+			return registration.MarkDCRIssuedWithName(client, stored.ClientName)
 		}
 		return client
 	}
@@ -357,7 +358,7 @@ func clientFromStored(stored storedClient, hasTTL bool) fosite.Client {
 		TokenEndpointAuthSigningAlgorithm: stored.TokenEndpointAuthSigningAlgorithm,
 	}
 	if stored.DCRIssued {
-		return registration.MarkDCRIssued(oidcClient)
+		return registration.MarkDCRIssuedWithName(oidcClient, stored.ClientName)
 	}
 	return oidcClient
 }
@@ -401,6 +402,9 @@ func buildStoredClient(client fosite.Client) storedClient {
 		stored.TokenEndpointAuthSigningAlgorithm = oidcClient.GetTokenEndpointAuthSigningAlgorithm()
 	}
 	stored.DCRIssued = registration.DCRIssued(client)
+	if stored.DCRIssued {
+		stored.ClientName = registration.ClientName(client)
+	}
 	return stored
 }
 
@@ -2308,24 +2312,32 @@ func (s *RedisStorage) GetDCRCredentials(ctx context.Context, key DCRKey) (*DCRC
 
 // storedPendingAuthorization is a serializable wrapper for PendingAuthorization.
 type storedPendingAuthorization struct {
-	ClientID             string   `json:"client_id"`
-	RedirectURI          string   `json:"redirect_uri"`
-	State                string   `json:"state"`
-	PKCEChallenge        string   `json:"pkce_challenge"`
-	PKCEMethod           string   `json:"pkce_method"`
-	Scopes               []string `json:"scopes"`
-	InternalState        string   `json:"internal_state"`
-	UpstreamPKCEVerifier string   `json:"upstream_pkce_verifier"`
-	UpstreamNonce        string   `json:"upstream_nonce"`
-	BrowserBindingHash   string   `json:"browser_binding_hash,omitempty"`
-	UpstreamProviderName string   `json:"upstream_provider_name,omitempty"`
-	SessionID            string   `json:"session_id,omitempty"`
-	ResolvedUserID       string   `json:"resolved_user_id,omitempty"`
-	ResolvedUserName     string   `json:"resolved_user_name,omitempty"`
-	ResolvedUserEmail    string   `json:"resolved_user_email,omitempty"`
-	SingleLeg            bool     `json:"single_leg,omitempty"`
-	ChainUpstreams       []string `json:"chain_upstreams,omitempty"`
-	CreatedAt            int64    `json:"created_at"`
+	ClientID                string   `json:"client_id"`
+	RedirectURI             string   `json:"redirect_uri"`
+	State                   string   `json:"state"`
+	PKCEChallenge           string   `json:"pkce_challenge"`
+	PKCEMethod              string   `json:"pkce_method"`
+	Scopes                  []string `json:"scopes"`
+	Resource                string   `json:"resource,omitempty"`
+	ConsentStage            string   `json:"consent_stage,omitempty"`
+	RememberConsent         bool     `json:"remember_consent,omitempty"`
+	FirstProviderSubject    string   `json:"first_provider_subject,omitempty"`
+	ExpectedUserID          string   `json:"expected_user_id,omitempty"`
+	ExpectedProviderSubject string   `json:"expected_provider_subject,omitempty"`
+	ConsentSessionDigest    string   `json:"consent_session_digest,omitempty"`
+	InternalState           string   `json:"internal_state"`
+	UpstreamPKCEVerifier    string   `json:"upstream_pkce_verifier"`
+	UpstreamNonce           string   `json:"upstream_nonce"`
+	BrowserBindingHash      string   `json:"browser_binding_hash,omitempty"`
+	UpstreamProviderName    string   `json:"upstream_provider_name,omitempty"`
+	SessionID               string   `json:"session_id,omitempty"`
+	ResolvedUserID          string   `json:"resolved_user_id,omitempty"`
+	ResolvedUserName        string   `json:"resolved_user_name,omitempty"`
+	ResolvedUserEmail       string   `json:"resolved_user_email,omitempty"`
+	SingleLeg               bool     `json:"single_leg,omitempty"`
+	ChainUpstreams          []string `json:"chain_upstreams,omitempty"`
+	CreatedAt               int64    `json:"created_at"`
+	CreatedAtNano           int64    `json:"created_at_nano,omitempty"`
 }
 
 // StorePendingAuthorization stores a pending authorization request.
@@ -2340,24 +2352,32 @@ func (s *RedisStorage) StorePendingAuthorization(ctx context.Context, state stri
 	key := redisKey(s.keyPrefix, KeyTypePending, state)
 
 	stored := storedPendingAuthorization{
-		ClientID:             pending.ClientID,
-		RedirectURI:          pending.RedirectURI,
-		State:                pending.State,
-		PKCEChallenge:        pending.PKCEChallenge,
-		PKCEMethod:           pending.PKCEMethod,
-		Scopes:               slices.Clone(pending.Scopes),
-		InternalState:        pending.InternalState,
-		UpstreamPKCEVerifier: pending.UpstreamPKCEVerifier,
-		UpstreamNonce:        pending.UpstreamNonce,
-		BrowserBindingHash:   pending.BrowserBindingHash,
-		UpstreamProviderName: pending.UpstreamProviderName,
-		SessionID:            pending.SessionID,
-		ResolvedUserID:       pending.ResolvedUserID,
-		ResolvedUserName:     pending.ResolvedUserName,
-		ResolvedUserEmail:    pending.ResolvedUserEmail,
-		SingleLeg:            pending.SingleLeg,
-		ChainUpstreams:       slices.Clone(pending.ChainUpstreams),
-		CreatedAt:            pending.CreatedAt.Unix(),
+		ClientID:                pending.ClientID,
+		RedirectURI:             pending.RedirectURI,
+		State:                   pending.State,
+		PKCEChallenge:           pending.PKCEChallenge,
+		PKCEMethod:              pending.PKCEMethod,
+		Scopes:                  slices.Clone(pending.Scopes),
+		Resource:                pending.Resource,
+		ConsentStage:            pending.ConsentStage,
+		RememberConsent:         pending.RememberConsent,
+		FirstProviderSubject:    pending.FirstProviderSubject,
+		ExpectedUserID:          pending.ExpectedUserID,
+		ExpectedProviderSubject: pending.ExpectedProviderSubject,
+		ConsentSessionDigest:    pending.ConsentSessionDigest,
+		InternalState:           pending.InternalState,
+		UpstreamPKCEVerifier:    pending.UpstreamPKCEVerifier,
+		UpstreamNonce:           pending.UpstreamNonce,
+		BrowserBindingHash:      pending.BrowserBindingHash,
+		UpstreamProviderName:    pending.UpstreamProviderName,
+		SessionID:               pending.SessionID,
+		ResolvedUserID:          pending.ResolvedUserID,
+		ResolvedUserName:        pending.ResolvedUserName,
+		ResolvedUserEmail:       pending.ResolvedUserEmail,
+		SingleLeg:               pending.SingleLeg,
+		ChainUpstreams:          slices.Clone(pending.ChainUpstreams),
+		CreatedAt:               pending.CreatedAt.Unix(),
+		CreatedAtNano:           pending.CreatedAt.UnixNano(),
 	}
 
 	data, err := json.Marshal(stored) //nolint:gosec // G117 - internal Redis storage serialization, not exposed to users
@@ -2365,7 +2385,11 @@ func (s *RedisStorage) StorePendingAuthorization(ctx context.Context, state stri
 		return fmt.Errorf("failed to marshal pending authorization: %w", err)
 	}
 
-	return s.client.Set(ctx, key, data, DefaultPendingAuthorizationTTL).Err()
+	ttl := time.Until(pending.CreatedAt.Add(DefaultPendingAuthorizationTTL))
+	if ttl <= 0 {
+		return ErrExpired
+	}
+	return s.client.Set(ctx, key, data, ttl).Err()
 }
 
 // LoadPendingAuthorization retrieves a pending authorization by internal state.
@@ -2386,31 +2410,41 @@ func (s *RedisStorage) LoadPendingAuthorization(ctx context.Context, state strin
 	}
 
 	createdAt := time.Unix(stored.CreatedAt, 0)
+	if stored.CreatedAtNano != 0 {
+		createdAt = time.Unix(0, stored.CreatedAtNano)
+	}
 
 	// Check if expired (TTL should handle this, but double-check)
-	if time.Since(createdAt) > DefaultPendingAuthorizationTTL {
+	if !createdAt.Add(DefaultPendingAuthorizationTTL).After(time.Now()) {
 		return nil, ErrExpired
 	}
 
 	return &PendingAuthorization{
-		ClientID:             stored.ClientID,
-		RedirectURI:          stored.RedirectURI,
-		State:                stored.State,
-		PKCEChallenge:        stored.PKCEChallenge,
-		PKCEMethod:           stored.PKCEMethod,
-		Scopes:               slices.Clone(stored.Scopes),
-		InternalState:        stored.InternalState,
-		UpstreamPKCEVerifier: stored.UpstreamPKCEVerifier,
-		UpstreamNonce:        stored.UpstreamNonce,
-		BrowserBindingHash:   stored.BrowserBindingHash,
-		UpstreamProviderName: stored.UpstreamProviderName,
-		SessionID:            stored.SessionID,
-		ResolvedUserID:       stored.ResolvedUserID,
-		ResolvedUserName:     stored.ResolvedUserName,
-		ResolvedUserEmail:    stored.ResolvedUserEmail,
-		SingleLeg:            stored.SingleLeg,
-		ChainUpstreams:       slices.Clone(stored.ChainUpstreams),
-		CreatedAt:            createdAt,
+		ClientID:                stored.ClientID,
+		RedirectURI:             stored.RedirectURI,
+		State:                   stored.State,
+		PKCEChallenge:           stored.PKCEChallenge,
+		PKCEMethod:              stored.PKCEMethod,
+		Scopes:                  slices.Clone(stored.Scopes),
+		Resource:                stored.Resource,
+		ConsentStage:            stored.ConsentStage,
+		RememberConsent:         stored.RememberConsent,
+		FirstProviderSubject:    stored.FirstProviderSubject,
+		ExpectedUserID:          stored.ExpectedUserID,
+		ExpectedProviderSubject: stored.ExpectedProviderSubject,
+		ConsentSessionDigest:    stored.ConsentSessionDigest,
+		InternalState:           stored.InternalState,
+		UpstreamPKCEVerifier:    stored.UpstreamPKCEVerifier,
+		UpstreamNonce:           stored.UpstreamNonce,
+		BrowserBindingHash:      stored.BrowserBindingHash,
+		UpstreamProviderName:    stored.UpstreamProviderName,
+		SessionID:               stored.SessionID,
+		ResolvedUserID:          stored.ResolvedUserID,
+		ResolvedUserName:        stored.ResolvedUserName,
+		ResolvedUserEmail:       stored.ResolvedUserEmail,
+		SingleLeg:               stored.SingleLeg,
+		ChainUpstreams:          slices.Clone(stored.ChainUpstreams),
+		CreatedAt:               createdAt,
 	}, nil
 }
 

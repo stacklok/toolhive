@@ -37,6 +37,7 @@ require (
 	github.com/google/go-cmp v0.7.0
 	github.com/google/go-containerregistry v0.22.1
 	github.com/google/uuid v1.6.0
+	github.com/gorilla/websocket v1.5.4-0.20250319132907-e064f32e3674
 	github.com/hashicorp/golang-lru/v2 v2.0.7
 	github.com/jwx-go/jwkfetch/v4 v4.0.4
 	github.com/lestrrat-go/httprc/v3 v3.0.6
@@ -91,6 +92,7 @@ require (
 	golang.org/x/crypto v0.57.0
 	golang.org/x/exp/jsonrpc2 v0.0.0-20260908205506-85c1c2202aba
 	golang.org/x/mod v0.41.0
+	golang.org/x/net v0.59.0
 	golang.org/x/oauth2 v0.37.0
 	golang.org/x/sync v0.23.0
 	golang.org/x/sys v0.48.0
@@ -205,7 +207,6 @@ require (
 	github.com/google/gnostic-models v0.7.1 // indirect
 	github.com/google/jsonschema-go v0.4.3 // indirect
 	github.com/google/pprof v0.0.0-20260802141513-ef3492d7dac3 // indirect
-	github.com/gorilla/websocket v1.5.4-0.20250319132907-e064f32e3674 // indirect
 	github.com/grpc-ecosystem/grpc-gateway/v2 v2.30.0 // indirect
 	github.com/hashicorp/go-cleanhttp v0.5.2 // indirect
 	github.com/hashicorp/go-retryablehttp v0.7.8 // indirect
@@ -330,7 +331,6 @@ require (
 	golang.ngrok.com/muxado/v2 v2.0.1 // indirect
 	golang.org/x/exp v0.0.0-20260824195058-e88cd73687aa // indirect
 	golang.org/x/exp/event v0.0.0-20260824195058-e88cd73687aa // indirect
-	golang.org/x/net v0.59.0 // indirect
 	golang.org/x/text v0.42.0 // indirect
 	golang.org/x/tools v0.49.0 // indirect
 	golang.org/x/xerrors v0.0.0-20240903120638-7835f813f4da // indirect

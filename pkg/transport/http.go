@@ -36,19 +36,20 @@ const (
 
 // HTTPTransport implements the Transport interface using Server-Sent/Streamable Events.
 type HTTPTransport struct {
-	transportType     types.TransportType
-	host              string
-	proxyPort         int
-	targetPort        int
-	targetHost        string
-	containerName     string
-	targetURI         string
-	deployer          rt.Deployer
-	debug             bool
-	middlewares       []types.NamedMiddleware
-	prometheusHandler http.Handler
-	authInfoHandler   http.Handler
-	prefixHandlers    map[string]http.Handler
+	transportType      types.TransportType
+	host               string
+	proxyPort          int
+	targetPort         int
+	targetHost         string
+	containerName      string
+	targetURI          string
+	deployer           rt.Deployer
+	debug              bool
+	middlewares        []types.NamedMiddleware
+	prometheusHandler  http.Handler
+	authInfoHandler    http.Handler
+	prefixHandlers     map[string]http.Handler
+	stripConsentCookie bool
 
 	// endpointPrefix is an explicit prefix to prepend to SSE endpoint URLs
 	endpointPrefix string
@@ -449,6 +450,9 @@ func (t *HTTPTransport) buildProxyOptions(remoteBasePath, remoteRawQuery string)
 	}
 	if t.sessionStorage != nil {
 		opts = append(opts, transparent.WithSessionStorage(t.sessionStorage))
+	}
+	if t.stripConsentCookie {
+		opts = append(opts, transparent.WithStripConsentCookie())
 	}
 	return opts
 }

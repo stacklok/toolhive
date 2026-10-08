@@ -259,6 +259,7 @@ func (r *Runner) Run(ctx context.Context) error {
 		EndpointPrefix:           r.Config.EndpointPrefix,
 		SessionTTL:               effectiveSessionTTL,
 		ReadTimeout:              proxyReadTimeout,
+		StripConsentCookie:       r.Config.EmbeddedAuthServerConfig != nil,
 	}
 
 	// Set proxy mode for stdio transport

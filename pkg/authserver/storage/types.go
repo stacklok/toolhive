@@ -16,7 +16,7 @@
 // OAuth authorization server.
 package storage
 
-//go:generate mockgen -destination=mocks/mock_storage.go -package=mocks -source=types.go Storage,PendingAuthorizationStorage,DeviceCodeStorage,PendingDeviceLoginStorage,PendingDeviceConfirmationStorage,AssertionJWTConsumer,ClientRegistry,UpstreamTokenStorage,UpstreamTokenRefresher,UserStorage,DCRCredentialStore
+//go:generate mockgen -destination=mocks/mock_storage.go -package=mocks -source=types.go Storage,PendingAuthorizationStorage,DeviceCodeStorage,PendingDeviceLoginStorage,PendingDeviceConfirmationStorage,RememberedConsentStorage,AssertionJWTConsumer,ClientRegistry,UpstreamTokenStorage,UpstreamTokenRefresher,UserStorage,DCRCredentialStore
 
 import (
 	"context"
@@ -588,6 +588,49 @@ type ProviderIdentity struct {
 	LastUsedAt time.Time
 }
 
+// Consent stages for a pending client authorization. Empty is a legacy record
+// and must never grant consent.
+const (
+	ConsentStageAwaiting = "awaiting"
+	ConsentStageApproved = "approved"
+)
+
+// ConsentSession binds a browser to a previously verified first-upstream identity.
+// JSON names match existing Redis rows written without tags.
+type ConsentSession struct {
+	UserID          string    `json:"UserID"`
+	ProviderID      string    `json:"ProviderID"`
+	ProviderSubject string    `json:"ProviderSubject"`
+	ExpiresAt       time.Time `json:"ExpiresAt"`
+}
+
+// ClientApproval is the exact request envelope approved by a user for a client.
+// JSON names match existing Redis rows written without tags.
+type ClientApproval struct {
+	RedirectURI string    `json:"RedirectURI"`
+	Scopes      []string  `json:"Scopes"`
+	Resource    string    `json:"Resource"`
+	ExpiresAt   time.Time `json:"ExpiresAt"`
+}
+
+const (
+	// ConsentSessionTTL is the fixed lifetime of a remembered browser session.
+	ConsentSessionTTL = 7 * 24 * time.Hour
+	// ClientApprovalTTL is the fixed lifetime of a remembered client approval.
+	ClientApprovalTTL = 30 * 24 * time.Hour
+)
+
+// RememberedConsentStorage is an optional browser-session and client-approval capability.
+// Callers supply a digest of the session secret; raw cookie values must never be stored.
+// Reads return ErrNotFound for absent rows and ErrExpired for expired rows.
+type RememberedConsentStorage interface {
+	StoreConsentSession(ctx context.Context, digest string, session *ConsentSession) error
+	GetConsentSession(ctx context.Context, digest string) (*ConsentSession, error)
+	DeleteConsentSession(ctx context.Context, digest string) error
+	StoreClientApproval(ctx context.Context, userID, clientID string, approval *ClientApproval) error
+	GetClientApproval(ctx context.Context, userID, clientID string) (*ClientApproval, error)
+}
+
 // PendingAuthorization tracks a client's authorization request while they
 // authenticate with the upstream IDP.
 type PendingAuthorization struct {
@@ -608,6 +651,24 @@ type PendingAuthorization struct {
 
 	// Scopes are the OAuth scopes requested by the client.
 	Scopes []string
+
+	// Resource is the single audience selected at authorization, either explicitly
+	// by the client or from the sole configured allowed audience.
+	Resource string
+
+	// ConsentStage is empty on legacy records, awaiting before approval, and
+	// approved only after a browser-bound consent POST.
+	ConsentStage string
+
+	// RememberConsent is set only by a browser-bound approval on an HTTPS endpoint.
+	RememberConsent bool
+	// FirstProviderSubject is the non-synthetic first upstream's verified subject.
+	FirstProviderSubject string
+
+	// Expected identity and originating session for a remembered, page-skipping flow.
+	ExpectedUserID          string
+	ExpectedProviderSubject string
+	ConsentSessionDigest    string
 
 	// InternalState is our randomly generated state for correlating upstream callback.
 	InternalState string
@@ -682,7 +743,9 @@ type PendingAuthorization struct {
 	// than recomputed, so the filter is never re-run against a later leg's context.
 	ChainUpstreams []string
 
-	// CreatedAt is when the pending authorization was created.
+	// CreatedAt is when the pending authorization was created. It must be set on
+	// the first leg and preserved across subsequent legs; storage expires the
+	// request at CreatedAt + DefaultPendingAuthorizationTTL.
 	CreatedAt time.Time
 }
 

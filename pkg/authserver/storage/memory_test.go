@@ -1517,7 +1517,8 @@ func TestMemoryStorage_PendingAuthorization(t *testing.T) {
 		return &PendingAuthorization{
 			ClientID: "test-client", RedirectURI: "https://example.com/callback",
 			State: "client-state", PKCEChallenge: "challenge", PKCEMethod: "S256",
-			Scopes: []string{"openid", "profile"}, InternalState: state,
+			Scopes: []string{"openid", "profile"}, Resource: "https://api.example.com",
+			ConsentStage: ConsentStageApproved, InternalState: state,
 			UpstreamPKCEVerifier: "verifier", UpstreamNonce: "nonce",
 			BrowserBindingHash: "binding-hash",
 			SingleLeg:          true, ChainUpstreams: []string{"provider-1", "provider-2"},
@@ -1535,9 +1536,37 @@ func TestMemoryStorage_PendingAuthorization(t *testing.T) {
 			assert.Equal(t, pending.ClientID, retrieved.ClientID)
 			assert.Equal(t, pending.PKCEChallenge, retrieved.PKCEChallenge)
 			assert.Equal(t, pending.Scopes, retrieved.Scopes)
+			assert.Equal(t, pending.Resource, retrieved.Resource)
+			assert.Equal(t, pending.ConsentStage, retrieved.ConsentStage)
 			assert.Equal(t, pending.BrowserBindingHash, retrieved.BrowserBindingHash)
 			assert.Equal(t, pending.SingleLeg, retrieved.SingleLeg)
 			assert.Equal(t, pending.ChainUpstreams, retrieved.ChainUpstreams)
+		})
+	})
+
+	t.Run("re-store retains original deadline", func(t *testing.T) {
+		withStorage(t, func(ctx context.Context, s *MemoryStorage) {
+			pending := makePending("near-deadline")
+			pending.CreatedAt = time.Now().Add(-DefaultPendingAuthorizationTTL + 3*time.Second)
+			deadline := pending.CreatedAt.Add(DefaultPendingAuthorizationTTL)
+			require.NoError(t, s.StorePendingAuthorization(ctx, "near-deadline", pending))
+			require.NoError(t, s.StorePendingAuthorization(ctx, "near-deadline", pending))
+			assert.Equal(t, deadline, s.pendingAuthorizations["near-deadline"].expiresAt)
+
+			pending.CreatedAt = time.Now().Add(-DefaultPendingAuthorizationTTL - time.Second)
+			require.ErrorIs(t, s.StorePendingAuthorization(ctx, "near-deadline", pending), ErrExpired)
+			assert.Equal(t, deadline, s.pendingAuthorizations["near-deadline"].expiresAt)
+			s.mu.Lock()
+			s.pendingAuthorizations["near-deadline"].expiresAt = time.Now().Add(-time.Second)
+			s.mu.Unlock()
+			_, err := s.LoadPendingAuthorization(ctx, "near-deadline")
+			require.ErrorIs(t, err, ErrExpired)
+		})
+	})
+
+	t.Run("missing creation time is expired", func(t *testing.T) {
+		withStorage(t, func(ctx context.Context, s *MemoryStorage) {
+			require.ErrorIs(t, s.StorePendingAuthorization(ctx, "missing-time", &PendingAuthorization{}), ErrExpired)
 		})
 	})
 

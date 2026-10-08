@@ -108,6 +108,9 @@ type TransparentProxy struct {
 	// stateless indicates the server is POST-only (no SSE/GET support)
 	stateless bool
 
+	// stripConsentCookie prevents the embedded AS session from reaching the backend.
+	stripConsentCookie bool
+
 	// Callback when health check fails (for remote servers)
 	onHealthCheckFailed types.HealthCheckFailedCallback
 
@@ -257,6 +260,14 @@ func WithRemoteRawQuery(rawQuery string) Option {
 		if rawQuery != "" {
 			p.remoteRawQuery = rawQuery
 		}
+	}
+}
+
+// WithStripConsentCookie removes the entire embedded auth server browser session
+// cookie family from outbound backend requests. Enable only when that server is mounted.
+func WithStripConsentCookie() Option {
+	return func(p *TransparentProxy) {
+		p.stripConsentCookie = true
 	}
 }
 
@@ -1161,6 +1172,43 @@ func (p *TransparentProxy) setXForwardedHeaders(pr *httputil.ProxyRequest, upstr
 	}
 }
 
+// stripConsentCookie removes the embedded AS cookie family, retaining other cookie
+// pairs across all Cookie header lines. The caller supplies the outbound header.
+func stripConsentCookie(header http.Header) {
+	var kept []string
+	removed := false
+	for key, values := range header {
+		if !strings.EqualFold(key, "Cookie") {
+			continue
+		}
+		for _, value := range values {
+			var pairs []string
+			for _, pair := range strings.Split(value, ";") {
+				name, _, ok := strings.Cut(strings.TrimSpace(pair), "=")
+				if ok && strings.HasPrefix(strings.TrimSpace(name), "__Host-thv_consent_") {
+					removed = true
+					continue
+				}
+				pairs = append(pairs, pair)
+			}
+			if len(pairs) > 0 {
+				kept = append(kept, strings.Join(pairs, ";"))
+			}
+		}
+	}
+	if !removed {
+		return
+	}
+	for key := range header {
+		if strings.EqualFold(key, "Cookie") {
+			delete(header, key)
+		}
+	}
+	if len(kept) > 0 {
+		header["Cookie"] = kept
+	}
+}
+
 // Start starts the transparent proxy.
 // nolint:gocyclo // This function handles multiple startup scenarios and is complex by design
 func (p *TransparentProxy) Start(ctx context.Context) error {
@@ -1183,6 +1231,9 @@ func (p *TransparentProxy) Start(ctx context.Context) error {
 		FlushInterval: -1,
 		Rewrite: func(pr *httputil.ProxyRequest) {
 			pr.SetURL(targetURL)
+			if p.stripConsentCookie {
+				stripConsentCookie(pr.Out.Header)
+			}
 			p.setXForwardedHeaders(pr, targetURL.Scheme)
 
 			// Stash the original inbound request in the outbound request's

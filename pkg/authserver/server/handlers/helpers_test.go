@@ -92,6 +92,7 @@ type testStorageState struct {
 	users              map[string]*storage.User
 	providerIdentities map[string]*storage.ProviderIdentity // key: providerID:providerSubject
 	authCodeSessions   map[string]fosite.Requester          // authorize code sessions for token exchange
+	refreshSessions    map[string]fosite.Requester          // refresh token sessions for token exchange
 	pkceSessions       map[string]fosite.Requester          // PKCE sessions for token exchange
 	idpTokenCount      int
 	renewedClients     []string // client IDs passed to RenewClientTTL
@@ -108,6 +109,7 @@ type testStorageState struct {
 type baseTestSetupOption func(*baseTestSetupConfig)
 
 type baseTestSetupConfig struct {
+	deletePendingErr           error            // if non-nil, DeletePendingAuthorization always returns this error
 	storePendingErr            error            // if non-nil, StorePendingAuthorization always returns this error
 	getLatestUpstreamTokensErr error            // if non-nil, GetLatestUpstreamTokensForUser always returns this error
 	createUserErr              error            // if non-nil, CreateUser always returns this error
@@ -116,7 +118,12 @@ type baseTestSetupConfig struct {
 	getAllUpstreamErrAfter     int              // number of GetAllUpstreamTokens calls that succeed before the error kicks in
 	deleteForProviderErrs      map[string]error // per-provider error for DeleteUpstreamTokensForProvider
 	getClientErr               error            // if non-nil, GetClient returns this after getClientErrAfter successful calls
+	getProviderIdentityErr     error            // if non-nil, GetProviderIdentity returns this error
 	getClientErrAfter          int              // number of GetClient calls that succeed before getClientErr kicks in
+}
+
+func withDeletePendingError(err error) baseTestSetupOption {
+	return func(c *baseTestSetupConfig) { c.deletePendingErr = err }
 }
 
 func withStorePendingError(err error) baseTestSetupOption {
@@ -227,6 +234,7 @@ func baseTestSetup(t *testing.T, opts ...baseTestSetupOption) (fosite.OAuth2Prov
 		users:              make(map[string]*storage.User),
 		providerIdentities: make(map[string]*storage.ProviderIdentity),
 		authCodeSessions:   make(map[string]fosite.Requester),
+		refreshSessions:    make(map[string]fosite.Requester),
 		pkceSessions:       make(map[string]fosite.Requester),
 	}
 
@@ -239,7 +247,8 @@ func baseTestSetup(t *testing.T, opts ...baseTestSetupOption) (fosite.OAuth2Prov
 		RedirectURIs:  []string{testAuthRedirectURI},
 		ResponseTypes: []string{"code"},
 		GrantTypes:    []string{"authorization_code", "refresh_token"},
-		Scopes:        []string{"openid", "profile", "email"},
+		Scopes:        []string{"openid", "profile", "email", "offline_access"},
+		Audience:      []string{"https://api.example.com"},
 		Public:        true,
 	}
 	storState.clients[testAuthClientID] = testClient
@@ -303,6 +312,9 @@ func baseTestSetup(t *testing.T, opts ...baseTestSetupOption) (fosite.OAuth2Prov
 
 	stor.EXPECT().DeletePendingAuthorization(gomock.Any(), gomock.Any()).DoAndReturn(
 		func(_ context.Context, state string) error {
+			if setupCfg.deletePendingErr != nil {
+				return setupCfg.deletePendingErr
+			}
 			if _, ok := storState.pendingAuths[state]; !ok {
 				return storage.ErrNotFound
 			}
@@ -355,10 +367,25 @@ func baseTestSetup(t *testing.T, opts ...baseTestSetupOption) (fosite.OAuth2Prov
 	stor.EXPECT().RevokeAccessToken(gomock.Any(), gomock.Any()).Return(nil).AnyTimes()
 
 	// Setup mock expectations for refresh token storage (needed by fosite for token generation)
-	stor.EXPECT().CreateRefreshTokenSession(gomock.Any(), gomock.Any(), gomock.Any(), gomock.Any()).Return(nil).AnyTimes()
-	stor.EXPECT().GetRefreshTokenSession(gomock.Any(), gomock.Any(), gomock.Any()).Return(nil, fosite.ErrNotFound).AnyTimes()
-	stor.EXPECT().DeleteRefreshTokenSession(gomock.Any(), gomock.Any()).Return(nil).AnyTimes()
+	stor.EXPECT().CreateRefreshTokenSession(gomock.Any(), gomock.Any(), gomock.Any(), gomock.Any()).DoAndReturn(
+		func(_ context.Context, signature, _ string, req fosite.Requester) error {
+			storState.refreshSessions[signature] = req
+			return nil
+		}).AnyTimes()
+	stor.EXPECT().GetRefreshTokenSession(gomock.Any(), gomock.Any(), gomock.Any()).DoAndReturn(
+		func(_ context.Context, signature string, _ fosite.Session) (fosite.Requester, error) {
+			if req, ok := storState.refreshSessions[signature]; ok {
+				return req, nil
+			}
+			return nil, fosite.ErrNotFound
+		}).AnyTimes()
+	stor.EXPECT().DeleteRefreshTokenSession(gomock.Any(), gomock.Any()).DoAndReturn(
+		func(_ context.Context, signature string) error {
+			delete(storState.refreshSessions, signature)
+			return nil
+		}).AnyTimes()
 	stor.EXPECT().RevokeRefreshToken(gomock.Any(), gomock.Any()).Return(nil).AnyTimes()
+	stor.EXPECT().RotateRefreshToken(gomock.Any(), gomock.Any(), gomock.Any()).Return(nil).AnyTimes()
 
 	// Setup mock expectations for user storage (needed by UserResolver)
 	if setupCfg.createUserErr != nil {
@@ -382,6 +409,9 @@ func baseTestSetup(t *testing.T, opts ...baseTestSetupOption) (fosite.OAuth2Prov
 
 	stor.EXPECT().GetProviderIdentity(gomock.Any(), gomock.Any(), gomock.Any()).DoAndReturn(
 		func(_ context.Context, providerID, providerSubject string) (*storage.ProviderIdentity, error) {
+			if setupCfg.getProviderIdentityErr != nil {
+				return nil, setupCfg.getProviderIdentityErr
+			}
 			key := providerID + ":" + providerSubject
 			if identity, ok := storState.providerIdentities[key]; ok {
 				return identity, nil
@@ -628,6 +658,26 @@ func multiUpstreamTestSetupWithStorage(t *testing.T, storageOpts ...baseTestSetu
 	return handler, storState, mockProvider1, mockProvider2
 }
 
+// approveConsent submits the approval form from an authorize response.
+func approveConsent(t *testing.T, handler *Handler, page *httptest.ResponseRecorder) *httptest.ResponseRecorder {
+	t.Helper()
+	require.Equal(t, http.StatusOK, page.Code)
+	_, rest, ok := strings.Cut(page.Body.String(), `name="handle" value="`)
+	require.True(t, ok, "consent handle missing")
+	handle, _, ok := strings.Cut(rest, `"`)
+	require.True(t, ok)
+	form := "handle=" + handle + "&decision=approve"
+	req := httptest.NewRequest(http.MethodPost, "/oauth/consent", strings.NewReader(form))
+	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	req.Header.Set("Origin", testAuthIssuer)
+	for _, cookie := range page.Result().Cookies() {
+		req.AddCookie(cookie)
+	}
+	rec := httptest.NewRecorder()
+	handler.ConsentHandler(rec, req)
+	return rec
+}
+
 // testBindingSecure reports the cookie shape the shared test handler emits:
 // testAuthIssuer is plain http and no test overrides the authorize base URL,
 // so the unprefixed, non-Secure shape.
@@ -643,6 +693,7 @@ func bindPending(t *testing.T, storState *testStorageState, state string, pendin
 	t.Helper()
 	binding := newBrowserBinding()
 	pending.BrowserBindingHash = binding.hash
+	pending.ConsentStage = storage.ConsentStageApproved
 	storState.pendingAuths[state] = pending
 	return &http.Cookie{Name: browserBindingCookieName(state, testBindingSecure()), Value: binding.value}
 }

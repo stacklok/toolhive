@@ -424,8 +424,9 @@ func (p *CachedAPIRegistryProvider) GetRemoteServer(name string) (*types.RemoteS
 //     would silently serve stale skills and hide the need to re-auth;
 //   - other failures (network blip, 5xx) degrade gracefully to stale cache
 //     when one is present;
-//   - a missing skills endpoint (404) means the registry predates skills and
-//     is treated as an empty list, matching the pre-skills behavior;
+//   - a missing skills endpoint (a 404 on the first page of the list, because
+//     the registry predates skills) is treated as an empty list, matching the
+//     pre-skills behavior; a 404 on a later page is a real failure;
 //   - with no stale cache, any other error is returned (never nil,nil), so
 //     the v0.1 registry route surfaces a real failure instead of an empty 200.
 func (p *CachedAPIRegistryProvider) ListAvailableSkills() ([]types.Skill, error) {
@@ -467,10 +468,12 @@ func (p *CachedAPIRegistryProvider) ListAvailableSkills() ([]types.Skill, error)
 		if errors.Is(err, auth.ErrRegistryAuthRequired) {
 			return nil, err
 		}
-		// A registry that does not serve the skills endpoint (404) simply has
-		// no skills: preserve the servers-only behavior of an empty list
-		// rather than surfacing the probe as a route-level 500.
-		if errors.As(err, &httpErr) && httpErr.StatusCode == http.StatusNotFound {
+		// A registry that does not serve the skills endpoint (a 404 on the first
+		// page of the list) simply has no skills: preserve the servers-only
+		// behavior of an empty list rather than surfacing the probe as a
+		// route-level 500. A 404 on a later page means the endpoint answered and
+		// then broke, which is a real failure and is handled below.
+		if errors.Is(err, api.ErrSkillsEndpointNotServed) {
 			return nil, nil
 		}
 		// Transient failures: degrade to stale cache if available.

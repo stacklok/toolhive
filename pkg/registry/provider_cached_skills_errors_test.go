@@ -15,6 +15,7 @@ import (
 
 	thvregistry "github.com/stacklok/toolhive-core/registry/types"
 	"github.com/stacklok/toolhive/pkg/registry/api"
+	"github.com/stacklok/toolhive/pkg/registry/auth"
 )
 
 // skillsListPayload is the wire format served by the test registry for the
@@ -138,4 +139,60 @@ func TestCachedProvider_SkillsTransient500WithColdCache(t *testing.T) {
 	got, err := provider.ListAvailableSkills()
 	require.Error(t, err, "transient 500 with cold cache must return the error, not nil,nil")
 	require.Nil(t, got)
+}
+
+// TestCachedProvider_SkillsEndpointAbsent verifies that a registry without a
+// skills endpoint (404, e.g. a servers-only registry) yields an empty skill
+// list and no error, preserving the pre-skills behavior rather than turning
+// the probe into a route-level 500.
+func TestCachedProvider_SkillsEndpointAbsent(t *testing.T) {
+	t.Parallel()
+
+	var status atomic.Int32
+	status.Store(http.StatusNotFound)
+	srv := newSkillsStatusServer(t, nil, &status)
+
+	provider, err := NewCachedAPIRegistryProvider(srv.URL, true, false, nil)
+	require.NoError(t, err)
+
+	got, err := provider.ListAvailableSkills()
+	require.NoError(t, err, "a missing skills endpoint must not fail the route")
+	require.Empty(t, got)
+}
+
+// TestCachedProvider_SkillsTokenFailurePropagates verifies that a token
+// acquisition failure (wrapped with auth.ErrRegistryAuthRequired) propagates
+// like a 401/403, even with a warm cache: a revoked or missing token must not
+// silently serve stale skills.
+func TestCachedProvider_SkillsTokenFailurePropagates(t *testing.T) {
+	t.Parallel()
+
+	skills := []*thvregistry.Skill{
+		{Namespace: "io.github.stacklok", Name: "code-reviewer", Version: "1.0.0"},
+	}
+	var status atomic.Int32 // 0 = healthy
+	srv := newSkillsStatusServer(t, skills, &status)
+
+	provider, err := NewCachedAPIRegistryProvider(srv.URL, true, false, nil)
+	require.NoError(t, err)
+
+	// Warm the cache.
+	got, err := provider.ListAvailableSkills()
+	require.NoError(t, err)
+	require.Len(t, got, 1)
+
+	// Swap in a failing token source and expire the cache.
+	var failing failingTokenSource
+	failing.fail.Store(true)
+	provider.tokenSource = &failing
+	provider.skillsMu.Lock()
+	provider.skillsTime = provider.skillsTime.Add(-defaultCacheTTL - 1)
+	provider.skillsMu.Unlock()
+
+	got2, err := provider.ListAvailableSkills()
+	require.Error(t, err, "token acquisition failure must propagate, not be masked by stale cache")
+	require.Nil(t, got2)
+	require.True(t,
+		errors.Is(err, auth.ErrRegistryAuthRequired),
+		"expected errors.Is(err, ErrRegistryAuthRequired); got: %v", err)
 }

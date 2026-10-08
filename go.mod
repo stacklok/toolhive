@@ -85,7 +85,7 @@ require (
 	go.opentelemetry.io/otel/sdk/metric v1.47.0
 	go.opentelemetry.io/otel/trace v1.47.0
 	go.opentelemetry.io/proto/otlp v1.11.1
-	go.starlark.net v0.0.0-20260908191801-89a6a09411d5
+	go.starlark.net v0.0.0-20261005163335-bcb1a1a55bf9
 	go.uber.org/mock v0.6.0
 	go.uber.org/zap v1.28.0
 	golang.ngrok.com/ngrok/v2 v2.2.0

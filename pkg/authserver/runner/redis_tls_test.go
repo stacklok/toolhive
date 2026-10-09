@@ -12,7 +12,7 @@ import (
 	"github.com/stretchr/testify/require"
 
 	"github.com/stacklok/toolhive/pkg/authserver/storage"
-	"github.com/stacklok/toolhive/test/helpers/redistls"
+	"github.com/stacklok/toolhive/test/testkit/redistls"
 )
 
 func TestConvertRedisTLSRunConfig(t *testing.T) {

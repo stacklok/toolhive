@@ -13,7 +13,7 @@ import (
 
 	v1beta1 "github.com/stacklok/toolhive/cmd/thv-operator/api/v1beta1"
 	"github.com/stacklok/toolhive/pkg/redisconfig"
-	"github.com/stacklok/toolhive/test/helpers/redistls"
+	"github.com/stacklok/toolhive/test/testkit/redistls"
 )
 
 func TestNewRedisLimiterTLS(t *testing.T) {

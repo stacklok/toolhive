@@ -11,7 +11,7 @@ import (
 
 	"github.com/stacklok/toolhive/pkg/redisconfig"
 	vmcpconfig "github.com/stacklok/toolhive/pkg/vmcp/config"
-	"github.com/stacklok/toolhive/test/helpers/redistls"
+	"github.com/stacklok/toolhive/test/testkit/redistls"
 )
 
 func TestNewLimiterUsesSessionStorageTLS(t *testing.T) {

@@ -11,7 +11,7 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
-	"github.com/stacklok/toolhive/test/helpers/redistls"
+	"github.com/stacklok/toolhive/test/testkit/redistls"
 )
 
 func TestTLSConfigLoad(t *testing.T) {

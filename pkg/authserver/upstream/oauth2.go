@@ -1023,8 +1023,15 @@ func formatOAuth2Error(err error, prefix string) error {
 // resolver's per-request-host, low-frequency calls don't have the same
 // trade-off, hence the difference. If this provider's threat model changes
 // (e.g. it starts dialing caller-varying hosts), revisit this decision.
+//
+// The client also sets no response-header timeout, so the client timeout is the
+// budget for each call, as for the shared grant client in pkg/oauthproto (see
+// grants.go): corporate IdP chains can take more than 10s to send the first
+// byte. That holds for every call made with this client, because discovery,
+// JWKS, userinfo and the token endpoint are all served by the same IdP.
 func newHTTPClientForHost(host string, allowPrivateIPs, insecureAllowHTTP bool, caFilePath string) (*http.Client, error) {
-	builder := networking.NewHostScopedClientBuilder(host, allowPrivateIPs, insecureAllowHTTP)
+	builder := networking.NewHostScopedClientBuilder(host, allowPrivateIPs, insecureAllowHTTP).
+		WithResponseHeaderTimeout(0)
 	if caFilePath != "" {
 		builder.WithSystemRootsPlusCABundle(caFilePath)
 	}

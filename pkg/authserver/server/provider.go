@@ -461,6 +461,11 @@ func NewAuthorizationServerConfig(cfg *AuthorizationServerParams) (*Authorizatio
 		// ExactScopeStrategy requires exact matches (no wildcards) for security.
 		// This prevents clients from requesting scopes beyond what they registered with.
 		ScopeStrategy: fosite.ExactScopeStrategy,
+		// AudienceMatchingStrategy and JWKSFetcherStrategy are set explicitly
+		// because fosite's getters lazily assign their defaults on first use,
+		// an unsynchronized write that races between concurrent requests.
+		AudienceMatchingStrategy: fosite.DefaultAudienceMatchingStrategy,
+		JWKSFetcherStrategy:      fosite.NewDefaultJWKSFetcherStrategy(),
 		// ClientSecretsHasher compares client secrets at the token endpoint.
 		// Plain SHA-256 is correct here: the secrets are 256 bits of CSPRNG
 		// output, never client-chosen, so a password-stretching KDF protects

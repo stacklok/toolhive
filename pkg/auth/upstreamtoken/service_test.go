@@ -647,18 +647,6 @@ func TestInProcessService_RefreshOnExpiredIDToken(t *testing.T) {
 			},
 		},
 		{
-			name: "failed refresh returns stored tokens and is not retried within the backoff",
-			rows: []*storage.UpstreamTokens{staleRow, staleRow},
-			setupRefresher: func(r *storagemocks.MockUpstreamTokenRefresher) {
-				r.EXPECT().RefreshAndStore(gomock.Any(), "session-1", staleRow).
-					Return(nil, errors.New("upstream unavailable")).Times(1)
-			},
-			want: []UpstreamCredential{
-				{AccessToken: "valid-access-token", IDToken: expiredIDToken},
-				{AccessToken: "valid-access-token", IDToken: expiredIDToken},
-			},
-		},
-		{
 			name:           "unexpired ID token does not trigger a refresh",
 			rows:           []*storage.UpstreamTokens{freshRow},
 			setupRefresher: func(*storagemocks.MockUpstreamTokenRefresher) {},
@@ -738,33 +726,62 @@ func signedIDToken(t *testing.T, exp time.Time) string {
 	return tok
 }
 
-// TestInProcessService_IDTokenRefreshFailureBackoff pins the suppression window
-// recorded after a failed ID-token-triggered refresh: a short backoff, capped
-// at the access token's expiry when that comes sooner. Waiting out the real
-// backoff in a test is impractical, so the recorded window is inspected
-// directly.
-func TestInProcessService_IDTokenRefreshFailureBackoff(t *testing.T) {
+// TestInProcessService_IDTokenRefreshFailure covers a failed refresh triggered
+// by an expired ID token while the access token is still valid. A transient
+// failure returns the stored credential and backs off (for the backoff, capped
+// at access-token expiry); a failure that removed the row is fatal; a failure
+// caused by the caller's own context ending records no backoff. The recorded
+// window is inspected directly, since waiting out the real backoff in a test is
+// impractical.
+func TestInProcessService_IDTokenRefreshFailure(t *testing.T) {
 	t.Parallel()
 
 	expiredIDToken := signedIDToken(t, time.Now().Add(-10*time.Minute))
 	soon := time.Now().Add(20 * time.Second)
 
 	tests := []struct {
-		name       string
-		expiresAt  time.Time
-		wantUntil  func(before time.Time) time.Time
-		wantWithin time.Duration
+		name      string
+		expiresAt time.Time
+		cancelCtx bool
+		// reRead is the storage re-read result after the failure; nil means no
+		// re-read is expected.
+		reRead       func(*storagemocks.MockUpstreamTokenStorage, *storage.UpstreamTokens)
+		wantErr      bool
+		wantSuppress bool
+		wantUntil    func(before time.Time) time.Time
+		wantWithin   time.Duration
 	}{
 		{
-			name:       "access token outlives backoff: suppressed for the backoff only",
-			expiresAt:  time.Now().Add(30 * time.Minute),
-			wantUntil:  func(before time.Time) time.Time { return before.Add(idTokenRefreshFailureBackoff) },
-			wantWithin: time.Second,
+			name:      "transient failure with long-lived access token backs off for the backoff only",
+			expiresAt: time.Now().Add(30 * time.Minute),
+			reRead: func(s *storagemocks.MockUpstreamTokenStorage, row *storage.UpstreamTokens) {
+				s.EXPECT().GetUpstreamTokens(gomock.Any(), "session-1", "entra").Return(row, nil)
+			},
+			wantSuppress: true,
+			wantUntil:    func(before time.Time) time.Time { return before.Add(idTokenRefreshFailureBackoff) },
+			wantWithin:   time.Second,
 		},
 		{
-			name:      "access token expires within backoff: suppressed until access-token expiry",
+			name:      "transient failure with access token expiring within backoff backs off until access-token expiry",
 			expiresAt: soon,
-			wantUntil: func(time.Time) time.Time { return soon },
+			reRead: func(s *storagemocks.MockUpstreamTokenStorage, row *storage.UpstreamTokens) {
+				s.EXPECT().GetUpstreamTokens(gomock.Any(), "session-1", "entra").Return(row, nil)
+			},
+			wantSuppress: true,
+			wantUntil:    func(time.Time) time.Time { return soon },
+		},
+		{
+			name:      "failure that removed the row is fatal and records no backoff",
+			expiresAt: time.Now().Add(30 * time.Minute),
+			reRead: func(s *storagemocks.MockUpstreamTokenStorage, _ *storage.UpstreamTokens) {
+				s.EXPECT().GetUpstreamTokens(gomock.Any(), "session-1", "entra").Return(nil, storage.ErrNotFound)
+			},
+			wantErr: true,
+		},
+		{
+			name:      "failure after the caller's context ended returns stored tokens without backoff",
+			expiresAt: time.Now().Add(30 * time.Minute),
+			cancelCtx: true,
 		},
 	}
 
@@ -773,11 +790,11 @@ func TestInProcessService_IDTokenRefreshFailureBackoff(t *testing.T) {
 			t.Parallel()
 
 			ctrl := gomock.NewController(t)
+			mockStorage := storagemocks.NewMockUpstreamTokenStorage(ctrl)
 			mockRefresher := storagemocks.NewMockUpstreamTokenRefresher(ctrl)
 			mockRefresher.EXPECT().RefreshAndStore(gomock.Any(), "session-1", gomock.Any()).
 				Return(nil, errors.New("upstream unavailable"))
 
-			svc := NewInProcessService(storagemocks.NewMockUpstreamTokenStorage(ctrl), mockRefresher)
 			row := &storage.UpstreamTokens{
 				ProviderID:   "entra",
 				AccessToken:  "valid-access-token",
@@ -785,16 +802,71 @@ func TestInProcessService_IDTokenRefreshFailureBackoff(t *testing.T) {
 				IDToken:      expiredIDToken,
 				ExpiresAt:    tt.expiresAt,
 			}
+			if tt.reRead != nil {
+				tt.reRead(mockStorage, row)
+			}
 
+			ctx := context.Background()
+			if tt.cancelCtx {
+				cancelled, cancel := context.WithCancel(ctx)
+				cancel()
+				ctx = cancelled
+			}
+
+			svc := NewInProcessService(mockStorage, mockRefresher)
 			before := time.Now()
-			svc.refreshForIDToken(context.Background(), "session-1", "entra", row)
+			cred, err := svc.refreshForIDToken(ctx, "session-1", "entra", row)
+
+			if tt.wantErr {
+				require.Error(t, err)
+				assert.ErrorIs(t, err, ErrRefreshFailed)
+				assert.Nil(t, cred)
+			} else {
+				require.NoError(t, err)
+				assert.Equal(t, &UpstreamCredential{AccessToken: "valid-access-token", IDToken: expiredIDToken}, cred)
+			}
 
 			sup, ok := svc.idTokenSuppressions[suppressionKey("session-1", "entra")]
-			require.True(t, ok, "failed refresh must record a suppression")
+			require.Equal(t, tt.wantSuppress, ok)
+			if !tt.wantSuppress {
+				return
+			}
 			assert.Equal(t, expiredIDToken, sup.idToken)
 			assert.WithinDuration(t, tt.wantUntil(before), sup.until, tt.wantWithin)
+			assert.True(t, svc.idTokenRefreshSuppressed("session-1", "entra", expiredIDToken, before),
+				"trigger must stay suppressed within the window")
 			assert.False(t, svc.idTokenRefreshSuppressed("session-1", "entra", expiredIDToken, sup.until),
 				"trigger must fire again once the window has passed")
 		})
 	}
+}
+
+// TestInProcessService_GetAllUpstreamCredentials_IDTokenRefreshRemovedRow
+// verifies that when a failed ID-token-triggered refresh removed the row, the
+// bulk path reports the provider as failed rather than serving the stale copy.
+func TestInProcessService_GetAllUpstreamCredentials_IDTokenRefreshRemovedRow(t *testing.T) {
+	t.Parallel()
+
+	ctrl := gomock.NewController(t)
+	row := &storage.UpstreamTokens{
+		ProviderID:   "entra",
+		AccessToken:  "valid-access-token",
+		RefreshToken: "refresh-token",
+		IDToken:      signedIDToken(t, time.Now().Add(-10*time.Minute)),
+		ExpiresAt:    time.Now().Add(30 * time.Minute),
+	}
+	mockStorage := storagemocks.NewMockUpstreamTokenStorage(ctrl)
+	mockStorage.EXPECT().GetAllUpstreamTokens(gomock.Any(), "session-1").
+		Return(map[string]*storage.UpstreamTokens{"entra": row}, nil)
+	mockStorage.EXPECT().GetUpstreamTokens(gomock.Any(), "session-1", "entra").Return(nil, storage.ErrNotFound)
+	mockRefresher := storagemocks.NewMockUpstreamTokenRefresher(ctrl)
+	mockRefresher.EXPECT().RefreshAndStore(gomock.Any(), "session-1", row).
+		Return(nil, errors.New("failed to persist rotated upstream refresh token"))
+
+	creds, failed, err := NewInProcessService(mockStorage, mockRefresher).
+		GetAllUpstreamCredentials(context.Background(), "session-1")
+
+	require.NoError(t, err)
+	assert.Empty(t, creds)
+	assert.Equal(t, []string{"entra"}, failed)
 }

@@ -33,6 +33,11 @@ const (
 	// transient upstream error does not reopen the stale-ID-token window for
 	// the rest of the access token's lifetime.
 	idTokenRefreshFailureBackoff = time.Minute
+
+	// idTokenSuppressionSweepInterval rate-limits the full sweep of expired
+	// suppression entries, which runs under mu. Entries are also dropped
+	// lazily when read after expiry.
+	idTokenSuppressionSweepInterval = time.Minute
 )
 
 // InProcessService implements the Service interface for in-process use.
@@ -68,13 +73,14 @@ type InProcessService struct {
 	storage   storage.UpstreamTokenStorage
 	refresher storage.UpstreamTokenRefresher
 
-	// mu guards idTokenSuppressions.
+	// mu guards idTokenSuppressions and lastSuppressionSweep.
 	mu sync.Mutex
 	// idTokenSuppressions records rows for which an ID-token-triggered refresh
 	// should not be attempted again until the access token next expires,
 	// because a previous refresh left the ID token expired (the provider
 	// omitted id_token, or the refresh failed). Keyed by suppressionKey.
-	idTokenSuppressions map[string]idTokenSuppression
+	idTokenSuppressions  map[string]idTokenSuppression
+	lastSuppressionSweep time.Time
 }
 
 // idTokenSuppression pins a suppression to the exact stale ID token it was
@@ -135,7 +141,7 @@ func (s *InProcessService) GetValidTokens(ctx context.Context, sessionID, provid
 	}
 
 	if s.shouldRefreshForIDToken(sessionID, providerName, tokens) {
-		return s.refreshForIDToken(ctx, sessionID, providerName, tokens), nil
+		return s.refreshForIDToken(ctx, sessionID, providerName, tokens)
 	}
 
 	return &UpstreamCredential{AccessToken: tokens.AccessToken, IDToken: tokens.IDToken}, nil
@@ -181,7 +187,17 @@ func (s *InProcessService) GetAllUpstreamCredentials(
 		// If token is not expired, use it directly.
 		if tokens.ExpiresAt.IsZero() || !tokens.IsExpired(time.Now()) {
 			if s.shouldRefreshForIDToken(sessionID, providerName, tokens) {
-				result[providerName] = *s.refreshForIDToken(ctx, sessionID, providerName, tokens)
+				cred, idErr := s.refreshForIDToken(ctx, sessionID, providerName, tokens)
+				if idErr != nil {
+					slog.WarnContext(ctx, "upstream token row removed by failed refresh; provider will require re-authentication",
+						"session_id", sessionID,
+						"provider", providerName,
+						"error", idErr,
+					)
+					failed = append(failed, providerName)
+					continue
+				}
+				result[providerName] = *cred
 				continue
 			}
 			result[providerName] = UpstreamCredential{
@@ -296,35 +312,50 @@ func (s *InProcessService) shouldRefreshForIDToken(
 }
 
 // refreshForIDToken refreshes a row whose access token is still valid but whose
-// ID token has expired. A failed refresh is not fatal: the stored credential is
-// returned unchanged (its access token is still usable) and the trigger backs
-// off for idTokenRefreshFailureBackoff (or until the access token expires, if
-// sooner), so a failing upstream is not hammered on every read.
+// ID token has expired. A failed refresh is deliberately not fatal: the stored
+// credential is returned unchanged, since its access token is still usable and
+// a transient upstream error should not force re-authentication. The trigger
+// then backs off for idTokenRefreshFailureBackoff (or until the access token
+// expires, if sooner) so a failing upstream is not hammered on every read; no
+// backoff is recorded when the failure is the caller's own context ending.
+//
+// The one fatal case is a row the failed refresh removed: the refresher deletes
+// it when the provider rotated the refresh token but the rotation could not be
+// persisted, leaving the old one dead. Serving the stored copy would then hand
+// out a credential that no longer exists, so the row is re-read and
+// ErrRefreshFailed returned if it is gone.
 func (s *InProcessService) refreshForIDToken(
 	ctx context.Context, sessionID, providerName string, tokens *storage.UpstreamTokens,
-) *UpstreamCredential {
+) (*UpstreamCredential, error) {
 	refreshed, err := s.refreshOrFail(ctx, sessionID, providerName, tokens)
 	if err == nil {
-		return refreshed
+		return refreshed, nil
 	}
-	slog.WarnContext(ctx, "upstream refresh for expired ID token failed; returning stored tokens",
+	// refreshOrFail has already logged the failure at WARN.
+	if ctx.Err() != nil {
+		return &UpstreamCredential{AccessToken: tokens.AccessToken, IDToken: tokens.IDToken}, nil
+	}
+	if _, readErr := s.storage.GetUpstreamTokens(ctx, sessionID, providerName); errors.Is(readErr, storage.ErrNotFound) {
+		return nil, err
+	}
+	slog.DebugContext(ctx, "returning stored upstream tokens after failed refresh for expired ID token",
 		"session_id", sessionID,
 		"provider", providerName,
-		"error", err,
 	)
 	until := time.Now().Add(idTokenRefreshFailureBackoff)
 	if !tokens.ExpiresAt.IsZero() && tokens.ExpiresAt.Before(until) {
 		until = tokens.ExpiresAt
 	}
 	s.suppressIDTokenRefresh(sessionID, providerName, tokens.IDToken, until, time.Time{})
-	return &UpstreamCredential{AccessToken: tokens.AccessToken, IDToken: tokens.IDToken}
+	return &UpstreamCredential{AccessToken: tokens.AccessToken, IDToken: tokens.IDToken}, nil
 }
 
 // suppressIDTokenRefresh records that the ID-token trigger must not fire for
 // idToken on this row until the access token expires. When the access token
 // asserts no expiry, the session expiry (or defaultIDTokenSuppression) bounds
-// the entry instead. Expired entries are swept on each call so the map stays
-// bounded by the number of live suppressed rows.
+// the entry instead. Expired entries are swept at most once per
+// idTokenSuppressionSweepInterval, which keeps the map bounded by the rows
+// suppressed within roughly the last interval plus those still live.
 func (s *InProcessService) suppressIDTokenRefresh(
 	sessionID, providerName, idToken string, accessExpiresAt, sessionExpiresAt time.Time,
 ) {
@@ -339,21 +370,32 @@ func (s *InProcessService) suppressIDTokenRefresh(
 
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	for k, v := range s.idTokenSuppressions {
-		if !now.Before(v.until) {
-			delete(s.idTokenSuppressions, k)
+	if now.Sub(s.lastSuppressionSweep) >= idTokenSuppressionSweepInterval {
+		for k, v := range s.idTokenSuppressions {
+			if !now.Before(v.until) {
+				delete(s.idTokenSuppressions, k)
+			}
 		}
+		s.lastSuppressionSweep = now
 	}
 	s.idTokenSuppressions[suppressionKey(sessionID, providerName)] = idTokenSuppression{idToken: idToken, until: until}
 }
 
 // idTokenRefreshSuppressed reports whether the ID-token trigger is suppressed
-// for idToken on this row at now.
+// for idToken on this row at now. An entry found expired is dropped.
 func (s *InProcessService) idTokenRefreshSuppressed(sessionID, providerName, idToken string, now time.Time) bool {
+	key := suppressionKey(sessionID, providerName)
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	sup, ok := s.idTokenSuppressions[suppressionKey(sessionID, providerName)]
-	return ok && sup.idToken == idToken && now.Before(sup.until)
+	sup, ok := s.idTokenSuppressions[key]
+	if !ok {
+		return false
+	}
+	if !now.Before(sup.until) {
+		delete(s.idTokenSuppressions, key)
+		return false
+	}
+	return sup.idToken == idToken
 }
 
 func suppressionKey(sessionID, providerName string) string {

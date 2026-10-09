@@ -9,6 +9,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/golang-jwt/jwt/v5"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 	"go.uber.org/mock/gomock"
@@ -563,4 +564,193 @@ func TestInProcessService_GetAllUpstreamCredentials_NilRefresher(t *testing.T) {
 	require.NoError(t, err)
 	assert.Equal(t, map[string]UpstreamCredential{}, result)
 	assert.Equal(t, []string{"github"}, failed)
+}
+
+// TestInProcessService_RefreshOnExpiredIDToken covers the opt-in ID-token
+// staleness trigger on both read paths. Each case performs one read per entry
+// in rows; the refresher mock fails the test on any refresh it did not expect.
+func TestInProcessService_RefreshOnExpiredIDToken(t *testing.T) {
+	t.Parallel()
+
+	expiredIDToken := signedIDToken(t, time.Now().Add(-10*time.Minute))
+	freshIDToken := signedIDToken(t, time.Now().Add(time.Hour))
+	rotatedIDToken := signedIDToken(t, time.Now().Add(time.Hour))
+
+	staleRow := &storage.UpstreamTokens{
+		ProviderID:   "entra",
+		AccessToken:  "valid-access-token",
+		RefreshToken: "refresh-token",
+		IDToken:      expiredIDToken,
+		ExpiresAt:    time.Now().Add(30 * time.Minute),
+	}
+	staleRowNoRefresh := &storage.UpstreamTokens{
+		ProviderID:  "entra",
+		AccessToken: "valid-access-token",
+		IDToken:     expiredIDToken,
+		ExpiresAt:   time.Now().Add(30 * time.Minute),
+	}
+	freshRow := &storage.UpstreamTokens{
+		ProviderID:   "entra",
+		AccessToken:  "valid-access-token",
+		RefreshToken: "refresh-token",
+		IDToken:      freshIDToken,
+		ExpiresAt:    time.Now().Add(30 * time.Minute),
+	}
+	rotatedRow := &storage.UpstreamTokens{
+		ProviderID:   "entra",
+		AccessToken:  "new-access-token",
+		RefreshToken: "refresh-token",
+		IDToken:      rotatedIDToken,
+		ExpiresAt:    time.Now().Add(time.Hour),
+	}
+	// What the refresher persists when the provider omits id_token: the
+	// expired login ID token is carried forward alongside a new access token.
+	carriedForwardRow := &storage.UpstreamTokens{
+		ProviderID:   "entra",
+		AccessToken:  "new-access-token",
+		RefreshToken: "refresh-token",
+		IDToken:      expiredIDToken,
+		ExpiresAt:    time.Now().Add(time.Hour),
+	}
+
+	tests := []struct {
+		name           string
+		enabled        bool
+		rows           []*storage.UpstreamTokens
+		setupRefresher func(*storagemocks.MockUpstreamTokenRefresher)
+		want           []UpstreamCredential
+	}{
+		{
+			name:    "enabled: expired ID token triggers one refresh and returns the rotated ID token",
+			enabled: true,
+			rows:    []*storage.UpstreamTokens{staleRow},
+			setupRefresher: func(r *storagemocks.MockUpstreamTokenRefresher) {
+				r.EXPECT().RefreshAndStore(gomock.Any(), "session-1", staleRow).
+					Return(rotatedRow, nil).Times(1)
+			},
+			want: []UpstreamCredential{{AccessToken: "new-access-token", IDToken: rotatedIDToken}},
+		},
+		{
+			name:           "enabled: no refresh token returns the stored expired ID token without refreshing",
+			enabled:        true,
+			rows:           []*storage.UpstreamTokens{staleRowNoRefresh},
+			setupRefresher: func(*storagemocks.MockUpstreamTokenRefresher) {},
+			want:           []UpstreamCredential{{AccessToken: "valid-access-token", IDToken: expiredIDToken}},
+		},
+		{
+			name:    "enabled: omitted id_token is carried forward and not refreshed again before access-token expiry",
+			enabled: true,
+			rows:    []*storage.UpstreamTokens{staleRow, carriedForwardRow},
+			setupRefresher: func(r *storagemocks.MockUpstreamTokenRefresher) {
+				r.EXPECT().RefreshAndStore(gomock.Any(), "session-1", staleRow).
+					Return(carriedForwardRow, nil).Times(1)
+			},
+			want: []UpstreamCredential{
+				{AccessToken: "new-access-token", IDToken: expiredIDToken},
+				{AccessToken: "new-access-token", IDToken: expiredIDToken},
+			},
+		},
+		{
+			name:    "enabled: failed refresh returns stored tokens and is not retried before access-token expiry",
+			enabled: true,
+			rows:    []*storage.UpstreamTokens{staleRow, staleRow},
+			setupRefresher: func(r *storagemocks.MockUpstreamTokenRefresher) {
+				r.EXPECT().RefreshAndStore(gomock.Any(), "session-1", staleRow).
+					Return(nil, errors.New("upstream unavailable")).Times(1)
+			},
+			want: []UpstreamCredential{
+				{AccessToken: "valid-access-token", IDToken: expiredIDToken},
+				{AccessToken: "valid-access-token", IDToken: expiredIDToken},
+			},
+		},
+		{
+			name:           "enabled: unexpired ID token does not trigger a refresh",
+			enabled:        true,
+			rows:           []*storage.UpstreamTokens{freshRow},
+			setupRefresher: func(*storagemocks.MockUpstreamTokenRefresher) {},
+			want:           []UpstreamCredential{{AccessToken: "valid-access-token", IDToken: freshIDToken}},
+		},
+		{
+			name:           "disabled: expired ID token with valid access token does not trigger a refresh",
+			enabled:        false,
+			rows:           []*storage.UpstreamTokens{staleRow},
+			setupRefresher: func(*storagemocks.MockUpstreamTokenRefresher) {},
+			want:           []UpstreamCredential{{AccessToken: "valid-access-token", IDToken: expiredIDToken}},
+		},
+	}
+
+	readers := []struct {
+		name string
+		read func(t *testing.T, svc *InProcessService) UpstreamCredential
+		// expect registers the storage call for a single read returning row.
+		expect func(s *storagemocks.MockUpstreamTokenStorage, row *storage.UpstreamTokens) *gomock.Call
+	}{
+		{
+			name: "GetValidTokens",
+			read: func(t *testing.T, svc *InProcessService) UpstreamCredential {
+				t.Helper()
+				cred, err := svc.GetValidTokens(context.Background(), "session-1", "entra")
+				require.NoError(t, err)
+				require.NotNil(t, cred)
+				return *cred
+			},
+			expect: func(s *storagemocks.MockUpstreamTokenStorage, row *storage.UpstreamTokens) *gomock.Call {
+				return s.EXPECT().GetUpstreamTokens(gomock.Any(), "session-1", "entra").Return(row, nil)
+			},
+		},
+		{
+			name: "GetAllUpstreamCredentials",
+			read: func(t *testing.T, svc *InProcessService) UpstreamCredential {
+				t.Helper()
+				creds, failed, err := svc.GetAllUpstreamCredentials(context.Background(), "session-1")
+				require.NoError(t, err)
+				assert.Empty(t, failed)
+				require.Contains(t, creds, "entra")
+				return creds["entra"]
+			},
+			expect: func(s *storagemocks.MockUpstreamTokenStorage, row *storage.UpstreamTokens) *gomock.Call {
+				return s.EXPECT().GetAllUpstreamTokens(gomock.Any(), "session-1").
+					Return(map[string]*storage.UpstreamTokens{"entra": row}, nil)
+			},
+		},
+	}
+
+	for _, tt := range tests {
+		for _, rd := range readers {
+			t.Run(tt.name+"/"+rd.name, func(t *testing.T) {
+				t.Parallel()
+
+				ctrl := gomock.NewController(t)
+				mockStorage := storagemocks.NewMockUpstreamTokenStorage(ctrl)
+				mockRefresher := storagemocks.NewMockUpstreamTokenRefresher(ctrl)
+
+				calls := make([]any, 0, len(tt.rows))
+				for _, row := range tt.rows {
+					calls = append(calls, rd.expect(mockStorage, row).Times(1))
+				}
+				gomock.InOrder(calls...)
+				tt.setupRefresher(mockRefresher)
+
+				opts := []Option{}
+				if tt.enabled {
+					opts = append(opts, WithRefreshOnExpiredIDToken())
+				}
+				svc := NewInProcessService(mockStorage, mockRefresher, opts...)
+
+				for i := range tt.rows {
+					assert.Equal(t, tt.want[i], rd.read(t, svc), "read %d", i)
+				}
+			})
+		}
+	}
+}
+
+// signedIDToken returns a JWT whose only claim is exp. The signature is
+// irrelevant: the service reads exp without verifying it.
+func signedIDToken(t *testing.T, exp time.Time) string {
+	t.Helper()
+	tok, err := jwt.NewWithClaims(jwt.SigningMethodHS256, jwt.MapClaims{"exp": exp.Unix()}).
+		SignedString([]byte("test-key"))
+	require.NoError(t, err)
+	return tok
 }

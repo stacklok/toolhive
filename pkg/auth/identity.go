@@ -177,6 +177,14 @@ type Identity struct {
 	// Either way the token is NOT re-validated for signature or freshness here, so
 	// treat its claims as login-time facts rather than current state.
 	//
+	// When the token reader is built with upstreamtoken.WithRefreshOnExpiredIDToken,
+	// an expired ID token triggers a refresh even while the access token is still
+	// valid, so a provider that rotates the ID token on refresh yields a currently
+	// valid one here. Caveat: a provider may omit id_token on refresh (OIDC Core
+	// 1.0 §12.2); the expired ID token is then carried forward and can still
+	// appear in this map, so a consumer that needs a fresh token must still check
+	// `exp` itself.
+	//
 	// Redacted in MarshalJSON() to prevent token leakage.
 	// MUST NOT be mutated after the Identity is placed in the request context.
 	UpstreamIDTokens map[string]string

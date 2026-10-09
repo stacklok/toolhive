@@ -30,7 +30,8 @@ type Server interface {
 	//   - /oauth/register (Dynamic Client Registration, RFC 7591)
 	//
 	// The handler uses internal routing - the consumer doesn't need to know
-	// about the endpoint structure.
+	// about the endpoint structure. All endpoints limit request bodies to
+	// 64 KiB and reject oversized bodies with HTTP 413.
 	Handler() http.Handler
 
 	// IDPTokenStorage returns storage for upstream IDP tokens.

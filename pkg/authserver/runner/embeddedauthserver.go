@@ -20,12 +20,10 @@ import (
 	"github.com/stacklok/toolhive/pkg/auth/dcr"
 	"github.com/stacklok/toolhive/pkg/authserver"
 	servercrypto "github.com/stacklok/toolhive/pkg/authserver/server/crypto"
-	"github.com/stacklok/toolhive/pkg/authserver/server/handlers"
 	"github.com/stacklok/toolhive/pkg/authserver/server/keys"
 	"github.com/stacklok/toolhive/pkg/authserver/server/tokenexchange"
 	"github.com/stacklok/toolhive/pkg/authserver/storage"
 	"github.com/stacklok/toolhive/pkg/authserver/upstream"
-	"github.com/stacklok/toolhive/pkg/bodylimit"
 	"github.com/stacklok/toolhive/pkg/oauthproto"
 	"github.com/stacklok/toolhive/pkg/redisconfig"
 )
@@ -40,10 +38,6 @@ const (
 	// RedisPasswordEnvVar is the environment variable for the Redis ACL password.
 	// #nosec G101 -- This is an environment variable name, not a hardcoded credential
 	RedisPasswordEnvVar = "TOOLHIVE_AUTH_SERVER_REDIS_PASSWORD"
-
-	// maxAuthServerBodySize caps auth-server request bodies; shared with the DCR
-	// endpoint via handlers.MaxDCRBodySize so the two bounds cannot drift.
-	maxAuthServerBodySize = handlers.MaxDCRBodySize
 )
 
 // EmbeddedAuthServer wraps the authorization server for integration with the proxy runner.
@@ -353,15 +347,10 @@ func newEmbeddedAuthServerWithStorage(
 //   - /oauth/authorize, /oauth/callback, /oauth/token, /oauth/register
 //   - /.well-known/jwks.json, /.well-known/oauth-authorization-server, /.well-known/openid-configuration
 //
-// All auth-server endpoints are body-size-limited to handlers.MaxDCRBodySize
-// (64KB) and reject oversized requests with HTTP 413 Request Entity Too Large.
+// The underlying authserver.Server limits all endpoint request bodies to 64 KiB
+// and rejects oversized requests with HTTP 413 Request Entity Too Large.
 func (e *EmbeddedAuthServer) Handler() http.Handler {
-	// Cap request bodies on all auth-server endpoints (e.g. POST /oauth/token,
-	// /oauth/register) so they cannot be used for memory-exhaustion DoS. These
-	// routes are mounted outside the MCP middleware chain (the proxies and vMCP
-	// mount them via Routes()/RegisterHandlers, which derive from this handler),
-	// so the cap is applied here to cover every consumer.
-	return bodylimit.Middleware(maxAuthServerBodySize)(e.server.Handler())
+	return e.server.Handler()
 }
 
 // Close releases resources held by the EmbeddedAuthServer.

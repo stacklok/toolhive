@@ -12,12 +12,14 @@ import (
 	"net/http/httptest"
 	"os"
 	"os/exec"
+	"strings"
 	"testing"
 	"time"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
+	"github.com/stacklok/toolhive/pkg/authserver/server/handlers"
 	"github.com/stacklok/toolhive/pkg/authserver/server/keys"
 	"github.com/stacklok/toolhive/pkg/authserver/storage"
 	"github.com/stacklok/toolhive/pkg/authserver/upstream"
@@ -113,6 +115,49 @@ func TestNewFailureLeavesStorageCallerOwned(t *testing.T) {
 			require.ErrorContains(t, err, tt.errContains)
 			assert.Nil(t, srv)
 			assert.Empty(t, events, "failed construction must not close caller storage")
+		})
+	}
+}
+
+func TestServerHandlerBodyLimit(t *testing.T) {
+	t.Parallel()
+
+	stor := storage.NewMemoryStorage()
+	srv, err := New(t.Context(), Config{
+		Issuer:           "https://example.com",
+		KeyProvider:      keys.NewGeneratingProvider(keys.DefaultAlgorithm),
+		AllowedAudiences: []string{"https://mcp.example.com"},
+		Upstreams:        []UpstreamConfig{{Name: "default", Type: UpstreamProviderTypeOAuth2, OAuth2Config: validUpstreamConfig()}},
+	}, stor)
+	if err != nil {
+		require.NoError(t, stor.Close())
+	}
+	require.NoError(t, err)
+	t.Cleanup(func() { assert.NoError(t, srv.Close()) })
+
+	tests := []struct {
+		name          string
+		path          string
+		bodySize      int
+		contentLength int64
+		wantStatus    int
+	}{
+		{"declared oversized token body", "/oauth/token", handlers.MaxDCRBodySize + 1, handlers.MaxDCRBodySize + 1, http.StatusRequestEntityTooLarge},
+		{"unknown length token body", "/oauth/token", handlers.MaxDCRBodySize + 1, -1, http.StatusRequestEntityTooLarge},
+		{"understated token body", "/oauth/token", handlers.MaxDCRBodySize + 1, 1, http.StatusRequestEntityTooLarge},
+		{"exact limit token body", "/oauth/token", handlers.MaxDCRBodySize, handlers.MaxDCRBodySize, http.StatusBadRequest},
+		{"unknown length exact limit token body", "/oauth/token", handlers.MaxDCRBodySize, -1, http.StatusBadRequest},
+		{"declared oversized discovery body", "/.well-known/openid-configuration", handlers.MaxDCRBodySize + 1, handlers.MaxDCRBodySize + 1, http.StatusRequestEntityTooLarge},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			req := httptest.NewRequest(http.MethodPost, tt.path, strings.NewReader(strings.Repeat("x", tt.bodySize)))
+			req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+			req.ContentLength = tt.contentLength
+			response := httptest.NewRecorder()
+			srv.Handler().ServeHTTP(response, req)
+			assert.Equal(t, tt.wantStatus, response.Code, "%s", response.Body.String())
 		})
 	}
 }

@@ -24,6 +24,7 @@ import (
 	spiffeauth "github.com/stacklok/toolhive/pkg/authserver/spiffe"
 	"github.com/stacklok/toolhive/pkg/authserver/storage"
 	"github.com/stacklok/toolhive/pkg/authserver/upstream"
+	"github.com/stacklok/toolhive/pkg/bodylimit"
 	"github.com/stacklok/toolhive/pkg/oauthproto"
 )
 
@@ -287,8 +288,8 @@ func newServer(ctx context.Context, cfg Config, stor storage.Storage) (_ *server
 		return nil, fmt.Errorf("failed to create handler: %w", err)
 	}
 
-	// Create HTTP handler serving all endpoints
-	router := handlerInstance.Routes()
+	// Cap every endpoint for direct embedders as well as runner-hosted servers.
+	router := bodylimit.Middleware(handlers.MaxDCRBodySize)(handlerInstance.Routes())
 
 	slog.Debug("oauth authorization server initialized",
 		"issuer", cfg.Issuer,

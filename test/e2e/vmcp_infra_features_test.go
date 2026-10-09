@@ -308,9 +308,12 @@ var _ = Describe("vMCP infra features", Label("vmcp", "e2e", "infra"), func() {
 			var err error
 			certs, err = redistls.NewCertificates(certDir)
 			Expect(err).ToNot(HaveOccurred())
-			// The redis user inside the container must be able to read the
-			// bind-mounted key; the directory is private to this test run.
-			Expect(os.Chmod(certs.ServerKeyFile, 0o644)).To(Succeed())
+			// The redis user inside the container is not the owner of the
+			// bind-mounted files on Linux hosts, so it must be able to read the
+			// CA, certificate and key; the directory is private to this test run.
+			for _, f := range []string{certs.CACertFile, certs.ServerCertFile, certs.ServerKeyFile} {
+				Expect(os.Chmod(f, 0o644)).To(Succeed())
+			}
 			Expect(os.Chmod(certDir, 0o755)).To(Succeed())
 			redisCLITLSArgs = []string{
 				"--tls", "--cacert", "/certs/" + filepath.Base(certs.CACertFile),

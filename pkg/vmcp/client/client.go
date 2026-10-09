@@ -8,6 +8,7 @@
 package client
 
 import (
+	"bytes"
 	"context"
 	"crypto/tls"
 	"crypto/x509"
@@ -1252,7 +1253,7 @@ func (h *httpBackendClient) modernEnumerate(
 
 	var tools []mcp.Tool
 	if caps != nil && caps.Tools != nil {
-		tools, err = modernListAll[mcp.Tool](ctx, hc, endpoint, "tools/list", "tools")
+		tools, err = modernListAll[mcp.Tool](ctx, hc, endpoint, "tools/list", "tools", target.WorkloadName)
 		if err != nil {
 			return nil, wrapBackendError(err, target.WorkloadID, "list tools")
 		}
@@ -1311,7 +1312,7 @@ func (h *httpBackendClient) modernEnumerate(
 func modernListOptional[T any](
 	ctx context.Context, hc *http.Client, endpoint, method, itemsField, backend string, degradeNotFound bool,
 ) ([]T, error) {
-	items, err := modernListAll[T](ctx, hc, endpoint, method, itemsField)
+	items, err := modernListAll[T](ctx, hc, endpoint, method, itemsField, backend)
 	switch {
 	case errors.Is(err, errModernTransient):
 		slog.Warn(method+" transiently unavailable; degrading to empty list",
@@ -1342,10 +1343,11 @@ func cursorParams(cursor mcp.Cursor) map[string]any {
 // Items are decoded one at a time. An item the compat types cannot decode (for
 // example a tool whose top-level schema "type" is a JSON Schema type array) is
 // skipped with a warning naming it, so one malformed item does not hide every
-// other item the backend advertises. An items field that is not an array is a
-// protocol-level fault and still fails the page.
+// other item the backend advertises. A JSON null item carries nothing to
+// advertise and is skipped the same way. An items field that is not an array is
+// a protocol-level fault and still fails the page.
 func modernListAll[T any](
-	ctx context.Context, hc *http.Client, endpoint, method, itemsField string,
+	ctx context.Context, hc *http.Client, endpoint, method, itemsField, backend string,
 ) ([]T, error) {
 	return pagination.ListAll(ctx, func(ctx context.Context, cursor mcp.Cursor) ([]T, mcp.Cursor, error) {
 		var page map[string]json.RawMessage
@@ -1361,9 +1363,15 @@ func modernListAll[T any](
 			items = make([]T, 0, len(rawItems))
 			for i, rawItem := range rawItems {
 				var item T
+				if bytes.Equal(bytes.TrimSpace(rawItem), []byte("null")) {
+					slog.Warn("skipping null item in "+method+" response",
+						"backend", backend, "field", itemsField, "index", i)
+					continue
+				}
 				if err := json.Unmarshal(rawItem, &item); err != nil {
 					slog.Warn("skipping undecodable item in "+method+" response",
-						"field", itemsField, "index", i, "item", itemIdentifier(rawItem), "error", err)
+						"backend", backend, "field", itemsField, "index", i,
+						"item", itemIdentifier(rawItem), "error", err)
 					continue
 				}
 				items = append(items, item)

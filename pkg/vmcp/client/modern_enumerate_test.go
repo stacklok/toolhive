@@ -84,60 +84,125 @@ func TestModernEnumerate_Pagination(t *testing.T) {
 	assert.Equal(t, "b", list.Tools[0].BackendID)
 }
 
-// TestModernEnumerate_SkipsUndecodableTool verifies one tool the compat types
-// cannot decode (here a top-level inputSchema "type" that is a JSON Schema type
-// array, which is valid JSON Schema) is skipped, and every other tool on the
-// page is still returned. Without this, a single such tool fails the whole
-// tools/list and the backend lists no tools at all.
-func TestModernEnumerate_SkipsUndecodableTool(t *testing.T) {
+// TestModernEnumerate_UndecodableItems verifies the per-item tolerance of the
+// Modern list path: an item the compat types cannot decode (a wrongly typed
+// field) or a JSON null item is skipped and every other item on the page is
+// kept, for tools and for the optional lists that share modernListAll. A list
+// field that is not an array is a protocol-level fault and still fails the
+// enumeration. Without per-item decoding, one bad item hides every other item
+// the backend advertises.
+func TestModernEnumerate_UndecodableItems(t *testing.T) {
 	t.Parallel()
 
-	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		id, _ := modernReq(t, r)
-		writeModernResult(t, w, id, map[string]any{
-			"tools": []any{
-				map[string]any{"name": "t1", "inputSchema": map[string]any{"type": "object"}},
-				map[string]any{"name": "bad", "inputSchema": map[string]any{"type": []any{"object", "null"}}},
-				map[string]any{"name": "t3", "inputSchema": map[string]any{"type": "object"}},
+	goodTool := func(name string) map[string]any {
+		return map[string]any{"name": name, "inputSchema": map[string]any{"type": "object"}}
+	}
+	toolNames := func(l *vmcp.CapabilityList) []string {
+		names := make([]string, 0, len(l.Tools))
+		for _, tool := range l.Tools {
+			names = append(names, tool.Name)
+		}
+		return names
+	}
+
+	tests := []struct {
+		name    string
+		results map[string]map[string]any // Mcp-Method -> result; unlisted methods return empty lists
+		wantErr string
+		check   func(t *testing.T, l *vmcp.CapabilityList)
+	}{
+		{
+			name: "undecodable tool is skipped and its neighbours kept",
+			results: map[string]map[string]any{"tools/list": {"tools": []any{
+				goodTool("t1"),
+				map[string]any{"name": "bad", "description": 123},
+				goodTool("t3"),
+			}}},
+			check: func(t *testing.T, l *vmcp.CapabilityList) {
+				t.Helper()
+				assert.Equal(t, []string{"t1", "t3"}, toolNames(l))
 			},
+		},
+		{
+			name: "null tool is skipped",
+			results: map[string]map[string]any{"tools/list": {"tools": []any{
+				goodTool("t1"), nil, goodTool("t3"),
+			}}},
+			check: func(t *testing.T, l *vmcp.CapabilityList) {
+				t.Helper()
+				assert.Equal(t, []string{"t1", "t3"}, toolNames(l))
+			},
+		},
+		{
+			name: "undecodable resource is skipped",
+			results: map[string]map[string]any{"resources/list": {"resources": []any{
+				map[string]any{"name": "r1", "uri": "file:///r1"},
+				map[string]any{"name": 123, "uri": "file:///bad"},
+				map[string]any{"name": "r3", "uri": "file:///r3"},
+			}}},
+			check: func(t *testing.T, l *vmcp.CapabilityList) {
+				t.Helper()
+				require.Len(t, l.Resources, 2)
+				assert.Equal(t, "file:///r1", l.Resources[0].URI)
+				assert.Equal(t, "file:///r3", l.Resources[1].URI)
+			},
+		},
+		{
+			name: "undecodable prompt is skipped",
+			results: map[string]map[string]any{"prompts/list": {"prompts": []any{
+				map[string]any{"name": "p1"},
+				map[string]any{"name": "bad", "description": 123},
+				map[string]any{"name": "p3"},
+			}}},
+			check: func(t *testing.T, l *vmcp.CapabilityList) {
+				t.Helper()
+				require.Len(t, l.Prompts, 2)
+				assert.Equal(t, "p1", l.Prompts[0].Name)
+				assert.Equal(t, "p3", l.Prompts[1].Name)
+			},
+		},
+		{
+			name:    "tools field that is not an array fails the enumeration",
+			results: map[string]map[string]any{"tools/list": {"tools": "not-an-array"}},
+			wantErr: "decoding tools from tools/list",
+		},
+	}
+
+	emptyLists := map[string]string{
+		"tools/list":               "tools",
+		"resources/list":           "resources",
+		"resources/templates/list": "resourceTemplates",
+		"prompts/list":             "prompts",
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				id, _ := modernReq(t, r)
+				method := r.Header.Get("Mcp-Method")
+				result, ok := tt.results[method]
+				if !ok {
+					result = map[string]any{emptyLists[method]: []any{}}
+				}
+				writeModernResult(t, w, id, result)
+			}))
+			t.Cleanup(srv.Close)
+
+			h := newProbeClient(t)
+			target := &vmcp.BackendTarget{WorkloadID: "b", BaseURL: srv.URL, TransportType: "streamable-http"}
+
+			list, err := h.modernEnumerate(context.Background(), target, modernCapsAll())
+			if tt.wantErr != "" {
+				require.Error(t, err)
+				assert.Contains(t, err.Error(), tt.wantErr)
+				return
+			}
+			require.NoError(t, err)
+			tt.check(t, list)
 		})
-	}))
-	t.Cleanup(srv.Close)
-
-	h := newProbeClient(t)
-	target := &vmcp.BackendTarget{WorkloadID: "b", BaseURL: srv.URL, TransportType: "streamable-http"}
-	caps := &mcpmcp.ServerCapabilities{Tools: &struct {
-		ListChanged bool `json:"listChanged,omitempty"`
-	}{}}
-
-	list, err := h.modernEnumerate(context.Background(), target, caps)
-	require.NoError(t, err)
-	require.Len(t, list.Tools, 2, "the undecodable tool is skipped, its neighbours are kept")
-	assert.Equal(t, "t1", list.Tools[0].Name)
-	assert.Equal(t, "t3", list.Tools[1].Name)
-}
-
-// TestModernEnumerate_MalformedItemsFieldFails verifies the per-item tolerance
-// stops at the envelope: a tools field that is not an array at all is a
-// protocol-level fault and still fails the enumeration.
-func TestModernEnumerate_MalformedItemsFieldFails(t *testing.T) {
-	t.Parallel()
-
-	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		id, _ := modernReq(t, r)
-		writeModernResult(t, w, id, map[string]any{"tools": "not-an-array"})
-	}))
-	t.Cleanup(srv.Close)
-
-	h := newProbeClient(t)
-	target := &vmcp.BackendTarget{WorkloadID: "b", BaseURL: srv.URL, TransportType: "streamable-http"}
-	caps := &mcpmcp.ServerCapabilities{Tools: &struct {
-		ListChanged bool `json:"listChanged,omitempty"`
-	}{}}
-
-	_, err := h.modernEnumerate(context.Background(), target, caps)
-	require.Error(t, err)
-	assert.Contains(t, err.Error(), "decoding tools from tools/list")
+	}
 }
 
 // TestModernEnumerate_GatesOnFlags verifies only advertised capabilities are

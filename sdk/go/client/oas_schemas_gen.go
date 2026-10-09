@@ -9523,6 +9523,52 @@ func (o OptRateLimitBucket) Or(d RateLimitBucket) RateLimitBucket {
 	return d
 }
 
+// NewOptRedisconfigTLSConfig returns new OptRedisconfigTLSConfig with value set to v.
+func NewOptRedisconfigTLSConfig(v RedisconfigTLSConfig) OptRedisconfigTLSConfig {
+	return OptRedisconfigTLSConfig{
+		Value: v,
+		Set:   true,
+	}
+}
+
+// OptRedisconfigTLSConfig is optional RedisconfigTLSConfig.
+type OptRedisconfigTLSConfig struct {
+	Value RedisconfigTLSConfig
+	Set   bool
+}
+
+// IsSet returns true if OptRedisconfigTLSConfig was set.
+func (o OptRedisconfigTLSConfig) IsSet() bool { return o.Set }
+
+// Reset unsets value.
+func (o *OptRedisconfigTLSConfig) Reset() {
+	var v RedisconfigTLSConfig
+	o.Value = v
+	o.Set = false
+}
+
+// SetTo sets value to v.
+func (o *OptRedisconfigTLSConfig) SetTo(v RedisconfigTLSConfig) {
+	o.Set = true
+	o.Value = v
+}
+
+// Get returns value and boolean that denotes whether value was set.
+func (o OptRedisconfigTLSConfig) Get() (v RedisconfigTLSConfig, ok bool) {
+	if !o.Set {
+		return v, false
+	}
+	return o.Value, true
+}
+
+// Or returns value if set, or given parameter if does not.
+func (o OptRedisconfigTLSConfig) Or(d RedisconfigTLSConfig) RedisconfigTLSConfig {
+	if v, ok := o.Get(); ok {
+		return v
+	}
+	return d
+}
+
 // NewOptRegistryGroupRemoteServers returns new OptRegistryGroupRemoteServers with value set to v.
 func NewOptRegistryGroupRemoteServers(v RegistryGroupRemoteServers) OptRegistryGroupRemoteServers {
 	return OptRegistryGroupRemoteServers{
@@ -14468,6 +14514,39 @@ func (s *RateLimitBucket) SetRefillPeriod(val *V1Duration) {
 	s.RefillPeriod = val
 }
 
+// TLS enables TLS for session storage and rate limiting. An empty
+// configuration verifies the Redis server using system roots.
+// Ref: #/components/schemas/RedisconfigTLSConfig
+type RedisconfigTLSConfig struct {
+	// CACertFile is the path to a PEM-encoded CA bundle. When configured, this
+	// bundle replaces the system roots used to verify the Redis server.
+	// +optional.
+	CaCertFile OptString `json:"caCertFile"`
+	// InsecureSkipVerify skips server certificate and hostname verification.
+	// +optional.
+	InsecureSkipVerify OptBool `json:"insecureSkipVerify"`
+}
+
+// GetCaCertFile returns the value of CaCertFile.
+func (s *RedisconfigTLSConfig) GetCaCertFile() OptString {
+	return s.CaCertFile
+}
+
+// GetInsecureSkipVerify returns the value of InsecureSkipVerify.
+func (s *RedisconfigTLSConfig) GetInsecureSkipVerify() OptBool {
+	return s.InsecureSkipVerify
+}
+
+// SetCaCertFile sets the value of CaCertFile.
+func (s *RedisconfigTLSConfig) SetCaCertFile(val OptString) {
+	s.CaCertFile = val
+}
+
+// SetInsecureSkipVerify sets the value of InsecureSkipVerify.
+func (s *RedisconfigTLSConfig) SetInsecureSkipVerify(val OptBool) {
+	s.InsecureSkipVerify = val
+}
+
 type RefreshRegistryInternalServerErrorApplicationJSON string
 
 func (*RefreshRegistryInternalServerErrorApplicationJSON) refreshRegistryRes() {}
@@ -18135,7 +18214,8 @@ type RunnerSessionRedisConfig struct {
 	// DB is the Redis database number.
 	Db OptInt `json:"db"`
 	// KeyPrefix is an optional prefix applied to all Redis keys used by ToolHive.
-	KeyPrefix OptString `json:"key_prefix"`
+	KeyPrefix OptString               `json:"key_prefix"`
+	TLS       OptRedisconfigTLSConfig `json:"tls"`
 }
 
 // GetAddress returns the value of Address.
@@ -18153,6 +18233,11 @@ func (s *RunnerSessionRedisConfig) GetKeyPrefix() OptString {
 	return s.KeyPrefix
 }
 
+// GetTLS returns the value of TLS.
+func (s *RunnerSessionRedisConfig) GetTLS() OptRedisconfigTLSConfig {
+	return s.TLS
+}
+
 // SetAddress sets the value of Address.
 func (s *RunnerSessionRedisConfig) SetAddress(val OptString) {
 	s.Address = val
@@ -18166,6 +18251,11 @@ func (s *RunnerSessionRedisConfig) SetDb(val OptInt) {
 // SetKeyPrefix sets the value of KeyPrefix.
 func (s *RunnerSessionRedisConfig) SetKeyPrefix(val OptString) {
 	s.KeyPrefix = val
+}
+
+// SetTLS sets the value of TLS.
+func (s *RunnerSessionRedisConfig) SetTLS(val OptRedisconfigTLSConfig) {
+	s.TLS = val
 }
 
 // Ref: #/components/schemas/RunnerToolOverride

@@ -135,6 +135,40 @@ vmcp uses a YAML configuration file to define:
 
 See [examples/vmcp-config.yaml](../../examples/vmcp-config.yaml) for a complete example.
 
+### Redis Session Storage
+
+Add `sessionStorage` to the vMCP YAML configuration to share session data
+through Redis. Set `tls: {}` to enable TLS with certificate and hostname
+verification using system root CAs:
+
+```yaml
+sessionStorage:
+  provider: redis
+  address: redis.example.com:6379
+  tls: {}
+```
+
+For a private CA, replace the empty `tls` object with a local PEM bundle path:
+
+```yaml
+sessionStorage:
+  provider: redis
+  address: redis.example.com:6379
+  tls:
+    caCertFile: /etc/redis/ca.crt
+```
+
+The CA bundle replaces system roots and is read at startup. Missing, empty,
+or invalid CA files fail startup; TLS errors never fall back to plaintext.
+Restart vMCP after updating the file. Redis-backed rate limiting uses these
+same TLS settings. TLS requires `provider: redis`; omitting `tls` selects
+plaintext. Set `THV_SESSION_REDIS_PASSWORD` in the process environment when
+Redis requires a password.
+
+Start with `vmcp serve --config vmcp-config.yaml` or
+`thv vmcp serve --config vmcp-config.yaml`. TLS is configured in YAML and
+requires no additional CLI flag.
+
 ## Authentication Model
 
 Virtual MCP implements **two independent authentication boundaries**:

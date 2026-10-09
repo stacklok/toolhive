@@ -4137,6 +4137,21 @@ spec:
                         - memory
                         - redis
                         type: string
+                      tls:
+                        description: |-
+                          TLS enables TLS for session storage and rate limiting. An empty
+                          configuration verifies the Redis server using system roots.
+                        properties:
+                          caCertFile:
+                            description: |-
+                              CACertFile is the path to a PEM-encoded CA bundle. When configured, this
+                              bundle replaces the system roots used to verify the Redis server.
+                            type: string
+                          insecureSkipVerify:
+                            description: InsecureSkipVerify skips server certificate
+                              and hostname verification.
+                            type: boolean
+                        type: object
                     required:
                     - provider
                     type: object
@@ -9187,6 +9202,21 @@ spec:
                         - memory
                         - redis
                         type: string
+                      tls:
+                        description: |-
+                          TLS enables TLS for session storage and rate limiting. An empty
+                          configuration verifies the Redis server using system roots.
+                        properties:
+                          caCertFile:
+                            description: |-
+                              CACertFile is the path to a PEM-encoded CA bundle. When configured, this
+                              bundle replaces the system roots used to verify the Redis server.
+                            type: string
+                          insecureSkipVerify:
+                            description: InsecureSkipVerify skips server certificate
+                              and hostname verification.
+                            type: boolean
+                        type: object
                     required:
                     - provider
                     type: object

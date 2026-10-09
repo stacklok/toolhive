@@ -2646,6 +2646,23 @@ components:
                 refillPeriod:
                     $ref: '#/components/schemas/V1Duration'
             type: object
+        RedisconfigTLSConfig:
+            description: |-
+                TLS enables TLS for session storage and rate limiting. An empty
+                configuration verifies the Redis server using system roots.
+            properties:
+                caCertFile:
+                    description: |-
+                        CACertFile is the path to a PEM-encoded CA bundle. When configured, this
+                        bundle replaces the system roots used to verify the Redis server.
+                        +optional
+                    type: string
+                insecureSkipVerify:
+                    description: |-
+                        InsecureSkipVerify skips server certificate and hostname verification.
+                        +optional
+                    type: boolean
+            type: object
         RegistryEnvVar:
             properties:
                 default:
@@ -3834,6 +3851,8 @@ components:
                 key_prefix:
                     description: KeyPrefix is an optional prefix applied to all Redis keys used by ToolHive.
                     type: string
+                tls:
+                    $ref: '#/components/schemas/RedisconfigTLSConfig'
             type: object
         RunnerToolOverride:
             properties:

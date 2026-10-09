@@ -366,7 +366,7 @@ type Server struct {
 // buildSessionDataStorage constructs the DataStorage backend from cfg.
 // When cfg.SessionStorage is nil or provider is "memory" (or empty), local in-process
 // storage is used. When provider is "redis", a Redis-backed store is created
-// using the address, DB, and key prefix from cfg.SessionStorage; the password
+// using the address, DB, TLS settings, and key prefix from cfg.SessionStorage; the password
 // is read from the THV_SESSION_REDIS_PASSWORD environment variable.
 // Any other provider value is a misconfiguration and returns an error.
 //
@@ -378,6 +378,9 @@ type Server struct {
 // — and is rejected rather than silently downgraded, mirroring the embedded auth
 // server's convertRedisACLConfig. An authenticated connection logs at INFO.
 func buildSessionDataStorage(ctx context.Context, cfg *Config) (transportsession.DataStorage, error) {
+	if cfg.SessionStorage != nil && cfg.SessionStorage.TLS != nil && cfg.SessionStorage.Provider != "redis" {
+		return nil, fmt.Errorf("session storage TLS requires provider redis")
+	}
 	// Default to in-process storage when session storage is not configured,
 	// or when the provider is explicitly "memory" or left empty.
 	if cfg.SessionStorage == nil ||
@@ -402,10 +405,15 @@ func buildSessionDataStorage(ctx context.Context, cfg *Config) (transportsession
 			"%s is set but empty; unset it for a no-auth connection or fix the referenced secret",
 			vmcpconfig.RedisPasswordEnvVar)
 	}
+	tlsCfg, err := cfg.SessionStorage.TLS.Load()
+	if err != nil {
+		return nil, fmt.Errorf("redis session storage TLS configuration: %w", err)
+	}
 	redisCfg := redisconn.Config{
 		Addr:     cfg.SessionStorage.Address,
 		Password: password,
 		DB:       int(cfg.SessionStorage.DB),
+		TLS:      tlsCfg,
 	}
 	// Distinguish an authenticated connection (INFO) from a no-auth one (WARN):
 	// an unset password is an intended no-auth connection, but the downgrade

@@ -51,7 +51,7 @@ func TestConvertRedisTLSRunConfig(t *testing.T) {
 
 		dir := t.TempDir()
 		certPath := filepath.Join(dir, "ca.crt")
-		_, certData := redistls.Certificate(t)
+		certData := redistls.CACertPEM(t)
 		require.NoError(t, os.WriteFile(certPath, certData, 0600))
 
 		rc := &storage.RedisTLSRunConfig{

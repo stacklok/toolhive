@@ -5,6 +5,7 @@
 package controllers
 
 import (
+	"fmt"
 	"time"
 
 	. "github.com/onsi/ginkgo/v2"
@@ -13,6 +14,7 @@ import (
 
 	mcpv1beta1 "github.com/stacklok/toolhive/cmd/thv-operator/api/v1beta1"
 	"github.com/stacklok/toolhive/cmd/thv-operator/api/v1beta1/v1beta1test"
+	"github.com/stacklok/toolhive/pkg/redisconfig"
 	vmcpconfig "github.com/stacklok/toolhive/pkg/vmcp/config"
 )
 
@@ -120,6 +122,38 @@ var _ = Describe("CEL Validation for SessionStorageConfig on VirtualMCPServer",
 				err := k8sClient.Create(ctx, vmcp)
 				Expect(err).To(HaveOccurred())
 				Expect(err.Error()).To(ContainSubstring("tls.caCertSecretRef would be ignored"))
+			})
+
+			It("should reject a caCertSecretRef with an empty name or key", func() {
+				for i, ref := range []*mcpv1beta1.SecretKeyRef{
+					{Name: "", Key: "ca.crt"},
+					{Name: "redis-ca", Key: ""},
+				} {
+					vmcp := newVirtualMCPServerWithSessionStorage(
+						fmt.Sprintf("vmcp-redis-tls-empty-ref-%d", i), &mcpv1beta1.SessionStorageConfig{
+							Provider: "redis",
+							Address:  "redis:6380",
+							TLS:      &mcpv1beta1.RedisTLSConfig{CACertSecretRef: ref},
+						})
+					err := k8sClient.Create(ctx, vmcp)
+					Expect(err).To(HaveOccurred())
+					Expect(err.Error()).To(ContainSubstring("tls.caCertSecretRef requires a non-empty name and key"))
+				}
+			})
+
+			It("should reject tls under config.sessionStorage, which the operator ignores", func() {
+				vmcp := newVirtualMCPServerWithSessionStorage("vmcp-redis-config-tls", &mcpv1beta1.SessionStorageConfig{
+					Provider: "redis",
+					Address:  "redis:6380",
+				})
+				vmcp.Spec.Config.SessionStorage = &vmcpconfig.SessionStorageConfig{
+					Provider: "redis",
+					Address:  "redis:6380",
+					TLS:      &redisconfig.TLSConfig{},
+				}
+				err := k8sClient.Create(ctx, vmcp)
+				Expect(err).To(HaveOccurred())
+				Expect(err.Error()).To(ContainSubstring("config.sessionStorage.tls is ignored by the operator"))
 			})
 		})
 

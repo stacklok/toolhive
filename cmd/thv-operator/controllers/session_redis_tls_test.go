@@ -10,6 +10,7 @@ import (
 	"github.com/stretchr/testify/require"
 	appsv1 "k8s.io/api/apps/v1"
 	corev1 "k8s.io/api/core/v1"
+	"k8s.io/apimachinery/pkg/runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client/fake"
 
 	mcpv1beta1 "github.com/stacklok/toolhive/cmd/thv-operator/api/v1beta1"
@@ -144,6 +145,34 @@ func TestSessionRedisTLSCAMountedAndDriftDetected(t *testing.T) {
 				"switching the referenced CA Secret must trigger a Deployment update")
 		})
 	}
+}
+
+// TestRemoteProxySessionRedisTLSPodTemplatePatchIsNotDrift verifies that a
+// podTemplateSpec overriding the session storage CA volume is compared against
+// the patched Deployment, so the reconciler does not report drift forever.
+func TestRemoteProxySessionRedisTLSPodTemplatePatchIsNotDrift(t *testing.T) {
+	t.Parallel()
+
+	proxy := v1beta1test.NewMCPRemoteProxy("tls-proxy", "default",
+		v1beta1test.WithRemoteProxySessionStorage(sessionTLSStorage("redis-ca")))
+	proxy.Spec.PodTemplateSpec = &runtime.RawExtension{Raw: []byte(`{"spec":{"volumes":[` +
+		`{"name":"` + ctrlutil.SessionRedisTLSCACertVolumeName + `","secret":{"secretName":"patched-ca"}}]}}`)}
+	r := newRemoteProxyTLSReconciler(t, proxy)
+
+	dep := r.deploymentForMCPRemoteProxy(t.Context(), proxy, "test-checksum")
+	require.NotNil(t, dep)
+
+	var secretName string
+	for _, v := range dep.Spec.Template.Spec.Volumes {
+		if v.Name == ctrlutil.SessionRedisTLSCACertVolumeName {
+			require.NotNil(t, v.Secret)
+			secretName = v.Secret.SecretName
+		}
+	}
+	require.Equal(t, "patched-ca", secretName, "the podTemplateSpec patch must override the CA volume")
+
+	assert.False(t, r.deploymentNeedsUpdate(t.Context(), dep, proxy, "test-checksum"),
+		"a Deployment matching the patched template must not be flagged as drifted")
 }
 
 func newRemoteProxyTLSReconciler(t *testing.T, proxy *mcpv1beta1.MCPRemoteProxy) *MCPRemoteProxyReconciler {

@@ -367,8 +367,8 @@ type Server struct {
 // When cfg.SessionStorage is nil or provider is "memory" (or empty), local in-process
 // storage is used. When provider is "redis", a Redis-backed store is created
 // using the address, DB, TLS settings, and key prefix from cfg.SessionStorage; the password
-// is read from the THV_SESSION_REDIS_PASSWORD environment variable. A password
-// sent without verified TLS is tolerated but logged at WARN.
+// is read from the THV_SESSION_REDIS_PASSWORD environment variable. A connection
+// without verified TLS is tolerated but logged at WARN by the store constructor.
 // Any other provider value is a misconfiguration and returns an error.
 //
 // Presence of THV_SESSION_REDIS_PASSWORD, not just its value, carries intent:
@@ -416,7 +416,6 @@ func buildSessionDataStorage(ctx context.Context, cfg *Config) (transportsession
 		DB:       int(cfg.SessionStorage.DB),
 		TLS:      tlsCfg,
 	}
-	transportsession.WarnInsecureRedisTransport(&redisCfg, cfg.SessionStorage.Address)
 	// Distinguish an authenticated connection (INFO) from a no-auth one (WARN):
 	// an unset password is an intended no-auth connection, but the downgrade
 	// should still be visible in logs rather than silent. The store holds session

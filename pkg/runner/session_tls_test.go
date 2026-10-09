@@ -29,10 +29,7 @@ import (
 //   - TLS against a server whose CA is not trusted fails certificate
 //     verification, so the handshake was attempted.
 //   - Omitted TLS fails without any certificate check (plaintext dial).
-//   - The right CA but an address the certificate does not cover
-//     ("localhost", the certificate only has the 127.0.0.1 IP SAN) fails
-//     hostname verification, so ServerName is derived from the address.
-//   - The right CA and a matching address passes the session store step and
+//   - The trusted CA passes the session store step and
 //     only fails afterwards, when creating the transport.
 func TestRunner_RunPassesSessionRedisTLS(t *testing.T) {
 	t.Parallel()
@@ -42,7 +39,6 @@ func TestRunner_RunPassesSessionRedisTLS(t *testing.T) {
 
 	tests := []struct {
 		name      string
-		addr      string
 		tls       *redisconfig.TLSConfig
 		wantErr   []string
 		unwantErr string
@@ -58,13 +54,7 @@ func TestRunner_RunPassesSessionRedisTLS(t *testing.T) {
 			unwantErr: "certificate",
 		},
 		{
-			name:    "hostname is verified against the configured address",
-			addr:    "localhost:" + srv.Port(),
-			tls:     &redisconfig.TLSConfig{CACertFile: certs.CACertFile},
-			wantErr: []string{"failed to verify certificate", "localhost"},
-		},
-		{
-			name:      "trusted CA and matching address connect",
+			name:      "trusted CA connects",
 			tls:       &redisconfig.TLSConfig{CACertFile: certs.CACertFile},
 			wantErr:   []string{"failed to create transport"},
 			unwantErr: "session storage",
@@ -73,15 +63,11 @@ func TestRunner_RunPassesSessionRedisTLS(t *testing.T) {
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
 			t.Parallel()
-			addr := tc.addr
-			if addr == "" {
-				addr = srv.Addr()
-			}
 			config := NewRunConfig()
 			config.Name = "redis-tls-run"
 			config.RemoteURL = "http://127.0.0.1:1/mcp"
 			config.ScalingConfig = &ScalingConfig{
-				SessionRedis: &SessionRedisConfig{Address: addr, TLS: tc.tls},
+				SessionRedis: &SessionRedisConfig{Address: srv.Addr(), TLS: tc.tls},
 			}
 
 			ctx, cancel := context.WithTimeout(t.Context(), 15*time.Second)

@@ -1567,6 +1567,24 @@ func TestConverter_SessionStorage(t *testing.T) {
 			},
 		},
 		{
+			name: "spec.config.sessionStorage.tls never reaches the vMCP config",
+			sessionStorage: &mcpv1beta1.SessionStorageConfig{
+				Provider: mcpv1beta1.SessionStorageProviderRedis,
+				Address:  "redis:6380",
+				TLS:      &mcpv1beta1.RedisTLSConfig{},
+			},
+			inlineConfig: &vmcpconfig.SessionStorageConfig{
+				Provider: "redis",
+				Address:  "redis:6380",
+				TLS:      &redisconfig.TLSConfig{CACertFile: "/user/supplied/ca.crt", InsecureSkipVerify: true},
+			},
+			expectedStorage: &vmcpconfig.SessionStorageConfig{
+				Provider: "redis",
+				Address:  "redis:6380",
+				TLS:      &redisconfig.TLSConfig{},
+			},
+		},
+		{
 			name: "memory provider results in nil SessionStorage",
 			sessionStorage: &mcpv1beta1.SessionStorageConfig{
 				Provider: "memory",

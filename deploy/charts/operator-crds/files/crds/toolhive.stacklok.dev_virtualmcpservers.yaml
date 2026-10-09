@@ -4151,8 +4151,8 @@ spec:
                         description: |-
                           TLS enables TLS for session storage and rate limiting. An empty
                           configuration verifies the Redis server using system roots.
-                          On Kubernetes the operator derives this from spec.sessionStorage.tls and
-                          overwrites any value set under spec.config.sessionStorage.
+                          On Kubernetes, set spec.sessionStorage.tls instead: the operator derives this
+                          field from it and rejects a value set under spec.config.sessionStorage.
                         properties:
                           caCertFile:
                             description: |-
@@ -4770,6 +4770,9 @@ spec:
                     so tls.caCertSecretRef would be ignored; set only one
                   rule: '!has(self.tls) || !has(self.tls.caCertSecretRef) || !has(self.tls.insecureSkipVerify)
                     || !self.tls.insecureSkipVerify'
+                - message: tls.caCertSecretRef requires a non-empty name and key
+                  rule: '!has(self.tls) || !has(self.tls.caCertSecretRef) || (size(self.tls.caCertSecretRef.name)
+                    > 0 && size(self.tls.caCertSecretRef.key) > 0)'
               telemetryConfigRef:
                 description: |-
                   TelemetryConfigRef references an MCPTelemetryConfig resource for shared telemetry configuration.
@@ -4805,6 +4808,9 @@ spec:
               rule: '!has(self.config) || !has(self.config.rateLimiting) || !has(self.config.rateLimiting.tools)
                 || self.config.rateLimiting.tools.all(t, !has(t.perUser)) || (has(self.incomingAuth)
                 && self.incomingAuth.type == ''oidc'')'
+            - message: config.sessionStorage.tls is ignored by the operator; set sessionStorage.tls
+                instead
+              rule: '!has(self.config) || !has(self.config.sessionStorage) || !has(self.config.sessionStorage.tls)'
             - message: embeddingServerRef provisions a managed TEI server and cannot
                 be combined with optimizer.embeddingProvider 'openai'; openai mode
                 uses embeddingService directly
@@ -9270,8 +9276,8 @@ spec:
                         description: |-
                           TLS enables TLS for session storage and rate limiting. An empty
                           configuration verifies the Redis server using system roots.
-                          On Kubernetes the operator derives this from spec.sessionStorage.tls and
-                          overwrites any value set under spec.config.sessionStorage.
+                          On Kubernetes, set spec.sessionStorage.tls instead: the operator derives this
+                          field from it and rejects a value set under spec.config.sessionStorage.
                         properties:
                           caCertFile:
                             description: |-
@@ -9889,6 +9895,9 @@ spec:
                     so tls.caCertSecretRef would be ignored; set only one
                   rule: '!has(self.tls) || !has(self.tls.caCertSecretRef) || !has(self.tls.insecureSkipVerify)
                     || !self.tls.insecureSkipVerify'
+                - message: tls.caCertSecretRef requires a non-empty name and key
+                  rule: '!has(self.tls) || !has(self.tls.caCertSecretRef) || (size(self.tls.caCertSecretRef.name)
+                    > 0 && size(self.tls.caCertSecretRef.key) > 0)'
               telemetryConfigRef:
                 description: |-
                   TelemetryConfigRef references an MCPTelemetryConfig resource for shared telemetry configuration.
@@ -9924,6 +9933,9 @@ spec:
               rule: '!has(self.config) || !has(self.config.rateLimiting) || !has(self.config.rateLimiting.tools)
                 || self.config.rateLimiting.tools.all(t, !has(t.perUser)) || (has(self.incomingAuth)
                 && self.incomingAuth.type == ''oidc'')'
+            - message: config.sessionStorage.tls is ignored by the operator; set sessionStorage.tls
+                instead
+              rule: '!has(self.config) || !has(self.config.sessionStorage) || !has(self.config.sessionStorage.tls)'
             - message: embeddingServerRef provisions a managed TEI server and cannot
                 be combined with optimizer.embeddingProvider 'openai'; openai mode
                 uses embeddingService directly

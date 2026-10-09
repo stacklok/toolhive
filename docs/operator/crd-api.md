@@ -737,7 +737,7 @@ _Appears in:_
 | `address` _string_ | Address is the Redis server address (required when provider is redis). |  | Optional: \{\} <br /> |
 | `db` _integer_ | DB is the Redis database number. | 0 | Minimum: 0 <br />Optional: \{\} <br /> |
 | `keyPrefix` _string_ | KeyPrefix is an optional prefix for all Redis keys used by ToolHive. |  | Optional: \{\} <br /> |
-| `tls` _[pkg.redisconfig.TLSConfig](#pkgredisconfigtlsconfig)_ | TLS enables TLS for session storage and rate limiting. An empty<br />configuration verifies the Redis server using system roots.<br />On Kubernetes the operator derives this from spec.sessionStorage.tls and<br />overwrites any value set under spec.config.sessionStorage. |  | Optional: \{\} <br /> |
+| `tls` _[pkg.redisconfig.TLSConfig](#pkgredisconfigtlsconfig)_ | TLS enables TLS for session storage and rate limiting. An empty<br />configuration verifies the Redis server using system roots.<br />On Kubernetes, set spec.sessionStorage.tls instead: the operator derives this<br />field from it and rejects a value set under spec.config.sessionStorage. |  | Optional: \{\} <br /> |
 
 
 #### vmcp.config.StaticBackendConfig

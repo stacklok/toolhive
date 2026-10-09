@@ -2086,7 +2086,8 @@ func (r *MCPServerReconciler) deploymentNeedsUpdate(
 			return true
 		}
 
-		if ctrlutil.SessionRedisTLSVolumeNeedsUpdate(deployment.Spec.Template.Spec.Volumes, mcpServer.Spec.SessionStorage) {
+		wantSessionTLSVolumes, _ := ctrlutil.SessionRedisTLSVolumes(mcpServer.Spec.SessionStorage)
+		if ctrlutil.SessionRedisTLSVolumeNeedsUpdate(deployment.Spec.Template.Spec.Volumes, wantSessionTLSVolumes) {
 			return true
 		}
 

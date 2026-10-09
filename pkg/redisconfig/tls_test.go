@@ -16,7 +16,7 @@ import (
 
 func TestTLSConfigLoad(t *testing.T) {
 	t.Parallel()
-	_, certificate := redistls.Certificate(t)
+	certificate := redistls.CACertPEM(t)
 	for _, tc := range []struct {
 		name      string
 		config    *TLSConfig

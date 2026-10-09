@@ -38,6 +38,7 @@ type RedisSessionDataStorage struct {
 // Connection-mode validation, timeout defaults, client construction (standalone,
 // cluster, or sentinel), TLS plumbing, and connectivity verification are
 // delegated to the shared toolhive-core redis package.
+// A connection without verified TLS is allowed but logged at WARN.
 func NewRedisSessionDataStorage(
 	ctx context.Context,
 	cfg redisconn.Config,
@@ -47,6 +48,7 @@ func NewRedisSessionDataStorage(
 	if err := validateSessionInvariants(keyPrefix, ttl); err != nil {
 		return nil, err
 	}
+	warnInsecureRedisTransport(&cfg)
 	client, err := redisconn.NewClient(ctx, &cfg)
 	if err != nil {
 		return nil, err

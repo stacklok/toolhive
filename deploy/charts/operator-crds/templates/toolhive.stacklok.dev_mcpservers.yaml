@@ -1780,6 +1780,9 @@ spec:
                     so tls.caCertSecretRef would be ignored; set only one
                   rule: '!has(self.tls) || !has(self.tls.caCertSecretRef) || !has(self.tls.insecureSkipVerify)
                     || !self.tls.insecureSkipVerify'
+                - message: tls.caCertSecretRef requires a non-empty name and key
+                  rule: '!has(self.tls) || !has(self.tls.caCertSecretRef) || (size(self.tls.caCertSecretRef.name)
+                    > 0 && size(self.tls.caCertSecretRef.key) > 0)'
               telemetryConfigRef:
                 description: |-
                   TelemetryConfigRef references an MCPTelemetryConfig resource for shared telemetry configuration.
@@ -3767,6 +3770,9 @@ spec:
                     so tls.caCertSecretRef would be ignored; set only one
                   rule: '!has(self.tls) || !has(self.tls.caCertSecretRef) || !has(self.tls.insecureSkipVerify)
                     || !self.tls.insecureSkipVerify'
+                - message: tls.caCertSecretRef requires a non-empty name and key
+                  rule: '!has(self.tls) || !has(self.tls.caCertSecretRef) || (size(self.tls.caCertSecretRef.name)
+                    > 0 && size(self.tls.caCertSecretRef.key) > 0)'
               telemetryConfigRef:
                 description: |-
                   TelemetryConfigRef references an MCPTelemetryConfig resource for shared telemetry configuration.

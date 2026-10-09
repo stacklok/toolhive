@@ -163,12 +163,12 @@ or invalid CA files fail startup; TLS errors never fall back to plaintext.
 Restart vMCP after updating the file. Redis-backed rate limiting uses these
 same TLS settings. TLS requires `provider: redis`; omitting `tls` selects
 plaintext. Set `THV_SESSION_REDIS_PASSWORD` in the process environment when
-Redis requires a password. If a password is set without TLS (or with
-`insecureSkipVerify`), vMCP logs a startup warning.
+Redis requires a password. If TLS is omitted (or `insecureSkipVerify` is set),
+vMCP logs a startup warning.
 
 On Kubernetes, configure TLS with `spec.sessionStorage.tls` on the
-`VirtualMCPServer` instead: the operator mounts `caCertSecretRef` and
-overwrites any `spec.config.sessionStorage.tls`.
+`VirtualMCPServer` instead: the operator mounts `caCertSecretRef`, and the API
+rejects `spec.config.sessionStorage.tls`.
 
 Start with `vmcp serve --config vmcp-config.yaml` or
 `thv vmcp serve --config vmcp-config.yaml`. TLS is configured in YAML and

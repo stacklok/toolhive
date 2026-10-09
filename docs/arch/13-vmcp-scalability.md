@@ -126,12 +126,14 @@ YAML (`caCertFile`, `insecureSkipVerify`), and proxy RunConfigs use
   `ContainerCreating`. This is fail-closed, as for the embedded auth server's Redis CA.
 - The CA is mounted with `subPath`, so rotating the Secret's content requires a pod
   restart. Switching to a different Secret rolls the Deployment.
-- On a `VirtualMCPServer`, the operator-set value replaces any
-  `spec.config.sessionStorage.tls`.
+- On a `VirtualMCPServer`, the API rejects `spec.config.sessionStorage.tls`,
+  because the operator derives the vMCP setting from `spec.sessionStorage.tls`.
+- The API rejects a `caCertSecretRef` with an empty name or key.
 
 When `tls` is omitted, the connection stays unencrypted for backward compatibility.
-If a password is configured without TLS, or with `insecureSkipVerify`, the session
-store logs one startup WARN carrying a `store` attribute. The operator-wide
+If TLS is omitted, or `insecureSkipVerify` is set, the session store constructor
+logs one startup WARN carrying a `store` attribute, whether or not a password is
+configured. The operator-wide
 `defaultRedis` fallback (`TOOLHIVE_DEFAULT_REDIS_ADDR`) does not carry TLS settings
 yet.
 

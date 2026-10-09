@@ -26,40 +26,24 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
-// Certificate creates a self-signed CA certificate valid for the local Redis endpoint.
-func Certificate(t *testing.T) (tls.Certificate, []byte) {
-	t.Helper()
-	key, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
-	require.NoError(t, err)
-	template := &x509.Certificate{
-		SerialNumber:          big.NewInt(1),
-		NotBefore:             time.Now().Add(-time.Hour),
-		NotAfter:              time.Now().Add(time.Hour),
-		KeyUsage:              x509.KeyUsageCertSign | x509.KeyUsageDigitalSignature,
-		ExtKeyUsage:           []x509.ExtKeyUsage{x509.ExtKeyUsageServerAuth},
-		BasicConstraintsValid: true,
-		IsCA:                  true,
-		IPAddresses:           []net.IP{net.ParseIP("127.0.0.1")},
-		DNSNames:              []string{"localhost"},
-	}
-	der, err := x509.CreateCertificate(rand.Reader, template, template, key.Public(), key)
-	require.NoError(t, err)
-	return tls.Certificate{Certificate: [][]byte{der}, PrivateKey: key},
-		pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: der})
-}
-
-// Start runs a TLS-only Redis endpoint and writes its trusted certificate to a file.
+// Start runs a TLS-only Redis endpoint and returns it together with the path
+// of the CA certificate that verifies it.
 func Start(t *testing.T) (*miniredis.Miniredis, string) {
 	t.Helper()
-	cert, ca := Certificate(t)
-	server := miniredis.NewMiniRedis()
-	require.NoError(t, server.StartTLS(&tls.Config{
-		Certificates: []tls.Certificate{cert}, MinVersion: tls.VersionTLS12,
-	}))
-	t.Cleanup(server.Close)
-	path := filepath.Join(t.TempDir(), "redis-ca.pem")
-	require.NoError(t, os.WriteFile(path, ca, 0600))
-	return server, path
+	certs, err := NewCertificates(t.TempDir())
+	require.NoError(t, err)
+	return StartWithCertificates(t, certs), certs.CACertFile
+}
+
+// CACertPEM returns a PEM-encoded CA certificate for tests that only need
+// valid certificate bytes.
+func CACertPEM(t *testing.T) []byte {
+	t.Helper()
+	certs, err := NewCertificates(t.TempDir())
+	require.NoError(t, err)
+	data, err := os.ReadFile(certs.CACertFile)
+	require.NoError(t, err)
+	return data
 }
 
 // Certificates are PEM files for a private CA and a server certificate signed

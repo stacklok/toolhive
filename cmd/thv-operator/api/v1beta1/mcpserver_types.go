@@ -585,6 +585,7 @@ type SecretRef struct {
 // +kubebuilder:validation:XValidation:rule="self.provider == 'redis' ? has(self.address) : true",message="address is required"
 // +kubebuilder:validation:XValidation:rule="!has(self.tls) || self.provider == 'redis'",message="tls is only supported when provider is redis"
 // +kubebuilder:validation:XValidation:rule="!has(self.tls) || !has(self.tls.caCertSecretRef) || !has(self.tls.insecureSkipVerify) || !self.tls.insecureSkipVerify",message="tls.insecureSkipVerify disables certificate verification, so tls.caCertSecretRef would be ignored; set only one"
+// +kubebuilder:validation:XValidation:rule="!has(self.tls) || !has(self.tls.caCertSecretRef) || (size(self.tls.caCertSecretRef.name) > 0 && size(self.tls.caCertSecretRef.key) > 0)",message="tls.caCertSecretRef requires a non-empty name and key"
 //
 //nolint:lll // CEL validation rules exceed line length limit
 type SessionStorageConfig struct {

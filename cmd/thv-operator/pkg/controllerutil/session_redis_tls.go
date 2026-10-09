@@ -48,37 +48,33 @@ func SessionRedisTLSConfig(ss *mcpv1beta1.SessionStorageConfig) *redisconfig.TLS
 // session storage Redis CA Secret into the container, or nil slices when no
 // CA Secret is referenced.
 func SessionRedisTLSVolumes(ss *mcpv1beta1.SessionStorageConfig) ([]corev1.Volume, []corev1.VolumeMount) {
-	vol := sessionRedisTLSVolume(ss)
-	if vol == nil {
+	tlsCfg := sessionRedisTLS(ss)
+	if tlsCfg == nil || tlsCfg.CACertSecretRef == nil {
 		return nil, nil
 	}
-	return []corev1.Volume{*vol}, []corev1.VolumeMount{{
-		Name:      SessionRedisTLSCACertVolumeName,
-		MountPath: path.Join(SessionRedisTLSCACertMountPath, SessionRedisTLSCACertFileName),
-		SubPath:   SessionRedisTLSCACertFileName,
-		ReadOnly:  true,
-	}}
+	vol, mount := secretFileVolume(SessionRedisTLSCACertVolumeName, tlsCfg.CACertSecretRef,
+		SessionRedisTLSCACertMountPath, SessionRedisTLSCACertFileName)
+	return []corev1.Volume{vol}, []corev1.VolumeMount{mount}
 }
 
-// SessionRedisTLSVolumeNeedsUpdate reports whether the live pod volumes do not
-// project the CA Secret that ss references. The RunConfig checksum already
-// triggers a rollout when TLS is enabled or disabled, but the mounted file path
-// is fixed, so a change to the referenced Secret name or key is only visible in
-// the volume itself.
-func SessionRedisTLSVolumeNeedsUpdate(live []corev1.Volume, ss *mcpv1beta1.SessionStorageConfig) bool {
-	want := sessionRedisTLSVolume(ss)
-	var got *corev1.Volume
-	for i := range live {
-		if live[i].Name == SessionRedisTLSCACertVolumeName {
-			got = &live[i]
-			break
-		}
-	}
+// SessionRedisTLSVolumeNeedsUpdate reports whether the live pod volumes project
+// a different session storage CA Secret than the desired pod volumes. The
+// RunConfig checksum already triggers a rollout when TLS is enabled or
+// disabled, but the mounted file path is fixed, so a change to the referenced
+// Secret name or key is only visible in the volume itself. Callers pass the
+// desired volumes after any pod template patch has been applied, so a patch
+// that overrides this volume is not reported as drift.
+func SessionRedisTLSVolumeNeedsUpdate(live, desired []corev1.Volume) bool {
+	got := findVolume(live, SessionRedisTLSCACertVolumeName)
+	want := findVolume(desired, SessionRedisTLSCACertVolumeName)
 	if want == nil || got == nil {
 		return (want == nil) != (got == nil)
 	}
-	if got.Secret == nil {
+	if (want.Secret == nil) != (got.Secret == nil) {
 		return true
+	}
+	if want.Secret == nil {
+		return false
 	}
 	return got.Secret.SecretName != want.Secret.SecretName ||
 		!equality.Semantic.DeepEqual(got.Secret.Items, want.Secret.Items)
@@ -93,22 +89,34 @@ func sessionRedisTLS(ss *mcpv1beta1.SessionStorageConfig) *mcpv1beta1.RedisTLSCo
 	return ss.TLS
 }
 
-func sessionRedisTLSVolume(ss *mcpv1beta1.SessionStorageConfig) *corev1.Volume {
-	tlsCfg := sessionRedisTLS(ss)
-	if tlsCfg == nil || tlsCfg.CACertSecretRef == nil {
-		return nil
+func findVolume(volumes []corev1.Volume, name string) *corev1.Volume {
+	for i := range volumes {
+		if volumes[i].Name == name {
+			return &volumes[i]
+		}
 	}
-	return &corev1.Volume{
-		Name: SessionRedisTLSCACertVolumeName,
+	return nil
+}
+
+// secretFileVolume projects a single key of a Secret as an owner-read-only file
+// at mountDir/fileName, mounted with subPath so other files in mountDir are
+// left untouched.
+func secretFileVolume(
+	volumeName string, ref *mcpv1beta1.SecretKeyRef, mountDir, fileName string,
+) (corev1.Volume, corev1.VolumeMount) {
+	return corev1.Volume{
+		Name: volumeName,
 		VolumeSource: corev1.VolumeSource{
 			Secret: &corev1.SecretVolumeSource{
-				SecretName: tlsCfg.CACertSecretRef.Name,
-				Items: []corev1.KeyToPath{{
-					Key:  tlsCfg.CACertSecretRef.Key,
-					Path: SessionRedisTLSCACertFileName,
-				}},
+				SecretName:  ref.Name,
+				Items:       []corev1.KeyToPath{{Key: ref.Key, Path: fileName}},
 				DefaultMode: k8sptr.To(int32(0400)),
 			},
 		},
+	}, corev1.VolumeMount{
+		Name:      volumeName,
+		MountPath: path.Join(mountDir, fileName),
+		SubPath:   fileName,
+		ReadOnly:  true,
 	}
 }

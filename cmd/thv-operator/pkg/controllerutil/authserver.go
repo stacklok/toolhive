@@ -578,50 +578,16 @@ func GenerateAuthServerVolumes(
 	if authConfig.Storage != nil && authConfig.Storage.Redis != nil {
 		redis := authConfig.Storage.Redis
 		if redis.TLS != nil && redis.TLS.CACertSecretRef != nil {
-			ref := redis.TLS.CACertSecretRef
-			volumeName := RedisTLSCACertVolumePrefix + "master"
-			volumes = append(volumes, corev1.Volume{
-				Name: volumeName,
-				VolumeSource: corev1.VolumeSource{
-					Secret: &corev1.SecretVolumeSource{
-						SecretName: ref.Name,
-						Items: []corev1.KeyToPath{{
-							Key:  ref.Key,
-							Path: RedisTLSCACertFileName,
-						}},
-						DefaultMode: k8sptr.To(int32(0400)),
-					},
-				},
-			})
-			volumeMounts = append(volumeMounts, corev1.VolumeMount{
-				Name:      volumeName,
-				MountPath: fmt.Sprintf("%s/%s", RedisTLSCACertMountPath, RedisTLSCACertFileName),
-				SubPath:   RedisTLSCACertFileName,
-				ReadOnly:  true,
-			})
+			vol, mount := secretFileVolume(RedisTLSCACertVolumePrefix+"master", redis.TLS.CACertSecretRef,
+				RedisTLSCACertMountPath, RedisTLSCACertFileName)
+			volumes = append(volumes, vol)
+			volumeMounts = append(volumeMounts, mount)
 		}
 		if redis.SentinelTLS != nil && redis.SentinelTLS.CACertSecretRef != nil {
-			ref := redis.SentinelTLS.CACertSecretRef
-			volumeName := RedisTLSCACertVolumePrefix + "sentinel"
-			volumes = append(volumes, corev1.Volume{
-				Name: volumeName,
-				VolumeSource: corev1.VolumeSource{
-					Secret: &corev1.SecretVolumeSource{
-						SecretName: ref.Name,
-						Items: []corev1.KeyToPath{{
-							Key:  ref.Key,
-							Path: RedisSentinelTLSCACertFileName,
-						}},
-						DefaultMode: k8sptr.To(int32(0400)),
-					},
-				},
-			})
-			volumeMounts = append(volumeMounts, corev1.VolumeMount{
-				Name:      volumeName,
-				MountPath: fmt.Sprintf("%s/%s", RedisTLSCACertMountPath, RedisSentinelTLSCACertFileName),
-				SubPath:   RedisSentinelTLSCACertFileName,
-				ReadOnly:  true,
-			})
+			vol, mount := secretFileVolume(RedisTLSCACertVolumePrefix+"sentinel", redis.SentinelTLS.CACertSecretRef,
+				RedisTLSCACertMountPath, RedisSentinelTLSCACertFileName)
+			volumes = append(volumes, vol)
+			volumeMounts = append(volumeMounts, mount)
 		}
 	}
 

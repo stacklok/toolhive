@@ -1338,6 +1338,12 @@ func cursorParams(cursor mcp.Cursor) map[string]any {
 // nextCursor (#5851). itemsField is the result key holding the item array
 // ("tools", "resources", "resourceTemplates", "prompts"); the envelope is decoded
 // into a raw-message map so one helper serves all four list shapes.
+//
+// Items are decoded one at a time. An item the compat types cannot decode (for
+// example a tool whose top-level schema "type" is a JSON Schema type array) is
+// skipped with a warning naming it, so one malformed item does not hide every
+// other item the backend advertises. An items field that is not an array is a
+// protocol-level fault and still fails the page.
 func modernListAll[T any](
 	ctx context.Context, hc *http.Client, endpoint, method, itemsField string,
 ) ([]T, error) {
@@ -1348,8 +1354,19 @@ func modernListAll[T any](
 		}
 		var items []T
 		if raw, ok := page[itemsField]; ok {
-			if err := json.Unmarshal(raw, &items); err != nil {
+			var rawItems []json.RawMessage
+			if err := json.Unmarshal(raw, &rawItems); err != nil {
 				return nil, "", fmt.Errorf("decoding %s from %s: %w", itemsField, method, err)
+			}
+			items = make([]T, 0, len(rawItems))
+			for i, rawItem := range rawItems {
+				var item T
+				if err := json.Unmarshal(rawItem, &item); err != nil {
+					slog.Warn("skipping undecodable item in "+method+" response",
+						"field", itemsField, "index", i, "item", itemIdentifier(rawItem), "error", err)
+					continue
+				}
+				items = append(items, item)
 			}
 		}
 		var next mcp.Cursor
@@ -1358,6 +1375,22 @@ func modernListAll[T any](
 		}
 		return items, next, nil
 	})
+}
+
+// itemIdentifier returns the name (or, for resources, the uri) of a raw list
+// item for logging, or "" when it carries neither.
+func itemIdentifier(raw json.RawMessage) string {
+	var id struct {
+		Name string `json:"name"`
+		URI  string `json:"uri"`
+	}
+	if err := json.Unmarshal(raw, &id); err != nil {
+		return ""
+	}
+	if id.Name != "" {
+		return id.Name
+	}
+	return id.URI
 }
 
 // newCapabilityListFromMCP converts backend mcp types into the vmcp domain

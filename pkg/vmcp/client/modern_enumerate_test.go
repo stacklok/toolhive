@@ -84,6 +84,62 @@ func TestModernEnumerate_Pagination(t *testing.T) {
 	assert.Equal(t, "b", list.Tools[0].BackendID)
 }
 
+// TestModernEnumerate_SkipsUndecodableTool verifies one tool the compat types
+// cannot decode (here a top-level inputSchema "type" that is a JSON Schema type
+// array, which is valid JSON Schema) is skipped, and every other tool on the
+// page is still returned. Without this, a single such tool fails the whole
+// tools/list and the backend lists no tools at all.
+func TestModernEnumerate_SkipsUndecodableTool(t *testing.T) {
+	t.Parallel()
+
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		id, _ := modernReq(t, r)
+		writeModernResult(t, w, id, map[string]any{
+			"tools": []any{
+				map[string]any{"name": "t1", "inputSchema": map[string]any{"type": "object"}},
+				map[string]any{"name": "bad", "inputSchema": map[string]any{"type": []any{"object", "null"}}},
+				map[string]any{"name": "t3", "inputSchema": map[string]any{"type": "object"}},
+			},
+		})
+	}))
+	t.Cleanup(srv.Close)
+
+	h := newProbeClient(t)
+	target := &vmcp.BackendTarget{WorkloadID: "b", BaseURL: srv.URL, TransportType: "streamable-http"}
+	caps := &mcpmcp.ServerCapabilities{Tools: &struct {
+		ListChanged bool `json:"listChanged,omitempty"`
+	}{}}
+
+	list, err := h.modernEnumerate(context.Background(), target, caps)
+	require.NoError(t, err)
+	require.Len(t, list.Tools, 2, "the undecodable tool is skipped, its neighbours are kept")
+	assert.Equal(t, "t1", list.Tools[0].Name)
+	assert.Equal(t, "t3", list.Tools[1].Name)
+}
+
+// TestModernEnumerate_MalformedItemsFieldFails verifies the per-item tolerance
+// stops at the envelope: a tools field that is not an array at all is a
+// protocol-level fault and still fails the enumeration.
+func TestModernEnumerate_MalformedItemsFieldFails(t *testing.T) {
+	t.Parallel()
+
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		id, _ := modernReq(t, r)
+		writeModernResult(t, w, id, map[string]any{"tools": "not-an-array"})
+	}))
+	t.Cleanup(srv.Close)
+
+	h := newProbeClient(t)
+	target := &vmcp.BackendTarget{WorkloadID: "b", BaseURL: srv.URL, TransportType: "streamable-http"}
+	caps := &mcpmcp.ServerCapabilities{Tools: &struct {
+		ListChanged bool `json:"listChanged,omitempty"`
+	}{}}
+
+	_, err := h.modernEnumerate(context.Background(), target, caps)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "decoding tools from tools/list")
+}
+
 // TestModernEnumerate_GatesOnFlags verifies only advertised capabilities are
 // enumerated: a backend advertising only Tools is never asked for resources or
 // prompts.

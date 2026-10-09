@@ -26,7 +26,11 @@ func TestNewRedisLimiterTLS(t *testing.T) {
 		wantError string
 	}{
 		{name: "verified custom CA", tls: &redisconfig.TLSConfig{CACertFile: caFile}},
-		{name: "untrusted certificate", tls: &redisconfig.TLSConfig{}, wantError: "certificate"},
+		// Omitting TLS keeps the connection unencrypted, which a TLS-only
+		// server rejects; the underlying redisconn error proves the limiter
+		// dialed without TLS rather than failing for another reason.
+		{name: "omitted TLS cannot reach a TLS-only server", tls: nil, wantError: "redis: failed to connect"},
+		{name: "untrusted certificate", tls: &redisconfig.TLSConfig{}, wantError: "failed to verify certificate"},
 		{name: "missing configured CA", tls: &redisconfig.TLSConfig{CACertFile: caFile + ".missing"}, wantError: "failed to read Redis CA cert file"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {

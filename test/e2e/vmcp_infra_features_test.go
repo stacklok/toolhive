@@ -13,6 +13,7 @@ import (
 	"io"
 	"net/http"
 	"net/url"
+	"os"
 	"os/exec"
 	"path/filepath"
 	"strings"
@@ -21,9 +22,11 @@ import (
 	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
 
+	"github.com/stacklok/toolhive/pkg/redisconfig"
 	vmcpconfig "github.com/stacklok/toolhive/pkg/vmcp/config"
 	"github.com/stacklok/toolhive/test/e2e"
 	"github.com/stacklok/toolhive/test/e2e/images"
+	"github.com/stacklok/toolhive/test/testkit/redistls"
 )
 
 // fetchClientCredentialsToken obtains an access token from the mock OIDC server
@@ -70,11 +73,41 @@ func stopRedisContainer(containerName string) {
 	_ = exec.Command("docker", "stop", containerName).Run()
 }
 
+// startTLSRedisContainer starts a Redis container that only accepts TLS
+// connections (the plaintext port is disabled) and requires password, using
+// the server certificate in certs. certs' directory is mounted read-only.
+func startTLSRedisContainer(containerName string, hostPort int, certs *redistls.Certificates, password string) {
+	certDir := filepath.Dir(certs.CACertFile)
+	out, err := exec.Command("docker", "run", "-d", "--rm",
+		"--name", containerName,
+		"-p", fmt.Sprintf("127.0.0.1:%d:6379", hostPort),
+		"-v", certDir+":/certs:ro",
+		images.RedisImage,
+		"redis-server",
+		"--port", "0",
+		"--tls-port", "6379",
+		"--tls-cert-file", "/certs/"+filepath.Base(certs.ServerCertFile),
+		"--tls-key-file", "/certs/"+filepath.Base(certs.ServerKeyFile),
+		"--tls-ca-cert-file", "/certs/"+filepath.Base(certs.CACertFile),
+		"--tls-auth-clients", "no",
+		"--requirepass", password,
+	).CombinedOutput()
+	Expect(err).ToNot(HaveOccurred(), "should start TLS Redis container: %s", out)
+}
+
+// redisCLI runs redis-cli inside the container with the given arguments
+// (connection flags such as TLS options, followed by the command).
+func redisCLI(containerName string, args ...string) ([]byte, error) {
+	cmdArgs := append([]string{"exec", containerName, "redis-cli"}, args...)
+	return exec.Command("docker", cmdArgs...).CombinedOutput()
+}
+
 // waitForRedisReady polls the Redis container until it responds to PING.
-func waitForRedisReady(containerName string, timeout time.Duration) {
+// connArgs are extra redis-cli connection arguments (e.g. TLS flags).
+func waitForRedisReady(containerName string, timeout time.Duration, connArgs ...string) {
 	GinkgoWriter.Printf("waiting for Redis container %q to respond to PING\n", containerName)
 	Eventually(func() error {
-		out, err := exec.Command("docker", "exec", containerName, "redis-cli", "ping").CombinedOutput()
+		out, err := redisCLI(containerName, append(connArgs, "ping")...)
 		if err != nil {
 			return fmt.Errorf("redis-cli ping: %w; output: %s", err, out)
 		}
@@ -250,6 +283,109 @@ var _ = Describe("vMCP infra features", Label("vmcp", "e2e", "infra"), func() {
 			Expect(err).ToNot(HaveOccurred())
 			Expect(tools.Tools).ToNot(BeEmpty(),
 				"backend tools should be visible with Redis session storage")
+		})
+	})
+
+	// -------------------------------------------------------------------------
+	// TLS-only Redis session storage
+	// Verifies that sessionStorage.tls makes vMCP talk TLS to a Redis that has
+	// no plaintext listener and requires a password, so the password and the
+	// session records only ever cross the network encrypted.
+	// -------------------------------------------------------------------------
+	Context("TLS-only Redis session storage (config-file mode)", func() {
+		const redisPassword = "e2e-redis-tls-secret"
+		var fx singleBackendFixture
+		var redisName string
+		var redisPort int
+		var certs *redistls.Certificates
+		var redisCLITLSArgs []string
+
+		BeforeEach(func() {
+			fx.setup("vmcp-redis-tls", "vmcp-redis-tls-*")
+
+			certDir := filepath.Join(fx.tmpDir, "redis-tls")
+			Expect(os.Mkdir(certDir, 0o750)).To(Succeed())
+			var err error
+			certs, err = redistls.NewCertificates(certDir)
+			Expect(err).ToNot(HaveOccurred())
+			// The redis user inside the container must be able to read the
+			// bind-mounted key; the directory is private to this test run.
+			Expect(os.Chmod(certs.ServerKeyFile, 0o644)).To(Succeed())
+			Expect(os.Chmod(certDir, 0o755)).To(Succeed())
+			redisCLITLSArgs = []string{
+				"--tls", "--cacert", "/certs/" + filepath.Base(certs.CACertFile),
+				"-a", redisPassword, "--no-auth-warning",
+			}
+
+			redisPort = allocateVMCPPort()
+			redisName = e2e.GenerateUniqueServerName("e2e-redis-tls")
+			startTLSRedisContainer(redisName, redisPort, certs, redisPassword)
+			DeferCleanup(func() { stopRedisContainer(redisName) })
+			waitForRedisReady(redisName, 30*time.Second, redisCLITLSArgs...)
+		})
+
+		AfterEach(func() { fx.teardown() })
+
+		It("stores sessions over verified TLS with password authentication", func() {
+			configPath := filepath.Join(fx.tmpDir, "vmcp.yaml")
+			initVMCPConfig(fx.cfg, fx.groupName, configPath)
+
+			Expect(modifyVMCPConfig(configPath, func(c *vmcpconfig.Config) {
+				c.SessionStorage = &vmcpconfig.SessionStorageConfig{
+					Provider:  "redis",
+					Address:   fmt.Sprintf("127.0.0.1:%d", redisPort),
+					KeyPrefix: "e2e-tls:",
+					TLS:       &redisconfig.TLSConfig{CACertFile: certs.CACertFile},
+				}
+			})).To(Succeed())
+
+			By("starting vMCP serve with TLS Redis session storage and a password")
+			// Pass the password only to this child process: os.Setenv would leak
+			// it into concurrently running specs.
+			fx.vMCPCmd = exec.Command(fx.cfg.THVBinary,
+				"vmcp", "serve",
+				"--config", configPath,
+				"--port", fmt.Sprintf("%d", fx.vMCPPort),
+			)
+			fx.vMCPCmd.Env = append(os.Environ(), vmcpconfig.RedisPasswordEnvVar+"="+redisPassword)
+			fx.vMCPCmd.Stdout = GinkgoWriter
+			fx.vMCPCmd.Stderr = GinkgoWriter
+			Expect(fx.vMCPCmd.Start()).To(Succeed())
+
+			vMCPURL := vmcpEndpointURL(fx.vMCPPort)
+			Expect(e2e.WaitForMCPServerReady(fx.cfg, vMCPURL, "streamable-http", 60*time.Second)).To(Succeed())
+
+			ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+			defer cancel()
+
+			By("connecting an MCP client and listing tools")
+			mcpClient, err := e2e.NewMCPClientForStreamableHTTP(fx.cfg, vMCPURL)
+			Expect(err).ToNot(HaveOccurred())
+			defer func() { _ = mcpClient.Close() }()
+			Expect(mcpClient.Initialize(ctx)).To(Succeed())
+
+			tools, err := mcpClient.ListTools(ctx)
+			Expect(err).ToNot(HaveOccurred())
+			Expect(tools.Tools).ToNot(BeEmpty(),
+				"backend tools should be visible with TLS Redis session storage")
+
+			By("opening a Legacy (session-bearing) MCP session")
+			// Modern clients are sessionless and store nothing; a Legacy
+			// initialize is what persists session data to Redis.
+			rawClient, err := e2e.NewRawMCPClient(30 * time.Second)
+			Expect(err).ToNot(HaveOccurred())
+			initResp, err := rawClient.Send(ctx, vMCPURL, e2e.NewLegacyInitializeRequest("redis-tls-e2e", "1.0"))
+			Expect(err).ToNot(HaveOccurred())
+			Expect(initResp.StatusCode).To(Equal(http.StatusOK), "initialize body: %s", initResp.Body)
+			sessionID := initResp.Headers.Get(e2e.HeaderMCPSessionID)
+			Expect(sessionID).ToNot(BeEmpty(), "Legacy initialize should assign a session id")
+
+			By("verifying the session was written to the TLS-only Redis")
+			Eventually(func() (string, error) {
+				out, err := redisCLI(redisName, append(redisCLITLSArgs, "exists", "e2e-tls:"+sessionID)...)
+				return strings.TrimSpace(string(out)), err
+			}, 10*time.Second, time.Second).Should(Equal("1"),
+				"vMCP should have stored the session in Redis over TLS")
 		})
 	})
 

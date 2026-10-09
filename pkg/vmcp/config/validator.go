@@ -506,6 +506,13 @@ func (*DefaultValidator) validateFailureHandling(fh *FailureHandlingConfig) erro
 		return fmt.Errorf("healthCheckTimeout must be >= 0 (zero means no timeout), got %v", healthCheckTimeout)
 	}
 
+	// Validate session initialize timeout. Zero means unset and inherits
+	// HealthCheckTimeout at runtime; negative values are invalid.
+	sessionInitTimeout := time.Duration(fh.SessionInitTimeout)
+	if sessionInitTimeout < 0 {
+		return fmt.Errorf("sessionInitTimeout must be >= 0 (zero inherits healthCheckTimeout), got %v", sessionInitTimeout)
+	}
+
 	// If timeout is configured (non-zero), validate that it's less than interval
 	if healthCheckTimeout > 0 {
 		checkInterval := time.Duration(fh.HealthCheckInterval)

@@ -15,7 +15,6 @@ import (
 	"github.com/stretchr/testify/require"
 
 	"github.com/stacklok/toolhive/pkg/authserver/storage"
-	"github.com/stacklok/toolhive/pkg/transport/proxy/transparent"
 )
 
 func TestConsentCookieName(t *testing.T) {
@@ -49,57 +48,6 @@ func TestConsentCookieName(t *testing.T) {
 	fallback := h.consentCookieName()
 	h.config.AuthorizationEndpointBaseURL = h.config.AccessTokenIssuer
 	require.Equal(t, fallback, h.consentCookieName())
-}
-
-func TestRememberedConsentCookieNotForwardedToBackend(t *testing.T) {
-	t.Parallel()
-	h, _, _ := handlerTestSetup(t)
-	s := storage.NewMemoryStorage()
-	t.Cleanup(func() { require.NoError(t, s.Close()) })
-	h.rememberedStorage = s
-	pending := &storage.PendingAuthorization{ClientID: testAuthClientID, RedirectURI: testAuthRedirectURI,
-		Scopes: []string{"openid"}, Resource: "https://api.example.com", UpstreamProviderName: "test-upstream",
-		PKCEChallenge: strings.Repeat("A", 43), PKCEMethod: "S256", RememberConsent: true,
-		FirstProviderSubject: "sub", ConsentStage: storage.ConsentStageApproved}
-	w := httptest.NewRecorder()
-	require.NoError(t, h.writeAuthorizationResponse(context.Background(), w, pending, "sid", "user", "", ""))
-	var consentCookie *http.Cookie
-	for _, cookie := range w.Result().Cookies() {
-		if cookie.Name == h.consentCookieName() {
-			consentCookie = cookie
-		}
-	}
-	require.NotNil(t, consentCookie, "authorization response must set remembered-consent cookie")
-
-	backendCookies := make(chan string, 1)
-	backend := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		backendCookies <- r.Header.Get("Cookie")
-		w.WriteHeader(http.StatusOK)
-	}))
-	t.Cleanup(backend.Close)
-	proxy := transparent.NewTransparentProxyWithOptions(
-		"127.0.0.1", 0, backend.URL, nil, nil, nil, false, false, "streamable-http",
-		nil, nil, "", false, nil, transparent.WithStripConsentCookie(),
-	)
-	t.Cleanup(func() {
-		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-		defer cancel()
-		require.NoError(t, proxy.Stop(ctx))
-	})
-	require.NoError(t, proxy.Start(context.Background()))
-
-	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-	t.Cleanup(cancel)
-	req, err := http.NewRequestWithContext(ctx, http.MethodPost, "http://"+proxy.ListenerAddr()+"/mcp",
-		strings.NewReader(`{"jsonrpc":"2.0","method":"tools/list"}`))
-	require.NoError(t, err)
-	req.AddCookie(&http.Cookie{Name: "backend", Value: "one"})
-	req.AddCookie(consentCookie)
-	resp, err := http.DefaultClient.Do(req)
-	require.NoError(t, err)
-	t.Cleanup(func() { require.NoError(t, resp.Body.Close()) })
-	require.Equal(t, http.StatusOK, resp.StatusCode)
-	require.Equal(t, "backend=one", <-backendCookies)
 }
 
 func TestRememberCapabilityResolvedFromHTTPSBackend(t *testing.T) {

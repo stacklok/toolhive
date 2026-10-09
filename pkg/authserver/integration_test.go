@@ -126,6 +126,8 @@ type testServerOptions struct {
 	deviceFlowEnabled bool
 	// deviceCodeInterval, when non-zero, sets Config.DeviceCodeInterval.
 	deviceCodeInterval time.Duration
+	// authorizationEndpointBaseURL sets the browser-facing authorization origin.
+	authorizationEndpointBaseURL string
 }
 
 // testServerOption is a functional option for test server setup.
@@ -214,6 +216,13 @@ func withDeviceFlowEnabled() testServerOption {
 func withDeviceCodeInterval(d time.Duration) testServerOption {
 	return func(opts *testServerOptions) {
 		opts.deviceCodeInterval = d
+	}
+}
+
+// withAuthorizationEndpointBaseURL configures the browser-facing authorization origin.
+func withAuthorizationEndpointBaseURL(baseURL string) testServerOption {
+	return func(opts *testServerOptions) {
+		opts.authorizationEndpointBaseURL = baseURL
 	}
 }
 
@@ -361,6 +370,7 @@ func setupTestServer(t *testing.T, opts ...testServerOption) *testServer {
 		ForceConfidentialRedirectURIs:       options.forceConfidentialRedirectURIs,
 		DeviceFlowEnabled:                   options.deviceFlowEnabled,
 		DeviceCodeInterval:                  options.deviceCodeInterval,
+		AuthorizationEndpointBaseURL:        options.authorizationEndpointBaseURL,
 		// The test server's issuer is a plain-HTTP loopback URL (genuinely
 		// local: an in-process httptest server), so opt in to the same
 		// combination withAllowConfidentialClientRegistration would otherwise

@@ -7,6 +7,7 @@ import (
 	"context"
 	"encoding/base64"
 	"encoding/json"
+	"errors"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -76,4 +77,42 @@ func TestNewRegistersIdentityModifiers(t *testing.T) {
 	require.NoError(t, err)
 	assert.Equal(t, "upstream-user", identity.Subject)
 	assert.False(t, identity.Synthetic)
+}
+
+func TestNewFailureLeavesStorageCallerOwned(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name        string
+		cfg         Config
+		errContains string
+	}{
+		{name: "validation failure", errContains: "issuer is required"},
+		{
+			name: "upstream construction failure",
+			cfg: Config{
+				Issuer:           "https://example.com",
+				KeyProvider:      keys.NewGeneratingProvider(keys.DefaultAlgorithm),
+				AllowedAudiences: []string{"https://mcp.example.com"},
+				Upstreams:        []UpstreamConfig{{Name: "default", Type: UpstreamProviderTypeOAuth2, OAuth2Config: validUpstreamConfig()}},
+				UpstreamFactory: func(context.Context, *UpstreamConfig) (upstream.OAuth2Provider, error) {
+					return nil, errors.New("upstream construction failed")
+				},
+			},
+			errContains: "upstream construction failed",
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			base := storage.NewMemoryStorage()
+			t.Cleanup(func() { assert.NoError(t, base.Close()) })
+			var events []string
+			stor := &eventRecordingStorage{MemoryStorage: base, record: func(event string) { events = append(events, event) }}
+			srv, err := New(t.Context(), tt.cfg, stor)
+			require.ErrorContains(t, err, tt.errContains)
+			assert.Nil(t, srv)
+			assert.Empty(t, events, "failed construction must not close caller storage")
+		})
+	}
 }

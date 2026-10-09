@@ -63,6 +63,8 @@ type Server interface {
 	// connections (see the CloseIdleConnections function) and then closes
 	// storage. Do not call it on a server whose storage is shared with another
 	// live server; retire that one with CloseIdleConnections instead.
+	// Call Close only once: repeated calls are not guaranteed to be safe and
+	// may panic, depending on the storage backend.
 	Close() error
 }
 
@@ -111,9 +113,15 @@ func CloseIdleConnections(s Server) bool {
 
 // New creates a new OAuth authorization server and initializes the upstream
 // identity-extraction modifiers before constructing providers.
-// The storage parameter is required and determines where OAuth state is persisted.
-// Use storage.NewMemoryStorage() for single-instance deployments or provide
-// a distributed storage backend for production deployments.
+// The storage parameter is required; its unwrapped backend must also implement
+// storage.DCRCredentialStore. Use storage.NewMemoryStorage() for single-instance
+// deployments or provide a distributed storage backend for production deployments.
+//
+// If New fails, storage remains caller-owned and is not closed. On success,
+// Server.Close takes responsibility for closing storage. Construction failure
+// releases any upstream pools and validator workers created by the server.
+// HTTP clients injected into upstream providers remain caller-owned; the caller
+// is responsible for their connection pools and networking security policy.
 func New(ctx context.Context, cfg Config, stor storage.Storage) (Server, error) {
 	upstream.RegisterModifiers()
 	slog.Debug("creating new OAuth authorization server", "issuer", cfg.Issuer)

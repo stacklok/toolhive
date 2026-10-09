@@ -1056,7 +1056,7 @@ func TestUpstreamTokenRefresher_ConcurrentRefreshConflict_LogLevel(t *testing.T)
 // TestUpstreamTokenRefresher_ReReadShortCircuit pins when the leader's re-read
 // skips the upstream call: only when the stored row is unexpired and was
 // rewritten since the caller read it. A caller that deliberately refreshes a
-// still-current row (the opt-in expired-ID-token trigger) must reach the
+// still-current row (the expired-ID-token trigger) must reach the
 // provider.
 func TestUpstreamTokenRefresher_ReReadShortCircuit(t *testing.T) {
 	t.Parallel()

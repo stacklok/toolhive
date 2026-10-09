@@ -34,7 +34,9 @@ const NoUpstreamSessionClaimKey = "https://toolhive.dev/no_upstream_session"
 // The IDToken is the rotated ID token when a refresh produced one (OIDC Core
 // 1.0 §12.2 permits but does not require a new id_token on refresh), otherwise
 // the original JWT captured at the initial OIDC login (OIDC Core 1.0 §3.1.3.7).
-// It is not independently validated for freshness.
+// InProcessService refreshes when the stored ID token has expired, so it is
+// usually current, but it is not guaranteed to be: it can still be expired when
+// the provider omits id_token on refresh or the refresh fails.
 //
 // Callers that PRESENT it as a credential — e.g. as the subject_token of an
 // RFC 8693 token exchange — are subject to expiry and must either check its `exp`

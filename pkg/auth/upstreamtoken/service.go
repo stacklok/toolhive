@@ -17,7 +17,7 @@ import (
 )
 
 const (
-	// idTokenExpirySkew is how far ahead of the ID token's `exp` the opt-in
+	// idTokenExpirySkew is how far ahead of the ID token's `exp` the
 	// ID-token trigger fires, so a token is not handed out moments before it
 	// expires.
 	idTokenExpirySkew = 30 * time.Second
@@ -41,13 +41,32 @@ const (
 // the refresher's own singleflight.Group keyed by an opaque storage-row identity,
 // so the same Group covers both the handler's chain-walk path and the runtime
 // token-swap path within this process.
+//
+// Refresh is triggered by an expired access token or by an expired ID token
+// (its `exp` claim, read without re-verifying the signature it was validated
+// with when stored). The ID-token trigger serves providers whose ID-token
+// lifetime is shorter than their access-token lifetime (e.g. Microsoft Entra
+// ID), which would otherwise hand consumers an expired ID token for part of
+// every access-token lifetime. It never fires when the row has no refresh
+// token, or for an empty, unparseable or `exp`-less ID token.
+//
+// It cannot help when the provider omits id_token on refresh (OIDC Core 1.0
+// §12.2): the expired ID token is then carried forward, and the trigger is
+// suppressed for that row until the access token next expires so reads do not
+// loop on refresh. After a failed ID-token-triggered refresh the trigger backs
+// off briefly (idTokenRefreshFailureBackoff). Consumers that need a currently
+// valid ID token must therefore still check `exp` themselves.
+//
+// Suppression state is held in process memory: replicas sharing storage each
+// keep their own, so each may perform one extra refresh per access-token
+// lifetime for a provider that omits id_token. Likewise, refresh
+// deduplication is per process; replicas that refresh the same row at the same
+// moment can each redeem its refresh token (see upstreamTokenRefresher), which
+// a provider enforcing single-use refresh-token rotation may treat as reuse.
+// The ID-token trigger adds refresh events, but no new race shape.
 type InProcessService struct {
 	storage   storage.UpstreamTokenStorage
 	refresher storage.UpstreamTokenRefresher
-
-	// refreshOnExpiredIDToken enables the opt-in ID-token staleness trigger.
-	// See WithRefreshOnExpiredIDToken.
-	refreshOnExpiredIDToken bool
 
 	// mu guards idTokenSuppressions.
 	mu sync.Mutex
@@ -65,32 +84,6 @@ type idTokenSuppression struct {
 	until   time.Time
 }
 
-// Option configures an InProcessService.
-type Option func(*InProcessService)
-
-// WithRefreshOnExpiredIDToken makes the service refresh a provider's tokens
-// when the stored ID token's `exp` has passed, even if the access token is
-// still valid. Without it (the default), refresh is keyed only on access-token
-// expiry and the ID token may be returned expired.
-//
-// This serves consumers that need a currently valid ID token from providers
-// whose ID-token lifetime is shorter than their access-token lifetime (e.g.
-// Microsoft Entra ID). It does not help when the provider omits id_token on
-// refresh (OIDC Core 1.0 §12.2): the expired ID token is then carried forward
-// and the trigger is suppressed for that row until the access token next
-// expires, so reads do not loop on refresh. After a failed ID-token-triggered
-// refresh the trigger backs off briefly (idTokenRefreshFailureBackoff). It
-// never fires when the row has no refresh token.
-//
-// Suppression state is held in process memory: replicas sharing storage each
-// keep their own, so each may perform one extra refresh per access-token
-// lifetime for a provider that omits id_token.
-func WithRefreshOnExpiredIDToken() Option {
-	return func(s *InProcessService) {
-		s.refreshOnExpiredIDToken = true
-	}
-}
-
 // Compile-time checks.
 var (
 	_ Service     = (*InProcessService)(nil)
@@ -103,22 +96,17 @@ var (
 func NewInProcessService(
 	stor storage.UpstreamTokenStorage,
 	refresher storage.UpstreamTokenRefresher,
-	opts ...Option,
 ) *InProcessService {
-	s := &InProcessService{
+	return &InProcessService{
 		storage:             stor,
 		refresher:           refresher,
 		idTokenSuppressions: make(map[string]idTokenSuppression),
 	}
-	for _, opt := range opts {
-		opt(s)
-	}
-	return s
 }
 
 // GetValidTokens returns a valid upstream credential for a session and provider.
 // It transparently refreshes expired access tokens using the refresh token,
-// and expired ID tokens when WithRefreshOnExpiredIDToken is set.
+// and refreshes expired ID tokens where possible (see InProcessService).
 func (s *InProcessService) GetValidTokens(ctx context.Context, sessionID, providerName string) (*UpstreamCredential, error) {
 	tokens, err := s.storage.GetUpstreamTokens(ctx, sessionID, providerName)
 	if err != nil {
@@ -161,8 +149,8 @@ func (s *InProcessService) GetValidTokens(ctx context.Context, sessionID, provid
 // the rotated ID token when a refresh produced one (OIDC Core 1.0 §12.2),
 // otherwise the original JWT captured at the initial OIDC login; it is not
 // independently validated for freshness and may be empty if the upstream login
-// never yielded one. With WithRefreshOnExpiredIDToken, an expired ID token
-// also triggers a refresh; a failed ID-token-triggered refresh does not put the
+// never yielded one. An expired ID token also triggers a refresh (see
+// InProcessService); a failed ID-token-triggered refresh does not put the
 // provider in the failed slice, since its access token is still valid. Callers
 // that PRESENT it as a credential must expect expiry to be rejected; callers
 // that only READ ITS CLAIMS are unaffected by expiry. See
@@ -227,8 +215,8 @@ func (s *InProcessService) GetAllUpstreamCredentials(
 	// break the second while duplicating what the IdP already does for the first.
 	// A future consumer that presents the token to a sink which does NOT validate
 	// `exp` would change that calculus — such a caller must check it itself.
-	// WithRefreshOnExpiredIDToken refreshes an expired ID token when the provider
-	// can rotate it, but still does not filter what it returns: an ID token the
+	// An expired ID token is refreshed when the provider can rotate it, but this
+	// still does not filter what it returns: an ID token the
 	// provider declined to rotate is passed through expired.
 	// See Identity.UpstreamIDTokens for both.
 	return result, failed, nil
@@ -281,25 +269,23 @@ func (s *InProcessService) refreshOrFail(
 		idToken = expired.IDToken
 	}
 
-	// With the ID-token trigger enabled, a refresh that still leaves the ID token
-	// expired (the provider omitted id_token) must not be retried on every read.
+	// A refresh that still leaves the ID token expired (the provider omitted id_token) must not be retried on every read.
 	// Suppress the trigger for this exact ID token until the new access token
 	// expires, when the access-token trigger refreshes anyway.
-	if s.refreshOnExpiredIDToken && idTokenExpired(idToken, time.Now()) {
+	if idTokenExpired(idToken, time.Now()) {
 		s.suppressIDTokenRefresh(sessionID, providerName, idToken, refreshed.ExpiresAt, refreshed.SessionExpiresAt)
 	}
 
 	return &UpstreamCredential{AccessToken: refreshed.AccessToken, IDToken: idToken}, nil
 }
 
-// shouldRefreshForIDToken reports whether the opt-in ID-token trigger applies
-// to a row whose access token is still valid: the option is enabled, a refresh
-// token exists, the stored ID token is expired, and the trigger is not
+// shouldRefreshForIDToken reports whether the ID-token trigger applies to a
+// row whose access token is still valid: a refresh token exists, the stored ID token is expired, and the trigger is not
 // suppressed for that ID token.
 func (s *InProcessService) shouldRefreshForIDToken(
 	sessionID, providerName string, tokens *storage.UpstreamTokens,
 ) bool {
-	if !s.refreshOnExpiredIDToken || tokens.RefreshToken == "" {
+	if tokens.RefreshToken == "" {
 		return false
 	}
 	now := time.Now()

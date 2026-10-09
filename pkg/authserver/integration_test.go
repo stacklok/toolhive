@@ -3208,9 +3208,9 @@ func TestIntegration_UpstreamTokenService_NonExpiringToken(t *testing.T) {
 }
 
 // TestIntegration_UpstreamTokenService_RefreshOnExpiredIDToken exercises the
-// opt-in ID-token trigger against the real refresher and mockoidc: the stored
+// ID-token trigger against the real refresher and mockoidc: the stored
 // access token is still valid but the ID token has expired (the Entra shape,
-// where access tokens outlive ID tokens). With the option enabled, a read must
+// where access tokens outlive ID tokens). A read must
 // reach the upstream token endpoint and return the rotated ID token, rather
 // than being short-circuited by the refresher because the access token is
 // unexpired.
@@ -3259,8 +3259,7 @@ func TestIntegration_UpstreamTokenService_RefreshOnExpiredIDToken(t *testing.T) 
 		Email:   "testuser@example.com",
 	})
 
-	svc := upstreamtoken.NewInProcessService(stor, ts.authServer.UpstreamTokenRefresher(),
-		upstreamtoken.WithRefreshOnExpiredIDToken())
+	svc := upstreamtoken.NewInProcessService(stor, ts.authServer.UpstreamTokenRefresher())
 
 	cred, err := svc.GetValidTokens(context.Background(), tsid, "default")
 	require.NoError(t, err)

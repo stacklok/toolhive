@@ -27,6 +27,7 @@ import (
 	"github.com/stacklok/toolhive/pkg/authserver/upstream"
 	"github.com/stacklok/toolhive/pkg/bodylimit"
 	"github.com/stacklok/toolhive/pkg/oauthproto"
+	"github.com/stacklok/toolhive/pkg/redisconfig"
 )
 
 // Redis ACL credential environment variable names.
@@ -1147,26 +1148,18 @@ func applyRedisTimeouts(rc *storage.RedisRunConfig, cfg *redisconn.Config) error
 }
 
 // convertRedisTLSRunConfig converts a RedisTLSRunConfig to a runtime
-// redisconn.TLSConfig. Returns an error if a CA cert file is configured but
-// cannot be read — this is treated as a hard error because silently falling
-// back to system CAs could mask a misconfiguration and cause confusing TLS
-// failures downstream.
+// redisconn.TLSConfig. A configured CA certificate file must be readable and
+// contain valid certificates; errors never fall back to system roots.
 func convertRedisTLSRunConfig(rc *storage.RedisTLSRunConfig) (*redisconn.TLSConfig, error) {
 	if rc == nil {
 		return nil, nil
 	}
-	cfg := &redisconn.TLSConfig{
+	// Preserve the auth server's existing snake_case serialization while sharing
+	// CA loading and validation with the session storage configuration.
+	return (&redisconfig.TLSConfig{
 		InsecureSkipVerify: rc.InsecureSkipVerify,
-	}
-	if rc.CACertFile != "" {
-		// #nosec G304 - file path is from configuration, not user input
-		data, err := os.ReadFile(rc.CACertFile)
-		if err != nil {
-			return nil, fmt.Errorf("failed to read Redis CA cert file %q: %w", rc.CACertFile, err)
-		}
-		cfg.CACert = data
-	}
-	return cfg, nil
+		CACertFile:         rc.CACertFile,
+	}).Load()
 }
 
 // resolveCIMDConfig extracts CIMD settings from a CIMDRunConfig.

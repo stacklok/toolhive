@@ -687,6 +687,25 @@ func TestIntegration_UpstreamTokens(t *testing.T) {
 	})
 }
 
+func TestIntegration_RememberedConsent(t *testing.T) {
+	withIntegrationStorage(t, func(ctx context.Context, s *RedisStorage) {
+		expiry := time.Now().Add(time.Hour)
+		require.NoError(t, s.StoreConsentSession(ctx, "digest", &ConsentSession{UserID: "user", ProviderID: "first", ProviderSubject: "sub", ExpiresAt: expiry}))
+		require.NoError(t, s.StoreClientApproval(ctx, "user", "client", &ClientApproval{RedirectURI: "https://client.example/callback", Scopes: []string{"openid"}, Resource: "https://resource.example", ExpiresAt: expiry}))
+		session, err := s.GetConsentSession(ctx, "digest")
+		require.NoError(t, err)
+		require.Equal(t, "sub", session.ProviderSubject)
+		approval, err := s.GetClientApproval(ctx, "user", "client")
+		require.NoError(t, err)
+		require.Equal(t, []string{"openid"}, approval.Scopes)
+		require.NoError(t, s.DeleteConsentSession(ctx, "digest"))
+		_, err = s.GetConsentSession(ctx, "digest")
+		require.ErrorIs(t, err, ErrNotFound)
+		_, err = s.GetClientApproval(ctx, "other", "client")
+		require.ErrorIs(t, err, ErrNotFound)
+	})
+}
+
 // --- Storage Interface: Pending Authorization ---
 
 func TestIntegration_PendingAuthorization(t *testing.T) {

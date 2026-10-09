@@ -10,10 +10,12 @@ import (
 	"log/slog"
 	"net/http"
 	"net/url"
+	"strings"
 	"time"
 
 	"github.com/ory/fosite"
 
+	"github.com/stacklok/toolhive/pkg/authserver/server"
 	"github.com/stacklok/toolhive/pkg/authserver/server/crypto"
 	"github.com/stacklok/toolhive/pkg/authserver/server/registration"
 	"github.com/stacklok/toolhive/pkg/authserver/storage"
@@ -45,7 +47,7 @@ func newUpstreamAuthSecrets() *upstreamAuthSecrets {
 }
 
 // AuthorizeHandler handles GET /oauth/authorize requests.
-// It validates the client's authorization request and redirects to the upstream IDP.
+// It validates the client's request and shows the approval page before any upstream redirect.
 func (h *Handler) AuthorizeHandler(w http.ResponseWriter, req *http.Request) {
 	ctx := req.Context()
 
@@ -96,67 +98,130 @@ func (h *Handler) AuthorizeHandler(w http.ResponseWriter, req *http.Request) {
 		return
 	}
 
+	// Bind the resource while the client request is still being authorized.
+	// Multi-audience deployments require an explicit choice before upstream login.
+	resources := ar.GetRequestForm()["resource"]
+	if len(resources) > 1 || (len(resources) == 1 && resources[0] == "") {
+		h.provider.WriteAuthorizeError(ctx, w, errAr, server.ErrInvalidTarget.WithHint("Exactly one non-empty resource is required"))
+		return
+	}
+	resource := ""
+	if len(resources) == 1 {
+		resource = resources[0]
+	} else if len(h.config.AllowedAudiences) == 1 {
+		resource = h.config.AllowedAudiences[0]
+	} else {
+		h.provider.WriteAuthorizeError(ctx, w, errAr, server.ErrInvalidTarget.WithHint("Specify one resource for this authorization"))
+		return
+	}
+	if resource == "" {
+		h.provider.WriteAuthorizeError(ctx, w, errAr, server.ErrInvalidTarget.WithHint("No resource audience is configured"))
+		return
+	}
+	if err := server.ValidateAudienceURI(resource); err != nil {
+		h.provider.WriteAuthorizeError(ctx, w, errAr, err)
+		return
+	}
+	if err := server.ValidateAudienceAllowed(resource, h.config.AllowedAudiences); err != nil {
+		h.provider.WriteAuthorizeError(ctx, w, errAr, err)
+		return
+	}
+
 	slog.Debug("authorize request received",
 		"client_id", clientID,
 		"redirect_uri", redirectURI,
 		"scope_count", len(scopes),
 	)
 
-	// Generate secrets for upstream authorization, plus the browser-binding
-	// secret whose hash ties this pending record to the calling browser.
-	secrets := newUpstreamAuthSecrets()
+	// Store the request before any upstream authorization secrets exist.
 	binding := newBrowserBinding()
-
-	// Create and store pending authorization.
-	// SessionID is generated here at the start of the chain so it can be
-	// threaded through all legs of a multi-upstream authorization flow.
-	// The first leg always targets upstreams[0].
+	handle := rand.Text()
 	pending := &storage.PendingAuthorization{
-		ClientID:             clientID,
-		RedirectURI:          redirectURI,
-		State:                state,
-		PKCEChallenge:        codeChallenge,
-		PKCEMethod:           codeChallengeMethod,
-		Scopes:               scopes,
-		InternalState:        secrets.State,
-		UpstreamPKCEVerifier: secrets.PKCEVerifier,
-		UpstreamNonce:        secrets.Nonce,
-		BrowserBindingHash:   binding.hash,
-		UpstreamProviderName: h.upstreams[0].Name,
-		SessionID:            rand.Text(),
-		CreatedAt:            time.Now(),
+		ClientID: clientID, RedirectURI: redirectURI, State: state,
+		PKCEChallenge: codeChallenge, PKCEMethod: codeChallengeMethod,
+		Scopes: scopes, Resource: resource, ConsentStage: storage.ConsentStageAwaiting,
+		BrowserBindingHash: binding.hash, UpstreamProviderName: h.upstreams[0].Name,
+		SessionID: rand.Text(), CreatedAt: time.Now(),
 	}
-
-	if err := h.storage.StorePendingAuthorization(ctx, secrets.State, pending); err != nil {
-		slog.Error("failed to store pending authorization",
-			"error", err,
-		)
+	if h.beginIfRemembered(ctx, w, req, errAr, pending, redirectURI, scopes, resource) {
+		return
+	}
+	if err := h.storage.StorePendingAuthorization(ctx, handle, pending); err != nil {
+		slog.Error("failed to store pending authorization", "error", err)
 		h.provider.WriteAuthorizeError(ctx, w, errAr, fosite.ErrServerError.WithHint("failed to store authorization request"))
 		return
 	}
+	h.setBrowserBindingCookie(w, handle, binding.value)
+	h.renderConsent(w, handle, pending, ar.GetClient())
+}
 
-	// Build upstream authorization URL with PKCE challenge
-	// Add nonce for OIDC providers that support ID token validation
+// beginIfRemembered skips the consent page when a covering server-side approval
+// exists and the client has not explicitly requested consent, and reports
+// whether it answered the request.
+func (h *Handler) beginIfRemembered(ctx context.Context, w http.ResponseWriter, req *http.Request,
+	errAr fosite.AuthorizeRequester, pending *storage.PendingAuthorization,
+	redirectURI string, scopes []string, resource string) bool {
+	// A downstream consent prompt requires the consent page even with a covering approval.
+	for _, prompt := range errAr.GetRequestForm()["prompt"] {
+		for _, token := range strings.Fields(prompt) {
+			if token == "consent" {
+				return false
+			}
+		}
+	}
+
+	// Only a covering server-side approval can bypass the consent page.
+	remembered, digest, err := h.coveringConsent(ctx, req, errAr.GetClient(), redirectURI, scopes, resource)
+	if err != nil {
+		slog.Error("failed to load remembered consent", "error", err)
+		h.provider.WriteAuthorizeError(ctx, w, errAr, fosite.ErrServerError)
+		return true
+	}
+	if remembered == nil {
+		return false
+	}
+	pending.ConsentStage = storage.ConsentStageApproved
+	pending.ExpectedUserID = remembered.UserID
+	pending.ExpectedProviderSubject = remembered.ProviderSubject
+	pending.ConsentSessionDigest = digest
+	h.beginUpstream(ctx, w, req, errAr, pending)
+	return true
+}
+
+// beginUpstream starts an approved request using fresh per-leg secrets.
+func (h *Handler) beginUpstream(ctx context.Context, w http.ResponseWriter, req *http.Request,
+	ar fosite.AuthorizeRequester, pending *storage.PendingAuthorization,
+) {
+	provider, ok := h.upstreamByName(pending.UpstreamProviderName)
+	if !ok {
+		h.provider.WriteAuthorizeError(ctx, w, ar, fosite.ErrServerError.WithHint("upstream provider not configured"))
+		return
+	}
+	secrets := newUpstreamAuthSecrets()
+	binding := newBrowserBinding()
+	next := *pending
+	next.InternalState = secrets.State
+	next.UpstreamPKCEVerifier = secrets.PKCEVerifier
+	next.UpstreamNonce = secrets.Nonce
+	next.BrowserBindingHash = binding.hash
+	if err := h.storage.StorePendingAuthorization(ctx, secrets.State, &next); err != nil {
+		slog.Error("failed to store pending authorization", "error", err)
+		h.provider.WriteAuthorizeError(ctx, w, ar, fosite.ErrServerError.WithHint("failed to store authorization request"))
+		return
+	}
 	var authOpts []upstream.AuthorizationOption
 	if secrets.Nonce != "" {
 		authOpts = append(authOpts, upstream.WithAdditionalParams(map[string]string{"nonce": secrets.Nonce}))
 	}
-	upstreamURL, err := h.upstreams[0].Provider.AuthorizationURL(secrets.State, secrets.PKCEChallenge, authOpts...)
+	upstreamURL, err := provider.AuthorizationURL(secrets.State, secrets.PKCEChallenge, authOpts...)
 	if err != nil {
-		slog.Error("failed to build upstream authorization URL",
-			"error", err,
-		)
-		// Clean up pending authorization
+		slog.Error("failed to build upstream authorization URL", "error", err)
 		_ = h.storage.DeletePendingAuthorization(ctx, secrets.State)
-		h.provider.WriteAuthorizeError(ctx, w, errAr, fosite.ErrServerError.WithHint("failed to build authorization URL"))
+		h.provider.WriteAuthorizeError(ctx, w, ar, fosite.ErrServerError.WithHint("failed to build authorization URL"))
 		return
 	}
-
-	// Redirect user to upstream IDP
-	// The cookie rides the redirect to the upstream so that only this browser
-	// can complete the callback for secrets.State. See browser_binding.go.
 	h.setBrowserBindingCookie(w, secrets.State, binding.value)
-	http.Redirect(w, req, upstreamURL, http.StatusFound)
+	http.Redirect(w, req, upstreamURL, http.StatusSeeOther)
 }
 
 // rejectBackChannelOnlyAuthorizeClient rejects a configured client that has no

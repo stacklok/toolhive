@@ -259,6 +259,7 @@ func (r *Runner) Run(ctx context.Context) error {
 		EndpointPrefix:           r.Config.EndpointPrefix,
 		SessionTTL:               effectiveSessionTTL,
 		ReadTimeout:              proxyReadTimeout,
+		StripConsentCookie:       r.Config.EmbeddedAuthServerConfig != nil,
 	}
 
 	// Set proxy mode for stdio transport
@@ -514,10 +515,15 @@ func (r *Runner) Run(ctx context.Context) error {
 		if keyPrefix == "" {
 			keyPrefix = "thv:proxy:session:"
 		}
+		tlsCfg, err := redisCfg.TLS.Load()
+		if err != nil {
+			return fmt.Errorf("redis session storage TLS configuration: %w", err)
+		}
 		storage, err := session.NewRedisStorage(ctx, redisconn.Config{
 			Addr:     redisCfg.Address,
 			Password: os.Getenv(session.RedisPasswordEnvVar),
 			DB:       int(redisCfg.DB),
+			TLS:      tlsCfg,
 		}, keyPrefix, effectiveSessionTTL)
 		if err != nil {
 			return fmt.Errorf("failed to create Redis session storage: %w", err)

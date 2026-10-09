@@ -8,6 +8,7 @@ import (
 
 	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
+	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/types"
 
@@ -20,6 +21,10 @@ const (
 	telemetryFinalizerName = "mcptelemetryconfig.toolhive.stacklok.dev/finalizer"
 	timeout                = time.Second * 30
 	interval               = time.Millisecond * 250
+
+	// deletionUnblockTimeout is far below the 30s requeue so a regression to
+	// requeue-only unblocking fails the spec.
+	deletionUnblockTimeout = time.Second * 10
 )
 
 var _ = Describe("MCPTelemetryConfig Controller", func() {
@@ -168,7 +173,7 @@ var _ = Describe("MCPTelemetryConfig Controller", func() {
 				Name:      telemetryConfig.Name,
 				Namespace: telemetryConfig.Namespace,
 			}, fetched)
-			return err != nil // Should be NotFound
+			return apierrors.IsNotFound(err)
 		}, timeout, interval).Should(BeTrue())
 	})
 
@@ -250,15 +255,15 @@ var _ = Describe("MCPTelemetryConfig Controller", func() {
 		// Now remove the referencing MCPServer
 		Expect(k8sClient.Delete(ctx, server)).To(Succeed())
 
-		// The config should now be deleted (finalizer removed after reference is gone)
+		// The config should now be deleted, unblocked by the workload watch rather than the 30s requeue.
 		Eventually(func() bool {
 			fetched := &mcpv1beta1.MCPTelemetryConfig{}
 			err := k8sClient.Get(ctx, types.NamespacedName{
 				Name:      telemetryConfig.Name,
 				Namespace: telemetryConfig.Namespace,
 			}, fetched)
-			return err != nil // Should be NotFound
-		}, timeout, interval).Should(BeTrue(), "Config should be deleted after references are removed")
+			return apierrors.IsNotFound(err)
+		}, deletionUnblockTimeout, interval).Should(BeTrue(), "Config should be deleted after references are removed")
 	})
 
 	It("should block deletion when MCPRemoteProxy references the config", func() {
@@ -330,14 +335,14 @@ var _ = Describe("MCPTelemetryConfig Controller", func() {
 		// Remove the referencing proxy
 		Expect(k8sClient.Delete(ctx, proxy)).To(Succeed())
 
-		// Config should now be deleted
+		// Config should now be deleted, unblocked by the workload watch rather than the 30s requeue.
 		Eventually(func() bool {
 			fetched := &mcpv1beta1.MCPTelemetryConfig{}
 			err := k8sClient.Get(ctx, types.NamespacedName{
 				Name:      telemetryConfig.Name,
 				Namespace: telemetryConfig.Namespace,
 			}, fetched)
-			return err != nil // Should be NotFound
-		}, timeout, interval).Should(BeTrue(), "Config should be deleted after proxy reference is removed")
+			return apierrors.IsNotFound(err)
+		}, deletionUnblockTimeout, interval).Should(BeTrue(), "Config should be deleted after proxy reference is removed")
 	})
 })

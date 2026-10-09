@@ -455,7 +455,7 @@ var _ = Describe("MCPOIDCConfig and MCPRemoteProxy Cross-Resource Integration Te
 			// Delete the MCPRemoteProxy to remove the reference
 			Expect(k8sClient.Delete(ctx, proxy)).Should(Succeed())
 
-			// The MCPOIDCConfig should eventually be fully deleted
+			// The MCPOIDCConfig should be deleted, unblocked by the workload watch rather than the 30s requeue.
 			Eventually(func() bool {
 				updated := &mcpv1beta1.MCPOIDCConfig{}
 				err := k8sClient.Get(ctx, types.NamespacedName{
@@ -463,7 +463,7 @@ var _ = Describe("MCPOIDCConfig and MCPRemoteProxy Cross-Resource Integration Te
 					Namespace: namespace,
 				}, updated)
 				return errors.IsNotFound(err)
-			}, timeout, interval).Should(BeTrue())
+			}, deletionUnblockTimeout, interval).Should(BeTrue())
 		})
 	})
 

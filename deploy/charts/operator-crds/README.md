@@ -80,7 +80,7 @@ This is a one-time operation. After patching, future upgrades will work as long 
 ## Values
 
 | Key | Type | Default | Description |
-|-----|-------------|------|---------|
+|-----|------|---------|-------------|
 | crds | object | `{"install":true,"keep":true}` | Custom resource definition (CRD) installation and retention settings. |
 | crds.install | bool | `true` | Include the chart's CRDs in the Helm release for installation and upgrades. |
 | crds.keep | bool | `true` | Add the `helm.sh/resource-policy: keep` annotation to each CRD so Helm retains it when you uninstall the release. |

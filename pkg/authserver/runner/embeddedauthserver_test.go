@@ -2500,7 +2500,7 @@ func TestBuildUpstreamConfigs_DCR(t *testing.T) {
 		assert.Equal(t, "dcr-client-id", got[0].OAuth2Config.ClientID)
 		assert.Equal(t, "dcr-client-secret", got[0].OAuth2Config.ClientSecret)
 
-		// Store now contains the resolution under the canonical storage.DCRKey.
+		// Store now contains the resolution under the canonical dcrkey.Key.
 		redirectURI := server.URL + "/oauth/callback"
 		key := storage.DCRKey{
 			Issuer:      server.URL,
@@ -2589,7 +2589,7 @@ func TestBuildUpstreamConfigs_DCR(t *testing.T) {
 // inside the constructor. It verifies that (a) the constructor wires
 // the shared storage.DCRCredentialStore into the DCR resolver (via the
 // dcr.CredentialStore adapter passed to buildUpstreamConfigs), (b) that
-// store is populated with the canonical storage.DCRKey after boot, and
+// store is populated with the canonical dcrkey.Key after boot, and
 // (c) the caller's original RunConfig.Upstreams[i] slice element is
 // unchanged.
 //
@@ -2643,7 +2643,7 @@ func TestNewEmbeddedAuthServer_DCRBoot(t *testing.T) {
 		"DCR boot should have issued network I/O to the mock AS")
 
 	// The store on the EmbeddedAuthServer contains the canonical
-	// storage.DCRKey for this upstream — the accessor delegates to the
+	// dcrkey.Key for this upstream — the accessor delegates to the
 	// same storage.DCRCredentialStore createStorage produced, so a
 	// successful boot persisted the resolution there directly (no
 	// separate in-memory store was created).

@@ -137,11 +137,11 @@ func redisProviderKey(prefix, providerID, providerSubject string) string {
 // The first three segments are length-prefixed to handle colons in UpstreamID
 // and RedirectURI (and, for symmetry, Issuer) without ambiguity, mirroring
 // redisProviderKey. ScopesHash is expected to be a SHA-256 hex digest produced
-// by storage.ScopesHash — only [0-9a-f] and never colon-bearing — so it is
+// by dcrkey.ScopesHash — only [0-9a-f] and never colon-bearing — so it is
 // appended without a length prefix. The format is robust for that domain;
 // validateDCRCredentialsForStore (called by every Store path) already
 // rejects an empty ScopesHash, and callers are required to compute the hash
-// via storage.ScopesHash. Length-prefix collision-safety is preserved on
+// via dcrkey.ScopesHash. Length-prefix collision-safety is preserved on
 // the leading segments either way.
 //
 // The UpstreamID segment (issue #5823) means two upstreams that share the
@@ -156,7 +156,7 @@ func redisProviderKey(prefix, providerID, providerSubject string) string {
 // There is no automated one-shot migration for this key-format change today.
 //
 // The public-vs-confidential client distinction is intentionally NOT
-// encoded here — see DCRKey's doc for the rationale. Today's two consumers
+// encoded here — see dcrkey.Key's doc for the rationale. Today's two consumers
 // register on disjoint RedirectURI address spaces (AS-origin vs RFC 8252
 // loopback) so the persisted key cannot collide across profiles. A future
 // consumer that defaults its RedirectURI into either space would need to

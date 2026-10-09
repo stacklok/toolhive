@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"github.com/stacklok/toolhive/pkg/authserver/storage"
+	"github.com/stacklok/toolhive/pkg/oauthproto/dcrkey"
 )
 
 // dcrStaleAgeThreshold is the age beyond which a cached DCR resolution is
@@ -20,14 +21,9 @@ import (
 // long-lived and are only purged by explicit RFC 7592 deregistration.
 const dcrStaleAgeThreshold = 90 * 24 * time.Hour
 
-// Key is a re-export of storage.DCRKey, kept as a package-local alias so
-// callers in this package can reference the canonical cache key without an
-// explicit storage. qualifier on every call site, while the canonical
-// definition lives in pkg/authserver/storage. The canonical form (and its
-// ScopesHash constructor) MUST live in a single place so any future Redis
-// backend hashes keys identically to the in-memory backend; see
-// storage.DCRKey for the field documentation.
-type Key = storage.DCRKey
+// Key aliases the canonical OAuth-side DCR key so resolver callers can
+// reference it without an explicit dcrkey qualifier.
+type Key = dcrkey.Key
 
 // CredentialStore caches RFC 7591 Dynamic Client Registration resolutions
 // keyed by the (Issuer, UpstreamID, RedirectURI, ScopesHash) tuple.

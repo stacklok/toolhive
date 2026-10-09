@@ -60,9 +60,9 @@ import (
 
 	"golang.org/x/sync/singleflight"
 
-	"github.com/stacklok/toolhive/pkg/authserver/storage"
 	"github.com/stacklok/toolhive/pkg/networking"
 	"github.com/stacklok/toolhive/pkg/oauthproto"
+	"github.com/stacklok/toolhive/pkg/oauthproto/dcrkey"
 )
 
 // dcrFlight coalesces concurrent ResolveCredentials calls that share the
@@ -364,7 +364,7 @@ func ResolveCredentials(
 		Issuer:      req.Issuer,
 		UpstreamID:  upstreamID,
 		RedirectURI: redirectURI,
-		ScopesHash:  storage.ScopesHash(scopes),
+		ScopesHash:  dcrkey.ScopesHash(scopes),
 	}
 
 	// Cache lookup short-circuits before any network I/O.

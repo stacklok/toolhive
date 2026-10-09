@@ -32,6 +32,8 @@ import (
 	"github.com/ory/fosite"
 	"github.com/ory/fosite/handler/oauth2"
 	"github.com/ory/fosite/handler/pkce"
+
+	"github.com/stacklok/toolhive/pkg/oauthproto/dcrkey"
 )
 
 // Sentinel errors for storage operations.
@@ -165,108 +167,14 @@ func (t *UpstreamTokens) IsExpired(now time.Time) bool {
 	return !t.ExpiresAt.IsZero() && now.After(t.ExpiresAt)
 }
 
-// DCRKey is the canonical lookup key for a DCR registration. The tuple is
-// designed so that any backend (in-memory or Redis) serialises it identically
-// without redefining the canonical form. ScopesHash is used rather than a raw
-// scope slice so the key is comparable, fixed-size, and order-insensitive.
-//
-// The key lives in the storage package because both MemoryStorage and the
-// future Redis backend must hash keys identically; keeping the canonical form
-// next to the persistence implementations prevents drift.
-type DCRKey struct {
-	// Issuer is the registration consumer's issuer identifier. The dual
-	// semantic depends on the consumer profile:
-	//   - Embedded authorization server: its OWN local issuer (the embedded
-	//     authserver that performed the registration).
-	//   - CLI / direct OAuth flow: the UPSTREAM authorization server's
-	//     issuer, because the CLI has no separate local issuer of its own.
-	// The cache is keyed by this value because two different consumers
-	// registering against the same upstream are distinct OAuth clients and
-	// must not share credentials. The (Issuer, UpstreamID, RedirectURI,
-	// ScopesHash) tuple keeps the two consumer profiles' entries apart via
-	// the RedirectURI component (the embedded authserver registers an
-	// AS-origin callback while the CLI registers a loopback callback per
-	// RFC 8252 §7.3 — the two address spaces are disjoint), so a collision
-	// between profiles is impossible by construction even when the
-	// upstream is the same. Public-client vs confidential-client
-	// separation rides on that same disjoint-RedirectURI property at both
-	// the persistent-cache and in-process singleflight layers; encoding it on
-	// the key would invalidate every existing Redis-cached entry across a
-	// deployment without buying additional protection. If a future
-	// consumer brings the two address spaces into collision the key
-	// format must gain a consumer-identifier component alongside an
-	// explicit migration story.
-	Issuer string
+// DCRKey is retained as a compatibility alias for the canonical DCR key.
+// New code should use oauthproto/dcrkey.Key directly.
+type DCRKey = dcrkey.Key
 
-	// UpstreamID identifies the upstream authorization server this
-	// registration is bound to, disambiguating upstreams that share the
-	// consumer's Issuer, RedirectURI, and scope set. Within a single
-	// embedded authserver every OAuth2 upstream shares the authserver's own
-	// Issuer and the one defaulted {issuer}/oauth/callback RedirectURI, so
-	// before this component existed two upstreams configured with equal
-	// scopes collided on one cache entry — the second read back the first's
-	// dynamically-registered client_id / client_secret and never registered
-	// with its own authorization server (issue #5823).
-	//
-	// The value is the upstream's registration identity: the upstream issuer
-	// recovered from the consumer's discovery URL, or the registration
-	// endpoint URL when the consumer configured one directly. It is derived
-	// by the dcr resolver from the Request; do not hand-build it at call
-	// sites.
-	//
-	// On the discovery-URL path this is the derived issuer, so it identifies
-	// the authorization server rather than the exact discovery URL: two
-	// configs that resolve to the same issuer intentionally share one
-	// registration. It does not fully disambiguate the nonstandard case of a
-	// single issuer exposing distinct registration endpoints under custom
-	// (non-well-known) discovery paths — see resolveUpstreamKeyIdentity in
-	// pkg/auth/dcr for the full rationale.
-	UpstreamID string
-
-	// RedirectURI is the redirect URI registered with the upstream
-	// authorization server. Embedded-authserver callers register an
-	// AS-origin callback; CLI callers register an RFC 8252 loopback
-	// callback. The two address spaces are disjoint, which is what makes
-	// the per-consumer cache namespace structurally safe today.
-	RedirectURI string
-
-	// ScopesHash is the SHA-256 hex digest of the sorted, deduplicated scope
-	// list. Use ScopesHash() to compute this value — do NOT hash scopes by
-	// hand at call sites; the canonical form must be a single source of truth
-	// so the key matches across processes and backends.
-	ScopesHash string
-}
-
-// ScopesHash returns the SHA-256 hex digest of the canonical OAuth scope set,
-// suitable for use as DCRKey.ScopesHash.
-//
-// Canonicalisation:
-//  1. Sort ascending so the digest is order-insensitive — e.g.
-//     []string{"openid", "profile"} and []string{"profile", "openid"} hash to
-//     the same value.
-//  2. Deduplicate so that []string{"openid"} and []string{"openid", "openid"}
-//     hash to the same value. An OAuth scope set is a set, not a multiset
-//     (RFC 6749 §3.3), and without deduplication a caller that accidentally
-//     duplicated a scope would miss cache entries and trigger redundant
-//     RFC 7591 registrations.
-//  3. Join with newlines (a character not valid in OAuth scope tokens per
-//     RFC 6749 §3.3) to avoid collision between e.g. ["ab", "c"] and
-//     ["a", "bc"].
-//
-// nil and empty slice both canonicalise to the same hash.
+// ScopesHash forwards to the canonical OAuth-side implementation for
+// compatibility with existing storage callers.
 func ScopesHash(scopes []string) string {
-	sorted := slices.Clone(scopes)
-	sort.Strings(sorted)
-	sorted = slices.Compact(sorted)
-
-	h := sha256.New()
-	for i, s := range sorted {
-		if i > 0 {
-			_, _ = h.Write([]byte("\n"))
-		}
-		_, _ = h.Write([]byte(s))
-	}
-	return hex.EncodeToString(h.Sum(nil))
+	return dcrkey.ScopesHash(scopes)
 }
 
 // validateDCRCredentialsForStore enforces the rejection contract that every

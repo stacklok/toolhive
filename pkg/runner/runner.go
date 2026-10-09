@@ -519,12 +519,14 @@ func (r *Runner) Run(ctx context.Context) error {
 		if err != nil {
 			return fmt.Errorf("redis session storage TLS configuration: %w", err)
 		}
-		storage, err := session.NewRedisStorage(ctx, redisconn.Config{
+		connCfg := redisconn.Config{
 			Addr:     redisCfg.Address,
 			Password: os.Getenv(session.RedisPasswordEnvVar),
 			DB:       int(redisCfg.DB),
 			TLS:      tlsCfg,
-		}, keyPrefix, effectiveSessionTTL)
+		}
+		session.WarnInsecureRedisTransport(&connCfg, redisCfg.Address)
+		storage, err := session.NewRedisStorage(ctx, connCfg, keyPrefix, effectiveSessionTTL)
 		if err != nil {
 			return fmt.Errorf("failed to create Redis session storage: %w", err)
 		}

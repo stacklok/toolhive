@@ -1620,20 +1620,19 @@ func (r *MCPRemoteProxyReconciler) updateMCPRemoteProxyStatus(ctx context.Contex
 		return err
 	}
 
-	// Update the status based on the pod status
+	// Update the status based on the pod status. The classifier is shared with
+	// the MCPServer reconciler so that both CRDs report the same verdict for the
+	// same pod: a pod in the Running phase whose container is not ready, or one
+	// in CrashLoopBackOff, is not a proxy that can serve traffic (#6726).
 	var running, pending, failed int
+	var failureReason string
 	for _, pod := range podList.Items {
-		switch pod.Status.Phase {
-		case corev1.PodRunning:
-			running++
-		case corev1.PodPending:
-			pending++
-		case corev1.PodFailed:
-			failed++
-		case corev1.PodSucceeded:
-			running++
-		case corev1.PodUnknown:
-			pending++
+		podRunning, podPending, podFailed, reason := categorizePodStatus(pod)
+		running += podRunning
+		pending += podPending
+		failed += podFailed
+		if reason != "" && failureReason == "" {
+			failureReason = reason
 		}
 	}
 
@@ -1661,11 +1660,14 @@ func (r *MCPRemoteProxyReconciler) updateMCPRemoteProxyStatus(ctx context.Contex
 	} else if failed > 0 {
 		proxy.Status.Phase = mcpv1beta1.MCPRemoteProxyPhaseFailed
 		proxy.Status.Message = "Remote proxy failed to start"
+		if failureReason != "" {
+			proxy.Status.Message = fmt.Sprintf("Remote proxy failed to start: %s", failureReason)
+		}
 		meta.SetStatusCondition(&proxy.Status.Conditions, metav1.Condition{
 			Type:               mcpv1beta1.ConditionTypeReady,
 			Status:             metav1.ConditionFalse,
 			Reason:             mcpv1beta1.ConditionReasonDeploymentNotReady,
-			Message:            "Deployment failed",
+			Message:            proxy.Status.Message,
 			ObservedGeneration: proxy.Generation,
 		})
 	} else {

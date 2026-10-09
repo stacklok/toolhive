@@ -397,6 +397,9 @@ func TestMCPRemoteProxyStatusProgression(t *testing.T) {
 		},
 		Status: corev1.PodStatus{
 			Phase: corev1.PodRunning,
+			ContainerStatuses: []corev1.ContainerStatus{
+				{Name: "proxy", Ready: true},
+			},
 		},
 	}
 	err = fakeClient.Create(ctx, runningPod)

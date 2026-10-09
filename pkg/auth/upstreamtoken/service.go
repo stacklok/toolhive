@@ -27,6 +27,12 @@ const (
 	// session expiry is unknown, so the suppression map cannot grow without
 	// bound.
 	defaultIDTokenSuppression = time.Hour
+
+	// idTokenRefreshFailureBackoff is how long the ID-token trigger stays
+	// suppressed after a failed ID-token-triggered refresh. It is short so a
+	// transient upstream error does not reopen the stale-ID-token window for
+	// the rest of the access token's lifetime.
+	idTokenRefreshFailureBackoff = time.Minute
 )
 
 // InProcessService implements the Service interface for in-process use.
@@ -72,9 +78,9 @@ type Option func(*InProcessService)
 // Microsoft Entra ID). It does not help when the provider omits id_token on
 // refresh (OIDC Core 1.0 §12.2): the expired ID token is then carried forward
 // and the trigger is suppressed for that row until the access token next
-// expires, so reads do not loop on refresh. The trigger is likewise suppressed
-// after a failed ID-token-triggered refresh, and never fires when the row has
-// no refresh token.
+// expires, so reads do not loop on refresh. After a failed ID-token-triggered
+// refresh the trigger backs off briefly (idTokenRefreshFailureBackoff). It
+// never fires when the row has no refresh token.
 //
 // Suppression state is held in process memory: replicas sharing storage each
 // keep their own, so each may perform one extra refresh per access-token
@@ -157,8 +163,9 @@ func (s *InProcessService) GetValidTokens(ctx context.Context, sessionID, provid
 // independently validated for freshness and may be empty if the upstream login
 // never yielded one. With WithRefreshOnExpiredIDToken, an expired ID token
 // also triggers a refresh; a failed ID-token-triggered refresh does not put the
-// provider in the failed slice, since its access token is still valid. Callers that PRESENT it as a credential must expect expiry
-// to be rejected; callers that only READ ITS CLAIMS are unaffected by expiry. See
+// provider in the failed slice, since its access token is still valid. Callers
+// that PRESENT it as a credential must expect expiry to be rejected; callers
+// that only READ ITS CLAIMS are unaffected by expiry. See
 // Identity.UpstreamIDTokens for both consumers.
 //
 // Returns an empty map and nil failed slice (not error) for unknown sessions.
@@ -304,9 +311,9 @@ func (s *InProcessService) shouldRefreshForIDToken(
 
 // refreshForIDToken refreshes a row whose access token is still valid but whose
 // ID token has expired. A failed refresh is not fatal: the stored credential is
-// returned unchanged (its access token is still usable) and the trigger is
-// suppressed until the access token expires, so a failing upstream is not
-// hammered on every read.
+// returned unchanged (its access token is still usable) and the trigger backs
+// off for idTokenRefreshFailureBackoff (or until the access token expires, if
+// sooner), so a failing upstream is not hammered on every read.
 func (s *InProcessService) refreshForIDToken(
 	ctx context.Context, sessionID, providerName string, tokens *storage.UpstreamTokens,
 ) *UpstreamCredential {
@@ -319,7 +326,11 @@ func (s *InProcessService) refreshForIDToken(
 		"provider", providerName,
 		"error", err,
 	)
-	s.suppressIDTokenRefresh(sessionID, providerName, tokens.IDToken, tokens.ExpiresAt, tokens.SessionExpiresAt)
+	until := time.Now().Add(idTokenRefreshFailureBackoff)
+	if !tokens.ExpiresAt.IsZero() && tokens.ExpiresAt.Before(until) {
+		until = tokens.ExpiresAt
+	}
+	s.suppressIDTokenRefresh(sessionID, providerName, tokens.IDToken, until, time.Time{})
 	return &UpstreamCredential{AccessToken: tokens.AccessToken, IDToken: tokens.IDToken}
 }
 

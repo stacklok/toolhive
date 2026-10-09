@@ -651,7 +651,7 @@ func TestInProcessService_RefreshOnExpiredIDToken(t *testing.T) {
 			},
 		},
 		{
-			name:    "enabled: failed refresh returns stored tokens and is not retried before access-token expiry",
+			name:    "enabled: failed refresh returns stored tokens and is not retried within the backoff",
 			enabled: true,
 			rows:    []*storage.UpstreamTokens{staleRow, staleRow},
 			setupRefresher: func(r *storagemocks.MockUpstreamTokenRefresher) {

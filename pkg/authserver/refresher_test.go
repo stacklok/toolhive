@@ -1052,3 +1052,87 @@ func TestUpstreamTokenRefresher_ConcurrentRefreshConflict_LogLevel(t *testing.T)
 		})
 	}
 }
+
+// TestUpstreamTokenRefresher_ReReadShortCircuit pins when the leader's re-read
+// skips the upstream call: only when the stored row is unexpired and was
+// rewritten since the caller read it. A caller that deliberately refreshes a
+// still-current row (the opt-in expired-ID-token trigger) must reach the
+// provider.
+func TestUpstreamTokenRefresher_ReReadShortCircuit(t *testing.T) {
+	t.Parallel()
+
+	current := &storage.UpstreamTokens{
+		ProviderID:      "github",
+		AccessToken:     "current-access",
+		RefreshToken:    "current-refresh",
+		IDToken:         "expired-id-token",
+		ExpiresAt:       time.Now().Add(30 * time.Minute),
+		UpstreamSubject: "upstream-sub",
+	}
+	rotatedByOther := &storage.UpstreamTokens{
+		ProviderID:      "github",
+		AccessToken:     "other-access",
+		RefreshToken:    "other-refresh",
+		IDToken:         "other-id-token",
+		ExpiresAt:       time.Now().Add(time.Hour),
+		UpstreamSubject: "upstream-sub",
+	}
+
+	tests := []struct {
+		name          string
+		stored        *storage.UpstreamTokens
+		expectRefresh bool
+		wantAccess    string
+		wantIDToken   string
+	}{
+		{
+			name:          "unexpired row unchanged since caller read it is refreshed upstream",
+			stored:        current,
+			expectRefresh: true,
+			wantAccess:    "new-access",
+			wantIDToken:   "new-id-token",
+		},
+		{
+			name:        "unexpired row already rotated by another caller is returned without an upstream call",
+			stored:      rotatedByOther,
+			wantAccess:  "other-access",
+			wantIDToken: "other-id-token",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			ctrl := gomock.NewController(t)
+			mockProvider := upstreammocks.NewMockOAuth2Provider(ctrl)
+			mockStorage := storagemocks.NewMockUpstreamTokenStorage(ctrl)
+			mockStorage.EXPECT().ResolveUpstreamTokenRowID(gomock.Any(), "session-1", "github").
+				Return(storage.UpstreamTokenRowID("row"), nil)
+			mockStorage.EXPECT().GetUpstreamTokens(gomock.Any(), "session-1", "github").
+				Return(tt.stored, nil)
+			if tt.expectRefresh {
+				mockProvider.EXPECT().RefreshTokens(gomock.Any(), "current-refresh", "upstream-sub").
+					Return(&upstream.Tokens{
+						AccessToken: "new-access",
+						IDToken:     "new-id-token",
+						ExpiresAt:   time.Now().Add(time.Hour),
+					}, nil)
+				mockStorage.EXPECT().CompareAndSwapUpstreamTokens(
+					gomock.Any(), "session-1", "github", "current-refresh", gomock.Any()).Return(nil)
+			}
+
+			refresher := &upstreamTokenRefresher{
+				providers:            map[string]upstream.OAuth2Provider{"github": mockProvider},
+				storage:              mockStorage,
+				refreshTokenLifespan: 24 * time.Hour,
+			}
+
+			result, err := refresher.RefreshAndStore(context.Background(), "session-1", current)
+			require.NoError(t, err)
+			require.NotNil(t, result)
+			assert.Equal(t, tt.wantAccess, result.AccessToken)
+			assert.Equal(t, tt.wantIDToken, result.IDToken)
+		})
+	}
+}

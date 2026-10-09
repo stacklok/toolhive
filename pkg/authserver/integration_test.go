@@ -8,6 +8,7 @@ import (
 	"context"
 	"crypto/rand"
 	"crypto/rsa"
+	"encoding/base64"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -3204,6 +3205,72 @@ func TestIntegration_UpstreamTokenService_NonExpiringToken(t *testing.T) {
 		"non-expiring token must not gain an ExpiresAt after GetValidTokens")
 	assert.Equal(t, original.AccessToken, cred.AccessToken,
 		"access token must be unchanged — no refresh occurred")
+}
+
+// TestIntegration_UpstreamTokenService_RefreshOnExpiredIDToken exercises the
+// opt-in ID-token trigger against the real refresher and mockoidc: the stored
+// access token is still valid but the ID token has expired (the Entra shape,
+// where ID tokens outlive access tokens). With the option enabled, a read must
+// reach the upstream token endpoint and return the rotated ID token, rather
+// than being short-circuited by the refresher because the access token is
+// unexpired.
+func TestIntegration_UpstreamTokenService_RefreshOnExpiredIDToken(t *testing.T) {
+	t.Parallel()
+
+	m := startMockOIDC(t)
+	ts := setupTestServerWithMockOIDC(t, m)
+
+	verifier := servercrypto.GeneratePKCEVerifier()
+	challenge := servercrypto.ComputePKCEChallenge(verifier)
+
+	authCode, _ := completeAuthorizationFlow(t, ts.Server.URL, authorizationParams{
+		ClientID:     testClientID,
+		RedirectURI:  testRedirectURI,
+		State:        "upstream-expired-id-token-test",
+		Challenge:    challenge,
+		Scope:        "openid profile offline_access",
+		ResponseType: "code",
+	})
+
+	tokenData := exchangeCodeForTokens(t, ts.Server.URL, authCode, verifier, testAudience)
+
+	accessToken, ok := tokenData["access_token"].(string)
+	require.True(t, ok)
+	tsid := extractTSID(t, accessToken, ts.PrivateKey.Public())
+
+	stor := ts.authServer.IDPTokenStorage()
+	original, err := stor.GetUpstreamTokens(context.Background(), tsid, "default")
+	require.NoError(t, err)
+	require.NotNil(t, original)
+
+	// Keep the access token valid, but replace the ID token with one whose exp
+	// has passed. Only exp is read before refresh, so the signature is a stub.
+	b64 := base64.RawURLEncoding.EncodeToString
+	staleIDToken := b64([]byte(`{"alg":"RS256","typ":"JWT"}`)) + "." +
+		b64([]byte(fmt.Sprintf(`{"exp":%d}`, time.Now().Add(-10*time.Minute).Unix()))) + "." +
+		b64([]byte("sig"))
+	stale := *original
+	stale.IDToken = staleIDToken
+	stale.ExpiresAt = time.Now().Add(30 * time.Minute)
+	require.NoError(t, stor.StoreUpstreamTokens(context.Background(), tsid, "default", &stale))
+
+	m.QueueUser(&mockoidc.MockUser{
+		Subject: "mock-user-sub-123",
+		Email:   "testuser@example.com",
+	})
+
+	svc := upstreamtoken.NewInProcessService(stor, ts.authServer.UpstreamTokenRefresher(),
+		upstreamtoken.WithRefreshOnExpiredIDToken())
+
+	cred, err := svc.GetValidTokens(context.Background(), tsid, "default")
+	require.NoError(t, err)
+	require.NotNil(t, cred)
+	assert.NotEmpty(t, cred.IDToken)
+	assert.NotEqual(t, staleIDToken, cred.IDToken, "expired ID token must be rotated by a real upstream refresh")
+
+	persisted, err := stor.GetUpstreamTokens(context.Background(), tsid, "default")
+	require.NoError(t, err)
+	assert.Equal(t, cred.IDToken, persisted.IDToken, "rotated ID token must be persisted")
 }
 
 // TestIntegration_UpstreamTokenService_SessionNotFound verifies that the service

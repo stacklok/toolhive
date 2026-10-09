@@ -1069,6 +1069,24 @@ func TestUpstreamTokenRefresher_ReReadShortCircuit(t *testing.T) {
 		ExpiresAt:       time.Now().Add(30 * time.Minute),
 		UpstreamSubject: "upstream-sub",
 	}
+	// An expired caller row, and the stored row after a provider that re-issued
+	// the same token strings with only a new expiry.
+	expiredCaller := &storage.UpstreamTokens{
+		ProviderID:      "github",
+		AccessToken:     "current-access",
+		RefreshToken:    "current-refresh",
+		IDToken:         "expired-id-token",
+		ExpiresAt:       time.Now().Add(-time.Minute),
+		UpstreamSubject: "upstream-sub",
+	}
+	reExtended := &storage.UpstreamTokens{
+		ProviderID:      "github",
+		AccessToken:     "current-access",
+		RefreshToken:    "current-refresh",
+		IDToken:         "expired-id-token",
+		ExpiresAt:       time.Now().Add(time.Hour),
+		UpstreamSubject: "upstream-sub",
+	}
 	rotatedByOther := &storage.UpstreamTokens{
 		ProviderID:      "github",
 		AccessToken:     "other-access",
@@ -1080,6 +1098,7 @@ func TestUpstreamTokenRefresher_ReReadShortCircuit(t *testing.T) {
 
 	tests := []struct {
 		name          string
+		caller        *storage.UpstreamTokens
 		stored        *storage.UpstreamTokens
 		expectRefresh bool
 		wantAccess    string
@@ -1087,6 +1106,7 @@ func TestUpstreamTokenRefresher_ReReadShortCircuit(t *testing.T) {
 	}{
 		{
 			name:          "unexpired row unchanged since caller read it is refreshed upstream",
+			caller:        current,
 			stored:        current,
 			expectRefresh: true,
 			wantAccess:    "new-access",
@@ -1094,9 +1114,17 @@ func TestUpstreamTokenRefresher_ReReadShortCircuit(t *testing.T) {
 		},
 		{
 			name:        "unexpired row already rotated by another caller is returned without an upstream call",
+			caller:      current,
 			stored:      rotatedByOther,
 			wantAccess:  "other-access",
 			wantIDToken: "other-id-token",
+		},
+		{
+			name:        "row re-extended with the same token strings is returned without an upstream call",
+			caller:      expiredCaller,
+			stored:      reExtended,
+			wantAccess:  "current-access",
+			wantIDToken: "expired-id-token",
 		},
 	}
 
@@ -1128,7 +1156,7 @@ func TestUpstreamTokenRefresher_ReReadShortCircuit(t *testing.T) {
 				refreshTokenLifespan: 24 * time.Hour,
 			}
 
-			result, err := refresher.RefreshAndStore(context.Background(), "session-1", current)
+			result, err := refresher.RefreshAndStore(context.Background(), "session-1", tt.caller)
 			require.NoError(t, err)
 			require.NotNil(t, result)
 			assert.Equal(t, tt.wantAccess, result.AccessToken)

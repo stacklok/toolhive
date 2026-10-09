@@ -391,9 +391,13 @@ func (r *upstreamTokenRefresher) compareAndSwapWithRetry(
 }
 
 // rowChanged reports whether the stored row was rewritten since the caller read
-// it, i.e. another caller already refreshed it. A caller that passed an expired
-// row and finds an unexpired one always sees a change, since the access token
-// and its expiry are rewritten together.
+// it, i.e. another caller already refreshed it. Expiry is compared as well as
+// the token values so a provider that re-issues the same access token string
+// with a new expiry (and does not rotate the refresh token) still counts as a
+// change, and the caller does not redeem again.
 func rowChanged(callerRow, stored *storage.UpstreamTokens) bool {
-	return callerRow.AccessToken != stored.AccessToken || callerRow.RefreshToken != stored.RefreshToken
+	return callerRow.AccessToken != stored.AccessToken ||
+		callerRow.RefreshToken != stored.RefreshToken ||
+		callerRow.IDToken != stored.IDToken ||
+		!callerRow.ExpiresAt.Equal(stored.ExpiresAt)
 }

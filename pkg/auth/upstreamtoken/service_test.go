@@ -754,3 +754,65 @@ func signedIDToken(t *testing.T, exp time.Time) string {
 	require.NoError(t, err)
 	return tok
 }
+
+// TestInProcessService_IDTokenRefreshFailureBackoff pins the suppression window
+// recorded after a failed ID-token-triggered refresh: a short backoff, capped
+// at the access token's expiry when that comes sooner. Waiting out the real
+// backoff in a test is impractical, so the recorded window is inspected
+// directly.
+func TestInProcessService_IDTokenRefreshFailureBackoff(t *testing.T) {
+	t.Parallel()
+
+	expiredIDToken := signedIDToken(t, time.Now().Add(-10*time.Minute))
+	soon := time.Now().Add(20 * time.Second)
+
+	tests := []struct {
+		name       string
+		expiresAt  time.Time
+		wantUntil  func(before time.Time) time.Time
+		wantWithin time.Duration
+	}{
+		{
+			name:       "access token outlives backoff: suppressed for the backoff only",
+			expiresAt:  time.Now().Add(30 * time.Minute),
+			wantUntil:  func(before time.Time) time.Time { return before.Add(idTokenRefreshFailureBackoff) },
+			wantWithin: time.Second,
+		},
+		{
+			name:      "access token expires within backoff: suppressed until access-token expiry",
+			expiresAt: soon,
+			wantUntil: func(time.Time) time.Time { return soon },
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			ctrl := gomock.NewController(t)
+			mockRefresher := storagemocks.NewMockUpstreamTokenRefresher(ctrl)
+			mockRefresher.EXPECT().RefreshAndStore(gomock.Any(), "session-1", gomock.Any()).
+				Return(nil, errors.New("upstream unavailable"))
+
+			svc := NewInProcessService(storagemocks.NewMockUpstreamTokenStorage(ctrl), mockRefresher,
+				WithRefreshOnExpiredIDToken())
+			row := &storage.UpstreamTokens{
+				ProviderID:   "entra",
+				AccessToken:  "valid-access-token",
+				RefreshToken: "refresh-token",
+				IDToken:      expiredIDToken,
+				ExpiresAt:    tt.expiresAt,
+			}
+
+			before := time.Now()
+			svc.refreshForIDToken(context.Background(), "session-1", "entra", row)
+
+			sup, ok := svc.idTokenSuppressions[suppressionKey("session-1", "entra")]
+			require.True(t, ok, "failed refresh must record a suppression")
+			assert.Equal(t, expiredIDToken, sup.idToken)
+			assert.WithinDuration(t, tt.wantUntil(before), sup.until, tt.wantWithin)
+			assert.False(t, svc.idTokenRefreshSuppressed("session-1", "entra", expiredIDToken, sup.until),
+				"trigger must fire again once the window has passed")
+		})
+	}
+}

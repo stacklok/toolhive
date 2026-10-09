@@ -109,11 +109,13 @@ func CloseIdleConnections(s Server) bool {
 	return ok
 }
 
-// New creates a new OAuth authorization server.
+// New creates a new OAuth authorization server and initializes the upstream
+// identity-extraction modifiers before constructing providers.
 // The storage parameter is required and determines where OAuth state is persisted.
 // Use storage.NewMemoryStorage() for single-instance deployments or provide
 // a distributed storage backend for production deployments.
 func New(ctx context.Context, cfg Config, stor storage.Storage) (Server, error) {
+	upstream.RegisterModifiers()
 	slog.Debug("creating new OAuth authorization server", "issuer", cfg.Issuer)
 	return newServer(ctx, cfg, stor)
 }

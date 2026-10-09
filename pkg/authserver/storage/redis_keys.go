@@ -36,7 +36,9 @@ const (
 	KeyTypeUpstream = "upstream"
 
 	// KeyTypePending is the key type for pending authorizations.
-	KeyTypePending = "pending"
+	KeyTypePending        = "pending"
+	KeyTypeConsentSession = "consent:session"
+	KeyTypeClientApproval = "consent:approval"
 
 	// KeyTypeDeviceCode is the key type for RFC 8628 device authorization
 	// requests, keyed by device_code.

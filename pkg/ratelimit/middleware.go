@@ -15,11 +15,11 @@ import (
 	"os"
 	"time"
 
-	"github.com/redis/go-redis/v9"
-
+	"github.com/stacklok/toolhive-core/redisconn"
 	v1beta1 "github.com/stacklok/toolhive/cmd/thv-operator/api/v1beta1"
 	"github.com/stacklok/toolhive/pkg/auth"
 	"github.com/stacklok/toolhive/pkg/mcp"
+	"github.com/stacklok/toolhive/pkg/redisconfig"
 	"github.com/stacklok/toolhive/pkg/transport/session"
 	"github.com/stacklok/toolhive/pkg/transport/types"
 )
@@ -40,6 +40,7 @@ type MiddlewareParams struct {
 	Config     *v1beta1.RateLimitConfig `json:"config"`
 	RedisAddr  string                   `json:"redis_addr,omitempty"`
 	RedisDB    int32                    `json:"redis_db,omitempty"`
+	RedisTLS   *redisconfig.TLSConfig   `json:"redis_tls,omitempty"`
 }
 
 // rateLimitMiddleware wraps rate limiting functionality for the factory pattern.
@@ -67,19 +68,19 @@ func NewRedisLimiter(params MiddlewareParams) (Limiter, io.Closer, error) {
 		return nil, nil, fmt.Errorf("rate limit middleware requires a Redis address")
 	}
 
-	// TODO: share a Redis client builder with session storage to get TLS,
-	// dial/read/write timeouts, and username support. For now, a basic client
-	// suffices since rate limiting and session storage target the same Redis.
-	client := redis.NewClient(&redis.Options{
+	tlsCfg, err := params.RedisTLS.Load()
+	if err != nil {
+		return nil, nil, fmt.Errorf("rate limit middleware TLS configuration: %w", err)
+	}
+	pingCtx, pingCancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer pingCancel()
+	client, err := redisconn.NewClient(pingCtx, &redisconn.Config{
 		Addr:     params.RedisAddr,
 		DB:       int(params.RedisDB),
 		Password: os.Getenv(redisPasswordEnvVar),
+		TLS:      tlsCfg,
 	})
-
-	pingCtx, pingCancel := context.WithTimeout(context.Background(), 5*time.Second)
-	defer pingCancel()
-	if err := client.Ping(pingCtx).Err(); err != nil {
-		_ = client.Close()
+	if err != nil {
 		return nil, nil, fmt.Errorf("rate limit middleware: failed to connect to Redis at %s: %w", params.RedisAddr, err)
 	}
 

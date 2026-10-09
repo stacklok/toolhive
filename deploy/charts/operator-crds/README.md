@@ -81,9 +81,9 @@ This is a one-time operation. After patching, future upgrades will work as long 
 
 | Key | Type | Default | Description |
 |-----|------|---------|-------------|
-| crds | object | `{"install":true,"keep":true}` | CRD installation configuration |
-| crds.install | bool | `true` | Whether to install the CRDs in this chart |
-| crds.keep | bool | `true` | Whether to add the "helm.sh/resource-policy: keep" annotation to CRDs When true, CRDs will not be deleted when the Helm release is uninstalled |
+| crds | object | `{"install":true,"keep":true}` | Custom resource definition (CRD) installation and retention settings. |
+| crds.install | bool | `true` | Include the chart's CRDs in the Helm release for installation and upgrades. |
+| crds.keep | bool | `true` | Add the `helm.sh/resource-policy: keep` annotation to each CRD so Helm retains it when you uninstall the release. |
 
 ## Contributing
 

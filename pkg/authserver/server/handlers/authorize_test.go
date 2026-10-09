@@ -224,10 +224,8 @@ func TestAuthorizeHandler_PKCENotValidatedAtAuthorizeEndpoint(t *testing.T) {
 	t.Parallel()
 	handler, _, _ := handlerTestSetup(t)
 
-	// Note: Per RFC 7636, PKCE code_challenge is accepted at the authorize endpoint,
-	// but the code_verifier is only validated at the token endpoint. Fosite follows
-	// this pattern, so requests without code_challenge are accepted at /authorize
-	// and will fail at /token instead.
+	// This branch defers the missing-challenge check until code issuance.
+	// The client must still pass consent before reaching the upstream IDP.
 	params := url.Values{
 		"client_id":     {testAuthClientID},
 		"redirect_uri":  {testAuthRedirectURI},
@@ -240,11 +238,11 @@ func TestAuthorizeHandler_PKCENotValidatedAtAuthorizeEndpoint(t *testing.T) {
 
 	handler.AuthorizeHandler(rec, req)
 
-	// Fosite accepts requests without PKCE at authorize endpoint per RFC 7636
-	// PKCE validation happens at the token endpoint
-	assert.Equal(t, http.StatusFound, rec.Code)
+	// Accepting the authorization request shows consent, not an upstream redirect.
+	rec = approveConsent(t, handler, rec)
+	assert.Equal(t, http.StatusSeeOther, rec.Code)
 	location := rec.Header().Get("Location")
-	// Should redirect to upstream IDP (not return error)
+	// Approval starts upstream login; missing PKCE is rejected at code issuance.
 	assert.Contains(t, location, "https://idp.example.com/authorize")
 }
 
@@ -252,27 +250,75 @@ func TestAuthorizeHandler_PlainChallengeMethodAcceptedButValidatedAtToken(t *tes
 	t.Parallel()
 	handler, _, _ := handlerTestSetup(t)
 
-	// Note: Similar to missing PKCE, the challenge method is captured at authorize
-	// but validated at token endpoint. The config has EnablePKCEPlainChallengeMethod=false,
-	// which will reject "plain" method at the token endpoint.
+	// The challenge method is captured here and validated later by Fosite.
+	// Consent is still required before redirecting upstream.
 	params := url.Values{
 		"client_id":             {testAuthClientID},
 		"redirect_uri":          {testAuthRedirectURI},
 		"response_type":         {"code"},
 		"state":                 {"test-state"},
 		"code_challenge":        {"challenge123"},
-		"code_challenge_method": {"plain"}, // Will fail at token endpoint, not authorize
+		"code_challenge_method": {"plain"}, // Not rejected at the authorize endpoint.
 	}
 	req := httptest.NewRequest(http.MethodGet, "/oauth/authorize?"+params.Encode(), nil)
 	rec := httptest.NewRecorder()
 
 	handler.AuthorizeHandler(rec, req)
 
-	// Fosite accepts requests at authorize endpoint; validation happens at token endpoint
-	assert.Equal(t, http.StatusFound, rec.Code)
+	rec = approveConsent(t, handler, rec)
+	assert.Equal(t, http.StatusSeeOther, rec.Code)
 	location := rec.Header().Get("Location")
-	// Should redirect to upstream IDP (not return error at authorize endpoint)
+	// Approval redirects to the upstream IDP; it does not validate the PKCE method.
 	assert.Contains(t, location, "https://idp.example.com/authorize")
+}
+
+func TestAuthorizeHandler_ResourceSelection(t *testing.T) {
+	t.Parallel()
+	for _, tt := range []struct {
+		name      string
+		allowed   []string
+		resources []string
+		want      string
+	}{
+		{name: "sole default", allowed: []string{"https://api.example.com"}, want: "https://api.example.com"},
+		{name: "explicit", allowed: []string{"https://api.example.com", "https://other.example.com"}, resources: []string{"https://other.example.com"}, want: "https://other.example.com"},
+		{name: "ambiguous", allowed: []string{"https://api.example.com", "https://other.example.com"}},
+		{name: "unconfigured", allowed: nil},
+		{name: "repeated", allowed: []string{"https://api.example.com"}, resources: []string{"https://api.example.com", "https://api.example.com"}},
+		{name: "empty", allowed: []string{"https://api.example.com"}, resources: []string{""}},
+		{name: "unknown", allowed: []string{"https://api.example.com"}, resources: []string{"https://other.example.com"}},
+		{name: "malformed", allowed: []string{"https://api.example.com", "relative"}, resources: []string{"relative"}},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			handler, state, upstream := handlerTestSetup(t)
+			handler.config.AllowedAudiences = tt.allowed
+			params := url.Values{
+				"client_id": {testAuthClientID}, "redirect_uri": {testAuthRedirectURI},
+				"response_type": {"code"}, "state": {"client-state"},
+				"code_challenge": {"challenge123"}, "code_challenge_method": {"S256"},
+			}
+			if tt.resources != nil {
+				params["resource"] = tt.resources
+			}
+			rec := httptest.NewRecorder()
+			handler.AuthorizeHandler(rec, httptest.NewRequest(http.MethodGet, "/oauth/authorize?"+params.Encode(), nil))
+			if tt.want == "" {
+				assert.Equal(t, http.StatusSeeOther, rec.Code)
+				assert.Contains(t, rec.Header().Get("Location"), "error=invalid_target")
+				assert.Empty(t, upstream.capturedState)
+				assert.Empty(t, state.pendingAuths)
+				return
+			}
+			require.Equal(t, http.StatusOK, rec.Code)
+			require.Len(t, state.pendingAuths, 1)
+			assert.Empty(t, upstream.capturedState)
+			for _, pending := range state.pendingAuths {
+				assert.Equal(t, tt.want, pending.Resource)
+				assert.Equal(t, storage.ConsentStageAwaiting, pending.ConsentStage)
+			}
+		})
+	}
 }
 
 func TestNewHandler_AllowsEmptyUpstreams(t *testing.T) {
@@ -336,9 +382,10 @@ func TestAuthorizeHandler_RedirectsToUpstream(t *testing.T) {
 	rec := httptest.NewRecorder()
 
 	handler.AuthorizeHandler(rec, req)
+	rec = approveConsent(t, handler, rec)
 
 	// Should redirect to upstream IDP
-	assert.Equal(t, http.StatusFound, rec.Code)
+	assert.Equal(t, http.StatusSeeOther, rec.Code)
 	location := rec.Header().Get("Location")
 	assert.Contains(t, location, "https://idp.example.com/authorize")
 
@@ -390,6 +437,7 @@ func registerLoopbackClient(t *testing.T, storState *testStorageState, clientID 
 		ID:                      clientID,
 		RedirectURIs:            redirectURIs,
 		TokenEndpointAuthMethod: oauthproto.TokenEndpointAuthMethodNone,
+		Audience:                []string{"https://api.example.com"},
 	})
 	require.NoError(t, err)
 	storState.clients[clientID] = client
@@ -414,8 +462,9 @@ func TestAuthorizeHandler_LoopbackLocalhostDynamicPortIsAccepted(t *testing.T) {
 	rec := httptest.NewRecorder()
 
 	handler.AuthorizeHandler(rec, req)
+	rec = approveConsent(t, handler, rec)
 
-	require.Equal(t, http.StatusFound, rec.Code, "response body: %s", rec.Body.String())
+	require.Equal(t, http.StatusSeeOther, rec.Code, "response body: %s", rec.Body.String())
 	assert.Contains(t, rec.Header().Get("Location"), "https://idp.example.com/authorize")
 
 	pending, ok := storState.pendingAuths[mockUpstream.capturedState]
@@ -450,8 +499,9 @@ func TestAuthorizeHandler_LoopbackCaseInsensitiveLocalhostIsAccepted(t *testing.
 	rec := httptest.NewRecorder()
 
 	handler.AuthorizeHandler(rec, req)
+	rec = approveConsent(t, handler, rec)
 
-	require.Equal(t, http.StatusFound, rec.Code, "response body: %s", rec.Body.String())
+	require.Equal(t, http.StatusSeeOther, rec.Code, "response body: %s", rec.Body.String())
 
 	pending, ok := storState.pendingAuths[mockUpstream.capturedState]
 	require.True(t, ok, "pending authorization should be stored")
@@ -477,8 +527,9 @@ func TestAuthorizeHandler_Loopback127001DynamicPortStillWorks(t *testing.T) {
 	rec := httptest.NewRecorder()
 
 	handler.AuthorizeHandler(rec, req)
+	rec = approveConsent(t, handler, rec)
 
-	require.Equal(t, http.StatusFound, rec.Code, "response body: %s", rec.Body.String())
+	require.Equal(t, http.StatusSeeOther, rec.Code, "response body: %s", rec.Body.String())
 
 	pending, ok := storState.pendingAuths[mockUpstream.capturedState]
 	require.True(t, ok, "pending authorization should be stored")

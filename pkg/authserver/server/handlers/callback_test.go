@@ -5,6 +5,7 @@ package handlers
 
 import (
 	"errors"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -517,6 +518,7 @@ func TestCallbackHandler_TwoUpstreams_FirstLeg_RedirectsToSecond(t *testing.T) {
 	firstLegVerifier := "first-leg-pkce-verifier-123456789012345678"
 
 	pending := &storage.PendingAuthorization{
+		RememberConsent:      true,
 		ClientID:             testAuthClientID,
 		RedirectURI:          testAuthRedirectURI,
 		State:                "client-original-state",
@@ -567,9 +569,43 @@ func TestCallbackHandler_TwoUpstreams_FirstLeg_RedirectsToSecond(t *testing.T) {
 	assert.NotEmpty(t, nextPending.ResolvedUserID, "ResolvedUserID should be set from first leg")
 	assert.Equal(t, "First Leg User", nextPending.ResolvedUserName, "ResolvedUserName should come from first leg")
 	assert.Equal(t, "firstleg@example.com", nextPending.ResolvedUserEmail, "ResolvedUserEmail should come from first leg")
+	require.True(t, nextPending.RememberConsent)
+	require.Equal(t, "user-from-provider1", nextPending.FirstProviderSubject)
 
 	// Fresh secrets: InternalState must differ from the first leg
 	assert.NotEqual(t, firstLegState, nextPending.InternalState, "second leg must have fresh InternalState")
+}
+
+func TestRememberedMultiLegCarriesExpectedIdentity(t *testing.T) {
+	t.Parallel()
+	h, state, first, _ := multiUpstreamTestSetup(t)
+	mem := storage.NewMemoryStorage()
+	t.Cleanup(func() { require.NoError(t, mem.Close()) })
+	h.rememberedStorage = mem
+	state.users["user"] = &storage.User{ID: "user"}
+	state.providerIdentities["provider-1:user-from-provider1"] = &storage.ProviderIdentity{
+		UserID: "user", ProviderID: "provider-1", ProviderSubject: "user-from-provider1",
+	}
+	pending := &storage.PendingAuthorization{
+		ClientID: testAuthClientID, RedirectURI: testAuthRedirectURI, State: "original", PKCEChallenge: "challenge", PKCEMethod: "S256",
+		Scopes: []string{"openid"}, UpstreamProviderName: "provider-1", SessionID: "session", CreatedAt: time.Now(),
+		ExpectedUserID: "user", ExpectedProviderSubject: "user-from-provider1", ConsentSessionDigest: "digest",
+	}
+	cookie := bindPending(t, state, "first-leg", pending)
+	w := httptest.NewRecorder()
+	h.CallbackHandler(w, newCallbackRequest("code=upstream-code&state=first-leg", cookie))
+	require.Equal(t, http.StatusFound, w.Code, w.Body.String())
+	require.Equal(t, "upstream-code", first.capturedCode)
+	for _, next := range state.pendingAuths {
+		if next.UpstreamProviderName == "provider-2" {
+			require.Equal(t, "user", next.ExpectedUserID)
+			require.Equal(t, "user-from-provider1", next.ExpectedProviderSubject)
+			require.Equal(t, "digest", next.ConsentSessionDigest)
+			require.Equal(t, pending.CreatedAt, next.CreatedAt)
+			return
+		}
+	}
+	t.Fatal("next leg missing")
 }
 
 func TestCallbackHandler_TwoUpstreams_SecondLeg_IssuesCode(t *testing.T) {
@@ -2070,6 +2106,7 @@ func newSeededPending(state string) *storage.PendingAuthorization {
 		PKCEChallenge:        "challenge123",
 		PKCEMethod:           "S256",
 		Scopes:               []string{"openid"},
+		ConsentStage:         storage.ConsentStageApproved,
 		InternalState:        state,
 		UpstreamPKCEVerifier: "upstream-verifier-12345678901234567890",
 		SessionID:            "session-" + state,
@@ -2081,7 +2118,7 @@ func newSeededPending(state string) *storage.PendingAuthorization {
 // TestCallbackHandler_BrowserBinding_RejectsForeignBrowser proves that a
 // callback is only completed for the browser that started the flow: without
 // the binding cookie set by /oauth/authorize the code is not exchanged, nothing
-// is redirected to the client, and the pending record is consumed.
+// is redirected to the client, and the owner's pending record survives.
 func TestCallbackHandler_BrowserBinding_RejectsForeignBrowser(t *testing.T) {
 	t.Parallel()
 
@@ -2138,7 +2175,7 @@ func TestCallbackHandler_BrowserBinding_RejectsForeignBrowser(t *testing.T) {
 			assert.Empty(t, rec.Header().Get("Location"), "a foreign browser must not be redirected to the client")
 			assert.Empty(t, mockUpstream.capturedCode, "the upstream code must not be exchanged")
 			_, ok := storState.pendingAuths[state]
-			assert.False(t, ok, "the pending authorization is consumed on a binding failure")
+			assert.True(t, ok, "the owner's pending authorization survives a binding failure")
 		})
 	}
 }
@@ -2158,7 +2195,47 @@ func TestCallbackHandler_UpstreamError_RequiresBrowserBinding(t *testing.T) {
 	assert.Equal(t, http.StatusBadRequest, rec.Code)
 	assert.Empty(t, rec.Header().Get("Location"))
 	_, ok := storState.pendingAuths[state]
-	assert.False(t, ok, "the pending authorization is consumed")
+	assert.True(t, ok, "the owner's pending authorization survives")
+}
+
+func TestCallbackHandler_DeleteFailureStopsBeforeExchange(t *testing.T) {
+	t.Parallel()
+	for _, tc := range []struct {
+		name   string
+		err    error
+		status int
+	}{
+		{name: "backend failure", err: errors.New("storage unavailable"), status: http.StatusInternalServerError},
+		{name: "lost race to a concurrent consume", err: storage.ErrNotFound, status: http.StatusBadRequest},
+		{name: "wrapped not found", err: fmt.Errorf("delete: %w", storage.ErrNotFound), status: http.StatusBadRequest},
+		{name: "expired", err: storage.ErrExpired, status: http.StatusBadRequest},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			handler, storState, upstream := handlerTestSetup(t, withDeletePendingError(tc.err))
+			cookie := bindPending(t, storState, testInternalState, newSeededPending(testInternalState))
+
+			rec := httptest.NewRecorder()
+			handler.CallbackHandler(rec, newCallbackRequest("code=upstream-code&state="+testInternalState, cookie))
+			assert.Equal(t, tc.status, rec.Code)
+			assert.Empty(t, upstream.capturedCode)
+			assert.Contains(t, storState.pendingAuths, testInternalState)
+		})
+	}
+}
+
+func TestCallbackHandler_ExpiredPendingStopsBeforeExchange(t *testing.T) {
+	t.Parallel()
+	handler, storState, upstreamIDP := handlerTestSetup(t)
+	pending := newSeededPending(testInternalState)
+	pending.CreatedAt = time.Now().Add(-storage.DefaultPendingAuthorizationTTL)
+	cookie := bindPending(t, storState, testInternalState, pending)
+
+	rec := httptest.NewRecorder()
+	handler.CallbackHandler(rec, newCallbackRequest("code=upstream-code&state="+testInternalState, cookie))
+	assert.Equal(t, http.StatusBadRequest, rec.Code)
+	assert.Empty(t, upstreamIDP.capturedCode)
+	assert.Contains(t, storState.pendingAuths, testInternalState)
 }
 
 // runFirstChainLeg drives provider-1's callback with a valid binding and

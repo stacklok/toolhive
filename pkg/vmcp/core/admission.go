@@ -37,7 +37,7 @@ import (
 // legacy server.New path, which retains the HTTP authz middleware).
 type Admission interface {
 	// FilterTools returns the subset of tools the identity may call. Mirrors
-	// pkg/authz filterToolsByPolicy: a per-tool AuthorizeWithJWTClaims(call) using
+	// pkg/authz authorizedToolIndexes: a per-tool AuthorizeWithJWTClaims(call) using
 	// the tool's annotations; a per-tool authorizer error skips that tool
 	// (log-and-continue), it is not a hard failure.
 	FilterTools(ctx context.Context, identity *auth.Identity, tools []vmcp.Tool) ([]vmcp.Tool, error)
@@ -139,17 +139,16 @@ func newCedarAdmission(a authorizers.Authorizer, opts ...cedarOption) *cedarAdmi
 	return adm
 }
 
-// FilterTools mirrors pkg/authz filterToolsByPolicy: each tool is authorized for
+// FilterTools mirrors pkg/authz authorizedToolIndexes: each tool is authorized for
 // call with its annotations injected, and a per-tool authorizer error skips that
 // tool (log-and-continue).
 func (a *cedarAdmission) FilterTools(
 	ctx context.Context, identity *auth.Identity, tools []vmcp.Tool,
 ) ([]vmcp.Tool, error) {
 	ctx = auth.WithIdentity(ctx, identity)
-	// A filter returns a subset, so build a fresh non-nil slice — mirroring
-	// pkg/authz filterToolsByPolicy (its configured-authorizer path is also
-	// non-nil; its nil-authorizer no-op, like the allow-all seam here, returns the
-	// input as-is). nil-vs-[] wire normalization is the Serve layer's concern.
+	// A filter returns a subset, so build a fresh non-nil slice. The allow-all
+	// seam returns the input as-is instead. nil-vs-[] wire normalization is the
+	// Serve layer's concern.
 	filtered := make([]vmcp.Tool, 0, len(tools))
 	for i := range tools {
 		tool := &tools[i]

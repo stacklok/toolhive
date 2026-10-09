@@ -94,6 +94,9 @@ type Config struct {
 	// ID is the unique client identifier.
 	ID string
 
+	// ClientName is unverified, display-only metadata supplied at registration.
+	ClientName string
+
 	// Secret is the client secret for confidential clients.
 	// Required for client_secret_basic / client_secret_post; ignored for "none".
 	Secret string //nolint:gosec // G117: field legitimately holds sensitive data
@@ -149,6 +152,14 @@ func DCRIssued(client fosite.Client) bool {
 	return ok
 }
 
+// ClientName returns the unverified display name of a DCR client, if supplied.
+func ClientName(client fosite.Client) string {
+	if named, ok := client.(interface{ GetClientName() string }); ok {
+		return named.GetClientName()
+	}
+	return ""
+}
+
 // MarkDCRIssued wraps a client rebuilt from persisted DCR-issued form so the
 // DCRIssued marker — and with it the anti-bloat TTL behaviour in storage —
 // survives the storage round-trip. Callers must only mark clients they know
@@ -172,11 +183,16 @@ func DCRIssued(client fosite.Client) bool {
 // DCRIssued marker and so stops renewing its TTL, which is recoverable —
 // unlike a panic on an unauthenticated request path.
 func MarkDCRIssued(client fosite.Client) fosite.Client {
+	return MarkDCRIssuedWithName(client, "")
+}
+
+// MarkDCRIssuedWithName restores a DCR-issued client's unverified display name.
+func MarkDCRIssuedWithName(client fosite.Client, name string) fosite.Client {
 	switch c := client.(type) {
 	case *fosite.DefaultOpenIDConnectClient:
-		return &markedDCRIssuedOIDC{DefaultOpenIDConnectClient: c}
+		return &markedDCRIssuedOIDC{DefaultOpenIDConnectClient: c, clientName: name}
 	case *fosite.DefaultClient:
-		return &markedDCRIssuedDefault{DefaultClient: c}
+		return &markedDCRIssuedDefault{DefaultClient: c, clientName: name}
 	default:
 		slog.Error("registration: MarkDCRIssued: unsupported concrete client type, returning unmarked",
 			"type", fmt.Sprintf("%T", client))
@@ -186,15 +202,19 @@ func MarkDCRIssued(client fosite.Client) fosite.Client {
 
 type markedDCRIssuedOIDC struct {
 	*fosite.DefaultOpenIDConnectClient
+	clientName string
 }
 
-func (markedDCRIssuedOIDC) dcrIssued() {}
+func (c *markedDCRIssuedOIDC) GetClientName() string { return c.clientName }
+func (markedDCRIssuedOIDC) dcrIssued()               {}
 
 type markedDCRIssuedDefault struct {
 	*fosite.DefaultClient
+	clientName string
 }
 
-func (markedDCRIssuedDefault) dcrIssued() {}
+func (c *markedDCRIssuedDefault) GetClientName() string { return c.clientName }
+func (markedDCRIssuedDefault) dcrIssued()               {}
 
 type dcrIssuedMarker struct{}
 
@@ -233,7 +253,10 @@ func (BackChannelOnlyMarker) backChannelOnly() {}
 type publicClient struct {
 	dcrIssuedMarker
 	*fosite.DefaultOpenIDConnectClient
+	clientName string
 }
+
+func (c *publicClient) GetClientName() string { return c.clientName }
 
 // confidentialClient is the DCR-issued confidential client shape: an OIDC
 // client so fosite pins and enforces the registered auth method at the token
@@ -242,7 +265,10 @@ type publicClient struct {
 type confidentialClient struct {
 	dcrIssuedMarker
 	*fosite.DefaultOpenIDConnectClient
+	clientName string
 }
+
+func (c *confidentialClient) GetClientName() string { return c.clientName }
 
 // privateKeyJWTClient is a DCR-issued client authenticated with an inline
 // public key rather than a client secret. It is non-public because it must
@@ -250,7 +276,10 @@ type confidentialClient struct {
 type privateKeyJWTClient struct {
 	dcrIssuedMarker
 	*fosite.DefaultOpenIDConnectClient
+	clientName string
 }
+
+func (c *privateKeyJWTClient) GetClientName() string { return c.clientName }
 
 // GetResponseTypes prevents fosite.DefaultClient's implicit ["code"] default
 // from representing this token-exchange-only client as an authorization-code
@@ -348,12 +377,12 @@ func New(cfg Config) (fosite.Client, error) {
 	}
 
 	if public {
-		return &publicClient{DefaultOpenIDConnectClient: oidcClient}, nil
+		return &publicClient{DefaultOpenIDConnectClient: oidcClient, clientName: cfg.ClientName}, nil
 	}
 	if privateKeyJWT {
-		return &privateKeyJWTClient{DefaultOpenIDConnectClient: oidcClient}, nil
+		return &privateKeyJWTClient{DefaultOpenIDConnectClient: oidcClient, clientName: cfg.ClientName}, nil
 	}
-	return &confidentialClient{DefaultOpenIDConnectClient: oidcClient}, nil
+	return &confidentialClient{DefaultOpenIDConnectClient: oidcClient, clientName: cfg.ClientName}, nil
 }
 
 func cloneJSONWebKeySet(jwks *jose.JSONWebKeySet) *jose.JSONWebKeySet {
@@ -422,7 +451,7 @@ func NewConfidentialPlain(cfg Config) (fosite.Client, error) {
 		Public:        false,
 	}
 
-	return MarkDCRIssued(defaultClient), nil
+	return MarkDCRIssuedWithName(defaultClient, cfg.ClientName), nil
 }
 
 // NewStaticDelegateClient creates an unmarked, pre-provisioned confidential

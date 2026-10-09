@@ -684,6 +684,80 @@ func TestRedisStorage_DCRClientTTL(t *testing.T) {
 	})
 }
 
+func TestRedisStorage_DCRClientName(t *testing.T) {
+	t.Parallel()
+	for _, tc := range []struct {
+		name   string
+		create func() (fosite.Client, error)
+		method string
+	}{
+		{"public", func() (fosite.Client, error) {
+			return registration.New(registration.Config{
+				ID: "named", ClientName: "Example", TokenEndpointAuthMethod: oauthproto.TokenEndpointAuthMethodNone,
+			})
+		}, oauthproto.TokenEndpointAuthMethodNone},
+		{"confidential", func() (fosite.Client, error) {
+			return registration.New(registration.Config{
+				ID: "named", ClientName: "Example", Secret: "secret", TokenEndpointAuthMethod: oauthproto.TokenEndpointAuthMethodClientSecretBasic,
+			})
+		}, oauthproto.TokenEndpointAuthMethodClientSecretBasic},
+		{"forced plain", func() (fosite.Client, error) {
+			return registration.NewConfidentialPlain(registration.Config{
+				ID: "named", ClientName: "Example", Secret: "secret",
+			})
+		}, ""},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			withRedisStorage(t, func(ctx context.Context, s *RedisStorage, mr *miniredis.Miniredis) {
+				client, err := tc.create()
+				require.NoError(t, err)
+				require.NoError(t, s.RegisterClient(ctx, client))
+				loaded, err := s.GetClient(ctx, "named")
+				require.NoError(t, err)
+				assert.Equal(t, "Example", registration.ClientName(loaded))
+				assert.True(t, registration.DCRIssued(loaded))
+				_, oidc := loaded.(fosite.OpenIDConnectClient)
+				assert.Equal(t, tc.method != "", oidc)
+				if oidc {
+					assert.Equal(t, tc.method, loaded.(fosite.OpenIDConnectClient).GetTokenEndpointAuthMethod())
+				}
+				assert.True(t, fingerprintOfClient(loaded).equal(fingerprintOfClient(client)))
+
+				key := redisKey(s.keyPrefix, KeyTypeClient, "named")
+				row := storedClient{}
+				encoded, err := mr.Get(key)
+				require.NoError(t, err)
+				require.NoError(t, json.Unmarshal([]byte(encoded), &row))
+				assert.Equal(t, "Example", row.ClientName)
+				row.ClientName = "Changed only in display metadata"
+				assert.True(t, row.fingerprint().equal(buildStoredClient(client).fingerprint()))
+			})
+		})
+	}
+
+	// Rows predating the DCR marker and client_name still load without changing auth shape.
+	t.Run("legacy public with TTL", func(t *testing.T) {
+		withRedisStorage(t, func(ctx context.Context, s *RedisStorage, mr *miniredis.Miniredis) {
+			client, err := registration.New(registration.Config{ID: "old", TokenEndpointAuthMethod: oauthproto.TokenEndpointAuthMethodNone})
+			require.NoError(t, err)
+			row := buildStoredClient(client)
+			row.DCRIssued = false
+			row.TokenEndpointAuthMethod = ""
+			data, err := json.Marshal(row)
+			require.NoError(t, err)
+			key := redisKey(s.keyPrefix, KeyTypeClient, "old")
+			require.NoError(t, mr.Set(key, string(data)))
+			mr.SetTTL(key, time.Hour)
+			loaded, err := s.GetClient(ctx, "old")
+			require.NoError(t, err)
+			assert.Empty(t, registration.ClientName(loaded))
+			assert.True(t, registration.DCRIssued(loaded))
+			_, oidc := loaded.(fosite.OpenIDConnectClient)
+			assert.False(t, oidc)
+		})
+	})
+}
+
 // TestClientFingerprint_StoredAndReconstructedAgree builds a storedClient by
 // hand and the fosite.Client it round-trips to via clientFromStored, then
 // asserts their fingerprints agree. This is the stronger companion to
@@ -2448,7 +2522,8 @@ func TestRedisStorage_PendingAuthorization(t *testing.T) {
 		return &PendingAuthorization{
 			ClientID: "test-client", RedirectURI: "https://example.com/callback",
 			State: "client-state", PKCEChallenge: "challenge", PKCEMethod: "S256",
-			Scopes: []string{"openid", "profile"}, InternalState: state,
+			Scopes: []string{"openid", "profile"}, Resource: "https://api.example.com",
+			ConsentStage: ConsentStageApproved, InternalState: state,
 			UpstreamPKCEVerifier: "verifier", UpstreamNonce: "nonce",
 			BrowserBindingHash: "binding-hash",
 			SingleLeg:          true, ChainUpstreams: []string{"provider-1", "provider-2"},
@@ -2466,9 +2541,40 @@ func TestRedisStorage_PendingAuthorization(t *testing.T) {
 			assert.Equal(t, pending.ClientID, retrieved.ClientID)
 			assert.Equal(t, pending.PKCEChallenge, retrieved.PKCEChallenge)
 			assert.Equal(t, pending.Scopes, retrieved.Scopes)
+			assert.Equal(t, pending.Resource, retrieved.Resource)
+			assert.Equal(t, pending.ConsentStage, retrieved.ConsentStage)
 			assert.Equal(t, pending.BrowserBindingHash, retrieved.BrowserBindingHash)
 			assert.Equal(t, pending.SingleLeg, retrieved.SingleLeg)
 			assert.Equal(t, pending.ChainUpstreams, retrieved.ChainUpstreams)
+			assert.WithinDuration(t, pending.CreatedAt, retrieved.CreatedAt, time.Nanosecond)
+		})
+	})
+
+	t.Run("re-store retains original deadline", func(t *testing.T) {
+		withRedisStorage(t, func(ctx context.Context, s *RedisStorage, mr *miniredis.Miniredis) {
+			pending := makePending("near-deadline")
+			pending.CreatedAt = time.Now().Add(-DefaultPendingAuthorizationTTL + 3*time.Second)
+			key := redisKey(s.keyPrefix, KeyTypePending, "near-deadline")
+			require.NoError(t, s.StorePendingAuthorization(ctx, "near-deadline", pending))
+			require.NoError(t, s.StorePendingAuthorization(ctx, "near-deadline", pending))
+			assert.InDelta(t, 3*time.Second, mr.TTL(key), float64(time.Second))
+			loaded, err := s.LoadPendingAuthorization(ctx, "near-deadline")
+			require.NoError(t, err)
+			assert.Equal(t, pending.CreatedAt.UnixNano(), loaded.CreatedAt.UnixNano())
+
+			pending.CreatedAt = time.Now().Add(-DefaultPendingAuthorizationTTL - time.Second)
+			require.ErrorIs(t, s.StorePendingAuthorization(ctx, "near-deadline", pending), ErrExpired)
+			assert.InDelta(t, 3*time.Second, mr.TTL(key), float64(time.Second))
+			mr.FastForward(4 * time.Second)
+			_, err = s.LoadPendingAuthorization(ctx, "near-deadline")
+			requireRedisNotFoundError(t, err)
+		})
+	})
+
+	t.Run("missing creation time is expired", func(t *testing.T) {
+		withRedisStorage(t, func(ctx context.Context, s *RedisStorage, mr *miniredis.Miniredis) {
+			require.ErrorIs(t, s.StorePendingAuthorization(ctx, "missing-time", &PendingAuthorization{}), ErrExpired)
+			assert.False(t, mr.Exists(redisKey(s.keyPrefix, KeyTypePending, "missing-time")))
 		})
 	})
 
@@ -2505,9 +2611,20 @@ func TestRedisStorage_PendingAuthorization(t *testing.T) {
 
 			assert.Empty(t, retrieved.ChainUpstreams, "legacy record must decode with empty ChainUpstreams")
 			assert.Empty(t, retrieved.BrowserBindingHash, "legacy record must decode with empty BrowserBindingHash")
+			assert.Empty(t, retrieved.Resource)
+			assert.Empty(t, retrieved.ConsentStage)
 			// Sanity-check that unrelated fields still populate from the legacy blob.
 			assert.Equal(t, "legacy-client", retrieved.ClientID)
 			assert.Equal(t, "legacy-session", retrieved.SessionID)
+		})
+	})
+
+	t.Run("expired legacy row without Redis TTL is rejected", func(t *testing.T) {
+		withRedisStorage(t, func(ctx context.Context, s *RedisStorage, mr *miniredis.Miniredis) {
+			key := redisKey(s.keyPrefix, KeyTypePending, "legacy-expired")
+			require.NoError(t, mr.Set(key, fmt.Sprintf(`{"created_at":%d}`, time.Now().Add(-DefaultPendingAuthorizationTTL-time.Second).Unix())))
+			_, err := s.LoadPendingAuthorization(ctx, "legacy-expired")
+			require.ErrorIs(t, err, ErrExpired)
 		})
 	})
 

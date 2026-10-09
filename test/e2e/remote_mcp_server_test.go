@@ -170,10 +170,7 @@ var _ = Describe("Remote MCP Server", Label("remote", "mcp", "mcp-protocol", "e2
 				err = mcpClient.Initialize(ctx)
 				Expect(err).ToNot(HaveOccurred(), "Should be able to initialize MCP connection")
 
-				By("Testing basic MCP operations")
-				err = mcpClient.Ping(ctx)
-				Expect(err).ToNot(HaveOccurred(), "Should be able to ping the server")
-
+				// No ping: the remote server speaks MCP 2026-07-28, which has no ping method.
 				By("Listing available tools")
 				tools, err := mcpClient.ListTools(ctx)
 				Expect(err).ToNot(HaveOccurred(), "Should be able to list tools")

@@ -18514,6 +18514,39 @@ func (s *OptRateLimitBucket) UnmarshalJSON(data []byte) error {
 	return s.Decode(d)
 }
 
+// Encode encodes RedisconfigTLSConfig as json.
+func (o OptRedisconfigTLSConfig) Encode(e *jx.Encoder) {
+	if !o.Set {
+		return
+	}
+	o.Value.Encode(e)
+}
+
+// Decode decodes RedisconfigTLSConfig from json.
+func (o *OptRedisconfigTLSConfig) Decode(d *jx.Decoder) error {
+	if o == nil {
+		return errors.New("invalid: unable to decode OptRedisconfigTLSConfig to nil")
+	}
+	o.Set = true
+	if err := o.Value.Decode(d); err != nil {
+		return err
+	}
+	return nil
+}
+
+// MarshalJSON implements stdjson.Marshaler.
+func (s OptRedisconfigTLSConfig) MarshalJSON() ([]byte, error) {
+	e := jx.Encoder{}
+	s.Encode(&e)
+	return e.Bytes(), nil
+}
+
+// UnmarshalJSON implements stdjson.Unmarshaler.
+func (s *OptRedisconfigTLSConfig) UnmarshalJSON(data []byte) error {
+	d := jx.DecodeBytes(data)
+	return s.Decode(d)
+}
+
 // Encode encodes RegistryGroupRemoteServers as json.
 func (o OptRegistryGroupRemoteServers) Encode(e *jx.Encoder) {
 	if !o.Set {
@@ -24776,6 +24809,86 @@ func (s *RateLimitBucket) MarshalJSON() ([]byte, error) {
 
 // UnmarshalJSON implements stdjson.Unmarshaler.
 func (s *RateLimitBucket) UnmarshalJSON(data []byte) error {
+	d := jx.DecodeBytes(data)
+	return s.Decode(d)
+}
+
+// Encode implements json.Marshaler.
+func (s *RedisconfigTLSConfig) Encode(e *jx.Encoder) {
+	e.ObjStart()
+	s.encodeFields(e)
+	e.ObjEnd()
+}
+
+// encodeFields encodes fields.
+func (s *RedisconfigTLSConfig) encodeFields(e *jx.Encoder) {
+	{
+		if s.CaCertFile.Set {
+			e.FieldStart("caCertFile")
+			s.CaCertFile.Encode(e)
+		}
+	}
+	{
+		if s.InsecureSkipVerify.Set {
+			e.FieldStart("insecureSkipVerify")
+			s.InsecureSkipVerify.Encode(e)
+		}
+	}
+}
+
+var jsonFieldsNameOfRedisconfigTLSConfig = [2]string{
+	0: "caCertFile",
+	1: "insecureSkipVerify",
+}
+
+// Decode decodes RedisconfigTLSConfig from json.
+func (s *RedisconfigTLSConfig) Decode(d *jx.Decoder) error {
+	if s == nil {
+		return errors.New("invalid: unable to decode RedisconfigTLSConfig to nil")
+	}
+
+	if err := d.ObjBytes(func(d *jx.Decoder, k []byte) error {
+		switch string(k) {
+		case "caCertFile":
+			if err := func() error {
+				s.CaCertFile.Reset()
+				if err := s.CaCertFile.Decode(d); err != nil {
+					return err
+				}
+				return nil
+			}(); err != nil {
+				return errors.Wrap(err, "decode field \"caCertFile\"")
+			}
+		case "insecureSkipVerify":
+			if err := func() error {
+				s.InsecureSkipVerify.Reset()
+				if err := s.InsecureSkipVerify.Decode(d); err != nil {
+					return err
+				}
+				return nil
+			}(); err != nil {
+				return errors.Wrap(err, "decode field \"insecureSkipVerify\"")
+			}
+		default:
+			return d.Skip()
+		}
+		return nil
+	}); err != nil {
+		return errors.Wrap(err, "decode RedisconfigTLSConfig")
+	}
+
+	return nil
+}
+
+// MarshalJSON implements stdjson.Marshaler.
+func (s *RedisconfigTLSConfig) MarshalJSON() ([]byte, error) {
+	e := jx.Encoder{}
+	s.Encode(&e)
+	return e.Bytes(), nil
+}
+
+// UnmarshalJSON implements stdjson.Unmarshaler.
+func (s *RedisconfigTLSConfig) UnmarshalJSON(data []byte) error {
 	d := jx.DecodeBytes(data)
 	return s.Decode(d)
 }
@@ -32235,12 +32348,19 @@ func (s *RunnerSessionRedisConfig) encodeFields(e *jx.Encoder) {
 			s.KeyPrefix.Encode(e)
 		}
 	}
+	{
+		if s.TLS.Set {
+			e.FieldStart("tls")
+			s.TLS.Encode(e)
+		}
+	}
 }
 
-var jsonFieldsNameOfRunnerSessionRedisConfig = [3]string{
+var jsonFieldsNameOfRunnerSessionRedisConfig = [4]string{
 	0: "address",
 	1: "db",
 	2: "key_prefix",
+	3: "tls",
 }
 
 // Decode decodes RunnerSessionRedisConfig from json.
@@ -32280,6 +32400,16 @@ func (s *RunnerSessionRedisConfig) Decode(d *jx.Decoder) error {
 				return nil
 			}(); err != nil {
 				return errors.Wrap(err, "decode field \"key_prefix\"")
+			}
+		case "tls":
+			if err := func() error {
+				s.TLS.Reset()
+				if err := s.TLS.Decode(d); err != nil {
+					return err
+				}
+				return nil
+			}(); err != nil {
+				return errors.Wrap(err, "decode field \"tls\"")
 			}
 		default:
 			return d.Skip()

@@ -44,7 +44,7 @@ permissions:
 jobs:
   crd-schema-check:
     name: CRD Schema Compatibility
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-26.04
     # Skip the check entirely when `api-break-allowed` is applied — a
     # required check that is skipped (rather than failed) counts as passing
     # for branch protection, so this is the escape hatch for intentional

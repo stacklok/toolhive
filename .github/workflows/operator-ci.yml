@@ -12,7 +12,7 @@ jobs:
     name: Operator Tests
     # Short, setup-dominated job; the standard runner is free for this
     # public repo. Integration and E2E jobs below keep the large runner.
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-26.04
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
         with:
@@ -60,7 +60,7 @@ jobs:
     name: Build Operator
     # Short, setup-dominated job; the standard runner is free for this
     # public repo.
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-26.04
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
         with:
@@ -83,7 +83,7 @@ jobs:
 
   generate-crds:
     name: Generate CRDs
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-26.04
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
         with:
@@ -118,7 +118,7 @@ jobs:
 
   generate-crd-docs:
     name: Generate CRD Docs
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-26.04
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
         with:

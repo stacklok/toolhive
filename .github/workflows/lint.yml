@@ -12,7 +12,7 @@ jobs:
     # golangci-lint itself runs for well under a minute here; the job is
     # dominated by checkout, toolchain setup and cache restore, none of which
     # scale with cores. The standard runner is free for this public repo.
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-26.04
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
         with:

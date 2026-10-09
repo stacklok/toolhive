@@ -36,7 +36,7 @@ permissions:
 jobs:
   crd-schema-check:
     name: CRD Schema Compatibility
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-26.04
     timeout-minutes: 2
     steps:
       - name: No API surface changes

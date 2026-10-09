@@ -222,7 +222,7 @@ func TestGeneratedInvokerMatchesOpenAPIOperations(t *testing.T) {
 		Paths map[string]map[string]json.RawMessage `json:"paths"`
 	}
 	require.NoError(t, json.Unmarshal(content, &document))
-	require.Len(t, document.Components.Schemas, 197, "update this deliberate contract count when publishing a new schema")
+	require.Len(t, document.Components.Schemas, 199, "update this deliberate contract count when publishing a new schema")
 	for name := range document.Components.Schemas {
 		require.NotContains(t, name, ".", "schema names are public SDK contract names")
 	}

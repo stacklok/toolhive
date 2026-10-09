@@ -44,6 +44,7 @@ import (
 	"github.com/stacklok/toolhive/cmd/thv-operator/pkg/virtualmcpserverstatus"
 	operatorvmcpconfig "github.com/stacklok/toolhive/cmd/thv-operator/pkg/vmcpconfig"
 	"github.com/stacklok/toolhive/pkg/authserver"
+	"github.com/stacklok/toolhive/pkg/authserver/upstreamfilter"
 	"github.com/stacklok/toolhive/pkg/networking"
 	vmcptypes "github.com/stacklok/toolhive/pkg/vmcp"
 	"github.com/stacklok/toolhive/pkg/vmcp/auth/converters"
@@ -532,6 +533,22 @@ func (r *VirtualMCPServerReconciler) runAuthValidations(
 		statusManager.RemoveConditionsWithPrefix(mcpv1beta1.ConditionTypeIdentitySynthesized, []string{})
 	}
 
+	// Re-check the upstream filter's full static invariants against the
+	// configured upstream providers. CEL enforces only cheap structural
+	// invariants at admission time (filter requires authServerConfig, min
+	// two upstream providers); deeper reference-integrity checks (every
+	// referenced provider exists, no reference to the mandatory first
+	// provider, no duplicates, no empty values) are enforced here before
+	// the ConfigMap is written. Runs regardless of AuthServerConfig
+	// presence so a filter set without a corresponding AuthServerConfig
+	// also surfaces as a terminal spec error.
+	if err := r.validateAuthServerUpstreamFilter(vmcp, statusManager); err != nil {
+		if applyErr := r.applyStatusUpdates(ctx, vmcp, statusManager); applyErr != nil {
+			return false, applyErr
+		}
+		return false, nil
+	}
+
 	// Validate that authz policies have an upstream IDP available to source
 	// claims from. Runs after the AuthServerConfig branch so it can set the
 	// AuthServerConfigValidated condition without being clobbered by the
@@ -544,6 +561,62 @@ func (r *VirtualMCPServerReconciler) runAuthValidations(
 	}
 
 	return true, nil
+}
+
+// validateAuthServerUpstreamFilter re-checks the upstream filter's static
+// invariants against the configured upstream providers. This repeats the CEL
+// admission rules so a resource that bypassed admission (fake client, pre-CEL
+// stored object) is still rejected before its ConfigMap is written.
+//
+// Returns a terminal validation error — the caller should surface the
+// condition and return without requeueing. Returns nil when no filter is
+// configured.
+func (*VirtualMCPServerReconciler) validateAuthServerUpstreamFilter(
+	vmcp *mcpv1beta1.VirtualMCPServer,
+	statusManager virtualmcpserverstatus.StatusManager,
+) error {
+	filter := vmcp.Spec.AuthServerUpstreamFilter
+	if filter == nil {
+		return nil
+	}
+	cfg := vmcp.Spec.AuthServerConfig
+	if cfg == nil {
+		return setAuthServerUpstreamFilterError(vmcp, statusManager,
+			"spec.authServerUpstreamFilter requires spec.authServerConfig to be set")
+	}
+
+	configured := make([]string, len(cfg.UpstreamProviders))
+	for i := range cfg.UpstreamProviders {
+		configured[i] = cfg.UpstreamProviders[i].Name
+	}
+
+	runtimeCfg := operatorvmcpconfig.ConvertUpstreamFilter(filter)
+	if _, err := upstreamfilter.NewGroupBasedFilter(*runtimeCfg, configured); err != nil {
+		return setAuthServerUpstreamFilterError(vmcp, statusManager,
+			fmt.Sprintf("spec.authServerUpstreamFilter: %v", err))
+	}
+	return nil
+}
+
+// setAuthServerUpstreamFilterError stamps a terminal AuthServerUpstreamFilter
+// validation failure onto status. Reuses ConditionTypeAuthServerConfigValidated
+// (rather than introducing a new condition type) so operators observe all
+// auth-server spec defects through a single surface; the message carries the
+// precise field path.
+func setAuthServerUpstreamFilterError(
+	vmcp *mcpv1beta1.VirtualMCPServer,
+	statusManager virtualmcpserverstatus.StatusManager,
+	message string,
+) error {
+	statusManager.SetPhase(mcpv1beta1.VirtualMCPServerPhaseFailed)
+	statusManager.SetMessage(message)
+	statusManager.SetAuthServerConfigValidatedCondition(
+		mcpv1beta1.ConditionReasonAuthServerConfigInvalid,
+		message,
+		metav1.ConditionFalse,
+	)
+	statusManager.SetObservedGeneration(vmcp.Generation)
+	return stderrors.New(message)
 }
 
 // validateAuthServerConfigCABundles resolves inline upstream CA dependencies.

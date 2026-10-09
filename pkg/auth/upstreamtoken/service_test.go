@@ -6,6 +6,8 @@ package upstreamtoken
 import (
 	"context"
 	"errors"
+	"fmt"
+	"sync"
 	"testing"
 	"time"
 
@@ -612,6 +614,15 @@ func TestInProcessService_RefreshOnExpiredIDToken(t *testing.T) {
 		IDToken:      expiredIDToken,
 		ExpiresAt:    time.Now().Add(time.Hour),
 	}
+	// The original #6237 shape: both tokens expired, so the access-token
+	// trigger refreshes and the provider omits id_token.
+	bothExpiredRow := &storage.UpstreamTokens{
+		ProviderID:   "entra",
+		AccessToken:  "expired-access-token",
+		RefreshToken: "refresh-token",
+		IDToken:      expiredIDToken,
+		ExpiresAt:    time.Now().Add(-time.Minute),
+	}
 
 	tests := []struct {
 		name           string
@@ -639,6 +650,18 @@ func TestInProcessService_RefreshOnExpiredIDToken(t *testing.T) {
 			rows: []*storage.UpstreamTokens{staleRow, carriedForwardRow},
 			setupRefresher: func(r *storagemocks.MockUpstreamTokenRefresher) {
 				r.EXPECT().RefreshAndStore(gomock.Any(), "session-1", staleRow).
+					Return(carriedForwardRow, nil).Times(1)
+			},
+			want: []UpstreamCredential{
+				{AccessToken: "new-access-token", IDToken: expiredIDToken},
+				{AccessToken: "new-access-token", IDToken: expiredIDToken},
+			},
+		},
+		{
+			name: "expired access token with omitted id_token carries it forward and suppresses the ID-token trigger",
+			rows: []*storage.UpstreamTokens{bothExpiredRow, carriedForwardRow},
+			setupRefresher: func(r *storagemocks.MockUpstreamTokenRefresher) {
+				r.EXPECT().RefreshAndStore(gomock.Any(), "session-1", bothExpiredRow).
 					Return(carriedForwardRow, nil).Times(1)
 			},
 			want: []UpstreamCredential{
@@ -869,4 +892,157 @@ func TestInProcessService_GetAllUpstreamCredentials_IDTokenRefreshRemovedRow(t *
 	require.NoError(t, err)
 	assert.Empty(t, creds)
 	assert.Equal(t, []string{"entra"}, failed)
+}
+
+func TestIDTokenExpired(t *testing.T) {
+	t.Parallel()
+
+	now := time.Now()
+	noExp, err := jwt.NewWithClaims(jwt.SigningMethodHS256, jwt.MapClaims{"sub": "user"}).
+		SignedString([]byte("test-key"))
+	require.NoError(t, err)
+
+	tests := []struct {
+		name    string
+		idToken string
+		want    bool
+	}{
+		{name: "empty token is not expired", idToken: "", want: false},
+		{name: "unparseable token is not expired", idToken: "not-a-jwt", want: false},
+		{name: "token without exp is not expired", idToken: noExp, want: false},
+		{name: "exp in the past is expired", idToken: signedIDToken(t, now.Add(-time.Minute)), want: true},
+		{
+			name:    "exp inside the skew window is expired",
+			idToken: signedIDToken(t, now.Add(idTokenExpirySkew-time.Second)),
+			want:    true,
+		},
+		{
+			name:    "exp beyond the skew window is not expired",
+			idToken: signedIDToken(t, now.Add(idTokenExpirySkew+2*time.Second)),
+			want:    false,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			assert.Equal(t, tt.want, idTokenExpired(tt.idToken, now))
+		})
+	}
+}
+
+// TestInProcessService_IDTokenSuppressionLifecycle pins how suppression entries
+// are scoped, bounded, and evicted.
+func TestInProcessService_IDTokenSuppressionLifecycle(t *testing.T) {
+	t.Parallel()
+
+	newSvc := func() *InProcessService { return NewInProcessService(nil, nil) }
+	key := suppressionKey("session-1", "entra")
+
+	t.Run("a rotated ID token is not suppressed", func(t *testing.T) {
+		t.Parallel()
+		svc := newSvc()
+		svc.suppressIDTokenRefresh("session-1", "entra", "old-id-token", time.Now().Add(time.Hour), time.Time{})
+		assert.True(t, svc.idTokenRefreshSuppressed("session-1", "entra", "old-id-token", time.Now()))
+		assert.False(t, svc.idTokenRefreshSuppressed("session-1", "entra", "rotated-id-token", time.Now()))
+	})
+
+	t.Run("an expired entry is dropped on read", func(t *testing.T) {
+		t.Parallel()
+		svc := newSvc()
+		until := time.Now().Add(time.Minute)
+		svc.suppressIDTokenRefresh("session-1", "entra", "id-token", until, time.Time{})
+		assert.False(t, svc.idTokenRefreshSuppressed("session-1", "entra", "id-token", until))
+		assert.NotContains(t, svc.idTokenSuppressions, key)
+	})
+
+	t.Run("expired entries are swept on write once the sweep interval has elapsed", func(t *testing.T) {
+		t.Parallel()
+		svc := newSvc()
+		svc.idTokenSuppressions[suppressionKey("session-old", "entra")] = idTokenSuppression{
+			idToken: "id-token", until: time.Now().Add(-time.Second),
+		}
+		svc.suppressIDTokenRefresh("session-1", "entra", "id-token", time.Now().Add(time.Hour), time.Time{})
+		assert.NotContains(t, svc.idTokenSuppressions, suppressionKey("session-old", "entra"))
+		assert.Contains(t, svc.idTokenSuppressions, key)
+
+		// Within the interval the sweep does not run again.
+		svc.idTokenSuppressions[suppressionKey("session-old", "entra")] = idTokenSuppression{
+			idToken: "id-token", until: time.Now().Add(-time.Second),
+		}
+		svc.suppressIDTokenRefresh("session-2", "entra", "id-token", time.Now().Add(time.Hour), time.Time{})
+		assert.Contains(t, svc.idTokenSuppressions, suppressionKey("session-old", "entra"))
+	})
+
+	t.Run("zero access-token expiry falls back to session expiry", func(t *testing.T) {
+		t.Parallel()
+		svc := newSvc()
+		sessionExpiry := time.Now().Add(24 * time.Hour)
+		svc.suppressIDTokenRefresh("session-1", "entra", "id-token", time.Time{}, sessionExpiry)
+		assert.Equal(t, sessionExpiry, svc.idTokenSuppressions[key].until)
+	})
+
+	t.Run("zero access-token and session expiry falls back to the default bound", func(t *testing.T) {
+		t.Parallel()
+		svc := newSvc()
+		before := time.Now()
+		svc.suppressIDTokenRefresh("session-1", "entra", "id-token", time.Time{}, time.Time{})
+		assert.WithinDuration(t, before.Add(defaultIDTokenSuppression), svc.idTokenSuppressions[key].until, time.Second)
+	})
+}
+
+// TestInProcessService_ConcurrentIDTokenRefresh exercises the mutex-guarded
+// suppression map under concurrent reads and writes; it is meaningful under
+// the race detector, which task test enables.
+func TestInProcessService_ConcurrentIDTokenRefresh(t *testing.T) {
+	t.Parallel()
+
+	expiredIDToken := signedIDToken(t, time.Now().Add(-10*time.Minute))
+	ctrl := gomock.NewController(t)
+	mockStorage := storagemocks.NewMockUpstreamTokenStorage(ctrl)
+	mockRefresher := storagemocks.NewMockUpstreamTokenRefresher(ctrl)
+
+	const workers = 16
+	for i := range workers {
+		session := fmt.Sprintf("session-%d", i%4)
+		mockStorage.EXPECT().GetUpstreamTokens(gomock.Any(), session, "entra").AnyTimes().
+			Return(&storage.UpstreamTokens{
+				ProviderID:   "entra",
+				AccessToken:  "valid-access-token",
+				RefreshToken: "refresh-token",
+				IDToken:      expiredIDToken,
+				ExpiresAt:    time.Now().Add(30 * time.Minute),
+			}, nil)
+	}
+	// The provider omits id_token, so every refresh records a suppression.
+	mockRefresher.EXPECT().RefreshAndStore(gomock.Any(), gomock.Any(), gomock.Any()).AnyTimes().
+		DoAndReturn(func(_ context.Context, _ string, row *storage.UpstreamTokens) (*storage.UpstreamTokens, error) {
+			refreshed := *row
+			refreshed.ExpiresAt = time.Now().Add(time.Hour)
+			return &refreshed, nil
+		})
+
+	svc := NewInProcessService(mockStorage, mockRefresher)
+
+	var wg sync.WaitGroup
+	for i := range workers {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			cred, err := svc.GetValidTokens(context.Background(), fmt.Sprintf("session-%d", i%4), "entra")
+			assert.NoError(t, err)
+			assert.NotNil(t, cred)
+		}()
+	}
+
+	done := make(chan struct{})
+	go func() {
+		wg.Wait()
+		close(done)
+	}()
+	select {
+	case <-done:
+	case <-time.After(5 * time.Second):
+		t.Fatal("timeout waiting for concurrent reads")
+	}
 }

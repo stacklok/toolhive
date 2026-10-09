@@ -1164,3 +1164,47 @@ func TestUpstreamTokenRefresher_ReReadShortCircuit(t *testing.T) {
 		})
 	}
 }
+
+// TestRowChanged pins each field that marks a stored row as rewritten since
+// the caller read it. Dropping any comparison would let a caller redeem a row
+// another caller already refreshed.
+func TestRowChanged(t *testing.T) {
+	t.Parallel()
+
+	expiry := time.Now().Add(time.Hour)
+	base := storage.UpstreamTokens{
+		AccessToken:  "access",
+		RefreshToken: "refresh",
+		IDToken:      "id-token",
+		ExpiresAt:    expiry,
+	}
+
+	tests := []struct {
+		name   string
+		mutate func(*storage.UpstreamTokens)
+		want   bool
+	}{
+		{name: "identical row is unchanged", mutate: func(*storage.UpstreamTokens) {}, want: false},
+		{name: "different access token", mutate: func(r *storage.UpstreamTokens) { r.AccessToken = "other" }, want: true},
+		{name: "different refresh token", mutate: func(r *storage.UpstreamTokens) { r.RefreshToken = "other" }, want: true},
+		{name: "different ID token", mutate: func(r *storage.UpstreamTokens) { r.IDToken = "other" }, want: true},
+		{name: "different expiry", mutate: func(r *storage.UpstreamTokens) { r.ExpiresAt = expiry.Add(time.Minute) }, want: true},
+		{
+			// Equal, not ==: the same instant with a different monotonic reading
+			// or location (e.g. after a storage round-trip) is not a change.
+			name:   "same expiry instant in another location",
+			mutate: func(r *storage.UpstreamTokens) { r.ExpiresAt = expiry.UTC() },
+			want:   false,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			caller := base
+			stored := base
+			tt.mutate(&stored)
+			assert.Equal(t, tt.want, rowChanged(&caller, &stored))
+		})
+	}
+}

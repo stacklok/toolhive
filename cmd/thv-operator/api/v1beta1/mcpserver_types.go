@@ -583,6 +583,10 @@ type SecretRef struct {
 // into the vMCP ConfigMap so the vMCP process receives connection parameters at startup.
 //
 // +kubebuilder:validation:XValidation:rule="self.provider == 'redis' ? has(self.address) : true",message="address is required"
+// +kubebuilder:validation:XValidation:rule="!has(self.tls) || self.provider == 'redis'",message="tls is only supported when provider is redis"
+// +kubebuilder:validation:XValidation:rule="!has(self.tls) || !has(self.tls.caCertSecretRef) || !has(self.tls.insecureSkipVerify) || !self.tls.insecureSkipVerify",message="tls.insecureSkipVerify disables certificate verification, so tls.caCertSecretRef would be ignored; set only one"
+//
+//nolint:lll // CEL validation rules exceed line length limit
 type SessionStorageConfig struct {
 	// Provider is the session storage backend type
 	// +kubebuilder:validation:Enum=memory;redis
@@ -607,6 +611,16 @@ type SessionStorageConfig struct {
 	// PasswordRef is a reference to a Secret key containing the Redis password
 	// +optional
 	PasswordRef *SecretKeyRef `json:"passwordRef,omitempty"`
+
+	// TLS enables TLS for the Redis session storage connection and, when rate
+	// limiting is configured, for the rate-limit connection to the same Redis.
+	// When omitted, the connections are plaintext and the Redis password and
+	// session data cross the network unencrypted. An empty object enables TLS
+	// with server certificate verification against the system root CAs; set
+	// caCertSecretRef for a private CA. A failed handshake never falls back to
+	// plaintext. Only used when provider is redis.
+	// +optional
+	TLS *RedisTLSConfig `json:"tls,omitempty"`
 }
 
 // RateLimitConfig defines rate limiting configuration for an MCP server.

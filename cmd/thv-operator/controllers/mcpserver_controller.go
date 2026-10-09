@@ -1428,6 +1428,11 @@ func (r *MCPServerReconciler) deploymentForMCPServer(
 		}
 	}
 
+	// Mount the session storage Redis CA bundle when TLS references one.
+	sessionTLSVolumes, sessionTLSMounts := ctrlutil.SessionRedisTLSVolumes(m.Spec.SessionStorage)
+	volumes = append(volumes, sessionTLSVolumes...)
+	volumeMounts = append(volumeMounts, sessionTLSMounts...)
+
 	// Add embedded auth server volumes and env vars. AuthServerRef takes precedence;
 	// externalAuthConfigRef is used as a fallback (legacy path).
 	if configName := ctrlutil.EmbeddedAuthServerConfigName(m.Spec.ExternalAuthConfigRef, m.Spec.AuthServerRef); configName != "" {
@@ -2078,6 +2083,10 @@ func (r *MCPServerReconciler) deploymentNeedsUpdate(
 		// Add default environment variables that are always injected
 		expectedProxyEnv = ctrlutil.EnsureRequiredEnvVars(ctx, expectedProxyEnv)
 		if !equality.Semantic.DeepEqual(container.Env, expectedProxyEnv) {
+			return true
+		}
+
+		if ctrlutil.SessionRedisTLSVolumeNeedsUpdate(deployment.Spec.Template.Spec.Volumes, mcpServer.Spec.SessionStorage) {
 			return true
 		}
 

@@ -107,6 +107,34 @@ plaintext PII at rest as the price of correctness; operators who require additio
 protection against a Redis compromise must layer Redis-side access controls as
 described above.
 
+### Transport security
+
+`spec.sessionStorage.tls` (shared by `VirtualMCPServer`, `MCPServer` and
+`MCPRemoteProxy`) enables TLS for the session-storage connection and for the rate
+limiter's client to the same Redis. Standalone vMCP uses `sessionStorage.tls` in its
+YAML (`caCertFile`, `insecureSkipVerify`), and proxy RunConfigs use
+`scaling_config.session_redis.tls`; both map to `pkg/redisconfig.TLSConfig`.
+
+- An empty `tls` object verifies the server certificate against the system roots.
+- `caCertSecretRef` mounts a private CA at `/etc/toolhive/session-redis-tls/ca.crt`
+  in the proxy runner or vMCP pod.
+- `insecureSkipVerify` disables verification and is meant for testing only. The API
+  rejects it together with `caCertSecretRef`, and rejects `tls` with a non-Redis
+  provider.
+- A failed handshake never falls back to plaintext.
+- If the referenced CA Secret or key does not exist, the pod stays in
+  `ContainerCreating`. This is fail-closed, as for the embedded auth server's Redis CA.
+- The CA is mounted with `subPath`, so rotating the Secret's content requires a pod
+  restart. Switching to a different Secret rolls the Deployment.
+- On a `VirtualMCPServer`, the operator-set value replaces any
+  `spec.config.sessionStorage.tls`.
+
+When `tls` is omitted, the connection stays unencrypted for backward compatibility.
+If a password is configured without TLS, or with `insecureSkipVerify`, the session
+store logs one startup WARN carrying a `store` attribute. The operator-wide
+`defaultRedis` fallback (`TOOLHIVE_DEFAULT_REDIS_ADDR`) does not carry TLS settings
+yet.
+
 ## File descriptor limits
 
 Each open backend connection consumes one file descriptor on the vMCP pod. A

@@ -1765,6 +1765,10 @@ func (r *MCPRemoteProxyReconciler) deploymentNeedsUpdate(
 		return true
 	}
 
+	if ctrlutil.SessionRedisTLSVolumeNeedsUpdate(deployment.Spec.Template.Spec.Volumes, proxy.Spec.SessionStorage) {
+		return true
+	}
+
 	// Check if spec.replicas has changed. Only compare when spec.replicas is
 	// non-nil; nil means hands-off mode (HPA or another external controller
 	// manages replicas) and the live count is authoritative.

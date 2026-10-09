@@ -78,6 +78,49 @@ var _ = Describe("CEL Validation for SessionStorageConfig on VirtualMCPServer",
 				err := k8sClient.Create(ctx, vmcp)
 				Expect(err).NotTo(HaveOccurred())
 			})
+
+			It("should reject tls, which only applies to redis", func() {
+				vmcp := newVirtualMCPServerWithSessionStorage("vmcp-memory-tls", &mcpv1beta1.SessionStorageConfig{
+					Provider: "memory",
+					TLS:      &mcpv1beta1.RedisTLSConfig{},
+				})
+				err := k8sClient.Create(ctx, vmcp)
+				Expect(err).To(HaveOccurred())
+				Expect(err.Error()).To(ContainSubstring("tls is only supported when provider is redis"))
+			})
+		})
+
+		Context("tls", func() {
+			caRef := &mcpv1beta1.SecretKeyRef{Name: "redis-ca", Key: "ca.crt"}
+
+			It("should accept an empty tls block (system roots)", func() {
+				vmcp := newVirtualMCPServerWithSessionStorage("vmcp-redis-tls-empty", &mcpv1beta1.SessionStorageConfig{
+					Provider: "redis",
+					Address:  "redis:6380",
+					TLS:      &mcpv1beta1.RedisTLSConfig{},
+				})
+				Expect(k8sClient.Create(ctx, vmcp)).To(Succeed())
+			})
+
+			It("should accept a private CA reference", func() {
+				vmcp := newVirtualMCPServerWithSessionStorage("vmcp-redis-tls-ca", &mcpv1beta1.SessionStorageConfig{
+					Provider: "redis",
+					Address:  "redis:6380",
+					TLS:      &mcpv1beta1.RedisTLSConfig{CACertSecretRef: caRef},
+				})
+				Expect(k8sClient.Create(ctx, vmcp)).To(Succeed())
+			})
+
+			It("should reject insecureSkipVerify together with caCertSecretRef", func() {
+				vmcp := newVirtualMCPServerWithSessionStorage("vmcp-redis-tls-conflict", &mcpv1beta1.SessionStorageConfig{
+					Provider: "redis",
+					Address:  "redis:6380",
+					TLS:      &mcpv1beta1.RedisTLSConfig{InsecureSkipVerify: true, CACertSecretRef: caRef},
+				})
+				err := k8sClient.Create(ctx, vmcp)
+				Expect(err).To(HaveOccurred())
+				Expect(err.Error()).To(ContainSubstring("tls.caCertSecretRef would be ignored"))
+			})
 		})
 
 		Context("replicas field", func() {

@@ -278,6 +278,10 @@ func (r *VirtualMCPServerReconciler) buildPodVolumesForVmcp(
 		volumeMounts = append(volumeMounts, authServerMounts...)
 	}
 
+	sessionTLSVolumes, sessionTLSMounts := ctrlutil.SessionRedisTLSVolumes(vmcp.Spec.SessionStorage)
+	volumes = append(volumes, sessionTLSVolumes...)
+	volumeMounts = append(volumeMounts, sessionTLSMounts...)
+
 	hash, err := podVolumesHash(volumes, volumeMounts)
 	if err != nil {
 		return nil, nil, "", err

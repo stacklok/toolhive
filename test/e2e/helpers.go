@@ -366,9 +366,11 @@ func DebugServerState(config *TestConfig, serverName string) {
 
 // CheckTHVBinaryAvailable checks if the thv binary is available
 func CheckTHVBinaryAvailable(config *TestConfig) error {
-	_, _, err := NewTHVCommand(config, "--help").Run()
+	_, stderr, err := NewTHVCommand(config, "--help").Run()
 	if err != nil {
-		return fmt.Errorf("thv binary not available at %s: %w", config.THVBinary, err)
+		// Preserve stderr so a startup failure (e.g. the default-group race) is
+		// diagnosable instead of being reported as a bare "binary not available".
+		return fmt.Errorf("thv binary not available at %s: %w: %s", config.THVBinary, err, stderr)
 	}
 	return nil
 }

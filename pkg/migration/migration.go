@@ -6,6 +6,7 @@ package migration
 
 import (
 	"context"
+	"errors"
 	"log/slog"
 
 	"github.com/stacklok/toolhive/pkg/container/runtime"
@@ -40,5 +41,13 @@ func ensureDefaultGroupExists(ctx context.Context) error {
 	}
 
 	slog.Debug("creating default group", "name", groups.DefaultGroupName)
-	return groupManager.Create(ctx, groups.DefaultGroupName)
+	err = groupManager.Create(ctx, groups.DefaultGroupName)
+	// Another process may create the default group between our Exists check and
+	// this Create (e.g. concurrent `thv` startup against a shared state
+	// directory). That race is benign: the group we wanted exists now, so treat
+	// it as success rather than a fatal startup error.
+	if err != nil && !errors.Is(err, groups.ErrGroupAlreadyExists) {
+		return err
+	}
+	return nil
 }

@@ -133,9 +133,12 @@ YAML (`caCertFile`, `insecureSkipVerify`), and proxy RunConfigs use
 When `tls` is omitted, the connection stays unencrypted for backward compatibility.
 If TLS is omitted, or `insecureSkipVerify` is set, the session store constructor
 logs one startup WARN carrying a `store` attribute, whether or not a password is
-configured. The operator-wide
-`defaultRedis` fallback (`TOOLHIVE_DEFAULT_REDIS_ADDR`) does not carry TLS settings
-yet.
+configured. vMCP additionally logs its existing no-authentication WARN when
+`THV_SESSION_REDIS_PASSWORD` is unset; the two cover different gaps.
+
+The operator-wide `defaultRedis` fallback (`TOOLHIVE_DEFAULT_REDIS_ADDR`) does not
+carry TLS settings yet, so workloads that rely on it always log the plaintext WARN.
+To encrypt their connection, set `spec.sessionStorage` with `tls` on the workload.
 
 ## File descriptor limits
 

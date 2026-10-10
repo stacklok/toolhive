@@ -5,7 +5,6 @@ package app
 
 import (
 	"context"
-	"errors"
 	"fmt"
 	"log/slog"
 	"os"
@@ -105,7 +104,7 @@ func clientSetupCmdFunc(cmd *cobra.Command, _ []string) error {
 	}
 	availableClients := getAvailableClients(clientStatuses)
 	if len(availableClients) == 0 {
-		fmt.Println("No new clients found.")
+		fmt.Println("No installed clients found.")
 		return nil
 	}
 
@@ -124,27 +123,58 @@ func clientSetupCmdFunc(cmd *cobra.Command, _ []string) error {
 		return fmt.Errorf("failed to list groups: %w", err)
 	}
 
-	selectedClients, selectedGroups, confirmed, err := ui.RunClientSetup(availableClients, availableGroups)
+	selectedClients, initiallyRegistered, selectedGroups, confirmed, err := ui.RunClientSetup(availableClients, availableGroups)
 	if err != nil {
-		if errors.Is(err, client.ErrAllClientsRegistered) {
-			fmt.Println("All installed clients are already registered for the selected groups.")
-			return nil
-		}
 		return fmt.Errorf("error running interactive setup: %w", err)
 	}
 	if !confirmed {
-		fmt.Println("Setup cancelled. No clients registered.")
-		return nil
-	}
-	if len(selectedClients) == 0 {
-		fmt.Println("No clients selected for registration.")
+		fmt.Println("Setup cancelled. No changes made.")
 		return nil
 	}
 	if len(selectedGroups) == 0 && len(availableGroups) != 0 {
-		fmt.Println("No groups selected for registration. Please select at least one group.")
+		fmt.Println("No groups selected. Please select at least one group.")
 		return nil
 	}
-	return registerSelectedClients(cmd, selectedClients, selectedGroups)
+
+	// Clients newly selected (not already registered) get registered.
+	initialRegisteredSet := make(map[string]struct{}, len(initiallyRegistered))
+	for _, name := range initiallyRegistered {
+		initialRegisteredSet[name] = struct{}{}
+	}
+	var toRegister []client.ClientAppStatus
+	for _, cli := range selectedClients {
+		if _, ok := initialRegisteredSet[string(cli.ClientType)]; !ok {
+			toRegister = append(toRegister, cli)
+		}
+	}
+
+	// Pre-selected clients that the user deselected get un-registered.
+	selectedSet := make(map[string]struct{}, len(selectedClients))
+	for _, cli := range selectedClients {
+		selectedSet[string(cli.ClientType)] = struct{}{}
+	}
+	var toRemove []client.ClientAppStatus
+	for _, name := range initiallyRegistered {
+		if _, ok := selectedSet[name]; !ok {
+			toRemove = append(toRemove, client.ClientAppStatus{ClientType: client.ClientApp(name)})
+		}
+	}
+
+	if len(toRegister) == 0 && len(toRemove) == 0 {
+		fmt.Println("No changes to client registrations.")
+		return nil
+	}
+	if len(toRegister) > 0 {
+		if err := registerSelectedClients(cmd, toRegister, selectedGroups); err != nil {
+			return err
+		}
+	}
+	if len(toRemove) > 0 {
+		if err := removeSelectedClients(cmd, toRemove, selectedGroups); err != nil {
+			return err
+		}
+	}
+	return nil
 }
 
 // Helper to get available (installed) clients
@@ -167,6 +197,17 @@ func registerSelectedClients(cmd *cobra.Command, clientsToRegister []client.Clie
 	}
 
 	return performClientRegistration(cmd.Context(), clients, selectedGroups)
+}
+
+// Helper to un-register selected clients
+func removeSelectedClients(cmd *cobra.Command, clientsToRemove []client.ClientAppStatus, selectedGroups []string) error {
+	for _, cli := range clientsToRemove {
+		warnIfDeprecatedClient(cli.ClientType)
+		if err := performClientRemoval(cmd.Context(), client.Client{Name: cli.ClientType}, selectedGroups); err != nil {
+			return err
+		}
+	}
+	return nil
 }
 
 func clientRegisterCmdFunc(cmd *cobra.Command, args []string) error {

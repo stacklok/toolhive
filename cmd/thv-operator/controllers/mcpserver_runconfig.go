@@ -339,6 +339,7 @@ func populateScalingConfig(runConfig *runner.RunConfig, m *mcpv1beta1.MCPServer)
 			Address:   m.Spec.SessionStorage.Address,
 			DB:        m.Spec.SessionStorage.DB,
 			KeyPrefix: m.Spec.SessionStorage.KeyPrefix,
+			TLS:       ctrlutil.SessionRedisTLSConfig(m.Spec.SessionStorage),
 		}
 	} else if defaultRedis != nil {
 		runConfig.ScalingConfig.SessionRedis = &runner.SessionRedisConfig{

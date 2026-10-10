@@ -43,6 +43,11 @@ func (r *MCPRemoteProxyReconciler) deploymentForMCPRemoteProxy(
 	}
 	env := r.buildEnvVarsForProxy(ctx, proxy)
 
+	// Mount the session storage Redis CA bundle when TLS references one.
+	sessionTLSVolumes, sessionTLSMounts := ctrlutil.SessionRedisTLSVolumes(proxy.Spec.SessionStorage)
+	volumes = append(volumes, sessionTLSVolumes...)
+	volumeMounts = append(volumeMounts, sessionTLSMounts...)
+
 	// Add embedded auth server volumes and env vars. AuthServerRef takes precedence;
 	// externalAuthConfigRef is used as a fallback (legacy path).
 	configName := ctrlutil.EmbeddedAuthServerConfigName(proxy.Spec.ExternalAuthConfigRef, proxy.Spec.AuthServerRef)

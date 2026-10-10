@@ -27,6 +27,7 @@ import (
 	"github.com/stacklok/toolhive/cmd/thv-operator/pkg/oidc"
 	oidcmocks "github.com/stacklok/toolhive/cmd/thv-operator/pkg/oidc/mocks"
 	thvjson "github.com/stacklok/toolhive/pkg/json"
+	"github.com/stacklok/toolhive/pkg/redisconfig"
 	"github.com/stacklok/toolhive/pkg/telemetry"
 	vmcpconfig "github.com/stacklok/toolhive/pkg/vmcp/config"
 )
@@ -1546,6 +1547,41 @@ func TestConverter_SessionStorage(t *testing.T) {
 				Address:   "redis:6379",
 				DB:        2,
 				KeyPrefix: "thv:",
+			},
+		},
+		{
+			name: "redis provider with TLS CA secret points at the mounted CA file",
+			sessionStorage: &mcpv1beta1.SessionStorageConfig{
+				Provider: mcpv1beta1.SessionStorageProviderRedis,
+				Address:  "redis:6380",
+				TLS: &mcpv1beta1.RedisTLSConfig{
+					CACertSecretRef: &mcpv1beta1.SecretKeyRef{Name: "redis-ca", Key: "ca.crt"},
+				},
+			},
+			expectedStorage: &vmcpconfig.SessionStorageConfig{
+				Provider: "redis",
+				Address:  "redis:6380",
+				TLS: &redisconfig.TLSConfig{
+					CACertFile: "/etc/toolhive/session-redis-tls/ca.crt",
+				},
+			},
+		},
+		{
+			name: "spec.config.sessionStorage.tls never reaches the vMCP config",
+			sessionStorage: &mcpv1beta1.SessionStorageConfig{
+				Provider: mcpv1beta1.SessionStorageProviderRedis,
+				Address:  "redis:6380",
+				TLS:      &mcpv1beta1.RedisTLSConfig{},
+			},
+			inlineConfig: &vmcpconfig.SessionStorageConfig{
+				Provider: "redis",
+				Address:  "redis:6380",
+				TLS:      &redisconfig.TLSConfig{CACertFile: "/user/supplied/ca.crt", InsecureSkipVerify: true},
+			},
+			expectedStorage: &vmcpconfig.SessionStorageConfig{
+				Provider: "redis",
+				Address:  "redis:6380",
+				TLS:      &redisconfig.TLSConfig{},
 			},
 		},
 		{

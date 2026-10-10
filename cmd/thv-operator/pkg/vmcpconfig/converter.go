@@ -528,6 +528,10 @@ func convertSessionStorage(vmcp *mcpv1beta1.VirtualMCPServer) *vmcpconfig.Sessio
 			Address:   vmcp.Spec.SessionStorage.Address,
 			DB:        vmcp.Spec.SessionStorage.DB,
 			KeyPrefix: vmcp.Spec.SessionStorage.KeyPrefix,
+			// spec.sessionStorage.tls is the only TLS source (CEL rejects
+			// spec.config.sessionStorage.tls); CACertFile points at the CA bundle
+			// the deployment builder mounts from caCertSecretRef.
+			TLS: controllerutil.SessionRedisTLSConfig(vmcp.Spec.SessionStorage),
 		}
 	}
 

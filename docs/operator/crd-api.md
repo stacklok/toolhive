@@ -737,7 +737,7 @@ _Appears in:_
 | `address` _string_ | Address is the Redis server address (required when provider is redis). |  | Optional: \{\} <br /> |
 | `db` _integer_ | DB is the Redis database number. | 0 | Minimum: 0 <br />Optional: \{\} <br /> |
 | `keyPrefix` _string_ | KeyPrefix is an optional prefix for all Redis keys used by ToolHive. |  | Optional: \{\} <br /> |
-| `tls` _[pkg.redisconfig.TLSConfig](#pkgredisconfigtlsconfig)_ | TLS enables TLS for session storage and rate limiting. An empty<br />configuration verifies the Redis server using system roots. |  | Optional: \{\} <br /> |
+| `tls` _[pkg.redisconfig.TLSConfig](#pkgredisconfigtlsconfig)_ | TLS enables TLS for session storage and rate limiting. An empty<br />configuration verifies the Redis server using system roots.<br />On Kubernetes, set spec.sessionStorage.tls instead: the operator derives this<br />field from it and rejects a value set under spec.config.sessionStorage. |  | Optional: \{\} <br /> |
 
 
 #### vmcp.config.StaticBackendConfig
@@ -4104,11 +4104,12 @@ Presence of this struct on a connection type enables TLS for that connection.
 
 _Appears in:_
 - [api.v1beta1.RedisStorageConfig](#apiv1beta1redisstorageconfig)
+- [api.v1beta1.SessionStorageConfig](#apiv1beta1sessionstorageconfig)
 
 | Field | Description | Default | Validation |
 | --- | --- | --- | --- |
-| `insecureSkipVerify` _boolean_ | InsecureSkipVerify skips TLS certificate verification.<br />Use when connecting to services with self-signed certificates. |  | Optional: \{\} <br /> |
-| `caCertSecretRef` _[api.v1beta1.SecretKeyRef](#apiv1beta1secretkeyref)_ | CACertSecretRef references a Secret containing a PEM-encoded CA certificate<br />for verifying the server. When not specified, system root CAs are used. |  | Optional: \{\} <br /> |
+| `insecureSkipVerify` _boolean_ | InsecureSkipVerify disables server certificate and hostname verification.<br />The connection is encrypted but not authenticated, so anyone able to<br />impersonate the server can read the credentials and data sent over it.<br />Intended for testing only; for self-signed or private CAs set<br />caCertSecretRef instead. |  | Optional: \{\} <br /> |
+| `caCertSecretRef` _[api.v1beta1.SecretKeyRef](#apiv1beta1secretkeyref)_ | CACertSecretRef references a Secret containing a PEM-encoded CA certificate<br />for verifying the server. When not specified, system root CAs are used.<br />If the Secret or key does not exist, the pod cannot start (it stays in<br />ContainerCreating) rather than connecting without verification. |  | Optional: \{\} <br /> |
 
 
 #### api.v1beta1.ResourceList
@@ -4483,6 +4484,7 @@ _Appears in:_
 | `db` _integer_ | DB is the Redis database number | 0 | Minimum: 0 <br />Optional: \{\} <br /> |
 | `keyPrefix` _string_ | KeyPrefix is an optional prefix for all Redis keys used by ToolHive |  | Optional: \{\} <br /> |
 | `passwordRef` _[api.v1beta1.SecretKeyRef](#apiv1beta1secretkeyref)_ | PasswordRef is a reference to a Secret key containing the Redis password |  | Optional: \{\} <br /> |
+| `tls` _[api.v1beta1.RedisTLSConfig](#apiv1beta1redistlsconfig)_ | TLS enables TLS for the Redis session storage connection and, when rate<br />limiting is configured, for the rate-limit connection to the same Redis.<br />When omitted, the connections are plaintext and the Redis password and<br />session data cross the network unencrypted. An empty object enables TLS<br />with server certificate verification against the system root CAs; set<br />caCertSecretRef for a private CA. A failed handshake never falls back to<br />plaintext. Only used when provider is redis. |  | Optional: \{\} <br /> |
 
 
 #### api.v1beta1.TokenExchangeConfig

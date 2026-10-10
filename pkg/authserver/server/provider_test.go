@@ -69,6 +69,14 @@ func TestNewAuthorizationServerConfig(t *testing.T) {
 	// Verify JWKS contains the key
 	require.NotNil(t, authzServerConfig.SigningJWKS)
 	assert.Len(t, authzServerConfig.SigningJWKS.Keys, 1)
+
+	// Strategies that fosite would otherwise assign lazily on first use (an
+	// unsynchronized write to the shared Config) must be set up front.
+	assert.NotNil(t, authzServerConfig.AudienceMatchingStrategy)
+	require.NotNil(t, authzServerConfig.JWKSFetcherStrategy)
+	clientKeys, err := authzServerConfig.JWKSFetcherStrategy.Resolve(t.Context(), "https://client.example.com/jwks", false)
+	assert.Nil(t, clientKeys)
+	require.ErrorIs(t, err, fosite.ErrInvalidClient, "remote client key sets must be rejected, not fetched")
 }
 
 // TestNewAuthorizationServerConfig_ConfidentialClientCapabilities pins the

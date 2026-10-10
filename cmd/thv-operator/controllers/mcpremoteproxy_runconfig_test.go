@@ -33,6 +33,7 @@ import (
 	"github.com/stacklok/toolhive/cmd/thv-operator/internal/testutil"
 	"github.com/stacklok/toolhive/pkg/authz"
 	"github.com/stacklok/toolhive/pkg/authz/authorizers/cedar"
+	"github.com/stacklok/toolhive/pkg/redisconfig"
 	"github.com/stacklok/toolhive/pkg/runner"
 	transporttypes "github.com/stacklok/toolhive/pkg/transport/types"
 )
@@ -780,6 +781,21 @@ func TestPopulateScalingConfigForRemoteProxy(t *testing.T) {
 				assert.Equal(t, "redis.default.svc:6379", sc.SessionRedis.Address)
 				assert.Equal(t, int32(2), sc.SessionRedis.DB)
 				assert.Equal(t, "thv:", sc.SessionRedis.KeyPrefix)
+				assert.Nil(t, sc.SessionRedis.TLS, "omitted tls must keep the existing plaintext behavior")
+			},
+		},
+		{
+			name: "redis with tls — TLS written to SessionRedis",
+			storage: &mcpv1beta1.SessionStorageConfig{
+				Provider: mcpv1beta1.SessionStorageProviderRedis,
+				Address:  "redis:6380",
+				TLS:      &mcpv1beta1.RedisTLSConfig{InsecureSkipVerify: true},
+			},
+			expected: func(t *testing.T, sc *runner.ScalingConfig) {
+				t.Helper()
+				require.NotNil(t, sc)
+				require.NotNil(t, sc.SessionRedis)
+				assert.Equal(t, &redisconfig.TLSConfig{InsecureSkipVerify: true}, sc.SessionRedis.TLS)
 			},
 		},
 		{

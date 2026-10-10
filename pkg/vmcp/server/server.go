@@ -631,14 +631,14 @@ func (s *Server) Handler(_ context.Context) (http.Handler, error) {
 		}),
 		server.WithHeartbeatInterval(heartbeatInterval(s.config.HeartbeatInterval)),
 	}
-	// Install the pre-dispatch authorization gate only when authz is configured
-	// (allow-all otherwise, matching the core admission seam's guard). The gate
-	// re-runs the core admission decision for gated methods so a denied tools/call,
-	// resources/read, or prompts/get is rejected as HTTP 403 + JSON-RPC 403 before
-	// the SDK dispatches it, instead of the SDK's 200 result.
-	if s.authzGateEnabled {
-		streamableOpts = append(streamableOpts, server.WithCallGate(s.authzCallGate()))
-	}
+	// Install the pre-dispatch gate. Session identity binding is enforced
+	// unconditionally for session-scoped list methods (a foreign caller must not
+	// read another session's advertised tools/resources/prompts). When authz is
+	// configured the gate ALSO re-runs the core admission decision for gated
+	// methods so a denied tools/call, resources/read, or prompts/get is rejected
+	// as HTTP 403 + JSON-RPC 403 before the SDK dispatches it, instead of the SDK's
+	// 200 result. Both checks run before session validation (see server.CallGate).
+	streamableOpts = append(streamableOpts, server.WithCallGate(s.callGate()))
 	streamableServer := server.NewStreamableHTTPServer(s.mcpServer, streamableOpts...)
 
 	// Create HTTP mux with separated authenticated and unauthenticated routes

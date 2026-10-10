@@ -620,6 +620,38 @@ func TestRemoveMatching(t *testing.T) {
 	}
 }
 
+// TestRemove verifies that Remove deletes exactly the requested key, fires
+// onEvict for it once, returns true when present (false when absent), and
+// leaves other entries untouched.
+func TestRemove(t *testing.T) {
+	t.Parallel()
+
+	var evicted []string
+	c := newStringCache(
+		func(_ context.Context, key string) (string, error) { return "loaded-" + key, nil },
+		alwaysAliveCheck,
+		func(key, _ string) { evicted = append(evicted, key) },
+	)
+
+	c.Set("drop-a", "va")
+	c.Set("keep-b", "vb")
+
+	require.True(t, c.Remove("drop-a"), "Remove must report an existing entry")
+	assert.ElementsMatch(t, []string{"drop-a"}, evicted,
+		"onEvict should fire once for the removed entry")
+	assert.Equal(t, 1, c.Len(), "only keep-b should remain")
+
+	// Removing an absent key is a no-op: returns false, fires no eviction.
+	require.False(t, c.Remove("drop-a"))
+	assert.Equal(t, []string{"drop-a"}, evicted, "no eviction for an absent key")
+	assert.Equal(t, 1, c.Len(), "cache unchanged after removing an absent key")
+
+	// Surviving entry is still a cache hit (no reload).
+	v, ok := c.Get(context.Background(), "keep-b")
+	require.True(t, ok)
+	assert.NotEqual(t, "loaded-keep-b", v, "keep-b should be served from cache, not reloaded")
+}
+
 // TestRemoveMatching_NoMatch verifies RemoveMatching is a no-op (and fires no
 // eviction) when the predicate matches nothing.
 func TestRemoveMatching_NoMatch(t *testing.T) {

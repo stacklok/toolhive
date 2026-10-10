@@ -534,11 +534,17 @@ func (sm *Manager) Terminate(sessionID string) (isNotAllowed bool, err error) {
 	}
 
 	if _, isFullSession := metadata[sessiontypes.MetadataKeyIdentityBinding]; isFullSession {
-		// Phase 2 (full MultiSession): delete from storage. The cache entry will be
-		// evicted lazily on the next Get when checkSession finds the session gone.
+		// Phase 2 (full MultiSession): delete from storage, then remove the
+		// node-local cache entry so its backend connections close immediately.
+		// Deleting the storage record first lets the loadSession SET XX guard
+		// reject restores that have not yet completed their metadata update
+		// (see CheckOrCreateSession). onEvict closes the connections, so no
+		// extra teardown is needed here. Other replicas still self-heal via
+		// checkSession on their next Get.
 		if deleteErr := sm.storage.Delete(ctx, sessionID); deleteErr != nil {
 			return false, fmt.Errorf("Manager.Terminate: failed to delete session from storage: %w", deleteErr)
 		}
+		sm.sessions.Remove(sessionID)
 		slog.Info("Manager.Terminate: session terminated", "session_id", sessionID)
 		return false, nil
 	}

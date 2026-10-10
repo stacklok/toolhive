@@ -651,14 +651,18 @@ func TestSessionManager_Terminate(t *testing.T) {
 		// so Terminate will take the Phase 2 path (storage.Delete) without
 		// any additional seeding.
 
-		// Terminate deletes from storage; the cache entry is evicted lazily on
-		// the next GetMultiSession call when checkSession detects ErrSessionNotFound.
+		// Terminate deletes from storage and removes the cache entry immediately,
+		// so backend connections close via onEvict right away — no subsequent
+		// GetMultiSession needed to trigger the cleanup.
 		isNotAllowed, err := sm.Terminate(sessionID)
 		require.NoError(t, err)
 		assert.False(t, isNotAllowed)
 
-		// The next GetMultiSession triggers checkSession: storage returns
-		// ErrSessionNotFound → ErrExpired → onEvict → Close().
+		// The entry is reclaimed eagerly: Terminate itself removes the cache
+		// entry and onEvict already called Close (Times(1) above).
+		assert.Equal(t, 0, sm.sessions.Len(), "terminated session should be removed from node-local cache immediately")
+
+		// A subsequent GetMultiSession must not resurrect the session.
 		_, ok := sm.GetMultiSession(t.Context(), sessionID)
 		assert.False(t, ok, "terminated session must not be returned")
 		// gomock verifies Close() was called exactly once via Times(1)
@@ -705,6 +709,10 @@ func TestSessionManager_Terminate(t *testing.T) {
 		_, loadErrAfter := storage.Load(context.Background(), sessionID)
 		assert.ErrorIs(t, loadErrAfter, transportsession.ErrSessionNotFound,
 			"session should be deleted from storage after Terminate")
+
+		// Cache entry must be reclaimed immediately (not wait for lazy eviction).
+		assert.Equal(t, 0, sm.sessions.Len(),
+			"terminated session must be removed from node-local cache on Terminate")
 	})
 
 	t.Run("placeholder session is marked terminated (not deleted)", func(t *testing.T) {

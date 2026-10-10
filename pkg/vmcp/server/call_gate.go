@@ -13,7 +13,95 @@ import (
 	"github.com/stacklok/toolhive/pkg/auth"
 	mcpparser "github.com/stacklok/toolhive/pkg/mcp"
 	"github.com/stacklok/toolhive/pkg/vmcp"
+	vmcpsession "github.com/stacklok/toolhive/pkg/vmcp/session"
 )
+
+// mcpSessionIDHeader is the transport header carrying the MCP session ID. The
+// CallGate runs before the SDK validates the session, so it reads this header
+// directly rather than relying on a context-populated session.
+const mcpSessionIDHeader = "Mcp-Session-Id"
+
+// sessionScopedListMethods are the methods that return session-scoped
+// capabilities straight from the SDK's per-session store.
+func sessionScopedListMethods(method string) bool {
+	switch method {
+	case "tools/list", "resources/list", "resources/templates/list", "prompts/list":
+		return true
+	default:
+		return false
+	}
+}
+
+// sessionBindingCallGate builds a pre-dispatch CallGate that rejects a
+// session-scoped LIST request (tools/list, resources/list,
+// resources/templates/list, prompts/list) whose caller is not the session's
+// bound owner.
+//
+// Those methods answer from the SDK's per-session store, which is populated
+// under the OWNER's identity at registration; the SDK's SessionIdManager.Validate
+// gates session existence and termination, not caller identity, and the
+// OnBeforeList* hooks cannot reject a request (they return no error). Without this
+// gate a foreign caller holding a valid token plus the victim's session ID
+// receives the owner's advertised tools, resources, and prompts — the list-method
+// analogue of the tools/call hijack that enforceSessionBinding blocks on the call
+// path.
+//
+// It is installed unconditionally (see Handler), independent of whether Cedar
+// authorization is configured, because identity binding is enforced for every
+// session. An unknown session admits, leaving the SDK to return its usual
+// not-found response; a request carrying no session ID (e.g. initialize) admits
+// because it exposes no session-scoped data.
+func (s *Server) sessionBindingCallGate() server.CallGate {
+	return func(ctx context.Context, r *http.Request) *server.Denial {
+		parsed := mcpparser.GetParsedMCPRequest(ctx)
+		if parsed == nil || !sessionScopedListMethods(parsed.Method) {
+			return nil
+		}
+		// The gate runs before session validation, so the session ID is only on
+		// the wire. A nil request (unit-test call shape) has no session to check.
+		if r == nil {
+			return nil
+		}
+		sessionID := r.Header.Get(mcpSessionIDHeader)
+		if sessionID == "" {
+			return nil
+		}
+		identity, _ := auth.IdentityFromContext(ctx)
+		sess, ok := s.vmcpSessionMgr.GetMultiSession(ctx, sessionID)
+		if !ok {
+			return nil // unknown/expired session: the SDK answers not-found
+		}
+		storedBinding, _ := sess.GetMetadataValue(vmcpsession.MetadataKeyIdentityBinding)
+		if err := vmcpsession.ValidateCaller(storedBinding, identity); err != nil {
+			slog.WarnContext(ctx, "vmcp session binding gate: caller does not match session owner",
+				"method", parsed.Method)
+			// HTTPStatus left zero ⇒ the shim writes HTTP 403 (see server.Denial).
+			return &server.Denial{Code: mcpparser.JSONRPCCodeDenied, Message: vmcp.DenyMessageSessionBinding}
+		}
+		return nil
+	}
+}
+
+// callGate composes the always-on session identity binding gate with the
+// authorization gate (present only when authz is configured). Binding runs
+// first: a foreign caller is rejected before any admission decision, so the
+// authz path never sees — or leaks — another session's capabilities.
+func (s *Server) callGate() server.CallGate {
+	bindingGate := s.sessionBindingCallGate()
+	var authzGate server.CallGate
+	if s.authzGateEnabled {
+		authzGate = s.authzCallGate()
+	}
+	return func(ctx context.Context, r *http.Request) *server.Denial {
+		if d := bindingGate(ctx, r); d != nil {
+			return d
+		}
+		if authzGate == nil {
+			return nil
+		}
+		return authzGate(ctx, r)
+	}
+}
 
 // authzCallGate builds the pre-dispatch CallGate consulted once per POST on the
 // Streamable HTTP transport, BEFORE session validation and BEFORE the message

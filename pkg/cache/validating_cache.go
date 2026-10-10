@@ -303,6 +303,25 @@ func (c *ValidatingCache[K, V]) RemoveMatching(pred func(K, V) bool) int {
 	return removed
 }
 
+// Remove deletes the entry for key, invoking the user onEvict for it, and
+// returns true if the entry was present.
+//
+// onEvict runs via drainEvictions after the lock is released, so a slow onEvict
+// (e.g. closing a hung backend connection) delays only the drain, never the
+// shared cache lock. This is intended for explicit invalidation of a known key
+// (e.g. Manager.Terminate removing a terminated session immediately rather than
+// waiting for lazy self-healing on the next Get).
+func (c *ValidatingCache[K, V]) Remove(key K) bool {
+	c.mu.Lock()
+	_, wasPresent := c.lruCache.Peek(key)
+	if wasPresent {
+		c.lruCache.Remove(key) // buffers the eviction; drained below
+	}
+	c.mu.Unlock()
+	c.drainEvictions()
+	return wasPresent
+}
+
 // sameEntry reports whether a and b are the same cache entry.
 // For pointer types it compares addresses (identity), so a concurrent Set that
 // stores a distinct new value is never mistaken for the stale entry. For

@@ -18,7 +18,9 @@ import (
 	"k8s.io/client-go/tools/events"
 	"k8s.io/utils/ptr"
 	ctrl "sigs.k8s.io/controller-runtime"
+	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/client/fake"
+	"sigs.k8s.io/controller-runtime/pkg/client/interceptor"
 
 	mcpv1beta1 "github.com/stacklok/toolhive/cmd/thv-operator/api/v1beta1"
 	"github.com/stacklok/toolhive/cmd/thv-operator/api/v1beta1/v1beta1test"
@@ -588,6 +590,53 @@ func TestHandleDeletion(t *testing.T) {
 			}
 		})
 	}
+}
+
+// TestHandleDeletion_FinalizeStatusUpdateFails verifies that when the final
+// status update fails, the finalizer is retained and the error is propagated
+// so the deletion is retried instead of silently dropping the status update.
+func TestHandleDeletion_FinalizeStatusUpdateFails(t *testing.T) {
+	t.Parallel()
+
+	transient := fmt.Errorf("simulated status update failure")
+	embedding := v1beta1test.NewEmbeddingServer("test", testNamespaceDefault,
+		v1beta1test.WithEmbeddingImage("test:latest"),
+		v1beta1test.WithEmbeddingModel("test-model"),
+		v1beta1test.WithEmbeddingDeletionTimestamp(metav1.Time{Time: time.Now()}, embeddingFinalizerName),
+	)
+
+	scheme := testutil.NewScheme(t)
+	fakeClient := fake.NewClientBuilder().
+		WithScheme(scheme).
+		WithRuntimeObjects(embedding).
+		WithStatusSubresource(embedding).
+		WithInterceptorFuncs(interceptor.Funcs{
+			SubResourceUpdate: func(_ context.Context, _ client.Client, _ string,
+				_ client.Object, _ ...client.SubResourceUpdateOption) error {
+				return transient
+			},
+		}).
+		Build()
+
+	reconciler := &EmbeddingServerReconciler{
+		Client:   fakeClient,
+		Scheme:   scheme,
+		Recorder: events.NewFakeRecorder(10),
+	}
+
+	result, done, err := reconciler.handleDeletion(context.TODO(), embedding)
+
+	require.ErrorIs(t, err, transient)
+	assert.True(t, done)
+	assert.Equal(t, ctrl.Result{}, result)
+
+	// The finalizer must be retained so the deletion is requeued and retried.
+	updated := &mcpv1beta1.EmbeddingServer{}
+	require.NoError(t, fakeClient.Get(context.TODO(), types.NamespacedName{
+		Name:      embedding.Name,
+		Namespace: embedding.Namespace,
+	}, updated))
+	assert.Contains(t, updated.Finalizers, embeddingFinalizerName)
 }
 
 // TestEnsureStatefulSet tests statefulset creation and updates

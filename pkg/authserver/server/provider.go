@@ -24,6 +24,7 @@ import (
 	"strings"
 	"time"
 
+	josev3 "github.com/go-jose/go-jose/v3"
 	"github.com/go-jose/go-jose/v4"
 	"github.com/ory/fosite"
 	"github.com/spiffe/go-spiffe/v2/bundle/jwtbundle"
@@ -465,7 +466,7 @@ func NewAuthorizationServerConfig(cfg *AuthorizationServerParams) (*Authorizatio
 		// because fosite's getters lazily assign their defaults on first use,
 		// an unsynchronized write that races between concurrent requests.
 		AudienceMatchingStrategy: fosite.DefaultAudienceMatchingStrategy,
-		JWKSFetcherStrategy:      fosite.NewDefaultJWKSFetcherStrategy(),
+		JWKSFetcherStrategy:      unsupportedJWKSFetcher{},
 		// ClientSecretsHasher compares client secrets at the token endpoint.
 		// Plain SHA-256 is correct here: the secrets are 256 bits of CSPRNG
 		// output, never client-chosen, so a password-stretching KDF protects
@@ -498,6 +499,19 @@ func NewAuthorizationServerConfig(cfg *AuthorizationServerParams) (*Authorizatio
 		SPIFFEX509BundleSource:                    cfg.SPIFFEX509BundleSource,
 		SPIFFEJWTBundleSource:                     cfg.SPIFFEJWTBundleSource,
 	}, nil
+}
+
+// unsupportedJWKSFetcher is the fosite JWKS fetcher for this server. Client
+// keys are only accepted inline: DCR rejects jwks_uri and storage drops it, so
+// fosite has nothing to fetch. Unlike fosite's default fetcher, it starts no
+// cache goroutines, and if a client with a jwks_uri ever reached client
+// authentication it fails closed instead of fetching an arbitrary URL.
+type unsupportedJWKSFetcher struct{}
+
+// Resolve always rejects the client, because remote client key sets are not
+// supported. fosite's interface uses go-jose v3.
+func (unsupportedJWKSFetcher) Resolve(context.Context, string, bool) (*josev3.JSONWebKeySet, error) {
+	return nil, fosite.ErrInvalidClient.WithHint("Client JSON Web Key Sets must be registered inline; jwks_uri is not supported.")
 }
 
 // NewAuthorizationServer creates a new fosite OAuth2Provider with the given configuration,

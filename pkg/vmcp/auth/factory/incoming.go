@@ -197,6 +197,7 @@ func buildCedarAuthzConfig(authzCfg *config.AuthzConfig) (*authz.Config, error) 
 			GroupClaimName:          authzCfg.GroupClaimName,
 			RoleClaimName:           authzCfg.RoleClaimName,
 			GroupEntityType:         authzCfg.GroupEntityType,
+			MultiValuedClaims:       authzCfg.MultiValuedClaims,
 		},
 	}
 

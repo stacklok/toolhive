@@ -269,12 +269,13 @@ func (c *Converter) resolveAuthzConfigRef(
 	}
 
 	authz := &vmcpconfig.AuthzConfig{
-		Type:            "cedar",
-		Policies:        opts.Policies,
-		EntitiesJSON:    opts.EntitiesJSON,
-		GroupClaimName:  opts.GroupClaimName,
-		RoleClaimName:   opts.RoleClaimName,
-		GroupEntityType: opts.GroupEntityType,
+		Type:              "cedar",
+		Policies:          opts.Policies,
+		EntitiesJSON:      opts.EntitiesJSON,
+		GroupClaimName:    opts.GroupClaimName,
+		RoleClaimName:     opts.RoleClaimName,
+		GroupEntityType:   opts.GroupEntityType,
+		MultiValuedClaims: opts.MultiValuedClaims,
 	}
 
 	// PrimaryUpstreamProvider is an auth-server (control-plane) property resolved
@@ -335,6 +336,7 @@ func (c *Converter) convertAuthzConfig(
 		authz.GroupClaimName = opts.GroupClaimName
 		authz.RoleClaimName = opts.RoleClaimName
 		authz.GroupEntityType = opts.GroupEntityType
+		authz.MultiValuedClaims = opts.MultiValuedClaims
 
 	default:
 		// Defense in depth. The CRD enum (configMap;inline) blocks unknown

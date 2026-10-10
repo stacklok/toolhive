@@ -573,6 +573,11 @@ type ToolCallResult struct {
 // ResourceContent represents a single resource content item,
 // preserving the text vs blob distinction from the MCP protocol.
 type ResourceContent struct {
+	// Meta carries the per-item `_meta` object from the backend (e.g. MCP-UI
+	// payloads). It is raw pass-through metadata, distinct from the
+	// result-level ResourceReadResult.Meta. Reserved io.modelcontextprotocol/*
+	// keys are stripped before it is forwarded to clients.
+	Meta map[string]any
 	// URI is the resource URI.
 	URI string
 	// MimeType is the content type of this resource item.

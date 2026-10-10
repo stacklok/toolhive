@@ -11,6 +11,7 @@ import (
 	"log/slog"
 
 	"github.com/stacklok/toolhive-core/mcpcompat/mcp"
+	mcpparser "github.com/stacklok/toolhive/pkg/mcp"
 	"github.com/stacklok/toolhive/pkg/vmcp"
 )
 
@@ -217,12 +218,14 @@ func ConvertMCPResourceContents(contents []mcp.ResourceContents) []vmcp.Resource
 	for _, c := range contents {
 		if textRes, ok := mcp.AsTextResourceContents(c); ok {
 			result = append(result, vmcp.ResourceContent{
+				Meta:     textRes.Meta,
 				URI:      textRes.URI,
 				MimeType: textRes.MIMEType,
 				Text:     textRes.Text,
 			})
 		} else if blobRes, ok := mcp.AsBlobResourceContents(c); ok {
 			result = append(result, vmcp.ResourceContent{
+				Meta:     blobRes.Meta,
 				URI:      blobRes.URI,
 				MimeType: blobRes.MIMEType,
 				Blob:     blobRes.Blob,
@@ -238,20 +241,28 @@ func ConvertMCPResourceContents(contents []mcp.ResourceContents) []vmcp.Resource
 }
 
 // ToMCPResourceContents converts []vmcp.ResourceContent to []mcp.ResourceContents,
-// reconstructing the text vs blob distinction.
+// reconstructing the text vs blob distinction and forwarding per-item _meta.
+//
+// Per-item _meta is passed through the same reserved-key strip as every other
+// egress (mcpparser.StripReservedMeta): vMCP, not the backend, is the client's
+// MCP peer, so a backend must not speak for it at the item level either. A map
+// consisting only of reserved keys collapses to nil.
 func ToMCPResourceContents(contents []vmcp.ResourceContent) []mcp.ResourceContents {
 	result := make([]mcp.ResourceContents, 0, len(contents))
 	for _, c := range contents {
+		meta := mcpparser.StripReservedMeta(c.Meta)
 		// Blob takes precedence: a non-empty Blob field means this is a blob resource.
 		// If both Text and Blob are set the Text field is ignored.
 		if c.Blob != "" {
 			result = append(result, mcp.BlobResourceContents{
+				Meta:     meta,
 				URI:      c.URI,
 				MIMEType: c.MimeType,
 				Blob:     c.Blob,
 			})
 		} else {
 			result = append(result, mcp.TextResourceContents{
+				Meta:     meta,
 				URI:      c.URI,
 				MIMEType: c.MimeType,
 				Text:     c.Text,

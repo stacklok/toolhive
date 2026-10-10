@@ -473,7 +473,8 @@ func setupOIDCConfiguration(cmd *cobra.Command, runFlags *RunFlags) (*auth.Token
 	}
 
 	return createOIDCConfig(oidcIssuer, oidcAudience, oidcJwksURL, oidcIntrospectionURL,
-		oidcClientID, oidcClientSecret, runFlags.ResourceURL, runFlags.JWKSAllowPrivateIP, oidcScopes), nil
+		oidcClientID, oidcClientSecret, runFlags.ResourceURL, runFlags.JWKSAllowPrivateIP, oidcScopes,
+		runFlags.ThvCABundle, runFlags.InsecureAllowHTTP, runFlags.JWKSAuthTokenFile), nil
 }
 
 // resolveMetricsOnTransportPort turns the bound bool into a tri-state. Only an
@@ -1227,19 +1228,24 @@ func getTelemetryFromFlags(cmd *cobra.Command, config *cfg.Config, otelEndpoint 
 
 // createOIDCConfig creates an OIDC configuration if any OIDC parameters are provided
 func createOIDCConfig(oidcIssuer, oidcAudience, oidcJwksURL, oidcIntrospectionURL,
-	oidcClientID, oidcClientSecret, resourceURL string, allowPrivateIP bool, scopes []string) *auth.TokenValidatorConfig {
+	oidcClientID, oidcClientSecret, resourceURL string, allowPrivateIP bool, scopes []string,
+	caCertPath string, insecureAllowHTTP bool, authTokenFile string) *auth.TokenValidatorConfig {
 	if oidcIssuer != "" || oidcAudience != "" || oidcJwksURL != "" || oidcIntrospectionURL != "" ||
-		oidcClientID != "" || oidcClientSecret != "" || resourceURL != "" {
+		oidcClientID != "" || oidcClientSecret != "" || resourceURL != "" || caCertPath != "" ||
+		authTokenFile != "" || insecureAllowHTTP || len(scopes) > 0 {
 		return &auth.TokenValidatorConfig{
-			Issuer:           oidcIssuer,
-			Audience:         oidcAudience,
-			JWKSURL:          oidcJwksURL,
-			IntrospectionURL: oidcIntrospectionURL,
-			ClientID:         oidcClientID,
-			ClientSecret:     oidcClientSecret,
-			ResourceURL:      resourceURL,
-			AllowPrivateIP:   allowPrivateIP,
-			Scopes:           scopes,
+			Issuer:            oidcIssuer,
+			Audience:          oidcAudience,
+			JWKSURL:           oidcJwksURL,
+			IntrospectionURL:  oidcIntrospectionURL,
+			ClientID:          oidcClientID,
+			ClientSecret:      oidcClientSecret,
+			ResourceURL:       resourceURL,
+			AllowPrivateIP:    allowPrivateIP,
+			Scopes:            scopes,
+			CACertPath:        caCertPath,
+			InsecureAllowHTTP: insecureAllowHTTP,
+			AuthTokenFile:     authTokenFile,
 		}
 	}
 	return nil

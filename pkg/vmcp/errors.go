@@ -85,6 +85,11 @@ const (
 	DenyMessageResourceRead = "read denied by authorization policy"
 	// DenyMessagePromptGet is emitted when a prompts/get is denied by policy.
 	DenyMessagePromptGet = "prompt denied by authorization policy"
+	// DenyMessageSessionBinding is emitted when a session-scoped request presents
+	// a caller that is not the session's bound owner. Like the policy denials it is
+	// kind-only — it never names the session, tool, resource, or prompt — so it
+	// cannot be used to enumerate session contents.
+	DenyMessageSessionBinding = "caller identity does not match session owner"
 )
 
 // Error Categorization Helpers

@@ -251,8 +251,7 @@ func (r *MCPRemoteProxyReconciler) validateAndHandleConfigs(ctx context.Context,
 	// Handle MCPToolConfig
 	if err := r.handleToolConfig(ctx, proxy); err != nil {
 		ctxLogger.Error(err, "Failed to handle MCPToolConfig")
-		proxy.Status.Phase = mcpv1beta1.MCPRemoteProxyPhaseFailed
-		if statusErr := r.Status().Update(ctx, proxy); statusErr != nil {
+		if statusErr := r.markConfigHandlerFailed(ctx, proxy, "MCPToolConfig", err); statusErr != nil {
 			ctxLogger.Error(statusErr, "Failed to update MCPRemoteProxy status after MCPToolConfig error")
 		}
 		return err
@@ -261,8 +260,7 @@ func (r *MCPRemoteProxyReconciler) validateAndHandleConfigs(ctx context.Context,
 	// Handle MCPTelemetryConfig
 	if err := r.handleTelemetryConfig(ctx, proxy); err != nil {
 		ctxLogger.Error(err, "Failed to handle MCPTelemetryConfig")
-		proxy.Status.Phase = mcpv1beta1.MCPRemoteProxyPhaseFailed
-		if statusErr := r.Status().Update(ctx, proxy); statusErr != nil {
+		if statusErr := r.markConfigHandlerFailed(ctx, proxy, "MCPTelemetryConfig", err); statusErr != nil {
 			ctxLogger.Error(statusErr, "Failed to update MCPRemoteProxy status after MCPTelemetryConfig error")
 		}
 		return err
@@ -271,8 +269,7 @@ func (r *MCPRemoteProxyReconciler) validateAndHandleConfigs(ctx context.Context,
 	// Handle MCPExternalAuthConfig
 	if err := r.handleExternalAuthConfig(ctx, proxy); err != nil {
 		ctxLogger.Error(err, "Failed to handle MCPExternalAuthConfig")
-		proxy.Status.Phase = mcpv1beta1.MCPRemoteProxyPhaseFailed
-		if statusErr := r.Status().Update(ctx, proxy); statusErr != nil {
+		if statusErr := r.markConfigHandlerFailed(ctx, proxy, "MCPExternalAuthConfig", err); statusErr != nil {
 			ctxLogger.Error(statusErr, "Failed to update MCPRemoteProxy status after MCPExternalAuthConfig error")
 		}
 		return err
@@ -285,8 +282,7 @@ func (r *MCPRemoteProxyReconciler) validateAndHandleConfigs(ctx context.Context,
 		}
 
 		ctxLogger.Error(err, "Failed to handle authServerRef")
-		proxy.Status.Phase = mcpv1beta1.MCPRemoteProxyPhaseFailed
-		if statusErr := r.Status().Update(ctx, proxy); statusErr != nil {
+		if statusErr := r.markConfigHandlerFailed(ctx, proxy, "authServerRef", err); statusErr != nil {
 			ctxLogger.Error(statusErr, "Failed to update MCPRemoteProxy status after authServerRef error")
 		}
 		return err
@@ -295,8 +291,7 @@ func (r *MCPRemoteProxyReconciler) validateAndHandleConfigs(ctx context.Context,
 	// Handle MCPOIDCConfig
 	if err := r.handleOIDCConfig(ctx, proxy); err != nil {
 		ctxLogger.Error(err, "Failed to handle MCPOIDCConfig")
-		proxy.Status.Phase = mcpv1beta1.MCPRemoteProxyPhaseFailed
-		if statusErr := r.Status().Update(ctx, proxy); statusErr != nil {
+		if statusErr := r.markConfigHandlerFailed(ctx, proxy, "MCPOIDCConfig", err); statusErr != nil {
 			ctxLogger.Error(statusErr, "Failed to update MCPRemoteProxy status after MCPOIDCConfig error")
 		}
 		return err
@@ -305,14 +300,39 @@ func (r *MCPRemoteProxyReconciler) validateAndHandleConfigs(ctx context.Context,
 	// Handle MCPAuthzConfig
 	if err := r.handleAuthzConfig(ctx, proxy); err != nil {
 		ctxLogger.Error(err, "Failed to handle MCPAuthzConfig")
-		proxy.Status.Phase = mcpv1beta1.MCPRemoteProxyPhaseFailed
-		if statusErr := r.Status().Update(ctx, proxy); statusErr != nil {
+		if statusErr := r.markConfigHandlerFailed(ctx, proxy, "MCPAuthzConfig", err); statusErr != nil {
 			ctxLogger.Error(statusErr, "Failed to update MCPRemoteProxy status after MCPAuthzConfig error")
 		}
 		return err
 	}
 
 	return nil
+}
+
+// markConfigHandlerFailed records a config-handler failure the way the other
+// terminal paths in this controller do: the phase, a message naming the
+// handler, the observed generation, and Ready=False. Writing only the phase
+// leaves the message and the Ready condition from the last healthy reconcile
+// in place, so a proxy that then loses a referenced config reports Failed and
+// Ready=True at the same time.
+func (r *MCPRemoteProxyReconciler) markConfigHandlerFailed(
+	ctx context.Context,
+	proxy *mcpv1beta1.MCPRemoteProxy,
+	handler string,
+	cause error,
+) error {
+	proxy.Status.Phase = mcpv1beta1.MCPRemoteProxyPhaseFailed
+	proxy.Status.Message = fmt.Sprintf("Failed to handle %s: %v", handler, cause)
+	proxy.Status.ObservedGeneration = proxy.Generation
+	meta.SetStatusCondition(&proxy.Status.Conditions, metav1.Condition{
+		Type:               mcpv1beta1.ConditionTypeReady,
+		Status:             metav1.ConditionFalse,
+		ObservedGeneration: proxy.Generation,
+		Reason:             mcpv1beta1.ConditionReasonNotReady,
+		Message:            proxy.Status.Message,
+	})
+
+	return r.Status().Update(ctx, proxy)
 }
 
 func (r *MCPRemoteProxyReconciler) validateSpecAndPodTemplate(

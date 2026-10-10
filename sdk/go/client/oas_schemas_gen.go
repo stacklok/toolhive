@@ -2727,6 +2727,7 @@ const (
 	ClientClientAppFactory           ClientClientApp = "factory"
 	ClientClientAppCopilotCli        ClientClientApp = "copilot-cli"
 	ClientClientAppQoder             ClientClientApp = "qoder"
+	ClientClientAppPi                ClientClientApp = "pi"
 )
 
 // AllValues returns all ClientClientApp values.
@@ -2757,6 +2758,7 @@ func (ClientClientApp) AllValues() []ClientClientApp {
 		ClientClientAppFactory,
 		ClientClientAppCopilotCli,
 		ClientClientAppQoder,
+		ClientClientAppPi,
 	}
 }
 
@@ -2812,6 +2814,8 @@ func (s ClientClientApp) MarshalText() ([]byte, error) {
 	case ClientClientAppCopilotCli:
 		return []byte(s), nil
 	case ClientClientAppQoder:
+		return []byte(s), nil
+	case ClientClientAppPi:
 		return []byte(s), nil
 	default:
 		return nil, errors.Errorf("invalid value: %q", s)
@@ -2895,6 +2899,9 @@ func (s *ClientClientApp) UnmarshalText(data []byte) error {
 		return nil
 	case ClientClientAppQoder:
 		*s = ClientClientAppQoder
+		return nil
+	case ClientClientAppPi:
+		*s = ClientClientAppPi
 		return nil
 	default:
 		return errors.Errorf("invalid value: %q", data)

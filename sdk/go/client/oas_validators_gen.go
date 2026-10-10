@@ -101,6 +101,8 @@ func (s ClientClientApp) Validate() error {
 		return nil
 	case "qoder":
 		return nil
+	case "pi":
+		return nil
 	default:
 		return errors.Errorf("invalid value: %v", s)
 	}

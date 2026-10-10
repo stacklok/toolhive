@@ -980,3 +980,51 @@ func TestBuildRunnerConfig_MaxRequestBodySizeWiring(t *testing.T) {
 		})
 	}
 }
+
+func TestCreateOIDCConfig_PassesThroughTransportFields(t *testing.T) {
+	t.Parallel()
+
+	cfg := createOIDCConfig(
+		"https://issuer.example.com", "audience", "", "", "client-id", "client-secret",
+		"", true, []string{"openid"}, true, "/tmp/ca.pem", "/tmp/token.txt",
+	)
+
+	require.NotNil(t, cfg)
+	assert.Equal(t, "https://issuer.example.com", cfg.Issuer)
+	assert.Equal(t, "audience", cfg.Audience)
+	assert.Equal(t, "client-id", cfg.ClientID)
+	assert.Equal(t, "client-secret", cfg.ClientSecret)
+	assert.True(t, cfg.AllowPrivateIP)
+	assert.True(t, cfg.InsecureAllowHTTP)
+	assert.Equal(t, "/tmp/ca.pem", cfg.CACertPath)
+	assert.Equal(t, "/tmp/token.txt", cfg.AuthTokenFile)
+	assert.Equal(t, []string{"openid"}, cfg.Scopes)
+}
+
+func TestCreateOIDCConfig_NilWhenNoOIDCParams(t *testing.T) {
+	t.Parallel()
+
+	cfg := createOIDCConfig("", "", "", "", "", "", "", false, nil, false, "", "")
+	assert.Nil(t, cfg)
+}
+
+func TestSetupOIDCConfiguration_PassesTransportFlags(t *testing.T) {
+	t.Parallel()
+
+	runFlags := &RunFlags{}
+	cmd := &cobra.Command{}
+	AddRunFlags(cmd, runFlags)
+	AddOIDCFlags(cmd)
+	require.NoError(t, cmd.Flags().Set("oidc-issuer", "https://issuer.example.com"))
+	require.NoError(t, cmd.Flags().Set("oidc-audience", "audience"))
+	require.NoError(t, cmd.Flags().Set("thv-ca-bundle", "/tmp/private-ca.pem"))
+	require.NoError(t, cmd.Flags().Set("jwks-auth-token-file", "/tmp/token.txt"))
+	require.NoError(t, cmd.Flags().Set("oidc-insecure-allow-http", "true"))
+
+	cfg, err := setupOIDCConfiguration(cmd, runFlags)
+	require.NoError(t, err)
+	require.NotNil(t, cfg)
+	assert.True(t, cfg.InsecureAllowHTTP)
+	assert.Equal(t, "/tmp/private-ca.pem", cfg.CACertPath)
+	assert.Equal(t, "/tmp/token.txt", cfg.AuthTokenFile)
+}

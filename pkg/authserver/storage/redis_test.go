@@ -3905,6 +3905,58 @@ func TestRedisStorage_GetLatestUpstreamTokensForUser(t *testing.T) {
 		})
 	})
 
+	// foreign_owned_row_in_set: a row for another user injected into this user's
+	// index set. The index member names only session+provider, so without an
+	// explicit UserID check the foreign row would be returned as this user's.
+	t.Run("foreign_owned_row_in_set_not_returned", func(t *testing.T) {
+		withRedisStorage(t, func(ctx context.Context, s *RedisStorage, mr *miniredis.Miniredis) {
+			require.NoError(t, s.StoreUpstreamTokens(ctx, "session-foreign", "prov-X", &UpstreamTokens{
+				ProviderID:   "prov-X",
+				UserID:       "user-B",
+				RefreshToken: "rt-foreign",
+				ExpiresAt:    time.Now().Add(time.Hour),
+			}))
+
+			// Corrupt user-A's index by pointing it at user-B's row.
+			foreignKey := redisUpstreamKey("test:auth:", "session-foreign", "prov-X")
+			setKeyA := redisSetKey("test:auth:", KeyTypeUserUpstream, "user-A")
+			mr.SAdd(setKeyA, foreignKey)
+
+			_, err := s.GetLatestUpstreamTokensForUser(ctx, "user-A", "prov-X")
+			require.Error(t, err)
+			assert.ErrorIs(t, err, ErrNotFound)
+		})
+	})
+
+	// foreign_row_with_later_expiry: the foreign row would win the ExpiresAt
+	// tie-break, so the ownership check must drop it before selection.
+	t.Run("foreign_row_with_later_expiry_does_not_shadow_legit", func(t *testing.T) {
+		withRedisStorage(t, func(ctx context.Context, s *RedisStorage, mr *miniredis.Miniredis) {
+			now := time.Now()
+			require.NoError(t, s.StoreUpstreamTokens(ctx, "session-legit", "prov-X", &UpstreamTokens{
+				ProviderID:   "prov-X",
+				UserID:       "user-A",
+				RefreshToken: "rt-legit",
+				ExpiresAt:    now.Add(time.Hour),
+			}))
+			require.NoError(t, s.StoreUpstreamTokens(ctx, "session-foreign", "prov-X", &UpstreamTokens{
+				ProviderID:   "prov-X",
+				UserID:       "user-B",
+				RefreshToken: "rt-foreign",
+				ExpiresAt:    now.Add(10 * time.Hour),
+			}))
+
+			foreignKey := redisUpstreamKey("test:auth:", "session-foreign", "prov-X")
+			setKeyA := redisSetKey("test:auth:", KeyTypeUserUpstream, "user-A")
+			mr.SAdd(setKeyA, foreignKey)
+
+			got, err := s.GetLatestUpstreamTokensForUser(ctx, "user-A", "prov-X")
+			require.NoError(t, err)
+			require.NotNil(t, got)
+			assert.Equal(t, "rt-legit", got.RefreshToken)
+		})
+	})
+
 	t.Run("returns_all_fields_round_trip", func(t *testing.T) {
 		withRedisStorage(t, func(ctx context.Context, s *RedisStorage, _ *miniredis.Miniredis) {
 			// Truncate to second precision: Redis stores time as int64 unix seconds.

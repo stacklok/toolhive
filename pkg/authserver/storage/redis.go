@@ -1735,7 +1735,7 @@ func (s *RedisStorage) GetLatestUpstreamTokensForUser(ctx context.Context, userI
 
 	var winner *storedUpstreamTokens
 	for i, val := range values {
-		stored, ok := parseUserUpstreamEntry(val, providerID, members[i])
+		stored, ok := parseUserUpstreamEntry(val, userID, providerID, members[i])
 		if !ok {
 			continue
 		}
@@ -1778,9 +1778,12 @@ func compareExpiryInt64(a, b int64) int {
 // parseUserUpstreamEntry parses one raw Redis value from the user-upstream index
 // and returns the decoded storedUpstreamTokens together with a match flag.
 // It returns (nil, false) for nil values, type mismatches, deletion tombstones,
-// JSON decode errors, and rows whose ProviderID does not match providerID.
-// keyName is used only for warning log messages.
-func parseUserUpstreamEntry(val any, providerID, keyName string) (*storedUpstreamTokens, bool) {
+// JSON decode errors, and rows whose ProviderID or UserID does not match the
+// requested providerID/userID. The UserID check mirrors the memory backend,
+// which recomputes ownership at lookup time: the index member names only the
+// session and provider, so a row in this user's set is otherwise trusted
+// wholesale. keyName is used only for warning log messages.
+func parseUserUpstreamEntry(val any, userID, providerID, keyName string) (*storedUpstreamTokens, bool) {
 	if val == nil {
 		// Dangling set member: the per-provider key has been TTL-evicted.
 		// Skip it; the next write will clean up the index entry (best-effort).
@@ -1805,6 +1808,15 @@ func parseUserUpstreamEntry(val any, providerID, keyName string) (*storedUpstrea
 	}
 
 	if stored.ProviderID != providerID {
+		return nil, false
+	}
+
+	// Ownership check: the index member does not carry the userID, so a member
+	// that survived index corruption (or an over-broad delete) could point at a
+	// row owned by a different user. Reject it rather than let it stand in for
+	// this user's row. This mirrors the memory backend's lookup-time UserID
+	// filter (memory.go:1353).
+	if stored.UserID != userID {
 		return nil, false
 	}
 

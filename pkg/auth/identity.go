@@ -175,7 +175,16 @@ type Identity struct {
 	//     token are likewise captured once at login and never refreshed.
 	//
 	// Either way the token is NOT re-validated for signature or freshness here, so
-	// treat its claims as login-time facts rather than current state.
+	// treat its claims as facts the upstream asserted when it issued the token
+	// rather than current state.
+	//
+	// When populated by upstreamtoken.InProcessService (see NewInProcessService),
+	// an expired ID token triggers a refresh even while the access token is still
+	// valid, so a provider that rotates the ID token on refresh yields a currently
+	// valid one here. It can still be expired when the provider omits id_token on
+	// refresh (OIDC Core 1.0 §12.2) and the old one is carried forward, when that
+	// refresh failed and the stored token was returned, or when the row has no
+	// refresh token; a consumer that needs a fresh token must check `exp` itself.
 	//
 	// Redacted in MarshalJSON() to prevent token leakage.
 	// MUST NOT be mutated after the Identity is placed in the request context.

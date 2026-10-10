@@ -6,9 +6,12 @@ package upstreamtoken
 import (
 	"context"
 	"errors"
+	"fmt"
+	"sync"
 	"testing"
 	"time"
 
+	"github.com/golang-jwt/jwt/v5"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 	"go.uber.org/mock/gomock"
@@ -563,4 +566,483 @@ func TestInProcessService_GetAllUpstreamCredentials_NilRefresher(t *testing.T) {
 	require.NoError(t, err)
 	assert.Equal(t, map[string]UpstreamCredential{}, result)
 	assert.Equal(t, []string{"github"}, failed)
+}
+
+// TestInProcessService_RefreshOnExpiredIDToken covers the ID-token staleness
+// trigger on both read paths. Each case performs one read per entry
+// in rows; the refresher mock fails the test on any refresh it did not expect.
+func TestInProcessService_RefreshOnExpiredIDToken(t *testing.T) {
+	t.Parallel()
+
+	expiredIDToken := signedIDToken(t, time.Now().Add(-10*time.Minute))
+	freshIDToken := signedIDToken(t, time.Now().Add(time.Hour))
+	rotatedIDToken := signedIDToken(t, time.Now().Add(time.Hour))
+
+	staleRow := &storage.UpstreamTokens{
+		ProviderID:   "entra",
+		AccessToken:  "valid-access-token",
+		RefreshToken: "refresh-token",
+		IDToken:      expiredIDToken,
+		ExpiresAt:    time.Now().Add(30 * time.Minute),
+	}
+	staleRowNoRefresh := &storage.UpstreamTokens{
+		ProviderID:  "entra",
+		AccessToken: "valid-access-token",
+		IDToken:     expiredIDToken,
+		ExpiresAt:   time.Now().Add(30 * time.Minute),
+	}
+	freshRow := &storage.UpstreamTokens{
+		ProviderID:   "entra",
+		AccessToken:  "valid-access-token",
+		RefreshToken: "refresh-token",
+		IDToken:      freshIDToken,
+		ExpiresAt:    time.Now().Add(30 * time.Minute),
+	}
+	rotatedRow := &storage.UpstreamTokens{
+		ProviderID:   "entra",
+		AccessToken:  "new-access-token",
+		RefreshToken: "refresh-token",
+		IDToken:      rotatedIDToken,
+		ExpiresAt:    time.Now().Add(time.Hour),
+	}
+	// What the refresher persists when the provider omits id_token: the
+	// expired login ID token is carried forward alongside a new access token.
+	carriedForwardRow := &storage.UpstreamTokens{
+		ProviderID:   "entra",
+		AccessToken:  "new-access-token",
+		RefreshToken: "refresh-token",
+		IDToken:      expiredIDToken,
+		ExpiresAt:    time.Now().Add(time.Hour),
+	}
+	// The original #6237 shape: both tokens expired, so the access-token
+	// trigger refreshes and the provider omits id_token.
+	bothExpiredRow := &storage.UpstreamTokens{
+		ProviderID:   "entra",
+		AccessToken:  "expired-access-token",
+		RefreshToken: "refresh-token",
+		IDToken:      expiredIDToken,
+		ExpiresAt:    time.Now().Add(-time.Minute),
+	}
+
+	tests := []struct {
+		name           string
+		rows           []*storage.UpstreamTokens
+		setupRefresher func(*storagemocks.MockUpstreamTokenRefresher)
+		want           []UpstreamCredential
+	}{
+		{
+			name: "expired ID token triggers one refresh and returns the rotated ID token",
+			rows: []*storage.UpstreamTokens{staleRow},
+			setupRefresher: func(r *storagemocks.MockUpstreamTokenRefresher) {
+				r.EXPECT().RefreshAndStore(gomock.Any(), "session-1", staleRow).
+					Return(rotatedRow, nil).Times(1)
+			},
+			want: []UpstreamCredential{{AccessToken: "new-access-token", IDToken: rotatedIDToken}},
+		},
+		{
+			name:           "no refresh token returns the stored expired ID token without refreshing",
+			rows:           []*storage.UpstreamTokens{staleRowNoRefresh},
+			setupRefresher: func(*storagemocks.MockUpstreamTokenRefresher) {},
+			want:           []UpstreamCredential{{AccessToken: "valid-access-token", IDToken: expiredIDToken}},
+		},
+		{
+			name: "omitted id_token is carried forward and not refreshed again before access-token expiry",
+			rows: []*storage.UpstreamTokens{staleRow, carriedForwardRow},
+			setupRefresher: func(r *storagemocks.MockUpstreamTokenRefresher) {
+				r.EXPECT().RefreshAndStore(gomock.Any(), "session-1", staleRow).
+					Return(carriedForwardRow, nil).Times(1)
+			},
+			want: []UpstreamCredential{
+				{AccessToken: "new-access-token", IDToken: expiredIDToken},
+				{AccessToken: "new-access-token", IDToken: expiredIDToken},
+			},
+		},
+		{
+			name: "expired access token with omitted id_token carries it forward and suppresses the ID-token trigger",
+			rows: []*storage.UpstreamTokens{bothExpiredRow, carriedForwardRow},
+			setupRefresher: func(r *storagemocks.MockUpstreamTokenRefresher) {
+				r.EXPECT().RefreshAndStore(gomock.Any(), "session-1", bothExpiredRow).
+					Return(carriedForwardRow, nil).Times(1)
+			},
+			want: []UpstreamCredential{
+				{AccessToken: "new-access-token", IDToken: expiredIDToken},
+				{AccessToken: "new-access-token", IDToken: expiredIDToken},
+			},
+		},
+		{
+			name:           "unexpired ID token does not trigger a refresh",
+			rows:           []*storage.UpstreamTokens{freshRow},
+			setupRefresher: func(*storagemocks.MockUpstreamTokenRefresher) {},
+			want:           []UpstreamCredential{{AccessToken: "valid-access-token", IDToken: freshIDToken}},
+		},
+	}
+
+	readers := []struct {
+		name string
+		read func(t *testing.T, svc *InProcessService) UpstreamCredential
+		// expect registers the storage call for a single read returning row.
+		expect func(s *storagemocks.MockUpstreamTokenStorage, row *storage.UpstreamTokens) *gomock.Call
+	}{
+		{
+			name: "GetValidTokens",
+			read: func(t *testing.T, svc *InProcessService) UpstreamCredential {
+				t.Helper()
+				cred, err := svc.GetValidTokens(context.Background(), "session-1", "entra")
+				require.NoError(t, err)
+				require.NotNil(t, cred)
+				return *cred
+			},
+			expect: func(s *storagemocks.MockUpstreamTokenStorage, row *storage.UpstreamTokens) *gomock.Call {
+				return s.EXPECT().GetUpstreamTokens(gomock.Any(), "session-1", "entra").Return(row, nil)
+			},
+		},
+		{
+			name: "GetAllUpstreamCredentials",
+			read: func(t *testing.T, svc *InProcessService) UpstreamCredential {
+				t.Helper()
+				creds, failed, err := svc.GetAllUpstreamCredentials(context.Background(), "session-1")
+				require.NoError(t, err)
+				assert.Empty(t, failed)
+				require.Contains(t, creds, "entra")
+				return creds["entra"]
+			},
+			expect: func(s *storagemocks.MockUpstreamTokenStorage, row *storage.UpstreamTokens) *gomock.Call {
+				return s.EXPECT().GetAllUpstreamTokens(gomock.Any(), "session-1").
+					Return(map[string]*storage.UpstreamTokens{"entra": row}, nil)
+			},
+		},
+	}
+
+	for _, tt := range tests {
+		for _, rd := range readers {
+			t.Run(tt.name+"/"+rd.name, func(t *testing.T) {
+				t.Parallel()
+
+				ctrl := gomock.NewController(t)
+				mockStorage := storagemocks.NewMockUpstreamTokenStorage(ctrl)
+				mockRefresher := storagemocks.NewMockUpstreamTokenRefresher(ctrl)
+
+				calls := make([]any, 0, len(tt.rows))
+				for _, row := range tt.rows {
+					calls = append(calls, rd.expect(mockStorage, row).Times(1))
+				}
+				gomock.InOrder(calls...)
+				tt.setupRefresher(mockRefresher)
+
+				svc := NewInProcessService(mockStorage, mockRefresher)
+
+				for i := range tt.rows {
+					assert.Equal(t, tt.want[i], rd.read(t, svc), "read %d", i)
+				}
+			})
+		}
+	}
+}
+
+// signedIDToken returns a JWT whose only claim is exp. The signature is
+// irrelevant: the service reads exp without verifying it.
+func signedIDToken(t *testing.T, exp time.Time) string {
+	t.Helper()
+	tok, err := jwt.NewWithClaims(jwt.SigningMethodHS256, jwt.MapClaims{"exp": exp.Unix()}).
+		SignedString([]byte("test-key"))
+	require.NoError(t, err)
+	return tok
+}
+
+// TestInProcessService_IDTokenRefreshFailure covers a failed refresh triggered
+// by an expired ID token while the access token is still valid. A transient
+// failure returns the stored credential and backs off (for the backoff, capped
+// at access-token expiry); a failure that removed the row is fatal; a failure
+// caused by the caller's own context ending records no backoff. The recorded
+// window is inspected directly, since waiting out the real backoff in a test is
+// impractical.
+func TestInProcessService_IDTokenRefreshFailure(t *testing.T) {
+	t.Parallel()
+
+	expiredIDToken := signedIDToken(t, time.Now().Add(-10*time.Minute))
+	soon := time.Now().Add(20 * time.Second)
+
+	tests := []struct {
+		name      string
+		expiresAt time.Time
+		cancelCtx bool
+		// reRead is the storage re-read result after the failure; nil means no
+		// re-read is expected.
+		reRead       func(*storagemocks.MockUpstreamTokenStorage, *storage.UpstreamTokens)
+		wantErr      bool
+		wantSuppress bool
+		wantUntil    func(before time.Time) time.Time
+		wantWithin   time.Duration
+	}{
+		{
+			name:      "transient failure with long-lived access token backs off for the backoff only",
+			expiresAt: time.Now().Add(30 * time.Minute),
+			reRead: func(s *storagemocks.MockUpstreamTokenStorage, row *storage.UpstreamTokens) {
+				s.EXPECT().GetUpstreamTokens(gomock.Any(), "session-1", "entra").Return(row, nil)
+			},
+			wantSuppress: true,
+			wantUntil:    func(before time.Time) time.Time { return before.Add(idTokenRefreshFailureBackoff) },
+			wantWithin:   time.Second,
+		},
+		{
+			name:      "transient failure with access token expiring within backoff backs off until access-token expiry",
+			expiresAt: soon,
+			reRead: func(s *storagemocks.MockUpstreamTokenStorage, row *storage.UpstreamTokens) {
+				s.EXPECT().GetUpstreamTokens(gomock.Any(), "session-1", "entra").Return(row, nil)
+			},
+			wantSuppress: true,
+			wantUntil:    func(time.Time) time.Time { return soon },
+		},
+		{
+			name:      "failure that removed the row is fatal and records no backoff",
+			expiresAt: time.Now().Add(30 * time.Minute),
+			reRead: func(s *storagemocks.MockUpstreamTokenStorage, _ *storage.UpstreamTokens) {
+				s.EXPECT().GetUpstreamTokens(gomock.Any(), "session-1", "entra").Return(nil, storage.ErrNotFound)
+			},
+			wantErr: true,
+		},
+		{
+			name:      "failure after the caller's context ended returns stored tokens without backoff",
+			expiresAt: time.Now().Add(30 * time.Minute),
+			cancelCtx: true,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			ctrl := gomock.NewController(t)
+			mockStorage := storagemocks.NewMockUpstreamTokenStorage(ctrl)
+			mockRefresher := storagemocks.NewMockUpstreamTokenRefresher(ctrl)
+			mockRefresher.EXPECT().RefreshAndStore(gomock.Any(), "session-1", gomock.Any()).
+				Return(nil, errors.New("upstream unavailable"))
+
+			row := &storage.UpstreamTokens{
+				ProviderID:   "entra",
+				AccessToken:  "valid-access-token",
+				RefreshToken: "refresh-token",
+				IDToken:      expiredIDToken,
+				ExpiresAt:    tt.expiresAt,
+			}
+			if tt.reRead != nil {
+				tt.reRead(mockStorage, row)
+			}
+
+			ctx := context.Background()
+			if tt.cancelCtx {
+				cancelled, cancel := context.WithCancel(ctx)
+				cancel()
+				ctx = cancelled
+			}
+
+			svc := NewInProcessService(mockStorage, mockRefresher)
+			before := time.Now()
+			cred, err := svc.refreshForIDToken(ctx, "session-1", "entra", row)
+
+			if tt.wantErr {
+				require.Error(t, err)
+				assert.ErrorIs(t, err, ErrRefreshFailed)
+				assert.Nil(t, cred)
+			} else {
+				require.NoError(t, err)
+				assert.Equal(t, &UpstreamCredential{AccessToken: "valid-access-token", IDToken: expiredIDToken}, cred)
+			}
+
+			sup, ok := svc.idTokenSuppressions[suppressionKey("session-1", "entra")]
+			require.Equal(t, tt.wantSuppress, ok)
+			if !tt.wantSuppress {
+				return
+			}
+			assert.Equal(t, expiredIDToken, sup.idToken)
+			assert.WithinDuration(t, tt.wantUntil(before), sup.until, tt.wantWithin)
+			assert.True(t, svc.idTokenRefreshSuppressed("session-1", "entra", expiredIDToken, before),
+				"trigger must stay suppressed within the window")
+			assert.False(t, svc.idTokenRefreshSuppressed("session-1", "entra", expiredIDToken, sup.until),
+				"trigger must fire again once the window has passed")
+		})
+	}
+}
+
+// TestInProcessService_GetAllUpstreamCredentials_IDTokenRefreshRemovedRow
+// verifies that when a failed ID-token-triggered refresh removed the row, the
+// bulk path reports the provider as failed rather than serving the stale copy.
+func TestInProcessService_GetAllUpstreamCredentials_IDTokenRefreshRemovedRow(t *testing.T) {
+	t.Parallel()
+
+	ctrl := gomock.NewController(t)
+	row := &storage.UpstreamTokens{
+		ProviderID:   "entra",
+		AccessToken:  "valid-access-token",
+		RefreshToken: "refresh-token",
+		IDToken:      signedIDToken(t, time.Now().Add(-10*time.Minute)),
+		ExpiresAt:    time.Now().Add(30 * time.Minute),
+	}
+	mockStorage := storagemocks.NewMockUpstreamTokenStorage(ctrl)
+	mockStorage.EXPECT().GetAllUpstreamTokens(gomock.Any(), "session-1").
+		Return(map[string]*storage.UpstreamTokens{"entra": row}, nil)
+	mockStorage.EXPECT().GetUpstreamTokens(gomock.Any(), "session-1", "entra").Return(nil, storage.ErrNotFound)
+	mockRefresher := storagemocks.NewMockUpstreamTokenRefresher(ctrl)
+	mockRefresher.EXPECT().RefreshAndStore(gomock.Any(), "session-1", row).
+		Return(nil, errors.New("failed to persist rotated upstream refresh token"))
+
+	creds, failed, err := NewInProcessService(mockStorage, mockRefresher).
+		GetAllUpstreamCredentials(context.Background(), "session-1")
+
+	require.NoError(t, err)
+	assert.Empty(t, creds)
+	assert.Equal(t, []string{"entra"}, failed)
+}
+
+func TestIDTokenExpired(t *testing.T) {
+	t.Parallel()
+
+	now := time.Now()
+	noExp, err := jwt.NewWithClaims(jwt.SigningMethodHS256, jwt.MapClaims{"sub": "user"}).
+		SignedString([]byte("test-key"))
+	require.NoError(t, err)
+
+	tests := []struct {
+		name    string
+		idToken string
+		want    bool
+	}{
+		{name: "empty token is not expired", idToken: "", want: false},
+		{name: "unparseable token is not expired", idToken: "not-a-jwt", want: false},
+		{name: "token without exp is not expired", idToken: noExp, want: false},
+		{name: "exp in the past is expired", idToken: signedIDToken(t, now.Add(-time.Minute)), want: true},
+		{
+			name:    "exp inside the skew window is expired",
+			idToken: signedIDToken(t, now.Add(idTokenExpirySkew-time.Second)),
+			want:    true,
+		},
+		{
+			name:    "exp beyond the skew window is not expired",
+			idToken: signedIDToken(t, now.Add(idTokenExpirySkew+2*time.Second)),
+			want:    false,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			assert.Equal(t, tt.want, idTokenExpired(tt.idToken, now))
+		})
+	}
+}
+
+// TestInProcessService_IDTokenSuppressionLifecycle pins how suppression entries
+// are scoped, bounded, and evicted.
+func TestInProcessService_IDTokenSuppressionLifecycle(t *testing.T) {
+	t.Parallel()
+
+	newSvc := func() *InProcessService { return NewInProcessService(nil, nil) }
+	key := suppressionKey("session-1", "entra")
+
+	t.Run("a rotated ID token is not suppressed", func(t *testing.T) {
+		t.Parallel()
+		svc := newSvc()
+		svc.suppressIDTokenRefresh("session-1", "entra", "old-id-token", time.Now().Add(time.Hour), time.Time{})
+		assert.True(t, svc.idTokenRefreshSuppressed("session-1", "entra", "old-id-token", time.Now()))
+		assert.False(t, svc.idTokenRefreshSuppressed("session-1", "entra", "rotated-id-token", time.Now()))
+	})
+
+	t.Run("an expired entry is dropped on read", func(t *testing.T) {
+		t.Parallel()
+		svc := newSvc()
+		until := time.Now().Add(time.Minute)
+		svc.suppressIDTokenRefresh("session-1", "entra", "id-token", until, time.Time{})
+		assert.False(t, svc.idTokenRefreshSuppressed("session-1", "entra", "id-token", until))
+		assert.NotContains(t, svc.idTokenSuppressions, key)
+	})
+
+	t.Run("expired entries are swept on write once the sweep interval has elapsed", func(t *testing.T) {
+		t.Parallel()
+		svc := newSvc()
+		svc.idTokenSuppressions[suppressionKey("session-old", "entra")] = idTokenSuppression{
+			idToken: "id-token", until: time.Now().Add(-time.Second),
+		}
+		svc.suppressIDTokenRefresh("session-1", "entra", "id-token", time.Now().Add(time.Hour), time.Time{})
+		assert.NotContains(t, svc.idTokenSuppressions, suppressionKey("session-old", "entra"))
+		assert.Contains(t, svc.idTokenSuppressions, key)
+
+		// Within the interval the sweep does not run again.
+		svc.idTokenSuppressions[suppressionKey("session-old", "entra")] = idTokenSuppression{
+			idToken: "id-token", until: time.Now().Add(-time.Second),
+		}
+		svc.suppressIDTokenRefresh("session-2", "entra", "id-token", time.Now().Add(time.Hour), time.Time{})
+		assert.Contains(t, svc.idTokenSuppressions, suppressionKey("session-old", "entra"))
+	})
+
+	t.Run("zero access-token expiry falls back to session expiry", func(t *testing.T) {
+		t.Parallel()
+		svc := newSvc()
+		sessionExpiry := time.Now().Add(24 * time.Hour)
+		svc.suppressIDTokenRefresh("session-1", "entra", "id-token", time.Time{}, sessionExpiry)
+		assert.Equal(t, sessionExpiry, svc.idTokenSuppressions[key].until)
+	})
+
+	t.Run("zero access-token and session expiry falls back to the default bound", func(t *testing.T) {
+		t.Parallel()
+		svc := newSvc()
+		before := time.Now()
+		svc.suppressIDTokenRefresh("session-1", "entra", "id-token", time.Time{}, time.Time{})
+		assert.WithinDuration(t, before.Add(defaultIDTokenSuppression), svc.idTokenSuppressions[key].until, time.Second)
+	})
+}
+
+// TestInProcessService_ConcurrentIDTokenRefresh exercises the mutex-guarded
+// suppression map under concurrent reads and writes; it is meaningful under
+// the race detector, which task test enables.
+func TestInProcessService_ConcurrentIDTokenRefresh(t *testing.T) {
+	t.Parallel()
+
+	expiredIDToken := signedIDToken(t, time.Now().Add(-10*time.Minute))
+	ctrl := gomock.NewController(t)
+	mockStorage := storagemocks.NewMockUpstreamTokenStorage(ctrl)
+	mockRefresher := storagemocks.NewMockUpstreamTokenRefresher(ctrl)
+
+	const workers = 16
+	for i := range workers {
+		session := fmt.Sprintf("session-%d", i%4)
+		mockStorage.EXPECT().GetUpstreamTokens(gomock.Any(), session, "entra").AnyTimes().
+			Return(&storage.UpstreamTokens{
+				ProviderID:   "entra",
+				AccessToken:  "valid-access-token",
+				RefreshToken: "refresh-token",
+				IDToken:      expiredIDToken,
+				ExpiresAt:    time.Now().Add(30 * time.Minute),
+			}, nil)
+	}
+	// The provider omits id_token, so every refresh records a suppression.
+	mockRefresher.EXPECT().RefreshAndStore(gomock.Any(), gomock.Any(), gomock.Any()).AnyTimes().
+		DoAndReturn(func(_ context.Context, _ string, row *storage.UpstreamTokens) (*storage.UpstreamTokens, error) {
+			refreshed := *row
+			refreshed.ExpiresAt = time.Now().Add(time.Hour)
+			return &refreshed, nil
+		})
+
+	svc := NewInProcessService(mockStorage, mockRefresher)
+
+	var wg sync.WaitGroup
+	for i := range workers {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			cred, err := svc.GetValidTokens(context.Background(), fmt.Sprintf("session-%d", i%4), "entra")
+			assert.NoError(t, err)
+			assert.NotNil(t, cred)
+		}()
+	}
+
+	done := make(chan struct{})
+	go func() {
+		wg.Wait()
+		close(done)
+	}()
+	select {
+	case <-done:
+	case <-time.After(5 * time.Second):
+		t.Fatal("timeout waiting for concurrent reads")
+	}
 }

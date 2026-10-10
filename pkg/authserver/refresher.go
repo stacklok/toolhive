@@ -80,8 +80,11 @@ var _ storage.UpstreamTokenRefresher = (*upstreamTokenRefresher)(nil)
 // opaque storage-row identity used to deduplicate a refresh within this process.
 // The leader re-reads that row under a detached timeout so it never redeems a
 // stale refresh token supplied by a caller. It only short-circuits on that
-// re-read when the row is actually unexpired; a storage backend that returns
-// tokens without checking expiry does not fool it into skipping the refresh.
+// re-read when the row is unexpired AND differs from the caller's row, i.e.
+// another caller already refreshed it. A storage backend that returns tokens
+// without checking expiry does not fool it into skipping the refresh, and a
+// caller that deliberately refreshes a still-current row (e.g. because its ID
+// token expired before its access token) gets a real upstream refresh.
 func (r *upstreamTokenRefresher) RefreshAndStore(
 	ctx context.Context,
 	sessionID string,
@@ -122,7 +125,7 @@ func (r *upstreamTokenRefresher) RefreshAndStore(
 					sessionID, expired.ProviderID,
 				)
 			}
-			if !authoritative.IsExpired(time.Now()) {
+			if !authoritative.IsExpired(time.Now()) && rowChanged(expired, authoritative) {
 				return authoritative, nil
 			}
 			return r.refreshAndStore(refreshCtx, sessionID, authoritative)
@@ -385,4 +388,16 @@ func (r *upstreamTokenRefresher) compareAndSwapWithRetry(
 		}
 	}
 	return lastErr
+}
+
+// rowChanged reports whether the stored row was rewritten since the caller read
+// it, i.e. another caller already refreshed it. Expiry is compared as well as
+// the token values so a provider that re-issues the same access token string
+// with a new expiry (and does not rotate the refresh token) still counts as a
+// change, and the caller does not redeem again.
+func rowChanged(callerRow, stored *storage.UpstreamTokens) bool {
+	return callerRow.AccessToken != stored.AccessToken ||
+		callerRow.RefreshToken != stored.RefreshToken ||
+		callerRow.IDToken != stored.IDToken ||
+		!callerRow.ExpiresAt.Equal(stored.ExpiresAt)
 }

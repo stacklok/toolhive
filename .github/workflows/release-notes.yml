@@ -106,7 +106,7 @@ jobs:
 
       - name: Generate release notes with Claude
         id: claude
-        uses: anthropics/claude-code-action@cab360f6565aa35a51d6ce9e43f1f4287c0a32ea # v1.0.241
+        uses: anthropics/claude-code-action@1d6de8cb0c237e7c15e9e1bdf973826ebae490cc # v1.0.248
         env:
           # gh CLI used by the skill (read-only PR/issue lookups) authenticates
           # via GH_TOKEN. Read access is sufficient — publishing happens in a
@@ -182,7 +182,7 @@ jobs:
           echo "text=$SUMMARY" >> "$GITHUB_OUTPUT"
 
       - name: Upload release notes artifact
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: release-notes-${{ steps.tag.outputs.tag }}
           path: ${{ steps.verify.outputs.file }}

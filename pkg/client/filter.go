@@ -34,6 +34,13 @@ func FilterClientsAlreadyRegistered(
 	return filtered
 }
 
+// IsClientRegisteredInAllGroups reports whether clientName is listed in the
+// RegisteredClients of every provided group. When no groups are given it
+// returns true (vacuously), mirroring FilterClientsAlreadyRegistered.
+func IsClientRegisteredInAllGroups(clientName string, selectedGroups []*groups.Group) bool {
+	return isClientRegisteredInAllGroups(clientName, selectedGroups)
+}
+
 func isClientRegisteredInAllGroups(clientName string, selectedGroups []*groups.Group) bool {
 	for _, group := range selectedGroups {
 		if !slices.Contains(group.RegisteredClients, clientName) {

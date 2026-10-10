@@ -67,7 +67,7 @@ func TestSelectedGroups_BoundsCheck(t *testing.T) {
 	}
 }
 
-func TestFilterClientsBySelectedGroups_OutOfBoundsIndices(t *testing.T) {
+func TestPrepareClientSelection_OutOfBoundsGroupIndices(t *testing.T) {
 	t.Parallel()
 
 	allClients := []client.ClientAppStatus{
@@ -86,14 +86,17 @@ func TestFilterClientsBySelectedGroups_OutOfBoundsIndices(t *testing.T) {
 		CurrentStep:     stepGroupSelection,
 	}
 
-	// Press enter to trigger transition which calls filterClientsBySelectedGroups
+	// Press enter to trigger transition which calls prepareClientSelection
 	updated, _ := m.Update(tea.KeyPressMsg{Code: tea.KeyEnter})
 	result := updated.(*setupModel)
 
 	assert.Equal(t, stepClientSelection, result.CurrentStep)
 	assert.False(t, result.Quitting)
-	assert.False(t, result.AllFiltered)
-	// Only cursor remains; vscode was filtered by group1, OOB index 99 safely ignored
-	assert.Len(t, result.Clients, 1)
-	assert.Equal(t, client.Cursor, result.Clients[0].ClientType)
+	// All installed clients remain visible; vscode is pre-selected because it
+	// is registered in group1. The out-of-bounds group index is safely ignored.
+	assert.Len(t, result.Clients, 2)
+	assert.Equal(t, client.VSCode, result.Clients[0].ClientType)
+	_, selected := result.SelectedClients[0]
+	assert.True(t, selected, "vscode should be pre-selected")
+	assert.Equal(t, []string{"vscode"}, result.InitiallyRegistered)
 }

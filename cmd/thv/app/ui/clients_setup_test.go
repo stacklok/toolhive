@@ -18,17 +18,18 @@ func TestSetupModelUpdate_GroupToClientTransition(t *testing.T) {
 	t.Parallel()
 
 	tests := []struct {
-		name            string
-		allClients      []client.ClientAppStatus
-		grps            []*groups.Group
-		selectedGroups  map[int]struct{}
-		wantStep        setupStep
-		wantQuitting    bool
-		wantAllFiltered bool
-		wantClientCount int
+		name                    string
+		allClients              []client.ClientAppStatus
+		grps                    []*groups.Group
+		selectedGroups          map[int]struct{}
+		wantStep                setupStep
+		wantQuitting            bool
+		wantClientCount         int
+		wantSelectedIndices     []int
+		wantInitiallyRegistered []string
 	}{
 		{
-			name: "filters already-registered clients on transition",
+			name: "pre-selects already-registered clients on transition",
 			allClients: []client.ClientAppStatus{
 				{ClientType: client.VSCode, Installed: true},
 				{ClientType: client.Cursor, Installed: true},
@@ -37,14 +38,15 @@ func TestSetupModelUpdate_GroupToClientTransition(t *testing.T) {
 			grps: []*groups.Group{
 				{Name: "group1", RegisteredClients: []string{"vscode"}},
 			},
-			selectedGroups:  map[int]struct{}{0: {}},
-			wantStep:        stepClientSelection,
-			wantQuitting:    false,
-			wantAllFiltered: false,
-			wantClientCount: 2, // cursor and claude-code remain
+			selectedGroups:          map[int]struct{}{0: {}},
+			wantStep:                stepClientSelection,
+			wantQuitting:            false,
+			wantClientCount:         3,
+			wantSelectedIndices:     []int{0},
+			wantInitiallyRegistered: []string{"vscode"},
 		},
 		{
-			name: "sets AllFiltered when all clients are already registered",
+			name: "pre-selects all clients when all are registered",
 			allClients: []client.ClientAppStatus{
 				{ClientType: client.VSCode, Installed: true},
 				{ClientType: client.Cursor, Installed: true},
@@ -52,11 +54,12 @@ func TestSetupModelUpdate_GroupToClientTransition(t *testing.T) {
 			grps: []*groups.Group{
 				{Name: "group1", RegisteredClients: []string{"vscode", "cursor"}},
 			},
-			selectedGroups:  map[int]struct{}{0: {}},
-			wantStep:        stepClientSelection,
-			wantQuitting:    true,
-			wantAllFiltered: true,
-			wantClientCount: 0,
+			selectedGroups:          map[int]struct{}{0: {}},
+			wantStep:                stepClientSelection,
+			wantQuitting:            false,
+			wantClientCount:         2,
+			wantSelectedIndices:     []int{0, 1},
+			wantInitiallyRegistered: []string{"vscode", "cursor"},
 		},
 		{
 			name: "does not transition without group selection",
@@ -69,7 +72,6 @@ func TestSetupModelUpdate_GroupToClientTransition(t *testing.T) {
 			selectedGroups:  map[int]struct{}{}, // none selected
 			wantStep:        stepGroupSelection, // stays on group step
 			wantQuitting:    false,
-			wantAllFiltered: false,
 			wantClientCount: 1,
 		},
 	}
@@ -93,8 +95,13 @@ func TestSetupModelUpdate_GroupToClientTransition(t *testing.T) {
 
 			assert.Equal(t, tt.wantStep, result.CurrentStep)
 			assert.Equal(t, tt.wantQuitting, result.Quitting)
-			assert.Equal(t, tt.wantAllFiltered, result.AllFiltered)
 			assert.Len(t, result.Clients, tt.wantClientCount)
+
+			for _, i := range tt.wantSelectedIndices {
+				_, selected := result.SelectedClients[i]
+				assert.True(t, selected, "client at index %d should be pre-selected", i)
+			}
+			assert.Equal(t, tt.wantInitiallyRegistered, result.InitiallyRegistered)
 		})
 	}
 }
@@ -133,6 +140,5 @@ func TestSetupModelUpdate_ClientSelection(t *testing.T) {
 	result = updated.(*setupModel)
 	assert.True(t, result.Confirmed)
 	assert.True(t, result.Quitting)
-	assert.False(t, result.AllFiltered)
 	require.NotNil(t, cmd, "should return a quit command")
 }

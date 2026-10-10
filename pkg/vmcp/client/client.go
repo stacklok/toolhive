@@ -2018,10 +2018,11 @@ func (h *httpBackendClient) modernReadResource(
 	// content->vmcp mapping is shared, not duplicated.
 	var res struct {
 		Contents []struct {
-			URI      string `json:"uri"`
-			MIMEType string `json:"mimeType"`
-			Text     string `json:"text"`
-			Blob     string `json:"blob"`
+			URI      string         `json:"uri"`
+			MIMEType string         `json:"mimeType"`
+			Text     string         `json:"text"`
+			Blob     string         `json:"blob"`
+			Meta     map[string]any `json:"_meta"`
 		} `json:"contents"`
 		Meta map[string]any `json:"_meta"`
 	}
@@ -2032,9 +2033,9 @@ func (h *httpBackendClient) modernReadResource(
 	mcpContents := make([]mcp.ResourceContents, len(res.Contents))
 	for i, c := range res.Contents {
 		if c.Blob != "" {
-			mcpContents[i] = mcp.BlobResourceContents{URI: c.URI, MIMEType: c.MIMEType, Blob: c.Blob}
+			mcpContents[i] = mcp.BlobResourceContents{URI: c.URI, MIMEType: c.MIMEType, Blob: c.Blob, Meta: c.Meta}
 		} else {
-			mcpContents[i] = mcp.TextResourceContents{URI: c.URI, MIMEType: c.MIMEType, Text: c.Text}
+			mcpContents[i] = mcp.TextResourceContents{URI: c.URI, MIMEType: c.MIMEType, Text: c.Text, Meta: c.Meta}
 		}
 	}
 	return &vmcp.ResourceReadResult{

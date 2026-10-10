@@ -460,6 +460,29 @@ func TestConvertMCPResourceContents(t *testing.T) {
 				{URI: "file://f", MimeType: "image/png", Blob: "cG5nZGF0YQ=="},
 			},
 		},
+		{
+			name: "per-item meta is preserved on text and blob items",
+			contents: []mcp.ResourceContents{
+				mcp.TextResourceContents{
+					URI: "file://g", MIMEType: "text/plain", Text: "text",
+					Meta: map[string]any{"mcpui": map[string]any{"resource": "widget"}},
+				},
+				mcp.BlobResourceContents{
+					URI: "file://h", MIMEType: "image/png", Blob: "cG5nZGF0YQ==",
+					Meta: map[string]any{"mcpui": map[string]any{"resource": "image"}},
+				},
+			},
+			want: []vmcp.ResourceContent{
+				{
+					URI: "file://g", MimeType: "text/plain", Text: "text",
+					Meta: map[string]any{"mcpui": map[string]any{"resource": "widget"}},
+				},
+				{
+					URI: "file://h", MimeType: "image/png", Blob: "cG5nZGF0YQ==",
+					Meta: map[string]any{"mcpui": map[string]any{"resource": "image"}},
+				},
+			},
+		},
 	}
 
 	for _, tt := range tests {
@@ -547,6 +570,42 @@ func TestToMCPResourceContents(t *testing.T) {
 				assert.True(t, ok, "second item should be BlobResourceContents")
 			},
 		},
+		{
+			name: "per-item meta is forwarded and reserved keys stripped",
+			contents: []vmcp.ResourceContent{
+				{
+					URI: "file://f", MimeType: "text/plain", Text: "text",
+					Meta: map[string]any{
+						"mcpui":                           map[string]any{"resource": "widget"},
+						"io.modelcontextprotocol/backend": "spoofed",
+					},
+				},
+			},
+			check: func(t *testing.T, result []mcp.ResourceContents) {
+				t.Helper()
+				require.Len(t, result, 1)
+				textRes, ok := mcp.AsTextResourceContents(result[0])
+				require.True(t, ok, "expected TextResourceContents")
+				assert.Equal(t, map[string]any{"mcpui": map[string]any{"resource": "widget"}}, textRes.Meta,
+					"non-reserved per-item meta should survive, reserved keys should be stripped")
+			},
+		},
+		{
+			name: "per-item meta consisting only of reserved keys collapses to nil",
+			contents: []vmcp.ResourceContent{
+				{
+					URI: "file://g", MimeType: "text/plain", Text: "text",
+					Meta: map[string]any{"io.modelcontextprotocol/backend": "spoofed"},
+				},
+			},
+			check: func(t *testing.T, result []mcp.ResourceContents) {
+				t.Helper()
+				require.Len(t, result, 1)
+				textRes, ok := mcp.AsTextResourceContents(result[0])
+				require.True(t, ok, "expected TextResourceContents")
+				assert.Nil(t, textRes.Meta, "an all-reserved meta map should collapse to nil")
+			},
+		},
 	}
 
 	for _, tt := range tests {
@@ -589,6 +648,24 @@ func TestResourceContentsRoundTrip(t *testing.T) {
 		assert.Equal(t, "file://b", blobRes.URI)
 		assert.Equal(t, "image/png", blobRes.MIMEType)
 		assert.Equal(t, "cG5nZGF0YQ==", blobRes.Blob)
+	})
+
+	t.Run("per-item meta round-trip", func(t *testing.T) {
+		t.Parallel()
+		input := []mcp.ResourceContents{
+			mcp.TextResourceContents{
+				URI: "file://c", MIMEType: "text/plain", Text: "hello",
+				Meta: map[string]any{"mcpui": map[string]any{"resource": "widget"}},
+			},
+		}
+		intermediate := conversion.ConvertMCPResourceContents(input)
+		require.Len(t, intermediate, 1)
+		assert.Equal(t, map[string]any{"mcpui": map[string]any{"resource": "widget"}}, intermediate[0].Meta)
+		output := conversion.ToMCPResourceContents(intermediate)
+		require.Len(t, output, 1)
+		textRes, ok := mcp.AsTextResourceContents(output[0])
+		require.True(t, ok)
+		assert.Equal(t, map[string]any{"mcpui": map[string]any{"resource": "widget"}}, textRes.Meta)
 	})
 }
 

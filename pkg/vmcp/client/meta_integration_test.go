@@ -260,6 +260,9 @@ func TestMetaPreservation_ReadResource(t *testing.T) {
 	require.NotEmpty(t, result.Contents)
 	assert.Equal(t, "Test resource content", result.Contents[0].Text)
 	assert.Equal(t, "text/plain", result.Contents[0].MimeType)
+	// Verify per-item _meta survives the Legacy path too
+	assert.Equal(t, map[string]any{"mcpui": map[string]any{"resource": "widget"}}, result.Contents[0].Meta,
+		"per-item resource _meta must be preserved")
 }
 
 // TestOutboundMetaTraceContext verifies that the vMCP backend client injects the
@@ -527,6 +530,9 @@ func startTestMCPServer(t *testing.T) (string, *metaCapture, func()) {
 						URI:      "test://resource",
 						MIMEType: "text/plain",
 						Text:     "Test resource content",
+						Meta: map[string]any{
+							"mcpui": map[string]any{"resource": "widget"},
+						},
 					},
 				},
 			}, nil

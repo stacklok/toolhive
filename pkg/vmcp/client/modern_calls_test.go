@@ -126,13 +126,16 @@ func TestModernCallTool_LogLevelGating(t *testing.T) {
 }
 
 // TestModernReadResource verifies resources/read shaping (Mcp-Name mirrors the
-// translated uri) and text/blob content decode.
+// translated uri) and text/blob content decode, including per-item _meta.
 func TestModernReadResource(t *testing.T) {
 	t.Parallel()
 
 	srv, hdr, body := bodyRecordingServer(t, map[string]any{
 		"contents": []any{
-			map[string]any{"uri": "file:///x", "mimeType": "text/plain", "text": "hello"},
+			map[string]any{
+				"uri": "file:///x", "mimeType": "text/plain", "text": "hello",
+				"_meta": map[string]any{"mcpui": map[string]any{"resource": "widget"}},
+			},
 			map[string]any{"uri": "file:///y", "mimeType": "application/octet-stream", "blob": "AAAA"},
 		},
 		"_meta": map[string]any{"trace": "r"},
@@ -148,7 +151,10 @@ func TestModernReadResource(t *testing.T) {
 	assert.Equal(t, "file:///backend", (*body)["uri"], "body uri must match Mcp-Name")
 	require.Len(t, res.Contents, 2)
 	assert.Equal(t, "hello", res.Contents[0].Text)
+	assert.Equal(t, map[string]any{"mcpui": map[string]any{"resource": "widget"}}, res.Contents[0].Meta,
+		"per-item _meta must survive the Modern decode")
 	assert.Equal(t, "AAAA", res.Contents[1].Blob)
+	assert.Nil(t, res.Contents[1].Meta, "item without _meta decodes to nil")
 	assert.Equal(t, "r", res.Meta["trace"])
 }
 

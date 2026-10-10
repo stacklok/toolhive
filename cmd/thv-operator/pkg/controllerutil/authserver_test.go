@@ -3577,9 +3577,19 @@ func TestBuildSPIFFETrustDomainRunConfigs(t *testing.T) {
 				},
 			},
 		},
+		{
+			Name: "development", TrustDomain: "dev.example.org", Methods: methods,
+			BundleSource: mcpv1beta1.SPIFFEBundleSourceConfig{
+				Type: mcpv1beta1.SPIFFEBundleSourceTypeFile,
+				File: &mcpv1beta1.SPIFFEFileBundleSourceConfig{
+					ConfigMapName: "spire-bundle",
+					ConfigMapKey:  "bundle.json",
+				},
+			},
+		},
 	})
 
-	require.Len(t, configs, 2)
+	require.Len(t, configs, 3)
 	assert.Equal(t, "example", configs[0].Name)
 	assert.Equal(t, "example.org", configs[0].TrustDomain)
 	assert.Equal(t, []authserver.SPIFFEAuthenticationMethod{authserver.SPIFFEAuthenticationMethodX509}, configs[0].Methods)
@@ -3592,6 +3602,15 @@ func TestBuildSPIFFETrustDomainRunConfigs(t *testing.T) {
 	assert.Equal(t, "https://bundle.example.com", configs[1].BundleSource.Endpoint.URL)
 	assert.Equal(t, authserver.SPIFFEBundleEndpointProfileHTTPSWeb, configs[1].BundleSource.Endpoint.Profile)
 	assert.Nil(t, configs[1].BundleSource.WorkloadAPI)
+
+	// The runtime file source carries a derived, index-scoped mount path —
+	// not the CRD's configMapName/configMapKey — matching the volume
+	// GenerateAuthServerVolumes projects that ConfigMap key to.
+	assert.Equal(t, authserver.SPIFFEBundleSourceTypeFile, configs[2].BundleSource.Type)
+	require.NotNil(t, configs[2].BundleSource.File)
+	assert.Equal(t, AuthServerSPIFFEBundleMountPath+"/2/"+AuthServerSPIFFEBundleFileName, configs[2].BundleSource.File.Path)
+	assert.Nil(t, configs[2].BundleSource.Endpoint)
+	assert.Nil(t, configs[2].BundleSource.WorkloadAPI)
 
 	// The runtime type must not retain the CRD object's backing slices.
 	methods[0] = mcpv1beta1.SPIFFEAuthenticationMethodJWT

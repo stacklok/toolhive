@@ -778,9 +778,9 @@ spec:
                       properties:
                         bundleSource:
                           description: |-
-                            BundleSource declares exactly one future trust-bundle source. It is
-                            validated for shape only; fetching or loading a bundle from it is a
-                            later step.
+                            BundleSource declares exactly one trust-bundle source and is validated for
+                            shape here. The standalone file loader exists, but is not wired into SPIFFE
+                            authentication.
                           properties:
                             endpoint:
                               description: |-
@@ -807,10 +807,35 @@ spec:
                               - profile
                               - url
                               type: object
+                            file:
+                              description: |-
+                                File declares a SPIFFE trust bundle projected from a ConfigMap.
+                                Required when Type is "file".
+                              properties:
+                                configMapKey:
+                                  description: |-
+                                    ConfigMapKey is the key within the ConfigMap holding the SPIFFE JWKS
+                                    trust-bundle document.
+                                  maxLength: 253
+                                  minLength: 1
+                                  pattern: ^[A-Za-z0-9._-]+$
+                                  type: string
+                                configMapName:
+                                  description: ConfigMapName is the name of the ConfigMap
+                                    containing the trust bundle.
+                                  maxLength: 253
+                                  minLength: 1
+                                  pattern: ^[a-z0-9]([-a-z0-9]*[a-z0-9])?(\.[a-z0-9]([-a-z0-9]*[a-z0-9])?)*$
+                                  type: string
+                              required:
+                              - configMapKey
+                              - configMapName
+                              type: object
                             type:
                               description: Type selects the trust-bundle source.
                               enum:
                               - bundle_endpoint
+                              - file
                               - workload_api
                               type: string
                             workloadAPI:
@@ -826,6 +851,9 @@ spec:
                               if type is 'bundle_endpoint'
                             rule: 'self.type == ''bundle_endpoint'' ? has(self.endpoint)
                               : !has(self.endpoint)'
+                          - message: file configuration must be set if and only if
+                              type is 'file'
+                            rule: 'self.type == ''file'' ? has(self.file) : !has(self.file)'
                           - message: workloadAPI configuration must be set if and
                               only if type is 'workload_api'
                             rule: 'self.type == ''workload_api'' ? has(self.workloadAPI)
@@ -5843,9 +5871,9 @@ spec:
                       properties:
                         bundleSource:
                           description: |-
-                            BundleSource declares exactly one future trust-bundle source. It is
-                            validated for shape only; fetching or loading a bundle from it is a
-                            later step.
+                            BundleSource declares exactly one trust-bundle source and is validated for
+                            shape here. The standalone file loader exists, but is not wired into SPIFFE
+                            authentication.
                           properties:
                             endpoint:
                               description: |-
@@ -5872,10 +5900,35 @@ spec:
                               - profile
                               - url
                               type: object
+                            file:
+                              description: |-
+                                File declares a SPIFFE trust bundle projected from a ConfigMap.
+                                Required when Type is "file".
+                              properties:
+                                configMapKey:
+                                  description: |-
+                                    ConfigMapKey is the key within the ConfigMap holding the SPIFFE JWKS
+                                    trust-bundle document.
+                                  maxLength: 253
+                                  minLength: 1
+                                  pattern: ^[A-Za-z0-9._-]+$
+                                  type: string
+                                configMapName:
+                                  description: ConfigMapName is the name of the ConfigMap
+                                    containing the trust bundle.
+                                  maxLength: 253
+                                  minLength: 1
+                                  pattern: ^[a-z0-9]([-a-z0-9]*[a-z0-9])?(\.[a-z0-9]([-a-z0-9]*[a-z0-9])?)*$
+                                  type: string
+                              required:
+                              - configMapKey
+                              - configMapName
+                              type: object
                             type:
                               description: Type selects the trust-bundle source.
                               enum:
                               - bundle_endpoint
+                              - file
                               - workload_api
                               type: string
                             workloadAPI:
@@ -5891,6 +5944,9 @@ spec:
                               if type is 'bundle_endpoint'
                             rule: 'self.type == ''bundle_endpoint'' ? has(self.endpoint)
                               : !has(self.endpoint)'
+                          - message: file configuration must be set if and only if
+                              type is 'file'
+                            rule: 'self.type == ''file'' ? has(self.file) : !has(self.file)'
                           - message: workloadAPI configuration must be set if and
                               only if type is 'workload_api'
                             rule: 'self.type == ''workload_api'' ? has(self.workloadAPI)

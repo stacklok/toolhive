@@ -762,20 +762,22 @@ components:
             Profile selects how the endpoint's TLS connection is authenticated:
             SPIFFEBundleEndpointProfileHTTPSWeb (Web PKI) or
             SPIFFEBundleEndpointProfileHTTPSSPIFFE (a separately distributed
-            X.509-SVID root). Required, since the future bundle loader cannot
-            otherwise know which trust anchor to use for the initial connection.
+            X.509-SVID root). Required, since an endpoint loader needs this profile
+            to choose the trust anchor for its initial connection.
           type: string
         url:
           type: string
       type: object
     authserver.SPIFFEBundleSourceRunConfig:
       description: |-
-        BundleSource declares exactly one future trust-bundle source. It is
-        validated for shape only; fetching or loading a bundle from it is a
-        later step.
+        BundleSource declares exactly one trust-bundle source and is validated for
+        shape here. The standalone file loader exists, but source initialization
+        is not wired into SPIFFE authentication.
       properties:
         endpoint:
           $ref: '#/components/schemas/authserver.SPIFFEBundleEndpointSourceRunConfig'
+        file:
+          $ref: '#/components/schemas/authserver.SPIFFEFileBundleSourceRunConfig'
         type:
           type: string
         workload_api:
@@ -840,6 +842,11 @@ components:
           description: |-
             TrustDomainRef identifies the SPIFFE trust-domain declaration governing
             this association policy.
+          type: string
+      type: object
+    authserver.SPIFFEFileBundleSourceRunConfig:
+      properties:
+        path:
           type: string
       type: object
     authserver.SPIFFETrustDomainRunConfig:

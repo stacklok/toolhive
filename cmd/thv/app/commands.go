@@ -14,6 +14,7 @@ import (
 	"github.com/stacklok/toolhive-core/logging"
 	"github.com/stacklok/toolhive/pkg/desktop"
 	"github.com/stacklok/toolhive/pkg/updates"
+	"github.com/stacklok/toolhive/pkg/versions"
 )
 
 var rootCmd = &cobra.Command{
@@ -82,6 +83,10 @@ func NewRootCmd(enableUpdates bool) *cobra.Command {
 	// Silence printing the usage on error
 	rootCmd.SilenceUsage = true
 
+	// Expose the version at the top level (`thv --version`) in addition to the
+	// `thv version` subcommand.
+	rootCmd.Version = versions.GetVersionInfo().Version
+
 	if enableUpdates {
 		checkForUpdates()
 	}
@@ -104,6 +109,14 @@ func IsInformationalCommand(args []string) bool {
 	}
 
 	command := args[1]
+
+	// Top-level informational flags never need a container runtime or startup
+	// migrations: `thv --help` and `thv --version` must work on machines
+	// without a container runtime.
+	switch command {
+	case "--help", "-h", "--version", "-v":
+		return true
+	}
 
 	// Commands that don't need container runtime or startup migrations.
 	// "vmcp" is safe here: telemetry/secret-scope migrations only affect thv run state,

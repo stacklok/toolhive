@@ -230,7 +230,9 @@ func runSingleServer(ctx context.Context, runFlags *RunFlags, serverOrImage stri
 		return fmt.Errorf("failed to check if workload exists: %w", err)
 	}
 	if exists {
-		return fmt.Errorf("workload with name '%s' already exists", runFlags.Name)
+		return fmt.Errorf(
+			"workload with name '%s' already exists; use 'thv rm %s' to remove it, or pass a different --name",
+			runFlags.Name, runFlags.Name)
 	}
 	err = validateGroup(ctx, workloadManager, serverOrImage)
 	if err != nil {

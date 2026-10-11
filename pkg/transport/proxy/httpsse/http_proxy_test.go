@@ -433,8 +433,11 @@ func TestHandlePostRequest_NoSessionID(t *testing.T) {
 func TestHandlePostRequest_InvalidSession(t *testing.T) {
 	proxy := NewHTTPSSEProxy("localhost", 8080, false, nil, nil)
 
-	// Create a test request with non-existent session_id
-	req := httptest.NewRequest("POST", "/messages?session_id=invalid", nil)
+	// A request with an id carries it in a body the proxy has not read yet; the
+	// session-not-found 404 must still echo it so the client can correlate the
+	// error with its request (#6042).
+	req := httptest.NewRequest("POST", "/messages?session_id=invalid", bytes.NewReader([]byte(
+		`{"jsonrpc":"2.0","id":7,"method":"tools/list"}`)))
 	w := httptest.NewRecorder()
 
 	// Handle the request
@@ -444,6 +447,24 @@ func TestHandlePostRequest_InvalidSession(t *testing.T) {
 	assert.Equal(t, http.StatusNotFound, w.Code)
 	assert.Equal(t, "application/json", w.Header().Get("Content-Type"))
 	assert.Contains(t, w.Body.String(), `"code":-32001`)
+	assert.Contains(t, w.Body.String(), `"id":7`)
+}
+
+// TestHandlePostRequest_InvalidSession_UnparsableBody keeps today's precedence
+// when the request is both malformed and unowned: the 404 stands and the id
+// stays absent rather than the parse error winning (#6042).
+//
+//nolint:paralleltest // Test modifies shared proxy state
+func TestHandlePostRequest_InvalidSession_UnparsableBody(t *testing.T) {
+	proxy := NewHTTPSSEProxy("localhost", 8080, false, nil, nil)
+
+	req := httptest.NewRequest("POST", "/messages?session_id=invalid", bytes.NewReader([]byte(`not json`)))
+	w := httptest.NewRecorder()
+
+	proxy.handlePostRequest(w, req)
+
+	assert.Equal(t, http.StatusNotFound, w.Code)
+	assert.NotContains(t, w.Body.String(), `"id"`)
 }
 
 // TestRWMutexUsage tests that RWMutex is used correctly for read operations

@@ -5,7 +5,6 @@ package streamable
 
 import (
 	"bytes"
-	"fmt"
 	"io"
 	"net"
 	"net/http"
@@ -59,14 +58,13 @@ func TestHTTPProxy_RejectsOversizedBody(t *testing.T) {
 		{Name: bodylimit.MiddlewareType, Function: bodylimit.Middleware(limit)},
 	}
 
-	port := getFreePort(t)
-	proxy := NewHTTPProxy("127.0.0.1", port, nil, chain)
+	proxy := NewHTTPProxy("127.0.0.1", 0, nil, chain)
 	ctx := t.Context()
 	require.NoError(t, proxy.Start(ctx))
 	defer proxy.Stop(ctx)
-	waitForReady(t, fmt.Sprintf("127.0.0.1:%d", port))
+	waitForReady(t, proxy.Address())
 
-	url := fmt.Sprintf("http://127.0.0.1:%d%s", port, StreamableHTTPEndpoint)
+	url := "http://" + proxy.Address() + StreamableHTTPEndpoint
 
 	// io.NopCloser hides the concrete reader type so net/http omits
 	// Content-Length and uses chunked transfer, bypassing the middleware's
@@ -116,14 +114,13 @@ func TestHTTPProxy_BodyLimitBoundsDownstreamReader(t *testing.T) {
 		{Name: "parser-like-reader", Function: recorder},
 	}
 
-	port := getFreePort(t)
-	proxy := NewHTTPProxy("127.0.0.1", port, nil, chain)
+	proxy := NewHTTPProxy("127.0.0.1", 0, nil, chain)
 	ctx := t.Context()
 	require.NoError(t, proxy.Start(ctx))
 	defer proxy.Stop(ctx)
-	waitForReady(t, fmt.Sprintf("127.0.0.1:%d", port))
+	waitForReady(t, proxy.Address())
 
-	url := fmt.Sprintf("http://127.0.0.1:%d%s", port, StreamableHTTPEndpoint)
+	url := "http://" + proxy.Address() + StreamableHTTPEndpoint
 
 	// io.NopCloser hides the concrete reader type so net/http sends the request
 	// with chunked transfer encoding (ContentLength unknown).

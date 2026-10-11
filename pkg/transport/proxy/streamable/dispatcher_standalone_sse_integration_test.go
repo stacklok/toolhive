@@ -30,10 +30,10 @@ import (
 // success result, which is sufficient here: session assignment happens in
 // resolveSessionForRequest based on the request method alone, independent of
 // the backend's response payload.
-func establishSession(t *testing.T, port int) string {
+func establishSession(t *testing.T, proxy *HTTPProxy) string {
 	t.Helper()
 
-	url := fmt.Sprintf("http://127.0.0.1:%d%s", port, StreamableHTTPEndpoint)
+	url := "http://" + proxy.Address() + StreamableHTTPEndpoint
 	initJSON := `{"jsonrpc":"2.0","id":"1","method":"initialize","params":{"protocolVersion":"2025-03-26","clientInfo":{"name":"sse-test","version":"0.0.0"},"capabilities":{}}}`
 	resp, err := http.Post(url, "application/json", bytes.NewReader([]byte(initJSON))) //nolint:noctx // test-only
 	require.NoError(t, err)
@@ -49,10 +49,10 @@ func establishSession(t *testing.T, port int) string {
 // sessID as Mcp-Session-Id, and returns the live response along with a
 // buffered reader over its body. The caller owns closing resp.Body (register
 // with t.Cleanup).
-func openGETStream(ctx context.Context, t *testing.T, port int, sessID string) (*http.Response, *bufio.Reader) {
+func openGETStream(ctx context.Context, t *testing.T, proxy *HTTPProxy, sessID string) (*http.Response, *bufio.Reader) {
 	t.Helper()
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet,
-		fmt.Sprintf("http://127.0.0.1:%d%s", port, StreamableHTTPEndpoint), nil)
+		"http://"+proxy.Address()+StreamableHTTPEndpoint, nil)
 	require.NoError(t, err)
 	req.Header.Set("Mcp-Session-Id", sessID)
 
@@ -109,12 +109,11 @@ func readSSEData(t *testing.T, r *bufio.Reader) string {
 func TestStandaloneSSE_NotificationReachesConnectedClient(t *testing.T) {
 	t.Parallel()
 
-	port := pickFreePort(t)
-	proxy, ctx, cancel := startProxyWithBackend(t, port)
+	proxy, ctx, cancel := startProxyWithBackend(t)
 	t.Cleanup(cancel)
 
-	sessID := establishSession(t, port)
-	resp, reader := openGETStream(ctx, t, port, sessID)
+	sessID := establishSession(t, proxy)
+	resp, reader := openGETStream(ctx, t, proxy, sessID)
 	t.Cleanup(func() { _ = resp.Body.Close() })
 
 	require.Eventually(t, func() bool { return proxy.serverStreams.streamCount() == 1 },
@@ -138,12 +137,11 @@ func TestStandaloneSSE_NotificationReachesConnectedClient(t *testing.T) {
 func TestStandaloneSSE_NonGlobalNotificationDoesNotReachClient(t *testing.T) {
 	t.Parallel()
 
-	port := pickFreePort(t)
-	proxy, ctx, cancel := startProxyWithBackend(t, port)
+	proxy, ctx, cancel := startProxyWithBackend(t)
 	t.Cleanup(cancel)
 
-	sessID := establishSession(t, port)
-	resp, reader := openGETStream(ctx, t, port, sessID)
+	sessID := establishSession(t, proxy)
+	resp, reader := openGETStream(ctx, t, proxy, sessID)
 	t.Cleanup(func() { _ = resp.Body.Close() })
 
 	require.Eventually(t, func() bool { return proxy.serverStreams.streamCount() == 1 },
@@ -175,16 +173,15 @@ func TestStandaloneSSE_NonGlobalNotificationDoesNotReachClient(t *testing.T) {
 func TestStandaloneSSE_FanOutToConcurrentClients(t *testing.T) {
 	t.Parallel()
 
-	port := pickFreePort(t)
-	proxy, ctx, cancel := startProxyWithBackend(t, port)
+	proxy, ctx, cancel := startProxyWithBackend(t)
 	t.Cleanup(cancel)
 
-	sessID1 := establishSession(t, port)
-	sessID2 := establishSession(t, port)
+	sessID1 := establishSession(t, proxy)
+	sessID2 := establishSession(t, proxy)
 
-	resp1, reader1 := openGETStream(ctx, t, port, sessID1)
+	resp1, reader1 := openGETStream(ctx, t, proxy, sessID1)
 	t.Cleanup(func() { _ = resp1.Body.Close() })
-	resp2, reader2 := openGETStream(ctx, t, port, sessID2)
+	resp2, reader2 := openGETStream(ctx, t, proxy, sessID2)
 	t.Cleanup(func() { _ = resp2.Body.Close() })
 
 	require.Eventually(t, func() bool { return proxy.serverStreams.streamCount() == 2 },
@@ -203,13 +200,12 @@ func TestStandaloneSSE_FanOutToConcurrentClients(t *testing.T) {
 func TestStandaloneSSE_ClientDisconnectDrainsRegistry(t *testing.T) {
 	t.Parallel()
 
-	port := pickFreePort(t)
-	proxy, ctx, cancel := startProxyWithBackend(t, port)
+	proxy, ctx, cancel := startProxyWithBackend(t)
 	t.Cleanup(cancel)
 
-	sessID := establishSession(t, port)
+	sessID := establishSession(t, proxy)
 	getCtx, getCancel := context.WithCancel(ctx)
-	resp, _ := openGETStream(getCtx, t, port, sessID)
+	resp, _ := openGETStream(getCtx, t, proxy, sessID)
 
 	require.Eventually(t, func() bool { return proxy.serverStreams.streamCount() == 1 },
 		time.Second, 5*time.Millisecond, "stream was not registered")
@@ -228,21 +224,20 @@ func TestStandaloneSSE_ClientDisconnectDrainsRegistry(t *testing.T) {
 func TestStandaloneSSE_SecondGetOnSameSessionEvictsFirst(t *testing.T) {
 	t.Parallel()
 
-	port := pickFreePort(t)
-	proxy, ctx, cancel := startProxyWithBackend(t, port)
+	proxy, ctx, cancel := startProxyWithBackend(t)
 	t.Cleanup(cancel)
 
-	sessID := establishSession(t, port)
+	sessID := establishSession(t, proxy)
 
 	firstCtx, firstCancel := context.WithCancel(ctx)
 	t.Cleanup(firstCancel)
-	firstResp, _ := openGETStream(firstCtx, t, port, sessID)
+	firstResp, _ := openGETStream(firstCtx, t, proxy, sessID)
 	t.Cleanup(func() { _ = firstResp.Body.Close() })
 
 	require.Eventually(t, func() bool { return proxy.serverStreams.streamCount() == 1 },
 		time.Second, 5*time.Millisecond, "first stream was not registered")
 
-	secondResp, _ := openGETStream(ctx, t, port, sessID)
+	secondResp, _ := openGETStream(ctx, t, proxy, sessID)
 	t.Cleanup(func() { _ = secondResp.Body.Close() })
 
 	// Still exactly one stream for the session (the second evicted the first),
@@ -272,11 +267,10 @@ func TestStandaloneSSE_SecondGetOnSameSessionEvictsFirst(t *testing.T) {
 func TestStandaloneSSE_GetSessionDecisionMatrix(t *testing.T) {
 	t.Parallel()
 
-	port := pickFreePort(t)
-	_, ctx, cancel := startProxyWithBackend(t, port)
+	proxy, ctx, cancel := startProxyWithBackend(t)
 	t.Cleanup(cancel)
 
-	sessID := establishSession(t, port)
+	sessID := establishSession(t, proxy)
 
 	tests := []struct {
 		name       string
@@ -297,7 +291,7 @@ func TestStandaloneSSE_GetSessionDecisionMatrix(t *testing.T) {
 			t.Cleanup(reqCancel)
 
 			req, err := http.NewRequestWithContext(reqCtx, http.MethodGet,
-				fmt.Sprintf("http://127.0.0.1:%d%s", port, StreamableHTTPEndpoint), nil)
+				"http://"+proxy.Address()+StreamableHTTPEndpoint, nil)
 			require.NoError(t, err)
 			if tt.setHeader {
 				req.Header.Set("Mcp-Session-Id", tt.sessID)
@@ -321,8 +315,7 @@ func TestStandaloneSSE_GetSessionDecisionMatrix(t *testing.T) {
 func TestStandaloneSSE_StopWhileStreamOpenReturnsCleanly(t *testing.T) {
 	t.Parallel()
 
-	port := pickFreePort(t)
-	proxy := NewHTTPProxy("127.0.0.1", port, nil, nil)
+	proxy := NewHTTPProxy("127.0.0.1", 0, nil, nil)
 	bgCtx := context.Background()
 	require.NoError(t, proxy.Start(bgCtx))
 
@@ -344,10 +337,10 @@ func TestStandaloneSSE_StopWhileStreamOpenReturnsCleanly(t *testing.T) {
 
 	time.Sleep(50 * time.Millisecond)
 
-	sessID := establishSession(t, port)
+	sessID := establishSession(t, proxy)
 
 	// Independent context so the GET request outlives proxy.Stop below.
-	resp, _ := openGETStream(context.Background(), t, port, sessID)
+	resp, _ := openGETStream(context.Background(), t, proxy, sessID)
 	t.Cleanup(func() { _ = resp.Body.Close() })
 
 	require.Eventually(t, func() bool { return proxy.serverStreams.streamCount() == 1 },
@@ -396,8 +389,7 @@ func TestStandaloneSSE_ListChangedRefiltersThroughExistingMiddleware(t *testing.
 		{Name: "tool-call-filter", Function: callMw},
 	}
 
-	port := pickFreePort(t)
-	proxy := NewHTTPProxy("127.0.0.1", port, nil, middlewares)
+	proxy := NewHTTPProxy("127.0.0.1", 0, nil, middlewares)
 	ctx, cancel := context.WithCancel(context.Background())
 	t.Cleanup(cancel)
 	require.NoError(t, proxy.Start(ctx))
@@ -435,10 +427,10 @@ func TestStandaloneSSE_ListChangedRefiltersThroughExistingMiddleware(t *testing.
 		}
 	}()
 
-	sessID := establishSession(t, port)
+	sessID := establishSession(t, proxy)
 
 	// (1) notifications/tools/list_changed reaches the GET SSE client.
-	getResp, reader := openGETStream(ctx, t, port, sessID)
+	getResp, reader := openGETStream(ctx, t, proxy, sessID)
 	t.Cleanup(func() { _ = getResp.Body.Close() })
 	require.Eventually(t, func() bool { return proxy.serverStreams.streamCount() == 1 },
 		time.Second, 5*time.Millisecond, "stream was not registered")
@@ -448,7 +440,7 @@ func TestStandaloneSSE_ListChangedRefiltersThroughExistingMiddleware(t *testing.
 	require.NoError(t, proxy.ForwardResponseToClients(ctx, notification))
 	assert.Contains(t, readSSEData(t, reader), "notifications/tools/list_changed")
 
-	endpoint := fmt.Sprintf("http://127.0.0.1:%d%s", port, StreamableHTTPEndpoint)
+	endpoint := "http://" + proxy.Address() + StreamableHTTPEndpoint
 
 	// (2) tools/list POST response omits the filtered tool.
 	listBody := `{"jsonrpc":"2.0","id":"list-1","method":"tools/list"}`
@@ -490,10 +482,10 @@ func TestStandaloneSSE_ListChangedRefiltersThroughExistingMiddleware(t *testing.
 // flushes headers before waiting for any request-scoped data), so the
 // returned reader can be used to read SSE frames as they are written,
 // including interim progress frames before the final response.
-func postSSE(ctx context.Context, t *testing.T, port int, sessID, body string) (*http.Response, *bufio.Reader) {
+func postSSE(ctx context.Context, t *testing.T, proxy *HTTPProxy, sessID, body string) (*http.Response, *bufio.Reader) {
 	t.Helper()
 	req, err := http.NewRequestWithContext(ctx, http.MethodPost,
-		fmt.Sprintf("http://127.0.0.1:%d%s", port, StreamableHTTPEndpoint), strings.NewReader(body))
+		"http://"+proxy.Address()+StreamableHTTPEndpoint, strings.NewReader(body))
 	require.NoError(t, err)
 	req.Header.Set("Content-Type", "application/json")
 	req.Header.Set("Accept", "text/event-stream")
@@ -509,10 +501,10 @@ func postSSE(ctx context.Context, t *testing.T, port int, sessID, body string) (
 // postJSON POSTs body to the proxy's MCP endpoint (no Accept header, so the
 // proxy answers with a plain JSON response) for sessID, and returns the
 // response along with its fully-read body.
-func postJSON(t *testing.T, port int, sessID, body string) (*http.Response, []byte) {
+func postJSON(t *testing.T, proxy *HTTPProxy, sessID, body string) (*http.Response, []byte) {
 	t.Helper()
 	req, err := http.NewRequest(http.MethodPost, //nolint:noctx // test-only
-		fmt.Sprintf("http://127.0.0.1:%d%s", port, StreamableHTTPEndpoint), strings.NewReader(body))
+		"http://"+proxy.Address()+StreamableHTTPEndpoint, strings.NewReader(body))
 	require.NoError(t, err)
 	req.Header.Set("Content-Type", "application/json")
 	if sessID != "" {
@@ -545,12 +537,13 @@ func extractMetaProgressToken(params json.RawMessage) (string, bool) {
 	return token, ok
 }
 
-// startProxyOnly starts an HTTPProxy on port with no automatic backend
-// responder attached, for tests that need a custom backend goroutine (e.g. to
-// track subscribe/unsubscribe call counts, or react differently per request).
-func startProxyOnly(t *testing.T, port int) (*HTTPProxy, context.Context) {
+// startProxyOnly starts an HTTPProxy on an OS-assigned port (port 0) with no
+// automatic backend responder attached, for tests that need a custom backend
+// goroutine (e.g. to track subscribe/unsubscribe call counts, or react
+// differently per request).
+func startProxyOnly(t *testing.T) (*HTTPProxy, context.Context) {
 	t.Helper()
-	proxy := NewHTTPProxy("127.0.0.1", port, nil, nil)
+	proxy := NewHTTPProxy("127.0.0.1", 0, nil, nil)
 	ctx, cancel := context.WithCancel(context.Background())
 	require.NoError(t, proxy.Start(ctx))
 	t.Cleanup(func() {
@@ -574,8 +567,7 @@ func startProxyOnly(t *testing.T, port int) (*HTTPProxy, context.Context) {
 func TestPostSSE_ProgressIsolationBetweenSessions(t *testing.T) {
 	t.Parallel()
 
-	port := pickFreePort(t)
-	proxy, ctx := startProxyOnly(t, port)
+	proxy, ctx := startProxyOnly(t)
 
 	// The backend only emits progress for the request tagged "which":"A", so
 	// the test controls precisely which session's progress token is used,
@@ -610,15 +602,15 @@ func TestPostSSE_ProgressIsolationBetweenSessions(t *testing.T) {
 		}
 	}()
 
-	sessA := establishSession(t, port)
-	sessB := establishSession(t, port)
+	sessA := establishSession(t, proxy)
+	sessB := establishSession(t, proxy)
 
 	bodyA := `{"jsonrpc":"2.0","id":"call-a","method":"tools/call","params":{"which":"A","_meta":{"progressToken":"1"}}}`
 	bodyB := `{"jsonrpc":"2.0","id":"call-b","method":"tools/call","params":{"which":"B","_meta":{"progressToken":"1"}}}`
 
-	respA, readerA := postSSE(ctx, t, port, sessA, bodyA)
+	respA, readerA := postSSE(ctx, t, proxy, sessA, bodyA)
 	t.Cleanup(func() { _ = respA.Body.Close() })
-	respB, readerB := postSSE(ctx, t, port, sessB, bodyB)
+	respB, readerB := postSSE(ctx, t, proxy, sessB, bodyB)
 	t.Cleanup(func() { _ = respB.Body.Close() })
 
 	// A's stream: progress frame (token restored to "1"), then the final response.
@@ -642,8 +634,7 @@ func TestPostSSE_ProgressIsolationBetweenSessions(t *testing.T) {
 func TestPostSSE_ProgressTokenClearedAfterRequestCompletes(t *testing.T) {
 	t.Parallel()
 
-	port := pickFreePort(t)
-	proxy, ctx := startProxyOnly(t, port)
+	proxy, ctx := startProxyOnly(t)
 
 	capturedToken := make(chan string, 1)
 	go func() {
@@ -667,10 +658,10 @@ func TestPostSSE_ProgressTokenClearedAfterRequestCompletes(t *testing.T) {
 		}
 	}()
 
-	sessID := establishSession(t, port)
+	sessID := establishSession(t, proxy)
 	body := `{"jsonrpc":"2.0","id":"call-1","method":"tools/call","params":{"_meta":{"progressToken":"1"}}}`
 
-	resp, reader := postSSE(ctx, t, port, sessID, body)
+	resp, reader := postSSE(ctx, t, proxy, sessID, body)
 	t.Cleanup(func() { _ = resp.Body.Close() })
 
 	final := readSSEData(t, reader)
@@ -703,8 +694,7 @@ func TestPostSSE_ProgressTokenClearedAfterRequestCompletes(t *testing.T) {
 func TestPostSSE_ResourcesUpdated_SubscribersOnlyAndUpstreamRefCounted(t *testing.T) {
 	t.Parallel()
 
-	port := pickFreePort(t)
-	proxy, ctx := startProxyOnly(t, port)
+	proxy, ctx := startProxyOnly(t)
 
 	var mu sync.Mutex
 	subscribeCalls := map[string]int{}
@@ -739,14 +729,14 @@ func TestPostSSE_ResourcesUpdated_SubscribersOnlyAndUpstreamRefCounted(t *testin
 		}
 	}()
 
-	sessA := establishSession(t, port)
-	sessB := establishSession(t, port)
-	sessC := establishSession(t, port)
-	sessD := establishSession(t, port)
+	sessA := establishSession(t, proxy)
+	sessB := establishSession(t, proxy)
+	sessC := establishSession(t, proxy)
+	sessD := establishSession(t, proxy)
 
-	getA, readerA := openGETStream(ctx, t, port, sessA)
+	getA, readerA := openGETStream(ctx, t, proxy, sessA)
 	t.Cleanup(func() { _ = getA.Body.Close() })
-	getB, readerB := openGETStream(ctx, t, port, sessB)
+	getB, readerB := openGETStream(ctx, t, proxy, sessB)
 	t.Cleanup(func() { _ = getB.Body.Close() })
 
 	require.Eventually(t, func() bool { return proxy.serverStreams.streamCount() == 2 },
@@ -754,12 +744,12 @@ func TestPostSSE_ResourcesUpdated_SubscribersOnlyAndUpstreamRefCounted(t *testin
 
 	subscribe := func(sessID, uri string) {
 		body := fmt.Sprintf(`{"jsonrpc":"2.0","id":"sub-%s","method":"resources/subscribe","params":{"uri":%q}}`, sessID, uri)
-		resp, respBody := postJSON(t, port, sessID, body)
+		resp, respBody := postJSON(t, proxy, sessID, body)
 		require.Equal(t, http.StatusOK, resp.StatusCode, "subscribe must succeed: %s", string(respBody))
 	}
 	unsubscribe := func(sessID, uri string) {
 		body := fmt.Sprintf(`{"jsonrpc":"2.0","id":"unsub-%s","method":"resources/unsubscribe","params":{"uri":%q}}`, sessID, uri)
-		resp, respBody := postJSON(t, port, sessID, body)
+		resp, respBody := postJSON(t, proxy, sessID, body)
 		require.Equal(t, http.StatusOK, resp.StatusCode, "unsubscribe must succeed: %s", string(respBody))
 	}
 
@@ -814,8 +804,7 @@ func TestPostSSE_ResourcesUpdated_SubscribersOnlyAndUpstreamRefCounted(t *testin
 func TestPostSSE_LoggingDroppedAndUpstreamLevelIsMaxAcrossSessions(t *testing.T) {
 	t.Parallel()
 
-	port := pickFreePort(t)
-	proxy, ctx := startProxyOnly(t, port)
+	proxy, ctx := startProxyOnly(t)
 
 	var mu sync.Mutex
 	var observedLevels []string
@@ -844,19 +833,19 @@ func TestPostSSE_LoggingDroppedAndUpstreamLevelIsMaxAcrossSessions(t *testing.T)
 		}
 	}()
 
-	sessA := establishSession(t, port)
-	getA, readerA := openGETStream(ctx, t, port, sessA)
+	sessA := establishSession(t, proxy)
+	getA, readerA := openGETStream(ctx, t, proxy, sessA)
 	t.Cleanup(func() { _ = getA.Body.Close() })
 	require.Eventually(t, func() bool { return proxy.serverStreams.streamCount() == 1 },
 		time.Second, 5*time.Millisecond, "GET stream was not registered")
 
 	setLevel := func(sessID, level string) {
 		body := fmt.Sprintf(`{"jsonrpc":"2.0","id":"lvl-%s","method":"logging/setLevel","params":{"level":%q}}`, sessID, level)
-		resp, respBody := postJSON(t, port, sessID, body)
+		resp, respBody := postJSON(t, proxy, sessID, body)
 		require.Equal(t, http.StatusOK, resp.StatusCode, "setLevel must succeed: %s", string(respBody))
 	}
 
-	sessB := establishSession(t, port)
+	sessB := establishSession(t, proxy)
 
 	// reconcileUpstreamLogLevel runs in a background goroutine (fire-and-forget
 	// from the client's perspective, see its doc comment), so each step below
@@ -910,8 +899,7 @@ func TestPostSSE_LoggingDroppedAndUpstreamLevelIsMaxAcrossSessions(t *testing.T)
 func TestPostSSE_SamplingRequestNeverReachesClientAndBackendGetsError(t *testing.T) {
 	t.Parallel()
 
-	port := pickFreePort(t)
-	proxy, ctx := startProxyOnly(t, port)
+	proxy, ctx := startProxyOnly(t)
 
 	// backendReceivedError captures the rejection response the backend loop
 	// below observes on messageCh, so the test can assert on it without a
@@ -938,8 +926,8 @@ func TestPostSSE_SamplingRequestNeverReachesClientAndBackendGetsError(t *testing
 		}
 	}()
 
-	sessID := establishSession(t, port)
-	getResp, reader := openGETStream(ctx, t, port, sessID)
+	sessID := establishSession(t, proxy)
+	getResp, reader := openGETStream(ctx, t, proxy, sessID)
 	t.Cleanup(func() { _ = getResp.Body.Close() })
 	require.Eventually(t, func() bool { return proxy.serverStreams.streamCount() == 1 },
 		time.Second, 5*time.Millisecond, "GET stream was not registered")
@@ -989,8 +977,7 @@ func TestPostSSE_FailedFirstSubscribeIsNotRecordedAndSecondSubscriberRetries(t *
 
 	const uri = "err-uri"
 
-	port := pickFreePort(t)
-	proxy, ctx := startProxyOnly(t, port)
+	proxy, ctx := startProxyOnly(t)
 
 	var mu sync.Mutex
 	subscribeCalls := 0
@@ -1029,12 +1016,12 @@ func TestPostSSE_FailedFirstSubscribeIsNotRecordedAndSecondSubscriberRetries(t *
 		}
 	}()
 
-	sessA := establishSession(t, port)
-	sessB := establishSession(t, port)
+	sessA := establishSession(t, proxy)
+	sessB := establishSession(t, proxy)
 
 	// (a) sessA's subscribe gets the real backend error back.
 	subBody := fmt.Sprintf(`{"jsonrpc":"2.0","id":"sub-a","method":"resources/subscribe","params":{"uri":%q}}`, uri)
-	respA, bodyA := postJSON(t, port, sessA, subBody)
+	respA, bodyA := postJSON(t, proxy, sessA, subBody)
 	assert.Equal(t, http.StatusOK, respA.StatusCode, "a JSON-RPC error is still an HTTP 200 envelope")
 	assert.Contains(t, string(bodyA), "resource not found", "the client must see the real backend error")
 	assert.Contains(t, string(bodyA), `"error"`)
@@ -1046,7 +1033,7 @@ func TestPostSSE_FailedFirstSubscribeIsNotRecordedAndSecondSubscriberRetries(t *
 	// (c) sessB's subscribe for the SAME uri must actually reach the backend
 	// again (call count 2), not be dedup-served a synthesized success.
 	subBodyB := fmt.Sprintf(`{"jsonrpc":"2.0","id":"sub-b","method":"resources/subscribe","params":{"uri":%q}}`, uri)
-	respB, bodyB := postJSON(t, port, sessB, subBodyB)
+	respB, bodyB := postJSON(t, proxy, sessB, subBodyB)
 	assert.Equal(t, http.StatusOK, respB.StatusCode)
 	assert.NotContains(t, string(bodyB), `"error"`, "sessB's subscribe should succeed against the backend")
 
@@ -1076,8 +1063,7 @@ func TestPostSSE_AuthzDeniedSubscribeNeverRecordedInRouting(t *testing.T) {
 		},
 	}
 
-	port := pickFreePort(t)
-	proxy := NewHTTPProxy("127.0.0.1", port, nil, []types.NamedMiddleware{denyAll})
+	proxy := NewHTTPProxy("127.0.0.1", 0, nil, []types.NamedMiddleware{denyAll})
 	ctx, cancel := context.WithCancel(context.Background())
 	t.Cleanup(cancel)
 	require.NoError(t, proxy.Start(ctx))
@@ -1090,7 +1076,7 @@ func TestPostSSE_AuthzDeniedSubscribeNeverRecordedInRouting(t *testing.T) {
 
 	body := `{"jsonrpc":"2.0","id":"sub-1","method":"resources/subscribe","params":{"uri":"secret-uri"}}`
 	req, err := http.NewRequest(http.MethodPost, //nolint:noctx // test-only
-		fmt.Sprintf("http://127.0.0.1:%d%s", port, StreamableHTTPEndpoint), strings.NewReader(body))
+		"http://"+proxy.Address()+StreamableHTTPEndpoint, strings.NewReader(body))
 	require.NoError(t, err)
 	req.Header.Set("Content-Type", "application/json")
 	req.Header.Set("Mcp-Session-Id", "does-not-matter-authz-denies-first")
@@ -1114,8 +1100,7 @@ func TestPostSSE_AuthzDeniedSubscribeNeverRecordedInRouting(t *testing.T) {
 func TestHandleDelete_PurgesRoutingState(t *testing.T) {
 	t.Parallel()
 
-	port := pickFreePort(t)
-	proxy, ctx := startProxyOnly(t, port)
+	proxy, ctx := startProxyOnly(t)
 	go func() {
 		for {
 			select {
@@ -1130,18 +1115,18 @@ func TestHandleDelete_PurgesRoutingState(t *testing.T) {
 		}
 	}()
 
-	sessID := establishSession(t, port)
-	postJSON(t, port, sessID,
+	sessID := establishSession(t, proxy)
+	postJSON(t, proxy, sessID,
 		`{"jsonrpc":"2.0","id":"sub-1","method":"resources/subscribe","params":{"uri":"uri1"}}`)
 	require.NotEmpty(t, proxy.routing.subscribersOf("uri1"), "subscription must be recorded before delete")
 
-	getResp, _ := openGETStream(ctx, t, port, sessID)
+	getResp, _ := openGETStream(ctx, t, proxy, sessID)
 	t.Cleanup(func() { _ = getResp.Body.Close() })
 	require.Eventually(t, func() bool { return proxy.serverStreams.streamCount() == 1 },
 		time.Second, 5*time.Millisecond, "GET stream was not registered")
 
 	delReq, err := http.NewRequest(http.MethodDelete, //nolint:noctx // test-only
-		fmt.Sprintf("http://127.0.0.1:%d%s", port, StreamableHTTPEndpoint), nil)
+		"http://"+proxy.Address()+StreamableHTTPEndpoint, nil)
 	require.NoError(t, err)
 	delReq.Header.Set("Mcp-Session-Id", sessID)
 	delResp, err := http.DefaultClient.Do(delReq)
@@ -1250,8 +1235,7 @@ func TestPostSSE_ConcurrentLastUnsubscribeAndFirstSubscribe_SameURIAreOrdered(t 
 
 	const uri = "shared-uri"
 
-	port := pickFreePort(t)
-	proxy, ctx := startProxyOnly(t, port)
+	proxy, ctx := startProxyOnly(t)
 
 	var mu sync.Mutex
 	var order []string
@@ -1287,18 +1271,18 @@ func TestPostSSE_ConcurrentLastUnsubscribeAndFirstSubscribe_SameURIAreOrdered(t 
 		}
 	}()
 
-	sessA := establishSession(t, port)
-	sessB := establishSession(t, port)
+	sessA := establishSession(t, proxy)
+	sessB := establishSession(t, proxy)
 
 	// sessB's GET stream is opened up front so it can observe the eventual
 	// resources/updated once it becomes uri's subscriber.
-	getB, readerB := openGETStream(ctx, t, port, sessB)
+	getB, readerB := openGETStream(ctx, t, proxy, sessB)
 	t.Cleanup(func() { _ = getB.Body.Close() })
 	require.Eventually(t, func() bool { return proxy.serverStreams.streamCount() == 1 },
 		time.Second, 5*time.Millisecond, "sessB's GET stream was not registered")
 
 	// Precondition: sessA is the sole (first) subscriber of uri.
-	subA, subABody := postJSON(t, port, sessA,
+	subA, subABody := postJSON(t, proxy, sessA,
 		fmt.Sprintf(`{"jsonrpc":"2.0","id":"sub-a","method":"resources/subscribe","params":{"uri":%q}}`, uri))
 	require.Equal(t, http.StatusOK, subA.StatusCode, "sessA's initial subscribe must succeed: %s", string(subABody))
 	require.ElementsMatch(t, []string{sessA}, proxy.routing.subscribersOf(uri))
@@ -1312,7 +1296,7 @@ func TestPostSSE_ConcurrentLastUnsubscribeAndFirstSubscribe_SameURIAreOrdered(t 
 	unsubDone := make(chan struct{})
 	go func() {
 		defer close(unsubDone)
-		resp, body := postJSON(t, port, sessA,
+		resp, body := postJSON(t, proxy, sessA,
 			fmt.Sprintf(`{"jsonrpc":"2.0","id":"unsub-a","method":"resources/unsubscribe","params":{"uri":%q}}`, uri))
 		assert.Equal(t, http.StatusOK, resp.StatusCode, "sessA's unsubscribe must succeed: %s", string(body))
 	}()
@@ -1330,7 +1314,7 @@ func TestPostSSE_ConcurrentLastUnsubscribeAndFirstSubscribe_SameURIAreOrdered(t 
 	subDone := make(chan struct{})
 	go func() {
 		defer close(subDone)
-		resp, body := postJSON(t, port, sessB,
+		resp, body := postJSON(t, proxy, sessB,
 			fmt.Sprintf(`{"jsonrpc":"2.0","id":"sub-b","method":"resources/subscribe","params":{"uri":%q}}`, uri))
 		assert.Equal(t, http.StatusOK, resp.StatusCode, "sessB's subscribe must succeed: %s", string(body))
 	}()

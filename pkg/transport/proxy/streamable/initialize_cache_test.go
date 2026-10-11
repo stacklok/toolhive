@@ -124,8 +124,7 @@ func strictInitializeResponder() func(*jsonrpc2.Request) jsonrpc2.Message {
 // /mcp endpoint URL.
 func startInitTestProxy(t *testing.T) (*HTTPProxy, string) {
 	t.Helper()
-	port := getFreePort(t)
-	proxy := NewHTTPProxy("localhost", port, nil, nil)
+	proxy := NewHTTPProxy("localhost", 0, nil, nil)
 	require.NoError(t, proxy.Start(t.Context()))
 	t.Cleanup(func() {
 		stopCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
@@ -134,7 +133,7 @@ func startInitTestProxy(t *testing.T) (*HTTPProxy, string) {
 	})
 	// Give the listener a moment to accept connections.
 	time.Sleep(100 * time.Millisecond)
-	return proxy, fmt.Sprintf("http://localhost:%d%s", port, StreamableHTTPEndpoint)
+	return proxy, "http://" + proxy.Address() + StreamableHTTPEndpoint
 }
 
 // postInitialize sends an initialize request and returns the decoded JSON-RPC

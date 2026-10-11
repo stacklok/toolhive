@@ -7,9 +7,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
-	"fmt"
 	"io"
-	"net"
 	"net/http"
 	"runtime"
 	"sync"
@@ -21,14 +19,9 @@ import (
 	"golang.org/x/exp/jsonrpc2"
 )
 
-// getFreePort returns a free port by binding to port 0 and getting the assigned port
-func getFreePort(t *testing.T) int {
-	t.Helper()
-	listener, err := net.Listen("tcp", "127.0.0.1:0")
-	require.NoError(t, err)
-	defer listener.Close()
-	return listener.Addr().(*net.TCPAddr).Port
-}
+// No port-probe helper here: proxies bind port 0 (OS-assigned) and callers
+// read the real address from Address(), avoiding the bind-close-rebind race
+// that a getFreePort-style helper cannot (see #6045/#6034).
 
 // TestHTTPRequestIgnoresNotifications tests that HTTP requests ignore notifications
 // and only return the actual response. This addresses the fix for issue #1568.
@@ -36,8 +29,7 @@ func getFreePort(t *testing.T) int {
 //nolint:paralleltest // Test starts HTTP server
 func TestHTTPRequestIgnoresNotifications(t *testing.T) {
 	// Get an available port dynamically
-	port := getFreePort(t)
-	proxy := NewHTTPProxy("localhost", port, nil, nil)
+	proxy := NewHTTPProxy("localhost", 0, nil, nil)
 	ctx := t.Context()
 
 	// Start the proxy server
@@ -70,7 +62,7 @@ func TestHTTPRequestIgnoresNotifications(t *testing.T) {
 		}
 	}()
 
-	proxyURL := fmt.Sprintf("http://localhost:%d%s", port, StreamableHTTPEndpoint)
+	proxyURL := "http://" + proxy.Address() + StreamableHTTPEndpoint
 
 	// Test single request
 	requestJSON := `{"jsonrpc": "2.0", "method": "test.method", "id": "req-123"}`
@@ -118,8 +110,7 @@ func TestHTTPProxy_StartMountsAuthDiscoveryEndpoint(t *testing.T) {
 		_, _ = w.Write([]byte(wantBody))
 	})
 
-	port := getFreePort(t)
-	proxy := NewHTTPProxy("localhost", port, nil, nil, WithAuthInfoHandler(sentinel))
+	proxy := NewHTTPProxy("localhost", 0, nil, nil, WithAuthInfoHandler(sentinel))
 	ctx := t.Context()
 
 	require.NoError(t, proxy.Start(ctx))
@@ -130,7 +121,7 @@ func TestHTTPProxy_StartMountsAuthDiscoveryEndpoint(t *testing.T) {
 	})
 
 	// streamable Start() returns before the goroutine binds — poll until ready.
-	url := fmt.Sprintf("http://localhost:%d/.well-known/oauth-protected-resource", port)
+	url := "http://" + proxy.Address() + "/.well-known/oauth-protected-resource"
 	var resp *http.Response
 	require.Eventually(t, func() bool {
 		var err error
@@ -177,12 +168,11 @@ func syncMapLen(m *sync.Map) int {
 //
 //nolint:paralleltest // reads process-wide runtime.NumGoroutine() as a baseline and starts an HTTP proxy; must run serially
 func TestModernLoadDoesNotAccumulateState(t *testing.T) {
-	port := pickFreePort(t)
-	proxy, ctx, cancel := startProxyWithBackend(t, port)
+	proxy, ctx, cancel := startProxyWithBackend(t)
 	t.Cleanup(cancel)
 	t.Cleanup(func() { _ = proxy.Stop(ctx) })
 
-	url := fmt.Sprintf("http://127.0.0.1:%d%s", port, StreamableHTTPEndpoint)
+	url := "http://" + proxy.Address() + StreamableHTTPEndpoint
 
 	const requestCount = 1000
 	// Cap in-flight requests well under the proxy's 100-slot message-channel

@@ -46,6 +46,7 @@ import (
 	"github.com/stacklok/toolhive/cmd/thv-operator/pkg/validation"
 	"github.com/stacklok/toolhive/pkg/auth/obo"
 	"github.com/stacklok/toolhive/pkg/container/kubernetes"
+	"github.com/stacklok/toolhive/pkg/diagnostics"
 	"github.com/stacklok/toolhive/pkg/transport"
 	"github.com/stacklok/toolhive/pkg/transport/session"
 )
@@ -1180,7 +1181,51 @@ func proxySchedulingNeedsUpdate(
 
 // deploymentForMCPServer returns a MCPServer Deployment object
 //
+// metricsContainerPortName is the name of the named container port through
+// which a PodMonitor can target the diagnostics metrics listener. It is only
+// declared when the referenced MCPTelemetryConfig enables Prometheus metrics.
+//
 //nolint:gocyclo
+const metricsContainerPortName = "metrics"
+
+// prometheusMetricsEnabled reports whether the referenced MCPTelemetryConfig
+// turns on the Prometheus metrics endpoint that the diagnostics listener serves.
+func prometheusMetricsEnabled(telCfg *mcpv1beta1.MCPTelemetryConfig) bool {
+	return telCfg != nil && telCfg.Spec.Prometheus != nil && telCfg.Spec.Prometheus.Enabled
+}
+
+// hasMetricsPort reports whether the container's declared ports include the
+// named "metrics" port.
+func hasMetricsPort(ports []corev1.ContainerPort) bool {
+	for _, p := range ports {
+		if p.Name == metricsContainerPortName {
+			return true
+		}
+	}
+	return false
+}
+
+// proxyContainerPorts returns the proxy container's declared ports. The
+// "metrics" port is added only when Prometheus metrics are enabled, pointing at
+// the diagnostics listener's default port (9464, the OpenTelemetry default;
+// the operator does not expose a configurable metrics port). Declaring it by
+// name lets a PodMonitor select it without hardcoding the port number (#6434).
+func proxyContainerPorts(proxyPort int32, metricsEnabled bool) []corev1.ContainerPort {
+	ports := []corev1.ContainerPort{{
+		ContainerPort: proxyPort,
+		Name:          "http",
+		Protocol:      corev1.ProtocolTCP,
+	}}
+	if metricsEnabled {
+		ports = append(ports, corev1.ContainerPort{
+			ContainerPort: int32(diagnostics.DefaultPort),
+			Name:          metricsContainerPortName,
+			Protocol:      corev1.ProtocolTCP,
+		})
+	}
+	return ports
+}
+
 func (r *MCPServerReconciler) deploymentForMCPServer(
 	ctx context.Context, m *mcpv1beta1.MCPServer, runConfigChecksum string,
 ) (*appsv1.Deployment, error) {
@@ -1249,6 +1294,12 @@ func (r *MCPServerReconciler) deploymentForMCPServer(
 	// Prepare container env vars for the proxy container
 	env := []corev1.EnvVar{}
 
+	// metricsEnabled mirrors whether the referenced MCPTelemetryConfig turns on
+	// the Prometheus metrics endpoint. When it is on, the pod declares a named
+	// "metrics" container port below so a PodMonitor can target the diagnostics
+	// listener by name rather than by number (see #6434).
+	metricsEnabled := false
+
 	// Add OpenTelemetry environment variables: prefer TelemetryConfigRef over deprecated inline.
 	// handleTelemetryConfig already validated this ref earlier in the reconcile loop;
 	// a failure here means a transient issue, so we log a warning and proceed without
@@ -1261,6 +1312,7 @@ func (r *MCPServerReconciler) deploymentForMCPServer(
 				"telemetryConfig", m.Spec.TelemetryConfigRef.Name, "error", telErr)
 		} else if telCfg != nil {
 			env = append(env, ctrlutil.GenerateOpenTelemetryEnvVarsFromRef(telCfg, m.Spec.TelemetryConfigRef, m.Name, m.Namespace)...)
+			metricsEnabled = prometheusMetricsEnabled(telCfg)
 		}
 	}
 
@@ -1562,11 +1614,7 @@ func (r *MCPServerReconciler) deploymentForMCPServer(
 						Env:          env,
 						VolumeMounts: volumeMounts,
 						Resources:    resources,
-						Ports: []corev1.ContainerPort{{
-							ContainerPort: m.GetProxyPort(),
-							Name:          "http",
-							Protocol:      corev1.ProtocolTCP,
-						}},
+						Ports:        proxyContainerPorts(m.GetProxyPort(), metricsEnabled),
 						StartupProbe: &corev1.Probe{
 							ProbeHandler: corev1.ProbeHandler{
 								HTTPGet: &corev1.HTTPGetAction{
@@ -1961,6 +2009,16 @@ func (r *MCPServerReconciler) deploymentNeedsUpdate(
 				)
 				expectedProxyEnv = append(expectedProxyEnv, otelEnvVars...)
 			}
+
+			// The named "metrics" port must track the Prometheus-enabled state so
+			// enabling/disabling metrics reconciles the Deployment (see #6434).
+			if hasMetricsPort(container.Ports) != prometheusMetricsEnabled(telCfg) {
+				return true
+			}
+		} else if hasMetricsPort(container.Ports) {
+			// No telemetry config means metrics are off; a lingering metrics port
+			// (e.g. the ref was removed) must be reconciled away.
+			return true
 		}
 
 		// Add token exchange environment variables

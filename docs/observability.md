@@ -243,6 +243,12 @@ Port selection:
   one machine, for example) an available port is chosen instead. The resolved
   address is logged at startup.
 
+Under the Kubernetes operator, workloads do not expose `prometheusPort`: when the
+referenced `MCPTelemetryConfig` enables Prometheus, the pod declares a container
+port named `metrics` on the diagnostics port (`9464`) so a `PodMonitor` can target
+it by name instead of hardcoding the number. It is a pod-level declaration only —
+the operator deliberately does not add it to any `Service`, per the guidance below.
+
 #### Finding the endpoint after an upgrade
 
 If metrics stopped arriving after an upgrade, the endpoint moved off the transport

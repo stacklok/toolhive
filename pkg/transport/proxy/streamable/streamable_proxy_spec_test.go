@@ -9,7 +9,6 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
-	"net"
 	"net/http"
 	"net/http/httptest"
 	"testing"
@@ -21,12 +20,13 @@ import (
 	"golang.org/x/exp/jsonrpc2"
 )
 
-// startProxyWithBackend starts an HTTP proxy on the given port and a simple backend goroutine
-// that responds to JSON-RPC requests by echoing a minimal success result.
-func startProxyWithBackend(t *testing.T, port int, observers ...func(jsonrpc2.Message)) (*HTTPProxy, context.Context, context.CancelFunc) {
+// startProxyWithBackend starts an HTTP proxy on an OS-assigned port (port 0)
+// and a simple backend goroutine that responds to JSON-RPC requests by echoing
+// a minimal success result. The bound address is available via Address().
+func startProxyWithBackend(t *testing.T, observers ...func(jsonrpc2.Message)) (*HTTPProxy, context.Context, context.CancelFunc) {
 	t.Helper()
 
-	proxy := NewHTTPProxy("127.0.0.1", port, nil, nil)
+	proxy := NewHTTPProxy("127.0.0.1", 0, nil, nil)
 	ctx, cancel := context.WithCancel(context.Background())
 
 	require.NoError(t, proxy.Start(ctx), "proxy start")
@@ -88,12 +88,11 @@ func TestGETReturns405WhenStandaloneSSEDisabled(t *testing.T) {
 func TestDeleteTerminatesSession(t *testing.T) {
 	t.Parallel()
 
-	const port = 8102
-	proxy, ctx, cancel := startProxyWithBackend(t, port)
+	proxy, ctx, cancel := startProxyWithBackend(t)
 	defer cancel()
 	defer func() { _ = proxy.Stop(ctx) }()
 
-	url := "http://127.0.0.1:8102" + StreamableHTTPEndpoint
+	url := "http://" + proxy.Address() + StreamableHTTPEndpoint
 
 	// Initialize without session header - server should assign one in response header
 	initJSON := `{"jsonrpc":"2.0","id":"1","method":"initialize","params":{"protocolVersion":"2025-03-26","clientInfo":{"name":"spec-test","version":"0.0.0"},"capabilities":{}}}`
@@ -133,12 +132,11 @@ func TestDeleteTerminatesSession(t *testing.T) {
 func TestInitializeSetsSessionHeader(t *testing.T) {
 	t.Parallel()
 
-	const port = 8103
-	proxy, ctx, cancel := startProxyWithBackend(t, port)
+	proxy, ctx, cancel := startProxyWithBackend(t)
 	defer cancel()
 	defer func() { _ = proxy.Stop(ctx) }()
 
-	url := "http://127.0.0.1:8103" + StreamableHTTPEndpoint
+	url := "http://" + proxy.Address() + StreamableHTTPEndpoint
 
 	initJSON := `{"jsonrpc":"2.0","id":"1","method":"initialize","params":{"protocolVersion":"2025-03-26","clientInfo":{"name":"spec-test","version":"0.0.0"},"capabilities":{}}}`
 	resp, err := http.Post(url, "application/json", bytes.NewReader([]byte(initJSON)))
@@ -287,12 +285,11 @@ func TestBatchRequestsRejected(t *testing.T) {
 func TestDeleteUnknownSessionReturnsJSONRPCError(t *testing.T) {
 	t.Parallel()
 
-	const port = 8107
-	proxy, ctx, cancel := startProxyWithBackend(t, port)
+	proxy, ctx, cancel := startProxyWithBackend(t)
 	defer cancel()
 	defer func() { _ = proxy.Stop(ctx) }()
 
-	url := "http://127.0.0.1:8107" + StreamableHTTPEndpoint
+	url := "http://" + proxy.Address() + StreamableHTTPEndpoint
 
 	delReq, _ := http.NewRequest(http.MethodDelete, url, nil)
 	delReq.Header.Set("Mcp-Session-Id", "bogus-session-id")
@@ -320,12 +317,11 @@ func TestDeleteUnknownSessionReturnsJSONRPCError(t *testing.T) {
 func TestSingleRequestWithStaleSessionIncludesRequestID(t *testing.T) {
 	t.Parallel()
 
-	const port = 8109
-	proxy, ctx, cancel := startProxyWithBackend(t, port)
+	proxy, ctx, cancel := startProxyWithBackend(t)
 	defer cancel()
 	defer func() { _ = proxy.Stop(ctx) }()
 
-	url := "http://127.0.0.1:8109" + StreamableHTTPEndpoint
+	url := "http://" + proxy.Address() + StreamableHTTPEndpoint
 
 	reqJSON := `{"jsonrpc":"2.0","id":"test-42","method":"tools/list","params":{}}`
 	req, _ := http.NewRequest(http.MethodPost, url, bytes.NewReader([]byte(reqJSON)))
@@ -352,12 +348,11 @@ func TestSingleRequestWithStaleSessionIncludesRequestID(t *testing.T) {
 func TestSSEResponseIncludesEventMessage(t *testing.T) {
 	t.Parallel()
 
-	port := pickFreePort(t)
-	proxy, ctx, cancel := startProxyWithBackend(t, port)
+	proxy, ctx, cancel := startProxyWithBackend(t)
 	t.Cleanup(cancel)
 	t.Cleanup(func() { _ = proxy.Stop(ctx) })
 
-	url := fmt.Sprintf("http://127.0.0.1:%d%s", port, StreamableHTTPEndpoint)
+	url := "http://" + proxy.Address() + StreamableHTTPEndpoint
 	body := `{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2025-11-25","capabilities":{},"clientInfo":{"name":"sse-event-test","version":"1.0"}}}`
 
 	req, err := http.NewRequest(http.MethodPost, url, bytes.NewReader([]byte(body)))
@@ -406,17 +401,9 @@ func TestSSEErrorEventIncludesEventMessage(t *testing.T) {
 	assert.Contains(t, got, `"Timeout"`)
 }
 
-// pickFreePort returns a TCP port the OS reports as available. There is a small
-// race window before the proxy binds it, but that is the same pattern other
-// streamable tests follow and is acceptable here.
-func pickFreePort(t *testing.T) int {
-	t.Helper()
-	l, err := net.Listen("tcp", "127.0.0.1:0")
-	require.NoError(t, err)
-	port := l.Addr().(*net.TCPAddr).Port
-	require.NoError(t, l.Close())
-	return port
-}
+// No port-probe helper here: proxies bind port 0 (OS-assigned) and callers
+// read the real address from Address(), avoiding the bind-close-rebind race
+// that a getFreePort-style helper cannot (see #6045/#6034).
 
 // TestSessionlessConcurrentRequestsAreNotMixed verifies that two concurrent
 // sessionless POSTs sharing a JSON-RPC id each receive their own response
@@ -433,8 +420,7 @@ func TestSessionlessConcurrentRequestsAreNotMixed(t *testing.T) {
 	// default, when the bug regresses.
 	t.Setenv(proxyRequestTimeoutEnv, "3s")
 
-	port := pickFreePort(t)
-	proxy := NewHTTPProxy("127.0.0.1", port, nil, nil)
+	proxy := NewHTTPProxy("127.0.0.1", 0, nil, nil)
 	ctx, cancel := context.WithCancel(context.Background())
 	t.Cleanup(cancel)
 	require.NoError(t, proxy.Start(ctx))
@@ -466,7 +452,7 @@ func TestSessionlessConcurrentRequestsAreNotMixed(t *testing.T) {
 		}
 	}()
 
-	url := fmt.Sprintf("http://127.0.0.1:%d%s", port, StreamableHTTPEndpoint)
+	url := "http://" + proxy.Address() + StreamableHTTPEndpoint
 
 	type result struct {
 		method string

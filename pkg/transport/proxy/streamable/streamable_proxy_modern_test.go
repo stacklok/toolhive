@@ -50,8 +50,7 @@ func modernBody(id int, method string) string {
 func TestModernConcurrentRequestsAreNotMixed(t *testing.T) {
 	t.Setenv(proxyRequestTimeoutEnv, "3s")
 
-	port := pickFreePort(t)
-	proxy := NewHTTPProxy("127.0.0.1", port, nil, nil)
+	proxy := NewHTTPProxy("127.0.0.1", 0, nil, nil)
 	ctx, cancel := context.WithCancel(context.Background())
 	t.Cleanup(cancel)
 	require.NoError(t, proxy.Start(ctx))
@@ -82,7 +81,7 @@ func TestModernConcurrentRequestsAreNotMixed(t *testing.T) {
 		}
 	}()
 
-	url := fmt.Sprintf("http://127.0.0.1:%d%s", port, StreamableHTTPEndpoint)
+	url := "http://" + proxy.Address() + StreamableHTTPEndpoint
 
 	type result struct {
 		method string
@@ -151,12 +150,11 @@ func TestModernConcurrentRequestsAreNotMixed(t *testing.T) {
 func TestModernRequestIgnoresClientSessionID(t *testing.T) {
 	t.Parallel()
 
-	port := pickFreePort(t)
-	proxy, ctx, cancel := startProxyWithBackend(t, port)
+	proxy, ctx, cancel := startProxyWithBackend(t)
 	t.Cleanup(cancel)
 	t.Cleanup(func() { _ = proxy.Stop(ctx) })
 
-	url := fmt.Sprintf("http://127.0.0.1:%d%s", port, StreamableHTTPEndpoint)
+	url := "http://" + proxy.Address() + StreamableHTTPEndpoint
 
 	const bogusSession = "bogus-session-id"
 	req, err := http.NewRequest(
@@ -238,12 +236,11 @@ func TestModernNeverReusesClientSessionIDAsRoutingToken(t *testing.T) {
 func TestModernClassificationErrorsReturn400(t *testing.T) {
 	t.Parallel()
 
-	port := pickFreePort(t)
-	proxy, ctx, cancel := startProxyWithBackend(t, port)
+	proxy, ctx, cancel := startProxyWithBackend(t)
 	t.Cleanup(cancel)
 	t.Cleanup(func() { _ = proxy.Stop(ctx) })
 
-	url := fmt.Sprintf("http://127.0.0.1:%d%s", port, StreamableHTTPEndpoint)
+	url := "http://" + proxy.Address() + StreamableHTTPEndpoint
 
 	tests := []struct {
 		name        string

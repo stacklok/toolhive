@@ -5,7 +5,6 @@ package streamable
 
 import (
 	"context"
-	"fmt"
 	"io"
 	"net/http"
 	"strings"
@@ -26,8 +25,7 @@ func TestAdmissionStreamableClientResponses(t *testing.T) {
 			ctx, cancel := context.WithTimeout(t.Context(), 5*time.Second)
 			t.Cleanup(cancel)
 			forwarded := make(chan *jsonrpc2.Response, 1)
-			port := pickFreePort(t)
-			_, _, stop := startProxyWithBackend(t, port, func(msg jsonrpc2.Message) {
+			proxy, _, stop := startProxyWithBackend(t, func(msg jsonrpc2.Message) {
 				if response, ok := msg.(*jsonrpc2.Response); ok {
 					select {
 					case forwarded <- response:
@@ -36,7 +34,7 @@ func TestAdmissionStreamableClientResponses(t *testing.T) {
 				}
 			})
 			t.Cleanup(stop)
-			target := fmt.Sprintf("http://127.0.0.1:%d%s", port, StreamableHTTPEndpoint)
+			target := "http://" + proxy.Address() + StreamableHTTPEndpoint
 			send := func(body, sid string) *http.Response {
 				t.Helper()
 				req, err := http.NewRequestWithContext(ctx, http.MethodPost, target, strings.NewReader(body))
@@ -95,11 +93,10 @@ func TestAdmissionStandaloneStreamable(t *testing.T) {
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			t.Parallel()
-			port := pickFreePort(t)
 			var calls atomic.Int32
-			_, _, stop := startProxyWithBackend(t, port, func(jsonrpc2.Message) { calls.Add(1) })
+			proxy, _, stop := startProxyWithBackend(t, func(jsonrpc2.Message) { calls.Add(1) })
 			t.Cleanup(stop)
-			target := fmt.Sprintf("http://127.0.0.1:%d%s", port, StreamableHTTPEndpoint)
+			target := "http://" + proxy.Address() + StreamableHTTPEndpoint
 			ctx, cancel := context.WithTimeout(t.Context(), 5*time.Second)
 			defer cancel()
 			req, err := http.NewRequestWithContext(ctx, http.MethodPost, target, strings.NewReader(tc.body))

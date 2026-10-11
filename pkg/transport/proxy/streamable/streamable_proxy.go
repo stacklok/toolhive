@@ -12,6 +12,7 @@ import (
 	"io"
 	"log/slog"
 	"maps"
+	"net"
 	"net/http"
 	"os"
 	"strings"
@@ -28,6 +29,7 @@ import (
 	"github.com/stacklok/toolhive/pkg/diagnostics"
 	"github.com/stacklok/toolhive/pkg/healthcheck"
 	"github.com/stacklok/toolhive/pkg/mcp"
+	"github.com/stacklok/toolhive/pkg/transport/proxy/socket"
 	"github.com/stacklok/toolhive/pkg/transport/session"
 	"github.com/stacklok/toolhive/pkg/transport/types"
 )
@@ -305,6 +307,22 @@ func (p *HTTPProxy) Start(_ context.Context) error {
 		ReadTimeout:       p.readTimeout,
 	}
 
+	// With port 0 (OS-assigned), bind synchronously so the actual address is
+	// known as soon as Start returns; Address() reports it. This is what lets
+	// callers hand the proxy port 0 and read the bound address back instead of
+	// probing a port with a separate bind-close-rebind cycle, which races (#6045).
+	// Explicitly configured ports keep their ListenAndServe behaviour.
+	var listener net.Listener
+	if p.port == 0 {
+		var err error
+		lc := socket.ListenConfig()
+		listener, err = lc.Listen(context.Background(), "tcp", net.JoinHostPort(p.host, "0"))
+		if err != nil {
+			return fmt.Errorf("failed to create listener: %w", err)
+		}
+		p.server.Addr = listener.Addr().String()
+	}
+
 	// Route container responses to matching waiter channels
 	go p.dispatchResponses()
 
@@ -317,8 +335,14 @@ func (p *HTTPProxy) Start(_ context.Context) error {
 		slog.Debug("streamable HTTP proxy started", "port", p.port)
 		//nolint:gosec // G706: logging configured host and port
 		slog.Debug("streamable HTTP endpoint",
-			"url", fmt.Sprintf("http://%s:%d%s", p.host, p.port, StreamableHTTPEndpoint))
-		if err := p.server.ListenAndServe(); err != nil && !errors.Is(err, http.ErrServerClosed) {
+			"url", fmt.Sprintf("http://%s%s", p.server.Addr, StreamableHTTPEndpoint))
+		var err error
+		if listener != nil {
+			err = p.server.Serve(listener)
+		} else {
+			err = p.server.ListenAndServe()
+		}
+		if err != nil && !errors.Is(err, http.ErrServerClosed) {
 			slog.Error("streamable HTTP server error", "error", err)
 		}
 	}()
@@ -363,6 +387,17 @@ func (p *HTTPProxy) IsRunning() (bool, error) {
 	default:
 		return true, nil
 	}
+}
+
+// Address returns the bound "host:port" of the HTTP server. With port 0 the
+// listener is bound before Start returns, so the actual address is available
+// immediately after a successful Start rather than after an arbitrary wait.
+// Returns empty before Start.
+func (p *HTTPProxy) Address() string {
+	if p.server == nil {
+		return ""
+	}
+	return p.server.Addr
 }
 
 // GetMessageChannel returns the message channel for sending JSON-RPC to the container.

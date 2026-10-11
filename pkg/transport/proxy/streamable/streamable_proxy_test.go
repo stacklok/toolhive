@@ -232,8 +232,7 @@ func TestNewHTTPProxy_AuthInfoHandlerMounted(t *testing.T) {
 		w.WriteHeader(http.StatusOK)
 	})
 
-	port := getFreePort(t)
-	proxy := NewHTTPProxy("localhost", port, nil, nil, WithAuthInfoHandler(sentinel))
+	proxy := NewHTTPProxy("localhost", 0, nil, nil, WithAuthInfoHandler(sentinel))
 	ctx := t.Context()
 
 	require.NoError(t, proxy.Start(ctx))
@@ -244,7 +243,7 @@ func TestNewHTTPProxy_AuthInfoHandlerMounted(t *testing.T) {
 	})
 
 	// Poll until server is ready (max 500 ms).
-	url := fmt.Sprintf("http://localhost:%d/.well-known/oauth-protected-resource", port)
+	url := "http://" + proxy.Address() + "/.well-known/oauth-protected-resource"
 	var resp *http.Response
 	require.Eventually(t, func() bool {
 		var err error
@@ -261,8 +260,7 @@ func TestNewHTTPProxy_AuthInfoHandlerMounted(t *testing.T) {
 //
 //nolint:paralleltest // Test starts/stops HTTP server
 func TestNewHTTPProxy_AuthInfoHandlerNil(t *testing.T) {
-	port := getFreePort(t)
-	proxy := NewHTTPProxy("localhost", port, nil, nil) // no WithAuthInfoHandler
+	proxy := NewHTTPProxy("localhost", 0, nil, nil) // no WithAuthInfoHandler
 	ctx := t.Context()
 
 	require.NoError(t, proxy.Start(ctx))
@@ -272,7 +270,7 @@ func TestNewHTTPProxy_AuthInfoHandlerNil(t *testing.T) {
 		_ = proxy.Stop(stopCtx)
 	})
 
-	url := fmt.Sprintf("http://localhost:%d/.well-known/oauth-protected-resource", port)
+	url := "http://" + proxy.Address() + "/.well-known/oauth-protected-resource"
 	var resp *http.Response
 	require.Eventually(t, func() bool {
 		var err error
@@ -295,8 +293,7 @@ func TestNewHTTPProxy_PrefixHandlerMounted(t *testing.T) {
 		w.WriteHeader(http.StatusOK)
 	})
 
-	port := getFreePort(t)
-	proxy := NewHTTPProxy("localhost", port, nil, nil,
+	proxy := NewHTTPProxy("localhost", 0, nil, nil,
 		WithPrefixHandlers(map[string]http.Handler{"/oauth/token": sentinel}),
 	)
 	ctx := t.Context()
@@ -308,7 +305,7 @@ func TestNewHTTPProxy_PrefixHandlerMounted(t *testing.T) {
 		_ = proxy.Stop(stopCtx)
 	})
 
-	url := fmt.Sprintf("http://localhost:%d/oauth/token", port)
+	url := "http://" + proxy.Address() + "/oauth/token"
 	var resp *http.Response
 	require.Eventually(t, func() bool {
 		var err error
@@ -329,8 +326,7 @@ func TestNewHTTPProxy_PrefixHandlerDoesNotShadowMCP(t *testing.T) {
 		w.WriteHeader(http.StatusOK)
 	})
 
-	port := getFreePort(t)
-	proxy := NewHTTPProxy("localhost", port, nil, nil,
+	proxy := NewHTTPProxy("localhost", 0, nil, nil,
 		WithPrefixHandlers(map[string]http.Handler{"/oauth/token": sentinel}),
 		WithStandaloneSSE(false), // keep the 405 GET response so this test terminates promptly
 	)
@@ -345,7 +341,7 @@ func TestNewHTTPProxy_PrefixHandlerDoesNotShadowMCP(t *testing.T) {
 
 	// /mcp returns 405 for GET (only POST is accepted), which proves the
 	// endpoint is registered — a missing route would be 404.
-	url := fmt.Sprintf("http://localhost:%d%s", port, StreamableHTTPEndpoint)
+	url := "http://" + proxy.Address() + StreamableHTTPEndpoint
 	var resp *http.Response
 	require.Eventually(t, func() bool {
 		var err error
@@ -371,8 +367,7 @@ func TestNewHTTPProxy_ExactWellKnownBeatsSubtree(t *testing.T) {
 		w.WriteHeader(http.StatusOK)
 	})
 
-	port := getFreePort(t)
-	proxy := NewHTTPProxy("localhost", port, nil, nil,
+	proxy := NewHTTPProxy("localhost", 0, nil, nil,
 		WithPrefixHandlers(map[string]http.Handler{"/.well-known/openid-configuration": oidcHandler}),
 		WithAuthInfoHandler(prmHandler),
 	)
@@ -386,7 +381,7 @@ func TestNewHTTPProxy_ExactWellKnownBeatsSubtree(t *testing.T) {
 	})
 
 	// Poll until server is ready.
-	oidcURL := fmt.Sprintf("http://localhost:%d/.well-known/openid-configuration", port)
+	oidcURL := "http://" + proxy.Address() + "/.well-known/openid-configuration"
 	var resp *http.Response
 	require.Eventually(t, func() bool {
 		var err error
@@ -397,7 +392,7 @@ func TestNewHTTPProxy_ExactWellKnownBeatsSubtree(t *testing.T) {
 
 	assert.Equal(t, http.StatusTeapot, resp.StatusCode, "exact /.well-known/openid-configuration must win")
 
-	prmURL := fmt.Sprintf("http://localhost:%d/.well-known/oauth-protected-resource", port)
+	prmURL := "http://" + proxy.Address() + "/.well-known/oauth-protected-resource"
 	resp2, err := http.Get(prmURL) //nolint:gosec // test-only URL construction
 	require.NoError(t, err)
 	defer resp2.Body.Close()

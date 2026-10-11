@@ -48,12 +48,11 @@ func (lr *lockRegistry) CleanupAll() {
 	defer lr.mu.Unlock()
 
 	for lockPath, lock := range lr.locks {
-		if err := lock.Unlock(); err != nil && !os.IsNotExist(err) {
-			slog.Warn("failed to unlock file", "path", lockPath, "error", err)
-		}
-
 		if err := os.Remove(lockPath); err != nil && !os.IsNotExist(err) {
 			slog.Warn("failed to remove lock file", "path", lockPath, "error", err)
+		}
+		if err := lock.Unlock(); err != nil && !os.IsNotExist(err) {
+			slog.Warn("failed to unlock file", "path", lockPath, "error", err)
 		}
 	}
 
@@ -178,12 +177,13 @@ func CleanupStaleLocks(directories []string, maxAge time.Duration) {
 				lock := flock.New(lockFile)
 				if locked, err := lock.TryLock(); err == nil && locked {
 					// Lock was acquired, so it was stale
+					if err := os.Remove(lockFile); err != nil && !os.IsNotExist(err) {
+						slog.Warn("failed to remove stale lock file", "path", lockFile, "error", err)
+					}
 					if err := lock.Unlock(); err != nil && !os.IsNotExist(err) {
 						slog.Warn("failed to unlock stale lock file", "path", lockFile, "error", err)
 					}
-					if err := os.Remove(lockFile); err != nil && !os.IsNotExist(err) {
-						slog.Warn("failed to remove stale lock file", "path", lockFile, "error", err)
-					} else {
+					if err == nil || os.IsNotExist(err) {
 						slog.Debug("removed stale lock file", "path", lockFile)
 					}
 				}

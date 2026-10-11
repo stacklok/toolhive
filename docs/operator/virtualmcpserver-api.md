@@ -193,6 +193,38 @@ spec:
   - `externalAuthConfigRef`: Reference an MCPExternalAuthConfig resource
 - `externalAuthConfigRef` (ExternalAuthConfigRef, optional): Auth config reference (when type=externalAuthConfigRef)
 
+#### Subject provider fallback per strategy
+
+The strategies that act on a calling user's token differ in how they treat a
+missing subject provider. A **subject provider** is the upstream whose stored
+credential is presented to the backend instead of the raw presented token; it
+is selected with `subjectProviderName` on the strategy configuration.
+
+The vMCP server auto-populates an unset `subjectProviderName` for
+`token_exchange`, `aws_sts`, and `xaa` when an embedded authorization server is
+active and at least one upstream is configured, defaulting to the first
+upstream. `xaa` is stricter: when multiple upstreams are configured and it has
+no explicit pin, it fails at startup with `ErrAmbiguousSubjectProvider` instead
+of guessing (only `xaa`, which has no legacy deployments to break); the other
+two keep defaulting silently. The table below describes the runtime behavior
+when `subjectProviderName` is left empty (no embedded auth server, or the field
+was explicitly cleared):
+
+| Strategy | Selector field | When absent |
+| --- | --- | --- |
+| `xaa` | `subjectProviderName` | **Hard-fails** on the first call with `ErrUpstreamTokenNotFound` naming the configured provider. The stored upstream ID token it needs is only ever populated by a login flow, so this strategy cannot work from a presented (delegated) token alone. |
+| `aws_sts` | `subjectProviderName` | Falls back to the raw presented token (`identity.Token`). The same strategy also reads inbound claims to select which IAM role to assume, so this is the one strategy where inbound claims are authority-bearing *and* the presented token is accepted directly. |
+| `token_exchange` | `subjectProviderName` | Falls back to the raw presented token. |
+| `upstream_inject` | `providerName` (in `UpstreamInject`) | **Hard-fails** — the injected token comes from the named provider's stored credentials and there is no fallback. |
+
+Strategies that do not consult a subject provider at all (`header_injection`,
+`unauthenticated`, `obo`) are unaffected.
+
+In practice this means: if a deployment must accept a foreign-issuer (delegated)
+token and no upstream is pinned, `aws_sts` and `token_exchange` are the paths
+that work — using `xaa` or `upstream_inject` will fail at runtime until a
+provider is configured.
+
 ### `.spec.passthroughHeaders` (optional)
 
 Allowlist of incoming client request headers forwarded verbatim to every

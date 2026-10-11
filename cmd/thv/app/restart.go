@@ -6,6 +6,7 @@ package app
 import (
 	"context"
 	"fmt"
+	"strings"
 
 	"github.com/spf13/cobra"
 
@@ -42,6 +43,25 @@ func init() {
 	restartCmd.MarkFlagsMutuallyExclusive("all", "group")
 
 	restartCmd.PreRunE = validateGroupFlag()
+
+	// Improve the generic "unknown flag" error: `thv start`/`thv restart` resume
+	// a workload from its saved configuration and cannot apply run-time flags,
+	// which is easy to miss when coming from `thv run`.
+	restartCmd.SetFlagErrorFunc(func(_ *cobra.Command, err error) error {
+		return unknownFlagError(err)
+	})
+}
+
+// unknownFlagError augments cobra's generic "unknown flag" error on commands
+// that resume a saved workload with a hint about where run-time flags belong.
+// Other flag errors (e.g. mutually-exclusive flags) are returned unchanged.
+func unknownFlagError(err error) error {
+	msg := err.Error()
+	if !strings.HasPrefix(msg, "unknown flag") && !strings.HasPrefix(msg, "unknown shorthand flag") {
+		return err
+	}
+	return fmt.Errorf("%w\nHint: 'thv start'/'thv restart' resume a workload from its saved configuration and do not accept run-time flags. "+
+		"To change a workload's configuration, remove and re-run it: 'thv rm <name>' then 'thv run <name> <flags>'", err)
 }
 
 func restartCmdFunc(cmd *cobra.Command, args []string) error {

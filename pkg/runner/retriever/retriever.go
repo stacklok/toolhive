@@ -245,12 +245,29 @@ func handleRegistryLookup(
 			imageToUse = serverOrImage
 		}
 	} else {
-		// Server not found in registry, treat as a direct image reference
-		slog.Debug("Server not found in registry", "server", serverOrImage, "error", err)
+		// A genuine not-found is expected when the caller passed a literal
+		// image reference, so keep it at debug level. Any other failure
+		// (parse error, network/API error, ambiguous short-name match) is
+		// swallowed by the image-reference fallback, so surface it instead
+		// of leaving the user to debug a misleading image-pull error.
+		logRegistryLookupFallback(slog.Default(), serverOrImage, err)
 		imageToUse = serverOrImage
 	}
 
 	return imageToUse, imageMetadata, nil, nil
+}
+
+// logRegistryLookupFallback records a registry lookup failure at a level that
+// reflects whether it is an expected not-found (a literal image reference) or a
+// real error (parse/network/ambiguous short name). The image-reference fallback
+// that follows would otherwise hide the latter behind a misleading pull error.
+func logRegistryLookupFallback(logger *slog.Logger, serverOrImage string, err error) {
+	if errors.Is(err, registry.ErrServerNotFound) {
+		logger.Debug("Server not found in registry", "server", serverOrImage, "error", err)
+		return
+	}
+	logger.Warn("could not resolve server via registry, attempting to pull as a container image",
+		"server", serverOrImage, "error", err)
 }
 
 // pullImage pulls an image from a remote registry if it has the "latest" tag

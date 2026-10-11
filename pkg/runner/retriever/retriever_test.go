@@ -6,6 +6,8 @@ package retriever
 import (
 	"context"
 	"errors"
+	"fmt"
+	"log/slog"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
@@ -13,8 +15,59 @@ import (
 
 	"github.com/stacklok/toolhive-core/container/verifier"
 	regtypes "github.com/stacklok/toolhive-core/registry/types"
+	"github.com/stacklok/toolhive/pkg/registry"
 	"github.com/stacklok/toolhive/pkg/runner"
 )
+
+// captureHandler is a minimal slog.Handler that records the entries it receives
+// so tests can assert on level and message.
+type captureHandler struct {
+	records []slog.Record
+}
+
+func (h *captureHandler) Enabled(context.Context, slog.Level) bool { return true }
+
+func (h *captureHandler) Handle(_ context.Context, r slog.Record) error {
+	h.records = append(h.records, r)
+	return nil
+}
+
+func (h *captureHandler) WithAttrs([]slog.Attr) slog.Handler { return h }
+func (h *captureHandler) WithGroup(string) slog.Handler      { return h }
+
+func TestLogRegistryLookupFallback(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name      string
+		err       error
+		wantLevel slog.Level
+	}{
+		{
+			name:      "not found stays at debug",
+			err:       fmt.Errorf("%w: osv", registry.ErrServerNotFound),
+			wantLevel: slog.LevelDebug,
+		},
+		{
+			name:      "other lookup failure escalates to warn",
+			err:       errors.New("failed to read local registry file"),
+			wantLevel: slog.LevelWarn,
+		},
+	}
+
+	for _, tt := range tests {
+		tt := tt
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			h := &captureHandler{}
+			logRegistryLookupFallback(slog.New(h), "some-image", tt.err)
+
+			require.Len(t, h.records, 1)
+			assert.Equal(t, tt.wantLevel, h.records[0].Level)
+		})
+	}
+}
 
 func TestResolveMCPServer_WithGroup(t *testing.T) {
 	t.Parallel()

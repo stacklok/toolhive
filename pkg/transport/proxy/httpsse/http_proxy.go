@@ -240,8 +240,8 @@ func NewHTTPSSEProxy(
 	ownership, err := sessionbinding.NewMiddleware(
 		func(r *http.Request) (string, error) { return sessionbinding.RequestID(r, "session_id") },
 		proxy.sessionManager.LookupOwner,
-		func(w http.ResponseWriter, _ *http.Request, err error) {
-			sessionbinding.WriteOwnershipError(w, nil, err)
+		func(w http.ResponseWriter, r *http.Request, err error) {
+			sessionbinding.WriteOwnershipError(w, rejectedRequestID(r, err), err)
 		},
 	)
 	if err != nil {
@@ -557,6 +557,38 @@ func (p *HTTPSSEProxy) handleSSEConnection(w http.ResponseWriter, r *http.Reques
 			flusher.Flush()
 		}
 	}
+}
+
+// rejectedRequestID recovers the JSON-RPC id for a session-ownership rejection
+// so the session-not-found 404 can be correlated with the request that caused
+// it (#6042). It runs only for ErrNotFound; every other rejection keeps the id
+// absent, matching the bodiless GET/DELETE sites.
+//
+// Recovery is best-effort by design. The ownership middleware rejects before the
+// body is read, so an absent, unreadable or unparsable body yields nil and the
+// response is unchanged. A request that is both malformed and unowned therefore
+// still gets today's 404 rather than a 400: the 404-first precedence is
+// deliberate, so a server never parses attacker-controlled input under an
+// unknown session id before telling the client to re-establish one.
+func rejectedRequestID(r *http.Request, err error) any {
+	if !errors.Is(err, sessionbinding.ErrNotFound) || r.Method != http.MethodPost || r.Body == nil {
+		return nil
+	}
+	// Bounded to the same cap the body-limit middleware enforces, so a rejected
+	// request cannot make the proxy buffer more than it would accept.
+	body, readErr := io.ReadAll(io.LimitReader(r.Body, bodylimit.DefaultMaxRequestBodySize))
+	if readErr != nil {
+		return nil
+	}
+	msg, decodeErr := mcp.DecodeMessage(body)
+	if decodeErr != nil {
+		return nil
+	}
+	request, ok := msg.(*jsonrpc2.Request)
+	if !ok || !request.ID.IsValid() {
+		return nil
+	}
+	return request.ID.Raw()
 }
 
 // handlePostRequest handles a POST request with a JSON-RPC message.

@@ -96,6 +96,18 @@ func ParsingMiddleware(next http.Handler) http.Handler {
 
 		// Check if we should parse this request
 		if !shouldParseMCPRequest(r) {
+			// Only POST carries an MCP message, and only a POST body is parsed.
+			// Reject any other request that carries a body instead of forwarding
+			// a message the chain has not parsed. Method names are case-sensitive
+			// (RFC 9110 §9.1). Bodyless GET (SSE stream), DELETE (session
+			// termination) and OPTIONS (CORS preflight) pass through unchanged.
+			if requestCarriesBody(r) {
+				slog.WarnContext(r.Context(), "rejected request body on a non-POST method",
+					"method", r.Method)
+				w.Header().Set("Allow", "GET, POST, DELETE")
+				http.Error(w, "Method Not Allowed", http.StatusMethodNotAllowed)
+				return
+			}
 			next.ServeHTTP(w, r)
 			return
 		}
@@ -284,8 +296,33 @@ func GetParsedMCPRequest(ctx context.Context) *ParsedMCPRequest {
 // ToolHive's proxies forward as given. Any POST may carry an MCP message,
 // regardless of Content-Type (not mandated by all supported MCP revisions).
 // Path or media-type gates would bypass downstream request-level controls.
+// ParsingMiddleware rejects a body sent with any other method instead of
+// forwarding it unparsed (see requestCarriesBody).
 func shouldParseMCPRequest(r *http.Request) bool {
 	return r.Method == http.MethodPost
+}
+
+// requestCarriesBody reports whether r has a non-empty body. When the length
+// is unknown (chunked) it reads one byte and puts it back, so the body
+// forwarded downstream is unchanged. A read error other than EOF counts as a
+// body: the request is rejected rather than forwarded unexamined.
+func requestCarriesBody(r *http.Request) bool {
+	if r.Body == nil || r.Body == http.NoBody || r.ContentLength == 0 {
+		return false
+	}
+	if r.ContentLength > 0 {
+		return true
+	}
+	var first [1]byte
+	n, err := io.ReadFull(r.Body, first[:])
+	if n > 0 {
+		r.Body = struct {
+			io.Reader
+			io.Closer
+		}{io.MultiReader(bytes.NewReader(first[:n]), r.Body), r.Body}
+		return true
+	}
+	return !errors.Is(err, io.EOF)
 }
 
 // parsedMCPMessage returns nil, nil for responses. Request params that do not

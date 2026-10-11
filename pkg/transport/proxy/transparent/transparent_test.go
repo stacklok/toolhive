@@ -19,6 +19,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/google/uuid"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 	"go.opentelemetry.io/otel"
@@ -1097,6 +1098,100 @@ func TestSSEEndpointRewritingWithExplicitPrefix(t *testing.T) {
 	// Verify the endpoint URL was rewritten with the explicit prefix
 	assert.Contains(t, bodyLines, "data: /api/mcp/sse?sessionId=DEF456",
 		"Endpoint URL should be rewritten with explicit prefix")
+}
+
+// TestStripEndpointPrefix covers the request-side counterpart of the SSE
+// endpoint rewriting: the configured prefix must be removed from the outbound
+// path, at a path-segment boundary, so the backend sees its expected path.
+func TestStripEndpointPrefix(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name   string
+		prefix string
+		path   string
+		want   string
+	}{
+		{name: "no prefix configured", prefix: "", path: "/messages", want: "/messages"},
+		{name: "prefix with subpath", prefix: "/playwright", path: "/playwright/messages", want: "/messages"},
+		{name: "prefix exactly", prefix: "/playwright", path: "/playwright", want: "/"},
+		{name: "prefix with trailing slash config", prefix: "/playwright/", path: "/playwright/sse", want: "/sse"},
+		{name: "path without prefix is unchanged", prefix: "/playwright", path: "/messages", want: "/messages"},
+		{name: "similar prefix is not stripped mid-segment", prefix: "/abc", path: "/abcdef/sse", want: "/abcdef/sse"},
+		{name: "only first occurrence is stripped", prefix: "/abc", path: "/abc/abc/sse", want: "/abc/sse"},
+		{name: "root path is unchanged", prefix: "/playwright", path: "/", want: "/"},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			p := NewTransparentProxy("127.0.0.1", 0, "", nil, nil, nil, false, false, "sse", nil, nil, tt.prefix, false)
+			assert.Equal(t, tt.want, p.stripEndpointPrefix(tt.path))
+		})
+	}
+}
+
+// TestTransparentProxy_StripsEndpointPrefixFromForwardedPath verifies that a
+// request that follows the advertised prefixed SSE endpoint reaches the backend
+// without the prefix.
+func TestTransparentProxy_StripsEndpointPrefixFromForwardedPath(t *testing.T) {
+	t.Parallel()
+
+	var (
+		mu      sync.Mutex
+		gotPath string
+	)
+	backend := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		mu.Lock()
+		gotPath = r.URL.Path
+		mu.Unlock()
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer backend.Close()
+
+	proxy := NewTransparentProxy(
+		"127.0.0.1",
+		0,
+		backend.URL,
+		nil, // prometheusHandler
+		nil, // authInfoHandler
+		nil, // prefixHandlers
+		false,
+		false,
+		"sse",
+		nil,
+		nil,
+		"/playwright",
+		false,
+	)
+
+	ctx := context.Background()
+	require.NoError(t, proxy.Start(ctx))
+	defer func() { _ = proxy.Stop(ctx) }()
+
+	// Seed an owned session so the transparent proxy's session-binding guard
+	// admits the request (auth-disabled fixture, mirroring backend_routing_test.go).
+	sessionID := uuid.New().String()
+	sess := session.NewProxySession(sessionID)
+	sess.SetMetadata(session.MetadataKeyIdentityBinding, "unauthenticated")
+	require.NoError(t, proxy.sessionManager.AddSession(sess))
+
+	addr := proxy.listener.Addr().String()
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost,
+		"http://"+addr+"/playwright/messages",
+		strings.NewReader(`{"jsonrpc":"2.0","method":"tools/list"}`))
+	require.NoError(t, err)
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("Mcp-Session-Id", sessionID)
+
+	resp, err := http.DefaultClient.Do(req)
+	require.NoError(t, err)
+	defer resp.Body.Close()
+	require.Equal(t, http.StatusOK, resp.StatusCode)
+
+	mu.Lock()
+	defer mu.Unlock()
+	assert.Equal(t, "/messages", gotPath, "endpoint prefix must be stripped before forwarding")
 }
 
 // TestSSEMessageEventNotRewritten tests that message events are not rewritten

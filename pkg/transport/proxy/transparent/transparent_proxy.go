@@ -1209,6 +1209,30 @@ func stripConsentCookie(header http.Header) {
 	}
 }
 
+// stripEndpointPrefix removes the configured endpointPrefix from an inbound
+// request path before it is forwarded to the backend. The prefix is applied to
+// the client-facing URL only (SSE endpoint URLs are rewritten with it), so the
+// backend receives the path without it.
+//
+// Matching happens at a path-segment boundary: with prefix "/abc" the paths
+// "/abc" and "/abc/sse" are stripped to "/" and "/sse", while "/abcdef" and
+// "/sse" are returned unchanged. A path derived from X-Forwarded-Prefix has
+// already been stripped by the ingress, so it does not start with the prefix
+// and is returned untouched.
+func (p *TransparentProxy) stripEndpointPrefix(path string) string {
+	prefix := strings.TrimSuffix(p.endpointPrefix, "/")
+	if prefix == "" {
+		return path
+	}
+	if path == prefix {
+		return "/"
+	}
+	if rest, ok := strings.CutPrefix(path, prefix+"/"); ok {
+		return "/" + rest
+	}
+	return path
+}
+
 // Start starts the transparent proxy.
 // nolint:gocyclo // This function handles multiple startup scenarios and is complex by design
 func (p *TransparentProxy) Start(ctx context.Context) error {
@@ -1231,6 +1255,19 @@ func (p *TransparentProxy) Start(ctx context.Context) error {
 		FlushInterval: -1,
 		Rewrite: func(pr *httputil.ProxyRequest) {
 			pr.SetURL(targetURL)
+
+			// Strip the configured endpoint prefix from the outbound path before
+			// forwarding. The prefix only exists on the client-facing URL — SSE
+			// endpoint URLs are rewritten to include it — so a backend that knows
+			// nothing about it must receive the unprefixed path
+			// (e.g. /playwright/messages -> /messages). When the prefix comes from
+			// X-Forwarded-Prefix the ingress already stripped it, so there is
+			// nothing to strip here.
+			if stripped := p.stripEndpointPrefix(pr.Out.URL.Path); stripped != pr.Out.URL.Path {
+				pr.Out.URL.Path = stripped
+				pr.Out.URL.RawPath = ""
+			}
+
 			if p.stripConsentCookie {
 				stripConsentCookie(pr.Out.Header)
 			}

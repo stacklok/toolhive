@@ -32,18 +32,22 @@ container-based isolation for running MCP servers.`,
 			slog.Error(fmt.Sprintf("Error displaying help: %v", err))
 		}
 	},
-	PersistentPreRunE: func(_ *cobra.Command, _ []string) error {
-		// Re-initialize logger now that cobra has parsed flags and viper has
-		// the correct value for "debug".
-		var opts []logging.Option
-		if viper.GetBool("debug") {
-			opts = append(opts, logging.WithLevel(slog.LevelDebug))
-		}
-		slog.SetDefault(logging.New(opts...))
+	PersistentPreRunE: rootPersistentPreRunE,
+}
 
-		// Check for desktop app conflict
-		return desktop.ValidateDesktopAlignment()
-	},
+// rootPersistentPreRunE re-initializes the logger now that cobra has parsed
+// flags and viper has the correct value for "debug", then checks for a desktop
+// app conflict. NewRootCmd wraps it to also run the update check, so that the
+// update banner only appears after flag parsing and these checks succeed.
+func rootPersistentPreRunE(_ *cobra.Command, _ []string) error {
+	var opts []logging.Option
+	if viper.GetBool("debug") {
+		opts = append(opts, logging.WithLevel(slog.LevelDebug))
+	}
+	slog.SetDefault(logging.New(opts...))
+
+	// Check for desktop app conflict
+	return desktop.ValidateDesktopAlignment()
 }
 
 // NewRootCmd creates a new root command for the ToolHive CLI.
@@ -82,8 +86,19 @@ func NewRootCmd(enableUpdates bool) *cobra.Command {
 	// Silence printing the usage on error
 	rootCmd.SilenceUsage = true
 
-	if enableUpdates {
-		checkForUpdates()
+	// Run the update check from PersistentPreRunE rather than before Execute so
+	// the banner only appears once the command's flags have been parsed and the
+	// persistent pre-run checks have passed. Otherwise the banner prints on top
+	// of flag-parsing errors (e.g. an unknown flag), adding noise to an already
+	// confusing error. Assigning (not wrapping) keeps NewRootCmd idempotent.
+	rootCmd.PersistentPreRunE = func(cmd *cobra.Command, args []string) error {
+		if err := rootPersistentPreRunE(cmd, args); err != nil {
+			return err
+		}
+		if enableUpdates {
+			checkForUpdates()
+		}
+		return nil
 	}
 
 	return rootCmd

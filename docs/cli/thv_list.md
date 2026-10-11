@@ -17,6 +17,11 @@ List running MCP servers
 
 List all MCP servers managed by ToolHive, including their status and configuration.
 
+By default only running and auth_retrying workloads are shown. A stopped
+workload is hidden here but still reserves its name, so 'thv run <name>' will
+report that it already exists; run 'thv list --all' to see it and 'thv rm
+<name>' to free the name before re-running with a different configuration.
+
 Examples:
   # List running MCP servers
   thv list

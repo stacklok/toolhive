@@ -29,7 +29,9 @@ import (
 //	@Produce		json
 //	@Param			registryName	path		string	true	"Registry name (currently ignored, uses the default provider)"
 //	@Param			q				query		string	false	"Search filter — matches against server name and description"
+//	@Param			search			query		string	false	"Search filter (alias for q; registry-server clients send this)"
 //	@Param			page			query		integer	false	"Page number, 1-based (default: 1)"
+//	@Param			cursor			query		string	false	"Pagination cursor (alias for page, takes precedence; registry-server clients send this)"
 //	@Param			limit			query		integer	false	"Items per page, max 200 (default: 50)"
 //	@Success		200				{object}	serversV01Response
 //	@Failure		500				{object}	registryErrorResponse	"Internal server error"
@@ -63,7 +65,7 @@ func listServersV01(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// Apply search filter
-	if q := r.URL.Query().Get("q"); q != "" {
+	if q := searchQueryV01(r); q != "" {
 		converted = filterServersV01(converted, q)
 	}
 
@@ -74,12 +76,8 @@ func listServersV01(w http.ResponseWriter, r *http.Request) {
 
 	w.Header().Set("Content-Type", "application/json")
 	if err := json.NewEncoder(w).Encode(serversV01Response{
-		Servers: converted[start:end],
-		Metadata: paginationV01Metadata{
-			Total: total,
-			Page:  page,
-			Limit: limit,
-		},
+		Servers:  converted[start:end],
+		Metadata: newPaginationV01Metadata(total, page, limit, end-start),
 	}); err != nil {
 		slog.Error("failed to encode servers response", "error", err)
 	}

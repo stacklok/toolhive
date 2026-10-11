@@ -3775,9 +3775,17 @@ const docTemplate = `{
             "pkg_api_v1.paginationV01Metadata": {
                 "description": "Metadata contains pagination information",
                 "properties": {
+                    "count": {
+                        "description": "Count is the number of items returned in this response. Emitted to match\nthe registry-server contract that pkg/registry/api clients decode.",
+                        "type": "integer"
+                    },
                     "limit": {
                         "description": "Limit is the maximum number of items per page",
                         "type": "integer"
+                    },
+                    "nextCursor": {
+                        "description": "NextCursor is the opaque token for the next page, empty on the last page.\nEmitted to match the registry-server contract so auto-paginating clients\nstop correctly. The value is the next page number.",
+                        "type": "string"
                     },
                     "page": {
                         "description": "Page is the current page number (1-based)",
@@ -10120,11 +10128,27 @@ const docTemplate = `{
                         }
                     },
                     {
+                        "description": "Search filter (alias for q; registry-server clients send this)",
+                        "in": "query",
+                        "name": "search",
+                        "schema": {
+                            "type": "string"
+                        }
+                    },
+                    {
                         "description": "Page number, 1-based (default: 1)",
                         "in": "query",
                         "name": "page",
                         "schema": {
                             "type": "integer"
+                        }
+                    },
+                    {
+                        "description": "Pagination cursor (alias for page, takes precedence; registry-server clients send this)",
+                        "in": "query",
+                        "name": "cursor",
+                        "schema": {
+                            "type": "string"
                         }
                     },
                     {
@@ -10277,11 +10301,27 @@ const docTemplate = `{
                         }
                     },
                     {
+                        "description": "Search filter (alias for q; registry-server clients send this)",
+                        "in": "query",
+                        "name": "search",
+                        "schema": {
+                            "type": "string"
+                        }
+                    },
+                    {
                         "description": "Page number, 1-based (default: 1)",
                         "in": "query",
                         "name": "page",
                         "schema": {
                             "type": "integer"
+                        }
+                    },
+                    {
+                        "description": "Pagination cursor (alias for page, takes precedence; registry-server clients send this)",
+                        "in": "query",
+                        "name": "cursor",
+                        "schema": {
+                            "type": "string"
                         }
                     },
                     {
@@ -10433,11 +10473,27 @@ const docTemplate = `{
                         }
                     },
                     {
+                        "description": "Search filter (alias for q; registry-server clients send this)",
+                        "in": "query",
+                        "name": "search",
+                        "schema": {
+                            "type": "string"
+                        }
+                    },
+                    {
                         "description": "Page number, 1-based (default: 1)",
                         "in": "query",
                         "name": "page",
                         "schema": {
                             "type": "integer"
+                        }
+                    },
+                    {
+                        "description": "Pagination cursor (alias for page, takes precedence; registry-server clients send this)",
+                        "in": "query",
+                        "name": "cursor",
+                        "schema": {
+                            "type": "string"
                         }
                     },
                     {

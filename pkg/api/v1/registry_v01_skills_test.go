@@ -66,6 +66,11 @@ func TestParsePaginationV01(t *testing.T) {
 		{"limit at max", "limit=200", 1, v01MaxLimit},
 		{"page overflow", fmt.Sprintf("page=%d", math.MaxInt), math.MaxInt / v01DefaultLimit, v01DefaultLimit},
 		{"non-numeric", "page=abc&limit=xyz", 1, v01DefaultLimit},
+		{"cursor", "cursor=3", 3, v01DefaultLimit},
+		{"cursor wins over page", "page=2&cursor=5", 5, v01DefaultLimit},
+		{"invalid cursor falls back to page", "cursor=abc&page=4", 4, v01DefaultLimit},
+		{"invalid cursor only", "cursor=abc", 1, v01DefaultLimit},
+		{"non-numeric cursor", "cursor=-1", 1, v01DefaultLimit},
 	}
 
 	for _, tt := range tests {
@@ -75,6 +80,63 @@ func TestParsePaginationV01(t *testing.T) {
 			page, limit := parsePaginationV01(r)
 			assert.Equal(t, tt.wantPage, page)
 			assert.Equal(t, tt.wantLimit, limit)
+		})
+	}
+}
+
+func TestSearchQueryV01(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name  string
+		query string
+		want  string
+	}{
+		{"empty", "", ""},
+		{"q", "q=github", "github"},
+		{"search", "search=github", "github"},
+		{"search wins over q", "q=alpha&search=beta", "beta"},
+		{"empty search falls back to q", "q=alpha&search=", "alpha"},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			r := httptest.NewRequest(http.MethodGet, "/skills?"+tt.query, nil)
+			assert.Equal(t, tt.want, searchQueryV01(r))
+		})
+	}
+}
+
+func TestNewPaginationV01Metadata(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name        string
+		total       int
+		page        int
+		limit       int
+		returned    int
+		wantCount   int
+		wantNextCur string
+	}{
+		{"first page of many", 250, 1, 100, 100, 100, "2"},
+		{"middle page", 250, 2, 100, 100, 100, "3"},
+		{"last page", 250, 3, 100, 50, 50, ""},
+		{"single page", 10, 1, 50, 10, 10, ""},
+		{"empty result", 0, 1, 50, 0, 0, ""},
+		{"page beyond results", 30, 5, 10, 0, 0, ""},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			md := newPaginationV01Metadata(tt.total, tt.page, tt.limit, tt.returned)
+			assert.Equal(t, tt.total, md.Total)
+			assert.Equal(t, tt.page, md.Page)
+			assert.Equal(t, tt.limit, md.Limit)
+			assert.Equal(t, tt.wantCount, md.Count)
+			assert.Equal(t, tt.wantNextCur, md.NextCursor)
 		})
 	}
 }

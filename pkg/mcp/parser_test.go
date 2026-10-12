@@ -355,8 +355,7 @@ func TestParsingMiddlewareRejectsBodiesOnNonPOSTMethods(t *testing.T) {
 
 			if tt.wantRejected {
 				assert.False(t, nextCalled, "a body on a non-POST method must not reach the next handler")
-				assert.Equal(t, http.StatusMethodNotAllowed, recorder.Code)
-				assert.Equal(t, "GET, POST, DELETE", recorder.Header().Get("Allow"))
+				assert.Equal(t, http.StatusBadRequest, recorder.Code)
 				return
 			}
 			assert.True(t, nextCalled)

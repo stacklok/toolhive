@@ -96,16 +96,18 @@ func ParsingMiddleware(next http.Handler) http.Handler {
 
 		// Check if we should parse this request
 		if !shouldParseMCPRequest(r) {
-			// Only POST carries an MCP message, and only a POST body is parsed.
-			// Reject any other request that carries a body instead of forwarding
-			// a message the chain has not parsed. Method names are case-sensitive
-			// (RFC 9110 §9.1). Bodyless GET (SSE stream), DELETE (session
-			// termination) and OPTIONS (CORS preflight) pass through unchanged.
+			// Only a POST body is parsed as an MCP message. Rather than forward a
+			// body the chain has not inspected, reject any non-POST request that
+			// carries one. A bodyless GET (SSE stream), DELETE (session
+			// termination) or OPTIONS (CORS preflight) passes through unchanged;
+			// the method itself may be legitimate, so this is a 400 for the
+			// unexpected body, not a 405. Method-specific 405/Allow responses are
+			// left to the transport handlers, which know the methods their
+			// endpoint serves. Method names are case-sensitive (RFC 9110 §9.1).
 			if requestCarriesBody(r) {
 				slog.WarnContext(r.Context(), "rejected request body on a non-POST method",
 					"method", r.Method)
-				w.Header().Set("Allow", "GET, POST, DELETE")
-				http.Error(w, "Method Not Allowed", http.StatusMethodNotAllowed)
+				http.Error(w, "request body is only accepted on POST", http.StatusBadRequest)
 				return
 			}
 			next.ServeHTTP(w, r)

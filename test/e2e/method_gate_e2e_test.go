@@ -80,9 +80,8 @@ var _ = Describe("Non-POST method handling", Label("middleware", "sse", "e2e"), 
 				defer resp.Body.Close()
 				_, _ = io.Copy(io.Discard, resp.Body)
 
-				Expect(resp.StatusCode).To(Equal(http.StatusMethodNotAllowed),
+				Expect(resp.StatusCode).To(Equal(http.StatusBadRequest),
 					"method %q carrying a body must be rejected", method)
-				Expect(resp.Header.Get("Allow")).To(Equal("GET, POST, DELETE"))
 			},
 			Entry("lower-case post", "post"),
 			Entry("mixed-case Post", "Post"),

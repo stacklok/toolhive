@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: Copyright 2025 Stacklok, Inc.
+// SPDX-License-Identifier: Apache-2.0
+
 // Regression coverage for the six config-handler failure blocks in
 // validateAndHandleConfigs. Each of them used to write only
 // Status.Phase = Failed, which left the message and the Ready condition from

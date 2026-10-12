@@ -318,11 +318,11 @@ func (r *MCPRemoteProxyReconciler) validateAndHandleConfigs(ctx context.Context,
 func (r *MCPRemoteProxyReconciler) markConfigHandlerFailed(
 	ctx context.Context,
 	proxy *mcpv1beta1.MCPRemoteProxy,
-	handler string,
+	handlerName string,
 	cause error,
 ) error {
 	proxy.Status.Phase = mcpv1beta1.MCPRemoteProxyPhaseFailed
-	proxy.Status.Message = fmt.Sprintf("Failed to handle %s: %v", handler, cause)
+	proxy.Status.Message = fmt.Sprintf("Failed to handle %s: %v", handlerName, cause)
 	proxy.Status.ObservedGeneration = proxy.Generation
 	meta.SetStatusCondition(&proxy.Status.Conditions, metav1.Condition{
 		Type:               mcpv1beta1.ConditionTypeReady,

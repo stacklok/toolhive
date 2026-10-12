@@ -9,6 +9,7 @@ import (
 
 	"github.com/stretchr/testify/assert"
 	corev1 "k8s.io/api/core/v1"
+	"k8s.io/apimachinery/pkg/api/resource"
 
 	"github.com/stacklok/toolhive/pkg/secrets"
 )
@@ -353,3 +354,34 @@ func TestMergeStringMaps(t *testing.T) {
 		})
 	}
 }
+
+func TestBuildDefaultProxyRunnerResourceRequirements(t *testing.T) {
+	t.Parallel()
+
+	res := BuildDefaultProxyRunnerResourceRequirements()
+	assert.Equal(t, resource.MustParse("50m"), res.Requests[corev1.ResourceCPU])
+	assert.Equal(t, resource.MustParse("64Mi"), res.Requests[corev1.ResourceMemory])
+	assert.Equal(t, resource.MustParse("200m"), res.Limits[corev1.ResourceCPU])
+	assert.Equal(t, resource.MustParse("256Mi"), res.Limits[corev1.ResourceMemory])
+}
+
+func TestMergeResourceRequirements(t *testing.T) {
+	t.Parallel()
+
+	defaults := BuildDefaultProxyRunnerResourceRequirements()
+	user := corev1.ResourceRequirements{
+		Requests: corev1.ResourceList{
+			corev1.ResourceMemory: resource.MustParse("128Mi"),
+		},
+		Limits: corev1.ResourceList{
+			corev1.ResourceCPU: resource.MustParse("1"),
+		},
+	}
+
+	merged := MergeResourceRequirements(defaults, user)
+	assert.Equal(t, resource.MustParse("50m"), merged.Requests[corev1.ResourceCPU])
+	assert.Equal(t, resource.MustParse("128Mi"), merged.Requests[corev1.ResourceMemory])
+	assert.Equal(t, resource.MustParse("1"), merged.Limits[corev1.ResourceCPU])
+	assert.Equal(t, resource.MustParse("256Mi"), merged.Limits[corev1.ResourceMemory])
+}
+

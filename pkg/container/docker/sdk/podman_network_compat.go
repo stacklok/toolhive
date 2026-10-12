@@ -111,25 +111,39 @@ func normalizePodmanNetwork(rawNetwork json.RawMessage) (json.RawMessage, bool) 
 	if !ok {
 		return rawNetwork, false
 	}
+	normalizedIPAM, changed := normalizePodmanIPAM(rawIPAM)
+	if !changed {
+		return rawNetwork, false
+	}
+
+	networkFields["IPAM"] = normalizedIPAM
+	normalizedNetwork, err := json.Marshal(networkFields)
+	if err != nil {
+		return rawNetwork, false
+	}
+	return normalizedNetwork, true
+}
+
+func normalizePodmanIPAM(rawIPAM json.RawMessage) (json.RawMessage, bool) {
 	var ipamFields map[string]json.RawMessage
 	if err := json.Unmarshal(rawIPAM, &ipamFields); err != nil {
-		return rawNetwork, false
+		return rawIPAM, false
 	}
 
 	rawConfigs, ok := ipamFields["Config"]
 	if !ok {
-		return rawNetwork, false
+		return rawIPAM, false
 	}
 	var configs []json.RawMessage
 	if err := json.Unmarshal(rawConfigs, &configs); err != nil {
-		return rawNetwork, false
+		return rawIPAM, false
 	}
 
 	changed := false
 	for i, rawConfig := range configs {
 		var configFields map[string]json.RawMessage
 		if err := json.Unmarshal(rawConfig, &configFields); err != nil {
-			return rawNetwork, false
+			return rawIPAM, false
 		}
 		rawGateway, ok := configFields["Gateway"]
 		if !ok {
@@ -143,30 +157,25 @@ func normalizePodmanNetwork(rawNetwork json.RawMessage) (json.RawMessage, bool) 
 		configFields["Gateway"] = json.RawMessage("null")
 		normalizedConfig, err := json.Marshal(configFields)
 		if err != nil {
-			return rawNetwork, false
+			return rawIPAM, false
 		}
 		configs[i] = normalizedConfig
 		changed = true
 	}
 	if !changed {
-		return rawNetwork, false
+		return rawIPAM, false
 	}
 
 	normalizedConfigs, err := json.Marshal(configs)
 	if err != nil {
-		return rawNetwork, false
+		return rawIPAM, false
 	}
 	ipamFields["Config"] = normalizedConfigs
 	normalizedIPAM, err := json.Marshal(ipamFields)
 	if err != nil {
-		return rawNetwork, false
+		return rawIPAM, false
 	}
-	networkFields["IPAM"] = normalizedIPAM
-	normalizedNetwork, err := json.Marshal(networkFields)
-	if err != nil {
-		return rawNetwork, false
-	}
-	return normalizedNetwork, true
+	return normalizedIPAM, true
 }
 
 func isNetworkAPIPath(path string) bool {

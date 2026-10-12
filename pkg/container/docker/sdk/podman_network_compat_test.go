@@ -142,9 +142,54 @@ func newPodmanCompatTestClient(t *testing.T, handler http.Handler) *mobyclient.C
 	return client
 }
 
-func TestNormalizePodmanNetworkResponseIgnoresUnrelatedGatewayFields(t *testing.T) {
+func TestNormalizePodmanNetworkResponse(t *testing.T) {
 	t.Parallel()
 
-	body := []byte(`{"Gateway":"<nil>","IPAM":{"Config":[{"Gateway":"10.0.0.1"}]}}`)
-	require.Equal(t, body, normalizePodmanNetworkResponse(body))
+	tests := []struct {
+		name          string
+		body          string
+		want          string
+		wantUnchanged bool
+	}{
+		{
+			name:          "ignores unrelated gateway fields",
+			body:          `{"Gateway":"<nil>","IPAM":{"Config":[{"Gateway":"10.0.0.1"}]}}`,
+			wantUnchanged: true,
+		},
+		{
+			name:          "leaves response unchanged when a later config is malformed",
+			body:          `{"IPAM":{"Config":[{"Gateway":"<nil>"},42]}}`,
+			wantUnchanged: true,
+		},
+		{
+			name: "normalizes every exact sentinel and preserves lookalikes",
+			body: `{"IPAM":{"Config":[
+				{"Gateway":"<nil>"},
+				{"Gateway":"10.0.0.1"},
+				{"Gateway":"<nil>"},
+				{"Gateway":" <nil>"},
+				{"Gateway":"<NIL>"}
+			]}}`,
+			want: `{"IPAM":{"Config":[
+				{"Gateway":null},
+				{"Gateway":"10.0.0.1"},
+				{"Gateway":null},
+				{"Gateway":" <nil>"},
+				{"Gateway":"<NIL>"}
+			]}}`,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			got := normalizePodmanNetworkResponse([]byte(tt.body))
+			if tt.wantUnchanged {
+				require.Equal(t, tt.body, string(got))
+				return
+			}
+			require.JSONEq(t, tt.want, string(got))
+		})
+	}
 }

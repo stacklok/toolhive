@@ -546,8 +546,8 @@ func (sm *Manager) Terminate(sessionID string) (isNotAllowed bool, err error) {
 		// whose metadata Update runs after this delete is rejected by the
 		// pre-existing SET XX guard, so it cannot resurrect the session.
 		// This does not make termination race-free: the window between that
-		// Update returning true and Get's miss path inserting the value is
-		// pre-existing and out of scope for this change.
+		// Update returning true and the cache insertion on the Get miss path
+		// is pre-existing and out of scope for this change.
 		//
 		// Relying on lazy eviction alone is not enough: checkSession only runs
 		// on the cache-hit path, and a well-behaved client stops using a

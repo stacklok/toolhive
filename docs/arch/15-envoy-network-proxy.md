@@ -66,9 +66,10 @@ the proxy entirely.
 
 ### Proper dynamic forward proxy
 
-Envoy's `dynamic_forward_proxy` cluster performs per-request DNS resolution and
-handles HTTP CONNECT tunnelling natively. HTTPS flows through a CONNECT tunnel
-exactly as a client would expect, with Envoy acting as a transparent TCP relay
+Envoy's `dynamic_forward_proxy` cluster performs a per-request DNS-cache lookup
+with TTL-based background refresh and handles HTTP CONNECT tunnelling natively.
+HTTPS flows through a CONNECT tunnel exactly as a client would expect, with Envoy
+acting as a transparent TCP relay
 after the CONNECT handshake — no TLS inspection, no certificate pinning, no CA
 changes.
 
@@ -113,26 +114,27 @@ HTTP_PROXY / HTTPS_PROXY → Envoy :3128
   └── HCM (upgrade: CONNECT)
         ├── [optional] RBAC DENY  — docker gateway (:authority: IP literal + hostnames)
         ├── RBAC ALLOW            — outbound allowlist (or allow-all)
-        ├── dynamic_forward_proxy — per-request DNS + CONNECT tunnel
+        ├── dynamic_forward_proxy — DNS cache filters resolved gateway IPs
         └── router
 ```
 
-The RBAC filters are evaluated top-to-bottom. The gateway DENY filter is present
-unless `--allow-docker-gateway` is set. It blocks the Docker gateway purely at
-L7, by matching the `:authority` header (the forward-proxy target for both plain
-HTTP and HTTPS CONNECT) against anchored, case-insensitive, port-tolerant
-regexes for:
-- The resolved Docker bridge gateway IP literal (e.g. `172.17.0.1`, with an
-  optional `:port`)
+The RBAC filters are evaluated top-to-bottom. Unless `--allow-docker-gateway`
+is set, the gateway DENY filter blocks direct authorities and the shared dynamic
+forward proxy DNS cache removes answers matching the same deployment-time gateway
+set before they can be selected. Together they cover aliases, CNAMEs, and DNS
+refreshes that resolve to any snapshotted IPv4 gateway. Authority matching also
+blocks direct IPv4 and IPv6 gateway literals, including IPv4-mapped IPv6 forms:
+- Every gateway in a deployment-time snapshot of all daemon bridge networks.
+  Bridges created later require a workload redeploy.
 - The Docker-internal hostnames `host.docker.internal` and
-  `gateway.docker.internal` (with an optional `:port`, so HTTPS CONNECT
-  authorities such as `host.docker.internal:443` match too)
+  `gateway.docker.internal`, with an optional port.
 
-There is deliberately no `destination_ip`/L3 CIDR component: as noted above, a
-forward proxy's `destination_ip` is Envoy's own listener, so it would never match
-the gateway. Matching the IP literal in `:authority` is what actually catches a
-client that connects directly to the gateway address, giving parity with Squid's
-combined `dst`/`dstdomain` denies.
+The DNS cache uses exact `/32` address ranges. Exact `/128` ranges are generated
+for configuration parity but remain dormant while DFP DNS is `V4_ONLY`; IPv6
+literals are enforced by authority RBAC. If every IPv4 answer is filtered,
+resolution fails; a previously approved cached address may remain, but
+a gateway address never becomes eligible for a new connection. The filter and
+cluster use the same named cache configuration, as required by Envoy.
 
 The ALLOW filter implements the permission profile's `Outbound` rules:
 - `InsecureAllowAll: true` → single wildcard policy (`any: true`)
@@ -147,9 +149,9 @@ The ALLOW filter implements the permission profile's `Outbound` rules:
 This preserves parity with the existing Squid backend so that permission
 profiles written for Squid's `dstdomain` syntax behave identically under Envoy.
 
-When `--allow-docker-gateway` is set, ToolHive not only omits the gateway DENY
-filter but also injects explicit ALLOW policies for the gateway (the IP literal
-and both Docker-internal hostnames, matched the same way as the deny). This is
+When `--allow-docker-gateway` is set, ToolHive omits both the gateway DENY
+filter and the DNS-cache address filter, then injects explicit ALLOW policies for
+the same gateway snapshot and both Docker-internal hostnames. This is
 required because the ALLOW filter is default-deny: under a non-permissive profile
 (one without `InsecureAllowAll`), simply dropping the deny would leave the
 gateway unreachable, since nothing in the allowlist would match it. The explicit
@@ -180,7 +182,8 @@ attack surface entirely.
 ### Bootstrap lifecycle
 
 1. ToolHive generates a protobuf-JSON bootstrap file in `os.TempDir()` at mode
-   `0600`.
+   `0644`. It contains no credentials, but local users can read workload names,
+   ports, gateway addresses, and network policy hostnames.
 2. The file is bind-mounted read-only into the Envoy container at
    `/etc/envoy/envoy.json`.
 3. Envoy reads it once at startup.
@@ -188,7 +191,7 @@ attack surface entirely.
 The bootstrap file is **not** removed when the workload is torn down — there is
 no cleanup hook for it today. The only removal path is a best-effort cleanup if
 generation fails partway through writing. As a result, a bootstrap file persists
-in the OS temp directory (at mode `0600`) for the lifetime of the host until the
+in the OS temp directory (at mode `0644`) for the lifetime of the host until the
 OS reclaims the temp directory. This is a known limitation (see below).
 
 ## Selection
@@ -202,9 +205,11 @@ TOOLHIVE_NETWORK_PROXY=envoy thv run --isolate-network <server>
 - `"envoy"` — Envoy backend
 
 An unknown value causes `NewClient` to fail at startup with a descriptive error.
-The env var is intentionally not exposed as a CLI flag or CRD field while the
-backend is experimental; chart surface and `RunConfig` wiring come later once the
-backend is stable.
+`TOOLHIVE_ENVOY_IMAGE` overrides must use Envoy v1.39 or newer and include DFP
+`resolved_address_filter`; older images reject the generated bootstrap and fail
+startup closed. The env var is intentionally not exposed as a CLI flag or CRD
+field while the backend is experimental; chart surface and `RunConfig` wiring
+come later once the backend is stable.
 
 ## Comparison with Squid
 
@@ -216,10 +221,10 @@ backend is stable.
 | HTTPS CONNECT tunnelling | ✓ | ✓ |
 | TLS inspection | ✗ | ✗ |
 | L7 hostname deny | ✓ (`dstdomain`) | ✓ (`:authority` header match) |
-| Destination IP deny | ✓ (`dst` ACL, resolved IP) | ~ (IP literal in `:authority` only; resolved IP not enforced — see Known Limitations) |
+| Destination IP deny | ✓ (`dst` ACL, resolved IP) | ✓ (DFP DNS-cache `resolved_address_filter`) |
 | Wildcard host allowlist | ✓ (`.example.com` dot-prefix) | ✓ (same syntax, regex match incl. apex + port) |
 | Port-based allowlist | ✓ (`AllowPort` ACL, AND-d with host) | ✓ (combined host+port regex; bare hostname allowed when port 80 is listed, matching Squid's plain-HTTP behaviour) |
-| Per-request DNS resolution | Via Squid resolver | Via DFP cluster |
+| DNS behavior | Via Squid resolver | Per-request DFP cache lookup with TTL-based refresh |
 | Access logs | Per-container, text format | Unified stdout, structured |
 | Config format | Text template | Typed Go structs → protobuf-JSON |
 | Runtime config update | Restart required | xDS-capable (not yet used) |
@@ -242,15 +247,6 @@ backend is stable.
   `HTTP_PROXY`) is contained by the `Internal: true` network, not Envoy. True
   non-bypassable enforcement requires iptables TPROXY + an init container with
   `CAP_NET_ADMIN` — this is Phase 2 and requires its own architecture doc.
-- **Gateway deny matches the requested name, not the resolved IP.** The deny
-  filter matches the `:authority` string (the gateway IP literal and the two
-  Docker-internal hostnames). Because an HTTP RBAC filter cannot see the address
-  the `dynamic_forward_proxy` cluster ultimately resolves and dials, a hostname
-  that resolves to the gateway IP — via DNS rebinding, an attacker-controlled
-  record, or an allowlisted host repointed at the gateway — is not caught, whereas
-  Squid's `dst` ACL denies on the resolved IP. Enforcing on the resolved address
-  requires L3/L4 interception (Phase 2, #5905); until then this is a known
-  weakening of the gateway block versus the Squid backend.
 - **IPv4-only DFP DNS.** The `dynamic_forward_proxy` cluster's DNS lookup is
   hardcoded to `V4_ONLY`. A host that resolves only to IPv6 addresses is
   unreachable through the Envoy egress path even if it is allowlisted.
@@ -259,7 +255,7 @@ backend is stable.
   it is bounded by the host-side port binding to `127.0.0.1`: only the local
   proxy runner can reach the ingress listener, so the wildcard is not exposed
   beyond the local machine.
-- **Bootstrap file not cleaned up.** The generated bootstrap file (mode `0600` in
+- **Bootstrap file not cleaned up.** The generated bootstrap file (mode `0644` in
   the OS temp directory) is not removed on workload teardown; it is only removed
   on a mid-write generation failure. Files accumulate until the OS reclaims the
   temp directory.

@@ -1665,7 +1665,7 @@ const docTemplate = `{
                         "uniqueItems": false
                     },
                     "allow_docker_gateway": {
-                        "description": "AllowDockerGateway permits outbound connections to Docker gateway addresses\n(host.docker.internal, gateway.docker.internal, 172.17.0.1). These are\nblocked by default in the egress proxy even when InsecureAllowAll is set.\nOnly applicable to Docker deployments with network isolation enabled.\nGateway access is port-independent: it ignores the permission profile's\nallowed ports, so once enabled the gateway is reachable on any port.",
+                        "description": "AllowDockerGateway permits outbound connections to Docker gateway addresses\n(all daemon bridge gateways, host.docker.internal, and gateway.docker.internal). These are\nblocked by default in the egress proxy even when InsecureAllowAll is set.\nOnly applicable to Docker deployments with network isolation enabled.\nGateways are snapshotted at deployment; redeploy to include bridges created later.\nGateway access is port-independent: it ignores the permission profile's\nallowed ports, so once enabled the gateway is reachable on any port.",
                         "type": "boolean"
                     },
                     "allowed_origins": {
@@ -3286,7 +3286,7 @@ const docTemplate = `{
                 "description": "Request to create a new workload",
                 "properties": {
                     "allow_docker_gateway": {
-                        "description": "Whether to permit outbound connections to Docker gateway addresses\n(host.docker.internal, gateway.docker.internal, 172.17.0.1). These are\nblocked by default in the egress proxy even when network isolation is on.\nOnly applicable to Docker deployments with network isolation enabled.",
+                        "description": "Whether to permit outbound connections to Docker gateway addresses\n(all daemon bridge gateways, host.docker.internal, and gateway.docker.internal). These are\nblocked by default in the egress proxy even when network isolation is on.\nOnly applicable to Docker deployments with network isolation enabled.\nGateways are snapshotted at deployment; redeploy to include bridges created later.",
                         "type": "boolean"
                     },
                     "authz_config": {
@@ -4219,7 +4219,7 @@ const docTemplate = `{
                 "description": "Request to update an existing workload (name cannot be changed)",
                 "properties": {
                     "allow_docker_gateway": {
-                        "description": "Whether to permit outbound connections to Docker gateway addresses\n(host.docker.internal, gateway.docker.internal, 172.17.0.1). These are\nblocked by default in the egress proxy even when network isolation is on.\nOnly applicable to Docker deployments with network isolation enabled.",
+                        "description": "Whether to permit outbound connections to Docker gateway addresses\n(all daemon bridge gateways, host.docker.internal, and gateway.docker.internal). These are\nblocked by default in the egress proxy even when network isolation is on.\nOnly applicable to Docker deployments with network isolation enabled.\nGateways are snapshotted at deployment; redeploy to include bridges created later.",
                         "type": "boolean"
                     },
                     "authz_config": {

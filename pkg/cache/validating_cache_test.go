@@ -584,9 +584,6 @@ func TestValidatingCache_Singleflight_DeduplicatesConcurrentMisses(t *testing.T)
 	}
 }
 
-// TestRemoveMatching verifies that RemoveMatching evicts exactly the entries the
-// predicate selects, fires onEvict for each, returns the count, and leaves
-// non-matching entries in place.
 // TestRemove verifies Remove evicts the entry, invokes onEvict exactly once,
 // and reports that an entry was present.
 func TestRemove(t *testing.T) {
@@ -707,6 +704,9 @@ func TestRemove_SlowOnEvictDoesNotBlockOtherKeys(t *testing.T) {
 	}
 }
 
+// TestRemoveMatching verifies that RemoveMatching evicts exactly the entries the
+// predicate selects, fires onEvict for each, returns the count, and leaves
+// non-matching entries in place.
 func TestRemoveMatching(t *testing.T) {
 	t.Parallel()
 

@@ -23,13 +23,22 @@ import (
 	statusesmocks "github.com/stacklok/toolhive/pkg/workloads/statuses/mocks"
 )
 
+// backendRequest is one request the stand-in backend received.
+type backendRequest struct {
+	method string
+	body   string
+}
+
 // TestTransparentProxyRejectsNonPOSTBodies proves, through the middleware chain
-// the runner installs in front of the transparent proxy, that a request carrying
-// a body on any method other than an exact POST is rejected with 405 and never
-// reaches the backend, while an ordinary POST is still authorized and forwarded.
-// It fails on the pre-fix parser (the body is forwarded unparsed) and passes with
-// the fix. A backend that dispatches a JSON-RPC message regardless of the HTTP
-// method stands in for a method-lenient MCP server.
+// the runner installs in front of a real transparent proxy, that:
+//   - an authorized POST still reaches the backend;
+//   - a request carrying a body on any method other than an exact POST is
+//     rejected with 400 and never reaches the backend;
+//   - a bodyless GET and DELETE still reach the backend unchanged.
+//
+// The non-POST-with-body cases fail on the pre-fix parser (the body is forwarded
+// unparsed) and pass with the fix. A backend that answers a JSON-RPC message
+// regardless of the HTTP method stands in for a method-lenient MCP server.
 func TestTransparentProxyRejectsNonPOSTBodies(t *testing.T) {
 	t.Parallel()
 
@@ -48,15 +57,18 @@ func TestTransparentProxyRejectsNonPOSTBodies(t *testing.T) {
 	runConfig.AuthzConfig = authzConfig
 
 	var mu sync.Mutex
-	var backendMethods []string
-	backend := newRecordingBackend(t, &mu, &backendMethods)
+	var received []backendRequest
+	backend := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		body, _ := io.ReadAll(r.Body)
+		mu.Lock()
+		received = append(received, backendRequest{method: r.Method, body: string(body)})
+		mu.Unlock()
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"jsonrpc":"2.0","id":1,"result":{"content":[{"type":"text","text":"EXECUTED"}]}}`))
+	})
 
 	proxy := startTransparentProxyForMethodTest(t, runConfig, backend)
 	client := &http.Client{Timeout: 5 * time.Second}
-
-	// A denied tools/call. On POST it is authorized (403). On any other method
-	// carrying a body it must be rejected by the proxy before reaching the backend.
-	deniedCall := `{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"admin_tool","arguments":{}}}`
 
 	do := func(method, body string) *http.Response {
 		t.Helper()
@@ -79,38 +91,64 @@ func TestTransparentProxyRejectsNonPOSTBodies(t *testing.T) {
 		require.NoError(t, resp.Body.Close())
 	}
 
-	// Baseline: an exact POST is authorized (403 for the denied tool), proving the
-	// backend and policy are wired correctly.
-	postResp := do(http.MethodPost, deniedCall)
-	assert.Equal(t, http.StatusForbidden, postResp.StatusCode, "an exact POST must still be authorized")
-	drain(postResp)
+	deniedCall := `{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"admin_tool","arguments":{}}}`
+	allowedCall := `{"jsonrpc":"2.0","id":2,"method":"tools/call","params":{"name":"weather","arguments":{}}}`
 
-	// Every non-POST method carrying the same body must be rejected with 405.
+	// A denied POST is authorized and rejected (403) before the backend.
+	deniedResp := do(http.MethodPost, deniedCall)
+	assert.Equal(t, http.StatusForbidden, deniedResp.StatusCode, "a denied POST must be rejected by authorization")
+	drain(deniedResp)
+
+	// An allowed POST is authorized and reaches the backend.
+	allowedResp := do(http.MethodPost, allowedCall)
+	assert.Equal(t, http.StatusOK, allowedResp.StatusCode, "an authorized POST must reach the backend")
+	drain(allowedResp)
+
+	// Every non-POST method carrying a body is rejected with 400.
 	for _, method := range []string{"post", "Post", http.MethodPut, http.MethodPatch, http.MethodDelete} {
 		resp := do(method, deniedCall)
-		assert.Equal(t, http.StatusMethodNotAllowed, resp.StatusCode,
-			"method %q carrying a body must be rejected", method)
-		assert.Equal(t, "GET, POST, DELETE", resp.Header.Get("Allow"), "method %q", method)
+		assert.Equal(t, http.StatusBadRequest, resp.StatusCode,
+			"method %q carrying a body must be rejected with 400", method)
+		drain(resp)
+	}
+
+	// Bodyless GET and DELETE pass through to the backend unchanged.
+	for _, method := range []string{http.MethodGet, http.MethodDelete} {
+		resp := do(method, "")
+		assert.NotEqual(t, http.StatusBadRequest, resp.StatusCode,
+			"a bodyless %s must not be rejected by the body check", method)
 		drain(resp)
 	}
 
 	mu.Lock()
-	assert.Empty(t, backendMethods, "no denied non-POST request must reach the backend")
-	mu.Unlock()
+	defer mu.Unlock()
+	for _, req := range received {
+		assert.NotContains(t, req.body, "admin_tool",
+			"no denied or non-POST request must reach the backend (saw %s)", req.method)
+	}
+	assert.Equal(t, 1, countMatching(received, func(r backendRequest) bool {
+		return r.method == http.MethodPost && strings.Contains(r.body, "weather")
+	}), "exactly the authorized POST must reach the backend")
+	assert.True(t, hasMatching(received, func(r backendRequest) bool {
+		return r.method == http.MethodGet && r.body == ""
+	}), "a bodyless GET must reach the backend")
+	assert.True(t, hasMatching(received, func(r backendRequest) bool {
+		return r.method == http.MethodDelete && r.body == ""
+	}), "a bodyless DELETE must reach the backend")
 }
 
-// newRecordingBackend returns a backend that records the method of every request
-// that reaches it and answers any JSON-RPC message, whatever the HTTP method —
-// standing in for an MCP server that routes methods leniently.
-func newRecordingBackend(t *testing.T, mu *sync.Mutex, methods *[]string) http.Handler {
-	t.Helper()
-	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		mu.Lock()
-		*methods = append(*methods, r.Method)
-		mu.Unlock()
-		w.Header().Set("Content-Type", "application/json")
-		_, _ = w.Write([]byte(`{"jsonrpc":"2.0","id":1,"result":{"content":[{"type":"text","text":"EXECUTED"}]}}`))
-	})
+func countMatching(reqs []backendRequest, pred func(backendRequest) bool) int {
+	n := 0
+	for _, r := range reqs {
+		if pred(r) {
+			n++
+		}
+	}
+	return n
+}
+
+func hasMatching(reqs []backendRequest, pred func(backendRequest) bool) bool {
+	return countMatching(reqs, pred) > 0
 }
 
 // startTransparentProxyForMethodTest builds the runner middleware chain and puts a

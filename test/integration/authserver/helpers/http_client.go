@@ -6,9 +6,11 @@ package helpers
 import (
 	"bytes"
 	"encoding/json"
+	"errors"
 	"io"
 	"net/http"
 	"net/url"
+	"strings"
 	"time"
 )
 
@@ -122,6 +124,39 @@ func (c *OAuthClient) GetOIDCDiscovery() (map[string]interface{}, int, error) {
 func (c *OAuthClient) StartAuthorization(params url.Values) (*http.Response, error) {
 	authURL := c.baseURL + "/oauth/authorize?" + params.Encode()
 	resp, err := c.httpClient.Get(authURL)
+	if err != nil {
+		return nil, err
+	}
+	c.rememberCookies(resp)
+	return resp, nil
+}
+
+// ApproveConsent submits the consent page using the browser-binding cookies
+// from the authorization response, then remembers the upstream binding cookie.
+func (c *OAuthClient) ApproveConsent(page *http.Response, origin string) (*http.Response, error) {
+	body, err := io.ReadAll(page.Body)
+	if err != nil {
+		return nil, err
+	}
+	_, rest, ok := strings.Cut(string(body), `name="handle" value="`)
+	if !ok {
+		return nil, errors.New("consent handle missing")
+	}
+	handle, _, ok := strings.Cut(rest, `"`)
+	if !ok || handle == "" {
+		return nil, errors.New("consent handle missing")
+	}
+	form := url.Values{"handle": {handle}, "decision": {"approve"}}
+	req, err := http.NewRequest(http.MethodPost, c.baseURL+"/oauth/consent", strings.NewReader(form.Encode()))
+	if err != nil {
+		return nil, err
+	}
+	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	req.Header.Set("Origin", origin)
+	for _, cookie := range page.Cookies() {
+		req.AddCookie(cookie)
+	}
+	resp, err := c.httpClient.Do(req)
 	if err != nil {
 		return nil, err
 	}

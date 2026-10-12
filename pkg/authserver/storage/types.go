@@ -16,7 +16,7 @@
 // OAuth authorization server.
 package storage
 
-//go:generate mockgen -destination=mocks/mock_storage.go -package=mocks -source=types.go Storage,PendingAuthorizationStorage,DeviceCodeStorage,PendingDeviceLoginStorage,PendingDeviceConfirmationStorage,AssertionJWTConsumer,ClientRegistry,UpstreamTokenStorage,UpstreamTokenRefresher,UserStorage,DCRCredentialStore
+//go:generate mockgen -destination=mocks/mock_storage.go -package=mocks -source=types.go Storage,PendingAuthorizationStorage,DeviceCodeStorage,PendingDeviceLoginStorage,PendingDeviceConfirmationStorage,RememberedConsentStorage,AssertionJWTConsumer,ClientRegistry,UpstreamTokenStorage,UpstreamTokenRefresher,UserStorage,DCRCredentialStore
 
 import (
 	"context"
@@ -78,6 +78,13 @@ var (
 	// (ErrNotFound means there was no race to lose — see
 	// CompareAndSwapUpstreamTokens for the full coordination contract).
 	ErrConcurrentRefresh = errors.New("storage: upstream token row changed concurrently")
+
+	// ErrDCRCredentialsChanged is returned by
+	// DCRCredentialStore.UpdateDCRCredentialsIfUnchanged when the stored row
+	// no longer equals the caller's expected value: another writer replaced it
+	// after the caller read it. Nothing is written. A row that is absent
+	// altogether is reported as ErrNotFound instead.
+	ErrDCRCredentialsChanged = errors.New("storage: dcr credentials row changed concurrently")
 
 	// ErrInvalidState is returned when an operation requires an item to be in a
 	// particular lifecycle state (e.g. a pending device request) but it is not.
@@ -306,6 +313,24 @@ func validateDCRCredentialsForStore(creds *DCRCredentials) error {
 	return nil
 }
 
+// validateDCRCompareAndSet enforces the input contract of
+// DCRCredentialStore.UpdateDCRCredentialsIfUnchanged on top of
+// validateDCRCredentialsForStore: expected must be present and must address
+// the same row as creds, so a caller cannot gate a write to one key on the
+// contents of another.
+func validateDCRCompareAndSet(creds, expected *DCRCredentials) error {
+	if err := validateDCRCredentialsForStore(creds); err != nil {
+		return err
+	}
+	if expected == nil {
+		return fosite.ErrInvalidRequest.WithHint("expected dcr credentials cannot be nil")
+	}
+	if expected.Key != creds.Key {
+		return fosite.ErrInvalidRequest.WithHint("expected dcr credentials key must match creds key")
+	}
+	return nil
+}
+
 // DCRCredentials is the persisted form of an RFC 7591 Dynamic Client
 // Registration result. All fields are populated from the upstream's DCR
 // response. The RFC 7592 management fields (RegistrationAccessToken,
@@ -473,6 +498,57 @@ type DCRCredentialStore interface {
 	// from the incoming creds, so an update can extend, shorten, or clear the
 	// row's TTL exactly as an initial store would.
 	UpdateDCRCredentialsIfPresent(ctx context.Context, creds *DCRCredentials) (*DCRCredentials, error)
+
+	// UpdateDCRCredentialsIfUnchanged replaces the record at creds.Key with
+	// creds, iff the record currently stored there still equals expected —
+	// the value the caller previously read via GetDCRCredentials. It is the
+	// compare-and-set sibling of UpdateDCRCredentialsIfPresent, for callers
+	// that coordinate re-registration across replicas and must not clobber a
+	// newer row written by a concurrent writer after their read (e.g. a lock
+	// holder that stalled past its lease before writing).
+	//
+	// Returns ErrNotFound (wrapped) if no record exists at the key, and
+	// ErrDCRCredentialsChanged if the stored record no longer equals
+	// expected. In both cases nothing is written. On success it returns the
+	// stored value (a defensive copy) and the returned *DCRCredentials is
+	// non-nil.
+	//
+	// Any other error leaves the row's state to be determined by re-reading
+	// it. This includes transport failures, where the write may or may not
+	// have been applied. It also includes a backend that bounds its internal
+	// retries (the Redis backend) giving up because other writers kept
+	// touching the key between its compare and its write; in that case this
+	// call wrote nothing, and the caller may re-read and try again.
+	//
+	// expected must be non-nil and its Key must equal creds.Key. Equality is
+	// over every persisted field, compared at the backend's storage precision
+	// (the Redis backend persists times at one-second resolution), so a value
+	// returned by GetDCRCredentials always compares equal to the row it was
+	// read from.
+	//
+	// A decorator that transforms fields on the way in and out (encryption,
+	// compression, …) must pass the inner store the stored form of expected —
+	// what the inner GetDCRCredentials returned — not the decoded form it
+	// handed to its own caller. When the transform is not reproducible (e.g.
+	// encryption with a fresh nonce per seal), the decorator cannot derive
+	// that stored form from the caller's decoded expected. Instead it should
+	// re-read the inner row, decode it, return ErrDCRCredentialsChanged if
+	// the decoded value differs from the caller's expected, and otherwise
+	// call the inner UpdateDCRCredentialsIfUnchanged with the raw inner row
+	// it just read as expected. That stays atomic: if the row changes between
+	// the decorator's re-read and the inner write, the inner compare refuses
+	// it. A decorator that recovers a row it cannot decode at all already
+	// holds the raw inner row and passes it directly. A consumer outside the
+	// decorator that needs to compare-and-set a row it cannot decode would
+	// need an opaque version or etag instead; that is not provided today.
+	//
+	// Presence is physical, exactly as for UpdateDCRCredentialsIfPresent, and
+	// the rewritten row's backend TTL follows the same ClientSecretExpiresAt
+	// rules. Implementations MUST perform the compare and the write
+	// atomically with respect to other writers of the same key, and MUST
+	// touch only that one key so the operation stays valid under Redis
+	// Cluster.
+	UpdateDCRCredentialsIfUnchanged(ctx context.Context, creds, expected *DCRCredentials) (*DCRCredentials, error)
 }
 
 // User represents a user account in the authorization server.
@@ -512,6 +588,49 @@ type ProviderIdentity struct {
 	LastUsedAt time.Time
 }
 
+// Consent stages for a pending client authorization. Empty is a legacy record
+// and must never grant consent.
+const (
+	ConsentStageAwaiting = "awaiting"
+	ConsentStageApproved = "approved"
+)
+
+// ConsentSession binds a browser to a previously verified first-upstream identity.
+// JSON names match existing Redis rows written without tags.
+type ConsentSession struct {
+	UserID          string    `json:"UserID"`
+	ProviderID      string    `json:"ProviderID"`
+	ProviderSubject string    `json:"ProviderSubject"`
+	ExpiresAt       time.Time `json:"ExpiresAt"`
+}
+
+// ClientApproval is the exact request envelope approved by a user for a client.
+// JSON names match existing Redis rows written without tags.
+type ClientApproval struct {
+	RedirectURI string    `json:"RedirectURI"`
+	Scopes      []string  `json:"Scopes"`
+	Resource    string    `json:"Resource"`
+	ExpiresAt   time.Time `json:"ExpiresAt"`
+}
+
+const (
+	// ConsentSessionTTL is the fixed lifetime of a remembered browser session.
+	ConsentSessionTTL = 7 * 24 * time.Hour
+	// ClientApprovalTTL is the fixed lifetime of a remembered client approval.
+	ClientApprovalTTL = 30 * 24 * time.Hour
+)
+
+// RememberedConsentStorage is an optional browser-session and client-approval capability.
+// Callers supply a digest of the session secret; raw cookie values must never be stored.
+// Reads return ErrNotFound for absent rows and ErrExpired for expired rows.
+type RememberedConsentStorage interface {
+	StoreConsentSession(ctx context.Context, digest string, session *ConsentSession) error
+	GetConsentSession(ctx context.Context, digest string) (*ConsentSession, error)
+	DeleteConsentSession(ctx context.Context, digest string) error
+	StoreClientApproval(ctx context.Context, userID, clientID string, approval *ClientApproval) error
+	GetClientApproval(ctx context.Context, userID, clientID string) (*ClientApproval, error)
+}
+
 // PendingAuthorization tracks a client's authorization request while they
 // authenticate with the upstream IDP.
 type PendingAuthorization struct {
@@ -532,6 +651,24 @@ type PendingAuthorization struct {
 
 	// Scopes are the OAuth scopes requested by the client.
 	Scopes []string
+
+	// Resource is the single audience selected at authorization, either explicitly
+	// by the client or from the sole configured allowed audience.
+	Resource string
+
+	// ConsentStage is empty on legacy records, awaiting before approval, and
+	// approved only after a browser-bound consent POST.
+	ConsentStage string
+
+	// RememberConsent is set only by a browser-bound approval on an HTTPS endpoint.
+	RememberConsent bool
+	// FirstProviderSubject is the non-synthetic first upstream's verified subject.
+	FirstProviderSubject string
+
+	// Expected identity and originating session for a remembered, page-skipping flow.
+	ExpectedUserID          string
+	ExpectedProviderSubject string
+	ConsentSessionDigest    string
 
 	// InternalState is our randomly generated state for correlating upstream callback.
 	InternalState string
@@ -606,7 +743,9 @@ type PendingAuthorization struct {
 	// than recomputed, so the filter is never re-run against a later leg's context.
 	ChainUpstreams []string
 
-	// CreatedAt is when the pending authorization was created.
+	// CreatedAt is when the pending authorization was created. It must be set on
+	// the first leg and preserved across subsequent legs; storage expires the
+	// request at CreatedAt + DefaultPendingAuthorizationTTL.
 	CreatedAt time.Time
 }
 

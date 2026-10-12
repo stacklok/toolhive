@@ -364,6 +364,7 @@ func buildDCRClient(
 	if forced {
 		fositeClient, err = registration.NewConfidentialPlain(registration.Config{
 			ID:            clientID,
+			ClientName:    validated.ClientName,
 			Secret:        clientSecret,
 			RedirectURIs:  validated.RedirectURIs,
 			GrantTypes:    validated.GrantTypes,
@@ -374,6 +375,7 @@ func buildDCRClient(
 	} else {
 		fositeClient, err = registration.New(registration.Config{
 			ID:                                clientID,
+			ClientName:                        validated.ClientName,
 			Secret:                            clientSecret,
 			RedirectURIs:                      validated.RedirectURIs,
 			TokenEndpointAuthMethod:           validated.TokenEndpointAuthMethod,

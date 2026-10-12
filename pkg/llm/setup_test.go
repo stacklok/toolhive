@@ -11,6 +11,7 @@ import (
 	"net"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 	"time"
 
@@ -189,7 +190,7 @@ func TestConfigureDetectedTools_BedrockClaudeCode(t *testing.T) {
 		[]string{"claude-code"},
 		"https://gw.example.com", "http://localhost:14000/v1",
 		"/usr/local/bin/thv", []string{"llm", "token", "--skip-browser"},
-		false, "/anthropic", nil, nil,
+		false, "/anthropic", nil, nil, false,
 		BedrockConfig{Compat: true, Enable1M: true},
 	)
 	require.NoError(t, err)
@@ -213,13 +214,95 @@ func TestConfigureDetectedTools_BedrockSkippedForNonClaudeCode(t *testing.T) {
 		[]string{"cursor"},
 		"https://gw.example.com", "http://localhost:14000/v1",
 		"/usr/local/bin/thv", []string{"llm", "token", "--skip-browser"},
-		false, "", nil, nil,
+		false, "", nil, nil, false,
 		BedrockConfig{Compat: true},
 	)
 	require.NoError(t, err)
 	require.Len(t, gm.applied, 1)
 	assert.False(t, gm.applied[0].BedrockCompat)
 	assert.Empty(t, gm.applied[0].BedrockOpusModel)
+}
+
+func TestConfigureDetectedTools_PromptCache(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name             string
+		clientType       string
+		mode             string
+		shortPromptCache bool
+		conflict         string
+		conflictErr      error
+		wantStderr       []string
+		wantStderrAbsent []string
+		wantConflictCall bool
+	}{
+		{
+			name:             "Claude Code gets one-hour lifetime by default",
+			clientType:       claudeCodeClient,
+			mode:             llmgateway.ModeDirect,
+			wantConflictCall: true,
+		},
+		{
+			name:             "non-Claude client has no prompt-cache reporting",
+			clientType:       "cursor",
+			mode:             llmgateway.ModeProxy,
+			wantStderrAbsent: []string{"Warning:"},
+		},
+		{
+			name:             "short-cache opt-out skips conflict inspection",
+			clientType:       claudeCodeClient,
+			mode:             llmgateway.ModeDirect,
+			shortPromptCache: true,
+			wantStderrAbsent: []string{"Warning:"},
+		},
+		{
+			name:             "five-minute override warns but one-hour settings are still written",
+			clientType:       claudeCodeClient,
+			mode:             llmgateway.ModeDirect,
+			conflict:         "CLAUDE_CODE_PROMPT_CACHE_TTL=5m in the process environment",
+			wantStderr:       []string{"CLAUDE_CODE_PROMPT_CACHE_TTL=5m", "wrote the one-hour", promptCacheVerificationCommand},
+			wantConflictCall: true,
+		},
+		{
+			name:             "inspection failure warns but one-hour settings are still written",
+			clientType:       claudeCodeClient,
+			mode:             llmgateway.ModeDirect,
+			conflictErr:      errors.New("invalid settings"),
+			wantStderr:       []string{"could not inspect claude-code", "wrote the one-hour settings anyway"},
+			wantConflictCall: true,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			gm := &capturingGatewayManager{
+				mode:             tt.mode,
+				cacheConflict:    tt.conflict,
+				cacheConflictErr: tt.conflictErr,
+			}
+			var out, errOut bytes.Buffer
+
+			configured, err := configureDetectedToolsWithDiscovery(
+				&out, &errOut, gm, []string{tt.clientType},
+				"https://gw.example.com", "http://localhost:14000/v1",
+				"/usr/local/bin/thv", []string{"llm", "token", "--skip-browser"},
+				false, "", nil, nil, tt.shortPromptCache, BedrockConfig{},
+			)
+			require.NoError(t, err)
+			require.Len(t, configured, 1)
+			require.Len(t, gm.applied, 1)
+			assert.Equal(t, tt.shortPromptCache, gm.applied[0].ShortPromptCache)
+			assert.Equal(t, tt.wantConflictCall, gm.conflictCalls == 1)
+			for _, want := range tt.wantStderr {
+				assert.Contains(t, errOut.String(), want)
+			}
+			for _, absent := range tt.wantStderrAbsent {
+				assert.NotContains(t, errOut.String(), absent)
+			}
+		})
+	}
 }
 
 // ── mergeToolConfigs ──────────────────────────────────────────────────────────
@@ -305,7 +388,10 @@ func (*stubGatewayManager) DetectedLLMGatewayClients() []string { return nil }
 func (*stubGatewayManager) ConfigureLLMGateway(_ string, _ llmgateway.ApplyConfig) (string, error) {
 	return "", nil
 }
-func (*stubGatewayManager) LLMGatewayModeFor(_ string) string      { return "" }
+func (*stubGatewayManager) LLMGatewayModeFor(_ string) string { return "" }
+func (*stubGatewayManager) PromptCacheConflict(_ string) (string, error) {
+	return "", nil
+}
 func (*stubGatewayManager) IsManaged(_ string) bool                { return false }
 func (*stubGatewayManager) LLMClientDetectionHint(_ string) string { return "" }
 func (*stubGatewayManager) ConfigureEnvFile(_ string, _ llmgateway.ApplyConfig) (string, error) {
@@ -321,15 +407,19 @@ func (s *stubGatewayManager) RevertLLMGateway(clientType, _ string) error {
 type stubConfigUpdater struct {
 	cfg         Config
 	updateCalls int
+	updateErr   error
 }
 
 func (s *stubConfigUpdater) GetLLMConfig() Config { return s.cfg }
 func (s *stubConfigUpdater) UpdateLLMConfig(fn func(*Config) error) error {
 	s.updateCalls++
+	if s.updateErr != nil {
+		return s.updateErr
+	}
 	return fn(&s.cfg)
 }
 
-func TestTeardown_PurgeTokens_ClearsConfigRefsAndDeletesSecrets(t *testing.T) {
+func TestTeardown_PurgeTokens_ClearsConfigRefsAndDeletesSecretsDuringPartialTeardown(t *testing.T) {
 	t.Parallel()
 
 	ctrl := gomock.NewController(t)
@@ -337,9 +427,16 @@ func TestTeardown_PurgeTokens_ClearsConfigRefsAndDeletesSecrets(t *testing.T) {
 	sp.EXPECT().Capabilities().Return(secrets.ProviderCapabilities{
 		CanRead: true, CanWrite: true, CanDelete: true, CanList: true,
 	}).AnyTimes()
-	// DeleteCachedTokens lists then deletes; for simplicity return empty list so
-	// the delete call is skipped — we only need to verify the config refs are cleared.
-	sp.EXPECT().ListSecrets(gomock.Any()).Return(nil, nil)
+	refreshKey := secrets.SystemKeyPrefix + string(secrets.ScopeLLM) + "_refresh_token"
+	accessKey := secrets.SystemKeyPrefix + string(secrets.ScopeLLM) + "_access_token"
+	sp.EXPECT().ListSecrets(gomock.Any()).Return([]secrets.SecretDescription{
+		{Key: refreshKey},
+		{Key: accessKey},
+	}, nil)
+	sp.EXPECT().DeleteSecrets(gomock.Any(), gomock.InAnyOrder([]string{
+		refreshKey,
+		accessKey,
+	})).Return(nil)
 
 	expiry := time.Now()
 	provider := &stubConfigUpdater{cfg: Config{
@@ -347,19 +444,27 @@ func TestTeardown_PurgeTokens_ClearsConfigRefsAndDeletesSecrets(t *testing.T) {
 			CachedRefreshTokenRef: "some-ref",
 			CachedTokenExpiry:     expiry,
 		},
-		ConfiguredTools: []ToolConfig{{Tool: "cursor", ConfigPath: "/tmp/cursor.json"}},
+		ConfiguredTools: []ToolConfig{
+			{Tool: "cursor", ConfigPath: "/tmp/cursor.json"},
+			{Tool: "claude-code", ConfigPath: "/tmp/claude.json"},
+		},
 	}}
 	gm := &stubGatewayManager{}
 
 	var stdout, stderr bytes.Buffer
-	err := Teardown(context.Background(), &stdout, &stderr, gm, "", true, provider, sp)
+	err := Teardown(context.Background(), &stdout, &stderr, gm, "cursor", false, true, provider,
+		func() (secrets.Provider, error) { return sp, nil })
 	require.NoError(t, err)
 
 	// Config refs must be cleared.
 	assert.Empty(t, provider.cfg.OIDC.CachedRefreshTokenRef)
 	assert.True(t, provider.cfg.OIDC.CachedTokenExpiry.IsZero())
-	// Tool must have been reverted.
+	require.Len(t, provider.cfg.ConfiguredTools, 1)
+	assert.Equal(t, "claude-code", provider.cfg.ConfiguredTools[0].Tool)
+	// Only the targeted tool must have been reverted.
 	assert.Equal(t, []string{"cursor"}, gm.reverted)
+	assert.Contains(t, stdout.String(), "Remaining configured tools share this session")
+	assert.Contains(t, stdout.String(), "active process may recreate cached credentials")
 }
 
 // fullSetupConfig returns a config as "thv llm setup" would leave it, with the
@@ -389,9 +494,8 @@ func fullSetupConfig(tools ...string) Config {
 // deliberately sticky across "thv llm setup" re-runs, so leaving them behind
 // would let a later setup silently re-apply settings the user just tore down.
 //
-// Cached token state is the one exception: it is carried over so the keyring
-// secret it points at is not stranded, and stays the business of --purge-tokens.
-func TestTeardown_ResetsConfigWhenLastToolReverted(t *testing.T) {
+// Cached token state is retained only when the user explicitly requests it.
+func TestTeardown_KeepTokensResetsConfigWhenLastToolReverted(t *testing.T) {
 	t.Parallel()
 
 	tests := []struct {
@@ -419,7 +523,7 @@ func TestTeardown_ResetsConfigWhenLastToolReverted(t *testing.T) {
 
 			var stdout, stderr bytes.Buffer
 			err := Teardown(context.Background(), &stdout, &stderr,
-				&stubGatewayManager{}, tt.targetTool, false, provider, nil)
+				&stubGatewayManager{}, tt.targetTool, true, false, provider, nil)
 			require.NoError(t, err)
 
 			want := Config{OIDC: OIDCConfig{CachedRefreshTokenRef: "secret-ref"}}
@@ -430,20 +534,80 @@ func TestTeardown_ResetsConfigWhenLastToolReverted(t *testing.T) {
 	}
 }
 
-// TestTeardown_ResetsCachedTokenStateWhenPurging verifies that --purge-tokens
-// still clears the cached token refs on a full teardown, so the config keeps no
-// pointer to secrets that PurgeTokens deletes.
-func TestTeardown_ResetsCachedTokenStateWhenPurging(t *testing.T) {
+// TestTeardown_DefaultPurgeWhenNoToolsRemain verifies that both forms of full
+// teardown delete cached tokens without requiring --purge-tokens.
+func TestTeardown_DefaultPurgeWhenNoToolsRemain(t *testing.T) {
 	t.Parallel()
 
-	provider := &stubConfigUpdater{cfg: fullSetupConfig("claude-code")}
+	tests := []struct {
+		name       string
+		configured []string
+		targetTool string
+	}{
+		{
+			name:       "targeted teardown removes final tool",
+			configured: []string{"claude-code"},
+			targetTool: "claude-code",
+		},
+		{
+			name:       "untargeted teardown removes all tools",
+			configured: []string{"claude-code", "cursor"},
+		},
+	}
 
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			ctrl := gomock.NewController(t)
+			sp := secretsmocks.NewMockProvider(ctrl)
+			sp.EXPECT().Capabilities().Return(secrets.ProviderCapabilities{
+				CanRead: true, CanWrite: true, CanDelete: true, CanList: true,
+			}).AnyTimes()
+			sp.EXPECT().ListSecrets(gomock.Any()).Return(nil, nil)
+
+			factoryCalls := 0
+			provider := &stubConfigUpdater{cfg: fullSetupConfig(tt.configured...)}
+			var stdout, stderr bytes.Buffer
+			err := Teardown(context.Background(), &stdout, &stderr,
+				&stubGatewayManager{}, tt.targetTool, false, false, provider,
+				func() (secrets.Provider, error) {
+					factoryCalls++
+					return sp, nil
+				})
+			require.NoError(t, err)
+
+			assert.Equal(t, 1, factoryCalls)
+			assert.Equal(t, Config{}, provider.cfg)
+		})
+	}
+}
+
+func TestTeardown_ZeroToolsStillPurgesCachedTokens(t *testing.T) {
+	t.Parallel()
+
+	ctrl := gomock.NewController(t)
+	sp := secretsmocks.NewMockProvider(ctrl)
+	sp.EXPECT().Capabilities().Return(secrets.ProviderCapabilities{
+		CanRead: true, CanWrite: true, CanDelete: true, CanList: true,
+	}).AnyTimes()
+	sp.EXPECT().ListSecrets(gomock.Any()).Return(nil, nil)
+
+	factoryCalls := 0
+	provider := &stubConfigUpdater{cfg: fullSetupConfig()}
 	var stdout, stderr bytes.Buffer
 	err := Teardown(context.Background(), &stdout, &stderr,
-		&stubGatewayManager{}, "", true, provider, nil)
+		&stubGatewayManager{}, "", false, false, provider,
+		func() (secrets.Provider, error) {
+			factoryCalls++
+			return sp, nil
+		})
 	require.NoError(t, err)
 
+	assert.Equal(t, 1, factoryCalls)
+	assert.Equal(t, 1, provider.updateCalls)
 	assert.Equal(t, Config{}, provider.cfg)
+	assert.Contains(t, stdout.String(), "No tools are currently configured")
 }
 
 // TestTeardown_KeepsConfigWhileToolsRemain verifies that a targeted teardown
@@ -454,12 +618,18 @@ func TestTeardown_KeepsConfigWhileToolsRemain(t *testing.T) {
 	t.Parallel()
 
 	provider := &stubConfigUpdater{cfg: fullSetupConfig("claude-code", "cursor")}
+	factoryCalls := 0
 
 	var stdout, stderr bytes.Buffer
 	err := Teardown(context.Background(), &stdout, &stderr,
-		&stubGatewayManager{}, "claude-code", false, provider, nil)
+		&stubGatewayManager{}, "claude-code", false, false, provider,
+		func() (secrets.Provider, error) {
+			factoryCalls++
+			return nil, errors.New("must not acquire secrets provider")
+		})
 	require.NoError(t, err)
 
+	assert.Zero(t, factoryCalls)
 	assert.True(t, provider.cfg.IsConfigured(),
 		"cursor still routes through the gateway, so its config must survive")
 	assert.Equal(t, "secret-ref", provider.cfg.OIDC.CachedRefreshTokenRef,
@@ -474,7 +644,7 @@ func TestTeardown_KeepsConfigWhileToolsRemain(t *testing.T) {
 	assert.Equal(t, []string{"cursor"}, remaining)
 }
 
-func TestTeardown_NoPurge_LeavesTokenRefsIntact(t *testing.T) {
+func TestTeardown_KeepTokens_LeavesTokenRefsIntact(t *testing.T) {
 	t.Parallel()
 
 	expiry := time.Now()
@@ -486,14 +656,161 @@ func TestTeardown_NoPurge_LeavesTokenRefsIntact(t *testing.T) {
 		ConfiguredTools: []ToolConfig{{Tool: "cursor", ConfigPath: "/tmp/cursor.json"}},
 	}}
 	gm := &stubGatewayManager{}
+	factoryCalls := 0
 
 	var stdout, stderr bytes.Buffer
-	err := Teardown(context.Background(), &stdout, &stderr, gm, "", false, provider, nil)
+	err := Teardown(context.Background(), &stdout, &stderr, gm, "", true, false, provider,
+		func() (secrets.Provider, error) {
+			factoryCalls++
+			return nil, errors.New("must not acquire secrets provider")
+		})
 	require.NoError(t, err)
 
-	// Token refs must be untouched when purgeTokens=false.
+	assert.Zero(t, factoryCalls)
+	// Token refs must be untouched when keepTokens=true.
 	assert.Equal(t, "some-ref", provider.cfg.OIDC.CachedRefreshTokenRef)
 	assert.Equal(t, expiry, provider.cfg.OIDC.CachedTokenExpiry)
+}
+
+func TestTeardown_SecretsProviderAcquisitionErrorStopsBeforeConfigUpdate(t *testing.T) {
+	t.Parallel()
+
+	original := fullSetupConfig("cursor")
+	provider := &stubConfigUpdater{cfg: original}
+	gm := &stubGatewayManager{}
+
+	var stdout, stderr bytes.Buffer
+	err := Teardown(context.Background(), &stdout, &stderr, gm, "", false, false, provider,
+		func() (secrets.Provider, error) { return nil, errors.New("keychain unavailable") })
+	require.Error(t, err)
+
+	assert.ErrorContains(t, err, "getting secrets provider to remove cached LLM tokens")
+	assert.ErrorContains(t, err, "keychain unavailable")
+	assert.Zero(t, provider.updateCalls)
+	assert.Equal(t, original, provider.cfg)
+	assert.Empty(t, gm.reverted)
+}
+
+func TestTeardown_ConfigUpdateFailureLeavesToolStateAfterSecretCleanup(t *testing.T) {
+	t.Parallel()
+
+	ctrl := gomock.NewController(t)
+	sp := secretsmocks.NewMockProvider(ctrl)
+	sp.EXPECT().Capabilities().Return(secrets.ProviderCapabilities{
+		CanRead: true, CanWrite: true, CanDelete: true, CanList: true,
+	}).AnyTimes()
+	sp.EXPECT().ListSecrets(gomock.Any()).Return(nil, nil)
+	original := fullSetupConfig("cursor")
+	provider := &stubConfigUpdater{cfg: original, updateErr: errors.New("disk full")}
+	gm := &stubGatewayManager{}
+	factoryCalls := 0
+
+	var stdout, stderr bytes.Buffer
+	err := Teardown(context.Background(), &stdout, &stderr, gm, "", false, false, provider,
+		func() (secrets.Provider, error) {
+			factoryCalls++
+			return sp, nil
+		})
+	require.Error(t, err)
+
+	assert.ErrorContains(t, err, "cached LLM tokens were deleted, but persisting tool configuration")
+	assert.Equal(t, 1, factoryCalls)
+	assert.Equal(t, 1, provider.updateCalls)
+	assert.Equal(t, original, provider.cfg)
+	assert.Empty(t, gm.reverted)
+}
+
+func TestTeardown_PurgeErrorsAreFatal(t *testing.T) {
+	t.Parallel()
+
+	llmRefreshKey := secrets.SystemKeyPrefix + string(secrets.ScopeLLM) + "_refresh_token"
+	tests := []struct {
+		name      string
+		setupMock func(*secretsmocks.MockProvider)
+		wantError string
+	}{
+		{
+			name: "list error",
+			setupMock: func(sp *secretsmocks.MockProvider) {
+				sp.EXPECT().ListSecrets(gomock.Any()).Return(nil, errors.New("list failed"))
+			},
+			wantError: "list failed",
+		},
+		{
+			name: "delete error",
+			setupMock: func(sp *secretsmocks.MockProvider) {
+				sp.EXPECT().ListSecrets(gomock.Any()).Return([]secrets.SecretDescription{
+					{Key: llmRefreshKey},
+				}, nil)
+				sp.EXPECT().DeleteSecrets(gomock.Any(), []string{llmRefreshKey}).Return(errors.New("delete failed"))
+			},
+			wantError: "delete failed",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			ctrl := gomock.NewController(t)
+			sp := secretsmocks.NewMockProvider(ctrl)
+			sp.EXPECT().Capabilities().Return(secrets.ProviderCapabilities{
+				CanRead: true, CanWrite: true, CanDelete: true, CanList: true,
+			}).AnyTimes()
+			tt.setupMock(sp)
+
+			provider := &stubConfigUpdater{cfg: fullSetupConfig("cursor")}
+			gm := &stubGatewayManager{}
+			var stdout, stderr bytes.Buffer
+			err := Teardown(context.Background(), &stdout, &stderr, gm, "", false, false, provider,
+				func() (secrets.Provider, error) { return sp, nil })
+			require.Error(t, err)
+
+			assert.ErrorContains(t, err, "cached token cleanup failed; no configuration changes were made")
+			assert.ErrorContains(t, err, tt.wantError)
+			assert.Equal(t, fullSetupConfig("cursor"), provider.cfg)
+			assert.Zero(t, provider.updateCalls)
+			assert.Empty(t, gm.reverted)
+		})
+	}
+}
+
+func TestTeardown_PurgeFailureCanRetrySameTargetedCommand(t *testing.T) {
+	t.Parallel()
+
+	ctrl := gomock.NewController(t)
+	sp := secretsmocks.NewMockProvider(ctrl)
+	sp.EXPECT().Capabilities().Return(secrets.ProviderCapabilities{
+		CanRead: true, CanWrite: true, CanDelete: true, CanList: true,
+	}).AnyTimes()
+	gomock.InOrder(
+		sp.EXPECT().ListSecrets(gomock.Any()).Return(nil, errors.New("temporary keychain failure")),
+		sp.EXPECT().ListSecrets(gomock.Any()).Return(nil, nil),
+	)
+
+	provider := &stubConfigUpdater{cfg: fullSetupConfig("cursor", "claude-code")}
+	factoryCalls := 0
+	getSecretsProvider := func() (secrets.Provider, error) {
+		factoryCalls++
+		return sp, nil
+	}
+
+	var firstStdout, firstStderr bytes.Buffer
+	err := Teardown(context.Background(), &firstStdout, &firstStderr,
+		&stubGatewayManager{}, "cursor", false, true, provider, getSecretsProvider)
+	require.ErrorContains(t, err, "temporary keychain failure")
+	assert.Equal(t, fullSetupConfig("cursor", "claude-code"), provider.cfg)
+	assert.Zero(t, provider.updateCalls)
+
+	var retryStdout, retryStderr bytes.Buffer
+	err = Teardown(context.Background(), &retryStdout, &retryStderr,
+		&stubGatewayManager{}, "cursor", false, true, provider, getSecretsProvider)
+	require.NoError(t, err)
+
+	assert.Equal(t, 2, factoryCalls)
+	assert.Equal(t, 1, provider.updateCalls)
+	require.Len(t, provider.cfg.ConfiguredTools, 1)
+	assert.Equal(t, "claude-code", provider.cfg.ConfiguredTools[0].Tool)
 }
 
 // ── Setup --lazy path ─────────────────────────────────────────────────────────
@@ -516,7 +833,10 @@ func (g *setupGatewayManager) ConfigureLLMGateway(client string, cfg llmgateway.
 	return "/tmp/settings.json", nil
 }
 func (g *setupGatewayManager) LLMGatewayModeFor(_ string) string { return g.mode }
-func (*setupGatewayManager) IsManaged(_ string) bool             { return false }
+func (*setupGatewayManager) PromptCacheConflict(_ string) (string, error) {
+	return "", nil
+}
+func (*setupGatewayManager) IsManaged(_ string) bool { return false }
 func (g *setupGatewayManager) LLMClientDetectionHint(_ string) string {
 	return g.hint
 }
@@ -740,6 +1060,102 @@ func TestSetup_VSCodeDiscoveryFailureSelectionSemantics(t *testing.T) {
 	})
 }
 
+func TestSetup_ShortPromptCachePreference(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name           string
+		persistedShort bool
+		inline         *bool
+		wantShort      bool
+	}{
+		{name: "default applies one-hour cache"},
+		{name: "persisted opt-out is reapplied", persistedShort: true, wantShort: true},
+		{name: "inline opt-out is persisted", inline: boolPtr(true), wantShort: true},
+		{name: "explicit false restores one-hour cache", persistedShort: true, inline: boolPtr(false)},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			gm := &capturingGatewayManager{detected: []string{claudeCodeClient}, mode: llmgateway.ModeDirect}
+			provider := configuredSetupProvider()
+			provider.cfg.ShortPromptCache = tt.persistedShort
+			var stdout, stderr bytes.Buffer
+			err := Setup(
+				context.Background(), &stdout, &stderr, gm, provider,
+				func(context.Context, *Config) error { return nil },
+				SetOptions{ShortPromptCache: tt.inline}, "", true, "", true,
+			)
+			require.NoError(t, err)
+			require.Len(t, gm.applied, 1)
+			assert.Equal(t, tt.wantShort, gm.applied[0].ShortPromptCache)
+			assert.Equal(t, tt.wantShort, provider.cfg.ShortPromptCache)
+		})
+	}
+}
+
+func TestSetup_ShortPromptCacheWarningForNonClaudeClient(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name     string
+		inline   *bool
+		wantWarn bool
+	}{
+		{name: "plain setup is silent"},
+		{name: "explicit short-cache flag warns", inline: boolPtr(true), wantWarn: true},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			gm := &capturingGatewayManager{detected: []string{"cursor"}, mode: llmgateway.ModeProxy}
+			provider := configuredSetupProvider()
+			var stdout, stderr bytes.Buffer
+			err := Setup(
+				context.Background(), &stdout, &stderr, gm, provider,
+				func(context.Context, *Config) error { return nil },
+				SetOptions{ShortPromptCache: tt.inline}, "", true, "cursor", true,
+			)
+			require.NoError(t, err)
+			assert.Equal(t, tt.wantWarn, strings.Contains(stderr.String(), "--short-prompt-cache was set"))
+		})
+	}
+}
+
+func TestSetup_PromptCacheBedrockWarningOnlyForInlineFlag(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name              string
+		persistedBedrock  bool
+		inlineBedrock     *bool
+		shortPromptCache  bool
+		wantCompatibility bool
+	}{
+		{name: "inline Bedrock compatibility warns", inlineBedrock: boolPtr(true), wantCompatibility: true},
+		{name: "persisted Bedrock compatibility is silent", persistedBedrock: true},
+		{name: "short cache is compatible", inlineBedrock: boolPtr(true), shortPromptCache: true},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			gm := &capturingGatewayManager{detected: []string{claudeCodeClient}, mode: llmgateway.ModeDirect}
+			provider := configuredSetupProvider()
+			provider.cfg.Bedrock.Compat = tt.persistedBedrock
+			provider.cfg.ShortPromptCache = tt.shortPromptCache
+			var stdout, stderr bytes.Buffer
+			err := Setup(
+				context.Background(), &stdout, &stderr, gm, provider,
+				func(context.Context, *Config) error { return nil },
+				SetOptions{BedrockCompat: tt.inlineBedrock}, "", true, "", true,
+			)
+			require.NoError(t, err)
+			assert.Equal(t, tt.wantCompatibility,
+				strings.Contains(stderr.String(), "may not take effect with Bedrock compatibility"))
+		})
+	}
+}
+
 func TestFilterDetectedClients_LeftoverDirHint(t *testing.T) {
 	t.Parallel()
 	gm := &setupGatewayManager{
@@ -869,17 +1285,25 @@ func TestSetup_CallbackPortInUseBeforeLogin(t *testing.T) {
 
 // capturingGatewayManager records the ApplyConfig passed to ConfigureLLMGateway.
 type capturingGatewayManager struct {
-	mode    string // returned by LLMGatewayModeFor
-	applied []llmgateway.ApplyConfig
+	mode             string // returned by LLMGatewayModeFor
+	detected         []string
+	cacheConflict    string
+	cacheConflictErr error
+	conflictCalls    int
+	applied          []llmgateway.ApplyConfig
 }
 
-func (*capturingGatewayManager) DetectedLLMGatewayClients() []string { return nil }
+func (g *capturingGatewayManager) DetectedLLMGatewayClients() []string { return g.detected }
 func (g *capturingGatewayManager) ConfigureLLMGateway(_ string, cfg llmgateway.ApplyConfig) (string, error) {
 	g.applied = append(g.applied, cfg)
 	return "/path/to/settings.json", nil
 }
 func (g *capturingGatewayManager) LLMGatewayModeFor(_ string) string { return g.mode }
-func (*capturingGatewayManager) IsManaged(_ string) bool             { return false }
+func (g *capturingGatewayManager) PromptCacheConflict(_ string) (string, error) {
+	g.conflictCalls++
+	return g.cacheConflict, g.cacheConflictErr
+}
+func (*capturingGatewayManager) IsManaged(_ string) bool { return false }
 func (*capturingGatewayManager) LLMClientDetectionHint(_ string) string {
 	return ""
 }
@@ -901,7 +1325,7 @@ func TestConfigureDetectedTools_PathPrefixAppendedForDirectMode(t *testing.T) {
 		[]string{"claude-code"},
 		"https://gw.example.com", "http://localhost:14000/v1",
 		"/usr/local/bin/thv", []string{"llm", "token", "--skip-browser"},
-		false, "/anthropic", nil, nil,
+		false, "/anthropic", nil, nil, false,
 		BedrockConfig{},
 	)
 	require.NoError(t, err)
@@ -923,7 +1347,7 @@ func TestConfigureDetectedTools_NoPrefixWhenEmpty(t *testing.T) {
 		[]string{"claude-code"},
 		"https://gw.example.com", "http://localhost:14000/v1",
 		"/usr/local/bin/thv", []string{"llm", "token", "--skip-browser"},
-		false, "", nil, nil, // no prefix
+		false, "", nil, nil, false, // no prefix
 		BedrockConfig{},
 	)
 	require.NoError(t, err)
@@ -944,7 +1368,7 @@ func TestConfigureDetectedTools_PrefixNotAppliedForProxyMode(t *testing.T) {
 		[]string{"cursor"},
 		"https://gw.example.com", "http://localhost:14000/v1",
 		"/usr/local/bin/thv", []string{"llm", "token", "--skip-browser"},
-		false, "/anthropic", nil, nil,
+		false, "/anthropic", nil, nil, false,
 		BedrockConfig{},
 	)
 	require.NoError(t, err)
@@ -1035,6 +1459,9 @@ func (*managedGatewayManager) ConfigureLLMGateway(_ string, _ llmgateway.ApplyCo
 }
 func (*managedGatewayManager) LLMGatewayModeFor(_ string) string {
 	return llmgateway.ModeCredentialHelper
+}
+func (*managedGatewayManager) PromptCacheConflict(_ string) (string, error) {
+	return "", nil
 }
 func (g *managedGatewayManager) IsManaged(c string) bool { return g.managed[c] }
 func (*managedGatewayManager) LLMClientDetectionHint(_ string) string {

@@ -6,6 +6,7 @@
 - [toolhive.stacklok.dev/config](#toolhivestacklokdevconfig)
 - [toolhive.stacklok.dev/json](#toolhivestacklokdevjson)
 - [toolhive.stacklok.dev/ratelimit](#toolhivestacklokdevratelimit)
+- [toolhive.stacklok.dev/redisconfig](#toolhivestacklokdevredisconfig)
 - [toolhive.stacklok.dev/telemetry](#toolhivestacklokdevtelemetry)
 - [toolhive.stacklok.dev/v1alpha1](#toolhivestacklokdevv1alpha1)
 - [toolhive.stacklok.dev/v1beta1](#toolhivestacklokdevv1beta1)
@@ -276,7 +277,7 @@ _Appears in:_
 
 | Field | Description | Default | Validation |
 | --- | --- | --- | --- |
-| `conflictResolution` _[pkg.vmcp.ConflictResolutionStrategy](#pkgvmcpconflictresolutionstrategy)_ | ConflictResolution defines the strategy for resolving tool name conflicts.<br />- prefix: Automatically prefix tool names with workload identifier<br />- priority: First workload in priority order wins<br />- manual: Explicitly define overrides for all conflicts | prefix | Enum: [prefix priority manual] <br />Optional: \{\} <br /> |
+| `conflictResolution` _[pkg.vmcp.ConflictResolutionStrategy](#pkgvmcpconflictresolutionstrategy)_ | ConflictResolution defines the strategy for resolving tool name conflicts.<br />- prefix: Automatically prefix tool names with workload identifier<br />- priority: Highest-priority workload wins only if all conflicting workloads<br />  are listed; otherwise all candidates are dropped (see PriorityOrder)<br />- manual: Explicitly define overrides for all conflicts | prefix | Enum: [prefix priority manual] <br />Optional: \{\} <br /> |
 | `conflictResolutionConfig` _[vmcp.config.ConflictResolutionConfig](#vmcpconfigconflictresolutionconfig)_ | ConflictResolutionConfig provides configuration for the chosen strategy. |  | Optional: \{\} <br /> |
 | `tools` _[vmcp.config.WorkloadToolConfig](#vmcpconfigworkloadtoolconfig) array_ | Tools defines per-workload tool filtering and overrides. |  | Optional: \{\} <br /> |
 | `excludeAllTools` _boolean_ | ExcludeAllTools hides all backend tools from MCP clients when true.<br />Hidden tools are NOT advertised in tools/list responses, but they ARE<br />available in the routing table for composite tools to use.<br />This enables the use case where you want to hide raw backend tools from<br />direct client access while exposing curated composite tool workflows. |  | Optional: \{\} <br /> |
@@ -437,7 +438,7 @@ _Appears in:_
 | Field | Description | Default | Validation |
 | --- | --- | --- | --- |
 | `prefixFormat` _string_ | PrefixFormat defines the prefix format for the "prefix" tool strategy<br />and for backend-prefixed prompt names (the default for every prompt;<br />under the "priority" strategy, backends listed in priorityOrder keep<br />their own prompt names).<br />Supports placeholders: \{workload\}, \{workload\}_, \{workload\}. | \{workload\}_ | Optional: \{\} <br /> |
-| `priorityOrder` _string array_ | PriorityOrder defines the workload priority order for the "priority" strategy.<br />Listed workloads also keep their own prompt names (unlisted workloads'<br />prompts stay backend-prefixed). |  | Optional: \{\} <br /> |
+| `priorityOrder` _string array_ | PriorityOrder defines the workload priority order for the "priority" strategy<br />(first has highest priority). It is not an allowlist: unique tools remain<br />unchanged, including those from unlisted workloads. If all workloads in a<br />tool-name collision are listed, the highest-priority one wins and losers<br />are dropped. If any conflicting workload is unlisted, all candidates in that<br />collision are dropped from advertising and routing, with no prefix fallback,<br />and the collision is logged at ERROR.<br />Separately, listed workloads keep their own prompt names (unlisted workloads'<br />prompts stay backend-prefixed). |  | Optional: \{\} <br /> |
 
 
 #### vmcp.config.DefaultToolVisibility
@@ -736,6 +737,7 @@ _Appears in:_
 | `address` _string_ | Address is the Redis server address (required when provider is redis). |  | Optional: \{\} <br /> |
 | `db` _integer_ | DB is the Redis database number. | 0 | Minimum: 0 <br />Optional: \{\} <br /> |
 | `keyPrefix` _string_ | KeyPrefix is an optional prefix for all Redis keys used by ToolHive. |  | Optional: \{\} <br /> |
+| `tls` _[pkg.redisconfig.TLSConfig](#pkgredisconfigtlsconfig)_ | TLS enables TLS for session storage and rate limiting. An empty<br />configuration verifies the Redis server using system roots.<br />On Kubernetes, set spec.sessionStorage.tls instead: the operator derives this<br />field from it and rejects a value set under spec.config.sessionStorage. |  | Optional: \{\} <br /> |
 
 
 #### vmcp.config.StaticBackendConfig
@@ -1003,6 +1005,28 @@ _Appears in:_
 | `name` _string_ | Name is the MCP tool name this limit applies to. |  | MinLength: 1 <br />Required: \{\} <br /> |
 | `shared` _[ratelimit.types.RateLimitBucket](#ratelimittypesratelimitbucket)_ | Shared token bucket for this specific tool. |  | Optional: \{\} <br /> |
 | `perUser` _[ratelimit.types.RateLimitBucket](#ratelimittypesratelimitbucket)_ | PerUser token bucket configuration for this tool. |  | Optional: \{\} <br /> |
+
+
+
+## toolhive.stacklok.dev/redisconfig
+
+
+#### pkg.redisconfig.TLSConfig
+
+
+
+TLSConfig configures TLS for a Redis connection. Presence enables TLS;
+an empty configuration verifies the server certificate using system roots.
+
+
+
+_Appears in:_
+- [vmcp.config.SessionStorageConfig](#vmcpconfigsessionstorageconfig)
+
+| Field | Description | Default | Validation |
+| --- | --- | --- | --- |
+| `insecureSkipVerify` _boolean_ | InsecureSkipVerify skips server certificate and hostname verification. |  | Optional: \{\} <br /> |
+| `caCertFile` _string_ | CACertFile is the path to a PEM-encoded CA bundle. When configured, this<br />bundle replaces the system roots used to verify the Redis server. |  | Optional: \{\} <br /> |
 
 
 
@@ -4080,11 +4104,12 @@ Presence of this struct on a connection type enables TLS for that connection.
 
 _Appears in:_
 - [api.v1beta1.RedisStorageConfig](#apiv1beta1redisstorageconfig)
+- [api.v1beta1.SessionStorageConfig](#apiv1beta1sessionstorageconfig)
 
 | Field | Description | Default | Validation |
 | --- | --- | --- | --- |
-| `insecureSkipVerify` _boolean_ | InsecureSkipVerify skips TLS certificate verification.<br />Use when connecting to services with self-signed certificates. |  | Optional: \{\} <br /> |
-| `caCertSecretRef` _[api.v1beta1.SecretKeyRef](#apiv1beta1secretkeyref)_ | CACertSecretRef references a Secret containing a PEM-encoded CA certificate<br />for verifying the server. When not specified, system root CAs are used. |  | Optional: \{\} <br /> |
+| `insecureSkipVerify` _boolean_ | InsecureSkipVerify disables server certificate and hostname verification.<br />The connection is encrypted but not authenticated, so anyone able to<br />impersonate the server can read the credentials and data sent over it.<br />Intended for testing only; for self-signed or private CAs set<br />caCertSecretRef instead. |  | Optional: \{\} <br /> |
+| `caCertSecretRef` _[api.v1beta1.SecretKeyRef](#apiv1beta1secretkeyref)_ | CACertSecretRef references a Secret containing a PEM-encoded CA certificate<br />for verifying the server. When not specified, system root CAs are used.<br />If the Secret or key does not exist, the pod cannot start (it stays in<br />ContainerCreating) rather than connecting without verification. |  | Optional: \{\} <br /> |
 
 
 #### api.v1beta1.ResourceList
@@ -4459,6 +4484,7 @@ _Appears in:_
 | `db` _integer_ | DB is the Redis database number | 0 | Minimum: 0 <br />Optional: \{\} <br /> |
 | `keyPrefix` _string_ | KeyPrefix is an optional prefix for all Redis keys used by ToolHive |  | Optional: \{\} <br /> |
 | `passwordRef` _[api.v1beta1.SecretKeyRef](#apiv1beta1secretkeyref)_ | PasswordRef is a reference to a Secret key containing the Redis password |  | Optional: \{\} <br /> |
+| `tls` _[api.v1beta1.RedisTLSConfig](#apiv1beta1redistlsconfig)_ | TLS enables TLS for the Redis session storage connection and, when rate<br />limiting is configured, for the rate-limit connection to the same Redis.<br />When omitted, the connections are plaintext and the Redis password and<br />session data cross the network unencrypted. An empty object enables TLS<br />with server certificate verification against the system root CAs; set<br />caCertSecretRef for a private CA. A failed handshake never falls back to<br />plaintext. Only used when provider is redis. |  | Optional: \{\} <br /> |
 
 
 #### api.v1beta1.TokenExchangeConfig

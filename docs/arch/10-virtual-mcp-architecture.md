@@ -133,8 +133,15 @@ When backends expose tools with the same name, vMCP resolves the conflict using 
 | Strategy | Behavior |
 |----------|----------|
 | **prefix** | Prepend backend name to all tools (e.g., `github_create_issue`) |
-| **priority** | First backend in priority order wins, others hidden |
+| **priority** | Highest-priority backend wins only if every conflicting backend is listed; otherwise all candidates are dropped |
 | **manual** | Explicit mapping for each conflict |
+
+Tool priority resolution leaves unique tools unchanged, including those from
+backends absent from `priorityOrder`; the list is not an allowlist. When every
+backend in a tool-name collision is listed, the first in priority order wins and
+losers are dropped. If any conflicting backend is unlisted, **all** candidates
+in that collision are dropped from both advertising and routing, with no prefix
+fallback, and the collision is logged at `ERROR`.
 
 The three strategies above cover **tools**. Resources, resource templates, and
 prompts are resolved separately (`aggregator/capability_conflicts.go`), with

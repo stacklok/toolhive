@@ -17,6 +17,7 @@ import (
 	"github.com/stacklok/toolhive/pkg/audit"
 	thvjson "github.com/stacklok/toolhive/pkg/json"
 	ratelimittypes "github.com/stacklok/toolhive/pkg/ratelimit/types"
+	"github.com/stacklok/toolhive/pkg/redisconfig"
 	"github.com/stacklok/toolhive/pkg/telemetry"
 	"github.com/stacklok/toolhive/pkg/vmcp"
 	authtypes "github.com/stacklok/toolhive/pkg/vmcp/auth/types"
@@ -491,7 +492,8 @@ func (c *OutgoingAuthConfig) ApplyToBackend(backend *vmcp.Backend, backendName s
 type AggregationConfig struct {
 	// ConflictResolution defines the strategy for resolving tool name conflicts.
 	// - prefix: Automatically prefix tool names with workload identifier
-	// - priority: First workload in priority order wins
+	// - priority: Highest-priority workload wins only if all conflicting workloads
+	//   are listed; otherwise all candidates are dropped (see PriorityOrder)
 	// - manual: Explicitly define overrides for all conflicts
 	// +kubebuilder:validation:Enum=prefix;priority;manual
 	// +kubebuilder:default=prefix
@@ -571,8 +573,14 @@ type ConflictResolutionConfig struct {
 	// +optional
 	PrefixFormat string `json:"prefixFormat,omitempty" yaml:"prefixFormat,omitempty"`
 
-	// PriorityOrder defines the workload priority order for the "priority" strategy.
-	// Listed workloads also keep their own prompt names (unlisted workloads'
+	// PriorityOrder defines the workload priority order for the "priority" strategy
+	// (first has highest priority). It is not an allowlist: unique tools remain
+	// unchanged, including those from unlisted workloads. If all workloads in a
+	// tool-name collision are listed, the highest-priority one wins and losers
+	// are dropped. If any conflicting workload is unlisted, all candidates in that
+	// collision are dropped from advertising and routing, with no prefix fallback,
+	// and the collision is logged at ERROR.
+	// Separately, listed workloads keep their own prompt names (unlisted workloads'
 	// prompts stay backend-prefixed).
 	// +optional
 	PriorityOrder []string `json:"priorityOrder,omitempty" yaml:"priorityOrder,omitempty"`
@@ -1249,6 +1257,13 @@ type SessionStorageConfig struct {
 	// KeyPrefix is an optional prefix for all Redis keys used by ToolHive.
 	// +optional
 	KeyPrefix string `json:"keyPrefix,omitempty" yaml:"keyPrefix,omitempty"`
+
+	// TLS enables TLS for session storage and rate limiting. An empty
+	// configuration verifies the Redis server using system roots.
+	// On Kubernetes, set spec.sessionStorage.tls instead: the operator derives this
+	// field from it and rejects a value set under spec.config.sessionStorage.
+	// +optional
+	TLS *redisconfig.TLSConfig `json:"tls,omitempty" yaml:"tls,omitempty"`
 }
 
 // Validator validates configuration.

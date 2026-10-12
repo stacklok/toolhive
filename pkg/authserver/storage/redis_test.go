@@ -17,6 +17,7 @@ import (
 	"fmt"
 	"log/slog"
 	"net/url"
+	"reflect"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -679,6 +680,80 @@ func TestRedisStorage_DCRClientTTL(t *testing.T) {
 			require.NoError(t, err)
 			assert.True(t, registration.DCRIssued(retrieved))
 			assert.Positive(t, mr.TTL(key))
+		})
+	})
+}
+
+func TestRedisStorage_DCRClientName(t *testing.T) {
+	t.Parallel()
+	for _, tc := range []struct {
+		name   string
+		create func() (fosite.Client, error)
+		method string
+	}{
+		{"public", func() (fosite.Client, error) {
+			return registration.New(registration.Config{
+				ID: "named", ClientName: "Example", TokenEndpointAuthMethod: oauthproto.TokenEndpointAuthMethodNone,
+			})
+		}, oauthproto.TokenEndpointAuthMethodNone},
+		{"confidential", func() (fosite.Client, error) {
+			return registration.New(registration.Config{
+				ID: "named", ClientName: "Example", Secret: "secret", TokenEndpointAuthMethod: oauthproto.TokenEndpointAuthMethodClientSecretBasic,
+			})
+		}, oauthproto.TokenEndpointAuthMethodClientSecretBasic},
+		{"forced plain", func() (fosite.Client, error) {
+			return registration.NewConfidentialPlain(registration.Config{
+				ID: "named", ClientName: "Example", Secret: "secret",
+			})
+		}, ""},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			withRedisStorage(t, func(ctx context.Context, s *RedisStorage, mr *miniredis.Miniredis) {
+				client, err := tc.create()
+				require.NoError(t, err)
+				require.NoError(t, s.RegisterClient(ctx, client))
+				loaded, err := s.GetClient(ctx, "named")
+				require.NoError(t, err)
+				assert.Equal(t, "Example", registration.ClientName(loaded))
+				assert.True(t, registration.DCRIssued(loaded))
+				_, oidc := loaded.(fosite.OpenIDConnectClient)
+				assert.Equal(t, tc.method != "", oidc)
+				if oidc {
+					assert.Equal(t, tc.method, loaded.(fosite.OpenIDConnectClient).GetTokenEndpointAuthMethod())
+				}
+				assert.True(t, fingerprintOfClient(loaded).equal(fingerprintOfClient(client)))
+
+				key := redisKey(s.keyPrefix, KeyTypeClient, "named")
+				row := storedClient{}
+				encoded, err := mr.Get(key)
+				require.NoError(t, err)
+				require.NoError(t, json.Unmarshal([]byte(encoded), &row))
+				assert.Equal(t, "Example", row.ClientName)
+				row.ClientName = "Changed only in display metadata"
+				assert.True(t, row.fingerprint().equal(buildStoredClient(client).fingerprint()))
+			})
+		})
+	}
+
+	// Rows predating the DCR marker and client_name still load without changing auth shape.
+	t.Run("legacy public with TTL", func(t *testing.T) {
+		withRedisStorage(t, func(ctx context.Context, s *RedisStorage, mr *miniredis.Miniredis) {
+			client, err := registration.New(registration.Config{ID: "old", TokenEndpointAuthMethod: oauthproto.TokenEndpointAuthMethodNone})
+			require.NoError(t, err)
+			row := buildStoredClient(client)
+			row.DCRIssued = false
+			row.TokenEndpointAuthMethod = ""
+			data, err := json.Marshal(row)
+			require.NoError(t, err)
+			key := redisKey(s.keyPrefix, KeyTypeClient, "old")
+			require.NoError(t, mr.Set(key, string(data)))
+			mr.SetTTL(key, time.Hour)
+			loaded, err := s.GetClient(ctx, "old")
+			require.NoError(t, err)
+			assert.Empty(t, registration.ClientName(loaded))
+			assert.True(t, registration.DCRIssued(loaded))
+			_, oidc := loaded.(fosite.OpenIDConnectClient)
+			assert.False(t, oidc)
 		})
 	})
 }
@@ -2447,7 +2522,8 @@ func TestRedisStorage_PendingAuthorization(t *testing.T) {
 		return &PendingAuthorization{
 			ClientID: "test-client", RedirectURI: "https://example.com/callback",
 			State: "client-state", PKCEChallenge: "challenge", PKCEMethod: "S256",
-			Scopes: []string{"openid", "profile"}, InternalState: state,
+			Scopes: []string{"openid", "profile"}, Resource: "https://api.example.com",
+			ConsentStage: ConsentStageApproved, InternalState: state,
 			UpstreamPKCEVerifier: "verifier", UpstreamNonce: "nonce",
 			BrowserBindingHash: "binding-hash",
 			SingleLeg:          true, ChainUpstreams: []string{"provider-1", "provider-2"},
@@ -2465,9 +2541,40 @@ func TestRedisStorage_PendingAuthorization(t *testing.T) {
 			assert.Equal(t, pending.ClientID, retrieved.ClientID)
 			assert.Equal(t, pending.PKCEChallenge, retrieved.PKCEChallenge)
 			assert.Equal(t, pending.Scopes, retrieved.Scopes)
+			assert.Equal(t, pending.Resource, retrieved.Resource)
+			assert.Equal(t, pending.ConsentStage, retrieved.ConsentStage)
 			assert.Equal(t, pending.BrowserBindingHash, retrieved.BrowserBindingHash)
 			assert.Equal(t, pending.SingleLeg, retrieved.SingleLeg)
 			assert.Equal(t, pending.ChainUpstreams, retrieved.ChainUpstreams)
+			assert.WithinDuration(t, pending.CreatedAt, retrieved.CreatedAt, time.Nanosecond)
+		})
+	})
+
+	t.Run("re-store retains original deadline", func(t *testing.T) {
+		withRedisStorage(t, func(ctx context.Context, s *RedisStorage, mr *miniredis.Miniredis) {
+			pending := makePending("near-deadline")
+			pending.CreatedAt = time.Now().Add(-DefaultPendingAuthorizationTTL + 3*time.Second)
+			key := redisKey(s.keyPrefix, KeyTypePending, "near-deadline")
+			require.NoError(t, s.StorePendingAuthorization(ctx, "near-deadline", pending))
+			require.NoError(t, s.StorePendingAuthorization(ctx, "near-deadline", pending))
+			assert.InDelta(t, 3*time.Second, mr.TTL(key), float64(time.Second))
+			loaded, err := s.LoadPendingAuthorization(ctx, "near-deadline")
+			require.NoError(t, err)
+			assert.Equal(t, pending.CreatedAt.UnixNano(), loaded.CreatedAt.UnixNano())
+
+			pending.CreatedAt = time.Now().Add(-DefaultPendingAuthorizationTTL - time.Second)
+			require.ErrorIs(t, s.StorePendingAuthorization(ctx, "near-deadline", pending), ErrExpired)
+			assert.InDelta(t, 3*time.Second, mr.TTL(key), float64(time.Second))
+			mr.FastForward(4 * time.Second)
+			_, err = s.LoadPendingAuthorization(ctx, "near-deadline")
+			requireRedisNotFoundError(t, err)
+		})
+	})
+
+	t.Run("missing creation time is expired", func(t *testing.T) {
+		withRedisStorage(t, func(ctx context.Context, s *RedisStorage, mr *miniredis.Miniredis) {
+			require.ErrorIs(t, s.StorePendingAuthorization(ctx, "missing-time", &PendingAuthorization{}), ErrExpired)
+			assert.False(t, mr.Exists(redisKey(s.keyPrefix, KeyTypePending, "missing-time")))
 		})
 	})
 
@@ -2504,9 +2611,20 @@ func TestRedisStorage_PendingAuthorization(t *testing.T) {
 
 			assert.Empty(t, retrieved.ChainUpstreams, "legacy record must decode with empty ChainUpstreams")
 			assert.Empty(t, retrieved.BrowserBindingHash, "legacy record must decode with empty BrowserBindingHash")
+			assert.Empty(t, retrieved.Resource)
+			assert.Empty(t, retrieved.ConsentStage)
 			// Sanity-check that unrelated fields still populate from the legacy blob.
 			assert.Equal(t, "legacy-client", retrieved.ClientID)
 			assert.Equal(t, "legacy-session", retrieved.SessionID)
+		})
+	})
+
+	t.Run("expired legacy row without Redis TTL is rejected", func(t *testing.T) {
+		withRedisStorage(t, func(ctx context.Context, s *RedisStorage, mr *miniredis.Miniredis) {
+			key := redisKey(s.keyPrefix, KeyTypePending, "legacy-expired")
+			require.NoError(t, mr.Set(key, fmt.Sprintf(`{"created_at":%d}`, time.Now().Add(-DefaultPendingAuthorizationTTL-time.Second).Unix())))
+			_, err := s.LoadPendingAuthorization(ctx, "legacy-expired")
+			require.ErrorIs(t, err, ErrExpired)
 		})
 	})
 
@@ -3825,6 +3943,111 @@ func dcrFixtureKey() DCRKey {
 	}
 }
 
+// dcrCASFixture returns a valid DCRCredentials at key whose ClientSecret is
+// secret, for the UpdateDCRCredentialsIfUnchanged tests on every backend.
+func dcrCASFixture(key DCRKey, secret string) *DCRCredentials {
+	return &DCRCredentials{
+		Key:                   key,
+		ClientID:              "client-" + secret,
+		ClientSecret:          secret,
+		AuthorizationEndpoint: "https://idp.example.com/auth",
+		TokenEndpoint:         "https://idp.example.com/token",
+	}
+}
+
+// dcrCASFieldMutations mutates exactly one persisted field of a
+// DCRCredentials each, keyed by field name. Key is excluded: a mismatched key
+// is rejected as invalid input before any compare. Time fields move by a full
+// second so the change survives the Redis backend's one-second precision.
+var dcrCASFieldMutations = map[string]func(*DCRCredentials){
+	"ProviderName":            func(c *DCRCredentials) { c.ProviderName += "-changed" },
+	"ClientID":                func(c *DCRCredentials) { c.ClientID += "-changed" },
+	"ClientSecret":            func(c *DCRCredentials) { c.ClientSecret += "-changed" },
+	"TokenEndpointAuthMethod": func(c *DCRCredentials) { c.TokenEndpointAuthMethod += "-changed" },
+	"RegistrationAccessToken": func(c *DCRCredentials) { c.RegistrationAccessToken += "-changed" },
+	"RegistrationClientURI":   func(c *DCRCredentials) { c.RegistrationClientURI += "-changed" },
+	"AuthorizationEndpoint":   func(c *DCRCredentials) { c.AuthorizationEndpoint += "-changed" },
+	"TokenEndpoint":           func(c *DCRCredentials) { c.TokenEndpoint += "-changed" },
+	"CreatedAt":               func(c *DCRCredentials) { c.CreatedAt = c.CreatedAt.Add(time.Second) },
+	"ClientSecretExpiresAt":   func(c *DCRCredentials) { c.ClientSecretExpiresAt = c.ClientSecretExpiresAt.Add(time.Second) },
+}
+
+// fullDCRCASFixture returns a DCRCredentials at key with every field
+// populated, so each mutation in dcrCASFieldMutations changes a non-zero value.
+func fullDCRCASFixture(key DCRKey) *DCRCredentials {
+	c := dcrCASFixture(key, "original")
+	c.ProviderName = "provider"
+	c.TokenEndpointAuthMethod = "client_secret_basic"
+	c.RegistrationAccessToken = "rat"
+	c.RegistrationClientURI = "https://idp.example.com/register/client-original"
+	c.CreatedAt = time.Unix(1_700_000_000, 0)
+	c.ClientSecretExpiresAt = time.Now().Add(24 * time.Hour).Truncate(time.Second)
+	return c
+}
+
+// runDCRCASPerFieldTest pins that every persisted field takes part in the
+// UpdateDCRCredentialsIfUnchanged comparison: for each field, an expected that
+// differs from the stored row in only that field is refused with
+// ErrDCRCredentialsChanged and the row is left intact. newStore returns a
+// fresh, empty store per subtest.
+func runDCRCASPerFieldTest(t *testing.T, newStore func(t *testing.T) DCRCredentialStore) {
+	t.Helper()
+
+	// Every DCRCredentials field except Key must have a mutation, so a field
+	// added later cannot silently escape the comparison.
+	typ := reflect.TypeFor[DCRCredentials]()
+	for i := range typ.NumField() {
+		name := typ.Field(i).Name
+		if name == "Key" {
+			continue
+		}
+		require.Containsf(t, dcrCASFieldMutations, name,
+			"DCRCredentials.%s has no entry in dcrCASFieldMutations", name)
+	}
+
+	for name, mutate := range dcrCASFieldMutations {
+		t.Run(name, func(t *testing.T) {
+			t.Parallel()
+			ctx := context.Background()
+			s := newStore(t)
+			key := dcrFixtureKey()
+			stored := fullDCRCASFixture(key)
+			_, err := s.StoreDCRCredentialsIfAbsent(ctx, stored)
+			require.NoError(t, err)
+
+			before, err := s.GetDCRCredentials(ctx, key)
+			require.NoError(t, err)
+			expected := cloneDCRCredentials(before)
+			mutate(expected)
+
+			_, err = s.UpdateDCRCredentialsIfUnchanged(ctx, dcrCASFixture(key, "replacement"), expected)
+			require.ErrorIs(t, err, ErrDCRCredentialsChanged)
+
+			after, err := s.GetDCRCredentials(ctx, key)
+			require.NoError(t, err)
+			assert.Equal(t, *before, *after, "a refused compare-and-set must not write")
+		})
+	}
+}
+
+// requireSingleDCRCASWinner asserts that of a set of racing
+// UpdateDCRCredentialsIfUnchanged calls made against the same expected value,
+// exactly one succeeded and every other one was refused with
+// ErrDCRCredentialsChanged.
+func requireSingleDCRCASWinner(t *testing.T, errs []error) {
+	t.Helper()
+	winners := 0
+	for gid, e := range errs {
+		if e == nil {
+			winners++
+			continue
+		}
+		require.ErrorIsf(t, e, ErrDCRCredentialsChanged,
+			"a losing writer must be refused as changed (goroutine %d)", gid)
+	}
+	require.Equal(t, 1, winners, "exactly one racing compare-and-set must win")
+}
+
 func TestRedisStorage_DCRCredentials_RoundTrip(t *testing.T) {
 	withRedisStorage(t, func(ctx context.Context, s *RedisStorage, _ *miniredis.Miniredis) {
 		// Truncate to second precision: time fields are stored as int64 unix seconds.
@@ -4307,6 +4530,350 @@ func TestRedisStorage_DCRCredentials_UpdateConcurrent(t *testing.T) {
 		_, isCandidate := candidates[got.ClientSecret]
 		assert.True(t, isCandidate,
 			"the stored row must converge on one racing candidate, got %q", got.ClientSecret)
+	})
+}
+
+// TestRedisStorage_DCRCredentials_UpdateIfUnchanged pins the
+// UpdateDCRCredentialsIfUnchanged compare-and-set contract on the Redis
+// backend, mirroring the memory backend's equivalent, plus the Redis-specific
+// TTL and stored-precision behaviour.
+func TestRedisStorage_DCRCredentials_UpdateIfUnchanged(t *testing.T) {
+	t.Parallel()
+
+	t.Run("unchanged row is overwritten", func(t *testing.T) {
+		withRedisStorage(t, func(ctx context.Context, s *RedisStorage, _ *miniredis.Miniredis) {
+			key := dcrFixtureKey()
+			_, err := s.StoreDCRCredentialsIfAbsent(ctx, dcrCASFixture(key, "original"))
+			require.NoError(t, err)
+			expected, err := s.GetDCRCredentials(ctx, key)
+			require.NoError(t, err)
+
+			replacement := dcrCASFixture(key, "replacement")
+			got, err := s.UpdateDCRCredentialsIfUnchanged(ctx, replacement, expected)
+			require.NoError(t, err)
+			assert.Equal(t, *replacement, *got)
+
+			reread, err := s.GetDCRCredentials(ctx, key)
+			require.NoError(t, err)
+			assert.Equal(t, *replacement, *reread)
+		})
+	})
+
+	t.Run("changed row is refused and left intact", func(t *testing.T) {
+		withRedisStorage(t, func(ctx context.Context, s *RedisStorage, _ *miniredis.Miniredis) {
+			key := dcrFixtureKey()
+			_, err := s.StoreDCRCredentialsIfAbsent(ctx, dcrCASFixture(key, "original"))
+			require.NoError(t, err)
+			stale, err := s.GetDCRCredentials(ctx, key)
+			require.NoError(t, err)
+
+			// A concurrent writer replaces the row after the stale read.
+			newer := dcrCASFixture(key, "newer")
+			_, err = s.UpdateDCRCredentialsIfPresent(ctx, newer)
+			require.NoError(t, err)
+
+			_, err = s.UpdateDCRCredentialsIfUnchanged(ctx, dcrCASFixture(key, "stale-writer"), stale)
+			require.ErrorIs(t, err, ErrDCRCredentialsChanged)
+
+			reread, err := s.GetDCRCredentials(ctx, key)
+			require.NoError(t, err)
+			assert.Equal(t, *newer, *reread, "a refused compare-and-set must not write")
+		})
+	})
+
+	t.Run("absent row returns not-found and does not create", func(t *testing.T) {
+		withRedisStorage(t, func(ctx context.Context, s *RedisStorage, _ *miniredis.Miniredis) {
+			key := dcrFixtureKey()
+			_, err := s.UpdateDCRCredentialsIfUnchanged(ctx,
+				dcrCASFixture(key, "replacement"), dcrCASFixture(key, "original"))
+			requireRedisNotFoundError(t, err)
+
+			_, getErr := s.GetDCRCredentials(ctx, key)
+			requireRedisNotFoundError(t, getErr)
+		})
+	})
+
+	t.Run("expected is compared at stored one-second precision", func(t *testing.T) {
+		withRedisStorage(t, func(ctx context.Context, s *RedisStorage, _ *miniredis.Miniredis) {
+			key := dcrFixtureKey()
+			// A sub-second CreatedAt is truncated on the way in, so the caller's
+			// own pre-store value must still match the stored row.
+			stored := dcrCASFixture(key, "original")
+			stored.CreatedAt = time.Unix(1_700_000_000, 123_456_789)
+			_, err := s.StoreDCRCredentialsIfAbsent(ctx, stored)
+			require.NoError(t, err)
+
+			_, err = s.UpdateDCRCredentialsIfUnchanged(ctx, dcrCASFixture(key, "replacement"), stored)
+			require.NoError(t, err)
+		})
+	})
+
+	t.Run("TTL follows UpdateDCRCredentialsIfPresent rules", func(t *testing.T) {
+		withRedisStorage(t, func(ctx context.Context, s *RedisStorage, mr *miniredis.Miniredis) {
+			key := dcrFixtureKey()
+			redisKey := redisDCRKey(s.keyPrefix, key)
+			_, err := s.StoreDCRCredentialsIfAbsent(ctx, dcrCASFixture(key, "original"))
+			require.NoError(t, err)
+			require.Equal(t, time.Duration(0), mr.TTL(redisKey))
+
+			// Future expiry sets a TTL.
+			expected, err := s.GetDCRCredentials(ctx, key)
+			require.NoError(t, err)
+			expiring := dcrCASFixture(key, "expiring")
+			expiring.ClientSecretExpiresAt = time.Now().Add(12 * time.Hour).Truncate(time.Second)
+			_, err = s.UpdateDCRCredentialsIfUnchanged(ctx, expiring, expected)
+			require.NoError(t, err)
+			ttl := mr.TTL(redisKey)
+			assert.Greater(t, ttl, time.Duration(0), "future expiry must set a positive TTL")
+			assert.LessOrEqual(t, ttl, 12*time.Hour)
+
+			// Zero expiry clears it again.
+			expected, err = s.GetDCRCredentials(ctx, key)
+			require.NoError(t, err)
+			_, err = s.UpdateDCRCredentialsIfUnchanged(ctx, dcrCASFixture(key, "persistent"), expected)
+			require.NoError(t, err)
+			assert.Equal(t, time.Duration(0), mr.TTL(redisKey), "zero expiry must clear the TTL")
+
+			// Past expiry uses the bounded pastExpiryDCRTTL.
+			expected, err = s.GetDCRCredentials(ctx, key)
+			require.NoError(t, err)
+			expired := dcrCASFixture(key, "expired")
+			expired.ClientSecretExpiresAt = time.Now().Add(-time.Hour).Truncate(time.Second)
+			_, err = s.UpdateDCRCredentialsIfUnchanged(ctx, expired, expected)
+			require.NoError(t, err)
+			assert.Equal(t, pastExpiryDCRTTL, mr.TTL(redisKey))
+		})
+	})
+}
+
+// TestRedisStorage_DCRCredentials_UpdateIfUnchangedInvalidInput pins that the
+// Redis backend runs the shared validateDCRCompareAndSet gate. The full matrix
+// is covered by TestMemoryStorage_DCRCredentials_UpdateIfUnchangedInvalidInput
+// against the same function; this only confirms the wiring.
+func TestRedisStorage_DCRCredentials_UpdateIfUnchangedInvalidInput(t *testing.T) {
+	withRedisStorage(t, func(ctx context.Context, s *RedisStorage, _ *miniredis.Miniredis) {
+		_, err := s.UpdateDCRCredentialsIfUnchanged(ctx, dcrCASFixture(dcrFixtureKey(), "replacement"), nil)
+		require.Error(t, err)
+		assert.ErrorIs(t, err, fosite.ErrInvalidRequest)
+	})
+}
+
+// TestRedisStorage_DCRCredentials_UpdateIfUnchangedConnectionFailure pins that
+// a connection failure surfaces as a generic error, never as a spurious
+// ErrNotFound or ErrDCRCredentialsChanged.
+func TestRedisStorage_DCRCredentials_UpdateIfUnchangedConnectionFailure(t *testing.T) {
+	t.Parallel()
+
+	mr := miniredis.RunT(t)
+	client := redis.NewClient(&redis.Options{Addr: mr.Addr()})
+	s := NewRedisStorageWithClient(client, "test:auth:")
+	mr.Close()
+
+	key := dcrFixtureKey()
+	_, err := s.UpdateDCRCredentialsIfUnchanged(context.Background(),
+		dcrCASFixture(key, "replacement"), dcrCASFixture(key, "original"))
+	require.Error(t, err)
+	assert.NotErrorIs(t, err, ErrNotFound)
+	assert.NotErrorIs(t, err, ErrDCRCredentialsChanged)
+}
+
+// TestRedisStorage_DCRCredentials_UpdateIfUnchangedConcurrent pins that the
+// WATCH/MULTI compare and write are atomic: of N writers that all read the
+// same row and race to replace it, exactly one wins, every other one is
+// refused as changed, and the stored row is the winner's.
+func TestRedisStorage_DCRCredentials_UpdateIfUnchangedConcurrent(t *testing.T) {
+	withRedisStorage(t, func(ctx context.Context, s *RedisStorage, _ *miniredis.Miniredis) {
+		const goroutines = 8
+		key := dcrFixtureKey()
+		_, err := s.StoreDCRCredentialsIfAbsent(ctx, dcrCASFixture(key, "original"))
+		require.NoError(t, err)
+		expected, err := s.GetDCRCredentials(ctx, key)
+		require.NoError(t, err)
+
+		start := make(chan struct{})
+		errs := make([]error, goroutines)
+		results := make([]*DCRCredentials, goroutines)
+		var wg sync.WaitGroup
+		for g := range goroutines {
+			wg.Add(1)
+			go func() {
+				defer wg.Done()
+				<-start
+				results[g], errs[g] = s.UpdateDCRCredentialsIfUnchanged(ctx,
+					dcrCASFixture(key, fmt.Sprintf("secret-%d", g)), expected)
+			}()
+		}
+		close(start)
+		wg.Wait()
+
+		requireSingleDCRCASWinner(t, errs)
+
+		got, err := s.GetDCRCredentials(ctx, key)
+		require.NoError(t, err)
+		for g, e := range errs {
+			if e == nil {
+				assert.Equal(t, *results[g], *got, "the stored row must be the winner's")
+			}
+		}
+	})
+}
+
+// TestRedisStorage_DCRCredentials_UpdateIfUnchangedPerField runs the shared
+// per-field comparison test against the Redis backend.
+func TestRedisStorage_DCRCredentials_UpdateIfUnchangedPerField(t *testing.T) {
+	t.Parallel()
+	runDCRCASPerFieldTest(t, func(t *testing.T) DCRCredentialStore {
+		t.Helper()
+		s, _ := newTestRedisStorage(t)
+		t.Cleanup(func() { _ = s.Close() })
+		return s
+	})
+}
+
+// dcrCASInterferenceHook is a go-redis hook that, before each MULTI/EXEC
+// pipeline, rewrites key with its current value through a separate client.
+// The rewrite leaves the row's contents unchanged but invalidates the WATCH,
+// so EXEC aborts with redis.TxFailedErr. It interferes with the first limit
+// transactions only (limit < 0 means every one).
+type dcrCASInterferenceHook struct {
+	other *redis.Client
+	key   string
+	limit int64
+	count atomic.Int64
+}
+
+func (*dcrCASInterferenceHook) DialHook(next redis.DialHook) redis.DialHook { return next }
+
+func (*dcrCASInterferenceHook) ProcessHook(next redis.ProcessHook) redis.ProcessHook { return next }
+
+func (h *dcrCASInterferenceHook) ProcessPipelineHook(next redis.ProcessPipelineHook) redis.ProcessPipelineHook {
+	return func(ctx context.Context, cmds []redis.Cmder) error {
+		if h.limit < 0 || h.count.Load() < h.limit {
+			h.count.Add(1)
+			val, err := h.other.Get(ctx, h.key).Result()
+			if err != nil {
+				return err
+			}
+			if err := h.other.SetArgs(ctx, h.key, val, redis.SetArgs{KeepTTL: true}).Err(); err != nil {
+				return err
+			}
+		}
+		return next(ctx, cmds)
+	}
+}
+
+// newInterferedDCRCASStorage returns a Redis-backed store seeded with an
+// "original" row at dcrFixtureKey, the value read back from it, and the
+// interference hook installed on the store's client.
+func newInterferedDCRCASStorage(t *testing.T, limit int64) (*RedisStorage, *DCRCredentials, *dcrCASInterferenceHook) {
+	t.Helper()
+	mr := miniredis.RunT(t)
+	client := redis.NewClient(&redis.Options{Addr: mr.Addr()})
+	other := redis.NewClient(&redis.Options{Addr: mr.Addr()})
+	s := NewRedisStorageWithClient(client, "test:auth:")
+	t.Cleanup(func() {
+		_ = s.Close()
+		_ = other.Close()
+	})
+
+	ctx := context.Background()
+	key := dcrFixtureKey()
+	_, err := s.StoreDCRCredentialsIfAbsent(ctx, dcrCASFixture(key, "original"))
+	require.NoError(t, err)
+	expected, err := s.GetDCRCredentials(ctx, key)
+	require.NoError(t, err)
+
+	hook := &dcrCASInterferenceHook{other: other, key: redisDCRKey(s.keyPrefix, key), limit: limit}
+	client.AddHook(hook)
+	return s, expected, hook
+}
+
+// TestRedisStorage_DCRCredentials_UpdateIfUnchangedRetry pins the
+// WATCH/MULTI retry loop: an aborted EXEC is retried and the retry succeeds
+// when the row still matches, while an EXEC aborted on every attempt returns a
+// generic error after maxDCRClaimRetries attempts and writes nothing.
+func TestRedisStorage_DCRCredentials_UpdateIfUnchangedRetry(t *testing.T) {
+	t.Parallel()
+
+	t.Run("aborted EXEC is retried and succeeds", func(t *testing.T) {
+		t.Parallel()
+		s, expected, hook := newInterferedDCRCASStorage(t, 1)
+		ctx := context.Background()
+
+		replacement := dcrCASFixture(expected.Key, "replacement")
+		_, err := s.UpdateDCRCredentialsIfUnchanged(ctx, replacement, expected)
+		require.NoError(t, err)
+		assert.Equal(t, int64(1), hook.count.Load(), "exactly one attempt must have been interfered with")
+
+		got, err := s.GetDCRCredentials(ctx, expected.Key)
+		require.NoError(t, err)
+		assert.Equal(t, *replacement, *got)
+	})
+
+	t.Run("retry exhaustion returns a generic error and writes nothing", func(t *testing.T) {
+		t.Parallel()
+		s, expected, hook := newInterferedDCRCASStorage(t, -1)
+		ctx := context.Background()
+
+		_, err := s.UpdateDCRCredentialsIfUnchanged(ctx, dcrCASFixture(expected.Key, "replacement"), expected)
+		require.Error(t, err)
+		assert.ErrorIs(t, err, redis.TxFailedErr)
+		assert.NotErrorIs(t, err, ErrDCRCredentialsChanged)
+		assert.NotErrorIs(t, err, ErrNotFound)
+		assert.Equal(t, int64(maxDCRClaimRetries), hook.count.Load())
+
+		got, err := s.GetDCRCredentials(ctx, expected.Key)
+		require.NoError(t, err)
+		assert.Equal(t, *expected, *got, "an exhausted compare-and-set must not write")
+	})
+}
+
+// TestRedisStorage_DCRCredentials_UpdateIfUnchangedStoredRowStates pins the
+// two remaining stored-row branches: a corrupt row surfaces as a generic error
+// and is left untouched, and a row whose ClientSecretExpiresAt has passed but
+// whose key still exists is updatable (presence is physical, as for
+// UpdateDCRCredentialsIfPresent).
+func TestRedisStorage_DCRCredentials_UpdateIfUnchangedStoredRowStates(t *testing.T) {
+	t.Parallel()
+
+	t.Run("corrupt row returns a generic error", func(t *testing.T) {
+		withRedisStorage(t, func(ctx context.Context, s *RedisStorage, mr *miniredis.Miniredis) {
+			key := dcrFixtureKey()
+			redisKey := redisDCRKey(s.keyPrefix, key)
+			require.NoError(t, mr.Set(redisKey, "not-json"))
+
+			_, err := s.UpdateDCRCredentialsIfUnchanged(ctx,
+				dcrCASFixture(key, "replacement"), dcrCASFixture(key, "original"))
+			require.Error(t, err)
+			assert.NotErrorIs(t, err, ErrDCRCredentialsChanged)
+			assert.NotErrorIs(t, err, ErrNotFound)
+
+			raw, getErr := mr.Get(redisKey)
+			require.NoError(t, getErr)
+			assert.Equal(t, "not-json", raw, "a corrupt row must not be overwritten")
+		})
+	})
+
+	t.Run("expired but present row is updatable", func(t *testing.T) {
+		withRedisStorage(t, func(ctx context.Context, s *RedisStorage, mr *miniredis.Miniredis) {
+			key := dcrFixtureKey()
+			stored := dcrCASFixture(key, "original")
+			stored.ClientSecretExpiresAt = time.Now().Add(-time.Hour).Truncate(time.Second)
+			_, err := s.StoreDCRCredentialsIfAbsent(ctx, stored)
+			require.NoError(t, err)
+			// Keep the key present past its bounded pastExpiryDCRTTL.
+			mr.SetTTL(redisDCRKey(s.keyPrefix, key), time.Hour)
+
+			expected, err := s.GetDCRCredentials(ctx, key)
+			require.NoError(t, err)
+			replacement := dcrCASFixture(key, "replacement")
+			_, err = s.UpdateDCRCredentialsIfUnchanged(ctx, replacement, expected)
+			require.NoError(t, err, "an expired-but-present row must be updatable")
+
+			got, err := s.GetDCRCredentials(ctx, key)
+			require.NoError(t, err)
+			assert.Equal(t, *replacement, *got)
+		})
 	})
 }
 

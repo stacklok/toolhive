@@ -12,6 +12,7 @@ import (
 	"encoding/base64"
 	"encoding/json"
 	"fmt"
+	"html"
 	"io"
 	"log/slog"
 	"net"
@@ -1685,10 +1686,11 @@ type embeddedASTokenResult struct {
 //
 // It works from outside the cluster by:
 //  1. Calling the embedded AS /oauth/authorize via port-forward
-//  2. Rewriting the Dex redirect URL from in-cluster to the Dex NodePort
-//  3. Following Dex's mockCallback auto-approval redirect
-//  4. Rewriting the callback URL from in-cluster to the port-forward address
-//  5. Exchanging the resulting auth code for an access token
+//  2. Approving embedded AS consent with its configured origin and binding cookie
+//  3. Rewriting the Dex redirect URL from in-cluster to the Dex NodePort
+//  4. Following Dex's mockCallback auto-approval redirect
+//  5. Rewriting the callback URL from in-cluster to the port-forward address
+//  6. Exchanging the resulting auth code for an access token
 //
 // Parameters:
 //   - vmcpLocalURL: base URL for the embedded AS via port-forward (e.g., "http://localhost:9090")
@@ -1719,7 +1721,7 @@ func getEmbeddedASToken(vmcpLocalURL, dexLocalURL, dexInClusterHost, vmcpInClust
 	clientState := "e2e-test-state"
 	clientRedirectURI := "http://localhost:19999/callback"
 
-	// Step 3: Start authorization at embedded AS
+	// Step 3: Start authorization at embedded AS and approve consent
 	authParams := url.Values{
 		"response_type":         {"code"},
 		"client_id":             {clientID},
@@ -1736,20 +1738,22 @@ func getEmbeddedASToken(vmcpLocalURL, dexLocalURL, dexInClusterHost, vmcpInClust
 	if err != nil {
 		return "", fmt.Errorf("authorize request failed: %w", err)
 	}
-	_, _ = io.Copy(io.Discard, resp.Body)
-	_ = resp.Body.Close()
-	if resp.StatusCode != http.StatusFound {
-		return "", fmt.Errorf("expected 302 from /oauth/authorize, got %d", resp.StatusCode)
+	resp, err = approveEmbeddedASConsent(noRedirectClient, resp, vmcpLocalURL, vmcpInClusterHost)
+	if err != nil {
+		return "", err
+	}
+	if resp.StatusCode != http.StatusFound && resp.StatusCode != http.StatusSeeOther {
+		return "", fmt.Errorf("expected 302/303 from /oauth/consent, got %d", resp.StatusCode)
 	}
 	dexRedirectURL := resp.Header.Get("Location")
-	// The embedded AS binds the callback to the browser that started the flow
-	// with a cookie on this redirect; this helper plays that browser. Cookies
-	// are carried by hand rather than through a cookie jar because the issuer
-	// is https while the port-forward is plain http, and a jar would drop the
-	// Secure cookie.
+	// Approval rotates the browser binding. Carry the fresh response cookies
+	// to the callback, not the cookies from the awaiting-consent page.
+	// Cookies are carried by hand rather than through a cookie jar because
+	// the issuer is https while the port-forward is plain http, and a jar
+	// would drop the Secure cookie.
 	asBindingCookies := resp.Cookies()
 	if dexRedirectURL == "" {
-		return "", fmt.Errorf("no Location header from /oauth/authorize")
+		return "", fmt.Errorf("no Location header from /oauth/consent")
 	}
 
 	// Step 4: Rewrite the Dex in-cluster URL to the local NodePort URL
@@ -1899,6 +1903,73 @@ func getEmbeddedASToken(vmcpLocalURL, dexLocalURL, dexInClusterHost, vmcpInClust
 		return "", fmt.Errorf("empty access_token in token response")
 	}
 	return result.AccessToken, nil
+}
+
+// approveEmbeddedASConsent consumes the consent page and returns the approval response.
+// Both response bodies are closed here; callers only need the headers and status.
+func approveEmbeddedASConsent(
+	httpClient *http.Client, resp *http.Response, vmcpLocalURL, vmcpInClusterHost string,
+) (*http.Response, error) {
+	page, err := io.ReadAll(io.LimitReader(resp.Body, (64<<10)+1))
+	// Cleanup is best-effort; preserve the read error. The client timeout bounds draining.
+	_, _ = io.Copy(io.Discard, resp.Body)
+	_ = resp.Body.Close()
+	if err != nil {
+		return nil, fmt.Errorf("reading embedded AS consent page: %w", err)
+	}
+	if len(page) > 64<<10 {
+		return nil, fmt.Errorf("embedded AS consent page exceeds 64 KiB")
+	}
+	if resp.StatusCode != http.StatusOK {
+		return nil, fmt.Errorf("expected 200 from /oauth/authorize, got %d", resp.StatusCode)
+	}
+	action, handle, err := parseEmbeddedASConsent(page)
+	if err != nil {
+		return nil, err
+	}
+	localAction, err := rewriteURLBase(action.String(), vmcpInClusterHost, vmcpLocalURL)
+	if err != nil {
+		return nil, fmt.Errorf("cannot rewrite embedded AS consent action to local endpoint")
+	}
+	formData := url.Values{"handle": {handle}, "decision": {"approve"}}
+	req, err := http.NewRequest(http.MethodPost, localAction, strings.NewReader(formData.Encode()))
+	if err != nil {
+		return nil, fmt.Errorf("building embedded AS consent request: %w", err)
+	}
+	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	// Origin is the configured browser-facing origin, not the port-forward address.
+	req.Header.Set("Origin", action.Scheme+"://"+action.Host)
+	for _, cookie := range resp.Cookies() {
+		req.AddCookie(cookie)
+	}
+	approved, err := httpClient.Do(req)
+	if err != nil {
+		return nil, fmt.Errorf("posting embedded AS consent: %w", err)
+	}
+	// Cleanup errors are immaterial: only the approval headers and status are used.
+	_, _ = io.Copy(io.Discard, approved.Body)
+	_ = approved.Body.Close()
+	return approved, nil
+}
+
+func parseEmbeddedASConsent(page []byte) (*url.URL, string, error) {
+	// Match the fixed server template before unescaping attribute values.
+	_, form, foundForm := strings.Cut(string(page), `<form method="POST" action="`)
+	actionURL, input, foundInput := strings.Cut(form, `"><input type="hidden" name="handle" value="`)
+	handle, _, foundEnd := strings.Cut(input, `"`)
+	if !foundForm || !foundInput || !foundEnd || handle == "" {
+		return nil, "", fmt.Errorf("missing embedded AS consent form or handle")
+	}
+	action, err := url.Parse(html.UnescapeString(actionURL))
+	if err != nil {
+		return nil, "", fmt.Errorf("invalid embedded AS consent action URL")
+	}
+	if (action.Scheme != "http" && action.Scheme != "https") || action.User != nil ||
+		action.RawQuery != "" || action.ForceQuery || action.Fragment != "" ||
+		!strings.HasSuffix(action.Path, "/oauth/consent") {
+		return nil, "", fmt.Errorf("unexpected embedded AS consent action URL")
+	}
+	return action, html.UnescapeString(handle), nil
 }
 
 // registerOAuthClient performs Dynamic Client Registration against the embedded AS.

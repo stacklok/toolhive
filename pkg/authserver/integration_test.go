@@ -86,6 +86,7 @@ type testServerOptions struct {
 	upstream            upstream.OAuth2Provider
 	withoutUpstreams    bool
 	scopes              []string
+	allowedAudiences    []string
 	accessTokenLifespan time.Duration
 	// storageFactory, when non-nil, supplies the storage backend instead of
 	// the default in-memory implementation. The factory may also return a
@@ -147,6 +148,12 @@ func withoutUpstreams() testServerOption {
 func withScopes(scopes []string) testServerOption {
 	return func(opts *testServerOptions) {
 		opts.scopes = scopes
+	}
+}
+
+func withAllowedAudiences(audiences ...string) testServerOption {
+	return func(opts *testServerOptions) {
+		opts.allowedAudiences = audiences
 	}
 }
 
@@ -266,7 +273,8 @@ func setupTestServer(t *testing.T, opts ...testServerOption) *testServer {
 
 	// Apply options
 	options := &testServerOptions{
-		scopes: registration.DefaultScopes,
+		scopes:           registration.DefaultScopes,
+		allowedAudiences: []string{testAudience},
 	}
 	for _, opt := range opts {
 		opt(options)
@@ -344,7 +352,7 @@ func setupTestServer(t *testing.T, opts ...testServerOption) *testServer {
 			return []UpstreamConfig{{Name: "default", Type: UpstreamProviderTypeOAuth2, OAuth2Config: upstreamCfg}}
 		}(),
 		UpstreamFilter:   options.upstreamFilter,
-		AllowedAudiences: []string{"https://mcp.example.com"},
+		AllowedAudiences: options.allowedAudiences,
 		TrustedIssuers:   options.trustedIssuers,
 		// Opt-in gate for confidential-client DCR; off by default in tests just
 		// as in production.
@@ -1094,6 +1102,74 @@ func TestIntegration_TokenExchange_ConfidentialClientHappyPath(t *testing.T) {
 	require.True(t, ok, "exp claim should be a number")
 	assert.WithinDuration(t, now.Add(15*time.Minute), time.Unix(int64(exp), 0), 2*time.Minute,
 		"delegated token exp must be capped at the 15m delegation lifespan, not the subject token's 30m")
+}
+
+func TestIntegration_TokenExchange_AudienceAndResourceIndependent(t *testing.T) {
+	t.Parallel()
+	const otherAudience = "https://other.example.com"
+	const clientID = "exchange-audiences"
+	const clientSecret = "exchange-secret"
+	client, err := registration.New(registration.Config{
+		ID: clientID, Secret: clientSecret,
+		TokenEndpointAuthMethod: oauthproto.TokenEndpointAuthMethodClientSecretPost,
+		GrantTypes:              []string{oauthproto.GrantTypeTokenExchange},
+		Scopes:                  registration.DefaultScopes, Audience: []string{testAudience, otherAudience},
+	})
+	require.NoError(t, err)
+	m := startMockOIDC(t)
+	ts := setupTestServerWithMockOIDC(t, m,
+		withAllowedAudiences(testAudience, otherAudience), withExtraClient(client))
+	signer, err := jose.NewSigner(jose.SigningKey{Algorithm: jose.RS256, Key: ts.PrivateKey},
+		(&jose.SignerOptions{}).WithType("JWT").WithHeader("kid", "test-key"))
+	require.NoError(t, err)
+	now := time.Now()
+	subjectToken, err := jwt.Signed(signer).
+		Claims(jwt.Claims{
+			Issuer: testIssuer, Subject: "delegated-user", Audience: jwt.Audience{testAudience, otherAudience},
+			Expiry: jwt.NewNumericDate(now.Add(30 * time.Minute)), IssuedAt: jwt.NewNumericDate(now),
+		}).Claims(map[string]any{"client_id": clientID}).Serialize()
+	require.NoError(t, err)
+	for _, tc := range []struct {
+		name      string
+		audiences []string
+		resources []string
+		wantError bool
+	}{
+		{name: "multiple audiences", audiences: []string{testAudience, otherAudience}},
+		{name: "space-delimited audiences", audiences: []string{testAudience + " " + otherAudience}},
+		{name: "distinct audience and resource", audiences: []string{testAudience}, resources: []string{otherAudience}},
+		{name: "multiple resources rejected", audiences: []string{testAudience}, resources: []string{testAudience, otherAudience}, wantError: true},
+		{name: "malformed resource rejected", audiences: []string{testAudience}, resources: []string{"relative"}, wantError: true},
+		{name: "unlisted resource rejected", audiences: []string{testAudience}, resources: []string{"https://unlisted.example.com"}, wantError: true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			form := url.Values{
+				"grant_type":    {oauthproto.GrantTypeTokenExchange},
+				"subject_token": {subjectToken}, "subject_token_type": {oauthproto.TokenTypeAccessToken},
+				"client_id": {clientID}, "client_secret": {clientSecret}, "audience": tc.audiences,
+			}
+			if tc.resources != nil {
+				form["resource"] = tc.resources
+			}
+			resp := makeTokenRequest(t, ts.Server.URL, form)
+			defer resp.Body.Close()
+			body := parseTokenResponse(t, resp)
+			if tc.wantError {
+				require.Equal(t, http.StatusBadRequest, resp.StatusCode, "exchange response: %v", body)
+				require.Equal(t, "invalid_target", body["error"])
+				return
+			}
+			require.Equal(t, http.StatusOK, resp.StatusCode, "exchange response: %v", body)
+			token, ok := body["access_token"].(string)
+			require.True(t, ok)
+			parsed, err := jwt.ParseSigned(token, []jose.SignatureAlgorithm{jose.RS256})
+			require.NoError(t, err)
+			var claims map[string]any
+			require.NoError(t, parsed.Claims(ts.PrivateKey.Public(), &claims))
+			require.ElementsMatch(t, []string{testAudience, otherAudience}, claims["aud"])
+		})
+	}
 }
 
 // TestIntegration_TokenExchange_SelfIssuedSubjectTokenScopeFromScp proves
@@ -2192,6 +2268,7 @@ type authorizationParams struct {
 	State        string
 	Challenge    string
 	Scope        string
+	Resource     string
 	ResponseType string
 }
 
@@ -2211,7 +2288,7 @@ func completeAuthorizationFlow(
 	client := noRedirectClient()
 
 	// Step 1: Start authorization flow on our server
-	authorizeURL := serverURL + "/oauth/authorize?" + url.Values{
+	query := url.Values{
 		"client_id":             {params.ClientID},
 		"redirect_uri":          {params.RedirectURI},
 		"state":                 {params.State},
@@ -2219,11 +2296,16 @@ func completeAuthorizationFlow(
 		"code_challenge_method": {"S256"},
 		"response_type":         {params.ResponseType},
 		"scope":                 {params.Scope},
-	}.Encode()
+	}
+	if params.Resource != "" {
+		query.Set("resource", params.Resource)
+	}
+	authorizeURL := serverURL + "/oauth/authorize?" + query.Encode()
 
 	resp, err := client.Get(authorizeURL)
 	require.NoError(t, err)
-	require.Equal(t, http.StatusFound, resp.StatusCode, "expected redirect to mockoidc")
+	resp = approveIntegrationConsent(t, client, serverURL, resp)
+	require.Equal(t, http.StatusSeeOther, resp.StatusCode, "expected redirect to mockoidc")
 	mockOIDCLocation, err := resp.Location()
 	require.NoError(t, err)
 	bindingCookies := resp.Cookies()
@@ -2258,6 +2340,29 @@ func completeAuthorizationFlow(
 	state = clientLocation.Query().Get("state")
 
 	return code, state
+}
+
+// approveIntegrationConsent performs the browser-bound consent step after /authorize.
+func approveIntegrationConsent(t *testing.T, client *http.Client, serverURL string, resp *http.Response) *http.Response {
+	t.Helper()
+	require.Equal(t, http.StatusOK, resp.StatusCode, "expected consent page")
+	page, err := io.ReadAll(resp.Body)
+	require.NoError(t, err)
+	consentCookies := resp.Cookies()
+	resp.Body.Close()
+	match := regexp.MustCompile(`name="handle" value="([^"]+)"`).FindSubmatch(page)
+	require.Len(t, match, 2, "consent handle missing")
+	form := url.Values{"handle": {string(match[1])}, "decision": {"approve"}}
+	req, err := http.NewRequest(http.MethodPost, serverURL+"/oauth/consent", strings.NewReader(form.Encode()))
+	require.NoError(t, err)
+	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	req.Header.Set("Origin", testIssuer)
+	for _, cookie := range consentCookies {
+		req.AddCookie(cookie)
+	}
+	approved, err := client.Do(req)
+	require.NoError(t, err)
+	return approved
 }
 
 // exchangeCodeForTokens exchanges an authorization code for tokens and validates the response.
@@ -2431,6 +2536,91 @@ func TestIntegration_FullPKCEFlow_DefaultAudience(t *testing.T) {
 	require.True(t, ok, "aud claim should be an array")
 	require.Len(t, aud, 1, "aud should have exactly one audience")
 	assert.Equal(t, testAudience, aud[0], "audience should default to sole AllowedAudience")
+}
+
+// TestIntegration_BoundAudience rejects substitution even when both resources are
+// allowed for the server and client, across both storage backends.
+func TestIntegration_BoundAudience(t *testing.T) {
+	t.Parallel()
+	const otherAudience = "https://other.example.com"
+	for _, backend := range []struct {
+		name string
+		opts []testServerOption
+	}{
+		{name: "memory"},
+		{name: "redis", opts: []testServerOption{withRedisBackedStorage()}},
+	} {
+		t.Run(backend.name, func(t *testing.T) {
+			t.Parallel()
+			client := &fosite.DefaultClient{
+				ID: "two-audience-client", RedirectURIs: []string{testRedirectURI},
+				ResponseTypes: []string{"code"}, GrantTypes: []string{"authorization_code", "refresh_token"},
+				Scopes: registration.DefaultScopes, Audience: []string{testAudience, otherAudience}, Public: true,
+			}
+			m := startMockOIDC(t)
+			opts := append([]testServerOption{
+				withAllowedAudiences(testAudience, otherAudience), withExtraClient(client),
+			}, backend.opts...)
+			ts := setupTestServerWithMockOIDC(t, m, opts...)
+			verifier := servercrypto.GeneratePKCEVerifier()
+			challenge := servercrypto.ComputePKCEChallenge(verifier)
+			authorize := func() string {
+				t.Helper()
+				code, _ := completeAuthorizationFlow(t, ts.Server.URL, authorizationParams{
+					ClientID: client.ID, RedirectURI: testRedirectURI, State: "bound-audience",
+					Challenge: challenge, Scope: "openid profile offline_access", ResponseType: "code", Resource: testAudience,
+				})
+				return code
+			}
+			form := url.Values{
+				"grant_type": {"authorization_code"}, "client_id": {client.ID},
+				"redirect_uri": {testRedirectURI}, "code": {authorize()}, "code_verifier": {verifier},
+			}
+			check := func(form url.Values, status int) map[string]interface{} {
+				t.Helper()
+				resp := makeTokenRequest(t, ts.Server.URL, form)
+				defer resp.Body.Close()
+				body := parseTokenResponse(t, resp)
+				require.Equal(t, status, resp.StatusCode, "response: %v", body)
+				if status != http.StatusOK {
+					require.Equal(t, "invalid_target", body["error"])
+					return body
+				}
+				token, ok := body["access_token"].(string)
+				require.True(t, ok)
+				parsed, err := jwt.ParseSigned(token, []jose.SignatureAlgorithm{jose.RS256})
+				require.NoError(t, err)
+				var claims map[string]interface{}
+				require.NoError(t, parsed.Claims(ts.PrivateKey.Public(), &claims))
+				require.Equal(t, []interface{}{testAudience}, claims["aud"])
+				return body
+			}
+			form.Set("resource", otherAudience)
+			check(form, http.StatusBadRequest)
+			// Fosite consumes the PKCE session during NewAccessRequest, even on rejection.
+			form.Set("code", authorize())
+			form.Del("resource")
+			body := check(form, http.StatusOK)
+			refresh, ok := body["refresh_token"].(string)
+			require.True(t, ok)
+			refreshForm := url.Values{
+				"grant_type": {"refresh_token"}, "client_id": {client.ID}, "refresh_token": {refresh},
+				"resource": {otherAudience},
+			}
+			check(refreshForm, http.StatusBadRequest)
+			refreshForm.Del("resource")
+			body = check(refreshForm, http.StatusOK)
+			refresh, ok = body["refresh_token"].(string)
+			require.True(t, ok)
+			refreshForm.Set("refresh_token", refresh)
+			refreshForm.Set("resource", testAudience)
+			check(refreshForm, http.StatusOK)
+
+			form.Set("code", authorize())
+			form.Set("resource", testAudience)
+			check(form, http.StatusOK)
+		})
+	}
 }
 
 // ============================================================================
@@ -3782,7 +3972,8 @@ func runFirstLeg(t *testing.T, serverURL, challenge, clientState string) *http.R
 
 	resp, err := client.Get(authorizeURL)
 	require.NoError(t, err)
-	require.Equal(t, http.StatusFound, resp.StatusCode)
+	resp = approveIntegrationConsent(t, client, serverURL, resp)
+	require.Equal(t, http.StatusSeeOther, resp.StatusCode)
 	firstUpstreamLocation, err := resp.Location()
 	require.NoError(t, err)
 	bindingCookies := resp.Cookies()
@@ -4428,6 +4619,155 @@ func TestIntegration_Callback_PreservesRefreshTokenOnReauth(t *testing.T) {
 	require.NoError(t, err, "leg 3: upstream tokens should be stored")
 	assert.Empty(t, tokens3.RefreshToken,
 		"leg 3: no RT carry-forward for a new user with no prior row (ErrNotFound path)")
+}
+
+// startMockOIDCCountingTokenRequests starts a mockoidc instance with a
+// pre-queued default user (identical to startMockOIDC) and a middleware that
+// counts requests to the token endpoint. mockoidc.AddMiddleware refuses once
+// the server has started, so — unlike startMockOIDC, which uses the
+// mockoidc.Run() shortcut — this builds the server by hand (mirroring
+// startMockOIDCNoExpiresIn) so the middleware can be registered first.
+func startMockOIDCCountingTokenRequests(t *testing.T) (*mockoidc.MockOIDC, *atomic.Int32) {
+	t.Helper()
+
+	var tokenRequests atomic.Int32
+	m, err := mockoidc.NewServer(nil)
+	require.NoError(t, err)
+
+	m.QueueUser(&mockoidc.MockUser{
+		Subject: "mock-user-sub-123",
+		Email:   "testuser@example.com",
+	})
+
+	require.NoError(t, m.AddMiddleware(func(next http.Handler) http.Handler {
+		return http.HandlerFunc(func(rw http.ResponseWriter, req *http.Request) {
+			if req.URL.Path == mockoidc.TokenEndpoint {
+				tokenRequests.Add(1)
+			}
+			next.ServeHTTP(rw, req)
+		})
+	}))
+
+	ln, err := net.Listen("tcp", "127.0.0.1:0")
+	require.NoError(t, err)
+	require.NoError(t, m.Start(ln, nil))
+
+	t.Cleanup(func() {
+		require.NoError(t, m.Shutdown())
+	})
+
+	return m, &tokenRequests
+}
+
+// TestIntegration_AttackerAuthorizeURLRequiresConsent ensures a client-crafted
+// authorization URL cannot send the victim upstream or issue a code by itself.
+func TestIntegration_AttackerAuthorizeURLRequiresConsent(t *testing.T) {
+	t.Parallel()
+	m, tokenRequests := startMockOIDCCountingTokenRequests(t)
+	ts := setupTestServerWithMockOIDC(t, m)
+	client := noRedirectClient()
+	reg := dcrRegisterClient(t, ts.Server.URL, oauthproto.TokenEndpointAuthMethodNone)
+	challenge := servercrypto.ComputePKCEChallenge(servercrypto.GeneratePKCEVerifier())
+	query := url.Values{
+		"client_id": {reg.ClientID}, "redirect_uri": {testConfidentialRedirectURI},
+		"response_type": {"code"}, "scope": {"openid"}, "state": {"attacker-state"},
+		"code_challenge": {challenge}, "code_challenge_method": {"S256"},
+	}
+	resp, err := client.Get(ts.Server.URL + "/oauth/authorize?" + query.Encode())
+	require.NoError(t, err)
+	require.Equal(t, http.StatusOK, resp.StatusCode)
+	page, err := io.ReadAll(resp.Body)
+	require.NoError(t, err)
+	cookies := resp.Cookies()
+	resp.Body.Close()
+	assert.Contains(t, string(page), testConfidentialRedirectURI)
+	assert.Empty(t, resp.Header.Get("Location"))
+	assert.Equal(t, int32(0), tokenRequests.Load())
+	handle := regexp.MustCompile(`name="handle" value="([^"]+)"`).FindSubmatch(page)
+	require.Len(t, handle, 2)
+	callback := getWithCookies(t, client, ts.Server.URL+"/oauth/callback?state="+string(handle[1])+"&code=forged", cookies)
+	defer callback.Body.Close()
+	assert.Equal(t, http.StatusBadRequest, callback.StatusCode)
+	assert.Empty(t, callback.Header.Get("Location"))
+	assert.Equal(t, int32(0), tokenRequests.Load())
+}
+
+// TestIntegration_CrossBrowserCallbackIssuesVictimGrant is the end-to-end
+// regression test for GHSA-2gjv-f568-6cxp: an attacker-registered client
+// starts /oauth/authorize and hands the resulting upstream URL to a victim in
+// a different browser. Without the browser binding, the victim's callback
+// handed the attacker an authorization code backed by the victim's upstream
+// login. The victim's browser never received the binding cookie, so the
+// callback must be rejected before any upstream code exchange or code
+// retry it with their own cookie. The pending authorization survives the
+// rejected callback for the browser that started the flow.
+func TestIntegration_CrossBrowserCallbackIssuesVictimGrant(t *testing.T) {
+	t.Parallel()
+
+	m, tokenRequests := startMockOIDCCountingTokenRequests(t)
+	ts := setupTestServerWithMockOIDC(t, m)
+	client := noRedirectClient()
+
+	// Attacker: register a public client via DCR.
+	reg := dcrRegisterClient(t, ts.Server.URL, oauthproto.TokenEndpointAuthMethodNone)
+	challenge := servercrypto.ComputePKCEChallenge(servercrypto.GeneratePKCEVerifier())
+
+	// Attacker's browser starts the flow and keeps the upstream URL without
+	// visiting it. Only this response carries the binding cookie.
+	authorizeURL := ts.Server.URL + "/oauth/authorize?" + url.Values{
+		"client_id":             {reg.ClientID},
+		"redirect_uri":          {testConfidentialRedirectURI},
+		"response_type":         {"code"},
+		"scope":                 {"openid profile"},
+		"state":                 {"attacker-state-1"},
+		"code_challenge":        {challenge},
+		"code_challenge_method": {"S256"},
+	}.Encode()
+
+	resp, err := client.Get(authorizeURL)
+	require.NoError(t, err)
+	resp = approveIntegrationConsent(t, client, ts.Server.URL, resp)
+	require.Equal(t, http.StatusSeeOther, resp.StatusCode, "expected redirect to mockoidc")
+	upstreamURL, err := resp.Location()
+	require.NoError(t, err)
+	attackerCookies := resp.Cookies()
+	resp.Body.Close()
+	require.NotEmpty(t, attackerCookies, "authorize must set the browser-binding cookie")
+
+	serverURL, err := url.Parse(ts.Server.URL)
+	require.NoError(t, err)
+
+	// followUpstream logs in at mockoidc and returns our callback URL, with
+	// scheme/host rewritten to the test server as completeAuthorizationFlow does.
+	followUpstream := func() string {
+		resp, err := client.Get(upstreamURL.String())
+		require.NoError(t, err)
+		require.Equal(t, http.StatusFound, resp.StatusCode, "expected redirect from mockoidc to our callback")
+		callbackURL, err := resp.Location()
+		require.NoError(t, err)
+		resp.Body.Close()
+		callbackURL.Scheme = serverURL.Scheme
+		callbackURL.Host = serverURL.Host
+		return callbackURL.String()
+	}
+
+	// Victim, in a different browser (no cookies), follows only the upstream
+	// URL, logs in, and lands on our callback.
+	resp = getWithCookies(t, client, followUpstream(), nil)
+	defer resp.Body.Close()
+	require.Equal(t, http.StatusBadRequest, resp.StatusCode,
+		"a callback from a browser that never received the binding cookie must be rejected")
+	assert.Empty(t, resp.Header.Get("Location"), "no redirect, and so no code, to the attacker's client")
+	assert.Equal(t, int32(0), tokenRequests.Load(), "the victim's upstream code must not be exchanged")
+
+	// A rejected callback cannot consume the owner's flow; the browser that
+	// started it can still complete a fresh upstream login.
+	resp = getWithCookies(t, client, followUpstream(), attackerCookies)
+	defer resp.Body.Close()
+	require.Equal(t, http.StatusSeeOther, resp.StatusCode,
+		"the owner's pending authorization must survive a foreign callback")
+	assert.Contains(t, resp.Header.Get("Location"), "code=")
+	assert.Equal(t, int32(1), tokenRequests.Load())
 }
 
 // ============================================================================
@@ -5120,15 +5460,15 @@ func TestIntegration_ConfidentialClientDCR_PKCEEnforced(t *testing.T) {
 	}.Encode()
 	resp, err := client.Get(authorizeURL)
 	require.NoError(t, err)
+	resp = approveIntegrationConsent(t, client, ts.Server.URL, resp)
 	_, _ = io.Copy(io.Discard, resp.Body)
 	resp.Body.Close()
 	bindingCookies := resp.Cookies()
 
-	// The authorize endpoint accepts the request and redirects to the upstream
-	// IDP: fosite deliberately validates code_verifier at the token endpoint,
-	// not code_challenge at the authorize endpoint.
-	require.Equal(t, http.StatusFound, resp.StatusCode,
-		"authorize without code_challenge is accepted per RFC 7636 (validation is deferred to token redemption)")
+	// Consent approval redirects upstream; this branch defers the missing-PKCE
+	// rejection until the callback attempts to issue an authorization code.
+	require.Equal(t, http.StatusSeeOther, resp.StatusCode,
+		"consent approval must reach the upstream before the code-issuance PKCE check")
 
 	// Complete the upstream login to reach the callback, where the challenge-
 	// less code issuance fails closed.

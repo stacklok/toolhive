@@ -395,6 +395,80 @@ func TestTokenHandler_AudienceClaim(t *testing.T) {
 	}
 }
 
+func TestTokenHandler_BoundAudience(t *testing.T) {
+	t.Parallel()
+	const audience = "https://api.example.com"
+	for _, tt := range []struct {
+		name      string
+		resources []string
+		wantCode  int
+	}{
+		{name: "omission inherits", wantCode: http.StatusOK},
+		{name: "same resource", resources: []string{audience}, wantCode: http.StatusOK},
+		{name: "substitution rejected", resources: []string{"https://other.example.com"}, wantCode: http.StatusBadRequest},
+		{name: "empty rejected", resources: []string{""}, wantCode: http.StatusBadRequest},
+		{name: "repeated rejected", resources: []string{audience, audience}, wantCode: http.StatusBadRequest},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			handler, storState, _ := handlerTestSetup(t)
+			code := simulateAuthorizeFlow(t, handler, storState, audience)
+			form := url.Values{
+				"grant_type": {"authorization_code"}, "client_id": {testAuthClientID},
+				"redirect_uri": {testAuthRedirectURI}, "code": {code}, "code_verifier": {testPKCEVerifier},
+			}
+			if tt.resources != nil {
+				form["resource"] = tt.resources
+			}
+			rec := httptest.NewRecorder()
+			req := httptest.NewRequest(http.MethodPost, "/oauth/token", strings.NewReader(form.Encode()))
+			req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+			handler.TokenHandler(rec, req)
+			assert.Equal(t, tt.wantCode, rec.Code, rec.Body.String())
+			if tt.wantCode != http.StatusOK {
+				assert.Contains(t, rec.Body.String(), "invalid_target")
+			}
+		})
+	}
+}
+
+func TestTokenHandler_BoundAudienceRefreshCannotWiden(t *testing.T) {
+	t.Parallel()
+	handler, storState, _ := handlerTestSetup(t)
+	form := url.Values{
+		"grant_type": {"authorization_code"}, "client_id": {testAuthClientID},
+		"redirect_uri": {testAuthRedirectURI}, "code_verifier": {testPKCEVerifier},
+	}
+	for _, resource := range []string{"https://other.example.com", "https://api.example.com"} {
+		code := simulateAuthorizeFlow(t, handler, storState, "https://api.example.com")
+		form.Set("code", code)
+		redeem := httptest.NewRequest(http.MethodPost, "/oauth/token", strings.NewReader(form.Encode()))
+		redeem.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+		redeemed := httptest.NewRecorder()
+		handler.TokenHandler(redeemed, redeem)
+		require.Equal(t, http.StatusOK, redeemed.Code, redeemed.Body.String())
+		var tokens struct {
+			RefreshToken string `json:"refresh_token"`
+		}
+		require.NoError(t, json.NewDecoder(redeemed.Body).Decode(&tokens))
+		require.NotEmpty(t, tokens.RefreshToken)
+		refresh := url.Values{
+			"grant_type": {"refresh_token"}, "client_id": {testAuthClientID},
+			"refresh_token": {tokens.RefreshToken}, "resource": {resource},
+		}
+		req := httptest.NewRequest(http.MethodPost, "/oauth/token", strings.NewReader(refresh.Encode()))
+		req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+		rec := httptest.NewRecorder()
+		handler.TokenHandler(rec, req)
+		if resource == "https://other.example.com" {
+			assert.Equal(t, http.StatusBadRequest, rec.Code, rec.Body.String())
+			assert.Contains(t, rec.Body.String(), "invalid_target")
+		} else {
+			assert.Equal(t, http.StatusOK, rec.Code, rec.Body.String())
+		}
+	}
+}
+
 func TestTokenHandler_RouteRegistered(t *testing.T) {
 	t.Parallel()
 	handler, _, _ := handlerTestSetup(t)
@@ -417,7 +491,7 @@ const testPKCEVerifier = "dBjftJeZ4CVP-mB92K27uhbUJU1p1r_wW1gFWFOEjXk"
 
 // simulateAuthorizeFlow runs through the authorize and callback flow to produce
 // a valid authorization code that can be exchanged at the token endpoint.
-func simulateAuthorizeFlow(t *testing.T, handler *Handler, storState *testStorageState) string {
+func simulateAuthorizeFlow(t *testing.T, handler *Handler, storState *testStorageState, resource ...string) string {
 	t.Helper()
 
 	// Step 1: Store a pending authorization (simulating what AuthorizeHandler does)
@@ -436,6 +510,10 @@ func simulateAuthorizeFlow(t *testing.T, handler *Handler, storState *testStorag
 		SessionID:            "session-token-test-" + t.Name(),
 		UpstreamProviderName: "test-upstream",
 		CreatedAt:            time.Now(),
+	}
+	if len(resource) == 1 {
+		pending.Resource = resource[0]
+		pending.Scopes = append(pending.Scopes, "offline_access")
 	}
 	cookie := bindPending(t, storState, internalState, pending)
 

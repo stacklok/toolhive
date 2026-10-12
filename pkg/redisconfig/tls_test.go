@@ -11,12 +11,12 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
-	"github.com/stacklok/toolhive/test/helpers/redistls"
+	"github.com/stacklok/toolhive/test/testkit/redistls"
 )
 
 func TestTLSConfigLoad(t *testing.T) {
 	t.Parallel()
-	_, certificate := redistls.Certificate(t)
+	certificate := redistls.CACertPEM(t)
 	for _, tc := range []struct {
 		name      string
 		config    *TLSConfig

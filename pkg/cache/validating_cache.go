@@ -45,7 +45,8 @@ type evictedEntry[K comparable, V any] struct {
 // eviction callback only *buffers* each evicted entry (bufferEvicted); every
 // mutating operation then drains the buffer and invokes the user onEvict via
 // drainEvictions after releasing mu. onEvict therefore never runs while mu is
-// held, so a slow onEvict never blocks Get/Set/RemoveMatching on other keys.
+// held, so a slow onEvict never blocks Get/Set/Remove/RemoveMatching on other
+// keys.
 type ValidatingCache[K comparable, V any] struct {
 	lruCache *lru.Cache[K, V]
 	flight   singleflight.Group
@@ -54,8 +55,8 @@ type ValidatingCache[K comparable, V any] struct {
 	onEvict  func(K, V)
 
 	// mu serializes Set against the conditional eviction in getHit and the
-	// per-entry eviction in RemoveMatching. check() runs outside the lock to
-	// avoid holding it during I/O; the lock is only held for short
+	// per-entry eviction in Remove and RemoveMatching. check() runs outside the
+	// lock to avoid holding it during I/O; the lock is only held for short
 	// Peek+Remove / Add sequences, never across onEvict.
 	mu sync.Mutex
 
@@ -260,6 +261,26 @@ func (c *ValidatingCache[K, V]) Set(key K, value V) {
 // Len returns the number of entries currently in the cache.
 func (c *ValidatingCache[K, V]) Len() int {
 	return c.lruCache.Len()
+}
+
+// Remove deletes the entry for key and reports whether one was present.
+//
+// It mirrors RemoveMatching's lock discipline: the removal runs under mu (which
+// buffers the eviction via bufferEvicted) and the user onEvict runs in
+// drainEvictions after mu is released, so a slow teardown never blocks
+// Get/Set/Remove/RemoveMatching on other keys.
+//
+// Removing an absent key is a no-op returning false, so callers on a
+// termination path may invoke it unconditionally without first probing the
+// cache.
+func (c *ValidatingCache[K, V]) Remove(key K) bool {
+	c.mu.Lock()
+	removed := c.lruCache.Remove(key) // buffers the eviction; drained below
+	c.mu.Unlock()
+
+	// Run onEvict off the lock, matching RemoveMatching.
+	c.drainEvictions()
+	return removed
 }
 
 // RemoveMatching evicts every entry for which pred reports true, invoking the

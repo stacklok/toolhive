@@ -310,9 +310,10 @@ untouched. Desktop app detection is supported on macOS and Windows; the canonica
 reopen it after setup.
 
 Pi is configured with OpenAI-compatible and Anthropic providers in
-~/.pi/agent/models.json. It runs "thv llm token" for each request; models are
-discovered from both gateway APIs unless --models is provided. With --lazy,
---models is required for Pi.
+~/.pi/agent/models.json (or $PI_CODING_AGENT_DIR/models.json). It runs
+"thv llm token" for each request; authenticated setup discovers models and
+context sizes from both gateway APIs. --models filters the discovered models.
+Pi does not support --lazy because model discovery determines each model's API.
 
 Proxy-mode tools (Cursor, VS Code, Xcode) are configured to send requests to
 the localhost reverse proxy started by "thv llm proxy start".

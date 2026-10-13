@@ -101,7 +101,7 @@ func Setup(
 	// there is nothing to configure. In non-lazy mode login still runs before any
 	// files are patched, preserving the guarantee that a failed login leaves no
 	// state.
-	detected, done, err := setupClients(gm, targetClient, lazy, llmCfg.Models, out, errOut)
+	detected, done, err := setupClients(gm, targetClient, lazy, out, errOut)
 	if err != nil {
 		return err
 	}
@@ -496,7 +496,7 @@ func filterDetectedClients(gm GatewayManager, targetClient string) ([]string, er
 }
 
 func setupClients(
-	gm GatewayManager, targetClient string, lazy bool, models []string, out, errOut io.Writer,
+	gm GatewayManager, targetClient string, lazy bool, out, errOut io.Writer,
 ) ([]string, bool, error) {
 	detected, err := filterDetectedClients(gm, targetClient)
 	if err != nil {
@@ -509,10 +509,7 @@ func setupClients(
 	if !lazy {
 		return detected, false, nil
 	}
-	if slices.Contains(detected, "pi") && len(models) == 0 {
-		return nil, false, fmt.Errorf("pi requires --models with --lazy; omit --lazy to discover gateway models")
-	}
-	detected, err = filterLazyVSCodeClients(detected, targetClient, errOut)
+	detected, err = filterLazyModelDiscoveryClients(detected, targetClient, errOut)
 	if err != nil {
 		return nil, false, err
 	}
@@ -544,7 +541,11 @@ func hasVSCodeClient(clients []string) bool {
 	return false
 }
 
-func filterLazyVSCodeClients(clients []string, targetClient string, errOut io.Writer) ([]string, error) {
+func filterLazyModelDiscoveryClients(clients []string, targetClient string, errOut io.Writer) ([]string, error) {
+	if targetClient == "pi" {
+		return nil, fmt.Errorf("client %q does not support --lazy: Pi needs authenticated model discovery "+
+			"to select each model's API; rerun without --lazy", targetClient)
+	}
 	if targetClient != "" && isVSCodeClient(targetClient) {
 		return nil, fmt.Errorf(
 			"client %q does not support --lazy: VS Code requires non-lazy setup for authenticated model discovery; "+
@@ -552,6 +553,10 @@ func filterLazyVSCodeClients(clients []string, targetClient string, errOut io.Wr
 	}
 	filtered := make([]string, 0, len(clients))
 	for _, clientType := range clients {
+		if clientType == "pi" {
+			_, _ = fmt.Fprintln(errOut, "Warning: skipping pi in lazy mode; Pi needs authenticated model discovery.")
+			continue
+		}
 		if isVSCodeClient(clientType) {
 			_, _ = fmt.Fprintf(
 				errOut,
@@ -578,7 +583,7 @@ func discoverSetupModels(
 	hasPi := slices.Contains(clients, "pi")
 	hasVSCode := hasVSCodeClient(clients)
 	catalog, openErr, anthropicErr := fetchSetupModelCatalog(ctx, cfg, hasPi, hasVSCode)
-	piMissing := hasPi && len(cfg.Models) == 0 && len(catalog.openAI) == 0 && len(catalog.anthropic) == 0
+	piMissing := hasPi && len(catalog.openAI) == 0 && len(catalog.anthropic) == 0
 	if isVSCodeClient(targetClient) && openErr != nil {
 		return nil, catalog, openErr
 	}
@@ -601,7 +606,7 @@ func fetchSetupModelCatalog(
 ) (discoveredGatewayModels, error, error) {
 	var catalog discoveredGatewayModels
 	var openErr, anthropicErr error
-	if hasVSCode || (hasPi && (len(cfg.Models) == 0 || cfg.discoveryAccessToken != "")) {
+	if hasVSCode || hasPi {
 		catalog.openAI, catalog.openAIContextWindows, openErr = discoverGatewayModels(ctx, cfg)
 	}
 	if hasPi && cfg.discoveryAccessToken != "" {

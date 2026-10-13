@@ -904,9 +904,9 @@ func TestSetup_Lazy_VSCodeSelectionSemantics(t *testing.T) {
 		assert.Empty(t, gm.configured)
 	})
 
-	t.Run("multi-client setup warns, skips VS Code, and continues", func(t *testing.T) {
+	t.Run("multi-client setup warns, skips model-discovery clients, and continues", func(t *testing.T) {
 		t.Parallel()
-		gm := &setupGatewayManager{detected: []string{"vscode", "cursor", "vscode-insider"}, mode: llmgateway.ModeProxy}
+		gm := &setupGatewayManager{detected: []string{"vscode", "pi", "cursor", "vscode-insider"}, mode: llmgateway.ModeProxy}
 		provider := configuredSetupProvider()
 		loginCalled := false
 		var stdout, stderr bytes.Buffer
@@ -918,6 +918,7 @@ func TestSetup_Lazy_VSCodeSelectionSemantics(t *testing.T) {
 		assert.Equal(t, []string{"cursor"}, gm.configured)
 		assert.Contains(t, stderr.String(), "skipping vscode in lazy mode")
 		assert.Contains(t, stderr.String(), "skipping vscode-insider in lazy mode")
+		assert.Contains(t, stderr.String(), "skipping pi in lazy mode")
 		require.Len(t, provider.cfg.ConfiguredTools, 1)
 		assert.Equal(t, "cursor", provider.cfg.ConfiguredTools[0].Tool)
 	})
@@ -943,9 +944,10 @@ func TestSetupPiModels(t *testing.T) {
 		models  []string
 		wantErr string
 	}{
-		{name: "discover models", models: nil},
-		{name: "lazy requires models", lazy: true, wantErr: "pi requires --models"},
-		{name: "lazy explicit models", lazy: true, models: []string{"claude-opus-4-8"}},
+		{name: "discover models"},
+		{name: "explicit Anthropic model", models: []string{"claude-sonnet-5"}},
+		{name: "lazy no models", lazy: true, wantErr: "does not support --lazy"},
+		{name: "lazy explicit models", lazy: true, models: []string{"claude-sonnet-5"}, wantErr: "does not support --lazy"},
 	} {
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
@@ -967,14 +969,10 @@ func TestSetupPiModels(t *testing.T) {
 			require.NoError(t, err)
 			require.Len(t, gm.applied, 1)
 			assert.Equal(t, tt.models, gm.applied[0].Models)
-			if !tt.lazy {
-				assert.Equal(t, []string{"gpt-5"}, gm.applied[0].DiscoveredModels)
-				assert.Equal(t, map[string]int{"gpt-5": 400000}, gm.applied[0].DiscoveredModelContextWindows)
-				assert.Equal(t, []string{"claude-sonnet-5"}, gm.applied[0].AnthropicModels)
-				assert.Equal(t, map[string]int{"claude-sonnet-5": 1000000}, gm.applied[0].AnthropicModelContextWindows)
-			} else {
-				assert.Empty(t, gm.applied[0].DiscoveredModelContextWindows)
-			}
+			assert.Equal(t, []string{"gpt-5"}, gm.applied[0].DiscoveredModels)
+			assert.Equal(t, map[string]int{"gpt-5": 400000}, gm.applied[0].DiscoveredModelContextWindows)
+			assert.Equal(t, []string{"claude-sonnet-5"}, gm.applied[0].AnthropicModels)
+			assert.Equal(t, map[string]int{"claude-sonnet-5": 1000000}, gm.applied[0].AnthropicModelContextWindows)
 			assert.Empty(t, gm.applied[0].AnthropicBaseURL)
 		})
 	}

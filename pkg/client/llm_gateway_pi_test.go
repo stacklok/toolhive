@@ -4,6 +4,7 @@
 package client
 
 import (
+	"bytes"
 	"encoding/json"
 	"os"
 	"path/filepath"
@@ -79,6 +80,70 @@ func TestPiGatewaySetupAndTeardown(t *testing.T) {
 	require.Contains(t, root.Providers, "personal")
 }
 
+func TestPiGatewayPreservesJSONCAndBOM(t *testing.T) {
+	t.Parallel()
+	home := t.TempDir()
+	cm := NewTestClientManager(home, nil, supportedClientIntegrations, nil)
+	path := filepath.Join(home, ".pi", "agent", "models.json")
+	require.NoError(t, os.MkdirAll(filepath.Dir(path), 0o700))
+	original := append(append([]byte{}, piBOM...), []byte(`{
+  // Keep this comment on the root object.
+  "theme": "dark",
+  "providers": {
+    // Keep this personal provider comment.
+    "personal": {
+      "models": [
+        { "id": "local" }, // Keep this model comment.
+      ],
+    },
+  },
+}`)...)
+	require.NoError(t, os.WriteFile(path, original, 0o600))
+	cfg := llmgateway.ApplyConfig{GatewayURL: "https://gateway.example", DiscoveredModels: []string{"gpt-5"}}
+	_, err := cm.ConfigureLLMGateway(ClientApp(Pi), cfg)
+	require.NoError(t, err)
+	assertPreserved := func() {
+		content, err := os.ReadFile(path)
+		require.NoError(t, err)
+		require.True(t, bytes.HasPrefix(content, piBOM))
+		for _, comment := range []string{"Keep this comment on the root object.",
+			"Keep this personal provider comment.", "Keep this model comment."} {
+			require.Contains(t, string(content), comment)
+		}
+		_, providers, err := readPiConfig(path)
+		require.NoError(t, err)
+		require.Contains(t, providers, "personal")
+	}
+	assertPreserved()
+	require.NoError(t, cm.RevertLLMGateway(ClientApp(Pi), path))
+	assertPreserved()
+}
+
+func TestPiGatewayAgentDirOverride(t *testing.T) {
+	home, agentDir := t.TempDir(), t.TempDir()
+	t.Setenv("PI_CODING_AGENT_DIR", agentDir)
+	cm := NewTestClientManager(home, nil, supportedClientIntegrations, nil)
+	cm.lookPath = func(string) (string, error) { return "/usr/local/bin/pi", nil }
+	require.Contains(t, cm.DetectedLLMGatewayClients(), ClientApp(Pi))
+	path, err := cm.ConfigureLLMGateway(ClientApp(Pi), llmgateway.ApplyConfig{
+		GatewayURL: "https://gateway.example", DiscoveredModels: []string{"gpt-5"},
+	})
+	require.NoError(t, err)
+	require.Equal(t, filepath.Join(agentDir, "models.json"), path)
+	require.NoFileExists(t, filepath.Join(home, ".pi", "agent", "models.json"))
+	require.NoError(t, cm.RevertLLMGateway(ClientApp(Pi), path))
+	_, providers, err := readPiConfig(path)
+	require.NoError(t, err)
+	require.NotContains(t, providers, piProviderName)
+	t.Setenv("PI_CODING_AGENT_DIR", "~/custom-pi-agent")
+	require.Equal(t, filepath.Join(home, "custom-pi-agent", "models.json"),
+		cm.buildLLMSettingsPath(cm.lookupClientAppConfig(ClientApp(Pi))))
+	t.Setenv("PI_CODING_AGENT_DIR", "relative-pi-agent")
+	relativePath, err := filepath.Abs(filepath.Join("relative-pi-agent", "models.json"))
+	require.NoError(t, err)
+	require.Equal(t, relativePath, cm.buildLLMSettingsPath(cm.lookupClientAppConfig(ClientApp(Pi))))
+}
+
 func TestPiGatewayAnthropicOnly(t *testing.T) {
 	t.Parallel()
 	home := t.TempDir()
@@ -119,6 +184,14 @@ func TestPiGatewayRejectsUnmanagedAnthropicProvider(t *testing.T) {
 	require.Equal(t, original, content)
 }
 
+func TestPiGatewayRejectsUnclassifiedModel(t *testing.T) {
+	t.Parallel()
+	cm := NewTestClientManager(t.TempDir(), nil, supportedClientIntegrations, nil)
+	cfg := llmgateway.ApplyConfig{GatewayURL: "https://gateway.example", Models: []string{"claude-opus-4-8"}}
+	_, err := cm.ConfigureLLMGateway(ClientApp(Pi), cfg)
+	require.ErrorContains(t, err, "cannot determine its API")
+}
+
 func TestPiGatewayRejectsUnownedProviderAndMissingModels(t *testing.T) {
 	t.Parallel()
 	home := t.TempDir()
@@ -131,6 +204,7 @@ func TestPiGatewayRejectsUnownedProviderAndMissingModels(t *testing.T) {
 	original := []byte(`{"providers":{"toolhive":{"apiKey":"personal","models":[{"id":"my-model"}]}}}`)
 	require.NoError(t, os.WriteFile(path, original, 0o600))
 	cfg.Models = []string{"claude-sonnet-5"}
+	cfg.DiscoveredModels = []string{"claude-sonnet-5"}
 	_, err = cm.ConfigureLLMGateway(ClientApp(Pi), cfg)
 	require.ErrorContains(t, err, "not managed")
 	require.ErrorContains(t, cm.RevertLLMGateway(ClientApp(Pi), path), "no longer managed")

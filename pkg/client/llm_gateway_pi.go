@@ -4,12 +4,15 @@
 package client
 
 import (
+	"bytes"
 	"encoding/json"
 	"fmt"
 	"os"
 	"path/filepath"
 	"slices"
 	"strings"
+
+	"github.com/tailscale/hujson"
 
 	"github.com/stacklok/toolhive/pkg/fileutils"
 	"github.com/stacklok/toolhive/pkg/llmgateway"
@@ -21,15 +24,18 @@ const piTokenCommand = "!thv llm token" //nolint:gosec // command, not a credent
 
 // configurePi adds a named provider without disturbing the user's other providers.
 func (cm *ClientManager) configurePi(appCfg *clientAppConfig, cfg llmgateway.ApplyConfig) (string, error) {
-	openAIModels, anthropicModels := selectPiModels(cfg)
+	openAIModels, anthropicModels, err := selectPiModels(cfg)
+	if err != nil {
+		return "", err
+	}
 	if len(openAIModels) == 0 && len(anthropicModels) == 0 {
-		return "", fmt.Errorf("pi requires a model list; pass --models or run setup without --lazy for gateway model discovery")
+		return "", fmt.Errorf("pi requires a model list from authenticated gateway discovery")
 	}
 	path := cm.buildLLMSettingsPath(appCfg)
 	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
 		return "", fmt.Errorf("creating Pi config directory: %w", err)
 	}
-	err := fileutils.WithFileLock(path, func() error {
+	err = fileutils.WithFileLock(path, func() error {
 		root, providers, err := readPiConfig(path)
 		if err != nil {
 			return err
@@ -68,20 +74,25 @@ func (cm *ClientManager) configurePi(appCfg *clientAppConfig, cfg llmgateway.App
 	return path, nil
 }
 
-func selectPiModels(cfg llmgateway.ApplyConfig) ([]string, []string) {
+func selectPiModels(cfg llmgateway.ApplyConfig) ([]string, []string, error) {
 	if len(cfg.Models) == 0 {
-		return cfg.DiscoveredModels, cfg.AnthropicModels
+		return cfg.DiscoveredModels, cfg.AnthropicModels, nil
 	}
 	var openAIModels, anthropicModels []string
 	for _, id := range cfg.Models {
-		if slices.Contains(cfg.DiscoveredModels, id) || !slices.Contains(cfg.AnthropicModels, id) {
+		openAI := slices.Contains(cfg.DiscoveredModels, id)
+		anthropic := slices.Contains(cfg.AnthropicModels, id)
+		if !openAI && !anthropic {
+			return nil, nil, fmt.Errorf("pi model %q was not found by authenticated model discovery; cannot determine its API", id)
+		}
+		if openAI {
 			openAIModels = append(openAIModels, id)
 		}
-		if slices.Contains(cfg.AnthropicModels, id) {
+		if anthropic {
 			anthropicModels = append(anthropicModels, id)
 		}
 	}
-	return openAIModels, anthropicModels
+	return openAIModels, anthropicModels, nil
 }
 
 func piProviderManaged(existing json.RawMessage) bool {
@@ -147,37 +158,79 @@ func (cm *ClientManager) revertPi(appCfg *clientAppConfig, path string) error {
 	})
 }
 
-func readPiConfig(path string) (map[string]json.RawMessage, map[string]json.RawMessage, error) {
-	root := make(map[string]json.RawMessage)
+type piConfig struct {
+	value  hujson.Value
+	hasBOM bool
+}
+
+var piBOM = []byte{0xef, 0xbb, 0xbf}
+
+func readPiConfig(path string) (piConfig, map[string]json.RawMessage, error) {
 	content, err := os.ReadFile(path) // #nosec G304 -- path is the registered Pi config location
 	if err != nil && !os.IsNotExist(err) {
-		return nil, nil, fmt.Errorf("reading Pi config: %w", err)
+		return piConfig{}, nil, fmt.Errorf("reading Pi config: %w", err)
 	}
-	if len(content) != 0 {
-		if err := json.Unmarshal(content, &root); err != nil || root == nil {
-			return nil, nil, fmt.Errorf("decoding Pi config %s: expected a JSON object: %v", path, err)
-		}
+	hasBOM := bytes.HasPrefix(content, piBOM)
+	content = bytes.TrimPrefix(content, piBOM)
+	if len(content) == 0 {
+		content = []byte("{}")
+	}
+	value, err := parseJSONC(content, path)
+	if err != nil {
+		return piConfig{}, nil, err
+	}
+	standardized, err := standardizeJSONC(&value, path)
+	if err != nil {
+		return piConfig{}, nil, err
+	}
+	var root map[string]json.RawMessage
+	if err := json.Unmarshal(standardized, &root); err != nil || root == nil {
+		return piConfig{}, nil, fmt.Errorf("decoding Pi config %s: expected a JSON object: %v", path, err)
 	}
 	providers := make(map[string]json.RawMessage)
 	if raw, ok := root["providers"]; ok {
 		if err := json.Unmarshal(raw, &providers); err != nil || providers == nil {
-			return nil, nil, fmt.Errorf("decoding Pi providers in %s: expected a JSON object: %v", path, err)
+			return piConfig{}, nil, fmt.Errorf("decoding Pi providers in %s: expected a JSON object: %v", path, err)
 		}
 	}
-	return root, providers, nil
+	return piConfig{value: value, hasBOM: hasBOM}, providers, nil
 }
 
-func writePiConfig(path string, root, providers map[string]json.RawMessage) error {
-	encoded, err := json.Marshal(providers)
+func writePiConfig(path string, root piConfig, providers map[string]json.RawMessage) error {
+	standardized, err := standardizeJSONC(&root.value, path)
 	if err != nil {
-		return fmt.Errorf("encoding Pi providers: %w", err)
+		return err
 	}
-	root["providers"] = encoded
-	content, err := json.MarshalIndent(root, "", "  ")
+	if !jsonPointerExists(standardized, "/providers") && len(providers) != 0 {
+		if err := root.value.Patch([]byte(`[{"op":"add","path":"/providers","value":{}}]`)); err != nil {
+			return fmt.Errorf("adding Pi providers in %s: %w", path, err)
+		}
+	}
+	for _, name := range []string{piProviderName, piAnthropicProviderName} {
+		ptr := "/providers/" + name
+		value, ok := providers[name]
+		if !ok {
+			if err := removeLLMKey(&root.value, ptr, path, standardized); err != nil {
+				return err
+			}
+			continue
+		}
+		patch, err := json.Marshal([]llmPatchOp{{Op: "add", Path: ptr, Value: value}})
+		if err != nil {
+			return fmt.Errorf("encoding Pi provider %q: %w", name, err)
+		}
+		if err := root.value.Patch(patch); err != nil {
+			return fmt.Errorf("patching Pi provider %q in %s: %w", name, path, err)
+		}
+	}
+	content, err := hujson.Format(root.value.Pack())
 	if err != nil {
-		return fmt.Errorf("encoding Pi config: %w", err)
+		return fmt.Errorf("formatting Pi config %s: %w", path, err)
 	}
-	if err := fileutils.AtomicWriteFile(path, append(content, '\n'), 0o600); err != nil {
+	if root.hasBOM {
+		content = append(append([]byte{}, piBOM...), content...)
+	}
+	if err := fileutils.AtomicWriteFile(path, content, 0o600); err != nil {
 		return fmt.Errorf("writing Pi config: %w", err)
 	}
 	return nil

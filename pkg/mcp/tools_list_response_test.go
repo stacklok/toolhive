@@ -155,3 +155,41 @@ func TestEncodeToolsListResponse(t *testing.T) {
 		})
 	}
 }
+
+func TestSSEDataLines(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name    string
+		payload string
+		want    []string
+	}{
+		{
+			name:    "every kind of line break ends a data line",
+			payload: "a\r\nb\rc",
+			want:    []string{"a", "b", "c"},
+		},
+		{
+			name:    "a value without a line break is one data line",
+			payload: `{"a":1}`,
+			want:    []string{`{"a":1}`},
+		},
+		{
+			name:    "an empty line is an empty data line",
+			payload: "{\"a\":\n\n1}",
+			want:    []string{`{"a":`, "", "1}"},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			var got []string
+			for _, line := range sseDataLines([]byte(tt.payload)) {
+				got = append(got, string(line))
+			}
+			assert.Equal(t, tt.want, got)
+		})
+	}
+}

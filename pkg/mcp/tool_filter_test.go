@@ -751,6 +751,30 @@ data: {"type":"info","message":"Processing complete"}
 			expectError: false,
 		},
 		{
+			// The value of _meta is pretty-printed with LF inside a stream
+			// whose lines end in CRLF, so the filtered list holds line
+			// breaks and goes out as one data line per line of it.
+			name: "SSE with a pretty-printed value inside a CRLF stream",
+			config: &toolMiddlewareConfig{
+				filterTools: map[string]struct{}{
+					"allowed_tool": {},
+				},
+			},
+			inputBuffer: []byte("event: message\r\n" +
+				"data: {\"jsonrpc\":\"2.0\",\"id\":1,\"result\":{\"resultType\":\"complete\",\"_meta\":{\n" +
+				"  \"io.modelcontextprotocol/serverInfo\": {\n" +
+				"    \"name\": \"example-server\"\n" +
+				"  }\n" +
+				"},\"tools\":[{\"name\":\"allowed_tool\"},{\"name\":\"blocked_tool\"}]}}\r\n\r\n"),
+			expected: "event: message\r\n" +
+				"data: {\"jsonrpc\":\"2.0\",\"id\":1,\"result\":{\"resultType\":\"complete\",\"_meta\":{\r\n" +
+				"data:   \"io.modelcontextprotocol/serverInfo\": {\r\n" +
+				"data:     \"name\": \"example-server\"\r\n" +
+				"data:   }\r\n" +
+				"data: },\"tools\":[{\"name\":\"allowed_tool\"}]}}\r\n\r\n",
+			expectError: false,
+		},
+		{
 			name: "SSE with CR line endings",
 			config: &toolMiddlewareConfig{
 				filterTools: map[string]struct{}{

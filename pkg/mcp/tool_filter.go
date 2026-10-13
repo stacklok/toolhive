@@ -728,7 +728,7 @@ func processEventStream(
 		if data, ok := bytes.CutPrefix(line, []byte("data:")); ok {
 			var response toolsListResponse
 			if err := json.Unmarshal(data, &response); err == nil && response.Result.Tools != nil {
-				if err := writeToolsListDataLine(config, data, response, linesep, w); err != nil {
+				if err := writeToolsListDataLines(config, data, response, linesep, w); err != nil {
 					return err
 				}
 				continue
@@ -746,12 +746,14 @@ func processEventStream(
 	return nil
 }
 
-// writeToolsListDataLine writes data, the value of a data line that carries a
-// tools list response decoded into response, back to w as the data line that
-// holds the filtered list, ended by linesep. The JSON encoder ends the list
-// with a newline that is no part of the data line, so that newline is dropped
-// and linesep alone ends the line.
-func writeToolsListDataLine(
+// writeToolsListDataLines writes data, the value of a data line that carries
+// a tools list response decoded into response, back to w as one data line per
+// line of the filtered list, each ended by linesep. A line break inside a
+// value the filter keeps, legal white space as in a pretty-printed value,
+// would otherwise end the data line for the client, which reads the rest of
+// the value as a line of its own; written as data lines of the same event,
+// the lines are joined back with a newline by the client (see sseDataLines).
+func writeToolsListDataLines(
 	config *toolMiddlewareConfig,
 	data []byte,
 	response toolsListResponse,
@@ -762,9 +764,11 @@ func writeToolsListDataLine(
 	if err := processToolsListResponse(config, data, response, &filtered); err != nil {
 		return err
 	}
-	for _, chunk := range [][]byte{[]byte("data: "), bytes.TrimSuffix(filtered.Bytes(), []byte("\n")), linesep} {
-		if _, err := w.Write(chunk); err != nil {
-			return fmt.Errorf("%w: %w", errBug, err)
+	for _, part := range sseDataLines(bytes.TrimSuffix(filtered.Bytes(), []byte("\n"))) {
+		for _, chunk := range [][]byte{[]byte("data: "), part, linesep} {
+			if _, err := w.Write(chunk); err != nil {
+				return fmt.Errorf("%w: %w", errBug, err)
+			}
 		}
 	}
 	return nil

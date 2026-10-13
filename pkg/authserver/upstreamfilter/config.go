@@ -15,6 +15,11 @@ package upstreamfilter
 // GroupBasedFilterConfig is the serializable configuration for the group-based
 // upstream filter. It is stored in RunConfig and delivered to the vMCP pod via
 // the auth-server config ConfigMap.
+//
+// The nested keys are camelCase where RunConfig's own fields are snake_case.
+// They match the v1beta1 CRD spelling (spec.authServerConfig.upstreamProviders),
+// which keeps a rule spelled the same in the CR and in the generated YAML.
+// Renaming them would also change the published OpenAPI model and Go SDK.
 type GroupBasedFilterConfig struct {
 	// Claim is the exact, top-level JWT/OIDC claim name to read group
 	// membership from. Defaults to "groups" when empty. The claim value MUST be
@@ -22,6 +27,14 @@ type GroupBasedFilterConfig struct {
 	// fail the authorization. Nested claims (e.g. Keycloak's realm_access.roles)
 	// must be flattened by the identity provider — nested paths are not
 	// supported in this implementation.
+	//
+	// The value is read from upstream.Identity.Claims as the first upstream
+	// resolves it: an OIDC upstream fills that map from the validated ID
+	// token, a pure OAuth2 upstream from the userinfo response. The
+	// identityFromToken and synthesized-identity paths leave it empty, and
+	// groups carried only in an access token never reach it. A missing claim
+	// fails the authorization — DefaultUpstreams covers a valid-but-empty
+	// claim and unmatched groups, not an absent one.
 	Claim string `json:"claim,omitempty" yaml:"claim,omitempty"`
 
 	// Rules assigns groups to upstream provider subsets. A principal matches a

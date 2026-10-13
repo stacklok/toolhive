@@ -23,6 +23,7 @@ import (
 	"github.com/stacklok/toolhive/pkg/authserver/server/tokenexchange"
 	"github.com/stacklok/toolhive/pkg/authserver/storage"
 	"github.com/stacklok/toolhive/pkg/authserver/upstream"
+	"github.com/stacklok/toolhive/pkg/authserver/upstreamfilter"
 	"github.com/stacklok/toolhive/pkg/networking"
 	"github.com/stacklok/toolhive/pkg/oauthproto"
 )
@@ -78,6 +79,18 @@ type RunConfig struct {
 	// TrustedIssuer with JWTBearerGrant enables token-only operation.
 	// Multiple upstreams are supported for sequential authorization chains.
 	Upstreams []UpstreamRunConfig `json:"upstreams" yaml:"upstreams"`
+
+	// UpstreamFilter configures an optional group-based filter that narrows the
+	// multi-upstream authorization chain per-request based on the first
+	// upstream's resolved identity. When nil, every request walks the full
+	// upstream chain in configured order (preserving behavior from before the
+	// filter hook existed).
+	//
+	// The filter is applied exactly once per authorization, on the first leg's
+	// callback. The mandatory first upstream (Upstreams[0]) is never filtered
+	// out. See pkg/authserver/upstreamfilter for the configuration schema and
+	// pkg/authserver/server/handlers for the runtime contract.
+	UpstreamFilter *upstreamfilter.GroupBasedFilterConfig `json:"upstream_filter,omitempty" yaml:"upstream_filter,omitempty"`
 
 	// ScopesSupported lists the OAuth 2.0 scope values advertised in discovery documents.
 	// If empty, defaults to registration.DefaultScopes (["openid", "profile", "email", "offline_access"]).
@@ -332,7 +345,29 @@ func (c *RunConfig) Validate() error {
 	if err := validateSPIFFENotYetEnforced(c.SPIFFETrustDomains); err != nil {
 		return err
 	}
+	if err := c.validateUpstreamFilter(); err != nil {
+		return err
+	}
 	return c.validateBaselineClientScopes()
+}
+
+// validateUpstreamFilter rejects an UpstreamFilter configuration whose rules or
+// defaults reference upstream names that are not configured, that reference the
+// mandatory first upstream, or that otherwise violate the filter's static
+// invariants. It constructs the filter against the configured upstream names
+// and discards the result — successful construction is the validation.
+func (c *RunConfig) validateUpstreamFilter() error {
+	if c.UpstreamFilter == nil {
+		return nil
+	}
+	configured := make([]string, len(c.Upstreams))
+	for i := range c.Upstreams {
+		configured[i] = c.Upstreams[i].Name
+	}
+	if _, err := upstreamfilter.NewGroupBasedFilter(*c.UpstreamFilter, configured); err != nil {
+		return fmt.Errorf("upstream_filter: %w", err)
+	}
+	return nil
 }
 
 // validateSPIFFENotYetEnforced hard-rejects a non-empty SPIFFE trust

@@ -7,6 +7,17 @@
   ],
   "labels": ["dependencies"],
   "schedule": ["every weekend"],
+  "ignorePaths": [
+    "**/node_modules/**",
+    "**/bower_components/**",
+    "**/vendor/**",
+    "**/examples/**",
+    "**/__tests__/**",
+    "test/**/!(images.go)",
+    "*/**/test/**",
+    "**/tests/**",
+    "**/__fixtures__/**"
+  ],
   "vulnerabilityAlerts": {
     "enabled": true,
     "schedule": ["at any time"]
@@ -93,6 +104,33 @@
       "matchStrings": [
         "FROM (?<depName>[a-z0-9./_-]+):(?<currentValue>[a-z0-9.-]+)@(?<currentDigest>sha256:[a-f0-9]{64})"
       ],
+      "datasourceTemplate": "docker"
+    },
+    {
+      "customType": "regex",
+      "description": "Synchronize the pinned Envoy image",
+      "managerFilePatterns": [
+        "pkg/container/docker/envoy.go",
+        "pkg/container/docker/envoy_test.go",
+        ".github/workflows/e2e-tests.yml"
+      ],
+      "matchStrings": [
+        "(?<depName>envoyproxy/envoy):(?<currentValue>distroless-v\\d+\\.\\d+\\.\\d+)@(?<currentDigest>sha256:[a-f0-9]{64})"
+      ],
+      "datasourceTemplate": "docker"
+    },
+    {
+      "customType": "regex",
+      "description": "Synchronize the pinned Python network fixture image",
+      "managerFilePatterns": [
+        "test/e2e/images/images.go",
+        ".github/workflows/e2e-tests.yml"
+      ],
+      "matchStrings": [
+        "pythonImageTag\\s*=\\s*\"(?<currentValue>[^\"]+)\"[\\s\\S]*?networkFixtureImageDigest\\s*=\\s*\"(?<currentDigest>sha256:[a-f0-9]{64})\"",
+        "python:(?<currentValue>\\d+\\.\\d+-slim)@(?<currentDigest>sha256:[a-f0-9]{64})"
+      ],
+      "depNameTemplate": "python",
       "datasourceTemplate": "docker"
     },
     {

@@ -744,10 +744,10 @@ Custom permission profiles can be defined in JSON files for reusable security po
 
 ### Kubernetes
 
-**Pod security context:**
-- RunConfig permission profile → Security context
-- Network policies generated from profile
-- Volume mounts → PersistentVolumeClaims or HostPath
+**Security configuration:**
+- `spec.permissionProfile` is retained for API compatibility but is deprecated and ignored by the operator
+- Configure pod security through `spec.podTemplateSpec` using Kubernetes `securityContext` fields
+- Define Kubernetes `NetworkPolicy` resources separately for network enforcement
 
 **Pod template patches:**
 ```json
@@ -756,7 +756,7 @@ Custom permission profiles can be defined in JSON files for reusable security po
 }
 ```
 
-**Implementation**: Operator converts profiles to K8s resources
+**Implementation**: `spec.podTemplateSpec` configures pod-level controls; Kubernetes `NetworkPolicy` resources are managed separately
 
 ### Docker/Podman
 

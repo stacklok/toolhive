@@ -15,7 +15,7 @@ Configure detected AI tools to use the LLM gateway
 
 ### Synopsis
 
-Detect installed AI tools (Claude Code, Gemini CLI, Cursor, VS Code, Xcode,
+Detect installed AI tools (Claude Code, Gemini CLI, Pi, Cursor, VS Code, Xcode,
 Claude Desktop, Codex) and patch each tool's configuration to route through the
 LLM gateway.
 
@@ -34,6 +34,11 @@ directly (no shell), keeping existing model_providers and mcp_servers entries
 untouched. Desktop app detection is supported on macOS and Windows; the canonical
 --client target remains "codex". If the desktop app is running, fully quit and
 reopen it after setup.
+
+Pi is configured with OpenAI-compatible and Anthropic providers in
+~/.pi/agent/models.json. It runs "thv llm token" for each request; models are
+discovered from both gateway APIs unless --models is provided. With --lazy,
+--models is required for Pi.
 
 Proxy-mode tools (Cursor, VS Code, Xcode) are configured to send requests to
 the localhost reverse proxy started by "thv llm proxy start".
@@ -75,7 +80,7 @@ thv llm setup [flags]
   -h, --help                           help for setup
       --issuer string                  OIDC issuer URL
       --lazy                           Skip the interactive OIDC login and defer it until the first time a configured tool accesses the gateway. Tool config and persisted settings are written normally. Useful for unattended provisioning (e.g. an MDM profile).
-      --models strings                 Model IDs to configure, comma-separated or by repeating the flag, e.g. --models=us.anthropic.claude-opus-4-8,us.anthropic.claude-sonnet-5. For credential-helper clients (Claude Desktop) these become inferenceModels. With --bedrock-compat, each ID is also mapped to a Claude Code tier by matching 'haiku', 'opus', or 'sonnet' in the ID (IDs matching no tier are ignored with a warning). Omit to use the built-in Bedrock defaults / gateway model discovery.
+      --models strings                 Model IDs to configure, comma-separated or by repeating the flag, e.g. --models=us.anthropic.claude-opus-4-8,us.anthropic.claude-sonnet-5. For Pi these define its custom provider models (required with --lazy). For credential-helper clients (Claude Desktop) these become inferenceModels. With --bedrock-compat, each ID is also mapped to a Claude Code tier by matching 'haiku', 'opus', or 'sonnet' in the ID (IDs matching no tier are ignored with a warning). Omit to use the built-in Bedrock defaults / gateway model discovery.
       --proxy-port int                 Localhost proxy listen port (omit to keep current; default: 14000)
       --short-prompt-cache             Use Claude Code's five-minute prompt cache instead of ToolHive's one-hour default. Persisted, so a later plain "thv llm setup" keeps it; use --short-prompt-cache=false to restore one-hour caching.
       --skip-browser                   Print the OIDC authorization URL instead of opening a browser, then wait for the callback. Use in headless/SSH/CI environments where no system browser is available.

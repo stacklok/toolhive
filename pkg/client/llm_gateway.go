@@ -53,6 +53,9 @@ func (cm *ClientManager) ConfigureLLMGateway(clientType ClientApp, cfg llmgatewa
 	if appCfg.LLMGatewayMode == llmgateway.ModeCodexAuth {
 		return cm.configureCodexAuth(appCfg, cfg)
 	}
+	if appCfg.LLMGatewayMode == llmgateway.ModePi {
+		return cm.configurePi(appCfg, cfg)
+	}
 	if appCfg.LLMGatewayMode == llmgateway.ModeVSCode {
 		return cm.configureVSCode(appCfg, cfg)
 	}
@@ -191,6 +194,9 @@ func (cm *ClientManager) RevertLLMGateway(clientType ClientApp, configPath strin
 	// Codex reverts via its dedicated TOML writer.
 	if appCfg.LLMGatewayMode == llmgateway.ModeCodexAuth {
 		return cm.revertCodexAuth(appCfg, configPath)
+	}
+	if appCfg.LLMGatewayMode == llmgateway.ModePi {
+		return cm.revertPi(appCfg, configPath)
 	}
 	if appCfg.LLMGatewayMode == llmgateway.ModeVSCode {
 		return cm.revertVSCode(appCfg, configPath)
@@ -509,8 +515,10 @@ func (cm *ClientManager) sharedCLIDetection(cfg *clientAppConfig) bool {
 	// exist until first configured (e.g. Claude Desktop's configLibrary),
 	// LLMDetectRelPath points at a directory that exists once the app is
 	// installed. Otherwise fall back to the settings directory.
-	if _, err := os.Stat(cm.llmDetectDir(cfg)); err != nil {
-		return false
+	if cfg.ClientType != ClientApp(Pi) {
+		if _, err := os.Stat(cm.llmDetectDir(cfg)); err != nil {
+			return false
+		}
 	}
 	if cfg.LLMBinaryName != "" {
 		if cm.lookPath == nil {

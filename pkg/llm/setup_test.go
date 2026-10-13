@@ -190,7 +190,7 @@ func TestConfigureDetectedTools_BedrockClaudeCode(t *testing.T) {
 		[]string{"claude-code"},
 		"https://gw.example.com", "http://localhost:14000/v1",
 		"/usr/local/bin/thv", []string{"llm", "token", "--skip-browser"},
-		false, "/anthropic", nil, nil, false,
+		false, "/anthropic", nil, discoveredGatewayModels{}, false,
 		BedrockConfig{Compat: true, Enable1M: true},
 	)
 	require.NoError(t, err)
@@ -214,7 +214,7 @@ func TestConfigureDetectedTools_BedrockSkippedForNonClaudeCode(t *testing.T) {
 		[]string{"cursor"},
 		"https://gw.example.com", "http://localhost:14000/v1",
 		"/usr/local/bin/thv", []string{"llm", "token", "--skip-browser"},
-		false, "", nil, nil, false,
+		false, "", nil, discoveredGatewayModels{}, false,
 		BedrockConfig{Compat: true},
 	)
 	require.NoError(t, err)
@@ -288,7 +288,7 @@ func TestConfigureDetectedTools_PromptCache(t *testing.T) {
 				&out, &errOut, gm, []string{tt.clientType},
 				"https://gw.example.com", "http://localhost:14000/v1",
 				"/usr/local/bin/thv", []string{"llm", "token", "--skip-browser"},
-				false, "", nil, nil, tt.shortPromptCache, BedrockConfig{},
+				false, "", nil, discoveredGatewayModels{}, tt.shortPromptCache, BedrockConfig{},
 			)
 			require.NoError(t, err)
 			require.Len(t, configured, 1)
@@ -923,21 +923,141 @@ func TestSetup_Lazy_VSCodeSelectionSemantics(t *testing.T) {
 	})
 }
 
+func TestSetupPiModels(t *testing.T) {
+	t.Parallel()
+	server := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		assert.Equal(t, "Bearer discovery-token", r.Header.Get("Authorization"))
+		switch r.URL.Path {
+		case "/v1/models":
+			_, _ = w.Write([]byte(`{"object":"list","data":[{"id":"gpt-5","context_window":400000}]}`))
+		case "/anthropic/v1/models":
+			_, _ = w.Write([]byte(`{"data":[{"id":"claude-sonnet-5","max_input_tokens":1000000}],"has_more":false}`))
+		default:
+			w.WriteHeader(http.StatusNotFound)
+		}
+	}))
+	t.Cleanup(server.Close)
+	for _, tt := range []struct {
+		name    string
+		lazy    bool
+		models  []string
+		wantErr string
+	}{
+		{name: "discover models", models: nil},
+		{name: "lazy requires models", lazy: true, wantErr: "pi requires --models"},
+		{name: "lazy explicit models", lazy: true, models: []string{"claude-opus-4-8"}},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			gm := &setupGatewayManager{detected: []string{"pi"}, mode: llmgateway.ModePi}
+			provider := configuredSetupProvider()
+			provider.cfg.GatewayURL = server.URL
+			provider.cfg.TLSSkipVerify = true
+			var out, errOut bytes.Buffer
+			err := Setup(context.Background(), &out, &errOut, gm, provider,
+				func(_ context.Context, cfg *Config) error {
+					cfg.SetDiscoveryAccessToken("discovery-token")
+					return nil
+				}, SetOptions{Models: tt.models}, "/anthropic", true, "pi", tt.lazy)
+			if tt.wantErr != "" {
+				require.ErrorContains(t, err, tt.wantErr)
+				assert.Zero(t, provider.updateCalls)
+				return
+			}
+			require.NoError(t, err)
+			require.Len(t, gm.applied, 1)
+			assert.Equal(t, tt.models, gm.applied[0].Models)
+			if !tt.lazy {
+				assert.Equal(t, []string{"gpt-5"}, gm.applied[0].DiscoveredModels)
+				assert.Equal(t, map[string]int{"gpt-5": 400000}, gm.applied[0].DiscoveredModelContextWindows)
+				assert.Equal(t, []string{"claude-sonnet-5"}, gm.applied[0].AnthropicModels)
+				assert.Equal(t, map[string]int{"claude-sonnet-5": 1000000}, gm.applied[0].AnthropicModelContextWindows)
+			} else {
+				assert.Empty(t, gm.applied[0].DiscoveredModelContextWindows)
+			}
+			assert.Empty(t, gm.applied[0].AnthropicBaseURL)
+		})
+	}
+}
+
+func TestDiscoverSetupModelsPiAnthropicFallback(t *testing.T) {
+	t.Parallel()
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/v1/models" {
+			w.WriteHeader(http.StatusNotFound)
+			return
+		}
+		assert.Equal(t, "/anthropic/v1/models", r.URL.Path)
+		_, _ = w.Write([]byte(`{"data":[{"id":"claude-opus-4-8","max_input_tokens":1000000}],"has_more":false}`))
+	}))
+	t.Cleanup(server.Close)
+	cfg := Config{GatewayURL: server.URL}
+	cfg.SetDiscoveryAccessToken("discovery-token")
+	var warnings strings.Builder
+	clients, catalog, err := discoverSetupModels(context.Background(), &warnings, []string{"pi"}, "pi", cfg)
+	require.NoError(t, err)
+	assert.Equal(t, []string{"pi"}, clients)
+	assert.Empty(t, catalog.openAI)
+	assert.Equal(t, []string{"claude-opus-4-8"}, catalog.anthropic)
+	assert.Equal(t, map[string]int{"claude-opus-4-8": 1000000}, catalog.anthropicContextWindows)
+	assert.Contains(t, warnings.String(), "skipping Pi OpenAI models")
+}
+
+func TestDiscoverAnthropicGatewayModels(t *testing.T) {
+	t.Parallel()
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		assert.Equal(t, "/anthropic/v1/models", r.URL.Path)
+		assert.Equal(t, "Bearer discovery-token", r.Header.Get("Authorization"))
+		switch r.URL.Query().Get("after_id") {
+		case "":
+			_, _ = w.Write([]byte(`{"data":[{"id":" claude-opus-4-8 ","max_input_tokens":1000000},` +
+				`{"id":"claude-haiku-5-5"}],"has_more":true,"last_id":"claude-haiku-5-5"}`))
+		case "claude-haiku-5-5":
+			_, _ = w.Write([]byte(`{"data":[{"id":"claude-sonnet-5","max_input_tokens":200000},` +
+				`{"id":"claude-opus-4-8","max_input_tokens":10}],"has_more":false}`))
+		default:
+			w.WriteHeader(http.StatusBadRequest)
+		}
+	}))
+	t.Cleanup(server.Close)
+	cfg := Config{GatewayURL: server.URL}
+	cfg.SetDiscoveryAccessToken("discovery-token")
+	models, contexts, err := discoverAnthropicGatewayModels(context.Background(), cfg)
+	require.NoError(t, err)
+	assert.Equal(t, []string{"claude-haiku-5-5", "claude-opus-4-8", "claude-sonnet-5"}, models)
+	assert.Equal(t, map[string]int{"claude-opus-4-8": 1000000, "claude-sonnet-5": 200000}, contexts)
+}
+
+func TestDiscoverAnthropicGatewayModelsRejectsInvalidPagination(t *testing.T) {
+	t.Parallel()
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		_, _ = w.Write([]byte(`{"data":[{"id":"model"}],"has_more":true}`))
+	}))
+	t.Cleanup(server.Close)
+	cfg := Config{GatewayURL: server.URL}
+	cfg.SetDiscoveryAccessToken("discovery-token")
+	_, _, err := discoverAnthropicGatewayModels(context.Background(), cfg)
+	require.ErrorContains(t, err, "invalid Anthropic pagination cursor")
+}
+
 func TestDiscoverGatewayModels(t *testing.T) {
 	t.Parallel()
 
 	tests := []struct {
-		name     string
-		status   int
-		body     string
-		setToken bool
-		want     []string
-		wantErr  string
+		name        string
+		status      int
+		body        string
+		setToken    bool
+		want        []string
+		wantContext map[string]int
+		wantErr     string
 	}{
 		{name: "valid OpenAI list is trimmed, deduplicated, and sorted", status: http.StatusOK,
-			body: `{"object":"list","data":[{"id":" z-model "},{"id":"a-model"},{"id":"z-model"},` +
-				`{"id":" a-model "}]}`,
-			setToken: true, want: []string{"a-model", "z-model"}},
+			body: `{"object":"list","data":[{"id":" z-model ","context_window":1000000},` +
+				`{"id":"a-model"},{"id":"z-model","context_window":-5},` +
+				`{"id":" a-model ","context_window":0}]}`,
+			setToken: true, want: []string{"a-model", "z-model"},
+			wantContext: map[string]int{"z-model": 1000000}},
 		{name: "missing authentication", status: http.StatusOK, body: `{"object":"list","data":[{"id":"model"}]}`,
 			wantErr: "did not provide an access token"},
 		{name: "authentication failure", status: http.StatusUnauthorized, body: `{"error":"unauthorized"}`,
@@ -966,13 +1086,14 @@ func TestDiscoverGatewayModels(t *testing.T) {
 			if tt.setToken {
 				cfg.SetDiscoveryAccessToken("discovery-token")
 			}
-			got, err := discoverGatewayModels(context.Background(), cfg)
+			got, contexts, err := discoverGatewayModels(context.Background(), cfg)
 			if tt.wantErr != "" {
 				require.ErrorContains(t, err, tt.wantErr)
 				return
 			}
 			require.NoError(t, err)
 			assert.Equal(t, tt.want, got)
+			assert.Equal(t, tt.wantContext, contexts)
 		})
 	}
 }
@@ -1325,7 +1446,7 @@ func TestConfigureDetectedTools_PathPrefixAppendedForDirectMode(t *testing.T) {
 		[]string{"claude-code"},
 		"https://gw.example.com", "http://localhost:14000/v1",
 		"/usr/local/bin/thv", []string{"llm", "token", "--skip-browser"},
-		false, "/anthropic", nil, nil, false,
+		false, "/anthropic", nil, discoveredGatewayModels{}, false,
 		BedrockConfig{},
 	)
 	require.NoError(t, err)
@@ -1347,7 +1468,7 @@ func TestConfigureDetectedTools_NoPrefixWhenEmpty(t *testing.T) {
 		[]string{"claude-code"},
 		"https://gw.example.com", "http://localhost:14000/v1",
 		"/usr/local/bin/thv", []string{"llm", "token", "--skip-browser"},
-		false, "", nil, nil, false, // no prefix
+		false, "", nil, discoveredGatewayModels{}, false, // no prefix
 		BedrockConfig{},
 	)
 	require.NoError(t, err)
@@ -1368,7 +1489,7 @@ func TestConfigureDetectedTools_PrefixNotAppliedForProxyMode(t *testing.T) {
 		[]string{"cursor"},
 		"https://gw.example.com", "http://localhost:14000/v1",
 		"/usr/local/bin/thv", []string{"llm", "token", "--skip-browser"},
-		false, "/anthropic", nil, nil, false,
+		false, "/anthropic", nil, discoveredGatewayModels{}, false,
 		BedrockConfig{},
 	)
 	require.NoError(t, err)

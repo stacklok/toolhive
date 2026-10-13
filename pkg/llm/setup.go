@@ -13,6 +13,7 @@ import (
 	"net/http"
 	"net/url"
 	"os"
+	"slices"
 	"sort"
 	"strings"
 	"time"
@@ -100,7 +101,7 @@ func Setup(
 	// there is nothing to configure. In non-lazy mode login still runs before any
 	// files are patched, preserving the guarantee that a failed login leaves no
 	// state.
-	detected, done, err := setupClients(gm, targetClient, lazy, out, errOut)
+	detected, done, err := setupClients(gm, targetClient, lazy, llmCfg.Models, out, errOut)
 	if err != nil {
 		return err
 	}
@@ -132,7 +133,7 @@ func Setup(
 		_, _ = fmt.Fprintln(out, "Login successful.")
 	}
 
-	detected, discoveredModels, err := discoverVSCodeModelsForSetup(
+	detected, discoveredModels, err := discoverSetupModels(
 		ctx, errOut, detected, targetClient, llmCfg,
 	)
 	if err != nil {
@@ -463,6 +464,9 @@ func warnTLSSkipVerify(errOut io.Writer, skip bool, configured []ToolConfig) {
 					"Warning: %s uses proxy mode — TLS certificate verification is disabled for the "+
 						"proxy's upstream gateway connection only. Use only in isolated local environments.\n", tc.Tool)
 			}
+		case llmgateway.ModePi:
+			_, _ = fmt.Fprintf(errOut,
+				"Warning: --tls-skip-verify was NOT applied to %s — trust the gateway certificate in the system store.\n", tc.Tool)
 		case llmgateway.ModeCodexAuth:
 			_, _ = fmt.Fprintf(errOut,
 				"Warning: --tls-skip-verify was NOT applied to %s — its config.toml has no "+
@@ -492,7 +496,7 @@ func filterDetectedClients(gm GatewayManager, targetClient string) ([]string, er
 }
 
 func setupClients(
-	gm GatewayManager, targetClient string, lazy bool, out, errOut io.Writer,
+	gm GatewayManager, targetClient string, lazy bool, models []string, out, errOut io.Writer,
 ) ([]string, bool, error) {
 	detected, err := filterDetectedClients(gm, targetClient)
 	if err != nil {
@@ -504,6 +508,9 @@ func setupClients(
 	}
 	if !lazy {
 		return detected, false, nil
+	}
+	if slices.Contains(detected, "pi") && len(models) == 0 {
+		return nil, false, fmt.Errorf("pi requires --models with --lazy; omit --lazy to discover gateway models")
 	}
 	detected, err = filterLazyVSCodeClients(detected, targetClient, errOut)
 	if err != nil {
@@ -558,90 +565,187 @@ func filterLazyVSCodeClients(clients []string, targetClient string, errOut io.Wr
 	return filtered, nil
 }
 
-func discoverVSCodeModelsForSetup(
-	ctx context.Context, errOut io.Writer, clients []string, targetClient string, cfg Config,
-) ([]string, []string, error) {
-	if !hasVSCodeClient(clients) {
-		return clients, nil, nil
-	}
-	models, err := discoverGatewayModels(ctx, cfg)
-	if err == nil {
-		return clients, models, nil
-	}
-	if isVSCodeClient(targetClient) {
-		return nil, nil, err
-	}
+type discoveredGatewayModels struct {
+	openAI                  []string
+	openAIContextWindows    map[string]int
+	anthropic               []string
+	anthropicContextWindows map[string]int
+}
 
-	_, _ = fmt.Fprintf(
-		errOut,
-		"Warning: skipping auto-detected VS Code clients because gateway model discovery failed: %v\n",
-		err,
-	)
+func discoverSetupModels(
+	ctx context.Context, errOut io.Writer, clients []string, targetClient string, cfg Config,
+) ([]string, discoveredGatewayModels, error) {
+	hasPi := slices.Contains(clients, "pi")
+	hasVSCode := hasVSCodeClient(clients)
+	catalog, openErr, anthropicErr := fetchSetupModelCatalog(ctx, cfg, hasPi, hasVSCode)
+	piMissing := hasPi && len(cfg.Models) == 0 && len(catalog.openAI) == 0 && len(catalog.anthropic) == 0
+	if isVSCodeClient(targetClient) && openErr != nil {
+		return nil, catalog, openErr
+	}
+	if targetClient == "pi" && piMissing {
+		return nil, catalog, fmt.Errorf("discovering Pi models: %w", errors.Join(openErr, anthropicErr))
+	}
+	warnModelDiscovery(errOut, hasVSCode, hasPi, piMissing, catalog, openErr, anthropicErr)
 	filtered := make([]string, 0, len(clients))
 	for _, clientType := range clients {
-		if !isVSCodeClient(clientType) {
-			filtered = append(filtered, clientType)
+		if (isVSCodeClient(clientType) && openErr != nil) || (clientType == "pi" && piMissing) {
+			continue
 		}
+		filtered = append(filtered, clientType)
 	}
-	return filtered, nil, nil
+	return filtered, catalog, nil
+}
+
+func fetchSetupModelCatalog(
+	ctx context.Context, cfg Config, hasPi, hasVSCode bool,
+) (discoveredGatewayModels, error, error) {
+	var catalog discoveredGatewayModels
+	var openErr, anthropicErr error
+	if hasVSCode || (hasPi && (len(cfg.Models) == 0 || cfg.discoveryAccessToken != "")) {
+		catalog.openAI, catalog.openAIContextWindows, openErr = discoverGatewayModels(ctx, cfg)
+	}
+	if hasPi && cfg.discoveryAccessToken != "" {
+		catalog.anthropic, catalog.anthropicContextWindows, anthropicErr = discoverAnthropicGatewayModels(ctx, cfg)
+	}
+	return catalog, openErr, anthropicErr
+}
+
+func warnModelDiscovery(
+	errOut io.Writer, hasVSCode, hasPi, piMissing bool, catalog discoveredGatewayModels, openErr, anthropicErr error,
+) {
+	if hasVSCode && openErr != nil {
+		_, _ = fmt.Fprintf(errOut,
+			"Warning: skipping auto-detected VS Code clients because gateway model discovery failed: %v\n", openErr)
+	}
+	if piMissing {
+		_, _ = fmt.Fprintf(errOut,
+			"Warning: skipping auto-detected Pi because gateway model discovery failed: %v\n",
+			errors.Join(openErr, anthropicErr))
+	}
+	if hasPi && len(catalog.openAI) > 0 && anthropicErr != nil {
+		_, _ = fmt.Fprintf(errOut, "Warning: skipping Pi Anthropic models: %v\n", anthropicErr)
+	}
+	if hasPi && len(catalog.anthropic) > 0 && openErr != nil {
+		_, _ = fmt.Fprintf(errOut, "Warning: skipping Pi OpenAI models: %v\n", openErr)
+	}
 }
 
 type gatewayModelsResponse struct {
-	Object string `json:"object"`
-	Data   []struct {
-		ID string `json:"id"`
+	Object  string `json:"object"`
+	HasMore *bool  `json:"has_more"`
+	LastID  string `json:"last_id"`
+	Data    []struct {
+		ID             string `json:"id"`
+		ContextWindow  int    `json:"context_window"`
+		MaxInputTokens int    `json:"max_input_tokens"`
 	} `json:"data"`
 }
 
-func discoverGatewayModels(ctx context.Context, cfg Config) ([]string, error) {
+func requestGatewayModels(ctx context.Context, cfg Config, path, afterID string) (gatewayModelsResponse, error) {
 	if cfg.discoveryAccessToken == "" {
-		return nil, fmt.Errorf("discovering gateway models: authenticated setup did not provide an access token")
+		return gatewayModelsResponse{}, fmt.Errorf("discovering gateway models: authenticated setup did not provide an access token")
 	}
-	modelsURL, err := url.JoinPath(cfg.GatewayURL, "v1/models")
+	modelsURL, err := url.JoinPath(cfg.GatewayURL, path)
 	if err != nil {
-		return nil, fmt.Errorf("building gateway models URL: %w", err)
+		return gatewayModelsResponse{}, fmt.Errorf("building gateway models URL: %w", err)
 	}
 	requestCtx, cancel := context.WithTimeout(ctx, 15*time.Second)
 	defer cancel()
 	req, err := http.NewRequestWithContext(requestCtx, http.MethodGet, modelsURL, nil)
 	if err != nil {
-		return nil, fmt.Errorf("creating gateway model-discovery request: %w", err)
+		return gatewayModelsResponse{}, fmt.Errorf("creating gateway model-discovery request: %w", err)
+	}
+	if afterID != "" {
+		query := req.URL.Query()
+		query.Set("after_id", afterID)
+		req.URL.RawQuery = query.Encode()
 	}
 	req.Header.Set("Authorization", "Bearer "+cfg.discoveryAccessToken)
 	resp, err := gatewayHTTPClient(cfg.TLSSkipVerify).Do(req)
 	if err != nil {
-		return nil, fmt.Errorf("discovering gateway models: %w", err)
+		return gatewayModelsResponse{}, fmt.Errorf("discovering gateway models: %w", err)
 	}
 	defer func() {
 		_ = resp.Body.Close()
 	}()
 	if resp.StatusCode != http.StatusOK {
 		_, _ = io.Copy(io.Discard, resp.Body)
-		return nil, fmt.Errorf("discovering gateway models: gateway returned %s", resp.Status)
+		return gatewayModelsResponse{}, fmt.Errorf("discovering gateway models: gateway returned %s", resp.Status)
 	}
 	var payload gatewayModelsResponse
 	if err := json.NewDecoder(resp.Body).Decode(&payload); err != nil {
 		_, _ = io.Copy(io.Discard, resp.Body)
-		return nil, fmt.Errorf("decoding gateway model response: %w", err)
+		return gatewayModelsResponse{}, fmt.Errorf("decoding gateway model response: %w", err)
+	}
+	return payload, nil
+}
+
+func discoverGatewayModels(ctx context.Context, cfg Config) ([]string, map[string]int, error) {
+	payload, err := requestGatewayModels(ctx, cfg, "v1/models", "")
+	if err != nil {
+		return nil, nil, err
 	}
 	if payload.Object != "list" || len(payload.Data) == 0 {
-		return nil, fmt.Errorf("decoding gateway model response: expected a non-empty OpenAI model list")
+		return nil, nil, fmt.Errorf("decoding gateway model response: expected a non-empty OpenAI model list")
 	}
 	seen := make(map[string]struct{}, len(payload.Data))
 	models := make([]string, 0, len(payload.Data))
+	contextWindows := make(map[string]int, len(payload.Data))
 	for _, model := range payload.Data {
 		modelID := strings.TrimSpace(model.ID)
 		if modelID == "" {
-			return nil, fmt.Errorf("decoding gateway model response: model ID must not be empty")
+			return nil, nil, fmt.Errorf("decoding gateway model response: model ID must not be empty")
 		}
 		if _, exists := seen[modelID]; exists {
 			continue
 		}
 		seen[modelID] = struct{}{}
 		models = append(models, modelID)
+		if model.ContextWindow > 0 {
+			contextWindows[modelID] = model.ContextWindow
+		}
 	}
 	sort.Strings(models)
-	return models, nil
+	return models, contextWindows, nil
+}
+
+func discoverAnthropicGatewayModels(ctx context.Context, cfg Config) ([]string, map[string]int, error) {
+	seen := make(map[string]struct{})
+	models := make([]string, 0)
+	contextWindows := make(map[string]int)
+	afterID := ""
+	for range 100 {
+		payload, err := requestGatewayModels(ctx, cfg, "anthropic/v1/models", afterID)
+		if err != nil {
+			return nil, nil, err
+		}
+		if payload.HasMore == nil || len(payload.Data) == 0 {
+			return nil, nil, fmt.Errorf("decoding gateway model response: expected a non-empty Anthropic model page")
+		}
+		for _, model := range payload.Data {
+			id := strings.TrimSpace(model.ID)
+			if id == "" {
+				return nil, nil, fmt.Errorf("decoding gateway model response: model ID must not be empty")
+			}
+			if _, exists := seen[id]; exists {
+				continue
+			}
+			seen[id] = struct{}{}
+			models = append(models, id)
+			if model.MaxInputTokens > 0 {
+				contextWindows[id] = model.MaxInputTokens
+			}
+		}
+		if !*payload.HasMore {
+			sort.Strings(models)
+			return models, contextWindows, nil
+		}
+		if payload.LastID == "" || payload.LastID == afterID {
+			return nil, nil, fmt.Errorf("decoding gateway model response: invalid Anthropic pagination cursor")
+		}
+		afterID = payload.LastID
+	}
+	return nil, nil, fmt.Errorf("decoding gateway model response: too many Anthropic model pages")
 }
 
 // Default Bedrock inference-profile model IDs written for Claude Code in
@@ -762,7 +866,7 @@ func configureDetectedToolsWithDiscovery(
 	out, errOut io.Writer, gm GatewayManager, detected []string,
 	gatewayURL, proxyBaseURL, tokenHelperPath string, tokenHelperArgs []string,
 	tlsSkipVerify bool, anthropicPathPrefix string,
-	models, discoveredModels []string, shortPromptCache bool, bedrock BedrockConfig,
+	models []string, discovered discoveredGatewayModels, shortPromptCache bool, bedrock BedrockConfig,
 ) ([]ToolConfig, error) {
 	var configured []ToolConfig
 	for _, clientType := range detected {
@@ -782,15 +886,18 @@ func configureDetectedToolsWithDiscovery(
 		}
 
 		applyCfg := llmgateway.ApplyConfig{
-			GatewayURL:         gatewayURL,
-			AnthropicBaseURL:   anthropicBaseURL,
-			ProxyBaseURL:       proxyBaseURL,
-			TokenHelperCommand: tokenHelperShellCommand,
-			TokenHelperPath:    tokenHelperPath,
-			TokenHelperArgs:    tokenHelperArgs,
-			TLSSkipVerify:      tlsSkipVerify,
-			Models:             models,
-			DiscoveredModels:   discoveredModels,
+			GatewayURL:                    gatewayURL,
+			AnthropicBaseURL:              anthropicBaseURL,
+			ProxyBaseURL:                  proxyBaseURL,
+			TokenHelperCommand:            tokenHelperShellCommand,
+			TokenHelperPath:               tokenHelperPath,
+			TokenHelperArgs:               tokenHelperArgs,
+			TLSSkipVerify:                 tlsSkipVerify,
+			Models:                        models,
+			DiscoveredModels:              discovered.openAI,
+			DiscoveredModelContextWindows: discovered.openAIContextWindows,
+			AnthropicModels:               discovered.anthropic,
+			AnthropicModelContextWindows:  discovered.anthropicContextWindows,
 		}
 
 		if clientType == claudeCodeClient {

@@ -65,6 +65,8 @@ const (
 	// shell), rather than the JSON-Pointer LLMGatewayKeys mechanism the other
 	// modes share.
 	ModeCodexAuth = "codex-auth" //nolint:gosec // G101: mode identifier, not a credential
+	// ModePi configures Pi's OpenAI-compatible and Anthropic providers in models.json.
+	ModePi = "pi"
 	// ModeVSCode configures VS Code's chatLanguageModels.json provider groups.
 	ModeVSCode = "vscode"
 )
@@ -114,6 +116,13 @@ type ApplyConfig struct {
 	// discovery request. It is used only by integrations that require an explicit
 	// model catalogue, such as VS Code's customendpoint provider.
 	DiscoveredModels []string
+	// DiscoveredModelContextWindows contains positive context sizes from gateway
+	// discovery for Pi's model catalogue. Missing entries use Pi's default.
+	DiscoveredModelContextWindows map[string]int
+	// AnthropicModels and AnthropicModelContextWindows contain the separately
+	// discovered Anthropic model catalogue for Pi. Sizes are max_input_tokens.
+	AnthropicModels              []string
+	AnthropicModelContextWindows map[string]int
 	// ShortPromptCache opts supported clients out of ToolHive's one-hour
 	// prompt-cache lifetime and restores their shorter default.
 	ShortPromptCache bool

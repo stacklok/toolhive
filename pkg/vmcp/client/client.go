@@ -1340,12 +1340,15 @@ func cursorParams(cursor mcp.Cursor) map[string]any {
 // ("tools", "resources", "resourceTemplates", "prompts"); the envelope is decoded
 // into a raw-message map so one helper serves all four list shapes.
 //
-// Items are decoded one at a time. An item the compat types cannot decode (for
-// example a tool whose top-level schema "type" is a JSON Schema type array) is
-// skipped with a warning naming it, so one malformed item does not hide every
-// other item the backend advertises. A JSON null item carries nothing to
-// advertise and is skipped the same way. An items field that is not an array is
-// a protocol-level fault and still fails the page.
+// Items are decoded one at a time. An item the compat types cannot decode is
+// skipped with a warning naming it, so one bad item does not hide every other
+// item the backend advertises. The item is not necessarily invalid: the compat
+// types model less than the spec allows (for example a tool whose top-level
+// outputSchema "type" is a JSON Schema type array is valid but cannot be
+// represented), so a skip means vMCP could not use the item, not that the
+// backend broke the protocol. A JSON null item carries nothing to advertise and
+// is skipped the same way. An items field that is not an array is a
+// protocol-level fault and still fails the page.
 func modernListAll[T any](
 	ctx context.Context, hc *http.Client, endpoint, method, itemsField, backend string,
 ) ([]T, error) {
@@ -1386,19 +1389,20 @@ func modernListAll[T any](
 }
 
 // itemIdentifier returns the name (or, for resources, the uri) of a raw list
-// item for logging, or "" when it carries neither.
+// item for logging, or "" when it carries neither as a string. The keys are
+// decoded separately so a wrongly typed name does not hide a usable uri.
 func itemIdentifier(raw json.RawMessage) string {
-	var id struct {
-		Name string `json:"name"`
-		URI  string `json:"uri"`
-	}
-	if err := json.Unmarshal(raw, &id); err != nil {
+	var fields map[string]json.RawMessage
+	if err := json.Unmarshal(raw, &fields); err != nil {
 		return ""
 	}
-	if id.Name != "" {
-		return id.Name
+	for _, key := range []string{"name", "uri"} {
+		var value string
+		if err := json.Unmarshal(fields[key], &value); err == nil && value != "" {
+			return value
+		}
 	}
-	return id.URI
+	return ""
 }
 
 // newCapabilityListFromMCP converts backend mcp types into the vmcp domain

@@ -106,8 +106,10 @@ func TestModernEnumerate_UndecodableItems(t *testing.T) {
 	}
 
 	tests := []struct {
-		name    string
-		results map[string]map[string]any // Mcp-Method -> result; unlisted methods return empty lists
+		name string
+		// "<Mcp-Method>" (first page) or "<Mcp-Method>@<cursor>" -> result; a request
+		// with no entry gets an empty list.
+		results map[string]map[string]any
 		wantErr string
 		check   func(t *testing.T, l *vmcp.CapabilityList)
 	}{
@@ -162,6 +164,48 @@ func TestModernEnumerate_UndecodableItems(t *testing.T) {
 			},
 		},
 		{
+			name: "undecodable resource template is skipped",
+			results: map[string]map[string]any{"resources/templates/list": {"resourceTemplates": []any{
+				map[string]any{"name": "rt1", "uriTemplate": "file:///{a}"},
+				map[string]any{"name": 123, "uriTemplate": "file:///{bad}"},
+				map[string]any{"name": "rt3", "uriTemplate": "file:///{c}"},
+			}}},
+			check: func(t *testing.T, l *vmcp.CapabilityList) {
+				t.Helper()
+				require.Len(t, l.ResourceTemplates, 2)
+				assert.Equal(t, "file:///{a}", l.ResourceTemplates[0].URITemplate)
+				assert.Equal(t, "file:///{c}", l.ResourceTemplates[1].URITemplate)
+			},
+		},
+		{
+			name: "page where every item is bad yields an empty list, not an error",
+			results: map[string]map[string]any{"tools/list": {"tools": []any{
+				map[string]any{"name": "bad1", "description": 123},
+				nil,
+				map[string]any{"name": "bad3", "description": 123},
+			}}},
+			check: func(t *testing.T, l *vmcp.CapabilityList) {
+				t.Helper()
+				assert.Empty(t, l.Tools)
+			},
+		},
+		{
+			name: "bad items do not stop pagination and later pages are kept",
+			results: map[string]map[string]any{
+				"tools/list": {
+					"tools":      []any{goodTool("t1"), map[string]any{"name": "bad", "description": 123}},
+					"nextCursor": "c2",
+				},
+				"tools/list@c2": {
+					"tools": []any{map[string]any{"name": "bad", "description": 123}, goodTool("t3")},
+				},
+			},
+			check: func(t *testing.T, l *vmcp.CapabilityList) {
+				t.Helper()
+				assert.Equal(t, []string{"t1", "t3"}, toolNames(l))
+			},
+		},
+		{
 			name:    "tools field that is not an array fails the enumeration",
 			results: map[string]map[string]any{"tools/list": {"tools": "not-an-array"}},
 			wantErr: "decoding tools from tools/list",
@@ -180,9 +224,13 @@ func TestModernEnumerate_UndecodableItems(t *testing.T) {
 			t.Parallel()
 
 			srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-				id, _ := modernReq(t, r)
+				id, cursor := modernReq(t, r)
 				method := r.Header.Get("Mcp-Method")
-				result, ok := tt.results[method]
+				key := method
+				if cursor != "" {
+					key += "@" + cursor
+				}
+				result, ok := tt.results[key]
 				if !ok {
 					result = map[string]any{emptyLists[method]: []any{}}
 				}
@@ -201,6 +249,34 @@ func TestModernEnumerate_UndecodableItems(t *testing.T) {
 			}
 			require.NoError(t, err)
 			tt.check(t, list)
+		})
+	}
+}
+
+// TestItemIdentifier verifies the identifier logged for a skipped item: the name
+// when it is a string, else the uri, decoded per key so one wrongly typed field
+// does not hide the other.
+func TestItemIdentifier(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name string
+		raw  string
+		want string
+	}{
+		{name: "name wins over uri", raw: `{"name":"n","uri":"file:///u"}`, want: "n"},
+		{name: "uri when there is no name", raw: `{"uri":"file:///u"}`, want: "file:///u"},
+		{name: "wrongly typed name falls back to uri", raw: `{"name":123,"uri":"file:///u"}`, want: "file:///u"},
+		{name: "wrongly typed uri still yields the name", raw: `{"name":"n","uri":123}`, want: "n"},
+		{name: "neither field is a string", raw: `{"name":123,"uri":[]}`, want: ""},
+		{name: "neither field present", raw: `{"description":"d"}`, want: ""},
+		{name: "item that is not an object", raw: `"just-a-string"`, want: ""},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			assert.Equal(t, tt.want, itemIdentifier(json.RawMessage(tt.raw)))
 		})
 	}
 }

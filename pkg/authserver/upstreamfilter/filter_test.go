@@ -307,6 +307,51 @@ func TestFilterUpstreams(t *testing.T) {
 	}
 }
 
+// TestFilterUpstreams_MultiGroupRuleMatchesAnyGroup pins the any-of (OR)
+// semantics of a rule listing several groups: each group selects the rule on
+// its own. Every matching rule in TestFilterUpstreams carries a single group,
+// so none of them tells OR from AND. DefaultUpstreams is deliberately a
+// different set here, so a case that fell through to the fallback could not
+// be mistaken for a match. Issue #6675 leaves the preferred semantic open;
+// this test is what a move to all-of would have to update.
+func TestFilterUpstreams_MultiGroupRuleMatchesAnyGroup(t *testing.T) {
+	t.Parallel()
+
+	cfg := GroupBasedFilterConfig{
+		Rules: []GroupRule{
+			{Groups: []string{"engineering", "production"}, UpstreamProviders: []string{"jira", "slack"}},
+		},
+		DefaultUpstreams: []string{"confluence"},
+	}
+
+	tests := []struct {
+		name   string
+		groups []any
+		want   []string
+	}{
+		{name: "first group alone matches", groups: []any{"engineering"}, want: []string{"jira", "slack"}},
+		{name: "second group alone matches", groups: []any{"production"}, want: []string{"jira", "slack"}},
+		{name: "both groups match once", groups: []any{"engineering", "production"}, want: []string{"jira", "slack"}},
+		{name: "unrelated group falls back to defaults", groups: []any{"sales"}, want: []string{"confluence"}},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			f, err := NewGroupBasedFilter(cfg, testConfigured)
+			require.NoError(t, err)
+
+			got, err := f.FilterUpstreams(
+				context.Background(),
+				auth.PrincipalInfo{Claims: map[string]any{"groups": tc.groups}},
+				testConfigured[1:],
+			)
+			require.NoError(t, err)
+			assert.Equal(t, tc.want, got)
+		})
+	}
+}
+
 func TestFilterUpstreams_CustomClaimName(t *testing.T) {
 	t.Parallel()
 

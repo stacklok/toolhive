@@ -111,6 +111,7 @@ When you change behavior, update every comment that describes it. A comment that
 - After any refactor, search for comments referencing the old behavior and update them.
 - If a comment names a specific function, variable, or mechanism, verify the name is still accurate.
 - Comments describing concurrency semantics (eviction timing, lazy vs. eager, which lock is held) are especially prone to drift — treat them as part of the implementation, not decoration.
+- A doc or interface comment is the contract. Before new code depends on a behavior a comment promises (an error an interface says it returns, upsert versus no-overwrite semantics, how many fields a check covers), confirm that every implementation honors it. If none does, either make them honor it or rewrite the comment to the semantics the implementations share. Never let code lean on a documented promise that nothing enforces (#6284, #6490).
 
 ## Constructor Validation: Fail Loudly on Invalid Input
 

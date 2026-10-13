@@ -343,7 +343,9 @@ spec:
                 - name
                 type: object
               permissionProfile:
-                description: PermissionProfile defines the permission profile to use
+                description: |-
+                  PermissionProfile is deprecated and retained for API compatibility. It is
+                  not supported by the Kubernetes operator and has no effect.
                 properties:
                   key:
                     description: |-
@@ -2333,7 +2335,9 @@ spec:
                 - name
                 type: object
               permissionProfile:
-                description: PermissionProfile defines the permission profile to use
+                description: |-
+                  PermissionProfile is deprecated and retained for API compatibility. It is
+                  not supported by the Kubernetes operator and has no effect.
                 properties:
                   key:
                     description: |-

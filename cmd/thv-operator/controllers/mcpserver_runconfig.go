@@ -164,25 +164,6 @@ func (r *MCPServerReconciler) createRunConfigFromMCPServer(m *mcpv1beta1.MCPServ
 		options = append(options, runner.WithToolsOverride(toolsOverride))
 	}
 
-	// Add permission profile if specified
-	if m.Spec.PermissionProfile != nil {
-		switch m.Spec.PermissionProfile.Type {
-		case mcpv1beta1.PermissionProfileTypeBuiltin:
-			options = append(options,
-				runner.WithPermissionProfileNameOrPath(
-					m.Spec.PermissionProfile.Name,
-				),
-			)
-		case mcpv1beta1.PermissionProfileTypeConfigMap:
-			// For ConfigMap-based permission profiles, we store the path
-			options = append(options,
-				runner.WithPermissionProfileNameOrPath(
-					fmt.Sprintf("/etc/toolhive/profiles/%s", m.Spec.PermissionProfile.Key),
-				),
-			)
-		}
-	}
-
 	// Create context for API operations
 	ctx, cancel := context.WithTimeout(context.Background(), defaultAPITimeout)
 	defer cancel()

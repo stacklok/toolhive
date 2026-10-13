@@ -146,6 +146,11 @@ const defaultTerminationGracePeriodSeconds = int64(30)
 
 const stdioTransport = "stdio"
 
+const (
+	permissionProfileUnsupportedEventReason = "PermissionProfileUnsupported"
+	permissionProfileUnsupportedEventAction = "IgnorePermissionProfile"
+)
+
 // detectPlatform detects the Kubernetes platform type (Kubernetes vs OpenShift)
 // It uses the shared platform detector to ensure detection is only performed once and cached
 func (r *MCPServerReconciler) detectPlatform(ctx context.Context) (kubernetes.Platform, error) {
@@ -272,6 +277,8 @@ func (r *MCPServerReconciler) Reconcile(ctx context.Context, req ctrl.Request) (
 		}
 		return ctrl.Result{}, nil
 	}
+
+	r.emitPermissionProfileUnsupportedEvent(mcpServer)
 
 	// Add finalizer for this CR
 	if !controllerutil.ContainsFinalizer(mcpServer, MCPServerFinalizerName) {
@@ -649,6 +656,27 @@ func (r *MCPServerReconciler) Reconcile(ctx context.Context, req ctrl.Request) (
 	}
 
 	return ctrl.Result{}, nil
+}
+
+// emitPermissionProfileUnsupportedEvent emits a Warning when an MCPServer
+// configures the deprecated spec.permissionProfile field. The operator keeps
+// the field for API compatibility but does not apply it to Kubernetes
+// workloads.
+//
+// The generation==observedGeneration guard suppresses the event after a
+// successful reconcile advances status. Retries that fail before
+// observedGeneration is updated can re-emit; Kubernetes event aggregation
+// is the practical dedupe in that window.
+func (r *MCPServerReconciler) emitPermissionProfileUnsupportedEvent(mcpServer *mcpv1beta1.MCPServer) {
+	if mcpServer.Spec.PermissionProfile == nil || r.Recorder == nil {
+		return
+	}
+	if mcpServer.Generation == mcpServer.Status.ObservedGeneration {
+		return
+	}
+	r.Recorder.Eventf(mcpServer, nil, corev1.EventTypeWarning,
+		permissionProfileUnsupportedEventReason, permissionProfileUnsupportedEventAction,
+		"spec.permissionProfile is deprecated and unsupported by the Kubernetes operator; it has no effect")
 }
 
 func (r *MCPServerReconciler) validateGroupRef(ctx context.Context, mcpServer *mcpv1beta1.MCPServer) {
@@ -1237,7 +1265,7 @@ func (r *MCPServerReconciler) deploymentForMCPServer(
 		},
 	})
 
-	// Pod template patch, permission profile, OIDC, authorization, audit, environment variables,
+	// Pod template patch, OIDC, authorization, audit, environment variables,
 	// tools filter, and telemetry configuration are all included in the ConfigMap
 	// so we don't need to add them as individual flags
 
@@ -1371,26 +1399,6 @@ func (r *MCPServerReconciler) deploymentForMCPServer(
 			VolumeSource: corev1.VolumeSource{
 				HostPath: &corev1.HostPathVolumeSource{
 					Path: v.HostPath,
-				},
-			},
-		})
-	}
-
-	// Add volume mount for permission profile if using configmap
-	if m.Spec.PermissionProfile != nil && m.Spec.PermissionProfile.Type == mcpv1beta1.PermissionProfileTypeConfigMap {
-		volumeMounts = append(volumeMounts, corev1.VolumeMount{
-			Name:      "permission-profile",
-			MountPath: "/etc/toolhive/profiles",
-			ReadOnly:  true,
-		})
-
-		volumes = append(volumes, corev1.Volume{
-			Name: "permission-profile",
-			VolumeSource: corev1.VolumeSource{
-				ConfigMap: &corev1.ConfigMapVolumeSource{
-					LocalObjectReference: corev1.LocalObjectReference{
-						Name: m.Spec.PermissionProfile.Name,
-					},
 				},
 			},
 		})

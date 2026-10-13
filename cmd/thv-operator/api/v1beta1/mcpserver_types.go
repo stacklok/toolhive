@@ -295,7 +295,8 @@ type MCPServerSpec struct {
 	// +optional
 	ServiceAccount *string `json:"serviceAccount,omitempty"`
 
-	// PermissionProfile defines the permission profile to use
+	// PermissionProfile is deprecated and retained for API compatibility. It is
+	// not supported by the Kubernetes operator and has no effect.
 	// +optional
 	PermissionProfile *PermissionProfileRef `json:"permissionProfile,omitempty"`
 
@@ -639,10 +640,12 @@ type ToolRateLimitConfig = ratelimittypes.ToolRateLimitConfig
 
 // Permission profile types
 const (
-	// PermissionProfileTypeBuiltin is the type for built-in permission profiles
+	// PermissionProfileTypeBuiltin is the deprecated type for built-in permission
+	// profiles. Permission profiles are not supported for MCPServer workloads.
 	PermissionProfileTypeBuiltin = "builtin"
 
-	// PermissionProfileTypeConfigMap is the type for permission profiles stored in ConfigMaps
+	// PermissionProfileTypeConfigMap is the deprecated type for permission profiles
+	// stored in ConfigMaps. Permission profiles are not supported for MCPServer workloads.
 	PermissionProfileTypeConfigMap = "configmap"
 )
 
@@ -655,7 +658,8 @@ const (
 	AuthzConfigTypeInline = "inline"
 )
 
-// PermissionProfileRef defines a reference to a permission profile
+// PermissionProfileRef defines a deprecated reference to a permission profile.
+// Permission profiles are not supported for MCPServer workloads.
 type PermissionProfileRef struct {
 	// Type is the type of permission profile reference
 	// +kubebuilder:validation:Enum=builtin;configmap
@@ -674,7 +678,8 @@ type PermissionProfileRef struct {
 	Key string `json:"key,omitempty"`
 }
 
-// PermissionProfileSpec defines the permissions for an MCP server
+// PermissionProfileSpec defines deprecated permissions for an MCP server.
+// Permission profiles are not supported for MCPServer workloads.
 // +gendoc
 type PermissionProfileSpec struct {
 	// Read is a list of paths that the MCP server can read from
@@ -692,7 +697,8 @@ type PermissionProfileSpec struct {
 	Network *NetworkPermissions `json:"network,omitempty"`
 }
 
-// NetworkPermissions defines the network permissions for an MCP server
+// NetworkPermissions defines deprecated network permissions for an MCP server.
+// Permission profiles are not supported for MCPServer workloads.
 type NetworkPermissions struct {
 	// Mode specifies the network mode for the container (e.g., "host", "bridge", "none")
 	// When empty, the default container runtime network mode is used

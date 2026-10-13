@@ -3388,7 +3388,7 @@ _Appears in:_
 | `resources` _[api.v1beta1.ResourceRequirements](#apiv1beta1resourcerequirements)_ | Resources defines the resource requirements for the MCP server container |  | Optional: \{\} <br /> |
 | `secrets` _[api.v1beta1.SecretRef](#apiv1beta1secretref) array_ | Secrets are references to secrets to mount in the MCP server container |  | Optional: \{\} <br /> |
 | `serviceAccount` _string_ | ServiceAccount is the name of an already existing service account to use by the MCP server.<br />If not specified, a ServiceAccount will be created automatically and used by the MCP server. |  | Optional: \{\} <br /> |
-| `permissionProfile` _[api.v1beta1.PermissionProfileRef](#apiv1beta1permissionprofileref)_ | PermissionProfile defines the permission profile to use |  | Optional: \{\} <br /> |
+| `permissionProfile` _[api.v1beta1.PermissionProfileRef](#apiv1beta1permissionprofileref)_ | PermissionProfile is deprecated and retained for API compatibility. It is<br />not supported by the Kubernetes operator and has no effect. |  | Optional: \{\} <br /> |
 | `podTemplateSpec` _[RawExtension](https://kubernetes.io/docs/reference/generated/kubernetes-api/v1.27/#rawextension-runtime-pkg)_ | PodTemplateSpec defines the pod template to use for the MCP server<br />This allows for customizing the pod configuration beyond what is provided by the other fields.<br />Note that to modify the specific container the MCP server runs in, you must specify<br />the `mcp` container name in the PodTemplateSpec.<br />This field accepts a PodTemplateSpec object as JSON/YAML. |  | Type: object <br />Optional: \{\} <br /> |
 | `resourceOverrides` _[api.v1beta1.ResourceOverrides](#apiv1beta1resourceoverrides)_ | ResourceOverrides allows overriding annotations and labels for resources created by the operator |  | Optional: \{\} <br /> |
 | `oidcConfigRef` _[api.v1beta1.MCPOIDCConfigReference](#apiv1beta1mcpoidcconfigreference)_ | OIDCConfigRef references a shared MCPOIDCConfig resource for OIDC authentication.<br />The referenced MCPOIDCConfig must exist in the same namespace as this MCPServer.<br />Per-server overrides (audience, scopes) are specified here; shared provider config<br />lives in the MCPOIDCConfig resource.<br />SECURITY: if this field is omitted and no other authentication source is configured,<br />the proxy runs UNAUTHENTICATED. It accepts every request that can reach its port and<br />forwards it to the MCP server under a synthetic local-user identity, with no token or<br />credential check. Set this field to enforce identity-based access control per request. |  | Optional: \{\} <br /> |
@@ -3711,7 +3711,8 @@ _Appears in:_
 
 
 
-NetworkPermissions defines the network permissions for an MCP server
+NetworkPermissions defines deprecated network permissions for an MCP server.
+Permission profiles are not supported for MCPServer workloads.
 
 
 
@@ -3934,7 +3935,8 @@ _Appears in:_
 
 
 
-PermissionProfileRef defines a reference to a permission profile
+PermissionProfileRef defines a deprecated reference to a permission profile.
+Permission profiles are not supported for MCPServer workloads.
 
 
 
@@ -3952,7 +3954,8 @@ _Appears in:_
 
 
 
-PermissionProfileSpec defines the permissions for an MCP server
+PermissionProfileSpec defines deprecated permissions for an MCP server.
+Permission profiles are not supported for MCPServer workloads.
 
 
 

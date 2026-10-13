@@ -305,6 +305,8 @@ These features are implemented through two complementary middleware components t
 - One component handles outgoing responses containing tool lists
 - Another component handles incoming requests to execute tools
 
+The response component rewrites only the `tools` array of a `tools/list` result: every other member of the response and of its result, such as `id`, `nextCursor`, `resultType` or `_meta`, reaches the client as the backend sent it.
+
 Both components must be in place for the features to work correctly, as they ensure consistency between tool discovery and tool execution.
 
 **Configuration**:

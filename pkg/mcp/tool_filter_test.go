@@ -620,8 +620,11 @@ func TestProcessToolsListResponse(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
 
+			body, err := json.Marshal(tt.inputResponse)
+			require.NoError(t, err)
+
 			var buf bytes.Buffer
-			err := processToolsListResponse(tt.config, tt.inputResponse, &buf)
+			err = processToolsListResponse(tt.config, body, tt.inputResponse, &buf)
 
 			if tt.expectError != nil {
 				assert.ErrorIs(t, err, tt.expectError)
@@ -1186,8 +1189,11 @@ func TestProcessToolsListResponse_JSONEncoding(t *testing.T) {
 		{"name": "tool3", "description": "Third tool", "inputSchema": map[string]any{"type": "array"}},
 	})
 
+	body, err := json.Marshal(inputResponse)
+	require.NoError(t, err)
+
 	var buf bytes.Buffer
-	err := processToolsListResponse(config, inputResponse, &buf)
+	err = processToolsListResponse(config, body, inputResponse, &buf)
 	require.NoError(t, err)
 
 	// Verify the output can be parsed back as valid JSON

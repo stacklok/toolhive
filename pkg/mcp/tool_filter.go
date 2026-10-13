@@ -619,7 +619,7 @@ func processJSONBuffer(config *toolMiddlewareConfig, buffer []byte, w io.Writer)
 		return fmt.Errorf("%w: %w", errKeepBuffering, err)
 	}
 	if err == nil && toolsListResponse.Result.Tools != nil {
-		return processToolsListResponse(config, toolsListResponse, w)
+		return processToolsListResponse(config, buffer, toolsListResponse, w)
 	}
 
 	_, err = w.Write(buffer)
@@ -664,7 +664,7 @@ func processUnrecognizedMimeType(
 
 	var candidate toolsListResponse
 	if err := json.Unmarshal(buffer, &candidate); err == nil && candidate.Result.Tools != nil {
-		return processToolsListResponse(config, candidate, w)
+		return processToolsListResponse(config, buffer, candidate, w)
 	}
 
 	if sniffSSEToolsList(buffer) {
@@ -740,7 +740,7 @@ func processEventStream(
 					return fmt.Errorf("%w: %w", errBug, err)
 				}
 
-				if err := processToolsListResponse(config, toolsListResponse, w); err != nil {
+				if err := processToolsListResponse(config, data, toolsListResponse, w); err != nil {
 					return err
 				}
 				written = true
@@ -773,18 +773,22 @@ func processEventStream(
 	return nil
 }
 
-// processToolsListResponse processes a tools list response filtering out
-// tools that are not in the filter list.
+// processToolsListResponse writes body, a tools list response that decodes
+// into response, to w followed by a newline, with the tools that are not in
+// the filter list left out and the overrides applied to the rest. Every other
+// member of the message and of its result reaches the client as the backend
+// sent it: see encodeToolsListResponse.
 func processToolsListResponse(
 	config *toolMiddlewareConfig,
-	toolsListResponse toolsListResponse,
+	body []byte,
+	response toolsListResponse,
 	w io.Writer,
 ) error {
 	// Convert to SimpleTool format for shared processing
-	simpleTools := make([]SimpleTool, 0, len(*toolsListResponse.Result.Tools))
-	toolMaps := make([]map[string]any, 0, len(*toolsListResponse.Result.Tools))
+	simpleTools := make([]SimpleTool, 0, len(*response.Result.Tools))
+	toolMaps := make([]map[string]any, 0, len(*response.Result.Tools))
 
-	for _, tool := range *toolsListResponse.Result.Tools {
+	for _, tool := range *response.Result.Tools {
 		// NOTE: the spec does not allow for name to be missing.
 		toolName, ok := tool["name"].(string)
 		if !ok {
@@ -834,8 +838,11 @@ func processToolsListResponse(
 		}
 	}
 
-	toolsListResponse.Result.Tools = &filteredTools
-	if err := json.NewEncoder(w).Encode(toolsListResponse); err != nil {
+	encoded, err := encodeToolsListResponse(body, response, filteredTools)
+	if err != nil {
+		return fmt.Errorf("%w: %w", errBug, err)
+	}
+	if _, err := w.Write(append(encoded, '\n')); err != nil {
 		return fmt.Errorf("%w: %w", errBug, err)
 	}
 

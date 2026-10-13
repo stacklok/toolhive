@@ -52,10 +52,11 @@ type IdentityFromTokenConfig struct {
 var registerOnce sync.Once
 
 // RegisterModifiers registers the gjson custom modifiers used by this
-// package's path-based identity extractors. Call once during application
-// or test wire-up before invoking any extractor that consumes a
-// modifier-bearing path. Repeated calls are safe — the registration is
-// protected by a sync.Once and executes at most once per process.
+// package's path-based identity extractors. NewOAuth2Provider and authserver.New
+// call it automatically; callers of those constructors need no explicit registration.
+// Direct extractor use must register before consuming a modifier-bearing path.
+// Repeated calls are safe — registration is protected by a sync.Once and
+// executes at most once per process.
 //
 // Modifiers registered:
 //   - @upstreamjwt: see upstreamJWTModifier.

@@ -13,6 +13,7 @@ import (
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+	"gopkg.in/yaml.v3"
 
 	servercrypto "github.com/stacklok/toolhive/pkg/authserver/server/crypto"
 	"github.com/stacklok/toolhive/pkg/authserver/server/keys"
@@ -870,6 +871,76 @@ func TestRunConfig_UpstreamFilterRoundTrip(t *testing.T) {
 	noFilterJSON, err := json.Marshal(&noFilter)
 	require.NoError(t, err)
 	assert.NotContains(t, string(noFilterJSON), "upstream_filter")
+}
+
+// TestRunConfig_UpstreamFilterYAMLRoundTrip verifies YAML decoding and
+// re-encoding of upstream filter configuration using the vMCP loader's
+// YAML package. A literal document pins the expected configuration keys.
+func TestRunConfig_UpstreamFilterYAMLRoundTrip(t *testing.T) {
+	t.Parallel()
+
+	t.Run("configured_filter", func(t *testing.T) {
+		t.Parallel()
+
+		const doc = `
+schema_version: v0.1.0
+issuer: https://example.com
+upstreams:
+  - name: okta
+  - name: jira
+  - name: slack
+upstream_filter:
+  claim: custom_groups
+  rules:
+    - groups:
+        - engineering
+      upstreamProviders:
+        - jira
+        - slack
+    - groups:
+        - sales
+      upstreamProviders:
+        - slack
+  defaultUpstreams:
+    - jira
+`
+
+		want := &upstreamfilter.GroupBasedFilterConfig{
+			Claim: "custom_groups",
+			Rules: []upstreamfilter.GroupRule{
+				{Groups: []string{"engineering"}, UpstreamProviders: []string{"jira", "slack"}},
+				{Groups: []string{"sales"}, UpstreamProviders: []string{"slack"}},
+			},
+			DefaultUpstreams: []string{"jira"},
+		}
+
+		var decoded RunConfig
+		require.NoError(t, yaml.Unmarshal([]byte(doc), &decoded))
+		require.NotNil(t, decoded.UpstreamFilter)
+		assert.Equal(t, want, decoded.UpstreamFilter)
+
+		// Re-encoding must produce a document the same decoder reads back
+		// unchanged: the operator rewrites the ConfigMap on every reconcile.
+		encoded, err := yaml.Marshal(&decoded)
+		require.NoError(t, err)
+		var reDecoded RunConfig
+		require.NoError(t, yaml.Unmarshal(encoded, &reDecoded))
+		assert.Equal(t, decoded.UpstreamFilter, reDecoded.UpstreamFilter)
+	})
+
+	t.Run("nil_filter", func(t *testing.T) {
+		t.Parallel()
+
+		// An unset filter must be omitted from YAML and decode back to nil.
+		noFilter := RunConfig{SchemaVersion: CurrentSchemaVersion, Issuer: "https://example.com"}
+		encoded, err := yaml.Marshal(&noFilter)
+		require.NoError(t, err)
+		assert.NotContains(t, string(encoded), "upstream_filter")
+
+		var decoded RunConfig
+		require.NoError(t, yaml.Unmarshal(encoded, &decoded))
+		assert.Nil(t, decoded.UpstreamFilter)
+	})
 }
 
 func TestDelegateClientRunConfigValidate(t *testing.T) {

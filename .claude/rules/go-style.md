@@ -200,6 +200,11 @@ Keep comments about mutexes, locks, and concurrency accurate — they are easy t
 - **INFO** sparingly — only for long-running operations like image pulls
 - **WARN** for non-fatal issues (deprecations, fallback behavior, cleanup failures)
 - **Never log** credentials, tokens, API keys, or passwords
+- **Log startup conditions once**, where the defaults are applied. A line fully determined by configuration resolved at startup is byte-identical on every request and carries no per-request information; the per-request detail belongs at DEBUG (#6283)
+- **Callers do not set WARN volume**: a line an unauthenticated caller can trigger at request rate stays at DEBUG, with a metrics counter where operators need a signal, or has its volume bounded by a negative cache. The exception is a request-shape rejection logged at WARN on purpose as the operator-visible signal; keep that WARN and name the cause (#6283, #6284)
+- **Log the final value**: emit the line after unions, merges, and defaults have been applied, under the key the codebase already uses for that value, and keyed on the server-minted identifier (`client_id`) rather than a caller-supplied name (#6283)
+- **Log a failure once**: either log it or wrap it into the returned error, never both, or the operator sees the same failure twice (#6284)
+- **Rejections name the cause**: when a request or response is rejected, the line says what failed (which tool, which member) so operators can find the broken backend (#6709)
 
 ## Prefer Existing Code and Packages Over From-Scratch Implementations
 

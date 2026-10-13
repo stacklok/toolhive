@@ -107,6 +107,39 @@ plaintext PII at rest as the price of correctness; operators who require additio
 protection against a Redis compromise must layer Redis-side access controls as
 described above.
 
+### Transport security
+
+`spec.sessionStorage.tls` (shared by `VirtualMCPServer`, `MCPServer` and
+`MCPRemoteProxy`) enables TLS for the session-storage connection and for the rate
+limiter's client to the same Redis. Standalone vMCP uses `sessionStorage.tls` in its
+YAML (`caCertFile`, `insecureSkipVerify`), and proxy RunConfigs use
+`scaling_config.session_redis.tls`; both map to `pkg/redisconfig.TLSConfig`.
+
+- An empty `tls` object verifies the server certificate against the system roots.
+- `caCertSecretRef` mounts a private CA at `/etc/toolhive/session-redis-tls/ca.crt`
+  in the proxy runner or vMCP pod.
+- `insecureSkipVerify` disables verification and is meant for testing only. The API
+  rejects it together with `caCertSecretRef`, and rejects `tls` with a non-Redis
+  provider.
+- A failed handshake never falls back to plaintext.
+- If the referenced CA Secret or key does not exist, the pod stays in
+  `ContainerCreating`. This is fail-closed, as for the embedded auth server's Redis CA.
+- The CA is mounted with `subPath`, so rotating the Secret's content requires a pod
+  restart. Switching to a different Secret rolls the Deployment.
+- On a `VirtualMCPServer`, the API rejects `spec.config.sessionStorage.tls`,
+  because the operator derives the vMCP setting from `spec.sessionStorage.tls`.
+- The API rejects a `caCertSecretRef` with an empty name or key.
+
+When `tls` is omitted, the connection stays unencrypted for backward compatibility.
+If TLS is omitted, or `insecureSkipVerify` is set, the session store constructor
+logs one startup WARN carrying a `store` attribute, whether or not a password is
+configured. vMCP additionally logs its existing no-authentication WARN when
+`THV_SESSION_REDIS_PASSWORD` is unset; the two cover different gaps.
+
+The operator-wide `defaultRedis` fallback (`TOOLHIVE_DEFAULT_REDIS_ADDR`) does not
+carry TLS settings yet, so workloads that rely on it always log the plaintext WARN.
+To encrypt their connection, set `spec.sessionStorage` with `tls` on the workload.
+
 ## File descriptor limits
 
 Each open backend connection consumes one file descriptor on the vMCP pod. A

@@ -1260,6 +1260,8 @@ type SessionStorageConfig struct {
 
 	// TLS enables TLS for session storage and rate limiting. An empty
 	// configuration verifies the Redis server using system roots.
+	// On Kubernetes, set spec.sessionStorage.tls instead: the operator derives this
+	// field from it and rejects a value set under spec.config.sessionStorage.
 	// +optional
 	TLS *redisconfig.TLSConfig `json:"tls,omitempty" yaml:"tls,omitempty"`
 }

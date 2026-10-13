@@ -207,6 +207,7 @@ func populateScalingConfigForRemoteProxy(runConfig *runner.RunConfig, proxy *mcp
 				Address:   proxy.Spec.SessionStorage.Address,
 				DB:        proxy.Spec.SessionStorage.DB,
 				KeyPrefix: proxy.Spec.SessionStorage.KeyPrefix,
+				TLS:       ctrlutil.SessionRedisTLSConfig(proxy.Spec.SessionStorage),
 			}
 		}
 		// spec.sessionStorage was set explicitly — never fall through to the

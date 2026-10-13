@@ -549,6 +549,9 @@ const docTemplate = `{
                         "type": "array",
                         "uniqueItems": false
                     },
+                    "upstream_filter": {
+                        "$ref": "#/components/schemas/upstreamfilter.GroupBasedFilterConfig"
+                    },
                     "upstreams": {
                         "description": "Upstreams configures connections to upstream Identity Providers for\ninteractive authorization. It may be empty only when DelegateClients or a\nTrustedIssuer with JWTBearerGrant enables token-only operation.\nMultiple upstreams are supported for sequential authorization chains.",
                         "items": {
@@ -1665,7 +1668,7 @@ const docTemplate = `{
                         "uniqueItems": false
                     },
                     "allow_docker_gateway": {
-                        "description": "AllowDockerGateway permits outbound connections to Docker gateway addresses\n(host.docker.internal, gateway.docker.internal, 172.17.0.1). These are\nblocked by default in the egress proxy even when InsecureAllowAll is set.\nOnly applicable to Docker deployments with network isolation enabled.\nGateway access is port-independent: it ignores the permission profile's\nallowed ports, so once enabled the gateway is reachable on any port.",
+                        "description": "AllowDockerGateway permits outbound connections to Docker gateway addresses\n(all daemon bridge gateways, host.docker.internal, and gateway.docker.internal). These are\nblocked by default in the egress proxy even when InsecureAllowAll is set.\nOnly applicable to Docker deployments with network isolation enabled.\nGateways are snapshotted at deployment; redeploy to include bridges created later.\nGateway access is port-independent: it ignores the permission profile's\nallowed ports, so once enabled the gateway is reachable on any port.",
                         "type": "boolean"
                     },
                     "allowed_origins": {
@@ -3286,7 +3289,7 @@ const docTemplate = `{
                 "description": "Request to create a new workload",
                 "properties": {
                     "allow_docker_gateway": {
-                        "description": "Whether to permit outbound connections to Docker gateway addresses\n(host.docker.internal, gateway.docker.internal, 172.17.0.1). These are\nblocked by default in the egress proxy even when network isolation is on.\nOnly applicable to Docker deployments with network isolation enabled.",
+                        "description": "Whether to permit outbound connections to Docker gateway addresses\n(all daemon bridge gateways, host.docker.internal, and gateway.docker.internal). These are\nblocked by default in the egress proxy even when network isolation is on.\nOnly applicable to Docker deployments with network isolation enabled.\nGateways are snapshotted at deployment; redeploy to include bridges created later.",
                         "type": "boolean"
                     },
                     "authz_config": {
@@ -4219,7 +4222,7 @@ const docTemplate = `{
                 "description": "Request to update an existing workload (name cannot be changed)",
                 "properties": {
                     "allow_docker_gateway": {
-                        "description": "Whether to permit outbound connections to Docker gateway addresses\n(host.docker.internal, gateway.docker.internal, 172.17.0.1). These are\nblocked by default in the egress proxy even when network isolation is on.\nOnly applicable to Docker deployments with network isolation enabled.",
+                        "description": "Whether to permit outbound connections to Docker gateway addresses\n(all daemon bridge gateways, host.docker.internal, and gateway.docker.internal). These are\nblocked by default in the egress proxy even when network isolation is on.\nOnly applicable to Docker deployments with network isolation enabled.\nGateways are snapshotted at deployment; redeploy to include bridges created later.",
                         "type": "boolean"
                     },
                     "authz_config": {
@@ -5770,6 +5773,53 @@ const docTemplate = `{
                     },
                     "shared": {
                         "$ref": "#/components/schemas/types.RateLimitBucket"
+                    }
+                },
+                "type": "object"
+            },
+            "upstreamfilter.GroupBasedFilterConfig": {
+                "description": "UpstreamFilter configures an optional group-based filter that narrows the\nmulti-upstream authorization chain per-request based on the first\nupstream's resolved identity. When nil, every request walks the full\nupstream chain in configured order (preserving behavior from before the\nfilter hook existed).\n\nThe filter is applied exactly once per authorization, on the first leg's\ncallback. The mandatory first upstream (Upstreams[0]) is never filtered\nout. See pkg/authserver/upstreamfilter for the configuration schema and\npkg/authserver/server/handlers for the runtime contract.",
+                "properties": {
+                    "claim": {
+                        "description": "Claim is the exact, top-level JWT/OIDC claim name to read group\nmembership from. Defaults to \"groups\" when empty. The claim value MUST be\na JSON array of strings; other shapes (missing, non-array, mixed types)\nfail the authorization. Nested claims (e.g. Keycloak's realm_access.roles)\nmust be flattened by the identity provider — nested paths are not\nsupported in this implementation.\n\nThe value is read from upstream.Identity.Claims as the first upstream\nresolves it: an OIDC upstream fills that map from the validated ID\ntoken, a pure OAuth2 upstream from the userinfo response. The\nidentityFromToken and synthesized-identity paths leave it empty, and\ngroups carried only in an access token never reach it. A missing claim\nfails the authorization — DefaultUpstreams covers a valid-but-empty\nclaim and unmatched groups, not an absent one.",
+                        "type": "string"
+                    },
+                    "defaultUpstreams": {
+                        "description": "DefaultUpstreams is used when the claim is a valid empty array or when no\nrule matches. When empty or omitted, no optional upstreams are added —\nthe mandatory first upstream remains but the authorization walks no\nfurther.",
+                        "items": {
+                            "type": "string"
+                        },
+                        "type": "array",
+                        "uniqueItems": false
+                    },
+                    "rules": {
+                        "description": "Rules assigns groups to upstream provider subsets. A principal matches a\nrule if any of the principal's group values appears in the rule's Groups\nlist (any-of / OR semantics). Multiple matching rules are combined by\nunion: the effective upstream chain contains every UpstreamProviders\nvalue from every matching rule, deduplicated.",
+                        "items": {
+                            "$ref": "#/components/schemas/upstreamfilter.GroupRule"
+                        },
+                        "type": "array",
+                        "uniqueItems": false
+                    }
+                },
+                "type": "object"
+            },
+            "upstreamfilter.GroupRule": {
+                "properties": {
+                    "groups": {
+                        "description": "Groups is the set of principal group names this rule matches. Matching\nis case-sensitive and exact. Empty and duplicate values are rejected at\nconfiguration validation time.",
+                        "items": {
+                            "type": "string"
+                        },
+                        "type": "array",
+                        "uniqueItems": false
+                    },
+                    "upstreamProviders": {
+                        "description": "UpstreamProviders lists the non-first upstream provider names to include\nin the chain when this rule matches. All names must reference a\nconfigured non-first upstream. Empty and duplicate values, references to\nthe mandatory first upstream, and references to undeclared upstreams are\nrejected at configuration validation time.",
+                        "items": {
+                            "type": "string"
+                        },
+                        "type": "array",
+                        "uniqueItems": false
                     }
                 },
                 "type": "object"

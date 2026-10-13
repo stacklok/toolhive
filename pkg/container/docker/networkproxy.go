@@ -6,6 +6,7 @@ package docker
 import (
 	"context"
 	"fmt"
+	"net/netip"
 	"os"
 
 	"github.com/moby/moby/api/types/network"
@@ -70,8 +71,8 @@ type proxySpec struct {
 	// AllowDockerGateway, when true, skips the docker-gateway deny rules in the
 	// egress proxy configuration.
 	AllowDockerGateway bool
-	// GatewayIP is the Docker bridge gateway IP resolved at runtime.
-	GatewayIP string
+	// GatewayIPs is the canonical set of Docker bridge gateway addresses resolved at runtime.
+	GatewayIPs []netip.Addr
 	// TransportType is the MCP transport in use (e.g. "stdio", "sse",
 	// "streamable-http"). A value of "stdio" suppresses ingress proxy creation.
 	TransportType string

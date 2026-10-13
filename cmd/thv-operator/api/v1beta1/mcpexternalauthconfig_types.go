@@ -2127,13 +2127,18 @@ type SentinelServiceRef struct {
 // RedisTLSConfig configures TLS for Redis connections.
 // Presence of this struct on a connection type enables TLS for that connection.
 type RedisTLSConfig struct {
-	// InsecureSkipVerify skips TLS certificate verification.
-	// Use when connecting to services with self-signed certificates.
+	// InsecureSkipVerify disables server certificate and hostname verification.
+	// The connection is encrypted but not authenticated, so anyone able to
+	// impersonate the server can read the credentials and data sent over it.
+	// Intended for testing only; for self-signed or private CAs set
+	// caCertSecretRef instead.
 	// +optional
 	InsecureSkipVerify bool `json:"insecureSkipVerify,omitempty"`
 
 	// CACertSecretRef references a Secret containing a PEM-encoded CA certificate
 	// for verifying the server. When not specified, system root CAs are used.
+	// If the Secret or key does not exist, the pod cannot start (it stays in
+	// ContainerCreating) rather than connecting without verification.
 	// +optional
 	CACertSecretRef *SecretKeyRef `json:"caCertSecretRef,omitempty"`
 }

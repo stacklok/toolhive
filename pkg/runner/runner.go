@@ -529,6 +529,7 @@ func (r *Runner) Run(ctx context.Context) error {
 			return fmt.Errorf("failed to create Redis session storage: %w", err)
 		}
 		slog.Info("using Redis session storage",
+			"store", redisCfg.Address,
 			"address", redisCfg.Address,
 			"db", redisCfg.DB,
 			"key_prefix", keyPrefix,

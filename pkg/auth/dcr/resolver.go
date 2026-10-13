@@ -61,9 +61,9 @@ import (
 
 	"golang.org/x/sync/singleflight"
 
-	"github.com/stacklok/toolhive/pkg/authserver/storage"
 	"github.com/stacklok/toolhive/pkg/networking"
 	"github.com/stacklok/toolhive/pkg/oauthproto"
+	"github.com/stacklok/toolhive/pkg/oauthproto/dcrkey"
 )
 
 // dcrFlight coalesces concurrent ResolveCredentials calls that share the
@@ -395,16 +395,14 @@ func ResolveCredentials(
 		Issuer:      req.Issuer,
 		UpstreamID:  upstreamID,
 		RedirectURI: redirectURI,
-		ScopesHash:  storage.ScopesHash(scopes),
+		ScopesHash:  dcrkey.ScopesHash(scopes),
 		RotationKey: req.RotationKey,
 	}
 
 	// Coalesce concurrent cache lookups, cache-hit verifications and
 	// registrations for the same Key — see dcrFlight doc comment. The leader
 	// runs the closure; followers receive the leader's *Resolution result.
-	// The flight key embeds the Key fields with a separator that cannot
-	// appear in any of them (newline is not valid in OAuth scope tokens,
-	// URLs, or hex digests).
+	// The flight key uses length-prefixed components to avoid collisions.
 	//
 	// The cache is read inside the flight, so a flight always verifies or
 	// registers against the row as it stands when the flight starts, never

@@ -68,6 +68,7 @@ The storage layer implements multiple interfaces from the [fosite](https://githu
 
 **Implementation:**
 - Interface definitions: `pkg/authserver/storage/types.go`
+- Canonical outbound DCR cache key and scope hash: `pkg/oauthproto/dcrkey`. Storage retains `DCRKey` as a type alias and `ScopesHash` as a forwarding function for compatibility. Key fields, scope hashing, and Redis key encoding are unchanged; this extraction requires no cache migration. The DCR persistence adapters in `pkg/auth/dcr` still depend on storage.
 - Memory backend: `pkg/authserver/storage/memory.go`
 - Redis backend: `pkg/authserver/storage/redis.go`
 

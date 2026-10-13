@@ -53,7 +53,7 @@ const (
 // lifetime is shorter than their access-token lifetime (e.g. Microsoft Entra
 // ID), which would otherwise hand consumers an expired ID token for part of
 // every access-token lifetime. It never fires when the row has no refresh
-// token, or for an empty, unparseable or `exp`-less ID token.
+// token, or for an empty, unparsable or `exp`-less ID token.
 //
 // It cannot help when the provider omits id_token on refresh (OIDC Core 1.0
 // §12.2): the expired ID token is then carried forward, and the trigger is
@@ -405,7 +405,7 @@ func suppressionKey(sessionID, providerName string) string {
 // idTokenExpired reports whether idToken carries an `exp` claim that has
 // passed, allowing idTokenExpirySkew. The token's signature is not verified:
 // it was validated when stored, and only its expiry is read here. An empty or
-// unparseable token, or one without `exp`, is not treated as expired, so the
+// unparsable token, or one without `exp`, is not treated as expired, so the
 // trigger never fires for a row it cannot reason about.
 func idTokenExpired(idToken string, now time.Time) bool {
 	if idToken == "" {

@@ -3500,9 +3500,10 @@ func (*CreateGroupResponse) createGroupRes() {}
 // Ref: #/components/schemas/CreateRequest
 type CreateRequest struct {
 	// Whether to permit outbound connections to Docker gateway addresses
-	// (host.docker.internal, gateway.docker.internal, 172.17.0.1). These are
+	// (all daemon bridge gateways, host.docker.internal, and gateway.docker.internal). These are
 	// blocked by default in the egress proxy even when network isolation is on.
 	// Only applicable to Docker deployments with network isolation enabled.
+	// Gateways are snapshotted at deployment; redeploy to include bridges created later.
 	AllowDockerGateway OptBool `json:"allow_docker_gateway"`
 	// Authorization configuration.
 	AuthzConfig OptString `json:"authz_config"`
@@ -17310,9 +17311,10 @@ type RunnerRunConfig struct {
 	// against this.
 	AdditionalMiddlewareConfigs []MiddlewareConfig `json:"additional_middleware_configs"`
 	// AllowDockerGateway permits outbound connections to Docker gateway addresses
-	// (host.docker.internal, gateway.docker.internal, 172.17.0.1). These are
+	// (all daemon bridge gateways, host.docker.internal, and gateway.docker.internal). These are
 	// blocked by default in the egress proxy even when InsecureAllowAll is set.
 	// Only applicable to Docker deployments with network isolation enabled.
+	// Gateways are snapshotted at deployment; redeploy to include bridges created later.
 	// Gateway access is port-independent: it ignores the permission profile's
 	// allowed ports, so once enabled the gateway is reachable on any port.
 	AllowDockerGateway OptBool `json:"allow_docker_gateway"`
@@ -21249,9 +21251,10 @@ func (*UpdateRegistryResponse) updateRegistryRes() {}
 // Ref: #/components/schemas/UpdateRequest
 type UpdateRequest struct {
 	// Whether to permit outbound connections to Docker gateway addresses
-	// (host.docker.internal, gateway.docker.internal, 172.17.0.1). These are
+	// (all daemon bridge gateways, host.docker.internal, and gateway.docker.internal). These are
 	// blocked by default in the egress proxy even when network isolation is on.
 	// Only applicable to Docker deployments with network isolation enabled.
+	// Gateways are snapshotted at deployment; redeploy to include bridges created later.
 	AllowDockerGateway OptBool `json:"allow_docker_gateway"`
 	// Authorization configuration.
 	AuthzConfig OptString `json:"authz_config"`

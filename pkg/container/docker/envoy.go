@@ -8,8 +8,10 @@ import (
 	"encoding/json"
 	"fmt"
 	"log/slog"
+	"net/netip"
 	"os"
 	"regexp"
+	"slices"
 	"strconv"
 	"strings"
 
@@ -23,8 +25,9 @@ import (
 
 const (
 	// defaultEnvoyImage is pinned by tag+digest for supply-chain integrity.
-	// Override with TOOLHIVE_ENVOY_IMAGE (accepts any docker pull reference).
-	defaultEnvoyImage = "envoyproxy/envoy-distroless:v1.32.3@sha256:375aab0d80b3c0e1b42a776b4cb1743ed79012032051d2da19cbc93ea884fb81"
+	// TOOLHIVE_ENVOY_IMAGE overrides must use Envoy v1.39+ with DFP
+	// resolved_address_filter support.
+	defaultEnvoyImage = "envoyproxy/envoy:distroless-v1.39.1@sha256:eb2c01c13125d1629637cb4e4cce7207009fb7cc2c8027f9742758549d15b6f4"
 
 	// Protobuf type URLs required by Envoy's protobuf-JSON bootstrap format.
 	// Every typed_config field must carry an @type URL or Envoy will reject the
@@ -224,8 +227,33 @@ type envoyDFPFilter struct {
 // envoyDNSCache is the shared DNS cache config referenced by both the DFP
 // HTTP filter and the DFP cluster extension.
 type envoyDNSCache struct {
-	Name            string `json:"name"`
-	DNSLookupFamily string `json:"dns_lookup_family"`
+	Name                  string               `json:"name"`
+	DNSLookupFamily       string               `json:"dns_lookup_family"`
+	ResolvedAddressFilter *envoyAddressMatcher `json:"resolved_address_filter,omitempty"`
+}
+
+// envoyAddressMatcher filters resolved DNS addresses against exact gateway CIDRs.
+type envoyAddressMatcher struct {
+	Ranges []envoyCIDRRange `json:"ranges"`
+}
+
+type envoyCIDRRange struct {
+	AddressPrefix string `json:"address_prefix"`
+	PrefixLen     int    `json:"prefix_len"`
+}
+
+func buildDFPDNSCache(spec proxySpec) envoyDNSCache {
+	cache := envoyDNSCache{Name: dfpCacheName, DNSLookupFamily: "V4_ONLY"}
+	if spec.AllowDockerGateway {
+		return cache
+	}
+	ranges := make([]envoyCIDRRange, len(spec.GatewayIPs))
+	for i, gateway := range spec.GatewayIPs {
+		gateway = gateway.Unmap()
+		ranges[i] = envoyCIDRRange{AddressPrefix: gateway.String(), PrefixLen: gateway.BitLen()}
+	}
+	cache.ResolvedAddressFilter = &envoyAddressMatcher{Ranges: ranges}
+	return cache
 }
 
 // ── Router ────────────────────────────────────────────────────────────────────
@@ -335,7 +363,7 @@ type envoyEndpointAddress struct {
 // The resulting HCM HTTP filter chain is:
 //  1. (when !spec.AllowDockerGateway) RBAC DENY on gateway IP and hostnames
 //  2. RBAC ALLOW allowlist — empty policies map is Envoy's deny-all
-//  3. dynamic_forward_proxy HTTP filter
+//  3. dynamic_forward_proxy HTTP filter — removes resolved gateway addresses
 //  4. router
 //
 // CONNECT upgrades are enabled so that HTTPS CONNECT tunnels pass through.
@@ -410,7 +438,7 @@ func buildEgressHTTPFilters(spec proxySpec) []envoyHTTPFilter {
 	if !spec.AllowDockerGateway {
 		filters = append(filters, envoyHTTPFilter{
 			Name:        "envoy.filters.http.rbac",
-			TypedConfig: buildGatewayDenyRBAC(spec.GatewayIP),
+			TypedConfig: buildGatewayDenyRBAC(spec.GatewayIPs),
 		})
 	}
 
@@ -422,11 +450,8 @@ func buildEgressHTTPFilters(spec proxySpec) []envoyHTTPFilter {
 		envoyHTTPFilter{
 			Name: "envoy.filters.http.dynamic_forward_proxy",
 			TypedConfig: &envoyDFPFilter{
-				Type: typeDFPFilter,
-				DNSCacheConfig: envoyDNSCache{
-					Name:            dfpCacheName,
-					DNSLookupFamily: "V4_ONLY",
-				},
+				Type:           typeDFPFilter,
+				DNSCacheConfig: buildDFPDNSCache(spec),
 			},
 		},
 		envoyHTTPFilter{
@@ -448,14 +473,14 @@ func buildEgressHTTPFilters(spec proxySpec) []envoyHTTPFilter {
 // target is carried in :authority for both plain HTTP and HTTPS CONNECT, so
 // authority matching — including the gateway IP literal — is what actually
 // blocks it (mirroring Squid's `dst`/`dstdomain` denies).
-func buildGatewayDenyRBAC(gatewayIP string) *envoyHTTPRBAC {
+func buildGatewayDenyRBAC(gatewayIPs []netip.Addr) *envoyHTTPRBAC {
 	return &envoyHTTPRBAC{
 		Type: typeHTTPRBAC,
 		Rules: envoyRBACRules{
 			Action: "DENY",
 			Policies: map[string]envoyRBACPolicy{
 				"gateway": {
-					Permissions: gatewayAuthorityPermissions(gatewayIP),
+					Permissions: gatewayAuthorityPermissions(gatewayIPs),
 					Principals:  []envoyPrincipal{{Any: true}},
 				},
 			},
@@ -464,17 +489,20 @@ func buildGatewayDenyRBAC(gatewayIP string) *envoyHTTPRBAC {
 }
 
 // gatewayAuthorityPermissions returns RBAC permissions that match the Docker
-// gateway on the :authority header — the resolved gateway IP literal plus the
-// two Docker-internal hostnames. Each is matched with hostMatchRegex, so the
-// match is anchored, case-insensitive (HOST.DOCKER.INTERNAL cannot bypass it),
-// and tolerant of an optional :port. Shared by the deny path (gateway blocked)
+// gateways on the :authority header plus the two Docker-internal hostnames.
+// Matches are anchored, case-insensitive, and tolerate an optional port; IPv6
+// includes every legal compressed, expanded, and dotted-suffix representation.
+// Shared by the deny path (gateway blocked)
 // and the allow path (--allow-docker-gateway).
-func gatewayAuthorityPermissions(gatewayIP string) []envoyPermission {
-	patterns := []string{
-		hostMatchRegex(gatewayIP),
+func gatewayAuthorityPermissions(gatewayIPs []netip.Addr) []envoyPermission {
+	patterns := make([]string, 0, len(gatewayIPs)+2)
+	for _, gateway := range gatewayIPs {
+		patterns = append(patterns, gatewayAuthorityRegexes(gateway)...)
+	}
+	patterns = append(patterns,
 		hostMatchRegex(dockerGatewayHostname),
 		hostMatchRegex(dockerAltGatewayHostname),
-	}
+	)
 	rules := make([]envoyPermission, 0, len(patterns))
 	for _, re := range patterns {
 		rules = append(rules, envoyPermission{
@@ -485,6 +513,89 @@ func gatewayAuthorityPermissions(gatewayIP string) []envoyPermission {
 		})
 	}
 	return []envoyPermission{{OrRules: &envoyOrRules{Rules: rules}}}
+}
+
+func gatewayAuthorityRegexes(addr netip.Addr) []string {
+	addr = addr.Unmap()
+	if addr.Is4() {
+		return append([]string{hostMatchRegex(addr.String())}, ipv4MappedAuthorityRegexes(addr.As4())...)
+	}
+	return ipv6AuthorityRegexes(addr)
+}
+
+func ipv4MappedAuthorityRegexes(v4 [4]byte) []string {
+	hexTail := `0*` + strconv.FormatUint(uint64(uint16(v4[0])<<8|uint16(v4[1])), 16) +
+		`:0*` + strconv.FormatUint(uint64(uint16(v4[2])<<8|uint16(v4[3])), 16)
+	dottedTail := strings.Join([]string{
+		strconv.Itoa(int(v4[0])), strconv.Itoa(int(v4[1])),
+		strconv.Itoa(int(v4[2])), strconv.Itoa(int(v4[3])),
+	}, `\.`)
+	prefixes := []string{
+		`(?:0+:){5}0*ffff:`,
+		`(?:0+(?::0+){0,3})?::(?:0+:){0,4}0*ffff:`,
+	}
+	patterns := make([]string, 0, 4)
+	for _, prefix := range prefixes {
+		patterns = append(patterns,
+			`(?i)\[`+prefix+hexTail+`\](:[0-9]+)?`,
+			`(?i)\[`+prefix+dottedTail+`\](:[0-9]+)?`,
+		)
+	}
+	return patterns
+}
+
+func ipv6AuthorityRegexes(addr netip.Addr) []string {
+	bytes := addr.As16()
+	words := make([]uint16, 8)
+	for i := range words {
+		words[i] = uint16(bytes[2*i])<<8 | uint16(bytes[2*i+1])
+	}
+	patterns := ipv6TextPatterns(words, "")
+	dotted := strings.Join([]string{
+		strconv.Itoa(int(bytes[12])), strconv.Itoa(int(bytes[13])),
+		strconv.Itoa(int(bytes[14])), strconv.Itoa(int(bytes[15])),
+	}, `\.`)
+	patterns = append(patterns, ipv6TextPatterns(words[:6], dotted)...)
+	for i, pattern := range patterns {
+		patterns[i] = `(?i)\[` + pattern + `\](:[0-9]+)?`
+	}
+	return patterns
+}
+
+func ipv6TextPatterns(words []uint16, suffix string) []string {
+	tokens := make([]string, len(words))
+	for i, word := range words {
+		if word == 0 {
+			tokens[i] = `0{1,4}`
+		} else {
+			tokens[i] = `0{0,3}` + strconv.FormatUint(uint64(word), 16)
+		}
+	}
+	patterns := []string{strings.Join(append(slices.Clone(tokens), suffixIfSet(suffix)...), ":")}
+	for start := range words {
+		for end := start + 1; end <= len(words); end++ {
+			allZero := true
+			for _, word := range words[start:end] {
+				allZero = allZero && word == 0
+			}
+			if !allZero {
+				break
+			}
+			left := strings.Join(tokens[:start], ":")
+			rightTokens := slices.Clone(tokens[end:])
+			rightTokens = append(rightTokens, suffixIfSet(suffix)...)
+			right := strings.Join(rightTokens, ":")
+			patterns = append(patterns, left+"::"+right)
+		}
+	}
+	return patterns
+}
+
+func suffixIfSet(s string) []string {
+	if s == "" {
+		return nil
+	}
+	return []string{s}
 }
 
 // buildAllowlistRBAC builds an RBAC ALLOW filter encoding the outbound
@@ -527,7 +638,7 @@ func buildAllowlistPolicies(spec proxySpec) map[string]envoyRBACPolicy {
 	// Harmless under InsecureAllowAll (allow-all already covers it).
 	if spec.AllowDockerGateway {
 		policies["gateway"] = envoyRBACPolicy{
-			Permissions: gatewayAuthorityPermissions(spec.GatewayIP),
+			Permissions: gatewayAuthorityPermissions(spec.GatewayIPs),
 			Principals:  []envoyPrincipal{{Any: true}},
 		}
 	}
@@ -677,7 +788,7 @@ func hostMatchRegex(host string) string {
 
 // buildEgressCluster returns the dynamic_forward_proxy cluster required by the
 // egress listener's route config.
-func buildEgressCluster() envoyCluster {
+func buildEgressCluster(spec proxySpec) envoyCluster {
 	return envoyCluster{
 		Name:           dfpClusterName,
 		ConnectTimeout: "10s",
@@ -685,11 +796,8 @@ func buildEgressCluster() envoyCluster {
 		ClusterType: &envoyClusterType{
 			Name: "envoy.clusters.dynamic_forward_proxy",
 			TypedConfig: &envoyDFPClusterConfig{
-				Type: typeDFPCluster,
-				DNSCacheConfig: envoyDNSCache{
-					Name:            dfpCacheName,
-					DNSLookupFamily: "V4_ONLY",
-				},
+				Type:           typeDFPCluster,
+				DNSCacheConfig: buildDFPDNSCache(spec),
 			},
 		},
 	}
@@ -810,7 +918,8 @@ func buildIngressCluster(spec proxySpec) envoyCluster {
 }
 
 // writeEnvoyBootstrap marshals b to JSON and writes it to a temporary file at
-// mode 0600, returning the path. On success the file must outlive this call —
+// mode 0644, returning the path. The bootstrap contains no secrets and must be
+// readable by the nonroot Envoy container. On success the file must outlive this call —
 // the Envoy container bind-mounts it read-only — so it is not removed here; the
 // caller removes it if setup fails afterward. On any error during writing, the
 // partially-created file is removed before returning.
@@ -886,7 +995,7 @@ func (e *envoyProxy) SetupIngress(ctx context.Context, spec proxySpec, _ egressR
 	bootstrap := envoyBootstrap{
 		StaticResources: envoyStaticResources{
 			Listeners: []envoyListener{buildEgressListener(spec)},
-			Clusters:  []envoyCluster{buildEgressCluster()},
+			Clusters:  []envoyCluster{buildEgressCluster(spec)},
 		},
 	}
 

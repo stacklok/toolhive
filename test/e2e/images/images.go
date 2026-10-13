@@ -42,6 +42,11 @@ const (
 	// in Kubernetes tests. These run Flask-based Python services for testing authentication flows.
 	PythonImage = pythonImageURL + ":" + pythonImageTag
 
+	networkFixtureImageDigest = "sha256:2d97f6910b16bd338d3060f261f53f144965f755599aab1acda1e13cf1731b1b"
+	// NetworkFixtureImage is pinned because network-isolation tests use it for
+	// security-sensitive DNS and HTTP fixtures in the Docker-backed CI shard.
+	NetworkFixtureImage = pythonImageURL + ":" + pythonImageTag + "@" + networkFixtureImageDigest
+
 	curlImageURL = "curlimages/curl"
 	curlImageTag = "8.17.0"
 	// CurlImage is used to query service endpoints and gather statistics during Kubernetes tests.

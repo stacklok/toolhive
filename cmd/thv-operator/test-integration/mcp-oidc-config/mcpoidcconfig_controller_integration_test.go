@@ -17,6 +17,10 @@ import (
 const (
 	timeout  = time.Second * 30
 	interval = time.Millisecond * 250
+
+	// deletionUnblockTimeout is far below the 30s requeue so a regression to
+	// requeue-only unblocking fails the spec.
+	deletionUnblockTimeout = time.Second * 10
 )
 
 var _ = Describe("MCPOIDCConfig Controller", func() {

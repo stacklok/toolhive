@@ -2036,7 +2036,9 @@ func (*MCPRemoteProxyReconciler) podTemplateSpecNeedsUpdate(
 // Currently compares ImagePullSecrets — the merge of cluster-wide chart
 // defaults with spec.resourceOverrides.proxyDeployment.imagePullSecrets. Uses
 // equality.Semantic.DeepEqual so nil and empty slices are treated as equal,
-// which matches Kubernetes' own serialization semantics.
+// which matches Kubernetes' own serialization semantics. Also compares the
+// session storage Redis CA volume, whose Secret is not covered by the RunConfig
+// checksum.
 func (r *MCPRemoteProxyReconciler) podSpecNeedsUpdate(
 	ctx context.Context,
 	deployment *appsv1.Deployment,
@@ -2067,6 +2069,11 @@ func (r *MCPRemoteProxyReconciler) podSpecNeedsUpdate(
 			!equality.Semantic.DeepEqual(
 				deployment.Spec.Template.Spec.Affinity,
 				expectedDeployment.Spec.Template.Spec.Affinity,
+			) ||
+			// podTemplateSpec may also patch the session storage CA volume.
+			ctrlutil.SessionRedisTLSVolumeNeedsUpdate(
+				deployment.Spec.Template.Spec.Volumes,
+				expectedDeployment.Spec.Template.Spec.Volumes,
 			)
 	}
 
@@ -2075,6 +2082,11 @@ func (r *MCPRemoteProxyReconciler) podSpecNeedsUpdate(
 	}
 
 	if proxySchedulingNeedsUpdate(deployment, proxy.Spec.ResourceOverrides) {
+		return true
+	}
+
+	wantSessionTLSVolumes, _ := ctrlutil.SessionRedisTLSVolumes(proxy.Spec.SessionStorage)
+	if ctrlutil.SessionRedisTLSVolumeNeedsUpdate(deployment.Spec.Template.Spec.Volumes, wantSessionTLSVolumes) {
 		return true
 	}
 

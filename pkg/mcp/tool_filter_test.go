@@ -747,7 +747,7 @@ data: {"type":"info","message":"Processing complete"}
 				},
 			},
 			inputBuffer: []byte("event: message\r\ndata: {\"jsonrpc\":\"2.0\",\"id\":1,\"result\":{\"tools\":[{\"name\":\"allowed_tool\",\"description\":\"Allowed\"},{\"name\":\"blocked_tool\",\"description\":\"Blocked\"}]}}\r\n\r\n"),
-			expected:    "event: message\r\ndata: {\"jsonrpc\":\"2.0\",\"id\":1,\"result\":{\"tools\":[{\"description\":\"Allowed\",\"name\":\"allowed_tool\"}]}}\n\r\n\r\n",
+			expected:    "event: message\r\ndata: {\"jsonrpc\":\"2.0\",\"id\":1,\"result\":{\"tools\":[{\"description\":\"Allowed\",\"name\":\"allowed_tool\"}]}}\r\n\r\n",
 			expectError: false,
 		},
 		{
@@ -758,7 +758,7 @@ data: {"type":"info","message":"Processing complete"}
 				},
 			},
 			inputBuffer: []byte("event: message\rdata: {\"jsonrpc\":\"2.0\",\"id\":1,\"result\":{\"tools\":[{\"name\":\"allowed_tool\",\"description\":\"Allowed\"}]}}\r\r"),
-			expected:    "event: message\rdata: {\"jsonrpc\":\"2.0\",\"id\":1,\"result\":{\"tools\":[{\"description\":\"Allowed\",\"name\":\"allowed_tool\"}]}}\n\r\r",
+			expected:    "event: message\rdata: {\"jsonrpc\":\"2.0\",\"id\":1,\"result\":{\"tools\":[{\"description\":\"Allowed\",\"name\":\"allowed_tool\"}]}}\r\r",
 			expectError: false,
 		},
 		{
@@ -796,7 +796,18 @@ data: {"jsonrpc":"2.0","id":1,"result":{"tools":[{"name":"tool1"}]}
 				},
 			},
 			inputBuffer: []byte("\n\n"),
-			expected:    "\n",
+			expected:    "\n\n",
+			expectError: false,
+		},
+		{
+			name: "SSE with two events keeps the blank line between them",
+			config: &toolMiddlewareConfig{
+				filterTools: map[string]struct{}{
+					"any_tool": {},
+				},
+			},
+			inputBuffer: []byte("event: a\ndata: {\"x\":1}\n\nevent: b\ndata: {\"y\":2}\n\n"),
+			expected:    "event: a\ndata: {\"x\":1}\n\nevent: b\ndata: {\"y\":2}\n\n",
 			expectError: false,
 		},
 		{

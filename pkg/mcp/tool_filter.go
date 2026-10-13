@@ -721,55 +721,52 @@ func processEventStream(
 		return fmt.Errorf("unsupported SSE line separator in %d-byte buffer", len(buffer))
 	}
 
-	var linesepTotal, linesepCount int
-	linesepTotal = bytes.Count(buffer, linesep)
-	lines := bytes.Split(buffer, linesep)
-	for _, line := range lines {
-		if len(line) == 0 {
-			continue
-		}
-
-		var written bool
+	// buffer ends with linesep, so splitting what comes before it gives one
+	// element per line, blank lines included, and every line is written back
+	// with linesep after it.
+	for _, line := range bytes.Split(bytes.TrimSuffix(buffer, linesep), linesep) {
 		if data, ok := bytes.CutPrefix(line, []byte("data:")); ok {
-			var toolsListResponse toolsListResponse
-			if err := json.Unmarshal(data, &toolsListResponse); err == nil && toolsListResponse.Result.Tools != nil {
-				// We got to the point of processing a real tools list response,
-				// so we need to write the "data: " prefix first.
-				_, err := w.Write([]byte("data: "))
-				if err != nil {
-					return fmt.Errorf("%w: %w", errBug, err)
-				}
-
-				if err := processToolsListResponse(config, data, toolsListResponse, w); err != nil {
+			var response toolsListResponse
+			if err := json.Unmarshal(data, &response); err == nil && response.Result.Tools != nil {
+				if err := writeToolsListDataLine(config, data, response, linesep, w); err != nil {
 					return err
 				}
-				written = true
+				continue
 			}
 		}
 
-		if !written {
-			_, err := w.Write(line)
-			if err != nil {
-				return fmt.Errorf("%w: %w", errBug, err)
-			}
-		}
-
-		_, err := w.Write(linesep)
-		if err != nil {
+		if _, err := w.Write(line); err != nil {
 			return fmt.Errorf("%w: %w", errBug, err)
 		}
-		linesepCount++
-	}
-
-	// This ensures we don't send too few line separators, which might break
-	// SSE parsing.
-	if linesepCount < linesepTotal {
-		_, err := w.Write(linesep)
-		if err != nil {
+		if _, err := w.Write(linesep); err != nil {
 			return fmt.Errorf("%w: %w", errBug, err)
 		}
 	}
 
+	return nil
+}
+
+// writeToolsListDataLine writes data, the value of a data line that carries a
+// tools list response decoded into response, back to w as the data line that
+// holds the filtered list, ended by linesep. The JSON encoder ends the list
+// with a newline that is no part of the data line, so that newline is dropped
+// and linesep alone ends the line.
+func writeToolsListDataLine(
+	config *toolMiddlewareConfig,
+	data []byte,
+	response toolsListResponse,
+	linesep []byte,
+	w io.Writer,
+) error {
+	var filtered bytes.Buffer
+	if err := processToolsListResponse(config, data, response, &filtered); err != nil {
+		return err
+	}
+	for _, chunk := range [][]byte{[]byte("data: "), bytes.TrimSuffix(filtered.Bytes(), []byte("\n")), linesep} {
+		if _, err := w.Write(chunk); err != nil {
+			return fmt.Errorf("%w: %w", errBug, err)
+		}
+	}
 	return nil
 }
 

@@ -2527,7 +2527,7 @@ func TestBuildUpstreamConfigs_DCR(t *testing.T) {
 			"original OAuth2Config.DCRConfig must not be cleared by DCR resolution")
 	})
 
-	t.Run("cache hit on second call issues zero additional HTTP requests", func(t *testing.T) {
+	t.Run("cache hit on second call skips discovery and registration", func(t *testing.T) {
 		t.Parallel()
 
 		server, requestCount := newMockAuthorizationServer(t)
@@ -2564,16 +2564,17 @@ func TestBuildUpstreamConfigs_DCR(t *testing.T) {
 		require.Greater(t, firstCallRequests, int32(0),
 			"first call should have issued network I/O")
 
-		// Second call: must short-circuit on the cache and issue zero
-		// additional HTTP requests against the mock AS.
+		// Second call: must reuse the cache. Its only HTTP request is the
+		// token-endpoint verification of the cached client, which the mock
+		// AS answers with a non-OAuth 404, so the cached client is kept.
 		got, err := buildUpstreamConfigs(context.Background(), cfg.Upstreams, cfg.Issuer, store, false)
 		require.NoError(t, err)
 		require.Len(t, got, 1)
 		assert.Equal(t, "dcr-client-id", got[0].OAuth2Config.ClientID)
 		assert.Equal(t, "dcr-client-secret", got[0].OAuth2Config.ClientSecret)
 
-		assert.Equal(t, firstCallRequests, atomic.LoadInt32(requestCount),
-			"second call must not issue any additional HTTP requests to the mock AS")
+		assert.Equal(t, firstCallRequests+1, atomic.LoadInt32(requestCount),
+			"second call must issue only the cached-client verification, no discovery or registration")
 
 		// Copy-before-mutate still holds after both calls.
 		assert.Equal(t, "", cfg.Upstreams[0].OAuth2Config.ClientID,

@@ -16,10 +16,11 @@ import (
 
 // dcrStaleAgeThreshold is the age beyond which a cached DCR resolution is
 // considered stale and logged as such by higher-level wiring. The store itself
-// does not expire or evict entries — RFC 7591 client registrations are
-// long-lived and are only purged by explicit RFC 7592 deregistration. An
-// operator retires a cached registration by changing Request.RotationKey,
-// which addresses a new row; the old row is left in place.
+// does not expire or evict entries. An upstream can still drop a registration
+// on its own (a ToolHive auth server evicts idle DCR clients); the resolver
+// detects that on the next cache hit and replaces the entry through
+// ReplaceIfUnchanged. An operator retires a cached registration by changing
+// Request.RotationKey, which addresses a new row; the old row is left in place.
 const dcrStaleAgeThreshold = 90 * 24 * time.Hour
 
 // Key is a re-export of storage.DCRKey, kept as a package-local alias so
@@ -66,6 +67,23 @@ type CredentialStore interface {
 	//
 	// The returned *Resolution is always non-nil when err is nil.
 	PutIfAbsent(ctx context.Context, key Key, resolution *Resolution) (*Resolution, error)
+
+	// ReplaceIfUnchanged replaces the resolution stored at key with
+	// replacement, iff the stored resolution is still the registration the
+	// caller read (it carries expected's ClientID). It is the write path for
+	// re-registering after the upstream rejected a cached client, and it
+	// never overwrites a newer registration that a concurrent replica already
+	// persisted.
+	//
+	// Returns the authoritative durable value: replacement on success, the
+	// concurrent writer's row when the stored registration has already
+	// changed, or the result of claiming the key as PutIfAbsent would when no
+	// row exists any more. Callers MUST use the returned value, for the same
+	// reason as with PutIfAbsent.
+	//
+	// Implementations must reject a nil expected or replacement with an
+	// error. The returned *Resolution is always non-nil when err is nil.
+	ReplaceIfUnchanged(ctx context.Context, key Key, expected, replacement *Resolution) (*Resolution, error)
 }
 
 // NewStorageBackedStore returns a CredentialStore that delegates to a
@@ -180,6 +198,14 @@ func (s *inMemoryStore) PutIfAbsent(ctx context.Context, key Key, resolution *Re
 	return credentialsToResolution(authoritative), nil
 }
 
+// ReplaceIfUnchanged implements CredentialStore by delegating to the
+// embedded *storage.MemoryStorage; see replaceIfUnchanged.
+func (s *inMemoryStore) ReplaceIfUnchanged(
+	ctx context.Context, key Key, expected, replacement *Resolution,
+) (*Resolution, error) {
+	return replaceIfUnchanged(ctx, s.mem, key, expected, replacement)
+}
+
 // Close releases the embedded MemoryStorage cleanup goroutine. Safe to
 // call multiple times: the underlying storage.MemoryStorage.Close
 // closes a channel and is NOT itself idempotent (a second call panics
@@ -237,6 +263,59 @@ func (s *storageBackedStore) PutIfAbsent(ctx context.Context, key Key, resolutio
 		return nil, err
 	}
 	return credentialsToResolution(authoritative), nil
+}
+
+// ReplaceIfUnchanged implements CredentialStore; see replaceIfUnchanged.
+func (s *storageBackedStore) ReplaceIfUnchanged(
+	ctx context.Context, key Key, expected, replacement *Resolution,
+) (*Resolution, error) {
+	return replaceIfUnchanged(ctx, s.backend, key, expected, replacement)
+}
+
+// replaceIfUnchanged is the shared ReplaceIfUnchanged body. It re-reads the
+// row and uses that physical row, not the caller's expected resolution, as
+// the compare-and-set witness: storage.DCRCredentialStore requires the value
+// its own GetDCRCredentials returned, and a Resolution does not carry every
+// persisted field. Identity is decided by ClientID because DCR mints a new
+// client_id on every registration.
+//
+// When the row has changed or vanished between the read and the write, the
+// key is claimed with StoreDCRCredentialsIfAbsent, which returns whatever a
+// concurrent writer left there and claims an empty slot otherwise.
+func replaceIfUnchanged(
+	ctx context.Context, backend storage.DCRCredentialStore, key Key, expected, replacement *Resolution,
+) (*Resolution, error) {
+	if expected == nil || replacement == nil {
+		return nil, fmt.Errorf("dcr: expected and replacement resolutions must not be nil")
+	}
+	creds := resolutionToCredentials(key, replacement)
+	claim := func() (*Resolution, error) {
+		authoritative, err := backend.StoreDCRCredentialsIfAbsent(ctx, creds)
+		if err != nil {
+			return nil, err
+		}
+		return credentialsToResolution(authoritative), nil
+	}
+
+	current, err := backend.GetDCRCredentials(ctx, key)
+	switch {
+	case errors.Is(err, storage.ErrNotFound):
+		return claim()
+	case err != nil:
+		return nil, err
+	case current.ClientID != expected.ClientID:
+		// Another writer already replaced the stale registration.
+		return credentialsToResolution(current), nil
+	}
+
+	updated, err := backend.UpdateDCRCredentialsIfUnchanged(ctx, creds, current)
+	if errors.Is(err, storage.ErrDCRCredentialsChanged) || errors.Is(err, storage.ErrNotFound) {
+		return claim()
+	}
+	if err != nil {
+		return nil, err
+	}
+	return credentialsToResolution(updated), nil
 }
 
 // resolutionToCredentials converts a resolver-side *Resolution into the

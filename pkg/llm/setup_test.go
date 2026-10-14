@@ -932,7 +932,9 @@ func TestSetupPiModels(t *testing.T) {
 		case "/v1/models":
 			_, _ = w.Write([]byte(`{"object":"list","data":[{"id":"gpt-5","context_window":400000}]}`))
 		case "/anthropic/v1/models":
-			_, _ = w.Write([]byte(`{"data":[{"id":"claude-sonnet-5","max_input_tokens":1000000}],"has_more":false}`))
+			_, _ = w.Write([]byte(`{"data":[{"id":"claude-sonnet-5","max_input_tokens":1000000,` +
+				`"capabilities":{"thinking":{"supported":true,"types":{"adaptive":{"supported":true}}}}}],` +
+				`"has_more":false}`))
 		default:
 			w.WriteHeader(http.StatusNotFound)
 		}
@@ -980,6 +982,7 @@ func TestSetupPiModels(t *testing.T) {
 			assert.Equal(t, map[string]int{"gpt-5": 400000}, gm.applied[0].DiscoveredModelContextWindows)
 			assert.Equal(t, []string{"claude-sonnet-5"}, gm.applied[0].AnthropicModels)
 			assert.Equal(t, map[string]int{"claude-sonnet-5": 1000000}, gm.applied[0].AnthropicModelContextWindows)
+			assert.Equal(t, map[string]bool{"claude-sonnet-5": true}, gm.applied[0].AnthropicModelReasoning)
 			assert.Equal(t, server.URL+"/anthropic", gm.applied[0].AnthropicBaseURL)
 		})
 	}
@@ -1060,8 +1063,10 @@ func TestDiscoverAnthropicGatewayModels(t *testing.T) {
 		assert.Equal(t, "Bearer discovery-token", r.Header.Get("Authorization"))
 		switch r.URL.Query().Get("after_id") {
 		case "":
-			_, _ = w.Write([]byte(`{"data":[{"id":" claude-opus-4-8 ","max_input_tokens":1000000},` +
-				`{"id":"claude-haiku-5-5"}],"has_more":true,"last_id":"claude-haiku-5-5"}`))
+			_, _ = w.Write([]byte(`{"data":[{"id":" claude-opus-4-8 ","max_input_tokens":1000000,` +
+				`"capabilities":{"thinking":{"supported":true,"types":{"adaptive":{"supported":true}}}}},` +
+				`{"id":"claude-haiku-5-5","capabilities":{"thinking":{"supported":false}}}],` +
+				`"has_more":true,"last_id":"claude-haiku-5-5"}`))
 		case "claude-haiku-5-5":
 			_, _ = w.Write([]byte(`{"data":[{"id":"claude-sonnet-5","max_input_tokens":200000},` +
 				`{"id":"claude-opus-4-8","max_input_tokens":10}],"has_more":false}`))
@@ -1072,10 +1077,11 @@ func TestDiscoverAnthropicGatewayModels(t *testing.T) {
 	t.Cleanup(server.Close)
 	cfg := Config{GatewayURL: server.URL}
 	cfg.SetDiscoveryAccessToken("discovery-token")
-	models, contexts, err := discoverAnthropicGatewayModels(context.Background(), cfg, "/anthropic")
+	models, contexts, reasoning, err := discoverAnthropicGatewayModels(context.Background(), cfg, "/anthropic")
 	require.NoError(t, err)
 	assert.Equal(t, []string{"claude-haiku-5-5", "claude-opus-4-8", "claude-sonnet-5"}, models)
 	assert.Equal(t, map[string]int{"claude-opus-4-8": 1000000, "claude-sonnet-5": 200000}, contexts)
+	assert.Equal(t, map[string]bool{"claude-opus-4-8": true}, reasoning)
 }
 
 func TestDiscoverAnthropicGatewayModelsRejectsInvalidPagination(t *testing.T) {
@@ -1086,7 +1092,7 @@ func TestDiscoverAnthropicGatewayModelsRejectsInvalidPagination(t *testing.T) {
 	t.Cleanup(server.Close)
 	cfg := Config{GatewayURL: server.URL}
 	cfg.SetDiscoveryAccessToken("discovery-token")
-	_, _, err := discoverAnthropicGatewayModels(context.Background(), cfg, "/anthropic")
+	_, _, _, err := discoverAnthropicGatewayModels(context.Background(), cfg, "/anthropic")
 	require.ErrorContains(t, err, "invalid Anthropic pagination cursor")
 }
 

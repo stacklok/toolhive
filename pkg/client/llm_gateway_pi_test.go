@@ -29,6 +29,7 @@ func TestPiGatewaySetupAndTeardown(t *testing.T) {
 		DiscoveredModelContextWindows: map[string]int{"anthropic/claude-sonnet-5": 1000000},
 		AnthropicModels:               []string{"claude-opus-4-8", "claude-haiku-5-5"},
 		AnthropicModelContextWindows:  map[string]int{"claude-opus-4-8": 1000000},
+		AnthropicModelReasoning:       map[string]bool{"claude-opus-4-8": true},
 	}
 	for range 2 {
 		got, err := cm.ConfigureLLMGateway(ClientApp(Pi), cfg)
@@ -47,6 +48,7 @@ func TestPiGatewaySetupAndTeardown(t *testing.T) {
 			Models     []struct {
 				ID            string `json:"id"`
 				ContextWindow *int   `json:"contextWindow"`
+				Reasoning     *bool  `json:"reasoning"`
 			} `json:"models"`
 		} `json:"providers"`
 	}
@@ -62,6 +64,8 @@ func TestPiGatewaySetupAndTeardown(t *testing.T) {
 	require.Equal(t, 1000000, *root.Providers[piProviderName].Models[0].ContextWindow)
 	require.Equal(t, "gpt-5", root.Providers[piProviderName].Models[1].ID)
 	require.Nil(t, root.Providers[piProviderName].Models[1].ContextWindow)
+	require.Nil(t, root.Providers[piProviderName].Models[0].Reasoning)
+	require.Nil(t, root.Providers[piProviderName].Models[1].Reasoning)
 	require.Equal(t, "https://gateway.example/custom", root.Providers[piAnthropicProviderName].BaseURL)
 	require.Equal(t, "anthropic-messages", root.Providers[piAnthropicProviderName].API)
 	require.Equal(t, piTokenCommand, root.Providers[piAnthropicProviderName].APIKey)
@@ -69,7 +73,10 @@ func TestPiGatewaySetupAndTeardown(t *testing.T) {
 	require.Equal(t, "claude-opus-4-8", root.Providers[piAnthropicProviderName].Models[0].ID)
 	require.NotNil(t, root.Providers[piAnthropicProviderName].Models[0].ContextWindow)
 	require.Equal(t, 1000000, *root.Providers[piAnthropicProviderName].Models[0].ContextWindow)
+	require.NotNil(t, root.Providers[piAnthropicProviderName].Models[0].Reasoning)
+	require.True(t, *root.Providers[piAnthropicProviderName].Models[0].Reasoning)
 	require.Nil(t, root.Providers[piAnthropicProviderName].Models[1].ContextWindow)
+	require.Nil(t, root.Providers[piAnthropicProviderName].Models[1].Reasoning)
 
 	require.NoError(t, cm.RevertLLMGateway(ClientApp(Pi), path))
 	content, err = os.ReadFile(path)

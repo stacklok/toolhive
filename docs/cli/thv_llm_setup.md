@@ -38,12 +38,14 @@ reopen it after setup.
 Pi is configured with OpenAI-compatible and Anthropic providers in
 ~/.pi/agent/models.json (or $PI_CODING_AGENT_DIR/models.json). It runs
 "thv llm token" for each request; authenticated setup discovers models and
-context sizes from both gateway APIs. --models filters the discovered models.
-Pi does not support --lazy because model discovery determines each model's API.
+context sizes from both gateway APIs and Anthropic thinking support when
+advertised. --models filters the discovered models. Pi does not support --lazy
+because model discovery determines each model's API.
 Pi defaults to short prompt caching: start Pi with PI_CACHE_RETENTION=long
 in its environment for long retention (Anthropic: 1h; OpenAI: 24h).
-This cannot be persisted in models.json. Pi defaults models without discovered
-capability metadata to text-only, no reasoning, and 16K max output tokens.
+This cannot be persisted in models.json. The gateway does not currently provide
+image-input or max-output metadata, so Pi defaults to text-only input and 16K
+max output tokens. OpenAI models without reasoning metadata default to no reasoning.
 If Pi cannot refresh its gateway token, run "thv llm token" in a terminal to
 log in again.
 

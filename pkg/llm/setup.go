@@ -571,6 +571,7 @@ type discoveredGatewayModels struct {
 	openAIContextWindows    map[string]int
 	anthropic               []string
 	anthropicContextWindows map[string]int
+	anthropicReasoning      map[string]bool
 }
 
 func discoverSetupModels(
@@ -606,7 +607,7 @@ func fetchSetupModelCatalog(
 		catalog.openAI, catalog.openAIContextWindows, openErr = discoverGatewayModels(ctx, cfg)
 	}
 	if hasPi && cfg.discoveryAccessToken != "" {
-		catalog.anthropic, catalog.anthropicContextWindows, anthropicErr =
+		catalog.anthropic, catalog.anthropicContextWindows, catalog.anthropicReasoning, anthropicErr =
 			discoverAnthropicGatewayModels(ctx, cfg, anthropicPrefix)
 	}
 	return catalog, openErr, anthropicErr
@@ -640,6 +641,11 @@ type gatewayModelsResponse struct {
 		ID             string `json:"id"`
 		ContextWindow  int    `json:"context_window"`
 		MaxInputTokens int    `json:"max_input_tokens"`
+		Capabilities   *struct {
+			Thinking struct {
+				Supported bool `json:"supported"`
+			} `json:"thinking"`
+		} `json:"capabilities"`
 	} `json:"data"`
 }
 
@@ -711,7 +717,9 @@ func discoverGatewayModels(ctx context.Context, cfg Config) ([]string, map[strin
 	return models, contextWindows, nil
 }
 
-func discoverAnthropicGatewayModels(ctx context.Context, cfg Config, anthropicPrefix string) ([]string, map[string]int, error) {
+func discoverAnthropicGatewayModels(
+	ctx context.Context, cfg Config, anthropicPrefix string,
+) ([]string, map[string]int, map[string]bool, error) {
 	path := strings.Trim(anthropicPrefix, "/")
 	if path != "" {
 		path += "/"
@@ -720,19 +728,20 @@ func discoverAnthropicGatewayModels(ctx context.Context, cfg Config, anthropicPr
 	seen := make(map[string]struct{})
 	models := make([]string, 0)
 	contextWindows := make(map[string]int)
+	reasoning := make(map[string]bool)
 	afterID := ""
 	for range 100 {
 		payload, err := requestGatewayModels(ctx, cfg, path, afterID)
 		if err != nil {
-			return nil, nil, err
+			return nil, nil, nil, err
 		}
 		if payload.HasMore == nil || len(payload.Data) == 0 {
-			return nil, nil, fmt.Errorf("decoding gateway model response: expected a non-empty Anthropic model page")
+			return nil, nil, nil, fmt.Errorf("decoding gateway model response: expected a non-empty Anthropic model page")
 		}
 		for _, model := range payload.Data {
 			id := strings.TrimSpace(model.ID)
 			if id == "" {
-				return nil, nil, fmt.Errorf("decoding gateway model response: model ID must not be empty")
+				return nil, nil, nil, fmt.Errorf("decoding gateway model response: model ID must not be empty")
 			}
 			if _, exists := seen[id]; exists {
 				continue
@@ -742,17 +751,20 @@ func discoverAnthropicGatewayModels(ctx context.Context, cfg Config, anthropicPr
 			if model.MaxInputTokens > 0 {
 				contextWindows[id] = model.MaxInputTokens
 			}
+			if model.Capabilities != nil && model.Capabilities.Thinking.Supported {
+				reasoning[id] = true
+			}
 		}
 		if !*payload.HasMore {
 			sort.Strings(models)
-			return models, contextWindows, nil
+			return models, contextWindows, reasoning, nil
 		}
 		if payload.LastID == "" || payload.LastID == afterID {
-			return nil, nil, fmt.Errorf("decoding gateway model response: invalid Anthropic pagination cursor")
+			return nil, nil, nil, fmt.Errorf("decoding gateway model response: invalid Anthropic pagination cursor")
 		}
 		afterID = payload.LastID
 	}
-	return nil, nil, fmt.Errorf("decoding gateway model response: too many Anthropic model pages")
+	return nil, nil, nil, fmt.Errorf("decoding gateway model response: too many Anthropic model pages")
 }
 
 // Default Bedrock inference-profile model IDs written for Claude Code in
@@ -912,6 +924,7 @@ func configureDetectedToolsWithDiscovery(
 			DiscoveredModelContextWindows: discovered.openAIContextWindows,
 			AnthropicModels:               discovered.anthropic,
 			AnthropicModelContextWindows:  discovered.anthropicContextWindows,
+			AnthropicModelReasoning:       discovered.anthropicReasoning,
 		}
 
 		if clientType == claudeCodeClient {

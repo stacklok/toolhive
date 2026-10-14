@@ -51,7 +51,7 @@ func (cm *ClientManager) configurePi(appCfg *clientAppConfig, cfg llmgateway.App
 		baseURL := strings.TrimRight(cfg.GatewayURL, "/")
 		if len(openAIModels) > 0 {
 			provider, err := encodePiGatewayProvider(baseURL+"/v1", "openai-completions", openAIModels,
-				cfg.DiscoveredModelContextWindows)
+				cfg.DiscoveredModelContextWindows, nil)
 			if err != nil {
 				return err
 			}
@@ -65,7 +65,7 @@ func (cm *ClientManager) configurePi(appCfg *clientAppConfig, cfg llmgateway.App
 				anthropicBaseURL = strings.TrimRight(cfg.AnthropicBaseURL, "/")
 			}
 			provider, err := encodePiGatewayProvider(anthropicBaseURL, "anthropic-messages", anthropicModels,
-				cfg.AnthropicModelContextWindows)
+				cfg.AnthropicModelContextWindows, cfg.AnthropicModelReasoning)
 			if err != nil {
 				return err
 			}
@@ -109,14 +109,17 @@ func piProviderManaged(existing json.RawMessage) bool {
 	return json.Unmarshal(existing, &provider) == nil && provider.APIKey == piTokenCommand
 }
 
-func encodePiGatewayProvider(baseURL, api string, models []string, contextWindows map[string]int) (json.RawMessage, error) {
+func encodePiGatewayProvider(
+	baseURL, api string, models []string, contextWindows map[string]int, reasoning map[string]bool,
+) (json.RawMessage, error) {
 	type piModel struct {
 		ID            string `json:"id"`
 		ContextWindow int    `json:"contextWindow,omitempty"`
+		Reasoning     bool   `json:"reasoning,omitempty"`
 	}
 	entries := make([]piModel, 0, len(models))
 	for _, id := range models {
-		entries = append(entries, piModel{ID: id, ContextWindow: contextWindows[id]})
+		entries = append(entries, piModel{ID: id, ContextWindow: contextWindows[id], Reasoning: reasoning[id]})
 	}
 	provider, err := json.Marshal(struct {
 		BaseURL    string    `json:"baseUrl"`

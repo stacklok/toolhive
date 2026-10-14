@@ -176,29 +176,7 @@ func validateAlgorithmForPublicKeyValue(
 ) error {
 	switch k := key.(type) {
 	case *rsa.PublicKey:
-		if k == nil || k.N == nil {
-			return fmt.Errorf("RSA public key is missing a modulus")
-		}
-		keyBits := k.N.BitLen()
-		if keyBits < MinRSAKeyBits {
-			return fmt.Errorf("RSA key size %d bits is below minimum required %d bits", keyBits, MinRSAKeyBits)
-		}
-		if boundRSA && keyBits > MaxRSAKeyBits {
-			return fmt.Errorf("RSA key size %d bits exceeds maximum allowed %d bits", keyBits, MaxRSAKeyBits)
-		}
-		// Reject a degenerate or unsafe public exponent (e.g. e=1 makes RSA
-		// the identity function; e must be odd for the exponentiation to be
-		// well-defined).
-		if k.E < 3 || k.E%2 == 0 {
-			return fmt.Errorf("RSA public exponent %d is invalid or unsafe (must be odd and at least 3)", k.E)
-		}
-		if boundRSA && k.E > MaxRSAPublicExponent {
-			return fmt.Errorf("RSA public exponent %d exceeds maximum allowed %d", k.E, MaxRSAPublicExponent)
-		}
-		if slices.Contains(allowedRSAAlgorithms, alg) {
-			return nil
-		}
-		return fmt.Errorf("algorithm %s is not compatible with RSA key", alg)
+		return validateAlgorithmForRSAPublicKey(alg, k, allowedRSAAlgorithms, boundRSA)
 	case *ecdsa.PublicKey:
 		expectedAlg, err := deriveECAlgorithm(k.Curve)
 		if err != nil {
@@ -217,6 +195,37 @@ func validateAlgorithmForPublicKeyValue(
 	default:
 		return fmt.Errorf("unsupported key type: %T", key)
 	}
+}
+
+// validateAlgorithmForRSAPublicKey checks an RSA public key's modulus and
+// exponent and whether alg is in allowedRSAAlgorithms. boundRSA caps the
+// modulus size and public exponent, as for validateAlgorithmForPublicKeyValue.
+func validateAlgorithmForRSAPublicKey(
+	alg string, k *rsa.PublicKey, allowedRSAAlgorithms []string, boundRSA bool,
+) error {
+	if k == nil || k.N == nil {
+		return fmt.Errorf("RSA public key is missing a modulus")
+	}
+	keyBits := k.N.BitLen()
+	if keyBits < MinRSAKeyBits {
+		return fmt.Errorf("RSA key size %d bits is below minimum required %d bits", keyBits, MinRSAKeyBits)
+	}
+	if boundRSA && keyBits > MaxRSAKeyBits {
+		return fmt.Errorf("RSA key size %d bits exceeds maximum allowed %d bits", keyBits, MaxRSAKeyBits)
+	}
+	// Reject a degenerate or unsafe public exponent (e.g. e=1 makes RSA
+	// the identity function; e must be odd for the exponentiation to be
+	// well-defined).
+	if k.E < 3 || k.E%2 == 0 {
+		return fmt.Errorf("RSA public exponent %d is invalid or unsafe (must be odd and at least 3)", k.E)
+	}
+	if boundRSA && k.E > MaxRSAPublicExponent {
+		return fmt.Errorf("RSA public exponent %d exceeds maximum allowed %d", k.E, MaxRSAPublicExponent)
+	}
+	if slices.Contains(allowedRSAAlgorithms, alg) {
+		return nil
+	}
+	return fmt.Errorf("algorithm %s is not compatible with RSA key", alg)
 }
 
 // ValidateAlgorithmForPublicKey checks whether alg is compatible with a public key.

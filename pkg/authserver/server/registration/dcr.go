@@ -379,7 +379,10 @@ func validatePrivateKeyJWTMetadata(req *oauthproto.DynamicClientRegistrationRequ
 		return &DCRError{Error: DCRErrorInvalidClientMetadata, ErrorDescription: "private_key_jwt requires a non-empty inline jwks"}
 	}
 	if len(req.JWKS.Keys) > maxInlineJWKSKeys {
-		return &DCRError{Error: DCRErrorInvalidClientMetadata, ErrorDescription: fmt.Sprintf("too many inline jwks keys (maximum %d)", maxInlineJWKSKeys)}
+		return &DCRError{
+			Error:            DCRErrorInvalidClientMetadata,
+			ErrorDescription: fmt.Sprintf("too many inline jwks keys (maximum %d)", maxInlineJWKSKeys),
+		}
 	}
 	if !supportedSigningAlgorithm(req.TokenEndpointAuthSigningAlg) {
 		return &DCRError{

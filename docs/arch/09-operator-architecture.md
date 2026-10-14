@@ -167,7 +167,7 @@ Defines an MCP server deployment, including container images, transports, middle
 
 **Implementation**: `cmd/thv-operator/api/v1beta1/mcpserver_types.go`
 
-MCPServer resources support various transport types (stdio, SSE, streamable-http), permission profiles, OIDC authentication, and Cedar-based authorization policies. The operator reconciles these resources into Kubernetes Deployments, Services, and StatefulSets.
+MCPServer resources support various transport types (stdio, SSE, streamable-http), OIDC authentication, and Cedar-based authorization policies. The operator reconciles these resources into Kubernetes Deployments, Services, and StatefulSets. The legacy `permissionProfile` field is retained for API compatibility but is deprecated and ignored; Kubernetes-native workload and network controls provide enforcement in operator deployments.
 
 MCPServer supports referencing shared configuration CRDs:
 - `oidcConfigRef` — references an MCPOIDCConfig for shared OIDC settings
@@ -238,7 +238,7 @@ MCPExternalAuthConfig resources can be referenced via two paths:
 
 **Controller**: `cmd/thv-operator/controllers/mcpexternalauthconfig_controller.go`
 
-`EmbeddedAuthServerConfig` can also carry top-level SPIFFE trust-domain declarations in `spiffeTrustDomains` and canonical client associations in `inboundGrants.spiffeClientAuth` (`cmd/thv-operator/api/v1beta1/mcpexternalauthconfig_types.go`). The operator converts these CRD fields into runtime config via `buildSPIFFETrustDomainRunConfigs`/`buildSPIFFEClientAuthRunConfigs` in `cmd/thv-operator/pkg/controllerutil/authserver.go`, which flow into the RunConfig delivered to the proxy-runner alongside the rest of the embedded auth server settings. See [SPIFFE Association Declarations](18-spiffe-association-declarations.md) for the full configuration and policy model — **any non-empty configuration here is currently rejected by `RunConfig.Validate()` before the runner starts**, pending real SVID verification; the CRD fields, conversion, and runtime model exist, but this is not yet a deployable feature.
+`EmbeddedAuthServerConfig` can also carry top-level SPIFFE trust-domain declarations in `spiffeTrustDomains` and canonical client associations in `inboundGrants.spiffeClientAuth` (`cmd/thv-operator/api/v1beta1/mcpexternalauthconfig_types.go`). The operator converts these CRD fields into runtime config via `buildSPIFFETrustDomainRunConfigs`/`buildSPIFFEClientAuthRunConfigs` in `cmd/thv-operator/pkg/controllerutil/authserver.go`, and projects file-source ConfigMap data read-only for use by the standalone file-bundle loader. That loader can read and poll a file in isolation, but it is not connected to SPIFFE authentication: `RunConfig.Validate()` rejects any non-empty `spiffeTrustDomains` before the runner starts. These fields, conversion, and loader therefore do not make the feature deployable. See [SPIFFE Association Declarations](18-spiffe-association-declarations.md) for current scope.
 
 ### MCPOIDCConfig
 

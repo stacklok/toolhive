@@ -1563,7 +1563,8 @@ type AuthenticationRunConfig struct {
 	// signals, and operator-facing constraints (audience/scope bounding,
 	// subject namespace qualification, required client binding) that aren't
 	// visible from the config shape alone.
-	TrustedIssuers []TokenExchangeTrustedIssuer `json:"trusted_issuers"`
+	TrustedIssuers []TokenExchangeTrustedIssuer            `json:"trusted_issuers"`
+	UpstreamFilter OptUpstreamfilterGroupBasedFilterConfig `json:"upstream_filter"`
 	// Upstreams configures connections to upstream Identity Providers for
 	// interactive authorization. It may be empty only when DelegateClients or a
 	// TrustedIssuer with JWTBearerGrant enables token-only operation.
@@ -1686,6 +1687,11 @@ func (s *AuthenticationRunConfig) GetTrustedIssuers() []TokenExchangeTrustedIssu
 	return s.TrustedIssuers
 }
 
+// GetUpstreamFilter returns the value of UpstreamFilter.
+func (s *AuthenticationRunConfig) GetUpstreamFilter() OptUpstreamfilterGroupBasedFilterConfig {
+	return s.UpstreamFilter
+}
+
 // GetUpstreams returns the value of Upstreams.
 func (s *AuthenticationRunConfig) GetUpstreams() []AuthenticationUpstreamRunConfig {
 	return s.Upstreams
@@ -1806,6 +1812,11 @@ func (s *AuthenticationRunConfig) SetTrustedIssuers(val []TokenExchangeTrustedIs
 	s.TrustedIssuers = val
 }
 
+// SetUpstreamFilter sets the value of UpstreamFilter.
+func (s *AuthenticationRunConfig) SetUpstreamFilter(val OptUpstreamfilterGroupBasedFilterConfig) {
+	s.UpstreamFilter = val
+}
+
 // SetUpstreams sets the value of Upstreams.
 func (s *AuthenticationRunConfig) SetUpstreams(val []AuthenticationUpstreamRunConfig) {
 	s.Upstreams = val
@@ -1816,8 +1827,8 @@ type AuthenticationSPIFFEBundleEndpointSourceRunConfig struct {
 	// Profile selects how the endpoint's TLS connection is authenticated:
 	// SPIFFEBundleEndpointProfileHTTPSWeb (Web PKI) or
 	// SPIFFEBundleEndpointProfileHTTPSSPIFFE (a separately distributed
-	// X.509-SVID root). Required, since the future bundle loader cannot
-	// otherwise know which trust anchor to use for the initial connection.
+	// X.509-SVID root). Required, since an endpoint loader needs this profile
+	// to choose the trust anchor for its initial connection.
 	Profile OptString `json:"profile"`
 	URL     OptString `json:"url"`
 }
@@ -1842,12 +1853,13 @@ func (s *AuthenticationSPIFFEBundleEndpointSourceRunConfig) SetURL(val OptString
 	s.URL = val
 }
 
-// BundleSource declares exactly one future trust-bundle source. It is
-// validated for shape only; fetching or loading a bundle from it is a
-// later step.
+// BundleSource declares exactly one trust-bundle source and is validated for
+// shape here. The standalone file loader exists, but source initialization
+// is not wired into SPIFFE authentication.
 // Ref: #/components/schemas/AuthenticationSPIFFEBundleSourceRunConfig
 type AuthenticationSPIFFEBundleSourceRunConfig struct {
 	Endpoint    OptAuthenticationSPIFFEBundleEndpointSourceRunConfig  `json:"endpoint"`
+	File        OptAuthenticationSPIFFEFileBundleSourceRunConfig      `json:"file"`
 	Type        OptString                                             `json:"type"`
 	WorkloadAPI *AuthenticationSPIFFEWorkloadAPIBundleSourceRunConfig `json:"workload_api"`
 }
@@ -1855,6 +1867,11 @@ type AuthenticationSPIFFEBundleSourceRunConfig struct {
 // GetEndpoint returns the value of Endpoint.
 func (s *AuthenticationSPIFFEBundleSourceRunConfig) GetEndpoint() OptAuthenticationSPIFFEBundleEndpointSourceRunConfig {
 	return s.Endpoint
+}
+
+// GetFile returns the value of File.
+func (s *AuthenticationSPIFFEBundleSourceRunConfig) GetFile() OptAuthenticationSPIFFEFileBundleSourceRunConfig {
+	return s.File
 }
 
 // GetType returns the value of Type.
@@ -1870,6 +1887,11 @@ func (s *AuthenticationSPIFFEBundleSourceRunConfig) GetWorkloadAPI() *Authentica
 // SetEndpoint sets the value of Endpoint.
 func (s *AuthenticationSPIFFEBundleSourceRunConfig) SetEndpoint(val OptAuthenticationSPIFFEBundleEndpointSourceRunConfig) {
 	s.Endpoint = val
+}
+
+// SetFile sets the value of File.
+func (s *AuthenticationSPIFFEBundleSourceRunConfig) SetFile(val OptAuthenticationSPIFFEFileBundleSourceRunConfig) {
+	s.File = val
 }
 
 // SetType sets the value of Type.
@@ -1992,6 +2014,21 @@ func (s *AuthenticationSPIFFEClientAuthRunConfig) SetScopes(val []string) {
 // SetTrustDomainRef sets the value of TrustDomainRef.
 func (s *AuthenticationSPIFFEClientAuthRunConfig) SetTrustDomainRef(val OptString) {
 	s.TrustDomainRef = val
+}
+
+// Ref: #/components/schemas/AuthenticationSPIFFEFileBundleSourceRunConfig
+type AuthenticationSPIFFEFileBundleSourceRunConfig struct {
+	Path OptString `json:"path"`
+}
+
+// GetPath returns the value of Path.
+func (s *AuthenticationSPIFFEFileBundleSourceRunConfig) GetPath() OptString {
+	return s.Path
+}
+
+// SetPath sets the value of Path.
+func (s *AuthenticationSPIFFEFileBundleSourceRunConfig) SetPath(val OptString) {
+	s.Path = val
 }
 
 // Ref: #/components/schemas/AuthenticationSPIFFETrustDomainRunConfig
@@ -2727,6 +2764,7 @@ const (
 	ClientClientAppFactory           ClientClientApp = "factory"
 	ClientClientAppCopilotCli        ClientClientApp = "copilot-cli"
 	ClientClientAppQoder             ClientClientApp = "qoder"
+	ClientClientAppPi                ClientClientApp = "pi"
 )
 
 // AllValues returns all ClientClientApp values.
@@ -2757,6 +2795,7 @@ func (ClientClientApp) AllValues() []ClientClientApp {
 		ClientClientAppFactory,
 		ClientClientAppCopilotCli,
 		ClientClientAppQoder,
+		ClientClientAppPi,
 	}
 }
 
@@ -2812,6 +2851,8 @@ func (s ClientClientApp) MarshalText() ([]byte, error) {
 	case ClientClientAppCopilotCli:
 		return []byte(s), nil
 	case ClientClientAppQoder:
+		return []byte(s), nil
+	case ClientClientAppPi:
 		return []byte(s), nil
 	default:
 		return nil, errors.Errorf("invalid value: %q", s)
@@ -2895,6 +2936,9 @@ func (s *ClientClientApp) UnmarshalText(data []byte) error {
 		return nil
 	case ClientClientAppQoder:
 		*s = ClientClientAppQoder
+		return nil
+	case ClientClientAppPi:
+		*s = ClientClientAppPi
 		return nil
 	default:
 		return errors.Errorf("invalid value: %q", data)
@@ -7264,6 +7308,52 @@ func (o OptAuthenticationSPIFFEBundleSourceRunConfig) Get() (v AuthenticationSPI
 
 // Or returns value if set, or given parameter if does not.
 func (o OptAuthenticationSPIFFEBundleSourceRunConfig) Or(d AuthenticationSPIFFEBundleSourceRunConfig) AuthenticationSPIFFEBundleSourceRunConfig {
+	if v, ok := o.Get(); ok {
+		return v
+	}
+	return d
+}
+
+// NewOptAuthenticationSPIFFEFileBundleSourceRunConfig returns new OptAuthenticationSPIFFEFileBundleSourceRunConfig with value set to v.
+func NewOptAuthenticationSPIFFEFileBundleSourceRunConfig(v AuthenticationSPIFFEFileBundleSourceRunConfig) OptAuthenticationSPIFFEFileBundleSourceRunConfig {
+	return OptAuthenticationSPIFFEFileBundleSourceRunConfig{
+		Value: v,
+		Set:   true,
+	}
+}
+
+// OptAuthenticationSPIFFEFileBundleSourceRunConfig is optional AuthenticationSPIFFEFileBundleSourceRunConfig.
+type OptAuthenticationSPIFFEFileBundleSourceRunConfig struct {
+	Value AuthenticationSPIFFEFileBundleSourceRunConfig
+	Set   bool
+}
+
+// IsSet returns true if OptAuthenticationSPIFFEFileBundleSourceRunConfig was set.
+func (o OptAuthenticationSPIFFEFileBundleSourceRunConfig) IsSet() bool { return o.Set }
+
+// Reset unsets value.
+func (o *OptAuthenticationSPIFFEFileBundleSourceRunConfig) Reset() {
+	var v AuthenticationSPIFFEFileBundleSourceRunConfig
+	o.Value = v
+	o.Set = false
+}
+
+// SetTo sets value to v.
+func (o *OptAuthenticationSPIFFEFileBundleSourceRunConfig) SetTo(v AuthenticationSPIFFEFileBundleSourceRunConfig) {
+	o.Set = true
+	o.Value = v
+}
+
+// Get returns value and boolean that denotes whether value was set.
+func (o OptAuthenticationSPIFFEFileBundleSourceRunConfig) Get() (v AuthenticationSPIFFEFileBundleSourceRunConfig, ok bool) {
+	if !o.Set {
+		return v, false
+	}
+	return o.Value, true
+}
+
+// Or returns value if set, or given parameter if does not.
+func (o OptAuthenticationSPIFFEFileBundleSourceRunConfig) Or(d AuthenticationSPIFFEFileBundleSourceRunConfig) AuthenticationSPIFFEFileBundleSourceRunConfig {
 	if v, ok := o.Get(); ok {
 		return v
 	}
@@ -12462,6 +12552,52 @@ func (o OptUpgradeRequestEnv) Get() (v UpgradeRequestEnv, ok bool) {
 
 // Or returns value if set, or given parameter if does not.
 func (o OptUpgradeRequestEnv) Or(d UpgradeRequestEnv) UpgradeRequestEnv {
+	if v, ok := o.Get(); ok {
+		return v
+	}
+	return d
+}
+
+// NewOptUpstreamfilterGroupBasedFilterConfig returns new OptUpstreamfilterGroupBasedFilterConfig with value set to v.
+func NewOptUpstreamfilterGroupBasedFilterConfig(v UpstreamfilterGroupBasedFilterConfig) OptUpstreamfilterGroupBasedFilterConfig {
+	return OptUpstreamfilterGroupBasedFilterConfig{
+		Value: v,
+		Set:   true,
+	}
+}
+
+// OptUpstreamfilterGroupBasedFilterConfig is optional UpstreamfilterGroupBasedFilterConfig.
+type OptUpstreamfilterGroupBasedFilterConfig struct {
+	Value UpstreamfilterGroupBasedFilterConfig
+	Set   bool
+}
+
+// IsSet returns true if OptUpstreamfilterGroupBasedFilterConfig was set.
+func (o OptUpstreamfilterGroupBasedFilterConfig) IsSet() bool { return o.Set }
+
+// Reset unsets value.
+func (o *OptUpstreamfilterGroupBasedFilterConfig) Reset() {
+	var v UpstreamfilterGroupBasedFilterConfig
+	o.Value = v
+	o.Set = false
+}
+
+// SetTo sets value to v.
+func (o *OptUpstreamfilterGroupBasedFilterConfig) SetTo(v UpstreamfilterGroupBasedFilterConfig) {
+	o.Set = true
+	o.Value = v
+}
+
+// Get returns value and boolean that denotes whether value was set.
+func (o OptUpstreamfilterGroupBasedFilterConfig) Get() (v UpstreamfilterGroupBasedFilterConfig, ok bool) {
+	if !o.Set {
+		return v, false
+	}
+	return o.Value, true
+}
+
+// Or returns value if set, or given parameter if does not.
+func (o OptUpstreamfilterGroupBasedFilterConfig) Or(d UpstreamfilterGroupBasedFilterConfig) UpstreamfilterGroupBasedFilterConfig {
 	if v, ok := o.Get(); ok {
 		return v
 	}
@@ -21938,6 +22074,108 @@ func (*UpgradeWorkloadNotFoundApplicationJSON) upgradeWorkloadRes() {}
 type UpgradeWorkloadUnprocessableEntityApplicationJSON string
 
 func (*UpgradeWorkloadUnprocessableEntityApplicationJSON) upgradeWorkloadRes() {}
+
+// UpstreamFilter configures an optional group-based filter that narrows the
+// multi-upstream authorization chain per-request based on the first
+// upstream's resolved identity. When nil, every request walks the full
+// upstream chain in configured order (preserving behavior from before the
+// filter hook existed).
+// The filter is applied exactly once per authorization, on the first leg's
+// callback. The mandatory first upstream (Upstreams[0]) is never filtered
+// out. See pkg/authserver/upstreamfilter for the configuration schema and
+// pkg/authserver/server/handlers for the runtime contract.
+// Ref: #/components/schemas/UpstreamfilterGroupBasedFilterConfig
+type UpstreamfilterGroupBasedFilterConfig struct {
+	// Claim is the exact, top-level JWT/OIDC claim name to read group
+	// membership from. Defaults to "groups" when empty. The claim value MUST be
+	// a JSON array of strings; other shapes (missing, non-array, mixed types)
+	// fail the authorization. Nested claims (e.g. Keycloak's realm_access.roles)
+	// must be flattened by the identity provider — nested paths are not
+	// supported in this implementation.
+	// The value is read from upstream.Identity.Claims as the first upstream
+	// resolves it: an OIDC upstream fills that map from the validated ID
+	// token, a pure OAuth2 upstream from the userinfo response. The
+	// identityFromToken and synthesized-identity paths leave it empty, and
+	// groups carried only in an access token never reach it. A missing claim
+	// fails the authorization — DefaultUpstreams covers a valid-but-empty
+	// claim and unmatched groups, not an absent one.
+	Claim OptString `json:"claim"`
+	// DefaultUpstreams is used when the claim is a valid empty array or when no
+	// rule matches. When empty or omitted, no optional upstreams are added —
+	// the mandatory first upstream remains but the authorization walks no
+	// further.
+	DefaultUpstreams []string `json:"defaultUpstreams"`
+	// Rules assigns groups to upstream provider subsets. A principal matches a
+	// rule if any of the principal's group values appears in the rule's Groups
+	// list (any-of / OR semantics). Multiple matching rules are combined by
+	// union: the effective upstream chain contains every UpstreamProviders
+	// value from every matching rule, deduplicated.
+	Rules []UpstreamfilterGroupRule `json:"rules"`
+}
+
+// GetClaim returns the value of Claim.
+func (s *UpstreamfilterGroupBasedFilterConfig) GetClaim() OptString {
+	return s.Claim
+}
+
+// GetDefaultUpstreams returns the value of DefaultUpstreams.
+func (s *UpstreamfilterGroupBasedFilterConfig) GetDefaultUpstreams() []string {
+	return s.DefaultUpstreams
+}
+
+// GetRules returns the value of Rules.
+func (s *UpstreamfilterGroupBasedFilterConfig) GetRules() []UpstreamfilterGroupRule {
+	return s.Rules
+}
+
+// SetClaim sets the value of Claim.
+func (s *UpstreamfilterGroupBasedFilterConfig) SetClaim(val OptString) {
+	s.Claim = val
+}
+
+// SetDefaultUpstreams sets the value of DefaultUpstreams.
+func (s *UpstreamfilterGroupBasedFilterConfig) SetDefaultUpstreams(val []string) {
+	s.DefaultUpstreams = val
+}
+
+// SetRules sets the value of Rules.
+func (s *UpstreamfilterGroupBasedFilterConfig) SetRules(val []UpstreamfilterGroupRule) {
+	s.Rules = val
+}
+
+// Ref: #/components/schemas/UpstreamfilterGroupRule
+type UpstreamfilterGroupRule struct {
+	// Groups is the set of principal group names this rule matches. Matching
+	// is case-sensitive and exact. Empty and duplicate values are rejected at
+	// configuration validation time.
+	Groups []string `json:"groups"`
+	// UpstreamProviders lists the non-first upstream provider names to include
+	// in the chain when this rule matches. All names must reference a
+	// configured non-first upstream. Empty and duplicate values, references to
+	// the mandatory first upstream, and references to undeclared upstreams are
+	// rejected at configuration validation time.
+	UpstreamProviders []string `json:"upstreamProviders"`
+}
+
+// GetGroups returns the value of Groups.
+func (s *UpstreamfilterGroupRule) GetGroups() []string {
+	return s.Groups
+}
+
+// GetUpstreamProviders returns the value of UpstreamProviders.
+func (s *UpstreamfilterGroupRule) GetUpstreamProviders() []string {
+	return s.UpstreamProviders
+}
+
+// SetGroups sets the value of Groups.
+func (s *UpstreamfilterGroupRule) SetGroups(val []string) {
+	s.Groups = val
+}
+
+// SetUpstreamProviders sets the value of UpstreamProviders.
+func (s *UpstreamfilterGroupRule) SetUpstreamProviders(val []string) {
+	s.UpstreamProviders = val
+}
 
 // Ref: #/components/schemas/V0ServerJSON
 type V0ServerJSON struct {

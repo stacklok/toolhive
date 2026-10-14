@@ -68,6 +68,9 @@ func jsonRPCErrorResponse(req *http.Request, requestID any, err error) *http.Res
 // Parse errors retain the standard -32700 code. CodedError supplies Code(),
 // Error(), and optional Data(); other errors fall back to Invalid Params.
 //
+// When requestID is nil, an id carried by err (RequestID() any) is used; only
+// errors raised after the id was validated carry one.
+//
 // MCP narrows base JSON-RPC 2.0 here: schema/2025-11-25 types the error
 // response as `id?: RequestId` where RequestId = string | number, so an
 // absent id is encoded by omitting the "id" key, never as null. See
@@ -93,6 +96,12 @@ func classificationErrorBody(requestID any, err error) []byte {
 	resp := map[string]any{
 		"jsonrpc": "2.0",
 		"error":   errBody,
+	}
+	if requestID == nil {
+		var withID interface{ RequestID() any }
+		if errors.As(err, &withID) {
+			requestID = withID.RequestID()
+		}
 	}
 	if session.HasJSONRPCID(requestID) {
 		resp["id"] = requestID

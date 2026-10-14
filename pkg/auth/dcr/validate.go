@@ -48,12 +48,16 @@ var errProbeRedirectRefused = errors.New("dcr: token endpoint returned a redirec
 // that sees the resulting authorize error, so the resolver must ask.
 //
 // The probe redeems a random authorization code with the cached client
-// credentials. Token endpoints authenticate the client before validating the
-// grant (RFC 6749 §5.2), so invalid_client means the registration is gone and
-// invalid_grant means it is alive. No token can be issued for the random code.
-// Every other outcome, including transport failures, is unverified: callers
-// keep the cached registration so an unreachable upstream never blocks
-// startup.
+// credentials. Servers that authenticate the client before validating the
+// grant (as fosite does, for public and confidential clients alike) answer
+// invalid_client when the registration is gone and invalid_grant when it is
+// alive. No token can be issued for the random code. RFC 6749 §4.1.3 only
+// requires confidential clients to authenticate, so for a public client some
+// servers validate the code first and answer invalid_grant for any client_id;
+// against those servers the probe cannot detect a deleted registration and
+// the cached one is kept, as before. Every other outcome, including transport
+// failures, is unverified: callers keep the cached registration so an
+// unreachable upstream never blocks startup.
 //
 // The configured token endpoint wins over the cached one, mirroring
 // applyExplicitEndpointOverrides, so a tampered cached endpoint cannot

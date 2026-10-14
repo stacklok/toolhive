@@ -24,6 +24,7 @@ func TestPiGatewaySetupAndTeardown(t *testing.T) {
 	require.NoError(t, os.WriteFile(path, []byte(`{"theme":"dark","providers":{"personal":{"models":[{"id":"local"}]}}}`), 0o600))
 	cfg := llmgateway.ApplyConfig{
 		GatewayURL:                    "https://gateway.example/",
+		AnthropicBaseURL:              "https://gateway.example/custom",
 		DiscoveredModels:              []string{"anthropic/claude-sonnet-5", "gpt-5"},
 		DiscoveredModelContextWindows: map[string]int{"anthropic/claude-sonnet-5": 1000000},
 		AnthropicModels:               []string{"claude-opus-4-8", "claude-haiku-5-5"},
@@ -61,7 +62,7 @@ func TestPiGatewaySetupAndTeardown(t *testing.T) {
 	require.Equal(t, 1000000, *root.Providers[piProviderName].Models[0].ContextWindow)
 	require.Equal(t, "gpt-5", root.Providers[piProviderName].Models[1].ID)
 	require.Nil(t, root.Providers[piProviderName].Models[1].ContextWindow)
-	require.Equal(t, "https://gateway.example/anthropic", root.Providers[piAnthropicProviderName].BaseURL)
+	require.Equal(t, "https://gateway.example/custom", root.Providers[piAnthropicProviderName].BaseURL)
 	require.Equal(t, "anthropic-messages", root.Providers[piAnthropicProviderName].API)
 	require.Equal(t, piTokenCommand, root.Providers[piAnthropicProviderName].APIKey)
 	require.True(t, root.Providers[piAnthropicProviderName].AuthHeader)
@@ -120,10 +121,12 @@ func TestPiGatewayPreservesJSONCAndBOM(t *testing.T) {
 }
 
 func TestPiGatewayAgentDirOverride(t *testing.T) {
-	home, agentDir := t.TempDir(), t.TempDir()
+	home, agentDir := t.TempDir(), filepath.Join(t.TempDir(), "agent")
 	t.Setenv("PI_CODING_AGENT_DIR", agentDir)
 	cm := NewTestClientManager(home, nil, supportedClientIntegrations, nil)
 	cm.lookPath = func(string) (string, error) { return "/usr/local/bin/pi", nil }
+	require.NotContains(t, cm.DetectedLLMGatewayClients(), ClientApp(Pi))
+	require.NoError(t, os.MkdirAll(agentDir, 0o700))
 	require.Contains(t, cm.DetectedLLMGatewayClients(), ClientApp(Pi))
 	path, err := cm.ConfigureLLMGateway(ClientApp(Pi), llmgateway.ApplyConfig{
 		GatewayURL: "https://gateway.example", DiscoveredModels: []string{"gpt-5"},
@@ -135,6 +138,10 @@ func TestPiGatewayAgentDirOverride(t *testing.T) {
 	_, providers, err := readPiConfig(path)
 	require.NoError(t, err)
 	require.NotContains(t, providers, piProviderName)
+	t.Setenv("PI_CODING_AGENT_DIR", "")
+	require.NotContains(t, cm.DetectedLLMGatewayClients(), ClientApp(Pi))
+	require.NoError(t, os.MkdirAll(filepath.Join(home, ".pi", "agent"), 0o700))
+	require.Contains(t, cm.DetectedLLMGatewayClients(), ClientApp(Pi))
 	t.Setenv("PI_CODING_AGENT_DIR", "~/custom-pi-agent")
 	require.Equal(t, filepath.Join(home, "custom-pi-agent", "models.json"),
 		cm.buildLLMSettingsPath(cm.lookupClientAppConfig(ClientApp(Pi))))
@@ -161,6 +168,11 @@ func TestPiGatewayAnthropicOnly(t *testing.T) {
 	require.NoError(t, err)
 	require.NotContains(t, providers, piProviderName)
 	require.Contains(t, providers, piAnthropicProviderName)
+	var anthropic struct {
+		BaseURL string `json:"baseUrl"`
+	}
+	require.NoError(t, json.Unmarshal(providers[piAnthropicProviderName], &anthropic))
+	require.Equal(t, cfg.GatewayURL, anthropic.BaseURL)
 	require.NoError(t, cm.RevertLLMGateway(ClientApp(Pi), path))
 	_, providers, err = readPiConfig(path)
 	require.NoError(t, err)

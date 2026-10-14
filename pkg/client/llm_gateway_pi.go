@@ -20,7 +20,10 @@ import (
 
 const piProviderName = "toolhive"
 const piAnthropicProviderName = "toolhive-anthropic"
-const piTokenCommand = "!thv llm token" //nolint:gosec // command, not a credential
+
+// Pi runs !-prefixed API keys on every request with its own fixed timeout;
+// it has no configurable helper TTL or timeout to write into models.json.
+const piTokenCommand = "!" + llmgateway.TokenHelperShellCommand //nolint:gosec // command, not a credential
 
 // configurePi adds a named provider without disturbing the user's other providers.
 func (cm *ClientManager) configurePi(appCfg *clientAppConfig, cfg llmgateway.ApplyConfig) (string, error) {
@@ -57,7 +60,11 @@ func (cm *ClientManager) configurePi(appCfg *clientAppConfig, cfg llmgateway.App
 			delete(providers, piProviderName)
 		}
 		if len(anthropicModels) > 0 {
-			provider, err := encodePiGatewayProvider(baseURL+"/anthropic", "anthropic-messages", anthropicModels,
+			anthropicBaseURL := baseURL
+			if cfg.AnthropicBaseURL != "" {
+				anthropicBaseURL = strings.TrimRight(cfg.AnthropicBaseURL, "/")
+			}
+			provider, err := encodePiGatewayProvider(anthropicBaseURL, "anthropic-messages", anthropicModels,
 				cfg.AnthropicModelContextWindows)
 			if err != nil {
 				return err

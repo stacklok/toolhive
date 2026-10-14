@@ -10,6 +10,9 @@ import (
 	"time"
 )
 
+// TokenHelperShellCommand is used by shell-invoked LLM gateway token helpers.
+const TokenHelperShellCommand = "thv llm token" //nolint:gosec // command line, not a credential
+
 // ClaudeCodeHelperTTL is written to settings.json as
 // CLAUDE_CODE_API_KEY_HELPER_TTL_MS: how often Claude Code re-invokes the
 // apiKeyHelper ("thv llm token"). Pinned to Claude Code's documented default so

@@ -40,6 +40,12 @@ Pi is configured with OpenAI-compatible and Anthropic providers in
 "thv llm token" for each request; authenticated setup discovers models and
 context sizes from both gateway APIs. --models filters the discovered models.
 Pi does not support --lazy because model discovery determines each model's API.
+Pi defaults to short prompt caching: start Pi with PI_CACHE_RETENTION=long
+in its environment for long retention (Anthropic: 1h; OpenAI: 24h).
+This cannot be persisted in models.json. Pi defaults models without discovered
+capability metadata to text-only, no reasoning, and 16K max output tokens.
+If Pi cannot refresh its gateway token, run "thv llm token" in a terminal to
+log in again.
 
 Proxy-mode tools (Cursor, VS Code, Xcode) are configured to send requests to
 the localhost reverse proxy started by "thv llm proxy start".
@@ -70,7 +76,7 @@ thv llm setup [flags]
 ### Options
 
 ```
-      --anthropic-path-prefix string   Path prefix appended to the gateway URL when writing ANTHROPIC_BASE_URL for direct-mode tools (e.g. /anthropic). When omitted, the gateway is probed automatically.
+      --anthropic-path-prefix string   Path prefix appended to the gateway URL for Anthropic API tools (e.g. /anthropic). Also used for Pi model discovery. When omitted, the gateway is probed automatically.
       --audience string                OIDC audience (optional)
       --bedrock-compat                 Configure Claude Code for a gateway that forwards to AWS Bedrock: write CLAUDE_CODE_DISABLE_EXPERIMENTAL_BETAS=1 (Bedrock rejects the experimental anthropic-beta headers) and pin per-tier Bedrock model IDs (override with --models). Persisted, so a later plain "thv llm setup" keeps it; clear with --bedrock-compat=false. Only affects Claude Code.
       --callback-port int              OIDC callback port (omit to keep current; default: ephemeral)
@@ -81,7 +87,7 @@ thv llm setup [flags]
   -h, --help                           help for setup
       --issuer string                  OIDC issuer URL
       --lazy                           Skip the interactive OIDC login and defer it until the first time a configured tool accesses the gateway. Tool config and persisted settings are written normally. Useful for unattended provisioning (e.g. an MDM profile).
-      --models strings                 Model IDs to configure, comma-separated or by repeating the flag, e.g. --models=us.anthropic.claude-opus-4-8,us.anthropic.claude-sonnet-5. For Pi these define its custom provider models (required with --lazy). For credential-helper clients (Claude Desktop) these become inferenceModels. With --bedrock-compat, each ID is also mapped to a Claude Code tier by matching 'haiku', 'opus', or 'sonnet' in the ID (IDs matching no tier are ignored with a warning). Omit to use the built-in Bedrock defaults / gateway model discovery.
+      --models strings                 Model IDs to configure, comma-separated or by repeating the flag, e.g. --models=us.anthropic.claude-opus-4-8,us.anthropic.claude-sonnet-5. For Pi these filter its discovered models (Pi does not support --lazy). For credential-helper clients (Claude Desktop) these become inferenceModels. With --bedrock-compat, each ID is also mapped to a Claude Code tier by matching 'haiku', 'opus', or 'sonnet' in the ID (IDs matching no tier are ignored with a warning). Omit to use the built-in Bedrock defaults / gateway model discovery.
       --proxy-port int                 Localhost proxy listen port (omit to keep current; default: 14000)
       --short-prompt-cache             Use Claude Code's five-minute prompt cache instead of ToolHive's one-hour default. Persisted, so a later plain "thv llm setup" keeps it; use --short-prompt-cache=false to restore one-hour caching.
       --skip-browser                   Print the OIDC authorization URL instead of opening a browser, then wait for the callback. Use in headless/SSH/CI environments where no system browser is available.

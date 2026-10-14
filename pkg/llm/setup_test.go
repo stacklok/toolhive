@@ -941,11 +941,13 @@ func TestSetupPiModels(t *testing.T) {
 	for _, tt := range []struct {
 		name    string
 		lazy    bool
+		short   bool
 		models  []string
 		wantErr string
 	}{
 		{name: "discover models"},
 		{name: "explicit Anthropic model", models: []string{"claude-sonnet-5"}},
+		{name: "short cache does not suggest long", short: true},
 		{name: "lazy no models", lazy: true, wantErr: "does not support --lazy"},
 		{name: "lazy explicit models", lazy: true, models: []string{"claude-sonnet-5"}, wantErr: "does not support --lazy"},
 	} {
@@ -956,24 +958,74 @@ func TestSetupPiModels(t *testing.T) {
 			provider.cfg.GatewayURL = server.URL
 			provider.cfg.TLSSkipVerify = true
 			var out, errOut bytes.Buffer
+			opts := SetOptions{Models: tt.models}
+			if tt.short {
+				opts.ShortPromptCache = &tt.short
+			}
 			err := Setup(context.Background(), &out, &errOut, gm, provider,
 				func(_ context.Context, cfg *Config) error {
 					cfg.SetDiscoveryAccessToken("discovery-token")
 					return nil
-				}, SetOptions{Models: tt.models}, "/anthropic", true, "pi", tt.lazy)
+				}, opts, "/anthropic", true, "pi", tt.lazy)
 			if tt.wantErr != "" {
 				require.ErrorContains(t, err, tt.wantErr)
 				assert.Zero(t, provider.updateCalls)
 				return
 			}
 			require.NoError(t, err)
+			assert.Equal(t, !tt.short, strings.Contains(out.String(), "PI_CACHE_RETENTION=long"))
 			require.Len(t, gm.applied, 1)
 			assert.Equal(t, tt.models, gm.applied[0].Models)
 			assert.Equal(t, []string{"gpt-5"}, gm.applied[0].DiscoveredModels)
 			assert.Equal(t, map[string]int{"gpt-5": 400000}, gm.applied[0].DiscoveredModelContextWindows)
 			assert.Equal(t, []string{"claude-sonnet-5"}, gm.applied[0].AnthropicModels)
 			assert.Equal(t, map[string]int{"claude-sonnet-5": 1000000}, gm.applied[0].AnthropicModelContextWindows)
-			assert.Empty(t, gm.applied[0].AnthropicBaseURL)
+			assert.Equal(t, server.URL+"/anthropic", gm.applied[0].AnthropicBaseURL)
+		})
+	}
+}
+
+func TestSetupPiAnthropicPrefix(t *testing.T) {
+	t.Parallel()
+	for _, tt := range []struct {
+		name, flag, wantPath, wantBase string
+		flagSet                        bool
+	}{
+		{name: "root", flagSet: true, wantPath: "/v1/models"},
+		{name: "custom", flag: "/custom", flagSet: true, wantPath: "/custom/v1/models", wantBase: "/custom"},
+		{name: "probed", wantPath: "/anthropic/v1/models", wantBase: "/anthropic"},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			server := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				switch {
+				case r.Method == http.MethodHead && r.URL.Path == "/anthropic/v1/messages":
+					w.WriteHeader(http.StatusUnauthorized)
+				case r.URL.Path == "/v1/models" && r.Method == http.MethodGet && tt.wantPath != "/v1/models":
+					w.WriteHeader(http.StatusNotFound)
+				case r.URL.Path == tt.wantPath && r.Method == http.MethodGet:
+					_, _ = w.Write([]byte(`{"data":[{"id":"claude-test"}],"has_more":false}`))
+				default:
+					w.WriteHeader(http.StatusNotFound)
+				}
+			}))
+			t.Cleanup(server.Close)
+			gm := &setupGatewayManager{detected: []string{"pi"}, mode: llmgateway.ModePi}
+			provider := configuredSetupProvider()
+			provider.cfg.GatewayURL = server.URL
+			provider.cfg.TLSSkipVerify = true
+			var out, errOut bytes.Buffer
+			err := Setup(context.Background(), &out, &errOut, gm, provider,
+				func(_ context.Context, cfg *Config) error { cfg.SetDiscoveryAccessToken("token"); return nil },
+				SetOptions{}, tt.flag, tt.flagSet, "pi", false)
+			require.NoError(t, err)
+			require.Len(t, gm.applied, 1)
+			assert.Equal(t, []string{"claude-test"}, gm.applied[0].AnthropicModels)
+			wantBase := ""
+			if tt.wantBase != "" {
+				wantBase = server.URL + tt.wantBase
+			}
+			assert.Equal(t, wantBase, gm.applied[0].AnthropicBaseURL)
 		})
 	}
 }
@@ -992,7 +1044,7 @@ func TestDiscoverSetupModelsPiAnthropicFallback(t *testing.T) {
 	cfg := Config{GatewayURL: server.URL}
 	cfg.SetDiscoveryAccessToken("discovery-token")
 	var warnings strings.Builder
-	clients, catalog, err := discoverSetupModels(context.Background(), &warnings, []string{"pi"}, "pi", cfg)
+	clients, catalog, err := discoverSetupModels(context.Background(), &warnings, []string{"pi"}, "pi", cfg, "/anthropic")
 	require.NoError(t, err)
 	assert.Equal(t, []string{"pi"}, clients)
 	assert.Empty(t, catalog.openAI)
@@ -1020,7 +1072,7 @@ func TestDiscoverAnthropicGatewayModels(t *testing.T) {
 	t.Cleanup(server.Close)
 	cfg := Config{GatewayURL: server.URL}
 	cfg.SetDiscoveryAccessToken("discovery-token")
-	models, contexts, err := discoverAnthropicGatewayModels(context.Background(), cfg)
+	models, contexts, err := discoverAnthropicGatewayModels(context.Background(), cfg, "/anthropic")
 	require.NoError(t, err)
 	assert.Equal(t, []string{"claude-haiku-5-5", "claude-opus-4-8", "claude-sonnet-5"}, models)
 	assert.Equal(t, map[string]int{"claude-opus-4-8": 1000000, "claude-sonnet-5": 200000}, contexts)
@@ -1034,7 +1086,7 @@ func TestDiscoverAnthropicGatewayModelsRejectsInvalidPagination(t *testing.T) {
 	t.Cleanup(server.Close)
 	cfg := Config{GatewayURL: server.URL}
 	cfg.SetDiscoveryAccessToken("discovery-token")
-	_, _, err := discoverAnthropicGatewayModels(context.Background(), cfg)
+	_, _, err := discoverAnthropicGatewayModels(context.Background(), cfg, "/anthropic")
 	require.ErrorContains(t, err, "invalid Anthropic pagination cursor")
 }
 

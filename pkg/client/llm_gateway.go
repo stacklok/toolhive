@@ -515,10 +515,8 @@ func (cm *ClientManager) sharedCLIDetection(cfg *clientAppConfig) bool {
 	// exist until first configured (e.g. Claude Desktop's configLibrary),
 	// LLMDetectRelPath points at a directory that exists once the app is
 	// installed. Otherwise fall back to the settings directory.
-	if cfg.ClientType != ClientApp(Pi) {
-		if _, err := os.Stat(cm.llmDetectDir(cfg)); err != nil {
-			return false
-		}
+	if _, err := os.Stat(cm.llmDetectDir(cfg)); err != nil {
+		return false
 	}
 	if cfg.LLMBinaryName != "" {
 		if cm.lookPath == nil {

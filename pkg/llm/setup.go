@@ -133,8 +133,12 @@ func Setup(
 		_, _ = fmt.Fprintln(out, "Login successful.")
 	}
 
+	// Resolve the effective path prefix for the Anthropic API before discovery
+	// so Pi uses the same endpoint to list models and serve requests.
+	anthropicPrefix := resolveAnthropicPrefix(ctx, gm, detected, llmCfg, anthropicPathPrefix, anthropicPathPrefixSet)
+
 	detected, discoveredModels, err := discoverSetupModels(
-		ctx, errOut, detected, targetClient, llmCfg,
+		ctx, errOut, detected, targetClient, llmCfg, anthropicPrefix,
 	)
 	if err != nil {
 		return err
@@ -142,15 +146,6 @@ func Setup(
 	if len(detected) == 0 {
 		return nil
 	}
-
-	// Resolve the effective path prefix for ANTHROPIC_BASE_URL.
-	// If the caller supplied --anthropic-path-prefix, use it directly.
-	// Otherwise auto-probe: a HEAD request to <gateway>/anthropic/v1/messages
-	// that returns 401 (rather than 404) indicates the gateway uses the
-	// /anthropic prefix, so we apply it automatically.
-	// Only probe if at least one detected tool uses direct mode; proxy-mode
-	// tools ignore the Anthropic prefix entirely.
-	anthropicPrefix := resolveAnthropicPrefix(ctx, gm, detected, llmCfg, anthropicPathPrefix, anthropicPathPrefixSet)
 
 	configured, err := configureDetectedToolsWithDiscovery(
 		out, errOut, gm, detected, llmCfg.GatewayURL, proxyBaseURL,
@@ -191,6 +186,7 @@ func Setup(
 		return fmt.Errorf("persisting tool configuration: %w", err)
 	}
 
+	printPiLongCacheHint(out, configured, llmCfg.ShortPromptCache)
 	if hasProxyMode(configured) {
 		_, _ = fmt.Fprintln(out, "One or more tools use proxy mode. Start the proxy with: thv llm proxy start")
 	}
@@ -578,11 +574,11 @@ type discoveredGatewayModels struct {
 }
 
 func discoverSetupModels(
-	ctx context.Context, errOut io.Writer, clients []string, targetClient string, cfg Config,
+	ctx context.Context, errOut io.Writer, clients []string, targetClient string, cfg Config, anthropicPrefix string,
 ) ([]string, discoveredGatewayModels, error) {
 	hasPi := slices.Contains(clients, "pi")
 	hasVSCode := hasVSCodeClient(clients)
-	catalog, openErr, anthropicErr := fetchSetupModelCatalog(ctx, cfg, hasPi, hasVSCode)
+	catalog, openErr, anthropicErr := fetchSetupModelCatalog(ctx, cfg, hasPi, hasVSCode, anthropicPrefix)
 	piMissing := hasPi && len(catalog.openAI) == 0 && len(catalog.anthropic) == 0
 	if isVSCodeClient(targetClient) && openErr != nil {
 		return nil, catalog, openErr
@@ -602,7 +598,7 @@ func discoverSetupModels(
 }
 
 func fetchSetupModelCatalog(
-	ctx context.Context, cfg Config, hasPi, hasVSCode bool,
+	ctx context.Context, cfg Config, hasPi, hasVSCode bool, anthropicPrefix string,
 ) (discoveredGatewayModels, error, error) {
 	var catalog discoveredGatewayModels
 	var openErr, anthropicErr error
@@ -610,7 +606,8 @@ func fetchSetupModelCatalog(
 		catalog.openAI, catalog.openAIContextWindows, openErr = discoverGatewayModels(ctx, cfg)
 	}
 	if hasPi && cfg.discoveryAccessToken != "" {
-		catalog.anthropic, catalog.anthropicContextWindows, anthropicErr = discoverAnthropicGatewayModels(ctx, cfg)
+		catalog.anthropic, catalog.anthropicContextWindows, anthropicErr =
+			discoverAnthropicGatewayModels(ctx, cfg, anthropicPrefix)
 	}
 	return catalog, openErr, anthropicErr
 }
@@ -714,13 +711,18 @@ func discoverGatewayModels(ctx context.Context, cfg Config) ([]string, map[strin
 	return models, contextWindows, nil
 }
 
-func discoverAnthropicGatewayModels(ctx context.Context, cfg Config) ([]string, map[string]int, error) {
+func discoverAnthropicGatewayModels(ctx context.Context, cfg Config, anthropicPrefix string) ([]string, map[string]int, error) {
+	path := strings.Trim(anthropicPrefix, "/")
+	if path != "" {
+		path += "/"
+	}
+	path += "v1/models"
 	seen := make(map[string]struct{})
 	models := make([]string, 0)
 	contextWindows := make(map[string]int)
 	afterID := ""
 	for range 100 {
-		payload, err := requestGatewayModels(ctx, cfg, "anthropic/v1/models", afterID)
+		payload, err := requestGatewayModels(ctx, cfg, path, afterID)
 		if err != nil {
 			return nil, nil, err
 		}
@@ -841,6 +843,13 @@ func warnBedrockNoEffect(errOut io.Writer, opts SetOptions, effectiveCompat bool
 	if opts.Enable1M != nil && *opts.Enable1M && !effectiveCompat {
 		_, _ = fmt.Fprintln(errOut,
 			"Warning: --enable-1m has no effect without --bedrock-compat; it is ignored.")
+	}
+}
+
+func printPiLongCacheHint(out io.Writer, configured []ToolConfig, shortPromptCache bool) {
+	if isTarget(configured, "pi") && !shortPromptCache {
+		_, _ = fmt.Fprintln(out, "Pi uses short prompt caching by default. To enable long retention, "+
+			"start Pi with PI_CACHE_RETENTION=long in its environment (Anthropic: 1h; OpenAI: 24h).")
 	}
 }
 
@@ -974,12 +983,12 @@ func warnPromptCacheConflict(errOut io.Writer, gm GatewayManager, clientType str
 // resolveAnthropicPrefix returns the effective Anthropic path prefix. When the
 // caller explicitly set the flag (anthropicPathPrefixSet), the provided value is
 // returned as-is (including empty string, which disables the prefix). Otherwise
-// the gateway is auto-probed when at least one direct-mode client is present.
+// the gateway is auto-probed when at least one client uses its Anthropic API.
 func resolveAnthropicPrefix(
 	ctx context.Context, gm GatewayManager, detected []string,
 	llmCfg Config, anthropicPathPrefix string, anthropicPathPrefixSet bool,
 ) string {
-	if anthropicPathPrefixSet || !hasDirectModeClient(gm, detected) {
+	if anthropicPathPrefixSet || !hasAnthropicBaseURLClient(gm, detected) {
 		return anthropicPathPrefix
 	}
 	return probeAnthropicPrefix(ctx, llmCfg.GatewayURL, llmCfg.TLSSkipVerify)
@@ -987,8 +996,8 @@ func resolveAnthropicPrefix(
 
 // probeAnthropicPrefix performs a HEAD request to <gatewayURL>/anthropic/v1/messages.
 // If the server responds with HTTP 401 (Unauthorized) — meaning the path exists but
-// requires authentication — it returns "/anthropic" as the path prefix so that
-// ANTHROPIC_BASE_URL is constructed as <gateway>/anthropic rather than <gateway>.
+// requires authentication — it returns "/anthropic" as the path prefix for
+// clients using the Anthropic API.
 // Any other status code (including 404 Not Found) or any network error is treated
 // as "no prefix needed" and the function returns "".
 func probeAnthropicPrefix(ctx context.Context, gatewayURL string, tlsSkipVerify bool) string {
@@ -1053,7 +1062,7 @@ func gatewayHTTPClient(tlsSkipVerify bool) *http.Client {
 // Claude Desktop cannot accept them — it is only ever GUI-launched — so its
 // credential-helper shim uses the absolute TokenHelperPath instead (see
 // writeCredentialHelperShim in pkg/client).
-const tokenHelperShellCommand = "thv llm token" //nolint:gosec // G101: a command line, not a credential
+const tokenHelperShellCommand = llmgateway.TokenHelperShellCommand
 
 // buildTokenHelperArgv returns the argv-form of the token helper, for config
 // formats that invoke an executable directly (no shell) — e.g. Codex's
@@ -1070,16 +1079,16 @@ func buildTokenHelperArgv() (string, []string, error) {
 }
 
 // usesAnthropicBaseURL reports whether a client mode consumes the Anthropic base
-// URL (gateway + /anthropic prefix): direct mode via ANTHROPIC_BASE_URL, and
-// credential-helper mode (Claude Desktop) via inferenceGatewayBaseUrl.
+// URL (gateway plus its probed or configured prefix): direct mode via
+// ANTHROPIC_BASE_URL, credential-helper mode via inferenceGatewayBaseUrl,
+// and Pi via its Anthropic provider.
 func usesAnthropicBaseURL(mode string) bool {
-	return mode == llmgateway.ModeDirect || mode == llmgateway.ModeCredentialHelper
+	return mode == llmgateway.ModeDirect || mode == llmgateway.ModeCredentialHelper || mode == llmgateway.ModePi
 }
 
-// hasDirectModeClient reports whether any client in the detected list uses a
-// mode that needs the Anthropic base URL. Used to skip the Anthropic-prefix
-// probe when no such tools are present (proxy-mode tools ignore it entirely).
-func hasDirectModeClient(gm GatewayManager, detected []string) bool {
+// hasAnthropicBaseURLClient reports whether any detected client needs the
+// Anthropic base URL. Proxy-mode tools ignore it entirely.
+func hasAnthropicBaseURLClient(gm GatewayManager, detected []string) bool {
 	for _, clientType := range detected {
 		if usesAnthropicBaseURL(gm.LLMGatewayModeFor(clientType)) {
 			return true

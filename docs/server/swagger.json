@@ -1079,7 +1079,8 @@
                     "kimi-cli",
                     "factory",
                     "copilot-cli",
-                    "qoder"
+                    "qoder",
+                    "pi"
                 ],
                 "type": "string",
                 "x-enum-varnames": [
@@ -1107,7 +1108,8 @@
                     "KimiCli",
                     "Factory",
                     "CopilotCli",
-                    "Qoder"
+                    "Qoder",
+                    "Pi"
                 ]
             },
             "github_com_stacklok_toolhive_pkg_client.ClientAppStatus": {

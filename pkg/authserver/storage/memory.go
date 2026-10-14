@@ -18,6 +18,7 @@ import (
 	"context"
 	"fmt"
 	"log/slog"
+	"net/url"
 	"slices"
 	"sync"
 	"time"
@@ -524,6 +525,40 @@ func (s *MemoryStorage) cleanupExpired() {
 	}
 }
 
+// snapshotRequester copies request-owned data while retaining the concrete client reference.
+// GetID may initialize an empty ID on the caller's Request during creation.
+func snapshotRequester(request fosite.Requester) *fosite.Request {
+	form := request.GetRequestForm()
+	var formCopy url.Values
+	if form != nil {
+		formCopy = make(url.Values, len(form))
+		for key, values := range form {
+			formCopy[key] = slices.Clone(values)
+		}
+	}
+
+	snapshot := &fosite.Request{
+		ID:                request.GetID(),
+		RequestedAt:       request.GetRequestedAt(),
+		Client:            request.GetClient(),
+		RequestedScope:    slices.Clone(request.GetRequestedScopes()),
+		GrantedScope:      slices.Clone(request.GetGrantedScopes()),
+		RequestedAudience: slices.Clone(request.GetRequestedAudience()),
+		GrantedAudience:   slices.Clone(request.GetGrantedAudience()),
+		Form:              formCopy,
+	}
+	if session := request.GetSession(); session != nil {
+		snapshot.Session = session.Clone()
+	}
+	if langContext, ok := request.(fosite.G11NContext); ok {
+		snapshot.Lang = langContext.GetLang()
+	}
+	// Requester implementations other than fosite.Request may return an empty ID.
+	// Initialize the copy before publishing it so Get never writes under RLock.
+	snapshot.GetID()
+	return snapshot
+}
+
 // getExpirationFromRequester extracts expiration time from a fosite.Requester session.
 // Returns the provided default if expiration cannot be extracted.
 //
@@ -829,10 +864,11 @@ func (s *MemoryStorage) CreateAuthorizeCodeSession(_ context.Context, code strin
 	defer s.mu.Unlock()
 
 	now := time.Now()
-	expiresAt := getExpirationFromRequester(request, fosite.AuthorizeCode, DefaultAuthCodeTTL)
+	stored := snapshotRequester(request)
+	expiresAt := getExpirationFromRequester(stored, fosite.AuthorizeCode, DefaultAuthCodeTTL)
 
 	s.authCodes[code] = &timedEntry[fosite.Requester]{
-		value:     request,
+		value:     stored,
 		createdAt: now,
 		expiresAt: expiresAt,
 	}
@@ -841,7 +877,8 @@ func (s *MemoryStorage) CreateAuthorizeCodeSession(_ context.Context, code strin
 
 // GetAuthorizeCodeSession retrieves the authorization request for a given code.
 // If the authorization code has been invalidated, it returns ErrInvalidatedAuthorizeCode
-// along with the request (as required by fosite).
+// along with the request (as required by fosite). Expired codes are rejected
+// with a not-found error, after the invalidation check so reuse is still detected.
 func (s *MemoryStorage) GetAuthorizeCodeSession(_ context.Context, code string, _ fosite.Session) (fosite.Requester, error) {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
@@ -855,10 +892,15 @@ func (s *MemoryStorage) GetAuthorizeCodeSession(_ context.Context, code string, 
 	// Check if the code has been invalidated
 	if s.invalidatedCodes[code] != nil {
 		// Must return the request along with the error as per fosite documentation
-		return entry.value, fosite.ErrInvalidatedAuthorizeCode
+		return snapshotRequester(entry.value), fosite.ErrInvalidatedAuthorizeCode
 	}
 
-	return entry.value, nil
+	if time.Now().After(entry.expiresAt) {
+		slog.Debug("authorization code expired")
+		return nil, notFoundRFC6749Error("Authorization code expired")
+	}
+
+	return snapshotRequester(entry.value), nil
 }
 
 // InvalidateAuthorizeCodeSession marks an authorization code as used/invalid.
@@ -898,10 +940,11 @@ func (s *MemoryStorage) CreateAccessTokenSession(_ context.Context, signature st
 	defer s.mu.Unlock()
 
 	now := time.Now()
-	expiresAt := getExpirationFromRequester(request, fosite.AccessToken, DefaultAccessTokenTTL)
+	stored := snapshotRequester(request)
+	expiresAt := getExpirationFromRequester(stored, fosite.AccessToken, DefaultAccessTokenTTL)
 
 	s.accessTokens[signature] = &timedEntry[fosite.Requester]{
-		value:     request,
+		value:     stored,
 		createdAt: now,
 		expiresAt: expiresAt,
 	}
@@ -911,8 +954,8 @@ func (s *MemoryStorage) CreateAccessTokenSession(_ context.Context, signature st
 // GetAccessTokenSession retrieves the access token session by its signature.
 //
 // The session parameter is a prototype for deserialization in persistent backends.
-// Our in-memory implementation ignores it since we store live Requester objects.
-// Persistent backends (SQL, Redis) use it to know what concrete type to deserialize into.
+// Our in-memory implementation ignores it because it snapshots Requesters in memory.
+// A persistent backend may instead use it to choose a deserialization type.
 func (s *MemoryStorage) GetAccessTokenSession(_ context.Context, signature string, _ fosite.Session) (fosite.Requester, error) {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
@@ -922,7 +965,7 @@ func (s *MemoryStorage) GetAccessTokenSession(_ context.Context, signature strin
 		slog.Debug("access token not found")
 		return nil, notFoundRFC6749Error("Access token not found")
 	}
-	return entry.value, nil
+	return snapshotRequester(entry.value), nil
 }
 
 // DeleteAccessTokenSession removes the access token session.
@@ -957,10 +1000,11 @@ func (s *MemoryStorage) CreateRefreshTokenSession(_ context.Context, signature s
 	defer s.mu.Unlock()
 
 	now := time.Now()
-	expiresAt := getExpirationFromRequester(request, fosite.RefreshToken, DefaultRefreshTokenTTL)
+	stored := snapshotRequester(request)
+	expiresAt := getExpirationFromRequester(stored, fosite.RefreshToken, DefaultRefreshTokenTTL)
 
 	s.refreshTokens[signature] = &timedEntry[fosite.Requester]{
-		value:     request,
+		value:     stored,
 		createdAt: now,
 		expiresAt: expiresAt,
 	}
@@ -977,7 +1021,7 @@ func (s *MemoryStorage) GetRefreshTokenSession(_ context.Context, signature stri
 		slog.Debug("refresh token not found")
 		return nil, notFoundRFC6749Error("Refresh token not found")
 	}
-	return entry.value, nil
+	return snapshotRequester(entry.value), nil
 }
 
 // DeleteRefreshTokenSession removes the refresh token session.
@@ -1085,10 +1129,11 @@ func (s *MemoryStorage) CreatePKCERequestSession(_ context.Context, signature st
 	defer s.mu.Unlock()
 
 	now := time.Now()
-	expiresAt := getExpirationFromRequester(request, fosite.AuthorizeCode, DefaultPKCETTL)
+	stored := snapshotRequester(request)
+	expiresAt := getExpirationFromRequester(stored, fosite.AuthorizeCode, DefaultPKCETTL)
 
 	s.pkceRequests[signature] = &timedEntry[fosite.Requester]{
-		value:     request,
+		value:     stored,
 		createdAt: now,
 		expiresAt: expiresAt,
 	}
@@ -1105,7 +1150,7 @@ func (s *MemoryStorage) GetPKCERequestSession(_ context.Context, signature strin
 		slog.Debug("pkce request not found")
 		return nil, notFoundRFC6749Error("PKCE request not found")
 	}
-	return entry.value, nil
+	return snapshotRequester(entry.value), nil
 }
 
 // DeletePKCERequestSession removes the PKCE request session.

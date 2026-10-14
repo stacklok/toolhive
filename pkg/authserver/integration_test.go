@@ -21,6 +21,7 @@ import (
 	"net/url"
 	"regexp"
 	"strings"
+	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -735,6 +736,88 @@ func TestIntegration_JWTBearerGrant_NoJTISyntheticKeyDoesNotCollideWithJTI(t *te
 			require.NotEmpty(t, result["access_token"])
 		})
 	}
+}
+
+// GHSA-3qvw-5c9g-77xx: fosite writes to the stored session before PKCE
+// verification runs, so concurrent bad-verifier requests used to crash the server.
+func TestIntegration_TokenEndpoint_ConcurrentWrongPKCEVerifier(t *testing.T) {
+	t.Parallel()
+
+	m := startMockOIDC(t)
+	m.QueueUser(&mockoidc.MockUser{Subject: "concurrent-pkce-user", Email: "concurrent-pkce@example.com"})
+	ts := setupTestServerWithMockOIDC(t, m)
+
+	verifier := servercrypto.GeneratePKCEVerifier()
+	authCode, _ := completeAuthorizationFlow(t, ts.Server.URL, authorizationParams{
+		ClientID: testClientID, RedirectURI: testRedirectURI, State: "test-state",
+		Challenge: servercrypto.ComputePKCEChallenge(verifier), Scope: "openid profile", ResponseType: "code",
+	})
+
+	params := url.Values{
+		"grant_type":    {"authorization_code"},
+		"code":          {authCode},
+		"client_id":     {testClientID},
+		"redirect_uri":  {testRedirectURI},
+		"code_verifier": {servercrypto.GeneratePKCEVerifier()}, // well-formed, wrong
+	}
+	body := params.Encode()
+
+	const workers = 32
+	type result struct {
+		status int
+		errStr string
+		err    error
+	}
+	results := make(chan result, workers)
+	httpClient := &http.Client{Timeout: 10 * time.Second}
+	start := make(chan struct{})
+	var wg sync.WaitGroup
+	for range workers {
+		wg.Go(func() {
+			<-start
+			// Not makeTokenRequest: it calls require (FailNow) off the test goroutine.
+			resp, err := httpClient.Post(ts.Server.URL+"/oauth/token",
+				"application/x-www-form-urlencoded", strings.NewReader(body))
+			if err != nil {
+				results <- result{err: err}
+				return
+			}
+			defer resp.Body.Close()
+			var payload map[string]any
+			err = json.NewDecoder(resp.Body).Decode(&payload)
+			errStr, _ := payload["error"].(string)
+			results <- result{status: resp.StatusCode, errStr: errStr, err: err}
+		})
+	}
+	close(start)
+	done := make(chan struct{})
+	go func() { wg.Wait(); close(done) }()
+	select {
+	case <-done:
+	case <-time.After(30 * time.Second):
+		t.Fatal("timeout waiting for goroutines to finish")
+	}
+	close(results)
+
+	for r := range results {
+		require.NoError(t, r.err)
+		// Losers of fosite's PKCE Get-then-Delete race get server_error from the
+		// failed DeletePKCERequestSession; everyone else gets invalid_grant.
+		switch r.status {
+		case http.StatusBadRequest:
+			assert.Equal(t, "invalid_grant", r.errStr)
+		case http.StatusInternalServerError:
+			assert.Equal(t, "server_error", r.errStr)
+		default:
+			t.Errorf("unexpected status %d (%s)", r.status, r.errStr)
+		}
+	}
+
+	// Liveness only: the process survived the concurrent requests and still answers.
+	params.Set("code_verifier", verifier)
+	resp := makeTokenRequest(t, ts.Server.URL, params)
+	defer resp.Body.Close()
+	assert.Less(t, resp.StatusCode, http.StatusInternalServerError)
 }
 
 // TestIntegration_TokenEndpoint_Errors tests various error conditions at the token endpoint.

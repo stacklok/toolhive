@@ -8,7 +8,9 @@ import (
 	"context"
 	"crypto/rand"
 	"crypto/rsa"
+	"crypto/sha256"
 	"encoding/base64"
+	"encoding/binary"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -622,33 +624,117 @@ func TestIntegration_JWTBearerGrantReplay_RedisStorage(t *testing.T) {
 	assert.Equal(t, "invalid_grant", result["error"])
 }
 
-// TestIntegration_JWTBearerGrantReplay_NoJTI proves replay protection still
-// works for an assertion that omits the optional "jti" claim (as real-world
-// IdPs like Microsoft Entra ID commonly do): the fallback hash-of-assertion
-// key must catch the second use of the identical assertion, exactly as jti
-// would.
+// TestIntegration_JWTBearerGrantReplay_NoJTI exercises replay and compact-form
+// rejection through the real token endpoint for an assertion without jti.
 func TestIntegration_JWTBearerGrantReplay_NoJTI(t *testing.T) {
 	t.Parallel()
 
 	ts, signAssertion := setupJWTBearerGrantTestServer(t)
 	now := time.Now()
 	assertion := signAssertion("external-subject", now, now.Add(2*time.Minute), "")
-	params := url.Values{
-		"grant_type": {oauthproto.GrantTypeJWTBearer},
-		"assertion":  {assertion},
-		"resource":   {testAudience},
+	parts := strings.Split(assertion, ".")
+	require.Len(t, parts, 3)
+
+	// A 2048-bit RS256 signature is 256 bytes (256 % 3 == 1): changing
+	// the low four unused bits of its final base64url character preserves
+	// the decoded signature while changing the compact serialization.
+	signature, err := base64.RawURLEncoding.DecodeString(parts[2])
+	require.NoError(t, err)
+	require.Len(t, signature, 256)
+	const alphabet = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-_"
+	last := strings.IndexByte(alphabet, parts[2][len(parts[2])-1])
+	require.GreaterOrEqual(t, last, 0)
+	require.Equal(t, 0, last%16)
+	noncanonicalSignature := parts[2][:len(parts[2])-1] + string(alphabet[last+1])
+	altered, err := base64.RawURLEncoding.DecodeString(noncanonicalSignature)
+	require.NoError(t, err)
+	require.Equal(t, signature, altered)
+
+	request := func(raw string) (*http.Response, map[string]interface{}) {
+		t.Helper()
+		response := makeTokenRequest(t, ts.Server.URL, url.Values{
+			"grant_type": {oauthproto.GrantTypeJWTBearer},
+			"assertion":  {raw},
+			"resource":   {testAudience},
+		})
+		defer response.Body.Close()
+		return response, parseTokenResponse(t, response)
 	}
 
-	response := makeTokenRequest(t, ts.Server.URL, params)
-	defer response.Body.Close()
-	result := parseTokenResponse(t, response)
+	response, result := request(assertion)
 	require.Equal(t, http.StatusOK, response.StatusCode, result)
+	require.NotEmpty(t, result["access_token"])
 
-	response = makeTokenRequest(t, ts.Server.URL, params)
-	defer response.Body.Close()
-	result = parseTokenResponse(t, response)
-	assert.Equal(t, http.StatusBadRequest, response.StatusCode, result)
-	assert.Equal(t, "invalid_grant", result["error"])
+	for _, tc := range []struct {
+		name      string
+		assertion string
+	}{
+		{name: "identical replay", assertion: assertion},
+		{name: "signature newline", assertion: parts[0] + "." + parts[1] + "." + parts[2] + "\n"},
+		{name: "noncanonical signature bits", assertion: parts[0] + "." + parts[1] + "." + noncanonicalSignature},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			response, result := request(tc.assertion)
+			assert.Equal(t, http.StatusBadRequest, response.StatusCode)
+			assert.Equal(t, "invalid_grant", result["error"])
+		})
+	}
+}
+
+func TestIntegration_JWTBearerGrant_NoJTISyntheticKeyDoesNotCollideWithJTI(t *testing.T) {
+	t.Parallel()
+
+	ts, signAssertion := setupJWTBearerGrantTestServer(t)
+	now := time.Now()
+	noJTI := signAssertion("external-subject", now, now.Add(2*time.Minute), "")
+	parts := strings.Split(noJTI, ".")
+	require.Len(t, parts, 3)
+	header, err := base64.RawURLEncoding.DecodeString(parts[0])
+	require.NoError(t, err)
+	payload, err := base64.RawURLEncoding.DecodeString(parts[1])
+	require.NoError(t, err)
+	var noJTIClaims map[string]any
+	require.NoError(t, json.Unmarshal(payload, &noJTIClaims))
+	require.NotContains(t, noJTIClaims, "jti")
+
+	// Mirrors assertionReplayKey in tokenexchange; update both together or
+	// this jti stops colliding with the no-jti key and the test goes vacuous.
+	framed := binary.BigEndian.AppendUint64(nil, uint64(len(header)))
+	framed = append(framed, header...)
+	framed = append(framed, payload...)
+	digest := sha256.Sum256(framed)
+	collisionKey := "jwt-bearer-noJTI-" + base64.RawURLEncoding.EncodeToString(digest[:])
+	withJTI := signAssertion("external-subject", now, now.Add(2*time.Minute), collisionKey)
+	withJTIParts := strings.Split(withJTI, ".")
+	require.Len(t, withJTIParts, 3)
+	withJTIPayload, err := base64.RawURLEncoding.DecodeString(withJTIParts[1])
+	require.NoError(t, err)
+	var withJTIClaims map[string]any
+	require.NoError(t, json.Unmarshal(withJTIPayload, &withJTIClaims))
+	require.Equal(t, collisionKey, withJTIClaims["jti"])
+	require.NotEqual(t, noJTI, withJTI)
+
+	for _, tc := range []struct {
+		name      string
+		assertion string
+	}{
+		{name: "no jti", assertion: noJTI},
+		{name: "jti equal to no-jti replay key", assertion: withJTI},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			response := makeTokenRequest(t, ts.Server.URL, url.Values{
+				"grant_type": {oauthproto.GrantTypeJWTBearer},
+				"assertion":  {tc.assertion},
+				"resource":   {testAudience},
+			})
+			defer response.Body.Close()
+			result := parseTokenResponse(t, response)
+			require.Equal(t, http.StatusOK, response.StatusCode, result)
+			require.NotEmpty(t, result["access_token"])
+		})
+	}
 }
 
 // TestIntegration_TokenEndpoint_Errors tests various error conditions at the token endpoint.

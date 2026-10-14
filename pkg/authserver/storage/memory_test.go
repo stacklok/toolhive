@@ -20,8 +20,10 @@ package storage
 
 import (
 	"context"
+	"crypto/rsa"
 	"errors"
 	"fmt"
+	"math/big"
 	"net/url"
 	"reflect"
 	"sync"
@@ -29,11 +31,13 @@ import (
 	"testing"
 	"time"
 
+	"github.com/go-jose/go-jose/v3"
 	"github.com/ory/fosite"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
 	"github.com/stacklok/toolhive/pkg/authserver/server/registration"
+	authsession "github.com/stacklok/toolhive/pkg/authserver/server/session"
 	"github.com/stacklok/toolhive/pkg/oauthproto"
 )
 
@@ -226,6 +230,61 @@ func TestMemoryStorage_Client(t *testing.T) {
 					require.NoError(t, err)
 					assert.Equal(t, tt.clientID, client.GetID())
 				}
+			})
+		})
+	}
+}
+
+// storedPrivateKeyJWTClientCases are stored clients that GetClient must
+// recheck against the current private_key_jwt key limits. Shared by the
+// memory and Redis backends.
+func storedPrivateKeyJWTClientCases() []struct {
+	name    string
+	keys    []jose.JSONWebKey
+	wantErr bool
+} {
+	key := func(bits, e int) jose.JSONWebKey {
+		return jose.JSONWebKey{Key: &rsa.PublicKey{N: new(big.Int).Lsh(big.NewInt(1), uint(bits-1)), E: e}, Use: "sig"}
+	}
+	tooMany := make([]jose.JSONWebKey, 11)
+	for i := range tooMany {
+		tooMany[i] = key(2048, 65537)
+	}
+	return []struct {
+		name    string
+		keys    []jose.JSONWebKey
+		wantErr bool
+	}{
+		{"valid key loads", []jose.JSONWebKey{key(2048, 65537)}, false},
+		{"oversized modulus", []jose.JSONWebKey{key(8193, 65537)}, true},
+		{"oversized exponent", []jose.JSONWebKey{key(2048, 65539)}, true},
+		{"too many keys", tooMany, true},
+	}
+}
+
+func storedPrivateKeyJWTClient(id string, keys []jose.JSONWebKey) *fosite.DefaultOpenIDConnectClient {
+	return &fosite.DefaultOpenIDConnectClient{
+		DefaultClient:                     &fosite.DefaultClient{ID: id},
+		TokenEndpointAuthMethod:           oauthproto.TokenEndpointAuthMethodPrivateKeyJWT,
+		TokenEndpointAuthSigningAlgorithm: "RS256",
+		JSONWebKeys:                       &jose.JSONWebKeySet{Keys: keys},
+	}
+}
+
+func TestMemoryStorage_GetClientRechecksPrivateKeyJWTKeys(t *testing.T) {
+	t.Parallel()
+	for _, tt := range storedPrivateKeyJWTClientCases() {
+		t.Run(tt.name, func(t *testing.T) {
+			withStorage(t, func(ctx context.Context, s *MemoryStorage) {
+				client := storedPrivateKeyJWTClient("stored-client", tt.keys)
+				require.NoError(t, s.RegisterClient(ctx, client))
+				got, err := s.GetClient(ctx, client.GetID())
+				if tt.wantErr {
+					require.ErrorIs(t, err, fosite.ErrInvalidClient)
+					return
+				}
+				require.NoError(t, err)
+				assert.Equal(t, client.GetID(), got.GetID())
 			})
 		})
 	}
@@ -918,6 +977,218 @@ func TestMemoryStorage_TokenSessions(t *testing.T) {
 			})
 		}
 	}
+}
+
+func TestMemoryStorage_TokenSessionSnapshots(t *testing.T) {
+	t.Parallel()
+
+	for _, tc := range getTokenSessionTestCases() {
+		t.Run(tc.name, func(t *testing.T) {
+			withStorage(t, func(ctx context.Context, s *MemoryStorage) {
+				client := &mockClient{id: "client-1", scopes: []string{"openid"}}
+				expires := time.Now().Add(time.Hour)
+				sess := authsession.New("subject", "upstream-1", client.id, authsession.UserClaims{})
+				sess.SetExpiresAt(tc.tokenType, expires)
+				sess.JWTClaims.Extra["profile"] = map[string]any{"roles": []string{"reader"}}
+				sess.JWTHeader.Extra["metadata"] = map[string]any{"tags": []string{"original"}}
+				request := &fosite.Request{
+					ID:                "req-1",
+					Client:            client,
+					RequestedScope:    fosite.Arguments{"openid", "profile"},
+					GrantedScope:      fosite.Arguments{"openid"},
+					RequestedAudience: fosite.Arguments{"api-1"},
+					GrantedAudience:   fosite.Arguments{"api-1"},
+					Form:              url.Values{"state": {"initial"}},
+					Session:           sess,
+				}
+				require.NoError(t, tc.create(ctx, s, "sig-123", request))
+
+				checkSnapshot := func(got fosite.Requester) {
+					t.Helper()
+					require.NotNil(t, got)
+					assert.Equal(t, "req-1", got.GetID())
+					assert.Equal(t, fosite.Arguments{"openid", "profile"}, got.GetRequestedScopes())
+					assert.Equal(t, fosite.Arguments{"openid"}, got.GetGrantedScopes())
+					assert.Equal(t, fosite.Arguments{"api-1"}, got.GetRequestedAudience())
+					assert.Equal(t, fosite.Arguments{"api-1"}, got.GetGrantedAudience())
+					assert.Equal(t, url.Values{"state": {"initial"}}, got.GetRequestForm())
+					assert.Same(t, client, got.GetClient())
+					assert.Equal(t, "client-1", got.GetClient().GetID())
+					assert.Equal(t, []string{"openid"}, client.scopes)
+					require.IsType(t, &authsession.Session{}, got.GetSession())
+					storedSession := got.GetSession().(*authsession.Session)
+					assert.Equal(t, expires, storedSession.ExpiresAt[tc.tokenType])
+					assert.Equal(t, "upstream-1", storedSession.GetIDPSessionID())
+					assert.Equal(t, "upstream-1", storedSession.JWTClaims.Extra[authsession.TokenSessionIDClaimKey])
+					assert.Equal(t, map[string]any{"roles": []string{"reader"}}, storedSession.JWTClaims.Extra["profile"])
+					assert.Equal(t, map[string]any{"tags": []string{"original"}}, storedSession.GetJWTHeader().Extra["metadata"])
+				}
+
+				request.SetID("changed-source")
+				request.RequestedScope[0] = "changed"
+				request.GrantedScope[0] = "changed"
+				request.RequestedAudience[0] = "changed"
+				request.GrantedAudience[0] = "changed"
+				request.Form["state"][0] = "changed"
+				request.Form.Set("new", "value")
+				sess.SetExpiresAt(tc.tokenType, expires.Add(time.Hour))
+				sess.SetIDPSessionID("changed-source")
+				sess.JWTClaims.Extra["profile"].(map[string]any)["roles"].([]string)[0] = "changed"
+				sess.GetJWTHeader().Extra["metadata"].(map[string]any)["tags"].([]string)[0] = "changed"
+
+				first, err := tc.get(ctx, s, "sig-123")
+				require.NoError(t, err)
+				checkSnapshot(first)
+
+				first.SetID("changed-returned")
+				first.GetRequestedScopes()[0] = "changed"
+				first.GetGrantedScopes()[0] = "changed"
+				first.GetRequestedAudience()[0] = "changed"
+				first.GetGrantedAudience()[0] = "changed"
+				first.GetRequestForm()["state"][0] = "changed"
+				first.GetRequestForm().Set("new", "value")
+				returnedSession := first.GetSession().(*authsession.Session)
+				returnedSession.SetExpiresAt(tc.tokenType, expires.Add(2*time.Hour))
+				returnedSession.SetIDPSessionID("changed-returned")
+				returnedSession.JWTClaims.Extra["profile"].(map[string]any)["roles"].([]string)[0] = "changed"
+				returnedSession.GetJWTHeader().Extra["metadata"].(map[string]any)["tags"].([]string)[0] = "changed"
+
+				second, err := tc.get(ctx, s, "sig-123")
+				require.NoError(t, err)
+				checkSnapshot(second)
+			})
+		})
+	}
+}
+
+// GHSA-3qvw-5c9g-77xx: fosite mutates the session it gets back from storage
+// (SetExpiresAt in the authorize-code token handler). Concurrent token requests
+// for the same code must each receive their own session, or they race on the
+// ExpiresAt map ("fatal error: concurrent map writes").
+func TestMemoryStorage_TokenSessions_ConcurrentGetAndMutate(t *testing.T) {
+	t.Parallel()
+
+	for _, tc := range getTokenSessionTestCases() {
+		t.Run(tc.name, func(t *testing.T) {
+			withStorage(t, func(ctx context.Context, s *MemoryStorage) {
+				sess := authsession.New("subject", "upstream-1", "client-1", authsession.UserClaims{})
+				sess.SetExpiresAt(tc.tokenType, time.Now().Add(time.Hour))
+				request := &fosite.Request{ID: "req-1", Client: testClient(), Session: sess}
+				require.NoError(t, tc.create(ctx, s, "sig-123", request))
+
+				const workers = 20
+				var wg sync.WaitGroup
+				errs := make(chan error, workers)
+				for i := range workers {
+					wg.Go(func() {
+						got, err := tc.get(ctx, s, "sig-123")
+						if err != nil {
+							errs <- err
+							return
+						}
+						// Same writes fosite's HandleTokenEndpointRequest performs.
+						got.GetSession().SetExpiresAt(fosite.AccessToken, time.Now().Add(time.Duration(i)*time.Second))
+						got.GetSession().SetExpiresAt(fosite.RefreshToken, time.Now().Add(time.Duration(i)*time.Second))
+					})
+				}
+				done := make(chan struct{})
+				go func() { wg.Wait(); close(done) }()
+				select {
+				case <-done:
+				case <-time.After(10 * time.Second):
+					t.Fatal("timeout waiting for goroutines to finish")
+				}
+				close(errs)
+				for err := range errs {
+					assert.NoError(t, err)
+				}
+			})
+		})
+	}
+}
+
+func TestMemoryStorage_AuthorizeCode_ExpiredRejected(t *testing.T) {
+	t.Parallel()
+
+	t.Run("expired code is not returned", func(t *testing.T) {
+		withStorage(t, func(ctx context.Context, s *MemoryStorage) {
+			request := newMockRequesterWithExpiration("req-1", testClient(), fosite.AuthorizeCode, time.Now().Add(-time.Second))
+			require.NoError(t, s.CreateAuthorizeCodeSession(ctx, "expired-code", request))
+
+			got, err := s.GetAuthorizeCodeSession(ctx, "expired-code", nil)
+			requireNotFoundError(t, err)
+			assert.Nil(t, got)
+		})
+	})
+
+	t.Run("unexpired code is returned", func(t *testing.T) {
+		withStorage(t, func(ctx context.Context, s *MemoryStorage) {
+			request := newMockRequesterWithExpiration("req-1", testClient(), fosite.AuthorizeCode, time.Now().Add(time.Minute))
+			require.NoError(t, s.CreateAuthorizeCodeSession(ctx, "valid-code", request))
+
+			got, err := s.GetAuthorizeCodeSession(ctx, "valid-code", nil)
+			require.NoError(t, err)
+			assert.Equal(t, "req-1", got.GetID())
+		})
+	})
+
+	// Reuse detection must win over expiry: fosite revokes the issued tokens only
+	// when it sees ErrInvalidatedAuthorizeCode together with the original request.
+	t.Run("invalidated code still reports reuse after expiry", func(t *testing.T) {
+		withStorage(t, func(ctx context.Context, s *MemoryStorage) {
+			request := newMockRequesterWithExpiration("req-1", testClient(), fosite.AuthorizeCode, time.Now().Add(-time.Second))
+			require.NoError(t, s.CreateAuthorizeCodeSession(ctx, "used-code", request))
+			require.NoError(t, s.InvalidateAuthorizeCodeSession(ctx, "used-code"))
+
+			got, err := s.GetAuthorizeCodeSession(ctx, "used-code", nil)
+			require.ErrorIs(t, err, fosite.ErrInvalidatedAuthorizeCode)
+			require.NotNil(t, got)
+			assert.Equal(t, "req-1", got.GetID())
+		})
+	})
+}
+
+func TestMemoryStorage_TokenSessionLazyID(t *testing.T) {
+	withStorage(t, func(ctx context.Context, s *MemoryStorage) {
+		request := &fosite.Request{}
+		require.NoError(t, s.CreateAuthorizeCodeSession(ctx, "code", request))
+		id := request.GetID()
+		require.NotEmpty(t, id)
+
+		first, err := s.GetAuthorizeCodeSession(ctx, "code", nil)
+		require.NoError(t, err)
+		second, err := s.GetAuthorizeCodeSession(ctx, "code", nil)
+		require.NoError(t, err)
+		assert.Equal(t, id, first.GetID())
+		assert.Equal(t, id, second.GetID())
+		assert.Nil(t, first.GetSession())
+		assert.Nil(t, first.GetRequestForm())
+	})
+}
+
+func TestMemoryStorage_AuthorizeCode_InvalidatedSnapshot(t *testing.T) {
+	withStorage(t, func(ctx context.Context, s *MemoryStorage) {
+		request := &fosite.Request{ID: "req-1", RequestedScope: fosite.Arguments{"openid"},
+			Session: authsession.New("subject", "upstream-1", "", authsession.UserClaims{})}
+		require.NoError(t, s.CreateAuthorizeCodeSession(ctx, "code-123", request))
+		request.SetID("changed-source")
+		request.RequestedScope[0] = "changed"
+		require.NoError(t, s.InvalidateAuthorizeCodeSession(ctx, "code-123"))
+
+		first, err := s.GetAuthorizeCodeSession(ctx, "code-123", nil)
+		require.ErrorIs(t, err, fosite.ErrInvalidatedAuthorizeCode)
+		require.NotNil(t, first)
+		assert.Equal(t, "req-1", first.GetID())
+		assert.Equal(t, fosite.Arguments{"openid"}, first.GetRequestedScopes())
+		first.SetID("changed-returned")
+		first.GetRequestedScopes()[0] = "changed"
+
+		second, err := s.GetAuthorizeCodeSession(ctx, "code-123", nil)
+		require.ErrorIs(t, err, fosite.ErrInvalidatedAuthorizeCode)
+		require.NotNil(t, second)
+		assert.Equal(t, "req-1", second.GetID())
+		assert.Equal(t, fosite.Arguments{"openid"}, second.GetRequestedScopes())
+	})
 }
 
 func TestMemoryStorage_AuthorizeCode_Invalidation(t *testing.T) {

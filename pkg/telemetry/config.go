@@ -142,7 +142,8 @@ func (c Config) GoString() string {
 	return c.String()
 }
 
-// String returns a human-readable representation of the Config with sensitive header values redacted.
+// String returns a human-readable representation of the Config with sensitive header values
+// and environment variable entries redacted.
 func (c Config) String() string {
 	// Redact header values to prevent credential leakage
 	redactedHeaders := make(map[string]string, len(c.Headers))
@@ -153,12 +154,12 @@ func (c Config) String() string {
 	return fmt.Sprintf("Config{Endpoint: %q, ServiceName: %q, ServiceVersion: %q, TracingEnabled: %t, "+
 		"MetricsEnabled: %t, SamplingRate: %q, Headers: %v, Insecure: %t, "+
 		"EnablePrometheusMetricsPath: %t, PrometheusPort: %d, MetricsOnTransportPort: %t, "+
-		"EnvironmentVariables: %v, CustomAttributes: %v, "+
+		"EnvironmentVariables: [%d redacted], CustomAttributes: %v, "+
 		"UseLegacyAttributes: %t, CACertPath: %q}",
 		c.Endpoint, c.ServiceName, c.ServiceVersion, c.TracingEnabled,
 		c.MetricsEnabled, c.SamplingRate, redactedHeaders, c.Insecure,
 		c.EnablePrometheusMetricsPath, c.PrometheusPort, c.ServeMetricsOnTransportPort(),
-		c.EnvironmentVariables, c.CustomAttributes,
+		len(c.EnvironmentVariables), c.CustomAttributes,
 		c.UseLegacyAttributes, c.CACertPath)
 }
 

@@ -114,6 +114,69 @@ func TestMiddlewareDeniesSkillsGetWithoutURI(t *testing.T) {
 	}
 }
 
+// A number that overflows float64 anywhere in params must never leave the
+// request authorized as a different (empty) resource than the backend executes
+// (GHSA-vpfq-5j3m-j36r). The forbid below is the only thing protecting prod_deploy.
+func TestParsingMiddlewareRejectsOutOfRangeNumberBeforeAuthz(t *testing.T) {
+	t.Parallel()
+
+	authorizer, err := cedar.NewCedarAuthorizer(cedar.ConfigOptions{
+		Policies: []string{
+			`permit(principal, action == Action::"call_tool", resource);`,
+			`forbid(principal, action, resource == Tool::"prod_deploy");`,
+		},
+		EntitiesJSON: `[]`,
+	}, "")
+	require.NoError(t, err)
+
+	handlerCalled := false
+	rr := httptest.NewRecorder()
+	mcpparser.ParsingMiddleware(Middleware(authorizer, http.HandlerFunc(func(http.ResponseWriter, *http.Request) {
+		handlerCalled = true
+	}), nil)).ServeHTTP(rr, skillRequest(t, "tools/call",
+		`{"name":"prod_deploy","arguments":{},"_meta":{"x":1e1000}}`))
+
+	assert.Equal(t, http.StatusBadRequest, rr.Code)
+	assert.False(t, handlerCalled)
+
+	var response map[string]any
+	require.NoError(t, json.Unmarshal(rr.Body.Bytes(), &response))
+	errorBody, ok := response["error"].(map[string]any)
+	require.True(t, ok)
+	assert.Equal(t, float64(mcpparser.CodeInvalidRequest), errorBody["code"])
+}
+
+// Defense in depth: a name/uri that is missing, empty or not a string yields an
+// empty resource ID, which must be denied rather than handed to the authorizer
+// (whose policy might permit an empty identifier), as skills/get already does.
+func TestMiddlewareDeniesTargetedMethodsWithoutResourceID(t *testing.T) {
+	t.Parallel()
+
+	for _, tt := range []struct{ name, method, params string }{
+		{"tools_call_empty_object", "tools/call", `{}`},
+		{"tools_call_empty_name", "tools/call", `{"name":""}`},
+		{"tools_call_non_string_name", "tools/call", `{"name":42}`},
+		{"prompts_get_empty_name", "prompts/get", `{"name":""}`},
+		{"prompts_get_non_string_name", "prompts/get", `{"name":42}`},
+		{"resources_read_empty_object", "resources/read", `{}`},
+		{"resources_read_non_string_uri", "resources/read", `{"uri":42}`},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			authorizer := &stubAuthorizer{allowed: true}
+			handlerCalled := false
+			rr := httptest.NewRecorder()
+			mcpparser.ParsingMiddleware(Middleware(authorizer, http.HandlerFunc(func(http.ResponseWriter, *http.Request) {
+				handlerCalled = true
+			}), nil)).ServeHTTP(rr, skillRequest(t, tt.method, tt.params))
+
+			assert.Equal(t, http.StatusForbidden, rr.Code)
+			assert.False(t, handlerCalled)
+			assert.Zero(t, authorizer.calls)
+		})
+	}
+}
+
 func TestMiddlewareSkillsListResponseFilter(t *testing.T) {
 	t.Parallel()
 

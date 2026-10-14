@@ -95,6 +95,8 @@ const (
 	CopilotCli ClientApp = "copilot-cli"
 	// Qoder represents the Qoder IDE.
 	Qoder ClientApp = "qoder"
+	// Pi represents the Pi coding agent.
+	Pi ClientApp = "pi"
 )
 
 const (
@@ -1041,6 +1043,29 @@ var supportedClientIntegrations = []clientAppConfig{
 		SupportsSkills:    true,
 		SkillsGlobalPath:  []string{".qoder", skillsDirName},
 		SkillsProjectPath: []string{".qoder", skillsDirName},
+	},
+	{
+		ClientType:           Pi,
+		Description:          "Pi coding agent",
+		SettingsFile:         "mcp.json",
+		MCPServersPathPrefix: "/mcpServers",
+		RelPath:              []string{".pi", "agent"},
+		Extension:            JSON,
+		// Pi rejects the legacy "sse" type, so SSE is intentionally unmapped
+		// and no type field is written for SSE servers.
+		SupportedTransportTypesMap: map[types.TransportType]string{
+			types.TransportTypeStdio:          httpTransportLabel,
+			types.TransportTypeStreamableHTTP: httpTransportLabel,
+		},
+		IsTransportTypeFieldSupported: true,
+		MCPServersUrlLabelMap: map[types.TransportType]string{
+			types.TransportTypeStdio:          defaultURLFieldName,
+			types.TransportTypeSSE:            defaultURLFieldName,
+			types.TransportTypeStreamableHTTP: defaultURLFieldName,
+		},
+		SupportsSkills:    true,
+		SkillsGlobalPath:  []string{".pi", "agent", skillsDirName},
+		SkillsProjectPath: []string{".pi", skillsDirName},
 	},
 	{
 		// Xcode does not support MCP; it is an LLM-gateway-only entry.

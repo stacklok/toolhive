@@ -8,6 +8,9 @@ import (
 	"context"
 	"crypto/rand"
 	"crypto/rsa"
+	"crypto/sha256"
+	"encoding/base64"
+	"encoding/binary"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -18,6 +21,7 @@ import (
 	"net/url"
 	"regexp"
 	"strings"
+	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -621,33 +625,199 @@ func TestIntegration_JWTBearerGrantReplay_RedisStorage(t *testing.T) {
 	assert.Equal(t, "invalid_grant", result["error"])
 }
 
-// TestIntegration_JWTBearerGrantReplay_NoJTI proves replay protection still
-// works for an assertion that omits the optional "jti" claim (as real-world
-// IdPs like Microsoft Entra ID commonly do): the fallback hash-of-assertion
-// key must catch the second use of the identical assertion, exactly as jti
-// would.
+// TestIntegration_JWTBearerGrantReplay_NoJTI exercises replay and compact-form
+// rejection through the real token endpoint for an assertion without jti.
 func TestIntegration_JWTBearerGrantReplay_NoJTI(t *testing.T) {
 	t.Parallel()
 
 	ts, signAssertion := setupJWTBearerGrantTestServer(t)
 	now := time.Now()
 	assertion := signAssertion("external-subject", now, now.Add(2*time.Minute), "")
-	params := url.Values{
-		"grant_type": {oauthproto.GrantTypeJWTBearer},
-		"assertion":  {assertion},
-		"resource":   {testAudience},
+	parts := strings.Split(assertion, ".")
+	require.Len(t, parts, 3)
+
+	// A 2048-bit RS256 signature is 256 bytes (256 % 3 == 1): changing
+	// the low four unused bits of its final base64url character preserves
+	// the decoded signature while changing the compact serialization.
+	signature, err := base64.RawURLEncoding.DecodeString(parts[2])
+	require.NoError(t, err)
+	require.Len(t, signature, 256)
+	const alphabet = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-_"
+	last := strings.IndexByte(alphabet, parts[2][len(parts[2])-1])
+	require.GreaterOrEqual(t, last, 0)
+	require.Equal(t, 0, last%16)
+	noncanonicalSignature := parts[2][:len(parts[2])-1] + string(alphabet[last+1])
+	altered, err := base64.RawURLEncoding.DecodeString(noncanonicalSignature)
+	require.NoError(t, err)
+	require.Equal(t, signature, altered)
+
+	request := func(raw string) (*http.Response, map[string]interface{}) {
+		t.Helper()
+		response := makeTokenRequest(t, ts.Server.URL, url.Values{
+			"grant_type": {oauthproto.GrantTypeJWTBearer},
+			"assertion":  {raw},
+			"resource":   {testAudience},
+		})
+		defer response.Body.Close()
+		return response, parseTokenResponse(t, response)
 	}
 
-	response := makeTokenRequest(t, ts.Server.URL, params)
-	defer response.Body.Close()
-	result := parseTokenResponse(t, response)
+	response, result := request(assertion)
 	require.Equal(t, http.StatusOK, response.StatusCode, result)
+	require.NotEmpty(t, result["access_token"])
 
-	response = makeTokenRequest(t, ts.Server.URL, params)
-	defer response.Body.Close()
-	result = parseTokenResponse(t, response)
-	assert.Equal(t, http.StatusBadRequest, response.StatusCode, result)
-	assert.Equal(t, "invalid_grant", result["error"])
+	for _, tc := range []struct {
+		name      string
+		assertion string
+	}{
+		{name: "identical replay", assertion: assertion},
+		{name: "signature newline", assertion: parts[0] + "." + parts[1] + "." + parts[2] + "\n"},
+		{name: "noncanonical signature bits", assertion: parts[0] + "." + parts[1] + "." + noncanonicalSignature},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			response, result := request(tc.assertion)
+			assert.Equal(t, http.StatusBadRequest, response.StatusCode)
+			assert.Equal(t, "invalid_grant", result["error"])
+		})
+	}
+}
+
+func TestIntegration_JWTBearerGrant_NoJTISyntheticKeyDoesNotCollideWithJTI(t *testing.T) {
+	t.Parallel()
+
+	ts, signAssertion := setupJWTBearerGrantTestServer(t)
+	now := time.Now()
+	noJTI := signAssertion("external-subject", now, now.Add(2*time.Minute), "")
+	parts := strings.Split(noJTI, ".")
+	require.Len(t, parts, 3)
+	header, err := base64.RawURLEncoding.DecodeString(parts[0])
+	require.NoError(t, err)
+	payload, err := base64.RawURLEncoding.DecodeString(parts[1])
+	require.NoError(t, err)
+	var noJTIClaims map[string]any
+	require.NoError(t, json.Unmarshal(payload, &noJTIClaims))
+	require.NotContains(t, noJTIClaims, "jti")
+
+	// Mirrors assertionReplayKey in tokenexchange; update both together or
+	// this jti stops colliding with the no-jti key and the test goes vacuous.
+	framed := binary.BigEndian.AppendUint64(nil, uint64(len(header)))
+	framed = append(framed, header...)
+	framed = append(framed, payload...)
+	digest := sha256.Sum256(framed)
+	collisionKey := "jwt-bearer-noJTI-" + base64.RawURLEncoding.EncodeToString(digest[:])
+	withJTI := signAssertion("external-subject", now, now.Add(2*time.Minute), collisionKey)
+	withJTIParts := strings.Split(withJTI, ".")
+	require.Len(t, withJTIParts, 3)
+	withJTIPayload, err := base64.RawURLEncoding.DecodeString(withJTIParts[1])
+	require.NoError(t, err)
+	var withJTIClaims map[string]any
+	require.NoError(t, json.Unmarshal(withJTIPayload, &withJTIClaims))
+	require.Equal(t, collisionKey, withJTIClaims["jti"])
+	require.NotEqual(t, noJTI, withJTI)
+
+	for _, tc := range []struct {
+		name      string
+		assertion string
+	}{
+		{name: "no jti", assertion: noJTI},
+		{name: "jti equal to no-jti replay key", assertion: withJTI},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			response := makeTokenRequest(t, ts.Server.URL, url.Values{
+				"grant_type": {oauthproto.GrantTypeJWTBearer},
+				"assertion":  {tc.assertion},
+				"resource":   {testAudience},
+			})
+			defer response.Body.Close()
+			result := parseTokenResponse(t, response)
+			require.Equal(t, http.StatusOK, response.StatusCode, result)
+			require.NotEmpty(t, result["access_token"])
+		})
+	}
+}
+
+// GHSA-3qvw-5c9g-77xx: fosite writes to the stored session before PKCE
+// verification runs, so concurrent bad-verifier requests used to crash the server.
+func TestIntegration_TokenEndpoint_ConcurrentWrongPKCEVerifier(t *testing.T) {
+	t.Parallel()
+
+	m := startMockOIDC(t)
+	m.QueueUser(&mockoidc.MockUser{Subject: "concurrent-pkce-user", Email: "concurrent-pkce@example.com"})
+	ts := setupTestServerWithMockOIDC(t, m)
+
+	verifier := servercrypto.GeneratePKCEVerifier()
+	authCode, _ := completeAuthorizationFlow(t, ts.Server.URL, authorizationParams{
+		ClientID: testClientID, RedirectURI: testRedirectURI, State: "test-state",
+		Challenge: servercrypto.ComputePKCEChallenge(verifier), Scope: "openid profile", ResponseType: "code",
+	})
+
+	params := url.Values{
+		"grant_type":    {"authorization_code"},
+		"code":          {authCode},
+		"client_id":     {testClientID},
+		"redirect_uri":  {testRedirectURI},
+		"code_verifier": {servercrypto.GeneratePKCEVerifier()}, // well-formed, wrong
+	}
+	body := params.Encode()
+
+	const workers = 32
+	type result struct {
+		status int
+		errStr string
+		err    error
+	}
+	results := make(chan result, workers)
+	httpClient := &http.Client{Timeout: 10 * time.Second}
+	start := make(chan struct{})
+	var wg sync.WaitGroup
+	for range workers {
+		wg.Go(func() {
+			<-start
+			// Not makeTokenRequest: it calls require (FailNow) off the test goroutine.
+			resp, err := httpClient.Post(ts.Server.URL+"/oauth/token",
+				"application/x-www-form-urlencoded", strings.NewReader(body))
+			if err != nil {
+				results <- result{err: err}
+				return
+			}
+			defer resp.Body.Close()
+			var payload map[string]any
+			err = json.NewDecoder(resp.Body).Decode(&payload)
+			errStr, _ := payload["error"].(string)
+			results <- result{status: resp.StatusCode, errStr: errStr, err: err}
+		})
+	}
+	close(start)
+	done := make(chan struct{})
+	go func() { wg.Wait(); close(done) }()
+	select {
+	case <-done:
+	case <-time.After(30 * time.Second):
+		t.Fatal("timeout waiting for goroutines to finish")
+	}
+	close(results)
+
+	for r := range results {
+		require.NoError(t, r.err)
+		// Losers of fosite's PKCE Get-then-Delete race get server_error from the
+		// failed DeletePKCERequestSession; everyone else gets invalid_grant.
+		switch r.status {
+		case http.StatusBadRequest:
+			assert.Equal(t, "invalid_grant", r.errStr)
+		case http.StatusInternalServerError:
+			assert.Equal(t, "server_error", r.errStr)
+		default:
+			t.Errorf("unexpected status %d (%s)", r.status, r.errStr)
+		}
+	}
+
+	// Liveness only: the process survived the concurrent requests and still answers.
+	params.Set("code_verifier", verifier)
+	resp := makeTokenRequest(t, ts.Server.URL, params)
+	defer resp.Body.Close()
+	assert.Less(t, resp.StatusCode, http.StatusInternalServerError)
 }
 
 // TestIntegration_TokenEndpoint_Errors tests various error conditions at the token endpoint.
@@ -3204,6 +3374,71 @@ func TestIntegration_UpstreamTokenService_NonExpiringToken(t *testing.T) {
 		"non-expiring token must not gain an ExpiresAt after GetValidTokens")
 	assert.Equal(t, original.AccessToken, cred.AccessToken,
 		"access token must be unchanged — no refresh occurred")
+}
+
+// TestIntegration_UpstreamTokenService_RefreshOnExpiredIDToken exercises the
+// ID-token trigger against the real refresher and mockoidc: the stored
+// access token is still valid but the ID token has expired (the Entra shape,
+// where access tokens outlive ID tokens). A read must
+// reach the upstream token endpoint and return the rotated ID token, rather
+// than being short-circuited by the refresher because the access token is
+// unexpired.
+func TestIntegration_UpstreamTokenService_RefreshOnExpiredIDToken(t *testing.T) {
+	t.Parallel()
+
+	m := startMockOIDC(t)
+	ts := setupTestServerWithMockOIDC(t, m)
+
+	verifier := servercrypto.GeneratePKCEVerifier()
+	challenge := servercrypto.ComputePKCEChallenge(verifier)
+
+	authCode, _ := completeAuthorizationFlow(t, ts.Server.URL, authorizationParams{
+		ClientID:     testClientID,
+		RedirectURI:  testRedirectURI,
+		State:        "upstream-expired-id-token-test",
+		Challenge:    challenge,
+		Scope:        "openid profile offline_access",
+		ResponseType: "code",
+	})
+
+	tokenData := exchangeCodeForTokens(t, ts.Server.URL, authCode, verifier, testAudience)
+
+	accessToken, ok := tokenData["access_token"].(string)
+	require.True(t, ok)
+	tsid := extractTSID(t, accessToken, ts.PrivateKey.Public())
+
+	stor := ts.authServer.IDPTokenStorage()
+	original, err := stor.GetUpstreamTokens(context.Background(), tsid, "default")
+	require.NoError(t, err)
+	require.NotNil(t, original)
+
+	// Keep the access token valid, but replace the ID token with one whose exp
+	// has passed. Only exp is read before refresh, so the signature is a stub.
+	b64 := base64.RawURLEncoding.EncodeToString
+	staleIDToken := b64([]byte(`{"alg":"RS256","typ":"JWT"}`)) + "." +
+		b64([]byte(fmt.Sprintf(`{"exp":%d}`, time.Now().Add(-10*time.Minute).Unix()))) + "." +
+		b64([]byte("sig"))
+	stale := *original
+	stale.IDToken = staleIDToken
+	stale.ExpiresAt = time.Now().Add(30 * time.Minute)
+	require.NoError(t, stor.StoreUpstreamTokens(context.Background(), tsid, "default", &stale))
+
+	m.QueueUser(&mockoidc.MockUser{
+		Subject: "mock-user-sub-123",
+		Email:   "testuser@example.com",
+	})
+
+	svc := upstreamtoken.NewInProcessService(stor, ts.authServer.UpstreamTokenRefresher())
+
+	cred, err := svc.GetValidTokens(context.Background(), tsid, "default")
+	require.NoError(t, err)
+	require.NotNil(t, cred)
+	assert.NotEmpty(t, cred.IDToken)
+	assert.NotEqual(t, staleIDToken, cred.IDToken, "expired ID token must be rotated by a real upstream refresh")
+
+	persisted, err := stor.GetUpstreamTokens(context.Background(), tsid, "default")
+	require.NoError(t, err)
+	assert.Equal(t, cred.IDToken, persisted.IDToken, "rotated ID token must be persisted")
 }
 
 // TestIntegration_UpstreamTokenService_SessionNotFound verifies that the service

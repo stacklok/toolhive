@@ -566,7 +566,7 @@ const docTemplate = `{
             "authserver.SPIFFEBundleEndpointSourceRunConfig": {
                 "properties": {
                     "profile": {
-                        "description": "Profile selects how the endpoint's TLS connection is authenticated:\nSPIFFEBundleEndpointProfileHTTPSWeb (Web PKI) or\nSPIFFEBundleEndpointProfileHTTPSSPIFFE (a separately distributed\nX.509-SVID root). Required, since the future bundle loader cannot\notherwise know which trust anchor to use for the initial connection.",
+                        "description": "Profile selects how the endpoint's TLS connection is authenticated:\nSPIFFEBundleEndpointProfileHTTPSWeb (Web PKI) or\nSPIFFEBundleEndpointProfileHTTPSSPIFFE (a separately distributed\nX.509-SVID root). Required, since an endpoint loader needs this profile\nto choose the trust anchor for its initial connection.",
                         "type": "string"
                     },
                     "url": {
@@ -576,10 +576,13 @@ const docTemplate = `{
                 "type": "object"
             },
             "authserver.SPIFFEBundleSourceRunConfig": {
-                "description": "BundleSource declares exactly one future trust-bundle source. It is\nvalidated for shape only; fetching or loading a bundle from it is a\nlater step.",
+                "description": "BundleSource declares exactly one trust-bundle source and is validated for\nshape here. The standalone file loader exists, but source initialization\nis not wired into SPIFFE authentication.",
                 "properties": {
                     "endpoint": {
                         "$ref": "#/components/schemas/authserver.SPIFFEBundleEndpointSourceRunConfig"
+                    },
+                    "file": {
+                        "$ref": "#/components/schemas/authserver.SPIFFEFileBundleSourceRunConfig"
                     },
                     "type": {
                         "type": "string"
@@ -641,6 +644,14 @@ const docTemplate = `{
                     },
                     "trust_domain_ref": {
                         "description": "TrustDomainRef identifies the SPIFFE trust-domain declaration governing\nthis association policy.",
+                        "type": "string"
+                    }
+                },
+                "type": "object"
+            },
+            "authserver.SPIFFEFileBundleSourceRunConfig": {
+                "properties": {
+                    "path": {
                         "type": "string"
                     }
                 },
@@ -1086,7 +1097,8 @@ const docTemplate = `{
                     "kimi-cli",
                     "factory",
                     "copilot-cli",
-                    "qoder"
+                    "qoder",
+                    "pi"
                 ],
                 "type": "string",
                 "x-enum-varnames": [
@@ -1114,7 +1126,8 @@ const docTemplate = `{
                     "KimiCli",
                     "Factory",
                     "CopilotCli",
-                    "Qoder"
+                    "Qoder",
+                    "Pi"
                 ]
             },
             "github_com_stacklok_toolhive_pkg_client.ClientAppStatus": {

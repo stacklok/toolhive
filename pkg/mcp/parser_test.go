@@ -10,6 +10,7 @@ import (
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
@@ -320,13 +321,49 @@ func TestParsingMiddlewarePreservesValidBody(t *testing.T) {
 	assert.Equal(t, []byte(body), forwarded)
 }
 
+func TestParsedMCPMessage_UndecodableParamsFailsClosed(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name   string
+		id     jsonrpc2.ID
+		wantID any
+		params string
+	}{
+		{name: "exponent beyond float64", id: jsonrpc2.Int64ID(1), wantID: int64(1), params: `{"name":"echo","arguments":{"x":1e1000}}`},
+		{name: "huge integer literal", id: jsonrpc2.StringID("req-1"), wantID: "req-1", params: `{"name":"echo","arguments":{"x":` + strings.Repeat("9", 400) + `}}`},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			msg := &jsonrpc2.Request{
+				ID:     tt.id,
+				Method: "tools/call",
+				Params: json.RawMessage(tt.params),
+			}
+
+			parsed, err := parsedMCPMessage(msg)
+
+			assert.Nil(t, parsed)
+			var coded CodedError
+			require.ErrorAs(t, err, &coded)
+			assert.Equal(t, CodeInvalidRequest, coded.Code())
+			var withID interface{ RequestID() any }
+			require.ErrorAs(t, err, &withID)
+			assert.Equal(t, tt.wantID, withID.RequestID())
+		})
+	}
+}
+
 func TestParsedMCPMessage_LeadingBOM(t *testing.T) {
 	t.Parallel()
 
 	msg, err := DecodeMessage([]byte("\xEF\xBB\xBF" +
 		`{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"weather"}}`))
 	require.NoError(t, err)
-	parsed := parsedMCPMessage(msg)
+	parsed, err := parsedMCPMessage(msg)
+	require.NoError(t, err)
 
 	require.NotNil(t, parsed)
 	assert.Equal(t, "tools/call", parsed.Method)
@@ -1052,7 +1089,8 @@ func TestExtractResourceAndArguments(t *testing.T) {
 				params = json.RawMessage(tt.params)
 			}
 
-			resourceID, arguments, meta := extractResourceAndArguments(tt.method, params)
+			resourceID, arguments, meta, err := extractResourceAndArguments(tt.method, params)
+			require.NoError(t, err)
 
 			assert.Equal(t, tt.expectedResourceID, resourceID)
 			if tt.expectedArguments == nil {
@@ -1646,7 +1684,9 @@ func TestParsedMCPMessageWithoutRequest(t *testing.T) {
 				return
 			}
 			require.NoError(t, err)
-			assert.Nil(t, parsedMCPMessage(msg))
+			parsed, err := parsedMCPMessage(msg)
+			require.NoError(t, err)
+			assert.Nil(t, parsed)
 		})
 	}
 }
@@ -1784,7 +1824,8 @@ func TestExtractResourceAndArgumentsNilParams(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
-			resourceID, arguments, meta := extractResourceAndArguments(tt.method, nil)
+			resourceID, arguments, meta, err := extractResourceAndArguments(tt.method, nil)
+			require.NoError(t, err)
 			assert.Equal(t, tt.expectedResourceID, resourceID)
 			assert.Nil(t, arguments)
 			assert.Nil(t, meta)

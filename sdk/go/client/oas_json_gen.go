@@ -5908,6 +5908,8 @@ func (s *ClientClientApp) Decode(d *jx.Decoder) error {
 		*s = ClientClientAppCopilotCli
 	case ClientClientAppQoder:
 		*s = ClientClientAppQoder
+	case ClientClientAppPi:
+		*s = ClientClientAppPi
 	default:
 		*s = ClientClientApp(v)
 	}

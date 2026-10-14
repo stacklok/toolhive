@@ -1268,6 +1268,7 @@ components:
       - factory
       - copilot-cli
       - qoder
+      - pi
       type: string
       x-enum-varnames:
       - RooCode
@@ -1295,6 +1296,7 @@ components:
       - Factory
       - CopilotCli
       - Qoder
+      - Pi
     github_com_stacklok_toolhive_pkg_client.ClientAppStatus:
       properties:
         client_type:

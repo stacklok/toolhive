@@ -1081,7 +1081,8 @@
           "kimi-cli",
           "factory",
           "copilot-cli",
-          "qoder"
+          "qoder",
+          "pi"
         ],
         "type": "string",
         "x-enum-varnames": [
@@ -1109,7 +1110,8 @@
           "KimiCli",
           "Factory",
           "CopilotCli",
-          "Qoder"
+          "Qoder",
+          "Pi"
         ]
       },
       "ClientClientAppStatus": {

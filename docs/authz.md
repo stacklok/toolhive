@@ -216,13 +216,18 @@ In the context of MCP servers, the following entities are used:
   every URI character is ordinary, but `"` and `\` must be escaped (for example
   `Resource::"file://C:\\share\\data"`).
 
+Requests that identify their target only by `params.name` or `params.uri` (`tools/call`,
+`prompts/get`, `resources/read`, `resources/subscribe`, `resources/unsubscribe`, and
+`skills/get`) are rejected with a 403 when that value is missing, empty, or not a string. The proxy denies these before any policy is evaluated or
+the backend is called, so a permit that does not name the target cannot match an empty
+identifier.
+
 #### Skills (SEP-2640 direct proxy)
 
 Direct proxies authorize `skills/get` with `Action::"get_skill"` on an exact
 `Skill::"<params.uri>"` entity. The URI is passed through verbatim: it is not
-canonicalized and no scheme or suffix is validated. A missing, empty, or non-string
-`params.uri` is denied before the authorizer or backend is called. Requests with duplicate
-immediate `params.uri` members are likewise denied so the proxy and backend cannot
+canonicalized and no scheme or suffix is validated. Requests with duplicate
+immediate `params.uri` members are denied so the proxy and backend cannot
 interpret an ambiguous URI differently.
 
 `skills/list` itself has no separate list policy. It is forwarded and each entry is
@@ -279,7 +284,7 @@ List operations (`tools/list`, `prompts/list`, `resources/list`, `skills/list`) 
 They are always allowed but the response is automatically filtered based on the user's permissions
 for the corresponding operations:
 
-- `tools/list` shows only tools the user can call (based on `call_tool` policies)
+- `tools/list` shows only tools the user can call (based on `call_tool` policies); a result in which a tool repeats `name`, `annotations`, or the annotation `title` or a hint such as `readOnlyHint`, or spells one with a case-insensitive alias, fails closed with a generic internal JSON-RPC error, so policies evaluate exactly the hints the client receives.
 - `prompts/list` shows only prompts the user can get (based on `get_prompt` policies)
 - `resources/list` shows only resources the user can read (based on `read_resource` policies)
 - `skills/list` shows only skill entries the user can get (based on `get_skill` policies); entries
@@ -291,6 +296,8 @@ permit(principal, action == Action::"call_tool", resource == Tool::"weather");
 ```
 
 Then `tools/list` will only show the "weather" tool for that user.
+
+A filtered list depends on the caller's permissions, so `tools/list`, `prompts/list`, and `resources/list` responses carry the HTTP header `Cache-Control: private, no-store`, and a `cacheScope` or `ttlMs` member the backend sent in the result is replaced with `"private"` or `0`. The proxy does not add either member when the backend omitted it, so a list from a backend on an MCP revision that predates these members reaches the client without them. A result that repeats `cacheScope` or `ttlMs`, or spells one with a case-insensitive alias, fails closed with a generic internal JSON-RPC error. `resources/templates/list` responses carry the same header, and their result always includes `cacheScope: "private"` and `ttlMs: 0`.
 
 ##### Methods covered by a prompt or resource policy
 

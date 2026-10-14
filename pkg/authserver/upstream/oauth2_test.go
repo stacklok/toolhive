@@ -36,6 +36,7 @@ import (
 	"github.com/stretchr/testify/require"
 	"golang.org/x/oauth2"
 
+	"github.com/stacklok/toolhive/pkg/networking"
 	"github.com/stacklok/toolhive/pkg/oauthproto"
 )
 
@@ -2799,6 +2800,16 @@ func TestNewHTTPClientForHost(t *testing.T) {
 			client, err := newHTTPClientForHost(tt.host, tt.allowPrivateIPs, false, "")
 			require.NoError(t, err)
 			require.NotNil(t, client)
+
+			// Every case: no response-header timeout, so the client timeout is
+			// the whole budget for a slow identity provider's response.
+			validating, ok := client.Transport.(*networking.ValidatingTransport)
+			require.True(t, ok, "unexpected client transport %T", client.Transport)
+			transport, ok := validating.Transport.(*http.Transport)
+			require.True(t, ok, "unexpected base transport %T", validating.Transport)
+			assert.Zero(t, transport.ResponseHeaderTimeout,
+				"ResponseHeaderTimeout must stay unset so a slow identity provider can respond within the client timeout")
+			assert.Equal(t, networking.HttpTimeout, client.Timeout)
 
 			// Use a short deadline so "allowed" cases don't wait for a real TCP
 			// timeout when dialing the unreachable private IP.

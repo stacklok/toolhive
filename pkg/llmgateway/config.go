@@ -114,6 +114,9 @@ type ApplyConfig struct {
 	// discovery request. It is used only by integrations that require an explicit
 	// model catalogue, such as VS Code's customendpoint provider.
 	DiscoveredModels []string
+	// ShortPromptCache opts supported clients out of ToolHive's one-hour
+	// prompt-cache lifetime and restores their shorter default.
+	ShortPromptCache bool
 	// BedrockCompat and the per-tier Bedrock model IDs configure Claude Code for a
 	// gateway that forwards to AWS Bedrock. When BedrockCompat is true, Claude Code
 	// is configured with CLAUDE_CODE_DISABLE_EXPERIMENTAL_BETAS=1 (Bedrock rejects

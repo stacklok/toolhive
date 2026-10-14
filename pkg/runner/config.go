@@ -29,6 +29,7 @@ import (
 	"github.com/stacklok/toolhive/pkg/labels"
 	"github.com/stacklok/toolhive/pkg/networking"
 	"github.com/stacklok/toolhive/pkg/oauthproto/tokenexchange"
+	"github.com/stacklok/toolhive/pkg/redisconfig"
 	"github.com/stacklok/toolhive/pkg/secrets"
 	"github.com/stacklok/toolhive/pkg/state"
 	"github.com/stacklok/toolhive/pkg/telemetry"
@@ -197,9 +198,10 @@ type RunConfig struct {
 	IsolateNetwork bool `json:"isolate_network,omitempty" yaml:"isolate_network,omitempty"`
 
 	// AllowDockerGateway permits outbound connections to Docker gateway addresses
-	// (host.docker.internal, gateway.docker.internal, 172.17.0.1). These are
+	// (all daemon bridge gateways, host.docker.internal, and gateway.docker.internal). These are
 	// blocked by default in the egress proxy even when InsecureAllowAll is set.
 	// Only applicable to Docker deployments with network isolation enabled.
+	// Gateways are snapshotted at deployment; redeploy to include bridges created later.
 	// Gateway access is port-independent: it ignores the permission profile's
 	// allowed ports, so once enabled the gateway is reachable on any port.
 	AllowDockerGateway bool `json:"allow_docker_gateway,omitempty" yaml:"allow_docker_gateway,omitempty"`
@@ -349,6 +351,10 @@ type SessionRedisConfig struct {
 
 	// KeyPrefix is an optional prefix applied to all Redis keys used by ToolHive.
 	KeyPrefix string `json:"key_prefix,omitempty" yaml:"key_prefix,omitempty"`
+
+	// TLS enables TLS for session storage and rate limiting. An empty
+	// configuration verifies the Redis server using system roots.
+	TLS *redisconfig.TLSConfig `json:"tls,omitempty" yaml:"tls,omitempty"`
 }
 
 // NormalizeProxyMode sets ProxyMode to the effective value based on the

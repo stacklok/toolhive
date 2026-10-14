@@ -395,6 +395,191 @@ func TestConfigureLLMGateway_ClaudeCodeBedrock(t *testing.T) {
 	})
 }
 
+func TestConfigureLLMGateway_ClaudeCodePromptCache(t *testing.T) {
+	t.Parallel()
+
+	cachePointers := map[string]string{
+		"/promptCacheTtl":               "1h",
+		"/subagentPromptCacheTtl":       "1h",
+		"/env/ENABLE_PROMPT_CACHING_1H": "1",
+	}
+	baseCfg := llmgateway.ApplyConfig{
+		GatewayURL:         "https://gw.example.com",
+		TokenHelperCommand: `thv llm token`,
+	}
+
+	t.Run("default writes both request buckets and legacy fallback", func(t *testing.T) {
+		t.Parallel()
+		home := t.TempDir()
+		cm := NewTestClientManager(home, nil, supportedClientIntegrations, nil)
+		require.NoError(t, os.MkdirAll(filepath.Join(home, ".claude"), 0o700))
+
+		path, err := cm.ConfigureLLMGateway(ClaudeCode, baseCfg)
+		require.NoError(t, err)
+
+		data, err := os.ReadFile(path)
+		require.NoError(t, err)
+		for ptr, want := range cachePointers {
+			got, ok := jsonPointerGet(data, ptr)
+			assert.True(t, ok, "pointer %q missing", ptr)
+			assert.Equal(t, want, got, "wrong value at %q", ptr)
+		}
+	})
+
+	t.Run("short opt-out removes keys and explicit false restores them", func(t *testing.T) {
+		t.Parallel()
+		home := t.TempDir()
+		cm := NewTestClientManager(home, nil, supportedClientIntegrations, nil)
+		require.NoError(t, os.MkdirAll(filepath.Join(home, ".claude"), 0o700))
+
+		path, err := cm.ConfigureLLMGateway(ClaudeCode, baseCfg)
+		require.NoError(t, err)
+		shortCfg := baseCfg
+		shortCfg.ShortPromptCache = true
+		_, err = cm.ConfigureLLMGateway(ClaudeCode, shortCfg)
+		require.NoError(t, err)
+
+		data, err := os.ReadFile(path)
+		require.NoError(t, err)
+		for ptr := range cachePointers {
+			_, ok := jsonPointerGet(data, ptr)
+			assert.False(t, ok, "pointer %q should be absent with the short-cache opt-out", ptr)
+		}
+
+		_, err = cm.ConfigureLLMGateway(ClaudeCode, baseCfg)
+		require.NoError(t, err)
+		data, err = os.ReadFile(path)
+		require.NoError(t, err)
+		for ptr, want := range cachePointers {
+			got, ok := jsonPointerGet(data, ptr)
+			assert.True(t, ok, "pointer %q missing after restoring the default", ptr)
+			assert.Equal(t, want, got, "wrong value at %q", ptr)
+		}
+	})
+
+	t.Run("teardown removes all prompt cache keys", func(t *testing.T) {
+		t.Parallel()
+		home := t.TempDir()
+		cm := NewTestClientManager(home, nil, supportedClientIntegrations, nil)
+		require.NoError(t, os.MkdirAll(filepath.Join(home, ".claude"), 0o700))
+
+		path, err := cm.ConfigureLLMGateway(ClaudeCode, baseCfg)
+		require.NoError(t, err)
+		require.NoError(t, cm.RevertLLMGateway(ClaudeCode, path))
+
+		data, err := os.ReadFile(path)
+		require.NoError(t, err)
+		for ptr := range cachePointers {
+			_, ok := jsonPointerGet(data, ptr)
+			assert.False(t, ok, "pointer %q should be absent after teardown", ptr)
+		}
+	})
+}
+
+func TestPromptCacheConflict(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name    string
+		files   map[string]string
+		env     map[string]string
+		want    string
+		wantErr string
+	}{
+		{name: "no override"},
+		{
+			name: "process global five-minute override",
+			env:  map[string]string{"FORCE_PROMPT_CACHING_5M": "1"},
+			want: "FORCE_PROMPT_CACHING_5M=1 in the process environment",
+		},
+		{
+			name: "process bucket five-minute override",
+			env:  map[string]string{"CLAUDE_CODE_PROMPT_CACHE_TTL": "5m"},
+			want: "CLAUDE_CODE_PROMPT_CACHE_TTL=5m in the process environment",
+		},
+		{
+			name:  "managed top-level override",
+			files: map[string]string{"managed-settings.json": `{"promptCacheTtl":"5m"}`},
+			want:  "promptCacheTtl=5m",
+		},
+		{
+			name: "managed drop-in environment override",
+			files: map[string]string{
+				"managed-settings.d/10-cache.json": `{"env":{"CLAUDE_CODE_SUBAGENT_PROMPT_CACHE_TTL":"5m"}}`,
+			},
+			want: "CLAUDE_CODE_SUBAGENT_PROMPT_CACHE_TTL=5m",
+		},
+		{
+			name: "later managed drop-in restores one hour",
+			files: map[string]string{
+				"managed-settings.json":                   `{"promptCacheTtl":"5m"}`,
+				"managed-settings.d/10-five-minutes.json": `{"promptCacheTtl":"5m"}`,
+				"managed-settings.d/20-one-hour.json":     `{"promptCacheTtl":"1h"}`,
+			},
+		},
+		{
+			name:  "process one-hour bucket overrides managed five minutes",
+			files: map[string]string{"managed-settings.json": `{"promptCacheTtl":"5m"}`},
+			env:   map[string]string{"CLAUDE_CODE_PROMPT_CACHE_TTL": "1h"},
+		},
+		{
+			name:    "malformed managed settings",
+			files:   map[string]string{"managed-settings.json": `{`},
+			wantErr: "parsing",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			managedDir := t.TempDir()
+			for relativePath, contents := range tt.files {
+				writePromptCacheSettings(t, filepath.Join(managedDir, filepath.FromSlash(relativePath)), contents)
+			}
+			lookupEnv := func(name string) (string, bool) {
+				value, ok := tt.env[name]
+				return value, ok
+			}
+
+			got, err := promptCacheConflict(managedDir, lookupEnv)
+			if tt.wantErr != "" {
+				require.ErrorContains(t, err, tt.wantErr)
+				return
+			}
+			require.NoError(t, err)
+			if tt.want == "" {
+				assert.Empty(t, got)
+			} else {
+				assert.Contains(t, got, tt.want)
+			}
+		})
+	}
+}
+
+func TestManagedPromptCacheSettingsPaths(t *testing.T) {
+	t.Parallel()
+
+	managedDir := t.TempDir()
+	writePromptCacheSettings(t, filepath.Join(managedDir, "managed-settings.d", "20-later.json"), `{}`)
+	writePromptCacheSettings(t, filepath.Join(managedDir, "managed-settings.d", "10-earlier.json"), `{}`)
+	writePromptCacheSettings(t, filepath.Join(managedDir, "managed-settings.d", ".hidden.json"), `{}`)
+	writePromptCacheSettings(t, filepath.Join(managedDir, "managed-settings.d", "README.txt"), `{}`)
+
+	paths, err := managedPromptCacheSettingsPaths(managedDir)
+	require.NoError(t, err)
+	assert.Equal(t, []string{
+		filepath.Join(managedDir, "managed-settings.json"),
+		filepath.Join(managedDir, "managed-settings.d", "10-earlier.json"),
+		filepath.Join(managedDir, "managed-settings.d", "20-later.json"),
+	}, paths)
+}
+
+func writePromptCacheSettings(t *testing.T, path, settings string) {
+	t.Helper()
+	require.NoError(t, os.MkdirAll(filepath.Dir(path), 0o700))
+	require.NoError(t, os.WriteFile(path, []byte(settings), 0o600))
+}
+
 // newLLMManager builds a ClientManager with a single direct-mode LLM entry
 // whose settings dir is homeDir/<dir>.
 func newLLMManager(t *testing.T, clientType ClientApp, mode, dir string, ptrs, vals []string) (*ClientManager, string) {

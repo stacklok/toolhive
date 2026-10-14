@@ -687,6 +687,25 @@ func TestIntegration_UpstreamTokens(t *testing.T) {
 	})
 }
 
+func TestIntegration_RememberedConsent(t *testing.T) {
+	withIntegrationStorage(t, func(ctx context.Context, s *RedisStorage) {
+		expiry := time.Now().Add(time.Hour)
+		require.NoError(t, s.StoreConsentSession(ctx, "digest", &ConsentSession{UserID: "user", ProviderID: "first", ProviderSubject: "sub", ExpiresAt: expiry}))
+		require.NoError(t, s.StoreClientApproval(ctx, "user", "client", &ClientApproval{RedirectURI: "https://client.example/callback", Scopes: []string{"openid"}, Resource: "https://resource.example", ExpiresAt: expiry}))
+		session, err := s.GetConsentSession(ctx, "digest")
+		require.NoError(t, err)
+		require.Equal(t, "sub", session.ProviderSubject)
+		approval, err := s.GetClientApproval(ctx, "user", "client")
+		require.NoError(t, err)
+		require.Equal(t, []string{"openid"}, approval.Scopes)
+		require.NoError(t, s.DeleteConsentSession(ctx, "digest"))
+		_, err = s.GetConsentSession(ctx, "digest")
+		require.ErrorIs(t, err, ErrNotFound)
+		_, err = s.GetClientApproval(ctx, "other", "client")
+		require.ErrorIs(t, err, ErrNotFound)
+	})
+}
+
 // --- Storage Interface: Pending Authorization ---
 
 func TestIntegration_PendingAuthorization(t *testing.T) {
@@ -1596,6 +1615,59 @@ func TestIntegration_DCRCredentials_UpdateIfPresent(t *testing.T) {
 
 			_, getErr := s.GetDCRCredentials(ctx, key)
 			requireRedisNotFoundError(t, getErr)
+		})
+	})
+}
+
+// TestIntegration_DCRCredentials_UpdateIfUnchanged pins the
+// UpdateDCRCredentialsIfUnchanged WATCH/MULTI path against a real Redis
+// Sentinel cluster: an unchanged row is overwritten with a TTL derived from the
+// incoming creds, and a row replaced after the caller's read is refused and
+// left intact.
+func TestIntegration_DCRCredentials_UpdateIfUnchanged(t *testing.T) {
+	t.Parallel()
+
+	t.Run("unchanged row is overwritten and TTL applied", func(t *testing.T) {
+		withIntegrationStorage(t, func(ctx context.Context, s *RedisStorage) {
+			key := dcrFixtureKey()
+			_, err := s.StoreDCRCredentialsIfAbsent(ctx, dcrCASFixture(key, "original"))
+			require.NoError(t, err)
+			expected, err := s.GetDCRCredentials(ctx, key)
+			require.NoError(t, err)
+
+			replacement := dcrCASFixture(key, "replacement")
+			replacement.ClientSecretExpiresAt = time.Now().Add(24 * time.Hour).Truncate(time.Second)
+			_, err = s.UpdateDCRCredentialsIfUnchanged(ctx, replacement, expected)
+			require.NoError(t, err)
+
+			reread, err := s.GetDCRCredentials(ctx, key)
+			require.NoError(t, err)
+			assert.Equal(t, "replacement", reread.ClientSecret)
+
+			ttl, err := s.client.TTL(ctx, redisDCRKey(s.keyPrefix, key)).Result()
+			require.NoError(t, err)
+			assert.Greater(t, ttl, time.Duration(0))
+			assert.LessOrEqual(t, ttl, 24*time.Hour)
+		})
+	})
+
+	t.Run("changed row is refused and left intact", func(t *testing.T) {
+		withIntegrationStorage(t, func(ctx context.Context, s *RedisStorage) {
+			key := dcrFixtureKey()
+			_, err := s.StoreDCRCredentialsIfAbsent(ctx, dcrCASFixture(key, "original"))
+			require.NoError(t, err)
+			stale, err := s.GetDCRCredentials(ctx, key)
+			require.NoError(t, err)
+
+			_, err = s.UpdateDCRCredentialsIfPresent(ctx, dcrCASFixture(key, "newer"))
+			require.NoError(t, err)
+
+			_, err = s.UpdateDCRCredentialsIfUnchanged(ctx, dcrCASFixture(key, "stale-writer"), stale)
+			require.ErrorIs(t, err, ErrDCRCredentialsChanged)
+
+			reread, err := s.GetDCRCredentials(ctx, key)
+			require.NoError(t, err)
+			assert.Equal(t, "newer", reread.ClientSecret)
 		})
 	})
 }

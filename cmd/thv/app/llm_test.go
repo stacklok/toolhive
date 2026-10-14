@@ -7,6 +7,7 @@ import (
 	"bytes"
 	"context"
 	"errors"
+	"fmt"
 	"os"
 	"path/filepath"
 	"runtime"
@@ -46,6 +47,43 @@ func llmProvider(t *testing.T, llmCfg llm.Config) config.Provider {
 // noopLogin is a LoginFunc that always succeeds without touching the keyring.
 // Use it in tests that don't exercise the authentication path.
 var noopLogin llm.LoginFunc = func(context.Context, *llm.Config) error { return nil }
+
+func TestConfigSetCommand_ShortPromptCacheFlagWiring(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name      string
+		flagValue *bool
+	}{
+		{name: "omitted"},
+		{name: "enabled", flagValue: boolPtr(true)},
+		{name: "explicitly disabled", flagValue: boolPtr(false)},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			cmd := newConfigSetCommand()
+			flag := cmd.Flags().Lookup("short-prompt-cache")
+			require.NotNil(t, flag)
+			assert.Nil(t, cmd.Flags().Lookup("extended-ttl-cache"))
+			if tt.flagValue != nil {
+				require.NoError(t, cmd.Flags().Set("short-prompt-cache", fmt.Sprintf("%t", *tt.flagValue)))
+			}
+
+			parsed, err := cmd.Flags().GetBool("short-prompt-cache")
+			require.NoError(t, err)
+			var opts llm.SetOptions
+			applyChangedLLMFlags(cmd, &opts, false, parsed, false, false, nil)
+
+			if tt.flagValue == nil {
+				assert.Nil(t, opts.ShortPromptCache)
+				return
+			}
+			require.NotNil(t, opts.ShortPromptCache)
+			assert.Equal(t, *tt.flagValue, *opts.ShortPromptCache)
+		})
+	}
+}
 
 // errOnUpdateProvider wraps a base Provider but returns a fixed error from
 // UpdateConfig. Used to inject deterministic failures without relying on

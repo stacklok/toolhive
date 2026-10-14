@@ -34,6 +34,12 @@ func TestAdmissionParserEnvelopes(t *testing.T) {
 		{name: "params_object", body: `{"jsonrpc":"2.0","id":0,"method":"ping","params":{}}`, method: "ping", id: int64(0)},
 		{name: "params_null", body: `{"jsonrpc":"2.0","id":1,"method":"ping","params":null}`, code: -32600},
 		{name: "params_array", body: `{"jsonrpc":"2.0","id":1,"method":"ping","params":[]}`, code: -32600},
+		{name: "params_number_out_of_range", body: `{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"echo","_meta":{"x":1e1000}}}`, code: -32600},
+		{name: "params_negative_number_out_of_range", body: `{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"echo","arguments":{"x":[-1e1000]}}}`, code: -32600},
+		{name: "params_max_float64", body: `{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"echo","arguments":{"x":1.7976931348623157e308}}}`, method: "tools/call", id: int64(1)},
+		{name: "params_integer_literal_out_of_range", body: `{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"echo","arguments":{"x":` + strings.Repeat("1", 400) + `}}}`, code: -32600},
+		{name: "notification_params_number_out_of_range", body: `{"jsonrpc":"2.0","method":"notifications/message","params":{"x":1e1000}}`, code: -32600},
+		{name: "result_number_out_of_range", body: `{"jsonrpc":"2.0","id":1,"result":{"x":1e1000}}`},
 		{name: "id_null", body: `{"jsonrpc":"2.0","id":null,"method":"ping"}`, code: -32600},
 		{name: "id_fractional", body: `{"jsonrpc":"2.0","id":1.5,"method":"ping"}`, code: -32600},
 		{name: "id_decimal_integer", body: `{"jsonrpc":"2.0","id":1.0,"method":"ping"}`, code: -32600},
@@ -96,6 +102,50 @@ func TestAdmissionParserEnvelopes(t *testing.T) {
 	}
 }
 
+func TestAdmissionRejectionEchoesIDOnlyForUndecodableParams(t *testing.T) {
+	t.Parallel()
+	for _, tc := range []struct {
+		name   string
+		body   string
+		wantID any // nil means the "id" key must be absent; numbers are json.Number
+	}{
+		{"string_id", `{"jsonrpc":"2.0","id":"request-1","method":"tools/call","params":{"name":"echo","_meta":{"x":1e1000}}}`, "request-1"},
+		{"int_id", `{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"echo","_meta":{"x":1e1000}}}`, json.Number("1")},
+		{"large_int_id", `{"jsonrpc":"2.0","id":9007199254740993,"method":"tools/call","params":{"name":"echo","_meta":{"x":1e1000}}}`, json.Number("9007199254740993")},
+		{"notification", `{"jsonrpc":"2.0","method":"notifications/message","params":{"x":1e1000}}`, nil},
+		{"duplicate_id", `{"jsonrpc":"2.0","id":1,"id":2,"method":"tools/call","params":{"x":1e1000}}`, nil},
+		{"casefold_method", `{"jsonrpc":"2.0","id":1,"Method":"tools/call","method":"tools/call","params":{"x":1e1000}}`, nil},
+		{"bad_jsonrpc", `{"jsonrpc":"1.0","id":1,"method":"tools/call","params":{"x":1e1000}}`, nil},
+		{"params_not_object", `{"jsonrpc":"2.0","id":1,"method":"tools/call","params":[]}`, nil},
+		{"invalid_id", `{"jsonrpc":"2.0","id":1.5,"method":"tools/call","params":{"x":1e1000}}`, nil},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			handler := ParsingMiddleware(http.HandlerFunc(func(http.ResponseWriter, *http.Request) {
+				t.Error("rejected request must not reach the next handler")
+			}))
+			rec := httptest.NewRecorder()
+			handler.ServeHTTP(rec, httptest.NewRequest(http.MethodPost, "/messages", strings.NewReader(tc.body)))
+
+			assert.Equal(t, http.StatusBadRequest, rec.Code)
+			// UseNumber keeps ids above 2^53 exact instead of rounding through float64.
+			dec := json.NewDecoder(rec.Body)
+			dec.UseNumber()
+			var resp map[string]any
+			require.NoError(t, dec.Decode(&resp))
+			errBody, ok := resp["error"].(map[string]any)
+			require.True(t, ok)
+			assert.Equal(t, json.Number("-32600"), errBody["code"])
+			assert.Equal(t, "Invalid Request", errBody["message"])
+			if tc.wantID == nil {
+				assert.NotContains(t, resp, "id")
+			} else {
+				assert.Equal(t, tc.wantID, resp["id"])
+			}
+		})
+	}
+}
+
 //nolint:paralleltest // captures the process-global slog logger
 func TestAdmissionParserBodyFailures(t *testing.T) {
 	for _, tc := range []struct {
@@ -151,6 +201,7 @@ func TestAdmissionDecodeMessageLogs(t *testing.T) {
 		{"batch", `[{"jsonrpc":"2.0","id":"id-marker","method":"body-marker"}]`, "batch"},
 		{"invalid_request", `{"jsonrpc":"2.0","id":"id-marker","method":"body-marker","result":{}}`, "invalid_request"},
 		{"invalid_error", `{"jsonrpc":"2.0","id":"id-marker","error":{"code":null,"message":"error-marker"}}`, "invalid_request"},
+		{"undecodable_params", `{"jsonrpc":"2.0","id":"id-marker","method":"body-marker","params":{"x":1e1000}}`, "undecodable_params"},
 		{"valid_request", `{"jsonrpc":"2.0","id":"id-marker","method":"body-marker"}`, ""},
 		{"valid_error_without_id", `{"jsonrpc":"2.0","error":{"code":-32603,"message":"error-marker"}}`, ""},
 	} {
@@ -169,7 +220,7 @@ func TestAdmissionDecodeMessageLogs(t *testing.T) {
 			}
 			require.Error(t, err)
 			assert.Nil(t, msg)
-			for _, marker := range []string{tc.body, err.Error(), "id-marker", "body-marker", "error-marker"} {
+			for _, marker := range []string{tc.body, err.Error(), "id-marker", "body-marker", "error-marker", "1e1000"} {
 				assert.NotContains(t, logs.String(), marker)
 			}
 			var entry map[string]any

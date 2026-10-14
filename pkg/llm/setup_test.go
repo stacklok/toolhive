@@ -11,6 +11,7 @@ import (
 	"net"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 	"time"
 
@@ -189,7 +190,7 @@ func TestConfigureDetectedTools_BedrockClaudeCode(t *testing.T) {
 		[]string{"claude-code"},
 		"https://gw.example.com", "http://localhost:14000/v1",
 		"/usr/local/bin/thv", []string{"llm", "token", "--skip-browser"},
-		false, "/anthropic", nil, nil,
+		false, "/anthropic", nil, nil, false,
 		BedrockConfig{Compat: true, Enable1M: true},
 	)
 	require.NoError(t, err)
@@ -213,13 +214,95 @@ func TestConfigureDetectedTools_BedrockSkippedForNonClaudeCode(t *testing.T) {
 		[]string{"cursor"},
 		"https://gw.example.com", "http://localhost:14000/v1",
 		"/usr/local/bin/thv", []string{"llm", "token", "--skip-browser"},
-		false, "", nil, nil,
+		false, "", nil, nil, false,
 		BedrockConfig{Compat: true},
 	)
 	require.NoError(t, err)
 	require.Len(t, gm.applied, 1)
 	assert.False(t, gm.applied[0].BedrockCompat)
 	assert.Empty(t, gm.applied[0].BedrockOpusModel)
+}
+
+func TestConfigureDetectedTools_PromptCache(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name             string
+		clientType       string
+		mode             string
+		shortPromptCache bool
+		conflict         string
+		conflictErr      error
+		wantStderr       []string
+		wantStderrAbsent []string
+		wantConflictCall bool
+	}{
+		{
+			name:             "Claude Code gets one-hour lifetime by default",
+			clientType:       claudeCodeClient,
+			mode:             llmgateway.ModeDirect,
+			wantConflictCall: true,
+		},
+		{
+			name:             "non-Claude client has no prompt-cache reporting",
+			clientType:       "cursor",
+			mode:             llmgateway.ModeProxy,
+			wantStderrAbsent: []string{"Warning:"},
+		},
+		{
+			name:             "short-cache opt-out skips conflict inspection",
+			clientType:       claudeCodeClient,
+			mode:             llmgateway.ModeDirect,
+			shortPromptCache: true,
+			wantStderrAbsent: []string{"Warning:"},
+		},
+		{
+			name:             "five-minute override warns but one-hour settings are still written",
+			clientType:       claudeCodeClient,
+			mode:             llmgateway.ModeDirect,
+			conflict:         "CLAUDE_CODE_PROMPT_CACHE_TTL=5m in the process environment",
+			wantStderr:       []string{"CLAUDE_CODE_PROMPT_CACHE_TTL=5m", "wrote the one-hour", promptCacheVerificationCommand},
+			wantConflictCall: true,
+		},
+		{
+			name:             "inspection failure warns but one-hour settings are still written",
+			clientType:       claudeCodeClient,
+			mode:             llmgateway.ModeDirect,
+			conflictErr:      errors.New("invalid settings"),
+			wantStderr:       []string{"could not inspect claude-code", "wrote the one-hour settings anyway"},
+			wantConflictCall: true,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			gm := &capturingGatewayManager{
+				mode:             tt.mode,
+				cacheConflict:    tt.conflict,
+				cacheConflictErr: tt.conflictErr,
+			}
+			var out, errOut bytes.Buffer
+
+			configured, err := configureDetectedToolsWithDiscovery(
+				&out, &errOut, gm, []string{tt.clientType},
+				"https://gw.example.com", "http://localhost:14000/v1",
+				"/usr/local/bin/thv", []string{"llm", "token", "--skip-browser"},
+				false, "", nil, nil, tt.shortPromptCache, BedrockConfig{},
+			)
+			require.NoError(t, err)
+			require.Len(t, configured, 1)
+			require.Len(t, gm.applied, 1)
+			assert.Equal(t, tt.shortPromptCache, gm.applied[0].ShortPromptCache)
+			assert.Equal(t, tt.wantConflictCall, gm.conflictCalls == 1)
+			for _, want := range tt.wantStderr {
+				assert.Contains(t, errOut.String(), want)
+			}
+			for _, absent := range tt.wantStderrAbsent {
+				assert.NotContains(t, errOut.String(), absent)
+			}
+		})
+	}
 }
 
 // ── mergeToolConfigs ──────────────────────────────────────────────────────────
@@ -305,7 +388,10 @@ func (*stubGatewayManager) DetectedLLMGatewayClients() []string { return nil }
 func (*stubGatewayManager) ConfigureLLMGateway(_ string, _ llmgateway.ApplyConfig) (string, error) {
 	return "", nil
 }
-func (*stubGatewayManager) LLMGatewayModeFor(_ string) string      { return "" }
+func (*stubGatewayManager) LLMGatewayModeFor(_ string) string { return "" }
+func (*stubGatewayManager) PromptCacheConflict(_ string) (string, error) {
+	return "", nil
+}
 func (*stubGatewayManager) IsManaged(_ string) bool                { return false }
 func (*stubGatewayManager) LLMClientDetectionHint(_ string) string { return "" }
 func (*stubGatewayManager) ConfigureEnvFile(_ string, _ llmgateway.ApplyConfig) (string, error) {
@@ -747,7 +833,10 @@ func (g *setupGatewayManager) ConfigureLLMGateway(client string, cfg llmgateway.
 	return "/tmp/settings.json", nil
 }
 func (g *setupGatewayManager) LLMGatewayModeFor(_ string) string { return g.mode }
-func (*setupGatewayManager) IsManaged(_ string) bool             { return false }
+func (*setupGatewayManager) PromptCacheConflict(_ string) (string, error) {
+	return "", nil
+}
+func (*setupGatewayManager) IsManaged(_ string) bool { return false }
 func (g *setupGatewayManager) LLMClientDetectionHint(_ string) string {
 	return g.hint
 }
@@ -971,6 +1060,102 @@ func TestSetup_VSCodeDiscoveryFailureSelectionSemantics(t *testing.T) {
 	})
 }
 
+func TestSetup_ShortPromptCachePreference(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name           string
+		persistedShort bool
+		inline         *bool
+		wantShort      bool
+	}{
+		{name: "default applies one-hour cache"},
+		{name: "persisted opt-out is reapplied", persistedShort: true, wantShort: true},
+		{name: "inline opt-out is persisted", inline: boolPtr(true), wantShort: true},
+		{name: "explicit false restores one-hour cache", persistedShort: true, inline: boolPtr(false)},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			gm := &capturingGatewayManager{detected: []string{claudeCodeClient}, mode: llmgateway.ModeDirect}
+			provider := configuredSetupProvider()
+			provider.cfg.ShortPromptCache = tt.persistedShort
+			var stdout, stderr bytes.Buffer
+			err := Setup(
+				context.Background(), &stdout, &stderr, gm, provider,
+				func(context.Context, *Config) error { return nil },
+				SetOptions{ShortPromptCache: tt.inline}, "", true, "", true,
+			)
+			require.NoError(t, err)
+			require.Len(t, gm.applied, 1)
+			assert.Equal(t, tt.wantShort, gm.applied[0].ShortPromptCache)
+			assert.Equal(t, tt.wantShort, provider.cfg.ShortPromptCache)
+		})
+	}
+}
+
+func TestSetup_ShortPromptCacheWarningForNonClaudeClient(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name     string
+		inline   *bool
+		wantWarn bool
+	}{
+		{name: "plain setup is silent"},
+		{name: "explicit short-cache flag warns", inline: boolPtr(true), wantWarn: true},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			gm := &capturingGatewayManager{detected: []string{"cursor"}, mode: llmgateway.ModeProxy}
+			provider := configuredSetupProvider()
+			var stdout, stderr bytes.Buffer
+			err := Setup(
+				context.Background(), &stdout, &stderr, gm, provider,
+				func(context.Context, *Config) error { return nil },
+				SetOptions{ShortPromptCache: tt.inline}, "", true, "cursor", true,
+			)
+			require.NoError(t, err)
+			assert.Equal(t, tt.wantWarn, strings.Contains(stderr.String(), "--short-prompt-cache was set"))
+		})
+	}
+}
+
+func TestSetup_PromptCacheBedrockWarningOnlyForInlineFlag(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name              string
+		persistedBedrock  bool
+		inlineBedrock     *bool
+		shortPromptCache  bool
+		wantCompatibility bool
+	}{
+		{name: "inline Bedrock compatibility warns", inlineBedrock: boolPtr(true), wantCompatibility: true},
+		{name: "persisted Bedrock compatibility is silent", persistedBedrock: true},
+		{name: "short cache is compatible", inlineBedrock: boolPtr(true), shortPromptCache: true},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			gm := &capturingGatewayManager{detected: []string{claudeCodeClient}, mode: llmgateway.ModeDirect}
+			provider := configuredSetupProvider()
+			provider.cfg.Bedrock.Compat = tt.persistedBedrock
+			provider.cfg.ShortPromptCache = tt.shortPromptCache
+			var stdout, stderr bytes.Buffer
+			err := Setup(
+				context.Background(), &stdout, &stderr, gm, provider,
+				func(context.Context, *Config) error { return nil },
+				SetOptions{BedrockCompat: tt.inlineBedrock}, "", true, "", true,
+			)
+			require.NoError(t, err)
+			assert.Equal(t, tt.wantCompatibility,
+				strings.Contains(stderr.String(), "may not take effect with Bedrock compatibility"))
+		})
+	}
+}
+
 func TestFilterDetectedClients_LeftoverDirHint(t *testing.T) {
 	t.Parallel()
 	gm := &setupGatewayManager{
@@ -1100,17 +1285,25 @@ func TestSetup_CallbackPortInUseBeforeLogin(t *testing.T) {
 
 // capturingGatewayManager records the ApplyConfig passed to ConfigureLLMGateway.
 type capturingGatewayManager struct {
-	mode    string // returned by LLMGatewayModeFor
-	applied []llmgateway.ApplyConfig
+	mode             string // returned by LLMGatewayModeFor
+	detected         []string
+	cacheConflict    string
+	cacheConflictErr error
+	conflictCalls    int
+	applied          []llmgateway.ApplyConfig
 }
 
-func (*capturingGatewayManager) DetectedLLMGatewayClients() []string { return nil }
+func (g *capturingGatewayManager) DetectedLLMGatewayClients() []string { return g.detected }
 func (g *capturingGatewayManager) ConfigureLLMGateway(_ string, cfg llmgateway.ApplyConfig) (string, error) {
 	g.applied = append(g.applied, cfg)
 	return "/path/to/settings.json", nil
 }
 func (g *capturingGatewayManager) LLMGatewayModeFor(_ string) string { return g.mode }
-func (*capturingGatewayManager) IsManaged(_ string) bool             { return false }
+func (g *capturingGatewayManager) PromptCacheConflict(_ string) (string, error) {
+	g.conflictCalls++
+	return g.cacheConflict, g.cacheConflictErr
+}
+func (*capturingGatewayManager) IsManaged(_ string) bool { return false }
 func (*capturingGatewayManager) LLMClientDetectionHint(_ string) string {
 	return ""
 }
@@ -1132,7 +1325,7 @@ func TestConfigureDetectedTools_PathPrefixAppendedForDirectMode(t *testing.T) {
 		[]string{"claude-code"},
 		"https://gw.example.com", "http://localhost:14000/v1",
 		"/usr/local/bin/thv", []string{"llm", "token", "--skip-browser"},
-		false, "/anthropic", nil, nil,
+		false, "/anthropic", nil, nil, false,
 		BedrockConfig{},
 	)
 	require.NoError(t, err)
@@ -1154,7 +1347,7 @@ func TestConfigureDetectedTools_NoPrefixWhenEmpty(t *testing.T) {
 		[]string{"claude-code"},
 		"https://gw.example.com", "http://localhost:14000/v1",
 		"/usr/local/bin/thv", []string{"llm", "token", "--skip-browser"},
-		false, "", nil, nil, // no prefix
+		false, "", nil, nil, false, // no prefix
 		BedrockConfig{},
 	)
 	require.NoError(t, err)
@@ -1175,7 +1368,7 @@ func TestConfigureDetectedTools_PrefixNotAppliedForProxyMode(t *testing.T) {
 		[]string{"cursor"},
 		"https://gw.example.com", "http://localhost:14000/v1",
 		"/usr/local/bin/thv", []string{"llm", "token", "--skip-browser"},
-		false, "/anthropic", nil, nil,
+		false, "/anthropic", nil, nil, false,
 		BedrockConfig{},
 	)
 	require.NoError(t, err)
@@ -1266,6 +1459,9 @@ func (*managedGatewayManager) ConfigureLLMGateway(_ string, _ llmgateway.ApplyCo
 }
 func (*managedGatewayManager) LLMGatewayModeFor(_ string) string {
 	return llmgateway.ModeCredentialHelper
+}
+func (*managedGatewayManager) PromptCacheConflict(_ string) (string, error) {
+	return "", nil
 }
 func (g *managedGatewayManager) IsManaged(c string) bool { return g.managed[c] }
 func (*managedGatewayManager) LLMClientDetectionHint(_ string) string {

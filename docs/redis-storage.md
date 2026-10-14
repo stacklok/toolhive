@@ -334,7 +334,9 @@ All keys use the prefix `thv:auth:{namespace:name}:` where `{namespace:name}` is
 | `{prefix}user:{user_id}` | User account | None |
 | `{prefix}provider:{len}:{provider_id}:{subject}` | Provider identity linkage | None |
 | `{prefix}upstream:{session_id}` | Upstream IDP tokens | Matches token lifetime |
-| `{prefix}pending:{state}` | In-flight authorization | 10 minutes |
+| `{prefix}pending:{handle_or_state}` | Browser-bound consent handle or upstream callback state | Remaining time until the initial `CreatedAt` + 10 minutes; deadline checked before consent/callback consumption |
+| `{prefix}consent:session:{digest}` | SHA-256 digest of the browser session cookie secret (never the raw secret) | Remaining fixed lifetime, at most 7 days |
+| `{prefix}consent:approval:{pair_hash}` | One approval per user/client; `pair_hash` is SHA-256 of the JSON-encoded `[userID, clientID]` pair | Remaining fixed lifetime, at most 30 days |
 | `{prefix}invalidated:{code}` | Replay detection for auth codes | 30 minutes |
 | `{prefix}jwt:{jti}` | Client assertion JWT replay prevention | Matches JWT `exp` |
 

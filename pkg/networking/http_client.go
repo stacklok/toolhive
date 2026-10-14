@@ -420,6 +420,15 @@ func (b *HttpClientBuilder) WithTimeout(timeout time.Duration) *HttpClientBuilde
 	return b
 }
 
+// WithResponseHeaderTimeout sets how long the transport waits for a server's
+// response headers after writing the request. Zero means no limit, as for
+// http.Transport.ResponseHeaderTimeout; the client timeout set by WithTimeout
+// still bounds the whole request.
+func (b *HttpClientBuilder) WithResponseHeaderTimeout(timeout time.Duration) *HttpClientBuilder {
+	b.responseHeaderTimeout = timeout
+	return b
+}
+
 // Build creates the configured HTTP client
 func (b *HttpClientBuilder) Build() (*http.Client, error) {
 	transport := &http.Transport{

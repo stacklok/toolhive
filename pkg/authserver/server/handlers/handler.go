@@ -19,6 +19,7 @@ import (
 	"fmt"
 	"log/slog"
 	"net/http"
+	"net/url"
 	"time"
 
 	"github.com/go-chi/chi/v5"
@@ -106,7 +107,8 @@ type Handler struct {
 	// field instead of storage directly. Nil when device flow is disabled;
 	// OAuthRoutes never registers DeviceAuthorizationHandler in that case, so
 	// it is never dereferenced.
-	deviceStorage storage.DeviceCodeStorage
+	deviceStorage     storage.DeviceCodeStorage
+	rememberedStorage storage.RememberedConsentStorage
 	// deviceVerificationLimiter bounds the unauthenticated POST /oauth/device
 	// endpoint (DeviceVerificationSubmitHandler), which looks up a
 	// DeviceRequest by the human-entered user_code. RFC 8628 §5.4 requires
@@ -259,6 +261,9 @@ func NewHandler(
 		}
 		h.deviceStorage = deviceStorage
 	}
+	if base, err := url.Parse(config.GetAuthorizationEndpointBaseURL()); err == nil && base.Scheme == "https" {
+		h.rememberedStorage, _ = storage.Unwrap(stor).(storage.RememberedConsentStorage)
+	}
 	for _, o := range opts {
 		o(h)
 	}
@@ -284,11 +289,12 @@ func (h *Handler) Routes() http.Handler {
 	return r
 }
 
-// OAuthRoutes registers OAuth endpoints (authorize, callback, token, register,
+// OAuthRoutes registers OAuth endpoints (authorize, consent, callback, token, register,
 // and the device flow's device_authorization/verification routes when enabled)
 // on the provided router.
 func (h *Handler) OAuthRoutes(r chi.Router) {
 	r.Get("/oauth/authorize", h.rateLimitCIMDAuthorize(h.AuthorizeHandler))
+	r.Post("/oauth/consent", h.ConsentHandler)
 	// /oauth/callback is shared by the OAuth-client authorization_code flow
 	// and (when device flow is enabled) the verification page's upstream
 	// login -- an upstream's redirect_uri is fixed per upstream at

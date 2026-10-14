@@ -815,6 +815,8 @@ components:
                         $ref: '#/components/schemas/TokenExchangeTrustedIssuer'
                     type: array
                     uniqueItems: false
+                upstream_filter:
+                    $ref: '#/components/schemas/UpstreamfilterGroupBasedFilterConfig'
                 upstreams:
                     description: |-
                         Upstreams configures connections to upstream Identity Providers for
@@ -1409,9 +1411,10 @@ components:
                 allow_docker_gateway:
                     description: |-
                         Whether to permit outbound connections to Docker gateway addresses
-                        (host.docker.internal, gateway.docker.internal, 172.17.0.1). These are
+                        (all daemon bridge gateways, host.docker.internal, and gateway.docker.internal). These are
                         blocked by default in the egress proxy even when network isolation is on.
                         Only applicable to Docker deployments with network isolation enabled.
+                        Gateways are snapshotted at deployment; redeploy to include bridges created later.
                     type: boolean
                 authz_config:
                     description: Authorization configuration
@@ -2646,6 +2649,23 @@ components:
                 refillPeriod:
                     $ref: '#/components/schemas/V1Duration'
             type: object
+        RedisconfigTLSConfig:
+            description: |-
+                TLS enables TLS for session storage and rate limiting. An empty
+                configuration verifies the Redis server using system roots.
+            properties:
+                caCertFile:
+                    description: |-
+                        CACertFile is the path to a PEM-encoded CA bundle. When configured, this
+                        bundle replaces the system roots used to verify the Redis server.
+                        +optional
+                    type: string
+                insecureSkipVerify:
+                    description: |-
+                        InsecureSkipVerify skips server certificate and hostname verification.
+                        +optional
+                    type: boolean
+            type: object
         RegistryEnvVar:
             properties:
                 default:
@@ -3519,9 +3539,10 @@ components:
                 allow_docker_gateway:
                     description: |-
                         AllowDockerGateway permits outbound connections to Docker gateway addresses
-                        (host.docker.internal, gateway.docker.internal, 172.17.0.1). These are
+                        (all daemon bridge gateways, host.docker.internal, and gateway.docker.internal). These are
                         blocked by default in the egress proxy even when InsecureAllowAll is set.
                         Only applicable to Docker deployments with network isolation enabled.
+                        Gateways are snapshotted at deployment; redeploy to include bridges created later.
                         Gateway access is port-independent: it ignores the permission profile's
                         allowed ports, so once enabled the gateway is reachable on any port.
                     type: boolean
@@ -3834,6 +3855,8 @@ components:
                 key_prefix:
                     description: KeyPrefix is an optional prefix applied to all Redis keys used by ToolHive.
                     type: string
+                tls:
+                    $ref: '#/components/schemas/RedisconfigTLSConfig'
             type: object
         RunnerToolOverride:
             properties:
@@ -4914,9 +4937,10 @@ components:
                 allow_docker_gateway:
                     description: |-
                         Whether to permit outbound connections to Docker gateway addresses
-                        (host.docker.internal, gateway.docker.internal, 172.17.0.1). These are
+                        (all daemon bridge gateways, host.docker.internal, and gateway.docker.internal). These are
                         blocked by default in the egress proxy even when network isolation is on.
                         Only applicable to Docker deployments with network isolation enabled.
+                        Gateways are snapshotted at deployment; redeploy to include bridges created later.
                     type: boolean
                 authz_config:
                     description: Authorization configuration
@@ -5149,6 +5173,81 @@ components:
                 public_key:
                     description: PublicKey proposes a cosign public key as the replacement trust anchor.
                     type: string
+            type: object
+        UpstreamfilterGroupBasedFilterConfig:
+            description: |-
+                UpstreamFilter configures an optional group-based filter that narrows the
+                multi-upstream authorization chain per-request based on the first
+                upstream's resolved identity. When nil, every request walks the full
+                upstream chain in configured order (preserving behavior from before the
+                filter hook existed).
+
+                The filter is applied exactly once per authorization, on the first leg's
+                callback. The mandatory first upstream (Upstreams[0]) is never filtered
+                out. See pkg/authserver/upstreamfilter for the configuration schema and
+                pkg/authserver/server/handlers for the runtime contract.
+            properties:
+                claim:
+                    description: |-
+                        Claim is the exact, top-level JWT/OIDC claim name to read group
+                        membership from. Defaults to "groups" when empty. The claim value MUST be
+                        a JSON array of strings; other shapes (missing, non-array, mixed types)
+                        fail the authorization. Nested claims (e.g. Keycloak's realm_access.roles)
+                        must be flattened by the identity provider — nested paths are not
+                        supported in this implementation.
+
+                        The value is read from upstream.Identity.Claims as the first upstream
+                        resolves it: an OIDC upstream fills that map from the validated ID
+                        token, a pure OAuth2 upstream from the userinfo response. The
+                        identityFromToken and synthesized-identity paths leave it empty, and
+                        groups carried only in an access token never reach it. A missing claim
+                        fails the authorization — DefaultUpstreams covers a valid-but-empty
+                        claim and unmatched groups, not an absent one.
+                    type: string
+                defaultUpstreams:
+                    description: |-
+                        DefaultUpstreams is used when the claim is a valid empty array or when no
+                        rule matches. When empty or omitted, no optional upstreams are added —
+                        the mandatory first upstream remains but the authorization walks no
+                        further.
+                    items:
+                        type: string
+                    type: array
+                    uniqueItems: false
+                rules:
+                    description: |-
+                        Rules assigns groups to upstream provider subsets. A principal matches a
+                        rule if any of the principal's group values appears in the rule's Groups
+                        list (any-of / OR semantics). Multiple matching rules are combined by
+                        union: the effective upstream chain contains every UpstreamProviders
+                        value from every matching rule, deduplicated.
+                    items:
+                        $ref: '#/components/schemas/UpstreamfilterGroupRule'
+                    type: array
+                    uniqueItems: false
+            type: object
+        UpstreamfilterGroupRule:
+            properties:
+                groups:
+                    description: |-
+                        Groups is the set of principal group names this rule matches. Matching
+                        is case-sensitive and exact. Empty and duplicate values are rejected at
+                        configuration validation time.
+                    items:
+                        type: string
+                    type: array
+                    uniqueItems: false
+                upstreamProviders:
+                    description: |-
+                        UpstreamProviders lists the non-first upstream provider names to include
+                        in the chain when this rule matches. All names must reference a
+                        configured non-first upstream. Empty and duplicate values, references to
+                        the mandatory first upstream, and references to undeclared upstreams are
+                        rejected at configuration validation time.
+                    items:
+                        type: string
+                    type: array
+                    uniqueItems: false
             type: object
         V0ServerJSON:
             properties:

@@ -63,58 +63,8 @@ func (h *Handler) TokenHandler(w http.ResponseWriter, req *http.Request) {
 		return
 	}
 
-	// RFC 8707: Handle resource parameter for audience claim.
-	// The resource parameter allows clients to specify which protected resource (MCP server)
-	// the token is intended for. This value becomes the "aud" claim in the JWT.
-	//
-	// Note: RFC 8707 allows multiple resource parameters, but we explicitly reject them
-	// for security reasons (simpler audience model, clearer token scope).
-	resources := accessRequest.GetRequestForm()["resource"]
-	if len(resources) > 1 {
-		slog.Debug("multiple resource parameters not supported", //nolint:gosec // G706: count is an integer
-			"count", len(resources),
-		)
-		h.provider.WriteAccessError(ctx, w, accessRequest,
-			server.ErrInvalidTarget.WithHint("Multiple resource parameters are not supported"))
+	if h.applyResourceAudience(ctx, w, accessRequest) {
 		return
-	}
-	if len(resources) == 1 && resources[0] != "" {
-		resource := resources[0]
-		// Validate URI format per RFC 8707
-		if err := server.ValidateAudienceURI(resource); err != nil {
-			slog.Debug("invalid resource URI format", //nolint:gosec // G706: resource URI from token request
-				"resource", resource,
-				"error", err,
-			)
-			h.provider.WriteAccessError(ctx, w, accessRequest, err)
-			return
-		}
-
-		// Validate against allowed audiences list
-		if err := server.ValidateAudienceAllowed(resource, h.config.AllowedAudiences); err != nil {
-			slog.Debug("resource not in allowed audiences", //nolint:gosec // G706: resource URI from token request
-				"resource", resource,
-				"error", err,
-			)
-			h.provider.WriteAccessError(ctx, w, accessRequest, err)
-			return
-		}
-
-		slog.Debug("granting audience from resource parameter", //nolint:gosec // G706: resource URI from token request
-			"resource", resource,
-		)
-		accessRequest.GrantAudience(resource)
-	} else if accessRequest.GetGrantTypes().ExactOne("authorization_code") && len(h.config.AllowedAudiences) == 1 {
-		// No resource parameter provided (or provided as empty) during an authorization_code
-		// exchange; default to the sole allowed audience. The len == 1 guard makes the
-		// intended audience unambiguous and the index access safe. We restrict this defaulting
-		// to authorization_code grants: for refresh_token grants, fosite already carries the
-		// originally-granted audience forward through the session, so re-granting here would
-		// conflict with fosite's audience matching strategy.
-		slog.Debug("no resource parameter, defaulting to sole allowed audience",
-			"audience", h.config.AllowedAudiences[0],
-		)
-		accessRequest.GrantAudience(h.config.AllowedAudiences[0])
 	}
 
 	// Generate the access response (tokens)
@@ -145,4 +95,73 @@ func (h *Handler) TokenHandler(w http.ResponseWriter, req *http.Request) {
 
 	// Write the token response
 	h.provider.WriteAccessResponse(ctx, w, accessRequest, response)
+}
+
+// applyResourceAudience applies the RFC 8707 resource parameter to the access
+// request's granted audience. It reports whether it already wrote an error response.
+func (h *Handler) applyResourceAudience(
+	ctx context.Context, w http.ResponseWriter, accessRequest fosite.AccessRequester,
+) (handled bool) {
+	// RFC 8707: Handle resource parameter for audience claim.
+	// The resource parameter allows clients to specify which protected resource (MCP server)
+	// the token is intended for. This value becomes the "aud" claim in the JWT.
+	//
+	// Note: RFC 8707 allows multiple resource parameters, but we explicitly reject them
+	// for security reasons (simpler audience model, clearer token scope).
+	resources := accessRequest.GetRequestForm()["resource"]
+	if requested := accessRequest.GetRequestedAudience(); len(requested) > 0 &&
+		(accessRequest.GetGrantTypes().ExactOne("authorization_code") || accessRequest.GetGrantTypes().ExactOne("refresh_token")) {
+		// Fosite restores the authorized audience on code redemption and refresh;
+		// other grants (notably token exchange) may request audiences independently.
+		if len(requested) != 1 || len(resources) > 1 || (len(resources) == 1 && resources[0] != requested[0]) {
+			h.provider.WriteAccessError(ctx, w, accessRequest,
+				server.ErrInvalidTarget.WithHint("Resource differs from authorized audience"))
+			return true
+		}
+	} else if len(resources) > 1 {
+		slog.Debug("multiple resource parameters not supported", //nolint:gosec // G706: count is an integer
+			"count", len(resources),
+		)
+		h.provider.WriteAccessError(ctx, w, accessRequest,
+			server.ErrInvalidTarget.WithHint("Multiple resource parameters are not supported"))
+		return true
+	} else if len(resources) == 1 && resources[0] != "" {
+		resource := resources[0]
+		// Validate URI format per RFC 8707
+		if err := server.ValidateAudienceURI(resource); err != nil {
+			slog.Debug("invalid resource URI format", //nolint:gosec // G706: resource URI from token request
+				"resource", resource,
+				"error", err,
+			)
+			h.provider.WriteAccessError(ctx, w, accessRequest, err)
+			return true
+		}
+
+		// Validate against allowed audiences list
+		if err := server.ValidateAudienceAllowed(resource, h.config.AllowedAudiences); err != nil {
+			slog.Debug("resource not in allowed audiences", //nolint:gosec // G706: resource URI from token request
+				"resource", resource,
+				"error", err,
+			)
+			h.provider.WriteAccessError(ctx, w, accessRequest, err)
+			return true
+		}
+
+		slog.Debug("granting audience from resource parameter", //nolint:gosec // G706: resource URI from token request
+			"resource", resource,
+		)
+		accessRequest.GrantAudience(resource)
+	} else if accessRequest.GetGrantTypes().ExactOne("authorization_code") && len(h.config.AllowedAudiences) == 1 {
+		// No resource parameter provided (or provided as empty) during an authorization_code
+		// exchange; default to the sole allowed audience. The len == 1 guard makes the
+		// intended audience unambiguous and the index access safe. We restrict this defaulting
+		// to authorization_code grants: for refresh_token grants, fosite already carries the
+		// originally-granted audience forward through the session, so re-granting here would
+		// conflict with fosite's audience matching strategy.
+		slog.Debug("no resource parameter, defaulting to sole allowed audience",
+			"audience", h.config.AllowedAudiences[0],
+		)
+		accessRequest.GrantAudience(h.config.AllowedAudiences[0])
+	}
+	return false
 }

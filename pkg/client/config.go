@@ -100,8 +100,6 @@ const (
 )
 
 const (
-	// Pi represents the Pi coding agent's LLM gateway integration.
-	Pi LLMClientApp = "pi"
 	// Xcode represents GitHub Copilot for Xcode.
 	// Xcode does not support MCP; it is an LLM-gateway-only tool.
 	// It is declared as LLMClientApp (not ClientApp) so that code generators
@@ -916,15 +914,6 @@ var supportedClientIntegrations = []clientAppConfig{
 		SkillsProjectPath: []string{".vibe", skillsDirName},
 	},
 	{
-		ClientType:         ClientApp(Pi),
-		Description:        "Pi coding agent",
-		LLMGatewayOnly:     true,
-		LLMGatewayMode:     llmgateway.ModePi,
-		LLMBinaryName:      "pi",
-		LLMSettingsFile:    "models.json",
-		LLMSettingsRelPath: []string{".pi", "agent"},
-	},
-	{
 		ClientType:           Codex,
 		Description:          "OpenAI Codex CLI",
 		SettingsFile:         "config.toml",
@@ -1063,9 +1052,13 @@ var supportedClientIntegrations = []clientAppConfig{
 			types.TransportTypeSSE:            defaultURLFieldName,
 			types.TransportTypeStreamableHTTP: defaultURLFieldName,
 		},
-		SupportsSkills:    true,
-		SkillsGlobalPath:  []string{".pi", "agent", skillsDirName},
-		SkillsProjectPath: []string{".pi", skillsDirName},
+		SupportsSkills:     true,
+		SkillsGlobalPath:   []string{".pi", "agent", skillsDirName},
+		SkillsProjectPath:  []string{".pi", skillsDirName},
+		LLMGatewayMode:     llmgateway.ModePi,
+		LLMBinaryName:      "pi",
+		LLMSettingsFile:    "models.json",
+		LLMSettingsRelPath: []string{".pi", "agent"},
 	},
 	{
 		// Xcode does not support MCP; it is an LLM-gateway-only entry.

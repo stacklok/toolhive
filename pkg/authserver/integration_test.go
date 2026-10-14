@@ -37,7 +37,6 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
-	"github.com/stacklok/toolhive/pkg/auth"
 	"github.com/stacklok/toolhive/pkg/auth/upstreamtoken"
 	"github.com/stacklok/toolhive/pkg/authserver/authorizationdetails"
 	servercrypto "github.com/stacklok/toolhive/pkg/authserver/server/crypto"
@@ -4581,7 +4580,7 @@ type stubChainFilter struct {
 
 func (f *stubChainFilter) FilterUpstreams(
 	_ context.Context,
-	_ auth.PrincipalInfo,
+	_ handlers.FilterPrincipal,
 	_ []string,
 ) ([]string, error) {
 	return f.keep, nil

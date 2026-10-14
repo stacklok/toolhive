@@ -14,7 +14,7 @@ import (
 
 	"github.com/ory/fosite"
 
-	"github.com/stacklok/toolhive/pkg/auth"
+	serveridentity "github.com/stacklok/toolhive/pkg/authserver/identity"
 	"github.com/stacklok/toolhive/pkg/authserver/server/session"
 	"github.com/stacklok/toolhive/pkg/authserver/storage"
 	"github.com/stacklok/toolhive/pkg/authserver/upstream"
@@ -296,11 +296,11 @@ func (h *Handler) CallbackHandler(w http.ResponseWriter, req *http.Request) {
 	// Place the resolved canonical user in the request context so callback storage
 	// calls that carry no tokens argument — GetAllUpstreamTokens during chain
 	// consistency, DeleteUpstreamTokensForProvider on cleanup — can resolve the user
-	// from context. We use WithPlatformUser, not WithIdentity: no ToolHive bearer has
-	// been issued at the callback, so there is no authenticated identity to assert —
+	// from context. The authserver-owned helper does not create a ToolHive identity:
+	// no bearer has been issued, so there is no authenticated identity to assert —
 	// only the canonical user for storage keying. (StoreUpstreamTokens does not need
 	// this; it keys off tokens.UserID below.)
-	ctx = auth.WithPlatformUser(ctx, subject)
+	ctx = serveridentity.WithCanonicalUser(ctx, subject)
 
 	// Convert IDP tokens to storage tokens with binding fields.
 	// SessionExpiresAt is set unconditionally as the Fosite session bound. Storage
@@ -342,12 +342,12 @@ func (h *Handler) CallbackHandler(w http.ResponseWriter, req *http.Request) {
 	// upstream subject; subject is the canonical ToolHive user ID. On subsequent legs
 	// the filter is not consulted, so this only drives filtering for upstreams[0].
 	// result.Claims carries the ID-token/userinfo claims (nil for synthetic upstreams).
-	principal := auth.PrincipalInfo{
-		Subject:        providerSubject,
-		PlatformUserID: subject,
-		Name:           userName,
-		Email:          userEmail,
-		Claims:         result.Claims,
+	principal := filterPrincipal{
+		subject:         providerSubject,
+		canonicalUserID: subject,
+		name:            userName,
+		email:           userEmail,
+		claims:          result.Claims,
 	}
 
 	h.continueChainOrComplete(ctx, w, req, ar, pending, sessionID, principal)
@@ -761,14 +761,14 @@ func (h *Handler) continueChainOrComplete(
 	ar fosite.AuthorizeRequester,
 	pending *storage.PendingAuthorization,
 	sessionID string,
-	principal auth.PrincipalInfo,
+	principal FilterPrincipal,
 ) {
 	// subject is the canonical ToolHive user ID used for chain state, token keying,
-	// and the cross-leg identity check. Note this is principal.PlatformUserID, NOT
-	// principal.Subject (which is the upstream provider's subject).
-	subject := principal.PlatformUserID
-	name := principal.Name
-	email := principal.Email
+	// and the cross-leg identity check. Note this is principal.GetCanonicalUserID(), NOT
+	// principal.GetSubject() (which is the upstream provider's subject).
+	subject := principal.GetCanonicalUserID()
+	name := principal.GetName()
+	email := principal.GetEmail()
 
 	// SingleLeg authorizations intentionally bypass chain continuation: the caller
 	// scoped this flow to one specific upstream (e.g. a UI-initiated "connect one

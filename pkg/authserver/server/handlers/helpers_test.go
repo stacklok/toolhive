@@ -116,13 +116,13 @@ type testStorageState struct {
 	// getClientCalls records storage client lookups so route-boundary tests can
 	// prove malformed requests are rejected before any lookup.
 	getClientCalls int
-	// getAllUpstreamCtx and deleteUpstreamCtx capture the context passed to
-	// GetAllUpstreamTokens / DeleteUpstreamTokens, so a test can assert the
-	// callback placed the authenticated identity into the request context before
-	// that storage call runs. Each records only the most recent call; tests that
-	// trigger multiple calls must account for last-write-wins.
-	getAllUpstreamCtx context.Context
-	deleteUpstreamCtx context.Context
+	// Capture each context separately so assertions observe the context at the
+	// storage call itself, including methods that may be called more than once.
+	getAllUpstreamCtx    []context.Context
+	getLatestUpstreamCtx []context.Context
+	storeUpstreamCtx     []context.Context
+	deleteUpstreamCtx    []context.Context
+	deleteForProviderCtx []context.Context
 }
 
 // baseTestSetupOption configures optional behavior overrides for baseTestSetup.
@@ -467,7 +467,8 @@ func baseTestSetup(t *testing.T, opts ...baseTestSetupOption) (fosite.OAuth2Prov
 	// Setup mock expectations for upstream tokens storage.
 	// Keyed by "sessionID:providerName" to support multiple providers per session.
 	stor.EXPECT().StoreUpstreamTokens(gomock.Any(), gomock.Any(), gomock.Any(), gomock.Any()).DoAndReturn(
-		func(_ context.Context, sessionID, providerName string, tokens *storage.UpstreamTokens) error {
+		func(ctx context.Context, sessionID, providerName string, tokens *storage.UpstreamTokens) error {
+			storState.storeUpstreamCtx = append(storState.storeUpstreamCtx, ctx)
 			if setupCfg.storeUpstreamTokensErr != nil {
 				return setupCfg.storeUpstreamTokensErr
 			}
@@ -482,8 +483,8 @@ func baseTestSetup(t *testing.T, opts ...baseTestSetupOption) (fosite.OAuth2Prov
 			// DeleteUpstreamTokens takes only (ctx, sessionID) — no tokens argument
 			// to carry the user — so a context-keyed storage decorator can resolve
 			// the user only from ctx. Capture the ctx so a test can assert the
-			// callback placed the identity into it before this delete runs.
-			storState.deleteUpstreamCtx = ctx
+			// callback placed the canonical user into it before this delete runs.
+			storState.deleteUpstreamCtx = append(storState.deleteUpstreamCtx, ctx)
 			for key := range storState.upstreamTokens {
 				if len(key) > len(sessionID) && key[:len(sessionID)+1] == sessionID+":" {
 					delete(storState.upstreamTokens, key)
@@ -499,7 +500,7 @@ func baseTestSetup(t *testing.T, opts ...baseTestSetupOption) (fosite.OAuth2Prov
 			// resolves the user from ctx exactly as DeleteUpstreamTokens does. Capture
 			// the ctx here too so the callback's per-provider cleanup path is covered by
 			// the same context-placement assertions.
-			storState.deleteUpstreamCtx = ctx
+			storState.deleteForProviderCtx = append(storState.deleteForProviderCtx, ctx)
 			// Mirror the real backends, which reject an empty session or provider rather
 			// than deleting; cleanupUpstreamTokens filters empty names, so this only
 			// fires if a future caller bug lets one through.
@@ -520,8 +521,8 @@ func baseTestSetup(t *testing.T, opts ...baseTestSetupOption) (fosite.OAuth2Prov
 			// GetAllUpstreamTokens takes only (ctx, sessionID) — no tokens argument to
 			// carry the user — so a user-keyed storage decorator can resolve the user
 			// only from ctx. Capture the ctx here so a test can assert the callback
-			// placed the identity into it before this read runs.
-			storState.getAllUpstreamCtx = ctx
+			// placed the canonical user into it before this read runs.
+			storState.getAllUpstreamCtx = append(storState.getAllUpstreamCtx, ctx)
 			getAllUpstreamCalls++
 			if setupCfg.getAllUpstreamTokensErr != nil && getAllUpstreamCalls > setupCfg.getAllUpstreamErrAfter {
 				return nil, setupCfg.getAllUpstreamTokensErr
@@ -538,7 +539,8 @@ func baseTestSetup(t *testing.T, opts ...baseTestSetupOption) (fosite.OAuth2Prov
 
 	stor.EXPECT().
 		GetLatestUpstreamTokensForUser(gomock.Any(), gomock.Any(), gomock.Any()).
-		DoAndReturn(func(_ context.Context, userID, providerID string) (*storage.UpstreamTokens, error) {
+		DoAndReturn(func(ctx context.Context, userID, providerID string) (*storage.UpstreamTokens, error) {
+			storState.getLatestUpstreamCtx = append(storState.getLatestUpstreamCtx, ctx)
 			if setupCfg.getLatestUpstreamTokensErr != nil {
 				return nil, setupCfg.getLatestUpstreamTokensErr
 			}

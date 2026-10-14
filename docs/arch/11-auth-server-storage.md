@@ -164,6 +164,17 @@ During a rolling upgrade or after a rollback, replicas running an older version 
 The device flow has two more cases. When an older replica handles the device confirmation, or serves any device token poll after the confirmation (each poll rewrites the stored device request), the stored upstream identity is lost and that login gets neither claim.
 
 Rollout order for embedders that enable disclosure: first roll out this version with disclosure off, and enable it only when no older replica is left. To roll back, turn disclosure off and let the new version serve refreshes before going back to the older version.
+## Callback identity and storage context
+
+The first upstream callback passes a `handlers.FilterPrincipal` to `UpstreamFilter`. This public interface is a getter contract (`GetSubject`, `GetCanonicalUserID`, `GetName`, `GetEmail`, `GetClaims`), not a promise that implementations contain only those fields. The callback passes a private concrete projection with only those five credential-free values; tokens and upstream credentials are not included. The claims map is upstream-provided and read-only, and may be nil when unavailable.
+
+`GetSubject()` is the first upstream's mapped subject, and `GetCanonicalUserID()` is the canonical storage-user ID. They are different values and must not be swapped. `pkg/authserver/server/handlers/filter_principal.go` documents where each value comes from. External `UpstreamFilter` implementations written for the former `auth.PrincipalInfo` parameter must migrate their method signature to `handlers.FilterPrincipal` and read values through its getters. This is a source-incompatible API change; no external source-compatibility guarantee is implied.
+
+The server owns the credential-free canonical-user context contract in `pkg/authserver/identity`: `WithCanonicalUser` writes the explicit storage user and `CanonicalUserFromContext` reads only that key. An empty setter value leaves the context unchanged. This context value identifies which user storage should key on; it is not bearer authentication and does not establish an authenticated principal. The server getter intentionally does not interpret host identity-only contexts.
+
+ToolHive bridges its host API to this contract: `auth.PlatformUserContextKey` aliases the server key, `auth.WithPlatformUser` and `auth.PlatformUserFromContext` wrap the server helpers, and `auth.CanonicalUserFromContext` checks the explicit key first, then falls back to the host `Identity.PlatformUserID`, typically attached on authenticated request paths. Context lookup alone is not proof of authentication. A direct explicit value, including an empty string, takes precedence. Host storage decorators that require this identity fallback must use the host getter or provide an explicit adapter; using the server getter alone on an identity-only host context will not resolve a user.
+
+The group-based implementation in `pkg/authserver/upstreamfilter` strictly decodes claims with `pkg/oauthproto/claims.DecodeStringArray`; absent, malformed, or mixed-type group claims fail closed. The decoder belongs to the OAuth protocol claims package, not ToolHive's general `pkg/auth` package.
 
 ## Identity resolution for pure OAuth2 providers
 

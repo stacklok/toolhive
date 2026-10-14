@@ -19,6 +19,8 @@ import (
 // and are preserved exactly. Duplicate or case-fold-colliding object keys are
 // rejected recursively, including in params, results, errors and extensions.
 // Unknown extension members are allowed; aliases of reserved members are not.
+// Request and notification params that do not decode as an object (e.g. a number
+// outside float64 range) are rejected.
 // Result values retain all accepted JSON shapes; no result-object schema is imposed.
 // Only requests and notifications should be published as ParsedMCPRequest.
 //
@@ -50,6 +52,9 @@ func DecodeMessage(body []byte) (msg jsonrpc2.Message, err error) {
 	if err != nil {
 		return nil, err
 	}
+	if _, isRequest := envelope["method"]; isRequest && !decodableParams(envelope["params"]) {
+		return nil, newUndecodableParams(id)
+	}
 	// MCP permits an error response without an ID. The decoder requires one;
 	// supply it only for decoding and restore the absent ID below.
 	if envelope["error"] != nil && !id.IsValid() {
@@ -71,15 +76,43 @@ func DecodeMessage(body []byte) (msg jsonrpc2.Message, err error) {
 
 func messageRejectionReason(err error) string {
 	var batch *BatchUnsupportedError
+	var undecodable *undecodableParamsError
 	switch {
 	case errors.Is(err, jsonrpc2.ErrParse):
 		return "parse"
 	case errors.As(err, &batch):
 		return "batch"
+	case errors.As(err, &undecodable):
+		return "undecodable_params"
 	default:
 		return "invalid_request"
 	}
 }
+
+// undecodableParamsError rejects a request whose envelope is otherwise valid
+// but whose params do not decode. Only then is the request ID unambiguous, so
+// it is carried to let the client correlate the error. Error is fixed so no
+// request content is reflected.
+type undecodableParamsError struct{ id any }
+
+// newUndecodableParams carries id only when it is valid (a notification has none).
+func newUndecodableParams(id jsonrpc2.ID) *undecodableParamsError {
+	if !id.IsValid() {
+		return &undecodableParamsError{}
+	}
+	return &undecodableParamsError{id: id.Raw()}
+}
+
+func (*undecodableParamsError) Error() string { return "Invalid Request" }
+
+// Code implements CodedError.
+func (*undecodableParamsError) Code() int64 { return CodeInvalidRequest }
+
+// Data implements CodedError.
+func (*undecodableParamsError) Data() map[string]any { return nil }
+
+// RequestID returns the decoded request ID (string or int64), or nil.
+func (e *undecodableParamsError) RequestID() any { return e.id }
 
 // writeBodyReadError never exposes reader-provided errors to clients or logs.
 func writeBodyReadError(w http.ResponseWriter, err error) {
@@ -123,6 +156,33 @@ func validMessageEnvelope(envelope map[string]json.RawMessage) bool {
 			envelope["result"] == nil && envelope["error"] == nil && (params == nil || params[0] == '{')
 	}
 	return validResponseEnvelope(envelope)
+}
+
+// decodableParams reports whether request params decode the way the parser
+// decodes them. Syntactically valid JSON can still fail to decode: a number
+// outside float64 range (e.g. 1e1000) is accepted by lenient backend parsers
+// but makes the decode fail, which would leave authorization, rate limiting and
+// audit acting on an empty resource ID while the backend executes the real one.
+// Such requests are rejected rather than decoded with json.Number, because
+// authorizers only consume float64 numeric arguments. Responses are not checked:
+// their results are opaque to ToolHive and may legitimately carry any number.
+func decodableParams(params json.RawMessage) bool {
+	_, err := decodeParams(params)
+	return err == nil
+}
+
+// decodeParams decodes request params into an object map. It is the single
+// decode shared by admission (decodableParams) and the parser, so the two
+// cannot disagree about which params are usable. Nil params decode to a nil map.
+func decodeParams(params json.RawMessage) (map[string]any, error) {
+	if params == nil {
+		return nil, nil
+	}
+	var m map[string]any
+	if err := json.Unmarshal(params, &m); err != nil {
+		return nil, err
+	}
+	return m, nil
 }
 
 func validResponseEnvelope(envelope map[string]json.RawMessage) bool {

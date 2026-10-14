@@ -983,6 +983,7 @@ func TestSetupPiModels(t *testing.T) {
 			assert.Equal(t, []string{"claude-sonnet-5"}, gm.applied[0].AnthropicModels)
 			assert.Equal(t, map[string]int{"claude-sonnet-5": 1000000}, gm.applied[0].AnthropicModelContextWindows)
 			assert.Equal(t, map[string]bool{"claude-sonnet-5": true}, gm.applied[0].AnthropicModelReasoning)
+			assert.Equal(t, map[string]bool{"claude-sonnet-5": true}, gm.applied[0].AnthropicModelAdaptive)
 			assert.Equal(t, server.URL+"/anthropic", gm.applied[0].AnthropicBaseURL)
 		})
 	}
@@ -1069,6 +1070,8 @@ func TestDiscoverAnthropicGatewayModels(t *testing.T) {
 				`"has_more":true,"last_id":"claude-haiku-5-5"}`))
 		case "claude-haiku-5-5":
 			_, _ = w.Write([]byte(`{"data":[{"id":"claude-sonnet-5","max_input_tokens":200000},` +
+				`{"id":"claude-haiku-4-5","capabilities":{"thinking":{"supported":true,` +
+				`"types":{"enabled":{"supported":true}}}}},` +
 				`{"id":"claude-opus-4-8","max_input_tokens":10}],"has_more":false}`))
 		default:
 			w.WriteHeader(http.StatusBadRequest)
@@ -1077,11 +1080,14 @@ func TestDiscoverAnthropicGatewayModels(t *testing.T) {
 	t.Cleanup(server.Close)
 	cfg := Config{GatewayURL: server.URL}
 	cfg.SetDiscoveryAccessToken("discovery-token")
-	models, contexts, reasoning, err := discoverAnthropicGatewayModels(context.Background(), cfg, "/anthropic")
+	models, contexts, reasoning, adaptive, err := discoverAnthropicGatewayModels(context.Background(), cfg, "/anthropic")
 	require.NoError(t, err)
-	assert.Equal(t, []string{"claude-haiku-5-5", "claude-opus-4-8", "claude-sonnet-5"}, models)
+	assert.Equal(t, []string{"claude-haiku-4-5", "claude-haiku-5-5", "claude-opus-4-8", "claude-sonnet-5"}, models)
 	assert.Equal(t, map[string]int{"claude-opus-4-8": 1000000, "claude-sonnet-5": 200000}, contexts)
-	assert.Equal(t, map[string]bool{"claude-opus-4-8": true}, reasoning)
+	assert.Equal(t, map[string]bool{"claude-opus-4-8": true, "claude-haiku-4-5": true,
+		"claude-haiku-5-5": false}, reasoning)
+	assert.Equal(t, map[string]bool{"claude-opus-4-8": true, "claude-haiku-4-5": false,
+		"claude-haiku-5-5": false}, adaptive)
 }
 
 func TestDiscoverAnthropicGatewayModelsRejectsInvalidPagination(t *testing.T) {
@@ -1092,7 +1098,7 @@ func TestDiscoverAnthropicGatewayModelsRejectsInvalidPagination(t *testing.T) {
 	t.Cleanup(server.Close)
 	cfg := Config{GatewayURL: server.URL}
 	cfg.SetDiscoveryAccessToken("discovery-token")
-	_, _, _, err := discoverAnthropicGatewayModels(context.Background(), cfg, "/anthropic")
+	_, _, _, _, err := discoverAnthropicGatewayModels(context.Background(), cfg, "/anthropic")
 	require.ErrorContains(t, err, "invalid Anthropic pagination cursor")
 }
 

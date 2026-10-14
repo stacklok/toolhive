@@ -27,9 +27,10 @@ func TestPiGatewaySetupAndTeardown(t *testing.T) {
 		AnthropicBaseURL:              "https://gateway.example/custom",
 		DiscoveredModels:              []string{"anthropic/claude-sonnet-5", "gpt-5"},
 		DiscoveredModelContextWindows: map[string]int{"anthropic/claude-sonnet-5": 1000000},
-		AnthropicModels:               []string{"claude-opus-4-8", "claude-haiku-5-5"},
+		AnthropicModels:               []string{"claude-opus-4-8", "claude-haiku-5-5", "claude-haiku-4-5"},
 		AnthropicModelContextWindows:  map[string]int{"claude-opus-4-8": 1000000},
-		AnthropicModelReasoning:       map[string]bool{"claude-opus-4-8": true},
+		AnthropicModelReasoning:       map[string]bool{"claude-opus-4-8": true, "claude-haiku-4-5": true},
+		AnthropicModelAdaptive:        map[string]bool{"claude-opus-4-8": true},
 	}
 	for range 2 {
 		got, err := cm.ConfigureLLMGateway(ClientApp(Pi), cfg)
@@ -49,6 +50,9 @@ func TestPiGatewaySetupAndTeardown(t *testing.T) {
 				ID            string `json:"id"`
 				ContextWindow *int   `json:"contextWindow"`
 				Reasoning     *bool  `json:"reasoning"`
+				Compat        *struct {
+					ForceAdaptiveThinking bool `json:"forceAdaptiveThinking"`
+				} `json:"compat"`
 			} `json:"models"`
 		} `json:"providers"`
 	}
@@ -66,6 +70,7 @@ func TestPiGatewaySetupAndTeardown(t *testing.T) {
 	require.Nil(t, root.Providers[piProviderName].Models[1].ContextWindow)
 	require.Nil(t, root.Providers[piProviderName].Models[0].Reasoning)
 	require.Nil(t, root.Providers[piProviderName].Models[1].Reasoning)
+	require.Nil(t, root.Providers[piProviderName].Models[0].Compat)
 	require.Equal(t, "https://gateway.example/custom", root.Providers[piAnthropicProviderName].BaseURL)
 	require.Equal(t, "anthropic-messages", root.Providers[piAnthropicProviderName].API)
 	require.Equal(t, piTokenCommand, root.Providers[piAnthropicProviderName].APIKey)
@@ -75,8 +80,14 @@ func TestPiGatewaySetupAndTeardown(t *testing.T) {
 	require.Equal(t, 1000000, *root.Providers[piAnthropicProviderName].Models[0].ContextWindow)
 	require.NotNil(t, root.Providers[piAnthropicProviderName].Models[0].Reasoning)
 	require.True(t, *root.Providers[piAnthropicProviderName].Models[0].Reasoning)
+	require.NotNil(t, root.Providers[piAnthropicProviderName].Models[0].Compat)
+	require.True(t, root.Providers[piAnthropicProviderName].Models[0].Compat.ForceAdaptiveThinking)
 	require.Nil(t, root.Providers[piAnthropicProviderName].Models[1].ContextWindow)
 	require.Nil(t, root.Providers[piAnthropicProviderName].Models[1].Reasoning)
+	require.Nil(t, root.Providers[piAnthropicProviderName].Models[1].Compat)
+	require.NotNil(t, root.Providers[piAnthropicProviderName].Models[2].Reasoning)
+	require.True(t, *root.Providers[piAnthropicProviderName].Models[2].Reasoning)
+	require.Nil(t, root.Providers[piAnthropicProviderName].Models[2].Compat)
 
 	require.NoError(t, cm.RevertLLMGateway(ClientApp(Pi), path))
 	content, err = os.ReadFile(path)

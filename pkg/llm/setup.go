@@ -572,6 +572,7 @@ type discoveredGatewayModels struct {
 	anthropic               []string
 	anthropicContextWindows map[string]int
 	anthropicReasoning      map[string]bool
+	anthropicAdaptive       map[string]bool
 }
 
 func discoverSetupModels(
@@ -607,7 +608,7 @@ func fetchSetupModelCatalog(
 		catalog.openAI, catalog.openAIContextWindows, openErr = discoverGatewayModels(ctx, cfg)
 	}
 	if hasPi && cfg.discoveryAccessToken != "" {
-		catalog.anthropic, catalog.anthropicContextWindows, catalog.anthropicReasoning, anthropicErr =
+		catalog.anthropic, catalog.anthropicContextWindows, catalog.anthropicReasoning, catalog.anthropicAdaptive, anthropicErr =
 			discoverAnthropicGatewayModels(ctx, cfg, anthropicPrefix)
 	}
 	return catalog, openErr, anthropicErr
@@ -644,6 +645,14 @@ type gatewayModelsResponse struct {
 		Capabilities   *struct {
 			Thinking struct {
 				Supported bool `json:"supported"`
+				Types     struct {
+					Adaptive struct {
+						Supported bool `json:"supported"`
+					} `json:"adaptive"`
+					Enabled struct {
+						Supported bool `json:"supported"`
+					} `json:"enabled"`
+				} `json:"types"`
 			} `json:"thinking"`
 		} `json:"capabilities"`
 	} `json:"data"`
@@ -719,7 +728,7 @@ func discoverGatewayModels(ctx context.Context, cfg Config) ([]string, map[strin
 
 func discoverAnthropicGatewayModels(
 	ctx context.Context, cfg Config, anthropicPrefix string,
-) ([]string, map[string]int, map[string]bool, error) {
+) ([]string, map[string]int, map[string]bool, map[string]bool, error) {
 	path := strings.Trim(anthropicPrefix, "/")
 	if path != "" {
 		path += "/"
@@ -729,19 +738,20 @@ func discoverAnthropicGatewayModels(
 	models := make([]string, 0)
 	contextWindows := make(map[string]int)
 	reasoning := make(map[string]bool)
+	adaptive := make(map[string]bool)
 	afterID := ""
 	for range 100 {
 		payload, err := requestGatewayModels(ctx, cfg, path, afterID)
 		if err != nil {
-			return nil, nil, nil, err
+			return nil, nil, nil, nil, err
 		}
 		if payload.HasMore == nil || len(payload.Data) == 0 {
-			return nil, nil, nil, fmt.Errorf("decoding gateway model response: expected a non-empty Anthropic model page")
+			return nil, nil, nil, nil, fmt.Errorf("decoding gateway model response: expected a non-empty Anthropic model page")
 		}
 		for _, model := range payload.Data {
 			id := strings.TrimSpace(model.ID)
 			if id == "" {
-				return nil, nil, nil, fmt.Errorf("decoding gateway model response: model ID must not be empty")
+				return nil, nil, nil, nil, fmt.Errorf("decoding gateway model response: model ID must not be empty")
 			}
 			if _, exists := seen[id]; exists {
 				continue
@@ -751,20 +761,26 @@ func discoverAnthropicGatewayModels(
 			if model.MaxInputTokens > 0 {
 				contextWindows[id] = model.MaxInputTokens
 			}
-			if model.Capabilities != nil && model.Capabilities.Thinking.Supported {
-				reasoning[id] = true
+			if model.Capabilities != nil {
+				thinking := model.Capabilities.Thinking
+				reasoning[id], adaptive[id] = piThinkingModes(
+					thinking.Supported, thinking.Types.Adaptive.Supported, thinking.Types.Enabled.Supported)
 			}
 		}
 		if !*payload.HasMore {
 			sort.Strings(models)
-			return models, contextWindows, reasoning, nil
+			return models, contextWindows, reasoning, adaptive, nil
 		}
 		if payload.LastID == "" || payload.LastID == afterID {
-			return nil, nil, nil, fmt.Errorf("decoding gateway model response: invalid Anthropic pagination cursor")
+			return nil, nil, nil, nil, fmt.Errorf("decoding gateway model response: invalid Anthropic pagination cursor")
 		}
 		afterID = payload.LastID
 	}
-	return nil, nil, nil, fmt.Errorf("decoding gateway model response: too many Anthropic model pages")
+	return nil, nil, nil, nil, fmt.Errorf("decoding gateway model response: too many Anthropic model pages")
+}
+
+func piThinkingModes(supported, adaptive, enabled bool) (bool, bool) {
+	return supported && (adaptive || enabled), supported && adaptive
 }
 
 // Default Bedrock inference-profile model IDs written for Claude Code in
@@ -925,6 +941,7 @@ func configureDetectedToolsWithDiscovery(
 			AnthropicModels:               discovered.anthropic,
 			AnthropicModelContextWindows:  discovered.anthropicContextWindows,
 			AnthropicModelReasoning:       discovered.anthropicReasoning,
+			AnthropicModelAdaptive:        discovered.anthropicAdaptive,
 		}
 
 		if clientType == claudeCodeClient {

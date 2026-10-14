@@ -126,9 +126,12 @@ type ApplyConfig struct {
 	// discovered Anthropic model catalogue for Pi. Sizes are max_input_tokens.
 	AnthropicModels              []string
 	AnthropicModelContextWindows map[string]int
-	// AnthropicModelReasoning is true for Anthropic models whose discovery
-	// capabilities advertise thinking support. Missing entries use Pi's default.
+	// AnthropicModelReasoning is true for Anthropic models with a supported
+	// thinking mode. Missing entries use Pi's default.
 	AnthropicModelReasoning map[string]bool
+	// AnthropicModelAdaptive marks models that accept adaptive thinking; Pi
+	// otherwise sends budget-based thinking for reasoning models.
+	AnthropicModelAdaptive map[string]bool
 	// ShortPromptCache opts supported clients out of ToolHive's one-hour
 	// prompt-cache lifetime and restores their shorter default.
 	ShortPromptCache bool

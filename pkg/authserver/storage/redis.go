@@ -682,7 +682,13 @@ func (s *RedisStorage) GetClient(ctx context.Context, id string) (fosite.Client,
 		return nil, fmt.Errorf("failed to unmarshal client: %w", err)
 	}
 
-	return clientFromStored(stored, hasTTL), nil
+	client := clientFromStored(stored, hasTTL)
+	if dcrErr := registration.ValidatePrivateKeyJWTClientKeys(client); dcrErr != nil {
+		slog.DebugContext(ctx, "rejecting client whose signing keys no longer meet server policy",
+			"client_id", id, "reason", dcrErr.ErrorDescription)
+		return nil, fosite.ErrInvalidClient.WithHint("client signing keys no longer meet server policy")
+	}
+	return client, nil
 }
 
 // RenewClientTTL extends a DCR-issued client's registration TTL to DefaultDCRClientTTL.

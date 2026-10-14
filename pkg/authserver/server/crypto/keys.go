@@ -39,6 +39,12 @@ const MinSecretLength = 32
 // NIST recommends at least 2048 bits for RSA keys.
 const MinRSAKeyBits = 2048
 
+// MaxRSAKeyBits is the maximum accepted RSA public modulus size in bits.
+const MaxRSAKeyBits = 8192
+
+// MaxRSAPublicExponent is the largest accepted public exponent for client RSA keys.
+const MaxRSAPublicExponent = 65537
+
 // LoadSigningKey loads a private key from a PEM file.
 // Supports both RSA (PKCS1 and PKCS8) and ECDSA (PKCS8) formats.
 // Returns a crypto.Signer that can be used for JWT signing.
@@ -162,20 +168,32 @@ func SupportedClientKeyAlgorithms() []string {
 }
 
 // validateAlgorithmForPublicKeyValue checks whether alg is compatible with a public key,
-// accepting exactly the RSA algorithms in allowedRSAAlgorithms.
-func validateAlgorithmForPublicKeyValue(alg string, key crypto.PublicKey, allowedRSAAlgorithms []string) error {
+// accepting exactly the RSA algorithms in allowedRSAAlgorithms. boundRSA
+// additionally caps the RSA modulus and public exponent; it is set for
+// untrusted client keys only, not for operator-provisioned signing keys.
+func validateAlgorithmForPublicKeyValue(
+	alg string, key crypto.PublicKey, allowedRSAAlgorithms []string, boundRSA bool,
+) error {
 	switch k := key.(type) {
 	case *rsa.PublicKey:
-		if keyBits := k.N.BitLen(); keyBits < MinRSAKeyBits {
+		if k == nil || k.N == nil {
+			return fmt.Errorf("RSA public key is missing a modulus")
+		}
+		keyBits := k.N.BitLen()
+		if keyBits < MinRSAKeyBits {
 			return fmt.Errorf("RSA key size %d bits is below minimum required %d bits", keyBits, MinRSAKeyBits)
+		}
+		if boundRSA && keyBits > MaxRSAKeyBits {
+			return fmt.Errorf("RSA key size %d bits exceeds maximum allowed %d bits", keyBits, MaxRSAKeyBits)
 		}
 		// Reject a degenerate or unsafe public exponent (e.g. e=1 makes RSA
 		// the identity function; e must be odd for the exponentiation to be
-		// well-defined). This mirrors the modulus-size check above as
-		// defense-in-depth against a structurally weak key, not just an
-		// undersized one.
+		// well-defined).
 		if k.E < 3 || k.E%2 == 0 {
-			return fmt.Errorf("RSA public exponent %d is invalid or unsafe", k.E)
+			return fmt.Errorf("RSA public exponent %d is invalid or unsafe (must be odd and at least 3)", k.E)
+		}
+		if boundRSA && k.E > MaxRSAPublicExponent {
+			return fmt.Errorf("RSA public exponent %d exceeds maximum allowed %d", k.E, MaxRSAPublicExponent)
 		}
 		if slices.Contains(allowedRSAAlgorithms, alg) {
 			return nil
@@ -204,7 +222,7 @@ func validateAlgorithmForPublicKeyValue(alg string, key crypto.PublicKey, allowe
 // ValidateAlgorithmForPublicKey checks whether alg is compatible with a public key.
 // It accepts the public-key values stored in jose.JSONWebKey.Key.
 func ValidateAlgorithmForPublicKey(alg string, key crypto.PublicKey) error {
-	return validateAlgorithmForPublicKeyValue(alg, key, rsaAlgorithmsForClientKeys)
+	return validateAlgorithmForPublicKeyValue(alg, key, rsaAlgorithmsForClientKeys, true)
 }
 
 // ValidateAlgorithmForKey checks if the provided algorithm is compatible with the key type.
@@ -215,17 +233,17 @@ func ValidateAlgorithmForKey(alg string, key crypto.Signer) error {
 		if k == nil {
 			return fmt.Errorf("signing key is nil")
 		}
-		return validateAlgorithmForPublicKeyValue(alg, &k.PublicKey, rsaAlgorithmsForSigningKeys)
+		return validateAlgorithmForPublicKeyValue(alg, &k.PublicKey, rsaAlgorithmsForSigningKeys, false)
 	case *ecdsa.PrivateKey:
 		if k == nil {
 			return fmt.Errorf("signing key is nil")
 		}
-		return validateAlgorithmForPublicKeyValue(alg, &k.PublicKey, rsaAlgorithmsForSigningKeys)
+		return validateAlgorithmForPublicKeyValue(alg, &k.PublicKey, rsaAlgorithmsForSigningKeys, false)
 	case ed25519.PrivateKey:
 		if k == nil {
 			return fmt.Errorf("signing key is nil")
 		}
-		return validateAlgorithmForPublicKeyValue(alg, k.Public(), rsaAlgorithmsForSigningKeys)
+		return validateAlgorithmForPublicKeyValue(alg, k.Public(), rsaAlgorithmsForSigningKeys, false)
 	default:
 		return fmt.Errorf("unsupported key type: %T", key)
 	}

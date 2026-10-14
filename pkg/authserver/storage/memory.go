@@ -719,6 +719,11 @@ func (s *MemoryStorage) GetClient(_ context.Context, id string) (fosite.Client, 
 		slog.Debug("client not found", "client_id", id)
 		return nil, notFoundRFC6749Error("Client not found")
 	}
+	if dcrErr := registration.ValidatePrivateKeyJWTClientKeys(client); dcrErr != nil {
+		slog.Debug("rejecting client whose signing keys no longer meet server policy",
+			"client_id", id, "reason", dcrErr.ErrorDescription)
+		return nil, fosite.ErrInvalidClient.WithHint("client signing keys no longer meet server policy")
+	}
 	return client, nil
 }
 

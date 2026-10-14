@@ -338,7 +338,11 @@ authentication, AWS STS `act` mapping, and ID-JAG chaining are deferred and out
 of scope. `token_endpoint_auth_signing_alg` is required and the supported
 values are `RS256`, `RS384`, `RS512`, `PS256`, `PS384`, `PS512`, `ES256`,
 `ES384`, and `ES512` (not `EdDSA` — the pinned fosite version's
-client-assertion verification doesn't handle it). Unlike confidential-client
+client-assertion verification doesn't handle it). RSA keys must have a
+2048–8192-bit modulus and an odd public exponent between 3 and 65537, and a
+registration may carry at most 10 inline JWKS keys. Stored `private_key_jwt`
+clients whose keys no longer meet these limits are rejected with
+`invalid_client` when loaded. Unlike confidential-client
 registration, this has no transport restriction of its own: the DCR response
 for a `private_key_jwt` client never contains a `client_secret` or any other
 secret, so there is nothing for cleartext HTTP to expose. It is governed only

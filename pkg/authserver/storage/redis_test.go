@@ -570,6 +570,25 @@ func TestRedisStorage_ClientAuthMethodPersistence(t *testing.T) {
 	})
 }
 
+func TestRedisStorage_GetClientRechecksPrivateKeyJWTKeys(t *testing.T) {
+	t.Parallel()
+	for _, tt := range storedPrivateKeyJWTClientCases() {
+		t.Run(tt.name, func(t *testing.T) {
+			withRedisStorage(t, func(ctx context.Context, s *RedisStorage, _ *miniredis.Miniredis) {
+				client := storedPrivateKeyJWTClient("stored-client", tt.keys)
+				require.NoError(t, s.RegisterClient(ctx, client))
+				got, err := s.GetClient(ctx, client.GetID())
+				if tt.wantErr {
+					require.ErrorIs(t, err, fosite.ErrInvalidClient)
+					return
+				}
+				require.NoError(t, err)
+				assert.Equal(t, client.GetID(), got.GetID())
+			})
+		})
+	}
+}
+
 // TestRedisStorage_ForceConfidentialPlainClientRoundTrip pins the storage
 // shape of registration.NewConfidentialPlain (the client the DCR force-
 // confidential override builds): it must round-trip through Redis as a

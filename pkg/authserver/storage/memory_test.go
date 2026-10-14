@@ -20,8 +20,10 @@ package storage
 
 import (
 	"context"
+	"crypto/rsa"
 	"errors"
 	"fmt"
+	"math/big"
 	"net/url"
 	"reflect"
 	"sync"
@@ -29,6 +31,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/go-jose/go-jose/v3"
 	"github.com/ory/fosite"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -226,6 +229,61 @@ func TestMemoryStorage_Client(t *testing.T) {
 					require.NoError(t, err)
 					assert.Equal(t, tt.clientID, client.GetID())
 				}
+			})
+		})
+	}
+}
+
+// storedPrivateKeyJWTClientCases are stored clients that GetClient must
+// recheck against the current private_key_jwt key limits. Shared by the
+// memory and Redis backends.
+func storedPrivateKeyJWTClientCases() []struct {
+	name    string
+	keys    []jose.JSONWebKey
+	wantErr bool
+} {
+	key := func(bits, e int) jose.JSONWebKey {
+		return jose.JSONWebKey{Key: &rsa.PublicKey{N: new(big.Int).Lsh(big.NewInt(1), uint(bits-1)), E: e}, Use: "sig"}
+	}
+	tooMany := make([]jose.JSONWebKey, 11)
+	for i := range tooMany {
+		tooMany[i] = key(2048, 65537)
+	}
+	return []struct {
+		name    string
+		keys    []jose.JSONWebKey
+		wantErr bool
+	}{
+		{"valid key loads", []jose.JSONWebKey{key(2048, 65537)}, false},
+		{"oversized modulus", []jose.JSONWebKey{key(8193, 65537)}, true},
+		{"oversized exponent", []jose.JSONWebKey{key(2048, 65539)}, true},
+		{"too many keys", tooMany, true},
+	}
+}
+
+func storedPrivateKeyJWTClient(id string, keys []jose.JSONWebKey) *fosite.DefaultOpenIDConnectClient {
+	return &fosite.DefaultOpenIDConnectClient{
+		DefaultClient:                     &fosite.DefaultClient{ID: id},
+		TokenEndpointAuthMethod:           oauthproto.TokenEndpointAuthMethodPrivateKeyJWT,
+		TokenEndpointAuthSigningAlgorithm: "RS256",
+		JSONWebKeys:                       &jose.JSONWebKeySet{Keys: keys},
+	}
+}
+
+func TestMemoryStorage_GetClientRechecksPrivateKeyJWTKeys(t *testing.T) {
+	t.Parallel()
+	for _, tt := range storedPrivateKeyJWTClientCases() {
+		t.Run(tt.name, func(t *testing.T) {
+			withStorage(t, func(ctx context.Context, s *MemoryStorage) {
+				client := storedPrivateKeyJWTClient("stored-client", tt.keys)
+				require.NoError(t, s.RegisterClient(ctx, client))
+				got, err := s.GetClient(ctx, client.GetID())
+				if tt.wantErr {
+					require.ErrorIs(t, err, fosite.ErrInvalidClient)
+					return
+				}
+				require.NoError(t, err)
+				assert.Equal(t, client.GetID(), got.GetID())
 			})
 		})
 	}

@@ -391,8 +391,17 @@ public signing key with `use: "sig"`. `token_endpoint_auth_signing_alg` is
 mandatory and must match a key in the set. The accepted algorithms are `RS256`,
 `RS384`, `RS512`, `PS256`, `PS384`, `PS512`, `ES256`, `ES384`, and `ES512`
 (EdDSA is excluded because the pinned fosite version cannot verify it — see
-`crypto.SupportedClientKeyAlgorithms`). The registration response contains the
+`crypto.SupportedClientKeyAlgorithms`). RSA keys must have a 2048–8192-bit
+modulus and an odd public exponent between 3 and 65537, and a registration may
+carry at most 10 inline JWKS keys. The registration response contains the
 client metadata and no `client_secret`.
+
+Stored `private_key_jwt` clients are checked against these rules again every
+time they are loaded. A client registered before the limits existed whose keys
+exceed them is rejected with `invalid_client` (the reason is logged at debug
+level with its `client_id`) and must re-register. Re-registration issues a new
+`client_id`, so update any `AllowedDelegateClients` entries that name the old
+one.
 
 A `private_key_jwt` DCR registration is restricted to the RFC 8693 token-exchange
 grant (`urn:ietf:params:oauth:grant-type:token-exchange`) and cannot request the

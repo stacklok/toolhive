@@ -75,6 +75,15 @@ const (
 	// AuthServerCABundleChecksumAnnotation triggers a rollout when a selected CA bundle changes.
 	AuthServerCABundleChecksumAnnotation = "toolhive.stacklok.dev/authserver-ca-checksum"
 
+	// AuthServerSPIFFEBundleVolumePrefix is the prefix for SPIFFE trust-bundle ConfigMap volumes.
+	AuthServerSPIFFEBundleVolumePrefix = "authserver-spiffe-bundle-"
+
+	// AuthServerSPIFFEBundleMountPath is the base directory for SPIFFE trust bundles.
+	AuthServerSPIFFEBundleMountPath = "/etc/toolhive/authserver/spiffe-bundles"
+
+	// AuthServerSPIFFEBundleFileName is the controlled filename for a projected trust bundle.
+	AuthServerSPIFFEBundleFileName = "bundle.json"
+
 	// UpstreamClientSecretEnvVar is the prefix for upstream client secret environment variables.
 	// Actual names are TOOLHIVE_UPSTREAM_CLIENT_SECRET_<PROVIDER> where PROVIDER is the
 	// upstream name uppercased with hyphens replaced by underscores (e.g.,
@@ -330,20 +339,30 @@ func buildSPIFFETrustDomainRunConfigs(
 			Name:         domain.Name,
 			TrustDomain:  domain.TrustDomain,
 			Methods:      methods,
-			BundleSource: buildSPIFFEBundleSourceRunConfig(domain.BundleSource),
+			BundleSource: buildSPIFFEBundleSourceRunConfig(domain.BundleSource, i),
 		}
 	}
 	return configs
 }
 
 // buildSPIFFEBundleSourceRunConfig converts the CRD's discriminated
-// bundle-source union to the runtime shape.
-func buildSPIFFEBundleSourceRunConfig(source mcpv1beta1.SPIFFEBundleSourceConfig) authserver.SPIFFEBundleSourceRunConfig {
+// bundle-source union to the runtime shape. index identifies the owning
+// trust-domain declaration's position, which a file source needs to derive
+// the per-domain mount path GenerateAuthServerVolumes projects the
+// referenced ConfigMap key to.
+func buildSPIFFEBundleSourceRunConfig(
+	source mcpv1beta1.SPIFFEBundleSourceConfig, index int,
+) authserver.SPIFFEBundleSourceRunConfig {
 	converted := authserver.SPIFFEBundleSourceRunConfig{Type: authserver.SPIFFEBundleSourceType(source.Type)}
 	if source.Endpoint != nil {
 		converted.Endpoint = &authserver.SPIFFEBundleEndpointSourceRunConfig{
 			URL:     source.Endpoint.URL,
 			Profile: authserver.SPIFFEBundleEndpointProfile(source.Endpoint.Profile),
+		}
+	}
+	if source.File != nil {
+		converted.File = &authserver.SPIFFEFileBundleSourceRunConfig{
+			Path: fmt.Sprintf("%s/%d/%s", AuthServerSPIFFEBundleMountPath, index, AuthServerSPIFFEBundleFileName),
 		}
 	}
 	if source.WorkloadAPI != nil {
@@ -504,7 +523,7 @@ func EmbeddedAuthServerCABundleChecksumForConfig(
 // GenerateAuthServerVolumes generates volumes and mounts for auth server
 // signing keys, HMAC secrets, Redis CA certificates, and CA bundles.
 // Returns an error when a CA bundle reference is malformed.
-// The volumes are configured with 0400 permissions for security.
+// Secret-backed key volumes use 0400; trust material is projected read-only.
 //
 // For signing keys, files are mounted at /etc/toolhive/authserver/keys/key-{N}.pem
 // For HMAC secrets, files are mounted at /etc/toolhive/authserver/hmac/hmac-{N}
@@ -570,6 +589,30 @@ func GenerateAuthServerVolumes(
 			Name:      volumeName,
 			MountPath: fmt.Sprintf("%s/%s", AuthServerHMACMountPath, fileName),
 			SubPath:   fileName,
+			ReadOnly:  true,
+		})
+	}
+
+	for idx, domain := range authConfig.SPIFFETrustDomains {
+		if domain.BundleSource.File == nil {
+			continue
+		}
+		volumeName := fmt.Sprintf("%s%d", AuthServerSPIFFEBundleVolumePrefix, idx)
+		mountPath := fmt.Sprintf("%s/%d", AuthServerSPIFFEBundleMountPath, idx)
+		volumes = append(volumes, corev1.Volume{
+			Name: volumeName,
+			VolumeSource: corev1.VolumeSource{ConfigMap: &corev1.ConfigMapVolumeSource{
+				LocalObjectReference: corev1.LocalObjectReference{Name: domain.BundleSource.File.ConfigMapName},
+				Items: []corev1.KeyToPath{{
+					Key:  domain.BundleSource.File.ConfigMapKey,
+					Path: AuthServerSPIFFEBundleFileName,
+				}},
+				DefaultMode: k8sptr.To(int32(0444)), // Public JWKS; readable by nonroot without fsGroup.
+			}},
+		})
+		volumeMounts = append(volumeMounts, corev1.VolumeMount{
+			Name:      volumeName,
+			MountPath: mountPath,
 			ReadOnly:  true,
 		})
 	}

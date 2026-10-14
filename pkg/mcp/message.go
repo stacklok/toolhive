@@ -55,12 +55,17 @@ func DecodeMessage(body []byte) (msg jsonrpc2.Message, err error) {
 	if _, isRequest := envelope["method"]; isRequest && !decodableParams(envelope["params"]) {
 		return nil, newUndecodableParams(id)
 	}
+	return decodeWithExactID(body, envelope, id)
+}
+
+// decodeWithExactID decodes an admitted envelope, preserving id exactly.
+func decodeWithExactID(body []byte, envelope map[string]json.RawMessage, id jsonrpc2.ID) (jsonrpc2.Message, error) {
 	// MCP permits an error response without an ID. The decoder requires one;
 	// supply it only for decoding and restore the absent ID below.
 	if envelope["error"] != nil && !id.IsValid() {
 		body = append([]byte(`{"id":0,`), body[1:]...)
 	}
-	msg, err = jsonrpc2.DecodeMessage(body)
+	msg, err := jsonrpc2.DecodeMessage(body)
 	if err != nil {
 		return nil, ambiguousRequest
 	}

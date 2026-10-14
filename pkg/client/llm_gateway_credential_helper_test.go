@@ -50,13 +50,20 @@ func readConfigDoc(t *testing.T, path string) claudeDesktopConfig {
 	return doc
 }
 
+func claudeDesktopTestHelperPath() string {
+	if runtime.GOOS == "windows" {
+		return `C:\opt\toolhive\bin\thv.exe`
+	}
+	return "/opt/toolhive/bin/thv"
+}
+
 func claudeDesktopApplyCfg() llmgateway.ApplyConfig {
 	return llmgateway.ApplyConfig{
 		GatewayURL:       "https://gw.example.com",
 		AnthropicBaseURL: "https://gw.example.com/anthropic",
 		// The shim consumes TokenHelperPath (the absolute thv path), not the
 		// shell-string TokenHelperCommand that direct-mode clients use.
-		TokenHelperPath: "/opt/toolhive/bin/thv",
+		TokenHelperPath: claudeDesktopTestHelperPath(),
 	}
 }
 
@@ -86,10 +93,17 @@ func TestConfigureCredentialHelper_WritesConfigMetaAndShim(t *testing.T) {
 	assert.Equal(t, shimPath, doc.InferenceCredentialHelper)
 	info, err := os.Stat(shimPath)
 	require.NoError(t, err)
-	assert.Equal(t, os.FileMode(0o700), info.Mode().Perm())
+	if runtime.GOOS != "windows" {
+		assert.Equal(t, os.FileMode(0o700), info.Mode().Perm())
+	}
 	shim, err := os.ReadFile(shimPath) // #nosec G304 -- test-controlled path
 	require.NoError(t, err)
-	assert.Contains(t, string(shim), `exec '/opt/toolhive/bin/thv' llm token`)
+	if runtime.GOOS == "windows" {
+		assert.True(t, strings.HasSuffix(shimPath, "claude-desktop-helper.cmd"))
+		assert.Contains(t, string(shim), `call "`+claudeDesktopTestHelperPath()+`" llm token`)
+	} else {
+		assert.Contains(t, string(shim), `exec '/opt/toolhive/bin/thv' llm token`)
+	}
 	assert.Contains(t, string(shim), "--skip-browser")
 
 	// _meta.json selects our config by the config document's id.
@@ -252,11 +266,10 @@ func TestRevertCredentialHelper_LeavesForeignAppliedIDIntact(t *testing.T) {
 // Each case gets its own sentinel file so subtests run in parallel safely.
 func TestRevertCredentialHelper_RejectsUnsafeConfigPath(t *testing.T) {
 	t.Parallel()
-	cm, _ := newClaudeDesktopManager(t)
+	cm, metaPath := newClaudeDesktopManager(t)
 	// configLibrary must exist so revert reaches the guard rather than
 	// early-returning on a missing dir.
-	require.NoError(t, os.MkdirAll(
-		filepath.Join(cm.homeDir, "Library", "Application Support", "Claude-3p", "configLibrary"), 0o700))
+	require.NoError(t, os.MkdirAll(filepath.Dir(metaPath), 0o700))
 
 	cases := []struct {
 		name   string
@@ -348,6 +361,55 @@ func TestQuoteForPOSIXShell_SurvivesRealShell(t *testing.T) {
 	assert.True(t, strings.HasPrefix(string(out), "/a"))
 }
 
+func TestQuoteForCmd(t *testing.T) {
+	t.Parallel()
+
+	cases := []struct {
+		name string
+		in   string
+		want string
+	}{
+		{"plain path", `C:\opt\thv.exe`, `"C:\opt\thv.exe"`},
+		{"space", `C:\Program Files\thv.exe`, `"C:\Program Files\thv.exe"`},
+		{"embedded quote", `C:\say "hi"\thv.exe`, `"C:\say ""hi""\thv.exe"`},
+		{"percent", `C:\100%\thv.exe`, `"C:\100%%\thv.exe"`},
+		{"empty", "", `""`},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			assert.Equal(t, tc.want, quoteForCmd(tc.in))
+		})
+	}
+}
+
+func TestWriteCredentialHelperShim_ExecutesWithHostilePath_Windows(t *testing.T) {
+	t.Parallel()
+	if runtime.GOOS != "windows" {
+		t.Skip("Windows .cmd shim")
+	}
+
+	hostileDir := filepath.Join(t.TempDir(), "O'Brien we ird")
+	require.NoError(t, os.MkdirAll(hostileDir, 0o700))
+	fakeThv := filepath.Join(hostileDir, "thv.cmd")
+	require.NoError(t, os.WriteFile(fakeThv, []byte("@echo off\r\necho ARGS: %*\r\n"), 0o700))
+
+	cm := &ClientManager{homeDir: t.TempDir()}
+	shimPath, err := cm.writeCredentialHelperShim(fakeThv)
+	require.NoError(t, err)
+	assert.True(t, strings.HasSuffix(shimPath, "claude-desktop-helper.cmd"))
+
+	out, err := exec.Command("cmd.exe", "/c", shimPath).CombinedOutput() // #nosec G204 -- test-controlled path
+	require.NoError(t, err, "shim failed: %s", out)
+	assert.Equal(t, "ARGS: llm token --skip-browser", strings.TrimSpace(string(out)))
+
+	cmd := exec.Command("cmd.exe", "/c", shimPath) // #nosec G204 -- test-controlled path
+	cmd.Env = append(os.Environ(), "CLAUDE_HELPER_CONTEXT=interactive")
+	out, err = cmd.CombinedOutput()
+	require.NoError(t, err, "shim failed: %s", out)
+	assert.Equal(t, "ARGS: llm token", strings.TrimSpace(string(out)))
+}
+
 // TestWriteCredentialHelperShim_RequiresAbsolutePath proves the writer fails
 // closed on anything that is not an absolute path. Defeating PATH resolution is
 // the whole point of the shim, so a relative path — which Claude Desktop would
@@ -381,13 +443,24 @@ func TestWriteCredentialHelperShim_UsesAbsolutePath(t *testing.T) {
 	t.Parallel()
 	cm := &ClientManager{homeDir: t.TempDir()}
 
-	shimPath, err := cm.writeCredentialHelperShim("/opt/toolhive/bin/thv")
+	helperPath := claudeDesktopTestHelperPath()
+	shimPath, err := cm.writeCredentialHelperShim(helperPath)
 	require.NoError(t, err)
 	shim, err := os.ReadFile(shimPath) // #nosec G304 -- test-controlled path
 	require.NoError(t, err)
 
-	assert.Contains(t, string(shim), `exec '/opt/toolhive/bin/thv' llm token`)
-	assert.Contains(t, string(shim), `exec '/opt/toolhive/bin/thv' llm token --skip-browser`)
+	if runtime.GOOS == "windows" {
+		assert.Contains(t, string(shim), `call "`+helperPath+`" llm token`)
+		assert.Contains(t, string(shim), `call "`+helperPath+`" llm token --skip-browser`)
+		silent, interactive, found := strings.Cut(string(shim), ":interactive")
+		require.True(t, found, "Windows shim must have a :interactive label")
+		assert.Contains(t, silent, "--skip-browser")
+		assert.NotContains(t, interactive, "--skip-browser")
+		return
+	}
+
+	assert.Contains(t, string(shim), `exec '`+helperPath+`' llm token`)
+	assert.Contains(t, string(shim), `exec '`+helperPath+`' llm token --skip-browser`)
 	// The interactive branch must NOT pass --skip-browser: it is the only
 	// context permitted to open a browser for a full OIDC re-auth.
 	interactive, _, found := strings.Cut(string(shim), "\nfi\n")

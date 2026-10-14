@@ -1446,6 +1446,7 @@ func buildDCRUpstreamRunConfig(
 	rc := &authserver.DCRUpstreamConfig{
 		DiscoveryURL:         dcr.DiscoveryURL,
 		RegistrationEndpoint: dcr.RegistrationEndpoint,
+		RotationKey:          dcr.RotationKey,
 		SoftwareID:           dcr.SoftwareID,
 		SoftwareStatement:    dcr.SoftwareStatement,
 	}

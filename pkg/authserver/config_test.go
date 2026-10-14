@@ -1294,6 +1294,31 @@ func TestDCRUpstreamConfigValidate(t *testing.T) {
 			},
 		},
 		{
+			name: "rotation_key within the allowed alphabet passes validation",
+			config: DCRUpstreamConfig{
+				RegistrationEndpoint: "https://idp.example.com/register",
+				RotationKey:          "2026-10.ion_v2-A",
+			},
+		},
+		{
+			name: "rotation_key with characters outside the allowed alphabet rejects",
+			config: DCRUpstreamConfig{
+				RegistrationEndpoint: "https://idp.example.com/register",
+				RotationKey:          "rotate me",
+			},
+			wantErr: true,
+			errMsg:  "rotation_key must be 1-64 characters",
+		},
+		{
+			name: "rotation_key longer than 64 characters rejects",
+			config: DCRUpstreamConfig{
+				RegistrationEndpoint: "https://idp.example.com/register",
+				RotationKey:          strings.Repeat("a", 65),
+			},
+			wantErr: true,
+			errMsg:  "rotation_key must be 1-64 characters",
+		},
+		{
 			name: "both initial_access_token_file and initial_access_token_env_var rejects",
 			config: DCRUpstreamConfig{
 				RegistrationEndpoint:     "https://idp.example.com/register",

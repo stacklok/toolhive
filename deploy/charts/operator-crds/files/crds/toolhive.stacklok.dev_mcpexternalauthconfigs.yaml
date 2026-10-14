@@ -1736,6 +1736,20 @@ spec:
                                   maxLength: 2048
                                   pattern: ^https://[^\s?#]+[^/\s?#]$
                                   type: string
+                                rotationKey:
+                                  description: |-
+                                    RotationKey is an optional operator-chosen label that is part of the
+                                    cached registration's identity but is never sent to the upstream.
+                                    Change it to make the proxies register a fresh client at their next
+                                    start instead of reusing the cached one: for example after the
+                                    upstream has dropped the registration (it rejects the stale client_id
+                                    in the user's browser, so ToolHive cannot detect it) or when a
+                                    rotation is required. The previous registration's row stays in storage,
+                                    and upstream refresh tokens bound to the previous client_id stop
+                                    refreshing, so affected users sign in again.
+                                  maxLength: 64
+                                  pattern: ^[A-Za-z0-9._-]+$
+                                  type: string
                                 softwareId:
                                   description: |-
                                     SoftwareID is the RFC 7591 "software_id" registration metadata value,
@@ -2115,6 +2129,20 @@ spec:
                                     cost) and matches the conventional URL length cap.
                                   maxLength: 2048
                                   pattern: ^https://[^\s?#]+[^/\s?#]$
+                                  type: string
+                                rotationKey:
+                                  description: |-
+                                    RotationKey is an optional operator-chosen label that is part of the
+                                    cached registration's identity but is never sent to the upstream.
+                                    Change it to make the proxies register a fresh client at their next
+                                    start instead of reusing the cached one: for example after the
+                                    upstream has dropped the registration (it rejects the stale client_id
+                                    in the user's browser, so ToolHive cannot detect it) or when a
+                                    rotation is required. The previous registration's row stays in storage,
+                                    and upstream refresh tokens bound to the previous client_id stop
+                                    refreshing, so affected users sign in again.
+                                  maxLength: 64
+                                  pattern: ^[A-Za-z0-9._-]+$
                                   type: string
                                 softwareId:
                                   description: |-
@@ -4622,6 +4650,20 @@ spec:
                                   maxLength: 2048
                                   pattern: ^https://[^\s?#]+[^/\s?#]$
                                   type: string
+                                rotationKey:
+                                  description: |-
+                                    RotationKey is an optional operator-chosen label that is part of the
+                                    cached registration's identity but is never sent to the upstream.
+                                    Change it to make the proxies register a fresh client at their next
+                                    start instead of reusing the cached one: for example after the
+                                    upstream has dropped the registration (it rejects the stale client_id
+                                    in the user's browser, so ToolHive cannot detect it) or when a
+                                    rotation is required. The previous registration's row stays in storage,
+                                    and upstream refresh tokens bound to the previous client_id stop
+                                    refreshing, so affected users sign in again.
+                                  maxLength: 64
+                                  pattern: ^[A-Za-z0-9._-]+$
+                                  type: string
                                 softwareId:
                                   description: |-
                                     SoftwareID is the RFC 7591 "software_id" registration metadata value,
@@ -5001,6 +5043,20 @@ spec:
                                     cost) and matches the conventional URL length cap.
                                   maxLength: 2048
                                   pattern: ^https://[^\s?#]+[^/\s?#]$
+                                  type: string
+                                rotationKey:
+                                  description: |-
+                                    RotationKey is an optional operator-chosen label that is part of the
+                                    cached registration's identity but is never sent to the upstream.
+                                    Change it to make the proxies register a fresh client at their next
+                                    start instead of reusing the cached one: for example after the
+                                    upstream has dropped the registration (it rejects the stale client_id
+                                    in the user's browser, so ToolHive cannot detect it) or when a
+                                    rotation is required. The previous registration's row stays in storage,
+                                    and upstream refresh tokens bound to the previous client_id stop
+                                    refreshing, so affected users sign in again.
+                                  maxLength: 64
+                                  pattern: ^[A-Za-z0-9._-]+$
                                   type: string
                                 softwareId:
                                   description: |-

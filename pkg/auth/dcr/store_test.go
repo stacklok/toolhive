@@ -109,6 +109,10 @@ func TestStorageBackedStore_DistinctKeysDoNotCollide(t *testing.T) {
 		RedirectURI: "https://toolhive.example.com/oauth/callback",
 		ScopesHash:  storage.ScopesHash([]string{"openid"}),
 	}
+	// keyF is keyA under an operator-set RotationKey: the rotation must
+	// address its own entry while keyA's row stays reachable.
+	keyF := keyA
+	keyF.RotationKey = "r2"
 
 	// The persisted *storage.DCRCredentials shape requires non-empty
 	// AuthorizationEndpoint / TokenEndpoint per validateDCRCredentialsForStore;
@@ -126,7 +130,7 @@ func TestStorageBackedStore_DistinctKeysDoNotCollide(t *testing.T) {
 		key      Key
 		clientID string
 	}{
-		{keyA, "a"}, {keyB, "b"}, {keyC, "c"}, {keyD, "d"}, {keyE, "e"},
+		{keyA, "a"}, {keyB, "b"}, {keyC, "c"}, {keyD, "d"}, {keyE, "e"}, {keyF, "f"},
 	} {
 		_, err := store.PutIfAbsent(ctx, put.key, resolution(put.clientID))
 		require.NoError(t, err)
@@ -141,6 +145,7 @@ func TestStorageBackedStore_DistinctKeysDoNotCollide(t *testing.T) {
 		{keyC, "c"},
 		{keyD, "d"},
 		{keyE, "e"},
+		{keyF, "f"},
 	} {
 		got, ok, err := store.Get(ctx, tc.key)
 		require.NoError(t, err)
@@ -375,6 +380,7 @@ func TestResolutionCredentialsRoundTrip(t *testing.T) {
 		UpstreamID:  "https://upstream.example.com",
 		RedirectURI: "https://thv.example.com/oauth/callback",
 		ScopesHash:  storage.ScopesHash([]string{"openid", "profile"}),
+		RotationKey: "2026-10",
 	}
 
 	original := &Resolution{

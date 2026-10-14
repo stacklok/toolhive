@@ -157,6 +157,10 @@ const docTemplate = `{
                         "description": "RegistrationEndpoint is the RFC 7591 registration endpoint URL used\ndirectly, bypassing discovery. Because no discovery is performed,\nserver-capability fields (token_endpoint_auth_methods_supported,\nscopes_supported) are unavailable on this code path; the caller is\nexpected to also supply AuthorizationEndpoint, TokenEndpoint, and an\nexplicit Scopes list on the parent OAuth2UpstreamRunConfig. Auth\nmethod falls back to the resolver's default (client_secret_basic).\n\nMutually exclusive with DiscoveryURL.",
                         "type": "string"
                     },
+                    "rotation_key": {
+                        "description": "RotationKey is an optional operator-chosen label (1-64 characters from\n[A-Za-z0-9._-]) that becomes part of the cached registration's identity\nwithout being sent to the upstream. Changing it makes the next start\nregister a fresh client instead of reusing the cached one. Use it when\nthe upstream has dropped the registration it issued — that rejection is\nonly visible in the user's browser, so the resolver cannot detect it —\nor when a registration must be rotated on request. The row written\nunder the previous value is left in place. Upstream refresh tokens\nbound to the previous client_id stop refreshing once the client\nchanges; affected users sign in again.",
+                        "type": "string"
+                    },
                     "software_id": {
                         "description": "SoftwareID is the RFC 7591 \"software_id\" registration metadata value,\nidentifying the client software independent of any particular\nregistration instance.",
                         "type": "string"

@@ -10,6 +10,7 @@ import (
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
@@ -300,6 +301,68 @@ func TestParsingMiddlewareRejectsBOMPrefixedAmbiguousJSON(t *testing.T) {
 
 	assert.Equal(t, http.StatusBadRequest, recorder.Code)
 	assert.False(t, nextCalled)
+}
+
+func TestParsingMiddlewareRejectsBodiesOnNonPOSTMethods(t *testing.T) {
+	t.Parallel()
+
+	const body = `{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"weather"}}`
+	tests := []struct {
+		name         string
+		method       string
+		body         string
+		chunked      bool // unknown length (Transfer-Encoding: chunked)
+		wantRejected bool
+	}{
+		{name: "GET without body", method: http.MethodGet},
+		{name: "DELETE without body", method: http.MethodDelete},
+		{name: "OPTIONS without body", method: http.MethodOptions},
+		{name: "lower-case post without body", method: "post"},
+		{name: "chunked GET with empty body", method: http.MethodGet, chunked: true},
+		{name: "GET with body", method: http.MethodGet, body: body, wantRejected: true},
+		{name: "DELETE with body", method: http.MethodDelete, body: body, wantRejected: true},
+		{name: "lower-case post with body", method: "post", body: body, wantRejected: true},
+		{name: "mixed-case Post with body", method: "Post", body: body, wantRejected: true},
+		{name: "PUT with body", method: http.MethodPut, body: body, wantRejected: true},
+		{name: "PATCH with body", method: http.MethodPatch, body: body, wantRejected: true},
+		{name: "chunked PUT with body", method: http.MethodPut, body: body, chunked: true, wantRejected: true},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			var nextCalled bool
+			var forwarded []byte
+			next := http.HandlerFunc(func(_ http.ResponseWriter, r *http.Request) {
+				nextCalled = true
+				var err error
+				forwarded, err = io.ReadAll(r.Body)
+				require.NoError(t, err)
+			})
+
+			req := httptest.NewRequest(tt.method, "/mcp", nil)
+			if tt.body != "" {
+				req = httptest.NewRequest(tt.method, "/mcp", strings.NewReader(tt.body))
+			}
+			if tt.chunked {
+				req.ContentLength = -1
+				req.Body = io.NopCloser(strings.NewReader(tt.body))
+			}
+			recorder := httptest.NewRecorder()
+
+			ParsingMiddleware(next).ServeHTTP(recorder, req)
+
+			if tt.wantRejected {
+				assert.False(t, nextCalled, "a body on a non-POST method must not reach the next handler")
+				assert.Equal(t, http.StatusBadRequest, recorder.Code)
+				return
+			}
+			assert.True(t, nextCalled)
+			assert.Equal(t, http.StatusOK, recorder.Code)
+			assert.Empty(t, forwarded)
+		})
+	}
 }
 
 func TestParsingMiddlewarePreservesValidBody(t *testing.T) {

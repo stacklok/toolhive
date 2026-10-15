@@ -550,6 +550,9 @@ const docTemplate = `{
                     "storage": {
                         "$ref": "#/components/schemas/storage.RunConfig"
                     },
+                    "tls_listener": {
+                        "$ref": "#/components/schemas/authserver.TLSListenerRunConfig"
+                    },
                     "token_lifespans": {
                         "$ref": "#/components/schemas/authserver.TokenLifespanRunConfig"
                     },
@@ -713,6 +716,18 @@ const docTemplate = `{
                     },
                     "signing_key_file": {
                         "description": "SigningKeyFile is the filename of the primary signing key (relative to KeyDir).\nThis key is used for signing new tokens.",
+                        "type": "string"
+                    }
+                },
+                "type": "object"
+            },
+            "authserver.TLSListenerRunConfig": {
+                "description": "TLSListener configures auth server routes to be served over TLS on port 8443.\nIt is currently rejected because the runner does not start this listener.",
+                "properties": {
+                    "cert_file": {
+                        "type": "string"
+                    },
+                    "key_file": {
                         "type": "string"
                     }
                 },

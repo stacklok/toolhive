@@ -95,10 +95,12 @@ type Request struct {
 	// RotationKey is an optional operator-chosen label folded into the cache
 	// key (and the in-process singleflight key) when non-empty. It is never
 	// sent to the upstream. Changing it forces a fresh RFC 7591 registration
-	// on the next resolve, which is how an operator retires a registration
-	// the upstream no longer recognises without editing the credential store
-	// by hand. An empty value addresses the same cache row as a Request
-	// written before the field existed.
+	// on the next resolve, without editing the credential store by hand.
+	// ResolveCredentials replaces a registration the upstream rejects with
+	// invalid_client on its own (see verifyCachedRegistration); RotationKey
+	// is how an operator retires one the probe cannot tell is gone, or
+	// rotates one on request. An empty value addresses the same cache row as
+	// a Request written before the field existed.
 	RotationKey string
 
 	// CodeChallengeMethodsSupported lists the PKCE challenge methods the

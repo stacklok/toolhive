@@ -625,11 +625,14 @@ type AuthenticationDCRUpstreamConfig struct {
 	// RotationKey is an optional operator-chosen label (1-64 characters from
 	// [A-Za-z0-9._-]) that becomes part of the cached registration's identity
 	// without being sent to the upstream. Changing it makes the next start
-	// register a fresh client instead of reusing the cached one. Use it when
-	// the upstream has dropped the registration it issued — that rejection is
-	// only visible in the user's browser, so the resolver cannot detect it —
-	// or when a registration must be rotated on request. The row written
-	// under the previous value is left in place. Upstream refresh tokens
+	// register a fresh client instead of reusing the cached one. At start the
+	// resolver checks the cached client at the upstream's token endpoint and
+	// replaces it by itself when the upstream answers invalid_client. Use
+	// RotationKey when the upstream has dropped the registration and that
+	// check cannot tell (an upstream that answers a dropped public client
+	// like a live one, or a private_key_jwt client), so the rejection is only
+	// visible in the user's browser, or when a registration must be rotated
+	// on request. The row written under the previous value is left in place. Upstream refresh tokens
 	// bound to the previous client_id stop refreshing once the client
 	// changes; affected users sign in again.
 	RotationKey OptString `json:"rotation_key"`

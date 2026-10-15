@@ -1604,6 +1604,16 @@ type OIDCUpstreamConfig struct {
 	// +optional
 	AdditionalTokenParams map[string]string `json:"additionalTokenParams,omitempty"`
 
+	// OmitScopeOnRefresh stops the scope parameter from being sent on
+	// refresh_token grant requests to the upstream provider's token endpoint.
+	// Scopes are still sent on the authorization request.
+	// By default (false), the configured scopes are sent on refresh as well,
+	// which some providers require to avoid narrowing the refreshed token.
+	// Set it for providers that reject scope on refresh, such as Salesforce
+	// ("invalid_request - scope parameter not supported").
+	// +optional
+	OmitScopeOnRefresh bool `json:"omitScopeOnRefresh,omitempty"`
+
 	// SubjectClaim names the validated ID-token claim to use as the upstream
 	// subject. Defaults to "sub" when empty. Set it for IdPs where "sub" isn't
 	// stable per user — e.g. Entra/Azure AD, whose "sub" rotates per application
@@ -1774,6 +1784,16 @@ type OAuth2UpstreamConfig struct {
 	// +kubebuilder:validation:MaxProperties=16
 	// +optional
 	AdditionalTokenParams map[string]string `json:"additionalTokenParams,omitempty"`
+
+	// OmitScopeOnRefresh stops the scope parameter from being sent on
+	// refresh_token grant requests to the upstream provider's token endpoint.
+	// Scopes are still sent on the authorization request.
+	// By default (false), the configured scopes are sent on refresh as well,
+	// which some providers require to avoid narrowing the refreshed token.
+	// Set it for providers that reject scope on refresh, such as Salesforce
+	// ("invalid_request - scope parameter not supported").
+	// +optional
+	OmitScopeOnRefresh bool `json:"omitScopeOnRefresh,omitempty"`
 
 	// CABundleRef references a ConfigMap containing a CA bundle added to the
 	// system roots when connecting to this upstream; it does not restrict trust

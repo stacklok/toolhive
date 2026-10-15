@@ -332,6 +332,10 @@ const docTemplate = `{
                         "description": "InsecureAllowHTTP permits plain-HTTP authorization and token endpoint URLs\nfor this upstream. Only for in-cluster development environments (e.g. an\nOAuth2 provider served over HTTP in a kind cluster) where TLS is not\navailable. Never set this in production.",
                         "type": "boolean"
                     },
+                    "omit_scope_on_refresh": {
+                        "description": "OmitScopeOnRefresh stops the ` + "`" + `scope` + "`" + ` parameter from being sent on\nrefresh_token grant requests. Scopes are still sent on the authorization\nrequest. Useful for providers that reject ` + "`" + `scope` + "`" + ` on refresh, such as\nSalesforce. See upstream.CommonOAuthConfig.",
+                        "type": "boolean"
+                    },
                     "redirect_uri": {
                         "description": "RedirectURI is the callback URL where the upstream IDP will redirect after authentication.\nFor a DCR upstream (dcr_config set) an empty value is resolved to\n` + "`" + `{issuer}/oauth/callback` + "`" + `; a pre-provisioned client (client_id set) must\nspecify it. Its hostname must match the browser-facing authorize URL\n(issuer, or authorization_endpoint_base_url when set): /oauth/callback is\nbound to the browser that started the login by a host-only cookie, so a\ndifferent host rejects every browser login (Config.Validate warns).",
                         "type": "string"
@@ -408,6 +412,10 @@ const docTemplate = `{
                     "issuer_url": {
                         "description": "IssuerURL is the OIDC issuer URL for automatic endpoint discovery.\nMust be a valid HTTPS URL.",
                         "type": "string"
+                    },
+                    "omit_scope_on_refresh": {
+                        "description": "OmitScopeOnRefresh stops the ` + "`" + `scope` + "`" + ` parameter from being sent on\nrefresh_token grant requests. Scopes are still sent on the authorization\nrequest. Useful for providers that reject ` + "`" + `scope` + "`" + ` on refresh, such as\nSalesforce. See upstream.CommonOAuthConfig.",
+                        "type": "boolean"
                     },
                     "redirect_uri": {
                         "description": "RedirectURI is the callback URL where the upstream IDP will redirect after authentication.\nFor a DCR upstream (dcr_config set) an empty value is resolved to\n` + "`" + `{issuer}/oauth/callback` + "`" + `; a pre-provisioned client (client_id set) must\nspecify it. Its hostname must match the browser-facing authorize URL\n(issuer, or authorization_endpoint_base_url when set): /oauth/callback is\nbound to the browser that started the login by a host-only cookie, so a\ndifferent host rejects every browser login (Config.Validate warns).",

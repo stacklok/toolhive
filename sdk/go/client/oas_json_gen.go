@@ -1833,6 +1833,12 @@ func (s *AuthenticationOAuth2UpstreamRunConfig) encodeFields(e *jx.Encoder) {
 		}
 	}
 	{
+		if s.OmitScopeOnRefresh.Set {
+			e.FieldStart("omit_scope_on_refresh")
+			s.OmitScopeOnRefresh.Encode(e)
+		}
+	}
+	{
 		if s.RedirectURI.Set {
 			e.FieldStart("redirect_uri")
 			s.RedirectURI.Encode(e)
@@ -1874,7 +1880,7 @@ func (s *AuthenticationOAuth2UpstreamRunConfig) encodeFields(e *jx.Encoder) {
 	}
 }
 
-var jsonFieldsNameOfAuthenticationOAuth2UpstreamRunConfig = [17]string{
+var jsonFieldsNameOfAuthenticationOAuth2UpstreamRunConfig = [18]string{
 	0:  "additional_authorization_params",
 	1:  "additional_token_params",
 	2:  "allow_private_ips",
@@ -1886,12 +1892,13 @@ var jsonFieldsNameOfAuthenticationOAuth2UpstreamRunConfig = [17]string{
 	8:  "dcr_config",
 	9:  "identity_from_token",
 	10: "insecure_allow_http",
-	11: "redirect_uri",
-	12: "scopes",
-	13: "token_endpoint",
-	14: "token_endpoint_auth_method",
-	15: "token_response_mapping",
-	16: "userinfo",
+	11: "omit_scope_on_refresh",
+	12: "redirect_uri",
+	13: "scopes",
+	14: "token_endpoint",
+	15: "token_endpoint_auth_method",
+	16: "token_response_mapping",
+	17: "userinfo",
 }
 
 // Decode decodes AuthenticationOAuth2UpstreamRunConfig from json.
@@ -2011,6 +2018,16 @@ func (s *AuthenticationOAuth2UpstreamRunConfig) Decode(d *jx.Decoder) error {
 				return nil
 			}(); err != nil {
 				return errors.Wrap(err, "decode field \"insecure_allow_http\"")
+			}
+		case "omit_scope_on_refresh":
+			if err := func() error {
+				s.OmitScopeOnRefresh.Reset()
+				if err := s.OmitScopeOnRefresh.Decode(d); err != nil {
+					return err
+				}
+				return nil
+			}(); err != nil {
+				return errors.Wrap(err, "decode field \"omit_scope_on_refresh\"")
 			}
 		case "redirect_uri":
 			if err := func() error {
@@ -2287,6 +2304,12 @@ func (s *AuthenticationOIDCUpstreamRunConfig) encodeFields(e *jx.Encoder) {
 		}
 	}
 	{
+		if s.OmitScopeOnRefresh.Set {
+			e.FieldStart("omit_scope_on_refresh")
+			s.OmitScopeOnRefresh.Encode(e)
+		}
+	}
+	{
 		if s.RedirectURI.Set {
 			e.FieldStart("redirect_uri")
 			s.RedirectURI.Encode(e)
@@ -2316,7 +2339,7 @@ func (s *AuthenticationOIDCUpstreamRunConfig) encodeFields(e *jx.Encoder) {
 	}
 }
 
-var jsonFieldsNameOfAuthenticationOIDCUpstreamRunConfig = [14]string{
+var jsonFieldsNameOfAuthenticationOIDCUpstreamRunConfig = [15]string{
 	0:  "additional_authorization_params",
 	1:  "additional_token_params",
 	2:  "allow_private_ips",
@@ -2327,10 +2350,11 @@ var jsonFieldsNameOfAuthenticationOIDCUpstreamRunConfig = [14]string{
 	7:  "dcr_config",
 	8:  "insecure_allow_http",
 	9:  "issuer_url",
-	10: "redirect_uri",
-	11: "scopes",
-	12: "subject_claim",
-	13: "userinfo_override",
+	10: "omit_scope_on_refresh",
+	11: "redirect_uri",
+	12: "scopes",
+	13: "subject_claim",
+	14: "userinfo_override",
 }
 
 // Decode decodes AuthenticationOIDCUpstreamRunConfig from json.
@@ -2440,6 +2464,16 @@ func (s *AuthenticationOIDCUpstreamRunConfig) Decode(d *jx.Decoder) error {
 				return nil
 			}(); err != nil {
 				return errors.Wrap(err, "decode field \"issuer_url\"")
+			}
+		case "omit_scope_on_refresh":
+			if err := func() error {
+				s.OmitScopeOnRefresh.Reset()
+				if err := s.OmitScopeOnRefresh.Decode(d); err != nil {
+					return err
+				}
+				return nil
+			}(); err != nil {
+				return errors.Wrap(err, "decode field \"omit_scope_on_refresh\"")
 			}
 		case "redirect_uri":
 			if err := func() error {

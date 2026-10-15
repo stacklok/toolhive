@@ -714,6 +714,12 @@ type OIDCUpstreamRunConfig struct {
 	//nolint:lll // field tags require full JSON+YAML names
 	AdditionalTokenParams map[string]string `json:"additional_token_params,omitempty" yaml:"additional_token_params,omitempty"`
 
+	// OmitScopeOnRefresh stops the `scope` parameter from being sent on
+	// refresh_token grant requests. Scopes are still sent on the authorization
+	// request. Useful for providers that reject `scope` on refresh, such as
+	// Salesforce. See upstream.CommonOAuthConfig.
+	OmitScopeOnRefresh bool `json:"omit_scope_on_refresh,omitempty" yaml:"omit_scope_on_refresh,omitempty"`
+
 	// SubjectClaim names the validated ID-token claim to use as the upstream
 	// subject. Defaults to "sub" when empty. Set for IdPs where "sub" isn't
 	// stable per user (e.g. Entra/Azure AD's "oid"). See upstream.OIDCConfig.
@@ -817,6 +823,12 @@ type OAuth2UpstreamRunConfig struct {
 	// providers that enforce RFC 8707 resource indicators on token requests.
 	//nolint:lll // field tags require full JSON+YAML names
 	AdditionalTokenParams map[string]string `json:"additional_token_params,omitempty" yaml:"additional_token_params,omitempty"`
+
+	// OmitScopeOnRefresh stops the `scope` parameter from being sent on
+	// refresh_token grant requests. Scopes are still sent on the authorization
+	// request. Useful for providers that reject `scope` on refresh, such as
+	// Salesforce. See upstream.CommonOAuthConfig.
+	OmitScopeOnRefresh bool `json:"omit_scope_on_refresh,omitempty" yaml:"omit_scope_on_refresh,omitempty"`
 
 	// DCRConfig enables RFC 7591 Dynamic Client Registration against the
 	// upstream authorization server. When set, the client credentials are

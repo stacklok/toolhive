@@ -472,6 +472,13 @@ components:
                         OAuth2 provider served over HTTP in a kind cluster) where TLS is not
                         available. Never set this in production.
                     type: boolean
+                omit_scope_on_refresh:
+                    description: |-
+                        OmitScopeOnRefresh stops the `scope` parameter from being sent on
+                        refresh_token grant requests. Scopes are still sent on the authorization
+                        request. Useful for providers that reject `scope` on refresh, such as
+                        Salesforce. See upstream.CommonOAuthConfig.
+                    type: boolean
                 redirect_uri:
                     description: |-
                         RedirectURI is the callback URL where the upstream IDP will redirect after authentication.
@@ -563,6 +570,13 @@ components:
                         IssuerURL is the OIDC issuer URL for automatic endpoint discovery.
                         Must be a valid HTTPS URL.
                     type: string
+                omit_scope_on_refresh:
+                    description: |-
+                        OmitScopeOnRefresh stops the `scope` parameter from being sent on
+                        refresh_token grant requests. Scopes are still sent on the authorization
+                        request. Useful for providers that reject `scope` on refresh, such as
+                        Salesforce. See upstream.CommonOAuthConfig.
+                    type: boolean
                 redirect_uri:
                     description: |-
                         RedirectURI is the callback URL where the upstream IDP will redirect after authentication.

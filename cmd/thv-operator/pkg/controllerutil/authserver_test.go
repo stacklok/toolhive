@@ -1542,6 +1542,75 @@ func TestBuildAuthServerRunConfig(t *testing.T) {
 			},
 		},
 		{
+			name: "OIDC upstream propagates OmitScopeOnRefresh",
+			authConfig: &mcpv1beta1.EmbeddedAuthServerConfig{
+				Issuer: "https://auth.example.com",
+				SigningKeySecretRefs: []mcpv1beta1.SecretKeyRef{
+					{Name: "signing-key", Key: "private.pem"},
+				},
+				HMACSecretRefs: []mcpv1beta1.SecretKeyRef{
+					{Name: "hmac-secret", Key: "hmac"},
+				},
+				UpstreamProviders: []mcpv1beta1.UpstreamProviderConfig{
+					{
+						Name: "okta",
+						Type: mcpv1beta1.UpstreamProviderTypeOIDC,
+						OIDCConfig: &mcpv1beta1.OIDCUpstreamConfig{
+							IssuerURL:          "https://okta.example.com",
+							ClientID:           "okta-client-id",
+							RedirectURI:        "https://auth.example.com/callback",
+							Scopes:             []string{"openid", "profile"},
+							OmitScopeOnRefresh: true,
+						},
+					},
+				},
+			},
+			allowedAudiences: defaultAudiences,
+			scopesSupported:  defaultScopes,
+			checkFunc: func(t *testing.T, config *authserver.RunConfig) {
+				t.Helper()
+				require.Len(t, config.Upstreams, 1)
+				upstream := config.Upstreams[0]
+				require.NotNil(t, upstream.OIDCConfig)
+				assert.True(t, upstream.OIDCConfig.OmitScopeOnRefresh)
+			},
+		},
+		{
+			name: "OAuth2 upstream propagates OmitScopeOnRefresh",
+			authConfig: &mcpv1beta1.EmbeddedAuthServerConfig{
+				Issuer: "https://auth.example.com",
+				SigningKeySecretRefs: []mcpv1beta1.SecretKeyRef{
+					{Name: "signing-key", Key: "private.pem"},
+				},
+				HMACSecretRefs: []mcpv1beta1.SecretKeyRef{
+					{Name: "hmac-secret", Key: "hmac"},
+				},
+				UpstreamProviders: []mcpv1beta1.UpstreamProviderConfig{
+					{
+						Name: "salesforce",
+						Type: mcpv1beta1.UpstreamProviderTypeOAuth2,
+						OAuth2Config: &mcpv1beta1.OAuth2UpstreamConfig{
+							AuthorizationEndpoint: "https://login.salesforce.com/services/oauth2/authorize",
+							TokenEndpoint:         "https://login.salesforce.com/services/oauth2/token",
+							ClientID:              "salesforce-client-id",
+							RedirectURI:           "https://auth.example.com/callback",
+							Scopes:                []string{"api", "refresh_token"},
+							OmitScopeOnRefresh:    true,
+						},
+					},
+				},
+			},
+			allowedAudiences: defaultAudiences,
+			scopesSupported:  defaultScopes,
+			checkFunc: func(t *testing.T, config *authserver.RunConfig) {
+				t.Helper()
+				require.Len(t, config.Upstreams, 1)
+				upstream := config.Upstreams[0]
+				require.NotNil(t, upstream.OAuth2Config)
+				assert.True(t, upstream.OAuth2Config.OmitScopeOnRefresh)
+			},
+		},
+		{
 			name:        "OIDC upstream with empty redirectUri defaults to resourceURL/oauth/callback",
 			resourceURL: "https://mcp.example.com",
 			authConfig: &mcpv1beta1.EmbeddedAuthServerConfig{

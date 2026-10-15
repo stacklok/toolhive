@@ -980,6 +980,11 @@ type AuthenticationOAuth2UpstreamRunConfig struct {
 	// OAuth2 provider served over HTTP in a kind cluster) where TLS is not
 	// available. Never set this in production.
 	InsecureAllowHTTP OptBool `json:"insecure_allow_http"`
+	// OmitScopeOnRefresh stops the `scope` parameter from being sent on
+	// refresh_token grant requests. Scopes are still sent on the authorization
+	// request. Useful for providers that reject `scope` on refresh, such as
+	// Salesforce. See upstream.CommonOAuthConfig.
+	OmitScopeOnRefresh OptBool `json:"omit_scope_on_refresh"`
 	// RedirectURI is the callback URL where the upstream IDP will redirect after authentication.
 	// For a DCR upstream (dcr_config set) an empty value is resolved to
 	// `{issuer}/oauth/callback`; a pre-provisioned client (client_id set) must
@@ -1055,6 +1060,11 @@ func (s *AuthenticationOAuth2UpstreamRunConfig) GetIdentityFromToken() OptAuthen
 // GetInsecureAllowHTTP returns the value of InsecureAllowHTTP.
 func (s *AuthenticationOAuth2UpstreamRunConfig) GetInsecureAllowHTTP() OptBool {
 	return s.InsecureAllowHTTP
+}
+
+// GetOmitScopeOnRefresh returns the value of OmitScopeOnRefresh.
+func (s *AuthenticationOAuth2UpstreamRunConfig) GetOmitScopeOnRefresh() OptBool {
+	return s.OmitScopeOnRefresh
 }
 
 // GetRedirectURI returns the value of RedirectURI.
@@ -1140,6 +1150,11 @@ func (s *AuthenticationOAuth2UpstreamRunConfig) SetIdentityFromToken(val OptAuth
 // SetInsecureAllowHTTP sets the value of InsecureAllowHTTP.
 func (s *AuthenticationOAuth2UpstreamRunConfig) SetInsecureAllowHTTP(val OptBool) {
 	s.InsecureAllowHTTP = val
+}
+
+// SetOmitScopeOnRefresh sets the value of OmitScopeOnRefresh.
+func (s *AuthenticationOAuth2UpstreamRunConfig) SetOmitScopeOnRefresh(val OptBool) {
+	s.OmitScopeOnRefresh = val
 }
 
 // SetRedirectURI sets the value of RedirectURI.
@@ -1237,6 +1252,11 @@ type AuthenticationOIDCUpstreamRunConfig struct {
 	// IssuerURL is the OIDC issuer URL for automatic endpoint discovery.
 	// Must be a valid HTTPS URL.
 	IssuerURL OptString `json:"issuer_url"`
+	// OmitScopeOnRefresh stops the `scope` parameter from being sent on
+	// refresh_token grant requests. Scopes are still sent on the authorization
+	// request. Useful for providers that reject `scope` on refresh, such as
+	// Salesforce. See upstream.CommonOAuthConfig.
+	OmitScopeOnRefresh OptBool `json:"omit_scope_on_refresh"`
 	// RedirectURI is the callback URL where the upstream IDP will redirect after authentication.
 	// For a DCR upstream (dcr_config set) an empty value is resolved to
 	// `{issuer}/oauth/callback`; a pre-provisioned client (client_id set) must
@@ -1308,6 +1328,11 @@ func (s *AuthenticationOIDCUpstreamRunConfig) GetIssuerURL() OptString {
 	return s.IssuerURL
 }
 
+// GetOmitScopeOnRefresh returns the value of OmitScopeOnRefresh.
+func (s *AuthenticationOIDCUpstreamRunConfig) GetOmitScopeOnRefresh() OptBool {
+	return s.OmitScopeOnRefresh
+}
+
 // GetRedirectURI returns the value of RedirectURI.
 func (s *AuthenticationOIDCUpstreamRunConfig) GetRedirectURI() OptString {
 	return s.RedirectURI
@@ -1376,6 +1401,11 @@ func (s *AuthenticationOIDCUpstreamRunConfig) SetInsecureAllowHTTP(val OptBool) 
 // SetIssuerURL sets the value of IssuerURL.
 func (s *AuthenticationOIDCUpstreamRunConfig) SetIssuerURL(val OptString) {
 	s.IssuerURL = val
+}
+
+// SetOmitScopeOnRefresh sets the value of OmitScopeOnRefresh.
+func (s *AuthenticationOIDCUpstreamRunConfig) SetOmitScopeOnRefresh(val OptBool) {
+	s.OmitScopeOnRefresh = val
 }
 
 // SetRedirectURI sets the value of RedirectURI.

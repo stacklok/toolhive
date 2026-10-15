@@ -18,9 +18,10 @@ import (
 // considered stale and logged as such by higher-level wiring. The store itself
 // does not expire or evict entries. An upstream can still drop a registration
 // on its own (a ToolHive auth server evicts idle DCR clients); the resolver
-// detects that on the next cache hit and replaces the entry through
-// ReplaceIfUnchanged. An operator retires a cached registration by changing
-// Request.RotationKey, which addresses a new row; the old row is left in place.
+// can detect that on the next cache hit and replace the entry through
+// Replacer.ReplaceIfUnchanged (see verifyCachedRegistration for when it can).
+// An operator retires a cached registration by changing Request.RotationKey,
+// which addresses a new row; the old row is left in place.
 const dcrStaleAgeThreshold = 90 * 24 * time.Hour
 
 // Key is a re-export of storage.DCRKey, kept as a package-local alias so
@@ -67,7 +68,21 @@ type CredentialStore interface {
 	//
 	// The returned *Resolution is always non-nil when err is nil.
 	PutIfAbsent(ctx context.Context, key Key, resolution *Resolution) (*Resolution, error)
+}
 
+// Replacer is implemented by a CredentialStore that can replace a
+// registration the upstream has rejected. It is optional: ResolveCredentials
+// verifies a cached registration against the upstream only when its store
+// implements Replacer, and otherwise returns the cached registration
+// unchecked, without contacting the upstream.
+//
+// It is a separate interface rather than a CredentialStore method so that
+// stores implemented outside this package keep compiling, and so that a
+// wrapper which embeds CredentialStore does not inherit a replacement that
+// skips whatever the wrapper does around writes (key namespacing, a lock
+// that lets only one replica register). A wrapper that supports replacement
+// must implement and forward ReplaceIfUnchanged explicitly.
+type Replacer interface {
 	// ReplaceIfUnchanged replaces the resolution stored at key with
 	// replacement, iff the stored resolution is still the registration the
 	// caller read (it carries expected's ClientID). It is the write path for
@@ -79,12 +94,18 @@ type CredentialStore interface {
 	// concurrent writer's row when the stored registration has already
 	// changed, or the result of claiming the key as PutIfAbsent would when no
 	// row exists any more. Callers MUST use the returned value, for the same
-	// reason as with PutIfAbsent.
+	// reason as with CredentialStore.PutIfAbsent.
 	//
 	// Implementations must reject a nil expected or replacement with an
 	// error. The returned *Resolution is always non-nil when err is nil.
 	ReplaceIfUnchanged(ctx context.Context, key Key, expected, replacement *Resolution) (*Resolution, error)
 }
+
+// Both in-package stores support replacement.
+var (
+	_ Replacer = (*inMemoryStore)(nil)
+	_ Replacer = (*storageBackedStore)(nil)
+)
 
 // NewStorageBackedStore returns a CredentialStore that delegates to a
 // storage.DCRCredentialStore for durable persistence and translates
@@ -198,8 +219,8 @@ func (s *inMemoryStore) PutIfAbsent(ctx context.Context, key Key, resolution *Re
 	return credentialsToResolution(authoritative), nil
 }
 
-// ReplaceIfUnchanged implements CredentialStore by delegating to the
-// embedded *storage.MemoryStorage; see replaceIfUnchanged.
+// ReplaceIfUnchanged implements Replacer by delegating to the embedded
+// *storage.MemoryStorage; see replaceIfUnchanged.
 func (s *inMemoryStore) ReplaceIfUnchanged(
 	ctx context.Context, key Key, expected, replacement *Resolution,
 ) (*Resolution, error) {
@@ -265,7 +286,7 @@ func (s *storageBackedStore) PutIfAbsent(ctx context.Context, key Key, resolutio
 	return credentialsToResolution(authoritative), nil
 }
 
-// ReplaceIfUnchanged implements CredentialStore; see replaceIfUnchanged.
+// ReplaceIfUnchanged implements Replacer; see replaceIfUnchanged.
 func (s *storageBackedStore) ReplaceIfUnchanged(
 	ctx context.Context, key Key, expected, replacement *Resolution,
 ) (*Resolution, error) {

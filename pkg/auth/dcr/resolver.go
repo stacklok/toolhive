@@ -318,11 +318,17 @@ func newDCRStepError(step, issuer, redirectURI string, err error) *dcrStepError 
 // ResolveCredentials performs Dynamic Client Registration for req against
 // the upstream authorization server identified by req.DiscoveryURL or
 // req.RegistrationEndpoint, caching the resulting credentials in cache.
-// On cache hit the resolver sends one token-endpoint request to confirm the
-// upstream still recognises the cached client (verifyCachedRegistration).
-// When the upstream rejects it, the resolver registers a new client and
-// replaces the cached entry; otherwise it returns the cached resolution
-// without discovery or registration I/O.
+// On cache hit, when cache implements Replacer, the resolver sends one
+// token-endpoint request to confirm the upstream still recognises the cached
+// client (verifyCachedRegistration). When the upstream answers invalid_client,
+// the resolver registers a new client and replaces the cached entry;
+// otherwise, and always when cache does not implement Replacer, it returns
+// the cached resolution without discovery or registration I/O.
+//
+// The probe cannot tell every dropped registration apart from a live one: an
+// upstream that validates the grant before authenticating a public client,
+// or a private_key_jwt client, leaves the cached registration in use. For
+// those, the operator retires the registration with Request.RotationKey.
 //
 // The check runs only here, so a registration the upstream drops while the
 // caller keeps using a returned resolution is recovered on the next
@@ -385,22 +391,21 @@ func ResolveCredentials(
 		RotationKey: req.RotationKey,
 	}
 
-	// Cache lookup happens before discovery or registration I/O; a hit is
-	// verified against the upstream inside the flight below.
-	cached, hit, err := lookupCachedResolution(ctx, cache, key, req.Issuer, redirectURI)
-	if err != nil {
-		return nil, newDCRStepError(dcrStepCacheRead, req.Issuer, redirectURI, err)
-	}
-
-	// Coalesce concurrent registrations and cache-hit verifications for the
-	// same Key — see dcrFlight doc comment. The leader runs the closure;
-	// followers receive the leader's *Resolution result. The flight key
-	// embeds the Key fields with a separator that cannot appear in any of
-	// them (newline is not valid in OAuth scope tokens, URLs, or hex digests).
+	// Coalesce concurrent cache lookups, cache-hit verifications and
+	// registrations for the same Key — see dcrFlight doc comment. The leader
+	// runs the closure; followers receive the leader's *Resolution result.
+	// The flight key embeds the Key fields with a separator that cannot
+	// appear in any of them (newline is not valid in OAuth scope tokens,
+	// URLs, or hex digests).
 	//
-	// A defer/recover inside the closure converts a panic in registerAndCache
-	// or revalidateCachedResolution (or anything they call) into a normal
-	// error. Without this, singleflight re-panics the leader's panic in every
+	// The cache is read inside the flight, so a flight always verifies or
+	// registers against the row as it stands when the flight starts, never
+	// one a caller read before an earlier flight for the same Key replaced
+	// it. The lookup still precedes any discovery or registration I/O.
+	//
+	// A defer/recover inside the closure converts a panic in the lookup,
+	// registerAndCache or revalidateCachedResolution (or anything they call)
+	// into a normal error. Without this, singleflight re-panics the leader's panic in every
 	// follower — N concurrent callers
 	// for the same Key would all crash with the same value. The panic is
 	// still surfaced: the captured stack trace is attached to the wrapped
@@ -418,6 +423,10 @@ func ResolveCredentials(
 				res = nil
 			}
 		}()
+		cached, hit, err := lookupCachedResolution(ctx, cache, key, req.Issuer, redirectURI)
+		if err != nil {
+			return nil, newDCRStepError(dcrStepCacheRead, req.Issuer, redirectURI, err)
+		}
 		if hit {
 			return revalidateCachedResolution(ctx, req, redirectURI, scopes, key, cache, cached)
 		}
@@ -432,10 +441,13 @@ func ResolveCredentials(
 // revalidateCachedResolution is the cache-hit body of ResolveCredentials
 // wrapped by the singleflight. It keeps cached unless the upstream rejects
 // the client, in which case it registers a new client and replaces the
-// stale entry with ReplaceIfUnchanged so concurrent replicas converge on a
-// single registration. A failed re-registration is returned as an error
-// rather than falling back to cached: the upstream has just said that client
-// no longer exists.
+// stale entry with Replacer.ReplaceIfUnchanged so concurrent replicas
+// converge on a single registration. A failed re-registration is returned
+// as an error rather than falling back to cached: the upstream has just said
+// that client no longer exists.
+//
+// A cache that does not implement Replacer could not act on a rejection, so
+// the upstream is not contacted at all and cached is returned unchecked.
 func revalidateCachedResolution(
 	ctx context.Context,
 	req *Request,
@@ -445,7 +457,16 @@ func revalidateCachedResolution(
 	cache CredentialStore,
 	cached *Resolution,
 ) (*Resolution, error) {
-	if verifyCachedRegistration(ctx, req, cached) != registrationRejected {
+	replacer, ok := cache.(Replacer)
+	if !ok {
+		return cached, nil
+	}
+
+	status, reason := verifyCachedRegistration(ctx, req, cached)
+	if status == registrationUnverified {
+		logUnverifiedRegistration(ctx, req, key, redirectURI, cached, reason)
+	}
+	if status != registrationRejected {
 		return cached, nil
 	}
 
@@ -454,13 +475,14 @@ func revalidateCachedResolution(
 		"local_issuer", req.Issuer,
 		"upstream_id", key.UpstreamID,
 		"redirect_uri", redirectURI,
+		"rotation_key", key.RotationKey,
 		"client_id", cached.ClientID,
 	)
 	resolution, err := registerClient(ctx, req, redirectURI, scopes)
 	if err != nil {
 		return nil, err
 	}
-	authoritative, err := cache.ReplaceIfUnchanged(ctx, key, cached, resolution)
+	authoritative, err := replacer.ReplaceIfUnchanged(ctx, key, cached, resolution)
 	if err != nil {
 		return nil, newDCRStepError(dcrStepCacheWrite, req.Issuer, redirectURI,
 			fmt.Errorf("cache replace: %w", err))
@@ -475,11 +497,34 @@ func revalidateCachedResolution(
 	return checkAuthoritativeResolution(req, key, redirectURI, resolution, authoritative)
 }
 
+// logUnverifiedRegistration records why a cached registration is used
+// without the upstream having confirmed it. A private_key_jwt client is
+// never probed, so it logs at Debug on every resolve; any other reason is
+// unexpected and logs at Warn.
+func logUnverifiedRegistration(
+	ctx context.Context, req *Request, key Key, redirectURI string, cached *Resolution, reason error,
+) {
+	level := slog.LevelWarn
+	attrs := []any{
+		"local_issuer", req.Issuer,
+		"upstream_id", key.UpstreamID,
+		"redirect_uri", redirectURI,
+		"rotation_key", key.RotationKey,
+		"client_id", cached.ClientID,
+		"token_endpoint_auth_method", cached.TokenEndpointAuthMethod,
+	}
+	if errors.Is(reason, errProbeUnsupportedAuthMethod) {
+		level = slog.LevelDebug
+	} else {
+		attrs = append(attrs, probeErrorAttrs(reason)...)
+	}
+	//nolint:gosec // G706: client_id is public metadata per RFC 7591.
+	slog.Log(ctx, level, "dcr: cached registration not verified; using it as-is", attrs...)
+}
+
 // registerAndCache is the cache-miss body of ResolveCredentials wrapped
-// by the singleflight. It rechecks the cache before any network I/O so
-// followers that arrive after the leader's Put returns immediately see the
-// fresh entry on a subsequent call. Registration (registerClient) and the
-// durable Put live here.
+// by the singleflight. Registration (registerClient) and the durable Put
+// live here; the cache was already read inside the same flight.
 func registerAndCache(
 	ctx context.Context,
 	req *Request,
@@ -488,14 +533,6 @@ func registerAndCache(
 	key Key,
 	cache CredentialStore,
 ) (*Resolution, error) {
-	// Recheck cache: another flight that just finished may have populated
-	// it between our initial lookup and our singleflight entry.
-	if cached, hit, err := lookupCachedResolution(ctx, cache, key, req.Issuer, redirectURI); err != nil {
-		return nil, newDCRStepError(dcrStepCacheRead, req.Issuer, redirectURI, err)
-	} else if hit {
-		return cached, nil
-	}
-
 	resolution, err := registerClient(ctx, req, redirectURI, scopes)
 	if err != nil {
 		return nil, err
@@ -803,10 +840,9 @@ func validateResolveInputs(
 //     signal — the upstream said when its credential expires.
 //   - Soft staleness (now - CreatedAt vs dcrStaleAgeThreshold): the age in
 //     days is logged on every hit, and if it exceeds the threshold an
-//     additional slog.Warn is emitted with a remediation hint so operators
-//     can act on long-lived registrations that may need rotation or
-//     re-registration. This is observability only, not a cache-invalidation
-//     trigger.
+//     additional slog.Warn points operators at Request.RotationKey, the way
+//     to rotate a long-lived registration. This is observability only, not a
+//     cache-invalidation trigger.
 func lookupCachedResolution(
 	ctx context.Context,
 	cache CredentialStore,
@@ -849,11 +885,11 @@ func lookupCachedResolution(
 		//nolint:gosec // G706: client_id is public metadata per RFC 7591.
 		slog.Warn(
 			"dcr: cached registration exceeds staleness threshold; "+
-				"consider rotating the registration via RFC 7592 deregistration "+
-				"and re-registering at next startup",
+				"to rotate it, change dcrConfig.rotationKey and restart",
 			"local_issuer", localIssuer,
 			"upstream_id", key.UpstreamID,
 			"redirect_uri", redirectURI,
+			"rotation_key", key.RotationKey,
 			"client_id", cached.ClientID,
 			"dcr_age_days", ageDays,
 			"stale_threshold_days", int(dcrStaleAgeThreshold/(24*time.Hour)),

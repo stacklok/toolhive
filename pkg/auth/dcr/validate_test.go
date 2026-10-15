@@ -12,6 +12,7 @@ import (
 	"sync"
 	"sync/atomic"
 	"testing"
+	"time"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -319,4 +320,160 @@ func TestResolveCredentials_RejectedRegistrationStillStoredIsAnError(t *testing.
 
 	_, err := ResolveCredentials(context.Background(), req, cache)
 	require.ErrorContains(t, err, "the rejected registration is still stored")
+}
+
+// TestResolveCredentials_CacheHitWithoutReplacerSkipsProbe pins that a store
+// which cannot replace a registration gets today's cache-hit behaviour: the
+// upstream is never contacted, even when it would reject the cached client.
+// The wrapper embeds CredentialStore, as wrappers outside this package do,
+// so it also pins that embedding does not pick up Replacer.
+func TestResolveCredentials_CacheHitWithoutReplacerSkipsProbe(t *testing.T) {
+	t.Parallel()
+
+	upstream := newProbeUpstream(t, oauthErrorResponse(http.StatusUnauthorized, "invalid_client"), http.StatusCreated)
+	cache := struct{ CredentialStore }{newMemoryDCRStore(t)}
+	_, isReplacer := any(cache).(Replacer)
+	require.False(t, isReplacer, "embedding CredentialStore must not provide Replacer")
+	req := preloadCachedRegistration(t, cache, upstream, "client_secret_basic")
+
+	got, err := ResolveCredentials(context.Background(), req, cache)
+	require.NoError(t, err)
+	assert.Equal(t, "cached-client-id", got.ClientID)
+	assert.Zero(t, upstream.tokenRequests.Load(), "a store without Replacer must not be probed")
+	assert.Zero(t, upstream.registrations.Load())
+}
+
+// readHookStore runs afterFirstRead once, after its first Get has read the
+// row and before that Get returns it. Later Gets never wait for the hook
+// (unlike sync.Once.Do, which would block them until it returns).
+type readHookStore struct {
+	inner interface {
+		CredentialStore
+		Replacer
+	}
+	fired          atomic.Bool
+	afterFirstRead func()
+}
+
+func (s *readHookStore) Get(ctx context.Context, key Key) (*Resolution, bool, error) {
+	res, ok, err := s.inner.Get(ctx, key)
+	if s.fired.CompareAndSwap(false, true) {
+		s.afterFirstRead()
+	}
+	return res, ok, err
+}
+
+func (s *readHookStore) PutIfAbsent(ctx context.Context, key Key, res *Resolution) (*Resolution, error) {
+	return s.inner.PutIfAbsent(ctx, key, res)
+}
+
+func (s *readHookStore) ReplaceIfUnchanged(ctx context.Context, key Key, expected, replacement *Resolution) (*Resolution, error) {
+	return s.inner.ReplaceIfUnchanged(ctx, key, expected, replacement)
+}
+
+// TestResolveCredentials_RejectedRegistrationReplacedOncePerProcess covers a
+// second caller for the same Key arriving after the first caller has read
+// the rejected row. Had the cache been read before the singleflight, the
+// first caller would revalidate the row it read after the second caller's
+// flight had already replaced it, and register a second client that the
+// compare-and-set then discards, orphaned upstream. Reading inside the flight
+// makes the second caller share the first caller's flight instead.
+func TestResolveCredentials_RejectedRegistrationReplacedOncePerProcess(t *testing.T) {
+	t.Parallel()
+
+	upstream := newProbeUpstream(t, func(w http.ResponseWriter, r *http.Request) {
+		if clientID, _, _ := r.BasicAuth(); clientID == "cached-client-id" {
+			oauthErrorResponse(http.StatusUnauthorized, "invalid_client")(w, r)
+			return
+		}
+		oauthErrorResponse(http.StatusBadRequest, "invalid_grant")(w, r)
+	}, http.StatusCreated)
+	inner, ok := newMemoryDCRStore(t).(interface {
+		CredentialStore
+		Replacer
+	})
+	require.True(t, ok)
+	req := preloadCachedRegistration(t, inner, upstream, "client_secret_basic")
+
+	var (
+		second    *Resolution
+		secondErr error
+	)
+	secondDone := make(chan struct{})
+	cache := &readHookStore{inner: inner}
+	cache.afterFirstRead = func() {
+		go func() {
+			defer close(secondDone)
+			second, secondErr = ResolveCredentials(context.Background(), req, cache)
+		}()
+		// Give the second caller time to finish on its own if it is not
+		// coalesced with this one.
+		select {
+		case <-secondDone:
+		case <-time.After(250 * time.Millisecond):
+		}
+	}
+
+	first, err := ResolveCredentials(context.Background(), req, cache)
+	require.NoError(t, err)
+	select {
+	case <-secondDone:
+	case <-time.After(5 * time.Second):
+		t.Fatal("timeout waiting for the second ResolveCredentials call")
+	}
+	require.NoError(t, secondErr)
+
+	assert.Equal(t, "fresh-client-id", first.ClientID)
+	assert.Equal(t, "fresh-client-id", second.ClientID)
+	assert.Equal(t, int32(1), upstream.registrations.Load(),
+		"the rejected registration must be replaced by exactly one new client")
+}
+
+func TestProbeErrorAttrs_OmitsServerResponse(t *testing.T) {
+	t.Parallel()
+
+	const secretish = "do-not-log-this-response-text"
+	tests := []struct {
+		name  string
+		token http.HandlerFunc
+		want  []any
+	}{
+		{
+			name: "oauth error with description",
+			token: func(w http.ResponseWriter, _ *http.Request) {
+				w.Header().Set("Content-Type", "application/json")
+				w.WriteHeader(http.StatusBadRequest)
+				_ = json.NewEncoder(w).Encode(map[string]string{
+					"error": "invalid_request", "error_description": secretish,
+				})
+			},
+			want: []any{"error_code", "invalid_request", "status", http.StatusBadRequest},
+		},
+		{
+			name: "non-oauth body",
+			token: func(w http.ResponseWriter, _ *http.Request) {
+				w.WriteHeader(http.StatusBadGateway)
+				_, _ = w.Write([]byte(secretish))
+			},
+			want: []any{"error_code", "", "status", http.StatusBadGateway},
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			upstream := newProbeUpstream(t, tt.token, http.StatusCreated)
+			req := preloadCachedRegistration(t, newMemoryDCRStore(t), upstream, "client_secret_basic")
+			status, reason := verifyCachedRegistration(context.Background(), req, &Resolution{
+				ClientID:                "cached-client-id",
+				ClientSecret:            "cached-client-secret",
+				TokenEndpoint:           upstream.URL + "/token",
+				TokenEndpointAuthMethod: "client_secret_basic",
+			})
+			require.Equal(t, registrationUnverified, status)
+			require.Error(t, reason)
+			assert.Contains(t, reason.Error(), secretish, "the raw error does carry the server's text")
+			attrs := probeErrorAttrs(reason)
+			assert.Equal(t, tt.want, attrs)
+		})
+	}
 }

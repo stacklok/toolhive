@@ -1596,10 +1596,6 @@ func (c *countingStore) PutIfAbsent(ctx context.Context, key Key, res *Resolutio
 	return c.inner.PutIfAbsent(ctx, key, res)
 }
 
-func (c *countingStore) ReplaceIfUnchanged(ctx context.Context, key Key, expected, replacement *Resolution) (*Resolution, error) {
-	return c.inner.ReplaceIfUnchanged(ctx, key, expected, replacement)
-}
-
 // TestResolveDCRCredentials_SingleflightCoalescesConcurrentCallers pins the
 // behaviour that N concurrent callers for the same Key result in exactly
 // one RegisterClientDynamically call against the upstream — preventing the
@@ -1883,10 +1879,6 @@ func (f failingDCRStore) PutIfAbsent(_ context.Context, _ Key, res *Resolution) 
 	return res, nil
 }
 
-func (f failingDCRStore) ReplaceIfUnchanged(ctx context.Context, key Key, _, replacement *Resolution) (*Resolution, error) {
-	return f.PutIfAbsent(ctx, key, replacement)
-}
-
 // TestResolveDCRCredentials_CacheGetFailureWrapped covers PR #5042 review
 // comment #12 for the cache.Get error path. When the store backend fails
 // (e.g. a Redis network error in Phase 3), the resolver wraps the error
@@ -1957,10 +1949,6 @@ func (expiredWinnerDCRStore) Get(_ context.Context, _ Key) (*Resolution, bool, e
 }
 
 func (s expiredWinnerDCRStore) PutIfAbsent(_ context.Context, _ Key, _ *Resolution) (*Resolution, error) {
-	return s.winner, nil
-}
-
-func (s expiredWinnerDCRStore) ReplaceIfUnchanged(_ context.Context, _ Key, _, _ *Resolution) (*Resolution, error) {
 	return s.winner, nil
 }
 
@@ -2171,10 +2159,6 @@ func (panickingPutDCRStore) Get(_ context.Context, _ Key) (*Resolution, bool, er
 }
 
 func (s panickingPutDCRStore) PutIfAbsent(_ context.Context, _ Key, _ *Resolution) (*Resolution, error) {
-	panic(s.panicValue)
-}
-
-func (s panickingPutDCRStore) ReplaceIfUnchanged(_ context.Context, _ Key, _, _ *Resolution) (*Resolution, error) {
 	panic(s.panicValue)
 }
 

@@ -23,6 +23,7 @@ import (
 	"github.com/redis/go-redis/v9"
 	"github.com/stretchr/testify/require"
 
+	"github.com/stacklok/toolhive/pkg/auth/dcr"
 	"github.com/stacklok/toolhive/pkg/authserver"
 	"github.com/stacklok/toolhive/pkg/authserver/server/registration"
 	"github.com/stacklok/toolhive/pkg/authserver/storage"
@@ -41,33 +42,7 @@ import (
 func TestEmbeddedAuthServer_ChainedDCRRecoversFromEvictedRegistration(t *testing.T) {
 	t.Parallel()
 	ctx := context.Background()
-
-	// The upstream's own IdP. The test stops at the upstream's consent page,
-	// so the IdP is never reached.
-	idp, _ := newMockAuthorizationServer(t)
-
-	upstreamRedis := miniredis.RunT(t)
-	upstreamStore := storage.NewRedisStorageWithClient(
-		redis.NewClient(&redis.Options{Addr: upstreamRedis.Addr()}), "upstream:")
-	upstream := newIndirectServer(t)
-	upstreamAS, err := NewEmbeddedAuthServerWithStorage(ctx, &authserver.RunConfig{
-		SchemaVersion:    authserver.CurrentSchemaVersion,
-		Issuer:           upstream.URL,
-		AllowedAudiences: []string{upstream.URL + "/mcp"},
-		Upstreams: []authserver.UpstreamRunConfig{{
-			Name: "idp",
-			Type: authserver.UpstreamProviderTypeOAuth2,
-			OAuth2Config: &authserver.OAuth2UpstreamRunConfig{
-				AuthorizationEndpoint: idp.URL + "/authorize",
-				TokenEndpoint:         idp.URL + "/token",
-				ClientID:              "upstream-at-idp",
-				RedirectURI:           upstream.URL + "/oauth/callback",
-			},
-		}},
-	}, upstreamStore)
-	require.NoError(t, err)
-	t.Cleanup(func() { _ = upstreamAS.Close() })
-	upstream.set(upstreamAS.Handler())
+	upstream, upstreamRedis, upstreamStore := newDCRUpstream(t)
 
 	// The downstream persists its state, including the DCR cache, in its own
 	// Redis, which survives a downstream restart.
@@ -192,7 +167,7 @@ func TestEmbeddedAuthServer_ChainedDCRRecoversFromEvictedRegistration(t *testing
 	// Nobody completes a token exchange for longer than the upstream's TTL,
 	// so the upstream evicts the idle registration.
 	upstreamRedis.FastForward(storage.DefaultDCRClientTTL + time.Hour)
-	_, err = upstreamStore.GetClient(ctx, registered)
+	_, err := upstreamStore.GetClient(ctx, registered)
 	require.Error(t, err, "the upstream must have evicted the idle DCR client")
 
 	// The downstream restarts against the same persistent Redis. Its next
@@ -202,6 +177,84 @@ func TestEmbeddedAuthServer_ChainedDCRRecoversFromEvictedRegistration(t *testing
 	resp, presented := authorize()
 	requireUpstreamAccepted(resp, "after the upstream evicted client "+registered+
 		", the restarted downstream presented client "+presented)
+}
+
+// TestDCRResolver_PublicClientRecoversFromEvictedRegistration is the
+// public-client counterpart of the test above. The embedded auth server
+// always registers a confidential client, so this drives the resolver the
+// way the CLI flow does (PublicClient, token_endpoint_auth_method=none)
+// against the same ToolHive upstream. The probe then carries no client
+// secret, and detecting the eviction relies on the upstream looking the
+// client up before it validates the authorization code.
+func TestDCRResolver_PublicClientRecoversFromEvictedRegistration(t *testing.T) {
+	t.Parallel()
+	ctx := context.Background()
+	upstream, upstreamRedis, upstreamStore := newDCRUpstream(t)
+
+	downstreamRedis := miniredis.RunT(t)
+	cache := dcr.NewStorageBackedStore(storage.NewRedisStorageWithClient(
+		redis.NewClient(&redis.Options{Addr: downstreamRedis.Addr()}), "downstream:"))
+	req := &dcr.Request{
+		Issuer:       "https://downstream.example.com",
+		Scopes:       []string{"openid", "offline_access"},
+		DiscoveryURL: upstream.URL + "/.well-known/oauth-authorization-server",
+		PublicClient: true,
+	}
+
+	registered, err := dcr.ResolveCredentials(ctx, req, cache)
+	require.NoError(t, err)
+	require.Equal(t, oauthproto.TokenEndpointAuthMethodNone, registered.TokenEndpointAuthMethod)
+	_, err = upstreamStore.GetClient(ctx, registered.ClientID)
+	require.NoError(t, err, "the upstream must know the registered public client")
+
+	// While the upstream still knows the client, the cached one is kept.
+	kept, err := dcr.ResolveCredentials(ctx, req, cache)
+	require.NoError(t, err)
+	require.Equal(t, registered.ClientID, kept.ClientID)
+
+	upstreamRedis.FastForward(storage.DefaultDCRClientTTL + time.Hour)
+	_, err = upstreamStore.GetClient(ctx, registered.ClientID)
+	require.Error(t, err, "the upstream must have evicted the idle DCR client")
+
+	recovered, err := dcr.ResolveCredentials(ctx, req, cache)
+	require.NoError(t, err)
+	require.NotEqual(t, registered.ClientID, recovered.ClientID,
+		"the resolver must replace the public client the upstream evicted")
+	_, err = upstreamStore.GetClient(ctx, recovered.ClientID)
+	require.NoError(t, err, "the upstream must know the replacement client")
+}
+
+// newDCRUpstream starts a ToolHive auth server that accepts dynamic client
+// registration and stores its clients in its own miniredis, so a test can
+// fast-forward past DefaultDCRClientTTL. Its own upstream IdP is never
+// reached by these tests.
+func newDCRUpstream(t *testing.T) (*indirectServer, *miniredis.Miniredis, *storage.RedisStorage) {
+	t.Helper()
+	idp, _ := newMockAuthorizationServer(t)
+
+	upstreamRedis := miniredis.RunT(t)
+	upstreamStore := storage.NewRedisStorageWithClient(
+		redis.NewClient(&redis.Options{Addr: upstreamRedis.Addr()}), "upstream:")
+	upstream := newIndirectServer(t)
+	upstreamAS, err := NewEmbeddedAuthServerWithStorage(context.Background(), &authserver.RunConfig{
+		SchemaVersion:    authserver.CurrentSchemaVersion,
+		Issuer:           upstream.URL,
+		AllowedAudiences: []string{upstream.URL + "/mcp"},
+		Upstreams: []authserver.UpstreamRunConfig{{
+			Name: "idp",
+			Type: authserver.UpstreamProviderTypeOAuth2,
+			OAuth2Config: &authserver.OAuth2UpstreamRunConfig{
+				AuthorizationEndpoint: idp.URL + "/authorize",
+				TokenEndpoint:         idp.URL + "/token",
+				ClientID:              "upstream-at-idp",
+				RedirectURI:           upstream.URL + "/oauth/callback",
+			},
+		}},
+	}, upstreamStore)
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = upstreamAS.Close() })
+	upstream.set(upstreamAS.Handler())
+	return upstream, upstreamRedis, upstreamStore
 }
 
 // indirectServer is an httptest server whose handler is installed after the

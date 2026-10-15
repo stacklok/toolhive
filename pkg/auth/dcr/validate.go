@@ -7,7 +7,7 @@ import (
 	"context"
 	"crypto/rand"
 	"errors"
-	"log/slog"
+	"fmt"
 	"net/http"
 	"time"
 
@@ -40,6 +40,10 @@ const (
 // would re-send the client credentials to another origin.
 var errProbeRedirectRefused = errors.New("dcr: token endpoint returned a redirect; refusing to follow")
 
+// errProbeUnsupportedAuthMethod reports a cached registration whose token
+// endpoint auth method the probe cannot authenticate with.
+var errProbeUnsupportedAuthMethod = errors.New("dcr: token endpoint auth method cannot be probed")
+
 // verifyCachedRegistration asks the upstream token endpoint whether it still
 // recognises the cached client. An upstream can drop a registration that the
 // resolver still caches: RFC 7591 lets client_secret_expires_at be 0 while
@@ -56,21 +60,20 @@ var errProbeRedirectRefused = errors.New("dcr: token endpoint returned a redirec
 // servers validate the code first and answer invalid_grant for any client_id;
 // against those servers the probe cannot detect a deleted registration and
 // the cached one is kept, as before. Every other outcome, including transport
-// failures, is unverified: callers keep the cached registration so an
-// unreachable upstream never blocks startup.
+// failures and private_key_jwt clients (which the probe does not sign for),
+// is unverified: callers keep the cached registration so an unreachable
+// upstream never blocks startup.
+//
+// The returned error is non-nil only for an unverified status and says why;
+// it never carries the token endpoint's response body (see probeErrorAttrs).
 //
 // The configured token endpoint wins over the cached one, mirroring
 // applyExplicitEndpointOverrides, so a tampered cached endpoint cannot
 // receive the client secret when the operator configured the endpoint.
-func verifyCachedRegistration(ctx context.Context, req *Request, cached *Resolution) registrationStatus {
+func verifyCachedRegistration(ctx context.Context, req *Request, cached *Resolution) (registrationStatus, error) {
 	authStyle, ok := probeAuthStyle(cached)
 	if !ok {
-		//nolint:gosec // G706: client_id is public metadata per RFC 7591.
-		slog.Debug("dcr: cached registration not verified; unsupported token endpoint auth method",
-			"client_id", cached.ClientID,
-			"token_endpoint_auth_method", cached.TokenEndpointAuthMethod,
-		)
-		return registrationUnverified
+		return registrationUnverified, errProbeUnsupportedAuthMethod
 	}
 
 	tokenEndpoint, operatorSupplied := req.TokenEndpoint, true
@@ -80,9 +83,7 @@ func verifyCachedRegistration(ctx context.Context, req *Request, cached *Resolut
 	}
 	client, err := newProbeHTTPClient(req, tokenEndpoint, !operatorSupplied)
 	if err != nil {
-		slog.Warn("dcr: cached registration not verified; cannot build token endpoint client",
-			"error", SanitizeErrorForLog(err))
-		return registrationUnverified
+		return registrationUnverified, fmt.Errorf("dcr: build token endpoint client: %w", err)
 	}
 
 	clientSecret := cached.ClientSecret
@@ -101,14 +102,28 @@ func verifyCachedRegistration(ctx context.Context, req *Request, cached *Resolut
 	_, err = cfg.Exchange(probeCtx, rand.Text(), oauth2.VerifierOption(rand.Text()+rand.Text()))
 
 	status := classifyProbe(err)
-	if status == registrationUnverified {
-		//nolint:gosec // G706: client_id is public metadata per RFC 7591.
-		slog.Warn("dcr: cached registration not verified; using it as-is",
-			"client_id", cached.ClientID,
-			"error", SanitizeErrorForLog(err),
-		)
+	if status != registrationUnverified {
+		return status, nil
 	}
-	return status
+	return status, err
+}
+
+// probeErrorAttrs renders why a probe was unverified as log attributes. An
+// OAuth error response is reduced to its HTTP status and RFC 6749 error
+// code: oauth2.RetrieveError's message includes the server's
+// error_description, or its raw response body when there is no error code,
+// and none of that belongs in our logs. Other errors (transport failures,
+// refused redirects, an unusable endpoint) originate on our side and go
+// through SanitizeErrorForLog.
+func probeErrorAttrs(err error) []any {
+	if retrieveErr, ok := errors.AsType[*oauth2.RetrieveError](err); ok {
+		attrs := []any{"error_code", retrieveErr.ErrorCode}
+		if retrieveErr.Response != nil {
+			attrs = append(attrs, "status", retrieveErr.Response.StatusCode)
+		}
+		return attrs
+	}
+	return []any{"error", SanitizeErrorForLog(err)}
 }
 
 // probeAuthStyle maps the cached token endpoint auth method onto the oauth2

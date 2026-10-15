@@ -599,13 +599,24 @@ func TestCredentialStore_ReplaceIfUnchanged(t *testing.T) {
 	}
 	stale, newer, fresh := registration("stale-id"), registration("newer-id"), registration("fresh-id")
 
-	stores := map[string]func(t *testing.T) CredentialStore{
-		"storage-backed": newMemoryDCRStore,
-		"in-memory": func(t *testing.T) CredentialStore {
+	type replacingStore interface {
+		CredentialStore
+		Replacer
+	}
+	stores := map[string]func(t *testing.T) replacingStore{
+		"storage-backed": func(t *testing.T) replacingStore {
+			t.Helper()
+			s, ok := newMemoryDCRStore(t).(replacingStore)
+			require.True(t, ok, "the storage-backed store must implement Replacer")
+			return s
+		},
+		"in-memory": func(t *testing.T) replacingStore {
 			t.Helper()
 			s := NewInMemoryStore()
 			t.Cleanup(func() { _ = s.Close() })
-			return s
+			r, ok := s.(replacingStore)
+			require.True(t, ok, "the in-memory store must implement Replacer")
+			return r
 		},
 	}
 	tests := []struct {

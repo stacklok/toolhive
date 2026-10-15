@@ -3086,6 +3086,13 @@ func TestMemoryStorage_DCRCredentials_DistinctKeysDoNotCollide(t *testing.T) {
 			// inside one embedded authserver sharing issuer, redirect, and
 			// scopes. Before UpstreamID joined the key these collided (#5823).
 			mkCreds(mkKey("https://idp-a.example.com", "https://up-b", "https://x/cb", []string{"openid"}), "e"),
+			// Differs from entry "a" only by the operator-set RotationKey: a
+			// rotation addresses its own entry and leaves "a" reachable.
+			func() *DCRCredentials {
+				key := mkKey("https://idp-a.example.com", "https://up-a", "https://x/cb", []string{"openid"})
+				key.RotationKey = "r2"
+				return mkCreds(key, "f")
+			}(),
 		}
 		for _, e := range entries {
 			_, err := s.StoreDCRCredentialsIfAbsent(ctx, e)

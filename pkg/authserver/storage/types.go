@@ -235,6 +235,18 @@ type DCRKey struct {
 	// hand at call sites; the canonical form must be a single source of truth
 	// so the key matches across processes and backends.
 	ScopesHash string
+
+	// RotationKey is an optional operator-chosen label that is part of the
+	// cache identity but carries no OAuth meaning and is never sent to the
+	// upstream. Changing it makes the resolver miss the cache and register a
+	// fresh client. It is how an operator retires a registration the upstream
+	// has dropped when the resolver's own token-endpoint check cannot tell
+	// (see authserver.DCRUpstreamConfig.RotationKey).
+	// Empty for every row written before the field existed; backends MUST
+	// encode an empty value exactly as they encoded a key without the field
+	// so those rows stay reachable. Rows written under a previous value are
+	// not deleted and follow the same lifetime rules as any superseded row.
+	RotationKey string
 }
 
 // ScopesHash returns the SHA-256 hex digest of the canonical OAuth scope set,
@@ -364,7 +376,8 @@ func validateDCRCompareAndSet(creds, expected *DCRCredentials) error {
 // TestResolutionCredentialsRoundTrip in
 // pkg/auth/dcr/store_test.go.
 type DCRCredentials struct {
-	// Key is the canonical cache key: (Issuer, UpstreamID, RedirectURI, ScopesHash).
+	// Key is the canonical cache key: (Issuer, UpstreamID, RedirectURI,
+	// ScopesHash) plus the optional RotationKey.
 	Key DCRKey
 
 	// ProviderName is the upstream's UpstreamRunConfig.Name. Debug / audit

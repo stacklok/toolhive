@@ -1604,6 +1604,16 @@ type OIDCUpstreamConfig struct {
 	// +optional
 	AdditionalTokenParams map[string]string `json:"additionalTokenParams,omitempty"`
 
+	// OmitScopeOnRefresh stops the scope parameter from being sent on
+	// refresh_token grant requests to the upstream provider's token endpoint.
+	// Scopes are still sent on the authorization request.
+	// By default (false), the configured scopes are sent on refresh as well,
+	// which some providers require to avoid narrowing the refreshed token.
+	// Set it for providers that reject scope on refresh, such as Salesforce
+	// ("invalid_request - scope parameter not supported").
+	// +optional
+	OmitScopeOnRefresh bool `json:"omitScopeOnRefresh,omitempty"`
+
 	// SubjectClaim names the validated ID-token claim to use as the upstream
 	// subject. Defaults to "sub" when empty. Set it for IdPs where "sub" isn't
 	// stable per user — e.g. Entra/Azure AD, whose "sub" rotates per application
@@ -1775,6 +1785,16 @@ type OAuth2UpstreamConfig struct {
 	// +optional
 	AdditionalTokenParams map[string]string `json:"additionalTokenParams,omitempty"`
 
+	// OmitScopeOnRefresh stops the scope parameter from being sent on
+	// refresh_token grant requests to the upstream provider's token endpoint.
+	// Scopes are still sent on the authorization request.
+	// By default (false), the configured scopes are sent on refresh as well,
+	// which some providers require to avoid narrowing the refreshed token.
+	// Set it for providers that reject scope on refresh, such as Salesforce
+	// ("invalid_request - scope parameter not supported").
+	// +optional
+	OmitScopeOnRefresh bool `json:"omitScopeOnRefresh,omitempty"`
+
 	// CABundleRef references a ConfigMap containing a CA bundle added to the
 	// system roots when connecting to this upstream; it does not restrict trust
 	// to this bundle or disable public-root trust. The selected key is projected
@@ -1853,6 +1873,24 @@ type DCRUpstreamConfig struct {
 	// +kubebuilder:validation:Pattern=`^https://[^\s?#]+[^/\s?#]$`
 	// +kubebuilder:validation:MaxLength=2048
 	RegistrationEndpoint string `json:"registrationEndpoint,omitempty"`
+
+	// RotationKey is an optional operator-chosen label that is part of the
+	// cached registration's identity but is never sent to the upstream.
+	// Change it to make the proxies register a fresh client at their next
+	// start instead of reusing the cached one: for example after the
+	// upstream has dropped the registration, or when a rotation is required.
+	// At start ToolHive checks the cached client at the upstream's token
+	// endpoint and registers a new one by itself when the upstream answers
+	// invalid_client. Where that check cannot tell (an upstream that answers
+	// a dropped public client like a live one, or a private_key_jwt client),
+	// the stale client_id is only rejected in the user's browser, and
+	// changing this key is the remedy. The previous registration's row stays
+	// in storage, and upstream refresh tokens bound to the previous client_id
+	// stop refreshing, so affected users sign in again.
+	// +optional
+	// +kubebuilder:validation:Pattern=`^[A-Za-z0-9._-]+$`
+	// +kubebuilder:validation:MaxLength=64
+	RotationKey string `json:"rotationKey,omitempty"`
 
 	// InitialAccessTokenRef is an optional reference to a Kubernetes Secret
 	// carrying an RFC 7591 §3 initial access token. When set, the resolver

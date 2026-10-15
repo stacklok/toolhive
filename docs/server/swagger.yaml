@@ -203,6 +203,22 @@ components:
 
             Mutually exclusive with DiscoveryURL.
           type: string
+        rotation_key:
+          description: |-
+            RotationKey is an optional operator-chosen label (1-64 characters from
+            [A-Za-z0-9._-]) that becomes part of the cached registration's identity
+            without being sent to the upstream. Changing it makes the next start
+            register a fresh client instead of reusing the cached one. At start the
+            resolver checks the cached client at the upstream's token endpoint and
+            replaces it by itself when the upstream answers invalid_client. Use
+            RotationKey when the upstream has dropped the registration and that
+            check cannot tell (an upstream that answers a dropped public client
+            like a live one, or a private_key_jwt client), so the rejection is only
+            visible in the user's browser, or when a registration must be rotated
+            on request. The row written under the previous value is left in place. Upstream refresh tokens
+            bound to the previous client_id stop refreshing once the client
+            changes; affected users sign in again.
+          type: string
         software_id:
           description: |-
             SoftwareID is the RFC 7591 "software_id" registration metadata value,
@@ -386,6 +402,13 @@ components:
             OAuth2 provider served over HTTP in a kind cluster) where TLS is not
             available. Never set this in production.
           type: boolean
+        omit_scope_on_refresh:
+          description: |-
+            OmitScopeOnRefresh stops the `scope` parameter from being sent on
+            refresh_token grant requests. Scopes are still sent on the authorization
+            request. Useful for providers that reject `scope` on refresh, such as
+            Salesforce. See upstream.CommonOAuthConfig.
+          type: boolean
         redirect_uri:
           description: |-
             RedirectURI is the callback URL where the upstream IDP will redirect after authentication.
@@ -479,6 +502,13 @@ components:
             IssuerURL is the OIDC issuer URL for automatic endpoint discovery.
             Must be a valid HTTPS URL.
           type: string
+        omit_scope_on_refresh:
+          description: |-
+            OmitScopeOnRefresh stops the `scope` parameter from being sent on
+            refresh_token grant requests. Scopes are still sent on the authorization
+            request. Useful for providers that reject `scope` on refresh, such as
+            Salesforce. See upstream.CommonOAuthConfig.
+          type: boolean
         redirect_uri:
           description: |-
             RedirectURI is the callback URL where the upstream IDP will redirect after authentication.
@@ -725,6 +755,8 @@ components:
           uniqueItems: false
         storage:
           $ref: '#/components/schemas/storage.RunConfig'
+        tls_listener:
+          $ref: '#/components/schemas/authserver.TLSListenerRunConfig'
         token_lifespans:
           $ref: '#/components/schemas/authserver.TokenLifespanRunConfig'
         trusted_issuers:
@@ -898,6 +930,16 @@ components:
           description: |-
             SigningKeyFile is the filename of the primary signing key (relative to KeyDir).
             This key is used for signing new tokens.
+          type: string
+      type: object
+    authserver.TLSListenerRunConfig:
+      description: |-
+        TLSListener configures auth server routes to be served over TLS on port 8443.
+        It is currently rejected because the runner does not start this listener.
+      properties:
+        cert_file:
+          type: string
+        key_file:
           type: string
       type: object
     authserver.TokenExchangeInboundGrantRunConfig:

@@ -1294,6 +1294,31 @@ func TestDCRUpstreamConfigValidate(t *testing.T) {
 			},
 		},
 		{
+			name: "rotation_key within the allowed alphabet passes validation",
+			config: DCRUpstreamConfig{
+				RegistrationEndpoint: "https://idp.example.com/register",
+				RotationKey:          "2026-10.ion_v2-A",
+			},
+		},
+		{
+			name: "rotation_key with characters outside the allowed alphabet rejects",
+			config: DCRUpstreamConfig{
+				RegistrationEndpoint: "https://idp.example.com/register",
+				RotationKey:          "rotate me",
+			},
+			wantErr: true,
+			errMsg:  "rotation_key must be 1-64 characters",
+		},
+		{
+			name: "rotation_key longer than 64 characters rejects",
+			config: DCRUpstreamConfig{
+				RegistrationEndpoint: "https://idp.example.com/register",
+				RotationKey:          strings.Repeat("a", 65),
+			},
+			wantErr: true,
+			errMsg:  "rotation_key must be 1-64 characters",
+		},
+		{
 			name: "both initial_access_token_file and initial_access_token_env_var rejects",
 			config: DCRUpstreamConfig{
 				RegistrationEndpoint:     "https://idp.example.com/register",
@@ -1997,6 +2022,64 @@ func TestConfig_WarnTrustedIssuerAudiences(t *testing.T) {
 			} else {
 				require.Empty(t, buf.String())
 			}
+
+		})
+	}
+}
+
+func TestRunConfigValidateTLSListener(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name       string
+		config     *TLSListenerRunConfig
+		wantErrMsg string
+	}{
+		{name: "nil listener"},
+		{
+			name:       "empty listener config is rejected as unsupported",
+			config:     &TLSListenerRunConfig{},
+			wantErrMsg: "tls_listener: the TLS listener is not yet supported",
+		},
+		{
+			name:       "complete listener config is rejected as unsupported",
+			config:     &TLSListenerRunConfig{CertFile: "cert", KeyFile: "key"},
+			wantErrMsg: "tls_listener: the TLS listener is not yet supported",
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			cfg := RunConfig{TLSListener: tt.config}
+			err := cfg.Validate()
+			if tt.wantErrMsg == "" {
+				require.NoError(t, err)
+				return
+			}
+			require.ErrorContains(t, err, tt.wantErrMsg)
+		})
+	}
+}
+
+func TestHasSPIFFEX509ClientAuth(t *testing.T) {
+	t.Parallel()
+
+	x509Association := SPIFFEClientAuthRunConfig{Methods: []SPIFFEAuthenticationMethod{SPIFFEAuthenticationMethodX509}}
+	jwtAssociation := SPIFFEClientAuthRunConfig{Methods: []SPIFFEAuthenticationMethod{SPIFFEAuthenticationMethodJWT}}
+	tests := []struct {
+		name string
+		cfg  *RunConfig
+		want bool
+	}{
+		{name: "nil receiver", cfg: nil},
+		{name: "nil grants", cfg: &RunConfig{}},
+		{name: "JWT only", cfg: &RunConfig{InboundGrants: &InboundGrantsRunConfig{SPIFFEClientAuth: []SPIFFEClientAuthRunConfig{jwtAssociation}}}},
+		{name: "X.509 present", cfg: &RunConfig{InboundGrants: &InboundGrantsRunConfig{SPIFFEClientAuth: []SPIFFEClientAuthRunConfig{x509Association}}}, want: true},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			assert.Equal(t, tt.want, tt.cfg.HasSPIFFEX509ClientAuth())
 		})
 	}
 }

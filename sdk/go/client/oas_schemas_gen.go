@@ -622,6 +622,20 @@ type AuthenticationDCRUpstreamConfig struct {
 	// method falls back to the resolver's default (client_secret_basic).
 	// Mutually exclusive with DiscoveryURL.
 	RegistrationEndpoint OptString `json:"registration_endpoint"`
+	// RotationKey is an optional operator-chosen label (1-64 characters from
+	// [A-Za-z0-9._-]) that becomes part of the cached registration's identity
+	// without being sent to the upstream. Changing it makes the next start
+	// register a fresh client instead of reusing the cached one. At start the
+	// resolver checks the cached client at the upstream's token endpoint and
+	// replaces it by itself when the upstream answers invalid_client. Use
+	// RotationKey when the upstream has dropped the registration and that
+	// check cannot tell (an upstream that answers a dropped public client
+	// like a live one, or a private_key_jwt client), so the rejection is only
+	// visible in the user's browser, or when a registration must be rotated
+	// on request. The row written under the previous value is left in place. Upstream refresh tokens
+	// bound to the previous client_id stop refreshing once the client
+	// changes; affected users sign in again.
+	RotationKey OptString `json:"rotation_key"`
 	// SoftwareID is the RFC 7591 "software_id" registration metadata value,
 	// identifying the client software independent of any particular
 	// registration instance.
@@ -652,6 +666,11 @@ func (s *AuthenticationDCRUpstreamConfig) GetRegistrationEndpoint() OptString {
 	return s.RegistrationEndpoint
 }
 
+// GetRotationKey returns the value of RotationKey.
+func (s *AuthenticationDCRUpstreamConfig) GetRotationKey() OptString {
+	return s.RotationKey
+}
+
 // GetSoftwareID returns the value of SoftwareID.
 func (s *AuthenticationDCRUpstreamConfig) GetSoftwareID() OptString {
 	return s.SoftwareID
@@ -680,6 +699,11 @@ func (s *AuthenticationDCRUpstreamConfig) SetInitialAccessTokenFile(val OptStrin
 // SetRegistrationEndpoint sets the value of RegistrationEndpoint.
 func (s *AuthenticationDCRUpstreamConfig) SetRegistrationEndpoint(val OptString) {
 	s.RegistrationEndpoint = val
+}
+
+// SetRotationKey sets the value of RotationKey.
+func (s *AuthenticationDCRUpstreamConfig) SetRotationKey(val OptString) {
+	s.RotationKey = val
 }
 
 // SetSoftwareID sets the value of SoftwareID.
@@ -959,6 +983,11 @@ type AuthenticationOAuth2UpstreamRunConfig struct {
 	// OAuth2 provider served over HTTP in a kind cluster) where TLS is not
 	// available. Never set this in production.
 	InsecureAllowHTTP OptBool `json:"insecure_allow_http"`
+	// OmitScopeOnRefresh stops the `scope` parameter from being sent on
+	// refresh_token grant requests. Scopes are still sent on the authorization
+	// request. Useful for providers that reject `scope` on refresh, such as
+	// Salesforce. See upstream.CommonOAuthConfig.
+	OmitScopeOnRefresh OptBool `json:"omit_scope_on_refresh"`
 	// RedirectURI is the callback URL where the upstream IDP will redirect after authentication.
 	// For a DCR upstream (dcr_config set) an empty value is resolved to
 	// `{issuer}/oauth/callback`; a pre-provisioned client (client_id set) must
@@ -1034,6 +1063,11 @@ func (s *AuthenticationOAuth2UpstreamRunConfig) GetIdentityFromToken() OptAuthen
 // GetInsecureAllowHTTP returns the value of InsecureAllowHTTP.
 func (s *AuthenticationOAuth2UpstreamRunConfig) GetInsecureAllowHTTP() OptBool {
 	return s.InsecureAllowHTTP
+}
+
+// GetOmitScopeOnRefresh returns the value of OmitScopeOnRefresh.
+func (s *AuthenticationOAuth2UpstreamRunConfig) GetOmitScopeOnRefresh() OptBool {
+	return s.OmitScopeOnRefresh
 }
 
 // GetRedirectURI returns the value of RedirectURI.
@@ -1119,6 +1153,11 @@ func (s *AuthenticationOAuth2UpstreamRunConfig) SetIdentityFromToken(val OptAuth
 // SetInsecureAllowHTTP sets the value of InsecureAllowHTTP.
 func (s *AuthenticationOAuth2UpstreamRunConfig) SetInsecureAllowHTTP(val OptBool) {
 	s.InsecureAllowHTTP = val
+}
+
+// SetOmitScopeOnRefresh sets the value of OmitScopeOnRefresh.
+func (s *AuthenticationOAuth2UpstreamRunConfig) SetOmitScopeOnRefresh(val OptBool) {
+	s.OmitScopeOnRefresh = val
 }
 
 // SetRedirectURI sets the value of RedirectURI.
@@ -1216,6 +1255,11 @@ type AuthenticationOIDCUpstreamRunConfig struct {
 	// IssuerURL is the OIDC issuer URL for automatic endpoint discovery.
 	// Must be a valid HTTPS URL.
 	IssuerURL OptString `json:"issuer_url"`
+	// OmitScopeOnRefresh stops the `scope` parameter from being sent on
+	// refresh_token grant requests. Scopes are still sent on the authorization
+	// request. Useful for providers that reject `scope` on refresh, such as
+	// Salesforce. See upstream.CommonOAuthConfig.
+	OmitScopeOnRefresh OptBool `json:"omit_scope_on_refresh"`
 	// RedirectURI is the callback URL where the upstream IDP will redirect after authentication.
 	// For a DCR upstream (dcr_config set) an empty value is resolved to
 	// `{issuer}/oauth/callback`; a pre-provisioned client (client_id set) must
@@ -1287,6 +1331,11 @@ func (s *AuthenticationOIDCUpstreamRunConfig) GetIssuerURL() OptString {
 	return s.IssuerURL
 }
 
+// GetOmitScopeOnRefresh returns the value of OmitScopeOnRefresh.
+func (s *AuthenticationOIDCUpstreamRunConfig) GetOmitScopeOnRefresh() OptBool {
+	return s.OmitScopeOnRefresh
+}
+
 // GetRedirectURI returns the value of RedirectURI.
 func (s *AuthenticationOIDCUpstreamRunConfig) GetRedirectURI() OptString {
 	return s.RedirectURI
@@ -1355,6 +1404,11 @@ func (s *AuthenticationOIDCUpstreamRunConfig) SetInsecureAllowHTTP(val OptBool) 
 // SetIssuerURL sets the value of IssuerURL.
 func (s *AuthenticationOIDCUpstreamRunConfig) SetIssuerURL(val OptString) {
 	s.IssuerURL = val
+}
+
+// SetOmitScopeOnRefresh sets the value of OmitScopeOnRefresh.
+func (s *AuthenticationOIDCUpstreamRunConfig) SetOmitScopeOnRefresh(val OptBool) {
+	s.OmitScopeOnRefresh = val
 }
 
 // SetRedirectURI sets the value of RedirectURI.
@@ -1553,6 +1607,7 @@ type AuthenticationRunConfig struct {
 	// referenced by an InboundGrants.SPIFFEClientAuth entry.
 	SpiffeTrustDomains []AuthenticationSPIFFETrustDomainRunConfig `json:"spiffe_trust_domains"`
 	Storage            OptStorageRunConfig                        `json:"storage"`
+	TLSListener        OptAuthenticationTLSListenerRunConfig      `json:"tls_listener"`
 	TokenLifespans     OptAuthenticationTokenLifespanRunConfig    `json:"token_lifespans"`
 	// TrustedIssuers lists external OIDC trust declarations.
 	// This legacy field is deprecated; RFC 8693 and JWT-bearer policies embedded in these entries
@@ -1675,6 +1730,11 @@ func (s *AuthenticationRunConfig) GetSpiffeTrustDomains() []AuthenticationSPIFFE
 // GetStorage returns the value of Storage.
 func (s *AuthenticationRunConfig) GetStorage() OptStorageRunConfig {
 	return s.Storage
+}
+
+// GetTLSListener returns the value of TLSListener.
+func (s *AuthenticationRunConfig) GetTLSListener() OptAuthenticationTLSListenerRunConfig {
+	return s.TLSListener
 }
 
 // GetTokenLifespans returns the value of TokenLifespans.
@@ -1800,6 +1860,11 @@ func (s *AuthenticationRunConfig) SetSpiffeTrustDomains(val []AuthenticationSPIF
 // SetStorage sets the value of Storage.
 func (s *AuthenticationRunConfig) SetStorage(val OptStorageRunConfig) {
 	s.Storage = val
+}
+
+// SetTLSListener sets the value of TLSListener.
+func (s *AuthenticationRunConfig) SetTLSListener(val OptAuthenticationTLSListenerRunConfig) {
+	s.TLSListener = val
 }
 
 // SetTokenLifespans sets the value of TokenLifespans.
@@ -2158,6 +2223,34 @@ func (s *AuthenticationSigningKeyRunConfig) SetKeyDir(val OptString) {
 // SetSigningKeyFile sets the value of SigningKeyFile.
 func (s *AuthenticationSigningKeyRunConfig) SetSigningKeyFile(val OptString) {
 	s.SigningKeyFile = val
+}
+
+// TLSListener configures auth server routes to be served over TLS on port 8443.
+// It is currently rejected because the runner does not start this listener.
+// Ref: #/components/schemas/AuthenticationTLSListenerRunConfig
+type AuthenticationTLSListenerRunConfig struct {
+	CertFile OptString `json:"cert_file"`
+	KeyFile  OptString `json:"key_file"`
+}
+
+// GetCertFile returns the value of CertFile.
+func (s *AuthenticationTLSListenerRunConfig) GetCertFile() OptString {
+	return s.CertFile
+}
+
+// GetKeyFile returns the value of KeyFile.
+func (s *AuthenticationTLSListenerRunConfig) GetKeyFile() OptString {
+	return s.KeyFile
+}
+
+// SetCertFile sets the value of CertFile.
+func (s *AuthenticationTLSListenerRunConfig) SetCertFile(val OptString) {
+	s.CertFile = val
+}
+
+// SetKeyFile sets the value of KeyFile.
+func (s *AuthenticationTLSListenerRunConfig) SetKeyFile(val OptString) {
+	s.KeyFile = val
 }
 
 // TokenExchange configures RFC 8693 inbound clients and issuer policies.
@@ -7400,6 +7493,52 @@ func (o OptAuthenticationSigningKeyRunConfig) Get() (v AuthenticationSigningKeyR
 
 // Or returns value if set, or given parameter if does not.
 func (o OptAuthenticationSigningKeyRunConfig) Or(d AuthenticationSigningKeyRunConfig) AuthenticationSigningKeyRunConfig {
+	if v, ok := o.Get(); ok {
+		return v
+	}
+	return d
+}
+
+// NewOptAuthenticationTLSListenerRunConfig returns new OptAuthenticationTLSListenerRunConfig with value set to v.
+func NewOptAuthenticationTLSListenerRunConfig(v AuthenticationTLSListenerRunConfig) OptAuthenticationTLSListenerRunConfig {
+	return OptAuthenticationTLSListenerRunConfig{
+		Value: v,
+		Set:   true,
+	}
+}
+
+// OptAuthenticationTLSListenerRunConfig is optional AuthenticationTLSListenerRunConfig.
+type OptAuthenticationTLSListenerRunConfig struct {
+	Value AuthenticationTLSListenerRunConfig
+	Set   bool
+}
+
+// IsSet returns true if OptAuthenticationTLSListenerRunConfig was set.
+func (o OptAuthenticationTLSListenerRunConfig) IsSet() bool { return o.Set }
+
+// Reset unsets value.
+func (o *OptAuthenticationTLSListenerRunConfig) Reset() {
+	var v AuthenticationTLSListenerRunConfig
+	o.Value = v
+	o.Set = false
+}
+
+// SetTo sets value to v.
+func (o *OptAuthenticationTLSListenerRunConfig) SetTo(v AuthenticationTLSListenerRunConfig) {
+	o.Set = true
+	o.Value = v
+}
+
+// Get returns value and boolean that denotes whether value was set.
+func (o OptAuthenticationTLSListenerRunConfig) Get() (v AuthenticationTLSListenerRunConfig, ok bool) {
+	if !o.Set {
+		return v, false
+	}
+	return o.Value, true
+}
+
+// Or returns value if set, or given parameter if does not.
+func (o OptAuthenticationTLSListenerRunConfig) Or(d AuthenticationTLSListenerRunConfig) AuthenticationTLSListenerRunConfig {
 	if v, ok := o.Get(); ok {
 		return v
 	}

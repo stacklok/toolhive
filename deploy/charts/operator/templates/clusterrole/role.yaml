@@ -70,6 +70,12 @@ rules:
   - update
   - watch
 - apiGroups:
+  - apps
+  resources:
+  - statefulsets/finalizers
+  verbs:
+  - update
+- apiGroups:
   - coordination.k8s.io
   resources:
   - leases

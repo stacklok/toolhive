@@ -898,6 +898,18 @@ type DCRUpstreamConfig struct {
 	// Mutually exclusive with DiscoveryURL.
 	RegistrationEndpoint string `json:"registration_endpoint,omitempty" yaml:"registration_endpoint,omitempty"`
 
+	// RotationKey is an optional operator-chosen label (1-64 characters from
+	// [A-Za-z0-9._-]) that becomes part of the cached registration's identity
+	// without being sent to the upstream. Changing it makes the next start
+	// register a fresh client instead of reusing the cached one. Use it when
+	// the upstream has dropped the registration it issued — that rejection is
+	// only visible in the user's browser, so the resolver cannot detect it —
+	// or when a registration must be rotated on request. The row written
+	// under the previous value is left in place. Upstream refresh tokens
+	// bound to the previous client_id stop refreshing once the client
+	// changes; affected users sign in again.
+	RotationKey string `json:"rotation_key,omitempty" yaml:"rotation_key,omitempty"`
+
 	// InitialAccessTokenFile is the path to a file containing the RFC 7591
 	// initial access token presented to the registration endpoint. Mutually
 	// exclusive with InitialAccessTokenEnvVar. Both may be omitted for open
@@ -1625,8 +1637,18 @@ func (c *DCRUpstreamConfig) Validate() error {
 			"dcr_config: initial_access_token_file and initial_access_token_env_var are mutually exclusive")
 	}
 
+	// Mirrors the CRD's Pattern/MaxLength markers on rotationKey for the
+	// YAML and CLI run-config paths, which have no admission-time schema.
+	if c.RotationKey != "" && !dcrRotationKeyPattern.MatchString(c.RotationKey) {
+		return fmt.Errorf("dcr_config: rotation_key must be 1-64 characters from [A-Za-z0-9._-]")
+	}
+
 	return nil
 }
+
+// dcrRotationKeyPattern bounds DCRUpstreamConfig.RotationKey to a short,
+// log- and key-safe alphabet; the CRD enforces the same shape at admission.
+var dcrRotationKeyPattern = regexp.MustCompile(`^[A-Za-z0-9._-]{1,64}$`)
 
 func validateZeroUpstreamMode(upstreamCount, delegateClientCount int, issuers []tokenexchange.TrustedIssuer) error {
 	if upstreamCount > 0 || delegateClientCount > 0 || JWTBearerGrantEnabled(issuers) {

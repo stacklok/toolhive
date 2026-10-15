@@ -622,6 +622,17 @@ type AuthenticationDCRUpstreamConfig struct {
 	// method falls back to the resolver's default (client_secret_basic).
 	// Mutually exclusive with DiscoveryURL.
 	RegistrationEndpoint OptString `json:"registration_endpoint"`
+	// RotationKey is an optional operator-chosen label (1-64 characters from
+	// [A-Za-z0-9._-]) that becomes part of the cached registration's identity
+	// without being sent to the upstream. Changing it makes the next start
+	// register a fresh client instead of reusing the cached one. Use it when
+	// the upstream has dropped the registration it issued — that rejection is
+	// only visible in the user's browser, so the resolver cannot detect it —
+	// or when a registration must be rotated on request. The row written
+	// under the previous value is left in place. Upstream refresh tokens
+	// bound to the previous client_id stop refreshing once the client
+	// changes; affected users sign in again.
+	RotationKey OptString `json:"rotation_key"`
 	// SoftwareID is the RFC 7591 "software_id" registration metadata value,
 	// identifying the client software independent of any particular
 	// registration instance.
@@ -652,6 +663,11 @@ func (s *AuthenticationDCRUpstreamConfig) GetRegistrationEndpoint() OptString {
 	return s.RegistrationEndpoint
 }
 
+// GetRotationKey returns the value of RotationKey.
+func (s *AuthenticationDCRUpstreamConfig) GetRotationKey() OptString {
+	return s.RotationKey
+}
+
 // GetSoftwareID returns the value of SoftwareID.
 func (s *AuthenticationDCRUpstreamConfig) GetSoftwareID() OptString {
 	return s.SoftwareID
@@ -680,6 +696,11 @@ func (s *AuthenticationDCRUpstreamConfig) SetInitialAccessTokenFile(val OptStrin
 // SetRegistrationEndpoint sets the value of RegistrationEndpoint.
 func (s *AuthenticationDCRUpstreamConfig) SetRegistrationEndpoint(val OptString) {
 	s.RegistrationEndpoint = val
+}
+
+// SetRotationKey sets the value of RotationKey.
+func (s *AuthenticationDCRUpstreamConfig) SetRotationKey(val OptString) {
+	s.RotationKey = val
 }
 
 // SetSoftwareID sets the value of SoftwareID.

@@ -1879,18 +1879,32 @@ type DCRUpstreamConfig struct {
 	// Change it to make the proxies register a fresh client at their next
 	// start instead of reusing the cached one: for example after the
 	// upstream has dropped the registration, or when a rotation is required.
-	// At start ToolHive checks the cached client at the upstream's token
-	// endpoint and registers a new one by itself when the upstream answers
-	// invalid_client. Where that check cannot tell (an upstream that answers
-	// a dropped public client like a live one, or a private_key_jwt client),
-	// the stale client_id is only rejected in the user's browser, and
-	// changing this key is the remedy. The previous registration's row stays
-	// in storage, and upstream refresh tokens bound to the previous client_id
-	// stop refreshing, so affected users sign in again.
+	// At start ToolHive checks the cached client at the upstream (see
+	// RegistrationProbe) and registers a new one by itself when the upstream
+	// rejects it. Where the configured probe cannot tell, the stale client_id
+	// may only be rejected in the user's browser, and changing this key is
+	// the remedy. The previous registration's row stays in storage, and
+	// upstream refresh tokens bound to the previous client_id stop
+	// refreshing, so affected users sign in again.
 	// +optional
 	// +kubebuilder:validation:Pattern=`^[A-Za-z0-9._-]+$`
 	// +kubebuilder:validation:MaxLength=64
 	RotationKey string `json:"rotationKey,omitempty"`
+
+	// RegistrationProbe selects how ToolHive checks the cached upstream client
+	// at start. tokenEndpoint (the default) redeems a random authorization
+	// code with the cached client and reads invalid_client as "registration
+	// gone"; it decides only for upstreams that authenticate the client
+	// before validating the grant. authorizationEndpoint sends an
+	// authorization request for the cached client without following
+	// redirects and reads a direct 4xx as "gone" (RFC 6749 §4.1.2.1), for
+	// upstreams whose token endpoint answers invalid_grant for any client_id;
+	// do not use it behind bot protection that answers 4xx to non-browser
+	// requests. none skips the check; the registration is then retired only
+	// through RotationKey.
+	// +optional
+	// +kubebuilder:validation:Enum=tokenEndpoint;authorizationEndpoint;none
+	RegistrationProbe string `json:"registrationProbe,omitempty"`
 
 	// InitialAccessTokenRef is an optional reference to a Kubernetes Secret
 	// carrying an RFC 7591 §3 initial access token. When set, the resolver

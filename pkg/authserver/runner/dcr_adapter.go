@@ -88,6 +88,7 @@ func newDCRRequest(rc *authserver.UpstreamRunConfig, localIssuer string) (*dcr.R
 		Issuer: localIssuer, RedirectURI: redirectURI, Scopes: scopes,
 		DiscoveryURL: discoveryURL, RegistrationEndpoint: dcrConfig.RegistrationEndpoint,
 		RotationKey:           dcrConfig.RotationKey,
+		RegistrationProbe:     dcr.RegistrationProbe(dcrConfig.RegistrationProbe),
 		AuthorizationEndpoint: authorizationEndpoint, TokenEndpoint: tokenEndpoint,
 		InitialAccessToken: initialAccessToken, CAFilePath: caFilePath, AllowPrivateIPs: allowPrivateIPs,
 	}, nil

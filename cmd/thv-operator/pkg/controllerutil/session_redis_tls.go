@@ -30,8 +30,9 @@ const (
 
 // SessionRedisTLSConfig returns the runtime TLS settings for Redis session
 // storage, or nil when session storage is not Redis or TLS is not configured
-// (plaintext). When a CA Secret is referenced, CACertFile points at the file
-// mounted by SessionRedisTLSVolumes.
+// (plaintext). A nil session storage config selects the operator-wide default.
+// Explicit Redis settings never inherit global TLS. When a CA Secret is
+// referenced, CACertFile points at the file mounted by SessionRedisTLSVolumes.
 func SessionRedisTLSConfig(ss *mcpv1beta1.SessionStorageConfig) *redisconfig.TLSConfig {
 	tlsCfg := sessionRedisTLS(ss)
 	if tlsCfg == nil {
@@ -46,7 +47,8 @@ func SessionRedisTLSConfig(ss *mcpv1beta1.SessionStorageConfig) *redisconfig.TLS
 
 // SessionRedisTLSVolumes returns the volume and mount that project the
 // session storage Redis CA Secret into the container, or nil slices when no
-// CA Secret is referenced.
+// CA Secret is referenced. A nil session storage config selects the global default;
+// explicit non-Redis storage does not use it.
 func SessionRedisTLSVolumes(ss *mcpv1beta1.SessionStorageConfig) ([]corev1.Volume, []corev1.VolumeMount) {
 	tlsCfg := sessionRedisTLS(ss)
 	if tlsCfg == nil || tlsCfg.CACertSecretRef == nil {
@@ -55,6 +57,17 @@ func SessionRedisTLSVolumes(ss *mcpv1beta1.SessionStorageConfig) ([]corev1.Volum
 	vol, mount := secretFileVolume(SessionRedisTLSCACertVolumeName, tlsCfg.CACertSecretRef,
 		SessionRedisTLSCACertMountPath, SessionRedisTLSCACertFileName)
 	return []corev1.Volume{vol}, []corev1.VolumeMount{mount}
+}
+
+// SessionRedisTLSVolumesWithDefault returns CA projections for workloads whose
+// existing storage selection falls back to global Redis for non-Redis providers.
+// MCPServer and VirtualMCPServer use this policy; MCPRemoteProxy only falls back
+// when session storage is absent and must use SessionRedisTLSVolumes instead.
+func SessionRedisTLSVolumesWithDefault(ss *mcpv1beta1.SessionStorageConfig) ([]corev1.Volume, []corev1.VolumeMount) {
+	if ss != nil && ss.Provider != mcpv1beta1.SessionStorageProviderRedis {
+		return SessionRedisTLSVolumes(nil)
+	}
+	return SessionRedisTLSVolumes(ss)
 }
 
 // SessionRedisTLSVolumeNeedsUpdate reports whether the live pod volumes project
@@ -81,9 +94,16 @@ func SessionRedisTLSVolumeNeedsUpdate(live, desired []corev1.Volume) bool {
 }
 
 // sessionRedisTLS returns the TLS block of a Redis session storage config, or
-// nil when session storage is not Redis or TLS is not configured.
+// nil when session storage is not Redis or TLS is not configured. A nil
+// session storage config selects the global default Redis TLS settings.
 func sessionRedisTLS(ss *mcpv1beta1.SessionStorageConfig) *mcpv1beta1.RedisTLSConfig {
-	if ss == nil || ss.Provider != mcpv1beta1.SessionStorageProviderRedis {
+	if ss == nil {
+		if def := ReadDefaultRedisConfig(); def != nil {
+			return def.TLS
+		}
+		return nil
+	}
+	if ss.Provider != mcpv1beta1.SessionStorageProviderRedis {
 		return nil
 	}
 	return ss.TLS

@@ -338,7 +338,11 @@ authentication, AWS STS `act` mapping, and ID-JAG chaining are deferred and out
 of scope. `token_endpoint_auth_signing_alg` is required and the supported
 values are `RS256`, `RS384`, `RS512`, `PS256`, `PS384`, `PS512`, `ES256`,
 `ES384`, and `ES512` (not `EdDSA` — the pinned fosite version's
-client-assertion verification doesn't handle it). Unlike confidential-client
+client-assertion verification doesn't handle it). RSA keys must have a
+2048–8192-bit modulus and an odd public exponent between 3 and 65537, and a
+registration may carry at most 10 inline JWKS keys. Stored `private_key_jwt`
+clients whose keys no longer meet these limits are rejected with
+`invalid_client` when loaded. Unlike confidential-client
 registration, this has no transport restriction of its own: the DCR response
 for a `private_key_jwt` client never contains a `client_secret` or any other
 secret, so there is nothing for cleartext HTTP to expose. It is governed only
@@ -823,14 +827,23 @@ spec:
   `exp`, and returns `fosite.ErrJTIKnown` on a repeat. `key` is not always the
   assertion's `jti`: many real-world IdPs (e.g. Entra ID `client_credentials`
   tokens) never emit one, so `jti` is not a required claim here. `assertionReplayKey`
-  uses `jti` when present, and otherwise falls back to a SHA-256 digest of the
-  raw assertion JWT string (prefixed `jwt-bearer-noJTI-` so it can never
-  collide with a real `jti`) — hashing the serialized assertion identifies
-  replays of the exact same assertion without storing the raw JWT. Replay
-  protection is never skipped, only re-keyed. The
-  JWT-bearer grant's purpose is `"jwt-bearer"` (`jwtBearerReplayPurpose`), kept
-  separate from any other assertion-consuming grant so a reused key cannot be
-  laundered across purposes. Consumption happens *before* issuance: if token
+  uses `jti` when present. Plain JWT-bearer assertions must first be compact
+  JWTs with exactly three canonical unpadded base64url segments (protected
+  header, payload, signature); malformed or alternate encodings are rejected
+  as `invalid_grant` before validation. Without `jti`, the key is a SHA-256
+  digest of the decoded protected header and payload, with the header length
+  framed to separate the two. The signature is excluded so re-signing the
+  same header and payload cannot evade replay detection. This also treats
+  independently issued assertions with identical header and payload as one use;
+  without an issuer-provided identifier they cannot be distinguished safely.
+  No-`jti` keys use purpose `"jwt-bearer-no-jti"`, separate from the `"jwt-bearer"`
+  purpose for issuer-supplied `jti` values, so those keys cannot collide.
+  Existing no-`jti` replay entries keyed by the old hash of the raw JWT are not
+  migrated; until those assertions expire, a previously consumed no-`jti`
+  assertion may be accepted once more across the upgrade. Replay protection
+  is otherwise never skipped. Both purposes are kept separate from other
+  assertion-consuming grants so a reused key cannot be laundered across
+  purposes. Consumption happens *before* issuance: if token
   issuance somehow fails after that point, the assertion stays consumed rather
   than becoming replayable — a fail-closed choice that costs an otherwise-valid
   assertion its one use on an issuance-side error, rather than risk a second

@@ -289,7 +289,7 @@ func newLLMSetupCommand() *cobra.Command {
 	cmd := &cobra.Command{
 		Use:   "setup",
 		Short: "Configure detected AI tools to use the LLM gateway",
-		Long: `Detect installed AI tools (Claude Code, Gemini CLI, Cursor, VS Code, Xcode,
+		Long: `Detect installed AI tools (Claude Code, Gemini CLI, Pi, Cursor, VS Code, Xcode,
 Claude Desktop, Codex) and patch each tool's configuration to route through the
 LLM gateway.
 
@@ -308,6 +308,20 @@ directly (no shell), keeping existing model_providers and mcp_servers entries
 untouched. Desktop app detection is supported on macOS and Windows; the canonical
 --client target remains "codex". If the desktop app is running, fully quit and
 reopen it after setup.
+
+Pi is configured with OpenAI-compatible and Anthropic providers in
+~/.pi/agent/models.json (or $PI_CODING_AGENT_DIR/models.json). It runs
+"thv llm token" for each request; authenticated setup discovers models and
+context sizes from both gateway APIs and Anthropic thinking support when
+advertised. --models filters the discovered models. Pi does not support --lazy
+because model discovery determines each model's API.
+Pi defaults to short prompt caching: start Pi with PI_CACHE_RETENTION=long
+in its environment for long retention (Anthropic: 1h; OpenAI: 24h).
+This cannot be persisted in models.json. The gateway does not currently provide
+image-input or max-output metadata, so Pi defaults to text-only input and 16K
+max output tokens. OpenAI models without reasoning metadata default to no reasoning.
+If Pi cannot refresh its gateway token, run "thv llm token" in a terminal to
+log in again.
 
 Proxy-mode tools (Cursor, VS Code, Xcode) are configured to send requests to
 the localhost reverse proxy started by "thv llm proxy start".
@@ -358,8 +372,8 @@ Run "thv llm teardown" to revert all changes.`,
 		"Use Claude Code's five-minute prompt cache instead of ToolHive's one-hour default. Persisted, so a later "+
 			"plain \"thv llm setup\" keeps it; use --short-prompt-cache=false to restore one-hour caching.")
 	cmd.Flags().StringVar(&anthropicPathPrefix, "anthropic-path-prefix", "",
-		"Path prefix appended to the gateway URL when writing ANTHROPIC_BASE_URL for direct-mode tools "+
-			"(e.g. /anthropic). When omitted, the gateway is probed automatically.")
+		"Path prefix appended to the gateway URL for Anthropic API tools (e.g. /anthropic). "+
+			"Also used for Pi model discovery. When omitted, the gateway is probed automatically.")
 	cmd.Flags().StringVar(&targetClient, "client", "",
 		"Configure only this AI tool by name (e.g. claude-code, cursor, codex). Omit to configure all detected tools.")
 	cmd.Flags().BoolVar(&lazy, "lazy", false,
@@ -370,6 +384,7 @@ Run "thv llm teardown" to revert all changes.`,
 	cmd.Flags().StringSliceVar(&models, "models", nil,
 		"Model IDs to configure, comma-separated or by repeating the flag, e.g. "+
 			"--models=us.anthropic.claude-opus-4-8,us.anthropic.claude-sonnet-5. "+
+			"For Pi these filter its discovered models (Pi does not support --lazy). "+
 			"For credential-helper clients (Claude Desktop) these become inferenceModels. "+
 			"With --bedrock-compat, each ID is also mapped to a Claude Code tier by matching "+
 			"'haiku', 'opus', or 'sonnet' in the ID (IDs matching no tier are ignored with a "+

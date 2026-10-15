@@ -1052,9 +1052,13 @@ var supportedClientIntegrations = []clientAppConfig{
 			types.TransportTypeSSE:            defaultURLFieldName,
 			types.TransportTypeStreamableHTTP: defaultURLFieldName,
 		},
-		SupportsSkills:    true,
-		SkillsGlobalPath:  []string{".pi", "agent", skillsDirName},
-		SkillsProjectPath: []string{".pi", skillsDirName},
+		SupportsSkills:     true,
+		SkillsGlobalPath:   []string{".pi", "agent", skillsDirName},
+		SkillsProjectPath:  []string{".pi", skillsDirName},
+		LLMGatewayMode:     llmgateway.ModePi,
+		LLMBinaryName:      "pi",
+		LLMSettingsFile:    "models.json",
+		LLMSettingsRelPath: []string{".pi", "agent"},
 	},
 	{
 		// Xcode does not support MCP; it is an LLM-gateway-only entry.

@@ -10,6 +10,9 @@ import (
 	"time"
 )
 
+// TokenHelperShellCommand is used by shell-invoked LLM gateway token helpers.
+const TokenHelperShellCommand = "thv llm token" //nolint:gosec // command line, not a credential
+
 // ClaudeCodeHelperTTL is written to settings.json as
 // CLAUDE_CODE_API_KEY_HELPER_TTL_MS: how often Claude Code re-invokes the
 // apiKeyHelper ("thv llm token"). Pinned to Claude Code's documented default so
@@ -65,6 +68,8 @@ const (
 	// shell), rather than the JSON-Pointer LLMGatewayKeys mechanism the other
 	// modes share.
 	ModeCodexAuth = "codex-auth" //nolint:gosec // G101: mode identifier, not a credential
+	// ModePi configures Pi's OpenAI-compatible and Anthropic providers in models.json.
+	ModePi = "pi"
 	// ModeVSCode configures VS Code's chatLanguageModels.json provider groups.
 	ModeVSCode = "vscode"
 )
@@ -114,6 +119,19 @@ type ApplyConfig struct {
 	// discovery request. It is used only by integrations that require an explicit
 	// model catalogue, such as VS Code's customendpoint provider.
 	DiscoveredModels []string
+	// DiscoveredModelContextWindows contains positive context sizes from gateway
+	// discovery for Pi's model catalogue. Missing entries use Pi's default.
+	DiscoveredModelContextWindows map[string]int
+	// AnthropicModels and AnthropicModelContextWindows contain the separately
+	// discovered Anthropic model catalogue for Pi. Sizes are max_input_tokens.
+	AnthropicModels              []string
+	AnthropicModelContextWindows map[string]int
+	// AnthropicModelReasoning is true for Anthropic models with a supported
+	// thinking mode. Missing entries use Pi's default.
+	AnthropicModelReasoning map[string]bool
+	// AnthropicModelAdaptive marks models that accept adaptive thinking; Pi
+	// otherwise sends budget-based thinking for reasoning models.
+	AnthropicModelAdaptive map[string]bool
 	// ShortPromptCache opts supported clients out of ToolHive's one-hour
 	// prompt-cache lifetime and restores their shorter default.
 	ShortPromptCache bool

@@ -129,6 +129,15 @@ type CommonOAuthConfig struct {
 	// and will be rejected during validation.
 	//nolint:lll // field tags require full JSON+YAML names
 	AdditionalTokenParams map[string]string `json:"additional_token_params,omitempty" yaml:"additional_token_params,omitempty"`
+
+	// OmitScopeOnRefresh stops RefreshTokens from sending the `scope` parameter
+	// on refresh_token grant requests. Scopes are still sent on the
+	// authorization request. Defaults to false, which sends Scopes on refresh.
+	// Set it for providers that reject `scope` on refresh (e.g. Salesforce
+	// returns "invalid_request - scope parameter not supported"); per
+	// RFC 6749 §6 the AS then treats the refresh as covering the originally
+	// granted scope.
+	OmitScopeOnRefresh bool `json:"omit_scope_on_refresh,omitempty" yaml:"omit_scope_on_refresh,omitempty"`
 }
 
 // ValidateWithInsecure validates CommonOAuthConfig, allowing http:// redirect URIs for
@@ -817,10 +826,12 @@ func (p *BaseOAuth2Provider) exchangeCodeForTokens(
 
 // RefreshTokens refreshes the upstream IDP tokens.
 //
-// Sends `scope` explicitly. RFC 6749 §6 makes the param optional and says the
-// AS SHOULD preserve original scopes on omission, but some ASes (notably
-// Entra ID v1) silently narrow refreshed tokens to the user's default consent
-// set when `scope` is omitted, dropping custom resource scopes.
+// Sends `scope` explicitly by default. RFC 6749 §6 makes the param optional
+// and says the AS SHOULD preserve original scopes on omission, but some ASes
+// (notably Entra ID v1) silently narrow refreshed tokens to the user's default
+// consent set when `scope` is omitted, dropping custom resource scopes. Other
+// ASes (e.g. Salesforce) reject `scope` on refresh outright; for those,
+// CommonOAuthConfig.OmitScopeOnRefresh leaves it out.
 //
 // Uses oauth2.Config.Exchange with SetAuthURLParam overrides (mirroring the
 // pattern in pkg/auth/oauth/non_caching_refresher.go) because the standard
@@ -849,7 +860,7 @@ func (p *BaseOAuth2Provider) RefreshTokens(ctx context.Context, refreshToken, _ 
 		oauth2.SetAuthURLParam("grant_type", "refresh_token"),
 		oauth2.SetAuthURLParam("refresh_token", refreshToken),
 	}
-	if len(p.oauth2Config.Scopes) > 0 {
+	if len(p.oauth2Config.Scopes) > 0 && !p.config.OmitScopeOnRefresh {
 		opts = append(opts, oauth2.SetAuthURLParam("scope", strings.Join(p.oauth2Config.Scopes, " ")))
 	}
 	// Same rationale as in exchangeCodeForTokens: ASes that enforce

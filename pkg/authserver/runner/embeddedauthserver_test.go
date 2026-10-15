@@ -720,6 +720,27 @@ func TestBuildPureOAuth2Config(t *testing.T) {
 			cfg.AdditionalAuthorizationParams)
 	})
 
+	t.Run("propagates OmitScopeOnRefresh", func(t *testing.T) {
+		t.Parallel()
+
+		rc := &authserver.UpstreamRunConfig{
+			Type: authserver.UpstreamProviderTypeOAuth2,
+			OAuth2Config: &authserver.OAuth2UpstreamRunConfig{
+				AuthorizationEndpoint: "https://example.com/authorize",
+				TokenEndpoint:         "https://example.com/token",
+				ClientID:              "my-client-id",
+				RedirectURI:           "https://my-app.com/callback",
+				OmitScopeOnRefresh:    true,
+			},
+		}
+
+		cfg, err := buildPureOAuth2Config(rc, false)
+		require.NoError(t, err)
+		require.NotNil(t, cfg)
+
+		assert.True(t, cfg.OmitScopeOnRefresh)
+	})
+
 	t.Run("rejects config with neither ClientID nor DCRConfig", func(t *testing.T) {
 		t.Parallel()
 
@@ -1310,6 +1331,26 @@ func TestBuildOIDCConfig(t *testing.T) {
 
 		assert.Equal(t, map[string]string{"access_type": "offline"},
 			cfg.AdditionalAuthorizationParams)
+	})
+
+	t.Run("propagates OmitScopeOnRefresh", func(t *testing.T) {
+		t.Parallel()
+
+		rc := &authserver.UpstreamRunConfig{
+			Type: authserver.UpstreamProviderTypeOIDC,
+			OIDCConfig: &authserver.OIDCUpstreamRunConfig{
+				IssuerURL:          "https://example.com",
+				ClientID:           "test-client-id",
+				RedirectURI:        "http://localhost:8080/callback",
+				OmitScopeOnRefresh: true,
+			},
+		}
+
+		cfg, err := buildOIDCConfig(rc, false)
+		require.NoError(t, err)
+		require.NotNil(t, cfg)
+
+		assert.True(t, cfg.OmitScopeOnRefresh)
 	})
 
 	t.Run("propagates SubjectClaim", func(t *testing.T) {

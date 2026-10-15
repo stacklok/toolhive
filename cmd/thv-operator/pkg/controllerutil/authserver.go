@@ -1344,6 +1344,7 @@ func buildOIDCUpstreamRunConfig(
 		Scopes:                        cfg.Scopes,
 		AdditionalAuthorizationParams: cfg.AdditionalAuthorizationParams,
 		AdditionalTokenParams:         cfg.AdditionalTokenParams,
+		OmitScopeOnRefresh:            cfg.OmitScopeOnRefresh,
 		SubjectClaim:                  cfg.SubjectClaim,
 		AllowPrivateIPs:               cfg.AllowPrivateIPs,
 	}
@@ -1399,6 +1400,7 @@ func buildOAuth2UpstreamRunConfig(
 		Scopes:                        cfg.Scopes,
 		AdditionalAuthorizationParams: cfg.AdditionalAuthorizationParams,
 		AdditionalTokenParams:         cfg.AdditionalTokenParams,
+		OmitScopeOnRefresh:            cfg.OmitScopeOnRefresh,
 		InsecureAllowHTTP:             cfg.InsecureAllowHTTP,
 		AllowPrivateIPs:               cfg.AllowPrivateIPs,
 	}

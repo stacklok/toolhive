@@ -51,7 +51,9 @@ type statusTracker struct {
 
 	// removedBackends tracks backends that were explicitly removed to prevent
 	// race conditions where in-flight health checks re-create removed backends.
-	removedBackends map[string]bool
+	// The value is the removal timestamp; entries expire after removedTTL()
+	// (2*checkInterval or 5m default) to bound the map.
+	removedBackends map[string]time.Time
 
 	// unhealthyThreshold is the number of consecutive failures before marking unhealthy.
 	unhealthyThreshold int
@@ -59,6 +61,10 @@ type statusTracker struct {
 	// circuitBreakerConfig contains circuit breaker configuration.
 	// nil means circuit breaker is disabled.
 	circuitBreakerConfig *CircuitBreakerConfig
+
+	// checkInterval is the health check interval used to compute the
+	// removedBackend TTL (2*interval). Zero means use default 5m.
+	checkInterval time.Duration
 }
 
 // newStatusTracker creates a new status tracker.
@@ -77,16 +83,58 @@ func newStatusTracker(unhealthyThreshold int, circuitBreakerConfig *CircuitBreak
 
 	return &statusTracker{
 		states:               make(map[string]*backendHealthState),
-		removedBackends:      make(map[string]bool),
+		removedBackends:      make(map[string]time.Time),
 		unhealthyThreshold:   unhealthyThreshold,
 		circuitBreakerConfig: circuitBreakerConfig,
 	}
 }
 
+// removedTTL returns the TTL for removedBackend tombstones.
+// When checkInterval is set (via Monitor), TTL is 2*interval; otherwise 5m default.
+// The 2*interval factor bounds the map while preserving the race-protection window:
+// in-flight health checks that started before RemoveBackend can still be
+// in-flight for up to Timeout (10s) + network latency; 2 ticks (60s at default
+// 30s interval) comfortably covers this window without retaining tombstones
+// indefinitely under ID churn. Zero interval (direct newStatusTracker in tests)
+// falls back to 5m to avoid premature expiry.
+func (t *statusTracker) removedTTL() time.Duration {
+	if t.checkInterval > 0 {
+		return 2 * t.checkInterval
+	}
+	return 5 * time.Minute
+}
+
+// pruneExpiredRemovedBackendsLocked deletes tombstones older than TTL.
+// Must be called with t.mu held (exclusive).
+func (t *statusTracker) pruneExpiredRemovedBackendsLocked(now time.Time) {
+	ttl := t.removedTTL()
+	for id, ts := range t.removedBackends {
+		if now.Sub(ts) > ttl {
+			delete(t.removedBackends, id)
+		}
+	}
+}
+
+// pruneExpiredRemovedBackends deletes tombstones older than TTL.
+// It acquires the lock, so it can be called without holding it.
+func (t *statusTracker) pruneExpiredRemovedBackends() {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	t.pruneExpiredRemovedBackendsLocked(time.Now())
+}
+
 // isRemoved checks if a backend has been explicitly removed.
-// Must be called with lock held.
+// Must be called with lock held. Expired tombstones are lazily pruned.
 func (t *statusTracker) isRemoved(backendID string) bool {
-	return t.removedBackends[backendID]
+	ts, ok := t.removedBackends[backendID]
+	if !ok {
+		return false
+	}
+	if time.Since(ts) > t.removedTTL() {
+		delete(t.removedBackends, backendID)
+		return false
+	}
+	return true
 }
 
 // getOrCreateState retrieves an existing backend state or creates a new one with the specified initial values.
@@ -454,13 +502,16 @@ func (t *statusTracker) IsHealthy(backendID string) bool {
 
 // RemoveBackend removes a backend from the status tracker.
 // The backend is marked as removed to prevent race conditions where in-flight
-// health checks might try to re-create the backend state.
+// health checks might try to re-create the backend state. The tombstone
+// expires after removedTTL() to bound the map.
 func (t *statusTracker) RemoveBackend(backendID string) {
 	t.mu.Lock()
 	defer t.mu.Unlock()
 
 	delete(t.states, backendID)
-	t.removedBackends[backendID] = true
+	// Prune expired tombstones before adding the new one to keep the map bounded.
+	t.pruneExpiredRemovedBackendsLocked(time.Now())
+	t.removedBackends[backendID] = time.Now()
 }
 
 // ClearRemovedFlag clears the "removed" flag for a backend.

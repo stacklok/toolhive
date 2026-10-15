@@ -319,16 +319,20 @@ func newDCRStepError(step, issuer, redirectURI string, err error) *dcrStepError 
 // the upstream authorization server identified by req.DiscoveryURL or
 // req.RegistrationEndpoint, caching the resulting credentials in cache.
 // On cache hit, when cache implements Replacer, the resolver sends one
-// token-endpoint request to confirm the upstream still recognises the cached
-// client (verifyCachedRegistration). When the upstream answers invalid_client,
-// the resolver registers a new client and replaces the cached entry;
-// otherwise, and always when cache does not implement Replacer, it returns
-// the cached resolution without discovery or registration I/O.
+// request to confirm the upstream still recognises the cached client, using
+// the strategy req.RegistrationProbe selects (verifyCachedRegistration): the
+// token endpoint by default, or the authorization endpoint. When the upstream
+// rejects the client, the resolver registers a new client and replaces the
+// cached entry; otherwise, and always when cache does not implement Replacer
+// or req.RegistrationProbe is ProbeNone, it returns the cached resolution
+// without discovery or registration I/O.
 //
-// The probe cannot tell every dropped registration apart from a live one: an
-// upstream that validates the grant before authenticating a public client,
-// or a private_key_jwt client, leaves the cached registration in use. For
-// those, the operator retires the registration with Request.RotationKey.
+// Neither probe can tell every dropped registration apart from a live one:
+// the token-endpoint probe is blind to an upstream that validates the grant
+// before authenticating a public client, the authorization-endpoint probe to
+// one that renders its unknown-client error with 200 or a redirect, and
+// private_key_jwt clients are never probed. For those, the operator retires
+// the registration with Request.RotationKey.
 //
 // The check runs only here, so a registration the upstream drops while the
 // caller keeps using a returned resolution is recovered on the next
@@ -476,6 +480,7 @@ func revalidateCachedResolution(
 		"upstream_id", key.UpstreamID,
 		"redirect_uri", redirectURI,
 		"rotation_key", key.RotationKey,
+		"registration_probe", string(req.RegistrationProbe.effective()),
 		"client_id", cached.ClientID,
 	)
 	resolution, err := registerClient(ctx, req, redirectURI, scopes)
@@ -499,8 +504,8 @@ func revalidateCachedResolution(
 
 // logUnverifiedRegistration records why a cached registration is used
 // without the upstream having confirmed it. A private_key_jwt client is
-// never probed, so it logs at Debug on every resolve; any other reason is
-// unexpected and logs at Warn.
+// never probed and ProbeNone asks for no probe, so those log at Debug on
+// every resolve; any other reason is unexpected and logs at Warn.
 func logUnverifiedRegistration(
 	ctx context.Context, req *Request, key Key, redirectURI string, cached *Resolution, reason error,
 ) {
@@ -510,10 +515,11 @@ func logUnverifiedRegistration(
 		"upstream_id", key.UpstreamID,
 		"redirect_uri", redirectURI,
 		"rotation_key", key.RotationKey,
+		"registration_probe", string(req.RegistrationProbe.effective()),
 		"client_id", cached.ClientID,
 		"token_endpoint_auth_method", cached.TokenEndpointAuthMethod,
 	}
-	if errors.Is(reason, errProbeUnsupportedAuthMethod) {
+	if errors.Is(reason, errProbeUnsupportedAuthMethod) || errors.Is(reason, errProbeDisabled) {
 		level = slog.LevelDebug
 	} else {
 		attrs = append(attrs, probeErrorAttrs(reason)...)
@@ -815,6 +821,9 @@ func validateResolveInputs(
 	}
 	if req.DiscoveryURL != "" && req.RegistrationEndpoint != "" {
 		return fmt.Errorf("dcr: discovery_url and registration_endpoint are mutually exclusive")
+	}
+	if err := req.RegistrationProbe.Validate(); err != nil {
+		return fmt.Errorf("dcr: %w", err)
 	}
 	if cache == nil {
 		return fmt.Errorf("dcr: credential store is required")

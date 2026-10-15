@@ -18,6 +18,7 @@ import (
 
 	"github.com/ory/fosite"
 
+	"github.com/stacklok/toolhive/pkg/auth/dcr"
 	"github.com/stacklok/toolhive/pkg/authserver/authorizationdetails"
 	"github.com/stacklok/toolhive/pkg/authserver/internal/consentpolicy"
 	oauthserver "github.com/stacklok/toolhive/pkg/authserver/server"
@@ -1022,16 +1023,28 @@ type DCRUpstreamConfig struct {
 	// [A-Za-z0-9._-]) that becomes part of the cached registration's identity
 	// without being sent to the upstream. Changing it makes the next start
 	// register a fresh client instead of reusing the cached one. At start the
-	// resolver checks the cached client at the upstream's token endpoint and
-	// replaces it by itself when the upstream answers invalid_client. Use
-	// RotationKey when the upstream has dropped the registration and that
-	// check cannot tell (an upstream that answers a dropped public client
-	// like a live one, or a private_key_jwt client), so the rejection is only
-	// visible in the user's browser, or when a registration must be rotated
-	// on request. The row written under the previous value is left in place. Upstream refresh tokens
-	// bound to the previous client_id stop refreshing once the client
-	// changes; affected users sign in again.
+	// resolver checks the cached client at the upstream (see RegistrationProbe)
+	// and replaces it by itself when the upstream rejects it. Use RotationKey
+	// when the upstream has dropped the registration and the configured probe
+	// cannot tell, so the rejection may not be visible to the resolver, or when
+	// a registration must be rotated on request. The row written under the
+	// previous value is left in place. Upstream refresh tokens bound to the
+	// previous client_id stop refreshing once the client changes; affected
+	// users sign in again.
 	RotationKey string `json:"rotation_key,omitempty" yaml:"rotation_key,omitempty"`
+
+	// RegistrationProbe selects how the resolver checks a cached registration
+	// against the upstream at start. "tokenEndpoint" (the default) redeems a
+	// random authorization code with the cached client and reads
+	// invalid_client as "registration gone"; it decides only for upstreams
+	// that authenticate the client before validating the grant.
+	// "authorizationEndpoint" sends an authorization request for the cached
+	// client without following redirects and reads a direct 4xx as "gone"
+	// (RFC 6749 §4.1.2.1), for upstreams whose token endpoint answers
+	// invalid_grant for any client_id; do not use it behind bot protection
+	// that answers 4xx to non-browser requests. "none" skips the check; the
+	// registration is then retired only through RotationKey.
+	RegistrationProbe string `json:"registration_probe,omitempty" yaml:"registration_probe,omitempty"`
 
 	// InitialAccessTokenFile is the path to a file containing the RFC 7591
 	// initial access token presented to the registration endpoint. Mutually
@@ -1860,6 +1873,12 @@ func (c *DCRUpstreamConfig) Validate() error {
 	// YAML and CLI run-config paths, which have no admission-time schema.
 	if c.RotationKey != "" && !dcrRotationKeyPattern.MatchString(c.RotationKey) {
 		return fmt.Errorf("dcr_config: rotation_key must be 1-64 characters from [A-Za-z0-9._-]")
+	}
+
+	// Mirrors the CRD's Enum marker on registrationProbe; the resolver owns
+	// the set of strategies.
+	if err := dcr.RegistrationProbe(c.RegistrationProbe).Validate(); err != nil {
+		return fmt.Errorf("dcr_config: %w", err)
 	}
 
 	return nil

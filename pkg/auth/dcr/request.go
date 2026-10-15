@@ -3,6 +3,57 @@
 
 package dcr
 
+import "fmt"
+
+// RegistrationProbe selects how ResolveCredentials confirms, on a cache hit,
+// that the upstream still recognises the cached client (see
+// verifyCachedRegistration). The zero value means ProbeTokenEndpoint.
+type RegistrationProbe string
+
+const (
+	// ProbeTokenEndpoint redeems a random authorization code at the token
+	// endpoint with the cached credentials. invalid_client means the
+	// registration is gone; invalid_grant means it is alive. It decides only
+	// for upstreams that authenticate the client before validating the grant
+	// (a ToolHive auth server does). This is the default.
+	ProbeTokenEndpoint RegistrationProbe = "tokenEndpoint"
+
+	// ProbeAuthorizationEndpoint sends an authorization request for the
+	// cached client without following redirects. RFC 6749 §4.1.2.1 has the
+	// server answer an unknown client_id or redirect_uri directly, with no
+	// redirect, while a known client is redirected (to login, or back to
+	// redirect_uri with an error). A direct 4xx therefore means the
+	// registration is gone. Use it for upstreams whose token endpoint
+	// validates the grant before the client, where ProbeTokenEndpoint cannot
+	// decide; not behind bot protection that answers 4xx to non-browser
+	// requests, which would re-register at every start.
+	ProbeAuthorizationEndpoint RegistrationProbe = "authorizationEndpoint"
+
+	// ProbeNone never contacts the upstream on a cache hit; the cached
+	// registration is used as-is and retired only through RotationKey.
+	ProbeNone RegistrationProbe = "none"
+)
+
+// Validate rejects a RegistrationProbe value other than the empty default
+// and the three named strategies.
+func (p RegistrationProbe) Validate() error {
+	switch p {
+	case "", ProbeTokenEndpoint, ProbeAuthorizationEndpoint, ProbeNone:
+		return nil
+	default:
+		return fmt.Errorf("registration_probe must be one of %q, %q or %q (got %q)",
+			ProbeTokenEndpoint, ProbeAuthorizationEndpoint, ProbeNone, string(p))
+	}
+}
+
+// effective returns the strategy to run, resolving the empty default.
+func (p RegistrationProbe) effective() RegistrationProbe {
+	if p == "" {
+		return ProbeTokenEndpoint
+	}
+	return p
+}
+
 // Request is the profile-neutral input to ResolveCredentials. Each consumer
 // (embedded authserver, CLI OAuth flow) translates its domain types into a
 // Request at the call site so the resolver does not import any consumer's
@@ -96,12 +147,18 @@ type Request struct {
 	// key (and the in-process singleflight key) when non-empty. It is never
 	// sent to the upstream. Changing it forces a fresh RFC 7591 registration
 	// on the next resolve, without editing the credential store by hand.
-	// ResolveCredentials replaces a registration the upstream rejects with
-	// invalid_client on its own (see verifyCachedRegistration); RotationKey
-	// is how an operator retires one the probe cannot tell is gone, or
-	// rotates one on request. An empty value addresses the same cache row as
-	// a Request written before the field existed.
+	// ResolveCredentials replaces a registration the upstream rejects on its
+	// own when the configured RegistrationProbe can tell (see
+	// verifyCachedRegistration); RotationKey is how an operator retires one
+	// the probe cannot tell is gone, or rotates one on request. An empty
+	// value addresses the same cache row as a Request written before the
+	// field existed.
 	RotationKey string
+
+	// RegistrationProbe selects how a cached registration is checked against
+	// the upstream on a cache hit. Empty means ProbeTokenEndpoint. See the
+	// RegistrationProbe constants for when each strategy can decide.
+	RegistrationProbe RegistrationProbe
 
 	// CodeChallengeMethodsSupported lists the PKCE challenge methods the
 	// upstream advertises. Only consulted when RegistrationEndpoint is set;

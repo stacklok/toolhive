@@ -1815,6 +1815,7 @@ func TestBuildAuthServerRunConfig(t *testing.T) {
 							DCRConfig: &mcpv1beta1.DCRUpstreamConfig{
 								RegistrationEndpoint: "https://idp.example.com/register",
 								RotationKey:          "2026-10",
+								RegistrationProbe:    "authorizationEndpoint",
 							},
 						},
 					},
@@ -1832,6 +1833,7 @@ func TestBuildAuthServerRunConfig(t *testing.T) {
 					upstream.OAuth2Config.DCRConfig.RegistrationEndpoint)
 				assert.Empty(t, upstream.OAuth2Config.DCRConfig.DiscoveryURL)
 				assert.Equal(t, "2026-10", upstream.OAuth2Config.DCRConfig.RotationKey)
+				assert.Equal(t, "authorizationEndpoint", upstream.OAuth2Config.DCRConfig.RegistrationProbe)
 				// No InitialAccessTokenRef set: env var name should stay empty.
 				assert.Empty(t, upstream.OAuth2Config.DCRConfig.InitialAccessTokenEnvVar)
 			},

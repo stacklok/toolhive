@@ -49,35 +49,42 @@ type Connector struct {
 }
 
 // AddConnector adds a remote MCP server to the client, or updates the URL of
-// an existing connector with the same name. The client signs in to the server
-// itself (OAuth), so nothing is proxied through ToolHive.
+// an existing connector with the same name, keeping its other fields. The
+// client signs in to the server itself (OAuth), so nothing is proxied through
+// ToolHive. A same-name entry that is not a remote server is an error.
 func (cm *ClientManager) AddConnector(clientType ClientApp, name, serverURL string) error {
 	if err := validateConnector(name, serverURL); err != nil {
 		return err
 	}
 	return cm.updateConnectors(clientType, func(servers []any) ([]any, error) {
-		entry := map[string]any{
+		for _, s := range servers {
+			m, ok := s.(map[string]any)
+			if !ok || m["name"] != name {
+				continue
+			}
+			if !isRemoteServer(m) {
+				return nil, fmt.Errorf("a server named %q that is not a remote connector already exists", name)
+			}
+			m["url"] = serverURL
+			return servers, nil
+		}
+		return append(servers, map[string]any{
 			"name":      name,
 			"transport": "http",
 			"url":       serverURL,
 			"oauth":     true,
-		}
-		for i, s := range servers {
-			if m, ok := s.(map[string]any); ok && m["name"] == name {
-				servers[i] = entry
-				return servers, nil
-			}
-		}
-		return append(servers, entry), nil
+		}), nil
 	})
 }
 
 // RemoveConnector removes the connector with the given name from the client.
+// Entries that are not remote servers are never removed, matching
+// ListConnectors.
 func (cm *ClientManager) RemoveConnector(clientType ClientApp, name string) error {
 	return cm.updateConnectors(clientType, func(servers []any) ([]any, error) {
 		kept := make([]any, 0, len(servers))
 		for _, s := range servers {
-			if m, ok := s.(map[string]any); ok && m["name"] == name {
+			if m, ok := s.(map[string]any); ok && m["name"] == name && isRemoteServer(m) {
 				continue
 			}
 			kept = append(kept, s)
@@ -233,17 +240,20 @@ func connectorsFrom(servers []any) []Connector {
 	connectors := make([]Connector, 0, len(servers))
 	for _, s := range servers {
 		m, ok := s.(map[string]any)
-		if !ok {
+		if !ok || !isRemoteServer(m) {
 			continue
 		}
-		name, _ := m["name"].(string)
-		serverURL, _ := m["url"].(string)
-		if name == "" || serverURL == "" {
-			continue
-		}
-		connectors = append(connectors, Connector{Name: name, URL: serverURL})
+		connectors = append(connectors, Connector{Name: m["name"].(string), URL: m["url"].(string)})
 	}
 	return connectors
+}
+
+// isRemoteServer reports whether a managedMcpServers entry is a remote server
+// with a name, the only kind of entry the connector commands read or change.
+func isRemoteServer(m map[string]any) bool {
+	name, _ := m["name"].(string)
+	serverURL, _ := m["url"].(string)
+	return name != "" && serverURL != ""
 }
 
 // validateConnector checks the name and URL before anything is written.

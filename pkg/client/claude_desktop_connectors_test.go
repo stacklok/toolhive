@@ -95,6 +95,60 @@ func TestAddConnector_PreservesEntriesToolHiveDidNotWrite(t *testing.T) {
 		"list shows remote servers only")
 }
 
+// writeServers replaces the document's managedMcpServers with servers.
+func writeServers(t *testing.T, configPath string, servers ...any) {
+	t.Helper()
+	doc := readDocMap(t, configPath)
+	doc["managedMcpServers"] = servers
+	data, err := json.Marshal(doc)
+	require.NoError(t, err)
+	require.NoError(t, os.WriteFile(configPath, data, 0o600))
+}
+
+func TestAddConnector_SameNameKeepsOtherFields(t *testing.T) {
+	t.Parallel()
+	cm, configPath := newConnectorManager(t)
+	writeServers(t, configPath, map[string]any{
+		"name":       "stacklok",
+		"transport":  "http",
+		"url":        testConnectorURL,
+		"oauth":      map[string]any{"clientId": "abc"},
+		"toolPolicy": map[string]any{"*": "ask"},
+	})
+
+	require.NoError(t, cm.AddConnector(ClientApp(ClaudeDesktop), "stacklok", "https://new.example.com/mcp"))
+
+	assert.Equal(t, []any{map[string]any{
+		"name":       "stacklok",
+		"transport":  "http",
+		"url":        "https://new.example.com/mcp",
+		"oauth":      map[string]any{"clientId": "abc"},
+		"toolPolicy": map[string]any{"*": "ask"},
+	}}, readDocMap(t, configPath)["managedMcpServers"])
+}
+
+func TestConnectors_LeaveSameNameLocalEntryAlone(t *testing.T) {
+	t.Parallel()
+	local := map[string]any{"name": "stacklok", "transport": "stdio", "command": "/usr/local/bin/srv"}
+
+	t.Run("add rejects the name collision", func(t *testing.T) {
+		t.Parallel()
+		cm, configPath := newConnectorManager(t)
+		writeServers(t, configPath, local)
+
+		assert.Error(t, cm.AddConnector(ClientApp(ClaudeDesktop), "stacklok", testConnectorURL))
+		assert.Equal(t, []any{local}, readDocMap(t, configPath)["managedMcpServers"])
+	})
+	t.Run("rm does not delete the local entry", func(t *testing.T) {
+		t.Parallel()
+		cm, configPath := newConnectorManager(t)
+		writeServers(t, configPath, local)
+
+		assert.ErrorIs(t, cm.RemoveConnector(ClientApp(ClaudeDesktop), "stacklok"), ErrConnectorNotFound)
+		assert.Equal(t, []any{local}, readDocMap(t, configPath)["managedMcpServers"])
+	})
+}
+
 func TestAddConnector_RejectsInvalidInput(t *testing.T) {
 	t.Parallel()
 

@@ -1704,6 +1704,16 @@ spec:
                                 OAuth2 provider served over HTTP in a kind cluster) where TLS is not
                                 available. Never set this in production.
                               type: boolean
+                            omitScopeOnRefresh:
+                              description: |-
+                                OmitScopeOnRefresh stops the scope parameter from being sent on
+                                refresh_token grant requests to the upstream provider's token endpoint.
+                                Scopes are still sent on the authorization request.
+                                By default (false), the configured scopes are sent on refresh as well,
+                                which some providers require to avoid narrowing the refreshed token.
+                                Set it for providers that reject scope on refresh, such as Salesforce
+                                ("invalid_request - scope parameter not supported").
+                              type: boolean
                             redirectUri:
                               description: |-
                                 RedirectURI is the callback URL where the upstream IdP will redirect after authentication.
@@ -2058,6 +2068,16 @@ spec:
                                 Must be a valid HTTPS URL.
                               pattern: ^https://.*$
                               type: string
+                            omitScopeOnRefresh:
+                              description: |-
+                                OmitScopeOnRefresh stops the scope parameter from being sent on
+                                refresh_token grant requests to the upstream provider's token endpoint.
+                                Scopes are still sent on the authorization request.
+                                By default (false), the configured scopes are sent on refresh as well,
+                                which some providers require to avoid narrowing the refreshed token.
+                                Set it for providers that reject scope on refresh, such as Salesforce
+                                ("invalid_request - scope parameter not supported").
+                              type: boolean
                             redirectUri:
                               description: |-
                                 RedirectURI is the callback URL where the upstream IdP will redirect after authentication.
@@ -6897,6 +6917,16 @@ spec:
                                 OAuth2 provider served over HTTP in a kind cluster) where TLS is not
                                 available. Never set this in production.
                               type: boolean
+                            omitScopeOnRefresh:
+                              description: |-
+                                OmitScopeOnRefresh stops the scope parameter from being sent on
+                                refresh_token grant requests to the upstream provider's token endpoint.
+                                Scopes are still sent on the authorization request.
+                                By default (false), the configured scopes are sent on refresh as well,
+                                which some providers require to avoid narrowing the refreshed token.
+                                Set it for providers that reject scope on refresh, such as Salesforce
+                                ("invalid_request - scope parameter not supported").
+                              type: boolean
                             redirectUri:
                               description: |-
                                 RedirectURI is the callback URL where the upstream IdP will redirect after authentication.
@@ -7251,6 +7281,16 @@ spec:
                                 Must be a valid HTTPS URL.
                               pattern: ^https://.*$
                               type: string
+                            omitScopeOnRefresh:
+                              description: |-
+                                OmitScopeOnRefresh stops the scope parameter from being sent on
+                                refresh_token grant requests to the upstream provider's token endpoint.
+                                Scopes are still sent on the authorization request.
+                                By default (false), the configured scopes are sent on refresh as well,
+                                which some providers require to avoid narrowing the refreshed token.
+                                Set it for providers that reject scope on refresh, such as Salesforce
+                                ("invalid_request - scope parameter not supported").
+                              type: boolean
                             redirectUri:
                               description: |-
                                 RedirectURI is the callback URL where the upstream IdP will redirect after authentication.

@@ -242,6 +242,7 @@ func TestNewDCRRequest(t *testing.T) {
 		wantRegistration       string
 		wantAllowPrivateIPs    bool
 		wantCAFilePath         string
+		wantRotationKey        string
 	}{
 		{
 			name: "discovery_url branch resolves file-based initial access token",
@@ -290,6 +291,23 @@ func TestNewDCRRequest(t *testing.T) {
 			wantCAFilePath:      "/var/run/toolhive/upstream-ca/ca.crt",
 		},
 		{
+			// Pins the RotationKey copy onto dcr.Request: without it a
+			// rotation configured on the run-config would silently keep
+			// addressing the pre-rotation cache row.
+			name: "rotation_key propagates from run-config",
+			rc: &authserver.OAuth2UpstreamRunConfig{
+				Scopes: []string{"openid"},
+				DCRConfig: &authserver.DCRUpstreamConfig{
+					RegistrationEndpoint: "https://idp.example.com/register",
+					RotationKey:          "2026-10",
+				},
+			},
+			localIssuer:      "https://thv.example.com",
+			wantIssuer:       "https://thv.example.com",
+			wantRegistration: "https://idp.example.com/register",
+			wantRotationKey:  "2026-10",
+		},
+		{
 			name:        "nil run-config rejected",
 			rc:          nil,
 			localIssuer: "https://thv.example.com",
@@ -313,6 +331,7 @@ func TestNewDCRRequest(t *testing.T) {
 			assert.Equal(t, tc.wantRegistration, req.RegistrationEndpoint)
 			assert.Equal(t, tc.wantAllowPrivateIPs, req.AllowPrivateIPs)
 			assert.Equal(t, tc.wantCAFilePath, req.CAFilePath)
+			assert.Equal(t, tc.wantRotationKey, req.RotationKey)
 		})
 	}
 }

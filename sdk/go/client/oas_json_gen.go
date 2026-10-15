@@ -1052,6 +1052,12 @@ func (s *AuthenticationDCRUpstreamConfig) encodeFields(e *jx.Encoder) {
 		}
 	}
 	{
+		if s.RotationKey.Set {
+			e.FieldStart("rotation_key")
+			s.RotationKey.Encode(e)
+		}
+	}
+	{
 		if s.SoftwareID.Set {
 			e.FieldStart("software_id")
 			s.SoftwareID.Encode(e)
@@ -1065,13 +1071,14 @@ func (s *AuthenticationDCRUpstreamConfig) encodeFields(e *jx.Encoder) {
 	}
 }
 
-var jsonFieldsNameOfAuthenticationDCRUpstreamConfig = [6]string{
+var jsonFieldsNameOfAuthenticationDCRUpstreamConfig = [7]string{
 	0: "discovery_url",
 	1: "initial_access_token_env_var",
 	2: "initial_access_token_file",
 	3: "registration_endpoint",
-	4: "software_id",
-	5: "software_statement",
+	4: "rotation_key",
+	5: "software_id",
+	6: "software_statement",
 }
 
 // Decode decodes AuthenticationDCRUpstreamConfig from json.
@@ -1121,6 +1128,16 @@ func (s *AuthenticationDCRUpstreamConfig) Decode(d *jx.Decoder) error {
 				return nil
 			}(); err != nil {
 				return errors.Wrap(err, "decode field \"registration_endpoint\"")
+			}
+		case "rotation_key":
+			if err := func() error {
+				s.RotationKey.Reset()
+				if err := s.RotationKey.Decode(d); err != nil {
+					return err
+				}
+				return nil
+			}(); err != nil {
+				return errors.Wrap(err, "decode field \"rotation_key\"")
 			}
 		case "software_id":
 			if err := func() error {

@@ -34,9 +34,9 @@
 // # Concurrency
 //
 // The package maintains a process-global singleflight keyed on the tuple
-// (issuer, upstreamID, redirectURI, scopesHash) so concurrent
+// (issuer, upstreamID, redirectURI, scopesHash, rotationKey) so concurrent
 // ResolveCredentials calls across all consumers in a single process
-// coalesce when their cache keys match. Consumers that share all four
+// coalesce when their cache keys match. Consumers that share all five
 // values will share a flight — the deduplication is a feature for the
 // embedded authserver but means callers cannot assume per-call-site flight
 // isolation. See the dcrFlight doc comment below for the rationale.
@@ -127,7 +127,10 @@ var dcrFlight singleflight.Group
 // UpstreamID keeps two upstreams that share Issuer, RedirectURI, and
 // scopes from coalescing into a single flight (issue #5823) — the same
 // distinction the persisted DCRKey draws, so the singleflight and cache
-// layers stay aligned.
+// layers stay aligned. RotationKey, when non-empty, is appended
+// length-prefixed exactly as redisDCRKey appends it, so a rotation also
+// separates the in-flight registration from one still running under the
+// previous key; an empty RotationKey leaves the flight key unchanged.
 //
 // PublicClient is intentionally NOT part of the flight key — the
 // dcrFlight doc above explains why: today's two consumers register on
@@ -137,11 +140,15 @@ var dcrFlight singleflight.Group
 // DCRKey from cross-profile coalescence; the two layers are aligned
 // rather than asymmetric.
 func flightKeyOf(key Key) string {
-	return fmt.Sprintf("%d:%s:%d:%s:%d:%s:%s",
+	base := fmt.Sprintf("%d:%s:%d:%s:%d:%s:%s",
 		len(key.Issuer), key.Issuer,
 		len(key.UpstreamID), key.UpstreamID,
 		len(key.RedirectURI), key.RedirectURI,
 		key.ScopesHash)
+	if key.RotationKey == "" {
+		return base
+	}
+	return fmt.Sprintf("%s:%d:%s", base, len(key.RotationKey), key.RotationKey)
 }
 
 // defaultUpstreamRedirectPath is the redirect path derived from the issuer
@@ -365,6 +372,7 @@ func ResolveCredentials(
 		UpstreamID:  upstreamID,
 		RedirectURI: redirectURI,
 		ScopesHash:  storage.ScopesHash(scopes),
+		RotationKey: req.RotationKey,
 	}
 
 	// Cache lookup short-circuits before any network I/O.
@@ -518,6 +526,7 @@ func registerAndCache(
 		"local_issuer", req.Issuer,
 		"upstream_id", key.UpstreamID,
 		"redirect_uri", redirectURI,
+		"rotation_key", key.RotationKey,
 		"client_id", authoritative.ClientID,
 	)
 	return authoritative, nil
@@ -746,6 +755,7 @@ func lookupCachedResolution(
 		"local_issuer", localIssuer,
 		"upstream_id", key.UpstreamID,
 		"redirect_uri", redirectURI,
+		"rotation_key", key.RotationKey,
 		"client_id", cached.ClientID,
 		"dcr_age_days", ageDays,
 	)

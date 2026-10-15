@@ -1854,6 +1854,20 @@ type DCRUpstreamConfig struct {
 	// +kubebuilder:validation:MaxLength=2048
 	RegistrationEndpoint string `json:"registrationEndpoint,omitempty"`
 
+	// RotationKey is an optional operator-chosen label that is part of the
+	// cached registration's identity but is never sent to the upstream.
+	// Change it to make the proxies register a fresh client at their next
+	// start instead of reusing the cached one: for example after the
+	// upstream has dropped the registration (it rejects the stale client_id
+	// in the user's browser, so ToolHive cannot detect it) or when a
+	// rotation is required. The previous registration's row stays in storage,
+	// and upstream refresh tokens bound to the previous client_id stop
+	// refreshing, so affected users sign in again.
+	// +optional
+	// +kubebuilder:validation:Pattern=`^[A-Za-z0-9._-]+$`
+	// +kubebuilder:validation:MaxLength=64
+	RotationKey string `json:"rotationKey,omitempty"`
+
 	// InitialAccessTokenRef is an optional reference to a Kubernetes Secret
 	// carrying an RFC 7591 §3 initial access token. When set, the resolver
 	// presents the token value as a Bearer credential on the registration

@@ -17,7 +17,9 @@ import (
 // dcrStaleAgeThreshold is the age beyond which a cached DCR resolution is
 // considered stale and logged as such by higher-level wiring. The store itself
 // does not expire or evict entries — RFC 7591 client registrations are
-// long-lived and are only purged by explicit RFC 7592 deregistration.
+// long-lived and are only purged by explicit RFC 7592 deregistration. An
+// operator retires a cached registration by changing Request.RotationKey,
+// which addresses a new row; the old row is left in place.
 const dcrStaleAgeThreshold = 90 * 24 * time.Hour
 
 // Key is a re-export of storage.DCRKey, kept as a package-local alias so
@@ -30,8 +32,8 @@ const dcrStaleAgeThreshold = 90 * 24 * time.Hour
 type Key = storage.DCRKey
 
 // CredentialStore caches RFC 7591 Dynamic Client Registration resolutions
-// keyed by the (Issuer, UpstreamID, RedirectURI, ScopesHash) tuple.
-// Implementations must be safe for concurrent use.
+// keyed by the (Issuer, UpstreamID, RedirectURI, ScopesHash) tuple plus the
+// optional RotationKey. Implementations must be safe for concurrent use.
 //
 // This is the runner-facing interface used by the DCR resolver. It is a
 // narrow re-projection of storage.DCRCredentialStore that exchanges

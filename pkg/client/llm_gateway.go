@@ -547,22 +547,11 @@ func (cm *ClientManager) LLMClientDetectionHint(clientType ClientApp) string {
 }
 
 // buildLLMSettingsPath resolves the absolute path to the LLM settings file
-// for the given client using the same PlatformPrefix logic as MCP config paths.
+// for the given client using the same PlatformPrefix logic as MCP config paths,
+// honoring cfg.ConfigDirEnvVar when it is set.
 func (cm *ClientManager) buildLLMSettingsPath(cfg *clientAppConfig) string {
-	if cfg.ClientType == ClientApp(Pi) {
-		if dir := os.Getenv("PI_CODING_AGENT_DIR"); dir != "" {
-			if dir == "~" {
-				dir = cm.homeDir
-			} else if strings.HasPrefix(dir, "~/") {
-				dir = filepath.Join(cm.homeDir, dir[2:])
-			}
-			if !filepath.IsAbs(dir) {
-				if absolute, err := filepath.Abs(dir); err == nil {
-					dir = absolute
-				}
-			}
-			return filepath.Join(dir, cfg.LLMSettingsFile)
-		}
+	if dir := cm.configDirOverride(cfg); dir != "" {
+		return filepath.Join(dir, cfg.LLMSettingsFile)
 	}
 	return buildConfigFilePath(
 		cfg.LLMSettingsFile,

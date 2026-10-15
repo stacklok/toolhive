@@ -13,6 +13,7 @@ import (
 	"github.com/stretchr/testify/require"
 
 	"github.com/stacklok/toolhive/pkg/llmgateway"
+	"github.com/stacklok/toolhive/pkg/skills"
 )
 
 func TestPiGatewaySetupAndTeardown(t *testing.T) {
@@ -167,6 +168,33 @@ func TestPiGatewayAgentDirOverride(t *testing.T) {
 	relativePath, err := filepath.Abs(filepath.Join("relative-pi-agent", "models.json"))
 	require.NoError(t, err)
 	require.Equal(t, relativePath, cm.buildLLMSettingsPath(cm.lookupClientAppConfig(ClientApp(Pi))))
+}
+
+// TestPiAgentDirOverrideAppliesToMCPAndSkills pins that PI_CODING_AGENT_DIR
+// relocates Pi's MCP config and global skills alongside models.json, so
+// `thv client register` and `thv skill install` land in the same directory as
+// `thv llm setup`.
+func TestPiAgentDirOverrideAppliesToMCPAndSkills(t *testing.T) {
+	home, agentDir := t.TempDir(), filepath.Join(t.TempDir(), "agent")
+	t.Setenv("PI_CODING_AGENT_DIR", agentDir)
+	cm := NewTestClientManager(home, nil, supportedClientIntegrations, nil)
+
+	mcpPath, err := cm.GetConfigPath(ClientApp(Pi))
+	require.NoError(t, err)
+	require.Equal(t, filepath.Join(agentDir, "mcp.json"), mcpPath)
+
+	skillPath, err := cm.GetSkillPath(ClientApp(Pi), "my-skill", skills.ScopeUser, "")
+	require.NoError(t, err)
+	require.Equal(t, filepath.Join(agentDir, "skills", "my-skill"), skillPath)
+
+	require.False(t, cm.IsClientInstalled(ClientApp(Pi)))
+	require.NoError(t, os.MkdirAll(agentDir, 0o700))
+	require.True(t, cm.IsClientInstalled(ClientApp(Pi)))
+
+	_, err = cm.CreateClientConfig(ClientApp(Pi))
+	require.NoError(t, err)
+	require.FileExists(t, mcpPath)
+	require.NoFileExists(t, filepath.Join(home, ".pi", "agent", "mcp.json"))
 }
 
 func TestPiGatewayAnthropicOnly(t *testing.T) {

@@ -62,8 +62,8 @@ func TestValidateDefaultRedisConfigRejectsInvalidTLS(t *testing.T) {
 		caSecret string
 		caKey    string
 	}{
-		{name: "malformed enable flag", addr: "redis:6380", enabled: "tru"},
-		{name: "malformed enable flag without address", enabled: "tru"},
+		{name: "malformed enable flag", addr: "redis:6380", enabled: "invalid"},
+		{name: "malformed enable flag without address", enabled: "invalid"},
 		{name: "TLS enabled without Redis address", enabled: "true"},
 		{name: "CA secret without key", addr: "redis:6380", enabled: "true", caSecret: "redis-ca"},
 		{name: "CA key without secret", addr: "redis:6380", enabled: "true", caKey: "ca.crt"},

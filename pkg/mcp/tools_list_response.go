@@ -3,10 +3,7 @@
 
 package mcp
 
-import (
-	"bytes"
-	"encoding/json"
-)
+import "encoding/json"
 
 // encodeToolsListResponse returns body, a tools/list response that decodes
 // into response, with the tools of its result replaced by tools. Every other
@@ -53,18 +50,4 @@ func toolsListMembers(body []byte) (members, resultMembers []JSONObjectMember, o
 		return nil, nil, false
 	}
 	return members, resultMembers, true
-}
-
-// sseDataLines splits payload, a JSON value, into the values of the data
-// lines that carry it over an event stream. A client joins the data lines of
-// an event with a newline, so an event may span several data lines, and
-// every line break in payload, be it CRLF, CR or LF, ends a data line: the
-// client reads payload back with a newline in place of each, which outside a
-// string is the same white space. A payload without a line break is one data
-// line.
-func sseDataLines(payload []byte) [][]byte {
-	lf := []byte("\n")
-	unified := bytes.ReplaceAll(payload, []byte("\r\n"), lf)
-	unified = bytes.ReplaceAll(unified, []byte("\r"), lf)
-	return bytes.Split(unified, lf)
 }

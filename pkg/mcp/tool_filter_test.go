@@ -697,6 +697,7 @@ func TestProcessSSEEvents(t *testing.T) {
 		inputBuffer []byte
 		expected    string
 		expectError bool
+		wantErr     error
 	}{
 		{
 			name: "SSE with non-tools data - pass through unchanged",
@@ -751,27 +752,52 @@ data: {"type":"info","message":"Processing complete"}
 			expectError: false,
 		},
 		{
-			// The value of _meta is pretty-printed with LF inside a stream
-			// whose lines end in CRLF, so the filtered list holds line
-			// breaks and goes out as one data line per line of it.
-			name: "SSE with a pretty-printed value inside a CRLF stream",
+			// The data line ends in LF and the empty line that ends the event
+			// in CRLF: each goes out with its own ending, so the client still
+			// sees the empty line and dispatches the event.
+			name: "SSE with a data line ended by LF and an empty line ended by CRLF",
 			config: &toolMiddlewareConfig{
 				filterTools: map[string]struct{}{
 					"allowed_tool": {},
 				},
 			},
-			inputBuffer: []byte("event: message\r\n" +
-				"data: {\"jsonrpc\":\"2.0\",\"id\":1,\"result\":{\"resultType\":\"complete\",\"_meta\":{\n" +
-				"  \"io.modelcontextprotocol/serverInfo\": {\n" +
-				"    \"name\": \"example-server\"\n" +
-				"  }\n" +
-				"},\"tools\":[{\"name\":\"allowed_tool\"},{\"name\":\"blocked_tool\"}]}}\r\n\r\n"),
-			expected: "event: message\r\n" +
-				"data: {\"jsonrpc\":\"2.0\",\"id\":1,\"result\":{\"resultType\":\"complete\",\"_meta\":{\r\n" +
-				"data:   \"io.modelcontextprotocol/serverInfo\": {\r\n" +
-				"data:     \"name\": \"example-server\"\r\n" +
-				"data:   }\r\n" +
-				"data: },\"tools\":[{\"name\":\"allowed_tool\"}]}}\r\n\r\n",
+			inputBuffer: []byte("data: {\"jsonrpc\":\"2.0\",\"id\":1,\"result\":{\"tools\":[{\"name\":\"allowed_tool\",\"description\":\"Allowed\"},{\"name\":\"blocked_tool\",\"description\":\"Blocked\"}]}}\n\r\n"),
+			expected:    "data: {\"jsonrpc\":\"2.0\",\"id\":1,\"result\":{\"tools\":[{\"description\":\"Allowed\",\"name\":\"allowed_tool\"}]}}\n\r\n",
+			expectError: false,
+		},
+		{
+			name: "SSE with a data line ended by CRLF and an empty line ended by LF",
+			config: &toolMiddlewareConfig{
+				filterTools: map[string]struct{}{
+					"allowed_tool": {},
+				},
+			},
+			inputBuffer: []byte("event: message\r\ndata: {\"jsonrpc\":\"2.0\",\"id\":1,\"result\":{\"tools\":[{\"name\":\"allowed_tool\",\"description\":\"Allowed\"},{\"name\":\"blocked_tool\",\"description\":\"Blocked\"}]}}\r\n\n"),
+			expected:    "event: message\r\ndata: {\"jsonrpc\":\"2.0\",\"id\":1,\"result\":{\"tools\":[{\"description\":\"Allowed\",\"name\":\"allowed_tool\"}]}}\r\n\n",
+			expectError: false,
+		},
+		{
+			name: "SSE with a data line ended by CR and an empty line ended by CRLF",
+			config: &toolMiddlewareConfig{
+				filterTools: map[string]struct{}{
+					"allowed_tool": {},
+				},
+			},
+			inputBuffer: []byte("data: {\"jsonrpc\":\"2.0\",\"id\":1,\"result\":{\"tools\":[{\"name\":\"allowed_tool\",\"description\":\"Allowed\"},{\"name\":\"blocked_tool\",\"description\":\"Blocked\"}]}}\r\r\n"),
+			expected:    "data: {\"jsonrpc\":\"2.0\",\"id\":1,\"result\":{\"tools\":[{\"description\":\"Allowed\",\"name\":\"allowed_tool\"}]}}\r\r\n",
+			expectError: false,
+		},
+		{
+			name: "SSE with two events of different line endings in one buffer",
+			config: &toolMiddlewareConfig{
+				filterTools: map[string]struct{}{
+					"allowed_tool": {},
+				},
+			},
+			inputBuffer: []byte("data: {\"jsonrpc\":\"2.0\",\"id\":1,\"result\":{\"tools\":[{\"name\":\"allowed_tool\",\"description\":\"Allowed\"},{\"name\":\"blocked_tool\",\"description\":\"Blocked\"}]}}\r\n\r\n" +
+				"event: notification\rdata: {\"type\":\"info\"}\n\n"),
+			expected: "data: {\"jsonrpc\":\"2.0\",\"id\":1,\"result\":{\"tools\":[{\"description\":\"Allowed\",\"name\":\"allowed_tool\"}]}}\r\n\r\n" +
+				"event: notification\rdata: {\"type\":\"info\"}\n\n",
 			expectError: false,
 		},
 		{
@@ -786,7 +812,60 @@ data: {"type":"info","message":"Processing complete"}
 			expectError: false,
 		},
 		{
-			name: "SSE with unsupported line separator - should fail",
+			// A lone CR ends a line for the SSE specification and is white space
+			// inside a JSON value for go-sdk, which ends a line at LF alone: the
+			// list is filtered as go-sdk reads it, so the whole value never
+			// reaches a client in pieces no line of the specification decodes.
+			name: "SSE with a lone CR inside a tools list value in an LF stream filters the list as go-sdk reads it",
+			config: &toolMiddlewareConfig{
+				filterTools: map[string]struct{}{
+					"allowed_tool": {},
+				},
+			},
+			inputBuffer: []byte("data: {\"jsonrpc\":\"2.0\",\"id\":1,\"result\":{\"tools\":[{\"name\":\"allowed_tool\"},\r{\"name\":\"blocked_tool\"}]}}\n\n"),
+			expected:    "data: {\"jsonrpc\":\"2.0\",\"id\":1,\"result\":{\"tools\":[{\"name\":\"allowed_tool\"}]}}\n\n",
+			expectError: false,
+		},
+		{
+			// The lone CR sits inside a member the filter keeps as sent, so the
+			// filtered value still holds it and goes out as two data lines of
+			// the event, which a client joins with a newline.
+			name: "SSE with a lone CR inside a kept member of a tools list value writes the list as data lines",
+			config: &toolMiddlewareConfig{
+				filterTools: map[string]struct{}{
+					"allowed_tool": {},
+				},
+			},
+			inputBuffer: []byte("data: {\"jsonrpc\":\"2.0\",\"id\":1,\"result\":{\"_meta\":{\r\"k\":1},\"tools\":[{\"name\":\"allowed_tool\"},{\"name\":\"blocked_tool\"}]}}\r\n\r\n"),
+			expected:    "data: {\"jsonrpc\":\"2.0\",\"id\":1,\"result\":{\"_meta\":{\r\ndata: \"k\":1},\"tools\":[{\"name\":\"allowed_tool\"}]}}\r\n\r\n",
+			expectError: false,
+		},
+		{
+			// A buffer ending in CR is complete, and go-sdk reads a stream that
+			// never carries LF as one line once it closes.
+			name: "SSE with a lone CR inside a tools list value in a CR stream filters the list as go-sdk reads it",
+			config: &toolMiddlewareConfig{
+				filterTools: map[string]struct{}{
+					"allowed_tool": {},
+				},
+			},
+			inputBuffer: []byte("data: {\"jsonrpc\":\"2.0\",\"id\":1,\"result\":{\"tools\":[{\"name\":\"allowed_tool\"},\r{\"name\":\"blocked_tool\"}]}}\r\r"),
+			expected:    "data: {\"jsonrpc\":\"2.0\",\"id\":1,\"result\":{\"tools\":[{\"name\":\"allowed_tool\"}]}}\r\r",
+			expectError: false,
+		},
+		{
+			name: "SSE one-byte buffer not ending in a line break keeps buffering",
+			config: &toolMiddlewareConfig{
+				filterTools: map[string]struct{}{
+					"any_tool": {},
+				},
+			},
+			inputBuffer: []byte("d"),
+			expectError: true,
+			wantErr:     errKeepBuffering,
+		},
+		{
+			name: "SSE buffer not ending in a line break keeps buffering",
 			config: &toolMiddlewareConfig{
 				filterTools: map[string]struct{}{
 					"any_tool": {},
@@ -794,6 +873,7 @@ data: {"type":"info","message":"Processing complete"}
 			},
 			inputBuffer: []byte("event: message\vdata: {\"jsonrpc\":\"2.0\",\"id\":1}\v\v"),
 			expectError: true,
+			wantErr:     errKeepBuffering,
 		},
 		{
 			name: "SSE with malformed JSON in data - pass through unchanged",
@@ -867,6 +947,9 @@ data: {"jsonrpc":"2.0","id":1,"result":{"tools":[{"name":"tool1"}]}
 
 			if tt.expectError {
 				assert.Error(t, err)
+				if tt.wantErr != nil {
+					assert.ErrorIs(t, err, tt.wantErr)
+				}
 				return
 			}
 
@@ -968,6 +1051,21 @@ data: {"jsonrpc":"2.0","id":1,"result":{"tools":[{"name":"allowed_tool","descrip
 data: {"jsonrpc":"2.0","id":1,"result":{"tools":[{"name":"allowed_tool","description":"Allowed"},{"name":"blocked_tool","description":"Blocked"}]}}
 
 `),
+			mimeType:        "",
+			successResponse: true,
+			expectFiltered:  true,
+		},
+		{
+			// The lone CR inside the value is a line break to the SSE
+			// specification and white space to go-sdk, so the sniff must find
+			// the list as go-sdk reads it.
+			name: "Missing Content-Type on a success response cannot smuggle an SSE tools list holding a lone CR",
+			config: &toolMiddlewareConfig{
+				filterTools: map[string]struct{}{
+					"allowed_tool": {},
+				},
+			},
+			buffer:          []byte("data: {\"jsonrpc\":\"2.0\",\"id\":1,\"result\":{\"tools\":[{\"name\":\"allowed_tool\",\"description\":\"Allowed\"},\r{\"name\":\"blocked_tool\",\"description\":\"Blocked\"}]}}\n\n"),
 			mimeType:        "",
 			successResponse: true,
 			expectFiltered:  true,

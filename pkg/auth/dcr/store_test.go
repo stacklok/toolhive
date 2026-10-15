@@ -578,3 +578,85 @@ func TestInMemoryStore_GetMissingKeyReturnsMissTuple(t *testing.T) {
 	assert.False(t, ok)
 	assert.Nil(t, got)
 }
+
+func TestCredentialStore_ReplaceIfUnchanged(t *testing.T) {
+	t.Parallel()
+
+	key := Key{
+		Issuer:      "https://idp.example.com",
+		UpstreamID:  "https://upstream.example.com",
+		RedirectURI: "https://toolhive.example.com/oauth/callback",
+		ScopesHash:  storage.ScopesHash([]string{"openid"}),
+	}
+	registration := func(clientID string) *Resolution {
+		return &Resolution{
+			ClientID:              clientID,
+			ClientSecret:          clientID + "-secret",
+			AuthorizationEndpoint: "https://upstream.example.com/authorize",
+			TokenEndpoint:         "https://upstream.example.com/token",
+			CreatedAt:             time.Now(),
+		}
+	}
+	stale, newer, fresh := registration("stale-id"), registration("newer-id"), registration("fresh-id")
+
+	type replacingStore interface {
+		CredentialStore
+		Replacer
+	}
+	stores := map[string]func(t *testing.T) replacingStore{
+		"storage-backed": func(t *testing.T) replacingStore {
+			t.Helper()
+			s, ok := newMemoryDCRStore(t).(replacingStore)
+			require.True(t, ok, "the storage-backed store must implement Replacer")
+			return s
+		},
+		"in-memory": func(t *testing.T) replacingStore {
+			t.Helper()
+			s := NewInMemoryStore()
+			t.Cleanup(func() { _ = s.Close() })
+			r, ok := s.(replacingStore)
+			require.True(t, ok, "the in-memory store must implement Replacer")
+			return r
+		},
+	}
+	tests := []struct {
+		name     string
+		stored   *Resolution
+		wantID   string
+		wantRead string
+	}{
+		{name: "replaces the registration the caller read", stored: stale, wantID: "fresh-id", wantRead: "fresh-id"},
+		{name: "keeps a registration a concurrent writer already replaced", stored: newer, wantID: "newer-id", wantRead: "newer-id"},
+		{name: "claims the key when the row is gone", stored: nil, wantID: "fresh-id", wantRead: "fresh-id"},
+	}
+	for storeName, newStore := range stores {
+		for _, tt := range tests {
+			t.Run(storeName+"/"+tt.name, func(t *testing.T) {
+				t.Parallel()
+				ctx := context.Background()
+				store := newStore(t)
+				if tt.stored != nil {
+					_, err := store.PutIfAbsent(ctx, key, tt.stored)
+					require.NoError(t, err)
+				}
+
+				got, err := store.ReplaceIfUnchanged(ctx, key, stale, fresh)
+				require.NoError(t, err)
+				assert.Equal(t, tt.wantID, got.ClientID)
+
+				read, ok, err := store.Get(ctx, key)
+				require.NoError(t, err)
+				require.True(t, ok)
+				assert.Equal(t, tt.wantRead, read.ClientID)
+			})
+		}
+		t.Run(storeName+"/rejects nil resolutions", func(t *testing.T) {
+			t.Parallel()
+			store := newStore(t)
+			_, err := store.ReplaceIfUnchanged(context.Background(), key, nil, fresh)
+			require.Error(t, err)
+			_, err = store.ReplaceIfUnchanged(context.Background(), key, stale, nil)
+			require.Error(t, err)
+		})
+	}
+}

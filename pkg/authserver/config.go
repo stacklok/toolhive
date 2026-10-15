@@ -31,6 +31,12 @@ import (
 // CurrentSchemaVersion is the current version of the authserver RunConfig schema.
 const CurrentSchemaVersion = "v0.1.0"
 
+// TLSListenerRunConfig describes the auth server TLS listener configuration.
+type TLSListenerRunConfig struct {
+	CertFile string `json:"cert_file" yaml:"cert_file"`
+	KeyFile  string `json:"key_file" yaml:"key_file"`
+}
+
 // RunConfig is the serializable configuration for the embedded auth server.
 // It contains no secrets - only file paths and environment variable names
 // that will be resolved at runtime.
@@ -265,6 +271,10 @@ type RunConfig struct {
 	// SPIFFE client authentication, delegate clients, and issuer policy. A
 	// non-nil value explicitly controls grant-family enablement.
 	InboundGrants *InboundGrantsRunConfig `json:"inbound_grants,omitempty" yaml:"inbound_grants,omitempty"`
+
+	// TLSListener configures auth server routes to be served over TLS on port 8443.
+	// It is currently rejected because the runner does not start this listener.
+	TLSListener *TLSListenerRunConfig `json:"tls_listener,omitempty" yaml:"tls_listener,omitempty"`
 }
 
 // DelegateClientRunConfig declares a pre-provisioned confidential OAuth
@@ -303,6 +313,12 @@ type DelegateClientRunConfig struct {
 // catches operator-supplied misconfiguration early so server startup fails
 // loudly instead of degrading silently at runtime.
 func (c *RunConfig) Validate() error {
+	if c.TLSListener != nil {
+		return errors.New(
+			"tls_listener: the TLS listener is not yet supported by this build; " +
+				"remove this configuration until listener startup is implemented",
+		)
+	}
 	if c.CIMD != nil {
 		if err := c.CIMD.Validate(); err != nil {
 			return fmt.Errorf("cimd: %w", err)
@@ -368,6 +384,22 @@ func (c *RunConfig) validateUpstreamFilter() error {
 		return fmt.Errorf("upstream_filter: %w", err)
 	}
 	return nil
+}
+
+// HasSPIFFEX509ClientAuth reports whether any SPIFFE client association
+// enables spiffe_x509. A nil *RunConfig returns false.
+func (c *RunConfig) HasSPIFFEX509ClientAuth() bool {
+	if c == nil || c.InboundGrants == nil {
+		return false
+	}
+	for _, association := range c.InboundGrants.SPIFFEClientAuth {
+		for _, method := range association.Methods {
+			if method == SPIFFEAuthenticationMethodX509 {
+				return true
+			}
+		}
+	}
+	return false
 }
 
 // validateSPIFFENotYetEnforced hard-rejects a non-empty SPIFFE trust
@@ -913,11 +945,14 @@ type DCRUpstreamConfig struct {
 	// RotationKey is an optional operator-chosen label (1-64 characters from
 	// [A-Za-z0-9._-]) that becomes part of the cached registration's identity
 	// without being sent to the upstream. Changing it makes the next start
-	// register a fresh client instead of reusing the cached one. Use it when
-	// the upstream has dropped the registration it issued — that rejection is
-	// only visible in the user's browser, so the resolver cannot detect it —
-	// or when a registration must be rotated on request. The row written
-	// under the previous value is left in place. Upstream refresh tokens
+	// register a fresh client instead of reusing the cached one. At start the
+	// resolver checks the cached client at the upstream's token endpoint and
+	// replaces it by itself when the upstream answers invalid_client. Use
+	// RotationKey when the upstream has dropped the registration and that
+	// check cannot tell (an upstream that answers a dropped public client
+	// like a live one, or a private_key_jwt client), so the rejection is only
+	// visible in the user's browser, or when a registration must be rotated
+	// on request. The row written under the previous value is left in place. Upstream refresh tokens
 	// bound to the previous client_id stop refreshing once the client
 	// changes; affected users sign in again.
 	RotationKey string `json:"rotation_key,omitempty" yaml:"rotation_key,omitempty"`

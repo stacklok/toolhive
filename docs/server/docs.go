@@ -158,7 +158,7 @@ const docTemplate = `{
                         "type": "string"
                     },
                     "rotation_key": {
-                        "description": "RotationKey is an optional operator-chosen label (1-64 characters from\n[A-Za-z0-9._-]) that becomes part of the cached registration's identity\nwithout being sent to the upstream. Changing it makes the next start\nregister a fresh client instead of reusing the cached one. Use it when\nthe upstream has dropped the registration it issued — that rejection is\nonly visible in the user's browser, so the resolver cannot detect it —\nor when a registration must be rotated on request. The row written\nunder the previous value is left in place. Upstream refresh tokens\nbound to the previous client_id stop refreshing once the client\nchanges; affected users sign in again.",
+                        "description": "RotationKey is an optional operator-chosen label (1-64 characters from\n[A-Za-z0-9._-]) that becomes part of the cached registration's identity\nwithout being sent to the upstream. Changing it makes the next start\nregister a fresh client instead of reusing the cached one. At start the\nresolver checks the cached client at the upstream's token endpoint and\nreplaces it by itself when the upstream answers invalid_client. Use\nRotationKey when the upstream has dropped the registration and that\ncheck cannot tell (an upstream that answers a dropped public client\nlike a live one, or a private_key_jwt client), so the rejection is only\nvisible in the user's browser, or when a registration must be rotated\non request. The row written under the previous value is left in place. Upstream refresh tokens\nbound to the previous client_id stop refreshing once the client\nchanges; affected users sign in again.",
                         "type": "string"
                     },
                     "software_id": {
@@ -550,6 +550,9 @@ const docTemplate = `{
                     "storage": {
                         "$ref": "#/components/schemas/storage.RunConfig"
                     },
+                    "tls_listener": {
+                        "$ref": "#/components/schemas/authserver.TLSListenerRunConfig"
+                    },
                     "token_lifespans": {
                         "$ref": "#/components/schemas/authserver.TokenLifespanRunConfig"
                     },
@@ -713,6 +716,18 @@ const docTemplate = `{
                     },
                     "signing_key_file": {
                         "description": "SigningKeyFile is the filename of the primary signing key (relative to KeyDir).\nThis key is used for signing new tokens.",
+                        "type": "string"
+                    }
+                },
+                "type": "object"
+            },
+            "authserver.TLSListenerRunConfig": {
+                "description": "TLSListener configures auth server routes to be served over TLS on port 8443.\nIt is currently rejected because the runner does not start this listener.",
+                "properties": {
+                    "cert_file": {
+                        "type": "string"
+                    },
+                    "key_file": {
                         "type": "string"
                     }
                 },

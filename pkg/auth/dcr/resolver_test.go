@@ -140,8 +140,10 @@ func TestResolveDCRCredentials_CacheHitShortCircuits(t *testing.T) {
 	t.Parallel()
 
 	// Count every request to every path — discovery, registration,
-	// anything. The acceptance criterion is that a cache hit issues zero
-	// network I/O, so the cache-hit path must never reach this server.
+	// anything. A cache hit never re-runs discovery or registration, and the
+	// preloaded row below records no token endpoint auth method, so the
+	// cache-hit verification (TestResolveCredentials_CacheHitVerifiesRegistration)
+	// is skipped too and the cache-hit path must never reach this server.
 	var totalRequests int32
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		atomic.AddInt32(&totalRequests, 1)

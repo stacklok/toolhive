@@ -871,7 +871,7 @@ var _ = Describe("thv llm — all-client matrix", Label("cli", "llm", "clients",
 			}
 
 			// readAppliedConfigDoc resolves _meta.json's appliedId to its config doc.
-			readAppliedConfigDoc := func(configLib string) (map[string]any, map[string]any) {
+			readAppliedConfigDoc := func(configLib string) map[string]any {
 				metaData, err := os.ReadFile(filepath.Join(configLib, "_meta.json"))
 				Expect(err).ToNot(HaveOccurred(), "_meta.json should exist after setup")
 				var meta map[string]any
@@ -883,7 +883,7 @@ var _ = Describe("thv llm — all-client matrix", Label("cli", "llm", "clients",
 				Expect(err).ToNot(HaveOccurred(), "applied config document should exist")
 				var doc map[string]any
 				Expect(json.Unmarshal(docData, &doc)).To(Succeed())
-				return meta, doc
+				return doc
 			}
 
 			It("writes the config document, selector, and shim, then reverts them", func() {
@@ -911,7 +911,7 @@ var _ = Describe("thv llm — all-client matrix", Label("cli", "llm", "clients",
 					"setup should tell the user to relaunch Claude Desktop")
 
 				By("verifying the config document contents")
-				_, doc := readAppliedConfigDoc(configLib)
+				doc := readAppliedConfigDoc(configLib)
 				Expect(doc["inferenceProvider"]).To(Equal("gateway"))
 				Expect(doc["inferenceCredentialKind"]).To(Equal("helper-script"))
 				Expect(doc["inferenceGatewayAuthScheme"]).To(Equal("bearer"))
@@ -990,7 +990,7 @@ var _ = Describe("thv llm — all-client matrix", Label("cli", "llm", "clients",
 					"stacklok", connectorURL).ExpectSuccess()
 
 				By("verifying the applied config keeps inference settings and gains the connector")
-				_, doc := readAppliedConfigDoc(configLib)
+				doc := readAppliedConfigDoc(configLib)
 				Expect(doc["inferenceProvider"]).To(Equal("gateway"))
 				Expect(doc["managedMcpServers"]).To(ConsistOf(map[string]any{
 					"name":      "stacklok",
@@ -1008,7 +1008,7 @@ var _ = Describe("thv llm — all-client matrix", Label("cli", "llm", "clients",
 
 				By("removing the connector")
 				thvCmd("client", "connector", "rm", "--client", "claude-desktop", "stacklok").ExpectSuccess()
-				_, doc = readAppliedConfigDoc(configLib)
+				doc = readAppliedConfigDoc(configLib)
 				Expect(doc).ToNot(HaveKey("managedMcpServers"))
 
 				By("tearing down with a connector still configured")

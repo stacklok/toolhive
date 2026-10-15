@@ -38,9 +38,10 @@ const (
 )
 
 // claudeDesktopConfig is the <id>.json document written into the configLibrary.
-// ToolHive fully owns this file, so a typed struct is safe (no user fields to
-// preserve). inferenceModels is omitted when empty so Claude Desktop falls back
-// to gateway-side model auto-discovery once the gateway serves it.
+// ToolHive owns this file; besides these keys it may also hold managedMcpServers
+// written by "thv client connector add" (see claude_desktop_connectors.go).
+// inferenceModels is omitted when empty so Claude Desktop falls back to
+// gateway-side model auto-discovery once the gateway serves it.
 type claudeDesktopConfig struct {
 	InferenceProvider                   string   `json:"inferenceProvider"`
 	InferenceGatewayBaseURL             string   `json:"inferenceGatewayBaseUrl"`
@@ -117,6 +118,9 @@ func (cm *ClientManager) configureCredentialHelper(appCfg *clientAppConfig, cfg 
 		meta["entries"] = upsertMetaEntry(metaEntries(meta), id, claudeDesktopManagedEntryName)
 		meta["appliedId"] = id
 
+		// This rewrites the whole document, so it drops any managedMcpServers
+		// entries "thv client connector add" wrote; they must be re-added after
+		// re-running setup. Accepted for now: the two are run together, setup first.
 		doc := claudeDesktopConfig{
 			InferenceProvider:                   "gateway",
 			InferenceGatewayBaseURL:             baseURL,
@@ -216,6 +220,13 @@ func (cm *ClientManager) revertCredentialHelper(appCfg *clientAppConfig, configP
 			if err := writeClaudeDesktopMeta(metaPath, meta); err != nil {
 				return err
 			}
+		}
+		// The document also holds any connectors "thv client connector add" wrote;
+		// they go with it, since Claude Desktop ignores them without the inference
+		// settings anyway.
+		if names := connectorNamesInDoc(configPath); len(names) > 0 {
+			slog.Warn("removing Claude Desktop connectors along with the LLM gateway configuration",
+				"connectors", names)
 		}
 		if err := removeIfExists(configPath); err != nil {
 			return err

@@ -959,6 +959,67 @@ var _ = Describe("thv llm — all-client matrix", Label("cli", "llm", "clients",
 				Expect(cfg.ConfiguredTools).To(BeEmpty(),
 					"ConfiguredTools should be empty after teardown")
 			})
+
+			It("adds, lists, and removes connectors in the same config document", func() {
+				issuerURL := fmt.Sprintf("http://localhost:%d", oidcPort)
+				appDir, configLib, _ := claudeDesktopPaths(tempDir)
+				Expect(os.MkdirAll(appDir, 0750)).To(Succeed())
+				const connectorURL = "https://cgw.example.com/gw/mcp"
+
+				By("rejecting connector add before thv llm setup")
+				_, stderr, err := thvCmd("client", "connector", "add", "--client", "claude-desktop",
+					"stacklok", connectorURL).ExpectFailure()
+				Expect(err).To(HaveOccurred())
+				Expect(stderr).To(ContainSubstring("thv llm setup --client claude-desktop"),
+					"error should point at the setup command")
+
+				By("running thv llm setup --client claude-desktop")
+				stdout, stderr, err := runSetupWithOIDCCompletion(
+					thvCmd, oidcServer,
+					"--client", "claude-desktop",
+					"--gateway-url", gatewayURL,
+					"--issuer", issuerURL,
+					"--client-id", clientID,
+					"--anthropic-path-prefix", "/anthropic",
+				)
+				Expect(err).ToNot(HaveOccurred(),
+					"setup should succeed; stdout=%q stderr=%q", stdout, stderr)
+
+				By("adding a connector")
+				thvCmd("client", "connector", "add", "--client", "claude-desktop",
+					"stacklok", connectorURL).ExpectSuccess()
+
+				By("verifying the applied config keeps inference settings and gains the connector")
+				_, doc := readAppliedConfigDoc(configLib)
+				Expect(doc["inferenceProvider"]).To(Equal("gateway"))
+				Expect(doc["managedMcpServers"]).To(ConsistOf(map[string]any{
+					"name":      "stacklok",
+					"transport": "http",
+					"url":       connectorURL,
+					"oauth":     true,
+				}))
+
+				By("listing connectors as JSON")
+				listOut, _ := thvCmd("client", "connector", "list", "--client", "claude-desktop",
+					"--format", "json").ExpectSuccess()
+				var connectors []map[string]string
+				Expect(json.Unmarshal([]byte(listOut), &connectors)).To(Succeed())
+				Expect(connectors).To(ConsistOf(map[string]string{"name": "stacklok", "url": connectorURL}))
+
+				By("removing the connector")
+				thvCmd("client", "connector", "rm", "--client", "claude-desktop", "stacklok").ExpectSuccess()
+				_, doc = readAppliedConfigDoc(configLib)
+				Expect(doc).ToNot(HaveKey("managedMcpServers"))
+
+				By("tearing down with a connector still configured")
+				thvCmd("client", "connector", "add", "--client", "claude-desktop",
+					"stacklok", connectorURL).ExpectSuccess()
+				thvCmd("llm", "teardown", "claude-desktop").ExpectSuccess()
+				_, stderr, err = thvCmd("client", "connector", "list", "--client", "claude-desktop").ExpectFailure()
+				Expect(err).To(HaveOccurred())
+				Expect(stderr).To(ContainSubstring("thv llm setup --client claude-desktop"),
+					"connectors should be gone with the config document")
+			})
 		})
 
 		Describe("codex (codex-auth) setup and teardown", func() {

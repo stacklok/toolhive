@@ -1742,11 +1742,15 @@ spec:
                                     cached registration's identity but is never sent to the upstream.
                                     Change it to make the proxies register a fresh client at their next
                                     start instead of reusing the cached one: for example after the
-                                    upstream has dropped the registration (it rejects the stale client_id
-                                    in the user's browser, so ToolHive cannot detect it) or when a
-                                    rotation is required. The previous registration's row stays in storage,
-                                    and upstream refresh tokens bound to the previous client_id stop
-                                    refreshing, so affected users sign in again.
+                                    upstream has dropped the registration, or when a rotation is required.
+                                    At start ToolHive checks the cached client at the upstream's token
+                                    endpoint and registers a new one by itself when the upstream answers
+                                    invalid_client. Where that check cannot tell (an upstream that answers
+                                    a dropped public client like a live one, or a private_key_jwt client),
+                                    the stale client_id is only rejected in the user's browser, and
+                                    changing this key is the remedy. The previous registration's row stays
+                                    in storage, and upstream refresh tokens bound to the previous client_id
+                                    stop refreshing, so affected users sign in again.
                                   maxLength: 64
                                   pattern: ^[A-Za-z0-9._-]+$
                                   type: string
@@ -2146,11 +2150,15 @@ spec:
                                     cached registration's identity but is never sent to the upstream.
                                     Change it to make the proxies register a fresh client at their next
                                     start instead of reusing the cached one: for example after the
-                                    upstream has dropped the registration (it rejects the stale client_id
-                                    in the user's browser, so ToolHive cannot detect it) or when a
-                                    rotation is required. The previous registration's row stays in storage,
-                                    and upstream refresh tokens bound to the previous client_id stop
-                                    refreshing, so affected users sign in again.
+                                    upstream has dropped the registration, or when a rotation is required.
+                                    At start ToolHive checks the cached client at the upstream's token
+                                    endpoint and registers a new one by itself when the upstream answers
+                                    invalid_client. Where that check cannot tell (an upstream that answers
+                                    a dropped public client like a live one, or a private_key_jwt client),
+                                    the stale client_id is only rejected in the user's browser, and
+                                    changing this key is the remedy. The previous registration's row stays
+                                    in storage, and upstream refresh tokens bound to the previous client_id
+                                    stop refreshing, so affected users sign in again.
                                   maxLength: 64
                                   pattern: ^[A-Za-z0-9._-]+$
                                   type: string
@@ -4676,11 +4684,15 @@ spec:
                                     cached registration's identity but is never sent to the upstream.
                                     Change it to make the proxies register a fresh client at their next
                                     start instead of reusing the cached one: for example after the
-                                    upstream has dropped the registration (it rejects the stale client_id
-                                    in the user's browser, so ToolHive cannot detect it) or when a
-                                    rotation is required. The previous registration's row stays in storage,
-                                    and upstream refresh tokens bound to the previous client_id stop
-                                    refreshing, so affected users sign in again.
+                                    upstream has dropped the registration, or when a rotation is required.
+                                    At start ToolHive checks the cached client at the upstream's token
+                                    endpoint and registers a new one by itself when the upstream answers
+                                    invalid_client. Where that check cannot tell (an upstream that answers
+                                    a dropped public client like a live one, or a private_key_jwt client),
+                                    the stale client_id is only rejected in the user's browser, and
+                                    changing this key is the remedy. The previous registration's row stays
+                                    in storage, and upstream refresh tokens bound to the previous client_id
+                                    stop refreshing, so affected users sign in again.
                                   maxLength: 64
                                   pattern: ^[A-Za-z0-9._-]+$
                                   type: string
@@ -5080,11 +5092,15 @@ spec:
                                     cached registration's identity but is never sent to the upstream.
                                     Change it to make the proxies register a fresh client at their next
                                     start instead of reusing the cached one: for example after the
-                                    upstream has dropped the registration (it rejects the stale client_id
-                                    in the user's browser, so ToolHive cannot detect it) or when a
-                                    rotation is required. The previous registration's row stays in storage,
-                                    and upstream refresh tokens bound to the previous client_id stop
-                                    refreshing, so affected users sign in again.
+                                    upstream has dropped the registration, or when a rotation is required.
+                                    At start ToolHive checks the cached client at the upstream's token
+                                    endpoint and registers a new one by itself when the upstream answers
+                                    invalid_client. Where that check cannot tell (an upstream that answers
+                                    a dropped public client like a live one, or a private_key_jwt client),
+                                    the stale client_id is only rejected in the user's browser, and
+                                    changing this key is the remedy. The previous registration's row stays
+                                    in storage, and upstream refresh tokens bound to the previous client_id
+                                    stop refreshing, so affected users sign in again.
                                   maxLength: 64
                                   pattern: ^[A-Za-z0-9._-]+$
                                   type: string

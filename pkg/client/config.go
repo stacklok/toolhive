@@ -236,6 +236,12 @@ type clientAppConfig struct {
 	YAMLDefaults        map[string]any  // Default values to add to entries
 	// TOML-specific configuration (only used when Extension == TOML)
 	TOMLStorageType TOMLStorageType // How servers are stored in TOML (map or array)
+	// ConfigDirEnvVar names an environment variable that, when set, relocates
+	// the client's config directory. It replaces the home-relative directory
+	// holding SettingsFile and LLMSettingsFile, and the global skills directory
+	// becomes <dir>/skills. A leading "~" expands to the home directory and a
+	// relative value resolves against the working directory.
+	ConfigDirEnvVar string
 	// Skill-specific configuration
 	SupportsSkills    bool     // Whether this client supports skills
 	SkillsGlobalPath  []string // Path segments for global skills dir (from home dir)
@@ -1052,6 +1058,7 @@ var supportedClientIntegrations = []clientAppConfig{
 			types.TransportTypeSSE:            defaultURLFieldName,
 			types.TransportTypeStreamableHTTP: defaultURLFieldName,
 		},
+		ConfigDirEnvVar:    "PI_CODING_AGENT_DIR",
 		SupportsSkills:     true,
 		SkillsGlobalPath:   []string{".pi", "agent", skillsDirName},
 		SkillsProjectPath:  []string{".pi", skillsDirName},
@@ -1286,7 +1293,7 @@ func (cm *ClientManager) CreateClientConfig(clientType ClientApp) (*ConfigFile, 
 	}
 
 	// Build the path to the configuration file
-	path := buildConfigFilePath(clientCfg.SettingsFile, clientCfg.RelPath, clientCfg.PlatformPrefix, []string{cm.homeDir})
+	path := cm.buildMCPConfigPath(clientCfg)
 
 	// Validate that the file does not already exist
 	if _, err := os.Stat(path); !os.IsNotExist(err) {
@@ -1392,7 +1399,7 @@ func (cm *ClientManager) retrieveConfigFileMetadata(clientType ClientApp) (*Conf
 	}
 
 	// Build the path to the configuration file
-	path := buildConfigFilePath(clientCfg.SettingsFile, clientCfg.RelPath, clientCfg.PlatformPrefix, []string{cm.homeDir})
+	path := cm.buildMCPConfigPath(clientCfg)
 
 	// Validate that the file exists
 	if err := validateConfigFileExists(path); err != nil {
@@ -1444,6 +1451,38 @@ func (cm *ClientManager) retrieveConfigFileMetadata(clientType ClientApp) (*Conf
 		ClientType:    clientCfg.ClientType,
 		Extension:     clientCfg.Extension,
 	}, nil
+}
+
+// buildMCPConfigPath resolves the absolute path to the client's MCP settings
+// file, honoring cfg.ConfigDirEnvVar when it is set.
+func (cm *ClientManager) buildMCPConfigPath(cfg *clientAppConfig) string {
+	if dir := cm.configDirOverride(cfg); dir != "" {
+		return filepath.Join(dir, cfg.SettingsFile)
+	}
+	return buildConfigFilePath(cfg.SettingsFile, cfg.RelPath, cfg.PlatformPrefix, []string{cm.homeDir})
+}
+
+// configDirOverride returns the absolute directory named by cfg.ConfigDirEnvVar,
+// or "" when the client has no override variable or it is unset.
+func (cm *ClientManager) configDirOverride(cfg *clientAppConfig) string {
+	if cfg.ConfigDirEnvVar == "" {
+		return ""
+	}
+	dir := os.Getenv(cfg.ConfigDirEnvVar)
+	switch {
+	case dir == "":
+		return ""
+	case dir == "~":
+		dir = cm.homeDir
+	case strings.HasPrefix(dir, "~/"):
+		dir = filepath.Join(cm.homeDir, dir[2:])
+	}
+	if !filepath.IsAbs(dir) {
+		if absolute, err := filepath.Abs(dir); err == nil {
+			dir = absolute
+		}
+	}
+	return dir
 }
 
 func buildConfigFilePath(settingsFile string, relPath []string, platformPrefix map[Platform][]string, path []string) string {

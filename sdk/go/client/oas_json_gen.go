@@ -1052,6 +1052,12 @@ func (s *AuthenticationDCRUpstreamConfig) encodeFields(e *jx.Encoder) {
 		}
 	}
 	{
+		if s.RotationKey.Set {
+			e.FieldStart("rotation_key")
+			s.RotationKey.Encode(e)
+		}
+	}
+	{
 		if s.SoftwareID.Set {
 			e.FieldStart("software_id")
 			s.SoftwareID.Encode(e)
@@ -1065,13 +1071,14 @@ func (s *AuthenticationDCRUpstreamConfig) encodeFields(e *jx.Encoder) {
 	}
 }
 
-var jsonFieldsNameOfAuthenticationDCRUpstreamConfig = [6]string{
+var jsonFieldsNameOfAuthenticationDCRUpstreamConfig = [7]string{
 	0: "discovery_url",
 	1: "initial_access_token_env_var",
 	2: "initial_access_token_file",
 	3: "registration_endpoint",
-	4: "software_id",
-	5: "software_statement",
+	4: "rotation_key",
+	5: "software_id",
+	6: "software_statement",
 }
 
 // Decode decodes AuthenticationDCRUpstreamConfig from json.
@@ -1121,6 +1128,16 @@ func (s *AuthenticationDCRUpstreamConfig) Decode(d *jx.Decoder) error {
 				return nil
 			}(); err != nil {
 				return errors.Wrap(err, "decode field \"registration_endpoint\"")
+			}
+		case "rotation_key":
+			if err := func() error {
+				s.RotationKey.Reset()
+				if err := s.RotationKey.Decode(d); err != nil {
+					return err
+				}
+				return nil
+			}(); err != nil {
+				return errors.Wrap(err, "decode field \"rotation_key\"")
 			}
 		case "software_id":
 			if err := func() error {
@@ -1816,6 +1833,12 @@ func (s *AuthenticationOAuth2UpstreamRunConfig) encodeFields(e *jx.Encoder) {
 		}
 	}
 	{
+		if s.OmitScopeOnRefresh.Set {
+			e.FieldStart("omit_scope_on_refresh")
+			s.OmitScopeOnRefresh.Encode(e)
+		}
+	}
+	{
 		if s.RedirectURI.Set {
 			e.FieldStart("redirect_uri")
 			s.RedirectURI.Encode(e)
@@ -1857,7 +1880,7 @@ func (s *AuthenticationOAuth2UpstreamRunConfig) encodeFields(e *jx.Encoder) {
 	}
 }
 
-var jsonFieldsNameOfAuthenticationOAuth2UpstreamRunConfig = [17]string{
+var jsonFieldsNameOfAuthenticationOAuth2UpstreamRunConfig = [18]string{
 	0:  "additional_authorization_params",
 	1:  "additional_token_params",
 	2:  "allow_private_ips",
@@ -1869,12 +1892,13 @@ var jsonFieldsNameOfAuthenticationOAuth2UpstreamRunConfig = [17]string{
 	8:  "dcr_config",
 	9:  "identity_from_token",
 	10: "insecure_allow_http",
-	11: "redirect_uri",
-	12: "scopes",
-	13: "token_endpoint",
-	14: "token_endpoint_auth_method",
-	15: "token_response_mapping",
-	16: "userinfo",
+	11: "omit_scope_on_refresh",
+	12: "redirect_uri",
+	13: "scopes",
+	14: "token_endpoint",
+	15: "token_endpoint_auth_method",
+	16: "token_response_mapping",
+	17: "userinfo",
 }
 
 // Decode decodes AuthenticationOAuth2UpstreamRunConfig from json.
@@ -1994,6 +2018,16 @@ func (s *AuthenticationOAuth2UpstreamRunConfig) Decode(d *jx.Decoder) error {
 				return nil
 			}(); err != nil {
 				return errors.Wrap(err, "decode field \"insecure_allow_http\"")
+			}
+		case "omit_scope_on_refresh":
+			if err := func() error {
+				s.OmitScopeOnRefresh.Reset()
+				if err := s.OmitScopeOnRefresh.Decode(d); err != nil {
+					return err
+				}
+				return nil
+			}(); err != nil {
+				return errors.Wrap(err, "decode field \"omit_scope_on_refresh\"")
 			}
 		case "redirect_uri":
 			if err := func() error {
@@ -2270,6 +2304,12 @@ func (s *AuthenticationOIDCUpstreamRunConfig) encodeFields(e *jx.Encoder) {
 		}
 	}
 	{
+		if s.OmitScopeOnRefresh.Set {
+			e.FieldStart("omit_scope_on_refresh")
+			s.OmitScopeOnRefresh.Encode(e)
+		}
+	}
+	{
 		if s.RedirectURI.Set {
 			e.FieldStart("redirect_uri")
 			s.RedirectURI.Encode(e)
@@ -2299,7 +2339,7 @@ func (s *AuthenticationOIDCUpstreamRunConfig) encodeFields(e *jx.Encoder) {
 	}
 }
 
-var jsonFieldsNameOfAuthenticationOIDCUpstreamRunConfig = [14]string{
+var jsonFieldsNameOfAuthenticationOIDCUpstreamRunConfig = [15]string{
 	0:  "additional_authorization_params",
 	1:  "additional_token_params",
 	2:  "allow_private_ips",
@@ -2310,10 +2350,11 @@ var jsonFieldsNameOfAuthenticationOIDCUpstreamRunConfig = [14]string{
 	7:  "dcr_config",
 	8:  "insecure_allow_http",
 	9:  "issuer_url",
-	10: "redirect_uri",
-	11: "scopes",
-	12: "subject_claim",
-	13: "userinfo_override",
+	10: "omit_scope_on_refresh",
+	11: "redirect_uri",
+	12: "scopes",
+	13: "subject_claim",
+	14: "userinfo_override",
 }
 
 // Decode decodes AuthenticationOIDCUpstreamRunConfig from json.
@@ -2423,6 +2464,16 @@ func (s *AuthenticationOIDCUpstreamRunConfig) Decode(d *jx.Decoder) error {
 				return nil
 			}(); err != nil {
 				return errors.Wrap(err, "decode field \"issuer_url\"")
+			}
+		case "omit_scope_on_refresh":
+			if err := func() error {
+				s.OmitScopeOnRefresh.Reset()
+				if err := s.OmitScopeOnRefresh.Decode(d); err != nil {
+					return err
+				}
+				return nil
+			}(); err != nil {
+				return errors.Wrap(err, "decode field \"omit_scope_on_refresh\"")
 			}
 		case "redirect_uri":
 			if err := func() error {
@@ -2773,6 +2824,12 @@ func (s *AuthenticationRunConfig) encodeFields(e *jx.Encoder) {
 		}
 	}
 	{
+		if s.TLSListener.Set {
+			e.FieldStart("tls_listener")
+			s.TLSListener.Encode(e)
+		}
+	}
+	{
 		if s.TokenLifespans.Set {
 			e.FieldStart("token_lifespans")
 			s.TokenLifespans.Encode(e)
@@ -2789,6 +2846,12 @@ func (s *AuthenticationRunConfig) encodeFields(e *jx.Encoder) {
 		}
 	}
 	{
+		if s.UpstreamFilter.Set {
+			e.FieldStart("upstream_filter")
+			s.UpstreamFilter.Encode(e)
+		}
+	}
+	{
 		if s.Upstreams != nil {
 			e.FieldStart("upstreams")
 			e.ArrStart()
@@ -2800,7 +2863,7 @@ func (s *AuthenticationRunConfig) encodeFields(e *jx.Encoder) {
 	}
 }
 
-var jsonFieldsNameOfAuthenticationRunConfig = [24]string{
+var jsonFieldsNameOfAuthenticationRunConfig = [26]string{
 	0:  "allow_confidential_client_registration",
 	1:  "allow_private_key_jwt_registration",
 	2:  "allowed_audiences",
@@ -2822,9 +2885,11 @@ var jsonFieldsNameOfAuthenticationRunConfig = [24]string{
 	18: "signing_key_config",
 	19: "spiffe_trust_domains",
 	20: "storage",
-	21: "token_lifespans",
-	22: "trusted_issuers",
-	23: "upstreams",
+	21: "tls_listener",
+	22: "token_lifespans",
+	23: "trusted_issuers",
+	24: "upstream_filter",
+	25: "upstreams",
 }
 
 // Decode decodes AuthenticationRunConfig from json.
@@ -3104,6 +3169,16 @@ func (s *AuthenticationRunConfig) Decode(d *jx.Decoder) error {
 			}(); err != nil {
 				return errors.Wrap(err, "decode field \"storage\"")
 			}
+		case "tls_listener":
+			if err := func() error {
+				s.TLSListener.Reset()
+				if err := s.TLSListener.Decode(d); err != nil {
+					return err
+				}
+				return nil
+			}(); err != nil {
+				return errors.Wrap(err, "decode field \"tls_listener\"")
+			}
 		case "token_lifespans":
 			if err := func() error {
 				s.TokenLifespans.Reset()
@@ -3130,6 +3205,16 @@ func (s *AuthenticationRunConfig) Decode(d *jx.Decoder) error {
 				return nil
 			}(); err != nil {
 				return errors.Wrap(err, "decode field \"trusted_issuers\"")
+			}
+		case "upstream_filter":
+			if err := func() error {
+				s.UpstreamFilter.Reset()
+				if err := s.UpstreamFilter.Decode(d); err != nil {
+					return err
+				}
+				return nil
+			}(); err != nil {
+				return errors.Wrap(err, "decode field \"upstream_filter\"")
 			}
 		case "upstreams":
 			if err := func() error {
@@ -3268,6 +3353,12 @@ func (s *AuthenticationSPIFFEBundleSourceRunConfig) encodeFields(e *jx.Encoder) 
 		}
 	}
 	{
+		if s.File.Set {
+			e.FieldStart("file")
+			s.File.Encode(e)
+		}
+	}
+	{
 		if s.Type.Set {
 			e.FieldStart("type")
 			s.Type.Encode(e)
@@ -3281,10 +3372,11 @@ func (s *AuthenticationSPIFFEBundleSourceRunConfig) encodeFields(e *jx.Encoder) 
 	}
 }
 
-var jsonFieldsNameOfAuthenticationSPIFFEBundleSourceRunConfig = [3]string{
+var jsonFieldsNameOfAuthenticationSPIFFEBundleSourceRunConfig = [4]string{
 	0: "endpoint",
-	1: "type",
-	2: "workload_api",
+	1: "file",
+	2: "type",
+	3: "workload_api",
 }
 
 // Decode decodes AuthenticationSPIFFEBundleSourceRunConfig from json.
@@ -3304,6 +3396,16 @@ func (s *AuthenticationSPIFFEBundleSourceRunConfig) Decode(d *jx.Decoder) error 
 				return nil
 			}(); err != nil {
 				return errors.Wrap(err, "decode field \"endpoint\"")
+			}
+		case "file":
+			if err := func() error {
+				s.File.Reset()
+				if err := s.File.Decode(d); err != nil {
+					return err
+				}
+				return nil
+			}(); err != nil {
+				return errors.Wrap(err, "decode field \"file\"")
 			}
 		case "type":
 			if err := func() error {
@@ -3594,6 +3696,69 @@ func (s *AuthenticationSPIFFEClientAuthRunConfig) MarshalJSON() ([]byte, error) 
 
 // UnmarshalJSON implements stdjson.Unmarshaler.
 func (s *AuthenticationSPIFFEClientAuthRunConfig) UnmarshalJSON(data []byte) error {
+	d := jx.DecodeBytes(data)
+	return s.Decode(d)
+}
+
+// Encode implements json.Marshaler.
+func (s *AuthenticationSPIFFEFileBundleSourceRunConfig) Encode(e *jx.Encoder) {
+	e.ObjStart()
+	s.encodeFields(e)
+	e.ObjEnd()
+}
+
+// encodeFields encodes fields.
+func (s *AuthenticationSPIFFEFileBundleSourceRunConfig) encodeFields(e *jx.Encoder) {
+	{
+		if s.Path.Set {
+			e.FieldStart("path")
+			s.Path.Encode(e)
+		}
+	}
+}
+
+var jsonFieldsNameOfAuthenticationSPIFFEFileBundleSourceRunConfig = [1]string{
+	0: "path",
+}
+
+// Decode decodes AuthenticationSPIFFEFileBundleSourceRunConfig from json.
+func (s *AuthenticationSPIFFEFileBundleSourceRunConfig) Decode(d *jx.Decoder) error {
+	if s == nil {
+		return errors.New("invalid: unable to decode AuthenticationSPIFFEFileBundleSourceRunConfig to nil")
+	}
+
+	if err := d.ObjBytes(func(d *jx.Decoder, k []byte) error {
+		switch string(k) {
+		case "path":
+			if err := func() error {
+				s.Path.Reset()
+				if err := s.Path.Decode(d); err != nil {
+					return err
+				}
+				return nil
+			}(); err != nil {
+				return errors.Wrap(err, "decode field \"path\"")
+			}
+		default:
+			return d.Skip()
+		}
+		return nil
+	}); err != nil {
+		return errors.Wrap(err, "decode AuthenticationSPIFFEFileBundleSourceRunConfig")
+	}
+
+	return nil
+}
+
+// MarshalJSON implements stdjson.Marshaler.
+func (s *AuthenticationSPIFFEFileBundleSourceRunConfig) MarshalJSON() ([]byte, error) {
+	e := jx.Encoder{}
+	s.Encode(&e)
+	return e.Bytes(), nil
+}
+
+// UnmarshalJSON implements stdjson.Unmarshaler.
+func (s *AuthenticationSPIFFEFileBundleSourceRunConfig) UnmarshalJSON(data []byte) error {
 	d := jx.DecodeBytes(data)
 	return s.Decode(d)
 }
@@ -3968,6 +4133,86 @@ func (s *AuthenticationSigningKeyRunConfig) MarshalJSON() ([]byte, error) {
 
 // UnmarshalJSON implements stdjson.Unmarshaler.
 func (s *AuthenticationSigningKeyRunConfig) UnmarshalJSON(data []byte) error {
+	d := jx.DecodeBytes(data)
+	return s.Decode(d)
+}
+
+// Encode implements json.Marshaler.
+func (s *AuthenticationTLSListenerRunConfig) Encode(e *jx.Encoder) {
+	e.ObjStart()
+	s.encodeFields(e)
+	e.ObjEnd()
+}
+
+// encodeFields encodes fields.
+func (s *AuthenticationTLSListenerRunConfig) encodeFields(e *jx.Encoder) {
+	{
+		if s.CertFile.Set {
+			e.FieldStart("cert_file")
+			s.CertFile.Encode(e)
+		}
+	}
+	{
+		if s.KeyFile.Set {
+			e.FieldStart("key_file")
+			s.KeyFile.Encode(e)
+		}
+	}
+}
+
+var jsonFieldsNameOfAuthenticationTLSListenerRunConfig = [2]string{
+	0: "cert_file",
+	1: "key_file",
+}
+
+// Decode decodes AuthenticationTLSListenerRunConfig from json.
+func (s *AuthenticationTLSListenerRunConfig) Decode(d *jx.Decoder) error {
+	if s == nil {
+		return errors.New("invalid: unable to decode AuthenticationTLSListenerRunConfig to nil")
+	}
+
+	if err := d.ObjBytes(func(d *jx.Decoder, k []byte) error {
+		switch string(k) {
+		case "cert_file":
+			if err := func() error {
+				s.CertFile.Reset()
+				if err := s.CertFile.Decode(d); err != nil {
+					return err
+				}
+				return nil
+			}(); err != nil {
+				return errors.Wrap(err, "decode field \"cert_file\"")
+			}
+		case "key_file":
+			if err := func() error {
+				s.KeyFile.Reset()
+				if err := s.KeyFile.Decode(d); err != nil {
+					return err
+				}
+				return nil
+			}(); err != nil {
+				return errors.Wrap(err, "decode field \"key_file\"")
+			}
+		default:
+			return d.Skip()
+		}
+		return nil
+	}); err != nil {
+		return errors.Wrap(err, "decode AuthenticationTLSListenerRunConfig")
+	}
+
+	return nil
+}
+
+// MarshalJSON implements stdjson.Marshaler.
+func (s *AuthenticationTLSListenerRunConfig) MarshalJSON() ([]byte, error) {
+	e := jx.Encoder{}
+	s.Encode(&e)
+	return e.Bytes(), nil
+}
+
+// UnmarshalJSON implements stdjson.Unmarshaler.
+func (s *AuthenticationTLSListenerRunConfig) UnmarshalJSON(data []byte) error {
 	d := jx.DecodeBytes(data)
 	return s.Decode(d)
 }
@@ -5891,6 +6136,8 @@ func (s *ClientClientApp) Decode(d *jx.Decoder) error {
 		*s = ClientClientAppCopilotCli
 	case ClientClientAppQoder:
 		*s = ClientClientAppQoder
+	case ClientClientAppPi:
+		*s = ClientClientAppPi
 	default:
 		*s = ClientClientApp(v)
 	}
@@ -17079,6 +17326,39 @@ func (s *OptAuthenticationSPIFFEBundleSourceRunConfig) UnmarshalJSON(data []byte
 	return s.Decode(d)
 }
 
+// Encode encodes AuthenticationSPIFFEFileBundleSourceRunConfig as json.
+func (o OptAuthenticationSPIFFEFileBundleSourceRunConfig) Encode(e *jx.Encoder) {
+	if !o.Set {
+		return
+	}
+	o.Value.Encode(e)
+}
+
+// Decode decodes AuthenticationSPIFFEFileBundleSourceRunConfig from json.
+func (o *OptAuthenticationSPIFFEFileBundleSourceRunConfig) Decode(d *jx.Decoder) error {
+	if o == nil {
+		return errors.New("invalid: unable to decode OptAuthenticationSPIFFEFileBundleSourceRunConfig to nil")
+	}
+	o.Set = true
+	if err := o.Value.Decode(d); err != nil {
+		return err
+	}
+	return nil
+}
+
+// MarshalJSON implements stdjson.Marshaler.
+func (s OptAuthenticationSPIFFEFileBundleSourceRunConfig) MarshalJSON() ([]byte, error) {
+	e := jx.Encoder{}
+	s.Encode(&e)
+	return e.Bytes(), nil
+}
+
+// UnmarshalJSON implements stdjson.Unmarshaler.
+func (s *OptAuthenticationSPIFFEFileBundleSourceRunConfig) UnmarshalJSON(data []byte) error {
+	d := jx.DecodeBytes(data)
+	return s.Decode(d)
+}
+
 // Encode encodes AuthenticationSigningKeyRunConfig as json.
 func (o OptAuthenticationSigningKeyRunConfig) Encode(e *jx.Encoder) {
 	if !o.Set {
@@ -17108,6 +17388,39 @@ func (s OptAuthenticationSigningKeyRunConfig) MarshalJSON() ([]byte, error) {
 
 // UnmarshalJSON implements stdjson.Unmarshaler.
 func (s *OptAuthenticationSigningKeyRunConfig) UnmarshalJSON(data []byte) error {
+	d := jx.DecodeBytes(data)
+	return s.Decode(d)
+}
+
+// Encode encodes AuthenticationTLSListenerRunConfig as json.
+func (o OptAuthenticationTLSListenerRunConfig) Encode(e *jx.Encoder) {
+	if !o.Set {
+		return
+	}
+	o.Value.Encode(e)
+}
+
+// Decode decodes AuthenticationTLSListenerRunConfig from json.
+func (o *OptAuthenticationTLSListenerRunConfig) Decode(d *jx.Decoder) error {
+	if o == nil {
+		return errors.New("invalid: unable to decode OptAuthenticationTLSListenerRunConfig to nil")
+	}
+	o.Set = true
+	if err := o.Value.Decode(d); err != nil {
+		return err
+	}
+	return nil
+}
+
+// MarshalJSON implements stdjson.Marshaler.
+func (s OptAuthenticationTLSListenerRunConfig) MarshalJSON() ([]byte, error) {
+	e := jx.Encoder{}
+	s.Encode(&e)
+	return e.Bytes(), nil
+}
+
+// UnmarshalJSON implements stdjson.Unmarshaler.
+func (s *OptAuthenticationTLSListenerRunConfig) UnmarshalJSON(data []byte) error {
 	d := jx.DecodeBytes(data)
 	return s.Decode(d)
 }
@@ -18510,6 +18823,39 @@ func (s OptRateLimitBucket) MarshalJSON() ([]byte, error) {
 
 // UnmarshalJSON implements stdjson.Unmarshaler.
 func (s *OptRateLimitBucket) UnmarshalJSON(data []byte) error {
+	d := jx.DecodeBytes(data)
+	return s.Decode(d)
+}
+
+// Encode encodes RedisconfigTLSConfig as json.
+func (o OptRedisconfigTLSConfig) Encode(e *jx.Encoder) {
+	if !o.Set {
+		return
+	}
+	o.Value.Encode(e)
+}
+
+// Decode decodes RedisconfigTLSConfig from json.
+func (o *OptRedisconfigTLSConfig) Decode(d *jx.Decoder) error {
+	if o == nil {
+		return errors.New("invalid: unable to decode OptRedisconfigTLSConfig to nil")
+	}
+	o.Set = true
+	if err := o.Value.Decode(d); err != nil {
+		return err
+	}
+	return nil
+}
+
+// MarshalJSON implements stdjson.Marshaler.
+func (s OptRedisconfigTLSConfig) MarshalJSON() ([]byte, error) {
+	e := jx.Encoder{}
+	s.Encode(&e)
+	return e.Bytes(), nil
+}
+
+// UnmarshalJSON implements stdjson.Unmarshaler.
+func (s *OptRedisconfigTLSConfig) UnmarshalJSON(data []byte) error {
 	d := jx.DecodeBytes(data)
 	return s.Decode(d)
 }
@@ -20617,6 +20963,39 @@ func (s OptUpgradeRequestEnv) MarshalJSON() ([]byte, error) {
 
 // UnmarshalJSON implements stdjson.Unmarshaler.
 func (s *OptUpgradeRequestEnv) UnmarshalJSON(data []byte) error {
+	d := jx.DecodeBytes(data)
+	return s.Decode(d)
+}
+
+// Encode encodes UpstreamfilterGroupBasedFilterConfig as json.
+func (o OptUpstreamfilterGroupBasedFilterConfig) Encode(e *jx.Encoder) {
+	if !o.Set {
+		return
+	}
+	o.Value.Encode(e)
+}
+
+// Decode decodes UpstreamfilterGroupBasedFilterConfig from json.
+func (o *OptUpstreamfilterGroupBasedFilterConfig) Decode(d *jx.Decoder) error {
+	if o == nil {
+		return errors.New("invalid: unable to decode OptUpstreamfilterGroupBasedFilterConfig to nil")
+	}
+	o.Set = true
+	if err := o.Value.Decode(d); err != nil {
+		return err
+	}
+	return nil
+}
+
+// MarshalJSON implements stdjson.Marshaler.
+func (s OptUpstreamfilterGroupBasedFilterConfig) MarshalJSON() ([]byte, error) {
+	e := jx.Encoder{}
+	s.Encode(&e)
+	return e.Bytes(), nil
+}
+
+// UnmarshalJSON implements stdjson.Unmarshaler.
+func (s *OptUpstreamfilterGroupBasedFilterConfig) UnmarshalJSON(data []byte) error {
 	d := jx.DecodeBytes(data)
 	return s.Decode(d)
 }
@@ -24776,6 +25155,86 @@ func (s *RateLimitBucket) MarshalJSON() ([]byte, error) {
 
 // UnmarshalJSON implements stdjson.Unmarshaler.
 func (s *RateLimitBucket) UnmarshalJSON(data []byte) error {
+	d := jx.DecodeBytes(data)
+	return s.Decode(d)
+}
+
+// Encode implements json.Marshaler.
+func (s *RedisconfigTLSConfig) Encode(e *jx.Encoder) {
+	e.ObjStart()
+	s.encodeFields(e)
+	e.ObjEnd()
+}
+
+// encodeFields encodes fields.
+func (s *RedisconfigTLSConfig) encodeFields(e *jx.Encoder) {
+	{
+		if s.CaCertFile.Set {
+			e.FieldStart("caCertFile")
+			s.CaCertFile.Encode(e)
+		}
+	}
+	{
+		if s.InsecureSkipVerify.Set {
+			e.FieldStart("insecureSkipVerify")
+			s.InsecureSkipVerify.Encode(e)
+		}
+	}
+}
+
+var jsonFieldsNameOfRedisconfigTLSConfig = [2]string{
+	0: "caCertFile",
+	1: "insecureSkipVerify",
+}
+
+// Decode decodes RedisconfigTLSConfig from json.
+func (s *RedisconfigTLSConfig) Decode(d *jx.Decoder) error {
+	if s == nil {
+		return errors.New("invalid: unable to decode RedisconfigTLSConfig to nil")
+	}
+
+	if err := d.ObjBytes(func(d *jx.Decoder, k []byte) error {
+		switch string(k) {
+		case "caCertFile":
+			if err := func() error {
+				s.CaCertFile.Reset()
+				if err := s.CaCertFile.Decode(d); err != nil {
+					return err
+				}
+				return nil
+			}(); err != nil {
+				return errors.Wrap(err, "decode field \"caCertFile\"")
+			}
+		case "insecureSkipVerify":
+			if err := func() error {
+				s.InsecureSkipVerify.Reset()
+				if err := s.InsecureSkipVerify.Decode(d); err != nil {
+					return err
+				}
+				return nil
+			}(); err != nil {
+				return errors.Wrap(err, "decode field \"insecureSkipVerify\"")
+			}
+		default:
+			return d.Skip()
+		}
+		return nil
+	}); err != nil {
+		return errors.Wrap(err, "decode RedisconfigTLSConfig")
+	}
+
+	return nil
+}
+
+// MarshalJSON implements stdjson.Marshaler.
+func (s *RedisconfigTLSConfig) MarshalJSON() ([]byte, error) {
+	e := jx.Encoder{}
+	s.Encode(&e)
+	return e.Bytes(), nil
+}
+
+// UnmarshalJSON implements stdjson.Unmarshaler.
+func (s *RedisconfigTLSConfig) UnmarshalJSON(data []byte) error {
 	d := jx.DecodeBytes(data)
 	return s.Decode(d)
 }
@@ -32235,12 +32694,19 @@ func (s *RunnerSessionRedisConfig) encodeFields(e *jx.Encoder) {
 			s.KeyPrefix.Encode(e)
 		}
 	}
+	{
+		if s.TLS.Set {
+			e.FieldStart("tls")
+			s.TLS.Encode(e)
+		}
+	}
 }
 
-var jsonFieldsNameOfRunnerSessionRedisConfig = [3]string{
+var jsonFieldsNameOfRunnerSessionRedisConfig = [4]string{
 	0: "address",
 	1: "db",
 	2: "key_prefix",
+	3: "tls",
 }
 
 // Decode decodes RunnerSessionRedisConfig from json.
@@ -32280,6 +32746,16 @@ func (s *RunnerSessionRedisConfig) Decode(d *jx.Decoder) error {
 				return nil
 			}(); err != nil {
 				return errors.Wrap(err, "decode field \"key_prefix\"")
+			}
+		case "tls":
+			if err := func() error {
+				s.TLS.Reset()
+				if err := s.TLS.Decode(d); err != nil {
+					return err
+				}
+				return nil
+			}(); err != nil {
+				return errors.Wrap(err, "decode field \"tls\"")
 			}
 		default:
 			return d.Skip()
@@ -41080,6 +41556,233 @@ func (s UpgradeWorkloadUnprocessableEntityApplicationJSON) MarshalJSON() ([]byte
 
 // UnmarshalJSON implements stdjson.Unmarshaler.
 func (s *UpgradeWorkloadUnprocessableEntityApplicationJSON) UnmarshalJSON(data []byte) error {
+	d := jx.DecodeBytes(data)
+	return s.Decode(d)
+}
+
+// Encode implements json.Marshaler.
+func (s *UpstreamfilterGroupBasedFilterConfig) Encode(e *jx.Encoder) {
+	e.ObjStart()
+	s.encodeFields(e)
+	e.ObjEnd()
+}
+
+// encodeFields encodes fields.
+func (s *UpstreamfilterGroupBasedFilterConfig) encodeFields(e *jx.Encoder) {
+	{
+		if s.Claim.Set {
+			e.FieldStart("claim")
+			s.Claim.Encode(e)
+		}
+	}
+	{
+		if s.DefaultUpstreams != nil {
+			e.FieldStart("defaultUpstreams")
+			e.ArrStart()
+			for _, elem := range s.DefaultUpstreams {
+				e.Str(elem)
+			}
+			e.ArrEnd()
+		}
+	}
+	{
+		if s.Rules != nil {
+			e.FieldStart("rules")
+			e.ArrStart()
+			for _, elem := range s.Rules {
+				elem.Encode(e)
+			}
+			e.ArrEnd()
+		}
+	}
+}
+
+var jsonFieldsNameOfUpstreamfilterGroupBasedFilterConfig = [3]string{
+	0: "claim",
+	1: "defaultUpstreams",
+	2: "rules",
+}
+
+// Decode decodes UpstreamfilterGroupBasedFilterConfig from json.
+func (s *UpstreamfilterGroupBasedFilterConfig) Decode(d *jx.Decoder) error {
+	if s == nil {
+		return errors.New("invalid: unable to decode UpstreamfilterGroupBasedFilterConfig to nil")
+	}
+
+	if err := d.ObjBytes(func(d *jx.Decoder, k []byte) error {
+		switch string(k) {
+		case "claim":
+			if err := func() error {
+				s.Claim.Reset()
+				if err := s.Claim.Decode(d); err != nil {
+					return err
+				}
+				return nil
+			}(); err != nil {
+				return errors.Wrap(err, "decode field \"claim\"")
+			}
+		case "defaultUpstreams":
+			if err := func() error {
+				s.DefaultUpstreams = make([]string, 0)
+				if err := d.Arr(func(d *jx.Decoder) error {
+					var elem string
+					v, err := d.Str()
+					elem = string(v)
+					if err != nil {
+						return err
+					}
+					s.DefaultUpstreams = append(s.DefaultUpstreams, elem)
+					return nil
+				}); err != nil {
+					return err
+				}
+				return nil
+			}(); err != nil {
+				return errors.Wrap(err, "decode field \"defaultUpstreams\"")
+			}
+		case "rules":
+			if err := func() error {
+				s.Rules = make([]UpstreamfilterGroupRule, 0)
+				if err := d.Arr(func(d *jx.Decoder) error {
+					var elem UpstreamfilterGroupRule
+					if err := elem.Decode(d); err != nil {
+						return err
+					}
+					s.Rules = append(s.Rules, elem)
+					return nil
+				}); err != nil {
+					return err
+				}
+				return nil
+			}(); err != nil {
+				return errors.Wrap(err, "decode field \"rules\"")
+			}
+		default:
+			return d.Skip()
+		}
+		return nil
+	}); err != nil {
+		return errors.Wrap(err, "decode UpstreamfilterGroupBasedFilterConfig")
+	}
+
+	return nil
+}
+
+// MarshalJSON implements stdjson.Marshaler.
+func (s *UpstreamfilterGroupBasedFilterConfig) MarshalJSON() ([]byte, error) {
+	e := jx.Encoder{}
+	s.Encode(&e)
+	return e.Bytes(), nil
+}
+
+// UnmarshalJSON implements stdjson.Unmarshaler.
+func (s *UpstreamfilterGroupBasedFilterConfig) UnmarshalJSON(data []byte) error {
+	d := jx.DecodeBytes(data)
+	return s.Decode(d)
+}
+
+// Encode implements json.Marshaler.
+func (s *UpstreamfilterGroupRule) Encode(e *jx.Encoder) {
+	e.ObjStart()
+	s.encodeFields(e)
+	e.ObjEnd()
+}
+
+// encodeFields encodes fields.
+func (s *UpstreamfilterGroupRule) encodeFields(e *jx.Encoder) {
+	{
+		if s.Groups != nil {
+			e.FieldStart("groups")
+			e.ArrStart()
+			for _, elem := range s.Groups {
+				e.Str(elem)
+			}
+			e.ArrEnd()
+		}
+	}
+	{
+		if s.UpstreamProviders != nil {
+			e.FieldStart("upstreamProviders")
+			e.ArrStart()
+			for _, elem := range s.UpstreamProviders {
+				e.Str(elem)
+			}
+			e.ArrEnd()
+		}
+	}
+}
+
+var jsonFieldsNameOfUpstreamfilterGroupRule = [2]string{
+	0: "groups",
+	1: "upstreamProviders",
+}
+
+// Decode decodes UpstreamfilterGroupRule from json.
+func (s *UpstreamfilterGroupRule) Decode(d *jx.Decoder) error {
+	if s == nil {
+		return errors.New("invalid: unable to decode UpstreamfilterGroupRule to nil")
+	}
+
+	if err := d.ObjBytes(func(d *jx.Decoder, k []byte) error {
+		switch string(k) {
+		case "groups":
+			if err := func() error {
+				s.Groups = make([]string, 0)
+				if err := d.Arr(func(d *jx.Decoder) error {
+					var elem string
+					v, err := d.Str()
+					elem = string(v)
+					if err != nil {
+						return err
+					}
+					s.Groups = append(s.Groups, elem)
+					return nil
+				}); err != nil {
+					return err
+				}
+				return nil
+			}(); err != nil {
+				return errors.Wrap(err, "decode field \"groups\"")
+			}
+		case "upstreamProviders":
+			if err := func() error {
+				s.UpstreamProviders = make([]string, 0)
+				if err := d.Arr(func(d *jx.Decoder) error {
+					var elem string
+					v, err := d.Str()
+					elem = string(v)
+					if err != nil {
+						return err
+					}
+					s.UpstreamProviders = append(s.UpstreamProviders, elem)
+					return nil
+				}); err != nil {
+					return err
+				}
+				return nil
+			}(); err != nil {
+				return errors.Wrap(err, "decode field \"upstreamProviders\"")
+			}
+		default:
+			return d.Skip()
+		}
+		return nil
+	}); err != nil {
+		return errors.Wrap(err, "decode UpstreamfilterGroupRule")
+	}
+
+	return nil
+}
+
+// MarshalJSON implements stdjson.Marshaler.
+func (s *UpstreamfilterGroupRule) MarshalJSON() ([]byte, error) {
+	e := jx.Encoder{}
+	s.Encode(&e)
+	return e.Bytes(), nil
+}
+
+// UnmarshalJSON implements stdjson.Unmarshaler.
+func (s *UpstreamfilterGroupRule) UnmarshalJSON(data []byte) error {
 	d := jx.DecodeBytes(data)
 	return s.Decode(d)
 }

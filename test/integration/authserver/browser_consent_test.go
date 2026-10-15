@@ -163,6 +163,12 @@ func TestConsentNativeBrowserForm(t *testing.T) {
 					}
 					require.NoError(t, conn.ReadJSON(&msg))
 					if msg.ID == commandID {
+						// The consent redirect chain can tear down the page an
+						// evaluation ran in. Callers poll, so report no result
+						// rather than failing.
+						if strings.Contains(string(msg.Error), "Inspected target navigated or closed") {
+							return nil
+						}
 						require.Empty(t, msg.Error)
 						return msg.Result
 					}
@@ -175,9 +181,13 @@ func TestConsentNativeBrowserForm(t *testing.T) {
 						Value any `json:"value"`
 					} `json:"result"`
 				}
-				require.NoError(t, json.Unmarshal(command("Runtime.evaluate", map[string]any{
+				raw := command("Runtime.evaluate", map[string]any{
 					"expression": expression, "returnByValue": true,
-				}), &result))
+				})
+				if raw == nil {
+					return nil
+				}
+				require.NoError(t, json.Unmarshal(raw, &result))
 				return result.Result.Value
 			}
 			command("Page.navigate", map[string]any{"url": auth.URL + prefix + "/oauth/authorize?" + params.Encode()})

@@ -280,9 +280,10 @@ type DeployWorkloadOptions struct {
 	ScalingConfig *ScalingConfig
 
 	// AllowDockerGateway permits outbound connections to Docker gateway addresses
-	// (host.docker.internal, gateway.docker.internal, 172.17.0.1). These are
+	// (all daemon bridge gateways, host.docker.internal, and gateway.docker.internal). These are
 	// blocked by default in the egress proxy even when InsecureAllowAll is set.
 	// Only applicable to Docker deployments with network isolation enabled.
+	// Gateways are snapshotted at deployment; redeploy to include bridges created later.
 	// Gateway access is port-independent: it ignores the permission profile's
 	// allowed ports, so once enabled the gateway is reachable on any port.
 	AllowDockerGateway bool

@@ -720,6 +720,27 @@ func TestBuildPureOAuth2Config(t *testing.T) {
 			cfg.AdditionalAuthorizationParams)
 	})
 
+	t.Run("propagates OmitScopeOnRefresh", func(t *testing.T) {
+		t.Parallel()
+
+		rc := &authserver.UpstreamRunConfig{
+			Type: authserver.UpstreamProviderTypeOAuth2,
+			OAuth2Config: &authserver.OAuth2UpstreamRunConfig{
+				AuthorizationEndpoint: "https://example.com/authorize",
+				TokenEndpoint:         "https://example.com/token",
+				ClientID:              "my-client-id",
+				RedirectURI:           "https://my-app.com/callback",
+				OmitScopeOnRefresh:    true,
+			},
+		}
+
+		cfg, err := buildPureOAuth2Config(rc, false)
+		require.NoError(t, err)
+		require.NotNil(t, cfg)
+
+		assert.True(t, cfg.OmitScopeOnRefresh)
+	})
+
 	t.Run("rejects config with neither ClientID nor DCRConfig", func(t *testing.T) {
 		t.Parallel()
 
@@ -1310,6 +1331,26 @@ func TestBuildOIDCConfig(t *testing.T) {
 
 		assert.Equal(t, map[string]string{"access_type": "offline"},
 			cfg.AdditionalAuthorizationParams)
+	})
+
+	t.Run("propagates OmitScopeOnRefresh", func(t *testing.T) {
+		t.Parallel()
+
+		rc := &authserver.UpstreamRunConfig{
+			Type: authserver.UpstreamProviderTypeOIDC,
+			OIDCConfig: &authserver.OIDCUpstreamRunConfig{
+				IssuerURL:          "https://example.com",
+				ClientID:           "test-client-id",
+				RedirectURI:        "http://localhost:8080/callback",
+				OmitScopeOnRefresh: true,
+			},
+		}
+
+		cfg, err := buildOIDCConfig(rc, false)
+		require.NoError(t, err)
+		require.NotNil(t, cfg)
+
+		assert.True(t, cfg.OmitScopeOnRefresh)
 	})
 
 	t.Run("propagates SubjectClaim", func(t *testing.T) {
@@ -2527,7 +2568,7 @@ func TestBuildUpstreamConfigs_DCR(t *testing.T) {
 			"original OAuth2Config.DCRConfig must not be cleared by DCR resolution")
 	})
 
-	t.Run("cache hit on second call issues zero additional HTTP requests", func(t *testing.T) {
+	t.Run("cache hit on second call skips discovery and registration", func(t *testing.T) {
 		t.Parallel()
 
 		server, requestCount := newMockAuthorizationServer(t)
@@ -2564,16 +2605,17 @@ func TestBuildUpstreamConfigs_DCR(t *testing.T) {
 		require.Greater(t, firstCallRequests, int32(0),
 			"first call should have issued network I/O")
 
-		// Second call: must short-circuit on the cache and issue zero
-		// additional HTTP requests against the mock AS.
+		// Second call: must reuse the cache. Its only HTTP request is the
+		// token-endpoint verification of the cached client, which the mock
+		// AS answers with a non-OAuth 404, so the cached client is kept.
 		got, err := buildUpstreamConfigs(context.Background(), cfg.Upstreams, cfg.Issuer, store, false)
 		require.NoError(t, err)
 		require.Len(t, got, 1)
 		assert.Equal(t, "dcr-client-id", got[0].OAuth2Config.ClientID)
 		assert.Equal(t, "dcr-client-secret", got[0].OAuth2Config.ClientSecret)
 
-		assert.Equal(t, firstCallRequests, atomic.LoadInt32(requestCount),
-			"second call must not issue any additional HTTP requests to the mock AS")
+		assert.Equal(t, firstCallRequests+1, atomic.LoadInt32(requestCount),
+			"second call must issue only the cached-client verification, no discovery or registration")
 
 		// Copy-before-mutate still holds after both calls.
 		assert.Equal(t, "", cfg.Upstreams[0].OAuth2Config.ClientID,

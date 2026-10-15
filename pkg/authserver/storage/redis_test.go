@@ -570,6 +570,25 @@ func TestRedisStorage_ClientAuthMethodPersistence(t *testing.T) {
 	})
 }
 
+func TestRedisStorage_GetClientRechecksPrivateKeyJWTKeys(t *testing.T) {
+	t.Parallel()
+	for _, tt := range storedPrivateKeyJWTClientCases() {
+		t.Run(tt.name, func(t *testing.T) {
+			withRedisStorage(t, func(ctx context.Context, s *RedisStorage, _ *miniredis.Miniredis) {
+				client := storedPrivateKeyJWTClient("stored-client", tt.keys)
+				require.NoError(t, s.RegisterClient(ctx, client))
+				got, err := s.GetClient(ctx, client.GetID())
+				if tt.wantErr {
+					require.ErrorIs(t, err, fosite.ErrInvalidClient)
+					return
+				}
+				require.NoError(t, err)
+				assert.Equal(t, client.GetID(), got.GetID())
+			})
+		})
+	}
+}
+
 // TestRedisStorage_ForceConfidentialPlainClientRoundTrip pins the storage
 // shape of registration.NewConfidentialPlain (the client the DCR force-
 // confidential override builds): it must round-trip through Redis as a
@@ -3598,6 +3617,22 @@ func TestRedisKeyGeneration(t *testing.T) {
 			"test:auth:dcr:23:https://thv.example.com:23:https://idp.example.com:38:https://thv.example.com/oauth/callback:abc123",
 			result)
 	})
+
+	t.Run("redisDCRKey with rotation key", func(t *testing.T) {
+		t.Parallel()
+		key := DCRKey{
+			Issuer:      "https://thv.example.com",
+			UpstreamID:  "https://idp.example.com",
+			RedirectURI: "https://thv.example.com/oauth/callback",
+			ScopesHash:  "abc123",
+		}
+		legacy := redisDCRKey("test:auth:", key)
+		key.RotationKey = "2026-10"
+		// A rotation key appends one length-prefixed segment after the scopes
+		// hash; the empty value must keep producing the pre-rotation key so
+		// rows written before the field existed stay reachable.
+		assert.Equal(t, legacy+":7:2026-10", redisDCRKey("test:auth:", key))
+	})
 }
 
 // TestRedisDCRKey_Distinct pins the colon-safe lookup contract: any pair of
@@ -4087,6 +4122,33 @@ func TestRedisStorage_DCRCredentials_RoundTrip(t *testing.T) {
 // authoritative value, and the stored row is unchanged. This is the fix for
 // the concurrent-replica bug where two replicas racing a cache miss each
 // independently register a distinct RFC 7591 client for the same key.
+// TestRedisStorage_DCRCredentials_RotationKeyRoundTrip pins that
+// DCRKey.RotationKey survives the stored JSON shape and addresses its own
+// Redis row: the same tuple without the rotation key must miss.
+func TestRedisStorage_DCRCredentials_RotationKeyRoundTrip(t *testing.T) {
+	withRedisStorage(t, func(ctx context.Context, s *RedisStorage, _ *miniredis.Miniredis) {
+		key := dcrFixtureKey()
+		key.RotationKey = "2026-10"
+
+		_, err := s.StoreDCRCredentialsIfAbsent(ctx, &DCRCredentials{
+			Key:                   key,
+			ClientID:              "rotated-client",
+			AuthorizationEndpoint: "https://idp.example.com/auth",
+			TokenEndpoint:         "https://idp.example.com/token",
+		})
+		require.NoError(t, err)
+
+		got, err := s.GetDCRCredentials(ctx, key)
+		require.NoError(t, err)
+		assert.Equal(t, key, got.Key, "RotationKey must round-trip through the stored row")
+		assert.Equal(t, "rotated-client", got.ClientID)
+
+		_, err = s.GetDCRCredentials(ctx, dcrFixtureKey())
+		require.ErrorIs(t, err, ErrNotFound,
+			"the tuple without the rotation key must address a different row")
+	})
+}
+
 func TestRedisStorage_DCRCredentials_FirstClaimWins(t *testing.T) {
 	withRedisStorage(t, func(ctx context.Context, s *RedisStorage, _ *miniredis.Miniredis) {
 		key := dcrFixtureKey()

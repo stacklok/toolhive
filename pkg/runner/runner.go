@@ -515,15 +515,21 @@ func (r *Runner) Run(ctx context.Context) error {
 		if keyPrefix == "" {
 			keyPrefix = "thv:proxy:session:"
 		}
+		tlsCfg, err := redisCfg.TLS.Load()
+		if err != nil {
+			return fmt.Errorf("redis session storage TLS configuration: %w", err)
+		}
 		storage, err := session.NewRedisStorage(ctx, redisconn.Config{
 			Addr:     redisCfg.Address,
 			Password: os.Getenv(session.RedisPasswordEnvVar),
 			DB:       int(redisCfg.DB),
+			TLS:      tlsCfg,
 		}, keyPrefix, effectiveSessionTTL)
 		if err != nil {
 			return fmt.Errorf("failed to create Redis session storage: %w", err)
 		}
 		slog.Info("using Redis session storage",
+			"store", redisCfg.Address,
 			"address", redisCfg.Address,
 			"db", redisCfg.DB,
 			"key_prefix", keyPrefix,

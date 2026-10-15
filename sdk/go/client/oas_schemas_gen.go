@@ -622,6 +622,20 @@ type AuthenticationDCRUpstreamConfig struct {
 	// method falls back to the resolver's default (client_secret_basic).
 	// Mutually exclusive with DiscoveryURL.
 	RegistrationEndpoint OptString `json:"registration_endpoint"`
+	// RotationKey is an optional operator-chosen label (1-64 characters from
+	// [A-Za-z0-9._-]) that becomes part of the cached registration's identity
+	// without being sent to the upstream. Changing it makes the next start
+	// register a fresh client instead of reusing the cached one. At start the
+	// resolver checks the cached client at the upstream's token endpoint and
+	// replaces it by itself when the upstream answers invalid_client. Use
+	// RotationKey when the upstream has dropped the registration and that
+	// check cannot tell (an upstream that answers a dropped public client
+	// like a live one, or a private_key_jwt client), so the rejection is only
+	// visible in the user's browser, or when a registration must be rotated
+	// on request. The row written under the previous value is left in place. Upstream refresh tokens
+	// bound to the previous client_id stop refreshing once the client
+	// changes; affected users sign in again.
+	RotationKey OptString `json:"rotation_key"`
 	// SoftwareID is the RFC 7591 "software_id" registration metadata value,
 	// identifying the client software independent of any particular
 	// registration instance.
@@ -652,6 +666,11 @@ func (s *AuthenticationDCRUpstreamConfig) GetRegistrationEndpoint() OptString {
 	return s.RegistrationEndpoint
 }
 
+// GetRotationKey returns the value of RotationKey.
+func (s *AuthenticationDCRUpstreamConfig) GetRotationKey() OptString {
+	return s.RotationKey
+}
+
 // GetSoftwareID returns the value of SoftwareID.
 func (s *AuthenticationDCRUpstreamConfig) GetSoftwareID() OptString {
 	return s.SoftwareID
@@ -680,6 +699,11 @@ func (s *AuthenticationDCRUpstreamConfig) SetInitialAccessTokenFile(val OptStrin
 // SetRegistrationEndpoint sets the value of RegistrationEndpoint.
 func (s *AuthenticationDCRUpstreamConfig) SetRegistrationEndpoint(val OptString) {
 	s.RegistrationEndpoint = val
+}
+
+// SetRotationKey sets the value of RotationKey.
+func (s *AuthenticationDCRUpstreamConfig) SetRotationKey(val OptString) {
+	s.RotationKey = val
 }
 
 // SetSoftwareID sets the value of SoftwareID.
@@ -959,6 +983,11 @@ type AuthenticationOAuth2UpstreamRunConfig struct {
 	// OAuth2 provider served over HTTP in a kind cluster) where TLS is not
 	// available. Never set this in production.
 	InsecureAllowHTTP OptBool `json:"insecure_allow_http"`
+	// OmitScopeOnRefresh stops the `scope` parameter from being sent on
+	// refresh_token grant requests. Scopes are still sent on the authorization
+	// request. Useful for providers that reject `scope` on refresh, such as
+	// Salesforce. See upstream.CommonOAuthConfig.
+	OmitScopeOnRefresh OptBool `json:"omit_scope_on_refresh"`
 	// RedirectURI is the callback URL where the upstream IDP will redirect after authentication.
 	// For a DCR upstream (dcr_config set) an empty value is resolved to
 	// `{issuer}/oauth/callback`; a pre-provisioned client (client_id set) must
@@ -1034,6 +1063,11 @@ func (s *AuthenticationOAuth2UpstreamRunConfig) GetIdentityFromToken() OptAuthen
 // GetInsecureAllowHTTP returns the value of InsecureAllowHTTP.
 func (s *AuthenticationOAuth2UpstreamRunConfig) GetInsecureAllowHTTP() OptBool {
 	return s.InsecureAllowHTTP
+}
+
+// GetOmitScopeOnRefresh returns the value of OmitScopeOnRefresh.
+func (s *AuthenticationOAuth2UpstreamRunConfig) GetOmitScopeOnRefresh() OptBool {
+	return s.OmitScopeOnRefresh
 }
 
 // GetRedirectURI returns the value of RedirectURI.
@@ -1119,6 +1153,11 @@ func (s *AuthenticationOAuth2UpstreamRunConfig) SetIdentityFromToken(val OptAuth
 // SetInsecureAllowHTTP sets the value of InsecureAllowHTTP.
 func (s *AuthenticationOAuth2UpstreamRunConfig) SetInsecureAllowHTTP(val OptBool) {
 	s.InsecureAllowHTTP = val
+}
+
+// SetOmitScopeOnRefresh sets the value of OmitScopeOnRefresh.
+func (s *AuthenticationOAuth2UpstreamRunConfig) SetOmitScopeOnRefresh(val OptBool) {
+	s.OmitScopeOnRefresh = val
 }
 
 // SetRedirectURI sets the value of RedirectURI.
@@ -1216,6 +1255,11 @@ type AuthenticationOIDCUpstreamRunConfig struct {
 	// IssuerURL is the OIDC issuer URL for automatic endpoint discovery.
 	// Must be a valid HTTPS URL.
 	IssuerURL OptString `json:"issuer_url"`
+	// OmitScopeOnRefresh stops the `scope` parameter from being sent on
+	// refresh_token grant requests. Scopes are still sent on the authorization
+	// request. Useful for providers that reject `scope` on refresh, such as
+	// Salesforce. See upstream.CommonOAuthConfig.
+	OmitScopeOnRefresh OptBool `json:"omit_scope_on_refresh"`
 	// RedirectURI is the callback URL where the upstream IDP will redirect after authentication.
 	// For a DCR upstream (dcr_config set) an empty value is resolved to
 	// `{issuer}/oauth/callback`; a pre-provisioned client (client_id set) must
@@ -1287,6 +1331,11 @@ func (s *AuthenticationOIDCUpstreamRunConfig) GetIssuerURL() OptString {
 	return s.IssuerURL
 }
 
+// GetOmitScopeOnRefresh returns the value of OmitScopeOnRefresh.
+func (s *AuthenticationOIDCUpstreamRunConfig) GetOmitScopeOnRefresh() OptBool {
+	return s.OmitScopeOnRefresh
+}
+
 // GetRedirectURI returns the value of RedirectURI.
 func (s *AuthenticationOIDCUpstreamRunConfig) GetRedirectURI() OptString {
 	return s.RedirectURI
@@ -1355,6 +1404,11 @@ func (s *AuthenticationOIDCUpstreamRunConfig) SetInsecureAllowHTTP(val OptBool) 
 // SetIssuerURL sets the value of IssuerURL.
 func (s *AuthenticationOIDCUpstreamRunConfig) SetIssuerURL(val OptString) {
 	s.IssuerURL = val
+}
+
+// SetOmitScopeOnRefresh sets the value of OmitScopeOnRefresh.
+func (s *AuthenticationOIDCUpstreamRunConfig) SetOmitScopeOnRefresh(val OptBool) {
+	s.OmitScopeOnRefresh = val
 }
 
 // SetRedirectURI sets the value of RedirectURI.
@@ -1553,6 +1607,7 @@ type AuthenticationRunConfig struct {
 	// referenced by an InboundGrants.SPIFFEClientAuth entry.
 	SpiffeTrustDomains []AuthenticationSPIFFETrustDomainRunConfig `json:"spiffe_trust_domains"`
 	Storage            OptStorageRunConfig                        `json:"storage"`
+	TLSListener        OptAuthenticationTLSListenerRunConfig      `json:"tls_listener"`
 	TokenLifespans     OptAuthenticationTokenLifespanRunConfig    `json:"token_lifespans"`
 	// TrustedIssuers lists external OIDC trust declarations.
 	// This legacy field is deprecated; RFC 8693 and JWT-bearer policies embedded in these entries
@@ -1563,7 +1618,8 @@ type AuthenticationRunConfig struct {
 	// signals, and operator-facing constraints (audience/scope bounding,
 	// subject namespace qualification, required client binding) that aren't
 	// visible from the config shape alone.
-	TrustedIssuers []TokenExchangeTrustedIssuer `json:"trusted_issuers"`
+	TrustedIssuers []TokenExchangeTrustedIssuer            `json:"trusted_issuers"`
+	UpstreamFilter OptUpstreamfilterGroupBasedFilterConfig `json:"upstream_filter"`
 	// Upstreams configures connections to upstream Identity Providers for
 	// interactive authorization. It may be empty only when DelegateClients or a
 	// TrustedIssuer with JWTBearerGrant enables token-only operation.
@@ -1676,6 +1732,11 @@ func (s *AuthenticationRunConfig) GetStorage() OptStorageRunConfig {
 	return s.Storage
 }
 
+// GetTLSListener returns the value of TLSListener.
+func (s *AuthenticationRunConfig) GetTLSListener() OptAuthenticationTLSListenerRunConfig {
+	return s.TLSListener
+}
+
 // GetTokenLifespans returns the value of TokenLifespans.
 func (s *AuthenticationRunConfig) GetTokenLifespans() OptAuthenticationTokenLifespanRunConfig {
 	return s.TokenLifespans
@@ -1684,6 +1745,11 @@ func (s *AuthenticationRunConfig) GetTokenLifespans() OptAuthenticationTokenLife
 // GetTrustedIssuers returns the value of TrustedIssuers.
 func (s *AuthenticationRunConfig) GetTrustedIssuers() []TokenExchangeTrustedIssuer {
 	return s.TrustedIssuers
+}
+
+// GetUpstreamFilter returns the value of UpstreamFilter.
+func (s *AuthenticationRunConfig) GetUpstreamFilter() OptUpstreamfilterGroupBasedFilterConfig {
+	return s.UpstreamFilter
 }
 
 // GetUpstreams returns the value of Upstreams.
@@ -1796,6 +1862,11 @@ func (s *AuthenticationRunConfig) SetStorage(val OptStorageRunConfig) {
 	s.Storage = val
 }
 
+// SetTLSListener sets the value of TLSListener.
+func (s *AuthenticationRunConfig) SetTLSListener(val OptAuthenticationTLSListenerRunConfig) {
+	s.TLSListener = val
+}
+
 // SetTokenLifespans sets the value of TokenLifespans.
 func (s *AuthenticationRunConfig) SetTokenLifespans(val OptAuthenticationTokenLifespanRunConfig) {
 	s.TokenLifespans = val
@@ -1804,6 +1875,11 @@ func (s *AuthenticationRunConfig) SetTokenLifespans(val OptAuthenticationTokenLi
 // SetTrustedIssuers sets the value of TrustedIssuers.
 func (s *AuthenticationRunConfig) SetTrustedIssuers(val []TokenExchangeTrustedIssuer) {
 	s.TrustedIssuers = val
+}
+
+// SetUpstreamFilter sets the value of UpstreamFilter.
+func (s *AuthenticationRunConfig) SetUpstreamFilter(val OptUpstreamfilterGroupBasedFilterConfig) {
+	s.UpstreamFilter = val
 }
 
 // SetUpstreams sets the value of Upstreams.
@@ -1816,8 +1892,8 @@ type AuthenticationSPIFFEBundleEndpointSourceRunConfig struct {
 	// Profile selects how the endpoint's TLS connection is authenticated:
 	// SPIFFEBundleEndpointProfileHTTPSWeb (Web PKI) or
 	// SPIFFEBundleEndpointProfileHTTPSSPIFFE (a separately distributed
-	// X.509-SVID root). Required, since the future bundle loader cannot
-	// otherwise know which trust anchor to use for the initial connection.
+	// X.509-SVID root). Required, since an endpoint loader needs this profile
+	// to choose the trust anchor for its initial connection.
 	Profile OptString `json:"profile"`
 	URL     OptString `json:"url"`
 }
@@ -1842,12 +1918,13 @@ func (s *AuthenticationSPIFFEBundleEndpointSourceRunConfig) SetURL(val OptString
 	s.URL = val
 }
 
-// BundleSource declares exactly one future trust-bundle source. It is
-// validated for shape only; fetching or loading a bundle from it is a
-// later step.
+// BundleSource declares exactly one trust-bundle source and is validated for
+// shape here. The standalone file loader exists, but source initialization
+// is not wired into SPIFFE authentication.
 // Ref: #/components/schemas/AuthenticationSPIFFEBundleSourceRunConfig
 type AuthenticationSPIFFEBundleSourceRunConfig struct {
 	Endpoint    OptAuthenticationSPIFFEBundleEndpointSourceRunConfig  `json:"endpoint"`
+	File        OptAuthenticationSPIFFEFileBundleSourceRunConfig      `json:"file"`
 	Type        OptString                                             `json:"type"`
 	WorkloadAPI *AuthenticationSPIFFEWorkloadAPIBundleSourceRunConfig `json:"workload_api"`
 }
@@ -1855,6 +1932,11 @@ type AuthenticationSPIFFEBundleSourceRunConfig struct {
 // GetEndpoint returns the value of Endpoint.
 func (s *AuthenticationSPIFFEBundleSourceRunConfig) GetEndpoint() OptAuthenticationSPIFFEBundleEndpointSourceRunConfig {
 	return s.Endpoint
+}
+
+// GetFile returns the value of File.
+func (s *AuthenticationSPIFFEBundleSourceRunConfig) GetFile() OptAuthenticationSPIFFEFileBundleSourceRunConfig {
+	return s.File
 }
 
 // GetType returns the value of Type.
@@ -1870,6 +1952,11 @@ func (s *AuthenticationSPIFFEBundleSourceRunConfig) GetWorkloadAPI() *Authentica
 // SetEndpoint sets the value of Endpoint.
 func (s *AuthenticationSPIFFEBundleSourceRunConfig) SetEndpoint(val OptAuthenticationSPIFFEBundleEndpointSourceRunConfig) {
 	s.Endpoint = val
+}
+
+// SetFile sets the value of File.
+func (s *AuthenticationSPIFFEBundleSourceRunConfig) SetFile(val OptAuthenticationSPIFFEFileBundleSourceRunConfig) {
+	s.File = val
 }
 
 // SetType sets the value of Type.
@@ -1992,6 +2079,21 @@ func (s *AuthenticationSPIFFEClientAuthRunConfig) SetScopes(val []string) {
 // SetTrustDomainRef sets the value of TrustDomainRef.
 func (s *AuthenticationSPIFFEClientAuthRunConfig) SetTrustDomainRef(val OptString) {
 	s.TrustDomainRef = val
+}
+
+// Ref: #/components/schemas/AuthenticationSPIFFEFileBundleSourceRunConfig
+type AuthenticationSPIFFEFileBundleSourceRunConfig struct {
+	Path OptString `json:"path"`
+}
+
+// GetPath returns the value of Path.
+func (s *AuthenticationSPIFFEFileBundleSourceRunConfig) GetPath() OptString {
+	return s.Path
+}
+
+// SetPath sets the value of Path.
+func (s *AuthenticationSPIFFEFileBundleSourceRunConfig) SetPath(val OptString) {
+	s.Path = val
 }
 
 // Ref: #/components/schemas/AuthenticationSPIFFETrustDomainRunConfig
@@ -2121,6 +2223,34 @@ func (s *AuthenticationSigningKeyRunConfig) SetKeyDir(val OptString) {
 // SetSigningKeyFile sets the value of SigningKeyFile.
 func (s *AuthenticationSigningKeyRunConfig) SetSigningKeyFile(val OptString) {
 	s.SigningKeyFile = val
+}
+
+// TLSListener configures auth server routes to be served over TLS on port 8443.
+// It is currently rejected because the runner does not start this listener.
+// Ref: #/components/schemas/AuthenticationTLSListenerRunConfig
+type AuthenticationTLSListenerRunConfig struct {
+	CertFile OptString `json:"cert_file"`
+	KeyFile  OptString `json:"key_file"`
+}
+
+// GetCertFile returns the value of CertFile.
+func (s *AuthenticationTLSListenerRunConfig) GetCertFile() OptString {
+	return s.CertFile
+}
+
+// GetKeyFile returns the value of KeyFile.
+func (s *AuthenticationTLSListenerRunConfig) GetKeyFile() OptString {
+	return s.KeyFile
+}
+
+// SetCertFile sets the value of CertFile.
+func (s *AuthenticationTLSListenerRunConfig) SetCertFile(val OptString) {
+	s.CertFile = val
+}
+
+// SetKeyFile sets the value of KeyFile.
+func (s *AuthenticationTLSListenerRunConfig) SetKeyFile(val OptString) {
+	s.KeyFile = val
 }
 
 // TokenExchange configures RFC 8693 inbound clients and issuer policies.
@@ -2727,6 +2857,7 @@ const (
 	ClientClientAppFactory           ClientClientApp = "factory"
 	ClientClientAppCopilotCli        ClientClientApp = "copilot-cli"
 	ClientClientAppQoder             ClientClientApp = "qoder"
+	ClientClientAppPi                ClientClientApp = "pi"
 )
 
 // AllValues returns all ClientClientApp values.
@@ -2757,6 +2888,7 @@ func (ClientClientApp) AllValues() []ClientClientApp {
 		ClientClientAppFactory,
 		ClientClientAppCopilotCli,
 		ClientClientAppQoder,
+		ClientClientAppPi,
 	}
 }
 
@@ -2812,6 +2944,8 @@ func (s ClientClientApp) MarshalText() ([]byte, error) {
 	case ClientClientAppCopilotCli:
 		return []byte(s), nil
 	case ClientClientAppQoder:
+		return []byte(s), nil
+	case ClientClientAppPi:
 		return []byte(s), nil
 	default:
 		return nil, errors.Errorf("invalid value: %q", s)
@@ -2895,6 +3029,9 @@ func (s *ClientClientApp) UnmarshalText(data []byte) error {
 		return nil
 	case ClientClientAppQoder:
 		*s = ClientClientAppQoder
+		return nil
+	case ClientClientAppPi:
+		*s = ClientClientAppPi
 		return nil
 	default:
 		return errors.Errorf("invalid value: %q", data)
@@ -3489,9 +3626,10 @@ func (*CreateGroupResponse) createGroupRes() {}
 // Ref: #/components/schemas/CreateRequest
 type CreateRequest struct {
 	// Whether to permit outbound connections to Docker gateway addresses
-	// (host.docker.internal, gateway.docker.internal, 172.17.0.1). These are
+	// (all daemon bridge gateways, host.docker.internal, and gateway.docker.internal). These are
 	// blocked by default in the egress proxy even when network isolation is on.
 	// Only applicable to Docker deployments with network isolation enabled.
+	// Gateways are snapshotted at deployment; redeploy to include bridges created later.
 	AllowDockerGateway OptBool `json:"allow_docker_gateway"`
 	// Authorization configuration.
 	AuthzConfig OptString `json:"authz_config"`
@@ -7269,6 +7407,52 @@ func (o OptAuthenticationSPIFFEBundleSourceRunConfig) Or(d AuthenticationSPIFFEB
 	return d
 }
 
+// NewOptAuthenticationSPIFFEFileBundleSourceRunConfig returns new OptAuthenticationSPIFFEFileBundleSourceRunConfig with value set to v.
+func NewOptAuthenticationSPIFFEFileBundleSourceRunConfig(v AuthenticationSPIFFEFileBundleSourceRunConfig) OptAuthenticationSPIFFEFileBundleSourceRunConfig {
+	return OptAuthenticationSPIFFEFileBundleSourceRunConfig{
+		Value: v,
+		Set:   true,
+	}
+}
+
+// OptAuthenticationSPIFFEFileBundleSourceRunConfig is optional AuthenticationSPIFFEFileBundleSourceRunConfig.
+type OptAuthenticationSPIFFEFileBundleSourceRunConfig struct {
+	Value AuthenticationSPIFFEFileBundleSourceRunConfig
+	Set   bool
+}
+
+// IsSet returns true if OptAuthenticationSPIFFEFileBundleSourceRunConfig was set.
+func (o OptAuthenticationSPIFFEFileBundleSourceRunConfig) IsSet() bool { return o.Set }
+
+// Reset unsets value.
+func (o *OptAuthenticationSPIFFEFileBundleSourceRunConfig) Reset() {
+	var v AuthenticationSPIFFEFileBundleSourceRunConfig
+	o.Value = v
+	o.Set = false
+}
+
+// SetTo sets value to v.
+func (o *OptAuthenticationSPIFFEFileBundleSourceRunConfig) SetTo(v AuthenticationSPIFFEFileBundleSourceRunConfig) {
+	o.Set = true
+	o.Value = v
+}
+
+// Get returns value and boolean that denotes whether value was set.
+func (o OptAuthenticationSPIFFEFileBundleSourceRunConfig) Get() (v AuthenticationSPIFFEFileBundleSourceRunConfig, ok bool) {
+	if !o.Set {
+		return v, false
+	}
+	return o.Value, true
+}
+
+// Or returns value if set, or given parameter if does not.
+func (o OptAuthenticationSPIFFEFileBundleSourceRunConfig) Or(d AuthenticationSPIFFEFileBundleSourceRunConfig) AuthenticationSPIFFEFileBundleSourceRunConfig {
+	if v, ok := o.Get(); ok {
+		return v
+	}
+	return d
+}
+
 // NewOptAuthenticationSigningKeyRunConfig returns new OptAuthenticationSigningKeyRunConfig with value set to v.
 func NewOptAuthenticationSigningKeyRunConfig(v AuthenticationSigningKeyRunConfig) OptAuthenticationSigningKeyRunConfig {
 	return OptAuthenticationSigningKeyRunConfig{
@@ -7309,6 +7493,52 @@ func (o OptAuthenticationSigningKeyRunConfig) Get() (v AuthenticationSigningKeyR
 
 // Or returns value if set, or given parameter if does not.
 func (o OptAuthenticationSigningKeyRunConfig) Or(d AuthenticationSigningKeyRunConfig) AuthenticationSigningKeyRunConfig {
+	if v, ok := o.Get(); ok {
+		return v
+	}
+	return d
+}
+
+// NewOptAuthenticationTLSListenerRunConfig returns new OptAuthenticationTLSListenerRunConfig with value set to v.
+func NewOptAuthenticationTLSListenerRunConfig(v AuthenticationTLSListenerRunConfig) OptAuthenticationTLSListenerRunConfig {
+	return OptAuthenticationTLSListenerRunConfig{
+		Value: v,
+		Set:   true,
+	}
+}
+
+// OptAuthenticationTLSListenerRunConfig is optional AuthenticationTLSListenerRunConfig.
+type OptAuthenticationTLSListenerRunConfig struct {
+	Value AuthenticationTLSListenerRunConfig
+	Set   bool
+}
+
+// IsSet returns true if OptAuthenticationTLSListenerRunConfig was set.
+func (o OptAuthenticationTLSListenerRunConfig) IsSet() bool { return o.Set }
+
+// Reset unsets value.
+func (o *OptAuthenticationTLSListenerRunConfig) Reset() {
+	var v AuthenticationTLSListenerRunConfig
+	o.Value = v
+	o.Set = false
+}
+
+// SetTo sets value to v.
+func (o *OptAuthenticationTLSListenerRunConfig) SetTo(v AuthenticationTLSListenerRunConfig) {
+	o.Set = true
+	o.Value = v
+}
+
+// Get returns value and boolean that denotes whether value was set.
+func (o OptAuthenticationTLSListenerRunConfig) Get() (v AuthenticationTLSListenerRunConfig, ok bool) {
+	if !o.Set {
+		return v, false
+	}
+	return o.Value, true
+}
+
+// Or returns value if set, or given parameter if does not.
+func (o OptAuthenticationTLSListenerRunConfig) Or(d AuthenticationTLSListenerRunConfig) AuthenticationTLSListenerRunConfig {
 	if v, ok := o.Get(); ok {
 		return v
 	}
@@ -9517,6 +9747,52 @@ func (o OptRateLimitBucket) Get() (v RateLimitBucket, ok bool) {
 
 // Or returns value if set, or given parameter if does not.
 func (o OptRateLimitBucket) Or(d RateLimitBucket) RateLimitBucket {
+	if v, ok := o.Get(); ok {
+		return v
+	}
+	return d
+}
+
+// NewOptRedisconfigTLSConfig returns new OptRedisconfigTLSConfig with value set to v.
+func NewOptRedisconfigTLSConfig(v RedisconfigTLSConfig) OptRedisconfigTLSConfig {
+	return OptRedisconfigTLSConfig{
+		Value: v,
+		Set:   true,
+	}
+}
+
+// OptRedisconfigTLSConfig is optional RedisconfigTLSConfig.
+type OptRedisconfigTLSConfig struct {
+	Value RedisconfigTLSConfig
+	Set   bool
+}
+
+// IsSet returns true if OptRedisconfigTLSConfig was set.
+func (o OptRedisconfigTLSConfig) IsSet() bool { return o.Set }
+
+// Reset unsets value.
+func (o *OptRedisconfigTLSConfig) Reset() {
+	var v RedisconfigTLSConfig
+	o.Value = v
+	o.Set = false
+}
+
+// SetTo sets value to v.
+func (o *OptRedisconfigTLSConfig) SetTo(v RedisconfigTLSConfig) {
+	o.Set = true
+	o.Value = v
+}
+
+// Get returns value and boolean that denotes whether value was set.
+func (o OptRedisconfigTLSConfig) Get() (v RedisconfigTLSConfig, ok bool) {
+	if !o.Set {
+		return v, false
+	}
+	return o.Value, true
+}
+
+// Or returns value if set, or given parameter if does not.
+func (o OptRedisconfigTLSConfig) Or(d RedisconfigTLSConfig) RedisconfigTLSConfig {
 	if v, ok := o.Get(); ok {
 		return v
 	}
@@ -12421,6 +12697,52 @@ func (o OptUpgradeRequestEnv) Or(d UpgradeRequestEnv) UpgradeRequestEnv {
 	return d
 }
 
+// NewOptUpstreamfilterGroupBasedFilterConfig returns new OptUpstreamfilterGroupBasedFilterConfig with value set to v.
+func NewOptUpstreamfilterGroupBasedFilterConfig(v UpstreamfilterGroupBasedFilterConfig) OptUpstreamfilterGroupBasedFilterConfig {
+	return OptUpstreamfilterGroupBasedFilterConfig{
+		Value: v,
+		Set:   true,
+	}
+}
+
+// OptUpstreamfilterGroupBasedFilterConfig is optional UpstreamfilterGroupBasedFilterConfig.
+type OptUpstreamfilterGroupBasedFilterConfig struct {
+	Value UpstreamfilterGroupBasedFilterConfig
+	Set   bool
+}
+
+// IsSet returns true if OptUpstreamfilterGroupBasedFilterConfig was set.
+func (o OptUpstreamfilterGroupBasedFilterConfig) IsSet() bool { return o.Set }
+
+// Reset unsets value.
+func (o *OptUpstreamfilterGroupBasedFilterConfig) Reset() {
+	var v UpstreamfilterGroupBasedFilterConfig
+	o.Value = v
+	o.Set = false
+}
+
+// SetTo sets value to v.
+func (o *OptUpstreamfilterGroupBasedFilterConfig) SetTo(v UpstreamfilterGroupBasedFilterConfig) {
+	o.Set = true
+	o.Value = v
+}
+
+// Get returns value and boolean that denotes whether value was set.
+func (o OptUpstreamfilterGroupBasedFilterConfig) Get() (v UpstreamfilterGroupBasedFilterConfig, ok bool) {
+	if !o.Set {
+		return v, false
+	}
+	return o.Value, true
+}
+
+// Or returns value if set, or given parameter if does not.
+func (o OptUpstreamfilterGroupBasedFilterConfig) Or(d UpstreamfilterGroupBasedFilterConfig) UpstreamfilterGroupBasedFilterConfig {
+	if v, ok := o.Get(); ok {
+		return v
+	}
+	return d
+}
+
 // NewOptV0ServerMeta returns new OptV0ServerMeta with value set to v.
 func NewOptV0ServerMeta(v V0ServerMeta) OptV0ServerMeta {
 	return OptV0ServerMeta{
@@ -14466,6 +14788,39 @@ func (s *RateLimitBucket) SetMaxTokens(val OptInt) {
 // SetRefillPeriod sets the value of RefillPeriod.
 func (s *RateLimitBucket) SetRefillPeriod(val *V1Duration) {
 	s.RefillPeriod = val
+}
+
+// TLS enables TLS for session storage and rate limiting. An empty
+// configuration verifies the Redis server using system roots.
+// Ref: #/components/schemas/RedisconfigTLSConfig
+type RedisconfigTLSConfig struct {
+	// CACertFile is the path to a PEM-encoded CA bundle. When configured, this
+	// bundle replaces the system roots used to verify the Redis server.
+	// +optional.
+	CaCertFile OptString `json:"caCertFile"`
+	// InsecureSkipVerify skips server certificate and hostname verification.
+	// +optional.
+	InsecureSkipVerify OptBool `json:"insecureSkipVerify"`
+}
+
+// GetCaCertFile returns the value of CaCertFile.
+func (s *RedisconfigTLSConfig) GetCaCertFile() OptString {
+	return s.CaCertFile
+}
+
+// GetInsecureSkipVerify returns the value of InsecureSkipVerify.
+func (s *RedisconfigTLSConfig) GetInsecureSkipVerify() OptBool {
+	return s.InsecureSkipVerify
+}
+
+// SetCaCertFile sets the value of CaCertFile.
+func (s *RedisconfigTLSConfig) SetCaCertFile(val OptString) {
+	s.CaCertFile = val
+}
+
+// SetInsecureSkipVerify sets the value of InsecureSkipVerify.
+func (s *RedisconfigTLSConfig) SetInsecureSkipVerify(val OptBool) {
+	s.InsecureSkipVerify = val
 }
 
 type RefreshRegistryInternalServerErrorApplicationJSON string
@@ -17174,9 +17529,10 @@ type RunnerRunConfig struct {
 	// against this.
 	AdditionalMiddlewareConfigs []MiddlewareConfig `json:"additional_middleware_configs"`
 	// AllowDockerGateway permits outbound connections to Docker gateway addresses
-	// (host.docker.internal, gateway.docker.internal, 172.17.0.1). These are
+	// (all daemon bridge gateways, host.docker.internal, and gateway.docker.internal). These are
 	// blocked by default in the egress proxy even when InsecureAllowAll is set.
 	// Only applicable to Docker deployments with network isolation enabled.
+	// Gateways are snapshotted at deployment; redeploy to include bridges created later.
 	// Gateway access is port-independent: it ignores the permission profile's
 	// allowed ports, so once enabled the gateway is reachable on any port.
 	AllowDockerGateway OptBool `json:"allow_docker_gateway"`
@@ -18135,7 +18491,8 @@ type RunnerSessionRedisConfig struct {
 	// DB is the Redis database number.
 	Db OptInt `json:"db"`
 	// KeyPrefix is an optional prefix applied to all Redis keys used by ToolHive.
-	KeyPrefix OptString `json:"key_prefix"`
+	KeyPrefix OptString               `json:"key_prefix"`
+	TLS       OptRedisconfigTLSConfig `json:"tls"`
 }
 
 // GetAddress returns the value of Address.
@@ -18153,6 +18510,11 @@ func (s *RunnerSessionRedisConfig) GetKeyPrefix() OptString {
 	return s.KeyPrefix
 }
 
+// GetTLS returns the value of TLS.
+func (s *RunnerSessionRedisConfig) GetTLS() OptRedisconfigTLSConfig {
+	return s.TLS
+}
+
 // SetAddress sets the value of Address.
 func (s *RunnerSessionRedisConfig) SetAddress(val OptString) {
 	s.Address = val
@@ -18166,6 +18528,11 @@ func (s *RunnerSessionRedisConfig) SetDb(val OptInt) {
 // SetKeyPrefix sets the value of KeyPrefix.
 func (s *RunnerSessionRedisConfig) SetKeyPrefix(val OptString) {
 	s.KeyPrefix = val
+}
+
+// SetTLS sets the value of TLS.
+func (s *RunnerSessionRedisConfig) SetTLS(val OptRedisconfigTLSConfig) {
+	s.TLS = val
 }
 
 // Ref: #/components/schemas/RunnerToolOverride
@@ -21102,9 +21469,10 @@ func (*UpdateRegistryResponse) updateRegistryRes() {}
 // Ref: #/components/schemas/UpdateRequest
 type UpdateRequest struct {
 	// Whether to permit outbound connections to Docker gateway addresses
-	// (host.docker.internal, gateway.docker.internal, 172.17.0.1). These are
+	// (all daemon bridge gateways, host.docker.internal, and gateway.docker.internal). These are
 	// blocked by default in the egress proxy even when network isolation is on.
 	// Only applicable to Docker deployments with network isolation enabled.
+	// Gateways are snapshotted at deployment; redeploy to include bridges created later.
 	AllowDockerGateway OptBool `json:"allow_docker_gateway"`
 	// Authorization configuration.
 	AuthzConfig OptString `json:"authz_config"`
@@ -21845,6 +22213,108 @@ func (*UpgradeWorkloadNotFoundApplicationJSON) upgradeWorkloadRes() {}
 type UpgradeWorkloadUnprocessableEntityApplicationJSON string
 
 func (*UpgradeWorkloadUnprocessableEntityApplicationJSON) upgradeWorkloadRes() {}
+
+// UpstreamFilter configures an optional group-based filter that narrows the
+// multi-upstream authorization chain per-request based on the first
+// upstream's resolved identity. When nil, every request walks the full
+// upstream chain in configured order (preserving behavior from before the
+// filter hook existed).
+// The filter is applied exactly once per authorization, on the first leg's
+// callback. The mandatory first upstream (Upstreams[0]) is never filtered
+// out. See pkg/authserver/upstreamfilter for the configuration schema and
+// pkg/authserver/server/handlers for the runtime contract.
+// Ref: #/components/schemas/UpstreamfilterGroupBasedFilterConfig
+type UpstreamfilterGroupBasedFilterConfig struct {
+	// Claim is the exact, top-level JWT/OIDC claim name to read group
+	// membership from. Defaults to "groups" when empty. The claim value MUST be
+	// a JSON array of strings; other shapes (missing, non-array, mixed types)
+	// fail the authorization. Nested claims (e.g. Keycloak's realm_access.roles)
+	// must be flattened by the identity provider — nested paths are not
+	// supported in this implementation.
+	// The value is read from upstream.Identity.Claims as the first upstream
+	// resolves it: an OIDC upstream fills that map from the validated ID
+	// token, a pure OAuth2 upstream from the userinfo response. The
+	// identityFromToken and synthesized-identity paths leave it empty, and
+	// groups carried only in an access token never reach it. A missing claim
+	// fails the authorization — DefaultUpstreams covers a valid-but-empty
+	// claim and unmatched groups, not an absent one.
+	Claim OptString `json:"claim"`
+	// DefaultUpstreams is used when the claim is a valid empty array or when no
+	// rule matches. When empty or omitted, no optional upstreams are added —
+	// the mandatory first upstream remains but the authorization walks no
+	// further.
+	DefaultUpstreams []string `json:"defaultUpstreams"`
+	// Rules assigns groups to upstream provider subsets. A principal matches a
+	// rule if any of the principal's group values appears in the rule's Groups
+	// list (any-of / OR semantics). Multiple matching rules are combined by
+	// union: the effective upstream chain contains every UpstreamProviders
+	// value from every matching rule, deduplicated.
+	Rules []UpstreamfilterGroupRule `json:"rules"`
+}
+
+// GetClaim returns the value of Claim.
+func (s *UpstreamfilterGroupBasedFilterConfig) GetClaim() OptString {
+	return s.Claim
+}
+
+// GetDefaultUpstreams returns the value of DefaultUpstreams.
+func (s *UpstreamfilterGroupBasedFilterConfig) GetDefaultUpstreams() []string {
+	return s.DefaultUpstreams
+}
+
+// GetRules returns the value of Rules.
+func (s *UpstreamfilterGroupBasedFilterConfig) GetRules() []UpstreamfilterGroupRule {
+	return s.Rules
+}
+
+// SetClaim sets the value of Claim.
+func (s *UpstreamfilterGroupBasedFilterConfig) SetClaim(val OptString) {
+	s.Claim = val
+}
+
+// SetDefaultUpstreams sets the value of DefaultUpstreams.
+func (s *UpstreamfilterGroupBasedFilterConfig) SetDefaultUpstreams(val []string) {
+	s.DefaultUpstreams = val
+}
+
+// SetRules sets the value of Rules.
+func (s *UpstreamfilterGroupBasedFilterConfig) SetRules(val []UpstreamfilterGroupRule) {
+	s.Rules = val
+}
+
+// Ref: #/components/schemas/UpstreamfilterGroupRule
+type UpstreamfilterGroupRule struct {
+	// Groups is the set of principal group names this rule matches. Matching
+	// is case-sensitive and exact. Empty and duplicate values are rejected at
+	// configuration validation time.
+	Groups []string `json:"groups"`
+	// UpstreamProviders lists the non-first upstream provider names to include
+	// in the chain when this rule matches. All names must reference a
+	// configured non-first upstream. Empty and duplicate values, references to
+	// the mandatory first upstream, and references to undeclared upstreams are
+	// rejected at configuration validation time.
+	UpstreamProviders []string `json:"upstreamProviders"`
+}
+
+// GetGroups returns the value of Groups.
+func (s *UpstreamfilterGroupRule) GetGroups() []string {
+	return s.Groups
+}
+
+// GetUpstreamProviders returns the value of UpstreamProviders.
+func (s *UpstreamfilterGroupRule) GetUpstreamProviders() []string {
+	return s.UpstreamProviders
+}
+
+// SetGroups sets the value of Groups.
+func (s *UpstreamfilterGroupRule) SetGroups(val []string) {
+	s.Groups = val
+}
+
+// SetUpstreamProviders sets the value of UpstreamProviders.
+func (s *UpstreamfilterGroupRule) SetUpstreamProviders(val []string) {
+	s.UpstreamProviders = val
+}
 
 // Ref: #/components/schemas/V0ServerJSON
 type V0ServerJSON struct {

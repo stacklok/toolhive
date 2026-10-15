@@ -150,6 +150,10 @@
                         "description": "RegistrationEndpoint is the RFC 7591 registration endpoint URL used\ndirectly, bypassing discovery. Because no discovery is performed,\nserver-capability fields (token_endpoint_auth_methods_supported,\nscopes_supported) are unavailable on this code path; the caller is\nexpected to also supply AuthorizationEndpoint, TokenEndpoint, and an\nexplicit Scopes list on the parent OAuth2UpstreamRunConfig. Auth\nmethod falls back to the resolver's default (client_secret_basic).\n\nMutually exclusive with DiscoveryURL.",
                         "type": "string"
                     },
+                    "rotation_key": {
+                        "description": "RotationKey is an optional operator-chosen label (1-64 characters from\n[A-Za-z0-9._-]) that becomes part of the cached registration's identity\nwithout being sent to the upstream. Changing it makes the next start\nregister a fresh client instead of reusing the cached one. At start the\nresolver checks the cached client at the upstream's token endpoint and\nreplaces it by itself when the upstream answers invalid_client. Use\nRotationKey when the upstream has dropped the registration and that\ncheck cannot tell (an upstream that answers a dropped public client\nlike a live one, or a private_key_jwt client), so the rejection is only\nvisible in the user's browser, or when a registration must be rotated\non request. The row written under the previous value is left in place. Upstream refresh tokens\nbound to the previous client_id stop refreshing once the client\nchanges; affected users sign in again.",
+                        "type": "string"
+                    },
                     "software_id": {
                         "description": "SoftwareID is the RFC 7591 \"software_id\" registration metadata value,\nidentifying the client software independent of any particular\nregistration instance.",
                         "type": "string"
@@ -321,6 +325,10 @@
                         "description": "InsecureAllowHTTP permits plain-HTTP authorization and token endpoint URLs\nfor this upstream. Only for in-cluster development environments (e.g. an\nOAuth2 provider served over HTTP in a kind cluster) where TLS is not\navailable. Never set this in production.",
                         "type": "boolean"
                     },
+                    "omit_scope_on_refresh": {
+                        "description": "OmitScopeOnRefresh stops the `scope` parameter from being sent on\nrefresh_token grant requests. Scopes are still sent on the authorization\nrequest. Useful for providers that reject `scope` on refresh, such as\nSalesforce. See upstream.CommonOAuthConfig.",
+                        "type": "boolean"
+                    },
                     "redirect_uri": {
                         "description": "RedirectURI is the callback URL where the upstream IDP will redirect after authentication.\nFor a DCR upstream (dcr_config set) an empty value is resolved to\n`{issuer}/oauth/callback`; a pre-provisioned client (client_id set) must\nspecify it. Its hostname must match the browser-facing authorize URL\n(issuer, or authorization_endpoint_base_url when set): /oauth/callback is\nbound to the browser that started the login by a host-only cookie, so a\ndifferent host rejects every browser login (Config.Validate warns).",
                         "type": "string"
@@ -397,6 +405,10 @@
                     "issuer_url": {
                         "description": "IssuerURL is the OIDC issuer URL for automatic endpoint discovery.\nMust be a valid HTTPS URL.",
                         "type": "string"
+                    },
+                    "omit_scope_on_refresh": {
+                        "description": "OmitScopeOnRefresh stops the `scope` parameter from being sent on\nrefresh_token grant requests. Scopes are still sent on the authorization\nrequest. Useful for providers that reject `scope` on refresh, such as\nSalesforce. See upstream.CommonOAuthConfig.",
+                        "type": "boolean"
                     },
                     "redirect_uri": {
                         "description": "RedirectURI is the callback URL where the upstream IDP will redirect after authentication.\nFor a DCR upstream (dcr_config set) an empty value is resolved to\n`{issuer}/oauth/callback`; a pre-provisioned client (client_id set) must\nspecify it. Its hostname must match the browser-facing authorize URL\n(issuer, or authorization_endpoint_base_url when set): /oauth/callback is\nbound to the browser that started the login by a host-only cookie, so a\ndifferent host rejects every browser login (Config.Validate warns).",
@@ -531,6 +543,9 @@
                     "storage": {
                         "$ref": "#/components/schemas/storage.RunConfig"
                     },
+                    "tls_listener": {
+                        "$ref": "#/components/schemas/authserver.TLSListenerRunConfig"
+                    },
                     "token_lifespans": {
                         "$ref": "#/components/schemas/authserver.TokenLifespanRunConfig"
                     },
@@ -541,6 +556,9 @@
                         },
                         "type": "array",
                         "uniqueItems": false
+                    },
+                    "upstream_filter": {
+                        "$ref": "#/components/schemas/upstreamfilter.GroupBasedFilterConfig"
                     },
                     "upstreams": {
                         "description": "Upstreams configures connections to upstream Identity Providers for\ninteractive authorization. It may be empty only when DelegateClients or a\nTrustedIssuer with JWTBearerGrant enables token-only operation.\nMultiple upstreams are supported for sequential authorization chains.",
@@ -556,7 +574,7 @@
             "authserver.SPIFFEBundleEndpointSourceRunConfig": {
                 "properties": {
                     "profile": {
-                        "description": "Profile selects how the endpoint's TLS connection is authenticated:\nSPIFFEBundleEndpointProfileHTTPSWeb (Web PKI) or\nSPIFFEBundleEndpointProfileHTTPSSPIFFE (a separately distributed\nX.509-SVID root). Required, since the future bundle loader cannot\notherwise know which trust anchor to use for the initial connection.",
+                        "description": "Profile selects how the endpoint's TLS connection is authenticated:\nSPIFFEBundleEndpointProfileHTTPSWeb (Web PKI) or\nSPIFFEBundleEndpointProfileHTTPSSPIFFE (a separately distributed\nX.509-SVID root). Required, since an endpoint loader needs this profile\nto choose the trust anchor for its initial connection.",
                         "type": "string"
                     },
                     "url": {
@@ -566,10 +584,13 @@
                 "type": "object"
             },
             "authserver.SPIFFEBundleSourceRunConfig": {
-                "description": "BundleSource declares exactly one future trust-bundle source. It is\nvalidated for shape only; fetching or loading a bundle from it is a\nlater step.",
+                "description": "BundleSource declares exactly one trust-bundle source and is validated for\nshape here. The standalone file loader exists, but source initialization\nis not wired into SPIFFE authentication.",
                 "properties": {
                     "endpoint": {
                         "$ref": "#/components/schemas/authserver.SPIFFEBundleEndpointSourceRunConfig"
+                    },
+                    "file": {
+                        "$ref": "#/components/schemas/authserver.SPIFFEFileBundleSourceRunConfig"
                     },
                     "type": {
                         "type": "string"
@@ -636,6 +657,14 @@
                 },
                 "type": "object"
             },
+            "authserver.SPIFFEFileBundleSourceRunConfig": {
+                "properties": {
+                    "path": {
+                        "type": "string"
+                    }
+                },
+                "type": "object"
+            },
             "authserver.SPIFFETrustDomainRunConfig": {
                 "properties": {
                     "bundle_source": {
@@ -680,6 +709,18 @@
                     },
                     "signing_key_file": {
                         "description": "SigningKeyFile is the filename of the primary signing key (relative to KeyDir).\nThis key is used for signing new tokens.",
+                        "type": "string"
+                    }
+                },
+                "type": "object"
+            },
+            "authserver.TLSListenerRunConfig": {
+                "description": "TLSListener configures auth server routes to be served over TLS on port 8443.\nIt is currently rejected because the runner does not start this listener.",
+                "properties": {
+                    "cert_file": {
+                        "type": "string"
+                    },
+                    "key_file": {
                         "type": "string"
                     }
                 },
@@ -1076,7 +1117,8 @@
                     "kimi-cli",
                     "factory",
                     "copilot-cli",
-                    "qoder"
+                    "qoder",
+                    "pi"
                 ],
                 "type": "string",
                 "x-enum-varnames": [
@@ -1104,7 +1146,8 @@
                     "KimiCli",
                     "Factory",
                     "CopilotCli",
-                    "Qoder"
+                    "Qoder",
+                    "Pi"
                 ]
             },
             "github_com_stacklok_toolhive_pkg_client.ClientAppStatus": {
@@ -1658,7 +1701,7 @@
                         "uniqueItems": false
                     },
                     "allow_docker_gateway": {
-                        "description": "AllowDockerGateway permits outbound connections to Docker gateway addresses\n(host.docker.internal, gateway.docker.internal, 172.17.0.1). These are\nblocked by default in the egress proxy even when InsecureAllowAll is set.\nOnly applicable to Docker deployments with network isolation enabled.\nGateway access is port-independent: it ignores the permission profile's\nallowed ports, so once enabled the gateway is reachable on any port.",
+                        "description": "AllowDockerGateway permits outbound connections to Docker gateway addresses\n(all daemon bridge gateways, host.docker.internal, and gateway.docker.internal). These are\nblocked by default in the egress proxy even when InsecureAllowAll is set.\nOnly applicable to Docker deployments with network isolation enabled.\nGateways are snapshotted at deployment; redeploy to include bridges created later.\nGateway access is port-independent: it ignores the permission profile's\nallowed ports, so once enabled the gateway is reachable on any port.",
                         "type": "boolean"
                     },
                     "allowed_origins": {
@@ -1974,6 +2017,9 @@
                     "key_prefix": {
                         "description": "KeyPrefix is an optional prefix applied to all Redis keys used by ToolHive.",
                         "type": "string"
+                    },
+                    "tls": {
+                        "$ref": "#/components/schemas/redisconfig.TLSConfig"
                     }
                 },
                 "type": "object"
@@ -3276,7 +3322,7 @@
                 "description": "Request to create a new workload",
                 "properties": {
                     "allow_docker_gateway": {
-                        "description": "Whether to permit outbound connections to Docker gateway addresses\n(host.docker.internal, gateway.docker.internal, 172.17.0.1). These are\nblocked by default in the egress proxy even when network isolation is on.\nOnly applicable to Docker deployments with network isolation enabled.",
+                        "description": "Whether to permit outbound connections to Docker gateway addresses\n(all daemon bridge gateways, host.docker.internal, and gateway.docker.internal). These are\nblocked by default in the egress proxy even when network isolation is on.\nOnly applicable to Docker deployments with network isolation enabled.\nGateways are snapshotted at deployment; redeploy to include bridges created later.",
                         "type": "boolean"
                     },
                     "authz_config": {
@@ -4209,7 +4255,7 @@
                 "description": "Request to update an existing workload (name cannot be changed)",
                 "properties": {
                     "allow_docker_gateway": {
-                        "description": "Whether to permit outbound connections to Docker gateway addresses\n(host.docker.internal, gateway.docker.internal, 172.17.0.1). These are\nblocked by default in the egress proxy even when network isolation is on.\nOnly applicable to Docker deployments with network isolation enabled.",
+                        "description": "Whether to permit outbound connections to Docker gateway addresses\n(all daemon bridge gateways, host.docker.internal, and gateway.docker.internal). These are\nblocked by default in the egress proxy even when network isolation is on.\nOnly applicable to Docker deployments with network isolation enabled.\nGateways are snapshotted at deployment; redeploy to include bridges created later.",
                         "type": "boolean"
                     },
                     "authz_config": {
@@ -4557,6 +4603,20 @@
                             "policy_stopped"
                         ],
                         "type": "string"
+                    }
+                },
+                "type": "object"
+            },
+            "redisconfig.TLSConfig": {
+                "description": "TLS enables TLS for session storage and rate limiting. An empty\nconfiguration verifies the Redis server using system roots.",
+                "properties": {
+                    "caCertFile": {
+                        "description": "CACertFile is the path to a PEM-encoded CA bundle. When configured, this\nbundle replaces the system roots used to verify the Redis server.\n+optional",
+                        "type": "string"
+                    },
+                    "insecureSkipVerify": {
+                        "description": "InsecureSkipVerify skips server certificate and hostname verification.\n+optional",
+                        "type": "boolean"
                     }
                 },
                 "type": "object"
@@ -5746,6 +5806,53 @@
                     },
                     "shared": {
                         "$ref": "#/components/schemas/types.RateLimitBucket"
+                    }
+                },
+                "type": "object"
+            },
+            "upstreamfilter.GroupBasedFilterConfig": {
+                "description": "UpstreamFilter configures an optional group-based filter that narrows the\nmulti-upstream authorization chain per-request based on the first\nupstream's resolved identity. When nil, every request walks the full\nupstream chain in configured order (preserving behavior from before the\nfilter hook existed).\n\nThe filter is applied exactly once per authorization, on the first leg's\ncallback. The mandatory first upstream (Upstreams[0]) is never filtered\nout. See pkg/authserver/upstreamfilter for the configuration schema and\npkg/authserver/server/handlers for the runtime contract.",
+                "properties": {
+                    "claim": {
+                        "description": "Claim is the exact, top-level JWT/OIDC claim name to read group\nmembership from. Defaults to \"groups\" when empty. The claim value MUST be\na JSON array of strings; other shapes (missing, non-array, mixed types)\nfail the authorization. Nested claims (e.g. Keycloak's realm_access.roles)\nmust be flattened by the identity provider — nested paths are not\nsupported in this implementation.\n\nThe value is read from upstream.Identity.Claims as the first upstream\nresolves it: an OIDC upstream fills that map from the validated ID\ntoken, a pure OAuth2 upstream from the userinfo response. The\nidentityFromToken and synthesized-identity paths leave it empty, and\ngroups carried only in an access token never reach it. A missing claim\nfails the authorization — DefaultUpstreams covers a valid-but-empty\nclaim and unmatched groups, not an absent one.",
+                        "type": "string"
+                    },
+                    "defaultUpstreams": {
+                        "description": "DefaultUpstreams is used when the claim is a valid empty array or when no\nrule matches. When empty or omitted, no optional upstreams are added —\nthe mandatory first upstream remains but the authorization walks no\nfurther.",
+                        "items": {
+                            "type": "string"
+                        },
+                        "type": "array",
+                        "uniqueItems": false
+                    },
+                    "rules": {
+                        "description": "Rules assigns groups to upstream provider subsets. A principal matches a\nrule if any of the principal's group values appears in the rule's Groups\nlist (any-of / OR semantics). Multiple matching rules are combined by\nunion: the effective upstream chain contains every UpstreamProviders\nvalue from every matching rule, deduplicated.",
+                        "items": {
+                            "$ref": "#/components/schemas/upstreamfilter.GroupRule"
+                        },
+                        "type": "array",
+                        "uniqueItems": false
+                    }
+                },
+                "type": "object"
+            },
+            "upstreamfilter.GroupRule": {
+                "properties": {
+                    "groups": {
+                        "description": "Groups is the set of principal group names this rule matches. Matching\nis case-sensitive and exact. Empty and duplicate values are rejected at\nconfiguration validation time.",
+                        "items": {
+                            "type": "string"
+                        },
+                        "type": "array",
+                        "uniqueItems": false
+                    },
+                    "upstreamProviders": {
+                        "description": "UpstreamProviders lists the non-first upstream provider names to include\nin the chain when this rule matches. All names must reference a\nconfigured non-first upstream. Empty and duplicate values, references to\nthe mandatory first upstream, and references to undeclared upstreams are\nrejected at configuration validation time.",
+                        "items": {
+                            "type": "string"
+                        },
+                        "type": "array",
+                        "uniqueItems": false
                     }
                 },
                 "type": "object"

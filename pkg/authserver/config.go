@@ -23,12 +23,19 @@ import (
 	"github.com/stacklok/toolhive/pkg/authserver/server/tokenexchange"
 	"github.com/stacklok/toolhive/pkg/authserver/storage"
 	"github.com/stacklok/toolhive/pkg/authserver/upstream"
+	"github.com/stacklok/toolhive/pkg/authserver/upstreamfilter"
 	"github.com/stacklok/toolhive/pkg/networking"
 	"github.com/stacklok/toolhive/pkg/oauthproto"
 )
 
 // CurrentSchemaVersion is the current version of the authserver RunConfig schema.
 const CurrentSchemaVersion = "v0.1.0"
+
+// TLSListenerRunConfig describes the auth server TLS listener configuration.
+type TLSListenerRunConfig struct {
+	CertFile string `json:"cert_file" yaml:"cert_file"`
+	KeyFile  string `json:"key_file" yaml:"key_file"`
+}
 
 // RunConfig is the serializable configuration for the embedded auth server.
 // It contains no secrets - only file paths and environment variable names
@@ -78,6 +85,18 @@ type RunConfig struct {
 	// TrustedIssuer with JWTBearerGrant enables token-only operation.
 	// Multiple upstreams are supported for sequential authorization chains.
 	Upstreams []UpstreamRunConfig `json:"upstreams" yaml:"upstreams"`
+
+	// UpstreamFilter configures an optional group-based filter that narrows the
+	// multi-upstream authorization chain per-request based on the first
+	// upstream's resolved identity. When nil, every request walks the full
+	// upstream chain in configured order (preserving behavior from before the
+	// filter hook existed).
+	//
+	// The filter is applied exactly once per authorization, on the first leg's
+	// callback. The mandatory first upstream (Upstreams[0]) is never filtered
+	// out. See pkg/authserver/upstreamfilter for the configuration schema and
+	// pkg/authserver/server/handlers for the runtime contract.
+	UpstreamFilter *upstreamfilter.GroupBasedFilterConfig `json:"upstream_filter,omitempty" yaml:"upstream_filter,omitempty"`
 
 	// ScopesSupported lists the OAuth 2.0 scope values advertised in discovery documents.
 	// If empty, defaults to registration.DefaultScopes (["openid", "profile", "email", "offline_access"]).
@@ -252,6 +271,10 @@ type RunConfig struct {
 	// SPIFFE client authentication, delegate clients, and issuer policy. A
 	// non-nil value explicitly controls grant-family enablement.
 	InboundGrants *InboundGrantsRunConfig `json:"inbound_grants,omitempty" yaml:"inbound_grants,omitempty"`
+
+	// TLSListener configures auth server routes to be served over TLS on port 8443.
+	// It is currently rejected because the runner does not start this listener.
+	TLSListener *TLSListenerRunConfig `json:"tls_listener,omitempty" yaml:"tls_listener,omitempty"`
 }
 
 // DelegateClientRunConfig declares a pre-provisioned confidential OAuth
@@ -290,6 +313,12 @@ type DelegateClientRunConfig struct {
 // catches operator-supplied misconfiguration early so server startup fails
 // loudly instead of degrading silently at runtime.
 func (c *RunConfig) Validate() error {
+	if c.TLSListener != nil {
+		return errors.New(
+			"tls_listener: the TLS listener is not yet supported by this build; " +
+				"remove this configuration until listener startup is implemented",
+		)
+	}
 	if c.CIMD != nil {
 		if err := c.CIMD.Validate(); err != nil {
 			return fmt.Errorf("cimd: %w", err)
@@ -332,7 +361,45 @@ func (c *RunConfig) Validate() error {
 	if err := validateSPIFFENotYetEnforced(c.SPIFFETrustDomains); err != nil {
 		return err
 	}
+	if err := c.validateUpstreamFilter(); err != nil {
+		return err
+	}
 	return c.validateBaselineClientScopes()
+}
+
+// validateUpstreamFilter rejects an UpstreamFilter configuration whose rules or
+// defaults reference upstream names that are not configured, that reference the
+// mandatory first upstream, or that otherwise violate the filter's static
+// invariants. It constructs the filter against the configured upstream names
+// and discards the result — successful construction is the validation.
+func (c *RunConfig) validateUpstreamFilter() error {
+	if c.UpstreamFilter == nil {
+		return nil
+	}
+	configured := make([]string, len(c.Upstreams))
+	for i := range c.Upstreams {
+		configured[i] = c.Upstreams[i].Name
+	}
+	if _, err := upstreamfilter.NewGroupBasedFilter(*c.UpstreamFilter, configured); err != nil {
+		return fmt.Errorf("upstream_filter: %w", err)
+	}
+	return nil
+}
+
+// HasSPIFFEX509ClientAuth reports whether any SPIFFE client association
+// enables spiffe_x509. A nil *RunConfig returns false.
+func (c *RunConfig) HasSPIFFEX509ClientAuth() bool {
+	if c == nil || c.InboundGrants == nil {
+		return false
+	}
+	for _, association := range c.InboundGrants.SPIFFEClientAuth {
+		for _, method := range association.Methods {
+			if method == SPIFFEAuthenticationMethodX509 {
+				return true
+			}
+		}
+	}
+	return false
 }
 
 // validateSPIFFENotYetEnforced hard-rejects a non-empty SPIFFE trust
@@ -679,6 +746,12 @@ type OIDCUpstreamRunConfig struct {
 	//nolint:lll // field tags require full JSON+YAML names
 	AdditionalTokenParams map[string]string `json:"additional_token_params,omitempty" yaml:"additional_token_params,omitempty"`
 
+	// OmitScopeOnRefresh stops the `scope` parameter from being sent on
+	// refresh_token grant requests. Scopes are still sent on the authorization
+	// request. Useful for providers that reject `scope` on refresh, such as
+	// Salesforce. See upstream.CommonOAuthConfig.
+	OmitScopeOnRefresh bool `json:"omit_scope_on_refresh,omitempty" yaml:"omit_scope_on_refresh,omitempty"`
+
 	// SubjectClaim names the validated ID-token claim to use as the upstream
 	// subject. Defaults to "sub" when empty. Set for IdPs where "sub" isn't
 	// stable per user (e.g. Entra/Azure AD's "oid"). See upstream.OIDCConfig.
@@ -783,6 +856,12 @@ type OAuth2UpstreamRunConfig struct {
 	//nolint:lll // field tags require full JSON+YAML names
 	AdditionalTokenParams map[string]string `json:"additional_token_params,omitempty" yaml:"additional_token_params,omitempty"`
 
+	// OmitScopeOnRefresh stops the `scope` parameter from being sent on
+	// refresh_token grant requests. Scopes are still sent on the authorization
+	// request. Useful for providers that reject `scope` on refresh, such as
+	// Salesforce. See upstream.CommonOAuthConfig.
+	OmitScopeOnRefresh bool `json:"omit_scope_on_refresh,omitempty" yaml:"omit_scope_on_refresh,omitempty"`
+
 	// DCRConfig enables RFC 7591 Dynamic Client Registration against the
 	// upstream authorization server. When set, the client credentials are
 	// obtained at runtime rather than being pre-provisioned via ClientID /
@@ -862,6 +941,21 @@ type DCRUpstreamConfig struct {
 	//
 	// Mutually exclusive with DiscoveryURL.
 	RegistrationEndpoint string `json:"registration_endpoint,omitempty" yaml:"registration_endpoint,omitempty"`
+
+	// RotationKey is an optional operator-chosen label (1-64 characters from
+	// [A-Za-z0-9._-]) that becomes part of the cached registration's identity
+	// without being sent to the upstream. Changing it makes the next start
+	// register a fresh client instead of reusing the cached one. At start the
+	// resolver checks the cached client at the upstream's token endpoint and
+	// replaces it by itself when the upstream answers invalid_client. Use
+	// RotationKey when the upstream has dropped the registration and that
+	// check cannot tell (an upstream that answers a dropped public client
+	// like a live one, or a private_key_jwt client), so the rejection is only
+	// visible in the user's browser, or when a registration must be rotated
+	// on request. The row written under the previous value is left in place. Upstream refresh tokens
+	// bound to the previous client_id stop refreshing once the client
+	// changes; affected users sign in again.
+	RotationKey string `json:"rotation_key,omitempty" yaml:"rotation_key,omitempty"`
 
 	// InitialAccessTokenFile is the path to a file containing the RFC 7591
 	// initial access token presented to the registration endpoint. Mutually
@@ -1590,8 +1684,18 @@ func (c *DCRUpstreamConfig) Validate() error {
 			"dcr_config: initial_access_token_file and initial_access_token_env_var are mutually exclusive")
 	}
 
+	// Mirrors the CRD's Pattern/MaxLength markers on rotationKey for the
+	// YAML and CLI run-config paths, which have no admission-time schema.
+	if c.RotationKey != "" && !dcrRotationKeyPattern.MatchString(c.RotationKey) {
+		return fmt.Errorf("dcr_config: rotation_key must be 1-64 characters from [A-Za-z0-9._-]")
+	}
+
 	return nil
 }
+
+// dcrRotationKeyPattern bounds DCRUpstreamConfig.RotationKey to a short,
+// log- and key-safe alphabet; the CRD enforces the same shape at admission.
+var dcrRotationKeyPattern = regexp.MustCompile(`^[A-Za-z0-9._-]{1,64}$`)
 
 func validateZeroUpstreamMode(upstreamCount, delegateClientCount int, issuers []tokenexchange.TrustedIssuer) error {
 	if upstreamCount > 0 || delegateClientCount > 0 || JWTBearerGrantEnabled(issuers) {

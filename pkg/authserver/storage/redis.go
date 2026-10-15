@@ -682,7 +682,13 @@ func (s *RedisStorage) GetClient(ctx context.Context, id string) (fosite.Client,
 		return nil, fmt.Errorf("failed to unmarshal client: %w", err)
 	}
 
-	return clientFromStored(stored, hasTTL), nil
+	client := clientFromStored(stored, hasTTL)
+	if dcrErr := registration.ValidatePrivateKeyJWTClientKeys(client); dcrErr != nil {
+		slog.DebugContext(ctx, "rejecting client whose signing keys no longer meet server policy",
+			"client_id", id, "reason", dcrErr.ErrorDescription)
+		return nil, fosite.ErrInvalidClient.WithHint("client signing keys no longer meet server policy")
+	}
+	return client, nil
 }
 
 // RenewClientTTL extends a DCR-issued client's registration TTL to DefaultDCRClientTTL.
@@ -1865,6 +1871,9 @@ type storedDCRCredentials struct {
 	KeyUpstreamID  string `json:"key_upstream_id"`
 	KeyRedirectURI string `json:"key_redirect_uri"`
 	KeyScopesHash  string `json:"key_scopes_hash"`
+	// Omitted when empty so rows written before the field existed and rows
+	// without a rotation key share one wire shape.
+	KeyRotationKey string `json:"key_rotation_key,omitempty"`
 
 	ProviderName string `json:"provider_name,omitempty"`
 
@@ -1893,6 +1902,7 @@ func newStoredDCRCredentials(creds *DCRCredentials) storedDCRCredentials {
 		KeyUpstreamID:           creds.Key.UpstreamID,
 		KeyRedirectURI:          creds.Key.RedirectURI,
 		KeyScopesHash:           creds.Key.ScopesHash,
+		KeyRotationKey:          creds.Key.RotationKey,
 		ProviderName:            creds.ProviderName,
 		ClientID:                creds.ClientID,
 		ClientSecret:            creds.ClientSecret,
@@ -1929,6 +1939,7 @@ func (s *storedDCRCredentials) toDCRCredentials() *DCRCredentials {
 			UpstreamID:  s.KeyUpstreamID,
 			RedirectURI: s.KeyRedirectURI,
 			ScopesHash:  s.KeyScopesHash,
+			RotationKey: s.KeyRotationKey,
 		},
 		ProviderName:            s.ProviderName,
 		ClientID:                s.ClientID,

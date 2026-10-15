@@ -905,9 +905,9 @@ spec:
                       properties:
                         bundleSource:
                           description: |-
-                            BundleSource declares exactly one future trust-bundle source. It is
-                            validated for shape only; fetching or loading a bundle from it is a
-                            later step.
+                            BundleSource declares exactly one trust-bundle source and is validated for
+                            shape here. The standalone file loader exists, but is not wired into SPIFFE
+                            authentication.
                           properties:
                             endpoint:
                               description: |-
@@ -934,10 +934,37 @@ spec:
                               - profile
                               - url
                               type: object
+                            file:
+                              description: |-
+                                File declares a SPIFFE trust bundle projected from a ConfigMap.
+                                Required when Type is "file".
+                              properties:
+                                configMapKey:
+                                  description: |-
+                                    ConfigMapKey is the key within the ConfigMap holding the SPIFFE JWKS
+                                    trust-bundle document. It must not be "." or start with "..".
+                                  maxLength: 253
+                                  minLength: 1
+                                  pattern: ^[A-Za-z0-9._-]+$
+                                  type: string
+                                  x-kubernetes-validations:
+                                  - rule: self != '.' && !self.startsWith('..')
+                                configMapName:
+                                  description: ConfigMapName is the name of the ConfigMap
+                                    containing the trust bundle.
+                                  maxLength: 253
+                                  minLength: 1
+                                  pattern: ^[a-z0-9]([-a-z0-9]*[a-z0-9])?(\.[a-z0-9]([-a-z0-9]*[a-z0-9])?)*$
+                                  type: string
+                              required:
+                              - configMapKey
+                              - configMapName
+                              type: object
                             type:
                               description: Type selects the trust-bundle source.
                               enum:
                               - bundle_endpoint
+                              - file
                               - workload_api
                               type: string
                             workloadAPI:
@@ -953,6 +980,9 @@ spec:
                               if type is 'bundle_endpoint'
                             rule: 'self.type == ''bundle_endpoint'' ? has(self.endpoint)
                               : !has(self.endpoint)'
+                          - message: file configuration must be set if and only if
+                              type is 'file'
+                            rule: 'self.type == ''file'' ? has(self.file) : !has(self.file)'
                           - message: workloadAPI configuration must be set if and
                               only if type is 'workload_api'
                             rule: 'self.type == ''workload_api'' ? has(self.workloadAPI)
@@ -1130,6 +1160,8 @@ spec:
                                 description: |-
                                   CACertSecretRef references a Secret containing a PEM-encoded CA certificate
                                   for verifying the server. When not specified, system root CAs are used.
+                                  If the Secret or key does not exist, the pod cannot start (it stays in
+                                  ContainerCreating) rather than connecting without verification.
                                 properties:
                                   key:
                                     description: Key is the key within the secret
@@ -1143,8 +1175,11 @@ spec:
                                 type: object
                               insecureSkipVerify:
                                 description: |-
-                                  InsecureSkipVerify skips TLS certificate verification.
-                                  Use when connecting to services with self-signed certificates.
+                                  InsecureSkipVerify disables server certificate and hostname verification.
+                                  The connection is encrypted but not authenticated, so anyone able to
+                                  impersonate the server can read the credentials and data sent over it.
+                                  Intended for testing only; for self-signed or private CAs set
+                                  caCertSecretRef instead.
                                 type: boolean
                             type: object
                           tls:
@@ -1156,6 +1191,8 @@ spec:
                                 description: |-
                                   CACertSecretRef references a Secret containing a PEM-encoded CA certificate
                                   for verifying the server. When not specified, system root CAs are used.
+                                  If the Secret or key does not exist, the pod cannot start (it stays in
+                                  ContainerCreating) rather than connecting without verification.
                                 properties:
                                   key:
                                     description: Key is the key within the secret
@@ -1169,8 +1206,11 @@ spec:
                                 type: object
                               insecureSkipVerify:
                                 description: |-
-                                  InsecureSkipVerify skips TLS certificate verification.
-                                  Use when connecting to services with self-signed certificates.
+                                  InsecureSkipVerify disables server certificate and hostname verification.
+                                  The connection is encrypted but not authenticated, so anyone able to
+                                  impersonate the server can read the credentials and data sent over it.
+                                  Intended for testing only; for self-signed or private CAs set
+                                  caCertSecretRef instead.
                                 type: boolean
                             type: object
                           writeTimeout:
@@ -1699,6 +1739,24 @@ spec:
                                   maxLength: 2048
                                   pattern: ^https://[^\s?#]+[^/\s?#]$
                                   type: string
+                                rotationKey:
+                                  description: |-
+                                    RotationKey is an optional operator-chosen label that is part of the
+                                    cached registration's identity but is never sent to the upstream.
+                                    Change it to make the proxies register a fresh client at their next
+                                    start instead of reusing the cached one: for example after the
+                                    upstream has dropped the registration, or when a rotation is required.
+                                    At start ToolHive checks the cached client at the upstream's token
+                                    endpoint and registers a new one by itself when the upstream answers
+                                    invalid_client. Where that check cannot tell (an upstream that answers
+                                    a dropped public client like a live one, or a private_key_jwt client),
+                                    the stale client_id is only rejected in the user's browser, and
+                                    changing this key is the remedy. The previous registration's row stays
+                                    in storage, and upstream refresh tokens bound to the previous client_id
+                                    stop refreshing, so affected users sign in again.
+                                  maxLength: 64
+                                  pattern: ^[A-Za-z0-9._-]+$
+                                  type: string
                                 softwareId:
                                   description: |-
                                     SoftwareID is the RFC 7591 "software_id" registration metadata value,
@@ -1776,6 +1834,16 @@ spec:
                                 for this upstream. Only for in-cluster development environments (e.g. an
                                 OAuth2 provider served over HTTP in a kind cluster) where TLS is not
                                 available. Never set this in production.
+                              type: boolean
+                            omitScopeOnRefresh:
+                              description: |-
+                                OmitScopeOnRefresh stops the scope parameter from being sent on
+                                refresh_token grant requests to the upstream provider's token endpoint.
+                                Scopes are still sent on the authorization request.
+                                By default (false), the configured scopes are sent on refresh as well,
+                                which some providers require to avoid narrowing the refreshed token.
+                                Set it for providers that reject scope on refresh, such as Salesforce
+                                ("invalid_request - scope parameter not supported").
                               type: boolean
                             redirectUri:
                               description: |-
@@ -2079,6 +2147,24 @@ spec:
                                   maxLength: 2048
                                   pattern: ^https://[^\s?#]+[^/\s?#]$
                                   type: string
+                                rotationKey:
+                                  description: |-
+                                    RotationKey is an optional operator-chosen label that is part of the
+                                    cached registration's identity but is never sent to the upstream.
+                                    Change it to make the proxies register a fresh client at their next
+                                    start instead of reusing the cached one: for example after the
+                                    upstream has dropped the registration, or when a rotation is required.
+                                    At start ToolHive checks the cached client at the upstream's token
+                                    endpoint and registers a new one by itself when the upstream answers
+                                    invalid_client. Where that check cannot tell (an upstream that answers
+                                    a dropped public client like a live one, or a private_key_jwt client),
+                                    the stale client_id is only rejected in the user's browser, and
+                                    changing this key is the remedy. The previous registration's row stays
+                                    in storage, and upstream refresh tokens bound to the previous client_id
+                                    stop refreshing, so affected users sign in again.
+                                  maxLength: 64
+                                  pattern: ^[A-Za-z0-9._-]+$
+                                  type: string
                                 softwareId:
                                   description: |-
                                     SoftwareID is the RFC 7591 "software_id" registration metadata value,
@@ -2117,6 +2203,16 @@ spec:
                                 Must be a valid HTTPS URL.
                               pattern: ^https://.*$
                               type: string
+                            omitScopeOnRefresh:
+                              description: |-
+                                OmitScopeOnRefresh stops the scope parameter from being sent on
+                                refresh_token grant requests to the upstream provider's token endpoint.
+                                Scopes are still sent on the authorization request.
+                                By default (false), the configured scopes are sent on refresh as well,
+                                which some providers require to avoid narrowing the refreshed token.
+                                Set it for providers that reject scope on refresh, such as Salesforce
+                                ("invalid_request - scope parameter not supported").
+                              type: boolean
                             redirectUri:
                               description: |-
                                 RedirectURI is the callback URL where the upstream IdP will redirect after authentication.
@@ -3751,9 +3847,9 @@ spec:
                       properties:
                         bundleSource:
                           description: |-
-                            BundleSource declares exactly one future trust-bundle source. It is
-                            validated for shape only; fetching or loading a bundle from it is a
-                            later step.
+                            BundleSource declares exactly one trust-bundle source and is validated for
+                            shape here. The standalone file loader exists, but is not wired into SPIFFE
+                            authentication.
                           properties:
                             endpoint:
                               description: |-
@@ -3780,10 +3876,37 @@ spec:
                               - profile
                               - url
                               type: object
+                            file:
+                              description: |-
+                                File declares a SPIFFE trust bundle projected from a ConfigMap.
+                                Required when Type is "file".
+                              properties:
+                                configMapKey:
+                                  description: |-
+                                    ConfigMapKey is the key within the ConfigMap holding the SPIFFE JWKS
+                                    trust-bundle document. It must not be "." or start with "..".
+                                  maxLength: 253
+                                  minLength: 1
+                                  pattern: ^[A-Za-z0-9._-]+$
+                                  type: string
+                                  x-kubernetes-validations:
+                                  - rule: self != '.' && !self.startsWith('..')
+                                configMapName:
+                                  description: ConfigMapName is the name of the ConfigMap
+                                    containing the trust bundle.
+                                  maxLength: 253
+                                  minLength: 1
+                                  pattern: ^[a-z0-9]([-a-z0-9]*[a-z0-9])?(\.[a-z0-9]([-a-z0-9]*[a-z0-9])?)*$
+                                  type: string
+                              required:
+                              - configMapKey
+                              - configMapName
+                              type: object
                             type:
                               description: Type selects the trust-bundle source.
                               enum:
                               - bundle_endpoint
+                              - file
                               - workload_api
                               type: string
                             workloadAPI:
@@ -3799,6 +3922,9 @@ spec:
                               if type is 'bundle_endpoint'
                             rule: 'self.type == ''bundle_endpoint'' ? has(self.endpoint)
                               : !has(self.endpoint)'
+                          - message: file configuration must be set if and only if
+                              type is 'file'
+                            rule: 'self.type == ''file'' ? has(self.file) : !has(self.file)'
                           - message: workloadAPI configuration must be set if and
                               only if type is 'workload_api'
                             rule: 'self.type == ''workload_api'' ? has(self.workloadAPI)
@@ -3976,6 +4102,8 @@ spec:
                                 description: |-
                                   CACertSecretRef references a Secret containing a PEM-encoded CA certificate
                                   for verifying the server. When not specified, system root CAs are used.
+                                  If the Secret or key does not exist, the pod cannot start (it stays in
+                                  ContainerCreating) rather than connecting without verification.
                                 properties:
                                   key:
                                     description: Key is the key within the secret
@@ -3989,8 +4117,11 @@ spec:
                                 type: object
                               insecureSkipVerify:
                                 description: |-
-                                  InsecureSkipVerify skips TLS certificate verification.
-                                  Use when connecting to services with self-signed certificates.
+                                  InsecureSkipVerify disables server certificate and hostname verification.
+                                  The connection is encrypted but not authenticated, so anyone able to
+                                  impersonate the server can read the credentials and data sent over it.
+                                  Intended for testing only; for self-signed or private CAs set
+                                  caCertSecretRef instead.
                                 type: boolean
                             type: object
                           tls:
@@ -4002,6 +4133,8 @@ spec:
                                 description: |-
                                   CACertSecretRef references a Secret containing a PEM-encoded CA certificate
                                   for verifying the server. When not specified, system root CAs are used.
+                                  If the Secret or key does not exist, the pod cannot start (it stays in
+                                  ContainerCreating) rather than connecting without verification.
                                 properties:
                                   key:
                                     description: Key is the key within the secret
@@ -4015,8 +4148,11 @@ spec:
                                 type: object
                               insecureSkipVerify:
                                 description: |-
-                                  InsecureSkipVerify skips TLS certificate verification.
-                                  Use when connecting to services with self-signed certificates.
+                                  InsecureSkipVerify disables server certificate and hostname verification.
+                                  The connection is encrypted but not authenticated, so anyone able to
+                                  impersonate the server can read the credentials and data sent over it.
+                                  Intended for testing only; for self-signed or private CAs set
+                                  caCertSecretRef instead.
                                 type: boolean
                             type: object
                           writeTimeout:
@@ -4545,6 +4681,24 @@ spec:
                                   maxLength: 2048
                                   pattern: ^https://[^\s?#]+[^/\s?#]$
                                   type: string
+                                rotationKey:
+                                  description: |-
+                                    RotationKey is an optional operator-chosen label that is part of the
+                                    cached registration's identity but is never sent to the upstream.
+                                    Change it to make the proxies register a fresh client at their next
+                                    start instead of reusing the cached one: for example after the
+                                    upstream has dropped the registration, or when a rotation is required.
+                                    At start ToolHive checks the cached client at the upstream's token
+                                    endpoint and registers a new one by itself when the upstream answers
+                                    invalid_client. Where that check cannot tell (an upstream that answers
+                                    a dropped public client like a live one, or a private_key_jwt client),
+                                    the stale client_id is only rejected in the user's browser, and
+                                    changing this key is the remedy. The previous registration's row stays
+                                    in storage, and upstream refresh tokens bound to the previous client_id
+                                    stop refreshing, so affected users sign in again.
+                                  maxLength: 64
+                                  pattern: ^[A-Za-z0-9._-]+$
+                                  type: string
                                 softwareId:
                                   description: |-
                                     SoftwareID is the RFC 7591 "software_id" registration metadata value,
@@ -4622,6 +4776,16 @@ spec:
                                 for this upstream. Only for in-cluster development environments (e.g. an
                                 OAuth2 provider served over HTTP in a kind cluster) where TLS is not
                                 available. Never set this in production.
+                              type: boolean
+                            omitScopeOnRefresh:
+                              description: |-
+                                OmitScopeOnRefresh stops the scope parameter from being sent on
+                                refresh_token grant requests to the upstream provider's token endpoint.
+                                Scopes are still sent on the authorization request.
+                                By default (false), the configured scopes are sent on refresh as well,
+                                which some providers require to avoid narrowing the refreshed token.
+                                Set it for providers that reject scope on refresh, such as Salesforce
+                                ("invalid_request - scope parameter not supported").
                               type: boolean
                             redirectUri:
                               description: |-
@@ -4925,6 +5089,24 @@ spec:
                                   maxLength: 2048
                                   pattern: ^https://[^\s?#]+[^/\s?#]$
                                   type: string
+                                rotationKey:
+                                  description: |-
+                                    RotationKey is an optional operator-chosen label that is part of the
+                                    cached registration's identity but is never sent to the upstream.
+                                    Change it to make the proxies register a fresh client at their next
+                                    start instead of reusing the cached one: for example after the
+                                    upstream has dropped the registration, or when a rotation is required.
+                                    At start ToolHive checks the cached client at the upstream's token
+                                    endpoint and registers a new one by itself when the upstream answers
+                                    invalid_client. Where that check cannot tell (an upstream that answers
+                                    a dropped public client like a live one, or a private_key_jwt client),
+                                    the stale client_id is only rejected in the user's browser, and
+                                    changing this key is the remedy. The previous registration's row stays
+                                    in storage, and upstream refresh tokens bound to the previous client_id
+                                    stop refreshing, so affected users sign in again.
+                                  maxLength: 64
+                                  pattern: ^[A-Za-z0-9._-]+$
+                                  type: string
                                 softwareId:
                                   description: |-
                                     SoftwareID is the RFC 7591 "software_id" registration metadata value,
@@ -4963,6 +5145,16 @@ spec:
                                 Must be a valid HTTPS URL.
                               pattern: ^https://.*$
                               type: string
+                            omitScopeOnRefresh:
+                              description: |-
+                                OmitScopeOnRefresh stops the scope parameter from being sent on
+                                refresh_token grant requests to the upstream provider's token endpoint.
+                                Scopes are still sent on the authorization request.
+                                By default (false), the configured scopes are sent on refresh as well,
+                                which some providers require to avoid narrowing the refreshed token.
+                                Set it for providers that reject scope on refresh, such as Salesforce
+                                ("invalid_request - scope parameter not supported").
+                              type: boolean
                             redirectUri:
                               description: |-
                                 RedirectURI is the callback URL where the upstream IdP will redirect after authentication.

@@ -8,6 +8,7 @@ import (
 	"errors"
 	"maps"
 	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -1815,6 +1816,151 @@ func TestLoadSession_Phase2Marker_UsesIdentityBindingKey(t *testing.T) {
 		require.NotNil(t, multiSess)
 		assert.Equal(t, sessionID, multiSess.ID())
 	})
+}
+
+// TestRegression_Terminate_RemovesCacheEntryAndClosesSession pins the fix for
+// #6762: Terminate's Phase 2 branch used to delete only the storage record and
+// leave the node-local cache entry in place, so a terminated session kept its
+// backend connections and capability copies until some unrelated eviction
+// trigger fired. Because a well-behaved client stops using a terminated session
+// ID, checkSession's lazy path (cache-hit only) might never run, and retained
+// memory tracked the cumulative number of sessions ever created rather than the
+// live ones.
+//
+// Close() must be called exactly once, and the cache must shrink immediately.
+func TestRegression_Terminate_RemovesCacheEntryAndClosesSession(t *testing.T) {
+	t.Parallel()
+
+	ctrl := gomock.NewController(t)
+	registry := newFakeRegistry()
+	sess := newMockSession(t, ctrl, "s", nil)
+	// Count calls rather than relying on gomock's end-of-test verification, so
+	// the assertion below pins that Close ran during Terminate and not later
+	// (e.g. at cache teardown).
+	var closeCalls atomic.Int32
+	sess.EXPECT().Close().DoAndReturn(func() error {
+		closeCalls.Add(1)
+		return nil
+	}).AnyTimes()
+	factory := newMockFactory(t, ctrl, sess)
+	sm, storage := newTestSessionManager(t, factory, registry)
+
+	sessionID := sm.Generate()
+	_, err := sm.CreateSession(t.Context(), sessionID, nil)
+	require.NoError(t, err)
+	require.Equal(t, 1, sm.sessions.Len(), "session must be cached after CreateSession")
+
+	_, err = storage.Update(context.Background(), sessionID, map[string]string{
+		sessiontypes.MetadataKeyIdentityBinding: "unauthenticated",
+	})
+	require.NoError(t, err, "seed Phase 2 marker so Terminate takes the delete path")
+
+	isNotAllowed, err := sm.Terminate(sessionID)
+	require.NoError(t, err)
+	assert.False(t, isNotAllowed)
+
+	assert.Zero(t, sm.sessions.Len(),
+		"Terminate must drop the node-local cache entry, not wait for a later eviction")
+	assert.Equal(t, int32(1), closeCalls.Load(),
+		"Terminate must close the session's backend connections exactly once, during Terminate")
+
+	// The storage record is gone too, so a later Get cannot restore the session.
+	_, loadErr := storage.Load(context.Background(), sessionID)
+	assert.ErrorIs(t, loadErr, transportsession.ErrSessionNotFound)
+
+	// And the session is no longer retrievable.
+	_, ok := sm.GetMultiSession(t.Context(), sessionID)
+	assert.False(t, ok, "terminated session must not be retrievable")
+}
+
+// TestRegression_Terminate_RepeatedIsSafe pins that terminating the same
+// session twice does not close it twice. The second call finds the storage
+// record already gone and returns before touching the cache, so Close() must
+// still have fired exactly once.
+func TestRegression_Terminate_RepeatedIsSafe(t *testing.T) {
+	t.Parallel()
+
+	ctrl := gomock.NewController(t)
+	registry := newFakeRegistry()
+	sess := newMockSession(t, ctrl, "s", nil)
+	var closeCalls atomic.Int32
+	sess.EXPECT().Close().DoAndReturn(func() error {
+		closeCalls.Add(1)
+		return nil
+	}).AnyTimes()
+	factory := newMockFactory(t, ctrl, sess)
+	sm, storage := newTestSessionManager(t, factory, registry)
+
+	sessionID := sm.Generate()
+	_, err := sm.CreateSession(t.Context(), sessionID, nil)
+	require.NoError(t, err)
+	_, err = storage.Update(context.Background(), sessionID, map[string]string{
+		sessiontypes.MetadataKeyIdentityBinding: "unauthenticated",
+	})
+	require.NoError(t, err, "seed Phase 2 marker so Terminate takes the delete path")
+
+	for i := range 2 {
+		isNotAllowed, termErr := sm.Terminate(sessionID)
+		require.NoErrorf(t, termErr, "Terminate call %d must not error", i+1)
+		assert.False(t, isNotAllowed)
+	}
+	assert.Zero(t, sm.sessions.Len())
+	assert.Equal(t, int32(1), closeCalls.Load(),
+		"the second Terminate must not close the session again")
+}
+
+// TestRegression_Terminate_StorageDeleteFailureKeepsCacheEntry pins the
+// ordering guarantee: when the storage delete fails, Terminate returns the
+// error before touching the cache. Dropping the cached session while its
+// storage record survives would close live backend connections for a session
+// that Validate still reports as alive.
+//
+// This holds both before and after the fix; it is a guardrail so a later change
+// cannot start removing the entry ahead of a successful delete.
+func TestRegression_Terminate_StorageDeleteFailureKeepsCacheEntry(t *testing.T) {
+	t.Parallel()
+
+	ctrl := gomock.NewController(t)
+	registry := newFakeRegistry()
+	sess := newMockSession(t, ctrl, "s", nil)
+	// Count calls: Len()==1 alone would not prove the connections are still
+	// open, since a stray Close could have run without the entry being removed.
+	var closeCalls atomic.Int32
+	sess.EXPECT().Close().DoAndReturn(func() error {
+		closeCalls.Add(1)
+		return nil
+	}).AnyTimes()
+	factory := newMockFactory(t, ctrl, sess)
+	sm, storage := newTestSessionManager(t, factory, registry)
+
+	sessionID := sm.Generate()
+	_, err := sm.CreateSession(t.Context(), sessionID, nil)
+	require.NoError(t, err)
+	require.Equal(t, 1, sm.sessions.Len())
+
+	_, err = storage.Update(context.Background(), sessionID, map[string]string{
+		sessiontypes.MetadataKeyIdentityBinding: "unauthenticated",
+	})
+	require.NoError(t, err, "seed Phase 2 marker so Terminate takes the delete path")
+
+	sm.storage = &deleteFailingStorage{DataStorage: storage}
+
+	_, termErr := sm.Terminate(sessionID)
+	require.Error(t, termErr, "Terminate must surface the storage delete failure")
+	assert.Equal(t, 1, sm.sessions.Len(),
+		"cache entry must survive a failed storage delete: the session is still live")
+	assert.Zero(t, closeCalls.Load(),
+		"a failed storage delete must not close the session's backend connections")
+}
+
+// deleteFailingStorage fails every Delete, leaving the rest of the DataStorage
+// behaviour intact.
+type deleteFailingStorage struct {
+	transportsession.DataStorage
+}
+
+func (*deleteFailingStorage) Delete(context.Context, string) error {
+	return errors.New("simulated storage delete failure")
 }
 
 // TestTerminate_Phase2DetectionUsesIdentityBindingKey verifies that Terminate

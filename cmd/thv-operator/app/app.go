@@ -81,6 +81,11 @@ func Run() {
 	// Bridge to slog for consistency with the rest of the ToolHive codebase.
 	ctrl.SetLogger(logr.FromSlogHandler(slog.Default().Handler()))
 
+	if err := ctrlutil.ValidateDefaultRedisConfig(); err != nil {
+		setupLog.Error(err, "invalid global Redis configuration")
+		os.Exit(1)
+	}
+
 	podNamespace, _ := os.LookupEnv("POD_NAMESPACE")
 
 	options := ctrl.Options{

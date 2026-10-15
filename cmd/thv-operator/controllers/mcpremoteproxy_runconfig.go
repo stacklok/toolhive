@@ -221,6 +221,7 @@ func populateScalingConfigForRemoteProxy(runConfig *runner.RunConfig, proxy *mcp
 		}
 		runConfig.ScalingConfig.SessionRedis = &runner.SessionRedisConfig{
 			Address: def.Addr,
+			TLS:     ctrlutil.SessionRedisTLSConfig(nil),
 		}
 	}
 }

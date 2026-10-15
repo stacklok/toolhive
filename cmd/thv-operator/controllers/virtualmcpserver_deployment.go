@@ -278,7 +278,7 @@ func (r *VirtualMCPServerReconciler) buildPodVolumesForVmcp(
 		volumeMounts = append(volumeMounts, authServerMounts...)
 	}
 
-	sessionTLSVolumes, sessionTLSMounts := ctrlutil.SessionRedisTLSVolumes(vmcp.Spec.SessionStorage)
+	sessionTLSVolumes, sessionTLSMounts := ctrlutil.SessionRedisTLSVolumesWithDefault(vmcp.Spec.SessionStorage)
 	volumes = append(volumes, sessionTLSVolumes...)
 	volumeMounts = append(volumeMounts, sessionTLSMounts...)
 

@@ -1464,7 +1464,7 @@ func (r *MCPServerReconciler) deploymentForMCPServer(
 	}
 
 	// Mount the session storage Redis CA bundle when TLS references one.
-	sessionTLSVolumes, sessionTLSMounts := ctrlutil.SessionRedisTLSVolumes(m.Spec.SessionStorage)
+	sessionTLSVolumes, sessionTLSMounts := ctrlutil.SessionRedisTLSVolumesWithDefault(m.Spec.SessionStorage)
 	volumes = append(volumes, sessionTLSVolumes...)
 	volumeMounts = append(volumeMounts, sessionTLSMounts...)
 
@@ -2121,7 +2121,7 @@ func (r *MCPServerReconciler) deploymentNeedsUpdate(
 			return true
 		}
 
-		wantSessionTLSVolumes, _ := ctrlutil.SessionRedisTLSVolumes(mcpServer.Spec.SessionStorage)
+		wantSessionTLSVolumes, _ := ctrlutil.SessionRedisTLSVolumesWithDefault(mcpServer.Spec.SessionStorage)
 		if ctrlutil.SessionRedisTLSVolumeNeedsUpdate(deployment.Spec.Template.Spec.Volumes, wantSessionTLSVolumes) {
 			return true
 		}

@@ -240,7 +240,7 @@ type DCRKey struct {
 	// cache identity but carries no OAuth meaning and is never sent to the
 	// upstream. Changing it makes the resolver miss the cache and register a
 	// fresh client. It is how an operator retires a registration the upstream
-	// has dropped when the resolver's own token-endpoint check cannot tell
+	// has dropped when the resolver's own registration probe cannot tell
 	// (see authserver.DCRUpstreamConfig.RotationKey).
 	// Empty for every row written before the field existed; backends MUST
 	// encode an empty value exactly as they encoded a key without the field

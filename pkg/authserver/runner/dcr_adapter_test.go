@@ -284,6 +284,7 @@ func TestNewDCRRequest(t *testing.T) {
 		wantAllowPrivateIPs    bool
 		wantCAFilePath         string
 		wantRotationKey        string
+		wantRegistrationProbe  dcr.RegistrationProbe
 	}{
 		{
 			name: "discovery_url branch resolves file-based initial access token",
@@ -349,6 +350,23 @@ func TestNewDCRRequest(t *testing.T) {
 			wantRotationKey:  "2026-10",
 		},
 		{
+			// Pins the RegistrationProbe copy onto dcr.Request: without it an
+			// upstream configured for the authorization-endpoint probe would
+			// silently be probed at its token endpoint.
+			name: "registration_probe propagates from run-config",
+			rc: &authserver.OAuth2UpstreamRunConfig{
+				Scopes: []string{"openid"},
+				DCRConfig: &authserver.DCRUpstreamConfig{
+					RegistrationEndpoint: "https://idp.example.com/register",
+					RegistrationProbe:    "authorizationEndpoint",
+				},
+			},
+			localIssuer:           "https://thv.example.com",
+			wantIssuer:            "https://thv.example.com",
+			wantRegistration:      "https://idp.example.com/register",
+			wantRegistrationProbe: dcr.ProbeAuthorizationEndpoint,
+		},
+		{
 			name:        "nil run-config rejected",
 			rc:          nil,
 			localIssuer: "https://thv.example.com",
@@ -373,6 +391,7 @@ func TestNewDCRRequest(t *testing.T) {
 			assert.Equal(t, tc.wantAllowPrivateIPs, req.AllowPrivateIPs)
 			assert.Equal(t, tc.wantCAFilePath, req.CAFilePath)
 			assert.Equal(t, tc.wantRotationKey, req.RotationKey)
+			assert.Equal(t, tc.wantRegistrationProbe, req.RegistrationProbe)
 		})
 	}
 }

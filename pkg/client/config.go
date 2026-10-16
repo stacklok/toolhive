@@ -107,8 +107,9 @@ const (
 	Xcode LLMClientApp = "xcode"
 
 	// ClaudeDesktop represents the Claude Desktop app configured for LLM gateway
-	// routing via its "third-party inference" surface. Only LLM-gateway support is
-	// wired here (not MCP), so it is declared as LLMClientApp — same rationale as
+	// routing via its "third-party inference" surface. ToolHive workloads are not
+	// registered with it (remote MCP servers are added with "thv client
+	// connector" instead), so it is declared as LLMClientApp — same rationale as
 	// Xcode above.
 	ClaudeDesktop LLMClientApp = "claude-desktop"
 )
@@ -1091,8 +1092,10 @@ var supportedClientIntegrations = []clientAppConfig{
 		// document per saved config plus a _meta.json selector naming the active
 		// one. That document model does not fit JSON-key patching, so this entry
 		// uses LLMGatewayMode "credential-helper" and carries no LLMGatewayKeys —
-		// the dedicated credential-helper writer handles it. LLM-gateway-only (MCP
-		// not wired). Cast LLMClientApp → ClientApp for internal storage.
+		// the dedicated credential-helper writer handles it. LLM-gateway-only for
+		// workload registration; remote MCP servers are added to the same document
+		// by "thv client connector" instead. Cast LLMClientApp → ClientApp for
+		// internal storage.
 		ClientType:     ClientApp(ClaudeDesktop),
 		Description:    "Claude Desktop",
 		LLMGatewayOnly: true,

@@ -38,9 +38,11 @@ const (
 )
 
 // claudeDesktopConfig is the <id>.json document written into the configLibrary.
-// ToolHive fully owns this file, so a typed struct is safe (no user fields to
-// preserve). inferenceModels is omitted when empty so Claude Desktop falls back
-// to gateway-side model auto-discovery once the gateway serves it.
+// ToolHive owns this file. ManagedMCPServers holds the connectors written by
+// "thv client connector add" (see claude_desktop_connectors.go); setup carries
+// them over from the previous document rather than managing them itself.
+// inferenceModels is omitted when empty so Claude Desktop falls back to
+// gateway-side model auto-discovery once the gateway serves it.
 type claudeDesktopConfig struct {
 	InferenceProvider                   string   `json:"inferenceProvider"`
 	InferenceGatewayBaseURL             string   `json:"inferenceGatewayBaseUrl"`
@@ -50,6 +52,7 @@ type claudeDesktopConfig struct {
 	InferenceCredentialHelperTtlSec     int      `json:"inferenceCredentialHelperTtlSec"`
 	InferenceCredentialHelperTimeoutSec int      `json:"inferenceCredentialHelperTimeoutSec"`
 	InferenceModels                     []string `json:"inferenceModels,omitempty"`
+	ManagedMCPServers                   []any    `json:"managedMcpServers,omitempty"`
 }
 
 // configureCredentialHelper writes (or updates) ToolHive's Claude Desktop
@@ -117,6 +120,7 @@ func (cm *ClientManager) configureCredentialHelper(appCfg *clientAppConfig, cfg 
 		meta["entries"] = upsertMetaEntry(metaEntries(meta), id, claudeDesktopManagedEntryName)
 		meta["appliedId"] = id
 
+		cp := filepath.Join(dir, id+".json")
 		doc := claudeDesktopConfig{
 			InferenceProvider:                   "gateway",
 			InferenceGatewayBaseURL:             baseURL,
@@ -126,13 +130,14 @@ func (cm *ClientManager) configureCredentialHelper(appCfg *clientAppConfig, cfg 
 			InferenceCredentialHelperTtlSec:     int(llmgateway.ClaudeDesktopHelperTTL.Seconds()),
 			InferenceCredentialHelperTimeoutSec: int(llmgateway.ClaudeDesktopHelperTimeout.Seconds()),
 			InferenceModels:                     cfg.Models,
+			// Keep connectors across re-runs of setup, which rewrites the document.
+			ManagedMCPServers: previousManagedMCPServers(cp),
 		}
 		docBytes, err := json.MarshalIndent(doc, "", "  ")
 		if err != nil {
 			cleanup("")
 			return fmt.Errorf("encoding Claude Desktop config: %w", err)
 		}
-		cp := filepath.Join(dir, id+".json")
 		if err := fileutils.AtomicWriteFile(cp, docBytes, 0o600); err != nil {
 			cleanup(cp)
 			return fmt.Errorf("writing %s: %w", cp, err)
@@ -216,6 +221,13 @@ func (cm *ClientManager) revertCredentialHelper(appCfg *clientAppConfig, configP
 			if err := writeClaudeDesktopMeta(metaPath, meta); err != nil {
 				return err
 			}
+		}
+		// The document also holds any connectors "thv client connector add" wrote;
+		// they go with it, since Claude Desktop ignores them without the inference
+		// settings anyway.
+		if names := connectorNamesInDoc(configPath); len(names) > 0 {
+			slog.Warn("removing Claude Desktop connectors along with the LLM gateway configuration",
+				"connectors", names)
 		}
 		if err := removeIfExists(configPath); err != nil {
 			return err

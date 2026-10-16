@@ -1,8 +1,24 @@
 # SPIFFE Association Declarations
 
-**Current status: SPIFFE configuration is still rejected at startup.** `RunConfig.Validate()` validates the trust declarations, then `validateSPIFFENotYetEnforced` rejects any non-empty `spiffeTrustDomains` before the runner starts. This branch does wire `newServer` to construct the configured bundle source and pass its X.509 and JWT views into the authorization server, but that wiring is not reachable through normal startup. TLS-listener startup and X.509-SVID verification are not implemented, so SPIFFE client authentication is not deployable yet.
+**Current status: SPIFFE configuration is still rejected at startup.** `RunConfig.Validate()` validates the trust declarations, then `validateSPIFFENotYetEnforced` rejects any non-empty `spiffeTrustDomains` before the runner starts. This branch wires `newServer` to construct the configured bundle source and pass its X.509 and JWT views into the authorization server, and the proxy runner can start the auth-server TLS listener. However, X.509-SVID verification is not implemented and SPIFFE client authentication is not deployable yet.
 
-The embedded authorization server carries the SPIFFE association model across the `RunConfig` boundary, and the file-bundle source can load and poll a local trust-bundle file. The source wiring is present in server construction; the startup validation gate still prevents configured associations from being used. This document describes the implemented components and remaining gaps, not an available deployment capability.
+The embedded authorization server carries the SPIFFE association model across the `RunConfig` boundary, and the file-bundle source can load and poll a local trust-bundle file. The source wiring is present in server construction; the startup validation gate still prevents configured associations from being used. This document describes the implemented components and remaining gaps, not an available SPIFFE deployment capability.
+
+## Auth-server TLS listener
+
+The proxy runner can serve authorization-server routes on an additional TLS listener at fixed port `8443`. Configure the serving certificate and private key in the embedded auth-server `RunConfig`; mount both files read-only into the runner and keep the private key accessible only to the runner:
+
+```yaml
+tls_listener:
+  cert_file: /etc/toolhive/auth-server/tls.crt
+  key_file: /etc/toolhive/auth-server/tls.key
+```
+
+The listener binds the runner's configured host (falling back to loopback when the runner host is unset). A missing or invalid initial certificate/key pair, a bind failure, or a port-8443 conflict with the proxy or enabled diagnostics listener fails startup; the listener does not select another port. Certificate files are checked lazily during TLS handshakes, at most once every 30 seconds. A valid changed pair is used for subsequent handshakes; a failed reload keeps serving the last good pair.
+
+This listener serves OAuth/OIDC authorization-server routes only. Those routes remain mounted on the MCP transport port as well; enabling the listener does not make MCP traffic HTTPS. The listener uses the runner's bind host, so binding a non-loopback address exposes it on that network interface: restrict network reachability with deployment firewall/network policy controls and protect the certificate key. SPIFFE trust-domain configuration is still rejected at startup, and X.509-SVID verification is not implemented, so this listener does not make SPIFFE authentication deployable. vMCP does not start this listener: its current constructor call supplies no listener host, so configuring `tls_listener` there fails clearly at startup. Operator configuration and Service/port or certificate-mount exposure for this listener are not supported.
+
+The token-endpoint middleware rejects certificates containing a malformed SPIFFE identity with HTTP 401 and JSON `{"error":"invalid_client"}`, using `Content-Type: application/json` and `Cache-Control: no-store`. Rejected requests do not reach the authentication strategy; certificates without a SPIFFE URI SAN pass through unchanged. Extracting a claimed SPIFFE ID does not verify the certificate or enable SPIFFE authentication.
 
 ## Model and boundaries
 
@@ -104,11 +120,11 @@ JWT-SVID assertions currently have no application-level replay protection, `jti`
 
 Configuration and loaded bundles are not authentication by themselves. A client ID, a declared association, a request header, an unverified SPIFFE-looking URI, a client-supplied trust domain, or a loaded bundle is never workload identity. JWT-SVID validation establishes identity only after the assertion validates against configured trust material and the association registry authorizes the resulting SPIFFE ID and configured client ID.
 
-The JWT-SVID client-authentication path described above is implemented by [#6203](https://github.com/stacklok/toolhive/issues/6203). `newServer` (`pkg/authserver/server_impl.go`) now constructs and wires the multi-domain bundle source into both JWT and X.509 verification interfaces. However, `RunConfig.Validate()` rejects every non-empty SPIFFE trust configuration before normal server startup, so neither authentication path is currently deployable. The file loader and its rotation logic are wired into server construction, but are not reachable through that startup path. TLS listener startup and X.509-SVID verification ([#6202](https://github.com/stacklok/toolhive/issues/6202)) remain unimplemented; Workload API and bundle-endpoint loaders, SPIFFE method integration with grants or discovery metadata ([#6204](https://github.com/stacklok/toolhive/issues/6204)), and deploying SPIRE or mounting Workload API sockets ([#6205](https://github.com/stacklok/toolhive/issues/6205)) also remain pending.
+The JWT-SVID client-authentication path described above is implemented by [#6203](https://github.com/stacklok/toolhive/issues/6203). `newServer` (`pkg/authserver/server_impl.go`) constructs and wires the multi-domain bundle source into both JWT and X.509 verification interfaces. However, `RunConfig.Validate()` rejects every non-empty SPIFFE trust configuration before normal server startup, so neither authentication path is currently deployable. The file loader and its rotation logic are wired into server construction, but are not reachable through that startup path. The proxy runner's auth-server TLS listener is implemented and documented above; X.509-SVID verification ([#6202](https://github.com/stacklok/toolhive/issues/6202)) remains unimplemented. Workload API and bundle-endpoint loaders, SPIFFE method integration with grants or discovery metadata ([#6204](https://github.com/stacklok/toolhive/issues/6204)), and deploying SPIRE or mounting Workload API sockets ([#6205](https://github.com/stacklok/toolhive/issues/6205)) also remain pending.
 
 For [#6205](https://github.com/stacklok/toolhive/issues/6205), `workloadapi.X509Source` implements both `x509svid.Source` and `x509bundle.Source`, so one Workload API connection can also provide the authorization server's own certificate when deployment wiring is added. The v1alpha1 `ClientCASecretRef` plus `subPath` shape cannot support a rotating bundle and must not be reused for this purpose.
 
-Configured SPIFFE associations remain non-deployable independent of the above: `RunConfig.Validate()` still hard-rejects any non-empty `spiffeTrustDomains` (see "Current status" above), so none of this runs against a real deployment yet.
+Configured SPIFFE associations remain non-deployable: `RunConfig.Validate()` still hard-rejects any non-empty `spiffeTrustDomains` (see "Current status" above), so none of the SPIFFE authentication paths runs against a real deployment yet.
 
 Future X.509-SVID credential-validation code must establish identity from validated SVIDs and then resolve that verified identity through this registry. It must fail closed for missing associations, client-ID ownership mismatches, unknown trust domains, and methods not enabled by policy.
 

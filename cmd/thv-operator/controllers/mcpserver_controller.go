@@ -12,6 +12,7 @@ import (
 	"fmt"
 	"maps"
 	"os"
+	"slices"
 	"strconv"
 	"strings"
 	"time"
@@ -62,9 +63,10 @@ type MCPServerReconciler struct {
 	ImagePullSecretsDefaults imagepullsecrets.Defaults
 }
 
-// defaultRBACRules are the default RBAC rules that the
-// ToolHive ProxyRunner and/or MCP server needs to have in order to run.
+// defaultRBACRules are the RBAC rules that the ToolHive ProxyRunner and/or MCP
+// server needs to have in order to run, whatever transport is configured.
 // These permissions are needed for MCPServer which deploys and manages MCP server containers.
+// Transport-specific rules are added on top; see rbacRulesForTransport.
 var defaultRBACRules = []rbacv1.PolicyRule{
 	{
 		APIGroups: []string{"apps"},
@@ -88,14 +90,39 @@ var defaultRBACRules = []rbacv1.PolicyRule{
 	},
 	{
 		APIGroups: []string{""},
-		Resources: []string{"pods/attach"},
-		Verbs:     []string{"create", "get"},
-	},
-	{
-		APIGroups: []string{""},
 		Resources: []string{"configmaps"},
 		Verbs:     []string{"get", "list", "watch"},
 	},
+}
+
+// stdioRBACRules are granted on top of defaultRBACRules for stdio transport only.
+// The proxy runner talks to a stdio MCP server by attaching to the pod's stdio
+// (Client.AttachToWorkload, reached only from the stdio transport); the HTTP
+// transports speak to the pod over the network and never attach. Security
+// auditors treat pods/attach as equivalent to pod exec, so withhold it where it
+// cannot be used.
+var stdioRBACRules = []rbacv1.PolicyRule{
+	{
+		APIGroups: []string{""},
+		Resources: []string{"pods/attach"},
+		Verbs:     []string{"create", "get"},
+	},
+}
+
+// rbacRulesForTransport returns the proxy-runner Role rules for the given
+// MCPServer transport. An empty transport is treated as stdio: the CRD defaults
+// the field to stdio, so an object can only reach here with an empty value if it
+// predates that default or was built in Go, and granting the extra permission
+// keeps such a server working rather than breaking it.
+//
+// The result is always a fresh slice — appending to defaultRBACRules directly
+// would let a future rule share its backing array.
+func rbacRulesForTransport(mcpTransport string) []rbacv1.PolicyRule {
+	rules := slices.Clone(defaultRBACRules)
+	if mcpTransport == stdioTransport || mcpTransport == "" {
+		rules = append(rules, stdioRBACRules...)
+	}
+	return rules
 }
 
 // remoteProxyRBACRules defines minimal RBAC permissions for MCPRemoteProxy.
@@ -1105,7 +1132,7 @@ func (r *MCPServerReconciler) ensureRBACResources(ctx context.Context, mcpServer
 	if _, err := rbacClient.EnsureRBACResources(ctx, rbac.EnsureRBACResourcesParams{
 		Name:             proxyRunnerNameForRBAC,
 		Namespace:        mcpServer.Namespace,
-		Rules:            defaultRBACRules,
+		Rules:            rbacRulesForTransport(mcpServer.Spec.Transport),
 		Owner:            mcpServer,
 		ImagePullSecrets: imagePullSecrets,
 	}); err != nil {

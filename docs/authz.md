@@ -568,7 +568,11 @@ Two consequences worth planning around:
 Everything else stays closed. A token that simply arrives without upstream
 credentials and says nothing about why — an anonymous or local identity, or a
 bearer token from an IdP other than the pinned one — is denied, as is a session
-that exists but holds no credential for the pinned provider.
+that holds credentials for other providers but none for the pinned one. A session
+whose stored upstream credentials have all expired or been deleted never reaches
+the authorizer: the authentication middleware answers it with 401 and a
+`WWW-Authenticate` challenge so the client signs in again (see
+[Middleware Architecture](middleware.md)).
 
 **Upgrading:** JWT-bearer tokens minted by an authorization server running a
 version before this marker existed carry no marker, so a pinned deployment

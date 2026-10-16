@@ -2664,6 +2664,63 @@ func TestMiddleware_UpstreamTokenEnrichment(t *testing.T) {
 		require.Contains(t, rr.Header().Get("WWW-Authenticate"), `error="invalid_token"`)
 	})
 
+	// A token session whose stored rows have all expired or been deleted, or whose
+	// rows carry no access token, leaves the identity without a usable upstream
+	// credential. That is the same user-facing state as a refused refresh, so the
+	// middleware answers the same 401 challenge instead of handing an empty map to
+	// consumers that can only deny.
+	t.Run("returns 401 with WWW-Authenticate when the session holds no usable upstream access token", func(t *testing.T) {
+		t.Parallel()
+
+		tests := []struct {
+			name  string
+			creds map[string]upstreamtoken.UpstreamCredential
+		}{
+			{
+				name:  "no rows stored for the session",
+				creds: map[string]upstreamtoken.UpstreamCredential{},
+			},
+			{
+				name:  "rows without an access token",
+				creds: map[string]upstreamtoken.UpstreamCredential{"github": {IDToken: "gh-id-tok"}},
+			},
+		}
+
+		for _, tt := range tests {
+			t.Run(tt.name, func(t *testing.T) {
+				t.Parallel()
+				ctrl := gomock.NewController(t)
+				reader := upstreamtokenmocks.NewMockTokenReader(ctrl)
+				reader.EXPECT().GetAllUpstreamCredentials(gomock.Any(), "session-xyz").
+					Return(tt.creds, []string(nil), nil)
+				v := makeValidator(t, WithUpstreamTokenReader(reader))
+
+				nextCalled := false
+				handler := v.Middleware(http.HandlerFunc(func(_ http.ResponseWriter, _ *http.Request) {
+					nextCalled = true
+				}))
+
+				req := httptest.NewRequest("GET", "/", nil)
+				req.Header.Set("Authorization", "Bearer "+signToken(claimsWithTsid))
+				rr := httptest.NewRecorder()
+				handler.ServeHTTP(rr, req)
+
+				require.Equal(t, http.StatusUnauthorized, rr.Code)
+				require.False(t, nextCalled, "next must not be called when the session holds no upstream access token")
+				wwwAuth := rr.Header().Get("WWW-Authenticate")
+				require.Contains(t, wwwAuth, `error="invalid_token"`)
+				require.Contains(t, wwwAuth,
+					`error_description="upstream token is no longer valid; re-authentication required"`)
+				var body map[string]string
+				require.NoError(t, json.Unmarshal(rr.Body.Bytes(), &body))
+				require.Equal(t, map[string]string{
+					"error":             "invalid_token",
+					"error_description": "upstream token is no longer valid; re-authentication required",
+				}, body)
+			})
+		}
+	})
+
 	t.Run("no enrichment without tsid", func(t *testing.T) {
 		t.Parallel()
 		ctrl := gomock.NewController(t)

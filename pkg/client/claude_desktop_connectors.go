@@ -7,6 +7,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"log/slog"
 	"net/url"
 	"os"
 	"path/filepath"
@@ -23,10 +24,10 @@ import (
 // connects to each server directly and runs the server's OAuth sign-in itself,
 // so no local proxy is involved.
 //
-// The two commands are meant to be used together. Known gaps, accepted for now:
-// re-running "thv llm setup" rewrites the document and drops these entries
-// (re-add them afterwards), and "thv llm teardown" deletes the document along
-// with any entries still in it (it logs a warning naming them).
+// Re-running "thv llm setup" keeps these entries when it rewrites the document.
+// "thv llm teardown" deletes the document along with any entries still in it
+// and logs a warning naming them, since Desktop ignores them without the
+// inference settings.
 
 const claudeDesktopManagedMCPServersKey = "managedMcpServers"
 
@@ -52,11 +53,15 @@ type Connector struct {
 // an existing connector with the same name, keeping its other fields. The
 // client signs in to the server itself (OAuth), so nothing is proxied through
 // ToolHive. A same-name entry that is not a remote server is an error.
+//
+// The write succeeds but logs a warning when Claude Desktop will not load the
+// connector: when a managed-preferences (MDM) profile overrides the local
+// configuration, or when the user has applied a different saved configuration.
 func (cm *ClientManager) AddConnector(clientType ClientApp, name, serverURL string) error {
 	if err := validateConnector(name, serverURL); err != nil {
 		return err
 	}
-	return cm.updateConnectors(clientType, func(servers []any) ([]any, error) {
+	applied, err := cm.updateConnectors(clientType, func(servers []any) ([]any, error) {
 		for _, s := range servers {
 			m, ok := s.(map[string]any)
 			if !ok || m["name"] != name {
@@ -75,13 +80,26 @@ func (cm *ClientManager) AddConnector(clientType ClientApp, name, serverURL stri
 			"oauth":     true,
 		}), nil
 	})
+	if err != nil {
+		return err
+	}
+	if cm.IsManaged(clientType) {
+		slog.Warn("a managed-preferences profile overrides Claude Desktop's local configuration, "+
+			"so it will not load this connector; add it to the managed profile instead",
+			"connector", name)
+	}
+	if !applied {
+		slog.Warn("Claude Desktop is using a different saved configuration, so it will not load this connector "+
+			"until \""+claudeDesktopManagedEntryName+"\" is applied again", "connector", name)
+	}
+	return nil
 }
 
 // RemoveConnector removes the connector with the given name from the client.
 // Entries that are not remote servers are never removed, matching
 // ListConnectors.
 func (cm *ClientManager) RemoveConnector(clientType ClientApp, name string) error {
-	return cm.updateConnectors(clientType, func(servers []any) ([]any, error) {
+	_, err := cm.updateConnectors(clientType, func(servers []any) ([]any, error) {
 		kept := make([]any, 0, len(servers))
 		for _, s := range servers {
 			if m, ok := s.(map[string]any); ok && m["name"] == name && isRemoteServer(m) {
@@ -94,6 +112,7 @@ func (cm *ClientManager) RemoveConnector(clientType ClientApp, name string) erro
 		}
 		return kept, nil
 	})
+	return err
 }
 
 // ListConnectors returns the remote MCP servers configured in the client.
@@ -117,22 +136,25 @@ func (cm *ClientManager) ListConnectors(clientType ClientApp) ([]Connector, erro
 
 // updateConnectors applies fn to the managedMcpServers array of ToolHive's
 // Claude Desktop configuration document, under the same lock "thv llm setup"
-// and "thv llm teardown" hold, preserving every other key in the document.
-func (cm *ClientManager) updateConnectors(clientType ClientApp, fn func([]any) ([]any, error)) error {
+// and "thv llm teardown" hold, preserving every other key in the document. It
+// reports whether that document is the one Claude Desktop currently applies.
+func (cm *ClientManager) updateConnectors(clientType ClientApp, fn func([]any) ([]any, error)) (bool, error) {
 	appCfg, err := cm.connectorAppConfig(clientType)
 	if err != nil {
-		return err
+		return false, err
 	}
 	metaPath := cm.buildLLMSettingsPath(appCfg)
 	// The lock file lives in configLibrary, which only exists once setup has run.
 	if !fileExistsAt(filepath.Dir(metaPath)) {
-		return ErrConnectorsNotSetUp
+		return false, ErrConnectorsNotSetUp
 	}
-	return fileutils.WithFileLock(metaPath, func() error {
-		docPath, err := connectorDocPathLocked(metaPath)
+	var applied bool
+	err = fileutils.WithFileLock(metaPath, func() error {
+		docPath, isApplied, err := connectorDocPathLocked(metaPath)
 		if err != nil {
 			return err
 		}
+		applied = isApplied
 		doc, err := readClaudeDesktopDoc(docPath)
 		if err != nil {
 			return err
@@ -159,6 +181,7 @@ func (cm *ClientManager) updateConnectors(clientType ClientApp, fn func([]any) (
 		}
 		return nil
 	})
+	return applied, err
 }
 
 // connectorAppConfig returns the integration config for a client that
@@ -181,25 +204,28 @@ func (cm *ClientManager) connectorDocPath(clientType ClientApp) (string, error) 
 	if err != nil {
 		return "", err
 	}
-	return connectorDocPathLocked(cm.buildLLMSettingsPath(appCfg))
+	docPath, _, err := connectorDocPathLocked(cm.buildLLMSettingsPath(appCfg))
+	return docPath, err
 }
 
 // connectorDocPathLocked finds the document named by ToolHive's _meta.json
-// entry. Callers that write must hold the metaPath lock.
-func connectorDocPathLocked(metaPath string) (string, error) {
+// entry, and reports whether _meta.json's appliedId still selects it. Callers
+// that write must hold the metaPath lock.
+func connectorDocPathLocked(metaPath string) (string, bool, error) {
 	meta, err := readClaudeDesktopMeta(metaPath)
 	if err != nil {
-		return "", err
+		return "", false, err
 	}
 	id := metaEntryID(meta, claudeDesktopManagedEntryName)
 	if id == "" {
-		return "", ErrConnectorsNotSetUp
+		return "", false, ErrConnectorsNotSetUp
 	}
 	docPath := filepath.Join(filepath.Dir(metaPath), id+".json")
 	if !fileExistsAt(docPath) {
-		return "", ErrConnectorsNotSetUp
+		return "", false, ErrConnectorsNotSetUp
 	}
-	return docPath, nil
+	applied, _ := meta["appliedId"].(string)
+	return docPath, applied == id, nil
 }
 
 // readClaudeDesktopDoc reads a configuration document into a generic map so
@@ -267,6 +293,29 @@ func validateConnector(name, serverURL string) error {
 		return fmt.Errorf("invalid connector URL %q: must be an absolute https URL", serverURL)
 	}
 	return nil
+}
+
+// previousManagedMCPServers returns the managedMcpServers entries of the
+// document "thv llm setup" is about to rewrite, so re-running setup keeps them.
+// A missing document has none. An unreadable one is still replaced, as before
+// connectors existed, with a warning that anything in it is dropped.
+func previousManagedMCPServers(path string) []any {
+	if !fileExistsAt(path) {
+		return nil
+	}
+	servers, err := func() ([]any, error) {
+		doc, err := readClaudeDesktopDoc(path)
+		if err != nil {
+			return nil, err
+		}
+		return managedMCPServers(doc, path)
+	}()
+	if err != nil {
+		slog.Warn("could not read connectors from the previous Claude Desktop configuration; "+
+			"they will not be carried over", "path", path, "error", err)
+		return nil
+	}
+	return servers
 }
 
 // connectorNamesInDoc returns the names of the connectors in a configuration

@@ -33,15 +33,21 @@ Claude Desktop reads its configuration only at launch, so fully quit and reopen
 it after adding or removing a connector. A new connector then shows a Connect
 button under Customize → Connectors.
 
-Re-running "thv llm setup --client claude-desktop" drops existing connectors;
-add them again afterwards. "thv llm teardown" removes them.`,
+Re-running "thv llm setup --client claude-desktop" keeps existing connectors.
+"thv llm teardown" removes them.`,
 }
 
 var clientConnectorAddCmd = &cobra.Command{
 	Use:   "add NAME URL",
 	Short: "Add a remote MCP server to a client",
 	Long: `Add a remote MCP server to a client, or update the URL of an existing
-connector with the same name. The URL must be an absolute https URL.
+connector with the same name. The URL must be an absolute https URL, and it
+must be the server's final address: Claude Desktop does not follow HTTP
+redirects, even one that only adds a trailing slash.
+
+A warning is logged when Claude Desktop will not load the connector: when a
+managed-preferences (MDM) profile overrides its local configuration, or when a
+different saved configuration is applied in the app.
 
 Example:
   thv client connector add --client claude-desktop stacklok-connectors https://connector-gateway.example.com/gw/mcp`,

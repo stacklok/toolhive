@@ -4,8 +4,11 @@
 package client
 
 import (
+	"bytes"
 	"encoding/json"
+	"log/slog"
 	"os"
+	"path/filepath"
 	"runtime"
 	"testing"
 
@@ -147,6 +150,90 @@ func TestConnectors_LeaveSameNameLocalEntryAlone(t *testing.T) {
 		assert.ErrorIs(t, cm.RemoveConnector(ClientApp(ClaudeDesktop), "stacklok"), ErrConnectorNotFound)
 		assert.Equal(t, []any{local}, readDocMap(t, configPath)["managedMcpServers"])
 	})
+}
+
+//nolint:paralleltest // slog.SetDefault and managedPreferencesRoot are process-global
+func TestAddConnector_WarnsWhenDesktopWillNotLoadIt(t *testing.T) {
+	tests := []struct {
+		name       string
+		otherApply bool
+		managed    bool
+		wantWarn   string
+	}{
+		{name: "applied and unmanaged does not warn"},
+		{name: "another config applied", otherApply: true, wantWarn: "different saved configuration"},
+		{name: "managed profile present", managed: true, wantWarn: "managed-preferences profile"},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			if tc.managed && runtime.GOOS != "darwin" {
+				t.Skip("managed-preferences profiles are only detected on macOS")
+			}
+			cm, configPath := newConnectorManager(t)
+			if tc.otherApply {
+				metaPath := filepath.Join(filepath.Dir(configPath), "_meta.json")
+				meta := readMeta(t, metaPath)
+				meta["appliedId"] = "user-config"
+				require.NoError(t, writeClaudeDesktopMeta(metaPath, meta))
+			}
+			root := t.TempDir()
+			if tc.managed {
+				require.NoError(t, os.WriteFile(filepath.Join(root, "com.anthropic.claudefordesktop.plist"), nil, 0o600))
+			}
+			previousRoot := managedPreferencesRoot
+			managedPreferencesRoot = root
+			t.Cleanup(func() { managedPreferencesRoot = previousRoot })
+
+			var buf bytes.Buffer
+			previous := slog.Default()
+			slog.SetDefault(slog.New(slog.NewTextHandler(&buf, &slog.HandlerOptions{Level: slog.LevelWarn})))
+			t.Cleanup(func() { slog.SetDefault(previous) })
+
+			require.NoError(t, cm.AddConnector(ClientApp(ClaudeDesktop), "stacklok", testConnectorURL),
+				"the connector is still written")
+			if tc.wantWarn == "" {
+				assert.Empty(t, buf.String())
+				return
+			}
+			assert.Contains(t, buf.String(), tc.wantWarn)
+		})
+	}
+}
+
+func TestConfigureLLMGateway_KeepsConnectors(t *testing.T) {
+	t.Parallel()
+	cm, configPath := newConnectorManager(t)
+	local := map[string]any{"name": "local", "transport": "stdio", "command": "/usr/local/bin/srv"}
+	writeServers(t, configPath, local)
+	require.NoError(t, cm.AddConnector(ClientApp(ClaudeDesktop), "stacklok", testConnectorURL))
+
+	cfg := claudeDesktopApplyCfg()
+	cfg.Models = []string{"claude-opus-4-8"}
+	rerunPath, err := cm.ConfigureLLMGateway(ClientApp(ClaudeDesktop), cfg)
+	require.NoError(t, err)
+	require.Equal(t, configPath, rerunPath, "re-running setup reuses the same document")
+
+	doc := readDocMap(t, configPath)
+	assert.Equal(t, []any{"claude-opus-4-8"}, doc["inferenceModels"], "setup still applies its own changes")
+	assert.Equal(t, []any{local, map[string]any{
+		"name":      "stacklok",
+		"transport": "http",
+		"url":       testConnectorURL,
+		"oauth":     true,
+	}}, doc["managedMcpServers"])
+}
+
+func TestConfigureLLMGateway_ReplacesUnreadableDocument(t *testing.T) {
+	t.Parallel()
+	cm, configPath := newConnectorManager(t)
+	require.NoError(t, os.WriteFile(configPath, []byte("not json"), 0o600))
+
+	_, err := cm.ConfigureLLMGateway(ClientApp(ClaudeDesktop), claudeDesktopApplyCfg())
+	require.NoError(t, err, "setup still replaces a document it cannot read")
+
+	doc := readDocMap(t, configPath)
+	assert.Equal(t, "gateway", doc["inferenceProvider"])
+	assert.NotContains(t, doc, "managedMcpServers")
 }
 
 func TestAddConnector_RejectsInvalidInput(t *testing.T) {

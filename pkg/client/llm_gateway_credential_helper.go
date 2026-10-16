@@ -38,8 +38,9 @@ const (
 )
 
 // claudeDesktopConfig is the <id>.json document written into the configLibrary.
-// ToolHive owns this file; besides these keys it may also hold managedMcpServers
-// written by "thv client connector add" (see claude_desktop_connectors.go).
+// ToolHive owns this file. ManagedMCPServers holds the connectors written by
+// "thv client connector add" (see claude_desktop_connectors.go); setup carries
+// them over from the previous document rather than managing them itself.
 // inferenceModels is omitted when empty so Claude Desktop falls back to
 // gateway-side model auto-discovery once the gateway serves it.
 type claudeDesktopConfig struct {
@@ -51,6 +52,7 @@ type claudeDesktopConfig struct {
 	InferenceCredentialHelperTtlSec     int      `json:"inferenceCredentialHelperTtlSec"`
 	InferenceCredentialHelperTimeoutSec int      `json:"inferenceCredentialHelperTimeoutSec"`
 	InferenceModels                     []string `json:"inferenceModels,omitempty"`
+	ManagedMCPServers                   []any    `json:"managedMcpServers,omitempty"`
 }
 
 // configureCredentialHelper writes (or updates) ToolHive's Claude Desktop
@@ -118,9 +120,7 @@ func (cm *ClientManager) configureCredentialHelper(appCfg *clientAppConfig, cfg 
 		meta["entries"] = upsertMetaEntry(metaEntries(meta), id, claudeDesktopManagedEntryName)
 		meta["appliedId"] = id
 
-		// This rewrites the whole document, so it drops any managedMcpServers
-		// entries "thv client connector add" wrote; they must be re-added after
-		// re-running setup. Accepted for now: the two are run together, setup first.
+		cp := filepath.Join(dir, id+".json")
 		doc := claudeDesktopConfig{
 			InferenceProvider:                   "gateway",
 			InferenceGatewayBaseURL:             baseURL,
@@ -130,13 +130,14 @@ func (cm *ClientManager) configureCredentialHelper(appCfg *clientAppConfig, cfg 
 			InferenceCredentialHelperTtlSec:     int(llmgateway.ClaudeDesktopHelperTTL.Seconds()),
 			InferenceCredentialHelperTimeoutSec: int(llmgateway.ClaudeDesktopHelperTimeout.Seconds()),
 			InferenceModels:                     cfg.Models,
+			// Keep connectors across re-runs of setup, which rewrites the document.
+			ManagedMCPServers: previousManagedMCPServers(cp),
 		}
 		docBytes, err := json.MarshalIndent(doc, "", "  ")
 		if err != nil {
 			cleanup("")
 			return fmt.Errorf("encoding Claude Desktop config: %w", err)
 		}
-		cp := filepath.Join(dir, id+".json")
 		if err := fileutils.AtomicWriteFile(cp, docBytes, 0o600); err != nil {
 			cleanup(cp)
 			return fmt.Errorf("writing %s: %w", cp, err)

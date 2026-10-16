@@ -26,8 +26,8 @@ Claude Desktop reads its configuration only at launch, so fully quit and reopen
 it after adding or removing a connector. A new connector then shows a Connect
 button under Customize → Connectors.
 
-Re-running "thv llm setup --client claude-desktop" drops existing connectors;
-add them again afterwards. "thv llm teardown" removes them.
+Re-running "thv llm setup --client claude-desktop" keeps existing connectors.
+"thv llm teardown" removes them.
 
 ### Options
 

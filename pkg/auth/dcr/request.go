@@ -19,14 +19,18 @@ const (
 	ProbeTokenEndpoint RegistrationProbe = "tokenEndpoint"
 
 	// ProbeAuthorizationEndpoint sends an authorization request for the
-	// cached client without following redirects. RFC 6749 §4.1.2.1 has the
-	// server answer an unknown client_id or redirect_uri directly, with no
-	// redirect, while a known client is redirected (to login, or back to
-	// redirect_uri with an error). A direct 4xx therefore means the
-	// registration is gone. Use it for upstreams whose token endpoint
-	// validates the grant before the client, where ProbeTokenEndpoint cannot
-	// decide; not behind bot protection that answers 4xx to non-browser
-	// requests, which would re-register at every start.
+	// cached client without following redirects and no credentials, so it
+	// covers every auth method. RFC 6749 §4.1.2.1 has the server answer an
+	// unknown client_id or redirect_uri directly, with no redirect, while a
+	// known client is redirected (to login, or back to redirect_uri with an
+	// error). A direct 400, 401 or 403 carrying an RFC 6749 JSON error object
+	// with error invalid_client, unauthorized_client or invalid_request means
+	// the registration is gone; any other direct answer (an HTML page, a
+	// gateway's 401/403, another error code) is unverified and keeps the
+	// cached client. Use it for upstreams whose token endpoint validates the
+	// grant before the client, where ProbeTokenEndpoint cannot decide. A
+	// false rejection re-registers at every start and, when registration
+	// also fails, fails startup.
 	ProbeAuthorizationEndpoint RegistrationProbe = "authorizationEndpoint"
 
 	// ProbeNone never contacts the upstream on a cache hit; the cached
